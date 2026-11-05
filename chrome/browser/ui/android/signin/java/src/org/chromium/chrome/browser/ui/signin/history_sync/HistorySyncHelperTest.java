@@ -9,8 +9,6 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -49,6 +47,7 @@ public class HistorySyncHelperTest {
 
     @Mock private SyncService mSyncServiceMock;
     @Mock private Profile mProfileMock;
+    @Mock private Profile mProfileMock2;
     @Mock private PrefService mPrefServiceMock;
     @Mock private UserPrefs.Natives mUserPrefsJniMock;
 
@@ -61,12 +60,23 @@ public class HistorySyncHelperTest {
         when(mUserPrefsJniMock.get(any(Profile.class))).thenReturn(mPrefServiceMock);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mHistorySyncHelper = new HistorySyncHelper(mProfileMock);
+                    mHistorySyncHelper = HistorySyncHelper.getForProfile(mProfileMock);
                 });
     }
 
     @Test
-    @SmallTest
+    public void testGetForProfile() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    Assert.assertSame(
+                            mHistorySyncHelper, HistorySyncHelper.getForProfile(mProfileMock));
+                    HistorySyncHelper secondHelper = HistorySyncHelper.getForProfile(mProfileMock2);
+                    Assert.assertNotSame(mHistorySyncHelper, secondHelper);
+                    Assert.assertSame(secondHelper, HistorySyncHelper.getForProfile(mProfileMock2));
+                });
+    }
+
+    @Test
     public void testDidAlreadyOptIn() {
         Assert.assertTrue(mHistorySyncHelper.shouldDisplayHistorySync());
         Assert.assertFalse(mHistorySyncHelper.didAlreadyOptIn());
@@ -79,7 +89,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testIsHistorySyncDisabledByPolicy_syncDisabledByPolicy() {
         Assert.assertTrue(mHistorySyncHelper.shouldDisplayHistorySync());
         Assert.assertFalse(mHistorySyncHelper.isHistorySyncDisabledByPolicy());
@@ -91,7 +100,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testIsHistorySyncDisabledByPolicy_typesManagedByPolicy() {
         Assert.assertFalse(mHistorySyncHelper.isHistorySyncDisabledByPolicy());
 
@@ -102,7 +110,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testIsHistorySyncDisabledByCustodian() {
         Assert.assertFalse(mHistorySyncHelper.isHistorySyncDisabledByCustodian());
 
@@ -113,7 +120,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testIsDeclinedOften_didDeclineInThePastTwoWeeks() {
         when(mPrefServiceMock.getLong(Pref.HISTORY_SYNC_LAST_DECLINED_TIMESTAMP))
                 .thenReturn(TimeUtils.currentTimeMillis());
@@ -122,7 +128,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testIsDeclinedOften_didDeclineTwiceInARow() {
         when(mPrefServiceMock.getInteger(Pref.HISTORY_SYNC_SUCCESSIVE_DECLINE_COUNT)).thenReturn(2);
 
@@ -130,7 +135,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testIsDeclinedOften() {
         when(mPrefServiceMock.getInteger(Pref.HISTORY_SYNC_SUCCESSIVE_DECLINE_COUNT)).thenReturn(0);
         when(mPrefServiceMock.getLong(Pref.HISTORY_SYNC_LAST_DECLINED_TIMESTAMP))
@@ -142,7 +146,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testShouldDisplayHistorySync() {
         when(mSyncServiceMock.getSelectedTypes()).thenReturn(Set.of());
         when(mSyncServiceMock.isTypeManagedByCustodian(anyInt())).thenReturn(false);
@@ -153,7 +156,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     @SuppressWarnings("DirectInvocationOnMock")
     public void testRecordHistorySyncDeclinedPrefs() {
         final int someIntegerValue =
@@ -168,7 +170,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testClearHistorySyncDeclinedPrefs() {
         mHistorySyncHelper.clearHistorySyncDeclinedPrefs();
 
@@ -177,7 +178,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testEnablingHistoryAndTabsSync() {
         mHistorySyncHelper.setHistoryAndTabsSync(true);
 
@@ -186,7 +186,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testClearingHistoryAndTabsSync() {
         mHistorySyncHelper.setHistoryAndTabsSync(false);
 
@@ -195,7 +194,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testRecordHistorySyncNotShown_userAlreadyOptedIn() {
         when(mSyncServiceMock.getSelectedTypes())
                 .thenReturn(Set.of(UserSelectableType.HISTORY, UserSelectableType.TABS));
@@ -209,7 +207,6 @@ public class HistorySyncHelperTest {
     }
 
     @Test
-    @SmallTest
     public void testRecordHistorySyncNotShown_userNotOptedIn() {
         HistogramWatcher histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(

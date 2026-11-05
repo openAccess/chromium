@@ -6,8 +6,10 @@
 
 #import <algorithm>
 #import <set>
+#import <utility>
 
 #import "base/apple/foundation_util.h"
+#import "base/containers/to_vector.h"
 #import "base/i18n/message_formatter.h"
 #import "base/ios/ios_util.h"
 #import "base/memory/raw_ptr.h"
@@ -59,14 +61,15 @@
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_scene_agent.h"
 #import "ios/chrome/browser/intents/model/intents_donation_helper.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
+#import "ios/chrome/browser/menu/public/menu_histograms.h"
 #import "ios/chrome/browser/menu/ui_bundled/browser_action_factory.h"
-#import "ios/chrome/browser/menu/ui_bundled/menu_histograms.h"
 #import "ios/chrome/browser/metrics/model/new_tab_page_uma.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/alert/alert_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state_observer.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/incognito_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
@@ -139,7 +142,7 @@ typedef NS_ENUM(NSInteger, BookmarksContextBarState) {
 constexpr CGFloat kSpaceBetweenAccountAndProfileSections = 32.0;
 
 // Returns a vector of all URLs in `nodes`.
-std::vector<GURL> GetUrlsToOpen(const std::vector<const BookmarkNode*>& nodes) {
+std::vector<GURL> GetUrlsToOpen(const bookmark_utils_ios::NodeVector& nodes) {
   std::vector<GURL> urls;
   for (const BookmarkNode* node : nodes) {
     if (node->is_url()) {
@@ -151,7 +154,7 @@ std::vector<GURL> GetUrlsToOpen(const std::vector<const BookmarkNode*>& nodes) {
 
 // Given a set of BookmarkNode pointers, it returns their IDs in a set.
 BookmarkNodeIDSet GetBookmarkNodeIDSet(
-    const std::set<const BookmarkNode*>& nodes) {
+    const bookmark_utils_ios::NodeSet& nodes) {
   BookmarkNodeIDSet nodeIDs;
   for (const BookmarkNode* node : nodes) {
     nodeIDs.emplace(node->id());
@@ -168,6 +171,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
     BookmarksFolderEditorCoordinatorDelegate,
     BookmarksHomeConsumer,
     BookmarkTableCellTitleEditDelegate,
+    SceneStateObserver,
     TableViewURLDragDataSource,
     TableViewURLDropDelegate,
     UIGestureRecognizerDelegate,
@@ -275,6 +279,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   self = [super initWithStyle:style];
   if (self) {
     _browser = browser->AsWeakPtr();
+    [browser->GetSceneState() addObserver:self];
     ProfileIOS* profile = self.profile;
     _webStateList = browser->GetWebStateList();
 
@@ -306,6 +311,9 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   _displayedFolderNode = nullptr;
   self.mediator.consumer = nil;
   self.mediator = nil;
+  if (_browser) {
+    [_browser->GetSceneState() removeObserver:self];
+  }
   _browser = nullptr;
   [self.searchController dismissViewControllerAnimated:YES completion:nil];
   [self dismissActionSheetCoordinator];
@@ -723,9 +731,9 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   [_signinCoordinator stop];
   __weak __typeof(self) weakSelf = self;
   [command addSigninCompletion:^(SigninCoordinator* coordinator,
-                                 SigninCoordinatorResult result,
-                                 id<SystemIdentity>) {
-    [weakSelf signinDidCompleteWithCoordinator:coordinator result:result];
+                                 SigninCoordinatorResultOrIdentity result) {
+    [weakSelf signinDidCompleteWithCoordinator:coordinator
+                                        result:std::move(result)];
   }];
   _signinCoordinator = [SigninCoordinator
       signinCoordinatorWithCommand:command
@@ -762,9 +770,10 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 #pragma mark - BookmarksHomeConsumer Helper
 
 - (void)signinDidCompleteWithCoordinator:(SigninCoordinator*)coordinator
-                                  result:(SigninCoordinatorResult)result {
-  CHECK_EQ(_signinCoordinator, coordinator, base::NotFatalUntil::M151);
-  [self.mediator signinDidCompleteWithResult:result];
+                                  result:(SigninCoordinatorResultOrIdentity)
+                                             result {
+  CHECK_EQ(_signinCoordinator, coordinator);
+  [self.mediator signinDidCompleteWithResult:std::move(result)];
   [self stopSigninCoordinator];
 }
 
@@ -1227,7 +1236,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   }
 }
 
-- (void)handleSelectEditNodes:(const std::set<const BookmarkNode*>&)nodes {
+- (void)handleSelectEditNodes:(const bookmark_utils_ios::NodeSet&)nodes {
   // Early return if bookmarks table is not in edit mode.
   if (!self.mediator.currentlyInEditMode) {
     return;
@@ -1344,8 +1353,8 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
     return;
   }
   ProfileIOS* profile = self.profile;
-  std::vector<const BookmarkNode*> editedNodesVector(editedNodesSet.begin(),
-                                                     editedNodesSet.end());
+  bookmark_utils_ios::NodeVector editedNodesVector =
+      base::ToVector(editedNodesSet);
   SnackbarMessage* snackbarMessage =
       bookmark_utils_ios::MoveBookmarksWithUndoSnackbar(
           editedNodesVector, _bookmarkModel.get(), folder, profile,
@@ -1849,7 +1858,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   if (!_bookmarkModel) {
     return;
   }
-  std::set<const bookmarks::BookmarkNode*> allEditableNodes;
+  bookmark_utils_ios::NodeSet allEditableNodes;
   NSArray<TableViewItem*>* items = [self.tableViewModel
       itemsInSectionWithIdentifier:BookmarksHomeSectionIdentifierBookmarks];
 
@@ -2036,7 +2045,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   }
   // Create a new selectedNodesForEditMode set to check if some selected nodes
   // are removed.
-  std::set<const BookmarkNode*> newEditNodes;
+  bookmark_utils_ios::NodeSet newEditNodes;
 
   // Add selected nodes to selectedNodesForEditMode only if they are not removed
   // (still exist in the table).
@@ -2189,8 +2198,8 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   return [self.tableViewModel numberOfItemsInSection:section] > 0;
 }
 
-- (std::vector<const BookmarkNode*>)selectedNodesForEditMode {
-  std::vector<const BookmarkNode*> nodes;
+- (bookmark_utils_ios::NodeVector)selectedNodesForEditMode {
+  bookmark_utils_ios::NodeVector nodes;
   if (self.mediator.currentlyShowingSearchResults) {
     // Create a vector of edit nodes in the same order as the selected nodes.
     std::ranges::copy(self.mediator.selectedNodesForEditMode,
@@ -2410,7 +2419,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   if ([self isAnyControllerPresenting]) {
     return;
   }
-  const std::set<const BookmarkNode*> nodes =
+  const bookmark_utils_ios::NodeSet nodes =
       self.mediator.selectedNodesForEditMode;
   switch (self.contextBarState) {
     case BookmarksContextBarDefault:
@@ -2442,7 +2451,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
   if ([self isAnyControllerPresenting]) {
     return;
   }
-  const std::set<const BookmarkNode*> nodes =
+  const bookmark_utils_ios::NodeSet& nodes =
       self.mediator.selectedNodesForEditMode;
   // Center button is shown and is clickable only when at least
   // one node is selected.
@@ -2562,7 +2571,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 #pragma mark - Context Menu
 
 - (void)configureCoordinator:(AlertCoordinator*)coordinator
-     forMultipleBookmarkURLs:(const std::set<const BookmarkNode*>)nodes {
+     forMultipleBookmarkURLs:(const bookmark_utils_ios::NodeSet&)nodes {
   __weak BookmarksHomeViewController* weakSelf = self;
   coordinator.alertController.view.accessibilityIdentifier =
       kBookmarksHomeContextMenuIdentifier;
@@ -2623,7 +2632,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
                  style:UIAlertActionStyleDefault
                enabled:![self isIncognitoForced]];
 
-  if (base::ios::IsMultipleScenesSupported()) {
+  if (_browser && _browser->GetSceneState().multipleScenesAvailable) {
     titleString = GetNSString(IDS_IOS_CONTENT_CONTEXT_OPENINNEWWINDOW);
     auto action = ^{
       [weakSelf actionSheetOpenNewWindowActionWithURL:nodeURL];
@@ -2683,7 +2692,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 }
 
 - (void)configureCoordinator:(AlertCoordinator*)coordinator
-    forMixedAndMultiFolderSelection:(const std::set<const BookmarkNode*>)nodes {
+    forMixedAndMultiFolderSelection:(const bookmark_utils_ios::NodeSet&)nodes {
   __weak BookmarksHomeViewController* weakSelf = self;
   coordinator.alertController.view.accessibilityIdentifier =
       kBookmarksHomeContextMenuIdentifier;
@@ -2711,7 +2720,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 
 - (void)actionSheetOpenAction {
   [self dismissActionSheetCoordinator];
-  std::vector<const BookmarkNode*> selectedNodesForEditMode =
+  bookmark_utils_ios::NodeVector selectedNodesForEditMode =
       [self selectedNodesForEditMode];
   [self openAllURLs:GetUrlsToOpen(selectedNodesForEditMode)
         inIncognito:NO
@@ -2720,7 +2729,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
 
 - (void)actionSheetOpenIncognitoAction {
   [self dismissActionSheetCoordinator];
-  std::vector<const BookmarkNode*> selectedNodesForEditMode =
+  bookmark_utils_ios::NodeVector selectedNodesForEditMode =
       [self selectedNodesForEditMode];
   [self openAllURLs:GetUrlsToOpen(selectedNodesForEditMode)
         inIncognito:YES
@@ -2990,7 +2999,7 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
     if (!node) {
       return;
     }
-    std::set<const BookmarkNode*> nodes;
+    bookmark_utils_ios::NodeSet nodes;
     nodes.insert(node);
     [self deleteBookmarkNodes:nodes
                    userAction:"MobileBookmarkManagerEntryDeleted"];
@@ -3279,6 +3288,13 @@ BookmarkNodeIDSet GetBookmarkNodeIDSet(
               base::SysUTF8ToNSString(URL.spec()), URL,
               self.displayedFolderNode, index, _bookmarkModel.get(),
               self.profile)];
+}
+
+#pragma mark - SceneStateObserver
+
+- (void)sceneState:(SceneState*)sceneState
+    multipleScenesAvailabilityDidChange:(BOOL)multipleScenesAvailable {
+  [self dismissActionSheetCoordinator];
 }
 
 @end

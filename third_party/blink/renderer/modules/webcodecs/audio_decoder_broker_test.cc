@@ -20,7 +20,11 @@
 #include "media/base/sample_format.h"
 #include "media/base/test_data_util.h"
 #include "media/base/test_helpers.h"
+#include "media/media_buildflags.h"
 #include "media/mojo/buildflags.h"
+#if BUILDFLAG(ENABLE_SYMPHONIA)
+#include "media/filters/symphonia_audio_decoder.h"
+#endif
 #include "media/mojo/mojom/audio_decoder.mojom.h"
 #include "media/mojo/mojom/interface_factory.mojom.h"
 #include "media/mojo/services/interface_factory_impl.h"
@@ -138,12 +142,12 @@ class FakeInterfaceFactory : public media::mojom::InterfaceFactory {
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
       mojo::PendingRemote<media::mojom::VideoDecoder> dst_video_decoder)
       override {}
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   void CreateVideoDecoderWithTracker(
       mojo::PendingReceiver<media::mojom::VideoDecoder> receiver,
       mojo::PendingRemote<media::mojom::VideoDecoderTracker> tracker) override {
   }
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
   void CreateDefaultRenderer(
       const std::string& audio_device_id,
       mojo::PendingReceiver<media::mojom::Renderer> receiver) override {}
@@ -322,7 +326,14 @@ TEST_F(AudioDecoderBrokerTest, Decode_NoMojoDecoder) {
   EXPECT_EQ(GetDecoderType(), media::AudioDecoderType::kBroker);
 
   InitializeDecoder(MakeVorbisConfig());
+#if BUILDFLAG(ENABLE_SYMPHONIA)
+  EXPECT_EQ(GetDecoderType(),
+            media::SymphoniaAudioDecoder::IsCodecSupported(kCodec)
+                ? media::AudioDecoderType::kSymphonia
+                : media::AudioDecoderType::kFFmpeg);
+#else
   EXPECT_EQ(GetDecoderType(), media::AudioDecoderType::kFFmpeg);
+#endif
 
   DecodeBuffer(
       media::ReadTestDataFile("vorbis-packet-0", base::Milliseconds(0)));

@@ -17,8 +17,6 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/launch_utils.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
 #include "chrome/browser/ash/drive/drive_integration_service_factory.h"
@@ -35,7 +33,6 @@
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/shell_dialogs/select_file_policy.h"
 
 namespace ash {
@@ -100,7 +97,7 @@ bool ChromeScanningAppDelegate::IsFilePathSupported(
 
 void ChromeScanningAppDelegate::OpenFilesInMediaApp(
     const std::vector<base::FilePath>& file_paths) {
-  DCHECK(!file_paths.empty());
+  CHECK(!file_paths.empty(), base::NotFatalUntil::M160);
 
   ash::SystemAppLaunchParams params;
   params.launch_paths = file_paths;

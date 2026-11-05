@@ -10,13 +10,6 @@ const fontFamilyClasses = ['sans-serif', 'serif', 'monospace', 'Lexend'];
 
 // LINT.ThenChange(//components/dom_distiller/core/viewer.cc:JSThemesAndFonts)
 
-// On iOS, |distillerOnIos| was set to true before this script.
-// eslint-disable-next-line no-var
-var distillerOnIos;
-if (typeof distillerOnIos === 'undefined') {
-  distillerOnIos = false;
-}
-
 // The style guide recommends preferring $() to getElementById(). Chrome's
 // standard implementation of $() is imported from chrome://resources, which the
 // distilled page is prohibited from accessing. A version of it is
@@ -48,7 +41,7 @@ function postProcessElement(element) {
   // Wrap tables to make them scrollable.
   tryStep(wrapTables);
 
-  // Readability will leave iframes around, but they need the proper structure
+  // The distiller leaves iframes in place, and they need the proper structure
   // and classes to be styled correctly.
   tryStep(addClassesToYoutubeIFrames);
   // DomDistiller will leave placeholders, which need to be replaced with
@@ -67,8 +60,8 @@ function addToPage(html) {
   postProcessElement(div);
 }
 
-function showLoadingIndicator(isLastPage) {
-  $('loading-indicator').className = isLastPage ? 'hidden' : 'visible';
+function hideLoadingIndicator() {
+  $('loading-indicator').className = 'hidden';
 }
 
 // Sets the title.

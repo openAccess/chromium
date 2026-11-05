@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -39,6 +40,12 @@
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/page_load_metrics/google/browser/google_url_util.h"
+#include "components/services/app_service/public/cpp/app_launch_params.h"
+#include "components/services/app_service/public/cpp/app_launch_util.h"
+#include "components/services/app_service/public/cpp/app_types.h"
+#include "components/services/app_service/public/cpp/app_update.h"
+#include "components/services/app_service/public/cpp/intent.h"
+#include "components/services/app_service/public/cpp/intent_util.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/webapps/browser/navigation_capturing_log.h"
 #include "content/public/browser/browser_thread.h"
@@ -46,9 +53,13 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
+#include "net/base/schemeful_site.h"
+#include "services/network/public/mojom/referrer_policy.mojom-shared.h"
 #include "third_party/blink/public/mojom/loader/referrer.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/display/types/display_constants.h"
+#include "url/origin.h"
 #include "url/url_constants.h"
 
 namespace apps {
@@ -145,8 +156,9 @@ bool IsCapturableLinkNavigation(ui::PageTransition page_transition,
   // PAGE_TRANSITION_AUTO_SUBFRAME in order not to add session history items
   // (see https://crrev.com/c/3265344). So we only check |has_user_gesture|.
   if (is_in_fenced_frame_tree) {
-    DCHECK(ui::PageTransitionCoreTypeIs(page_transition,
-                                        ui::PAGE_TRANSITION_AUTO_SUBFRAME));
+    CHECK(ui::PageTransitionCoreTypeIs(page_transition,
+                                       ui::PAGE_TRANSITION_AUTO_SUBFRAME),
+          base::NotFatalUntil::M161);
     return has_user_gesture;
   }
 
@@ -365,9 +377,9 @@ bool ChromeOsReimplNavigationCapturingThrottle::MaybeCreateAndAdd(
   // Never link capture links that open in a popup window. Popups are closely
   // associated with the tab that opened them, so the popup should open in the
   // same (app/non-app) context as its opener.
-  WindowOpenDisposition disposition =
+  ui::mojom::WindowOpenDisposition disposition =
       GetLinkCapturingSourceDisposition(contents);
-  if (disposition == WindowOpenDisposition::NEW_POPUP &&
+  if (disposition == ui::mojom::WindowOpenDisposition::kNewPopup &&
       !contents->GetLastCommittedURL().is_valid()) {
     return false;
   }
@@ -414,7 +426,7 @@ ChromeOsReimplNavigationCapturingThrottle::WillStartRequest() {
 
 ThrottleCheckResult
 ChromeOsReimplNavigationCapturingThrottle::WillRedirectRequest() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   return HandleRequest();
 }
 
@@ -425,7 +437,7 @@ ChromeOsReimplNavigationCapturingThrottle::
     : content::NavigationThrottle(registry), profile_(*profile) {}
 
 ThrottleCheckResult ChromeOsReimplNavigationCapturingThrottle::HandleRequest() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   AppServiceProxy* proxy =
       apps::AppServiceProxyFactory::GetForProfile(&profile_.get());
   if (!proxy) {
@@ -545,6 +557,34 @@ ThrottleCheckResult ChromeOsReimplNavigationCapturingThrottle::HandleRequest() {
           : handle->GetURL();
   debug_data->Set("redirected_url", redirected_url.possibly_invalid_spec());
 
+  // Snapshot `profile` and the navigation's initiator origin and referrer
+  // before `ClosePage()` below, as `ClosePage()` can cancel navigations and
+  // destroy `this` (and the WebContents) when the navigation is a script
+  // redirect without transient user activation.
+  // Forwarding `initiator_origin` and `referrer` to the relaunched web app
+  // navigation prevents treating cross-site renderer-initiated navigations as
+  // browser-initiated (`Sec-Fetch-Site: none`), which would otherwise bypass
+  // `SameSite=Strict` cookie restrictions (https://crbug.com/569008661,
+  // https://crbug.com/40061291).
+  Profile* profile = &profile_.get();
+  std::optional<url::Origin> initiator_origin = handle->GetInitiatorOrigin();
+  if (initiator_origin.has_value() &&
+      std::ranges::any_of(
+          handle->GetRedirectChain(), [&](const GURL& chain_url) {
+            return !net::SchemefulSite::IsSameSite(
+                *initiator_origin, url::Origin::Create(chain_url));
+          })) {
+    // Because the relaunch starts a fresh navigation to `redirected_url`
+    // without the prior redirect chain, downgrade `initiator_origin` to an
+    // opaque origin if any hop in `GetRedirectChain()` was cross-site so that
+    // `Sec-Fetch-Site` is `cross-site` and `SameSite=Strict` cookies are not
+    // attached.
+    initiator_origin = initiator_origin->DeriveNewOpaqueOrigin();
+  }
+  const GURL referrer_url = handle->GetReferrer().url;
+  const network::mojom::ReferrerPolicy referrer_policy =
+      handle->GetReferrer().policy;
+
   // Close existing web contents if it is around.
   std::unique_ptr<ScopedKeepAlive> browser_keep_alive;
   std::unique_ptr<ScopedProfileKeepAlive> profile_keep_alive;
@@ -554,25 +594,50 @@ ThrottleCheckResult ChromeOsReimplNavigationCapturingThrottle::HandleRequest() {
   if (IsEmptyDanglingWebContentsAfterLinkCapture()) {
     browser_keep_alive = std::make_unique<ScopedKeepAlive>(
         KeepAliveOrigin::APP_LAUNCH, KeepAliveRestartOption::ENABLED);
-    if (!profile_->IsOffTheRecord()) {
+    if (!profile->IsOffTheRecord()) {
       profile_keep_alive = std::make_unique<ScopedProfileKeepAlive>(
-          &profile_.get(), ProfileKeepAliveOrigin::kAppWindow);
+          profile, ProfileKeepAliveOrigin::kAppWindow);
     }
-    auto weak_this = weak_ptr_factory_.GetWeakPtr();
     handle->GetWebContents()->ClosePage();
-    if (!weak_this) {
-      return content::NavigationThrottle::CANCEL_AND_IGNORE;
-    }
+    // NOTE: ClosePage() can cancel navigations and destroy `this`.
   }
 
-  proxy->LaunchAppWithUrl(
-      launch_app_id,
-      GetEventFlags(WindowOpenDisposition::NEW_WINDOW,
-                    /*prefer_container=*/true),
-      redirected_url, launch_source,
-      std::make_unique<WindowInfo>(display::kDefaultDisplayId),
-      base::DoNothingWithBoundArgs(std::move(browser_keep_alive),
-                                   std::move(profile_keep_alive)));
+  // NOTE: `this` MIGHT BE DESTROYED HERE BY THE `ClosePage()` ABOVE.
+  // Do not use `this` or any fields in the code below.
+  const int32_t event_flags =
+      GetEventFlags(ui::mojom::WindowOpenDisposition::kNewWindow,
+                    /*prefer_container=*/true);
+  auto launch_callback = base::DoNothingWithBoundArgs(
+      std::move(browser_keep_alive), std::move(profile_keep_alive));
+  if (app_type == AppType::kArc) {
+    // Prefer using `LaunchAppWithUrl` over `LaunchAppWithParams` for ARC apps
+    // so that the call gets routed through the `LaunchAppWithIntent` flow
+    // without recomputing `event_flags` from `params.disposition`.
+    proxy->LaunchAppWithUrl(
+        launch_app_id, event_flags, redirected_url, launch_source,
+        std::make_unique<WindowInfo>(display::kDefaultDisplayId),
+        std::move(launch_callback));
+  } else {
+    WindowMode window_mode = WindowMode::kUnknown;
+    proxy->AppRegistryCache().ForOneApp(
+        launch_app_id, [&window_mode](const AppUpdate& update) {
+          window_mode = update.WindowMode();
+        });
+    LaunchContainer fallback_container =
+        ConvertWindowModeToAppLaunchContainer(window_mode);
+    if (fallback_container == LaunchContainer::kLaunchContainerNone) {
+      fallback_container = LaunchContainer::kLaunchContainerTab;
+    }
+    AppLaunchParams params = CreateAppLaunchParamsForIntent(
+        launch_app_id, event_flags, launch_source, display::kDefaultDisplayId,
+        fallback_container,
+        std::make_unique<Intent>(apps_util::kIntentActionView, redirected_url),
+        profile);
+    params.initiator_origin = initiator_origin;
+    params.referrer_url = referrer_url;
+    params.referrer_policy = referrer_policy;
+    proxy->LaunchAppWithParams(std::move(params), std::move(launch_callback));
+  }
   IntentHandlingMetrics::RecordPreferredAppLinkClickMetrics(
       GetMetricsPlatform(app_type));
 

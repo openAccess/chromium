@@ -6,11 +6,11 @@
 
 #include <stdint.h>
 
-#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -26,7 +26,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "components/autofill/core/browser/data_model/payments/autofill_offer_data.h"
 #include "components/autofill/core/browser/data_model/payments/autofill_wallet_usage_data.h"
 #include "components/autofill/core/browser/data_model/payments/bank_account.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
@@ -45,7 +44,6 @@
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/facilitated_payments/core/features/features.h"
 #include "components/sync/model/entity_change.h"
-#include "components/sync/protocol/autofill_offer_specifics.pb.h"
 #include "components/sync/protocol/autofill_specifics.pb.h"
 #include "components/sync/protocol/autofill_wallet_credential_specifics.pb.h"
 #include "components/sync/protocol/autofill_wallet_usage_specifics.pb.h"
@@ -499,7 +497,7 @@ std::string GetStorageKeyForWalletMetadataTypeAndSpecificsId(
     sync_pb::WalletMetadataSpecifics::Type type,
     const std::string& specifics_id) {
   base::Pickle pickle;
-  pickle.WriteInt(static_cast<int>(type));
+  pickle.WriteInt(std::to_underlying(type));
   // We use the (base64-encoded) |specifics_id| here.
   pickle.WriteString(specifics_id);
   return std::string(pickle.AsStringView());
@@ -771,111 +769,6 @@ void SetAutofillWalletUsageSpecificsFromAutofillWalletUsageData(
   }
 }
 
-void SetAutofillOfferSpecificsFromOfferData(
-    const AutofillOfferData& offer_data,
-    sync_pb::AutofillOfferSpecifics* offer_specifics) {
-  // General offer data:
-  offer_specifics->set_id(offer_data.GetOfferId());
-  offer_specifics->set_offer_details_url(
-      offer_data.GetOfferDetailsUrl().spec());
-  for (const GURL& merchant_origin : offer_data.GetMerchantOrigins()) {
-    offer_specifics->add_merchant_domain(merchant_origin.spec());
-  }
-  offer_specifics->set_offer_expiry_date(
-      (offer_data.GetExpiry() - base::Time::UnixEpoch()).InSeconds());
-  offer_specifics->mutable_display_strings()->set_value_prop_text(
-      offer_data.GetDisplayStrings().value_prop_text);
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-  offer_specifics->mutable_display_strings()->set_see_details_text_mobile(
-      offer_data.GetDisplayStrings().see_details_text);
-  offer_specifics->mutable_display_strings()
-      ->set_usage_instructions_text_mobile(
-          offer_data.GetDisplayStrings().usage_instructions_text);
-#else
-  offer_specifics->mutable_display_strings()->set_see_details_text_desktop(
-      offer_data.GetDisplayStrings().see_details_text);
-  offer_specifics->mutable_display_strings()
-      ->set_usage_instructions_text_desktop(
-          offer_data.GetDisplayStrings().usage_instructions_text);
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-
-  // Because card_linked_offer_data and promo_code_offer_data are a oneof,
-  // setting one will clear the other. We should figure out which one we care
-  // about.
-  if (offer_data.GetPromoCode().empty()) {
-    // Card-linked offer fields (promo code is empty):
-    for (int64_t instrument_id : offer_data.GetEligibleInstrumentIds()) {
-      offer_specifics->mutable_card_linked_offer_data()->add_instrument_id(
-          instrument_id);
-    }
-    if (offer_data.GetOfferRewardAmount().find("%") != std::string::npos) {
-      offer_specifics->mutable_percentage_reward()->set_percentage(
-          offer_data.GetOfferRewardAmount());
-    } else {
-      offer_specifics->mutable_fixed_amount_reward()->set_amount(
-          offer_data.GetOfferRewardAmount());
-    }
-  } else {
-    // Promo code offer fields:
-    offer_specifics->mutable_promo_code_offer_data()->set_promo_code(
-        offer_data.GetPromoCode());
-  }
-}
-
-AutofillOfferData AutofillOfferDataFromOfferSpecifics(
-    const sync_pb::AutofillOfferSpecifics& offer_specifics) {
-  DCHECK(IsOfferSpecificsValid(offer_specifics));
-
-  // General offer data:
-  int64_t offer_id = offer_specifics.id();
-  base::Time expiry = base::Time::UnixEpoch() +
-                      base::Seconds(offer_specifics.offer_expiry_date());
-  GURL offer_details_url = GURL(offer_specifics.offer_details_url());
-  std::vector<GURL> merchant_origins;
-  for (const std::string& domain : offer_specifics.merchant_domain()) {
-    const GURL gurl_domain = GURL(domain);
-    if (gurl_domain.is_valid())
-      merchant_origins.emplace_back(gurl_domain.DeprecatedGetOriginAsURL());
-  }
-  DisplayStrings display_strings;
-  display_strings.value_prop_text =
-      offer_specifics.display_strings().value_prop_text();
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-  display_strings.see_details_text =
-      offer_specifics.display_strings().see_details_text_mobile();
-  display_strings.usage_instructions_text =
-      offer_specifics.display_strings().usage_instructions_text_mobile();
-#else
-  display_strings.see_details_text =
-      offer_specifics.display_strings().see_details_text_desktop();
-  display_strings.usage_instructions_text =
-      offer_specifics.display_strings().usage_instructions_text_desktop();
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-
-  if (offer_specifics.promo_code_offer_data().promo_code().empty()) {
-    // Card-linked offer fields:
-    std::string offer_reward_amount =
-        offer_specifics.has_percentage_reward()
-            ? offer_specifics.percentage_reward().percentage()
-            : offer_specifics.fixed_amount_reward().amount();
-    std::vector<int64_t> eligible_instrument_id;
-    for (int64_t instrument_id :
-         offer_specifics.card_linked_offer_data().instrument_id()) {
-      eligible_instrument_id.push_back(instrument_id);
-    }
-
-    AutofillOfferData offer_data = AutofillOfferData::GPayCardLinkedOffer(
-        offer_id, expiry, merchant_origins, offer_details_url, display_strings,
-        eligible_instrument_id, offer_reward_amount);
-    return offer_data;
-  } else {
-    AutofillOfferData offer_data = AutofillOfferData::GPayPromoCodeOffer(
-        offer_id, expiry, merchant_origins, offer_details_url, display_strings,
-        offer_specifics.promo_code_offer_data().promo_code());
-    return offer_data;
-  }
-}
-
 sync_pb::AutofillWalletCredentialSpecifics
 AutofillWalletCredentialSpecificsFromStructData(const ServerCvc& server_cvc) {
   sync_pb::AutofillWalletCredentialSpecifics wallet_credential_specifics;
@@ -1106,146 +999,6 @@ void PopulateWalletTypesFromSyncData(
         break;
     }
   }
-}
-
-template <class Item>
-bool AreAnyItemsDifferent(const std::vector<std::unique_ptr<Item>>& old_data,
-                          const std::vector<Item>& new_data) {
-  if (old_data.size() != new_data.size())
-    return true;
-
-  std::vector<const Item*> old_ptrs;
-  old_ptrs.reserve(old_data.size());
-  for (const std::unique_ptr<Item>& old_item : old_data)
-    old_ptrs.push_back(old_item.get());
-  std::vector<const Item*> new_ptrs;
-  new_ptrs.reserve(new_data.size());
-  for (const Item& new_item : new_data)
-    new_ptrs.push_back(&new_item);
-
-  // Sort our vectors.
-  auto compare_less = [](const Item* lhs, const Item* rhs) {
-    return lhs->Compare(*rhs) < 0;
-  };
-  std::sort(old_ptrs.begin(), old_ptrs.end(), compare_less);
-  std::sort(new_ptrs.begin(), new_ptrs.end(), compare_less);
-
-  auto compare_equal = [](const Item* lhs, const Item* rhs) {
-    return lhs->Compare(*rhs) == 0;
-  };
-  return !std::ranges::equal(old_ptrs, new_ptrs, compare_equal);
-}
-
-template bool AreAnyItemsDifferent<>(
-    const std::vector<std::unique_ptr<AutofillOfferData>>&,
-    const std::vector<AutofillOfferData>&);
-
-template bool AreAnyItemsDifferent<>(
-    const std::vector<std::unique_ptr<CreditCardCloudTokenData>>&,
-    const std::vector<CreditCardCloudTokenData>&);
-
-template bool AreAnyItemsDifferent<>(const std::vector<BankAccount>&,
-                                     const std::vector<BankAccount>&);
-
-template <class Item>
-bool AreAnyItemsDifferent(const std::vector<Item>& old_data,
-                          const std::vector<Item>& new_data) {
-  if (old_data.size() != new_data.size()) {
-    return true;
-  }
-
-  return base::MakeFlatSet<Item>(old_data) != base::MakeFlatSet<Item>(new_data);
-}
-
-template bool AreAnyItemsDifferent<>(const std::vector<CreditCardBenefit>&,
-                                     const std::vector<CreditCardBenefit>&);
-
-template bool AreAnyItemsDifferent<>(const std::vector<std::string>&,
-                                     const std::vector<std::string>&);
-
-bool AreAnyItemsDifferent(
-    const std::vector<sync_pb::PaymentInstrument>& old_instruments,
-    const std::vector<sync_pb::PaymentInstrument>& new_instruments) {
-  if (old_instruments.size() != new_instruments.size()) {
-    return true;
-  }
-
-  std::vector<std::string> old_instrument_strings, new_instrument_strings;
-  for (const auto& instrument : old_instruments) {
-    old_instrument_strings.push_back(instrument.SerializeAsString());
-  }
-  for (const auto& instrument : new_instruments) {
-    new_instrument_strings.push_back(instrument.SerializeAsString());
-  }
-
-  return AreAnyItemsDifferent(old_instrument_strings, new_instrument_strings);
-}
-
-bool AreAnyItemsDifferent(
-    const std::vector<sync_pb::PaymentInstrumentCreationOption>&
-        old_creation_options,
-    const std::vector<sync_pb::PaymentInstrumentCreationOption>&
-        new_creation_options) {
-  int old_creation_options_size = old_creation_options.size();
-  int new_creation_options_size = new_creation_options.size();
-  if (old_creation_options_size != new_creation_options_size) {
-    return true;
-  }
-
-  std::vector<std::string> old_creation_option_strings,
-      new_creation_option_strings;
-  old_creation_option_strings.reserve(old_creation_options_size);
-  new_creation_option_strings.reserve(new_creation_options_size);
-
-  for (const auto& creation_option : old_creation_options) {
-    old_creation_option_strings.push_back(creation_option.SerializeAsString());
-  }
-  for (const auto& creation_option : new_creation_options) {
-    new_creation_option_strings.push_back(creation_option.SerializeAsString());
-  }
-
-  return AreAnyItemsDifferent(old_creation_option_strings,
-                              new_creation_option_strings);
-}
-
-bool IsOfferSpecificsValid(const sync_pb::AutofillOfferSpecifics specifics) {
-  // A valid offer has a non-empty id.
-  if (!specifics.has_id())
-    return false;
-
-  // A valid offer must have at least one valid merchant domain URL.
-  if (specifics.merchant_domain().size() == 0) {
-    return false;
-  }
-  bool has_valid_domain = false;
-  for (const std::string& domain : specifics.merchant_domain()) {
-    if (GURL(domain).is_valid()) {
-      has_valid_domain = true;
-      break;
-    }
-  }
-  if (!has_valid_domain) {
-    return false;
-  }
-
-  // Card-linked offers must have at least one linked card instrument ID, and
-  // fixed_amount_reward or percentage_reward. Promo code offers must have a
-  // promo code.
-  bool has_instrument_id =
-      specifics.has_card_linked_offer_data() &&
-      specifics.card_linked_offer_data().instrument_id().size() != 0;
-  bool has_fixed_or_percentage_reward =
-      (specifics.has_fixed_amount_reward() &&
-       specifics.fixed_amount_reward().has_amount()) ||
-      (specifics.has_percentage_reward() &&
-       specifics.percentage_reward().has_percentage() &&
-       specifics.percentage_reward().percentage().find('%') !=
-           std::string::npos);
-  bool has_promo_code = specifics.has_promo_code_offer_data() &&
-                        specifics.promo_code_offer_data().promo_code() != "";
-
-  return (has_instrument_id && has_fixed_or_percentage_reward) ||
-         has_promo_code;
 }
 
 bool IsVirtualCardUsageDataSpecificsValid(

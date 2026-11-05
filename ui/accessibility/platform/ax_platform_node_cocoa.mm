@@ -11,6 +11,7 @@
 
 #include "base/apple/bridging.h"
 #include "base/apple/foundation_util.h"
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/mac/mac_util.h"
 #include "base/memory/raw_ptr_exclusion.h"
@@ -574,10 +575,11 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   // is aria-hidden, this int attribute only has one value: the non-aria-hidden
   // one. In this case, titleUIElement should not be returned because the name
   // came from two places.
-  std::vector<int32_t> labelledby_ids =
+  base::span<const int32_t> labelledby_ids =
       _node->GetIntListAttribute(ax::mojom::IntListAttribute::kLabelledbyIds);
-  if (labelledby_ids.size() != 1)
+  if (labelledby_ids.size() != 1) {
     return nil;
+  }
 
   ui::AXPlatformNode* label =
       _node->GetDelegate()->GetFromNodeID(labelledby_ids[0]);
@@ -641,7 +643,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   // which suggests this should be exposed via AXTitleUIElement. See
   // crbug.com/1430419
   if (ui::IsRadio(role) || ui::IsCheckBox(role)) {
-    std::vector<int32_t> labelledby_ids =
+    base::span<const int32_t> labelledby_ids =
         _node->GetIntListAttribute(ax::mojom::IntListAttribute::kLabelledbyIds);
     if (labelledby_ids.size() == 1) {
       ui::AXPlatformNode* label =
@@ -692,7 +694,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     return elements;
   }
 
-  const std::vector<int32_t>& attributeValues =
+  base::span<const int32_t> attributeValues =
       delegate->GetIntListAttribute(attribute);
   for (auto& attributeValue : attributeValues) {
     ui::AXPlatformNode* node = delegate->GetFromNodeID(attributeValue);
@@ -1146,7 +1148,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 
   [attributedString beginEditing];
   for (const AXRange& leafTextRange : *axRange) {
-    DCHECK(!leafTextRange.IsNull());
+    CHECK(!leafTextRange.IsNull(), base::NotFatalUntil::M163);
     DCHECK_EQ(leafTextRange.anchor()->GetAnchor(),
               leafTextRange.focus()->GetAnchor())
         << "An anchor range should only span a single object.";
@@ -1179,28 +1181,31 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
                                  leafTextRange.focus()->CreateParentPosition());
       markers_anchor = markersTextRange.anchor()->GetAnchor();
 
-      DCHECK(markersTextRange.anchor()->GetAnchor() ==
-             markersTextRange.focus()->GetAnchor());
+      CHECK(markersTextRange.anchor()->GetAnchor() ==
+                markersTextRange.focus()->GetAnchor(),
+            base::NotFatalUntil::M163);
       DCHECK(markers_anchor) << "Markers anchor should not be null.";
-      DCHECK(markers_anchor->GetRole() == ax::mojom::Role::kStaticText ||
-             markers_anchor->GetRole() == ax::mojom::Role::kLineBreak);
+      CHECK(markers_anchor->GetRole() == ax::mojom::Role::kStaticText ||
+                markers_anchor->GetRole() == ax::mojom::Role::kLineBreak,
+            base::NotFatalUntil::M163);
     }
 
     // Add misspelling information
-    const std::vector<int32_t>& markerTypes =
-        markers_anchor->GetIntListAttribute(
-            ax::mojom::IntListAttribute::kMarkerTypes);
-    const std::vector<int>& markerStarts = markers_anchor->GetIntListAttribute(
+    base::span<const int32_t> markerTypes = markers_anchor->GetIntListAttribute(
+        ax::mojom::IntListAttribute::kMarkerTypes);
+    base::span<const int> markerStarts = markers_anchor->GetIntListAttribute(
         ax::mojom::IntListAttribute::kMarkerStarts);
-    const std::vector<int>& markerEnds = markers_anchor->GetIntListAttribute(
+    base::span<const int> markerEnds = markers_anchor->GetIntListAttribute(
         ax::mojom::IntListAttribute::kMarkerEnds);
-    const std::vector<int32_t>& highlightTypes =
+    base::span<const int32_t> highlightTypes =
         markers_anchor->GetIntListAttribute(
             ax::mojom::IntListAttribute::kHighlightTypes);
 
-    DCHECK_EQ(markerTypes.size(), markerStarts.size());
-    DCHECK_EQ(markerTypes.size(), markerEnds.size());
-    DCHECK_EQ(markerTypes.size(), highlightTypes.size());
+    CHECK_EQ(markerTypes.size(), markerStarts.size(),
+             base::NotFatalUntil::M163);
+    CHECK_EQ(markerTypes.size(), markerEnds.size(), base::NotFatalUntil::M163);
+    CHECK_EQ(markerTypes.size(), highlightTypes.size(),
+             base::NotFatalUntil::M163);
 
     for (size_t i = 0; i < markerTypes.size(); ++i) {
       const bool is_spelling_marker =
@@ -1380,8 +1385,9 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 
 - (AXAnnouncementSpec*)announcementForEvent:(ax::mojom::Event)eventType {
   // Only alerts and live region changes should be announced.
-  DCHECK(eventType == ax::mojom::Event::kAlert ||
-         eventType == ax::mojom::Event::kLiveRegionChanged);
+  CHECK(eventType == ax::mojom::Event::kAlert ||
+            eventType == ax::mojom::Event::kLiveRegionChanged,
+        base::NotFatalUntil::M163);
   std::string liveStatus =
       _node->GetStringAttribute(ax::mojom::StringAttribute::kLiveStatus);
   // If live status is explicitly set to off, don't announce.
@@ -1500,7 +1506,8 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 
   // VoiceOver expects the "press" action to be first. Note that some roles
   // should be given a press action implicitly.
-  DCHECK([action_list[0].second isEqualToString:NSAccessibilityPressAction]);
+  CHECK([action_list[0].second isEqualToString:NSAccessibilityPressAction],
+        base::NotFatalUntil::M163);
   for (const auto& item : action_list) {
     if ((_node->HasAction(item.first) ||
          HasImplicitAction(*_node, item.first))) {
@@ -2482,6 +2489,9 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   return _node->GetDelegate()->GetFocus() == _node->GetNativeViewAccessible();
 }
 
+// TODO(crbug.com/574469797): This API does not return the same thing in all
+// cases as Safari. For example, when the node is focusable, it returns itsself,
+// where as Safari searches for an ancestor.
 - (id)AXFocusableAncestor {
   if (![self instanceActive])
     return nil;
@@ -2795,8 +2805,8 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   if (!_node) {
     return NO;
   }
-  DCHECK(_node->GetDelegate());
-  DCHECK([self instanceActive]);
+  CHECK(_node->GetDelegate(), base::NotFatalUntil::M163);
+  CHECK([self instanceActive], base::NotFatalUntil::M163);
 
   // After ViewsAX lands, we should be able to add this DCHECK.
   // DCHECK(!_node->GetDelegate()->IsIgnored())
@@ -2951,11 +2961,13 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   if (nameFrom == ax::mojom::NameFrom::kPlaceholder)
     return @"";
 
-  // Cell titles are empty if they came from content.
+  // Cell and list item titles are empty if they came from content.
   if (nameFrom == ax::mojom::NameFrom::kContents) {
     NSString* role = [self accessibilityRole];
-    if ([role isEqualToString:NSAccessibilityCellRole])
+    if ([role isEqualToString:NSAccessibilityCellRole] ||
+        _node->GetRole() == ax::mojom::Role::kListItem) {
       return @"";
+    }
   }
 
   return [self getName];
@@ -3196,7 +3208,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     return nil;
   }
 
-  std::optional<int> column = delegate->GetTableCellColIndex();
+  std::optional<int> column = delegate->GetTableCellDomColIndex();
   if (!column) {
     return nil;
   }
@@ -3204,7 +3216,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   ui::AXPlatformNodeDelegate* tableDelegate = table->GetDelegate();
   for (ui::AXNodeID id : tableDelegate->GetColHeaderNodeIds(*column)) {
     AXPlatformNodeCocoa* colheader = [self fromNodeID:id];
-    if (colheader) {
+    if (colheader && colheader != self) {
       [ret addObject:colheader];
     }
   }
@@ -3263,7 +3275,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   }
 
   ui::AXPlatformNodeDelegate* delegate = _node->GetDelegate();
-  std::optional<int> count = delegate->GetTableColCount();
+  std::optional<int> count = delegate->GetTableDomColCount();
   if (count.has_value()) {
     return *count;
   }
@@ -3281,7 +3293,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   }
 
   ui::AXPlatformNodeDelegate* delegate = _node->GetDelegate();
-  std::optional<int> count = delegate->GetTableRowCount();
+  std::optional<int> count = delegate->GetTableDomRowCount();
   if (count.has_value()) {
     return *count;
   }
@@ -3317,7 +3329,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   ui::AXPlatformNodeDelegate* tableDelegate = tableNode->GetDelegate();
 
   // A table with no row headers.
-  if (isTableLike && !tableDelegate->GetTableRowCount().has_value()) {
+  if (isTableLike && !tableDelegate->GetTableDomRowCount().has_value()) {
     return nil;
   }
 
@@ -3327,7 +3339,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     // Return the table's row headers.
     std::set<int32_t> headerIds;
 
-    int numberOfRows = tableDelegate->GetTableRowCount().value();
+    int numberOfRows = tableDelegate->GetTableDomRowCount().value();
 
     // Rows can have more than one row header cell. Also, we apparently need
     // to guard against duplicate row header ids. Storing in a set dedups.
@@ -3348,7 +3360,7 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     // Otherwise this is a cell, return the row headers for this cell.
     for (int32_t nodeId : delegate->GetRowHeaderNodeIds()) {
       ui::AXPlatformNode* cellNode = delegate->GetFromNodeID(nodeId);
-      if (cellNode) {
+      if (cellNode && cellNode != _node) {
         [rowHeaders addObject:cellNode->GetNativeViewAccessible().Get()];
       }
     }
@@ -3388,11 +3400,14 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
 
   ax::mojom::Role role = [self internalRole];
 
-  std::vector<int32_t> nodeIds;
+  std::vector<int32_t> ownedNodeIds;
+  base::span<const int32_t> nodeIds;
   if (role == ax::mojom::Role::kTree) {
-    [self getTreeItemDescendantNodeIds:&nodeIds];
+    [self getTreeItemDescendantNodeIds:&ownedNodeIds];
+    nodeIds = ownedNodeIds;
   } else if (ui::IsTableLike(role)) {
-    nodeIds = delegate->GetRowNodeIds();
+    ownedNodeIds = delegate->GetRowNodeIds();
+    nodeIds = ownedNodeIds;
   } else if (role == ax::mojom::Role::kColumn) {
     // Rows attribute for a column is the list of all the elements in that
     // column at each row.
@@ -3520,14 +3535,14 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
   if ([self internalRole] == ax::mojom::Role::kTreeItem) {
     return [[self treeItemRowIndex] integerValue];
   } else if ([self internalRole] == ax::mojom::Role::kColumn) {
-    DCHECK(_node);
+    CHECK(_node, base::NotFatalUntil::M163);
     std::optional<int> col_index =
         _node->GetDelegate()->node()->GetTableColColIndex();
     if (col_index.has_value()) {
       return *col_index;
     }
   } else if ([self internalRole] == ax::mojom::Role::kRow) {
-    DCHECK(_node);
+    CHECK(_node, base::NotFatalUntil::M163);
     std::optional<int> row_index =
         _node->GetDelegate()->node()->GetTableRowRowIndex();
     if (row_index.has_value()) {
@@ -3830,8 +3845,8 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     return NSMakeRange(0, 0);
   }
 
-  std::optional<int> column = [self nodeDelegate]->GetTableCellColIndex();
-  std::optional<int> columnSpan = [self nodeDelegate]->GetTableCellColSpan();
+  std::optional<int> column = [self nodeDelegate]->GetTableCellDomColIndex();
+  std::optional<int> columnSpan = [self nodeDelegate]->GetTableCellDomColSpan();
   if (column && columnSpan) {
     return NSMakeRange(*column, *columnSpan);
   }
@@ -3843,8 +3858,8 @@ const ui::CocoaActionList& GetCocoaActionListForTesting() {
     return NSMakeRange(0, 0);
   }
 
-  std::optional<int> row = [self nodeDelegate]->GetTableCellRowIndex();
-  std::optional<int> rowSpan = [self nodeDelegate]->GetTableCellRowSpan();
+  std::optional<int> row = [self nodeDelegate]->GetTableCellDomRowIndex();
+  std::optional<int> rowSpan = [self nodeDelegate]->GetTableCellDomRowSpan();
   if (row && rowSpan) {
     return NSMakeRange(*row, *rowSpan);
   }

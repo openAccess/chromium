@@ -198,7 +198,7 @@ class PerProcessInitializer final {
     return *instance;
   }
 
-  void Acquire(bool use_skia) {
+  void Acquire(bool enable_xfa, bool use_skia) {
     DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
 
     DCHECK_GE(init_count_, 0);
@@ -207,7 +207,8 @@ class PerProcessInitializer final {
     }
 
     DCHECK(!IsSDKInitializedViaPlugin());
-    InitializeSDK(/*enable_v8=*/true, use_skia, FontMappingMode::kBlink);
+    InitializeSDK(/*enable_v8=*/true, enable_xfa, use_skia,
+                  FontMappingMode::kBlink);
     SetIsSDKInitializedViaPlugin(true);
   }
 
@@ -328,11 +329,11 @@ class PdfViewWebPlugin::PdfInkModuleClientImpl : public PdfInkModuleClient {
 
   void DrawText(int page_index,
                 InkTextId id,
-                base::span<const InkTextInfo> text_info,
+                base::span<const InkTextLine> text_lines,
                 float ascent,
                 double pdf_zoom,
                 const InkTextBoxAttributes& attributes) override {
-    plugin_->engine_->DrawText(page_index, id, text_info, ascent, pdf_zoom,
+    plugin_->engine_->DrawText(page_index, id, text_lines, ascent, pdf_zoom,
                                attributes);
   }
 
@@ -590,7 +591,10 @@ bool PdfViewWebPlugin::InitializeCommon() {
   base::debug::SetCrashKeyString(subresource_url, params->original_url);
 
   use_skia_renderer_ = params->use_skia;
-  PerProcessInitializer::GetInstance().Acquire(params->use_skia);
+  PerProcessInitializer::GetInstance().Acquire(
+      /*enable_xfa=*/params->script_option ==
+          PDFiumFormFiller::ScriptOption::kJavaScriptAndXFA,
+      params->use_skia);
   initialized_ = true;
 
   // Check if the PDF is being loaded in the PDF chrome extension. We only allow
@@ -1095,6 +1099,10 @@ gfx::Rect PdfViewWebPlugin::GetPluginCaretBounds() {
   return caret_rect_;
 }
 
+gfx::Rect PdfViewWebPlugin::GetPluginSelectionBounds() {
+  return selection_bounding_box_;
+}
+
 void PdfViewWebPlugin::ImeSetCompositionForPlugin(
     const blink::WebString& text,
     const std::vector<ui::ImeTextSpan>& /*ime_text_spans*/,
@@ -1535,6 +1543,19 @@ void PdfViewWebPlugin::DocumentLoadComplete() {
   pdf_host_->UpdateContentRestrictions(GetContentRestrictions());
 }
 
+void PdfViewWebPlugin::OnFirstContentPainted() {
+  // Only a full-page PDF represents what the user navigated to; a PDF embedded
+  // in an HTML page is already covered by that page's own paint timing.
+  if (!full_frame_) {
+    return;
+  }
+
+  // The engine fires this at most once, so this is not re-entrant. Sampled
+  // here rather than in the engine so the timestamp is taken on the same clock
+  // the browser compares it against.
+  pdf_host_->OnPdfFirstContentPainted(base::TimeTicks::Now());
+}
+
 void PdfViewWebPlugin::DocumentLoadFailed() {
   DCHECK_EQ(DocumentLoadState::kLoading, document_load_state_);
   document_load_state_ = DocumentLoadState::kFailed;
@@ -1622,7 +1643,8 @@ SkColor PdfViewWebPlugin::GetBackgroundColor() const {
 }
 
 void PdfViewWebPlugin::SelectionChanged(const gfx::Rect& left,
-                                        const gfx::Rect& right) {
+                                        const gfx::Rect& right,
+                                        const gfx::Rect& bounding_box) {
 #if BUILDFLAG(ENABLE_PDF_INK2)
   // Ignore the selected text if `ink_module_` is currently text highlighting.
   // This prevents `pdf_host_` from showing touch handles for touch text
@@ -1631,6 +1653,11 @@ void PdfViewWebPlugin::SelectionChanged(const gfx::Rect& left,
     return;
   }
 #endif  // BUILDFLAG(ENABLE_PDF_INK2)
+
+  selection_bounding_box_ =
+      bounding_box.IsEmpty()
+          ? gfx::Rect()
+          : bounding_box + available_area_.OffsetFromOrigin();
 
   gfx::PointF left_point(left.x() + available_area_.x(), left.y());
   gfx::PointF right_point(right.x() + available_area_.x(), right.y());
@@ -1645,6 +1672,9 @@ void PdfViewWebPlugin::SelectionChanged(const gfx::Rect& left,
   if (accessibility_state_ == AccessibilityState::kLoaded) {
     PrepareAndSetAccessibilityViewportInfo();
   }
+
+  client_->UpdateSelectionBounds();
+  // Warning: `this` may be destroyed at this point.
 }
 
 void PdfViewWebPlugin::EnteredEditMode() {
@@ -1931,12 +1961,13 @@ void PdfViewWebPlugin::HandleGetNamedDestinationMessage(
   std::optional<PDFiumEngine::NamedDestination> named_destination =
       engine_->GetNamedDestination(*message.FindString("namedDestination"));
 
-  const int page_number = named_destination.has_value()
-                              ? base::checked_cast<int>(named_destination->page)
-                              : -1;
+  const int page_index =
+      named_destination.has_value()
+          ? base::checked_cast<int>(named_destination->page_index)
+          : -1;
 
   base::DictValue reply = PrepareReplyMessage(message);
-  reply.Set("pageNumber", page_number);
+  reply.Set("pageIndex", page_index);
 
   if (named_destination.has_value() && !named_destination->view.empty()) {
     std::ostringstream view_stream;
@@ -2006,7 +2037,8 @@ void PdfViewWebPlugin::HandleGetSaveDataBlockMessage(
 void PdfViewWebPlugin::HandleGetSuggestedFileName(
     const base::DictValue& message) {
   client_->PostMessage(PrepareReplyMessage(message).Set(
-      "fileName", GetFileNameForSaveFromUrl(url_)));
+      "fileName", GetFileNameForSaveFromUrlAndSuggestion(
+                      url_, engine_->GetFileNameFromContentDisposition())));
 }
 
 void PdfViewWebPlugin::HandleGetThumbnailMessage(
@@ -2236,8 +2268,7 @@ void PdfViewWebPlugin::HandleViewportMessage(const base::DictValue& message) {
     }
 
     paint_manager_.SetTransform(zoom_ratio, pinch_center,
-                                pinch_vector + paint_offset + scroll_delta,
-                                true);
+                                pinch_vector + paint_offset + scroll_delta);
     needs_reraster_ = false;
     return;
   }
@@ -2287,10 +2318,13 @@ void PdfViewWebPlugin::SaveToBuffer(pdf::mojom::SaveRequestType request_type,
   }
 #endif  // BUILDFLAG(ENABLE_PDF_INK2)
 
-  auto message = base::DictValue()
-                     .Set("type", "saveData")
-                     .Set("token", token)
-                     .Set("fileName", GetFileNameForSaveFromUrl(url_));
+  auto message =
+      base::DictValue()
+          .Set("type", "saveData")
+          .Set("token", token)
+          .Set("fileName",
+               GetFileNameForSaveFromUrlAndSuggestion(
+                   url_, engine_->GetFileNameFromContentDisposition()));
 
   // Expose `edit_mode_` state for integration testing.
   message.Set("editModeForTesting", edit_mode_);
@@ -2531,18 +2565,8 @@ void PdfViewWebPlugin::DoPaint(const std::vector<gfx::Rect>& paint_rects,
 
   engine_->PostPaint();
 
-  if (base::FeatureList::IsEnabled(features::kPdfBufferedPaintManager)) {
-    for (const gfx::Rect& ready_rect : ready_rects) {
-      ready.emplace_back(ready_rect, nullptr);
-    }
-  } else {
-    // TODO(crbug.com/40203030): Write pixels directly to the `SkSurface` in
-    // `PaintManager`, rather than using an intermediate `SkBitmap` and
-    // `SkImage`.
-    sk_sp<SkImage> painted_image = image_data_.asImage();
-    for (const gfx::Rect& ready_rect : ready_rects) {
-      ready.emplace_back(ready_rect, painted_image);
-    }
+  for (const gfx::Rect& ready_rect : ready_rects) {
+    ready.emplace_back(ready_rect);
   }
 
   InvalidateAfterPaintDone();
@@ -2557,13 +2581,8 @@ void PdfViewWebPlugin::PrepareForFirstPaint(
   // Fill the image data buffer with the background color.
   first_paint_ = false;
   image_data_.eraseColor(background_color_);
-  if (base::FeatureList::IsEnabled(features::kPdfBufferedPaintManager)) {
-    ready.emplace_back(gfx::SkIRectToRect(image_data_.bounds()), nullptr,
-                       /*flush_now=*/true);
-  } else {
-    ready.emplace_back(gfx::SkIRectToRect(image_data_.bounds()),
-                       image_data_.asImage(), /*flush_now=*/true);
-  }
+  ready.emplace_back(gfx::SkIRectToRect(image_data_.bounds()),
+                     /*flush_now=*/true);
 }
 
 void PdfViewWebPlugin::OnGeometryChanged(double old_zoom,
@@ -2772,22 +2791,6 @@ void PdfViewWebPlugin::OnViewportChanged(
   SkAlphaType alpha_type =
       UseSkiaPremultipliedAlpha() ? kPremul_SkAlphaType : kUnpremul_SkAlphaType;
   paint_manager_.SetSize(plugin_rect_.size(), device_scale_, alpha_type);
-  // In the PdfBufferedPaintManager experiment, all these calculations and
-  // allocations are done in the PaintManager.
-  if (!base::FeatureList::IsEnabled(features::kPdfBufferedPaintManager)) {
-    // Initialize the image data buffer if the context size changes.
-    const gfx::Size old_image_size =
-        gfx::SkISizeToSize(image_data_.dimensions());
-    const gfx::Size new_image_size =
-        PaintManager::GetNewContextSize(old_image_size, plugin_rect_.size());
-    if (new_image_size != old_image_size) {
-      // Ignore the result. If the allocation fails, the image data buffer
-      // will be empty and the code below will handle that.
-      (void)image_data_.tryAllocPixels(SkImageInfo::MakeN32(
-          new_image_size.width(), new_image_size.height(), alpha_type));
-      first_paint_ = true;
-    }
-  }
 
   // Skip updating the geometry if the new image data buffer is empty.
   if (image_data_.drawsNothing()) {
@@ -3096,6 +3099,10 @@ void PdfViewWebPlugin::HandleResetPrintPreviewModeMessage(
   preview_pages_info_ = base::queue<PreviewPageInfo>();
   preview_document_load_state_ = DocumentLoadState::kComplete;
   document_load_state_ = DocumentLoadState::kLoading;
+  // Reload accessibility once the new document finishes loading.
+  if (accessibility_state_ == AccessibilityState::kLoaded) {
+    accessibility_state_ = AccessibilityState::kPending;
+  }
   last_progress_sent_ = 0;
   LoadUrl(url_, base::BindOnce(&PdfViewWebPlugin::DidOpen,
                                weak_factory_.GetWeakPtr()));
@@ -3299,6 +3306,10 @@ PdfViewWebPlugin::GetAccessibilityDocInfo() const {
   doc_info->text_accessible =
       engine_->HasPermission(DocumentPermission::kCopyAccessible);
   doc_info->text_copyable = engine_->HasPermission(DocumentPermission::kCopy);
+  const auto& language_tag = engine_->GetDocumentMetadata().language_tag;
+  if (language_tag.has_value()) {
+    doc_info->language = std::string(language_tag->tag_string());
+  }
   return doc_info;
 }
 

@@ -6,12 +6,14 @@
 
 #include <memory>
 
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/api/toast_registry.h"
 #include "chrome/browser/ui/toasts/api/toast_specification.h"
 #include "chrome/browser/ui/toasts/toast_features.h"
+#include "chrome/browser/ui/toasts/toast_metrics.h"
 #include "chrome/browser/ui/toasts/toast_view.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -276,4 +278,98 @@ TEST_F(ToastControllerUnitTest, CloseTimerResetsWhenToastShown) {
   // toast should have timed out by now.
   task_environment().FastForwardBy(ToastController::kToastDefaultTimeout / 2);
   EXPECT_TRUE(controller->IsShowingToast());
+}
+
+TEST_F(ToastControllerUnitTest, RecordToastDismissReasonHistogram) {
+  base::HistogramTester histogram_tester;
+  RecordToastDismissReason(ToastId::kLinkCopied,
+                           toasts::ToastCloseReason::kFeatureDismiss);
+  histogram_tester.ExpectUniqueSample("Toast.LinkCopied.Dismissed",
+                                      toasts::ToastCloseReason::kFeatureDismiss,
+                                      1);
+
+  RecordToastDismissReason(ToastId::kLinkCopied,
+                           toasts::ToastCloseReason::kAutoDismissed);
+  histogram_tester.ExpectBucketCount("Toast.LinkCopied.Dismissed",
+                                     toasts::ToastCloseReason::kAutoDismissed,
+                                     1);
+}
+
+TEST_F(ToastControllerUnitTest,
+       NavigationDismissesRegularToastButNotPersistOnNavigationToast) {
+  ToastRegistry* const registry = toast_registry();
+  registry->RegisterToast(
+      ToastId::kLinkCopied,
+      ToastSpecification::Builder(features::IsRoundedIconsEnabled()
+                                      ? vector_icons::kMailFilledIcon
+                                      : vector_icons::kEmailOldIcon,
+                                  kTestStringResId)
+          .Build());
+  registry->RegisterToast(
+      ToastId::kImageCopied,
+      ToastSpecification::Builder(features::IsRoundedIconsEnabled()
+                                      ? vector_icons::kMailFilledIcon
+                                      : vector_icons::kEmailOldIcon,
+                                  kTestStringResId)
+          .SetPersistOnNavigation()
+          .Build());
+
+  auto controller = std::make_unique<TestToastController>(registry);
+
+  // 1. Regular toast has persist_on_navigation = false.
+  EXPECT_CALL(*controller, CreateToast);
+  EXPECT_TRUE(controller->MaybeShowToast(ToastParams(ToastId::kLinkCopied)));
+  EXPECT_TRUE(controller->IsShowingToast());
+  EXPECT_TRUE(controller->GetToastCloseTimerForTesting()->IsRunning());
+
+  // Navigation should dismiss the regular toast and stop the close timer.
+  controller->ClearTabScopedToastsForTesting(/*is_navigation=*/true);
+  EXPECT_FALSE(controller->IsShowingToast());
+  EXPECT_FALSE(controller->GetToastCloseTimerForTesting()->IsRunning());
+
+  // 2. Toast with persist_on_navigation = true.
+  EXPECT_CALL(*controller, CreateToast);
+  EXPECT_TRUE(controller->MaybeShowToast(ToastParams(ToastId::kImageCopied)));
+  EXPECT_TRUE(controller->IsShowingToast());
+  EXPECT_TRUE(controller->GetToastCloseTimerForTesting()->IsRunning());
+
+  // Navigation should NOT dismiss the toast, and the timer should remain
+  // running.
+  controller->ClearTabScopedToastsForTesting(/*is_navigation=*/true);
+  EXPECT_TRUE(controller->IsShowingToast());
+  EXPECT_TRUE(controller->GetToastCloseTimerForTesting()->IsRunning());
+}
+
+TEST_F(ToastControllerUnitTest, ShowToastWithActionButtonCallbackData) {
+  ToastRegistry* const registry = toast_registry();
+  int received_id = 0;
+  registry->RegisterToast(
+      ToastId::kLinkCopied,
+      ToastSpecification::Builder(features::IsRoundedIconsEnabled()
+                                      ? vector_icons::kMailFilledIcon
+                                      : vector_icons::kEmailOldIcon,
+                                  kTestStringResId)
+          .AddActionButton(
+              kTestStringResId,
+              base::BindRepeating(
+                  [](int* out, BrowserWindowInterface* window,
+                     const base::Value& data) { *out = data.GetInt(); },
+                  &received_id))
+          .AddCloseButton()
+          .Build());
+
+  auto controller = std::make_unique<TestToastController>(registry);
+
+  EXPECT_CALL(*controller, CreateToast)
+      .WillOnce([](ToastParams params, const ToastSpecification* spec) {
+        base::RepeatingClosure action_callback = spec->GetActionButtonCallback(
+            /*browser_window_interface=*/nullptr,
+            std::move(params.action_button_callback_data));
+        action_callback.Run();
+      });
+
+  ToastParams params(ToastId::kLinkCopied);
+  params.action_button_callback_data = base::Value(42);
+  EXPECT_TRUE(controller->MaybeShowToast(std::move(params)));
+  EXPECT_EQ(42, received_id);
 }

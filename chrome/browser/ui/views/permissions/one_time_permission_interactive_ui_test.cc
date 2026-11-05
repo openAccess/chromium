@@ -4,7 +4,9 @@
 
 #include "base/run_loop.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/simple_test_clock.h"
+#include "base/test/test_mock_time_task_runner.h"
 #include "base/time/default_clock.h"
 #include "base/time/time.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
@@ -20,6 +22,7 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -30,27 +33,35 @@
 #include "chrome/test/base/test_switches.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/content_settings/core/browser/content_settings_uma_util.h"
+#include "components/content_settings/core/browser/content_settings_utils.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/browser/permission_settings_registry.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/content_settings/core/common/content_settings_types.mojom-shared.h"
+#include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/content_settings/core/common/features.h"
 #include "components/performance_manager/public/performance_manager.h"
 #include "components/permissions/content_setting_permission_context_base.h"
 #include "components/permissions/features.h"
+#include "components/permissions/permission_context_base.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/permissions/permission_uma_util.h"
 #include "components/permissions/permission_util.h"
 #include "components/permissions/permissions_client.h"
 #include "components/permissions/request_type.h"
+#include "components/permissions/resolvers/permission_prompt_options.h"
 #include "components/permissions/test/permission_request_observer.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/permissions_test_utils.h"
+#include "content/public/test/test_navigation_observer.h"
 #include "media/base/media_switches.h"
 #include "net/dns/mock_host_resolver.h"
 #include "services/device/public/cpp/test/scoped_geolocation_overrider.h"
@@ -118,11 +129,21 @@ class OneTimePermissionInteractiveUiTest : public WebRtcTestBase {
     command_line->AppendSwitch(switches::kUseFakeDeviceForMediaStream);
   }
 
-  // InProcessBrowserTest:
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
     host_resolver()->AddRule("*", "127.0.0.1");
     ASSERT_TRUE(embedded_test_server()->Start());
+    OneTimePermissionsTrackerFactory::GetForBrowserContext(
+        browser()->GetProfile())
+        ->SetTaskRunnerForTesting(task_runner_);
+  }
+
+  void TearDownOnMainThread() override {
+    OneTimePermissionsTrackerFactory::GetForBrowserContext(
+        browser()->GetProfile())
+        ->SetTaskRunnerForTesting(
+            base::SequencedTaskRunner::GetCurrentDefault());
+    InProcessBrowserTest::TearDownOnMainThread();
   }
 
   BrowserWindowInterface* current_browser() { return current_browser_; }
@@ -164,15 +185,6 @@ class OneTimePermissionInteractiveUiTest : public WebRtcTestBase {
     WebRtcTestBase::CloseLastLocalStream(
         current_browser()->GetTabStripModel()->GetWebContentsAt(index));
     observer.Wait();
-  }
-
-  void FireRunningExpirationTimers() {
-    OneTimePermissionsTrackerFactory::GetForBrowserContext(
-        current_browser()
-            ->GetTabStripModel()
-            ->GetActiveWebContents()
-            ->GetBrowserContext())
-        ->FireRunningTimersForTesting();
   }
 
   void WatchPositionAndExpectGrantedPermission(
@@ -259,6 +271,9 @@ class OneTimePermissionInteractiveUiTest : public WebRtcTestBase {
       current_browser_ = nullptr;
 
   base::HistogramTester histograms_;
+
+  scoped_refptr<base::TestMockTimeTaskRunner> task_runner_ =
+      base::MakeRefCounted<base::TestMockTimeTaskRunner>();
 
  private:
   // The render frame host where JS calls will be executed.
@@ -391,6 +406,14 @@ IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
   // Discard previous tab
   DiscardTabAt(0);
 
+  auto* hcsm =
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return hcsm->GetContentSetting(GetGeolocationGurl(), GetGeolocationGurl(),
+                                   ContentSettingsType::GEOLOCATION) ==
+           CONTENT_SETTING_ASK;
+  }));
+
   // Open new tab to the right.
   ASSERT_NO_FATAL_FAILURE(
       Initialize(INITIALIZATION_DEFAULT, GetGeolocationGurl()));
@@ -459,12 +482,8 @@ IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
   ASSERT_NO_FATAL_FAILURE(
       Initialize(INITIALIZATION_NEWTAB, GetDifferentOriginUrl()));
 
-  // Fire running timers. This means, that all one time permission expiration
-  // timers that are running at this point in time will fire their callbacks and
-  // are stopped.
-  OneTimePermissionsTrackerFactory::GetForBrowserContext(
-      browser()->GetTabStripModel()->GetWebContentsAt(0)->GetBrowserContext())
-      ->FireRunningTimersForTesting();
+  // Fast forward time to expire the permissions in the background.
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
 
   // Go to previous tab.
   browser()->GetTabStripModel()->ActivateTabAt(0);
@@ -494,10 +513,8 @@ IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
   // web contents).
   CloseLastLocalStreamAt(0);
 
-  // Fire running timers. This means, that all one time permission
-  // expiration timers that are running at this point in time will fire
-  // their callbacks and are stopped.
-  FireRunningExpirationTimers();
+  // Fast forward time by the expiration timeout.
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
 
   // Request cam/mic permission, expect no prompt is triggered.
   GetUserMediaAndExpectGrantedPermission(
@@ -527,10 +544,8 @@ IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
   // within specified web contents).
   CloseLastLocalStreamAt(0);
 
-  // Fire running timers. This means, that all one time permission
-  // expiration timers that are running at this point in time will fire
-  // their callbacks and are stopped.
-  FireRunningExpirationTimers();
+  // Fast forward time to expire the permissions in the background.
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
 
   // Switch back to previous tab
   browser()->GetTabStripModel()->ActivateTabAt(0);
@@ -566,10 +581,8 @@ IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
   // Open new tab, this puts the first tab in the background.
   Initialize(INITIALIZATION_NEWTAB, GetDifferentOriginUrl());
 
-  // Fire running timers. This means, that all one time permission expiration
-  // timers that are running at this point in time will fire their callbacks and
-  // are stopped.
-  FireRunningExpirationTimers();
+  // Fast forward time by the expiration timeout.
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
 
   // Switch back to previous tab
   browser()->GetTabStripModel()->ActivateTabAt(0);
@@ -599,10 +612,8 @@ IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
   // web contents).
   CloseLastLocalStreamAt(0);
 
-  // Fire running timers. This means, that all one time permission
-  // expiration timers that are running at this point in time will fire
-  // their callbacks and are stopped.
-  FireRunningExpirationTimers();
+  // Fast forward time by the expiration timeout.
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
 
   // Request cam/mic permission, expect no prompt is triggered.
   GetUserMediaAndExpectGrantedPermission(
@@ -615,6 +626,325 @@ IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
   OtpEventExpectUniqueSample(
       ContentSettingsType::MEDIASTREAM_CAMERA,
       permissions::OneTimePermissionEvent::GRANTED_ONE_TIME, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
+                       CamMicRevokedWhenNavigatedAwayWhileCapturing) {
+  ASSERT_NO_FATAL_FAILURE(Initialize(INITIALIZATION_DEFAULT, GetWebrtcGurl()));
+
+  // Open a second tab to the same origin.
+  ASSERT_NO_FATAL_FAILURE(Initialize(INITIALIZATION_NEWTAB, GetWebrtcGurl()));
+
+  // Request cam/mic permission in the active tab, expect prompt and grant it.
+  GetUserMediaAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE, true, 1);
+
+  // Navigate the active tab away while capturing is ongoing.
+  ASSERT_NO_FATAL_FAILURE(
+      Initialize(INITIALIZATION_DEFAULT, GetDifferentOriginUrl()));
+
+  // Fast forward time by the expiration timeout. Since capturing has stopped
+  // and the remaining tab to the origin is in the background, the one-time
+  // permissions should expire.
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
+
+  // Switch back to the background tab.
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+
+  // Request cam/mic permission, expect a prompt is triggered.
+  GetUserMediaAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE, true, 0);
+
+  OtpEventExpectBucketCount(
+      ContentSettingsType::MEDIASTREAM_MIC,
+      permissions::OneTimePermissionEvent::GRANTED_ONE_TIME, 2);
+
+  OtpEventExpectBucketCount(
+      ContentSettingsType::MEDIASTREAM_CAMERA,
+      permissions::OneTimePermissionEvent::GRANTED_ONE_TIME, 2);
+
+  OtpEventExpectBucketCount(
+      ContentSettingsType::MEDIASTREAM_MIC,
+      permissions::OneTimePermissionEvent::EXPIRED_IN_BACKGROUND, 1);
+  OtpEventExpectBucketCount(
+      ContentSettingsType::MEDIASTREAM_CAMERA,
+      permissions::OneTimePermissionEvent::EXPIRED_IN_BACKGROUND, 1);
+}
+
+// Regression test for https://crbug.com/498748871.
+// A page must not be able to keep a one time camera/microphone grant alive by
+// opening a popup and navigating it to a different origin while the popup is
+// hidden. Once every tab of the granted origin is in the background, the grant
+// has to expire.
+IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
+                       CamMicRevokedWhenHiddenPopupIsNavigatedCrossOrigin) {
+  ASSERT_NO_FATAL_FAILURE(Initialize(INITIALIZATION_DEFAULT, GetWebrtcGurl()));
+  content::WebContents* tab_a =
+      current_browser()->GetTabStripModel()->GetWebContentsAt(0);
+
+  // Request cam/mic permission, expect prompt and grant it once.
+  GetUserMediaAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE, true, 0);
+
+  // Stop the local streams. Ongoing capture would keep the grant alive
+  // independently of tab visibility.
+  CloseLastLocalStreamAt(0);
+
+  // `Tab A` opens a popup to a same origin page, `Tab B`. The popup becomes
+  // the active tab, which puts `Tab A` in the background. The observer is
+  // scoped, as it only supports observing a single WebContents creation.
+  content::WebContents* tab_b = nullptr;
+  {
+    content::WebContentsAddedObserver popup_observer;
+    ASSERT_TRUE(content::ExecJs(
+        tab_a,
+        content::JsReplace("window.popup = window.open($1); true;",
+                           embedded_test_server()->GetURL("/title1.html"))));
+    tab_b = popup_observer.GetWebContents();
+  }
+  ASSERT_TRUE(content::WaitForLoadStop(tab_b));
+  ASSERT_EQ(2, current_browser()->GetTabStripModel()->count());
+
+  // The user switches back to `Tab A`, which puts `Tab B` in the HIDDEN state.
+  current_browser()->GetTabStripModel()->ActivateTabAt(0);
+  ASSERT_EQ(content::Visibility::HIDDEN, tab_b->GetVisibility());
+
+  // `Tab A` navigates the hidden `Tab B` to a different origin.
+  content::TestNavigationObserver navigation_observer(tab_b);
+  ASSERT_TRUE(content::ExecJs(
+      tab_a, content::JsReplace("window.popup.location.href = $1;",
+                                GetDifferentOriginUrl())));
+  navigation_observer.Wait();
+
+  // The user switches to an unrelated tab, which puts `Tab A` in the
+  // background as well. No page of the granted origin is visible anymore.
+  ASSERT_NO_FATAL_FAILURE(
+      Initialize(INITIALIZATION_NEWTAB, GetDifferentOriginUrl()));
+  ASSERT_EQ(content::Visibility::HIDDEN, tab_a->GetVisibility());
+
+  // Fast forward time to expire the permissions in the background.
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
+
+  // The expiry runs synchronously from the timer callback, so the camera and
+  // microphone grants are revoked as soon as the timeout has elapsed.
+  auto* hcsm =
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
+  EXPECT_EQ(CONTENT_SETTING_ASK,
+            hcsm->GetContentSetting(GetWebrtcGurl(), GetWebrtcGurl(),
+                                    ContentSettingsType::MEDIASTREAM_CAMERA));
+  EXPECT_EQ(CONTENT_SETTING_ASK,
+            hcsm->GetContentSetting(GetWebrtcGurl(), GetWebrtcGurl(),
+                                    ContentSettingsType::MEDIASTREAM_MIC));
+
+  // Switch back to `Tab A`. Requesting cam/mic must trigger a prompt again.
+  current_browser()->GetTabStripModel()->ActivateTabAt(0);
+  GetUserMediaAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE, true, 0);
+
+  OtpEventExpectBucketCount(
+      ContentSettingsType::MEDIASTREAM_MIC,
+      permissions::OneTimePermissionEvent::EXPIRED_IN_BACKGROUND, 1);
+  OtpEventExpectBucketCount(
+      ContentSettingsType::MEDIASTREAM_CAMERA,
+      permissions::OneTimePermissionEvent::EXPIRED_IN_BACKGROUND, 1);
+}
+
+// Regression test for https://crbug.com/497593347.
+// A page must not be able to keep a one time camera/microphone grant alive by
+// opening a same origin popup and closing it again via `window.close()` while
+// capturing. Once capturing has stopped and every tab of the origin is in the
+// background, the grant has to expire.
+IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
+                       CamMicRevokedWhenSameOriginPopupIsClosedByScript) {
+  ASSERT_NO_FATAL_FAILURE(Initialize(INITIALIZATION_DEFAULT, GetWebrtcGurl()));
+  content::WebContents* tab_a =
+      current_browser()->GetTabStripModel()->GetWebContentsAt(0);
+
+  // `Tab A` opens a popup to the same origin, `Tab B`. The observer is scoped,
+  // as it only supports observing a single WebContents creation.
+  content::WebContents* tab_b = nullptr;
+  {
+    content::WebContentsAddedObserver popup_observer;
+    ASSERT_TRUE(content::ExecJs(
+        tab_a, content::JsReplace("window.popup = window.open($1); true;",
+                                  GetWebrtcGurl())));
+    tab_b = popup_observer.GetWebContents();
+  }
+  ASSERT_TRUE(content::WaitForLoadStop(tab_b));
+  ASSERT_EQ(2, current_browser()->GetTabStripModel()->count());
+
+  // The popup became the active tab. Switch back to `Tab A`, as a permission
+  // prompt is only shown for the visible tab.
+  current_browser()->GetTabStripModel()->ActivateTabAt(0);
+
+  // Request cam/mic permission in `Tab A`, expect prompt, grant it once and
+  // start capturing.
+  GetUserMediaAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE, true, 0);
+
+  // The page closes `Tab B` again while `Tab A` is still capturing.
+  content::WebContentsDestroyedWatcher destroyed_watcher(tab_b);
+  ASSERT_TRUE(content::ExecJs(tab_a, "window.popup.close();"));
+  destroyed_watcher.Wait();
+  ASSERT_EQ(1, current_browser()->GetTabStripModel()->count());
+
+  // `Tab A` stops capturing.
+  CloseLastLocalStreamAt(0);
+
+  // The user switches to an unrelated tab, which puts `Tab A` in the
+  // background. No page of the granted origin is visible anymore.
+  ASSERT_NO_FATAL_FAILURE(
+      Initialize(INITIALIZATION_NEWTAB, GetDifferentOriginUrl()));
+  ASSERT_EQ(content::Visibility::HIDDEN, tab_a->GetVisibility());
+
+  // Fast forward time to expire the permissions in the background.
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
+
+  // The expiry runs synchronously from the timer callback, so the camera and
+  // microphone grants are revoked as soon as the timeout has elapsed.
+  auto* hcsm =
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
+  EXPECT_EQ(CONTENT_SETTING_ASK,
+            hcsm->GetContentSetting(GetWebrtcGurl(), GetWebrtcGurl(),
+                                    ContentSettingsType::MEDIASTREAM_CAMERA));
+  EXPECT_EQ(CONTENT_SETTING_ASK,
+            hcsm->GetContentSetting(GetWebrtcGurl(), GetWebrtcGurl(),
+                                    ContentSettingsType::MEDIASTREAM_MIC));
+
+  // Switch back to `Tab A`. Requesting cam/mic must trigger a prompt again.
+  current_browser()->GetTabStripModel()->ActivateTabAt(0);
+  GetUserMediaAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE, true, 0);
+
+  OtpEventExpectBucketCount(
+      ContentSettingsType::MEDIASTREAM_MIC,
+      permissions::OneTimePermissionEvent::EXPIRED_IN_BACKGROUND, 1);
+  OtpEventExpectBucketCount(
+      ContentSettingsType::MEDIASTREAM_CAMERA,
+      permissions::OneTimePermissionEvent::EXPIRED_IN_BACKGROUND, 1);
+}
+
+// Regression test for https://crbug.com/553394270.
+// A tab that is repeatedly covered and uncovered by another window must still
+// have its one time grant revoked once it is genuinely hidden for the one time
+// permission timeout.
+IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
+                       GeolocationRevokedInBackgroundAfterOcclusionCycles) {
+  ASSERT_NO_FATAL_FAILURE(
+      Initialize(INITIALIZATION_DEFAULT, GetGeolocationGurl()));
+  content::WebContents* tab_a =
+      current_browser()->GetTabStripModel()->GetWebContentsAt(0);
+
+  // A popup window covers `Tab A` and is closed again. Window occlusion is not
+  // computed in this test environment, so it is simulated on the contents.
+  tab_a->WasOccluded();
+  ASSERT_EQ(content::Visibility::OCCLUDED, tab_a->GetVisibility());
+  tab_a->WasShown();
+
+  // Request geolocation permission, expect prompt and grant it once.
+  WatchPositionAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE, true);
+
+  auto* hcsm =
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
+  const ContentSettingsType geolocation_type =
+      content_settings::GeolocationContentSettingsType();
+  const content_settings::PermissionSettingsInfo* permission_info =
+      content_settings::PermissionSettingsRegistry::GetInstance()->Get(
+          geolocation_type);
+  ASSERT_TRUE(permission_info->delegate().IsAnyPermissionAllowed(
+      hcsm->GetPermissionSetting(GetGeolocationGurl(), GetGeolocationGurl(),
+                                 geolocation_type)));
+
+  // Another cover/uncover cycle. An occluded tab still counts as being in the
+  // foreground, so the expiry must not run while the tab is merely covered.
+  tab_a->WasOccluded();
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
+  EXPECT_TRUE(permission_info->delegate().IsAnyPermissionAllowed(
+      hcsm->GetPermissionSetting(GetGeolocationGurl(), GetGeolocationGurl(),
+                                 geolocation_type)));
+  tab_a->WasShown();
+
+  // The user switches to another tab, which genuinely hides `Tab A`.
+  ASSERT_NO_FATAL_FAILURE(
+      Initialize(INITIALIZATION_NEWTAB, GetDifferentOriginUrl()));
+  ASSERT_EQ(content::Visibility::HIDDEN, tab_a->GetVisibility());
+
+  // Fast forward time to expire the permission in the background.
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
+
+  // Foreground `Tab A` again and inspect the permission without requesting it
+  // again.
+  current_browser()->GetTabStripModel()->ActivateTabAt(0);
+  ASSERT_EQ(content::Visibility::VISIBLE, tab_a->GetVisibility());
+  EXPECT_TRUE(
+      permission_info->delegate().IsUndecided(hcsm->GetPermissionSetting(
+          GetGeolocationGurl(), GetGeolocationGurl(), geolocation_type)));
+
+  OtpEventExpectBucketCount(
+      geolocation_type,
+      permissions::OneTimePermissionEvent::EXPIRED_IN_BACKGROUND, 1);
+}
+
+// Regression test for https://crbug.com/553394270.
+// An occluded tab counts as being in the foreground. Going from HIDDEN back to
+// OCCLUDED therefore stops a pending background expiry, and hiding the tab
+// again restarts it.
+IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
+                       GeolocationExpiryStoppedWhenHiddenTabBecomesOccluded) {
+  ASSERT_NO_FATAL_FAILURE(
+      Initialize(INITIALIZATION_DEFAULT, GetGeolocationGurl()));
+  content::WebContents* tab_a =
+      current_browser()->GetTabStripModel()->GetWebContentsAt(0);
+
+  // Request geolocation permission, expect prompt and grant it once.
+  WatchPositionAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE, true);
+
+  auto* hcsm =
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
+  const ContentSettingsType geolocation_type =
+      content_settings::GeolocationContentSettingsType();
+  const content_settings::PermissionSettingsInfo* permission_info =
+      content_settings::PermissionSettingsRegistry::GetInstance()->Get(
+          geolocation_type);
+  ASSERT_TRUE(permission_info->delegate().IsAnyPermissionAllowed(
+      hcsm->GetPermissionSetting(GetGeolocationGurl(), GetGeolocationGurl(),
+                                 geolocation_type)));
+
+  // The browser window gets covered by another window and is then minimized,
+  // which hides the tab and starts the expiry. Visibility is not driven by the
+  // window manager in this test environment, so it is simulated on the
+  // contents.
+  tab_a->WasOccluded();
+  tab_a->WasHidden();
+  ASSERT_EQ(content::Visibility::HIDDEN, tab_a->GetVisibility());
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout -
+                              base::Seconds(1));
+  ASSERT_TRUE(permission_info->delegate().IsAnyPermissionAllowed(
+      hcsm->GetPermissionSetting(GetGeolocationGurl(), GetGeolocationGurl(),
+                                 geolocation_type)));
+
+  // The window is restored before the timeout elapses, but is still covered by
+  // the other window. The tab counts as being in the foreground again, so the
+  // pending expiry must be stopped.
+  tab_a->WasOccluded();
+  ASSERT_EQ(content::Visibility::OCCLUDED, tab_a->GetVisibility());
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
+  EXPECT_TRUE(permission_info->delegate().IsAnyPermissionAllowed(
+      hcsm->GetPermissionSetting(GetGeolocationGurl(), GetGeolocationGurl(),
+                                 geolocation_type)));
+
+  // Hiding the tab again restarts the expiry, which now runs to completion.
+  tab_a->WasHidden();
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
+  EXPECT_TRUE(
+      permission_info->delegate().IsUndecided(hcsm->GetPermissionSetting(
+          GetGeolocationGurl(), GetGeolocationGurl(), geolocation_type)));
+
+  OtpEventExpectBucketCount(
+      geolocation_type,
+      permissions::OneTimePermissionEvent::EXPIRED_IN_BACKGROUND, 1);
 }
 
 class OneTimePermissionExpiryEnforcementUmaInteractiveUiTest
@@ -728,4 +1058,125 @@ IN_PROC_BROWSER_TEST_P(OneTimePermissionExpiryEnforcementUmaInteractiveUiTest,
       active_expiry_is_active ? 1 : 0);
 
   hcsm->SetClockForTesting(base::DefaultClock::GetInstance());
+}
+
+IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
+                       SandboxedOneTimeGrantRevokedOnTabClose) {
+  auto* hcsm =
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
+  GURL root_url = embedded_test_server()->GetURL("/");
+
+  const content_settings::PermissionSettingsInfo* permission_info =
+      content_settings::PermissionSettingsRegistry::GetInstance()->Get(
+          permissions::PermissionUtil::GetGeolocationType());
+  EXPECT_TRUE(
+      permission_info->delegate().IsUndecided(hcsm->GetPermissionSetting(
+          root_url, root_url,
+          permissions::PermissionUtil::GetGeolocationType())));
+
+  ASSERT_NO_FATAL_FAILURE(Initialize(
+      INITIALIZATION_DEFAULT,
+      embedded_test_server()->GetURL("/set-header-with-file/chrome/test/data/"
+                                     "geolocation/simple.html?Content-Security-"
+                                     "Policy: sandbox allow-scripts")));
+  EXPECT_TRUE(current_browser()
+                  ->tab_strip_model()
+                  ->GetActiveWebContents()
+                  ->GetPrimaryMainFrame()
+                  ->GetLastCommittedOrigin()
+                  .opaque());
+
+  WatchPositionAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE,
+      /*expect_prompt=*/true);
+
+  EXPECT_TRUE(permission_info->delegate().IsAnyPermissionAllowed(
+      hcsm->GetPermissionSetting(
+          root_url, root_url,
+          permissions::PermissionUtil::GetGeolocationType())));
+
+  ASSERT_NO_FATAL_FAILURE(
+      Initialize(INITIALIZATION_NEWTAB, GetDifferentOriginUrl()));
+
+  content::WebContentsDestroyedWatcher destroyed_watcher(
+      current_browser()->tab_strip_model()->GetWebContentsAt(0));
+  current_browser()->tab_strip_model()->CloseWebContentsAt(
+      0, TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
+  destroyed_watcher.Wait();
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return permission_info->delegate().IsUndecided(hcsm->GetPermissionSetting(
+        root_url, root_url, permissions::PermissionUtil::GetGeolocationType()));
+  }));
+
+  OtpEventExpectBucketCount(
+      ContentSettingsType::GEOLOCATION,
+      permissions::OneTimePermissionEvent::ALL_TABS_CLOSED_OR_DISCARDED, 1);
+
+  ASSERT_NO_FATAL_FAILURE(
+      Initialize(INITIALIZATION_DEFAULT, GetGeolocationGurl()));
+  WatchPositionAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE,
+      /*expect_prompt=*/true);
+}
+
+IN_PROC_BROWSER_TEST_F(OneTimePermissionInteractiveUiTest,
+                       SandboxedOneTimeGrantRevokedInBackground) {
+  auto* hcsm =
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
+  GURL root_url = embedded_test_server()->GetURL("/");
+
+  const content_settings::PermissionSettingsInfo* permission_info =
+      content_settings::PermissionSettingsRegistry::GetInstance()->Get(
+          permissions::PermissionUtil::GetGeolocationType());
+  EXPECT_TRUE(
+      permission_info->delegate().IsUndecided(hcsm->GetPermissionSetting(
+          root_url, root_url,
+          permissions::PermissionUtil::GetGeolocationType())));
+
+  ASSERT_NO_FATAL_FAILURE(Initialize(
+      INITIALIZATION_DEFAULT,
+      embedded_test_server()->GetURL("/set-header-with-file/chrome/test/data/"
+                                     "geolocation/simple.html?Content-Security-"
+                                     "Policy: sandbox allow-scripts")));
+  EXPECT_TRUE(current_browser()
+                  ->tab_strip_model()
+                  ->GetActiveWebContents()
+                  ->GetPrimaryMainFrame()
+                  ->GetLastCommittedOrigin()
+                  .opaque());
+
+  WatchPositionAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE,
+      /*expect_prompt=*/true);
+
+  EXPECT_TRUE(permission_info->delegate().IsAnyPermissionAllowed(
+      hcsm->GetPermissionSetting(
+          root_url, root_url,
+          permissions::PermissionUtil::GetGeolocationType())));
+
+  ASSERT_NO_FATAL_FAILURE(
+      Initialize(INITIALIZATION_NEWTAB, GetDifferentOriginUrl()));
+
+  // Fast forward time to expire the permissions in the background.
+  task_runner_->FastForwardBy(permissions::kOneTimePermissionTimeout);
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return permission_info->delegate().IsUndecided(hcsm->GetPermissionSetting(
+        root_url, root_url, permissions::PermissionUtil::GetGeolocationType()));
+  }));
+
+  current_browser()->tab_strip_model()->ActivateTabAt(0);
+
+  WatchPositionAndExpectGrantedPermission(
+      permissions::PermissionRequestManager::ACCEPT_ONCE,
+      /*expect_prompt=*/true);
+
+  OtpEventExpectBucketCount(
+      ContentSettingsType::GEOLOCATION,
+      permissions::OneTimePermissionEvent::GRANTED_ONE_TIME, 2);
+
+  OtpEventExpectBucketCount(
+      ContentSettingsType::GEOLOCATION,
+      permissions::OneTimePermissionEvent::EXPIRED_IN_BACKGROUND, 1);
 }

@@ -495,6 +495,25 @@ compiled_action("generate_country_native_names") {
   deps = [ "//third_party/icu:copy_icudata($default_toolchain)" ]
 }
 
+source_set("country_names_impl") {
+  visibility = [ ":browser" ]
+  public = []
+  sources = get_target_outputs(":generate_country_native_names") + [
+              "geo/country_names.cc",
+              "geo/country_names.h",
+              "geo/country_names_for_locale.h",
+            ]
+  deps = [
+    ":buildflags",
+    ":country_data",
+    ":generate_country_native_names",
+    "//base",
+    "//base:i18n",
+    "//components/autofill/core/common",
+    "//third_party/icu",
+  ]
+}
+
 proto_library("amount_extraction_heuristic_regexes_proto") {
   sources = [ "payments/amount_extraction_heuristic_regexes.proto" ]
 }
@@ -517,8 +536,6 @@ static_library("browser") {
     "at_memory/autofill_data_provider.h",
     "autofill_ai_form_rationalization.cc",
     "autofill_ai_form_rationalization.h",
-    "autofill_browser_util.cc",
-    "autofill_browser_util.h",
     "autofill_feedback_data.cc",
     "autofill_feedback_data.h",
     "autofill_field.cc",
@@ -560,9 +577,8 @@ static_library("browser") {
     "data_manager/autofill_ai/entity_instance_cleaner.h",
     "data_manager/autofill_ai/entity_suppression_entry.cc",
     "data_manager/autofill_ai/entity_suppression_entry.h",
-    "data_manager/autofill_ai/entity_suppression_manager.h",
-    "data_manager/autofill_ai/in_memory_entity_suppression_manager.cc",
-    "data_manager/autofill_ai/in_memory_entity_suppression_manager.h",
+    "data_manager/autofill_ai/personal_context_entity_metadata_manager.cc",
+    "data_manager/autofill_ai/personal_context_entity_metadata_manager.h",
     "data_manager/payments/payments_data_manager.cc",
     "data_manager/payments/payments_data_manager.h",
     "data_manager/personal_data_manager.cc",
@@ -795,7 +811,6 @@ static_library("browser") {
     "geo/alternative_state_name_map_updater.h",
     "geo/autofill_country.cc",
     "geo/autofill_country.h",
-    "geo/country_names.cc",
     "geo/country_names.h",
     "geo/country_names_for_locale.cc",
     "geo/country_names_for_locale.h",
@@ -845,18 +860,41 @@ static_library("browser") {
     "integrators/autofill_ai/metrics/personal_context_metrics.h",
     "integrators/compose/autofill_compose_delegate.h",
     "integrators/identity_credential/identity_credential_delegate.h",
+    "integrators/one_time_tokens/form_cache_query_util.cc",
+    "integrators/one_time_tokens/form_cache_query_util.h",
+    "integrators/one_time_tokens/gmail_otp_opt_in_coordinator.cc",
+    "integrators/one_time_tokens/gmail_otp_opt_in_coordinator.h",
+    "integrators/one_time_tokens/gmail_otp_opt_in_result.h",
     "integrators/one_time_tokens/metrics/otp_form_event_logger.cc",
     "integrators/one_time_tokens/metrics/otp_form_event_logger.h",
+    "integrators/one_time_tokens/one_time_token_log_handler.cc",
+    "integrators/one_time_tokens/one_time_token_log_handler.h",
+    "integrators/one_time_tokens/otp_delivery.cc",
+    "integrators/one_time_tokens/otp_delivery.h",
+    "integrators/one_time_tokens/otp_delivery_policy.cc",
+    "integrators/one_time_tokens/otp_delivery_policy.h",
     "integrators/one_time_tokens/otp_field_detector.cc",
     "integrators/one_time_tokens/otp_field_detector.h",
     "integrators/one_time_tokens/otp_manager.h",
     "integrators/one_time_tokens/otp_manager_impl.cc",
     "integrators/one_time_tokens/otp_manager_impl.h",
+    "integrators/one_time_tokens/otp_manager_legacy_impl.cc",
+    "integrators/one_time_tokens/otp_manager_legacy_impl.h",
     "integrators/one_time_tokens/otp_metrics_tracker.cc",
     "integrators/one_time_tokens/otp_metrics_tracker.h",
     "integrators/one_time_tokens/otp_phish_guard_delegate.h",
+    "integrators/one_time_tokens/otp_phish_guard_gateway.cc",
+    "integrators/one_time_tokens/otp_phish_guard_gateway.h",
+    "integrators/one_time_tokens/otp_security_gateway.cc",
+    "integrators/one_time_tokens/otp_security_gateway.h",
     "integrators/one_time_tokens/otp_suggestion.cc",
     "integrators/one_time_tokens/otp_suggestion.h",
+    "integrators/one_time_tokens/otp_suggestion_dropdown_dispatcher.cc",
+    "integrators/one_time_tokens/otp_suggestion_dropdown_dispatcher.h",
+    "integrators/one_time_tokens/otp_target_field_identifier.cc",
+    "integrators/one_time_tokens/otp_target_field_identifier.h",
+    "integrators/one_time_tokens/otp_types.cc",
+    "integrators/one_time_tokens/otp_types.h",
     "integrators/optimization_guide/autofill_optimization_guide_decider.cc",
     "integrators/optimization_guide/autofill_optimization_guide_decider.h",
     "integrators/password_form_classification.h",
@@ -881,6 +919,8 @@ static_library("browser") {
     "metrics/address_data_cleaner_metrics.h",
     "metrics/address_save_metrics.cc",
     "metrics/address_save_metrics.h",
+    "metrics/autocomplete_key_metrics_logger.cc",
+    "metrics/autocomplete_key_metrics_logger.h",
     "metrics/autofill_in_devtools_metrics.cc",
     "metrics/autofill_in_devtools_metrics.h",
     "metrics/autofill_metrics.cc",
@@ -902,6 +942,8 @@ static_library("browser") {
     "metrics/form_events/loyalty_card_form_event_logger.h",
     "metrics/form_interactions_ukm_logger.cc",
     "metrics/form_interactions_ukm_logger.h",
+    "metrics/javascript_dropdown_metrics.cc",
+    "metrics/javascript_dropdown_metrics.h",
     "metrics/log_event.cc",
     "metrics/log_event.h",
     "metrics/loyalty_cards_metrics.cc",
@@ -936,6 +978,8 @@ static_library("browser") {
     "metrics/payments/mandatory_reauth_metrics.h",
     "metrics/payments/payments_window_metrics.cc",
     "metrics/payments/payments_window_metrics.h",
+    "metrics/payments/promo_code_metrics.cc",
+    "metrics/payments/promo_code_metrics.h",
     "metrics/payments/risk_data_metrics.cc",
     "metrics/payments/risk_data_metrics.h",
     "metrics/payments/save_and_fill_metrics.cc",
@@ -973,6 +1017,8 @@ static_library("browser") {
     "ml_model/autofill_ai/autofill_ai_model_executor_impl.h",
     "ml_model/field_classification_model_encoder.cc",
     "ml_model/field_classification_model_encoder.h",
+    "ml_model/field_classification_model_encoder_dictionary.cc",
+    "ml_model/field_classification_model_encoder_dictionary.h",
     "ml_model/field_classification_model_executor.cc",
     "ml_model/field_classification_model_executor.h",
     "ml_model/field_classification_model_handler.cc",
@@ -1042,8 +1088,6 @@ static_library("browser") {
     "payments/multiple_request_payments_network_interface.h",
     "payments/multiple_request_payments_network_interface_base.cc",
     "payments/multiple_request_payments_network_interface_base.h",
-    "payments/offer_notification_handler.cc",
-    "payments/offer_notification_handler.h",
     "payments/offer_notification_options.h",
     "payments/otp_unmask_delegate.h",
     "payments/otp_unmask_result.h",
@@ -1074,6 +1118,8 @@ static_library("browser") {
     "payments/payments_requests/get_bnpl_payment_instrument_for_fetching_vcn_request.h",
     "payments/payments_requests/get_card_upload_details_request.cc",
     "payments/payments_requests/get_card_upload_details_request.h",
+    "payments/payments_requests/get_data_for_agent_request.cc",
+    "payments/payments_requests/get_data_for_agent_request.h",
     "payments/payments_requests/get_details_for_create_bnpl_payment_instrument_request.cc",
     "payments/payments_requests/get_details_for_create_bnpl_payment_instrument_request.h",
     "payments/payments_requests/get_details_for_create_card_request.cc",
@@ -1082,6 +1128,8 @@ static_library("browser") {
     "payments/payments_requests/get_details_for_enrollment_request.h",
     "payments/payments_requests/get_details_for_update_bnpl_payment_instrument_request.cc",
     "payments/payments_requests/get_details_for_update_bnpl_payment_instrument_request.h",
+    "payments/payments_requests/get_details_for_update_card_request.cc",
+    "payments/payments_requests/get_details_for_update_card_request.h",
     "payments/payments_requests/get_iban_upload_details_request.cc",
     "payments/payments_requests/get_iban_upload_details_request.h",
     "payments/payments_requests/get_unmask_details_request.cc",
@@ -1103,6 +1151,8 @@ static_library("browser") {
     "payments/payments_requests/unmask_iban_request.h",
     "payments/payments_requests/update_bnpl_payment_instrument_request.cc",
     "payments/payments_requests/update_bnpl_payment_instrument_request.h",
+    "payments/payments_requests/update_card_request.cc",
+    "payments/payments_requests/update_card_request.h",
     "payments/payments_requests/update_virtual_card_enrollment_request.cc",
     "payments/payments_requests/update_virtual_card_enrollment_request.h",
     "payments/payments_requests/upload_card_request.cc",
@@ -1136,6 +1186,8 @@ static_library("browser") {
     "permissions/autofill_ai/autofill_ai_permission_util.h",
     "permissions/autofill_policy_service.cc",
     "permissions/autofill_policy_service.h",
+    "permissions/device_reauth_util.cc",
+    "permissions/device_reauth_util.h",
     "single_field_fillers/autocomplete/autocomplete_history_manager.cc",
     "single_field_fillers/autocomplete/autocomplete_history_manager.h",
     "single_field_fillers/payments/merchant_promo_code_manager.cc",
@@ -1155,6 +1207,8 @@ static_library("browser") {
     "strike_databases/autofill_ai/autofill_ai_update_strike_database.h",
     "strike_databases/evp/email_verification_not_signed_in_strike_database.h",
     "strike_databases/evp/email_verification_strike_database.h",
+    "strike_databases/payments/cardholder_name_fix_flow_strike_database.cc",
+    "strike_databases/payments/cardholder_name_fix_flow_strike_database.h",
     "strike_databases/payments/credit_card_save_strike_database.cc",
     "strike_databases/payments/credit_card_save_strike_database.h",
     "strike_databases/payments/cvc_storage_strike_database.cc",
@@ -1170,6 +1224,8 @@ static_library("browser") {
     "studies/autofill_ablation_study.h",
     "studies/autofill_experiments.cc",
     "studies/autofill_experiments.h",
+    "studies/hats_surveys_util.cc",
+    "studies/hats_surveys_util.h",
     "suggestions/addresses/address_suggestion_generator.cc",
     "suggestions/addresses/address_suggestion_generator.h",
     "suggestions/at_memory/at_memory_nudge_generator.cc",
@@ -1204,6 +1260,8 @@ static_library("browser") {
     "suggestions/suggestion_type.h",
     "suggestions/suggestion_util.cc",
     "suggestions/suggestion_util.h",
+    "suggestions/trusted_vault/trusted_vault_error_suggestion_generator.cc",
+    "suggestions/trusted_vault/trusted_vault_error_suggestion_generator.h",
     "suggestions/valuables/valuable_suggestion_generator.cc",
     "suggestions/valuables/valuable_suggestion_generator.h",
     "ui/addresses/autofill_address_util.cc",
@@ -1246,6 +1304,7 @@ static_library("browser") {
     "ui/payments/card_unmask_prompt_options.cc",
     "ui/payments/card_unmask_prompt_options.h",
     "ui/payments/card_unmask_prompt_view.h",
+    "ui/payments/payments_churned_users_ui_delegate.h",
     "ui/payments/payments_ui_closed_reasons.h",
     "ui/payments/payments_window_user_consent_dialog.h",
     "ui/payments/payments_window_user_consent_dialog_controller.h",
@@ -1302,6 +1361,7 @@ static_library("browser") {
     "webdata/autofill_ai/entity_table.h",
     "webdata/autofill_change.cc",
     "webdata/autofill_change.h",
+    "webdata/autofill_sync_bridge_util.h",
     "webdata/autofill_sync_metadata_table.cc",
     "webdata/autofill_sync_metadata_table.h",
     "webdata/autofill_table_util.cc",
@@ -1316,8 +1376,6 @@ static_library("browser") {
     "webdata/payments/autofill_wallet_credential_sync_bridge.h",
     "webdata/payments/autofill_wallet_metadata_sync_bridge.cc",
     "webdata/payments/autofill_wallet_metadata_sync_bridge.h",
-    "webdata/payments/autofill_wallet_offer_sync_bridge.cc",
-    "webdata/payments/autofill_wallet_offer_sync_bridge.h",
     "webdata/payments/autofill_wallet_sync_bridge.cc",
     "webdata/payments/autofill_wallet_sync_bridge.h",
     "webdata/payments/autofill_wallet_usage_data_sync_bridge.cc",
@@ -1327,6 +1385,10 @@ static_library("browser") {
     "webdata/payments/payments_sync_bridge_util.cc",
     "webdata/payments/payments_sync_bridge_util.h",
     "webdata/payments/server_cvc.h",
+    "webdata/personal_context/personal_context_entity_metadata_sync_bridge.cc",
+    "webdata/personal_context/personal_context_entity_metadata_sync_bridge.h",
+    "webdata/personal_context/personal_context_entity_metadata_sync_util.cc",
+    "webdata/personal_context/personal_context_entity_metadata_sync_util.h",
     "webdata/valuables/valuable_data_type_controller.cc",
     "webdata/valuables/valuable_data_type_controller.h",
     "webdata/valuables/valuable_metadata_sync_bridge.cc",
@@ -1339,7 +1401,6 @@ static_library("browser") {
     "webdata/valuables/valuables_table.h",
   ]
 
-  sources += get_target_outputs(":generate_country_native_names")
   sources += get_target_outputs(":regex_patterns_inl_h")
   sources += get_target_outputs(":entity_schema_enums_and_functions")
 
@@ -1380,6 +1441,8 @@ static_library("browser") {
       "ui/addresses/android/dropdown_key_value_android.h",
       "ui/addresses/android/supported_countries_cache.cc",
       "ui/addresses/android/supported_countries_cache.h",
+      "ui/autofill_tapjacking_protector.cc",
+      "ui/autofill_tapjacking_protector.h",
     ]
   }
 
@@ -1421,10 +1484,7 @@ static_library("browser") {
     ]
   }
 
-  configs += [
-    "//build/config:precompiled_headers",
-    "//build/config/compiler:wexit_time_destructors",
-  ]
+  configs += [ "//build/config:precompiled_headers" ]
 
   public_deps = [
     ":amount_extraction_heuristic_regexes_proto",
@@ -1463,8 +1523,8 @@ static_library("browser") {
     ":autofill_address_rewriter_resources",
     ":autofill_alternative_state_name_map_resources",
     ":buildflags",
+    ":country_names_impl",
     ":entity_schema_enums_and_functions",
-    ":generate_country_native_names",
     ":regex_patterns_inl_h",
     "//base",
     "//base:i18n",
@@ -1488,6 +1548,8 @@ static_library("browser") {
     "//components/one_time_tokens/core/browser",
     "//components/optimization_guide/core",
     "//components/optimization_guide/proto:optimization_guide_proto",
+    "//components/os_crypt/async/browser",
+    "//components/os_crypt/async/common",
     "//components/os_crypt/common",
     "//components/password_manager/core/browser/features:password_features",
     "//components/payments/core:currency_formatter",
@@ -1500,7 +1562,6 @@ static_library("browser") {
     "//components/pref_registry",
     "//components/prefs",
     "//components/profile_metrics",
-    "//components/security_interstitials/core:insecure_form_util",
     "//components/sessions:session_id",
     "//components/signin/public/base",
     "//components/signin/public/identity_manager",
@@ -1589,7 +1650,6 @@ static_library("legal_message_line") {
     "//ui/gfx/range",
     "//url",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 source_set("payments_sync_utils") {
@@ -1611,6 +1671,7 @@ if (is_android) {
       "$target_gen_dir/data_model/autofill_ai/entity_type_names.h",
       "data_model/autofill_ai/entity_instance.h",
       "data_model/autofill_ai/entity_type.h",
+      "integrators/autofill_ai/metrics/autofill_ai_metrics.h",
       "permissions/autofill_ai/autofill_ai_permission_util.h",
     ]
     deps = [ ":entity_schema_enums_and_functions" ]
@@ -1725,6 +1786,7 @@ static_library("test_support") {
     "integrators/one_time_tokens/mock_otp_manager.cc",
     "integrators/one_time_tokens/mock_otp_manager.h",
     "integrators/one_time_tokens/otp_manager_impl_test_api.h",
+    "integrators/one_time_tokens/otp_manager_legacy_impl_test_api.h",
     "integrators/optimization_guide/mock_autofill_optimization_guide_decider.cc",
     "integrators/optimization_guide/mock_autofill_optimization_guide_decider.h",
     "integrators/password_manager/mock_password_manager_delegate.cc",
@@ -1767,6 +1829,7 @@ static_library("test_support") {
     "payments/payments_requests/get_details_for_create_bnpl_payment_instrument_request_test_api.h",
     "payments/payments_requests/get_details_for_create_card_request_test_api.h",
     "payments/payments_requests/get_details_for_update_bnpl_payment_instrument_request_test_api.h",
+    "payments/payments_requests/get_details_for_update_card_request_test_api.h",
     "payments/payments_requests/get_wallet_reminder_notice_request_test_api.h",
     "payments/payments_requests/payments_request_test_api.h",
     "payments/payments_requests/update_bnpl_payment_instrument_request_test_api.h",
@@ -1825,6 +1888,8 @@ static_library("test_support") {
     "test_utils/entity_data_test_util.cc",
     "test_utils/entity_data_test_util.h",
     "test_utils/field_prediction_test_matchers.h",
+    "test_utils/personal_context_test_util.cc",
+    "test_utils/personal_context_test_util.h",
     "test_utils/test_autofill_clock.cc",
     "test_utils/test_autofill_clock.h",
     "test_utils/test_event_waiter.h",
@@ -1851,6 +1916,8 @@ static_library("test_support") {
     "webdata/mock_autofill_webdata_service.h",
     "webdata/payments/payments_sync_bridge_test_util.cc",
     "webdata/payments/payments_sync_bridge_test_util.h",
+    "webdata/personal_context/personal_context_entity_metadata_sync_bridge_test_util.cc",
+    "webdata/personal_context/personal_context_entity_metadata_sync_bridge_test_util.h",
     "webdata/valuables/valuables_sync_test_util.cc",
     "webdata/valuables/valuables_sync_test_util.h",
   ]
@@ -1886,6 +1953,7 @@ static_library("test_support") {
     "//components/leveldb_proto",
     "//components/metrics",
     "//components/optimization_guide/proto:optimization_guide_proto",
+    "//components/os_crypt/async/browser:test_support",
     "//components/os_crypt/browser:test_support",
     "//components/pref_registry",
     "//components/prefs:test_support",
@@ -1898,7 +1966,6 @@ static_library("test_support") {
     "//components/variations",
     "//components/variations:test_support",
     "//components/variations/net",
-    "//components/version_info",
     "//components/webdata/common",
     "//crypto",
     "//google_apis:test_support",
@@ -1931,10 +1998,14 @@ static_library("test_support") {
     ]
   }
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  if (is_android) {
+    sources += [
+      "ui/mock_autofill_tapjacking_protector.cc",
+      "ui/mock_autofill_tapjacking_protector.h",
+    ]
+  }
+
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 }
 
 bundle_data("unit_tests_bundle_data") {
@@ -1986,6 +2057,7 @@ source_set("unit_tests") {
     "autofill_ai_form_rationalization_unittest.cc",
     "autofill_feedback_data_unittest.cc",
     "autofill_field_unittest.cc",
+    "autofill_format_string_unittest.cc",
     "autofill_merge_unittest.cc",
     "autofill_server_prediction_unittest.cc",
     "autofill_type_unittest.cc",
@@ -2003,7 +2075,7 @@ source_set("unit_tests") {
     "data_manager/autofill_ai/entity_data_manager_unittest.cc",
     "data_manager/autofill_ai/entity_instance_cleaner_unittest.cc",
     "data_manager/autofill_ai/entity_suppression_entry_unittest.cc",
-    "data_manager/autofill_ai/in_memory_entity_suppression_manager_unittest.cc",
+    "data_manager/autofill_ai/personal_context_entity_metadata_manager_unittest.cc",
     "data_manager/payments/payments_data_manager_test_base.cc",
     "data_manager/payments/payments_data_manager_test_base.h",
     "data_manager/payments/payments_data_manager_unittest.cc",
@@ -2118,11 +2190,22 @@ source_set("unit_tests") {
     "integrators/autofill_ai/autofill_ai_wallet_util_unittest.cc",
     "integrators/autofill_ai/management_util_unittest.cc",
     "integrators/autofill_ai/metrics/autofill_ai_logger_unittest.cc",
+    "integrators/one_time_tokens/form_cache_query_util_unittest.cc",
+    "integrators/one_time_tokens/gmail_otp_opt_in_coordinator_unittest.cc",
     "integrators/one_time_tokens/metrics/otp_form_event_logger_unittest.cc",
+    "integrators/one_time_tokens/one_time_token_log_handler_unittest.cc",
+    "integrators/one_time_tokens/otp_delivery_policy_unittest.cc",
+    "integrators/one_time_tokens/otp_delivery_unittest.cc",
     "integrators/one_time_tokens/otp_field_detector_unittest.cc",
     "integrators/one_time_tokens/otp_manager_impl_unittest.cc",
+    "integrators/one_time_tokens/otp_manager_legacy_impl_unittest.cc",
     "integrators/one_time_tokens/otp_metrics_tracker_unittest.cc",
+    "integrators/one_time_tokens/otp_phish_guard_gateway_unittest.cc",
+    "integrators/one_time_tokens/otp_security_gateway_unittest.cc",
+    "integrators/one_time_tokens/otp_suggestion_dropdown_dispatcher_unittest.cc",
     "integrators/one_time_tokens/otp_suggestion_unittest.cc",
+    "integrators/one_time_tokens/otp_target_field_identifier_unittest.cc",
+    "integrators/one_time_tokens/otp_types_unittest.cc",
     "integrators/optimization_guide/autofill_optimization_guide_decider_unittest.cc",
     "integrators/personal_context/personal_context_autofill_util_unittest.cc",
     "logging/log_buffer_submitter_unittest.cc",
@@ -2131,6 +2214,7 @@ source_set("unit_tests") {
     "logging/text_log_receiver_unittest.cc",
     "manual_testing_import_unittest.cc",
     "metrics/address_data_cleaner_metrics_unittest.cc",
+    "metrics/autocomplete_key_metrics_logger_unittest.cc",
     "metrics/autofill_metrics_unittest.cc",
     "metrics/autofill_metrics_util_unittest.cc",
     "metrics/autofill_settings_metrics_unittest.cc",
@@ -2140,11 +2224,13 @@ source_set("unit_tests") {
     "metrics/form_events/form_event_logger_base_unittest.cc",
     "metrics/form_events/loyalty_card_form_event_logger_unittest.cc",
     "metrics/form_interactions_ukm_logger_unittest.cc",
+    "metrics/javascript_dropdown_metrics_unittest.cc",
     "metrics/payments/bnpl_metrics_unittest.cc",
     "metrics/payments/card_info_retrieval_enrolled_metrics_unittest.cc",
     "metrics/payments/card_metadata_metrics_unittest.cc",
     "metrics/payments/cvc_storage_metrics_unittest.cc",
     "metrics/payments/iban_metrics_unittest.cc",
+    "metrics/payments/promo_code_metrics_unittest.cc",
     "metrics/payments/save_and_fill_metrics_unittest.cc",
     "metrics/payments/virtual_card_standalone_cvc_suggestion_metrics_unittest.cc",
     "metrics/payments/wallet_reminder_notice_metrics_unittest.cc",
@@ -2158,6 +2244,7 @@ source_set("unit_tests") {
     "metrics/stored_profile_metrics_unittest.cc",
     "metrics/suggestions_list_metrics_unittest.cc",
     "ml_model/autofill_ai/autofill_ai_model_cache_impl_unittest.cc",
+    "ml_model/field_classification_model_encoder_dictionary_unittest.cc",
     "ml_model/field_classification_model_encoder_unittest.cc",
     "ml_model/field_classification_model_executor_unittest.cc",
     "ml_model/field_classification_model_handler_unittest.cc",
@@ -2192,10 +2279,12 @@ source_set("unit_tests") {
     "payments/payments_requests/get_bnpl_payment_instrument_for_fetching_url_request_unittest.cc",
     "payments/payments_requests/get_bnpl_payment_instrument_for_fetching_vcn_request_unittest.cc",
     "payments/payments_requests/get_card_upload_details_request_unittest.cc",
+    "payments/payments_requests/get_data_for_agent_request_unittest.cc",
     "payments/payments_requests/get_details_for_create_bnpl_payment_instrument_request_unittest.cc",
     "payments/payments_requests/get_details_for_create_card_request_unittest.cc",
     "payments/payments_requests/get_details_for_enrollment_request_unittest.cc",
     "payments/payments_requests/get_details_for_update_bnpl_payment_instrument_request_unittest.cc",
+    "payments/payments_requests/get_details_for_update_card_request_unittest.cc",
     "payments/payments_requests/get_iban_upload_details_request_unittest.cc",
     "payments/payments_requests/get_wallet_reminder_notice_request_unittest.cc",
     "payments/payments_requests/payments_request_unittest.cc",
@@ -2203,6 +2292,7 @@ source_set("unit_tests") {
     "payments/payments_requests/unmask_card_request_unittest.cc",
     "payments/payments_requests/unmask_iban_request_unittest.cc",
     "payments/payments_requests/update_bnpl_payment_instrument_request_unittest.cc",
+    "payments/payments_requests/update_card_request_unittest.cc",
     "payments/payments_requests/update_virtual_card_enrollment_request_unittest.cc",
     "payments/payments_requests/upload_card_request_unittest.cc",
     "payments/payments_requests/upload_iban_request_unittest.cc",
@@ -2219,6 +2309,7 @@ source_set("unit_tests") {
     "strike_databases/autofill_ai/autofill_ai_save_strike_database_by_host_unittest.cc",
     "strike_databases/evp/email_verification_not_signed_in_strike_database_unittest.cc",
     "strike_databases/evp/email_verification_strike_database_unittest.cc",
+    "strike_databases/payments/cardholder_name_fix_flow_strike_database_unittest.cc",
     "strike_databases/payments/payments_churned_users_strike_database_unittest.cc",
     "strike_databases/payments/virtual_card_enrollment_strike_database_unittest.cc",
     "studies/autofill_ablation_study_unittest.cc",
@@ -2234,6 +2325,7 @@ source_set("unit_tests") {
     "suggestions/payments/merchant_promo_code_suggestion_generator_unittest.cc",
     "suggestions/suggestion_unittest.cc",
     "suggestions/suggestion_util_unittest.cc",
+    "suggestions/trusted_vault/trusted_vault_error_suggestion_generator_unittest.cc",
     "suggestions/valuables/valuable_suggestion_generator_unittest.cc",
     "ui/addresses/autofill_address_util_unittest.cc",
     "ui/autofill_external_delegate_unittest.cc",
@@ -2261,14 +2353,16 @@ source_set("unit_tests") {
     "webdata/autocomplete/autocomplete_table_unittest.cc",
     "webdata/autofill_ai/entity_sync_util_unittest.cc",
     "webdata/autofill_ai/entity_table_unittest.cc",
+    "webdata/autofill_sync_bridge_util_unittest.cc",
     "webdata/autofill_sync_metadata_table_unittest.cc",
     "webdata/payments/autofill_wallet_credential_sync_bridge_unittest.cc",
     "webdata/payments/autofill_wallet_metadata_sync_bridge_unittest.cc",
-    "webdata/payments/autofill_wallet_offer_sync_bridge_unittest.cc",
     "webdata/payments/autofill_wallet_sync_bridge_unittest.cc",
     "webdata/payments/autofill_wallet_usage_data_sync_bridge_unittest.cc",
     "webdata/payments/payments_autofill_table_unittest.cc",
     "webdata/payments/payments_sync_bridge_util_unittest.cc",
+    "webdata/personal_context/personal_context_entity_metadata_sync_bridge_unittest.cc",
+    "webdata/personal_context/personal_context_entity_metadata_sync_util_unittest.cc",
     "webdata/valuables/valuable_metadata_sync_bridge_unittest.cc",
     "webdata/valuables/valuable_sync_bridge_unittest.cc",
     "webdata/valuables/valuables_sync_util_unittest.cc",
@@ -2362,6 +2456,8 @@ source_set("unit_tests") {
     "//base/i18n:test_support",
     "//base/test:test_support",
     "//base/version_info",
+    "//build:blink_buildflags",
+    "//components/affiliations/core/browser:test_support",
     "//components/autofill/core/browser/actor:unit_tests",
     "//components/autofill/core/common:autofill_regex",
     "//components/autofill/core/common:credit_card_number_validation",
@@ -2380,6 +2476,7 @@ source_set("unit_tests") {
     "//components/optimization_guide/core",
     "//components/optimization_guide/core:test_support",
     "//components/optimization_guide/proto:optimization_guide_proto",
+    "//components/os_crypt/async/browser:test_support",
     "//components/os_crypt/browser:test_support",
     "//components/password_manager/core/browser/features:password_features",
     "//components/personal_context/core:test_support",
@@ -2439,6 +2536,10 @@ source_set("unit_tests") {
     deps += [ "//build:branding_buildflags" ]
   }
 
+  if (is_android) {
+    deps += [ "//components/autofill/android:main_autofill_jni_headers" ]
+  }
+
   if (!is_ios && !is_android) {
     deps += [ "//ui/native_theme" ]
   }
@@ -2459,7 +2560,7 @@ source_set("unit_tests") {
   }
 
   if (!is_fuchsia) {
-    deps += [ "//components/autofill/core/browser/at_memory/policy:unit_tests" ]
+    deps += [ "//components/autofill/core/browser/policy:unit_tests" ]
   }
 
   if (is_win || is_mac || is_linux || is_chromeos || is_android) {

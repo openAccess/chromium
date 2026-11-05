@@ -9,25 +9,31 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/password_manager/password_change/change_password_form_waiter.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
 #include "components/actor/public/mojom/actor_types.mojom-forward.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
+
+namespace content {
+class WebContents;
+}
+
+namespace optimization_guide {
+struct OptimizationGuideModelExecutionResult;
+namespace proto {
+class PasswordChangeSubmissionLoggingData;
+}  // namespace proto
+}  // namespace optimization_guide
 
 namespace password_manager {
 class PasswordFormManager;
 class PasswordManagerClient;
 }  // namespace password_manager
 
-namespace content {
-class WebContents;
-}
-
 class AnnotatedPageContentCapturer;
 class ButtonClickHelper;
 class ModelQualityLogsUploader;
-class PasswordChangePageStabilityWaiter;
+class OptimizationGuideKeyedService;
 
 // Helper class which searches for a change password form, performs actuation
 // when necessary. Invokes a callback with a form when it's found, or nullptr
@@ -53,13 +59,14 @@ class ChangePasswordFormFinder {
   // LINT.ThenChange(//tools/metrics/histograms/metadata/password/enums.xml:ChangePasswordFormFinderError)
 
   using FailureCallback = base::OnceCallback<void(ErrorCase)>;
+  using SuccessCallback =
+      base::OnceCallback<void(password_manager::PasswordFormManager*)>;
 
-  ChangePasswordFormFinder(
-      content::WebContents* web_contents,
-      password_manager::PasswordManagerClient* client,
-      ModelQualityLogsUploader* logs_uploader,
-      ChangePasswordFormWaiter::PasswordFormFoundCallback success_callback,
-      FailureCallback failure_callback);
+  ChangePasswordFormFinder(content::WebContents* web_contents,
+                           password_manager::PasswordManagerClient* client,
+                           ModelQualityLogsUploader* logs_uploader,
+                           SuccessCallback success_callback,
+                           FailureCallback failure_callback);
 
   ~ChangePasswordFormFinder();
 
@@ -68,17 +75,13 @@ class ChangePasswordFormFinder {
     std::move(failure_callback_).Run(ErrorCase::kFormNotFound);
   }
 
-  void TriggerPageStabilityForTesting() { OnPageStableInitially(); }
-
   ChangePasswordFormWaiter* form_waiter() { return form_waiter_.get(); }
   ButtonClickHelper* click_helper() { return click_helper_.get(); }
   AnnotatedPageContentCapturer* capturer() { return capturer_.get(); }
 #endif
 
  private:
-  void OnPageStableInitially();
-  void OnPageStableAfterClick();
-
+  void OnInitialFormWaitingResult(ChangePasswordFormWaiter::Result result);
   void OnFormNotFoundInitially();
   void OnFormFoundInitially(
       password_manager::PasswordFormManager* form_manager);
@@ -98,7 +101,7 @@ class ChangePasswordFormFinder {
   void OnButtonClicked(actor::mojom::ActionResultCode result);
 
   void OnChangePasswordFormFoundAfterClick(
-      password_manager::PasswordFormManager* form_manager);
+      ChangePasswordFormWaiter::Result result);
   void OnFormNotFound();
 
   const base::Time creation_time_;
@@ -107,12 +110,11 @@ class ChangePasswordFormFinder {
   raw_ptr<ModelQualityLogsUploader> logs_uploader_ = nullptr;
 
   FailureCallback failure_callback_;
-  ChangePasswordFormWaiter::PasswordFormFoundCallback success_callback_;
+  SuccessCallback success_callback_;
 
   std::unique_ptr<AnnotatedPageContentCapturer> capturer_;
 
   std::unique_ptr<ChangePasswordFormWaiter> form_waiter_;
-  std::unique_ptr<PasswordChangePageStabilityWaiter> page_stability_waiter_;
 
   std::unique_ptr<ButtonClickHelper> click_helper_;
 

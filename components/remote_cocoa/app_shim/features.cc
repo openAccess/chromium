@@ -21,4 +21,22 @@ BASE_FEATURE(kImmersiveFullscreenOverlayWindowDebug,
 
 BASE_FEATURE(kSuppressAppKitFrameAdjustmentsDuringMoveLoop,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, file dialogs opened from companion or auxiliary windows
+// (windows with NSWindowCollectionBehaviorFullScreenAuxiliary) are presented
+// as sheets attached to the parent window. This allows the file chooser to
+// display reliably when floating over native macOS fullscreen spaces.
+BASE_FEATURE(kMacFullScreenAuxiliaryFileDialog,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Kill switch for clearing the first responder before hiding a WebContents in
+// the NSToolbarFullScreenWindow. See https://crbug.com/573809833.
+BASE_FEATURE(kClearFirstResponderInToolbarFullScreenWindow,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, `NativeWidgetNSWindowBridge` registers all top-level
+// (non-child, non-tooltip) Views windows with `WindowOcclusionCheckerMac`,
+// rather than only tracking windows that contain a `WebContentsViewCocoa`.
+BASE_FEATURE(kTrackAllTopLevelWindowsForOcclusion,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 }  // namespace remote_cocoa::features

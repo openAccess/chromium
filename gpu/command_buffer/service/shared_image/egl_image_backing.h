@@ -35,10 +35,6 @@ class EGLImageBacking : public ClearTrackingSharedImageBacking {
   // format.
   static bool SupportsPixelUploadWithFormat(viz::SharedImageFormat format);
 
-  // Returns true if EGLImageBacking supports ReadbackToMemory for the given
-  // format.
-  static bool SupportsPixelReadbackWithFormat(viz::SharedImageFormat format);
-
   EGLImageBacking(
       const Mailbox& mailbox,
       const SharedImageInfo& si_info,
@@ -55,7 +51,7 @@ class EGLImageBacking : public ClearTrackingSharedImageBacking {
 
   // SharedImageBacking implementation.
   SharedImageBackingType GetType() const override;
-  void Update(std::unique_ptr<gfx::GpuFence> in_fence) override;
+  void Update(gfx::GpuFenceHandle in_fence) override;
   void MarkForDestruction() override;
   bool UploadFromMemory(const std::vector<SkPixmap>& pixmaps) override;
   bool ReadbackToMemory(const std::vector<SkPixmap>& pixmaps) override;

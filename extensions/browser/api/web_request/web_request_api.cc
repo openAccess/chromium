@@ -435,7 +435,8 @@ WebRequestAPI::WebRequestAPI(content::BrowserContext* context)
   for (const std::string& event_name : WebRequestEventRouter::GetEventNames()) {
     event_router->RegisterObserver(this, event_name);
   }
-  extensions::ExtensionRegistry::Get(browser_context_)->AddObserver(this);
+  extension_registry_observation_.Observe(
+      extensions::ExtensionRegistry::Get(browser_context_));
 }
 
 WebRequestAPI::~WebRequestAPI() = default;
@@ -443,7 +444,7 @@ WebRequestAPI::~WebRequestAPI() = default;
 void WebRequestAPI::Shutdown() {
   proxies_.reset();
   EventRouter::Get(browser_context_)->UnregisterObserver(this);
-  extensions::ExtensionRegistry::Get(browser_context_)->RemoveObserver(this);
+  extension_registry_observation_.Reset();
   // TODO(crbug.com/40264286): Remove this once WebRequestEventRouter
   // implements `KeyedService::Shutdown` correctly.
   WebRequestEventRouter::Get(browser_context_)
@@ -1558,6 +1559,14 @@ WebRequestInternalEventHandledFunction::Run() {
                            render_process_id, web_view_instance_id,
                            extra_info_spec, std::move(response));
         return RespondNow(Error(keys::kInvalidRedirectUrl, new_url_str));
+      }
+      if (response->new_url.SchemeIsFile() &&
+          !util::AllowFileAccess(extension_id_safe(), browser_context())) {
+        response->new_url = GURL();
+        RouteEventResponse(event_name, sub_event_name, request_id,
+                           render_process_id, web_view_instance_id,
+                           extra_info_spec, std::move(response));
+        return RespondNow(Error(keys::kFileUrlRedirectDisallowed));
       }
     }
 

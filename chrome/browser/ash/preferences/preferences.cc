@@ -49,8 +49,6 @@
 #include "chrome/browser/ash/system/input_device_settings.h"
 #include "chrome/browser/ash/system/timezone_resolver_manager.h"
 #include "chrome/browser/ash/system/timezone_util.h"
-#include "chrome/browser/download/download_prefs.h"
-#include "chrome/browser/prefs/pref_service_syncable_util.h"
 #include "chrome/browser/ui/ash/system/system_tray_client_impl.h"
 #include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/dbus/pciguard/pciguard_client.h"
@@ -167,7 +165,6 @@ void Preferences::RegisterPrefs(PrefRegistrySimple* registry) {
   registry->RegisterIntegerPref(
       ash::prefs::kSystemTimezoneAutomaticDetectionPolicy,
       enterprise_management::SystemTimezoneProto::USERS_DECIDE);
-  registry->RegisterStringPref(::prefs::kMinimumAllowedChromeVersion, "");
   registry->RegisterBooleanPref(prefs::kDeviceSystemWideTracingEnabled, true);
   registry->RegisterBooleanPref(
       prefs::kLocalStateDevicePeripheralDataAccessEnabled, false);
@@ -253,10 +250,7 @@ void Preferences::RegisterProfilePrefs(
   registry->RegisterBooleanPref(
       prefs::kTouchpadHapticFeedback, true,
       user_prefs::PrefRegistrySyncable::SYNCABLE_OS_PRIORITY_PREF);
-  registry->RegisterBooleanPref(::prefs::kLabsMediaplayerEnabled, false);
   registry->RegisterBooleanPref(::ash::prefs::kLabsAdvancedFilesystemEnabled,
-                                false);
-  registry->RegisterBooleanPref(::prefs::kAppReinstallRecommendationEnabled,
                                 false);
 
   registry->RegisterIntegerPref(
@@ -461,35 +455,15 @@ void Preferences::RegisterProfilePrefs(
 
   registry->RegisterBooleanPref(ash::prefs::kHatsDeviceIsSelected, false);
 
-  registry->RegisterInt64Pref(ash::prefs::kHatsOnboardingSurveyCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsOnboardingDeviceIsSelected,
-                                false);
-
-  registry->RegisterInt64Pref(ash::prefs::kHatsArcGamesSurveyCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsArcGamesDeviceIsSelected,
-                                false);
-
   registry->RegisterInt64Pref(ash::prefs::kHatsAudioSurveyCycleEndTs, 0);
 
   registry->RegisterBooleanPref(ash::prefs::kHatsAudioDeviceIsSelected, false);
-
-  registry->RegisterInt64Pref(ash::prefs::kHatsAudioOutputProcSurveyCycleEndTs,
-                              0);
-
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsAudioOutputProcDeviceIsSelected, false);
 
   registry->RegisterInt64Pref(ash::prefs::kHatsBluetoothAudioSurveyCycleEndTs,
                               0);
 
   registry->RegisterBooleanPref(ash::prefs::kHatsBluetoothAudioDeviceIsSelected,
                                 false);
-
-  registry->RegisterInt64Pref(ash::prefs::kHatsEntSurveyCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsEntDeviceIsSelected, false);
 
   registry->RegisterInt64Pref(ash::prefs::kHatsStabilitySurveyCycleEndTs, 0);
 
@@ -522,11 +496,6 @@ void Preferences::RegisterProfilePrefs(
       ash::prefs::kHatsGeneralCameraPrioritizedLastInteractionTimestamp,
       base::Time());
 
-  registry->RegisterInt64Pref(ash::prefs::kHatsBluetoothRevampCycleEndTs, 0);
-
-  registry->RegisterBooleanPref(ash::prefs::kHatsBluetoothRevampIsSelected,
-                                false);
-
   registry->RegisterInt64Pref(ash::prefs::kHatsBatteryLifeCycleEndTs, 0);
 
   registry->RegisterBooleanPref(ash::prefs::kHatsBatteryLifeIsSelected, false);
@@ -535,42 +504,11 @@ void Preferences::RegisterProfilePrefs(
 
   registry->RegisterBooleanPref(ash::prefs::kHatsPeripheralsIsSelected, false);
 
-  // Personalization HaTS survey prefs for avatar, screensaver, and wallpaper
-  // features.
-  registry->RegisterInt64Pref(
-      ash::prefs::kHatsPersonalizationAvatarSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsPersonalizationAvatarSurveyIsSelected, false);
-  registry->RegisterInt64Pref(
-      ash::prefs::kHatsPersonalizationScreensaverSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsPersonalizationScreensaverSurveyIsSelected, false);
-  registry->RegisterInt64Pref(
-      ash::prefs::kHatsPersonalizationWallpaperSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsPersonalizationWallpaperSurveyIsSelected, false);
-
-  // MediaApp HaTS prefs for Pdf and Photos experiences.
-  registry->RegisterInt64Pref(ash::prefs::kHatsMediaAppPdfCycleEndTs, 0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsMediaAppPdfIsSelected, false);
-  registry->RegisterInt64Pref(ash::prefs::kHatsPhotosExperienceCycleEndTs, 0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsPhotosExperienceIsSelected,
-                                false);
-
-  // Office HaTS prefs.
-  registry->RegisterInt64Pref(ash::prefs::kHatsOfficeSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsOfficeSurveyIsSelected, false);
-
   // Slow and Laggy Deep Dive HaTS prefs.
   registry->RegisterInt64Pref(
       ash::prefs::kHatsSlowAndLaggyDeepDiveSurveyCycleEndTs, 0);
   registry->RegisterBooleanPref(
       ash::prefs::kHatsSlowAndLaggyDeepDiveSurveyIsSelected, false);
-
-  registry->RegisterBooleanPref(::prefs::kPinUnlockFeatureNotificationShown,
-                                false);
-  registry->RegisterBooleanPref(
-      ::prefs::kFingerprintUnlockFeatureNotificationShown, false);
 
   // We don't sync EOL related prefs because they are device specific.
   registry->RegisterBooleanPref(ash::prefs::kEolNotificationDismissed, false);
@@ -583,7 +521,6 @@ void Preferences::RegisterProfilePrefs(
                                 false);
 
   registry->RegisterBooleanPref(::prefs::kCastReceiverEnabled, false);
-  registry->RegisterBooleanPref(::prefs::kShowArcSettingsOnSessionStart, false);
   registry->RegisterBooleanPref(::ash::prefs::kShowSyncSettingsOnSessionStart,
                                 false);
 
@@ -664,25 +601,6 @@ void Preferences::RegisterProfilePrefs(
   registry->RegisterBooleanPref(prefs::kShowGeminiIntroScreenEnabled, true);
 
   registry->RegisterBooleanPref(prefs::kShowTouchpadScrollScreenEnabled, true);
-
-  // Settings HaTS survey prefs for Settings and Settings Search features.
-  registry->RegisterInt64Pref(ash::prefs::kHatsOsSettingsSearchSurveyCycleEndTs,
-                              0);
-  registry->RegisterBooleanPref(
-      ash::prefs::kHatsOsSettingsSearchSurveyIsSelected, false);
-
-  // Borealis HaTS survey prefs for game satisfaction.
-  registry->RegisterInt64Pref(ash::prefs::kHatsBorealisGamesSurveyCycleEndTs,
-                              0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsBorealisGamesSurveyIsSelected,
-                                false);
-  registry->RegisterTimePref(
-      ash::prefs::kHatsBorealisGamesLastInteractionTimestamp, base::Time());
-
-  // Launcher HaTS survey prefs.
-  registry->RegisterInt64Pref(ash::prefs::kHatsLauncherAppsSurveyCycleEndTs, 0);
-  registry->RegisterBooleanPref(ash::prefs::kHatsLauncherAppsSurveyIsSelected,
-                                false);
 
   registry->RegisterBooleanPref(prefs::kShowDisplaySizeScreenEnabled, true);
 
@@ -815,11 +733,12 @@ void Preferences::InitUserPrefs(sync_preferences::PrefServiceSyncable* prefs) {
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
-void Preferences::Init(Profile* profile, const user_manager::User* user) {
-  DCHECK(profile);
-  DCHECK(user);
-  sync_preferences::PrefServiceSyncable* prefs =
-      PrefServiceSyncableFromProfile(profile);
+void Preferences::Init(const user_manager::User* user,
+                       Profile* profile,
+                       sync_preferences::PrefServiceSyncable* prefs) {
+  CHECK(user, base::NotFatalUntil::M160);
+  CHECK(profile, base::NotFatalUntil::M160);
+  CHECK(prefs, base::NotFatalUntil::M160);
   // This causes OnIsSyncingChanged to be called when the value of
   // PrefService::IsSyncing() changes.
   prefs->AddObserver(this);
@@ -833,7 +752,7 @@ void Preferences::Init(Profile* profile, const user_manager::User* user) {
   user_manager::UserManager::Get()->AddSessionStateObserver(this);
 
   UserSessionManager* session_manager = UserSessionManager::GetInstance();
-  DCHECK(session_manager);
+  CHECK(session_manager, base::NotFatalUntil::M160);
   ime_state_ = session_manager->GetDefaultIMEState(profile);
 
   if (user_is_primary_) {
@@ -946,7 +865,8 @@ void Preferences::ReportTimePrefApplication(
 
 void Preferences::ApplyPreferences(ApplyReason reason,
                                    const std::string& pref_name) {
-  DCHECK(reason != REASON_PREF_CHANGED || !pref_name.empty());
+  CHECK(reason != REASON_PREF_CHANGED || !pref_name.empty(),
+        base::NotFatalUntil::M160);
   const bool user_is_owner =
       user_manager::UserManager::Get()->GetOwnerAccountId() ==
       user_->GetAccountId();
@@ -1241,7 +1161,7 @@ void Preferences::ApplyPreferences(ApplyReason reason,
     }
     if (ImeController::Get()) {  // Can be null in tests.
       ImeController::Get()->SetImesManagedByPolicy(
-          success && allowed_input_methods_force_enabled);
+          allowed_by_policy && success && allowed_input_methods_force_enabled);
     } else {
       CHECK_IS_TEST();
     }
@@ -1472,8 +1392,8 @@ void Preferences::UpdateAutoRepeatRate() {
       .repeat_interval =
           base::Milliseconds(xkb_auto_repeat_interval_pref_.GetValue()),
   };
-  DCHECK(rate.initial_delay.is_positive());
-  DCHECK(rate.repeat_interval.is_positive());
+  CHECK(rate.initial_delay.is_positive(), base::NotFatalUntil::M160);
+  CHECK(rate.repeat_interval.is_positive(), base::NotFatalUntil::M160);
   input_method::InputMethodManager::Get()->GetImeKeyboard()->SetAutoRepeatRate(
       rate);
 

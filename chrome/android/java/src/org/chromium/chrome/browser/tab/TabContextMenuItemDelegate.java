@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.tab;
 
+import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
@@ -30,37 +31,28 @@ import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.BookmarkUtils;
 import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeManager;
 import org.chromium.chrome.browser.download.DownloadUtils;
 import org.chromium.chrome.browser.ephemeraltab.EphemeralTabCoordinator;
-import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
-import org.chromium.chrome.browser.offlinepages.OfflinePageBridge;
-import org.chromium.chrome.browser.offlinepages.RequestCoordinatorBridge;
-import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManagerFactory;
-import org.chromium.chrome.browser.printing.TabPrinter;
+import org.chromium.chrome.browser.printing.PrintingDelegate;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.reader_mode.ReaderModeManager;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuItemDelegate;
 import org.chromium.components.embedder_support.util.UrlUtilities;
-import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.AdditionalNavigationParams;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.common.Referrer;
-import org.chromium.printing.PrintManagerDelegateImpl;
-import org.chromium.printing.PrintingController;
-import org.chromium.printing.PrintingControllerImpl;
 import org.chromium.ui.base.Clipboard;
 import org.chromium.ui.base.PageTransition;
-import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
 
 import java.util.function.Supplier;
@@ -77,7 +69,8 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
     private final Supplier<@Nullable EphemeralTabCoordinator> mEphemeralTabCoordinatorSupplier;
     private final Runnable mContextMenuCopyLinkObserver;
     private final Supplier<SnackbarManager> mSnackbarManagerSupplier;
-    private final Supplier<BottomSheetController> mBottomSheetControllerSupplier;
+    private final Supplier<@Nullable BottomSheetController> mBottomSheetControllerSupplier;
+    private final @Nullable PrintingDelegate mPrintingDelegate;
 
     /** Builds a {@link TabContextMenuItemDelegate} instance. */
     public TabContextMenuItemDelegate(
@@ -88,7 +81,8 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
             Supplier<@Nullable EphemeralTabCoordinator> ephemeralTabCoordinatorSupplier,
             Runnable contextMenuCopyLinkObserver,
             Supplier<SnackbarManager> snackbarManagerSupplier,
-            Supplier<BottomSheetController> bottomSheetControllerSupplier) {
+            Supplier<@Nullable BottomSheetController> bottomSheetControllerSupplier,
+            @Nullable PrintingDelegate printingDelegate) {
         mActivity = activity;
         mActivityType = activityType;
         mTab = (TabImpl) tab;
@@ -97,6 +91,7 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
         mContextMenuCopyLinkObserver = contextMenuCopyLinkObserver;
         mSnackbarManagerSupplier = snackbarManagerSupplier;
         mBottomSheetControllerSupplier = bottomSheetControllerSupplier;
+        mPrintingDelegate = printingDelegate;
     }
 
     @Override
@@ -153,11 +148,11 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
 
     @Override
     public boolean isPrintSupported() {
-        if (mTab == null) return false;
+        if (mTab == null || mPrintingDelegate == null) return false;
         if (ContextualTasksUtils.isContextualTasksUrl(mTab.getUrl())) {
             return false;
         }
-        return UserPrefs.get(mTab.getProfile()).getBoolean(Pref.PRINTING_ENABLED);
+        return mPrintingDelegate.isPrintingEnabled(UserPrefs.get(mTab.getProfile()));
     }
 
     @Override
@@ -179,12 +174,8 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
     @Override
     public void startPrint() {
         if (mActivity.isFinishing() || mActivity.isDestroyed()) return;
-        WindowAndroid windowAndroid = mTab.getWindowAndroid();
-        if (windowAndroid != null) {
-            PrintingController printingController =
-                    PrintingControllerImpl.getInstance(windowAndroid);
-            printingController.startPrint(
-                    new TabPrinter(mTab), new PrintManagerDelegateImpl(mActivity));
+        if (mPrintingDelegate != null) {
+            mPrintingDelegate.print(mTab);
         }
     }
 
@@ -309,13 +300,27 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
      * @param referrer The referrer to use when opening the URL.
      * @param isIncognito Whether the other window should be incognito.
      * @param preferNew Whether the URL should be opened in a new window.
+     * @param additionalNavigationParams Additional information that needs to be passed to the
+     *     navigation request.
      */
     @Override
     public void openInOtherWindow(
-            GURL url, @Nullable Referrer referrer, boolean isIncognito, boolean preferNew) {
+            GURL url,
+            @Nullable Referrer referrer,
+            boolean isIncognito,
+            boolean preferNew,
+            @Nullable AdditionalNavigationParams additionalNavigationParams) {
         LoadUrlParams loadUrlParams = new LoadUrlParams(url.getSpec());
+        // Only attach referrer and initiator navigation parameters if the target window is not
+        // incognito, to prevent leaking state across the regular-to-incognito privacy boundary.
+        // When opening in incognito, omitting AdditionalNavigationParams causes the native layer to
+        // treat this as a direct browser-initiated navigation without an initiator frame token,
+        // avoiding stale token lookups while preserving privacy.
         if (!isIncognito) {
             loadUrlParams.setReferrer(referrer);
+            loadUrlParams.setAdditionalNavigationParams(additionalNavigationParams);
+        } else if (additionalNavigationParams != null) {
+            additionalNavigationParams.destroy();
         }
         MultiInstanceOrchestratorFactory.getInstance()
                 .openUrlInOtherWindow(
@@ -348,7 +353,7 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
      * the current page.
      *
      * @param url The URL to open.
-     * @param referrer The attribution impression to associate with the navigation.
+     * @param referrer The referrer to use when opening the URL.
      * @param navigateToTab Whether or not to navigate to the new page.
      * @param additionalNavigationParams Additional information that needs to be passed to the
      *     navigation request.
@@ -377,13 +382,20 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
      * Called when {@code url} should be opened in a new page in the same group as the current page.
      *
      * @param url The URL to open.
+     * @param referrer The referrer to use when opening the URL.
+     * @param additionalNavigationParams Additional information that needs to be passed to the
+     *     navigation request.
      */
     @Override
-    public void onOpenInNewTabInGroup(GURL url, @Nullable Referrer referrer) {
+    public void onOpenInNewTabInGroup(
+            GURL url,
+            @Nullable Referrer referrer,
+            @Nullable AdditionalNavigationParams additionalNavigationParams) {
         RecordUserAction.record("MobileNewTabOpened");
         RecordUserAction.record("LinkOpenedInNewTab");
         LoadUrlParams loadUrlParams = new LoadUrlParams(url.getSpec());
         loadUrlParams.setReferrer(referrer);
+        loadUrlParams.setAdditionalNavigationParams(additionalNavigationParams);
         mTabModelSelector.openNewTab(
                 loadUrlParams,
                 TabLaunchType.FROM_LONGPRESS_BACKGROUND_IN_GROUP,
@@ -415,12 +427,19 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
      * Called when the {@code url} is of an image and should be opened in the same page.
      *
      * @param url The image URL to open.
+     * @param referrer The referrer to use when opening the URL.
+     * @param additionalNavigationParams Additional information that needs to be passed to the
+     *     navigation request.
      */
     @Override
-    public void onOpenImageUrl(GURL url, @Nullable Referrer referrer) {
+    public void onOpenImageUrl(
+            GURL url,
+            @Nullable Referrer referrer,
+            @Nullable AdditionalNavigationParams additionalNavigationParams) {
         LoadUrlParams loadUrlParams = new LoadUrlParams(url.getSpec());
         loadUrlParams.setTransitionType(PageTransition.LINK);
         loadUrlParams.setReferrer(referrer);
+        loadUrlParams.setAdditionalNavigationParams(additionalNavigationParams);
         mTab.loadUrl(loadUrlParams);
     }
 
@@ -428,11 +447,18 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
      * Called when the {@code url} is of an image and should be opened in a new page.
      *
      * @param url The image URL to open.
+     * @param referrer The referrer to use when opening the URL.
+     * @param additionalNavigationParams Additional information that needs to be passed to the
+     *     navigation request.
      */
     @Override
-    public void onOpenImageInNewTab(GURL url, @Nullable Referrer referrer) {
+    public void onOpenImageInNewTab(
+            GURL url,
+            @Nullable Referrer referrer,
+            @Nullable AdditionalNavigationParams additionalNavigationParams) {
         LoadUrlParams loadUrlParams = new LoadUrlParams(url.getSpec());
         loadUrlParams.setReferrer(referrer);
+        loadUrlParams.setAdditionalNavigationParams(additionalNavigationParams);
         mTabModelSelector.openNewTab(
                 loadUrlParams, TabLaunchType.FROM_LONGPRESS_BACKGROUND, mTab, isIncognito());
     }
@@ -442,11 +468,19 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
      *
      * @param url The URL to open.
      * @param title The title text to show on top control.
+     * @param additionalNavigationParams Additional information that needs to be passed to the
+     *     navigation request.
      */
     @Override
-    public void onOpenInEphemeralTab(GURL url, String title) {
+    public void onOpenInEphemeralTab(
+            GURL url,
+            String title,
+            @Nullable AdditionalNavigationParams additionalNavigationParams) {
         EphemeralTabCoordinator ephemeralTabCoordinator = mEphemeralTabCoordinatorSupplier.get();
         if (ephemeralTabCoordinator == null) {
+            if (additionalNavigationParams != null) {
+                additionalNavigationParams.destroy();
+            }
             return;
         }
         var initiatorOrigin = getWebContents().getMainFrame().getLastCommittedOrigin();
@@ -459,6 +493,7 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
                         || mActivityType == ActivityType.CUSTOM_TAB,
                 /* shouldHaveContextMenu= */ true,
                 initiatorOrigin,
+                additionalNavigationParams,
                 CallbackUtils.emptyRunnable());
     }
 
@@ -485,18 +520,9 @@ public class TabContextMenuItemDelegate implements ContextMenuItemDelegate {
                             url,
                             mSnackbarManagerSupplier.get(),
                             mTab.getProfile(),
-                            mBottomSheetControllerSupplier.get(),
+                            assertNonNull(mBottomSheetControllerSupplier.get()),
                             new BookmarkManagerOpenerImpl(),
                             PriceDropNotificationManagerFactory.create(mTab.getProfile()));
-                    TrackerFactory.getTrackerForProfile(profile)
-                            .notifyEvent(EventConstants.READ_LATER_CONTEXT_MENU_TAPPED);
-
-                    // Add to offline pages.
-                    assumeNonNull(RequestCoordinatorBridge.getForProfile(profile))
-                            .savePageLater(
-                                    url.getSpec(),
-                                    OfflinePageBridge.BOOKMARK_NAMESPACE,
-                                    /* userRequested= */ true);
                 });
     }
 

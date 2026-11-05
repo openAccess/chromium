@@ -41,9 +41,6 @@ class APP_LIST_MODEL_EXPORT SearchBoxModel {
   SearchBoxModel& operator=(const SearchBoxModel&) = delete;
   ~SearchBoxModel();
 
-  // TODO: crbug.com/388361414 - Delete.
-  bool show_assistant_button() const { return false; }
-
   // Show gemini button with display name and icon specified in
   // `search_box_icon_button`. Passing `std::nullopt` hides the button.
   void SetGeminiButtonVisibility(
@@ -57,9 +54,6 @@ class APP_LIST_MODEL_EXPORT SearchBoxModel {
     return sunfish_button_visibility_;
   }
 
-  void SetWouldTriggerIph(bool would_trigger_iph);
-  bool would_trigger_iph() const { return would_trigger_iph_; }
-
   void SetSearchEngineIsGoogle(bool is_google);
   bool search_engine_is_google() const { return search_engine_is_google_; }
 
@@ -71,11 +65,6 @@ class APP_LIST_MODEL_EXPORT SearchBoxModel {
   std::optional<SearchBoxIconButton> gemini_search_box_icon_button_;
   SunfishButtonVisibility sunfish_button_visibility_ =
       SunfishButtonVisibility::kHidden;
-
-  // `would_trigger_iph_` indicates whether we should START showing an IPH or
-  // not. This can be set to false while an IPH is being shown and the IPH
-  // should be kept showing.
-  bool would_trigger_iph_ = false;
 
   base::ObserverList<SearchBoxModelObserver> observers_;
 };

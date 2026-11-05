@@ -10,6 +10,7 @@ import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.UnownedUserDataKey;
+import org.chromium.base.UserData;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.embedder_support.util.UrlUtilities;
@@ -21,11 +22,10 @@ import org.chromium.url.GURL;
 
 /** Provides a trusted CDN publisher URL for the current web contents in a Tab. */
 @NullMarked
-public class TrustedCdn extends TabWebContentsUserData {
+public class TrustedCdn implements UserData {
     @VisibleForTesting public static final Class<TrustedCdn> USER_DATA_KEY = TrustedCdn.class;
 
     private final Tab mTab;
-    private final long mNativeTrustedCdn;
 
     /**
      * UnownedUserData shared across all tabs to get the publisher url visibility. This hangs off of
@@ -114,24 +114,7 @@ public class TrustedCdn extends TabWebContentsUserData {
     }
 
     private TrustedCdn(Tab tab) {
-        super(tab);
         mTab = tab;
-        mNativeTrustedCdn = TrustedCdnJni.get().init();
-    }
-
-    @Override
-    public void initWebContents(WebContents webContents) {
-        TrustedCdnJni.get().setWebContents(mNativeTrustedCdn, webContents);
-    }
-
-    @Override
-    public void cleanupWebContents(@Nullable WebContents webContents) {
-        TrustedCdnJni.get().resetWebContents(mNativeTrustedCdn);
-    }
-
-    @Override
-    public void destroyInternal() {
-        TrustedCdnJni.get().onDestroyed(mNativeTrustedCdn);
     }
 
     @VisibleForTesting
@@ -146,24 +129,15 @@ public class TrustedCdn extends TabWebContentsUserData {
         if (publisherUrlVisibility == null || !publisherUrlVisibility.canShowPublisherUrl(mTab)) {
             return null;
         }
-        int level = SecurityStateModel.getSecurityLevelForWebContents(mTab.getWebContents());
+        int level = SecurityStateModel.getSecurityLevelForWebContents(webContents);
         if (level != ConnectionSecurityLevel.SECURE) return null;
-        GURL publisherUrl = TrustedCdnJni.get().getPublisherUrl(mNativeTrustedCdn);
+        GURL publisherUrl = TrustedCdnJni.get().getPublisherUrl(webContents);
         return publisherUrl.isValid() ? publisherUrl : null;
     }
 
     @NativeMethods
     public interface Natives {
-        long init();
-
-        void onDestroyed(long nativeTrustedCdn);
-
-        void setWebContents(
-                long nativeTrustedCdn, @JniType("content::WebContents*") WebContents webContents);
-
-        void resetWebContents(long nativeTrustedCdn);
-
         @JniType("GURL")
-        GURL getPublisherUrl(long nativeTrustedCdn);
+        GURL getPublisherUrl(@JniType("content::WebContents*") @Nullable WebContents webContents);
     }
 }

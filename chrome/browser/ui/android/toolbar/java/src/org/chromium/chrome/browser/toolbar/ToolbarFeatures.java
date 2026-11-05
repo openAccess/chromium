@@ -19,20 +19,25 @@ public final class ToolbarFeatures {
     private ToolbarFeatures() {}
 
     /**
-     * Returns whether to record metrics from suppression experiment. This allows an arm of
-     * suppression to run without the overhead from reporting any extra metrics in Java. Using a
-     * feature instead of a param to utilize Java side caching.
-     */
-    public static boolean shouldRecordSuppressionMetrics() {
-        return ChromeFeatureList.sRecordSuppressionMetrics.isEnabled();
-    }
-
-    /**
      * Returns whether the history back and forward navigation menu uses ListMenu instead of legacy
      * OS popups.
      */
     public static boolean isNavigationListMenuEnabled() {
         return ChromeFeatureList.isEnabled(ChromeFeatureList.NAVIGATION_LIST_MENU);
+    }
+
+    /** Returns whether the AI overlay dialog is enabled. */
+    public static boolean isAiOverlayDialogEnabled() {
+        return ChromeFeatureList.sAiOverlayDialog.isEnabled();
+    }
+
+    /**
+     * Returns whether the tablet toolbar, used on large screens (tablets and desktop Android), can
+     * host the TTC button: whether the TTC feature is enabled. The button only shows once the TTC
+     * session UI asks for it, and when there's room for it.
+     */
+    public static boolean isTtcToolbarButtonSupported() {
+        return ChromeFeatureList.sTtc.isEnabled();
     }
 
     /**

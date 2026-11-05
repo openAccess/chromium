@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import type {Module, ModuleWrapperElement, NamedWidth} from 'chrome://new-tab-page/lazy_load.js';
-import {ModuleDescriptor, ModuleRegistry, ModulesElement, SUPPORTED_MODULE_WIDTHS} from 'chrome://new-tab-page/lazy_load.js';
+import type {Module, ModulesElement, ModuleWrapperElement, NamedWidth} from 'chrome://new-tab-page/lazy_load.js';
+import {ModuleDescriptor, ModuleRegistry, SUPPORTED_MODULE_WIDTHS} from 'chrome://new-tab-page/lazy_load.js';
 import type {PageRemote} from 'chrome://new-tab-page/new_tab_page.js';
-import {NewTabPageProxy, PageCallbackRouter, PageHandlerRemote} from 'chrome://new-tab-page/new_tab_page.js';
+import {newTabPageProxyFactory, PageHandlerRemote, WindowProxy} from 'chrome://new-tab-page/new_tab_page.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {FakeMediaQueryList} from 'chrome://webui-test/fake_media_query_list.js';
 import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
 import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
 import type {TestMock} from 'chrome://webui-test/test_mock.js';
@@ -29,18 +30,18 @@ suite('NewTabPageModulesModulesV2Test', () => {
   setup(() => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     loadTimeData.overrideValues({
+      enableThreadsRail: false,
       modulesMaxColumnCount: MAX_COLUMN_COUNT,
       multipleLoadedModulesMaxModuleInstanceCount: NO_MAX_INSTANCE_COUNT,
     });
-    handler = installMock(
-        PageHandlerRemote,
-        (mock: PageHandlerRemote) =>
-            NewTabPageProxy.setInstance(mock, new PageCallbackRouter()));
+    handler = installMock(PageHandlerRemote, (mock: PageHandlerRemote) => {
+      const {instance, remote} = newTabPageProxyFactory.createForTest(mock);
+      newTabPageProxyFactory.setInstance(instance);
+      callbackRouterRemote = remote;
+    });
 
     metrics = fakeMetricsPrivate();
     moduleRegistry = installMock(ModuleRegistry);
-    callbackRouterRemote = NewTabPageProxy.getInstance()
-                               .callbackRouter.$.bindNewPipeAndPassRemote();
     handler.setResultFor('getModulesEligibleForRemoval', {moduleIds: []});
   });
 
@@ -60,7 +61,7 @@ suite('NewTabPageModulesModulesV2Test', () => {
     });
 
     moduleRegistry.setResultFor('initializeModulesHavingIds', modulesPromise);
-    const element = new ModulesElement();
+    const element = document.createElement('ntp-modules');
     document.body.style.width = `${width}px`;
     document.body.appendChild(element);
     await modulesPromise;
@@ -412,17 +413,12 @@ suite('NewTabPageModulesModulesV2Test', () => {
               assertFalse(modulesElement.$.undoToast.open);
 
               let restoreCalled = false;
-              moduleWrappers[0]!.dispatchEvent(
-                  new CustomEvent('dismiss-module-instance', {
-                    bubbles: true,
-                    composed: true,
-                    detail: {
-                      message: 'Foo',
-                      restoreCallback: () => {
-                        restoreCalled = true;
-                      },
-                    },
-                  }));
+              moduleWrappers[0]!.fire('dismiss-module-instance', {
+                message: 'Foo',
+                restoreCallback: () => {
+                  restoreCalled = true;
+                },
+              });
               await microtasksFinished();
 
               assertEquals(
@@ -675,17 +671,12 @@ suite('NewTabPageModulesModulesV2Test', () => {
           assertContainerLayout(moduleWrappers, layoutChangeScenario.before);
 
           let restoreCalled = false;
-          moduleWrappers[0]!.dispatchEvent(
-              new CustomEvent('dismiss-module-instance', {
-                bubbles: true,
-                composed: true,
-                detail: {
-                  message: 'Foo',
-                  restoreCallback: () => {
-                    restoreCalled = true;
-                  },
-                },
-              }));
+          moduleWrappers[0]!.fire('dismiss-module-instance', {
+            message: 'Foo',
+            restoreCallback: () => {
+              restoreCalled = true;
+            },
+          });
           assertFalse(restoreCalled);
           await microtasksFinished();
 
@@ -695,6 +686,68 @@ suite('NewTabPageModulesModulesV2Test', () => {
                       'ntp-module-wrapper')) as ModuleWrapperElement[],
               layoutChangeScenario.after);
         });
+  });
+
+  suite('ContainerWidth', () => {
+    // 360px (medium) * 1 + 48px (margin) * 2
+    const NARROW_LAYOUT: Scenario = {
+      width: 456,
+      count: 3,
+      rows: [[MEDIUM_WIDTH], [MEDIUM_WIDTH], [MEDIUM_WIDTH]],
+    };
+    // 312px (narrow) * 3 + 8px (gap) * 2 + 48px (margin) * 2
+    const WIDE_LAYOUT: Scenario = {
+      width: 1048,
+      count: 3,
+      rows: [[NARROW_WIDTH, NARROW_WIDTH, NARROW_WIDTH]],
+    };
+
+    let modulesElement: ModulesElement;
+    let windowProxy: TestMock<WindowProxy>;
+
+    function assertLayout(scenario: Scenario) {
+      assertContainerLayout(
+          Array.from(modulesElement.shadowRoot.querySelectorAll<HTMLElement>(
+              'ntp-module-wrapper')) as ModuleWrapperElement[],
+          scenario);
+    }
+
+    setup(async () => {
+      loadTimeData.overrideValues({enableThreadsRail: true});
+      windowProxy = installMock(WindowProxy);
+      windowProxy.setResultMapperFor(
+          'matchMedia', (query: string) => new FakeMediaQueryList(query));
+
+      const fooDescriptor = new ModuleDescriptor('foo', initNullModule);
+      handler.setResultFor('getModulesIdNames', {
+        data: [{id: fooDescriptor.id, name: fooDescriptor.id}],
+      });
+
+      modulesElement = await createModulesElement(
+          [{
+            descriptor: fooDescriptor,
+            elements: Array(3).fill(0).map(_ => createElement()),
+          }],
+          true, SAMPLE_SCREEN_WIDTH);
+    });
+
+    teardown(() => {
+      WindowProxy.setInstance(new WindowProxy());
+    });
+
+    test('layout follows the container width', async () => {
+      modulesElement.containerWidth = NARROW_LAYOUT.width;
+      await microtasksFinished();
+      assertLayout(NARROW_LAYOUT);
+
+      modulesElement.containerWidth = WIDE_LAYOUT.width;
+      await microtasksFinished();
+      assertLayout(WIDE_LAYOUT);
+    });
+
+    test('does not use the window width', () => {
+      assertEquals(0, windowProxy.getCallCount('matchMedia'));
+    });
   });
 
   suite('ModuleAutoRemoval', () => {

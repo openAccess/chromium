@@ -6,7 +6,6 @@
 #define COMPONENTS_HISTORY_CORE_BROWSER_HISTORY_DATABASE_H_
 
 #include <memory>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -15,6 +14,8 @@
 #include "build/build_config.h"
 #include "components/history/core/browser/download_database.h"
 #include "components/history/core/browser/history_types.h"
+#include "components/history/core/browser/journeys/journeys_database.h"
+#include "components/history/core/browser/journeys/journeys_sync_metadata_database.h"
 #include "components/history/core/browser/sync/history_sync_metadata_database.h"
 #include "components/history/core/browser/url_database.h"
 #include "components/history/core/browser/visit_annotations_database.h"
@@ -25,6 +26,7 @@
 #include "sql/init_status.h"
 #include "sql/meta_table.h"
 #include "sql/statement.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 
 namespace base {
 class FilePath;
@@ -50,7 +52,8 @@ class HistoryDatabase : public DownloadDatabase,
                         public VisitDatabase,
                         public VisitAnnotationsDatabase,
                         public VisitedLinkDatabase,
-                        public VisitSegmentDatabase {
+                        public VisitSegmentDatabase,
+                        public journeys::JourneysDatabase {
  public:
   // Reasons for initialization to fail. These are logged to UMA. It corresponds
   // to the HistoryInitStep enum in enums.xml.
@@ -86,8 +89,7 @@ class HistoryDatabase : public DownloadDatabase,
   void reset_error_callback() { db_.reset_error_callback(); }
 
   // Must call this function to complete initialization. Will return
-  // sql::INIT_OK on success. Otherwise, no other function should be called. You
-  // may want to call BeginExclusiveMode after this when you are ready.
+  // sql::INIT_OK on success. Otherwise, no other function should be called.
   sql::InitStatus Init(const base::FilePath& history_name);
 
   // Computes and records various metrics for the database. Should only be
@@ -110,13 +112,6 @@ class HistoryDatabase : public DownloadDatabase,
   int CountUniqueDomainsVisited(base::Time begin_time,
                                 base::Time end_time,
                                 VisitQuery404sPolicy policy_for_404_visits);
-
-  // Call to set the mode on the database to exclusive. The default locking mode
-  // is "normal" but we want to run in exclusive mode for slightly better
-  // performance since we know nobody else is using the database. This is
-  // separate from Init() since the in-memory database attaches to slurp the
-  // data out, and this can't happen in exclusive mode.
-  void BeginExclusiveMode();
 
   // Returns the current version that we will generate history databases with.
   static int GetCurrentVersion();
@@ -240,7 +235,7 @@ class HistoryDatabase : public DownloadDatabase,
   // visit_time descending. Used to batch-fetch recent visits for multiple URLs
   // in a single query during startup rebuild, instead of issuing N separate
   // GetMostRecentVisitsForURL queries.
-  using RecentVisitsMap = std::unordered_map<
+  using RecentVisitsMap = absl::flat_hash_map<
       URLID,
       std::vector<std::pair<base::Time, ui::PageTransition>>>;
 
@@ -256,13 +251,17 @@ class HistoryDatabase : public DownloadDatabase,
   // Returns the sub-database used for storing Sync metadata for History.
   HistorySyncMetadataDatabase* GetHistoryMetadataDB();
 
+  // Returns the sub-database used for storing Sync metadata for Journeys.
+  journeys::JourneysSyncMetadataDatabase* GetJourneysMetadataDB();
+
   sql::Database& GetDBForTesting();
 
  private:
   friend class ::InMemoryURLIndexTest;
 
-  // Overridden from URLDatabase, DownloadDatabase, VisitDatabase, and
-  // VisitSegmentDatabase.
+  // Overridden from URLDatabase, DownloadDatabase, VisitDatabase,
+  // VisitAnnotationsDatabase, VisitedLinkDatabase, VisitSegmentDatabase, and
+  // JourneysDatabase.
   sql::Database& GetDB() override;
 
   // Migration -----------------------------------------------------------------
@@ -294,7 +293,8 @@ class HistoryDatabase : public DownloadDatabase,
   bool DropAndroidUrlsTable();
 #endif
 
-  // ---------------------------------------------------------------------------
+  // Reports metrics related to clusters.
+  void ReportClusterDatabaseMetrics();
 
   sql::Database db_;
   sql::MetaTable meta_table_;
@@ -302,8 +302,9 @@ class HistoryDatabase : public DownloadDatabase,
   // Most of the sub-DBs (URLDatabase etc.) are integrated into HistoryDatabase
   // via inheritance. However, that can lead to "diamond inheritance" issues
   // when multiple of these base classes define the same methods. Therefore the
-  // Sync metadata DB is integrated via composition instead.
+  // Sync metadata DBs are integrated via composition instead.
   HistorySyncMetadataDatabase history_metadata_db_;
+  journeys::JourneysSyncMetadataDatabase journeys_metadata_db_;
 
   base::Time cached_early_expiration_threshold_;
 };

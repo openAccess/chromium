@@ -6,6 +6,7 @@
 #define COMPONENTS_SAFE_BROWSING_CORE_BROWSER_CLIENT_SIDE_PHISHING_MODEL_H_
 
 #include <memory>
+#include <vector>
 
 #include "base/callback_list.h"
 #include "base/containers/span.h"
@@ -21,7 +22,6 @@
 #include "components/safe_browsing/core/browser/csd_model_type.h"
 #include "components/safe_browsing/core/common/fbs/client_model_generated.h"
 #include "components/safe_browsing/core/common/proto/client_model.pb.h"
-#include "third_party/tflite_support/src/tensorflow_lite_support/cc/task/vision/proto/embeddings.pb.h"
 
 namespace optimization_guide {
 class OptimizationGuideModelProvider;
@@ -31,9 +31,14 @@ namespace safe_browsing {
 
 // Holds an embedding we are targeting.
 struct TargetEmbedding {
-  TargetEmbedding(tflite::task::vision::FeatureVector embedding,
-                  float threshold);
-  tflite::task::vision::FeatureVector embedding;
+  TargetEmbedding(std::vector<float> embedding, float threshold);
+  TargetEmbedding(const TargetEmbedding&);
+  TargetEmbedding& operator=(const TargetEmbedding&);
+  TargetEmbedding(TargetEmbedding&&);
+  TargetEmbedding& operator=(TargetEmbedding&&);
+  ~TargetEmbedding();
+
+  std::vector<float> embedding;
   float threshold;
 };
 
@@ -110,10 +115,10 @@ class ClientSidePhishingModel
   // failure).
   void SetModelDoneCallbackForTesting(base::OnceClosure callback);
 
-  const std::vector<TfLiteModelMetadata::Threshold>&
+  base::span<const TfLiteModelMetadata::Threshold>
   GetVisualTfLiteModelThresholds() const;
 
-  const std::vector<TargetEmbedding>& GetTargetImageEmbeddings() const;
+  base::span<const TargetEmbedding> GetTargetImageEmbeddings() const;
 
   void SetTargetImageEmbeddingsForTesting(
       std::vector<TargetEmbedding> target_embeddings);
@@ -129,6 +134,12 @@ class ClientSidePhishingModel
   void OnImageEmbeddingModelFileAndEmbeddingListLoaded(
       std::optional<optimization_guide::proto::Any> model_metadata,
       std::pair<base::File, std::optional<EmbeddingList>> model_and_list);
+
+  // Callback when the file overriding the model has been read in
+  // client_side_phishing_model_unittest
+  void OnGetOverriddenModelData(
+      CSDModelType model_type,
+      std::pair<std::string, base::File> model_and_tflite);
 
   void SetModelAndVisualTfLiteForTesting(
       const base::FilePath& model_file_path,
@@ -152,11 +163,10 @@ class ClientSidePhishingModel
 
   void NotifyCallbacksOnUI();
 
-  // Callback when the file overriding the model has been read in
-  // client_side_phishing_model_unittest
-  void OnGetOverridenModelData(
-      CSDModelType model_type,
-      std::pair<std::string, base::File> model_and_tflite);
+  // Assigns `file` to `visual_tflite_model_` after posting any existing open
+  // file handle to `background_task_runner_` to be closed, avoiding blocking
+  // I/O on the UI thread.
+  void ReplaceVisualTfLiteModel(base::File file);
 
   // The list of callbacks to notify when a new model is ready. Guarded by
   // sequence_checker_. Will always be notified on the UI thread.

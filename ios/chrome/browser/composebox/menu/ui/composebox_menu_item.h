@@ -9,6 +9,8 @@
 
 #import "ios/chrome/browser/composebox/menu/ui/composebox_menu_item_type.h"
 
+@class ComposeboxModelItem;
+
 // Represents a menu item in the Composebox menu.
 @interface ComposeboxMenuItem : NSObject <NSCopying>
 
@@ -24,19 +26,20 @@
 @property(nonatomic, strong, readonly) UIImage* favicon;
 // The composebox menu item subtitle.
 @property(nonatomic, copy, readonly) NSString* subtitle;
-// The composebox menu item count.
-@property(nonatomic, assign, readonly) NSUInteger count;
+// The composebox menu item favicons.
+@property(nonatomic, copy, readonly) NSArray<UIImage*>* favicons;
+// The model represented by this menu item. Only set for
+// `ComposeboxMenuItemType::kModel` items.
+@property(nonatomic, strong, readonly) ComposeboxModelItem* modelItem;
 
 - (BOOL)isEqual:(id)object;
 - (NSUInteger)hash;
 
+// Initializes a menu item with a subtitle and a list of favicons.
 - (instancetype)initWithTitle:(NSString*)title
                      subtitle:(NSString*)subtitle
-                        count:(NSUInteger)count
-                        image:(UIImage*)image
-                         type:(ComposeboxMenuItemType)type
-                     disabled:(BOOL)disabled
-                      favicon:(UIImage*)favicon;
+                     favicons:(NSArray<UIImage*>*)favicons
+                         type:(ComposeboxMenuItemType)type;
 
 - (instancetype)initWithTitle:(NSString*)title
                         image:(UIImage*)image
@@ -50,8 +53,17 @@
                      disabled:(BOOL)disabled;
 
 - (instancetype)initWithTitle:(NSString*)title
+                     subtitle:(NSString*)subtitle
+                        image:(UIImage*)image
+                         type:(ComposeboxMenuItemType)type
+                     disabled:(BOOL)disabled;
+
+- (instancetype)initWithTitle:(NSString*)title
                         image:(UIImage*)image
                          type:(ComposeboxMenuItemType)type;
+
+// Initializes a `ComposeboxMenuItemType::kModel` menu item for `modelItem`.
+- (instancetype)initWithModelItem:(ComposeboxModelItem*)modelItem;
 
 // Returns YES if the item is an attachment type.
 - (BOOL)isAttachmentType;

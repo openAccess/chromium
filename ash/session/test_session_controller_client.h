@@ -75,20 +75,19 @@ class TestSessionControllerClient final : public SessionControllerClient {
   void SetIsRunningInAppMode(bool app_mode);
   void SetIsDemoSession();
 
-  // Adds a user session from a given LoginInfo, `acount_id' and `pref_service`.
-  // For convenience, `LoginInfo.user_email` can be used to create an AccountId,
-  // in which case, the `account_id` should be std::nulopt.  For testing
-  // behavior where |AccountId|s are compared, prefer the method of the same
-  // name that takes an |AccountId| created with a valid storage key
-  // instead. See the documentation for|AccountId::GetUserEmail| for discussion.
+  // Adds a user session from a given `login_info`.
+  // If `login_info.account_id` is not provided, a default `AccountId` is used.
+  // Note that if a test refers to a user or session by `AccountId`, the test
+  // must explicitly provide `login_info.account_id` rather than relying on the
+  // implicit default `AccountId` chosen by `TestSessionControllerClient`.
+  // If `login_info.display_email` is not provided, it is derived from
+  // `account_id.GetUserEmail()`.
   //
-  // If `pref_service1 is provided, the new session will use it, or it will
-  // create a new PrefService. However, if `pref_service_must_exist_` is set to
-  // true, the PrefService for the account must already exist, or it will result
-  // in CHCEK failure.
-  AccountId AddUserSession(LoginInfo login_info,
-                           std::optional<AccountId> account_id = std::nullopt,
-                           std::unique_ptr<PrefService> pref_service = nullptr);
+  // It will create a new PrefService (initialized with
+  // `login_info.init_pref_service_value` if provided). However, if
+  // `pref_service_must_exist_` is set to true, the PrefService for the account
+  // must already exist, or it will result in CHECK failure.
+  AccountId AddUserSession(const LoginInfo& login_info);
 
   // Synchronously lock screen by requesting screen lock and waiting for the
   // request to complete.
@@ -153,7 +152,7 @@ class TestSessionControllerClient final : public SessionControllerClient {
   // is at least one user session created, and session state is ACTIVE.
   void MaybeNotifyFirstSessionReady();
 
-  const raw_ptr<SessionControllerImpl, DanglingUntriaged> controller_;
+  const raw_ptr<SessionControllerImpl> controller_;
   const raw_ptr<TestPrefServiceProvider> prefs_provider_;
 
   int fake_session_id_ = 0;

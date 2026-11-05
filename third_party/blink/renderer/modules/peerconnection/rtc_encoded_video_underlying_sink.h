@@ -5,16 +5,27 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_ENCODED_VIDEO_UNDERLYING_SINK_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_RTC_ENCODED_VIDEO_UNDERLYING_SINK_H_
 
-#include "base/functional/callback.h"
+#include <cstdint>
+#include <limits>
+
+#include "base/memory/scoped_refptr.h"
+#include "base/threading/thread_checker.h"
+#include "base/unguessable_token.h"
+#include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/core/streams/underlying_sink_base.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
+#include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_encoded_video_stream_transformer.h"
-#include "third_party/webrtc/api/frame_transformer_interface.h"
+#include "third_party/webrtc/api/encoded_video_frame_injector_interface.h"
 
 namespace blink {
 
 class ExceptionState;
 class RTCEncodedVideoStreamTransformer;
+class RTCRtpSenderEncodedSource;
 
 class MODULES_EXPORT RTCEncodedVideoUnderlyingSink final
     : public UnderlyingSinkBase {
@@ -30,6 +41,12 @@ class MODULES_EXPORT RTCEncodedVideoUnderlyingSink final
       bool detach_frame_data_on_write,
       bool enable_frame_restrictions,
       base::UnguessableToken owner_id);
+
+  RTCEncodedVideoUnderlyingSink(
+      ScriptState* script_state,
+      scoped_refptr<webrtc::EncodedVideoFrameInjectorInterface> frame_injector,
+      RTCRtpSenderEncodedSource* parent_source,
+      bool detach_frame_data_on_write);
 
   // UnderlyingSinkBase
   ScriptPromise<IDLUndefined> start(ScriptState*,
@@ -49,6 +66,8 @@ class MODULES_EXPORT RTCEncodedVideoUnderlyingSink final
  private:
   scoped_refptr<blink::RTCEncodedVideoStreamTransformer::Broker>
       transformer_broker_;
+  scoped_refptr<webrtc::EncodedVideoFrameInjectorInterface> frame_injector_;
+  Member<RTCRtpSenderEncodedSource> encoded_source_;
   const bool detach_frame_data_on_write_;
   const bool enable_frame_restrictions_;
   base::UnguessableToken owner_id_;

@@ -13,7 +13,7 @@
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/types/optional_ref.h"
-#include "components/optimization_guide/optimization_guide_internals/webui/optimization_guide_internals.mojom.h"
+#include "components/optimization_guide/optimization_guide_internals/webui/optimization_guide_internals.mojom-forward.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "url/gurl.h"
 
@@ -28,8 +28,36 @@ namespace optimization_guide {
 class MqlsFeatureMetadata;
 class ModelQualityLogEntry;
 
+// Overrides the model quality service URL.
+inline constexpr char kModelQualityServiceURLSwitch[] =
+    "model-quality-service-url";
+
 // Returns the URL endpoint for the model quality service.
 GURL GetModelQualityLogsUploaderServiceURL();
+
+// Status of a model quality logs upload request.
+enum class ModelQualityLogsUploadStatus {
+  kUnknown = 0,
+  // Logs upload was successful.
+  kUploadSuccessful = 1,
+  // Upload is disabled due to logging feature not enabled.
+  kLoggingNotEnabled = 2,
+  // Upload was not successful because of network error.
+  kNetError = 3,
+  // Upload is disabled due to metrics reporting being disabled in
+  // chrome://settings.
+  kMetricsReportingDisabled = 4,
+  // Upload is disabled due to enterprise policy.
+  kDisabledDueToEnterprisePolicy = 5,
+  // Upload is disabled because the feature is not enabled for the user.
+  kFeatureNotEnabledForUser = 6,
+
+  // Insert new values before this line.
+  // This enum must remain synchronized with the enum
+  // |OptimizationGuideModelQualityLogsUploadStatus| in
+  // tools/metrics/histograms/metadata/optimization/enums.xml.
+  kMaxValue = kFeatureNotEnabledForUser,
+};
 
 class ModelQualityLogsUploaderService {
  public:

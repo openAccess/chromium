@@ -59,6 +59,7 @@
 #include "third_party/blink/renderer/core/layout/layout_text.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -104,7 +105,7 @@ bool IsNodeRendered(const Node& node) {
   if (!layout_object)
     return false;
 
-  return layout_object->StyleRef().Visibility() == EVisibility::kVisible;
+  return layout_object->Style().Visibility() == EVisibility::kVisible;
 }
 
 bool IsInlineElement(const Node* node) {
@@ -184,7 +185,7 @@ static bool IsSpecialHTMLElement(const Node& n) {
   if (!layout_object)
     return false;
 
-  if (layout_object->StyleRef().IsDisplayTable()) {
+  if (layout_object->Style().IsDisplayTable()) {
     return true;
   }
 
@@ -293,7 +294,7 @@ bool LineBreakExistsAtPosition(const Position& position) {
 
   const auto* text_node = DynamicTo<Text>(position.AnchorNode());
   if (!text_node ||
-      text_node->GetLayoutObject()->StyleRef().ShouldCollapseBreaks()) {
+      text_node->GetLayoutObject()->Style().ShouldCollapseBreaks()) {
     return false;
   }
 
@@ -362,7 +363,7 @@ Position LeadingCollapsibleWhitespacePosition(const Position& position,
     return Position();
   if (option == kNotConsiderNonCollapsibleWhitespace &&
       anchor_node->GetLayoutObject() &&
-      anchor_node->GetLayoutObject()->StyleRef().ShouldPreserveWhiteSpaces()) {
+      anchor_node->GetLayoutObject()->Style().ShouldPreserveWhiteSpaces()) {
     return Position();
   }
   const String& string = anchor_text_node->data();
@@ -730,13 +731,22 @@ InputEvent::InputType DeletionInputTypeFromTextGranularity(
 
 void DispatchEditableContentChangedEvents(Element* start_root,
                                           Element* end_root) {
-  if (start_root) {
-    start_root->DefaultEventHandler(
-        *Event::Create(event_type_names::kWebkitEditableContentChanged));
-  }
-  if (end_root && end_root != start_root) {
-    end_root->DefaultEventHandler(
-        *Event::Create(event_type_names::kWebkitEditableContentChanged));
+  if (RuntimeEnabledFeatures::CleanUpActivationBehaviorEnabled()) {
+    if (start_root) {
+      start_root->NotifyEditableContentChanged();
+    }
+    if (end_root && end_root != start_root) {
+      end_root->NotifyEditableContentChanged();
+    }
+  } else {
+    if (start_root) {
+      start_root->DefaultEventHandler(
+          *Event::Create(event_type_names::kWebkitEditableContentChanged));
+    }
+    if (end_root && end_root != start_root) {
+      end_root->DefaultEventHandler(
+          *Event::Create(event_type_names::kWebkitEditableContentChanged));
+    }
   }
 }
 

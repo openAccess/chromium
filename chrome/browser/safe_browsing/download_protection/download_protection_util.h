@@ -15,7 +15,7 @@
 #include "components/download/public/common/download_item.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
-#include "components/safe_browsing/core/browser/download_check_result.h"
+#include "components/safe_browsing/core/browser/download/download_check_result.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "content/public/browser/file_system_access_write_item.h"
 
@@ -213,11 +213,6 @@ bool ShouldSendDangerousDownloadReport(
     download::DownloadItem* item,
     ClientSafeBrowsingReportRequest::ReportType report_type);
 #endif
-
-// Returns whether deep scanning is enabled.
-// On Android, only Enterprise scan may be enabled. Consumer deep scan is not
-// (yet) supported.
-bool IsDeepScanningEnabled();
 
 // If the item should be uploaded for deep scanning, this returns the content
 // analysis settings to use. If the item should not be uploaded, this returns

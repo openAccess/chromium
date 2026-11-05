@@ -28,6 +28,7 @@ bool VisualProperties::operator==(const VisualProperties& other) const {
          scroll_focused_node_into_view == other.scroll_focused_node_into_view &&
          local_surface_id == other.local_surface_id &&
          is_fullscreen_granted == other.is_fullscreen_granted &&
+         fullscreen_grant_count == other.fullscreen_grant_count &&
          display_mode == other.display_mode &&
          application_context == other.application_context &&
          zoom_level == other.zoom_level &&
@@ -40,7 +41,8 @@ bool VisualProperties::operator==(const VisualProperties& other) const {
          is_pinch_gesture_active == other.is_pinch_gesture_active &&
          window_controls_overlay_rect == other.window_controls_overlay_rect &&
          window_show_state == other.window_show_state &&
-         resizable == other.resizable && always_on_top == other.always_on_top;
+         resizable == other.resizable &&
+         always_on_top_popup == other.always_on_top_popup;
 }
 
 }  // namespace blink

@@ -13,7 +13,7 @@ import {FocusOutlineManager} from 'chrome://resources/js/focus_outline_manager.j
 import {getDeepActiveElement} from 'chrome://resources/js/util.js';
 import {keyDownOn} from 'chrome://webui-test/keyboard_mock_interactions.js';
 import {html, css, CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
-import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertNear, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 import {getTrustedHtml} from 'chrome://webui-test/trusted_html.js';
 import {getTrustedHTML as getTrustedStaticHtml} from 'chrome://resources/js/static_types.js';
@@ -197,6 +197,19 @@ suite('CrActionMenu', function() {
     return;
   });
 
+  test('pressing control+enter when no focus', function() {
+    menu.showAt(dots);
+    assertEquals(menu, document.activeElement);
+    const keydown = new KeyboardEvent(
+        'keydown', {key: 'Enter', ctrlKey: true, cancelable: true});
+    menu.dispatchEvent(keydown);
+    assertEquals(!isMac, keydown.defaultPrevented);
+    assertEquals(!isWindows, dialog.open);
+    if (!isWindows && !isMac) {
+      assertEquals(items[0], getDeepActiveElement());
+    }
+  });
+
   test('pressing enter when when item has focus', function() {
     menu.showAt(dots);
     down();
@@ -228,9 +241,22 @@ suite('CrActionMenu', function() {
   test('close on click away', function() {
     menu.showAt(dots);
     assertTrue(dialog.open);
-    menu.click();
+    dialog.click();
     assertFalse(dialog.open);
   });
+
+  test(
+      'does not close when click targets host from drag across items',
+      function() {
+        menu.showAt(dots);
+        assertTrue(dialog.open);
+
+        // When dragging across slotted items or selecting text, the browser
+        // fires the 'click' event on the common ancestor (<cr-action-menu>).
+        // This should not dismiss the menu.
+        menu.click();
+        assertTrue(dialog.open);
+      });
 
   test('close on resize', function() {
     menu.showAt(dots);
@@ -433,8 +459,8 @@ suite('CrActionMenu', function() {
       left: 0,
       top: 0,
     }));
-    assertEquals(`0px`, dialog.style.left);
-    assertEquals(`0px`, dialog.style.top);
+    assertEquals('0px', dialog.style.left);
+    assertEquals('0px', dialog.style.top);
     menu.close();
 
     // Being aligned to a point in the bottom right should anchor to the top
@@ -458,7 +484,7 @@ suite('CrActionMenu', function() {
       maxX: menuWidth * 2 - 10,
     });
     assertEquals(`${menuWidth - 10}px`, dialog.style.left);
-    assertEquals(`0px`, dialog.style.top);
+    assertEquals('0px', dialog.style.top);
     menu.close();
 
     // Alignment is reversed in RTL.
@@ -647,8 +673,8 @@ suite('CrActionMenu', function() {
     // Show the menu, scrolling the body to the button.
     test('simple offscreen', function() {
       menu.showAt(dots, {anchorAlignmentX: AnchorAlignment.AFTER_START});
-      assertEquals(`${containerLeft}px`, dialog.style.left);
-      assertEquals(`${containerTop}px`, dialog.style.top);
+      assertNear(containerLeft, parseFloat(dialog.style.left), 1);
+      assertNear(containerTop, parseFloat(dialog.style.top), 1);
       menu.close();
     });
 
@@ -662,8 +688,8 @@ suite('CrActionMenu', function() {
       container.scrollTop = containerTop;
 
       menu.showAt(dots, {anchorAlignmentX: AnchorAlignment.AFTER_START});
-      assertEquals(`${containerLeft}px`, dialog.style.left);
-      assertEquals(`${containerTop}px`, dialog.style.top);
+      assertNear(containerLeft, parseFloat(dialog.style.left), 1);
+      assertNear(containerTop, parseFloat(dialog.style.top), 1);
       menu.close();
     });
 
@@ -700,9 +726,10 @@ suite('CrActionMenu', function() {
       document.body.style.direction = 'rtl';
       menu.showAt(dots, {anchorAlignmentX: AnchorAlignment.AFTER_START});
       const menuWidth = dialog.offsetWidth;
-      assertEquals(
-          container.offsetLeft + containerWidth - menuWidth, dialog.offsetLeft);
-      assertEquals(containerTop, dialog.offsetTop);
+      assertNear(
+          container.offsetLeft + containerWidth - menuWidth, dialog.offsetLeft,
+          1);
+      assertNear(containerTop, dialog.offsetTop, 1);
       menu.close();
     });
 
@@ -760,6 +787,405 @@ suite('CrActionMenu', function() {
       assertTrue(menu.getDialog().open);
       keyDownOn(menu, 0, [], 'Escape');
       assertFalse(menu.getDialog().open);
+    });
+  });
+
+  suite('Unbounded', function() {
+    let menu: CrActionMenuElement;
+    let dots: HTMLElement;
+
+    setup(async function() {
+      document.body.innerHTML = getTrustedStaticHtml`
+        <button id="dots">...</button>
+        <cr-action-menu>
+          <button class="dropdown-item">Item 1</button>
+          <button class="dropdown-item">Item 2</button>
+        </cr-action-menu>
+      `;
+      menu = document.querySelector('cr-action-menu')!;
+      dots = document.querySelector('#dots')!;
+      await menu.setUnbounded();
+    });
+
+    test(
+        'allows negative coordinates without clamping to document', function() {
+          menu.showAtPosition({
+            top: -50,
+            left: -30,
+            minX: -500,
+            minY: -500,
+            maxX: 2000,
+            maxY: 2000,
+          });
+
+          assertTrue(menu.getDialog().open);
+          assertEquals('-50px', menu.getDialog().style.top);
+          assertEquals('-30px', menu.getDialog().style.left);
+        });
+
+    test('opens without throwing in unbounded mode', function() {
+      menu.showAt(dots, {
+        anchorAlignmentX: AnchorAlignment.AFTER_START,
+        anchorAlignmentY: AnchorAlignment.AFTER_END,
+      });
+
+      assertTrue(menu.getDialog().open);
+      assertTrue(menu.getDialog().hasAttribute('unbounded'));
+      menu.close();
+    });
+
+    test(
+        'fires unbounded-shown event on successful unbounded presentation',
+        async () => {
+          const shownPromise = eventToPromise('unbounded-shown', menu);
+          menu.showAt(dots);
+          await shownPromise;
+          assertTrue(menu.open);
+          assertTrue(menu.getDialog().matches(':unbounded'));
+          menu.close();
+        });
+
+    test(
+        'fires unbounded-show-error when showUnboundedElement rejects with non-AbortError',
+        async () => {
+          const dialog = menu.getDialog() as UnboundedDialogElement;
+          const originalShow = dialog.showUnboundedElement;
+          dialog.showUnboundedElement = () =>
+              Promise.reject(new Error('Presentation failed'));
+
+          const errorPromise = eventToPromise('unbounded-show-error', menu);
+          const originalConsoleError = console.error;
+          console.error = () => {};
+          try {
+            menu.showAt(dots);
+            await errorPromise;
+          } finally {
+            console.error = originalConsoleError;
+          }
+
+          dialog.showUnboundedElement = originalShow;
+          menu.close();
+        });
+
+    test(
+        'does not fire unbounded-shown or unbounded-show-error on AbortError',
+        async () => {
+          const dialog = menu.getDialog() as UnboundedDialogElement;
+          const originalShow = dialog.showUnboundedElement;
+          dialog.showUnboundedElement = () =>
+              Promise.reject(new DOMException('Dismissed', 'AbortError'));
+
+          let eventFired = false;
+          const onEvent = () => {
+            eventFired = true;
+          };
+          menu.addEventListener('unbounded-shown', onEvent);
+          menu.addEventListener('unbounded-show-error', onEvent);
+
+          menu.showAt(dots);
+          await microtasksFinished();
+          assertFalse(eventFired);
+
+          menu.removeEventListener('unbounded-shown', onEvent);
+          menu.removeEventListener('unbounded-show-error', onEvent);
+          dialog.showUnboundedElement = originalShow;
+          menu.close();
+        });
+
+    test(
+        'activates and deactivates unbounded dialog in unbounded mode', () => {
+          let showEventFired = false;
+          let hideEventFired = false;
+          const dialog = menu.getDialog();
+          dialog.addEventListener('beforetoggle', (e: Event) => {
+            const toggleEvent = e as ToggleEvent;
+            if (toggleEvent.newState === 'open') {
+              showEventFired = true;
+            } else if (toggleEvent.newState === 'closed') {
+              hideEventFired = true;
+            }
+          });
+
+          menu.showAt(dots);
+          assertTrue(menu.open);
+          assertTrue(dialog.matches(':unbounded'));
+          assertTrue(dialog.hasAttribute('unbounded'));
+          assertTrue(showEventFired);
+
+          menu.close();
+          assertFalse(menu.open);
+          assertFalse(dialog.matches(':unbounded'));
+          assertTrue(dialog.hasAttribute('unbounded'));
+          assertTrue(hideEventFired);
+        });
+
+    test(
+        'setUnbounded returns true and enables unbounded mode when supported',
+        async () => {
+          const newMenu = document.createElement('cr-action-menu');
+          document.body.appendChild(newMenu);
+          const success = await newMenu.setUnbounded();
+          assertTrue(success);
+          assertTrue(newMenu.getDialog().hasAttribute('unbounded'));
+          newMenu.remove();
+        });
+
+    test(
+        'setUnbounded returns false and logs warning if API is unsupported',
+        async () => {
+          const original =
+              (HTMLElement.prototype as unknown as
+               Record<string, unknown>)['showUnboundedElement'];
+          delete (
+              HTMLElement.prototype as unknown as
+              Record<string, unknown>)['showUnboundedElement'];
+
+          const warnCalls: string[] = [];
+          const originalWarn = console.warn;
+          console.warn = (...args: unknown[]) => {
+            warnCalls.push(args.join(' '));
+          };
+
+          try {
+            const newMenu = document.createElement('cr-action-menu');
+            document.body.appendChild(newMenu);
+            const success = await newMenu.setUnbounded();
+
+            assertFalse(success);
+            assertFalse(newMenu.getDialog().hasAttribute('unbounded'));
+            assertEquals(1, warnCalls.length);
+            assertTrue(warnCalls[0]!.includes('not supported'));
+            newMenu.remove();
+          } finally {
+            if (original !== undefined) {
+              (HTMLElement.prototype as unknown as
+               Record<string, unknown>)['showUnboundedElement'] = original;
+            }
+            console.warn = originalWarn;
+          }
+        });
+
+    test('clamps center alignment to screen bounds in unbounded mode', () => {
+      // Center alignment overflowing maxX clamps to maxX - menuWidth.
+      menu.showAtPosition({
+        top: 50,
+        left: 950,
+        height: 30,
+        width: 100,
+        minX: 0,
+        maxX: 1000,
+        anchorAlignmentX: AnchorAlignment.CENTER,
+      });
+      const menuWidth = menu.getDialog().offsetWidth;
+      assertEquals(`${1000 - menuWidth}px`, menu.getDialog().style.left);
+      menu.close();
+
+      // Center alignment underflowing minX clamps to minX.
+      menu.showAtPosition({
+        top: 50,
+        left: 0,
+        height: 30,
+        width: 100,
+        minX: 50,
+        maxX: 1000,
+        anchorAlignmentX: AnchorAlignment.CENTER,
+      });
+      assertEquals('50px', menu.getDialog().style.left);
+      menu.close();
+    });
+
+    test('closes menu when receiving beforetoggle closed toggle event', () => {
+      menu.showAt(dots);
+      assertTrue(menu.open);
+
+      const dialog = menu.getDialog() as UnboundedDialogElement;
+      let hideCalled = false;
+      const originalHide = dialog.hideUnboundedElement;
+      dialog.hideUnboundedElement = () => {
+        hideCalled = true;
+        return originalHide ? originalHide.call(dialog) : Promise.resolve();
+      };
+
+      try {
+        const toggleEvent = new CustomEvent('beforetoggle');
+        Object.assign(toggleEvent, {oldState: 'open', newState: 'closed'});
+        dialog.dispatchEvent(toggleEvent);
+
+        assertFalse(menu.open);
+        assertFalse(dialog.open);
+        assertFalse(hideCalled);
+      } finally {
+        dialog.hideUnboundedElement = originalHide;
+      }
+    });
+
+    test('preserves host document scroll position when opening', () => {
+      document.body.style.height = '2000px';
+      document.body.style.width = '2000px';
+      document.documentElement.scrollLeft = 120;
+      document.documentElement.scrollTop = 240;
+
+      menu.showAtPosition({top: 50, left: 50});
+      assertEquals(120, document.documentElement.scrollLeft);
+      assertEquals(240, document.documentElement.scrollTop);
+
+      menu.close();
+      document.documentElement.scrollLeft = 0;
+      document.documentElement.scrollTop = 0;
+      document.body.style.height = '';
+      document.body.style.width = '';
+    });
+
+    test(
+        'preserves requested anchor alignment without clamping in ' +
+            'unbounded mode',
+        () => {
+          menu.showAtPosition({
+            top: 200,
+            left: 50,
+            height: 30,
+            width: 100,
+            anchorAlignmentY: AnchorAlignment.AFTER_END,
+          });
+
+          assertEquals('230px', menu.getDialog().style.top);
+          menu.close();
+        });
+
+    test(
+        'flips forward and backward alignments when overflowing display ' +
+            'bounds in unbounded mode',
+        () => {
+          // Forward AFTER_END flips to backward (start - menuLength) when
+          // overflowing maxY.
+          menu.showAtPosition({
+            top: 500,
+            left: 50,
+            height: 30,
+            width: 100,
+            minY: 0,
+            maxY: 550,
+            anchorAlignmentY: AnchorAlignment.AFTER_END,
+          });
+          const menuHeight = menu.getDialog().offsetHeight;
+          assertEquals(`${500 - menuHeight}px`, menu.getDialog().style.top);
+          menu.close();
+
+          // Forward AFTER_START flips to backward (end - menuLength) when
+          // overflowing maxX.
+          menu.showAtPosition({
+            top: 50,
+            left: 950,
+            height: 30,
+            width: 100,
+            minX: 0,
+            maxX: 1000,
+            anchorAlignmentX: AnchorAlignment.AFTER_START,
+          });
+          const menuWidth = menu.getDialog().offsetWidth;
+          assertEquals(`${1050 - menuWidth}px`, menu.getDialog().style.left);
+          menu.close();
+
+          // Backward BEFORE_START flips to forward (end) when underflowing
+          // minY.
+          menu.showAtPosition({
+            top: 50,
+            left: 50,
+            height: 30,
+            width: 100,
+            minY: 100,
+            maxY: 1000,
+            anchorAlignmentY: AnchorAlignment.BEFORE_START,
+          });
+          assertEquals('80px', menu.getDialog().style.top);
+          menu.close();
+
+          // Backward BEFORE_END flips to forward (start) when underflowing
+          // minX.
+          menu.showAtPosition({
+            top: 50,
+            left: 50,
+            height: 30,
+            width: 100,
+            minX: 100,
+            maxX: 1000,
+            anchorAlignmentX: AnchorAlignment.BEFORE_END,
+          });
+          assertEquals('50px', menu.getDialog().style.left);
+          menu.close();
+        });
+
+    test(
+        'focuses items on mouseover with preventScroll in unbounded mode',
+        () => {
+          menu.showAt(dots);
+          const firstItem = menu.querySelector<HTMLElement>('.dropdown-item')!;
+          let preventScrollValue: boolean|undefined;
+          const originalFocus = firstItem.focus.bind(firstItem);
+          firstItem.focus = (options?: FocusOptions) => {
+            preventScrollValue = options?.preventScroll;
+            originalFocus(options);
+          };
+
+          firstItem.dispatchEvent(
+              new MouseEvent('mouseover', {bubbles: true, composed: true}));
+          assertEquals(true, preventScrollValue);
+          menu.close();
+        });
+
+    test(
+        'focuses items on arrow key navigation with preventScroll in ' +
+            'unbounded mode',
+        () => {
+          menu.showAt(dots);
+          const firstItem = menu.querySelector<HTMLElement>('.dropdown-item')!;
+          let preventScrollValue: boolean|undefined;
+          const originalFocus = firstItem.focus.bind(firstItem);
+          firstItem.focus = (options?: FocusOptions) => {
+            preventScrollValue = options?.preventScroll;
+            originalFocus(options);
+          };
+
+          keyDownOn(menu, 0, [], 'ArrowDown');
+          assertEquals(true, preventScrollValue);
+          menu.close();
+        });
+
+    test('focuses wrapper with preventScroll in unbounded mode', () => {
+      let preventScrollValue: boolean|undefined;
+      const originalFocus = menu.$.wrapper.focus.bind(menu.$.wrapper);
+      menu.$.wrapper.focus = (options?: FocusOptions) => {
+        preventScrollValue = options?.preventScroll;
+        originalFocus(options);
+      };
+
+      menu.showAt(dots);
+      assertEquals(true, preventScrollValue);
+      menu.close();
+    });
+
+    test('does not set preventScroll on focus in bounded mode', () => {
+      // A menu that never had setUnbounded() called on it stays bounded.
+      const boundedMenu = document.createElement('cr-action-menu');
+      const item = document.createElement('button');
+      item.classList.add('dropdown-item');
+      boundedMenu.appendChild(item);
+      document.body.appendChild(boundedMenu);
+      assertFalse(boundedMenu.getDialog().hasAttribute('unbounded'));
+
+      boundedMenu.showAt(dots);
+      let preventScrollValue: boolean|undefined;
+      const originalFocus = item.focus.bind(item);
+      item.focus = (options?: FocusOptions) => {
+        preventScrollValue = options?.preventScroll;
+        originalFocus(options);
+      };
+
+      item.dispatchEvent(
+          new MouseEvent('mouseover', {bubbles: true, composed: true}));
+      assertEquals(false, preventScrollValue);
+      boundedMenu.close();
+      boundedMenu.remove();
     });
   });
 });

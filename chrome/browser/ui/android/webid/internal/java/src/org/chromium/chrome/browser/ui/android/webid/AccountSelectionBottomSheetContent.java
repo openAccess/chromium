@@ -4,11 +4,12 @@
 
 package org.chromium.chrome.browser.ui.android.webid;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.view.View;
 import android.widget.FrameLayout;
 
-import androidx.annotation.Nullable;
 import androidx.annotation.Px;
 import androidx.annotation.StringRes;
 import androidx.core.view.ViewCompat;
@@ -18,9 +19,13 @@ import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.blink.mojom.RpMode;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
 
 import java.util.function.Supplier;
 
@@ -28,6 +33,7 @@ import java.util.function.Supplier;
  * This view renders content that gets displayed inside the bottom sheet. This is a simple container
  * for the view which is the current best practice for bottom sheet content.
  */
+@NullMarked
 public class AccountSelectionBottomSheetContent implements BottomSheetContent {
     /**
      * The maximum number of accounts that should be fully visible when the the account picker is
@@ -42,6 +48,8 @@ public class AccountSelectionBottomSheetContent implements BottomSheetContent {
     private static final float MAX_VISIBLE_ACCOUNTS_BUTTON_MODE = 3.5f;
 
     private static final int MIN_NUM_ACCOUNTS_FOR_SCROLL = 3;
+
+    private final BottomSheetType mBottomSheetType;
 
     private final View mContentView;
     private final BottomSheetController mBottomSheetController;
@@ -66,6 +74,12 @@ public class AccountSelectionBottomSheetContent implements BottomSheetContent {
         mBottomSheetController = bottomSheetController;
         mScrollOffsetSupplier = scrollOffsetSupplier;
         mRpMode = rpMode;
+        mBottomSheetType =
+                new BottomSheetType.Builder()
+                        .setUserInitiated(mRpMode != RpMode.PASSIVE)
+                        .setModal(mRpMode != RpMode.PASSIVE)
+                        .setUserCritical(UserCriticalFeature.FEDERATED_ACCOUNT_SELECTION)
+                        .build();
     }
 
     /**
@@ -89,9 +103,6 @@ public class AccountSelectionBottomSheetContent implements BottomSheetContent {
     }
 
     public void computeAndUpdateAccountListHeightForPassiveSingleIdp() {
-        // {@link mContentView} is null for some tests.
-        if (mContentView == null) return;
-
         View sheetContainer = mContentView.findViewById(R.id.sheet_item_list_container);
         // When we're in the multi-account chooser and there are more than {@link
         // MAX_VISIBLE_ACCOUNTS_PASSIVE_MODE_SINGLE_IDP} accounts, resize the list so that only
@@ -99,7 +110,7 @@ public class AccountSelectionBottomSheetContent implements BottomSheetContent {
         // MAX_VISIBLE_ACCOUNTS_PASSIVE_MODE_SINGLE_IDP}
         // accounts and part of the next one are visible.
         RecyclerView sheetItemListView = sheetContainer.findViewById(R.id.sheet_item_list);
-        int numAccounts = sheetItemListView.getAdapter().getItemCount();
+        int numAccounts = assumeNonNull(sheetItemListView.getAdapter()).getItemCount();
 
         // When the number of rows is just over the limit and the last one is the user a different
         // account button, we increase the max to avoid cutting off the use a different account
@@ -162,7 +173,7 @@ public class AccountSelectionBottomSheetContent implements BottomSheetContent {
         // maxVisibleRows}
         // accounts and part of the next one are visible.
         RecyclerView sheetItemListView = sheetContainer.findViewById(R.id.sheet_item_list);
-        int numAccounts = sheetItemListView.getAdapter().getItemCount();
+        int numAccounts = assumeNonNull(sheetItemListView.getAdapter()).getItemCount();
         if (numAccounts < MIN_NUM_ACCOUNTS_FOR_SCROLL) {
             return maxHeightPx;
         }
@@ -186,7 +197,7 @@ public class AccountSelectionBottomSheetContent implements BottomSheetContent {
      * @return the half state height in pixels. Never 0. Can theoretically exceed the screen height.
      */
     private @Px int getDesiredPassiveModeMultiIdpSheetHeightPx() {
-        if (!mCustomAccessibilityDelegateSet && mContentView != null) {
+        if (!mCustomAccessibilityDelegateSet) {
             // Add delegate so that the BottomSheet expands to full height if a11y focus occurs. We
             // could pass the item list instead but this is less disruptive since the focus shifts
             // when expandSheet occurs.
@@ -215,6 +226,11 @@ public class AccountSelectionBottomSheetContent implements BottomSheetContent {
     @Override
     public int getVerticalScrollOffset() {
         return mScrollOffsetSupplier.get();
+    }
+
+    @Override
+    public BottomSheetType getSheetType() {
+        return mBottomSheetType;
     }
 
     @Override
@@ -250,6 +266,17 @@ public class AccountSelectionBottomSheetContent implements BottomSheetContent {
         if (mRpMode == RpMode.PASSIVE && !mIsMultipleIdps) {
             computeAndUpdateAccountListHeightForPassiveSingleIdp();
         }
+
+        if (mBottomSheetController.isLargeFormFactorUiEnabled(this)) {
+            int maxHeight = mBottomSheetController.getMaxSheetHeight();
+            int availableHeight =
+                    maxHeight > 0 ? maxHeight : mBottomSheetController.getContainerHeight();
+            return availableHeight <= 0
+                    ? 0f
+                    : Math.min(getMaximumSheetHeightPx(), availableHeight)
+                            / (float) availableHeight;
+        }
+
         // WRAP_CONTENT would be the right fit but this disables the HALF state and this does not
         // work properly when we transition from a multi IDP UI to a single IDP UI, for unknown
         // reasons.
@@ -259,6 +286,24 @@ public class AccountSelectionBottomSheetContent implements BottomSheetContent {
 
     @Override
     public float getHalfHeightRatio() {
+        if (mBottomSheetController.isLargeFormFactorUiEnabled(this)) {
+            int maxHeight = mBottomSheetController.getMaxSheetHeight();
+            int availableHeight =
+                    maxHeight > 0 ? maxHeight : mBottomSheetController.getContainerHeight();
+            if (availableHeight <= 0) {
+                return HeightMode.DISABLED;
+            }
+            if (mRpMode == RpMode.PASSIVE) {
+                if (!mIsMultipleIdps || !mIsPassiveModeHalfHeightEnabled) {
+                    return HeightMode.DISABLED;
+                }
+                return Math.min(getDesiredPassiveModeMultiIdpSheetHeightPx(), availableHeight)
+                        / (float) availableHeight;
+            }
+            return Math.min(getDesiredActiveModeSheetHeightPx(), availableHeight)
+                    / (float) availableHeight;
+        }
+
         if (mRpMode == RpMode.PASSIVE) {
             if (!mIsMultipleIdps || !mIsPassiveModeHalfHeightEnabled) {
                 return HeightMode.DISABLED;

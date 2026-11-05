@@ -14,7 +14,6 @@
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
-#include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/browser/worker_host/shared_worker_host.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/global_routing_id.h"
@@ -39,6 +38,7 @@ class Origin;
 
 namespace content {
 
+class ServiceWorkerContextWrapper;
 class SharedWorkerHost;
 class SharedWorkerInstance;
 class StoragePartitionImpl;
@@ -75,6 +75,8 @@ class CONTENT_EXPORT SharedWorkerServiceImpl : public SharedWorkerService {
                        const blink::StorageKey& storage_key,
                        const blink::mojom::SharedWorkerSameSiteCookies
                            same_site_cookies) override;
+  void TerminateWorkersForStorageKey(
+      const blink::StorageKey& storage_key) override;
   void Shutdown() override;
 
   // Uses |url_loader_factory| to load workers' scripts instead of

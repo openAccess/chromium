@@ -51,6 +51,8 @@ class PageInfoMainView : public views::View,
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kMainLayoutElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kPermissionsElementId);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kMerchantTrustElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kSeeExtensionsButtonElementId);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kResetPermissionsButtonElementId);
 
   // Container view that fills the bubble width for button rows. Supports
   // updating the layout.
@@ -68,7 +70,9 @@ class PageInfoMainView : public views::View,
                    ChromePageInfoUiDelegate* ui_delegate,
                    PageInfoNavigationHandler* navigation_handler,
                    base::OnceClosure initialized_callback,
-                   bool allow_extended_site_info);
+                   bool allow_extended_site_info,
+                   base::RepeatingClosure open_extensions_menu_callback =
+                       base::RepeatingClosure());
   ~PageInfoMainView() override;
 
   // PageInfoUI implementations.
@@ -92,9 +96,13 @@ class PageInfoMainView : public views::View,
     return toggle_rows_.size();
   }
 
-  const std::vector<raw_ptr<PermissionToggleRowView, VectorExperimental>>&
+  const std::vector<raw_ptr<PermissionToggleRowView>>&
   GetToggleRowsForTesting() const {
     return toggle_rows_;
+  }
+
+  RichHoverButton* GetSeeExtensionsButtonForTesting() const {
+    return see_extensions_button_;
   }
 
  protected:
@@ -127,6 +135,9 @@ class PageInfoMainView : public views::View,
   // enables it if any permission is in a non-default state. Also updates
   // the label depending on the number of visible permissions.
   void UpdateResetButton(const PermissionInfoList& permission_info_list);
+
+  // Handles clicks on the "Extensions" button in the site settings section.
+  void OnSeeExtensionsClicked();
 
   void OnMerchantTrustDataFetched(
       const GURL& url,
@@ -164,14 +175,16 @@ class PageInfoMainView : public views::View,
   std::u16string details_text_ = std::u16string();
 
   // The button that opens the "Connection" subpage.
-  raw_ptr<RichHoverButton, AcrossTasksDanglingUntriaged> connection_button_ =
-      nullptr;
+  raw_ptr<RichHoverButton> connection_button_ = nullptr;
 
   // The view that contains the certificate, cookie, and permissions sections.
   raw_ptr<views::View> site_settings_view_ = nullptr;
 
   // The button that opens the "Cookies" subpage.
   raw_ptr<RichHoverButton> cookie_button_ = nullptr;
+
+  // The button that opens the "Extensions" menu.
+  raw_ptr<RichHoverButton> see_extensions_button_ = nullptr;
 
   // The button that opens up "Site Settings".
   raw_ptr<RichHoverButton> site_settings_link_ = nullptr;
@@ -185,6 +198,9 @@ class PageInfoMainView : public views::View,
   // shown when at least of one the buttons is available.
   raw_ptr<views::View> extended_site_info_section_ = nullptr;
 
+  // Bubble header view containing the page title/URL.
+  raw_ptr<views::View> header_view_ = nullptr;
+
   // "About this site" button that opens a subpage.
   raw_ptr<views::View> about_this_site_section_ = nullptr;
 
@@ -192,8 +208,7 @@ class PageInfoMainView : public views::View,
   raw_ptr<views::View> merchant_trust_section_ = nullptr;
 
   // The view that contains `SecurityInformationView` and a certificate button.
-  raw_ptr<PageInfoSecurityContentView, AcrossTasksDanglingUntriaged>
-      security_content_view_ = nullptr;
+  raw_ptr<PageInfoSecurityContentView> security_content_view_ = nullptr;
 
 #if BUILDFLAG(IS_WIN) && BUILDFLAG(ENABLE_VR)
   // The view that contains ui related to features on a page, like a presenting
@@ -204,8 +219,7 @@ class PageInfoMainView : public views::View,
   // These rows bundle together all the |View|s involved in a single row of the
   // permissions section, and keep those views updated when the underlying
   // |Permission| changes.
-  std::vector<raw_ptr<PermissionToggleRowView, VectorExperimental>>
-      toggle_rows_;
+  std::vector<raw_ptr<PermissionToggleRowView>> toggle_rows_;
 
   // This map contains rows for permission types that should be updated when
   // their usage status is changed. This is needed to avoid recreating the whole
@@ -213,15 +227,15 @@ class PageInfoMainView : public views::View,
   std::map<ContentSettingsType, raw_ptr<PermissionToggleRowView>>
       syncable_permission_rows_;
 
-  std::vector<raw_ptr<ChosenObjectView, VectorExperimental>>
-      chosen_object_rows_;
+  std::vector<raw_ptr<ChosenObjectView>> chosen_object_rows_;
 
   raw_ptr<views::Label> title_ = nullptr;
 
   raw_ptr<views::View> security_container_view_ = nullptr;
 
-  raw_ptr<views::LabelButton, AcrossTasksDanglingUntriaged> reset_button_ =
-      nullptr;
+  raw_ptr<views::LabelButton> reset_button_ = nullptr;
+
+  base::RepeatingClosure open_extensions_menu_callback_;
 
   base::WeakPtrFactory<PageInfoMainView> weak_factory_{this};
 };

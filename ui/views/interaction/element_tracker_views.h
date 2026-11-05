@@ -145,9 +145,9 @@ class VIEWS_EXPORT ElementTrackerViews
   ViewList GetAllMatchingViewsInAnyContext(ui::ElementIdentifier id,
                                            bool require_visible = false);
 
-  // Returns a widget that matches the given context. A valid
-  // TrackedElementViews must exist within the widget.
-  Widget* GetWidgetForContext(ui::ElementContext context);
+  // Returns the primary widget that matches the given context. A valid
+  // TrackedElementViews must exist within the context.
+  Widget* GetPrimaryWindowWidgetForContext(ui::ElementContext context);
 
   // ----------
   // Notifies listeners that a specific custom event has occurred for the given
@@ -215,7 +215,7 @@ T* ElementTrackerViews::GetUniqueViewAs(ui::ElementIdentifier id,
     return nullptr;
   }
   T* const result = views::AsViewClass<T>(view);
-  DCHECK(result);
+  CHECK(result, base::NotFatalUntil::M163);
   return result;
 }
 
@@ -228,7 +228,7 @@ T* ElementTrackerViews::GetFirstMatchingViewAs(ui::ElementIdentifier id,
     return nullptr;
   }
   T* const result = views::AsViewClass<T>(view);
-  DCHECK(result);
+  CHECK(result, base::NotFatalUntil::M163);
   return result;
 }
 

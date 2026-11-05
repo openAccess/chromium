@@ -71,7 +71,7 @@ void ShowCustomizeChromeSidePanel(Profile* profile) {
           1);
 
   actions::ActionManager::Get()
-      .FindAction(kActionSidePanelShowCustomizeChrome)
+      .FindAction(kActionSidePanelShowCustomizeChrome, nullptr)
       ->InvokeAction(
           actions::ActionInvocationContext::Builder()
               .SetProperty(
@@ -112,13 +112,6 @@ NTPCustomizeChromePromoEligibility CanShowCustomizeChromePromo(
   if (profile->GetPrefs()->GetInteger(
           prefs::kNtpCustomizeChromeButtonOpenCount) > 0) {
     return NTPCustomizeChromePromoEligibility::kCustomizeChromeOpenedByUser;
-  }
-
-  // If no max auto open count is set, then we are showing a different variation
-  // of the promo (not involving auto opening of the Side Panel), for which the
-  // user is considered eligible at this point.
-  if (ntp_features::kNtpCustomizeChromeAutoShownMaxCount.Get() == 0) {
-    return NTPCustomizeChromePromoEligibility::kCanShowPromo;
   }
 
   if (ntp_features::kNtpCustomizeChromeAutoShownMaxCount.Get() <= 0 ||
@@ -194,9 +187,7 @@ bool NewTabPageFeaturePromoHelper::IsSigninModalDialogOpen(
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
   // `browser` might be NULL if the new tab is immediately dragged out of the
   // window.
-  return browser ? browser->GetFeatures()
-                       .signin_view_controller()
-                       ->ShowsModalDialog()
+  return browser ? SigninViewController::From(browser)->ShowsModalDialog()
                  : false;
 #else
   return false;
@@ -207,9 +198,9 @@ void NewTabPageFeaturePromoHelper::MaybeTriggerAutomaticCustomizeChromePromo(
     content::WebContents* web_contents) {
 #if !BUILDFLAG(IS_ANDROID)
   auto* browser_interface = webui::GetBrowserWindowInterface(web_contents);
-  if (!browser_interface ||
-      browser_interface->GetFeatures().side_panel_ui()->IsSidePanelEntryShowing(
-          SidePanelEntryKey(SidePanelEntryId::kCustomizeChrome))) {
+  if (!browser_interface || SidePanelUI::From(browser_interface)
+                                ->IsSidePanelEntryShowing(SidePanelEntryKey(
+                                    SidePanelEntryId::kCustomizeChrome))) {
     return;
   }
 
@@ -226,14 +217,6 @@ void NewTabPageFeaturePromoHelper::MaybeTriggerAutomaticCustomizeChromePromo(
   if (promo_eligibility != NTPCustomizeChromePromoEligibility::kCanShowPromo ||
       !base::FeatureList::IsEnabled(
           ntp_features::kNtpCustomizeChromeAutoOpen)) {
-    return;
-  }
-
-  // Variation where we do not open the Side Panel automatically; instead we
-  // show a tutorial.
-  if (ntp_features::kNtpCustomizeChromeAutoShownMaxCount.Get() == 0) {
-    interface->MaybeShowFeaturePromo(
-        feature_engagement::kIPHDesktopCustomizeChromeExperimentFeature);
     return;
   }
 

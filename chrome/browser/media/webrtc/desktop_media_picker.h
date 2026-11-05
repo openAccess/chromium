@@ -37,8 +37,6 @@ BASE_DECLARE_FEATURE(kAndroidMediaPicker);
 
 // Base class for desktop media picker UI. It's used by Desktop Media API, and
 // by ARC to let user choose a desktop media source.
-//
-// TODO(crbug.com/40637301): Rename this class.
 class DesktopMediaPicker {
  public:
   using DoneCallbackArgumentType =
@@ -140,6 +138,9 @@ class DesktopMediaPicker {
 
     // True if getDisplayMedia requested audioSelection='preferred'.
     bool audio_selection_preferred = false;
+
+    // Optional callback invoked when the picker dialog view is being destroyed.
+    base::RepeatingClosure on_picker_destroying;
   };
 
   // Creates a picker dialog/confirmation box depending on the value of

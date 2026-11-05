@@ -14,14 +14,21 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/password_manager/core/browser/password_form.h"
 #include "components/strings/grit/components_strings.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "third_party/skia/include/core/SkRect.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/range/range.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+using ::testing::Pair;
 
 namespace {
 
@@ -196,4 +203,51 @@ TEST(ManagePasswordsViewUtilTest,
             GetConfirmationManagePasswordsDialogTitleText(/*is_update=*/false));
   EXPECT_NE(std::u16string(),
             GetConfirmationManagePasswordsDialogTitleText(/*is_update=*/true));
+}
+
+TEST(ManagePasswordsViewUtilTest, GetSingleLineDisplayText) {
+  EXPECT_EQ(u"user@example.com", GetSingleLineDisplayText(u"user@example.com"));
+  EXPECT_EQ(u"", GetSingleLineDisplayText(u""));
+  EXPECT_EQ(u"user Chrome Security This site is verified",
+            GetSingleLineDisplayText(
+                u"user\n\n\nChrome Security\r\nThis site\tis verified"));
+  // Unicode line/paragraph separators and other control characters.
+  EXPECT_EQ(u"a b c d", GetSingleLineDisplayText(u"a\u2028b\u2029c\u0085\x1b"
+                                                 u"d"));
+  // Unterminated directional overrides are terminated.
+  EXPECT_EQ(u"\u202Euser\u202C", GetSingleLineDisplayText(u"\u202Euser"));
+}
+
+TEST(ManagePasswordsViewUtilTest,
+     GetCredentialLabelsForAccountChooser_SingleLineFields) {
+  password_manager::PasswordForm form;
+  form.username_value = u"user\n\nFake claim";
+  EXPECT_THAT(GetCredentialLabelsForAccountChooser(form),
+              Pair(u"user Fake claim", u""));
+
+  form.display_name = u"Name\nFake claim";
+  EXPECT_THAT(GetCredentialLabelsForAccountChooser(form),
+              Pair(u"Name Fake claim", u"user Fake claim"));
+
+  // A display name that consists only of whitespace is treated as missing.
+  form.display_name = u" \n ";
+  EXPECT_THAT(GetCredentialLabelsForAccountChooser(form),
+              Pair(u"user Fake claim", u""));
+}
+
+TEST(ManagePasswordsViewUtilTest,
+     ScaleImageForAccountAvatarCropsNonSquareImage) {
+  SkBitmap wide_bitmap;
+  wide_bitmap.allocN32Pixels(48, 24);
+  wide_bitmap.eraseColor(SK_ColorRED);
+  wide_bitmap.erase(SK_ColorGREEN, SkIRect::MakeXYWH(12, 0, 24, 24));
+
+  gfx::ImageSkia scaled = ScaleImageForAccountAvatar(
+      gfx::ImageSkia::CreateFrom1xBitmap(wide_bitmap), 24);
+  ASSERT_FALSE(scaled.isNull());
+  EXPECT_EQ(scaled.width(), 24);
+  EXPECT_EQ(scaled.height(), 24);
+  EXPECT_EQ(scaled.bitmap()->getColor(0, 12), SK_ColorGREEN);
+  EXPECT_EQ(scaled.bitmap()->getColor(12, 12), SK_ColorGREEN);
+  EXPECT_EQ(scaled.bitmap()->getColor(23, 12), SK_ColorGREEN);
 }

@@ -8,12 +8,12 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "base/command_line.h"
+#include "base/i18n/language_tag.h"
 #include "base/memory/ref_counted.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/extensions/input_method_event_router.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
@@ -35,7 +35,8 @@ using ::ash::extension_ime_util::GetInputMethodIDByEngineID;
 using ::ash::input_method::InputMethodDescriptor;
 using ::ash::input_method::InputMethodManager;
 
-const char kLoginScreenUILanguage[] = "fr";
+constexpr base::i18n::LanguageTag kLoginScreenUILanguage =
+    base::i18n::GetKnownLanguageTag("fr");
 const char kInitialInputMethodOnLoginScreen[] = "xkb:us::eng";
 const char kTestIMEID[] = "_ext_ime_ilanclmaeigfpnmdlgelmhkpkegdioiptest";
 const char kTestIMEID2[] = "_ext_ime_ilanclmaeigfpnmdlgelmhkpkegdioiptest2";

@@ -34,10 +34,8 @@ android_library("java") {
   deps = [
     ":java_resources",
     "//base:base_java",
-    "//base:service_loader_java",
     "//build/android:build_java",
     "//cc:cc_java",
-    "//components/browser_ui/notifications/android:utils_java",
     "//components/browser_ui/widget/android:java_resources",
     "//components/download/public/common:public_java",
     "//components/embedder_support/android:util_java",
@@ -57,7 +55,7 @@ android_library("java") {
 }
 
 android_resources("java_resources") {
-  sources = [ "res/values/dimens.xml" ]
+  sources = []
   deps = [ "//components/browser_ui/strings/android:browser_ui_strings_grd" ]
 }
 
@@ -83,23 +81,27 @@ robolectric_library("junit") {
     "java/src/org/chromium/components/browser_ui/util/DimensionCompatUnitTest.java",
     "java/src/org/chromium/components/browser_ui/util/DownloadUtilsTest.java",
     "java/src/org/chromium/components/browser_ui/util/TimeTextResolverUnitTest.java",
+    "java/src/org/chromium/components/browser_ui/util/ToolbarUtilsTest.java",
     "java/src/org/chromium/components/browser_ui/util/motion/MotionEventInfoUnitTest.java",
   ]
   deps = [
     ":java",
+    ":java_resources",
     "//base:base_java",
     "//base:base_java_test_support",
     "//base:base_junit_test_support",
     "//base/test:test_support_java",
     "//cc:cc_java",
-    "//components/embedder_support/android:util_java",
     "//components/url_formatter/android:url_formatter_java",
     "//content/public/android:content_java",
+    "//third_party/androidx:androidx_appcompat_appcompat_java",
     "//third_party/androidx:androidx_core_core_java",
+    "//third_party/androidx:androidx_test_core_java",
     "//third_party/junit",
     "//third_party/mockito:mockito_java",
     "//url:gurl_java",
   ]
+  resources_package = "org.chromium.components.browser_ui.util"
 }
 
 android_library("unit_device_javatests") {
@@ -107,7 +109,6 @@ android_library("unit_device_javatests") {
   sources = [
     "java/src/org/chromium/components/browser_ui/util/AvatarGeneratorTest.java",
     "java/src/org/chromium/components/browser_ui/util/FirstDrawDetectorTest.java",
-    "java/src/org/chromium/components/browser_ui/util/ToolbarUtilsTest.java",
     "java/src/org/chromium/components/browser_ui/util/motion/OnPeripheralClickListenerTest.java",
   ]
   deps = [
@@ -116,8 +117,6 @@ android_library("unit_device_javatests") {
     ":test_support_java",
     "//base:base_java",
     "//base:base_java_test_support",
-    "//content/public/test/android:content_java_test_support",
-    "//third_party/androidx:androidx_appcompat_appcompat_java",
     "//third_party/androidx:androidx_core_core_java",
     "//third_party/androidx:androidx_test_runner_java",
     "//third_party/junit",

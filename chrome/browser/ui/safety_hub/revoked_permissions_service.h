@@ -24,10 +24,11 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/browser/web_contents_user_data.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
 
 class PrefChangeRegistrar;
 class PrefService;
+class RevokedPermissionsService;
 
 namespace url {
 class Origin;
@@ -37,32 +38,30 @@ namespace content {
 class Page;
 }  // namespace content
 
+class RevokedPermissionsTabHelper : public content::WebContentsObserver {
+ public:
+  RevokedPermissionsTabHelper(
+      content::WebContents* web_contents,
+      RevokedPermissionsService* revoked_permissions_service);
+  RevokedPermissionsTabHelper(const RevokedPermissionsTabHelper&) = delete;
+  RevokedPermissionsTabHelper& operator=(const RevokedPermissionsTabHelper&) =
+      delete;
+  ~RevokedPermissionsTabHelper() override;
+
+  // WebContentsObserver:
+  void PrimaryPageChanged(content::Page& page) override;
+
+ private:
+  base::WeakPtr<RevokedPermissionsService> revoked_permissions_service_;
+};
+
 // This class keeps track of revoked permissions, including unused permissions,
 // abusive and disruptive notifications. For unused permissions, it updates
 // their last_visit date on navigations and clears them periodically.
 class RevokedPermissionsService final : public SafetyHubService,
                                         public content_settings::Observer {
  public:
-  class TabHelper : public content::WebContentsObserver,
-                    public content::WebContentsUserData<TabHelper> {
-   public:
-    TabHelper(const TabHelper&) = delete;
-    TabHelper& operator=(const TabHelper&) = delete;
-    ~TabHelper() override;
-
-    // WebContentsObserver:
-    void PrimaryPageChanged(content::Page& page) override;
-
-   private:
-    explicit TabHelper(
-        content::WebContents* web_contents,
-        RevokedPermissionsService* unused_site_permission_service);
-
-    base::WeakPtr<RevokedPermissionsService> unused_site_permission_service_;
-
-    friend class content::WebContentsUserData<TabHelper>;
-    WEB_CONTENTS_USER_DATA_KEY_DECL();
-  };
+  using TabHelper = RevokedPermissionsTabHelper;
 
   explicit RevokedPermissionsService(content::BrowserContext* browser_context,
                                      PrefService* prefs);
@@ -116,13 +115,15 @@ class RevokedPermissionsService final : public SafetyHubService,
 
   // Test support:
   void SetClockForTesting(base::Clock* clock);
-  std::vector<ContentSettingEntry> GetTrackedUnusedPermissionsForTesting();
-  UnusedSitePermissionsManager::UntimestampedPermissionList
-  GetUntimestampedPermissionsForTesting();
+  UnusedSitePermissionsManager* unused_site_permissions_manager_for_testing() {
+    return unused_site_permissions_manager_.get();
+  }
 
  private:
+  friend class RevokedPermissionsTabHelper;
+
   // Called by TabHelper when a URL was visited.
-  void OnPageVisited(const url::Origin& origin);
+  void OnPageVisited(const url::Origin& origin, ukm::SourceId ukm_source_id);
 
   HostContentSettingsMap* hcsm() {
     return HostContentSettingsMapFactory::GetForProfile(browser_context_.get());

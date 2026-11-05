@@ -18,6 +18,8 @@
 #include "components/offline_items_collection/core/fail_state.h"
 #include "components/offline_items_collection/core/launch_location.h"
 #include "components/offline_items_collection/core/offline_content_aggregator.h"
+#include "components/url_formatter/elide_url.h"
+#include "url/origin.h"
 
 using offline_items_collection::ContentId;
 using offline_items_collection::FailState;
@@ -303,6 +305,25 @@ bool OfflineItemModel::ShouldPromoteOrigin() const {
   return offline_item_ && offline_item_->promote_origin;
 }
 
+std::u16string OfflineItemModel::GetDownloadDomainForDisplay() const {
+  if (!offline_item_) {
+    return std::u16string();
+  }
+  url::Origin display_origin;
+  if (offline_item_->referrer_url.is_valid()) {
+    display_origin = url::Origin::Create(offline_item_->referrer_url);
+  } else if (GetOriginalURL().is_valid()) {
+    display_origin = url::Origin::Create(GetOriginalURL());
+  } else {
+    display_origin = url::Origin::Create(GetURL());
+  }
+  if (display_origin.opaque()) {
+    return std::u16string();
+  }
+  return url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
+      display_origin.GetURL());
+}
+
 #if !BUILDFLAG(IS_ANDROID)
 bool OfflineItemModel::IsCommandEnabled(
     const DownloadCommands* download_commands,
@@ -311,6 +332,7 @@ bool OfflineItemModel::IsCommandEnabled(
     case DownloadCommands::SHOW_IN_FOLDER:
     case DownloadCommands::OPEN_WHEN_COMPLETE:
     case DownloadCommands::PLATFORM_OPEN:
+    case DownloadCommands::OPEN_WITH:
     case DownloadCommands::ALWAYS_OPEN_TYPE:
     case DownloadCommands::OPEN_WITH_MEDIA_APP:
     case DownloadCommands::EDIT_WITH_MEDIA_APP:
@@ -351,6 +373,7 @@ bool OfflineItemModel::IsCommandChecked(
       return IsPaused();
     case DownloadCommands::SHOW_IN_FOLDER:
     case DownloadCommands::PLATFORM_OPEN:
+    case DownloadCommands::OPEN_WITH:
     case DownloadCommands::CANCEL:
     case DownloadCommands::DISCARD:
     case DownloadCommands::KEEP:
@@ -379,6 +402,7 @@ void OfflineItemModel::ExecuteCommand(DownloadCommands* download_commands,
     case DownloadCommands::SHOW_IN_FOLDER:
     case DownloadCommands::OPEN_WHEN_COMPLETE:
     case DownloadCommands::ALWAYS_OPEN_TYPE:
+    case DownloadCommands::OPEN_WITH:
     case DownloadCommands::KEEP:
     case DownloadCommands::LEARN_MORE_SCANNING:
     case DownloadCommands::LEARN_MORE_INSECURE_DOWNLOAD:

@@ -36,8 +36,9 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/run_loop.h"
 #include "base/strings/string_util.h"
+#include "base/test/run_until.h"
+#include "base/test/scoped_run_loop_timeout.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/browser_delegate/browser_controller_impl.h"
 #include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
@@ -47,16 +48,10 @@
 #include "chrome/browser/ui/ash/new_window/chrome_new_window_client.h"
 #include "chrome/browser/ui/ash/session/session_controller_client_impl.h"
 #include "chrome/browser/ui/ash/session/session_util.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
-#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
-#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
-#include "chrome/test/base/test_browser_window_aura.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
@@ -125,19 +120,6 @@ class TestShellDelegateChromeOS : public ash::TestShellDelegate {
   }
 };
 
-std::unique_ptr<BrowserWindowInterface> CreateTestBrowser(
-    aura::Window* window,
-    const gfx::Rect& bounds,
-    BrowserWindowCreateParams params) {
-  if (!bounds.IsEmpty()) {
-    window->SetBounds(bounds);
-  }
-  std::unique_ptr<BrowserWindowInterface> browser =
-      chrome::CreateBrowserWithAuraTestWindowForParams(base::WrapUnique(window),
-                                                       std::move(params));
-  return browser;
-}
-
 }  // namespace
 
 namespace ash {
@@ -146,7 +128,7 @@ namespace ash {
 // various windows and instantiates the MultiUserWindowManager.
 class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
  public:
-  MultiUserWindowManagerBrowserAdaptorTest() { set_start_session(false); }
+  MultiUserWindowManagerBrowserAdaptorTest() = default;
 
   MultiUserWindowManagerBrowserAdaptorTest(
       const MultiUserWindowManagerBrowserAdaptorTest&) = delete;
@@ -154,9 +136,10 @@ class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
       const MultiUserWindowManagerBrowserAdaptorTest&) = delete;
 
   // ChromeAshTestBase:
+  void SetUpInitParams(ash::AshTestHelper::InitParams& init_params) override;
   void SetUp() override;
   void TearDown() override;
-  void OnHelperWillBeDestroyed() override;
+  void OnSubsystemsTornDown() override;
 
  protected:
   void SwitchActiveUser(const AccountId& account_id) {
@@ -178,12 +161,10 @@ class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
     CHECK(user_manager_->FindUser(account_id));
     SwitchActiveUser(account_id);
 
-    base::TimeTicks now = base::TimeTicks::Now();
-    while (ash::MultiUserWindowManager::Get()->IsAnimationRunningForTest()) {
-      // This should never take longer then a second.
-      ASSERT_GE(1000, (base::TimeTicks::Now() - now).InMilliseconds());
-      base::RunLoop().RunUntilIdle();
-    }
+    base::test::ScopedRunLoopTimeout timeout(FROM_HERE, base::Seconds(1));
+    ASSERT_TRUE(base::test::RunUntil([] {
+      return !ash::MultiUserWindowManager::Get()->IsAnimationRunningForTest();
+    }));
   }
 
   // Return the window with the given index.
@@ -224,13 +205,16 @@ class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
           user->GetAccountId().GetUserEmail());
     }
 
+    // TODO(crbug.com/40225390): Use ProfileUserManagerController.
     user_manager_->OnUserProfileCreated(user->GetAccountId(),
                                         profile->GetPrefs());
     GetSessionControllerClient()->SetUnownedUserPrefService(
         user->GetAccountId(), profile->GetPrefs());
 
     GetSessionControllerClient()->AddUserSession(
-        {user->GetDisplayEmail(), user->GetType()}, user->GetAccountId());
+        {.account_id = user->GetAccountId(),
+         .display_email = user->GetDisplayEmail(),
+         .user_type = user->GetType()});
     GetSessionControllerClient()->SetSessionState(
         session_manager::SessionState::ACTIVE);
 
@@ -290,6 +274,12 @@ class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
 
   // Make a window system modal.
   void MakeWindowSystemModal(aura::Window* window) {
+    AddWindowToSystemModalContainer(window);
+    window->SetProperty(aura::client::kModalKey, ui::mojom::ModalType::kSystem);
+  }
+
+  // Add a window to SystemModalContainer without setting system modal property.
+  void AddWindowToSystemModalContainer(aura::Window* window) {
     aura::Window* system_modal_container =
         window->GetRootWindow()->GetChildById(
             kShellWindowId_SystemModalContainer);
@@ -355,6 +345,13 @@ class MultiUserWindowManagerBrowserAdaptorTest : public ChromeAshTestBase {
   std::optional<ash::BrowserControllerImpl> browser_controller_;
 };
 
+void MultiUserWindowManagerBrowserAdaptorTest::SetUpInitParams(
+    ash::AshTestHelper::InitParams& init_params) {
+  ChromeAshTestBase::SetUpInitParams(init_params);
+  init_params.users.clear();
+  init_params.delegate = std::make_unique<TestShellDelegateChromeOS>();
+}
+
 void MultiUserWindowManagerBrowserAdaptorTest::SetUp() {
   ash::DeviceSettingsService::Initialize();
   cros_settings_holder_ = std::make_unique<ash::CrosSettingsHolder>(
@@ -367,7 +364,6 @@ void MultiUserWindowManagerBrowserAdaptorTest::SetUp() {
       std::make_unique<user_manager::FakeUserManagerDelegate>(),
       TestingBrowserProcess::GetGlobal()->GetTestingLocalState(),
       ash::CrosSettings::Get()));
-  set_shell_delegate(std::make_unique<TestShellDelegateChromeOS>());
 
   ChromeAshTestBase::SetUp();
   GetSessionControllerClient()->set_pref_service_must_exist(true);
@@ -452,7 +448,7 @@ void MultiUserWindowManagerBrowserAdaptorTest::TearDown() {
   browser_controller_.reset();
 
   ChromeAshTestBase::TearDown();
-  // ProfileManager instance is destroyed in OnHelperWillBeDestroyed()
+  // ProfileManager instance is destroyed in OnSubsystemsTornDown()
   // invoked inside ChromeAshTestBase::TearDown().
   EXPECT_FALSE(profile_manager_.get());
   user_manager_.Reset();
@@ -461,8 +457,8 @@ void MultiUserWindowManagerBrowserAdaptorTest::TearDown() {
   ash::DeviceSettingsService::Shutdown();
 }
 
-void MultiUserWindowManagerBrowserAdaptorTest::OnHelperWillBeDestroyed() {
-  ChromeAshTestBase::OnHelperWillBeDestroyed();
+void MultiUserWindowManagerBrowserAdaptorTest::OnSubsystemsTornDown() {
+  ChromeAshTestBase::OnSubsystemsTornDown();
   profile_manager_.reset();
 }
 
@@ -976,6 +972,31 @@ TEST_F(MultiUserWindowManagerBrowserAdaptorTest, TransientWindows) {
   ::wm::RemoveTransientChild(window(7), window(9));
 }
 
+// Tests that destroying a transient window while its owner is hidden by a user
+// switch doesn't try to show the window that is being destroyed.
+TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
+       DeleteTransientWindowWhileOwnerIsHidden) {
+  AddLoggedInUsers({kAccountIdB, kAccountIdA});
+
+  SetUpForThisManyWindows(2);
+  multi_user_window_manager()->SetWindowOwner(window(0), kAccountIdA);
+  ::wm::AddTransientChild(window(0), window(1));
+  EXPECT_EQ("S[a], S[]", GetStatus());
+
+  // Switching to B hides A's window together with its transient child, while
+  // remembering that the transient child should be shown again for A.
+  SwitchActiveUser(kAccountIdB);
+  EXPECT_EQ("H[a], H[]", GetStatus());
+
+  // Destroying the hidden transient child removes it from its transient parent
+  // during its destruction. Its remembered visibility must not be restored.
+  delete_window_at(1);
+  EXPECT_EQ("H[a], D", GetStatus());
+
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_EQ("S[a], D", GetStatus());
+}
+
 // Verifies duplicate observers are not added for transient dialog windows.
 // https://crbug.com/41444428
 TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
@@ -1136,6 +1157,225 @@ TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
   // Showing the window should trigger a user switch.
   window(0)->Show();
   EXPECT_EQ(kAccountIdB, GetAndValidateCurrentUserFromSessionStateObserver());
+}
+
+// Test that a background non-modal window created in the system modal container
+// for an inactive user does not spontaneously trigger a user switch.
+TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
+       DontSwitchUsersUponBackgroundNonModalSystemContainerWindowCreation) {
+  AddLoggedInUsers({kAccountIdA, kAccountIdB});
+
+  // Switch to User A first, then to User B to ensure User B is the active user.
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdA, multi_user_window_manager()->CurrentAccountId());
+
+  SwitchActiveUser(kAccountIdB);
+  EXPECT_EQ(kAccountIdB, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdB, multi_user_window_manager()->CurrentAccountId());
+
+  // Inactive User A creates a non-modal window in the system modal container in
+  // the background (e.g. wl_shell inactive transient surface).
+  SetUpForThisManyWindows(1);
+  AddWindowToSystemModalContainer(window(0));
+  multi_user_window_manager()->SetWindowOwner(window(0), kAccountIdA);
+
+  // The active user must remain User B; it should not switch to User A.
+  EXPECT_EQ(kAccountIdB, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdB, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_FALSE(window(0)->IsVisible());
+}
+
+// Test that user switching transitions correctly when a non-modal window
+// belonging to the previous user is in the system modal container.
+TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
+       NonModalSystemContainerWindowDuringUserSwitch) {
+  AddLoggedInUsers({kAccountIdA, kAccountIdB});
+
+  // Start on user A's desktop.
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+
+  // Create a window owned by user A and parented to the SystemModalContainer
+  // without system modality.
+  SetUpForThisManyWindows(1);
+  multi_user_window_manager()->SetWindowOwner(window(0), kAccountIdA);
+  AddWindowToSystemModalContainer(window(0));
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+
+  // Switch to user B with animation disabled.
+  multi_user_window_manager()->SetAnimationSpeedForTest(
+      ash::MultiUserWindowManager::ANIMATION_SPEED_DISABLED);
+  SwitchActiveUser(kAccountIdB);
+
+  // The active user should properly change to user B, and window(0) should be
+  // hidden on user B's desktop.
+  EXPECT_EQ(kAccountIdB, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdB, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_FALSE(window(0)->IsVisible());
+
+  // Switch back to user A and verify window(0) becomes visible again.
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdA, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_TRUE(window(0)->IsVisible());
+
+  // Test switch to user B with fast animation enabled.
+  multi_user_window_manager()->SetAnimationSpeedForTest(
+      ash::MultiUserWindowManager::ANIMATION_SPEED_FAST);
+  SwitchUserAndWaitForAnimation(kAccountIdB);
+  EXPECT_EQ(kAccountIdB, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdB, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_FALSE(window(0)->IsVisible());
+
+  // Switch back to user A with fast animation enabled.
+  SwitchUserAndWaitForAnimation(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdA, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_TRUE(window(0)->IsVisible());
+}
+
+// Test that user switching transitions correctly when a window belonging to the
+// previous user has a non-modal transient child in the system modal container.
+TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
+       TransientChildInSystemContainerDuringUserSwitch) {
+  AddLoggedInUsers({kAccountIdA, kAccountIdB});
+
+  // Start on user A's desktop.
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+
+  // Create a normal window and attach a non-modal transient child window in
+  // the system modal container.
+  SetUpForThisManyWindows(2);
+  multi_user_window_manager()->SetWindowOwner(window(0), kAccountIdA);
+  ::wm::AddTransientChild(window(0), window(1));
+  AddWindowToSystemModalContainer(window(1));
+  EXPECT_TRUE(window(0)->IsVisible());
+  EXPECT_TRUE(window(1)->IsVisible());
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+
+  // Switch to user B.
+  SwitchActiveUser(kAccountIdB);
+
+  // The active user should properly change to user B, and both windows should
+  // be hidden on user B's desktop.
+  EXPECT_EQ(kAccountIdB, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdB, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_FALSE(window(0)->IsVisible());
+  EXPECT_FALSE(window(1)->IsVisible());
+
+  // Switch back to user A and verify both windows become visible again.
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdA, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_TRUE(window(0)->IsVisible());
+  EXPECT_TRUE(window(1)->IsVisible());
+
+  ::wm::RemoveTransientChild(window(0), window(1));
+}
+
+// Test that user switching transitions correctly when a window belonging to the
+// previous user is a system modal dialog.
+TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
+       SystemModalWindowDuringUserSwitch) {
+  AddLoggedInUsers({kAccountIdA, kAccountIdB});
+
+  // Start on User 1's desktop.
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+
+  // Create a window owned by User 1 and make it system modal dialog.
+  SetUpForThisManyWindows(1);
+  multi_user_window_manager()->SetWindowOwner(window(0), kAccountIdA);
+  MakeWindowSystemModal(window(0));
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+
+  // Switch to User 2 with animation disabled.
+  multi_user_window_manager()->SetAnimationSpeedForTest(
+      ash::MultiUserWindowManager::ANIMATION_SPEED_DISABLED);
+  SwitchActiveUser(kAccountIdB);
+
+  // The active user should properly change to User 2, and window(0) should be
+  // hidden on User 2's desktop.
+  EXPECT_EQ(kAccountIdB, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdB, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_FALSE(window(0)->IsVisible());
+
+  // Switch back to User 1 and verify window(0) becomes visible again.
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdA, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_TRUE(window(0)->IsVisible());
+
+  // Test switch to User 2 with fast animation enabled.
+  multi_user_window_manager()->SetAnimationSpeedForTest(
+      ash::MultiUserWindowManager::ANIMATION_SPEED_FAST);
+  SwitchUserAndWaitForAnimation(kAccountIdB);
+  EXPECT_EQ(kAccountIdB, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdB, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_FALSE(window(0)->IsVisible());
+
+  // Switch back to User 1 with fast animation enabled.
+  SwitchUserAndWaitForAnimation(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdA, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_TRUE(window(0)->IsVisible());
+}
+
+// Test that user switching transitions correctly when a window belonging to the
+// previous user has a transient child as a system modal dialog.
+TEST_F(MultiUserWindowManagerBrowserAdaptorTest,
+       TransientModalChildDuringUserSwitch) {
+  AddLoggedInUsers({kAccountIdA, kAccountIdB});
+
+  // Start on User 1's desktop.
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+
+  // Create a normal window and attach a system modal dialog.
+  SetUpForThisManyWindows(2);
+  multi_user_window_manager()->SetWindowOwner(window(0), kAccountIdA);
+  ::wm::AddTransientChild(window(0), window(1));
+  MakeWindowSystemModal(window(1));
+  EXPECT_TRUE(window(0)->IsVisible());
+  EXPECT_TRUE(window(1)->IsVisible());
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+
+  // Switch to User 2.
+  SwitchActiveUser(kAccountIdB);
+
+  // The active user should properly change to User 2, and both windows should
+  // be hidden on User 2's desktop.
+  EXPECT_EQ(kAccountIdB, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdB, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_FALSE(window(0)->IsVisible());
+  EXPECT_FALSE(window(1)->IsVisible());
+
+  // Switch back to User 1 and verify both windows become visible again.
+  SwitchActiveUser(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdA, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_TRUE(window(0)->IsVisible());
+  EXPECT_TRUE(window(1)->IsVisible());
+
+  // Test switch to User 2 with fast animation enabled.
+  multi_user_window_manager()->SetAnimationSpeedForTest(
+      ash::MultiUserWindowManager::ANIMATION_SPEED_FAST);
+  SwitchUserAndWaitForAnimation(kAccountIdB);
+  EXPECT_EQ(kAccountIdB, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdB, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_FALSE(window(0)->IsVisible());
+  EXPECT_FALSE(window(1)->IsVisible());
+
+  // Switch back to User 1 with fast animation enabled.
+  SwitchUserAndWaitForAnimation(kAccountIdA);
+  EXPECT_EQ(kAccountIdA, GetAndValidateCurrentUserFromSessionStateObserver());
+  EXPECT_EQ(kAccountIdA, multi_user_window_manager()->CurrentAccountId());
+  EXPECT_TRUE(window(0)->IsVisible());
+  EXPECT_TRUE(window(1)->IsVisible());
+
+  ::wm::RemoveTransientChild(window(0), window(1));
 }
 
 // Test that using the full user switch animations are working as expected.
@@ -1651,40 +1891,6 @@ TEST_F(MultiUserWindowManagerBrowserAdaptorTest, WindowsOrderPreservedTests) {
   EXPECT_EQ(mru_list[0], window(0));
   EXPECT_EQ(mru_list[1], window(1));
   EXPECT_EQ(mru_list[2], window(2));
-}
-
-// Tests that GlobalBrowserCollection::GetActiveBrowser() works properly in
-// multi-user scenario, that is it should return the browser with active window
-// associated with it (crbug.com/40498682).
-TEST_F(MultiUserWindowManagerBrowserAdaptorTest, GetActiveBrowser) {
-  AddLoggedInUsers({kAccountIdA, kAccountIdB});
-
-  SetUpForThisManyWindows(1);
-
-  SwitchActiveUser(kAccountIdA);
-
-  multi_user_window_manager()->SetWindowOwner(window(0), kAccountIdA);
-  Profile* profile = Profile::FromBrowserContext(
-      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
-          kAccountIdA));
-  BrowserWindowCreateParams params(profile, true);
-  std::unique_ptr<BrowserWindowInterface> browser(
-      CreateTestBrowser(CreateTestWindowInShell({.window_id = 0}).release(),
-                        {16, 32, 640, 320}, std::move(params)));
-  browser->GetWindow()->Activate();
-  // Manually set last active browser in BrowserList for testing.
-  ui_test_utils::DeprecatedFakeActivateBrowser(browser.get());
-  EXPECT_EQ(browser.get(), GetLastActiveBrowserWindowInterfaceWithAnyProfile());
-  EXPECT_TRUE(browser->GetWindow()->IsActive());
-  EXPECT_EQ(browser.get(),
-            GlobalBrowserCollection::GetInstance()->GetActiveBrowser());
-
-  // Switch to another user's desktop with no active window.
-  SwitchActiveUser(kAccountIdB);
-  EXPECT_EQ(browser.get(), GetLastActiveBrowserWindowInterfaceWithAnyProfile());
-  EXPECT_FALSE(browser->GetWindow()->IsActive());
-  EXPECT_EQ(nullptr,
-            GlobalBrowserCollection::GetInstance()->GetActiveBrowser());
 }
 
 // Tests that a window's bounds get restored to their pre tablet mode bounds,

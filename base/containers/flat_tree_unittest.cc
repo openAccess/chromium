@@ -251,6 +251,22 @@ TEST(FlatTree, Stability) {
   cont.insert(Pair(3, 2));
 
   EXPECT_TRUE(AllOfSecondsAreZero()) << "insert should be stable";
+
+  // Range insert should preserve existing elements and keep the first
+  // occurrence among newly inserted duplicate keys.
+  Pair range[] = {{6, 0}, {4, 0}, {2, 3}, {6, 1}, {5, 0},
+                  {0, 3}, {4, 1}, {5, 1}, {1, 3}};
+  auto span = base::span(range);
+  cont.insert(span.begin(), span.end());
+  EXPECT_THAT(cont, ElementsAre(Pair(0, 0), Pair(1, 0), Pair(2, 0), Pair(3, 0),
+                                Pair(4, 0), Pair(5, 0), Pair(6, 0)));
+
+  // Constructor stability when first occurrences of duplicate keys are in
+  // reverse order across merge partitions.
+  Tree reversed_cont(
+      {{3, 0}, {2, 0}, {3, 1}, {1, 0}, {2, 1}, {0, 0}, {1, 1}, {0, 1}, {0, 2}});
+  EXPECT_THAT(reversed_cont,
+              ElementsAre(Pair(0, 0), Pair(1, 0), Pair(2, 0), Pair(3, 0)));
 }
 
 // ----------------------------------------------------------------------------
@@ -1745,6 +1761,32 @@ TEST(FlatTree, ConstexprIteratorsAndLifetime) {
     }
     return sum;
   }() == 6);
+}
+
+TEST(FlatTree, ConstexprEmplace) {
+  constexpr auto test_constexpr_emplace = [] {
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree(
+        sorted_unique, std::vector<int>({1, 2, 3, 5}));
+
+    // Emplace a new element in the middle of the tree.
+    auto [it, inserted] = tree.emplace(4);
+    return inserted && it != tree.end();
+  };
+
+  static_assert(test_constexpr_emplace());
+}
+
+TEST(FlatTree, ConstexprEmplaceDuplicate) {
+  constexpr auto test_constexpr_emplace_duplicate = [] {
+    flat_tree<int, std::identity, std::less<>, std::vector<int>> tree(
+        sorted_unique, std::vector<int>({1, 2, 3, 5}));
+
+    auto [it, inserted] = tree.emplace(2);
+    // No insertion is performed and `it` should point to element '2'.
+    return !inserted && it != tree.end() && *it == 2;
+  };
+
+  static_assert(test_constexpr_emplace_duplicate());
 }
 
 }  // namespace base::internal

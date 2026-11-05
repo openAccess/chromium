@@ -22,7 +22,7 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/extensions/api/certificate_provider.h"
+#include "chromeos/ash/experiences/extensions/common/api/certificate_provider.h"
 #include "content/public/browser/browser_context.h"
 #include "crypto/sign.h"
 #include "extensions/browser/api/test/test_api.h"
@@ -189,8 +189,8 @@ void TestCertificateProviderExtension::TriggerSetCertificates() {
     cert_info_values.Append(MakeClientCertificateInfoValue(*certificate_));
   message_data.Set("certificateInfoList", std::move(cert_info_values));
 
-  base::ListValue message;
-  message.Append(std::move(message_data));
+  auto message = base::MakeRefCounted<extensions::EventArgs>();
+  message->data.Append(std::move(message_data));
   auto event = std::make_unique<extensions::Event>(
       extensions::events::FOR_TEST,
       extensions::api::test::OnMessage::kEventName, std::move(message),

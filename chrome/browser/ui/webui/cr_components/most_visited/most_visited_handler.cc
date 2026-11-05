@@ -16,7 +16,7 @@
 #include "chrome/browser/new_tab_page/new_tab_page_util.h"
 #include "chrome/browser/new_tab_page/prefs/ntp_pref_names.h"
 #include "chrome/browser/ntp_tiles/chrome_most_visited_sites_factory.h"
-#include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
+#include "chrome/browser/page_load_metrics/chrome_navigation_initiator.h"
 #include "chrome/browser/predictors/loading_predictor.h"
 #include "chrome/browser/predictors/loading_predictor_config.h"
 #include "chrome/browser/predictors/loading_predictor_factory.h"
@@ -24,26 +24,21 @@
 #include "chrome/browser/preloading/new_tab_page_preload/new_tab_page_preload_pipeline_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
-// Android uses a different implementation of tab features.
-#if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/android/tab_features.h"
-#else
-#include "chrome/browser/ui/tabs/public/tab_features.h"
-#endif
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "components/history/core/browser/features.h"
 #include "components/ntp_tiles/constants.h"
 #include "components/ntp_tiles/most_visited_sites.h"
 #include "components/ntp_tiles/ntp_tile_impression.h"
-#include "components/ntp_tiles/pref_names.h"
 #include "components/ntp_tiles/tile_type.h"
-#include "components/page_load_metrics/browser/navigation_handle_user_data.h"
+#include "components/page_load_metrics/browser/navigation_initiator.h"
 #include "components/prefs/pref_service.h"
 #include "components/search/ntp_features.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "services/network/public/cpp/constants.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition_utils.h"
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -267,13 +262,13 @@ void MostVisitedHandler::OnMostVisitedTileNavigation(
   DisableShortcutsAutoRemoval(profile_);
   logger_->LogMostVisitedNavigation(MakeNTPTileImpression(*tile, index));
 
-  WindowOpenDisposition disposition = ui::DispositionFromClick(
+  ui::mojom::WindowOpenDisposition disposition = ui::DispositionFromClick(
       /*middle_button=*/mouse_button == 1, alt_key, ctrl_key, meta_key,
       shift_key);
 
   if (tile->url.is_valid() &&
-      disposition != WindowOpenDisposition::SAVE_TO_DISK &&
-      disposition != WindowOpenDisposition::IGNORE_ACTION) {
+      disposition != ui::mojom::WindowOpenDisposition::kSaveToDisk &&
+      disposition != ui::mojom::WindowOpenDisposition::kIgnoreAction) {
     if (PrefService* prefs = profile_->GetPrefs()) {
       prefs->SetInt64(
           ntp_prefs::kNtpMostVisitedTileNavigationCount,
@@ -291,13 +286,13 @@ void MostVisitedHandler::OnMostVisitedTileNavigation(
   // is enabled.
   base::OnceCallback<void(content::NavigationHandle&)>
       navigation_handle_callback =
-          base::BindRepeating(&AttachNewTabPageNavigationHandleUserData);
+          page_load_metrics::NavigationInitiatorHolder::AttacherCallback(
+              chrome_navigation_initiator::kNewTabPage);
   web_contents_->OpenURL(
-      content::OpenURLParams(tile->url, content::Referrer(), disposition,
-                             tile->is_query_tile
-                                 ? ui::PAGE_TRANSITION_LINK
-                                 : ui::PAGE_TRANSITION_AUTO_BOOKMARK,
-                             /*is_renderer_initiated=*/false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          tile->url, disposition,
+          tile->is_query_tile ? ui::PAGE_TRANSITION_LINK
+                              : ui::PAGE_TRANSITION_AUTO_BOOKMARK),
       std::move(navigation_handle_callback));
 }
 
@@ -447,8 +442,7 @@ void MostVisitedHandler::OnIconMadeAvailable(const GURL& site_url) {}
 NewTabPagePreloadPipelineManager*
 MostVisitedHandler::GetNewTabPagePreloadPipelineManager() {
   tabs::TabInterface* tab = webui::GetTabInterface(web_contents_);
-  return tab ? tab->GetTabFeatures()->new_tab_page_preload_pipeline_manager()
-             : nullptr;
+  return NewTabPagePreloadPipelineManager::From(tab);
 }
 
 bool MostVisitedHandler::MaybeRemoveStaleShortcuts() {

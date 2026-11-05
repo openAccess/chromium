@@ -25,12 +25,12 @@
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/extensions/api/vpn_provider.h"
 #include "chromeos/ash/components/dbus/shill/fake_shill_third_party_vpn_driver_client.h"
 #include "chromeos/ash/components/dbus/shill/shill_manager_client.h"
 #include "chromeos/ash/components/dbus/shill/shill_profile_client.h"
 #include "chromeos/ash/components/network/network_configuration_handler.h"
 #include "chromeos/ash/components/network/shill_property_handler.h"
+#include "chromeos/ash/experiences/extensions/common/api/vpn_provider.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
@@ -135,20 +135,19 @@ class VpnProviderApiTestBase : public extensions::ExtensionApiTest {
   }
 
   bool RunTest(const std::string& test_name) {
-    DCHECK(extension_);
+    CHECK(extension_, base::NotFatalUntil::M161);
     const std::string extension_url = "basic.html?#" + test_name;
     return RunExtensionTest("vpn_provider",
                             {.extension_url = extension_url.c_str()});
   }
 
   const std::string& extension_id() const {
-    DCHECK(extension_id_);
+    CHECK(extension_id_, base::NotFatalUntil::M161);
     return *extension_id_;
   }
 
   chromeos::VpnService* service() {
-    return static_cast<chromeos::VpnService*>(
-        chromeos::VpnServiceFactory::GetForBrowserContext(profile()));
+    return chromeos::VpnServiceFactory::GetForBrowserContext(profile());
   }
 
   virtual void OnPlatformMessage(const std::string& configuration_name,
@@ -158,7 +157,7 @@ class VpnProviderApiTestBase : public extensions::ExtensionApiTest {
 
  protected:
   void LoadVpnExtension() {
-    DCHECK(!extension_);
+    CHECK(!extension_, base::NotFatalUntil::M161);
     extension_ = LoadExtension(test_data_dir_.AppendASCII("vpn_provider"));
     extension_id_ = extension_->id();
   }

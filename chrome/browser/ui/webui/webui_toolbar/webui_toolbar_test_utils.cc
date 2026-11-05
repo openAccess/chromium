@@ -35,15 +35,14 @@ MockBrowserControlsServiceDelegate::MockBrowserControlsServiceDelegate() =
 MockBrowserControlsServiceDelegate::~MockBrowserControlsServiceDelegate() =
     default;
 
-toolbar_ui_api::mojom::NavigationControlsStatePtr
-CreateValidNavigationControlsState() {
+toolbar_ui_api::mojom::ToolbarStatePtr CreateValidToolbarState() {
   auto back_forward_state =
       toolbar_ui_api::mojom::BackForwardControlState::New();
   back_forward_state->back_button_state =
       toolbar_ui_api::mojom::BackForwardButtonState::New();
   back_forward_state->forward_button_state =
       toolbar_ui_api::mojom::BackForwardButtonState::New();
-  return toolbar_ui_api::mojom::NavigationControlsState::New(
+  return toolbar_ui_api::mojom::ToolbarState::New(
       toolbar_ui_api::mojom::ReloadControlState::New(),
       toolbar_ui_api::mojom::SplitTabsControlState::New(),
       std::move(back_forward_state),
@@ -51,7 +50,9 @@ CreateValidNavigationControlsState() {
       toolbar_ui_api::mojom::PerformanceInterventionControlState::New(),
       toolbar_ui_api::mojom::AppMenuControlState::New(),
       toolbar_ui_api::mojom::AvatarControlState::New(),
-      /*battery_saver_button_visible=*/false,
+      toolbar_ui_api::mojom::OverflowButtonControlState::New(),
+      toolbar_ui_api::mojom::MediaControlState::New(),
+      toolbar_ui_api::mojom::BatterySaverControlState::New(),
       toolbar_ui_api::mojom::LocationBarState::New(
           toolbar_ui_api::mojom::OmniboxViewState::New(),
           toolbar_ui_api::mojom::LocationBarFlags::New(),
@@ -72,12 +73,17 @@ CreateValidNavigationControlsState() {
                   /*is_visible=*/true,
                   /*is_context_menu_visible=*/false),
               std::vector<toolbar_ui_api::mojom::ContentSettingImageStatePtr>(),
-              /*permission_dashboard=*/nullptr),
+              /*permission_dashboard=*/
+              toolbar_ui_api::mojom::PermissionDashboardState::New(
+                  toolbar_ui_api::mojom::PermissionChipState::New(),
+                  toolbar_ui_api::mojom::PermissionChipState::New(),
+                  /*is_divider_visible=*/false)),
           toolbar_ui_api::mojom::SelectedKeywordStatePtr()),
       std::vector<extensions_bar::mojom::ExtensionActionInfoPtr>(),
       std::vector<toolbar_ui_api::mojom::PinnedToolbarActionStatePtr>(),
       /*layout_constants_version=*/0,
-      /*touch_ui=*/false);
+      /*touch_ui=*/false, toolbar_ui_api::mojom::GlicButtonState::New(),
+      /*controls_appear_inactive=*/false);
 }
 
 MockCommandUpdater::MockCommandUpdater() = default;

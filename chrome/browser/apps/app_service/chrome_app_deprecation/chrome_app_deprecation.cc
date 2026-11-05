@@ -22,6 +22,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
+#include "extensions/common/manifest.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/metadata/view_factory.h"
 
@@ -32,11 +33,14 @@ BASE_FEATURE(kAllowUserInstalledChromeApps, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kAllowChromeAppsInKioskSessions,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kAllowAdminInstalledChromeApps, base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kChromeAppsDeprecationComponentUpdater,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 namespace {
 constexpr auto kCommonAllowlist = base::MakeFixedFlatSet<std::string_view>({
+    // clang-format off
     // go/keep-sorted start
     "aakfkoilmhehmmadlkedfbcelkbamdkj",
     "acdafoiapclbpdkhnighhilgampkglpc",
@@ -182,8 +186,9 @@ constexpr auto kCommonAllowlist = base::MakeFixedFlatSet<std::string_view>({
     "pifpopligmljinioeacaccciabhbbpjo",
     "plhmjahmpikllpphfaoopdhnkbpffccm",
     "pnclfbefcgmenbbbpljbhbdacgkgkjlh",
-    "ppkfnjlimknmjoaemnpidmdlfchhehel"
+    "ppkfnjlimknmjoaemnpidmdlfchhehel",
     // go/keep-sorted end
+    // clang-format on
 });
 
 constexpr auto kUserInstalledAllowlist = base::flat_set<std::string_view>();
@@ -201,7 +206,7 @@ constexpr auto kTestAllowlist = {
     "aajgmlihcokkalfjbangebcffdoanjfo",
     "epeagdmdgnhlibpbnhalblaohdhhkpne",
     "fimgekdokgldflggeacgijngdienfdml",
-    "kjecmldfmbflidigcdfdnegjgkgggoih"
+    "kjecmldfmbflidigcdfdnegjgkgggoih",
     // go/keep-sorted end
 };
 
@@ -264,7 +269,7 @@ void ReportMetric(DeprecationCheckOutcome outcome) {
 bool g_fake_kiosk_session_for_testing = false;
 bool g_skip_system_dialog_for_testing = false;
 
-enum class AllowlistContext { UserInstalled, KioskSession };
+enum class AllowlistContext { UserInstalled, KioskSession, AdminInstalled };
 
 bool IsAllowlisted(std::string_view app_id, AllowlistContext context) {
   auto* state = DeprecationState::GetInstance();
@@ -272,19 +277,24 @@ bool IsAllowlisted(std::string_view app_id, AllowlistContext context) {
     case AllowlistContext::UserInstalled:
       return kCommonAllowlist.contains(app_id) ||
              state->common_allowlist_from_component_updater.contains(
-                 app_id.data()) ||
+                 std::string(app_id)) ||
              kUserInstalledAllowlist.contains(app_id) ||
              state->user_installed_allowlist_from_component_updater.contains(
-                 app_id.data()) ||
-             state->test_allowlisted_apps.contains(app_id.data());
+                 std::string(app_id)) ||
+             state->test_allowlisted_apps.contains(std::string(app_id));
     case AllowlistContext::KioskSession:
       return kCommonAllowlist.contains(app_id) ||
              state->common_allowlist_from_component_updater.contains(
-                 app_id.data()) ||
+                 std::string(app_id)) ||
              kKioskSessionAllowlist.contains(app_id) ||
              state->kiosk_session_allowlist_from_component_updater.contains(
-                 app_id.data()) ||
-             state->test_allowlisted_apps.contains(app_id.data());
+                 std::string(app_id)) ||
+             state->test_allowlisted_apps.contains(std::string(app_id));
+    case AllowlistContext::AdminInstalled:
+      return kCommonAllowlist.contains(app_id) ||
+             state->common_allowlist_from_component_updater.contains(
+                 std::string(app_id)) ||
+             state->test_allowlisted_apps.contains(std::string(app_id));
   }
 }
 
@@ -352,7 +362,7 @@ bool IsUserInstalled(std::string_view app_id, Profile* profile) {
   }
 
   std::optional<const extensions::ExtensionPrefs::InstallRecord>
-      extension_info = prefs->GetInstalledExtensionInfo(app_id.data());
+      extension_info = prefs->GetInstalledExtensionInfo(std::string(app_id));
   if (!extension_info) {
     return false;
   }
@@ -361,6 +371,22 @@ bool IsUserInstalled(std::string_view app_id, Profile* profile) {
 
   return location == extensions::mojom::ManifestLocation::kInternal ||
          location == extensions::mojom::ManifestLocation::kUnpacked;
+}
+
+bool IsAdminInstalled(std::string_view app_id, Profile* profile) {
+  auto* prefs = extensions::ExtensionPrefs::Get(profile);
+  if (!prefs) {
+    return false;
+  }
+
+  std::optional<const extensions::ExtensionPrefs::InstallRecord>
+      extension_info = prefs->GetInstalledExtensionInfo(std::string(app_id));
+  if (!extension_info) {
+    return false;
+  }
+
+  return extensions::Manifest::IsPolicyLocation(
+      extension_info->extension_location);
 }
 
 DeprecationStatus HandleUserInstalledApp(const extensions::Extension& app,
@@ -380,6 +406,31 @@ DeprecationStatus HandleUserInstalledApp(const extensions::Extension& app,
     ShowLaunchBlockedDialog(app.name());
   }
   ReportMetric(DeprecationCheckOutcome::kUserInstalledBlocked);
+  return DeprecationStatus::kLaunchBlocked;
+}
+
+DeprecationStatus HandleAdminInstalledApp(const extensions::Extension& app,
+                                          Profile* profile) {
+  if (IsAllowlisted(app.id(), AllowlistContext::AdminInstalled)) {
+    ReportMetric(DeprecationCheckOutcome::kManagedAllowedByAllowlist);
+    return DeprecationStatus::kLaunchAllowed;
+  }
+
+  if (profile->GetPrefs()->GetBoolean(
+          ash::prefs::kAdminInstalledChromeAppsForceAllowed)) {
+    ReportMetric(DeprecationCheckOutcome::kManagedAllowedByAdminPolicy);
+    return DeprecationStatus::kLaunchAllowed;
+  }
+
+  if (base::FeatureList::IsEnabled(kAllowAdminInstalledChromeApps)) {
+    ReportMetric(DeprecationCheckOutcome::kManagedAllowedByFlag);
+    return DeprecationStatus::kLaunchAllowed;
+  }
+
+  if (!g_skip_system_dialog_for_testing) {
+    ShowLaunchBlockedDialog(app.name());
+  }
+  ReportMetric(DeprecationCheckOutcome::kManagedBlocked);
   return DeprecationStatus::kLaunchBlocked;
 }
 
@@ -496,7 +547,7 @@ ScopedAddAppToAllowlistForTesting::~ScopedAddAppToAllowlistForTesting() {
 DeprecationStatus HandleDeprecation(std::string_view app_id, Profile* profile) {
   const extensions::Extension* app =
       extensions::ExtensionRegistry::Get(profile)->GetInstalledExtension(
-          app_id.data());
+          std::string(app_id));
 
   if (!app || !app->is_app()) {
     ReportMetric(DeprecationCheckOutcome::kAllowedNotChromeApp);
@@ -509,6 +560,10 @@ DeprecationStatus HandleDeprecation(std::string_view app_id, Profile* profile) {
 
   if (IsUserInstalled(app_id, profile)) {
     return HandleUserInstalledApp(*app, profile);
+  }
+
+  if (IsAdminInstalled(app_id, profile)) {
+    return HandleAdminInstalledApp(*app, profile);
   }
 
   ReportMetric(DeprecationCheckOutcome::kAllowedDefault);
@@ -526,7 +581,7 @@ void RegisterAllowlistComponentUpdater(
           component_updater::
               ChromeAppsDeprecationAllowlistComponentInstallerPolicy>(
           base::BindRepeating(&LoadComponentUpdaterAllowlists)),
-      /*action_handler=*/nullptr, base::TaskPriority::BEST_EFFORT)
+      /*action_handler=*/nullptr, base::TaskPriority::USER_BLOCKING)
       ->Register(cus, base::DoNothing());
 }
 

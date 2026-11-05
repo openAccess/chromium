@@ -4,8 +4,6 @@
 
 package org.chromium.android_webview.robolectric;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 
@@ -13,19 +11,21 @@ import android.content.Context;
 import android.graphics.Insets;
 import android.graphics.Rect;
 import android.os.Build;
-import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.WindowMetrics;
+import android.widget.FrameLayout;
 
-import androidx.test.filters.SmallTest;
+import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.annotation.Config;
+import org.robolectric.shadow.api.Shadow;
+import org.robolectric.shadows.ShadowApplication;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.android_webview.AwDisplayCutoutController;
 import org.chromium.android_webview.AwViewAndroidDelegate;
@@ -37,7 +37,6 @@ import org.chromium.base.test.util.Feature;
 @Config(sdk = Build.VERSION_CODES.R)
 public class AwInsetsTest {
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void webViewIsAlignedWithBottomOfWindow() {
         Rect windowBounds = new Rect(20, 50, 520, 850);
@@ -50,7 +49,6 @@ public class AwInsetsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void webViewIsAboveWindowBottomNoImeOverlap() {
         Rect windowBounds = new Rect(20, 50, 520, 850);
@@ -63,7 +61,6 @@ public class AwInsetsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void webViewIsAboveWindowBottomImeGap() {
         Rect windowBounds = new Rect(20, 50, 520, 850);
@@ -76,7 +73,6 @@ public class AwInsetsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void webViewIsAboveWindowBottomImeOverlap() {
         Rect windowBounds = new Rect(20, 50, 520, 850);
@@ -90,7 +86,6 @@ public class AwInsetsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void webViewIsBelowWindowBottomNoIme() {
         Rect windowBounds = new Rect(20, 50, 520, 850);
@@ -101,7 +96,6 @@ public class AwInsetsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void webViewIsBelowWindowBottomIme() {
         Rect windowBounds = new Rect(20, 50, 520, 850);
@@ -112,10 +106,6 @@ public class AwInsetsTest {
                         .setInsets(WindowInsets.Type.ime(), Insets.of(0, 0, 0, 100))
                         .build();
         runInsetTest(windowBounds, webViewBounds, insets, 300);
-    }
-
-    private static class InsetsListenerHolder {
-        public View.OnApplyWindowInsetsListener listener;
     }
 
     /**
@@ -129,37 +119,26 @@ public class AwInsetsTest {
      */
     private void runInsetTest(
             Rect windowBounds, Rect webViewBounds, WindowInsets insets, int expected) {
-        final InsetsListenerHolder holder = new InsetsListenerHolder();
+        Context context = ApplicationProvider.getApplicationContext();
+        ViewGroup view = new FrameLayout(context);
+        // Attach the view to a window so that it is attached and has a location in the window.
+        FrameLayout windowRoot = new FrameLayout(context);
+        windowRoot.addView(view);
+        context.getSystemService(WindowManager.class)
+                .addView(windowRoot, new WindowManager.LayoutParams());
+        ShadowLooper.idleMainLooper();
+        view.layout(
+                webViewBounds.left, webViewBounds.top, webViewBounds.right, webViewBounds.bottom);
+
         WindowMetrics wm = mock(WindowMetrics.class);
         doReturn(insets).when(wm).getWindowInsets();
         doReturn(windowBounds).when(wm).getBounds();
-        ViewGroup view = mock(ViewGroup.class);
-        Context context = mock(Context.class);
         WindowManager manager = mock(WindowManager.class);
         doReturn(wm).when(manager).getCurrentWindowMetrics();
-        doReturn(manager).when(context).getSystemService(WindowManager.class);
-        doAnswer(
-                        invocation -> {
-                            holder.listener =
-                                    (View.OnApplyWindowInsetsListener) invocation.getArguments()[0];
-                            return null;
-                        })
-                .when(view)
-                .setOnApplyWindowInsetsListener(any(View.OnApplyWindowInsetsListener.class));
-        doReturn(context).when(view).getContext();
-        doReturn(webViewBounds.width()).when(view).getWidth();
-        doReturn(webViewBounds.height()).when(view).getHeight();
-        doAnswer(
-                        invocation -> {
-                            int[] out = (int[]) invocation.getArguments()[0];
-                            out[0] = webViewBounds.left;
-                            out[1] = webViewBounds.top;
-                            return null;
-                        })
-                .when(view)
-                .getLocationInWindow(any(int[].class));
-        doReturn(true).when(view).isAttachedToWindow();
-        doReturn(mock(ViewTreeObserver.class)).when(view).getViewTreeObserver();
+        // Set after constructing the View so that View construction uses the real WindowManager.
+        ShadowApplication shadowApplication = Shadow.extract(context);
+        shadowApplication.setSystemService(Context.WINDOW_SERVICE, manager);
+
         AwDisplayCutoutController awDisplayCutoutController =
                 new AwDisplayCutoutController(
                         new AwDisplayCutoutController.Delegate() {
@@ -178,8 +157,8 @@ public class AwInsetsTest {
                         view);
         AwViewAndroidDelegate viewAndroidDelegate =
                 new AwViewAndroidDelegate(view, null, null, awDisplayCutoutController);
-        Assert.assertNotNull(holder.listener);
-        holder.listener.onApplyWindowInsets(view, insets);
+        // Dispatches to the OnApplyWindowInsetsListener registered by AwDisplayCutoutController.
+        view.dispatchApplyWindowInsets(insets);
         Assert.assertEquals(expected, viewAndroidDelegate.getViewportInsetBottom());
     }
 }

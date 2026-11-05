@@ -30,7 +30,9 @@
 #include "third_party/blink/public/mojom/ai/ai_manager.mojom-forward.h"
 #include "third_party/blink/public/mojom/blob/blob_url_store.mojom-forward.h"
 #include "third_party/blink/public/mojom/broadcastchannel/broadcast_channel.mojom.h"
+#include "third_party/blink/public/mojom/clipboard/clipboard.mojom-forward.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom.h"
+#include "third_party/blink/public/mojom/hid/hid.mojom-forward.h"
 #include "third_party/blink/public/mojom/loader/code_cache.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_container.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_container_type.mojom.h"
@@ -39,10 +41,6 @@
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom.h"
 #include "third_party/blink/public/mojom/webtransport/web_transport_connector.mojom.h"
 #include "url/origin.h"
-
-#if !BUILDFLAG(IS_ANDROID)
-#include "third_party/blink/public/mojom/hid/hid.mojom-forward.h"
-#endif
 
 namespace content {
 
@@ -95,12 +93,15 @@ class CONTENT_EXPORT ServiceWorkerHost : public BucketContext,
   void BindCacheStorage(
       mojo::PendingReceiver<blink::mojom::CacheStorage> receiver);
 
-#if !BUILDFLAG(IS_ANDROID)
   void BindHidService(mojo::PendingReceiver<blink::mojom::HidService> receiver);
-#endif  // !BUILDFLAG(IS_ANDROID)
 
   void BindUsbService(
       mojo::PendingReceiver<blink::mojom::WebUsbService> receiver);
+
+  // Refused with a bad message unless the embedder lists the worker's origin
+  // as eligible.
+  void BindClipboardHost(
+      mojo::PendingReceiver<blink::mojom::ClipboardHost> receiver);
 
   ServiceWorkerContainerHostForServiceWorker* container_host() {
     return container_host_.get();
@@ -181,6 +182,10 @@ class CONTENT_EXPORT ServiceWorkerHost : public BucketContext,
   // CodeCacheHost processes requests to fetch / write generated code for
   // JavaScript / WebAssembly resources.
   std::unique_ptr<CodeCacheHostImpl::ReceiverSet> code_cache_host_receivers_;
+
+  // Clipboard hosts bound by this worker. They hold a reference to `this` and
+  // go away with it, or earlier when their pipe closes.
+  mojo::UniqueReceiverSet<blink::mojom::ClipboardHost> clipboard_hosts_;
 
   mojo::AssociatedReceiver<blink::mojom::ServiceWorkerContainerHost>
       host_receiver_;

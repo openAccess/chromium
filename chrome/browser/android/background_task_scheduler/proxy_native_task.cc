@@ -12,15 +12,17 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/browser/profiles/profile_key_android.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/ProxyNativeTask_jni.h"
 
-static int64_t JNI_ProxyNativeTask_Init(JNIEnv* env,
-                                        const JavaRef<jobject>& jobj,
-                                        int32_t task_id,
-                                        const std::string& extras,
-                                        const JavaRef<jobject>& jcallback) {
+static jni_zero::JniUniquePtr<ProxyNativeTask> JNI_ProxyNativeTask_Init(
+    JNIEnv* env,
+    const JavaRef<jobject>& jobj,
+    int32_t task_id,
+    const std::string& extras,
+    const JavaRef<jobject>& jcallback) {
   std::unique_ptr<background_task::BackgroundTask> background_task =
       ChromeBackgroundTaskFactory::GetNativeBackgroundTaskFromTaskId(task_id);
 
@@ -35,10 +37,9 @@ static int64_t JNI_ProxyNativeTask_Init(JNIEnv* env,
       base::BindOnce(&base::android::RunBooleanCallbackAndroid,
                      base::android::ScopedJavaGlobalRef<jobject>(jcallback));
 
-  ProxyNativeTask* proxy_native_task =
-      new ProxyNativeTask(std::move(background_task), std::move(params),
-                          std::move(finish_callback));
-  return reinterpret_cast<intptr_t>(proxy_native_task);
+  return jni_zero::MakeUnique<ProxyNativeTask>(std::move(background_task),
+                                               std::move(params),
+                                               std::move(finish_callback));
 }
 
 ProxyNativeTask::ProxyNativeTask(
@@ -51,10 +52,6 @@ ProxyNativeTask::ProxyNativeTask(
 
 ProxyNativeTask::~ProxyNativeTask() = default;
 
-void ProxyNativeTask::Destroy(JNIEnv* env) {
-  delete this;
-}
-
 void ProxyNativeTask::StartBackgroundTaskInReducedMode(
     JNIEnv* env,
     const JavaRef<jobject>& jkey) {
@@ -64,7 +61,7 @@ void ProxyNativeTask::StartBackgroundTaskInReducedMode(
   }
 
   ProfileKey* key = ProfileKeyAndroid::FromProfileKeyAndroid(jkey);
-  DCHECK(key);
+  CHECK(key, base::NotFatalUntil::M161);
   background_task_->OnStartTaskInReducedMode(task_params_,
                                              std::move(finish_callback_), key);
 }
@@ -76,7 +73,7 @@ void ProxyNativeTask::StartBackgroundTaskWithFullBrowser(JNIEnv* env,
     return;
   }
 
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
   background_task_->OnStartTaskWithFullBrowser(
       task_params_, std::move(finish_callback_), profile);
 }
@@ -86,7 +83,7 @@ void ProxyNativeTask::OnFullBrowserLoaded(JNIEnv* env,
   if (!background_task_)
     return;
 
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
   background_task_->OnFullBrowserLoaded(profile);
 }
 

@@ -94,7 +94,7 @@ AttestationObject::ParseForResponseFields(
         device::AttestationObject::AAGUID::kInclude);
     if (did_modify) {
       ret.attestation_object_bytes =
-          *cbor::Writer::Write(AsCBOR(*attestation_object));
+          *cbor::Writer::Write(attestation_object->AsCBOR());
     } else {
       ret.attestation_object_bytes = std::move(attestation_object_bytes);
     }
@@ -167,14 +167,12 @@ bool AttestationObject::IsAttestationCertificateInappropriatelyIdentifying() {
       ->IsAttestationCertificateInappropriatelyIdentifying();
 }
 
-cbor::Value AsCBOR(const AttestationObject& object) {
+cbor::Value AttestationObject::AsCBOR() const {
   cbor::Value::MapValue map;
-  map[cbor::Value(kFormatKey)] =
-      cbor::Value(object.attestation_statement().format_name());
-  map[cbor::Value(kAuthDataKey)] =
-      cbor::Value(object.authenticator_data().SerializeToByteArray());
-  map[cbor::Value(kAttestationStatementKey)] =
-      AsCBOR(object.attestation_statement());
+  map.emplace(kFormatKey, attestation_statement().format_name());
+  map.emplace(kAuthDataKey, authenticator_data().SerializeToByteArray());
+  map.emplace(kAttestationStatementKey,
+              device::AsCBOR(attestation_statement()));
   return cbor::Value(std::move(map));
 }
 

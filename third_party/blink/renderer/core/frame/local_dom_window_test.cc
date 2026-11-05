@@ -40,6 +40,11 @@
 #include "third_party/blink/public/web/web_window_features.h"
 #include "third_party/blink/renderer/bindings/core/v8/isolated_world_csp.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_promise_rejection_event_init.h"
+#include "third_party/blink/renderer/core/dom/events/event.h"
+#include "third_party/blink/renderer/core/event_type_names.h"
+#include "third_party/blink/renderer/core/events/error_event.h"
+#include "third_party/blink/renderer/core/events/promise_rejection_event.h"
 #include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -48,6 +53,8 @@
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/core/testing/mock_policy_container_host.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
+#include "third_party/blink/renderer/platform/bindings/dom_wrapper_world.h"
+#include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
@@ -71,7 +78,7 @@ class LocalDOMWindowTest : public PageTestBase {
         blink::WebPolicyContainerPolicies(),
         mock_policy_container_host.BindNewEndpointAndPassDedicatedRemote());
     params->policy_container->policies.sandbox_flags = sandbox_flags;
-    params->initiator_state_token = base::UnguessableToken::Create();
+    params->initiator_state_token = InitiatorStateToken();
     if ((params->policy_container->policies.sandbox_flags &
          network::mojom::blink::WebSandboxFlags::kOrigin) !=
         network::mojom::blink::WebSandboxFlags::kNone) {
@@ -84,16 +91,6 @@ class LocalDOMWindowTest : public PageTestBase {
     ASSERT_EQ(url.GetString(), GetDocument().Url().GetString());
   }
 };
-
-TEST_F(LocalDOMWindowTest, AttachExecutionContext) {
-  auto* scheduler = GetFrame().GetFrameScheduler();
-  auto* window = GetFrame().DomWindow();
-  EXPECT_TRUE(
-      window->GetAgent()->event_loop()->IsSchedulerAttachedForTest(scheduler));
-  window->FrameDestroyed();
-  EXPECT_FALSE(
-      window->GetAgent()->event_loop()->IsSchedulerAttachedForTest(scheduler));
-}
 
 TEST_F(LocalDOMWindowTest, referrerPolicyParsing) {
   LocalDOMWindow* window = GetFrame().DomWindow();
@@ -345,6 +342,65 @@ TEST_F(LocalDOMWindowTest, StorageAccessApiStatus) {
             net::StorageAccessApiStatus::kAccessViaAPI);
 }
 
+TEST_F(LocalDOMWindowTest, EventRespectsWorldOfCurrentEvent) {
+  LocalFrame* frame = &GetFrame();
+  LocalDOMWindow* window = frame->DomWindow();
+  ScriptState* main_world_script_state = ToScriptStateForMainWorld(frame);
+  v8::Isolate* isolate = main_world_script_state->GetIsolate();
+
+  constexpr int kIsolatedWorldId = 1;
+  DOMWrapperWorld* isolated_world =
+      DOMWrapperWorld::EnsureIsolatedWorld(isolate, kIsolatedWorldId);
+  ASSERT_TRUE(isolated_world->IsIsolatedWorld());
+  ScriptState* isolated_world_script_state =
+      ToScriptState(frame, *isolated_world);
+
+  auto event_visible_in = [window](ScriptState* script_state) {
+    ScriptState::Scope scope(script_state);
+    return !window->event(script_state).IsUndefined();
+  };
+
+  // An event with no world binding is visible in every world.
+  window->SetCurrentEvent(Event::Create(event_type_names::kChange));
+  EXPECT_TRUE(event_visible_in(main_world_script_state));
+  EXPECT_TRUE(event_visible_in(isolated_world_script_state));
+
+  // An ErrorEvent bound to an isolated world is only visible in that world.
+  {
+    ScriptState::Scope scope(isolated_world_script_state);
+    window->SetCurrentEvent(ErrorEvent::Create(isolated_world_script_state));
+  }
+  EXPECT_FALSE(event_visible_in(main_world_script_state));
+  EXPECT_TRUE(event_visible_in(isolated_world_script_state));
+
+  // An ErrorEvent bound to the main world is only visible in the main world.
+  {
+    ScriptState::Scope scope(main_world_script_state);
+    window->SetCurrentEvent(ErrorEvent::Create(main_world_script_state));
+  }
+  EXPECT_TRUE(event_visible_in(main_world_script_state));
+  EXPECT_FALSE(event_visible_in(isolated_world_script_state));
+
+  // A PromiseRejectionEvent bound to an isolated world is only visible in
+  // that world.
+  {
+    ScriptState::Scope scope(isolated_world_script_state);
+    v8::Local<v8::Promise::Resolver> resolver =
+        v8::Promise::Resolver::New(isolated_world_script_state->GetContext())
+            .ToLocalChecked();
+    auto* init = PromiseRejectionEventInit::Create();
+    init->setPromise(
+        MemberScriptPromise<IDLAny>(isolate, resolver->GetPromise()));
+    window->SetCurrentEvent(PromiseRejectionEvent::Create(
+        isolated_world_script_state, event_type_names::kUnhandledrejection,
+        init));
+  }
+  EXPECT_FALSE(event_visible_in(main_world_script_state));
+  EXPECT_TRUE(event_visible_in(isolated_world_script_state));
+
+  window->SetCurrentEvent(nullptr);
+}
+
 TEST_F(LocalDOMWindowTest, CanExecuteScriptsDuringDetach) {
   GetFrame().Loader().DetachDocument();
   EXPECT_NE(GetFrame().DomWindow(), nullptr);
@@ -362,15 +418,15 @@ TEST_F(LocalDOMWindowTest, CanExecuteScriptsDuringDetach) {
       GetFrame().DomWindow()->CanExecuteScripts(kAboutToExecuteScript));
 }
 
-TEST_F(LocalDOMWindowTest, AlwaysOnTop) {
+TEST_F(LocalDOMWindowTest, AlwaysOnTopPopup) {
   LocalDOMWindow* window = GetFrame().DomWindow();
-  EXPECT_FALSE(window->alwaysOnTop());
+  EXPECT_FALSE(window->alwaysOnTopPopup());
 
-  GetFrame().GetPage()->SetAlwaysOnTop(true);
-  EXPECT_TRUE(window->alwaysOnTop());
+  GetFrame().GetPage()->SetAlwaysOnTopPopup(true);
+  EXPECT_TRUE(window->alwaysOnTopPopup());
 
-  GetFrame().GetPage()->SetAlwaysOnTop(false);
-  EXPECT_FALSE(window->alwaysOnTop());
+  GetFrame().GetPage()->SetAlwaysOnTopPopup(false);
+  EXPECT_FALSE(window->alwaysOnTopPopup());
 }
 
 TEST_F(LocalDOMWindowTest, OutgoingReferrerUrlCaching) {
@@ -446,7 +502,7 @@ TEST_F(LocalDOMWindowWithSubframeTest, OutgoingReferrerUrlSrcdoc) {
   params->policy_container = std::make_unique<blink::WebPolicyContainer>(
       blink::WebPolicyContainerPolicies(),
       mock_policy_container_host.BindNewEndpointAndPassDedicatedRemote());
-  params->initiator_state_token = base::UnguessableToken::Create();
+  params->initiator_state_token = InitiatorStateToken();
   child.Loader().CommitNavigation(std::move(params), /*extra_data=*/nullptr);
   test::RunPendingTasks();
 

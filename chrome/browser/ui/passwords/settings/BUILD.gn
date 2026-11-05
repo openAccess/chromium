@@ -29,6 +29,7 @@ source_set("impl") {
   ]
   deps = [
     ":settings",
+    "//chrome/app:branded_strings",
     "//chrome/browser:primitives",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui/select_file_policy",
@@ -39,7 +40,6 @@ source_set("impl") {
     "//content/public/browser",
     "//ui/base",
   ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("unit_tests") {
@@ -55,6 +55,7 @@ source_set("unit_tests") {
     "//chrome/browser/password_manager/factories",
     "//chrome/browser/ui/select_file_policy",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/affiliations/core/browser:test_support",
     "//components/password_manager/core/browser:test_support",
     "//components/password_manager/core/browser/export",

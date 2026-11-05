@@ -44,11 +44,9 @@ SVGScriptElement::SVGScriptElement(Document& document,
 void SVGScriptElement::ParseAttribute(
     const AttributeModificationParams& params) {
   if (params.name == html_names::kOnerrorAttr) {
-    SetAttributeEventListener(
-        event_type_names::kError,
-        JSEventHandlerForContentAttribute::Create(
-            GetExecutionContext(), params.name, params.new_value,
-            JSEventHandler::HandlerType::kOnErrorEventHandler));
+    SetElementAttributeEventListenerFromScriptBody(
+        event_type_names::kError, params.name, params.new_value, params.reason,
+        JSEventHandler::HandlerType::kOnErrorEventHandler);
   } else if (params.name == svg_names::kAsyncAttr &&
              RuntimeEnabledFeatures::SvgScriptElementAsyncAttributeEnabled()) {
     // https://html.spec.whatwg.org/C/#non-blocking
@@ -182,12 +180,13 @@ const AtomicString& SVGScriptElement::GetNonceForElement() const {
 
 bool SVGScriptElement::AllowInlineScriptForCSP(
     const AtomicString& nonce,
-    const OrdinalNumber& context_line,
+    const TextPosition& context_position,
     const String& script_content) {
   return GetExecutionContext()
       ->GetContentSecurityPolicyForCurrentWorld()
       ->AllowInline(ContentSecurityPolicy::InlineType::kScript, this,
-                    script_content, nonce, GetDocument().Url(), context_line);
+                    script_content, nonce, GetDocument().Url(),
+                    context_position);
 }
 
 Document& SVGScriptElement::GetDocument() const {

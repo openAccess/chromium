@@ -261,7 +261,6 @@ void PageContainerLayoutAlgorithm::LayoutPageBorderBox(
 
   Document& document = Node().GetDocument();
   const LayoutView& layout_view = *document.GetLayoutView();
-  const ComputedStyle* content_scaled_style = &Style();
   float layout_scale = layout_view.PaginationScaleFactor();
 
   // If the document contents are scaled (because there's wide content and/or
@@ -269,16 +268,19 @@ void PageContainerLayoutAlgorithm::LayoutPageBorderBox(
   // to follow this, since it's supposed to be in document coordinates.
   safe_printable_inset_in_document_coords *= layout_scale;
 
-  if (layout_scale != 1 && !ignore_author_page_style_) {
-    // Scaling shouldn't apply to @page borders etc. Apply a zoom property to
-    // cancel out the effect of layout scaling.
-    content_scaled_style = document.GetStyleResolver().StyleForPage(
-        page_index_, page_name_, layout_scale);
-  }
+  const ComputedStyle& content_scaled_style = ([&]() -> const ComputedStyle& {
+    if (layout_scale != 1 && !ignore_author_page_style_) {
+      // Scaling shouldn't apply to @page borders etc. Apply a zoom property to
+      // cancel out the effect of layout scaling.
+      return document.GetStyleResolver().StyleForPage(page_index_, page_name_,
+                                                      layout_scale);
+    }
+    return Style();
+  })();
 
   LayoutBlockFlow* page_border_box =
       document.View()->GetPaginationState()->CreateAnonymousPageLayoutObject(
-          document, *content_scaled_style);
+          document, content_scaled_style);
   BlockNode page_border_box_node(page_border_box);
 
   FragmentGeometry geometry;
@@ -293,6 +295,8 @@ void PageContainerLayoutAlgorithm::LayoutPageBorderBox(
   space_builder.SetIsPaintedAtomically(true);
   ConstraintSpace child_space = space_builder.ToConstraintSpace();
   LayoutAlgorithmParams params(page_border_box_node, geometry, child_space);
+  params.fragmentation.fragmented_oof_container =
+      container_builder_.GetFragmentedOofContainer();
   PageBorderBoxLayoutAlgorithm child_algorithm(params, content_node_,
                                                page_area_params_);
   const LayoutResult* result = child_algorithm.Layout();
@@ -561,8 +565,11 @@ PageContainerLayoutAlgorithm::EdgeMarginNodePreferredSize(
           GetConstraintSpace(), child.Style().GetWritingDirection(),
           /*is_new_fc=*/true);
       intrinsic_space_builder.SetCacheSlot(LayoutResultCacheSlot::kMeasure);
+      // We pass MinMaxSizesInput::Unconstrained() because page-margin boxes
+      // are not IFCs.
       minmax = ComputeMinAndMaxContentContributionForSelf(
-                   child, intrinsic_space_builder.ToConstraintSpace())
+                   child, intrinsic_space_builder.ToConstraintSpace(),
+                   MinMaxSizesInput::Unconstrained())
                    .sizes;
     } else {
       BoxStrut border_padding = ComputeBorders(child_space, child) +

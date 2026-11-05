@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.customtabs.content;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -13,22 +14,16 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import android.content.Context;
-import android.content.ContextWrapper;
 import android.content.Intent;
-import android.content.pm.PackageManager;
+import android.content.pm.ActivityInfo;
 import android.content.pm.ResolveInfo;
+import android.net.Uri;
 import android.os.Build;
-import android.window.OnBackInvokedDispatcher;
-
-import com.google.common.collect.ImmutableList;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -39,12 +34,13 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
+import org.robolectric.Robolectric;
+import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
-import org.chromium.base.test.util.PackageManagerWrapper;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.back_press.BackPressManager;
@@ -67,6 +63,17 @@ import org.chromium.url.GURL;
  */
 @RunWith(BaseRobolectricTestRunner.class)
 public class CustomTabActivityNavigationControllerTest {
+    // onNewIntent() otherwise runs startup / native initialization logic.
+    private static class TestChromeTabbedActivity extends ChromeTabbedActivity {
+        private Intent mLastNewIntent;
+
+        @Override
+        @SuppressWarnings("MissingSuperCall")
+        public void onNewIntent(Intent intent) {
+            mLastNewIntent = intent;
+        }
+    }
+
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
@@ -74,43 +81,33 @@ public class CustomTabActivityNavigationControllerTest {
             new CustomTabActivityContentTestEnvironment();
 
     private CustomTabActivityNavigationController mNavigationController;
-    private TestContext mTestContext;
 
     @Mock CustomTabActivityTabController mTabController;
     @Mock FinishHandler mFinishHandler;
-    @Mock OnBackInvokedDispatcher mDispatcher;
-    @Mock private PackageManager mPackageManager;
-    @Mock private ResolveInfo mResolveInfo;
-    @Mock private ChromeTabbedActivity mAdjacentActivity;
-
-    class TestContext extends ContextWrapper {
-        public TestContext(Context base) {
-            super(base);
-        }
-
-        @Override
-        public PackageManager getPackageManager() {
-            return new PackageManagerWrapper(mPackageManager);
-        }
-    }
 
     @Before
     public void setUp() {
-        mTestContext = new TestContext(ContextUtils.getApplicationContext());
-        ContextUtils.initApplicationContextForTests(mTestContext);
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            when(env.activity.getOnBackInvokedDispatcher()).thenReturn(mDispatcher);
-        }
+        // The "open in browser" flow checks PackageManagerUtils.canResolveActivity() for the
+        // outgoing VIEW intent, and shows an error toast if nothing handles it. Register a
+        // handler with Robolectric's PackageManager shadow so the intent resolves the way it
+        // would on a real device.
+        ResolveInfo browserResolveInfo = new ResolveInfo();
+        browserResolveInfo.activityInfo = new ActivityInfo();
+        browserResolveInfo.activityInfo.packageName = "com.test.browser";
+        browserResolveInfo.activityInfo.name = "BrowserActivity";
+        Intent browserIntent =
+                new Intent(
+                                Intent.ACTION_VIEW,
+                                Uri.parse(CustomTabActivityContentTestEnvironment.INITIAL_URL))
+                        .addCategory(Intent.CATEGORY_BROWSABLE);
+        Shadows.shadowOf(ContextUtils.getApplicationContext().getPackageManager())
+                .addResolveInfoForIntent(browserIntent, browserResolveInfo);
 
         mNavigationController = env.createNavigationController(mTabController);
         mNavigationController.setFinishHandler(mFinishHandler);
         Tab tab = env.prepareTab();
         when(tab.getUrl()).thenReturn(new GURL("")); // avoid DomDistillerUrlUtils going to native.
         env.tabProvider.setInitialTab(tab, TabCreationMode.DEFAULT);
-        doReturn(ImmutableList.of(mResolveInfo))
-                .when(mPackageManager)
-                .queryIntentActivities(any(), anyInt());
     }
 
     // Predictive back is enabled by default on SDK 36+. Pin to older SDKs to
@@ -247,7 +244,7 @@ public class CustomTabActivityNavigationControllerTest {
     public void startsReparenting_WhenOpenInBrowserCalled_AndChromeCanHandleIntent() {
         ExternalNavigationDelegateImpl.setWillChromeHandleIntentHookForTesting(intent -> true);
         mNavigationController.openCurrentUrlInBrowser();
-        verify(env.activity, never()).startActivity(any());
+        assertNull(Shadows.shadowOf(env.activity).getNextStartedActivity());
         ArgumentCaptor<Intent> intentCaptor = ArgumentCaptor.forClass(Intent.class);
         verify(mTabController).detachAndStartReparenting(intentCaptor.capture(), any(), any());
         Intent intent = intentCaptor.getValue();
@@ -269,16 +266,18 @@ public class CustomTabActivityNavigationControllerTest {
 
     @Test
     public void finishes_whenDoneReparentingToAdjacentActivity() {
+        TestChromeTabbedActivity adjacentActivity =
+                Robolectric.buildActivity(TestChromeTabbedActivity.class).get();
         ExternalNavigationDelegateImpl.setWillChromeHandleIntentHookForTesting(intent -> true);
-        MultiWindowUtils.setActivitySupplierForTesting(() -> mAdjacentActivity);
+        MultiWindowUtils.setActivitySupplierForTesting(() -> adjacentActivity);
         TabWindowManager tabWindowManager = mock(TabWindowManager.class);
         TabWindowManagerSingleton.setTabWindowManagerForTesting(tabWindowManager);
-        when(tabWindowManager.getIdForWindow(mAdjacentActivity)).thenReturn(1);
-        MultiWindowUtils.setActivityByWindowIdForTesting(1, mAdjacentActivity);
+        when(tabWindowManager.getIdForWindow(adjacentActivity)).thenReturn(1);
+        MultiWindowUtils.setActivityByWindowIdForTesting(1, adjacentActivity);
 
         mNavigationController.openCurrentUrlInBrowser();
 
-        verify(mAdjacentActivity, times(1)).onNewIntent(any());
+        assertNotNull(adjacentActivity.mLastNewIntent);
         verify(mFinishHandler).onFinish(FinishReason.REPARENTING, false);
     }
 
@@ -287,9 +286,8 @@ public class CustomTabActivityNavigationControllerTest {
         ExternalNavigationDelegateImpl.setWillChromeHandleIntentHookForTesting(intent -> false);
         mNavigationController.openCurrentUrlInBrowser();
         verify(mTabController, never()).detachAndStartReparenting(any(), any(), any());
-        ArgumentCaptor<Intent> intentCaptor = ArgumentCaptor.forClass(Intent.class);
-        verify(env.activity).startActivity(intentCaptor.capture(), any());
-        Intent intent = intentCaptor.getValue();
+        Intent intent = Shadows.shadowOf(env.activity).getNextStartedActivity();
+        assertNotNull(intent);
         assertTrue(intent.hasCategory(Intent.CATEGORY_BROWSABLE));
         verify(mFinishHandler).onFinish(FinishReason.OPEN_IN_BROWSER, true);
     }
@@ -302,7 +300,7 @@ public class CustomTabActivityNavigationControllerTest {
 
         mNavigationController.openCurrentUrlInBrowser();
         verify(mTabController, never()).detachAndStartReparenting(any(), any(), any());
-        verify(env.activity).startActivity(any(), any());
+        assertNotNull(Shadows.shadowOf(env.activity).getNextStartedActivity());
         // The TWA client app must be kept alive, so the activity must not be finished.
         verify(mFinishHandler, never()).onFinish(anyInt(), anyBoolean());
     }
@@ -318,7 +316,7 @@ public class CustomTabActivityNavigationControllerTest {
         mNavigationController.openCurrentUrlInBrowser();
 
         verify(mTabController, never()).detachAndStartReparenting(any(), any(), any());
-        verify(env.activity).startActivity(any(), any());
+        assertNotNull(Shadows.shadowOf(env.activity).getNextStartedActivity());
         verify(mFinishHandler, never()).onFinish(anyInt(), anyBoolean());
     }
 
@@ -332,7 +330,7 @@ public class CustomTabActivityNavigationControllerTest {
         mNavigationController.openCurrentUrlInBrowser();
 
         verify(mTabController, never()).detachAndStartReparenting(any(), any(), any());
-        verify(env.activity).startActivity(any(), any());
+        assertNotNull(Shadows.shadowOf(env.activity).getNextStartedActivity());
         verify(mFinishHandler, never()).onFinish(anyInt(), anyBoolean());
     }
 
@@ -352,7 +350,7 @@ public class CustomTabActivityNavigationControllerTest {
 
         mNavigationController.openCurrentUrlInBrowser();
 
-        verify(env.activity, never()).startActivity(any(), any());
+        assertNull(Shadows.shadowOf(env.activity).getNextStartedActivity());
         verify(mTabController).detachAndStartReparenting(any(), any(), any());
         // The webapp must stay alive, even once reparenting completes.
         callbackCaptor.getValue().run();
@@ -371,7 +369,7 @@ public class CustomTabActivityNavigationControllerTest {
 
         mNavigationController.openCurrentUrlInBrowser();
 
-        verify(env.activity, never()).startActivity(any(), any());
+        assertNull(Shadows.shadowOf(env.activity).getNextStartedActivity());
         verify(mTabController).detachAndStartReparenting(any(), any(), any());
         callbackCaptor.getValue().run();
         verify(mFinishHandler, never()).onFinish(anyInt(), anyBoolean());
@@ -390,7 +388,7 @@ public class CustomTabActivityNavigationControllerTest {
 
         mNavigationController.openCurrentUrlInBrowser();
 
-        verify(env.activity, never()).startActivity(any(), any());
+        assertNull(Shadows.shadowOf(env.activity).getNextStartedActivity());
         verify(mTabController).detachAndStartReparenting(any(), any(), any());
         callbackCaptor.getValue().run();
         verify(mFinishHandler, never()).onFinish(anyInt(), anyBoolean());

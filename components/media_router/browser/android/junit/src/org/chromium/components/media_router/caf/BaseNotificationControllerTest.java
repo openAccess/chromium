@@ -23,7 +23,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.browser_ui.media.MediaNotificationInfo;
@@ -34,7 +33,6 @@ import org.chromium.components.media_router.TestMediaRouterClient;
 
 /** Robolectric tests for BaseNotificationController. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class BaseNotificationControllerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     private static final String PRESENTATION_ID = "presentation-id";
@@ -84,6 +82,9 @@ public class BaseNotificationControllerTest {
 
     @Test
     public void testOnSessionStarted() {
+        Intent tabIntent = new Intent();
+        doReturn(tabIntent).when(mMediaRouterClient).createBringTabToFrontIntent(TAB_ID);
+
         ArgumentCaptor<MediaNotificationInfo> notificationInfoCaptor =
                 ArgumentCaptor.forClass(MediaNotificationInfo.class);
         mController.onSessionStarted();
@@ -91,16 +92,12 @@ public class BaseNotificationControllerTest {
         verify(mMediaRouterClient).showNotification(notificationInfoCaptor.capture());
         MediaNotificationInfo notificationInfo = notificationInfoCaptor.getValue();
         assertEquals(DEVICE_NAME, notificationInfo.metadata.getTitle());
+        assertEquals(tabIntent, notificationInfo.contentIntent);
     }
 
     private static class TestNotificationController extends BaseNotificationController {
         public TestNotificationController(BaseSessionController sessionController) {
             super(sessionController);
-        }
-
-        @Override
-        public Intent createContentIntent() {
-            return null;
         }
 
         @Override

@@ -14,6 +14,7 @@
 #import "ios/web/common/features.h"
 #import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/test/js_test_util.h"
+#import "ios/web/public/web_state.h"
 
 namespace actor {
 
@@ -28,6 +29,11 @@ ActorToolJavaScriptFeatureTestBase::ActorToolJavaScriptFeatureTestBase()
 
 void ActorToolJavaScriptFeatureTestBase::SetUp() {
   IOSChromeTestWithWebState::SetUp();
+  // Force creation of the WebState's container view and keep the render
+  // process alive in the windowed container so WebKit does not throttle or
+  // suspend `LoadHtml()` when unparented.
+  web_state()->GetView();
+  web_state()->SetKeepRenderProcessAlive(true);
   // We load a real HTML page so that we can get and use the main WebFrame in
   // these tests. Using a fake WebFrame would require us to inject and
   // redeclare the dependent JavaScriptFeatures in each test suite.
@@ -65,6 +71,22 @@ base::WeakPtr<web::WebFrame> ActorToolJavaScriptFeatureTestBase::GetMainFrame(
   web::WebFrame* frame = WaitForMainFrame(feature);
   CHECK(frame);
   return frame->AsWeakPtr();
+}
+
+ActionTarget ActorToolJavaScriptFeatureTestBase::CreateTargetWithCoordinates() {
+  optimization_guide::proto::ActionTarget target;
+  target.mutable_coordinate()->set_x(1);
+  target.mutable_coordinate()->set_y(2);
+  target.mutable_coordinate()->set_pixel_type(
+      optimization_guide::proto::Coordinate::PIXEL_TYPE_UNSPECIFIED);
+  return ActionTarget::FromProto(target);
+}
+
+ActionTarget ActorToolJavaScriptFeatureTestBase::CreateTargetWithNodeId() {
+  optimization_guide::proto::ActionTarget target;
+  target.set_content_node_id(123);
+  target.mutable_document_identifier()->set_serialized_token("doc_id");
+  return ActionTarget::FromProto(target);
 }
 
 }  // namespace actor

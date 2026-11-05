@@ -149,6 +149,10 @@ class TabStateStorageService : public KeyedService,
                                  bool is_off_the_record,
                                  std::vector<StorageId> ids);
 
+  // Helper methods to query window tag and OTR status from packager.
+  std::string GetWindowTag(const TabCollection* collection) const;
+  bool IsOffTheRecord(const TabCollection* collection) const;
+
   // Sets the key for encryption.
   void SetKey(std::string_view window_tag, std::vector<uint8_t> key);
 
@@ -179,6 +183,7 @@ class TabStateStorageService : public KeyedService,
 
     TabStateStorageUpdaterBuilder builder;
     int batch_cnt = 0;
+    std::vector<base::OnceClosure> pending_idle_callbacks;
   };
 
   void OnTabCreated(StorageId storage_id, const TabInterface* tab);

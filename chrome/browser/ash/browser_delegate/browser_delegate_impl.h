@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_ASH_BROWSER_DELEGATE_BROWSER_DELEGATE_IMPL_H_
 
 #include "base/memory/raw_ref.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 
 class BrowserWindowInterface;
 
@@ -29,6 +29,9 @@ class BrowserDelegateImpl : public BrowserDelegate {
   content::WebContents* GetActiveWebContents() const override;
   size_t GetWebContentsCount() const override;
   content::WebContents* GetWebContentsAt(size_t index) const override;
+  std::optional<size_t> GetIndexOfWebContents(
+      const content::WebContents* contents) const override;
+  content::WebContents* GetOpenerOfTabAt(size_t index) const override;
   tabs::TabIteratorRange GetTabIterator() const override;
   content::WebContents* GetInspectedWebContents() const override;
   ui::BaseWindow* GetWindow() const override;
@@ -49,16 +52,17 @@ class BrowserDelegateImpl : public BrowserDelegate {
   void Activate() override;
   void Minimize() override;
   void Close() override;
+  void CloseAllTabs() override;
   void SetSkipWarningUserOnClose(bool skip) override;
-  void AddTab(const GURL& url,
-              std::optional<size_t> index,
-              TabDisposition disposition) override;
+  content::WebContents* AddTab(const GURL& url,
+                               std::optional<size_t> index,
+                               TabDisposition disposition,
+                               ui::PageTransition transition) override;
   void CloseWebContentsAt(size_t index, UserGesture user_gesture) override;
-  content::WebContents* NavigateWebApp(
-      const GURL& url,
-      TabPinning pin_tab,
-      std::optional<webapps::LaunchParams> launch_params =
-          std::nullopt) override;
+  void ForceCloseWebContentsAt(size_t index) override;
+  content::WebContents* LoadUrl(const GURL& url,
+                                ui::PageTransition transition,
+                                LoadUrlParams params) override;
   void CreateTabGroup(const tab_groups::TabGroupInfo& tab_group) override;
   std::vector<tab_groups::TabGroupInfo> GetTabGroupInfos() const override;
   void PinTab(size_t tab_index) override;
@@ -67,6 +71,7 @@ class BrowserDelegateImpl : public BrowserDelegate {
   void ResetLocationBar() override;
   void SetOnTaskState(OnTaskState state) override;
   bool IsOnTaskState(OnTaskState state) const override;
+  void SetImmersiveAllowedWhileTrustedPinned(bool allowed) override;
   void ActivateWebContentsAt(size_t index) override;
   void SetContentsBackgroundVisible(bool visible) override;
   void EnterLockedFullscreen() override;

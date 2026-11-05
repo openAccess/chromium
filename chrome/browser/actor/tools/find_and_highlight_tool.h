@@ -8,22 +8,22 @@
 #include <string>
 
 #include "base/memory/weak_ptr.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/tools/tool.h"
 #include "chrome/browser/actor/tools/tool_callbacks.h"
-#include "components/tabs/public/tab_interface.h"
 
 class GURL;
 
 namespace actor {
 
-class ActorTask;
+class ActorSurface;
 
 // Highlights matching text in a tab and scrolls it into view.
 class FindAndHighlightTool : public Tool {
  public:
   FindAndHighlightTool(TaskId task_id,
                        ToolDelegate& tool_delegate,
-                       tabs::TabHandle tab_handle,
+                       ActorSurface& actor_surface,
                        std::string query);
   ~FindAndHighlightTool() override;
 
@@ -36,17 +36,14 @@ class FindAndHighlightTool : public Tool {
   std::unique_ptr<ObservationDelayController> GetObservationDelayer(
       ObservationDelayController::PageStabilityConfig page_stability_config)
       override;
-  void UpdateTaskBeforeInvoke(ActorTask& task,
-                              ToolCallback callback) const override;
-  tabs::TabHandle GetTargetTab() const override;
+  ActorSurfaceHandle GetTargetActorSurface() const override;
 
   const std::string& query() const { return query_; }
-  tabs::TabHandle tab_handle() const { return tab_handle_; }
 
  private:
   void OnHighlightFinished(ToolCallback callback, bool success);
 
-  tabs::TabHandle tab_handle_;
+  ActorSurfaceHandle actor_surface_handle_;
   std::string query_;
 
   base::WeakPtrFactory<FindAndHighlightTool> weak_ptr_factory_{this};

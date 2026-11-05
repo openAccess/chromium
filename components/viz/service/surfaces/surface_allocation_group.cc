@@ -8,6 +8,7 @@
 #include <numeric>
 #include <utility>
 
+#include "base/containers/adapters.h"
 #include "base/memory/raw_ptr.h"
 #include "components/viz/service/surfaces/surface.h"
 #include "components/viz/service/surfaces/surface_manager.h"
@@ -68,6 +69,43 @@ void SurfaceAllocationGroup::UnregisterBlockedEmbedder(Surface* surface,
 
 bool SurfaceAllocationGroup::HasBlockedEmbedder() const {
   return !blocked_embedders_.empty();
+}
+
+bool SurfaceAllocationGroup::HasActiveEmbedderAwaitingNewerSurface() const {
+  if (active_embedders_.empty() || !last_active_reference_.is_valid()) {
+    return false;
+  }
+  const Surface* latest_active = nullptr;
+  // Normally there is at most one pending surface, so this loop shouldn't take
+  // more than two iterations.
+  for (const Surface* surface : base::Reversed(surfaces_)) {
+    if (surface->HasActiveFrame()) {
+      latest_active = surface;
+      break;
+    }
+  }
+  if (!latest_active) {
+    return true;
+  }
+  const SurfaceId& latest_id = latest_active->surface_id();
+  // References in a group are ordered in practice, so covering the newest one
+  // so far covers every current one.
+  if (latest_id.IsSameOrNewerThan(last_active_reference_)) {
+    return false;
+  }
+  // `last_active_reference_` never moves backward, so it can outlive the
+  // reference that set it while another reference keeps `active_embedders_`
+  // non-empty. Check what live active frames currently reference.
+  for (const Surface* embedder : active_embedders_) {
+    for (const SurfaceRange& range :
+         embedder->GetActiveFrameMetadata().referenced_surfaces) {
+      const SurfaceId reference = GetReferenceFromRange(range);
+      if (reference.is_valid() && !latest_id.IsSameOrNewerThan(reference)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 void SurfaceAllocationGroup::RegisterActiveEmbedder(Surface* surface) {
@@ -267,6 +305,24 @@ void SurfaceAllocationGroup::UpdateLastReferenceAndMaybeActivate(
   // because fallback surfaces never block.
   if ((*it)->surface_id() != surface_id)
     (*it)->SetIsFallbackAndMaybeActivate();
+}
+
+SurfaceId SurfaceAllocationGroup::GetReferenceFromRange(
+    const SurfaceRange& range) const {
+  auto in_group = [this](const SurfaceId& id) {
+    return id.frame_sink_id() == submitter_ &&
+           id.local_surface_id().embed_token() == embed_token_;
+  };
+  if (in_group(range.end())) {
+    return range.end();
+  }
+  if (!range.start() || !in_group(*range.start())) {
+    return SurfaceId();
+  }
+  const Surface* in_flight = surface_manager_->GetLatestInFlightSurface(range);
+  return Surface::ReferencesStartAllocationGroup(range, in_flight)
+             ? *range.start()
+             : SurfaceId();
 }
 
 }  // namespace viz

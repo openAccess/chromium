@@ -30,11 +30,8 @@ public class SigninChecker implements AccountsChangeObserver, Destroyable {
     // Counter to record the number of child account checks done for tests.
     private int mNumOfChildAccountChecksDone;
 
-    /**
-     * Please use {@link SigninCheckerProvider} to get {@link SigninChecker} instance instead of
-     * creating it manually.
-     */
-    public SigninChecker(SigninManager signinManager) {
+    /** This class is managed by {@link SigninManagerImpl}. */
+    SigninChecker(SigninManager signinManager) {
         mSigninManager = signinManager;
         mAccountManagerFacade = AccountManagerFacadeProvider.getInstance();
         mAccountManagerFacade.addObserver(this);
@@ -64,6 +61,10 @@ public class SigninChecker implements AccountsChangeObserver, Destroyable {
         return mNumOfChildAccountChecksDone;
     }
 
+    public void resetForTesting() {
+        mNumOfChildAccountChecksDone = 0;
+    }
+
     private void checkChildAccount(List<AccountInfo> accounts) {
         AccountUtils.checkIsSubjectToParentalControls(
                 mAccountManagerFacade, accounts, this::onChildAccountStatusReady);
@@ -78,7 +79,7 @@ public class SigninChecker implements AccountsChangeObserver, Destroyable {
         assert childInfo != null;
         mSigninManager.runAfterOperationInProgress(
                 () -> {
-                    CoreAccountInfo accountInfo =
+                    AccountInfo accountInfo =
                             mSigninManager.getIdentityManager().getPrimaryAccountInfo();
 
                     if (accountInfo == null || childInfo.getId().equals(accountInfo.getId())) {

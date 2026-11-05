@@ -24,9 +24,6 @@ class SyncSessionsWebContentsRouter;
 // TabHelper class that forwards tab-level WebContentsObserver events to a
 // (per-profile) sessions router. The router is responsible for forwarding
 // these events to sessions sync.
-// A TabHelper is a WebContentsObserver tied to the top level WebContents for a
-// browser tab.
-// https://chromium.googlesource.com/chromium/src/+/main/docs/tab_helpers.md
 class SyncSessionsRouterTabHelper
     : public content::WebContentsObserver,
       public translate::TranslateDriver::LanguageDetectionObserver,
@@ -51,14 +48,6 @@ class SyncSessionsRouterTabHelper
   void TitleWasSet(content::NavigationEntry* entry) override;
   void DidFinishLoad(content::RenderFrameHost* render_frame_host,
                      const GURL& validated_url) override;
-  void DidOpenRequestedURL(content::WebContents* new_contents,
-                           content::RenderFrameHost* source_render_frame_host,
-                           const GURL& url,
-                           const content::Referrer& referrer,
-                           WindowOpenDisposition disposition,
-                           ui::PageTransition transition,
-                           bool started_from_context_menu,
-                           bool renderer_initiated) override;
   void OnVisibilityChanged(content::Visibility visibility) override;
 
   // TranslateDriver::LanguageDetectionObserver implementation.

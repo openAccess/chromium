@@ -63,8 +63,7 @@ class ProfileHelper {
   // could not be extracted from |profile|.
   static std::string GetUserIdHashFromProfile(const Profile* profile);
 
-  // DEPRECATED. Please use
-  // ash::BrowserContextHelper::GetUserBrowserContextDirName() instead.
+  // DEPRECATED. Please use user_manager::User::GetDirName() instead.
   // Returns user profile dir in a format [u-user_id_hash].
   static base::FilePath GetUserProfileDir(const std::string& user_id_hash);
 
@@ -151,6 +150,7 @@ class ProfileHelper {
   // Associates |profile| with |user|, for GetProfileByUser() testing.
   virtual void SetUserToProfileMappingForTesting(const user_manager::User* user,
                                                  Profile* profile) = 0;
+  virtual void ClearUserToProfileMappingForTesting() = 0;
 
   // Enables/disables testing code path in GetUserByProfile() like
   // always return primary user (when always_return_primary_user_for_testing is

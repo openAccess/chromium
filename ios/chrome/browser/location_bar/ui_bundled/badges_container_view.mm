@@ -8,9 +8,9 @@
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/lens_overlay/public/lens_overlay_availability.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/highlight_utils.h"
+#import "ios/chrome/browser/location_bar/ui_bundled/location_bar_content_size_delegate.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_metrics.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_placeholder_type.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/shared/public/commands/page_action_menu_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
@@ -21,14 +21,17 @@
 
 namespace {
 
-// Sets `view.hidden` to `hidden` if necessary. This helper is useful to address
-// a bug where the number of times `.hidden` is set in a view accumulates if it
-// is presented inside of a stack view. As a result, setting `.hidden = YES`
-// twice does not have the same effect as only settings it once.
-void SetViewHiddenIfNecessary(UIView* view, BOOL hidden) {
-  if (view.hidden != hidden) {
-    view.hidden = hidden;
+// Sets `view.hidden` to `hidden` if necessary, returning YES if the view's
+// visibility actually changed. This helper is useful to address a bug where the
+// number of times `.hidden` is set in a view accumulates if it is presented
+// inside of a stack view. As a result, setting `.hidden = YES` twice does not
+// have the same effect as only setting it once.
+BOOL SetViewHiddenIfNecessary(UIView* view, BOOL hidden) {
+  if (!view || view.hidden == hidden) {
+    return NO;
   }
+  view.hidden = hidden;
+  return YES;
 }
 // The unified badge background height multiplier.
 const CGFloat kBackgroundHeightMultiplier = 0.72;
@@ -57,9 +60,7 @@ const CGFloat kSeparatorVerticalPadding = 12.0;
   UIView* _placeholderViewWrapper;
   BOOL _disableProactiveOverlay;
 
-  /// Whether the contextual panel entrypoint should be visible. The placeholder
-  /// view trumps the entrypoint when kLensOverlayPriceInsightsCounterfactual is
-  /// enabled.
+  /// Whether the contextual panel entrypoint should be visible.
   BOOL _contextualPanelEntrypointShouldBeVisible;
   /// The type of the contextual panel entrypoint.
   std::optional<ContextualPanelItemType> _contextualPanelItemType;
@@ -401,30 +402,28 @@ const CGFloat kSeparatorVerticalPadding = 12.0;
       !contextualPanelEntrypointShouldBeVisibleFinal &&
       !_readerModeChipShouldBeVisible && _placeholderView != nil;
 
-  SetViewHiddenIfNecessary(self.readerModeChipView,
-                           !readerModeChipShouldBeVisibleFinal);
-  SetViewHiddenIfNecessary(self.incognitoBadgeView,
-                           !incognitoBadgeViewShouldBeVisibleFinal);
-  SetViewHiddenIfNecessary(self.badgeView, !badgeViewShouldBeVisibleFinal);
-  SetViewHiddenIfNecessary(self.contextualPanelEntrypointView,
-                           !contextualPanelEntrypointShouldBeVisibleFinal);
-  SetViewHiddenIfNecessary(_placeholderViewWrapper,
-                           !placeholderViewShouldBeVisibleFinal);
+  BOOL visibilityChanged = NO;
+  visibilityChanged |= SetViewHiddenIfNecessary(
+      self.readerModeChipView, !readerModeChipShouldBeVisibleFinal);
+  visibilityChanged |= SetViewHiddenIfNecessary(
+      self.incognitoBadgeView, !incognitoBadgeViewShouldBeVisibleFinal);
+  visibilityChanged |=
+      SetViewHiddenIfNecessary(self.badgeView, !badgeViewShouldBeVisibleFinal);
+  visibilityChanged |=
+      SetViewHiddenIfNecessary(self.contextualPanelEntrypointView,
+                               !contextualPanelEntrypointShouldBeVisibleFinal);
+  visibilityChanged |= SetViewHiddenIfNecessary(
+      _placeholderViewWrapper, !placeholderViewShouldBeVisibleFinal);
 
   if (_placeholderView &&
       !!placeholderViewShouldBeVisibleFinal != !_placeholderView.hidden) {
     _placeholderView.hidden = !placeholderViewShouldBeVisibleFinal;
 
-    // Records why the placeholder view is hidden. These are not mutually
-    // exclusive, price tracking will take precedence over messages.
+    // Records why the placeholder view is hidden.
     if (!placeholderViewShouldBeVisibleFinal) {
       if (contextualPanelEntrypointShouldBeVisibleFinal) {
         if (_contextualPanelItemType) {
           switch (_contextualPanelItemType.value()) {
-            case ContextualPanelItemType::PriceInsightsItem:
-              RecordLensEntrypointHidden(
-                  IOSLocationBarLeadingIconType::kPriceTracking);
-              break;
             case ContextualPanelItemType::ReaderModeItem:
               RecordLensEntrypointHidden(
                   IOSLocationBarLeadingIconType::kReaderMode);
@@ -446,7 +445,8 @@ const CGFloat kSeparatorVerticalPadding = 12.0;
       BOOL separatorShouldBeVisible =
           contextualPanelEntrypointShouldBeVisibleFinal &&
           badgeViewShouldBeVisibleFinal;
-      _separatorView.hidden = !separatorShouldBeVisible;
+      visibilityChanged |=
+          SetViewHiddenIfNecessary(_separatorView, !separatorShouldBeVisible);
 
       if (separatorShouldBeVisible) {
         NSInteger badgeIndex =
@@ -469,6 +469,14 @@ const CGFloat kSeparatorVerticalPadding = 12.0;
   if (IsProactiveSuggestionsFrameworkEnabled() && _incognito &&
       !IsChromeNextIaEnabled()) {
     _containerStackView.userInteractionEnabled = YES;
+  }
+
+  // This is the only place where badges appear and disappear, and therefore the
+  // only place where this container changes the width it needs. The setters
+  // installing the badge views do not need to notify, as views are installed
+  // hidden and only become visible through this method.
+  if (visibilityChanged) {
+    [self.contentSizeDelegate locationBarContentSizeDidChange];
   }
 }
 

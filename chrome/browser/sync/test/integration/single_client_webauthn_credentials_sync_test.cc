@@ -35,11 +35,9 @@
 #include "components/version_info/version_info.h"
 #include "components/webauthn/core/browser/passkey_model.h"
 #include "components/webauthn/core/browser/passkey_model_change.h"
-#include "components/webauthn/core/browser/passkey_model_utils.h"
 #include "components/webauthn/core/browser/passkey_sync_bridge.h"
 #include "components/webauthn/features.h"
 #include "content/public/test/browser_test.h"
-#include "crypto/keypair.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace {
@@ -81,25 +79,6 @@ constexpr char kDisplayName2[] = "Yor Forger";
 constexpr int64_t kLastUsedTime1 = 10;
 constexpr int64_t kLastUsedTime2 = 20;
 
-constexpr std::array<uint8_t, 32> kTrustedVaultKey = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
-
-constexpr int32_t kTrustedVaultKeyVersion = 23;
-
-bool PublicKeyForPasskeyEquals(
-    const sync_pb::WebauthnCredentialSpecifics& passkey,
-    base::span<const uint8_t> trusted_vault_key,
-    base::span<const uint8_t> expected_spki) {
-  sync_pb::WebauthnCredentialSpecifics_Encrypted encrypted_data;
-  CHECK(webauthn::passkey_model_utils::DecryptWebauthnCredentialSpecificsData(
-      trusted_vault_key, passkey, &encrypted_data));
-  auto ec_key = crypto::keypair::PrivateKey::FromPrivateKeyInfo(
-      base::as_byte_span(encrypted_data.private_key()));
-  std::vector<uint8_t> ec_key_pub = ec_key->ToSubjectPublicKeyInfo();
-  return std::ranges::equal(ec_key_pub, expected_spki);
-}
-
 std::unique_ptr<syncer::PersistentUniqueClientEntity>
 CreateEntityWithCustomClientTagHash(
     const std::string& client_tag_hash,
@@ -127,6 +106,7 @@ class PasskeyModelReadyChecker : public StatusChangeChecker,
 
   // SingleClientStatusChangeChecker:
   bool IsExitConditionSatisfied(std::ostream* os) override {
+    *os << "Waiting for passkey model to become ready.";
     return model_->IsReady();
   }
 
@@ -188,18 +168,7 @@ class SingleClientWebAuthnCredentialsSyncTest
     : public SingleClientWebAuthnCredentialsSyncTestBase,
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  SingleClientWebAuthnCredentialsSyncTest() {
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitWithFeatures(
-          {webauthn::features::kDeleteOldHiddenPasskeys,
-           syncer::kReplaceSyncPromosWithSignInPromos},
-          {});
-    } else {
-      scoped_feature_list_.InitWithFeatures(
-          {webauthn::features::kDeleteOldHiddenPasskeys}, {});
-    }
-  }
-
+  SingleClientWebAuthnCredentialsSyncTest() = default;
   ~SingleClientWebAuthnCredentialsSyncTest() override = default;
 
   SyncTest::SetupSyncMode GetSetupSyncMode() const override {
@@ -207,7 +176,8 @@ class SingleClientWebAuthnCredentialsSyncTest
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      webauthn::features::kDeleteOldHiddenPasskeys};
 };
 
 INSTANTIATE_TEST_SUITE_P(
@@ -250,80 +220,6 @@ IN_PROC_BROWSER_TEST_P(SingleClientWebAuthnCredentialsSyncTest,
 
   EXPECT_TRUE(
       ServerPasskeysMatchChecker(ElementsAre(EntityHasSyncId(sync_id))).Wait());
-}
-
-// CreatePasskey should create a new passkey entity and upload it to the server.
-IN_PROC_BROWSER_TEST_P(SingleClientWebAuthnCredentialsSyncTest, CreatePasskey) {
-  ASSERT_TRUE(SetupSync());
-
-  const webauthn::PasskeyModel::UserEntity test_user(
-      std::vector<uint8_t>{1, 2, 3}, "user@example.com", "Example User");
-
-  std::vector<uint8_t> public_key_spki_der;
-  const sync_pb::WebauthnCredentialSpecifics passkey =
-      GetModel().CreatePasskey(kTestRpId, test_user, kTrustedVaultKey,
-                               kTrustedVaultKeyVersion, &public_key_spki_der);
-
-  EXPECT_TRUE(ServerPasskeysMatchChecker(
-                  ElementsAre(EntityHasSyncId(passkey.sync_id())))
-                  .Wait());
-
-  EXPECT_THAT(GetModel().GetPasskeys(AnyRp(), ShadowedCredentials::kInclude),
-              ElementsAre(PasskeySpecificsEq(passkey)));
-
-  EXPECT_THAT(passkey, PasskeyHasRpId(kTestRpId));
-  EXPECT_THAT(passkey, PasskeyHasUserId(base::as_string_view(test_user.id)));
-  EXPECT_TRUE(PublicKeyForPasskeyEquals(passkey, kTrustedVaultKey,
-                                        public_key_spki_der));
-}
-
-// Creating a new passkey should shadow passkeys for the same (RP ID, user ID).
-IN_PROC_BROWSER_TEST_P(SingleClientWebAuthnCredentialsSyncTest,
-                       CreatePasskeyWithShadows) {
-  ASSERT_TRUE(SetupSync());
-
-  sync_pb::WebauthnCredentialSpecifics passkey1a = NewPasskey();
-  sync_pb::WebauthnCredentialSpecifics passkey1b = NewPasskey();
-  // Make 1a shadow 1b implicitly, i.e. without setting
-  // newly_shadowed_credential_ids.
-  ASSERT_EQ(passkey1a.rp_id(), passkey1b.rp_id());
-  passkey1b.set_user_id(passkey1a.user_id());
-  // Add another that shadows 1b explicitly.
-  sync_pb::WebauthnCredentialSpecifics passkey1c =
-      NewShadowingPasskey(passkey1b);
-  // These shouldn't shadow anything.
-  sync_pb::WebauthnCredentialSpecifics passkey2 = NewPasskey();
-  passkey2.set_rp_id("rpid2.com");
-  passkey2.set_user_id(passkey1a.user_id());
-  sync_pb::WebauthnCredentialSpecifics passkey3 = NewPasskey();
-
-  GetModel().AddNewPasskeyForTesting(passkey1a);
-  GetModel().AddNewPasskeyForTesting(passkey1b);
-  GetModel().AddNewPasskeyForTesting(passkey1c);
-  GetModel().AddNewPasskeyForTesting(passkey2);
-  GetModel().AddNewPasskeyForTesting(passkey3);
-
-  // Invoking CreatePasskey() for the given RP ID should shadow 1a, 1c and 1c,
-  // but not 2 or 3 (different RP or user ID).
-  auto user_id = base::as_byte_span(passkey1a.user_id());
-  sync_pb::WebauthnCredentialSpecifics new_passkey =
-      GetModel().CreatePasskey(passkey1a.rp_id(),
-                               webauthn::PasskeyModel::UserEntity(
-                                   {user_id.begin(), user_id.end()}, "", ""),
-                               kTrustedVaultKey, kTrustedVaultKeyVersion,
-                               /*public_key_spki_der_out=*/nullptr);
-
-  EXPECT_THAT(
-      new_passkey.newly_shadowed_credential_ids(),
-      UnorderedElementsAre(passkey1a.credential_id(), passkey1b.credential_id(),
-                           passkey1c.credential_id()));
-  EXPECT_THAT(
-      GetModel().GetPasskeys(passkey1a.rp_id(), ShadowedCredentials::kExclude),
-      UnorderedElementsAre(PasskeyHasSyncId(passkey3.sync_id()),
-                           PasskeyHasSyncId(new_passkey.sync_id())));
-  EXPECT_THAT(
-      GetModel().GetPasskeys(passkey2.rp_id(), ShadowedCredentials::kExclude),
-      ElementsAre(PasskeyHasSyncId(passkey2.sync_id())));
 }
 
 // Tests CreatePasskey from a pre-constructed WebAuthnCredentialSpecifics.
@@ -721,6 +617,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientWebAuthnCredentialsSyncTest,
   GetModel().DeletePasskey(passkey.credential_id(), FROM_HERE);
   EXPECT_TRUE(
       GetModel().GetPasskeys(AnyRp(), ShadowedCredentials::kInclude).empty());
+  EXPECT_TRUE(ServerPasskeysMatchChecker(IsEmpty()).Wait());
 }
 
 IN_PROC_BROWSER_TEST_P(SingleClientWebAuthnCredentialsSyncTest,
@@ -957,6 +854,11 @@ IN_PROC_BROWSER_TEST_P(SingleClientWebAuthnCredentialsSyncTest,
                                            .user_display_name = kDisplayName1,
                                        },
                                        /*updated_by_user=*/false));
+  EXPECT_TRUE(ServerPasskeysMatchChecker(
+                  ElementsAre(AllOf(EntityHasSyncId(passkey.sync_id()),
+                                    EntityHasUsername(kUsername1),
+                                    EntityHasDisplayName(kDisplayName1))))
+                  .Wait());
 }
 
 IN_PROC_BROWSER_TEST_P(SingleClientWebAuthnCredentialsSyncTest,
@@ -1164,24 +1066,15 @@ class SingleClientWebAuthnCredentialsSyncParamTest
     : public SingleClientWebAuthnCredentialsSyncTestBase,
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  SingleClientWebAuthnCredentialsSyncParamTest() {
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitWithFeatures(
-          {webauthn::features::kDeleteOldHiddenPasskeys,
-           syncer::kReplaceSyncPromosWithSignInPromos},
-          {});
-    } else {
-      scoped_feature_list_.InitWithFeatures(
-          {webauthn::features::kDeleteOldHiddenPasskeys}, {});
-    }
-  }
+  SingleClientWebAuthnCredentialsSyncParamTest() = default;
 
   SyncTest::SetupSyncMode GetSetupSyncMode() const override {
     return GetParam();
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      webauthn::features::kDeleteOldHiddenPasskeys};
 };
 
 // Tests that passkeys sync on transport mode only if the user has consented to
@@ -1195,7 +1088,7 @@ IN_PROC_BROWSER_TEST_P(SingleClientWebAuthnCredentialsSyncParamTest,
 
   ASSERT_TRUE(SignIn());
 
-  PasskeySyncActiveChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(PasskeySyncActiveChecker(GetSyncService(0)).Wait());
   EXPECT_TRUE(LocalPasskeysMatchChecker(kSingleProfile,
                                         ElementsAre(PasskeyHasSyncId(sync_id)))
                   .Wait());

@@ -14,14 +14,12 @@ import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.autofill.AutofillProfile;
 
 /** Unit tests for the AutofillContact class. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AutofillContactUnitTest {
     private static final String MESSAGE = "message";
     private static final String NAME = "Jon Doe";
@@ -31,7 +29,7 @@ public class AutofillContactUnitTest {
     @Test
     public void testIsEqualOrSupersetOf_RequestAllFields() {
         AutofillProfile dummyProfile = AutofillProfile.builder().build();
-        Context mockContext = spy(RuntimeEnvironment.application);
+        Context mockContext = spy(RuntimeEnvironment.getApplication());
         doReturn(MESSAGE).when(mockContext).getString(anyInt());
 
         AutofillContact contact1 =
@@ -88,7 +86,7 @@ public class AutofillContactUnitTest {
     @Test
     public void testIsEqualOrSupersetOf_RequestSomeFields() {
         AutofillProfile dummyProfile = AutofillProfile.builder().build();
-        Context mockContext = spy(RuntimeEnvironment.application);
+        Context mockContext = spy(RuntimeEnvironment.getApplication());
         doReturn(MESSAGE).when(mockContext).getString(anyInt());
 
         // The merchant does not request a name.
@@ -130,7 +128,7 @@ public class AutofillContactUnitTest {
     @Test
     public void testGetRelevanceScore_RequestAllFields() {
         AutofillProfile dummyProfile = AutofillProfile.builder().build();
-        Context mockContext = spy(RuntimeEnvironment.application);
+        Context mockContext = spy(RuntimeEnvironment.getApplication());
         doReturn(MESSAGE).when(mockContext).getString(anyInt());
 
         // The merchant requests all fields.
@@ -252,7 +250,7 @@ public class AutofillContactUnitTest {
     @Test
     public void testGetRelevanceScore_RequestSomeFields() {
         AutofillProfile dummyProfile = AutofillProfile.builder().build();
-        Context mockContext = spy(RuntimeEnvironment.application);
+        Context mockContext = spy(RuntimeEnvironment.getApplication());
         doReturn(MESSAGE).when(mockContext).getString(anyInt());
 
         // The merchant does not request a name.

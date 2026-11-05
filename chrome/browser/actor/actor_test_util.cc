@@ -15,28 +15,32 @@
 #include "base/no_destructor.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
-#include "base/values.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_proto_conversion.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/enterprise_policy_checker.h"
 #include "chrome/browser/actor/execution_engine.h"
-#include "chrome/browser/actor/tools/attempt_login_tool_request.h"
 #include "chrome/browser/actor/tools/click_tool_request.h"
 #include "chrome/browser/actor/tools/drag_and_release_tool_request.h"
 #include "chrome/browser/actor/tools/find_and_highlight_tool_request.h"
 #include "chrome/browser/actor/tools/history_tool_request.h"
+#include "chrome/browser/actor/tools/media_control_tool_request.h"
 #include "chrome/browser/actor/tools/move_mouse_tool_request.h"
 #include "chrome/browser/actor/tools/navigate_tool_request.h"
 #include "chrome/browser/actor/tools/page_tool_request.h"
+#include "chrome/browser/actor/tools/password_manager/attempt_login/attempt_login_tool_request.h"
 #include "chrome/browser/actor/tools/perform_search_tool_request.h"
 #include "chrome/browser/actor/tools/script_tool_request.h"
 #include "chrome/browser/actor/tools/scroll_to_tool_request.h"
 #include "chrome/browser/actor/tools/scroll_tool_request.h"
 #include "chrome/browser/actor/tools/select_tool_request.h"
+#include "chrome/browser/actor/tools/site_based_search_tool_request.h"
 #include "chrome/browser/actor/tools/tab_management_tool_request.h"
 #include "chrome/browser/actor/tools/translate_page_tool_request.h"
 #include "chrome/browser/actor/tools/type_tool_request.h"
 #include "chrome/browser/actor/tools/wait_tool_request.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/actor/action_result.h"
 #include "chrome/common/actor/actor_constants.h"
@@ -49,13 +53,13 @@
 #include "components/optimization_guide/core/hints/hints_manager.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/optimization_guide/proto/hints.pb.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/gfx/geometry/point.h"
-#include "url/url_util.h"
 
 namespace actor {
 
@@ -91,6 +95,11 @@ TabHandle GetTabHandleForFrame(content::RenderFrameHost& rfh) {
       content::WebContents::FromRenderFrameHost(&rfh));
   CHECK(tab);
   return tab->GetHandle();
+}
+
+ActorSurfaceHandle GetActorSurfaceHandleForFrame(
+    content::RenderFrameHost& rfh) {
+  return ActorSurfaceHandle::From(GetTabHandleForFrame(rfh));
 }
 
 // Returns a configuration as a binary-serialized protobuf.
@@ -491,7 +500,9 @@ Actions MakeWait(std::optional<base::TimeDelta> duration,
   Actions actions;
   WaitAction* wait = actions.add_actions()->mutable_wait();
   if (observe_tab_handle.has_value()) {
-    wait->set_observe_tab_id(observe_tab_handle->raw_value());
+    // `observe_tab_id` holds a surface ID.
+    wait->set_observe_tab_id(
+        ActorSurfaceHandle::From(*observe_tab_handle).raw_value());
   }
   if (duration.has_value()) {
     wait->set_wait_time_ms(duration->InMilliseconds());
@@ -521,20 +532,52 @@ Actions MakeScriptTool(content::RenderFrameHost& rfh,
   return action;
 }
 
-Actions MakeMediaControl(tabs::TabHandle tab_handle,
-                         MediaControl media_control,
-                         std::optional<actor::TaskId> task_id) {
+Actions MakePlayMedia(tabs::TabHandle tab_handle,
+                      std::optional<actor::TaskId> task_id) {
   Actions action;
   auto* media_control_action = action.add_actions()->mutable_media_control();
   media_control_action->set_tab_id(tab_handle.raw_value());
+  media_control_action->mutable_play();
+  if (task_id.has_value()) {
+    action.set_task_id(task_id->value());
+  }
+  return action;
+}
 
-  if (std::get_if<PlayMedia>(&media_control)) {
-    media_control_action->mutable_play();
-  } else if (std::get_if<PauseMedia>(&media_control)) {
-    media_control_action->mutable_pause();
-  } else if (const auto* seek = std::get_if<SeekMedia>(&media_control)) {
-    media_control_action->mutable_seek()->set_seek_time_milliseconds(
-        seek->seek_time_milliseconds);
+Actions MakePauseMedia(tabs::TabHandle tab_handle,
+                       std::optional<actor::TaskId> task_id) {
+  Actions action;
+  auto* media_control_action = action.add_actions()->mutable_media_control();
+  media_control_action->set_tab_id(tab_handle.raw_value());
+  media_control_action->mutable_pause();
+  if (task_id.has_value()) {
+    action.set_task_id(task_id->value());
+  }
+  return action;
+}
+
+Actions MakeSeekMedia(tabs::TabHandle tab_handle,
+                      base::TimeDelta seek_time,
+                      std::optional<actor::TaskId> task_id) {
+  Actions action;
+  auto* media_control_action = action.add_actions()->mutable_media_control();
+  media_control_action->set_tab_id(tab_handle.raw_value());
+  media_control_action->mutable_seek()->set_seek_time_milliseconds(
+      seek_time.InMilliseconds());
+  if (task_id.has_value()) {
+    action.set_task_id(task_id->value());
+  }
+  return action;
+}
+
+Actions MakeTranslatePage(tabs::TabHandle tab_handle,
+                          std::string target_language,
+                          std::optional<actor::TaskId> task_id) {
+  Actions action;
+  auto* translate_page_action = action.add_actions()->mutable_translate_page();
+  translate_page_action->set_tab_id(tab_handle.raw_value());
+  if (!target_language.empty()) {
+    translate_page_action->set_target_language(target_language);
   }
   if (task_id.has_value()) {
     action.set_task_id(task_id->value());
@@ -558,15 +601,16 @@ std::unique_ptr<ToolRequest> MakeClickRequest(content::RenderFrameHost& rfh,
                                               int content_node_id,
                                               mojom::ClickType type,
                                               mojom::ClickCount count) {
-  return std::make_unique<ClickToolRequest>(
-      GetTabHandleForFrame(rfh), MakeTarget(rfh, content_node_id), type, count);
+  return std::make_unique<ClickToolRequest>(GetActorSurfaceHandleForFrame(rfh),
+                                            MakeTarget(rfh, content_node_id),
+                                            type, count);
 }
 
 std::unique_ptr<ToolRequest> MakeDirectElementActivationClickRequest(
     content::RenderFrameHost& rfh,
     int content_node_id) {
   return std::make_unique<ClickToolRequest>(
-      GetTabHandleForFrame(rfh), MakeTarget(rfh, content_node_id),
+      GetActorSurfaceHandleForFrame(rfh), MakeTarget(rfh, content_node_id),
       mojom::ClickType::kLeftOnOccludedTarget, mojom::ClickCount::kSingle);
 }
 
@@ -575,48 +619,64 @@ std::unique_ptr<ToolRequest> MakeClickRequest(TabInterface& tab,
                                               mojom::ClickType type,
                                               mojom::ClickCount count) {
   return std::make_unique<ClickToolRequest>(
-      tab.GetHandle(), MakeTarget(click_point), type, count);
+      ActorSurfaceHandle::From(tab.GetHandle()), MakeTarget(click_point), type,
+      count);
 }
 
 std::unique_ptr<ToolRequest> MakeHistoryBackRequest(TabInterface& tab) {
-  return std::make_unique<HistoryToolRequest>(
-      tab.GetHandle(), HistoryToolRequest::Direction::kBack);
+  return std::make_unique<HistoryBackToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()));
 }
 
 std::unique_ptr<ToolRequest> MakeHistoryForwardRequest(TabInterface& tab) {
-  return std::make_unique<HistoryToolRequest>(
-      tab.GetHandle(), HistoryToolRequest::Direction::kForward);
+  return std::make_unique<HistoryForwardToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()));
 }
 
-std::unique_ptr<ToolRequest> MakeHistoryReloadRequest(TabInterface& tab,
-                                                      bool bypass_cache) {
-  HistoryToolRequest::Direction direction =
-      bypass_cache ? HistoryToolRequest::Direction::kReloadBypassingCache
-                   : HistoryToolRequest::Direction::kReload;
-  return std::make_unique<HistoryToolRequest>(tab.GetHandle(), direction);
+std::unique_ptr<ToolRequest> MakeReloadPageRequest(TabInterface& tab,
+                                                   bool bypass_cache) {
+  return std::make_unique<ReloadPageToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()), bypass_cache);
 }
 
 std::unique_ptr<ToolRequest> MakeMouseMoveRequest(content::RenderFrameHost& rfh,
                                                   int content_node_id) {
   return std::make_unique<MoveMouseToolRequest>(
-      GetTabHandleForFrame(rfh), MakeTarget(rfh, content_node_id));
+      GetActorSurfaceHandleForFrame(rfh), MakeTarget(rfh, content_node_id));
 }
 
 std::unique_ptr<ToolRequest> MakeMouseMoveRequest(
     TabInterface& tab,
     const gfx::Point& move_point) {
-  return std::make_unique<MoveMouseToolRequest>(tab.GetHandle(),
-                                                MakeTarget(move_point));
+  return std::make_unique<MoveMouseToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()), MakeTarget(move_point));
 }
 std::unique_ptr<ToolRequest> MakeNavigateRequest(TabInterface& tab,
                                                  std::string_view target_url) {
-  return std::make_unique<NavigateToolRequest>(tab.GetHandle(),
-                                               GURL(target_url));
+  return std::make_unique<NavigateToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()), GURL(target_url));
 }
 std::unique_ptr<ToolRequest> MakePerformSearchRequest(TabInterface& tab,
                                                       std::string_view query) {
-  return std::make_unique<PerformSearchToolRequest>(tab.GetHandle(),
-                                                    std::string(query));
+  return std::make_unique<PerformSearchToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()), std::string(query));
+}
+std::unique_ptr<ToolRequest> MakeSiteBasedSearchRequest(
+    TabInterface& tab,
+    std::string_view query,
+    std::optional<std::string> document_identifier) {
+  std::string doc_id;
+  if (document_identifier.has_value()) {
+    doc_id = *document_identifier;
+  } else if (tab.GetContents() && tab.GetContents()->GetPrimaryMainFrame()) {
+    doc_id = optimization_guide::DocumentIdentifierUserData::
+                 GetOrCreateForCurrentDocument(
+                     tab.GetContents()->GetPrimaryMainFrame())
+                     ->serialized_token();
+  }
+  return std::make_unique<SiteBasedSearchToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()), std::string(query),
+      std::move(doc_id));
 }
 std::unique_ptr<ToolRequest> MakeTypeRequest(content::RenderFrameHost& rfh,
                                              int content_node_id,
@@ -624,22 +684,23 @@ std::unique_ptr<ToolRequest> MakeTypeRequest(content::RenderFrameHost& rfh,
                                              bool follow_by_enter) {
   // TODO(crbug.com/409570203): Tests should set a mode.
   return std::make_unique<TypeToolRequest>(
-      GetTabHandleForFrame(rfh), MakeTarget(rfh, content_node_id), text,
-      follow_by_enter, TypeToolRequest::Mode::kReplace);
+      GetActorSurfaceHandleForFrame(rfh), MakeTarget(rfh, content_node_id),
+      text, follow_by_enter, TypeToolRequest::Mode::kReplace);
 }
 std::unique_ptr<ToolRequest> MakeTypeRequest(TabInterface& tab,
                                              const gfx::Point& type_point,
                                              std::string_view text,
                                              bool follow_by_enter) {
   return std::make_unique<TypeToolRequest>(
-      tab.GetHandle(), MakeTarget(type_point), text, follow_by_enter,
-      TypeToolRequest::Mode::kReplace);
+      ActorSurfaceHandle::From(tab.GetHandle()), MakeTarget(type_point), text,
+      follow_by_enter, TypeToolRequest::Mode::kReplace);
 }
 std::unique_ptr<ToolRequest> MakeSelectRequest(content::RenderFrameHost& rfh,
                                                int content_node_id,
                                                std::string_view value) {
-  return std::make_unique<SelectToolRequest>(
-      GetTabHandleForFrame(rfh), MakeTarget(rfh, content_node_id), value);
+  return std::make_unique<SelectToolRequest>(GetActorSurfaceHandleForFrame(rfh),
+                                             MakeTarget(rfh, content_node_id),
+                                             value);
 }
 
 std::unique_ptr<ToolRequest> MakeScrollRequest(
@@ -669,14 +730,26 @@ std::unique_ptr<ToolRequest> MakeScrollRequest(
     distance = -scroll_offset_y;
   }
 
-  return std::make_unique<ScrollToolRequest>(
-      GetTabHandleForFrame(rfh), MakeTarget(rfh, node_id), direction, distance);
+  return std::make_unique<ScrollToolRequest>(GetActorSurfaceHandleForFrame(rfh),
+                                             MakeTarget(rfh, node_id),
+                                             direction, distance);
+}
+
+std::unique_ptr<ToolRequest> MakeScrollPageRequest(
+    content::RenderFrameHost& rfh,
+    std::optional<int> content_node_id,
+    ScrollPageToolRequest::Granularity granularity,
+    ScrollPageToolRequest::Direction direction) {
+  return std::make_unique<ScrollPageToolRequest>(
+      GetActorSurfaceHandleForFrame(rfh),
+      MakeTarget(rfh, content_node_id.value_or(kRootElementDomNodeId)),
+      granularity, direction);
 }
 
 std::unique_ptr<ToolRequest> MakeScrollToRequest(content::RenderFrameHost& rfh,
                                                  int content_node_id) {
   return std::make_unique<ScrollToToolRequest>(
-      GetTabHandleForFrame(rfh), MakeTarget(rfh, content_node_id));
+      GetActorSurfaceHandleForFrame(rfh), MakeTarget(rfh, content_node_id));
 }
 
 std::unique_ptr<ToolRequest> MakeDragAndReleaseRequest(
@@ -684,28 +757,33 @@ std::unique_ptr<ToolRequest> MakeDragAndReleaseRequest(
     const gfx::Point& from_point,
     const gfx::Point& to_point) {
   return std::make_unique<DragAndReleaseToolRequest>(
-      tab.GetHandle(), MakeTarget(from_point), MakeTarget(to_point));
+      ActorSurfaceHandle::From(tab.GetHandle()), MakeTarget(from_point),
+      MakeTarget(to_point));
 }
 std::unique_ptr<ToolRequest> MakeWaitRequest(TabInterface* observe_tab) {
   // TODO(bokan): Move this the default in WaitToolRequest.
   constexpr base::TimeDelta kWaitTime = base::Seconds(3);
   return std::make_unique<WaitToolRequest>(
-      kWaitTime, observe_tab ? observe_tab->GetHandle() : TabHandle::Null());
+      kWaitTime, observe_tab
+                     ? ActorSurfaceHandle::From(observe_tab->GetHandle())
+                     : ActorSurfaceHandle::Null());
 }
 
 std::unique_ptr<ToolRequest> MakeCreateTabRequest(SessionID window_id,
                                                   bool foreground) {
   return std::make_unique<CreateTabToolRequest>(
-      window_id.id(), foreground ? WindowOpenDisposition::NEW_FOREGROUND_TAB
-                                 : WindowOpenDisposition::NEW_BACKGROUND_TAB);
+      window_id.id(),
+      foreground ? ::ui::mojom::WindowOpenDisposition::kNewForegroundTab
+                 : ::ui::mojom::WindowOpenDisposition::kNewBackgroundTab);
 }
 
 std::unique_ptr<ToolRequest> MakeActivateTabRequest(TabHandle tab) {
-  return std::make_unique<ActivateTabToolRequest>(tab);
+  return std::make_unique<ActivateTabToolRequest>(
+      ActorSurfaceHandle::From(tab));
 }
 
 std::unique_ptr<ToolRequest> MakeCloseTabRequest(TabHandle tab) {
-  return std::make_unique<CloseTabToolRequest>(tab);
+  return std::make_unique<CloseTabToolRequest>(ActorSurfaceHandle::From(tab));
 }
 
 std::unique_ptr<ToolRequest> MakeAttemptLoginRequest(
@@ -713,7 +791,8 @@ std::unique_ptr<ToolRequest> MakeAttemptLoginRequest(
     std::optional<PageTarget> password_button,
     std::optional<PageTarget> sign_in_with_google_button) {
   return std::make_unique<AttemptLoginToolRequest>(
-      tab.GetHandle(), password_button, sign_in_with_google_button);
+      ActorSurfaceHandle::From(tab.GetHandle()), password_button,
+      sign_in_with_google_button);
 }
 
 std::unique_ptr<ToolRequest> MakeAttemptLoginRequestByNodeIds(
@@ -739,35 +818,46 @@ std::unique_ptr<ToolRequest> MakeScriptToolRequest(
     const std::string& name,
     const std::string& input_arguments) {
   return std::make_unique<ScriptToolRequest>(
-      GetTabHandleForFrame(rfh),
+      GetActorSurfaceHandleForFrame(rfh),
       optimization_guide::DocumentIdentifierUserData::
           GetOrCreateForCurrentDocument(&rfh)
               ->token(),
       name, input_arguments);
 }
 
-std::unique_ptr<ToolRequest> MakeMediaControlRequest(
-    tabs::TabInterface& tab,
-    MediaControl media_control) {
-  return std::make_unique<MediaControlToolRequest>(tab.GetHandle(),
-                                                   media_control);
+std::unique_ptr<ToolRequest> MakePlayMediaRequest(tabs::TabInterface& tab) {
+  return std::make_unique<PlayMediaToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()));
+}
+
+std::unique_ptr<ToolRequest> MakePauseMediaRequest(tabs::TabInterface& tab) {
+  return std::make_unique<PauseMediaToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()));
+}
+
+std::unique_ptr<ToolRequest> MakeSeekMediaRequest(tabs::TabInterface& tab,
+                                                  base::TimeDelta seek_time) {
+  return std::make_unique<SeekMediaToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()), seek_time);
 }
 
 std::unique_ptr<ToolRequest> MakeTranslatePageRequest(tabs::TabInterface& tab) {
-  return std::make_unique<TranslatePageToolRequest>(tab.GetHandle());
+  return std::make_unique<TranslatePageToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()));
 }
 
 std::unique_ptr<ToolRequest> MakeTranslatePageRequest(
     tabs::TabInterface& tab,
     std::string_view target_language) {
   return std::make_unique<TranslatePageToolRequest>(
-      tab.GetHandle(), std::string(target_language));
+      ActorSurfaceHandle::From(tab.GetHandle()), std::string(target_language));
 }
 
 std::unique_ptr<ToolRequest> MakeFindAndHighlightRequest(
     tabs::TabInterface& tab,
     const std::string& query) {
-  return std::make_unique<FindAndHighlightToolRequest>(tab.GetHandle(), query);
+  return std::make_unique<FindAndHighlightToolRequest>(
+      ActorSurfaceHandle::From(tab.GetHandle()), query);
 }
 
 std::vector<std::unique_ptr<ToolRequest>> ToRequestList(
@@ -963,6 +1053,9 @@ ScopedMockTabObservationResult::~ScopedMockTabObservationResult() {
 TestTabState::TestTabState(content::WebContents* web_contents) {
   if (web_contents) {
     ON_CALL(tab, GetContents).WillByDefault(::testing::Return(web_contents));
+    ON_CALL(tab, GetProfile)
+        .WillByDefault(::testing::Return(
+            Profile::FromBrowserContext(web_contents->GetBrowserContext())));
   }
   ON_CALL(tab, RegisterWillDetach)
       .WillByDefault([this](tabs::TabInterface::WillDetach callback) {
@@ -972,11 +1065,52 @@ TestTabState::TestTabState(content::WebContents* web_contents) {
       .WillByDefault(::testing::ReturnRef(user_data_host));
 
   tab_data = std::make_unique<ActorTabData>(&tab);
+  if (web_contents) {
+    actor_surface_tab_helper = std::make_unique<ActorSurfaceTabHelper>(tab);
+  }
 }
 
 TestTabState::~TestTabState() {
   will_detach_callback_list_.Notify(&tab,
                                     tabs::TabInterface::DetachReason::kDelete);
+}
+
+ActorJournalRecorder::Entry::Entry() = default;
+
+ActorJournalRecorder::Entry::Entry(const Entry&) = default;
+
+ActorJournalRecorder::Entry& ActorJournalRecorder::Entry::operator=(
+    const Entry&) = default;
+
+ActorJournalRecorder::Entry::~Entry() = default;
+
+ActorJournalRecorder::ActorJournalRecorder(AggregatedJournal& journal) {
+  observation_.Observe(&journal);
+}
+
+ActorJournalRecorder::~ActorJournalRecorder() = default;
+
+std::vector<ActorJournalRecorder::Entry> ActorJournalRecorder::GetEntries(
+    std::string_view event) const {
+  std::vector<Entry> entries;
+  for (const Entry& entry : entries_) {
+    if (entry.event == event) {
+      entries.push_back(entry);
+    }
+  }
+  return entries;
+}
+
+void ActorJournalRecorder::WillAddJournalEntry(
+    const AggregatedJournal::Entry& entry) {
+  Entry& recorded = entries_.emplace_back();
+  recorded.type = entry.data->type;
+  recorded.event = entry.data->event;
+  recorded.task_id = entry.data->task_id;
+  recorded.track_uuid = entry.data->track_uuid;
+  for (const mojom::JournalDetailsPtr& detail : entry.data->details) {
+    recorded.details.emplace(detail->key, detail->value);
+  }
 }
 
 }  // namespace actor

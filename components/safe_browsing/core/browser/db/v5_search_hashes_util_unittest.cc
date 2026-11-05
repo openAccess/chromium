@@ -300,7 +300,7 @@ TEST_F(V5SearchHashesUtilTest, DetermineMostSevereThreat_MultipleDetails) {
       CreateHashDetail(V5::ThreatType::TRICK_TO_BILL);  // Severity 15
   V5::FullHash::FullHashDetail detail_med = CreateHashDetail(
       V5::ThreatType::SOCIAL_ENGINEERING,
-      {V5::ThreatAttribute::CANARY});  // Severity 4 (Suspicious Site)
+      {V5::ThreatAttribute::CANARY});  // Severity 7 (Suspicious Site)
   V5::FullHash::FullHashDetail detail_high =
       CreateHashDetail(V5::ThreatType::MALWARE);  // Severity 0 (most severe)
 
@@ -345,6 +345,11 @@ TEST_F(V5SearchHashesUtilTest,
 
   std::vector<ThreatConfig> configs = {
       {V5::ThreatType::MALWARE,
+       {},
+       SBThreatType::SB_THREAT_TYPE_URL_MALWARE,
+       0,
+       ThreatMetadata()},
+      {V5::ThreatType::POTENTIALLY_HARMFUL_APPLICATION,
        {},
        SBThreatType::SB_THREAT_TYPE_URL_MALWARE,
        0,
@@ -469,9 +474,6 @@ TEST_F(V5SearchHashesUtilTest,
       V5::ThreatType::BETTER_ADS_VIOLATION, {V5::ThreatAttribute::CANARY});
   V5::FullHash::FullHashDetail abs_enforce =
       CreateHashDetail(V5::ThreatType::ABUSIVE_EXPERIENCE_VIOLATION);
-  V5::FullHash::FullHashDetail abs_warn =
-      CreateHashDetail(V5::ThreatType::ABUSIVE_EXPERIENCE_VIOLATION,
-                       {V5::ThreatAttribute::CANARY});
   V5::FullHash::FullHashDetail soceng =
       CreateHashDetail(V5::ThreatType::SOCIAL_ENGINEERING);
 

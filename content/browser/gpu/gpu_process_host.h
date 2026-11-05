@@ -28,7 +28,6 @@
 #include "gpu/config/gpu_mode.h"
 #include "mojo/public/cpp/bindings/generic_pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "sandbox/policy/mojom/sandbox.mojom.h"
 #include "services/viz/privileged/mojom/compositing/frame_sink_manager.mojom.h"
 #include "services/viz/privileged/mojom/gl/gpu_host.mojom.h"
@@ -39,26 +38,14 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "services/viz/privileged/mojom/gl/info_collection_gpu_service.mojom.h"
-#include "services/webnn/public/cpp/context_properties.h"
-#include "services/webnn/public/mojom/webnn_context_provider.mojom.h"
 #endif
 
 namespace base {
 class Thread;
 }
 
-#if BUILDFLAG(IS_WIN)
-namespace webnn {
-struct EpDeviceInfo;
-}
-#endif
-
 namespace content {
 class BrowserChildProcessHostImpl;
-
-#if BUILDFLAG(IS_WIN)
-class WebNNCompilerProcessHost;
-#endif
 
 #if BUILDFLAG(IS_MAC)
 class BrowserChildProcessBackgroundedBridge;
@@ -79,6 +66,11 @@ class GpuProcessHost final : public BrowserChildProcessHostDelegate,
   CONTENT_EXPORT static GpuProcessHost* Get(
       GpuProcessKind kind = GPU_PROCESS_KIND_SANDBOXED,
       bool force_create = true);
+
+  // Returns true while the OS is ending the user session (Windows logoff,
+  // shutdown, or restart). During session teardown, Windows kills child
+  // processes and refuses to start new ones, which says nothing about the GPU.
+  CONTENT_EXPORT static bool IsSessionEnding();
 
   GpuProcessHost(const GpuProcessHost&) = delete;
   GpuProcessHost& operator=(const GpuProcessHost&) = delete;
@@ -134,8 +126,6 @@ class GpuProcessHost final : public BrowserChildProcessHostDelegate,
   CONTENT_EXPORT viz::mojom::InfoCollectionGpuService*
   info_collection_gpu_service();
 #endif
-
-  CONTENT_EXPORT int GetIDForTesting() const;
 
   viz::GpuHostImpl* gpu_host() { return gpu_host_.get(); }
 
@@ -209,21 +199,6 @@ class GpuProcessHost final : public BrowserChildProcessHostDelegate,
   void BindHostReceiver(mojo::GenericPendingReceiver generic_receiver) override;
 #if BUILDFLAG(IS_OZONE)
   void TerminateGpuProcess(const std::string& message) override;
-#endif
-#if BUILDFLAG(IS_WIN)
-  void RequestWebNNCompilerContext(
-      webnn::mojom::CreateContextOptionsPtr context_options,
-      const webnn::ContextProperties& context_properties,
-      const webnn::EpDeviceInfo& target_device,
-      mojo::PendingReceiver<webnn::mojom::WebNNCompilerContext>
-          compiler_context_receiver,
-      mojo::PendingRemote<webnn::mojom::WebNNModelLoader> model_loader_remote,
-      RequestWebNNCompilerContextResultCallback callback) override;
-#endif
-#if BUILDFLAG(IS_APPLE)
-  void CopyWebNNCompiledModel(
-      const base::FilePath& compiler_model_path,
-      viz::mojom::GpuHost::CopyWebNNCompiledModelCallback callback) override;
 #endif
 
   bool LaunchGpuProcess();
@@ -300,11 +275,6 @@ class GpuProcessHost final : public BrowserChildProcessHostDelegate,
   std::multiset<GURL> urls_with_live_offscreen_contexts_;
 
   std::unique_ptr<viz::GpuHostImpl> gpu_host_;
-
-#if BUILDFLAG(IS_WIN)
-  // Manages the WebNN Compiler utility process lifecycle.
-  std::unique_ptr<WebNNCompilerProcessHost> webnn_compiler_process_host_;
-#endif
 
   base::WeakPtrFactory<GpuProcessHost> weak_ptr_factory_{this};
 };

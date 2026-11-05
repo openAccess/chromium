@@ -18,13 +18,14 @@
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ash/app_list/arc/arc_package_syncable_service.h"
 #include "chrome/browser/ash/arc/tracing/arc_app_performance_tracing_session.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/sync/sync_service_factory.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/sync/sync_service_provider.h"
 #include "chromeos/ash/experiences/arc/arc_browser_context_keyed_service_factory_base.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
+#include "components/account_id/account_id.h"
 #include "components/app_restore/window_properties.h"
 #include "components/exo/shell_surface_util.h"
 #include "components/exo/surface.h"
@@ -258,7 +259,7 @@ base::DictValue ArcAppPerformanceTracing::StopCustomTracing() {
   custom_trace_result_.reset();
   if (session_ && session_->tracing_active()) {
     session_->Finish();
-    DCHECK(custom_trace_result_.has_value());
+    CHECK(custom_trace_result_.has_value(), base::NotFatalUntil::M160);
   }
 
   if (!custom_trace_result_.has_value()) {
@@ -295,7 +296,7 @@ void ArcAppPerformanceTracing::OnWindowActivated(ActivationReason reason,
 }
 
 void ArcAppPerformanceTracing::TrackIfTaskIsActive() {
-  DCHECK(active_window_);
+  CHECK(active_window_, base::NotFatalUntil::M160);
 
   if (active_task_) {
     return;
@@ -328,7 +329,7 @@ void ArcAppPerformanceTracing::TrackIfTaskIsActive() {
 
 void ArcAppPerformanceTracing::OnWindowDestroying(aura::Window* window) {
   // ARC++ window will be destroyed.
-  DCHECK_EQ(active_window_, window);
+  CHECK_EQ(active_window_, window, base::NotFatalUntil::M160);
 
   MaybeCancelTracing();
 
@@ -358,7 +359,7 @@ void ArcAppPerformanceTracing::OnTaskDestroyed(int32_t task_id) {
 }
 
 void ArcAppPerformanceTracing::StartJankinessTracing() {
-  DCHECK(!jankiness_timer_.IsRunning());
+  CHECK(!jankiness_timer_.IsRunning(), base::NotFatalUntil::M160);
   jankiness_timer_.Start(
       FROM_HERE, kJankinessTracingTime,
       base::BindOnce(&ArcAppPerformanceTracing::FinalizeJankinessTracing,
@@ -366,7 +367,7 @@ void ArcAppPerformanceTracing::StartJankinessTracing() {
 }
 
 void ArcAppPerformanceTracing::HandleActiveAppRendered(base::Time timestamp) {
-  DCHECK(active_task_);
+  CHECK(active_task_, base::NotFatalUntil::M160);
 
   const std::string& app_id = task_id_to_app_id_[active_task_->id].first;
   const base::Time launch_request_time =
@@ -387,7 +388,8 @@ void ArcAppPerformanceTracing::OnCommit(exo::Surface* surface) {
 void ArcAppPerformanceTracing::OnSurfaceDestroying(exo::Surface* surface) {
   // |scoped_surface_| might be already reset in case window is destroyed
   // first.
-  DCHECK(!active_task_ || (active_task_->root_surface.get() == surface));
+  CHECK(!active_task_ || (active_task_->root_surface.get() == surface),
+        base::NotFatalUntil::M160);
   DetachActiveWindow();
 }
 
@@ -502,7 +504,7 @@ void ArcAppPerformanceTracing::OnGfxMetrics(const std::string& package_name,
 void ArcAppPerformanceTracing::MaybeStartTracing() {
   if (session_) {
     // We are already tracing, ignore.
-    DCHECK_EQ(session_->window(), active_window_);
+    CHECK_EQ(session_->window(), active_window_, base::NotFatalUntil::M160);
     return;
   }
 
@@ -530,11 +532,12 @@ void ArcAppPerformanceTracing::MaybeStartTracing() {
     return;
   }
 
-  Profile* const profile = Profile::FromBrowserContext(context_);
-  DCHECK(profile);
-
+  // ARC only runs for regular user sessions, so `context_` is always an
+  // annotated user context here; the null branch below still covers a
+  // context without one.
+  const AccountId* const account_id = ash::AnnotatedAccountId::Get(context_);
   const syncer::SyncService* sync_service =
-      SyncServiceFactory::GetForProfile(profile);
+      account_id ? ash::SyncServiceProvider::Get().Find(*account_id) : nullptr;
   if (!sync_service) {
     // Possible if sync is disabled by command line flag.
     // TODO(crbug.com/40227318): This should probably handled by

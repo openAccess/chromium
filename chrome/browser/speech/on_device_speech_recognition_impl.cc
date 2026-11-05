@@ -27,6 +27,7 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
+#include "content/public/common/url_constants.h"
 #include "media/base/media_switches.h"
 #include "media/mojo/mojom/speech_recognizer.mojom.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
@@ -43,6 +44,11 @@
 #include "components/optimization_guide/core/model_execution/model_broker_client.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom-shared.h"
 #include "components/soda/soda_util.h"
+#include "extensions/buildflags/buildflags.h"
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "chrome/common/extensions/extension_constants.h"
+#endif
 
 namespace {
 const char kOnDeviceLanguagesDownloadedKey[] = "ondevice-languages-downloaded";
@@ -53,7 +59,8 @@ int GetPriority(media::mojom::AvailabilityStatus status) {
       return 0;
     case media::mojom::AvailabilityStatus::kDownloadable:
       return 1;
-    case media::mojom::AvailabilityStatus::kDownloadableWithoutUserActivation:
+    case media::mojom::AvailabilityStatus::
+        kDownloadableWithoutTransientUserActivation:
       return 2;
     case media::mojom::AvailabilityStatus::kDownloading:
       return 3;
@@ -118,7 +125,8 @@ media::mojom::AvailabilityStatus ApplyOriginMasking(
 
   if (availability_status == media::mojom::AvailabilityStatus::kDownloadable &&
       has_mic_and_accept_lang) {
-    return media::mojom::AvailabilityStatus::kDownloadableWithoutUserActivation;
+    return media::mojom::AvailabilityStatus::
+        kDownloadableWithoutTransientUserActivation;
   }
 
   return availability_status;
@@ -566,6 +574,19 @@ bool OnDeviceSpeechRecognitionImpl::IsLanguageAvailabilityMaskedForOrigin(
   }
 
   const GURL url = render_frame_host().GetLastCommittedOrigin().GetURL();
+  // Exempt masking from internal WebUI.
+  if (url.SchemeIs(content::kChromeUIScheme)) {
+    return false;
+  }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+  // Exempt masking from internal component extensions.
+  if (url.SchemeIs(extensions::kExtensionScheme) &&
+      url.host() == extension_misc::kDictationConnectorExtensionId) {
+    return false;
+  }
+#endif
+
   if (!url.is_valid() || url.SchemeIsFile()) {
     return !transient_on_device_languages_downloaded_.contains(
         std::string(language));

@@ -56,8 +56,8 @@ NotificationActionsView::NotificationActionsView() {
 
   textfield_ = inline_reply_container_->AddChildView(
       std::make_unique<SystemTextfield>(SystemTextfield::Type::kMedium));
-  textfield_->SetBackgroundColorId(cros_tokens::kCrosSysSurface);
-  textfield_->SetShowBackground(true);
+  textfield_->SetBackgroundColor(cros_tokens::kCrosSysSurface);
+  textfield_->SetBackgroundMode(SystemTextfield::BackgroundMode::kAlways);
   textfield_->SetCornerRadius(24);
   textfield_->SetProperty(
       views::kFlexBehaviorKey,
@@ -92,8 +92,14 @@ void NotificationActionsView::UpdateWithNotification(
     const message_center::Notification& notification) {
   buttons_container_->RemoveAllChildViews();
 
+  // Only calculate the color when there are buttons that use it.
+  if (!notification.buttons().empty()) {
+    button_and_icon_background_color_ =
+        notification_style_utils::CalculateIconBackgroundColor(&notification);
+  }
+
   int button_index = 0;
-  for (auto button : notification.buttons()) {
+  for (const auto& button : notification.buttons()) {
     // base::Unretained is safe here because `this` is guaranteed to outlive
     // `actions_button` which is owned by `this`. `MessageCenter` is also
     // guaranteed to outlive `this` since it owns all notifications.
@@ -112,12 +118,10 @@ void NotificationActionsView::UpdateWithNotification(
                                      PillButton::Type::kFloatingWithoutIcon,
                                      /*icon=*/nullptr);
 
-    button_and_icon_background_color_ =
-        notification_style_utils::CalculateIconBackgroundColor(&notification);
-
     actions_button->SetButtonTextColor(button_and_icon_background_color_);
 
     buttons_container_->AddChildView(std::move(actions_button));
+    ++button_index;
   }
 
   SetEnabled(!notification.buttons().empty());

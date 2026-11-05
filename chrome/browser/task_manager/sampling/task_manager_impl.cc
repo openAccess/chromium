@@ -31,6 +31,7 @@
 #include "chrome/browser/task_manager/providers/web_contents/web_contents_task_provider.h"
 #include "chrome/browser/task_manager/providers/worker_task_provider.h"
 #include "chrome/browser/task_manager/sampling/shared_sampler.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_host.h"
 #include "content/public/browser/gpu_data_manager.h"
@@ -84,7 +85,7 @@ TaskManagerImpl::TaskManagerImpl()
           {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
            base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})),
       shared_sampler_(new SharedSampler(blocking_pool_runner_)) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   task_providers_.push_back(std::make_unique<BrowserProcessTaskProvider>());
   task_providers_.push_back(std::make_unique<ChildProcessTaskProvider>());
@@ -121,7 +122,7 @@ TaskManagerImpl::~TaskManagerImpl() {
 
 // static
 TaskManagerImpl* TaskManagerImpl::GetInstance() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   static base::NoDestructor<TaskManagerImpl> instance;
   return instance.get();
@@ -130,7 +131,7 @@ TaskManagerImpl* TaskManagerImpl::GetInstance() {
 bool TaskManagerImpl::IsCreated() {
   // In minimal mode, BrowserThread doesn't exist.
   if (g_browser_process) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   }
   return g_instance_created;
 }
@@ -255,6 +256,10 @@ const gfx::ImageSkia& TaskManagerImpl::GetIcon(TaskId task_id) const {
   return GetTaskByTaskId(task_id)->icon();
 }
 
+bool TaskManagerImpl::ShouldThemifyIcon(TaskId task_id) const {
+  return GetTaskByTaskId(task_id)->should_themify_icon();
+}
+
 const base::ProcessHandle& TaskManagerImpl::GetProcessHandle(
     TaskId task_id) const {
   return GetTaskGroupByTaskId(task_id)->process_handle();
@@ -282,7 +287,8 @@ SessionID TaskManagerImpl::GetTabId(TaskId task_id) const {
   return GetTaskByTaskId(task_id)->GetTabId();
 }
 
-int TaskManagerImpl::GetChildProcessUniqueId(TaskId task_id) const {
+content::ChildProcessId TaskManagerImpl::GetChildProcessUniqueId(
+    TaskId task_id) const {
   return GetTaskByTaskId(task_id)->GetChildProcessUniqueID();
 }
 
@@ -317,8 +323,31 @@ bool TaskManagerImpl::GetV8Memory(TaskId task_id,
   const Task* task = GetTaskByTaskId(task_id);
   const std::optional<base::ByteSize> allocated_memory =
       task->GetV8MemoryAllocated();
+  if (!allocated_memory.has_value()) {
+    return false;
+  }
   const std::optional<base::ByteSize> used_memory = task->GetV8MemoryUsed();
-  if (!allocated_memory.has_value() || !used_memory.has_value()) {
+  if (!used_memory.has_value()) {
+    return false;
+  }
+
+  *allocated = allocated_memory.value();
+  *used = used_memory.value();
+
+  return true;
+}
+
+bool TaskManagerImpl::GetCppGCMemory(TaskId task_id,
+                                     base::ByteSize* allocated,
+                                     base::ByteSize* used) const {
+  const Task* task = GetTaskByTaskId(task_id);
+  const std::optional<base::ByteSize> allocated_memory =
+      task->GetCppGCMemoryAllocated();
+  if (!allocated_memory.has_value()) {
+    return false;
+  }
+  const std::optional<base::ByteSize> used_memory = task->GetCppGCMemoryUsed();
+  if (!used_memory.has_value()) {
     return false;
   }
 
@@ -402,7 +431,7 @@ const TaskIdList& TaskManagerImpl::GetTaskIdsList() const {
         if (task->HasParentTask())
           children[task->GetParentTask().get()].push_back(task);
         else
-          DCHECK(!group_task->HasParentTask());
+          CHECK(!group_task->HasParentTask(), base::NotFatalUntil::M162);
       }
     }
 
@@ -417,7 +446,8 @@ const TaskIdList& TaskManagerImpl::GetTaskIdsList() const {
     // Now sort |tasks_to_visit| in reverse order (putting the browser process
     // at back()). We will treat it as a stack from now on.
     std::sort(tasks_to_visit.rbegin(), tasks_to_visit.rend(), comparator);
-    DCHECK_EQ(Task::BROWSER, tasks_to_visit.back()->GetType());
+    CHECK_EQ(Task::BROWSER, tasks_to_visit.back()->GetType(),
+             base::NotFatalUntil::M162);
 
     // Using |tasks_to_visit| as a stack, and |visited_groups| to track which
     // groups we've already added, add groups to |sorted_task_ids_| until all
@@ -428,7 +458,7 @@ const TaskIdList& TaskManagerImpl::GetTaskIdsList() const {
     std::vector<raw_ptr<Task, VectorExperimental>>
         current_group_tasks;  // Outside loop for fewer mallocs.
     while (visited_groups.size() < num_groups) {
-      DCHECK(!tasks_to_visit.empty());
+      CHECK(!tasks_to_visit.empty(), base::NotFatalUntil::M162);
       TaskGroup* current_group =
           GetTaskGroupByTaskId(tasks_to_visit.back()->task_id());
       tasks_to_visit.pop_back();
@@ -461,7 +491,7 @@ const TaskIdList& TaskManagerImpl::GetTaskIdsList() const {
       }
     }
 
-    DCHECK_EQ(num_tasks, sorted_task_ids_.size());
+    CHECK_EQ(num_tasks, sorted_task_ids_.size(), base::NotFatalUntil::M162);
   }
 
   return sorted_task_ids_;
@@ -506,7 +536,7 @@ bool TaskManagerImpl::IsTaskValid(TaskId task_id) const {
 }
 
 void TaskManagerImpl::TaskAdded(Task* task) {
-  DCHECK(task);
+  CHECK(task, base::NotFatalUntil::M162);
 
   const base::ProcessId proc_id = task->process_id();
   const TaskId task_id = task->task_id();
@@ -538,7 +568,7 @@ void TaskManagerImpl::TaskAdded(Task* task) {
 }
 
 void TaskManagerImpl::TaskRemoved(Task* task) {
-  DCHECK(task);
+  CHECK(task, base::NotFatalUntil::M162);
 
   const base::ProcessId proc_id = task->process_id();
   const TaskId task_id = task->task_id();
@@ -548,7 +578,7 @@ void TaskManagerImpl::TaskRemoved(Task* task) {
       is_running_in_vm ? arc_vm_task_groups_by_proc_id_
                        : task_groups_by_proc_id_;
 
-  DCHECK(task_group_map.count(proc_id));
+  CHECK(task_group_map.count(proc_id), base::NotFatalUntil::M162);
 
   NotifyObserversOnTaskToBeRemoved(task_id);
 
@@ -564,7 +594,7 @@ void TaskManagerImpl::TaskRemoved(Task* task) {
 }
 
 void TaskManagerImpl::TaskUnresponsive(Task* task) {
-  DCHECK(task);
+  CHECK(task, base::NotFatalUntil::M162);
   NotifyObserversOnTaskUnresponsive(task->task_id());
 }
 
@@ -579,7 +609,7 @@ void TaskManagerImpl::UpdateAccumulatedStatsNetworkForRoute(
     content::GlobalRenderFrameHostId render_frame_host_id,
     base::ByteSize recv_bytes,
     base::ByteSize sent_bytes) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!is_running_)
     return;
   Task* task = GetTaskByRoute(render_frame_host_id);
@@ -595,7 +625,7 @@ void TaskManagerImpl::UpdateAccumulatedStatsNetworkForRoute(
 
 void TaskManagerImpl::OnVideoMemoryUsageStatsUpdate(
     const gpu::VideoMemoryUsageStats& gpu_memory_stats) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   gpu_memory_stats_ = gpu_memory_stats;
 }

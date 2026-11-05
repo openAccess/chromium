@@ -7,6 +7,7 @@
 
 #include <memory>
 
+#include "components/autofill/core/browser/data_model/payments/autofill_offer_data.h"
 #include "components/autofill/core/browser/data_model/valuables/loyalty_card.h"
 #include "components/autofill/core/browser/data_model/valuables/valuable_types.h"
 #include "components/sync/protocol/autofill_valuable_metadata_specifics.pb.h"
@@ -14,6 +15,22 @@
 #include "components/sync/protocol/entity_data.h"
 
 namespace autofill {
+
+// Converts the given `offer` into a `syncer::EntityData`.
+std::unique_ptr<syncer::EntityData> CreateEntityDataFromOfferData(
+    const AutofillOfferData& offer,
+    const sync_pb::AutofillValuableSpecifics& base_specifics);
+
+// For a given `AutofillOfferData`, returns the corresponding
+// `sync_pb::AutofillValuableSpecifics`.
+sync_pb::AutofillValuableSpecifics CreateSpecificsFromOfferData(
+    const AutofillOfferData& offer,
+    const sync_pb::AutofillValuableSpecifics& base_specifics);
+
+// Converts the given valuable `specifics` into an equivalent AutofillOfferData
+// instance.
+AutofillOfferData CreateOfferDataFromValuableSpecifics(
+    const sync_pb::AutofillValuableSpecifics& specifics);
 
 // Converts the given `loyalty_card` into a `syncer::EntityData`.
 std::unique_ptr<syncer::EntityData> CreateEntityDataFromLoyaltyCard(

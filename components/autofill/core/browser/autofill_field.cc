@@ -24,7 +24,6 @@
 #include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
 #include "base/no_destructor.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
@@ -512,11 +511,11 @@ FieldType AutofillField::heuristic_type(HeuristicSource s) const {
   // Special handling for ML model predictions.
   if (s == HeuristicSource::kAutofillMachineLearning) {
     FieldType regex_type =
-        local_type_predictions_[static_cast<size_t>(HeuristicSource::kRegexes)];
+        local_type_predictions_[std::to_underlying(HeuristicSource::kRegexes)];
     if (regex_type == FieldType::NO_SERVER_DATA) {
       regex_type = FieldType::UNKNOWN_TYPE;
     }
-    FieldType model_type = local_type_predictions_[static_cast<size_t>(
+    FieldType model_type = local_type_predictions_[std::to_underlying(
         HeuristicSource::kAutofillMachineLearning)];
     // We fall back to regex heuristics in the following cases:
     // - The regex heuristics detected a type that the model does not support
@@ -531,7 +530,7 @@ FieldType AutofillField::heuristic_type(HeuristicSource s) const {
     return model_type;
   }
 
-  FieldType type = local_type_predictions_[static_cast<size_t>(s)];
+  FieldType type = local_type_predictions_[std::to_underlying(s)];
   // Guaranteed by construction of `local_type_predictions_`.
   DCHECK(ToSafeFieldType(type).has_value());
   // `NO_SERVER_DATA` would mean that there is no heuristic type. Client code
@@ -551,8 +550,8 @@ FieldType AutofillField::server_type() const {
 }
 
 void AutofillField::set_heuristic_type(HeuristicSource s, FieldType type) {
-  CHECK(ToSafeFieldType(type).has_value(), base::NotFatalUntil::M142);
-  local_type_predictions_[static_cast<size_t>(s)] = type;
+  CHECK(ToSafeFieldType(type).has_value());
+  local_type_predictions_[std::to_underlying(s)] = type;
   if (s == GetActiveHeuristicSource()) {
     overall_type_ = std::nullopt;
   }
@@ -639,8 +638,8 @@ std::optional<AutofillPredictionSource> AutofillField::PredictionSource()
   return GetOverallPredictionResult().source;
 }
 
-AutofillType AutofillField::MakeAutofillType(FieldType primary_field_type,
-                                             bool is_country_code) const {
+AutofillType AutofillField::MakeAutofillType(
+    FieldType primary_field_type) const {
   // Indicates whether `ft` may be part of the union type.
   auto is_union_type_candidate = [](FieldType ft) {
     return GroupTypeOfFieldType(ft) == FieldTypeGroup::kAutofillAi &&
@@ -670,7 +669,7 @@ AutofillType AutofillField::MakeAutofillType(FieldType primary_field_type,
         base::span(server_predictions_).first(prefix_length));
   } while (!AutofillType::TestConstraints(field_types) && prefix_length-- > 0);
   DCHECK(field_types.contains(primary_field_type));
-  return AutofillType(field_types, is_country_code);
+  return AutofillType(field_types);
 }
 
 AutofillField::PredictionResult AutofillField::GetOverallPredictionResult()
@@ -724,11 +723,9 @@ AutofillField::PredictionResult AutofillField::GetComputedPredictionResult()
     // `HtmlFieldTypeToBestCorrespondingFieldType(html_type_local)` behave
     // differently (crbug.com/436013479). In all other cases, they are
     // identical, except for AutofillType::ToString().
-    // TODO(crbug.com/436013479): Remove AutofillType::is_country_code().
-    AutofillType type = MakeAutofillType(
-        HtmlFieldTypeToBestCorrespondingFieldType(html_type_local),
-        /*is_country_code=*/html_type_local == HtmlFieldType::kCountryCode);
-    return {type, AutofillPredictionSource::kAutocomplete};
+    return {MakeAutofillType(
+                HtmlFieldTypeToBestCorrespondingFieldType(html_type_local)),
+            AutofillPredictionSource::kAutocomplete};
   }
 
   // #### Handle on-device ML classifications.

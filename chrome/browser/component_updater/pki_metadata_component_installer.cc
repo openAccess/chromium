@@ -4,8 +4,9 @@
 
 #include "chrome/browser/component_updater/pki_metadata_component_installer.h"
 
+#include <stdint.h>
+
 #include <algorithm>
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -37,7 +38,6 @@
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/component_updater/pki_metadata_component_installer_policy.h"
 #include "chrome/browser/component_updater/pki_metadata_fastpush_component_installer_policy.h"
-#include "chrome/browser/net/key_pinning.pb.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/ssl/ssl_config_service_manager.h"
 #include "content/public/browser/network_service_instance.h"
@@ -49,7 +49,6 @@
 #include "net/net_buildflags.h"
 #include "services/cert_verifier/public/mojom/cert_verifier_service_factory.mojom.h"
 #include "services/network/public/cpp/network_service_buildflags.h"
-#include "services/network/public/mojom/key_pinning.mojom.h"
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "third_party/boringssl/src/include/openssl/bytestring.h"
@@ -69,8 +68,10 @@
 #include "net/cert/internal/trust_store_chrome.h"
 #endif
 
-#if BUILDFLAG(INCLUDE_TRANSPORT_SECURITY_STATE_PRELOAD_LIST)
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+#include "chrome/browser/net/key_pinning.pb.h"
 #include "net/http/transport_security_state.h"
+#include "services/network/public/mojom/key_pinning.mojom.h"
 #endif
 
 namespace {
@@ -81,14 +82,7 @@ namespace {
 // if it is set). This should never be decreased since that will cause CT
 // enforcement to eventually stop. This should also only be increased if Chrome
 // is compatible with the version it is being incremented to.
-const uint64_t kMaxSupportedCTCompatibilityVersion = 4;
-
-// This is the last version of key pins lists that this version of Chrome will
-// accept. If a list is delivered with a compatibility version higher than this,
-// it will be ignored. This should never be decreased since that will cause key
-// pinning enforcement to eventually stop. This should also only be increased if
-// Chrome is compatible with the version it is being incremented to.
-const uint64_t kMaxSupportedKPCompatibilityVersion = 1;
+constexpr uint64_t kMaxSupportedCTCompatibilityVersion = 4;
 
 // This is the last version of signer sets that this version of Chrome will
 // accept. If a list is delivered with a compatibility version higher than this,
@@ -96,7 +90,7 @@ const uint64_t kMaxSupportedKPCompatibilityVersion = 1;
 // verification to eventually fail for new signer sets. This should also only be
 // increased if Chrome is compatible with the version it is being incremented
 // to.
-const int64_t kMaxSupportedSignerSetCompatibilityVersion = 1;
+constexpr int64_t kMaxSupportedSignerSetCompatibilityVersion = 2;
 
 // Ignore any MtcMetadata component update data that is older than this amount.
 // The MTC Metadata has a short useful lifetime, and since it impacts Trust
@@ -108,20 +102,29 @@ const int64_t kMaxSupportedSignerSetCompatibilityVersion = 1;
 // CQRP draft policy allows up to 47 days as the max cert lifetime.
 constexpr base::TimeDelta kMaxMtcMetadataAge = base::Days(47);
 
-const base::FilePath::CharType kCTConfigProtoFileName[] =
+constexpr base::FilePath::CharType kCTConfigProtoFileName[] =
     FILE_PATH_LITERAL("ct_config.pb");
 
-const base::FilePath::CharType kKPConfigProtoFileName[] =
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+// This is the last version of key pins lists that this version of Chrome will
+// accept. If a list is delivered with a compatibility version higher than this,
+// it will be ignored. This should never be decreased since that will cause key
+// pinning enforcement to eventually stop. This should also only be increased if
+// Chrome is compatible with the version it is being incremented to.
+constexpr uint64_t kMaxSupportedKPCompatibilityVersion = 1;
+
+constexpr base::FilePath::CharType kKPConfigProtoFileName[] =
     FILE_PATH_LITERAL("kp_pinslist.pb");
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
 #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
-const base::FilePath::CharType kCRSProtoFileName[] =
+constexpr base::FilePath::CharType kCRSProtoFileName[] =
     FILE_PATH_LITERAL("crs.pb");
 constexpr char kChromeRootStoreProto[] = "chrome_root_store.RootStore";
-const base::FilePath::CharType kMtcMetadataProtoFileName[] =
+constexpr base::FilePath::CharType kMtcMetadataProtoFileName[] =
     FILE_PATH_LITERAL("mtc_metadata.pb");
 constexpr char kMtcMetadataProto[] = "chrome_root_store.MtcMetadata";
-const base::FilePath::CharType kMtcConfigProtoFileName[] =
+constexpr base::FilePath::CharType kMtcConfigProtoFileName[] =
     FILE_PATH_LITERAL("mtc_config.pb");
 constexpr char kMtcConfigProto[] = "chrome_root_store.MtcConfig";
 #endif
@@ -220,6 +223,16 @@ PKIMetadataComponentInstallerService::MtcCaIdAndLandmarkTrustAnchorIds::
     MtcCaIdAndLandmarkTrustAnchorIds(
         const MtcCaIdAndLandmarkTrustAnchorIds& other) = default;
 
+PKIMetadataComponentInstallerService::LoadedPKIMetadata::LoadedPKIMetadata() =
+    default;
+PKIMetadataComponentInstallerService::LoadedPKIMetadata::~LoadedPKIMetadata() =
+    default;
+PKIMetadataComponentInstallerService::LoadedPKIMetadata::LoadedPKIMetadata(
+    LoadedPKIMetadata&&) = default;
+PKIMetadataComponentInstallerService::LoadedPKIMetadata&
+PKIMetadataComponentInstallerService::LoadedPKIMetadata::operator=(
+    LoadedPKIMetadata&&) = default;
+
 #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 // static
 std::optional<mojo_base::ProtoWrapper>
@@ -256,49 +269,65 @@ PKIMetadataComponentInstallerService::ParseMtcConfig(
 
 #endif  // BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 
-void PKIMetadataComponentInstallerService::ConfigureChromeRootStore() {
-#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+void PKIMetadataComponentInstallerService::ConfigurePKIMetadata(
+    bool network_service_only) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (install_dir_.empty()) {
+    return;
+  }
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
       base::BindOnce(
-          [](const base::FilePath& crs_pb_path,
-             const base::FilePath& mtc_config_pb_path) {
-            std::optional<mojo_base::ProtoWrapper> mtc_config_wrapper;
-            if (std::optional<chrome_root_store::MtcConfig> mtc_config =
-                    PKIMetadataComponentInstallerService::ParseMtcConfig(
-                        mtc_config_pb_path)) {
-              if (mtc_config->has_signer_set() &&
-                  mtc_config->signer_set().compatibility_version() >
-                      kMaxSupportedSignerSetCompatibilityVersion) {
-                LOG(WARNING) << "SignerSet compatibility version ("
-                             << mtc_config->signer_set().compatibility_version()
-                             << ") is higher than max supported version ("
-                             << kMaxSupportedSignerSetCompatibilityVersion
-                             << "). Ignoring SignerSet update.";
-                mtc_config->clear_signer_set();
-              }
-              std::string mtc_config_contents;
-              if (!mtc_config->SerializeToString(&mtc_config_contents)) {
-                LOG(ERROR) << "Failed to serialize MtcConfig proto";
-              } else {
-                mtc_config_wrapper = mojo_base::ProtoWrapper(
-                    base::as_byte_span(mtc_config_contents), kMtcConfigProto,
-                    mojo_base::ProtoWrapperBytes::GetPassKey());
-              }
+          [](const base::FilePath& install_dir, bool network_service_only) {
+            LoadedPKIMetadata data;
+            data.network_service_only = network_service_only;
+#if BUILDFLAG(IS_CT_SUPPORTED)
+            if (base::FeatureList::IsEnabled(
+                    features::kCertificateTransparencyAskBeforeEnabling)) {
+              data.ct_config_bytes = LoadBinaryProtoFromDisk(
+                  install_dir.Append(kCTConfigProtoFileName));
             }
-            return ChromeRootStoreAndMtcConfig{
-                .chrome_root_store =
-                    PKIMetadataComponentInstallerService::ParseChromeRootStore(
-                        crs_pb_path),
-                .mtc_config = std::move(mtc_config_wrapper)};
+#endif
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+            data.kp_config_bytes = LoadBinaryProtoFromDisk(
+                install_dir.Append(kKPConfigProtoFileName));
+#endif
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+            if (!network_service_only) {
+              if (std::optional<chrome_root_store::MtcConfig> mtc_config =
+                      PKIMetadataComponentInstallerService::ParseMtcConfig(
+                          install_dir.Append(kMtcConfigProtoFileName))) {
+                if (mtc_config->has_signer_set() &&
+                    mtc_config->signer_set().compatibility_version() >
+                        kMaxSupportedSignerSetCompatibilityVersion) {
+                  LOG(WARNING)
+                      << "SignerSet compatibility version ("
+                      << mtc_config->signer_set().compatibility_version()
+                      << ") is higher than max supported version ("
+                      << kMaxSupportedSignerSetCompatibilityVersion
+                      << "). Ignoring SignerSet update.";
+                  mtc_config->clear_signer_set();
+                }
+                std::string mtc_config_contents;
+                if (!mtc_config->SerializeToString(&mtc_config_contents)) {
+                  LOG(ERROR) << "Failed to serialize MtcConfig proto";
+                } else {
+                  data.mtc_config = mojo_base::ProtoWrapper(
+                      base::as_byte_span(mtc_config_contents), kMtcConfigProto,
+                      mojo_base::ProtoWrapperBytes::GetPassKey());
+                }
+              }
+              data.chrome_root_store =
+                  PKIMetadataComponentInstallerService::ParseChromeRootStore(
+                      install_dir.Append(kCRSProtoFileName));
+            }
+#endif
+            return data;
           },
-          install_dir_.Append(kCRSProtoFileName),
-          install_dir_.Append(kMtcConfigProtoFileName)),
+          install_dir_, network_service_only),
       base::BindOnce(
-          &PKIMetadataComponentInstallerService::UpdateChromeRootStoreOnUI,
+          &PKIMetadataComponentInstallerService::UpdatePKIMetadataOnUI,
           weak_factory_.GetWeakPtr()));
-#endif  // BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 }
 
 void PKIMetadataComponentInstallerService::ConfigureMtcMetadata() {
@@ -307,7 +336,7 @@ void PKIMetadataComponentInstallerService::ConfigureMtcMetadata() {
     // If the feature flag is disabled, call the observer immediately. This is
     // slightly weird but allows tests to easily test both the enabled and
     // disabled state.
-    NotifyMtcMetadataConfigured();
+    NotifyMtcMetadataProcessed();
     return;
   }
 
@@ -332,43 +361,119 @@ void PKIMetadataComponentInstallerService::ConfigureMtcMetadata() {
 #endif  // BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 }
 
-#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
-void PKIMetadataComponentInstallerService::UpdateChromeRootStoreOnUI(
-    ChromeRootStoreAndMtcConfig root_store_and_mtc_config) {
-  auto& [chrome_root_store, mtc_config] = root_store_and_mtc_config;
-  if (chrome_root_store.has_value()) {
-    bool updated_tai = UpdateCRSTrustAnchorIDs(chrome_root_store.value());
-    if (mtc_config.has_value() &&
-        UpdateSignerSetTrustAnchorIDs(mtc_config.value())) {
-      updated_tai = true;
-    }
-    if (updated_tai) {
-      UpdateTrustAnchorIDsImpl();
-    }
+void PKIMetadataComponentInstallerService::UpdatePKIMetadataOnUI(
+    LoadedPKIMetadata data) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+#if BUILDFLAG(IS_CT_SUPPORTED) || BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED) || \
+    BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  auto cert_verifier_update = cert_verifier::mojom::PKIMetadataUpdate::New();
 
-    content::GetCertVerifierServiceFactory()->UpdateChromeRootStore(
-        std::move(chrome_root_store.value()), std::move(mtc_config),
-        base::BindOnce(&PKIMetadataComponentInstallerService::
-                           NotifyChromeRootStoreConfigured,
-                       weak_factory_.GetWeakPtr()));
+  // Notifying the OnPKIMetadataProcessed observer needs to wait for up to 3
+  // separate asynchronous tasks to complete:
+  // 1. CertVerifierServiceFactory::UpdatePKIMetadata (which covers the cert
+  //    verifier updates for CT, KeyPins, and ChromeRootStore).
+  // 2. ProcessCTLogListOnUI (network service CT update, if supported).
+  // 3. ProcessKeyPinsListOnUI (network service KeyPins update, if supported).
+  //
+  // Note that SystemNetworkContextManager::UpdateTrustAnchorIDs does not
+  // implement a completion callback so it is not waited on by this observer
+  // even though it ends up triggering mojo calls to the network service to
+  // configure the trust anchor ids. If that was waited on by the observer too,
+  // then the TrustAnchorID tests wouldn't need to do the
+  // SystemNetworkContextManager::FlushSSLConfigManagerForTesting() workaround.
+  int num_closures = 1;
+#if BUILDFLAG(IS_CT_SUPPORTED)
+  ++num_closures;
+#endif
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+  ++num_closures;
+#endif
+  base::RepeatingClosure done_callback = base::BarrierClosure(
+      num_closures,
+      base::BindOnce(
+          &PKIMetadataComponentInstallerService::NotifyPKIMetadataProcessed,
+          weak_factory_.GetWeakPtr()));
+
+#if BUILDFLAG(IS_CT_SUPPORTED)
+  ProcessCTLogListOnUI(data.ct_config_bytes, data.network_service_only,
+                       *cert_verifier_update, done_callback);
+#endif
+
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+  ProcessKeyPinsListOnUI(data.kp_config_bytes, data.network_service_only,
+                         *cert_verifier_update, done_callback);
+#endif
+
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  if (!data.network_service_only) {
+    ProcessChromeRootStoreOnUI(std::move(data.chrome_root_store),
+                               std::move(data.mtc_config),
+                               *cert_verifier_update);
   }
+#endif
+
+  bool has_cert_verifier_update = false;
+#if BUILDFLAG(IS_CT_SUPPORTED)
+  has_cert_verifier_update |= !cert_verifier_update->ct_config.is_null();
+#endif
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+  has_cert_verifier_update |= !cert_verifier_update->key_pins.is_null();
+#endif
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  has_cert_verifier_update |=
+      !cert_verifier_update->chrome_root_store.is_null();
+#endif
+
+  if (has_cert_verifier_update) {
+    content::GetCertVerifierServiceFactory()->UpdatePKIMetadata(
+        std::move(cert_verifier_update), done_callback);
+  } else {
+    done_callback.Run();
+  }
+#else
+  NotifyPKIMetadataProcessed();
+#endif
+}
+
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+void PKIMetadataComponentInstallerService::ProcessChromeRootStoreOnUI(
+    std::optional<mojo_base::ProtoWrapper> chrome_root_store,
+    std::optional<mojo_base::ProtoWrapper> mtc_config,
+    cert_verifier::mojom::PKIMetadataUpdate& cert_verifier_update) {
+  if (!chrome_root_store.has_value()) {
+    return;
+  }
+
+  bool updated_tai = UpdateCRSTrustAnchorIDs(chrome_root_store.value());
+  if (mtc_config.has_value() &&
+      UpdateSignerSetTrustAnchorIDs(mtc_config.value())) {
+    updated_tai = true;
+  }
+  if (updated_tai) {
+    UpdateTrustAnchorIDsImpl();
+  }
+
+  cert_verifier_update.chrome_root_store =
+      cert_verifier::mojom::ChromeRootStoreUpdate::New(
+          std::move(chrome_root_store.value()), std::move(mtc_config));
 }
 
 void PKIMetadataComponentInstallerService::UpdateMtcMetadataOnUI(
     std::optional<mojo_base::ProtoWrapper> mtc_metadata) {
   if (!mtc_metadata.has_value()) {
+    NotifyMtcMetadataProcessed();
     return;
   }
   if (!UpdateMtcMetadataTrustAnchorIDs(mtc_metadata.value())) {
     // If the Metadata was out of date, don't bother sending it to the cert
     // verifier service either.
-    NotifyMtcMetadataConfigured();
+    NotifyMtcMetadataProcessed();
     return;
   }
   content::GetCertVerifierServiceFactory()->UpdateMtcMetadata(
       std::move(mtc_metadata.value()),
       base::BindOnce(
-          &PKIMetadataComponentInstallerService::NotifyMtcMetadataConfigured,
+          &PKIMetadataComponentInstallerService::NotifyMtcMetadataProcessed,
           weak_factory_.GetWeakPtr()));
 }
 
@@ -414,7 +519,7 @@ PKIMetadataComponentInstallerService::CalculateTrustAnchorIdsWithLandmarks() {
   return SSLConfigServiceMtcLandmarkInfo{
       .max_usable_time = mtc_landmark_max_usable_time_,
       .mtc_landmark_and_standalone_trust_anchor_ids =
-          mtc_landmark_and_standalone_trust_anchor_ids,
+          std::move(mtc_landmark_and_standalone_trust_anchor_ids),
   };
 }
 
@@ -569,17 +674,10 @@ bool PKIMetadataComponentInstallerService::UpdateMtcMetadataTrustAnchorIDs(
   return true;
 }
 
-void PKIMetadataComponentInstallerService::NotifyChromeRootStoreConfigured() {
+void PKIMetadataComponentInstallerService::NotifyMtcMetadataProcessed() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   for (Observer& observer : observers_) {
-    observer.OnChromeRootStoreConfigured();
-  }
-}
-
-void PKIMetadataComponentInstallerService::NotifyMtcMetadataConfigured() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  for (Observer& observer : observers_) {
-    observer.OnMtcMetadataConfigured();
+    observer.OnMtcMetadataProcessed();
   }
 }
 
@@ -611,34 +709,14 @@ bool PKIMetadataComponentInstallerService::WriteSignerSetDataForTesting(
 void PKIMetadataComponentInstallerService::ReconfigureAfterNetworkRestart() {
   // Runs on UI thread.
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (install_dir_.empty()) {
-    return;
-  }
-  if (base::FeatureList::IsEnabled(
-          features::kCertificateTransparencyAskBeforeEnabling)) {
-    base::ThreadPool::PostTaskAndReplyWithResult(
-        FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
-        base::BindOnce(&LoadBinaryProtoFromDisk,
-                       install_dir_.Append(kCTConfigProtoFileName)),
-        base::BindOnce(&PKIMetadataComponentInstallerService::
-                           UpdateNetworkServiceCTListOnUI,
-                       weak_factory_.GetWeakPtr()));
-  }
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
-      base::BindOnce(&LoadBinaryProtoFromDisk,
-                     install_dir_.Append(kKPConfigProtoFileName)),
-      base::BindOnce(
-          &PKIMetadataComponentInstallerService::UpdateNetworkServiceKPListOnUI,
-          weak_factory_.GetWeakPtr()));
+  ConfigurePKIMetadata(/*network_service_only=*/true);
 }
 
 void PKIMetadataComponentInstallerService::OnComponentReady(
     base::FilePath install_dir) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  install_dir_ = install_dir;
-  ReconfigureAfterNetworkRestart();
-  ConfigureChromeRootStore();
+  install_dir_ = std::move(install_dir);
+  ConfigurePKIMetadata(/*network_service_only=*/false);
 }
 
 void PKIMetadataComponentInstallerService::OnFastpushComponentReady(
@@ -672,10 +750,14 @@ void PKIMetadataComponentInstallerService::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
-void PKIMetadataComponentInstallerService::UpdateNetworkServiceCTListOnUI(
-    const std::string& ct_config_bytes) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 #if BUILDFLAG(IS_CT_SUPPORTED)
+void PKIMetadataComponentInstallerService::ProcessCTLogListOnUI(
+    const std::string& ct_config_bytes,
+    bool network_service_only,
+    cert_verifier::mojom::PKIMetadataUpdate& cert_verifier_update,
+    base::OnceClosure done_callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  base::ScopedClosureRunner scoped_done(std::move(done_callback));
   if (ct_config_bytes.empty()) {
     // LoadBinaryProtoFromDisk returns an empty string if it fails to find
     // the file on disk or fails to read. An empty string is valid proto,
@@ -699,14 +781,11 @@ void PKIMetadataComponentInstallerService::UpdateNetworkServiceCTListOnUI(
     // TODO(crbug.com/41392053): The disable_ct_enforcement kill switch is
     // used in both the network service and cert verifier service. Finish
     // refactoring so that it is only sent to cert verifier service.
-    base::RepeatingClosure done_callback = BarrierClosure(
-        /*num_closures=*/2,
-        base::BindOnce(
-            &PKIMetadataComponentInstallerService::NotifyCTLogListConfigured,
-            weak_factory_.GetWeakPtr()));
-    content::GetCertVerifierServiceFactory()->DisableCtEnforcement(
-        done_callback);
-    network_service->SetCtEnforcementEnabled(false, done_callback);
+    if (!network_service_only) {
+      cert_verifier_update.ct_config = cert_verifier::mojom::CtUpdate::New();
+      cert_verifier_update.ct_config->disable_ct_enforcement = true;
+    }
+    network_service->SetCtEnforcementEnabled(false, scoped_done.Release());
     return;
   }
 
@@ -729,8 +808,8 @@ void PKIMetadataComponentInstallerService::UpdateNetworkServiceCTListOnUI(
   // TODO(crbug.com/41392053): Log info needs to be sent to both network
   // service and cert verifier service. Finish refactoring so that it is only
   // sent to cert verifier service.
-  std::vector<network::mojom::CTLogInfoPtr> log_list_mojo;
-  std::vector<network::mojom::CTLogInfoPtr> log_list_mojo_clone_network_service;
+  std::vector<network::mojom::CTLogInfoPtr> log_list_mojo_for_cert_verifier;
+  std::vector<network::mojom::CTLogInfoPtr> log_list_mojo_for_network_service;
 
   // The log list shipped via component updater is a single message of CTLogList
   // type, as defined in
@@ -796,34 +875,44 @@ void PKIMetadataComponentInstallerService::UpdateNetworkServiceCTListOnUI(
 
     log_ptr->mmd = base::Seconds(log.mmd_secs());
     log_ptr->log_type = ProtoLogTypeToLogType(log.log_type());
-    log_list_mojo_clone_network_service.push_back(log_ptr.Clone());
-    log_list_mojo.push_back(std::move(log_ptr));
+    if (!network_service_only) {
+      log_list_mojo_for_cert_verifier.push_back(log_ptr.Clone());
+    }
+    log_list_mojo_for_network_service.push_back(std::move(log_ptr));
   }
 
-  // We need to wait for both CT log list updates and the popular SCT list
-  // update.
-  base::RepeatingClosure done_callback = BarrierClosure(
-      /*num_closures=*/3,
-      base::BindOnce(
-          &PKIMetadataComponentInstallerService::NotifyCTLogListConfigured,
-          weak_factory_.GetWeakPtr()));
-  content::GetCertVerifierServiceFactory()->UpdateCtLogList(
-      std::move(log_list_mojo), proto_timestamp, done_callback);
-  network_service->UpdateCtLogList(
-      std::move(log_list_mojo_clone_network_service), done_callback);
+  if (!network_service_only) {
+    cert_verifier_update.ct_config = cert_verifier::mojom::CtUpdate::New(
+        /*disable_ct_enforcement=*/false,
+        std::move(log_list_mojo_for_cert_verifier), proto_timestamp);
+  }
+
+  // Wait for both network service CT updates to complete.
+  base::RepeatingClosure network_service_done_callback =
+      BarrierClosure(/*num_closures=*/2, scoped_done.Release());
+  network_service->UpdateCtLogList(std::move(log_list_mojo_for_network_service),
+                                   network_service_done_callback);
 
   // Send the updated popular SCTs list to the network service, if available.
   // TODO(crbug.com/41286522): should this also be vector<SHA256HashValue>?
   std::vector<std::vector<uint8_t>> popular_scts =
       BytesArrayFromProtoBytes(proto->popular_scts());
   network_service->UpdateCtKnownPopularSCTs(std::move(popular_scts),
-                                            done_callback);
-#endif  // BUILDFLAG(IS_CT_SUPPORTED)
+                                            network_service_done_callback);
 }
+#endif  // BUILDFLAG(IS_CT_SUPPORTED)
 
-void PKIMetadataComponentInstallerService::UpdateNetworkServiceKPListOnUI(
-    const std::string& kp_config_bytes) {
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+void PKIMetadataComponentInstallerService::ProcessKeyPinsListOnUI(
+    const std::string& kp_config_bytes,
+    bool network_service_only,
+    cert_verifier::mojom::PKIMetadataUpdate& cert_verifier_update,
+    base::OnceClosure done_callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  base::ScopedClosureRunner scoped_done(std::move(done_callback));
+  if (kp_config_bytes.empty()) {
+    return;
+  }
   auto proto = std::make_unique<chrome_browser_key_pinning::PinList>();
   if (!proto->ParseFromString(kp_config_bytes)) {
     return;
@@ -839,14 +928,12 @@ void PKIMetadataComponentInstallerService::UpdateNetworkServiceKPListOnUI(
                                base::Seconds(proto->timestamp().seconds()) +
                                base::Nanoseconds(proto->timestamp().nanos());
 
-#if BUILDFLAG(INCLUDE_TRANSPORT_SECURITY_STATE_PRELOAD_LIST)
   // Do not update the pins list with the component data if it's older than the
   // built in list.
   if (proto_timestamp <
       net::TransportSecurityState::GetBuiltInPinsListTimestamp()) {
     return;
   }
-#endif  // BUILDFLAG(INCLUDE_TRANSPORT_SECURITY_STATE_PRELOAD_LIST)
 
   network::mojom::PinListPtr pinlist_ptr = network::mojom::PinList::New();
 
@@ -869,13 +956,24 @@ void PKIMetadataComponentInstallerService::UpdateNetworkServiceKPListOnUI(
     pinlist_ptr->host_pins.push_back(std::move(pininfo_ptr));
   }
 
-  network_service->UpdateKeyPinsList(std::move(pinlist_ptr), proto_timestamp);
+  // TODO(crbug.com/497882860): remove once pins are no longer needed in the
+  // network service.
+  if (network_service_only) {
+    network_service->UpdateKeyPinsList(std::move(pinlist_ptr), proto_timestamp,
+                                       scoped_done.Release());
+  } else {
+    network_service->UpdateKeyPinsList(pinlist_ptr->Clone(), proto_timestamp,
+                                       scoped_done.Release());
+    cert_verifier_update.key_pins = cert_verifier::mojom::KeyPinsUpdate::New(
+        std::move(pinlist_ptr), proto_timestamp);
+  }
 }
+#endif  // BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
 
-void PKIMetadataComponentInstallerService::NotifyCTLogListConfigured() {
+void PKIMetadataComponentInstallerService::NotifyPKIMetadataProcessed() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   for (Observer& observer : observers_) {
-    observer.OnCTLogListConfigured();
+    observer.OnPKIMetadataProcessed();
   }
 }
 

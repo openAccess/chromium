@@ -4,6 +4,7 @@
 
 #include "content/browser/preloading/prefetch/prefetch_resource_request_utils.h"
 
+#include "base/trace_event/trace_event.h"
 #include "components/variations/net/variations_http_headers.h"
 #include "content/browser/devtools/devtools_agent_host_impl.h"
 #include "content/browser/devtools/devtools_instrumentation.h"
@@ -89,6 +90,47 @@ void AddAdditionalHeaders(net::HttpRequestHeaders& request_headers,
     request_headers.MergeFrom(additional_headers_without_ua);
   } else {
     request_headers.MergeFrom(additional_headers);
+  }
+}
+
+// Remove them when following a redirect to a different origin, explicitly
+// following the semantics of `WebView.navigate` (which is implemented via
+// `NavigationRequest::OnRedirectChecksComplete()` for browser-initiated
+// navigations with `remove_extra_headers_on_cross_origin_redirect`).
+//
+// Please see `PrefetchContainer::ShouldRemoveEmbedderAdditionalHeaders()` too
+// for more details.
+void RemoveAdditionalHeaders(
+    network::HttpRequestHeadersUpdateParams& headers_update_params,
+    bool should_remove_embedder_additional_headers,
+    const PrefetchRequest& prefetch_request) {
+  if (!should_remove_embedder_additional_headers) {
+    return;
+  }
+
+  // Header overwrite and recovery:
+  // `NavigationRequest::OnRedirectChecksComplete()` does not have any explicit
+  // mechanism around handling overwritten headers by additional headers during
+  // the first request; it simply adds them to `removed_headers`. For example,
+  // if the embedder overrides an internal Chrome `X-Example` header via an
+  // Additional header, and the header is pushed to `removed_headers` on a
+  // cross-origin redirect, the embedder's override is simply removed.
+  net::HttpRequestHeaders headers_to_remove =
+      prefetch_request.additional_headers();
+
+  // Unlike `NavigationRequest::OnRedirectChecksComplete()`, which removes all
+  // extra headers (including `User-Agent`) and then re-adds a recomputed
+  // `User-Agent` to `modified_headers`, Prefetch does not currently re-apply
+  // WebContents overrides on redirects (TODO(crbug.com/441612842)).
+  // Therefore, to ensure the overridden UA survives across cross-origin
+  // redirects, it is simply excluded from the removal list here.
+  if (base::FeatureList::IsEnabled(
+          features::kPreloadingRespectUserAgentOverride)) {
+    headers_to_remove.RemoveHeader(net::HttpRequestHeaders::kUserAgent);
+  }
+
+  for (const auto& header : headers_to_remove.GetHeaderVector()) {
+    headers_update_params.removed_headers.push_back(header.key);
   }
 }
 
@@ -338,7 +380,7 @@ void AddClientHintsHeaders(net::HttpRequestHeaders& request_headers,
     request_headers.MergeFrom(client_hints_headers);
   } else if (cross_site_behavior ==
              features::PrefetchClientHintsCrossSiteBehavior::kLowEntropy) {
-    for (const auto& [ch, header] : network::GetClientHintToNameMap()) {
+    for (const auto& [ch, header] : network::kClientHintToNameMap) {
       if (blink::IsClientHintSentByDefault(ch)) {
         std::optional<std::string> header_value =
             client_hints_headers.GetHeader(header);
@@ -355,7 +397,8 @@ void AddClientHintsHeaders(net::HttpRequestHeaders& request_headers,
 // Hints):
 void MaybeApplyOverrideForDevtoolsUserAgentHeader(
     net::HttpRequestHeaders& request_headers,
-    const PrefetchRequest& prefetch_request) {
+    const PrefetchRequest& prefetch_request,
+    const GURL& request_url) {
   if (!base::FeatureList::IsEnabled(
           features::kPrefetchDevtoolsUserAgentOverride) ||
       !prefetch_request.referring_web_contents()) {
@@ -384,13 +427,15 @@ void MaybeApplyOverrideForDevtoolsUserAgentHeader(
     // mode UA override. There are other types of UA overrides, which are at
     // WebContents level.
     devtools_instrumentation::ApplyEmulationOverrides(
-        RenderFrameDevToolsAgentHost::GetFor(referring_ftn), &request_headers);
+        RenderFrameDevToolsAgentHost::GetFor(referring_ftn), &request_headers,
+        request_url);
   }
 }
 
 network::HttpRequestHeadersUpdateParams PrepareInitialHeadersForPrefetchPhase1(
     const GURL& request_url,
     const PrefetchRequest& prefetch_request) {
+  TRACE_EVENT("loading", "PrepareInitialHeadersForPrefetchPhase1");
   network::HttpRequestHeadersUpdateParams headers_update_params;
 
   url::Origin request_url_origin = url::Origin::Create(request_url);
@@ -440,7 +485,8 @@ network::HttpRequestHeadersUpdateParams PrepareInitialHeadersForPrefetchPhase2(
     const GURL& request_url,
     const PrefetchRequest& prefetch_request,
     bool is_first_party_context_for_variations_header) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  TRACE_EVENT("loading", "PrepareInitialHeadersForPrefetchPhase2");
 
   network::HttpRequestHeadersUpdateParams headers_update_params;
 
@@ -504,14 +550,16 @@ network::HttpRequestHeadersUpdateParams PrepareInitialHeadersForPrefetchPhase2(
   // WebContents override. See also the comment in
   // `PrefetchContainer::MakeResourceRequest()` for the overriding order.
   MaybeApplyOverrideForDevtoolsUserAgentHeader(
-      headers_update_params.modified_headers, prefetch_request);
+      headers_update_params.modified_headers, prefetch_request, request_url);
 
   return headers_update_params;
 }
 
 network::HttpRequestHeadersUpdateParams PrepareRedirectHeadersForPrefetch(
     const GURL& request_url,
-    const PrefetchRequest& prefetch_request) {
+    const PrefetchRequest& prefetch_request,
+    bool should_remove_embedder_additional_headers) {
+  TRACE_EVENT("loading", "PrepareRedirectHeadersForPrefetch");
   // There are sometimes other headers that are modified during navigation
   // redirects; see `NavigationRequest::OnRedirectChecksComplete` (including
   // some which are added by throttles). These aren't yet supported for
@@ -520,6 +568,20 @@ network::HttpRequestHeadersUpdateParams PrepareRedirectHeadersForPrefetch(
   network::HttpRequestHeadersUpdateParams headers_update_params;
 
   url::Origin request_url_origin = url::Origin::Create(request_url);
+
+  // ------------------------------------------------------------------------
+  // [1] Additional headers:
+  //
+  // Ordering: This is done here just to align with the order of
+  // `AddAdditionalHeaders()` in
+  // `PrepareInitialHeadersForPrefetchPhase1()` and the extra header removal in
+  // `NavigationRequest::OnRedirectChecksComplete()`, while the order of
+  // `RemoveAdditionalHeaders()` is currently no-op here because
+  // `removed_headers` isn't checked during
+  // `PrepareRedirectHeadersForPrefetch()`.
+  RemoveAdditionalHeaders(headers_update_params,
+                          should_remove_embedder_additional_headers,
+                          prefetch_request);
 
   // ------------------------------------------------------------------------
   // [2] `Sec-Purpose`:
@@ -564,11 +626,11 @@ network::HttpRequestHeadersUpdateParams PrepareRedirectHeadersForPrefetch(
   // Remove any existing client hints headers, then (re-)add the new client
   // hints that are appropriate for the redirect.
   if (base::FeatureList::IsEnabled(features::kPrefetchClientHints)) {
-    const auto& client_hints = network::GetClientHintToNameMap();
+    const auto& client_hints = network::kClientHintToNameMap;
     headers_update_params.removed_headers.reserve(
         headers_update_params.removed_headers.size() + client_hints.size());
     for (const auto& [_, header] : client_hints) {
-      headers_update_params.removed_headers.push_back(header);
+      headers_update_params.removed_headers.emplace_back(header);
     }
     AddClientHintsHeaders(headers_update_params.modified_headers,
                           request_url_origin, prefetch_request);
@@ -580,7 +642,7 @@ network::HttpRequestHeadersUpdateParams PrepareRedirectHeadersForPrefetch(
   // TODO(crbug.com/422193319): Reconsider the appropriate place to set DevTools
   // override of non-UA Client Hints.
   MaybeApplyOverrideForDevtoolsUserAgentHeader(
-      headers_update_params.modified_headers, prefetch_request);
+      headers_update_params.modified_headers, prefetch_request, request_url);
 
   return headers_update_params;
 }
@@ -618,6 +680,7 @@ std::unique_ptr<network::ResourceRequest>
 MakeInitialResourceRequestWithoutHeadersForPrefetch(
     const PrefetchRequest& prefetch_request,
     bool is_decoy) {
+  TRACE_EVENT("loading", "MakeInitialResourceRequestWithoutHeadersForPrefetch");
   const GURL& url = prefetch_request.key().url();
   url::Origin origin = url::Origin::Create(url);
   net::IsolationInfo isolation_info = net::IsolationInfo::Create(
@@ -739,7 +802,8 @@ MakeInitialResourceRequestWithoutHeadersForPrefetch(
 std::unique_ptr<network::ResourceRequest> MakeInitialResourceRequestForPrefetch(
     const PrefetchRequest& prefetch_request,
     bool is_decoy) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  TRACE_EVENT("loading", "MakeInitialResourceRequestForPrefetch");
 
   auto resource_request = MakeInitialResourceRequestWithoutHeadersForPrefetch(
       prefetch_request, is_decoy);
@@ -771,6 +835,7 @@ MakeInitialResourceRequestForPrePrefetch(
     const PrefetchRequest& prefetch_request,
     const network::HttpRequestHeadersUpdateParams&
         ui_thread_pre_calculated_headers) {
+  TRACE_EVENT("loading", "MakeInitialResourceRequestForPrePrefetch");
   auto resource_request = MakeInitialResourceRequestWithoutHeadersForPrefetch(
       prefetch_request, /*is_decoy=*/false);
 

@@ -6,15 +6,18 @@
 
 #include "base/android/device_info.h"
 #include "base/memory/raw_ptr.h"
+#include "base/run_loop.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/with_feature_override.h"
 #include "base/types/pass_key.h"
 #include "chrome/browser/password_manager/password_manager_test_util.h"
 #include "chrome/browser/ui/android/passwords/all_passwords_bottom_sheet_view.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-forward.h"
 #include "components/device_reauth/device_authenticator.h"
+#include "components/device_reauth/mock_device_auth_availability_checker.h"
 #include "components/device_reauth/mock_device_authenticator.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/origin_credential_store.h"
@@ -34,6 +37,7 @@
 namespace {
 
 using ::testing::_;
+using ::testing::ByMove;
 using ::testing::Eq;
 using ::testing::Pointee;
 using ::testing::Return;
@@ -66,10 +70,30 @@ constexpr char16_t kPassword[] = u"password123";
 class MockPasswordManagerDriver
     : public password_manager::StubPasswordManagerDriver {
  public:
+  MockPasswordManagerDriver() {
+    ON_CALL(*this, CanShowAutofillUi).WillByDefault(testing::Return(true));
+    ON_CALL(*this, GetLastCommittedOrigin)
+        .WillByDefault(testing::ReturnRef(origin_));
+    ON_CALL(*this, GetLastCommittedURL).WillByDefault(testing::ReturnRef(url_));
+  }
+
   MOCK_METHOD(void,
               FillIntoFocusedField,
               (bool, const std::u16string&),
               (override));
+  MOCK_METHOD(bool, CanShowAutofillUi, (), (const, override));
+  MOCK_METHOD(const url::Origin&,
+              GetLastCommittedOrigin,
+              (),
+              (const, override));
+  MOCK_METHOD(const GURL&, GetLastCommittedURL, (), (const, override));
+
+  void SetLastCommittedOrigin(const url::Origin& origin) { origin_ = origin; }
+  void SetLastCommittedURL(const GURL& url) { url_ = url; }
+
+ private:
+  url::Origin origin_;
+  GURL url_;
 };
 
 class MockAllPasswordsBottomSheetView : public AllPasswordsBottomSheetView {
@@ -84,13 +108,21 @@ class MockAllPasswordsBottomSheetView : public AllPasswordsBottomSheetView {
 class MockPasswordManagerClient
     : public password_manager::StubPasswordManagerClient {
  public:
+  MOCK_METHOD(bool,
+              IsReauthBeforeFillingRequired,
+              (device_reauth::DeviceAuthAvailabilityChecker*),
+              (override));
+  MOCK_METHOD(bool,
+              IsReauthBeforeFillingRequiredLegacy,
+              (device_reauth::DeviceAuthenticator*),
+              (override));
+  MOCK_METHOD(std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>,
+              GetDeviceAuthAvailabilityChecker,
+              (),
+              (override));
   MOCK_METHOD(std::unique_ptr<device_reauth::DeviceAuthenticator>,
               GetDeviceAuthenticator,
               (),
-              (override));
-  MOCK_METHOD(bool,
-              IsReauthBeforeFillingRequired,
-              (device_reauth::DeviceAuthenticator*),
               (override));
 };
 
@@ -139,18 +171,24 @@ class AllPasswordsBottomSheetControllerTest
   }
 
   void createAllPasswordsController(
-      autofill::mojom::FocusedFieldType focused_field_type) {
+      autofill::mojom::FocusedFieldType focused_field_type,
+      base::WeakPtr<password_manager::PasswordManagerDriver> driver) {
     std::unique_ptr<MockAllPasswordsBottomSheetView> mock_view_unique_ptr =
         std::make_unique<MockAllPasswordsBottomSheetView>();
     mock_view_ = mock_view_unique_ptr.get();
     all_passwords_controller_ =
         std::make_unique<AllPasswordsBottomSheetController>(
             base::PassKey<AllPasswordsBottomSheetControllerTest>(),
-            web_contents(), std::move(mock_view_unique_ptr),
-            driver_.AsWeakPtr(), profile_store_.get(), account_store_.get(),
+            web_contents(), std::move(mock_view_unique_ptr), driver,
+            profile_store_.get(), account_store_.get(),
             dissmissal_callback_.Get(), focused_field_type,
             mock_pwd_manager_client_.get(),
             mock_pwd_reuse_detection_manager_client_.get());
+  }
+
+  void createAllPasswordsController(
+      autofill::mojom::FocusedFieldType focused_field_type) {
+    createAllPasswordsController(focused_field_type, driver_.AsWeakPtr());
   }
 
   void TearDown() override {
@@ -267,17 +305,41 @@ TEST_F(AllPasswordsBottomSheetControllerTest,
       kUsername1, kPassword, RequestsToFillPassword(false));
 }
 
-TEST_F(AllPasswordsBottomSheetControllerTest, FillsPasswordIfAuthNotAvailable) {
+class AllPasswordsBottomSheetControllerReauthTest
+    : public base::test::WithFeatureOverride,
+      public AllPasswordsBottomSheetControllerTest {
+ public:
+  AllPasswordsBottomSheetControllerReauthTest()
+      : base::test::WithFeatureOverride(
+            password_manager::features::kDeviceReauthRefactor) {}
+
+  bool is_refactor_enabled() const { return IsParamFeatureEnabled(); }
+};
+
+TEST_P(AllPasswordsBottomSheetControllerReauthTest,
+       FillsPasswordIfAuthNotAvailable) {
   // Auth is required to fill passwords in Android automotive.
   if (base::android::device_info::is_automotive()) {
     GTEST_SKIP();
   }
 
   auto authenticator = std::make_unique<MockDeviceAuthenticator>();
-
-  EXPECT_CALL(client(), IsReauthBeforeFillingRequired).WillOnce(Return(false));
-  EXPECT_CALL(client(), GetDeviceAuthenticator)
-      .WillOnce(Return(testing::ByMove(std::move(authenticator))));
+  auto* authenticator_ptr = authenticator.get();
+  EXPECT_CALL(*authenticator_ptr, AuthenticateWithMessage).Times(0);
+  EXPECT_CALL(*authenticator_ptr, Cancel).Times(0);
+  ON_CALL(client(), IsReauthBeforeFillingRequired).WillByDefault(Return(false));
+  ON_CALL(client(), IsReauthBeforeFillingRequiredLegacy)
+      .WillByDefault(Return(false));
+  EXPECT_CALL(client(), IsReauthBeforeFillingRequired)
+      .Times(is_refactor_enabled() ? 1 : 0);
+  EXPECT_CALL(client(), IsReauthBeforeFillingRequiredLegacy)
+      .Times(is_refactor_enabled() ? 0 : 1);
+  if (is_refactor_enabled()) {
+    EXPECT_CALL(client(), GetDeviceAuthenticator).Times(0);
+  } else {
+    EXPECT_CALL(client(), GetDeviceAuthenticator)
+        .WillOnce(Return(ByMove(std::move(authenticator))));
+  }
   EXPECT_CALL(driver(), FillIntoFocusedField(true, std::u16string(kPassword)));
   EXPECT_CALL(dismissal_callback(), Run());
 
@@ -285,14 +347,21 @@ TEST_F(AllPasswordsBottomSheetControllerTest, FillsPasswordIfAuthNotAvailable) {
       kUsername1, kPassword, RequestsToFillPassword(true));
 }
 
-TEST_F(AllPasswordsBottomSheetControllerTest, FillsPasswordIfAuthSuccessful) {
+TEST_P(AllPasswordsBottomSheetControllerReauthTest,
+       FillsPasswordIfAuthSuccessful) {
   auto authenticator = std::make_unique<MockDeviceAuthenticator>();
 
   ON_CALL(client(), IsReauthBeforeFillingRequired).WillByDefault(Return(true));
+  ON_CALL(client(), IsReauthBeforeFillingRequiredLegacy)
+      .WillByDefault(Return(true));
+  EXPECT_CALL(client(), IsReauthBeforeFillingRequired)
+      .Times(is_refactor_enabled() ? 1 : 0);
+  EXPECT_CALL(client(), IsReauthBeforeFillingRequiredLegacy)
+      .Times(is_refactor_enabled() ? 0 : 1);
   EXPECT_CALL(*authenticator, AuthenticateWithMessage)
       .WillOnce(RunOnceCallback<1>(true));
   EXPECT_CALL(client(), GetDeviceAuthenticator)
-      .WillOnce(Return(testing::ByMove(std::move(authenticator))));
+      .WillOnce(Return(ByMove(std::move(authenticator))));
 
   EXPECT_CALL(driver(), FillIntoFocusedField(true, std::u16string(kPassword)));
   EXPECT_CALL(dismissal_callback(), Run());
@@ -301,14 +370,21 @@ TEST_F(AllPasswordsBottomSheetControllerTest, FillsPasswordIfAuthSuccessful) {
       kUsername1, kPassword, RequestsToFillPassword(true));
 }
 
-TEST_F(AllPasswordsBottomSheetControllerTest, DoesntFillPasswordIfAuthFailed) {
+TEST_P(AllPasswordsBottomSheetControllerReauthTest,
+       DoesntFillPasswordIfAuthFailed) {
   auto authenticator = std::make_unique<MockDeviceAuthenticator>();
 
   ON_CALL(client(), IsReauthBeforeFillingRequired).WillByDefault(Return(true));
+  ON_CALL(client(), IsReauthBeforeFillingRequiredLegacy)
+      .WillByDefault(Return(true));
+  EXPECT_CALL(client(), IsReauthBeforeFillingRequired)
+      .Times(is_refactor_enabled() ? 1 : 0);
+  EXPECT_CALL(client(), IsReauthBeforeFillingRequiredLegacy)
+      .Times(is_refactor_enabled() ? 0 : 1);
   EXPECT_CALL(*authenticator, AuthenticateWithMessage)
       .WillOnce(RunOnceCallback<1>(false));
   EXPECT_CALL(client(), GetDeviceAuthenticator)
-      .WillOnce(Return(testing::ByMove(std::move(authenticator))));
+      .WillOnce(Return(ByMove(std::move(authenticator))));
 
   EXPECT_CALL(driver(), FillIntoFocusedField(true, std::u16string(kPassword)))
       .Times(0);
@@ -318,14 +394,20 @@ TEST_F(AllPasswordsBottomSheetControllerTest, DoesntFillPasswordIfAuthFailed) {
       kUsername1, kPassword, RequestsToFillPassword(true));
 }
 
-TEST_F(AllPasswordsBottomSheetControllerTest, CancelsAuthIfDestroyed) {
+TEST_P(AllPasswordsBottomSheetControllerReauthTest, CancelsAuthIfDestroyed) {
   auto authenticator = std::make_unique<MockDeviceAuthenticator>();
   auto* authenticator_ptr = authenticator.get();
 
   ON_CALL(client(), IsReauthBeforeFillingRequired).WillByDefault(Return(true));
+  ON_CALL(client(), IsReauthBeforeFillingRequiredLegacy)
+      .WillByDefault(Return(true));
+  EXPECT_CALL(client(), IsReauthBeforeFillingRequired)
+      .Times(is_refactor_enabled() ? 1 : 0);
+  EXPECT_CALL(client(), IsReauthBeforeFillingRequiredLegacy)
+      .Times(is_refactor_enabled() ? 0 : 1);
   EXPECT_CALL(*authenticator_ptr, AuthenticateWithMessage);
   EXPECT_CALL(client(), GetDeviceAuthenticator)
-      .WillOnce(Return(testing::ByMove(std::move(authenticator))));
+      .WillOnce(Return(ByMove(std::move(authenticator))));
 
   EXPECT_CALL(driver(), FillIntoFocusedField(true, std::u16string(kPassword)))
       .Times(0);
@@ -336,6 +418,9 @@ TEST_F(AllPasswordsBottomSheetControllerTest, CancelsAuthIfDestroyed) {
   EXPECT_CALL(*authenticator_ptr, Cancel());
 }
 
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
+    AllPasswordsBottomSheetControllerReauthTest);
+
 TEST_F(AllPasswordsBottomSheetControllerTest, OnDismiss) {
   EXPECT_CALL(dismissal_callback(), Run());
   all_passwords_controller()->OnDismiss();
@@ -345,11 +430,15 @@ TEST_F(AllPasswordsBottomSheetControllerTest,
        OnCredentialSelectedTriggersPhishGuard) {
   if (base::android::device_info::is_automotive()) {
     auto authenticator = std::make_unique<MockDeviceAuthenticator>();
+    ON_CALL(client(), IsReauthBeforeFillingRequired)
+        .WillByDefault(Return(true));
+    ON_CALL(client(), IsReauthBeforeFillingRequiredLegacy)
+        .WillByDefault(Return(true));
     ON_CALL(*authenticator, AuthenticateWithMessage)
         .WillByDefault(
             base::test::RunOnceCallbackRepeatedly<1>(/*auth_succeeded=*/true));
     EXPECT_CALL(client(), GetDeviceAuthenticator)
-        .WillOnce(Return(testing::ByMove(std::move(authenticator))));
+        .WillOnce(Return(ByMove(std::move(authenticator))));
   }
 
   EXPECT_CALL(password_reuse_detection_manager_client(),
@@ -457,4 +546,68 @@ TEST_F(AllPasswordsBottomSheetControllerAccountStoreTest, BothStoresEmpty) {
 
   // Show method uses the store which has async work.
   RunUntilIdle();
+}
+
+TEST_F(AllPasswordsBottomSheetControllerTest, DoesNotShowWhenDriverIsNull) {
+  base::RunLoop run_loop;
+  auto local_driver = std::make_unique<MockPasswordManagerDriver>();
+  createAllPasswordsController(FocusedFieldType::kFillablePasswordField,
+                               local_driver->AsWeakPtr());
+  local_driver.reset();
+
+  EXPECT_CALL(view(), Show).Times(0);
+  EXPECT_CALL(dismissal_callback(), Run())
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+  all_passwords_controller()->Show();
+  run_loop.Run();
+}
+
+TEST_F(AllPasswordsBottomSheetControllerTest,
+       DoesNotShowWhenCannotShowAutofillUi) {
+  base::RunLoop run_loop;
+  EXPECT_CALL(driver(), CanShowAutofillUi).WillRepeatedly(Return(false));
+  EXPECT_CALL(view(), Show).Times(0);
+  EXPECT_CALL(dismissal_callback(), Run())
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+  all_passwords_controller()->Show();
+  run_loop.Run();
+}
+
+TEST_F(AllPasswordsBottomSheetControllerTest, DoesNotShowWhenOriginChanged) {
+  base::RunLoop run_loop;
+  url::Origin new_origin = url::Origin::Create(GURL("https://different.com"));
+  driver().SetLastCommittedOrigin(new_origin);
+
+  EXPECT_CALL(view(), Show).Times(0);
+  EXPECT_CALL(dismissal_callback(), Run())
+      .WillOnce(base::test::RunClosure(run_loop.QuitClosure()));
+
+  all_passwords_controller()->Show();
+  run_loop.Run();
+}
+
+TEST_F(AllPasswordsBottomSheetControllerTest, DoesNotFillWhenOriginChanged) {
+  url::Origin new_origin = url::Origin::Create(GURL("https://different.com"));
+  driver().SetLastCommittedOrigin(new_origin);
+
+  EXPECT_CALL(driver(), FillIntoFocusedField).Times(0);
+  EXPECT_CALL(dismissal_callback(), Run());
+
+  all_passwords_controller()->OnCredentialSelected(
+      kUsername1, kPassword, RequestsToFillPassword(false));
+}
+
+TEST_F(AllPasswordsBottomSheetControllerTest,
+       GetFrameOriginUrlReturnsOriginUrlWhenDriverIsNull) {
+  url::Origin expected_origin =
+      url::Origin::Create(GURL("https://example.com/login"));
+  auto local_driver = std::make_unique<MockPasswordManagerDriver>();
+  local_driver->SetLastCommittedOrigin(expected_origin);
+  createAllPasswordsController(FocusedFieldType::kFillablePasswordField,
+                               local_driver->AsWeakPtr());
+
+  local_driver.reset();
+  EXPECT_EQ(expected_origin.GetURL(),
+            all_passwords_controller()->GetFrameOriginUrl());
 }

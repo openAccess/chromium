@@ -25,6 +25,7 @@
 #include "chrome/browser/ui/views/frame/browser_caption_button_container_win.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/minimize_button_metrics_win.h"
+#include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/tabs/new_tab_button.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
@@ -684,12 +685,8 @@ void BrowserFrameViewWin::LayoutTitleBar() {
   TRACE_EVENT0("views.frame", "BrowserFrameViewWin::LayoutTitleBar");
   const bool show_icon = ShouldShowWindowIcon(TitlebarType::kCustom);
   const bool show_title = ShouldShowWindowTitle(TitlebarType::kCustom);
-  if (window_icon_) {
-    window_icon_->SetVisible(show_icon);
-  }
-  if (window_title_) {
-    window_title_->SetVisible(show_title);
-  }
+  SafeInvoke(window_icon_.get()).Then(&views::View::SetVisible, show_icon);
+  SafeInvoke(window_title_.get()).Then(&views::View::SetVisible, show_title);
   if (!show_icon && !show_title) {
     return;
   }
@@ -758,7 +755,7 @@ void BrowserFrameViewWin::LayoutClientView() {
 }
 
 void BrowserFrameViewWin::StartThrobber() {
-  DCHECK(ShouldShowWindowIcon(TitlebarType::kSystem));
+  CHECK(ShouldShowWindowIcon(TitlebarType::kSystem), base::NotFatalUntil::M162);
   if (!throbber_running_) {
     throbber_running_ = true;
     throbber_frame_ = 0;
@@ -770,7 +767,7 @@ void BrowserFrameViewWin::StartThrobber() {
 }
 
 void BrowserFrameViewWin::StopThrobber() {
-  DCHECK(ShouldShowWindowIcon(TitlebarType::kSystem));
+  CHECK(ShouldShowWindowIcon(TitlebarType::kSystem), base::NotFatalUntil::M162);
   if (throbber_running_) {
     throbber_running_ = false;
 
@@ -836,6 +833,8 @@ void BrowserFrameViewWin::InitThrobberIcons() {
     for (int i = 0; i < kThrobberIconCount; ++i) {
       throbber_icons_[i] =
           ui::LoadThemeIconFromResourcesDataDLL(IDI_THROBBER_01 + i);
+      // TODO(crbug.com/578876437): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
       DCHECK(throbber_icons_[i]);
     }
     initialized = true;

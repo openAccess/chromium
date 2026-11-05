@@ -5,12 +5,13 @@
 #import "ios/chrome/browser/composebox/menu/ui/composebox_menu_item.h"
 
 #import "ios/chrome/browser/composebox/shared/ui/composebox_ui_constants.h"
+#import "ios/chrome/browser/composebox/ui/composebox_model_item.h"
 
 @implementation ComposeboxMenuItem
 
 - (instancetype)initWithTitle:(NSString*)title
                      subtitle:(NSString*)subtitle
-                        count:(NSUInteger)count
+                     favicons:(NSArray<UIImage*>*)favicons
                         image:(UIImage*)image
                          type:(ComposeboxMenuItemType)type
                      disabled:(BOOL)disabled
@@ -19,7 +20,7 @@
   if (self) {
     _title = [title copy];
     _subtitle = [subtitle copy];
-    _count = count;
+    _favicons = [favicons copy];
     _image = image;
     _type = type;
     _disabled = disabled;
@@ -29,13 +30,26 @@
 }
 
 - (instancetype)initWithTitle:(NSString*)title
+                     subtitle:(NSString*)subtitle
+                     favicons:(NSArray<UIImage*>*)favicons
+                         type:(ComposeboxMenuItemType)type {
+  return [self initWithTitle:title
+                    subtitle:subtitle
+                    favicons:favicons
+                       image:nil
+                        type:type
+                    disabled:NO
+                     favicon:nil];
+}
+
+- (instancetype)initWithTitle:(NSString*)title
                         image:(UIImage*)image
                          type:(ComposeboxMenuItemType)type
                      disabled:(BOOL)disabled
                       favicon:(UIImage*)favicon {
   return [self initWithTitle:title
                     subtitle:nil
-                       count:0
+                    favicons:nil
                        image:image
                         type:type
                     disabled:disabled
@@ -54,6 +68,20 @@
 }
 
 - (instancetype)initWithTitle:(NSString*)title
+                     subtitle:(NSString*)subtitle
+                        image:(UIImage*)image
+                         type:(ComposeboxMenuItemType)type
+                     disabled:(BOOL)disabled {
+  return [self initWithTitle:title
+                    subtitle:subtitle
+                    favicons:nil
+                       image:image
+                        type:type
+                    disabled:disabled
+                     favicon:nil];
+}
+
+- (instancetype)initWithTitle:(NSString*)title
                         image:(UIImage*)image
                          type:(ComposeboxMenuItemType)type {
   return [self initWithTitle:title
@@ -61,6 +89,17 @@
                         type:type
                     disabled:NO
                      favicon:nil];
+}
+
+- (instancetype)initWithModelItem:(ComposeboxModelItem*)modelItem {
+  self = [self initWithTitle:modelItem.title
+                       image:modelItem.icon
+                        type:ComposeboxMenuItemType::kModel
+                    disabled:modelItem.disabled];
+  if (self) {
+    _modelItem = modelItem;
+  }
+  return self;
 }
 
 - (BOOL)isAttachmentType {
@@ -82,23 +121,33 @@
   ComposeboxMenuItem* other = (ComposeboxMenuItem*)object;
 
   return self.type == other.type &&
-         [self.subtitle isEqualToString:other.subtitle] &&
+         (self.subtitle == other.subtitle ||
+          [self.subtitle isEqualToString:other.subtitle]) &&
          [self.title isEqualToString:other.title] &&
-         self.count == other.count && self.disabled == other.disabled &&
+         (self.favicons == other.favicons ||
+          [self.favicons isEqualToArray:other.favicons]) &&
+         self.disabled == other.disabled &&
          (self.image == other.image || [self.image isEqual:other.image]) &&
          (self.favicon == other.favicon ||
-          [self.favicon isEqual:other.favicon]);
+          [self.favicon isEqual:other.favicon]) &&
+         self.modelItem.modelMode == other.modelItem.modelMode &&
+         self.modelItem.selected == other.modelItem.selected;
 }
 
 - (NSUInteger)hash {
   return static_cast<NSUInteger>(self.type) ^ self.title.hash ^
-         self.subtitle.hash ^ self.count ^ self.disabled;
+         self.subtitle.hash ^ self.favicons.hash ^ self.disabled ^
+         static_cast<NSUInteger>(self.modelItem.modelMode) ^
+         self.modelItem.selected;
 }
 
 - (id)copyWithZone:(NSZone*)zone {
+  if (self.modelItem) {
+    return [[ComposeboxMenuItem alloc] initWithModelItem:self.modelItem];
+  }
   return [[ComposeboxMenuItem alloc] initWithTitle:self.title
                                           subtitle:self.subtitle
-                                             count:self.count
+                                          favicons:self.favicons
                                              image:self.image
                                               type:self.type
                                           disabled:self.disabled
@@ -123,6 +172,8 @@ NSString* AccessibilityIdentifierForMenuItemType(ComposeboxMenuItemType type) {
       return kComposeboxGalleryActionAccessibilityIdentifier;
     case ComposeboxMenuItemType::kAttachmentFiles:
       return kComposeboxAttachFileActionAccessibilityIdentifier;
+    case ComposeboxMenuItemType::kAttachmentDrive:
+      return kComposeboxAttachDriveActionAccessibilityIdentifier;
     default:
       return nil;
   }

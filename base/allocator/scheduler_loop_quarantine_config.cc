@@ -28,7 +28,8 @@ constexpr char kBranchTypeGlobalStr[] = "global";
 constexpr char kBranchTypeThreadLocalDefaultStr[] = "*";
 constexpr char kBranchTypeMainStr[] = "main";
 constexpr char kBranchTypeIOStr[] = "io";
-constexpr char kBranchTypeAdvancedMemorySafetyChecksStr[] = "amsc";
+// Named "amsc" (Advanced Memory Safety Checks) for historical reasons.
+constexpr char kBranchTypeSanitizedObjectStr[] = "amsc";
 constexpr char kBranchTypeVizCompositorStr[] = "viz-compositor";
 constexpr char kBranchTypeCompositorGpuStr[] = "compositor-gpu";
 
@@ -43,8 +44,8 @@ constexpr std::string_view GetSchedulerLoopQuarantineBranchTypeStr(
       return kBranchTypeMainStr;
     case SchedulerLoopQuarantineBranchType::kIO:
       return kBranchTypeIOStr;
-    case SchedulerLoopQuarantineBranchType::kAdvancedMemorySafetyChecks:
-      return kBranchTypeAdvancedMemorySafetyChecksStr;
+    case SchedulerLoopQuarantineBranchType::kSanitizedObject:
+      return kBranchTypeSanitizedObjectStr;
     case SchedulerLoopQuarantineBranchType::kVizCompositor:
       return kBranchTypeVizCompositorStr;
     case SchedulerLoopQuarantineBranchType::kCompositorGpu:
@@ -61,13 +62,14 @@ constexpr int kJSONParserOptions =
 
 // JSON keys for parameters.
 constexpr char kKeyEnableQuarantine[] = "enable-quarantine";
-constexpr char kKeyEnableZapping[] = "enable-zapping";
 constexpr char kKeyLeakOnDestruction[] = "leak-on-destruction";
 constexpr char kKeyEnableTaskControlledPurge[] = "enable-task-controlled-purge";
 constexpr char kKeyPauseInBetweenTasks[] = "pause-in-between-tasks";
 constexpr char kKeyExcludeNonIpcTasks[] = "exclude-non-ipc-tasks";
 constexpr char kKeyBranchCapacityInBytes[] = "branch-capacity-in-bytes";
 constexpr char kKeyMaxQuarantineSize[] = "max-quarantine-size";
+constexpr char kKeyZapMax[] = "zap-max";
+constexpr char kKeyPurgeHeadroomPercent[] = "purge-headroom-percent";
 
 struct Match {
   const DictValue* dict;
@@ -185,8 +187,7 @@ GetSchedulerLoopQuarantineConfiguration(
     // Falls back to thread-local default unless global nor AMSC.
     if (!config_entry &&
         branch_type != SchedulerLoopQuarantineBranchType::kGlobal &&
-        branch_type !=
-            SchedulerLoopQuarantineBranchType::kAdvancedMemorySafetyChecks) {
+        branch_type != SchedulerLoopQuarantineBranchType::kSanitizedObject) {
       config_entry = config_process->FindDict(kBranchTypeThreadLocalDefaultStr);
     }
 
@@ -202,8 +203,6 @@ GetSchedulerLoopQuarantineConfiguration(
 
   config.enable_quarantine = config_entry->FindBool(kKeyEnableQuarantine)
                                  .value_or(config.enable_quarantine);
-  config.enable_zapping =
-      config_entry->FindBool(kKeyEnableZapping).value_or(config.enable_zapping);
   config.leak_on_destruction = config_entry->FindBool(kKeyLeakOnDestruction)
                                    .value_or(config.leak_on_destruction);
   config.enable_task_controlled_purge =
@@ -222,6 +221,19 @@ GetSchedulerLoopQuarantineConfiguration(
       config_entry->FindInt(kKeyMaxQuarantineSize).value_or(-1);
   if (0 < max_quarantine_size) {
     config.max_quarantine_size = static_cast<size_t>(max_quarantine_size);
+  }
+
+  int zap_max = config_entry->FindInt(kKeyZapMax).value_or(-1);
+  if (0 < zap_max) {
+    config.zap_max = static_cast<size_t>(zap_max);
+  }
+
+  int purge_headroom_percent =
+      config_entry->FindInt(kKeyPurgeHeadroomPercent).value_or(0);
+  if (0 < purge_headroom_percent) {
+    config.purge_headroom_percent =
+        std::min(static_cast<size_t>(purge_headroom_percent),
+                 ::partition_alloc::internal::kMaxPurgeHeadroomPercent);
   }
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
 

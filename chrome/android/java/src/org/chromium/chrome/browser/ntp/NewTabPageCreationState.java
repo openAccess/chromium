@@ -13,6 +13,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.omnibox.AutocompleteRequestType;
+import org.chromium.components.omnibox.OmniboxFocusReason;
 
 /** UserData that tracks the creation state of a new tab page. */
 @NullMarked
@@ -50,7 +51,7 @@ public class NewTabPageCreationState implements UserData {
     }
 
     /** Update the state when new NTPs opened in a new tab. */
-    void onNewTabCreated() {
+    void didAddTab() {
         mIsNewlyCreated = true;
         maybeFocusOmnibox();
     }
@@ -69,7 +70,7 @@ public class NewTabPageCreationState implements UserData {
                     .focusSearchBox(
                             /* beginVoiceSearch= */ false,
                             /* requestType= */ AutocompleteRequestType.SEARCH,
-                            /* showFuseboxPopup= */ false,
+                            OmniboxFocusReason.FAKE_BOX_TAP,
                             /* pastedText= */ null);
         }
     }

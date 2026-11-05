@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Feil passord</translation>
 <translation id="5059127710849015030">Nepali, translitterasjon</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> har angitt regler for overstyring av proxy-tjener</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> med filer blir slettet</translation>
 <translation id="508423945471810158">Flytter <ph name="NUMBER_OF_ITEMS" /> elementer til <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Det oppsto en feil.</translation>
-<translation id="5102922915594634436">Administrer synkroniserte mapper</translation>
 <translation id="5109254780565519649">Det oppsto en feil. Noen elementer er kanskje ikke gjenopprettet.</translation>
 <translation id="5110329002213341433">Engelsk (Canada)</translation>
 <translation id="5119780910075847424">Synkroniseringen er satt på pause</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">Hindi</translation>
 <translation id="7665680517722058469">Prøv et annet søk</translation>
 <translation id="7689532716264131859"><ph name="NUMBER_OF_ITEMS" /> elementer er lagt i papirkurven</translation>
-<translation id="7693909743393669729">Når du formaterer stasjoner, slettes alle data som er lagret på dem, og alle eksisterende partisjoner fjernes, inkludert partisjoner som kanskje ikke er synlige. Denne handlingen kan ikke angres.</translation>
 <translation id="7695430100978772476">Kunne ikke formatere <ph name="DRIVE_NAME" /></translation>
 <translation id="76959938259365003">Kunne ikke tømme papirkurven.</translation>
 <translation id="7705251383879779343"><ph name="FILE_NAME" /> er kopiert.</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">USA – Workman internasjonal</translation>
 <translation id="7903984238293908205">Katakana</translation>
 <translation id="7908378463497120834">Beklager, men minst én partisjon på den eksterne lagringsenheten din kunne ikke tilkobles.</translation>
-<translation id="7908793776359722643">Formatering av partisjonen sletter alle data som er lagret på den. Denne handlingen kan ikke angres.</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">Filene dine i Min disk synkroniseres automatisk med Chromebooken, slik at du har tilgang til dem uten internettilkobling.</translation>
 <translation id="7925247922861151263">AAA-kontroll mislyktes</translation>

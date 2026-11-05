@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "chrome/browser/infobars/confirm_infobar_creation_allowlist.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/infobars/confirm_infobar.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
@@ -19,6 +20,7 @@
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
+#include "ui/views/controls/link.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/view_class_properties.h"
@@ -97,6 +99,11 @@ class TestConfirmInfoBarDelegate : public ConfirmInfoBarDelegate {
   int buttons_;
   std::optional<ui::ButtonStyle> ok_style_;
   std::optional<ui::ButtonStyle> cancel_style_;
+};
+
+class TestConfirmInfoBarDelegateWithLink : public TestConfirmInfoBarDelegate {
+ public:
+  std::u16string GetLinkText() const override { return u"Test link"; }
 };
 
 }  // namespace
@@ -200,7 +207,9 @@ TEST_F(InfoBarViewUnitTest, CloseButtonIsVisibleAndCorrectlyPositioned) {
 
 TEST_F(InfoBarViewUnitTest, ConfirmInfoBarButtonPadding) {
   auto delegate = std::make_unique<TestConfirmInfoBarDelegate>();
-  auto infobar_view = ConfirmInfoBar::Create(std::move(delegate));
+  auto infobar_view = ConfirmInfoBar::Create(
+      ConfirmInfoBarCreationAllowlist::GetPassKeyForTesting(),
+      std::move(delegate));
 
   auto widget = std::make_unique<views::Widget>();
   views::Widget::InitParams params =
@@ -226,13 +235,49 @@ TEST_F(InfoBarViewUnitTest, ConfirmInfoBarButtonPadding) {
   widget->CloseNow();
 }
 
+TEST_F(InfoBarViewUnitTest, TrailingLinkIsVerticallyCentered) {
+  auto delegate = std::make_unique<TestConfirmInfoBarDelegateWithLink>();
+  auto infobar_view = ConfirmInfoBar::Create(
+      ConfirmInfoBarCreationAllowlist::GetPassKeyForTesting(),
+      std::move(delegate));
+
+  auto widget = std::make_unique<views::Widget>();
+  views::Widget::InitParams params =
+      CreateParams(views::Widget::InitParams::CLIENT_OWNS_WIDGET,
+                   views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  widget->Init(std::move(params));
+
+  widget->SetContentsView(infobar_view.get());
+  widget->SetBounds(gfx::Rect(0, 0, 500, 50));
+  widget->Show();
+  widget->LayoutRootViewIfNecessary();
+
+  views::Label* message_label = infobar_view->label_for_testing();
+  views::Link* link = infobar_view->link_for_testing();
+  views::View* close_button = infobar_view->close_button();
+  ASSERT_NE(nullptr, message_label);
+  ASSERT_NE(nullptr, link);
+  ASSERT_NE(nullptr, close_button);
+  ASSERT_LT(link->height(), close_button->height());
+
+  const int link_center_y = link->GetBoundsInScreen().CenterPoint().y();
+  EXPECT_NEAR(message_label->GetBoundsInScreen().CenterPoint().y(),
+              link_center_y, 1);
+  EXPECT_NEAR(close_button->GetBoundsInScreen().CenterPoint().y(),
+              link_center_y, 1);
+
+  widget->CloseNow();
+}
+
 TEST_F(InfoBarViewUnitTest, DefaultInfoBarButtonStyleSingleButton) {
   // Single buttons are Prominent by default.
   // Single OK button.
   {
     auto delegate = std::make_unique<TestConfirmInfoBarDelegate>(
         ConfirmInfoBarDelegate::BUTTON_OK);
-    auto infobar_view = ConfirmInfoBar::Create(std::move(delegate));
+    auto infobar_view = ConfirmInfoBar::Create(
+        ConfirmInfoBarCreationAllowlist::GetPassKeyForTesting(),
+        std::move(delegate));
 
     EXPECT_EQ(ui::ButtonStyle::kProminent,
               infobar_view->ok_button_for_testing()->GetStyle());
@@ -241,7 +286,9 @@ TEST_F(InfoBarViewUnitTest, DefaultInfoBarButtonStyleSingleButton) {
   {
     auto delegate = std::make_unique<TestConfirmInfoBarDelegate>(
         ConfirmInfoBarDelegate::BUTTON_CANCEL);
-    auto infobar_view = ConfirmInfoBar::Create(std::move(delegate));
+    auto infobar_view = ConfirmInfoBar::Create(
+        ConfirmInfoBarCreationAllowlist::GetPassKeyForTesting(),
+        std::move(delegate));
 
     EXPECT_EQ(ui::ButtonStyle::kProminent,
               infobar_view->cancel_button_for_testing()->GetStyle());
@@ -252,7 +299,9 @@ TEST_F(InfoBarViewUnitTest, DefaultInfoBarButtonStyleMultipleButton) {
   auto delegate = std::make_unique<TestConfirmInfoBarDelegate>(
       ConfirmInfoBarDelegate::BUTTON_OK |
       ConfirmInfoBarDelegate::BUTTON_CANCEL);
-  auto infobar_view = ConfirmInfoBar::Create(std::move(delegate));
+  auto infobar_view = ConfirmInfoBar::Create(
+      ConfirmInfoBarCreationAllowlist::GetPassKeyForTesting(),
+      std::move(delegate));
 
   EXPECT_EQ(ui::ButtonStyle::kProminent,
             infobar_view->ok_button_for_testing()->GetStyle());
@@ -264,7 +313,9 @@ TEST_F(InfoBarViewUnitTest, CustomInfoBarButtonStyle) {
   auto delegate = std::make_unique<TestConfirmInfoBarDelegate>(
       ConfirmInfoBarDelegate::BUTTON_OK | ConfirmInfoBarDelegate::BUTTON_CANCEL,
       ui::ButtonStyle::kTonal, ui::ButtonStyle::kProminent);
-  auto infobar_view = ConfirmInfoBar::Create(std::move(delegate));
+  auto infobar_view = ConfirmInfoBar::Create(
+      ConfirmInfoBarCreationAllowlist::GetPassKeyForTesting(),
+      std::move(delegate));
 
   EXPECT_EQ(ui::ButtonStyle::kTonal,
             infobar_view->ok_button_for_testing()->GetStyle());

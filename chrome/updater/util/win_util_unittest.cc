@@ -12,11 +12,13 @@
 #include <sddl.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <stddef.h>
 
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "base/base_paths.h"
 #include "base/command_line.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
@@ -65,7 +67,9 @@
 
 namespace updater::test {
 
+using ::testing::ElementsAre;
 using ::testing::EndsWith;
+using ::testing::Optional;
 
 namespace {
 
@@ -308,6 +312,14 @@ TEST(WinUtil, CompareOSVersions_OldMajorWithHigherMinor) {
 
 TEST(WinUtil, IsCOMCallerAdmin) {
   EXPECT_THAT(IsCOMCallerAdmin(), base::test::ValueIs(::IsUserAnAdmin()));
+}
+
+TEST(WinUtil, GetCOMCallerSid) {
+  ASSERT_OK_AND_ASSIGN(const auto token,
+                       base::win::AccessToken::FromCurrentProcess(
+                           /*impersonation=*/false, TOKEN_QUERY));
+  ASSERT_OK_AND_ASSIGN(const auto expected_sddl, token.User().ToSddlString());
+  EXPECT_EQ(GetCOMCallerSid(), expected_sddl);
 }
 
 TEST(WinUtil, EnableSecureDllLoading) {
@@ -584,6 +596,14 @@ TEST(WinUtil, GetLoggedOnUserToken) {
   ASSERT_FALSE(::IsUserAnAdmin());
 }
 
+TEST(WinUtil, GetUACState) {
+  const std::string uac_state = GetUACState();
+  EXPECT_THAT(uac_state, testing::HasSubstr("IsUserAdmin: "));
+  EXPECT_THAT(uac_state, testing::HasSubstr("IsUACOn: "));
+  EXPECT_THAT(uac_state, testing::HasSubstr("IsElevatedWithUACOn: "));
+  EXPECT_THAT(uac_state, testing::HasSubstr("LUA: "));
+}
+
 TEST(WinUtil, IsAuditMode) {
   if (!::IsUserAnAdmin()) {
     GTEST_SKIP();
@@ -703,6 +723,23 @@ TEST(WinUtil, GetCommandLineForPid) {
       GetCommandLineForPid(::GetCurrentProcessId());
   ASSERT_TRUE(cmd_line_for_pid.has_value());
   EXPECT_STREQ(cmd_line_for_pid->c_str(), ::GetCommandLine());
+}
+
+TEST(WinUtil, CommandLineToArgv) {
+  EXPECT_THAT(CommandLineToArgv(L"prog.exe"),
+              Optional(ElementsAre(L"prog.exe")));
+  EXPECT_THAT(
+      CommandLineToArgv(L"\"C:\\Program Files\\prog.exe\" a \"b c\" \"\""),
+      Optional(ElementsAre(L"C:\\Program Files\\prog.exe", L"a", L"b c", L"")));
+
+  // An empty command line returns the path of the current executable.
+  const std::optional<std::vector<std::wstring>> args = CommandLineToArgv(L"");
+  ASSERT_TRUE(args);
+  ASSERT_EQ(args->size(), 1u);
+  base::FilePath exe;
+  ASSERT_TRUE(base::PathService::Get(base::FILE_EXE, &exe));
+  EXPECT_TRUE(
+      base::FilePath::CompareEqualIgnoreCase(args->front(), exe.value()));
 }
 
 TEST(WinUtil, AddCurrentUserAllowedAce) {

@@ -15,6 +15,7 @@ import android.graphics.drawable.InsetDrawable;
 import android.view.View;
 
 import org.chromium.base.Callback;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.OneshotSupplierImpl;
@@ -35,6 +36,7 @@ import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.theme.ThemeColorProvider.TintObserver;
 import org.chromium.chrome.browser.toolbar.R;
+import org.chromium.chrome.browser.toolbar.account_menu.AccountMenuCoordinator;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.NoAccountSigninMode;
@@ -64,6 +66,7 @@ import org.chromium.components.sync.UserActionableError;
 import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.listmenu.ListMenuButton;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModel;
 
@@ -102,6 +105,7 @@ final class SigninButtonMediator
     private @Nullable Profile mProfile;
     private @Nullable BottomSheetSigninAndHistorySyncCoordinator mSigninCoordinator;
     private @Nullable SigninManager mSigninManager;
+    private @Nullable AccountMenuCoordinator mAccountMenuCoordinator;
 
     // We observe IdentityManager to receive primary account state change notifications.
     private @Nullable IdentityManager mIdentityManager;
@@ -226,7 +230,6 @@ final class SigninButtonMediator
             @Nullable ColorStateList tint,
             @Nullable ColorStateList activityFocusTint,
             @BrandedColorScheme int brandedColorScheme) {
-
         // If activityFocusTint is different from tint, the toolbar thinks we are inactive.
         boolean isWindowActive = Objects.equals(tint, activityFocusTint);
         mModel.set(SigninButtonProperties.IS_ENABLED, isWindowActive);
@@ -320,6 +323,10 @@ final class SigninButtonMediator
     private void setProfile(@Nullable Profile profile) {
         mProfile = profile;
         resetProfileDataCache();
+        if (mAccountMenuCoordinator != null) {
+            mAccountMenuCoordinator.destroy();
+            mAccountMenuCoordinator = null;
+        }
         if (mIdentityManager != null) {
             mIdentityManager.removeObserver(this);
             mIdentityManager = null;
@@ -350,7 +357,7 @@ final class SigninButtonMediator
 
             int aiTierRingThicknessPx =
                     mContext.getResources()
-                            .getDimensionPixelSize(R.dimen.ai_tier_ring_thickness_identity_disc);
+                            .getDimensionPixelSize(R.dimen.ai_tier_ring_thickness_small);
             int aiTierImageSizePx =
                     mContext.getResources()
                             .getDimensionPixelSize(R.dimen.toolbar_identity_disc_size_with_ring);
@@ -359,11 +366,17 @@ final class SigninButtonMediator
                             mContext,
                             mIdentityManager,
                             subscriptionEligibilityService,
+                            // TODO(crbug.com/578866423): Pass the SyncService and let the
+                            // cache handle the error badge too.
+                            // No SyncService: on an identity error, updateButtonState() sets a
+                            // badge on the avatar, and the cache never draws the ring on a
+                            // badged avatar.
+                            /* syncService= */ null,
                             aiTierImageSizePx,
                             aiTierRingThicknessPx);
         } else {
             mProfileDataCache =
-                    ProfileDataCache.createWithoutBadge(
+                    ProfileDataCache.create(
                             mContext, mIdentityManager, R.dimen.toolbar_identity_disc_size);
         }
         mProfileDataCache.addObserver(this);
@@ -385,16 +398,58 @@ final class SigninButtonMediator
         mOnSigninTapped.run();
         recordSigninButtonUsed(mProfile);
 
+        // TODO(crbug.com/551756560): Use a delegate pattern to handle form-factor-based behavior
+        // instead of branching here.
+        if (isAccountMenuEnabled()) {
+            if (mAccountMenuCoordinator == null) {
+                mAccountMenuCoordinator =
+                        new AccountMenuCoordinator(
+                                mContext,
+                                mProfile,
+                                mWindowAndroid,
+                                mSigninCoordinator,
+                                mSigninAndHistorySyncActivityLauncher);
+            }
+            mAccountMenuCoordinator.show((ListMenuButton) view);
+            return;
+        }
+
+        startSigninFlow();
+    }
+
+    /** Whether taps on the button open the account menu instead of starting the sign-in flow. */
+    static boolean isAccountMenuEnabled() {
+        return DeviceInfo.isDesktop()
+                && SigninFeatureMap.isEnabled(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU);
+    }
+
+    /**
+     * Returns the access point for the shared sign-in coordinator, which is created eagerly before
+     * the surface that starts the flow is known. When the account menu is enabled the menu is that
+     * surface, so the flow is attributed to {@link
+     * SigninAccessPoint#ACCOUNT_MENU_SIGNED_OUT_STATE}; otherwise the button starts the flow
+     * itself.
+     */
+    private @SigninAccessPoint int getSigninAccessPoint() {
+        return isAccountMenuEnabled()
+                ? SigninAccessPoint.ACCOUNT_MENU_SIGNED_OUT_STATE
+                : SigninAccessPoint.NTP_SIGNED_OUT_ICON;
+    }
+
+    private void startSigninFlow() {
+        if (mProfile == null || mProfile.isOffTheRecord()) {
+            return;
+        }
+
         Profile originalProfile = mProfile.getOriginalProfile();
         if (assumeNonNull(mSigninManager).isSigninAllowed()) {
+            String title = mContext.getString(R.string.signin_account_picker_bottom_sheet_title);
+            String subtitle =
+                    mContext.getString(
+                            R.string.signin_account_picker_bottom_sheet_benefits_subtitle);
             AccountPickerBottomSheetStrings bottomSheetStrings =
-                    new AccountPickerBottomSheetStrings.Builder(
-                                    mContext.getString(
-                                            R.string.signin_account_picker_bottom_sheet_title))
-                            .setSubtitleString(
-                                    mContext.getString(
-                                            R.string
-                                                    .signin_account_picker_bottom_sheet_benefits_subtitle))
+                    new AccountPickerBottomSheetStrings.Builder(title)
+                            .setSubtitleString(subtitle)
                             .build();
             BottomSheetSigninAndHistorySyncConfig config =
                     new BottomSheetSigninAndHistorySyncConfig.Builder(
@@ -460,7 +515,7 @@ final class SigninButtonMediator
                                     () -> mBottomSheetController,
                                     SupplierUtils.of(mModalDialogManager),
                                     SupplierUtils.of(mSnackbarManager),
-                                    SigninAccessPoint.NTP_SIGNED_OUT_ICON);
+                                    getSigninAccessPoint());
         }
     }
 

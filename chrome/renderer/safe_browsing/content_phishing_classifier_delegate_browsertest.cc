@@ -7,7 +7,6 @@
 #include <memory>
 #include <optional>
 
-#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
@@ -35,6 +34,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/public/platform/web_url.h"
 #include "third_party/blink/public/platform/web_url_request.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 using base::ASCIIToUTF16;
@@ -391,8 +391,7 @@ TEST_P(ContentPhishingClassifierDelegateTest, HasVisualTfLiteModel) {
   std::string model_str = GetFlatBufferString(0);
   base::MappedReadOnlyRegion mapped_region =
       base::ReadOnlySharedMemoryRegion::Create(model_str.length());
-  UNSAFE_TODO(memcpy(mapped_region.mapping.memory(), model_str.data(),
-                     model_str.length()));
+  base::span(mapped_region.mapping).copy_from(base::as_byte_span(model_str));
   ScorerStorage::GetInstance()->SetScorer(
       Scorer::Create(mapped_region.region.Duplicate(), std::move(file)));
   ASSERT_TRUE(classifier_->is_ready());

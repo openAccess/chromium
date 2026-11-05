@@ -16,9 +16,11 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
+import android.app.Activity;
 import android.content.res.Resources;
 
 import org.junit.Assert;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -28,10 +30,12 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.ParameterizedRobolectricTestRunner;
 import org.robolectric.ParameterizedRobolectricTestRunner.Parameters;
+import org.robolectric.Robolectric;
 import org.robolectric.RuntimeEnvironment;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRule;
+import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.test.util.modaldialog.FakeModalDialogManager;
@@ -60,7 +64,7 @@ public class PasswordEditDialogControllerTest {
 
     private final FakeModalDialogManager mModalDialogManager = new FakeModalDialogManager(0);
 
-    @Mock private PasswordEditDialogView mDialogViewMock;
+    private PasswordEditDialogView mDialogView;
 
     private PropertyModel mCustomViewModel;
     private PropertyModel mModalDialogModel;
@@ -75,6 +79,14 @@ public class PasswordEditDialogControllerTest {
 
     public PasswordEditDialogControllerTest(boolean isSignedIn) {
         mIsSignedIn = isSignedIn;
+    }
+
+    @Before
+    public void setUp() {
+        Activity activity = Robolectric.buildActivity(TestActivity.class).setup().get();
+        mDialogView =
+                (PasswordEditDialogView)
+                        activity.getLayoutInflater().inflate(R.layout.password_edit_dialog, null);
     }
 
     /**
@@ -326,6 +338,9 @@ public class PasswordEditDialogControllerTest {
         Resources r = RuntimeEnvironment.getApplication().getResources();
 
         Assert.assertEquals(
+                r.getString(R.string.save_password),
+                mModalDialogManager.getShownDialogModel().get(ModalDialogProperties.TITLE));
+        Assert.assertEquals(
                 r.getString(R.string.password_manager_save_button),
                 mModalDialogManager
                         .getShownDialogModel()
@@ -335,6 +350,9 @@ public class PasswordEditDialogControllerTest {
                 mCustomViewModel.get(PasswordEditDialogProperties.USERNAME_CHANGED_CALLBACK);
         usernameChangedCallback.onResult(CHANGED_USERNAME);
 
+        Assert.assertEquals(
+                r.getString(R.string.password_update_dialog_title),
+                mModalDialogManager.getShownDialogModel().get(ModalDialogProperties.TITLE));
         Assert.assertEquals(
                 r.getString(R.string.password_manager_update_button),
                 mModalDialogManager
@@ -371,13 +389,14 @@ public class PasswordEditDialogControllerTest {
                 new PasswordEditDialogCoordinator(
                         RuntimeEnvironment.getApplication(),
                         mModalDialogManager,
-                        mDialogViewMock,
+                        mDialogView,
                         mDelegateMock);
         mDialogCoordinator.showPasswordEditDialog(
                 new String[] {INITIAL_USERNAME, ""},
                 INITIAL_USERNAME,
                 INITIAL_PASSWORD,
-                ACCOUNT_NAME);
+                ACCOUNT_NAME,
+                /* isSavingBlockedByTrustedVaultError= */ false);
 
         mCustomViewModel = mDialogCoordinator.getDialogViewModelForTesting();
 
@@ -387,22 +406,109 @@ public class PasswordEditDialogControllerTest {
     }
 
     /**
+     * Tests that the positive button says "Continue" when trusted vault is locked on save dialog.
+     */
+    @Test
+    public void testSavePasswordDialogPropertiesWithTrustedVaultLocked() {
+        createAndShowDialog(new String[0], /* isSavingBlockedByTrustedVaultError= */ true);
+        Resources r = RuntimeEnvironment.getApplication().getResources();
+
+        Assert.assertEquals(
+                r.getString(R.string.continue_button),
+                mModalDialogManager
+                        .getShownDialogModel()
+                        .get(ModalDialogProperties.POSITIVE_BUTTON_TEXT));
+    }
+
+    /**
+     * Tests that button caption changes from "Update" to "Continue" when trusted vault is locked
+     * and user changes the username so that the new one is not known to Password Manager.
+     */
+    @Test
+    public void testChangesFromUpdateToContinueWhenTrustedVaultLocked() {
+        createAndShowDialog(
+                new String[] {INITIAL_USERNAME}, /* isSavingBlockedByTrustedVaultError= */ true);
+        Resources r = RuntimeEnvironment.getApplication().getResources();
+
+        Assert.assertEquals(
+                r.getString(R.string.password_update_dialog_title),
+                mModalDialogManager.getShownDialogModel().get(ModalDialogProperties.TITLE));
+        Assert.assertEquals(
+                r.getString(R.string.password_manager_update_button),
+                mModalDialogManager
+                        .getShownDialogModel()
+                        .get(ModalDialogProperties.POSITIVE_BUTTON_TEXT));
+
+        Callback<String> usernameChangedCallback =
+                mCustomViewModel.get(PasswordEditDialogProperties.USERNAME_CHANGED_CALLBACK);
+        usernameChangedCallback.onResult(CHANGED_USERNAME);
+
+        Assert.assertEquals(
+                r.getString(R.string.save_password),
+                mModalDialogManager.getShownDialogModel().get(ModalDialogProperties.TITLE));
+        Assert.assertEquals(
+                r.getString(R.string.continue_button),
+                mModalDialogManager
+                        .getShownDialogModel()
+                        .get(ModalDialogProperties.POSITIVE_BUTTON_TEXT));
+    }
+
+    /**
+     * Tests that title and button caption change from "Continue" to "Update" when trusted vault is
+     * locked and user changes the username to an already stored username.
+     */
+    @Test
+    public void testChangesFromContinueToUpdateWhenTrustedVaultLocked() {
+        createAndShowDialog(
+                new String[] {CHANGED_USERNAME}, /* isSavingBlockedByTrustedVaultError= */ true);
+        Resources r = RuntimeEnvironment.getApplication().getResources();
+
+        Assert.assertEquals(
+                r.getString(R.string.save_password),
+                mModalDialogManager.getShownDialogModel().get(ModalDialogProperties.TITLE));
+        Assert.assertEquals(
+                r.getString(R.string.continue_button),
+                mModalDialogManager
+                        .getShownDialogModel()
+                        .get(ModalDialogProperties.POSITIVE_BUTTON_TEXT));
+
+        Callback<String> usernameChangedCallback =
+                mCustomViewModel.get(PasswordEditDialogProperties.USERNAME_CHANGED_CALLBACK);
+        usernameChangedCallback.onResult(CHANGED_USERNAME);
+
+        Assert.assertEquals(
+                r.getString(R.string.password_update_dialog_title),
+                mModalDialogManager.getShownDialogModel().get(ModalDialogProperties.TITLE));
+        Assert.assertEquals(
+                r.getString(R.string.password_manager_update_button),
+                mModalDialogManager
+                        .getShownDialogModel()
+                        .get(ModalDialogProperties.POSITIVE_BUTTON_TEXT));
+    }
+
+    /**
      * Helper function that creates {@link PasswordEditDialogCoordinator}, and captures property
      * models for modal dialog and custom dialog view.
      */
     private void createAndShowDialog(String[] savedUserNames) {
+        createAndShowDialog(savedUserNames, /* isSavingBlockedByTrustedVaultError= */ false);
+    }
+
+    private void createAndShowDialog(
+            String[] savedUserNames, boolean isSavingBlockedByTrustedVaultError) {
         when(mDelegateMock.isUsingAccountStorage(any())).thenReturn(mIsSignedIn);
         mDialogCoordinator =
                 new PasswordEditDialogCoordinator(
                         RuntimeEnvironment.getApplication(),
                         mModalDialogManager,
-                        mDialogViewMock,
+                        mDialogView,
                         mDelegateMock);
         mDialogCoordinator.showPasswordEditDialog(
                 savedUserNames,
                 INITIAL_USERNAME,
                 INITIAL_PASSWORD,
-                mIsSignedIn ? ACCOUNT_NAME : null);
+                mIsSignedIn ? ACCOUNT_NAME : null,
+                isSavingBlockedByTrustedVaultError);
 
         mModalDialogModel = mDialogCoordinator.getDialogModelForTesting();
         mCustomViewModel = mDialogCoordinator.getDialogViewModelForTesting();

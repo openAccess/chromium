@@ -19,6 +19,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -33,7 +34,7 @@
 #include "ui/gl/buildflags.h"
 #include "ui/gl/gl_bindings.h"
 #include "ui/gl/gl_context.h"
-#include "ui/gl/gl_features.h"
+#include "ui/gl/gl_egl_api_implementation.h"
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_surface.h"
 #include "ui/gl/gl_surface_egl.h"
@@ -92,8 +93,7 @@ scoped_refptr<gl::GLSurface> InitializeGLSurface(gl::GLDisplay* display) {
 scoped_refptr<gl::GLContext> InitializeGLContext(gl::GLSurface* surface) {
   TRACE_EVENT("gpu,startup", "gpu_info_collector::InitializeGLContext");
   gl::GLContextAttribs attribs;
-  attribs.allow_es_version_fallback =
-      !features::ShouldFallbackToSWIfGLES3NotSupported();
+  attribs.allow_es_version_fallback = false;
   scoped_refptr<gl::GLContext> context(
       gl::init::CreateGLContext(nullptr, surface, attribs));
   if (!context.get()) {
@@ -260,6 +260,11 @@ void GetDawnTogglesForWebGPU(
   // Disallows usage of SPIR-V by default for security (we only ensure that WGSL
   // is secure).
   force_enabled_toggles->push_back("disallow_spirv");
+  // Allows usage of unsafe WebGPU features when `--enable-unsafe-webgpu` is
+  // specified.
+  if (enable_unsafe_webgpu) {
+    force_enabled_toggles->push_back("allow_unsafe_apis");
+  }
   // Enable timestamp quantization by default for privacy, unless
   // --enable-webgpu-developer-features is used.
   if (!enable_webgpu_developer_features) {
@@ -583,6 +588,68 @@ bool CollectBasicGraphicsInfo(const base::CommandLine* command_line,
   return CollectBasicGraphicsInfo(gpu_info);
 }
 
+bool CollectGraphicsInfoFromANGLEDisplay(GPUInfo* gpu_info,
+                                         gl::GLDisplay* display) {
+  TRACE_EVENT("gpu,startup",
+              "gpu_info_collector::CollectGraphicsInfoFromANGLEDisplay");
+  // gl_vendor below relies on ANGLE's GL_VENDOR matching its EGL_VENDOR,
+  // which doesn't hold for native EGL drivers.
+  if (gl::GetGLImplementation() != gl::kGLImplementationEGLANGLE) {
+    return false;
+  }
+  gl::GLDisplayEGL* egl_display =
+      display ? display->GetAs<gl::GLDisplayEGL>() : nullptr;
+  if (!egl_display) {
+    return false;
+  }
+
+  gpu_info->display_type = GetDisplayTypeString(egl_display->GetDisplayType());
+
+  // Query the display directly so that no context needs to be current.
+  EGLDisplay egl_display_handle = egl_display->GetDisplay();
+  gl::GLWindowSystemBindingInfo window_system_binding_info;
+  if (gl::GetGLWindowSystemBindingInfoEGL(egl_display_handle,
+                                          &window_system_binding_info)) {
+    // ANGLE's GL_VENDOR is the same string as its EGL_VENDOR.
+    gpu_info->gl_vendor = window_system_binding_info.vendor;
+    gpu_info->gl_ws_vendor = window_system_binding_info.vendor;
+    gpu_info->gl_ws_version = window_system_binding_info.version;
+    gpu_info->gl_ws_extensions = window_system_binding_info.extensions;
+  }
+
+  // EGL_ANGLE_query_renderer_strings returns GL_RENDERER and the ANGLE version
+  // embedded in GL_VERSION without a context.
+  if (egl_display->ext->b_EGL_ANGLE_query_renderer_strings) {
+    const char* renderer =
+        eglQueryString(egl_display_handle, EGL_RENDERER_STRING_ANGLE);
+    if (renderer) {
+      gpu_info->gl_renderer = renderer;
+    }
+    const char* angle_version =
+        eglQueryString(egl_display_handle, EGL_ANGLE_VERSION_STRING_ANGLE);
+    if (angle_version) {
+      // ANGLE's GL_VERSION is "OpenGL ES <major>.<minor> (ANGLE <version>)",
+      // with the client version of the context. Use the same default
+      // GLContextAttribs as the context created in CollectGraphicsInfoGL().
+      gl::GLContextAttribs attribs;
+      gpu_info->gl_version = base::StrCat(
+          {"OpenGL ES ", base::NumberToString(attribs.client_major_es_version),
+           ".", base::NumberToString(attribs.client_minor_es_version),
+           " (ANGLE ", angle_version, ")"});
+    }
+  }
+
+  // The reset notification strategy is a context creation attribute.
+  // GLContextEGL requests EGL_LOSE_CONTEXT_ON_RESET_EXT for contexts created
+  // with default GLContextAttribs (lose_context_on_reset = true), as the one
+  // in CollectGraphicsInfoGL() is, whenever the display supports
+  // EGL_EXT_create_context_robustness.
+  if (egl_display->ext->b_EGL_EXT_create_context_robustness) {
+    gpu_info->gl_reset_notification_strategy = GL_LOSE_CONTEXT_ON_RESET_KHR;
+  }
+  return true;
+}
+
 bool CollectGraphicsInfoGL(GPUInfo* gpu_info, gl::GLDisplay* display) {
   TRACE_EVENT("gpu,startup", "gpu_info_collector::CollectGraphicsInfoGL");
   DCHECK_NE(gl::GetGLImplementationParts(), gl::kGLImplementationNone);
@@ -615,6 +682,15 @@ bool CollectGraphicsInfoGL(GPUInfo* gpu_info, gl::GLDisplay* display) {
 
   gl::GLVersionInfo gl_info(gpu_info->gl_version.c_str(),
                             gpu_info->gl_renderer.c_str(), extension_set);
+  bool active_gpu_identified = false;
+#if BUILDFLAG(IS_WIN)
+  active_gpu_identified = IdentifyActiveGPUWithLuid(gpu_info);
+#endif  // BUILDFLAG(IS_WIN)
+
+  if (!active_gpu_identified) {
+    IdentifyActiveGPU(gpu_info);
+  }
+
   GPUInfo::GPUDevice& active_gpu = gpu_info->active_gpu();
   if (!gl_info.driver_vendor.empty() && active_gpu.driver_vendor.empty()) {
     active_gpu.driver_vendor = gl_info.driver_vendor;
@@ -622,18 +698,6 @@ bool CollectGraphicsInfoGL(GPUInfo* gpu_info, gl::GLDisplay* display) {
   if (!gl_info.driver_version.empty() && active_gpu.driver_version.empty()) {
     active_gpu.driver_version = gl_info.driver_version;
   }
-
-  GLint max_samples = 0;
-  if (gl_info.IsAtLeastGLES(3, 0) ||
-      gfx::HasExtension(extension_set, "GL_ANGLE_framebuffer_multisample") ||
-      gfx::HasExtension(extension_set, "GL_APPLE_framebuffer_multisample") ||
-      gfx::HasExtension(extension_set, "GL_EXT_framebuffer_multisample") ||
-      gfx::HasExtension(extension_set,
-                        "GL_EXT_multisampled_render_to_texture") ||
-      gfx::HasExtension(extension_set, "GL_NV_framebuffer_multisample")) {
-    glGetIntegerv(GL_MAX_SAMPLES, &max_samples);
-  }
-  gpu_info->max_msaa_samples = base::NumberToString(max_samples);
 
 #if BUILDFLAG(IS_ANDROID)
   gpu_info->can_support_threaded_texture_mailbox =
@@ -670,14 +734,6 @@ bool CollectGraphicsInfoGL(GPUInfo* gpu_info, gl::GLDisplay* display) {
   std::string glsl_version = GetVersionFromString(glsl_version_string);
   gpu_info->pixel_shader_version = glsl_version;
   gpu_info->vertex_shader_version = glsl_version;
-
-  bool active_gpu_identified = false;
-#if BUILDFLAG(IS_WIN)
-  active_gpu_identified = IdentifyActiveGPUWithLuid(gpu_info);
-#endif  // BUILDFLAG(IS_WIN)
-
-  if (!active_gpu_identified)
-    IdentifyActiveGPU(gpu_info);
 
   return true;
 }
@@ -741,6 +797,13 @@ void IdentifyActiveGPU(GPUInfo* gpu_info) {
       gpu_info->secondary_gpus[ii].active = true;
       return;
     }
+  }
+}
+
+void MarkPrimaryGpuActive(GPUInfo* gpu_info) {
+  gpu_info->gpu.active = true;
+  for (auto& secondary_gpu : gpu_info->secondary_gpus) {
+    secondary_gpu.active = false;
   }
 }
 
@@ -926,16 +989,38 @@ void CollectDawnInfo(const gpu::GpuPreferences& gpu_preferences,
   };
 #endif
 
-  for (wgpu::FeatureLevel featureLevel :
-       {wgpu::FeatureLevel::Compatibility, wgpu::FeatureLevel::Core}) {
-    adapter_options.featureLevel = featureLevel;
+  // Compatibility feature level is only relevant for backends that cannot
+  // support Core (such as OpenGLES, OpenGL, or D3D11). Probing Core backends
+  // (D3D12, Vulkan, Metal) for Compatibility mode is redundant because they
+  // always support Core and are discarded below. Only probe Compatibility mode
+  // for backends that may be Compatibility-only.
+  struct AdapterQuery {
+    wgpu::FeatureLevel feature_level;
+    wgpu::BackendType backend_type;
+  };
+  const AdapterQuery kQueries[] = {
+      {wgpu::FeatureLevel::Core, wgpu::BackendType::Undefined},
+#if BUILDFLAG(DAWN_ENABLE_BACKEND_OPENGLES)
+      {wgpu::FeatureLevel::Compatibility, wgpu::BackendType::OpenGLES},
+#endif
+#if BUILDFLAG(IS_WIN)
+      {wgpu::FeatureLevel::Compatibility, wgpu::BackendType::D3D11},
+#endif
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
+      {wgpu::FeatureLevel::Compatibility, wgpu::BackendType::OpenGL},
+#endif
+  };
+
+  for (const auto& query : kQueries) {
+    adapter_options.featureLevel = query.feature_level;
+    adapter_options.backendType = query.backend_type;
     std::vector<dawn::native::Adapter> adapters = instance->EnumerateAdapters(
         reinterpret_cast<const WGPURequestAdapterOptions*>(&adapter_options));
     for (dawn::native::Adapter& native_adapter : adapters) {
       wgpu::Adapter adapter(native_adapter.Get());
       wgpu::AdapterInfo info = {};
       adapter.GetInfo(&info);
-      if (featureLevel == wgpu::FeatureLevel::Compatibility &&
+      if (query.feature_level == wgpu::FeatureLevel::Compatibility &&
           adapter.HasFeature(wgpu::FeatureName::CoreFeaturesAndLimits)) {
         // If this adapter also supports Core feature level, then skip listing it as Compat
         // mode adapter.
@@ -948,7 +1033,7 @@ void CollectDawnInfo(const gpu::GpuPreferences& gpu_preferences,
         std::string gpu_str = GetDawnAdapterTypeString(info.adapterType);
         gpu_str += " " + GetDawnBackendTypeString(info.backendType);
         gpu_str += " - " + std::string(info.device);
-        if (featureLevel == wgpu::FeatureLevel::Compatibility) {
+        if (query.feature_level == wgpu::FeatureLevel::Compatibility) {
           gpu_str += " (Compatibility Mode)";
         }
         dawn_info_list->push_back(gpu_str);
@@ -974,19 +1059,16 @@ void CollectDawnInfo(const gpu::GpuPreferences& gpu_preferences,
           dawn_info_list->push_back(dawn::native::GetFeatureInfo(f)->name);
         }
 
-        // Scope the lifetime of |device| to avoid accidental use after release.
         {
-          // If Dawn is available, create the device with Dawn toggles.
+          // Query the enabled device toggles without allocating an expensive
+          // backend device.
           wgpu::DeviceDescriptor device_descriptor = {};
           device_descriptor.nextInChain = &dawn_toggles;
-          wgpu::Device device = adapter.CreateDevice(&device_descriptor);
-          // CreateDevice can return null if the device has been removed or
-          // we've run out of memory. Ensure we don't crash in these instances.
-          if (device) {
-            // Get the list of enabled toggles on the device
+          std::vector<const char*> toggle_names =
+              dawn::native::GetDeviceTogglesUsed(wgpu::Adapter(adapter.Get()),
+                                                 &device_descriptor);
+          if (!toggle_names.empty()) {
             dawn_info_list->push_back("[Enabled Toggle Names]");
-            std::vector<const char*> toggle_names =
-                dawn::native::GetTogglesUsed(device.Get());
             AddTogglesToDawnInfoList(instance.get(), toggle_names,
                                      dawn_info_list);
           }

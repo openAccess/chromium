@@ -17,7 +17,6 @@ import static org.chromium.chrome.browser.educational_tip.two_cell.see_more_bott
 import android.content.Context;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -46,9 +45,7 @@ import java.util.function.Supplier;
 
 /** Unit tests for {@link EducationalTipSetupListBottomSheetCoordinator} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowAppCompatResources.class})
+@Config(shadows = {ShadowAppCompatResources.class})
 public class EducationalTipSetupListBottomSheetCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -80,7 +77,6 @@ public class EducationalTipSetupListBottomSheetCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testShowBottomSheet() {
         EducationalTipSetupListBottomSheetCoordinator
                 educationalTipSetupListBottomSheetCoordinator =
@@ -105,7 +101,6 @@ public class EducationalTipSetupListBottomSheetCoordinatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDismissBottomSheet() {
         EducationalTipSetupListBottomSheetCoordinator
                 educationalTipSetupListBottomSheetCoordinator =

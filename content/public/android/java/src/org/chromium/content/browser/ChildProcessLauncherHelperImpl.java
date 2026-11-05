@@ -7,7 +7,6 @@ package org.chromium.content.browser;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.content.Context;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -30,6 +29,7 @@ import org.chromium.base.CpuFeatures;
 import org.chromium.base.EarlyTraceEvent;
 import org.chromium.base.JavaExceptionReporter;
 import org.chromium.base.Log;
+import org.chromium.base.SysUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.library_loader.IRelroLibInfo;
@@ -71,8 +71,6 @@ public final class ChildProcessLauncherHelperImpl {
     private static final String TAG = "ChildProcLH";
 
     // Manifest values used to specify the service names.
-    private static final String NUM_SANDBOXED_SERVICES_KEY =
-            "org.chromium.content.browser.NUM_SANDBOXED_SERVICES";
     private static final String NUM_PRIVILEGED_SERVICES_KEY =
             "org.chromium.content.browser.NUM_PRIVILEGED_SERVICES";
 
@@ -504,25 +502,11 @@ public final class ChildProcessLauncherHelperImpl {
                     @Override
                     public void run() {
                         assumeNonNull(sSandboxedChildConnectionRanking);
-                        ChildConnectionAllocator allocator =
-                                getConnectionAllocator(context, /* sandboxed= */ true);
-                        if (ChildProcessConnection.supportVariableConnections()) {
-                            sBindingManager =
-                                    new BindingManager(
-                                            context,
-                                            BindingManager.NO_MAX_SIZE,
-                                            sSandboxedChildConnectionRanking,
-                                            ChildProcessLauncherHelperImpl
-                                                    ::onBindingChangedImplicitly);
-                        } else {
-                            sBindingManager =
-                                    new BindingManager(
-                                            context,
-                                            allocator.getMaxNumberOfAllocations(),
-                                            sSandboxedChildConnectionRanking,
-                                            ChildProcessLauncherHelperImpl
-                                                    ::onBindingChangedImplicitly);
-                        }
+                        sBindingManager =
+                                new BindingManager(
+                                        context,
+                                        sSandboxedChildConnectionRanking,
+                                        ChildProcessLauncherHelperImpl::onBindingChangedImplicitly);
                         ChildProcessConnectionMetrics.getInstance()
                                 .setBindingManager(sBindingManager);
                     }
@@ -691,14 +675,9 @@ public final class ChildProcessLauncherHelperImpl {
                                 bindAsExternalService,
                                 /* fallbackToNextSlot= */ false,
                                 sandboxed);
-            } else if (ChildProcessConnection.supportVariableConnections()) {
+            } else {
                 final int maxIsolatedServices;
-
-                // Safesetid is only guaranteed to be enabled for 6.18 kernel on Android 17 and
-                // therefore the process limit can only be increased for devices with a new enough
-                // kernel that are also running Android 17.
-                if (isKernelVersionAtLeast6_18()
-                        && Build.VERSION.SDK_INT >= 37
+                if (SysUtils.hasLargeProcessCountSupport()
                         && ContentFeatureList.sSandboxedProcessServiceLimitOnAndroid.isEnabled()) {
                     maxIsolatedServices = Integer.MAX_VALUE;
                 } else {
@@ -716,32 +695,13 @@ public final class ChildProcessLauncherHelperImpl {
                                 bindAsExternalService,
                                 sandboxed,
                                 maxIsolatedServices);
-            } else {
-                connectionAllocator =
-                        ChildConnectionAllocator.create(
-                                context,
-                                LauncherThread.getHandler(),
-                                freeSlotRunnable,
-                                packageName,
-                                ChildProcessCreationParamsImpl.getSandboxedServicesName(),
-                                NUM_SANDBOXED_SERVICES_KEY,
-                                bindToCaller,
-                                bindAsExternalService,
-                                /* fallbackToNextSlot= */ false,
-                                sandboxed);
             }
             if (sSandboxedServiceFactoryForTesting != null) {
                 connectionAllocator.setConnectionFactoryForTesting(
                         sSandboxedServiceFactoryForTesting);
             }
             sSandboxedChildConnectionAllocator = connectionAllocator;
-            if (ChildProcessConnection.supportVariableConnections()) {
-                sSandboxedChildConnectionRanking = new ChildProcessRanking();
-            } else {
-                sSandboxedChildConnectionRanking =
-                        new ChildProcessRanking(
-                                sSandboxedChildConnectionAllocator.getMaxNumberOfAllocations());
-            }
+            sSandboxedChildConnectionRanking = new ChildProcessRanking();
         }
         return sSandboxedChildConnectionAllocator;
     }
@@ -1138,24 +1098,6 @@ public final class ChildProcessLauncherHelperImpl {
 
                     responseHandler.post(callback.bind(map));
                 });
-    }
-
-    private static boolean isKernelVersionAtLeast6_18() {
-        String osVersion = System.getProperty("os.version");
-        if (osVersion == null) return false;
-
-        String[] pieces = osVersion.split("\\.");
-        if (pieces.length >= 2) {
-            try {
-                int major = Integer.parseInt(pieces[0]);
-                int minor = Integer.parseInt(pieces[1]);
-                if (major > 6) return true;
-                if (major == 6 && minor >= 18) return true;
-            } catch (NumberFormatException e) {
-                // Ignore
-            }
-        }
-        return false;
     }
 
     // Testing only related methods.

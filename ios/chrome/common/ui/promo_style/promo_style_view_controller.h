@@ -99,6 +99,14 @@ enum class ActionButtonsVisibility {
 // When set to YES, the banner is hidden. Defaults to NO.
 @property(nonatomic, assign) BOOL shouldHideBanner;
 
+// When set to YES, the banner image is hidden. Defaults to NO.
+// Use this when the banner image is not needed, but the banner container is
+// still needed.
+@property(nonatomic, assign) BOOL shouldHideBannerImage;
+
+// The view containing the banner. Use this to add custom views to the banner.
+@property(nonatomic, strong) UIImageView* bannerImageView;
+
 // When set to YES, use `PromoStyleBackgroundView` as background. Only available
 // with hidden banner. This value has to be set before the view is loaded.
 // Defaults to NO.
@@ -235,6 +243,11 @@ enum class ActionButtonsVisibility {
 // Visibility and style indicator of the primary and secondary action buttons.
 @property(nonatomic, assign, readwrite)
     ActionButtonsVisibility actionButtonsVisibility;
+
+// When set to YES, hides the content below the title and the action buttons,
+// and displays a centered activity indicator while waiting for content to load.
+// Defaults to NO.
+@property(nonatomic, assign) BOOL contentLoading;
 
 // Determines the font text style to use for the title.
 - (UIFontTextStyle)titleLabelFontTextStyle;

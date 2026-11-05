@@ -75,6 +75,28 @@ class MultipleRequestPaymentsNetworkInterface
       const UpdateVirtualCardEnrollmentRequestDetails& request_details,
       base::OnceCallback<void(PaymentsAutofillClient::PaymentsRpcResult)>
           callback);
+
+  // Sends a preflight request to prepare for a card update (e.g. cardholder
+  // name fix flow). Returns a context token to be passed into the subsequent
+  // update call.
+  virtual RequestId GetDetailsForUpdateCard(
+      const GetDetailsForUpdateCardRequestDetails& request_details,
+      base::OnceCallback<void(PaymentsAutofillClient::PaymentsRpcResult,
+                              const std::string&)> callback);
+
+  // Sends a request to update card details (such as cardholder name)
+  // accompanied by CVC.
+  virtual RequestId UpdateCard(
+      const UpdateCardRequestDetails& request_details,
+      base::OnceCallback<void(PaymentsAutofillClient::PaymentsRpcResult)>
+          callback);
+
+  // Retrieves the card credentials that Google Payments associated with the
+  // opaque token in `request_details`.
+  virtual RequestId GetDataForAgent(
+      const GetDataForAgentRequestDetails& request_details,
+      base::OnceCallback<void(PaymentsAutofillClient::PaymentsRpcResult,
+                              const GetDataForAgentResponseDetails&)> callback);
 };
 
 }  // namespace autofill::payments

@@ -17,6 +17,7 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/user_education/mock_browser_user_education_interface.h"
+#include "components/feature_engagement/public/feature_constants.h"
 #include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
@@ -85,6 +86,20 @@ class SplitViewIphControllerTest : public ChromeRenderViewHostTestHarness {
         BrowserUserEducationInterface::From(browser_window_interface()));
   }
 
+  // Verifies that if any feature promos are shown, they are not for
+  // `kIPHSideBySidePinnableFeature`. During tests we may show other feature
+  // promos such as for top/bottom splits.
+  void ExpectSideBySidePinnableFeaturePromoNotShown() {
+    EXPECT_CALL(*user_education(), MaybeShowFeaturePromo(testing::_))
+        .Times(testing::AnyNumber());
+    EXPECT_CALL(*user_education(),
+                MaybeShowFeaturePromo(testing::Truly([](const auto& params) {
+                  return params.feature ==
+                         feature_engagement::kIPHSideBySidePinnableFeature;
+                })))
+        .Times(0);
+  }
+
  private:
   testing::NiceMock<MockBrowserWindowInterface> mock_browser_window_interface_;
   TestTabStripModelDelegate test_tab_strip_model_delegate_;
@@ -95,6 +110,12 @@ class SplitViewIphControllerTest : public ChromeRenderViewHostTestHarness {
   const tabs::TabModel::PreventFeatureInitializationForTesting prevent_;
 };
 
+TEST_F(SplitViewIphControllerTest, InitialStateEmpty) {
+  SplitViewIphController iph_controller{browser_window_interface()};
+  EXPECT_EQ(iph_controller.get_recent_tabs_size(), 0);
+  EXPECT_EQ(iph_controller.get_tab_switch_count(), 0);
+}
+
 TEST_F(SplitViewIphControllerTest, RemoveAllTabs) {
   SplitViewIphController iphController{browser_window_interface()};
 
@@ -104,8 +125,51 @@ TEST_F(SplitViewIphControllerTest, RemoveAllTabs) {
   EXPECT_EQ(iphController.get_recent_tabs_size(), 2);
 
   tab_strip_model()->CloseAllTabs();
-  // All tabs but 1 will be closed, which will remain in recent_tabs_.
-  EXPECT_EQ(iphController.get_recent_tabs_size(), 1);
+  // All tabs are closed and removed from recent_tabs_.
+  EXPECT_EQ(iphController.get_recent_tabs_size(), 0);
+}
+
+TEST_F(SplitViewIphControllerTest,
+       ClosingActiveTabsDoesNotDuplicateOrLeaveDanglingTab) {
+  SplitViewIphController iph_controller{browser_window_interface()};
+
+  tabs::TabInterface* tab_1 = AddTab(tab_strip_model(), GURL("test_tab_1"));
+  tabs::TabInterface* tab_2 = AddTab(tab_strip_model(), GURL("test_tab_2"));
+  tabs::TabInterface* tab_3 = AddTab(tab_strip_model(), GURL("test_tab_3"));
+
+  tab_strip_model()->SelectTabAt(1);  // Activate tab 2
+  tab_strip_model()->SelectTabAt(
+      0);  // Activate tab 1 -> recent_tabs_ is [tab 1, tab 2]
+
+  EXPECT_EQ(iph_controller.get_recent_tabs_size(), 2);
+  EXPECT_EQ(iph_controller.recent_tabs_for_testing()[0], tab_1);
+  EXPECT_EQ(iph_controller.recent_tabs_for_testing()[1], tab_2);
+
+  // Close active tab 1 (index 0) so tab 2 becomes active.
+  // Tab 2 should not be duplicated in recent_tabs_.
+  tab_strip_model()->CloseWebContentsAt(0, TabCloseTypes::CLOSE_USER_GESTURE);
+  EXPECT_EQ(iph_controller.get_recent_tabs_size(), 1);
+  EXPECT_EQ(iph_controller.recent_tabs_for_testing()[0], tab_2);
+
+  // Close active tab 2 (now index 0) so tab 3 becomes active.
+  // Tab 2 should be completely removed, leaving only tab 3.
+  tab_strip_model()->CloseWebContentsAt(0, TabCloseTypes::CLOSE_USER_GESTURE);
+  EXPECT_EQ(iph_controller.get_recent_tabs_size(), 1);
+  EXPECT_EQ(iph_controller.recent_tabs_for_testing()[0], tab_3);
+}
+
+TEST_F(SplitViewIphControllerTest, ClosingTabDoesNotIncrementTabSwitchCount) {
+  SplitViewIphController iph_controller{browser_window_interface()};
+
+  AddTab(tab_strip_model(), GURL("test_tab_1"));
+  AddTab(tab_strip_model(), GURL("test_tab_2"));
+
+  EXPECT_EQ(iph_controller.get_tab_switch_count(), 0);
+
+  // Close active tab 2 (index 1) so tab 1 becomes active.
+  // Closing a tab should not increment tab_switch_count_.
+  tab_strip_model()->CloseWebContentsAt(1, TabCloseTypes::CLOSE_USER_GESTURE);
+  EXPECT_EQ(iph_controller.get_tab_switch_count(), 0);
 }
 
 TEST_F(SplitViewIphControllerTest, AddMoreThanTwoTabs) {
@@ -159,7 +223,7 @@ TEST_F(SplitViewIphControllerTest, NoPromoWhenSwitchingTabsWhenAlreadyPinned) {
   AddTab(tab_strip_model(), GURL("test_tab_1"));
   AddTab(tab_strip_model(), GURL("test_tab_2"));
 
-  EXPECT_CALL(*user_education(), MaybeShowFeaturePromo(testing::_)).Times(0);
+  ExpectSideBySidePinnableFeaturePromoNotShown();
 
   tab_strip_model()->SelectTabAt(0);
   tab_strip_model()->SelectTabAt(1);
@@ -179,7 +243,7 @@ TEST_F(SplitViewIphControllerTest, NoPromoWhenSplitCreatedWhenAlreadyPinned) {
   AddTab(tab_strip_model(), GURL("test_url_1"));
   AddTab(tab_strip_model(), GURL("test_url_2"));
 
-  EXPECT_CALL(*user_education(), MaybeShowFeaturePromo(testing::_)).Times(0);
+  ExpectSideBySidePinnableFeaturePromoNotShown();
 
   tab_strip_model()->AddToNewSplit(
       {0}, split_tabs::SplitTabVisualData(),

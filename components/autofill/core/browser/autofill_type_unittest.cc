@@ -71,6 +71,7 @@ TEST(AutofillTypeTest, TestConstraints) {
   EXPECT_TRUE(tc({DRIVERS_LICENSE_REGION, ADDRESS_HOME_COUNTRY}));
   EXPECT_TRUE(tc({EMAIL_ADDRESS, USERNAME}));
   EXPECT_TRUE(tc({LOYALTY_MEMBERSHIP_ID, ADDRESS_HOME_STATE}));
+  EXPECT_TRUE(tc({PHONE_HOME_WHOLE_NUMBER, PASSWORD}));
 
   // Some examples of combinations that must not occur together.
   EXPECT_FALSE(tc({NAME_FULL, ADDRESS_HOME_ZIP}));
@@ -80,7 +81,6 @@ TEST(AutofillTypeTest, TestConstraints) {
   EXPECT_FALSE(tc({NAME_FULL, PASSPORT_NUMBER}));
   EXPECT_FALSE(tc({EMAIL_ADDRESS, LOYALTY_MEMBERSHIP_ID}));
   EXPECT_FALSE(tc({USERNAME, PASSWORD}));
-  EXPECT_FALSE(tc({PHONE_HOME_WHOLE_NUMBER, PASSWORD}));
   EXPECT_FALSE(tc(FieldTypeSet::all()));
 }
 
@@ -209,30 +209,6 @@ TEST(AutofillTypeTest, SurprisingMappings_UpdateDocumentationIfThisTestFails) {
   }
 }
 
-// Tests that `is_country_code()` is true only if GetTypes() contains
-// ADDRESS_HOME_COUNTRY.
-TEST(AutofillTypeTest, CountryCode) {
-  EXPECT_TRUE(AutofillType(ADDRESS_HOME_COUNTRY, true).is_country_code());
-  EXPECT_FALSE(AutofillType(ADDRESS_HOME_COUNTRY, false).is_country_code());
-
-  EXPECT_TRUE(
-      AutofillType({PASSPORT_ISSUING_COUNTRY, ADDRESS_HOME_COUNTRY}, true)
-          .is_country_code());
-  EXPECT_FALSE(
-      AutofillType({PASSPORT_ISSUING_COUNTRY, ADDRESS_HOME_COUNTRY}, false)
-          .is_country_code());
-
-  EXPECT_FALSE(
-      AutofillType(FieldTypeSet{ADDRESS_HOME_ZIP}, true).is_country_code());
-  EXPECT_FALSE(
-      AutofillType(FieldTypeSet{ADDRESS_HOME_ZIP}, false).is_country_code());
-
-  EXPECT_FALSE(AutofillType({UNKNOWN_TYPE, ADDRESS_HOME_COUNTRY}, true)
-                   .is_country_code());
-  EXPECT_FALSE(AutofillType({UNKNOWN_TYPE, ADDRESS_HOME_COUNTRY}, false)
-                   .is_country_code());
-}
-
 // Tests that GetAddressType() returns exactly the address types.
 TEST(AutofillTypeTest, GetAddressType) {
   auto get_type = [](FieldType type) {
@@ -303,10 +279,10 @@ TEST(AutofillTypeTest, GetCreditCardType) {
       CREDIT_CARD_TYPE);
 }
 
-// Tests that GetIdentityCredentialType() returns exactly the address types.
+// Tests that GetIdentityCredentialType() returns exactly the identity
+// credential types.
 TEST(AutofillTypeTest, GetIdentityCredentialType) {
-  constexpr FieldTypeSet kPositive = {NAME_FIRST, NAME_FULL, EMAIL_ADDRESS,
-                                      PHONE_HOME_WHOLE_NUMBER, PASSWORD};
+  constexpr FieldTypeSet kPositive = {PASSWORD};
   for (const FieldType field_type : FieldTypeSet::all()) {
     SCOPED_TRACE(testing::Message()
                  << "field_type=" << FieldTypeToStringView(field_type));
@@ -320,13 +296,10 @@ TEST(AutofillTypeTest, GetIdentityCredentialType) {
   }
   EXPECT_EQ(AutofillType({NAME_FULL, CREDIT_CARD_NAME_FIRST})
                 .GetIdentityCredentialType(),
-            NAME_FULL);
-  EXPECT_EQ(AutofillType({NAME_FIRST, CREDIT_CARD_NAME_FIRST})
-                .GetIdentityCredentialType(),
-            NAME_FIRST);
-  EXPECT_EQ(AutofillType({NAME_LAST, CREDIT_CARD_NAME_FIRST})
-                .GetIdentityCredentialType(),
             UNKNOWN_TYPE);
+  EXPECT_EQ(AutofillType({PASSWORD, CREDIT_CARD_NAME_FIRST})
+                .GetIdentityCredentialType(),
+            PASSWORD);
 }
 
 // Tests that GetLoyaltyCardType() returns exactly the address types.
@@ -399,7 +372,7 @@ TEST(AutofillTypeTest, GetPasswordManagerType) {
 //
 //   If no:
 //   - Do you want a new getter in AutofillType? That probably means you're
-//     creating a new Autofill integrator (something like Plus Addresses).
+//     creating a new Autofill integrator.
 //
 //     If yes:
 //     Add the getter and update AutofillType::TestConstraints().

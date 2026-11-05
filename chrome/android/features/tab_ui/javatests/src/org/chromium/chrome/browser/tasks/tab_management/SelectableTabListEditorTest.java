@@ -60,6 +60,7 @@ import org.chromium.base.GarbageCollectionTestUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
@@ -74,11 +75,9 @@ import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.app.bookmarks.BookmarkEditActivity;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
-import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
@@ -86,6 +85,7 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.Butt
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.IconPosition;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.ShowMode;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator.CreationMode;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
 import org.chromium.chrome.browser.ui.desktop_windowing.AppHeaderCoordinator;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
@@ -205,8 +205,7 @@ public class SelectableTabListEditorTest {
                                     currentTabModelSupplier,
                                     cta.getTabContentManager(),
                                     mSetRecyclerViewPosition,
-                                    TabListMode.GRID,
-                                    /* displayGroups= */ true,
+                                    TabListLayoutType.GROUPED,
                                     mSnackbarManager,
                                     /* bottomSheetController= */ null,
                                     TabProperties.TabActionState.SELECTABLE,
@@ -218,8 +217,7 @@ public class SelectableTabListEditorTest {
                                     /* itemPickerSelectionHandler= */ null,
                                     /* undoBarExplicitTrigger= */ null,
                                     /* componentId= */ null,
-                                    TabListEditorCoordinator.UNLIMITED_SELECTION,
-                                    /* isSingleContextMode= */ false);
+                                    TabListEditorCoordinator.UNLIMITED_SELECTION);
 
                     mTabListEditorController = mTabListEditorCoordinator.getController();
                     mTabListEditorLayout =
@@ -243,13 +241,6 @@ public class SelectableTabListEditorTest {
                         }
                         mTabListEditorCoordinator.destroy();
                     });
-
-            if (mActivityTestRule
-                    .getActivity()
-                    .getLayoutManager()
-                    .isLayoutVisible(LayoutType.HUB)) {
-                TabUiTestHelper.leaveTabSwitcher(mActivityTestRule.getActivity());
-            }
         }
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -1596,7 +1587,8 @@ public class SelectableTabListEditorTest {
                                     mCreationDialogManager,
                                     ShowMode.IF_ROOM,
                                     ButtonType.TEXT,
-                                    IconPosition.START));
+                                    IconPosition.START,
+                                    SupplierUtils.ofNull()));
 
                     showSelectionEditor(tabs, actions);
                 });
@@ -1631,7 +1623,7 @@ public class SelectableTabListEditorTest {
                                     ButtonType.TEXT,
                                     IconPosition.START,
                                     AppCompatResources.getDrawable(cta, R.drawable.ic_widgets),
-                                    (a, b, c, d, e, ignored, f, g, h) ->
+                                    (a, b, c, d, e, ignored, f, g, h, i) ->
                                             new TabGroupListBottomSheetCoordinator(
                                                     a,
                                                     b,
@@ -1641,7 +1633,9 @@ public class SelectableTabListEditorTest {
                                                     mBottomSheetController,
                                                     f,
                                                     g,
-                                                    h)));
+                                                    h,
+                                                    i),
+                                    SupplierUtils.ofNull()));
                     showSelectionEditor(tabs, actions);
                 });
 
@@ -1713,16 +1707,7 @@ public class SelectableTabListEditorTest {
      */
     private List<Tab> getRepresentativeTabsInCurrentTabModel() {
         return ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    List<Tab> tabs = new ArrayList<>();
-
-                    TabModel tabModel = mTabModelSelector.getCurrentModel();
-                    for (int i = 0; i < tabModel.getIndividualTabAndGroupCount(); i++) {
-                        tabs.add(tabModel.getRepresentativeTabAt(i));
-                    }
-
-                    return tabs;
-                });
+                () -> mTabModelSelector.getCurrentModel().getRepresentativeTabList());
     }
 
     private void showSelectionEditor(List<Tab> tabs, @Nullable List<TabListEditorAction> actions) {

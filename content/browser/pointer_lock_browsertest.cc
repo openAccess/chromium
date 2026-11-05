@@ -68,8 +68,7 @@ class ScopedEnableUnadjustedMouseEventsForTesting
 class MockPointerLockRenderWidgetHostView : public RenderWidgetHostViewAura {
  public:
   MockPointerLockRenderWidgetHostView(RenderWidgetHost* host)
-      : RenderWidgetHostViewAura(host),
-        host_(RenderWidgetHostImpl::From(host)) {}
+      : RenderWidgetHostViewAura(host) {}
   ~MockPointerLockRenderWidgetHostView() override {
     if (IsPointerLocked()) {
       UnlockPointer();
@@ -87,7 +86,9 @@ class MockPointerLockRenderWidgetHostView : public RenderWidgetHostViewAura {
   }
 
   void UnlockPointer() override {
-    host_->LostPointerLock();
+    if (host()) {
+      host()->LostPointerLock();
+    }
     event_handler()->mouse_locked_ = false;
     event_handler()->mouse_locked_unadjusted_movement_.reset();
   }
@@ -106,7 +107,6 @@ class MockPointerLockRenderWidgetHostView : public RenderWidgetHostViewAura {
 
   bool HasFocus() override { return has_focus_; }
 
-  raw_ptr<RenderWidgetHostImpl> host_;
   bool has_focus_ = true;
 };
 
@@ -530,6 +530,44 @@ IN_PROC_BROWSER_TEST_F(PointerLockBrowserTest,
   EXPECT_EQ(nullptr, web_contents()->pointer_lock_widget_.get());
   EXPECT_FALSE(web_contents()->HasPointerLock(
       root->current_frame_host()->GetRenderWidgetHost()));
+}
+
+// Tests that a pointer lock response sent to an inner WebContents that never
+// requested the lock (e.g. the Escape broadcast in BrowserPluginEmbedder) does
+// not clear the outer WebContents' lock, so another frame cannot take it.
+IN_PROC_BROWSER_TEST_F(PointerLockBrowserTest,
+                       PointerLockResponseToNonHolderInnerContentsIgnored) {
+  GURL main_url(embedded_test_server()->GetURL(
+      "a.com", "/cross_site_iframe_factory.html?a(b(b),c)"));
+  EXPECT_TRUE(NavigateToURL(shell(), main_url));
+
+  FrameTreeNode* root = web_contents()->GetPrimaryFrameTree().root();
+  FrameTreeNode* child = root->child_at(1);
+
+  WebContents* inner_contents = CreateAndAttachInnerContents(
+      root->child_at(0)->child_at(0)->current_frame_host());
+  inner_contents->SetDelegate(&web_contents_delegate_);
+  EXPECT_TRUE(NavigateToURLFromRenderer(
+      inner_contents, embedded_test_server()->GetURL("d.com", "/title1.html")));
+
+  // Request a pointer lock on the root frame's body.
+  EXPECT_EQ(true, PointerLockHelper::RequestPointerLockOnBody(root));
+  RenderWidgetHost* root_widget =
+      root->current_frame_host()->GetRenderWidgetHost();
+  EXPECT_EQ(root_widget, web_contents()->GetPointerLockWidget());
+
+  // The inner WebContents never requested the lock, so a response to it must
+  // be ignored.
+  EXPECT_FALSE(inner_contents->GotResponseToPointerLockRequest(
+      blink::mojom::PointerLockResult::kUserRejected));
+  EXPECT_EQ(root_widget, web_contents()->GetPointerLockWidget());
+  EXPECT_EQ(root_widget, web_contents()->mouse_lock_widget_for_testing());
+
+  // A cross-site child frame cannot take over the lock.
+  EXPECT_EQ(false, PointerLockHelper::RequestPointerLockOnBody(child));
+  EXPECT_EQ(false, PointerLockHelper::IsPointerLockOnBody(child));
+  EXPECT_EQ(true, PointerLockHelper::IsPointerLockOnBody(root));
+  EXPECT_EQ(root_widget, web_contents()->GetPointerLockWidget());
 }
 
 IN_PROC_BROWSER_TEST_F(PointerLockBrowserTest, PointerLockOopifCrashes) {

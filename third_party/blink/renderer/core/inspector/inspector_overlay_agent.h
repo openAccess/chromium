@@ -33,6 +33,8 @@
 
 #include <memory>
 
+#include "base/memory/raw_ptr.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/platform/web_input_event_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
@@ -46,7 +48,6 @@
 #include "third_party/blink/renderer/core/inspector/inspector_overlay_host.h"
 #include "third_party/blink/renderer/core/inspector/protocol/overlay.h"
 #include "third_party/blink/renderer/platform/graphics/color.h"
-#include "third_party/blink/renderer/platform/graphics/dom_node_id.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/timer.h"
@@ -123,7 +124,8 @@ class CORE_EXPORT InspectTool : public GarbageCollected<InspectTool> {
 
  protected:
   Member<InspectorOverlayAgent> overlay_;
-  OverlayFrontend* frontend_ = nullptr;
+  raw_ptr<OverlayFrontend, UnprotectedInRelease | DanglingUntriaged> frontend_ =
+      nullptr;
 };
 
 class CORE_EXPORT Hinge final : public GarbageCollected<Hinge> {
@@ -193,6 +195,8 @@ class CORE_EXPORT InspectorOverlayAgent final
   static std::unique_ptr<InspectorContainerQueryContainerHighlightConfig>
   ToContainerQueryContainerHighlightConfig(
       protocol::Overlay::ContainerQueryContainerHighlightConfig*);
+  static std::unique_ptr<InspectorImcbHighlightConfig> ToImcbHighlightConfig(
+      protocol::Overlay::ImcbHighlightConfig*);
   static std::unique_ptr<InspectorFlexItemHighlightConfig>
   ToFlexItemHighlightConfig(protocol::Overlay::FlexItemHighlightConfig*);
   static std::unique_ptr<InspectorIsolationModeHighlightConfig>
@@ -303,7 +307,8 @@ class CORE_EXPORT InspectorOverlayAgent final
   void Init(CoreProbeSink*,
             protocol::UberDispatcher*,
             InspectorSessionState*,
-            V8SessionHolder) override;
+            V8SessionHolder,
+            ClientIsTrusted) override;
   void Restore() override;
   void Dispose() override;
 
@@ -391,7 +396,7 @@ class CORE_EXPORT InspectorOverlayAgent final
   bool is_page_scrolling_ = false;
   std::unique_ptr<cc::LayerTreeDebugState> original_layer_tree_debug_state_;
 
-  DOMNodeId backend_node_id_to_inspect_;
+  DOMNodeIdType backend_node_id_to_inspect_;
   bool enabled_ = false;
   InspectorAgentState::Boolean show_ad_highlights_;
   InspectorAgentState::Boolean show_debug_borders_;

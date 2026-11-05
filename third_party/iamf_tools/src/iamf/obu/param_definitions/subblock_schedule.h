@@ -20,6 +20,7 @@
 #include "absl/functional/function_ref.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "iamf/common/read_bit_buffer.h"
 #include "iamf/common/write_bit_buffer.h"
@@ -65,7 +66,7 @@ class SubblockSchedule {
    *
    * \param duration Total duration of the schedule.
    * \param constant_subblock_duration Constant subblock duration. Must not be
-   * 0.
+   *        0.
    * \return Validated SubblockSchedule or error status.
    */
   static absl::StatusOr<SubblockSchedule> CreateWithConstantSubblockDuration(
@@ -102,7 +103,9 @@ class SubblockSchedule {
    */
   static absl::StatusOr<ScheduleAndParameterData>
   CreateFromBufferWithParameterData(
-      absl::FunctionRef<std::unique_ptr<ParameterData>()> create_parameter_data,
+      absl::FunctionRef<
+          absl::StatusOr<std::unique_ptr<ParameterData>>(ReadBitBuffer&)>
+          create_parameter_data,
       ReadBitBuffer& rb);
 
   /*!\brief Writes the SubblockSchedule to a buffer.
@@ -127,7 +130,7 @@ class SubblockSchedule {
   /*!\brief Returns the constant subblock duration of the schedule.
    *
    * \return Constant subblock duration of the schedule, or 0 if the schedule
-   *     has variable subblock durations.
+   *         has variable subblock durations.
    */
   DecodedUleb128 GetConstantSubblockDuration() const {
     return constant_subblock_duration_;
@@ -156,8 +159,23 @@ class SubblockSchedule {
    */
   absl::StatusOr<DecodedUleb128> GetSubblockDuration(int index) const;
 
-  /*!\brief Prints the subblock schedule information. */
-  void Print() const;
+  /*!\brief Supports Abseil stringification. */
+  template <typename Sink>
+  friend void AbslStringify(Sink& sink, const SubblockSchedule& schedule) {
+    absl::Format(&sink,
+                 "  duration= %v\n"
+                 "  constant_subblock_duration= %v\n"
+                 "  num_subblocks= %v",
+                 schedule.duration_, schedule.constant_subblock_duration_,
+                 schedule.num_subblocks_);
+
+    if (schedule.constant_subblock_duration_ == 0) {
+      for (size_t i = 0; i < schedule.num_subblocks_; ++i) {
+        absl::Format(&sink, "\n  subblock_durations[%v]= %v", i,
+                     schedule.subblock_durations_[i]);
+      }
+    }
+  }
 
  private:
   /*!\brief Private constructor.

@@ -19,6 +19,7 @@
 #include "android_webview/browser/aw_preconnector.h"
 #include "android_webview/browser/aw_ssl_host_state_delegate.h"
 #include "android_webview/browser/file_system_access/aw_file_system_access_permission_context.h"
+#include "android_webview/browser/http_headers/aw_header_interceptor_store.h"
 #include "android_webview/browser/http_headers/aw_origin_matched_header.h"
 #include "android_webview/browser/network_service/aw_proxy_config_monitor.h"
 #include "android_webview/browser/prefetch/aw_prefetch_manager.h"
@@ -39,6 +40,7 @@
 #include "services/cert_verifier/public/mojom/cert_verifier_service_factory.mojom-forward.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom-shared.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 class GURL;
 class PrefService;
@@ -47,7 +49,7 @@ namespace content {
 class ClientHintsControllerDelegate;
 class SSLHostStateDelegate;
 class WebContents;
-}
+}  // namespace content
 
 namespace download {
 class InProgressDownloadManager;
@@ -58,7 +60,7 @@ namespace visitedlink {
 // PartitionedVisitedLinkWriter
 class VisitedLinkWriter;
 class PartitionedVisitedLinkWriter;
-}
+}  // namespace visitedlink
 
 namespace android_webview {
 
@@ -92,8 +94,7 @@ class AwBrowserContext : public content::BrowserContext,
 
   // Convenience method to returns the AwBrowserContext corresponding to the
   // given WebContents.
-  static AwBrowserContext* FromWebContents(
-      content::WebContents* web_contents);
+  static AwBrowserContext* FromWebContents(content::WebContents* web_contents);
 
   base::FilePath GetHttpCachePath();
   base::FilePath GetPrefStorePath();
@@ -258,8 +259,21 @@ class AwBrowserContext : public content::BrowserContext,
   const std::vector<scoped_refptr<AwOriginMatchedHeader>>&
   GetOriginMatchedHeaders();
 
-  // Adds a QUIC hints for the given origins.
-  void AddQuicHints(JNIEnv* env, const std::vector<GURL>& origins);
+  // Returns the `AwHeaderInterceptorStore` associated to this BrowserContext.
+  // This reference is valid for as long as this AwBrowserContext instance is
+  // alive.
+  AwHeaderInterceptorStore& GetHeaderInterceptorStore() {
+    return header_interceptor_store_;
+  }
+  jni_zero::JniRawPtr<AwHeaderInterceptorStore>
+  GetHeaderInterceptorStoreFromJava(JNIEnv* env);
+
+  // Adds QUIC hints for the given origins, wildcard suffixes, or enables QUIC
+  // by default.
+  void AddQuicHints(JNIEnv* env,
+                    const std::vector<GURL>& origins,
+                    const std::vector<std::string>& wildcard_suffixes,
+                    bool try_quic_by_default);
 
   AwHttpCacheManager* GetHttpCacheManager() {
     return http_cache_manager_.get();
@@ -277,6 +291,29 @@ class AwBrowserContext : public content::BrowserContext,
       JNIEnv* env,
       const std::vector<std::string>& origin_patterns);
   std::vector<std::string> GetCrossOriginIsolatedAllowList(JNIEnv* env);
+
+  // Converts string sites into SchemefulSites and calls
+  // SetSitesForEmbedderShard with the results if all are valid.
+  //
+  // Note that inputs must strictly be sites (scheme + registrable domain or
+  // host, with no subdomain or port), not arbitrary origins. What is considered
+  // a site can vary over time based on eTLDs in the Public Suffix List.
+  //
+  // `sites` must be non-empty. The sites must be in a strict canonical form.
+  //
+  // CanConfigureIsolatedSites should be queried before using this method, as
+  // this method will CHECK-fail if the conditions described there are not met.
+  //
+  // Returns empty vector iff all inputs are valid (and therefore the list was
+  // applied). Otherwise, returns a vector of invalid input sites.
+  std::vector<std::string> ConfigureIsolatedSites(
+      JNIEnv* env,
+      const std::vector<std::string>& sites);
+
+  // Returns whether ConfigureIsolatedSites can still be called on this
+  // profile; i.e., a site list has not already been set and a RenderProcessHost
+  // has not already been used.
+  bool CanConfigureIsolatedSites(JNIEnv* env) const;
 
   // Returns if an origin is allowed to use APIs that require
   // CrossOriginIsolated. Checks if the origin matches any rule set by
@@ -359,6 +396,7 @@ class AwBrowserContext : public content::BrowserContext,
   bool enable_stale_dns_ = false;
 
   std::vector<scoped_refptr<AwOriginMatchedHeader>> origin_matched_headers_;
+  AwHeaderInterceptorStore header_interceptor_store_;
 
   std::unique_ptr<origin_matcher::OriginMatcher>
       cross_origin_allow_list_matcher_;

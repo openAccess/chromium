@@ -31,6 +31,7 @@
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/signing_key_pair.h"
 #include "components/policy/core/common/policy_paths.h"
 #include "components/policy/proto/device_management_backend.pb.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 
 using BPKUR = enterprise_management::BrowserPublicKeyUploadRequest;
@@ -123,7 +124,7 @@ bool LinuxKeyPersistenceDelegate::StoreKeyPair(
   base::File file = OpenSigningKeyFile(base::File::FLAG_OPEN_TRUNCATED |
                                        base::File::FLAG_WRITE);
   if (trust_level == BPKUR::KEY_TRUST_LEVEL_UNSPECIFIED) {
-    DCHECK_EQ(wrapped.size(), 0u);
+    CHECK_EQ(wrapped.size(), 0u, base::NotFatalUntil::M161);
     if (file.error_details() == base::File::FILE_OK) {
       return true;
     }
@@ -252,7 +253,7 @@ scoped_refptr<SigningKeyPair> LinuxKeyPersistenceDelegate::LoadKeyPair(
 scoped_refptr<SigningKeyPair> LinuxKeyPersistenceDelegate::CreateKeyPair() {
   // TODO (http://b/210343211): TPM support for linux.
   auto provider = std::make_unique<ECSigningKeyProvider>();
-  auto algorithm = {crypto::SignatureVerifier::ECDSA_SHA256};
+  auto algorithm = {crypto::sign::ECDSA_SHA256};
   auto signing_key = provider->GenerateSigningKeySlowly(algorithm);
 
   if (!signing_key) {

@@ -21,6 +21,7 @@
 #include "content/public/browser/file_select_listener.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
@@ -38,8 +39,8 @@ namespace ash::shimless_rma {
 namespace {
 
 ExternalAppDialog* g_instance = nullptr;
-base::RepeatingCallback<void(const ExternalAppDialog::InitParams&)>
-    g_mock_show_function;
+base::RepeatingCallback<void(const ExternalAppDialog::InitParams&)>*
+    g_mock_show_function = nullptr;
 
 constexpr double kRelativeScreenWidth = 0.9;
 constexpr double kRelativeScreenHeight = 0.8;
@@ -63,7 +64,7 @@ class WebContentsHandler
                       content::WebContents* source,
                       std::unique_ptr<content::WebContents> new_contents,
                       const GURL& target_url,
-                      WindowOpenDisposition disposition,
+                      ui::mojom::WindowOpenDisposition disposition,
                       const blink::mojom::WindowFeatures& window_features,
                       bool user_gesture) override;
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
@@ -89,7 +90,7 @@ void WebContentsHandler::AddNewContents(
     content::WebContents* source,
     std::unique_ptr<content::WebContents> new_contents,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture) {}
 
@@ -127,7 +128,7 @@ void ExternalAppDialog::Show(const InitParams& params) {
     return;
   }
   if (g_mock_show_function) {
-    g_mock_show_function.Run(params);
+    g_mock_show_function->Run(params);
     return;
   }
   new ExternalAppDialog(params);
@@ -139,16 +140,22 @@ content::WebContents* ExternalAppDialog::GetWebContents() {
 }
 
 // static
-void ExternalAppDialog::SetMockShowForTesting(
-    base::RepeatingCallback<void(const InitParams& params)> callback) {
-  g_mock_show_function = callback;
-}
-
-// static
 void ExternalAppDialog::CloseForTesting() {
   if (g_instance) {
     g_instance->widget_->Close();
   }
+}
+
+ExternalAppDialog::ScopedMockShowForTesting::ScopedMockShowForTesting(
+    Callback callback)
+    : callback_(std::move(callback)) {
+  CHECK_EQ(g_mock_show_function, nullptr);
+  g_mock_show_function = &callback_;
+}
+
+ExternalAppDialog::ScopedMockShowForTesting::~ScopedMockShowForTesting() {
+  CHECK_EQ(g_mock_show_function, &callback_);
+  g_mock_show_function = nullptr;
 }
 
 ExternalAppDialog::ExternalAppDialog(const InitParams& params)

@@ -25,8 +25,6 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.FrameLayout.LayoutParams;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -40,6 +38,7 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.android.controller.ActivityController;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
@@ -70,21 +69,23 @@ import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController.
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.ui.base.TestActivity;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 
 /** Unit tests for {@link HubManagerImpl}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class HubManagerImplUnitTest {
     private static final int TAB_ID = 8;
+    private static final int TOP_INSET = 64;
+    private static final int STATUS_INDICATOR_HEIGHT = 20;
+    private static final int RESET_TOP_INSET = 0;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private BackPressManager mBackPressManager;
     @Mock private Tab mTab;
     @Mock private Pane mTabSwitcherPane;
-    @Mock private ViewGroup mTabSwitcherPaneView;
     @Mock private MenuOrKeyboardActionHandler mTabSwitcherMenuOrKeyboardActionHandler;
     @Mock private Pane mIncognitoTabSwitcherPane;
-    @Mock private ViewGroup mIncognitoTabSwitcherPaneView;
     @Mock private MenuOrKeyboardActionHandler mIncognitoTabSwitcherMenuOrKeyboardActionHandler;
     @Mock private HubLayoutController mHubLayoutController;
     @Mock private MenuOrKeyboardActionController mMenuOrKeyboardActionController;
@@ -98,8 +99,15 @@ public class HubManagerImplUnitTest {
     @Mock private SearchActivityClient mSearchActivityClient;
     @Mock private BottomBarHostManager mBottomBarHostManager;
     @Mock private BottomSheetController mBottomSheetController;
+    @Mock private EdgeToEdgeController mEdgeToEdgeController;
 
     @Captor private ArgumentCaptor<NonNullObservableSupplier<Integer>> mMarginSupplierCaptor;
+    @Captor private ArgumentCaptor<EdgeToEdgePadAdjuster> mEdgeToEdgePadAdjusterCaptor;
+
+    private final ViewGroup mTabSwitcherPaneView =
+            new FrameLayout(ContextUtils.getApplicationContext());
+    private final ViewGroup mIncognitoTabSwitcherPaneView =
+            new FrameLayout(ContextUtils.getApplicationContext());
 
     private final MonotonicObservableSupplier<Integer> mPreviousLayoutTypeSupplier =
             ObservableSuppliers.alwaysNull();
@@ -110,8 +118,8 @@ public class HubManagerImplUnitTest {
             ObservableSuppliers.createMonotonic();
     private final OneshotSupplierImpl<ProfileProvider> mProfileProviderSupplier =
             new OneshotSupplierImpl<>();
-    private final MonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeSupplier =
-            ObservableSuppliers.alwaysNull();
+    private final SettableMonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeSupplier =
+            ObservableSuppliers.createMonotonic();
 
     private ActivityController<TestActivity> mActivityController;
     private Activity mActivity;
@@ -152,6 +160,8 @@ public class HubManagerImplUnitTest {
                 .thenReturn(mPreviousLayoutTypeSupplier);
         when(mHubLayoutController.getIsAnimatingSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
+        when(mHubLayoutController.getIsHidingSupplier())
+                .thenReturn(ObservableSuppliers.alwaysFalse());
 
         when(mTab.getId()).thenReturn(TAB_ID);
         when(mProfileProvider.getOriginalProfile()).thenReturn(mProfile);
@@ -168,7 +178,6 @@ public class HubManagerImplUnitTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testSnackbarBottomMargin_WithBottomToolbar() {
         ChromeFeatureList.sAndroidBottomBarShowBottomBarOnGts.setForTesting(true);
@@ -214,7 +223,6 @@ public class HubManagerImplUnitTest {
     }
 
     @Test
-    @SmallTest
     @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testSnackbarBottomMargin_WithoutBottomToolbar() {
         ChromeFeatureList.sAndroidBottomBarShowBottomBarOnGts.setForTesting(false);
@@ -256,7 +264,6 @@ public class HubManagerImplUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHubControllerWithBottomBarHostManager() {
         ChromeFeatureList.sAndroidBottomBarShowBottomBarOnGts.setForTesting(true);
 
@@ -298,7 +305,6 @@ public class HubManagerImplUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCreatesPaneManager() {
         PaneListBuilder builder =
                 new PaneListBuilder(new DefaultPaneOrderController())
@@ -334,7 +340,6 @@ public class HubManagerImplUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHubController() {
         PaneListBuilder builder =
                 new PaneListBuilder(new DefaultPaneOrderController())
@@ -406,7 +411,6 @@ public class HubManagerImplUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBackNavigation() {
         PaneListBuilder builder = new PaneListBuilder(new DefaultPaneOrderController());
         HubManagerImpl hubManager =
@@ -442,7 +446,6 @@ public class HubManagerImplUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testConsumeTouchEvents() {
         PaneListBuilder builder =
                 new PaneListBuilder(new DefaultPaneOrderController())
@@ -489,7 +492,6 @@ public class HubManagerImplUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testStatusIndicatorHeight() {
         PaneListBuilder builder =
                 new PaneListBuilder(new DefaultPaneOrderController())
@@ -543,7 +545,6 @@ public class HubManagerImplUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testAppHeaderHeight() {
         PaneListBuilder builder =
                 new PaneListBuilder(new DefaultPaneOrderController())
@@ -593,7 +594,6 @@ public class HubManagerImplUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSelectTabAndHideHub() {
         PaneListBuilder builder = new PaneListBuilder(new DefaultPaneOrderController());
         HubManagerImpl hubManager =
@@ -623,5 +623,57 @@ public class HubManagerImplUnitTest {
 
         hubManager.selectTabAndHideHub(TAB_ID);
         verify(mHubLayoutController).selectTabAndHideHubLayout(TAB_ID);
+    }
+
+    @Test
+    public void testEdgeToEdgeTopInset() {
+        mEdgeToEdgeSupplier.set(mEdgeToEdgeController);
+        PaneListBuilder builder =
+                new PaneListBuilder(new DefaultPaneOrderController())
+                        .registerPane(
+                                PaneId.TAB_SWITCHER,
+                                LazyOneshotSupplier.fromValue(mTabSwitcherPane));
+        HubManagerImpl hubManager =
+                new HubManagerImpl(
+                        mActivity,
+                        mProfileProviderSupplier,
+                        builder,
+                        mBackPressManager,
+                        mMenuOrKeyboardActionController,
+                        mSnackbarManager,
+                        mBottomSheetController,
+                        mBottomBarHostManager,
+                        mTabSupplier,
+                        mMenuButtonCoordinator,
+                        mHubShowPaneHelper,
+                        mEdgeToEdgeSupplier,
+                        mSearchActivityClient,
+                        /* xrSpaceModeObservableSupplier= */ null,
+                        /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        hubManager.getPaneManager().focusPane(PaneId.TAB_SWITCHER);
+
+        verify(mEdgeToEdgeController).registerAdjuster(mEdgeToEdgePadAdjusterCaptor.capture());
+
+        HubController hubController = hubManager.getHubController();
+        hubController.setHubLayoutController(mHubLayoutController);
+        hubController.onHubLayoutShow();
+
+        FrameLayout containerView = hubController.getContainerView();
+
+        mEdgeToEdgePadAdjusterCaptor.getValue().overrideTopInset(TOP_INSET);
+        assertEquals(TOP_INSET, ((LayoutParams) containerView.getLayoutParams()).topMargin);
+
+        hubManager.setStatusIndicatorHeight(STATUS_INDICATOR_HEIGHT);
+        assertEquals(
+                TOP_INSET + STATUS_INDICATOR_HEIGHT,
+                ((LayoutParams) containerView.getLayoutParams()).topMargin);
+
+        mEdgeToEdgePadAdjusterCaptor.getValue().overrideTopInset(RESET_TOP_INSET);
+        assertEquals(
+                STATUS_INDICATOR_HEIGHT,
+                ((LayoutParams) containerView.getLayoutParams()).topMargin);
+
+        hubManager.destroy();
+        verify(mEdgeToEdgeController).unregisterAdjuster(mEdgeToEdgePadAdjusterCaptor.getValue());
     }
 }

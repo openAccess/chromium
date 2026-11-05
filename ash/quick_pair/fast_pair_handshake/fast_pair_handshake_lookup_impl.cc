@@ -5,10 +5,11 @@
 #include "ash/quick_pair/fast_pair_handshake/fast_pair_handshake_lookup_impl.h"
 
 #include <memory>
+#include <string_view>
 
 #include "ash/quick_pair/fast_pair_handshake/fast_pair_handshake_impl.h"
 #include "base/functional/callback.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 
 namespace ash {
@@ -16,11 +17,12 @@ namespace quick_pair {
 
 // static
 FastPairHandshakeLookupImpl* FastPairHandshakeLookupImpl::GetImplInstance() {
-  return base::Singleton<FastPairHandshakeLookupImpl>::get();
+  static base::NoDestructor<FastPairHandshakeLookupImpl> instance;
+  return instance.get();
 }
 
-FastPairHandshakeLookupImpl::FastPairHandshakeLookupImpl() {}
-FastPairHandshakeLookupImpl::~FastPairHandshakeLookupImpl() {}
+FastPairHandshakeLookupImpl::FastPairHandshakeLookupImpl() = default;
+FastPairHandshakeLookupImpl::~FastPairHandshakeLookupImpl() = default;
 
 FastPairHandshake* FastPairHandshakeLookupImpl::Get(
     scoped_refptr<Device> device) {
@@ -28,8 +30,7 @@ FastPairHandshake* FastPairHandshakeLookupImpl::Get(
   return it != fast_pair_handshakes_.end() ? it->second.get() : nullptr;
 }
 
-FastPairHandshake* FastPairHandshakeLookupImpl::Get(
-    const std::string& address) {
+FastPairHandshake* FastPairHandshakeLookupImpl::Get(std::string_view address) {
   for (const auto& pair : fast_pair_handshakes_) {
     if (pair.first->classic_address() == address ||
         pair.first->ble_address() == address) {
@@ -44,7 +45,7 @@ bool FastPairHandshakeLookupImpl::Erase(scoped_refptr<Device> device) {
   return fast_pair_handshakes_.erase(device) == 1;
 }
 
-bool FastPairHandshakeLookupImpl::Erase(const std::string& address) {
+bool FastPairHandshakeLookupImpl::Erase(std::string_view address) {
   for (const auto& pair : fast_pair_handshakes_) {
     if (pair.first->classic_address() == address ||
         pair.first->ble_address() == address) {

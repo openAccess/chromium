@@ -13,6 +13,7 @@
 #include "base/rand_util.h"
 #include "base/strings/string_util.h"
 #include "third_party/blink/public/web/web_navigation_policy.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace web_test_string_util {
@@ -72,19 +73,20 @@ const char* WebNavigationPolicyToString(
   }
 }
 
-const char* WindowOpenDispositionToString(WindowOpenDisposition disposition) {
+const char* WindowOpenDispositionToString(
+    ui::mojom::WindowOpenDisposition disposition) {
   switch (disposition) {
-    case WindowOpenDisposition::SAVE_TO_DISK:
+    case ui::mojom::WindowOpenDisposition::kSaveToDisk:
       return kPolicyDownload;
-    case WindowOpenDisposition::CURRENT_TAB:
+    case ui::mojom::WindowOpenDisposition::kCurrentTab:
       return kPolicyCurrentTab;
-    case WindowOpenDisposition::NEW_BACKGROUND_TAB:
+    case ui::mojom::WindowOpenDisposition::kNewBackgroundTab:
       return kPolicyNewBackgroundTab;
-    case WindowOpenDisposition::NEW_FOREGROUND_TAB:
+    case ui::mojom::WindowOpenDisposition::kNewForegroundTab:
       return kPolicyNewForegroundTab;
-    case WindowOpenDisposition::NEW_WINDOW:
+    case ui::mojom::WindowOpenDisposition::kNewWindow:
       return kPolicyNewWindow;
-    case WindowOpenDisposition::NEW_POPUP:
+    case ui::mojom::WindowOpenDisposition::kNewPopup:
       return kPolicyNewPopup;
     default:
       return kIllegalString;

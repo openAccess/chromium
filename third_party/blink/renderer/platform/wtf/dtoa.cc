@@ -37,7 +37,7 @@
 
 #include "base/containers/heap_array.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/third_party/double_conversion/double-conversion/double-conversion.h"
+#include "base/third_party/double_conversion/src/double-conversion/double-conversion.h"
 #include "third_party/blink/renderer/platform/wtf/text/ascii_ctype.h"
 
 namespace blink {
@@ -124,9 +124,8 @@ FormatStringTruncatingTrailingZerosIfNeeded(
 
 base::span<const LChar> DoubleToStringConverter::ToStringWithFixedPrecision(
     double d,
-    unsigned significant_figures) {
-  // Mimic String::format("%.[precision]g", ...), but use dtoas rounding
-  // facilities.
+    wtf_size_t significant_figures) {
+  // Mimic printf("%.[precision]g", ...), but use dtoas rounding facilities.
   // "g": Signed value printed in f or e format, whichever is more compact for
   // the given value and precision.
   // The e format is used only when the exponent of the value is less than -4 or
@@ -148,9 +147,8 @@ base::span<const LChar> DoubleToStringConverter::ToStringWithFixedPrecision(
 
 base::span<const LChar> DoubleToStringConverter::ToStringWithFixedWidth(
     double d,
-    unsigned decimal_places) {
-  // Mimic String::format("%.[precision]f", ...), but use dtoas rounding
-  // facilities.
+    wtf_size_t decimal_places) {
+  // Mimic printf("%.[precision]f", ...), but use dtoas rounding facilities.
   // "f": Signed value having the form [ - ]dddd.dddd, where dddd is one or more
   // decimal digits.  The number of digits before the decimal point depends on
   // the magnitude of the number, and the number of digits after the decimal

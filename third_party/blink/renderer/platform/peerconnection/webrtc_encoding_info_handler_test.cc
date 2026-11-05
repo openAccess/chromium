@@ -5,18 +5,28 @@
 #include "third_party/blink/renderer/platform/peerconnection/webrtc_encoding_info_handler.h"
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/threading/thread.h"
+#include "media/video/gpu_video_accelerator_factories.h"
 #include "media/video/mock_gpu_video_accelerator_factories.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/web_string.h"
+#include "third_party/blink/renderer/platform/peerconnection/audio_codec_factory.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/webrtc/api/audio_codecs/audio_encoder_factory.h"
 #include "third_party/webrtc/api/audio_codecs/audio_format.h"
+#include "third_party/webrtc/api/environment/environment.h"
+#include "third_party/webrtc/api/scoped_refptr.h"
+#include "third_party/webrtc/api/video/resolution.h"
 #include "third_party/webrtc/api/video_codecs/sdp_video_format.h"
 #include "third_party/webrtc/api/video_codecs/video_encoder.h"
 #include "third_party/webrtc/api/video_codecs/video_encoder_factory.h"
@@ -273,6 +283,27 @@ TEST_F(WebrtcEncodingInfoHandlerTests, GpuEncoderSupportDeferred) {
   EXPECT_TRUE(encoding_info_callback.IsSuccess());
   EXPECT_TRUE(encoding_info_callback.IsSupported());
   EXPECT_TRUE(encoding_info_callback.IsPowerEfficient());
+}
+
+TEST_F(WebrtcEncodingInfoHandlerTests, SeparateWorkerAndMainThreadInstances) {
+  base::Thread worker_thread("WorkerThread");
+  ASSERT_TRUE(worker_thread.Start());
+
+  WebrtcEncodingInfoHandler* worker_handler = nullptr;
+  worker_thread.task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](WebrtcEncodingInfoHandler** handler) {
+                       *handler = WebrtcEncodingInfoHandler::Instance();
+                     },
+                     &worker_handler));
+  worker_thread.FlushForTesting();
+
+  WebrtcEncodingInfoHandler* main_handler =
+      WebrtcEncodingInfoHandler::Instance();
+
+  EXPECT_NE(worker_handler, nullptr);
+  EXPECT_NE(main_handler, nullptr);
+  EXPECT_NE(worker_handler, main_handler);
 }
 
 }  // namespace blink

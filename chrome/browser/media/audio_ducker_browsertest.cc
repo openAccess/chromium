@@ -6,7 +6,7 @@
 
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -17,6 +17,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/media_session/public/cpp/test/audio_focus_test_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace {
 
@@ -118,7 +119,8 @@ IN_PROC_BROWSER_TEST_F(AudioDuckerBrowserTest,
 
   // Open a second test page and also play a video.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), test_page_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), test_page_url,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   content::WebContents* web_contents2 =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -186,7 +188,7 @@ IN_PROC_BROWSER_TEST_F(AudioDuckerBrowserTest,
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), test_page_no_player_url,
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   content::WebContents* web_contents2 =
       browser()->tab_strip_model()->GetActiveWebContents();

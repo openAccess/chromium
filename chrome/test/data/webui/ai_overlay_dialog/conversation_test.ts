@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 import type {PageCallbackRouter} from 'chrome-untrusted://ai-overlay-dialog/ai_overlay_dialog.mojom-webui.js';
-import {Conversation, State} from 'chrome-untrusted://ai-overlay-dialog/internal/conversation.js';
+import {Conversation, DEFAULT_API_CONFIG, DEFAULT_PERSONA, DEFAULT_SYSTEM_INSTRUCTION, State} from 'chrome-untrusted://ai-overlay-dialog/internal/conversation.js';
 type ConversationMessage =|{
   type: 'inputTranscription',
   text: string,
@@ -12,7 +12,8 @@ type ConversationMessage =|{
   text: string,
 }|{type: 'clearTranscription'};
 import type {AiOverlayToolsRemote} from 'chrome-untrusted://ai-overlay-dialog/tools.mojom-webui.js';
-import {assertDeepEquals, assertEquals} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {loadTimeData} from 'chrome-untrusted://resources/js/load_time_data.js';
+import {assertDeepEquals, assertEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {TestBrowserProxy} from 'chrome-untrusted://webui-test/test_browser_proxy.js';
 
 class MockToolsRemote extends TestBrowserProxy {
@@ -32,7 +33,8 @@ class MockToolsRemote extends TestBrowserProxy {
       'pauseVideo',
       'seekToTimestamp',
       'translatePage',
-      'invokeGlic',
+      'openGeminiPanel',
+      'closeGeminiPanel',
     ]);
   }
   openUrl() {
@@ -77,8 +79,11 @@ class MockToolsRemote extends TestBrowserProxy {
   translatePage() {
     return Promise.resolve();
   }
-  invokeGlic() {
+  openGeminiPanel() {
     return Promise.resolve('');
+  }
+  closeGeminiPanel() {
+    return Promise.resolve();
   }
 }
 
@@ -123,9 +128,24 @@ suite('ConversationTest', () => {
   } as unknown as PageCallbackRouter;
 
   setup(() => {
+    loadTimeData.resetForTesting({});
     sentMessages = [];
     stateChanges = [];
     audioResponses = [];
+  });
+
+  teardown(() => {
+    loadTimeData.resetForTesting();
+  });
+
+  test('BuiltInDefaultsExported', () => {
+    assertTrue(DEFAULT_API_CONFIG.endpointUrl.startsWith('wss://'));
+    assertTrue(DEFAULT_API_CONFIG.model.length > 0);
+    assertTrue(DEFAULT_API_CONFIG.apiKey.length > 0);
+    assertEquals('generic', DEFAULT_PERSONA.id);
+    assertEquals('Chrome', DEFAULT_PERSONA.name);
+    assertEquals('Achernar', DEFAULT_PERSONA.voice);
+    assertTrue(DEFAULT_SYSTEM_INSTRUCTION.length > 0);
   });
 
   test('InputTranscriptionAssignment', () => {

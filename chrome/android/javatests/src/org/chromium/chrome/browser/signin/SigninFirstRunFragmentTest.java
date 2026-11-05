@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.signin;
 
 import static androidx.test.espresso.Espresso.onView;
+import static androidx.test.espresso.Espresso.pressBack;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.action.ViewActions.scrollTo;
 import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
@@ -21,6 +22,7 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.notNull;
 import static org.mockito.Mockito.atLeastOnce;
@@ -73,20 +75,23 @@ import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.transit.ViewElement;
 import org.chromium.base.test.transit.ViewFinder;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Features;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.ScalableTimeout;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.firstrun.FirstRunPageDelegate;
+import org.chromium.chrome.browser.firstrun.FirstRunStatus;
 import org.chromium.chrome.browser.firstrun.FirstRunUtils;
 import org.chromium.chrome.browser.firstrun.FirstRunUtilsJni;
 import org.chromium.chrome.browser.firstrun.MobileFreProgress;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.prefs.LocalStatePrefs;
@@ -96,11 +101,10 @@ import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.signin.services.BadgeConfig;
 import org.chromium.chrome.browser.signin.services.DisplayableProfileData;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
-import org.chromium.chrome.browser.signin.services.SigninChecker;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.signin.services.SigninManager.SignInCallback;
-import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninMediator;
-import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninMediator.LoadPoint;
+import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninCoordinator;
+import org.chromium.chrome.browser.ui.signin.fullscreen_signin.FullscreenSigninLoadPoint;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
@@ -116,7 +120,6 @@ import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.identitymanager.IdentityManagerImpl;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
-import org.chromium.components.signin.test.util.FakeAccountManagerFacade;
 import org.chromium.components.signin.test.util.SigninMatchers;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.components.user_prefs.UserPrefs;
@@ -131,7 +134,7 @@ import org.chromium.ui.test.util.ViewUtils;
 @RunWith(ParameterizedRunner.class)
 @ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DoNotBatch(reason = "Relies on global state")
+@Batch(Batch.PER_CLASS)
 public class SigninFirstRunFragmentTest {
     /** This class is used to test {@link SigninFirstRunFragment}. */
     public static class CustomSigninFirstRunFragment extends SigninFirstRunFragment {
@@ -149,9 +152,10 @@ public class SigninFirstRunFragmentTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Rule public final SigninTestRule mSigninTestRule = new SigninTestRule();
+    @Rule(order = 0)
+    public final SigninTestRule mSigninTestRule = SigninTestRule.createWithCleanups();
 
-    @Rule
+    @Rule(order = 1)
     public final BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
@@ -161,7 +165,6 @@ public class SigninFirstRunFragmentTest {
     @Mock private PolicyLoadListener mPolicyLoadListenerMock;
     @Mock private OneshotSupplierImpl<Boolean> mChildAccountStatusListenerMock;
     @Mock private SigninManager mSigninManagerMock;
-    @Mock private SigninChecker mSigninCheckerMock;
     @Captor private ArgumentCaptor<Callback<Boolean>> mCallbackCaptor;
     @Mock private PrivacyPreferencesManagerImpl mPrivacyPreferencesManagerMock;
     @Mock private ProfileProvider mProfileProvider;
@@ -183,6 +186,8 @@ public class SigninFirstRunFragmentTest {
 
     @Before
     public void setUp() {
+        FirstRunStatus.setFirstRunTriggeredForTesting(true);
+
         // SigninTestRule requires access to Profile which in turn requires browser process to be
         // initialized. Calling this method in #setUpBeforeActivityLaunched() method causes a
         // crash.
@@ -195,7 +200,6 @@ public class SigninFirstRunFragmentTest {
                 new OwnedState(/* isDeviceOwned= */ false, /* isProfileOwned= */ false));
         FirstRunUtils.setDisableDelayOnExitFreForTest(true);
         FirstRunUtilsJni.setInstanceForTesting(mFirstRunUtils);
-        SigninCheckerProvider.setForTests(mSigninCheckerMock);
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -233,7 +237,7 @@ public class SigninFirstRunFragmentTest {
         mFragment.setPageDelegate(mFirstRunPageDelegateMock);
 
         // Disable animations by default.
-        FullscreenSigninMediator.disableAnimationsForTesting();
+        FullscreenSigninCoordinator.disableAnimationsForTesting();
     }
 
     @After
@@ -243,6 +247,7 @@ public class SigninFirstRunFragmentTest {
                     PrefService prefService =
                             UserPrefs.get(ProfileManager.getLastUsedRegularProfile());
                     prefService.clearPref(Pref.SIGNIN_ALLOWED);
+                    LocalStatePrefs.get().clearPref(Pref.FORCE_BROWSER_SIGNIN);
                 });
         ActivityTestUtils.clearActivityOrientation(mActivityTestRule.getActivity());
     }
@@ -451,6 +456,93 @@ public class SigninFirstRunFragmentTest {
 
     @Test
     @MediumTest
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testManagementNoticeAccepted() {
+        setUpManagedAccountSignin();
+        launchActivityWithFragment();
+        checkFragmentWithSelectedAccount(TestAccounts.MANAGED_ACCOUNT);
+
+        clickContinueButton(getContinueAsButtonText(TestAccounts.MANAGED_ACCOUNT, true));
+        checkManagementNoticeIsDisplayed();
+
+        onView(withId(R.id.disclaimer_accept_button)).perform(click());
+
+        onView(withId(R.id.disclaimer_title)).check(doesNotExist());
+        verify(mSigninManagerMock).setUserAcceptedAccountManagement(true);
+        verify(mSigninManagerMock)
+                .signin(eq(TestAccounts.MANAGED_ACCOUNT), anyInt(), any(SignInCallback.class));
+        verify(mFirstRunPageDelegateMock).acceptTermsOfService(true);
+        waitForEvent(mFirstRunPageDelegateMock).advanceToNextPage();
+    }
+
+    @Test
+    @MediumTest
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testManagementNoticeDeclined() {
+        setUpManagedAccountSignin();
+        launchActivityWithFragment();
+        checkFragmentWithSelectedAccount(TestAccounts.MANAGED_ACCOUNT);
+
+        clickContinueButton(getContinueAsButtonText(TestAccounts.MANAGED_ACCOUNT, true));
+        checkManagementNoticeIsDisplayed();
+
+        onView(withId(R.id.disclaimer_cancel_button)).perform(click());
+
+        // Declining the notice should abort the sign-in and bring back the main FRE view.
+        onView(withId(R.id.disclaimer_title)).check(doesNotExist());
+        verify(mSigninManagerMock, never()).setUserAcceptedAccountManagement(true);
+        verify(mSigninManagerMock, never()).signin(any(), anyInt(), any());
+        verify(mFirstRunPageDelegateMock, never()).advanceToNextPage();
+        checkFragmentWithSelectedAccount(TestAccounts.MANAGED_ACCOUNT);
+    }
+
+    @Test
+    @MediumTest
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testManagementNoticeDismissedWithBackPress() {
+        setUpManagedAccountSignin();
+        launchActivityWithFragment();
+        checkFragmentWithSelectedAccount(TestAccounts.MANAGED_ACCOUNT);
+
+        clickContinueButton(getContinueAsButtonText(TestAccounts.MANAGED_ACCOUNT, true));
+        checkManagementNoticeIsDisplayed();
+
+        pressBack();
+
+        // Back press should be treated as declining the notice: the sign-in is aborted and the
+        // main FRE view is brought back.
+        onView(withId(R.id.disclaimer_title)).check(doesNotExist());
+        verify(mSigninManagerMock, never()).setUserAcceptedAccountManagement(true);
+        verify(mSigninManagerMock, never()).signin(any(), anyInt(), any());
+        verify(mFirstRunPageDelegateMock, never()).advanceToNextPage();
+        checkFragmentWithSelectedAccount(TestAccounts.MANAGED_ACCOUNT);
+    }
+
+    @Test
+    @MediumTest
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    @EnableFeatures(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE)
+    public void testManagementNoticeLearnMoreLinkClicked() {
+        setUpManagedAccountSignin();
+        launchActivityWithFragment();
+        checkFragmentWithSelectedAccount(TestAccounts.MANAGED_ACCOUNT);
+
+        clickContinueButton(getContinueAsButtonText(TestAccounts.MANAGED_ACCOUNT, true));
+        checkManagementNoticeIsDisplayed();
+
+        onView(withId(R.id.disclaimer_footer)).perform(ViewUtils.clickOnClickableSpan(0));
+
+        // The exact URL is verified in EnterpriseSignalsDisclaimerMediatorUnitTest.
+        verify(mFirstRunPageDelegateMock).showInfoPage(anyString());
+        checkManagementNoticeIsDisplayed();
+        verify(mSigninManagerMock, never()).signin(any(), anyInt(), any());
+    }
+
+    @Test
+    @MediumTest
     public void testFragmentWhenAddingAccountDynamicallyAndSigninIsDisabledByPolicy() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -512,7 +604,7 @@ public class SigninFirstRunFragmentTest {
         checkFragmentWithSelectedAccount(
                 TestAccounts.ACCOUNT1,
                 /* shouldShowSubtitle= */ false,
-                LoadPoint.NATIVE_INITIALIZATION);
+                FullscreenSigninLoadPoint.NATIVE_INITIALIZATION);
         onView(withId(R.id.fre_browser_managed_by)).check(matches(isDisplayed()));
     }
 
@@ -858,11 +950,7 @@ public class SigninFirstRunFragmentTest {
     @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     public void testDismissButtonWhenUserIsSignedIn() {
         mSigninTestRule.addAccount(TestAccounts.ACCOUNT2);
-        final CoreAccountInfo primaryAccount = mSigninTestRule.addTestAccountThenSignin();
-        Assert.assertNotEquals(
-                "The primary account should be a different account!",
-                TestAccounts.ACCOUNT2.getEmail(),
-                primaryAccount.getEmail());
+        mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
         launchActivityWithFragment();
 
         onScrollToView(withId(R.id.signin_fre_dismiss_button)).perform(click());
@@ -1349,7 +1437,8 @@ public class SigninFirstRunFragmentTest {
                     }
                 });
 
-        checkFragmentWithSelectedAccount(TestAccounts.ACCOUNT1, LoadPoint.POLICY_LOAD);
+        checkFragmentWithSelectedAccount(
+                TestAccounts.ACCOUNT1, FullscreenSigninLoadPoint.POLICY_LOAD);
     }
 
     @Test
@@ -1366,7 +1455,8 @@ public class SigninFirstRunFragmentTest {
 
         ThreadUtils.runOnUiThreadBlocking(() -> mNativeInitializationPromise.fulfill(null));
 
-        checkFragmentWithSelectedAccount(TestAccounts.ACCOUNT1, LoadPoint.NATIVE_INITIALIZATION);
+        checkFragmentWithSelectedAccount(
+                TestAccounts.ACCOUNT1, FullscreenSigninLoadPoint.NATIVE_INITIALIZATION);
         verify(mFirstRunPageDelegateMock).recordNativeInitializedHistogram();
     }
 
@@ -1390,20 +1480,24 @@ public class SigninFirstRunFragmentTest {
                     }
                 });
 
-        checkFragmentWithSelectedAccount(TestAccounts.ACCOUNT1, LoadPoint.CHILD_STATUS_LOAD);
+        checkFragmentWithSelectedAccount(
+                TestAccounts.ACCOUNT1, FullscreenSigninLoadPoint.CHILD_STATUS_LOAD);
     }
 
     @Test
     @MediumTest
     @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    @SigninTestRule.BlockGetAccounts
+    @RequiresRestart(
+            "Tests initial account loading state before IdentityManager loads refresh tokens")
     public void testFragmentWhenAccountsAreLoadedAfterChildStatusAndNativeAndPolicy() {
-        FakeAccountManagerFacade.UpdateBlocker blocker = mSigninTestRule.blockGetAccountsUpdate();
         launchActivityWithFragment();
         checkFragmentWhenLoading();
 
         mSigninTestRule.addAccount(TestAccounts.ACCOUNT1);
-        blocker.close();
-        checkFragmentWithSelectedAccount(TestAccounts.ACCOUNT1, LoadPoint.ACCOUNT_FETCHING);
+        mSigninTestRule.unblockGetAccounts();
+        checkFragmentWithSelectedAccount(
+                TestAccounts.ACCOUNT1, FullscreenSigninLoadPoint.ACCOUNT_FETCHING);
     }
 
     @Test
@@ -1411,7 +1505,7 @@ public class SigninFirstRunFragmentTest {
     public void testNativePolicyAndChildStatusLoadMetricRecordedOnlyOnce() {
         launchActivityWithFragment();
         verify(mFirstRunPageDelegateMock, timeout(CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL))
-                .recordLoadCompletedHistograms(LoadPoint.NATIVE_INITIALIZATION);
+                .recordLoadCompletedHistograms(FullscreenSigninLoadPoint.NATIVE_INITIALIZATION);
         verify(mFirstRunPageDelegateMock).recordNativeInitializedHistogram();
 
         // Changing the activity orientation will create FullscreenSigninCoordinator again and call
@@ -1422,7 +1516,7 @@ public class SigninFirstRunFragmentTest {
         // These histograms should not be recorded again. The call count should be the same as
         // before as mockito does not reset invocation counts between consecutive verify calls.
         verify(mFirstRunPageDelegateMock)
-                .recordLoadCompletedHistograms(LoadPoint.NATIVE_INITIALIZATION);
+                .recordLoadCompletedHistograms(FullscreenSigninLoadPoint.NATIVE_INITIALIZATION);
         verify(mFirstRunPageDelegateMock).recordNativeInitializedHistogram();
     }
 
@@ -1486,6 +1580,72 @@ public class SigninFirstRunFragmentTest {
 
     @Test
     @MediumTest
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    @EnableFeatures(
+            ChromeFeatureList.FRE_STRING_CHANGES
+                    + ":"
+                    + ChromeFeatureList.FRE_STRING_CHANGES_PERSONALIZED
+                    + "/true")
+    public void testShowsPersonalizedTitleAndSubtitleWhenEnabled() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mNativeInitializationPromise = new Promise<>();
+                });
+        launchActivityWithFragment();
+        ThreadUtils.runOnUiThreadBlocking(() -> mNativeInitializationPromise.fulfill(null));
+
+        onView(allOf(withId(R.id.title), withText(R.string.signin_fre_personalized_title)))
+                .check(matches(isDisplayed()));
+        onView(allOf(withId(R.id.subtitle), withText(R.string.signin_fre_personalized_subtitle)))
+                .check(matches(isDisplayed()));
+    }
+
+    @Test
+    @MediumTest
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    @EnableFeatures(
+            ChromeFeatureList.FRE_STRING_CHANGES
+                    + ":"
+                    + ChromeFeatureList.FRE_STRING_CHANGES_SAFETY
+                    + "/true")
+    public void testShowsSafetyTitleAndSubtitleWhenEnabled() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mNativeInitializationPromise = new Promise<>();
+                });
+        launchActivityWithFragment();
+        ThreadUtils.runOnUiThreadBlocking(() -> mNativeInitializationPromise.fulfill(null));
+
+        onView(allOf(withId(R.id.title), withText(R.string.signin_fre_safety_title)))
+                .check(matches(isDisplayed()));
+        onView(allOf(withId(R.id.subtitle), withText(R.string.signin_fre_safety_subtitle)))
+                .check(matches(isDisplayed()));
+    }
+
+    @Test
+    @MediumTest
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
+    @EnableFeatures(
+            ChromeFeatureList.FRE_STRING_CHANGES
+                    + ":"
+                    + ChromeFeatureList.FRE_STRING_CHANGES_SEAMLESSNESS
+                    + "/true")
+    public void testShowsSeamlessnessTitleAndSubtitleWhenEnabled() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mNativeInitializationPromise = new Promise<>();
+                });
+        launchActivityWithFragment();
+        ThreadUtils.runOnUiThreadBlocking(() -> mNativeInitializationPromise.fulfill(null));
+
+        onView(allOf(withId(R.id.title), withText(R.string.signin_fre_seamlessness_title)))
+                .check(matches(isDisplayed()));
+        onView(allOf(withId(R.id.subtitle), withText(R.string.signin_fre_seamlessness_subtitle)))
+                .check(matches(isDisplayed()));
+    }
+
+    @Test
+    @MediumTest
     public void testDismissWithTosDialogBehaviorPolicy() throws Exception {
         reset(mPolicyLoadListenerMock);
         when(mPolicyLoadListenerMock.onAvailable(any())).thenReturn(null);
@@ -1529,7 +1689,7 @@ public class SigninFirstRunFragmentTest {
     private void checkFragmentWithSelectedAccount(
             AccountInfo accountInfo,
             boolean shouldShowSubtitle,
-            @FullscreenSigninMediator.LoadPoint int slowestLoadPoint) {
+            @FullscreenSigninLoadPoint int slowestLoadPoint) {
         ViewUtils.waitForVisibleView(withId(R.id.signin_fre_selected_account));
         verify(mFirstRunPageDelegateMock).recordLoadCompletedHistograms(slowestLoadPoint);
         final DisplayableProfileData profileData =
@@ -1565,11 +1725,12 @@ public class SigninFirstRunFragmentTest {
     }
 
     private void checkFragmentWithSelectedAccount(AccountInfo accountInfo) {
-        checkFragmentWithSelectedAccount(accountInfo, true, LoadPoint.NATIVE_INITIALIZATION);
+        checkFragmentWithSelectedAccount(
+                accountInfo, true, FullscreenSigninLoadPoint.NATIVE_INITIALIZATION);
     }
 
     private void checkFragmentWithSelectedAccount(
-            AccountInfo accountInfo, @FullscreenSigninMediator.LoadPoint int slowestLoadPoint) {
+            AccountInfo accountInfo, @FullscreenSigninLoadPoint int slowestLoadPoint) {
         checkFragmentWithSelectedAccount(accountInfo, true, slowestLoadPoint);
     }
 
@@ -1591,7 +1752,7 @@ public class SigninFirstRunFragmentTest {
             boolean hasDisplayableFullName, boolean hasDisplayableEmail, AccountInfo accountInfo) {
         waitForDisabledSelectedAccountView();
         verify(mFirstRunPageDelegateMock)
-                .recordLoadCompletedHistograms(LoadPoint.NATIVE_INITIALIZATION);
+                .recordLoadCompletedHistograms(FullscreenSigninLoadPoint.NATIVE_INITIALIZATION);
         onView(allOf(withId(R.id.title), withText(R.string.signin_fre_title)))
                 .check(matches(isDisplayed()));
         onView(withId(R.id.subtitle)).check(matches(not(isDisplayed())));
@@ -1674,7 +1835,7 @@ public class SigninFirstRunFragmentTest {
         ViewFinder.waitForNoView(withId(R.id.signin_fre_selected_account));
         ViewFinder.waitForNoView(withId(R.id.signin_fre_dismiss_button));
         verify(mFirstRunPageDelegateMock)
-                .recordLoadCompletedHistograms(LoadPoint.NATIVE_INITIALIZATION);
+                .recordLoadCompletedHistograms(FullscreenSigninLoadPoint.NATIVE_INITIALIZATION);
         ViewUtils.waitForVisibleView(withId(R.id.fre_browser_managed_by));
         ViewUtils.waitForVisibleView(withText(R.string.continue_button));
         ViewUtils.waitForVisibleView(withId(R.id.signin_fre_footer));
@@ -1684,7 +1845,7 @@ public class SigninFirstRunFragmentTest {
         ViewUtils.waitForVisibleView(withId(R.id.signin_fre_selected_account));
         onView(withId(R.id.signin_fre_selected_account_expand_icon)).check(matches(isDisplayed()));
         verify(mFirstRunPageDelegateMock)
-                .recordLoadCompletedHistograms(LoadPoint.NATIVE_INITIALIZATION);
+                .recordLoadCompletedHistograms(FullscreenSigninLoadPoint.NATIVE_INITIALIZATION);
         onView(
                         allOf(
                                 withId(R.id.title),
@@ -1751,6 +1912,30 @@ public class SigninFirstRunFragmentTest {
     private void clickContinueButton(String continueAsText) {
         onScrollToView(withText(continueAsText)).perform(click());
         SigninTestUtil.completeAutoDeviceLockForFirstRunIfNeeded(mFragment);
+    }
+
+    /**
+     * Adds {@link TestAccounts#MANAGED_ACCOUNT} and mocks the {@link SigninManager} so that the
+     * account is reported as managed and sign-in succeeds.
+     */
+    private void setUpManagedAccountSignin() {
+        IdentityServicesProvider.setSigninManagerForTesting(mSigninManagerMock);
+        mSigninTestRule.addAccount(TestAccounts.MANAGED_ACCOUNT);
+        doCallback(/* index= */ 1, (Callback<Boolean> callback) -> callback.onResult(true))
+                .when(mSigninManagerMock)
+                .isAccountManaged(eq(TestAccounts.MANAGED_ACCOUNT), any());
+        doCallback(/* index= */ 2, (SignInCallback callback) -> callback.onSignInComplete())
+                .when(mSigninManagerMock)
+                .signin(eq(TestAccounts.MANAGED_ACCOUNT), anyInt(), any());
+    }
+
+    private void checkManagementNoticeIsDisplayed() {
+        onViewWaiting(withId(R.id.disclaimer_title)).check(matches(isDisplayed()));
+        onView(withId(R.id.disclaimer_accept_button)).check(matches(isDisplayed()));
+        onView(withId(R.id.disclaimer_cancel_button)).check(matches(isDisplayed()));
+        // The main FRE view should be replaced by the notice.
+        onView(withId(R.id.signin_fre_continue_button)).check(doesNotExist());
+        verify(mSigninManagerMock, never()).signin(any(), anyInt(), any());
     }
 
     /**

@@ -42,7 +42,6 @@ import org.chromium.ui.modaldialog.ModalDialogProperties.DialogStyles;
 import org.chromium.ui.modelutil.PropertyModel;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures(ModalDialogFeatureList.MODAL_DIALOG_LAYOUT_WITH_SYSTEM_INSETS)
 public class AppModalPresenterUnitTest {
     private static final int WINDOW_WIDTH = 800;
@@ -52,6 +51,7 @@ public class AppModalPresenterUnitTest {
 
     @Mock private InsetObserver mInsetObserver;
 
+    private Activity mActivity;
     private DisplayMetrics mDisplayMetrics;
     private AppModalPresenter mAppModalPresenter;
     private PropertyModel mModel;
@@ -59,10 +59,10 @@ public class AppModalPresenterUnitTest {
 
     @Before
     public void setup() {
-        Activity activity = buildActivity(TestActivity.class).setup().get();
-        mDisplayMetrics = activity.getResources().getDisplayMetrics();
+        mActivity = buildActivity(TestActivity.class).setup().get();
+        mDisplayMetrics = mActivity.getResources().getDisplayMetrics();
         mDisplayMetrics.density = 1;
-        mAppModalPresenter = new AppModalPresenter(activity);
+        mAppModalPresenter = new AppModalPresenter(mActivity);
         mAppModalPresenter.setInsetObserver(mInsetObserver);
         mEdgeToEdgeStateSupplier = ObservableSuppliers.createNonNull(false);
         mAppModalPresenter.setEdgeToEdgeStateSupplier(
@@ -236,7 +236,7 @@ public class AppModalPresenterUnitTest {
         // This method will be invoked when the dialog window is resized.
         mAppModalPresenter
                 .getWindowInsetsListenerForTesting()
-                .onApplyWindowInsets(mock(View.class), mock(WindowInsetsCompat.class));
+                .onApplyWindowInsets(new View(mActivity), mock(WindowInsetsCompat.class));
         verifyDialogMargins(/* expectedHorizontalMargin= */ 16, /* expectedVerticalMargin= */ 32);
         verifyDialogPadding(
                 /* expectedPaddingLeft= */ 0,
@@ -280,7 +280,7 @@ public class AppModalPresenterUnitTest {
         // This method will be invoked when the dialog window is resized.
         mAppModalPresenter
                 .getWindowInsetsListenerForTesting()
-                .onApplyWindowInsets(mock(View.class), mock(WindowInsetsCompat.class));
+                .onApplyWindowInsets(new View(mActivity), mock(WindowInsetsCompat.class));
         verifyDialogMargins(/* expectedHorizontalMargin= */ 16, /* expectedVerticalMargin= */ 16);
         verifyDialogPadding(
                 /* expectedPaddingLeft= */ 0,
@@ -325,7 +325,7 @@ public class AppModalPresenterUnitTest {
         // This method will be invoked when the dialog window is resized.
         mAppModalPresenter
                 .getWindowInsetsListenerForTesting()
-                .onApplyWindowInsets(mock(View.class), mock(WindowInsetsCompat.class));
+                .onApplyWindowInsets(new View(mActivity), mock(WindowInsetsCompat.class));
 
         verifyDialogMargins(/* expectedHorizontalMargin= */ 16, /* expectedVerticalMargin= */ 16);
         verifyDialogPadding(
@@ -371,7 +371,7 @@ public class AppModalPresenterUnitTest {
         // This method will be invoked when the dialog window is resized.
         mAppModalPresenter
                 .getWindowInsetsListenerForTesting()
-                .onApplyWindowInsets(mock(View.class), mock(WindowInsetsCompat.class));
+                .onApplyWindowInsets(new View(mActivity), mock(WindowInsetsCompat.class));
         mEdgeToEdgeStateSupplier.set(true);
 
         verifyDialogMargins(/* expectedHorizontalMargin= */ 25, /* expectedVerticalMargin= */ 40);
@@ -456,7 +456,7 @@ public class AppModalPresenterUnitTest {
         // This method will be invoked when the dialog window is resized.
         mAppModalPresenter
                 .getWindowInsetsListenerForTesting()
-                .onApplyWindowInsets(mock(View.class), mock(WindowInsetsCompat.class));
+                .onApplyWindowInsets(new View(mActivity), mock(WindowInsetsCompat.class));
         mEdgeToEdgeStateSupplier.set(true);
 
         verifyDialogMargins(/* expectedHorizontalMargin= */ 0, /* expectedVerticalMargin= */ 0);
@@ -604,7 +604,7 @@ public class AppModalPresenterUnitTest {
         // This method will be invoked when the dialog is added.
         mAppModalPresenter
                 .getWindowInsetsListenerForTesting()
-                .onApplyWindowInsets(mock(View.class), mock(WindowInsetsCompat.class));
+                .onApplyWindowInsets(new View(mActivity), mock(WindowInsetsCompat.class));
     }
 
     private void verifyDialogMargins(int expectedHorizontalMargin, int expectedVerticalMargin) {
@@ -643,7 +643,6 @@ public class AppModalPresenterUnitTest {
 
     @Test
     @Config(qualifiers = "sw600dp")
-    @EnableFeatures(ModalDialogFeatureList.DIALOGS_ON_LARGE_FORM_FACTORS)
     public void addDialogView_LargeFormFactorUi_Tablet_VerticalMargin24dpAndDimAmount() {
         mAppModalPresenter.setInsetObserver(null);
 
@@ -667,7 +666,6 @@ public class AppModalPresenterUnitTest {
 
     @Test
     @Config(qualifiers = "sw600dp")
-    @EnableFeatures(ModalDialogFeatureList.DIALOGS_ON_LARGE_FORM_FACTORS)
     public void addDialogView_LargeFormFactorUi_Desktop_VerticalMargin24dpAndDimAmount() {
         DeviceInfo.setIsDesktopForTesting(true);
         mAppModalPresenter.setInsetObserver(null);

@@ -76,6 +76,12 @@ class AURA_EXPORT Env : public ui::EventTarget {
   // otherwise it uses |mouse_button_flags_|.
   bool IsMouseButtonDown() const;
 
+  // Returns true if the left mouse button specifically is down. This may query
+  // the native OS, otherwise it uses |mouse_button_flags_|. Prefer this over
+  // IsMouseButtonDown() when validating that a drag gesture is in progress:
+  // drags are only ever initiated with the left button.
+  bool IsLeftMouseButtonDown() const;
+
   // Gets/sets the last mouse location seen in a mouse event in the screen
   // coordinates.
   const gfx::Point& last_mouse_location() const { return last_mouse_location_; }
@@ -86,6 +92,30 @@ class AURA_EXPORT Env : public ui::EventTarget {
   // Whether any touch device is currently down.
   bool is_touch_down() const { return is_touch_down_; }
   void SetTouchDown(bool value);
+
+  // If a touch that was pressed on `window` is still down and has not already
+  // been used to start a drag, marks it as used and returns its most recent
+  // location in screen coordinates. Otherwise returns std::nullopt.
+  //
+  // Unlike is_touch_down(), this only reports touches that were dispatched to
+  // `window` itself, and each touch press can start at most one drag. This
+  // makes it suitable for validating drags requested by untrusted code (e.g. a
+  // renderer), since neither a touch elsewhere in the window (e.g. on the
+  // caption) nor a touch whose release was lost after an earlier drag (e.g.
+  // consumed by a platform drag loop) can be used.
+  std::optional<gfx::Point> ConsumeTouchForDrag(const aura::Window* window);
+
+  // If the left mouse button is down, the press was dispatched to `window`, and
+  // the press has not already been used to start a drag, marks it as used and
+  // returns true. Otherwise returns false.
+  //
+  // Unlike IsLeftMouseButtonDown(), this only reports a press that was
+  // dispatched to `window` itself (and was not a non-client press), and each
+  // press can start at most one drag. This makes it suitable for validating
+  // drags requested by untrusted code (e.g. a renderer), since neither a press
+  // elsewhere (e.g. holding the window caption to move the window) nor a press
+  // whose release was lost after an earlier drag can be used.
+  bool ConsumeLeftMousePressForDrag(const aura::Window* window);
 
   void set_context_factory(ui::ContextFactory* context_factory) {
     context_factory_ = context_factory;

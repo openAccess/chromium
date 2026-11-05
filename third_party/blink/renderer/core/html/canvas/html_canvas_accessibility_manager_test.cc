@@ -11,12 +11,15 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/web/web_ax_object.h"
 #include "third_party/blink/public/web/web_node.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/core/accessibility/ax_context.h"
+#include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/platform/graphics/flush_reason.h"
 #include "ui/accessibility/accessibility_features.h"
@@ -33,8 +36,7 @@ class HTMLCanvasAccessibilityManagerTest : public PageTestBase {
     GetDocument().GetSettings()->SetScriptEnabled(true);
     GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(
         html_content);
-    canvas_element_ =
-        To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c")));
+    canvas_element_ = To<HTMLCanvasElement>(GetElementById("c"));
     UpdateAllLifecyclePhasesForTest();
   }
 
@@ -66,17 +68,6 @@ TEST_F(HTMLCanvasAccessibilityManagerTest, IsIgnored) {
   EXPECT_EQ(manager, nullptr);
 }
 
-TEST_F(HTMLCanvasAccessibilityManagerTest, AriaHiddenIsIgnored) {
-  SetUpCanvas(
-      "<body><canvas id='c' width=300 height=200 "
-      "aria-hidden='true'></canvas></body>");
-  canvas_element_->OnAxObjectIgnoredStateChanged(/*is_ignored=*/true);
-
-  HTMLCanvasAccessibilityManager* manager =
-      canvas_element_->GetAccessibilityManagerForTesting();
-  EXPECT_FALSE(manager);
-}
-
 TEST_F(HTMLCanvasAccessibilityManagerTest, TooSmall) {
   base::HistogramTester histogram_tester;
   SetUpCanvas("<body><canvas id='c' width=5 height=5></canvas></body>");
@@ -88,17 +79,17 @@ TEST_F(HTMLCanvasAccessibilityManagerTest, TooSmall) {
       HTMLCanvasAccessibilityManager::HeuristicResult::kTooSmall, 1);
 }
 
-TEST_F(HTMLCanvasAccessibilityManagerTest, HasLayoutSubtree) {
+TEST_F(HTMLCanvasAccessibilityManagerTest, HasContentDrawable) {
   base::HistogramTester histogram_tester;
   SetUpCanvas(
-      "<body><canvas id='c' width=300 height=200 layoutsubtree></"
+      "<body><canvas id='c' width=300 height=200 content=drawable></"
       "canvas></body>");
   canvas_element_->OnAxObjectIgnoredStateChanged(/*is_ignored=*/false);
   WaitForAccessibilityManagerUpdate();
 
   histogram_tester.ExpectUniqueSample(
       "Accessibility.Canvas.HeuristicResult",
-      HTMLCanvasAccessibilityManager::HeuristicResult::kHasLayoutSubtree, 1);
+      HTMLCanvasAccessibilityManager::HeuristicResult::kHasContentDrawable, 1);
 }
 
 TEST_F(HTMLCanvasAccessibilityManagerTest, HasNonElementFallbackContent) {
@@ -150,6 +141,24 @@ TEST_F(HTMLCanvasAccessibilityManagerTest, HasAriaLabel) {
   histogram_tester.ExpectUniqueSample(
       "Accessibility.Canvas.HeuristicResult",
       HTMLCanvasAccessibilityManager::HeuristicResult::kHasAriaAttributes, 1);
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       EmptyOrWhitespaceAriaAttributesDoNotDisqualify) {
+  base::HistogramTester histogram_tester;
+  SetUpCanvas(
+      "<body><canvas id='c' width=300 height=200 role='' aria-label='   ' "
+      "title=''></canvas></body>");
+  canvas_element_->OnAxObjectIgnoredStateChanged(/*is_ignored=*/false);
+  WaitForAccessibilityManagerUpdate();
+
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.Canvas.HeuristicResult",
+      HTMLCanvasAccessibilityManager::HeuristicResult::kNeedsA11ySupport, 1);
+  EXPECT_EQ(canvas_element_->GetAccessibilityManagerForTesting()
+                ->GetHeuristicResultForTesting(),
+            HTMLCanvasAccessibilityManager::HeuristicResult::kNeedsA11ySupport);
+  EXPECT_TRUE(canvas_element_->GetNeedsAccessibilitySupportHeuristic());
 }
 
 TEST_F(HTMLCanvasAccessibilityManagerTest, NeedsA11ySupport) {
@@ -325,8 +334,7 @@ TEST_F(HTMLCanvasAccessibilityManagerTest,
   GetDocument().GetSettings()->SetScriptEnabled(true);
   GetDocument().documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<body><canvas id='c' width=300 height=200></canvas></body>");
-  canvas_element_ =
-      To<HTMLCanvasElement>(GetDocument().getElementById(AtomicString("c")));
+  canvas_element_ = To<HTMLCanvasElement>(GetElementById("c"));
 
   // Verify that the layout object is indeed null.
   ASSERT_FALSE(canvas_element_->GetLayoutObject());
@@ -587,6 +595,288 @@ TEST_F(HTMLCanvasAccessibilityManagerTest,
   // Since accessibility was enabled later, the manager should schedule OCR
   // immediately.
   EXPECT_TRUE(manager->IsOCRTimerActiveForTesting());
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       PreCreatedManagerForUkmStillInitializesWhenAXEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      ::features::kAccessibilityCanvas,
+      {{"CanvasAccessibilityMode", "Advanced"}});
+  base::HistogramTester histogram_tester;
+
+  SetUpCanvas("<body><canvas id='c' width=300 height=200></canvas></body>");
+
+  // Early text drawing creates `accessibility_manager_` with
+  // `is_ignored = std::nullopt`.
+  canvas_element_->RecordRenderedText("Hello", gfx::RectF(0, 0, 100, 20),
+                                      12.0f);
+  // UKM heuristic evaluation before AXObject creation computes
+  // `kNeedsA11ySupport` statelessly without mutating the manager.
+  EXPECT_TRUE(canvas_element_->GetNeedsAccessibilitySupportHeuristic());
+
+  // When AXObject subsequently reports `is_ignored = false`, `SetIsIgnored`
+  // must initialize full AX annotation (starting `uma_timer_` and scheduling
+  // OCR).
+  canvas_element_->OnAxObjectIgnoredStateChanged(/*is_ignored=*/false);
+  WaitForAccessibilityManagerUpdate();
+
+  HTMLCanvasAccessibilityManager* manager =
+      canvas_element_->GetAccessibilityManagerForTesting();
+  ASSERT_TRUE(manager);
+  EXPECT_TRUE(manager->NeedsA11ySupport());
+  EXPECT_TRUE(manager->ShouldCaptureRenderedTextForTesting());
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.Canvas.HeuristicResult",
+      HTMLCanvasAccessibilityManager::HeuristicResult::kNeedsA11ySupport, 1);
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       DynamicAriaAttributeRemovedRestoresNeedsA11ySupport) {
+  base::HistogramTester histogram_tester;
+  SetUpCanvas(
+      "<body><canvas id='c' width=300 height=200 "
+      "aria-label='chart'></canvas></body>");
+  canvas_element_->OnAxObjectIgnoredStateChanged(/*is_ignored=*/false);
+  WaitForAccessibilityManagerUpdate();
+
+  EXPECT_EQ(
+      canvas_element_->GetAccessibilityManagerForTesting()
+          ->GetHeuristicResultForTesting(),
+      HTMLCanvasAccessibilityManager::HeuristicResult::kHasAriaAttributes);
+
+  // Removing the aria attribute dynamically updates heuristic.
+  canvas_element_->removeAttribute(html_names::kAriaLabelAttr);
+  WaitForAccessibilityManagerUpdate();
+
+  EXPECT_EQ(canvas_element_->GetAccessibilityManagerForTesting()
+                ->GetHeuristicResultForTesting(),
+            HTMLCanvasAccessibilityManager::HeuristicResult::kNeedsA11ySupport);
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       DynamicFallbackContentRemovedRestoresNeedsA11ySupport) {
+  base::HistogramTester histogram_tester;
+  SetUpCanvas(
+      "<body><canvas id='c' width=300 height=200><button "
+      "id='btn'>Click</button></canvas></body>");
+  canvas_element_->OnAxObjectIgnoredStateChanged(/*is_ignored=*/false);
+  WaitForAccessibilityManagerUpdate();
+
+  EXPECT_EQ(
+      canvas_element_->GetAccessibilityManagerForTesting()
+          ->GetHeuristicResultForTesting(),
+      HTMLCanvasAccessibilityManager::HeuristicResult::kHasFallbackContent);
+
+  // Removing the fallback element content dynamically updates heuristic.
+  auto* button = GetElementById("btn");
+  ASSERT_TRUE(button);
+  canvas_element_->RemoveChild(button);
+  UpdateAllLifecyclePhasesForTest();
+  WaitForAccessibilityManagerUpdate();
+
+  EXPECT_EQ(canvas_element_->GetAccessibilityManagerForTesting()
+                ->GetHeuristicResultForTesting(),
+            HTMLCanvasAccessibilityManager::HeuristicResult::kNeedsA11ySupport);
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       ComputeHeuristicResultStaticDirectEvaluation) {
+  SetUpCanvas("<body><canvas id='c' width=300 height=200></canvas></body>");
+
+  EXPECT_EQ(HTMLCanvasAccessibilityManager::ComputeHeuristicResult(
+                *canvas_element_,
+                /*is_ignored=*/true),
+            HTMLCanvasAccessibilityManager::HeuristicResult::kIsIgnored);
+  EXPECT_EQ(HTMLCanvasAccessibilityManager::ComputeHeuristicResult(
+                *canvas_element_,
+                /*is_ignored=*/false),
+            HTMLCanvasAccessibilityManager::HeuristicResult::kNeedsA11ySupport);
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       AriaHiddenTrueVsFalseIgnoredEstimation) {
+  SetUpCanvas(
+      "<body><canvas id='c' width=300 height=200 "
+      "aria-hidden='false'></canvas></body>");
+  // aria-hidden='false' should not be estimated as ignored for UKM.
+  EXPECT_TRUE(canvas_element_->GetNeedsAccessibilitySupportHeuristic());
+
+  canvas_element_->setAttribute(html_names::kAriaHiddenAttr,
+                                AtomicString("true"));
+  // aria-hidden='true' should be estimated as ignored for UKM.
+  EXPECT_FALSE(canvas_element_->GetNeedsAccessibilitySupportHeuristic());
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       IgnoredCanvasDoesNotCaptureTextOnDraw) {
+  SetUpCanvas("<body><canvas id='c' width=300 height=200></canvas></body>");
+  canvas_element_->OnAxObjectIgnoredStateChanged(/*is_ignored=*/true);
+
+  EXPECT_EQ(canvas_element_->GetAccessibilityManagerForTesting(), nullptr);
+  EXPECT_FALSE(canvas_element_->ShouldCaptureRenderedText());
+
+  // Drawing text should not allocate a manager with speculative capture.
+  canvas_element_->RecordRenderedText("Ignored text", gfx::RectF(0, 0, 50, 20),
+                                      12);
+  EXPECT_EQ(canvas_element_->GetAccessibilityManagerForTesting(), nullptr);
+  EXPECT_FALSE(canvas_element_->ShouldCaptureRenderedText());
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       CanvasAnnotationClearedOnHeuristicExit) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(::features::kAccessibilityCanvas);
+
+  SetUpCanvas("<body><canvas id='c' width=300 height=200></canvas></body>");
+  canvas_element_->OnAxObjectIgnoredStateChanged(/*is_ignored=*/false);
+  WaitForAccessibilityManagerUpdate();
+
+  HTMLCanvasAccessibilityManager* manager =
+      canvas_element_->GetAccessibilityManagerForTesting();
+  ASSERT_NE(manager, nullptr);
+  EXPECT_EQ(manager->GetHeuristicResultForTesting(),
+            HTMLCanvasAccessibilityManager::HeuristicResult::kNeedsA11ySupport);
+
+  manager->RecordRenderedText("Test Annotation", gfx::RectF(0, 0, 100, 20), 12);
+  // In production, UpdateAnnotation() is called automatically during canvas
+  // frame finalization (in HTMLCanvasElement::PostFinalizeFrame()). Because
+  // this test records text runs directly without executing a full rendering
+  // pass, UpdateAnnotation() must be called explicitly to synthesize
+  // canvas_annotation_.
+  manager->UpdateAnnotation();
+  EXPECT_EQ(manager->CanvasAnnotation(), "Test Annotation");
+
+  // Adding an aria attribute transitions out of kNeedsA11ySupport and clears
+  // any annotation.
+  canvas_element_->setAttribute(html_names::kAriaLabelAttr,
+                                AtomicString("chart"));
+  WaitForAccessibilityManagerUpdate();
+
+  EXPECT_EQ(
+      manager->GetHeuristicResultForTesting(),
+      HTMLCanvasAccessibilityManager::HeuristicResult::kHasAriaAttributes);
+  EXPECT_TRUE(manager->CanvasAnnotation().empty());
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       IsTooSmallFallbackToIntrinsicSizeBeforeLayout) {
+  auto* canvas = MakeGarbageCollected<HTMLCanvasElement>(GetDocument());
+  canvas->SetSize(gfx::Size(300, 200));
+  // Canvas is not attached to layout tree, so GetLayoutObject() is nullptr.
+  EXPECT_EQ(canvas->GetLayoutObject(), nullptr);
+  // ComputeHeuristicResult should use intrinsic size and not treat as too
+  // small.
+  EXPECT_EQ(HTMLCanvasAccessibilityManager::ComputeHeuristicResult(
+                *canvas, /*is_ignored=*/false),
+            HTMLCanvasAccessibilityManager::HeuristicResult::kNeedsA11ySupport);
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       OffscreenCanvasStandaloneDoesNotCaptureText) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(::features::kAccessibilityCanvas);
+
+  auto* offscreen = OffscreenCanvas::Create(
+      ToScriptStateForMainWorld(GetDocument().GetFrame()), 300, 200);
+  EXPECT_FALSE(offscreen->HasPlaceholderCanvas());
+  EXPECT_FALSE(offscreen->ShouldCaptureRenderedText());
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       OffscreenCanvasWithPlaceholderCapturesText) {
+  SetUpCanvas("<body><canvas id='c' width=300 height=200></canvas></body>");
+  DOMNodeId canvas_id = canvas_element_->GetDomNodeId();
+
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndEnableFeature(::features::kAccessibilityCanvas);
+    auto* offscreen = OffscreenCanvas::Create(
+        ToScriptStateForMainWorld(GetDocument().GetFrame()), 300, 200,
+        /*client_id=*/0, /*sink_id=*/0, canvas_id);
+    EXPECT_TRUE(offscreen->HasPlaceholderCanvas());
+    EXPECT_TRUE(offscreen->ShouldCaptureRenderedText());
+  }
+
+  {
+    base::test::ScopedFeatureList scoped_feature_list;
+    scoped_feature_list.InitAndDisableFeature(::features::kAccessibilityCanvas);
+    auto* offscreen = OffscreenCanvas::Create(
+        ToScriptStateForMainWorld(GetDocument().GetFrame()), 300, 200,
+        /*client_id=*/0, /*sink_id=*/0, canvas_id);
+    EXPECT_TRUE(offscreen->HasPlaceholderCanvas());
+    EXPECT_FALSE(offscreen->ShouldCaptureRenderedText());
+  }
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerTest,
+       DisabledFeatureDoesNotCaptureTextOrMarkDirtyOnFrame) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(::features::kAccessibilityCanvas);
+  base::HistogramTester histogram_tester;
+
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
+  AXObjectCache* cache = GetDocument().ExistingAXObjectCache();
+  ASSERT_NE(cache, nullptr);
+
+  SetUpCanvas("<body><canvas id='c' width=300 height=200></canvas></body>");
+  canvas_element_->OnAxObjectIgnoredStateChanged(/*is_ignored=*/false);
+  WaitForAccessibilityManagerUpdate();
+
+  HTMLCanvasAccessibilityManager* manager =
+      canvas_element_->GetAccessibilityManagerForTesting();
+  ASSERT_NE(manager, nullptr);
+  // Heuristic evaluation and UMA still run when the feature flag is disabled.
+  EXPECT_TRUE(manager->NeedsA11ySupport());
+  histogram_tester.ExpectUniqueSample(
+      "Accessibility.Canvas.HeuristicResult",
+      HTMLCanvasAccessibilityManager::HeuristicResult::kNeedsA11ySupport, 1);
+
+  // Text capture and frame-end annotation updates must be suppressed when the
+  // feature flag is disabled.
+  EXPECT_FALSE(manager->ShouldCaptureRenderedTextForTesting());
+
+  cache->UpdateAXForAllDocuments();
+  ASSERT_FALSE(cache->IsDirty());
+
+  canvas_element_->PostFinalizeFrame(FlushReason::kOther);
+  EXPECT_FALSE(cache->IsDirty());
+}
+
+TEST_F(HTMLCanvasAccessibilityManagerCaptureTest,
+       UpdateAnnotationMarksDirtyOnlyWhenChanged) {
+  AXContext ax_context(GetDocument(), ui::kAXModeComplete);
+  AXObjectCache* cache = GetDocument().ExistingAXObjectCache();
+  ASSERT_NE(cache, nullptr);
+
+  cache->UpdateAXForAllDocuments();
+  ASSERT_FALSE(cache->IsDirty());
+
+  // Updating with empty text runs when the annotation is already empty should
+  // not mark the accessibility cache dirty.
+  manager_->UpdateAnnotation();
+  EXPECT_FALSE(cache->IsDirty());
+
+  // Updating with a new text run changes the annotation and marks the element
+  // dirty.
+  manager_->RecordRenderedText("Hello", gfx::RectF(0, 0, 100, 20), 12.0f);
+  manager_->UpdateAnnotation();
+  EXPECT_EQ(manager_->CanvasAnnotation(), "Hello");
+  EXPECT_TRUE(cache->IsDirty());
+
+  // Subsequent updates with identical text runs should not mark the element
+  // dirty again.
+  cache->UpdateAXForAllDocuments();
+  ASSERT_FALSE(cache->IsDirty());
+  manager_->UpdateAnnotation();
+  EXPECT_FALSE(cache->IsDirty());
+
+  // Clearing text runs transitions the annotation back to empty and marks the
+  // element dirty.
+  manager_->ClearRenderedText();
+  manager_->UpdateAnnotation();
+  EXPECT_TRUE(manager_->CanvasAnnotation().empty());
+  EXPECT_TRUE(cache->IsDirty());
 }
 
 }  // namespace blink

@@ -14,7 +14,6 @@
 namespace {
 
 using testing::_;
-using testing::InvokeWithoutArgs;
 using testing::Sequence;
 using JniDelegate = NoPasskeysBottomSheetBridge::JniDelegate;
 
@@ -67,7 +66,7 @@ TEST_F(NoPasskeysBottomSheetBridgeTest, CallDismissalDelegateOnHide) {
                             on_dismissed_callback.Get(), base::DoNothing());
 
   EXPECT_CALL(on_dismissed_callback, Run);
-  no_passkeys_bridge().OnDismissed(/*env=*/nullptr);
+  no_passkeys_bridge().OnDismissed();
 }
 
 TEST_F(NoPasskeysBottomSheetBridgeTest, IgnoreRedundantDismissCalls) {
@@ -84,9 +83,9 @@ TEST_F(NoPasskeysBottomSheetBridgeTest, IgnoreRedundantDismissCalls) {
       /*on_dismissed_callback=*/base::DoNothing(),
       /*on_click_use_another_device_callback=*/base::DoNothing());
 
-  EXPECT_CALL(mock_jni_delegate(), Dismiss)
-      .WillOnce(InvokeWithoutArgs(
-          [this]() { no_passkeys_bridge().OnDismissed(/*env=*/nullptr); }));
+  EXPECT_CALL(mock_jni_delegate(), Dismiss).WillOnce([this]() {
+    no_passkeys_bridge().OnDismissed();
+  });
   no_passkeys_bridge().Dismiss();
   no_passkeys_bridge().Dismiss();  // This should not trigger a second call!
   destroyNoPasskeysBridge();  // This also should not trigger a second call!
@@ -102,7 +101,7 @@ TEST_F(NoPasskeysBottomSheetBridgeTest, RunCallbackForOnClickUseAnotherDevice) {
                             on_click_use_another_device_callback.Get());
 
   EXPECT_CALL(on_click_use_another_device_callback, Run);
-  no_passkeys_bridge().OnClickUseAnotherDevice(/*env=*/nullptr);
+  no_passkeys_bridge().OnClickUseAnotherDevice();
 }
 
 TEST_F(NoPasskeysBottomSheetBridgeTest, DismissesOnDestruction) {

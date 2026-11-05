@@ -46,6 +46,7 @@
 #import "components/password_manager/core/browser/mock_webauthn_credentials_delegate.h"
 #import "components/password_manager/core/browser/password_generation_frame_helper.h"
 #import "components/password_manager/core/browser/password_manager_interface.h"
+#import "components/password_manager/core/browser/password_string.h"
 #import "components/password_manager/core/browser/stub_password_manager_client.h"
 #import "components/password_manager/core/browser/stub_password_manager_driver.h"
 #import "components/password_manager/core/common/password_manager_features.h"
@@ -124,7 +125,7 @@ using autofill::FormData;
 using autofill::LocalFrameToken;
 using autofill::PasswordFormFillData;
 using autofill::RemoteFrameToken;
-using autofill::TestAutofillManagerInjector;
+using autofill::TestAutofillManagerInjectorIOS;
 using autofill::TestBrowserAutofillManager;
 using autofill::password_generation::PasswordGenerationType;
 using autofill::test::CreateTestFormField;
@@ -204,7 +205,7 @@ std::vector<PasskeyCredential> CreateCredential() {
 
 class MockPasswordGenerationFrameHelper : public PasswordGenerationFrameHelper {
  public:
-  MOCK_METHOD(std::u16string,
+  MOCK_METHOD(password_manager::PasswordString,
               GeneratePassword,
               (const GURL&,
                autofill::password_generation::PasswordGenerationType,
@@ -257,8 +258,10 @@ class SharedPasswordControllerTest : public PlatformTest {
     // The manager injector must be created before creating the controller to
     // make sure it can exchange the manager before the controller starts
     // observing it.
-    autofill_manager_injector_ = std::make_unique<
-        TestAutofillManagerInjector<TestBrowserAutofillManager>>(&web_state_);
+    autofill_manager_injector_ =
+        std::make_unique<
+            TestAutofillManagerInjectorIOS<TestBrowserAutofillManager>>(
+            &web_state_);
 
     controller_ =
         [[SharedPasswordController alloc] initWithWebState:&web_state_
@@ -349,12 +352,9 @@ class SharedPasswordControllerTest : public PlatformTest {
   web::ScopedTestingWebClient web_client_;
   web::WebTaskEnvironment task_environment_;
   autofill::test::AutofillUnitTestEnvironment autofill_test_environment_;
-  std::unique_ptr<autofill::TestAutofillClientIOS> autofill_client_;
-  std::unique_ptr<TestAutofillManagerInjector<TestBrowserAutofillManager>>
-      autofill_manager_injector_;
+  web::FakeBrowserState browser_state_;
   std::unique_ptr<webauthn::TestPasskeyModel> passkey_model_;
   web::FakeWebState web_state_;
-  web::FakeBrowserState browser_state_;
   raw_ptr<web::FakeWebFramesManager> web_frames_manager_;
   testing::StrictMock<MockPasswordManager> password_manager_;
   testing::StrictMock<MockPasswordGenerationFrameHelper>
@@ -367,7 +367,13 @@ class SharedPasswordControllerTest : public PlatformTest {
   scoped_refptr<IOSPasswordManagerDriver> dummy_driver_;
   id delegate_;
   SharedPasswordController* controller_;
+  std::unique_ptr<autofill::TestAutofillClientIOS> autofill_client_;
+  std::unique_ptr<TestAutofillManagerInjectorIOS<TestBrowserAutofillManager>>
+      autofill_manager_injector_;
 };
+
+// TODO(crbug.com/566740556): Refactor to avoid invoking completion handlers
+// inside `[OCMArg checkWithBlock:]` in test body.
 
 TEST_F(SharedPasswordControllerTest,
        PasswordManagerIsNotNotifiedAboutHeuristicsPredictions) {
@@ -947,7 +953,7 @@ TEST_F(SharedPasswordControllerTest, SuggestsGeneratedPassword) {
       GeneratePassword(web_state_.GetLastCommittedURL(),
                        PasswordGenerationType::kAutomatic, form_signature,
                        field_signature, kMaxPasswordLength))
-      .WillOnce(::testing::Return(kGeneratedPassword));
+      .WillOnce(Return(PasswordString(kGeneratedPassword)));
 
   // Select suggestion to start the password generation flow which will stop at
   // showing the generated pasword.
@@ -1035,7 +1041,7 @@ TEST_F(SharedPasswordControllerTest, PresavesGeneratedPassword) {
 
   // Mock generating a valid password.
   EXPECT_CALL(password_generation_helper_, GeneratePassword)
-      .WillOnce(::testing::Return(kGeneratedPassword));
+      .WillOnce(::testing::Return(PasswordString(kGeneratedPassword)));
 
   EXPECT_CALL(password_manager_, OnPresaveGeneratedPassword);
 
@@ -1211,7 +1217,7 @@ TEST_F(SharedPasswordControllerTest, PresavesGeneratedPassword_Empty) {
 
   // Emulate generating an empty password.
   EXPECT_CALL(password_generation_helper_, GeneratePassword)
-      .WillOnce(::testing::Return(u""));
+      .WillOnce(::testing::Return(PasswordString()));
 
   // Verify that presaving is never done because the generated password is empty
   // hence invalid for presaving. The
@@ -1296,7 +1302,7 @@ TEST_F(SharedPasswordControllerTest, TriggerPasswordGeneration) {
                       inFrame:frame
             completionHandler:extract_completion_handler_arg]);
   EXPECT_CALL(password_generation_helper_, GeneratePassword)
-      .WillOnce(Return(u"testpass"));
+      .WillOnce(Return(PasswordString(u"testpass")));
 
   [controller_ triggerPasswordGeneration];
 
@@ -1356,14 +1362,14 @@ TEST_F(SharedPasswordControllerTest, TriggerPasswordGeneration_Proactively) {
 
   // Emulate generating a non-empty password.
   EXPECT_CALL(password_generation_helper_, GeneratePassword)
-      .WillOnce(Return(u"testpass"));
+      .WillOnce(Return(PasswordString(u"testpass")));
 
   // Trigger password generation proactively to start the password generation
   // flow which will stop at the stage where it is shown to the user through the
   // bottom sheet.
   [controller_ triggerPasswordGenerationForFormId:form_id
                                   fieldIdentifier:password_field_id
-                                          inFrame:frame
+                                          inFrame:frame->AsWeakPtr()
                                         proactive:YES];
 
   // Verify that the metrics that verify the emptyness of the generated password
@@ -2052,7 +2058,7 @@ TEST_F(SharedPasswordControllerTest, DeclinePasswordGenerationDialog) {
 
   OCMStub([driver_helper_ PasswordManagerDriver:frame]);
   EXPECT_CALL(password_generation_helper_, GeneratePassword)
-      .WillOnce(Return(u"testpass"));
+      .WillOnce(Return(PasswordString(u"testpass")));
   EXPECT_CALL(password_manager_, SetGenerationElementAndTypeForForm);
 
   // Check that the generation is terminated.
@@ -2195,6 +2201,263 @@ TEST_F(SharedPasswordControllerTest, FillField) {
               forFrameId:base::SysNSStringToUTF8(kTestFrameID)
        completionHandler:base::CallbackToBlock(future.GetCallback())];
   EXPECT_TRUE(future.Get());
+}
+
+// Tests that `actorLoginToolRescansFormsInWebState:noFormsFoundHandler:`
+// reports no forms found when the web page content is not HTML.
+TEST_F(SharedPasswordControllerTest, ActorLoginToolRescansForms_NonHTML) {
+  auto web_frame =
+      web::FakeWebFrame::Create(base::SysNSStringToUTF8(kTestFrameID),
+                                /*is_main_frame=*/true, GURL(kTestURL));
+  AddWebFrame(std::move(web_frame));
+  web_state_.SetContentIsHTML(false);
+
+  base::test::TestFuture<void> future;
+  [controller_ actorLoginToolRescansFormsInWebState:&web_state_
+                                noFormsFoundHandler:base::CallbackToBlock(
+                                                        future.GetCallback())];
+  EXPECT_TRUE(future.Wait());
+}
+
+// Tests that `actorLoginToolRescansFormsInWebState:noFormsFoundHandler:`
+// reports no forms found when there are no web frames.
+TEST_F(SharedPasswordControllerTest, ActorLoginToolRescansForms_NoFrames) {
+  base::test::TestFuture<void> future;
+  [controller_ actorLoginToolRescansFormsInWebState:&web_state_
+                                noFormsFoundHandler:base::CallbackToBlock(
+                                                        future.GetCallback())];
+  EXPECT_TRUE(future.Wait());
+}
+
+// Tests that `actorLoginToolRescansFormsInWebState:noFormsFoundHandler:`
+// reports no forms found when the frame contains no password forms.
+TEST_F(SharedPasswordControllerTest,
+       ActorLoginToolRescansForms_SingleFrame_NoFormsFound) {
+  auto web_frame =
+      web::FakeWebFrame::Create(base::SysNSStringToUTF8(kTestFrameID),
+                                /*is_main_frame=*/true, GURL(kTestURL));
+  web::WebFrame* frame = web_frame.get();
+  AddWebFrame(std::move(web_frame));
+
+  OCMExpect([[suggestion_helper_ ignoringNonObjectArgs]
+                processWithNoSavedCredentialsWithFrameId:""])
+      .andCompareObjectAtIndex(SysNSStringToUTF8(kTestFrameID), 0);
+  EXPECT_CALL(password_manager_, OnPasswordFormsRendered);
+
+  id mock_handler =
+      [OCMArg checkWithBlock:^(void (^handler)(const std::vector<FormData>&)) {
+        handler({});
+        return YES;
+      }];
+  OCMExpect([form_helper_ findPasswordFormsInFrame:frame
+                                 completionHandler:mock_handler]);
+
+  base::test::TestFuture<void> future;
+  [controller_ actorLoginToolRescansFormsInWebState:&web_state_
+                                noFormsFoundHandler:base::CallbackToBlock(
+                                                        future.GetCallback())];
+  EXPECT_TRUE(future.Wait());
+}
+
+// Tests that `actorLoginToolRescansFormsInWebState:noFormsFoundHandler:`
+// processes forms and stays silent when the main frame contains a password
+// form, since that result is surfaced via `PasswordFormCache` observers.
+TEST_F(SharedPasswordControllerTest,
+       ActorLoginToolRescansForms_SingleFrame_FormsFound) {
+  auto web_frame =
+      web::FakeWebFrame::Create(base::SysNSStringToUTF8(kTestFrameID),
+                                /*is_main_frame=*/true, GURL(kTestURL));
+  web::WebFrame* frame = web_frame.get();
+  AddWebFrame(std::move(web_frame));
+
+  EXPECT_CALL(password_manager_, OnPasswordFormsParsed);
+  EXPECT_CALL(password_manager_, OnPasswordFormsRendered);
+
+  id mock_handler =
+      [OCMArg checkWithBlock:^(void (^handler)(const std::vector<FormData>&)) {
+        handler({CreateSignupForm()});
+        return YES;
+      }];
+  OCMExpect([form_helper_ findPasswordFormsInFrame:frame
+                                 completionHandler:mock_handler]);
+
+  base::test::TestFuture<void> future;
+  [controller_ actorLoginToolRescansFormsInWebState:&web_state_
+                                noFormsFoundHandler:base::CallbackToBlock(
+                                                        future.GetCallback())];
+  EXPECT_FALSE(future.IsReady());
+}
+
+// Tests that `actorLoginToolRescansFormsInWebState:noFormsFoundHandler:`
+// queries same-origin subframes (and not cross-origin subframes), and stays
+// silent when a same-origin subframe contains a form.
+TEST_F(SharedPasswordControllerTest,
+       ActorLoginToolRescansForms_MultipleFrames_QueriesSameOriginOnly) {
+  auto main_web_frame =
+      web::FakeWebFrame::Create(base::SysNSStringToUTF8(kTestFrameID),
+                                /*is_main_frame=*/true, GURL(kTestURL));
+  web::WebFrame* main_frame = main_web_frame.get();
+  AddWebFrame(std::move(main_web_frame));
+
+  auto same_origin_subframe = web::FakeWebFrame::Create(
+      "same_origin_subframe_id",
+      /*is_main_frame=*/false, GURL("https://www.chromium.org/subframe"));
+  web::WebFrame* same_origin_frame = same_origin_subframe.get();
+  AddWebFrame(std::move(same_origin_subframe));
+
+  auto cross_origin_subframe = web::FakeWebFrame::Create(
+      "cross_origin_subframe_id",
+      /*is_main_frame=*/false, GURL("https://www.google.com/"));
+  AddWebFrame(std::move(cross_origin_subframe));
+
+  // Main frame has no forms.
+  OCMExpect([[suggestion_helper_ ignoringNonObjectArgs]
+                processWithNoSavedCredentialsWithFrameId:""])
+      .andCompareObjectAtIndex(SysNSStringToUTF8(kTestFrameID), 0);
+
+  id main_frame_handler =
+      [OCMArg checkWithBlock:^(void (^handler)(const std::vector<FormData>&)) {
+        handler({});
+        return YES;
+      }];
+  OCMExpect([form_helper_ findPasswordFormsInFrame:main_frame
+                                 completionHandler:main_frame_handler]);
+
+  // Same-origin subframe has forms.
+  EXPECT_CALL(password_manager_, OnPasswordFormsParsed);
+  EXPECT_CALL(password_manager_, OnPasswordFormsRendered).Times(2);
+
+  id subframe_handler =
+      [OCMArg checkWithBlock:^(void (^handler)(const std::vector<FormData>&)) {
+        handler({CreateSignupForm()});
+        return YES;
+      }];
+  OCMExpect([form_helper_ findPasswordFormsInFrame:same_origin_frame
+                                 completionHandler:subframe_handler]);
+
+  base::test::TestFuture<void> future;
+  [controller_ actorLoginToolRescansFormsInWebState:&web_state_
+                                noFormsFoundHandler:base::CallbackToBlock(
+                                                        future.GetCallback())];
+  EXPECT_FALSE(future.IsReady());
+}
+
+// Tests that `actorLoginToolRescansFormsInWebState:noFormsFoundHandler:` does
+// not crash when called with a nil handler.
+TEST_F(SharedPasswordControllerTest,
+       ActorLoginToolRescansForms_NilNoFormsFoundHandler) {
+  auto web_frame =
+      web::FakeWebFrame::Create(base::SysNSStringToUTF8(kTestFrameID),
+                                /*is_main_frame=*/true, GURL(kTestURL));
+  web::WebFrame* frame = web_frame.get();
+  AddWebFrame(std::move(web_frame));
+
+  OCMExpect([[suggestion_helper_ ignoringNonObjectArgs]
+                processWithNoSavedCredentialsWithFrameId:""])
+      .andCompareObjectAtIndex(SysNSStringToUTF8(kTestFrameID), 0);
+  EXPECT_CALL(password_manager_, OnPasswordFormsRendered);
+
+  // Returns no forms so the nil handler is on the path that would be invoked.
+  id mock_handler =
+      [OCMArg checkWithBlock:^(void (^handler)(const std::vector<FormData>&)) {
+        handler({});
+        return YES;
+      }];
+  OCMExpect([form_helper_ findPasswordFormsInFrame:frame
+                                 completionHandler:mock_handler]);
+
+  // Calling with nil should not crash.
+  [controller_ actorLoginToolRescansFormsInWebState:&web_state_
+                                noFormsFoundHandler:nil];
+}
+
+// Tests that `actorLoginToolRescansFormsInWebState:noFormsFoundHandler:`
+// reports no forms found when multiple same-origin frames are queried and none
+// contain password forms.
+TEST_F(SharedPasswordControllerTest,
+       ActorLoginToolRescansForms_MultipleSameOriginFrames_NoFormsFound) {
+  auto main_web_frame =
+      web::FakeWebFrame::Create(base::SysNSStringToUTF8(kTestFrameID),
+                                /*is_main_frame=*/true, GURL(kTestURL));
+  web::WebFrame* main_frame = main_web_frame.get();
+  AddWebFrame(std::move(main_web_frame));
+
+  auto same_origin_subframe = web::FakeWebFrame::Create(
+      "same_origin_subframe_id",
+      /*is_main_frame=*/false, GURL("https://www.chromium.org/subframe"));
+  web::WebFrame* same_origin_frame = same_origin_subframe.get();
+  AddWebFrame(std::move(same_origin_subframe));
+
+  // Frames are iterated in an unspecified order, so record the notified frame
+  // IDs and compare them as an unordered collection.
+  __block std::vector<std::string> no_credentials_frame_ids;
+  OCMStub([[suggestion_helper_ ignoringNonObjectArgs]
+              processWithNoSavedCredentialsWithFrameId:""])
+      .andCallBlockWithParameterAtIndex(
+          const std::string&, 0, ^(const std::string* frame_id) {
+            no_credentials_frame_ids.push_back(*frame_id);
+          });
+  EXPECT_CALL(password_manager_, OnPasswordFormsRendered).Times(2);
+
+  id main_frame_handler =
+      [OCMArg checkWithBlock:^(void (^handler)(const std::vector<FormData>&)) {
+        handler({});
+        return YES;
+      }];
+  OCMExpect([form_helper_ findPasswordFormsInFrame:main_frame
+                                 completionHandler:main_frame_handler]);
+
+  id subframe_handler =
+      [OCMArg checkWithBlock:^(void (^handler)(const std::vector<FormData>&)) {
+        handler({});
+        return YES;
+      }];
+  OCMExpect([form_helper_ findPasswordFormsInFrame:same_origin_frame
+                                 completionHandler:subframe_handler]);
+
+  base::test::TestFuture<void> future;
+  [controller_ actorLoginToolRescansFormsInWebState:&web_state_
+                                noFormsFoundHandler:base::CallbackToBlock(
+                                                        future.GetCallback())];
+  EXPECT_TRUE(future.Wait());
+  EXPECT_THAT(no_credentials_frame_ids,
+              testing::UnorderedElementsAre(SysNSStringToUTF8(kTestFrameID),
+                                            "same_origin_subframe_id"));
+}
+
+// Tests that `actorLoginToolRescansFormsInWebState:noFormsFoundHandler:`
+// handles a frame being detached/destroyed while extraction is pending, without
+// crashing and without treating the detached frame as a success.
+TEST_F(SharedPasswordControllerTest,
+       ActorLoginToolRescansForms_FrameDestroyedDuringExtraction) {
+  auto web_frame =
+      web::FakeWebFrame::Create(base::SysNSStringToUTF8(kTestFrameID),
+                                /*is_main_frame=*/true, GURL(kTestURL));
+  web::WebFrame* frame = web_frame.get();
+  AddWebFrame(std::move(web_frame));
+
+  __block void (^extracted_handler)(const std::vector<FormData>&) = nil;
+  id mock_handler =
+      [OCMArg checkWithBlock:^(void (^handler)(const std::vector<FormData>&)) {
+        extracted_handler = [handler copy];
+        return YES;
+      }];
+  OCMExpect([form_helper_ findPasswordFormsInFrame:frame
+                                 completionHandler:mock_handler]);
+
+  base::test::TestFuture<void> future;
+  [controller_ actorLoginToolRescansFormsInWebState:&web_state_
+                                noFormsFoundHandler:base::CallbackToBlock(
+                                                        future.GetCallback())];
+
+  ASSERT_TRUE(extracted_handler);
+
+  OCMExpect([[suggestion_helper_ ignoringNonObjectArgs] cleanupForFrameId:""]);
+  web_frames_manager_->RemoveWebFrame(base::SysNSStringToUTF8(kTestFrameID));
+
+  extracted_handler({CreateSignupForm()});
+
+  EXPECT_TRUE(future.Wait());
 }
 
 // TODO(crbug.com/40701292): Finish unit testing the rest of the public API.

@@ -11,7 +11,6 @@
 #include <string>
 
 #include "base/compiler_specific.h"
-#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/trace_event/trace_event.h"
 #include "media/base/demuxer_memory_limit.h"
@@ -22,9 +21,6 @@
 namespace media {
 
 namespace {
-
-// TODO(crbug.com/486351442): Kill-switch to be removed after M147 goes stable.
-BASE_FEATURE(kMergeRangesDuringAppend, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // The minimum interbuffer decode timestamp delta (or buffer duration) for use
 // in fudge room for range membership, adjacency and coalescing.
@@ -301,6 +297,8 @@ void SourceBufferStream::Append(const BufferQueue& buffers) {
     last_appended_buffer_is_keyframe_ = buffers.back()->is_key_frame();
     last_appended_buffer_decode_timestamp_ =
         buffers.back()->GetDecodeTimestamp();
+    last_appended_gop_keyframe_timestamp_ =
+        (*range_for_next_append_)->GetLastGOPKeyframeTimestamp();
     highest_timestamp_in_append_sequence_ =
         (*range_for_next_append_)->GetEndTimestamp();
     highest_buffered_end_time_in_append_sequence_ =
@@ -363,6 +361,8 @@ void SourceBufferStream::Append(const BufferQueue& buffers) {
         buffers_for_new_range->back()->is_key_frame();
     last_appended_buffer_decode_timestamp_ =
         buffers_for_new_range->back()->GetDecodeTimestamp();
+    last_appended_gop_keyframe_timestamp_ =
+        (*range_for_next_append_)->GetLastGOPKeyframeTimestamp();
     highest_timestamp_in_append_sequence_ =
         (*range_for_next_append_)->GetEndTimestamp();
     highest_buffered_end_time_in_append_sequence_ =
@@ -411,9 +411,7 @@ void SourceBufferStream::Append(const BufferQueue& buffers) {
 
   SetSelectedRangeIfNeeded(next_buffer_timestamp);
 
-  if (base::FeatureList::IsEnabled(kMergeRangesDuringAppend)) {
-    MergeAllAdjacentRanges();
-  }
+  MergeAllAdjacentRanges();
   DVLOG(1) << __func__ << " " << GetStreamTypeName()
            << ": done. ranges_=" << RangesToString(ranges_);
   DCHECK(IsRangeListSorted(ranges_));
@@ -636,6 +634,7 @@ void SourceBufferStream::ResetLastAppendedState() {
   last_appended_buffer_duration_ = kNoTimestamp;
   last_appended_buffer_is_keyframe_ = false;
   last_appended_buffer_decode_timestamp_ = kNoDecodeTimestamp;
+  last_appended_gop_keyframe_timestamp_ = kNoTimestamp;
   highest_timestamp_in_append_sequence_ = kNoTimestamp;
   highest_buffered_end_time_in_append_sequence_ = kNoTimestamp;
 }
@@ -1013,8 +1012,14 @@ size_t SourceBufferStream::FreeBuffers(size_t total_bytes_to_free,
 
     // Check to see if we've just deleted the GOP that was last appended.
     base::TimeDelta end_timestamp = buffers.back()->timestamp();
-    if (end_timestamp == last_appended_buffer_timestamp_) {
+    if (range_for_next_append_ != ranges_.end() &&
+        current_range == range_for_next_append_->get() &&
+        buffers.front()->timestamp() == last_appended_gop_keyframe_timestamp_ &&
+        end_timestamp == last_appended_buffer_timestamp_ &&
+        buffers.back()->GetDecodeTimestamp() ==
+            last_appended_buffer_decode_timestamp_) {
       DCHECK(last_appended_buffer_timestamp_ != kNoTimestamp);
+      DCHECK(last_appended_gop_keyframe_timestamp_ != kNoTimestamp);
       DCHECK(!new_range_for_append);
 
       // Create a new range containing these buffers.

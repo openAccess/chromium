@@ -19,7 +19,6 @@
 #include "base/containers/span.h"
 #include "base/time/time.h"
 #include "build/buildflag.h"
-#include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/addresses/address.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
@@ -165,8 +164,7 @@ class AutofillProfile : public FormGroup {
   // Android/Java API.
 #if BUILDFLAG(IS_ANDROID)
   // Create a new Java AutofillProfile instance.
-  base::android::ScopedJavaLocalRef<jobject> CreateJavaObject(
-      std::string_view app_locale) const;
+  base::android::ScopedJavaLocalRef<jobject> CreateJavaObject() const;
 
   // Given a Java AutofillProfile object, create an equivalent C++ instance.
   // Java profile can represent either a new or an existing address profile
@@ -186,22 +184,16 @@ class AutofillProfile : public FormGroup {
   void GetMatchingTypes(std::u16string_view text,
                         std::string_view app_locale,
                         FieldTypeSet* matching_types) const override;
-  using FormGroup::GetInfo;
-  std::u16string GetInfo(const AutofillType& type,
+  std::u16string GetInfo(FieldType type,
                          std::string_view app_locale) const override;
   std::u16string GetRawInfo(FieldType type) const override;
   void SetRawInfoWithVerificationStatus(FieldType type,
                                         std::u16string_view value,
                                         VerificationStatus status) override;
-  // TODO(crbug.com/40264633): Change `AutofillType` into `FieldType`.
-  bool SetInfoWithVerificationStatus(const AutofillType& type,
-                                     std::u16string_view value,
-                                     std::string_view app_locale,
-                                     VerificationStatus status) override;
   bool SetInfoWithVerificationStatus(FieldType type,
                                      std::u16string_view value,
                                      std::string_view app_locale,
-                                     VerificationStatus status);
+                                     VerificationStatus status) override;
   VerificationStatus GetVerificationStatus(const FieldType type) const override;
   FieldTypeSet GetSupportedTypes() const override;
 
@@ -391,13 +383,6 @@ class AutofillProfile : public FormGroup {
 
   // Clears all specified `fields` from the profile.
   void ClearFields(const FieldTypeSet& fields);
-
-  // If a regular name is written in phonetic spelling, the contents
-  // of the regular name tree should be moved to the phonetic name tree and the
-  // regular name tree should be cleared. The incorrect assignment happened in
-  // the past when we did not have proper support for phonetic names.
-  // TODO(crbug.com/359768803): Remove this method once the migration is done.
-  void MigrateRegularNameToPhoneticName();
 
   const ProfileTokenQuality& token_quality() const { return token_quality_; }
   ProfileTokenQuality& token_quality() { return token_quality_; }

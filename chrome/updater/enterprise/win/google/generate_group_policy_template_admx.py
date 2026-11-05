@@ -10,10 +10,7 @@ The resulting strings and files use CRLF as required by gpedit.msc.
 from __future__ import print_function
 
 import codecs
-import filecmp
-import os
 import re
-import sys
 
 MAIN_POLICY_KEY = r'Software\Policies\Google\Update'
 
@@ -380,7 +377,7 @@ ADMX_APP_POLICY_TEMPLATE = '''\
       <supportedOn ref="Sup_GoogleUpdate138_0_7200_0" />
       <elements>
         <enum id="Part_MajorVersion"
-             valueName="MajorVerionRollout%(AppGuid)s" required="true">
+             valueName="MajorVersionRollout%(AppGuid)s" required="true">
           <item displayName="$(string.Name_RolloutDefault)">
             <value>
               <decimal value="0" />
@@ -408,7 +405,7 @@ ADMX_APP_POLICY_TEMPLATE = '''\
       <supportedOn ref="Sup_GoogleUpdate138_0_7200_0" />
       <elements>
         <enum id="Part_MinorVersion"
-             valueName="MinorVerionRollout%(AppGuid)s" required="true">
+             valueName="MinorVersionRollout%(AppGuid)s" required="true">
           <item displayName="$(string.Name_RolloutDefault)">
             <value>
               <decimal value="0" />

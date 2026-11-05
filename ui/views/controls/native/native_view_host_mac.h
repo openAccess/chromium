@@ -39,6 +39,7 @@ class NativeViewHostMac : public NativeViewHostWrapper,
   remote_cocoa::mojom::Application* GetRemoteCocoaApplication() const override;
   uint64_t GetNSViewId() const override;
   void OnHostableViewDestroying() override;
+  [[nodiscard]] base::ScopedClosureRunner CreateVideoCaptureLock() override;
 
   // NativeViewHostWrapper:
   void AttachNativeView() override;
@@ -50,8 +51,6 @@ class NativeViewHostMac : public NativeViewHostWrapper,
   gfx::RoundedCornersF GetNativeViewCornerRadii() const override;
   gfx::Rect GetNativeViewClipRect() const override;
 
-  void SetHitTestTopInset(int top_inset) override;
-  int GetHitTestTopInset() const override;
   void InstallClip(int x, int y, int w, int h) override;
   bool HasInstalledClip() override;
   void UninstallClip() override;

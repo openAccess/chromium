@@ -21,6 +21,15 @@ namespace content {
 
 namespace {
 
+bool IsBurstLimitPerPriorityEnabled() {
+  return base::FeatureList::IsEnabled(
+             features::kPrefetchSchedulerBurstLimitPerPriority) ||
+         base::FeatureList::IsEnabled(
+             features::kPrefetchAheadOfImminentNavigation) ||
+         base::FeatureList::IsEnabled(
+             features::kPrefetchSchedulerBurstQueryParam);
+}
+
 size_t GetActiveSetSizeLimitForBase() {
   // TODO(crbug.com/406403063): Update the limit for base.
 
@@ -36,7 +45,11 @@ size_t GetActiveSetSizeLimitForBase() {
   return 1;
 }
 
+// TODO(crbug.com/558142263): Remove once
+// `kPrefetchSchedulerBurstLimitPerPriority` is launched.
 size_t GetActiveSetSizeLimitForBurst() {
+  CHECK(!IsBurstLimitPerPriorityEnabled());
+
   if (base::FeatureList::IsEnabled(features::kPrefetchSchedulerTesting)) {
     return features::kPrefetchSchedulerTestingActiveSetSizeLimitForBurst.Get();
   }
@@ -48,9 +61,12 @@ size_t GetActiveSetSizeLimitForBurst() {
   // queue so that prerendering is not blocked by queued prefetch requests.
   //
   // Note that prerenders are run sequentially. So, +1 is enough.
-  if (features::kPrerender2FallbackPrefetchSchedulerPolicy.Get() ==
-      features::Prerender2FallbackPrefetchSchedulerPolicy::kBurst) {
-    return GetActiveSetSizeLimitForBase() + 1;
+  if (base::FeatureList::IsEnabled(
+          features::kPrerender2FallbackPrefetchSpecRules)) {
+    if (features::kPrerender2FallbackPrefetchSchedulerPolicy.Get() ==
+        features::Prerender2FallbackPrefetchSchedulerPolicy::kBurst) {
+      return GetActiveSetSizeLimitForBase() + 1;
+    }
   }
 
   if (base::FeatureList::IsEnabled(
@@ -62,8 +78,99 @@ size_t GetActiveSetSizeLimitForBurst() {
   return GetActiveSetSizeLimitForBase();
 }
 
+size_t GetActiveSetSizeLimit(PrefetchSchedulerPriority priority) {
+  CHECK(IsBurstLimitPerPriorityEnabled());
+
+  if (base::FeatureList::IsEnabled(features::kPrefetchSchedulerTesting)) {
+    if (priority >= PrefetchSchedulerPriority::kBurstThreshold) {
+      return features::kPrefetchSchedulerTestingActiveSetSizeLimitForBurst
+          .Get();
+    }
+
+    return features::kPrefetchSchedulerTestingActiveSetSizeLimitForBase.Get();
+  }
+
+  switch (priority) {
+    case PrefetchSchedulerPriority::kBase:
+    case PrefetchSchedulerPriority::kHighTest:
+    case PrefetchSchedulerPriority::kHighAheadOfPrerender:
+    case PrefetchSchedulerPriority::kBurstTest:
+      // No additional room for burst.
+      break;
+
+    case PrefetchSchedulerPriority::kBurstThreshold:
+      NOTREACHED();
+
+    case PrefetchSchedulerPriority::kBurstForPrefetchPriority:
+      // WebView prefetches with the highest priority have a configurable burst
+      // limit. Note that `kWebViewPrefetchHighestPrefetchPriorityBurstLimit`
+      // directly overrides the active set size limit rather than adding to or
+      // being lower-bounded by `GetActiveSetSizeLimitForBase()`.
+      if (base::FeatureList::IsEnabled(
+              features::kWebViewPrefetchHighestPrefetchPriority)) {
+        return features::kWebViewPrefetchHighestPrefetchPriorityBurstLimit
+            .Get();
+      }
+
+      break;
+
+    case PrefetchSchedulerPriority::kBurstAheadOfPrerender:
+      // Before prefetch/prerender integration (i.e.
+      // `Prerender2FallbackPrefetchSpecRules` is disabled), prerender ran
+      // without prefetch. So, it was not blocked by prefetch queue. Allow
+      // prefetch-ahead-of-prerender to run independently of the ordinal
+      // prefetch queue so that prerendering is not blocked by queued prefetch
+      // requests.
+      //
+      // Note that prerenders are run sequentially. So, +1 is enough.
+      if (base::FeatureList::IsEnabled(
+              features::kPrerender2FallbackPrefetchSpecRules)) {
+        if (features::kPrerender2FallbackPrefetchSchedulerPolicy.Get() ==
+            features::Prerender2FallbackPrefetchSchedulerPolicy::kBurst) {
+          return GetActiveSetSizeLimitForBase() + 1;
+        }
+      }
+
+      break;
+
+    case PrefetchSchedulerPriority::kBurstForQueryParam:
+      if (base::FeatureList::IsEnabled(
+              features::kPrefetchSchedulerBurstQueryParam)) {
+        return GetActiveSetSizeLimitForBase() +
+               features::kPrefetchSchedulerBurstQueryParamExtraLimit.Get();
+      }
+
+      break;
+
+    case PrefetchSchedulerPriority::kBurstAheadOfImminentNavigation:
+      // A prefetch ahead of an imminent navigation is triggered by a signal
+      // that the navigation is (almost) certain to happen soon. Allow it to run
+      // independently of the ordinary prefetch queue so that it is not blocked
+      // by queued prefetch requests.
+      if (base::FeatureList::IsEnabled(
+              features::kPrefetchAheadOfImminentNavigation)) {
+        return GetActiveSetSizeLimitForBase() + 1;
+      }
+
+      break;
+  }
+
+  return GetActiveSetSizeLimitForBase();
+}
+
 PrefetchSchedulerPriority CalculatePriorityImpl(
     const PrefetchContainer& prefetch_container) {
+  if (base::FeatureList::IsEnabled(
+          features::kPrefetchAheadOfImminentNavigation)) {
+    if (prefetch_container.request().is_ahead_of_imminent_navigation()) {
+      return PrefetchSchedulerPriority::kBurstAheadOfImminentNavigation;
+    }
+  }
+
+  if (prefetch_container.MatchesBurstQueryParam()) {
+    return PrefetchSchedulerPriority::kBurstForQueryParam;
+  }
+
   if (prefetch_container.request().priority().has_value()) {
     switch (prefetch_container.request().priority().value()) {
       case PrefetchPriority::kLow:
@@ -345,6 +452,19 @@ void PrefetchScheduler::Progress() {
   // TODO(crbug.com/443681583)): Remove it if possible.
   prefetch_service_->PrepareProgress(base::PassKey<PrefetchScheduler>());
 
+  if (IsBurstLimitPerPriorityEnabled()) {
+    ProgressInternalWithBurstLimitPerPriority();
+    return;
+  }
+
+  ProgressInternalLegacy();
+}
+
+// TODO(crbug.com/558142263): Remove once
+// `kPrefetchSchedulerBurstLimitPerPriority` is launched.
+void PrefetchScheduler::ProgressInternalLegacy() {
+  CHECK(!IsBurstLimitPerPriorityEnabled());
+
   // #algorithm
   //
   // 1. Start prefetches with burst priority with limit for burst.
@@ -396,6 +516,46 @@ void PrefetchScheduler::Progress() {
   internal(PrefetchSchedulerPriority::kBurstThreshold,
            GetActiveSetSizeLimitForBurst());
   internal(PrefetchSchedulerPriority::kBase, GetActiveSetSizeLimitForBase());
+}
+
+void PrefetchScheduler::ProgressInternalWithBurstLimitPerPriority() {
+  CHECK(IsBurstLimitPerPriorityEnabled());
+
+  // #algorithm
+  //
+  // Pop the highest-priority `PrefetchContainer` that is ready to start and
+  // within the active set size limit for its priority. Continue until no such
+  // container exists or the queue is empty.
+  while (true) {
+    std::optional<PrefetchQueue::Item> item = queue_.Pop(
+        [this](const PrefetchQueue::Item& candidate) {
+          if (active_set_.size() >= GetActiveSetSizeLimit(candidate.priority)) {
+            return false;
+          }
+
+          return IsReadyToStartPrefetch(candidate);
+        },
+        PrefetchSchedulerPriority::kBase);
+
+    if (!item.has_value()) {
+      break;
+    }
+
+    base::WeakPtr<PrefetchContainer> prefetch_container =
+        item.value().prefetch_container;
+    // `prefetch_container` must be valid. It will be ensured by
+    // `PrefetchService` in the future.
+    //
+    // TODO(crbug.com/400761083): Use `CHECK`.
+    if (!prefetch_container) {
+      continue;
+    }
+
+    // This call calls a method of `PrefetchService` and can incur methods of
+    // `PrefetchScheduler`. It is safe as we don't hold iterators at this
+    // timing.
+    ProgressOne(std::move(prefetch_container));
+  }
 }
 
 void PrefetchScheduler::ProgressOne(

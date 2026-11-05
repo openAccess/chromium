@@ -74,6 +74,8 @@ void SearchSessionMetricsManager::OnSeen(Location location,
                                          const std::vector<Result>& results,
                                          const std::u16string& query) {
   if (location == Location::kAnswerCard) {
+    // TODO(crbug.com/571319304): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK(session_active_);
     session_result_ = ash::SearchSessionConclusion::kAnswerCardSeen;
   }
@@ -84,6 +86,8 @@ void SearchSessionMetricsManager::OnLaunch(Location location,
                                            const std::vector<Result>& shown,
                                            const std::u16string& query) {
   if (location == Location::kList) {
+    // TODO(crbug.com/577825278): CHECK-exclusion: Convert to a CHECK once
+    // we are confident it won't be triggered.
     DCHECK(session_active_);
     session_result_ = ash::SearchSessionConclusion::kLaunch;
   }

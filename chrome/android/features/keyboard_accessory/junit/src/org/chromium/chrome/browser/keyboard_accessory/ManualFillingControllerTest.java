@@ -22,6 +22,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doNothing;
@@ -29,6 +30,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -52,9 +54,9 @@ import static org.chromium.chrome.browser.tab.TabSelectionType.FROM_USER;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.RectF;
+import android.text.Spanned;
+import android.text.style.ClickableSpan;
 import android.view.Surface;
-import android.view.View;
-import android.view.Window;
 
 import androidx.annotation.Px;
 
@@ -63,33 +65,33 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatcher;
 import org.mockito.Captor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.mockito.stubbing.Answer;
-import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
+import org.robolectric.Robolectric;
 import org.robolectric.shadows.ShadowLooper;
 
-import org.chromium.base.CallbackUtils;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.UnownedUserDataHost;
 import org.chromium.base.UserDataHost;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Features;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.ActivityTabProvider;
+import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.ChromeWindow;
-import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.compositor.CompositorViewHolder;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
@@ -104,18 +106,33 @@ import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData
 import org.chromium.chrome.browser.keyboard_accessory.data.Provider;
 import org.chromium.chrome.browser.keyboard_accessory.data.UserInfoField;
 import org.chromium.chrome.browser.keyboard_accessory.sheet_component.AccessorySheetCoordinator;
-import org.chromium.chrome.browser.multiwindow.MultiWindowModeStateDispatcher;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileJni;
+import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabHidingType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.AnchorSide;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.HeightType;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs.SideUiSize;
+import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
+import org.chromium.components.autofill.autofill_ai.AutofillAiSourceAttributionInfo;
+import org.chromium.components.autofill.autofill_ai.SourceType;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
+import org.chromium.components.browser_ui.settings.SettingsNavigation;
+import org.chromium.components.browser_ui.widget.ActionConfirmationDialog;
+import org.chromium.components.browser_ui.widget.ActionConfirmationDialog.DialogHandle;
+import org.chromium.components.browser_ui.widget.StrictButtonPressController.ButtonClickResult;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.embedder_support.view.ContentView;
+import org.chromium.components.feature_engagement.EventConstants;
+import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.mock.MockWebContents;
@@ -124,24 +141,65 @@ import org.chromium.ui.base.ApplicationViewportInsetTracker;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.edge_to_edge.EdgeToEdgeStateProvider;
 import org.chromium.ui.insets.InsetObserver;
+import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.mojom.VirtualKeyboardMode;
+import org.chromium.url.GURL;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /** Controller tests for the root controller for interactions with the manual filling UI. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @Features.EnableFeatures({
     ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_SUPPRESS_ACCESSORY_ON_EMPTY,
     ChromeFeatureList.AUTOFILL_ANDROID_DESKTOP_KEYBOARD_ACCESSORY_REVAMP,
     ChromeFeatureList.AUTOFILL_ANDROID_KEYBOARD_ACCESSORY_DYNAMIC_POSITIONING
 })
 public class ManualFillingControllerTest {
+    /**
+     * Subclass of {@link ChromeTabbedActivity} used to supply test doubles for activity-level
+     * getters queried by {@link ManualFillingMediator} without running native initialization.
+     */
+    private static class TestChromeActivity extends ChromeTabbedActivity {
+        private TabModelSelector mTabModelSelector;
+        private FullscreenManager mFullscreenManager;
+        private NonNullObservableSupplier<CompositorViewHolder> mCompositorViewHolderSupplier;
+        private Supplier<WebContents> mCurrentWebContentsSupplier;
+        private Resources mResources;
+
+        @Override
+        public TabModelSelector getTabModelSelector() {
+            return mTabModelSelector;
+        }
+
+        @Override
+        public FullscreenManager getFullscreenManager() {
+            return mFullscreenManager;
+        }
+
+        @Override
+        public NonNullObservableSupplier<CompositorViewHolder> getCompositorViewHolderSupplier() {
+            return mCompositorViewHolderSupplier;
+        }
+
+        @Override
+        public @Nullable WebContents getCurrentWebContents() {
+            return mCurrentWebContentsSupplier != null ? mCurrentWebContentsSupplier.get() : null;
+        }
+
+        @Override
+        public Resources getResources() {
+            return mResources != null ? mResources : super.getResources();
+        }
+    }
+
     private static final int sKeyboardHeightDp = 100;
     private static final int sAccessoryHeightDp = 48;
     private static final int sDynamicPositioningMaxWidthPx = 100;
@@ -152,17 +210,11 @@ public class ManualFillingControllerTest {
     @Captor private ArgumentCaptor<KeyboardAccessoryStyle> mStyleCaptor;
 
     @Mock private ChromeWindow mMockWindow;
-    @Mock private ChromeActivity mMockActivity;
-    @Mock private Window mMockActivityWindow;
-    private WebContents mLastMockWebContents;
     @Mock private Profile mMockProfile;
     @Mock private Profile.Natives mProfileJniMock;
-    @Mock private ContentView mMockContentView;
     @Mock private TabModelSelector mMockTabModelSelector;
-    @Mock private Resources mMockResources;
     @Mock private KeyboardAccessoryCoordinator mMockKeyboardAccessory;
     @Mock private AccessorySheetCoordinator mMockAccessorySheet;
-    @Mock private CompositorViewHolder mMockCompositorViewHolder;
     @Mock private BottomSheetController mMockBottomSheetController;
     @Mock private ManualFillingComponent.SoftKeyboardDelegate mMockSoftKeyboardDelegate;
     @Mock private ActivityKeyboardVisibilityDelegate mMockKeyboardDelegate;
@@ -170,9 +222,15 @@ public class ManualFillingControllerTest {
     @Mock private InsetObserver mInsetObserver;
     @Mock private BackPressManager mMockBackPressManager;
     @Mock private EdgeToEdgeController mMockEdgeToEdgeController;
-    @Mock private MultiWindowModeStateDispatcher mMockMultiWindowModeStateDispatcher;
     @Mock private BrowserControlsManager mMockBrowserControlsManager;
+    @Mock private SideUiStateProvider mMockSideUiStateProvider;
     @Mock private ManualFillingComponentBridge.Natives mManualFillingComponentBridgeJniMock;
+
+    private TestChromeActivity mActivity;
+    private WebContents mLastMockWebContents;
+    private ContentView mContentView;
+    private Resources mMockResources;
+    private CompositorViewHolder mCompositorViewHolder;
 
     private final ManualFillingCoordinator mController = new ManualFillingCoordinator();
     private final ManualFillingMediator mMediator = mController.getMediatorForTesting();
@@ -188,8 +246,6 @@ public class ManualFillingControllerTest {
             mMockEdgeToEdgeControllerSupplier = ObservableSuppliers.createNullable();
     private final SettableMonotonicObservableSupplier<TabModel> mMockTabModelSupplier =
             ObservableSuppliers.createMonotonic();
-
-    private final ActivityTabProvider mActivityTabProvider = new ActivityTabProvider();
 
     /**
      * Helper class that provides shortcuts to providing and observing AccessorySheetData and
@@ -210,7 +266,8 @@ public class ManualFillingControllerTest {
          * #getRecordedActions()} and {@link #getFirstRecordedAction()}.
          *
          * @param unusedTypeId Unused but necessary to enable use as method reference.
-         * @param item The {@link Action[]} provided by a {@link Provider<Action[]>}.
+         * @param item The array of {@link Action}s provided by a {@link Provider} of {@code
+         *     Action[]}.
          */
         void record(int unusedTypeId, Action[] item) {
             mRecordedActionNotifications++;
@@ -234,7 +291,7 @@ public class ManualFillingControllerTest {
          * @param actionType The type for the provided generation action.
          */
         void provideAction(@AccessoryAction int actionType) {
-            provideActions(new Action[] {new Action(actionType, CallbackUtils.emptyCallback())});
+            provideActions(new Action[] {new Action(actionType, wasObscured -> {})});
         }
 
         /**
@@ -340,34 +397,30 @@ public class ManualFillingControllerTest {
 
     @Before
     public void setUp() {
-        when(mMockWindow.getActivity()).thenReturn(new WeakReference<>(mMockActivity));
-        when(mMockActivity.getWindow()).thenReturn(mMockActivityWindow);
-        when(mMockActivityWindow.getDecorView()).thenReturn(mock(View.class));
+        mActivity = Robolectric.buildActivity(TestChromeActivity.class).get();
+        mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
+        mMockResources = spy(mActivity.getResources());
+        mActivity.mResources = mMockResources;
+        mCompositorViewHolder = new CompositorViewHolder(mActivity, /* attrs= */ null);
+        mCompositorViewHolder.setBrowserControlsManager(mMockBrowserControlsManager);
+        mContentView = ContentView.createContentView(mActivity, /* webContents= */ null);
+        when(mMockWindow.getActivity()).thenReturn(new WeakReference<>(mActivity));
         when(mMockWindow.getUnownedUserDataHost()).thenReturn(mUnownedUserDataHost);
         mInsetSupplier.setKeyboardInsetSupplier(mKeyboardInsetSupplier);
         mInsetSupplier.setKeyboardAccessoryInsetSupplier(mController.getBottomInsetSupplier());
         when(mMockWindow.getApplicationBottomInsetTracker()).thenReturn(mInsetSupplier);
         when(mMockSoftKeyboardDelegate.calculateSoftKeyboardHeight(any())).thenReturn(0);
-        when(mMockActivity.getTabModelSelector()).thenReturn(mMockTabModelSelector);
+        mActivity.mTabModelSelector = mMockTabModelSelector;
         when(mMockTabModelSelector.getCurrentTabModelSupplier()).thenReturn(mMockTabModelSupplier);
         when(mMockTabModelSelector.getModels()).thenReturn(Collections.emptyList());
-        when(mMockActivity.getActivityTabProvider()).thenReturn(mActivityTabProvider);
-        BrowserControlsManager browserControlsManager =
-                new BrowserControlsManager(mMockActivity, 0, mMockMultiWindowModeStateDispatcher);
-        when(mMockActivity.getBrowserControlsManager()).thenReturn(browserControlsManager);
-        when(mMockActivity.getFullscreenManager()).thenReturn(mMockFullscreenManager);
+        mActivity.mFullscreenManager = mMockFullscreenManager;
         doNothing().when(mMockFullscreenManager).addObserver(mFullscreenObserverCaptor.capture());
         SettableNonNullObservableSupplier<CompositorViewHolder> compositorViewHolderSupplier =
-                ObservableSuppliers.createNonNull(mMockCompositorViewHolder);
-        when(mMockActivity.getCompositorViewHolderSupplier())
-                .thenReturn(compositorViewHolderSupplier);
-        when(mMockActivity.getResources()).thenReturn(mMockResources);
-        when(mMockActivity.getPackageManager())
-                .thenReturn(RuntimeEnvironment.application.getPackageManager());
-        when(mMockActivity.findViewById(android.R.id.content)).thenReturn(mMockContentView);
-        when(mMockContentView.getRootView()).thenReturn(mock(View.class));
+                ObservableSuppliers.createNonNull(mCompositorViewHolder);
+        mActivity.mCompositorViewHolderSupplier = compositorViewHolderSupplier;
         mLastMockWebContents = mock(MockWebContents.class);
-        when(mMockActivity.getCurrentWebContents()).then(i -> mLastMockWebContents);
+        when(mLastMockWebContents.getVisibility()).thenReturn(Visibility.VISIBLE);
+        mActivity.mCurrentWebContentsSupplier = () -> mLastMockWebContents;
 
         ProfileJni.setInstanceForTesting(mProfileJniMock);
         when(mProfileJniMock.fromWebContents(any())).thenReturn(mMockProfile);
@@ -381,6 +434,7 @@ public class ManualFillingControllerTest {
         Configuration config = new Configuration();
         config.hardKeyboardHidden = HARDKEYBOARDHIDDEN_UNDEFINED;
         when(mMockResources.getConfiguration()).thenReturn(config);
+        when(mMockResources.getDimensionPixelSize(R.dimen.toolbar_shadow_height)).thenReturn(0);
         when(mMockResources.getDimensionPixelSize(
                         R.dimen.keyboard_accessory_bar_dynamic_positioning_max_width))
                 .thenReturn(sDynamicPositioningMaxWidthPx);
@@ -397,13 +451,23 @@ public class ManualFillingControllerTest {
                 /* isContextualSearchOpened= */ () -> false,
                 mMockBackPressManager,
                 mMockEdgeToEdgeControllerSupplier,
-                mMockSoftKeyboardDelegate,
-                mMockBrowserControlsManager);
+                mMockSoftKeyboardDelegate);
     }
 
     @Test
-    public void testRegistersAtMemoryCallbackOnInitialize() {
-        verify(mMockKeyboardAccessory).setAtMemoryCallback(any());
+    public void testAtMemoryCallbackNotifiesTrackerAndNative() {
+        Tracker tracker = mock(Tracker.class);
+        when(tracker.isInitialized()).thenReturn(true);
+        TrackerFactory.setTrackerForTests(tracker);
+        ArgumentCaptor<Runnable> callbackCaptor = ArgumentCaptor.forClass(Runnable.class);
+        verify(mMockKeyboardAccessory).setAtMemoryCallback(callbackCaptor.capture());
+
+        callbackCaptor.getValue().run();
+
+        verify(tracker).notifyEvent(EventConstants.KEYBOARD_ACCESSORY_AT_MEMORY_USED);
+        verify(mManualFillingComponentBridgeJniMock)
+                .onOptionSelectedForWebContents(
+                        mLastMockWebContents, AccessoryAction.SHOW_AT_MEMORY_BOTTOMSHEET);
     }
 
     @Test
@@ -450,6 +514,257 @@ public class ManualFillingControllerTest {
         mController.destroy();
 
         assertThat(mMediator.getActionConfirmationDialogForTesting(), is(nullValue()));
+    }
+
+    @Test
+    public void testShowAutofillAiSuggestionDetailsDeclines() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        Runnable confirmedCallback = mock(Runnable.class);
+        Runnable declinedCallback = mock(Runnable.class);
+
+        mController.showAutofillAiSuggestionDetails(
+                "Remove this info?",
+                "Your info was suggested by Gemini.",
+                "Remove",
+                "Got it",
+                List.of(
+                        new AutofillAiSourceAttributionInfo(
+                                SourceType.GMAIL,
+                                new GURL("https://mail.google.com/"),
+                                "Flight Confirmation")),
+                confirmedCallback,
+                declinedCallback);
+
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogParams> paramsCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogParams.class);
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogHandler> handlerCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogHandler.class);
+
+        verify(mockDialog).show(paramsCaptor.capture(), handlerCaptor.capture());
+
+        // Clicking positive button (Got it) should trigger declinedCallback
+        handlerCaptor
+                .getValue()
+                .onDialogInteracted(
+                        mock(ActionConfirmationDialog.DismissHandler.class),
+                        ButtonClickResult.POSITIVE,
+                        /* stopShowing= */ false);
+        verify(declinedCallback).run();
+        verify(confirmedCallback, never()).run();
+    }
+
+    @Test
+    public void testShowAutofillAiSuggestionDetailsConfirms() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        Runnable confirmedCallback = mock(Runnable.class);
+        Runnable declinedCallback = mock(Runnable.class);
+
+        mController.showAutofillAiSuggestionDetails(
+                "Remove this info?",
+                "Your info was suggested by Gemini.",
+                "Remove",
+                "Got it",
+                List.of(
+                        new AutofillAiSourceAttributionInfo(
+                                SourceType.GMAIL,
+                                new GURL("https://mail.google.com/"),
+                                "Flight Confirmation")),
+                confirmedCallback,
+                declinedCallback);
+
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogParams> paramsCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogParams.class);
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogHandler> handlerCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogHandler.class);
+
+        verify(mockDialog).show(paramsCaptor.capture(), handlerCaptor.capture());
+
+        // Clicking negative button (Remove) should trigger confirmedCallback
+        handlerCaptor
+                .getValue()
+                .onDialogInteracted(
+                        mock(ActionConfirmationDialog.DismissHandler.class),
+                        ButtonClickResult.NEGATIVE,
+                        /* stopShowing= */ false);
+        verify(confirmedCallback).run();
+        verify(declinedCallback, never()).run();
+    }
+
+    @Test
+    public void testFormatAutofillAiSuppressionMessage_WithSources() {
+        SettingsNavigation mockSettingsNavigation = mock(SettingsNavigation.class);
+        SettingsNavigationFactory.setInstanceForTesting(mockSettingsNavigation);
+
+        String rawBody =
+                "From Gemini and connected apps · <src_link>View sources</src_link>\n\n"
+                        + "You can remove this suggestion from Chrome. Your original source won't"
+                        + " be deleted. <manage_link>Manage enhanced autofill</manage_link>";
+        List<AutofillAiSourceAttributionInfo> sources =
+                List.of(
+                        new AutofillAiSourceAttributionInfo(
+                                SourceType.GMAIL,
+                                new GURL("https://mail.google.com"),
+                                "Flight Confirmation"));
+        CharSequence formatted =
+                mMediator.formatAutofillAiSuppressionMessage(rawBody, sources, "Passport details");
+
+        assertTrue(formatted instanceof Spanned);
+        Spanned spanned = (Spanned) formatted;
+        ClickableSpan[] spans = spanned.getSpans(0, spanned.length(), ClickableSpan.class);
+        assertEquals(2, spans.length);
+
+        String plainText = spanned.toString();
+
+        // Verify span 1 ("View sources")
+        int sourcesStart = plainText.indexOf("View sources");
+        int sourcesEnd = sourcesStart + "View sources".length();
+        assertEquals(sourcesStart, spanned.getSpanStart(spans[0]));
+        assertEquals(sourcesEnd, spanned.getSpanEnd(spans[0]));
+
+        // Verify span 2 ("Manage enhanced autofill")
+        int settingsStart = plainText.indexOf("Manage enhanced autofill");
+        int settingsEnd = settingsStart + "Manage enhanced autofill".length();
+        assertEquals(settingsStart, spanned.getSpanStart(spans[1]));
+        assertEquals(settingsEnd, spanned.getSpanEnd(spans[1]));
+
+        // Trigger settings click
+        spans[1].onClick(null);
+        verify(mockSettingsNavigation).startSettings(eq(mActivity), any(), any(), eq(true));
+
+        when(mMockBottomSheetController.requestShowContent(any(), eq(true))).thenReturn(true);
+        // Trigger attribution click
+        spans[0].onClick(null);
+
+        // Trigger attribution click a second time while active and verify debounce
+        spans[0].onClick(null);
+        verify(mMockBottomSheetController, times(1))
+                .requestShowContent(argThat(isAttributionSheet()), eq(true));
+    }
+
+    @Test
+    public void testDestroy_DestroysActiveSourceAttributionCoordinator() {
+        String rawBody = "Suggested by Gemini · <src_link>View sources</src_link>";
+        List<AutofillAiSourceAttributionInfo> sources =
+                List.of(
+                        new AutofillAiSourceAttributionInfo(
+                                SourceType.GMAIL,
+                                new GURL("https://mail.google.com/"),
+                                "Flight Confirmation"));
+        CharSequence formatted = mMediator.formatAutofillAiSuppressionMessage(rawBody, sources, "");
+        Spanned spanned = (Spanned) formatted;
+        ClickableSpan[] spans = spanned.getSpans(0, spanned.length(), ClickableSpan.class);
+        assertEquals(1, spans.length);
+
+        when(mMockBottomSheetController.requestShowContent(any(), eq(true))).thenReturn(true);
+        spans[0].onClick(null);
+
+        mMediator.destroy();
+        verify(mMockBottomSheetController)
+                .hideContent(argThat(isAttributionSheet()), eq(false), eq(StateChangeReason.NONE));
+    }
+
+    @Test
+    public void testPause_DestroysActiveSourceAttributionCoordinatorAndReleasesDebounce() {
+        String rawBody = "Suggested by Gemini · <src_link>View sources</src_link>";
+        List<AutofillAiSourceAttributionInfo> sources =
+                List.of(
+                        new AutofillAiSourceAttributionInfo(
+                                SourceType.GMAIL,
+                                new GURL("https://mail.google.com/"),
+                                "Flight Confirmation"));
+        CharSequence formatted = mMediator.formatAutofillAiSuppressionMessage(rawBody, sources, "");
+        Spanned spanned = (Spanned) formatted;
+        ClickableSpan[] spans = spanned.getSpans(0, spanned.length(), ClickableSpan.class);
+        assertEquals(1, spans.length);
+
+        when(mMockBottomSheetController.requestShowContent(any(), eq(true))).thenReturn(true);
+        spans[0].onClick(null);
+
+        mMediator.pause();
+        verify(mMockBottomSheetController)
+                .hideContent(argThat(isAttributionSheet()), eq(false), eq(StateChangeReason.NONE));
+
+        // Debounce guard should be released, allowing sheet to open again.
+        spans[0].onClick(null);
+        verify(mMockBottomSheetController, times(2))
+                .requestShowContent(argThat(isAttributionSheet()), eq(true));
+    }
+
+    @Test
+    public void testShowAutofillAiSourceAttribution_requestsShowContent() {
+        List<AutofillAiSourceAttributionInfo> sources =
+                List.of(
+                        new AutofillAiSourceAttributionInfo(
+                                SourceType.GMAIL,
+                                new GURL("https://mail.google.com/"),
+                                "Flight Confirmation"));
+        when(mMockBottomSheetController.requestShowContent(any(), eq(true))).thenReturn(true);
+        mMediator.showAutofillAiSourceAttribution(sources, "Remove passport?");
+        verify(mMockBottomSheetController)
+                .requestShowContent(argThat(isAttributionSheet()), eq(true));
+    }
+
+    private static ArgumentMatcher<BottomSheetContent> isAttributionSheet() {
+        return content ->
+                content != null
+                        && content.getSheetFullHeightAccessibilityStringId()
+                                == org.chromium.chrome.browser.autofill.R.string
+                                        .autofill_ai_attribution_sheet_accessibility_title;
+    }
+
+    @Test
+    public void testFormatAutofillAiSuppressionMessage_MalformedTagsFallbackStripsLinkTags() {
+        // Overlapping or nested tags causing SpanApplier to throw IllegalArgumentException
+        String malformedBody =
+                "Suggested by Gemini · <src_link><manage_link>View"
+                        + " sources</src_link></manage_link>\n\n"
+                        + "You can remove this suggestion. Manage";
+        List<AutofillAiSourceAttributionInfo> sources =
+                List.of(
+                        new AutofillAiSourceAttributionInfo(
+                                SourceType.GMAIL,
+                                new GURL("https://mail.google.com"),
+                                "Flight Confirmation"));
+        CharSequence formatted =
+                mMediator.formatAutofillAiSuppressionMessage(malformedBody, sources, "");
+
+        String plainText = formatted.toString();
+        assertFalse(plainText.contains("<src_link>"));
+        assertFalse(plainText.contains("</src_link>"));
+        assertFalse(plainText.contains("<manage_link>"));
+        assertFalse(plainText.contains("</manage_link>"));
+        assertTrue(plainText.contains("View sources"));
+        assertTrue(plainText.contains("Manage"));
+    }
+
+    @Test
+    public void testDestroyDismissesActiveConfirmationDialog() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        ActionConfirmationDialog.DismissHandler mockDismissHandler =
+                mock(ActionConfirmationDialog.DismissHandler.class);
+        when(mockDialog.show(any(), any())).thenReturn(mockDismissHandler);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        mController.showAutofillAiSuggestionDetails(
+                "Title",
+                "Body",
+                "Remove",
+                "Got it",
+                List.of(
+                        new AutofillAiSourceAttributionInfo(
+                                SourceType.GMAIL,
+                                new GURL("https://mail.google.com/"),
+                                "Flight Confirmation")),
+                () -> {},
+                () -> {});
+        verify(mockDialog).show(any(), any());
+
+        mMediator.destroy();
+        verify(mockDismissHandler).dismiss(DialogDismissalCause.UNKNOWN);
     }
 
     @Test
@@ -834,7 +1149,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
         verify(mMockKeyboardAccessory).show();
 
         // The accessory is shown and the content area plus bar size don't exceed the threshold.
@@ -863,7 +1178,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
         verify(mMockKeyboardAccessory).show();
 
         // The accessory is shown and the content area plus bar size don't exceed the threshold.
@@ -887,16 +1202,16 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
         setContentAreaDimensions(2.f, 180, 220);
-        mMediator.onLayoutChange(mMockContentView, 0, 0, 540, 360, 0, 0, 640, 360);
+        mMediator.onLayoutChange(mContentView, 0, 0, 540, 360, 0, 0, 640, 360);
         verify(mMockKeyboardAccessory).show();
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), not(is(HIDDEN)));
 
         // Rotating the screen causes a relayout:
         setContentAreaDimensions(2.f, 320, 128, Surface.ROTATION_90);
         when(mMockSoftKeyboardDelegate.isSoftKeyboardShowing(any())).thenReturn(false);
-        mMediator.onLayoutChange(mMockContentView, 0, 0, 160, 640, 0, 0, 540, 360);
+        mMediator.onLayoutChange(mContentView, 0, 0, 160, 640, 0, 0, 540, 360);
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(HIDDEN));
     }
 
@@ -920,7 +1235,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), not(is(HIDDEN)));
         verify(mMockKeyboardAccessory).show();
 
@@ -963,7 +1278,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), not(is(HIDDEN)));
 
         // Use a width that is too small but with a valid height (e.g. resized multi-window window).
@@ -1169,7 +1484,7 @@ public class ManualFillingControllerTest {
         final int density = 2;
         mMockEdgeToEdgeControllerSupplier.set(null);
         EdgeToEdgeStateProvider edgeToEdgeStateProvider =
-                new EdgeToEdgeStateProvider(mMockActivityWindow);
+                new EdgeToEdgeStateProvider(mActivity.getWindow());
         edgeToEdgeStateProvider.attach(mMockWindow);
         int edgeToEdgeToken = edgeToEdgeStateProvider.acquireEdgeToEdgeToken();
 
@@ -1263,6 +1578,7 @@ public class ManualFillingControllerTest {
         // Make sure the model is in a non-HIDDEN state first.
         mModel.set(KEYBOARD_EXTENSION_STATE, FLOATING_SHEET);
         reset(mMockKeyboardAccessory, mMockAccessorySheet);
+        mCompositorViewHolder.layout(0, 0, 100, 100);
 
         // Set the model HIDDEN. This should update keyboard and subcomponents.
         mModel.set(KEYBOARD_EXTENSION_STATE, HIDDEN);
@@ -1271,7 +1587,7 @@ public class ManualFillingControllerTest {
         verify(mMockAccessorySheet).hide();
         verify(mMockKeyboardAccessory).closeActiveTab();
         verify(mMockKeyboardAccessory).dismiss();
-        verify(mMockCompositorViewHolder).requestLayout(); // Triggered as if it was a keyboard.
+        assertTrue(mCompositorViewHolder.isLayoutRequested()); // Triggered as if it was a keyboard.
     }
 
     @Test
@@ -1300,6 +1616,7 @@ public class ManualFillingControllerTest {
         when(mMockSoftKeyboardDelegate.isSoftKeyboardShowing(any())).thenReturn(false);
         mModel.set(KEYBOARD_EXTENSION_STATE, HIDDEN);
         reset(mMockKeyboardAccessory, mMockAccessorySheet);
+        mCompositorViewHolder.layout(0, 0, 100, 100);
 
         // Set the model FLOATING_BAR. This should update keyboard and subcomponents.
         mModel.set(KEYBOARD_EXTENSION_STATE, FLOATING_BAR);
@@ -1308,7 +1625,7 @@ public class ManualFillingControllerTest {
         verify(mMockSoftKeyboardDelegate, atLeastOnce()).showSoftKeyboard(any());
         verify(mMockAccessorySheet).hide();
         verify(mMockKeyboardAccessory).closeActiveTab();
-        verify(mMockCompositorViewHolder).requestLayout(); // Triggered as if it was a keyboard.
+        assertTrue(mCompositorViewHolder.isLayoutRequested()); // Triggered as if it was a keyboard.
         verify(mMockKeyboardAccessory).show();
     }
 
@@ -1392,7 +1709,7 @@ public class ManualFillingControllerTest {
 
         // Showing the keyboard should now trigger a transition into EXTENDING state.
         when(mMockSoftKeyboardDelegate.isSoftKeyboardShowing(any())).thenReturn(true);
-        mMediator.onLayoutChange(mMockContentView, 0, 0, 320, 90, 0, 0, 320, 180);
+        mMediator.onLayoutChange(mContentView, 0, 0, 320, 90, 0, 0, 320, 180);
 
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(EXTENDING_KEYBOARD));
     }
@@ -1412,7 +1729,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
 
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(EXTENDING_KEYBOARD));
     }
@@ -1431,7 +1748,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
 
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(FLOATING_BAR));
     }
@@ -1450,7 +1767,7 @@ public class ManualFillingControllerTest {
 
         // Simulate opening a keyboard:
         when(mMockSoftKeyboardDelegate.isSoftKeyboardShowing(any())).thenReturn(true);
-        mMediator.onLayoutChange(mMockContentView, 0, 0, 320, 90, 0, 0, 320, 180);
+        mMediator.onLayoutChange(mContentView, 0, 0, 320, 90, 0, 0, 320, 180);
 
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(EXTENDING_KEYBOARD));
     }
@@ -1515,12 +1832,12 @@ public class ManualFillingControllerTest {
         // Now the filling component waits for the keyboard to disappear before changing the stat:
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(WAITING_TO_REPLACE));
         // Layout changes but the keyboard is still there, so nothing happens:
-        mMediator.onLayoutChange(mMockContentView, 0, 0, 320, 90, 0, 0, 320, 90);
+        mMediator.onLayoutChange(mContentView, 0, 0, 320, 90, 0, 0, 320, 90);
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(WAITING_TO_REPLACE));
 
         // The keyboard finally hides completely and the state changes to REPLACING.
         when(mMockSoftKeyboardDelegate.isSoftKeyboardShowing(any())).thenReturn(false);
-        mMediator.onLayoutChange(mMockContentView, 0, 0, 320, 90, 0, 0, 320, 180);
+        mMediator.onLayoutChange(mContentView, 0, 0, 320, 90, 0, 0, 320, 180);
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(REPLACING_KEYBOARD));
     }
 
@@ -1548,7 +1865,7 @@ public class ManualFillingControllerTest {
 
         // Simulate the keyboard opening:
         when(mMockSoftKeyboardDelegate.isSoftKeyboardShowing(any())).thenReturn(true);
-        mMediator.onLayoutChange(mMockContentView, 0, 0, 320, 90, 0, 0, 320, 180);
+        mMediator.onLayoutChange(mContentView, 0, 0, 320, 90, 0, 0, 320, 180);
 
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(EXTENDING_KEYBOARD));
     }
@@ -1572,7 +1889,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ false,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
 
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(HIDDEN));
         verify(mMockKeyboardAccessory, never()).setStyle(any());
@@ -1595,7 +1912,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
 
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(FLOATING_BAR));
         verify(mMockKeyboardAccessory).setStyle(mStyleCaptor.capture());
@@ -1665,7 +1982,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
 
         // Verify the accessory is shown as a floating bar with the correct style.
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(FLOATING_BAR));
@@ -1710,7 +2027,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
 
         // Verify the accessory is shown as a floating bar with the correct style.
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(FLOATING_BAR));
@@ -1722,6 +2039,57 @@ public class ManualFillingControllerTest {
 
         assertEquals(topBound * density - paddingForNotch - barHeight, style.getVerticalOffset());
         assertEquals(leftBound * density + horizontalMargin, style.getHorizontalOffset());
+    }
+
+    @Test
+    public void testLargeFormAccessoryWithDynamicPositioningIncludesViewportOffsets() {
+        DeviceInfo.setIsDesktopForTesting(true);
+        final int density = 2;
+        final int paddingForNotch = 5;
+        final int barHeight = 10;
+        final int leftBound = 10;
+        final int topBound = 20;
+        final int rightBound = 30;
+        final int bottomBound = 40;
+        final int horizontalMargin = 20;
+        final int viewportLeftOffset = 240;
+        final int viewportTopOffset = 100;
+
+        addBrowserTab(mMediator, 1111, null);
+        mModel.set(KEYBOARD_EXTENSION_STATE, HIDDEN);
+        reset(mMockKeyboardAccessory, mMockAccessorySheet);
+        when(mMockKeyboardAccessory.empty()).thenReturn(false);
+
+        simulateVisibleViewportBounds(
+                /* left= */ viewportLeftOffset,
+                /* top= */ viewportTopOffset,
+                /* right= */ 1000,
+                /* bottom= */ 1000);
+        mController.setFieldBounds(new RectF(leftBound, topBound, rightBound, bottomBound));
+
+        when(mMockResources.getDimensionPixelSize(R.dimen.keyboard_accessory_height))
+                .thenReturn(barHeight);
+        when(mMockResources.getDimensionPixelSize(R.dimen.keyboard_accessory_notch_height))
+                .thenReturn(paddingForNotch);
+        when(mMockResources.getDimensionPixelSize(
+                        R.dimen.keyboard_accessory_bar_dynamic_positioning_horizontal_margin))
+                .thenReturn(horizontalMargin);
+
+        mController.show(
+                /* waitForKeyboard= */ true,
+                /* shouldShowOnLargeFormFactor= */ true,
+                /* isUnstructuredField= */ false);
+
+        assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(FLOATING_BAR));
+        verify(mMockKeyboardAccessory).setStyle(mStyleCaptor.capture());
+        KeyboardAccessoryStyle style = mStyleCaptor.getValue();
+        assertFalse(style.isDocked());
+        assertEquals(KeyboardAccessoryStyle.NotchPosition.TOP, style.getNotchPosition());
+
+        assertEquals(viewportTopOffset + bottomBound * density, style.getVerticalOffset());
+        assertEquals(
+                viewportLeftOffset + leftBound * density + horizontalMargin,
+                style.getHorizontalOffset());
     }
 
     @Test
@@ -1738,7 +2106,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
 
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(EXTENDING_KEYBOARD));
         verify(mMockKeyboardAccessory).setStyle(mStyleCaptor.capture());
@@ -1787,7 +2155,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(FLOATING_BAR));
 
         // Scrolling should trigger a transition into HIDDEN state.
@@ -1809,7 +2177,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
         assertThat(mModel.get(KEYBOARD_EXTENSION_STATE), is(FLOATING_BAR));
 
         // Scrolling shouldn't trigger a transition into HIDDEN state.
@@ -1844,7 +2212,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
 
         // We can't directly check mWaitingForFetch because it's private in Mediator,
         // but we can verify that dismissIfWaitingForFetch still works.
@@ -1935,7 +2303,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ true);
+                /* isUnstructuredField= */ true);
 
         // Verify that AtMemory remains enabled while empty tabs are passed to both accessory bar
         // and accessory sheet (so exclusively the AtMemory icon is displayed).
@@ -1952,7 +2320,7 @@ public class ManualFillingControllerTest {
         mController.show(
                 /* waitForKeyboard= */ true,
                 /* shouldShowOnLargeFormFactor= */ true,
-                /* isContentEditable= */ false);
+                /* isUnstructuredField= */ false);
 
         // Verify that the cached tabs (passwords) are restored alongside AtMemory enablement.
         verify(mMockKeyboardAccessory).setAtMemoryEnabled(true);
@@ -1960,6 +2328,23 @@ public class ManualFillingControllerTest {
         verify(mMockAccessorySheet).setTabs(sheetTabCaptor.capture());
         assertThat(barTabCaptor.getValue().length, is(1));
         assertThat(sheetTabCaptor.getValue().length, is(1));
+    }
+
+    @Test
+    public void testNotifyingNullSheetDataDuringTeardownDoesNotCrash() {
+        // Regression test for crbug.com/518916125. When the native bridge is
+        // destroyed it broadcasts null to every registered sheet data provider
+        // (ManualFillingComponentBridge#destroy). While the WebContents is still
+        // showing, this used to forward null into a monotonic supplier that
+        // rejects null, throwing an AssertionError that crashed the browser via
+        // CheckException in the native destructor.
+        addBrowserTab(mMediator, 1234, null);
+        Provider<AccessorySheetData> sheetDataProvider = new Provider<>();
+        mController.registerSheetDataProvider(
+                mLastMockWebContents, AccessoryTabType.PASSWORDS, sheetDataProvider);
+
+        // Simulates the teardown broadcast; this must not throw.
+        sheetDataProvider.notifyObservers(null);
     }
 
     private Tab addBrowserTab(ManualFillingMediator mediator, int id, @Nullable Tab lastTab) {
@@ -1975,13 +2360,14 @@ public class ManualFillingControllerTest {
         when(tab.getId()).thenReturn(id);
         when(tab.getUserDataHost()).thenReturn(mUserDataHost);
         mLastMockWebContents = mock(MockWebContents.class);
+        when(mLastMockWebContents.getVisibility()).thenReturn(Visibility.VISIBLE);
         when(tab.getWebContents()).thenReturn(mLastMockWebContents);
         mCache.getStateFor(tab)
                 .getWebContentsObserverForTesting()
                 .onVisibilityChanged(Visibility.VISIBLE);
-        when(tab.getContentView()).thenReturn(mMockContentView);
+        when(tab.getContentView()).thenReturn(mContentView);
         when(mMockTabModelSelector.getCurrentTab()).thenReturn(tab);
-        mActivityTabProvider.setForTesting(tab);
+        mActivity.getActivityTabProvider().setForTesting(tab);
         mediator.getTabModelObserverForTesting()
                 .didAddTab(tab, FROM_BROWSER_ACTIONS, TabCreationState.LIVE_IN_FOREGROUND, false);
         mediator.getTabObserverForTesting().onShown(tab, FROM_NEW);
@@ -2101,7 +2487,7 @@ public class ManualFillingControllerTest {
         int newHeight = (int) (density * height);
         int newWidth = (int) (density * width);
         mMediator.onLayoutChange(
-                mMockContentView, 0, 0, newWidth, newHeight, 0, 0, oldWidth, oldHeight);
+                mContentView, 0, 0, newWidth, newHeight, 0, 0, oldWidth, oldHeight);
     }
 
     /**
@@ -2115,17 +2501,205 @@ public class ManualFillingControllerTest {
     }
 
     private void simulateVisibleViewportSize(@Px int width, @Px int height) {
-        RectF visibleViewport =
-                new RectF(/* left= */ 0, /* top= */ 0, /* right= */ width, /* bottom= */ height);
-        Mockito.doAnswer(
-                        (Answer<Void>)
-                                (invocationOnMock) -> {
-                                    invocationOnMock
-                                            .getArgument(0, RectF.class)
-                                            .set(visibleViewport);
-                                    return null;
-                                })
-                .when(mMockCompositorViewHolder)
-                .getVisibleViewport(any(RectF.class));
+        simulateVisibleViewportBounds(
+                /* left= */ 0, /* top= */ 0, /* right= */ width, /* bottom= */ height);
+    }
+
+    private void simulateVisibleViewportBounds(
+            @Px int left, @Px int top, @Px int right, @Px int bottom) {
+        if (top != 0) {
+            when(mMockBrowserControlsManager.getTopVisibleContentOffset()).thenReturn((float) top);
+        }
+        if (left != 0) {
+            when(mMockSideUiStateProvider.getCurrentSideUiSpecs())
+                    .thenReturn(
+                            new SideUiSpecs(
+                                    Map.of(
+                                            AnchorSide.LEFT,
+                                            new SideUiSize(left, HeightType.TOOLBAR))));
+            OneshotSupplierImpl<SideUiStateProvider> sideUiSupplier = new OneshotSupplierImpl<>();
+            sideUiSupplier.set(mMockSideUiStateProvider);
+            mCompositorViewHolder.setSideUiStateProviderSupplier(sideUiSupplier);
+            RobolectricUtil.runAllBackgroundAndUi();
+        }
+        mCompositorViewHolder.layout(0, 0, right, bottom);
+    }
+
+    @Test
+    public void testConfirmDeletionOperation() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        Runnable confirmedCallback = mock(Runnable.class);
+        Runnable declinedCallback = mock(Runnable.class);
+
+        mController.confirmDeletionOperation(
+                "Delete title",
+                "Delete message",
+                "",
+                "Delete",
+                confirmedCallback,
+                declinedCallback);
+
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogParams> paramsCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogParams.class);
+        ArgumentCaptor<ActionConfirmationDialog.ConfirmationDialogHandler> handlerCaptor =
+                ArgumentCaptor.forClass(ActionConfirmationDialog.ConfirmationDialogHandler.class);
+
+        verify(mockDialog).show(paramsCaptor.capture(), handlerCaptor.capture());
+
+        // For standard dialog, positive button triggers confirmedCallback
+        handlerCaptor
+                .getValue()
+                .onDialogInteracted(
+                        mock(ActionConfirmationDialog.DismissHandler.class),
+                        ButtonClickResult.POSITIVE,
+                        /* stopShowing= */ false);
+        verify(confirmedCallback).run();
+        verify(declinedCallback, never()).run();
+
+        // For standard dialog, negative button triggers declinedCallback
+        reset(confirmedCallback, declinedCallback);
+        mController.confirmDeletionOperation(
+                "Delete title",
+                "Delete message",
+                "",
+                "Delete",
+                confirmedCallback,
+                declinedCallback);
+        verify(mockDialog, times(2)).show(paramsCaptor.capture(), handlerCaptor.capture());
+        handlerCaptor
+                .getValue()
+                .onDialogInteracted(
+                        mock(ActionConfirmationDialog.DismissHandler.class),
+                        ButtonClickResult.NEGATIVE,
+                        /* stopShowing= */ false);
+        verify(declinedCallback).run();
+        verify(confirmedCallback, never()).run();
+    }
+
+    @Test
+    public void testFormatDeletionMessageWithLink() {
+        String body = "Delete this item? <link>Learn more</link>";
+        String bodyLink = "https://google.com";
+        CharSequence result = mMediator.formatDeletionMessage(body, bodyLink);
+
+        assertThat(result).isInstanceOf(Spanned.class);
+        Spanned spanned = (Spanned) result;
+        ClickableSpan[] spans = spanned.getSpans(0, spanned.length(), ClickableSpan.class);
+        assertThat(spans.length).isEqualTo(1);
+        assertThat(spanned.toString()).isEqualTo("Delete this item? Learn more");
+    }
+
+    @Test
+    public void testFormatDeletionMessageWithoutLink() {
+        String body = "Delete this item without link.";
+        CharSequence result = mMediator.formatDeletionMessage(body, "");
+        assertThat(result.toString()).isEqualTo(body);
+    }
+
+    @Test
+    public void testDismissConfirmationDialogOnDestroy() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        DialogHandle mockHandle = mock(DialogHandle.class);
+        when(mockDialog.show(any(), any())).thenReturn(mockHandle);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        mController.confirmDeletionOperation(
+                "Delete title",
+                "Delete message",
+                "",
+                "Delete",
+                mock(Runnable.class),
+                mock(Runnable.class));
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(mockHandle));
+
+        mController.destroy();
+
+        verify(mockHandle).dismiss(DialogDismissalCause.UNKNOWN);
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(nullValue()));
+    }
+
+    @Test
+    public void testDismissConfirmationDialogOnPause() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        DialogHandle mockHandle = mock(DialogHandle.class);
+        when(mockDialog.show(any(), any())).thenReturn(mockHandle);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        mController.confirmDeletionOperation(
+                "Delete title",
+                "Delete message",
+                "",
+                "Delete",
+                mock(Runnable.class),
+                mock(Runnable.class));
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(mockHandle));
+
+        mMediator.pause();
+
+        verify(mockHandle).dismiss(DialogDismissalCause.UNKNOWN);
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(nullValue()));
+    }
+
+    @Test
+    public void testRepeatedConfirmDeletionOperationDismissesActiveDialog() {
+        ActionConfirmationDialog mockDialog = mock(ActionConfirmationDialog.class);
+        DialogHandle mockHandle1 = mock(DialogHandle.class);
+        DialogHandle mockHandle2 = mock(DialogHandle.class);
+        when(mockDialog.show(any(), any())).thenReturn(mockHandle1, mockHandle2);
+        mMediator.setActionConfirmationDialogForTesting(mockDialog);
+
+        mController.confirmDeletionOperation(
+                "Delete title 1",
+                "Delete message 1",
+                "",
+                "Delete",
+                mock(Runnable.class),
+                mock(Runnable.class));
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(mockHandle1));
+
+        mController.confirmDeletionOperation(
+                "Delete title 2",
+                "Delete message 2",
+                "",
+                "Delete",
+                mock(Runnable.class),
+                mock(Runnable.class));
+
+        verify(mockHandle1).dismiss(DialogDismissalCause.UNKNOWN);
+        assertThat(mMediator.getConfirmationDialogDismissHandlerForTesting(), is(mockHandle2));
+    }
+
+    @Test
+    public void testHiddenWebContentsDoesNotOverwriteActiveTabSheetData() {
+        SheetProviderHelper activeTabHelper = new SheetProviderHelper();
+        SheetProviderHelper hiddenTabHelper = new SheetProviderHelper();
+
+        addBrowserTab(mMediator, 1111, null);
+        mController.registerSheetDataProvider(
+                mLastMockWebContents,
+                AccessoryTabType.PASSWORDS,
+                activeTabHelper.getSheetDataProvider());
+        getStateForBrowserTab()
+                .getSheetDataProvider(AccessoryTabType.PASSWORDS)
+                .addSyncObserverAndPostIfNonNull(activeTabHelper::record);
+        activeTabHelper.providePasswordSheet("ActiveTabPassword");
+        assertThat(activeTabHelper.getFirstRecordedPassword(), is("ActiveTabPassword"));
+
+        // Simulate a background WebContents that is already Visibility.HIDDEN when its
+        // ManualFillingState is first created (e.g. after Activity recreation).
+        WebContents hiddenWebContents = mock(MockWebContents.class);
+        when(hiddenWebContents.getVisibility()).thenReturn(Visibility.HIDDEN);
+        mController.registerSheetDataProvider(
+                hiddenWebContents,
+                AccessoryTabType.PASSWORDS,
+                hiddenTabHelper.getSheetDataProvider());
+        mCache.getStateFor(hiddenWebContents)
+                .getSheetDataProvider(AccessoryTabType.PASSWORDS)
+                .addSyncObserverAndPostIfNonNull(hiddenTabHelper::record);
+
+        hiddenTabHelper.providePasswordSheet("HiddenTabPassword");
+        assertThat(hiddenTabHelper.getRecordedSheetData(), is(nullValue()));
     }
 }

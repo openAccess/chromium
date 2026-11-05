@@ -69,9 +69,6 @@
 #include "net/filter/filter_source_stream.h"
 #include "net/filter/source_stream.h"
 #include "net/filter/source_stream_type.h"
-#include "net/first_party_sets/first_party_set_entry.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
-#include "net/first_party_sets/first_party_sets_cache_filter.h"
 #include "net/http/http_content_disposition.h"
 #include "net/http/http_log_util.h"
 #include "net/http/http_network_session.h"
@@ -103,6 +100,7 @@
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_error_job.h"
+#include "net/url_request/url_request_http_transaction_factory_override.h"
 #include "net/url_request/url_request_job_factory.h"
 #include "net/url_request/url_request_redirect_job.h"
 #include "net/url_request/websocket_handshake_userdata_key.h"
@@ -130,24 +128,6 @@ bool ShouldForceIgnoreSiteForCookies(const URLRequest& request) {
   NetworkDelegate* network_delegate = request.network_delegate();
   return network_delegate &&
          network_delegate->ShouldForceIgnoreSiteForCookies(request);
-}
-
-base::DictValue FirstPartySetMetadataNetLogParams(
-    const FirstPartySetMetadata& first_party_set_metadata,
-    const int64_t* const fps_cache_filter) {
-  base::DictValue dict;
-  auto entry_or_empty =
-      [](const std::optional<FirstPartySetEntry>& entry) -> std::string {
-    return entry.has_value() ? entry->GetDebugString() : "none";
-  };
-
-  dict.Set("cache_filter",
-           fps_cache_filter ? base::NumberToString(*fps_cache_filter) : "none");
-  dict.Set("frame_entry",
-           entry_or_empty(first_party_set_metadata.frame_entry()));
-  dict.Set("top_frame_primary",
-           entry_or_empty(first_party_set_metadata.top_frame_entry()));
-  return dict;
 }
 
 base::DictValue CookieInclusionStatusNetLogParams(
@@ -371,6 +351,16 @@ std::unique_ptr<URLRequestJob> URLRequestHttpJob::Create(URLRequest* request) {
   DCHECK(request->context()->http_transaction_factory());
   DCHECK(url.SchemeIsHTTPOrHTTPS() || url.SchemeIsWSOrWSS());
 
+  // GURL accepts hostnames that IsCanonicalizedHostCompliant() rejects (e.g.,
+  // "a!b.test", or ones with labels over 63 characters). TransportSecurityState
+  // can't canonicalize such hosts, so HSTS entries for parent domains with
+  // includeSubdomains don't apply to them. HostResolverManager rejects them,
+  // but they could still be sent to a proxy, so reject them here.
+  if (!IsCanonicalizedHostCompliant(url.host()) && !url.HostIsIPAddress() &&
+      base::FeatureList::IsEnabled(features::kRejectNonCompliantHttpHosts)) {
+    return std::make_unique<URLRequestErrorJob>(request, ERR_INVALID_URL);
+  }
+
   SSLUpgradeDecision upgrade_decision = SSLUpgradeDecision::kNoUpgrade;
   if (TransportSecurityState* hsts =
           request->context()->transport_security_state()) {
@@ -477,28 +467,6 @@ void URLRequestHttpJob::Start() {
   request_info_.is_shared_resource = request_->is_shared_resource();
   request_info_.target_network = request_->target_network();
 
-  CookieStore* cookie_store = request()->context()->cookie_store();
-  const CookieAccessDelegate* delegate =
-      cookie_store ? cookie_store->cookie_access_delegate() : nullptr;
-
-  request_->net_log().BeginEvent(NetLogEventType::FIRST_PARTY_SETS_METADATA);
-
-  auto [first_party_set_metadata, match_info] =
-      cookie_util::ComputeFirstPartySetMetadata(SchemefulSite(request()->url()),
-                                                request()->isolation_info(),
-                                                delegate);
-
-  first_party_set_metadata_ = std::move(first_party_set_metadata);
-  request_info_.fps_cache_filter = match_info.clear_at_run_id;
-  request_info_.browser_run_id = match_info.browser_run_id;
-
-  request_->net_log().EndEvent(
-      NetLogEventType::FIRST_PARTY_SETS_METADATA, [&]() {
-        return FirstPartySetMetadataNetLogParams(
-            first_party_set_metadata_,
-            base::OptionalToPtr(request_info_.fps_cache_filter));
-      });
-
   // Privacy mode could still be disabled in SetCookieHeaderAndStart if we are
   // going to send previously saved cookies.
   request_info_.privacy_mode = DeterminePrivacyMode();
@@ -558,9 +526,13 @@ void URLRequestHttpJob::CloseConnectionOnDestruction() {
 }
 
 int URLRequestHttpJob::NotifyConnectedCallback(
+    base::WeakPtr<URLRequestHttpJob> job,
     const TransportInfo& info,
     CompletionOnceCallback callback) {
-  return URLRequestJob::NotifyConnected(info, std::move(callback));
+  if (!job) {
+    return ERR_ABORTED;
+  }
+  return job->NotifyConnected(info, std::move(callback));
 }
 
 PrivacyMode URLRequestHttpJob::DeterminePrivacyMode() const {
@@ -710,10 +682,14 @@ void URLRequestHttpJob::StartTransactionInternal() {
 
   int rv = OK;
 
-  // Notify NetworkQualityEstimator.
+  // Notify NetworkQualityEstimator, except for requests running under
+  // simulated network conditions: their observations would contaminate the
+  // global network-quality estimate.
   NetworkQualityEstimator* network_quality_estimator =
       request()->context()->network_quality_estimator();
-  if (network_quality_estimator) {
+  if (network_quality_estimator &&
+      !HttpTransactionFactoryOverride::DisablesNetworkQualityEstimation(
+          request_)) {
     network_quality_estimator->NotifyStartTransaction(*request_);
   }
 
@@ -723,10 +699,15 @@ void URLRequestHttpJob::StartTransactionInternal() {
                                           base::Unretained(this)));
     auth_credentials_ = AuthCredentials();
   } else {
-    DCHECK(request_->context()->http_transaction_factory());
-    transaction_ =
-        request_->context()->http_transaction_factory()->CreateTransaction(
-            priority_);
+    // Use an override factory if one is attached to the request (e.g., for
+    // per-tab socket pool isolation). Otherwise, use the context's default.
+    HttpTransactionFactory* factory =
+        HttpTransactionFactoryOverride::Get(request_);
+    if (!factory) {
+      factory = request_->context()->http_transaction_factory();
+    }
+    DCHECK(factory);
+    transaction_ = factory->CreateTransaction(priority_);
     CHECK(transaction_);
 
     if (request_info_.url.SchemeIsWSOrWSS()) {
@@ -747,8 +728,9 @@ void URLRequestHttpJob::StartTransactionInternal() {
     }
 
     if (rv == OK) {
-      transaction_->SetConnectedCallback(base::BindRepeating(
-          &URLRequestHttpJob::NotifyConnectedCallback, base::Unretained(this)));
+      transaction_->SetConnectedCallback(
+          base::BindRepeating(&URLRequestHttpJob::NotifyConnectedCallback,
+                              weak_factory_.GetWeakPtr()));
       transaction_->SetRequestHeadersCallback(request_headers_callback_);
       transaction_->SetEarlyResponseHeadersCallback(
           early_response_headers_callback_);
@@ -944,8 +926,7 @@ void URLRequestHttpJob::SetCookieHeaderAndStart(
   if (service) {
     device_bound_sessions::DbscRequest request(request_);
     std::optional<device_bound_sessions::SessionService::DeferralParams>
-        deferral = service->ShouldDefer(request, &request_info_.extra_headers,
-                                        first_party_set_metadata_);
+        deferral = service->ShouldDefer(request, &request_info_.extra_headers);
     // If the request needs to be deferred while waiting for refresh, do not
     // start the transaction at this time. This may also kick off a refresh.
     if (deferral) {
@@ -963,14 +944,27 @@ void URLRequestHttpJob::SetCookieHeaderAndStart(
 
     base::UmaHistogramCounts100("Net.DeviceBoundSessions.RequestDeferralCount",
                                 device_bound_session_deferral_count_);
-    base::UmaHistogramEnumeration(
-        "Net.DeviceBoundSessions.RequestDeferralDecision3",
+    device_bound_sessions::SessionUsage max_usage =
         net::device_bound_sessions::GetMaxUsage(
-            request_->device_bound_session_usage()));
+            request_->device_bound_session_usage());
+    base::UmaHistogramEnumeration(
+        "Net.DeviceBoundSessions.RequestDeferralDecision3", max_usage);
     if (device_bound_session_deferral_count_ > 0) {
       base::UmaHistogramTimes(
           "Net.DeviceBoundSessions.TotalRequestDeferredDuration",
           base::TimeTicks::Now() - device_bound_session_first_deferral_);
+    }
+
+    if (device_bound_sessions::IsInScope(max_usage)) {
+      bool was_deferred =
+          (max_usage == device_bound_sessions::SessionUsage::kDeferred);
+      base::UmaHistogramBoolean(
+          "Net.DeviceBoundSessions.InScopeRequestWasDeferred", was_deferred);
+      if (request_info_.is_main_frame_navigation) {
+        base::UmaHistogramBoolean(
+            "Net.DeviceBoundSessions.InScopeNavigationRequestWasDeferred",
+            was_deferred);
+      }
     }
   }
 #endif  // BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
@@ -988,8 +982,7 @@ void URLRequestHttpJob::AnnotateAndMoveUserBlockedCookies(
   if (request()->network_delegate()) {
     can_get_cookies =
         request()->network_delegate()->AnnotateAndMoveUserBlockedCookies(
-            *request(), first_party_set_metadata_, maybe_included_cookies,
-            excluded_cookies);
+            *request(), maybe_included_cookies, excluded_cookies);
   }
 
   if (!can_get_cookies) {
@@ -1092,8 +1085,7 @@ void URLRequestHttpJob::SaveCookiesAndNotifyHeadersComplete(int result) {
     }
 
     // Check cookie accessibility with cookie_settings.
-    if (cookie && !CanSetCookie(*cookie, &options, first_party_set_metadata_,
-                                &returned_status)) {
+    if (cookie && !CanSetCookie(*cookie, &options, &returned_status)) {
       // Cookie allowed by cookie_settings checks could be blocked explicitly,
       // e.g. via Android Webview APIs, we need to manually add exclusion reason
       // in this case.
@@ -1176,8 +1168,7 @@ void URLRequestHttpJob::ProcessDeviceBoundSessionsHeader() {
   }
 
   device_bound_sessions::DbscRequest request(request_);
-  service->HandleResponseHeaders(request, GetResponseHeaders(),
-                                 first_party_set_metadata_);
+  service->HandleResponseHeaders(request, GetResponseHeaders());
 }
 #endif  // BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 
@@ -2103,10 +2094,13 @@ void URLRequestHttpJob::DoneWithRequest(CompletionCause reason) {
   }
   done_ = true;
 
-  // Notify NetworkQualityEstimator.
+  // Notify NetworkQualityEstimator, except for requests running under
+  // simulated network conditions (see NotifyStartTransaction above).
   NetworkQualityEstimator* network_quality_estimator =
       request()->context()->network_quality_estimator();
-  if (network_quality_estimator) {
+  if (network_quality_estimator &&
+      !HttpTransactionFactoryOverride::DisablesNetworkQualityEstimation(
+          request())) {
     network_quality_estimator->NotifyRequestCompleted(*request());
   }
 
@@ -2132,10 +2126,14 @@ HttpResponseHeaders* URLRequestHttpJob::GetResponseHeaders() const {
 void URLRequestHttpJob::NotifyURLRequestDestroyed() {
   awaiting_callback_ = false;
 
-  // Notify NetworkQualityEstimator.
+  // Notify NetworkQualityEstimator, except for requests running under
+  // simulated network conditions (never registered; see
+  // NotifyStartTransaction above).
   NetworkQualityEstimator* network_quality_estimator =
       request()->context()->network_quality_estimator();
-  if (network_quality_estimator) {
+  if (network_quality_estimator &&
+      !HttpTransactionFactoryOverride::DisablesNetworkQualityEstimation(
+          request())) {
     network_quality_estimator->NotifyURLRequestDestroyed(*request());
   }
 }

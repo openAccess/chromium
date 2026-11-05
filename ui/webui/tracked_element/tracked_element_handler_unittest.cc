@@ -15,11 +15,13 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
+#include "base/test/test_future.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/common/content_client.h"
 #include "content/public/test/browser_task_environment.h"
+#include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_browser_context.h"
 #include "content/public/test/test_content_client_initializer.h"
 #include "content/public/test/test_renderer_host.h"
@@ -30,6 +32,7 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/mojom/frame/viewport_intersection_state.mojom.h"
 #include "ui/base/interaction/element_events.h"
 #include "ui/base/interaction/element_highlighter.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -80,8 +83,11 @@ class TestTrackedElementManager
   }
 
   void ClickElement(tracked_element::mojom::TrackedElementIdentifierPtr id,
+                    tracked_element::mojom::InputType input_type,
                     ClickElementCallback callback) override {
-    interaction_events_.push_back("Click:" + id->native_identifier);
+    interaction_events_.push_back(
+        base::StringPrintf("Click:%s:%d", id->native_identifier.c_str(),
+                           static_cast<int>(input_type)));
     std::move(callback).Run(true);
   }
 
@@ -518,8 +524,19 @@ TEST_F(TrackedElementHandlerTest, Interaction) {
 
   const std::string name = kTestElementIdentifier1.GetName();
   EXPECT_TRUE(handler()->ClickElement(element));
-  EXPECT_THAT(manager.TakeInteractionEvents(),
-              testing::ElementsAre("Click:" + name));
+  EXPECT_THAT(
+      manager.TakeInteractionEvents(),
+      testing::ElementsAre(base::StringPrintf(
+          "Click:%s:%d", name.c_str(),
+          static_cast<int>(tracked_element::mojom::InputType::kDontCare))));
+
+  EXPECT_TRUE(handler()->ClickElement(
+      element, tracked_element::mojom::InputType::kKeyboard));
+  EXPECT_THAT(
+      manager.TakeInteractionEvents(),
+      testing::ElementsAre(base::StringPrintf(
+          "Click:%s:%d", name.c_str(),
+          static_cast<int>(tracked_element::mojom::InputType::kKeyboard))));
 
   EXPECT_TRUE(handler()->FocusElement(element));
   EXPECT_THAT(manager.TakeInteractionEvents(),
@@ -920,6 +937,118 @@ TEST_F(TrackedElementHandlerTest, DocumentSingleton) {
   EXPECT_EQ(
       handler.get(),
       TrackedElementHandlerDocumentSingleton::GetOrCreate(main_rfh()).get());
+}
+
+TEST_F(TrackedElementHandlerTest, DocumentSingletonAsync) {
+  content::TestWebUI test_web_ui;
+  test_web_ui.set_web_contents(web_contents());
+  auto controller = std::make_unique<TestWebUIController>(&test_web_ui);
+
+  base::test::TestFuture<base::WeakPtr<TrackedElementHandler>> future;
+
+  // Initially should not invoke callback
+  TrackedElementHandlerDocumentSingleton::GetOrCreateAsync(
+      main_rfh(), future.GetCallback());
+  task_environment()->RunUntilIdle();
+  EXPECT_FALSE(future.IsReady());
+
+  // Register.
+  TrackedElementHandlerDocumentSingleton::Register(controller.get(),
+                                                   {kTestElementIdentifier1});
+
+  // Now should be able to get the value.
+  auto handler = future.Get();
+  ASSERT_TRUE(handler);
+  EXPECT_EQ(web_contents(), handler->web_contents());
+
+  // Retrieving again should return the same handler.
+  base::test::TestFuture<base::WeakPtr<TrackedElementHandler>> future2;
+  TrackedElementHandlerDocumentSingleton::GetOrCreateAsync(
+      main_rfh(), future2.GetCallback());
+  EXPECT_EQ(handler.get(), future2.Get().get());
+}
+
+// Tests for RenderFrameHost association and subframe handling.
+TEST_F(TrackedElementHandlerTest, MainFrameHandler) {
+  mojo::Remote<tracked_element::mojom::TrackedElementHandler> remote;
+  auto test_handler = std::make_unique<TrackedElementHandler>(
+      web_contents(), remote.BindNewPipeAndPassReceiver(),
+      ui::ElementContext::CreateFakeContextForTesting(web_contents()),
+      std::vector<ui::ElementIdentifier>{kTestElementIdentifier1}, main_rfh());
+  EXPECT_EQ(main_rfh(), test_handler->render_frame_host());
+
+  remote->TrackedElementVisibilityChanged(
+      MakeId(kTestElementIdentifier1, kTestSecondaryId1), true, kElementBounds);
+  remote.FlushForTesting();
+
+  auto* const element =
+      ui::ElementTracker::GetElementTracker()->GetElementInAnyContext(
+          kTestElementIdentifier1);
+  ASSERT_TRUE(element);
+  auto* const webui_element = element->AsA<TrackedElementWebUI>();
+  ASSERT_TRUE(webui_element);
+  EXPECT_EQ(gfx::ToRoundedRect(kElementBounds),
+            webui_element->GetBoundsInWebContents());
+  gfx::Rect expected_screen_bounds = webui_element->GetBoundsInWebContents();
+  expected_screen_bounds.Offset(
+      web_contents()->GetContainerBounds().OffsetFromOrigin());
+  EXPECT_EQ(expected_screen_bounds, webui_element->GetScreenBounds());
+}
+
+TEST_F(TrackedElementHandlerTest, SubframeHandler) {
+  content::RenderFrameHostTester::For(main_rfh())
+      ->InitializeRenderFrameIfNeeded();
+
+  content::RenderFrameHost* const subframe_rfh =
+      content::RenderFrameHostTester::For(main_rfh())->AppendChild("subframe");
+  ASSERT_TRUE(subframe_rfh);
+
+  mojo::Remote<tracked_element::mojom::TrackedElementHandler> remote;
+  auto test_handler = std::make_unique<TrackedElementHandler>(
+      web_contents(), remote.BindNewPipeAndPassReceiver(),
+      ui::ElementContext::CreateFakeContextForTesting(web_contents()),
+      std::vector<ui::ElementIdentifier>{kTestElementIdentifier1},
+      subframe_rfh);
+  EXPECT_EQ(subframe_rfh, test_handler->render_frame_host());
+
+  remote->TrackedElementVisibilityChanged(
+      MakeId(kTestElementIdentifier1, kTestSecondaryId1), true, kElementBounds);
+  remote.FlushForTesting();
+
+  auto* const element =
+      ui::ElementTracker::GetElementTracker()->GetElementInAnyContext(
+          kTestElementIdentifier1);
+  ASSERT_TRUE(element);
+  auto* const webui_element = element->AsA<TrackedElementWebUI>();
+  ASSERT_TRUE(webui_element);
+
+  // In test harnesses, if subframe_rfh has no view or default view, bounds
+  // will calculate safely without crashing.
+  const gfx::Rect bounds = webui_element->GetBoundsInWebContents();
+  EXPECT_FALSE(bounds.IsEmpty());
+  EXPECT_EQ(bounds.size(), gfx::ToRoundedRect(kElementBounds).size());
+
+  UNCALLED_MOCK_CALLBACK(ui::ElementTracker::Callback, bounds_changed);
+  auto subscription =
+      ui::ElementTracker::GetElementTracker()->AddCustomEventCallback(
+          kElementBoundsChangedEvent, element->context(), bounds_changed.Get());
+
+  // Viewport intersection updates for an unrelated subframe should not fire
+  // `kElementBoundsChangedEvent`.
+  content::RenderFrameHost* const other_subframe_rfh =
+      content::RenderFrameHostTester::For(main_rfh())
+          ->AppendChild("other_subframe");
+  ASSERT_TRUE(other_subframe_rfh);
+  test_handler->OnRemoteSubframeViewportIntersectionStateChanged(
+      other_subframe_rfh, blink::mojom::ViewportIntersectionState());
+
+  // Viewport intersection updates for the tracked subframe (e.g. when the
+  // outer document resizes and repositions the OOPIF) should fire
+  // `kElementBoundsChangedEvent`.
+  EXPECT_CALL_IN_SCOPE(bounds_changed, Run(element), {
+    test_handler->OnRemoteSubframeViewportIntersectionStateChanged(
+        subframe_rfh, blink::mojom::ViewportIntersectionState());
+  });
 }
 
 // TODO(crbug.com/40243115): add tests for element screen bounds. This requires

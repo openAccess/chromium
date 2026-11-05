@@ -33,6 +33,10 @@ viz::FrameSinkId RenderWidgetHostViewInput::GetRootFrameSinkId() {
   return viz::FrameSinkId();
 }
 
+RenderWidgetHostViewInput* RenderWidgetHostViewInput::GetPinchZoomTarget() {
+  return GetRootView();
+}
+
 bool RenderWidgetHostViewInput::ScreenRectIsUnstableFor(
     const blink::WebInputEvent& event) {
   return false;
@@ -184,6 +188,13 @@ void RenderWidgetHostViewInput::GestureEventAck(
     const blink::WebGestureEvent& event,
     blink::mojom::InputEventResultSource ack_source,
     blink::mojom::InputEventResultState ack_result) {}
+
+void RenderWidgetHostViewInput::ProcessTouchpadZoomEventAck(
+    const blink::WebGestureEvent& event,
+    blink::mojom::InputEventResultState ack_result) {
+  RenderWidgetHostViewInput::ForwardTouchpadZoomEventIfNecessary(event,
+                                                                 ack_result);
+}
 
 void RenderWidgetHostViewInput::ChildDidAckGestureEvent(
     const blink::WebGestureEvent& event,
@@ -352,8 +363,10 @@ bool RenderWidgetHostViewInput::TransformPointToTargetCoordSpace(
   // HitTestQuery requires |point_in_pixels| to be in the coordinate space of
   // the root surface. See crbug.com/41460959 for context.
   gfx::Transform transform_root_to_original;
-  query->GetTransformToTarget(original_view->GetFrameSinkId(),
-                              &transform_root_to_original);
+  if (!query->GetTransformToTarget(original_view->GetFrameSinkId(),
+                                   &transform_root_to_original)) {
+    return false;
+  }
   const std::optional<gfx::PointF> point_in_pixels =
       transform_root_to_original.InverseMapPoint(
           gfx::ConvertPointToPixels(point, device_scale_factor));
@@ -374,6 +387,23 @@ bool RenderWidgetHostViewInput::TransformPointToTargetCoordSpace(
 scoped_refptr<ui::FilteredGestureProvider>
 RenderWidgetHostViewInput::GetGestureProvider() {
   return nullptr;
+}
+
+ScopedInputDispatchPin::ScopedInputDispatchPin(RenderWidgetHostViewInput* view)
+    : view_(view) {
+  if (view_) {
+    view_->PinForInputDispatch();
+  }
+}
+
+ScopedInputDispatchPin::~ScopedInputDispatchPin() {
+  if (view_) {
+    // Extract the raw pointer as dangling because UnpinForInputDispatch()
+    // can result in the view being destroyed, which would cause the
+    // raw_ptr member view_ to trigger a dangling pointer check upon
+    // destruction.
+    view_.ExtractAsDangling()->UnpinForInputDispatch();
+  }
 }
 
 }  // namespace input

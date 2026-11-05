@@ -25,10 +25,43 @@ found in the LICENSE file.
       </div>
 
       <div id="proxy-view-tab-content" class="content-box">
-       <input type="button" value="Re-apply settings"
-           id="proxy-view-reload-settings">
-       <input type="button" value="Clear bad proxies"
-           id="proxy-view-clear-bad-proxies">
+        <input type="button" value="Re-apply settings"
+            id="proxy-view-reload-settings">
+        <input type="button" value="Clear bad proxies"
+            id="proxy-view-clear-bad-proxies">
+        <p>Proxy settings for the current profile's network context:</p>
+        <div id="proxy-view-effective-content">
+          <h4>Effective proxy settings
+            <button id="proxy-view-copy-effective-settings" class="copy-button"
+                title="Copy effective proxy settings"
+                aria-label="Copy effective proxy settings">
+              <img src="chrome://resources/images/icon_copy_content.svg" alt="">
+            </button>
+          </h4>
+          <pre id="proxy-view-effective-settings"></pre>
+        </div>
+        <div id="proxy-view-original-content">
+          <h4>Original proxy settings
+            <button id="proxy-view-copy-original-settings" class="copy-button"
+                title="Copy original proxy settings"
+                aria-label="Copy original proxy settings">
+              <img src="chrome://resources/images/icon_copy_content.svg" alt="">
+            </button>
+          </h4>
+          <pre id="proxy-view-original-settings"></pre>
+        </div>
+        <div id="proxy-view-bad-proxies-div" style="display: none">
+          <h4>Recently failed proxies, marked as bad</h4>
+          <table class="styled-table">
+            <thead>
+              <tr>
+                <th>Bad proxy chain</th>
+                <th>Time for next retry</th>
+              </tr>
+            </thead>
+            <tbody id="proxy-view-bad-proxies-tbody"></tbody>
+          </table>
+        </div>
       </div>
 
       <div id="dns-view-tab-content" class="content-box">
@@ -66,16 +99,15 @@ found in the LICENSE file.
 
       <div id="domain-security-policy-view-tab-content" class="content-box">
         <!-- This UI allows a user to query and update the browser's list of
-             HSTS/PKP domains. -->
+             HSTS domains. -->
 
-        <h3>HSTS/PKP</h3>
+        <h3>HSTS</h3>
 
         <div class="deindent-header">
           HSTS is HTTP Strict Transport Security: a way for sites to elect to
           always use HTTPS. See
           <a href="https://www.chromium.org/hsts" target="_blank">
-          https://www.chromium.org/hsts</a>. PKP is Public Key Pinning: Chrome
-          "pins" certain public keys for certain sites in official builds.</div>
+          https://www.chromium.org/hsts</a>.</div>
 
         <h4>Add HSTS domain</h4>
 
@@ -89,9 +121,9 @@ found in the LICENSE file.
           <input type="submit" value="Add" id="hsts-view-add-submit">
         </form>
 
-        <h4>Query HSTS/PKP domain</h4>
+        <h4>Query HSTS domain</h4>
 
-        <p>Input a domain name to query the current HSTS/PKP set:</p>
+        <p>Input a domain name to query the current HSTS set:</p>
         <form id="hsts-view-query-form">
           Domain: <input type="text" id="hsts-view-query-input" type="url"
                    placeholder="example.com">

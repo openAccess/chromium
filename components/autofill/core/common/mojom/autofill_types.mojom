@@ -277,10 +277,6 @@ struct FormFieldData {
                         // via its id attribute.
     kForName,           // <label> for-attribute that links to an control
                         // via its name attribute.
-    kForShadowHostId,   // <label> for-attribute that links to an control
-                        // (inside a shadow DOM) via its id attribute.
-    kForShadowHostName, // <label> for-attribute that links to an control
-                        // (inside a shadow DOM) via its name attribute.
     kOverlayingLabel,   // Succeeding DOM node overlaying the input.
   };
 
@@ -367,6 +363,7 @@ struct FormData {
 // (components/autofill/core/common/form_field_data_predictions.h)
 struct FormFieldDataPredictions {
   string host_form_signature;
+  string host_form_structural_signature;
   string signature;
   string heuristic_type;
   // The type predicted by the Password Manager's ML model.
@@ -604,7 +601,7 @@ enum AutofillSuggestionTriggerSource {
   // Suggestions triggered by the GLIC service.
   kGlic = 21,
   // Suggestions triggered by the AtMemory feature (typing "@@").
-  kAtMemoryTriggerString = 22,
+  // kAtMemoryTriggerString = 22 is deprecated
   // Suggestions triggered by the AtMemory feature via context menu.
   kAtMemoryContextMenu = 23,
   // Suggestions triggered by the inactivity timer.
@@ -613,19 +610,10 @@ enum AutofillSuggestionTriggerSource {
   kAtMemoryKeyboardShortcut = 25,
   // Suggestions triggered by the AtMemory double Ctrl press.
   kAtMemoryDoubleCtrl = 26,
+  // Suggestions triggered when a Gmail one-time password becomes available.
+  kGmailOneTimePasswordAvailable = 27,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:AutofillSuggestionTriggerSource)
-
-// LINT.IfChange(EmailVerificationState)
-// Represents the visual verification state of an email input element.
-enum EmailVerificationState {
-  kNone,
-  kLoading,
-  kVerified,
-  kLoggedOutOrUnsupported,
-  kFailed,
-};
-// LINT.ThenChange(//third_party/blink/public/common/webid/email_verification_state.h:EmailVerificationState)
 
 // Represents the type of modification made by JavaScript to a form field's
 // value.
@@ -641,12 +629,22 @@ enum JavaScriptModificationType {
   kClearing = 3,
   // The field was non-empty and the old value is a prefix of the new value.
   kPrefixCompletion = 4,
+  // The field was non-empty and the old value is a non-prefix substring of the
+  // new value.
+  kSubstringCompletion = 5,
 };
 
-// Represents a form field modification performed by custom JavaScript autofill.
+// Represents a form field modification performed by custom JavaScript autofill
+// during a detection window.
 struct JavaScriptFieldModification {
   FieldRendererId field_id;
+  // The net modification type comparing the field's value prior to the first
+  // JavaScript modification in the window against its final value at the end of
+  // the window.
   JavaScriptModificationType modification_type;
+  // The timestamp of the first JavaScript modification to this field during the
+  // window.
+  mojo_base.mojom.TimeTicks timestamp;
 };
 
 // Observer interface to receive visibility notifications for a field.

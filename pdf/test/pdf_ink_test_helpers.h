@@ -68,6 +68,14 @@ base::DictValue CreateSetAnnotationBrushMessageForTesting(
 base::DictValue CreateSetAnnotationUndoRedoMessageForTesting(
     TestAnnotationUndoRedoMessageType type);
 
+base::DictValue CreateDeleteTextAnnotationMessage(int frontend_id,
+                                                  int page_index);
+
+base::DictValue CreateDeleteTextAnnotationMessageWithSource(
+    int frontend_id,
+    int page_index,
+    std::string_view source);
+
 base::DictValue CreateEditTextAnnotationMessage(int frontend_id);
 
 base::DictValue CreateFinishTextAnnotationMessage(base::DictValue data);
@@ -94,6 +102,10 @@ base::BlobStorage SampleInkTextInfoBlob(FontId typeface_id);
 
 // Matches `SampleInkTextInfoBlob()`.
 testing::Matcher<const InkTextInfo&> SampleInkTextInfoMatcher(
+    FontId typeface_id);
+
+// Matches `SampleInkTextInfoBlob()` when converted into an `InkTextLine`.
+testing::Matcher<const InkTextLine&> SampleInkTextLineMatcher(
     FontId typeface_id);
 
 base::DictValue SampleSerializedTypeface(FontId font_id,
@@ -131,21 +143,28 @@ MATCHER_P6(InkAffineTransformEq,
 
 bool InkTextInfoEquals(const InkTextInfo& lhs, const InkTextInfo& rhs);
 
-MATCHER_P6(InkTextInfoWithTextEq,
+MATCHER_P7(InkTextInfoWithTextEq,
            font_id,
            glyphs,
            glyph_positions,
            location,
            is_horizontal,
            text,
+           join_prev_actualtext,
            testing::PrintToString(InkTextInfo(font_id,
                                               glyphs,
                                               glyph_positions,
                                               location,
                                               is_horizontal,
-                                              text))) {
-  return InkTextInfoEquals(arg, InkTextInfo(font_id, glyphs, glyph_positions,
-                                            location, is_horizontal, text));
+                                              /*is_synthetic_bold=*/false,
+                                              /*is_synthetic_italic=*/false,
+                                              text,
+                                              join_prev_actualtext))) {
+  return InkTextInfoEquals(
+      arg,
+      InkTextInfo(font_id, glyphs, glyph_positions, location, is_horizontal,
+                  /*is_synthetic_bold=*/false, /*is_synthetic_italic=*/false,
+                  text, join_prev_actualtext));
 }
 
 MATCHER_P5(InkTextInfoEq,

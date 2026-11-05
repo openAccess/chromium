@@ -17,6 +17,7 @@
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/usb/usb_chooser_context.h"
 #include "chrome/browser/usb/usb_chooser_context_factory.h"
 #include "chrome/common/webui_url_constants.h"
@@ -42,6 +43,7 @@
 #include "services/network/public/cpp/features.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -980,7 +982,7 @@ IN_PROC_BROWSER_TEST_F(ControlledFramePolicyTest,
 }
 #endif
 
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
 class SmartCardConnectPolicyTest : public PolicyTest {
  public:
   SmartCardConnectPolicyTest() {
@@ -1103,7 +1105,9 @@ IN_PROC_BROWSER_TEST_F(SmartCardConnectPolicyTest,
                            content_settings::SettingSource::kUser),
             GetSmartCardConnectContentSetting(GetTestingUrl()));
 }
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 
+#if BUILDFLAG(IS_CHROMEOS)
 class DeviceAttributesPolicyTest : public PolicyTest {
  public:
   void SetUpOnMainThread() override {

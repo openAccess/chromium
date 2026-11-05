@@ -4,6 +4,7 @@
 
 #include "chrome/browser/web_applications/isolated_web_apps/jobs/prepare_install_info_job.h"
 
+#include "base/feature_list.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/version.h"
@@ -22,10 +23,15 @@
 #include "components/webapps/isolated_web_apps/types/source.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/common/manifest/manifest_util.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace web_app {
+
+BASE_FEATURE(kIsolatedWebAppIsolateInstallPageProcess,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 namespace {
 
@@ -65,14 +71,23 @@ PrepareInstallInfoJob::PrepareInstallInfoJob(
     std::optional<IwaVersion> expected_version,
     IsolatedWebAppUrlInfo url_info,
     std::unique_ptr<WebAppDataRetriever> data_retriever)
-    : profile_(profile),
-      source_(std::move(source)),
+    : source_(std::move(source)),
       operation_(std::move(operation)),
       expected_version_(std::move(expected_version)),
       url_info_(std::move(url_info)),
       data_retriever_(std::move(data_retriever)) {
-  web_contents_ = content::WebContents::Create(
-      content::WebContents::CreateParams(&profile));
+  profile_observation_.Observe(&profile);
+  content::WebContents::CreateParams create_params(&profile);
+  if (base::FeatureList::IsEnabled(kIsolatedWebAppIsolateInstallPageProcess)) {
+    // Prevent any service worker (such as a root-scoped worker in the IWA's
+    // StoragePartition calling `clients.claim()`) from controlling the hidden
+    // install page and intercepting its manifest or icon subresource fetches.
+    content::WebContents::PrivilegedParams privileged_params;
+    privileged_params.disallow_service_worker_control = true;
+    privileged_params.disallow_shared_workers = true;
+    create_params.privileged_params = privileged_params;
+  }
+  web_contents_ = content::WebContents::Create(create_params);
   webapps::InstallableManager::CreateForWebContents(web_contents_.get());
 }
 
@@ -95,11 +110,24 @@ void PrepareInstallInfoJob::Start(
   // clang-format on
 }
 
+void PrepareInstallInfoJob::OnProfileWillBeDestroyed(Profile* profile) {
+  weak_factory_.InvalidateWeakPtrs();
+  profile_observation_.Reset();
+  manifest_to_install_info_job_.reset();
+  data_retriever_.reset();
+  url_loader_.reset();
+  web_contents_.reset();
+  ReportFailure(Error::kProfileWillBeDestroyed, "Profile is shutting down.");
+}
+
 void PrepareInstallInfoJob::ReportFailure(Error error,
                                           const std::string& message) {
+  profile_observation_.Reset();
   url_loader_.reset();
-  std::move(callback_).Run(
-      base::unexpected(Failure{.error = error, .message = message}));
+  if (callback_) {
+    std::move(callback_).Run(
+        base::unexpected(Failure{.error = error, .message = message}));
+  }
 }
 
 void PrepareInstallInfoJob::LoadInstallUrl(
@@ -113,6 +141,12 @@ void PrepareInstallInfoJob::LoadInstallUrl(
   content::NavigationController::LoadURLParams load_params(install_page_url);
   load_params.transition_type = ui::PAGE_TRANSITION_GENERATED;
   load_params.reload_type = content::ReloadType::BYPASSING_CACHE;
+  if (base::FeatureList::IsEnabled(kIsolatedWebAppIsolateInstallPageProcess)) {
+    // Isolate the generated install page into a unique renderer instance so it
+    // never reuses an existing renderer process for the same IWA origin (such
+    // as one kept alive by a Service Worker when applying an update).
+    load_params.requests_unique_instance_isolation = true;
+  }
 
   url_loader_->LoadUrl(
       std::move(load_params), web_contents_.get(),
@@ -136,7 +170,7 @@ void PrepareInstallInfoJob::OnLoadInstallUrl(
 }
 
 void PrepareInstallInfoJob::CheckInstallabilityAndRetrieveManifest(
-    base::OnceCallback<void(blink::mojom::ManifestPtr)> next_step_callback) {
+    base::OnceCallback<void(blink::Manifest)> next_step_callback) {
   data_retriever_->CheckInstallabilityAndRetrieveManifest(
       web_contents_.get(),
       base::BindOnce(
@@ -145,8 +179,8 @@ void PrepareInstallInfoJob::CheckInstallabilityAndRetrieveManifest(
 }
 
 void PrepareInstallInfoJob::OnCheckInstallabilityAndRetrieveManifest(
-    base::OnceCallback<void(blink::mojom::ManifestPtr)> next_step_callback,
-    blink::mojom::ManifestPtr opt_manifest,
+    base::OnceCallback<void(blink::Manifest)> next_step_callback,
+    std::optional<blink::Manifest> opt_manifest,
     bool valid_manifest_for_web_app,
     webapps::InstallableStatusCode error_code) {
   if (error_code != webapps::InstallableStatusCode::NO_ERROR_DETECTED) {
@@ -163,29 +197,27 @@ void PrepareInstallInfoJob::OnCheckInstallabilityAndRetrieveManifest(
     return;
   }
 
-  if (opt_manifest->manifest_url.is_empty()) {
+  if (opt_manifest->manifest_url().is_empty()) {
     ReportFailure(Error::kAppIsNotInstallable, "Manifest URL is empty.");
     return;
   }
 
-  CHECK(!blink::IsEmptyManifest(opt_manifest));
-
-  std::move(next_step_callback).Run(std::move(opt_manifest));
+  std::move(next_step_callback).Run(std::move(*opt_manifest));
 }
 
 void PrepareInstallInfoJob::ValidateManifestAndGetVersion(
     base::OnceCallback<void(IwaVersion)> next_step_callback,
-    blink::mojom::ManifestPtr manifest) {
-  const GURL& manifest_url = manifest->manifest_url;
+    blink::Manifest manifest) {
+  const GURL& manifest_url = manifest.manifest_url();
 
-  if (!manifest->version.has_value()) {
+  if (!manifest.version().has_value()) {
     ReportFailure(Error::kCantValidateManifest,
                   "Manifest `version` is not present. manifest_url: " +
                       manifest_url.possibly_invalid_spec());
     return;
   }
 
-  std::string version_string = base::UTF16ToUTF8(*manifest->version);
+  std::string version_string = base::UTF16ToUTF8(*manifest.version());
 
   auto iwa_version_result = IwaVersion::Create(version_string);
   if (!iwa_version_result.has_value()) {
@@ -219,7 +251,7 @@ void PrepareInstallInfoJob::ValidateManifestAndGetVersion(
   // application and do not include other information in order to be able to
   // identify Isolated Web Apps by origin because there is always only 1 app per
   // origin.
-  std::string encoded_id = manifest->id.GetPath();
+  std::string encoded_id = manifest.id().GetPath();
   if (encoded_id != "/") {
     ReportFailure(
         Error::kCantValidateManifest,
@@ -228,10 +260,10 @@ void PrepareInstallInfoJob::ValidateManifestAndGetVersion(
   }
 
   url::Origin origin = url_info_.origin();
-  if (manifest->scope != origin.GetURL()) {
+  if (manifest.scope() != origin.GetURL()) {
     ReportFailure(Error::kCantValidateManifest,
                   base::StrCat({"Scope should resolve to the origin. scope: ",
-                                manifest->scope.possibly_invalid_spec(),
+                                manifest.scope().possibly_invalid_spec(),
                                 ", origin: ", origin.Serialize()}));
     return;
   }
@@ -245,9 +277,12 @@ void PrepareInstallInfoJob::ParseInstallInfoFromManifest(
     const IwaVersion parsed_version) {
   WebAppInstallInfoConstructOptions construct_options;
   construct_options.fail_all_if_any_fail = true;
+  CHECK(manifest_.has_value());
+
   manifest_to_install_info_job_ =
       ManifestToWebAppInstallInfoJob::CreateAndStart(
-          *manifest_, *data_retriever_.get(), /*background_installation=*/false,
+          *manifest_, *data_retriever_.get(),
+          /*background_installation=*/false,
           webapps::WebappInstallSource::IWA_GRAPHICAL_INSTALLER,
           web_contents_->GetWeakPtr(), [](IconUrlSizeSet& icon_url_size_set) {},
           manifest_to_info_debug_data_,
@@ -292,6 +327,7 @@ void PrepareInstallInfoJob::OnGettingInstallInfoFromManifest(
 void PrepareInstallInfoJob::FinishJob(WebAppInstallInfo info) {
   CHECK(!expected_version_ ||
         *expected_version_ == info.isolated_web_app_version());
+  profile_observation_.Reset();
   url_loader_.reset();
   std::move(callback_).Run(std::move(info));
 }

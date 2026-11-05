@@ -22,9 +22,11 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe_drainer.h"
 #include "services/tracing/public/mojom/perfetto_service.mojom.h"
+#include "third_party/perfetto/include/perfetto/tracing/core/forward_decls.h"
 #include "third_party/perfetto/protos/perfetto/trace/chrome/chrome_metadata.pbzero.h"
 
 namespace perfetto::protos::pbzero {
+class ChromeEventBundle;
 class TracePacket;
 }  // namespace perfetto::protos::pbzero
 
@@ -51,13 +53,25 @@ class TracingControllerImpl : public TracingController,
   CONTENT_EXPORT static TracingControllerImpl* GetInstance();
 
   // Should be called on the UI thread.
-  CONTENT_EXPORT TracingControllerImpl();
+  CONTENT_EXPORT explicit TracingControllerImpl(
+      const TracingDelegate& delegate);
 
   TracingControllerImpl(const TracingControllerImpl&) = delete;
   TracingControllerImpl& operator=(const TracingControllerImpl&) = delete;
 
-  // Returns the embedder's tracing delegate.
-  TracingDelegate* tracing_delegate() { return delegate_.get(); }
+  // Like StartTracing(), but from a config the caller assembled itself, for
+  // data sources or options with no base::trace_event::TraceConfig
+  // representation. tracing::GetDefaultPerfettoConfig() produces the config
+  // this takes, so callers can start from the default and adjust it.
+  //
+  // The trace is delivered as the raw perfetto protobuf, unless the config's
+  // data sources ask for the legacy JSON conversion. That conversion applies
+  // to the whole trace, so either every data source sets
+  // convert_to_legacy_json or none does; a mixed config is rejected. Fails
+  // while tracing is in progress.
+  CONTENT_EXPORT bool StartTracingWithPerfettoConfig(
+      const perfetto::TraceConfig& perfetto_config,
+      StartTracingDoneCallback callback);
 
   // TracingController implementation.
   bool GetCategories(GetCategoriesDoneCallback callback) override;
@@ -82,7 +96,7 @@ class TracingControllerImpl : public TracingController,
   friend std::default_delete<TracingControllerImpl>;
 
   ~TracingControllerImpl() override;
-  void InitializeDataSources();
+  void InitializeDataSources(const TracingDelegate& delegate);
   void ConnectToServiceIfNeeded();
   static void RecorderMetadataToBundle(
       perfetto::protos::pbzero::ChromeEventBundle* bundle);
@@ -95,6 +109,18 @@ class TracingControllerImpl : public TracingController,
   void OnDataComplete() override;
 
   void OnReadBuffersComplete();
+
+  // The format the trace data is delivered in, derived from the config the
+  // session was started with.
+  enum class TraceDataFormat { kLegacyJson, kProtobuf };
+
+  // Enables |perfetto_config| on the service and wires up the session.
+  bool StartTracingSession(perfetto::TraceConfig perfetto_config,
+                           StartTracingDoneCallback callback,
+                           bool converts_to_legacy_json);
+
+  // Only valid once the session has been disabled.
+  void StartProtobufRead();
 
   void CompleteFlush();
 
@@ -109,13 +135,16 @@ class TracingControllerImpl : public TracingController,
   mojo::Receiver<tracing::mojom::TracingSessionClient> receiver_{this};
   StartTracingDoneCallback start_tracing_callback_;
 
+  TraceDataFormat output_format_ = TraceDataFormat::kLegacyJson;
+  bool is_tracing_ = false;
+  bool stop_requested_ = false;
+  bool tracing_disabled_ = false;
+  // Null for a session started from a perfetto config.
   std::unique_ptr<base::trace_event::TraceConfig> trace_config_;
   std::unique_ptr<mojo::DataPipeDrainer> drainer_;
   scoped_refptr<TraceDataEndpoint> trace_data_endpoint_;
   bool is_data_complete_ = false;
   bool read_buffers_complete_ = false;
-
-  std::unique_ptr<TracingDelegate> delegate_;
 
 #if BUILDFLAG(IS_CHROMEOS)
   bool are_statistics_loaded_ = false;

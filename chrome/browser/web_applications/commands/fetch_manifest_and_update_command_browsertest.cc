@@ -7,9 +7,9 @@
 #include "base/strings/string_util.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
@@ -27,7 +27,6 @@
 #include "content/public/test/browser_test.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
-#include "third_party/blink/public/common/features.h"
 
 namespace web_app {
 
@@ -61,15 +60,7 @@ IN_PROC_BROWSER_TEST_F(FetchManifestAndUpdateCommandTest, BasicUpdate) {
 }
 
 class FetchManifestAndUpdateCommandMigrationTest
-    : public FetchManifestAndUpdateCommandTest {
- public:
-  FetchManifestAndUpdateCommandMigrationTest() {
-    feature_list_.InitAndEnableFeature(blink::features::kWebAppMigrationApi);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
+    : public FetchManifestAndUpdateCommandTest {};
 
 IN_PROC_BROWSER_TEST_F(FetchManifestAndUpdateCommandMigrationTest,
                        CheckMigrateFromTriggersUpdate) {

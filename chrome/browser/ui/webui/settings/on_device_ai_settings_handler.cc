@@ -10,17 +10,28 @@
 #include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
-#include "components/optimization_guide/core/model_execution/model_execution_util.h"
+#include "components/optimization_guide/core/model_execution/on_device_prefs.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/web_ui.h"
 
 using optimization_guide::model_execution::prefs::localstate::
     kOnDeviceAiUserSettingsEnabled;
 
+namespace {
+
+bool IsAllowedByEnterprisePolicy(const PrefService* local_state) {
+  return optimization_guide::model_execution::prefs::
+             GetGenAILocalFoundationalModelEnterprisePolicySettings(
+                 local_state) ==
+         optimization_guide::model_execution::prefs::
+             GenAILocalFoundationalModelEnterprisePolicySettings::kAllowed;
+}
+
+}  // namespace
+
 namespace features {
-// Feature flag for "On-device AI" toggle on chrome://settings page.
-BASE_FEATURE(kShowOnDeviceAiSettings, base::FEATURE_ENABLED_BY_DEFAULT);
+// Feature flag for advanced On-device AI settings subpage.
+BASE_FEATURE(kOnDeviceModelAdvancedSettings, base::FEATURE_DISABLED_BY_DEFAULT);
 }  // namespace features
 
 namespace settings {
@@ -67,13 +78,7 @@ base::DictValue OnDeviceAiSettingsHandler::GetOnDeviceAiState() {
   base::DictValue result;
   result.Set("enabled",
              local_state->GetBoolean(kOnDeviceAiUserSettingsEnabled));
-  using optimization_guide::model_execution::prefs::
-      GenAILocalFoundationalModelEnterprisePolicySettings;
-  bool allowedByPolicy =
-      optimization_guide::
-          GetGenAILocalFoundationalModelEnterprisePolicySettings(local_state) ==
-      GenAILocalFoundationalModelEnterprisePolicySettings::kAllowed;
-  result.Set("allowedByPolicy", allowedByPolicy);
+  result.Set("allowedByPolicy", IsAllowedByEnterprisePolicy(local_state));
   return result;
 }
 
@@ -91,13 +96,7 @@ void OnDeviceAiSettingsHandler::HandleSetOnDeviceAiEnabled(
   CHECK_EQ(1U, args.size());
 
   PrefService* local_state = g_browser_process->local_state();
-  using optimization_guide::model_execution::prefs::
-      GenAILocalFoundationalModelEnterprisePolicySettings;
-  bool disallowed_by_policy =
-      optimization_guide::
-          GetGenAILocalFoundationalModelEnterprisePolicySettings(local_state) ==
-      GenAILocalFoundationalModelEnterprisePolicySettings::kDisallowed;
-  if (disallowed_by_policy) {
+  if (!IsAllowedByEnterprisePolicy(local_state)) {
     LOG(ERROR) << "Cannot set on-device AI user setting when disallowed "
                   "by policy.";
     return;
@@ -113,7 +112,7 @@ void OnDeviceAiSettingsHandler::HandleOpenFeedbackDialog(
 
   BrowserWindowInterface* browser =
       webui::GetBrowserWindowInterface(web_ui()->GetWebContents());
-  DCHECK(browser);
+  CHECK(browser, base::NotFatalUntil::M162);
   std::string unused;
   chrome::ShowFeedbackPage(browser, feedback::kFeedbackSourceOnDeviceAI, unused,
                            unused, "on_device_ai", unused);

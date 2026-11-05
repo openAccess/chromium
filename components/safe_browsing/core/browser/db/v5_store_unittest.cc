@@ -6,6 +6,7 @@
 
 #include <optional>
 
+#include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
@@ -28,6 +29,9 @@
 #include "testing/platform_test.h"
 
 namespace safe_browsing {
+
+using ::testing::ElementsAre;
+using ::testing::UnorderedElementsAre;
 
 class V5StoreTest : public PlatformTest {
  public:
@@ -524,6 +528,95 @@ class V5StoreTest : public PlatformTest {
     } else {
       histogram_tester_.ExpectTotalCount("SafeBrowsing.V5StoreWrite.Result", 0);
     }
+  }
+
+  void RunApplyUpdateWithRemovalsTest(bool include_additions) {
+    // 1. Write old store to disk with 6 items: 10, 20, 30, 40, 50, 60
+    ListDetails list_details;
+    list_details.set_version("v5_old_version");
+    list_details.mutable_hash_file()->set_extension("foo");
+    list_details.mutable_hash_file()->set_file_size(24);
+
+    std::string old_data = SerializePrefixes({10, 20, 30, 40, 50, 60});
+    std::array<uint8_t, crypto::hash::kSha256Size> old_checksum;
+    crypto::hash::Hash(crypto::hash::HashKind::kSha256,
+                       base::as_byte_span(old_data), old_checksum);
+    list_details.mutable_checksum()->set_sha256(std::string(
+        reinterpret_cast<char*>(old_checksum.data()), old_checksum.size()));
+
+    WriteFileFormatProtoToFile(0x600D71FE, 10, &list_details);
+    ASSERT_TRUE(
+        base::WriteFile(store_path_.AddExtensionASCII("foo"), old_data));
+
+    // 2. Initialize store
+    V5Store store(task_runner(), store_path_, 4, v4_store_path_,
+                  /*is_eligible_for_v4_to_v5_disk_migration=*/true,
+                  /*is_extensions_blocklist=*/false);
+    store.Initialize();
+    ASSERT_TRUE(store.HasValidData());
+
+    // 3. Prepare update:
+    // Removals: index 1 (20), 2 (30), 4 (50), 5 (60).
+    // Rice encoded removals: first_value = 1, deltas = [1, 2, 1] (indices: 1,
+    // 2, 4, 5).
+    auto hash_list = std::make_unique<V5::HashList>();
+    hash_list->set_version("v5_new_version");
+    hash_list->set_partial_update(true);
+
+    auto* removals_proto = hash_list->mutable_compressed_removals();
+    removals_proto->set_rice_parameter(3);
+    removals_proto->set_first_value(1);
+    removals_proto->set_entries_count(3);
+    removals_proto->set_encoded_data("\x42\x02");
+
+    std::vector<uint32_t> expected_prefixes = {10, 40};
+    size_t expected_additions_count = 0;
+    if (include_additions) {
+      // Additions: [15, 25, 26, 45, 70, 71]
+      auto* additions_proto = hash_list->mutable_additions_four_bytes();
+      additions_proto->set_rice_parameter(3);
+      additions_proto->set_first_value(15);
+      additions_proto->set_entries_count(5);
+      additions_proto->set_encoded_data(std::string("\x49\xB6\x8B\x00", 4));
+      expected_prefixes = {10, 15, 25, 26, 40, 45, 70, 71};
+      expected_additions_count = 6;
+    }
+
+    std::string expected_data = SerializePrefixes(expected_prefixes);
+    std::array<uint8_t, crypto::hash::kSha256Size> checksum;
+    crypto::hash::Hash(crypto::hash::HashKind::kSha256,
+                       base::as_byte_span(expected_data), checksum);
+    std::string expected_checksum_str(reinterpret_cast<char*>(checksum.data()),
+                                      checksum.size());
+    hash_list->set_sha256_checksum(expected_checksum_str);
+
+    // 4. Apply
+    SBStorePtr updated_store = RunApplyUpdateTest(store, std::move(hash_list));
+
+    // 5. Verify
+    ASSERT_TRUE(updated_store);
+
+    EXPECT_TRUE(updated_store->HasValidData());
+    EXPECT_EQ("v5_new_version", updated_store->GetStoreState());
+
+    V5Store* v5_updated_store = static_cast<V5Store*>(updated_store.get());
+    EXPECT_EQ(expected_data, GetHashPrefixList(*v5_updated_store).view().at(4));
+    VerifyStoreReadBack(
+        /*expected_version=*/"v5_new_version",
+        /*expected_data=*/expected_data,
+        /*expected_checksum=*/expected_checksum_str,
+        /*expect_hash_file=*/true,
+        /*expected_hash_file_size=*/expected_data.size());
+
+    // Verify Histograms
+    CheckApplyUpdateHistograms(
+        "Partial", V5ApplyUpdateResult::kSuccess,
+        /*expected_decode_removals_result=*/V5DecodeResult::kSuccess,
+        /*expected_decode_additions_result=*/V5DecodeResult::kSuccess,
+        /*expected_removals_count=*/4,
+        /*expected_additions_count=*/expected_additions_count,
+        /*expected_write_result=*/V5StoreWriteResult::kWriteSuccess,
+        /*store_suffix=*/".V5StoreTest");
   }
 
   base::ScopedTempDir temp_dir_;
@@ -2257,86 +2350,11 @@ TEST_F(V5StoreTest, ApplyUpdateFullUpdateEmptiesStore) {
 }
 
 TEST_F(V5StoreTest, ApplyUpdateWithAdditionsAndRemovals) {
-  // 1. Write old store to disk with 6 items: 10, 20, 30, 40, 50, 60
-  ListDetails list_details;
-  list_details.set_version("v5_old_version");
-  list_details.mutable_hash_file()->set_extension("foo");
-  list_details.mutable_hash_file()->set_file_size(24);
+  RunApplyUpdateWithRemovalsTest(/*include_additions=*/true);
+}
 
-  std::string old_data = SerializePrefixes({10, 20, 30, 40, 50, 60});
-  std::array<uint8_t, crypto::hash::kSha256Size> old_checksum;
-  crypto::hash::Hash(crypto::hash::HashKind::kSha256,
-                     base::as_byte_span(old_data), old_checksum);
-  list_details.mutable_checksum()->set_sha256(std::string(
-      reinterpret_cast<char*>(old_checksum.data()), old_checksum.size()));
-
-  WriteFileFormatProtoToFile(0x600D71FE, 10, &list_details);
-  base::WriteFile(store_path_.AddExtensionASCII("foo"), old_data);
-
-  // 2. Initialize store
-  V5Store store(task_runner(), store_path_, 4, v4_store_path_,
-                /*is_eligible_for_v4_to_v5_disk_migration=*/true,
-                /*is_extensions_blocklist=*/false);
-  store.Initialize();
-  ASSERT_TRUE(store.HasValidData());
-
-  // 3. Prepare update:
-  // Removals: index 1 (20), 2 (30), 4 (50), 5 (60).
-  // Rice encoded removals: first_value = 1, deltas = [1, 2, 1] (indices: 1, 2,
-  // 4, 5) Additions: [15, 25, 26, 45, 70, 71]
-  auto hash_list = std::make_unique<V5::HashList>();
-  hash_list->set_version("v5_new_version");
-  hash_list->set_partial_update(true);
-
-  auto* removals_proto = hash_list->mutable_compressed_removals();
-  removals_proto->set_rice_parameter(3);
-  removals_proto->set_first_value(1);
-  removals_proto->set_entries_count(3);
-  removals_proto->set_encoded_data("\x42\x02");
-
-  auto* additions_proto = hash_list->mutable_additions_four_bytes();
-  additions_proto->set_rice_parameter(3);
-  additions_proto->set_first_value(15);
-  additions_proto->set_entries_count(5);
-  additions_proto->set_encoded_data(std::string("\x49\xB6\x8B\x00", 4));
-
-  // Checksum of expected result [10, 15, 25, 26, 40, 45, 70, 71]
-  std::string expected_data =
-      SerializePrefixes({10, 15, 25, 26, 40, 45, 70, 71});
-  std::array<uint8_t, crypto::hash::kSha256Size> checksum;
-  crypto::hash::Hash(crypto::hash::HashKind::kSha256,
-                     base::as_byte_span(expected_data), checksum);
-  std::string expected_checksum_str(reinterpret_cast<char*>(checksum.data()),
-                                    checksum.size());
-  hash_list->set_sha256_checksum(expected_checksum_str);
-
-  // 4. Apply
-  SBStorePtr updated_store = RunApplyUpdateTest(store, std::move(hash_list));
-
-  // 5. Verify
-  ASSERT_TRUE(updated_store);
-
-  EXPECT_TRUE(updated_store->HasValidData());
-  EXPECT_EQ("v5_new_version", updated_store->GetStoreState());
-
-  V5Store* v5_updated_store = static_cast<V5Store*>(updated_store.get());
-  EXPECT_EQ(expected_data, GetHashPrefixList(*v5_updated_store).view().at(4));
-  VerifyStoreReadBack(
-      /*expected_version=*/"v5_new_version",
-      /*expected_data=*/expected_data,
-      /*expected_checksum=*/expected_checksum_str,
-      /*expect_hash_file=*/true,
-      /*expected_hash_file_size=*/32);
-
-  // Verify Histograms
-  CheckApplyUpdateHistograms(
-      "Partial", V5ApplyUpdateResult::kSuccess,
-      /*expected_decode_removals_result=*/V5DecodeResult::kSuccess,
-      /*expected_decode_additions_result=*/V5DecodeResult::kSuccess,
-      /*expected_removals_count=*/4,
-      /*expected_additions_count=*/6,
-      /*expected_write_result=*/V5StoreWriteResult::kWriteSuccess,
-      /*store_suffix=*/".V5StoreTest");
+TEST_F(V5StoreTest, ApplyUpdateWithOnlyRemovals) {
+  RunApplyUpdateWithRemovalsTest(/*include_additions=*/false);
 }
 
 TEST_F(V5StoreTest, WriteToDiskFails_Rename) {
@@ -2425,6 +2443,13 @@ TEST_F(V5StoreTest, CleanUpOldFiles) {
 
   SBStorePtr updated_store = RunApplyUpdateTest(store, std::move(hash_list));
   ASSERT_TRUE(updated_store);
+
+  // Before cleanup, the dummy files exist.
+  EXPECT_TRUE(base::PathExists(dummy_file1));
+  EXPECT_TRUE(base::PathExists(dummy_file2));
+
+  SBStore::CleanupExtraFiles(store_path_, base::flat_set<base::FilePath>(
+                                              updated_store->GetPathsInUse()));
 
   // The dummy files should be deleted.
   EXPECT_FALSE(base::PathExists(dummy_file1));
@@ -2548,6 +2573,7 @@ TEST_F(V5StoreTest, TestCollectStoreInfo) {
   EXPECT_EQ("kSuccess", updated_store_info.v5_update_status());
   EXPECT_EQ("new_version", updated_store_info.state());
   EXPECT_TRUE(updated_store_info.has_last_apply_update_time_millis());
+  EXPECT_EQ(2u, updated_store_info.checks_attempted());
 }
 
 TEST_F(V5StoreTest, TestRecordAndReturnFileSize) {
@@ -2774,6 +2800,41 @@ TEST_F(V5StoreTest, UpdateCategory_PartialUpdate) {
   ApplyUpdateAndVerifyCategory(
       *static_cast<V5Store*>(updated_store.get()), /*is_partial_update=*/true,
       SafeBrowsingUpdateCategory::kRegularPartialUpdate, "v5_version_2");
+}
+
+TEST_F(V5StoreTest, GetPathsInUse) {
+  V5Store store(task_runner(), store_path_, /*prefix_size=*/4, v4_store_path_,
+                /*is_eligible_for_v4_to_v5_disk_migration=*/true,
+                /*is_extensions_blocklist=*/false);
+  // Before hash prefix list is loaded, GetPathsInUse() returns just the store
+  // path.
+  EXPECT_THAT(store.GetPathsInUse(), ElementsAre(store_path_));
+
+  // Write main proto and hash file.
+  V5StoreFileFormat file_format;
+  file_format.set_magic_number(0x600D71FE);
+  file_format.set_file_version(10);
+  ListDetails* list_details = file_format.mutable_list_details();
+  list_details->set_version("test_version");
+  V5HashFile* hash_file = list_details->mutable_hash_file();
+  hash_file->set_extension("foo");
+  hash_file->set_file_size(4);
+
+  std::string data = "abcd";
+  std::array<uint8_t, crypto::hash::kSha256Size> checksum;
+  crypto::hash::Hash(crypto::hash::HashKind::kSha256, base::as_byte_span(data),
+                     checksum);
+  list_details->mutable_checksum()->set_sha256(
+      std::string(reinterpret_cast<char*>(checksum.data()), checksum.size()));
+
+  base::WriteFile(store_path_, file_format.SerializeAsString());
+  base::WriteFile(store_path_.AddExtensionASCII("foo"), data);
+
+  store.Initialize();
+  EXPECT_TRUE(store.HasValidData());
+  EXPECT_THAT(
+      store.GetPathsInUse(),
+      UnorderedElementsAre(store_path_, store_path_.AddExtensionASCII("foo")));
 }
 
 }  // namespace safe_browsing

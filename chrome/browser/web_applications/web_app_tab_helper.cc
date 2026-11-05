@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/check_is_test.h"
+#include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/clock.h"
@@ -39,12 +40,13 @@
 #include "content/public/browser/media_session.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
+#include "url/origin.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/web_applications/os_integration/mac/web_app_shortcut_mac.h"
@@ -56,20 +58,8 @@ namespace web_app {
 std::optional<webapps::AppId> WebAppTabHelper::FindAppIdForUrl(
     WebAppRegistrar& registrar,
     const GURL& url) {
-  // 1. Check for IWAs or Isolated Sub-Apps, strictly excluding scope
-  // extensions.
-  std::optional<webapps::AppId> app_id = registrar.FindBestAppWithUrlInScope(
-      url, WebAppFilter::IsIsolatedApp() | WebAppFilter::IsIsolatedSubApp(),
-      {.exclude_scope_extensions = true});
-  if (app_id) {
-    return app_id;
-  }
-  // 2. Fallback to regular apps in Chrome, excluding IWAs, allowing scope
-  // extensions.
-  return registrar.FindBestAppWithUrlInScope(
-      url,
-      WebAppFilter::InstalledInChrome() &
-          !(WebAppFilter::IsIsolatedApp() | WebAppFilter::IsIsolatedSubApp()));
+  return registrar.FindBestAppWithUrlInScope(url,
+                                             WebAppFilter::InstalledInChrome());
 }
 
 // static
@@ -157,21 +147,29 @@ webapps::LaunchQueue& WebAppTabHelper::EnsureLaunchQueue() {
   return *launch_queue_;
 }
 
+void WebAppTabHelper::ScheduleOriginAssociationRevalidation(
+    const webapps::AppId& app_id) {
+  provider_->scheduler().UpdateValidatedOriginAssociations(app_id,
+                                                           base::DoNothing());
+}
+
 void WebAppTabHelper::EnqueueLaunchParams(webapps::LaunchParams launch_params) {
+  // Capturing can deliver a focus-existing launch without navigating.
+  ScheduleOriginAssociationRevalidation(launch_params.app_id());
   EnsureLaunchQueue().Enqueue(std::move(launch_params));
 }
 
 void WebAppTabHelper::SetState(std::optional<webapps::AppId> app_id,
                                std::optional<webapps::AppId> window_app_id) {
   // Empty string should not be used to indicate "no app ID".
-  DCHECK(!app_id || !app_id->empty());
+  CHECK(!app_id || !app_id->empty(), base::NotFatalUntil::M162);
 
   // If the app_id is changing, then it should exist in the database.
-  DCHECK(app_id_ == app_id || !app_id ||
-         provider_->registrar_unsafe().AppMatches(
-             *app_id, WebAppFilter::IsAppSurfaceableToUser()) ||
-         provider_->registrar_unsafe().IsUninstalling(*app_id));
-
+  CHECK(app_id_ == app_id || !app_id ||
+            provider_->registrar_unsafe().AppMatches(
+                *app_id, WebAppFilter::IsAppSurfaceableToUser()) ||
+            provider_->registrar_unsafe().IsUninstalling(*app_id),
+        base::NotFatalUntil::M162);
 
   if (app_id_ == app_id && window_app_id_ == window_app_id) {
     // This can be triggered for navigations that are happening in the same app
@@ -189,8 +187,7 @@ void WebAppTabHelper::SetState(std::optional<webapps::AppId> app_id,
       std::move(window_app_id_);
   window_app_id_ = std::move(window_app_id);
 
-  if (base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi) &&
-      (previous_window_app_id != window_app_id_)) {
+  if (previous_window_app_id != window_app_id_) {
     MaybeShowBlockedMigrationInfoBar();
   }
 
@@ -208,6 +205,9 @@ void WebAppTabHelper::SetAppId(std::optional<webapps::AppId> app_id) {
 void WebAppTabHelper::SetIsInAppWindow(
     std::optional<webapps::AppId> window_app_id) {
   SetState(app_id(), std::move(window_app_id));
+  if (window_app_id_) {
+    ScheduleOriginAssociationRevalidation(*window_app_id_);
+  }
 }
 
 void WebAppTabHelper::NotifyIsFirstWebContentsInAppWindow(
@@ -251,6 +251,24 @@ void WebAppTabHelper::DidFinishNavigation(
     return;
   }
 
+  // `ReadyToCommitNavigation` provisionally updates `app_id_` before a
+  // cross-document navigation commits. If that navigation subsequently fails or
+  // is aborted without committing (or if overlapping navigations complete out
+  // of order), reconcile `app_id_` with the last committed URL so `app_id_`
+  // cannot remain stuck on an uncommitted navigation's app.
+  // Same-document navigations are excluded to preserve existing semantics
+  // (renderer-initiated ones never run `ReadyToCommitNavigation`). Only call
+  // `SetAppId` when `app_id_` actually differs from `committed_app_id` to avoid
+  // re-triggering `ScheduleManifestAppliedUseCounter()` on matching IDs.
+  if (!navigation_handle->IsSameDocument()) {
+    std::optional<webapps::AppId> committed_app_id =
+        WebAppTabHelper::FindAppIdForUrl(provider_->registrar_unsafe(),
+                                         web_contents()->GetLastCommittedURL());
+    if (app_id_ != committed_app_id) {
+      SetAppId(std::move(committed_app_id));
+    }
+  }
+
   provider_->ui_manager().NotifyDidFinishNavigation(navigation_handle);
 }
 
@@ -267,6 +285,11 @@ void WebAppTabHelper::PrimaryPageChanged(content::Page& page) {
       page.GetMainDocument().GetLastCommittedURL());
 
   MaybeSchedulePreinstallUpdate();
+  if (window_app_id_) {
+    // Use the window's app, not the app associated with the current URL: app
+    // windows can display another app's scope or an out-of-scope page.
+    ScheduleOriginAssociationRevalidation(*window_app_id_);
+  }
 }
 
 void WebAppTabHelper::DidFinishLoad(content::RenderFrameHost* render_frame_host,
@@ -299,6 +322,32 @@ WebAppTabHelper::WebAppTabHelper(tabs::TabInterface* tab,
 }
 
 bool WebAppTabHelper::CanBeUsedForFocusExisting() const {
+  if (!app_id_.has_value() ||
+      !provider_->registrar_unsafe().IsUrlInAppExtendedScope(
+          web_contents()->GetLastCommittedURL(), *app_id_)) {
+    return false;
+  }
+
+  // Origins, not URL scopes, are the Web's security boundary. A document served
+  // with `Content-Security-Policy: sandbox` (without `allow-same-origin`)
+  // commits an opaque origin, which is cross-origin to the app that served it,
+  // even though its URL is still inside the app's scope.
+  //
+  // Reusing such a document in place would hand launch params -- the target
+  // URL, and any file handles minted for them -- to a context the app has
+  // explicitly declared untrusted, leaking URLs that may carry tokens or query
+  // parameters. It also breaks the user's intent: the navigation they asked for
+  // is cancelled and swallowed by a document that cannot act on it.
+  //
+  // Disqualify the document so callers fall back to navigating to the real,
+  // same-origin target URL, where the launch can actually be handled.
+  if (web_contents()
+          ->GetPrimaryMainFrame()
+          ->GetLastCommittedOrigin()
+          .opaque()) {
+    return false;
+  }
+
   constexpr std::array<std::string_view, 3>
       kMimeTypesWithExpectedLaunchConsumer = {
           "text/html",
@@ -480,7 +529,7 @@ void WebAppTabHelper::MaybeSchedulePreinstallUpdate() {
       provider_->registrar_unsafe().FindBestAppWithUrlInScope(
           web_contents()->GetLastCommittedURL(),
           web_app::WebAppFilter::InstalledInChrome(),
-          {.exclude_scope_extensions = true});
+          {.scope_score_options = {.exclude_scope_extensions = true}});
   if (in_scope_app == window_app_id()) {
     return;
   }
@@ -507,7 +556,7 @@ void WebAppTabHelper::OnManifestSpecifiedOnPrimaryPage(
   if (result.has_value()) {
     provider_->manifest_update_manager().OnManifestSeenOnPrimaryPage(
         *web_contents(), result.value(), base::PassKey<WebAppTabHelper>());
-    webapps::ManifestId manifest_id = webapps::ManifestId(result.value()->id);
+    webapps::ManifestId manifest_id = webapps::ManifestId(result.value().id());
     last_processed_manifest_id_for_current_page_ = manifest_id;
     manifest_processed_callbacks_.Notify(manifest_id);
   }

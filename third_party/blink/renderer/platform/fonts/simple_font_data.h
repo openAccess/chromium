@@ -93,6 +93,7 @@ class PLATFORM_EXPORT SimpleFontData final : public FontData {
 
   const FontPlatformData& PlatformData() const { return *platform_data_; }
   NGShapeCache& GetShapeCache() const { return *shape_cache_; }
+  bool IsFixedPitch() const { return is_fixed_pitch_; }
 
   SimpleFontData* SmallCapsFontData(const FontDescription&) const;
   SimpleFontData* EmphasisMarkFontData(const FontDescription&) const;
@@ -125,9 +126,11 @@ class PLATFORM_EXPORT SimpleFontData final : public FontData {
   // better ways to compute it.
   // https://docs.microsoft.com/en-us/typography/opentype/spec/baselinetags#ideoembox
   FontHeight NormalizedTypoAscentAndDescent(
-      FontBaseline baseline_type = kAlphabeticBaseline) const;
-  LayoutUnit NormalizedTypoAscent(FontBaseline = kAlphabeticBaseline) const;
-  LayoutUnit NormalizedTypoDescent(FontBaseline = kAlphabeticBaseline) const;
+      FontBaseline baseline_type = FontBaseline::kAlphabetic) const;
+  LayoutUnit NormalizedTypoAscent(
+      FontBaseline = FontBaseline::kAlphabetic) const;
+  LayoutUnit NormalizedTypoDescent(
+      FontBaseline = FontBaseline::kAlphabetic) const;
 
   LayoutUnit VerticalPosition(FontVerticalPositionType, FontBaseline) const;
 
@@ -199,6 +202,7 @@ class PLATFORM_EXPORT SimpleFontData final : public FontData {
   Member<const FontPlatformData> platform_data_;
   Member<NGShapeCache> shape_cache_;
   const SkFont font_;
+  const bool is_fixed_pitch_;
 
   Glyph space_glyph_ = 0;
   float space_width_ = 0;
@@ -263,8 +267,8 @@ ALWAYS_INLINE gfx::RectF SimpleFontData::BoundsForGlyph(Glyph glyph) const {
 
 template <>
 struct DowncastTraits<SimpleFontData> {
-  static bool AllowFrom(const FontData& fontData) {
-    return !fontData.IsSegmented();
+  static bool AllowFrom(const FontData& font_data) {
+    return !font_data.IsSegmented();
   }
 };
 

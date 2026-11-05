@@ -497,7 +497,7 @@ IN_PROC_BROWSER_TEST_P(DiscountsBubbleDialogInteractiveTest,
       EnsurePresent(kDiscountsBubbleTermsAndConditionLabelId),
       EnsureNotPresent(kDiscountsBubbleTermsAndConditionPageId),
       WithElement(kDiscountsBubbleTermsAndConditionLabelId,
-                  [](ui::TrackedElement* el) {
+                  [this](ui::TrackedElement* el) {
                     AsView<views::StyledLabel>(el)->ClickFirstLinkForTesting();
                   })
           .SetMustRemainVisible(false),
@@ -514,7 +514,7 @@ IN_PROC_BROWSER_TEST_P(DiscountsBubbleDialogInteractiveTest,
       PressButton(kDiscountsChipElementId),
       WaitForShow(kDiscountsBubbleDialogId),
       WithElement(kDiscountsBubbleTermsAndConditionLabelId,
-                  [](ui::TrackedElement* el) {
+                  [this](ui::TrackedElement* el) {
                     AsView<views::StyledLabel>(el)->ClickFirstLinkForTesting();
                   })
           .SetMustRemainVisible(false),
@@ -575,8 +575,6 @@ IN_PROC_BROWSER_TEST_P(DiscountDialogAutoPopupCounterfactual,
       NavigateWebContents(kShoppingTab,
                           embedded_test_server()->GetURL(kShoppingURL)),
       WaitForPageActionChipVisible(kActionCommerceDiscounts),
-      WaitForViewProperty(kDiscountsChipElementId, views::LabelButton, Visible,
-                          true),
       If([&]() { return is_counterfactual_enabled; },
          Then(EnsureNotPresent(kDiscountsBubbleDialogId)),
          Else(WaitForShow(kDiscountsBubbleDialogId))),

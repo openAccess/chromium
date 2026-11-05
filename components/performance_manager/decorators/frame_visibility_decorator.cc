@@ -4,6 +4,7 @@
 
 #include "components/performance_manager/decorators/frame_visibility_decorator.h"
 
+#include "base/feature_list.h"
 #include "components/performance_manager/graph/frame_node_impl.h"
 #include "components/performance_manager/graph/page_node_impl.h"
 #include "components/performance_manager/public/features.h"
@@ -19,14 +20,26 @@ bool IsBeingMirrored(const PageNode* page_node) {
 }
 
 FrameNode::Visibility GetFrameNodeVisibility(FrameNodeImpl* frame_node,
+                                             const FrameNode* parent_frame_node,
                                              bool is_page_user_visible) {
   // All frames of a page are not visible if the page is not visible.
   if (!is_page_user_visible) {
     return FrameNode::Visibility::kNotVisible;
   }
 
-  // Only frame nodes that are current can be visible.
-  if (!frame_node->IsCurrent()) {
+  // Only frame nodes that are active can be visible.
+  if (!frame_node->IsActive()) {
+    return FrameNode::Visibility::kNotVisible;
+  }
+
+  // A subframe can't be visible if its parent isn't. This matters for frames
+  // whose viewport intersection is never reported, e.g. frames inside a
+  // `display:none` frame.
+  if (parent_frame_node &&
+      parent_frame_node->GetVisibility() ==
+          FrameNode::Visibility::kNotVisible &&
+      base::FeatureList::IsEnabled(
+          features::kSubframeNotVisibleIfParentNotVisible)) {
     return FrameNode::Visibility::kNotVisible;
   }
 
@@ -50,8 +63,8 @@ FrameNode::Visibility GetFrameNodeVisibility(FrameNodeImpl* frame_node,
 // page visibility.
 void UpdateFrameTreeVisibility(FrameNodeImpl* frame_node,
                                bool is_page_user_visible) {
-  FrameNode::Visibility visibility =
-      GetFrameNodeVisibility(frame_node, is_page_user_visible);
+  FrameNode::Visibility visibility = GetFrameNodeVisibility(
+      frame_node, frame_node->parent_frame_node(), is_page_user_visible);
 
   frame_node->SetVisibility(visibility);
 
@@ -115,28 +128,13 @@ void FrameVisibilityDecorator::OnBeforeFrameNodeAdded(
     const ProcessNode* pending_process_node,
     const FrameNode* pending_parent_or_outer_document_or_embedder) {
   FrameNodeImpl* frame_node_impl = FrameNodeImpl::FromNode(frame_node);
-  frame_node_impl->SetInitialVisibility(GetFrameNodeVisibility(
-      frame_node_impl, IsPageUserVisible(pending_page_node)));
+  frame_node_impl->SetInitialVisibility(
+      GetFrameNodeVisibility(frame_node_impl, pending_parent_frame_node,
+                             IsPageUserVisible(pending_page_node)));
 }
 
-void FrameVisibilityDecorator::OnCurrentFrameChanged(
-    const FrameNode* previous_frame_node,
-    const FrameNode* current_frame_node) {
-  if (base::FeatureList::IsEnabled(features::kSeamlessRenderFrameSwap)) {
-    if (current_frame_node) {
-      OnFramePropertyChanged(current_frame_node);
-    }
-    if (previous_frame_node) {
-      OnFramePropertyChanged(previous_frame_node);
-    }
-  } else {
-    if (previous_frame_node) {
-      OnFramePropertyChanged(previous_frame_node);
-    }
-    if (current_frame_node) {
-      OnFramePropertyChanged(current_frame_node);
-    }
-  }
+void FrameVisibilityDecorator::OnIsActiveChanged(const FrameNode* frame_node) {
+  OnFramePropertyChanged(frame_node);
 }
 
 void FrameVisibilityDecorator::OnViewportIntersectionChanged(
@@ -166,15 +164,29 @@ void FrameVisibilityDecorator::OnPageUserVisibilityChanged(
 void FrameVisibilityDecorator::OnFramePropertyChanged(
     const FrameNode* frame_node) {
   FrameNodeImpl* frame_node_impl = FrameNodeImpl::FromNode(frame_node);
+  FrameNode::Visibility old_visibility = frame_node_impl->GetVisibility();
   FrameNode::Visibility new_visibility = GetFrameNodeVisibility(
-      frame_node_impl, IsPageUserVisible(frame_node_impl->page_node()));
+      frame_node_impl, frame_node_impl->parent_frame_node(),
+      IsPageUserVisible(frame_node_impl->page_node()));
 
-  if (new_visibility == frame_node_impl->GetVisibility()) {
+  if (new_visibility == old_visibility) {
     // No visibility change.
     return;
   }
 
   frame_node_impl->SetVisibility(new_visibility);
+
+  // Only transitions to or from `kNotVisible` can affect the visibility of
+  // child frames.
+  if ((old_visibility == FrameNode::Visibility::kNotVisible ||
+       new_visibility == FrameNode::Visibility::kNotVisible) &&
+      base::FeatureList::IsEnabled(
+          features::kSubframeNotVisibleIfParentNotVisible)) {
+    for (FrameNodeImpl* child_frame_node :
+         frame_node_impl->child_frame_nodes()) {
+      OnFramePropertyChanged(child_frame_node);
+    }
+  }
 }
 
 // static

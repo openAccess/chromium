@@ -24,7 +24,10 @@
 #include "components/search_engines/template_url_service.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/sessions/core/session_id.h"
+#include "content/public/browser/navigation_entry.h"
 #include "extensions/buildflags/buildflags.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS) && BUILDFLAG(SAFE_BROWSING_AVAILABLE)
@@ -143,9 +146,9 @@ void SearchboxOmniboxClient::OnURLOpenedFromOmnibox(OmniboxLog* log) {
 void SearchboxOmniboxClient::OnAutocompleteAccept(
     const GURL& destination_url,
     TemplateURLRef::PostContent* post_content,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
-    AutocompleteMatchType::Type match_type,
+    omnibox::AutocompleteMatchType match_type,
     base::TimeTicks match_selection_timestamp,
     bool destination_url_entered_without_scheme,
     bool destination_url_entered_with_http_scheme,
@@ -161,18 +164,17 @@ void SearchboxOmniboxClient::OnAutocompleteAccept(
   }
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS) && BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
-  web_contents_->OpenURL(
-      content::OpenURLParams(destination_url, content::Referrer(), disposition,
-                             transition, false),
-      /*navigation_handle_callback=*/{});
+  web_contents_->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                             destination_url, disposition, transition),
+                         /*navigation_handle_callback=*/{});
 }
 
-void SearchboxOmniboxClient::OpenUrl(GURL gurl,
-                                     WindowOpenDisposition disposition) {
-  web_contents_->OpenURL(
-      content::OpenURLParams(gurl, content::Referrer(), disposition,
-                             ui::PAGE_TRANSITION_GENERATED, false),
-      /*navigation_handle_callback=*/{});
+void SearchboxOmniboxClient::OpenUrl(
+    GURL gurl,
+    ui::mojom::WindowOpenDisposition disposition) {
+  web_contents_->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                             gurl, disposition, ui::PAGE_TRANSITION_GENERATED),
+                         /*navigation_handle_callback=*/{});
 }
 
 base::WeakPtr<OmniboxClient> SearchboxOmniboxClient::AsWeakPtr() {

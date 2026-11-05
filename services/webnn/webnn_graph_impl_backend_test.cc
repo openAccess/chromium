@@ -11,6 +11,7 @@
 #include "base/compiler_specific.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/containers/flat_map.h"
+#include "base/feature_list.h"
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
@@ -24,6 +25,7 @@
 #include "services/webnn/buildflags.h"
 #include "services/webnn/public/cpp/webnn_types.h"
 #include "services/webnn/public/mojom/features.mojom-features.h"
+#include "services/webnn/public/mojom/webnn_compiler_context.mojom.h"
 #include "services/webnn/public/mojom/webnn_context.mojom.h"
 #include "services/webnn/public/mojom/webnn_context_provider.mojom.h"
 #include "services/webnn/public/mojom/webnn_graph.mojom.h"
@@ -46,12 +48,6 @@
 namespace webnn::test {
 
 namespace {
-
-// TODO(crbug.com/373443096): Consolidate with the other Float16 types declared
-// elsewhere.
-struct Float16 {
-  uint16_t data;
-};
 
 struct TensorRemoteAndHandle {
   mojo::AssociatedRemote<mojom::WebNNTensor> remote;
@@ -295,6 +291,9 @@ class WebNNGraphImplBackendTest : public testing::Test,
   mojo::Remote<mojom::WebNNGraphBuilder> BindNewGraphBuilderRemote();
 
   mojo::Remote<mojom::WebNNContext>& context() { return webnn_context_; }
+  mojo::Remote<mojom::WebNNCompilerContext>& compiler_context() {
+    return compiler_context_;
+  }
 
  protected:
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -302,6 +301,7 @@ class WebNNGraphImplBackendTest : public testing::Test,
   WebNNTestEnvironment webnn_test_environment_;
   mojo::Remote<mojom::WebNNContextProvider> provider_remote_;
   mojo::Remote<mojom::WebNNContext> webnn_context_;
+  mojo::Remote<mojom::WebNNCompilerContext> compiler_context_;
 };
 
 void WebNNGraphImplBackendTest::SetUp() {
@@ -346,6 +346,9 @@ class WebNNGraphImplBackendTest : public testing::Test,
   mojo::Remote<mojom::WebNNGraphBuilder> BindNewGraphBuilderRemote();
 
   mojo::Remote<mojom::WebNNContext>& context() { return webnn_context_; }
+  mojo::Remote<mojom::WebNNCompilerContext>& compiler_context() {
+    return compiler_context_;
+  }
 
  protected:
   base::test::ScopedFeatureList scoped_feature_list_;
@@ -353,6 +356,7 @@ class WebNNGraphImplBackendTest : public testing::Test,
   WebNNTestEnvironment webnn_test_environment_;
   mojo::Remote<mojom::WebNNContextProvider> provider_remote_;
   mojo::Remote<mojom::WebNNContext> webnn_context_;
+  mojo::Remote<mojom::WebNNCompilerContext> compiler_context_;
 };
 
 void WebNNGraphImplBackendTest::SetUp() {
@@ -415,6 +419,7 @@ void WebNNGraphImplBackendTest::SetUp() {
       "FuseStandaloneActivationIntoLayerNormalization",
       "FuseStandaloneOperationsIntoMatmul",
       // "MultipleOutputsCanNotFuseStandaloneActivation",
+      "NewGraphInputTensorIsZeroInitialized",
   });
 
   if (!kSupportedTests.contains(GetBaseTestName(current_test_name))) {
@@ -442,22 +447,46 @@ void WebNNGraphImplBackendTest::SetUpBase() {
   if (create_context_result->is_success()) {
     webnn_context_.Bind(
         std::move(create_context_result->get_success()->context_remote));
+    if (create_context_result->get_success()
+            ->compiler_context_remote.is_valid()) {
+      compiler_context_.Bind(std::move(
+          create_context_result->get_success()->compiler_context_remote));
+    }
   }
   EXPECT_FALSE(create_context_result->is_error())
       << create_context_result->get_error()->message;
   EXPECT_TRUE(webnn_context_.is_bound());
+#if BUILDFLAG(IS_MAC)
+  if (!IsIncognito() && base::mac::MacOSVersion() >= 14'04'00 &&
+      base::mac::GetCPUType() == base::mac::CPUType::kArm &&
+      base::FeatureList::IsEnabled(mojom::features::kWebNNCoreML)) {
+    EXPECT_THAT(webnn_test_environment_.GetContextBackendNames(),
+                testing::ElementsAre("CoreML"));
+    EXPECT_EQ(compiler_context_.is_bound(),
+              base::FeatureList::IsEnabled(
+                  mojom::features::kWebNNCompilerProcess));
+  }
+#endif
 }
 
 void WebNNGraphImplBackendTest::TearDown() {
   // Give WebNNContext a chance to run disconnect.
+  compiler_context_.reset();
   webnn_context_.reset();
-  webnn_test_environment_.RunUntilIdle();
+  webnn_test_environment_.WaitForAllContextsToBeDestroyed();
+
+  provider_remote_.reset();
+  webnn_test_environment_.TearDown();
 }
 
 mojo::Remote<mojom::WebNNGraphBuilder>
 WebNNGraphImplBackendTest::BindNewGraphBuilderRemote() {
   mojo::Remote<mojom::WebNNGraphBuilder> remote;
-  webnn_context_->CreateGraphBuilder(remote.BindNewPipeAndPassReceiver());
+  if (compiler_context_.is_bound()) {
+    compiler_context_->CreateGraphBuilder(remote.BindNewPipeAndPassReceiver());
+  } else {
+    webnn_context_->CreateGraphBuilder(remote.BindNewPipeAndPassReceiver());
+  }
   return remote;
 }
 
@@ -3849,8 +3878,76 @@ TEST_P(WebNNGraphImplBackendTest, DestroyContextDuringBuild) {
                  result) { NOTREACHED(); }));
 
   // Destroy the context and wait for any pending tasks to complete.
+  compiler_context().reset();
   context().reset();
-  webnn_test_environment_.RunUntilIdle();
+  webnn_test_environment_.WaitForAllContextsToBeDestroyed();
+}
+
+// A tensor the renderer never writes must read as zeros, so a renderer cannot
+// observe whatever the allocation previously held. A tensor without read or
+// write usage is the one that may live in device-only memory, and that same
+// lack of read usage means it cannot be read back directly, so a graph copies
+// it into a tensor that can be.
+TEST_P(WebNNGraphImplBackendTest, NewGraphInputTensorIsZeroInitialized) {
+  // The staging chunk is 4 MiB, so these cover a partial chunk, exactly one
+  // chunk, and several chunks followed by a partial one.
+  for (uint32_t elements :
+       {uint32_t{1}, uint32_t{1024 * 1024}, uint32_t{2 * 1024 * 1024 + 2}}) {
+    SCOPED_TRACE(elements);
+
+    mojo::Remote<mojom::WebNNGraphBuilder> remote = BindNewGraphBuilderRemote();
+    GraphInfoBuilder builder(remote);
+    const OperandId input_operand_id =
+        builder.BuildInput("input", {elements}, OperandDataType::kFloat32);
+    const OperandId output_operand_id =
+        builder.BuildOutput("output", {elements, 1}, OperandDataType::kFloat32);
+    builder.BuildReshape(input_operand_id, output_operand_id);
+
+    base::test::TestFuture<
+        base::expected<mojom::CreateGraphSuccessPtr, mojom::ErrorPtr>>
+        create_graph_future;
+    remote->CreateGraph(builder.TakeGraphInfo(),
+                        create_graph_future.GetCallback());
+    auto create_graph_result = create_graph_future.Take();
+    ASSERT_TRUE(create_graph_result.has_value())
+        << create_graph_result.error()->message;
+
+    // Never written, and without read or write usage so that a backend with
+    // device-only memory places it there.
+    TensorRemoteAndHandle input = CreateTensor(
+        context(),
+        mojom::TensorInfo::New(
+            OperandDescriptor::UnsafeCreateForTesting(
+                OperandDataType::kFloat32, std::array<uint32_t, 1>{elements}),
+            MLTensorUsage()));
+
+    // Filled with a non-zero pattern first, so a dispatch that never wrote the
+    // output could not be mistaken for a zeroed input.
+    const std::vector<uint8_t> non_zero(elements * sizeof(float), 0xff);
+    TensorRemoteAndHandle output = CreateTensorWithValues(
+        context(),
+        mojom::TensorInfo::New(OperandDescriptor::UnsafeCreateForTesting(
+                                   OperandDataType::kFloat32,
+                                   std::array<uint32_t, 2>{elements, 1}),
+                               MLTensorUsage{MLTensorUsageFlags::kRead,
+                                             MLTensorUsageFlags::kWrite}),
+        non_zero);
+
+    context()->Dispatch(create_graph_result.value()->graph_token,
+                        {{"input", input.handle}}, {{"output", output.handle}});
+
+    base::test::TestFuture<mojom::ReadTensorResultPtr> read_tensor_future;
+    output.remote->ReadTensor(read_tensor_future.GetCallback());
+    mojom::ReadTensorResultPtr read_tensor_result = read_tensor_future.Take();
+    ASSERT_FALSE(read_tensor_result->is_error());
+
+    // Checked as bytes rather than floats because -0.0f compares equal to 0.
+    const mojo_base::BigBuffer buffer =
+        std::move(read_tensor_result->get_buffer());
+    ASSERT_EQ(buffer.size(), non_zero.size());
+    EXPECT_TRUE(std::ranges::all_of(base::span(buffer),
+                                    [](uint8_t byte) { return byte == 0; }));
+  }
 }
 
 }  // namespace webnn::test

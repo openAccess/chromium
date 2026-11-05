@@ -6,20 +6,43 @@ import {assert} from '//resources/js/assert.js';
 
 import {getReadingModeTextNodes} from '../shared/tree_traversal.js';
 
+import type {AudioBrowserProxy} from './audio_browser_proxy.js';
+import {AudioBrowserProxyImpl} from './audio_browser_proxy.js';
 import type {ReadAloudModelBrowserProxy} from './read_aloud_model_browser_proxy.js';
 import type {OffsetByNode, Segment, SegmentedSentence, Sentence} from './read_aloud_types.js';
-import {DomReadAloudNode, ReadAloudNode} from './read_aloud_types.js';
+import {ReadAloudNode} from './read_aloud_types.js';
 import {TextSegmenter} from './text_segmenter.js';
 
+// The number of sentences, starting with the current sentence, that phrase
+// boundaries are requested for at once. Prefetching is meant to be repeated as
+// playback moves to each new sentence, so this only needs to stay far enough
+// ahead of playback that boundaries are usually ready before a sentence is
+// spoken. Larger values do more parsing up front that may be discarded if the
+// content changes. This value may be adjusted in the future based on
+// realistic phrase highlighting usage.
+const PHRASE_PREFETCH_WINDOW_SIZE = 5;
 
 // Read aloud model implementation based in TS to be used when the
 // ReadAnythingReadAloudTSTextSegmentation flag is enabled.
 export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
   private textSegmenter_: TextSegmenter = TextSegmenter.getInstance();
+  private audioBrowserProxy_: AudioBrowserProxy =
+      AudioBrowserProxyImpl.getInstance();
   // The list of sentences on the current page.
   private sentences_: SegmentedSentence[] = [];
   private currentIndex_: number = -1;
   private initialized_: boolean = false;
+  // Sentences that phrase boundaries have been requested for but not received
+  // yet, keyed by request ID.
+  private pendingPhraseRequests_: Map<number, SegmentedSentence[]> = new Map();
+  private nextPhraseRequestId_: number = 0;
+
+  constructor() {
+    if (this.audioBrowserProxy_.isPhraseHighlightingEnabled()) {
+      this.audioBrowserProxy_.onPhraseBoundariesReady.addListener(
+          this.onPhraseBoundariesReady_.bind(this));
+    }
+  }
 
   getHighlightForCurrentSegmentIndex(index: number, phrases: boolean):
       Segment[] {
@@ -28,10 +51,8 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
     }
     const currentSentence = this.sentences_[this.currentIndex_]!;
 
-    // TODO: crbug.com/440400392 - Implement phrase highlighting.
     if (phrases) {
-      // For now, just return the current sentence.
-      return this.getCurrentTextSegments();
+      return this.getPhraseHighlightSegments_(currentSentence, index);
     }
 
     // Word highlighting.
@@ -86,8 +107,8 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
     return this.initialized_;
   }
 
-  init(context: DomReadAloudNode): void {
-    if (!(context instanceof DomReadAloudNode) || this.initialized_) {
+  init(context: ReadAloudNode): void {
+    if (this.initialized_) {
       return;
     }
 
@@ -100,7 +121,7 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
       // Do not set this if the context node is a DocumentFragment, which
       // happens when Readability is enabled and the fragment has just been
       // appended to the DOM (and therefore emptied).
-      if (context.domNode()?.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) {
+      if (context.domNode().nodeType !== Node.DOCUMENT_FRAGMENT_NODE) {
         this.initialized_ = true;
       }
       return;
@@ -134,7 +155,7 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
     // Filter out any segments containing the now deleted node.
     this.sentences_.forEach(sentence => {
       sentence.segments = sentence.segments.filter(
-          segment => !segment.node.domNode()?.isEqualNode(deletedNode));
+          segment => !segment.node.domNode().isEqualNode(deletedNode));
     });
 
     // Before filtering the main sentences list, count how many sentences
@@ -165,16 +186,59 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
     }
   }
 
+  prefetchPhraseBoundaries(): void {
+    if (!this.audioBrowserProxy_.isPhraseHighlightingEnabled() ||
+        !this.initialized_ || this.currentIndex_ < 0) {
+      return;
+    }
+
+    const sentencesToRequest: SegmentedSentence[] = [];
+    const end = Math.min(
+        this.currentIndex_ + PHRASE_PREFETCH_WINDOW_SIZE,
+        this.sentences_.length);
+    for (let i = this.currentIndex_; i < end; i++) {
+      const sentence = this.sentences_[i]!;
+      if (sentence.phraseBoundaries === undefined) {
+        // Mark the sentence as requested so it isn't requested again while the
+        // request is in flight.
+        sentence.phraseBoundaries = [];
+        sentencesToRequest.push(sentence);
+      }
+    }
+
+    if (sentencesToRequest.length === 0) {
+      return;
+    }
+    const requestId = this.nextPhraseRequestId_++;
+    this.pendingPhraseRequests_.set(requestId, sentencesToRequest);
+    this.audioBrowserProxy_.requestPhraseBoundaries(
+        requestId,
+        sentencesToRequest.map(sentence => sentence.sentenceInfo.text));
+  }
+
+  private onPhraseBoundariesReady_(requestId: number, boundaries: number[][]) {
+    const sentences = this.pendingPhraseRequests_.get(requestId);
+    // The request may have been cleared by a reset since it was made.
+    if (!sentences) {
+      return;
+    }
+    this.pendingPhraseRequests_.delete(requestId);
+    sentences.forEach((sentence, i) => {
+      sentence.phraseBoundaries = boundaries[i] ?? [];
+    });
+  }
+
   private resetState_() {
     this.sentences_ = [];
     this.currentIndex_ = -1;
     this.initialized_ = false;
+    this.pendingPhraseRequests_.clear();
   }
 
   // Takes a list of nodes to process and returns an object containing the
   // concatenated text content and a list of nodes with their starting offset
   // in their node in the concatenated text.
-  private buildTextAndOffsets_(textNodes: DomReadAloudNode[]): {
+  private buildTextAndOffsets_(textNodes: ReadAloudNode[]): {
     fullText: string,
     nodeOffsets: OffsetByNode[],
   } {
@@ -213,7 +277,7 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
     return {fullText, nodeOffsets};
   }
 
-  private isLineBreakingItem(node1: DomReadAloudNode, node2: DomReadAloudNode):
+  private isLineBreakingItem(node1: ReadAloudNode, node2: ReadAloudNode):
       boolean {
     const blockAncestor1 = node1.getBlockAncestor();
     const blockAncestor2 = node2.getBlockAncestor();
@@ -246,7 +310,8 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
       // sentence.
       if (previousSentence) {
         currentSentence = this.maybeMergeSuperscripts_(
-            currentSentence, nodeOffsets, fullText, previousSentence);
+            currentSentence, nodeOffsets, fullText, previousSentence,
+            nodeIndex);
       }
 
       // Add the completed sentence to the segments array
@@ -359,13 +424,16 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
     return null;
   }
 
-  // Returns the list of DomReadAloudNodes associated with the provided.
+  // Returns the list of ReadAloudNodes associated with the provided sentence.
+  // Nodes before `startNodeIndex` must end before the sentence starts.
   private findNodesForSentence_(
-      sentence: Sentence, nodeOffsets: OffsetByNode[]): OffsetByNode[] {
+      sentence: Sentence, nodeOffsets: OffsetByNode[],
+      startNodeIndex: number): OffsetByNode[] {
     const sentenceStart = sentence.index;
     const sentenceEnd = sentence.index + sentence.text.length;
     const nodes: OffsetByNode[] = [];
-    for (const offsetByNode of nodeOffsets) {
+    for (let i = startNodeIndex; i < nodeOffsets.length; i++) {
+      const offsetByNode = nodeOffsets[i]!;
       const nodeLength = offsetByNode.node.getText().length;
       const nodeEndOffset = offsetByNode.startOffset + nodeLength;
       if (offsetByNode.startOffset >= sentenceEnd) {
@@ -387,11 +455,12 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
   // Helper method to handle superscript merging
   private maybeMergeSuperscripts_(
       currentSentence: Sentence, nodeOffsets: OffsetByNode[], fullText: string,
-      previousSentence: Sentence): Sentence|null {
+      previousSentence: Sentence, startNodeIndex: number): Sentence|null {
     let finalSentence: Sentence|null = currentSentence;
 
     while (finalSentence) {
-      const nodes = this.findNodesForSentence_(finalSentence, nodeOffsets);
+      const nodes = this.findNodesForSentence_(
+          finalSentence, nodeOffsets, startNodeIndex);
       // If there are no nodes in the current sentence or the first node
       // is not a superscript, no need to continue with postprocessing.
       if (nodes.length === 0 || !nodes[0]!.node.isSuperscript()) {
@@ -460,22 +529,8 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
     return {segments, nextNodeIndex};
   }
 
-  private getAllTextNodesFrom_(node: Node|undefined): DomReadAloudNode[] {
-    if (!node) {
-      return [];
-    }
-
-    const nodes = getReadingModeTextNodes(node);
-
-    // Convert raw DOM nodes into the speech-wrapped DomReadAloudNode class,
-    // filtering out any null value nodes.
-    return nodes
-        .map(n => {
-          const readAloudNode = ReadAloudNode.create(n);
-          return readAloudNode instanceof DomReadAloudNode ? readAloudNode :
-                                                             null;
-        })
-        .filter((n): n is DomReadAloudNode => !!n);
+  private getAllTextNodesFrom_(node: Node): ReadAloudNode[] {
+    return getReadingModeTextNodes(node).map(n => ReadAloudNode.create(n));
   }
 
   private getWordHighlightSegment(
@@ -484,8 +539,38 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
     const remainingText = sentenceText.substring(index);
     const wordEndInRemaining =
         this.textSegmenter_.getNextWordEnd(remainingText);
-    const highlightEndIndex = index + wordEndInRemaining;
+    return this.getHighlightSegmentsForRange_(
+        currentSentence, index, index + wordEndInRemaining);
+  }
 
+  // Returns the segments for the phrase containing `index`. Falls back to word
+  // highlighting if the phrase boundaries for the sentence aren't available.
+  private getPhraseHighlightSegments_(
+      currentSentence: SegmentedSentence, index: number): Segment[] {
+    const boundaries = currentSentence.phraseBoundaries;
+    if (!boundaries || boundaries.length === 0) {
+      return this.getWordHighlightSegment(currentSentence, index);
+    }
+
+    // Find the last phrase that starts at or before `index`.
+    let phraseIndex = 0;
+    while (phraseIndex + 1 < boundaries.length &&
+           boundaries[phraseIndex + 1]! <= index) {
+      phraseIndex++;
+    }
+    const phraseStart = boundaries[phraseIndex]!;
+    const phraseEnd =
+        boundaries[phraseIndex + 1] ?? currentSentence.sentenceInfo.text.length;
+    return this.getHighlightSegmentsForRange_(
+        currentSentence, phraseStart, phraseEnd);
+  }
+
+  // Returns the segments covering the text from `highlightStart` to
+  // `highlightEnd` (exclusive) within the sentence text.
+  private getHighlightSegmentsForRange_(
+      currentSentence: SegmentedSentence, highlightStart: number,
+      highlightEnd: number): Segment[] {
+    const sentenceText = currentSentence.sentenceInfo.text;
     const sentenceSegments = currentSentence.segments;
     const highlightSegments: Segment[] = [];
     let textSoFarIndex = 0;
@@ -495,25 +580,23 @@ export class TsReadModelImpl implements ReadAloudModelBrowserProxy {
       // text starts in the sentence text. This allows extra characters such as
       // spaces that were added to make speech sound more natural to be indexed
       // correctly.
-      const segmentText =
-          (segment.node as DomReadAloudNode)
-              .getText()
-              .substring(segment.start, segment.start + segment.length);
+      const segmentText = segment.node.getText().substring(
+          segment.start, segment.start + segment.length);
       const segmentStart = sentenceText.indexOf(segmentText, textSoFarIndex);
 
       if (segmentStart === -1) {
         continue;
       }
 
-      if (segmentStart >= highlightEndIndex) {
+      if (segmentStart >= highlightEnd) {
         break;
       }
 
       const highlightSegment = this.createHighlightSegment(
           segment,
           segmentStart,
-          index,  // highlightStart
-          highlightEndIndex,
+          highlightStart,
+          highlightEnd,
       );
 
       if (highlightSegment) {

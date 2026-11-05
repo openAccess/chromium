@@ -11,6 +11,7 @@
 #include "ash/public/cpp/holding_space/mock_holding_space_client.h"
 #include "ash/system/diagnostics/diagnostics_browser_delegate.h"
 #include "ash/system/diagnostics/diagnostics_log_controller.h"
+#include "ash/system/diagnostics/keyboard_input_log.h"
 #include "ash/system/diagnostics/log_test_helpers.h"
 #include "ash/system/diagnostics/networking_log.h"
 #include "ash/system/diagnostics/routine_log.h"
@@ -28,12 +29,10 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/values.h"
-#include "chromeos/ash/components/test/ash_test_suite.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/test_web_ui.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/shell_dialogs/select_file_dialog_factory.h"
@@ -78,7 +77,7 @@ class FakeDiagnosticsBrowserDelegate : public DiagnosticsBrowserDelegate {
   FakeDiagnosticsBrowserDelegate() = default;
   ~FakeDiagnosticsBrowserDelegate() override = default;
 
-  base::FilePath GetActiveUserProfileDir() override {
+  std::optional<base::FilePath> GetActiveUserProfileDir() override {
     base::ScopedTempDir tmp_dir;
     EXPECT_TRUE(tmp_dir.CreateUniqueTempDir());
     return tmp_dir.GetPath();
@@ -161,12 +160,15 @@ class SessionLogHandlerTest : public NoSessionAshTestBase {
 
   void SetUp() override {
     EXPECT_TRUE(temp_dir_.CreateUniqueTempDir());
-    // Setup to ensure ash::Shell can configure for tests.
-    ui::ResourceBundle::CleanupSharedInstance();
-    AshTestSuite::LoadTestResources();
     NoSessionAshTestBase::SetUp();
     DiagnosticsLogController::Initialize(
         std::make_unique<FakeDiagnosticsBrowserDelegate>());
+    DiagnosticsLogController::Get()->SetRoutineLogForTesting(
+        std::make_unique<RoutineLog>(temp_dir_.GetPath()));
+    DiagnosticsLogController::Get()->SetNetworkingLogForTesting(
+        std::make_unique<NetworkingLog>(temp_dir_.GetPath()));
+    DiagnosticsLogController::Get()->SetKeyboardInputLogForTesting(
+        std::make_unique<KeyboardInputLog>(temp_dir_.GetPath()));
     session_log_handler_ = std::make_unique<diagnostics::SessionLogHandler>(
         base::BindRepeating(
             [](content::WebContents*) -> std::unique_ptr<ui::SelectFilePolicy> {
@@ -192,6 +194,7 @@ class SessionLogHandlerTest : public NoSessionAshTestBase {
     task_runner_.reset();
     task_environment()->RunUntilIdle();
     ui::SelectFileDialog::SetFactory(nullptr);
+    EXPECT_TRUE(temp_dir_.Delete());
 
     NoSessionAshTestBase::TearDown();
   }

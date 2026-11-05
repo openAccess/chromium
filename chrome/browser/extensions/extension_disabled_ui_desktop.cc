@@ -87,6 +87,10 @@ class ExtensionDisabledGlobalError final
   void OnExtensionUninstalled(content::BrowserContext* browser_context,
                               const Extension* extension,
                               UninstallReason reason) override;
+  void OnExtensionWillBeInstalled(content::BrowserContext* browser_context,
+                                  const Extension* extension,
+                                  bool is_update,
+                                  const std::string& old_name) override;
   void OnShutdown(ExtensionRegistry* registry) override;
 
   void RemoveGlobalError();
@@ -283,8 +287,20 @@ void ExtensionDisabledGlobalError::OnExtensionUninstalled(
   RemoveGlobalError();
 }
 
+void ExtensionDisabledGlobalError::OnExtensionWillBeInstalled(
+    content::BrowserContext* browser_context,
+    const Extension* extension,
+    bool is_update,
+    const std::string& old_name) {
+  if (extension->id() != extension_->id()) {
+    return;
+  }
+  RemoveGlobalError();
+}
+
 void ExtensionDisabledGlobalError::OnShutdown(ExtensionRegistry* registry) {
-  DCHECK_EQ(ExtensionRegistry::Get(profile_), registry);
+  CHECK_EQ(ExtensionRegistry::Get(profile_), registry,
+           base::NotFatalUntil::M161);
   registry_observation_.Reset();
 }
 

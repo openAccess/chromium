@@ -153,7 +153,9 @@
 
 #tabHeader,
 #toolHeader,
-#modelHeader {
+#modelHeader,
+#automaticallyAddTabsHeader,
+#manuallyAddTabsHeader {
   color: var(--cr-primary-text-color);
   font-size: 11px;
   font-weight: 500;
@@ -191,6 +193,9 @@ composebox-favicon-group {
   --composebox-favicon-border-color: var(--cr-menu-background-color,
       var(--color-composebox-background,
           #fff));
+  /* The menu is themed, so let the favicon skeleton loader follow the theme. */
+  --composebox-favicon-skeleton-color: var(--color-sys-surface-variant,
+      var(--cr-fallback-color-surface-variant));
   margin-inline-end: 10px;
   margin-inline-start: auto;
 }
@@ -237,6 +242,7 @@ composebox-favicon-group {
 #menu hr {
   background: var(--color-sys-divider);
   border: none;
+  flex-shrink: 0;
   height: 1px;
   margin: 8px 0;
 }
@@ -351,39 +357,28 @@ composebox-favicon-group {
   width: 100% !important;
 }
 
-.tab-title-group {
-  align-items: center;
-  display: flex;
-  flex: 1 1 auto;
-  gap: 4px;
-  min-width: 0;
-}
-
-.tab-title-group .tab-title {
-  min-width: 0;
-}
-
-.recent-tabs-suffix {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  font-family: var(--cr-composebox-context-menu-font-family, inherit);
-  font-size: 12px;
-  font-weight: 400;
-  height: 20px;
-  justify-content: flex-end;
-  line-height: var(--cr-composebox-context-menu-line-height, 18px);
-  white-space: nowrap;
-  width: 72px;
-}
-
-.recent-tabs-suffix[disabled] {
-  color: var(--color-composebox-context-entrypoint-text-disabled);
-}
-
 .share-tabs-check {
   --iron-icon-height: 16px;
   --iron-icon-width: 16px;
   flex-shrink: 0;
   margin-inline-start: auto;
+}
+
+@media (forced-colors: active) {
+  :host([unbounded-menu-enabled]) .main-menu-card,
+  .share-tabs-flyout {
+    border: 1px solid CanvasText;
+  }
+
+  #menu hr {
+    background: CanvasText;
+    forced-color-adjust: none;
+  }
+
+  .dropdown-item:hover:not([disabled]),
+  .dropdown-item:focus-visible:not([disabled]) {
+    background-color: Highlight;
+    color: HighlightText;
+    forced-color-adjust: none;
+  }
 }

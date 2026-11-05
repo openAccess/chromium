@@ -18,28 +18,26 @@ source_set("carousel") {
     "//ios/chrome/browser/omnibox/public",
     "//ios/chrome/browser/omnibox/public:features",
     "//ios/chrome/browser/omnibox/ui:omnibox_popup_shared",
+    "//ios/chrome/browser/omnibox/ui/popup:popup_util",
     "//ios/chrome/browser/omnibox/ui/popup/row",
     "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/common/ui/colors",
     "//ios/chrome/common/ui/favicon",
     "//ios/chrome/common/ui/util",
-    "//ui/base",
   ]
 }
 
 source_set("unit_tests") {
   testonly = true
-  sources = [
-    "omnibox_popup_carousel_control_unittest.mm",
-    "omnibox_popup_carousel_control_unittest_util.h",
-    "omnibox_popup_carousel_control_unittest_util.mm",
-  ]
+  sources = [ "omnibox_popup_carousel_control_unittest.mm" ]
   deps = [
     ":carousel",
     "//base",
     "//ios/chrome/browser/net/model:crurl",
     "//ios/chrome/browser/omnibox/public",
+    "//ios/chrome/common/ui/colors",
     "//ios/chrome/common/ui/favicon",
+    "//ios/chrome/test/app:test_support",
     "//testing/gtest",
     "//third_party/ocmock",
   ]

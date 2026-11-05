@@ -15,6 +15,7 @@
 #include "base/scoped_observation.h"
 #include "base/timer/timer.h"
 #include "base/types/expected.h"
+#include "chrome/browser/enterprise/data_protection/data_protection_clipboard_utils.h"
 #include "chrome/browser/glic/host/context/glic_page_context_fetcher.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/host.h"
@@ -32,6 +33,30 @@ class Profile;
 
 namespace glic {
 
+// LINT.IfChange(GlicTaskType)
+enum class GlicTaskType : int {
+  kUnknown = 0,
+  kSequentialTaskGroup = 1,
+  kParallelTaskGroup = 2,
+  kWaitForNavigation = 3,
+  kSetTabPendingActuation = 4,
+  kShowInstance = 5,
+  kSetupHiddenPanel = 6,
+  kMaybeInitializeHiddenClient = 7,
+  kWaitForClientConnected = 8,
+  kPostCallback = 9,
+  kStabilization = 10,
+  kWaitForFreCompletion = 11,
+  kSendToClient = 12,
+  kWaitForActuation = 13,
+  kClipboardPolicy = 14,
+  kCopyPolicy = 15,
+  kPastePolicy = 16,
+  kWaitForClientReady = 17,
+  kMaxValue = kWaitForClientReady,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicInvokeTimeoutStage)
+
 class GlicInvokeTask {
  public:
   virtual ~GlicInvokeTask() = default;
@@ -39,6 +64,7 @@ class GlicInvokeTask {
   // Called when the sequence of tasks completes (successfully or not).
   // This is where tasks should do cleanup.
   virtual void OnSequenceCompleted(bool success) {}
+  virtual std::optional<GlicTaskType> GetType() const;
 };
 
 // Executes tasks sequentially in the order they were added.
@@ -46,9 +72,14 @@ class GlicInvokeTask {
 // It cannot be executed more than once.
 class SequentialTaskGroup : public GlicInvokeTask {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   SequentialTaskGroup();
   explicit SequentialTaskGroup(
-      std::vector<std::unique_ptr<GlicInvokeTask>> tasks);
+      std::vector<std::unique_ptr<GlicInvokeTask>> tasks,
+      base::RepeatingCallback<void(std::optional<GlicTaskType>,
+                                   base::TimeDelta)> telemetry_cb =
+          base::NullCallback());
   ~SequentialTaskGroup() override;
 
   void Start(base::OnceClosure done_callback) override;
@@ -56,10 +87,18 @@ class SequentialTaskGroup : public GlicInvokeTask {
   // Notifies all tasks in the group that the sequence has completed.
   void NotifySequenceCompleted(bool success);
 
+  // Returns the type of the task that is currently executing, or the last
+  // executed task if the group has finished/errored. If no tasks have started,
+  // returns std::nullopt.
+  std::optional<GlicTaskType> GetLastActiveTaskType() const;
+
  private:
   void RunNextTask();
   std::vector<std::unique_ptr<GlicInvokeTask>> tasks_;
-  size_t current_task_index_ = 0;
+  base::RepeatingCallback<void(std::optional<GlicTaskType>, base::TimeDelta)>
+      telemetry_cb_;
+  base::TimeTicks current_task_start_time_;
+  size_t next_task_index_ = 0;
   base::OnceClosure done_callback_;
   base::WeakPtrFactory<SequentialTaskGroup> weak_ptr_factory_{this};
 };
@@ -69,6 +108,8 @@ class SequentialTaskGroup : public GlicInvokeTask {
 // It cannot be executed more than once.
 class ParallelTaskGroup : public GlicInvokeTask {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   ParallelTaskGroup();
   explicit ParallelTaskGroup(
       std::vector<std::unique_ptr<GlicInvokeTask>> tasks);
@@ -87,6 +128,8 @@ class GlicInstanceImpl;
 class WaitForNavigationTask : public GlicInvokeTask,
                               public content::WebContentsObserver {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   explicit WaitForNavigationTask(content::WebContents* web_contents);
   ~WaitForNavigationTask() override;
   void Start(base::OnceClosure done_callback) override;
@@ -101,6 +144,8 @@ class WaitForNavigationTask : public GlicInvokeTask,
 // indicator.
 class SetTabPendingActuationTask : public GlicInvokeTask {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   SetTabPendingActuationTask(Profile* profile, tabs::TabHandle tab_handle);
   ~SetTabPendingActuationTask() override;
   void Start(base::OnceClosure done_callback) override;
@@ -114,6 +159,8 @@ class SetTabPendingActuationTask : public GlicInvokeTask {
 // Task that shows the Glic instance.
 class ShowInstanceTask : public GlicInvokeTask {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   ShowInstanceTask(GlicInstanceImpl& instance, ShowOptions options);
   ~ShowInstanceTask() override;
   void Start(base::OnceClosure done_callback) override;
@@ -128,6 +175,8 @@ class ShowInstanceTask : public GlicInvokeTask {
 // Task that sets up the instance for a hidden panel.
 class SetupHiddenPanelTask : public GlicInvokeTask {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   SetupHiddenPanelTask(GlicInstanceImpl& instance, tabs::TabInterface& tab);
   ~SetupHiddenPanelTask() override;
   void Start(base::OnceClosure done_callback) override;
@@ -139,6 +188,8 @@ class SetupHiddenPanelTask : public GlicInvokeTask {
 
 class MaybeInitializeHiddenClientTask : public GlicInvokeTask {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   MaybeInitializeHiddenClientTask(GlicInstanceImpl* instance,
                                   mojom::InvocationSource invocation_source,
                                   mojom::FreOverride fre_override);
@@ -157,6 +208,8 @@ class MaybeInitializeHiddenClientTask : public GlicInvokeTask {
 class WaitForClientConnectedTask : public GlicInvokeTask,
                                    public Host::Observer {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   explicit WaitForClientConnectedTask(Host& host);
   ~WaitForClientConnectedTask() override;
   void Start(base::OnceClosure done_callback) override;
@@ -171,9 +224,53 @@ class WaitForClientConnectedTask : public GlicInvokeTask,
   base::OnceClosure done_callback_;
 };
 
+// What WaitForClientReadyTask does when the client stops on the sign-in panel
+// (`Host::client_load_state()` is `kError` with `client_load_error_reason()`
+// `kSignIn`). Unlike other load failures the client has not given up: it
+// reloads and becomes ready once the user signs in.
+enum class SignInBehavior {
+  // The task completes. An invocation with nothing to send the client is done
+  // once the panel shows what it should, and the sign-in panel is that.
+  kCompletes,
+  // The task keeps waiting for the user to sign in. An invocation that needs
+  // the client can do nothing before then; if the user never does, the
+  // invocation times out (GlicInvokeHandler reports that as kSignInRequired).
+  kWaits,
+};
+
+// Task that waits for the client load state to reach kReady.
+class WaitForClientReadyTask : public GlicInvokeTask, public Host::Observer {
+ public:
+  std::optional<GlicTaskType> GetType() const override;
+
+  WaitForClientReadyTask(
+      Host& host,
+      SignInBehavior sign_in_behavior,
+      base::OnceCallback<void(GlicInvokeError)> error_callback);
+  ~WaitForClientReadyTask() override;
+  void Start(base::OnceClosure done_callback) override;
+
+  // Host::Observer:
+  void ClientLoadStateChanged(ClientLoadState state) override;
+
+ private:
+  void OnWaitForLoadComplete(bool failed);
+  void CheckState(ClientLoadState state);
+
+  const base::raw_ref<Host> host_;
+  const SignInBehavior sign_in_behavior_;
+  base::OnceCallback<void(GlicInvokeError)> error_callback_;
+  base::ScopedObservation<Host, Host::Observer> observation_{this};
+  base::OnceClosure done_callback_;
+  bool wait_for_load_complete_ = false;
+  base::WeakPtrFactory<WaitForClientReadyTask> weak_ptr_factory_{this};
+};
+
 // Task that posts a callback asynchronously.
 class PostCallbackTask : public GlicInvokeTask {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   explicit PostCallbackTask(base::OnceClosure callback);
   ~PostCallbackTask() override;
   void Start(base::OnceClosure done_callback) override;
@@ -186,6 +283,8 @@ class PostCallbackTask : public GlicInvokeTask {
 class StabilizationTask : public GlicInvokeTask,
                           public content::WebContentsObserver {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   explicit StabilizationTask(content::WebContents* web_contents);
   ~StabilizationTask() override;
   void Start(base::OnceClosure done_callback) override;
@@ -201,6 +300,8 @@ class StabilizationTask : public GlicInvokeTask,
 // necessary.
 class WaitForFreCompletionTask : public GlicInvokeTask {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   WaitForFreCompletionTask(::Profile* profile, mojom::FreOverride fre_override);
   ~WaitForFreCompletionTask() override;
   void Start(base::OnceClosure done_callback) override;
@@ -218,6 +319,8 @@ class WaitForFreCompletionTask : public GlicInvokeTask {
 // Task that sends the invocation to the client.
 class SendToClientTask : public GlicInvokeTask {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   SendToClientTask(
       GlicInstanceImpl* instance,
       mojom::InvokeOptionsPtr mojo_options,
@@ -238,6 +341,8 @@ class SendToClientTask : public GlicInvokeTask {
 // Task that waits for actuation (both start and complete).
 class WaitForActuationTask : public GlicInvokeTask {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   WaitForActuationTask(
       GlicInstanceImpl* instance,
       base::TimeDelta start_timeout,
@@ -272,15 +377,9 @@ class ClipboardPolicyTask : public GlicInvokeTask {
                       base::OnceCallback<void(GlicInvokeError)> error_callback);
   ~ClipboardPolicyTask() override;
 
-  void Start(base::OnceClosure done_callback) override;
-
  protected:
-  virtual void RunPolicyCheck(const content::ClipboardEndpoint& source,
-                              const ui::ClipboardMetadata& metadata,
-                              content::ClipboardPasteData data,
-                              content::RenderFrameHost* source_rfh) = 0;
-
-  bool NeedsPolicyChecks() const;
+  bool TryCreateClipboardData(content::ClipboardPasteData& data,
+                              ui::ClipboardMetadata& metadata);
 
   raw_ptr<GlicInstanceImpl> instance_;
   content::GlobalRenderFrameHostId source_rfh_id_;
@@ -288,22 +387,21 @@ class ClipboardPolicyTask : public GlicInvokeTask {
   std::u16string text_data_;
   GURL src_url_;
   bool is_drag_and_drop_ = false;
+  std::u16string image_markup_;
   base::OnceClosure done_callback_;
   base::OnceCallback<void(GlicInvokeError)> error_callback_;
 };
 
 class CopyPolicyTask : public ClipboardPolicyTask {
  public:
+  std::optional<GlicTaskType> GetType() const override;
+
   CopyPolicyTask(GlicInstanceImpl* instance,
                  const GlicInvokeOptions& options,
                  base::OnceCallback<void(GlicInvokeError)> error_callback);
   ~CopyPolicyTask() override;
 
- protected:
-  void RunPolicyCheck(const content::ClipboardEndpoint& source,
-                      const ui::ClipboardMetadata& metadata,
-                      content::ClipboardPasteData data,
-                      content::RenderFrameHost* source_rfh) override;
+  void Start(base::OnceClosure done_callback) override;
 
  private:
   void OnCopyPolicyCheckComplete(
@@ -314,30 +412,24 @@ class CopyPolicyTask : public ClipboardPolicyTask {
   base::WeakPtrFactory<CopyPolicyTask> weak_ptr_factory_{this};
 };
 
-class PastePolicyCheckTask : public ClipboardPolicyTask,
-                             public content::WebContentsObserver {
+class PastePolicyTask : public ClipboardPolicyTask {
  public:
-  PastePolicyCheckTask(
-      content::WebContents* contents,
-      GlicInstanceImpl* instance,
-      const GlicInvokeOptions& options,
-      base::OnceCallback<void(GlicInvokeError)> error_callback);
-  ~PastePolicyCheckTask() override;
+  std::optional<GlicTaskType> GetType() const override;
 
- protected:
-  void RunPolicyCheck(const content::ClipboardEndpoint& source,
-                      const ui::ClipboardMetadata& metadata,
-                      content::ClipboardPasteData data,
-                      content::RenderFrameHost* source_rfh) override;
+  PastePolicyTask(GlicInstanceImpl* instance,
+                  const GlicInvokeOptions& options,
+                  base::OnceCallback<void(GlicInvokeError)> error_callback);
+  ~PastePolicyTask() override;
 
-  void DidFinishNavigation(
-      content::NavigationHandle* navigation_handle) override;
+  void Start(base::OnceClosure done_callback) override;
 
  private:
   void OnPastePolicyCheckComplete(
       std::optional<content::ClipboardPasteData> data);
 
-  base::WeakPtrFactory<PastePolicyCheckTask> weak_ptr_factory_{this};
+  std::optional<enterprise_data_protection::FullPasteSource> cached_source_;
+
+  base::WeakPtrFactory<PastePolicyTask> weak_ptr_factory_{this};
 };
 
 }  // namespace glic

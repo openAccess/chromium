@@ -189,6 +189,7 @@ fill: rgb(0, 0, 0)
 fill-opacity: 1
 fill-rule: nonzero
 filter: none
+fit-tolerance: normal
 flex-basis: auto
 flex-direction: row
 flex-grow: 0
@@ -198,7 +199,6 @@ flex-wrap: nowrap
 float: none
 flood-color: rgb(0, 0, 0)
 flood-opacity: 1
-flow-tolerance: normal
 font-feature-settings: normal
 font-kerning: auto
 font-language-override: normal
@@ -262,6 +262,7 @@ letter-spacing: normal
 lighting-color: rgb(255, 255, 255)
 line-break: auto
 line-height: normal
+link-parameters: none
 list-style-image: none
 list-style-position: outside
 list-style-type: disc
@@ -347,7 +348,7 @@ position-anchor: normal
 position-area: none
 position-try-fallbacks: none
 position-try-order: normal
-position-visibility: anchors-visible
+position-visibility: anchor-visible
 print-color-adjust: economy
 quotes: auto
 r: 0px
@@ -431,7 +432,7 @@ text-decoration-color: rgb(0, 0, 0)
 text-decoration-inset: 0px
 text-decoration-line: none
 text-decoration-skip-ink: auto
-text-decoration-skip-spaces: none
+text-decoration-skip-spaces: start end
 text-decoration-style: solid
 text-decoration-thickness: auto
 text-emphasis-color: rgb(0, 0, 0)

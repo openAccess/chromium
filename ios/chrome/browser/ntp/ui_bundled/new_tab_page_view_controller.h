@@ -7,6 +7,7 @@
 
 #import <UIKit/UIKit.h>
 
+#import "base/ios/block_types.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_consumer.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_header_view_delegate.h"
 #import "ios/chrome/browser/shared/ui/util/ui_view_controller_with_display_tracing.h"
@@ -31,6 +32,7 @@ typedef NS_ENUM(NSInteger, FeedLayoutUpdateType);
 // non-incognito new tab page.
 @interface NewTabPageViewController
     : UIViewControllerWithDisplayTracing <NewTabPageConsumer,
+                                          NewTabPageScrollConsumer,
                                           NewTabPageHeaderViewDelegate,
                                           UIScrollViewDelegate>
 
@@ -69,6 +71,9 @@ typedef NS_ENUM(NSInteger, FeedLayoutUpdateType);
 // The view controller representing the Feed top section (between the feed
 // header and the feed collection).
 @property(nonatomic, weak) UIViewController* feedTopSectionViewController;
+
+// Whether the feed top section has content to show and is visible.
+@property(nonatomic, assign) BOOL feedTopSectionVisible;
 
 // In-product help handle for displaying IPH bubbles relating to the NTP.
 @property(nonatomic, weak) id<HelpCommands> helpHandler;
@@ -148,6 +153,10 @@ typedef NS_ENUM(NSInteger, FeedLayoutUpdateType);
 
 // Clears state and delegates.
 - (void)invalidate;
+
+// Plays a radial wipe animation hiding the Magic Stack and Discover feed views,
+// then executes `completion`.
+- (void)animateHideMagicStackAndFeedWithCompletion:(ProceduralBlock)completion;
 
 @end
 

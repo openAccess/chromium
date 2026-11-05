@@ -4,7 +4,10 @@
 
 #include "chrome/browser/ash/smb_client/smb_service.h"
 
+#include <string_view>
+
 #include "ash/constants/ash_pref_names.h"
+#include "base/check_deref.h"
 #include "base/json/json_reader.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/gmock_callback_support.h"
@@ -127,7 +130,7 @@ TEST_F(SmbServiceWithSmbfsTest, Mount) {
   EXPECT_EQ(share->share_url().ToString(), kShareUrl);
 
   // Check that the share was saved.
-  SmbPersistedShareRegistry registry(profile());
+  SmbPersistedShareRegistry registry(CHECK_DEREF(profile()->GetPrefs()));
   std::optional<SmbShareInfo> info = registry.Get(SmbUrl(kShareUrl));
   ASSERT_TRUE(info);
   EXPECT_EQ(info->share_url().ToString(), kShareUrl);
@@ -198,7 +201,7 @@ TEST_F(SmbServiceWithSmbfsTest, Mount_SaveCredentials) {
   run_loop.Run();
 
   // Check that the share was saved.
-  SmbPersistedShareRegistry registry(profile());
+  SmbPersistedShareRegistry registry(CHECK_DEREF(profile()->GetPrefs()));
   std::optional<SmbShareInfo> info = registry.Get(SmbUrl(kShareUrl));
   ASSERT_TRUE(info);
   EXPECT_EQ(info->share_url().ToString(), kShareUrl);
@@ -210,7 +213,7 @@ TEST_F(SmbServiceWithSmbfsTest, Mount_SaveCredentials) {
 }
 
 TEST_F(SmbServiceWithSmbfsTest, MountPreconfigured) {
-  const char kPremountPath[] = "smb://preconfigured/share";
+  constexpr std::string_view kPremountPath = "smb://preconfigured/share";
   const char kPreconfiguredShares[] =
       R"([{"mode":"pre_mount","share_url":"\\\\preconfigured\\share"}])";
   auto parsed_shares = base::JSONReader::Read(
@@ -286,7 +289,7 @@ TEST_F(SmbServiceWithSmbfsTest, MountSaved) {
   const std::vector<uint8_t> kSalt = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
   // Save share in profile.
   {
-    SmbPersistedShareRegistry registry(profile());
+    SmbPersistedShareRegistry registry(CHECK_DEREF(profile()->GetPrefs()));
     SmbShareInfo info(SmbUrl(kShareUrl), kDisplayName, kTestUser, kTestDomain,
                       false /* use_kerberos */, kSalt);
     registry.Save(info);
@@ -349,7 +352,7 @@ TEST_F(SmbServiceWithSmbfsTest, MountSaved) {
   smb_service->UnmountSmbFs(base::FilePath(kMountPath));
   run_loop2.Run();
 
-  SmbPersistedShareRegistry registry(profile());
+  SmbPersistedShareRegistry registry(CHECK_DEREF(profile()->GetPrefs()));
   std::optional<SmbShareInfo> info = registry.Get(SmbUrl(kShareUrl));
   EXPECT_FALSE(info);
   EXPECT_TRUE(registry.GetAll().empty());
@@ -444,7 +447,7 @@ TEST_F(SmbServiceWithSmbfsTest, DisconnectDuringUnmountWithPendingOperations) {
   }));
 
   EXPECT_TRUE(delete_callback_ran);
-  SmbPersistedShareRegistry registry(profile());
+  SmbPersistedShareRegistry registry(CHECK_DEREF(profile()->GetPrefs()));
   EXPECT_FALSE(registry.Get(SmbUrl(kShareUrl)));
 }
 
@@ -452,7 +455,7 @@ TEST_F(SmbServiceWithSmbfsTest, MountInvalidSaved) {
   const std::vector<uint8_t> kSalt = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
   // Save an (invalid) share in profile. This can't occur in practice.
   {
-    SmbPersistedShareRegistry registry(profile());
+    SmbPersistedShareRegistry registry(CHECK_DEREF(profile()->GetPrefs()));
     SmbShareInfo info(SmbUrl(kInvalidShareUrl), kDisplayName, kTestUser,
                       kTestDomain, /*use_kerberos=*/false, kSalt);
     registry.Save(info);

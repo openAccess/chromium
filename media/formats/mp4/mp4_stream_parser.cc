@@ -37,8 +37,8 @@
 #include "media/formats/mp4/box_definitions.h"
 #include "media/formats/mp4/box_reader.h"
 #include "media/formats/mp4/es_descriptor.h"
-#include "media/formats/mp4/hdr_metadata_track.h"
 #include "media/formats/mp4/rcheck.h"
+#include "media/formats/mp4/stream_parser_metadata_track.h"
 #include "media/formats/mpeg/adts_constants.h"
 
 namespace media::mp4 {
@@ -108,9 +108,9 @@ base::HeapArray<uint8_t> PrepareAACBuffer(
 }
 #endif  // BUILDFLAG(USE_PROPRIETARY_CODECS)
 
-// Create a HdrMetadataTrack for attaching metadata to track samples. Returns
-// nullptr on failure.
-std::unique_ptr<HdrMetadataTrack> MakeMetadataTrack(
+// Create a StreamParserMetadataTrack for attaching metadata to track samples.
+// Returns nullptr on failure.
+std::unique_ptr<StreamParserMetadataTrack> MakeMetadataTrack(
     StreamParser::TrackId metadata_track_id,
     const MetadataIT35SampleEntry& it35_sample_entry,
     const TrackReference& track_references) {
@@ -119,9 +119,9 @@ std::unique_ptr<HdrMetadataTrack> MakeMetadataTrack(
   }
 
   switch (it35_sample_entry.it35_prefix_type) {
-    case MetadataIT35SampleEntry::IT35PrefixType::kUnknown:
+    case MetadataTrack::IT35PrefixType::kUnknown:
       return nullptr;
-    case MetadataIT35SampleEntry::IT35PrefixType::kSmpteSt2094App5:
+    case MetadataTrack::IT35PrefixType::kSmpteSt2094App5:
       break;
   }
 
@@ -143,7 +143,7 @@ std::unique_ptr<HdrMetadataTrack> MakeMetadataTrack(
     return nullptr;
   }
 
-  return std::make_unique<HdrMetadataTrack>(
+  return std::make_unique<StreamParserMetadataTrack>(
       metadata_track_id, it35_sample_entry.it35_prefix_type, render_track_ids);
 }
 
@@ -568,8 +568,7 @@ bool MP4StreamParser::ParseMoov(BoxReader* reader) {
         }
 
         codec = AudioCodec::kIAMF;
-        profile = entry.iacb.profile == 0 ? AudioCodecProfile::kIAMF_SIMPLE
-                                          : AudioCodecProfile::kIAMF_BASE;
+        profile = entry.iacb.profile;
         extra_data = entry.iacb.ia_descriptors;
 
         // The correct values for the channel layout and sample rate can
@@ -841,9 +840,7 @@ bool MP4StreamParser::ParseMoov(BoxReader* reader) {
         video_config.set_color_space_info(entry.dv_info->color_space);
       }
 
-      if (!entry.hdr_metadata.IsEmpty() && entry.hdr_metadata.IsValid()) {
-        video_config.set_hdr_metadata(entry.hdr_metadata);
-      }
+      video_config.set_hdr_metadata(entry.hdr_metadata);
 
       video_config.set_spatial_format(entry.video_spatial_format);
 
@@ -872,7 +869,7 @@ bool MP4StreamParser::ParseMoov(BoxReader* reader) {
         return false;
       }
 
-      std::unique_ptr<HdrMetadataTrack> metadata_track;
+      std::unique_ptr<StreamParserMetadataTrack> metadata_track;
       if (desc_idx < samp_descr.metadata_t35_entries.size()) {
         metadata_track = MakeMetadataTrack(
             track->header.track_id, samp_descr.metadata_t35_entries[desc_idx],

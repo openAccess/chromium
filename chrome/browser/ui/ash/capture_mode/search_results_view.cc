@@ -8,13 +8,15 @@
 #include "ash/capture_mode/capture_mode_session.h"
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/capture_mode/capture_mode_api.h"
-#include "chrome/browser/profiles/profile.h"
+#include "base/check_deref.h"
 #include "chrome/browser/ui/ash/web_view/ash_web_view_impl.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
-#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "components/user_manager/user.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 
 namespace ash {
 
@@ -30,19 +32,13 @@ AshWebView::InitParams GetInitParams() {
   return params;
 }
 
-// Modifies `new_tab_params` to open in a new tab.
-void OpenURLFromTabInternal(NavigateParams& new_tab_params) {
-  new_tab_params.window_action = NavigateParams::WindowAction::kShowWindow;
-  Navigate(&new_tab_params);
-}
-
 }  // namespace
 
 SearchResultsView::SearchResultsView() : AshWebViewImpl(GetInitParams()) {
   // We should not use `CanShowSunfishUi` here, as that could change between
   // sending the region and receiving a URL which will then create this view
   // (for example, if the Sunfish policy changes).
-  DCHECK(features::IsSunfishFeatureEnabled());
+  CHECK(features::IsSunfishFeatureEnabled(), base::NotFatalUntil::M162);
 }
 
 SearchResultsView::~SearchResultsView() = default;
@@ -53,37 +49,42 @@ content::WebContents* SearchResultsView::OpenURLFromTab(
     base::OnceCallback<void(content::NavigationHandle&)>
         navigation_handle_callback) {
   // Open the URL specified by `params` in a new tab.
-  NavigateParams new_tab_params(static_cast<BrowserWindowInterface*>(nullptr),
-                                params.url, params.transition);
+  ui::mojom::WindowOpenDisposition disposition;
   switch (params.disposition) {
-    case WindowOpenDisposition::UNKNOWN:
-    case WindowOpenDisposition::NEW_BACKGROUND_TAB:
-    case WindowOpenDisposition::CURRENT_TAB:
-    case WindowOpenDisposition::SINGLETON_TAB:
-      new_tab_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    case ui::mojom::WindowOpenDisposition::kUnknown:
+    case ui::mojom::WindowOpenDisposition::kNewBackgroundTab:
+    case ui::mojom::WindowOpenDisposition::kCurrentTab:
+    case ui::mojom::WindowOpenDisposition::kSingletonTab:
+      disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
       break;
-    case WindowOpenDisposition::NEW_FOREGROUND_TAB:
-    case WindowOpenDisposition::NEW_POPUP:
-    case WindowOpenDisposition::NEW_WINDOW:
-    case WindowOpenDisposition::SAVE_TO_DISK:
-    case WindowOpenDisposition::OFF_THE_RECORD:
-    case WindowOpenDisposition::IGNORE_ACTION:
-    case WindowOpenDisposition::SWITCH_TO_TAB:
-    case WindowOpenDisposition::NEW_PICTURE_IN_PICTURE:
-    case WindowOpenDisposition::NEW_SPLIT_VIEW:
+    case ui::mojom::WindowOpenDisposition::kNewForegroundTab:
+    case ui::mojom::WindowOpenDisposition::kNewPopup:
+    case ui::mojom::WindowOpenDisposition::kNewWindow:
+    case ui::mojom::WindowOpenDisposition::kSaveToDisk:
+    case ui::mojom::WindowOpenDisposition::kOffTheRecord:
+    case ui::mojom::WindowOpenDisposition::kIgnoreAction:
+    case ui::mojom::WindowOpenDisposition::kSwitchToTab:
+    case ui::mojom::WindowOpenDisposition::kNewPictureInPicture:
+    case ui::mojom::WindowOpenDisposition::kNewSplitView:
       // These other dispositions will open new windows / tabs, so use these
       // dispositions as-is.
-      new_tab_params.disposition = params.disposition;
+      disposition = params.disposition;
       break;
   }
-  new_tab_params.initiating_profile =
-      Profile::FromBrowserContext(source->GetBrowserContext());
-  OpenURLFromTabInternal(new_tab_params);
+
+  const AccountId& account_id =
+      CHECK_DEREF(BrowserContextHelper::Get()->GetUserByBrowserContext(
+                      source->GetBrowserContext()))
+          .GetAccountId();
+  content::WebContents* new_contents =
+      BrowserController::GetInstance()->OpenUrl(
+          account_id, params.url,
+          {.disposition = disposition, .transition = params.transition});
 
   if (auto* controller = CaptureModeController::Get()) {
     controller->OnSearchResultClicked();
   }
-  return new_tab_params.navigated_or_inserted_contents;
+  return new_contents;
 }
 
 bool SearchResultsView::IsWebContentsCreationOverridden(
@@ -104,11 +105,9 @@ bool SearchResultsView::IsWebContentsCreationOverridden(
             if (self) {
               self->OpenURLFromTab(
                   self->web_contents(),
-                  content::OpenURLParams(
-                      url, content::Referrer(),
-                      WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                      ui::PAGE_TRANSITION_LINK,
-                      /*is_renderer_initiated=*/false),
+                  content::OpenURLParams::CreateBrowserInitiated(
+                      url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                      ui::PAGE_TRANSITION_LINK),
                   /*navigation_handle_callback=*/{});
             }
           },

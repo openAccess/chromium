@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/no_destructor.h"
 #include "chrome/browser/browser_process.h"
@@ -16,6 +17,7 @@
 #include "chrome/browser/enterprise/identifiers/profile_id_service_factory.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/common/chrome_features.h"
 #include "components/enterprise/browser/identifiers/profile_id_service.h"
 #include "components/enterprise/client_certificates/core/certificate_provisioning_service.h"
 #include "components/enterprise/client_certificates/core/certificate_store.h"
@@ -25,6 +27,7 @@
 #include "components/enterprise/client_certificates/core/key_upload_client.h"
 #include "components/enterprise/client_certificates/core/profile_cloud_management_delegate.h"
 #include "components/enterprise/core/dependency_factory.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
@@ -57,8 +60,14 @@ CertificateProvisioningServiceFactory::GetForProfile(Profile* profile) {
 }
 
 CertificateProvisioningServiceFactory::CertificateProvisioningServiceFactory()
-    : ProfileKeyedServiceFactory("CertificateProvisioningService",
-                                 ProfileSelections::BuildForRegularProfile()) {
+    : ProfileKeyedServiceFactory(
+          "CertificateProvisioningService",
+          base::FeatureList::IsEnabled(
+              enterprise_isolated_mode::kEnterpriseIsolatedModeMilestone2)
+              ? ProfileSelections::Builder()
+                    .WithIsolatedMode(ProfileSelection::kRedirectedToOriginal)
+                    .Build()
+              : ProfileSelections::BuildForRegularProfile()) {
   DependsOn(CertificateStoreFactory::GetInstance());
   DependsOn(enterprise::ProfileIdServiceFactory::GetInstance());
 }
@@ -68,7 +77,21 @@ CertificateProvisioningServiceFactory::
 
 bool CertificateProvisioningServiceFactory::ServiceIsCreatedWithBrowserContext()
     const {
-  return true;
+  return !ServiceIsCreatedAfterStartup();
+}
+
+bool CertificateProvisioningServiceFactory::ServiceIsCreatedAfterStartup()
+    const {
+  // The service is needed early only to start provisioning for managed
+  // profiles. Creating it with the context forces the default
+  // `StoragePartition` and the LevelDB certificate store to be initialized
+  // during profile creation, which is on the startup critical path, so defer
+  // it until startup is complete. Consumers (e.g. the client cert store) still
+  // create it on demand if they run first.
+  return base::FeatureList::IsEnabled(
+             ::features::kLazyKeyedServiceInstantiation) &&
+         ::features::kLazyKeyedServiceInstantiationCertificateProvisioning
+             .Get();
 }
 
 bool CertificateProvisioningServiceFactory::ServiceIsNULLWhileTesting() const {
@@ -96,7 +119,7 @@ CertificateProvisioningServiceFactory::BuildServiceInstanceForBrowserContext(
 
   return CertificateProvisioningService::Create(
       profile->GetPrefs(), certificate_store,
-      std::make_unique<ProfileContextDelegate>(profile),
+      std::make_unique<ProfileContextDelegate>(profile, profile_id_service),
       KeyUploadClient::Create(
           std::make_unique<
               enterprise_attestation::ProfileCloudManagementDelegate>(

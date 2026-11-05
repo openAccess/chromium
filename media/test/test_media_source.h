@@ -6,6 +6,7 @@
 #define MEDIA_TEST_TEST_MEDIA_SOURCE_H_
 
 #include <limits>
+#include <string_view>
 
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
@@ -30,17 +31,17 @@ class TestMediaSource {
     kSuccessOrFailure,  // e.g., for fuzzing when parse may pass or fail
   };
 
-  TestMediaSource(const std::string& filename,
-                  const std::string& mimetype,
+  TestMediaSource(std::string_view filename,
+                  std::string_view mimetype,
                   size_t initial_append_size,
                   bool initial_sequence_mode = false);
   // Same as the constructor above, but use GetMimeTypeForFile() to get the mime
   // type.
-  TestMediaSource(const std::string& filename,
+  TestMediaSource(std::string_view filename,
                   size_t initial_append_size,
                   bool initial_sequence_mode = false);
   TestMediaSource(scoped_refptr<DecoderBuffer> data,
-                  const std::string& mimetype,
+                  std::string_view mimetype,
                   size_t initial_append_size,
                   bool initial_sequence_mode = false);
 
@@ -56,8 +57,9 @@ class TestMediaSource {
     encrypted_media_init_data_cb_ = encrypted_media_init_data_cb;
   }
 
-  void set_demuxer_failure_cb(const PipelineStatusCB& demuxer_failure_cb) {
-    demuxer_failure_cb_ = demuxer_failure_cb;
+  void set_demuxer_failure_cb(
+      RepeatingPipelineStatusCallback demuxer_failure_cb) {
+    demuxer_failure_cb_ = std::move(demuxer_failure_cb);
   }
 
   void set_do_eos_after_next_append(bool flag) {
@@ -89,7 +91,7 @@ class TestMediaSource {
   void DemuxerOpened();
   void DemuxerOpenedTask();
   ChunkDemuxer::Status AddId();
-  void ChangeType(const std::string& type);
+  void ChangeType(std::string_view type);
   void OnEncryptedMediaInitData(EmeInitDataType init_data_type,
                                 const std::vector<uint8_t>& init_data);
 
@@ -117,7 +119,7 @@ class TestMediaSource {
   std::string mimetype_;
   std::unique_ptr<ChunkDemuxer> owned_chunk_demuxer_;
   raw_ptr<ChunkDemuxer> chunk_demuxer_;
-  PipelineStatusCB demuxer_failure_cb_;
+  RepeatingPipelineStatusCallback demuxer_failure_cb_;
   Demuxer::EncryptedMediaInitDataCB encrypted_media_init_data_cb_;
   base::TimeDelta last_timestamp_offset_;
   base::TimeDelta append_window_start_;

@@ -76,12 +76,8 @@ const cryptauthv2::FeatureMetadata& GenerateFeatureMetadata() {
                   BetterTogetherFeatureMetadata_FeatureName_WIFI_SYNC_CLIENT);
         }
 
-        // Eche is only supported if the associated flag is enabled.
-        if (features::IsEcheSWAEnabled()) {
-          inner_metadata.add_supported_features(
-              cryptauthv2::
-                  BetterTogetherFeatureMetadata_FeatureName_ECHE_CLIENT);
-        }
+        inner_metadata.add_supported_features(
+            cryptauthv2::BetterTogetherFeatureMetadata_FeatureName_ECHE_CLIENT);
 
         // Camera Roll is enabled by default.
         inner_metadata.add_supported_features(
@@ -186,7 +182,8 @@ void ClientAppMetadataProviderService::GetClientAppMetadata(
   if (client_app_metadata_) {
     // If |gcm_registration_id| is different from a previously-supplied ID,
     // replace the ID with this new one.
-    DCHECK_EQ(1, client_app_metadata_->application_specific_metadata_size());
+    CHECK_EQ(1, client_app_metadata_->application_specific_metadata_size(),
+             base::NotFatalUntil::M160);
     client_app_metadata_->mutable_application_specific_metadata(0 /* index */)
         ->set_gcm_registration_id(gcm_registration_id);
 
@@ -249,7 +246,7 @@ void ClientAppMetadataProviderService::OnInstanceIdFetched(
     scoped_refptr<device::BluetoothAdapter> bluetooth_adapter,
     const base::SysInfo::HardwareInfo& hardware_info,
     const std::string& instance_id) {
-  DCHECK(!instance_id.empty());
+  CHECK(!instance_id.empty(), base::NotFatalUntil::M160);
   std::string previous_instance_id =
       pref_service_->GetString(ash::prefs::kCryptAuthInstanceId);
   if (!previous_instance_id.empty()) {
@@ -304,7 +301,7 @@ void ClientAppMetadataProviderService::OnInstanceIdTokenFetched(
     return;
   }
 
-  DCHECK(!token.empty());
+  CHECK(!token.empty(), base::NotFatalUntil::M160);
   std::string previous_instance_id_token =
       pref_service_->GetString(ash::prefs::kCryptAuthInstanceIdToken);
   if (!previous_instance_id_token.empty()) {
@@ -323,7 +320,7 @@ void ClientAppMetadataProviderService::OnInstanceIdTokenFetched(
   metadata.set_long_device_id(
       cryptauth_device_id::GetDeviceID(local_state_.get()));
 
-  metadata.set_locale(application_locale_storage_->Get());
+  metadata.set_locale(application_locale_storage_->GetTag().tag_string());
   metadata.set_device_os_version(base::GetLinuxDistro());
   metadata.set_device_os_version_code(SoftwareVersionCodeAsInt64());
   metadata.set_device_os_release(std::string(version_info::GetVersionNumber()));
@@ -409,8 +406,8 @@ void ClientAppMetadataProviderService::OnInstanceIdDeleted(
 }
 
 instance_id::InstanceID* ClientAppMetadataProviderService::GetInstanceId() {
-  DCHECK(instance_id_profile_service_);
-  DCHECK(instance_id_profile_service_->driver());
+  CHECK(instance_id_profile_service_, base::NotFatalUntil::M160);
+  CHECK(instance_id_profile_service_->driver(), base::NotFatalUntil::M160);
   return instance_id_profile_service_->driver()->GetInstanceID(
       device_sync::kCryptAuthGcmAppId);
 }

@@ -4,15 +4,20 @@
 
 import './top_toolbar.js';
 
+// clang-format off
+// <if expr="not is_android">
+import {ColorChangeUpdater} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
+// </if>
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {CSSResultGroup} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import type {BrowserProxy} from './contextual_tasks_browser_proxy.js';
-import {BrowserProxyImpl} from './contextual_tasks_browser_proxy.js';
+import type {ToolbarBrowserProxy} from './contextual_tasks_toolbar_browser_proxy.js';
+import {ToolbarBrowserProxyImpl} from './contextual_tasks_toolbar_browser_proxy.js';
 import {getCss} from './toolbar_app.css.js';
 import {getHtml} from './toolbar_app.html.js';
 import {recordAction} from './utils.js';
+// clang-format on
 
 export class ContextualTasksToolbarAppElement extends CrLitElement {
   static get is() {
@@ -30,10 +35,6 @@ export class ContextualTasksToolbarAppElement extends CrLitElement {
   static override get properties() {
     return {
       threadTitle_: {type: String},
-      darkMode_: {
-        type: Boolean,
-        reflect: true,
-      },
       isAiPage_: {
         type: Boolean,
         reflect: true,
@@ -44,65 +45,51 @@ export class ContextualTasksToolbarAppElement extends CrLitElement {
       },
       isUserSignedIn_: {type: Boolean},
       onboardingTooltipShowing_: {type: Boolean},
-      lensSearchTooltipShowing_: {type: Boolean},
     };
   }
 
   protected accessor threadTitle_: string = '';
-  protected accessor darkMode_: boolean = loadTimeData.getBoolean('darkMode');
   protected accessor isAiPage_: boolean = loadTimeData.getBoolean('isAiPage');
   protected accessor isAimEligible_: boolean =
       loadTimeData.getBoolean('isAimEligible');
   protected accessor isUserSignedIn_: boolean =
       loadTimeData.getBoolean('isSignedIn');
   protected accessor onboardingTooltipShowing_: boolean = false;
-  protected accessor lensSearchTooltipShowing_: boolean = false;
 
-  private browserProxy_: BrowserProxy = BrowserProxyImpl.getInstance();
-  private listenerIds_: number[] = [];
+  private toolbarBrowserProxy_: ToolbarBrowserProxy =
+      ToolbarBrowserProxyImpl.getInstance();
+  private toolbarListenerIds_: number[] = [];
 
   override connectedCallback() {
     super.connectedCallback();
 
-    const callbackRouter = this.browserProxy_.callbackRouter;
-    this.listenerIds_ = [
-      callbackRouter.setThreadTitle.addListener((title: string) => {
+    // <if expr="not is_android">
+    ColorChangeUpdater.forDocument().start();
+    // </if>
+
+    const toolbarCallbackRouter = this.toolbarBrowserProxy_.callbackRouter;
+    this.toolbarListenerIds_ = [
+      toolbarCallbackRouter.setThreadTitle.addListener((title: string) => {
         this.threadTitle_ = title;
         document.title = title || loadTimeData.getString('title');
       }),
-      callbackRouter.onAiPageStatusChanged.addListener((isAiPage: boolean) => {
-        this.isAiPage_ = isAiPage;
-      }),
-      callbackRouter.onSidePanelStateChanged.addListener(() => {
-        // Handle theme update if side panel state changes
-        const url = new URL(window.location.href);
-        this.updateThemeFromUrl(url);
-      }),
+      toolbarCallbackRouter.onAiPageStatusChanged.addListener(
+          (isAiPage: boolean) => {
+            this.isAiPage_ = isAiPage;
+          }),
     ];
-
-    const initialUrl = new URL(window.location.href);
-    this.updateThemeFromUrl(initialUrl);
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    this.listenerIds_.forEach(
-        id => this.browserProxy_.callbackRouter.removeListener(id));
-    this.listenerIds_ = [];
-  }
-
-  private updateThemeFromUrl(url: URL) {
-    const csParam = url.searchParams.get('cs');
-    if (csParam === '0') {
-      this.darkMode_ = false;
-    } else if (csParam === '1') {
-      this.darkMode_ = true;
-    }
+    this.toolbarListenerIds_.forEach(
+        id => this.toolbarBrowserProxy_.callbackRouter.removeListener(id));
+    this.toolbarListenerIds_ = [];
   }
 
   protected onNewThreadClick_() {
     recordAction('ContextualTasks.WebUI.UserAction.OpenNewThread');
-    this.browserProxy_.handler.createNewThread();
+    this.toolbarBrowserProxy_.handler.createNewThread();
   }
 }
 

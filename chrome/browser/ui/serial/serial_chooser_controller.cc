@@ -30,6 +30,8 @@
 #include "services/device/public/cpp/bluetooth/bluetooth_utils.h"
 #include "services/device/public/mojom/serial.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/webui/settings/public/constants/routes.mojom.h"
@@ -112,7 +114,7 @@ SerialChooserController::SerialChooserController(
       Profile::FromBrowserContext(render_frame_host->GetBrowserContext());
   chooser_context_ =
       SerialChooserContextFactory::GetForProfile(profile)->AsWeakPtr();
-  DCHECK(chooser_context_);
+  CHECK(chooser_context_, base::NotFatalUntil::M162);
 
   // Post `GetDevices` to be run later after the view is set in the current
   // sequence, so that it will have a valid view when running `GetDevices`.
@@ -226,7 +228,7 @@ bool SerialChooserController::DisplayServiceClassId(
 }
 
 std::u16string SerialChooserController::GetOption(size_t index) const {
-  DCHECK_LT(index, ports_.size());
+  CHECK_LT(index, ports_.size(), base::NotFatalUntil::M162);
   const device::mojom::SerialPortInfo& port = *ports_[index];
 
   // Get the last component of the device path i.e. COM1 or ttyS0 to show the
@@ -257,7 +259,7 @@ std::u16string SerialChooserController::GetOption(size_t index) const {
 }
 
 bool SerialChooserController::IsPaired(size_t index) const {
-  DCHECK_LE(index, ports_.size());
+  CHECK_LE(index, ports_.size(), base::NotFatalUntil::M162);
 
   if (!chooser_context_) {
     return false;
@@ -271,9 +273,9 @@ void SerialChooserController::RefreshOptions() {
 }
 
 void SerialChooserController::Select(const std::vector<size_t>& indices) {
-  DCHECK_EQ(1u, indices.size());
+  CHECK_EQ(1u, indices.size(), base::NotFatalUntil::M162);
   size_t index = indices[0];
-  DCHECK_LT(index, ports_.size());
+  CHECK_LT(index, ports_.size(), base::NotFatalUntil::M162);
 
   if (!chooser_context_) {
     RunCallback(/*port=*/nullptr);
@@ -306,12 +308,11 @@ void SerialChooserController::OpenHelpCenterUrl() const {
     return;
   }
 
-  web_contents->OpenURL(
-      content::OpenURLParams(
-          GURL(chrome::kChooserSerialOverviewUrl), content::Referrer(),
-          WindowOpenDisposition::NEW_FOREGROUND_TAB,
-          ui::PAGE_TRANSITION_AUTO_TOPLEVEL, /*is_renderer_initiated=*/false),
-      /*navigation_handle_callback=*/{});
+  web_contents->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                            GURL(chrome::kChooserSerialOverviewUrl),
+                            ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                            ui::PAGE_TRANSITION_AUTO_TOPLEVEL),
+                        /*navigation_handle_callback=*/{});
 }
 
 void SerialChooserController::OpenPermissionPreferences() const {
@@ -529,11 +530,11 @@ void SerialChooserController::OpenBluetoothHelpUrl() const {
       profile, chromeos::settings::mojom::kBluetoothDevicesSubpagePath);
 #else
   // For other operating systems, show a help center page in a tab.
-  content::OpenURLParams open_url_params(
-      GURL(chrome::kBluetoothAdapterOffHelpURL), content::Referrer(),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-      /*is_renderer_initiated=*/false);
+  content::OpenURLParams open_url_params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(chrome::kBluetoothAdapterOffHelpURL),
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
 #if BUILDFLAG(IS_ANDROID)
   auto* rfh = initiator_document_.AsRenderFrameHostIfValid();
   auto* web_contents = rfh && rfh->IsActive()

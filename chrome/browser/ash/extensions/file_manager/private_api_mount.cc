@@ -28,9 +28,9 @@
 #include "chrome/browser/ash/smb_client/smb_service.h"
 #include "chrome/browser/ash/smb_client/smb_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
 #include "chromeos/ash/components/dbus/cros_disks/cros_disks_client.h"
 #include "chromeos/ash/components/disks/disk_mount_manager.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "components/drive/event_logger.h"
 #include "components/services/unzip/content/unzip_service.h"
 #include "components/services/unzip/public/cpp/unzip.h"
@@ -65,10 +65,9 @@ ExtensionFunction::ResponseAction FileManagerPrivateAddMountFunction::Run() {
 
   Profile* const profile = Profile::FromBrowserContext(browser_context());
   if (drive::EventLogger* logger = file_manager::util::GetLogger(profile)) {
-    UNSAFE_TODO(logger->Log(
-        logging::LOGGING_INFO, "%s[%s] called. (source: '%s')", name(),
-        request_uuid().AsLowercaseString().c_str(),
-        params->file_url.empty() ? "(none)" : params->file_url.c_str()));
+    logger->Log(logging::LOGGING_INFO, "%s[%s] called. (source: '%s')", name(),
+                request_uuid().AsLowercaseString().c_str(),
+                params->file_url.empty() ? "(none)" : params->file_url.c_str());
   }
   set_log_on_completion(true);
 
@@ -91,7 +90,7 @@ ExtensionFunction::ResponseAction FileManagerPrivateAddMountFunction::Run() {
     notifier->NotifyFileTasks(urls);
   }
 
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (params->password) {
     options_.push_back("password=" + *params->password);
@@ -129,7 +128,7 @@ void FileManagerPrivateAddMountFunction::OnEncodingDetected(
 
 void FileManagerPrivateAddMountFunction::FinishMounting() {
   DiskMountManager* const disk_mount_manager = DiskMountManager::GetInstance();
-  DCHECK(disk_mount_manager);
+  CHECK(disk_mount_manager, base::NotFatalUntil::M160);
   disk_mount_manager->MountPath(path_.AsUTF8Unsafe(), std::move(extension_),
                                 path_.BaseName().AsUTF8Unsafe(),
                                 std::move(options_), ash::MountType::kArchive,
@@ -152,14 +151,13 @@ FileManagerPrivateCancelMountingFunction::Run() {
   Profile* const profile = Profile::FromBrowserContext(browser_context());
 
   if (drive::EventLogger* logger = file_manager::util::GetLogger(profile)) {
-    UNSAFE_TODO(logger->Log(
-        logging::LOGGING_INFO, "%s[%s] called. (source: '%s')", name(),
-        request_uuid().AsLowercaseString().c_str(),
-        params->file_url.empty() ? "(none)" : params->file_url.c_str()));
+    logger->Log(logging::LOGGING_INFO, "%s[%s] called. (source: '%s')", name(),
+                request_uuid().AsLowercaseString().c_str(),
+                params->file_url.empty() ? "(none)" : params->file_url.c_str());
   }
   set_log_on_completion(true);
 
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   const scoped_refptr<storage::FileSystemContext> file_system_context =
       file_manager::util::GetFileSystemContextForRenderFrameHost(
@@ -174,7 +172,7 @@ FileManagerPrivateCancelMountingFunction::Run() {
           : base::FilePath();
 
   DiskMountManager* const disk_mount_manager = DiskMountManager::GetInstance();
-  DCHECK(disk_mount_manager);
+  CHECK(disk_mount_manager, base::NotFatalUntil::M160);
   disk_mount_manager->UnmountPath(
       path.AsUTF8Unsafe(),
       base::BindOnce(&FileManagerPrivateCancelMountingFunction::OnCancelled,
@@ -200,16 +198,16 @@ ExtensionFunction::ResponseAction FileManagerPrivateRemoveMountFunction::Run() {
 
   Profile* const profile = Profile::FromBrowserContext(browser_context());
   if (drive::EventLogger* logger = file_manager::util::GetLogger(profile)) {
-    UNSAFE_TODO(logger->Log(
-        logging::LOGGING_INFO, "%s[%s] called. (volume_id: '%s')", name(),
-        request_uuid().AsLowercaseString().c_str(), params->volume_id.c_str()));
+    logger->Log(logging::LOGGING_INFO, "%s[%s] called. (volume_id: '%s')",
+                name(), request_uuid().AsLowercaseString().c_str(),
+                params->volume_id.c_str());
   }
   set_log_on_completion(true);
 
   using file_manager::Volume;
   using file_manager::VolumeManager;
   VolumeManager* const volume_manager = VolumeManager::Get(profile);
-  DCHECK(volume_manager);
+  CHECK(volume_manager, base::NotFatalUntil::M160);
 
   std::string volume_id = params->volume_id;
   volume_manager->ConvertFuseBoxFSPVolumeIdToFSPIfNeeded(&volume_id);
@@ -234,7 +232,7 @@ ExtensionFunction::ResponseAction FileManagerPrivateRemoveMountFunction::Run() {
     case file_manager::VOLUME_TYPE_PROVIDED: {
       auto* service =
           ash::file_system_provider::Service::Get(browser_context());
-      DCHECK(service);
+      CHECK(service, base::NotFatalUntil::M160);
       if (!service->RequestUnmount(volume->provider_id(),
                                    volume->file_system_id())) {
         return RespondNow(Error("Unmount failed"));
@@ -317,11 +315,10 @@ FileManagerPrivateGetVolumeMetadataListFunction::Run() {
   }
 
   if (drive::EventLogger* logger = file_manager::util::GetLogger(profile)) {
-    UNSAFE_TODO(logger->Log(logging::LOGGING_INFO,
-                            "%s[%s] succeeded. (results: '[%s]', %" PRIuS
-                            " mount points)",
-                            name(), request_uuid().AsLowercaseString().c_str(),
-                            log_string.c_str(), result.size()));
+    logger->Log(logging::LOGGING_INFO,
+                "%s[%s] succeeded. (results: '[%s]', %" PRIuS " mount points)",
+                name(), request_uuid().AsLowercaseString().c_str(),
+                log_string.c_str(), result.size());
   }
 
   return RespondNow(ArgumentList(

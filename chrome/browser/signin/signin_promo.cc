@@ -4,10 +4,11 @@
 
 #include "chrome/browser/signin/signin_promo.h"
 
+#include <algorithm>
+
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
@@ -25,12 +26,14 @@
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/sync/base/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "device/bluetooth/bluetooth_adapter.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
+#include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "net/base/url_util.h"
 #include "url/gurl.h"
@@ -40,6 +43,17 @@
 #endif
 
 namespace signin {
+
+namespace {
+
+// Gaia "Proceed To Challenge" capability: skips the identifier page when the
+// account is known (via `Email`).
+constexpr char kProceedToChallengeQueryKey[] = "ptc";
+
+constexpr char kReauthProceedToChallengeResultHistogram[] =
+    "Signin.Reauth.ProceedToChallengeResult";
+
+}  // namespace
 
 const char kSignInPromoQueryKeyAccessPoint[] = "access_point";
 const char kSignInPromoQueryKeyAutoClose[] = "auto_close";
@@ -113,56 +127,102 @@ GURL GetChromeSyncURLForDice(ChromeSyncUrlArgs args) {
     url = net::AppendQueryParameter(url, "theme", "mn");
   }
 
-  if (base::FeatureList::IsEnabled(
-          switches::kMagiChromeSignInExperimentsBatch1)) {
-    std::string exp_param = base::GetFieldTrialParamValueByFeature(
-        switches::kMagiChromeSignInExperimentsBatch1,
-        "magichrome_fre_exp_branch");
-    if (!exp_param.empty()) {
+  if (base::FeatureList::IsEnabled(switches::kMagiChromePasskeySignIn)) {
+    int exp_branch = switches::kMagiChromePasskeySignInGaiaExpBranch.Get();
+    if (exp_branch > 0) {
       url = net::AppendQueryParameter(url, "magichrome_fre_exp_branch",
-                                      exp_param);
+                                      base::NumberToString(exp_branch));
     }
   }
   static const char kMagiChromeHybridTransportSupportedHistogram[] =
       "Signin.MagiChrome.HybridTransportSupported";
   // Record hybrid transport signal histogram.
-  IsHybridTransportSupportedForQrCodeSignin(base::BindOnce([](bool can_start) {
-    base::UmaHistogramBoolean(kMagiChromeHybridTransportSupportedHistogram,
-                              can_start);
-  }));
+  IsHybridTransportSupportedForQrCodeSignin(base::BindOnce(
+      [](bool can_start, scoped_refptr<device::BluetoothAdapter>) {
+        base::UmaHistogramBoolean(kMagiChromeHybridTransportSupportedHistogram,
+                                  can_start);
+      }));
 
   return url;
 }
 
 void IsHybridTransportSupportedForQrCodeSignin(
-    base::OnceCallback<void(bool)> callback) {
+    HybridTransportSupportedCallback callback) {
   if (!device::BluetoothAdapterFactory::Get()->IsLowEnergySupported()) {
-    std::move(callback).Run(false);
+    std::move(callback).Run(false, nullptr);
     return;
   }
   device::BluetoothAdapterFactory::Get()->GetAdapter(base::BindOnce(
-      [](base::OnceCallback<void(bool)> callback,
+      [](HybridTransportSupportedCallback callback,
          scoped_refptr<device::BluetoothAdapter> adapter) {
         bool can_show =
             adapter && adapter->IsPresent() &&
             adapter->GetOsPermissionStatus() ==
                 device::BluetoothAdapter::PermissionStatus::kAllowed &&
             adapter->IsPowered();
-        std::move(callback).Run(can_show);
+        std::move(callback).Run(can_show, std::move(adapter));
       },
       std::move(callback)));
 }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
-GURL GetChromeReauthURL(ChromeSyncUrlArgs args) {
+GURL GetChromeReauthURL(ChromeReauthUrlArgs args) {
   GURL url = GaiaUrls::GetInstance()->reauth_chrome_dice();
   if (!args.email.empty()) {
     url = net::AppendQueryParameter(url, "Email", args.email);
+    // `ptc` needs a known identifier to proceed to the challenge page, so it
+    // is only meaningful together with `Email`.
+    if (args.proceed_to_challenge) {
+      url = net::AppendQueryParameter(url, kProceedToChallengeQueryKey, "1");
+    }
   }
   if (!args.continue_url.is_empty()) {
     url = net::AppendQueryParameter(url, "continue", args.continue_url.spec());
   }
   return url;
+}
+
+bool CanReauthProceedToChallenge(
+    const std::string& email,
+    const AccountsInCookieJarInfo& accounts_in_cookie_jar) {
+  if (email.empty()) {
+    return false;
+  }
+
+  const auto has_matching_email = [&email](const gaia::ListedAccount& account) {
+    return gaia::AreEmailsSame(account.email, email);
+  };
+
+  // Without fresh cookie info, it is unknown whether Gaia still has a valid
+  // session for `email`. Fall back to `/AddSession`, which always requires the
+  // challenge.
+  if (!accounts_in_cookie_jar.AreAccountsFresh()) {
+    base::UmaHistogramEnumeration(
+        kReauthProceedToChallengeResultHistogram,
+        ReauthProceedToChallengeResult::kAddSessionFallbackStaleCookies);
+    return false;
+  }
+
+  // If Gaia still has a valid session for `email`, `/AccountChooser` completes
+  // immediately without a new sign-in, so Chrome never receives a new refresh
+  // token and stays in the auth error state. Fall back to `/AddSession`, which
+  // always requires the challenge.
+  if (std::ranges::any_of(accounts_in_cookie_jar.GetValidSignedInAccounts(),
+                          has_matching_email)) {
+    base::UmaHistogramEnumeration(
+        kReauthProceedToChallengeResultHistogram,
+        ReauthProceedToChallengeResult::kAddSessionFallbackValidSession);
+    return false;
+  }
+
+  const bool account_in_cookies = std::ranges::any_of(
+      accounts_in_cookie_jar.GetAllAccounts(), has_matching_email);
+  base::UmaHistogramEnumeration(
+      kReauthProceedToChallengeResultHistogram,
+      account_in_cookies
+          ? ReauthProceedToChallengeResult::kProceedToChallenge
+          : ReauthProceedToChallengeResult::kAccountNotInCookies);
+  return true;
 }
 
 GURL GetAddAccountURLForDice(const std::string& email,
@@ -233,19 +293,6 @@ void RegisterProfilePrefs(
   registry->RegisterBooleanPref(
       prefs::kHistoryPageHistorySyncPromoShownAfterDismissalPerProfile, false);
 
-  // Signin promo limits experiment prefs.
-  registry->RegisterIntegerPref(
-      prefs::kAddressSignInPromoShownCountPerProfileForLimitsExperiment, 0);
-  registry->RegisterIntegerPref(
-      prefs::kBookmarkSignInPromoShownCountPerProfileForLimitsExperiment, 0);
-  registry->RegisterIntegerPref(
-      prefs::kPasswordSignInPromoShownCountPerProfileForLimitsExperiment, 0);
-  registry->RegisterIntegerPref(
-      prefs::kAddressSignInPromoDismissCountPerProfileForLimitsExperiment, 0);
-  registry->RegisterIntegerPref(
-      prefs::kPasswordSignInPromoDismissCountPerProfileForLimitsExperiment, 0);
-  registry->RegisterIntegerPref(
-      prefs::kBookmarkSignInPromoDismissCountPerProfileForLimitsExperiment, 0);
   registry->RegisterIntegerPref(
       prefs::kSearchAIModeSignInPromoShownCountPerProfile, 0);
   registry->RegisterIntegerPref(

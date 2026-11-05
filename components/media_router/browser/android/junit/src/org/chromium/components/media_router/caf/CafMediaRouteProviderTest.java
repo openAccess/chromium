@@ -58,7 +58,6 @@ import java.util.function.Function;
 /** Robolectric tests for CafMediaRouteProvider. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(
-        manifest = Config.NONE,
         shadows = {
             ShadowMediaRouter.class,
             ShadowCastContext.class,
@@ -90,7 +89,7 @@ public class CafMediaRouteProviderTest {
 
         MediaRouterClient.setInstance(new TestMediaRouterClient());
 
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
         ShadowCastContext.setInstance(mCastContext);
         CastMediaSource.setMockBuilderForTesting(mMockCastMediaSource);
         mMediaRouterHelper = new MediaRouterTestHelper();

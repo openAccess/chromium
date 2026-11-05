@@ -8,36 +8,26 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
-#import "base/check_op.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/sys_string_conversions.h"
-#import "components/strings/grit/components_strings.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/authentication/account_menu/public/account_menu_constants.h"
 #import "ios/chrome/browser/authentication/account_menu/ui/account_menu_data_source.h"
 #import "ios/chrome/browser/authentication/account_menu/ui/account_menu_mutator.h"
-#import "ios/chrome/browser/authentication/account_menu/ui/ui_swift.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/central_account_view.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
-#import "ios/chrome/browser/policy/model/management_state.h"
 #import "ios/chrome/browser/settings/model/sync/utils/account_error_ui_info.h"
-#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/ui/list_model/list_model.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/image_content_configuration.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/table_view_cell_content_configuration.h"
-#import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
-#import "ios/chrome/browser/signin/model/constants.h"
-#import "ios/chrome/browser/signin/model/signin_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
-#import "ios/chrome/common/ui/util/image_util.h"
 #import "ios/chrome/grit/ios_strings.h"
-#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util.h"
 
 namespace {
@@ -171,6 +161,7 @@ NSString* const kCustomExpandedDetentIdentifier = @"customExpandedDetent";
 - (void)viewIsAppearing:(BOOL)animated {
   [super viewIsAppearing:animated];
   _resizeReady = YES;
+  [self updateCloseButton];
 }
 
 #pragma mark - Private
@@ -327,9 +318,11 @@ NSString* const kCustomExpandedDetentIdentifier = @"customExpandedDetent";
 
 // Decides if the Close button should be shown.
 - (BOOL)shouldShowCloseButton {
-  return ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_PHONE ||
-         self.presentingViewController.traitCollection.horizontalSizeClass ==
-             UIUserInterfaceSizeClassCompact;
+  UITraitCollection* containerTraits =
+      self.presentingViewController
+          ? self.presentingViewController.traitCollection
+          : self.traitCollection;
+  return containerTraits.horizontalSizeClass == UIUserInterfaceSizeClassCompact;
 }
 
 // Adds or removes the Close button based on the device type and collection.
@@ -372,7 +365,6 @@ NSString* const kCustomExpandedDetentIdentifier = @"customExpandedDetent";
       base::apple::ObjCCastStrict<NSNumber>(itemIdentifier).integerValue);
   NSString* label = nil;
   NSString* accessibilityIdentifier = nil;
-  NSString* accessibilityLabel = nil;
   switch (rowIdentifier) {
     case RowIdentifierErrorExplanation: {
       return [self cellForErrorExplanationForTableView:tableView];
@@ -380,8 +372,6 @@ NSString* const kCustomExpandedDetentIdentifier = @"customExpandedDetent";
     case RowIdentifierErrorButton:
       label = l10n_util::GetNSString(
           self.dataSource.accountErrorUIInfo.buttonLabelID);
-      accessibilityLabel =
-          l10n_util::GetNSString(self.dataSource.accountErrorUIInfo.messageID);
       accessibilityIdentifier = kAccountMenuErrorActionButtonId;
       break;
     case RowIdentifierAddAccount:
@@ -414,7 +404,8 @@ NSString* const kCustomExpandedDetentIdentifier = @"customExpandedDetent";
   cell.contentConfiguration = configuration;
   cell.accessibilityTraits = UIAccessibilityTraitButton;
   cell.isAccessibilityElement = YES;
-  cell.accessibilityLabel = accessibilityLabel ? accessibilityLabel : label;
+  cell.accessibilityLabel = label;
+  cell.accessibilityUserInputLabels = @[ label ];
   cell.userInteractionEnabled = YES;
   cell.accessibilityIdentifier = accessibilityIdentifier;
 
@@ -516,7 +507,6 @@ NSString* const kCustomExpandedDetentIdentifier = @"customExpandedDetent";
 
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
   cell.accessibilityIdentifier = kAccountMenuErrorMessageId;
-  cell.accessibilityElementsHidden = YES;
   return cell;
 }
 
@@ -748,20 +738,11 @@ NSString* const kCustomExpandedDetentIdentifier = @"customExpandedDetent";
 
 - (void)updatePrimaryAccount {
   UIImage* avatarImage = [self.dataSource primaryAccountAvatar];
-  BOOL showsRing = [self.dataSource primaryAccountAvatarNeedsRing];
-  NSString* aiTierName = [self.dataSource primaryAccountAITierName];
-  UIView* subscriptionChipView = nil;
-  if (aiTierName.length > 0) {
-    subscriptionChipView =
-        [[AISubscriptionChipWrapperView alloc] initWithText:aiTierName];
-  }
 
   _identityAccountView = [[CentralAccountView alloc]
               initWithFrame:CGRectMake(0, 0, self.tableView.frame.size.width, 0)
                 avatarImage:avatarImage
-            showsAITierRing:showsRing
-             aiTierFullName:self.dataSource.primaryAccountAITierFullName
-       subscriptionChipView:subscriptionChipView
+            displayedAiTier:self.dataSource.primaryAccountAITier
                        name:self.dataSource.primaryAccountUserFullName
                       email:self.dataSource.primaryAccountEmail
       managementDescription:self.dataSource.managementDescription

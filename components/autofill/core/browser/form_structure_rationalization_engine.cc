@@ -296,7 +296,7 @@ void ApplyRuleIfApplicable(
     LogBuffer buffer(IsLoggingActive(log_manager));
     for (const SetTypeAction& action : rule.actions) {
       // Actions can only happen for fields that are bound via conditions.
-      CHECK(found_fields.find(action.target) != found_fields.end());
+      CHECK(found_fields.contains(action.target));
       AutofillField& field = *fields[found_fields[action.target]];
       buffer << ", changing field " << found_fields[action.target] << " from "
              << FieldTypeSetToString(field.Type().GetTypes()) << " to "
@@ -688,6 +688,38 @@ void ApplyRationalizationEngineRules(
                     .set_overall_type = ALTERNATIVE_GIVEN_NAME,
                 },
             })
+            .Build(),
+        // This rationalization rule is a client side fix that changes
+        // `FieldType` of a field from `LAST_NAME_SECOND` to `LAST_NAME` when
+        // `NAME_LAST_FIRST` was not detected.
+        // Additionally credit card related `FieldType`s mustn't be observed
+        // because sometimes `NAME_LAST_FIRST` is labeled as
+        // `CREDIT_CARD_NAME_LAST_FIRST`.
+        //
+        // NAME_LAST_FIRST and NAME_LAST_SECOND `FieldType`s should appear
+        // together because they represent the structure of a Hispanic/Latinx
+        // last name.
+        RationalizationRuleBuilder()
+            .SetRuleName("Correct LAST_NAME_SECOND classification to "
+                         "LAST_NAME when LAST_NAME_FIRST is absent.")
+            .SetEnvironmentCondition(
+                EnvironmentConditionBuilder()
+                    .SetFeature(
+                        &features::
+                            kAutofillImproveClassificationForTwoWordLastNames)
+                    .Build())
+            .SetTriggerField(FieldCondition{.possible_overall_types =
+                                                FieldTypeSet{NAME_LAST_SECOND}})
+            .SetFieldsWithConditionsDoNotExist({
+                FieldCondition{
+                    .location = FieldLocation::kAnywhere,
+                    .possible_overall_types = FieldTypeSet{NAME_LAST_FIRST}},
+                FieldCondition{.location = FieldLocation::kAnywhere,
+                               .possible_overall_types = FieldTypesOfGroup(
+                                   FieldTypeGroup::kCreditCard)},
+            })
+            .SetActions({SetTypeAction{.target = FieldLocation::kTriggerField,
+                                       .set_overall_type = NAME_LAST}})
             .Build(),
     });
   };

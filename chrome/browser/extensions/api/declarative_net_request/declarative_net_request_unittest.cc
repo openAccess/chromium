@@ -34,6 +34,7 @@
 #include "chrome/browser/extensions/extension_garbage_collector.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/browser/api/declarative_net_request/composite_matcher.h"
 #include "extensions/browser/api/declarative_net_request/constants.h"
 #include "extensions/browser/api/declarative_net_request/declarative_net_request_api.h"
@@ -52,7 +53,9 @@
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/load_error_reporter.h"
 #include "extensions/browser/test_extension_registry_observer.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/declarative_net_request/constants.h"
+#include "extensions/common/api/declarative_net_request/dnr_manifest_data.h"
 #include "extensions/common/api/declarative_net_request/test_utils.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/extension_features.h"
@@ -466,9 +469,8 @@ class DeclarativeNetRequestUnittest : public DNRTestBase {
   }
 
   bool RulesetExists(const std::string& ruleset_id_string) {
-    const DNRManifestData::ManifestIDToRulesetMap& public_id_map =
-        DNRManifestData::GetManifestIDToRulesetMap(*extension());
-    return public_id_map.contains(ruleset_id_string);
+    return DNRManifestData::FindRulesetByManifestID(
+               *extension(), ruleset_id_string) != nullptr;
   }
 
   void VerifyGetDisabledRuleIdsFunction(
@@ -1816,8 +1818,8 @@ TEST_P(SingleRulesetTest, GetMatchedRulesInvalidTabID) {
       base::MakeRefCounted<DeclarativeNetRequestGetMatchedRulesFunction>();
   function->set_extension(extension());
 
-  std::string expected_error = ErrorUtils::FormatErrorMessage(
-      declarative_net_request::kTabNotFoundError, "-9001");
+  std::string expected_error =
+      ErrorUtils::FormatErrorMessage(kTabNotFoundError, "-9001");
 
   std::string error = api_test_utils::RunFunctionAndReturnError(
       function.get(), R"([{ "tabId": -9001 }])" /* args */, browser_context());

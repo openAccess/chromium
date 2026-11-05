@@ -42,6 +42,7 @@ constexpr const char* kDisallowedFeatures[] = {
     extensions::manifest_keys::kAction,
     extensions::manifest_keys::kApp,
     extensions::manifest_keys::kAutomation,
+    extensions::manifest_keys::kBackForwardCache,
     extensions::manifest_keys::kBackground,
     extensions::manifest_keys::kBackgroundAsyncListenerRegistration,
     extensions::manifest_keys::kBackgroundPage,
@@ -59,7 +60,6 @@ constexpr const char* kDisallowedFeatures[] = {
     extensions::manifest_keys::kDisplayInNewTabPage,
     extensions::manifest_keys::kEventRules,
     extensions::manifest_keys::kExternallyConnectable,
-    extensions::manifest_keys::kFileBrowserHandlers,
     extensions::manifest_keys::kFileHandlers,
     extensions::manifest_keys::kHostPermissions,
     extensions::manifest_keys::kInputComponents,
@@ -114,12 +114,12 @@ constexpr const char* kDisallowedFeatures[] = {
     // populate availability messages if an extension requests them), so we
     // need to ensure they are included in this list.
     "action_handlers",
-    "file_system_provider_capabilities",
 
-// Unlike the keys above, chromeos_system_extension *is* only defined on
-// ChromeOS.
+// The following keys are only defined on ChromeOS.
 #if BUILDFLAG(IS_CHROMEOS)
+    "file_system_provider_capabilities",
     extensions::manifest_keys::kChromeOSSystemExtension,
+    extensions::manifest_keys::kFileBrowserHandlers,
 #endif
 
     // The following features have no declared constant, but are present in

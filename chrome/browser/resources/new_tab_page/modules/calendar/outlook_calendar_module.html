@@ -6,12 +6,11 @@
                           'modulesMoreActions',
                           'modulesOutlookCalendarTitle')}"
     @disable-button-click="${this.onDisableButtonClick_}"
-    @dismiss-button-click="${this.onDismissButtonClick_}"
     @info-button-click="${this.onInfoButtonClick_}"
     @signout-button-click="${this.onSignoutButtonClick_}">
 </ntp-module-header>
 <ntp-calendar id="outlook-calendar"
-    .events="${this.events_}"
+    .events="${this.events}"
     module-name="OutlookCalendar"
     calendar-link="https://outlook.office.com/calendar/">
 </ntp-calendar>

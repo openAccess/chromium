@@ -11,7 +11,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/password_manager/password_change/button_click_helper.h"
 #include "chrome/browser/password_manager/password_change/password_change_submission_verifier.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
@@ -24,14 +23,21 @@
 namespace content {
 class WebContents;
 }
+
+namespace optimization_guide::proto {
+class PasswordChangeSubmissionLoggingData;
+}
+
 namespace password_manager {
 class PasswordFormManager;
 class PasswordManagerClient;
+class PasswordString;
 }  // namespace password_manager
 
-class ModelQualityLogsUploader;
 class AnnotatedPageContentCapturer;
 class ChangePasswordFormFiller;
+class ModelQualityLogsUploader;
+class OptimizationGuideKeyedService;
 
 // Helper class which fills a form, submits it and verifies submission result.
 // Upon completion invokes `result_callback` to notify the result of submission.
@@ -80,8 +86,8 @@ class ChangePasswordFormFillingSubmissionHelper {
   void FillChangePasswordForm(
       password_manager::PasswordFormManager* form_manager,
       const std::u16string& username,
-      const std::u16string& login_password,
-      const std::u16string& generated_password);
+      const password_manager::PasswordString& login_password,
+      const password_manager::PasswordString& generated_password);
 
   // Saves a password with a given `username`. Must be called only after
   // `callback_` was invoked.

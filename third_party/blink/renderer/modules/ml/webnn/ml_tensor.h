@@ -10,6 +10,7 @@
 #include "base/types/expected.h"
 #include "base/types/pass_key.h"
 #include "gpu/command_buffer/common/sync_token.h"
+#include "services/webnn/public/cpp/in_renderer_tensor_handle.h"
 #include "services/webnn/public/cpp/ml_tensor_usage.h"
 #include "services/webnn/public/cpp/operand_descriptor.h"
 #include "services/webnn/public/cpp/webnn_trace.h"
@@ -17,18 +18,20 @@
 #include "services/webnn/public/mojom/webnn_tensor.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_ml_operand_data_type.h"
-#include "third_party/blink/renderer/modules/ml/webnn/allow_shared_buffer_source_util.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/platform/heap/prefinalizer.h"
 #include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_associated_remote.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace gpu {
 class ClientSharedImage;
+class WebNNScopedAccess;
 }  // namespace gpu
 
 namespace blink {
@@ -40,6 +43,7 @@ class GPUDevice;
 
 class MODULES_EXPORT MLTensor : public ScriptWrappable {
   DEFINE_WRAPPERTYPEINFO();
+  USING_PRE_FINALIZER(MLTensor, Dispose);
 
  public:
   // Instances should only be constructed via `MLContext.createTensor()`.
@@ -54,6 +58,7 @@ class MODULES_EXPORT MLTensor : public ScriptWrappable {
            webnn::OperandDescriptor descriptor,
            webnn::MLTensorUsage usage,
            scoped_refptr<gpu::ClientSharedImage> shared_image,
+           std::unique_ptr<gpu::WebNNScopedAccess> webnn_scoped_access,
            GPUDevice* gpu_device,
            webnn::mojom::blink::CreateTensorSuccessPtr create_tensor_success,
            base::PassKey<MLContext> pass_key);
@@ -104,10 +109,11 @@ class MODULES_EXPORT MLTensor : public ScriptWrappable {
                                                ScriptState* script_state,
                                                ExceptionState& exception_state);
 
-  ScriptPromise<IDLUndefined> ReadTensorImpl(webnn::ScopedTrace scoped_trace,
-                                             ScriptState* script_state,
-                                             AllowSharedBufferSource* dst_data,
-                                             ExceptionState& exception_state);
+  ScriptPromise<IDLUndefined> ReadTensorImpl(
+      webnn::ScopedTrace scoped_trace,
+      ScriptState* script_state,
+      V8AllowSharedBufferSource* dst_data,
+      ExceptionState& exception_state);
 
   // Write data to the MLTensor. If write was successful, the data will be
   // stored in the MLTensor.
@@ -123,11 +129,33 @@ class MODULES_EXPORT MLTensor : public ScriptWrappable {
                        webnn::mojom::blink::ReadTensorResultPtr result);
   void OnDidReadTensorByob(webnn::ScopedTrace scoped_trace,
                            ScriptPromiseResolver<IDLUndefined>* resolver,
-                           AllowSharedBufferSource* dst_data,
+                           V8AllowSharedBufferSource* dst_data,
                            base::ElapsedTimer read_tensor_timer,
                            webnn::mojom::blink::ReadTensorResultPtr result);
 
+  // Fast-path callbacks used when the in-renderer side channel is active.
+  // `src` is a view directly into the backend's buffer, bypassing the Mojo
+  // `ReadTensorResult` payload; it is only valid until `read_complete` is
+  // run, so these must copy out of it before running `read_complete`.
+  void OnReadyToReadTensorFast(webnn::ScopedTrace scoped_trace,
+                               ScriptPromiseResolver<DOMArrayBuffer>* resolver,
+                               base::ElapsedTimer read_tensor_timer,
+                               base::span<const uint8_t> src,
+                               base::OnceClosure read_complete);
+  void OnReadyToReadTensorByobFast(
+      webnn::ScopedTrace scoped_trace,
+      ScriptPromiseResolver<IDLUndefined>* resolver,
+      V8AllowSharedBufferSource* dst_data,
+      base::ElapsedTimer read_tensor_timer,
+      base::span<const uint8_t> src,
+      base::OnceClosure read_complete);
+
   void OnConnectionError();
+
+  // Destroys the backend tensor through `in_renderer_handle_`, if any. Also
+  // runs as a pre-finalizer so that garbage-collected tensors are destroyed
+  // in order with the fast path.
+  void Dispose();
 
   Member<MLContext> ml_context_;
 
@@ -144,6 +172,11 @@ class MODULES_EXPORT MLTensor : public ScriptWrappable {
   // accelerated OS machine learning API.
   HeapMojoAssociatedRemote<webnn::mojom::blink::WebNNTensor> remote_tensor_;
 
+  // In-renderer fast-path side channel. Populated when the tensor lives in
+  // the same process as Blink. When set, `WriteTensorImpl`/`ReadTensorImpl`
+  // and destruction bypass `remote_tensor_` and use this handle instead.
+  scoped_refptr<webnn::InRendererTensorHandle> in_renderer_handle_;
+
   // Keep a set of unresolved `ScriptPromiseResolver`s which will be
   // rejected when the Mojo pipe is unexpectedly disconnected.
   HeapHashSet<Member<ScriptPromiseResolver<DOMArrayBuffer>>> pending_resolvers_;
@@ -152,6 +185,7 @@ class MODULES_EXPORT MLTensor : public ScriptWrappable {
 
   // Exists when `WebNNTensor` is a tensor created for WebGPUInterop.
   scoped_refptr<gpu::ClientSharedImage> shared_image_;
+  std::unique_ptr<gpu::WebNNScopedAccess> webnn_scoped_access_;
   WeakMember<GPUDevice> gpu_device_;
 
   // Exists when this `WebNNTensor` has been exported to WebGPU.

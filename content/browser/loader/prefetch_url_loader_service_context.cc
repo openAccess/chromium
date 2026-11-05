@@ -4,6 +4,8 @@
 
 #include "content/browser/loader/prefetch_url_loader_service_context.h"
 
+#include "base/metrics/histogram_functions.h"
+#include "base/unguessable_token.h"
 #include "content/browser/loader/prefetch_url_loader.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
@@ -16,6 +18,51 @@
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 
 namespace content {
+namespace {
+
+using BindContext = SubresourceProxyingURLLoaderService::BindContext;
+
+base::UnguessableToken GenerateRecursivePrefetchToken(
+    base::WeakPtr<BindContext> current_context,
+    const network::ResourceRequest& request) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  // If the relevant frame has gone away before this method is called
+  // asynchronously, we cannot generate and store a {token, IsolationInfo} pair
+  // in the frame's `prefetch_isolation_infos` LRU cache, so we'll create and
+  // return a dummy token that will not get used.
+  if (!current_context) {
+    return base::UnguessableToken::Create();
+  }
+
+  // Attach the fenced frame nonce to the request's IsolationInfo. If the nonce
+  // is marked revoked for untrusted network access, the request will either not
+  // be created due to the check in `CorsURLLoaderFactory::CreateLoaderAndStart`
+  // or cancelled due to the check
+  // `CancelRequestIfNonceMatchesAndUrlNotExempted`.
+  // TODO(crbug.com/349978810): Attach credentialless iframe nonce.
+  std::optional<base::UnguessableToken> fenced_frame_nonce =
+      current_context->render_frame_host
+          ? current_context->render_frame_host->frame_tree_node()
+                ->GetFencedFrameNonce()
+          : std::nullopt;
+
+  // Create IsolationInfo.
+  url::Origin destination_origin = url::Origin::Create(request.url);
+  net::IsolationInfo preload_isolation_info = net::IsolationInfo::Create(
+      net::IsolationInfo::RequestType::kOther, destination_origin,
+      destination_origin, net::SiteForCookies(), /*nonce=*/fenced_frame_nonce);
+
+  // Generate token.
+  base::UnguessableToken return_token = base::UnguessableToken::Create();
+
+  // Associate the two in the LRU cache, and return the token.
+  current_context->total_tokens_generated++;
+  current_context->prefetch_isolation_infos.Put(
+      return_token, preload_isolation_info);
+  return return_token;
+}
+
+}  // namespace
 
 PrefetchURLLoaderServiceContext::PrefetchURLLoaderServiceContext(
     BrowserContext* browser_context,
@@ -23,9 +70,7 @@ PrefetchURLLoaderServiceContext::PrefetchURLLoaderServiceContext(
                       scoped_refptr<BindContext>>& loader_factory_receivers)
     : browser_context_(browser_context),
       loader_factory_receivers_(loader_factory_receivers) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  accept_langs_ =
-      GetContentClient()->browser()->GetAcceptLangs(browser_context);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   // Create a RendererPreferenceWatcher to observe updates in the preferences.
   GetContentClient()->browser()->RegisterRendererPreferenceWatcher(
@@ -49,7 +94,10 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
 
   BindContext& current_context = *current_bind_context();
 
-  if (!current_context.render_frame_host) {
+  // Abort if the frame is gone, or if its committed document has since
+  // navigated away (e.g. a new document committed on the same RFH).
+  if (!current_context.render_frame_host ||
+      current_context.WasInitiatorDocumentDestroyed()) {
     mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
         ->OnComplete(network::URLLoaderCompletionStatus(net::ERR_ABORTED));
     return;
@@ -84,23 +132,30 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
 
   if (resource_request.load_flags &
       net::LOAD_RESTRICTED_PREFETCH_FOR_MAIN_FRAME) {
-    CHECK(!resource_request.recursive_prefetch_token);
+    if (resource_request.recursive_prefetch_token) {
+      loader_factory_receivers_->ReportBadMessage(
+          "Prefetch/CreatePrefetchLoaderAndStart: recursive token with "
+          "restricted main frame prefetch");
+      mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
+          ->OnComplete(
+              network::URLLoaderCompletionStatus(net::ERR_INVALID_ARGUMENT));
+      return;
+    }
     // The renderer has marked this prefetch as restricted, meaning it is a
     // cross-origin prefetch intended for top-level navigation reuse. We must
     // verify that the request meets the necessary security requirements, and
     // populate `resource_request`'s IsolationInfo appropriately.
-    EnsureCrossOriginFactory();
-    DCHECK(current_context.cross_origin_factory);
-
-    // An invalid request could indicate a compromised renderer
-    // inappropriately modifying the request, so we immediately complete it
-    // with an error.
     if (!IsValidCrossOriginPrefetch(resource_request)) {
       mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
           ->OnComplete(
               network::URLLoaderCompletionStatus(net::ERR_INVALID_ARGUMENT));
       return;
     }
+
+    // Defer creating `cross_origin_factory` until after origin validation so it
+    // isn't cached with a stale pre-commit origin or `ClientSecurityState`.
+    EnsureCrossOriginFactory();
+    CHECK(current_context.cross_origin_factory, base::NotFatalUntil::M160);
 
     // Cross-site prefetches shouldn't include SameSite cookies.
     resource_request.site_for_cookies = net::SiteForCookies();
@@ -128,27 +183,80 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
   } else if (resource_request.recursive_prefetch_token) {
     // Recursive prefetch from a cross-origin main resource prefetch.
 
-    // TODO(crbug.com/40150754): Figure out why we're seeing this condition
-    // hold true in the field.
-    if (!current_context.cross_origin_factory) {
-      return;
-    }
-
-    // Resurrect the request's IsolationInfo from the current context's map,
-    // and use it for this request.
+    // Resurrect the request's IsolationInfo from the current context's LRU
+    // cache, and use it for this request.
     auto isolation_info_iterator =
-        current_context.prefetch_isolation_infos.find(
+        current_context.prefetch_isolation_infos.Get(
             resource_request.recursive_prefetch_token.value());
 
     // An unexpected token could indicate a compromised renderer trying to
     // fetch a request in a special way. We'll cancel the request.
     if (isolation_info_iterator ==
         current_context.prefetch_isolation_infos.end()) {
+      base::UmaHistogramEnumeration(
+          "Prefetch.RecursivePrefetch.TokenLookupResult",
+          RecursivePrefetchTokenLookupResult::kTokenNotFound);
       mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
           ->OnComplete(
               network::URLLoaderCompletionStatus(net::ERR_INVALID_ARGUMENT));
       return;
     }
+
+    // All fetches need to have an associated request_initiator.
+    if (!resource_request.request_initiator) {
+      loader_factory_receivers_->ReportBadMessage(
+          "Prefetch/CreatePrefetchLoaderAndStart: no request_initiator");
+      mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
+          ->OnComplete(
+              network::URLLoaderCompletionStatus(net::ERR_INVALID_ARGUMENT));
+      return;
+    }
+
+    // The request initiator has to match the request_initiator_origin_lock - it
+    // has to be the same origin as the last committed origin in the frame.
+    CHECK(current_context.render_frame_host);
+    if (!resource_request.request_initiator->opaque() &&
+        resource_request.request_initiator.value() !=
+            current_context.render_frame_host->GetLastCommittedOrigin()) {
+      loader_factory_receivers_->ReportBadMessage(
+          "Prefetch/CreatePrefetchLoaderAndStart: frame origin mismatch");
+      mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
+          ->OnComplete(
+              network::URLLoaderCompletionStatus(net::ERR_INVALID_ARGUMENT));
+      return;
+    }
+
+    // Recursive prefetches are subresources of a cross-origin main-frame
+    // prefetch and are dispatched with that target's `IsolationInfo` via the
+    // trusted cross-origin factory. Require them to be cross-origin with the
+    // initiating document, mirroring `IsValidCrossOriginPrefetch()` above, so
+    // a document cannot use a token minted for another origin to fetch its own
+    // resources under that origin's network partition.
+    if (current_context.render_frame_host->GetLastCommittedOrigin()
+            .IsSameOriginWith(resource_request.url) ||
+        resource_request.request_initiator->IsSameOriginWith(
+            resource_request.url)) {
+      base::UmaHistogramEnumeration(
+          "Prefetch.RecursivePrefetch.TokenLookupResult",
+          RecursivePrefetchTokenLookupResult::kRejectedSameOrigin);
+      loader_factory_receivers_->ReportBadMessage(
+          "Prefetch/CreatePrefetchLoaderAndStart: initiator origin");
+      mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
+          ->OnComplete(
+              network::URLLoaderCompletionStatus(net::ERR_INVALID_ARGUMENT));
+      return;
+    }
+
+    EnsureCrossOriginFactory();
+    if (!current_context.cross_origin_factory) {
+      mojo::Remote<network::mojom::URLLoaderClient>(std::move(client))
+          ->OnComplete(network::URLLoaderCompletionStatus(net::ERR_FAILED));
+      return;
+    }
+
+    base::UmaHistogramEnumeration(
+        "Prefetch.RecursivePrefetch.TokenLookupResult",
+        RecursivePrefetchTokenLookupResult::kSuccess);
 
     // Cross-site prefetches shouldn't include SameSite cookies.
     resource_request.site_for_cookies = net::SiteForCookies();
@@ -167,6 +275,11 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
       prefetched_signed_exchange_cache =
           current_context.prefetched_signed_exchange_cache;
 
+  if (!accept_langs_.has_value()) {
+    accept_langs_ =
+        GetContentClient()->browser()->GetAcceptLangs(browser_context_);
+  }
+
   // base::Unretained is safe here since |this| owns the loader.
   auto loader = std::make_unique<PrefetchURLLoader>(
       request_id, options, current_context.frame_tree_node_id, resource_request,
@@ -182,10 +295,9 @@ void PrefetchURLLoaderServiceContext::CreatePrefetchLoaderAndStart(
           base::Unretained(this), resource_request,
           current_context.frame_tree_node_id),
       browser_context_, std::move(prefetched_signed_exchange_cache),
-      accept_langs_,
+      *accept_langs_,
       base::BindOnce(
-          &PrefetchURLLoaderServiceContext::GenerateRecursivePrefetchToken,
-          base::Unretained(this),
+          &GenerateRecursivePrefetchToken,
           current_context.weak_ptr_factory.GetWeakPtr()));
   auto* raw_loader = loader.get();
   prefetch_loader_receivers_.Add(raw_loader, std::move(receiver),
@@ -218,15 +330,16 @@ bool PrefetchURLLoaderServiceContext::IsValidCrossOriginPrefetch(
 
   // The request initiator has to match the request_initiator_origin_lock - it
   // has to be the same origin as the last committed origin in the frame.
+  // Do not call `ReportBadMessage` here because `GetLastCommittedOrigin()` can
+  // legitimately differ from `request_initiator` (e.g. if the prefetch IPC
+  // arrives on the standalone URLLoaderFactory pipe before
+  // `DidCommitProvisionalLoad` updates the frame's committed origin, or if a
+  // child frame/window uses a pipe cloned from its parent/opener).
   const BindContext& current_context = *current_bind_context();
-  // Presence of |render_frame_host| is guaranteed by the caller - the caller
-  // calls earlier EnsureCrossOriginFactory which has the same DCHECK.
-  DCHECK(current_context.render_frame_host);
+  CHECK(current_context.render_frame_host, base::NotFatalUntil::M160);
   if (!resource_request.request_initiator->opaque() &&
       resource_request.request_initiator.value() !=
           current_context.render_frame_host->GetLastCommittedOrigin()) {
-    loader_factory_receivers_->ReportBadMessage(
-        "Prefetch/IsValidCrossOrigin: frame origin mismatch");
     return false;
   }
 
@@ -251,7 +364,7 @@ void PrefetchURLLoaderServiceContext::EnsureCrossOriginFactory() {
     return;
   }
 
-  DCHECK(current_context.render_frame_host);
+  CHECK(current_context.render_frame_host, base::NotFatalUntil::M160);
   std::unique_ptr<network::PendingSharedURLLoaderFactory> factories =
       current_context.render_frame_host
           ->CreateCrossOriginPrefetchLoaderFactoryBundle();
@@ -262,45 +375,6 @@ void PrefetchURLLoaderServiceContext::EnsureCrossOriginFactory() {
 void PrefetchURLLoaderServiceContext::NotifyUpdate(
     const blink::RendererPreferences& new_prefs) {
   SetAcceptLanguages(new_prefs.accept_languages);
-}
-
-base::UnguessableToken
-PrefetchURLLoaderServiceContext::GenerateRecursivePrefetchToken(
-    base::WeakPtr<BindContext> current_context,
-    const network::ResourceRequest& request) {
-  // If the relevant frame has gone away before this method is called
-  // asynchronously, we cannot generate and store a {token, IsolationInfo} pair
-  // in the frame's `prefetch_isolation_infos` map, so we'll create and return a
-  // dummy token that will not get used.
-  if (!current_context) {
-    return base::UnguessableToken::Create();
-  }
-
-  // Attach the fenced frame nonce to the request's IsolationInfo. If the nonce
-  // is marked revoked for untrusted network access, the request will either not
-  // be created due to the check in `CorsURLLoaderFactory::CreateLoaderAndStart`
-  // or cancelled due to the check
-  // `CancelRequestIfNonceMatchesAndUrlNotExempted`.
-  // TODO(crbug.com/349978810): Attach credentialless iframe nonce.
-  std::optional<base::UnguessableToken> fenced_frame_nonce =
-      current_context->render_frame_host
-          ? current_context->render_frame_host->frame_tree_node()
-                ->GetFencedFrameNonce()
-          : std::nullopt;
-
-  // Create IsolationInfo.
-  url::Origin destination_origin = url::Origin::Create(request.url);
-  net::IsolationInfo preload_isolation_info = net::IsolationInfo::Create(
-      net::IsolationInfo::RequestType::kOther, destination_origin,
-      destination_origin, net::SiteForCookies(), /*nonce=*/fenced_frame_nonce);
-
-  // Generate token.
-  base::UnguessableToken return_token = base::UnguessableToken::Create();
-
-  // Associate the two, and return the token.
-  current_context->prefetch_isolation_infos.insert(
-      {return_token, preload_isolation_info});
-  return return_token;
 }
 
 std::vector<std::unique_ptr<blink::URLLoaderThrottle>>

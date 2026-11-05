@@ -12,8 +12,8 @@
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 
 #if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/autofill/at_memory_suggestion_controller.h"
-#include "chrome/browser/ui/autofill/autofill_keyboard_accessory_controller_impl.h"
+#include "chrome/browser/ui/android/autofill/at_memory_suggestion_controller.h"
+#include "chrome/browser/ui/android/autofill/autofill_keyboard_accessory_controller_impl.h"
 #include "components/autofill/core/common/autofill_util.h"
 #elif BUILDFLAG(IS_MAC)
 // We cannot include the Objective-C++ header of AutofillPopupControllerImplMac
@@ -77,8 +77,9 @@ AutofillSuggestionController::GetOrCreate(
     PopupControllerCommon controller_common,
     int32_t form_control_ax_id,
     AutofillSuggestionTriggerSource trigger_source) {
-  if (previous &&
-      previous->MayRecycle(delegate, web_contents, trigger_source)) {
+  if (previous && previous->MayRecycle(delegate, web_contents,
+                                       controller_common.field_id.frame_token,
+                                       trigger_source)) {
     previous->Recycle(std::move(controller_common), form_control_ax_id);
     return previous;
   }

@@ -13,6 +13,7 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "url/android/gurl_android.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -25,21 +26,19 @@ using jni_zero::ScopedJavaLocalRef;
 namespace httpclient {
 
 // static
-static int64_t JNI_SimpleHttpClient_Init(JNIEnv* env, Profile* profile) {
-  return reinterpret_cast<intptr_t>(new HttpClientBridge(profile));
+static jni_zero::JniUniquePtr<HttpClientBridge> JNI_SimpleHttpClient_Init(
+    JNIEnv* env,
+    Profile* profile) {
+  return jni_zero::MakeUnique<HttpClientBridge>(profile);
 }
 
 HttpClientBridge::HttpClientBridge(Profile* profile) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(profile);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(profile, base::NotFatalUntil::M161);
   http_client_ = std::make_unique<HttpClient>(profile->GetURLLoaderFactory());
 }
 
 HttpClientBridge::~HttpClientBridge() = default;
-
-void HttpClientBridge::Destroy(JNIEnv* env) {
-  delete this;
-}
 
 void HttpClientBridge::SendNetworkRequest(
     JNIEnv* env,
@@ -49,8 +48,8 @@ void HttpClientBridge::SendNetworkRequest(
     std::map<std::string, std::string>&& headers,
     int32_t j_network_annotation_hashcode,
     const base::android::JavaRef<jobject>& j_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(gurl.is_valid());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(gurl.is_valid(), base::NotFatalUntil::M161);
   net::NetworkTrafficAnnotationTag tag =
       net::NetworkTrafficAnnotationTag::FromJavaAnnotation(
           j_network_annotation_hashcode);

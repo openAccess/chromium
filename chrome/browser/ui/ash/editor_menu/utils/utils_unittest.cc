@@ -4,8 +4,7 @@
 
 #include "utils.h"
 
-#include <string>
-
+#include "base/i18n/language_tag.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "components/application_locale_storage/application_locale_storage.h"
@@ -31,7 +30,7 @@ struct GetEditorMenuBoundsTestParams {
   gfx::Rect editor_menu_bounds;
 };
 
-std::vector<GetEditorMenuBoundsTestParams> get_editor_menu_bounds_test_cases = {
+constexpr GetEditorMenuBoundsTestParams kGetEditorMenuBoundsTestCases[] = {
     // When:
     //  - Context menu covers left half of the screen.
     //  - Cursor point is on the right side of context menu (vertically middle).
@@ -292,10 +291,10 @@ class GetEditorMenuBoundsTest
 TEST_P(GetEditorMenuBoundsTest, Verify) {
   test_screen_.set_cursor_screen_point(GetParam().cursor_point);
 
-  const std::string& locale = TestingBrowserProcess::GetGlobal()
-                                  ->GetFeatures()
-                                  ->application_locale_storage()
-                                  ->Get();
+  const base::i18n::LanguageTag& locale = TestingBrowserProcess::GetGlobal()
+                                              ->GetFeatures()
+                                              ->application_locale_storage()
+                                              ->GetTag();
   const gfx::Rect editor_menu_bounds =
       chromeos::editor_menu::GetEditorMenuBounds(GetParam().anchor_view_bounds,
                                                  target_.get(), locale);
@@ -309,7 +308,7 @@ TEST_P(GetEditorMenuBoundsTest, Verify) {
 
 INSTANTIATE_TEST_SUITE_P(GetEditorMenuBoundsTestAll,
                          GetEditorMenuBoundsTest,
-                         ValuesIn(get_editor_menu_bounds_test_cases));
+                         ValuesIn(kGetEditorMenuBoundsTestCases));
 
 }  // namespace
 

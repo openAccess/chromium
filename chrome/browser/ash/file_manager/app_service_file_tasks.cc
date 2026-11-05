@@ -11,11 +11,9 @@
 #include <utility>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/webui/file_manager/url_constants.h"
-#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -26,7 +24,6 @@
 #include "chrome/browser/apps/app_service/app_icon_source.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/apps/app_service/launch_utils.h"
 #include "chrome/browser/apps/app_service/policy_util.h"
 #include "chrome/browser/ash/crostini/crostini_features.h"
 #include "chrome/browser/ash/file_manager/file_tasks.h"
@@ -36,11 +33,9 @@
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/file_manager/virtual_file_tasks.h"
 #include "chrome/browser/ash/fusebox/fusebox_server.h"
-#include "chrome/browser/chromeos/upload_office_to_cloud/upload_office_to_cloud.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/webui/ash/cloud_upload/hats_office_trigger.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
 #include "chromeos/ash/components/file_manager/app_id.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "components/prefs/pref_service.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/app_types.h"
@@ -53,6 +48,7 @@
 #include "extensions/browser/extension_util.h"
 #include "storage/browser/file_system/file_system_context.h"
 #include "storage/browser/file_system/file_system_url.h"
+#include "ui/display/types/display_constants.h"
 #include "url/gurl.h"
 
 namespace file_manager::file_tasks {
@@ -203,13 +199,13 @@ void FindAppServiceTasks(Profile* profile,
                          const std::vector<GURL>& file_urls,
                          const std::vector<std::string>& dlp_source_urls,
                          std::vector<FullTaskDescriptor>* result_list) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK_EQ(entries.size(), file_urls.size());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK_EQ(entries.size(), file_urls.size(), base::NotFatalUntil::M161);
   // App Service uses the file extension in the URL for file_handlers for Web
   // Apps.
 #if DCHECK_IS_ON()
   for (const GURL& url : file_urls) {
-    DCHECK(url.is_valid());
+    CHECK(url.is_valid(), base::NotFatalUntil::M161);
   }
 #endif  // DCHECK_IS_ON()
 
@@ -293,8 +289,9 @@ void ExecuteAppServiceTask(
     const std::vector<storage::FileSystemURL>& file_system_urls,
     const std::vector<std::string>& mime_types,
     FileTaskFinishedCallback done) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK_EQ(file_system_urls.size(), mime_types.size());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK_EQ(file_system_urls.size(), mime_types.size(),
+           base::NotFatalUntil::M161);
 
   // App Service doesn't exist in Incognito mode but apps can be
   // launched (ie. default handler to open a download from its
@@ -338,26 +335,17 @@ void ExecuteAppServiceTask(
     intent_files.push_back(std::move(file));
   }
 
-  DCHECK(task.task_type == TASK_TYPE_WEB_APP ||
-         task.task_type == TASK_TYPE_FILE_HANDLER ||
-         task.task_type == TASK_TYPE_BRUSCHETTA_APP ||
-         task.task_type == TASK_TYPE_CROSTINI_APP ||
-         task.task_type == TASK_TYPE_ARC_APP);
+  CHECK(task.task_type == TASK_TYPE_WEB_APP ||
+            task.task_type == TASK_TYPE_FILE_HANDLER ||
+            task.task_type == TASK_TYPE_BRUSCHETTA_APP ||
+            task.task_type == TASK_TYPE_CROSTINI_APP ||
+            task.task_type == TASK_TYPE_ARC_APP,
+        base::NotFatalUntil::M161);
 
   apps::IntentPtr intent = std::make_unique<apps::Intent>(
       apps_util::kIntentActionView, std::move(intent_files));
   intent->activity_name = task.action_id;
 
-  if (base::FeatureList::IsEnabled(ash::features::kHappinessTrackingOffice) &&
-      task.app_id == extension_misc::kQuickOfficeComponentExtensionId &&
-      task.action_id == kActionIdQuickOffice) {
-    auto survey_launching_app =
-        chromeos::IsEligibleAndEnabledUploadOfficeToCloud(profile)
-            ? ash::cloud_upload::HatsOfficeLaunchingApp::kQuickOffice
-            : ash::cloud_upload::HatsOfficeLaunchingApp::kQuickOfficeClippyOff;
-    ash::cloud_upload::HatsOfficeTrigger::Get().ShowSurveyAfterDelay(
-        survey_launching_app);
-  }
   // `window_info` as nullptr sets `display_id` to `display::kInvalidDisplayId`
   // later, which is the default value. `display::kDefaultDisplayId` is not. The
   // default value allows a window on any display to be reused, i.e. a wildcard.
@@ -403,7 +391,7 @@ bool ChooseAndSetDefaultTaskFromPolicyPrefs(
     return true;
   }
 
-  DCHECK_EQ(default_handlers_for_entries.size(), 1U);
+  CHECK_EQ(default_handlers_for_entries.size(), 1U, base::NotFatalUntil::M161);
   const auto& policy_id = *default_handlers_for_entries.begin();
 
   std::vector<FullTaskDescriptor*> filtered_tasks;

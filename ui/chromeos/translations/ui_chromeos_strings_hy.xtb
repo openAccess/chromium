@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Գաղտնաբառը սխալ է</translation>
 <translation id="5059127710849015030">նեպալերեն (տառադարձություն)</translation>
 <translation id="5068919226082848014">Պիցցա</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> ընդլայնումը սահմանել է պրոքսի սերվերի փոխարինման կանոններ</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> ծավալով ֆայլեր կջնջվեն</translation>
 <translation id="508423945471810158"><ph name="NUMBER_OF_ITEMS" /> տարր տեղափոխվում է «<ph name="FOLDER_NAME" />» պանակ</translation>
 <translation id="509429900233858213">Սխալ առաջացավ:</translation>
-<translation id="5102922915594634436">Կառավարել համաժամացված պանակները</translation>
 <translation id="5109254780565519649">Սխալ առաջացավ։ Հնարավոր է՝ որոշ տարրեր չեն վերականգնվել։</translation>
 <translation id="5110329002213341433">անգլերեն (Կանադա)</translation>
 <translation id="5119780910075847424">Համաժամացումը դադարեցված է</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">հինդի</translation>
 <translation id="7665680517722058469">Փորձեք այլ հարցում</translation>
 <translation id="7689532716264131859"><ph name="NUMBER_OF_ITEMS" /> տարր տեղափոխվեց աղբարկղ</translation>
-<translation id="7693909743393669729">Եթե կրիչը ֆորմատավորեք, դրա վրա պահված բոլոր տվյալներն ու բաժինները (այդ թվում՝ անտեսանելի) կջնջվեն։ Գործողությունը հնարավոր չէ հետարկել։</translation>
 <translation id="7695430100978772476">Չհաջողվեց ձևաչափել «<ph name="DRIVE_NAME" />» կրիչը</translation>
 <translation id="76959938259365003">Չհաջողվեց դատարկել աղբարկղը։</translation>
 <translation id="7705251383879779343">Պատճենվեց <ph name="FILE_NAME" /> տարր։</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">US Workman, միջազգային</translation>
 <translation id="7903984238293908205">Կատականա</translation>
 <translation id="7908378463497120834">Չհաջողվեց միացնել ձեր արտաքին հիշողության սարքի առնվազն մեկ հատվածը:</translation>
-<translation id="7908793776359722643">Եթե բաժինը ֆորմատավորեք, դրա մեջ պահված բոլոր տվյալները կջնջվեն։ Գործողությունը հնարավոր չէ հետարկել։</translation>
 <translation id="7911118814695487383">Լինուքս</translation>
 <translation id="7920501309908018401">«Իմ դրայվը» պանակի ֆայլերն ավտոմատ կհամաժամացվեն ձեր Chromebook-ի հետ, այնպես որ դրանք կարող եք բացել առանց ինտերնետին միանալու։</translation>
 <translation id="7925247922861151263">AAA ստուգումը չհաջողվեց</translation>

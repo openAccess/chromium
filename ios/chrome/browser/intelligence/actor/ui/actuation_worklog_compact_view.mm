@@ -116,6 +116,19 @@ const CGFloat kCompactBottomBufferHeight = kToolChipHeight + kSpacingMedium;
   [self processNextPendingTransitionIfNeeded];
 }
 
+- (void)reset {
+  [_pendingTransitions removeAllObjects];
+  _isTransitioning = NO;
+  [_currentView removeFromSuperview];
+  [_nextView removeFromSuperview];
+  _currentView = nil;
+  _nextView = nil;
+  _currentTopConstraint = nil;
+  _stepsViewHeightConstraint.constant = 0.0;
+  _lastReportedHeight = 0.0;
+  [self setChipVisible:NO];
+}
+
 #pragma mark - UIView
 
 - (void)layoutSubviews {
@@ -203,9 +216,13 @@ const CGFloat kCompactBottomBufferHeight = kToolChipHeight + kSpacingMedium;
   BOOL animated = transition.animated;
   BOOL visibilityChanged = (_chipContainer.hidden != !show);
   if (!animated) {
-    [self setChipVisible:show];
+    [UIView performWithoutAnimation:^{
+      // This is a synchronous call.
+      [self setChipVisible:show];
+      [self transitionDidComplete];
+      [self layoutIfNeeded];
+    }];
     [self notifyHeight];
-    [self transitionDidComplete];
     return;
   }
 
@@ -281,6 +298,7 @@ const CGFloat kCompactBottomBufferHeight = kToolChipHeight + kSpacingMedium;
     addViewWithItem:(ActuationWorklogItem*)item
           connector:(ActuationWorklogConnectorVisibility)connector {
   ActuationWorklogItemView* view = [[ActuationWorklogItemView alloc] init];
+  view.delegate = self.itemDelegate;
   view.translatesAutoresizingMaskIntoConstraints = NO;
   [_stepsView addSubview:view];
 

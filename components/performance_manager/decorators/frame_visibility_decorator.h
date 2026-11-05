@@ -21,6 +21,9 @@ namespace performance_manager {
 // When the visibility of the frame cannot be determined, it is assigned a value
 // of FrameNode::Visibility::kUnknown. This can happen early in the lifetime of
 // a frame, where it hasn't been assigned its viewport intersection yet.
+//
+// With `kSubframeNotVisibleIfParentNotVisible`, a subframe is also not visible
+// when its parent frame is not visible.
 class FrameVisibilityDecorator : public GraphOwnedDefaultImpl,
                                  public PageNodeObserver,
                                  public PageLiveStateObserver,
@@ -51,8 +54,7 @@ class FrameVisibilityDecorator : public GraphOwnedDefaultImpl,
       const PageNode* pending_page_node,
       const ProcessNode* pending_process_node,
       const FrameNode* pending_parent_or_outer_document_or_embedder) override;
-  void OnCurrentFrameChanged(const FrameNode* previous_frame_node,
-                             const FrameNode* current_frame_node) override;
+  void OnIsActiveChanged(const FrameNode* frame_node) override;
   void OnViewportIntersectionChanged(const FrameNode* frame_node) override;
 
  private:

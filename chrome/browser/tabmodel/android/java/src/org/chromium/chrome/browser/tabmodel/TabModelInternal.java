@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.tabmodel;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.Token;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabDestroyStatus;
@@ -43,6 +44,17 @@ public interface TabModelInternal extends TabModel {
     void removeTab(Tab tab);
 
     /**
+     * Silently detaches a tab being reparented across Activity recreation from this model and its
+     * native collection before insertion into the destination model, without destroying the tab,
+     * firing removal observers, deleting group visual data, or destroying incognito profiles. Only
+     * models backed by a native {@code TabCollection} need to override this (along with wrappers
+     * such as {@link IncognitoTabModelImpl} that delegate to one).
+     *
+     * @param tab The tab to detach for reparenting.
+     */
+    default void detachTabForReparenting(Tab tab) {}
+
+    /**
      * Set when tab model become active and inactive.
      *
      * @param active Whether the tab model is active.
@@ -64,6 +76,14 @@ public interface TabModelInternal extends TabModel {
      * @see TabModelObserver#onDidActiveStateChange
      */
     /* package */ void notifyDidActiveStateChange(boolean active);
+
+    /**
+     * Notifies observers that a tab group is about to be removed.
+     *
+     * @param tabGroupId The id of the tab group being removed.
+     * @see TabGroupObserver#onTabGroupRemoving
+     */
+    /* package */ void notifyWillRemoveTabGroup(Token tabGroupId);
 
     /** Destroy the model and return the destroy status. */
     @TabDestroyStatus

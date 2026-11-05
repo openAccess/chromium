@@ -17,8 +17,10 @@
 #include "chrome/browser/ui/tabs/horizontal_tab_strip_metrics.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_style.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+#include "chrome/browser/ui/views/frame/frame_separator.h"
 #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
@@ -34,25 +36,16 @@
 #include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_collection_types.h"
 #include "components/tabs/public/tab_group.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/layer.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/scroll_view.h"
-#include "ui/views/controls/separator.h"
 #include "ui/views/layout/layout_types.h"
 #include "ui/views/layout/proposed_layout.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
-
-namespace {
-
-bool IsVerticalOrientation(const TabCollectionNode* collection_node) {
-  return collection_node &&
-         collection_node->orientation() == TabStripOrientation::kVertical;
-}
-
-}  // namespace
 
 class TabStripView::TargetViewsTracker : public views::ViewObserver {
  public:
@@ -171,9 +164,11 @@ class TabStripView::TargetViewsTracker : public views::ViewObserver {
 };
 
 TabStripView::TabStripView(TabCollectionNode* collection_node)
-    : collection_node_(collection_node),
-      target_views_tracker_(std::make_unique<TargetViewsTracker>(
-          collection_node->orientation())) {
+    : orientation_(collection_node->orientation()),
+      collection_node_(collection_node),
+      are_separators_hidden_(ShouldHideSeparators()),
+      target_views_tracker_(
+          std::make_unique<TargetViewsTracker>(orientation_)) {
   // Paint to a layer and mask to bounds to prevent tabs from overflowing and
   // drawing outside the window boundaries on Linux when the window is small.
   // This is configured here rather than a higher-level container so that drop
@@ -182,22 +177,23 @@ TabStripView::TabStripView(TabCollectionNode* collection_node)
   layer()->SetFillsBoundsOpaquely(false);
   layer()->SetMasksToBounds(true);
 
-  SetLayoutManager(
-      std::make_unique<TabStripViewLayout>(collection_node->orientation()));
+  SetLayoutManager(std::make_unique<TabStripViewLayout>(orientation_));
   SetProperty(views::kElementIdentifierKey, kTabStripElementId);
 
   pinned_tabs_scroll_view_ = AddChildView(std::make_unique<views::ScrollView>(
       views::ScrollView::ScrollWithLayers::kEnabled));
   SetScrollViewProperties(pinned_tabs_scroll_view_);
 
-  auto tabs_separator = std::make_unique<views::Separator>();
-  tabs_separator_ = AddChildView(std::move(tabs_separator));
+  auto* const tabs_separator = AddChildView(std::make_unique<FrameSeparator>());
+  tabs_separator->SetColorId(kColorTabDividerFrameActive);
+  tabs_separator->SetInactiveColorId(kColorTabDividerFrameInactive);
+  tabs_separator_ = tabs_separator;
 
   unpinned_tabs_scroll_view_ = AddChildView(std::make_unique<views::ScrollView>(
       views::ScrollView::ScrollWithLayers::kEnabled));
   SetScrollViewProperties(unpinned_tabs_scroll_view_);
 
-  if (!IsVerticalOrientation(collection_node_)) {
+  if (orientation_ == TabStripOrientation::kHorizontal) {
     unpinned_tab_scroll_type_recorder_ =
         std::make_unique<tabs::UnpinnedTabScrollTypeRecorder>(
             unpinned_tabs_scroll_view_);
@@ -221,6 +217,10 @@ TabStripView::TabStripView(TabCollectionNode* collection_node)
           &TabStripView::ResetCollectionNode, base::Unretained(this))));
 
   if (tab_scroll_button_container_) {
+    callback_subscriptions_.emplace_back(
+        tab_scroll_button_container_->AddVisibleChangedCallback(
+            base::BindRepeating(&TabStripView::OnScrollButtonsVisibilityChanged,
+                                base::Unretained(this))));
     if (PrefService* prefs = GetPrefs()) {
       pref_change_registrar_.Init(prefs);
       pref_change_registrar_.Add(
@@ -231,7 +231,6 @@ TabStripView::TabStripView(TabCollectionNode* collection_node)
   }
 
   SetNotifyEnterExitOnChild(true);
-  UpdateColors();
 }
 
 TabStripView::~TabStripView() {
@@ -242,9 +241,10 @@ TabStripView::~TabStripView() {
 
 void TabStripView::AddedToWidget() {
   views::Widget* const widget = GetWidget();
-  paint_as_active_subscription_ = widget->RegisterPaintAsActiveChangedCallback(
-      base::BindRepeating(&TabStripView::UpdateColors, base::Unretained(this)));
   widget_observation_.Observe(widget);
+  if (widget->IsVisible()) {
+    is_first_window_presentation_ = false;
+  }
 }
 
 void TabStripView::RemovedFromWidget() {
@@ -278,10 +278,57 @@ void TabStripView::OnWidgetActivationChanged(views::Widget* widget,
   }
 }
 
+void TabStripView::OnWidgetVisibilityChanged(views::Widget* widget,
+                                             bool visible) {
+  if (visible && is_first_window_presentation_) {
+    is_first_window_presentation_ = false;
+    // Only scroll-in the active tab for the first window presentation.
+    if (collection_node_) {
+      OnActiveTabChanged(collection_node_->GetController()->GetActiveTab());
+    }
+  }
+}
+
+void TabStripView::OnChildrenAdded(const tabs::TabCollectionNodes& handles) {
+  if (!collection_node_) {
+    return;
+  }
+
+  UpdateSeparatorVisibility();
+
+  const tabs::TabInterface* active_tab =
+      collection_node_->GetController()->GetActiveTab();
+  if (is_first_window_presentation_ || !active_tab) {
+    return;
+  }
+
+  const tabs::TabInterface* last_new_tab = nullptr;
+  for (const auto& handle : handles) {
+    if (const auto* tab_handle = std::get_if<tabs::TabHandle>(&handle)) {
+      tabs::TabInterface* new_tab = tab_handle->Get();
+      if (new_tab && new_tab != active_tab) {
+        last_new_tab = new_tab;
+      }
+    }
+  }
+
+  if (last_new_tab) {
+    ScrollToFitTabs(active_tab, last_new_tab);
+  }
+}
+
+void TabStripView::OnChildrenRemoved() {
+  if (!collection_node_) {
+    return;
+  }
+
+  UpdateSeparatorVisibility();
+}
+
 void TabStripView::OnChildMoved(TabCollectionNode* moved_node) {
   CHECK(moved_node);
 
-  if (collection_node_ &&
+  if (!collection_node_ || is_first_window_presentation_ ||
       collection_node_->GetController()->GetDragHandler().IsDragging()) {
     return;
   }
@@ -313,7 +360,7 @@ void TabStripView::OnChildMoved(TabCollectionNode* moved_node) {
         const tabs::TabInterface* tab =
             std::get<tabs::ConstDanglingUntriagedTabInterface>(
                 moved_node->GetNodeData());
-        OnTabChanged(tab);
+        OnActiveTabChanged(tab);
         break;
       }
       case TabCollectionNode::Type::SPLIT:
@@ -328,8 +375,8 @@ void TabStripView::OnChildMoved(TabCollectionNode* moved_node) {
   }
 }
 
-void TabStripView::OnTabChanged(const tabs::TabInterface* active_tab) {
-  if (!collection_node_ || !active_tab) {
+void TabStripView::OnActiveTabChanged(const tabs::TabInterface* active_tab) {
+  if (!collection_node_ || !active_tab || is_first_window_presentation_) {
     return;
   }
 
@@ -363,7 +410,7 @@ void TabStripView::OnTabChanged(const tabs::TabInterface* active_tab) {
 
 void TabStripView::ScrollToFitTabs(const tabs::TabInterface* active_tab,
                                    const tabs::TabInterface* new_tab) {
-  if (!collection_node_ || !active_tab || !new_tab) {
+  if (!collection_node_ || (!active_tab && !new_tab)) {
     return;
   }
 
@@ -372,22 +419,14 @@ void TabStripView::ScrollToFitTabs(const tabs::TabInterface* active_tab,
   }
 
   TabCollectionNode* active_node =
-      collection_node_->GetNodeForHandle(active_tab->GetHandle());
+      active_tab ? collection_node_->GetNodeForHandle(active_tab->GetHandle())
+                 : nullptr;
   TabCollectionNode* new_node =
-      collection_node_->GetNodeForHandle(new_tab->GetHandle());
+      new_tab ? collection_node_->GetNodeForHandle(new_tab->GetHandle())
+              : nullptr;
 
-  if (!active_node || !new_node) {
-    return;
-  }
-
-  views::View* active_view = active_node->view();
-  views::View* new_view = new_node->view();
-
-  if (!active_view || !new_view) {
-    return;
-  }
-
-  ScrollToFitViews(active_view, new_view);
+  ScrollToFitViews(active_node ? active_node->view() : nullptr,
+                   new_node ? new_node->view() : nullptr);
 }
 
 void TabStripView::ScrollToFitViews(views::View* view1, views::View* view2) {
@@ -438,9 +477,15 @@ void TabStripView::ScrollToFitViews(views::View* view1, views::View* view2) {
 void TabStripView::RecordMousePressedInTab() {
   if (mouse_entered_tabstrip_time_.has_value() &&
       !has_reported_time_mouse_entered_to_switch_) {
-    DEPRECATED_UMA_HISTOGRAM_MEDIUM_TIMES(
-        "TabStrip.Vertical.TimeToSwitch",
-        base::TimeTicks::Now() - mouse_entered_tabstrip_time_.value());
+    if (orientation_ == TabStripOrientation::kVertical) {
+      DEPRECATED_UMA_HISTOGRAM_MEDIUM_TIMES(
+          "TabStrip.Vertical.TimeToSwitch",
+          base::TimeTicks::Now() - mouse_entered_tabstrip_time_.value());
+    } else {
+      DEPRECATED_UMA_HISTOGRAM_MEDIUM_TIMES(
+          "TabStrip.TimeToSwitch",
+          base::TimeTicks::Now() - mouse_entered_tabstrip_time_.value());
+    }
     has_reported_time_mouse_entered_to_switch_ = true;
   }
 }
@@ -477,6 +522,13 @@ bool TabStripView::IsTabScrollButtonsPinned() const {
                : true;
 }
 
+void TabStripView::SetLeadingOverlap(int leading_overlap) {
+  if (leading_overlap != leading_overlap_) {
+    leading_overlap_ = leading_overlap;
+    InvalidateLayout(/*avoid_propagate_during_layout=*/true);
+  }
+}
+
 void TabStripView::SetCollapsedState(bool is_collapsed) {
   if (is_collapsed != is_collapsed_) {
     is_collapsed_ = is_collapsed;
@@ -489,7 +541,7 @@ void TabStripView::SetIsAnimatingSize(bool is_animating) {
        {pinned_tabs_scroll_view_, unpinned_tabs_scroll_view_}) {
     // Scrollbars are not visible in the horizontal orientation so only update
     // for the vertical orientation.
-    if (scroll_view && IsVerticalOrientation(collection_node_)) {
+    if (scroll_view && orientation_ == TabStripOrientation::kVertical) {
       if (auto* scroll_bar = views::AsViewClass<VerticalTabStripScrollBar>(
               scroll_view->vertical_scroll_bar())) {
         scroll_bar->SetIsAnimatingSize(is_animating);
@@ -578,7 +630,7 @@ void TabStripView::SetScrollViewProperties(views::ScrollView* scroll_view) {
   scroll_view->SetUseContentsPreferredSize(true);
   scroll_view->SetBackgroundColor(std::nullopt);
   CHECK(collection_node_);
-  if (IsVerticalOrientation(collection_node_)) {
+  if (orientation_ == TabStripOrientation::kVertical) {
     scroll_view->SetHorizontalScrollBarMode(
         views::ScrollView::ScrollBarMode::kDisabled);
     scroll_view->SetOverflowGradientMask(
@@ -666,7 +718,7 @@ void TabStripView::EnsureViewsVisibleInViewportPostLayout(
     return;
   }
 
-  const bool is_vertical = IsVerticalOrientation(collection_node_);
+  const bool is_vertical = orientation_ == TabStripOrientation::kVertical;
 
   // Handle the case where the scroll view is currently not in an overflow
   // state. In such a case the tracked views will be visible in the scroll
@@ -752,7 +804,7 @@ void TabStripView::EnableOverflowVisuals(views::ScrollView* scroll_view) {
   // Override the post-layout callback to prevent any scheduled scroll requests
   // from running.
   scroll_view->RegisterPostLayoutCallback(base::DoNothing());
-  if (IsVerticalOrientation(collection_node_)) {
+  if (orientation_ == TabStripOrientation::kVertical) {
     scroll_view->SetDrawOverflowIndicator(true);
     scroll_view->SetVerticalScrollBarMode(
         views::ScrollView::ScrollBarMode::kEnabled);
@@ -775,7 +827,7 @@ void TabStripView::EnableOverflowVisuals(views::ScrollView* scroll_view) {
 void TabStripView::DisableOverflowVisuals(views::ScrollView* scroll_view) {
   // If in the vertical orientation also hide scrollbar visuals. This is not
   // needed for horizontal since the scrollbar is not shown.
-  if (IsVerticalOrientation(collection_node_)) {
+  if (orientation_ == TabStripOrientation::kVertical) {
     scroll_view->SetDrawOverflowIndicator(false);
     scroll_view->SetVerticalScrollBarMode(
         views::ScrollView::ScrollBarMode::kHiddenButEnabled);
@@ -800,18 +852,6 @@ gfx::Rect TabStripView::GetBoundsInScrollViewContents(
   return bounds;
 }
 
-void TabStripView::UpdateColors() {
-  if (tabs_separator_) {
-    tabs_separator_->SetColorId(IsFrameActive()
-                                    ? kColorTabDividerFrameActive
-                                    : kColorTabDividerFrameInactive);
-  }
-}
-
-bool TabStripView::IsFrameActive() const {
-  return GetWidget() ? GetWidget()->ShouldPaintAsActive() : true;
-}
-
 void TabStripView::HideHoverCardOnScroll() {
   if (!collection_node_) {
     return;
@@ -825,10 +865,35 @@ void TabStripView::HideHoverCardOnScroll() {
   }
 }
 
-void TabStripView::SetAvailableUnpinnedSpace(views::SizeBound space) const {
-  if (unpinned_tabs_container_view_) {
-    unpinned_tabs_container_view_->SetAvailableSpace(space);
+void TabStripView::OnScrollButtonsVisibilityChanged() {
+  // Only scroll to the active tab if a scroll request isn't already pending
+  // (e.g. from adding or activating a tab) to avoid overwriting any tracked
+  // secondary target view.
+  if (collection_node_ && tab_scroll_button_container_->GetVisible() &&
+      target_views_tracker_->empty()) {
+    ScrollToFitTabs(collection_node_->GetController()->GetActiveTab(), nullptr);
   }
+}
+
+bool TabStripView::ShouldHideSeparators() const {
+  CHECK(collection_node_);
+  return orientation_ == TabStripOrientation::kHorizontal &&
+         features::IsTabStripDeclutterEnabled() &&
+         collection_node_->GetController()->GetTabCount() >=
+             TabStyle::kTabStripDeclutterMinTabsForSeparatorHide;
+}
+
+void TabStripView::UpdateSeparatorVisibility() {
+  const bool should_hide_separators = ShouldHideSeparators();
+  if (are_separators_hidden_ == should_hide_separators) {
+    return;
+  }
+
+  are_separators_hidden_ = should_hide_separators;
+  CHECK(pinned_tabs_container_view_);
+  CHECK(unpinned_tabs_container_view_);
+  pinned_tabs_container_view_->SchedulePaint();
+  unpinned_tabs_container_view_->SchedulePaint();
 }
 
 BEGIN_METADATA(TabStripView)

@@ -9,9 +9,13 @@
 
 #include "base/functional/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_attributes_entry.h"
+#include "chrome/browser/profiles/profile_attributes_storage.h"
+#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_util.h"
@@ -19,7 +23,11 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/contextual_tasks/public/features.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
+#include "components/enterprise/isolated_mode/prefs.h"
+#include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "content/public/test/browser_task_environment.h"
@@ -70,6 +78,25 @@ class ChromeSigninClientSignoutTest : public testing::Test {
   std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<MockChromeSigninClient> client_;
 };
+
+TEST_F(ChromeSigninClientSignoutTest, ChildProfilePreSignoutWithForceSignin) {
+  TestingProfile::Builder builder;
+  builder.SetIsSupervisedProfile();
+  std::unique_ptr<TestingProfile> profile = builder.Build();
+  EXPECT_TRUE(profile->IsChild());
+
+  CreateClient(profile.get());
+
+  signin_metrics::ProfileSignout source_metric =
+      signin_metrics::ProfileSignout::kUserClickedSignoutSettings;
+
+  EXPECT_CALL(*client_, ShowUserManager(profile->GetPath()));
+  EXPECT_CALL(*client_, LockForceSigninProfile(profile->GetPath()));
+  EXPECT_CALL(*client_, SignOutCallback(source_metric,
+                                        SigninClient::SignoutDecision::ALLOW));
+
+  PreSignOut(source_metric);
+}
 
 TEST_F(ChromeSigninClientSignoutTest, SignOut) {
   signin_metrics::ProfileSignout source_metric =
@@ -140,6 +167,7 @@ TEST_F(ChromeSigninClientSignoutTest, GetOAuthConsumerForContextualTasks) {
 
   // Scopes from chromium source
   EXPECT_THAT(scopes, testing::Contains(GaiaConstants::kClearCutOAuth2Scope));
+  EXPECT_THAT(scopes, testing::Contains(GaiaConstants::kDriveOAuth2Scope));
   EXPECT_THAT(scopes, testing::Contains(GaiaConstants::kLensOAuth2Scope));
 
   // Scopes from FeatureParam
@@ -166,11 +194,34 @@ TEST_F(ChromeSigninClientSignoutTest,
 
   // Scopes from chromium source
   EXPECT_THAT(scopes, testing::Contains(GaiaConstants::kClearCutOAuth2Scope));
+  EXPECT_THAT(scopes, testing::Contains(GaiaConstants::kDriveOAuth2Scope));
   EXPECT_THAT(scopes, testing::Contains(GaiaConstants::kLensOAuth2Scope));
 
   // Scopes from FeatureParam
   EXPECT_THAT(scopes, testing::Contains("https://example.com/scope1"));
   EXPECT_THAT(scopes, testing::Contains("https://example.com/scope2"));
+}
+
+TEST_F(ChromeSigninClientSignoutTest,
+       GetOAuthConsumerForContextualTasks_DriveOAuthScopeDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{contextual_tasks::kContextualTasks},
+      /*disabled_features=*/{
+          contextual_tasks::kContextualTasksDriveOAuthScope});
+
+  signin::OAuthConsumer consumer = client_->GetOAuthConsumerFromId(
+      signin::OAuthConsumerId::kContextualTasks);
+  EXPECT_EQ(consumer.GetName(),
+            signin::oauth_consumer_name::kContextualTasksName);
+
+  signin::ScopeSet scopes = consumer.GetScopes();
+
+  // Scopes from chromium source
+  EXPECT_THAT(scopes, testing::Contains(GaiaConstants::kClearCutOAuth2Scope));
+  EXPECT_THAT(scopes, testing::Contains(GaiaConstants::kLensOAuth2Scope));
+  EXPECT_THAT(scopes, testing::Not(
+                          testing::Contains(GaiaConstants::kDriveOAuth2Scope)));
 }
 
 class ChromeSigninClientSignoutSourceTest
@@ -363,3 +414,110 @@ INSTANTIATE_TEST_SUITE_P(AllSignoutSources,
                          testing::ValuesIn(kSignoutSources));
 
 #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+
+TEST(ChromeSigninClientTest, ClearSigninPrefsForIsolatedProfile) {
+  content::BrowserTaskEnvironment task_environment;
+  base::test::ScopedFeatureList scoped_feature_list(
+      enterprise_isolated_mode::kEnableEnterpriseIsolatedMode);
+
+  std::unique_ptr<TestingProfile> profile = TestingProfile::Builder().Build();
+  profile->GetPrefs()->SetInteger(
+      enterprise_isolated_mode::kEnterpriseIsolatedModeSettings,
+      static_cast<int>(
+          enterprise_isolated_mode::IsolatedModeSetting::kEnabled));
+
+  const std::string parent_list_accounts_data = "parent_list_accounts_data";
+  const std::string parent_account_id = "parent_account_id";
+  const std::string parent_device_id = "parent_device_id";
+  base::ListValue parent_account_info;
+  parent_account_info.Append(
+      base::DictValue().Set("account_id", parent_account_id));
+
+  profile->GetPrefs()->SetBoolean(prefs::kSigninAllowed, true);
+  profile->GetPrefs()->SetString(prefs::kGaiaCookieLastListAccountsBinaryData,
+                                 parent_list_accounts_data);
+  profile->GetPrefs()->SetString(prefs::kGoogleServicesAccountId,
+                                 parent_account_id);
+  profile->GetPrefs()->SetBoolean(prefs::kGoogleServicesConsentedToSync, true);
+  profile->GetPrefs()->SetString(prefs::kGoogleServicesSigninScopedDeviceId,
+                                 parent_device_id);
+  profile->GetPrefs()->SetList(prefs::kAccountInfo,
+                               parent_account_info.Clone());
+
+  Profile* isolated_profile =
+      profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+  ASSERT_TRUE(isolated_profile->IsEnterpriseIsolatedModeProfile());
+
+  ChromeSigninClient client(isolated_profile);
+  EXPECT_FALSE(isolated_profile->GetPrefs()->GetBoolean(prefs::kSigninAllowed));
+  EXPECT_THAT(isolated_profile->GetPrefs()->GetString(
+                  prefs::kGaiaCookieLastListAccountsBinaryData),
+              testing::IsEmpty());
+  EXPECT_THAT(
+      isolated_profile->GetPrefs()->GetString(prefs::kGoogleServicesAccountId),
+      testing::IsEmpty());
+  EXPECT_FALSE(isolated_profile->GetPrefs()->GetBoolean(
+      prefs::kGoogleServicesConsentedToSync));
+  EXPECT_THAT(isolated_profile->GetPrefs()->GetString(
+                  prefs::kGoogleServicesSigninScopedDeviceId),
+              testing::IsEmpty());
+  EXPECT_THAT(isolated_profile->GetPrefs()->GetList(prefs::kAccountInfo),
+              testing::IsEmpty());
+
+  EXPECT_TRUE(profile->GetPrefs()->GetBoolean(prefs::kSigninAllowed));
+  EXPECT_EQ(profile->GetPrefs()->GetString(
+                prefs::kGaiaCookieLastListAccountsBinaryData),
+            parent_list_accounts_data);
+  EXPECT_EQ(profile->GetPrefs()->GetString(prefs::kGoogleServicesAccountId),
+            parent_account_id);
+  EXPECT_TRUE(
+      profile->GetPrefs()->GetBoolean(prefs::kGoogleServicesConsentedToSync));
+  EXPECT_EQ(
+      profile->GetPrefs()->GetString(prefs::kGoogleServicesSigninScopedDeviceId),
+      parent_device_id);
+  EXPECT_EQ(profile->GetPrefs()->GetList(prefs::kAccountInfo),
+            parent_account_info);
+}
+
+TEST(ChromeSigninClientTest, IsAccountSignedInOnOtherProfile) {
+  content::BrowserTaskEnvironment task_environment;
+  TestingProfileManager profile_manager(TestingBrowserProcess::GetGlobal());
+  ASSERT_TRUE(profile_manager.SetUp());
+
+  TestingProfile* profile1 = profile_manager.CreateTestingProfile("Profile 1");
+  TestingProfile* profile2 = profile_manager.CreateTestingProfile("Profile 2");
+
+  ProfileAttributesStorage& storage =
+      profile_manager.profile_manager()->GetProfileAttributesStorage();
+  ProfileAttributesEntry* entry1 =
+      storage.GetProfileAttributesWithPath(profile1->GetPath());
+  ProfileAttributesEntry* entry2 =
+      storage.GetProfileAttributesWithPath(profile2->GetPath());
+  ASSERT_NE(entry1, nullptr);
+  ASSERT_NE(entry2, nullptr);
+
+  const GaiaId gaia1("gaia_1");
+  const GaiaId gaia2("gaia_2");
+  const GaiaId gaia_unassigned("gaia_unassigned");
+
+  entry1->SetAuthInfo(gaia1, u"user1@gmail.com",
+                      /*is_consented_primary_account=*/false);
+  entry2->SetAuthInfo(gaia2, u"user2@gmail.com",
+                      /*is_consented_primary_account=*/false);
+
+  ChromeSigninClient client1(profile1);
+  // Signed in on the same profile -> false.
+  EXPECT_FALSE(client1.IsAccountSignedInOnOtherProfile(gaia1));
+  // Signed in on another profile -> true.
+  EXPECT_TRUE(client1.IsAccountSignedInOnOtherProfile(gaia2));
+  // Omitted other profile -> ignored (false).
+  entry2->SetIsEphemeral(true);
+  entry2->SetIsOmitted(true);
+  EXPECT_FALSE(client1.IsAccountSignedInOnOtherProfile(gaia2));
+  entry2->SetIsOmitted(false);
+  entry2->SetIsEphemeral(false);
+  // Not signed in on any profile -> false.
+  EXPECT_FALSE(client1.IsAccountSignedInOnOtherProfile(gaia_unassigned));
+  // Empty GaiaId -> false.
+  EXPECT_FALSE(client1.IsAccountSignedInOnOtherProfile(GaiaId()));
+}

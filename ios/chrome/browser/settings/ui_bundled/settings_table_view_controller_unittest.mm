@@ -10,21 +10,21 @@
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
-#import "components/autofill/core/common/autofill_prefs.h"
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/test/mock_tracker.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/password_manager_test_utils.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
-#import "components/password_manager/core/common/password_manager_pref_names.h"
 #import "components/policy/core/common/policy_loader_ios_constants.h"
 #import "components/policy/policy_constants.h"
 #import "components/search_engines/template_url_service.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_metrics.h"
 #import "components/signin/public/base/signin_pref_names.h"
+#import "components/subscription_eligibility/subscription_eligibility_prefs.h"
 #import "components/sync/test/test_sync_service.h"
 #import "components/sync/test/test_sync_user_settings.h"
+#import "components/universal_optout/features.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/table_view_account_item.h"
 #import "ios/chrome/browser/default_browser/model/features.h"
 #import "ios/chrome/browser/discover_feed/model/discover_feed_visibility_browser_agent.h"
@@ -54,12 +54,13 @@
 #import "ios/chrome/browser/shared/ui/table_view/legacy_chrome_table_view_controller_test.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/browser/voice/model/voice_search_prefs.h"
+#import "ios/chrome/browser/web_extension/model/extension_service_factory.h"
+#import "ios/chrome/browser/web_extension/model/fake_extension_service.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -105,12 +106,17 @@ class SettingsTableViewControllerTest
                               PhotosServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
         base::BindOnce(&password_manager::BuildPasswordStore<
                        ProfileIOS, password_manager::TestPasswordStore>));
+    builder.AddTestingFactory(
+        ExtensionServiceFactory::GetInstance(),
+        base::BindRepeating(
+            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
+              return std::make_unique<FakeExtensionService>();
+            }));
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
     // Prepare mocks for PushNotificationClient dependency
@@ -226,6 +232,19 @@ class SettingsTableViewControllerTest
               BadgeType::kNotificationDot == default_browser_item.badgeType);
   }
 
+  TableViewDetailIconItem* GetPrivacyDetailItem() {
+    NSArray<TableViewItem*>* advanced_items = [controller().tableViewModel
+        itemsInSectionWithIdentifier:SettingsSectionIdentifier::
+                                         SettingsSectionIdentifierAdvanced];
+    for (TableViewItem* item in advanced_items) {
+      if ([item.accessibilityIdentifier
+              isEqualToString:kSettingsPrivacyCellId]) {
+        return base::apple::ObjCCast<TableViewDetailIconItem>(item);
+      }
+    }
+    return nil;
+  }
+
  protected:
   // Needed for test profile created by TestProfileIOS().
   web::WebTaskEnvironment task_environment_;
@@ -276,8 +295,8 @@ TEST_F(SettingsTableViewControllerTest, AccountSectionIfSignedIn) {
   auto* account_item = static_cast<TableViewAccountItem*>(account_items[0]);
   auto* google_services_item =
       static_cast<TableViewDetailIconItem*>(account_items[1]);
-  EXPECT_NSEQ(fake_identity_.userFullName, account_item.text);
-  EXPECT_NSEQ(fake_identity_.userEmail, account_item.detailText);
+  EXPECT_NSEQ(fake_identity_.userFullName, account_item.name);
+  EXPECT_NSEQ(fake_identity_.userEmail, account_item.email);
   EXPECT_NSEQ(l10n_util::GetNSString(IDS_IOS_GOOGLE_SERVICES_SETTINGS_TITLE),
               google_services_item.text);
   EXPECT_NSEQ(nil, google_services_item.detailText);
@@ -455,7 +474,7 @@ TEST_F(SettingsTableViewControllerTest,
           feature_engagement::kIPHiOSPromoSettingsCellDefaultBrowserFeature)))
       .Times(testing::AnyNumber());
 
-  auth_service_->SignOut(signin_metrics::ProfileSignout::kTest, nil);
+  auth_service_->SignOut(signin_metrics::ProfileSignout::kTest);
   ASSERT_FALSE(auth_service_->HasPrimaryIdentity());
 
   CreateController();
@@ -646,8 +665,8 @@ TEST_F(SettingsTableViewControllerTest, HasDownloadsMenuItem) {
 }
 
 // Verifies that if kDomainLevelSitePermissions is enabled, then there is a
-// Site Permissions Settings item in the Info section.
-TEST_F(SettingsTableViewControllerTest, HasSitePermissionsMenuItem) {
+// Site Settings item in the Info section.
+TEST_F(SettingsTableViewControllerTest, HasSiteSettingsMenuItem) {
   base::test::ScopedFeatureList features;
   features.InitAndEnableFeature(kDomainLevelSitePermissions);
 
@@ -655,7 +674,7 @@ TEST_F(SettingsTableViewControllerTest, HasSitePermissionsMenuItem) {
   CheckController();
 
   EXPECT_TRUE([controller().tableViewModel
-      hasItemForItemType:SettingsItemTypeSitePermissions
+      hasItemForItemType:SettingsItemTypeSiteSettings
        sectionIdentifier:SettingsSectionIdentifierInfo]);
 }
 
@@ -674,20 +693,6 @@ TEST_F(SettingsTableViewControllerTest, HasBackendPromoDebugToolsItem) {
 
   [[NSUserDefaults standardUserDefaults]
       removeObjectForKey:@"ShowBackendPromoDebugTools"];
-}
-
-// Verifies that the Level Up walkthrough target item (Autofill and Passwords)
-// exists in SettingsTableViewController.
-TEST_F(SettingsTableViewControllerTest, HasAutofillAndPasswordsLevelUpItem) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(kYourSavedInfoSettingsPageIos);
-
-  CreateController();
-  CheckController();
-
-  EXPECT_TRUE([controller().tableViewModel
-      hasItemForItemType:SettingsItemTypeAutofillAndPasswords
-       sectionIdentifier:SettingsSectionIdentifierBasics]);
 }
 
 // Verifies that the default browser blue dot is displayed when indicated.
@@ -766,21 +771,11 @@ TEST_F(SettingsTableViewControllerTest, SearchEngineChangedDoesntCrash) {
 TEST_F(SettingsTableViewControllerTest, ObservedPreferencesChangedDoesntCrash) {
   CreateControllerWithoutView();
   profile_->GetPrefs()->SetString(prefs::kVoiceSearchLocale, "en-US");
-  profile_->GetPrefs()->SetBoolean(
-      password_manager::prefs::kCredentialsEnableService, NO);
-  profile_->GetPrefs()->SetBoolean(autofill::prefs::kAutofillProfileEnabled,
-                                   NO);
-  profile_->GetPrefs()->SetBoolean(autofill::prefs::kAutofillCreditCardEnabled,
-                                   NO);
   CheckController();
 }
 
-// Verifies that the Basics section only shows the Autofill and Passwords row
-// when the YourSavedInfoSettingsPageIos flag is enabled.
-TEST_F(SettingsTableViewControllerTest,
-       BasicsSectionWithYourSavedInfoSettingsPageIosEnabled) {
-  base::test::ScopedFeatureList features{kYourSavedInfoSettingsPageIos};
-
+// Verifies that the Basics section only shows the Autofill and Passwords row.
+TEST_F(SettingsTableViewControllerTest, BasicsSection) {
   CreateController();
   CheckController();
 
@@ -793,30 +788,150 @@ TEST_F(SettingsTableViewControllerTest,
   EXPECT_EQ(SettingsItemTypeAutofillAndPasswords, item.type);
 }
 
-// Verifies that the Basics section shows the Passwords, Payment Methods, and
-// Addresses and More rows when the YourSavedInfoSettingsPageIos flag is
-// disabled.
-// TODO(crbug.com/496456595): Remove once kYourSavedInfoSettingsPageIos is
-// launched.
-TEST_F(SettingsTableViewControllerTest,
-       BasicsSectionWithYourSavedInfoSettingsPageIosDisabled) {
-  base::test::ScopedFeatureList features;
-  features.InitAndDisableFeature(kYourSavedInfoSettingsPageIos);
+// Test that the account item displays the AI tier ring when the user is
+// eligible and has no authentication error, and updates when the tier changes.
+TEST_F(SettingsTableViewControllerTest, ShowsAITierRingWhenEligibleAndNoError) {
+  base::test::ScopedFeatureList feature_list{
+      kAiSubscriptionAvatarRingFollowupIOS};
+  profile_->GetPrefs()->SetInteger(
+      subscription_eligibility::prefs::kAiSubscriptionTier, 1);
 
   CreateController();
   CheckController();
 
-  NSArray* basics_items = [controller().tableViewModel
+  NSArray* account_items = [controller().tableViewModel
       itemsInSectionWithIdentifier:SettingsSectionIdentifier::
-                                       SettingsSectionIdentifierBasics];
-  ASSERT_EQ(3U, basics_items.count);
+                                       SettingsSectionIdentifierAccount];
+  ASSERT_NE(0U, account_items.count);
 
-  TableViewItem* item1 = static_cast<TableViewItem*>(basics_items[0]);
-  EXPECT_EQ(SettingsItemTypePasswords, item1.type);
+  TableViewAccountItem* identity_account_item =
+      base::apple::ObjCCast<TableViewAccountItem>(account_items[0]);
+  ASSERT_TRUE(identity_account_item != nil);
+  EXPECT_EQ(TableViewAccountDetailImage::kAITierRing,
+            identity_account_item.detailImage);
 
-  TableViewItem* item2 = static_cast<TableViewItem*>(basics_items[1]);
-  EXPECT_EQ(SettingsItemTypeAutofillCreditCard, item2.type);
+  // Updating the AI subscription tier to 0 should remove the ring.
+  profile_->GetPrefs()->SetInteger(
+      subscription_eligibility::prefs::kAiSubscriptionTier, 0);
+  EXPECT_EQ(TableViewAccountDetailImage::kNone,
+            identity_account_item.detailImage);
+}
 
-  TableViewItem* item3 = static_cast<TableViewItem*>(basics_items[2]);
-  EXPECT_EQ(SettingsItemTypeAutofillProfile, item3.type);
+// Test that the account item hides the AI tier ring when an account error
+// exists and shows it once the error is resolved.
+TEST_F(SettingsTableViewControllerTest, HidesAITierRingWhenAccountErrorExists) {
+  base::test::ScopedFeatureList feature_list{
+      kAiSubscriptionAvatarRingFollowupIOS};
+  profile_->GetPrefs()->SetInteger(
+      subscription_eligibility::prefs::kAiSubscriptionTier, 1);
+
+  const char kSyncPassphrase[] = "passphrase";
+  sync_service_->GetUserSettings()->SetPassphraseRequired(kSyncPassphrase);
+
+  CreateController();
+  CheckController();
+
+  NSArray* account_items = [controller().tableViewModel
+      itemsInSectionWithIdentifier:SettingsSectionIdentifier::
+                                       SettingsSectionIdentifierAccount];
+  ASSERT_NE(0U, account_items.count);
+
+  TableViewAccountItem* identity_account_item =
+      base::apple::ObjCCast<TableViewAccountItem>(account_items[0]);
+  ASSERT_TRUE(identity_account_item != nil);
+  EXPECT_EQ(TableViewAccountDetailImage::kError,
+            identity_account_item.detailImage);
+
+  // Resolve the account error and fire a sync state change.
+  sync_service_->GetUserSettings()->SetDecryptionPassphrase(kSyncPassphrase);
+  sync_service_->FireStateChanged();
+
+  account_items = [controller().tableViewModel
+      itemsInSectionWithIdentifier:SettingsSectionIdentifier::
+                                       SettingsSectionIdentifierAccount];
+  ASSERT_NE(0U, account_items.count);
+  identity_account_item =
+      base::apple::ObjCCast<TableViewAccountItem>(account_items[0]);
+  ASSERT_TRUE(identity_account_item != nil);
+  EXPECT_EQ(TableViewAccountDetailImage::kAITierRing,
+            identity_account_item.detailImage);
+}
+
+// Tests that the privacy detail item displays a warning badge when the
+// extension service has a load error, and clears the badge when the error is
+// resolved.
+TEST_F(SettingsTableViewControllerTest, TestPrivacyItemErrorBadge) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      universal_optout::features::kUniversalOptOutSettings);
+
+  CreateController();
+  CheckController();
+
+  FakeExtensionService* fake_service = static_cast<FakeExtensionService*>(
+      ExtensionServiceFactory::GetForProfile(profile_.get()));
+  ASSERT_TRUE(fake_service != nullptr);
+
+  TableViewDetailIconItem* privacy_item = GetPrivacyDetailItem();
+  ASSERT_TRUE(privacy_item != nil);
+  EXPECT_TRUE(privacy_item.badgeType == BadgeType::kNone);
+
+  // Simulate extension load error.
+  fake_service->SetHasGPCLoadError(true);
+  EXPECT_TRUE(privacy_item.badgeType == BadgeType::kWarning);
+
+  // Simulate error resolution.
+  fake_service->SetHasGPCLoadError(false);
+  EXPECT_TRUE(privacy_item.badgeType == BadgeType::kNone);
+}
+
+// Tests that the privacy detail item does not display a warning badge when
+// kUniversalOptOutSettings is disabled even if the extension service reports a
+// load error.
+TEST_F(SettingsTableViewControllerTest,
+       TestPrivacyItemUniversalOptOutSettingsDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      universal_optout::features::kUniversalOptOutSettings);
+
+  CreateController();
+  CheckController();
+
+  FakeExtensionService* fake_service = static_cast<FakeExtensionService*>(
+      ExtensionServiceFactory::GetForProfile(profile_.get()));
+  ASSERT_TRUE(fake_service != nullptr);
+
+  TableViewDetailIconItem* privacy_item = GetPrivacyDetailItem();
+  ASSERT_TRUE(privacy_item != nil);
+  EXPECT_TRUE(privacy_item.badgeType == BadgeType::kNone);
+
+  // Simulate extension load error while the feature is disabled.
+  fake_service->SetHasGPCLoadError(true);
+  EXPECT_TRUE(privacy_item.badgeType == BadgeType::kNone);
+}
+
+// Tests that the privacy detail item does not display a warning badge when the
+// extension service is in silent mode even if it reports a load error.
+TEST_F(SettingsTableViewControllerTest, TestPrivacyItemSilentModeNoErrorBadge) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {universal_optout::features::kUniversalOptOutExtensionSilent},
+      /*disabled_features=*/
+      {universal_optout::features::kUniversalOptOutSettings});
+
+  CreateController();
+  CheckController();
+
+  FakeExtensionService* fake_service = static_cast<FakeExtensionService*>(
+      ExtensionServiceFactory::GetForProfile(profile_.get()));
+  ASSERT_TRUE(fake_service != nullptr);
+
+  TableViewDetailIconItem* privacy_item = GetPrivacyDetailItem();
+  ASSERT_TRUE(privacy_item != nil);
+  EXPECT_TRUE(privacy_item.badgeType == BadgeType::kNone);
+
+  // Simulate extension load error while in silent mode.
+  fake_service->SetHasGPCLoadError(true);
+  EXPECT_TRUE(privacy_item.badgeType == BadgeType::kNone);
 }

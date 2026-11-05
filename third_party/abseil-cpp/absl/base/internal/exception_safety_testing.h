@@ -25,17 +25,26 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <initializer_list>
 #include <iosfwd>
+#include <limits>
+#include <memory>
+#include <new>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include "gtest/gtest.h"
+#include "absl/base/attributes.h"
 #include "absl/base/internal/pretty_function.h"
 #include "absl/memory/memory.h"
 #include "absl/meta/type_traits.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
 #include "absl/utility/utility.h"
@@ -539,7 +548,7 @@ class ThrowingValue : private exceptions_internal::TrackedObject {
   }
 
   // Memory management operators
-  static void* operator new(size_t s) noexcept(
+  ABSL_ATTRIBUTE_NOINLINE static void* operator new(size_t s) noexcept(
       IsSpecified(TypeSpec::kNoThrowNew)) {
     if (!IsSpecified(TypeSpec::kNoThrowNew)) {
       exceptions_internal::MaybeThrow(ABSL_INTERNAL_PRETTY_FUNCTION, true);
@@ -547,7 +556,7 @@ class ThrowingValue : private exceptions_internal::TrackedObject {
     return ::operator new(s);
   }
 
-  static void* operator new[](size_t s) noexcept(
+  ABSL_ATTRIBUTE_NOINLINE static void* operator new[](size_t s) noexcept(
       IsSpecified(TypeSpec::kNoThrowNew)) {
     if (!IsSpecified(TypeSpec::kNoThrowNew)) {
       exceptions_internal::MaybeThrow(ABSL_INTERNAL_PRETTY_FUNCTION, true);
@@ -556,8 +565,8 @@ class ThrowingValue : private exceptions_internal::TrackedObject {
   }
 
   template <typename... Args>
-  static void* operator new(size_t s, Args&&... args) noexcept(
-      IsSpecified(TypeSpec::kNoThrowNew)) {
+  ABSL_ATTRIBUTE_NOINLINE static void* operator new(
+      size_t s, Args&&... args) noexcept(IsSpecified(TypeSpec::kNoThrowNew)) {
     if (!IsSpecified(TypeSpec::kNoThrowNew)) {
       exceptions_internal::MaybeThrow(ABSL_INTERNAL_PRETTY_FUNCTION, true);
     }
@@ -565,8 +574,8 @@ class ThrowingValue : private exceptions_internal::TrackedObject {
   }
 
   template <typename... Args>
-  static void* operator new[](size_t s, Args&&... args) noexcept(
-      IsSpecified(TypeSpec::kNoThrowNew)) {
+  ABSL_ATTRIBUTE_NOINLINE static void* operator new[](
+      size_t s, Args&&... args) noexcept(IsSpecified(TypeSpec::kNoThrowNew)) {
     if (!IsSpecified(TypeSpec::kNoThrowNew)) {
       exceptions_internal::MaybeThrow(ABSL_INTERNAL_PRETTY_FUNCTION, true);
     }
@@ -575,17 +584,23 @@ class ThrowingValue : private exceptions_internal::TrackedObject {
 
   // Abseil doesn't support throwing overloaded operator delete.  These are
   // provided so a throwing operator-new can clean up after itself.
-  void operator delete(void* p) noexcept { ::operator delete(p); }
+  ABSL_ATTRIBUTE_NOINLINE void operator delete(void* p) noexcept {
+    ::operator delete(p);
+  }
 
   template <typename... Args>
-  void operator delete(void* p, Args&&... args) noexcept {
+  ABSL_ATTRIBUTE_NOINLINE void operator delete(void* p,
+                                               Args&&... args) noexcept {
     ::operator delete(p, std::forward<Args>(args)...);
   }
 
-  void operator delete[](void* p) noexcept { return ::operator delete[](p); }
+  ABSL_ATTRIBUTE_NOINLINE void operator delete[](void* p) noexcept {
+    return ::operator delete[](p);
+  }
 
   template <typename... Args>
-  void operator delete[](void* p, Args&&... args) noexcept {
+  ABSL_ATTRIBUTE_NOINLINE void operator delete[](void* p,
+                                                 Args&&... args) noexcept {
     return ::operator delete[](p, std::forward<Args>(args)...);
   }
 
@@ -1029,10 +1044,10 @@ class ExceptionSafetyTestBuilder {
   ExceptionSafetyTestBuilder<Factory, Operation, Contracts...,
                              std::decay_t<MoreContracts>...>
   WithContracts(const MoreContracts&... more_contracts) const {
-    return {
-        factory_, operation_,
-        std::tuple_cat(contracts_, std::tuple<std::decay_t<MoreContracts>...>(
-                                       more_contracts...))};
+    return {factory_, operation_,
+            std::tuple_cat(
+                contracts_,
+                std::tuple<std::decay_t<MoreContracts>...>(more_contracts...))};
   }
 
   /*

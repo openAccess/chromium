@@ -15,12 +15,14 @@
 #include "base/json/json_writer.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "crypto/evp.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/keypair.h"
+#include "crypto/sign.h"
 #include "net/base/features.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
@@ -93,6 +95,14 @@ std::unique_ptr<net::test_server::HttpResponse> RequestHandler(
     response->AddCustomHeader("Origin-Trial", GetOriginTrialToken(base_url));
     response->set_content_type("text/html");
     return response;
+  } else if (request.relative_url.starts_with("/page_with_subframe")) {
+    std::string iframe_src =
+        GetQueryParameter(request.GetURL(), "iframe_src").value_or("");
+    response->set_content_type("text/html");
+    response->set_content(base::StringPrintf(
+        R"*(<html><body><iframe id="test_iframe" src="%s"></iframe></body></html>)*",
+        iframe_src));
+    return response;
   } else if (request.relative_url.starts_with("/dbsc_required")) {
     std::string query_params = request.GetURL().GetQuery();
     response->AddCustomHeader(
@@ -110,6 +120,24 @@ std::unique_ptr<net::test_server::HttpResponse> RequestHandler(
     std::string cookie_name = GetQueryParameter(request.GetURL(), "cookie_name")
                                   .value_or("auth_cookie");
     bool is_refresh = request.relative_url.starts_with("/dbsc_refresh_session");
+    std::string cookie_attributes =
+        GetQueryParameter(request.GetURL(), "cookie_attributes")
+            .value_or("SameSite=Strict; Secure");
+    std::optional<std::string> extra_cookie_name =
+        GetQueryParameter(request.GetURL(), "extra_cookie_name");
+    std::string extra_cookie_attributes =
+        GetQueryParameter(request.GetURL(), "extra_cookie_attributes")
+            .value_or("SameSite=None; Secure");
+    base::ListValue allowed_refresh_initiators;
+    if (std::optional<std::string> param =
+            GetQueryParameter(request.GetURL(), "allowed_refresh_initiators")) {
+      for (std::string_view initiator : base::SplitStringPiece(
+               *param, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+        allowed_refresh_initiators.Append(initiator);
+      }
+    } else {
+      allowed_refresh_initiators.Append("*");
+    }
     std::optional<std::string> trigger_challenge =
         GetQueryParameter(request.GetURL(), "trigger_challenge");
     bool has_secure_session_response =
@@ -126,14 +154,32 @@ std::unique_ptr<net::test_server::HttpResponse> RequestHandler(
     }
 
     response->AddCustomHeader(
-        "Set-Cookie", base::StringPrintf("%s=abcdef0123;SameSite=Strict;Secure",
-                                         cookie_name));
+        "Set-Cookie", base::StringPrintf("%s=abcdef0123; %s", cookie_name,
+                                         cookie_attributes));
+    if (extra_cookie_name.has_value()) {
+      response->AddCustomHeader(
+          "Set-Cookie",
+          base::StringPrintf("%s=abcdef0123; %s", *extra_cookie_name,
+                             extra_cookie_attributes));
+    }
 
     std::string refresh_path =
         GetQueryParameter(request.GetURL(), "refresh_path")
             .value_or("/dbsc_refresh_session");
     if (std::string query = request.GetURL().GetQuery(); !query.empty()) {
       base::StrAppend(&refresh_path, {"?", query});
+    }
+
+    base::ListValue credentials;
+    credentials.Append(base::DictValue()
+                           .Set("type", "cookie")
+                           .Set("name", cookie_name)
+                           .Set("attributes", cookie_attributes));
+    if (extra_cookie_name.has_value()) {
+      credentials.Append(base::DictValue()
+                             .Set("type", "cookie")
+                             .Set("name", *extra_cookie_name)
+                             .Set("attributes", extra_cookie_attributes));
     }
 
     const auto registration_response =
@@ -148,13 +194,9 @@ std::unique_ptr<net::test_server::HttpResponse> RequestHandler(
                                            .Set("type", "exclude")
                                            .Set("domain", base_url.GetHost())
                                            .Set("path", "/favicon.ico"))))
-            .Set("credentials",
-                 base::ListValue().Append(
-                     base::DictValue()
-                         .Set("type", "cookie")
-                         .Set("name", cookie_name)
-                         .Set("attributes", "SameSite=Strict; Secure")))
-            .Set("allowed_refresh_initiators", base::ListValue().Append("*"));
+            .Set("credentials", std::move(credentials))
+            .Set("allowed_refresh_initiators",
+                 std::move(allowed_refresh_initiators));
 
     std::optional<std::string> json = base::WriteJson(registration_response);
     EXPECT_TRUE(json.has_value());
@@ -179,6 +221,15 @@ std::unique_ptr<net::test_server::HttpResponse> RequestHandler(
     response->set_content_type("text/html");
     return response;
   } else if (request.relative_url.starts_with("/ensure_authenticated")) {
+    if (GetQueryParameter(request.GetURL(), "cors").has_value()) {
+      auto origin_it = request.headers.find("Origin");
+      if (origin_it != request.headers.end()) {
+        response->AddCustomHeader("Access-Control-Allow-Origin",
+                                  origin_it->second);
+        response->AddCustomHeader("Access-Control-Allow-Credentials", "true");
+        response->AddCustomHeader("Vary", "Origin");
+      }
+    }
     std::optional<std::string> expected_debug_header =
         GetQueryParameter(request.GetURL(), "debug_header");
     auto debug_header_it = request.headers.find("Secure-Session-Skipped");
@@ -192,10 +243,11 @@ std::unique_ptr<net::test_server::HttpResponse> RequestHandler(
     }
     // We do a very coarse-grained cookie check here rather than parsing
     // cookies.
+    std::string expected_cookie =
+        GetQueryParameter(request.GetURL(), "expected_cookie")
+            .value_or("auth_cookie");
     auto it = request.headers.find("Cookie");
-    if (it == request.headers.end()) {
-      response->set_code(net::HTTP_UNAUTHORIZED);
-    } else if (it->second.find("auth_cookie") == std::string::npos) {
+    if (it == request.headers.end() || !it->second.contains(expected_cookie)) {
       response->set_code(net::HTTP_UNAUTHORIZED);
     }
     response->set_content_type("text/html");
@@ -373,9 +425,9 @@ bool VerifyEs256Jwt(std::string_view jwt) {
     return false;
   }
 
-  // `crypto::SignatureVerifier` expects the public key in the
-  // SubjectPublicKeyInfo format and the signature in the DER format, so convert
-  // accordingly.
+  // `crypto::keypair::PublicKey::FromSubjectPublicKeyInfo` expects the public
+  // key in SubjectPublicKeyInfo format and `crypto::sign::Verify` expects the
+  // ECDSA signature in DER format, so convert accordingly.
   std::optional<std::vector<uint8_t>> spki = Es256JwkToSpki(*jwk);
   if (!spki) {
     return false;
@@ -387,12 +439,15 @@ bool VerifyEs256Jwt(std::string_view jwt) {
     return false;
   }
 
-  crypto::SignatureVerifier verifier;
-  verifier.VerifyInit(crypto::SignatureVerifier::ECDSA_SHA256, der_sig.value(),
-                      spki.value());
-  verifier.VerifyUpdate(
-      base::as_byte_span(base::StrCat({header64, ".", payload64})));
-  return verifier.VerifyFinal();
+  std::optional<crypto::keypair::PublicKey> public_key =
+      crypto::keypair::PublicKey::FromSubjectPublicKeyInfo(*spki);
+  if (!public_key || !public_key->IsEc()) {
+    return false;
+  }
+
+  return crypto::sign::Verify(
+      crypto::sign::ECDSA_SHA256, *public_key,
+      base::as_byte_span(base::StrCat({header64, ".", payload64})), *der_sig);
 }
 
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)

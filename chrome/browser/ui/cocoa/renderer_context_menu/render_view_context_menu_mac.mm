@@ -100,16 +100,17 @@ RenderViewContextMenuMac::RenderViewContextMenuMac(
 
 RenderViewContextMenuMac::~RenderViewContextMenuMac() = default;
 
-void RenderViewContextMenuMac::ExecuteCommand(int command_id, int event_flags) {
+bool RenderViewContextMenuMac::ExecPlatformCommand(int command_id,
+                                                   int event_flags) {
   switch (command_id) {
     case IDC_CONTENT_CONTEXT_LOOK_UP:
       LookUpInDictionary();
-      break;
+      return true;
     case IDC_SPELLCHECK_REMOVE_FROM_DICTIONARY:
       RemoveFromDictionary();
-      break;
+      return true;
     default:
-      RenderViewContextMenu::ExecuteCommand(command_id, event_flags);
+      return false;
   }
 }
 
@@ -159,7 +160,7 @@ bool RenderViewContextMenuMac::IsTextDirectionChecked(
 
 void RenderViewContextMenuMac::UpdateTextDirection(
     base::i18n::TextDirection direction) {
-  DCHECK_NE(direction, base::i18n::UNKNOWN_DIRECTION);
+  CHECK_NE(direction, base::i18n::UNKNOWN_DIRECTION, base::NotFatalUntil::M162);
 
   int command_id = IDC_WRITING_DIRECTION_LTR;
   if (direction == base::i18n::RIGHT_TO_LEFT) {

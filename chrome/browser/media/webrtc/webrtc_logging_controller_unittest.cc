@@ -12,7 +12,9 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/raw_ptr.h"
+#include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/common/media/webrtc_logging.mojom.h"
@@ -21,12 +23,14 @@
 #include "chrome/test/base/testing_profile.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/testing_pref_store.h"
+#include "components/profile_metrics/browser_profile_type.h"
 #include "components/sync_preferences/pref_service_mock_factory.h"
 #include "components/sync_preferences/pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/mock_render_process_host.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -66,6 +70,11 @@ class FakeWebRtcLoggingAgent : public chrome::mojom::WebRtcLoggingAgent {
     receivers_.Add(this,
                    mojo::PendingReceiver<chrome::mojom::WebRtcLoggingAgent>(
                        std::move(pipe)));
+  }
+
+  void Disconnect() {
+    receivers_.Clear();
+    client_.reset();
   }
 
  private:
@@ -227,6 +236,20 @@ TEST_F(WebRtcLoggingControllerTest, ManagedProfileWithUnsetPolicy) {
       browser_context_.get()));
 }
 
+TEST_F(WebRtcLoggingControllerTest, EnterpriseIsolatedModeWithUnsetPolicy) {
+  LoadMainTestProfile(std::nullopt);
+  Profile* isolated_profile =
+      browser_context_->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+  profile_metrics::SetBrowserProfileType(
+      isolated_profile,
+      profile_metrics::BrowserProfileType::kEnterpriseIsolated);
+
+  EXPECT_FALSE(
+      webrtc_logging_controller_->IsWebRtcTextLogAllowed(isolated_profile));
+
+  browser_context_->DestroyOffTheRecordProfile(isolated_profile);
+}
+
 TEST_F(WebRtcLoggingControllerTest, IncognitoWithUnsetPolicy) {
   LoadMainTestProfile(std::nullopt);
   Profile* incognito_profile =
@@ -383,6 +406,27 @@ TEST_F(WebRtcLoggingControllerTest, StartEventLogging_KWeb_NotAuthorized) {
                                                 "session_id", 1024, 1000, 123,
                                                 event_log_future.GetCallback());
   EXPECT_FALSE(event_log_future.Get<0>());
+}
+
+TEST_F(WebRtcLoggingControllerTest, DestroyWhileUploadOnRenderClosePending) {
+  LoadMainTestProfile(true);
+
+  base::test::TestFuture<bool, const std::string&> start_future;
+  webrtc_logging_controller_->StartLogging(start_future.GetCallback());
+  ASSERT_TRUE(start_future.Get<0>()) << start_future.Get<1>();
+  webrtc_logging_controller_->set_upload_log_on_render_close(true);
+
+  // Disconnect the renderer agent and run only the UI thread task that handles
+  // OnAgentDisconnected(), leaving the background PostTaskAndReplyWithResult
+  // pending when the test environment tears down.
+  fake_agent_.Disconnect();
+  base::RunLoop run_loop;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop.QuitClosure());
+  run_loop.Run();
+
+  webrtc_logging_controller_ = nullptr;
+  rph_.reset();
 }
 
 }  // namespace webrtc_text_log

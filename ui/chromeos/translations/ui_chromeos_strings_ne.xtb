@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">गलत पासवर्ड</translation>
 <translation id="5059127710849015030">नेपाली लिपि रूपान्तरण</translation>
 <translation id="5068919226082848014">पिजा</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> ले प्रोक्सी ओभरराइडसम्बन्धी नियमहरू सेट गरेको छ</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> फाइलहरू मेटाइने छन्</translation>
 <translation id="508423945471810158"><ph name="FOLDER_NAME" /> मा <ph name="NUMBER_OF_ITEMS" /> वटा वस्तु सारिँदै छन्</translation>
 <translation id="509429900233858213">त्रुटि भयो।</translation>
-<translation id="5102922915594634436">सिंक गरिएका फोल्डरहरू व्यवस्थापन गर्नुहोस्</translation>
 <translation id="5109254780565519649">कुनै त्रुटि भयो। केही वस्तुहरू रिस्टोर नभएका हुन सक्छन्।</translation>
 <translation id="5110329002213341433">अङ्ग्रेजी (क्यानाडा)</translation>
 <translation id="5119780910075847424">सिंक गर्ने प्रक्रिया पज गरिएको छ</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">हिन्दी</translation>
 <translation id="7665680517722058469">कुनै अर्को कुरा खोज्नुहोस्</translation>
 <translation id="7689532716264131859"><ph name="NUMBER_OF_ITEMS" /> वटा फाइल ट्र्यासमा सारियो</translation>
-<translation id="7693909743393669729">तपाईंले कुनै यन्त्र फर्म्याट गर्नुभयो भने उक्त यन्त्रमा भण्डारण भरिएको सम्पूर्ण डेटा मेटिने छ। यसका साथै सम्भवतः नदेखिएका पार्टिसनलगायतका सम्पूर्ण विद्यमान पार्टिसनहरू हट्ने छन्। यो कार्य अन्डू गर्न सकिँदैन।</translation>
 <translation id="7695430100978772476"><ph name="DRIVE_NAME" /> फर्म्याट गर्न सकिएन</translation>
 <translation id="76959938259365003">ट्र्यास खाली गर्न सकिएन।</translation>
 <translation id="7705251383879779343"><ph name="FILE_NAME" /> कपी गरियो।</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">अमेरिकी वर्कम्यान अन्तर्राष्ट्रिय</translation>
 <translation id="7903984238293908205">काटाकाना</translation>
 <translation id="7908378463497120834">माफ गर्नुहोला, तपाईंको भण्डारण साधनको कम्तीमा एक भाग माउन्ट हुन सकेन ।</translation>
-<translation id="7908793776359722643">तपाईंले कुनै पार्टिसन फर्म्याट गर्नुभयो भने उक्त पार्टिसनमा भण्डारण गरिएको सम्पूर्ण डेटा मेटिने छ। यो कार्य अन्डू गर्न सकिँदैन।</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">तपाईं "मेरो ड्राइभ" मा रहेका फाइलहरू इन्टरनेटविनै प्रयोग गर्न सक्नुहोस् भन्नाका लागि ती फाइलहरू तपाईंको Chromebook मा स्वतः सिंक हुने छन्।</translation>
 <translation id="7925247922861151263">AAA जाँच असफल भयो</translation>

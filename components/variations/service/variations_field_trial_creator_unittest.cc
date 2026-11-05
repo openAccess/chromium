@@ -50,6 +50,7 @@
 #include "components/metrics/test/test_enabled_state_provider.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/variations/field_trial_config/field_trial_util.h"
+#include "components/variations/field_trial_config/fieldtrial_testing_config.h"
 #include "components/variations/platform_field_trials.h"
 #include "components/variations/pref_names.h"
 #include "components/variations/proto/variations_seed.pb.h"
@@ -403,6 +404,23 @@ class TestVariationsSeedStore : public VariationsSeedStore {
   bool has_unloadable_safe_seed_ = false;
 };
 
+#if BUILDFLAG(FIELDTRIAL_TESTING_ENABLED)
+// Associates a mock testing config, instead of the one defined in
+// fieldtrial_testing_config.json.
+void AssociateMockTestingConfig(Study::Platform platform,
+                                Study::FormFactor form_factor,
+                                base::FeatureList* feature_list) {
+  AssociateParamsFromFieldTrialConfig(
+      {.studies =
+           {{.name = "UnitTest",
+             .experiments = {{.name = "Enabled",
+                              .platforms = {platform},
+                              .params = {{"x", "1"}},
+                              .enable_features = {"UnitTestEnabled"}}}}}},
+      platform, form_factor, feature_list);
+}
+#endif  // BUILDFLAG(FIELDTRIAL_TESTING_ENABLED)
+
 class TestVariationsFieldTrialCreator : public VariationsFieldTrialCreator {
  public:
   TestVariationsFieldTrialCreator(
@@ -442,7 +460,7 @@ class TestVariationsFieldTrialCreator : public VariationsFieldTrialCreator {
         std::vector<base::FeatureList::FeatureOverrideInfo>(),
         std::make_unique<base::FeatureList>(), metrics_state_manager_.get(),
         &platform_field_trials, safe_seed_manager_,
-        /*add_entropy_source_to_variations_ids=*/true,
+        metrics_state_manager_->GetLowEntropySource(),
         *metrics_state_manager_->CreateEntropyProviders(
             /*enable_limited_entropy_mode=*/false));
   }
@@ -464,9 +482,8 @@ class TestVariationsFieldTrialCreator : public VariationsFieldTrialCreator {
   // We override this method so that a mock testing config is used instead of
   // the one defined in fieldtrial_testing_config.json.
   void ApplyFieldTrialTestingConfig(base::FeatureList* feature_list) override {
-    AssociateParamsFromFieldTrialConfig(
-        kTestingConfig,
-        GetPlatform(), GetCurrentFormFactor(), feature_list);
+    AssociateMockTestingConfig(GetPlatform(), GetCurrentFormFactor(),
+                               feature_list);
   }
 #endif  // BUILDFLAG(FIELDTRIAL_TESTING_ENABLED)
 
@@ -638,7 +655,8 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_ValidSeed_NoLastFetchTime) {
       user_data_dir_path());
 
   // Simulate a first run by leaving fetch time empty.
-  EXPECT_EQ(base::Time(), field_trial_creator.GetLatestSeedFetchTime());
+  EXPECT_EQ(base::Time(),
+            field_trial_creator.seed_store()->GetLatestSeedFetchTime());
 
   // Check that field trials are created from the seed. Since the test study has
   // only one experiment with 100% probability weight, we must be part of it.
@@ -734,7 +752,8 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_ExpiredSeed) {
 // Verify that a regular seed is not used when the milestone with which it was
 // fetched is greater than the client's milestone.
 TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_FutureMilestone) {
-  const int future_seed_milestone = 7890;
+  const int future_seed_milestone =
+      version_info::GetMajorVersionNumberAsInt() + 5;
 
   // When the seed is associated with a future milestone (relative to the
   // client's milestone), no field trials should be created from the seed.
@@ -917,7 +936,8 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_ExpiredSafeSeed) {
 // Verify that no seed is applied when (i) safe mode is triggered and (ii) the
 // loaded safe seed was fetched with a future milestone.
 TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_SafeSeedForFutureMilestone) {
-  const int future_seed_milestone = 7890;
+  const int future_seed_milestone =
+      version_info::GetMajorVersionNumberAsInt() + 5;
 
   // The safe seed manager should not be informed of the active seed state.
   NiceMock<MockSafeSeedManager> safe_seed_manager(local_state());
@@ -1007,7 +1027,7 @@ TEST_F(FieldTrialCreatorTest, LoadSeedFromTestSeedJsonPath) {
       std::vector<base::FeatureList::FeatureOverrideInfo>(),
       std::make_unique<base::FeatureList>(), metrics_state_manager.get(),
       &platform_field_trials, &safe_seed_manager,
-      /*add_entropy_source_to_variations_ids=*/true,
+      metrics_state_manager->GetLowEntropySource(),
       *metrics_state_manager->CreateEntropyProviders(
           /*enable_limited_entropy_mode=*/false)));
 
@@ -1199,7 +1219,7 @@ TEST_F(FieldTrialCreatorTest, SetUpFieldTrials_LoadsCountryOnFirstRun) {
       std::vector<base::FeatureList::FeatureOverrideInfo>(),
       std::make_unique<base::FeatureList>(), metrics_state_manager.get(),
       &platform_field_trials, &safe_seed_manager,
-      /*add_entropy_source_to_variations_ids=*/true,
+      metrics_state_manager->GetLowEntropySource(),
       *metrics_state_manager->CreateEntropyProviders(
           /*enable_limited_entropy_mode=*/false)));
 
@@ -1938,7 +1958,7 @@ TEST_P(LimitedLayerFieldTrialCreatorTest, SetUpFieldTrials) {
           std::vector<base::FeatureList::FeatureOverrideInfo>(),
           std::make_unique<base::FeatureList>(), metrics_state_manager.get(),
           &platform_field_trials, &safe_seed_manager,
-          /*add_entropy_source_to_variations_ids=*/true,
+          metrics_state_manager->GetLowEntropySource(),
           *metrics_state_manager->CreateEntropyProviders(
               /*enable_limited_entropy_mode=*/true)),
       params.apply_seed);
@@ -2028,7 +2048,7 @@ TEST_P(FieldTrialCreatorFormFactorTest, FilterByFormFactor) {
       std::vector<base::FeatureList::FeatureOverrideInfo>(),
       std::make_unique<base::FeatureList>(), metrics_state_manager.get(),
       &platform_field_trials, &safe_seed_manager,
-      /*add_entropy_source_to_variations_ids=*/true,
+      metrics_state_manager->GetLowEntropySource(),
       *metrics_state_manager->CreateEntropyProviders(
           /*enable_limited_entropy_mode=*/false)));
 

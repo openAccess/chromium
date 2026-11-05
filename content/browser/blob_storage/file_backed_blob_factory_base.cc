@@ -6,19 +6,17 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/process/process_handle.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/uuid.h"
 #include "components/file_access/scoped_file_access.h"
 #include "content/browser/blob_storage/chrome_blob_storage_context.h"
 #include "content/browser/security/cpsp/child_process_security_policy_impl.h"
-#include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/render_process_host.h"
-#include "content/public/common/child_process_id.h"
 #include "storage/browser/blob/blob_data_builder.h"
 #include "storage/browser/blob/blob_impl.h"
 #include "storage/browser/blob/blob_registry_impl.h"
+#include "storage/browser/blob/blob_storage_context.h"
 #include "third_party/blink/public/mojom/blob/data_element.mojom.h"
 #include "url/gurl.h"
 
@@ -59,24 +57,15 @@ void ContinueRegisterBlob(
     file_access::ScopedFileAccessDelegate::RequestFilesAccessIOCallback
         file_access,
     bool security_check_success,
-    mojo::ReportBadMessageCallback bad_message_callback,
     scoped_refptr<ChromeBlobStorageContext> blob_storage_context,
-    blink::mojom::FileBackedBlobFactory::RegisterBlobSyncCallback
-        finish_callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  base::ScopedClosureRunner scoped_finish_callback(std::move(finish_callback));
-
-  if (blob_storage_context->context()->registry().HasEntry(uuid) ||
-      uuid.empty()) {
-    std::move(bad_message_callback)
-        .Run("Invalid UUID passed to FileBackedBlobFactoryImpl::RegisterBlob");
-    return;
-  }
+    mojo::PendingRemote<blink::mojom::SnapshotPermissionToken>
+        snapshot_permission_token) {
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   if (!security_check_success) {
     std::unique_ptr<storage::BlobDataHandle> handle =
         blob_storage_context->context()->AddBrokenBlob(
-            uuid, content_type, /*content_disposition=*/"",
+            uuid, content_type,
             storage::BlobStatus::ERR_REFERENCED_FILE_UNAVAILABLE);
     storage::BlobImpl::Create(std::move(handle), std::move(blob));
     return;
@@ -96,60 +85,41 @@ void ContinueRegisterBlob(
   CHECK(!handle->IsBroken());
 
   storage::BlobImpl::Create(std::move(handle), std::move(blob));
+
+  // `snapshot_permission_token` is dropped.
 }
 
 }  // namespace
 
-FileBackedBlobFactoryBase::FileBackedBlobFactoryBase(int process_id)
+FileBackedBlobFactoryBase::FileBackedBlobFactoryBase(ChildProcessId process_id)
     : process_id_(process_id) {}
 
 FileBackedBlobFactoryBase::~FileBackedBlobFactoryBase() = default;
 
 void FileBackedBlobFactoryBase::RegisterBlob(
     mojo::PendingReceiver<blink::mojom::Blob> blob,
-    const std::string& uuid,
-    const std::string& content_type,
-    blink::mojom::DataElementFilePtr file) {
-  // We can safely perform the registration asynchronously since blob remote
-  // messages are managed by the mojo infrastructure until the blob pending
-  // receiver is resolved, and this happens when the async registration is
-  // completed. Without the mojo continuation callback the `RegisterBlobSync`
-  // call is async.
-
-  RegisterBlobSync(std::move(blob), uuid, content_type, std::move(file),
-                   base::NullCallback());
-}
-
-void FileBackedBlobFactoryBase::RegisterBlobSync(
-    mojo::PendingReceiver<blink::mojom::Blob> blob,
-    const std::string& uuid,
     const std::string& content_type,
     blink::mojom::DataElementFilePtr file,
-    RegisterBlobSyncCallback finish_callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    mojo::PendingRemote<blink::mojom::SnapshotPermissionToken>
+        snapshot_permission_token,
+    RegisterBlobCallback finish_callback) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
-  // TODO(crbug.com/379869738) Remove FromUnsafeValue.
-  bool security_check_success =
-      ChildProcessSecurityPolicyImpl::GetInstance()->CanReadFile(
-          ChildProcessId::FromUnsafeValue(process_id_), file->path);
+  const bool security_check_success =
+      ChildProcessSecurityPolicyImpl::GetInstance()->CanReadFile(process_id_,
+                                                                 file->path);
 
-  GURL url_for_file_access_checks = GetCurrentUrl();
+  const GURL url_for_file_access_checks = GetCurrentUrl();
+  const std::string uuid = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  std::move(finish_callback).Run(uuid);
 
-  if (finish_callback) {
-    finish_callback =
-        base::BindPostTask(base::SequencedTaskRunner::GetCurrentDefault(),
-                           std::move(finish_callback));
-  }
-
-  content::GetIOThreadTaskRunner({})->PostTask(
-      FROM_HERE,
-      base::BindOnce(&ContinueRegisterBlob, std::move(blob), uuid, content_type,
-                     std::move(file),
-                     GetAccessCallback(url_for_file_access_checks),
-                     security_check_success,
-                     base::BindPostTask(GetUIThreadTaskRunner({}),
-                                        GetBadMessageCallback()),
-                     blob_storage_context_, std::move(finish_callback)));
+  base::OnceClosure do_register = base::BindOnce(
+      &ContinueRegisterBlob, std::move(blob), uuid, content_type,
+      std::move(file), GetAccessCallback(url_for_file_access_checks),
+      security_check_success, blob_storage_context_,
+      std::move(snapshot_permission_token));
+  content::GetIOThreadTaskRunner({})->PostTask(FROM_HERE,
+                                               std::move(do_register));
 }
 
 }  // namespace content

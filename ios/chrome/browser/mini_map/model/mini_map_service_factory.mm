@@ -4,40 +4,27 @@
 
 #import "ios/chrome/browser/mini_map/model/mini_map_service_factory.h"
 
+#import <utility>
+
 #import "base/check.h"
-#import "base/feature_list.h"
 #import "ios/chrome/browser/mini_map/model/mini_map_service.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 
-// static
-MiniMapService* MiniMapServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return static_cast<MiniMapService*>(
-      GetInstance()->GetServiceForProfileAs<MiniMapService>(profile,
-                                                            /*create=*/true));
-}
-
-// static
-MiniMapServiceFactory* MiniMapServiceFactory::GetInstance() {
-  static base::NoDestructor<MiniMapServiceFactory> instance;
-  return instance.get();
-}
-
-MiniMapServiceFactory::MiniMapServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("MiniMapService",
-                                    ProfileSelection::kRedirectedInIncognito) {
+MiniMapServiceFactory::MiniMapServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "MiniMapService",
+          ProfileSelection::kRedirectedInIncognito) {
   DependsOn(ios::TemplateURLServiceFactory::GetInstance());
 }
 
-MiniMapServiceFactory::~MiniMapServiceFactory() = default;
-
 std::unique_ptr<KeyedService> MiniMapServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
-  CHECK(IsMiniMapUniversalLinkEnabled() ||
-        base::FeatureList::IsEnabled(kIOSMiniMapUniversalLinkCounterfactual));
+    ProfileIOS& profile) const {
+  CHECK(IsMiniMapUniversalLinkEnabled());
 
   return std::make_unique<MiniMapService>(
-      profile->GetPrefs(),
+      profile.GetPrefs(),
       ios::TemplateURLServiceFactory::GetForProfile(profile));
 }

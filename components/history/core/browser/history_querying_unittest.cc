@@ -6,6 +6,7 @@
 
 #include <array>
 #include <memory>
+#include <string>
 
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
@@ -17,12 +18,16 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "components/history/core/browser/features.h"
 #include "components/history/core/browser/history_database_params.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/test/test_history_database.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 // Tests the history service for querying functionality.
 
@@ -386,34 +391,6 @@ TEST_F(HistoryQueryTest, TextSearchPrefix) {
   EXPECT_TRUE(NthResultIs(results, 1, 3));
 }
 
-TEST_F(HistoryQueryTest, HostSearch) {
-  ASSERT_TRUE(history_.get());
-
-  QueryOptions options;
-  QueryResults results;
-
-  // Query all normal search to make sure all entries appear.
-  options.host_only = false;
-  QueryHistory("example.test", options, &results);
-  EXPECT_EQ(7U, results.size());
-  EXPECT_TRUE(NthResultIs(results, 0, 8));
-  EXPECT_TRUE(NthResultIs(results, 1, 9));
-  EXPECT_TRUE(NthResultIs(results, 2, 10));
-  EXPECT_TRUE(NthResultIs(results, 3, 11));
-  EXPECT_TRUE(NthResultIs(results, 4, 12));
-  EXPECT_TRUE(NthResultIs(results, 5, 13));
-  EXPECT_TRUE(NthResultIs(results, 6, 14));
-
-  // Query with host_only = true to make sure only the host entries show up.
-  options.host_only = true;
-  QueryHistory("example.test", options, &results);
-  EXPECT_EQ(4U, results.size());
-  EXPECT_TRUE(NthResultIs(results, 0, 8));
-  EXPECT_TRUE(NthResultIs(results, 1, 9));
-  EXPECT_TRUE(NthResultIs(results, 2, 10));
-  EXPECT_TRUE(NthResultIs(results, 3, 11));
-}
-
 // Tests max_count feature for text search queries.
 TEST_F(HistoryQueryTest, TextSearchCount) {
   ASSERT_TRUE(history_.get());
@@ -482,6 +459,191 @@ TEST_F(HistoryQueryTest, TextSearchPaging) {
   // shouldn't appear.
   int expected_results[] = {2, 3, 1, 7, 6, 5};
   TestPaging("title", expected_results);
+}
+
+TEST_F(HistoryQueryTest, HostnameSuffixMatching) {
+  ASSERT_TRUE(history_.get());
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      kBrowsingHistoryImprovedHostnameSuffixMatching);
+
+  // Add test entries to verify suffix matching.
+  // Note: "http://example.com/" is already populated in SetUp().
+  const TestEntry entries[] = {
+      {"http://www.example.com/", "Host WWW Example", 1,
+       base::Time::Now() - base::Days(1)},
+      {"http://subdomain.example.com/", "Host Subdomain Example", 2,
+       base::Time::Now() - base::Days(2)},
+      {"http://www.somesite.com/", "Host WWW Somesite", 3,
+       base::Time::Now() - base::Days(3)},
+      {"http://somesite.com.someothersite.com/", "Host Subdomain of Other", 4,
+       base::Time::Now() - base::Days(4)},
+      {"http://some.site/somesite.com", "Host Path Match Only", 5,
+       base::Time::Now() - base::Days(5)},
+      {"http://mysomesite.com/", "Host Non-Subdomain Prefix", 6,
+       base::Time::Now() - base::Days(6)},
+  };
+  for (const auto& entry : entries) {
+    AddEntryToHistory(entry);
+  }
+
+  // Normal text search matches all entries containing "example.test" in URL or
+  // title (including path and title matches).
+  {
+    QueryOptions options;
+    QueryResults results;
+    QueryHistory("example.test", options, &results);
+    EXPECT_EQ(7U, results.size());
+    EXPECT_TRUE(NthResultIs(results, 0, 8));
+    EXPECT_TRUE(NthResultIs(results, 1, 9));
+    EXPECT_TRUE(NthResultIs(results, 2, 10));
+    EXPECT_TRUE(NthResultIs(results, 3, 11));
+    EXPECT_TRUE(NthResultIs(results, 4, 12));
+    EXPECT_TRUE(NthResultIs(results, 5, 13));
+    EXPECT_TRUE(NthResultIs(results, 6, 14));
+  }
+
+  // With hostname_suffix set, only actual host matches (including HTTP, HTTPS,
+  // and non-standard ports) are returned.
+  {
+    QueryOptions options;
+    options.hostname_suffix = "example.test";
+    QueryResults results;
+    QueryHistory("", options, &results);
+    EXPECT_EQ(4U, results.size());
+    EXPECT_TRUE(NthResultIs(results, 0, 8));
+    EXPECT_TRUE(NthResultIs(results, 1, 9));
+    EXPECT_TRUE(NthResultIs(results, 2, 10));
+    EXPECT_TRUE(NthResultIs(results, 3, 11));
+
+    // Combined text and host search.
+    QueryHistory("page_1", options, &results);
+    EXPECT_EQ(1U, results.size());
+    EXPECT_TRUE(NthResultIs(results, 0, 9));
+
+    // Text matching URL on different host should not be returned.
+    QueryHistory("Evil", options, &results);
+    EXPECT_EQ(0U, results.size());
+  }
+
+  // host:example.com matches example.com, www.example.com, and
+  // subdomain.example.com.
+  {
+    QueryOptions options;
+    options.hostname_suffix = "example.com";
+    QueryResults results;
+    QueryHistory("", options, &results);
+    EXPECT_THAT(
+        results,
+        testing::UnorderedElementsAre(
+            testing::Property(&URLResult::url, GURL("http://example.com/")),
+            testing::Property(&URLResult::url, GURL("http://www.example.com/")),
+            testing::Property(&URLResult::url,
+                              GURL("http://subdomain.example.com/"))));
+  }
+
+  // host:www.example.com matches www.example.com.
+  {
+    QueryOptions options;
+    options.hostname_suffix = "www.example.com";
+    QueryResults results;
+    QueryHistory("", options, &results);
+    EXPECT_EQ(1U, results.size());
+    EXPECT_EQ(GURL("http://www.example.com/"), results[0].url());
+  }
+
+  // host:somesite.com matches www.somesite.com, but not
+  // somesite.com.someothersite.com, and also not some.site/somesite.com, and
+  // also not mysomesite.com.
+  {
+    QueryOptions options;
+    options.hostname_suffix = "somesite.com";
+    QueryResults results;
+    QueryHistory("", options, &results);
+    EXPECT_EQ(1U, results.size());
+    EXPECT_EQ(GURL("http://www.somesite.com/"), results[0].url());
+  }
+
+  // Combined text and host search:
+  // "Subdomain" with hostname_suffix "example.com" should match only
+  // subdomain.example.com.
+  {
+    QueryOptions options;
+    options.hostname_suffix = "example.com";
+    QueryResults results;
+    QueryHistory("Subdomain", options, &results);
+    EXPECT_EQ(1U, results.size());
+    EXPECT_EQ(GURL("http://subdomain.example.com/"), results[0].url());
+  }
+
+  // With kBrowsingHistoryImprovedHostnameSuffixMatching enabled, matching is
+  // case-insensitive for both host-only and combined queries.
+  {
+    QueryOptions options;
+    options.hostname_suffix = "ExAmPlE.cOm";
+    QueryResults results;
+    QueryHistory("", options, &results);
+    EXPECT_EQ(3U, results.size());
+
+    QueryHistory("Subdomain", options, &results);
+    EXPECT_EQ(1U, results.size());
+    EXPECT_EQ(GURL("http://subdomain.example.com/"), results[0].url());
+  }
+}
+
+TEST_F(HistoryQueryTest, HostnameSuffixMatchingImprovementsDisabled) {
+  ASSERT_TRUE(history_.get());
+
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      kBrowsingHistoryImprovedHostnameSuffixMatching);
+
+  const TestEntry entries[] = {
+      {"http://www.example.com/", "Host WWW Example", 1,
+       base::Time::Now() - base::Days(1)},
+      {"http://subdomain.example.com/", "Host Subdomain Example", 2,
+       base::Time::Now() - base::Days(2)},
+  };
+  for (const auto& entry : entries) {
+    AddEntryToHistory(entry);
+  }
+
+  // With feature disabled, exact host matching is used instead of suffix.
+  // "example.com" only matches example.com (from SetUp), not www.example.com.
+  {
+    QueryOptions options;
+    options.hostname_suffix = "example.com";
+    QueryResults results;
+    QueryHistory("", options, &results);
+    EXPECT_THAT(results, testing::UnorderedElementsAre(testing::Property(
+                             &URLResult::url, GURL("http://example.com/"))));
+  }
+
+  // Combined text and host search with feature disabled:
+  // Text search for "Other" with hostname_suffix "example.com" matches only
+  // exact host, and matching is case-sensitive.
+  {
+    QueryOptions options;
+    options.hostname_suffix = "example.com";
+    QueryResults results;
+    QueryHistory("Other", options, &results);
+    EXPECT_EQ(1U, results.size());
+    EXPECT_EQ(GURL("http://example.com/"), results[0].url());
+
+    QueryHistory("Subdomain", options, &results);
+    EXPECT_EQ(0U, results.size());
+
+    options.hostname_suffix = "ExAmPlE.cOm";
+    QueryHistory("", options, &results);
+    EXPECT_EQ(0U, results.size());
+    QueryHistory("Other", options, &results);
+    EXPECT_EQ(0U, results.size());
+
+    options.hostname_suffix = "ExAmPlE.tEsT";
+    QueryHistory("", options, &results);
+    EXPECT_EQ(0U, results.size());
+  }
 }
 
 }  // namespace history

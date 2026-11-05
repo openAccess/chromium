@@ -52,9 +52,9 @@ source_set("impl") {
 
   deps = [
     ":chip",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/themes",
     "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/interaction",
     "//chrome/browser/ui/page_info",
     "//chrome/browser/ui/views:content_setting_bubble_contents",
     "//chrome/browser/ui/views/location_bar",
@@ -78,10 +78,14 @@ source_set("unit_tests") {
 
   deps = [
     ":chip",
+    "//chrome/browser/ui:browser_element_identifiers",
+    "//chrome/browser/ui/browser_window/test:test_support",
+    "//chrome/browser/ui/interaction",
     "//chrome/browser/ui/views/permissions",
     "//chrome/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
+    "//ui/base/interaction:test_support",
   ]
 }
 
@@ -94,11 +98,11 @@ source_set("browser_tests") {
     "permission_dashboard_browsertest.cc",
   ]
 
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
-
   deps = [
     ":chip",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/views:content_setting_bubble_contents",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/browser/ui/views/permissions",
     "//chrome/browser/ui/window_metadata",
     "//chrome/test:test_support",
@@ -119,12 +123,13 @@ if (!is_chromeos_device) {
       "permission_chip_kombucha_interactive_uitest.cc",
     ]
 
-    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
-
     deps = [
       ":chip",
       "//chrome/browser/permissions",
+      "//chrome/browser/ui:browser_commands",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/views:content_setting_bubble_contents",
+      "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/views/location_bar:test_support",
       "//chrome/browser/ui/views/page_info",
       "//chrome/browser/ui/views/permissions",

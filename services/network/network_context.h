@@ -20,6 +20,7 @@
 #include "base/component_export.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/hashing_lru_cache.h"
 #include "base/containers/unique_ptr_adapters.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -34,6 +35,7 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/remote_set.h"
 #include "mojo/public/cpp/bindings/unique_receiver_set.h"
@@ -42,18 +44,18 @@
 #include "net/cert/cert_verifier.h"
 #include "net/cert/cert_verify_result.h"
 #include "net/cookies/cookie_setting_override.h"
+#include "net/disk_cache/buildflags.h"
 #include "net/dns/host_resolver.h"
 #include "net/dns/public/dns_config_overrides.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
 #include "net/http/http_auth_preferences.h"
 #include "net/http/http_cache.h"
 #include "net/http/http_request_headers.h"
+#include "net/http/http_server_properties.h"
 #include "net/net_buildflags.h"
 #include "net/reporting/reporting_target_type.h"
 #include "net/storage_access_api/status.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/cors/preflight_controller.h"
-#include "services/network/first_party_sets/first_party_sets_access_delegate.h"
 #include "services/network/http_cache_data_counter.h"
 #include "services/network/http_cache_data_remover.h"
 #include "services/network/logical_invalidation_store.h"
@@ -61,6 +63,7 @@
 #include "services/network/oblivious_http_request_handler.h"
 #include "services/network/public/cpp/cors/origin_access_list.h"
 #include "services/network/public/cpp/network_service_buildflags.h"
+#include "services/network/public/cpp/originating_process_id.h"
 #include "services/network/public/cpp/transferable_directory.h"
 #include "services/network/public/mojom/clear_data_filter.mojom-forward.h"
 #include "services/network/public/mojom/connection_change_observer_client.mojom.h"
@@ -84,8 +87,8 @@
 #include "services/network/url_request_context_owner.h"
 #include "services/network/warc_range_completer.h"
 #include "services/network/web_bundle/web_bundle_manager.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "url/gurl.h"
+#include "url/scheme_host_port.h"
 
 #if BUILDFLAG(ENABLE_REPORTING)
 #include "net/reporting/reporting_cache_observer.h"
@@ -102,6 +105,10 @@ class UnguessableToken;
 
 namespace net {
 class CertVerifier;
+class DelayedClientSocketFactory;
+class HttpCache;
+class HttpNetworkSession;
+class HttpTransactionFactoryHandle;
 class HostPortPair;
 class IsolationInfo;
 class NetworkAnonymizationKey;
@@ -289,6 +296,11 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
       const net::CookieSettingOverrides& devtools_cookie_setting_overrides,
       bool prefer_bound_cookie_context,
       mojo::PendingRemote<mojom::CookieAccessObserver> observer) override;
+  void GetRestrictedDeviceBoundSessionManager(
+      mojo::PendingReceiver<mojom::RestrictedDeviceBoundSessionManager>
+          receiver,
+      const url::Origin& origin,
+      const net::IsolationInfo& isolation_info) override;
   void GetTrustTokenQueryAnswerer(
       mojo::PendingReceiver<mojom::TrustTokenQueryAnswerer> receiver,
       const url::Origin& top_frame_origin) override;
@@ -356,6 +368,19 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
       const base::UnguessableToken& throttling_profile_id,
       const base::UnguessableToken& throttling_client_id,
       std::vector<mojom::MatchedNetworkConditionsPtr> conditions) override;
+
+  void SetSocketLayerNetworkConditions(
+      const base::UnguessableToken& throttling_profile_id,
+      base::TimeDelta latency,
+      double download_throughput_bytes_per_second,
+      double upload_throughput_bytes_per_second) override;
+  void ClearSocketLayerNetworkConditions(
+      const base::UnguessableToken& throttling_profile_id) override;
+
+  scoped_refptr<net::HttpTransactionFactoryHandle>
+  GetIsolatedTransactionFactory(
+      const base::UnguessableToken& throttling_profile_id,
+      const GURL& url);
   void SetAcceptLanguage(const std::string& new_accept_language) override;
   void SetEnableReferrers(bool enable_referrers) override;
 #if BUILDFLAG(IS_CT_SUPPORTED)
@@ -419,6 +444,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
       override;
   void ForceReloadProxyConfig(ForceReloadProxyConfigCallback callback) override;
   void ClearBadProxiesCache(ClearBadProxiesCacheCallback callback) override;
+  void GetProxySettings(GetProxySettingsCallback callback) override;
   void CreateWebSocket(
       const GURL& url,
       const std::vector<std::string>& requested_protocols,
@@ -437,7 +463,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
       mojo::PendingRemote<mojom::TrustedHeaderClient> header_client,
       const std::optional<base::UnguessableToken>& throttling_profile_id,
       const base::UnguessableToken& network_restrictions_id,
-      mojom::IPAddressSpace target_address_space) override;
+      mojom::IPAddressSpace target_address_space,
+      std::optional<int64_t> target_network) override;
   void CreateWebTransport(
       const GURL& url,
       const url::Origin& origin,
@@ -499,8 +526,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
       std::vector<mojom::CorsOriginPatternPtr> allow_patterns,
       std::vector<mojom::CorsOriginPatternPtr> block_patterns,
       SetCorsOriginAccessListsForOriginCallback callback) override;
-  void EnableStaticKeyPinningForTesting(
-      EnableStaticKeyPinningForTestingCallback callback) override;
+  void ReinitializeKeyPinningForTesting(
+      ReinitializeKeyPinningForTestingCallback callback) override;
   void VerifyCertificateForTesting(
       const scoped_refptr<net::X509Certificate>& certificate,
       const std::string& hostname,
@@ -590,6 +617,14 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   void ClearSharedDictionaryCacheForIsolationKey(
       const net::SharedDictionaryIsolationKey& isolation_key,
       ClearSharedDictionaryCacheForIsolationKeyCallback callback) override;
+  void ClearSharedDictionarySessionOnlyData(
+      ClearSharedDictionarySessionOnlyDataCallback callback) override;
+#if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
+  void RegisterHttpCacheClient(
+      const net::NetworkIsolationKey& key,
+      mojo::PendingRemote<network::mojom::SharedHttpCacheClientFactory>
+          shared_http_cache_client) override;
+#endif  // BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
   void GetSharedDictionaryUsageInfo(
       GetSharedDictionaryUsageInfoCallback callback) override;
   void GetSharedDictionaryInfo(
@@ -626,9 +661,14 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   void AddQuicHints(
       const std::vector<url::SchemeHostPort>& origins,
       const net::NetworkAnonymizationKey& network_anonymization_key) override;
+  void AddWildcardQuicHints(
+      std::vector<mojom::WildcardQuicHintPtr> hints) override;
+  void SetTryQuicByDefault(bool enable) override;
 
   void SetVariationsHeaders(
       variations::mojom::VariationsHeadersPtr variations_headers) override;
+
+  void Clone(mojo::PendingReceiver<mojom::NetworkContext> receiver) override;
 
   void GetDeviceBoundSessionManager(
       mojo::PendingReceiver<network::mojom::DeviceBoundSessionManager>
@@ -637,9 +677,21 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   bool HasCookieAccessForDeviceBoundSession(
       const net::device_bound_sessions::CookieAccessCheckParams& params);
 
+  // Number of retired isolated throttling sessions still alive (i.e. still
+  // referenced by in-flight requests' factory handles).
+  size_t GetRetiredIsolatedSessionCountForTesting() const {
+    return retired_isolated_sessions_.size();
+  }
+
   void OnLogicalFilterAdded(const net::HttpCache::InvalidationFilter& filter,
                             base::OnceClosure callback = base::OnceClosure());
   void OnLogicalFilterRemoved(const net::HttpCache::InvalidationFilter& filter);
+
+  // Removes a logical invalidation filter from every isolated throttling
+  // session's cache (active and retired). Removal of a filter a cache never
+  // received (e.g. a session created after installation) is a no-op.
+  void RemoveInvalidationFilterFromIsolatedCaches(
+      const net::HttpCache::InvalidationFilter& filter);
 
   void SetTLS13EarlyDataEnabled(bool enabled);
 
@@ -667,11 +719,18 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
     max_loaders_per_process_ = count;
   }
 
+  uint32_t GetLoaderCountForTesting(
+      const OriginatingProcessId& process_id) const;
+
   size_t GetNumOutstandingResolveHostRequestsForTesting() const;
 
   size_t pending_proxy_lookup_requests_for_testing() const {
     return proxy_lookup_requests_.size();
   }
+
+  // Forces processing of shared cache eligible entries and calls the callback
+  // when done.
+  void ProcessSharedCacheEligibleEntriesForTesting(base::OnceClosure callback);
 
   void OnProxyCheckingHostResolverRequestComplete(
       ProxyCheckingHostResolverRequest* request);
@@ -762,6 +821,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
     return shared_resource_checker_.get();
   }
 
+  net::HttpCache* GetHttpCache();
+
   // Returns the current same-origin-policy exceptions.  For more details see
   // network::mojom::NetworkContextParams::cors_origin_access_list and
   // network::mojom::NetworkContext::SetCorsOriginAccessListsForOrigin.
@@ -780,10 +841,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   cors::NonWildcardRequestHeadersSupport
   cors_non_wildcard_request_headers_support() const {
     return cors_non_wildcard_request_headers_support_;
-  }
-
-  FirstPartySetsAccessDelegate& first_party_sets_access_delegate() {
-    return first_party_sets_access_delegate_;
   }
 
 #if BUILDFLAG(ENABLE_REPORTING)
@@ -839,6 +896,44 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
     kTlsCertificate
   };
 
+  // An isolated socket-layer throttling session. Each session has its own
+  // socket factory, HttpNetworkSession (with independent socket pools), and
+  // an in-memory HttpCache wrapping an HttpNetworkLayer. The in-memory cache
+  // ensures normal HTTP caching semantics within the session, but starts
+  // cold — it does not share cached entries with the primary session or
+  // other isolated sessions.
+  //
+  // Ref-counted so that in-flight requests keep the session alive even
+  // after it's removed from `isolated_sessions_` (e.g., when throttling is
+  // disabled while requests are pending). The HttpTransactionFactoryHandle
+  // holds a ref, and each URLRequest's override holds a ref to the handle.
+  struct IsolatedSession : public base::RefCounted<IsolatedSession> {
+    IsolatedSession();
+
+    // Declaration order matters: `session` holds raw pointers into
+    // `socket_factory` and `http_server_properties`, and `cache` /
+    // `transaction_factory` wrap `session`, so members must be destroyed
+    // bottom-up (reverse declaration order).
+    std::unique_ptr<net::DelayedClientSocketFactory> socket_factory;
+    // Isolated sessions get their own HttpServerProperties so that
+    // simulation-induced failures (e.g. QUIC timeouts under simulated
+    // delay) cannot mark alternative services broken for the primary
+    // session, and vice versa.
+    std::unique_ptr<net::HttpServerProperties> http_server_properties;
+    std::unique_ptr<net::HttpNetworkSession> session;
+    // The transaction factory stack. When the context has HTTP caching
+    // enabled, `cache` wraps the stack and `transaction_factory` is null;
+    // otherwise `transaction_factory` is the top of the stack and `cache`
+    // is null.
+    std::unique_ptr<net::HttpTransactionFactory> transaction_factory;
+    std::unique_ptr<net::HttpCache> cache;
+    scoped_refptr<net::HttpTransactionFactoryHandle> factory_handle;
+
+   private:
+    friend class base::RefCounted<IsolatedSession>;
+    ~IsolatedSession();
+  };
+
   // To be called back from CookieManager on settings change.
   void OnCookieManagerSettingsChanged();
 
@@ -851,11 +946,17 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
       net::handles::NetworkHandle bound_network);
   scoped_refptr<SessionCleanupCookieStore> MakeSessionCleanupCookieStore()
       const;
+
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(ClearHttpCacheMode)
   enum class ClearHttpCacheMode {
     kPhysical = 0,
     kLogical = 1,
     kMaxValue = kLogical,
   };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/network/enums.xml:NetworkServiceClearHttpCacheMode)
 
   void ClearHttpCacheInternal(base::Time start_time,
                               base::Time end_time,
@@ -929,8 +1030,15 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   void FinishConstructingTrustTokenStore(
       std::unique_ptr<SQLiteTrustTokenPersister> persister);
 
+  // Returns whether `scheme_host_port` is allowed to use all HTTP auth
+  // schemes regardless of the AuthSchemes policy.
+  // `scheme_host_port` is the challenging server origin or proxy address.
+  // `target` determines whether to match against destination server patterns
+  // (AUTH_SERVER via `url_matcher_`) or proxy patterns (AUTH_PROXY via
+  // `proxy_url_matcher_`).
   bool IsAllowedToUseAllHttpAuthSchemes(
-      const url::SchemeHostPort& scheme_host_port);
+      const url::SchemeHostPort& scheme_host_port,
+      net::HttpAuth::Target target);
 
   void InitializePrefetchURLLoaderFactory();
 
@@ -950,6 +1058,28 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
       const std::optional<base::UnguessableToken>& reporting_source,
       const std::string& group,
       bool enforced);
+
+  uint32_t GetLoaderCount(const OriginatingProcessId& process_id) const;
+
+  // Returns every live isolated session: active (in `isolated_sessions_`)
+  // and retired (kept alive by in-flight requests). Sessions are returned
+  // as refptrs so that a fan-out operation which reentrantly drops a
+  // session's last external handle reference - e.g. CloseAllConnections()
+  // aborting a request, which tears down its URLLoader - cannot destroy a
+  // session while the iteration is still using it.
+  std::vector<scoped_refptr<IsolatedSession>> GetAllIsolatedSessions();
+
+  // Moves the session for `it` into `retired_isolated_sessions_`. The
+  // session's handle stays functional, so in-flight requests continue under
+  // their captured conditions; the session is freed as soon as its last
+  // handle reference drains (which may be within this very call).
+  void RetireIsolatedSession(
+      std::map<base::UnguessableToken, scoped_refptr<IsolatedSession>>::iterator
+          it);
+
+  // Runs when the last reference to an isolated session's factory handle is
+  // released; drops the (retired) session's tracking entries, freeing it.
+  void OnIsolatedSessionHandleDestroyed(scoped_refptr<IsolatedSession> session);
 
   const raw_ptr<NetworkService> network_service_;
 
@@ -1019,8 +1149,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   using DirectReceiver = mojo::DirectReceiver<mojom::NetworkContext>;
   std::variant<Receiver, DirectReceiver> receiver_;
 
-  FirstPartySetsAccessDelegate first_party_sets_access_delegate_;
-
+  // Holds secondary receivers bound via Clone(). Unlike `receiver_`,
+  // disconnects on these receivers do not trigger
+  // `on_connection_close_callback_`.
+  mojo::ReceiverSet<mojom::NetworkContext> cloned_receivers_;
   std::unique_ptr<CookieManager> cookie_manager_;
 
   std::unique_ptr<SocketFactory> socket_factory_;
@@ -1038,6 +1170,15 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   // |trust_token_store_|.
   mojo::UniqueReceiverSet<mojom::TrustTokenQueryAnswerer>
       trust_token_query_answerers_;
+
+#if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
+  // One manager per Document pipe. Ordering: this must be after
+  // `url_request_context_owner_`, which owns the SessionService, and after
+  // `cookie_manager_`, which owns the CookieSettings. Each manager holds
+  // non-owning pointers to both, so it must be destroyed first.
+  mojo::UniqueReceiverSet<mojom::RestrictedDeviceBoundSessionManager>
+      restricted_device_bound_session_managers_;
+#endif
 
   // Whether the user is blocking Trust Tokens, value provided by the
   // PrivacySandboxSettings service.
@@ -1182,6 +1323,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
       connection_change_observers_;
 
   std::unique_ptr<url_matcher::URLMatcher> url_matcher_;
+  std::unique_ptr<url_matcher::URLMatcher> proxy_url_matcher_;
 
   scoped_refptr<MojoBackendFileOperationsFactory>
       http_cache_file_operations_factory_;
@@ -1245,6 +1387,37 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   // The variations headers to be used for the network context. These can be
   // updated from those passed via the initial params.
   variations::mojom::VariationsHeadersPtr variations_headers_;
+
+  // Isolated throttling sessions (see IsolatedSession), keyed by
+  // throttling_profile_id.
+  std::map<base::UnguessableToken, scoped_refptr<IsolatedSession>>
+      isolated_sessions_;
+
+  // Sessions retired by a conditions update or clear but kept alive because
+  // in-flight requests still hold refs to their factory handle. Tracked so
+  // context-wide maintenance (cache/auth/cert clearing, DisableQuic,
+  // connection closing) and ~NetworkContext still reach them; each entry is
+  // removed by OnIsolatedSessionHandleDestroyed() the moment its last
+  // in-flight handle reference is released.
+  std::vector<scoped_refptr<IsolatedSession>> retired_isolated_sessions_;
+
+  // The still-live factory handles of retired sessions (raw pointers, keyed
+  // by session; entries are erased by OnIsolatedSessionHandleDestroyed()
+  // just before a handle dies). Lets ~NetworkContext Reset() handles that
+  // in-flight requests still hold, since retired sessions no longer
+  // reference their handle themselves.
+  std::map<IsolatedSession*, net::HttpTransactionFactoryHandle*>
+      retired_isolated_session_handles_;
+
+  // QUIC hints applied via AddQuicHints(), replayed into isolated sessions
+  // created afterwards (hints are typically pushed at startup, before
+  // DevTools enables throttling). Cleared alongside the primary
+  // HttpServerProperties in ClearNetworkingHistoryBetween(). It has the same
+  // capacity as the primary HttpServerProperties' own LRU, so hints the
+  // primary has already evicted are not replayed into new isolated sessions.
+  base::HashingLRUCacheSet<
+      std::pair<url::SchemeHostPort, net::NetworkAnonymizationKey>>
+      quic_hints_{net::HttpServerProperties::kMaxServerInfoEntries};
 
   SEQUENCE_CHECKER(sequence_checker_);
 

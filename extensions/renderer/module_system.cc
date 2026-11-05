@@ -15,6 +15,7 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/renderer/console.h"
+#include "extensions/renderer/renderer_extension_registry.h"
 #include "extensions/renderer/safe_builtins.h"
 #include "extensions/renderer/script_context.h"
 #include "extensions/renderer/script_context_set.h"
@@ -144,6 +145,14 @@ bool ContextNeedsMojoBindings(ScriptContext* context) {
     if (context->GetAvailability(api).is_available())
       return true;
   }
+
+  const Extension* extension = context->extension();
+  if (context->IsForServiceWorker() && extension &&
+      RendererExtensionRegistry::Get()->IsMojoJsEnabledForServiceWorker(
+          extension->id())) {
+    return true;
+  }
+
   return false;
 }
 
@@ -195,9 +204,7 @@ ModuleSystem::ModuleSystem(ScriptContext* context, const SourceMap* source_map)
   if (context_->context_type() == mojom::ContextType::kPrivilegedExtension &&
       ContextNeedsMojoBindings(context_) &&
       blink::WebV8Features::IsSupported(context->v8_context())) {
-    // Valid enablement code path, so need to ensure MojoJS is allowed for the
-    // process before attempting to enable it.
-    blink::WebV8Features::AllowMojoJSForProcess();
+    blink::WebV8Features::AllowMojoJSPerContextForProcess();
     blink::WebV8Features::EnableMojoJS(context->v8_context(), true);
   }
 }
@@ -384,11 +391,12 @@ void ModuleSystem::OverrideNativeHandlerForTest(const std::string& name) {
 void ModuleSystem::LazyFieldGetter(
     v8::Local<v8::Name> property,
     const v8::PropertyCallbackInfo<v8::Value>& info) {
-  CHECK(!info.Data().IsEmpty());
-  CHECK(info.Data()->IsObject());
+  CHECK(!info.DataV2().IsEmpty());
+  CHECK(info.DataV2().As<v8::Value>()->IsObject());
   v8::Isolate* isolate = info.GetIsolate();
   v8::HandleScope handle_scope(isolate);
-  v8::Local<v8::Object> parameters = v8::Local<v8::Object>::Cast(info.Data());
+  v8::Local<v8::Object> parameters =
+      info.DataV2().As<v8::Value>().As<v8::Object>();
   // This context should be the same as context()->v8_context().
   v8::Local<v8::Context> context =
       parameters->GetCreationContextChecked(isolate);
@@ -562,7 +570,7 @@ v8::MaybeLocal<v8::Object> ModuleSystem::RequireNativeFromString(
     return v8::MaybeLocal<v8::Object>();
   }
 
-  if (overridden_native_handlers_.count(native_name) > 0u) {
+  if (overridden_native_handlers_.contains(native_name)) {
     v8::Local<v8::Value> value = RequireForJsInner(
         ToV8StringUnsafe(GetIsolate(), native_name.c_str()), true /* create */);
     if (value.IsEmpty() || !value->IsObject())

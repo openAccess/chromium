@@ -4,6 +4,7 @@
 
 #include "ui/ozone/platform/drm/common/drm_util.h"
 
+#include <drm_fourcc.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
@@ -663,6 +664,43 @@ TEST(CreateDisplaySnapshotTest, TiledDisplay) {
               Property(&display::DisplayMode::refresh_rate, Eq(60))))));
 }
 
+// Reading the EDID can fail, leaving |edid_parser| disengaged. A VRR capable
+// connector must not dereference it in that case.
+TEST(GetVariableRefreshRateStateTest, VrrCapableWithoutEdid) {
+  std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
+      std::make_unique<FakeDrmDeviceGenerator>();
+  scoped_refptr<DrmDevice> device = fake_device_generator->CreateDevice(
+      base::FilePath("/test/dri/card0"), base::ScopedFD(),
+      /*is_primary_device=*/true);
+  FakeDrmDevice* fake_drm = static_cast<FakeDrmDevice*>(device.get());
+
+  fake_drm->ResetStateWithAllProperties();
+  uint32_t crtc_id = 0, connector_id = 0;
+  {
+    auto& crtc = fake_drm->AddCrtc();
+    crtc_id = crtc.id;
+
+    auto& encoder = fake_drm->AddEncoder();
+    encoder.possible_crtcs = 1;
+
+    auto& connector = fake_drm->AddConnector();
+    connector_id = connector.id;
+    connector.connection = true;
+    connector.modes =
+        std::vector<ResolutionAndRefreshRate>{{gfx::Size(1920, 1080), 60}};
+    connector.encoders = std::vector<uint32_t>{encoder.id};
+    fake_drm->AddProperty(connector_id, {.id = kVrrCapablePropId, .value = 1});
+  }
+  fake_drm->InitializeState(/*use_atomic=*/true);
+
+  HardwareDisplayControllerInfo info(fake_drm->GetConnector(connector_id),
+                                     fake_drm->GetCrtc(crtc_id), /*index=*/0,
+                                     /*edid_parser=*/std::nullopt);
+
+  EXPECT_EQ(GetVariableRefreshRateState(*fake_drm, &info),
+            display::VariableRefreshRateState::kVrrNotCapable);
+}
+
 TEST(ConsolidateTiledDisplayInfoTest, OnlyNontiled) {
   std::unique_ptr<DrmDeviceGenerator> fake_device_generator =
       std::make_unique<FakeDrmDeviceGenerator>();
@@ -1255,5 +1293,41 @@ TEST(TileCrtcOffset, NotOrigin) {
   TileProperty property = {.tile_size = gfx::Size(1000, 2000),
                            .location = gfx::Point(1, 2)};
   EXPECT_EQ(GetTileCrtcOffset(property), gfx::Point(1000, 4000));
+}
+
+TEST(GetFourCCFormatForOpaqueFramebufferTest, SupportedFormats) {
+  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
+                viz::SinglePlaneFormat::kRGBA_8888)),
+            DRM_FORMAT_XBGR8888);
+  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
+                viz::SinglePlaneFormat::kRGBX_8888)),
+            DRM_FORMAT_XBGR8888);
+  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
+                viz::SinglePlaneFormat::kBGRA_8888)),
+            DRM_FORMAT_XRGB8888);
+  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
+                viz::SinglePlaneFormat::kBGRX_8888)),
+            DRM_FORMAT_XRGB8888);
+  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
+                viz::SinglePlaneFormat::kBGRA_1010102)),
+            DRM_FORMAT_XRGB2101010);
+  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
+                viz::SinglePlaneFormat::kRGBA_1010102)),
+            DRM_FORMAT_XBGR2101010);
+  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
+                viz::SinglePlaneFormat::kBGR_565)),
+            DRM_FORMAT_RGB565);
+  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
+                viz::MultiPlaneFormat::kNV12)),
+            DRM_FORMAT_NV12);
+  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
+                viz::MultiPlaneFormat::kYV12)),
+            DRM_FORMAT_YVU420);
+  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
+                viz::MultiPlaneFormat::kP010)),
+            DRM_FORMAT_P010);
+  EXPECT_EQ(static_cast<uint32_t>(GetFourCCFormatForOpaqueFramebuffer(
+                viz::SinglePlaneFormat::kRGBA_F16)),
+            DRM_FORMAT_XBGR16161616F);
 }
 }  // namespace ui

@@ -45,7 +45,7 @@ class PLATFORM_EXPORT MemoryManagedPaintRecorder {
   explicit MemoryManagedPaintRecorder(gfx::Size size, Client* client);
   ~MemoryManagedPaintRecorder();
 
-  void SetClient(Client* client);
+  const gfx::Size& size() const { return size_; }
 
   // See comments around `RecordPaintCanvas::maybe_draw_lines_as_paths_` for
   // details.
@@ -122,7 +122,7 @@ class PLATFORM_EXPORT MemoryManagedPaintRecorder {
  private:
   // Pointer to the client interested in events from this
   // `MemoryManagedPaintRecorder`. If `nullptr`, notifications are disabled.
-  raw_ptr<Client> client_ = nullptr;
+  const raw_ptr<Client> client_;
 
   const gfx::Size size_;
 
@@ -138,10 +138,9 @@ class PLATFORM_EXPORT MemoryManagedPaintRecorder {
 
   // Points to the current canvas we are recording into, either `main_canvas_`
   // or `side_canvas_`.
-  // Uses UnprotectedInRelease: Performance reasons (based on analysis of
-  // MotionMark).
-  raw_ptr<MemoryManagedPaintCanvas, UnprotectedInRelease> current_canvas_ =
-      &main_canvas_;
+  // UnprotectedInReleaseForPerformance: Based on analysis of Speedometer 3.
+  raw_ptr<MemoryManagedPaintCanvas, UnprotectedInReleaseForPerformance>
+      current_canvas_ = &main_canvas_;
 };
 
 }  // namespace blink

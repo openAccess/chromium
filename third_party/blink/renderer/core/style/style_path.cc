@@ -13,12 +13,14 @@
 #include "third_party/blink/renderer/platform/geometry/path_builder.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
 const StylePath* StylePath::EmptyPath() {
   DEFINE_STATIC_LOCAL(Persistent<StylePath>, empty_path,
                       (MakeGarbageCollected<StylePath>(SVGPathByteStream())));
+  CHECK(IsMainThread());
   return empty_path.Get();
 }
 
@@ -54,10 +56,12 @@ Path StylePath::GetPath(const gfx::RectF& offset_rect,
                         float zoom,
                         float path_scale) const {
   const Path& path = GetUnzoomedPath();
+  // Apply `path_scale` after zoom and the offset from the reference box. The
+  // reference box is assumed to have zoom applied.
   const AffineTransform transform =
-      AffineTransform::Translation(offset_rect.x(), offset_rect.y())
-          .Scale(zoom * path_scale);
-
+      AffineTransform::MakeScale(path_scale)
+          .Translate(offset_rect.x(), offset_rect.y())
+          .Scale(zoom);
   return transform.IsIdentity()
              ? path
              : PathBuilder(path).Transform(transform).Finalize();

@@ -95,7 +95,7 @@ class CookieSettingsBase {
     // kAllowBy3PCD = 4,  // Deprecated
     // kAllowBy3PCDHeuristics = 5,  // Deprecated
     kAllowByStorageAccess = 6,
-    kAllowByTopLevelStorageAccess = 7,
+    // kAllowByTopLevelStorageAccess = 7,  // Deprecated
     // kAllowByCORSException = 8,  // Deprecated
     // kAllowByTopLevel3PCD = 9,  // Deprecated
     // Allow by Enterprise Policy (SettingSource::kPolicy):
@@ -118,30 +118,6 @@ class CookieSettingsBase {
     kMaxValue = kAllowBySandboxValue,
   };
 
-  // Enum for recording what type of storage permissions or overrides are
-  // present on allowed cookies. These values are persisted to logs. Entries
-  // should not be renumbered and numeric values should never be reused.
-  enum class AllowedByStorageAccessType {
-    // The cookie was not accessible through TopLevelStorageAccess or
-    // StorageAccess.
-    kNone = 0,
-
-    // The cookie was accessible via TopLevelStorageAccess.
-    kTopLevelOnly = 1,
-
-    // The cookie was accessible via StorageAccess.
-    kStorageAccessOnly = 2,
-
-    // The cookie was accessible via TopLevelStorageAccess and StorageAccess
-    //
-    // This value should not be hit but is here for type completeness and to
-    // allow metrics to accurately report the unexpected case where both
-    // permissions are present, if it does occur.
-    kTopLevelAndStorageAccess = 3,
-
-    kMaxValue = kTopLevelAndStorageAccess,
-  };
-
   class CookieSettingWithMetadata {
    public:
     CookieSettingWithMetadata() = default;
@@ -151,9 +127,7 @@ class CookieSettingsBase {
         bool allow_partitioned_cookies,
         bool is_explicit_setting,
         ThirdPartyCookieAllowMechanism third_party_cookie_allow_mechanism,
-        bool is_third_party_request,
-        AllowedByStorageAccessType allowed_by_storage_access_type =
-            AllowedByStorageAccessType::kNone);
+        bool is_third_party_request);
 
     // Returns true iff the setting is "block" due to the user's
     // third-party-cookie-blocking setting.
@@ -173,10 +147,6 @@ class CookieSettingsBase {
 
     bool is_third_party_request() const { return is_third_party_request_; }
 
-    AllowedByStorageAccessType allowed_by_storage_access_type() const {
-      return allowed_by_storage_access_type_;
-    }
-
    private:
     // The setting itself.
     ContentSetting cookie_setting_ = ContentSetting::CONTENT_SETTING_ALLOW;
@@ -193,17 +163,10 @@ class CookieSettingsBase {
 
     // Whether the request is considered third-party.
     bool is_third_party_request_;
-
-    // TODO( https://crbug.com/378872426): remove value when
-    // `API.TopLevelStorageAccess.AllowedByStorageAccessType` is no longer being
-    // collected. Evaluation of if the metric should be removed should occur no
-    // earlier than 6 months after https://crbug.com/issues/379892196 is
-    // completed.
-    AllowedByStorageAccessType allowed_by_storage_access_type_;
   };
 
   // Set of types relevant for CookieSettings.
-  using CookieSettingsTypeSet = base::fixed_flat_set<ContentSettingsType, 6>;
+  using CookieSettingsTypeSet = base::fixed_flat_set<ContentSettingsType, 5>;
 
   // ContentSettings listed in this set will be automatically synced to the
   // CookieSettings instance in the network service.
@@ -239,6 +202,33 @@ class CookieSettingsBase {
   //
   // This may be called on any thread.
   bool IsFullCookieAccessAllowed(
+      const GURL& url,
+      const net::SiteForCookies& site_for_cookies,
+      base::optional_ref<const url::Origin> top_frame_origin,
+      net::CookieSettingOverrides overrides,
+      base::optional_ref<const net::CookiePartitionKey> cookie_partition_key,
+      CookieSettingWithMetadata* cookie_settings = nullptr) const;
+
+  // Returns true if the context identified by (`url`, `site_for_cookies`,
+  // `top_frame_origin`, `cookie_partition_key`) is allowed to access any level
+  // of storage (unpartitioned, partitioned, or nonced/ephemeral) for APIs such
+  // as WebStorage, IndexedDB, CacheStorage, Service Worker, and Shared Worker.
+  //
+  // While most contexts have access to at least partitioned or ephemeral
+  // storage by default, storage access is completely denied (returning false)
+  // when cookies/site data are blocked by user content settings (e.g. site-
+  // specific block rules or global block-all-cookies), or when third-party
+  // cookies are blocked and storage partitioning is disabled.
+  //
+  // Unlike `IsFullCookieAccessAllowed()`:
+  // - Nonced contexts (e.g. Fenced Frames, credentialless iframes) are allowed
+  //   to access ephemeral nonced storage unless blocked by site settings.
+  // - Cross-site contexts are allowed to access partitioned storage by default
+  //   when third-party cookies are blocked (provided storage partitioning is
+  //   enabled), unless blocked by a site-specific content setting.
+  //
+  // This may be called on any thread.
+  bool IsAnyStorageAccessAllowed(
       const GURL& url,
       const net::SiteForCookies& site_for_cookies,
       base::optional_ref<const url::Origin> top_frame_origin,
@@ -402,8 +392,8 @@ class CookieSettingsBase {
  private:
   // Returns a content setting for the requested parameters and populates |info|
   // if not null. Implementations might only implement a subset of all
-  // ContentSettingsTypes. Currently only COOKIES, STORAGE_ACCESS,
-  // TOP_LEVEL_STORAGE_ACCESS, and FEDERATED_IDENTITY_SHARING are required.
+  // ContentSettingsTypes. Currently only COOKIES, STORAGE_ACCESS, and
+  // FEDERATED_IDENTITY_SHARING are required.
   virtual ContentSetting GetContentSetting(const GURL& primary_url,
                                            const GURL& secondary_url,
                                            ContentSettingsType content_type,
@@ -419,25 +409,13 @@ class CookieSettingsBase {
       const GURL& first_party_url,
       net::CookieSettingOverrides overrides) const;
 
-  bool IsAllowedByTopLevelStorageAccessGrant(
-      const GURL& url,
-      const GURL& first_party_url,
-      net::CookieSettingOverrides overrides) const;
-
   bool IsAllowedBySandboxValue(const GURL& url,
                                const GURL& first_party_url,
                                net::CookieSettingOverrides overrides) const;
 
-  // TODO(https://crbug.com/378872426): remove `storage_access_permissions` when
-  // `API.TopLevelStorageAccess.AllowedByStorageAccessType` is no longer being
-  // collected. Evaluation of if the metric should be removed should occur no
-  // earlier than 6 months after https://crbug.com/issues/379892196 is
-  // completed.
   struct AllowAllCookies {
     ThirdPartyCookieAllowMechanism mechanism =
         ThirdPartyCookieAllowMechanism::kNone;
-    AllowedByStorageAccessType allowed_by_storage_access_type =
-        AllowedByStorageAccessType::kNone;
   };
   struct AllowPartitionedCookies {};
   struct BlockAllCookies {};

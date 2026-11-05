@@ -10,17 +10,18 @@
 #include <wincrypt.h>
 
 #include <memory>
+#include <string>
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_reg_util_win.h"
 #include "build/build_config.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/first_run/first_run.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -31,13 +32,14 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chrome/browser/ui/profiles/profile_picker.h"
+#include "chrome/browser/ui/profiles/profile_ui_test_utils.h"
 #include "chrome/browser/ui/startup/first_run_service.h"
 #include "chrome/browser/ui/startup/startup_types.h"
 #include "chrome/browser/ui/ui_features.h"
-#include "chrome/browser/ui/webui/signin/signin_utils.h"
-#include "chrome/browser/ui/webui/signin/turn_sync_on_helper.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/credential_provider/common/gcp_strings.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -45,47 +47,20 @@
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_pref_names.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
-#include "components/sync/base/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/test/browser_test.h"
-
-class SigninUIError;
+#include "content/public/test/browser_test_utils.h"
+#include "google_apis/gaia/google_service_auth_error.h"
+#include "ui/views/controls/webview/webview.h"
 
 namespace {
-
-// Automatically accepts enterprise confirmation screens and turns sync on.
-class TestTurnSyncOnHelperDelegate : public TurnSyncOnHelper::Delegate {
-  ~TestTurnSyncOnHelperDelegate() override = default;
-
-  // TurnSyncOnHelper::Delegate:
-  void ShowLoginError(const SigninUIError& error) override {}
-  void ShowMergeSyncDataConfirmation(
-      const std::string& previous_email,
-      const std::string& new_email,
-      signin::SigninChoiceCallback callback) override {
-    std::move(callback).Run(signin::SIGNIN_CHOICE_CONTINUE);
-  }
-  void ShowEnterpriseAccountConfirmation(
-      const AccountInfo& account_info,
-      signin::SigninChoiceCallback callback) override {
-    std::move(callback).Run(signin::SIGNIN_CHOICE_CONTINUE);
-  }
-  void ShowSyncConfirmation(
-      base::OnceCallback<void(LoginUIService::SyncConfirmationUIClosedResult)>
-          callback) override {
-    std::move(callback).Run(LoginUIService::SYNC_WITH_DEFAULT_SETTINGS);
-  }
-  void ShowSyncDisabledConfirmation(
-      bool is_managed_account,
-      base::OnceCallback<void(LoginUIService::SyncConfirmationUIClosedResult)>
-          callback) override {}
-  void ShowSyncSettings() override {}
-  void SwitchToProfile(Profile* new_profile) override {}
-};
 
 struct SigninUtilWinBrowserTestParams {
   SigninUtilWinBrowserTestParams(bool is_first_run,
@@ -229,10 +204,6 @@ class SigninUtilWinBrowserTestBase : public BrowserTestHelper,
   bool SetUpUserDataDirectory() override {
     registry_override_.OverrideRegistry(HKEY_CURRENT_USER);
 
-    signin_util::SetTurnSyncOnHelperDelegateForTesting(
-        std::unique_ptr<TurnSyncOnHelper::Delegate>(
-            new TestTurnSyncOnHelperDelegate()));
-
     SetSigninUtilRegistry();
 
     return InProcessBrowserTest::SetUpUserDataDirectory();
@@ -242,9 +213,6 @@ class SigninUtilWinBrowserTestBase : public BrowserTestHelper,
   registry_util::RegistryOverrideManager registry_override_;
 
   SigninUtilWinBrowserTestParams params_;
-
-  base::test::ScopedFeatureList feature_list_{
-      syncer::kReplaceSyncPromosWithSignInPromos};
 };
 
 // `GetTestParam()` and `GetParam()` are equivalent in this test suite.
@@ -508,16 +476,30 @@ IN_PROC_BROWSER_TEST_F(SigninUtilWinNoStartingWindowBrowserTest,
 
   // Attempt to run the first browser through the startup flow; simulating
   // opening the first browser after GCPW was done processing the refresh token
-  // set in the registry. This call is synchronous.
+  // set in the registry.
   profiles::FindOrCreateNewWindowForProfile(
       profile, chrome::startup::IsProcessStartup::kYes,
       chrome::startup::IsFirstRun::kYes, /*always_create=*/true);
+
+  if (switches::IsPreFirstRunDesktopRefreshEnabled()) {
+    profiles::testing::WaitForPickerUrl(
+        GURL(chrome::kChromeUIIntroURL)
+            .Resolve(chrome::kChromeUIIntroWelcomeSubPage));
+    ui_test_utils::BrowserCreatedObserver browser_created_observer;
+    CHECK(
+        content::ExecJs(ProfilePicker::GetWebViewForTesting()->GetWebContents(),
+                        "document.querySelector('welcome-app')"
+                        ".shadowRoot.querySelector('#acceptButton').click()"));
+    browser_created_observer.Wait();
+    profiles::testing::WaitForPickerClosed();
+  }
+
   BrowserWindowInterface* const first_browser =
       ProfileBrowserCollection::GetForProfile(profile)->GetLastActiveBrowser();
   EXPECT_TRUE(first_browser);
 
   // FRE should be marked as completed because it was bypassed by the already
-  // signed in profile without the user seeing the FRE screens.
+  // signed in profile without the user seeing the rest of the FRE screens.
   EXPECT_FALSE(ProfilePicker::IsFirstRunOpen());
   EXPECT_TRUE(IsFirstRunFinished());
 
@@ -564,9 +546,6 @@ class ExistingWinBrowserSigninUtilTest
   bool SetUpUserDataDirectory() override {
     registry_override_.OverrideRegistry(HKEY_CURRENT_USER);
 
-    signin_util::SetTurnSyncOnHelperDelegateForTesting(
-        std::unique_ptr<TurnSyncOnHelper::Delegate>(
-            new TestTurnSyncOnHelperDelegate()));
     if (!IsPreTest())
       SetSigninUtilRegistry();
 
@@ -575,9 +554,6 @@ class ExistingWinBrowserSigninUtilTest
 
  private:
   registry_util::RegistryOverrideManager registry_override_;
-
-  base::test::ScopedFeatureList feature_list_{
-      syncer::kReplaceSyncPromosWithSignInPromos};
 };
 
 IN_PROC_BROWSER_TEST_P(ExistingWinBrowserSigninUtilTest,
@@ -711,9 +687,6 @@ class ExistingWinBrowserProfilesSigninUtilTest
   bool SetUpUserDataDirectory() override {
     registry_override_.OverrideRegistry(HKEY_CURRENT_USER);
 
-    signin_util::SetTurnSyncOnHelperDelegateForTesting(
-        std::unique_ptr<TurnSyncOnHelper::Delegate>(
-            new TestTurnSyncOnHelperDelegate()));
     if (!IsPreTest()) {
       SetSigninUtilRegistry();
     } else if (IsPrePreTest() && GetParam().cred_provider_used_other_profile) {
@@ -726,8 +699,6 @@ class ExistingWinBrowserProfilesSigninUtilTest
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_{
-      syncer::kReplaceSyncPromosWithSignInPromos};
   registry_util::RegistryOverrideManager registry_override_;
 
   // Held throughout the test to prevent premature shutdown with

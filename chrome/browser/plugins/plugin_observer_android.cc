@@ -7,9 +7,14 @@
 #include <utility>
 
 #include "chrome/browser/plugins/plugin_observer_common.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
+
+DEFINE_USER_DATA(PluginObserverAndroid);
 
 void PluginObserverAndroid::BindPluginHost(
     mojo::PendingAssociatedReceiver<chrome::mojom::PluginHost> receiver,
@@ -17,15 +22,23 @@ void PluginObserverAndroid::BindPluginHost(
   auto* web_contents = content::WebContents::FromRenderFrameHost(rfh);
   if (!web_contents)
     return;
-  auto* plugin_helper = PluginObserverAndroid::FromWebContents(web_contents);
+  auto* tab = tabs::TabInterface::MaybeGetFromContents(web_contents);
+  auto* plugin_helper = tab ? PluginObserverAndroid::From(tab) : nullptr;
   if (!plugin_helper)
     return;
   plugin_helper->plugin_host_receivers_.Bind(rfh, std::move(receiver));
 }
 
-PluginObserverAndroid::PluginObserverAndroid(content::WebContents* web_contents)
-    : content::WebContentsUserData<PluginObserverAndroid>(*web_contents),
-      plugin_host_receivers_(web_contents, this) {}
+// static
+PluginObserverAndroid* PluginObserverAndroid::From(tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
+
+PluginObserverAndroid::PluginObserverAndroid(tabs::TabInterface& tab,
+                                             content::WebContents* web_contents)
+    : web_contents_(*web_contents),
+      plugin_host_receivers_(web_contents, this),
+      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {}
 
 PluginObserverAndroid::~PluginObserverAndroid() = default;
 
@@ -35,16 +48,15 @@ void PluginObserverAndroid::OpenPDF(const GURL& url) {
 
   content::Referrer referrer;
   if (!CanOpenPdfUrl(render_frame_host, url,
-                     GetWebContents().GetLastCommittedURL(), &referrer)) {
+                     web_contents_->GetLastCommittedURL(), &referrer)) {
     return;
   }
 
-  content::OpenURLParams open_url_params(
-      url, referrer, WindowOpenDisposition::CURRENT_TAB,
-      ui::PAGE_TRANSITION_AUTO_BOOKMARK, false);
+  content::OpenURLParams open_url_params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_AUTO_BOOKMARK, referrer);
   // On Android, PDFs downloaded with a user gesture are auto-opened.
   open_url_params.user_gesture = true;
-  GetWebContents().OpenURL(open_url_params, /*navigation_handle_callback=*/{});
+  web_contents_->OpenURL(open_url_params, /*navigation_handle_callback=*/{});
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(PluginObserverAndroid);

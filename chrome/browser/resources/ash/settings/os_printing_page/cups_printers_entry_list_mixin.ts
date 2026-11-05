@@ -38,7 +38,10 @@ export const CupsPrintersEntryListMixin = dedupingMixin(
           CupsPrintersEntryListMixinInterface {
         static get properties() {
           return {
-            entryManager_: Object,
+            entryManager_: {
+              type: Object,
+              value: () => CupsPrintersEntryManager.getInstance(),
+            },
 
             savedPrinters: {
               type: Array,
@@ -57,16 +60,10 @@ export const CupsPrintersEntryListMixin = dedupingMixin(
           };
         }
 
-        enterprisePrinters: PrinterListEntry[];
-        nearbyPrinters: PrinterListEntry[];
-        savedPrinters: PrinterListEntry[];
-        private entryManager_: CupsPrintersEntryManager;
-
-        constructor() {
-          super();
-
-          this.entryManager_ = CupsPrintersEntryManager.getInstance();
-        }
+        declare enterprisePrinters: PrinterListEntry[];
+        declare nearbyPrinters: PrinterListEntry[];
+        declare savedPrinters: PrinterListEntry[];
+        declare private entryManager_: CupsPrintersEntryManager;
 
         override connectedCallback(): void {
           this.entryManager_.addOnSavedPrintersChangedListener(
@@ -129,8 +126,8 @@ export const CupsPrintersEntryListMixin = dedupingMixin(
               printerList);
         }
 
-        private onEnterprisePrintersChanged_(enterprisePrinters:
-                                                 PrinterListEntry[]): void {
+        private onEnterprisePrintersChanged_(
+            enterprisePrinters: PrinterListEntry[]): void {
           this.updateList(
               'enterprisePrinters', printer => printer.printerInfo.printerId,
               enterprisePrinters);

@@ -30,6 +30,7 @@
 
 #include <memory>
 
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_buffer_options.h"
@@ -114,9 +115,8 @@ AudioBuffer* AudioBuffer::Create(unsigned number_of_channels,
   if (!audio_buffer) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotSupportedError,
-        StrCat({"createBuffer(", String::Number(number_of_channels), ", ",
-                String::Number(number_of_frames), ", ",
-                String::Number(sample_rate), ") failed."}));
+        Format("createBuffer({}, {}, {:g}) failed.", number_of_channels,
+               number_of_frames, sample_rate));
   }
 
   return audio_buffer;
@@ -207,9 +207,8 @@ NotShared<DOMFloat32Array> AudioBuffer::getChannelData(
   if (channel_index >= channels_.size()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"channel index (", String::Number(channel_index),
-                ") exceeds number of channels (",
-                String::Number(channels_.size()), ")"}));
+        Format("channel index ({}) exceeds number of channels ({})",
+               channel_index, channels_.size()));
     return NotShared<DOMFloat32Array>(nullptr);
   }
 
@@ -336,9 +335,11 @@ SharedAudioBuffer::SharedAudioBuffer(AudioBuffer* buffer)
   }
 }
 
-void SharedAudioBuffer::Zero() {
+void SharedAudioBuffer::Zero(size_t start_frame) {
+  DCHECK_LE(start_frame, length_);
   for (auto& channel : channels_) {
-    std::ranges::fill(channel.ByteSpan(), 0);
+    std::ranges::fill(channel.ByteSpan().subspan(start_frame * sizeof(float)),
+                      0);
   }
 }
 

@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_PERMISSIONS_CHIP_PERMISSION_CHIP_INTERFACE_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/callback_list.h"
@@ -60,7 +61,8 @@ class PermissionChipInterface {
   virtual void SetMessage(std::u16string message) = 0;
   virtual void SetTooltipText(const std::u16string& tooltip) = 0;
   virtual void SetTheme(PermissionChipTheme theme) = 0;
-  virtual void SetUserDecision(permissions::PermissionAction user_decision) = 0;
+  virtual void SetUserDecision(
+      std::optional<permissions::PermissionAction> user_decision) = 0;
   virtual void SetBlockedIconShowing(bool should_show_blocked_icon) = 0;
   virtual void SetPermissionPromptStyle(PermissionPromptStyle prompt_style) = 0;
 
@@ -98,7 +100,26 @@ class PermissionChipInterface {
   virtual void SetPressedCallback(
       base::RepeatingCallback<void(bool)> callback) = 0;
 
+  // Synchronously returns the anchor for the chip.
+  // * For native Views, this returns the anchor view.
+  // * For WebUI, this returns the tracked WebUI element if already registered,
+  // or a fallback anchor (e.g. location bar container). This is safe to use
+  // when the chip is already visible and rendered (e.g. user clicks opening
+  // PageInfo), but may fall back during initial prompt display if the WebUI
+  // element is still registering. Use WaitForAnchor() to wait for it before
+  // showing permission prompts.
   virtual views::BubbleAnchor GetAnchor() = 0;
+
+  // Runs `callback` once GetAnchor() can return the chip itself, or once it's
+  // time to stop waiting and let GetAnchor() fall back.
+  // * For native Views, this runs `callback` synchronously.
+  // * For WebUI, if the tracked element is not yet registered over Mojo, this
+  // waits for it to become available (or until a fallback timeout, or until
+  // the chip is hidden) before running `callback`. This ensures permission
+  // prompt bubbles, which look up their anchor when they're created, anchor to
+  // the correct location during initial presentation. `callback` is dropped if
+  // the chip is destroyed first. Only one call can be waiting at a time.
+  virtual void WaitForAnchor(base::OnceClosure callback) = 0;
 
   virtual void SetBubbleOwner(BubbleOwnerDelegate* owner) = 0;
 

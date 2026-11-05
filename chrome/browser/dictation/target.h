@@ -7,11 +7,15 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "content/public/browser/global_dom_node_id.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/mojom/dictation/dictation_agent.mojom.h"
 #include "ui/base/ime/ime_text_span.h"
 
 namespace content {
@@ -68,6 +72,15 @@ class Target {
   void CommitComposition(const std::u16string& text,
                          base::OnceClosure on_commit_complete);
 
+  // Returns the DictationAgent in the target's document, connecting to it if
+  // needed. Returns nullptr if the target's document is gone.
+  blink::mojom::DictationAgent* GetDictationAgent();
+
+  // Sets the text that was selected in the target when dictation started.
+  void SetSelectedText(std::u16string selected_text) {
+    selected_text_ = std::move(selected_text);
+  }
+
  protected:
   virtual void SetExternallySourcedComposition(
       const std::u16string& text,
@@ -77,6 +90,7 @@ class Target {
       const std::u16string& text,
       base::OnceClosure on_complete);
   virtual void PasteIntoNode(const std::u16string& text);
+  virtual std::optional<std::u16string_view> GetTextPrecedingSelection();
 
  private:
   // The stream may produce multiple updates while the last composition we sent
@@ -112,6 +126,9 @@ class Target {
   // Called when the currently executing operations completes.
   void OnOperationComplete(base::OnceClosure on_commit_complete);
 
+  // Formats transcription text for insertion into the target element.
+  std::u16string FormatTextForInsertion(const std::u16string& text);
+
   content::RenderWidgetHost* GetRenderWidgetHost() const;
 
   TargetDetails target_details_;
@@ -119,8 +136,16 @@ class Target {
   bool has_lost_focus_during_composition_ = false;
   bool paste_fallback_required_ = false;
 
+  std::optional<std::u16string> preceding_text_;
+  // The text selected in the target when dictation started. See
+  // `SetSelectedText()`.
+  std::u16string selected_text_;
+
   bool is_waiting_on_operation_completion_ = false;
   std::optional<QueuedOperation> queued_operation_;
+
+  // Connection to the DictationAgent in the target's document. Bound lazily.
+  mojo::Remote<blink::mojom::DictationAgent> dictation_agent_;
 
   base::WeakPtrFactory<Target> weak_factory_{this};
 };

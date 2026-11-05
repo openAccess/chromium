@@ -139,6 +139,7 @@
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_web_ui.h"
 #include "content/public/test/web_contents_tester.h"
+#include "device/base/public/cpp/string_util.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/bluetooth/test/mock_bluetooth_adapter.h"
 #include "device/bluetooth/test/mock_bluetooth_device.h"
@@ -157,6 +158,7 @@
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/bluetooth/web_bluetooth.mojom.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/text/bytes_formatting.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
@@ -165,10 +167,13 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
-#include "chrome/browser/smart_card/smart_card_permission_context.h"
-#include "chrome/browser/smart_card/smart_card_permission_context_factory.h"
 #include "components/account_id/account_id.h"
 #include "components/user_manager/scoped_user_manager.h"
+#endif
+
+#if BUILDFLAG(ENABLE_SMART_CARD)
+#include "chrome/browser/smart_card/smart_card_permission_context.h"
+#include "chrome/browser/smart_card/smart_card_permission_context_factory.h"
 #endif
 
 #if BUILDFLAG(ENABLE_PLUGINS)
@@ -385,8 +390,6 @@ class SiteSettingsHandlerBaseTest : public testing::Test {
 
     profile()->SetPermissionControllerDelegate(
         permissions::GetPermissionControllerDelegate(profile()));
-
-    safety_hub_test_util::CreateNotificationPermissionsReviewService(profile());
 
     SetUpIsolatedWebApp();
 
@@ -1018,13 +1021,8 @@ class SiteSettingsHandlerBaseTest : public testing::Test {
   }
 
   void ValidateCallbacksForNotificationPermission(int index) {
-    // When a notification permission is set or reset, there are two consecutive
-    // callbacks. The first one is to notify content setting observers, and
-    // the second one is to update safety check notification permission review.
     ASSERT_EQ("contentSettingSitePermissionChanged",
               web_ui()->call_data()[index]->arg1()->GetString());
-    ASSERT_EQ("notification-permission-review-list-maybe-changed",
-              web_ui()->call_data()[index + 1]->arg1()->GetString());
   }
 
   // Content setting group name for the relevant ContentSettingsType.
@@ -1048,7 +1046,7 @@ class SiteSettingsHandlerBaseTest : public testing::Test {
 
   // The number of listeners that are expected to fire when notification content
   // setting is changed.
-  const size_t kNumberNotificationsContentSettingListeners = 2;
+  const size_t kNumberNotificationsContentSettingListeners = 1;
 
   // The number of listeners that are expected to fire when cookies content
   // setting is changed.
@@ -1333,10 +1331,10 @@ TEST_P(SiteSettingsHandlerSchemeTest, HandleClearUnpartitionedUsage) {
 }
 
 class SiteSettingsHandlerTest : public SiteSettingsHandlerBaseTest {
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
  private:
   base::test::ScopedFeatureList feature_list_{blink::features::kSmartCard};
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_SMART_CARD)
 };
 
 TEST_F(SiteSettingsHandlerTest, GetAndSetDefault) {
@@ -2229,10 +2227,7 @@ TEST_F(SiteSettingsHandlerTest, ResetCategoryPermissionForEmbargoedOrigins) {
     set_args.Append(false);  // Incognito.
 
     handler()->HandleSetCategoryPermissionForPattern(set_args);
-    ASSERT_EQ(2U, web_ui()->call_data().size());
-    // When HandleSetCategoryPermissionForPattern is called for a notification
-    // permission, there are two callbacks that make call_data size increase
-    // by 2 instead of 1.
+    ASSERT_EQ(1U, web_ui()->call_data().size());
     ValidateCallbacksForNotificationPermission(0);
   }
 
@@ -2371,10 +2366,7 @@ TEST_F(SiteSettingsHandlerTest, ResetCategoryPermissionForInvalidOrigins) {
   set_args.Append(false);  // Incognito.
 
   handler()->HandleSetCategoryPermissionForPattern(set_args);
-  ASSERT_EQ(2U, web_ui()->call_data().size());
-  // When HandleSetCategoryPermissionForPattern is called for a notification
-  // permission, there are two callbacks that make call_data size increase
-  // by 2 instead of 1.
+  ASSERT_EQ(1U, web_ui()->call_data().size());
   ValidateCallbacksForNotificationPermission(0);
 
   // Reset blocked origin.
@@ -2400,10 +2392,7 @@ TEST_F(SiteSettingsHandlerTest, SetCategory_GetException_ResetCategory) {
         content_settings::ContentSettingToString(CONTENT_SETTING_BLOCK));
     set_args.Append(false);  // Incognito.
     handler()->HandleSetCategoryPermissionForPattern(set_args);
-    EXPECT_EQ(2U, web_ui()->call_data().size());
-    // When HandleSetCategoryPermissionForPattern is called for a notification
-    // permission, there are two callbacks that make call_data size increase
-    // by 2 instead of 1.
+    EXPECT_EQ(1U, web_ui()->call_data().size());
     ValidateCallbacksForNotificationPermission(0);
   }
 
@@ -2412,7 +2401,7 @@ TEST_F(SiteSettingsHandlerTest, SetCategory_GetException_ResetCategory) {
   get_exception_list_args.Append(kNotifications);
   handler()->HandleGetExceptionList(get_exception_list_args);
   ValidateOrigin(google, "", google, CONTENT_SETTING_BLOCK,
-                 site_settings::SiteSettingSource::kPreference, 3U);
+                 site_settings::SiteSettingSource::kPreference, 2U);
 
   {
     // Reset things back to how they were.
@@ -2422,16 +2411,13 @@ TEST_F(SiteSettingsHandlerTest, SetCategory_GetException_ResetCategory) {
     reset_args.Append(kNotifications);
     reset_args.Append(false);  // Incognito.
     handler()->HandleResetCategoryPermissionForPattern(reset_args);
-    EXPECT_EQ(5U, web_ui()->call_data().size());
-    // When HandleResetCategoryPermissionForPattern is called for a notification
-    // permission, there are two callbacks that make call_data size increase
-    // by 2 instead of 1.
-    ValidateCallbacksForNotificationPermission(3);
+    EXPECT_EQ(3U, web_ui()->call_data().size());
+    ValidateCallbacksForNotificationPermission(2);
   }
 
   // Verify the reset was successful.
   handler()->HandleGetExceptionList(get_exception_list_args);
-  ValidateNoOrigin(6U);
+  ValidateNoOrigin(4U);
 }
 
 TEST_F(SiteSettingsHandlerTest, NotificationPermissionRevokeUkm) {
@@ -2523,15 +2509,12 @@ TEST_F(SiteSettingsHandlerTest, MAYBE_DefaultSettingSource) {
   set_notification_pattern_args.Append(false);
   handler()->HandleSetCategoryPermissionForPattern(
       set_notification_pattern_args);
-  ASSERT_EQ(5U, web_ui()->call_data().size());
-  // When HandleSetCategoryPermissionForPattern is called for a notification
-  // permission, there are two callbacks that make call_data size increase
-  // by 2 instead of 1.
+  ASSERT_EQ(4U, web_ui()->call_data().size());
   ValidateCallbacksForNotificationPermission(3);
   // A user-set pattern should not show up as default.
   handler()->HandleGetOriginPermissions(get_origin_permissions_args);
   ValidateOrigin(google, google, expected_display_name, CONTENT_SETTING_ALLOW,
-                 site_settings::SiteSettingSource::kPreference, 6U);
+                 site_settings::SiteSettingSource::kPreference, 5U);
 
   base::ListValue set_notification_origin_args;
   set_notification_origin_args.Append(google);
@@ -2542,15 +2525,12 @@ TEST_F(SiteSettingsHandlerTest, MAYBE_DefaultSettingSource) {
   set_notification_origin_args.Append(false);
   handler()->HandleSetCategoryPermissionForPattern(
       set_notification_origin_args);
-  ASSERT_EQ(8U, web_ui()->call_data().size());
-  // When HandleSetCategoryPermissionForPattern is called for a notification
-  // permission, there are two callbacks that make call_data size increase
-  // by 2 instead of 1.
-  ValidateCallbacksForNotificationPermission(6);
+  ASSERT_EQ(6U, web_ui()->call_data().size());
+  ValidateCallbacksForNotificationPermission(5);
   // A user-set per-origin permission should not show up as default.
   handler()->HandleGetOriginPermissions(get_origin_permissions_args);
   ValidateOrigin(google, google, expected_display_name, CONTENT_SETTING_BLOCK,
-                 site_settings::SiteSettingSource::kPreference, 9U);
+                 site_settings::SiteSettingSource::kPreference, 7U);
 
   // Enterprise-policy set defaults should not show up as default.
   source_setter.SetPolicyDefault(CONTENT_SETTING_ALLOW);
@@ -2792,7 +2772,7 @@ TEST_F(SiteSettingsHandlerTest, SetCategoryPermissionForPattern_Incognito) {
     set_args.Append(true);  // Incognito.
 
     handler()->HandleSetCategoryPermissionForPattern(set_args);
-    EXPECT_EQ(3U, web_ui()->call_data().size());
+    EXPECT_EQ(2U, web_ui()->call_data().size());
 
     ASSERT_EQ(CONTENT_SETTING_BLOCK, incognito_map->GetContentSetting(
                                          GURL(kOrigin), GURL(std::string()),
@@ -2813,7 +2793,7 @@ TEST_F(SiteSettingsHandlerTest, SetCategoryPermissionForPattern_Incognito) {
     set_args.Append(false);  // Incognito.
 
     handler()->HandleSetCategoryPermissionForPattern(set_args);
-    EXPECT_EQ(6U, web_ui()->call_data().size());
+    EXPECT_EQ(4U, web_ui()->call_data().size());
 
     ASSERT_EQ(CONTENT_SETTING_ALLOW,
               map->GetContentSetting(GURL(kOrigin), GURL(std::string()),
@@ -4725,10 +4705,11 @@ class SiteSettingsHandlerChooserExceptionTest
         // TODO(crbug.com/40667219): No policy-granted exceptions are
         // included because Web Bluetooth does not support granting device
         // permissions by policy.
-        EXPECT_THAT(
-            GetExceptionDisplayNames(exceptions),
-            UnorderedElementsAre("persistent-device", "persistent-device",
-                                 "ephemeral-device", "user-granted-device"));
+        EXPECT_THAT(GetExceptionDisplayNames(exceptions),
+                    UnorderedElementsAre(GetPersistentDeviceDisplayName(),
+                                         GetPersistentDeviceDisplayName(),
+                                         GetEphemeralDeviceDisplayName(),
+                                         GetUserGrantedDeviceDisplayName()));
         break;
       case ContentSettingsType::HID_CHOOSER_DATA:
       case ContentSettingsType::SERIAL_CHOOSER_DATA:
@@ -4756,7 +4737,7 @@ class SiteSettingsHandlerChooserExceptionTest
     const std::string kWebUIOriginStr =
         kWebUIUrl.DeprecatedGetOriginAsURL().spec();
     EXPECT_FALSE(ChooserExceptionContainsSiteException(
-        exceptions, "persistent-device", kWebUIOriginStr));
+        exceptions, GetPersistentDeviceDisplayName(), kWebUIOriginStr));
   }
 
   void TestHandleGetChooserExceptionListForOffTheRecord() {
@@ -4783,11 +4764,12 @@ class SiteSettingsHandlerChooserExceptionTest
                                                    /*expected_total_calls=*/1u);
       switch (content_type()) {
         case ContentSettingsType::BLUETOOTH_CHOOSER_DATA:
-          EXPECT_THAT(
-              GetExceptionDisplayNames(exceptions),
-              UnorderedElementsAre("persistent-device", "persistent-device",
-                                   "ephemeral-device", "user-granted-device",
-                                   "off-the-record-device"));
+          EXPECT_THAT(GetExceptionDisplayNames(exceptions),
+                      UnorderedElementsAre(GetPersistentDeviceDisplayName(),
+                                           GetPersistentDeviceDisplayName(),
+                                           GetEphemeralDeviceDisplayName(),
+                                           GetUserGrantedDeviceDisplayName(),
+                                           GetOffTheRecordDeviceDisplayName()));
           break;
         case ContentSettingsType::HID_CHOOSER_DATA:
         case ContentSettingsType::SERIAL_CHOOSER_DATA:
@@ -4826,10 +4808,11 @@ class SiteSettingsHandlerChooserExceptionTest
                                                    /*expected_total_calls=*/3u);
       switch (content_type()) {
         case ContentSettingsType::BLUETOOTH_CHOOSER_DATA:
-          EXPECT_THAT(
-              GetExceptionDisplayNames(exceptions),
-              UnorderedElementsAre("persistent-device", "persistent-device",
-                                   "ephemeral-device", "user-granted-device"));
+          EXPECT_THAT(GetExceptionDisplayNames(exceptions),
+                      UnorderedElementsAre(GetPersistentDeviceDisplayName(),
+                                           GetPersistentDeviceDisplayName(),
+                                           GetEphemeralDeviceDisplayName(),
+                                           GetUserGrantedDeviceDisplayName()));
           break;
         case ContentSettingsType::HID_CHOOSER_DATA:
         case ContentSettingsType::SERIAL_CHOOSER_DATA:
@@ -4884,10 +4867,11 @@ class SiteSettingsHandlerChooserExceptionTest
                                                    /*expected_total_calls=*/1u);
       switch (content_type()) {
         case ContentSettingsType::BLUETOOTH_CHOOSER_DATA:
-          EXPECT_THAT(
-              GetExceptionDisplayNames(exceptions),
-              UnorderedElementsAre("persistent-device", "persistent-device",
-                                   "ephemeral-device", "user-granted-device"));
+          EXPECT_THAT(GetExceptionDisplayNames(exceptions),
+                      UnorderedElementsAre(GetPersistentDeviceDisplayName(),
+                                           GetPersistentDeviceDisplayName(),
+                                           GetEphemeralDeviceDisplayName(),
+                                           GetUserGrantedDeviceDisplayName()));
           break;
         case ContentSettingsType::HID_CHOOSER_DATA:
         case ContentSettingsType::SERIAL_CHOOSER_DATA:
@@ -4938,10 +4922,10 @@ class SiteSettingsHandlerChooserExceptionTest
                                                    /*expected_total_calls=*/4u);
       switch (content_type()) {
         case ContentSettingsType::BLUETOOTH_CHOOSER_DATA:
-          EXPECT_THAT(
-              GetExceptionDisplayNames(exceptions),
-              UnorderedElementsAre("persistent-device", "ephemeral-device",
-                                   "user-granted-device"));
+          EXPECT_THAT(GetExceptionDisplayNames(exceptions),
+                      UnorderedElementsAre(GetPersistentDeviceDisplayName(),
+                                           GetEphemeralDeviceDisplayName(),
+                                           GetUserGrantedDeviceDisplayName()));
           break;
         case ContentSettingsType::HID_CHOOSER_DATA:
         case ContentSettingsType::SERIAL_CHOOSER_DATA:
@@ -5002,9 +4986,9 @@ class SiteSettingsHandlerChooserExceptionTest
                                                    /*expected_total_calls=*/7u);
       switch (content_type()) {
         case ContentSettingsType::BLUETOOTH_CHOOSER_DATA:
-          EXPECT_THAT(
-              GetExceptionDisplayNames(exceptions),
-              UnorderedElementsAre("ephemeral-device", "user-granted-device"));
+          EXPECT_THAT(GetExceptionDisplayNames(exceptions),
+                      UnorderedElementsAre(GetEphemeralDeviceDisplayName(),
+                                           GetUserGrantedDeviceDisplayName()));
           break;
         case ContentSettingsType::HID_CHOOSER_DATA:
         case ContentSettingsType::SERIAL_CHOOSER_DATA:
@@ -5044,7 +5028,7 @@ class SiteSettingsHandlerChooserExceptionTest
       // Ensure the exception for user-granted-device on kAndroidOrigin is
       // present since we will try to revoke it.
       EXPECT_TRUE(ChooserExceptionContainsSiteException(
-          exceptions, "user-granted-device", kAndroidOriginStr));
+          exceptions, GetUserGrantedDeviceDisplayName(), kAndroidOriginStr));
     }
 
     // User granted USB permissions that are not covered by policy should be
@@ -5072,7 +5056,7 @@ class SiteSettingsHandlerChooserExceptionTest
       switch (content_type()) {
         case ContentSettingsType::BLUETOOTH_CHOOSER_DATA:
           EXPECT_THAT(GetExceptionDisplayNames(exceptions),
-                      UnorderedElementsAre("ephemeral-device"));
+                      UnorderedElementsAre(GetEphemeralDeviceDisplayName()));
           break;
         case ContentSettingsType::HID_CHOOSER_DATA:
         case ContentSettingsType::SERIAL_CHOOSER_DATA:
@@ -5095,7 +5079,7 @@ class SiteSettingsHandlerChooserExceptionTest
           NOTREACHED();
       }
       EXPECT_FALSE(ChooserExceptionContainsSiteException(
-          exceptions, "user-granted-device", kAndroidOriginStr));
+          exceptions, GetUserGrantedDeviceDisplayName(), kAndroidOriginStr));
     }
   }
 
@@ -5121,7 +5105,7 @@ class SiteSettingsHandlerChooserExceptionTest
       switch (content_type()) {
         case ContentSettingsType::BLUETOOTH_CHOOSER_DATA:
           EXPECT_THAT(GetExceptionDisplayNames(exceptions),
-                      UnorderedElementsAre("user-granted-device"));
+                      UnorderedElementsAre(GetUserGrantedDeviceDisplayName()));
           break;
         case ContentSettingsType::HID_CHOOSER_DATA:
         case ContentSettingsType::SERIAL_CHOOSER_DATA:
@@ -5137,7 +5121,7 @@ class SiteSettingsHandlerChooserExceptionTest
           NOTREACHED();
       }
       EXPECT_TRUE(ChooserExceptionContainsSiteException(
-          exceptions, "user-granted-device", kYoutubeOriginStr));
+          exceptions, GetUserGrantedDeviceDisplayName(), kYoutubeOriginStr));
     }
 
     // Clear data for kYoutubeOrigin. The permission should be revoked.
@@ -5332,6 +5316,22 @@ class SiteSettingsHandlerChooserExceptionTest
   // access a specific device by its vendor and product IDs.
   virtual std::string GetUnknownProductDisplayName() { return {}; }
 
+  virtual std::string GetPersistentDeviceDisplayName() {
+    return "persistent-device";
+  }
+
+  virtual std::string GetEphemeralDeviceDisplayName() {
+    return "ephemeral-device";
+  }
+
+  virtual std::string GetUserGrantedDeviceDisplayName() {
+    return "user-granted-device";
+  }
+
+  virtual std::string GetOffTheRecordDeviceDisplayName() {
+    return "off-the-record-device";
+  }
+
   permissions::MockPermissionObserver observer_;
 };
 
@@ -5479,6 +5479,26 @@ class SiteSettingsHandlerBluetoothTest
 
   ContentSettingsType guard_type() override {
     return ContentSettingsType::BLUETOOTH_GUARD;
+  }
+
+  std::string GetPersistentDeviceDisplayName() override {
+    return base::UTF16ToUTF8(
+        device::ContainStringForDisplay(u"persistent-device"));
+  }
+
+  std::string GetEphemeralDeviceDisplayName() override {
+    return base::UTF16ToUTF8(
+        device::ContainStringForDisplay(u"ephemeral-device"));
+  }
+
+  std::string GetUserGrantedDeviceDisplayName() override {
+    return base::UTF16ToUTF8(
+        device::ContainStringForDisplay(u"user-granted-device"));
+  }
+
+  std::string GetOffTheRecordDeviceDisplayName() override {
+    return base::UTF16ToUTF8(
+        device::ContainStringForDisplay(u"off-the-record-device"));
   }
 
   base::test::ScopedFeatureList feature_list_;
@@ -6984,7 +7004,7 @@ TEST_F(SiteSettingsHandlerTest, SiteExceptionScopeTypeMetrics) {
     set_args.Append(false);  // Incognito.
 
     handler()->HandleSetCategoryPermissionForPattern(set_args);
-    ASSERT_EQ(2U, web_ui()->call_data().size());
+    ASSERT_EQ(1U, web_ui()->call_data().size());
 
     tester.ExpectBucketCount(kScopeTypeHistogram,
                              ContentSettingsPattern::Scope::kOriginScoped,
@@ -7006,7 +7026,7 @@ TEST_F(SiteSettingsHandlerTest, SiteExceptionScopeTypeMetrics) {
     set_args.Append(false);  // Incognito.
 
     handler()->HandleSetCategoryPermissionForPattern(set_args);
-    ASSERT_EQ(3U, web_ui()->call_data().size());
+    ASSERT_EQ(2U, web_ui()->call_data().size());
 
     tester.ExpectBucketCount(kScopeTypeHistogram,
                              ContentSettingsPattern::Scope::kWithDomainWildcard,

@@ -20,6 +20,7 @@ import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -34,7 +35,8 @@ import org.chromium.build.annotations.RequiresNonNull;
 @JNINamespace("device")
 @NullMarked
 public class GamepadList {
-    private static final int MAX_GAMEPADS = 4;
+    // Keep in sync with device::Gamepads::kItemsLengthCap.
+    private static final int MAX_GAMEPADS = 8;
 
     private final Object mLock = new Object();
 
@@ -164,7 +166,7 @@ public class GamepadList {
     }
 
     private @Nullable GamepadDevice getDevice(int index) {
-        // Maximum 4 Gamepads can be connected at a time starting at index zero.
+        // Gamepads are assigned indices from zero up to MAX_GAMEPADS - 1.
         assert index >= 0 && index < MAX_GAMEPADS;
         return mGamepadDevices[index];
     }
@@ -346,6 +348,13 @@ public class GamepadList {
     @CalledByNative
     static void setGamepadAPIActive(boolean isActive) {
         getInstance().setIsGamepadActive(isActive);
+    }
+
+    /** Sets whether the Gamepad API is active for testing. */
+    public static void setGamepadApiActiveForTesting(boolean isActive) {
+        boolean oldValue = isGamepadAPIActive();
+        setGamepadAPIActive(isActive);
+        ResettersForTesting.register(() -> setGamepadAPIActive(oldValue));
     }
 
     private void setIsGamepadActive(boolean isGamepadActive) {

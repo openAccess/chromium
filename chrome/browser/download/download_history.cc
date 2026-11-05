@@ -29,18 +29,28 @@
 
 #include "chrome/browser/download/download_history.h"
 
+#include <algorithm>
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <utility>
 
+#include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/observer_list.h"
+#include "base/strings/strcat.h"
 #include "build/build_config.h"
 #include "chrome/browser/download/download_crx_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/download/public/common/download_features.h"
 #include "components/download/public/common/download_item.h"
+#include "components/download/public/common/download_path_reservation_tracker.h"
 #include "components/download/public/common/download_utils.h"
 #include "components/history/content/browser/download_conversions.h"
 #include "components/history/core/browser/download_database.h"
@@ -51,6 +61,11 @@
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "extensions/buildflags/buildflags.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+#include "third_party/re2/src/re2/re2.h"
+#include "url/origin.h"
+#include "url/url_constants.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/api/downloads/downloads_api.h"
@@ -226,32 +241,32 @@ ShouldUpdateHistoryResult ShouldUpdateHistory(
   return ShouldUpdateHistoryResult::NO_UPDATE;
 }
 
-// Counts how many times a target file path exists in |rows| and stores
-// the result into |file_path_count|.
-void CountFilePathOccurences(const std::vector<history::DownloadRow>& rows,
-                             std::map<std::string, int>* file_path_count) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+// Counts how many times a target file path exists in `rows` and stores
+// the result into `file_path_count`.
+void CountFilePathOccurences(
+    const std::vector<history::DownloadRow>& rows,
+    absl::flat_hash_map<base::FilePath::StringViewType, int>* file_path_count) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!base::FeatureList::IsEnabled(
           download::features::kDeleteOverwrittenDownloads)) {
     return;
   }
 
+  file_path_count->reserve(rows.size());
   for (const history::DownloadRow& row : rows) {
     if (row.state != DownloadState::COMPLETE || row.target_path.empty())
       continue;
-    std::string file_path = row.target_path.AsUTF8Unsafe();
-    if (file_path.empty())
-      continue;
-    ++(*file_path_count)[file_path];
+    ++(*file_path_count)[row.target_path.value()];
   }
 }
 
 // Checks whether a particular download row should be skipped from loading given
-// the number of times the same target file path appears in |file_path_count|.
-bool ShouldSkipLoadingDownload(const history::DownloadRow& row,
-                               std::map<std::string, int>* file_path_count) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+// the number of times the same target file path appears in `file_path_count`.
+bool ShouldSkipLoadingDownload(
+    const history::DownloadRow& row,
+    absl::flat_hash_map<base::FilePath::StringViewType, int>* file_path_count) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!base::FeatureList::IsEnabled(
           download::features::kDeleteOverwrittenDownloads)) {
@@ -260,16 +275,113 @@ bool ShouldSkipLoadingDownload(const history::DownloadRow& row,
 
   if (row.state != DownloadState::COMPLETE || row.target_path.empty())
     return false;
-  const std::string file_path = row.target_path.AsUTF8Unsafe();
-  if (file_path.empty())
-    return false;
-  auto iter = file_path_count->find(file_path);
+  auto iter = file_path_count->find(row.target_path.value());
   CHECK(iter != file_path_count->end());
   --iter->second;
   if (iter->second < 1)
     return false;
   return base::Time::Now() - row.end_time >=
          download::GetOverwrittenDownloadDeleteTime();
+}
+
+// Minimum number of loaded downloads in a time window required to emit
+// Download.History.HeavyProfile.* histograms for that window.
+size_t g_heavy_profile_download_count_threshold = 1000;
+
+// Returns the first valid non-opaque origin among `row.tab_url`,
+// `row.referrer_url`, `row.site_url`, and `row.url_chain`.
+std::optional<url::Origin> GetDownloadOrigin(const history::DownloadRow& row) {
+  for (const GURL& url : {row.tab_url, row.referrer_url, row.site_url}) {
+    url::Origin origin = url::Origin::Create(url);
+    if (!origin.opaque()) {
+      return origin;
+    }
+  }
+  for (const GURL& url : row.url_chain) {
+    url::Origin origin = url::Origin::Create(url);
+    if (!origin.opaque()) {
+      return origin;
+    }
+  }
+  return std::nullopt;
+}
+
+// Records Download.History.HeavyProfile.*{window_suffix} histograms for `rows`.
+void RecordHeavyProfileMetrics(
+    base::span<const history::DownloadRow* const> rows,
+    std::string_view window_suffix) {
+  CHECK_GE(rows.size(), g_heavy_profile_download_count_threshold);
+
+  size_t num_by_extension = 0;
+  size_t num_by_web_app = 0;
+  size_t num_blob_or_data_url = 0;
+  size_t num_incomplete = 0;
+  size_t num_opened = 0;
+  size_t num_uniquified_duplicates = 0;
+
+  absl::flat_hash_map<std::string, size_t> origin_counts;
+  size_t max_origin_count = 0;
+
+  absl::flat_hash_set<std::string> unique_stripped_paths;
+
+  absl::flat_hash_map<int64_t, size_t> downloads_per_day;
+  size_t max_downloads_in_a_day = 0;
+
+  for (const history::DownloadRow* row : rows) {
+    if (!row->by_ext_id.empty()) {
+      ++num_by_extension;
+    }
+    if (!row->by_web_app_id.empty()) {
+      ++num_by_web_app;
+    }
+    if (!row->url_chain.empty() &&
+        (row->url_chain.back().SchemeIsBlob() ||
+         row->url_chain.back().SchemeIs(url::kDataScheme))) {
+      ++num_blob_or_data_url;
+    }
+    if (row->state != DownloadState::COMPLETE) {
+      ++num_incomplete;
+    }
+    if (row->opened) {
+      ++num_opened;
+    }
+    if (!row->target_path.empty() &&
+        !unique_stripped_paths
+             .insert(
+                 DownloadHistory::GetPathWithoutUniquifier(row->target_path))
+             .second) {
+      ++num_uniquified_duplicates;
+    }
+    if (std::optional<url::Origin> origin = GetDownloadOrigin(*row)) {
+      max_origin_count =
+          std::max(max_origin_count, ++origin_counts[origin->Serialize()]);
+    }
+    const int64_t day_index =
+        row->start_time.ToDeltaSinceWindowsEpoch().InDaysFloored();
+    max_downloads_in_a_day =
+        std::max(max_downloads_in_a_day, ++downloads_per_day[day_index]);
+  }
+
+  auto record_percentage = [&](std::string_view characteristic, size_t count) {
+    base::UmaHistogramPercentage(
+        base::StrCat({"Download.History.HeavyProfile.Percent", characteristic,
+                      window_suffix}),
+        base::checked_cast<int>(count * 100 / rows.size()));
+  };
+
+  record_percentage("BlobOrDataUrl", num_blob_or_data_url);
+  record_percentage("ByExtension", num_by_extension);
+  record_percentage("ByWebApp", num_by_web_app);
+  record_percentage("FromTopOrigin", max_origin_count);
+  record_percentage("Incomplete", num_incomplete);
+  record_percentage("InPeakDay", max_downloads_in_a_day);
+  record_percentage("Opened", num_opened);
+  record_percentage("UniquifiedDuplicates", num_uniquified_duplicates);
+
+  base::UmaHistogramCounts100000(
+      base::StrCat(
+          {"Download.History.HeavyProfile.MaxDownloadsPerDay", window_suffix}),
+      base::saturated_cast<int>(max_downloads_in_a_day));
 }
 
 }  // anonymous namespace
@@ -310,13 +422,33 @@ bool DownloadHistory::IsPersisted(const download::DownloadItem* item) {
   return data && (data->state() == DownloadHistoryData::PERSISTED);
 }
 
+// static
+std::string DownloadHistory::GetPathWithoutUniquifier(
+    const base::FilePath& path) {
+  static_assert(download::DownloadPathReservationTracker::kMaxUniqueFiles ==
+                100);
+  static const base::NoDestructor<re2::RE2> kUniquifierRegex(
+      R"((?: \((?:[1-9]\d?|100)\)| - \d{4}-\d{2}-\d{2}T\d{6}\.\d{3}))"
+      R"((\.[^/\\]*)?$)");
+  std::string result = path.AsUTF8Unsafe();
+  re2::RE2::Replace(&result, *kUniquifierRegex, R"(\1)");
+  return result;
+}
+
+// static
+base::AutoReset<size_t> DownloadHistory::SetHeavyProfileThresholdForTesting(
+    size_t threshold) {
+  return base::AutoReset<size_t>(&g_heavy_profile_download_count_threshold,
+                                 threshold);
+}
+
 DownloadHistory::DownloadHistory(content::DownloadManager* manager,
                                  std::unique_ptr<HistoryAdapter> history)
     : notifier_(manager, this),
       history_(std::move(history)),
       loading_id_(download::DownloadItem::kInvalidId),
       initial_history_query_complete_(false) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   download::SimpleDownloadManager::DownloadVector items;
   notifier_.GetManager()->GetAllDownloads(&items);
   for (download::DownloadItem* item : items) {
@@ -327,14 +459,14 @@ DownloadHistory::DownloadHistory(content::DownloadManager* manager,
 }
 
 DownloadHistory::~DownloadHistory() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   for (Observer& observer : observers_)
     observer.OnDownloadHistoryDestroyed();
   observers_.Clear();
 }
 
 void DownloadHistory::AddObserver(DownloadHistory::Observer* observer) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   observers_.AddObserver(observer);
 
   if (initial_history_query_complete_)
@@ -342,34 +474,119 @@ void DownloadHistory::AddObserver(DownloadHistory::Observer* observer) {
 }
 
 void DownloadHistory::RemoveObserver(DownloadHistory::Observer* observer) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   observers_.RemoveObserver(observer);
 }
 
 void DownloadHistory::QueryCallback(std::vector<history::DownloadRow> rows) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   // ManagerGoingDown() may have happened before the history loaded.
   if (!notifier_.GetManager())
     return;
 
-  notifier_.GetManager()->OnHistoryQueryComplete(
+#if BUILDFLAG(IS_ANDROID)
+  base::OnceClosure callback =
+      base::FeatureList::IsEnabled(
+          download::features::kRetrieveDisplayNamesForHistoryDownloads)
+          ? base::BindOnce(
+                &DownloadHistory::RetrieveDisplayNamesAndLoadHistoryDownloads,
+                weak_ptr_factory_.GetWeakPtr(), std::move(rows))
+          : base::BindOnce(&DownloadHistory::LoadHistoryDownloads,
+                           weak_ptr_factory_.GetWeakPtr(), std::move(rows),
+                           nullptr);
+#else
+  base::OnceClosure callback =
+      base::BindOnce(&DownloadHistory::LoadHistoryDownloads,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(rows));
+#endif
+  notifier_.GetManager()->OnHistoryQueryComplete(std::move(callback));
+}
+
+#if BUILDFLAG(IS_ANDROID)
+void DownloadHistory::RetrieveDisplayNamesAndLoadHistoryDownloads(
+    std::vector<history::DownloadRow> rows) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  if (!notifier_.GetManager()) {
+    return;
+  }
+  std::vector<base::FilePath> content_uris;
+  for (const history::DownloadRow& row : rows) {
+    if (row.target_path.IsContentUri()) {
+      content_uris.push_back(row.target_path);
+    }
+  }
+  download::GetDisplayNamesForDownloads(
+      std::move(content_uris),
       base::BindOnce(&DownloadHistory::LoadHistoryDownloads,
                      weak_ptr_factory_.GetWeakPtr(), std::move(rows)));
 }
 
 void DownloadHistory::LoadHistoryDownloads(
+    const std::vector<history::DownloadRow>& rows,
+    download::DisplayNames display_names) {
+#else
+void DownloadHistory::LoadHistoryDownloads(
     const std::vector<history::DownloadRow>& rows) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(notifier_.GetManager());
+#endif
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  if (!notifier_.GetManager()) {
+    return;
+  }
 
-  std::map<std::string, int> file_name_count;
+  absl::flat_hash_map<base::FilePath::StringViewType, int> file_name_count;
   CountFilePathOccurences(rows, &file_name_count);
+
+  // Number of downloads loaded, in total and started in the last 30/90 days.
+  const base::Time now = base::Time::Now();
+  int num_loaded = 0;
+  int num_loaded_last_30_days = 0;
+  int num_loaded_last_90_days = 0;
+  const bool may_be_heavy_profile =
+      rows.size() >= g_heavy_profile_download_count_threshold;
+  std::vector<const history::DownloadRow*> loaded_rows;
+  std::vector<const history::DownloadRow*> loaded_rows_last_30_days;
+  std::vector<const history::DownloadRow*> loaded_rows_last_90_days;
+  if (may_be_heavy_profile) {
+    loaded_rows.reserve(rows.size());
+  }
+
+  // Completed downloads started before this time are removed from history
+  // instead of being loaded.
+  std::optional<base::Time> remove_completed_downloads_started_before;
+  if (base::FeatureList::IsEnabled(
+          download::features::kRemoveOldDownloadsFromHistory)) {
+    remove_completed_downloads_started_before =
+        now - download::features::kRemoveOldDownloadsFromHistoryMinAge.Get();
+  }
 
   for (const history::DownloadRow& row : rows) {
     if (ShouldSkipLoadingDownload(row, &file_name_count)) {
       ScheduleRemoveDownload(row.id);
       continue;
     }
+
+    // Checked after ShouldSkipLoadingDownload(), which must see every row to
+    // keep `file_name_count` accurate. Only completed downloads are removed
+    // here: DownloadManager already clears old cancelled and interrupted
+    // downloads, and deletes their partial files.
+    if (remove_completed_downloads_started_before.has_value() &&
+        row.state == DownloadState::COMPLETE &&
+        row.start_time < *remove_completed_downloads_started_before) {
+      ScheduleRemoveDownload(row.id);
+      continue;
+    }
+
+    base::FilePath display_name;
+#if BUILDFLAG(IS_ANDROID)
+    if (base::FeatureList::IsEnabled(
+            download::features::kRetrieveDisplayNamesForHistoryDownloads) &&
+        row.target_path.IsContentUri() && display_names) {
+      auto iter = display_names->find(row.target_path.value());
+      if (iter != display_names->end()) {
+        display_name = iter->second;
+      }
+    }
+#endif
 
     loading_id_ = history::ToContentDownloadId(row.id);
     download::DownloadItem::DownloadState history_download_state =
@@ -406,14 +623,33 @@ void DownloadHistory::LoadHistoryDownloads(
         history_download_state,
         history::ToContentDownloadDangerType(row.danger_type), history_reason,
         row.opened, row.last_access_time, row.transient,
-        history::ToContentReceivedSlices(row.download_slice_info));
+        history::ToContentReceivedSlices(row.download_slice_info),
+        display_name);
     // DownloadManager returns a nullptr if it decides to remove the download
     // permanently.
     if (item == nullptr) {
       ScheduleRemoveDownload(row.id);
       continue;
     }
-    DCHECK_EQ(download::DownloadItem::kInvalidId, loading_id_);
+    CHECK_EQ(download::DownloadItem::kInvalidId, loading_id_,
+             base::NotFatalUntil::M161);
+
+    ++num_loaded;
+    if (may_be_heavy_profile) {
+      loaded_rows.push_back(&row);
+    }
+    if (now - row.start_time <= base::Days(30)) {
+      ++num_loaded_last_30_days;
+      if (may_be_heavy_profile) {
+        loaded_rows_last_30_days.push_back(&row);
+      }
+    }
+    if (now - row.start_time <= base::Days(90)) {
+      ++num_loaded_last_90_days;
+      if (may_be_heavy_profile) {
+        loaded_rows_last_90_days.push_back(&row);
+      }
+    }
 
     // The download might have been in the terminal state without informing
     // history DB. If this is the case, populate the new state back to history
@@ -447,13 +683,39 @@ void DownloadHistory::LoadHistoryDownloads(
       item->UpdateObservers();
     }
 
-    DCHECK_EQ(DownloadHistoryData::PERSISTED,
-              DownloadHistoryData::Get(item)->state());
+    CHECK_EQ(DownloadHistoryData::PERSISTED,
+             DownloadHistoryData::Get(item)->state(),
+             base::NotFatalUntil::M161);
   }
 
   // Indicate that the history db is initialized.
   notifier_.GetManager()->PostInitialization(
       content::DownloadManager::DOWNLOAD_INITIALIZATION_DEPENDENCY_HISTORY_DB);
+
+  base::UmaHistogramCustomTimes("Download.History.LoadLatency",
+                                base::TimeTicks::Now() - load_start_time_,
+                                base::Milliseconds(1), base::Minutes(1), 50);
+  base::UmaHistogramCounts100000("Download.History.DownloadCount",
+                                 base::saturated_cast<int>(rows.size()));
+  base::UmaHistogramCounts100000("Download.History.DownloadCount.PostRemoval",
+                                 num_loaded);
+  base::UmaHistogramCounts100000(
+      "Download.History.DownloadCount.PostRemoval.Last30Days",
+      num_loaded_last_30_days);
+  base::UmaHistogramCounts100000(
+      "Download.History.DownloadCount.PostRemoval.Last90Days",
+      num_loaded_last_90_days);
+  if (loaded_rows.size() >= g_heavy_profile_download_count_threshold) {
+    RecordHeavyProfileMetrics(loaded_rows, "");
+  }
+  if (loaded_rows_last_30_days.size() >=
+      g_heavy_profile_download_count_threshold) {
+    RecordHeavyProfileMetrics(loaded_rows_last_30_days, ".Last30Days");
+  }
+  if (loaded_rows_last_90_days.size() >=
+      g_heavy_profile_download_count_threshold) {
+    RecordHeavyProfileMetrics(loaded_rows_last_90_days, ".Last90Days");
+  }
 
   initial_history_query_complete_ = true;
   for (Observer& observer : observers_) {
@@ -462,7 +724,7 @@ void DownloadHistory::LoadHistoryDownloads(
 }
 
 void DownloadHistory::MaybeAddToHistory(download::DownloadItem* item) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!NeedToUpdateDownloadHistory(item))
     return;
@@ -542,7 +804,7 @@ void DownloadHistory::ItemAdded(uint32_t download_id,
 
 void DownloadHistory::OnDownloadCreated(content::DownloadManager* manager,
                                         download::DownloadItem* item) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // All downloads should pass through OnDownloadCreated exactly once.
   CHECK(!DownloadHistoryData::Get(item));
@@ -558,7 +820,7 @@ void DownloadHistory::OnDownloadCreated(content::DownloadManager* manager,
 
 void DownloadHistory::OnDownloadUpdated(content::DownloadManager* manager,
                                         download::DownloadItem* item) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   DownloadHistoryData* data = DownloadHistoryData::Get(item);
   if (data->state() == DownloadHistoryData::NOT_PERSISTED) {
     MaybeAddToHistory(item);
@@ -597,7 +859,7 @@ void DownloadHistory::OnDownloadOpened(content::DownloadManager* manager,
 
 void DownloadHistory::OnDownloadRemoved(content::DownloadManager* manager,
                                         download::DownloadItem* item) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   DownloadHistoryData* data = DownloadHistoryData::Get(item);
   if (data->state() != DownloadHistoryData::PERSISTED) {
@@ -614,7 +876,7 @@ void DownloadHistory::OnDownloadRemoved(content::DownloadManager* manager,
 }
 
 void DownloadHistory::ScheduleRemoveDownload(uint32_t download_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // For database efficiency, batch removals together if they happen all at
   // once.
@@ -627,7 +889,7 @@ void DownloadHistory::ScheduleRemoveDownload(uint32_t download_id) {
 }
 
 void DownloadHistory::RemoveDownloadsBatch() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   IdSet remove_ids;
   removing_ids_.swap(remove_ids);
   history_->RemoveDownloads(remove_ids);

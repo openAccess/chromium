@@ -10,6 +10,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/run_loop.h"
+#include "base/test/run_until.h"
 #include "content/browser/back_forward_cache/back_forward_cache_metrics.h"
 #include "content/browser/renderer_host/debug_urls.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
@@ -914,6 +915,22 @@ void NavigationSimulatorImpl::CommitErrorPage() {
       << "NavigationSimulatorImpl::CommitErrorPage cannot be called after the "
          "navigation has finished";
 
+  // Navigations that are blocked by a NavigationThrottle do not go through
+  // FailComplete(), which is where the RenderFrameHost committing the error
+  // page is picked up for navigations failed via Fail(). Note that blocking a
+  // navigation in WillStartRequest fails it asynchronously, see
+  // NavigationRequest::OnStartChecksComplete(), so the RenderFrameHost may not
+  // have been selected yet.
+  CHECK(base::test::RunUntil([&]() {
+    return request_ && request_->HasRenderFrameHost();
+  })) << "Timed out waiting for the error page's RenderFrameHost";
+
+  // Update the RenderFrameHost now that we know which one will commit the
+  // error page. It may differ from the one selected for the original
+  // navigation, e.g. when error page isolation is enabled.
+  render_frame_host_ =
+      static_cast<TestRenderFrameHost*>(request_->GetRenderFrameHost());
+
   // Keep a pointer to the current RenderFrameHost that may be pending deletion
   // after commit.
   // RenderDocument: The |previous_rfh| might also be immediately deleted after
@@ -1430,7 +1447,7 @@ bool NavigationSimulatorImpl::SimulateRendererInitiatedStart() {
     return true;
   }
 
-  base::UnguessableToken initiator_state_token =
+  blink::InitiatorStateToken initiator_state_token =
       initiator_frame_host_
           ? static_cast<RenderFrameHostImpl*>(initiator_frame_host_)
                 ->current_initiator_state_token()
@@ -1447,7 +1464,7 @@ bool NavigationSimulatorImpl::SimulateRendererInitiatedStart() {
               ? std::make_optional(initiator_frame_host_->GetFrameToken())
               : std::nullopt,
           initiator_state_token, initiator_document_token, headers_,
-          load_flags_, skip_service_worker_, request_context_type_,
+          net::LOAD_NORMAL, skip_service_worker_, request_context_type_,
           mixed_content_context_type_, is_form_submission_,
           false /* was_initiated_by_link_click */,
           blink::mojom::ForceHistoryPush::kNo, searchable_form_url_,
@@ -1460,7 +1477,8 @@ bool NavigationSimulatorImpl::SimulateRendererInitiatedStart() {
           base::TimeTicks() /* before_unload_dialog_closed */,
           has_user_gesture_, false /* started_by_ad */,
           false /* is_container_initiated */, false /* has_rel_opener */,
-          std::nullopt /* script_tool_invocation_id */);
+          std::nullopt /* script_tool_invocation_id */,
+          /*script_injector_host=*/"");
   auto common_params = blink::CreateCommonNavigationParams();
   common_params->navigation_start =
       navigation_start_.is_null() ? base::TimeTicks::Now() : navigation_start_;
@@ -1471,16 +1489,19 @@ bool NavigationSimulatorImpl::SimulateRendererInitiatedStart() {
   common_params->post_data = resource_request_body_;
   common_params->referrer = referrer_.Clone();
   common_params->transition = transition_;
-  common_params->navigation_type =
+  common_params->navigation_type = navigation_type_.value_or(
       PageTransitionCoreTypeIs(transition_, ui::PAGE_TRANSITION_RELOAD)
           ? blink::mojom::NavigationType::RELOAD
-          : blink::mojom::NavigationType::DIFFERENT_DOCUMENT;
+          : blink::mojom::NavigationType::DIFFERENT_DOCUMENT);
   common_params->has_possibly_filtered_user_gesture = has_user_gesture_;
   common_params->should_check_main_world_csp = should_check_main_world_csp_;
   common_params->should_replace_current_entry = should_replace_current_entry_;
   common_params->href_translate = href_translate_;
   common_params->request_destination =
       network::mojom::RequestDestination::kDocument;
+  if (source_location_) {
+    common_params->source_location = source_location_.Clone();
+  }
 
   mojo::PendingAssociatedRemote<mojom::NavigationClient>
       navigation_client_remote;
@@ -1499,15 +1520,10 @@ bool NavigationSimulatorImpl::SimulateRendererInitiatedStart() {
     return false;
   }
 
-  // `request_` may not have been set by DidStartNavigation() yet, due to
-  // either:
-  // 1) Prerendered page activation can be deferred by CommitDeferringConditions
-  //    in BeginNavigation().
-  // 2) Fenced frame navigation can be deferred on pending URL mapping.
-  //
-  // In these cases, we set the `request_` here.
-  if (request->is_running_potential_prerender_activation_checks() ||
-      request->is_deferred_on_fenced_frame_url_mapping_for_testing()) {
+  // `request_` may not have been set by DidStartNavigation() yet, because
+  // prerendered page activation can be deferred by CommitDeferringConditions
+  // in BeginNavigation(). In this case, we set the `request_` here.
+  if (request->is_running_potential_prerender_activation_checks()) {
     DCHECK(!request_);
     request_ = request;
   }
@@ -1673,9 +1689,9 @@ NavigationSimulatorImpl::BuildDidCommitProvisionalLoadParams(
     params->transition = transition_;
   }
 
-  params->navigation_token = request_
-                                 ? request_->commit_params().navigation_token
-                                 : base::UnguessableToken::Create();
+  if (request_) {
+    params->navigation_token = request_->commit_params().navigation_token;
+  }
 
   params->method = request_ ? request_->common_params().method : "GET";
   params->post_id = -1;

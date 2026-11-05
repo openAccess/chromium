@@ -9,19 +9,19 @@
 
 #include "base/check.h"
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/keyboard_accessory/android/manual_filling_controller.h"
 #include "chrome/browser/touch_to_fill/password_manager/password_generation/android/touch_to_fill_password_generation_bridge.h"
 #include "chrome/browser/touch_to_fill/password_manager/password_generation/android/touch_to_fill_password_generation_controller.h"
 #include "components/autofill/core/common/password_generation_util.h"
 #include "components/password_manager/content/browser/content_password_manager_driver.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/web_contents.h"
 
 using autofill::password_generation::PasswordGenerationType;
 using password_manager::metrics_util::GenerationDialogChoice;
-using ShouldShowAction = ManualFillingController::ShouldShowAction;
 
 TouchToFillPasswordGenerationController::
     ~TouchToFillPasswordGenerationController() {
@@ -36,14 +36,12 @@ TouchToFillPasswordGenerationController::
         content::WebContents* web_contents,
         PasswordGenerationElementData generation_element_data,
         std::unique_ptr<TouchToFillPasswordGenerationBridge> bridge,
-        OnDismissedCallback on_dismissed_callback,
-        base::WeakPtr<ManualFillingController> manual_filling_controller)
+        OnDismissedCallback on_dismissed_callback)
     : frame_driver_(frame_driver),
       web_contents_(web_contents),
       generation_element_data_(std::move(generation_element_data)),
       bridge_(std::move(bridge)),
-      on_dismissed_callback_(std::move(on_dismissed_callback)),
-      manual_filling_controller_(manual_filling_controller) {
+      on_dismissed_callback_(std::move(on_dismissed_callback)) {
   CHECK(bridge_);
   CHECK(on_dismissed_callback_);
   suppress_showing_ime_callback_ = base::BindRepeating([]() {
@@ -59,14 +57,14 @@ bool TouchToFillPasswordGenerationController::ShowTouchToFill(
     PrefService* pref_service) {
   password_generation_type_ = type;
 
-  std::u16string generated_password =
+  password_manager::PasswordString generated_password =
       frame_driver_->GetPasswordGenerationHelper()->GeneratePassword(
           frame_driver_->GetLastCommittedOrigin().GetURL(), type,
           generation_element_data_.form_signature,
           generation_element_data_.field_signature,
           generation_element_data_.max_password_length);
   if (!bridge_->Show(web_contents_, pref_service, this,
-                     std::move(generated_password),
+                     generated_password.value(),
                      std::move(account_display_name))) {
     return false;
   }
@@ -93,7 +91,12 @@ void TouchToFillPasswordGenerationController::OnDismissed(
 }
 
 void TouchToFillPasswordGenerationController::OnGeneratedPasswordAccepted(
-    const std::u16string& password) {
+    const password_manager::PasswordString& password) {
+  // `frame_driver_` is null if it was invalidated since the bottom sheet was
+  // shown, e.g. because the frame was deleted.
+  if (!frame_driver_) {
+    return;
+  }
   frame_driver_->GeneratedPasswordAccepted(
       generation_element_data_.form_data,
       generation_element_data_.generation_element_id, password);
@@ -108,9 +111,11 @@ void TouchToFillPasswordGenerationController::AddSuppressShowingImeCallback() {
   if (suppress_showing_ime_callback_added_) {
     return;
   }
-  frame_driver_->render_frame_host()
-      ->GetRenderWidgetHost()
-      ->AddSuppressShowingImeCallback(suppress_showing_ime_callback_);
+  content::RenderFrameHost* render_frame_host =
+      frame_driver_->render_frame_host();
+  render_frame_host->GetRenderWidgetHost()->AddSuppressShowingImeCallback(
+      suppress_showing_ime_callback_);
+  suppress_showing_ime_frame_id_ = render_frame_host->GetGlobalId();
   suppress_showing_ime_callback_added_ = true;
 }
 
@@ -119,11 +124,14 @@ void TouchToFillPasswordGenerationController::
   if (!suppress_showing_ime_callback_added_) {
     return;
   }
-  if (frame_driver_) {
-    frame_driver_->render_frame_host()
-        ->GetRenderWidgetHost()
-        ->RemoveSuppressShowingImeCallback(suppress_showing_ime_callback_,
-                                           /*trigger_ime=*/false);
+  // Find the frame by its ID rather than via `frame_driver_`, so that the
+  // callback is removed even if the driver was invalidated while the frame is
+  // still alive.
+  if (content::RenderFrameHost* render_frame_host =
+          content::RenderFrameHost::FromID(suppress_showing_ime_frame_id_)) {
+    render_frame_host->GetRenderWidgetHost()->RemoveSuppressShowingImeCallback(
+        suppress_showing_ime_callback_,
+        /*trigger_ime=*/false);
   }
   suppress_showing_ime_callback_added_ = false;
 }

@@ -7,6 +7,7 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/test/with_feature_override.h"
 #include "build/build_config.h"
 #include "cc/base/features.h"
 #include "components/input/render_widget_host_input_event_router.h"
@@ -14,31 +15,50 @@
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
+#include "content/browser/renderer_host/unbounded_surface_host_impl.h"
 #include "content/browser/renderer_host/unbounded_surface_window.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/common/input/synthetic_gesture_target.h"
 #include "content/common/input/synthetic_pointer_driver.h"
+#include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
+#include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/hit_test_region_observer.h"
 #include "content/public/test/no_renderer_crashes_assertion.h"
+#include "content/public/test/popup_test_utils.h"
+#include "content/public/test/scoped_web_ui_controller_factory_registration.h"
+#include "content/public/test/web_ui_browsertest_util.h"
 #include "content/shell/browser/shell.h"
 #include "content/test/content_browser_test_utils_internal.h"
+#include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/gfx/geometry/point_conversions.h"
 #include "url/gurl.h"
 
 #if defined(USE_AURA)
+#include "ui/aura/test/test_window_delegate.h"
 #include "ui/aura/window.h"
+#include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_tracker.h"
+#include "ui/aura/window_tree_host.h"
+#include "ui/compositor/layer_type.h"
+#include "ui/events/event.h"
+#include "ui/events/event_constants.h"
+#include "ui/events/event_dispatcher.h"
+#include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/events/test/event_generator.h"
+#include "ui/wm/public/activation_client.h"
 #endif
 
 #if BUILDFLAG(IS_OZONE)
@@ -51,39 +71,39 @@
 
 namespace content {
 
-namespace {
-
-void SkipTestsForUnsupportedPlatforms() {
-#if BUILDFLAG(IS_IOS)
-  // TODO(crbug.com/508672616): Not yet implemented on iOS.
-  GTEST_SKIP();
-#elif BUILDFLAG(IS_ANDROID)
-  // if (base::android::android_info::sdk_int() <
-  //     base::android::android_info::SDK_VERSION_U) {
-  //   GTEST_SKIP()
-  //       << "Unbounded elements require Android U (API 34+ / Android 14+).";
-  // }
-
-  // TODO(crbug.com/544212552): Flaky/failing on Android.
-  GTEST_SKIP();
-#elif BUILDFLAG(IS_OZONE)
-  if (ui::OzonePlatform::RunningOnWaylandForTest()) {
-    // TODO(crbug.com/523970924): Wayland is flaky.
-    GTEST_SKIP();
-  }
-#endif
-}
-
-}  // namespace
-
 class UnboundedElementBrowserTestBase : public ContentBrowserTest {
  public:
   UnboundedElementBrowserTestBase() = default;
   ~UnboundedElementBrowserTestBase() override = default;
 
  protected:
+  void SetUp() override {
+#if BUILDFLAG(IS_IOS)
+    // TODO(crbug.com/508672616): Not yet implemented on iOS.
+    GTEST_SKIP();
+#elif BUILDFLAG(IS_ANDROID)
+    // if (base::android::android_info::sdk_int() <
+    //     base::android::android_info::SDK_VERSION_U) {
+    //   GTEST_SKIP()
+    //       << "Unbounded elements require Android U (API 34+ / Android 14+).";
+    // }
+
+    // TODO(crbug.com/544212552): Flaky/failing on Android.
+    GTEST_SKIP();
+#else
+#if BUILDFLAG(IS_OZONE)
+    if (ui::OzonePlatform::RunningOnWaylandForTest()) {
+      // TODO(crbug.com/523970924): Wayland is flaky.
+      GTEST_SKIP();
+    }
+#endif
+    ContentBrowserTest::SetUp();
+#endif
+  }
+
   void SetUpCommandLine(base::CommandLine* command_line) override {
     ContentBrowserTest::SetUpCommandLine(command_line);
+    IsolateAllSitesForTesting(command_line);
     command_line->AppendSwitchASCII(
         switches::kTouchEventFeatureDetection,
         switches::kTouchEventFeatureDetectionEnabled);
@@ -91,6 +111,8 @@ class UnboundedElementBrowserTestBase : public ContentBrowserTest {
 
   void SetUpOnMainThread() override {
     ContentBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
+    content::SetupCrossSiteRedirector(embedded_test_server());
     ASSERT_TRUE(embedded_test_server()->Start());
   }
 
@@ -105,6 +127,20 @@ class UnboundedElementBrowserTestBase : public ContentBrowserTest {
       }
     }
     ContentBrowserTest::TearDownOnMainThread();
+  }
+
+  // Returns the browser-side host of the active surface, whichever frame of
+  // the primary page requested it.
+  UnboundedSurfaceHostImpl* GetActiveHost() {
+    UnboundedSurfaceHostImpl* result = nullptr;
+    primary_main_frame_host()->ForEachRenderFrameHost(
+        [&](RenderFrameHost* rfh) {
+          if (auto* host =
+                  UnboundedSurfaceHostImpl::GetForCurrentDocument(rfh)) {
+            result = host;
+          }
+        });
+    return result;
   }
 
   UnboundedSurfaceWindow* GetActiveWindow() {
@@ -156,6 +192,20 @@ class UnboundedElementBrowserTestBase : public ContentBrowserTest {
     return web_contents()->GetPrimaryFrameTree().root()->current_frame_host();
   }
 
+  void HideWebContents() {
+    web_contents()->WasHidden();
+#if defined(USE_AURA)
+    // In production Chrome (BrowserView/TabStripModel/NativeViewHost), hiding a
+    // tab detaches or hides the WebContents native view (aura::Window::Hide()).
+    // In content_shell, the WebContents native view is directly attached to
+    // the shell WindowTreeHost. On Aura (e.g. Windows), also hide the native
+    // view so the OS message pump in EvalJs() does not re-show the view.
+    if (web_contents()->GetNativeView()) {
+      web_contents()->GetNativeView()->Hide();
+    }
+#endif
+  }
+
   void WaitForFrameReady() {
     ASSERT_NE(GetActiveWindow(), nullptr);
     WaitForHitTestData(primary_main_frame_host());
@@ -171,10 +221,9 @@ class UnboundedElementBrowserTest : public UnboundedElementBrowserTestBase,
   UnboundedElementBrowserTest() = default;
   ~UnboundedElementBrowserTest() override = default;
   void SetUp() override {
-    SkipTestsForUnsupportedPlatforms();
     std::vector<base::test::FeatureRef> enabled_features = {
         blink::features::kUnboundedElement,
-        blink::features::kUnboundedElementOnTheOpenWeb};
+        blink::features::kUnsafeUnboundedElementOnTheOpenWeb};
     std::vector<base::test::FeatureRef> disabled_features;
     if (GetParam()) {
       enabled_features.push_back(::features::kTreesInViz);
@@ -187,6 +236,21 @@ class UnboundedElementBrowserTest : public UnboundedElementBrowserTestBase,
 
  private:
   base::test::ScopedFeatureList feature_list_;
+};
+
+class UnboundedElementEscapingOpenWebBrowserTest
+    : public base::test::WithFeatureOverride,
+      public UnboundedElementBrowserTestBase {
+ public:
+  UnboundedElementEscapingOpenWebBrowserTest()
+      : base::test::WithFeatureOverride(::features::kTreesInViz) {}
+  ~UnboundedElementEscapingOpenWebBrowserTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_{{
+      blink::features::kUnboundedElement,
+      blink::features::kUnsafeEscapingUnboundedElementOnTheOpenWeb,
+  }};
 };
 
 IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest, ActivationPreconditions) {
@@ -330,6 +394,59 @@ IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest, InputEventRoutingTouch) {
   EXPECT_EQ(50, EvalJs(primary_main_frame_host(), "window.__touch_x"));
   EXPECT_EQ(50, EvalJs(primary_main_frame_host(), "window.__touch_y"));
 }
+
+#if defined(USE_AURA)
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       TouchOutsideDismissesSurface) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"(
+    document.body.innerHTML = `
+      <div id="target" style="width:50px; height:50px;" unbounded></div>
+    `;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  ASSERT_TRUE(ExecJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  base::WeakPtr<UnboundedSurfaceWindow> weak_window = window->GetWeakPtr();
+
+  // Dispatch a touch event on the page outside the unbounded element.
+  std::unique_ptr<SyntheticPointerDriver> synthetic_pointer_driver =
+      SyntheticPointerDriver::Create(
+          content::mojom::GestureSourceType::kTouchInput,
+          /*from_devtools_debugger=*/false);
+  RenderWidgetHostImpl* render_widget_host =
+      primary_main_frame_host()->GetRenderWidgetHost();
+  auto* root_view = render_widget_host->GetView()->GetRootView();
+  std::unique_ptr<SyntheticGestureTarget> synthetic_gesture_target =
+      root_view ? root_view->CreateSyntheticGestureTarget()
+                : render_widget_host->GetView()->CreateSyntheticGestureTarget();
+
+  synthetic_pointer_driver->Press(200, 200, 0,
+                                  SyntheticPointerActionParams::Button::LEFT);
+  synthetic_pointer_driver->DispatchEvent(synthetic_gesture_target.get(),
+                                          base::TimeTicks::Now());
+  synthetic_pointer_driver->Release(0,
+                                    SyntheticPointerActionParams::Button::LEFT);
+  synthetic_pointer_driver->DispatchEvent(synthetic_gesture_target.get(),
+                                          base::TimeTicks::Now());
+
+  RunUntilInputProcessed(render_widget_host);
+
+  // The touch on the web page outside the unbounded element must dismiss the
+  // surface.
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !weak_window; }));
+  std::string get_style =
+      "getComputedStyle(document.getElementById('target')).visibility";
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return EvalJs(primary_main_frame_host(), get_style) == "hidden";
+  }));
+}
+#endif  // defined(USE_AURA)
 
 // TODO(crbug.com/534380085): Flaky/failing on Android.
 #if BUILDFLAG(IS_ANDROID)
@@ -860,6 +977,67 @@ IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
             0.0);
 }
 
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
+#define MAYBE_ScrollerOutsideViewportMouseWheelScroll \
+  DISABLED_ScrollerOutsideViewportMouseWheelScroll
+#else
+#define MAYBE_ScrollerOutsideViewportMouseWheelScroll \
+  ScrollerOutsideViewportMouseWheelScroll
+#endif
+IN_PROC_BROWSER_TEST_P(UnboundedElementEscapingOpenWebBrowserTest,
+                       MAYBE_ScrollerOutsideViewportMouseWheelScroll) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  const int kOutsideElementLeft = 50;
+  const int kOutsideElementTop = 800;
+  std::string script = base::StringPrintf(
+      R"(
+    document.body.style.margin = '0';
+    document.body.style.height = '3000px';
+    document.body.innerHTML = `
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <div id="scroller" style="width:200px; height:150px; position:absolute;
+           top:%dpx; left:%dpx; overflow-y:scroll;" unbounded>
+        <div style="height:1000px;">Scroller content</div>
+      </div>
+    `;
+    const scroller = document.getElementById('scroller');
+    scroller.showUnboundedElement();
+  )",
+      kOutsideElementTop, kOutsideElementLeft);
+
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+
+  blink::WebMouseWheelEvent event(blink::WebInputEvent::Type::kMouseWheel,
+                                  blink::WebInputEvent::kNoModifiers,
+                                  base::TimeTicks::Now());
+  event.button = blink::WebMouseEvent::Button::kNoButton;
+  gfx::Rect popup_bounds = window->GetBounds();
+  const int kMouseOffsetX = 50;
+  const int kMouseOffsetY = 50;
+  event.SetPositionInWidget(kMouseOffsetX, kMouseOffsetY);
+  event.SetPositionInScreen(popup_bounds.x() + kMouseOffsetX,
+                            popup_bounds.y() + kMouseOffsetY);
+  event.delta_y = -50.0f;
+  event.wheel_ticks_y = -1.0f;
+  event.phase = blink::WebMouseWheelEvent::kPhaseBegan;
+
+  window->RouteMouseWheelEvent(event);
+  RunUntilInputProcessed(primary_main_frame_host()->GetRenderWidgetHost());
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return EvalJs(primary_main_frame_host(),
+                  "document.getElementById('scroller').scrollTop")
+               .ExtractDouble() > 0.0;
+  }));
+  EXPECT_EQ(0, EvalJs(primary_main_frame_host(), "window.scrollY"));
+}
+
 IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
                        InputEventRoutingWithScroll) {
   GURL url(embedded_test_server()->GetURL("/title1.html"));
@@ -1088,6 +1266,279 @@ IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest, IframeInputEventRouting) {
   EXPECT_EQ(130, EvalJs(iframe, "window.__mouse_y"));
 }
 
+// Disabled on Android because multi-window input event routing is not
+// supported.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_SubframeInputEventRouting DISABLED_SubframeInputEventRouting
+#else
+#define MAYBE_SubframeInputEventRouting SubframeInputEventRouting
+#endif
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       MAYBE_SubframeInputEventRouting) {
+  GURL url(embedded_test_server()->GetURL("a.com", "/unbounded_subframe.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(iframe);
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+  WaitForHitTestData(iframe);
+
+  RenderWidgetHostViewBase* child_view =
+      static_cast<RenderFrameHostImpl*>(iframe)
+          ->GetRenderWidgetHost()
+          ->GetView();
+  ASSERT_TRUE(child_view);
+  EXPECT_TRUE(child_view->IsRenderWidgetHostViewChildFrame());
+
+  EXPECT_TRUE(ExecJs(iframe, "window.openUnbounded()"));
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  MainThreadFrameObserver frame_observer(iframe->GetRenderWidgetHost());
+  frame_observer.Wait();
+
+  EXPECT_EQ(window->GetTargetView(), child_view);
+
+  RenderWidgetHostViewBase* root_view = static_cast<RenderWidgetHostViewBase*>(
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+  gfx::Point root_origin = root_view->GetViewBounds().origin();
+
+  double btn_center_x =
+      EvalJs(iframe,
+             "(() => {"
+             "  const r = "
+             "document.getElementById('flyout_btn').getBoundingClientRect();"
+             "  return r.left + r.width / 2;"
+             "})()")
+          .ExtractDouble();
+  double btn_center_y =
+      EvalJs(iframe,
+             "(() => {"
+             "  const r = "
+             "document.getElementById('flyout_btn').getBoundingClientRect();"
+             "  return r.top + r.height / 2;"
+             "})()")
+          .ExtractDouble();
+
+  gfx::PointF btn_center_in_child(btn_center_x, btn_center_y);
+  gfx::PointF btn_center_in_root =
+      child_view->TransformPointToRootCoordSpaceF(btn_center_in_child);
+  gfx::Point screen_point = gfx::ToRoundedPoint(
+      gfx::PointF(root_origin) + btn_center_in_root.OffsetFromOrigin());
+
+  // Route mouse move to the unbounded surface window.
+  blink::WebMouseEvent move_event = blink::SyntheticWebMouseEventBuilder::Build(
+      blink::WebInputEvent::Type::kMouseMove, screen_point.x(),
+      screen_point.y(), 0);
+  move_event.button = blink::WebMouseEvent::Button::kNoButton;
+  move_event.SetPositionInScreen(screen_point.x(), screen_point.y());
+  window->RouteMouseEvent(move_event);
+  RunUntilInputProcessed(iframe->GetRenderWidgetHost());
+
+  EXPECT_EQ(btn_center_x, EvalJs(iframe, "window.__mouse_x").ExtractDouble());
+  EXPECT_EQ(btn_center_y, EvalJs(iframe, "window.__mouse_y").ExtractDouble());
+
+  // Route mouse click to the unbounded surface window.
+  blink::WebMouseEvent down_event = blink::SyntheticWebMouseEventBuilder::Build(
+      blink::WebInputEvent::Type::kMouseDown, screen_point.x(),
+      screen_point.y(), blink::WebInputEvent::kLeftButtonDown);
+  down_event.button = blink::WebMouseEvent::Button::kLeft;
+  down_event.click_count = 1;
+  down_event.SetPositionInScreen(screen_point.x(), screen_point.y());
+  window->RouteMouseEvent(down_event);
+
+  blink::WebMouseEvent up_event = blink::SyntheticWebMouseEventBuilder::Build(
+      blink::WebInputEvent::Type::kMouseUp, screen_point.x(), screen_point.y(),
+      0);
+  up_event.button = blink::WebMouseEvent::Button::kLeft;
+  up_event.click_count = 1;
+  up_event.SetPositionInScreen(screen_point.x(), screen_point.y());
+  window->RouteMouseEvent(up_event);
+  RunUntilInputProcessed(iframe->GetRenderWidgetHost());
+
+  EXPECT_TRUE(EvalJs(iframe, "window.__clicked").ExtractBool());
+}
+
+// Verifies that when an unbounded element is positioned outside the subframe's
+// `DocumentRect()` (because `overflow: hidden` clamps `DocumentRect()` to the
+// 100x100 viewport), hit tests with `HitTestRequest::kIgnoreClipping` (such as
+// mouse moves during active mouse capture) still use `InfiniteIntRect()` and
+// reach the unbounded element.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_SubframeInputEventRoutingIgnoreClipping \
+  DISABLED_SubframeInputEventRoutingIgnoreClipping
+#else
+#define MAYBE_SubframeInputEventRoutingIgnoreClipping \
+  SubframeInputEventRoutingIgnoreClipping
+#endif
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       MAYBE_SubframeInputEventRoutingIgnoreClipping) {
+  GURL url(embedded_test_server()->GetURL(
+      "a.com", GetParam() ? "/unbounded_subframe.html"
+                          : "/unbounded_subframe.html?same_origin"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(iframe);
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+  WaitForHitTestData(iframe);
+
+  // Clamp the iframe's `DocumentRect()` to its 100x100 viewport so the
+  // unbounded element at (120, 120) lies outside `DocumentRect()`.
+  EXPECT_TRUE(ExecJs(
+      iframe,
+      "document.documentElement.style.cssText = 'width:100%; height:100%; "
+      "overflow:hidden;';"
+      "document.body.style.cssText = 'margin:0; width:100%; height:100%; "
+      "overflow:hidden;';"));
+
+  RenderWidgetHostViewBase* child_view =
+      static_cast<RenderFrameHostImpl*>(iframe)
+          ->GetRenderWidgetHost()
+          ->GetView();
+  ASSERT_TRUE(child_view);
+
+  EXPECT_TRUE(ExecJs(iframe, "window.openUnbounded()"));
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  MainThreadFrameObserver frame_observer(iframe->GetRenderWidgetHost());
+  frame_observer.Wait();
+
+  gfx::Rect popup_bounds = window->GetBounds();
+  gfx::Point screen_point = popup_bounds.CenterPoint();
+
+  double btn_center_x =
+      EvalJs(iframe,
+             "(() => {"
+             "  const r = "
+             "document.getElementById('flyout_btn').getBoundingClientRect();"
+             "  return r.left + r.width / 2;"
+             "})()")
+          .ExtractDouble();
+  double btn_center_y =
+      EvalJs(iframe,
+             "(() => {"
+             "  const r = "
+             "document.getElementById('flyout_btn').getBoundingClientRect();"
+             "  return r.top + r.height / 2;"
+             "})()")
+          .ExtractDouble();
+
+  // Press left mouse button down to initiate mouse capture, then send a
+  // dragged mouse move (`kLeftButtonDown`), which triggers hit testing with
+  // `HitTestRequest::kIgnoreClipping`.
+  blink::WebMouseEvent down_event = blink::SyntheticWebMouseEventBuilder::Build(
+      blink::WebInputEvent::Type::kMouseDown, screen_point.x(),
+      screen_point.y(), blink::WebInputEvent::kLeftButtonDown);
+  down_event.button = blink::WebMouseEvent::Button::kLeft;
+  down_event.click_count = 1;
+  down_event.SetPositionInScreen(screen_point.x(), screen_point.y());
+  window->RouteMouseEvent(down_event);
+
+  blink::WebMouseEvent drag_event = blink::SyntheticWebMouseEventBuilder::Build(
+      blink::WebInputEvent::Type::kMouseMove, screen_point.x() + 5,
+      screen_point.y() + 5, blink::WebInputEvent::kLeftButtonDown);
+  drag_event.button = blink::WebMouseEvent::Button::kLeft;
+  drag_event.SetPositionInScreen(screen_point.x() + 5, screen_point.y() + 5);
+  window->RouteMouseEvent(drag_event);
+  RunUntilInputProcessed(iframe->GetRenderWidgetHost());
+
+  EXPECT_EQ(btn_center_x + 5,
+            EvalJs(iframe, "window.__mouse_x").ExtractDouble());
+  EXPECT_EQ(btn_center_y + 5,
+            EvalJs(iframe, "window.__mouse_y").ExtractDouble());
+
+  blink::WebMouseEvent up_event = blink::SyntheticWebMouseEventBuilder::Build(
+      blink::WebInputEvent::Type::kMouseUp, screen_point.x() + 5,
+      screen_point.y() + 5, 0);
+  up_event.button = blink::WebMouseEvent::Button::kLeft;
+  up_event.click_count = 1;
+  up_event.SetPositionInScreen(screen_point.x() + 5, screen_point.y() + 5);
+  window->RouteMouseEvent(up_event);
+  RunUntilInputProcessed(iframe->GetRenderWidgetHost());
+
+  EXPECT_TRUE(EvalJs(iframe, "window.__clicked").ExtractBool());
+}
+
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_SubframeScrollableUnboundedElement \
+  DISABLED_SubframeScrollableUnboundedElement
+#else
+#define MAYBE_SubframeScrollableUnboundedElement \
+  SubframeScrollableUnboundedElement
+#endif
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       MAYBE_SubframeScrollableUnboundedElement) {
+  if (!GetParam()) {
+    // Same-origin subframes share the root view and compositor. Scrolling over
+    // parent-level occluders is a compositor scroll hit-testing limitation
+    // tracked separately (see go/same-origin-iframe-unbounded);
+    // RenderWidgetHostViewChildFrame is only exercised in OOPIF mode.
+    GTEST_SKIP();
+  }
+
+  GURL url(embedded_test_server()->GetURL(
+      "a.com", GetParam() ? "/unbounded_subframe.html"
+                          : "/unbounded_subframe.html?same_origin"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(iframe);
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+  WaitForHitTestData(iframe);
+
+  std::string script = R"(
+    document.body.innerHTML = `
+      <div id="scroller" style="width:150px; height:100px; position:absolute;
+           top:120px; left:120px; overflow-y:scroll;" unbounded>
+        <div style="height:600px;">Scroller content</div>
+      </div>
+    `;
+    document.getElementById('scroller').showUnboundedElement();
+  )";
+  EXPECT_TRUE(ExecJs(iframe, script));
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  MainThreadFrameObserver frame_observer(iframe->GetRenderWidgetHost());
+  frame_observer.Wait();
+
+  blink::WebMouseWheelEvent event(blink::WebInputEvent::Type::kMouseWheel,
+                                  blink::WebInputEvent::kNoModifiers,
+                                  base::TimeTicks::Now());
+  event.button = blink::WebMouseEvent::Button::kNoButton;
+  gfx::Rect popup_bounds = window->GetBounds();
+  const int kMouseOffsetX = 25;
+  const int kMouseOffsetY = 25;
+  event.SetPositionInWidget(kMouseOffsetX, kMouseOffsetY);
+  event.SetPositionInScreen(popup_bounds.x() + kMouseOffsetX,
+                            popup_bounds.y() + kMouseOffsetY);
+  event.delta_y = -50.0f;
+  event.wheel_ticks_y = -1.0f;
+
+  window->RouteMouseWheelEvent(event);
+  RunUntilInputProcessed(iframe->GetRenderWidgetHost());
+
+  double initial_scroll = 0.0;
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    initial_scroll =
+        EvalJs(iframe, "document.getElementById('scroller').scrollTop")
+            .ExtractDouble();
+    return initial_scroll > 0.0;
+  }));
+
+  // Route a second wheel tick to verify multi-tick wheel scrolling.
+  event.SetTimeStamp(base::TimeTicks::Now());
+  window->RouteMouseWheelEvent(event);
+  RunUntilInputProcessed(iframe->GetRenderWidgetHost());
+
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return EvalJs(iframe, "document.getElementById('scroller').scrollTop")
+               .ExtractDouble() > initial_scroll;
+  }));
+}
+
 IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest, DynamicBoundsSync) {
   GURL url(embedded_test_server()->GetURL("/title1.html"));
   EXPECT_TRUE(NavigateToURL(shell(), url));
@@ -1136,6 +1587,111 @@ IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest, DynamicBoundsSync) {
     gfx::Rect bounds = window->GetBounds();
     EXPECT_EQ(150, bounds.width());
     EXPECT_EQ(200, bounds.height());
+  }
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest, NestedOutOfFlowBoundsSync) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"(
+    document.body.innerHTML = `
+      <div id="parent" unbounded
+           style="width:100px; height:100px; position:relative;">
+        <div id="child" style="width:100px; height:100px; position:absolute;
+             top:0; left:100px; z-index:1; display:none;"></div>
+        <div id="hidden_container" style="visibility:hidden; display:none;">
+          <div id="visible_grandchild"
+               style="width:100px; height:100px; position:absolute;
+               top:0; left:200px; visibility:visible;"></div>
+        </div>
+        <div id="hidden_descendant"
+             style="width:100px; height:100px; position:absolute;
+             top:0; left:300px; visibility:hidden; display:none;"></div>
+      </div>
+    `;
+    const parent = document.getElementById('parent');
+    parent.showUnboundedElement();
+  )";
+
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window =
+      primary_main_frame_host()->GetUnboundedSurfaceWindow();
+  ASSERT_TRUE(window);
+
+  // Initial bounds should only be parent (100x100)
+  {
+    gfx::Rect bounds = window->GetBounds();
+    EXPECT_EQ(100, bounds.width());
+    EXPECT_EQ(100, bounds.height());
+  }
+
+  // Show nested out-of-flow child
+  std::string update_script = R"(
+    document.getElementById('child').style.display = 'block';
+  )";
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), update_script));
+
+  std::ignore = EvalJs(primary_main_frame_host(),
+                       "new Promise(r => requestAnimationFrame(() => "
+                       "requestAnimationFrame(r)))");
+
+  {
+    gfx::Rect bounds = window->GetBounds();
+    EXPECT_EQ(200, bounds.width());
+    EXPECT_EQ(100, bounds.height());
+  }
+
+  // Show hidden_container with visible_grandchild. Grandchild should expand
+  // bounds even though its intermediate parent is visibility:hidden.
+  std::string grandchild_script = R"(
+    document.getElementById('hidden_container').style.display = 'block';
+  )";
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), grandchild_script));
+
+  std::ignore = EvalJs(primary_main_frame_host(),
+                       "new Promise(r => requestAnimationFrame(() => "
+                       "requestAnimationFrame(r)))");
+
+  {
+    gfx::Rect bounds = window->GetBounds();
+    EXPECT_EQ(300, bounds.width());
+    EXPECT_EQ(100, bounds.height());
+  }
+
+  // Show hidden_descendant while it still has visibility:hidden. Bounds
+  // should NOT expand.
+  std::string hidden_script = R"(
+    document.getElementById('hidden_descendant').style.display = 'block';
+  )";
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), hidden_script));
+
+  std::ignore = EvalJs(primary_main_frame_host(),
+                       "new Promise(r => requestAnimationFrame(() => "
+                       "requestAnimationFrame(r)))");
+
+  {
+    gfx::Rect bounds = window->GetBounds();
+    EXPECT_EQ(300, bounds.width());
+    EXPECT_EQ(100, bounds.height());
+  }
+
+  // Make hidden_descendant visible. Now bounds should expand.
+  std::string make_visible_script = R"(
+    document.getElementById('hidden_descendant').style.visibility = 'visible';
+  )";
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), make_visible_script));
+
+  std::ignore = EvalJs(primary_main_frame_host(),
+                       "new Promise(r => requestAnimationFrame(() => "
+                       "requestAnimationFrame(r)))");
+
+  {
+    gfx::Rect bounds = window->GetBounds();
+    EXPECT_EQ(400, bounds.width());
+    EXPECT_EQ(100, bounds.height());
   }
 }
 
@@ -1357,6 +1913,501 @@ IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest, CloseOnWindowFocusLost) {
   WaitForDestruction(std::move(tracker));
 }
 
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest, CloseOnTabHidden) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"(
+    document.body.innerHTML = `
+      <div id="target" unbounded></div>
+    `;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  ASSERT_TRUE(ExecJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  EXPECT_TRUE(window->IsValid());
+  base::WeakPtr<UnboundedSurfaceWindow> weak_window = window->GetWeakPtr();
+
+  // Simulate switching tabs: Blur() initiates dismissal and WasHidden() hides
+  // the outgoing WebContents before a post-dismissal frame can be presented.
+  primary_main_frame_host()->GetRenderWidgetHost()->Blur();
+  HideWebContents();
+
+  // The native window must be destroyed synchronously on WasHidden() rather
+  // than waiting for the 10-second fallback timer.
+  EXPECT_FALSE(weak_window);
+  EXPECT_EQ(nullptr, primary_main_frame_host()->GetUnboundedSurfaceWindow());
+
+  std::string get_style =
+      "getComputedStyle(document.getElementById('target')).visibility";
+  EXPECT_EQ("hidden", EvalJs(primary_main_frame_host(), get_style));
+
+  // Requesting an unbounded surface while the tab is hidden must be rejected
+  // without allocating a native window.
+  EXPECT_EQ("AbortError", EvalJs(primary_main_frame_host(), R"(
+    document.getElementById('target').showUnboundedElement().then(
+        () => 'resolved', e => e.name);
+  )"));
+  EXPECT_EQ(nullptr, primary_main_frame_host()->GetUnboundedSurfaceWindow());
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       CloseOnTabHiddenCannotBeCanceledByBeforeToggle) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"(
+    document.body.innerHTML = `
+      <div id="target" unbounded></div>
+    `;
+    const target = document.getElementById('target');
+    target.addEventListener('beforetoggle', e => {
+      if (e.cancelable && e.newState === 'closed') {
+        e.preventDefault();
+      }
+    });
+    target.showUnboundedElement();
+  )";
+  ASSERT_TRUE(ExecJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  base::WeakPtr<UnboundedSurfaceWindow> weak_window = window->GetWeakPtr();
+
+  // Even when a beforetoggle listener cancels interactive dismissal from
+  // Blur(), hiding the tab must unconditionally dismiss the unbounded element
+  // and destroy the native surface window.
+  primary_main_frame_host()->GetRenderWidgetHost()->Blur();
+  HideWebContents();
+
+  EXPECT_FALSE(weak_window);
+  EXPECT_EQ(nullptr, primary_main_frame_host()->GetUnboundedSurfaceWindow());
+
+  std::string get_style =
+      "getComputedStyle(document.getElementById('target')).visibility";
+  EXPECT_EQ("hidden", EvalJs(primary_main_frame_host(), get_style));
+  EXPECT_EQ(false,
+            EvalJs(primary_main_frame_host(),
+                   "document.getElementById('target').matches(':unbounded')"));
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       CloseOnCrossSiteIframeTabHidden) {
+  GURL url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  GURL iframe_url(embedded_test_server()->GetURL("b.com", "/title1.html"));
+  std::string setup_script = base::StringPrintf(R"(
+    const iframe = document.createElement('iframe');
+    iframe.id = 'subframe';
+    iframe.allow = 'unbounded-element';
+    iframe.src = '%s';
+    iframe.style.cssText = 'width:200px; height:200px; border:none;';
+    document.body.appendChild(iframe);
+  )",
+                                                iframe_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), setup_script));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(iframe);
+  ASSERT_TRUE(iframe->IsCrossProcessSubframe());
+  WaitForHitTestData(iframe);
+
+  std::string iframe_script = R"(
+    document.body.innerHTML = `<div id="target" unbounded></div>`;
+    const target = document.getElementById('target');
+    target.addEventListener('beforetoggle', e => {
+      if (e.cancelable && e.newState === 'closed') {
+        e.preventDefault();
+      }
+    });
+    target.showUnboundedElement();
+  )";
+  EXPECT_TRUE(ExecJs(iframe, iframe_script));
+  WaitForFrameReady();
+  MainThreadFrameObserver iframe_frame_observer(iframe->GetRenderWidgetHost());
+  iframe_frame_observer.Wait();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  base::WeakPtr<UnboundedSurfaceWindow> weak_window = window->GetWeakPtr();
+
+  HideWebContents();
+
+  EXPECT_FALSE(weak_window);
+  EXPECT_EQ(nullptr, primary_main_frame_host()->GetUnboundedSurfaceWindow());
+
+  std::string get_style =
+      "getComputedStyle(document.getElementById('target')).visibility";
+  EXPECT_EQ("hidden", EvalJs(iframe, get_style));
+  EXPECT_EQ(false, EvalJs(iframe,
+                          "document.getElementById('target')"
+                          ".matches(':unbounded')"));
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       CloseOnCrossSiteIframeHiddenDirectly) {
+  GURL url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  GURL iframe_b_url(embedded_test_server()->GetURL("b.com", "/title1.html"));
+  GURL iframe_c_url(embedded_test_server()->GetURL("c.com", "/title1.html"));
+  std::string setup_script = base::StringPrintf(R"(
+    const iframeB = document.createElement('iframe');
+    iframeB.id = 'owner_subframe';
+    iframeB.allow = 'unbounded-element';
+    iframeB.src = '%s';
+    iframeB.style.cssText = 'width:200px; height:200px; border:none;';
+    document.body.appendChild(iframeB);
+
+    const iframeC = document.createElement('iframe');
+    iframeC.id = 'other_subframe';
+    iframeC.src = '%s';
+    iframeC.style.cssText = 'width:200px; height:200px; border:none;';
+    document.body.appendChild(iframeC);
+  )",
+                                                iframe_b_url.spec().c_str(),
+                                                iframe_c_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), setup_script));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* iframe_b = ChildFrameAt(primary_main_frame_host(), 0);
+  RenderFrameHost* iframe_c = ChildFrameAt(primary_main_frame_host(), 1);
+  ASSERT_TRUE(iframe_b);
+  ASSERT_TRUE(iframe_c);
+  ASSERT_TRUE(iframe_b->IsCrossProcessSubframe());
+  ASSERT_TRUE(iframe_c->IsCrossProcessSubframe());
+  WaitForHitTestData(iframe_b);
+
+  std::string iframe_script = R"(
+    document.body.innerHTML = `<div id="target" unbounded></div>`;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  EXPECT_TRUE(ExecJs(iframe_b, iframe_script));
+  WaitForFrameReady();
+  MainThreadFrameObserver iframe_frame_observer(
+      iframe_b->GetRenderWidgetHost());
+  iframe_frame_observer.Wait();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  base::WeakPtr<UnboundedSurfaceWindow> weak_window = window->GetWeakPtr();
+
+  // Hiding a non-owning cross-site iframe must not destroy the active surface.
+  static_cast<RenderWidgetHostViewBase*>(
+      iframe_c->GetRenderWidgetHost()->GetView())
+      ->Hide();
+  EXPECT_TRUE(weak_window);
+
+  // Hiding the owning cross-site iframe directly while the root view remains
+  // visible must destroy the surface.
+  static_cast<RenderWidgetHostViewBase*>(
+      iframe_b->GetRenderWidgetHost()->GetView())
+      ->Hide();
+  EXPECT_FALSE(weak_window);
+  EXPECT_EQ(nullptr, primary_main_frame_host()->GetUnboundedSurfaceWindow());
+
+  std::string get_style =
+      "getComputedStyle(document.getElementById('target')).visibility";
+  EXPECT_EQ("hidden", EvalJs(iframe_b, get_style));
+
+  // Requesting an unbounded surface from a hidden cross-site iframe while the
+  // tab remains visible must be rejected without allocating a native window.
+  EXPECT_EQ("AbortError", EvalJs(iframe_b, R"(
+    document.getElementById('target').showUnboundedElement().then(
+        () => 'resolved', e => e.name);
+  )"));
+  EXPECT_EQ(nullptr, primary_main_frame_host()->GetUnboundedSurfaceWindow());
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       CrossSiteIframeDeletionDestroysOwnedUnboundedSurface) {
+  GURL url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  GURL iframe_b_url(embedded_test_server()->GetURL("b.com", "/title1.html"));
+  GURL iframe_c_url(embedded_test_server()->GetURL("c.com", "/title1.html"));
+  std::string setup_script = base::StringPrintf(R"(
+    const iframeB = document.createElement('iframe');
+    iframeB.id = 'owner_subframe';
+    iframeB.allow = 'unbounded-element';
+    iframeB.src = '%s';
+    iframeB.style.cssText = 'width:200px; height:200px; border:none;';
+    document.body.appendChild(iframeB);
+
+    const iframeC = document.createElement('iframe');
+    iframeC.id = 'other_subframe';
+    iframeC.src = '%s';
+    iframeC.style.cssText = 'width:200px; height:200px; border:none;';
+    document.body.appendChild(iframeC);
+  )",
+                                                iframe_b_url.spec().c_str(),
+                                                iframe_c_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), setup_script));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* iframe_b = ChildFrameAt(primary_main_frame_host(), 0);
+  RenderFrameHost* iframe_c = ChildFrameAt(primary_main_frame_host(), 1);
+  ASSERT_TRUE(iframe_b);
+  ASSERT_TRUE(iframe_c);
+  ASSERT_TRUE(iframe_b->IsCrossProcessSubframe());
+  ASSERT_TRUE(iframe_c->IsCrossProcessSubframe());
+  WaitForHitTestData(iframe_b);
+
+  std::string iframe_script = R"(
+    document.body.innerHTML = `<div id="target" unbounded></div>`;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  EXPECT_TRUE(ExecJs(iframe_b, iframe_script));
+  WaitForFrameReady();
+  MainThreadFrameObserver iframe_frame_observer(
+      iframe_b->GetRenderWidgetHost());
+  iframe_frame_observer.Wait();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  base::WeakPtr<UnboundedSurfaceWindow> weak_window = window->GetWeakPtr();
+
+  // Removing a non-owning cross-site iframe must not destroy the active
+  // surface.
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(),
+                     "document.getElementById('other_subframe').remove();"));
+  RunUntilInputProcessed(primary_main_frame_host()->GetRenderWidgetHost());
+  EXPECT_TRUE(weak_window);
+
+  // Destroying the owning cross-site iframe's RenderWidgetHostViewChildFrame
+  // directly while its RenderFrameHostImpl and UnboundedSurfaceHostImpl are
+  // still alive must synchronously destroy the surface before
+  // CleanUpHostObservers() clears frame_connector_.
+  ASSERT_TRUE(UnboundedSurfaceHostImpl::GetForCurrentDocument(iframe_b));
+  static_cast<RenderWidgetHostViewBase*>(
+      iframe_b->GetRenderWidgetHost()->GetView())
+      ->DestroyOrDefer();
+  EXPECT_FALSE(weak_window);
+  EXPECT_EQ(nullptr, primary_main_frame_host()->GetUnboundedSurfaceWindow());
+}
+
+namespace {
+
+// Appends to `parent` an <iframe> allowed to use unbounded elements, navigated
+// to `url`. Returns it once loaded.
+RenderFrameHost* AddUnboundedIframe(RenderFrameHost* parent, const GURL& url) {
+  constexpr char kScript[] = R"(
+    const iframe = document.createElement('iframe');
+    iframe.id = 'subframe';
+    iframe.allow = 'unbounded-element';
+    iframe.src = $1;
+    iframe.style.cssText = 'width:200px; height:200px; position:absolute; ' +
+        'top:50px; left:50px; border:none;';
+    document.body.appendChild(iframe);
+  )";
+  EXPECT_TRUE(ExecJs(parent, JsReplace(kScript, url)));
+  EXPECT_TRUE(WaitForLoadStop(WebContents::FromRenderFrameHost(parent)));
+  return ChildFrameAt(parent, 0);
+}
+
+// Shows an unbounded element in `rfh`.
+void ShowUnboundedElement(RenderFrameHost* rfh) {
+  EXPECT_TRUE(ExecJs(rfh, R"(
+    document.body.innerHTML = `<div id="target" unbounded></div>`;
+    document.getElementById('target').showUnboundedElement();
+  )"));
+}
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       CloseOnPreHandledBrowserShortcut) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  ShowUnboundedElement(primary_main_frame_host());
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  base::WeakPtr<UnboundedSurfaceWindow> weak_window = window->GetWeakPtr();
+  auto tracker = CreateDestructionTracker(*window);
+
+  class PreHandlingDelegate : public WebContentsDelegate {
+   public:
+    KeyboardEventProcessingResult PreHandleKeyboardEvent(
+        WebContents* source,
+        const input::NativeWebKeyboardEvent& event) override {
+      return KeyboardEventProcessingResult::HANDLED;
+    }
+  };
+  WebContentsDelegate* original_delegate = web_contents()->GetDelegate();
+  PreHandlingDelegate shortcut_delegate;
+  web_contents()->SetDelegate(&shortcut_delegate);
+
+  std::string get_style =
+      "getComputedStyle(document.getElementById('target')).visibility";
+  RenderWidgetHostViewBase* main_view =
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView();
+
+  // Pre-handled kKeyUp events (e.g. releasing a modifier key that opened the
+  // picker) must not dismiss the unbounded surface.
+  input::NativeWebKeyboardEvent key_up_event(blink::WebInputEvent::Type::kKeyUp,
+                                             blink::WebInputEvent::kControlKey,
+                                             base::TimeTicks::Now());
+  key_up_event.windows_key_code = ui::VKEY_T;
+  primary_main_frame_host()->GetRenderWidgetHost()->ForwardKeyboardEvent(
+      key_up_event);
+  EXPECT_FALSE(main_view->TakeDismissUnboundedSurfaceCalledForTesting());
+  EXPECT_TRUE(weak_window);
+  EXPECT_EQ("visible", EvalJs(primary_main_frame_host(), get_style));
+
+  input::NativeWebKeyboardEvent key_down_event(
+      blink::WebInputEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kControlKey, base::TimeTicks::Now());
+  key_down_event.windows_key_code = ui::VKEY_T;
+  primary_main_frame_host()->GetRenderWidgetHost()->ForwardKeyboardEvent(
+      key_down_event);
+  EXPECT_TRUE(main_view->TakeDismissUnboundedSurfaceCalledForTesting());
+
+  web_contents()->SetDelegate(original_delegate);
+
+  WaitForDestruction(std::move(tracker));
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !weak_window; }));
+  EXPECT_EQ("hidden", EvalJs(primary_main_frame_host(), get_style));
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       CloseOnPreHandledBrowserShortcutInCrossSiteIframe) {
+  GURL url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+  RenderFrameHost* iframe = AddUnboundedIframe(
+      primary_main_frame_host(),
+      embedded_test_server()->GetURL("b.com", "/title1.html"));
+  ASSERT_TRUE(iframe);
+  ASSERT_TRUE(iframe->IsCrossProcessSubframe());
+  WaitForHitTestData(iframe);
+
+  ShowUnboundedElement(iframe);
+  WaitForFrameReady();
+  MainThreadFrameObserver iframe_frame_observer(iframe->GetRenderWidgetHost());
+  iframe_frame_observer.Wait();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  base::WeakPtr<UnboundedSurfaceWindow> weak_window = window->GetWeakPtr();
+  auto tracker = CreateDestructionTracker(*window);
+
+  class PreHandlingDelegate : public WebContentsDelegate {
+   public:
+    KeyboardEventProcessingResult PreHandleKeyboardEvent(
+        WebContents* source,
+        const input::NativeWebKeyboardEvent& event) override {
+      return KeyboardEventProcessingResult::HANDLED;
+    }
+  };
+  WebContentsDelegate* original_delegate = web_contents()->GetDelegate();
+  PreHandlingDelegate shortcut_delegate;
+  web_contents()->SetDelegate(&shortcut_delegate);
+
+  input::NativeWebKeyboardEvent key_down_event(
+      blink::WebInputEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kControlKey, base::TimeTicks::Now());
+  key_down_event.windows_key_code = ui::VKEY_T;
+  iframe->GetRenderWidgetHost()->ForwardKeyboardEvent(key_down_event);
+
+  web_contents()->SetDelegate(original_delegate);
+
+  WaitForDestruction(std::move(tracker));
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !weak_window; }));
+  std::string get_style =
+      "getComputedStyle(document.getElementById('target')).visibility";
+  EXPECT_EQ("hidden", EvalJs(iframe, get_style));
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       PostAckHandledBrowserShortcutDismissesSurface) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  ShowUnboundedElement(primary_main_frame_host());
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  base::WeakPtr<UnboundedSurfaceWindow> weak_window = window->GetWeakPtr();
+
+  class PostAckHandlingDelegate : public WebContentsDelegate {
+   public:
+    KeyboardEventProcessingResult PreHandleKeyboardEvent(
+        WebContents* source,
+        const input::NativeWebKeyboardEvent& event) override {
+      if (event.windows_key_code == ui::VKEY_S) {
+        return KeyboardEventProcessingResult::NOT_HANDLED_IS_SHORTCUT;
+      }
+      return KeyboardEventProcessingResult::NOT_HANDLED;
+    }
+    bool HandleKeyboardEvent(
+        WebContents* source,
+        const input::NativeWebKeyboardEvent& event) override {
+      // Simulate Windows DefWindowProc / macOS PWA unconditionally returning
+      // true on normal keys as well as handling non-reserved shortcuts.
+      return true;
+    }
+  };
+  WebContentsDelegate* original_delegate = web_contents()->GetDelegate();
+  PostAckHandlingDelegate shortcut_delegate;
+  web_contents()->SetDelegate(&shortcut_delegate);
+
+  std::string get_style =
+      "getComputedStyle(document.getElementById('target')).visibility";
+  RenderWidgetHostViewBase* main_view =
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView();
+
+  // Normal keys (not marked as a browser shortcut) that return true from
+  // HandleKeyboardEvent (e.g. DefWindowProc on Windows or PWA shims on macOS)
+  // must not dismiss the unbounded surface.
+  input::NativeWebKeyboardEvent normal_key_down_event(
+      blink::WebInputEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kNoModifiers, base::TimeTicks::Now());
+  normal_key_down_event.windows_key_code = ui::VKEY_A;
+  primary_main_frame_host()->GetRenderWidgetHost()->ForwardKeyboardEvent(
+      normal_key_down_event);
+  RunUntilInputProcessed(primary_main_frame_host()->GetRenderWidgetHost());
+  EXPECT_FALSE(main_view->TakeDismissUnboundedSurfaceCalledForTesting());
+  EXPECT_TRUE(weak_window);
+  EXPECT_EQ("visible", EvalJs(primary_main_frame_host(), get_style));
+
+  // Post-ack handled kKeyUp events on shortcuts must not dismiss the surface.
+  input::NativeWebKeyboardEvent key_up_event(blink::WebInputEvent::Type::kKeyUp,
+                                             blink::WebInputEvent::kControlKey,
+                                             base::TimeTicks::Now());
+  key_up_event.windows_key_code = ui::VKEY_S;
+  primary_main_frame_host()->GetRenderWidgetHost()->ForwardKeyboardEvent(
+      key_up_event);
+  RunUntilInputProcessed(primary_main_frame_host()->GetRenderWidgetHost());
+  EXPECT_FALSE(main_view->TakeDismissUnboundedSurfaceCalledForTesting());
+  EXPECT_TRUE(weak_window);
+  EXPECT_EQ("visible", EvalJs(primary_main_frame_host(), get_style));
+
+  // Post-ack handled kRawKeyDown events marked with is_browser_shortcut must
+  // dismiss the unbounded surface.
+  auto tracker = CreateDestructionTracker(*window);
+  input::NativeWebKeyboardEvent key_down_event(
+      blink::WebInputEvent::Type::kRawKeyDown,
+      blink::WebInputEvent::kControlKey, base::TimeTicks::Now());
+  key_down_event.windows_key_code = ui::VKEY_S;
+  primary_main_frame_host()->GetRenderWidgetHost()->ForwardKeyboardEvent(
+      key_down_event);
+
+  WaitForDestruction(std::move(tracker));
+  EXPECT_TRUE(base::test::RunUntil([&]() { return !weak_window; }));
+  EXPECT_EQ("hidden", EvalJs(primary_main_frame_host(), get_style));
+
+  web_contents()->SetDelegate(original_delegate);
+}
+
 IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
                        MultipleUnboundedElementsDismissesFirst) {
   GURL url(embedded_test_server()->GetURL("/title1.html"));
@@ -1364,12 +2415,16 @@ IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
 
   std::string script = R"JS(
     document.body.innerHTML = `
-      <meta name="viewport" content="width=device-width, initial-scale=1">
       <div id="first" unbounded></div>
       <div id="second" unbounded></div>
     `;
     const first = document.getElementById('first');
     const second = document.getElementById('second');
+    first.addEventListener('beforetoggle', e => {
+      if (e.newState === 'closed') {
+        e.preventDefault();
+      }
+    });
     let results = [];
     first.showUnboundedElement()
       .then(() => {
@@ -1385,6 +2440,200 @@ IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
   )JS";
 
   EXPECT_EQ("visible,hidden,hidden,visible",
+            EvalJs(primary_main_frame_host(), script).ExtractString());
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       ShowSecondElementInsideBeforeToggleOnClose) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"JS(
+    document.body.innerHTML = `
+      <div id="first" unbounded></div>
+      <div id="second" unbounded></div>
+    `;
+    const first = document.getElementById('first');
+    const second = document.getElementById('second');
+    let beforetoggle_count = 0;
+    let second_promise = null;
+    first.addEventListener('beforetoggle', e => {
+      if (e.newState === 'closed') {
+        beforetoggle_count++;
+        second_promise = second.showUnboundedElement();
+      }
+    });
+    first.showUnboundedElement()
+      .then(() => {
+        first.hideUnboundedElement();
+        return second_promise;
+      })
+      .then(() => {
+        return [
+          beforetoggle_count,
+          first.matches(':unbounded'),
+          second.matches(':unbounded'),
+          getComputedStyle(first).visibility,
+          getComputedStyle(second).visibility,
+        ].join(',');
+      }, err => 'error:' + err);
+  )JS";
+
+  EXPECT_EQ("1,false,true,hidden,visible",
+            EvalJs(primary_main_frame_host(), script).ExtractString());
+  EXPECT_NE(nullptr, GetActiveWindow());
+}
+
+IN_PROC_BROWSER_TEST_P(
+    UnboundedElementBrowserTest,
+    DismissCancelableWithShowSecondElementAndPreventDefault) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"JS(
+    document.body.innerHTML = `
+      <div id="first" unbounded></div>
+      <div id="second" unbounded></div>
+    `;
+    const first = document.getElementById('first');
+    const second = document.getElementById('second');
+    window.__beforetoggle_fired = false;
+    first.addEventListener('beforetoggle', e => {
+      if (e.newState === 'closed') {
+        window.__beforetoggle_fired = true;
+        e.preventDefault();
+        second.showUnboundedElement();
+      }
+    });
+    first.showUnboundedElement().then(() => 'first_ready');
+  )JS";
+  EXPECT_EQ("first_ready", EvalJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  // Blur() initiates cancelable dismissal.
+  primary_main_frame_host()->GetRenderWidgetHost()->Blur();
+  RunUntilInputProcessed(primary_main_frame_host()->GetRenderWidgetHost());
+
+  // Even though beforetoggle called e.preventDefault(), showing second must
+  // suppress first and make second the active element.
+  EXPECT_EQ(true,
+            EvalJs(primary_main_frame_host(), "window.__beforetoggle_fired"));
+  EXPECT_EQ(false,
+            EvalJs(primary_main_frame_host(),
+                   "document.getElementById('first').matches(':unbounded')"));
+  EXPECT_EQ(
+      "hidden",
+      EvalJs(primary_main_frame_host(),
+             "getComputedStyle(document.getElementById('first')).visibility"));
+  EXPECT_EQ(true,
+            EvalJs(primary_main_frame_host(),
+                   "document.getElementById('second').matches(':unbounded')"));
+  EXPECT_EQ(
+      "visible",
+      EvalJs(primary_main_frame_host(),
+             "getComputedStyle(document.getElementById('second')).visibility"));
+  EXPECT_NE(nullptr, GetActiveWindow());
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       ReshowSameElementInsideBeforeToggleOnClose) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"JS(
+    document.body.innerHTML = `<div id="target" unbounded></div>`;
+    const target = document.getElementById('target');
+    let beforetoggle_count = 0;
+    let reshow_promise = null;
+    target.addEventListener('beforetoggle', e => {
+      if (e.newState === 'closed') {
+        beforetoggle_count++;
+        reshow_promise = target.showUnboundedElement();
+      }
+    });
+    target.showUnboundedElement()
+      .then(() => {
+        target.hideUnboundedElement();
+        return reshow_promise;
+      })
+      .then(() => 'success', err => 'error:' + err.name);
+  )JS";
+
+  std::string result =
+      EvalJs(primary_main_frame_host(), script).ExtractString();
+  // Attempting to re-show the same element while it is being closed should
+  // cleanly reject with InvalidStateError and not corrupt the element.
+  EXPECT_EQ("error:InvalidStateError", result);
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       MutualBeforeTogglePingPongShowsDoNotLoop) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"JS(
+    document.body.innerHTML = `
+      <div id="first" unbounded></div>
+      <div id="second" unbounded></div>
+    `;
+    const first = document.getElementById('first');
+    const second = document.getElementById('second');
+    let ping_count = 0;
+    first.addEventListener('beforetoggle', e => {
+      if (e.newState === 'closed' && ++ping_count < 10) {
+        second.showUnboundedElement();
+      }
+    });
+    second.addEventListener('beforetoggle', e => {
+      if (e.newState === 'closed' && ++ping_count < 10) {
+        first.showUnboundedElement();
+      }
+    });
+    first.showUnboundedElement().then(() => {
+      return second.showUnboundedElement();
+    }).then(() => 'done', err => 'error:' + err);
+  )JS";
+
+  EXPECT_EQ("done", EvalJs(primary_main_frame_host(), script).ExtractString());
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       ThreeElementBeforeToggleShowRaceDoesNotLeak) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"JS(
+    document.body.innerHTML = `
+      <div id="a" unbounded></div>
+      <div id="b" unbounded></div>
+      <div id="c" unbounded></div>
+    `;
+    const a = document.getElementById('a');
+    const b = document.getElementById('b');
+    const c = document.getElementById('c');
+    let c_result = 'pending';
+
+    a.addEventListener('beforetoggle', e => {
+      if (e.newState === 'closed') {
+        c.showUnboundedElement()
+            .then(() => { c_result = 'resolved'; },
+                  err => { c_result = 'rejected:' + err.name; });
+      }
+    });
+
+    a.showUnboundedElement()
+      .then(() => b.showUnboundedElement())
+      .then(() => {
+        return [
+          c_result,
+          a.matches(':unbounded'),
+          b.matches(':unbounded'),
+          c.matches(':unbounded')
+        ].join(',');
+      }, err => 'error:' + err);
+  )JS";
+
+  EXPECT_EQ("rejected:AbortError,false,true,false",
             EvalJs(primary_main_frame_host(), script).ExtractString());
 }
 
@@ -1431,7 +2680,7 @@ IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_P(
-    UnboundedElementBrowserTest,
+    UnboundedElementEscapingOpenWebBrowserTest,
     WindowResizeWithScrolledPageUpdatesBoundsInViewportCoordinates) {
   GURL url(embedded_test_server()->GetURL("/title1.html"));
   EXPECT_TRUE(NavigateToURL(shell(), url));
@@ -1491,7 +2740,1056 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_EQ(100, updated_bounds.height());
 }
 
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       OpenWebConstrainedToViewport) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"(
+    document.body.innerHTML = `
+      <style>
+        body { margin: 0; padding: 0; }
+        #target {
+          position: absolute;
+          top: -100px;
+          left: -100px;
+          width: 3000px;
+          height: 3000px;
+        }
+      </style>
+      <div id="target" unbounded></div>
+    `;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+  ASSERT_TRUE(view);
+
+  EXPECT_TRUE(view->GetViewBounds().Contains(window->GetBounds()));
+  EXPECT_EQ(view->GetViewBounds(), window->GetBounds());
+}
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       OpenWebIframeConstrainedToViewport) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  GURL iframe_url(embedded_test_server()->GetURL("/title1.html"));
+  std::string setup_script = base::StringPrintf(R"(
+    const iframe = document.createElement('iframe');
+    iframe.id = 'subframe';
+    iframe.allow = 'unbounded-element';
+    iframe.src = '%s';
+    iframe.style.cssText = 'width:200px; height:200px; position:absolute; ' +
+        'top:50px; left:50px; border:none;';
+    document.body.appendChild(iframe);
+  )",
+                                                iframe_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), setup_script));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(iframe);
+  WaitForHitTestData(iframe);
+
+  std::string iframe_script = R"(
+    document.body.innerHTML = `
+      <style>
+        body { margin: 0; padding: 0; }
+        #target {
+          position: absolute;
+          top: -200px;
+          left: -200px;
+          width: 4000px;
+          height: 4000px;
+        }
+      </style>
+      <div id="target" unbounded></div>
+    `;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  EXPECT_TRUE(ExecJs(iframe, iframe_script));
+  WaitForFrameReady();
+  MainThreadFrameObserver iframe_frame_observer(iframe->GetRenderWidgetHost());
+  iframe_frame_observer.Wait();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+  ASSERT_TRUE(view);
+
+  EXPECT_TRUE(view->GetViewBounds().Contains(window->GetBounds()));
+  EXPECT_EQ(view->GetViewBounds(), window->GetBounds());
+}
+
+// Sends oversized bounds directly to the browser's UnboundedSurfaceHost
+// implementation, bypassing the renderer-side clamp, and checks that the
+// browser clamps them to the viewport.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       BrowserClampsOversizedBoundsFromMainFrame) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"(
+    document.body.innerHTML = `
+      <style>
+        body { margin: 0; padding: 0; }
+        #target {
+          position: absolute;
+          top: 10px;
+          left: 10px;
+          width: 50px;
+          height: 50px;
+        }
+      </style>
+      <div id="target" unbounded></div>
+    `;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+  ASSERT_TRUE(view);
+
+  gfx::Rect expected_initial_bounds(10, 10, 50, 50);
+  expected_initial_bounds.Offset(view->GetViewBounds().OffsetFromOrigin());
+  EXPECT_EQ(expected_initial_bounds, window->GetBounds());
+
+  ASSERT_TRUE(GetActiveHost());
+  GetActiveHost()->UpdateBounds(gfx::Rect(-1000, -1000, 10000, 10000));
+  EXPECT_EQ(view->GetViewBounds(), window->GetBounds());
+}
+
+// Same as OpenWebIframeConstrainedToViewport, but with a cross-site (OOPIF)
+// iframe. The iframe's renderer can't clamp to the (remote) top frame, so the
+// browser is responsible for the viewport clamp.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       OpenWebCrossSiteIframeConstrainedToViewport) {
+  GURL url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  GURL iframe_url(embedded_test_server()->GetURL("b.com", "/title1.html"));
+  std::string setup_script = base::StringPrintf(R"(
+    const iframe = document.createElement('iframe');
+    iframe.id = 'subframe';
+    iframe.allow = 'unbounded-element';
+    iframe.src = '%s';
+    iframe.style.cssText = 'width:200px; height:200px; position:absolute; ' +
+        'top:50px; left:50px; border:none;';
+    document.body.appendChild(iframe);
+  )",
+                                                iframe_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), setup_script));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(iframe);
+  ASSERT_TRUE(iframe->IsCrossProcessSubframe());
+  WaitForHitTestData(iframe);
+
+  std::string iframe_script = R"(
+    document.body.innerHTML = `
+      <style>
+        body { margin: 0; padding: 0; }
+        #target {
+          position: absolute;
+          top: -200px;
+          left: -200px;
+          width: 4000px;
+          height: 4000px;
+        }
+      </style>
+      <div id="target" unbounded></div>
+    `;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  EXPECT_TRUE(ExecJs(iframe, iframe_script));
+  WaitForFrameReady();
+  MainThreadFrameObserver iframe_frame_observer(iframe->GetRenderWidgetHost());
+  iframe_frame_observer.Wait();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+  ASSERT_TRUE(view);
+  EXPECT_EQ(view->GetViewBounds(), window->GetBounds());
+
+  // Bypass the renderer entirely.
+  ASSERT_TRUE(GetActiveHost());
+  GetActiveHost()->UpdateBounds(gfx::Rect(-1000, -1000, 10000, 10000));
+  EXPECT_EQ(view->GetViewBounds(), window->GetBounds());
+}
+
+// Verifies that a privileged cross-site subframe (authorized via
+// ContentBrowserClient::IsUnboundedElementAllowed and
+// ContentBrowserClient::IsUnboundedElementEscapingAllowed, such as an
+// allowlisted chrome-extension:// subframe embedded inside a trusted
+// outermost main frame) with allow="unbounded-element" can escape both its
+// iframe bounds and the top-level root view bounds, whereas if the outermost
+// main frame is not trusted by IsUnboundedElementEscapingAllowed, the bounds
+// remain clamped to the root view.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       PrivilegedCrossSiteSubframeCanEscapeRootView) {
+  class PrivilegedSubframeBrowserClient
+      : public ContentBrowserTestContentBrowserClient {
+   public:
+    bool IsUnboundedElementAllowed(
+        RenderFrameHost* render_frame_host) override {
+      return render_frame_host &&
+             render_frame_host->GetLastCommittedOrigin().host() == "b.com";
+    }
+
+    bool IsUnboundedElementEscapingAllowed(
+        RenderFrameHost* subframe,
+        RenderFrameHost* outermost_main_frame) override {
+      return IsUnboundedElementAllowed(subframe) && outermost_main_frame &&
+             outermost_main_frame->GetLastCommittedOrigin().host() == "a.com";
+    }
+  };
+  PrivilegedSubframeBrowserClient browser_client;
+
+  GURL url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  GURL iframe_url(embedded_test_server()->GetURL("b.com", "/title1.html"));
+  std::string setup_script = base::StringPrintf(R"(
+    const iframe = document.createElement('iframe');
+    iframe.id = 'subframe';
+    iframe.allow = 'unbounded-element';
+    iframe.src = '%s';
+    iframe.style.cssText = 'width:200px; height:200px; position:absolute; ' +
+        'top:50px; left:50px; border:none;';
+    document.body.appendChild(iframe);
+  )",
+                                                iframe_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), setup_script));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(iframe);
+  ASSERT_TRUE(iframe->IsCrossProcessSubframe());
+  WaitForHitTestData(iframe);
+
+  std::string iframe_script = R"(
+    document.body.innerHTML = `
+      <style>
+        body { margin: 0; padding: 0; }
+        #target {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100px;
+          height: 100px;
+        }
+      </style>
+      <div id="target" unbounded></div>
+    `;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  EXPECT_TRUE(ExecJs(iframe, iframe_script));
+  WaitForFrameReady();
+  MainThreadFrameObserver iframe_frame_observer(iframe->GetRenderWidgetHost());
+  iframe_frame_observer.Wait();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+  ASSERT_TRUE(view);
+
+  GetActiveHost()->UpdateBounds(gfx::Rect(-100, -100, 3000, 3000));
+  EXPECT_FALSE(view->GetViewBounds().Contains(window->GetBounds()));
+}
+
+// Verifies that if an untrusted outermost main frame (c.com) embeds a trusted
+// intermediate frame (a.com) which in turn embeds a privileged subframe
+// (b.com), ContentBrowserClient::IsUnboundedElementEscapingAllowed rejects the
+// untrusted outermost main frame and clamps the unbounded element to the root
+// view bounds.
+IN_PROC_BROWSER_TEST_P(
+    UnboundedElementBrowserTest,
+    PrivilegedSubframeInUntrustedOutermostMainFrameClampedToRootView) {
+  class PrivilegedSubframeBrowserClient
+      : public ContentBrowserTestContentBrowserClient {
+   public:
+    bool IsUnboundedElementAllowed(
+        RenderFrameHost* render_frame_host) override {
+      return render_frame_host &&
+             render_frame_host->GetLastCommittedOrigin().host() == "b.com";
+    }
+
+    bool IsUnboundedElementEscapingAllowed(
+        RenderFrameHost* subframe,
+        RenderFrameHost* outermost_main_frame) override {
+      return IsUnboundedElementAllowed(subframe) && outermost_main_frame &&
+             outermost_main_frame->GetLastCommittedOrigin().host() == "a.com";
+    }
+  };
+  PrivilegedSubframeBrowserClient browser_client;
+
+  GURL outer_url(embedded_test_server()->GetURL("c.com", "/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), outer_url));
+
+  GURL middle_url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  std::string outer_script = base::StringPrintf(R"(
+    const iframe = document.createElement('iframe');
+    iframe.id = 'middle';
+    iframe.allow = 'unbounded-element';
+    iframe.src = '%s';
+    iframe.style.cssText = 'width:300px; height:300px; position:absolute; ' +
+        'top:10px; left:10px; border:none;';
+    document.body.appendChild(iframe);
+  )",
+                                                middle_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), outer_script));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* middle_frame = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(middle_frame);
+
+  GURL inner_url(embedded_test_server()->GetURL("b.com", "/title1.html"));
+  std::string middle_script = base::StringPrintf(R"(
+    const iframe = document.createElement('iframe');
+    iframe.id = 'inner';
+    iframe.allow = 'unbounded-element';
+    iframe.src = '%s';
+    iframe.style.cssText = 'width:200px; height:200px; position:absolute; ' +
+        'top:10px; left:10px; border:none;';
+    document.body.appendChild(iframe);
+  )",
+                                                 inner_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(middle_frame, middle_script));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* inner_frame = ChildFrameAt(middle_frame, 0);
+  ASSERT_TRUE(inner_frame);
+  ASSERT_TRUE(inner_frame->IsCrossProcessSubframe());
+  WaitForHitTestData(inner_frame);
+
+  std::string inner_script = R"(
+    document.body.innerHTML = `
+      <style>
+        body { margin: 0; padding: 0; }
+        #target {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100px;
+          height: 100px;
+        }
+      </style>
+      <div id="target" unbounded></div>
+    `;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  EXPECT_TRUE(ExecJs(inner_frame, inner_script));
+  WaitForFrameReady();
+  MainThreadFrameObserver inner_frame_observer(
+      inner_frame->GetRenderWidgetHost());
+  inner_frame_observer.Wait();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+  ASSERT_TRUE(view);
+
+  GetActiveHost()->UpdateBounds(gfx::Rect(-100, -100, 3000, 3000));
+  EXPECT_EQ(view->GetViewBounds(), window->GetBounds());
+}
+
+// A cross-site (OOPIF) iframe without allow="unbounded-element" must be
+// constrained to the iframe's bounds, including when oversized bounds are sent
+// directly to the browser.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       OpenWebCrossSiteIframeWithoutAllowConstrainedToIframe) {
+  GURL url(embedded_test_server()->GetURL("a.com", "/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  GURL iframe_url(embedded_test_server()->GetURL("b.com", "/title1.html"));
+  std::string setup_script = base::StringPrintf(R"(
+    const iframe = document.createElement('iframe');
+    iframe.id = 'subframe';
+    iframe.src = '%s';
+    iframe.style.cssText = 'width:200px; height:200px; position:absolute; ' +
+        'top:50px; left:50px; border:none;';
+    document.body.appendChild(iframe);
+  )",
+                                                iframe_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), setup_script));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(iframe);
+  ASSERT_TRUE(iframe->IsCrossProcessSubframe());
+  WaitForHitTestData(iframe);
+
+  std::string iframe_script = R"(
+    document.body.innerHTML = `
+      <style>
+        body { margin: 0; padding: 0; }
+        #target {
+          position: absolute;
+          top: -200px;
+          left: -200px;
+          width: 4000px;
+          height: 4000px;
+        }
+      </style>
+      <div id="target" unbounded></div>
+    `;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  EXPECT_TRUE(ExecJs(iframe, iframe_script));
+  WaitForFrameReady();
+  MainThreadFrameObserver iframe_frame_observer(iframe->GetRenderWidgetHost());
+  iframe_frame_observer.Wait();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+  ASSERT_TRUE(view);
+
+  gfx::Rect expected_bounds(50, 50, 200, 200);
+  expected_bounds.Offset(view->GetViewBounds().OffsetFromOrigin());
+  EXPECT_EQ(expected_bounds, window->GetBounds());
+
+  // Bypass the renderer entirely.
+  ASSERT_TRUE(GetActiveHost());
+  GetActiveHost()->UpdateBounds(gfx::Rect(-1000, -1000, 10000, 10000));
+  EXPECT_EQ(expected_bounds, window->GetBounds());
+}
+
+// The surface must not outlive the document that requested it: removing the
+// requesting <iframe> destroys the surface synchronously on the browser side,
+// without waiting for the renderer to dismiss it.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       RemovingRequestingFrameDestroysSurface) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+  RenderFrameHost* iframe = AddUnboundedIframe(primary_main_frame_host(), url);
+  ASSERT_TRUE(iframe);
+  ShowUnboundedElement(iframe);
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  auto tracker = CreateDestructionTracker(*window);
+
+  RenderFrameDeletedObserver deleted_observer(iframe);
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(),
+                     "document.getElementById('subframe').remove();"));
+  deleted_observer.WaitUntilDeleted();
+  EXPECT_FALSE(primary_main_frame_host()->GetUnboundedSurfaceWindow());
+  WaitForDestruction(std::move(tracker));
+}
+
+// Same as above, but the requesting <iframe> navigates to a new document.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       NavigatingRequestingFrameDestroysSurface) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+  RenderFrameHost* iframe = AddUnboundedIframe(primary_main_frame_host(), url);
+  ASSERT_TRUE(iframe);
+  ShowUnboundedElement(iframe);
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  auto tracker = CreateDestructionTracker(*window);
+
+  EXPECT_TRUE(NavigateToURLFromRenderer(
+      iframe, embedded_test_server()->GetURL("/title2.html")));
+  EXPECT_FALSE(primary_main_frame_host()->GetUnboundedSurfaceWindow());
+  WaitForDestruction(std::move(tracker));
+}
+
+// When another document opens a surface in the same tab, the previous surface
+// is replaced, and the host of the previous document goes away with it.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       ReplacedSurfaceDestroysPreviousHost) {
+  EXPECT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("a.com", "/title1.html")));
+  // Use a cross-site iframe, so that the two surfaces are requested by
+  // different renderer processes, and only the browser can clean up the first
+  // one.
+  RenderFrameHost* iframe = AddUnboundedIframe(
+      primary_main_frame_host(),
+      embedded_test_server()->GetURL("b.com", "/title1.html"));
+  ASSERT_TRUE(iframe);
+
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), R"(
+    const target = document.createElement('div');
+    target.id = 'target';
+    target.setAttribute('unbounded', '');
+    target.addEventListener('beforetoggle', e => {
+      if (e.newState === 'closed') {
+        e.preventDefault();
+      }
+    });
+    document.body.appendChild(target);
+    target.showUnboundedElement();
+  )"));
+  WaitForFrameReady();
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  auto tracker = CreateDestructionTracker(*window);
+  ASSERT_TRUE(UnboundedSurfaceHostImpl::GetForCurrentDocument(
+      primary_main_frame_host()));
+
+  ShowUnboundedElement(iframe);
+  WaitForDestruction(std::move(tracker));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return !UnboundedSurfaceHostImpl::GetForCurrentDocument(
+        primary_main_frame_host());
+  }));
+  EXPECT_EQ(false,
+            EvalJs(primary_main_frame_host(),
+                   "document.getElementById('target').matches(':unbounded')"));
+  EXPECT_TRUE(UnboundedSurfaceHostImpl::GetForCurrentDocument(iframe));
+  EXPECT_TRUE(primary_main_frame_host()->GetUnboundedSurfaceWindow());
+}
+
+// A document that stops being active (here, entering the BackForwardCache) is
+// kept alive, but its surface must be destroyed.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       InactiveRequestingDocumentDestroysSurface) {
+  EXPECT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("a.com", "/title1.html")));
+  ShowUnboundedElement(primary_main_frame_host());
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  auto tracker = CreateDestructionTracker(*window);
+  RenderFrameHostWrapper old_rfh(primary_main_frame_host());
+
+  EXPECT_TRUE(NavigateToURL(
+      shell(), embedded_test_server()->GetURL("b.com", "/title1.html")));
+  if (!old_rfh.IsDestroyed()) {
+    EXPECT_FALSE(
+        UnboundedSurfaceHostImpl::GetForCurrentDocument(old_rfh.get()));
+    EXPECT_FALSE(static_cast<RenderFrameHostImpl*>(old_rfh.get())
+                     ->GetUnboundedSurfaceWindow());
+  }
+  WaitForDestruction(std::move(tracker));
+}
+
+namespace {
+
+// Stands in for the `UnboundedSurfaceHostImpl` of `window` while in scope, and
+// counts dismissal requests. `Dismiss()` calls the delegate synchronously, so
+// tests can check whether a single event dismissed the surface without
+// pumping the message loop.
+class ScopedDismissRecorder : public UnboundedSurfaceWindow::Delegate {
+ public:
+  ScopedDismissRecorder(UnboundedSurfaceWindow* window,
+                        UnboundedSurfaceWindow::Delegate* original_delegate)
+      : window_(window->GetWeakPtr()), original_delegate_(original_delegate) {
+    window->set_delegate(this);
+  }
+  ScopedDismissRecorder(const ScopedDismissRecorder&) = delete;
+  ScopedDismissRecorder& operator=(const ScopedDismissRecorder&) = delete;
+  ~ScopedDismissRecorder() override {
+    if (window_) {
+      window_->set_delegate(original_delegate_);
+    }
+  }
+
+  // Returns the number of dismissal requests since the last call.
+  int TakeDismissCount() { return std::exchange(dismiss_count_, 0); }
+
+  // UnboundedSurfaceWindow::Delegate:
+  void OnDismissRequested() override { ++dismiss_count_; }
+  void OnWindowDestroyed() override {
+    if (original_delegate_) {
+      original_delegate_->OnWindowDestroyed();
+    }
+  }
+
+ private:
+  base::WeakPtr<UnboundedSurfaceWindow> window_;
+  raw_ptr<UnboundedSurfaceWindow::Delegate> original_delegate_;
+  int dismiss_count_ = 0;
+};
+
+}  // namespace
+
+#if defined(USE_AURA)
+// The native window can be destroyed under the surface (e.g. by the window
+// manager). The surface must then be fully released: the root view no longer
+// holds it, and the host of the requesting document goes away.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       NativeWindowDestroyedExternally) {
+  EXPECT_TRUE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL("/title1.html")));
+  ShowUnboundedElement(primary_main_frame_host());
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  ASSERT_TRUE(window->GetNativeWindow());
+  ASSERT_TRUE(UnboundedSurfaceHostImpl::GetForCurrentDocument(
+      primary_main_frame_host()));
+
+  delete window->GetNativeWindow();
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return !primary_main_frame_host()->GetUnboundedSurfaceWindow(); }));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return !UnboundedSurfaceHostImpl::GetForCurrentDocument(
+        primary_main_frame_host());
+  }));
+}
+
+namespace {
+
+// Dispatches a key press with `target` as its target, regardless of which
+// window has focus. The event runs through the pre-target handlers of
+// `aura::Env`. Returns whether the event was marked handled.
+bool DispatchKeyPress(aura::Window* target,
+                      ui::KeyboardCode key_code,
+                      int flags) {
+  // `EF_IS_SYNTHESIZED` skips the IME, which would retarget the event to the
+  // focused window.
+  ui::KeyEvent event(ui::EventType::kKeyPressed, key_code,
+                     flags | ui::EF_IS_SYNTHESIZED);
+  ui::EventDispatchDetails details =
+      static_cast<ui::EventDispatcherDelegate*>(target->GetHost()->dispatcher())
+          ->DispatchEvent(target, &event);
+  EXPECT_FALSE(details.dispatcher_destroyed);
+  return event.handled();
+}
+
+}  // namespace
+
+// A key press aimed at a window outside the owner view (e.g. a browser
+// shortcut in another browser window) dismisses the surface, while a bare
+// modifier key or a key aimed at the owner view does not.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       DismissOnKeyPressOutsideOwnerView) {
+  EXPECT_TRUE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL("/title1.html")));
+  Shell* other_shell = CreateBrowser();
+  ASSERT_TRUE(other_shell);
+  aura::Window* other_window = other_shell->window();
+  ASSERT_TRUE(other_window);
+
+  ShowUnboundedElement(primary_main_frame_host());
+  WaitForFrameReady();
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  ScopedDismissRecorder recorder(window, GetActiveHost());
+
+  aura::Window* owner_window =
+      web_contents()->GetRenderWidgetHostView()->GetNativeView();
+  ASSERT_TRUE(owner_window);
+
+  // A bare modifier key, such as the first key of a shortcut, does not
+  // dismiss the surface.
+  EXPECT_FALSE(
+      DispatchKeyPress(other_window, ui::VKEY_CONTROL, ui::EF_CONTROL_DOWN));
+  EXPECT_EQ(0, recorder.TakeDismissCount());
+
+  // A key aimed at the owner view is left to `RenderWidgetHostImpl`, which
+  // only dismisses for shortcuts consumed by the browser.
+  DispatchKeyPress(owner_window, ui::VKEY_A, ui::EF_NONE);
+  EXPECT_EQ(0, recorder.TakeDismissCount());
+
+  // Ctrl+T aimed at another window dismisses the surface, and the event is
+  // not consumed, so that the shortcut still runs.
+  EXPECT_FALSE(DispatchKeyPress(other_window, ui::VKEY_T, ui::EF_CONTROL_DOWN));
+  EXPECT_EQ(1, recorder.TakeDismissCount());
+
+  // A key aimed at the browser UI around the owner view (e.g. the omnibox)
+  // also dismisses the surface.
+  EXPECT_FALSE(
+      DispatchKeyPress(shell()->window(), ui::VKEY_T, ui::EF_CONTROL_DOWN));
+  EXPECT_EQ(1, recorder.TakeDismissCount());
+}
+
+// Deactivating the window that hosts the owner view, or a cancel-mode event
+// (e.g. the system starting a drag or showing a menu), dismisses the surface.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       DismissOnDeactivationAndCancelMode) {
+  EXPECT_TRUE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL("/title1.html")));
+  ShowUnboundedElement(primary_main_frame_host());
+  WaitForFrameReady();
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  ScopedDismissRecorder recorder(window, GetActiveHost());
+
+  aura::Window* host_window = shell()->window();
+  ASSERT_TRUE(host_window);
+  aura::Window* root_window = host_window->GetRootWindow();
+  ASSERT_TRUE(root_window);
+
+  root_window->GetHost()->dispatcher()->DispatchCancelModeEvent();
+  EXPECT_EQ(1, recorder.TakeDismissCount());
+
+  wm::ActivationClient* activation_client =
+      wm::GetActivationClient(root_window);
+  ASSERT_TRUE(activation_client);
+  // Activating the window that hosts the owner view keeps the surface open.
+  activation_client->ActivateWindow(host_window);
+  ASSERT_EQ(host_window, activation_client->GetActiveWindow());
+  EXPECT_EQ(0, recorder.TakeDismissCount());
+
+  // Move focus from the owner view to other browser UI in the same window
+  // (e.g. the omnibox), as when the surface opened on hover without taking
+  // focus. Blurring the owner view requests a dismissal of its own, so
+  // discard it.
+  aura::test::TestWindowDelegate browser_ui_delegate;
+  aura::Window browser_ui_window(&browser_ui_delegate);
+  browser_ui_window.Init(ui::LAYER_NOT_DRAWN);
+  host_window->AddChild(&browser_ui_window);
+  browser_ui_window.SetBounds(gfx::Rect(0, 0, 10, 10));
+  browser_ui_window.Show();
+  browser_ui_window.Focus();
+  ASSERT_TRUE(browser_ui_window.HasFocus());
+  recorder.TakeDismissCount();
+
+  activation_client->ActivateWindow(nullptr);
+  EXPECT_NE(host_window, activation_client->GetActiveWindow());
+  EXPECT_EQ(1, recorder.TakeDismissCount());
+}
+
+// Clicking inside a child popup window (such as an <input type=date> picker)
+// belonging to the owner view must not dismiss the unbounded surface.
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       ClickInsideChildPopupWindowDoesNotDismiss) {
+  EXPECT_TRUE(
+      NavigateToURL(shell(), embedded_test_server()->GetURL("/title1.html")));
+
+  std::string script = R"(
+    document.body.innerHTML = `
+      <div id="target" style="width:200px; height:200px;" unbounded>
+        <input id="d" type="date">
+      </div>
+    `;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  ASSERT_TRUE(ExecJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  ScopedDismissRecorder recorder(window, GetActiveHost());
+
+  WaitForHitTestData(primary_main_frame_host());
+  ShowPopupWidgetWaiter waiter(web_contents(), primary_main_frame_host());
+  ASSERT_TRUE(ExecJs(primary_main_frame_host(),
+                     "document.getElementById('d').showPicker();"));
+  waiter.Wait();
+
+  int popup_process_id =
+      primary_main_frame_host()->GetProcess()->GetDeprecatedID();
+  int popup_routing_id = waiter.last_routing_id();
+  auto* popup =
+      RenderWidgetHostImpl::FromID(popup_process_id, popup_routing_id);
+  ASSERT_TRUE(popup);
+  ASSERT_TRUE(popup->GetView());
+  aura::Window* popup_window = popup->GetView()->GetNativeView();
+  ASSERT_TRUE(popup_window);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return popup_window->IsVisible() && popup_window->GetRootWindow();
+  }));
+
+  // Click inside the popup window.
+  gfx::Point click_point =
+      popup_window->GetBoundsInScreen().origin() + gfx::Vector2d(5, 5);
+  ui::test::EventGenerator generator(popup_window->GetRootWindow());
+  generator.MoveMouseTo(click_point);
+  generator.ClickLeftButton();
+
+  RunUntilInputProcessed(primary_main_frame_host()->GetRenderWidgetHost());
+
+  // The unbounded surface must not be dismissed.
+  EXPECT_EQ(0, recorder.TakeDismissCount());
+  std::string get_style =
+      "getComputedStyle(document.getElementById('target')).visibility";
+  EXPECT_EQ("visible", EvalJs(primary_main_frame_host(), get_style));
+}
+#endif  // defined(USE_AURA)
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
+                       UnhandledKeyPressDoesNotDismissSurface) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"(
+    document.body.innerHTML = `
+      <div id="target" style="width:50px; height:50px;" unbounded></div>
+    `;
+    document.getElementById('target').showUnboundedElement();
+  )";
+  ASSERT_TRUE(ExecJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  ScopedDismissRecorder recorder(window, GetActiveHost());
+
+  // Typing normal keys or unhandled navigation keys while focus is in the
+  // WebContents must not dismiss the surface.
+  SimulateKeyPress(web_contents(), ui::DomKey::FromCharacter('a'),
+                   ui::DomCode::US_A, ui::VKEY_A, false, false, false, false);
+  RunUntilInputProcessed(primary_main_frame_host()->GetRenderWidgetHost());
+
+  SimulateKeyPress(web_contents(), ui::DomKey::ARROW_DOWN,
+                   ui::DomCode::ARROW_DOWN, ui::VKEY_DOWN, false, false, false,
+                   false);
+  RunUntilInputProcessed(primary_main_frame_host()->GetRenderWidgetHost());
+
+  EXPECT_EQ(0, recorder.TakeDismissCount());
+  std::string get_style =
+      "getComputedStyle(document.getElementById('target')).visibility";
+  EXPECT_EQ("visible", EvalJs(primary_main_frame_host(), get_style));
+}
+
 INSTANTIATE_TEST_SUITE_P(All, UnboundedElementBrowserTest, testing::Bool());
+
+IN_PROC_BROWSER_TEST_P(UnboundedElementEscapingOpenWebBrowserTest,
+                       OpenWebCanEscapeWithUnsafeEscapingFlag) {
+  GURL url(embedded_test_server()->GetURL("/title1.html"));
+  EXPECT_TRUE(NavigateToURL(shell(), url));
+
+  std::string script = R"(
+    document.body.style.margin = '0';
+    document.body.style.padding = '0';
+    const target = document.createElement('div');
+    target.id = 'target';
+    target.setAttribute('unbounded', '');
+    target.style.cssText =
+        'position: absolute; top: -50px; left: -50px; ' +
+        'width: 3000px; height: 3000px;';
+    document.body.appendChild(target);
+    target.showUnboundedElement().then(() => "Success", e => e.name);
+  )";
+  EXPECT_EQ("Success", EvalJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+  ASSERT_TRUE(view);
+
+  gfx::Rect expected_screen_bounds = gfx::Rect(-50, -50, 3000, 3000);
+  expected_screen_bounds.Offset(view->GetViewBounds().OffsetFromOrigin());
+  EXPECT_EQ(expected_screen_bounds, window->GetBounds());
+  EXPECT_FALSE(view->GetViewBounds().Contains(window->GetBounds()));
+}
+
+INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
+    UnboundedElementEscapingOpenWebBrowserTest);
+
+class UnboundedElementWebUITest : public UnboundedElementBrowserTestBase {
+ public:
+  UnboundedElementWebUITest() = default;
+  ~UnboundedElementWebUITest() override = default;
+
+  void SetUp() override {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{blink::features::kUnboundedElement},
+        /*disabled_features=*/{
+            blink::features::kUnsafeUnboundedElementOnTheOpenWeb,
+            blink::features::kUnsafeEscapingUnboundedElementOnTheOpenWeb,
+            ::features::kTreesInViz});
+    UnboundedElementBrowserTestBase::SetUp();
+  }
+
+  void SetUpOnMainThread() override {
+    UnboundedElementBrowserTestBase::SetUpOnMainThread();
+    browser_client_ = std::make_unique<AllowSubframesBrowserClient>();
+  }
+
+  void TearDownOnMainThread() override {
+    browser_client_.reset();
+    UnboundedElementBrowserTestBase::TearDownOnMainThread();
+  }
+
+ private:
+  // TODO(crbug.com/571879162): Remove once the temporary allowlist is removed.
+  class AllowSubframesBrowserClient
+      : public ContentBrowserTestContentBrowserClient {
+   public:
+    bool IsUnboundedElementAllowedForSubframesOf(
+        const url::Origin& origin) override {
+      return true;
+    }
+  };
+
+  TestWebUIControllerFactory factory_;
+  ScopedWebUIControllerFactoryRegistration factory_registration_{&factory_};
+  base::test::ScopedFeatureList feature_list_;
+  std::unique_ptr<AllowSubframesBrowserClient> browser_client_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    UnboundedElementWebUITest,
+    UntrustedIframeAllowedWithPermissionsPolicyAndConstrainedToViewport) {
+  GURL webui_url(
+      GetWebUIURL("web-ui/title1.html?childsrc=*&notrustedtypes=true"));
+  EXPECT_TRUE(NavigateToURL(shell(), webui_url));
+
+  GURL iframe_url(embedded_test_server()->GetURL("/title1.html"));
+  std::string setup_script = base::StringPrintf(R"(
+    const iframe = document.createElement('iframe');
+    iframe.id = 'untrusted_iframe';
+    iframe.allow = 'unbounded-element';
+    iframe.src = '%s';
+    iframe.style.cssText = 'width:200px; height:200px; position:absolute; ' +
+        'top:50px; left:50px; border:none;';
+    document.body.appendChild(iframe);
+  )",
+                                                iframe_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), setup_script));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(iframe);
+  WaitForHitTestData(iframe);
+
+  std::string iframe_script = R"(
+    document.body.innerHTML = `
+      <style>
+        body { margin: 0; padding: 0; }
+        #target {
+          position: absolute;
+          top: -200px;
+          left: -200px;
+          width: 4000px;
+          height: 4000px;
+        }
+      </style>
+      <div id="target" unbounded></div>
+    `;
+    document.getElementById('target').showUnboundedElement().then(
+        () => "Success", e => e.name);
+  )";
+  EXPECT_EQ("Success", EvalJs(iframe, iframe_script));
+  WaitForFrameReady();
+  MainThreadFrameObserver iframe_frame_observer(iframe->GetRenderWidgetHost());
+  iframe_frame_observer.Wait();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+  ASSERT_TRUE(view);
+
+  EXPECT_TRUE(view->GetViewBounds().Contains(window->GetBounds()));
+  EXPECT_EQ(view->GetViewBounds(), window->GetBounds());
+}
+
+IN_PROC_BROWSER_TEST_F(UnboundedElementWebUITest,
+                       UntrustedIframeAllowedWithoutUserActivation) {
+  GURL webui_url(
+      GetWebUIURL("web-ui/title1.html?childsrc=*&notrustedtypes=true"));
+  EXPECT_TRUE(NavigateToURL(shell(), webui_url));
+
+  GURL iframe_url(embedded_test_server()->GetURL("/title1.html"));
+  std::string setup_script = base::StringPrintf(R"(
+    const iframe = document.createElement('iframe');
+    iframe.allow = 'unbounded-element';
+    iframe.src = '%s';
+    document.body.appendChild(iframe);
+  )",
+                                                iframe_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), setup_script,
+                     EXECUTE_SCRIPT_NO_USER_GESTURE));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(iframe);
+  EXPECT_FALSE(iframe->HasTransientUserActivation());
+
+  // The privileged main frame opted the untrusted iframe in via permissions
+  // policy, so user activation is not required.
+  std::string iframe_script = R"(
+    const div = document.createElement('div');
+    div.setAttribute('unbounded', '');
+    document.body.appendChild(div);
+    div.showUnboundedElement().then(() => "Success", e => e.name);
+  )";
+  EXPECT_EQ("Success",
+            EvalJs(iframe, iframe_script, EXECUTE_SCRIPT_NO_USER_GESTURE));
+}
+
+IN_PROC_BROWSER_TEST_F(UnboundedElementWebUITest,
+                       UntrustedIframeDeniedWithoutPermissionsPolicy) {
+  GURL webui_url(
+      GetWebUIURL("web-ui/title1.html?childsrc=*&notrustedtypes=true"));
+  EXPECT_TRUE(NavigateToURL(shell(), webui_url));
+
+  GURL iframe_url(embedded_test_server()->GetURL("/title1.html"));
+  std::string setup_script = base::StringPrintf(R"(
+    const iframe = document.createElement('iframe');
+    iframe.id = 'untrusted_iframe';
+    iframe.src = '%s';
+    iframe.style.cssText = 'width:200px; height:200px; position:absolute; ' +
+        'top:50px; left:50px; border:none;';
+    document.body.appendChild(iframe);
+  )",
+                                                iframe_url.spec().c_str());
+  EXPECT_TRUE(ExecJs(primary_main_frame_host(), setup_script));
+  EXPECT_TRUE(WaitForLoadStop(web_contents()));
+
+  RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
+  ASSERT_TRUE(iframe);
+
+  std::string check_script = R"(
+    const div = document.createElement('div');
+    'showUnboundedElement' in div ? "Present" : "Missing";
+  )";
+  EXPECT_EQ("Missing", EvalJs(iframe, check_script));
+}
+
+IN_PROC_BROWSER_TEST_F(UnboundedElementWebUITest,
+                       WebUIMainFrameCanEscapeViewport) {
+  GURL webui_url(
+      GetWebUIURL("web-ui/title1.html?childsrc=*&notrustedtypes=true"));
+  EXPECT_TRUE(NavigateToURL(shell(), webui_url));
+
+  std::string script = R"(
+    document.body.style.margin = '0';
+    document.body.style.padding = '0';
+    const target = document.createElement('div');
+    target.id = 'target';
+    target.setAttribute('unbounded', '');
+    target.style.cssText =
+        'position: absolute; top: -50px; left: -50px; ' +
+        'width: 3000px; height: 3000px;';
+    document.body.appendChild(target);
+    target.showUnboundedElement().then(() => "Success", e => e.name);
+  )";
+  EXPECT_EQ("Success", EvalJs(primary_main_frame_host(), script));
+  WaitForFrameReady();
+
+  UnboundedSurfaceWindow* window = GetActiveWindow();
+  ASSERT_TRUE(window);
+  RenderWidgetHostViewBase* view = static_cast<RenderWidgetHostViewBase*>(
+      primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+  ASSERT_TRUE(view);
+
+  gfx::Rect expected_screen_bounds = gfx::Rect(-50, -50, 3000, 3000);
+  expected_screen_bounds.Offset(view->GetViewBounds().OffsetFromOrigin());
+  EXPECT_EQ(expected_screen_bounds, window->GetBounds());
+  EXPECT_FALSE(view->GetViewBounds().Contains(window->GetBounds()));
+}
 
 INSTANTIATE_TEST_SUITE_P(All,
                          UnboundedElementHighDPIBrowserTest,
@@ -1514,7 +3812,6 @@ class UnboundedElementPermutationBrowserTest
   ~UnboundedElementPermutationBrowserTest() override = default;
 
   void SetUp() override {
-    SkipTestsForUnsupportedPlatforms();
     const auto& params = GetParam();
     std::vector<base::test::FeatureRef> enabled_features;
     std::vector<base::test::FeatureRef> disabled_features;
@@ -1527,10 +3824,10 @@ class UnboundedElementPermutationBrowserTest
 
     if (params.open_web_base_feature) {
       enabled_features.push_back(
-          blink::features::kUnboundedElementOnTheOpenWeb);
+          blink::features::kUnsafeUnboundedElementOnTheOpenWeb);
     } else {
       disabled_features.push_back(
-          blink::features::kUnboundedElementOnTheOpenWeb);
+          blink::features::kUnsafeUnboundedElementOnTheOpenWeb);
     }
 
     disabled_features.push_back(::features::kTreesInViz);
@@ -1554,9 +3851,9 @@ class UnboundedElementPermutationBrowserTest
     }
 
     if (params.open_web_runtime_feature) {
-      enabled_blink_features.push_back("UnboundedElementOnTheOpenWeb");
+      enabled_blink_features.push_back("UnsafeUnboundedElementOnTheOpenWeb");
     } else {
-      disabled_blink_features.push_back("UnboundedElementOnTheOpenWeb");
+      disabled_blink_features.push_back("UnsafeUnboundedElementOnTheOpenWeb");
     }
 
     if (!enabled_blink_features.empty()) {
@@ -1594,7 +3891,7 @@ IN_PROC_BROWSER_TEST_P(UnboundedElementPermutationBrowserTest,
   }
 
   // Blink's UnboundedElement runtime feature is implied if
-  // UnboundedElementOnTheOpenWeb runtime feature is enabled.
+  // UnsafeUnboundedElementOnTheOpenWeb runtime feature is enabled.
   bool effective_unbounded_runtime = params.unbounded_element_runtime_feature ||
                                      params.open_web_runtime_feature;
 

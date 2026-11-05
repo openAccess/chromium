@@ -26,6 +26,7 @@
 #include "base/test/test_reg_util_win.h"
 #include "base/values.h"
 #include "base/win/access_token.h"
+#include "base/win/scoped_bstr.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/security_descriptor.h"
 #include "base/win/security_util.h"
@@ -35,6 +36,7 @@
 #include "chrome/credential_provider/gaiacp/mdm_utils.h"
 #include "chrome/credential_provider/gaiacp/reg_utils.h"
 #include "chrome/credential_provider/test/gcp_fakes.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -665,17 +667,49 @@ TEST_F(GcpUtilsSecureCreateDirectoryTest, NewDirectory) {
   EXPECT_TRUE(base::DirectoryExists(new_dir));
   EXPECT_THAT(base::GetFileDacl(new_dir),
               AllOf(StartsWith(L"D:P"), HasSubstr(L";;;BA)"),
-                    HasSubstr(L";;;SY)"), Not(HasSubstr(L";;;WD)"))));
+                    HasSubstr(L";;;SY)"), Not(HasSubstr(L";;;AU)")),
+                    Not(HasSubstr(L";;;AC)")), Not(HasSubstr(L";;;WD)"))));
+  auto sd = base::win::SecurityDescriptor::FromFile(new_dir,
+                                                    OWNER_SECURITY_INFORMATION);
+  ASSERT_TRUE(sd.has_value());
+  EXPECT_EQ(sd->owner(),
+            base::win::Sid(base::win::WellKnownSid::kBuiltinAdministrators));
+}
+
+TEST_F(GcpUtilsSecureCreateDirectoryTest, GrantReadOnChildren) {
+  base::FilePath new_dir = temp_dir_.GetPath().Append(L"ReadableChildrenDir");
+  EXPECT_FALSE(base::DirectoryExists(new_dir));
+  EXPECT_TRUE(SecureCreateDirectory(new_dir, /*grant_read_on_children=*/true));
+  EXPECT_TRUE(base::DirectoryExists(new_dir));
+  EXPECT_THAT(
+      base::GetFileDacl(new_dir),
+      AllOf(StartsWith(L"D:P"), HasSubstr(L";;;BA)"), HasSubstr(L";;;SY)"),
+            HasSubstr(L"(A;OICIIO;RCGR;;;AU)"),
+            HasSubstr(L"(A;OICIIO;RCGR;;;AC)"), Not(HasSubstr(L";;;WD)"))));
 }
 
 TEST_F(GcpUtilsSecureCreateDirectoryTest, ExistingDirectory) {
   base::FilePath existing_dir = temp_dir_.GetPath().Append(L"ExistingDir");
   EXPECT_TRUE(base::CreateDirectory(existing_dir));
   EXPECT_TRUE(base::DirectoryExists(existing_dir));
+
+  // Set the initial owner to the current user SID to simulate a pre-created
+  // directory owned by a user rather than Administrators.
+  if (auto token = base::win::AccessToken::FromCurrentProcess(); token) {
+    base::win::SecurityDescriptor user_sd;
+    user_sd.set_owner(token->User());
+    EXPECT_TRUE(user_sd.WriteToFile(existing_dir, OWNER_SECURITY_INFORMATION));
+  }
+
   EXPECT_TRUE(SecureCreateDirectory(existing_dir));
   EXPECT_THAT(base::GetFileDacl(existing_dir),
               AllOf(StartsWith(L"D:P"), HasSubstr(L";;;BA)"),
                     HasSubstr(L";;;SY)"), Not(HasSubstr(L";;;WD)"))));
+  auto sd = base::win::SecurityDescriptor::FromFile(existing_dir,
+                                                    OWNER_SECURITY_INFORMATION);
+  ASSERT_TRUE(sd.has_value());
+  EXPECT_EQ(sd->owner(),
+            base::win::Sid(base::win::WellKnownSid::kBuiltinAdministrators));
 }
 
 TEST_F(GcpUtilsSecureCreateDirectoryTest,
@@ -714,6 +748,149 @@ TEST_F(GcpUtilsSecureCreateDirectoryTest, FailOnReparsePoint) {
     // reject it.
     EXPECT_FALSE(SecureCreateDirectory(link_dir));
   }
+}
+
+TEST_F(GcpUtilsSecureCreateDirectoryTest, SecureCreateFile) {
+  base::FilePath file_path = temp_dir_.GetPath().Append(L"test_file.txt");
+  EXPECT_TRUE(SecureCreateFile(file_path, "initial long content"));
+  std::string content;
+  EXPECT_TRUE(base::ReadFileToString(file_path, &content));
+  EXPECT_EQ("initial long content", content);
+
+  // Overwriting with shorter data must truncate the file.
+  EXPECT_TRUE(SecureCreateFile(file_path, "short"));
+  EXPECT_TRUE(base::ReadFileToString(file_path, &content));
+  EXPECT_EQ("short", content);
+
+  // Hardlink must be rejected without modifying the original file.
+  base::FilePath hardlink_path = temp_dir_.GetPath().Append(L"hardlink.txt");
+  ASSERT_TRUE(::CreateHardLinkW(hardlink_path.value().c_str(),
+                                file_path.value().c_str(), nullptr));
+  EXPECT_FALSE(SecureCreateFile(hardlink_path, "overwritten"));
+  EXPECT_TRUE(base::ReadFileToString(file_path, &content));
+  EXPECT_EQ("short", content);
+}
+
+class GcpRegUtilsTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    InitializeRegistryOverrideForTesting(&registry_override_);
+  }
+
+  registry_util::RegistryOverrideManager registry_override_;
+  FakeOSUserManager fake_os_user_manager_;
+};
+
+TEST_F(GcpRegUtilsTest, GetSidFromIdAndEmail) {
+  const std::wstring gaia_id = L"gaia_id";
+  const std::wstring email = L"user@gmail.com";
+  const std::wstring username = L"username";
+  const std::wstring password = L"password";
+  base::win::ScopedBstr sid;
+
+  ASSERT_EQ(S_OK, fake_os_user_manager_.CreateTestOSUser(
+                      username, password, L"Full Name", L"Comment",
+                      GaiaId(base::WideToUTF8(gaia_id)), email, sid.Receive()));
+
+  wchar_t found_sid[256];
+  ASSERT_EQ(S_OK, GetSidFromIdAndEmail(gaia_id, email, found_sid,
+                                       std::size(found_sid)));
+  EXPECT_EQ(std::wstring(sid.Get()), std::wstring(found_sid));
+
+  // Different email should fail.
+  ASSERT_EQ(HRESULT_FROM_WIN32(ERROR_NONE_MAPPED),
+            GetSidFromIdAndEmail(gaia_id, L"other@gmail.com", found_sid,
+                                 std::size(found_sid)));
+
+  // Different id should fail.
+  ASSERT_EQ(HRESULT_FROM_WIN32(ERROR_NONE_MAPPED),
+            GetSidFromIdAndEmail(L"other_id", email, found_sid,
+                                 std::size(found_sid)));
+}
+
+TEST_F(GcpRegUtilsTest, GetSidFromIdAndEmail_Duplicate) {
+  const std::wstring gaia_id = L"gaia_id";
+  const std::wstring email = L"user@gmail.com";
+  base::win::ScopedBstr sid1;
+  base::win::ScopedBstr sid2;
+
+  ASSERT_EQ(S_OK,
+            fake_os_user_manager_.CreateTestOSUser(
+                L"user1", L"pass1", L"Full Name 1", L"Comment 1",
+                GaiaId(base::WideToUTF8(gaia_id)), email, sid1.Receive()));
+
+  ASSERT_EQ(S_OK,
+            fake_os_user_manager_.CreateTestOSUser(
+                L"user2", L"pass2", L"Full Name 2", L"Comment 2",
+                GaiaId(base::WideToUTF8(gaia_id)), email, sid2.Receive()));
+
+  wchar_t found_sid[256];
+  ASSERT_EQ(
+      HRESULT_FROM_WIN32(ERROR_USER_EXISTS),
+      GetSidFromIdAndEmail(gaia_id, email, found_sid, std::size(found_sid)));
+}
+
+TEST_F(GcpRegUtilsTest, GetSidFromDomainAccountInfo) {
+  const std::wstring domain = L"domain";
+  const std::wstring username = L"username";
+  const std::wstring password = L"password";
+  base::win::ScopedBstr sid;
+
+  ASSERT_EQ(S_OK, fake_os_user_manager_.CreateTestOSUser(
+                      username, password, L"Full Name", L"Comment", GaiaId(),
+                      L"", domain, sid.Receive()));
+
+  // Manually set domain and username properties, as CreateTestOSUser doesn't.
+  ASSERT_EQ(S_OK,
+            SetUserProperty(sid.Get(), base::UTF8ToWide(kKeyDomain), domain));
+  ASSERT_EQ(S_OK, SetUserProperty(sid.Get(), base::UTF8ToWide(kKeyUsername),
+                                  username));
+
+  wchar_t found_sid[256];
+  ASSERT_EQ(S_OK, GetSidFromDomainAccountInfo(domain, username, found_sid,
+                                              std::size(found_sid)));
+  EXPECT_EQ(std::wstring(sid.Get()), std::wstring(found_sid));
+
+  // Different domain should fail.
+  ASSERT_EQ(E_FAIL,
+            GetSidFromDomainAccountInfo(L"other_domain", username, found_sid,
+                                        std::size(found_sid)));
+
+  // Different username should fail.
+  ASSERT_EQ(E_FAIL,
+            GetSidFromDomainAccountInfo(domain, L"other_user", found_sid,
+                                        std::size(found_sid)));
+}
+
+TEST_F(GcpRegUtilsTest, GetSidFromDomainAccountInfo_Duplicate) {
+  const std::wstring domain = L"domain";
+  const std::wstring username = L"username";
+  base::win::ScopedBstr sid1;
+  base::win::ScopedBstr sid2;
+
+  ASSERT_EQ(S_OK, fake_os_user_manager_.CreateTestOSUser(
+                      L"user1", L"pass1", L"Full Name 1", L"Comment 1",
+                      GaiaId(), L"", domain, sid1.Receive()));
+
+  ASSERT_EQ(S_OK, fake_os_user_manager_.CreateTestOSUser(
+                      L"user2", L"pass2", L"Full Name 2", L"Comment 2",
+                      GaiaId(), L"", domain, sid2.Receive()));
+
+  // Manually set domain and username properties for both.
+  ASSERT_EQ(S_OK,
+            SetUserProperty(sid1.Get(), base::UTF8ToWide(kKeyDomain), domain));
+  ASSERT_EQ(S_OK, SetUserProperty(sid1.Get(), base::UTF8ToWide(kKeyUsername),
+                                  username));
+
+  ASSERT_EQ(S_OK,
+            SetUserProperty(sid2.Get(), base::UTF8ToWide(kKeyDomain), domain));
+  ASSERT_EQ(S_OK, SetUserProperty(sid2.Get(), base::UTF8ToWide(kKeyUsername),
+                                  username));
+
+  wchar_t found_sid[256];
+  ASSERT_EQ(HRESULT_FROM_WIN32(ERROR_USER_EXISTS),
+            GetSidFromDomainAccountInfo(domain, username, found_sid,
+                                        std::size(found_sid)));
 }
 
 }  // namespace credential_provider

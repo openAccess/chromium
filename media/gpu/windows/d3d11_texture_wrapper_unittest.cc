@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "media/gpu/windows/d3d11_texture_wrapper.h"
-
 #include <utility>
 
 #include "base/functional/bind.h"
@@ -12,7 +10,8 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/task_environment.h"
 #include "media/gpu/test/fake_command_buffer_helper.h"
-#include "media/gpu/windows/d3d11_picture_buffer.h"
+#include "media/gpu/windows/d3d_picture_buffer.h"
+#include "media/gpu/windows/d3d_texture_wrapper.h"
 #include "media/gpu/windows/format_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -81,60 +80,60 @@ class D3D11TextureWrapperUnittest : public ::testing::Test {
 };
 
 TEST_F(D3D11TextureWrapperUnittest, NV12InitSucceeds) {
-  auto wrapper = std::make_unique<DefaultTexture2DWrapper>(
+  auto wrapper = std::make_unique<DefaultD3DTextureWrapper>(
       size_, color_space_, viz::MultiPlaneFormat::kNV12,
-      /*device=*/nullptr);
-  const D3D11Status init_result = wrapper->Init(
+      /*device=*/nullptr, gpu::GpuDriverBugWorkarounds());
+  const D3DStatus init_result = wrapper->Init(
       task_runner_, get_helper_cb_, /*in_texture=*/nullptr,
       /*array_slice=*/0, /*picture_buffer=*/nullptr,
       /*picture_buffer_gpu_resource_init_done_cb=*/base::DoNothing());
-  EXPECT_EQ(init_result.code(), D3D11Status::Codes::kOk);
+  EXPECT_EQ(init_result.code(), D3DStatus::Codes::kOk);
 
   // TODO: verify that ProcessTexture processes both textures.
 }
 
 TEST_F(D3D11TextureWrapperUnittest, BGRA8InitSucceeds) {
-  auto wrapper = std::make_unique<DefaultTexture2DWrapper>(
+  auto wrapper = std::make_unique<DefaultD3DTextureWrapper>(
       size_, color_space_, viz::SinglePlaneFormat::kBGRA_8888,
-      /*device=*/nullptr);
-  const D3D11Status init_result = wrapper->Init(
+      /*device=*/nullptr, gpu::GpuDriverBugWorkarounds());
+  const D3DStatus init_result = wrapper->Init(
       task_runner_, get_helper_cb_, /*in_texture=*/nullptr,
       /*array_slice=*/0, /*picture_buffer=*/nullptr,
       /*picture_buffer_gpu_resource_init_done_cb=*/base::DoNothing());
-  EXPECT_EQ(init_result.code(), D3D11Status::Codes::kOk);
+  EXPECT_EQ(init_result.code(), D3DStatus::Codes::kOk);
 }
 
 TEST_F(D3D11TextureWrapperUnittest, RGBA102InitSucceeds) {
-  auto wrapper = std::make_unique<DefaultTexture2DWrapper>(
+  auto wrapper = std::make_unique<DefaultD3DTextureWrapper>(
       size_, color_space_, viz::SinglePlaneFormat::kRGBA_1010102,
-      /*device=*/nullptr);
-  const D3D11Status init_result = wrapper->Init(
+      /*device=*/nullptr, gpu::GpuDriverBugWorkarounds());
+  const D3DStatus init_result = wrapper->Init(
       task_runner_, get_helper_cb_, /*in_texture=*/nullptr,
       /*array_slice=*/0, /*picture_buffer=*/nullptr,
       /*picture_buffer_gpu_resource_init_done_cb=*/base::DoNothing());
-  EXPECT_EQ(init_result.code(), D3D11Status::Codes::kOk);
+  EXPECT_EQ(init_result.code(), D3DStatus::Codes::kOk);
 }
 
 TEST_F(D3D11TextureWrapperUnittest, P010InitSucceeds) {
-  auto wrapper = std::make_unique<DefaultTexture2DWrapper>(
+  auto wrapper = std::make_unique<DefaultD3DTextureWrapper>(
       size_, color_space_, viz::MultiPlaneFormat::kP010,
-      /*device=*/nullptr);
-  const D3D11Status init_result = wrapper->Init(
+      /*device=*/nullptr, gpu::GpuDriverBugWorkarounds());
+  const D3DStatus init_result = wrapper->Init(
       task_runner_, get_helper_cb_, /*in_texture=*/nullptr,
       /*array_slice=*/0, /*picture_buffer=*/nullptr,
       /*picture_buffer_gpu_resource_init_done_cb=*/base::DoNothing());
-  EXPECT_EQ(init_result.code(), D3D11Status::Codes::kOk);
+  EXPECT_EQ(init_result.code(), D3DStatus::Codes::kOk);
 }
 
 TEST_F(D3D11TextureWrapperUnittest, UnknownInitFails) {
-  auto wrapper = std::make_unique<DefaultTexture2DWrapper>(
+  auto wrapper = std::make_unique<DefaultD3DTextureWrapper>(
       size_, color_space_, viz::SinglePlaneFormat::kRGBA_4444,
-      /*device=*/nullptr);
-  const D3D11Status init_result = wrapper->Init(
+      /*device=*/nullptr, gpu::GpuDriverBugWorkarounds());
+  const D3DStatus init_result = wrapper->Init(
       task_runner_, get_helper_cb_, /*in_texture=*/nullptr,
       /*array_slice=*/0, /*picture_buffer=*/nullptr,
       /*picture_buffer_gpu_resource_init_done_cb=*/base::DoNothing());
-  EXPECT_NE(init_result.code(), D3D11Status::Codes::kOk);
+  EXPECT_NE(init_result.code(), D3DStatus::Codes::kOk);
 }
 
 }  // namespace media

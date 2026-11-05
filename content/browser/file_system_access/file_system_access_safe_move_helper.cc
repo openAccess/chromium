@@ -21,6 +21,7 @@
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/common/content_client.h"
 #include "crypto/hash.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
@@ -51,7 +52,7 @@ class HashCalculator : public base::RefCounted<HashCalculator> {
       FileSystemAccessSafeMoveHelper::HashCallback callback,
       const storage::FileSystemURL& source_url,
       storage::FileSystemOperationRunner*) {
-    DCHECK_CURRENTLY_ON(BrowserThread::IO);
+    CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
     auto calculator = base::MakeRefCounted<HashCalculator>(std::move(context),
                                                            std::move(callback));
     calculator->Start(source_url);
@@ -60,7 +61,7 @@ class HashCalculator : public base::RefCounted<HashCalculator> {
   HashCalculator(scoped_refptr<storage::FileSystemContext> context,
                  FileSystemAccessSafeMoveHelper::HashCallback callback)
       : context_(std::move(context)), callback_(std::move(callback)) {
-    DCHECK(context_);
+    CHECK(context_, base::NotFatalUntil::M159);
   }
 
  private:
@@ -97,9 +98,9 @@ class HashCalculator : public base::RefCounted<HashCalculator> {
 
   void ReadMore() {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    DCHECK_GE(file_size_, 0);
+    CHECK_GE(file_size_, 0, base::NotFatalUntil::M159);
     int read_result =
-        reader_->Read(buffer_.get(), buffer_->size(),
+        reader_->Read(buffer_, buffer_->size(),
                       base::BindOnce(&HashCalculator::DidRead, this));
     if (read_result == net::ERR_IO_PENDING)
       return;
@@ -108,7 +109,7 @@ class HashCalculator : public base::RefCounted<HashCalculator> {
 
   void DidRead(int bytes_read) {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    DCHECK_GE(file_size_, 0);
+    CHECK_GE(file_size_, 0, base::NotFatalUntil::M159);
     if (bytes_read < 0) {
       std::move(callback_).Run(storage::NetErrorToFileError(bytes_read),
                                std::string(), -1);
@@ -152,15 +153,29 @@ FileSystemAccessSafeMoveHelper::FileSystemAccessSafeMoveHelper(
     const storage::FileSystemURL& dest_url,
     storage::FileSystemOperation::CopyOrMoveOptionSet options,
     download::QuarantineConnectionCallback quarantine_connection_callback,
-    bool has_transient_user_activation)
+    bool has_transient_user_activation,
+    base::WeakPtr<WebContents> web_contents,
+    GlobalRenderFrameHostId outermost_main_frame_id)
     : manager_(std::move(manager)),
       context_(context),
+      web_contents_(std::move(web_contents)),
+      outermost_main_frame_id_(outermost_main_frame_id),
       source_url_(source_url),
       dest_url_(dest_url),
       options_(options),
       quarantine_connection_callback_(
           std::move(quarantine_connection_callback)),
-      has_transient_user_activation_(has_transient_user_activation) {}
+      has_transient_user_activation_(has_transient_user_activation) {
+  if (auto* rfh = content::RenderFrameHost::FromID(context_.frame_id)) {
+    if (!outermost_main_frame_id_) {
+      outermost_main_frame_id_ = rfh->GetOutermostMainFrame()->GetGlobalId();
+    }
+    if (!web_contents_) {
+      web_contents_ =
+          content::WebContents::FromRenderFrameHost(rfh)->GetWeakPtr();
+    }
+  }
+}
 
 FileSystemAccessSafeMoveHelper::~FileSystemAccessSafeMoveHelper() = default;
 
@@ -242,20 +257,16 @@ void FileSystemAccessSafeMoveHelper::DoAfterWriteCheck(
     return;
   }
 
-  content::GlobalRenderFrameHostId outermost_main_frame_id;
-  auto* rfh = content::RenderFrameHost::FromID(context_.frame_id);
-  if (rfh)
-    outermost_main_frame_id = rfh->GetOutermostMainFrame()->GetGlobalId();
-
   auto item = std::make_unique<FileSystemAccessWriteItem>();
   item->target_file_path = dest_url().path();
   item->full_path = source_url().path();
   item->sha256_hash = hash;
   item->size = size;
   item->frame_url = context_.url;
-  item->outermost_main_frame_id = outermost_main_frame_id;
+  item->outermost_main_frame_id = outermost_main_frame_id_;
   item->initiating_frame_id = context_.frame_id;
   item->has_user_gesture = has_transient_user_activation_;
+  item->web_contents = web_contents_;
   manager_->permission_context()->PerformAfterWriteChecks(
       std::move(item), context_.frame_id,
       base::BindOnce(&FileSystemAccessSafeMoveHelper::DidAfterWriteCheck,

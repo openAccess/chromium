@@ -7,22 +7,29 @@
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/run_until.h"
 #include "base/test/test_timeouts.h"
+#include "build/build_config.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_metrics.h"
 #include "chrome/browser/actor/actor_tab_data.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/execution_engine.h"
 #include "chrome/browser/actor/site_policy.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/optimization_guide/browser_test_util.h"
 #include "chrome/browser/password_manager/actor_login/chrome_actor_login_delegate_client.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
 #include "components/optimization_guide/core/filters/optimization_hints_component_update_listener.h"
+#include "components/password_manager/core/browser/actor_login/actor_login_quality_logger_interface.h"
 #include "components/password_manager/core/browser/actor_login/internal/actor_login_delegate_client.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/webid/federated_embedder_login_request.h"
 #include "content/public/test/browser_test_utils.h"
@@ -31,7 +38,17 @@
 #include "ui/display/display_switches.h"
 #include "ui/gfx/geometry/rect_f.h"
 
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/actor/ui/actor_task_unload_handler.h"
+#else
+#include "chrome/browser/actor/android/ui/actor_ui_tab_controller_android.h"
+#include "content/public/common/content_switches.h"
+#endif
+
 namespace actor {
+
+MockToolDelegate::MockToolDelegate() = default;
+MockToolDelegate::~MockToolDelegate() = default;
 
 actor_login::Credential MakeTestCredential(
     const std::u16string& username,
@@ -77,7 +94,7 @@ MockActorLoginService::~MockActorLoginService() = default;
 void MockActorLoginService::GetCredentials(
     actor_login::ActorLoginDelegateClient* client,
     bool has_sign_in_with_google_button,
-    base::WeakPtr<actor_login::ActorLoginQualityLoggerInterface> mqls_logger,
+    scoped_refptr<actor_login::ActorLoginQualityLoggerInterface> mqls_logger,
     actor_login::CredentialsOrErrorReply callback) {
   std::move(callback).Run(credentials_);
 }
@@ -86,7 +103,7 @@ void MockActorLoginService::AttemptLogin(
     actor_login::ActorLoginDelegateClient* client,
     const actor_login::Credential& credential,
     bool should_store_permission,
-    base::WeakPtr<actor_login::ActorLoginQualityLoggerInterface> mqls_logger,
+    scoped_refptr<actor_login::ActorLoginQualityLoggerInterface> mqls_logger,
     base::TimeTicks attempt_login_tool_start_time,
     actor_login::FrameFillingStartedCallback frame_filling_started_cb,
     actor_login::LoginStatusResultOrErrorReply callback,
@@ -202,12 +219,35 @@ ActorToolsTest::ActorToolsTest() {
 
 ActorToolsTest::~ActorToolsTest() = default;
 
+void ActorToolsTest::SetUp() {
+  // TODO(crbug.com/517619366): Decouple tests from Glic eligibility criteria.
+  if (!glic::GlicEnabling::IsOsVersionSupported()) {
+    GTEST_SKIP() << "OS version not supported by Glic";
+  }
+  PlatformBrowserTest::SetUp();
+}
+
 void ActorToolsTest::SetUpOnMainThread() {
   PlatformBrowserTest::SetUpOnMainThread();
   host_resolver()->AddRule("*", "127.0.0.1");
   embedded_test_server()->ServeFilesFromSourceDirectory("components/test/data");
   embedded_https_test_server().ServeFilesFromSourceDirectory(
       "components/test/data");
+
+#if !BUILDFLAG(IS_ANDROID)
+  // These tests drive browser initiated navigations as scaffolding, which the
+  // leave site confirmation would treat as the user navigating away. Note this
+  // switch also suppresses the shared tab close dialog, so a suppressed fixture
+  // provides no coverage of either confirmation flow; tests that need a dialog
+  // must opt back in explicitly.
+  previous_suppress_confirm_dialog_ =
+      ActorTaskTabCloseConfirmDialog::ShouldSuppressForTesting();
+  ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(true);
+#else
+  previous_suppress_confirm_dialog_ = ui::ActorUiTabControllerAndroid::
+      ShouldSuppressNavigationDialogsForTesting();
+  ui::ActorUiTabControllerAndroid::SetSuppressNavigationDialogsForTesting(true);
+#endif
 
   task_id_ =
       ActorKeyedService::Get(GetProfile())
@@ -237,9 +277,26 @@ void ActorToolsTest::SetUpCommandLine(base::CommandLine* command_line) {
   PlatformBrowserTest::SetUpCommandLine(command_line);
   SetUpBlocklist(command_line, "blocked.example.com");
   command_line->AppendSwitchASCII(switches::kForceDeviceScaleFactor, "1");
+#if BUILDFLAG(IS_ANDROID)
+  // Test devices are often offline. The offline status indicator that appears
+  // a few seconds after startup resizes the top controls, which asserts if the
+  // controls are not fully shown at that moment (e.g. during tab fullscreen or
+  // a tab switch). Java instrumentation tests pass this switch globally too.
+  // TODO(crbug.com/574927722): Remove once BrowserControlsManager handles
+  // height changes while the controls are hidden.
+  command_line->AppendSwitch(switches::kForceOnlineConnectionStateForIndicator);
+#endif
 }
 
 void ActorToolsTest::TearDownOnMainThread() {
+#if !BUILDFLAG(IS_ANDROID)
+  ActorTaskTabCloseConfirmDialog::SetSuppressForTesting(
+      previous_suppress_confirm_dialog_);
+#else
+  ui::ActorUiTabControllerAndroid::SetSuppressNavigationDialogsForTesting(
+      previous_suppress_confirm_dialog_);
+#endif
+
   // The ActorTask owned ExecutionEngine has a pointer to the profile, which
   // must be released before the browser is torn down to avoid a dangling
   // pointer.
@@ -271,6 +328,28 @@ content::RenderFrameHost* ActorToolsTest::main_frame() {
   return web_contents()->GetPrimaryMainFrame();
 }
 
+TabListInterface* ActorToolsTest::tab_list() {
+  return TabListInterface::From(active_tab()->GetBrowserWindowInterface());
+}
+
+void ActorToolsTest::OpenForegroundTab(const GURL& url) {
+  // Open in the background and activate explicitly rather than opening in the
+  // foreground. On Android, a foreground open runs the new tab animation,
+  // which re-selects the new tab again when the animation finishes. That
+  // deferred selection can land after a tool under test has switched tabs
+  // and undo the switch.
+  tabs::TabInterface* tab =
+      tab_list()->OpenTab(url, /*index=*/-1, /*foreground=*/false);
+  ASSERT_TRUE(tab);
+  ASSERT_TRUE(content::WaitForLoadStop(tab->GetContents()));
+  tab_list()->ActivateTab(tab->GetHandle());
+
+  // On Android, TabInterface::IsActivated() can lag the tab list's active
+  // index briefly. Tools treat an already activated target as a successful
+  // no-op, so wait for activation to settle before acting.
+  ASSERT_TRUE(base::test::RunUntil([tab]() { return tab->IsActivated(); }));
+}
+
 ExecutionEngine& ActorToolsTest::execution_engine() {
   return actor_task().GetExecutionEngine();
 }
@@ -287,9 +366,8 @@ ActorTask& ActorToolsTest::actor_task() const {
 void ActorToolsTest::SetPageContent(
     base::OnceClosure quit_closure,
     optimization_guide::AIPageContentResultOrError page_content) {
-  auto apc = std::move(page_content->proto);
   auto* tab_data = ActorTabData::From(active_tab());
-  tab_data->DidObserveContent(apc, ApcSource::kActor);
+  tab_data->DidObserveContent(*page_content, ApcSource::kActor);
   std::move(quit_closure).Run();
 }
 

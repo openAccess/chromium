@@ -15,6 +15,7 @@
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "chrome/browser/ui/tabs/tab_group_attention_indicator.h"
+#include "chrome/browser/ui/views/tabs/common/tab_group_unfocus_button.h"
 #include "chrome/browser/ui/views/tabs/groups/tab_group_editor_bubble_tracker.h"
 #include "chrome/browser/ui/views/tabs/hovercard/hover_card_anchor_target.h"
 #include "chrome/browser/ui/views/tabs/tab_slot_view.h"
@@ -23,11 +24,11 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
 #include "ui/views/context_menu_controller.h"
-#include "ui/views/controls/focus_ring.h"
+#include "ui/views/view_observer.h"
 #include "ui/views/view_targeter_delegate.h"
 
 class TabSlotController;
-class TabGroupStyle;
+class TabGroupStyleViews;
 struct TabSizeInfo;
 class TabStyle;
 
@@ -45,7 +46,9 @@ class View;
 // boundaries. There is one header for each group, which is included in the tab
 // strip flow and positioned left of the leftmost tab in the group.
 class TabGroupHeader : public TabSlotView,
+                       public TabGroupUnfocusButton::Delegate,
                        public views::ContextMenuController,
+                       public views::ViewObserver,
                        public views::ViewTargeterDelegate,
                        public HoverCardAnchorTarget {
   METADATA_HEADER(TabGroupHeader, TabSlotView)
@@ -53,7 +56,7 @@ class TabGroupHeader : public TabSlotView,
  public:
   TabGroupHeader(TabSlotController& tab_slot_controller,
                  const tab_groups::TabGroupId& group,
-                 const TabGroupStyle& style);
+                 const TabGroupStyleViews& style);
   TabGroupHeader(const TabGroupHeader&) = delete;
   TabGroupHeader& operator=(const TabGroupHeader&) = delete;
   ~TabGroupHeader() override;
@@ -65,14 +68,19 @@ class TabGroupHeader : public TabSlotView,
   bool OnMousePressed(const ui::MouseEvent& event) override;
   bool OnMouseDragged(const ui::MouseEvent& event) override;
   void OnMouseReleased(const ui::MouseEvent& event) override;
+  void OnMouseMoved(const ui::MouseEvent& event) override;
   void OnMouseEntered(const ui::MouseEvent& event) override;
+  void OnMouseExited(const ui::MouseEvent& event) override;
   void OnGestureEvent(ui::GestureEvent* event) override;
-  void OnFocus() override;
-  void OnBlur() override;
   void OnThemeChanged() override;
   TabSlotView::ViewType GetTabSlotViewType() const override;
   TabSizeInfo GetTabSizeInfo() const override;
   gfx::Rect GetAnchorBoundsInScreen() const override;
+
+  // TabGroupUnfocusButton::Delegate:
+  void ExitFocusMode() override;
+  bool IsValid() const override;
+  const TabGroup& GetTabGroup() const override;
 
   // HoverCardAnchorTarget:
   bool NeedsToShowThumbnail() const override;
@@ -87,6 +95,10 @@ class TabGroupHeader : public TabSlotView,
       views::View* source,
       const gfx::Point& point,
       ui::mojom::MenuSourceType source_type) override;
+
+  // views::ViewObserver:
+  void OnViewFocused(views::View* observed_view) override;
+  void OnViewBlurred(views::View* observed_view) override;
 
   // views::ViewTargeterDelegate:
   bool DoesIntersectRect(const views::View* target,
@@ -107,6 +119,10 @@ class TabGroupHeader : public TabSlotView,
   std::u16string_view GetTitleTextForTesting() const;
 
   bool is_collapsed_for_testing() const { return is_collapsed_; }
+  views::View* title_chip_for_testing() const { return title_chip_; }
+  TabGroupUnfocusButton* unfocus_chip_for_testing() const {
+    return unfocus_chip_;
+  }
 
  private:
   friend class TabGroupEditorBubbleViewDialogBrowserTest;
@@ -137,13 +153,17 @@ class TabGroupHeader : public TabSlotView,
   // selected.
   void CreateHeaderWithTitle();
 
-  void UpdateTooltipText();
-
   void UpdateAccessibleName();
 
   void OnTabGroupDataChanged();
+  int GetUnfocusChipWidthWithGap() const;
+  void MaybeUpdateHoverStatus(const ui::MouseEvent& event);
 
   const raw_ref<TabSlotController> tab_slot_controller_;
+
+  // The button rendered before the title chip when a tab group is focused to
+  // exit focus mode.
+  const raw_ptr<TabGroupUnfocusButton> unfocus_chip_;
 
   // The title chip for the tab group header which comprises of title text if
   // there is any, and a background color. The size and color of the chip are
@@ -162,7 +182,7 @@ class TabGroupHeader : public TabSlotView,
   // needs_attention_ set to true.
   const raw_ptr<views::ImageView> attention_indicator_;
 
-  const raw_ref<const TabGroupStyle> group_style_;
+  const raw_ref<const TabGroupStyleViews> group_style_;
   const raw_ptr<const TabStyle> tab_style_;
 
   // The current title of the group.
@@ -182,14 +202,16 @@ class TabGroupHeader : public TabSlotView,
   // Determines whether the header UI should show the attention indicator needed
   // for collaboration messaging.
   bool needs_attention_ = false;
-
-  base::CallbackListSubscription title_text_changed_subscription_;
+  bool is_ephemeral_ = false;
+  bool is_title_chip_hovered_ = false;
 
   TabGroupEditorBubbleTracker editor_bubble_tracker_;
   base::CallbackListSubscription editor_bubble_opened_subscription_;
   base::CallbackListSubscription editor_bubble_closed_subscription_;
   std::unique_ptr<tabs::TabGroupDataObserver> tab_group_data_observer_;
   base::CallbackListSubscription tab_group_data_observer_subscription_;
+  base::ScopedObservation<views::View, views::ViewObserver>
+      title_chip_observation_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_TAB_GROUP_HEADER_H_

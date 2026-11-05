@@ -8,6 +8,7 @@
 #include <string>
 
 #include "crypto/crypto_export.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 
 namespace crypto {
@@ -46,17 +47,17 @@ enum class TPMOperation {
   // An operation to verify the signature of a restricted signing key.
   kRestrictedMessageVerify,
 };
-// LINT.ThenChange(//tools/metrics/histograms/metadata/net/histograms.xml:TpmOperation)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/crypto/histograms.xml:TpmOperation)
 
 // Converts the given `operation` to a string representation.
 CRYPTO_EXPORT std::string OperationToString(TPMOperation operation);
 
 // Converts the given `algorithm` to a string representation.
-CRYPTO_EXPORT std::string AlgorithmToString(
-    SignatureVerifier::SignatureAlgorithm algorithm);
+CRYPTO_EXPORT std::string AlgorithmToString(sign::SignatureKind algorithm);
 
 // Records UMA metrics of TPM availability, latency and successful usage.
-// Does the work on a new background task.
+// Runs slow, blocking TPM operations on the calling sequence, which must allow
+// blocking.
 CRYPTO_EXPORT void MaybeMeasureTpmOperations(
     UnexportableKeyProvider::Config config);
 
@@ -72,15 +73,46 @@ enum class TPMSupport {
   kMaxValue = 2,
 };
 
-// Note that values here are used in a recorded histogram. Don't change
-// the values of existing members.
-enum class TPMType {
-  kNone = 0,
-  kHW = 1,
-  kVirtual = 2,
-  kBoth = 3,
-  kMaxValue = 3,
+// Whether a Windows machine has TPM hardware for unexportable keys and, if not,
+// why. Recorded as Crypto.KeyHardwareSupport.Win.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(WinKeyHardwareSupport)
+enum class WinKeyHardwareSupport {
+  // tbs.dll could not be loaded.
+  kTbsUnavailable = 0,
+  // `Tbsi_GetDeviceInfo()` returned `TBS_E_TPM_NOT_FOUND`. There is no TPM, it
+  // is disabled in firmware, or no driver claimed it.
+  kTpmNotFound = 1,
+  // `Tbsi_GetDeviceInfo()` failed with any other error.
+  kGetDeviceInfoFailed = 2,
+  kTpm12 = 3,
+  kTpm20 = 4,
+  // TBS reported a TPM version other than 1.2 or 2.0.
+  kUnknownTpmVersion = 5,
+  kMaxValue = kUnknownTpmVersion,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/crypto/enums.xml:WinKeyHardwareSupport)
+
+// Whether a Mac has a Secure Enclave and the executable has the
+// keychain-access-groups entitlement that unexportable keys need, or which of
+// the two is missing. Recorded as Crypto.KeyHardwareSupport.Mac.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(MacKeyHardwareSupport)
+enum class MacKeyHardwareSupport {
+  // There is no Secure Enclave.
+  kNoSecureEnclave = 0,
+  // There is a Secure Enclave, but the executable lacks the
+  // keychain-access-groups entitlement for the configured access group.
+  kMissingEntitlement = 1,
+  // There is a Secure Enclave and the executable has the entitlement.
+  kSecureEnclave = 2,
+  kMaxValue = kSecureEnclave,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/crypto/enums.xml:MacKeyHardwareSupport)
 
 // Exported for testing
 CRYPTO_EXPORT void MeasureTpmOperationsInternalForTesting();

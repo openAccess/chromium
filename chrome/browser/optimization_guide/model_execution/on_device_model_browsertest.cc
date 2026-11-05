@@ -10,21 +10,23 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/component_updater/optimization_guide_on_device_model_installer.h"
 #include "chrome/browser/optimization_guide/model_execution/optimization_guide_global_state.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/metrics_services_manager/metrics_services_manager.h"
-#include "components/optimization_guide/core/model_execution/manifest_broker/test/manifest_builder.h"
+#include "components/optimization_guide/core/model_execution/configs/manifest_builder.h"
+#include "components/optimization_guide/core/model_execution/manifest_broker/test/manifest_component_directory.h"
 #include "components/optimization_guide/core/model_execution/model_execution_features.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
+#include "components/optimization_guide/core/model_execution/on_device_features.h"
 #include "components/optimization_guide/core/model_execution/performance_class.h"
 #include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
+#include "components/optimization_guide/core/model_execution/usage_tracker.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/proto/manifest.pb.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom-shared.h"
 #include "components/prefs/pref_service.h"
@@ -70,7 +72,7 @@ class OnDeviceAssets {
                 proto::BaseModelRecipe::PERFORMANCE_HINT_UNSPECIFIED, {}, 0)));
     builder.Add(
         "test_solution",
-        SolutionRecipe("base_model_recipe", "",
+        SolutionRecipe("base_model_recipe",
                        FileReference("manifest", "test_config.binarypb")),
         {
             DeviceUseCase{DeviceCategory::kCpu, "test"},
@@ -91,7 +93,7 @@ class OnDeviceModelBrowserTestBase : public InProcessBrowserTest {
     // This test depends on the disk information being available in a timely
     // manner (see crbug.com/346579988). Use this flag to have the information
     // retrieved with higher priority which reduces the chances of flakiness.
-    cmd->AppendSwitch(switches::kGetFreeDiskSpaceWithUserVisiblePriorityTask);
+    cmd->AppendSwitch(kGetFreeDiskSpaceWithUserVisiblePriorityTaskSwitch);
     cmd->AppendSwitchPath("optimization-guide-manifest-override",
                           assets_.manifest_override().path());
   }
@@ -122,8 +124,9 @@ class OnDeviceModelExecutionEnabledBrowserTest
   }
 
   void SetUpLocalStatePrefService(PrefService* local_state) override {
-    model_execution::prefs::RecordFeatureUsage(local_state,
-                                               mojom::OnDeviceFeature::kTest);
+    UsageTracker(local_state)
+        .RaisePriority(ToUseCaseName(mojom::OnDeviceFeature::kTest),
+                       UsageTracker::Priority::kBestEffort);
     UpdatePerformanceClassPref(local_state,
                                OnDeviceModelPerformanceClass::kVeryHigh);
   }

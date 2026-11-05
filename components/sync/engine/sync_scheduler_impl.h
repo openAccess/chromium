@@ -5,13 +5,13 @@
 #ifndef COMPONENTS_SYNC_ENGINE_SYNC_SCHEDULER_IMPL_H_
 #define COMPONENTS_SYNC_ENGINE_SYNC_SCHEDULER_IMPL_H_
 
-#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 
 #include "base/cancelable_callback.h"
 #include "base/compiler_specific.h"
+#include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -75,7 +75,7 @@ class SyncSchedulerImpl : public SyncScheduler {
   void OnReceivedPollIntervalUpdate(
       const base::TimeDelta& new_interval) override;
   void OnReceivedCustomNudgeDelays(
-      const std::map<DataType, base::TimeDelta>& nudge_delays) override;
+      const base::flat_map<DataType, base::TimeDelta>& nudge_delays) override;
   void OnSyncProtocolError(
       const SyncProtocolError& sync_protocol_error) override;
   void OnReceivedMigrationRequest(DataTypeSet types) override;
@@ -271,6 +271,11 @@ class SyncSchedulerImpl : public SyncScheduler {
   // Tracks if an asynchronous access token request is currently in flight,
   // storing the RespectGlobalBackoff setting.
   std::optional<RespectGlobalBackoff> pending_access_token_request_backoff_;
+
+  // Set when a sync cycle is skipped because the fetched access token was
+  // empty, so that `OnCredentialsUpdated()` knows to retry once credentials are
+  // available.
+  bool waiting_for_credentials_ = false;
 
   SEQUENCE_CHECKER(sequence_checker_);
 

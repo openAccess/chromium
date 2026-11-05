@@ -72,8 +72,6 @@
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
 #include "chrome/browser/ash/app_restore/app_restore_arc_test_helper.h"
 #include "chrome/browser/ash/app_restore/app_restore_test_util.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/login/login_manager_test.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
@@ -89,18 +87,20 @@
 #include "chrome/browser/ui/ash/login/user_adding_screen.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/test/base/ash/util/ash_test_util.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/ui/base/app_types.h"
@@ -124,6 +124,7 @@
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "components/services/app_service/public/cpp/launch_result.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tab_groups/tab_group_color.h"
 #include "components/tab_groups/tab_group_info.h"
 #include "components/tab_groups/tab_group_visual_data.h"
@@ -134,6 +135,7 @@
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/test/window_destroyed_waiter.h"
 #include "ui/aura/window.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/compositor/layer.h"
 #include "ui/display/screen.h"
@@ -663,7 +665,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest,
   app_launch_info->container =
       static_cast<int32_t>(apps::LaunchContainer::kLaunchContainerWindow);
   app_launch_info->disposition =
-      static_cast<int32_t>(WindowOpenDisposition::NEW_FOREGROUND_TAB);
+      static_cast<int32_t>(ui::mojom::WindowOpenDisposition::kNewForegroundTab);
   app_launch_info->browser_extra_info.urls = {GURL(kExampleUrl1)};
   app_launch_info->browser_extra_info.tab_group_infos = {group_info};
 
@@ -814,7 +816,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest, CaptureActiveDeskAsTemplateTest) {
 
   EXPECT_EQ(static_cast<int>(apps::LaunchContainer::kLaunchContainerWindow),
             data2->container.value());
-  EXPECT_EQ(static_cast<int>(WindowOpenDisposition::NEW_WINDOW),
+  EXPECT_EQ(static_cast<int>(ui::mojom::WindowOpenDisposition::kNewWindow),
             data2->disposition.value());
   // Verify window info are correctly captured.
   EXPECT_THAT(data2->window_info.current_bounds, Optional(settings_app_bounds));
@@ -985,8 +987,8 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest, LaunchTemplateWithChromeApp) {
       profile()->GetPath(),
       std::make_unique<app_restore::AppLaunchInfo>(
           extension_id, apps::LaunchContainer::kLaunchContainerWindow,
-          WindowOpenDisposition::NEW_WINDOW, display::kDefaultDisplayId,
-          std::vector<base::FilePath>{}, nullptr));
+          ui::mojom::WindowOpenDisposition::kNewWindow,
+          display::kDefaultDisplayId, std::vector<base::FilePath>{}, nullptr));
 
   extensions::AppWindow* app_window = CreateAppWindow(profile(), extension);
   ASSERT_TRUE(app_window);
@@ -2187,7 +2189,7 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest,
 
   EXPECT_EQ(static_cast<int>(apps::LaunchContainer::kLaunchContainerWindow),
             data2->container.value());
-  EXPECT_EQ(static_cast<int>(WindowOpenDisposition::NEW_WINDOW),
+  EXPECT_EQ(static_cast<int>(ui::mojom::WindowOpenDisposition::kNewWindow),
             data2->disposition.value());
   // Verify window info are correctly captured.
   EXPECT_THAT(data2->window_info.current_bounds, Optional(settings_app_bounds));
@@ -2211,8 +2213,8 @@ IN_PROC_BROWSER_TEST_F(DesksClientTest, SystemUILaunchTemplateWithChromeApp) {
       profile()->GetPath(),
       std::make_unique<app_restore::AppLaunchInfo>(
           extension_id, apps::LaunchContainer::kLaunchContainerWindow,
-          WindowOpenDisposition::NEW_WINDOW, display::kDefaultDisplayId,
-          std::vector<base::FilePath>{}, nullptr));
+          ui::mojom::WindowOpenDisposition::kNewWindow,
+          display::kDefaultDisplayId, std::vector<base::FilePath>{}, nullptr));
 
   extensions::AppWindow* app_window = CreateAppWindow(profile(), extension);
   ASSERT_TRUE(app_window);

@@ -16,6 +16,7 @@
 #include "third_party/blink/renderer/core/frame/frame_console.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
+#include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/html/html_link_element.h"
@@ -26,6 +27,7 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -35,7 +37,7 @@ ManifestManager::Result::Result(mojom::blink::ManifestRequestResult result,
                                 mojom::blink::ManifestPtr manifest)
     : result_(result),
       manifest_url_(manifest_url),
-      manifest_(manifest ? std::move(manifest) : mojom::blink::Manifest::New()),
+      manifest_(std::move(manifest)),
       debug_info_(mojom::blink::ManifestDebugInfo::New()) {
   // The default constructor for ManifestDebugInfo does not initialize
   // `raw_manifest` with a valid value, so do so here instead.
@@ -88,8 +90,9 @@ ManifestManager::~ManifestManager() = default;
 void ManifestManager::RequestManifest(RequestManifestCallback callback) {
   RequestManifestImpl(blink::BindOnce(
       [](RequestManifestCallback callback, const Result& result) {
-        std::move(callback).Run(result.result(), result.manifest_url(),
-                                result.manifest().Clone());
+        std::move(callback).Run(
+            result.result(), result.manifest_url(),
+            result.manifest() ? result.manifest()->Clone() : nullptr);
       },
       std::move(callback)));
 }
@@ -110,7 +113,8 @@ void ManifestManager::RequestManifestAndErrors(
             return;
           case mojom::blink::ManifestRequestResult::kNoManifestSpecified:
           case mojom::blink::ManifestRequestResult::kSuccess:
-            std::move(callback).Run(result.manifest().Clone());
+            CHECK(result.manifest());
+            std::move(callback).Run(result.manifest()->Clone());
             return;
         }
       },
@@ -121,9 +125,10 @@ void ManifestManager::RequestManifestDebugInfo(
     RequestManifestDebugInfoCallback callback) {
   RequestManifestImpl(blink::BindOnce(
       [](RequestManifestDebugInfoCallback callback, const Result& result) {
-        std::move(callback).Run(result.manifest_url(),
-                                result.manifest().Clone(),
-                                result.debug_info().Clone());
+        std::move(callback).Run(
+            result.manifest_url(),
+            result.manifest() ? result.manifest()->Clone() : nullptr,
+            result.debug_info().Clone());
       },
       std::move(callback)));
 }
@@ -248,9 +253,9 @@ void ManifestManager::OnManifestFetchComplete(
   if (response.HttpStatusCode() >= 200 && response.HttpStatusCode() < 400) {
     ParseManifestFromPage(document_url, response.CurrentRequestUrl(), data);
   } else {
-    const String message = StrCat(
-        {"Manifest fetch from ", response.CurrentRequestUrl().GetString(),
-         " failed, code ", String::Number(response.HttpStatusCode())});
+    const String message = Format("Manifest fetch from {} failed, code {}",
+                                  response.CurrentRequestUrl().GetString(),
+                                  response.HttpStatusCode());
 
     GetSupplementable()->AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
         mojom::blink::ConsoleMessageSource::kOther,
@@ -317,11 +322,11 @@ void ManifestManager::ParseManifestFromPage(const KURL& document_url,
 
   // We should always have a start_url, manifest_id, and scope, as any errors
   // still have fallbacks back to the document_url.
-  CHECK(!result.manifest().start_url.IsEmpty() &&
-        result.manifest().start_url.IsValid());
-  CHECK(!result.manifest().id.IsEmpty() && result.manifest().id.IsValid());
-  CHECK(!result.manifest().scope.IsEmpty() &&
-        result.manifest().scope.IsValid());
+  CHECK(!result.manifest()->start_url.IsEmpty() &&
+        result.manifest()->start_url.IsValid());
+  CHECK(!result.manifest()->id.IsEmpty() && result.manifest()->id.IsValid());
+  CHECK(!result.manifest()->scope.IsEmpty() &&
+        result.manifest()->scope.IsValid());
 
   // At this point, the manifest is validly parsed, and is not the default one.
   UseCounter::CountWebDXFeature(GetSupplementable(), WebDXFeature::kManifest);
@@ -337,10 +342,12 @@ void ManifestManager::ResolveCallbacks(Result result) {
   // if any URLs would be too long and return an error instead if that is the
   // case.
   const bool has_overlong_urls =
-      result.manifest().manifest_url.GetString().length() > url::kMaxURLChars ||
-      result.manifest().id.GetString().length() > url::kMaxURLChars ||
-      result.manifest().start_url.GetString().length() > url::kMaxURLChars ||
-      result.manifest().scope.GetString().length() > url::kMaxURLChars;
+      result.manifest() &&
+      (result.manifest()->manifest_url.GetString().length() >
+           url::kMaxURLChars ||
+       result.manifest()->id.GetString().length() > url::kMaxURLChars ||
+       result.manifest()->start_url.GetString().length() > url::kMaxURLChars ||
+       result.manifest()->scope.GetString().length() > url::kMaxURLChars);
   if (has_overlong_urls) {
     result = Result(mojom::blink::ManifestRequestResult::kUnexpectedFailure);
   }
@@ -359,11 +366,21 @@ void ManifestManager::ResolveCallbacks(Result result) {
 }
 
 KURL ManifestManager::ManifestURL() const {
-  HTMLLinkElement* link_element =
-      GetSupplementable()->document()->LinkManifest();
-  if (!link_element)
-    return KURL();
-  return link_element->Href();
+  if (HTMLLinkElement* link_element =
+          GetSupplementable()->document()->LinkManifest()) {
+    return link_element->Href();
+  }
+
+  LocalDOMWindow* window = GetSupplementable();
+  if (window->GetFrame() && window->GetFrame()->GetSettings()) {
+    if (const String& custom_manifest_url =
+            window->GetFrame()->GetSettings()->GetWebAppCustomManifestUrl();
+        !custom_manifest_url.empty()) {
+      return KURL(custom_manifest_url);
+    }
+  }
+
+  return KURL();
 }
 
 bool ManifestManager::ManifestUseCredentials() const {
@@ -398,8 +415,11 @@ mojom::blink::ManifestPtr ManifestManager::DefaultManifest() {
 }
 
 void ManifestManager::ContextDestroyed() {
-  if (fetcher_)
+  current_fetching_manifest_url_.reset();
+  if (fetcher_) {
     fetcher_->Cancel();
+    fetcher_ = nullptr;
+  }
 
   // Consumers in the browser process will not receive this message but they
   // will be aware of the RenderFrame dying and should act on that. Consumers

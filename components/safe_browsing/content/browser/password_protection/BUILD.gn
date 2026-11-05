@@ -18,8 +18,6 @@ source_set("password_protection") {
       "request_canceler_content.h",
     ]
 
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
     public_deps = [ "//google_apis" ]
 
     deps = [
@@ -34,7 +32,7 @@ source_set("password_protection") {
       "//components/safe_browsing/core/browser:safe_browsing_metrics_collector",
       "//components/safe_browsing/core/browser/db:allowlist_checker_client",
       "//components/safe_browsing/core/browser/db:database_manager",
-      "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
+      "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
       "//components/safe_browsing/core/browser/password_protection",
       "//components/safe_browsing/core/browser/password_protection:password_protection_metrics_util",
       "//components/safe_browsing/core/common",

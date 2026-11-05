@@ -13,7 +13,6 @@ namespace test_default {
 }  // namespace test_default
 
 ScopedTransportSecurityStateSource::ScopedTransportSecurityStateSource() {
-  // TODO(mattm): allow using other source?
   SetTransportSecurityStateSourceForTesting(&test_default::kHSTSSource);
 }
 

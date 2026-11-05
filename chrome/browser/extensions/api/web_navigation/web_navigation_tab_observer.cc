@@ -19,6 +19,8 @@
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_event_histogram_value.h"
 #include "net/base/net_errors.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 namespace extensions {
@@ -183,7 +185,7 @@ void WebNavigationTabObserver::DidOpenRequestedURL(
     content::RenderFrameHost* source_render_frame_host,
     const GURL& url,
     const content::Referrer& referrer,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
     bool started_from_context_menu,
     bool renderer_initiated) {
@@ -195,12 +197,12 @@ void WebNavigationTabObserver::DidOpenRequestedURL(
 
   // We only send the onCreatedNavigationTarget if we end up creating a new
   // window.
-  if (disposition != WindowOpenDisposition::SINGLETON_TAB &&
-      disposition != WindowOpenDisposition::NEW_FOREGROUND_TAB &&
-      disposition != WindowOpenDisposition::NEW_BACKGROUND_TAB &&
-      disposition != WindowOpenDisposition::NEW_POPUP &&
-      disposition != WindowOpenDisposition::NEW_WINDOW &&
-      disposition != WindowOpenDisposition::OFF_THE_RECORD) {
+  if (disposition != ui::mojom::WindowOpenDisposition::kSingletonTab &&
+      disposition != ui::mojom::WindowOpenDisposition::kNewForegroundTab &&
+      disposition != ui::mojom::WindowOpenDisposition::kNewBackgroundTab &&
+      disposition != ui::mojom::WindowOpenDisposition::kNewPopup &&
+      disposition != ui::mojom::WindowOpenDisposition::kNewWindow &&
+      disposition != ui::mojom::WindowOpenDisposition::kOffTheRecord) {
     return;
   }
 

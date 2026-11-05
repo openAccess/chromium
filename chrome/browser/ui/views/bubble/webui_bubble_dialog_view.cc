@@ -8,12 +8,13 @@
 
 #include "build/build_config.h"
 #include "components/input/native_web_keyboard_event.h"
-#include "third_party/skia/include/core/SkRect.h"
 #include "ui/base/hit_test.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/gfx/draggable_region.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/fill_layout.h"
@@ -55,7 +56,7 @@ class WebUIBubbleView : public views::WebView {
   explicit WebUIBubbleView(content::WebContents* web_contents) {
     SetWebContents(web_contents);
     // Allow the embedder to handle accelerators not handled by the WebContents.
-    set_allow_accelerators(true);
+    set_allow_accelerators_deprecated(true);
     SetPreferredSize(web_contents->GetSize());
   }
   ~WebUIBubbleView() override = default;
@@ -68,38 +69,26 @@ class WebUIBubbleView : public views::WebView {
   }
 };
 
-SkRegion ComputeDraggableRegion(
-    const std::vector<blink::mojom::DraggableRegionPtr>& regions) {
-  SkRegion draggable_region;
-  for (const blink::mojom::DraggableRegionPtr& region : regions) {
-    draggable_region.op(
-        SkIRect::MakeXYWH(region->bounds.x(), region->bounds.y(),
-                          region->bounds.width(), region->bounds.height()),
-        region->draggable ? SkRegion::kUnion_Op : SkRegion::kDifference_Op);
-  }
-  return draggable_region;
-}
-
 BEGIN_METADATA(WebUIBubbleView)
 END_METADATA
 
 }  // namespace
 
 WebUIBubbleDialogView::WebUIBubbleDialogView(
-    views::View* anchor_view,
+    views::BubbleAnchor anchor,
     base::WeakPtr<WebUIContentsWrapper> contents_wrapper,
     const std::optional<gfx::Rect>& anchor_rect,
     views::BubbleBorder::Arrow arrow,
     bool autosize)
-    : BubbleDialogDelegateView(anchor_view,
+    : BubbleDialogDelegateView(anchor,
                                arrow,
                                views::BubbleBorder::DIALOG_SHADOW,
                                autosize),
-      contents_wrapper_(contents_wrapper),
+      contents_wrapper_(std::move(contents_wrapper)),
       web_view_(AddChildView(std::make_unique<WebUIBubbleView>(
           contents_wrapper_->web_contents()))),
       bubble_anchor_(anchor_rect) {
-  DCHECK(!contents_wrapper_->GetHost());
+  CHECK(!contents_wrapper_->GetHost(), base::NotFatalUntil::M162);
 
   contents_wrapper_->web_contents()->WasShown();
 
@@ -120,9 +109,11 @@ void WebUIBubbleDialogView::ClearContentsWrapper() {
     return;
   }
   if (contents_wrapper_->GetHost()) {
-    DCHECK_EQ(this, contents_wrapper_->GetHost().get());
+    CHECK_EQ(this, contents_wrapper_->GetHost().get(),
+             base::NotFatalUntil::M162);
   }
-  DCHECK_EQ(web_view_->web_contents(), contents_wrapper_->web_contents());
+  CHECK_EQ(web_view_->web_contents(), contents_wrapper_->web_contents(),
+           base::NotFatalUntil::M162);
   web_view_->SetWebContents(nullptr);
   contents_wrapper_->web_contents()->WasHidden();
   contents_wrapper_->SetHost(nullptr);
@@ -231,7 +222,7 @@ bool WebUIBubbleDialogView::HandleKeyboardEvent(
 void WebUIBubbleDialogView::DraggableRegionsChanged(
     const std::vector<blink::mojom::DraggableRegionPtr>& regions,
     content::WebContents* contents) {
-  draggable_region_ = ComputeDraggableRegion(regions);
+  draggable_region_ = gfx::DraggableRegionsToSkRegion(regions);
 }
 
 web_modal::WebContentsModalDialogHost*

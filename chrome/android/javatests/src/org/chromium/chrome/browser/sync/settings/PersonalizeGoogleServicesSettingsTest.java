@@ -6,17 +6,15 @@ package org.chromium.chrome.browser.sync.settings;
 
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
-import static androidx.test.espresso.assertion.ViewAssertions.matches;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import static org.chromium.chrome.browser.settings.SettingsSearchTestUtils.assertHighlighted;
 import static org.chromium.chrome.browser.settings.SettingsSearchTestUtils.assertNoSearchResultsFound;
 import static org.chromium.chrome.browser.settings.SettingsSearchTestUtils.clickSearchResult;
-import static org.chromium.chrome.browser.settings.SettingsSearchTestUtils.highlighted;
 import static org.chromium.chrome.browser.settings.SettingsSearchTestUtils.typeSearchQuery;
 
 import androidx.test.filters.SmallTest;
@@ -37,9 +35,7 @@ import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.regional_capabilities.RegionalCapabilitiesServiceFactory;
 import org.chromium.chrome.browser.settings.MainSettings;
@@ -91,13 +87,12 @@ public class PersonalizeGoogleServicesSettingsTest {
         ServiceLoaderUtil.setInstanceForTesting(
                 GoogleActivityController.class, mGoogleActivityController);
         RegionalCapabilitiesServiceFactory.setInstanceForTesting(mRegionalCapabilities);
-        when(mRegionalCapabilities.isInEeaCountry()).thenReturn(true);
+        when(mRegionalCapabilities.mayShowLinkedGoogleServicesSetting()).thenReturn(true);
     }
 
     @Test
     @SmallTest
     @Feature({"RenderTest", "PersonalizedGoogleServices"})
-    @DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testLayout() throws Exception {
         mSyncTestRule.setUpAccountAndSignInForTesting();
         mSettingsTestRule.startSettingsActivity();
@@ -150,8 +145,7 @@ public class PersonalizeGoogleServicesSettingsTest {
 
         clickSearchResult(R.string.personalized_google_services_waa_title);
 
-        onView(highlighted(R.string.personalized_google_services_waa_title))
-                .check(matches(isDisplayed()));
+        assertHighlighted(R.string.personalized_google_services_waa_title);
     }
 
     @Test
@@ -165,15 +159,14 @@ public class PersonalizeGoogleServicesSettingsTest {
 
         clickSearchResult(R.string.personalized_google_services_linked_services_title);
 
-        onView(highlighted(R.string.personalized_google_services_linked_services_title))
-                .check(matches(isDisplayed()));
+        assertHighlighted(R.string.personalized_google_services_linked_services_title);
     }
 
     @Test
     @SmallTest
     @Feature({"PersonalizedGoogleServices"})
     public void testSearchPersonalizeGoogleServices_nonEea() {
-        when(mRegionalCapabilities.isInEeaCountry()).thenReturn(false);
+        when(mRegionalCapabilities.mayShowLinkedGoogleServicesSetting()).thenReturn(false);
         mSettingsSearchTestRule.startSettingsActivity();
         mSyncTestRule.setUpAccountAndSignInForTesting();
 

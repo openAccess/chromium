@@ -13,8 +13,6 @@
 #import "base/time/default_clock.h"
 #import "base/time/time.h"
 
-constexpr char kPasscodeArticleURL[] = "https://support.apple.com/HT204060";
-
 namespace {
 
 // Duration of authentication validity.
@@ -61,6 +59,9 @@ constexpr base::TimeDelta kIntervalForValidAuth = base::Minutes(1);
 }
 
 - (BOOL)canAttemptReauth {
+  // This implementation satisfies the thread-safety requirement because
+  // `canEvaluatePolicy` is running from an isolated, thread-confined LAContext
+  // instance.
   LAContext* context = _createLAContext();
   // The authentication method is Touch ID, Face ID or passcode.
   return [context canEvaluatePolicy:LAPolicyDeviceOwnerAuthentication

@@ -20,6 +20,8 @@
 #include "base/types/expected.h"
 #include "base/values.h"
 #include "build/chromeos_buildflags.h"
+#include "chrome/browser/ash/login/users/profile_user_manager_controller.h"
+#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/printing/cups_print_job_manager_factory.h"
 #include "chrome/browser/ash/printing/fake_local_printer.h"
 #include "chrome/browser/ash/printing/history/print_job_history_service_factory.h"
@@ -27,26 +29,26 @@
 #include "chrome/browser/ash/printing/history/test_print_job_database.h"
 #include "chrome/browser/ash/printing/print_management/printing_manager_factory.h"
 #include "chrome/browser/ash/printing/test_cups_print_job_manager.h"
-#include "chrome/browser/chromeos/printing/test_cups_wrapper.h"
 #include "chrome/browser/extensions/api/printing/fake_print_job_controller.h"
 #include "chrome/browser/extensions/api/printing/print_job_submitter.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/printing/print_preview_sticky_settings.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_constants.h"
-#include "chrome/common/extensions/api/printing.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/login/login_state/login_state.h"
+#include "chromeos/ash/experiences/extensions/common/api/printing.h"
 #include "chromeos/printing/printer_configuration.h"
+#include "chromeos/printing/test_cups_wrapper.h"
 #include "components/account_id/account_id.h"
 #include "components/account_id/account_id_literal.h"
 #include "components/history/core/test/history_service_test_util.h"
 #include "components/session_manager/core/fake_session_manager_delegate.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/user_manager/fake_user_manager_delegate.h"
 #include "components/user_manager/scoped_user_manager.h"
@@ -111,7 +113,7 @@ class PrintingEventObserver : public TestEventRouter::EventObserver {
                                   const Event& event) override {
     if (event.event_name == event_name_) {
       extension_id_ = extension_id;
-      event_args_ = base::Value(event.event_args.Clone());
+      event_args_ = base::Value(event.args().Clone());
     }
   }
 
@@ -401,22 +403,25 @@ class PrintingAPIHandlerUnittest : public testing::Test {
   }
 
   void SetUp() override {
-    test_user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
             TestingBrowserProcess::GetGlobal()->GetTestingLocalState());
     profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(profile_manager_->SetUp());
+    profile_user_manager_controller_ =
+        std::make_unique<ash::ProfileUserManagerController>(
+            profile_manager_->profile_manager(),
+            user_manager::UserManager::Get());
     ash::LoginState::Initialize();
 
-    ASSERT_TRUE(test_user_session_manager_->AddRegularUser(kAccountId));
-    test_user_session_manager_->LogIn(kAccountId);
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(kAccountId));
+    user_session_test_environment_->LogIn(kAccountId);
 
-    testing_profile_ =
-        profile_manager_->CreateTestingProfile(chrome::kInitialProfile);
-    ash::AnnotatedAccountId::Set(testing_profile_, kAccountId);
-    user_manager::UserManager::Get()->OnUserProfileCreated(
-        kAccountId, testing_profile_->GetPrefs());
+    ash::ScopedAccountIdAnnotator annotator(profile_manager_->profile_manager(),
+                                            kAccountId);
+    testing_profile_ = profile_manager_->CreateTestingProfile(
+        std::string(kAccountId.GetUserEmail()));
 
     print_job_manager_ =
         std::make_unique<ash::TestCupsPrintJobManager>(testing_profile_);
@@ -478,9 +483,9 @@ class PrintingAPIHandlerUnittest : public testing::Test {
     event_router_ = nullptr;
     print_job_history_service_.reset();
     ash::LoginState::Shutdown();
-    user_manager::UserManager::Get()->OnUserProfileWillBeDestroyed(kAccountId);
     testing_profile_ = nullptr;
-    profile_manager_->DeleteTestingProfile(chrome::kInitialProfile);
+    profile_manager_->DeleteTestingProfile(
+        std::string(kAccountId.GetUserEmail()));
     // HistoryService and CupsPrintJobManager must be shutdown later than
     // deleting the TestingProfile.
     // TestingProfile deletion will shutdown keyed service TestPrintingManager.
@@ -489,7 +494,8 @@ class PrintingAPIHandlerUnittest : public testing::Test {
     print_job_manager_.reset();
     history_service_.reset();
     profile_manager_.reset();
-    test_user_session_manager_.reset();
+    profile_user_manager_controller_.reset();
+    user_session_test_environment_.reset();
   }
 
  protected:
@@ -506,7 +512,10 @@ class PrintingAPIHandlerUnittest : public testing::Test {
   // Resets `disable_pdf_flattening_for_testing` back to false automatically
   // after the test is over.
   base::AutoReset<bool> disable_pdf_flattening_reset_;
-  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
+  std::unique_ptr<ash::ProfileUserManagerController>
+      profile_user_manager_controller_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
   std::unique_ptr<ash::TestCupsPrintJobManager> print_job_manager_;
   std::unique_ptr<ash::PrintJobHistoryServiceImpl> print_job_history_service_;

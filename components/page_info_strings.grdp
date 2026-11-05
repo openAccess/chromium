@@ -206,6 +206,15 @@
     <message name="IDS_PAGE_INFO_QWAC_STATUS_TITLE" desc="The text of the title of the Page Info row that shows EU Qualified Certificate status." formatter_data="android_java">
       EU Qualified Status
     </message>
+    <message name="IDS_PAGE_INFO_QWAC_ICON_A11Y_LABEL" desc="The accessibility label for the EU trust mark logo icon in the Page Info row that shows EU Qualified Certificate status." formatter_data="android_java" is_accessibility_with_no_ui="true">
+      EU trust mark
+    </message>
+    <message name="IDS_PAGE_INFO_OPEN_CERTIFICATE_DETAILS_A11Y_LABEL" desc="The accessibility label for the button icon that opens the certificate details dialog in Page Info." formatter_data="android_java" is_accessibility_with_no_ui="true">
+      Open certificate details
+    </message>
+    <message name="IDS_PAGE_INFO_OPEN_QWAC_A11Y_LABEL" desc="The accessibility label for the button icon that opens the EU Qualified Certificate (QWAC) dialog in Page Info." formatter_data="android_java" is_accessibility_with_no_ui="true">
+      Open EU Qualified Certificate (QWAC)
+    </message>
 
     <!-- Certificate Info strings -->
     <if expr="is_android">
@@ -400,15 +409,17 @@
     <message name="IDS_PAGE_INFO_DELETE_HID_DEVICE_WITH_NAME" desc="The tooltip displayed when hovering over the button that will remove permission to access a HID device that the user previously granted to the site.">
       Revoke access for <ph name="DEVICE_NAME">$1<ex>Stadia Controller</ex></ph>
     </message>
-    <message name="IDS_PAGE_INFO_SMART_CARD_READER_ALLOWED_BY_POLICY_LABEL" desc="The label displayed underneath the device name to inform the user that the item listed is refering to a Smart card reader device explicitly allowed by the user's enterprise policy.">
-      Smart card reader allowed by your administrator
-    </message>
-    <message name="IDS_PAGE_INFO_SMART_CARD_READER_SECONDARY_LABEL" desc="The label displayed underneath the device name to inform the user that the item refers to a smart card reader.">
-      Smart card reader
-    </message>
-    <message name="IDS_PAGE_INFO_DELETE_SMART_CARD_READER_WITH_NAME" desc="The tooltip displayed when hovering over the button that will remove permission to access a Smart Card Reader that the user previously granted to the site.">
-      Revoke access for <ph name="DEVICE_NAME">$1<ex>Reader 1</ex></ph>
-    </message>
+    <if expr="enable_smart_card">
+      <message name="IDS_PAGE_INFO_SMART_CARD_READER_ALLOWED_BY_POLICY_LABEL" desc="The label displayed underneath the device name to inform the user that the item listed is refering to a Smart card reader device explicitly allowed by the user's enterprise policy.">
+        Smart card reader allowed by your administrator
+      </message>
+      <message name="IDS_PAGE_INFO_SMART_CARD_READER_SECONDARY_LABEL" desc="The label displayed underneath the device name to inform the user that the item refers to a smart card reader.">
+        Smart card reader
+      </message>
+      <message name="IDS_PAGE_INFO_DELETE_SMART_CARD_READER_WITH_NAME" desc="The tooltip displayed when hovering over the button that will remove permission to access a Smart Card Reader that the user previously granted to the site.">
+        Revoke access for <ph name="DEVICE_NAME">$1<ex>Reader 1</ex></ph>
+      </message>
+    </if>
 
     <!-- Site settings link -->
     <message name="IDS_PAGE_INFO_SITE_SETTINGS_LINK" desc="This is the text of the link pointing to Chrome's Site Settings page. This appears at the bottom of the Permissions pane of the Page Information Window.">
@@ -909,6 +920,9 @@
   </message>
 
   <!-- Cookies subpage -->
+  <message name="IDS_PAGE_INFO_EXTENSIONS" desc="The label of the Extensions row in the Page Info bubble to open the extensions menu.">
+    Extensions
+  </message>
   <message name="IDS_PAGE_INFO_COOKIES_HEADER" desc="The header label of cookies subpage in Page Info bubble.">
     Cookies and site data
   </message>

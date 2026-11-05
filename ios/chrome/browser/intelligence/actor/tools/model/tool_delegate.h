@@ -6,7 +6,10 @@
 #define IOS_CHROME_BROWSER_INTELLIGENCE_ACTOR_TOOLS_MODEL_TOOL_DELEGATE_H_
 
 #import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
+#import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
 #import "ios/web/public/navigation/navigation_manager.h"
+
+class GURL;
 
 namespace web {
 class WebState;
@@ -57,6 +60,10 @@ class ToolDelegate {
       int32_t window_id,
       const web::NavigationManager::WebLoadParams& load_params,
       bool in_background) = 0;
+
+  virtual void IsAcceptableNavigationDestination(
+      const GURL& url,
+      ToolExecutionCallback callback) = 0;
 };
 
 }  // namespace actor

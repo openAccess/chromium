@@ -23,11 +23,12 @@ described below.
 
 ### Dry-Run
 
-This runs all the normal set of tests for a CL. When the dry-run has complete,
+This runs all the normal set of tests for a CL. When the dry-run has completed,
 it will simply report the results of the CQ attempt as a Gerrit comment on the
-CL and take no further action. This mode is intended to be used frequently as a
-CL is developed. Can be triggered via either the `CQ Dry Run` button in Gerrit
-or by applying the `Commit-Queue +1` label vote. See
+CL and take no further action. This mode is intended to be used as a CL is
+developed. Can be triggered via either the `CQ Dry Run` button in Gerrit or by
+applying the `Commit-Queue +1` label vote. Passing tryjob builds from a dry-run
+can be reused at submit time (see [Build Reuse](#build-reuse)). See
 [below](#what-exactly-does-the-cq-run) for the anatomy of a build on the CQ.
 
 ### Full-Run
@@ -66,6 +67,28 @@ running the Mega CQ, you'll likely want to spot-check the failures listed on
 Gerrit for anything that looks particularly relevant to your CL. Then you can use
 the normal `SUBMIT TO CQ` button to land once all failures look unrelated.
 
+## Build Reuse
+
+When you trigger a CQ run (`CQ+1` dry-run or `CQ+2` full-run), the CQ checks
+whether passing builds from an earlier run on the same patchset (or an
+equivalent patchset across trivial rebases or commit message edits) are still
+fresh enough to reuse instead of rebuilding from scratch.
+
+Whether a passing build can be reused depends on the reuse window configured
+for the target branch and builder:
+
+- **Commit-distance reuse window**: Builders configured with a commit-distance
+  window (e.g. `800` commits on `main`) evaluate freshness based on how many
+  commits have landed since the build ran rather than wall-clock time. A
+  passing build remains reusable as long as the target branch has not advanced
+  beyond that threshold, even if more than 24 hours have elapsed (such as over
+  a quiet weekend or holiday). Conversely, during high-volume weekday commit
+  surges, builds expire once the branch advances past the commit threshold.
+- **Time-based reuse window (24-hour default)**: If a builder or target branch
+  (such as a milestone release branch) does not use a commit-distance window,
+  passing builds can be reused for up to **24 hours** from when they were
+  created.
+
 ## Options
 
 The Chromium CQ supports a variety of options that can change what it checks.
@@ -86,11 +109,36 @@ The Chromium CQ supports a variety of options that can change what it checks.
   want to risk accidentally submitting it via the CQ. The CQ will immediately
   stop processing the change if it contains this option.
 
+* `Cq-Exclude-Trybots: <trybots>`
+
+    This flag allows you to specify trybots to exclude from running on this CL,
+    even if they would otherwise be triggered by default or by directory-based
+    rules (location filters). The format for the list of trybots is
+    "bucket:trybot1,trybot2;bucket2:trybot3".
+
 * `Cq-Include-Trybots: <trybots>`
 
   This flag allows you to specify some additional bots to run for this CL, in
   addition to the default bots. The format for the list of trybots is
   "bucket:trybot1,trybot2;bucket2:trybot3".
+
+* `Cq-No-Rebase: true`
+
+  Instructs trybots to check out the patch ref directly without rebasing it
+  onto the target branch tip (passes `gerrit_no_rebase_patch_ref=True` to
+  `bot_update`). This is intended for testing multi-parent merge CLs (such as
+  automated downstream syncs) where auto-rebasing the merged history onto the
+  branch tip would attempt to cherry-pick all merged commits individually.
+
+  **Restrictions:**
+  * **CQ Dry Runs only**: In CV, this footer is only supported during CQ Dry
+    Runs (`CQ+1`). Full CQ runs (`CQ+2`) containing this footer will fail
+    immediately.
+  * **No build reuse**: Builds executed with this footer are marked as reusable
+    only by other dry runs, and cannot be reused by subsequent Full Runs
+    (`CQ+2`).
+  * **Manual tryjobs**: Supported when triggering tryjobs directly outside CV
+    (e.g. via `git cl try` or `bb add`).
 
 * `Disable-Retries: true`
 
@@ -174,6 +222,17 @@ The Chromium CQ supports a variety of options that can change what it checks.
 
   Specifies the number of compilation failures each trybot should collect before
   terminating the build (0 means infinity).
+
+* `Missing-Deps: <mode>`
+
+  Configures how Siso handles missing dependencies (passing
+  `-missing_deps=<mode>` to Siso). `<mode>` must be one of:
+  * `ignore`: Skip missing dependency checks.
+  * `warn`: Print warnings on missing dependencies without failing the build.
+  * `error`: Print errors on missing dependencies and continue running remaining
+    steps, then fail the build at completion.
+  * `fatal`: Fail the build step immediately upon detecting missing
+    dependencies.
 
 ## Google-internal CQ Builders
 

@@ -9,6 +9,7 @@
 #include "ash/constants/ash_features.h"
 #include "ash/system/time/calendar_utils.h"
 #include "ash/system/time/date_helper.h"
+#include "base/check_deref.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/feature_list.h"
 #include "base/strings/string_util.h"
@@ -23,19 +24,19 @@
 #include "chrome/browser/ash/guest_os/guest_os_share_path.h"
 #include "chrome/browser/ash/guest_os/guest_os_share_path_factory.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_policy_constants.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager_factory.h"
-#include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/variations/service/variations_service.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -232,8 +233,6 @@ void AddStringsForDrive(base::DictValue* dict) {
              IDS_FILE_BROWSER_DRIVE_ORGANIZATION_STORAGE_FULL);
   SET_STRING("SYNC_SERVICE_UNAVAILABLE_ERROR",
              IDS_FILE_BROWSER_SYNC_SERVICE_UNAVAILABLE_ERROR);
-  SET_STRING("DRIVE_MANAGE_MIRRORSYNC",
-             IDS_FILE_BROWSER_DRIVE_MANAGE_MIRRORSYNC_LABEL);
   SET_STRING("GOOGLE_DRIVE_SETTINGS_LINK",
              IDS_FILE_BROWSER_GOOGLE_DRIVE_SETTINGS_LINK_LABEL);
   SET_STRING("DRIVE_MULTIPLE_FILES_SYNCING",
@@ -581,8 +580,6 @@ void AddStringsGeneric(base::DictValue* dict) {
              IDS_FILE_BROWSER_FORMAT_DEVICE_BUTTON_LABEL);
   SET_STRING("FORMAT_DIALOG_TITLE", IDS_FILE_BROWSER_FORMAT_DIALOG_TITLE);
   SET_STRING("FORMAT_DIALOG_MESSAGE", IDS_FILE_BROWSER_FORMAT_DIALOG_MESSAGE);
-  SET_STRING("FORMAT_PARTITION_DIALOG_MESSAGE",
-             IDS_FILE_BROWSER_FORMAT_PARTITION_DIALOG_MESSAGE);
   SET_STRING("FORMAT_DIALOG_DELETE_WARNING",
              IDS_FILE_BROWSER_FORMAT_DIALOG_DELETE_WARNING);
   SET_STRING("FORMAT_DIALOG_DRIVE_NAME_LABEL",
@@ -591,8 +588,6 @@ void AddStringsGeneric(base::DictValue* dict) {
              IDS_FILE_BROWSER_FORMAT_DIALOG_FORMAT_LABEL);
   SET_STRING("FORMAT_DIALOG_CONFIRM_LABEL",
              IDS_FILE_BROWSER_FORMAT_DIALOG_CONFIRM_LABEL);
-  SET_STRING("FORMAT_DIALOG_CONFIRM_SHORT_LABEL",
-             IDS_FILE_BROWSER_FORMAT_DIALOG_CONFIRM_SHORT_LABEL);
   SET_STRING("FORMAT_PROGRESS_MESSAGE",
              IDS_FILE_BROWSER_FORMAT_PROGRESS_MESSAGE);
   SET_STRING("FORMAT_SUCCESS_MESSAGE", IDS_FILE_BROWSER_FORMAT_SUCCESS_MESSAGE);
@@ -785,12 +780,6 @@ void AddStringsGeneric(base::DictValue* dict) {
              IDS_REMOVABLE_DEVICE_UNSUPPORTED_DEFAULT_MESSAGE);
   SET_STRING("REMOVABLE_DEVICE_UNSUPPORTED_MESSAGE",
              IDS_REMOVABLE_DEVICE_UNSUPPORTED_MESSAGE);
-  SET_STRING("REPARTITION_DEVICE_BUTTON_LABEL",
-             IDS_FILE_BROWSER_REPARTITION_DEVICE_BUTTON_LABEL);
-  SET_STRING("REPARTITION_DIALOG_CONFIRM_LABEL",
-             IDS_FILE_BROWSER_REPARTITION_DIALOG_CONFIRM_LABEL);
-  SET_STRING("REPARTITION_DIALOG_MESSAGE",
-             IDS_FILE_BROWSER_REPARTITION_DIALOG_MESSAGE);
   SET_STRING("RESTORE_FROM_TRASH_BUTTON_LABEL",
              IDS_FILE_BROWSER_RESTORE_FROM_TRASH_BUTTON_LABEL);
   SET_STRING("RESTORE_FROM_TRASH_ERROR",
@@ -1112,52 +1101,31 @@ void AddStringsGeneric(base::DictValue* dict) {
 
 #undef SET_STRING
 
-// Attempts to get the current user profile, may return nullptr.
-Profile* GetProfile() {
-  if (!user_manager::UserManager::IsInitialized()) {
-    return nullptr;
-  }
-
-  user_manager::UserManager* user_manager = user_manager::UserManager::Get();
-  if (!user_manager) {
-    return nullptr;
-  }
-
-  user_manager::User* user = user_manager->GetActiveUser();
-  if (!user) {
-    return nullptr;
-  }
-
-  return ash::ProfileHelper::Get()->GetProfileByUser(user);
-}
-
 bool IsEligibleAndEnabledGoogleOneOfferFilesBanner(
     const std::string& application_locale,
-    const variations::VariationsService& variations_service) {
+    const variations::VariationsService& variations_service,
+    const user_manager::User& user) {
   // Google One offer is for a device, not for an account. Do not show a banner
   // if a device is enrolled.
   if (ash::InstallAttributes::Get()->IsEnterpriseManaged()) {
     return false;
   }
 
-  Profile* profile = GetProfile();
-  if (!profile) {
+  if (user.GetType() == user_manager::UserType::kGuest) {
     return false;
   }
 
-  if (profile->IsGuestSession()) {
+  if (user.IsChild()) {
     return false;
   }
 
-  if (profile->IsChild()) {
+  // Policy status is known once the profile is initialized.
+  CHECK(user.is_managed().has_value());
+  if (*user.is_managed()) {
     return false;
   }
 
-  if (profile->GetProfilePolicyConnector()->IsManaged()) {
-    return false;
-  }
-
-  if (!ash::ProfileHelper::IsOwnerProfile(profile)) {
+  if (!user_manager::UserManager::Get()->IsOwnerUser(&user)) {
     return false;
   }
 
@@ -1176,8 +1144,8 @@ bool IsEligibleAndEnabledGoogleOneOfferFilesBanner(
              ash::features::kDisableGoogleOneOfferFilesBanner);
 }
 
-void AddStringsForVms(base::DictValue* dict) {
-  auto* profile = GetProfile();
+// `profile` may be null, which uses the default VM name.
+void AddStringsForVms(Profile* profile, base::DictValue* dict) {
   std::u16string overall_name = bruschetta::GetOverallVmName(profile);
 
   dict->Set("FOLDER_SHARED_WITH_BRUSCHETTA",
@@ -1247,7 +1215,10 @@ base::DictValue GetFileManagerStrings(const std::string& application_locale) {
   AddStringsForHoldingSpace(&dict);
   AddStringsForPhotos(&dict);
   AddStringsGeneric(&dict);
-  AddStringsForVms(&dict);
+  // No profile here: the component extension resource manager caches these
+  // strings process-wide. AddFileManagerFeatureStrings() sets the profile's
+  // VM name.
+  AddStringsForVms(/*profile=*/nullptr, &dict);
   AddStringsForSkyVault(&dict);
 
   dict.Set(
@@ -1290,7 +1261,7 @@ int GetLocaleBasedWeekStart() {
   // start, since there are no daylight saving starts/ends in June worldwide.
   base::Time fixed_date;
   bool result = base::Time::FromString("15 Jun 2021 12:00 GMT", &fixed_date);
-  DCHECK(result);
+  CHECK(result, base::NotFatalUntil::M161);
   int local_day_of_week = 2;  // 15 Jun 2021 is Tuesday.
   // Adjust local_day_of_week according to the current timezone. We are using
   // 12:00pm UTC above, so only need to check if the local time difference is
@@ -1317,7 +1288,7 @@ void AddFileManagerFeatureStrings(
     const variations::VariationsService& variations_service,
     Profile* profile,
     base::DictValue* dict) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 
   dict->Set("HIDE_SPACE_INFO", ash::demo_mode::IsDeviceInDemoMode());
   dict->Set("ARC_VM_ENABLED", arc::IsArcVmEnabled());
@@ -1325,11 +1296,6 @@ void AddFileManagerFeatureStrings(
             ash::features::IsFilesLocalImageSearchEnabled());
   dict->Set("FILES_TRASH_DRIVE_ENABLED",
             base::FeatureList::IsEnabled(ash::features::kFilesTrashDrive));
-  dict->Set(
-      "FILES_SINGLE_PARTITION_FORMAT_ENABLED",
-      base::FeatureList::IsEnabled(ash::features::kFilesSinglePartitionFormat));
-
-  dict->Set("DRIVEFS_MIRRORING", ash::features::IsDriveFsMirroringEnabled());
 
   dict->Set("GUEST_OS", true);
 
@@ -1362,6 +1328,7 @@ void AddFileManagerFeatureStrings(
     }
   }
   dict->Set("VMS_FOR_SHARING", std::move(vms));
+  AddStringsForVms(profile, dict);
 
   // Lastly, set UI_LOCALE and locale-dependent settings.
   dict->Set("UI_LOCALE", ui_locale);
@@ -1369,7 +1336,10 @@ void AddFileManagerFeatureStrings(
 
   // ELIGIBLE_AND_ENABLED_GOOGLE_ONE_OFFER_FILES_BANNER does additional checks
   // in addition to a feature flag check.
-  dict->Set("ELIGIBLE_AND_ENABLED_GOOGLE_ONE_OFFER_FILES_BANNER",
-            IsEligibleAndEnabledGoogleOneOfferFilesBanner(application_locale,
-                                                          variations_service));
+  dict->Set(
+      "ELIGIBLE_AND_ENABLED_GOOGLE_ONE_OFFER_FILES_BANNER",
+      IsEligibleAndEnabledGoogleOneOfferFilesBanner(
+          application_locale, variations_service,
+          CHECK_DEREF(ash::BrowserContextHelper::Get()->GetUserByBrowserContext(
+              profile))));
 }

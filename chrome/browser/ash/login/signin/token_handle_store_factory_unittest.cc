@@ -6,17 +6,18 @@
 
 #include <deque>
 #include <memory>
+#include <optional>
 
-#include "ash/constants/ash_features.h"
-#include "ash/public/cpp/token_handle_store.h"
 #include "base/strings/stringprintf.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "chrome/browser/ash/login/signin/token_handle_store.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/userdataauth/fake_userdataauth_client.h"
+#include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
+#include "chromeos/ash/components/login/auth/auth_factor_editor.h"
 #include "components/account_id/account_id.h"
 #include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
@@ -78,7 +79,6 @@ class CountingFakeUserDataAuthClient : public FakeUserDataAuthClient {
 class TokenHandleStoreFactoryTest : public testing::Test {
  public:
   void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(features::kUseTokenHandleStore);
     auto counting_client = std::make_unique<CountingFakeUserDataAuthClient>();
     counting_client_ = counting_client.get();
     FakeUserDataAuthClient::TestApi::OverrideGlobalInstance(
@@ -105,8 +105,11 @@ class TokenHandleStoreFactoryTest : public testing::Test {
   }
 
  protected:
+  using DoesUserHaveGaiaPassword =
+      TokenHandleStoreFactory::DoesUserHaveGaiaPassword;
+  using GaiaPasswordFuture = base::test::TestFuture<std::optional<bool>>;
+
   content::BrowserTaskEnvironment task_environment_;
-  base::test::ScopedFeatureList scoped_feature_list_;
   std::optional<session_manager::SessionManager> session_manager_;
   user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
       fake_user_manager_;
@@ -147,6 +150,49 @@ TEST_F(TokenHandleStoreFactoryTest,
   EXPECT_EQ(account_id, future.Get<AccountId>());
 }
 
+TEST_F(TokenHandleStoreFactoryTest, MissingUserIsAnsweredFromASeparateTask) {
+  const AccountId account_id = AccountId::FromUserEmail(kTestEmail);
+  DoesUserHaveGaiaPassword does_user_have_gaia_password(
+      std::make_unique<AuthFactorEditor>(UserDataAuthClient::Get()));
+
+  GaiaPasswordFuture future;
+  does_user_have_gaia_password.Run(account_id, future.GetCallback());
+
+  EXPECT_FALSE(future.IsReady());
+  EXPECT_TRUE(future.Wait());
+  EXPECT_EQ(std::nullopt, future.Get());
+  EXPECT_EQ(0, counting_client_->list_auth_factors_count());
+}
+
+TEST_F(TokenHandleStoreFactoryTest,
+       MissingUserRepliesWithUnknownGaiaPasswordStatus) {
+  const AccountId account_id = AccountId::FromUserEmail(kTestEmail);
+  fake_user_manager_->AddUser(account_id);
+
+  user_manager::KnownUser known_user(
+      TestingBrowserProcess::GetGlobal()->local_state());
+  known_user.SetStringPref(account_id, kTokenHandlePref, kFakeToken);
+  known_user.SetStringPref(account_id, kTokenHandleStatusPref,
+                           kTokenHandleStatusValid);
+
+  base::test::TestFuture<const AccountId&, const std::string&, bool> future;
+  token_handle_store_->IsReauthRequired(
+      account_id, url_loader_factory_.GetSafeWeakWrapper(),
+      future.GetCallback());
+
+  fake_user_manager_->RemoveUserFromList(account_id);
+
+  const GURL& url = GaiaUrls::GetInstance()->oauth2_token_info_url();
+  url_loader_factory_.SimulateResponseForPendingRequest(
+      url.spec(), base::StringPrintf(kTokenInfoResponse, kTestEmail, -1),
+      net::HTTP_OK, network::TestURLLoaderFactory::kMostRecentMatch);
+
+  EXPECT_TRUE(future.Wait());
+  EXPECT_EQ(account_id, future.Get<AccountId>());
+  EXPECT_EQ(kFakeToken, future.Get<std::string>());
+  EXPECT_TRUE(future.Get<bool>());
+}
+
 TEST_F(TokenHandleStoreFactoryTest, ConcurrentReauthRequestsArePooled) {
   const AccountId account_id = AccountId::FromUserEmail(kTestEmail);
   fake_user_manager_->AddUser(account_id);
@@ -177,7 +223,7 @@ TEST_F(TokenHandleStoreFactoryTest, ConcurrentReauthRequestsArePooled) {
   // At this point, the DBus call for check 1 is in flight.
 
   // Start second reauth check. This will cancel the (already completed)
-  // check 1 in TokenHandleStoreImpl, and start check 2.
+  // check 1 in TokenHandleStore, and start check 2.
   token_handle_store_->IsReauthRequired(
       account_id, url_loader_factory_.GetSafeWeakWrapper(),
       future2.GetCallback());

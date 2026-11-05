@@ -40,7 +40,7 @@ recorded_artifacts = []
 
 def Tee(output, logfile):
   logfile.write(output)
-  print(output, end=' ')
+  print(output, end='')
 
 
 def TeeCmd(cmd, logfile, fail_hard=True):
@@ -50,19 +50,16 @@ def TeeCmd(cmd, logfile, fail_hard=True):
   # its stdout buffer and don't give it a stdin.
   # shell=True is required in cmd.exe since depot_tools has an svn.bat, and
   # bat files only work with shell=True set.
-  proc = subprocess.Popen(
+  with subprocess.Popen(
     cmd,
-    bufsize=1,
     shell=sys.platform == 'win32',
-    stdin=open(os.devnull),
+    stdin=subprocess.DEVNULL,
     stdout=subprocess.PIPE,
     stderr=subprocess.STDOUT,
-  )
-  for line in iter(proc.stdout.readline, ''):
-    Tee(str(line.decode()), logfile)
-    if proc.poll() is not None:
-      break
-  exit_code = proc.wait()
+  ) as proc:
+    for line in iter(proc.stdout.readline, b''):
+      Tee(line.decode(), logfile)
+    exit_code = proc.wait()
   if exit_code != 0 and fail_hard:
     print('Failed:', cmd)
     sys.exit(1)
@@ -74,7 +71,7 @@ def PrintTarProgress(tarinfo):
 
 
 def GetGsutilPath():
-  if not 'find_depot_tools' in sys.modules:
+  if 'find_depot_tools' not in sys.modules:
     sys.path.insert(0, os.path.join(CHROMIUM_DIR, 'build'))
     global find_depot_tools
     import find_depot_tools
@@ -115,6 +112,16 @@ def PackageInArchive(directory_path, archive_path):
       )
 
 
+def VerifyPackageDoesntExist(gcs_bucket, filename, gcs_platform):
+  """Verifies that the package doesn't already exist on GCS, exiting if so."""
+  gcs_path = f'gs://{gcs_bucket}/{gcs_platform}/{filename}'
+  print(f'Checking if {gcs_path} already exists...')
+  if RunGsutil(['stat', gcs_path]) == 0:
+    print(f'Package {gcs_path} already exists!')
+    print('Did you forget to update the sub-revision?')
+    sys.exit(1)
+
+
 def MaybeUpload(
   do_upload, gcs_bucket, filename, gcs_platform, extra_gsutil_args=[]
 ):
@@ -126,7 +133,8 @@ def MaybeUpload(
     }
   )
   gsutil_args = (
-    ['cp']
+    # Fail if the item generation is not 0 (i.e. if it already exists).
+    ['-h', 'x-goog-if-generation-match:0', 'cp']
     + extra_gsutil_args
     + ['-n', filename, 'gs://%s/%s/' % (gcs_bucket, gcs_platform)]
   )
@@ -160,7 +168,8 @@ def UploadPDBsToSymbolServer(binaries):
   #   but tools/symsrc/pdb_fingerprint_from_img.py can compute it already, so
   #   again just use that.
   sys.path.insert(0, os.path.join(CHROMIUM_DIR, 'tools', 'symsrc'))
-  import img_fingerprint, pdb_fingerprint_from_img
+  import img_fingerprint
+  import pdb_fingerprint_from_img
 
   files = []
   for binary_path in binaries:
@@ -206,6 +215,9 @@ def UploadPDBsToSymbolServer(binaries):
     exit_code = RunGsutil(gsutil_args)
     if exit_code != 0:
       print("gsutil failed, exit_code: %s" % exit_code)
+      print(
+        "If a precondition did not hold, a package at this revision likely aready exists."
+      )
       sys.exit(exit_code)
 
 
@@ -276,6 +288,9 @@ def main():
   else:
     gcs_platform = 'Linux_x64'
 
+  if args.upload:
+    VerifyPackageDoesntExist(args.bucket, pdir + '.tar.xz', gcs_platform)
+
   with open('buildlog.txt', 'w', encoding='utf-8') as log:
     Tee('Starting build\n', log)
 
@@ -314,6 +329,9 @@ def main():
   runtime_packages = None
   runtime_package_name = None
 
+  android_runtime_packages = None
+  android_runtime_package_name = None
+
   # Copy a list of files to the directory we're going to tar up.
   # This supports the same patterns that the fnmatch module understands.
   # '$V' is replaced by RELEASE_VERSION further down.
@@ -326,8 +344,8 @@ def main():
       'bin/llvm-undname' + exe_ext,
       # Copy built-in headers (lib/clang/3.x.y/include).
       'lib/clang/$V/include/*',
-      'lib/clang/$V/share/asan_*list.txt',
-      'lib/clang/$V/share/cfi_*list.txt',
+      'lib/clang/$V/share/asan_ignorelist.txt',
+      'lib/clang/$V/share/cfi_ignorelist.txt',
     ]
   )
   if sys.platform == 'win32':
@@ -398,15 +416,10 @@ def main():
       ]
     )
   elif sys.platform.startswith('linux'):
-    want.update(
+    runtime_package_name = 'clang-linux-runtime-library'
+    runtime_packages = set(
       [
         # pylint: disable=line-too-long
-        # Required for use_debug_fissions=true to not break symbolization on swarming.
-        'bin/llvm-dwp',
-        # Add llvm-objcopy for partition extraction on Android.
-        'bin/llvm-objcopy',
-        # Add llvm-nm.
-        'bin/llvm-nm',
         # AddressSanitizer C runtime (pure C won't link with *_cxx).
         'lib/clang/$V/lib/aarch64-unknown-linux-gnu/libclang_rt.asan.a',
         'lib/clang/$V/lib/aarch64-unknown-linux-gnu/libclang_rt.asan.a.syms',
@@ -486,16 +499,27 @@ def main():
         'lib/clang/$V/lib/x86_64-unknown-linux-gnu/libclang_rt.ubsan_standalone_cxx.a',
         'lib/clang/$V/lib/x86_64-unknown-linux-gnu/libclang_rt.ubsan_standalone_cxx.a.syms',
         # Ignorelist for MemorySanitizer (used on Linux only).
-        'lib/clang/$V/share/msan_*list.txt',
+        'lib/clang/$V/share/msan_ignorelist.txt',
         # pylint: enable=line-too-long
+      ]
+    )
+    want.update(runtime_packages)
+    want.update(
+      [
+        # Required for use_debug_fissions=true to not break symbolization on swarming.
+        'bin/llvm-dwp',
+        # Add llvm-objcopy for partition extraction on Android.
+        'bin/llvm-objcopy',
+        # Add llvm-nm.
+        'bin/llvm-nm',
       ]
     )
     # The Android compiler-rt runtimes are cross-compiled target libraries
     # (host-independent). Ship them only as a standalone package that every
     # host building for Android (Linux included) overlays onto its host clang,
     # rather than bundling them into each host's clang package.
-    runtime_package_name = 'clang-android-runtime-library'
-    runtime_packages = set(
+    android_runtime_package_name = 'clang-android-runtime-library'
+    android_runtime_packages = set(
       [
         # pylint: disable=line-too-long
         # AddressSanitizer Android runtime.
@@ -577,10 +601,9 @@ def main():
   reclient_inputs = {
     'clang': set(
       [
-        # Note: These have to match the `want` list exactly. `want` uses
-        # a glob, so these must too.
-        'lib/clang/$V/share/asan_*list.txt',
-        'lib/clang/$V/share/cfi_*list.txt',
+        # Note: These have to match the `want` list exactly.
+        'lib/clang/$V/share/asan_ignorelist.txt',
+        'lib/clang/$V/share/cfi_ignorelist.txt',
       ]
     ),
   }
@@ -725,13 +748,25 @@ def main():
     shutil.rmtree(runtime_dir, ignore_errors=True)
     for f in sorted(replace_version(runtime_packages, RELEASE_VERSION)):
       os.makedirs(os.path.dirname(os.path.join(runtime_dir, f)), exist_ok=True)
-      # Prefer the staged package dir, but fall back to the build output for
-      # runtimes that are not bundled into the host package (e.g. the Android
-      # target runtimes, which ship only in this standalone package).
-      src = os.path.join(pdir, f)
-      if not os.path.exists(src):
-        src = os.path.join(LLVM_RELEASE_DIR, f)
-      shutil.copy(src, os.path.join(runtime_dir, f))
+      shutil.copy(
+        os.path.join(pdir, f),
+        os.path.join(runtime_dir, f),
+      )
+    PackageInArchive(runtime_dir, runtime_dir)
+    MaybeUpload(args.upload, args.bucket, f'{runtime_dir}.tar.xz', gcs_platform)
+
+  if android_runtime_package_name and len(android_runtime_packages) > 0:
+    runtime_dir = f'{android_runtime_package_name}-{stamp}'
+    shutil.rmtree(runtime_dir, ignore_errors=True)
+    for f in sorted(replace_version(android_runtime_packages, RELEASE_VERSION)):
+      os.makedirs(os.path.dirname(os.path.join(runtime_dir, f)), exist_ok=True)
+      # Use the build output for runtimes that are not bundled into the
+      # host package (i.e. the Android target runtimes, which ship only
+      # in this standalone package).
+      shutil.copy(
+        os.path.join(LLVM_RELEASE_DIR, f),
+        os.path.join(runtime_dir, f),
+      )
     PackageInArchive(runtime_dir, runtime_dir)
     MaybeUpload(args.upload, args.bucket, f'{runtime_dir}.tar.xz', gcs_platform)
 
@@ -873,8 +908,6 @@ def main():
     UploadPDBsToSymbolServer(binaries)
     end = time.time()
     print('symbol upload took', end - start, 'seconds')
-
-  # FIXME: Warn if the file already exists on the server.
 
   if args.output_artifacts_json:
     with open(args.output_artifacts_json, 'w') as f:

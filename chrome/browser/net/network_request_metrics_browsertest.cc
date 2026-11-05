@@ -21,6 +21,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_features.h"
@@ -43,7 +44,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/loader/resource_load_info.mojom.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -118,10 +119,12 @@ class NetworkRequestMetricsBrowserTest
     // Disable InitialWebUI and WebUI Omnibox Popup features to prevent
     // background preloaded WebUI navigations from flakily recording extra
     // samples in the test's histograms.
+    // TODO(crbug.com/579030694): Investigate lazy loading OrganizerPanel.
     scoped_feature_list_.InitWithFeatures(
         {}, {features::kInitialWebUI, features::kWebUIReloadButton,
              omnibox::internal::kWebUIOmniboxPopup,
-             omnibox::internal::kWebUIOmniboxAimPopup});
+             omnibox::internal::kWebUIOmniboxAimPopup,
+             organizer_panel::kOrganizerPanel});
   }
   ~NetworkRequestMetricsBrowserTest() override = default;
 
@@ -161,7 +164,8 @@ class NetworkRequestMetricsBrowserTest
     GURL interesting_url = embedded_test_server()->GetURL(kInterestingPath);
     if (GetParam() == RequestType::kMainFrame) {
       ui_test_utils::NavigateToURLWithDisposition(
-          browser(), interesting_url, WindowOpenDisposition::CURRENT_TAB,
+          browser(), interesting_url,
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui_test_utils::BROWSER_TEST_NO_WAIT);
     } else {
       WaitForMainFrameResourceObserver wait_for_main_frame_resource_observer(
@@ -169,7 +173,7 @@ class NetworkRequestMetricsBrowserTest
       ui_test_utils::NavigateToURLWithDisposition(
           browser(),
           embedded_test_server()->GetURL(kUninterestingMainFramePath),
-          WindowOpenDisposition::CURRENT_TAB,
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui_test_utils::BROWSER_TEST_NO_WAIT);
       uninteresting_main_frame_response_->WaitForRequest();
       uninteresting_main_frame_response_->Send(
@@ -315,10 +319,8 @@ class NetworkRequestMetricsBrowserTest
       // TODO(crbug.com/444358999): we need to exclude the resource load metric
       // for the initial web UI. This might be removed after the initial web UI
       // metrics are separated from the rest.
-      if ((features::IsWebUIToolbarEnabled() ||
-           base::FeatureList::IsEnabled(
-               features::kWebUIToolbarProcessOverheadExperiment)) &&
-          !found_resource_load && bucket.count > 0 && bucket.min == -net::OK) {
+      if (features::IsWebUIToolbarEnabled() && !found_resource_load &&
+          bucket.count > 0 && bucket.min == -net::OK) {
         found_resource_load = true;
         bucket.count--;
       }
@@ -566,10 +568,8 @@ IN_PROC_BROWSER_TEST_P(NetworkRequestMetricsBrowserTest, Download) {
     // TODO(crbug.com/444358999): we need to exclude the resource load metric
     // for the initial web UI. This might be removed after the initial web UI
     // metrics are separated from the rest.
-    if ((features::IsWebUIToolbarEnabled() ||
-         base::FeatureList::IsEnabled(
-             features::kWebUIToolbarProcessOverheadExperiment)) &&
-        !found_resource_load && bucket.count > 0 && bucket.min == -net::OK) {
+    if (features::IsWebUIToolbarEnabled() && !found_resource_load &&
+        bucket.count > 0 && bucket.min == -net::OK) {
       found_resource_load = true;
       bucket.count--;
     }

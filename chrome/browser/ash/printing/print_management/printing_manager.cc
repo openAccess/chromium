@@ -10,8 +10,6 @@
 #include "chrome/browser/ash/printing/history/print_job_history_service.h"
 #include "chrome/browser/ash/printing/history/print_job_history_service_factory.h"
 #include "chrome/browser/ash/printing/print_management/print_job_info_mojom_conversions.h"
-#include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/profiles/profile.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/prefs/pref_service.h"
@@ -34,8 +32,8 @@ PrintingManager::PrintingManager(
     : print_job_history_service_(print_job_history_service),
       history_service_(history_service),
       cups_print_job_manager_(cups_print_job_manager) {
-  DCHECK(history_service_);
-  DCHECK(cups_print_job_manager_);
+  CHECK(history_service_, base::NotFatalUntil::M160);
+  CHECK(cups_print_job_manager_, base::NotFatalUntil::M160);
   history_service_observation_.Observe(history_service_.get());
   cups_print_job_manager_->AddObserver(this);
 
@@ -46,8 +44,8 @@ PrintingManager::PrintingManager(
 }
 
 PrintingManager::~PrintingManager() {
-  DCHECK(history_service_);
-  DCHECK(cups_print_job_manager_);
+  CHECK(history_service_, base::NotFatalUntil::M160);
+  CHECK(cups_print_job_manager_, base::NotFatalUntil::M160);
   history_service_observation_.Reset();
   cups_print_job_manager_->RemoveObserver(this);
 }
@@ -193,7 +191,7 @@ void PrintingManager::RemoveAndUpdatePrintJob(base::WeakPtr<CupsPrintJob> job) {
 }
 
 void PrintingManager::NotifyPrintJobObservers(base::WeakPtr<CupsPrintJob> job) {
-  DCHECK(job);
+  CHECK(job, base::NotFatalUntil::M160);
   for (auto& observer : print_job_observers_) {
     observer->OnPrintJobUpdate(CupsPrintJobToMojom(*job));
   }

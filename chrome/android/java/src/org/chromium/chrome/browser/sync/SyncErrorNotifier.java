@@ -25,13 +25,13 @@ import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitio
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileKeyedMap;
 import org.chromium.chrome.browser.sync.ui.PassphraseActivity;
-import org.chromium.chrome.browser.sync.ui.SyncTrustedVaultProxyActivity;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxy;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
 import org.chromium.components.browser_ui.notifications.NotificationMetadata;
 import org.chromium.components.browser_ui.notifications.NotificationWrapper;
 import org.chromium.components.browser_ui.notifications.PendingIntentProvider;
 import org.chromium.components.sync.SyncService;
+import org.chromium.components.trusted_vault.SecurityDomainId;
 import org.chromium.components.trusted_vault.TrustedVaultClient;
 import org.chromium.components.trusted_vault.TrustedVaultUserActionTriggerForUMA;
 
@@ -88,7 +88,7 @@ public class SyncErrorNotifier implements SyncService.SyncStateChangedListener {
         return new SyncErrorNotifier(
                 BaseNotificationManagerProxyFactory.create(),
                 syncService,
-                TrustedVaultClient.get());
+                TrustedVaultClient.get(SecurityDomainId.CHROME_SYNC));
     }
 
     @VisibleForTesting
@@ -255,9 +255,13 @@ public class SyncErrorNotifier implements SyncService.SyncStateChangedListener {
                 .then(
                         realIntent ->
                                 promise.fulfill(
-                                        SyncTrustedVaultProxyActivity.createKeyRetrievalProxyIntent(
-                                                realIntent,
-                                                TrustedVaultUserActionTriggerForUMA.NOTIFICATION)),
+                                        mTrustedVaultClient
+                                                .getProxyIntentFactory()
+                                                .createKeyRetrievalProxyIntent(
+                                                        realIntent,
+                                                        TrustedVaultUserActionTriggerForUMA
+                                                                .NOTIFICATION,
+                                                        SecurityDomainId.CHROME_SYNC)),
                         exception -> promise.reject(exception));
         return promise;
     }

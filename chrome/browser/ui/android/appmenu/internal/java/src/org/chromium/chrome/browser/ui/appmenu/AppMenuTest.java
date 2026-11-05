@@ -15,7 +15,6 @@ import static org.mockito.Mockito.when;
 import android.app.Activity;
 import android.graphics.Canvas;
 import android.graphics.Rect;
-import android.os.Build.VERSION_CODES;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -149,6 +148,7 @@ public class AppMenuTest {
                         });
         ThreadUtils.runOnUiThreadBlocking(this::setUpTestOnUiThread);
         mLifecycleDispatcher.observerRegisteredCallbackHelper.waitForCallback(0);
+        CriteriaHelper.pollUiThread(() -> sActivity.findViewById(R.id.top_button).isLaidOut());
     }
 
     @After
@@ -235,10 +235,7 @@ public class AppMenuTest {
 
     @Test
     @MediumTest
-    @DisabledTest(message = "crbug.com/517914573")
-    @DisableIf.Build(
-            sdk_is_greater_than = VERSION_CODES.VANILLA_ICE_CREAM,
-            message = "crbug.com/435724248")
+    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/462297674
     public void testShowAppMenu_AnchorTop() throws TimeoutException {
         AppMenuCoordinatorImpl.setHasPermanentMenuKeyForTesting(false);
         showMenuAndAssert(mAppMenuHandler);
@@ -247,14 +244,20 @@ public class AppMenuTest {
         Rect viewRect = getViewLocationRect(topAnchor);
         Rect popupRect = getPopupLocationRect();
 
-        // Check that top right corner of app menu aligns with the top right corner of the anchor.
+        // Check that top right corner of app menu aligns with the top right corner of the anchor,
+        // accounting for R.dimen.menu_negative_software_vertical_offset on sw600dp devices.
+        int negativeSoftwareVerticalOffset =
+                sActivity
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.menu_negative_software_vertical_offset);
+        int expectedMinTop = viewRect.top - negativeSoftwareVerticalOffset;
         int alignmentSlop = viewRect.bottom - viewRect.top;
         Assert.assertEquals(
                 "Popup should overlap top anchor. Anchor rect: "
                         + viewRect
                         + ", popup rect: "
                         + popupRect,
-                viewRect.top,
+                expectedMinTop,
                 popupRect.top,
                 alignmentSlop);
         Assert.assertTrue(
@@ -262,7 +265,7 @@ public class AppMenuTest {
                         + viewRect
                         + ", popup rect: "
                         + popupRect,
-                viewRect.top <= popupRect.top);
+                expectedMinTop <= popupRect.top);
         Assert.assertEquals(
                 "Popup should be aligned with right of anchor. Anchor rect: "
                         + viewRect
@@ -443,6 +446,51 @@ public class AppMenuTest {
                     listView.setSelection(2);
                     mAppMenuHandler.onSubmenuEntered();
                     Assert.assertEquals(0, listView.getFirstVisiblePosition());
+                });
+    }
+
+    @Test
+    @MediumTest
+    public void testFlyoutPopup_ClampedToFlyoutMaxWidth() throws TimeoutException {
+        showMenuAndAssert(mAppMenuHandler);
+        View anchorView = getViewAtPosition(0);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    String longTitle = "Very long menu item title ".repeat(20);
+                    ListItem wideItem =
+                            new MVCListAdapter.ListItem(
+                                    AppMenuItemType.STANDARD,
+                                    new PropertyModel.Builder(AppMenuItemProperties.ALL_KEYS)
+                                            .with(AppMenuItemProperties.MENU_ITEM_ID, 31)
+                                            .with(AppMenuItemProperties.TITLE, longTitle)
+                                            .with(AppMenuItemProperties.ENABLED, true)
+                                            .build());
+
+                    AppMenu.AppMenuPopup flyoutPopup =
+                            mAppMenuHandler.createAndShowFlyoutPopup(
+                                    List.of(wideItem),
+                                    anchorView,
+                                    () -> {},
+                                    (v, x, y, ox, oy) -> {});
+
+                    View contentView = flyoutPopup.getContentView();
+                    Assert.assertNotNull(contentView);
+
+                    int lateralPadding =
+                            contentView.getPaddingLeft() + contentView.getPaddingRight();
+                    int expectedMaxWidth =
+                            sActivity
+                                            .getResources()
+                                            .getDimensionPixelSize(R.dimen.flyout_menu_max_width)
+                                    + lateralPadding;
+
+                    Assert.assertEquals(
+                            "Flyout popup width should be clamped to flyout_menu_max_width",
+                            expectedMaxWidth,
+                            contentView.getMeasuredWidth());
+
+                    flyoutPopup.dismiss();
                 });
     }
 
@@ -1333,6 +1381,29 @@ public class AppMenuTest {
         waitForMenuToShow(1, mAppMenuHandler);
     }
 
+    // Regression test for crbug.com/578623946: a second request while the first was still
+    // waiting for the keyboard left the first listener registered forever.
+    @Test
+    @MediumTest
+    public void testAppMenu_keyboardVisible_secondRequestReplacesFirst() throws Exception {
+        doReturn(true).when(mKeyboardDelegate).isKeyboardShowing(any());
+        ThreadUtils.runOnUiThreadBlocking(() -> mAppMenuCoordinator.showAppMenuForKeyboardEvent());
+        ThreadUtils.runOnUiThreadBlocking(() -> mAppMenuCoordinator.showAppMenuForKeyboardEvent());
+
+        verify(mKeyboardDelegate, timeout(500).times(2))
+                .addKeyboardVisibilityListener(mKeyboardListenerCaptor.capture());
+        KeyboardVisibilityDelegate.KeyboardVisibilityListener first =
+                mKeyboardListenerCaptor.getAllValues().get(0);
+        KeyboardVisibilityDelegate.KeyboardVisibilityListener second =
+                mKeyboardListenerCaptor.getAllValues().get(1);
+        Assert.assertNotSame(first, second);
+        verify(mKeyboardDelegate).removeKeyboardVisibilityListener(first);
+
+        ThreadUtils.runOnUiThreadBlocking(() -> second.keyboardVisibilityChanged(false));
+        waitForMenuToShow(0, mAppMenuHandler);
+        verify(mKeyboardDelegate).removeKeyboardVisibilityListener(second);
+    }
+
     @Test
     @SmallTest
     @Feature({"Browser", "Main", "RenderTest"})
@@ -1414,6 +1485,8 @@ public class AppMenuTest {
 
     private Rect getPopupLocationRect() {
         View contentView = mAppMenuHandler.getAppMenu().getPopup().getContentView();
+        CriteriaHelper.pollUiThread(
+                () -> contentView.getWidth() > 0 && contentView.getHeight() > 0);
 
         Rect popupRect = new Rect();
         int[] popupLocation = new int[2];

@@ -32,7 +32,6 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -41,7 +40,6 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper.FaviconImageCallback;
-import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.security_state.ConnectionSecurityLevel;
 import org.chromium.components.security_state.SecurityStateModel;
 import org.chromium.components.security_state.SecurityStateModelJni;
@@ -50,6 +48,7 @@ import org.chromium.components.thinwebview.ThinWebViewAttachParams;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.NavigationHandle;
+import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.content_public.browser.test.mock.MockWebContents;
@@ -57,15 +56,18 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
+import org.chromium.url.JUnitTestOrigins;
+import org.chromium.url.Origin;
 
 /** Tests for {@link MerchantTrustBottomSheetMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @SuppressWarnings("DoNotMock") // Mocking GURL
 public class MerchantTrustBottomSheetMediatorTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private MockWebContents mMockWebContents;
+
+    @Mock private RenderFrameHost mMockRenderFrameHost;
 
     @Mock private GURL mMockDestinationGurl;
 
@@ -104,15 +106,18 @@ public class MerchantTrustBottomSheetMediatorTest {
     private Resources mResources;
     private MerchantTrustBottomSheetMediator mMediator;
     private PropertyModel mToolbarModel;
+    private Origin mDestinationOrigin;
 
     @Before
     public void setUp() {
         mContext = RuntimeEnvironment.getApplication();
         mResources = mContext.getResources();
+        mDestinationOrigin = JUnitTestOrigins.createTuple("https", "www.example.com", 443);
         doReturn(mMockDisplayAndroid).when(mMockWindowAndroid).getDisplay();
         doReturn(1f).when(mMockDisplayAndroid).getDipScale();
         doReturn(DUMMY_URL).when(mMockDestinationGurl).getSpec();
-        doReturn(mMockDestinationGurl).when(mMockWebContents).getVisibleUrl();
+        doReturn(mMockRenderFrameHost).when(mMockWebContents).getMainFrame();
+        doReturn(mDestinationOrigin).when(mMockRenderFrameHost).getLastCommittedOrigin();
         doReturn(mMockNavigationController).when(mMockWebContents).getNavigationController();
         when(mSecurityStateMocks.getSecurityLevelForWebContents(any(WebContents.class)))
                 .thenReturn(ConnectionSecurityLevel.SECURE);
@@ -187,7 +192,7 @@ public class MerchantTrustBottomSheetMediatorTest {
     @Test
     public void testWebContentsDelegateSslChanges() {
         mAttachParamsCaptor.getValue().webContentsDelegate.visibleSSLStateChanged();
-        assertEquals(mMockDestinationGurl, mToolbarModel.get(BottomSheetToolbarProperties.URL));
+        assertEquals(mDestinationOrigin, mToolbarModel.get(BottomSheetToolbarProperties.ORIGIN));
         assertEquals(
                 R.drawable.omnibox_https_valid_lock,
                 mToolbarModel.get(BottomSheetToolbarProperties.SECURITY_ICON));
@@ -275,12 +280,12 @@ public class MerchantTrustBottomSheetMediatorTest {
         mWebContentsObserverCaptor
                 .getValue()
                 .didFinishNavigationInPrimaryMainFrame(mMockNavigationHandle);
-        assertEquals(null, mToolbarModel.get(BottomSheetToolbarProperties.URL));
+        assertEquals(null, mToolbarModel.get(BottomSheetToolbarProperties.ORIGIN));
 
         doReturn(true).when(mMockNavigationHandle).hasCommitted();
         mWebContentsObserverCaptor
                 .getValue()
                 .didFinishNavigationInPrimaryMainFrame(mMockNavigationHandle);
-        assertEquals(mMockDestinationGurl, mToolbarModel.get(BottomSheetToolbarProperties.URL));
+        assertEquals(mDestinationOrigin, mToolbarModel.get(BottomSheetToolbarProperties.ORIGIN));
     }
 }

@@ -7,18 +7,32 @@
 #include <optional>
 
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_cssnumericvalue_double.h"
+#include "third_party/blink/renderer/core/animation/scroll_timeline.h"
 #include "third_party/blink/renderer/core/animation/scroll_timeline_util.h"
 #include "third_party/blink/renderer/core/animation/timeline_trigger.h"
 #include "third_party/blink/renderer/core/css/cssom/css_unit_values.h"
 #include "third_party/blink/renderer/core/dom/node.h"
+#include "third_party/blink/renderer/core/html/forms/html_form_control_element.h"
+#include "third_party/blink/renderer/core/html/forms/text_control_element.h"
 #include "third_party/blink/renderer/core/layout/forms/layout_fieldset.h"
 #include "third_party/blink/renderer/core/layout/geometry/axis.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
 #include "third_party/blink/renderer/platform/geometry/physical_direction.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/text/writing_direction_mode.h"
 
 namespace blink {
+
+namespace {
+
+const HTMLFormControlElement* GetAncestorFormControlElement(Node* node) {
+  // Unwrap pseudo-elements and UA shadow trees to find the owning control.
+  return DynamicTo<HTMLFormControlElement>(
+      ScrollTimeline::Sanitize(DynamicTo<Element>(node)));
+}
+
+}  // namespace
 
 ScrollSnapshotTimeline::ScrollSnapshotTimeline(Document* document)
     : AnimationTimeline(document),
@@ -154,6 +168,11 @@ bool ScrollSnapshotTimeline::ShouldScheduleNextService() {
   }
 
   auto state = ComputeTimelineState();
+  // The state above tracks the preview, so comparing it against the retained
+  // snapshot would request a frame on every vsync.
+  if (BlockSnapshotUpdate(state.resolved_source)) {
+    return false;
+  }
   std::optional<base::TimeDelta> current_time = state.current_time;
   return current_time != last_current_time_;
 }
@@ -162,7 +181,6 @@ void ScrollSnapshotTimeline::ScheduleNextService() {
   // See DocumentAnimations::UpdateAnimations() for why we shouldn't reach here.
   NOTREACHED();
 }
-
 
 LayoutBox* ScrollSnapshotTimeline::ComputeScrollContainer(
     Node* resolved_source,
@@ -203,6 +221,10 @@ void ScrollSnapshotTimeline::UpdateSnapshotForServiceAnimations() {
 
 bool ScrollSnapshotTimeline::UpdateSnapshotInternal(bool service_animations) {
   TimelineState new_state = ComputeTimelineState();
+  if (BlockSnapshotUpdate(new_state.resolved_source)) {
+    // Retain the previous snapshot so the timeline stays paused.
+    return false;
+  }
   bool snapshot_changed = timeline_state_snapshotted_ != new_state;
   bool layout_changed =
       !timeline_state_snapshotted_.HasConsistentLayout(new_state);
@@ -230,30 +252,45 @@ bool ScrollSnapshotTimeline::UpdateSnapshotInternal(bool service_animations) {
 
   if (RuntimeEnabledFeatures::TimelineTriggerEnabled() &&
       (snapshot_changed || update_triggers_)) {
-    for (TimelineTrigger* trigger : GetTriggers()) {
-      bool trigger_changed = !trigger->Update();
-      if (trigger_changed) {
-        for (auto& [animation, behaviors] : trigger->BehaviorMap()) {
-          // A time-driven animation triggered by a TimelineTrigger should not
-          // be idle (it should have a resolved current time) because triggers
-          // should not remain attached to idle animations.
-          // scroll-driven animations pick up their start times post-layout
-          // and may not yet have resolved current times.
-          if (animation->timeline() &&
-              animation->timeline()->IsMonotonicallyIncreasing()) {
-            DCHECK(animation->CurrentTimeInternal());
-          }
-          // Avoid superfluous snapshot validation, by skipping the call if it
-          // will be invoked in the loop below.
-          if (!animations.Contains(animation)) {
-            if (should_skip_validation(animation)) {
-              continue;
-            }
-            animation->OnValidateSnapshot(true);
-          }
-        }
+    // Resolving style-dependent timeline offsets during TimelineTrigger::Update
+    // or Animation::OnValidateSnapshot can synchronously recalculate slot
+    // assignments, detaching elements and cancelling CSS animations. That
+    // disassociates animations from triggers and removes emptied triggers from
+    // `triggers_`, so copy the triggers upfront and collect triggered
+    // animations before validating snapshots.
+    HeapVector<Member<TimelineTrigger>> triggers(GetTriggers());
+    HeapVector<Member<Animation>> animations_to_validate;
+    for (TimelineTrigger* trigger : triggers) {
+      if (trigger->Update()) {
+        continue;
       }
-      snapshot_changed |= trigger_changed;
+      snapshot_changed = true;
+      for (Animation* animation : trigger->BehaviorMap().Keys()) {
+        // A time-driven animation triggered by a TimelineTrigger should not
+        // be idle (it should have a resolved current time) because triggers
+        // should not remain attached to idle animations.
+        // scroll-driven animations pick up their start times post-layout
+        // and may not yet have resolved current times.
+        if (animation->timeline() &&
+            animation->timeline()->IsMonotonicallyIncreasing()) {
+          DCHECK(animation->CurrentTimeInternal());
+        }
+        // Avoid superfluous snapshot validation, by skipping the call if it
+        // will be invoked in the loop below.
+        if (animations.Contains(animation) ||
+            should_skip_validation(animation)) {
+          continue;
+        }
+        animations_to_validate.push_back(animation);
+      }
+    }
+    for (Animation* animation : animations_to_validate) {
+      // A later TimelineTrigger::Update or earlier OnValidateSnapshot call may
+      // have cancelled `animation` and disassociated it from its trigger.
+      if (animation->GetTriggers().empty()) {
+        continue;
+      }
+      animation->OnValidateSnapshot(true);
     }
     update_triggers_ = false;
   }
@@ -267,6 +304,18 @@ bool ScrollSnapshotTimeline::UpdateSnapshotInternal(bool service_animations) {
   }
 
   return snapshot_changed;
+}
+
+bool ScrollSnapshotTimeline::BlockSnapshotUpdate(Node* resolved_source) const {
+  const auto* control = GetAncestorFormControlElement(resolved_source);
+  if (!control) {
+    return false;
+  }
+  // Password autofill sets a suggested value while marked kAutofilled, so a
+  // preview is not always flagged as previewed.
+  const auto* text_control = DynamicTo<TextControlElement>(control);
+  return control->IsPreviewed() ||
+         (text_control && !text_control->SuggestedValue().empty());
 }
 
 cc::AnimationTimeline* ScrollSnapshotTimeline::EnsureCompositorTimeline() {

@@ -450,7 +450,7 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   }
   // Push all pending invalidations on the document.
   void InvalidateStyle();
-  bool HasViewportDependentMediaQueries();
+  bool MayHaveViewportDependentMediaQueries();
   bool HasViewportDependentPropertyRegistrations();
 
   class InApplyAnimationUpdateScope {
@@ -523,7 +523,7 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
                              PendingSheetType type,
                              RenderBlockingBehavior render_blocking_behavior);
 
-  void CollectFeaturesTo(RuleFeatureSet& features);
+  void CollectFeaturesTo(RuleFeatureSet& features) const;
 
   void EnsureUAStyleForFullscreen(const Element&);
   void EnsureUAStyleForElement(const Element&);
@@ -532,7 +532,6 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
 
   void PlatformColorsChanged();
 
-  bool HasRulesForId(const AtomicString& id) const;
   void ClassChangedForElement(const SpaceSplitString& changed_classes,
                               Element&);
   void ClassChangedForElement(const SpaceSplitString& old_classes,
@@ -598,6 +597,8 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
 
   // Invalidate caches that depends on the base url.
   void BaseURLChanged();
+  // Invalidate caches that depend on the document's referrer policy.
+  void ReferrerPolicyChanged();
 
   unsigned StyleForElementCount() const { return style_for_element_count_; }
   void IncStyleForElementCount() { style_for_element_count_++; }
@@ -875,7 +876,6 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
                                        MediaValueChange);
   void MediaQueryAffectingValueChanged(HeapHashSet<Member<TextTrack>>&,
                                        MediaValueChange);
-  void EnsureUAStyleForTransitionPseudos();
 
   const RuleFeatureSet& GetRuleFeatureSet() const {
     DCHECK(global_rule_set_);
@@ -899,8 +899,7 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
 
   void PrepareUpdateActiveStyleSheetsInShadow(
       TreeScope*,
-      UnorderedTreeScopeSet& tree_scopes_removed,
-      const MediaQueryEvaluator& medium);
+      UnorderedTreeScopeSet& tree_scopes_removed);
 
   bool ShouldSkipInvalidationFor(const Element&) const;
   bool IsSubtreeAndSiblingsStyleDirty(const Element&) const;
@@ -1122,6 +1121,11 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
 
   // True if some data backing env() has changed.
   bool is_env_dirty_{false};
+
+  // Media query result flags from the "media" attribute of author style
+  // sheets. Sticky: only ever grows for the lifetime of the StyleEngine, so
+  // that setting it never requires rebuilding the CSSGlobalRuleSet.
+  MediaQueryResultFlags media_query_result_flags_;
 
   // Flags collected from all calls to EvaluateFunctionalMediaQuery.
   MediaQueryResultFlags functional_media_query_result_flags_;

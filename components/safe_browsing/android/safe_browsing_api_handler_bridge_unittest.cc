@@ -9,11 +9,12 @@
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/test/test_simple_task_runner.h"
 #include "base/types/fixed_array.h"
 #include "components/safe_browsing/android/safe_browsing_api_handler_test_util.h"
 #include "components/safe_browsing/android/safe_browsing_api_handler_util.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/safe_browsing/core/browser/db/util.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/safebrowsing_switches.h"
 #include "content/public/test/browser_task_environment.h"
@@ -174,6 +175,40 @@ class SafeBrowsingApiHandlerBridgeTest
           /*name=*/"SafeBrowsing.GmsSafeBrowsingApi.ResponseStatus" + suffix,
           /*expected_count=*/0);
     }
+  }
+
+  void RunHashRealTimeSocialEngineeringTest(bool has_canary,
+                                            SBThreatType expected_threat_type) {
+    GURL url("https://example.com");
+    std::vector<SafeBrowsingJavaThreatAttribute> threat_attributes;
+    if (has_canary) {
+      threat_attributes.push_back(SafeBrowsingJavaThreatAttribute::CANARY);
+    }
+    AddSafeBrowsingResponse(
+        url, SafeBrowsingApiLookupResult::SUCCESS,
+        SafeBrowsingJavaThreatType::SOCIAL_ENGINEERING, threat_attributes,
+        SafeBrowsingJavaResponseStatus::SUCCESS_WITH_REAL_TIME,
+        GetAllSafeBrowsingThreatTypes(), SafeBrowsingJavaProtocol::REAL_TIME);
+
+    RunHashRealTimeUrlCheck(url,
+                            /*threat_types=*/GetAllThreatTypes(),
+                            expected_threat_type);
+    CheckSafeBrowsingApiHistogramValues(
+        ".RealTime",
+        /*expected_is_available=*/true,
+        /*expected_validation_result=*/SafeBrowsingJavaValidationResult::VALID,
+        /*expected_lookup_result=*/
+        static_cast<int>(SafeBrowsingApiLookupResult::SUCCESS),
+        /*expected_threat_type=*/
+        static_cast<int>(SafeBrowsingJavaThreatType::SOCIAL_ENGINEERING),
+        /*expected_threat_attribute=*/
+        has_canary ? std::optional<int>(static_cast<int>(
+                         SafeBrowsingJavaThreatAttribute::CANARY))
+                   : std::nullopt,
+        /*expected_threat_attribute_count=*/has_canary ? 1 : 0,
+        /*expected_response_status=*/
+        static_cast<int>(
+            SafeBrowsingJavaResponseStatus::SUCCESS_WITH_REAL_TIME));
   }
 
   content::BrowserTaskEnvironment task_environment_;
@@ -344,6 +379,60 @@ TEST_F(SafeBrowsingApiHandlerBridgeTest, HashDatabaseUrlCheck_Timeout) {
       /*expected_response_status=*/std::nullopt);
 }
 
+TEST_F(SafeBrowsingApiHandlerBridgeTest,
+       HashDatabaseUrlCheck_CustomCallbackTaskRunner) {
+  auto custom_callback_runner =
+      base::MakeRefCounted<base::TestSimpleTaskRunner>();
+
+  // Standard JNI local blocklist check posts completion onto
+  // `custom_callback_runner`.
+  GURL url("https://example.com");
+  AddSafeBrowsingResponse(
+      url, SafeBrowsingApiLookupResult::SUCCESS,
+      SafeBrowsingJavaThreatType::UNWANTED_SOFTWARE, {},
+      SafeBrowsingJavaResponseStatus::SUCCESS_WITH_LOCAL_BLOCKLIST,
+      GetAllSafeBrowsingThreatTypes(),
+      SafeBrowsingJavaProtocol::LOCAL_BLOCK_LIST);
+  base::MockCallback<SafeBrowsingApiHandlerBridge::ResponseCallback> callback;
+  SafeBrowsingApiHandlerBridge::GetInstance().StartHashDatabaseUrlCheck(
+      callback.Get(), url, GetAllThreatTypes(), custom_callback_runner);
+  EXPECT_TRUE(custom_callback_runner->HasPendingTask());
+  EXPECT_CALL(callback,
+              Run(SBThreatType::SB_THREAT_TYPE_URL_UNWANTED, ::testing::_));
+  custom_callback_runner->RunPendingTasks();
+
+  // Command-line artificial phishing early return also posts completion onto
+  // `custom_callback_runner`.
+  SafeBrowsingApiHandlerBridge::GetInstance().PopulateArtificialDatabase();
+  GURL artificial_phishing_url("https://1.example.com/");
+  base::MockCallback<SafeBrowsingApiHandlerBridge::ResponseCallback>
+      artificial_callback;
+  SafeBrowsingApiHandlerBridge::GetInstance().StartHashDatabaseUrlCheck(
+      artificial_callback.Get(), artificial_phishing_url, GetAllThreatTypes(),
+      custom_callback_runner);
+  EXPECT_TRUE(custom_callback_runner->HasPendingTask());
+  EXPECT_CALL(artificial_callback,
+              Run(SBThreatType::SB_THREAT_TYPE_URL_PHISHING, ::testing::_));
+  custom_callback_runner->RunPendingTasks();
+  SafeBrowsingApiHandlerBridge::GetInstance().ClearArtificialDatabase();
+
+  // Non-recoverable API unavailability early return also posts completion onto
+  // `custom_callback_runner`.
+  SafeBrowsingApiHandlerBridge::GetInstance()
+      .OnSafeBrowsingApiNonRecoverableFailure();
+  base::MockCallback<SafeBrowsingApiHandlerBridge::ResponseCallback>
+      unavailable_callback;
+  SafeBrowsingApiHandlerBridge::GetInstance().StartHashDatabaseUrlCheck(
+      unavailable_callback.Get(), url, GetAllThreatTypes(),
+      custom_callback_runner);
+  EXPECT_TRUE(custom_callback_runner->HasPendingTask());
+  EXPECT_CALL(unavailable_callback,
+              Run(SBThreatType::SB_THREAT_TYPE_SAFE, ::testing::_));
+  custom_callback_runner->RunPendingTasks();
+  SafeBrowsingApiHandlerBridge::GetInstance()
+      .ResetSafeBrowsingApiAvailableForTesting();
+}
+
 TEST_F(SafeBrowsingApiHandlerBridgeTest, HashDatabaseUrlCheck_FromCommandline) {
   SafeBrowsingApiHandlerBridge::GetInstance().PopulateArtificialDatabase();
   GURL url1("https://1.example.com/");
@@ -443,6 +532,20 @@ TEST_F(SafeBrowsingApiHandlerBridgeTest, HashRealTimeUrlCheck_ThreatMatch) {
       /*expected_threat_attribute_count=*/0,
       /*expected_response_status=*/
       static_cast<int>(SafeBrowsingJavaResponseStatus::SUCCESS_WITH_REAL_TIME));
+}
+
+TEST_F(SafeBrowsingApiHandlerBridgeTest,
+       HashRealTimeUrlCheck_SocialEngineering) {
+  RunHashRealTimeSocialEngineeringTest(
+      /*has_canary=*/false,
+      /*expected_threat_type=*/SB_THREAT_TYPE_URL_PHISHING);
+}
+
+TEST_F(SafeBrowsingApiHandlerBridgeTest,
+       HashRealTimeUrlCheck_SocialEngineeringCanary) {
+  RunHashRealTimeSocialEngineeringTest(
+      /*has_canary=*/true,
+      /*expected_threat_type=*/SB_THREAT_TYPE_SAFE);
 }
 
 TEST_F(SafeBrowsingApiHandlerBridgeTest,

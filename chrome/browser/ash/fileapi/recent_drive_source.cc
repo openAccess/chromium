@@ -5,9 +5,11 @@
 #include "chrome/browser/ash/fileapi/recent_drive_source.h"
 
 #include <iterator>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_macros.h"
@@ -45,11 +47,11 @@ RecentDriveSource::CallContext::~CallContext() = default;
 RecentDriveSource::RecentDriveSource(Profile* profile)
     : RecentSource(extensions::api::file_manager_private::VolumeType::kDrive),
       profile_(profile) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 }
 
 RecentDriveSource::~RecentDriveSource() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 }
 
 std::vector<std::string> RecentDriveSource::CreateTypeFilters(
@@ -66,9 +68,10 @@ std::vector<std::string> RecentDriveSource::CreateTypeFilters(
       type_filters.push_back(kVideoMimeType);
       break;
     case FileType::kDocument: {
-      type_filters.insert(type_filters.end(),
-                          file_types_data::kDocumentMIMETypes.begin(),
-                          file_types_data::kDocumentMIMETypes.end());
+      const base::span<const std::string_view> document_mime_types =
+          file_types_data::GetDocumentMimeTypes();
+      type_filters.insert(type_filters.end(), document_mime_types.begin(),
+                          document_mime_types.end());
       break;
     }
     default:
@@ -80,7 +83,7 @@ std::vector<std::string> RecentDriveSource::CreateTypeFilters(
 
 void RecentDriveSource::GetRecentFiles(const Params& params,
                                        GetRecentFilesCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
   auto context = std::make_unique<CallContext>(std::move(callback));
   CallContext* context_ptr = context.get();
@@ -122,7 +125,7 @@ void RecentDriveSource::GetRecentFiles(const Params& params,
 }
 
 std::vector<RecentFile> RecentDriveSource::Stop(const int32_t call_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CallContext* context = context_map_.Lookup(call_id);
   if (context == nullptr) {
     return {};
@@ -133,12 +136,12 @@ std::vector<RecentFile> RecentDriveSource::Stop(const int32_t call_id) {
 }
 
 void RecentDriveSource::OnComplete(const int32_t call_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CallContext* context = context_map_.Lookup(call_id);
   if (context == nullptr) {
     return;
   }
-  DCHECK(!context->build_start_time.is_null());
+  CHECK(!context->build_start_time.is_null(), base::NotFatalUntil::M160);
 
   UMA_HISTOGRAM_TIMES(kLoadHistogramName,
                       base::TimeTicks::Now() - context->build_start_time);

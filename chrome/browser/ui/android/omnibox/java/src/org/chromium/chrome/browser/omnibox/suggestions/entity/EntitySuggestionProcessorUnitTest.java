@@ -12,7 +12,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 
@@ -25,8 +25,6 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.VectorDrawable;
 import android.view.ContextThemeWrapper;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -35,6 +33,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 
 import org.chromium.base.BaseSwitches;
 import org.chromium.base.Callback;
@@ -47,6 +46,7 @@ import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.UrlBarEditingTextStateProvider;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxDrawableState;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteUIContext;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionHost;
 import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewProperties;
@@ -54,11 +54,13 @@ import org.chromium.chrome.browser.omnibox.suggestions.basic.BasicSuggestionProc
 import org.chromium.chrome.browser.omnibox.suggestions.basic.SuggestionViewProperties;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatchBuilder;
 import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxSuggestionType;
+import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo;
 import org.chromium.components.omnibox.action.OmniboxActionDelegate;
 import org.chromium.components.omnibox.suggestions.OmniboxSuggestionUiType;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -75,19 +77,21 @@ public class EntitySuggestionProcessorUnitTest {
     private static final GURL WEB_URL = JUnitTestGURLs.URL_1;
     private static final GURL SEARCH_URL = JUnitTestGURLs.SEARCH_URL;
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private SuggestionHost mSuggestionHost;
     @Mock private OmniboxImageSupplier mImageSupplier;
     @Mock private Bitmap mBitmap;
     @Mock private BookmarkState mBookmarkState;
     @Mock private UrlBarEditingTextStateProvider mTextProvider;
-    @Mock private AutocompleteInput mInput;
     @Mock private Supplier<Tab> mTabSupplier;
     @Mock private Supplier<ShareDelegate> mShareDelegateSupplier;
     @Mock private OmniboxActionDelegate mActionDelegate;
 
+    private final AutocompleteInput mInput = new AutocompleteInput();
     private Context mContext;
+    private OmniboxResourceProvider mResourceProvider;
     private EntitySuggestionProcessor mProcessor;
 
     /**
@@ -136,9 +140,11 @@ public class EntitySuggestionProcessorUnitTest {
         mContext =
                 new ContextThemeWrapper(
                         ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
+        mResourceProvider = new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
         AutocompleteUIContext uiContext =
                 new AutocompleteUIContext(
                         mContext,
+                        mResourceProvider,
                         mSuggestionHost,
                         mTextProvider,
                         mImageSupplier,
@@ -148,11 +154,10 @@ public class EntitySuggestionProcessorUnitTest {
                         ObservableSuppliers.createNonNull(ControlsPosition.TOP),
                         mActionDelegate);
         mProcessor = new EntitySuggestionProcessor(uiContext);
-        doReturn("").when(mTextProvider).getTextWithoutAutocomplete();
+        lenient().doReturn("").when(mTextProvider).getTextWithoutAutocomplete();
     }
 
     @Test
-    @SmallTest
     public void contentTest_basicContent() {
         SuggestionTestHelper suggHelper = createSuggestion("subject", "details", null, SEARCH_URL);
         processSuggestion(suggHelper);
@@ -165,7 +170,6 @@ public class EntitySuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void decorationTest_noColorOrImage() {
         SuggestionTestHelper suggHelper = createSuggestion("", "", null, SEARCH_URL);
         processSuggestion(suggHelper);
@@ -175,7 +179,6 @@ public class EntitySuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void decorationTest_validHexColor_lowMemoryDevice() {
         OmniboxCapabilities.setIsLowMemoryDeviceForTesting(true);
         SuggestionTestHelper suggHelper = createSuggestion("", "", "#fedcba", SEARCH_URL);
@@ -185,7 +188,6 @@ public class EntitySuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void decorationTest_desktopDevice() {
         OmniboxCapabilities.setIsDesktopPlatformForTesting(true);
         SuggestionTestHelper suggHelper = createSuggestion("", "", "#fedcba", SEARCH_URL);
@@ -195,7 +197,6 @@ public class EntitySuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void decorationTest_validNamedColor() {
         SuggestionTestHelper suggHelper = createSuggestion("", "", "red", SEARCH_URL);
         processSuggestion(suggHelper);
@@ -206,7 +207,6 @@ public class EntitySuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void decorationTest_invalidColor() {
         // Note, fallback is the bitmap drawable representing a search loupe.
         SuggestionTestHelper suggHelper = createSuggestion("", "", "", SEARCH_URL);
@@ -223,7 +223,6 @@ public class EntitySuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void fetchImage_withSupplier() {
         SuggestionTestHelper suggHelper = createSuggestion("", "", "red", WEB_URL);
         processSuggestion(suggHelper);
@@ -241,11 +240,11 @@ public class EntitySuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void fetchImage_withoutSupplier() {
         AutocompleteUIContext uiContext =
                 new AutocompleteUIContext(
                         mContext,
+                        mResourceProvider,
                         mSuggestionHost,
                         mTextProvider,
                         /* imageSupplier= */ null,
@@ -282,9 +281,46 @@ public class EntitySuggestionProcessorUnitTest {
     }
 
     @Test
-    public void populateModel_suggestionTextDoesNotWrap() {
+    public void populateModel_primaryTextWrapping_default() {
         SuggestionTestHelper suggHelper = createSuggestion("subject", "details", null, SEARCH_URL);
         processSuggestion(suggHelper);
-        assertFalse(suggHelper.mModel.get(SuggestionViewProperties.ALLOW_WRAP_AROUND));
+        assertTrue(suggHelper.mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
+    }
+
+    @Test
+    public void populateModel_primaryTextWrapping_disabled() {
+        var template = SuggestTemplateInfo.newBuilder().setWrapPrimaryText(false).build();
+        AutocompleteMatch suggestion =
+                AutocompleteMatchBuilder.searchWithType(OmniboxSuggestionType.SEARCH_SUGGEST_ENTITY)
+                        .setDisplayText("subject")
+                        .setDescription("details")
+                        .setSerializedSuggestTemplate(template.toByteArray())
+                        .build();
+        PropertyModel model = mProcessor.createModel();
+        SuggestionTestHelper suggHelper = new SuggestionTestHelper(suggestion, model);
+        processSuggestion(suggHelper);
+        assertFalse(suggHelper.mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
+    }
+
+    @Test
+    public void populateModel_secondaryTextWrapping_default() {
+        SuggestionTestHelper suggHelper = createSuggestion("subject", "details", null, SEARCH_URL);
+        processSuggestion(suggHelper);
+        assertFalse(suggHelper.mModel.get(SuggestionViewProperties.TEXT_LINE_2_WRAP));
+    }
+
+    @Test
+    public void populateModel_secondaryTextWrapping_enabled() {
+        var template = SuggestTemplateInfo.newBuilder().setWrapSecondaryText(true).build();
+        AutocompleteMatch suggestion =
+                AutocompleteMatchBuilder.searchWithType(OmniboxSuggestionType.SEARCH_SUGGEST_ENTITY)
+                        .setDisplayText("subject")
+                        .setDescription("details")
+                        .setSerializedSuggestTemplate(template.toByteArray())
+                        .build();
+        PropertyModel model = mProcessor.createModel();
+        SuggestionTestHelper suggHelper = new SuggestionTestHelper(suggestion, model);
+        processSuggestion(suggHelper);
+        assertTrue(suggHelper.mModel.get(SuggestionViewProperties.TEXT_LINE_2_WRAP));
     }
 }

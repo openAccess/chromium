@@ -18,7 +18,6 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/banners/test_app_banner_manager_desktop.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_dialog_utils.h"
@@ -791,17 +790,7 @@ IN_PROC_BROWSER_TEST_F(MLPromotionBrowserTest,
   task_runner_->RunPendingTasks();
 }
 
-class MLPromotionBrowserTestNestedPromptBlocking
-    : public MLPromotionBrowserTest {
- public:
-  MLPromotionBrowserTestNestedPromptBlocking() = default;
-
-  base::test::ScopedFeatureList enable_feature_{
-      web_app::kBlockMlPromotionInNestedPagesNoManifest};
-};
-
-IN_PROC_BROWSER_TEST_F(MLPromotionBrowserTestNestedPromptBlocking,
-                       NoPromptForNestedDiy) {
+IN_PROC_BROWSER_TEST_F(MLPromotionBrowserTest, NoPromptForNestedDiy) {
   NavigateAndAwaitMetricsCollectionPending(GetUrlOuterApp());
 
   // Wait for the full ml pipeline to run. The reporting of the manifest from
@@ -824,8 +813,7 @@ IN_PROC_BROWSER_TEST_F(MLPromotionBrowserTestNestedPromptBlocking,
       [this]() { return ml_promoter()->IsCompleteForTesting(); });
 }
 
-IN_PROC_BROWSER_TEST_F(MLPromotionBrowserTestNestedPromptBlocking,
-                       PromptForNestedCraftedApp) {
+IN_PROC_BROWSER_TEST_F(MLPromotionBrowserTest, PromptForNestedCraftedApp) {
   NavigateAndAwaitMetricsCollectionPending(GetUrlOuterApp());
 
   // Wait for the full ml pipeline to run. The reporting of the manifest from

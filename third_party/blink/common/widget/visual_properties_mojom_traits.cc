@@ -35,9 +35,10 @@ bool StructTraits<
   }
   out->auto_resize_enabled = data.auto_resize_enabled();
   out->resizable = data.resizable();
-  out->always_on_top = data.always_on_top();
+  out->always_on_top_popup = data.always_on_top_popup();
   out->scroll_focused_node_into_view = data.scroll_focused_node_into_view();
   out->is_fullscreen_granted = data.is_fullscreen_granted();
+  out->fullscreen_grant_count = data.fullscreen_grant_count();
   out->display_mode = data.display_mode();
   out->application_context = data.application_context();
   out->zoom_level = data.zoom_level();

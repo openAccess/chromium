@@ -12,15 +12,20 @@ import android.view.MotionEvent;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.RobolectricTestRunner;
 
+import org.chromium.base.DeviceInfo;
+import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
 import org.chromium.components.browser_ui.util.motion.MotionEventTestUtils;
 import org.chromium.components.browser_ui.widget.list_view.FakeListViewTouchTracker;
 import org.chromium.components.browser_ui.widget.list_view.ListViewTouchTracker;
 import org.chromium.ui.util.MotionEventUtils;
 
-@RunWith(RobolectricTestRunner.class)
+/** Unit tests for {@link TabClosureParamsUtils}. */
+@RunWith(BaseRobolectricTestRunner.class)
 public class TabClosureParamsUtilsUnitTest {
 
     @Test
@@ -101,5 +106,37 @@ public class TabClosureParamsUtilsUnitTest {
     @Test
     public void shouldAllowUndo_forDownMotionButtonState_buttonStatePresent_returnFalse() {
         assertFalse(TabClosureParamsUtils.shouldAllowUndo(MotionEvent.BUTTON_PRIMARY));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_BEFORE_UNLOAD_SUPPORT)
+    public void areBeforeUnloadHandlersEnabled_featureEnabledOnDesktop_returnTrue() {
+        DeviceInfo.setIsDesktopForTesting(true);
+
+        assertTrue(TabClosureParamsUtils.areBeforeUnloadHandlersEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_BEFORE_UNLOAD_SUPPORT)
+    public void areBeforeUnloadHandlersEnabled_featureEnabledOnMobile_returnFalse() {
+        DeviceInfo.setIsDesktopForTesting(false);
+
+        assertFalse(TabClosureParamsUtils.areBeforeUnloadHandlersEnabled());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_BEFORE_UNLOAD_SUPPORT)
+    public void areBeforeUnloadHandlersEnabled_featureDisabledOnDesktop_returnFalse() {
+        DeviceInfo.setIsDesktopForTesting(true);
+
+        assertFalse(TabClosureParamsUtils.areBeforeUnloadHandlersEnabled());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_BEFORE_UNLOAD_SUPPORT)
+    public void areBeforeUnloadHandlersEnabled_featureDisabledOnMobile_returnFalse() {
+        DeviceInfo.setIsDesktopForTesting(false);
+
+        assertFalse(TabClosureParamsUtils.areBeforeUnloadHandlersEnabled());
     }
 }

@@ -12,6 +12,7 @@
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "base/barrier_closure.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -46,6 +47,8 @@
 #include "components/metrics/structured/recorder.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_type.h"
@@ -72,7 +75,7 @@ inline constexpr char kFeatureManagementScopeFlag[] =
 
 void IncrementPrefValue(const char* path, int num_samples) {
   PrefService* pref = g_browser_process->local_state();
-  DCHECK(pref);
+  CHECK(pref, base::NotFatalUntil::M161);
   int value = pref->GetInteger(path);
   pref->SetInteger(path, value + num_samples);
 }
@@ -83,7 +86,7 @@ ChromeOSMetricsProvider::ChromeOSMetricsProvider(
     metrics::MetricsLogUploader::MetricServiceType service_type,
     ChromeOSSystemProfileProvider* cros_system_profile_provider)
     : cros_system_profile_provider_(cros_system_profile_provider) {
-  DCHECK(cros_system_profile_provider_);
+  CHECK(cros_system_profile_provider_, base::NotFatalUntil::M161);
   if (service_type == metrics::MetricsLogUploader::UMA)
     profile_provider_ = std::make_unique<metrics::ProfileProvider>();
 }
@@ -191,10 +194,8 @@ void ChromeOSMetricsProvider::ProvideMetrics(
 
   // Use current enrollment status for initial stability logs, since it's not
   // likely to change between browser restarts.
-  UMA_STABILITY_HISTOGRAM_ENUMERATION(
-      "UMA.EnrollmentStatus", GetEnrollmentStatus(),
-      // static_cast because we only have macros for stability histograms.
-      static_cast<int>(EnrollmentStatus::kMaxValue) + 1);
+  UMA_STABILITY_HISTOGRAM_ENUMERATION("UMA.EnrollmentStatus",
+                                      GetEnrollmentStatus());
 
   if (should_include_arc_metrics) {
     // Record ARC-related stability metrics that should be included in initial
@@ -237,12 +238,16 @@ bool ChromeOSMetricsProvider::UpdateUserTypeUMA() {
   if (!user_manager::UserManager::IsInitialized()) {
     return false;
   }
-  const user_manager::User* primary_user =
-      user_manager::UserManager::Get()->GetPrimaryUser();
-  if (!primary_user) {
+  // TODO(crbug.com/278643115): Take the AccountId from the caller.
+  const session_manager::Session* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  if (!primary_session) {
     return false;
   }
-  user_manager::UserType user_type = primary_user->GetType();
+  user_manager::UserType user_type =
+      CHECK_DEREF(user_manager::UserManager::Get()->FindUser(
+                      primary_session->account_id()))
+          .GetType();
   base::UmaHistogramEnumeration("UMA.PrimaryUserType", user_type);
   return true;
 }

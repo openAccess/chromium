@@ -29,6 +29,7 @@
 #include "content/public/browser/service_process_host.h"
 #include "content/public/browser/service_process_info.h"
 #include "media/base/media_switches.h"
+#include "media/media_buildflags.h"
 #include "services/audio/public/mojom/audio_service.mojom.h"
 
 namespace {
@@ -83,13 +84,13 @@ class AudioProcessMlModelForwarder::AudioProcessObserver
     // AudioProcessMlModelForwarder to sequence check all accesses to the
     // AudioProcessObserver.
     if (launch_callback_) {
-      DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+      CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
       content::ServiceProcessHost::RemoveObserver(this);
     }
   }
 
   void Start(ServiceLaunchCallback cb) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     launch_callback_ = std::move(cb);
     content::ServiceProcessHost::AddObserver(this);
     // Trigger immediately if the audio process is already running.
@@ -104,7 +105,7 @@ class AudioProcessMlModelForwarder::AudioProcessObserver
 
   void OnServiceProcessLaunched(
       const content::ServiceProcessInfo& info) override {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     if (!info.IsService<audio::mojom::AudioService>()) {
       return;
     }
@@ -182,6 +183,7 @@ AudioProcessMlModelForwarder::AudioProcessMlModelForwarder(
                 OPTIMIZATION_TARGET_WEBRTC_NEURAL_RESIDUAL_ECHO_ESTIMATOR,
             audio::mojom::MlModelType::kResidualEchoEstimation, /*owner=*/this);
   }
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
   if (base::FeatureList::IsEnabled(media::kWebRtcVoiceIsolationDenoiser)) {
     model_forwarders_[audio::mojom::MlModelType::kVoiceIsolationDenoiser] =
         std::make_unique<SingleModelForwarder>(
@@ -189,6 +191,7 @@ AudioProcessMlModelForwarder::AudioProcessMlModelForwarder(
                 OPTIMIZATION_TARGET_WEBRTC_VOICE_ISOLATION_DENOISER,
             audio::mojom::MlModelType::kVoiceIsolationDenoiser, /*owner=*/this);
   }
+#endif
 }
 
 AudioProcessMlModelForwarder::~AudioProcessMlModelForwarder() {

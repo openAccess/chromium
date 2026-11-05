@@ -97,7 +97,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="ChildProcess.Launched.UtilityProcessHash"
-    enum="UtilityProcessNameHash" expires_after="2027-01-17">
+    enum="UtilityProcessNameHash" expires_after="2027-03-21">
   <owner>wfh@chromium.org</owner>
   <summary>
     Count of child utility process launches, bucketed by the hash of their
@@ -141,6 +141,34 @@ chromium-metrics-reviews@google.com.
     An extended Windows error code returned from GetLastError when failing to
     launch a utility process. Recorded when a Utility process fails to launch on
     Windows.
+  </summary>
+</histogram>
+
+<histogram name="ChildProcess.ModuleCircuitBreaker.BlockedModulePatchVersion"
+    units="patch number" expires_after="2027-10-01">
+  <owner>grt@chromium.org</owner>
+  <owner>toyoshim@chromium.org</owner>
+  <summary>
+    Records the 4th component (the patch version number, e.g. 51 in
+    147.0.7727.51) of a dynamically patched child module when it is added to the
+    Local State blocklist after tripping the circuit breaker in
+    ChildModuleManager.
+
+    Note: This metric reports only the patch component without the browser
+    milestone or build number; analysis should filter or slice by browser
+    version/milestone to interpret patch values in context.
+  </summary>
+</histogram>
+
+<histogram name="ChildProcess.ModuleCircuitBreaker.TriggerTerminationStatus"
+    enum="TerminationStatus" expires_after="2027-10-01">
+  <owner>grt@chromium.org</owner>
+  <owner>toyoshim@chromium.org</owner>
+  <summary>
+    Records the termination status of the final renderer exit that caused the
+    consecutive crash count to reach the threshold and trip the circuit breaker
+    in ChildModuleManager. Note that this only captures the cause of the final
+    triggering crash in the consecutive crash sequence.
   </summary>
 </histogram>
 
@@ -324,7 +352,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.Android.KillSpareRendererAvailability.{KillType}"
-    enum="SpareRendererAvailabilityWhenKilled" expires_after="2027-02-14">
+    enum="SpareRendererAvailabilityWhenKilled" expires_after="2027-04-18">
   <owner>gjc@google.com</owner>
   <owner>chrome-loading@google.com</owner>
   <summary>
@@ -384,7 +412,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.Android.RendererCrash" enum="Boolean"
-    expires_after="2027-01-17">
+    expires_after="2027-03-21">
   <owner>wnwen@chromium.org</owner>
   <summary>
     Counts renderer crashes including OOMs. Android only. Mirrors old stability
@@ -393,7 +421,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.Android.SystemExitReason{AndroidProcessExitReasons}"
-    enum="AndroidProcessExitReason" expires_after="2027-02-07">
+    enum="AndroidProcessExitReason" expires_after="2027-04-11">
   <owner>boliu@chromium.org</owner>
   <owner>ssid@chromium.org</owner>
   <owner>wnwen@chromium.org</owner>
@@ -527,7 +555,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.ChildFrameCrash.ShownAfterCrashingReason"
-    enum="ShownAfterCrashingReason" expires_after="2026-08-24">
+    enum="ShownAfterCrashingReason" expires_after="2027-08-24">
   <owner>alexmos@chromium.org</owner>
   <owner>boliu@chromium.org</owner>
   <owner>lukasza@chromium.org</owner>
@@ -549,7 +577,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.ChildFrameCrash.TabMarkedForReload.Visibility"
-    enum="FrameVisibility" expires_after="2026-11-01">
+    enum="FrameVisibility" expires_after="2027-11-01">
   <owner>alexmos@chromium.org</owner>
   <owner>boliu@chromium.org</owner>
   <summary>
@@ -571,7 +599,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.CommitLimitTerminatedTab.ReloadResult"
-    enum="CommitLimitTerminatedTabReloadResult" expires_after="2026-11-01">
+    enum="CommitLimitTerminatedTabReloadResult" expires_after="2027-11-01">
   <owner>aattar@google.com</owner>
   <owner>chrome-stability-core@google.com</owner>
   <summary>
@@ -600,7 +628,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.CommitLimitTerminatedTab.Visibility"
-    enum="CommitLimitTerminatedTabVisibility" expires_after="2026-11-01">
+    enum="CommitLimitTerminatedTabVisibility" expires_after="2027-11-01">
   <owner>aattar@google.com</owner>
   <owner>chrome-stability-core@google.com</owner>
   <summary>
@@ -719,7 +747,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.IOS.PostCrashAction" enum="IOSPostCrashAction"
-    expires_after="2026-12-14">
+    expires_after="2027-11-03">
   <owner>justincohen@chromium.org</owner>
   <owner>bling-fundamentals@google.com</owner>
   <summary>
@@ -766,7 +794,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.iOS.UTE.DeviceThermalState"
-    enum="IOSDeviceThermalState" expires_after="2026-09-20">
+    enum="IOSDeviceThermalState" expires_after="2027-10-01">
   <owner>michaeldo@chromium.org</owner>
   <owner>olivierrobin@chromium.org</owner>
   <summary>
@@ -781,7 +809,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.iOS.UTE.HasPossibleExplanation"
-    enum="BooleanHasPossibleExplanation" expires_after="2027-02-07">
+    enum="BooleanHasPossibleExplanation" expires_after="2027-04-11">
   <owner>michaeldo@chromium.org</owner>
   <owner>olivierrobin@chromium.org</owner>
   <summary>
@@ -881,7 +909,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.iOS.UTE.TimeBetweenUTEAndNextLaunch" units="ms"
-    expires_after="2027-02-07">
+    expires_after="2027-04-11">
   <owner>michaeldo@chromium.org</owner>
   <owner>olivierrobin@chromium.org</owner>
   <summary>
@@ -897,7 +925,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.Media.{ProcessType}.Crash.ExitCode"
-    enum="WindowsExitCode" expires_after="2026-12-09">
+    enum="WindowsExitCode" expires_after="2027-09-22">
   <owner>sangbaekpark@chromium.org</owner>
   <owner>media-dev-uma@chromium.org</owner>
   <summary>
@@ -908,7 +936,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.Media.{ProcessType}.Launch" enum="Boolean"
-    expires_after="2027-02-07">
+    expires_after="2027-09-22">
   <owner>sangbaekpark@chromium.org</owner>
   <owner>media-dev-uma@chromium.org</owner>
   <summary>
@@ -918,7 +946,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.Media.{ProcessType}.Launch.LaunchErrorCode"
-    enum="LaunchErrorCodes" expires_after="2026-12-09">
+    enum="LaunchErrorCodes" expires_after="2027-09-22">
   <owner>sangbaekpark@chromium.org</owner>
   <owner>media-dev-uma@chromium.org</owner>
   <summary>
@@ -929,7 +957,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.Media.{ProcessType}.Launch.WinLastError"
-    enum="WinGetLastError" expires_after="2026-12-09">
+    enum="WinGetLastError" expires_after="2027-09-22">
   <owner>sangbaekpark@chromium.org</owner>
   <owner>media-dev-uma@chromium.org</owner>
   <summary>
@@ -941,7 +969,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.MobileSessionShutdownType"
-    enum="MobileSessionShutdownType" expires_after="2027-02-21">
+    enum="MobileSessionShutdownType" expires_after="2027-04-25">
   <owner>michaeldo@chromium.org</owner>
   <owner>olivierrobin@chromium.org</owner>
   <summary>
@@ -963,8 +991,43 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Stability.Mojo.Channel.Win.PeakOpenChannels.Renderer"
+    units="channels" expires_after="2027-04-23">
+  <owner>wfh@chromium.org</owner>
+  <owner>jeffreygour@microsoft.com</owner>
+  <summary>
+    Records a sample whenever the number of open Mojo channels reaches a new
+    maximum on a Windows renderer I/O thread, including extension and top-WebUI
+    renderers. For example, opening three channels records samples 1, 2, and 3.
+    Closing one and opening a replacement records nothing; reaching four open
+    channels records 4.
+
+    Samples are recorded as the maximum increases because renderer termination
+    can bypass shutdown hooks, losing a shutdown-only sample. This avoids
+    depending on orderly shutdown, but does not guarantee delivery after a crash
+    or forced termination.
+
+    Each thread records each value from 1 through 100 at most once, plus one
+    overflow sample if it reaches 101 open channels. Bucket 32's count divided
+    by bucket 1's count estimates the fraction of observed renderer I/O threads
+    that reach at least 32 open channels. The histogram's mean is not the
+    average final peak.
+
+    A channel is counted after successful I/O registration. Closing or releasing
+    its pipe handle removes it from the count, even if native I/O completions
+    are still retiring.
+
+    The proposed event-based I/O pump uses two completion events per Mojo
+    channel and reserves one of 64 wait slots for task wakeups. A peak of 32
+    open channels exceeds its 31-channel capacity. This metric does not measure
+    exact event-watch occupancy: it excludes channels whose handles have closed
+    or been released but whose completions are still retiring, and it excludes
+    non-Mojo registrations.
+  </summary>
+</histogram>
+
 <histogram name="Stability.RendererAbnormalTermination2.HostedContentType"
-    enum="RendererHostedContentType" expires_after="2027-02-07">
+    enum="RendererHostedContentType" expires_after="2027-04-11">
   <owner>fdoray@chromium.org</owner>
   <owner>catan-team@chromium.org</owner>
   <summary>
@@ -974,7 +1037,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Stability.RendererAbnormalTermination2.{HostedContentType}"
-    enum="TerminationStatus" expires_after="2027-02-07">
+    enum="TerminationStatus" expires_after="2027-04-11">
   <owner>fdoray@chromium.org</owner>
   <owner>catan-team@chromium.org</owner>
   <summary>

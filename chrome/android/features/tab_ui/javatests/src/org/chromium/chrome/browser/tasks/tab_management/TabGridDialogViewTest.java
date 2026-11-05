@@ -16,6 +16,7 @@ import static org.junit.Assert.assertTrue;
 import android.app.Activity;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
+import android.graphics.RectF;
 import android.os.SystemClock;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
@@ -68,8 +69,16 @@ public class TabGridDialogViewTest {
     public static BaseActivityTestRule<BlankUiTestActivity> sActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
+    // Animation source view geometry, in px relative to the dialog's parent.
+    private static final int CLIP_TOP = 100;
+    private static final int SOURCE_LEFT = 20;
+    private static final int SOURCE_WIDTH = 200;
+    private static final int SOURCE_HEIGHT = 300;
+    private static final float DELTA = 0.01f;
+
     private static Activity sActivity;
 
+    private float mCardPadding;
     private int mMinMargin;
     private int mMaxMargin;
     private FrameLayout mTestParent;
@@ -111,6 +120,7 @@ public class TabGridDialogViewTest {
                     mTabGridDialogView.setupScrimManager(mScrimManager);
                     mTabGridDialogView.setScrimClickRunnable(() -> {});
 
+                    mCardPadding = TabUiThemeProvider.getTabGridCardMargin(sActivity);
                     mMinMargin =
                             sActivity
                                     .getResources()
@@ -507,6 +517,48 @@ public class TabGridDialogViewTest {
 
     @Test
     @MediumTest
+    public void testSetupDialogAnimation_DetachedDialogView_FallsBackToFade() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mSourceView = new View(sActivity);
+                    mTestParent.addView(mSourceView, 0, new FrameLayout.LayoutParams(100, 100));
+                });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    // Detach the dialog view so that the zoom animation cannot be computed.
+                    mTestParent.removeView(mTabGridDialogView);
+                    assertFalse(mTabGridDialogView.isAttachedToWindow());
+
+                    // Should fall back to the basic fade animation instead of throwing an NPE.
+                    mTabGridDialogView.setupDialogAnimation(mSourceView);
+                    assertEquals(0f, mAnimationCardView.getAlpha(), 0.0);
+                    assertEquals(0f, mBackgroundFrameView.getAlpha(), 0.0);
+                    assertFalse(mTabGridDialogContainer.isFocusable());
+                });
+    }
+
+    @Test
+    @MediumTest
+    public void testSetupDialogAnimation_DetachedSourceView_FallsBackToFade() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    // The source view has no parent, but the dialog view stays attached.
+                    View detachedSourceView = new View(sActivity);
+                    assertNull(detachedSourceView.getParent());
+                    assertTrue(mTabGridDialogView.isAttachedToWindow());
+
+                    // Should fall back to the basic fade animation instead of throwing an NPE.
+                    mTabGridDialogView.setupDialogAnimation(detachedSourceView);
+                    assertEquals(0f, mAnimationCardView.getAlpha(), 0.0);
+                    assertEquals(0f, mBackgroundFrameView.getAlpha(), 0.0);
+                    assertFalse(mTabGridDialogContainer.isFocusable());
+                });
+    }
+
+    @Test
+    @MediumTest
     public void testDialog_FadeInFadeOut() {
         // Setup the the basic fade-in and fade-out animation.
         ThreadUtils.runOnUiThreadBlocking(
@@ -568,6 +620,105 @@ public class TabGridDialogViewTest {
                     assertFalse(mTabGridDialogContainer.isFocusable());
                     assertFalse(mTabGridDialogView.getBackButtonForTesting().isFocused());
                 });
+    }
+
+    @Test
+    @MediumTest
+    public void testAnimationSourceRect_FullyVisible() {
+        int sourceTop = CLIP_TOP + 50;
+        RectF rect = setupDialogAnimationFromSource(sourceTop, sourceTop + SOURCE_HEIGHT + 50);
+
+        assertSourceRect(rect, sourceTop + mCardPadding);
+    }
+
+    @Test
+    @MediumTest
+    public void testAnimationSourceRect_AtClipTop() {
+        RectF rect = setupDialogAnimationFromSource(CLIP_TOP, CLIP_TOP + 2 * SOURCE_HEIGHT);
+
+        assertSourceRect(rect, CLIP_TOP + mCardPadding);
+    }
+
+    @Test
+    @MediumTest
+    public void testAnimationSourceRect_ClippedAtBottom() {
+        int sourceTop = CLIP_TOP + 50;
+        RectF rect = setupDialogAnimationFromSource(sourceTop, sourceTop + SOURCE_HEIGHT - 50);
+
+        // The rect is the unclipped card.
+        assertSourceRect(rect, sourceTop + mCardPadding);
+    }
+
+    @Test
+    @MediumTest
+    public void testAnimationSourceRect_ClippedAtTopLessThanPadding() {
+        int clip = Math.max(1, (int) (mCardPadding / 2));
+        int sourceTop = CLIP_TOP - clip;
+        RectF rect = setupDialogAnimationFromSource(sourceTop, CLIP_TOP + 2 * SOURCE_HEIGHT);
+
+        // The visible part of the top padding is still skipped.
+        assertSourceRect(rect, sourceTop + mCardPadding);
+    }
+
+    @Test
+    @MediumTest
+    public void testAnimationSourceRect_ClippedAtTopMoreThanPadding() {
+        int sourceTop = CLIP_TOP - (int) mCardPadding - 50;
+        RectF rect = setupDialogAnimationFromSource(sourceTop, CLIP_TOP + 2 * SOURCE_HEIGHT);
+
+        // The rect starts at the clip bound.
+        assertSourceRect(rect, CLIP_TOP);
+    }
+
+    @Test
+    @MediumTest
+    public void testAnimationSourceRect_AtClipTopAndClippedAtBottom() {
+        int sourceTop = CLIP_TOP;
+        RectF rect = setupDialogAnimationFromSource(sourceTop, sourceTop + SOURCE_HEIGHT - 50);
+
+        // Not taken as clipped at the top just because it touches the clip bound.
+        assertSourceRect(rect, sourceTop + mCardPadding);
+    }
+
+    /**
+     * Adds a SOURCE_WIDTH x SOURCE_HEIGHT source view at {@code sourceTop} inside a container that
+     * clips it to [CLIP_TOP, clipBottom), and returns the animation source rect for it.
+     */
+    private RectF setupDialogAnimationFromSource(int sourceTop, int clipBottom) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    FrameLayout clipContainer = new FrameLayout(sActivity);
+                    FrameLayout.LayoutParams clipParams =
+                            new FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT, clipBottom - CLIP_TOP);
+                    clipParams.topMargin = CLIP_TOP;
+                    mTestParent.addView(clipContainer, 0, clipParams);
+
+                    mSourceView = new View(sActivity);
+                    FrameLayout.LayoutParams sourceParams =
+                            new FrameLayout.LayoutParams(SOURCE_WIDTH, SOURCE_HEIGHT);
+                    sourceParams.leftMargin = SOURCE_LEFT;
+                    sourceParams.topMargin = sourceTop - CLIP_TOP;
+                    clipContainer.addView(mSourceView, sourceParams);
+                });
+        CriteriaHelper.pollUiThread(
+                () -> mSourceView.isLaidOut() && !mSourceView.isLayoutRequested());
+
+        return ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    AtomicReference<RectF> sourceRect = new AtomicReference<>();
+                    TabGridDialogView.setSourceRectCallbackForTesting(sourceRect::set);
+                    mTabGridDialogView.setupDialogAnimation(mSourceView);
+                    return sourceRect.get();
+                });
+    }
+
+    private void assertSourceRect(RectF rect, float expectedTop) {
+        assertNotNull(rect);
+        assertEquals("left", SOURCE_LEFT + mCardPadding, rect.left, DELTA);
+        assertEquals("top", expectedTop, rect.top, DELTA);
+        assertEquals("width", SOURCE_WIDTH - 2 * mCardPadding, rect.width(), DELTA);
+        assertEquals("height", SOURCE_HEIGHT - 2 * mCardPadding, rect.height(), DELTA);
     }
 
     @Test

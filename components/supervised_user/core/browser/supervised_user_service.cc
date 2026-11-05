@@ -21,12 +21,12 @@
 #include "base/values.h"
 #include "base/version.h"
 #include "build/build_config.h"
+#include "components/enterprise/isolated_mode/prefs.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/supervised_user/core/browser/permission_request_creator_impl.h"
 #include "components/supervised_user/core/browser/supervised_user_preferences.h"
-#include "components/supervised_user/core/browser/supervised_user_service_observer.h"
 #include "components/supervised_user/core/browser/supervised_user_utils.h"
 #include "components/supervised_user/core/common/features.h"
 #include "components/supervised_user/core/common/pref_names.h"
@@ -96,16 +96,6 @@ std::optional<Custodian> SupervisedUserService::GetSecondCustodian() const {
       prefs::kSupervisedUserSecondCustodianProfileImageURL);
 }
 
-void SupervisedUserService::AddObserver(
-    SupervisedUserServiceObserver* observer) {
-  observer_list_.AddObserver(observer);
-}
-
-void SupervisedUserService::RemoveObserver(
-    SupervisedUserServiceObserver* observer) {
-  observer_list_.RemoveObserver(observer);
-}
-
 // Note: unretained is safe, because the utility that binds callbacks is owned
 // by this instance.
 SupervisedUserService::SupervisedUserService(
@@ -130,6 +120,11 @@ SupervisedUserService::SupervisedUserService(
       base::BindRepeating(
           &SupervisedUserService::OnIncognitoModeAvailabilityChanged,
           base::Unretained(this)));
+  main_pref_change_registrar_.Add(
+      enterprise_isolated_mode::kEnterpriseIsolatedModeSettings,
+      base::BindRepeating(
+          &SupervisedUserService::OnIncognitoModeAvailabilityChanged,
+          base::Unretained(this)));
 
   OnSupervisedUserIdChanged();
 }
@@ -146,34 +141,10 @@ void SupervisedUserService::OnFamilyLinkParentalControlsEnabled() {
   remote_web_approvals_manager_.AddApprovalRequestCreator(
       std::make_unique<PermissionRequestCreatorImpl>(identity_manager_,
                                                      url_loader_factory_));
-
-  // Add handlers at the end to avoid multiple notifications (eg. web filtering
-  // consists of multiple prefs changing at once but producing separate
-  // notifications).
-  AddCustodianPrefChangeHandlers();
 }
 
 void SupervisedUserService::OnFamilyLinkParentalControlsDisabled() {
-  // Start with removing handlers, to avoid multiple notifications from pref
-  // status changes from the settings service.
-  RemoveCustodianPrefChangeHandlers();
-
-  // All disabling operations are idempotent.
   remote_web_approvals_manager_.ClearApprovalRequestsCreators();
-}
-
-void SupervisedUserService::AddCustodianPrefChangeHandlers() {
-  custodian_pref_change_registrar_.Init(&user_prefs_.get());
-  for (const auto* const pref : kCustodianInfoPrefs) {
-    custodian_pref_change_registrar_.Add(
-        pref,
-        base::BindRepeating(&SupervisedUserService::OnCustodianInfoChanged,
-                            base::Unretained(this)));
-  }
-}
-
-void SupervisedUserService::RemoveCustodianPrefChangeHandlers() {
-  custodian_pref_change_registrar_.RemoveAll();
 }
 
 void SupervisedUserService::OnIncognitoModeAvailabilityChanged() {
@@ -182,10 +153,6 @@ void SupervisedUserService::OnIncognitoModeAvailabilityChanged() {
   if (is_supervised && platform_delegate_->ShouldCloseIncognitoTabs()) {
     platform_delegate_->CloseIncognitoTabs();
   }
-}
-
-void SupervisedUserService::OnCustodianInfoChanged() {
-  observer_list_.Notify(&SupervisedUserServiceObserver::OnCustodianInfoChanged);
 }
 
 void SupervisedUserService::Shutdown() {

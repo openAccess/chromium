@@ -41,7 +41,6 @@ import androidx.appcompat.content.res.AppCompatResources;
 import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.touch_to_fill.TouchToFillPasswordManagerProperties.FaviconOrFallback;
 import org.chromium.chrome.browser.touch_to_fill.TouchToFillPasswordManagerProperties.ItemType;
 import org.chromium.chrome.browser.touch_to_fill.TouchToFillPasswordManagerProperties.MorePasskeysProperties;
@@ -49,7 +48,6 @@ import org.chromium.chrome.browser.touch_to_fill.common.FillableItemCollectionIn
 import org.chromium.chrome.browser.touch_to_fill.data.Credential;
 import org.chromium.chrome.browser.touch_to_fill.data.WebauthnCredential;
 import org.chromium.chrome.browser.ui.favicon.FaviconUtils;
-import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -76,15 +74,7 @@ class TouchToFillPasswordManagerViewBinder {
             assumeNonNull(dismissHandler);
             view.setDismissHandler(dismissHandler);
         } else if (propertyKey == VISIBLE) {
-            boolean visibilityChangeSuccessful = view.setVisible(model.get(VISIBLE));
-            if (!visibilityChangeSuccessful
-                    && model.get(VISIBLE)
-                    && !ChromeFeatureList.isEnabled(
-                            ChromeFeatureList.PASSWORD_FORM_GROUPED_AFFILIATIONS)) {
-                Callback<Integer> dismissHandler = model.get(DISMISS_HANDLER);
-                assert dismissHandler != null;
-                dismissHandler.onResult(BottomSheetController.StateChangeReason.NONE);
-            }
+            view.setVisible(model.get(VISIBLE));
         } else if (propertyKey == SHEET_ITEMS) {
             view.setSheetItemListAdapter(
                     new RecyclerViewAdapter<>(
@@ -111,22 +101,22 @@ class TouchToFillPasswordManagerViewBinder {
             case ItemType.HEADER:
                 return new TouchToFillPasswordManagerViewHolder(
                         parent,
-                        R.layout.touch_to_fill_header_item,
+                        R.layout.touch_to_fill_password_manager_header_item,
                         TouchToFillPasswordManagerViewBinder::bindHeaderView);
             case ItemType.CREDENTIAL:
                 return new TouchToFillPasswordManagerViewHolder(
                         parent,
-                        R.layout.touch_to_fill_list_item,
+                        R.layout.touch_to_fill_password_manager_list_item,
                         TouchToFillPasswordManagerViewBinder::bindCredentialView);
             case ItemType.WEBAUTHN_CREDENTIAL:
                 return new TouchToFillPasswordManagerViewHolder(
                         parent,
-                        R.layout.touch_to_fill_list_item,
+                        R.layout.touch_to_fill_password_manager_list_item,
                         TouchToFillPasswordManagerViewBinder::bindWebAuthnCredentialView);
             case ItemType.MORE_PASSKEYS:
                 return new TouchToFillPasswordManagerViewHolder(
                         parent,
-                        R.layout.touch_to_fill_more_passkeys_item,
+                        R.layout.touch_to_fill_password_manager_more_passkeys_item,
                         TouchToFillPasswordManagerViewBinder::bindMorePasskeysView);
             case ItemType.FILL_BUTTON:
                 return new TouchToFillPasswordManagerViewHolder(
@@ -136,7 +126,7 @@ class TouchToFillPasswordManagerViewBinder {
             case ItemType.FOOTER:
                 return new TouchToFillPasswordManagerViewHolder(
                         parent,
-                        R.layout.touch_to_fill_footer_item,
+                        R.layout.touch_to_fill_password_manager_footer_item,
                         TouchToFillPasswordManagerViewBinder::bindFooterView);
         }
         throw new IllegalArgumentException("Cannot create view for ItemType: " + itemType);

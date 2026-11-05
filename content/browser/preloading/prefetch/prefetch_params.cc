@@ -14,6 +14,7 @@
 #include "base/rand_util.h"
 #include "base/strings/strcat.h"
 #include "content/browser/preloading/prefetch/prefetch_features.h"
+#include "content/browser/preloading/prefetch/prefetch_request.h"
 #include "content/browser/preloading/prefetch/prefetch_type.h"
 #include "content/browser/preloading/preloading_trigger_type_impl.h"
 #include "content/browser/preloading/prerender/prerender_features.h"
@@ -87,7 +88,20 @@ bool PrefetchServiceSendDecoyRequestForIneligblePrefetch(
   return base::RandDouble() < probability;
 }
 
-base::TimeDelta PrefetchTimeoutDuration() {
+base::TimeDelta PrefetchTimeoutDuration(
+    const PrefetchRequest& prefetch_request) {
+  // Don't set a timeout for a prefetch ahead of an imminent navigation, for the
+  // same reason as `PrefetchBlockUntilHeadTimeout()`. Note that this timeout
+  // keeps running while a navigation is blocked until the head is received, so
+  // disabling only the block-until-head timeout is not enough.
+  if (base::FeatureList::IsEnabled(
+          features::kPrefetchAheadOfImminentNavigation) &&
+      prefetch_request.is_ahead_of_imminent_navigation() &&
+      !features::kPrefetchAheadOfImminentNavigationUsePrefetchLoaderTimeout
+           .Get()) {
+    return base::Seconds(0);
+  }
+
   return base::Milliseconds(base::GetFieldTrialParamByFeatureAsInt(
       features::kPrefetchUseContentRefactor, "prefetch_timeout_ms",
       10 * 1000 /* 10 seconds */));
@@ -187,11 +201,24 @@ int PrefetchCanaryCheckRetries() {
 }
 
 base::TimeDelta PrefetchBlockUntilHeadTimeout(
-    const PrefetchType& prefetch_type,
-    bool should_disable_block_until_head_timeout,
+    const PrefetchRequest& prefetch_request,
     bool is_nav_prerender) {
   // If the caller of prefetches requests to disable the timeout, follow that.
-  if (should_disable_block_until_head_timeout) {
+  if (prefetch_request.should_disable_block_until_head_timeout()) {
+    return base::Seconds(0);
+  }
+
+  // Don't set a timeout for a prefetch ahead of an imminent navigation because
+  //
+  // - Such a prefetch is triggered when the navigation is (almost) certain to
+  //   happen soon, so the prefetch is likely still in flight at matching time.
+  // - Timing out falls back to the network, which discards the head start of
+  //   the prefetch and thus is strictly worse than keeping waiting.
+  if (base::FeatureList::IsEnabled(
+          features::kPrefetchAheadOfImminentNavigation) &&
+      prefetch_request.is_ahead_of_imminent_navigation() &&
+      !features::kPrefetchAheadOfImminentNavigationUseBlockUntilHeadTimeout
+           .Get()) {
     return base::Seconds(0);
   }
 
@@ -209,6 +236,8 @@ base::TimeDelta PrefetchBlockUntilHeadTimeout(
       is_nav_prerender) {
     return base::Seconds(0);
   }
+
+  const PrefetchType& prefetch_type = prefetch_request.prefetch_type();
 
   int timeout_in_milliseconds = 0;
   if (IsSpeculationRuleType(prefetch_type.trigger_type())) {

@@ -10,8 +10,6 @@
 #include "extensions/browser/api/storage/backend_task_runner.h"
 #include "extensions/browser/extension_system.h"
 
-namespace browser_sync {
-
 ExtensionSettingDataTypeController::ExtensionSettingDataTypeController(
     syncer::DataType type,
     syncer::OnceDataTypeStoreFactory store_factory,
@@ -27,8 +25,9 @@ ExtensionSettingDataTypeController::ExtensionSettingDataTypeController(
           extensions::GetBackendTaskRunner(),
           delegate_mode),
       profile_(profile) {
-  DCHECK(profile_);
-  DCHECK(type == syncer::EXTENSION_SETTINGS || type == syncer::APP_SETTINGS);
+  CHECK(profile_, base::NotFatalUntil::M163);
+  CHECK(type == syncer::EXTENSION_SETTINGS || type == syncer::APP_SETTINGS,
+        base::NotFatalUntil::M163);
 }
 
 ExtensionSettingDataTypeController::~ExtensionSettingDataTypeController() =
@@ -37,11 +36,9 @@ ExtensionSettingDataTypeController::~ExtensionSettingDataTypeController() =
 void ExtensionSettingDataTypeController::LoadModels(
     const syncer::ConfigureContext& configure_context,
     const ModelLoadCallback& model_load_callback) {
-  DCHECK(CalledOnValidThread());
+  CHECK(CalledOnValidSequence(), base::NotFatalUntil::M163);
   extensions::ExtensionSystem::Get(profile_)->InitForRegularProfile(
       /*extensions_enabled=*/true);
   NonUiSyncableServiceBasedDataTypeController::LoadModels(configure_context,
                                                            model_load_callback);
 }
-
-}  // namespace browser_sync

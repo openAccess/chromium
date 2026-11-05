@@ -16,7 +16,6 @@
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
 #include "chrome/browser/pdf/pdf_extension_test_util.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -35,6 +34,7 @@
 #include "pdf/loader/document_loader_impl.h"
 #include "pdf/pdf_features.h"
 #include "third_party/blink/public/mojom/frame/find_in_page.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace content {
 
@@ -47,12 +47,14 @@ class PdfFindRequestManagerTest : public InProcessBrowserTest {
     // Swap the WebContents's delegate for our test delegate.
     normal_delegate_ = contents()->GetDelegate();
     contents()->SetDelegate(&test_delegate_);
+    test_delegate_.Observe(contents());
   }
 
   void TearDownOnMainThread() override {
     // Swap the WebContents's delegate back to its usual delegate.
     contents()->SetDelegate(normal_delegate_);
     normal_delegate_ = nullptr;
+    test_delegate_.Observe(nullptr);
   }
 
  protected:
@@ -66,9 +68,11 @@ class PdfFindRequestManagerTest : public InProcessBrowserTest {
 
   void Find(const std::string& search_text,
             blink::mojom::FindOptionsPtr options) {
-    delegate()->UpdateLastRequest(++last_request_id_);
-    contents()->Find(last_request_id_, base::UTF8ToUTF16(search_text),
-                     std::move(options), /*skip_delay=*/false);
+    contents()->Find(base::UTF8ToUTF16(search_text), std::move(options),
+                     /*skip_delay=*/false, [this](int request_id) {
+                       last_request_id_ = request_id;
+                       delegate()->UpdateLastRequest(request_id);
+                     });
   }
 
   WebContents* contents() const {

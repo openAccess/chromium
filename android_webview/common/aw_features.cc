@@ -33,7 +33,7 @@ BASE_FEATURE(kStartupNonBlockingWebViewConstructor,
 // When enabled, starts observing for Android OS accessibility changes on
 // startup.
 BASE_FEATURE(kWebViewObserveAccessibilityState,
-             base::FEATURE_ENABLED_BY_DEFAULT);
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Kill switch for Profile.addQuicHints.
 BASE_FEATURE(kWebViewAddQuicHints, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -163,6 +163,9 @@ BASE_FEATURE(kWebViewForceWebAuthn, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Gate text-size-adjust on whether the app called
 // setLayoutAlgorithm(TEXT_AUTOSIZING).
+// NOTE: When modifying behavior related to this flag, please e-mail
+// webview-font-settings@google.com as an FYI. Googlers, more info is
+// available at go/webview-font-settings.
 BASE_FEATURE(kWebViewGateTextSizeAdjustOnTextAutosizing,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -224,6 +227,12 @@ const base::FeatureParam<bool> kWebViewHttpCacheQuotaApiForceBackendInit{
 // This enables WebView's hyperlink context menu.
 BASE_FEATURE(kWebViewHyperlinkContextMenu, base::FEATURE_DISABLED_BY_DEFAULT);
 
+// When enabled, <video> elements without an explicitly specified poster will
+// use Chromium's usual logic to pick a frame from the video, instead of calling
+// the app's WebChromeClient.getDefaultVideoPoster() implementation.
+BASE_FEATURE(kWebViewIgnoreDefaultVideoPoster,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Controls whether we ignore duplicate navigations or not, in favor of
 // preserving the already ongoing navigation.
 BASE_FEATURE(kWebViewIgnoreDuplicateNavs, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -235,6 +244,10 @@ const base::FeatureParam<base::TimeDelta> kWebViewDuplicateNavThreshold{
 // rather than waiting for the framework to call init().
 BASE_FEATURE(kWebViewInitInConstructor, base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Enables initialization of the renderer process during WebContents creation.
+BASE_FEATURE(kWebViewInitRendererDuringWebContentsCreation,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // If enabled zoom picker is invoked on every kGestureScrollUpdate consumed ack,
 // otherwise the zoom picker is persistently shown from scroll start to scroll
 // end plus the usual delay in hiding.
@@ -243,7 +256,7 @@ BASE_FEATURE(kWebViewInvokeZoomPickerOnGSU, base::FEATURE_DISABLED_BY_DEFAULT);
 // When enabled, cookie policy settings are captured at RestrictedCookieManager
 // creation time and used throughout its lifetime. This enables shared memory
 // cookie versioning to reduce IPC overhead.
-BASE_FEATURE(kWebViewLatchedCookiePolicy, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kWebViewLatchedCookiePolicy, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Install the profiling client with memory_system::Initializer. If this is
 // enabled the profiler MAY be started by
@@ -281,7 +294,7 @@ BASE_FEATURE(kWebViewMoveWorkToProviderInitThreadPool,
 // When enabled, accessing multi-profile APIs skips automatic initialization
 // of the Default profile during startup.
 BASE_FEATURE(kWebViewMultiProfileSkipDefaultProfile,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Kill switch for the WebView Navigate method.
 BASE_FEATURE(kWebViewNavigate, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -295,16 +308,16 @@ BASE_FEATURE(kWebViewNavigateDrainPrefetch, base::FEATURE_ENABLED_BY_DEFAULT);
 // cookie loss and CHECK failures when cookies are set before WebView is fully
 // initialized.
 BASE_FEATURE(kWebViewNonBlockingCookieStoreHandoff,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Kill switch for using the low entropy source provided by the nonembedded
+// WebView service.
+BASE_FEATURE(kWebViewNonembeddedLowEntropySourceKillSwitch,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, opts in WebView to GMSCore's bindService optimizations.
 BASE_FEATURE(kWebViewOptInToGmsBindServiceOptimization,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, WebView stores the persistent metrics files in the
-// app's non-backed-up files directory instead of the app's data directory.
-BASE_FEATURE(kWebViewPersistentMetricsInNoBackupDir,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, HttpServerProperties will be persisted to disk across
 // app restarts.
@@ -317,10 +330,6 @@ BASE_FEATURE(kWebViewPrefetchAheadOfPrerender,
 // Prefetches the native WebView code to memory during startup.
 BASE_FEATURE(kWebViewPrefetchNativeLibrary, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// A parameter to trigger the prefetch from the renderer instead of the browser.
-const base::FeatureParam<bool> kWebViewPrefetchFromRenderer{
-    &kWebViewPrefetchNativeLibrary, "WebViewPrefetchFromRenderer", true};
-
 // This enables to start main resource prefetch request from off the main thread
 // for WebView Prefetch API. See crbug.com/452406598, crbug.com/452389538 for
 // more details. Only takes effect if `kPrefetchOffTheMainThread` is enabled
@@ -328,12 +337,31 @@ const base::FeatureParam<bool> kWebViewPrefetchFromRenderer{
 BASE_FEATURE(kWebViewPrefetchOffTheMainThread,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Prefetches the native WebView code to memory when renderer is reused.
-BASE_FEATURE(kWebViewPrefetchOnRendererReuse,
+// When enabled, stale `AwPrefetchHandleWrapper`s in `AwPrefetchManagerData` are
+// proactively pruned when new prefetch requests are added or reserved.
+BASE_FEATURE(kWebViewPrefetchPruneStaleWrappers,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Kill switch for reporting `PreloadServingMetrics` for WebView.
 BASE_FEATURE(kWebViewPreloadServingMetrics, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// When enabled, preconnect requests trigger compression dictionary prewarming.
+BASE_FEATURE(kWebViewPrewarmDictionaryOnPreconnect,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+constexpr base::FeatureParam<AwPrewarmDictionaryCleanupMode>::Option
+    kAwPrewarmDictionaryCleanupModeOptions[] = {
+        {AwPrewarmDictionaryCleanupMode::kEventsOnly, "events_only"},
+        {AwPrewarmDictionaryCleanupMode::kTimerOnly, "timer_only"},
+        {AwPrewarmDictionaryCleanupMode::kHybrid, "hybrid"},
+};
+const base::FeatureParam<AwPrewarmDictionaryCleanupMode>
+    kWebViewPrewarmDictionaryCleanupMode{
+        &kWebViewPrewarmDictionaryOnPreconnect, "CleanupMode",
+        AwPrewarmDictionaryCleanupMode::kHybrid,
+        &kAwPrewarmDictionaryCleanupModeOptions};
+// Maximum number of prewarmed dictionaries retained concurrently.
+const base::FeatureParam<int> kWebViewPrewarmDictionaryOnPreconnectMaxEntries{
+    &kWebViewPrewarmDictionaryOnPreconnect, "MaxEntries", 4};
 
 // Enables lazy profile creation in WebView.
 BASE_FEATURE(kWebViewProfileStoreNotTriggerStartup,
@@ -368,6 +396,10 @@ BASE_FEATURE(kWebViewReducedSeedRequestPeriod,
 BASE_FEATURE(kWebViewReduceUAAndroidVersionDeviceModel,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Allow WebView initialization to continue in the case where an old instance of
+// the same app process is stuck holding the lock.
+BASE_FEATURE(kWebViewRelaxDataDirLocking, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // When enabled, WebView support for Instant Apps is removed.
 BASE_FEATURE(kWebViewRemoveInstantAppSupport,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -377,18 +409,10 @@ BASE_FEATURE(kWebViewRemoveInstantAppSupport,
 // enabled.
 BASE_FEATURE(kWebViewRenderDocument, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Keeps the renderer process alive after the last WebView is destroyed to
-// allow for reuse.
-BASE_FEATURE(kWebViewRendererKeepAlive, base::FEATURE_ENABLED_BY_DEFAULT);
-
-const base::FeatureParam<base::TimeDelta> kWebViewRendererKeepAliveDuration{
-    &kWebViewRendererKeepAlive, "webview_renderer_keep_alive_duration",
-    base::Days(1000)};
-
 // Enables using a single shared gpu::SharedContextState across all
 // OutputSurfaceProviderWebView instances.
 BASE_FEATURE(kWebViewSingleSharedContextState,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, navigation headers will be saved and restored as part
 // of saved state for WebView.

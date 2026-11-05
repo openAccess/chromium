@@ -11,7 +11,12 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.ObserverList;
+import org.chromium.base.ResettersForTesting;
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.BuildConfig;
@@ -19,6 +24,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.Set;
@@ -30,6 +36,9 @@ public class TabArchiveSettings {
     public interface Observer {
         // Called when a setting was changed.
         void onSettingChanged();
+
+        // Called when the archived tab count is changed.
+        default void onArchivedTabCountChanged(int count) {}
     }
 
     // The default time to consider a tab as inactive.
@@ -41,18 +50,6 @@ public class TabArchiveSettings {
     // The default max simultaneous archives to allow in a single pass.
     static final int DEFAULT_MAX_SIMULTANEOUS_ARCHIVES = 150;
     static final int DEFAULT_AUTODELETE_TIME_HOURS = 90 * 24; // 90 days.
-    private static boolean sIphShownThisSession;
-
-    /** Sets whether the iph was shown this session. */
-    public static void setIphShownThisSession(boolean iphShownThisSession) {
-        sIphShownThisSession = iphShownThisSession;
-    }
-
-    /** Returns whether the iph was shown this session. */
-    public static boolean getIphShownThisSession() {
-        return sIphShownThisSession;
-    }
-
     @VisibleForTesting static final boolean DIALOG_IPH_DEFAULT = true;
     private static final Set<String> PREF_KEYS_FOR_NOTIFICATIONS =
             Set.of(
@@ -61,6 +58,9 @@ public class TabArchiveSettings {
                     ChromePreferenceKeys.TAB_DECLUTTER_AUTO_DELETE_ENABLED,
                     ChromePreferenceKeys.TAB_DECLUTTER_AUTO_DELETE_TIME_DELTA_HOURS,
                     ChromePreferenceKeys.TAB_DECLUTTER_AUTO_DELETE_DECISION_MADE);
+
+    private static boolean sIphShownThisSession;
+    private static @Nullable TabArchiveSettings sInstance;
 
     private final SharedPreferences.OnSharedPreferenceChangeListener mPrefsListener =
             new SharedPreferences.OnSharedPreferenceChangeListener() {
@@ -73,6 +73,57 @@ public class TabArchiveSettings {
 
     private final SharedPreferencesManager mPrefsManager;
     private final ObserverList<Observer> mObservers = new ObserverList<>();
+    private final SettableNonNullObservableSupplier<Integer> mArchivedTabCountSupplier;
+    private boolean mIsDestroyed;
+
+    /** Sets whether the iph was shown this session. */
+    public static void setIphShownThisSession(boolean iphShownThisSession) {
+        sIphShownThisSession = iphShownThisSession;
+    }
+
+    /** Returns whether the iph was shown this session. */
+    public static boolean getIphShownThisSession() {
+        return sIphShownThisSession;
+    }
+
+    /** Returns the singleton instance of {@link TabArchiveSettings}. */
+    public static TabArchiveSettings getInstance() {
+        ThreadUtils.assertOnUiThread();
+        if (sInstance == null) {
+            sInstance = new TabArchiveSettings(ChromeSharedPreferences.getInstance());
+            ResettersForTesting.register(TabArchiveSettings::resetForTesting);
+        }
+        return sInstance;
+    }
+
+    /** Sets the singleton instance for testing. */
+    public static void setInstanceForTesting(@Nullable TabArchiveSettings instance) {
+        ThreadUtils.assertOnUiThread();
+        if (sInstance != null && sInstance != instance && sInstance.mPrefsManager != null) {
+            sInstance.resetSettingsForTesting();
+            sInstance.destroy();
+        }
+        sInstance = instance;
+        ResettersForTesting.register(TabArchiveSettings::resetForTesting);
+    }
+
+    private static void resetForTesting() {
+        Runnable resetRunnable =
+                () -> {
+                    if (sInstance != null) {
+                        if (sInstance.mPrefsManager != null) {
+                            sInstance.resetSettingsForTesting();
+                            sInstance.destroy();
+                        }
+                        sInstance = null;
+                    }
+                };
+        if (ThreadUtils.runningOnUiThread()) {
+            resetRunnable.run();
+        } else {
+            ThreadUtils.runOnUiThreadBlocking(resetRunnable);
+        }
+    }
 
     /**
      * Constructor.
@@ -80,8 +131,12 @@ public class TabArchiveSettings {
      * @param prefsManager The {@link SharedPreferencesManager} used to read/write settings.
      */
     @SuppressWarnings("UseSharedPreferencesManagerFromChromeCheck")
-    public TabArchiveSettings(SharedPreferencesManager prefsManager) {
+    @VisibleForTesting
+    TabArchiveSettings(SharedPreferencesManager prefsManager) {
         mPrefsManager = prefsManager;
+        int initialCount =
+                mPrefsManager.readInt(ChromePreferenceKeys.TAB_DECLUTTER_ARCHIVED_TAB_COUNT, 0);
+        mArchivedTabCountSupplier = ObservableSuppliers.createNonNull(initialCount);
         ContextUtils.getAppSharedPreferences()
                 .registerOnSharedPreferenceChangeListener(mPrefsListener);
     }
@@ -89,8 +144,12 @@ public class TabArchiveSettings {
     /** Destroys the object, unregistering observers. */
     @SuppressWarnings("UseSharedPreferencesManagerFromChromeCheck")
     public void destroy() {
+        if (mIsDestroyed) return;
+        mIsDestroyed = true;
         ContextUtils.getAppSharedPreferences()
                 .unregisterOnSharedPreferenceChangeListener(mPrefsListener);
+        mArchivedTabCountSupplier.destroy();
+        mObservers.clear();
     }
 
     /** Adds the given observer to the list. */
@@ -255,9 +314,48 @@ public class TabArchiveSettings {
         return DEFAULT_MAX_SIMULTANEOUS_ARCHIVES;
     }
 
+    /** Returns a supplier for the archived tab count. */
+    public NonNullObservableSupplier<Integer> getArchivedTabCountSupplier() {
+        return mArchivedTabCountSupplier;
+    }
+
+    /** Returns whether the archived tab count has ever been persisted in preferences. */
+    public boolean hasArchivedTabCountBeenSet() {
+        return mPrefsManager.contains(ChromePreferenceKeys.TAB_DECLUTTER_ARCHIVED_TAB_COUNT);
+    }
+
+    /** Returns the cached archived tab count. */
+    public int getArchivedTabCount() {
+        return mArchivedTabCountSupplier.get();
+    }
+
+    /** Sets the cached archived tab count and updates the supplier and observers. */
+    public void setArchivedTabCount(int count) {
+        if (mIsDestroyed) return;
+        if (mArchivedTabCountSupplier.get() == count && hasArchivedTabCountBeenSet()) return;
+        mPrefsManager.writeInt(ChromePreferenceKeys.TAB_DECLUTTER_ARCHIVED_TAB_COUNT, count);
+        if (mArchivedTabCountSupplier.get() == count) return;
+        mArchivedTabCountSupplier.set(count);
+        for (Observer obs : mObservers) {
+            obs.onArchivedTabCountChanged(count);
+        }
+    }
+
     // Private methods.
 
     private void maybeNotifyObservers(@Nullable String key) {
+        if (mIsDestroyed) return;
+        if (ChromePreferenceKeys.TAB_DECLUTTER_ARCHIVED_TAB_COUNT.equals(key)) {
+            int count =
+                    mPrefsManager.readInt(ChromePreferenceKeys.TAB_DECLUTTER_ARCHIVED_TAB_COUNT, 0);
+            if (mArchivedTabCountSupplier.get() == count) return;
+            mArchivedTabCountSupplier.set(count);
+            for (Observer obs : mObservers) {
+                obs.onArchivedTabCountChanged(count);
+            }
+            return;
+        }
+
         if (!PREF_KEYS_FOR_NOTIFICATIONS.contains(key)) return;
 
         for (Observer obs : mObservers) {
@@ -274,5 +372,9 @@ public class TabArchiveSettings {
         mPrefsManager.removeKey(ChromePreferenceKeys.TAB_DECLUTTER_AUTO_DELETE_TIME_DELTA_HOURS);
         mPrefsManager.removeKey(ChromePreferenceKeys.TAB_DECLUTTER_DIALOG_IPH_DISMISS_COUNT);
         mPrefsManager.removeKey(ChromePreferenceKeys.TAB_DECLUTTER_AUTO_DELETE_DECISION_MADE);
+        mPrefsManager.removeKey(ChromePreferenceKeys.TAB_DECLUTTER_ARCHIVED_TAB_COUNT);
+        if (!mIsDestroyed) {
+            mArchivedTabCountSupplier.set(0);
+        }
     }
 }

@@ -10,9 +10,8 @@
 
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
-#include "base/observer_list_types.h"
-#include "base/scoped_observation_traits.h"
 #include "base/time/time.h"
+#include "chrome/browser/glic/common/observable_value.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/public/glic_instance_id.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
@@ -45,12 +44,6 @@ struct ConversationInfo {
   std::string title;
 };
 
-// Observes the state of the glic panel.
-class PanelStateObserver : public base::CheckedObserver {
- public:
-  virtual void PanelStateChanged(const mojom::PanelState& panel_state) = 0;
-};
-
 // Public interface for one instance of the glic web client.
 class GlicInstance {
  public:
@@ -59,11 +52,8 @@ class GlicInstance {
   virtual bool IsShowing() const = 0;
   virtual bool IsActive() = 0;
 
-  virtual void AddStateObserver(PanelStateObserver* observer) = 0;
-  virtual void RemoveStateObserver(PanelStateObserver* observer) = 0;
-
   // Returns the current panel state.
-  virtual mojom::PanelState GetPanelState() = 0;
+  virtual ObservableValueView<mojom::PanelState>& GetPanelState() const = 0;
 
   // TODO(b/501233062): Remove from the public interface once the existing
   // user has migrated away from the API.
@@ -71,13 +61,27 @@ class GlicInstance {
   virtual base::CallbackListSubscription RegisterWillBeDestroyed(
       DestructionCallback callback) = 0;
 
-  // Sends additional context to the instance.
-  // DEPRECATED: Use the invoke API instead.
+  // Delivers additional context to the web client of an instance that already
+  // exists, without starting an invocation. If the client isn't connected yet
+  // the context is queued, keeping only the latest value per
+  // `AdditionalContextSource`.
+  //
+  // Use this for passive context updates to an instance that is already
+  // showing (e.g. keeping the panel's selection chip in sync with the page).
+  // Anything that needs to show or target a surface, resolve a conversation,
+  // or carry a prompt must go through the invoke API instead; invoke also
+  // records the invocation as a user journey in metrics, which a background
+  // context update is not.
   virtual void SendAdditionalContext(mojom::AdditionalContextPtr context) = 0;
 
   // Focuses the instance if it is active.
   // More specifically, it will focus the active embedder.
   virtual void FocusIfActive() = 0;
+
+  // Returns true if the web client last reported audio (live) mode. The mode
+  // is sticky once reported, so combine with IsShowing() to decide whether a
+  // live conversation is actually in front of the user.
+  virtual bool IsLiveMode() const = 0;
 
   // Notifies the instance that a row in the actor task list bubble was clicked.
   // TODO(b/512866173): Look into migrating this usage to the invoke API.
@@ -125,7 +129,8 @@ class GlicInstance {
   // Cancels ongoing actuation task if one exists.
   virtual void CancelTask() = 0;
 
-  // Returns true if the instance is currently being invoked upon.
+  // Returns true if an invocation that sends an invoke to the web client is in
+  // progress on the instance. Invocations that only show the UI don't count.
   virtual bool IsInvoking() const = 0;
 
   // Cancels any ongoing invocation if one exists.
@@ -144,21 +149,5 @@ class GlicInstance {
 };
 
 }  // namespace glic
-
-namespace base {
-
-template <>
-struct ScopedObservationTraits<glic::GlicInstance, glic::PanelStateObserver> {
-  static void AddObserver(glic::GlicInstance* source,
-                          glic::PanelStateObserver* observer) {
-    source->AddStateObserver(observer);
-  }
-  static void RemoveObserver(glic::GlicInstance* source,
-                             glic::PanelStateObserver* observer) {
-    source->RemoveStateObserver(observer);
-  }
-};
-
-}  // namespace base
 
 #endif  // CHROME_BROWSER_GLIC_PUBLIC_GLIC_INSTANCE_H_

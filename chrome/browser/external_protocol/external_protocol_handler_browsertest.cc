@@ -6,11 +6,15 @@
 
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_features.h"
+#include "chrome/browser/external_protocol/features.h"
+#include "chrome/browser/platform_util_internal.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/shell_integration.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -20,24 +24,43 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "ui/base/page_transition_types.h"
 
 class ExternalProtocolHandlerBrowserTest : public InProcessBrowserTest {
  public:
+  void SetUpOnMainThread() override {
+    InProcessBrowserTest::SetUpOnMainThread();
+    platform_util::internal::DisableShellOperationsForTesting();
+  }
+
   content::WebContents* web_content() {
     return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 };
 
+class ExternalProtocolHandlerLocalOnlyBrowserTest
+    : public ExternalProtocolHandlerBrowserTest {
+ public:
+  ExternalProtocolHandlerLocalOnlyBrowserTest() {
+    features_.InitAndEnableFeature(features::kLocalOnlyAppProtocolPrefix);
+  }
+
+  void SetUpOnMainThread() override {
+    ExternalProtocolHandlerBrowserTest::SetUpOnMainThread();
+    ASSERT_TRUE(embedded_test_server()->Start());
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(
+        browser(), embedded_test_server()->GetURL("/empty.html")));
+  }
+
+ private:
+  base::test::ScopedFeatureList features_;
+};
+
 class ExternalProtocolHandlerSandboxBrowserTest
     : public ExternalProtocolHandlerBrowserTest {
  public:
-  ExternalProtocolHandlerSandboxBrowserTest() {
-    features_.InitAndEnableFeature(features::kSandboxExternalProtocolBlocked);
-  }
-
   void SetUpOnMainThread() override {
     ExternalProtocolHandlerBrowserTest::SetUpOnMainThread();
     AllowCustomProtocol();
@@ -78,10 +101,9 @@ class ExternalProtocolHandlerSandboxBrowserTest
     // Windows/Mac |allowed_msg_2|. That's because Linux do not provide API to
     // query for the supported protocols before launching the external
     // application.
-    const char allowed_msg_1[] =
-        "Launched external handler for 'custom:custom'.";
+    const char allowed_msg_1[] = "Launched external handler for 'custom:'.";
     const char allowed_msg_2[] =
-        "Failed to launch 'custom:custom' because the scheme does not have a "
+        "Failed to launch 'custom:' because the scheme does not have a "
         "registered handler.";
     const char blocked_msg[] =
         "Navigation to external protocol blocked by sandbox, because it "
@@ -111,8 +133,6 @@ class ExternalProtocolHandlerSandboxBrowserTest
 
     return message == allowed_msg_1 || message == allowed_msg_2;
   }
-
-  base::test::ScopedFeatureList features_;
 };
 
 // Observe that the tab is created then automatically closed.
@@ -179,12 +199,12 @@ IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerBrowserTest,
   content::WebContentsConsoleObserver observer(web_content());
   // Wait for either "Launched external handler..." or "Failed to launch..."; the former will pass
   // the test, while the latter will fail it more quickly than waiting for a timeout.
-  observer.SetPattern("*aunch*'mailto:test@site.test'*");
+  observer.SetPattern("*aunch*'mailto:'*");
   ASSERT_TRUE(
       ExecJs(web_content(), "window.open('mailto:test@site.test', '_self');"));
   ASSERT_TRUE(observer.Wait());
   ASSERT_EQ(1u, observer.messages().size());
-  EXPECT_EQ("Launched external handler for 'mailto:test@site.test'.",
+  EXPECT_EQ("Launched external handler for 'mailto:'.",
             observer.GetMessageAt(0u));
 }
 
@@ -194,7 +214,7 @@ IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerBrowserTest,
 // protocol handler is registered ahead of time.
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   content::WebContentsConsoleObserver observer(web_content());
-  observer.SetPattern("Failed to launch 'does.not.exist:failure'*");
+  observer.SetPattern("Failed to launch 'does.not.exist:'*");
   ASSERT_TRUE(
       ExecJs(web_content(), "window.open('does.not.exist:failure', '_self');"));
   ASSERT_TRUE(observer.Wait());
@@ -297,6 +317,16 @@ class AlwaysBlockedExternalProtocolHandlerDelegate
 
 }  // namespace
 
+IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerLocalOnlyBrowserTest,
+                       BlocksWebInitiatedNavigation) {
+  content::WebContentsConsoleObserver observer(web_content());
+  observer.SetPattern("Not allowed to launch 'local+custom:'.");
+
+  ASSERT_TRUE(ExecJs(web_content(), "location.href = 'local+custom:test';"));
+  ASSERT_TRUE(observer.Wait());
+  ASSERT_EQ(1u, observer.messages().size());
+}
+
 // Tests (by forcing a particular scheme to be blocked, regardless of platform)
 // that the console message is attributed to a subframe if one was responsible.
 IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerBrowserTest,
@@ -309,7 +339,7 @@ IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerBrowserTest,
 
   content::WebContentsConsoleObserver observer(
       content::WebContents::FromRenderFrameHost(originating_rfh));
-  observer.SetPattern("*aunch*'willfailtolaunch://foo'*");
+  observer.SetPattern("*aunch*'willfailtolaunch:'*");
   observer.SetFilter(base::BindRepeating(
       [](content::RenderFrameHost* expected_rfh,
          const content::WebContentsConsoleObserver::Message& message) {
@@ -321,89 +351,6 @@ IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerBrowserTest,
       ExecJs(originating_rfh, "location.href = 'willfailtolaunch://foo';"));
   ASSERT_TRUE(observer.Wait());
   ASSERT_EQ(1u, observer.messages().size());
-  EXPECT_EQ("Not allowed to launch 'willfailtolaunch://foo'.",
+  EXPECT_EQ("Not allowed to launch 'willfailtolaunch:'.",
             observer.GetMessageAt(0u));
-}
-
-class ExternalProtocolHandlerSandboxFencedFrameBrowserTest
-    : public ExternalProtocolHandlerSandboxBrowserTest {
- public:
-  void SetUpOnMainThread() override {
-    ExternalProtocolHandlerSandboxBrowserTest::SetUpOnMainThread();
-    ASSERT_TRUE(embedded_test_server()->Start());
-  }
-
-  content::RenderFrameHost* CreateFencedFrame() {
-    return fenced_frame_test_helper().CreateFencedFrame(
-        web_content()->GetPrimaryMainFrame(),
-        embedded_test_server()->GetURL("/fenced_frames/title1.html"));
-  }
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_test_helper_;
-  }
-
-  content::test::FencedFrameTestHelper fenced_frame_test_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerSandboxFencedFrameBrowserTest,
-                       SandboxAllWithoutGesture) {
-  EXPECT_TRUE(AllowedBySandbox(CreateFencedFrame(), /*user-gesture=*/false));
-}
-
-IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerSandboxFencedFrameBrowserTest,
-                       SandboxAllWithGesture) {
-  EXPECT_TRUE(AllowedBySandbox(CreateFencedFrame(), /*user-gesture=*/true));
-}
-
-IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerSandboxFencedFrameBrowserTest,
-                       SandboxInFencedFrame) {
-  EXPECT_TRUE(AllowedBySandbox(CreateIFrame(CreateFencedFrame(), "")));
-}
-
-IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerSandboxFencedFrameBrowserTest,
-                       SandboxAllInFencedFrame) {
-  EXPECT_FALSE(AllowedBySandbox(
-      CreateIFrame(CreateFencedFrame(), "iframe.sandbox = 'allow-scripts';")));
-}
-
-IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerSandboxFencedFrameBrowserTest,
-                       SandboxAllowPopupsInFencedFrame) {
-  EXPECT_TRUE(AllowedBySandbox(CreateIFrame(
-      CreateFencedFrame(), "iframe.sandbox = 'allow-scripts allow-popups';")));
-}
-
-IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerSandboxFencedFrameBrowserTest,
-                       SandboxAllowTopNavigationInFencedFrame) {
-  EXPECT_TRUE(AllowedBySandbox(
-      CreateIFrame(CreateFencedFrame(),
-                   "iframe.sandbox = 'allow-scripts allow-top-navigation';")));
-}
-
-IN_PROC_BROWSER_TEST_F(
-    ExternalProtocolHandlerSandboxFencedFrameBrowserTest,
-    SandboxAllowTopNavigationToCustomProtocolsInFencedFrame) {
-  EXPECT_TRUE(AllowedBySandbox(
-      CreateIFrame(CreateFencedFrame(),
-                   "iframe.sandbox = 'allow-scripts "
-                   "allow-top-navigation-to-custom-protocols';")));
-}
-
-IN_PROC_BROWSER_TEST_F(ExternalProtocolHandlerSandboxFencedFrameBrowserTest,
-                       SandboxAllowTopNavigationByUserActivationInFencedFrame) {
-  EXPECT_FALSE(AllowedBySandbox(
-      CreateIFrame(CreateFencedFrame(),
-                   "iframe.sandbox = 'allow-scripts "
-                   "allow-top-navigation-by-user-activation';"),
-      /*user-gesture=*/false));
-}
-
-IN_PROC_BROWSER_TEST_F(
-    ExternalProtocolHandlerSandboxFencedFrameBrowserTest,
-    SandboxAllowTopNavigationByUserActivationWithGestureInFencedFrame) {
-  EXPECT_TRUE(AllowedBySandbox(
-      CreateIFrame(web_content()->GetPrimaryMainFrame(),
-                   "iframe.sandbox = 'allow-scripts "
-                   "allow-top-navigation-by-user-activation';"),
-      /*user-gesture=*/true));
 }

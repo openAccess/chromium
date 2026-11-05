@@ -17,14 +17,12 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 
 /** Unit tests for {@link SecurePaymentConfirmationBottomSheetContent} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class SecurePaymentConfirmationBottomSheetContentTest {
     private Activity mActivity;
     private View mContentView;
@@ -36,7 +34,7 @@ public class SecurePaymentConfirmationBottomSheetContentTest {
         mActivity = Robolectric.buildActivity(Activity.class).create().get();
         mContentView =
                 mActivity.getLayoutInflater().inflate(R.layout.secure_payment_confirmation, null);
-        mScrollView = mContentView.findViewById(R.id.scroll_view);
+        mScrollView = (ScrollView) mContentView;
         mContent = new SecurePaymentConfirmationBottomSheetContent(mContentView, mScrollView);
     }
 

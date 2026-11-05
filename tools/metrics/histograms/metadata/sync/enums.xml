@@ -389,12 +389,25 @@ chromium-metrics-reviews@google.com.
   <int value="115" label="PrefTranslateRecentTargets"/>
   <int value="116" label="BookmarkBarVisibilityState"/>
   <int value="117" label="SyncableAccountScopedPrefForTesting"/>
-  <int value="118" label="AutofillAtMemoryTriggerInfo"/>
+  <int value="118" label="(obsolete) AutofillAtMemoryTriggerInfo"/>
   <int value="119" label="AutofillGmailOtpFillingEnabled"/>
   <int value="120" label="AutofillGmailOtpFillingActivationDismissalTimestamp"/>
   <int value="121" label="DriveConsentState"/>
   <int value="122" label="AutofillAiPrivateInferenceOptInStatus"/>
   <int value="123" label="AutofillWalletReminderNoticeShown"/>
+  <int value="124" label="AutofillAtMemoryDoubleCtrlTriggerEnabled"/>
+  <int value="125" label="AutofillAtMemoryShortcut"/>
+  <int value="126" label="SubscriptionEligibilitySubscriptionBenefits"/>
+  <int value="127" label="CustomLinksInitializedMobile"/>
+  <int value="128" label="CustomLinksListMobile"/>
+  <int value="129" label="SiteTokenProviderPref"/>
+  <int value="130" label="ReaderForAccessibility"/>
+  <int value="131" label="SafeBrowsingNoProtectionDisabledTimestamp"/>
+  <int value="132" label="SafeBrowsingPreNoProtectionState"/>
+  <int value="133" label="SafeBrowsingNoProtectionDisabledPermanently"/>
+  <int value="134" label="SafeBrowsingNoProtectionReminderDismissed"/>
+  <int value="135" label="SafeBrowsingNoProtectionReminderLastShown"/>
+  <int value="136" label="SafeBrowsingNoProtectionReminderCount"/>
 <!-- LINT.ThenChange(/components/sync_preferences/common_syncable_prefs_database.cc:CommonSyncablePref)-->
 
 <!-- LINT.IfChange(ChromeSyncablePref) -->
@@ -415,7 +428,7 @@ chromium-metrics-reviews@google.com.
   <int value="100013" label="HatsSurveyMetadata"/>
   <int value="100014" label="HomePage"/>
   <int value="100015" label="HomePageIsNewTabPage"/>
-  <int value="100016" label="NtpCustomBackgroundDict"/>
+  <int value="100016" label="(obsolete) NtpCustomBackgroundDict"/>
   <int value="100017" label="LiveCaptionBubbleExpanded"/>
   <int value="100018" label="(Obsolete) LiveCaptionBubblePinned"/>
   <int value="100019" label="LiveCaptionEnabled"/>
@@ -608,7 +621,7 @@ chromium-metrics-reviews@google.com.
   <int value="100193" label="ProfileDefaultContentSettingValuesPopups"/>
   <int value="100194"
       label="ProfileDefaultContentSettingValuesWindowPlacement"/>
-  <int value="100195" label="WebauthnCablev2Pairings"/>
+  <int value="100195" label="(obsolete) WebauthnCablev2Pairings"/>
   <int value="100196" label="DynamicColorColorScheme"/>
   <int value="100197" label="DynamicColorSeedColor"/>
   <int value="100198" label="LongPressDiacritics"/>
@@ -633,10 +646,10 @@ chromium-metrics-reviews@google.com.
   <int value="100216" label="SixPackKeyInsertNotificationsRemaining"/>
   <int value="100217" label="LiveCaptionMaskOffensiveWords"/>
   <int value="100218" label="AshSessionTimeOfLastActivation"/>
-  <int value="100219" label="BrowserColorScheme"/>
-  <int value="100220" label="BrowserColorVariant"/>
-  <int value="100221" label="GrayscaleThemeEnabled"/>
-  <int value="100222" label="UserColor"/>
+  <int value="100219" label="(obsolete) BrowserColorScheme"/>
+  <int value="100220" label="(obsolete) BrowserColorVariant"/>
+  <int value="100221" label="(obsolete) GrayscaleThemeEnabled"/>
+  <int value="100222" label="(obsolete) UserColor"/>
   <int value="100223" label="(Obsolete) BlockAll3pcToggleEnabled"/>
   <int value="100224" label="(Obsolete) TrackingProtectionLevel"/>
   <int value="100225" label="UserSpeakOnMuteDetectionEnabled"/>
@@ -824,6 +837,7 @@ chromium-metrics-reviews@google.com.
   <int value="100384" label="ProfileDefaultContentSettingValuesInlineCueMenu"/>
   <int value="100385" label="ExtensionsPinnedByDefault"/>
   <int value="100386" label="AudioFocusEnforcementEnabled"/>
+  <int value="100387" label="TtcAutoPinnedMigration"/>
 <!-- LINT.ThenChange(/chrome/browser/sync/prefs/chrome_syncable_prefs_database.cc:ChromeSyncablePref)-->
 
 <!-- LINT.IfChange(IosSyncablePref) -->
@@ -846,9 +860,11 @@ chromium-metrics-reviews@google.com.
   <int value="200015" label="LevelUpHighestLevel"/>
   <int value="200016" label="LevelUpUIEnabled"/>
   <int value="200017" label="LevelUpTabsDeclutteredStat"/>
-  <int value="200018" label="LevelUpTypingSavedStat"/>
+  <int value="200018" label="LevelUpPasswordsAutofilledStat"/>
   <int value="200019" label="LevelUpPasswordsVerifiedStat"/>
   <int value="200020" label="LevelUpPhotoSearchesPerformedStat"/>
+  <int value="200021" label="LevelUpOptIn"/>
+  <int value="200022" label="LevelUpNewTasksNotificationEnabled"/>
 <!-- LINT.ThenChange(/ios/chrome/browser/sync/model/prefs/ios_chrome_syncable_prefs_database.cc:IosSyncablePref)-->
 
 </enum>
@@ -1026,7 +1042,7 @@ chromium-metrics-reviews@google.com.
   <int value="46" label="OS Preferences"/>
   <int value="47" label="OS Priority Preferences"/>
   <int value="48" label="Sharing Message"/>
-  <int value="49" label="Autofill Wallet Offer"/>
+  <int value="49" label="(Obsolete) Autofill Wallet Offer"/>
   <int value="50" label="Workspace Desk"/>
   <int value="51" label="History"/>
   <int value="52" label="Printers Authorization Servers"/>
@@ -1039,7 +1055,7 @@ chromium-metrics-reviews@google.com.
   <int value="59" label="Incoming Password Sharing Invitations"/>
   <int value="60" label="Outgoing Password Sharing Invitations"/>
   <int value="61" label="Autofill Wallet Credential"/>
-  <int value="62" label="WebAPKs"/>
+  <int value="62" label="(Obsolete) WebAPKs"/>
   <int value="63" label="Shared Tab Group Data"/>
   <int value="64" label="Collaboration Groups"/>
   <int value="65" label="(Obsolete) Plus Address"/>
@@ -1062,6 +1078,7 @@ chromium-metrics-reviews@google.com.
   <int value="82" label="Encrypted Tab Context Item"/>
   <int value="83" label="Notebook"/>
   <int value="84" label="Journey"/>
+  <int value="85" label="Autofill Entity Suppression"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/sync/base/data_type.h:SyncDataTypes) -->
@@ -1395,7 +1412,7 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Button clicked"/>
 </enum>
 
-<!-- LINT.ThenChange(/chrome/android/java/src/org/chromium/chrome/browser/sync/settings/SyncSettingsUtils.java:SyncErrorUiAction) -->
+<!-- LINT.ThenChange(/chrome/browser/sync/android/java/src/org/chromium/chrome/browser/sync/SyncSettingsUtils.java:SyncErrorUiAction) -->
 
 <!-- LINT.IfChange(SyncFeatureOrTransport) -->
 
@@ -1501,18 +1518,6 @@ chromium-metrics-reviews@google.com.
   <int value="0" label="No keystore key"/>
   <int value="1" label="Unknown reason"/>
 </enum>
-
-<!-- LINT.IfChange(SyncMetadataConsistency) -->
-
-<enum name="SyncMetadataConsistency">
-  <int value="0" label="Metadata consistent"/>
-  <int value="1" label="Cache GUID mismatch"/>
-  <int value="2" label="Data type ID mismatch"/>
-  <int value="3" label="Empty persisted authenticated Gaia ID"/>
-  <int value="4" label="Authenticated Gaia ID mismatch"/>
-</enum>
-
-<!-- LINT.ThenChange(/components/sync/model/client_tag_based_data_type_processor.cc:SyncMetadataConsistency) -->
 
 <!-- LINT.IfChange(SyncModelError) -->
 
@@ -1629,8 +1634,8 @@ chromium-metrics-reviews@google.com.
   <int value="104" label="kNigoriInvalidPassphraseTransition"/>
   <int value="105" label="kNigoriInvalidSpecifics"/>
   <int value="106" label="kNigoriMissingKeystoreKeysDuringInitialSync"/>
-  <int value="107" label="kNigoriMissingLastTrustedVaultKeyInKeybag"/>
-  <int value="108" label="kNigoriMissingNewDefaultKeyInKeybag"/>
+  <int value="107" label="kNigoriMissingLastPrimaryKeyInKeybag"/>
+  <int value="108" label="kNigoriMissingNewPrimaryKeyInKeybag"/>
   <int value="121" label="(Obsolete) kPlusAddressAddOrUpdateProfileFailed"/>
   <int value="122" label="(Obsolete) kPlusAddressClearProfilesFailed"/>
   <int value="123" label="(Obsolete) kPlusAddressDatabaseInitFailed"/>
@@ -1712,6 +1717,7 @@ chromium-metrics-reviews@google.com.
   <int value="193" label="kTabContextContainerFailedToDeserializeSpecifics"/>
   <int value="194" label="kJourneysFailedToLoadMetadata"/>
   <int value="195" label="kJourneysDatabaseError"/>
+  <int value="196" label="kAutofillEntitySuppressionEncryptionUnavailable"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/sync/model/model_error.h:Type) -->
@@ -1857,6 +1863,25 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(/components/sync/base/data_type_histogram.h:SyncToSigninMigrationExtensionsStep) -->
 
+<!-- LINT.IfChange(SyncToSigninMigrationReadingListPrefMigrationState) -->
+
+<enum name="SyncToSigninMigrationReadingListPrefMigrationState">
+  <summary>
+    The state of the Reading List pref migration for a signed-in, non-syncing
+    user, as determined on startup by the fix-up for users who were migrated
+    from syncing to signed-in before the migration handled Reading List (see
+    crbug.com/568406887).
+  </summary>
+  <int value="0" label="Fix applied: toggle was unset and got enabled"/>
+  <int value="1" label="Handled by the Sync-to-Signin migration"/>
+  <int value="2" label="Toggle already explicitly set"/>
+  <int value="3" label="Fix needed but feature disabled: toggle still unset"/>
+  <int value="4" label="Profile was never migrated"/>
+  <int value="5" label="A different account was migrated"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/browser_sync/sync_to_signin_migration.cc:ReadingListPrefMigrationState) -->
+
 <!-- LINT.IfChange(SyncToSigninMigrationReadingListStep) -->
 
 <enum name="SyncToSigninMigrationReadingListStep">
@@ -1939,18 +1964,6 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(/components/sync_user_events/user_event_service_impl.cc:SyncUserEventType) -->
 
-<!-- LINT.IfChange(ThemePrefInMigration) -->
-
-<enum name="ThemePrefInMigration">
-  <int value="0" label="kBrowserColorScheme"/>
-  <int value="1" label="kUserColor"/>
-  <int value="2" label="kBrowserColorVariant"/>
-  <int value="3" label="kGrayscaleThemeEnabled"/>
-  <int value="4" label="kNtpCustomBackgroundDict"/>
-</enum>
-
-<!-- LINT.ThenChange(/chrome/browser/themes/theme_syncable_service.h:ThemePrefInMigration) -->
-
 <!-- LINT.IfChange(TriggerRefreshSource) -->
 
 <enum name="TriggerRefreshSource">
@@ -1999,6 +2012,7 @@ chromium-metrics-reviews@google.com.
   <int value="10" label="Needs client upgrade"/>
   <int value="11" label="Bookmarks limit exceeded"/>
   <int value="12" label="Device Management error"/>
+  <int value="13" label="Passkeys locked"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/sync/service/sync_service.h:UserActionableError) -->

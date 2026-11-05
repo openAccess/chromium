@@ -16,6 +16,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
@@ -40,6 +41,7 @@
 #include "components/autofill/core/browser/payments/mock_credit_card_access_manager_observer.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/payments_window_manager.h"
+#include "components/autofill/core/browser/payments/test/mock_multiple_request_payments_network_interface.h"
 #include "components/autofill/core/browser/payments/test/mock_payments_window_manager.h"
 #include "components/autofill/core/browser/payments/test/mock_virtual_card_enrollment_manager.h"
 #include "components/autofill/core/browser/payments/test/test_credit_card_otp_authenticator.h"
@@ -57,7 +59,6 @@
 #include "components/autofill/core/browser/payments/test_credit_card_fido_authenticator.h"
 #include "components/autofill/core/browser/strike_databases/payments/fido_authentication_strike_database.h"
 #endif
-
 
 namespace autofill {
 namespace {
@@ -889,6 +890,11 @@ TEST_P(CreditCardAccessManagerAuthFlowTest,
                                       1);
     histogram_tester.ExpectBucketCount(timeout_cvc_fallback_histogram_name,
                                        true, 1);
+    // Only the risk-based authentication records its timeouts separately.
+    histogram_tester.ExpectTotalCount(
+        "Autofill.BetterAuth.UserPerceivedLatencyOnCardSelection.RiskBased."
+        "TimedOut",
+        0);
   }
 }
 
@@ -2242,18 +2248,6 @@ TEST_F(
       autofill_metrics::ServerCardUnmaskResult::kFlowCancelled, 1);
 }
 
-TEST_F(CreditCardAccessManagerTest, Prefetching_RiskData) {
-  base::test::ScopedFeatureList scoped_feature_list{
-      features::kAutofillEnablePrefetchingRiskDataForRetrieval};
-  // Setting up a server card.
-  CreateServerCard(kTestGUID, kTestNumber);
-
-  credit_card_access_manager().PrepareToFetchCreditCard();
-
-  EXPECT_TRUE(
-      autofill_client().GetPaymentsAutofillClient()->risk_data_loaded());
-}
-
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
 // Ensures that the virtual card risk-based unmasking response is handled
 // correctly and authentication is delegated to the FIDO authenticator, when
@@ -2749,6 +2743,80 @@ TEST_F(CreditCardAccessManagerTest,
 
   PrepareToFetchCreditCardAndWaitForCallbacks();
   CreditCardAccessManagerTestBase::FetchCreditCard(&card);
+}
+
+class CreditCardAccessManagerOpaqueTokenTest
+    : public CreditCardAccessManagerTest {
+ protected:
+  payments::MockMultipleRequestPaymentsNetworkInterface& network_interface() {
+    return *payments_autofill_client()
+                .GetMultipleRequestPaymentsNetworkInterface();
+  }
+
+  std::optional<CreditCard> RetrieveCard(const std::string& opaque_token) {
+    base::test::TestFuture<std::optional<CreditCard>> future;
+    credit_card_access_manager().RetrieveCreditCardForOpaqueToken(
+        opaque_token, future.GetCallback());
+    return future.Take();
+  }
+
+  // Expects exactly one GetDataForAgent request for `opaque_token` and responds
+  // with `result` and `response_details`.
+  void ExpectRequestAndRespond(
+      const std::string& opaque_token,
+      PaymentsRpcResult result,
+      const payments::GetDataForAgentResponseDetails& response_details) {
+    EXPECT_CALL(network_interface(),
+                GetDataForAgent(
+                    testing::Field(
+                        &payments::GetDataForAgentRequestDetails::opaque_token,
+                        opaque_token),
+                    _))
+        .WillOnce([result, response_details](
+                      const payments::GetDataForAgentRequestDetails&,
+                      base::OnceCallback<void(
+                          PaymentsRpcResult,
+                          const payments::GetDataForAgentResponseDetails&)>
+                          callback) {
+          // base::test::RunOnceCallback() can't be used here: inside
+          // testing::DoAll() it only gets a const reference to the callback.
+          std::move(callback).Run(result, response_details);
+          return payments::RequestId("request_id");
+        });
+  }
+};
+
+TEST_F(CreditCardAccessManagerOpaqueTokenTest, EmptyToken) {
+  EXPECT_CALL(network_interface(), GetDataForAgent).Times(0);
+
+  EXPECT_FALSE(RetrieveCard("").has_value());
+}
+
+TEST_F(CreditCardAccessManagerOpaqueTokenTest, ReturnsLocalCard) {
+  payments::GetDataForAgentResponseDetails response_details;
+  response_details.card_number = "4111111111111111";
+  response_details.cvc = "123";
+  response_details.expiration_month = 12;
+  response_details.expiration_year = 2030;
+  ExpectRequestAndRespond("opaque_token_xyz", PaymentsRpcResult::kSuccess,
+                          response_details);
+
+  std::optional<CreditCard> card = RetrieveCard("opaque_token_xyz");
+  ASSERT_TRUE(card.has_value());
+  EXPECT_EQ(card->record_type(), CreditCard::RecordType::kLocalCard);
+  EXPECT_EQ(card->number(), u"4111111111111111");
+  EXPECT_EQ(card->cvc(), u"123");
+  EXPECT_EQ(card->expiration_month(), 12);
+  EXPECT_EQ(card->expiration_year(), 2030);
+}
+
+// A failed request is not retried because the token is single use.
+TEST_F(CreditCardAccessManagerOpaqueTokenTest, RequestFailed) {
+  ExpectRequestAndRespond("opaque_token_xyz",
+                          PaymentsRpcResult::kPermanentFailure,
+                          payments::GetDataForAgentResponseDetails());
+
+  EXPECT_FALSE(RetrieveCard("opaque_token_xyz").has_value());
 }
 
 }  // namespace autofill

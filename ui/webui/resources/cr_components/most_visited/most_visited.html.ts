@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {html} from '//resources/lit/v3_0/lit.rollup.js';
+import {html, nothing} from '//resources/lit/v3_0/lit.rollup.js';
 
 import type {MostVisitedElement} from './most_visited.js';
 
@@ -10,40 +10,50 @@ export function getHtml(this: MostVisitedElement) {
   // clang-format off
   return html`<!--_html_template_start_-->
 <div id="container" ?hidden="${!this.visible_}"
+    role="${this.inReorderMode_ ? 'application' : nothing}"
     .style="--tile-background-color: ${this.getBackgroundColorStyle_()};
             --column-count: ${this.columnCount_};
             --row-count: ${this.rowCount_};">
   ${this.tiles_.map((item, index) => html`
     <div class="tile" ?query-tile="${item.isQueryTile}"
-      ?hidden="${this.isHidden_(index)}"
-      title="${item.title}" @dragstart="${this.onDragstart_}"
-      @touchstart="${this.onTouchstart_}" @click="${this.onTileClick_}"
-      @mouseenter="${this.onTileMouseenter_}"
-      @mouseleave="${this.onTileMouseleave_}"
-      @mousedown="${this.onTileMousedown_}" @keydown="${this.onTileKeydown_}"
-      draggable="${!this.nonEditable}" data-index="${index}">
-      <a href="${item.url}" aria-label="${item.title}"
-          draggable="false">
+        ?hidden="${this.isHidden_(index)}" title="${item.title}"
+        @dragstart="${this.onDragstart_}" @touchstart="${this.onTouchstart_}"
+        @click="${this.onTileClick_}" @mouseenter="${this.onTileMouseenter_}"
+        @mouseleave="${this.onTileMouseleave_}"
+        @mousedown="${this.onTileMousedown_}" @keydown="${this.onTileKeydown_}"
+        draggable="${!this.nonEditable}" data-index="${index}">
+      <a href="${this.inReorderMode_ ? '' : item.url}"
+          aria-label="${this.getTileAriaLabel_(item.title)}" draggable="false">
       </a>
+      <div class="drag-pan-icon"
+          ?hidden="${!this.inReorderMode_ ||
+              (!this.customLinksEnabled_ &&
+               !this.isFromEnterpriseShortcut_(item.source))}">
+      </div>
       <cr-icon-button id="actionMenuButton" class="icon-more-vert"
           title="${this.getMoreActionText_(item.title)}"
           @click="${this.onTileActionButtonClick_}" tabindex="0"
-          ?hidden="${this.nonEditable || (!this.customLinksEnabled_ &&
-            !this.isFromEnterpriseShortcut_(item.source))}"
-          data-index="${index}"></cr-icon-button>
+          ?hidden="${this.nonEditable || this.inReorderMode_ ||
+              (!this.customLinksEnabled_ &&
+               !this.isFromEnterpriseShortcut_(item.source))}"
+          data-index="${index}">
+      </cr-icon-button>
       <cr-icon-button id="removeButton" class="icon-clear"
           title="${this.getRemoveButtonText_(item.title)}"
           @click="${this.onTileRemoveButtonClick_}" tabindex="0"
-          ?hidden="${this.nonEditable || (this.customLinksEnabled_ ||
-            this.isFromEnterpriseShortcut_(item.source))}"
-          data-index="${index}"></cr-icon-button>
+          ?hidden="${this.nonEditable ||
+              (this.customLinksEnabled_ ||
+               this.isFromEnterpriseShortcut_(item.source))}"
+          ?disabled="${this.inReorderMode_}" data-index="${index}">
+      </cr-icon-button>
       <div class="tile-icon">
         <img src="${this.getFaviconUrl_(item.url)}" draggable="false"
-            ?hidden="${item.isQueryTile}" alt=""></img>
+            ?hidden="${item.isQueryTile}" alt="">
         <div class="query-tile-icon" draggable="false"
-            ?hidden="${!item.isQueryTile}"></div>
+            ?hidden="${!item.isQueryTile}">
+        </div>
         <div class="managed-tile-icon"
-          ?hidden="${!this.isFromEnterpriseShortcut_(item.source)}">
+            ?hidden="${!this.isFromEnterpriseShortcut_(item.source)}">
           <cr-policy-indicator indicator-type="userPolicy">
           </cr-policy-indicator>
         </div>
@@ -55,7 +65,8 @@ export function getHtml(this: MostVisitedElement) {
     </div>
   `)}
   <cr-button id="addShortcut" tabindex="0" @click="${this.onAddClick_}"
-      ?hidden="${!this.showAdd_}" @keydown="${this.onAddShortcutKeydown_}"
+      ?hidden="${!this.showAdd_}" ?disabled="${this.inReorderMode_}"
+      @keydown="${this.onAddShortcutKeydown_}"
       aria-label="${this.i18n('addLinkTitle')}"
       title="${this.i18n('addLinkTitle')}" noink>
     <div class="tile-icon tile-icon-container">
@@ -67,9 +78,10 @@ export function getHtml(this: MostVisitedElement) {
   </cr-button>
   <div>
     <cr-button id="showMore" tabindex="0" @click="${this.onShowMoreClick_}"
-        ?hidden="${!this.showShowMore_}" @keydown="${this.onShowMoreKeydown_}"
-        aria-label="${this.i18n('showMore')}"
-        title="${this.i18n('showMore')}" noink>
+        ?hidden="${!this.showShowMore_}" ?disabled="${this.inReorderMode_}"
+        @keydown="${this.onShowMoreKeydown_}"
+        aria-label="${this.i18n('showMore')}" title="${this.i18n('showMore')}"
+        noink>
       <div class="tile-icon tile-icon-container">
         <div id="showMoreIcon" draggable="false"></div>
       </div>
@@ -78,9 +90,10 @@ export function getHtml(this: MostVisitedElement) {
       </div>
     </cr-button>
     <cr-button id="showLess" tabindex="0" @click="${this.onShowLessClick_}"
-        ?hidden="${!this.showShowLess_}" @keydown="${this.onShowLessKeydown_}"
-        aria-label="${this.i18n('showLess')}"
-        title="${this.i18n('showLess')}" noink>
+        ?hidden="${!this.showShowLess_}" ?disabled="${this.inReorderMode_}"
+        @keydown="${this.onShowLessKeydown_}"
+        aria-label="${this.i18n('showLess')}" title="${this.i18n('showLess')}"
+        noink>
       <div class="tile-icon tile-icon-container">
         <div id="showLessIcon" draggable="false"></div>
       </div>
@@ -99,11 +112,11 @@ export function getHtml(this: MostVisitedElement) {
           <span class="secondary">
             ${this.i18n('enterpriseShortcutSubtitle')}
           </span>
-        </div>` : ''}
+        </div>
+      ` : ''}
       <cr-input id="dialogInputName" label="${this.i18n('nameField')}"
           .value="${this.dialogTileTitle_}"
-          ?readonly="${this.dialogIsReadonly_}"
-          spellcheck="false" autofocus
+          ?readonly="${this.dialogIsReadonly_}" spellcheck="false" autofocus
           @value-changed="${this.onDialogTileNameValueChanged_}">
       </cr-input>
       <cr-input id="dialogInputUrl" label="${this.i18n('urlField')}"
@@ -113,7 +126,7 @@ export function getHtml(this: MostVisitedElement) {
           type="url" @blur="${this.onDialogTileUrlBlur_}"
           @value-changed="${this.onDialogTileUrlValueChanged_}"
           ?readonly="${this.dialogIsReadonly_ ||
-            this.isFromEnterpriseShortcut_(this.dialogSource_)}">
+              this.isFromEnterpriseShortcut_(this.dialogSource_)}">
       </cr-input>
     </div>
     <div slot="button-container">
@@ -132,6 +145,12 @@ export function getHtml(this: MostVisitedElement) {
         @click="${this.onViewOrEditClick_}">
       ${this.actionMenuViewOrEditTitle_}
     </button>
+    ${this.shortcutsReorderEnabled ? html`
+      <button id="actionMenuReorder" class="dropdown-item"
+          @click="${this.onReorderClick_}">
+        ${this.i18n('shortcutReorder')}
+      </button>
+    ` : ''}
     <button id="actionMenuRemove" class="dropdown-item"
         @click="${this.onRemoveClick_}"
         ?disabled="${this.actionMenuRemoveDisabled_}">
@@ -144,8 +163,7 @@ export function getHtml(this: MostVisitedElement) {
       @click="${this.onUndoClick_}">
     ${this.i18n('undo')}
   </cr-button>
-  <cr-button id="restore"
-      aria-label="${this.getRestoreButtonText_()}"
+  <cr-button id="restore" aria-label="${this.getRestoreButtonText_()}"
       @click="${this.onRestoreDefaultsClick_}">
     ${this.getRestoreButtonText_()}
   </cr-button>

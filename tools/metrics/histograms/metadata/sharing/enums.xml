@@ -92,7 +92,8 @@ chromium-metrics-reviews@google.com.
 <!-- LINT.IfChange(SendTabToSelfAutoOpenOutcome) -->
 
 <enum name="SendTabToSelfAutoOpenOutcome">
-  <int value="0" label="Unopened immediately (no window or in background)"/>
+  <int value="0"
+      label="(Deprecated) Unopened immediately (no window or in background)"/>
   <int value="1" label="First tab opened in foreground (Desktop)"/>
   <int value="2" label="Tabs opened immediately in background"/>
   <int value="3" label="Tabs opened upon browser activation"/>
@@ -167,6 +168,7 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="Link generation error"/>
   <int value="6" label="Invalid selector"/>
   <int value="7" label="Renderer timeout"/>
+  <int value="8" label="Page not scrolled"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/send_tab_to_self/metrics_util.h:ScrollPositionGenerationOutcome) -->

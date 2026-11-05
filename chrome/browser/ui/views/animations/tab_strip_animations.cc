@@ -5,7 +5,7 @@
 #include "chrome/browser/ui/views/animations/tab_strip_animations.h"
 
 #include "chrome/browser/ui/animation/browser_animation_types.h"
-#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/animations/common_animation_values.h"
 #include "ui/base/interaction/safe_castable.h"
 
 DEFINE_SAFE_CAST_TARGET(TabStripAnimations)
@@ -54,27 +54,16 @@ TabStripAnimations::TabStripAnimations() {
 TabStripAnimations::~TabStripAnimations() = default;
 
 TabStripAnimations::GroupInfos TabStripAnimations::GenerateAnimations() const {
-  const int expand_duration_ms =
-      features::UseSidePanelFlyoverAnimation() ? 300 : 400;
-  const int collapse_duration_ms =
-      features::UseSidePanelFlyoverAnimation() ? 250 : 350;
+  const int expand_duration_ms = browser_animations::GetLongExpandShowMs();
+  const int collapse_duration_ms = browser_animations::GetLongExpandHideMs();
   const gfx::Tween::Type expand_collapse_tween =
-      features::UseSidePanelFlyoverAnimation()
-          ? gfx::Tween::ACCEL_80_DECEL_20
-          : gfx::Tween::EASE_IN_OUT_EMPHASIZED;
+      browser_animations::GetLongExpandTweenType();
+
   // The sequence goes: one corner disappears, the top animates, and then the
   // other corner appears. These are the percentages of the animation at which
   // these changes happen.
   constexpr double kFirstCheckpoint = 0.25;
   constexpr double kSecondCheckpoint = 0.75;
-  constexpr int kExpandOnHoverMs = 250;
-  constexpr int kCollapseOnHoverMs = 200;
-
-  // These control how the opacity of the vertical tab strip changes in
-  // translucent mode during expand-on-hover animations.
-  constexpr int kOpacityFadeMs = 100;
-  constexpr auto kOpacityFadeInTween = gfx::Tween::EASE_OUT;
-  constexpr auto kOpacityFadeOutTween = gfx::Tween::FAST_OUT_LINEAR_IN;
 
   return Groups(Group(
       kVerticalTabStrip,
@@ -93,9 +82,10 @@ TabStripAnimations::GroupInfos TabStripAnimations::GenerateAnimations() const {
                       Keyframe(AtPercent(kSecondCheckpoint), Value(0.0))),
              Sequence(kTabStripHoverOpacity, StartingValue(1.0),
                       Transition::kStartAtOldValue,
-                      Segment(StartMs(expand_duration_ms - kOpacityFadeMs),
+                      Segment(StartMs(expand_duration_ms -
+                                      browser_animations::kShortExpandFadeMs),
                               EndMs(expand_duration_ms), ToValue(0.0),
-                              kOpacityFadeOutTween))),
+                              browser_animations::kShortExpandFadeOutTween))),
       Motion(kCollapse, TotalDurationMs(collapse_duration_ms),
              expand_collapse_tween,
              Animate(kTabStripWidth, FromValue(1.0), ToValue(0.0)),
@@ -113,23 +103,29 @@ TabStripAnimations::GroupInfos TabStripAnimations::GenerateAnimations() const {
       // The expand and collapse hover animation doesn't shift contents during
       // the animation and so shares the same animation parameters across all
       // the supported platforms.
-      Motion(kExpandOnHover, TotalDurationMs(kExpandOnHoverMs),
-             gfx::Tween::EASE_IN_OUT_EMPHASIZED,
+      Motion(kExpandOnHover,
+             TotalDurationMs(browser_animations::kShortExpandShowMs),
+             browser_animations::kShortExpandTween,
              Animate(kTabStripHoverWidth, FromValue(0.0), ToValue(1.0)),
              Animate(kTopCorner, FromValue(DefaultValue()), ToValue(-1.0)),
              Animate(kBottomCorner, FromValue(1.0), ToValue(-1.0)),
              Sequence(kTabStripHoverOpacity, StartingValue(0.0),
                       Transition::kStartAtOldValue,
-                      Segment(StartMs(0), EndMs(kOpacityFadeMs), ToValue(1.0),
-                              kOpacityFadeInTween))),
-      Motion(kCollapseOnHover, TotalDurationMs(kCollapseOnHoverMs),
-             gfx::Tween::EASE_IN_OUT_EMPHASIZED,
+                      Segment(StartMs(0),
+                              EndMs(browser_animations::kShortExpandFadeMs),
+                              ToValue(1.0),
+                              browser_animations::kShortExpandFadeInTween))),
+      Motion(kCollapseOnHover,
+             TotalDurationMs(browser_animations::kShortExpandHideMs),
+             browser_animations::kShortExpandTween,
              Animate(kTabStripHoverWidth, FromValue(1.0), ToValue(0.0)),
              Animate(kTopCorner, FromValue(-1.0), ToValue(DefaultValue())),
              Animate(kBottomCorner, FromValue(-1.0), ToValue(1.0)),
              Sequence(kTabStripHoverOpacity, StartingValue(1.0),
                       Transition::kStartAtOldValue,
-                      Segment(StartMs(kCollapseOnHoverMs - kOpacityFadeMs),
-                              EndMs(kCollapseOnHoverMs), ToValue(0.0),
-                              kOpacityFadeOutTween)))));
+                      Segment(StartMs(browser_animations::kShortExpandHideMs -
+                                      browser_animations::kShortExpandFadeMs),
+                              EndMs(browser_animations::kShortExpandHideMs),
+                              ToValue(0.0),
+                              browser_animations::kShortExpandFadeOutTween)))));
 }

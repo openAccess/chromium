@@ -17,6 +17,7 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include "google_apis/gaia/android/jni_headers/GoogleServiceAuthError_jni.h"
+#include "google_apis/gaia/android_device_management_error_details.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
 namespace {
@@ -33,6 +34,12 @@ const char* InvalidCredentialsReasonToString(
       return "credentials rejected by client";
     case InvalidGaiaCredentialsReason::CREDENTIALS_MISSING:
       return "credentials missing";
+    case InvalidGaiaCredentialsReason::
+        TOKEN_BINDING_ASSERTION_GENERATION_FAILED:
+      return "token binding assertion generation failed";
+    case InvalidGaiaCredentialsReason::
+        TOKEN_BINDING_ASSERTION_REJECTED_BY_SERVER:
+      return "token binding assertion rejected by server";
     case InvalidGaiaCredentialsReason::NUM_REASONS:
       NOTREACHED();
   }
@@ -58,6 +65,7 @@ const char* ScopeLimitedUnrecoverableErrorReasonToString(
   NOTREACHED();
 }
 
+// LINT.IfChange(IsTransientError)
 bool IsTransientError(GoogleServiceAuthError::State state) {
   switch (state) {
     // These are failures that are likely to succeed if tried again.
@@ -71,6 +79,7 @@ bool IsTransientError(GoogleServiceAuthError::State state) {
       return false;
   }
 }
+// LINT.ThenChange(//google_apis/gaia/android/java/src/org/chromium/google_apis/gaia/GoogleServiceAuthError.java:IsTransientError)
 }  // namespace
 
 bool operator==(const GoogleServiceAuthError&,
@@ -362,6 +371,14 @@ GoogleServiceAuthError GoogleServiceAuthError::FromJavaObject(
       return GSAE::CreateRequestCanceled();
     case GSAE::ACCOUNT_NOT_FOUND:
       return GSAE::CreateAccountNotFound();
+    case GSAE::DEVICE_MANAGEMENT_ERROR: {
+      base::android::ScopedJavaLocalRef<jobject> j_details =
+          Java_GoogleServiceAuthError_getDeviceManagementErrorDetails(
+              env, j_auth_error);
+      return GSAE::FromDeviceManagementError(
+          std::make_unique<gaia::AndroidDeviceManagementErrorDetails>(
+              base::android::ScopedJavaGlobalRef<jobject>(j_details)));
+    }
     default:
       NOTREACHED();
   }
@@ -369,12 +386,14 @@ GoogleServiceAuthError GoogleServiceAuthError::FromJavaObject(
 
 jni_zero::ScopedJavaLocalRef<jobject> GoogleServiceAuthError::ToJavaObject(
     JNIEnv* env) const {
+  if (state() == DEVICE_MANAGEMENT_ERROR) {
+    const auto& details =
+        static_cast<const gaia::AndroidDeviceManagementErrorDetails&>(
+            GetDeviceManagementErrorDetails());
+    return Java_GoogleServiceAuthError_fromDeviceManagementError(
+        env, details.GetJavaObject());
+  }
   return Java_GoogleServiceAuthError_Constructor(env, state());
-}
-
-static bool JNI_GoogleServiceAuthError_IsTransientError(JNIEnv* env,
-                                                        int32_t state) {
-  return IsTransientError(static_cast<GoogleServiceAuthError::State>(state));
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 

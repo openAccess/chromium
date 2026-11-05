@@ -17,6 +17,7 @@
 #include "content/public/test/test_web_ui.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/omnibox_proto/model_mode.pb.h"
 #include "third_party/omnibox_proto/tool_mode.pb.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/gfx/geometry/point.h"
@@ -75,7 +76,7 @@ class OmniboxPopupAimHandlerTest : public ChromeRenderViewHostTestHarness {
     omnibox_popup_ui_ = std::make_unique<OmniboxPopupUI>(&web_ui_);
     handler_ = std::make_unique<TestOmniboxPopupAimHandler>(
         mojo::PendingReceiver<omnibox_popup_aim::mojom::PageHandler>(),
-        page_.BindAndGetRemote(), web_contents());
+        page_.BindAndGetRemote());
     embedder_ = std::make_unique<TestEmbedder>();
     handler_->set_embedder(embedder_->GetWeakPtr());
   }
@@ -105,8 +106,10 @@ TEST_F(OmniboxPopupAimHandlerTest, ShowContextMenu) {
 
 TEST_F(OmniboxPopupAimHandlerTest, RequestClose) {
   EXPECT_FALSE(embedder_->ui_closed());
-  handler_->RequestClose();
+  EXPECT_EQ("", handler_->cached_draft_text());
+  handler_->RequestClose("live search query");
   EXPECT_TRUE(embedder_->ui_closed());
+  EXPECT_EQ("live search query", handler_->cached_draft_text());
 }
 
 TEST_F(OmniboxPopupAimHandlerTest, OnPopupShown) {
@@ -118,6 +121,21 @@ TEST_F(OmniboxPopupAimHandlerTest, OnPopupShown) {
       .WillOnce([&](searchbox::mojom::SearchContextPtr context_ptr) {
         EXPECT_EQ("test query", context_ptr->input);
         EXPECT_EQ(omnibox::TOOL_MODE_UNSPECIFIED, context_ptr->tool_mode);
+      });
+
+  handler_->OnPopupShown(std::move(context));
+}
+
+// The tool and model of the context reach the page, which applies them.
+TEST_F(OmniboxPopupAimHandlerTest, OnPopupShownSendsToolAndModel) {
+  auto context = std::make_unique<SearchboxContextData::Context>();
+  context->mode = omnibox::TOOL_MODE_DEEP_SEARCH;
+  context->model = omnibox::MODEL_MODE_GEMINI_PRO;
+
+  EXPECT_CALL(page_, OnPopupShown(testing::_))
+      .WillOnce([&](searchbox::mojom::SearchContextPtr context_ptr) {
+        EXPECT_EQ(omnibox::TOOL_MODE_DEEP_SEARCH, context_ptr->tool_mode);
+        EXPECT_EQ(omnibox::MODEL_MODE_GEMINI_PRO, context_ptr->model_mode);
       });
 
   handler_->OnPopupShown(std::move(context));
@@ -137,17 +155,36 @@ TEST_F(OmniboxPopupAimHandlerTest, AddContext) {
 
 TEST_F(OmniboxPopupAimHandlerTest, ClearPopup) {
   EXPECT_CALL(page_, ClearPopup(testing::_))
-      .WillOnce([](omnibox_popup_aim::mojom::Page::ClearPopupCallback callback) {
-        std::move(callback).Run("final input");
-      });
+      .WillOnce(
+          [](omnibox_popup_aim::mojom::Page::ClearPopupCallback callback) {
+            std::move(callback).Run("final input", /*query_submitted=*/true);
+          });
 
-  base::test::TestFuture<const std::string&> future;
+  base::test::TestFuture<const std::string&, bool> future;
   handler_->ClearPopup(future.GetCallback());
-  EXPECT_EQ("final input", future.Get());
+  EXPECT_EQ("final input", future.Get<0>());
+  EXPECT_TRUE(future.Get<1>());
 }
 
 TEST_F(OmniboxPopupAimHandlerTest, OnContextMenuClosed) {
   EXPECT_CALL(page_, OnContextMenuClosed());
   handler_->OnContextMenuClosed();
   page_.FlushForTesting();
+}
+
+// The handler mirrors the page, which keeps its context on close until the
+// popup is shown again or context is added.
+TEST_F(OmniboxPopupAimHandlerTest, PreserveContextOnClose) {
+  EXPECT_FALSE(handler_->preserve_context_on_close());
+
+  handler_->SetPreserveContextOnClose(true);
+  EXPECT_TRUE(handler_->preserve_context_on_close());
+  handler_->OnPopupShown(std::make_unique<SearchboxContextData::Context>());
+  EXPECT_FALSE(handler_->preserve_context_on_close());
+
+  handler_->SetPreserveContextOnClose(true);
+  auto context = std::make_unique<SearchboxContextData::Context>();
+  context->text = "added context";
+  handler_->AddContext(std::move(context));
+  EXPECT_FALSE(handler_->preserve_context_on_close());
 }

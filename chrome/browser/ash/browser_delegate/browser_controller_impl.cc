@@ -8,17 +8,22 @@
 #include <unordered_map>
 
 #include "base/check.h"
+#include "base/check_deref.h"
+#include "base/check_op.h"
 #include "base/containers/span.h"
+#include "base/memory/raw_ref.h"
+#include "base/no_destructor.h"
+#include "base/notreached.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/ash/browser_delegate/browser_delegate_impl.h"
-#include "chrome/browser/ash/browser_delegate/browser_type.h"
 #include "chrome/browser/ash/browser_delegate/browser_type_conversion.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/tab_list/tab_removed_reason.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -29,6 +34,7 @@
 #include "chrome/browser/ui/intent_picker_tab_helper.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -36,8 +42,17 @@
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_type.h"
 #include "components/account_id/account_id.h"
+#include "components/captive_portal/core/captive_portal_types.h"
+#include "components/sessions/core/tab_restore_service.h"
+#include "components/sessions/core/tab_restore_service_observer.h"
+#include "components/tabs/public/tab_interface.h"
+#include "third_party/blink/public/mojom/navigation/was_activated_option.mojom.h"
 #include "ui/aura/window.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
+#include "url/origin.h"
 
 namespace {
 
@@ -51,7 +66,7 @@ bool BrowserMatchesURL(BrowserWindowInterface* browser, const GURL& url) {
 bool BrowserMatches(BrowserWindowInterface* browser,
                     Profile* profile,
                     webapps::AppId app_id,
-                    Browser::Type type,
+                    BrowserWindowInterface::Type type,
                     const GURL& url) {
   return browser->GetProfile() == profile && browser->GetType() == type &&
          web_app::GetAppIdFromApplicationName(
@@ -84,6 +99,56 @@ BrowserWindowInterface* FindTabbedBrowserOnCurrentWorkspace(Profile* profile) {
 }  // namespace
 
 namespace ash {
+
+// Restores the most recently closed entry once the TabRestoreService has
+// finished loading. Owned by BrowserControllerImpl via `tab_restore_helper_`,
+// which it clears when done (destroying itself).
+class BrowserControllerImpl::TabRestoreHelper
+    : public sessions::TabRestoreServiceObserver {
+ public:
+  // Both `controller` and `service` must outlive this helper.
+  TabRestoreHelper(BrowserControllerImpl* controller,
+                   sessions::TabRestoreService* service)
+      : controller_(CHECK_DEREF(controller)), service_(CHECK_DEREF(service)) {}
+  TabRestoreHelper(const TabRestoreHelper&) = delete;
+  TabRestoreHelper& operator=(const TabRestoreHelper&) = delete;
+  ~TabRestoreHelper() override = default;
+
+  // Triggers the restore: restores immediately if the service is already
+  // loaded, otherwise waits for it to finish loading. Either way the helper
+  // destroys itself once the restore has been triggered.
+  void Start() {
+    if (service_->IsLoaded()) {
+      Restore();  // Destroys `this`.
+      return;
+    }
+    observation_.Observe(&service_.get());
+    service_->LoadTabsFromLastSession();
+  }
+
+  // sessions::TabRestoreServiceObserver:
+  void TabRestoreServiceChanged(sessions::TabRestoreService* service) override {
+  }
+  void TabRestoreServiceDestroyed(
+      sessions::TabRestoreService* service) override {
+    controller_->tab_restore_helper_.reset();  // Destroys `this`.
+  }
+  void TabRestoreServiceLoaded(sessions::TabRestoreService* service) override {
+    Restore();  // Destroys `this`.
+  }
+
+ private:
+  void Restore() {
+    service_->RestoreMostRecentEntry(nullptr);
+    controller_->tab_restore_helper_.reset();  // Destroys `this`; must be last.
+  }
+
+  const raw_ref<BrowserControllerImpl> controller_;
+  const raw_ref<sessions::TabRestoreService> service_;
+  base::ScopedObservation<sessions::TabRestoreService,
+                          sessions::TabRestoreServiceObserver>
+      observation_{this};
+};
 
 BrowserControllerImpl::BrowserControllerImpl() {
   observation_.Observe(GlobalBrowserCollection::GetInstance());
@@ -206,7 +271,8 @@ BrowserDelegate* BrowserControllerImpl::FindWebApp(const AccountId& account_id,
 
   CHECK(browser_type == BrowserType::kApp ||
         browser_type == BrowserType::kAppPopup);
-  Browser::Type internal_type = ToInternalBrowserType(browser_type);
+  BrowserWindowInterface::Type internal_type =
+      ToInternalBrowserType(browser_type);
 
   BrowserDelegate* browser_delegate = nullptr;
   GlobalBrowserCollection::GetInstance()->ForEach(
@@ -221,6 +287,80 @@ BrowserDelegate* BrowserControllerImpl::FindWebApp(const AccountId& account_id,
       BrowserCollection::Order::kActivation);
 
   return browser_delegate;
+}
+
+content::WebContents* BrowserControllerImpl::OpenUrl(
+    const AccountId& account_id,
+    const GURL& url,
+    const OpenUrlParams& params) {
+  Profile* profile = Profile::FromBrowserContext(
+      BrowserContextHelper::Get()->GetBrowserContextByAccountId(account_id));
+  CHECK(profile);
+
+  NavigateParams nav_params(profile, url, params.transition);
+  nav_params.disposition = params.disposition;
+  if (params.user_activation) {
+    nav_params.was_activated = blink::mojom::WasActivatedOption::kYes;
+  }
+  if (params.initiating_origin.has_value()) {
+    nav_params.is_renderer_initiated = true;
+    nav_params.initiator_origin = *params.initiating_origin;
+  }
+  if (params.popup_has_trusted_source) {
+    CHECK_EQ(params.disposition, ui::mojom::WindowOpenDisposition::kNewPopup);
+    nav_params.trusted_source = true;
+  }
+  if (params.ignore_path_for_tab_reuse) {
+    CHECK(params.disposition ==
+              ui::mojom::WindowOpenDisposition::kSingletonTab ||
+          params.disposition == ui::mojom::WindowOpenDisposition::kSwitchToTab);
+    nav_params.path_behavior = NavigateParams::IGNORE_AND_NAVIGATE;
+  }
+  Navigate(&nav_params);
+  return nav_params.navigated_or_inserted_contents.get();
+}
+
+content::WebContents* BrowserControllerImpl::OpenCaptivePortalSignin(
+    const AccountId& account_id,
+    const GURL& url,
+    CaptivePortalWindowMode mode) {
+  Profile* profile = Profile::FromBrowserContext(
+      BrowserContextHelper::Get()->GetBrowserContextByAccountId(account_id));
+  CHECK(profile);
+
+  switch (mode) {
+    case CaptivePortalWindowMode::kPopup: {
+      // In Guest mode, the active profile is OTR. Since creating an OTR profile
+      // from another OTR profile is not supported, use the active profile
+      // directly. Otherwise, use a dedicated captive-portal OTR profile to
+      // avoid passing existing OTR cookies to the captive portal sign-in page
+      // (see b/245578628).
+      if (!profile->IsOffTheRecord()) {
+        static const base::NoDestructor<Profile::OTRProfileID> otr_profile_id(
+            Profile::OTRProfileID::CreateUniqueForCaptivePortal());
+        profile = profile->GetOffTheRecordProfile(*otr_profile_id,
+                                                  /*create_if_needed=*/true);
+        CHECK(profile);
+      }
+      NavigateParams nav_params(profile, url,
+                                ui::PAGE_TRANSITION_AUTO_BOOKMARK);
+      nav_params.disposition = ui::mojom::WindowOpenDisposition::kNewPopup;
+      nav_params.captive_portal_window_type =
+          captive_portal::CaptivePortalWindowType::kPopup;
+      Navigate(&nav_params);
+      return nav_params.navigated_or_inserted_contents.get();
+    }
+    case CaptivePortalWindowMode::kTab: {
+      NavigateParams nav_params(profile, url, ui::PAGE_TRANSITION_LINK);
+      nav_params.disposition =
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab;
+      nav_params.captive_portal_window_type =
+          captive_portal::CaptivePortalWindowType::kTab;
+      Navigate(&nav_params);
+      return nav_params.navigated_or_inserted_contents.get();
+    }
+  }
+  NOTREACHED();
 }
 
 BrowserDelegate* BrowserControllerImpl::NewTabWithPostData(
@@ -273,7 +413,7 @@ BrowserDelegate* BrowserControllerImpl::CreateWebApp(
   CHECK(profile);
 
   if (GetBrowserWindowCreationStatusForProfile(*profile) !=
-      Browser::CreationStatus::kOk) {
+      BrowserWindowInterface::CreationStatus::kOk) {
     LOG(WARNING) << "Cannot create browser for given profile";
     return nullptr;
   }
@@ -291,6 +431,26 @@ BrowserDelegate* BrowserControllerImpl::CreateWebApp(
   cparams.can_fullscreen = params.allow_fullscreen;
   return GetDelegate(
       web_app::CreateWebAppWindowMaybeWithHomeTab(app_id, std::move(cparams)));
+}
+
+void BrowserControllerImpl::RestoreTab(const AccountId& account_id) {
+  if (tab_restore_helper_) {
+    // A previous request is still waiting for the service to load; it will
+    // perform the restore once ready.
+    return;
+  }
+  Profile* profile = Profile::FromBrowserContext(
+      BrowserContextHelper::Get()->GetBrowserContextByAccountId(account_id));
+  if (!profile || profile->IsOffTheRecord()) {
+    return;
+  }
+  sessions::TabRestoreService* service =
+      TabRestoreServiceFactory::GetForProfile(profile);
+  if (!service) {
+    return;
+  }
+  tab_restore_helper_ = std::make_unique<TabRestoreHelper>(this, service);
+  tab_restore_helper_->Start();
 }
 
 void BrowserControllerImpl::MayCloseAllBrowsers() {
@@ -408,10 +568,27 @@ void BrowserControllerImpl::OnTabStripModelChanged(
   }
 
   if (selection.active_tab_changed() && !tab_strip_model->empty()) {
+    const bool selection_only =
+        change.type() == TabStripModelChange::kSelectionOnly;
     for (auto& observer : tab_observers_) {
       observer.OnActiveWebContentsChanged(browser, selection.old_contents,
-                                          selection.new_contents);
+                                          selection.new_contents,
+                                          selection_only);
     }
+  }
+}
+
+void BrowserControllerImpl::OnTabChangedAt(tabs::TabInterface* tab,
+                                           TabChangeType change_type) {
+  // Every loading state change is reported synchronously as kLoadingOnly (see
+  // BrowserUiController::ScheduleUIUpdate). kAll is the deferred notification
+  // for tab, title and audio changes, so there is no need to forward it.
+  if (change_type != TabChangeType::kLoadingOnly) {
+    return;
+  }
+  BrowserDelegate* browser = GetDelegate(tab->GetBrowserWindowInterface());
+  for (auto& observer : tab_observers_) {
+    observer.OnTabLoadingStateChanged(browser, tab->GetContents());
   }
 }
 

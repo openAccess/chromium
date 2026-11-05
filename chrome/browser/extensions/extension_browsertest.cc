@@ -9,6 +9,7 @@
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/version_info/channel.h"
 #include "chrome/browser/extensions/chrome_extension_test_notification_observer.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
@@ -28,6 +29,7 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "components/crx_file/crx_verifier.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
@@ -52,6 +54,7 @@
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "extensions/test/extension_background_page_waiter.h"
 #include "extensions/test/extension_test_notification_observer.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -63,12 +66,17 @@
 #include "base/base_switches.h"
 #include "base/check.h"
 #include "chrome/browser/android/tab_android.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
+#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/test/base/android/android_ui_test_utils.h"
 #include "components/feed/feed_feature_list.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/test_launcher.h"
+#include "extensions/browser/state_store.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -162,6 +170,37 @@ void ExtensionProtocolTestResourcesHandler(const base::FilePath& test_dir_root,
     }
   }
 }
+
+#if BUILDFLAG(IS_ANDROID)
+// Waits for pending writes to `profile`'s prefs (which include ExtensionPrefs)
+// and its extension StateStores to complete. On Android, the browser test
+// process exits without an orderly browser shutdown (the profile isn't
+// destroyed and nothing waits on background file writes), so writes still
+// pending at the end of a PRE_ test can be lost before the next stage reads
+// them from disk.
+void FlushPersistentExtensionState(Profile* profile) {
+  base::test::TestFuture<void> prefs_committed;
+  profile->GetPrefs()->CommitPendingWrite(prefs_committed.GetCallback());
+  ASSERT_TRUE(prefs_committed.Wait())
+      << "Timed out waiting for prefs to be committed to disk.";
+
+  ExtensionSystem* extension_system = ExtensionSystem::Get(profile);
+  if (!extension_system) {
+    return;
+  }
+  for (StateStore* store :
+       {extension_system->state_store(), extension_system->rules_store(),
+        extension_system->dynamic_user_scripts_store()}) {
+    if (!store) {
+      continue;
+    }
+    base::test::TestFuture<void> store_flushed;
+    store->FlushForTesting(store_flushed.GetCallback());
+    ASSERT_TRUE(store_flushed.Wait())
+        << "Timed out waiting for an extension StateStore to flush.";
+  }
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace
 
@@ -315,6 +354,23 @@ void ExtensionBrowserTest::TearDownOnMainThread() {
   registry_observation_.Reset();
   PlatformBrowserTest::TearDownOnMainThread();
 }
+
+#if BUILDFLAG(IS_ANDROID)
+void ExtensionBrowserTest::PostRunTestOnMainThread() {
+  PlatformBrowserTest::PostRunTestOnMainThread();
+
+  // Flushing after the base class also covers state changes made during
+  // subclass teardown and tab closing. GetLoadedProfiles() excludes incognito
+  // profiles, whose persisted prefs and extension StateStores belong to their
+  // original profile.
+  if (content::IsPreTest()) {
+    for (Profile* loaded_profile :
+         g_browser_process->profile_manager()->GetLoadedProfiles()) {
+      FlushPersistentExtensionState(loaded_profile);
+    }
+  }
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 void ExtensionBrowserTest::OnExtensionLoaded(
     content::BrowserContext* browser_context,
@@ -850,7 +906,8 @@ BrowserWindowInterface* ExtensionBrowserTest::CreateBrowserWindowWithType(
     BrowserWindowInterface::Type type) {
   BrowserWindowCreateParams create_params = BrowserWindowCreateParams(
       type, *GetProfile(), /*from_user_gesture=*/false);
-  if (type == BrowserWindowInterface::Type::TYPE_APP) {
+  if (type == BrowserWindowInterface::Type::TYPE_APP ||
+      type == BrowserWindowInterface::Type::TYPE_APP_POPUP) {
     // Apps must have an app name.
     create_params.app_name = "app_name";
   }
@@ -882,7 +939,7 @@ content::RenderFrameHost* ExtensionBrowserTest::NavigateToURLInNewTab(
   return content::ConvertToRenderFrameHost(new_web_contents);
 #else
   return ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 #endif
 }

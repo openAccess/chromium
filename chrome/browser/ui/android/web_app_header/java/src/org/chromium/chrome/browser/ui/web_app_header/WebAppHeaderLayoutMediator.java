@@ -183,6 +183,11 @@ class WebAppHeaderLayoutMediator
         return mUserToggleHeaderAsOverlay;
     }
 
+    /** Returns whether the header is currently drawn as a window controls overlay. */
+    boolean isHeaderAsOverlay() {
+        return mHeaderAsOverlay;
+    }
+
     public void didChangeToggleButtonVisiblity(boolean visible) {
         mToggleButtonVisible = visible;
         updateHeaderAsOverlay();
@@ -291,7 +296,7 @@ class WebAppHeaderLayoutMediator
 
         mAppHeaderUnoccludedWidthSupplier.set(mCurrentHeaderState.getUnoccludedRectWidth());
         mModel.set(
-                WebAppHeaderLayoutProperties.MIN_HEIGHT,
+                WebAppHeaderLayoutProperties.HEADER_HEIGHT,
                 Math.max(mCurrentHeaderState.getAppHeaderHeight(), getDefaultMinHeight()));
         mModel.set(
                 WebAppHeaderLayoutProperties.IS_VISIBLE, mCurrentHeaderState.isInDesktopWindow());

@@ -2,15 +2,26 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/functional/callback_helpers.h"
+#include "base/threading/thread_restrictions.h"
+#include "chrome/browser/browser_features.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
+#include "chrome/browser/navigation_predictor/search_engine_preconnector.h"
+#include "chrome/browser/preloading/preloading_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/test/base/android/android_browser_test.h"
+#include "components/performance_manager/public/features.h"
+#include "content/public/browser/network_service_instance.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "net/base/network_change_notifier.h"
+#include "services/network/public/cpp/network_connection_tracker.h"
+#include "services/network/test/test_network_connection_tracker.h"
 
 IN_PROC_BROWSER_TEST_F(AndroidBrowserTest, Smoke) {
   ASSERT_EQ(TabModelList::models().size(), 1u);
@@ -57,4 +68,36 @@ IN_PROC_BROWSER_TEST_F(AndroidBrowserTest, StatePreserved) {
       profile->GetPath().Append(FILE_PATH_LITERAL("PRE_PRE_DIR"))));
   ASSERT_TRUE(base::DirectoryExists(
       profile->GetPath().Append(FILE_PATH_LITERAL("PRE_DIR"))));
+}
+
+IN_PROC_BROWSER_TEST_F(AndroidBrowserTest, NetworkIsReportedOnline) {
+  auto type = net::NetworkChangeNotifier::ConnectionType::CONNECTION_NONE;
+  const bool answered_synchronously =
+      content::GetNetworkConnectionTracker()->GetConnectionType(
+          &type, base::DoNothing());
+
+  EXPECT_TRUE(answered_synchronously);
+  EXPECT_NE(net::NetworkChangeNotifier::ConnectionType::CONNECTION_NONE, type);
+}
+
+class AndroidBrowserTestWithRealNetworkConnectionTracker
+    : public AndroidBrowserTest {
+ public:
+  AndroidBrowserTestWithRealNetworkConnectionTracker() {
+    set_use_test_network_connection_tracker(false);
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(AndroidBrowserTestWithRealNetworkConnectionTracker,
+                       UsesRealTracker) {
+  EXPECT_FALSE(network::TestNetworkConnectionTracker::HasInstance());
+}
+
+IN_PROC_BROWSER_TEST_F(AndroidBrowserTest, DefaultStartupFeatures) {
+  EXPECT_FALSE(base::FeatureList::IsEnabled(features::kPreconnectToSearch));
+  EXPECT_FALSE(base::FeatureList::IsEnabled(
+      features::kRestartNetworkServiceUnsandboxedForFailedLaunch));
+  EXPECT_FALSE(base::FeatureList::IsEnabled(
+      performance_manager::features::kTransientKeepAlivePolicy));
+  EXPECT_FALSE(base::FeatureList::IsEnabled(features::kPrewarm));
 }

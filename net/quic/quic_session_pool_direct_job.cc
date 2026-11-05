@@ -4,6 +4,7 @@
 
 #include "net/quic/quic_session_pool_direct_job.h"
 
+#include "base/containers/flat_set.h"
 #include "base/memory/weak_ptr.h"
 #include "base/trace_event/trace_event.h"
 #include "net/base/completion_once_callback.h"
@@ -45,6 +46,7 @@ QuicSessionPool::DirectJob::DirectJob(
           std::move(key),
           std::move(client_config_handle),
           priority,
+          session_creation_initiator,
           quic_connection_reuse_details,
           NetLogWithSource::Make(
               net_log.net_log(),
@@ -56,7 +58,6 @@ QuicSessionPool::DirectJob::DirectJob(
       cert_verify_flags_(cert_verify_flags),
       retry_on_alternate_network_before_handshake_(
           retry_on_alternate_network_before_handshake),
-      session_creation_initiator_(session_creation_initiator),
       connection_management_config_(connection_management_config) {
   // TODO(davidben): `require_dns_https_alpn_` only exists to be `DCHECK`ed
   // for consistency against `quic_version_`. Remove the parameter?
@@ -211,9 +212,9 @@ int QuicSessionPool::DirectJob::DoAttemptSession() {
     return ERR_DNS_NO_MATCHING_SUPPORTED_ALPN;
   }
 
-  std::set<std::string> dns_aliases =
+  base::flat_set<std::string> dns_aliases =
       use_dns_aliases_ ? resolve_host_request_->GetDnsAliasResults()
-                       : std::set<std::string>();
+                       : base::flat_set<std::string>();
   // Passing an empty `crypto_client_config_handle` is safe because this job
   // already owns a handle.
   session_attempt_ = std::make_unique<QuicSessionAttempt>(

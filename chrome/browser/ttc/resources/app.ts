@@ -7,8 +7,9 @@ import '/strings.m.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import type {BigBuffer} from '//resources/mojo/mojo/public/mojom/base/big_buffer.mojom-webui.js';
 
-import type {PageContentNode} from './ai_overlay_dialog.mojom-webui.js';
+import type {PageContentNode, WebMcpToolDefinition} from './ai_overlay_dialog.mojom-webui.js';
 import {PageCallbackRouter, PageHandlerFactory, PageHandlerRemote} from './ai_overlay_dialog.mojom-webui.js';
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
@@ -16,10 +17,16 @@ import type {AudioCapturer} from './audio_capturer.js';
 import {BlobAudioCapturer, MicrophoneAudioCapturer} from './audio_capturer.js';
 import {AudioPlayer} from './audio_player.js';
 import {CaptionBlockManager, formatCaptions} from './caption_block_manager.js';
-import {LocalSpeechRecognition} from './local_speech_recognition.js';
 // <if expr="_google_chrome">
-import {Conversation, DEFAULT_TTC_BUNDLE_URL, State} from './internal/conversation.js';
+import {Conversation, DEFAULT_API_CONFIG, DEFAULT_PERSONA, DEFAULT_SYSTEM_INSTRUCTION, DEFAULT_TTC_BUNDLE_URL, State} from './internal/conversation.js';
 import type {ApiConfig, ConversationConfig, Persona} from './internal/conversation.js';
+// </if>
+import {LocalSpeechRecognition} from './local_speech_recognition.js';
+import {errorLog, log, warnLog} from './logging.js';
+import type {PageContext} from './page_context_manager.js';
+import {AiOverlayToolsRemote} from './tools.mojom-webui.js';
+
+// <if expr="_google_chrome">
 export type ConversationMessage =|{
   type: 'inputTranscription',
   text: string,
@@ -57,7 +64,9 @@ class Conversation {
   onTurnComplete(): void {}
   interrupt(): void {}
   recordOnDeviceSpeechTranscript(..._args: any[]): void {}
-  start(): Promise<void> { return Promise.resolve(); }
+  start(): Promise<void> {
+    return Promise.resolve();
+  }
   stop(): void {}
 }
 type ApiConfig = any;
@@ -70,11 +79,21 @@ type ConversationConfig = {
 type ConversationMessage = any;
 type Persona = any;
 const DEFAULT_TTC_BUNDLE_URL = '';
+const DEFAULT_API_CONFIG: ApiConfig = {
+  endpointUrl: '',
+  model: '',
+  apiKey: '',
+};
+const DEFAULT_PERSONA: Persona = {
+  id: 'generic',
+  name: 'Chrome',
+  nicknames: [],
+  persona: '',
+  voice: 'Achernar',
+};
+const DEFAULT_SYSTEM_INSTRUCTION = '';
 // </if>
 /* eslint-enable @typescript-eslint/no-explicit-any */
-import {errorLog, log} from './logging.js';
-import type {PageContext} from './page_context_manager.js';
-import {AiOverlayToolsRemote} from './tools.mojom-webui.js';
 
 const FILE = 'App';
 
@@ -107,8 +126,8 @@ interface PersonaConfig {
 interface ResourceBundle {
   persona: Persona;
   apiConfig: ApiConfig;
-  speakingBlob: Blob;
-  listeningBlob: Blob;
+  speakingBlob: Blob|null;
+  listeningBlob: Blob|null;
   instruction: string;
 }
 
@@ -179,7 +198,7 @@ export class AppElement extends CrLitElement {
   protected accessor activeType: 'input'|'output' = 'output';
   protected accessor speakingBlobUrl: string = '';
   protected accessor listeningBlobUrl: string = '';
-  protected accessor usePersona: boolean = true;
+  protected accessor usePersona: boolean = false;
 
   private isLocalTranscription: boolean = false;
   private uiStateListeningTimeout: number = 0;
@@ -260,10 +279,12 @@ export class AppElement extends CrLitElement {
             {url, title, content: null, hasHadContent: false});
     const updateContextId =
         this.pageCallbackRouter.updateCurrentPageContext.addListener(
-            (title: string, rootNode: PageContentNode|null) => {
+            (title: string, rootNode: PageContentNode|null,
+             webmcpTools: WebMcpToolDefinition[]) => {
               if (this.initialPageContext) {
                 this.initialPageContext.title = title;
                 this.initialPageContext.content = rootNode ?? null;
+                this.initialPageContext.webmcpTools = webmcpTools ?? [];
                 this.initialPageContext.hasHadContent ||= Boolean(rootNode);
               }
             });
@@ -313,11 +334,80 @@ export class AppElement extends CrLitElement {
         this.pageHandler.$.bindNewPipeAndPassReceiver(),
         this.pageCallbackRouter.$.bindNewPipeAndPassRemote(),
         this.toolsRemote.$.bindNewPipeAndPassReceiver());
+
+    this.pageCallbackRouter.onStreamingSessionStateChanged.addListener(
+        (connected: boolean, sessionId: string, errorMessage: string) => {
+          log(FILE, `onStreamingSessionStateChanged: connected=${connected}, session=${sessionId}, err=${errorMessage}`);
+          if (connected) {
+            this.initializationState = InitializationState.INITIALIZED;
+            this.state = State.LISTENING;
+          } else if (errorMessage) {
+            this.initializationState = InitializationState.ERROR;
+          }
+          this.requestUpdate();
+        });
+
+    this.pageCallbackRouter.onTranscriptions.addListener(
+        (input: string, output: string) => {
+          if (input) {
+            this.inputTranscription = input;
+            this.activeType = 'input';
+          }
+          if (output) {
+            this.outputTranscription = output;
+            this.activeType = 'output';
+            if (this.state !== State.TALKING) {
+              this.state = State.TALKING;
+            }
+            this.captionBlockManager.updateBlocks(
+                output, this.usePersona, Boolean(this.audioPlayer?.isPlaying()),
+                this.audioPlaybackStartTime);
+          }
+          this.requestUpdate();
+        });
+
+    this.pageCallbackRouter.onAudioOutput.addListener(
+        (audioData: BigBuffer, sequenceNumber: bigint) => {
+          if (!this.audioPlayer) {
+            this.audioPlayer = this.createAudioPlayer();
+          }
+          let uint8: Uint8Array | null = null;
+          if (audioData.bytes !== undefined) {
+            uint8 = new Uint8Array(audioData.bytes);
+          } else if (audioData.sharedMemory?.bufferHandle) {
+            const buffer = audioData.sharedMemory.bufferHandle
+                .mapBuffer(0, audioData.sharedMemory.size)
+                .buffer;
+            uint8 = new Uint8Array(buffer, 0, audioData.sharedMemory.size);
+          }
+          if (uint8 && uint8.length > 0) {
+            this.audioPlayer.playPcmBytes(uint8);
+          }
+          this.pageHandler.reportPlaybackStatus(sequenceNumber);
+        });
+
+    this.pageCallbackRouter.onGenerationStateChanged.addListener(
+        (started: boolean, completed: boolean, interrupted: boolean) => {
+          if (interrupted) {
+            this.audioPlayer?.stop();
+            this.state = State.LISTENING;
+          } else if (started) {
+            this.state = State.TALKING;
+          } else if (completed) {
+            this.state = State.LISTENING;
+          }
+          this.requestUpdate();
+        });
   }
 
   private isAndroidBackend(): boolean {
     return loadTimeData.valueExists('isAndroidBackend') &&
         loadTimeData.getBoolean('isAndroidBackend');
+  }
+
+  private isMesEnabled(): boolean {
+    return loadTimeData.valueExists('useMes') &&
+        loadTimeData.getBoolean('useMes');
   }
 
   override connectedCallback() {
@@ -482,7 +572,18 @@ export class AppElement extends CrLitElement {
   }
 
   private onAudioInput(sampleRate: number, data: string) {
-    this.conversation?.sendAudio(sampleRate, data);
+    if (this.isMesEnabled()) {
+      try {
+        const binaryString = atob(data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        this.pageHandler.sendAudioChunk({bytes: Array.from(bytes)});
+      } catch (_e) {}
+    } else {
+      this.conversation?.sendAudio(sampleRate, data);
+    }
   }
 
   private onAudioOutput(audioData: string) {
@@ -569,7 +670,11 @@ export class AppElement extends CrLitElement {
       if (text) {
         this.localSpeechRecognition.stop();
         log(FILE, `Injecting text: ${text}`);
-        this.conversation?.sendText(text);
+        if (this.isMesEnabled()) {
+          this.pageHandler.sendTextInput(text);
+        } else {
+          this.conversation?.sendText(text);
+        }
         input.value = '';
       }
     }
@@ -656,12 +761,36 @@ export class AppElement extends CrLitElement {
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+      // On Android, enabling echoCancellation activates the platform
+      // ECHO_CANCELLER effect, which puts Android into VoIP communication mode
+      // (MODE_IN_COMMUNICATION / AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION) and
+      // causes Android AudioPolicy to silence concurrent microphone streams
+      // (such as Screen Recorder). Disabling echoCancellation keeps Android in
+      // MODE_NORMAL while still allowing WebRTC software noiseSuppression and
+      // autoGainControl.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: this.isAndroidBackend() ? {
+          echoCancellation: false,
+          noiseSuppression: true,
+          autoGainControl: true,
+        } :
+                                         true,
+      });
       return new MicrophoneAudioCapturer(stream);
     } catch (e) {
       log(FILE, 'No Microphone Found', e);
       return this.blobCapturer;
     }
+  }
+
+  private getBuiltInResourceBundle(): ResourceBundle {
+    return {
+      persona: DEFAULT_PERSONA,
+      apiConfig: {...DEFAULT_API_CONFIG},
+      speakingBlob: null,
+      listeningBlob: null,
+      instruction: DEFAULT_SYSTEM_INSTRUCTION,
+    };
   }
 
   private async startConversation() {
@@ -673,20 +802,54 @@ export class AppElement extends CrLitElement {
     this.initializationState = InitializationState.CONNECTING;
 
     try {
-      const ttcBundleUrl =
-          (loadTimeData.valueExists('ttcBundleUrl') ?
-               loadTimeData.getString('ttcBundleUrl') :
-               '') ||
-          DEFAULT_TTC_BUNDLE_URL;
-      const bundle = await this.initializeResourceBundle(ttcBundleUrl);
+      const customBundleUrl = loadTimeData.valueExists('ttcBundleUrl') ?
+          loadTimeData.getString('ttcBundleUrl') :
+          '';
+      const localApiKey = loadTimeData.valueExists('apiKey') ?
+          loadTimeData.getString('apiKey') :
+          '';
+      const allowBuiltInDefaults =
+          !loadTimeData.valueExists('allowBuiltInDefaults') ||
+          loadTimeData.getBoolean('allowBuiltInDefaults');
+      const hasLocalAuth = allowBuiltInDefaults &&
+          (Boolean(localApiKey || DEFAULT_API_CONFIG.apiKey) ||
+           this.isMesEnabled());
 
-      log(FILE, 'Bundle initialized');
-      this.speakingBlobUrl = URL.createObjectURL(bundle.speakingBlob);
-      this.listeningBlobUrl = URL.createObjectURL(bundle.listeningBlob);
+      let bundle: ResourceBundle;
+      if (!this.usePersona && !customBundleUrl && hasLocalAuth) {
+        log(FILE, 'Using built-in resource bundle (local auth / MES mode)');
+        bundle = this.getBuiltInResourceBundle();
+      } else {
+        const ttcBundleUrl = customBundleUrl || DEFAULT_TTC_BUNDLE_URL;
+        try {
+          bundle = await this.initializeResourceBundle(ttcBundleUrl);
+          log(FILE, 'Remote resource bundle initialized');
+        } catch (e) {
+          if (hasLocalAuth) {
+            warnLog(
+                FILE,
+                'Failed to load remote resource bundle, falling back to built-in defaults:',
+                e);
+            bundle = this.getBuiltInResourceBundle();
+          } else {
+            throw e;
+          }
+        }
+      }
+
+      if (this.speakingBlobUrl) {
+        URL.revokeObjectURL(this.speakingBlobUrl);
+      }
+      if (this.listeningBlobUrl) {
+        URL.revokeObjectURL(this.listeningBlobUrl);
+      }
+      this.speakingBlobUrl =
+          bundle.speakingBlob ? URL.createObjectURL(bundle.speakingBlob) : '';
+      this.listeningBlobUrl =
+          bundle.listeningBlob ? URL.createObjectURL(bundle.listeningBlob) : '';
 
       // Locally specified key overrides the fetched one.
-      const apiKey =
-          loadTimeData.getString('apiKey') || bundle.apiConfig.apiKey;
+      const apiKey = localApiKey || bundle.apiConfig.apiKey;
       const genericPersona: Persona = {
         id: 'generic',
         name: 'Chrome',
@@ -703,11 +866,14 @@ export class AppElement extends CrLitElement {
         },
       };
 
-      if (!this.conversation) {
-        this.conversation = this.createConversation(config);
+      if (this.isMesEnabled()) {
+        this.pageHandler.startStreamingSession();
+      } else {
+        if (!this.conversation) {
+          this.conversation = this.createConversation(config);
+        }
+        await this.conversation.start();
       }
-
-      await this.conversation.start();
 
       this.audioPlayer = this.createAudioPlayer();
       this.audioCapturer = await this.createAudioCapturer();
@@ -717,6 +883,7 @@ export class AppElement extends CrLitElement {
       }
       this.startEnergyAnimation();
 
+      this.state = State.LISTENING;
       this.initializationState = InitializationState.INITIALIZED;
     } catch (e) {
       this.initializationState = InitializationState.ERROR;
@@ -726,6 +893,9 @@ export class AppElement extends CrLitElement {
   }
 
   private stopConversation() {
+    if (this.isMesEnabled()) {
+      this.pageHandler.stopStreamingSession();
+    }
     if (this.conversation?.connected) {
       log(FILE, 'Conversation connected, stopping it.');
       this.conversation.stop();

@@ -9,7 +9,6 @@
 
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
-#include "chrome/browser/browser_features.h"
 #include "chrome/browser/feedback/report_unsafe_site/screenshot_taker.h"
 #include "chrome/browser/feedback/report_unsafe_site_dialog.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
@@ -29,7 +28,7 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
@@ -51,14 +50,14 @@ content::WebContents* OpenLinkInBrowser(
     content::WebContents* source,
     std::unique_ptr<content::WebContents> new_contents,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture) {
   if (!tab_interface || !user_gesture) {
     return nullptr;
   }
-  if (disposition != WindowOpenDisposition::NEW_FOREGROUND_TAB &&
-      disposition != WindowOpenDisposition::NEW_POPUP) {
+  if (disposition != ui::mojom::WindowOpenDisposition::kNewForegroundTab &&
+      disposition != ui::mojom::WindowOpenDisposition::kNewPopup) {
     return nullptr;
   }
   return chrome::AddWebContents(
@@ -75,8 +74,7 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(ReportUnsafeSiteDialogViews,
 // static
 bool ReportUnsafeSiteDialog::IsEnabled(const Profile& profile) {
   const PrefService* prefs = profile.GetPrefs();
-  return base::FeatureList::IsEnabled(features::kReportUnsafeSite) &&
-         !profile.IsOffTheRecord() && chrome::CanShowFeedback(&profile) &&
+  return !profile.IsOffTheRecord() && chrome::CanSubmitFeedback(&profile) &&
          safe_browsing::IsSafeBrowsingEnabled(*prefs);
 }
 

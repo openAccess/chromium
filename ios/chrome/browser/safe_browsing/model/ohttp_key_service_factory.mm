@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/safe_browsing/model/ohttp_key_service_factory.h"
 
+#import <utility>
+
 #import "components/safe_browsing/core/browser/hashprefix_realtime/ohttp_key_service.h"
 #import "components/safe_browsing/core/common/features.h"
 #import "components/safe_browsing/core/common/hashprefix_realtime/hash_realtime_utils.h"
@@ -21,7 +23,7 @@ std::optional<std::string> GetCountry() {
 }
 
 // Default factory.
-std::unique_ptr<KeyedService> BuildOhttpKeyService(ProfileIOS* profile) {
+std::unique_ptr<KeyedService> BuildOhttpKeyService(ProfileIOS& profile) {
   SafeBrowsingService* safe_browsing_service =
       GetApplicationContext()->GetSafeBrowsingService();
   if (!safe_browsing_service) {
@@ -32,7 +34,7 @@ std::unique_ptr<KeyedService> BuildOhttpKeyService(ProfileIOS* profile) {
           safe_browsing_service->GetURLLoaderFactory());
   return std::make_unique<safe_browsing::OhttpKeyService>(
       network::SharedURLLoaderFactory::Create(std::move(url_loader_factory)),
-      profile->GetPrefs(), GetApplicationContext()->GetLocalState(),
+      profile.GetPrefs(), GetApplicationContext()->GetLocalState(),
       base::BindRepeating(&GetCountry),
       /*are_background_lookups_allowed=*/false);
 }
@@ -40,31 +42,19 @@ std::unique_ptr<KeyedService> BuildOhttpKeyService(ProfileIOS* profile) {
 }  // namespace
 
 // static
-safe_browsing::OhttpKeyService* OhttpKeyServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<safe_browsing::OhttpKeyService>(
-      profile, /*create=*/true);
-}
-
-// static
-OhttpKeyServiceFactory* OhttpKeyServiceFactory::GetInstance() {
-  static base::NoDestructor<OhttpKeyServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-OhttpKeyServiceFactory::TestingFactory
+OhttpKeyServiceFactory::TestingFactoryByRef
 OhttpKeyServiceFactory::GetDefaultFactory() {
   return base::BindOnce(&BuildOhttpKeyService);
 }
 
 // The service is created early to start async key fetch.
-OhttpKeyServiceFactory::OhttpKeyServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("OhttpKeyService",
-                                    ServiceCreation::kCreateWithProfile,
-                                    TestingCreation::kNoServiceForTests) {}
+OhttpKeyServiceFactory::OhttpKeyServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "OhttpKeyService",
+                                         ServiceCreation::kCreateWithProfile,
+                                         TestingCreation::kNoServiceForTests) {}
 
 std::unique_ptr<KeyedService> OhttpKeyServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   return BuildOhttpKeyService(profile);
 }

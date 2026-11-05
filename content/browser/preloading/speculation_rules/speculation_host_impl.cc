@@ -104,13 +104,14 @@ void SpeculationHostImpl::Bind(
     mojo::PendingReceiver<blink::mojom::SpeculationHost> receiver) {
   CHECK(frame_host);
   // DocumentService will destroy this on pipe closure or frame destruction.
-  new SpeculationHostImpl(*frame_host, std::move(receiver));
+  base::MakeSelfDeleting<SpeculationHostImpl>(*frame_host, std::move(receiver));
 }
 
 SpeculationHostImpl::SpeculationHostImpl(
     RenderFrameHost& frame_host,
-    mojo::PendingReceiver<blink::mojom::SpeculationHost> receiver)
-    : DocumentService(frame_host, std::move(receiver)) {}
+    mojo::PendingReceiver<blink::mojom::SpeculationHost> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(frame_host, std::move(receiver), key) {}
 
 SpeculationHostImpl::~SpeculationHostImpl() = default;
 
@@ -155,14 +156,6 @@ void SpeculationHostImpl::EnactCandidate(
     blink::mojom::SpeculationCandidatePtr candidate,
     blink::mojom::SpeculationHeuristic heuristic) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  // The renderer must only send EnactCandidate when renderer-side heuristics
-  // are enabled; reject the message otherwise.
-  if (!base::FeatureList::IsEnabled(
-          blink::features::kSpeculationRulesRendererSideHeuristics)) {
-    mojo::ReportBadMessage("SH_ENACT_CANDIDATE_FEATURE_DISABLED");
-    return;
-  }
-
   // The heuristic that selected the candidate must have its browser-side
   // feature (and enactment param) enabled.
   if (!HeuristicMayEnact(heuristic)) {

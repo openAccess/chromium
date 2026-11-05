@@ -26,10 +26,13 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/display/screen.h"
+#include "ui/views/bubble/bubble_border.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/view.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
+#include "ui/views/window/dialog_delegate.h"
 #include "url/gurl.h"
 
 namespace {
@@ -200,6 +203,20 @@ TEST_F(DrivePickerHostControllerTest, ShowDrivePickerHostCreatesView) {
   EXPECT_EQ(controller_->web_contents(), view->GetWebContents());
 }
 
+TEST_F(DrivePickerHostControllerTest, FrameViewHasNoShadowAndZeroInsets) {
+  ShowDrivePickerHost();
+  ASSERT_TRUE(picker_widget());
+  auto* frame_view = picker_widget()
+                         ->widget_delegate()
+                         ->AsDialogDelegate()
+                         ->GetBubbleFrameView();
+  ASSERT_TRUE(frame_view);
+  EXPECT_EQ(frame_view->GetInsets(), gfx::Insets());
+  auto* bubble_border = frame_view->bubble_border();
+  ASSERT_TRUE(bubble_border);
+  EXPECT_EQ(bubble_border->shadow(), views::BubbleBorder::NO_SHADOW);
+}
+
 TEST_F(DrivePickerHostControllerTest, PickerCoversBrowserContents) {
   ShowDrivePickerHost();
 
@@ -256,16 +273,8 @@ TEST_F(DrivePickerHostControllerTest, ResetControllerStateClearsView) {
   EXPECT_FALSE(picker_view());
 }
 
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_ShowDrivePickerHostWithAnchorWidget \
-  DISABLED_ShowDrivePickerHostWithAnchorWidget
-#else
-#define MAYBE_ShowDrivePickerHostWithAnchorWidget \
-  ShowDrivePickerHostWithAnchorWidget
-#endif
 // Verifies Drive Picker host lifecycle when anchored to a widget.
-TEST_F(DrivePickerHostControllerTest,
-       MAYBE_ShowDrivePickerHostWithAnchorWidget) {
+TEST_F(DrivePickerHostControllerTest, ShowDrivePickerHostWithAnchorWidget) {
   // Create an anchor widget to simulate Loomnibox
   views::Widget anchor_widget;
   views::Widget::InitParams params(

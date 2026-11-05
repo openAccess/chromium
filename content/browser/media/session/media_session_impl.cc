@@ -118,7 +118,7 @@ class MediaSessionData : public base::SupportsUserData::Data {
 
 size_t ComputeFrameDepth(RenderFrameHost* rfh,
                          MapRenderFrameHostToDepth* map_rfh_to_depth) {
-  DCHECK(rfh);
+  CHECK(rfh, base::NotFatalUntil::M160);
   size_t depth = 0;
   RenderFrameHost* current_frame = rfh;
   while (current_frame) {
@@ -200,7 +200,8 @@ const base::UnguessableToken* MediaSession::MaybeGetSourceId(
 // static
 WebContents* MediaSession::GetWebContentsFromRequestId(
     const base::UnguessableToken& request_id) {
-  DCHECK_NE(base::UnguessableToken::Null(), request_id);
+  CHECK_NE(base::UnguessableToken::Null(), request_id,
+           base::NotFatalUntil::M160);
   for (WebContentsImpl* web_contents : WebContentsImpl::GetAllWebContents()) {
     MediaSessionImpl* session = MediaSessionImpl::FromWebContents(web_contents);
     if (!session)
@@ -227,14 +228,14 @@ WebContents* MediaSession::GetWebContentsFromRequestId(
 // static
 const base::UnguessableToken& MediaSession::GetRequestIdFromWebContents(
     WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M160);
   MediaSessionImpl* session = MediaSessionImpl::FromWebContents(web_contents);
   return session ? session->GetRequestId() : base::UnguessableToken::Null();
 }
 
 // static
 void MediaSession::FlushObserversForTesting(WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M160);
   MediaSessionImpl* session = MediaSessionImpl::FromWebContents(web_contents);
   session->flush_observers_for_testing();  // IN-TEST
 }
@@ -252,9 +253,9 @@ MediaSessionImpl* MediaSessionImpl::Get(WebContents* web_contents) {
 }
 
 MediaSessionImpl::~MediaSessionImpl() {
-  DCHECK(normal_players_.empty());
-  DCHECK(one_shot_players_.empty());
-  DCHECK(audio_focus_state_ == State::INACTIVE);
+  CHECK(normal_players_.empty(), base::NotFatalUntil::M160);
+  CHECK(one_shot_players_.empty(), base::NotFatalUntil::M160);
+  CHECK(audio_focus_state_ == State::INACTIVE, base::NotFatalUntil::M160);
 }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -296,6 +297,12 @@ void MediaSessionImpl::RenderFrameDeleted(RenderFrameHost* rfh) {
 
 void MediaSessionImpl::PrimaryPageChanged(content::Page& page) {
   last_auto_picture_in_picture_info_.reset();
+
+  // Source icons are the primary page's favicons, so sync them with the new
+  // primary page, like Initialize() does. Waiting for DidUpdateFaviconURL() is
+  // not enough: pages without favicons (e.g. WebUIs) never call it, and pages
+  // restored from the back/forward cache don't call it again.
+  SetSourceIconsFromFavicons(web_contents()->GetFaviconURLs());
 }
 
 void MediaSessionImpl::DidFinishNavigation(
@@ -427,6 +434,7 @@ void MediaSessionImpl::RenderFrameHostStateChanged(
       RemovePlayer(player.first.observer, player.first.player_id);
       hidden_players_.insert(player.first);
     }
+    UpdateRoutedService();
     return;
   }
 
@@ -447,12 +455,18 @@ void MediaSessionImpl::RenderFrameHostStateChanged(
     if (added_players)
       OnSuspendInternal(SuspendType::kSystem, State::SUSPENDED);
 
+    UpdateRoutedService();
     return;
   }
 }
 
 bool MediaSessionImpl::AddPlayer(MediaSessionPlayerObserver* observer,
                                  int player_id) {
+  RenderFrameHost* rfh = observer->render_frame_host();
+  if (rfh && !rfh->IsActive()) {
+    return false;
+  }
+
   media::MediaContentType media_content_type = observer->GetMediaContentType();
 
   if (media_content_type == media::MediaContentType::kOneShot) {
@@ -745,8 +759,8 @@ void MediaSessionImpl::Suspend(SuspendType suspend_type) {
 }
 
 void MediaSessionImpl::Stop(SuspendType suspend_type) {
-  DCHECK(audio_focus_state_ != State::INACTIVE);
-  DCHECK(suspend_type != SuspendType::kContent);
+  CHECK(audio_focus_state_ != State::INACTIVE, base::NotFatalUntil::M160);
+  CHECK(suspend_type != SuspendType::kContent, base::NotFatalUntil::M160);
 
   if (suspend_type == SuspendType::kUI) {
     // If the site has registered an action handle for stop then we should
@@ -771,6 +785,8 @@ void MediaSessionImpl::Stop(SuspendType suspend_type) {
   if (audio_focus_state_ != State::SUSPENDED)
     OnSuspendInternal(suspend_type, State::SUSPENDED);
 
+  // TODO(crbug.com/563861408): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(audio_focus_state_ == State::SUSPENDED);
   normal_players_.clear();
 
@@ -779,7 +795,7 @@ void MediaSessionImpl::Stop(SuspendType suspend_type) {
 }
 
 void MediaSessionImpl::Seek(base::TimeDelta seek_time) {
-  DCHECK(!seek_time.is_zero());
+  CHECK(!seek_time.is_zero(), base::NotFatalUntil::M160);
 
   if (seek_time.is_positive()) {
     // If the site has registered an action handler for seek forward then we
@@ -933,7 +949,7 @@ void MediaSessionImpl::OnImageDownloadComplete(
     const GURL& image_url,
     const std::vector<SkBitmap>& bitmaps,
     const std::vector<gfx::Size>& sizes) {
-  DCHECK(bitmaps.size() == sizes.size());
+  CHECK(bitmaps.size() == sizes.size(), base::NotFatalUntil::M160);
   SkBitmap image;
   double best_image_score = 0.0;
 
@@ -974,9 +990,11 @@ void MediaSessionImpl::OnSystemAudioFocusRequested(bool result) {
 
 void MediaSessionImpl::OnSuspendInternal(SuspendType suspend_type,
                                          State new_state) {
-  DCHECK(new_state == State::SUSPENDED || new_state == State::INACTIVE);
+  CHECK(new_state == State::SUSPENDED || new_state == State::INACTIVE,
+        base::NotFatalUntil::M160);
   // UI suspend cannot use State::INACTIVE.
-  DCHECK(suspend_type == SuspendType::kSystem || new_state == State::SUSPENDED);
+  CHECK(suspend_type == SuspendType::kSystem || new_state == State::SUSPENDED,
+        base::NotFatalUntil::M160);
 
   if (HasOnlyOneShotPlayers()) {
     return;
@@ -1037,7 +1055,7 @@ void MediaSessionImpl::Initialize() {
   delegate_ = AudioFocusDelegate::Create(this);
   delegate_->MediaSessionInfoChanged(GetMediaSessionInfoSync());
 
-  DCHECK(web_contents());
+  CHECK(web_contents(), base::NotFatalUntil::M160);
   SetSourceIconsFromFavicons(web_contents()->GetFaviconURLs());
 
   GetContentClient()->browser()->AddPresentationObserver(this, web_contents());
@@ -1051,8 +1069,8 @@ void MediaSessionImpl::OnPresentationsChanged(bool has_presentation) {
 AudioFocusDelegate::AudioFocusResult MediaSessionImpl::RequestSystemAudioFocus(
     AudioFocusType audio_focus_type) {
   // |kGainTransient| is not used in MediaSessionImpl.
-  DCHECK_NE(media_session::mojom::AudioFocusType::kGainTransient,
-            audio_focus_type);
+  CHECK_NE(media_session::mojom::AudioFocusType::kGainTransient,
+           audio_focus_type, base::NotFatalUntil::M160);
 
   should_unduck_on_focus_gained_ = true;
 
@@ -1344,6 +1362,10 @@ void MediaSessionImpl::EnterAutoPictureInPicture() {
   if (!ShouldRouteAction(
           media_session::mojom::MediaSessionAction::kEnterPictureInPicture)) {
     MaybeEnterBrowserInitiatedAutomaticPictureInPicture();
+    return;
+  }
+  if (!routed_service_->GetRenderFrameHost() ||
+      !routed_service_->GetRenderFrameHost()->IsInPrimaryMainFrame()) {
     return;
   }
 
@@ -1720,14 +1742,17 @@ void MediaSessionImpl::DidReceiveAction(
     }
   }
 
-  if (!routed_service_)
+  if (!routed_service_ || !routed_service_->GetRenderFrameHost() ||
+      !routed_service_->GetRenderFrameHost()->IsActive()) {
     return;
+  }
 
   routed_service_->GetClient()->DidReceiveAction(action, std::move(details));
 }
 
 bool MediaSessionImpl::IsServiceActiveForRenderFrameHost(RenderFrameHost* rfh) {
-  return services_.find(rfh->GetGlobalId()) != services_.end();
+  return rfh && rfh->IsActive() &&
+         services_.find(rfh->GetGlobalId()) != services_.end();
 }
 
 void MediaSessionImpl::UpdateRoutedService() {
@@ -1756,13 +1781,13 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
   std::set<RenderFrameHost*> frames;
   for (const auto& player : normal_players_) {
     RenderFrameHost* frame = player.first.observer->render_frame_host();
-    if (frame) {
+    if (frame && frame->IsActive()) {
       frames.insert(frame);
     }
   }
   for (const auto& player : one_shot_players_) {
     RenderFrameHost* frame = player.observer->render_frame_host();
-    if (frame) {
+    if (frame && frame->IsActive()) {
       frames.insert(frame);
     }
   }
@@ -1773,16 +1798,22 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
   std::map<RenderFrameHost*, size_t> map_rfh_to_depth;
 
   std::set<url::Origin> highest_player_origins;
+  std::set<RenderFrameHost*> highest_player_ancestors;
   size_t min_player_depth = std::numeric_limits<size_t>::max();
 
   for (RenderFrameHost* frame : frames) {
     size_t depth = ComputeFrameDepth(frame, &map_rfh_to_depth);
     if (depth < min_player_depth) {
       highest_player_origins.clear();
+      highest_player_ancestors.clear();
       min_player_depth = depth;
     }
     if (depth == min_player_depth) {
       highest_player_origins.insert(frame->GetLastCommittedOrigin());
+      for (RenderFrameHost* ancestor = frame->GetParentOrOuterDocument();
+           ancestor; ancestor = ancestor->GetParentOrOuterDocument()) {
+        highest_player_ancestors.insert(ancestor);
+      }
     }
     if (depth >= min_depth) {
       continue;
@@ -1795,8 +1826,8 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
   }
 
   // If we cannot find a suitable frame, take the top-most frame with an active
-  // MediaSessionService (and same-origin with the highest-level active player
-  // if one exists).
+  // MediaSessionService (that is either same-origin with or an ancestor of the
+  // highest-level active player if one exists).
   if (!best_frame) {
     // `FrameTree::Nodes()` iterates in breadth-first order, so this is
     // guaranteed to find the topmost (or tied topmost) frame with an active
@@ -1806,7 +1837,8 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
                                    .Nodes()) {
       RenderFrameHost* rfh = node->current_frame_host();
       if (!highest_player_origins.empty() &&
-          !highest_player_origins.contains(rfh->GetLastCommittedOrigin())) {
+          !highest_player_origins.contains(rfh->GetLastCommittedOrigin()) &&
+          !highest_player_ancestors.contains(rfh)) {
         continue;
       }
       if (IsServiceActiveForRenderFrameHost(rfh)) {
@@ -1918,11 +1950,15 @@ void MediaSessionImpl::RebuildAndNotifyActionsChanged() {
   }
 
   // If the website has specified an action handler for 'enterpictureinpicture',
-  // then we should expose EnterAutoPictureInPicture as an available action.
+  // then we should expose EnterAutoPictureInPicture as an available action if
+  // the routed service is in the primary main frame.
   if (actions.contains(
           media_session::mojom::MediaSessionAction::kEnterPictureInPicture)) {
-    actions.insert(
-        media_session::mojom::MediaSessionAction::kEnterAutoPictureInPicture);
+    if (routed_service_ && routed_service_->GetRenderFrameHost() &&
+        routed_service_->GetRenderFrameHost()->IsInPrimaryMainFrame()) {
+      actions.insert(
+          media_session::mojom::MediaSessionAction::kEnterAutoPictureInPicture);
+    }
     actions.insert(
         media_session::mojom::MediaSessionAction::kExitPictureInPicture);
   }
@@ -2214,7 +2250,7 @@ MediaSessionImpl::MaybeGuardDurationUpdate(
   if (!position) {
     // |position| should never go back to unset state once it's
     // set. Therefore it's safe to return it here when it's unset.
-    DCHECK(!is_throttling_);
+    CHECK(!is_throttling_, base::NotFatalUntil::M160);
     return position;
   }
 
@@ -2223,7 +2259,8 @@ MediaSessionImpl::MaybeGuardDurationUpdate(
 
   if (duration_update_allowance_ == 0) {
     is_throttling_ = true;
-    DCHECK(duration_update_allowance_timer_.IsRunning());
+    CHECK(duration_update_allowance_timer_.IsRunning(),
+          base::NotFatalUntil::M160);
 
     // Reset the timer so that we can keep the media as livestream
     // until the time difference between two updates is greater
@@ -2236,7 +2273,7 @@ MediaSessionImpl::MaybeGuardDurationUpdate(
   }
 
   --duration_update_allowance_;
-  DCHECK_GE(duration_update_allowance_, 0);
+  CHECK_GE(duration_update_allowance_, 0, base::NotFatalUntil::M160);
   if (!duration_update_allowance_timer_.IsRunning()) {
     duration_update_allowance_timer_.Start(
         FROM_HERE, kDurationUpdateAllowanceIncreaseInterval, this,

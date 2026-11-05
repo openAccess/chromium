@@ -13,13 +13,12 @@
 #include "chrome/browser/ash/file_system_provider/provided_file_system_info.h"
 #include "chrome/browser/ash/file_system_provider/request_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/extensions/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
 
 class Profile;
 
 namespace ash::file_system_provider {
 
-class CacheManager;
 class ProvidedFileSystemInterface;
 class ProviderId;
 
@@ -44,8 +43,7 @@ class ProviderInterface {
   // Returns a pointer to a created file system.
   virtual std::unique_ptr<ProvidedFileSystemInterface> CreateProvidedFileSystem(
       Profile* profile,
-      const ProvidedFileSystemInfo& file_system_info,
-      CacheManager* cache_manager) = 0;
+      const ProvidedFileSystemInfo& file_system_info) = 0;
 
   // Returns the capabilites of the provider.
   virtual const Capabilities& GetCapabilities() const = 0;

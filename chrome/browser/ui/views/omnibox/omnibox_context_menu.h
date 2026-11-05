@@ -8,6 +8,7 @@
 #include "base/containers/flat_map.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_context_menu_controller.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
@@ -18,7 +19,7 @@ namespace views {
 class MenuItemView;
 class MenuRunner;
 class View;
-class ViewShadow;
+class ViewDecoration;
 class Widget;
 }  // namespace views
 
@@ -52,6 +53,8 @@ class OmniboxContextMenu : public views::MenuDelegate,
   void ExecuteCommand(int command_id, int event_flags) override;
   const gfx::FontList* GetLabelFontList(int command_id) const override;
   std::optional<SkColor> GetLabelColor(int command_id) const override;
+  std::u16string GetTooltipText(int command_id,
+                                const gfx::Point& p) const override;
   int GetMaxWidthForMenu(views::MenuItemView* menu) override;
   void WillShowMenu(views::MenuItemView* menu) override;
   bool IsCommandEnabled(int command_id) const override;
@@ -60,6 +63,7 @@ class OmniboxContextMenu : public views::MenuDelegate,
 
   // ui::MenuModelDelegate:
   void OnIconChanged(int command_id) override;
+  void OnMenuStructureChanged() override;
 
   // Returns minimum preferred width for `menu`. Submenus return the default
   // width; top-level menu width depends on whether a shared tabs submenu is
@@ -67,7 +71,8 @@ class OmniboxContextMenu : public views::MenuDelegate,
   int GetMinimumMenuWidth(const views::MenuItemView* menu) const;
 
  private:
-  const raw_ptr<views::Widget> parent_widget_;
+  void BuildMenuTree();
+  base::WeakPtr<views::Widget> parent_widget_;
   std::unique_ptr<OmniboxContextMenuController> controller_;
 
   // Responsible for running the menu.
@@ -80,12 +85,17 @@ class OmniboxContextMenu : public views::MenuDelegate,
   base::WeakPtr<content::WebContents> web_contents_;
 
   // The drop shadows of the menus, mapped from the shadowed container view.
-  base::flat_map<raw_ptr<views::View>, std::unique_ptr<views::ViewShadow>>
+  base::flat_map<raw_ptr<views::View>, std::unique_ptr<views::ViewDecoration>>
       view_shadows_;
 
   bool was_add_tabs_button_shown_logged_ = false;
   bool was_add_tabs_button_hovered_logged_ = false;
   bool was_add_tabs_flyout_shown_logged_ = false;
+
+  // True while ExecuteCommand is actively running.
+  bool is_executing_command_ = false;
+  // True when the menu is in the process of closing or has closed.
+  bool is_closing_ = false;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_OMNIBOX_OMNIBOX_CONTEXT_MENU_H_

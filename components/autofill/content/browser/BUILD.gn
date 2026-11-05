@@ -24,8 +24,14 @@ static_library("browser") {
     "content_identity_credential_delegate.h",
     "integrators/actor/autofill_annotations_provider_impl.cc",
     "integrators/actor/autofill_annotations_provider_impl.h",
+    "integrators/custom_form_controls/custom_form_control_script_index.cc",
+    "integrators/custom_form_controls/custom_form_control_script_index.h",
+    "integrators/custom_form_controls/custom_form_control_script_runner.cc",
+    "integrators/custom_form_controls/custom_form_control_script_runner.h",
     "integrators/email_verifier/email_verifier_delegate.cc",
     "integrators/email_verifier/email_verifier_delegate.h",
+    "renderer_data_validation.cc",
+    "renderer_data_validation.h",
     "renderer_forms_from_browser_form.cc",
     "renderer_forms_from_browser_form.h",
     "risk/fingerprint.cc",
@@ -70,13 +76,13 @@ static_library("browser") {
     "//services/device/public/mojom",
     "//services/service_manager/public/cpp",
     "//sql",
+    "//third_party/re2",
     "//ui/base",
     "//ui/display",
     "//ui/gfx",
     "//ui/gfx/geometry",
     "//url",
   ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   if (!is_android) {
     deps += [ "//components/webauthn/content/browser" ]
@@ -121,7 +127,10 @@ source_set("test_support") {
     "//content/test:test_support",
   ]
 
-  deps = [ "//base" ]
+  deps = [
+    "//base",
+    "//components/keyed_service/content",
+  ]
 }
 
 source_set("unit_tests") {
@@ -132,6 +141,8 @@ source_set("unit_tests") {
     "content_autofill_driver_unittest.cc",
     "content_identity_credential_delegate_unittest.cc",
     "integrators/actor/autofill_annotations_provider_impl_unittest.cc",
+    "integrators/custom_form_controls/custom_form_control_script_index_unittest.cc",
+    "integrators/custom_form_controls/custom_form_control_script_runner_unittest.cc",
     "integrators/email_verifier/email_verifier_delegate_unittest.cc",
     "suggestions/identity_credential_suggestion_generator_unittest.cc",
   ]
@@ -157,14 +168,14 @@ source_set("unit_tests") {
     "//testing/gmock",
     "//testing/gtest",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
+
 source_set("browser_tests") {
   testonly = true
-  sources = [ "risk/fingerprint_browsertest.cc" ]
+  sources = [
+    "renderer_data_validation_browsertest.cc",
+    "risk/fingerprint_browsertest.cc",
+  ]
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 
@@ -174,11 +185,13 @@ source_set("browser_tests") {
     "//content/public/browser",
     "//content/test:browsertest_support",
     "//content/test:test_support",
+    "//net:test_support",
     "//services/device/public/cpp:test_support",
     "//services/device/public/cpp/geolocation",
     "//services/device/public/mojom",
     "//testing/gmock",
     "//testing/gtest",
+    "//ui/display",
     "//ui/gfx/geometry",
   ]
 }

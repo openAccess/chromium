@@ -73,6 +73,7 @@ class PasskeySyncBridge : public syncer::DataTypeSyncBridge,
   bool IsReady() const override;
   bool IsEmpty() const override;
   base::flat_set<std::string> GetAllSyncIds() const override;
+  base::flat_set<int32_t> GetDeviceAuthorizationKeyVersions() const override;
   std::vector<sync_pb::WebauthnCredentialSpecifics> GetPasskeys(
       std::variant<AnyRp, std::string_view> rp_id,
       ShadowedCredentials shadowed_credentials) const override;
@@ -94,12 +95,6 @@ class PasskeySyncBridge : public syncer::DataTypeSyncBridge,
   bool UpdatePasskeyEncryptedBlob(
       const std::string& credential_id,
       const std::string& new_encrypted_blob) override;
-  sync_pb::WebauthnCredentialSpecifics CreatePasskey(
-      std::string_view rp_id,
-      const UserEntity& user_entity,
-      base::span<const uint8_t> trusted_vault_key,
-      int32_t trusted_vault_key_version,
-      std::vector<uint8_t>* public_key_spki_der_out) override;
   void CreatePasskey(sync_pb::WebauthnCredentialSpecifics& passkey) override;
   std::string AddNewPasskeyForTesting(
       sync_pb::WebauthnCredentialSpecifics passkey) override;

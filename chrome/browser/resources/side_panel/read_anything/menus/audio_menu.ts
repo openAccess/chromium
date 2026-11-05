@@ -4,19 +4,18 @@
 
 import './grouped_action_menu.js';
 import '../read_aloud/accent_menu.js';
+import '../read_aloud/voice_selection_dialog.js';
 
 import {WebUiListenerMixinLit} from '//resources/cr_elements/web_ui_listener_mixin_lit.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
-import {DEFAULT_SETTINGS, ToolbarEvent} from '../content/read_anything_types.js';
-import type {SettingsPrefs, ShowAtConfigPrefs} from '../content/read_anything_types.js';
-import type {AccentMenuElement} from '../read_aloud/accent_menu.js';
+import {ToolbarEvent} from '../content/read_anything_types.js';
+import type {ShowAtConfigPrefs} from '../content/read_anything_types.js';
 import type {AudioBrowserProxy} from '../read_aloud/audio_browser_proxy.js';
 import {AudioBrowserProxyImpl} from '../read_aloud/audio_browser_proxy.js';
-import {ReadAloudSettingsChange} from '../shared/metrics_browser_proxy.js';
-import {ReadAnythingLogger} from '../shared/read_anything_logger.js';
+import {getVoiceDisplayName, getVoiceTitleAndNatureNaming} from '../read_aloud/voice_menu_display.js';
 
 import {getHtml} from './audio_menu.html.js';
 import type {GroupedActionMenuElement} from './grouped_action_menu.js';
@@ -26,9 +25,12 @@ import type {MenuGroup, MenuStateItem, ToolbarMenu} from './menu_util.js';
 export interface AudioMenuElement {
   $: {
     menu: GroupedActionMenuElement,
-    accentMenu?: AccentMenuElement,
   };
 }
+
+const VOICE_GROUP_INDEX = 0;
+const VOICE_SELECTION_ITEM_INDEX = 0;
+const ACCENT_MENU_ITEM_INDEX = 1;
 
 const AudioMenuElementBase = WebUiListenerMixinLit(CrLitElement);
 
@@ -44,7 +46,10 @@ export class AudioMenuElement extends AudioMenuElementBase implements
 
   static override get properties() {
     return {
-      settingsPrefs: {type: Object},
+      highlightGranularity: {type: Number},
+      selectedVoice: {type: Object},
+      previewVoicePlaying: {type: Object},
+      showVoiceSelectionDialog_: {type: Boolean},
       nonModal: {type: Boolean},
       groups_: {type: Array},
       enabledLangs: {type: Array},
@@ -55,13 +60,16 @@ export class AudioMenuElement extends AudioMenuElementBase implements
     };
   }
 
-  accessor settingsPrefs: SettingsPrefs = DEFAULT_SETTINGS;
+  accessor highlightGranularity: number = 0;
   accessor nonModal: boolean = false;
   accessor enabledLangs: string[] = [];
   accessor availableVoices: SpeechSynthesisVoice[] = [];
   accessor localeToDisplayName: {[lang: string]: string} = {};
+  accessor previewVoicePlaying: SpeechSynthesisVoice|null = null;
   accessor selectedLang: string = '';
+  accessor selectedVoice: SpeechSynthesisVoice|null = null;
   protected accessor showAccentMenuDialog_: boolean = false;
+  protected accessor showVoiceSelectionDialog_: boolean = false;
 
   private audioBrowserProxy_: AudioBrowserProxy =
       AudioBrowserProxyImpl.getInstance();
@@ -75,6 +83,8 @@ export class AudioMenuElement extends AudioMenuElementBase implements
       title: loadTimeData.getString('wordHighlightTitle'),
       data: this.audioBrowserProxy_.getWordHighlighting(),
     },
+    // TODO: b/444029483 - Don't show the phrase highlighting option on
+    // non-English pages, since phrase highlighting only supports English.
     ...(this.audioBrowserProxy_.isPhraseHighlightingEnabled()?[{
       title: loadTimeData.getString('phraseHighlightTitle'),
       data: this.audioBrowserProxy_.getPhraseHighlighting(),
@@ -89,39 +99,57 @@ export class AudioMenuElement extends AudioMenuElementBase implements
     },
   ];
 
-  protected accessor groups_: Array<MenuGroup<number|string>> = [
-    {
-      header: {
-        title: loadTimeData.getString('voiceLabel'),
-        separator: false,
-      },
-      items: [{
-        title: loadTimeData.getString('accentMenuLabel'),
-        icon: 'read-anything:translate',
-        itemType: SettingsItemType.ACTION,
-        data: 'open-accent-menu',
-      }],
-      eventName: 'open-accent-menu',
-    },
-    {
-      header: {
-        title: loadTimeData.getString('voiceHighlightLabel'),
-        separator: true,
-      },
-      items: this.highlightOptions_,
-      eventName: ToolbarEvent.HIGHLIGHT_CHANGE,
-    },
-  ];
-
-  private logger_: ReadAnythingLogger = ReadAnythingLogger.getInstance();
+  protected accessor groups_: Array<MenuGroup<number|string>> =
+      this.computeGroups_();
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
 
-    if (changedProperties.has('settingsPrefs')) {
-      this.updateOptionsForHighlight_();
-      this.groups_ = [...this.groups_];
+    if (changedProperties.has('highlightGranularity') ||
+        changedProperties.has('selectedVoice')) {
+      this.groups_ = this.computeGroups_();
     }
+  }
+
+  private computeGroups_(): Array<MenuGroup<number|string>> {
+    return [
+      {
+        header: {
+          title: loadTimeData.getString('voiceLabel'),
+          separator: false,
+        },
+        items: [
+          {
+            title: getVoiceDisplayName(
+                getVoiceTitleAndNatureNaming(this.selectedVoice)),
+            icon: loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
+                'read-anything:voice-selection' :
+                'read-anything:voice-selection-old',
+            data: 'open-voice-selection-dialog',
+            itemType: SettingsItemType.ACTION,
+            eventName: 'open-voice-selection-dialog',
+            opensDialog: true,
+          },
+          {
+            title: loadTimeData.getString('accentMenuLabel'),
+            icon: 'read-anything:translate',
+            itemType: SettingsItemType.ACTION,
+            data: 'open-accent-menu',
+            eventName: 'open-accent-menu',
+            opensDialog: true,
+          },
+        ],
+      },
+      {
+        header: {
+          title: loadTimeData.getString('voiceHighlightLabel'),
+          separator: true,
+        },
+        items: this.highlightOptions_,
+        eventName: ToolbarEvent.HIGHLIGHT_CHANGE,
+        selectedValue: this.highlightGranularity,
+      },
+    ];
   }
 
   open(anchor: HTMLElement, showAtConfig?: ShowAtConfigPrefs) {
@@ -132,18 +160,6 @@ export class AudioMenuElement extends AudioMenuElementBase implements
     this.$.menu.close();
   }
 
-  protected onHighlightChange_(event: CustomEvent<{data: number}>) {
-    const data = event.detail.data;
-    this.audioBrowserProxy_.onHighlightGranularityChanged(data);
-    this.logger_.logSpeechSettingsChange(
-        ReadAloudSettingsChange.HIGHLIGHT_CHANGE);
-    this.logger_.logHighlightGranularity(data);
-    this.settingsPrefs = {
-      ...this.settingsPrefs,
-      highlightGranularity: data,
-    };
-  }
-
   protected onOpenAccentMenu_() {
     this.showAccentMenuDialog_ = true;
   }
@@ -152,12 +168,25 @@ export class AudioMenuElement extends AudioMenuElementBase implements
     event.preventDefault();
     event.stopPropagation();
     this.showAccentMenuDialog_ = false;
+    this.focusMenuItem_(ACCENT_MENU_ITEM_INDEX);
   }
 
-  private updateOptionsForHighlight_() {
-    const currentHighlight = this.settingsPrefs.highlightGranularity;
-    this.highlightOptions_.forEach(option => {
-      option.selected = option.data === currentHighlight;
+  protected onOpenVoiceSelectionDialog_() {
+    this.showVoiceSelectionDialog_ = true;
+    this.fire(ToolbarEvent.VOICE_MENU_OPEN);
+  }
+
+  protected onVoiceSelectionDialogClose_(event: CustomEvent<void>) {
+    event.preventDefault();
+    event.stopPropagation();
+    this.showVoiceSelectionDialog_ = false;
+    this.fire(ToolbarEvent.VOICE_MENU_CLOSE);
+    this.focusMenuItem_(VOICE_SELECTION_ITEM_INDEX);
+  }
+
+  private focusMenuItem_(itemIndex: number) {
+    this.updateComplete.then(() => {
+      this.$.menu.focusItem(VOICE_GROUP_INDEX, itemIndex);
     });
   }
 }

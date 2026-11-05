@@ -26,12 +26,12 @@ namespace ash {
 GnubbyNotification::GnubbyNotification()
     : update_dismiss_notification_timer_(new base::OneShotTimer()),
       weak_ptr_factory_(this) {
-  DCHECK(GnubbyClient::Get());
+  CHECK(GnubbyClient::Get(), base::NotFatalUntil::M160);
   GnubbyClient::Get()->AddObserver(this);
 }
 
 GnubbyNotification::~GnubbyNotification() {
-  DCHECK(GnubbyClient::Get());
+  CHECK(GnubbyClient::Get(), base::NotFatalUntil::M160);
   if (message_center::MessageCenter::Get()) {
     DismissNotification();
   } else {
@@ -57,7 +57,7 @@ void GnubbyNotification::ShowNotification() {
 
   auto notification = ash::CreateSystemNotificationPtr(
       message_center::NOTIFICATION_TYPE_SIMPLE, kOOBEGnubbyNotificationId,
-      title, message, std::u16string(), GURL(), message_center::NotifierId(),
+      title, message, std::u16string(), message_center::NotifierId(),
       message_center::RichNotificationData(),
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
           base::BindRepeating(&GnubbyNotification::DismissNotification,

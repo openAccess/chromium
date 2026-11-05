@@ -165,6 +165,14 @@ class PageInfo : private content_settings::CookieControlsObserver,
 #endif  // BUILDFLAG(IS_ANDROID)
   };
 
+  enum class Surface {
+    // Standard PageInfo bubble (e.g. omnibox page info or unspecified surface).
+    kDefault = 0,
+    // Contextual Tasks side panel toolbar Super G button.
+    kContextualTasks = 1,
+    kMaxValue = kContextualTasks,
+  };
+
   // Creates a PageInfo for the passed |url| using the given |ssl| status
   // object to determine the status of the site's connection. Computes the UI
   // inputs and records page info opened action. It is assumed that this is
@@ -172,7 +180,8 @@ class PageInfo : private content_settings::CookieControlsObserver,
   // closed.
   PageInfo(std::unique_ptr<PageInfoDelegate> delegate,
            content::WebContents* web_contents,
-           const GURL& url);
+           const GURL& url,
+           Surface surface = Surface::kDefault);
 
   PageInfo(const PageInfo&) = delete;
   PageInfo& operator=(const PageInfo&) = delete;
@@ -377,11 +386,6 @@ class PageInfo : private content_settings::CookieControlsObserver,
       PageInfo::SafeBrowsingStatus* status,
       std::u16string* details);
 
-  // Returns PageSpecificContentSettings for the observed WebContents if
-  // present, nullptr otherwise.
-  content_settings::PageSpecificContentSettings*
-  GetPageSpecificContentSettings() const;
-
   // Whether the content setting of type |type| has changed via Page Info UI.
   bool HasContentSettingChangedViaPageInfo(ContentSettingsType type) const;
 
@@ -405,6 +409,9 @@ class PageInfo : private content_settings::CookieControlsObserver,
 
   // A web contents getter used to retrieve the associated WebContents object.
   base::WeakPtr<content::WebContents> web_contents_;
+
+  base::WeakPtr<content_settings::PageSpecificContentSettings>
+      page_specific_content_settings_;
 
   // The delegate allows the embedder to customize |PageInfo|'s behavior.
   std::unique_ptr<PageInfoDelegate> delegate_;
@@ -503,6 +510,8 @@ class PageInfo : private content_settings::CookieControlsObserver,
   bool is_subscribed_to_permission_change_for_testing = false;
 
   bool has_recorded_permission_metrics_ = false;
+
+  Surface surface_ = Surface::kDefault;
 
   base::WeakPtrFactory<PageInfo> weak_factory_{this};
 };

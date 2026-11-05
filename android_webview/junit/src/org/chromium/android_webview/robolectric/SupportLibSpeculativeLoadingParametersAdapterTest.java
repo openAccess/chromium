@@ -4,15 +4,12 @@
 
 package org.chromium.android_webview.robolectric;
 
-import androidx.test.filters.SmallTest;
-
 import com.android.webview.chromium.PrefetchParams;
 
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
@@ -23,11 +20,9 @@ import java.util.Collections;
 
 /** Tests for SupportLibSpeculativeLoadingParametersAdapter. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class SupportLibSpeculativeLoadingParametersAdapterTest {
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testFromBoundaryInterface_WithVariationsId() {
         SpeculativeLoadingParametersBoundaryInterface mockBoundary =
@@ -45,7 +40,6 @@ public class SupportLibSpeculativeLoadingParametersAdapterTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testFromBoundaryInterface_WithoutVariationsId() {
         SpeculativeLoadingParametersBoundaryInterface mockBoundary =

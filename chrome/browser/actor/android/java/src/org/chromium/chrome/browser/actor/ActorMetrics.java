@@ -6,28 +6,71 @@ package org.chromium.chrome.browser.actor;
 
 import android.content.Intent;
 import android.os.SystemClock;
+import android.text.TextUtils;
 import android.util.Pair;
 
 import androidx.annotation.IntDef;
 
+import org.chromium.base.IntentUtils;
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.actor.foreground_service.ActorForegroundServiceController;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicIntentConstants;
 import org.chromium.chrome.browser.notifications.NotificationConstants;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tab.Tab;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 /** Helper class for recording Actor-related UMA metrics. */
 @NullMarked
 public class ActorMetrics implements ActorKeyedService.Observer {
+    public static final String ACTOR_BACKGROUND_ACTUATION_COLD_RESTORE_LATENCY =
+            "Actor.BackgroundActuation.Restore.ColdRestore.Latency";
+    public static final String ACTOR_BACKGROUND_ACTUATION_ON_TAB_ADDED_LATENCY =
+            "Actor.BackgroundActuation.OnTabAdded.Latency";
+    public static final String ACTOR_BACKGROUND_ACTUATION_ON_TAB_ADDED_LATENCY_COLD =
+            "Actor.BackgroundActuation.OnTabAdded.Latency.ColdStart";
+    public static final String ACTOR_BACKGROUND_ACTUATION_ON_TAB_ADDED_LATENCY_WARM =
+            "Actor.BackgroundActuation.OnTabAdded.Latency.WarmStart";
+    public static final String ACTOR_BACKGROUND_ACTUATION_RESTORE_LATENCY_TOTAL =
+            "Actor.BackgroundActuation.Restore.Latency.Total";
+    public static final String ACTOR_BACKGROUND_ACTUATION_RESTORE_LATENCY_TOTAL_COLD =
+            "Actor.BackgroundActuation.Restore.Latency.Total.ColdStart";
+    public static final String ACTOR_BACKGROUND_ACTUATION_RESTORE_LATENCY_TOTAL_WARM =
+            "Actor.BackgroundActuation.Restore.Latency.Total.WarmStart";
+    public static final String
+            ACTOR_BACKGROUND_ACTUATION_RESTORE_LATENCY_WAIT_FOR_TAB_STATE_INITIALIZED =
+                    "Actor.BackgroundActuation.Restore.Latency.WaitForTabStateInitialized";
+    public static final String ACTOR_BACKGROUND_ACTUATION_TAB_CREATED_IN_BACKGROUND =
+            "Actor.BackgroundActuation.TabCreatedInBackground";
+    public static final String ACTOR_NOTIFICATION_FETCH_CONVERSATION_ID_STATUS =
+            "Actor.Notification.FetchConversationId.Status";
+    public static final String ACTOR_NOTIFICATION_FETCH_TAB_ID_STATUS =
+            "Actor.Notification.FetchTabId.Status";
+    public static final String ACTOR_NOTIFICATION_TIME_BETWEEN_WORKLOG_UPDATES =
+            "Actor.Notification.TimeBetweenWorklogUpdates";
+    public static final String ACTOR_TASK_STOPPED_REASON_BACKGROUND_ACTUATION =
+            "Actor.Task.StoppedReason.BackgroundActuation";
+    public static final String ACTOR_TASK_STOPPED_REASON_FOREGROUND =
+            "Actor.Task.StoppedReason.Foreground";
+    public static final String ACTOR_TASK_STOPPED_REASON_PIP = "Actor.Task.StoppedReason.Pip";
     private static final int INVALID_TASK_ID = -1;
     private static final int INVALID_TASK_STATE = -1;
+    private static final Set<Intent> sRecordedIntents =
+            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
 
     // LINT.IfChange(ActorPipStatus)
 
@@ -39,7 +82,7 @@ public class ActorMetrics implements ActorKeyedService.Observer {
         int NUM_ENTRIES = 2;
     }
 
-    // LINT.ThenChange(//chrome/browser/actor/actor_metrics.cc:ActorPipStatus)
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:ActorPipStatus)
 
     // LINT.IfChange(ActorPipExitReason)
 
@@ -56,7 +99,7 @@ public class ActorMetrics implements ActorKeyedService.Observer {
         int NUM_ENTRIES = 3;
     }
 
-    // LINT.ThenChange(//chrome/browser/actor/actor_metrics.cc:ActorPipExitReason)
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:ActorPipExitReason)
 
     // LINT.IfChange(ActorPipUserInteraction)
 
@@ -73,7 +116,60 @@ public class ActorMetrics implements ActorKeyedService.Observer {
         int NUM_ENTRIES = 3;
     }
 
-    // LINT.ThenChange(//chrome/browser/actor/actor_metrics.cc:ActorPipUserInteraction)
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:ActorPipUserInteraction)
+
+    // LINT.IfChange(ActorNotificationPermissionState)
+
+    @IntDef({
+        ActorNotificationPermissionState.ENABLED,
+        ActorNotificationPermissionState.CHANNEL_DISABLED,
+        ActorNotificationPermissionState.OS_DISABLED
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ActorNotificationPermissionState {
+        int ENABLED = 0;
+        int CHANNEL_DISABLED = 1;
+        int OS_DISABLED = 2;
+        int NUM_ENTRIES = 3;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:ActorNotificationPermissionState)
+
+    // LINT.IfChange(ActorFetchConversationIdStatus)
+
+    @IntDef({
+        ActorFetchConversationIdStatus.SUCCESS,
+        ActorFetchConversationIdStatus.NOT_FOUND,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ActorFetchConversationIdStatus {
+        int SUCCESS = 0;
+        int NOT_FOUND = 1;
+        int NUM_ENTRIES = 2;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:ActorFetchConversationIdStatus)
+
+    // LINT.IfChange(ActorFetchTabIdStatus)
+
+    @IntDef({
+        ActorFetchTabIdStatus.SUCCESS,
+        ActorFetchTabIdStatus.TAB_NOT_FOUND,
+        ActorFetchTabIdStatus.TAB_CLOSED,
+        ActorFetchTabIdStatus.INVALID_ID,
+        ActorFetchTabIdStatus.TIMEOUT,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ActorFetchTabIdStatus {
+        int SUCCESS = 0;
+        int TAB_NOT_FOUND = 1;
+        int TAB_CLOSED = 2;
+        int INVALID_ID = 3;
+        int TIMEOUT = 4;
+        int NUM_ENTRIES = 5;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:ActorFetchTabIdStatus)
 
     @IntDef({
         ActorPauseResumeSource.PIP,
@@ -83,19 +179,26 @@ public class ActorMetrics implements ActorKeyedService.Observer {
         int PIP = 0;
     }
 
-    /** Represents whether Chrome is in Picture-in-Picture mode or standard Foreground mode. */
-    @IntDef({ActorMode.FOREGROUND, ActorMode.PIP})
+    /**
+     * Represents whether an Actor task is executing in standard Foreground mode, Picture-in-Picture
+     * mode, or Background mode.
+     */
+    @IntDef({ActorMode.FOREGROUND, ActorMode.PIP, ActorMode.BACKGROUND})
     @Retention(RetentionPolicy.SOURCE)
     @Target({ElementType.TYPE_USE, ElementType.PARAMETER, ElementType.FIELD})
     public @interface ActorMode {
         int FOREGROUND = 0;
         int PIP = 1;
-        int NUM_ENTRIES = 2;
+        int BACKGROUND = 2;
+        int NUM_ENTRIES = 3;
     }
 
     private static @Nullable ActorMetrics sInstance;
 
     private final Map<@ActorTaskId Integer, LatencyTracker> mTrackers = new HashMap<>();
+    private final Map<@ActorTaskId Integer, Integer> mOmniboxClickCounts = new HashMap<>();
+    private final Set<@ActorTaskId Integer> mStoppedTasks = new HashSet<>();
+    private final Set<@ActorTaskId Integer> mRecordedBackgroundActuationTaskIds = new HashSet<>();
     private @ActorMode int mCurrentGlobalMode = ActorMode.FOREGROUND;
 
     /**
@@ -110,7 +213,228 @@ public class ActorMetrics implements ActorKeyedService.Observer {
         return sInstance;
     }
 
+    // LINT.IfChange(ActorBackgroundActuationTrigger)
+
+    @IntDef({
+        ActorBackgroundActuationTrigger.TASK_INIT_BY_CHROME,
+        ActorBackgroundActuationTrigger.TASK_INIT_BY_FCM,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ActorBackgroundActuationTrigger {
+        int TASK_INIT_BY_CHROME = 0;
+        int TASK_INIT_BY_FCM = 1;
+        int NUM_ENTRIES = 2;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:ActorBackgroundActuationTrigger)
+
+    // LINT.IfChange(ActorBackgroundTabCreationStatus)
+
+    @IntDef({
+        ActorBackgroundTabCreationStatus.TASK_INIT_BY_CHROME_SUCCESS,
+        ActorBackgroundTabCreationStatus.TASK_INIT_BY_CHROME_FAILURE,
+        ActorBackgroundTabCreationStatus.TASK_INIT_BY_FCM_SUCCESS,
+        ActorBackgroundTabCreationStatus.TASK_INIT_BY_FCM_FAILURE,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface ActorBackgroundTabCreationStatus {
+        int TASK_INIT_BY_CHROME_SUCCESS = 0;
+        int TASK_INIT_BY_CHROME_FAILURE = 1;
+        int TASK_INIT_BY_FCM_SUCCESS = 2;
+        int TASK_INIT_BY_FCM_FAILURE = 3;
+        int NUM_ENTRIES = 4;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/actor/enums.xml:ActorBackgroundTabCreationStatus)
+
     private ActorMetrics() {}
+
+    /**
+     * Records omnibox focus/click metrics if the given tab has an active Actor task bound to it.
+     *
+     * @param tab The current {@link Tab}.
+     */
+    public static void recordOmniboxFocus(@Nullable Tab tab) {
+        if (tab == null || tab.isDestroyed()) return;
+        Profile profile = tab.getProfile();
+        if (profile == null) return;
+        ActorKeyedService service = ActorKeyedServiceFactory.getForProfile(profile);
+        if (service == null || service.getActiveTasksCount() == 0) return;
+
+        @Nullable
+        @ActorTaskId
+        Integer taskId = service.getActiveTaskIdOnTab(tab.getId(), /* includePaused= */ true);
+        if (taskId == null) return;
+
+        ActorTask task = service.getTask(taskId);
+        if (task == null) return;
+
+        RecordHistogram.recordEnumeratedHistogram(
+                "Actor.Ui.OmniboxClick.TaskState", task.getState(), ActorTaskState.MAX_VALUE + 1);
+        getInstance().incrementOmniboxClickCount(taskId);
+    }
+
+    private void incrementOmniboxClickCount(@ActorTaskId int taskId) {
+        mOmniboxClickCounts.put(taskId, mOmniboxClickCounts.getOrDefault(taskId, 0) + 1);
+    }
+
+    @Override
+    public void onTaskStopped(@ActorTaskId int taskId, @StoppedReason int stoppedReason) {
+        if (!mStoppedTasks.add(taskId)) {
+            return;
+        }
+        RecordHistogram.recordEnumeratedHistogram(
+                getStoppedReasonModeHistogram(taskId), stoppedReason, StoppedReason.MAX_VALUE + 1);
+
+        String reasonName = getStoppedReasonName(stoppedReason);
+        if (!reasonName.isEmpty()) {
+            int clickCount = mOmniboxClickCounts.getOrDefault(taskId, 0);
+            RecordHistogram.recordCount100Histogram(
+                    "Actor.Task.OmniboxClickCount." + reasonName, clickCount);
+        }
+        mOmniboxClickCounts.remove(taskId);
+    }
+
+    /**
+     * Returns the stopped reason histogram for the task's execution mode. Relies on ActorMetrics
+     * being registered before ActorForegroundServiceManager so the background session is checked
+     * before cleanup. Background actuation takes precedence over PiP.
+     */
+    private String getStoppedReasonModeHistogram(@ActorTaskId int taskId) {
+        @ActorMode int mode = getEffectiveModeForTask(taskId);
+        if (mode == ActorMode.BACKGROUND) {
+            return ACTOR_TASK_STOPPED_REASON_BACKGROUND_ACTUATION;
+        }
+        if (mode == ActorMode.PIP) {
+            return ACTOR_TASK_STOPPED_REASON_PIP;
+        }
+        return ACTOR_TASK_STOPPED_REASON_FOREGROUND;
+    }
+
+    private @ActorMode int getEffectiveModeForTask(@ActorTaskId int taskId) {
+        if (ActorForegroundServiceController.get().hasBackgroundSessionForTask(taskId)) {
+            return ActorMode.BACKGROUND;
+        }
+        return mCurrentGlobalMode;
+    }
+
+    /**
+     * Records the elapsed time in milliseconds between consecutive worklog updates on an active
+     * Actor task notification.
+     */
+    public static void recordTimeBetweenWorklogUpdates(long durationMs) {
+        RecordHistogram.recordMediumTimesHistogram(
+                ACTOR_NOTIFICATION_TIME_BETWEEN_WORKLOG_UPDATES, durationMs);
+    }
+
+    /**
+     * Records the latency in milliseconds while waiting for a background tab to be restored and
+     * added to the {@link org.chromium.chrome.browser.tabmodel.TabModel}.
+     *
+     * @param durationMs The elapsed latency in milliseconds.
+     * @param isColdStart Whether the {@link org.chromium.chrome.browser.tabmodel.TabModelSelector}
+     *     tab state was uninitialized when waiting began.
+     */
+    public static void recordOnTabAddedLatency(long durationMs, boolean isColdStart) {
+        RecordHistogram.recordMediumTimesHistogram(
+                ACTOR_BACKGROUND_ACTUATION_ON_TAB_ADDED_LATENCY, durationMs);
+        RecordHistogram.recordMediumTimesHistogram(
+                isColdStart
+                        ? ACTOR_BACKGROUND_ACTUATION_ON_TAB_ADDED_LATENCY_COLD
+                        : ACTOR_BACKGROUND_ACTUATION_ON_TAB_ADDED_LATENCY_WARM,
+                durationMs);
+    }
+
+    /**
+     * Records the latency in milliseconds to restore and attach a background tab from {@link
+     * BackgroundTabPool} during tab state initialization.
+     *
+     * @param durationMs The elapsed latency in milliseconds.
+     */
+    public static void recordColdRestoreLatency(long durationMs) {
+        RecordHistogram.recordTimesHistogram(
+                ACTOR_BACKGROUND_ACTUATION_COLD_RESTORE_LATENCY, durationMs);
+    }
+
+    /**
+     * Records the time in milliseconds spent waiting for tab state initialization before background
+     * tab restoration executes.
+     *
+     * @param durationMs The elapsed wait time in milliseconds.
+     */
+    public static void recordWaitForTabStateInitializedLatency(long durationMs) {
+        RecordHistogram.recordMediumTimesHistogram(
+                ACTOR_BACKGROUND_ACTUATION_RESTORE_LATENCY_WAIT_FOR_TAB_STATE_INITIALIZED,
+                durationMs);
+    }
+
+    /**
+     * Records the total UI-thread duration in milliseconds spent restoring background sessions into
+     * the active foreground window.
+     *
+     * @param durationMs The elapsed restoration time in milliseconds.
+     * @param isColdStart Whether the {@link org.chromium.chrome.browser.tabmodel.TabModelSelector}
+     *     tab state was uninitialized when restoration was requested.
+     */
+    public static void recordTotalRestoreLatency(long durationMs, boolean isColdStart) {
+        RecordHistogram.recordMediumTimesHistogram(
+                ACTOR_BACKGROUND_ACTUATION_RESTORE_LATENCY_TOTAL, durationMs);
+        RecordHistogram.recordMediumTimesHistogram(
+                isColdStart
+                        ? ACTOR_BACKGROUND_ACTUATION_RESTORE_LATENCY_TOTAL_COLD
+                        : ACTOR_BACKGROUND_ACTUATION_RESTORE_LATENCY_TOTAL_WARM,
+                durationMs);
+    }
+
+    /** Records the trigger source that initiated background actuation. */
+    public static void recordBackgroundActuationTrigger(
+            @ActorBackgroundActuationTrigger int trigger) {
+        RecordHistogram.recordEnumeratedHistogram(
+                "Actor.BackgroundActuation.Trigger",
+                trigger,
+                ActorBackgroundActuationTrigger.NUM_ENTRIES);
+    }
+
+    /**
+     * Records the outcome of creating a tab during background actuation, categorized by the trigger
+     * source that initiated the task and whether provisioning succeeded or failed.
+     *
+     * @param status The creation status ({@link ActorBackgroundTabCreationStatus}).
+     */
+    public static void recordTabCreatedInBackground(@ActorBackgroundTabCreationStatus int status) {
+        RecordHistogram.recordEnumeratedHistogram(
+                ACTOR_BACKGROUND_ACTUATION_TAB_CREATED_IN_BACKGROUND,
+                status,
+                ActorBackgroundTabCreationStatus.NUM_ENTRIES);
+    }
+
+    /**
+     * Records the trigger source that initiated background actuation for a task if not already
+     * recorded for that task.
+     *
+     * @param taskId The task ID to check and record for.
+     * @param trigger The trigger source.
+     */
+    public static void maybeRecordBackgroundActuationTrigger(
+            @ActorTaskId int taskId, @ActorBackgroundActuationTrigger int trigger) {
+        ThreadUtils.assertOnUiThread();
+        if (!getInstance().mRecordedBackgroundActuationTaskIds.add(taskId)) {
+            return;
+        }
+        recordBackgroundActuationTrigger(trigger);
+    }
+
+    /**
+     * Marks a task as having already had its background actuation trigger recorded (e.g. when the
+     * task was originally initiated via FCM) so subsequent foreground-to-background transitions do
+     * not record {@link ActorBackgroundActuationTrigger#TASK_INIT_BY_CHROME}.
+     *
+     * @param taskId The task ID to mark as recorded.
+     */
+    public static void markBackgroundActuationTriggerRecorded(@ActorTaskId int taskId) {
+        ThreadUtils.assertOnUiThread();
+        getInstance().mRecordedBackgroundActuationTaskIds.add(taskId);
+    }
 
     /** Records the PiP status (Enter/Exit). */
     public static void recordPipStatus(@ActorPipStatus int status) {
@@ -135,8 +459,38 @@ public class ActorMetrics implements ActorKeyedService.Observer {
                 "Actor.Pip.UserInteractions", interaction, ActorPipUserInteraction.NUM_ENTRIES);
     }
 
+    /** Records the notification permission state when an Actor task starts. */
+    public static void recordNotificationPermissionState(
+            @ActorNotificationPermissionState int state) {
+        RecordHistogram.recordEnumeratedHistogram(
+                "Actor.Notification.PermissionState",
+                state,
+                ActorNotificationPermissionState.NUM_ENTRIES);
+    }
+
     /**
-     * Records ActorTaskState metrics from active task or intent.
+     * Records the status of fetching and selecting the target tab ID when an Actor notification is
+     * clicked.
+     */
+    public static void recordNotificationFetchTabIdStatus(@ActorFetchTabIdStatus int status) {
+        RecordHistogram.recordEnumeratedHistogram(
+                ACTOR_NOTIFICATION_FETCH_TAB_ID_STATUS, status, ActorFetchTabIdStatus.NUM_ENTRIES);
+    }
+
+    /**
+     * Records the status of fetching the Glic conversation ID when an Actor notification is
+     * clicked.
+     */
+    public static void recordNotificationFetchConversationIdStatus(
+            @ActorFetchConversationIdStatus int status) {
+        RecordHistogram.recordEnumeratedHistogram(
+                ACTOR_NOTIFICATION_FETCH_CONVERSATION_ID_STATUS,
+                status,
+                ActorFetchConversationIdStatus.NUM_ENTRIES);
+    }
+
+    /**
+     * Records ActorTaskState and conversation ID fetch status metrics from active task or intent.
      *
      * @param intent The intent to inspect.
      * @param profile The current Profile.
@@ -145,6 +499,7 @@ public class ActorMetrics implements ActorKeyedService.Observer {
             @Nullable Intent intent, @Nullable Profile profile) {
         if (intent == null) return;
         if (!intent.hasExtra(NotificationConstants.EXTRA_ACTOR_TASK_ID)) return;
+        if (sRecordedIntents.contains(intent)) return;
 
         int taskId = intent.getIntExtra(NotificationConstants.EXTRA_ACTOR_TASK_ID, INVALID_TASK_ID);
         if (taskId == INVALID_TASK_ID) return;
@@ -163,13 +518,19 @@ public class ActorMetrics implements ActorKeyedService.Observer {
         }
 
         if (state != INVALID_TASK_STATE) {
+            sRecordedIntents.add(intent);
             RecordHistogram.recordEnumeratedHistogram(
                     "Actor.Notification.ClickTaskState", state, ActorTaskState.MAX_VALUE + 1);
+            if (ChromeFeatureList.sActorNotificationIntentRouting.isEnabled()) {
+                String conversationId =
+                        IntentUtils.safeGetStringExtra(
+                                intent, GlicIntentConstants.EXTRA_CONVERSATION_ID);
+                recordNotificationFetchConversationIdStatus(
+                        !TextUtils.isEmpty(conversationId)
+                                ? ActorFetchConversationIdStatus.SUCCESS
+                                : ActorFetchConversationIdStatus.NOT_FOUND);
+            }
         }
-
-        // Consume the extras so that we don't record the same intent multiple times.
-        intent.removeExtra(NotificationConstants.EXTRA_ACTOR_TASK_ID);
-        intent.removeExtra(NotificationConstants.EXTRA_ACTOR_TASK_STATE);
     }
 
     private static int getActorTaskStateFromTaskId(int taskId, Profile profile) {
@@ -190,7 +551,7 @@ public class ActorMetrics implements ActorKeyedService.Observer {
      * Records the cumulative execution duration for a given task state and mode.
      *
      * @param state The {@link ActorTaskState} of the task.
-     * @param mode The {@link ActorMode} (Foreground or Pip).
+     * @param mode The {@link ActorMode} (Foreground, Pip, or Background).
      * @param durationMs The cumulative duration in milliseconds.
      */
     public static void recordExecutionDuration(
@@ -198,9 +559,21 @@ public class ActorMetrics implements ActorKeyedService.Observer {
         String stateName = getStateName(state);
         if (stateName.isEmpty()) return;
 
-        String modeName = (mode == ActorMode.PIP) ? "Pip" : "Foreground";
+        String modeName = getModeName(mode);
         String histogramName = "Actor.Tools.ExecutionDuration." + modeName + "." + stateName;
         RecordHistogram.recordLongTimesHistogram(histogramName, durationMs);
+    }
+
+    private static String getModeName(@ActorMode int mode) {
+        switch (mode) {
+            case ActorMode.PIP:
+                return "Pip";
+            case ActorMode.BACKGROUND:
+                return "Background";
+            case ActorMode.FOREGROUND:
+            default:
+                return "Foreground";
+        }
     }
 
     private static String getStateName(@ActorTaskState int state) {
@@ -238,24 +611,46 @@ public class ActorMetrics implements ActorKeyedService.Observer {
         if (mCurrentGlobalMode == newMode) return;
 
         mCurrentGlobalMode = newMode;
-        for (LatencyTracker tracker : mTrackers.values()) {
-            tracker.updateTaskStateAndMode(tracker.getCurrentState(), mCurrentGlobalMode);
+        refreshActiveTaskModes();
+    }
+
+    /**
+     * Re-evaluates the effective {@link ActorMode} for all currently tracked tasks and flushes
+     * elapsed duration for any task whose mode changed.
+     */
+    public void refreshActiveTaskModes() {
+        ThreadUtils.assertOnUiThread();
+        for (Map.Entry<@ActorTaskId Integer, LatencyTracker> entry : mTrackers.entrySet()) {
+            entry.getValue().setMode(getEffectiveModeForTask(entry.getKey()));
         }
     }
 
     @Override
     public void onTaskStateChanged(@ActorTaskId int taskId, @ActorTaskState int newState) {
+        @ActorMode int effectiveMode = getEffectiveModeForTask(taskId);
         LatencyTracker tracker = mTrackers.get(taskId);
         if (tracker == null) {
-            tracker = new LatencyTracker(newState, mCurrentGlobalMode);
+            if (!ActorUtils.isCompletedState(newState)) {
+                recordNotificationPermissionState(ActorUtils.getActorNotificationPermissionState());
+            }
+            tracker = new LatencyTracker(newState, effectiveMode);
             mTrackers.put(taskId, tracker);
         } else {
-            tracker.updateTaskStateAndMode(newState, mCurrentGlobalMode);
+            tracker.updateTaskStateAndMode(newState, effectiveMode);
         }
 
         if (ActorUtils.isCompletedState(newState)) {
             tracker.recordTaskMetrics();
             mTrackers.remove(taskId);
+            mRecordedBackgroundActuationTaskIds.remove(taskId);
+            if (!mStoppedTasks.contains(taskId)) {
+                @StoppedReason
+                int defaultReason =
+                        (newState == ActorTaskState.FINISHED)
+                                ? StoppedReason.TASK_COMPLETE
+                                : StoppedReason.STOPPED_BY_USER;
+                onTaskStopped(taskId, defaultReason);
+            }
         }
     }
 
@@ -273,9 +668,15 @@ public class ActorMetrics implements ActorKeyedService.Observer {
             mLastTransitionTime = SystemClock.elapsedRealtime();
         }
 
-        @ActorTaskState
-        int getCurrentState() {
-            return mCurrentState;
+        /**
+         * Updates the execution mode for the current state, flushing elapsed duration for the
+         * previous mode.
+         *
+         * @param newMode The next {@link ActorMode}.
+         */
+        void setMode(@ActorMode int newMode) {
+            if (mCurrentMode == newMode) return;
+            updateTaskStateAndMode(mCurrentState, newMode);
         }
 
         /**
@@ -314,10 +715,51 @@ public class ActorMetrics implements ActorKeyedService.Observer {
 
     public static void resetForTesting() {
         sInstance = null;
+        sRecordedIntents.clear();
     }
 
     public void onTaskStateChangedForTesting(
             @ActorTaskId int taskId, @ActorTaskState int newState) {
         onTaskStateChanged(taskId, newState);
     }
+
+    public void onTaskStoppedForTesting(@ActorTaskId int taskId, @StoppedReason int stoppedReason) {
+        onTaskStopped(taskId, stoppedReason);
+    }
+
+    public int getOmniboxClickCountForTesting(@ActorTaskId int taskId) {
+        return mOmniboxClickCounts.getOrDefault(taskId, 0);
+    }
+
+    // LINT.IfChange(StoppedReasonName)
+    private static String getStoppedReasonName(@StoppedReason int stoppedReason) {
+        switch (stoppedReason) {
+            case StoppedReason.STOPPED_BY_USER:
+                return "Cancelled";
+            case StoppedReason.TASK_COMPLETE:
+                return "Completed";
+            case StoppedReason.MODEL_ERROR:
+                return "ModelError";
+            case StoppedReason.CHROME_FAILURE:
+                return "ChromeFailure";
+            case StoppedReason.TAB_DETACHED:
+                return "TabDetached";
+            case StoppedReason.SHUTDOWN:
+                return "Shutdown";
+            case StoppedReason.USER_STARTED_NEW_CHAT:
+                return "NewChat";
+            case StoppedReason.USER_LOADED_PREVIOUS_CHAT:
+                return "PreviousChat";
+            case StoppedReason.USER_NAVIGATED_AWAY:
+                return "UserNavigatedAway";
+            case StoppedReason.TIMEOUT:
+                return "Timeout";
+            case StoppedReason.ABORTED_BY_POLICY:
+                return "AbortedByPolicy";
+            default:
+                return "";
+        }
+    }
+    // LINT.ThenChange(//chrome/browser/actor/actor_task.h:StoppedReason,
+    // //tools/metrics/histograms/metadata/actor/histograms.xml:StoppedReason)
 }

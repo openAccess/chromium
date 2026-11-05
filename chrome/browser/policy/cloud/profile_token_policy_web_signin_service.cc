@@ -18,6 +18,7 @@
 #include "components/policy/core/common/cloud/profile_cloud_policy_manager.h"
 #include "components/policy/core/common/policy_logger.h"
 #include "content/public/browser/storage_partition.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace policy {
 
@@ -73,8 +74,8 @@ void ProfileTokenPolicyWebSigninService::ShutdownCloudPolicyManager() {
 }
 
 void ProfileTokenPolicyWebSigninService::RegisterCloudPolicyService() {
-  DCHECK(policy_manager()->core()->client());
-  DCHECK(!policy_manager()->IsClientRegistered());
+  CHECK(policy_manager()->core()->client(), base::NotFatalUntil::M162);
+  CHECK(!policy_manager()->IsClientRegistered(), base::NotFatalUntil::M162);
 
   // Do nothing if already starting the registration process in which case there
   // will be an instance of |cloud_policy_registrar_|.
@@ -97,7 +98,7 @@ void ProfileTokenPolicyWebSigninService::RegisterCloudPolicyService() {
   auto* entry = g_browser_process->profile_manager()
                     ->GetProfileAttributesStorage()
                     .GetProfileAttributesWithPath(profile_->GetPath());
-  DCHECK(entry);
+  CHECK(entry, base::NotFatalUntil::M162);
   auto enrollment_token = entry->GetProfileManagementEnrollmentToken();
 
   cloud_policy_registrar_->RegisterForCloudManagementWithEnrollmentToken(
@@ -122,7 +123,7 @@ void ProfileTokenPolicyWebSigninService::OnRegistrationComplete(
   policy_manager()->core()->client()->SetupRegistration(
       dm_token, client_id,
       /*user_affiliation_ids=*/std::vector<std::string>());
-  DCHECK(policy_manager()->IsClientRegistered());
+  CHECK(policy_manager()->IsClientRegistered(), base::NotFatalUntil::M162);
   FetchPolicyForSignedInUser(
       AccountId(), dm_token, client_id,
       /*user_affiliation_ids=*/std::vector<std::string>(),
@@ -143,12 +144,12 @@ void ProfileTokenPolicyWebSigninService::OnPolicyFetchComplete(bool success) {
 void ProfileTokenPolicyWebSigninService::InitializeCloudPolicyManager(
     const AccountId& account_id,
     std::unique_ptr<CloudPolicyClient> client) {
-  DCHECK(client);
-  DCHECK(!account_id.is_valid());
+  CHECK(client, base::NotFatalUntil::M162);
+  CHECK(!account_id.is_valid(), base::NotFatalUntil::M162);
   CloudPolicyManager* manager = policy_manager();
-  DCHECK(!manager->core()->client());
+  CHECK(!manager->core()->client(), base::NotFatalUntil::M162);
   manager->Connect(local_state(), std::move(client));
-  DCHECK(manager->core()->service());
+  CHECK(manager->core()->service(), base::NotFatalUntil::M162);
 
   // Observe the client to detect errors fetching policy.
   cloud_policy_client_observation_.Observe(manager->core()->client());
@@ -179,7 +180,7 @@ std::string ProfileTokenPolicyWebSigninService::GetProfileId() {
 // InitializeForSignedInUser(); otherwise it clears any stored policies.
 void ProfileTokenPolicyWebSigninService::InitializeOnProfileReady(
     Profile* profile) {
-  DCHECK_EQ(profile, profile_);
+  CHECK_EQ(profile, profile_, base::NotFatalUntil::M162);
 
   // If using a TestingProfile with no IdentityManager or
   // CloudPolicyManager, skip initialization.

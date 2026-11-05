@@ -55,9 +55,12 @@ BASE_FEATURE(kEnableSpellcheckRegionalSignal,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kLazyInitializeSpellcheckCharAttribute,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kAsyncSpellcheckCustomDictionaryInit,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOnDemandSpellcheckInitialization,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 #endif  // BUILDFLAG(ENABLE_SPELLCHECK)

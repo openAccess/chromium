@@ -40,10 +40,10 @@ bool ShouldHighlight(const views::Button& button) {
 
 GrammarSuggestionWindow::GrammarSuggestionWindow(gfx::NativeView parent,
                                                  AssistiveDelegate* delegate)
-    : delegate_(delegate) {
+    : delegate_(delegate->GetWeakPtr()) {
   DialogDelegate::SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   SetCanActivate(false);
-  DCHECK(parent);
+  CHECK(parent, base::NotFatalUntil::M162);
   set_parent_window(parent);
   set_margins(gfx::Insets::TLBR(kGrammarPaddingSize, kGrammarPaddingSize,
                                 kGrammarPaddingSize, kGrammarPaddingSize));
@@ -54,8 +54,7 @@ GrammarSuggestionWindow::GrammarSuggestionWindow(gfx::NativeView parent,
 
   suggestion_button_ = AddChildView(
       std::make_unique<CompletionSuggestionView>(base::BindRepeating(
-          &AssistiveDelegate::AssistiveWindowButtonClicked,
-          base::Unretained(delegate_),
+          &AssistiveDelegate::AssistiveWindowButtonClicked, delegate_,
           AssistiveWindowButton{
               .id = ui::ime::ButtonId::kSuggestion,
               .window_type =
@@ -66,8 +65,7 @@ GrammarSuggestionWindow::GrammarSuggestionWindow(gfx::NativeView parent,
 
   ignore_button_ =
       AddChildView(std::make_unique<views::ImageButton>(base::BindRepeating(
-          &AssistiveDelegate::AssistiveWindowButtonClicked,
-          base::Unretained(delegate_),
+          &AssistiveDelegate::AssistiveWindowButtonClicked, delegate_,
           AssistiveWindowButton{
               .id = ui::ime::ButtonId::kIgnoreSuggestion,
               .window_type = ash::ime::AssistiveWindowType::kGrammarSuggestion,

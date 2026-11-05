@@ -65,10 +65,12 @@ class AttemptFormFillingTool : public WebActorTool {
   void Execute(ToolExecutionCallback callback) override;
   base::WeakPtr<web::WebState> GetTargetWebState() const override;
   ToolType GetToolType() const override;
+  std::string DebugString() const override;
 
  private:
   AttemptFormFillingTool(base::WeakPtr<web::WebState> web_state,
                          std::vector<FormFillingRequest> requests,
+                         std::string credit_card_opaque_token,
                          ToolDelegate* tool_delegate);
 
   // Returns the AutofillClientIOS associated with the target WebState.
@@ -99,6 +101,13 @@ class AttemptFormFillingTool : public WebActorTool {
       base::expected<std::vector<autofill::ActorFormFillingRequest>,
                      autofill::ActorFormFillingError> suggestions_result);
 
+  // Callback invoked when the form filling service returns a credit card
+  // suggestion ID for an opaque token. Directly fills the suggestion into the
+  // form without prompting the user.
+  void OnCreditCardSuggestionRetrieved(
+      base::expected<autofill::ActorSuggestionId,
+                     autofill::ActorFormFillingError> suggestion_id_result);
+
   // Scrolls the web page to the form corresponding to the current request and
   // prompts the user to select a suggestion.
   void ScrollToCurrentRequestAndShowSuggestions();
@@ -124,6 +133,9 @@ class AttemptFormFillingTool : public WebActorTool {
   // The list of requests containing requested data type and raw ActionTarget
   // trigger fields.
   std::vector<FormFillingRequest> tool_requests_;
+
+  // An optional opaque token to retrieve and fill a credit card suggestion.
+  std::string credit_card_opaque_token_;
 
   // Delegate handling UI interactions.
   raw_ptr<ToolDelegate> tool_delegate_ = nullptr;

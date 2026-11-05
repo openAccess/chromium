@@ -4,40 +4,29 @@
 
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator.h"
 
-#import "base/apple/foundation_util.h"
+#import <utility>
+
 #import "base/feature_list.h"
 #import "base/notreached.h"
-#import "base/strings/sys_string_conversions.h"
 #import "components/pref_registry/pref_registry_syncable.h"
-#import "components/prefs/pref_service.h"
 #import "components/signin/public/base/signin_metrics.h"
 #import "components/signin/public/base/signin_switches.h"
 #import "ios/chrome/browser/authentication/add_account_signin/coordinator/add_account_signin_coordinator.h"
 #import "ios/chrome/browser/authentication/consistency_promo_signin/coordinator/consistency_promo_signin_coordinator.h"
-#import "ios/chrome/browser/authentication/trusted_vault_reauthentication/coordinator/trusted_vault_reauthentication_coordinator.h"
-#import "ios/chrome/browser/authentication/trusted_vault_reauthentication/coordinator/trusted_vault_reauthentication_coordinator_delegate.h"
 #import "ios/chrome/browser/authentication/two_screens_signin/coordinator/two_screens_signin_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/deeplink_signin/deeplink_signin_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/history_sync/history_sync_signin_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/instant_signin/instant_signin_coordinator.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/logging/first_run_signin_logger.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_history_sync/signin_and_history_sync_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_in_progress.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_screen_provider.h"
 #import "ios/chrome/browser/metrics/model/activity_reporter.h"
-#import "ios/chrome/browser/shared/coordinator/chrome_coordinator/animated_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
-#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 
 using signin_metrics::AccessPoint;
 using signin_metrics::PromoAction;
@@ -73,7 +62,6 @@ using signin_metrics::PromoAction;
 + (void)registerProfilePrefs:(user_prefs::PrefRegistrySyncable*)registry {
   // ConsistencyPromoSigninCoordinator.
   registry->RegisterIntegerPref(prefs::kSigninWebSignDismissalCount, 0);
-  registry->RegisterDictionaryPref(prefs::kSigninHasAcceptedManagementDialog);
 }
 
 + (SigninCoordinator*)signinCoordinatorWithCommand:(ShowSigninCommand*)command
@@ -319,14 +307,14 @@ using signin_metrics::PromoAction;
                                        continuationProvider:
                                            (const ChangeProfileContinuationProvider&)
                                                continuationProvider {
-  return [ConsistencyPromoSigninCoordinator
-      coordinatorWithBaseViewController:viewController
-                                browser:browser
-                           contextStyle:contextStyle
-                            accessPoint:accessPoint
-                   confirmChangeProfile:confirmChangeProfile
-                   prepareChangeProfile:prepareChangeProfile
-                   continuationProvider:continuationProvider];
+  return [[ConsistencyPromoSigninCoordinator alloc]
+      initWithBaseViewController:viewController
+                         browser:browser
+                    contextStyle:contextStyle
+                     accessPoint:accessPoint
+            confirmChangeProfile:confirmChangeProfile
+            prepareChangeProfile:prepareChangeProfile
+            continuationProvider:continuationProvider];
 }
 
 + (SigninCoordinator*)
@@ -402,7 +390,7 @@ using signin_metrics::PromoAction;
 - (void)start {
   // `signinCompletion` needs to be set by the owner to know when the sign-in
   // is finished.
-  CHECK(self.signinCompletion, base::NotFatalUntil::M151);
+  CHECK(self.signinCompletion);
   [_activityReporter reportActive];
 }
 
@@ -416,25 +404,19 @@ using signin_metrics::PromoAction;
 
 #pragma mark - Protected
 
-- (void)runCompletionWithSigninResult:(SigninCoordinatorResult)signinResult
-                   completionIdentity:(id<SystemIdentity>)completionIdentity {
-  // `identity` is set, if and only if the sign-in is successful.
-  CHECK(((signinResult == SigninCoordinatorResultSuccess ||
-          signinResult == SigninCoordinatorProfileSwitch) &&
-         completionIdentity) ||
-            ((signinResult != SigninCoordinatorResultSuccess) &&
-             !completionIdentity),
-        base::NotFatalUntil::M151)
-      << "signinResult: " << signinResult
-      << ", identity: " << (completionIdentity ? "YES" : "NO");
+- (void)runCompletionWithSigninResult:
+    (SigninCoordinatorResultOrIdentity)signinResult {
+  if (signinResult.has_value()) {
+    CHECK(signinResult.value());
+  }
   // If `self.signinCompletion` is nil, this method has been probably called
   // twice.
-  CHECK(self.signinCompletion, base::NotFatalUntil::M151);
+  CHECK(self.signinCompletion);
   SigninCoordinatorCompletionCallback signinCompletion = self.signinCompletion;
   // The owner should call the stop method, during the callback.
   // `self.signinCompletion` needs to be set to nil before calling it.
   self.signinCompletion = nil;
-  signinCompletion(self, signinResult, completionIdentity);
+  signinCompletion(self, std::move(signinResult));
 }
 
 #pragma mark - BuggyAuthenticationViewOwner

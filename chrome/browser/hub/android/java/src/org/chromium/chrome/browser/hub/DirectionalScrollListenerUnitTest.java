@@ -9,7 +9,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -19,6 +18,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 
@@ -29,8 +29,9 @@ public class DirectionalScrollListenerUnitTest {
 
     @Mock private Runnable mOnScrollUp;
     @Mock private Runnable mOnScrollDown;
-    @Mock private RecyclerView mRecyclerView;
 
+    private final RecyclerView mRecyclerView =
+            new RecyclerView(ContextUtils.getApplicationContext());
     private DirectionalScrollListener mListener;
 
     @Before
@@ -39,7 +40,6 @@ public class DirectionalScrollListenerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnScrollDown() {
         mListener.onScrolled(mRecyclerView, 0, 20);
         verify(mOnScrollDown, times(1)).run();
@@ -47,7 +47,6 @@ public class DirectionalScrollListenerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnScrollUp() {
         mListener.onScrolled(mRecyclerView, 0, -20);
         verify(mOnScrollUp, times(1)).run();
@@ -55,7 +54,6 @@ public class DirectionalScrollListenerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollThresholdNotMet() {
         mListener.onScrolled(mRecyclerView, 0, 1);
         verify(mOnScrollUp, never()).run();
@@ -67,7 +65,6 @@ public class DirectionalScrollListenerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testThrottling() {
         mListener.onScrolled(mRecyclerView, 0, 20);
         verify(mOnScrollDown, times(1)).run();
@@ -88,7 +85,6 @@ public class DirectionalScrollListenerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDifferentThresholds() {
         int scrollUpThreshold = 10;
         int scrollDownThreshold = 20;

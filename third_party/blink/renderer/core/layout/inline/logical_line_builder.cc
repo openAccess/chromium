@@ -5,8 +5,8 @@
 #include "third_party/blink/renderer/core/layout/inline/logical_line_builder.h"
 
 #include <algorithm>
+#include <ranges>
 
-#include "base/containers/adapters.h"
 #include "third_party/blink/renderer/core/layout/disable_layout_side_effects_scope.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_box_state.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_child_layout_context.h"
@@ -59,7 +59,7 @@ const LayoutObject& LayoutObjectForLineClampEllipsis(
     const InlineNode& node,
     const InlineItemResults& line_items,
     const InlineItemTextIndex& line_start) {
-  for (const auto& item_result : base::Reversed(line_items)) {
+  for (const auto& item_result : std::views::reverse(line_items)) {
     const auto& item = *item_result.item;
     if (!CanUseItemForNeedsPaint(item)) {
       continue;
@@ -79,7 +79,7 @@ const LayoutObject& LayoutObjectForLineClampEllipsis(
   auto items_prefix =
       base::span<const Member<InlineItem>>(node.ItemsData(false).items)
           .first(line_start.item_index);
-  for (const auto& item : base::Reversed(items_prefix)) {
+  for (const auto& item : std::views::reverse(items_prefix)) {
     if (CanUseItemForNeedsPaint(*item)) {
       return *item->GetLayoutObject();
     }
@@ -114,8 +114,15 @@ void LogicalLineBuilder::CreateLine(LineInfo* line_info,
 
   const bool has_line_clamp_ellipsis =
       main_line_helper && main_line_helper->GetLineClampEllipsis();
-  const bool is_line_clamp_displaced_line =
-      has_line_clamp_ellipsis && line_items->empty();
+
+  LineHeightMode line_height_mode;
+  if (has_line_clamp_ellipsis && line_items->empty()) {
+    line_height_mode = LineHeightMode::kLineClampDisplacedEllipsis;
+  } else if (quirks_mode_) {
+    line_height_mode = LineHeightMode::kQuirk;
+  } else {
+    line_height_mode = LineHeightMode::kNormal;
+  }
 
   // Compute heights of all inline items by placing the dominant baseline at 0.
   // The baseline is adjusted after the height of the line box is computed.
@@ -125,9 +132,8 @@ void LogicalLineBuilder::CreateLine(LineInfo* line_info,
   const ComputedStyle& line_style = line_info->LineStyle();
   box_states_->SetIsEmptyLine(line_info->IsEmptyLine());
   InlineBoxState* box = box_states_->OnBeginPlaceItems(
-      node_, *line_info, baseline_type_,
-      quirks_mode_ || is_line_clamp_displaced_line, should_scale_line_height_,
-      line_box);
+      node_, *line_info, baseline_type_, line_height_mode,
+      should_scale_line_height_, line_box);
 #if EXPENSIVE_DCHECKS_ARE_ON()
   if (main_line_helper) {
     main_line_helper->CheckBoxStates(*line_info, should_scale_line_height_);
@@ -140,8 +146,7 @@ void LogicalLineBuilder::CreateLine(LineInfo* line_info,
   // but that doesn't explain why it's done for every line...
   // If the line contents are displaced because of the line-clamp ellipsis, we
   // also need to add the line box strut even if we're not in quirks mode.
-  if ((quirks_mode_ && line_style.IsDisplayListItem()) ||
-      is_line_clamp_displaced_line) {
+  if (quirks_mode_ && line_style.IsDisplayListItem()) {
     auto text_scale = FindTextScale(should_scale_line_height_, *line_items,
                                     /* start_index */ 0,
                                     /* initial_nesting_level */ 0);
@@ -314,7 +319,7 @@ InlineBoxState* LogicalLineBuilder::HandleItemResults(
       // block-level OOF child positions itself based on the direction of its
       // block-level container.
       WritingDirectionMode writing_direction =
-          item.GetLayoutObject()->StyleRef().IsOriginalDisplayInlineType()
+          item.GetLayoutObject()->Style().IsOriginalDisplayInlineType()
               ? WritingDirectionMode(constraint_space_.GetWritingMode(),
                                      item.Direction())
               : constraint_space_.GetWritingDirection();
@@ -484,7 +489,7 @@ InlineBoxState* LogicalLineBuilder::PlaceAtomicInline(
                       box->margins.inline_start + item_result->spacing_before);
   } else {
     // The metrics should be as text instead of atomic inline box.
-    const auto& style = layout_object->Parent()->StyleRef();
+    const auto& style = layout_object->Parent()->Style();
     // TextCombine items are not scaled.
     box->ComputeTextMetrics(style, *style.GetFont(), baseline_type_,
                             TextFitBlockScale::kFixed);
@@ -735,7 +740,7 @@ void LogicalLineBuilder::BidiReorder(
   if (has_opaque_items) {
     // Use the paragraph level for trailing opaque items.
     UBiDiLevel last_level = base_direction_level;
-    for (UBiDiLevel& level : base::Reversed(levels)) {
+    for (UBiDiLevel& level : std::views::reverse(levels)) {
       if (level == kOpaqueBidiLevel) {
         level = last_level;
       } else {
@@ -797,8 +802,10 @@ void LogicalLineBuilder::RebuildBoxStates(const LineInfo& line_info,
 
   // Create box states for tags that are not closed yet.
   LogicalLineItems& line_box = context_->AcquireTempLogicalLineItems();
-  box_states_->OnBeginPlaceItems(node_, line_info, baseline_type_, quirks_mode_,
-                                 should_scale_line_height_, &line_box);
+  box_states_->OnBeginPlaceItems(
+      node_, line_info, baseline_type_,
+      quirks_mode_ ? LineHeightMode::kQuirk : LineHeightMode::kNormal,
+      should_scale_line_height_, &line_box);
   for (wtf_size_t i = 0; i < open_items.size(); ++i) {
     const InlineItem* item = open_items[i];
     InlineItemResult item_result;

@@ -4,23 +4,26 @@
 
 package org.chromium.chrome.browser.toolbar.bottom;
 
-import static org.mockito.ArgumentMatchers.any;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import android.content.Context;
 import android.view.View;
-import android.view.ViewGroup;
+import android.widget.FrameLayout;
+
+import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
@@ -33,23 +36,43 @@ import org.chromium.ui.resources.dynamics.ViewResourceAdapter;
 /** Unit tests for {@link BottomControlsViewBinder}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class BottomControlsViewBinderTest {
+    /**
+     * Returns a mock {@link ViewResourceAdapter}, since the real adapter's cached bitmap is not
+     * observable from tests.
+     */
+    private static class TestBottomView extends ScrollingBottomViewResourceFrameLayout {
+        private final ViewResourceAdapter mResourceAdapter;
+
+        TestBottomView(Context context, ViewResourceAdapter resourceAdapter) {
+            super(context, null);
+            mResourceAdapter = resourceAdapter;
+        }
+
+        @Override
+        public ViewResourceAdapter getResourceAdapter() {
+            return mResourceAdapter;
+        }
+    }
+
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    @Mock private ScrollingBottomViewResourceFrameLayout mRootView;
     @Mock private ScrollingBottomViewSceneLayer mSceneLayer;
     @Mock private ViewResourceAdapter mResourceAdapter;
-    @Mock private View mSlotView;
-    @Mock private View mShadowView;
-    @Mock private ViewGroup.LayoutParams mLayoutParams;
 
+    private ScrollingBottomViewResourceFrameLayout mRootView;
+    private View mSlotView;
     private PropertyModel mModel;
 
     @Before
     public void setUp() {
-        doReturn(mResourceAdapter).when(mRootView).getResourceAdapter();
-        doReturn(mSlotView).when(mRootView).findViewById(R.id.bottom_container_slot);
-        doReturn(mShadowView).when(mRootView).findViewById(R.id.bottom_container_top_shadow);
-        doReturn(mLayoutParams).when(mSlotView).getLayoutParams();
+        Context context = ApplicationProvider.getApplicationContext();
+        mRootView = new TestBottomView(context, mResourceAdapter);
+        mSlotView = new FrameLayout(context);
+        mSlotView.setId(R.id.bottom_container_slot);
+        mRootView.addView(mSlotView, new FrameLayout.LayoutParams(0, 0));
+        View shadowView = new View(context);
+        shadowView.setId(R.id.bottom_container_top_shadow);
+        mRootView.addView(shadowView);
 
         mModel =
                 new PropertyModel.Builder(BottomControlsProperties.ALL_KEYS)
@@ -66,35 +89,45 @@ public class BottomControlsViewBinderTest {
                 new BottomControlsViewBinder.ViewHolder(mRootView, mSceneLayer),
                 BottomControlsViewBinder::bind);
 
-        Mockito.clearInvocations(mRootView, mSceneLayer, mResourceAdapter, mSlotView);
+        clearInvocations(mSceneLayer, mResourceAdapter);
     }
 
     @Test
     public void testBottomPadding_changed() {
         mModel.set(BottomControlsProperties.BOTTOM_PADDING, 54);
 
-        verify(mRootView).setPadding(anyInt(), anyInt(), anyInt(), eq(54));
+        assertEquals(54, mRootView.getPaddingBottom());
         verify(mSceneLayer).setBottomPadding(eq(54));
-        verify(mRootView).onModelTokenChange(any());
     }
 
     @Test
     public void testBottomPadding_unchanged() {
-        doReturn(54).when(mRootView).getPaddingBottom();
+        mRootView.setPadding(0, 0, 0, 54);
         mModel.set(BottomControlsProperties.BOTTOM_PADDING, 54);
 
-        verify(mRootView, never()).onModelTokenChange(any());
         verify(mSceneLayer, never()).setBottomPadding(anyInt());
     }
 
     @Test
+    public void testAndroidViewHeightNoPadding_unchanged() {
+        mSlotView.getLayoutParams().height = 100;
+        mSlotView.layout(0, 0, 100, 100);
+        assertFalse(mSlotView.isLayoutRequested());
+
+        mModel.set(BottomControlsProperties.ANDROID_VIEW_HEIGHT_NO_PADDING, 100);
+        assertFalse(mSlotView.isLayoutRequested());
+        verify(mSceneLayer).setContentHeight(100);
+    }
+
+    @Test
     public void testAndroidViewHeightNoPadding_changed() {
-        mLayoutParams.height = 80;
+        assertEquals(80, mSlotView.getLayoutParams().height);
+        mSlotView.layout(0, 0, 100, 80);
         mModel.set(BottomControlsProperties.ANDROID_VIEW_HEIGHT_NO_PADDING, 100);
 
-        verify(mSlotView, atLeastOnce()).getLayoutParams();
+        assertEquals(100, mSlotView.getLayoutParams().height);
+        assertTrue(mSlotView.isLayoutRequested());
         verify(mSceneLayer).setContentHeight(100);
-        verify(mRootView).onModelTokenChange(any());
     }
 
     @Test
@@ -106,7 +139,7 @@ public class BottomControlsViewBinderTest {
     @Test
     public void testAndroidViewTranslateY() {
         mModel.set(BottomControlsProperties.ANDROID_VIEW_TRANSLATE_Y, 25);
-        verify(mRootView).setTranslationY(25f);
+        assertEquals(25f, mRootView.getTranslationY(), 0f);
     }
 
     @Test
@@ -121,17 +154,18 @@ public class BottomControlsViewBinderTest {
     @Test
     public void testAndroidViewVisible_changed() {
         mModel.set(BottomControlsProperties.ANDROID_VIEW_VISIBLE, false);
-        verify(mRootView).setVisibility(View.INVISIBLE);
+        assertEquals(View.INVISIBLE, mRootView.getVisibility());
 
         mModel.set(BottomControlsProperties.ANDROID_VIEW_VISIBLE, true);
-        verify(mRootView).setVisibility(View.VISIBLE);
+        assertEquals(View.VISIBLE, mRootView.getVisibility());
     }
 
     @Test
     public void testDropCachedBitmap_whenBothHidden() {
         mModel.set(BottomControlsProperties.ANDROID_VIEW_VISIBLE, false);
-        mModel.set(BottomControlsProperties.COMPOSITED_VIEW_VISIBLE, false);
+        verify(mResourceAdapter, never()).dropCachedBitmap();
 
+        mModel.set(BottomControlsProperties.COMPOSITED_VIEW_VISIBLE, false);
         verify(mResourceAdapter).dropCachedBitmap();
     }
 }

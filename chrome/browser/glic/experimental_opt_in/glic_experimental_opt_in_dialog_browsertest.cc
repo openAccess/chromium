@@ -21,6 +21,7 @@
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/host/auth_controller.h"
 #include "chrome/browser/glic/host/glic_cookie_synchronizer.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
@@ -32,10 +33,12 @@
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -46,19 +49,31 @@
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/sync/test/test_sync_service.h"
 #include "components/sync_device_info/fake_device_info_sync_service.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
+#include "content/public/test/scoped_accessibility_mode_override.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/url_loader_interceptor.h"
 #include "extensions/browser/api/extensions_api_client.h"
 #include "net/base/url_util.h"
 #include "net/dns/mock_host_resolver.h"
 #include "services/network/public/cpp/network_switches.h"
-#include "ui/base/base_window.h"
+#include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/accessibility/ax_mode.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view_tracker.h"
 #include "ui/views/widget/widget.h"
+
+#if !BUILDFLAG(IS_MAC)
+#include "ui/views/accessibility/ax_update_notifier.h"
+#include "ui/views/accessibility/ax_update_observer.h"
+#endif
 
 namespace glic {
 
@@ -134,7 +149,8 @@ class GlicExperimentalOptInTest
     enabled_features.push_back(
         {features::kGlicExperimentalTriggeringOptInTabFocus, tab_focus_params});
 
-    feature_list_.InitWithFeaturesAndParameters(enabled_features, {});
+    feature_list_.InitWithFeaturesAndParameters(enabled_features,
+                                                disabled_features_);
 
     BaseClass::SetUp();
   }
@@ -143,7 +159,6 @@ class GlicExperimentalOptInTest
     fake_gaia_.set_initialize_configuration(false);
     BaseClass::SetUpOnMainThread();
     opt_in_test_server_.StartAcceptingConnections();
-    ASSERT_TRUE(embedded_https_test_server().Start());
     host_resolver()->AddRule("*", "127.0.0.1");
     creation_subscription_ = content::RegisterWebContentsCreationCallback(
         base::BindRepeating(&GlicExperimentalOptInTest::OnWebContentsCreated,
@@ -273,11 +288,21 @@ function isHidden(e) { return !!(e && e.hidden); }
 
   FakeGaiaMixin& fake_gaia() { return fake_gaia_; }
 
+ protected:
+  std::vector<base::test::FeatureRef> disabled_features_;
+
  private:
   // In a stripped-down browser test environment, dynamically created guest
   // WebContents inside <webview> lack critical extensions observers. We
   // manually attach them here to enable IPC bindings and navigation success.
   void OnWebContentsCreated(content::WebContents* web_contents) {
+    // Contexts without keyed services, e.g. TopChromeWebUIProfile, have no
+    // extension system.
+    if (BrowserContextDependencyManager::GetInstance()
+            ->AreBrowserContextServicesDisabledByDefault(
+                web_contents->GetBrowserContext())) {
+      return;
+    }
     extensions::ChromeExtensionWebContentsObserver::CreateForWebContents(
         web_contents);
     extensions::TabHelper::CreateForWebContents(web_contents);
@@ -1228,4 +1253,142 @@ IN_PROC_BROWSER_TEST_F(
             window_b);
 }
 
+IN_PROC_BROWSER_TEST_F(GlicExperimentalOptInTest,
+                       AccessibilityDialogRoleAndInitialFocusEnabled) {
+  views::Widget* widget = ShowDialogAndWait();
+  ASSERT_TRUE(widget);
+
+  GlicExperimentalOptInDialogView* dialog_view =
+      service()->opt_in_controller().GetDialogViewForTesting();
+  ASSERT_TRUE(dialog_view);
+
+  EXPECT_EQ(widget->widget_delegate()->GetAccessibleWindowTitle(),
+            l10n_util::GetStringUTF16(IDS_GLIC_EXPERIMENTAL_OPT_IN_TITLE));
+  EXPECT_EQ(widget->widget_delegate()->GetInitiallyFocusedView(),
+            dialog_view->GetWebViewForTesting());
+
+  ASSERT_TRUE(content::WaitForLoadStop(
+      dialog_view->GetWebViewForTesting()->GetWebContents()));
+  EXPECT_EQ(widget->GetFocusManager()->GetFocusedView(),
+            dialog_view->GetWebViewForTesting());
+
+  service()->opt_in_controller().CloseDialog(false);
+}
+
+class GlicExperimentalOptInA11yFixDisabledTest
+    : public GlicExperimentalOptInTest {
+ public:
+  GlicExperimentalOptInA11yFixDisabledTest() {
+    disabled_features_.push_back(features::kGlicOptInDialogA11yFix);
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(GlicExperimentalOptInA11yFixDisabledTest,
+                       AccessibilityDialogRoleAndInitialFocusDisabled) {
+  views::Widget* widget = ShowDialogAndWait();
+  ASSERT_TRUE(widget);
+
+  GlicExperimentalOptInDialogView* dialog_view =
+      service()->opt_in_controller().GetDialogViewForTesting();
+  ASSERT_TRUE(dialog_view);
+
+  EXPECT_EQ(widget->widget_delegate()->GetInitiallyFocusedView(), nullptr);
+  EXPECT_NE(widget->GetFocusManager()->GetFocusedView(),
+            dialog_view->GetWebViewForTesting());
+
+  service()->opt_in_controller().CloseDialog(false);
+}
+
+// macOS is excluded: RootView::AnnounceTextAs forwards to
+// AXPlatformNodeMac::AnnounceTextAs, which posts
+// NSAccessibilityAnnouncementRequestedNotification straight to Cocoa and never
+// fires ax::mojom::Event::kAlert through views::AXUpdateNotifier, so the
+// observer below would never be notified.
+#if !BUILDFLAG(IS_MAC)
+// Records whether the dialog widget was already visible at the moment the
+// accessibility alert carrying the dialog title was fired. The dialog announces
+// its title asynchronously once the widget becomes visible; this verifies that
+// ordering.
+class DialogTitleAlertRecorder : public views::AXUpdateObserver {
+ public:
+  explicit DialogTitleAlertRecorder(std::u16string expected_text)
+      : expected_text_(std::move(expected_text)) {
+    views::AXUpdateNotifier::Get()->AddObserver(this);
+  }
+
+  ~DialogTitleAlertRecorder() override {
+    views::AXUpdateNotifier::Get()->RemoveObserver(this);
+  }
+
+  // views::AXUpdateObserver:
+  void OnViewEvent(views::View* view, ax::mojom::Event event_type) override {
+    if (event_type != ax::mojom::Event::kAlert ||
+        view->GetViewAccessibility().GetCachedName() != expected_text_) {
+      return;
+    }
+    ++alert_count_;
+    views::Widget* widget = view->GetWidget();
+    widget_was_visible_ = widget && widget->IsVisible();
+  }
+
+  int alert_count() const { return alert_count_; }
+  bool widget_was_visible() const { return widget_was_visible_; }
+
+ private:
+  const std::u16string expected_text_;
+  int alert_count_ = 0;
+  bool widget_was_visible_ = false;
+};
+
+IN_PROC_BROWSER_TEST_F(GlicExperimentalOptInTest,
+                       AnnouncesAccessibleTitleAfterWidgetIsVisible) {
+  DialogTitleAlertRecorder recorder(
+      l10n_util::GetStringUTF16(IDS_GLIC_EXPERIMENTAL_OPT_IN_TITLE));
+
+  views::Widget* widget = ShowDialogAndWait();
+  ASSERT_TRUE(widget);
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&recorder]() { return recorder.alert_count() > 0; }));
+  EXPECT_TRUE(recorder.widget_was_visible());
+
+  service()->opt_in_controller().CloseDialog(false);
+}
+#endif  // !BUILDFLAG(IS_MAC)
+
+IN_PROC_BROWSER_TEST_F(GlicExperimentalOptInTest,
+                       WebUiExposesDialogRoleWithAccessibleTitle) {
+  content::ScopedAccessibilityModeOverride ax_mode(ui::kAXModeComplete);
+
+  views::Widget* widget = ShowDialogAndWait();
+  ASSERT_TRUE(widget);
+
+  content::WebContents* dialog_contents = GetDialogWebContents();
+  ASSERT_TRUE(dialog_contents);
+  ASSERT_TRUE(content::WaitForLoadStop(dialog_contents));
+
+  // The dialog container must carry the dialog semantics, and focus must be
+  // inside it, so that screen readers announce the dialog on focus entry.
+  EXPECT_EQ(true, EvalJs(dialog_contents, R"js(
+      (() => {
+        const root = getRequiredElement('dialogRoot');
+        return root.getAttribute('role') === 'dialog' &&
+            root.getAttribute('aria-modal') === 'true' &&
+            root.contains(document.activeElement);
+      })();
+  )js"));
+
+  EXPECT_EQ(
+      l10n_util::GetStringUTF8(IDS_GLIC_EXPERIMENTAL_OPT_IN_TITLE),
+      EvalJs(dialog_contents,
+             "getRequiredElement('dialogRoot').getAttribute('aria-label');")
+          .ExtractString());
+
+  // The label must also reach the accessibility tree.
+  content::WaitForAccessibilityTreeToContainNodeWithName(
+      dialog_contents,
+      l10n_util::GetStringUTF8(IDS_GLIC_EXPERIMENTAL_OPT_IN_TITLE));
+
+  service()->opt_in_controller().CloseDialog(false);
+}
 }  // namespace glic

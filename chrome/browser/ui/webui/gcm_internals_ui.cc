@@ -52,8 +52,7 @@ class GcmInternalsUIMessageHandler : public content::WebUIMessageHandler {
   // Return all of the GCM related infos to the gcm-internals page by calling
   // Javascript callback function
   // |gcm-internals.returnInfo()|.
-  void ReturnResults(Profile* profile,
-                     gcm::GCMProfileService* profile_service,
+  void ReturnResults(gcm::GCMProfileService* profile_service,
                      const gcm::GCMClient::GCMStatistics* stats);
 
   // Request all of the GCM related infos through gcm profile service.
@@ -74,11 +73,10 @@ GcmInternalsUIMessageHandler::GcmInternalsUIMessageHandler() = default;
 GcmInternalsUIMessageHandler::~GcmInternalsUIMessageHandler() = default;
 
 void GcmInternalsUIMessageHandler::ReturnResults(
-    Profile* profile,
     gcm::GCMProfileService* profile_service,
     const gcm::GCMClient::GCMStatistics* stats) {
-  base::DictValue results = gcm_driver::SetGCMInternalsInfo(
-      stats, profile_service, profile->GetPrefs());
+  base::DictValue results =
+      gcm_driver::SetGCMInternalsInfo(stats, profile_service);
   FireWebUIListener(gcm_driver::kSetGcmInternalsInfo, results);
 }
 
@@ -97,7 +95,7 @@ void GcmInternalsUIMessageHandler::RequestAllInfo(const base::ListValue& list) {
       gcm::GCMProfileServiceFactory::GetForProfile(profile);
 
   if (!profile_service || !profile_service->driver()) {
-    ReturnResults(profile, nullptr, nullptr);
+    ReturnResults(nullptr, nullptr);
   } else {
     profile_service->driver()->GetGCMStatistics(
         base::BindOnce(
@@ -118,7 +116,7 @@ void GcmInternalsUIMessageHandler::SetRecording(const base::ListValue& list) {
       gcm::GCMProfileServiceFactory::GetForProfile(profile);
 
   if (!profile_service) {
-    ReturnResults(profile, nullptr, nullptr);
+    ReturnResults(nullptr, nullptr);
     return;
   }
   // Get fresh stats after changing recording setting.
@@ -132,11 +130,11 @@ void GcmInternalsUIMessageHandler::SetRecording(const base::ListValue& list) {
 void GcmInternalsUIMessageHandler::RequestGCMStatisticsFinished(
     const gcm::GCMClient::GCMStatistics& stats) {
   Profile* profile = Profile::FromWebUI(web_ui());
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   gcm::GCMProfileService* profile_service =
       gcm::GCMProfileServiceFactory::GetForProfile(profile);
-  DCHECK(profile_service);
-  ReturnResults(profile, profile_service, &stats);
+  CHECK(profile_service, base::NotFatalUntil::M162);
+  ReturnResults(profile_service, &stats);
 }
 
 void GcmInternalsUIMessageHandler::RegisterMessages() {

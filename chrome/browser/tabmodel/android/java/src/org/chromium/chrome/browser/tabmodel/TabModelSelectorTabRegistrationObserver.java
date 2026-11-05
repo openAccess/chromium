@@ -124,16 +124,14 @@ public final class TabModelSelectorTabRegistrationObserver {
         }
     }
 
-    /**
-     * Removes an observer for subsequent tab registration events.
-     * @param observer The observer to be removed.
-     */
-    public void removeObserver(Observer observer) {
-        mObservers.removeObserver(observer);
+    /** Returns whether {@code tab} is currently registered in a managed tab model. */
+    boolean isTabRegistered(Tab tab) {
+        return mRegisteredTabs.contains(tab);
     }
 
     /**
      * Called when a tab is registered to a tab model this selector is managing.
+     *
      * @param tab The registered Tab.
      */
     private void onTabRegistered(Tab tab) {

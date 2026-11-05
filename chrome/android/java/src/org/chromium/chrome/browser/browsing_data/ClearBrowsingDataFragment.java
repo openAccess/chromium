@@ -37,6 +37,7 @@ import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.CollectionUtil;
+import org.chromium.base.IntentUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -54,10 +55,13 @@ import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.password_manager.ManagePasswordsReferrer;
 import org.chromium.chrome.browser.password_manager.PasswordManagerLauncher;
 import org.chromium.chrome.browser.preferences.Pref;
+import org.chromium.chrome.browser.privacy.settings.PrivacySettings;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.searchwidget.SearchActivity;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
+import org.chromium.chrome.browser.settings.SettingsFragmentRegistry;
+import org.chromium.chrome.browser.settings.SettingsInTabNavigationDelegate;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
@@ -67,6 +71,7 @@ import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.signin.SignOutCoordinator;
 import org.chromium.components.browser_ui.settings.ClickableSpansTextMessagePreference;
 import org.chromium.components.browser_ui.settings.CustomDividerFragment;
+import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.settings.SpinnerPreference;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
@@ -254,6 +259,13 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
 
     private @Nullable OtherFormsOfHistoryDialogFragment mDialogAboutOtherFormsOfBrowsingHistory;
 
+    /**
+     * The URL of the settings page this page was opened from, e.g. All sites. Recorded as a
+     * deletion starts, because deleting browsing history also deletes the tab's navigation entry
+     * for it. Null if this page was not opened from a settings page.
+     */
+    private @Nullable String mOpenerUrl;
+
     private SigninManager mSigninManager;
 
     private @Nullable ProgressDialog mProgressDialog;
@@ -359,7 +371,11 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
      */
     public static Bundle createFragmentArgs(String referrer) {
         Bundle bundle = new Bundle();
-        bundle.putString(ClearBrowsingDataFragment.CLEAR_BROWSING_DATA_REFERRER, referrer);
+        // Only a SearchActivity referrer changes the page (see getDialogOptions). Any other would
+        // just put an activity class name in the page's settings Url.
+        if (TextUtils.equals(referrer, SearchActivity.class.getName())) {
+            bundle.putString(ClearBrowsingDataFragment.CLEAR_BROWSING_DATA_REFERRER, referrer);
+        }
         return bundle;
     }
 
@@ -393,6 +409,11 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
             Set<Integer> options,
             String @Nullable [] excludedDomains,
             String @Nullable [] ignoredDomains) {
+        mOpenerUrl =
+                SettingsNavigationFactory.createSettingsNavigation(requireActivity())
+                                instanceof SettingsInTabNavigationDelegate navigation
+                        ? navigation.getPreviousSettingsPageUrl()
+                        : null;
         onClearBrowsingData();
         showProgressDialog();
         Set<Integer> dataTypes = new ArraySet<>();
@@ -532,7 +553,20 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
             dismissProgressDialog();
         } else {
             dismissProgressDialog();
-            SettingsNavigationFactory.createSettingsNavigation().finishCurrentSettings(this);
+            // Return to the page this one was opened from, or else to Privacy, where it lives. Name
+            // the page rather than going back: the deletion can have deleted the entries before
+            // this one. In SettingsActivity, which pops the fragment back stack, it is ignored.
+            SettingsNavigation navigation =
+                    SettingsNavigationFactory.createSettingsNavigation(requireActivity());
+            if (mOpenerUrl != null) {
+                navigation.finishCurrentSettings(
+                        this,
+                        SettingsFragmentRegistry.getFragmentClassForUrl(mOpenerUrl),
+                        SettingsFragmentRegistry.parseUrlArguments(mOpenerUrl));
+            } else {
+                navigation.finishCurrentSettings(
+                        this, PrivacySettings.class, /* parentArgs= */ null);
+            }
         }
     }
 
@@ -618,7 +652,10 @@ public class ClearBrowsingDataFragment extends ChromeBaseSettingsFragment
 
     private void setUpClearBrowsingDataFetcher(@Nullable Bundle savedInstanceState) {
         if (savedInstanceState != null) {
-            mFetcher = assertNonNull(savedInstanceState.getParcelable(CLEAR_BROWSING_DATA_FETCHER));
+            mFetcher =
+                    assertNonNull(
+                            IntentUtils.safeGetParcelable(
+                                    savedInstanceState, CLEAR_BROWSING_DATA_FETCHER));
             return;
         }
 

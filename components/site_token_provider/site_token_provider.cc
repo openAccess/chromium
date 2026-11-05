@@ -4,8 +4,14 @@
 
 #include "components/site_token_provider/site_token_provider.h"
 
+#include <map>
+#include <optional>
+#include <string>
+#include <utility>
+
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "components/endpoint_fetcher/endpoint_fetcher.h"
@@ -27,6 +33,18 @@ std::string NormalizeDomain(std::string_view domain) {
   return normalized;
 }
 
+base::flat_set<std::string> ParseAllowlistedDomains(
+    std::string_view allowlist) {
+  std::vector<std::string_view> raw_domains = base::SplitStringPiece(
+      allowlist, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+  std::vector<std::string> normalized_domains;
+  normalized_domains.reserve(raw_domains.size());
+  for (std::string_view domain : raw_domains) {
+    normalized_domains.push_back(NormalizeDomain(domain));
+  }
+  return base::flat_set<std::string>(std::move(normalized_domains));
+}
+
 namespace {
 
 constexpr char kUsersMeResourceName[] = "users/me";
@@ -40,7 +58,8 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
           "Fetches site-specific tokens to enable feature functionality on"
           " participating domains."
         trigger:
-          "Triggered on startup and when primary account sign-in changes."
+          "On startup, when the primary account changes, and periodically "
+          "(by default every 2 weeks) while signed in."
         data:
           "No user identifier is sent directly in the body. The request is "
           "authenticated with the user's Google OAuth credentials."
@@ -94,13 +113,13 @@ class SiteTokenProviderImpl : public SiteTokenProvider {
     request.set_name(kUsersMeResourceName);
     std::string post_data;
     if (!request.SerializeToString(&post_data)) {
-      callback_.Run({});
+      callback_.Run(std::nullopt);
       return;
     }
 
     GURL url(features::kSiteTokenEndpointUrl.Get());
     if (!url.is_valid() || url.is_empty()) {
-      callback_.Run({});
+      callback_.Run(std::nullopt);
       return;
     }
 
@@ -128,18 +147,21 @@ class SiteTokenProviderImpl : public SiteTokenProvider {
     CHECK(callback_);
     endpoint_fetcher_.reset();
 
-    std::map<std::string, std::string> tokens;
-    // TODO(b/534404774): Add retry logic for 5xx errors and preserve the cache
-    // on transient failures.
-    if (response && response->http_status_code == net::HTTP_OK) {
-      proto::GeneratePlatformSiteTokensResponse response_proto;
-      if (response_proto.ParseFromString(response->response)) {
-        for (const auto& token_data : response_proto.site_tokens()) {
-          tokens[token_data.domain()] = token_data.token();
-        }
-      }
+    // TODO(b/534404774): Retry transient failures with backoff.
+    if (!response || response->http_status_code != net::HTTP_OK) {
+      callback_.Run(std::nullopt);
+      return;
+    }
+    proto::GeneratePlatformSiteTokensResponse response_proto;
+    if (!response_proto.ParseFromString(response->response)) {
+      callback_.Run(std::nullopt);
+      return;
     }
 
+    std::map<std::string, std::string> tokens;
+    for (const auto& token_data : response_proto.site_tokens()) {
+      tokens[token_data.domain()] = token_data.token();
+    }
     callback_.Run(std::move(tokens));
   }
 

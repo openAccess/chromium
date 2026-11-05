@@ -16,7 +16,7 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "ui/gfx/image/image.h"
 
 namespace favicon {
@@ -78,7 +78,7 @@ void ContentFaviconDriver::OnDidDownloadManifest(
     ManifestDownloadCallback callback,
     blink::mojom::ManifestRequestResult result,
     const GURL& manifest_url,
-    blink::mojom::ManifestPtr manifest) {
+    std::optional<blink::Manifest> manifest) {
   // ~WebContentsImpl triggers running any pending callbacks for manifests.
   // As we're about to be destroyed ignore the request. To do otherwise may
   // result in calling back to this and attempting to use the WebContents, which
@@ -87,8 +87,8 @@ void ContentFaviconDriver::OnDidDownloadManifest(
     return;
 
   std::vector<FaviconURL> candidates;
-  if (manifest) {
-    for (const auto& icon : manifest->icons) {
+  if (manifest.has_value()) {
+    for (const auto& icon : manifest->icons()) {
       candidates.emplace_back(
           icon.src, favicon_base::IconType::kWebManifestIcon, icon.sizes);
     }
@@ -139,7 +139,13 @@ void ContentFaviconDriver::OnFaviconUpdated(
     entry->GetFavicon().valid = true;
     entry->GetFavicon().url = icon_url;
     entry->GetFavicon().image = image;
-    web_contents()->NotifyNavigationStateChanged(content::INVALIDATE_TYPE_TAB);
+    unsigned changed_flags = content::INVALIDATE_TYPE_TAB;
+    if (!notified_icon_available_) {
+      notified_icon_available_ = true;
+      changed_flags |= content::INVALIDATE_TYPE_ICON;
+    }
+    web_contents()->NotifyNavigationStateChanged(
+        static_cast<content::InvalidateTypes>(changed_flags));
   }
 
   NotifyFaviconUpdatedObservers(notification_icon_type, icon_url,
@@ -234,8 +240,20 @@ void ContentFaviconDriver::DidStartNavigation(
 void ContentFaviconDriver::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
   if (!navigation_handle->IsInPrimaryMainFrame() ||
-      !navigation_handle->HasCommitted() || navigation_handle->IsErrorPage()) {
+      !navigation_handle->HasCommitted()) {
     return;
+  }
+
+  if (navigation_handle->IsErrorPage()) {
+    // Error pages replace the committed entry without fetching a favicon.
+    // Cancel pending work so the previous page's icon cannot update this entry.
+    CancelPendingFaviconRequests();
+    return;
+  }
+
+  if (!navigation_handle->IsSameDocument()) {
+    // Reset the notified bit after navigating to a new page.
+    notified_icon_available_ = false;
   }
 
   // Transfer in-flight navigation data to the document user data.

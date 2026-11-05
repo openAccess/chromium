@@ -20,6 +20,8 @@
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_contents/web_app_data_retriever.h"
+#include "components/tabs/public/mock_tab_interface.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "components/webapps/browser/banners/app_banner_manager.h"
 #include "components/webapps/browser/install_result_code.h"
@@ -40,6 +42,7 @@
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 #include "third_party/blink/public/mojom/web_install/web_install.mojom.h"
 #include "url/gurl.h"
@@ -103,12 +106,21 @@ class WebInstallServiceImplTest : public WebAppTest {
     // Navigate to an HTTPS page so CreateIfAllowed succeeds.
     NavigateAndCommit(GURL(kDocumentUrl));
 
-    webapps::MLInstallabilityPromoter::CreateForWebContents(web_contents());
+    tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
+                                                         &mock_tab_);
+    ml_installability_promoter_ =
+        std::make_unique<webapps::MLInstallabilityPromoter>(mock_tab_,
+                                                            web_contents());
 
     // Mark the URL as loaded in the FakeWebContentsManager so data
     // retrievers know which page state to use.
     fake_web_contents_manager().SetUrlLoaded(web_contents(),
                                              GURL(kDocumentUrl));
+  }
+
+  void TearDown() override {
+    ml_installability_promoter_.reset();
+    WebAppTest::TearDown();
   }
 
   // Creates a WebInstallServiceImpl bound to `service_remote_` via the
@@ -138,36 +150,35 @@ class WebInstallServiceImplTest : public WebAppTest {
   }
 
   // Creates a manifest with the given properties. If `custom_id` is provided,
-  // sets the id field explicitly. Otherwise, the FakeWebContentsManager will
-  // default it to start_url (and set has_custom_id = false).
-  blink::mojom::ManifestPtr CreateManifest(
+  // sets the id field explicitly. Otherwise, defaults it to start_url (and
+  // sets has_custom_id = false).
+  blink::Manifest CreateManifest(
       const GURL& start_url,
       const std::optional<GURL>& custom_id = std::nullopt) {
-    auto manifest = blink::mojom::Manifest::New();
-    manifest->name = u"Test App";
-    manifest->short_name = u"Test";
-    manifest->start_url = start_url;
-    manifest->display = blink::mojom::DisplayMode::kStandalone;
-
+    GURL id = custom_id.value_or(start_url.GetWithoutRef());
+    blink::Manifest::Builder builder(
+        start_url, id, blink::Manifest::GetDefaultScope(start_url));
+    builder.SetName(u"Test App");
+    builder.SetShortName(u"Test");
+    builder.SetDisplay(blink::mojom::DisplayMode::kStandalone);
     if (custom_id) {
-      manifest->id = custom_id.value();
+      builder.SetHasCustomId(true);
     }
 
     blink::Manifest::ImageResource icon;
     icon.src = GURL(kIconUrl);
     icon.sizes = {{144, 144}};
     icon.purpose = {blink::mojom::ManifestImageResource_Purpose::ANY};
-    manifest->icons = {icon};
+    builder.SetIcons({icon});
 
-    return manifest;
+    return builder.BuildChecked();
   }
 
   // Populates the FakePageState for |url| with the given manifest.
-  void SetupPageWithManifest(const GURL& url,
-                             blink::mojom::ManifestPtr manifest) {
+  void SetupPageWithManifest(const GURL& url, blink::Manifest manifest) {
     auto& page_state = fake_web_contents_manager().GetOrCreatePageState(url);
     page_state.has_service_worker = true;
-    page_state.manifest_before_default_processing = std::move(manifest);
+    page_state.opt_manifest = std::move(manifest);
     page_state.valid_manifest_for_web_app = true;
     page_state.error_code = webapps::InstallableStatusCode::NO_ERROR_DETECTED;
     page_state.manifest_url = GURL(kManifestUrl);
@@ -201,6 +212,9 @@ class WebInstallServiceImplTest : public WebAppTest {
   }
 
  private:
+  tabs::MockTabInterface mock_tab_;
+  std::unique_ptr<webapps::MLInstallabilityPromoter>
+      ml_installability_promoter_;
   mojo::Remote<blink::mojom::WebInstallService> service_remote_;
   base::test::ScopedFeatureList scoped_feature_list_;
 };
@@ -270,7 +284,7 @@ TEST_F(WebInstallServiceImplTest, CurrentDocument_CrossOriginManifestId) {
   base::HistogramTester histograms;
   // Set up a manifest whose id is from a different origin.
   GURL cross_origin_id("https://evil.com/some_id");
-  auto manifest = CreateManifest(GURL(kDocumentUrl), cross_origin_id);
+  auto manifest = CreateManifest(cross_origin_id, cross_origin_id);
   SetupPageWithManifest(GURL(kDocumentUrl), std::move(manifest));
 
   BindService();
@@ -355,6 +369,28 @@ TEST_F(WebInstallServiceImplTest, UmaInstallType_CurrentDocument_InProgress) {
                                WebInstallServiceResult::kInstallInProgress, 1);
   histograms.ExpectBucketCount(kVariantedInstallResultUma,
                                WebInstallServiceResult::kInstallInProgress, 1);
+}
+
+// Preserve DataError if the command-level missing-icons check is reached.
+TEST_F(WebInstallServiceImplTest,
+       CurrentDocument_CommandReportsNoManifestIcons_DataError) {
+  base::HistogramTester histograms;
+
+  GURL custom_id("https://requesting-app.com/my_app_id");
+  auto manifest = CreateManifest(GURL(kDocumentUrl), custom_id);
+  SetupPageWithManifest(GURL(kDocumentUrl), std::move(manifest));
+  fake_ui_manager().SetTriggerInstallDialogResultCode(
+      webapps::InstallResultCode::kNoValidIconsInManifest);
+
+  BindService();
+  blink::mojom::WebInstallServiceResult result =
+      InstallFromApiCurrentDocument();
+
+  EXPECT_EQ(result, blink::mojom::WebInstallServiceResult::kDataError);
+  histograms.ExpectBucketCount(kInstallApiResultUma,
+                               WebInstallServiceResult::kNoManifestIcons, 1);
+  histograms.ExpectBucketCount(kVariantedInstallResultUma,
+                               WebInstallServiceResult::kNoManifestIcons, 1);
 }
 
 // A current document install rejected by the promoter's HasCurrentInstall()
@@ -1116,6 +1152,29 @@ TEST_F(WebInstallServiceImplTest,
       CountUkmEntriesWithResult(ukm_recorder, Entry::kResultByInstalledAppName,
                                 WebInstallServiceResult::kInstallCommandFailed),
       1);
+}
+
+// Navigating away before the install completes aborts the install with
+// kAbortError and records kUnexpectedFailure.
+TEST_F(WebInstallServiceImplTest, CurrentDocument_PageNavigated_Aborts) {
+  base::HistogramTester histograms;
+  GURL custom_id("https://requesting-app.com/my_app_id");
+  auto manifest = CreateManifest(GURL(kDocumentUrl), custom_id);
+  SetupPageWithManifest(GURL(kDocumentUrl), std::move(manifest));
+
+  BindService();
+
+  // Navigate away so the bound RenderFrameHost / page is no longer primary.
+  NavigateAndCommit(GURL("https://different-site.com/"));
+
+  blink::mojom::WebInstallServiceResult result =
+      InstallFromApiCurrentDocument();
+
+  EXPECT_EQ(result, blink::mojom::WebInstallServiceResult::kAbortError);
+  histograms.ExpectBucketCount(kInstallApiResultUma,
+                               WebInstallServiceResult::kUnexpectedFailure, 1);
+  histograms.ExpectBucketCount(kVariantedInstallResultUma,
+                               WebInstallServiceResult::kUnexpectedFailure, 1);
 }
 
 }  // namespace

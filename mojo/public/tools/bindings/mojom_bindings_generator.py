@@ -13,13 +13,11 @@ import hashlib
 import importlib
 import json
 import os
-import pprint
 import re
 import struct
 import sys
 
 # Disable lint check for finding modules:
-# pylint: disable=F0401
 
 
 def _GetDirAbove(dirname):
@@ -40,12 +38,9 @@ sys.path.insert(
   ),
 )
 
-from mojom.error import Error
-import mojom.fileutil as fileutil
-from mojom.generate.module import Module
-from mojom.generate import template_expander
-from mojom.generate import translate
-from mojom.generate.generator import WriteFile
+import mojom.fileutil as fileutil  # noqa: E402
+from mojom.generate.module import Module  # noqa: E402
+from mojom.generate import template_expander  # noqa: E402
 
 
 _BUILTIN_GENERATORS = {
@@ -53,6 +48,7 @@ _BUILTIN_GENERATORS = {
   "fuzzilli": "mojom_fuzzilli_generator",
   "javascript": "mojom_js_generator",
   "java": "mojom_java_generator",
+  "jni": "mojom_jni_generator",
   "mojolpm": "mojom_mojolpm_generator",
   "typescript": "mojom_ts_generator",
   "rust": "mojom_rust_generator",
@@ -203,6 +199,7 @@ def LoadTypemaps(typemaps, langs):
             language_map[mojom_type] = {
               'typename': rust_type,
               'traits_file': traits_file,
+              'derivable_traits': type_mapping.get('derivable_traits', []),
             }
         loaded_typemap["rust"] = language_map
       else:
@@ -219,13 +216,14 @@ def LoadTypemaps(typemaps, langs):
       if '_metadata' in typemaps:
         for lang, names in typemaps['_metadata']['module_typemaps'].items():
           if lang in langs:
-            if not lang in declared:
+            if lang not in declared:
               declared[lang] = []
             declared[lang] += names
 
   if 'c++' in loaded_typemap:
-    # The fuzzer also uses C++ typemappings.
+    # The fuzzer and JNI generator also use C++ typemappings.
     loaded_typemap['mojolpm'] = loaded_typemap['c++']
+    loaded_typemap['jni'] = loaded_typemap['c++']
 
   return loaded_typemap, declared
 

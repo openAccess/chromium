@@ -16,8 +16,6 @@
 #include "chrome/browser/ash/app_restore/app_restore_arc_task_handler.h"
 #include "chrome/browser/ash/app_restore/app_restore_arc_task_handler_factory.h"
 #include "chrome/browser/ash/app_restore/arc_app_queue_restore_handler.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/desks/chrome_desks_util.h"
@@ -26,6 +24,8 @@
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "components/app_constants/constants.h"
 #include "components/app_restore/app_restore_data.h"
 #include "components/app_restore/app_restore_utils.h"
@@ -36,6 +36,7 @@
 #include "components/services/app_service/public/cpp/types_util.h"
 #include "components/tab_groups/tab_group_info.h"
 #include "extensions/common/extension.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
@@ -89,12 +90,13 @@ void DesksTemplatesAppLaunchHandler::LaunchTemplate(
     const ash::DeskTemplate& desk_template,
     int32_t launch_id) {
   // Ensure that the handler isn't re-used.
-  DCHECK_EQ(launch_id_, 0);
+  CHECK_EQ(launch_id_, 0, base::NotFatalUntil::M162);
   launch_id_ = launch_id;
 
-  DCHECK(desk_template.desk_restore_data());
+  CHECK(desk_template.desk_restore_data(), base::NotFatalUntil::M162);
   auto restore_data = desk_template.desk_restore_data()->Clone();
-  DCHECK(!restore_data->app_id_to_launch_list().empty());
+  CHECK(!restore_data->app_id_to_launch_list().empty(),
+        base::NotFatalUntil::M162);
 
   // Note: Keep this until we have an OS Stepping Stone that performs the final
   // Lacros cleanup. See b/380780352.
@@ -166,15 +168,15 @@ bool DesksTemplatesAppLaunchHandler::ShouldLaunchSystemWebAppOrChromeApp(
         ash::GetSystemWebAppTypeForAppId(profile(), app_id);
     if (swa_type.has_value()) {
       auto* swa_manager = ash::SystemWebAppManager::Get(profile());
-      DCHECK(swa_manager);
+      CHECK(swa_manager, base::NotFatalUntil::M162);
       auto* system_app = swa_manager->GetSystemApp(*swa_type);
-      DCHECK(system_app);
+      CHECK(system_app, base::NotFatalUntil::M162);
       is_multi_instance_window = system_app->ShouldShowNewWindowMenuOption();
     }
   } else {
     // Check the extensions registry to see if the app is a platform app. No
     // need to do this check if the app is a system web app.
-    DCHECK(!is_multi_instance_window);
+    CHECK(!is_multi_instance_window, base::NotFatalUntil::M162);
     const extensions::Extension* extension =
         GetExtensionForAppID(app_id, profile());
     is_multi_instance_window = extension && !extension->is_platform_app();
@@ -211,7 +213,7 @@ DesksTemplatesAppLaunchHandler::GetWeakPtrAppLaunchHandler() {
 }
 
 void DesksTemplatesAppLaunchHandler::LaunchBrowsers() {
-  DCHECK(restore_data());
+  CHECK(restore_data(), base::NotFatalUntil::M162);
 
   const auto& launch_list = restore_data()->app_id_to_launch_list();
   for (const auto& iter : launch_list) {
@@ -273,12 +275,12 @@ void DesksTemplatesAppLaunchHandler::LaunchBrowsers() {
       std::optional<int32_t> active_tab_index =
           browser_extra_info.active_tab_index;
       for (size_t i = 0; i < urls.size(); i++) {
-        browser->AddTab(
-            urls[i], /*index=*/std::nullopt,
-            (active_tab_index &&
-             base::checked_cast<int32_t>(i) == *active_tab_index)
-                ? ash::BrowserDelegate::TabDisposition::kForeground
-                : ash::BrowserDelegate::TabDisposition::kBackground);
+        browser->AddTab(urls[i], /*index=*/std::nullopt,
+                        (active_tab_index &&
+                         base::checked_cast<int32_t>(i) == *active_tab_index)
+                            ? ash::BrowserDelegate::TabDisposition::kForeground
+                            : ash::BrowserDelegate::TabDisposition::kBackground,
+                        ui::PAGE_TRANSITION_TYPED);
       }
 
       if (!browser_extra_info.tab_group_infos.empty()) {
@@ -332,7 +334,7 @@ void DesksTemplatesAppLaunchHandler::MaybeLaunchArcApps() {
   if (type_ == Type::kTemplate) {
     for (const std::string& app_id : app_ids) {
       auto it = app_id_to_launch_list.find(app_id);
-      DCHECK(it != app_id_to_launch_list.end());
+      CHECK(it != app_id_to_launch_list.end(), base::NotFatalUntil::M162);
       if (!ash::DesksController::Get()
                ->OnSingleInstanceAppLaunchingFromSavedDesk(app_id,
                                                            it->second)) {

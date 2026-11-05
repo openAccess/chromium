@@ -19,6 +19,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "components/data_sharing/public/features.h"
 #include "components/data_sharing/public/logger.h"
 #include "components/optimization_guide/core/hints/mock_optimization_guide_decider.h"
@@ -2823,42 +2824,6 @@ TEST_F(TabGroupSyncServiceImplTest, MetricsOnSignin) {
   // Sync wasn't enabled, so no "OnSync" metrics should be recorded.
   EXPECT_THAT(histograms.GetTotalCountsForPrefix("TabGroups.OnSync."),
               IsEmpty());
-}
-
-// TODO(crbug.com/417950948): Remove this test once kSync is fully deprecated.
-TEST_F(TabGroupSyncServiceImplTest, MetricsOnSync) {
-  base::test::ScopedFeatureList features;
-  features.InitWithFeatures(
-      /*enabled_features=*/{},
-      /*disabled_features=*/{
-          syncer::kReplaceSyncPromosWithSignInPromos,
-          syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
-
-  base::HistogramTester histograms;
-  identity_test_environment_.MakePrimaryAccountAvailable(
-      "account@gmail.com", signin::ConsentLevel::kSync);
-
-  // Turning on sync includes signing in, so both "OnSignin" and "OnSync"
-  // metrics should be recorded.
-  base::HistogramTester::CountsMap expected_signin_counts{
-      {"TabGroups.OnSignin.TotalTabGroupCount", 1},
-      {"TabGroups.OnSignin.OpenTabGroupCount", 1},
-      {"TabGroups.OnSignin.ClosedTabGroupCount", 1},
-      {"TabGroups.OnSignin.TotalTabGroupTabsCount", 1},
-      {"TabGroups.OnSignin.OpenTabGroupTabsCount", 1},
-      {"TabGroups.OnSignin.ClosedTabGroupTabsCount", 1}};
-  EXPECT_THAT(histograms.GetTotalCountsForPrefix("TabGroups.OnSignin."),
-              ContainerEq(expected_signin_counts));
-
-  base::HistogramTester::CountsMap expected_sync_counts{
-      {"TabGroups.OnSync.TotalTabGroupCount", 1},
-      {"TabGroups.OnSync.OpenTabGroupCount", 1},
-      {"TabGroups.OnSync.ClosedTabGroupCount", 1},
-      {"TabGroups.OnSync.TotalTabGroupTabsCount", 1},
-      {"TabGroups.OnSync.OpenTabGroupTabsCount", 1},
-      {"TabGroups.OnSync.ClosedTabGroupTabsCount", 1}};
-  EXPECT_THAT(histograms.GetTotalCountsForPrefix("TabGroups.OnSync."),
-              ContainerEq(expected_sync_counts));
 }
 
 // Tests that after transitioning from a saved tab group to a shared tab group,

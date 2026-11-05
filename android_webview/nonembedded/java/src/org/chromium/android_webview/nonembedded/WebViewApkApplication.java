@@ -6,13 +6,14 @@ package org.chromium.android_webview.nonembedded;
 
 import android.app.Application;
 import android.content.Context;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 
 import com.android.webview.chromium.WebViewLibraryPreloader;
 
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.android_webview.AwLocaleConfig;
 import org.chromium.android_webview.common.CommandLineUtil;
 import org.chromium.android_webview.common.PlatformServiceBridge;
 import org.chromium.android_webview.common.SafeModeController;
@@ -20,24 +21,23 @@ import org.chromium.android_webview.services.NonembeddedSafeModeActionsList;
 import org.chromium.base.BundleUtils;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
+import org.chromium.base.PackageUtils;
 import org.chromium.base.PathUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LibraryProcessType;
 import org.chromium.base.metrics.UmaRecorderHolder;
-import org.chromium.base.version_info.VersionConstants;
 import org.chromium.build.BuildConfig;
 import org.chromium.components.crash.CustomAssertionHandler;
 import org.chromium.components.crash.PureJavaExceptionHandler;
-import org.chromium.ui.base.ResourceBundle;
 
 /**
- * Application subclass for SystemWebView and Trichrome.
+ * Application subclass for SystemWebView.
  *
- * Application subclass is used by renderer processes, services, and content providers that run
+ * <p>Application subclass is used by renderer processes, services, and content providers that run
  * under the WebView APK's package.
  *
- * None of this code runs in an application which simply uses WebView.
+ * <p>None of this code runs in an application which simply uses WebView.
  */
 @JNINamespace("android_webview")
 public class WebViewApkApplication extends Application {
@@ -45,20 +45,36 @@ public class WebViewApkApplication extends Application {
 
     // Called by the framework for ALL processes. Runs before ContentProviders are created.
     //
-    // Logic here is specific for standalone WebView and trichrome. There used to be a historical
-    // distinction between this method and maybeInitProcessGlobals(), but now initialization logic
-    // can safely go in either method.
+    // There used to be a historical distinction between this method and maybeInitProcessGlobals(),
+    // but now initialization logic can safely go in either method.
     // Quirk: context.getApplicationContext() returns null during this method.
     @Override
     protected void attachBaseContext(Context context) {
         super.attachBaseContext(context);
         ContextUtils.initApplicationContext(this);
 
+        // Do not call ApkInfo here, as child processes do not receive ApkInfo from the parent
+        // process until later.
+        String versionName = "";
+        long versionCode = BuildConfig.ORIGINAL_VERSION_CODE;
+        if (!ContextUtils.isIsolatedProcess()) {
+            try {
+                PackageInfo pi =
+                        context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+                if (pi != null) {
+                    versionName = pi.versionName != null ? pi.versionName : "";
+                    versionCode = PackageUtils.packageVersionCode(pi);
+                }
+            } catch (PackageManager.NameNotFoundException e) {
+                // Ignore.
+            }
+        }
+
         Log.i(
                 TAG,
                 "version=%s (%s) minSdkVersion=%s processName=%s splits=%s",
-                VersionConstants.PRODUCT_VERSION,
-                BuildConfig.VERSION_CODE,
+                versionName,
+                versionCode,
                 BuildConfig.MIN_SDK_VERSION,
                 ContextUtils.getProcessName(),
                 // BundleUtils uses getApplicationContext, so logging after we init it.
@@ -66,8 +82,6 @@ public class WebViewApkApplication extends Application {
 
         maybeSetPreloader();
         maybeInitProcessGlobals();
-
-        ResourceBundle.setAvailablePakLocales(AwLocaleConfig.getWebViewSupportedPakLocales());
     }
 
     @Override

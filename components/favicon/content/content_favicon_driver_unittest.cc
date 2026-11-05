@@ -5,25 +5,40 @@
 #include "components/favicon/content/content_favicon_driver.h"
 
 #include <memory>
+#include <utility>
 #include <vector>
 
+#include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
+#include "base/task/cancelable_task_tracker.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
+#include "base/test/test_simple_task_runner.h"
+#include "build/build_config.h"
 #include "components/favicon/core/favicon_client.h"
+#include "components/favicon/core/favicon_driver_observer.h"
 #include "components/favicon/core/favicon_handler.h"
 #include "components/favicon/core/test/favicon_driver_impl_test_helper.h"
 #include "components/favicon/core/test/mock_favicon_service.h"
+#include "content/public/browser/invalidate_type.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
+#include "net/base/net_errors.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/favicon/favicon_url.mojom.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/favicon_size.h"
+#include "ui/gfx/geometry/size.h"
+#include "ui/gfx/image/image_unittest_util.h"
 
 namespace favicon {
 namespace {
@@ -90,6 +105,29 @@ class ContentFaviconDriverTest : public content::RenderViewHostTestHarness {
 
   content::WebContentsTester* web_contents_tester() {
     return content::WebContentsTester::For(web_contents());
+  }
+
+  // Simulates the page setting its <link rel="icon"> to `icon_url` and the
+  // resulting download completing successfully.
+  void UpdateIconURLAndDownload(const GURL& icon_url) {
+    std::vector<blink::mojom::FaviconURLPtr> candidates;
+    candidates.push_back(blink::mojom::FaviconURL::New(
+        icon_url, blink::mojom::FaviconIconType::kFavicon, kEmptyIconSizes,
+        /*is_default_icon=*/false));
+    static_cast<content::WebContentsObserver*>(
+        ContentFaviconDriver::FromWebContents(web_contents()))
+        ->DidUpdateFaviconURL(
+            web_contents()->GetPrimaryMainFrame(), candidates,
+            blink::mojom::FaviconUpdateReason::kLinkElementChange);
+    // The handler asks the favicon service about the icon URL first, which
+    // the mock answers asynchronously.
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return web_contents_tester()->HasPendingDownloadImage(icon_url);
+    }));
+    ASSERT_TRUE(web_contents_tester()->TestDidDownloadImage(
+        icon_url, /*http_status_code=*/200,
+        {gfx::test::CreateBitmap(gfx::kFaviconSize)},
+        {gfx::Size(gfx::kFaviconSize, gfx::kFaviconSize)}));
   }
 
   testing::NiceMock<MockFaviconService> favicon_service_;
@@ -207,6 +245,80 @@ TEST_F(ContentFaviconDriverTest, ShouldDownloadSecondIfFirstUnavailable) {
   EXPECT_TRUE(web_contents_tester()->HasPendingDownloadImage(kOtherIconURL));
 }
 
+// Records the flags of every NavigationStateChanged() call.
+class ScopedNavigationStateChangeRecorder
+    : public content::WebContentsDelegate {
+ public:
+  explicit ScopedNavigationStateChangeRecorder(
+      content::WebContents* web_contents)
+      : web_contents_(web_contents) {
+    web_contents_->SetDelegate(this);
+  }
+  ~ScopedNavigationStateChangeRecorder() override {
+    web_contents_->SetDelegate(nullptr);
+  }
+
+  void NavigationStateChanged(content::WebContents* source,
+                              content::InvalidateTypes changed_flags) override {
+    flags_.push_back(changed_flags);
+  }
+
+  const std::vector<content::InvalidateTypes>& flags() const { return flags_; }
+
+ private:
+  const raw_ptr<content::WebContents> web_contents_;
+  std::vector<content::InvalidateTypes> flags_;
+};
+
+// Android and iOS don't use the NON_TOUCH_16_DIP handler, which is the only one
+// that notifies NavigationStateChanged(); their tab UIs observe the driver
+// directly.
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+TEST_F(ContentFaviconDriverTest, FaviconInvalidationFlags) {
+  constexpr unsigned kTab = content::INVALIDATE_TYPE_TAB;
+  // INVALIDATE_TYPE_ICON should accompany the arrival of the first valid
+  // favicon for each new page.
+  constexpr unsigned kTabAndIcon =
+      content::INVALIDATE_TYPE_TAB | content::INVALIDATE_TYPE_ICON;
+  const GURL kOtherIconURL("http://www.google.com/other.ico");
+  const GURL kSameDocumentURL("http://www.google.com/#fragment");
+  const GURL kOtherPageURL("http://www.example.com/");
+
+  // The first favicon fires icon invalidation.
+  web_contents_tester()->NavigateAndCommit(kPageURL);
+  {
+    ScopedNavigationStateChangeRecorder recorder(web_contents());
+    UpdateIconURLAndDownload(kIconURL);
+    EXPECT_THAT(recorder.flags(), testing::ElementsAre(kTabAndIcon));
+  }
+
+  // A later favicon change only fires tab invalidation.
+  {
+    ScopedNavigationStateChangeRecorder recorder(web_contents());
+    UpdateIconURLAndDownload(kOtherIconURL);
+    EXPECT_THAT(recorder.flags(), testing::ElementsAre(kTab));
+  }
+
+  // A same-document navigation does not count as a new document.
+  content::NavigationSimulator::CreateRendererInitiated(
+      kSameDocumentURL, web_contents()->GetPrimaryMainFrame())
+      ->CommitSameDocument();
+  {
+    ScopedNavigationStateChangeRecorder recorder(web_contents());
+    UpdateIconURLAndDownload(kIconURL);
+    EXPECT_THAT(recorder.flags(), testing::ElementsAre(kTab));
+  }
+
+  // A cross-document navigation does.
+  web_contents_tester()->NavigateAndCommit(kOtherPageURL);
+  {
+    ScopedNavigationStateChangeRecorder recorder(web_contents());
+    UpdateIconURLAndDownload(kIconURL);
+    EXPECT_THAT(recorder.flags(), testing::ElementsAre(kTabAndIcon));
+  }
+}
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+
 using ContentFaviconDriverTestNoFaviconService =
     content::RenderViewHostTestHarness;
 
@@ -242,6 +354,44 @@ TEST_F(ContentFaviconDriverTestNoFaviconService,
   // which should trigger notifying the callback for the manifest and *not*
   // crash.
   DeleteContents();
+}
+
+// Regression test for https://crbug.com/549900459.
+TEST_F(ContentFaviconDriverTest, StaleEntryAfterCommittedErrorPage) {
+  const GURL kFailedURL = GURL("https://does-not-resolve.example/");
+
+  ContentFaviconDriver* favicon_driver =
+      ContentFaviconDriver::FromWebContents(web_contents());
+  FaviconDriverImplTestHelper::RecreateHandlerForType(
+      favicon_driver, FaviconDriverObserver::NON_TOUCH_16_DIP);
+
+  bool has_run_result_callback = false;
+  auto lookup_runner = base::MakeRefCounted<base::TestSimpleTaskRunner>();
+  EXPECT_CALL(favicon_service_, GetFaviconForPageURL(kPageURL, _, _, _, _))
+      .WillOnce([&](auto, auto, auto,
+                    favicon_base::FaviconResultsCallback lookup_callback,
+                    base::CancelableTaskTracker* lookup_tracker) {
+        return lookup_tracker->PostTask(lookup_runner.get(), FROM_HERE,
+                                        base::BindLambdaForTesting([&] {
+                                          has_run_result_callback = true;
+                                        }));
+      });
+
+  web_contents_tester()->NavigateAndCommit(kPageURL);
+  ASSERT_TRUE(lookup_runner->HasPendingTask());
+
+  // Keep the lookup pending until the error page has committed.
+  auto failed = content::NavigationSimulator::CreateBrowserInitiated(
+      kFailedURL, web_contents());
+  failed->Fail(net::ERR_NAME_NOT_RESOLVED);
+  failed->CommitErrorPage();
+  ASSERT_EQ(kFailedURL,
+            web_contents()->GetController().GetLastCommittedEntry()->GetURL());
+
+  lookup_runner->RunPendingTasks();
+  EXPECT_FALSE(lookup_runner->HasPendingTask());
+  EXPECT_FALSE(favicon_driver->HasPendingTasksForTest());
+  EXPECT_FALSE(has_run_result_callback);
 }
 
 }  // namespace

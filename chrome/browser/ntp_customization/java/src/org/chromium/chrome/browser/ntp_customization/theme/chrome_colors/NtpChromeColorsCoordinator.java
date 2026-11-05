@@ -192,17 +192,18 @@ public class NtpChromeColorsCoordinator implements ThemeBottomSheetObserver {
         if (ntpThemeColorInfo instanceof NtpThemeColorFromHexInfo colorFromHexInfo) {
             backgroundData =
                     new NtpBackgroundDataCustomizedColor(PlatformType.ANDROID, colorFromHexInfo);
+            mLastClickedColorInfo = null;
         } else {
             backgroundData =
                     new NtpBackgroundDataColor(
                             PlatformType.ANDROID, mIsDailyRefreshEnabled, ntpThemeColorInfo);
+            mLastClickedColorInfo = ntpThemeColorInfo;
         }
 
         NtpCustomizationConfigManager.getInstance()
                 .onBackgroundDataChanged(mContext, backgroundData);
 
         mOnChromeColorSelectedCallback.run();
-        mLastClickedColorInfo = ntpThemeColorInfo;
     }
 
     /** Cleans up the resources used by this coordinator. */

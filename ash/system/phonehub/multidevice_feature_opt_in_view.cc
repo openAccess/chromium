@@ -12,7 +12,6 @@
 #include "ash/root_window_controller.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
-#include "ash/style/ash_color_provider.h"
 #include "ash/system/phonehub/phone_hub_metrics.h"
 #include "ash/system/phonehub/phone_hub_tray.h"
 #include "ash/system/phonehub/phone_hub_view_ids.h"
@@ -47,7 +46,6 @@ PermissionsOnboardingSetUpMode GetPermissionSetupMode(
       phonehub::MultideviceFeatureAccessManager::AccessStatus::
           kAvailableButNotGranted;
   bool can_request_apps_acess =
-      features::IsEcheSWAEnabled() &&
       multidevice_feature_access_manager->IsAccessRequestAllowed(
           Feature::kEche) &&
       multidevice_feature_access_manager->GetAppsAccessStatus() ==

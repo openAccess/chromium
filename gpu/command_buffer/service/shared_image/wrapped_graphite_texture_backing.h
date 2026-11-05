@@ -55,7 +55,7 @@ class WrappedGraphiteTextureBacking : public ClearTrackingSharedImageBacking {
 
   // SharedImageBacking implementation.
   SharedImageBackingType GetType() const override;
-  void Update(std::unique_ptr<gfx::GpuFence> in_fence) override;
+  void Update(gfx::GpuFenceHandle in_fence) override;
   bool UploadFromMemory(const std::vector<SkPixmap>& pixmaps) override;
   bool ReadbackToMemory(const std::vector<SkPixmap>& pixmaps) override;
 
@@ -102,7 +102,17 @@ class WrappedGraphiteTextureBacking : public ClearTrackingSharedImageBacking {
   const std::vector<
       scoped_refptr<SkiaImageRepresentation::GraphiteTextureHolder>>&
   GetWrappedGraphiteTextureHolders();
-  bool InsertRecordingAndSubmit();
+  bool InsertRecordingAndSubmit(SharedContextState* context_state);
+
+  // Called by representations from begin access functions. Returns true if
+  // access is allowed or false if access must fail. A corresponding EndAccess()
+  // call must be made if BeginAccess() returns true.
+  bool BeginAccess(bool readonly);
+  void EndAccess(bool readonly);
+
+  // Returns the SharedContextState to use for accessing the backing on the
+  // current thread, or nullptr if there is none.
+  SharedContextState* GetContextStateForCurrentThread() const;
 
   skgpu::graphite::Recorder* recorder() const {
     return context_state_->gpu_main_graphite_recorder();
@@ -111,6 +121,9 @@ class WrappedGraphiteTextureBacking : public ClearTrackingSharedImageBacking {
   scoped_refptr<SharedContextState> context_state_;
   std::vector<scoped_refptr<SkiaImageRepresentation::GraphiteTextureHolder>>
       texture_holders_;
+  const bool enforce_exclusive_access_;
+  bool is_write_in_progress_ GUARDED_BY(lock_) = false;
+  uint32_t reads_in_progress_ GUARDED_BY(lock_) = 0;
 
   // Only stored for thread safe backings.
   scoped_refptr<base::SingleThreadTaskRunner> created_task_runner_;

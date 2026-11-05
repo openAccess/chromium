@@ -4,8 +4,9 @@
 
 import 'chrome-untrusted://lens/side_panel/side_panel_app.js';
 
+import type {LensSidePanelPageRemote} from 'chrome-untrusted://lens/lens_side_panel.mojom-webui.js';
+import {browserProxyFactory} from 'chrome-untrusted://lens/lens_side_panel.mojom-webui.js';
 import type {LensSidePanelAppElement} from 'chrome-untrusted://lens/side_panel/side_panel_app.js';
-import {SidePanelBrowserProxyImpl} from 'chrome-untrusted://lens/side_panel/side_panel_browser_proxy.js';
 import type {ComposeboxElement} from 'chrome-untrusted://resources/cr_components/composebox/composebox.js';
 import {PageHandlerRemote} from 'chrome-untrusted://resources/cr_components/composebox/composebox.mojom-webui.js';
 import {ComposeboxProxyImpl} from 'chrome-untrusted://resources/cr_components/composebox/composebox_proxy.js';
@@ -18,7 +19,7 @@ import {waitAfterNextRender} from 'chrome-untrusted://webui-test/polymer_test_ut
 import {TestMock} from 'chrome-untrusted://webui-test/test_mock.js';
 import {isVisible} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {TestLensSidePanelBrowserProxy} from './test_side_panel_browser_proxy.js';
+import {TestLensSidePanelPageHandler} from './test_side_panel_browser_proxy.js';
 
 // This is a slow function, but is guaranteed to return false if the element is
 // not actually visible. isVisible() is fast, but may return true even if the
@@ -50,7 +51,7 @@ function getTransitionEndPromise(
           }));
 }
 suite('Composebox', () => {
-  let testBrowserProxy: TestLensSidePanelBrowserProxy;
+  let pageRemote: LensSidePanelPageRemote;
   let lensSidePanelElement: LensSidePanelAppElement;
   let mockPageHandler: TestMock<PageHandlerRemote>&PageHandlerRemote;
   let mockSearchboxPageHandler: TestMock<SearchboxPageHandlerRemote>&
@@ -59,8 +60,10 @@ suite('Composebox', () => {
 
   // Returns the composebox element.
   async function setupTest(): Promise<ComposeboxElement> {
-    testBrowserProxy = new TestLensSidePanelBrowserProxy();
-    SidePanelBrowserProxyImpl.setInstance(testBrowserProxy);
+    const {instance, remote} =
+        browserProxyFactory.createForTest(new TestLensSidePanelPageHandler());
+    browserProxyFactory.setInstance(instance);
+    pageRemote = remote;
 
     // Mock the composebox handlers.
     mockPageHandler = TestMock.fromClass(PageHandlerRemote);
@@ -84,7 +87,7 @@ suite('Composebox', () => {
             'cr-composebox');
     assertTrue(!!composebox);
 
-    testBrowserProxy.page.setIsOverlayShowing(false);
+    pageRemote.setIsOverlayShowing(false);
     await waitAfterNextRender(lensSidePanelElement);
 
     return composebox;
@@ -134,12 +137,12 @@ suite('Composebox', () => {
     assertTrue(isTrulyVisible(lensButton));
 
     // Grab the input to focus it.
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
 
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
+    const animatedElement = composebox.$.composebox;
 
     // Focusing the input should expand the composebox.
     const expandPromise =
@@ -166,14 +169,14 @@ suite('Composebox', () => {
     loadTimeData.overrideValues({enableAimSearchbox: true});
     const composebox = await setupTest();
 
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
+    const animatedElement = composebox.$.composebox;
 
     const initialHeight = composebox.offsetHeight;
     assertTrue(initialHeight > 0);
 
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
 
     // Focusing the input should expand the composebox.
@@ -201,7 +204,9 @@ suite('Composebox', () => {
         composebox.shadowRoot.querySelector<HTMLElement>('#submitContainer');
     const submitButton =
         composebox.shadowRoot.querySelector<HTMLElement>('#submitIcon');
-    const cancelButton = composebox.getInputElement().$.cancelIcon;
+    const cancelButton =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#cancelIcon');
     assertTrue(!!submitContainer);
     assertTrue(!!submitButton);
     assertTrue(!!cancelButton);
@@ -213,7 +218,9 @@ suite('Composebox', () => {
     assertFalse(isTrulyVisible(cancelButton));
 
     // Grab the input to focus it.
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
 
     // Focusing the input should expand the composebox.
@@ -283,12 +290,12 @@ suite('Composebox', () => {
     assertTrue(!!dropdown);
 
     // Focus input to expand composebox.
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
     input.focus();
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
+    const animatedElement = composebox.$.composebox;
     await getTransitionEndPromise(animatedElement, 'max-height');
 
     // Send suggestions to the composebox.
@@ -315,12 +322,12 @@ suite('Composebox', () => {
 
 
     // Focus input to expand composebox.
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
     input.focus();
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
+    const animatedElement = composebox.$.composebox;
     await getTransitionEndPromise(animatedElement, 'max-height');
 
     // Send suggestions to the composebox.
@@ -344,14 +351,14 @@ suite('Composebox', () => {
     const dropdown =
         composebox.shadowRoot.querySelector<HTMLElement>('[part=dropdown]');
     assertTrue(!!dropdown);
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
 
     // Focus input to expand composebox and show dropdown.
     input.focus();
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
+    const animatedElement = composebox.$.composebox;
     await getTransitionEndPromise(animatedElement, 'max-height');
 
     // Send suggestions to the composebox.
@@ -378,14 +385,14 @@ suite('Composebox', () => {
     const dropdown =
         composebox.shadowRoot.querySelector<HTMLElement>('[part=dropdown]');
     assertTrue(!!dropdown);
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
 
     // Focus input to expand composebox.
     input.focus();
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
+    const animatedElement = composebox.$.composebox;
     await getTransitionEndPromise(animatedElement, 'max-height');
 
     // Send suggestions to the composebox and assert dropdown is visible.
@@ -407,13 +414,17 @@ suite('Composebox', () => {
   test('TabbingOrder', async () => {
     loadTimeData.overrideValues({enableAimSearchbox: true});
     const composebox = await setupTest();
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
     const submitContainer =
         composebox.shadowRoot.querySelector<HTMLElement>('#submitContainer');
     const submitButton =
         composebox.shadowRoot.querySelector<HTMLElement>('#submitIcon');
-    const cancelButton = composebox.getInputElement().$.cancelIcon;
+    const cancelButton =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#cancelIcon');
     assertTrue(!!submitContainer);
     assertTrue(!!submitButton);
     assertTrue(!!cancelButton);
@@ -435,9 +446,7 @@ suite('Composebox', () => {
 
     input.focus();
     // Wait for expansion.
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
+    const animatedElement = composebox.$.composebox;
     await getTransitionEndPromise(animatedElement, 'max-height');
 
     // When no text is present, only the input should be focusable inside the
@@ -474,19 +483,21 @@ suite('Composebox', () => {
     loadTimeData.overrideValues({enableAimSearchbox: true});
     const composebox = await setupTest();
 
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
     const submitButton =
         composebox.shadowRoot.querySelector<HTMLElement>('#submitIcon');
-    const cancelButton = composebox.getInputElement().$.cancelIcon;
+    const cancelButton =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#cancelIcon');
     assertTrue(!!submitButton);
     assertTrue(!!cancelButton);
 
     input.focus();
     // Wait for expansion.
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
+    const animatedElement = composebox.$.composebox;
     await getTransitionEndPromise(animatedElement, 'max-height');
 
     input.innerText = 'some text';
@@ -529,8 +540,9 @@ suite('Composebox', () => {
       bubbles: true,
       composed: true,
     }));
-    const [matchIndex, url] =
+    const [resultSequenceId, matchIndex, url] =
         await mockSearchboxPageHandler.whenCalled('openAutocompleteMatch');
+    assertEquals(resultSequenceId, 0);
     assertEquals(matchIndex, 0);
     assertEquals(
         url, `https://www.google.com/search?q=${query.replace(/ /g, '+')}`);
@@ -566,14 +578,14 @@ suite('Composebox', () => {
       enableLensAimSuggestions: true,
     });
     const composebox = await setupTest();
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
 
     // Focus input to expand composebox.
     input.focus();
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
+    const animatedElement = composebox.$.composebox;
     await getTransitionEndPromise(animatedElement, 'max-height');
 
     // Send suggestions to the composebox.
@@ -614,12 +626,10 @@ suite('Composebox', () => {
         composebox.shadowRoot.querySelector<HTMLElement>('#lensIcon');
     assertTrue(!!lensButton);
 
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
-
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
 
     // The button should be visible.
     assertTrue(isTrulyVisible(lensButton));
@@ -638,12 +648,10 @@ suite('Composebox', () => {
         composebox.shadowRoot.querySelector<HTMLElement>('#lensIcon');
     assertTrue(!!lensButton);
 
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
-
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
 
     // The button should be visible.
     assertTrue(isTrulyVisible(lensButton));
@@ -652,13 +660,13 @@ suite('Composebox', () => {
     assertFalse(lensButton.hasAttribute('disabled'));
 
     // Setting the overlay to not showing should make the button enabled.
-    testBrowserProxy.page.setIsOverlayShowing(true);
+    pageRemote.setIsOverlayShowing(true);
     await waitAfterNextRender(lensSidePanelElement);
 
     assertTrue(lensButton.hasAttribute('disabled'));
 
     // Setting the overlay to showing should make the button disabled again.
-    testBrowserProxy.page.setIsOverlayShowing(false);
+    pageRemote.setIsOverlayShowing(false);
     await waitAfterNextRender(lensSidePanelElement);
 
     assertFalse(lensButton.hasAttribute('disabled'));
@@ -667,7 +675,9 @@ suite('Composebox', () => {
   test('FocusesComposeboxOnCallback', async () => {
     loadTimeData.overrideValues({enableAimSearchbox: true});
     const composebox = await setupTest();
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
 
     // Make sure input is not focused initially.
@@ -675,7 +685,7 @@ suite('Composebox', () => {
     assertNotEquals(input, composebox.shadowRoot.activeElement);
 
     // Trigger the mojom callback to focus the composebox.
-    testBrowserProxy.page.focusSearchbox();
+    pageRemote.focusSearchbox();
     await waitAfterNextRender(composebox);
 
     // Verify the input is now focused.
@@ -729,12 +739,12 @@ suite('Composebox', () => {
     await waitAfterNextRender(composebox);
 
     // Focus input to expand composebox.
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
     input.focus();
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
+    const animatedElement = composebox.$.composebox;
     await getTransitionEndPromise(animatedElement, 'max-height');
 
     // Send 3 suggestions to the composebox.
@@ -803,12 +813,12 @@ suite('Composebox', () => {
     await waitAfterNextRender(composebox);
 
     // Focus input to expand composebox.
-    const input = composebox.getInputElement().$.input;
+    const input =
+        composebox.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#input')!;
     assertTrue(!!input);
     input.focus();
-    const animatedElement =
-        composebox.shadowRoot.querySelector<HTMLElement>('#composebox');
-    assertTrue(!!animatedElement);
+    const animatedElement = composebox.$.composebox;
     await getTransitionEndPromise(animatedElement, 'max-height');
 
     // Send 3 suggestions to the composebox.

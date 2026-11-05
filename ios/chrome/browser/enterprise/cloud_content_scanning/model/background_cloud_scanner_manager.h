@@ -8,6 +8,7 @@
 #import <memory>
 #import <vector>
 
+#import "base/feature_list.h"
 #import "base/functional/callback.h"
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
@@ -23,6 +24,17 @@ class FilePath;
 
 namespace enterprise_connectors {
 
+// Controls whether to use `clonefile` for DLP scan upload on iOS.
+BASE_DECLARE_FEATURE(kEnableDLPClonefileScanUploadIOS);
+
+// This method does not create the directory, it simply tries to find and fill
+// `directory_path` with the system temporary directory and append
+// `kEnterpriseScanDirName` to the end. Returns true if this is successful.
+bool GetTempEnterpriseScanDirectory(base::FilePath* directory_path);
+
+// Asynchronously deletes the temporary enterprise scan directory.
+void DeleteTempEnterpriseScanDirectory();
+
 class BinaryUploadService;
 class ConnectorsService;
 class ContentAnalysisInfo;
@@ -34,7 +46,7 @@ class ReportingEventRouter;
 // (instead of the tab helper) ensures that:
 // 1. Scans survive tab closures to maintain enterprise compliance and auditing.
 // 2. All pending scans are safely cancelled and destroyed when the profile is
-//    destroyed, preventing use-after-free/dangling raw_ptr<ProfileIOS> issues.
+//    shut down, preventing use-after-free/dangling raw_ptr<ProfileIOS> issues.
 class BackgroundCloudScannerManager : public KeyedService {
  public:
   BackgroundCloudScannerManager(ConnectorsService* connectors_service,
@@ -47,13 +59,29 @@ class BackgroundCloudScannerManager : public KeyedService {
 
   ~BackgroundCloudScannerManager() override;
 
+  // KeyedService:
+  void Shutdown() override;
+
   // This is used for non-blocking scans where the UI proceeds immediately but
   // the scan must still run to completion and report audit verdicts.
   void StartScanner(std::unique_ptr<ContentAnalysisInfo> info,
                     const GURL& url,
-                    const base::FilePath& file_path);
+                    const base::FilePath& file_path,
+                    base::OnceCallback<void(bool)> download_proceed);
+
+  // Starts the scan with the cloned file in `temp_dir`.
+  void StartScannerWithClonedFile(std::unique_ptr<ContentAnalysisInfo> info,
+                                  const GURL& url,
+                                  const base::FilePath& clone_path,
+                                  const base::FilePath& temp_dir);
 
   base::WeakPtr<BackgroundCloudScannerManager> GetWeakPtr();
+
+  // Returns the number of scans currently running.
+  size_t GetScannerCountForTesting() const;
+
+  // Returns the number of completed scans that are waiting to be deleted.
+  size_t GetPendingDeletionCountForTesting() const;
 
  private:
   // Nested helper class representing a single active background scan request.
@@ -74,6 +102,7 @@ class BackgroundCloudScannerManager : public KeyedService {
                            BinaryUploadService* upload_service,
                            const GURL& url,
                            const base::FilePath& file_path,
+                           const base::FilePath& temp_dir,
                            OnCompleteCallback on_complete_callback);
 
     ~BackgroundCloudScanner();
@@ -94,21 +123,35 @@ class BackgroundCloudScannerManager : public KeyedService {
     std::unique_ptr<ContentAnalysisInfo> info_;
     std::unique_ptr<FilesRequestHandlerBase> handler_;
     OnCompleteCallback on_complete_callback_;
+    base::FilePath temp_dir_;
     base::WeakPtrFactory<BackgroundCloudScanner> weak_ptr_factory_{this};
   };
 
   // Registers an active background scanner to be owned by this manager.
   void AddScanner(std::unique_ptr<BackgroundCloudScanner> scanner);
 
-  // Unregisters and schedules the safe, asynchronous destruction of a scanner
-  // to avoid use-after-free/re-entrancy during active callback execution.
+  // Unregisters a scanner and schedules its safe, asynchronous destruction to
+  // avoid use-after-free/re-entrancy during active callback execution.
   void RemoveScanner(BackgroundCloudScanner* scanner);
+
+  // Destroys the scanners that completed and are waiting to be deleted.
+  void DeletePendingScanners();
 
   raw_ptr<BinaryUploadService> upload_service_;
   raw_ptr<ConnectorsService> connectors_service_;
   raw_ptr<ReportingEventRouter> router_;
 
   std::vector<std::unique_ptr<BackgroundCloudScanner>> scanners_;
+
+  // Scanners that completed and whose destruction has been posted. They stay
+  // owned by this manager so that they never outlive the profile.
+  std::vector<std::unique_ptr<BackgroundCloudScanner>>
+      scanners_pending_deletion_;
+
+  // Whether Shutdown() has run. No new scan is accepted afterwards since the
+  // services this manager depends on are about to be destroyed.
+  bool is_shutdown_ = false;
+
   SEQUENCE_CHECKER(sequence_checker_);
   base::WeakPtrFactory<BackgroundCloudScannerManager> weak_ptr_factory_{this};
 };

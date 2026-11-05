@@ -129,20 +129,6 @@ suite('AppStyleUpdater', () => {
       });
 
   test(
-      'setLineFocusStyle does not update toolbar colors if line focus is ' +
-          'disabled',
-      () => {
-        const initialColor = 'rgb(255, 0, 0)';
-        app.style.setProperty('--toolbar-icon-color', initialColor);
-        visualBrowserProxy.lineFocusEnabled = false;
-
-        updater.setLineFocusStyle(LineFocusType.WINDOW);
-
-        assertEquals(
-            initialColor, app.style.getPropertyValue('--toolbar-icon-color'));
-      });
-
-  test(
       'setLineFocusStyle sets dark toolbar icon color in immersive mode for ' +
           'window line focus',
       () => {
@@ -266,6 +252,26 @@ suite('AppStyleUpdater', () => {
     updater.setFont();
     assertStringContains(
         computeStyle('font-family'), visualBrowserProxy.fontName);
+  });
+
+  test('<pre> tags wrap and inherit font', () => {
+    // Some sites (e.g. Wattpad) incorrectly wrap large blocks of text
+    // in <pre> tags, which would cause reading mode to format this text in
+    // monospace and without wrapping to new lines.
+    const preElement = document.createElement('pre');
+    preElement.textContent =
+        'This is a text not code & reading mode should not format it as code.';
+    app.$.container.appendChild(preElement);
+
+    visualBrowserProxy.fontName = 'Andika';
+    updater.setFont();
+
+    const computedStyle = window.getComputedStyle(preElement);
+    assertEquals('pre-wrap', computedStyle.whiteSpace);
+    assertEquals('break-word', computedStyle.overflowWrap);
+    assertStringContains(
+        computedStyle.fontFamily.toLowerCase(),
+        visualBrowserProxy.fontName.toLowerCase());
   });
 
   test('current highlight', () => {

@@ -38,13 +38,10 @@ namespace content {
 std::unique_ptr<UnboundedSurfaceWindowAndroid>
 UnboundedSurfaceWindowAndroid::Create(
     RenderWidgetHostViewAndroid* parent_view,
-    mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-    mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient> client,
     const gfx::Rect& bounds_in_dips,
     base::WeakPtr<RenderWidgetHostViewBase> subframe_view) {
-  auto window = base::WrapUnique(new UnboundedSurfaceWindowAndroid(
-      parent_view, std::move(host), std::move(client),
-      std::move(subframe_view)));
+  auto window = base::WrapUnique(
+      new UnboundedSurfaceWindowAndroid(parent_view, std::move(subframe_view)));
   if (!window->InitWindow(bounds_in_dips)) {
     return nullptr;
   }
@@ -53,19 +50,9 @@ UnboundedSurfaceWindowAndroid::Create(
 
 UnboundedSurfaceWindowAndroid::UnboundedSurfaceWindowAndroid(
     RenderWidgetHostViewAndroid* parent_view,
-    mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-    mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient> client,
     base::WeakPtr<RenderWidgetHostViewBase> subframe_view)
-    : parent_view_(parent_view ? parent_view->GetWeakPtrAndroid() : nullptr),
-      subframe_view_(std::move(subframe_view)) {
-  if (host.is_valid() && client.is_valid()) {
-    receiver_.Bind(std::move(host));
-    receiver_.set_disconnect_handler(
-        base::BindOnce(&UnboundedSurfaceWindowAndroid::OnConnectionError,
-                       base::Unretained(this)));
-    client_remote_.Bind(std::move(client));
-  }
-}
+    : UnboundedSurfaceWindow(parent_view ? parent_view->GetWeakPtr() : nullptr,
+                             std::move(subframe_view)) {}
 
 UnboundedSurfaceWindowAndroid::~UnboundedSurfaceWindowAndroid() {
   parent_view_ = nullptr;
@@ -127,10 +114,6 @@ void UnboundedSurfaceWindowAndroid::SetBounds(const gfx::Rect& bounds_in_dips) {
         viz::SurfaceId(client_frame_sink_id_, GetLocalSurfaceId()),
         cc::DeadlinePolicy::UseDefaultDeadline());
   }
-
-  if (client_remote_.is_bound()) {
-    client_remote_->OnSurfaceAllocated(GetFrameSinkId(), GetLocalSurfaceId());
-  }
 }
 
 viz::FrameSinkId UnboundedSurfaceWindowAndroid::GetFrameSinkId() const {
@@ -147,10 +130,6 @@ void UnboundedSurfaceWindowAndroid::GetCompositorFrameSink(
   GetHostFrameSinkManager()->CreateCompositorFrameSink(
       client_frame_sink_id_, std::move(sink), std::move(client),
       /*render_input_router_config=*/nullptr);
-}
-
-RenderWidgetHostViewBase* UnboundedSurfaceWindowAndroid::GetParentView() const {
-  return parent_view_.get();
 }
 
 gfx::Rect UnboundedSurfaceWindowAndroid::GetBounds() const {
@@ -219,14 +198,6 @@ void UnboundedSurfaceWindowAndroid::TeardownAndDestroy() {
   if (parent_view_) {
     parent_view_->DestroyUnboundedSurface(GetWeakPtr());
   }
-}
-
-void UnboundedSurfaceWindowAndroid::UpdateBounds(const gfx::Rect& bounds) {
-  if (!parent_view_) {
-    return;
-  }
-  parent_view_->UpdateUnboundedSurfaceBoundsInSubframeContext(
-      bounds, subframe_view_.get());
 }
 
 bool UnboundedSurfaceWindowAndroid::InitWindow(
@@ -305,16 +276,7 @@ bool UnboundedSurfaceWindowAndroid::InitWindow(
       size_pixels, dsf,
       root_local_surface_id_allocator_.GetCurrentLocalSurfaceId());
 
-  if (client_remote_.is_bound()) {
-    client_remote_->OnSurfaceAllocated(GetFrameSinkId(), GetLocalSurfaceId());
-  }
-
   return true;
-}
-
-void UnboundedSurfaceWindowAndroid::OnConnectionError() {
-  dismiss_pending_ = true;
-  ScheduleDeferredDestroy();
 }
 
 }  // namespace content

@@ -28,15 +28,13 @@ public interface PopupCreator {
      * @param isIncognito Whether the popup is for an incognito tab.
      * @param windowFeatures The requested window features.
      * @param additionalIntentExtras Additional extras to add to the intent.
-     * @param startActivityOptions Options to pass to startActivity.
      * @return true if the popup was successfully created, false otherwise.
      */
     boolean createNewPopup(
             Context context,
             boolean isIncognito,
             @Nullable WindowFeatures windowFeatures,
-            @Nullable Bundle additionalIntentExtras,
-            @Nullable Bundle startActivityOptions);
+            @Nullable Bundle additionalIntentExtras);
 
     /**
      * Creates a new Custom Tab popup window from a given {@link WebContents}.
@@ -46,18 +44,17 @@ public interface PopupCreator {
      * @param webContents The {@link WebContents} to use for the new Custom Tab popup window.
      * @param windowFeatures The {@link WindowFeatures} to use for the new Custom Tab popup window.
      * @param additionalIntentExtras Additional extras to add to the intent.
-     * @param startActivityOptions Options to pass to startActivity.
      * @return true if the tab was successfully reparented to a new movable Task, false otherwise.
-     *     <p>Note: Do not use the provided WebContents after calling this function. This function
-     *     will take ownership of the provided WebContents, potentially destroying it.
+     *     <p>Note: The caller transfers ownership of {@code webContents} to this method. If popup
+     *     creation fails, {@code webContents} is destroyed. Do not use {@code webContents} after
+     *     calling this method.
      */
     boolean createNewPopupFromWebContents(
             Context context,
             Profile profile,
             WebContents webContents,
             @Nullable WindowFeatures windowFeatures,
-            @Nullable Bundle additionalIntentExtras,
-            @Nullable Bundle startActivityOptions);
+            @Nullable Bundle additionalIntentExtras);
 
     /**
      * Moves the given {@link Tab} to a new Custom Tab popup window.

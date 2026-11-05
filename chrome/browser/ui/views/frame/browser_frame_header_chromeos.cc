@@ -7,6 +7,7 @@
 #include "base/check.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view_chromeos.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
 #include "chromeos/ui/base/window_properties.h"
@@ -82,13 +83,8 @@ void PaintThemedFrame(gfx::Canvas* canvas,
 // Returns the frame path with the given |bounds| and |corner_radius|
 // for the rounded corner of the frame header.
 SkPath GetFrameHeaderPath(const gfx::Rect& bounds, int corner_radius) {
-  const SkScalar sk_corner_radius = SkIntToScalar(corner_radius);
-  const SkVector radii[4] = {{sk_corner_radius, sk_corner_radius},  // top-left
-                             {sk_corner_radius, sk_corner_radius},  // top-right
-                             {0, 0},   // bottom-right
-                             {0, 0}};  // bottom-left
-  return SkPath::RRect(
-      SkRRect::MakeRectRadii(gfx::RectToSkRect(bounds), radii));
+  return SkPath::RRect(gfx::RoundedRectToSkRRect(
+      bounds, gfx::RoundedCornersF(corner_radius, corner_radius, 0, 0)));
 }
 
 // Tiles |frame_image| and |frame_overlay_image| into an area, rounding the top
@@ -121,8 +117,8 @@ BrowserFrameHeaderChromeOS::BrowserFrameHeaderChromeOS(
     AppearanceProvider* appearance_provider,
     chromeos::FrameCaptionButtonContainerView* caption_button_container)
     : FrameHeader(target_widget, view) {
-  DCHECK(appearance_provider);
-  DCHECK(caption_button_container);
+  CHECK(appearance_provider, base::NotFatalUntil::M162);
+  CHECK(caption_button_container, base::NotFatalUntil::M162);
   appearance_provider_ = appearance_provider;
 
   SetCaptionButtonContainer(caption_button_container);
@@ -169,8 +165,9 @@ void BrowserFrameHeaderChromeOS::UpdateFrameColors() {
 
   // Please note, `app_browser_controller` may be null for non-PWA windows.
   if (!app_browser_controller ||
-      (app_browser_controller->system_app() &&
-       app_browser_controller->system_app()->UseSystemThemeColor())) {
+      SafeInvoke(app_browser_controller->system_app())
+          .Then(&ash::SystemWebAppDelegate::UseSystemThemeColor)
+          .value_or(false)) {
     button_colors = mode() == MODE_ACTIVE
                         ? ui::kColorSysPrimary
                         : ui::kColorFrameCaptionButtonUnfocused;

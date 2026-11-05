@@ -5,17 +5,23 @@
 package org.chromium.chrome.browser.tasks.tab_management.vertical_tabs;
 
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.app.Activity;
+import android.content.Context;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 
+import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -24,6 +30,8 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -41,6 +49,8 @@ import java.util.List;
 /** Unit tests for {@link VerticalTabKeyboardHandler}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class VerticalTabKeyboardHandlerUnitTest {
+    private static final int ITEM_COUNT = 4;
+    private static final int ITEM_HEIGHT = 10;
     private static final int TAB_ID_1 = 101;
     private static final int TAB_ID_2 = 102;
     private static final int TAB_ID_3 = 103;
@@ -53,16 +63,15 @@ public class VerticalTabKeyboardHandlerUnitTest {
     @Mock private TabModelSelector mTabModelSelector;
     @Mock private TabModel mTabModel;
     @Mock private TabUngrouper mTabUngrouper;
-    @Mock private RecyclerView mRecyclerView;
-    @Mock private RecyclerView mPinnedTabsRecyclerView;
-    @Mock private View mFocusedView;
-    @Mock private View mContainingItemView;
     @Mock private Tab mTab1;
     @Mock private Tab mTab2;
     @Mock private Tab mTab3;
     @Mock private Tab mPinnedTab1;
     @Mock private Tab mPinnedTab2;
-    @Mock private VerticalTabHoverCardController mHoverCardController;
+    @Mock private VerticalTabItemHoverController mItemHoverController;
+
+    private RecyclerView mRecyclerView;
+    private RecyclerView mPinnedTabsRecyclerView;
 
     private TabListModel mModelList;
     private TabListModel mPinnedTabsModelList;
@@ -70,6 +79,22 @@ public class VerticalTabKeyboardHandlerUnitTest {
 
     @Before
     public void setUp() {
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        mRecyclerView = createRecyclerView(activity);
+        mPinnedTabsRecyclerView = createRecyclerView(activity);
+        LinearLayout contentView = new LinearLayout(activity);
+        contentView.setOrientation(LinearLayout.VERTICAL);
+        contentView.addView(
+                mPinnedTabsRecyclerView,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ITEM_COUNT * ITEM_HEIGHT));
+        contentView.addView(
+                mRecyclerView,
+                new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ITEM_COUNT * ITEM_HEIGHT));
+        activity.setContentView(contentView);
+        ShadowLooper.idleMainLooper();
+
         when(mTabModelSelector.getCurrentModel()).thenReturn(mTabModel);
         when(mTabModel.getTabUngrouper()).thenReturn(mTabUngrouper);
         when(mTab1.getId()).thenReturn(TAB_ID_1);
@@ -102,11 +127,10 @@ public class VerticalTabKeyboardHandlerUnitTest {
                         mPinnedTabsModelList,
                         mRecyclerView,
                         mPinnedTabsRecyclerView,
-                        mHoverCardController);
+                        mItemHoverController);
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_UnpinnedTab_MoveDown() {
         setupFocusedTab(
                 mRecyclerView,
@@ -121,7 +145,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_UnpinnedTab_MoveUp() {
         setupFocusedTab(
                 mRecyclerView,
@@ -136,7 +159,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_Boundary_ReturnsFalse() {
         setupFocusedTab(
                 mRecyclerView,
@@ -151,13 +173,12 @@ public class VerticalTabKeyboardHandlerUnitTest {
         verify(mTabModel, never()).moveTab(anyInt(), anyInt());
 
         // Last item moving down should be a no-op
-        when(mRecyclerView.getChildAdapterPosition(mContainingItemView)).thenReturn(1);
+        focusItem(mRecyclerView, 1);
         assertFalse(mHandler.reorderKeyboardFocusedItem(/* toPrevious= */ false));
         verify(mTabModel, never()).moveTab(anyInt(), anyInt());
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_PinnedTab_MoveDown() {
         setupFocusedTab(
                 mPinnedTabsRecyclerView,
@@ -172,7 +193,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_PinnedTab_MoveUp() {
         setupFocusedTab(
                 mPinnedTabsRecyclerView,
@@ -187,11 +207,9 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_TabGroupHeader() {
         PropertyModel headerModel =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
-                        .with(TabProperties.TAB_ID, TAB_ID_1)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, GROUP_ID)
                         .build();
         mModelList.add(new ListItem(TabProperties.UiType.TAB_GROUP, headerModel));
@@ -201,24 +219,18 @@ public class VerticalTabKeyboardHandlerUnitTest {
                         .build();
         mModelList.add(new ListItem(TabProperties.UiType.TAB, tabModel2));
 
-        when(mRecyclerView.hasFocus()).thenReturn(true);
-        when(mRecyclerView.findFocus()).thenReturn(mFocusedView);
-        when(mRecyclerView.findContainingItemView(mFocusedView)).thenReturn(mContainingItemView);
-        when(mRecyclerView.getChildAdapterPosition(mContainingItemView)).thenReturn(0);
+        focusItem(mRecyclerView, 0);
 
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1));
-        when(mTabModel.getRelatedTabList(TAB_ID_2)).thenReturn(List.of(mTab2));
+        when(mTabModel.getTabsInGroup(GROUP_ID)).thenReturn(List.of(mTab1));
 
         assertTrue(mHandler.reorderKeyboardFocusedItem(/* toPrevious= */ false));
-        verify(mTabModel).moveRelatedTabs(TAB_ID_1, 1);
+        verify(mTabModel).moveGroupToIndex(GROUP_ID, 1);
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_ChildTab_UngroupUp() {
         PropertyModel headerModel =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
-                        .with(TabProperties.TAB_ID, TAB_ID_1)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, GROUP_ID)
                         .build();
         PropertyModel childModel1 =
@@ -236,23 +248,16 @@ public class VerticalTabKeyboardHandlerUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel1));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel2));
 
-        when(mRecyclerView.hasFocus()).thenReturn(true);
-        when(mRecyclerView.findFocus()).thenReturn(mFocusedView);
-        when(mRecyclerView.findContainingItemView(mFocusedView)).thenReturn(mContainingItemView);
-        when(mRecyclerView.getChildAdapterPosition(mContainingItemView)).thenReturn(1);
-
-        when(mTabModel.getRelatedTabList(TAB_ID_1)).thenReturn(List.of(mTab1, mTab2));
+        focusItem(mRecyclerView, 1);
 
         assertTrue(mHandler.reorderKeyboardFocusedItem(/* toPrevious= */ true));
         verify(mTabUngrouper).ungroupTabs(List.of(mTab1), /* trailing= */ false, false);
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_ChildTab_UngroupDown() {
         PropertyModel headerModel =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
-                        .with(TabProperties.TAB_ID, TAB_ID_1)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, GROUP_ID)
                         .build();
         PropertyModel childModel1 =
@@ -276,23 +281,16 @@ public class VerticalTabKeyboardHandlerUnitTest {
                         .build();
         mModelList.add(new ListItem(TabProperties.UiType.TAB, standaloneModel));
 
-        when(mRecyclerView.hasFocus()).thenReturn(true);
-        when(mRecyclerView.findFocus()).thenReturn(mFocusedView);
-        when(mRecyclerView.findContainingItemView(mFocusedView)).thenReturn(mContainingItemView);
-        when(mRecyclerView.getChildAdapterPosition(mContainingItemView)).thenReturn(2);
-
-        when(mTabModel.getRelatedTabList(TAB_ID_2)).thenReturn(List.of(mTab1, mTab2));
+        focusItem(mRecyclerView, 2);
 
         assertTrue(mHandler.reorderKeyboardFocusedItem(/* toPrevious= */ false));
         verify(mTabUngrouper).ungroupTabs(List.of(mTab2), /* trailing= */ true, false);
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_ChildTabAtEndOfList_UngroupsDown() {
         PropertyModel headerModel =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
-                        .with(TabProperties.TAB_ID, TAB_ID_1)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, GROUP_ID)
                         .build();
         PropertyModel childModel1 =
@@ -310,29 +308,22 @@ public class VerticalTabKeyboardHandlerUnitTest {
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel1));
         mModelList.add(new ListItem(TabProperties.UiType.TAB, childModel2));
 
-        when(mRecyclerView.hasFocus()).thenReturn(true);
-        when(mRecyclerView.findFocus()).thenReturn(mFocusedView);
-        when(mRecyclerView.findContainingItemView(mFocusedView)).thenReturn(mContainingItemView);
-        when(mRecyclerView.getChildAdapterPosition(mContainingItemView)).thenReturn(2);
-
-        when(mTabModel.getRelatedTabList(TAB_ID_2)).thenReturn(List.of(mTab1, mTab2));
+        focusItem(mRecyclerView, 2);
 
         assertTrue(mHandler.reorderKeyboardFocusedItem(/* toPrevious= */ false));
         verify(mTabUngrouper).ungroupTabs(List.of(mTab2), /* trailing= */ true, false);
     }
 
     @Test
-    @SmallTest
     public void testReorderKeyboardFocusedItem_NoFocus_ReturnsFalse() {
-        when(mRecyclerView.hasFocus()).thenReturn(false);
-        when(mPinnedTabsRecyclerView.hasFocus()).thenReturn(false);
+        assertFalse(mRecyclerView.hasFocus());
+        assertFalse(mPinnedTabsRecyclerView.hasFocus());
 
         assertFalse(mHandler.reorderKeyboardFocusedItem(/* toPrevious= */ false));
         verify(mTabModel, never()).moveTab(anyInt(), anyInt());
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_CtrlDpadDown_ReordersItem() {
         setupFocusedTab(
                 mRecyclerView,
@@ -355,7 +346,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_CtrlDpadUp_ReordersItem() {
         setupFocusedTab(
                 mRecyclerView,
@@ -378,9 +368,8 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_ActionUp_ConsumesEventWhenFocused() {
-        when(mRecyclerView.hasFocus()).thenReturn(true);
+        focusItem(mRecyclerView, 0);
         KeyEvent event =
                 new KeyEvent(
                         0,
@@ -394,10 +383,9 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_ActionUp_IgnoredWhenNotFocusedOnList() {
-        when(mRecyclerView.hasFocus()).thenReturn(false);
-        when(mPinnedTabsRecyclerView.hasFocus()).thenReturn(false);
+        assertFalse(mRecyclerView.hasFocus());
+        assertFalse(mPinnedTabsRecyclerView.hasFocus());
         KeyEvent event =
                 new KeyEvent(
                         0,
@@ -411,7 +399,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_NonCtrlKey_ReturnsFalse() {
         KeyEvent event = new KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP, 0, 0);
         assertFalse(mHandler.onKeyEvent(event));
@@ -419,7 +406,6 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_PageUpOrDown_ReturnsFalse() {
         KeyEvent pageUpEvent =
                 new KeyEvent(
@@ -444,39 +430,35 @@ public class VerticalTabKeyboardHandlerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_Escape_DismissesShowingHoverCard() {
-        when(mHoverCardController.isHoverCardShowing()).thenReturn(true);
+        when(mItemHoverController.isHoverCardShowing()).thenReturn(true);
 
         KeyEvent event = new KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE, 0, 0);
         assertTrue(mHandler.onKeyEvent(event));
-        verify(mHoverCardController).hideHoverCard();
+        verify(mItemHoverController).hideHoverCard();
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_Escape_ActionUp_ReturnsTrueWhenHoverCardShowing() {
-        when(mHoverCardController.isHoverCardShowing()).thenReturn(true);
+        when(mItemHoverController.isHoverCardShowing()).thenReturn(true);
 
         KeyEvent event = new KeyEvent(0, 0, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ESCAPE, 0, 0);
         assertTrue(mHandler.onKeyEvent(event));
-        verify(mHoverCardController, never()).hideHoverCard();
+        verify(mItemHoverController, never()).hideHoverCard();
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_Escape_HoverCardNotShowing_ReturnsFalse() {
-        when(mHoverCardController.isHoverCardShowing()).thenReturn(false);
+        when(mItemHoverController.isHoverCardShowing()).thenReturn(false);
 
         KeyEvent event = new KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ESCAPE, 0, 0);
         assertFalse(mHandler.onKeyEvent(event));
-        verify(mHoverCardController, never()).hideHoverCard();
+        verify(mItemHoverController, never()).hideHoverCard();
     }
 
     @Test
-    @SmallTest
     public void testOnKeyEvent_EscapeWithModifier_ReturnsFalse() {
-        when(mHoverCardController.isHoverCardShowing()).thenReturn(true);
+        when(mItemHoverController.isHoverCardShowing()).thenReturn(true);
 
         KeyEvent event =
                 new KeyEvent(
@@ -487,7 +469,7 @@ public class VerticalTabKeyboardHandlerUnitTest {
                         0,
                         KeyEvent.META_CTRL_ON);
         assertFalse(mHandler.onKeyEvent(event));
-        verify(mHoverCardController, never()).hideHoverCard();
+        verify(mItemHoverController, never()).hideHoverCard();
     }
 
     private void setupFocusedTab(
@@ -510,9 +492,45 @@ public class VerticalTabKeyboardHandlerUnitTest {
             modelList.add(new ListItem(uiType, model2));
         }
 
-        when(recyclerView.hasFocus()).thenReturn(true);
-        when(recyclerView.findFocus()).thenReturn(mFocusedView);
-        when(recyclerView.findContainingItemView(mFocusedView)).thenReturn(mContainingItemView);
-        when(recyclerView.getChildAdapterPosition(mContainingItemView)).thenReturn(focusedPosition);
+        focusItem(recyclerView, focusedPosition);
+    }
+
+    private static RecyclerView createRecyclerView(Context context) {
+        RecyclerView recyclerView = new RecyclerView(context);
+        recyclerView.setLayoutManager(new LinearLayoutManager(context));
+        recyclerView.setAdapter(new ItemAdapter());
+        return recyclerView;
+    }
+
+    /** Gives focus to a view nested inside the item at {@code position}. */
+    private static void focusItem(RecyclerView recyclerView, int position) {
+        RecyclerView.ViewHolder holder = recyclerView.findViewHolderForAdapterPosition(position);
+        assertNotNull(holder);
+        View focusTarget = ((ViewGroup) holder.itemView).getChildAt(0);
+        assertTrue(focusTarget.requestFocus());
+    }
+
+    /** Creates {@link #ITEM_COUNT} items, each containing a single focusable view. */
+    private static class ItemAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+        @Override
+        public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            FrameLayout itemView = new FrameLayout(parent.getContext());
+            itemView.setLayoutParams(
+                    new RecyclerView.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, ITEM_HEIGHT));
+            View focusTarget = new View(parent.getContext());
+            focusTarget.setFocusable(true);
+            focusTarget.setFocusableInTouchMode(true);
+            itemView.addView(focusTarget);
+            return new RecyclerView.ViewHolder(itemView) {};
+        }
+
+        @Override
+        public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {}
+
+        @Override
+        public int getItemCount() {
+            return ITEM_COUNT;
+        }
     }
 }

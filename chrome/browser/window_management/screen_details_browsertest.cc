@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/devtools/devtools_window_testing.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -73,6 +72,7 @@ IN_PROC_BROWSER_TEST_F(ScreenDetailsTest, FullscreenSize) {
                   return !!document.fullscreenElement;
                 });
   )JS";
+  tab->GetRenderWidgetHostView()->SetHasFocusForTesting(true);
   ASSERT_TRUE(EvalJs(tab, kEnterFullscreenAndResizeScript).ExtractBool());
   DevToolsWindowTesting::OpenDevToolsWindowSync(tab, true);
   ASSERT_TRUE(EvalJs(tab, "window.nextResize").is_ok());

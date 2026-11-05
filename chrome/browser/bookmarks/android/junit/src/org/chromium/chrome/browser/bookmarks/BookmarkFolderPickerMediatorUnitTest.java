@@ -11,7 +11,10 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import static org.chromium.ui.test.util.MockitoHelper.doCallback;
@@ -23,6 +26,7 @@ import android.view.MenuItem;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -33,6 +37,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
+import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.Callback;
 import org.chromium.base.DeviceInfo;
@@ -40,6 +45,7 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.UserActionTester;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.BookmarkListEntry.ViewType;
 import org.chromium.chrome.browser.bookmarks.BookmarkUiPrefs.BookmarkRowDisplayPref;
@@ -49,6 +55,7 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.bookmarks.BookmarkItem;
 import org.chromium.components.bookmarks.BookmarkType;
+import org.chromium.components.browser_ui.widget.gesture.BackPressHandler.BackPressResult;
 import org.chromium.components.commerce.core.CommerceFeatureUtils;
 import org.chromium.components.commerce.core.CommerceFeatureUtilsJni;
 import org.chromium.components.commerce.core.ShoppingService;
@@ -64,7 +71,10 @@ import java.util.Arrays;
 
 /** Unit tests for {@link BookmarkFolderPickerMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
+@DisableFeatures({
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG
+})
 public class BookmarkFolderPickerMediatorUnitTest {
     @Rule
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.LENIENT);
@@ -230,6 +240,7 @@ public class BookmarkFolderPickerMediatorUnitTest {
 
     @Mock private BookmarkImageFetcher mBookmarkImageFetcher;
     @Mock private BookmarkModel mBookmarkModel;
+    @Mock private BookmarkModelObserver mBookmarkModelObserver;
     @Mock private Runnable mFinishRunnable;
     @Mock private BookmarkUiPrefs mBookmarkUiPrefs;
     @Mock private Tracker mTracker;
@@ -319,11 +330,24 @@ public class BookmarkFolderPickerMediatorUnitTest {
         doReturn(BookmarkRowDisplayPref.COMPACT).when(mBookmarkUiPrefs).getBookmarkRowDisplayPref();
         doReturn(BookmarkRowSortOrder.MANUAL).when(mBookmarkUiPrefs).getBookmarkRowDisplayPref();
 
-        remakeMediator(mBookmarkModel, mUserBookmarkId);
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                mBookmarkModel,
+                mUserBookmarkId);
         mFinishModelLoadCallback.run();
     }
 
-    private void remakeMediator(BookmarkModel bookmarkModel, BookmarkId... bookmarkIds) {
+    @After
+    public void tearDown() {
+        DeviceInfo.resetIsDesktopForTesting();
+    }
+
+    private void remakeMediator(
+            boolean isDesktopDialog,
+            @Nullable BookmarkId restoredFolderId,
+            BookmarkModel bookmarkModel,
+            BookmarkId... bookmarkIds) {
         if (mMediator != null) {
             mMediator.destroy();
         }
@@ -346,20 +370,30 @@ public class BookmarkFolderPickerMediatorUnitTest {
                         mAddNewFolderCoordinator,
                         rowCoordinator,
                         mShoppingService,
-                        /* isFromBookmarkDialog= */ false);
+                        /* isFromBookmarkDialog= */ false,
+                        isDesktopDialog,
+                        restoredFolderId);
     }
 
     @Test
     public void testModelNotYetReady() {
         // Regression test for crbug.com/439882814
-        remakeMediator(mBookmarkModel, mUserFolderId);
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                mBookmarkModel,
+                mUserFolderId);
         // Do not call finishLoadingBookmarkModel().
         mMediator.updateToolbarButtons();
     }
 
     @Test
     public void testMoveFolder() {
-        remakeMediator(mBookmarkModel, mUserFolderId);
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                mBookmarkModel,
+                mUserFolderId);
         mMediator.populateFoldersForParentId(mMobileFolderId);
 
         // Check that the UserFolder isn't a row since it should be filtered out because it's the
@@ -418,6 +452,45 @@ public class BookmarkFolderPickerMediatorUnitTest {
     }
 
     @Test
+    public void testRestoredFolder() {
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ mUserFolderId,
+                mBookmarkModel,
+                mUserBookmarkId);
+        mFinishModelLoadCallback.run();
+
+        assertEquals(mUserFolderId, mMediator.getCurrentFolderId());
+        assertEquals("UserFolder", mModel.get(BookmarkFolderPickerProperties.TOOLBAR_TITLE));
+    }
+
+    @Test
+    public void testRestoredFolder_missing_showsDefault() {
+        BookmarkId missingId = new BookmarkId(/* id= */ 999, BookmarkType.NORMAL);
+        doReturn(null).when(mBookmarkModel).getBookmarkById(missingId);
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ missingId,
+                mBookmarkModel,
+                mUserBookmarkId);
+        mFinishModelLoadCallback.run();
+
+        assertEquals(mMobileFolderId, mMediator.getCurrentFolderId());
+    }
+
+    @Test
+    public void testRestoredFolder_notAFolder_showsDefault() {
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ mUserBookmarkId1,
+                mBookmarkModel,
+                mUserBookmarkId);
+        mFinishModelLoadCallback.run();
+
+        assertEquals(mMobileFolderId, mMediator.getCurrentFolderId());
+    }
+
+    @Test
     public void testOptionsItemSelected_BackPressed() {
         assertTrue(mMediator.optionsItemSelected(android.R.id.home));
         assertEquals("Move to…", mModel.get(BookmarkFolderPickerProperties.TOOLBAR_TITLE));
@@ -469,6 +542,43 @@ public class BookmarkFolderPickerMediatorUnitTest {
     }
 
     @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG)
+    public void testCoordinatorBackPressStateSupplier() {
+        ImprovedBookmarkRowCoordinator rowCoordinator =
+                new ImprovedBookmarkRowCoordinator(
+                        mActivity,
+                        mBookmarkImageFetcher,
+                        mBookmarkModel,
+                        mBookmarkUiPrefs,
+                        mShoppingService);
+        BookmarkFolderPickerCoordinator coordinator =
+                new BookmarkFolderPickerCoordinator(
+                        mActivity,
+                        mBookmarkModel,
+                        Arrays.asList(mUserBookmarkId),
+                        mFinishRunnable,
+                        mAddNewFolderCoordinator,
+                        mBookmarkUiPrefs,
+                        rowCoordinator,
+                        mShoppingService,
+                        /* isFromBookmarkDialog= */ false,
+                        /* isDesktopDialog= */ BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                        /* restoredFolderId= */ null);
+        mFinishModelLoadCallback.run();
+
+        // Initially populated at mMobileFolderId (not root), so back press is handled.
+        assertTrue(coordinator.getHandleBackPressChangedSupplier().get());
+
+        // Pressing back navigates to mRootFolderId and disables the supplier so the activity
+        // root callback can handle subsequent back presses.
+        assertEquals(BackPressResult.SUCCESS, coordinator.handleBackPress());
+        assertFalse(coordinator.getHandleBackPressChangedSupplier().get());
+        assertEquals(BackPressResult.FAILURE, coordinator.handleBackPress());
+
+        coordinator.destroy();
+    }
+
+    @Test
     @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
     public void testDesktopBookmarksLayout_UsesCompactRows() {
         DeviceInfo.setIsDesktopForTesting(true);
@@ -479,10 +589,14 @@ public class BookmarkFolderPickerMediatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
-    public void testDesktopBookmarksLayout_NavigationIconVisibility_NotFromBookmarkDialog() {
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG)
+    public void testDesktopBookmarksDialog_NavigationIconVisibility_NotFromBookmarkDialog() {
         DeviceInfo.setIsDesktopForTesting(true);
-        remakeMediator(mBookmarkModel, mUserBookmarkId);
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                mBookmarkModel,
+                mUserBookmarkId);
 
         // At root folder when not from a parent dialog, navigation icon should not be visible.
         mMediator.populateFoldersForParentId(mRootFolderId);
@@ -502,8 +616,8 @@ public class BookmarkFolderPickerMediatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
-    public void testDesktopBookmarksLayout_NavigationIconVisibility_FromBookmarkDialog() {
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG)
+    public void testDesktopBookmarksDialog_NavigationIconVisibility_FromBookmarkDialog() {
         DeviceInfo.setIsDesktopForTesting(true);
         if (mMediator != null) {
             mMediator.destroy();
@@ -527,16 +641,35 @@ public class BookmarkFolderPickerMediatorUnitTest {
                         mAddNewFolderCoordinator,
                         rowCoordinator,
                         mShoppingService,
-                        /* isFromBookmarkDialog= */ true);
+                        /* isFromBookmarkDialog= */ true,
+                        /* isDesktopDialog= */ BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                        /* restoredFolderId= */ null);
 
         // At root folder when from another dialog, navigation icon should be visible to allow
-        // returning.
+        // returning, but back press is not handled by mediator so it falls back to the activity.
         mMediator.populateFoldersForParentId(mRootFolderId);
         assertTrue(mModel.get(BookmarkFolderPickerProperties.NAVIGATION_ICON_VISIBLE));
+        assertFalse(mMediator.getHandleBackPressChangedSupplier().get());
 
-        // In a subfolder, navigation icon should also be visible.
+        // In a subfolder, navigation icon should also be visible and back press handled.
         mMediator.populateFoldersForParentId(mMobileFolderId);
         assertTrue(mModel.get(BookmarkFolderPickerProperties.NAVIGATION_ICON_VISIBLE));
+        assertTrue(mMediator.getHandleBackPressChangedSupplier().get());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG)
+    public void testNotDesktopDialog_flagEnabled_usesFullScreenTitle() {
+        // E.g. a folded foldable: the activity passes isDesktopDialog=false despite the flag.
+        remakeMediator(
+                /* isDesktopDialog= */ false,
+                /* restoredFolderId= */ null,
+                mBookmarkModel,
+                mUserBookmarkId);
+        mMediator.populateFoldersForParentId(mRootFolderId);
+        assertEquals(
+                mActivity.getString(R.string.folder_picker_root),
+                mModel.get(BookmarkFolderPickerProperties.TOOLBAR_TITLE));
     }
 
     @Test
@@ -556,7 +689,12 @@ public class BookmarkFolderPickerMediatorUnitTest {
 
     @Test
     public void testMoveMultiple_sharedParent() {
-        remakeMediator(mBookmarkModel, mUserBookmarkId, mUserBookmarkId1);
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                mBookmarkModel,
+                mUserBookmarkId,
+                mUserBookmarkId1);
         mFinishModelLoadCallback.run();
         assertEquals("Mobile bookmarks", mModel.get(BookmarkFolderPickerProperties.TOOLBAR_TITLE));
         assertTrue(mModel.get(BookmarkFolderPickerProperties.MOVE_BUTTON_ENABLED));
@@ -564,7 +702,12 @@ public class BookmarkFolderPickerMediatorUnitTest {
 
     @Test
     public void testMoveMultiple_noSharedParent() {
-        remakeMediator(mBookmarkModel, mUserFolderId, mUserBookmarkId1);
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                mBookmarkModel,
+                mUserFolderId,
+                mUserBookmarkId1);
         mFinishModelLoadCallback.run();
         assertEquals("Move to…", mModel.get(BookmarkFolderPickerProperties.TOOLBAR_TITLE));
         assertFalse(mModel.get(BookmarkFolderPickerProperties.MOVE_BUTTON_ENABLED));
@@ -572,10 +715,103 @@ public class BookmarkFolderPickerMediatorUnitTest {
 
     @Test
     public void testMoveMultiple_readingList() {
-        remakeMediator(mBookmarkModel, mReadingListItemId1, mReadingListItemId2);
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                mBookmarkModel,
+                mReadingListItemId1,
+                mReadingListItemId2);
         mFinishModelLoadCallback.run();
         assertEquals("Move to…", mModel.get(BookmarkFolderPickerProperties.TOOLBAR_TITLE));
         assertFalse(mModel.get(BookmarkFolderPickerProperties.MOVE_BUTTON_ENABLED));
+    }
+
+    @Test
+    public void testMoveMultiple_coalescesRefreshIntoOnePost() {
+        BookmarkModel bookmarkModel = FakeBookmarkModel.createModel();
+        BookmarkId id1 =
+                bookmarkModel.addBookmark(
+                        bookmarkModel.getMobileFolderId(),
+                        /* index= */ 0,
+                        "title1",
+                        new GURL("https://google.com"));
+        BookmarkId id2 =
+                bookmarkModel.addBookmark(
+                        bookmarkModel.getMobileFolderId(),
+                        /* index= */ 1,
+                        "title2",
+                        new GURL("https://google.com"));
+        BookmarkId targetFolderId =
+                bookmarkModel.addFolder(
+                        bookmarkModel.getMobileFolderId(), /* index= */ 2, "targetFolder");
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                bookmarkModel,
+                id1,
+                id2);
+
+        bookmarkModel.addObserver(mBookmarkModelObserver);
+        mMediator.populateFoldersForParentId(targetFolderId);
+        verify(mBookmarkModelObserver).bookmarkFolderViewed(targetFolderId);
+        clearInvocations(mBookmarkModelObserver);
+
+        mModel.get(BookmarkFolderPickerProperties.MOVE_CLICK_LISTENER).run();
+        verify(mFinishRunnable).run();
+        // Moving two bookmarks fires two model-changed notifications. bookmarkFolderViewed is the
+        // observable side effect of populateFoldersForParentId, i.e. the proxy for "rebuilt";
+        // nothing is rebuilt synchronously.
+        verify(mBookmarkModelObserver, never()).bookmarkFolderViewed(targetFolderId);
+
+        ShadowLooper.idleMainLooper();
+        verify(mBookmarkModelObserver, times(1)).bookmarkFolderViewed(targetFolderId);
+    }
+
+    @Test
+    public void testDestroy_cancelsPendingRefresh() {
+        BookmarkModel bookmarkModel = FakeBookmarkModel.createModel();
+        BookmarkId movedId =
+                bookmarkModel.addBookmark(
+                        bookmarkModel.getMobileFolderId(),
+                        /* index= */ 0,
+                        "title",
+                        new GURL("https://google.com"));
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                bookmarkModel,
+                movedId);
+        bookmarkModel.addObserver(mBookmarkModelObserver);
+        clearInvocations(mBookmarkModelObserver);
+
+        bookmarkModel.addFolder(bookmarkModel.getMobileFolderId(), /* index= */ 0, "folder");
+        mMediator.destroy();
+
+        ShadowLooper.idleMainLooper();
+        verify(mBookmarkModelObserver, never()).bookmarkFolderViewed(any());
+        verify(mFinishRunnable, never()).run();
+    }
+
+    @Test
+    public void testBookmarkRemoved_finishesAfterPostedRefresh() {
+        BookmarkModel bookmarkModel = FakeBookmarkModel.createModel();
+        BookmarkId movedId =
+                bookmarkModel.addBookmark(
+                        bookmarkModel.getMobileFolderId(),
+                        /* index= */ 0,
+                        "title",
+                        new GURL("https://google.com"));
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                bookmarkModel,
+                movedId);
+
+        bookmarkModel.deleteBookmark(movedId);
+        verify(mFinishRunnable, never()).run();
+
+        ShadowLooper.idleMainLooper();
+        verify(mFinishRunnable).run();
     }
 
     @Test
@@ -587,7 +823,11 @@ public class BookmarkFolderPickerMediatorUnitTest {
                         0,
                         "title",
                         new GURL("https://google.com"));
-        remakeMediator(bookmarkModel, id);
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                bookmarkModel,
+                id);
 
         mMediator.populateFoldersForParentId(bookmarkModel.getRootFolderId());
         assertEquals("Move to…", mModel.get(BookmarkFolderPickerProperties.TOOLBAR_TITLE));
@@ -609,7 +849,11 @@ public class BookmarkFolderPickerMediatorUnitTest {
                         0,
                         "title",
                         new GURL("https://google.com"));
-        remakeMediator(bookmarkModel, id);
+        remakeMediator(
+                BookmarkUtils.isDesktopBookmarksDialogEnabled(),
+                /* restoredFolderId= */ null,
+                bookmarkModel,
+                id);
 
         mMediator.populateFoldersForParentId(bookmarkModel.getRootFolderId());
         assertEquals("Move to…", mModel.get(BookmarkFolderPickerProperties.TOOLBAR_TITLE));

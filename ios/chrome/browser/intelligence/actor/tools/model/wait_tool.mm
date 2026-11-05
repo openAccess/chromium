@@ -6,8 +6,10 @@
 
 #import <utility>
 
+#import "base/format_macros.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback.h"
+#import "base/strings/stringprintf.h"
 #import "base/task/sequenced_task_runner.h"
 #import "components/actor/public/mojom/actor_types.mojom.h"
 #import "components/optimization_guide/proto/features/actions_data.pb.h"
@@ -43,8 +45,7 @@ void WaitTool::Validate(ToolExecutionCallback callback) {
 
 void WaitTool::Execute(ToolExecutionCallback callback) {
   if (observe_web_state_ && observe_web_state_->IsRealized()) {
-    // TODO(crbug.com/496164697): Observe the tab and monitor page stability,
-    // see also crbug.com/498991756.
+    // TODO(crbug.com/498991756): Observe the tab and monitor page stability.
   }
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
@@ -62,6 +63,11 @@ ToolType WaitTool::GetToolType() const {
     return ToolType::kWaitZeroDuration;
   }
   return ToolType::kWait;
+}
+
+std::string WaitTool::DebugString() const {
+  return base::StringPrintf("WaitTool[duration=%" PRId64 "ms]",
+                            wait_duration_.InMilliseconds());
 }
 
 void WaitTool::OnDelayFinished(ToolExecutionCallback callback) {

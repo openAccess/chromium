@@ -30,6 +30,7 @@ class SiteInstance;
 class StoragePartition;
 class StoragePartitionConfig;
 class RenderFrameHost;
+class WebContents;
 }  // namespace content
 
 namespace download {
@@ -49,16 +50,33 @@ namespace util {
 // Returns true if the extension can be enabled in incognito mode.
 bool CanBeIncognitoEnabled(const Extension* extension);
 
-// Returns true if `extension_id` can run in an incognito window.
+// Returns true if `extension_id` can run in an incognito window (or Enterprise
+// Isolated Mode window when it replaces Incognito).
 bool IsIncognitoEnabled(const ExtensionId& extension_id,
                         content::BrowserContext* context);
 bool IsIncognitoEnabled(const Extension* extension,
                         content::BrowserContext* context);
 
+// Returns true if `extension_id` is enabled in incognito mode. Unlike
+// `IsIncognitoEnabled`, this always checks the incognito setting even when
+// Enterprise Isolated Mode replaces incognito.
+bool IsIncognitoEnabledForSync(const ExtensionId& extension_id,
+                               content::BrowserContext* context);
+
+// Returns true if `extension` must remain enabled in Enterprise Isolated Mode.
+bool MustRemainIsolatedModeEnabled(const Extension* extension,
+                                   content::BrowserContext* context);
+
 // Returns true if `extension` can see events and data from another sub-profile
 // (incognito to original profile, or vice versa).
 bool CanCrossIncognito(const Extension* extension,
                        content::BrowserContext* context);
+
+// Returns whether `web_contents` belongs to `browser_context`, optionally
+// treating an incognito context as belonging to its original context.
+bool IsWebContentsInContext(content::WebContents& web_contents,
+                            content::BrowserContext& browser_context,
+                            bool include_incognito);
 
 // Returns true if the extension associated with `extension_id` is idle and it
 // is safe to perform actions such as updating.
@@ -165,6 +183,13 @@ bool CanRendererActOnBehalfOfExtension(
 // Returns true if the extension associated with `extension_id` is a Chrome App.
 bool IsChromeApp(const ExtensionId& extension_id,
                  content::BrowserContext* context);
+
+// Returns true if the enabled extension associated with `extension_id` holds
+// the clipboardWrite API permission. Asked by the renderer-facing permission
+// query and again by the browser when a write actually arrives, so a permission
+// revoked mid-worker takes effect.
+bool HasClipboardWritePermission(const ExtensionId& extension_id,
+                                 content::BrowserContext* context);
 
 // Returns true if `extension_id` can be launched (possibly only after being
 // enabled).

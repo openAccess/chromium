@@ -52,6 +52,7 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
     private @Nullable PropertyModel mMessage;
     private String[] mMessageExtensionIds = new String[0];
     private @Nullable WebContents mMessageWebContents;
+    private final Runnable mClearOmniboxFocus;
     private final Callback<@Nullable Tab> mTabSupplierObserver =
             (tab) -> refreshRequestAccessButton();
     private final Runnable mClearAllowedTextRunnable =
@@ -67,13 +68,15 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
             NullableObservableSupplier<Tab> currentTabSupplier,
             ExtensionsToolbarBridge extensionsToolbarBridge,
             Callback<Boolean> visibilityObserver,
-            Supplier<Boolean> isWindowCompactSupplier) {
+            Supplier<Boolean> isWindowCompactSupplier,
+            Runnable clearOmniboxFocus) {
         mContext = context;
         mCurrentTabSupplier = currentTabSupplier;
         mExtensionsToolbarBridge = extensionsToolbarBridge;
         mModel = model;
         mVisibilityObserver = visibilityObserver;
         mIsWindowCompactSupplier = isWindowCompactSupplier;
+        mClearOmniboxFocus = clearOmniboxFocus;
 
         mExtensionsToolbarBridge.addObserver(mToolbarObserver);
         mCurrentTabSupplier.addSyncObserverAndPostIfNonNull(mTabSupplierObserver);
@@ -248,11 +251,17 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
         mModel.set(
                 ExtensionsToolbarProperties.REQUEST_ACCESS_BUTTON_CLICK_LISTENER,
                 (v) -> {
+                    mClearOmniboxFocus.run();
                     handleAccessGranted(webContents);
                 });
     }
 
     private void handleAccessGranted(WebContents webContents) {
+        if (!mExtensionsToolbarBridge.onRequestAccessButtonClicked(webContents)) {
+            refreshRequestAccessButton();
+            return;
+        }
+
         mIsShowingAllowedText = true;
         mWebContentsShowingAllowedText = webContents;
         mModel.set(
@@ -264,8 +273,6 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
         mModel.set(
                 ExtensionsToolbarProperties.REQUEST_ACCESS_BUTTON_CLICK_LISTENER,
                 null); // Disable further clicks
-
-        mExtensionsToolbarBridge.onRequestAccessButtonClicked(webContents);
 
         // We post a delayed task to re-evaluate the button state so it naturally disappears
         // after the user has a moment to see the "Allowed" text.
@@ -321,9 +328,9 @@ class ExtensionAccessControlButtonMediator implements Destroyable {
 
     private class ToolbarObserver implements ExtensionsToolbarBridge.Observer {
         @Override
-        public void onActiveWebContentsChanged(WebContents webContents) {
+        public void onActiveWebContentsChanged(@Nullable WebContents webContents) {
             clearAllowedTextStateIfDifferentWebContents(webContents);
-            if (mIsShowingAllowedText) return;
+            if (mIsShowingAllowedText || webContents == null) return;
             refreshRequestAccessButtonWithWebContents(webContents);
         }
 

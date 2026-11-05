@@ -11,17 +11,14 @@ source_set("impl") {
 
   deps = [
     ":installable",
+    "//chrome/browser/profiles:profile",
     "//url",
   ]
 
   if (is_android) {
-    deps += [
-      "//chrome/browser:browser_public_dependencies",
-      "//chrome/browser/android:shortcut_helper",
-    ]
+    deps += [ "//chrome/browser/android:shortcut_helper" ]
   } else {
     deps += [
-      "//chrome/browser/profiles:profile",
       "//chrome/browser/web_applications",
       "//chrome/browser/web_applications/proto",
     ]
@@ -79,10 +76,10 @@ source_set("browser_tests") {
   deps = [
     "//base",
     "//base/test:test_support",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ssl",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_utils",
     "//components/favicon/content",
     "//components/favicon/core",
     "//components/webapps/browser",
@@ -100,7 +97,7 @@ source_set("browser_tests") {
       ":test_support",
       "//chrome/app:command_ids",
       "//chrome/browser/banners:test_support",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/user_education",
       "//chrome/browser/web_applications",
@@ -133,7 +130,6 @@ if (!is_android) {
       "//base",
       "//base/test:test_support",
       "//chrome/browser/banners:test_support",
-      "//chrome/browser/ui",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/web_applications",
       "//chrome/browser/web_applications:web_applications_test_support",

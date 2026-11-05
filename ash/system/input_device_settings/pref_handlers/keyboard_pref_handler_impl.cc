@@ -92,14 +92,12 @@ bool IsAppleKeyboardDefaultModifierRemapping(ui::mojom::ModifierKey from,
 }
 
 bool ShouldAddSixPackKeyProperties(const mojom::Keyboard& keyboard) {
-  return features::IsAltClickAndSixPackCustomizationEnabled() &&
-         !std::ranges::contains(keyboard.modifier_keys,
+  return !std::ranges::contains(keyboard.modifier_keys,
                                 ui::mojom::ModifierKey::kFunction);
 }
 
 bool ShouldAddExtendedFkeyProperties(const mojom::Keyboard& keyboard) {
-  return ::features::AreF11AndF12ShortcutsEnabled() &&
-         IsChromeOSKeyboard(keyboard) &&
+  return IsChromeOSKeyboard(keyboard) &&
          !std::ranges::contains(keyboard.modifier_keys,
                                 ui::mojom::ModifierKey::kFunction);
 }

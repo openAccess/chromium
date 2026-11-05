@@ -11,13 +11,16 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/functional/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "components/private_ai/common/private_ai_logger.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "net/base/net_errors.h"
+#include "services/network/public/cpp/network_context_getter.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/websocket.mojom.h"
 #include "services/network/test/test_network_context.h"
@@ -51,7 +54,8 @@ class MockNetworkContext : public network::TestNetworkContext {
       mojo::PendingRemote<network::mojom::TrustedHeaderClient> header_client,
       const std::optional<base::UnguessableToken>& throttling_profile_id,
       const base::UnguessableToken& network_restrictions_id,
-      network::mojom::IPAddressSpace target_address_space) override {
+      network::mojom::IPAddressSpace target_address_space,
+      std::optional<int64_t> target_network) override {
     create_called_ = true;
     pending_handshake_client_ = std::move(handshake_client);
     additional_headers_ = std::move(additional_headers);
@@ -72,6 +76,13 @@ class MockNetworkContext : public network::TestNetworkContext {
   std::vector<network::mojom::HttpHeaderPtr> additional_headers_;
 };
 
+network::NetworkContextGetter GetNetworkContextGetter(
+    network::mojom::NetworkContext* network_context) {
+  return base::BindRepeating(
+      [](network::mojom::NetworkContext* context) { return context; },
+      base::Unretained(network_context));
+}
+
 struct TestConnection {
   mojo::Remote<network::mojom::WebSocketClient> client_remote;
   mojo::Remote<network::mojom::WebSocket> websocket_remote;
@@ -83,7 +94,7 @@ class WebSocketClientTest : public ::testing::Test {
  protected:
   WebSocketClientTest()
       : client_(GURL("wss://example.com/websocket"),
-                &network_context_,
+                GetNetworkContextGetter(&network_context_),
                 &logger_) {
     client_.SetResponseCallback(future_.GetRepeatingCallback());
   }
@@ -128,6 +139,7 @@ class WebSocketClientTest : public ::testing::Test {
 };
 
 TEST_F(WebSocketClientTest, ConnectionFailure) {
+  base::HistogramTester histogram_tester;
   client_.Send(oak::session::v1::SessionRequest());
 
   EXPECT_TRUE(network_context_.create_called_);
@@ -140,7 +152,37 @@ TEST_F(WebSocketClientTest, ConnectionFailure) {
 
   const auto& result = future_.Get();
   ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error(), Transport::TransportError::kError);
+  EXPECT_EQ(result.error(), Transport::TransportError::kConnectionFailed);
+
+  histogram_tester.ExpectUniqueSample(
+      "PrivateAi.Client.WebSocketConnectionError.NetError", -net::ERR_FAILED,
+      1);
+  histogram_tester.ExpectUniqueSample(
+      "PrivateAi.Client.WebSocketConnectionError.ResponseCode", 500, 1);
+}
+
+TEST_F(WebSocketClientTest, ConnectionFailureWithoutResponse) {
+  base::HistogramTester histogram_tester;
+  client_.Send(oak::session::v1::SessionRequest());
+
+  ASSERT_TRUE(network_context_.pending_handshake_client_.is_valid());
+  mojo::Remote<network::mojom::WebSocketHandshakeClient> handshake_client(
+      std::move(network_context_.pending_handshake_client_));
+
+  // The network service reports a response code of -1 if no HTTP response was
+  // received.
+  handshake_client->OnFailure("Name not resolved", net::ERR_NAME_NOT_RESOLVED,
+                              -1);
+
+  const auto& result = future_.Get();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), Transport::TransportError::kConnectionFailed);
+
+  histogram_tester.ExpectUniqueSample(
+      "PrivateAi.Client.WebSocketConnectionError.NetError",
+      -net::ERR_NAME_NOT_RESOLVED, 1);
+  histogram_tester.ExpectTotalCount(
+      "PrivateAi.Client.WebSocketConnectionError.ResponseCode", 0);
 }
 
 TEST_F(WebSocketClientTest, ChannelDropped) {
@@ -157,6 +199,8 @@ TEST_F(WebSocketClientTest, ChannelDropped) {
       "PrivateAi.Client.WebSocketSessionDuration.ClosedByServer", 1);
   histogram_tester.ExpectUniqueSample("PrivateAi.Client.WebSocketCloseCode",
                                       1000, 1);
+  histogram_tester.ExpectTotalCount(
+      "PrivateAi.Client.WebSocketConnectionError.NetError", 0);
 }
 
 TEST_F(WebSocketClientTest, SuccessfulResponse) {
@@ -186,7 +230,8 @@ TEST_F(WebSocketClientTest, NonProdVerificationKeyVariantHeader) {
   GURL url("wss://dev-private-ai.example.com/websocket");
   MockNetworkContext network_context;
 
-  WebSocketClient client(url, &network_context, &logger_);
+  WebSocketClient client(url, GetNetworkContextGetter(&network_context),
+                         &logger_);
   client.SetResponseCallback(base::DoNothing());
   client.Send(oak::session::v1::SessionRequest());
 
@@ -201,7 +246,8 @@ TEST_F(WebSocketClientTest, ProdVerificationKeyVariantHeader) {
   GURL url("wss://example.com/websocket");
   MockNetworkContext network_context;
 
-  WebSocketClient client(url, &network_context, &logger_);
+  WebSocketClient client(url, GetNetworkContextGetter(&network_context),
+                         &logger_);
   client.SetResponseCallback(base::DoNothing());
   client.Send(oak::session::v1::SessionRequest());
 
@@ -210,6 +256,110 @@ TEST_F(WebSocketClientTest, ProdVerificationKeyVariantHeader) {
             "application/x-protobuf");
   EXPECT_FALSE(network_context.GetHeader("X-Client-Verification-Key-Variant")
                    .has_value());
+}
+
+TEST_F(WebSocketClientTest, ConnectionResultWithProxySuccess) {
+  base::HistogramTester histogram_tester;
+  GURL url("wss://example.com/websocket");
+  MockNetworkContext network_context;
+
+  WebSocketClient client(url, GetNetworkContextGetter(&network_context),
+                         &logger_, /*has_chrome_proxy=*/true);
+  client.SetResponseCallback(base::DoNothing());
+  client.Send(oak::session::v1::SessionRequest());
+
+  ASSERT_TRUE(network_context.pending_handshake_client_.is_valid());
+  mojo::Remote<network::mojom::WebSocketHandshakeClient> handshake_client(
+      std::move(network_context.pending_handshake_client_));
+
+  mojo::Remote<network::mojom::WebSocketClient> client_remote;
+  auto client_receiver = client_remote.BindNewPipeAndPassReceiver();
+  mojo::PendingRemote<network::mojom::WebSocket> websocket_remote;
+  auto websocket_receiver = websocket_remote.InitWithNewPipeAndPassReceiver();
+
+  mojo::ScopedDataPipeProducerHandle producer1;
+  mojo::ScopedDataPipeConsumerHandle consumer1;
+  CHECK_EQ(mojo::CreateDataPipe(nullptr, producer1, consumer1), MOJO_RESULT_OK);
+
+  mojo::ScopedDataPipeProducerHandle producer2;
+  mojo::ScopedDataPipeConsumerHandle consumer2;
+  CHECK_EQ(mojo::CreateDataPipe(nullptr, producer2, consumer2), MOJO_RESULT_OK);
+
+  handshake_client->OnConnectionEstablished(
+      std::move(websocket_remote), std::move(client_receiver),
+      network::mojom::WebSocketHandshakeResponse::New(), std::move(consumer1),
+      std::move(producer2));
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return histogram_tester.GetBucketCount(
+               "PrivateAi.Client.ConnectionResult.WithProxy", net::OK) == 1;
+  }));
+  histogram_tester.ExpectTotalCount(
+      "PrivateAi.Client.ConnectionResult.WithoutProxy", 0);
+}
+
+TEST_F(WebSocketClientTest, ConnectionResultWithProxyFailure) {
+  base::HistogramTester histogram_tester;
+  GURL url("wss://example.com/websocket");
+  MockNetworkContext network_context;
+
+  WebSocketClient client(url, GetNetworkContextGetter(&network_context),
+                         &logger_, /*has_chrome_proxy=*/true);
+  client.SetResponseCallback(base::DoNothing());
+  client.Send(oak::session::v1::SessionRequest());
+
+  ASSERT_TRUE(network_context.pending_handshake_client_.is_valid());
+  mojo::Remote<network::mojom::WebSocketHandshakeClient> handshake_client(
+      std::move(network_context.pending_handshake_client_));
+
+  handshake_client->OnFailure("Timeout", net::ERR_CONNECTION_TIMED_OUT, -1);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return histogram_tester.GetBucketCount(
+               "PrivateAi.Client.ConnectionResult.WithProxy",
+               -net::ERR_CONNECTION_TIMED_OUT) == 1;
+  }));
+  histogram_tester.ExpectTotalCount(
+      "PrivateAi.Client.ConnectionResult.WithoutProxy", 0);
+}
+
+TEST_F(WebSocketClientTest, ConnectionResultWithoutProxySuccess) {
+  base::HistogramTester histogram_tester;
+  GURL url("wss://example.com/websocket");
+  MockNetworkContext network_context;
+
+  WebSocketClient client(url, GetNetworkContextGetter(&network_context),
+                         &logger_, /*has_chrome_proxy=*/false);
+  client.SetResponseCallback(base::DoNothing());
+  client.Send(oak::session::v1::SessionRequest());
+
+  ASSERT_TRUE(network_context.pending_handshake_client_.is_valid());
+  mojo::Remote<network::mojom::WebSocketHandshakeClient> handshake_client(
+      std::move(network_context.pending_handshake_client_));
+
+  mojo::Remote<network::mojom::WebSocketClient> client_remote;
+  auto client_receiver = client_remote.BindNewPipeAndPassReceiver();
+  mojo::PendingRemote<network::mojom::WebSocket> websocket_remote;
+  auto websocket_receiver = websocket_remote.InitWithNewPipeAndPassReceiver();
+
+  mojo::ScopedDataPipeProducerHandle producer1;
+  mojo::ScopedDataPipeConsumerHandle consumer1;
+  CHECK_EQ(mojo::CreateDataPipe(nullptr, producer1, consumer1), MOJO_RESULT_OK);
+
+  mojo::ScopedDataPipeProducerHandle producer2;
+  mojo::ScopedDataPipeConsumerHandle consumer2;
+  CHECK_EQ(mojo::CreateDataPipe(nullptr, producer2, consumer2), MOJO_RESULT_OK);
+
+  handshake_client->OnConnectionEstablished(
+      std::move(websocket_remote), std::move(client_receiver),
+      network::mojom::WebSocketHandshakeResponse::New(), std::move(consumer1),
+      std::move(producer2));
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return histogram_tester.GetBucketCount(
+               "PrivateAi.Client.ConnectionResult.WithoutProxy", net::OK) == 1;
+  }));
+  histogram_tester.ExpectTotalCount(
+      "PrivateAi.Client.ConnectionResult.WithProxy", 0);
 }
 }  // namespace
 

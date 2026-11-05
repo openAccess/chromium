@@ -29,7 +29,6 @@ suite('OmniboxPopupContextualEntrypointTest', () => {
       searchboxLayoutMode: 'TallBottomContext',
       hideClassicContextButton: false,
       composeboxShowContextMenuDescription: false,
-      omniboxShowContextButtonSuggestionLabel: false,
       composeboxShowCurrentTabChip: true,
       composeboxShowChip: true,
       composeboxShowLensIcon: true,
@@ -135,6 +134,7 @@ suite('OmniboxPopupContextualEntrypointTest', () => {
 
   test('CurrentTabChipHasPriorityOverLensChip', async () => {
     element.isLensSearchEligible = true;
+    element.isLensIconEligible = true;
     testProxy.handler.setPromiseResolveFor<'getRecentTabs'>('getRecentTabs', {
       tabs: [{
         tabId: 123,
@@ -153,6 +153,46 @@ suite('OmniboxPopupContextualEntrypointTest', () => {
 
     const lensChip = $$<HTMLElement>(element, '#lensSearchChip');
     assertFalse(!!lensChip);
+
+    const lensIcon = $$<HTMLElement>(element, '#lensSearchIcon');
+    assertTrue(!!lensIcon);
+  });
+
+  test('CurrentTabChipSuppressedWhenFeatureIneligible', async () => {
+    loadTimeData.overrideValues({
+      composeboxShowCurrentTabChip: false,
+    });
+
+    const newElement =
+        document.createElement('omnibox-popup-contextual-entrypoint');
+    newElement.inputState = createDefaultInputState();
+    newElement.isContentSharingEnabled = true;
+    newElement.isLensSearchEligible = true;
+    newElement.isLensIconEligible = true;
+    document.body.appendChild(newElement);
+    testProxy.initVisibilityPrefs();
+
+    testProxy.handler.setPromiseResolveFor<'getRecentTabs'>('getRecentTabs', {
+      tabs: [{
+        tabId: 123,
+        title: 'Test Tab',
+        url: 'https://example.com',
+        showInCurrentTabChip: true,
+      }],
+    });
+
+    popupCallbackRouter.onShow();
+    await testProxy.handler.whenCalled('getRecentTabs');
+    await microtasksFinished();
+
+    const currentTabChip = $$<HTMLElement>(newElement, '#currentTabChip');
+    assertFalse(!!currentTabChip);
+
+    const lensChip = $$<HTMLElement>(newElement, '#lensSearchChip');
+    assertTrue(!!lensChip);
+
+    const lensIcon = $$<HTMLElement>(newElement, '#lensSearchIcon');
+    assertFalse(!!lensIcon);
   });
 
   test('BackgroundAndShapeProperties', async () => {
@@ -264,5 +304,88 @@ suite('OmniboxPopupContextualEntrypointTest', () => {
     // Verify inputState was not overwritten with empty allowedTools.
     assertEquals(1, newElement.inputState?.allowedTools.length);
     assertEquals(ToolMode.kDeepSearch, newElement.inputState?.allowedTools[0]);
+  });
+
+  // Name of the native element identifier that anchors the AskG Lens icon IPH.
+  const LENS_ICON_IPH_ANCHOR_ID = 'kOmniboxPopupLensIconElementId';
+
+  // Creates an element showing the Lens icon, with the Lens icon IPH param set
+  // to `iphEnabled`.
+  async function createElementWithLensIcon(iphEnabled: boolean):
+      Promise<OmniboxPopupContextualEntrypointElement> {
+    loadTimeData.overrideValues({askGLensIconIphEnabled: iphEnabled});
+    const newElement =
+        document.createElement('omnibox-popup-contextual-entrypoint');
+    newElement.inputState = createDefaultInputState();
+    newElement.isContentSharingEnabled = true;
+    newElement.isLensIconEligible = true;
+    document.body.appendChild(newElement);
+    testProxy.initVisibilityPrefs();
+    testProxy.handler.setPromiseResolveFor<'getRecentTabs'>(
+        'getRecentTabs', {tabs: []});
+    popupCallbackRouter.onShow();
+    await microtasksFinished();
+    return newElement;
+  }
+
+  // Returns the icon button inside the Lens icon, which anchors the IPH.
+  function getLensIconButton(parent: HTMLElement): HTMLElement|null {
+    const lensIcon = $$<HTMLElement>(parent, '#lensSearchIcon');
+    return lensIcon?.shadowRoot?.querySelector<HTMLElement>('#lensIcon') ??
+        null;
+  }
+
+  test('LensIconIphAnchorsToLensIconButton', async () => {
+    const newElement = await createElementWithLensIcon(/*iphEnabled=*/ true);
+
+    const lensIcon = $$<HTMLElement>(newElement, '#lensSearchIcon');
+    assertTrue(!!lensIcon);
+    const lensIconButton = getLensIconButton(newElement);
+    assertTrue(!!lensIconButton);
+
+    // The anchor is the icon button, not the host, whose bounds include a
+    // leading margin.
+    assertEquals(LENS_ICON_IPH_ANCHOR_ID, lensIconButton.dataset['nativeId']);
+    assertEquals(undefined, lensIcon.dataset['nativeId']);
+  });
+
+  test('LensIconIphAnchorUnregisteredWhenLensIconHidden', async () => {
+    const newElement = await createElementWithLensIcon(/*iphEnabled=*/ true);
+    const lensIconButton = getLensIconButton(newElement);
+    assertTrue(!!lensIconButton);
+    assertEquals(LENS_ICON_IPH_ANCHOR_ID, lensIconButton.dataset['nativeId']);
+
+    newElement.isLensIconEligible = false;
+    await microtasksFinished();
+
+    assertFalse(!!$$<HTMLElement>(newElement, '#lensSearchIcon'));
+    assertEquals(undefined, lensIconButton.dataset['nativeId']);
+  });
+
+  test('LensIconIphAnchorUnregisteredWhenPageHidden', async () => {
+    const newElement = await createElementWithLensIcon(/*iphEnabled=*/ true);
+    const lensIconButton = getLensIconButton(newElement);
+    assertTrue(!!lensIconButton);
+    assertEquals(LENS_ICON_IPH_ANCHOR_ID, lensIconButton.dataset['nativeId']);
+
+    // The popup's page is hidden, not destroyed, when the popup closes.
+    Object.defineProperty(
+        document, 'visibilityState', {value: 'hidden', configurable: true});
+    document.dispatchEvent(new Event('visibilitychange'));
+    await microtasksFinished();
+    assertEquals(undefined, lensIconButton.dataset['nativeId']);
+
+    // Restore the real `document.visibilityState` (visible).
+    delete (document as {visibilityState?: string}).visibilityState;
+    document.dispatchEvent(new Event('visibilitychange'));
+    await microtasksFinished();
+    assertEquals(LENS_ICON_IPH_ANCHOR_ID, lensIconButton.dataset['nativeId']);
+  });
+
+  test('LensIconIphAnchorNotRegisteredWhenParamDisabled', async () => {
+    const newElement = await createElementWithLensIcon(/*iphEnabled=*/ false);
+    const lensIconButton = getLensIconButton(newElement);
+    assertTrue(!!lensIconButton);
+    assertEquals(undefined, lensIconButton.dataset['nativeId']);
   });
 });

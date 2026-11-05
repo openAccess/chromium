@@ -15,7 +15,6 @@ include_rules = [
   # individually. Other dependencies within //chrome are listed on a per-
   # directory basis. See //tools/chromeos/gen_deps.sh for details.
   "+chrome/browser/ash/attestation",
-  "+chrome/browser/ash/login/users",
   "+chrome/browser/ash/platform_keys",
   "+chrome/browser/ash/policy/core",
   "+chrome/browser/ash/profiles",
@@ -23,5 +22,10 @@ include_rules = [
   "+chrome/browser/policy",
   "+chrome/browser/profiles",
   "+chrome/test/base",
-  "+components/invalidation",
 ]
+
+specific_include_rules = {
+  "cert_provisioning_test_helpers\\.cc": [
+    "+chrome/browser/ash/login/test/chrome_user_session_test_environment_delegate.h",
+  ]
+}

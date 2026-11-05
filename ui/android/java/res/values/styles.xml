@@ -66,6 +66,7 @@ found in the LICENSE file.
     <!-- Used by Chrome and Content -->
     <style name="TextAppearance" parent="android:TextAppearance" tools:ignore="UnusedResources">
         <item name="android:fontFamily">sans-serif</item>
+        <item name="android:fontFeatureSettings">@string/default_font_feature_settings</item>
     </style>
     <style name="TextAppearance.MediumStyle" tools:ignore="UnusedResources">
         <item name="android:fontFamily">sans-serif-medium</item>
@@ -145,6 +146,9 @@ found in the LICENSE file.
     <!-- Non Adaptive Text Styles -->
     <!--  Light version  -->
     <style name="TextAppearance.Headline.Primary.Baseline.Light" tools:ignore="UnusedResources">
+        <item name="android:textColor">@color/default_text_color_light_list</item>
+    </style>
+    <style name="TextAppearance.Headline2Thick.Primary.Baseline.Light" parent="TextAppearance.Headline2Thick" tools:ignore="UnusedResources">
         <item name="android:textColor">@color/default_text_color_light_list</item>
     </style>
     <style name="TextAppearance.HeadlineThick.Primary.Baseline.Light" tools:ignore="UnusedResources">
@@ -364,6 +368,11 @@ found in the LICENSE file.
     </style>
 
     <style name="TextAppearance.ListMenuItem.Subtitle" parent="TextAppearance.TextSmall">
+        <item name="android:textColor">?android:attr/textColorSecondary</item>
+    </style>
+
+    <style name="TextAppearance.ListMenuItem.Shortcut"
+        parent="TextAppearance.TextMedium">
         <item name="android:textColor">?android:attr/textColorSecondary</item>
     </style>
 

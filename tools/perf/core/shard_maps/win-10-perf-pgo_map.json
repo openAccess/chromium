@@ -1,9 +1,6 @@
 {
     "0": {
         "benchmarks": {
-            "ad_frames.fencedframe": {
-                "abridged": false
-            },
             "blink_perf.accessibility": {
                 "abridged": false
             },
@@ -68,6 +65,9 @@
         "benchmarks": {
             "blink_perf.layout": {
                 "begin": 54,
+                "abridged": false
+            },
+            "blink_perf.service_worker": {
                 "abridged": false
             },
             "blink_perf.owp_storage": {
@@ -216,9 +216,6 @@
                 "abridged": false
             },
             "rendering.desktop.notracing": {
-                "abridged": false
-            },
-            "speedometer3": {
                 "abridged": false
             },
             "speedometer3-future": {

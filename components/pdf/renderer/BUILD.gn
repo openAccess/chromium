@@ -20,6 +20,10 @@ static_library("renderer") {
 
   sources = [
     "internal_plugin_renderer_helpers.cc",
+    "pdf_accessibility_table_detector.cc",
+    "pdf_accessibility_table_detector.h",
+    "pdf_accessibility_text_utils.cc",
+    "pdf_accessibility_text_utils.h",
     "pdf_accessibility_tree.cc",
     "pdf_accessibility_tree_builder.cc",
     "pdf_accessibility_tree_builder.h",
@@ -54,6 +58,7 @@ static_library("renderer") {
     "//third_party/icu",
     "//ui/display",
     "//ui/gfx/geometry",
+    "//ui/gfx/range",
     "//ui/strings:auto_image_annotation_strings",
     "//url",
     "//v8",
@@ -78,16 +83,21 @@ static_library("renderer") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "pdf_accessibility_table_detector_unittest.cc",
+    "pdf_accessibility_text_utils_unittest.cc",
     "pdf_accessibility_tree_builder_structure_unittest.cc",
     "pdf_accessibility_tree_unittest.cc",
   ]
 
   deps = [
     ":renderer",
+    "//base/test:test_support",
     "//pdf:accessibility",
     "//pdf:pdf_accessibility_constants_helper",
     "//pdf/mojom",
+    "//testing/gmock",
     "//testing/gtest",
+    "//ui/gfx:test_support",
     "//ui/gfx/geometry",
 
     # TODO(crbug.com/40191420): The V8 dependency should have been propagated

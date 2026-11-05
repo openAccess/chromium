@@ -53,8 +53,8 @@ type:*SkBlockComRef*
 type:*RemoveIUnknown*
 src:*atlcomcli.h
 
-# TODO(crbug.com/504680934): Figure out, probably add _LIBCPP_NO_CFI upstream,
-# roll in, then remove this. Fires when called from __assume_valid_range.
+# TODO(crbug.com/504680934): Remove once we rolled in
+# https://github.com/llvm/llvm-project/pull/220296
 fun:*__assume_aligned*
 
 # src/base/win/event_trace_provider_unittest.cc
@@ -66,12 +66,9 @@ fun:*internal_default_instance*
 # CAtlArray<T> casts to uninitialized T*.
 src:*atlcoll.h
 
-# Temporarily disable CFI check in std::__allocate_unique_temporary_buffer
-# until upstream adds an annotation, crbug.com/367439556
-fun:*__allocate_unique_temporary_buffer*
-
 # Temporarily disable CFI unrelated/derived cast in std::shared_ptr
-# until upstream restores _LIBCPP_NO_CFI on __get_elem
+# until upstream restores _LIBCPP_NO_CFI on __get_elem, see
+# https://github.com/llvm/llvm-project/pull/200401#pullrequestreview-5155315035
 src:*third_party/libc*/*shared_ptr.h
 
 # https://github.com/grpc/grpc/issues/19375
@@ -182,7 +179,9 @@ src:*third_party/dawn/src/dawn/wire/client/Buffer.cpp
 src:*third_party/angle/src/common/vulkan/vulkan_icd.cpp
 src:*third_party/angle/src/libANGLE/*
 src:*third_party/angle/src/libEGL/*
+# TODO(crbug.com/502790555): Remove after rename
 src:*third_party/angle/src/third_party/libXNVCtrl/NVCtrl.c
+src:*third_party/angle/src/third_party/libxnvctrl/src/NVCtrl.c
 # third_party/angle/src/gpu_info_util/SystemInfo_libpci.cpp
 fun:*GetPCIDevicesWithLibPCI*
 # third_party/angle/src/common/event_tracer.cpp
@@ -218,9 +217,6 @@ fun:*FunctorTraits*
 src:*audio/pulse/pulse_stubs.cc
 src:*media/gpu/vaapi/va_stubs.cc
 
-# Calls to auto-generated stubs by generate_library_loader.py
-src:*content/browser/speech/tts_linux.cc
-
 # Calls to auto-generated stubs by ui/gl/generate_bindings.py
 src:*ui/gl/gl_bindings_autogen_*
 
@@ -238,7 +234,7 @@ src:*third_party/angle/src/common/vulkan/vulkan_icd.cpp
 # destroy function an OpenXrExtensionHandle/ScopedOpenXrObject stores, or as a
 # PFN parameter in openxr_spatial_utils.cc). The unittests' mock runtime and
 # its trampoline dispatch through the same kind of pointers, and the mock's
-# xrCreateVulkanInstanceKHR side calls through vkGetInstanceProcAddr.
+# Vulkan calls go through vkGetInstanceProcAddr.
 src:*third_party/openxr/src/src/*
 src:*device/vr/openxr/linux/openxr_vulkan_context.cc
 src:*device/vr/openxr/msft/openxr_anchor_manager_msft.cc
@@ -256,6 +252,7 @@ src:*device/vr/openxr/openxr_visibility_mask_handler.cc
 src:*device/vr/openxr/scoped_openxr_object.h
 src:*device/vr/openxr/test/fake_openxr_impl_api.cc
 src:*device/vr/openxr/test/openxr_mock_helper.cc
+src:*device/vr/openxr/test/openxr_test_helper.cc
 
 # Calls to TFLiteDelegate functions in a shared library.
 src:*services/webnn/tflite/graph_impl_tflite.cc
@@ -354,6 +351,7 @@ fun:*unique_ptr*TfLiteDelegate*
 # LiteRT: Indirect calls to dynamically loaded LiteRT runtime and accelerators.
 src:*third_party/litert/*
 src:*services/webnn/tflite/*
+src:*third_party/dawn/src/dawn/common/WGPUDeviceCallbackInfos.cpp
 
 ######### Uncategorized
 

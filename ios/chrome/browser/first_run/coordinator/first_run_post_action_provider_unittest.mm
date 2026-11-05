@@ -35,8 +35,7 @@ class FirstRunPostActionProviderTest : public PlatformTest {
 // promo is enabled and the Gemini promo has triggered.
 TEST_F(FirstRunPostActionProviderTest, SkipScreensForGeminiPromo) {
   base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures({kAppStoreInAppEvents, kPageActionMenu},
-                                       {});
+  scoped_feature_list.InitWithFeatures({kPageActionMenu}, {});
 
   pref_service_->SetBoolean(prefs::kAppStoreGeminiPromoTriggered, true);
 
@@ -78,9 +77,11 @@ TEST_F(FirstRunPostActionProviderTest, SkipSafariImportIfTourStarted) {
 }
 
 // Tests that Safari Import is NOT skipped if the Guided Tour has NOT started.
-// TODO(crbug.com/481585370): Re-enable this test.
-TEST_F(FirstRunPostActionProviderTest,
-       DISABLED_ShowSafariImportIfTourNotStarted) {
+TEST_F(FirstRunPostActionProviderTest, ShowSafariImportIfTourNotStarted) {
+  if (!@available(iOS 18.2, *)) {
+    GTEST_SKIP() << "Safari data import requires iOS 18.2+.";
+  }
+
   feature_list_.InitAndEnableFeatureWithParameters(kBestOfAppFRE,
                                                    {{"variant", "4"}});
 

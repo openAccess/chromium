@@ -29,6 +29,7 @@
 #include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/site_info.h"
 #include "content/browser/site_instance_impl.h"
+#include "content/browser/storage_partition_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/common/content_navigation_policy.h"
 #include "content/common/features.h"
@@ -258,12 +259,19 @@ std::string GetWebUIURLString(const std::string& host) {
          host;
 }
 
-WebContents* CreateAndAttachInnerContents(RenderFrameHost* rfh) {
+WebContents* CreateAndAttachInnerContents(
+    RenderFrameHost* rfh,
+    std::optional<WebContents::CreateParams> create_params) {
   auto* outer_contents = WebContents::FromRenderFrameHost(rfh);
-  if (!outer_contents)
+  if (!outer_contents) {
     return nullptr;
+  }
 
-  WebContents::CreateParams inner_params(outer_contents->GetBrowserContext());
+  CHECK(!create_params ||
+        create_params->browser_context == outer_contents->GetBrowserContext());
+
+  WebContents::CreateParams inner_params = create_params.value_or(
+      WebContents::CreateParams(outer_contents->GetBrowserContext()));
 
   std::unique_ptr<WebContents> inner_contents_ptr =
       WebContents::Create(inner_params);
@@ -680,6 +688,10 @@ void ForceNewCompositorFrameFromBrowser(WebContents* web_contents) {
                          ->GetCompositor();
   compositor->ScheduleFullRedraw();
 #endif
+}
+
+void ForceInProcessStorageServiceForTesting() {
+  StoragePartitionImpl::ForceInProcessStorageServiceForTesting();
 }
 
 }  // namespace content

@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_ASH_APP_LIST_SEARCH_SYSTEM_INFO_SYSTEM_INFO_CARD_PROVIDER_H_
 #define CHROME_BROWSER_ASH_APP_LIST_SEARCH_SYSTEM_INFO_SYSTEM_INFO_CARD_PROVIDER_H_
 
+#include <array>
 #include <bitset>
 #include <memory>
 #include <vector>
@@ -13,7 +14,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ash/app_list/search/search_provider.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/settings/calculator/size_calculator.h"
 #include "chromeos/ash/components/launcher_search/system_info/system_info_keyword_input.h"
 #include "chromeos/ash/components/system_info/battery_health.h"
@@ -120,8 +120,9 @@ class SystemInfoCardProvider : public SearchProvider,
 
   // Keeps track of the size of each storage item. Adding 1 since we are also
   // saving the system storage here
-  int64_t storage_items_total_bytes_
-      [::ash::settings::SizeCalculator::kCalculationTypeCount + 1] = {};
+  std::array<int64_t,
+             ::ash::settings::SizeCalculator::kCalculationTypeCount + 1>
+      storage_items_total_bytes_ = {};
 
   // Controls if the size of each storage item has been calculated.
   std::bitset<::ash::settings::SizeCalculator::kCalculationTypeCount>

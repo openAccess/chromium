@@ -220,6 +220,10 @@ class BrowserToPageConnector {
       return permissions_.allow_unsafe_operations;
     }
 
+    PeerMetadata GetPeerMetadata() override {
+      return connector_->peer_metadata_;
+    }
+
    private:
     raw_ptr<BrowserToPageConnector> connector_;
     BrowserConnectorHostClientPermissions permissions_;
@@ -229,9 +233,11 @@ class BrowserToPageConnector {
       const std::string& binding_name,
       DevToolsAgentHost* page_host,
       BrowserConnectorHostClientPermissions permissions,
+      DevToolsAgentHostClient::PeerMetadata peer_metadata,
       std::unique_ptr<Target::Backend::ExposeDevToolsProtocolCallback> callback)
       : binding_name_(binding_name),
         page_host_(page_host),
+        peer_metadata_(std::move(peer_metadata)),
         pending_callback_(std::move(callback)) {
     browser_host_ = BrowserDevToolsAgentHost::CreateForDiscovery();
     browser_host_client_ = std::make_unique<BrowserConnectorHostClient>(
@@ -332,7 +338,7 @@ class BrowserToPageConnector {
                                              base::as_byte_span(*payload));
       return;
     }
-    DCHECK(agent_host == browser_host_.get());
+    CHECK(agent_host == browser_host_.get(), base::NotFatalUntil::M159);
 
     std::string encoded = base::Base64Encode(message_sp);
     std::string eval_code =
@@ -352,7 +358,7 @@ class BrowserToPageConnector {
     if (agent_host == browser_host_.get()) {
       page_host_->DetachClient(page_host_client_.get());
     } else {
-      DCHECK(agent_host == page_host_.get());
+      CHECK(agent_host == page_host_.get(), base::NotFatalUntil::M159);
       browser_host_->DetachClient(browser_host_client_.get());
     }
     GetInstanceMap().erase(page_host_.get());
@@ -361,6 +367,7 @@ class BrowserToPageConnector {
   std::string binding_name_;
   scoped_refptr<DevToolsAgentHost> browser_host_;
   scoped_refptr<DevToolsAgentHost> page_host_;
+  DevToolsAgentHostClient::PeerMetadata peer_metadata_;
   std::unique_ptr<BrowserConnectorHostClient> browser_host_client_;
   std::unique_ptr<BrowserConnectorHostClient> page_host_client_;
   int page_message_id_ = 0;
@@ -520,7 +527,12 @@ class TargetHandler::Session : public DevToolsAgentHostClient {
     agent_host_->DetachClient(this);
   }
 
-  std::string GetTypeForMetrics() override { return "DevTools"; }
+  std::string GetTypeForMetrics() override {
+    return GetRootClient()->GetTypeForMetrics();
+  }
+  PeerMetadata GetPeerMetadata() override {
+    return GetRootClient()->GetPeerMetadata();
+  }
   std::optional<url::Origin> GetNavigationInitiatorOrigin() override {
     return GetRootClient()->GetNavigationInitiatorOrigin();
   }
@@ -568,7 +580,7 @@ class TargetHandler::Session : public DevToolsAgentHostClient {
     // for Target.SendMessageToTarget. And since the binary mode implies
     // flatten_protocol_ (we force the flag to true), we can assume in this
     // method that |message| is JSON.
-    DCHECK(!flatten_protocol_);
+    CHECK(!flatten_protocol_, base::NotFatalUntil::M159);
 
     if (throttle_ || worker_throttle_) {
       std::optional<base::DictValue> value = base::JSONReader::ReadDict(
@@ -608,7 +620,7 @@ class TargetHandler::Session : public DevToolsAgentHostClient {
   // DevToolsAgentHostClient implementation.
   void DispatchProtocolMessage(DevToolsAgentHost* agent_host,
                                base::span<const uint8_t> message) override {
-    DCHECK(agent_host == agent_host_.get());
+    CHECK(agent_host == agent_host_.get(), base::NotFatalUntil::M159);
     if (flatten_protocol_) {
       // TODO(johannes): It's not clear that this check is useful, but
       // a similar check has been in the code ever since the flattened protocol
@@ -630,7 +642,7 @@ class TargetHandler::Session : public DevToolsAgentHostClient {
   }
 
   void AgentHostClosed(DevToolsAgentHost* agent_host) override {
-    DCHECK(agent_host == agent_host_.get());
+    CHECK(agent_host == agent_host_.get(), base::NotFatalUntil::M159);
     Detach(true);
   }
 
@@ -814,12 +826,14 @@ Response TargetHandler::Disable() {
 void TargetHandler::MaybeCreateAndAddNavigationThrottle(
     TargetAutoAttacher* auto_attacher,
     NavigationThrottleRegistry& registry) {
-  DCHECK(auto_attach_ || !auto_attach_related_targets_.empty());
+  CHECK(auto_attach_ || !auto_attach_related_targets_.empty(),
+        base::NotFatalUntil::M159);
   auto* navigation_handle = &registry.GetNavigationHandle();
   FrameTreeNode* frame_tree_node =
       NavigationRequest::From(navigation_handle)->frame_tree_node();
-  DCHECK(access_mode_ != AccessMode::kBrowser ||
-         !auto_attach_related_targets_.empty() || !frame_tree_node->parent());
+  CHECK(access_mode_ != AccessMode::kBrowser ||
+            !auto_attach_related_targets_.empty() || !frame_tree_node->parent(),
+        base::NotFatalUntil::M159);
   // All child frames start navigating with their parent settings applied and
   // are only throttled at response where we know if they require a new host.
   // Note that fenced frames start as remote frames right away and get a RFDTAH
@@ -830,6 +844,8 @@ void TargetHandler::MaybeCreateAndAddNavigationThrottle(
     return;
   }
   // If we got here for main frame, it must be either browser or tab target.
+  // TODO(crbug.com/573156711): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(auto_attacher == auto_attacher_);
   DevToolsAgentHost* host =
       RenderFrameDevToolsAgentHost::GetFor(frame_tree_node);
@@ -838,7 +854,8 @@ void TargetHandler::MaybeCreateAndAddNavigationThrottle(
     // RFDTAHs created during auto-attach had no renderer allocated originally,
     // and hence have messages paused, but with navigation we're supposed to
     // have a live host, so we can send messages to renderer now.
-    DCHECK(frame_tree_node->current_frame_host()->IsRenderFrameLive());
+    CHECK(frame_tree_node->current_frame_host()->IsRenderFrameLive(),
+          base::NotFatalUntil::M159);
     // Only resume sending messages to frame agents (i.e. skip for WebContents
     // ones).
     waiting_session->ResumeSendingMessagesToAgent();
@@ -933,8 +950,8 @@ void TargetHandler::UpdateAgentHostObserver() {
 bool TargetHandler::AutoAttach(TargetAutoAttacher* source,
                                DevToolsAgentHost* host,
                                bool waiting_for_debugger) {
-  DCHECK(host);
-  DCHECK(auto_attach_target_filter_);
+  CHECK(host, base::NotFatalUntil::M159);
+  CHECK(auto_attach_target_filter_, base::NotFatalUntil::M159);
   if (!auto_attach_target_filter_->Match(*host)) {
     return false;
   }
@@ -969,7 +986,7 @@ void TargetHandler::SetAttachedTargetsOfType(
     TargetAutoAttacher* source,
     const base::flat_set<scoped_refptr<DevToolsAgentHost>>& new_hosts,
     const std::string& type) {
-  DCHECK(!type.empty());
+  CHECK(!type.empty(), base::NotFatalUntil::M159);
   // Detaching a target (e.g. a subframe) can synchronously dispose child
   // sessions and tear down owned resources (e.g. hidden targets), which may
   // destroy sibling DevToolsAgentHost instances and mutate
@@ -1029,7 +1046,7 @@ bool TargetHandler::ShouldWaitForDebuggerOnStart(
   if (auto_attach_) {
     return wait_for_debugger_on_start_;
   }
-  DCHECK(!auto_attach_related_targets_.empty());
+  CHECK(!auto_attach_related_targets_.empty(), base::NotFatalUntil::M159);
   auto* host = RenderFrameDevToolsAgentHost::GetFor(
       navigation_request->frame_tree_node());
   if (!host) {
@@ -1162,7 +1179,7 @@ void TargetHandler::AutoAttachRelated(
     return;
   }
   if (auto_attach_) {
-    DCHECK(auto_attach_related_targets_.empty());
+    CHECK(auto_attach_related_targets_.empty(), base::NotFatalUntil::M159);
     SetAutoAttachInternal(false, false, true, base::DoNothing());
   }
   flatten_auto_attach_ = true;
@@ -1344,8 +1361,9 @@ void TargetHandler::ExposeDevToolsProtocol(
         root_session_->GetClient()->AllowUnsafeOperations();
   }
 
-  new BrowserToPageConnector(binding_name.value_or("cdp"), agent_host.get(),
-                             permissions, std::move(callback));
+  new BrowserToPageConnector(
+      binding_name.value_or("cdp"), agent_host.get(), permissions,
+      root_session_->GetClient()->GetPeerMetadata(), std::move(callback));
 }
 
 Response TargetHandler::CreateTarget(
@@ -1453,7 +1471,7 @@ Response TargetHandler::GetTargets(
           : nullptr;
   const TargetFilter* effective_filter =
       passed_filter ? passed_filter.get() : discover_target_filter_.get();
-  DCHECK(effective_filter);
+  CHECK(effective_filter, base::NotFatalUntil::M159);
   *target_infos = std::make_unique<protocol::Array<Target::TargetInfo>>();
   for (const auto& host : DevToolsAgentHost::GetOrCreateAll()) {
     if (effective_filter->Match(*host)) {
@@ -1478,8 +1496,8 @@ bool TargetHandler::ShouldForceDevToolsAgentHostCreation() {
 }
 
 void TargetHandler::DevToolsAgentHostCreated(DevToolsAgentHost* host) {
-  DCHECK(discover());
-  DCHECK(host);
+  CHECK(discover(), base::NotFatalUntil::M159);
+  CHECK(host, base::NotFatalUntil::M159);
   if (!discover_target_filter_->Match(*host)) {
     return;
   }

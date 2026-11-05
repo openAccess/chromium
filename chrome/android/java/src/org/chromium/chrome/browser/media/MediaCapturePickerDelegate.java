@@ -40,7 +40,9 @@ public interface MediaCapturePickerDelegate {
 
     /**
      * Returns whether the user requested audio sharing in the picker. This is only valid if {@link
-     * #getPickedTab()} returns non-null.
+     * #getPickedTab()} returns non-null, and must be called before {@link
+     * #startAppContentMediaProjection(WebContents, ActivityResult)}, which consumes the pending
+     * selection.
      *
      * @return True if audio sharing was requested.
      */
@@ -54,6 +56,15 @@ public interface MediaCapturePickerDelegate {
      * @param result The activity result returned by the android capture prompt.
      */
     default void startAppContentMediaProjection(WebContents webContents, ActivityResult result) {}
+
+    /**
+     * Called before starting window or screen sharing. This detaches any active tab (app content)
+     * projection session for {@code webContents} so its MediaProjection callback will not treat the
+     * replacement projection as a user-initiated stop.
+     *
+     * @param webContents The webContents of the capturer tab.
+     */
+    default void stopAppContentMediaProjection(WebContents webContents) {}
 
     /**
      * Called when the screen capture picker is done i.e. after user has picked a tab/ window/

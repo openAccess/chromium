@@ -89,7 +89,7 @@ void BindMachineLearningService(
     content::RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<
         chromeos::machine_learning::mojom::MachineLearningService> receiver) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   chromeos::machine_learning::ServiceConnection::GetInstance()
       ->BindMachineLearningService(std::move(receiver));
 }
@@ -129,14 +129,14 @@ void BindRemoteAppsFactory(
   ash::RemoteAppsManager* remote_apps_manager =
       ash::RemoteAppsManagerFactory::GetForProfile(
           Profile::FromBrowserContext(render_frame_host->GetBrowserContext()));
-  DCHECK(remote_apps_manager);
+  CHECK(remote_apps_manager, base::NotFatalUntil::M161);
   remote_apps_manager->BindFactoryInterface(std::move(pending_receiver));
 }
 
 void BindCfmServiceContext(
     content::RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<chromeos::cfm::mojom::CfmServiceContext> receiver) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   chromeos::cfm::ServiceConnection::GetInstance()->BindServiceContext(
       std::move(receiver));
 #if BUILDFLAG(PLATFORM_CFM)
@@ -176,7 +176,7 @@ void PopulateChromeFrameBindersForExtension(
     mojo::BinderMapWithContext<content::RenderFrameHost*>* binder_map,
     content::RenderFrameHost* render_frame_host,
     const Extension* extension) {
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M161);
 
 #if BUILDFLAG(IS_CHROMEOS)
 
@@ -207,7 +207,9 @@ void PopulateChromeFrameBindersForExtension(
 // TODO(b/341493979): Deprecate after CfM LaCrOS migration is completed.
 #if BUILDFLAG(PLATFORM_CFM)
   if (chromeos::cfm::IsChromeboxForMeetingsHashedAppId(
-          extension->hashed_id().value())) {
+          extension->hashed_id().value_sha256()) ||
+      chromeos::cfm::IsChromeboxForMeetingsHashedAppId(
+          extension->hashed_id().value_sha1())) {
     binder_map->Add<ash::cfm::mojom::XuCamera>(
         [](content::RenderFrameHost* frame_host,
            mojo::PendingReceiver<ash::cfm::mojom::XuCamera> receiver) {
@@ -277,7 +279,9 @@ void PopulateChromeFrameBindersForExtension(
 
   // Only allow specific extensions to bind CfmServiceContext
   if (chromeos::cfm::IsChromeboxForMeetingsHashedAppId(
-          extension->hashed_id().value())) {
+          extension->hashed_id().value_sha256()) ||
+      chromeos::cfm::IsChromeboxForMeetingsHashedAppId(
+          extension->hashed_id().value_sha1())) {
     binder_map->Add<chromeos::cfm::mojom::CfmServiceContext>(
         &BindCfmServiceContext);
 
@@ -316,7 +320,7 @@ void PopulateChromeServiceWorkerBindersForExtension(
         binder_map,
     content::BrowserContext* browser_context,
     const Extension* extension) {
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M161);
 
 #if BUILDFLAG(IS_CHROMEOS)
   if (extension->id() == extension_misc::kGoogleSpeechSynthesisExtensionId) {

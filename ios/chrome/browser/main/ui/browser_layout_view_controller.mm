@@ -29,6 +29,9 @@
 
 namespace {
 constexpr CGFloat kContainedLayoutTabStripTopMargin = 4.0;
+// Minimum top margin between the TabStrip and the top of the screen when there
+// is no safe area top inset (e.g. unfolded Duo on iOS 27.0).
+constexpr CGFloat kNoSafeAreaTabStripTopMargin = 16.0;
 }  // namespace
 
 @interface BrowserLayoutViewController () <SceneLayoutStateObserver>
@@ -57,17 +60,11 @@ constexpr CGFloat kContainedLayoutTabStripTopMargin = 4.0;
   if (IsFullscreenRefactoringEnabled()) {
     self.view.translatesAutoresizingMaskIntoConstraints = NO;
   }
-  // Register for trait changes that affect the tab strip visibility.
-  NSArray<UITrait>* traits = TraitCollectionSetForTraits(@[
-    UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class,
-    UITraitUserInterfaceIdiom.class
-  ]);
-  __weak __typeof(self) weakSelf = self;
-  UITraitChangeHandler handler = ^(id<UITraitEnvironment> traitEnvironment,
-                                   UITraitCollection* previousCollection) {
-    [weakSelf updateUIOnTraitChange:previousCollection];
-  };
-  [self registerForTraitChanges:traits withHandler:handler];
+  // Register for size class changes that affect tab strip visibility.
+  [self
+      registerForTraitChanges:
+          @[ UITraitVerticalSizeClass.class, UITraitHorizontalSizeClass.class ]
+                   withAction:@selector(sizeClassDidChange)];
 }
 
 - (UIViewController*)childViewControllerForStatusBarHidden {
@@ -125,10 +122,16 @@ constexpr CGFloat kContainedLayoutTabStripTopMargin = 4.0;
   // `browserViewController`. If this happens during startup, it may be the BVC
   // adding launch screen as a child VC of this VC (BVC's parent).
   // TODO:(crbug.com/472278494): This fires frequently in stable.
-  CHECK_EQ(_browserViewController, browserViewController,
-           base::NotFatalUntil::M150);
+  CHECK_EQ(_browserViewController, browserViewController);
 
-  [self updateCurrentBVCLayoutInsetsWithTopInset:[self topInset]];
+  [self updateCurrentBVCLayoutInsets];
+}
+
+- (void)updateCurrentBVCLayoutInsets {
+  // `topInset` is only used when the tab strip can be shown, so avoid querying
+  // `SafeAreaProvider` when the value would be discarded.
+  CGFloat topInset = CanShowTabStrip(self) ? [self topInset] : 0;
+  [self updateCurrentBVCLayoutInsetsWithTopInset:topInset];
 }
 
 - (void)updateCurrentBVCLayoutInsetsWithTopInset:(CGFloat)topInset {
@@ -154,10 +157,11 @@ constexpr CGFloat kContainedLayoutTabStripTopMargin = 4.0;
 
 - (void)viewSafeAreaInsetsDidChange {
   [super viewSafeAreaInsetsDidChange];
-  [self updateCurrentBVCLayoutInsetsWithTopInset:[self topInset]];
-  if (_tabStripViewController) {
-    [self updateForFullscreenProgress:_fullscreenProgress];
+  if (!_tabStripViewController || !CanShowTabStrip(self)) {
+    [self updateCurrentBVCLayoutInsets];
+    return;
   }
+  [self updateLayoutWithTopInset:[self topInset]];
 }
 
 #pragma mark - FullscreenUIElement
@@ -186,11 +190,13 @@ constexpr CGFloat kContainedLayoutTabStripTopMargin = 4.0;
   frame.origin.y = topInset - offset;
   _tabStripViewController.view.frame = frame;
 
-  // When offset >= topInset, the tab strip is fully hidden (or covered by
+  // When offset >= fadeDistance, the tab strip is fully hidden (or covered by
   // status bar area). When offset == 0, the tab strip is fully visible.
-  // Interpolate alpha from 0 to 1 as offset goes from topInset to 0.
-  CGFloat clampedOffset = std::clamp(offset, 0.0, topInset);
-  CGFloat alpha = 1.0 - (clampedOffset / topInset);
+  // Interpolate alpha from 0 to 1 as offset goes from fadeDistance to 0.
+  CGFloat fadeDistance =
+      topInset > 0 ? topInset : TabStripCollectionViewConstants.height;
+  CGFloat clampedOffset = std::clamp(offset, 0.0, fadeDistance);
+  CGFloat alpha = 1.0 - (clampedOffset / fadeDistance);
   _fadingStatusBarView.alpha = alpha;
   _tabStripViewController.view.alpha = alpha;
 }
@@ -218,6 +224,9 @@ constexpr CGFloat kContainedLayoutTabStripTopMargin = 4.0;
     CGFloat height = TabStripCollectionViewConstants.height * progress;
     agent->AddObscuredInset(UIRectEdgeTop, height);
     [self updateForFullscreenProgress:progress];
+    if (agent->is_animating()) {
+      [self.view layoutIfNeeded];
+    }
   }
 }
 
@@ -237,13 +246,18 @@ constexpr CGFloat kContainedLayoutTabStripTopMargin = 4.0;
 
 #pragma mark - Private
 
-// Updates the UI when the trait collection changes.
-- (void)updateUIOnTraitChange:(UITraitCollection*)previousTraitCollection {
+// Updates the UI when the size class changes.
+- (void)sizeClassDidChange {
   [self updateStatusBarBackgroundViews];
-  [self updateCurrentBVCLayoutInsetsWithTopInset:[self topInset]];
   if (_tabStripViewController) {
-    _tabStripViewController.view.hidden = !CanShowTabStrip(self);
+    bool canShowTabStrip = CanShowTabStrip(self);
+    _tabStripViewController.view.hidden = !canShowTabStrip;
+    if (canShowTabStrip) {
+      [self updateLayoutWithTopInset:[self topInset]];
+      return;
+    }
   }
+  [self updateCurrentBVCLayoutInsets];
 }
 
 // Ensures the status bar background views are created and installed in the
@@ -363,7 +377,7 @@ constexpr CGFloat kContainedLayoutTabStripTopMargin = 4.0;
   [_tabStripViewController didMoveToParentViewController:self];
 
   // Set default frame to ensure valid initial position.
-  CGFloat topInset = [self topInset];
+  CGFloat topInset = CanShowTabStrip(self) ? [self topInset] : 0;
   CGRect frame = self.view.bounds;
   frame.origin.y = topInset;
   frame.size.height = TabStripCollectionViewConstants.height;
@@ -380,8 +394,12 @@ constexpr CGFloat kContainedLayoutTabStripTopMargin = 4.0;
 - (CGFloat)topInsetForContainedLayout:(BOOL)containedLayout {
   CGFloat topInset = containedLayout ? self.view.safeAreaInsets.top
                                      : self.safeAreaProvider.safeArea.top;
-  if (CanShowTabStrip(self) && containedLayout) {
-    topInset += kContainedLayoutTabStripTopMargin;
+  if (CanShowTabStrip(self)) {
+    if (containedLayout) {
+      topInset += kContainedLayoutTabStripTopMargin;
+    } else if (topInset == 0) {
+      topInset = kNoSafeAreaTabStripTopMargin;
+    }
   }
   return topInset;
 }
@@ -434,13 +452,12 @@ constexpr CGFloat kContainedLayoutTabStripTopMargin = 4.0;
   [self updateStatusBarBackgroundViews];
 
   // Notify the BVC about the layout inset changes.
-  [self updateCurrentBVCLayoutInsetsWithTopInset:[self topInset]];
-
-  if (!_tabStripViewController) {
+  if (!_tabStripViewController || !CanShowTabStrip(self)) {
+    [self updateCurrentBVCLayoutInsets];
     return;
   }
 
-  [self updateForFullscreenProgress:_fullscreenProgress];
+  [self updateLayoutWithTopInset:[self topInset]];
 }
 
 - (void)setInfobarBannerOverlayContainerViewController:

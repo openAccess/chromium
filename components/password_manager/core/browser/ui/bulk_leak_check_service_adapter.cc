@@ -4,11 +4,11 @@
 
 #include "components/password_manager/core/browser/ui/bulk_leak_check_service_adapter.h"
 
+#include <iterator>
 #include <memory>
 #include <tuple>
 
 #include "base/check.h"
-#include "base/containers/flat_set.h"
 #include "components/autofill/core/common/save_password_progress_logger.h"
 #include "components/password_manager/core/browser/leak_detection/bulk_leak_check.h"
 #include "components/password_manager/core/browser/leak_detection/encryption_utils.h"
@@ -18,6 +18,7 @@
 #include "components/password_manager/core/browser/ui/credential_utils.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #include "components/prefs/pref_service.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace password_manager {
 
@@ -46,9 +47,11 @@ bool BulkLeakCheckServiceAdapter::StartBulkLeakCheck(
 
   // Even though the BulkLeakCheckService performs canonicalization eventually
   // we do it here to de-dupe credentials that have the same canonicalized form.
-  const auto passwords = presenter_->GetSavedPasswords();
-  base::flat_set<CanonicalizedCredential> canonicalized(passwords.begin(),
-                                                        passwords.end());
+  auto passwords = presenter_->GetSavedPasswords();
+  absl::flat_hash_set<CanonicalizedCredential> canonicalized;
+  canonicalized.reserve(passwords.size());
+  canonicalized.insert(std::make_move_iterator(passwords.begin()),
+                       std::make_move_iterator(passwords.end()));
 
   // Build the list of LeakCheckCredentials and forward them to the service to
   // start the check.

@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string_table.h"
 
+#include <array>
+
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace blink {
@@ -98,6 +100,30 @@ TEST(AtomicStringTableTest, SmallStringCacheKeepAlive) {
   EXPECT_FALSE(
       AtomicStringTable::Instance().WeakFindForTesting(kSmallString).IsNull());
 
+  // Two distinct 8-byte strings should both be retained in SmallStringCache.
+  // Previously, all 8-byte strings hashed to the same slot and evicted each
+  // other.
+  const char* kEightByte1 = "eightch1";
+  const char* kEightByte2 = "eightch2";
+  {
+    EXPECT_TRUE(
+        AtomicStringTable::Instance().WeakFindForTesting(kEightByte1).IsNull());
+    EXPECT_TRUE(
+        AtomicStringTable::Instance().WeakFindForTesting(kEightByte2).IsNull());
+    AtomicString eight1(kEightByte1);
+    AtomicString eight2(kEightByte2);
+    EXPECT_EQ(eight1.length(), 8u);
+    EXPECT_EQ(eight2.length(), 8u);
+    EXPECT_FALSE(
+        AtomicStringTable::Instance().WeakFindForTesting(kEightByte1).IsNull());
+    EXPECT_FALSE(
+        AtomicStringTable::Instance().WeakFindForTesting(kEightByte2).IsNull());
+  }
+  EXPECT_FALSE(
+      AtomicStringTable::Instance().WeakFindForTesting(kEightByte1).IsNull());
+  EXPECT_FALSE(
+      AtomicStringTable::Instance().WeakFindForTesting(kEightByte2).IsNull());
+
   // Large strings (length > 16) are NOT kept alive by the SmallStringCache.
   const char* kLargeString = "largenotcachedstring17";
   {
@@ -142,6 +168,45 @@ TEST(AtomicStringTableTest, EmbeddedNulls) {
   EXPECT_FALSE(null_string.empty());
   EXPECT_NE(null_string, g_empty_atom);
   EXPECT_EQ(null_string[0], '\0');
+}
+
+TEST(AtomicStringTableTest, WideSmallStringSignatures) {
+  const std::array<LChar, 16> latin1 = {0,    'a',  0x7f, 0x80, 0xff, 'b',
+                                        0xe9, 'c',  0x81, 'd',  0xfe, 'e',
+                                        'f',  0x90, 'g',  'h'};
+  alignas(16) std::array<UChar, 23> storage;
+  for (wtf_size_t offset = 0; offset < 8; ++offset) {
+    SCOPED_TRACE(offset);
+    auto wide = base::span(storage).subspan(offset).first<16>();
+    for (wtf_size_t i = 0; i < latin1.size(); ++i) {
+      wide[i] = latin1[i];
+    }
+    for (wtf_size_t length = 1; length <= latin1.size(); ++length) {
+      SCOPED_TRACE(length);
+      const auto narrow_chars = base::span(latin1).first(length);
+      const auto wide_chars = wide.first(length);
+      AtomicString narrow(narrow_chars);
+      EXPECT_EQ(narrow.Impl(), AtomicString(wide_chars).Impl());
+      EXPECT_EQ(
+          narrow.Impl(),
+          AtomicString(wide_chars, AtomicStringUCharEncoding::kIs8Bit).Impl());
+      for (wtf_size_t i = 0; i < length; ++i) {
+        SCOPED_TRACE(i);
+        const UChar original = wide[i];
+        wide[i] = original ^ 1;
+        AtomicString changed(wide_chars);
+        EXPECT_NE(narrow, changed);
+        EXPECT_EQ(wide[i], changed[i]);
+        wide[i] = original | 0x100;
+        AtomicString unicode(wide_chars);
+        EXPECT_NE(narrow, unicode);
+        EXPECT_FALSE(unicode.Is8Bit());
+        EXPECT_EQ(wide[i], unicode[i]);
+        wide[i] = original;
+        EXPECT_EQ(narrow.Impl(), AtomicString(wide_chars).Impl());
+      }
+    }
+  }
 }
 
 }  // namespace blink

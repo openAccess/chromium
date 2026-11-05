@@ -11,13 +11,20 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "build/build_config.h"
 #include "extensions/browser/app_window/app_delegate.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/gfx/geometry/rect.h"
 
 class Profile;
 class ScopedKeepAlive;
 class ScopedProfileKeepAlive;
+
+#if BUILDFLAG(IS_CHROMEOS)
+namespace policy {
+class DlpContentTabHelper;
+}  // namespace policy
+#endif
 
 class ChromeAppDelegate : public extensions::AppDelegate {
  public:
@@ -52,7 +59,7 @@ class ChromeAppDelegate : public extensions::AppDelegate {
   void AddNewContents(content::BrowserContext* context,
                       std::unique_ptr<content::WebContents> new_contents,
                       const GURL& target_url,
-                      WindowOpenDisposition disposition,
+                      ui::mojom::WindowOpenDisposition disposition,
                       const blink::mojom::WindowFeatures& window_features,
                       bool user_gesture) override;
   void RunFileChooser(content::RenderFrameHost* render_frame_host,
@@ -87,6 +94,9 @@ class ChromeAppDelegate : public extensions::AppDelegate {
   std::unique_ptr<ScopedKeepAlive> keep_alive_;
   std::unique_ptr<ScopedProfileKeepAlive> profile_keep_alive_;
   std::unique_ptr<NewWindowContentsDelegate> new_window_contents_delegate_;
+#if BUILDFLAG(IS_CHROMEOS)
+  std::unique_ptr<policy::DlpContentTabHelper> dlp_content_tab_helper_;
+#endif
   base::OnceClosure terminating_callback_;
   base::CallbackListSubscription subscription_;
   base::WeakPtrFactory<ChromeAppDelegate> weak_factory_{this};

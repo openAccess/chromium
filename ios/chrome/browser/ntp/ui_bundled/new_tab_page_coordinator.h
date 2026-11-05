@@ -48,6 +48,10 @@ class WebState;
 @property(nonatomic, readwrite)
     BOOL canfocusAccessibilityOmniboxWhenViewAppears;
 
+// `YES` when a new NTP tab is being opened with the omnibox scheduled to be
+// focused after the new tab animation completes.
+@property(nonatomic, assign) BOOL willFocusOmniboxAfterNewTabAnimation;
+
 // Animates the NTP fakebox to the focused position and focuses the real
 // omnibox.
 - (void)focusFakebox;
@@ -100,7 +104,9 @@ class WebState;
 
 // Shows the Home Background Customization promo.
 - (void)showHomeBackgroundCustomizationPromoWithUIHandler:
-    (id<PromosManagerUIHandler>)uiHandler;
+            (id<PromosManagerUIHandler>)promosUIHandler
+                                shouldAlertFETOfDismissal:
+                                    (BOOL)shouldAlertFETOfDismissal;
 
 // Returns `YES` if the feed is currently visible on the NTP.
 - (BOOL)isFeedVisible;

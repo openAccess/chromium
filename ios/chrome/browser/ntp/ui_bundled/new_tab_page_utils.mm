@@ -4,31 +4,31 @@
 
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_utils.h"
 
-#import "base/time/time.h"
-#import "components/lens/lens_overlay_invocation_source.h"
-#import "components/search_engines/util.h"
+#import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_tiles_collection_view.h"
 #import "ios/chrome/browser/first_run/public/first_run_util.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_color_palette.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_constants.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_image_background_trait.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_trait.h"
+#import "ios/chrome/browser/ntp/ui_bundled/ntp_card_background_view.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
-#import "third_party/omnibox_proto/chrome_aim_entry_point.pb.h"
-#import "third_party/omnibox_proto/model_mode.pb.h"
+#import "ios/chrome/common/ui/util/constraints_ui_util.h"
+
+namespace {
+// Bottom padding between the MVT collection view and the bottom of its
+// container.
+constexpr CGFloat kMVTContainerBottomPadding = 10.0;
+
+// The height for the quick actions button row.
+constexpr CGFloat kQuickActionsHeight = 44.0;
+constexpr CGFloat kQuickActionsHeightUICleanup = 50.0;
+}  // namespace
 
 bool ShouldShowTopOfFeedSyncPromo() {
   // Checks the flag and ensures that the user is not in first run.
   return IsDiscoverFeedTopSyncPromoEnabled() &&
          !ShouldPresentFirstRunExperience();
-}
-
-GURL GetUrlForAim(TemplateURLService* turl_service,
-                  base::Time query_start_time) {
-  return GetUrlForAim(turl_service,
-                      omnibox::IOS_CHROME_NTP_FAKE_OMNIBOX_ENTRY_POINT,
-                      query_start_time, /*query_text=*/u"",
-                      lens::LensOverlayInvocationSource::kNtpContextualQuery,
-                      /*additional_params=*/{});
 }
 
 UIButtonConfigurationUpdateHandler CreateThemedButtonConfigurationUpdateHandler(
@@ -63,4 +63,65 @@ UIButtonConfigurationUpdateHandler CreateThemedButtonConfigurationUpdateHandler(
 
     updateButton.configuration = updateConfiguration;
   };
+}
+
+UIView* CreateMostVisitedContainerView(
+    MostVisitedTilesCollectionView* collectionView,
+    BOOL hasBackground) {
+  if (!collectionView) {
+    return nil;
+  }
+
+  UIView* container = [[UIView alloc] init];
+  container.translatesAutoresizingMaskIntoConstraints = NO;
+
+  if (hasBackground) {
+    UIView* backgroundView = [[NTPCardBackgroundView alloc] init];
+    backgroundView.translatesAutoresizingMaskIntoConstraints = NO;
+    [container addSubview:backgroundView];
+    AddSameConstraints(container, backgroundView);
+    container.layer.cornerRadius = kHomeModuleContainerCornerRadius;
+    container.clipsToBounds = YES;
+  }
+
+  collectionView.translatesAutoresizingMaskIntoConstraints = NO;
+  [container addSubview:collectionView];
+
+  [NSLayoutConstraint activateConstraints:@[
+    [collectionView.topAnchor constraintEqualToAnchor:container.topAnchor],
+    [collectionView.leadingAnchor
+        constraintEqualToAnchor:container.leadingAnchor],
+    [collectionView.trailingAnchor
+        constraintEqualToAnchor:container.trailingAnchor],
+    [collectionView.bottomAnchor
+        constraintEqualToAnchor:container.bottomAnchor
+                       constant:-kMVTContainerBottomPadding],
+  ]];
+
+  return container;
+}
+
+CGFloat MostVisitedContainerHeight(
+    MostVisitedTilesCollectionView* collectionView,
+    UIView* fallbackView) {
+  if (collectionView && collectionView.contentSize.height > 0) {
+    return collectionView.contentSize.height + kMVTContainerBottomPadding;
+  }
+  if (fallbackView) {
+    return
+        [fallbackView systemLayoutSizeFittingSize:UILayoutFittingCompressedSize]
+            .height;
+  }
+  if (collectionView) {
+    CGSize intrinsicSize = [collectionView intrinsicContentSize];
+    if (intrinsicSize.height > 0) {
+      return intrinsicSize.height + kMVTContainerBottomPadding;
+    }
+  }
+  return 0.0;
+}
+
+CGFloat QuickActionsHeight() {
+  return IsNewTabPageUICleanupEnabled() ? kQuickActionsHeightUICleanup
+                                        : kQuickActionsHeight;
 }

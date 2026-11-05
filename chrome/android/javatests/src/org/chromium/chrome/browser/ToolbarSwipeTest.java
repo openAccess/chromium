@@ -4,6 +4,9 @@
 
 package org.chromium.chrome.browser;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+
 import static org.chromium.ui.test.util.ViewUtils.createMotionEvent;
 
 import android.content.pm.ActivityInfo;
@@ -13,14 +16,12 @@ import androidx.test.filters.MediumTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.After;
-import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import org.chromium.base.task.PostTask;
-import org.chromium.base.task.TaskTraits;
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
@@ -71,9 +72,20 @@ public class ToolbarSwipeTest {
 
     @After
     public void tearDown() {
-        mActivityTestRule
-                .getActivity()
-                .setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        ChromeTabbedActivity activity = mActivityTestRule.getActivity();
+        if (activity == null) return;
+        activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        View urlBar = activity.findViewById(R.id.url_bar);
+        if (urlBar != null) {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        urlBar.clearFocus();
+                        mActivityTestRule.getKeyboardDelegate().hideKeyboard(urlBar);
+                    });
+            CriteriaHelper.pollUiThread(
+                    () -> !mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(urlBar),
+                    "Keyboard should be hidden after test teardown");
+        }
     }
 
     @Test
@@ -213,26 +225,33 @@ public class ToolbarSwipeTest {
     @Restriction(DeviceFormFactor.PHONE)
     @Feature({"Android-TabSwitcher"})
     public void testOSKIsNotShownDuringSwipe() throws InterruptedException {
+        mActivityTestRule.startOnBlankPage();
         final View urlBar = mActivityTestRule.getActivity().findViewById(R.id.url_bar);
         final LayoutManagerChrome layoutManager = updateTabsViewSize();
         final SwipeHandler swipeHandler = layoutManager.getToolbarSwipeHandler();
 
-        UiUtils.settleDownUI(InstrumentationRegistry.getInstrumentation());
-        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> urlBar.requestFocus());
-        UiUtils.settleDownUI(InstrumentationRegistry.getInstrumentation());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    urlBar.requestFocus();
+                });
+        CriteriaHelper.pollUiThread(
+                () -> mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(urlBar),
+                "Keyboard should be shown after focusing UrlBar");
 
-        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> urlBar.clearFocus());
-        UiUtils.settleDownUI(InstrumentationRegistry.getInstrumentation());
+        ThreadUtils.runOnUiThreadBlocking(urlBar::clearFocus);
+        CriteriaHelper.pollUiThread(
+                () -> !mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(urlBar),
+                "Keyboard should be hidden after clearing UrlBar focus");
+
         ChromeTabUtils.newTabFromMenu(
                 InstrumentationRegistry.getInstrumentation(), mActivityTestRule.getActivity());
         UiUtils.settleDownUI(InstrumentationRegistry.getInstrumentation());
 
-        Assert.assertFalse(
-                "Keyboard somehow got shown",
-                mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(urlBar));
+        CriteriaHelper.pollUiThread(
+                () -> !mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(urlBar),
+                "Keyboard should be hidden before starting swipe");
 
-        PostTask.runOrPostTask(
-                TaskTraits.UI_DEFAULT,
+        ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     swipeHandler.onSwipeStarted(ScrollDirection.RIGHT, createMotionEvent(0, 0));
                     float swipeXChange = mTabsViewWidthDp / 2.f;
@@ -253,10 +272,9 @@ public class ToolbarSwipeTest {
                             .shouldDisplayContentOverlay();
                 });
 
-        PostTask.runOrPostTask(
-                TaskTraits.UI_DEFAULT,
+        ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    Assert.assertFalse(
+                    assertFalse(
                             "Keyboard should be hidden while swiping",
                             mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(urlBar));
                     swipeHandler.onSwipeFinished();
@@ -269,9 +287,9 @@ public class ToolbarSwipeTest {
                 },
                 "Layout not requesting Tab Android view be attached");
 
-        Assert.assertFalse(
-                "Keyboard should not be shown",
-                mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(urlBar));
+        CriteriaHelper.pollUiThread(
+                () -> !mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(urlBar),
+                "Keyboard should not be shown");
     }
 
     private LayoutManagerChrome updateTabsViewSize() {
@@ -297,7 +315,6 @@ public class ToolbarSwipeTest {
     }
 
     private static void assertSelectedTabIndex(WebPageStation station, int selectedIndex) {
-        Assert.assertEquals(
-                selectedIndex, ChromeTabUtils.getIndexOnUiThread(station.getTabModel()));
+        assertEquals(selectedIndex, ChromeTabUtils.getIndexOnUiThread(station.getTabModel()));
     }
 }

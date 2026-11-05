@@ -29,19 +29,19 @@
 #include "chrome/browser/ash/printing/cups_printers_manager_factory.h"
 #include "chrome/browser/ash/printing/history/print_job_info.pb.h"
 #include "chrome/browser/ash/printing/history/print_job_info_proto_conversions.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/chromeos/printing/cups_wrapper.h"
 #include "chrome/browser/printing/print_job.h"
 #include "chrome/browser/printing/print_job_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/printing/cups_wrapper.h"
 #include "chromeos/printing/printing_constants.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "printing/printed_document.h"
 #include "printing/printing_utils.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace ash {
@@ -104,16 +104,16 @@ void RecordJobResult(JobResultForHistogram result,
 
 class CupsPrintJobManagerImpl : public CupsPrintJobManager {
  public:
-  explicit CupsPrintJobManagerImpl(Profile* profile)
+  CupsPrintJobManagerImpl(::printing::PrintJobManager& print_job_manager,
+                          Profile* profile)
       : CupsPrintJobManager(profile),
         cups_wrapper_(CupsWrapper::Create()),
         weak_ptr_factory_(this) {
     // NOTE: base::Unretained(this) is safe here because this object owns
     // |subscription_| and the callback won't be invoked after |subscription_|
     // is destroyed.
-    subscription_ = g_browser_process->print_job_manager()->AddDocDoneCallback(
-        base::BindRepeating(&CupsPrintJobManagerImpl::OnDocDone,
-                            base::Unretained(this)));
+    subscription_ = print_job_manager.AddDocDoneCallback(base::BindRepeating(
+        &CupsPrintJobManagerImpl::OnDocDone, base::Unretained(this)));
     timer_.SetTaskRunner(content::GetUIThreadTaskRunner({}));
   }
 
@@ -125,7 +125,7 @@ class CupsPrintJobManagerImpl : public CupsPrintJobManager {
   // CupsPrintJobManager overrides:
   // Must be run from the UI thread.
   void CancelPrintJob(CupsPrintJob* job) override {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
     job->set_state(CupsPrintJob::State::STATE_CANCELLED);
     NotifyJobCanceled(job->GetWeakPtr());
     // Ideally we should wait for IPP response.
@@ -148,14 +148,14 @@ class CupsPrintJobManagerImpl : public CupsPrintJobManager {
     const std::string printer_id =
         base::UTF16ToUTF8(document->settings().device_name());
     const std::string key = CupsPrintJob::CreateUniqueId(printer_id, job_id);
-    DCHECK(!printer_metrics_cache_.contains(key));
+    CHECK(!printer_metrics_cache_.contains(key), base::NotFatalUntil::M160);
     printer_metrics_cache_.emplace(
         key, PrinterMetrics{job->settings().printer_manually_selected(),
                             job->settings().printer_status_reason()});
 
     // This event occurs after the print job has been successfully sent to the
     // spooler which is when we begin tracking the print queue.
-    DCHECK(document);
+    CHECK(document, base::NotFatalUntil::M160);
     std::u16string title = ::printing::SimplifyDocumentTitle(document->name());
     if (title.empty()) {
       title = ::printing::SimplifyDocumentTitle(
@@ -179,7 +179,7 @@ class CupsPrintJobManagerImpl : public CupsPrintJobManager {
                       ::printing::PrintJob::Source source,
                       const std::string& source_id,
                       const printing::proto::PrintSettings& settings) override {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
     Profile* profile = ProfileManager::GetPrimaryUserProfile();
     if (!profile) {
@@ -248,7 +248,7 @@ class CupsPrintJobManagerImpl : public CupsPrintJobManager {
   }
 
   void PostQuery() {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
     // The set of active printers is expected to be small.
     std::set<std::string> printer_ids;
@@ -267,7 +267,7 @@ class CupsPrintJobManagerImpl : public CupsPrintJobManager {
   // could be in |jobs| but those are ignored as we will not emit updates for
   // them after they are completed.
   void UpdateJobs(std::unique_ptr<CupsWrapper::QueryResult> result) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
     // If the query failed, either retry or purge.
     if (!result->success) {
@@ -280,6 +280,8 @@ class CupsPrintJobManagerImpl : public CupsPrintJobManager {
         PurgeJobs();
       } else {
         // Backoff the polling frequency. Give CUPS a chance to recover.
+        // TODO(crbug.com/568716672): CHECK-exclusion: Convert to a CHECK once
+        // we are confident it won't be triggered.
         DCHECK_GE(1, retry_count_);
         ScheduleQuery(retry_count_);
       }
@@ -299,7 +301,8 @@ class CupsPrintJobManagerImpl : public CupsPrintJobManager {
 
         CupsPrintJob* print_job = entry->second.get();
 
-        if (UpdatePrintJob(queue.printer_status, job, print_job)) {
+        if (UpdatePrintJob(queue.printer_status, job, print_job,
+                           last_logged_status_)) {
           // The state of the job changed, notify observers.
           NotifyJobStateUpdate(print_job->GetWeakPtr());
         }
@@ -348,7 +351,7 @@ class CupsPrintJobManagerImpl : public CupsPrintJobManager {
 
   // Mark remaining jobs as errors and remove active jobs.
   void PurgeJobs() {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
     for (const auto& entry : jobs_) {
       // Declare all lost jobs errors.
@@ -364,7 +367,7 @@ class CupsPrintJobManagerImpl : public CupsPrintJobManager {
 
   // Notify observers that a state update has occurred for |job|.
   void NotifyJobStateUpdate(base::WeakPtr<CupsPrintJob> job) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
     if (!job)
       return;
@@ -521,6 +524,10 @@ class CupsPrintJobManagerImpl : public CupsPrintJobManager {
   // record the metrics entry to histograms and remove it from the map.
   base::flat_map<std::string, PrinterMetrics> printer_metrics_cache_;
 
+  // Maps a CUPS job id to the status message most recently logged for it, so
+  // that an unchanged status is not logged repeatedly while a job is polled.
+  absl::flat_hash_map<int, std::string> last_logged_status_;
+
   base::RepeatingTimer timer_;
   std::unique_ptr<CupsWrapper> cups_wrapper_;
   base::CallbackListSubscription subscription_;
@@ -529,8 +536,9 @@ class CupsPrintJobManagerImpl : public CupsPrintJobManager {
 
 // static
 std::unique_ptr<CupsPrintJobManager> CupsPrintJobManager::CreateInstance(
+    ::printing::PrintJobManager& print_job_manager,
     Profile* profile) {
-  return std::make_unique<CupsPrintJobManagerImpl>(profile);
+  return std::make_unique<CupsPrintJobManagerImpl>(print_job_manager, profile);
 }
 
 }  // namespace ash

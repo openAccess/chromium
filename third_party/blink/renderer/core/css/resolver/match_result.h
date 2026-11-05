@@ -24,6 +24,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_RESOLVER_MATCH_RESULT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_RESOLVER_MATCH_RESULT_H_
 
+#include <type_traits>
+
 #include "base/compiler_specific.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/cascade_layer_map.h"
@@ -70,10 +72,16 @@ struct CORE_EXPORT MatchedProperties {
     uint16_t layer_order = CascadeLayerMap::kImplicitOuterLayerOrder;
     // Try-tactics style come from <try-tactic>.
     // https://drafts.csswg.org/css-anchor-position-1/#typedef-position-try-fallbacks-try-tactic
-    bool is_try_tactics_style = false;
-    // 15 free bits after this, but since the MPC hashes and compares
+    uint16_t is_try_tactics_style : 1 = false;
+    // With SVG reuse enabled, distinguishes SVG hints from HTML hints in the
+    // MPC key to isolate cached cascade-loss flags.
+    uint16_t is_svg_presentation_hint : 1 = false;
+    // Set to true if these MatchedProperties is included for precomputing
+    // :hover styles.
+    uint16_t precompute_hover : 1 = false;
+    // 14 free bits after this, but since the MPC hashes and compares
     // this as raw bytes, we cannot have undefined padding.
-    uint8_t padding = 0;
+    uint16_t padding : 13 = 0;
 
     bool operator==(const Data& other) const {
       return UNSAFE_BUFFERS(memcmp(this, &other, sizeof(*this))) == 0;
@@ -93,6 +101,9 @@ struct CORE_EXPORT MatchedProperties {
   Member<const MixinParameterBindings> mixin_parameter_bindings;
   Data data_;
 };
+
+static_assert(std::has_unique_object_representations_v<MatchedProperties::Data>,
+              "MPC requires Data to have a unique object representation");
 
 struct SameSizeAsMatchedProperties {
   Member<void*> properties;
@@ -207,6 +218,12 @@ class CORE_EXPORT MatchResult {
   bool HasNonUniversalHighlightPseudoStyles() const {
     return has_non_universal_highlight_pseudo_styles_;
   }
+  void SetHasCustomHighlightUniversalSelector() {
+    has_custom_highlight_universal_selector_ = true;
+  }
+  bool HasCustomHighlightUniversalSelector() const {
+    return has_custom_highlight_universal_selector_;
+  }
   void SetHasNonUaHighlightPseudoStyles() {
     has_non_ua_highlight_pseudo_styles_ = true;
   }
@@ -224,6 +241,11 @@ class CORE_EXPORT MatchResult {
     return flags_ & static_cast<MatchFlags>(flag);
   }
   void AddFlags(MatchFlags flags) { flags_ |= flags; }
+
+  bool MayPrecomputeHover() const {
+    return (flags_ & kPrecomputedHoverMask) ==
+           static_cast<MatchFlags>(MatchFlag::kPrecomputedHoverMatch);
+  }
 
   void SetHasPseudoElementStyle(PseudoId pseudo) {
     DCHECK(pseudo >= kFirstPublicPseudoId);
@@ -274,6 +296,7 @@ class CORE_EXPORT MatchResult {
   bool conditionally_affects_animations_{false};
   bool has_non_universal_highlight_pseudo_styles_{false};
   bool has_non_ua_highlight_pseudo_styles_{false};
+  bool has_custom_highlight_universal_selector_{false};
   bool highlights_depend_on_size_container_queries_{false};
   MatchFlags flags_{0};
 #if DCHECK_IS_ON()

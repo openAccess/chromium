@@ -44,6 +44,7 @@
 
 #include "third_party/blink/renderer/core/paint/paint_layer_clipper.h"
 
+#include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
@@ -67,12 +68,12 @@ static const LayoutObject* FindActiveUnboundedAncestor(
     return nullptr;
   }
   for (const PaintLayer* curr = &layer; curr; curr = curr->Parent()) {
-    if (curr->GetLayoutObject().StyleRef().IsUnboundedElementActive()) {
+    if (curr->GetLayoutObject().Style().IsUnboundedElementActive()) {
       DCHECK(RuntimeEnabledFeatures::UnboundedElementEnabled());
       auto* html_element =
           DynamicTo<HTMLElement>(curr->GetLayoutObject().GetNode());
       DCHECK(!html_element ||
-             curr->GetLayoutObject().StyleRef().IsUnboundedElementActive() ==
+             curr->GetLayoutObject().Style().IsUnboundedElementActive() ==
                  html_element->IsUnboundedElementActive());
       return &curr->GetLayoutObject();
     }
@@ -126,8 +127,9 @@ void PaintLayerClipper::CalculateRects(const ClipRectsContext& context,
     foreground_rect =
         layout_object.OverflowClipRect(context.overlay_scrollbar_clip_behavior);
     foreground_rect.Move(layer_offset);
-    if (layout_object.StyleRef().HasBorderRadius())
+    if (layout_object.Style().HasBorderRadius()) {
       foreground_rect.SetHasRadius(true);
+    }
     foreground_rect.Intersect(background_rect);
   } else {
     foreground_rect = background_rect;
@@ -172,8 +174,14 @@ void PaintLayerClipper::CalculateBackgroundClipRectInternal(
   // paint outside of those bounds.
   // The total painting bounds includes any visual overflow (such as shadow) and
   // filter bounds.
+  const auto* element = DynamicTo<Element>(layer_->GetLayoutObject().GetNode());
+  const bool has_scoped_transition_pseudo =
+      element && !element->IsDocumentElement() &&
+      element->PseudoElementLayoutObject(kPseudoIdViewTransition);
+  // A scoped transition pseudo can extend outside these bounds and escapes the
+  // scope's overflow clip. Do not reject its hit-test pass at the scope layer.
   if ((should_apply_self_overflow_clip == kRespectOverflowClip) &&
-      HasNonVisibleOverflow(*layer_)) {
+      HasNonVisibleOverflow(*layer_) && !has_scoped_transition_pseudo) {
     // Implement the following special case: if computing clip rects with
     // respect to the root, don't exclude overlay scrollbars for the background
     // rect if layer_ is the same as the root.
@@ -240,7 +248,7 @@ bool PaintLayerClipper::ShouldClipOverflowAlongEitherAxis(
   // phases.
   return HasNonVisibleOverflow(*layer_) ||
          (layer_->GetLayoutObject().IsLayoutEmbeddedContent() &&
-          layer_->GetLayoutObject().StyleRef().HasBorderRadius());
+          layer_->GetLayoutObject().Style().HasBorderRadius());
 }
 
 }  // namespace blink

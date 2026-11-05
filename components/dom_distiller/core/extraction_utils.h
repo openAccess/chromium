@@ -7,8 +7,7 @@
 
 #include <string>
 
-#include "components/dom_distiller/core/readability_options.h"
-#include "third_party/dom_distiller_js/dom_distiller.pb.h"
+#include "components/dom_distiller/core/proto/distilled_page.pb.h"
 
 namespace base {
 class Value;
@@ -16,27 +15,28 @@ class Value;
 
 namespace dom_distiller {
 
+struct DistillerOptions;
+
+// Keys for fields in the dictionary returned by the JavaScript distiller.
+inline constexpr char kDistilledTitleKey[] = "title";
+inline constexpr char kDistilledContentKey[] = "content";
+inline constexpr char kDistilledTextDirectionKey[] = "dir";
+inline constexpr char kDistilledTextContentKey[] = "textContent";
+
 // Counts the number of words in the text_content portion.
 int CountWords(const std::string& text_content);
 
-// Converts the JS object returned by the readability distiller into the
-// DomDistillerResult expected by the distillation infra.
-bool ReadabilityDistillerResultToDomDistillerResult(
-    const base::Value& value,
-    proto::DomDistillerResult* result);
+// Parses the JS object returned by the web distiller into the
+// DistilledPageProto expected by the distillation infra.
+bool ParseDistillationResult(const base::Value& value,
+                             DistilledPageProto* result);
 
-// Returns the DomDistiller JavaScript web page distillation script with
-// selected distallation `options`.
-std::string GetDistillerScriptWithOptions(
-    const dom_distiller::proto::DomDistillerOptions& options);
+// Returns the JavaScript web page distillation script with the given options.
+std::string GetDistillerScript(const DistillerOptions& options);
 
-// Returns the Readability JavaScript web page distillation script with the
-// given options.
-std::string GetReadabilityDistillerScript(const ReadabilityOptions& options);
-
-// Returns the Javascript heuristic to determine if web pages are suitable for
+// Returns the JavaScript heuristic to determine if web pages are suitable for
 // reader mode.
-std::string GetReadabilityTriggeringScript();
+std::string GetDistillerTriggeringScript();
 
 }  // namespace dom_distiller
 

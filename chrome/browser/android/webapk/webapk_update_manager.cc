@@ -29,14 +29,13 @@
 #include "components/webapps/browser/android/webapk/webapk_types.h"
 #include "content/public/browser/browser_thread.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
+#include "third_party/jni_zero/default_conversions.h"
 #include "ui/android/color_utils_android.h"
 #include "url/gurl.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/WebApkUpdateManager_jni.h"
 
-using base::android::ConvertJavaStringToUTF16;
-using base::android::ConvertJavaStringToUTF8;
 using base::android::JavaRef;
 using base::android::ScopedJavaGlobalRef;
 
@@ -73,8 +72,7 @@ std::unique_ptr<webapps::WebappIcon> MakeWebAppIcon(
 }  // anonymous namespace
 
 // static JNI method.
-static int32_t JNI_WebApkUpdateManager_GetWebApkTargetShellVersion(
-    JNIEnv* env) {
+static int32_t JNI_WebApkUpdateManager_GetWebApkTargetShellVersion() {
   return base::GetFieldTrialParamByFeatureAsInt(
       kWebApkShellUpdate, kWebApkTargetShellVersion.name,
       kWebApkTargetShellVersion.default_value);
@@ -119,9 +117,9 @@ static void JNI_WebApkUpdateManager_StoreWebApkUpdateRequestToFile(
     int32_t java_webapk_version,
     bool java_is_manifest_stale,
     bool java_is_app_identity_update_supported,
-    const JavaRef<jintArray>& java_update_reasons,
-    const JavaRef<jobject>& java_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    const std::vector<int32_t>& java_update_reasons,
+    base::OnceCallback<void(bool)> java_callback) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   webapps::ShortcutInfo info((GURL(java_start_url)));
   info.scope = GURL(java_scope);
@@ -207,11 +205,12 @@ static void JNI_WebApkUpdateManager_StoreWebApkUpdateRequestToFile(
   base::android::JavaArrayOfByteArrayToStringVector(
       env, java_shortcut_icon_data, &shortcut_icon_data);
 
-  DCHECK_EQ(shortcuts.size(), shortcut_icon_data.size());
+  CHECK_EQ(shortcuts.size(), shortcut_icon_data.size(),
+           base::NotFatalUntil::M161);
 
   for (size_t i = 0; i < shortcuts.size(); i++) {
     const auto& shortcut_data = shortcuts[i];
-    DCHECK_EQ(shortcut_data.size(), 5u);
+    CHECK_EQ(shortcut_data.size(), 5u, base::NotFatalUntil::M161);
 
     blink::Manifest::ShortcutItem shortcut_item;
     shortcut_item.name = shortcut_data[0];
@@ -235,30 +234,25 @@ static void JNI_WebApkUpdateManager_StoreWebApkUpdateRequestToFile(
     info.shortcut_items.push_back(std::move(shortcut_item));
   }
 
-  std::vector<int> int_update_reasons;
-  base::android::JavaIntArrayToIntVector(env, java_update_reasons,
-                                         &int_update_reasons);
   std::vector<webapps::WebApkUpdateReason> update_reasons;
-  for (int update_reason : int_update_reasons)
+  for (int32_t update_reason : java_update_reasons) {
     update_reasons.push_back(
         static_cast<webapps::WebApkUpdateReason>(update_reason));
+  }
 
   WebApkInstaller::StoreUpdateRequestToFile(
       base::FilePath(update_request_path), info, app_key,
       std::move(primary_icon), std::move(splash_icon), webapk_package,
       base::NumberToString(java_webapk_version), std::move(webapk_icons),
       java_is_manifest_stale, java_is_app_identity_update_supported,
-      std::move(update_reasons),
-      base::BindOnce(&base::android::RunBooleanCallbackAndroid,
-                     ScopedJavaGlobalRef<jobject>(java_callback)));
+      std::move(update_reasons), std::move(java_callback));
 }
 
 // static JNI method.
 static void JNI_WebApkUpdateManager_UpdateWebApkFromFile(
-    JNIEnv* env,
     const std::string& update_request_path,
     const JavaRef<jobject>& java_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   ScopedJavaGlobalRef<jobject> callback_ref(java_callback);
 

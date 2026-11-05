@@ -17,7 +17,6 @@ static_library("external_metrics") {
 
   deps = [
     "//ash/constants",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/metrics",
     "//components/metrics:serialization",
     "//content/public/browser",
@@ -32,7 +31,7 @@ if (is_chromeos_device) {
       ":external_metrics",
       "//base",
       "//base/test:test_support",
-      "//chrome/test:ash_integration_test_support",
+      "//chrome/test/base/chromeos/crosier:ash_test_support",
     ]
   }
 }

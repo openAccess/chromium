@@ -120,14 +120,6 @@ declare_args() {
 
   # When true, seed corpora archives are built.
   archive_seed_corpus = true
-
-  # When true, only builds fuzzer targets that require high end machines to run.
-  # Otherwise, builds all the targets.
-  # TODO(paulsemel): once we have everything implemented on the recipe side, we
-  # can change the behaviour for the false case, and only build the non high-end
-  # jobs, so that they do not appear in the zip. As for now, this behaviour
-  # ensures nothing breaks.
-  high_end_fuzzer_targets = false
 }
 
 declare_args() {
@@ -169,7 +161,8 @@ declare_args() {
   # enable it by default only in sanitizer builds.
   # Also be sure not to enable this on non-Chromium builds where
   # the required //third_party/fuzztest dependency may be absent.
-  # TODO(crbug.com/40286621): enable on component builds
+  # TODO(crbug.com/578531658): Deprecate engine-less `--fuzz` support
+  # (`enable_fuzztest_fuzz`). Prefer an external fuzzing engine instead.
   enable_fuzztest_fuzz =
       !(use_libfuzzer || use_centipede || use_external_fuzzing_engine ||
         use_chromium_fuzzilli) &&
@@ -404,10 +397,10 @@ assert(
 not_fuzzed_remove_configs = []
 not_fuzzed_add_configs = []
 
-# It is usually OK to compile only certain parts of a binary with ASan. Usually,
-# but not always :)
+# It is usually OK to compile only certain parts of a binary with ASan/HWASan.
+# Usually, but not always :)
 # The `needs_asan` variant can be used in such cases: it disables coverage and
-# instrumentation to the extent possible, but leaves ASan enabled.
+# instrumentation to the extent possible, but leaves ASan/HWASan enabled.
 not_fuzzed_needs_asan_add_configs = []
 
 if (use_fuzzing_engine) {
@@ -420,9 +413,9 @@ if (use_fuzzing_engine) {
 
   # Always add the `not_fuzzed` config for "not fuzzed" targets, and explicitly
   # add sanitizer ldflags which are needed to link even partially-sanitized
-  # binaries. Depending on asan / msan the ldflags might already be included
-  # via the default_sanitizer_flags_but_coverage config, but it's fine to add
-  # it explicitly here.
+  # binaries. Depending on asan / hwasan / msan the ldflags might already be
+  # included via the default_sanitizer_flags_but_coverage config, but it's fine
+  # to add it explicitly here.
   not_fuzzed_add_configs += [
     "//build/config/sanitizers:not_fuzzed",
     "//build/config/sanitizers:default_sanitizer_ldflags",
@@ -437,14 +430,14 @@ if (use_fuzzing_engine) {
 
   not_fuzzed_needs_asan_add_configs = not_fuzzed_add_configs
 
-  # For selected targets which need ASan instrumentation, do also add back
-  # sanitizer flags except for coverage.
-  if (is_asan && !is_msan) {
+  # For selected targets which need ASan/HWASan instrumentation, do also add
+  # back sanitizer flags except for coverage.
+  if ((is_asan || is_hwasan) && !is_msan) {
     not_fuzzed_needs_asan_add_configs +=
         [ "//build/config/sanitizers:default_sanitizer_flags_but_coverage" ]
   }
 
-  if (is_asan && !is_msan) {
+  if ((is_asan || is_hwasan) && !is_msan) {
     assert(not_fuzzed_add_configs != not_fuzzed_needs_asan_add_configs)
   } else {
     assert(not_fuzzed_add_configs == not_fuzzed_needs_asan_add_configs)

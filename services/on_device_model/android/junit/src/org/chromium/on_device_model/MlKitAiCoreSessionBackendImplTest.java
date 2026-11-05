@@ -30,7 +30,6 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
@@ -47,7 +46,6 @@ import java.util.concurrent.Executor;
  * testing of the backend behavior.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class MlKitAiCoreSessionBackendImplTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.LENIENT);
 
@@ -297,8 +295,8 @@ public class MlKitAiCoreSessionBackendImplTest {
 
         InputPiece[] inputPieces = new InputPiece[] {createTextInputPiece("Hello")};
         GenerateOptions options = new GenerateOptions();
-        // maxOutputTokens > 4096 throws IllegalArgumentException in MLKit API
-        options.maxOutputTokens = 20000;
+        // maxOutputTokens < 0 throws IllegalArgumentException in MLKit API
+        options.maxOutputTokens = -1;
 
         backend.generate(options, inputPieces, responder);
 

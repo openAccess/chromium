@@ -317,9 +317,11 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionForReplaced(
   const auto& child_style = child.Style();
   const BoxStrut border_padding =
       ComputeBorders(space, child) + ComputePadding(space, child_style);
+  const LayoutUnit inline_size =
+      ComputeReplacedSize(child, space, border_padding).inline_size;
 
   MinMaxSizes result;
-  result = ComputeReplacedSize(child, space, border_padding).inline_size;
+  result = inline_size;
 
   if (child_style.LogicalWidth().HasPercent() ||
       child_style.LogicalMaxWidth().HasPercent()) {
@@ -329,9 +331,9 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionForReplaced(
     result.min_size = ResolveMinInlineLength(
         space, child_style, border_padding,
         [&](SizeType) -> MinMaxSizesResult {
-          // Behave the same as if we couldn't resolve the min-inline size.
+          // Use the inline-size if we need to resolve min-content/max-content.
           MinMaxSizes sizes;
-          sizes = border_padding.InlineSum();
+          sizes = inline_size;
           return {sizes, /* depends_on_block_constraints */ false};
         },
         child_style.LogicalMinWidth());
@@ -459,7 +461,7 @@ MinMaxSizesResult ComputeMinAndMaxContentContribution(
     const ComputedStyle& parent_style,
     const BlockNode& child,
     const ConstraintSpace& space,
-    const MinMaxSizesFloatInput float_input) {
+    const MinMaxSizesInput& input) {
   const auto& child_style = child.Style();
   const auto parent_writing_mode = parent_style.GetWritingMode();
   const auto child_writing_mode = child_style.GetWritingMode();
@@ -470,8 +472,7 @@ MinMaxSizesResult ComputeMinAndMaxContentContribution(
   }
 
   auto MinMaxSizesFunc = [&](SizeType type) -> MinMaxSizesResult {
-    return child.ComputeMinMaxSizes(parent_writing_mode, type, space,
-                                    float_input);
+    return child.ComputeMinMaxSizes(parent_writing_mode, type, space, input);
   };
 
   return ComputeMinAndMaxContentContributionInternal(parent_writing_mode, child,
@@ -480,7 +481,8 @@ MinMaxSizesResult ComputeMinAndMaxContentContribution(
 
 MinMaxSizesResult ComputeMinAndMaxContentContributionForSelf(
     const BlockNode& child,
-    const ConstraintSpace& space) {
+    const ConstraintSpace& space,
+    const MinMaxSizesInput& input) {
   DCHECK(child.CreatesNewFormattingContext());
 
   const ComputedStyle& child_style = child.Style();
@@ -490,7 +492,7 @@ MinMaxSizesResult ComputeMinAndMaxContentContributionForSelf(
     return ComputeMinAndMaxContentContributionForReplaced(child, space);
 
   auto MinMaxSizesFunc = [&](SizeType type) -> MinMaxSizesResult {
-    return child.ComputeMinMaxSizes(writing_mode, type, space);
+    return child.ComputeMinMaxSizes(writing_mode, type, space, input);
   };
 
   return ComputeMinAndMaxContentContributionInternal(writing_mode, child, space,
@@ -1373,24 +1375,22 @@ LayoutUnit ResolveRowGapForMulticol(const ComputedStyle& style,
       .value_or(LayoutUnit(style.GetFontDescription().ComputedPixelSize()));
 }
 
-std::optional<LayoutUnit> ResolveFlowToleranceLength(
-    const ComputedStyle& style,
-    LayoutUnit available_size) {
-  // TODO (celestepan): Account for when flow-tolerance is set to infinite.
-  const FlowTolerance& flow_tolerance = style.GetFlowTolerance();
-  if (flow_tolerance.IsNormal()) {
+std::optional<LayoutUnit> ResolveFitToleranceLength(const ComputedStyle& style,
+                                                    LayoutUnit available_size) {
+  const FitTolerance& fit_tolerance = style.GetFitTolerance();
+  if (fit_tolerance.IsNormal()) {
     return std::nullopt;
   }
-  if (flow_tolerance.IsInfinite()) {
+  if (fit_tolerance.IsInfinite()) {
     return LayoutUnit::Max();
   }
-  return MinimumValueForLength(flow_tolerance.GetLength(),
+  return MinimumValueForLength(fit_tolerance.GetLength(),
                                available_size.ClampIndefiniteToZero());
 }
 
-LayoutUnit ResolveFlowToleranceForGridLanes(const ComputedStyle& style,
-                                            const LogicalSize& available_size) {
-  return ResolveFlowToleranceLength(
+LayoutUnit ResolveFitToleranceForGridLanes(const ComputedStyle& style,
+                                           const LogicalSize& available_size) {
+  return ResolveFitToleranceLength(
              style, (style.GridLanesTrackSizingDirection() == kForColumns)
                         ? available_size.inline_size
                         : available_size.block_size)
@@ -1494,6 +1494,10 @@ BoxStrut ComputeBorders(const ConstraintSpace& constraint_space,
 
   if (node.IsTable()) {
     return To<TableNode>(node).GetTableBorders()->TableBorder();
+  }
+
+  if (node.IsTableSection() || node.IsTableRow()) {
+    return BoxStrut();
   }
 
   return ComputeBordersInternal(node.Style());
@@ -1750,7 +1754,9 @@ FragmentGeometry CalculateInitialFragmentGeometry(
     const BlockBreakToken* break_token,
     bool is_intrinsic) {
   auto MinMaxSizesFunc = [&](SizeType type) -> MinMaxSizesResult {
-    return node.ComputeMinMaxSizes(space.GetWritingMode(), type, space);
+    DCHECK(!is_intrinsic);
+    return node.ComputeMinMaxSizes(space.GetWritingMode(), type, space,
+                                   MinMaxSizesInput::Unconstrained());
   };
 
   return CalculateInitialFragmentGeometry(space, node, break_token,

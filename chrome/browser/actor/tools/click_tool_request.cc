@@ -5,7 +5,11 @@
 #include "chrome/browser/actor/tools/click_tool_request.h"
 
 #include <optional>
+#include <string_view>
 
+#include "chrome/browser/actor/tools/registry/tool_definition.h"
+#include "chrome/browser/actor/tools/registry/tool_definition_builder.h"
+#include "chrome/browser/actor/tools/registry/tool_schema_builder.h"
 #include "chrome/browser/actor/tools/tool_request_visitor_functor.h"
 #include "chrome/common/actor.mojom-shared.h"
 #include "content/public/browser/render_widget_host.h"
@@ -13,23 +17,44 @@
 
 namespace actor {
 
-using ::tabs::TabHandle;
+namespace {
+
+// Default description for the `click` tool.
+constexpr std::string_view kClickToolDescription =
+    "Click or toggle an interactive element (such as a button, radio button, "
+    "or checkbox) on the active webpage.";
+
+// Description for the `dom_node_id` parameter of the `click` tool.
+constexpr std::string_view kDomNodeIdParamDescription =
+    "The numeric DOM node ID of the target element (e.g. 101).";
+
+}  // namespace
+
 
 ClickToolRequest::ClickToolRequest(
-    TabHandle tab_handle,
+    ActorSurfaceHandle actor_surface_handle,
     const PageTarget& target,
     mojom::ClickType type,
     mojom::ClickCount count,
     bool requires_opening_web_contents,
     std::optional<ObservationDelayController::PageStabilityConfig>
         page_stability_config)
-    : PageToolRequest(tab_handle, target),
+    : PageToolRequest(actor_surface_handle, target),
       click_type_(type),
       click_count_(count),
       requires_opening_web_contents_(requires_opening_web_contents),
       page_stability_config_(page_stability_config) {}
 
 ClickToolRequest::~ClickToolRequest() = default;
+
+// static
+std::optional<ToolDefinition> ClickToolRequest::GetToolDefinition() {
+  return ToolDefinitionBuilder(ToolId::kClick, kModelFacingName,
+                               kClickToolDescription)
+      .SetToolParameterSchema(ToolSchemaBuilder().AddIntegerProperty(
+          kDomNodeIdParam, kDomNodeIdParamDescription))
+      .Build();
+}
 
 void ClickToolRequest::Apply(ToolRequestVisitorFunctor& f) const {
   f.Apply(*this);

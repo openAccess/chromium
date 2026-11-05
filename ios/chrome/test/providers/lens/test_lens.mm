@@ -30,6 +30,14 @@ enum TestLensProviderErrors : NSInteger {
 
 }  // namespace
 
+using LensWebParamsCallback =
+    base::OnceCallback<void(web::NavigationManager::WebLoadParams)>;
+
+id<ChromeLensController> NewChromeLensController(LensConfiguration* config) {
+  // Lens is not supported for tests.
+  return nil;
+}
+
 UIViewController<ChromeLensViewFinderController>*
 NewChromeLensViewFinderController(LensConfiguration* config) {
   // Lens is not supported for tests.
@@ -49,5 +57,27 @@ bool IsLensSupported() {
   return false;
 }
 
+std::optional<std::string> GenerateLensSapisidHash(
+    const std::string& email,
+    const std::string& sapisid_cookie,
+    const std::string& origin,
+    base::Time timestamp) {
+  // Lens identity delegation is not supported for tests.
+  return std::nullopt;
+}
+
+bool IsLensWebResultsURL(const GURL& url) {
+  // Lens is not supported for tests.
+  return false;
+}
+
+std::optional<LensEntrypoint> GetLensEntryPointFromURL(const GURL& url) {
+  return std::nullopt;
+}
+
+void GenerateLensLoadParamsAsync(LensQuery* query,
+                                 LensWebParamsCallback completion) {
+  NOTREACHED() << "Lens is not supported.";
+}
 }  // namespace provider
 }  // namespace ios

@@ -24,8 +24,10 @@
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/existing_window_sub_menu_model.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_menu_model.h"
 #include "chrome/browser/ui/tabs/tab_menu_model_delegate.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/base_tab_strip_region_view.h"
@@ -78,11 +80,14 @@
 #include "content/public/test/url_loader_interceptor.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/view_utils.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/wm/window_pin_util.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #endif
 
 using content::OpenURLParams;
@@ -153,16 +158,12 @@ class TabAddedAndRemovedWaiter : public TabStripModelObserver {
 }  // namespace
 namespace web_app {
 
-class WebAppTabStripBrowserTest : public WebAppBrowserTestBase,
-                                  public testing::WithParamInterface<
-                                      apps::test::LinkCapturingFeatureVersion> {
+class WebAppTabStripBrowserTestBase : public WebAppBrowserTestBase {
  public:
-  WebAppTabStripBrowserTest() = default;
-  ~WebAppTabStripBrowserTest() override = default;
-
-  void SetUp() override {
+  explicit WebAppTabStripBrowserTestBase(
+      apps::test::LinkCapturingFeatureVersion link_capturing_version) {
     std::vector<base::test::FeatureRefAndParams> enabled_features =
-        apps::test::GetFeaturesToEnableLinkCapturingUX(GetParam());
+        apps::test::GetFeaturesToEnableLinkCapturingUX(link_capturing_version);
     enabled_features.emplace_back(blink::features::kDesktopPWAsTabStrip,
                                   base::FieldTrialParams());
     enabled_features.emplace_back(features::kDesktopPWAsTabStripSettings,
@@ -171,12 +172,16 @@ class WebAppTabStripBrowserTest : public WebAppBrowserTestBase,
         blink::features::kDesktopPWAsTabStripCustomizations,
         base::FieldTrialParams());
     features_.InitWithFeaturesAndParameters(enabled_features, {});
+  }
+  ~WebAppTabStripBrowserTestBase() override = default;
 
+  void SetUp() override {
     ASSERT_TRUE(embedded_test_server()->Start());
 
     WebAppBrowserTestBase::SetUp();
   }
 
+ protected:
   struct App {
     STACK_ALLOCATED();
 
@@ -235,7 +240,7 @@ class WebAppTabStripBrowserTest : public WebAppBrowserTestBase,
 
     NavigateParams params(app_browser, url,
                           ui::PageTransition::PAGE_TRANSITION_LINK);
-    params.disposition = WindowOpenDisposition::CURRENT_TAB;
+    params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
     ui_test_utils::NavigateToURL(&params);
   }
 
@@ -284,6 +289,14 @@ class WebAppTabStripBrowserTest : public WebAppBrowserTestBase,
 
  private:
   base::test::ScopedFeatureList features_;
+};
+
+class WebAppTabStripBrowserTest : public WebAppTabStripBrowserTestBase,
+                                  public testing::WithParamInterface<
+                                      apps::test::LinkCapturingFeatureVersion> {
+ public:
+  WebAppTabStripBrowserTest() : WebAppTabStripBrowserTestBase(GetParam()) {}
+  ~WebAppTabStripBrowserTest() override = default;
 };
 
 IN_PROC_BROWSER_TEST_P(WebAppTabStripBrowserTest,
@@ -447,9 +460,10 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripBrowserTest,
                          apps::LaunchContainer>
       future;
   provider->scheduler().LaunchAppWithCustomParams(
-      apps::AppLaunchParams(
-          app_id, apps::LaunchContainer::kLaunchContainerWindow,
-          WindowOpenDisposition::CURRENT_TAB, apps::LaunchSource::kFromTest),
+      apps::AppLaunchParams(app_id,
+                            apps::LaunchContainer::kLaunchContainerWindow,
+                            ui::mojom::WindowOpenDisposition::kCurrentTab,
+                            apps::LaunchSource::kFromTest),
       future.GetCallback());
   content::WebContents* web_contents = future.template Get<1>().get();
   ASSERT_TRUE(web_contents);
@@ -974,7 +988,8 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripBrowserTest,
   EXPECT_EQ(tab_strip->active_index(), 1);
 
   // Navigate to home tab using the same URL.
-  app_browser->OpenGURL(start_url, WindowOpenDisposition::CURRENT_TAB);
+  app_browser->OpenGURL(start_url,
+                        ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // Expect the JS variable to still be set, meaning the page was not navigated.
   EXPECT_EQ(true, EvalJs(tab_strip->GetWebContentsAt(0), "test == 5"));
@@ -1044,7 +1059,7 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripBrowserTest, DontCreateThrottleForReload) {
   // Reload.
   content::TestNavigationObserver reload_nav_observer(
       tab_strip->GetActiveWebContents(), 1);
-  chrome::Reload(app_browser, WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(app_browser, ui::mojom::WindowOpenDisposition::kCurrentTab);
   reload_nav_observer.Wait();
 
   // Expect the reload did not cause a new tab to open.
@@ -1471,7 +1486,8 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripBrowserTest, MiddleClickHomeTabLink) {
   EXPECT_EQ(tab_strip->active_index(), 0);
 
   // Middle click home tab link from the home tab.
-  app_browser->OpenGURL(start_url, WindowOpenDisposition::NEW_BACKGROUND_TAB);
+  app_browser->OpenGURL(start_url,
+                        ui::mojom::WindowOpenDisposition::kNewBackgroundTab);
 
   // Check we stayed in the home tab.
   EXPECT_EQ(tab_strip->count(), 1);
@@ -1482,7 +1498,8 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripBrowserTest, MiddleClickHomeTabLink) {
   chrome::NewTab(app_browser, NewTabTypes::kNoUserAction);
 
   // Middle click home tab link from a different tab.
-  app_browser->OpenGURL(start_url, WindowOpenDisposition::NEW_BACKGROUND_TAB);
+  app_browser->OpenGURL(start_url,
+                        ui::mojom::WindowOpenDisposition::kNewBackgroundTab);
 
   // Check it was opened in the home tab.
   EXPECT_EQ(tab_strip->count(), 2);
@@ -1533,7 +1550,50 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripBrowserTest, PageTitle) {
 
 // Browser tests that verify web-app tab strip behavior when locked (and not
 // locked) for OnTask. Only relevant for non-web browser scenarios.
-using WebAppTabStripForOnTaskBrowserTest = WebAppTabStripBrowserTest;
+using WebAppTabStripForOnTaskBrowserTestParam =
+    std::tuple<apps::test::LinkCapturingFeatureVersion, bool>;
+
+class WebAppTabStripForOnTaskBrowserTest
+    : public WebAppTabStripBrowserTestBase,
+      public testing::WithParamInterface<
+          WebAppTabStripForOnTaskBrowserTestParam> {
+ public:
+  WebAppTabStripForOnTaskBrowserTest()
+      : WebAppTabStripBrowserTestBase(std::get<0>(GetParam())) {
+    scoped_feature_list_.InitWithFeatureState(
+        features::kUseUnifiedLockedStateController,
+        is_unified_locked_state_controller_enabled_);
+  }
+  ~WebAppTabStripForOnTaskBrowserTest() override = default;
+
+ protected:
+  const bool is_unified_locked_state_controller_enabled_ =
+      std::get<1>(GetParam());
+
+  void PinWindow(BrowserWindowInterface* browser) {
+    if (is_unified_locked_state_controller_enabled_) {
+      auto* controller = chromeos::LockedStateController::From(browser);
+      ASSERT_TRUE(controller);
+      controller->Lock(chromeos::LockedState::kOnTaskLocked);
+    } else {
+      ash::boca::OnTaskLockedController::From(browser)->set_locked_for_on_task(
+          true);
+      ash::PinWindow(browser->GetWindow()->GetNativeWindow(),
+                     /*trusted=*/true);
+      // TODO(crbug.com/429215055): This should happen as a part of pin state
+      // transition.
+      // The legacy path requires manual notification of command controller.
+      // In the unified controller path, Lock() internally triggers the
+      // delegate's EnterLockedFullscreen, which handles this.
+      chrome::BrowserCommandController::From(browser)
+          ->LockedFullscreenStateChanged();
+    }
+    ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(browser));
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
 
 IN_PROC_BROWSER_TEST_P(WebAppTabStripForOnTaskBrowserTest,
                        MiddleClickDoesNotCloseTabsWhenLockedForOnTask) {
@@ -1543,20 +1603,13 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripForOnTaskBrowserTest,
   const webapps::AppId app_id = InstallTestWebApp(start_url);
   BrowserWindowInterface* const app_browser =
       FindWebAppBrowser(browser()->GetProfile(), app_id);
-  ash::boca::OnTaskLockedController::From(app_browser)
-      ->set_locked_for_on_task(true);
 
   const TabStripModel* const tab_strip_model = app_browser->GetTabStripModel();
   ASSERT_TRUE(registrar().IsTabbedWindowModeEnabled(app_id));
   ASSERT_EQ(tab_strip_model->count(), 1);
   ASSERT_TRUE(tab_strip_model->IsTabPinned(0));
 
-  PinWindow(app_browser->GetWindow()->GetNativeWindow(), /*trusted=*/true);
-  // TODO(crbug.com/429215055): This should happen as a part of pin state
-  // transition.
-  chrome::BrowserCommandController::From(app_browser)
-      ->LockedFullscreenStateChanged();
-  ASSERT_TRUE(platform_util::IsBrowserLockedFullscreen(app_browser));
+  PinWindow(app_browser);
 
   // Open another tab so we can test tab close behavior on both home and
   // non-home tabs.
@@ -1583,8 +1636,10 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripForOnTaskBrowserTest,
   const webapps::AppId app_id = InstallTestWebApp(start_url);
   BrowserWindowInterface* const app_browser =
       FindWebAppBrowser(browser()->GetProfile(), app_id);
-  ash::boca::OnTaskLockedController::From(app_browser)
-      ->set_locked_for_on_task(false);
+  if (!is_unified_locked_state_controller_enabled_) {
+    ash::boca::OnTaskLockedController::From(app_browser)
+        ->set_locked_for_on_task(false);
+  }
 
   const TabStripModel* const tab_strip_model = app_browser->GetTabStripModel();
   ASSERT_TRUE(registrar().IsTabbedWindowModeEnabled(app_id));
@@ -1615,9 +1670,10 @@ IN_PROC_BROWSER_TEST_P(WebAppTabStripForOnTaskBrowserTest,
 INSTANTIATE_TEST_SUITE_P(
     All,
     WebAppTabStripForOnTaskBrowserTest,
-    testing::Values(apps::test::LinkCapturingFeatureVersion::kV2DefaultOff,
-                    apps::test::LinkCapturingFeatureVersion::kV2DefaultOn),
-    apps::test::LinkCapturingVersionToString);
+    testing::Combine(
+        testing::Values(apps::test::LinkCapturingFeatureVersion::kV2DefaultOff,
+                        apps::test::LinkCapturingFeatureVersion::kV2DefaultOn),
+        testing::Bool()));
 
 #endif  // BUILDFLAG(IS_CHROMEOS)
 

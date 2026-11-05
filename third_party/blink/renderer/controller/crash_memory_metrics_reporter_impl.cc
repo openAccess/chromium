@@ -7,10 +7,13 @@
 #include <utility>
 
 #include "base/atomicops.h"
+#include "base/feature_list.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/process/memory.h"
 #include "base/process/process_metrics.h"
+#include "build/build_config.h"
 #include "partition_alloc/oom_callback.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/platform/bindings/v8_per_isolate_data.h"
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread.h"
@@ -31,18 +34,21 @@ void CrashMemoryMetricsReporterImpl::Bind(
 }
 
 CrashMemoryMetricsReporterImpl& CrashMemoryMetricsReporterImpl::Instance() {
-  DEFINE_STATIC_LOCAL(CrashMemoryMetricsReporterImpl,
-                      crash_memory_metrics_reporter_impl, ());
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(CrashMemoryMetricsReporterImpl,
+                                  crash_memory_metrics_reporter_impl, ());
   return crash_memory_metrics_reporter_impl;
 }
 
 CrashMemoryMetricsReporterImpl::CrashMemoryMetricsReporterImpl()
+#if BUILDFLAG(IS_ANDROID)
     : timer_(Thread::MainThread()
                  ->Scheduler()
                  ->ToMainThreadScheduler()
                  ->NonWakingTaskRunner(),
              this,
-             &CrashMemoryMetricsReporterImpl::SampleMemoryState) {
+             &CrashMemoryMetricsReporterImpl::SampleMemoryState)
+#endif
+{
   ::partition_alloc::SetPartitionAllocOomCallback(
       CrashMemoryMetricsReporterImpl::OnOOMCallback);
 }
@@ -52,9 +58,34 @@ CrashMemoryMetricsReporterImpl::~CrashMemoryMetricsReporterImpl() = default;
 void CrashMemoryMetricsReporterImpl::SetSharedMemory(
     base::UnsafeSharedMemoryRegion shared_metrics_buffer) {
   // This method should be called only once per process.
-  DCHECK(!shared_metrics_mapping_.IsValid());
-  shared_metrics_mapping_ = shared_metrics_buffer.Map();
-  timer_.StartRepeating(base::Seconds(1), FROM_HERE);
+  base::WritableSharedMemoryMapping mapping = shared_metrics_buffer.Map();
+  {
+    base::AutoLock auto_lock(lock_);
+    DCHECK(!shared_metrics_mapping_.IsValid());
+    shared_metrics_mapping_ = std::move(mapping);
+  }
+#if BUILDFLAG(IS_ANDROID)
+  if (!base::FeatureList::IsEnabled(features::kGateMemoryMetricsOnVisibility)) {
+    timer_.StartRepeating(base::Seconds(1), FROM_HERE);
+    return;
+  }
+  UpdateTimer();
+#endif
+}
+
+void CrashMemoryMetricsReporterImpl::ResetForTesting() {
+#if BUILDFLAG(IS_ANDROID)
+  timer_.Stop();
+  is_visible_ = false;
+  timer_.SetTaskRunnerForTesting(Thread::MainThread()
+                                     ->Scheduler()
+                                     ->ToMainThreadScheduler()
+                                     ->NonWakingTaskRunner(),
+                                 nullptr);
+#endif
+  base::AutoLock auto_lock(lock_);
+  shared_metrics_mapping_ = base::WritableSharedMemoryMapping();
+  last_reported_metrics_ = OomInterventionMetrics();
 }
 
 void CrashMemoryMetricsReporterImpl::WriteIntoSharedMemory() {
@@ -66,29 +97,58 @@ void CrashMemoryMetricsReporterImpl::WriteIntoSharedMemory() {
       base::byte_span_from_ref(last_reported_metrics_));
 }
 
+#if BUILDFLAG(IS_ANDROID)
+void CrashMemoryMetricsReporterImpl::SetRendererVisible(bool visible) {
+  DCHECK(IsMainThread());
+  if (is_visible_ == visible) {
+    return;
+  }
+  is_visible_ = visible;
+  if (!base::FeatureList::IsEnabled(features::kGateMemoryMetricsOnVisibility)) {
+    return;
+  }
+  UpdateTimer();
+}
+
+void CrashMemoryMetricsReporterImpl::UpdateTimer() {
+  DCHECK(IsMainThread());
+  bool has_shared_memory;
+  {
+    base::AutoLock auto_lock(lock_);
+    has_shared_memory = shared_metrics_mapping_.IsValid();
+  }
+  if (is_visible_ && has_shared_memory) {
+    if (!timer_.IsActive()) {
+      SampleMemoryState(nullptr);
+      timer_.StartRepeating(base::Seconds(1), FROM_HERE);
+    }
+  } else {
+    timer_.Stop();
+  }
+}
+
 void CrashMemoryMetricsReporterImpl::SampleMemoryState(TimerBase*) {
   base::SystemMemoryInfo meminfo;
   base::GetSystemMemoryInfo(&meminfo);
-  OomInterventionMetrics metrics;
-  metrics.current_available_memory = meminfo.available;
-  metrics.current_swap_free = meminfo.swap_free;
-  last_reported_metrics_ = metrics;
+  base::AutoLock auto_lock(lock_);
+  last_reported_metrics_.current_available_memory = meminfo.available;
+  last_reported_metrics_.current_swap_free = meminfo.swap_free;
   WriteIntoSharedMemory();
 }
+#endif
 
 void CrashMemoryMetricsReporterImpl::OnOOMCallback() {
-  // TODO(yuzus: Support allocation failures on other threads as well.
-  if (!IsMainThread())
-    return;
   CrashMemoryMetricsReporterImpl& instance =
       CrashMemoryMetricsReporterImpl::Instance();
+  // None of the code executed while holding the`lock_` should allocate memory;
+  // if it does, it may trigger an OOM and end up in a deadlock.
+  base::AutoLock auto_lock(instance.lock_);
+
   // If shared_metrics_mapping_ is not set, it means OnNoMemory happened before
   // initializing render process host sets the shared memory.
   if (!instance.shared_metrics_mapping_.IsValid())
     return;
   // Else, we can send the allocation_failed bool.
-  // TODO(yuzus): Report this UMA on all the platforms. Currently this is only
-  // reported on Android.
   instance.last_reported_metrics_.allocation_failed = 1;  // true
   instance.WriteIntoSharedMemory();
 }

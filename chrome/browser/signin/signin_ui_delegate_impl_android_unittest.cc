@@ -66,7 +66,8 @@ class MockSigninBridge : public SigninBridge {
               StartUpdateCredentialsFlow,
               (TabAndroid * tab,
                const GURL& continue_url,
-               const CoreAccountId& account_id),
+               const CoreAccountId& account_to_reauth,
+               const CoreAccountId& target_account_id),
               (override));
 };
 
@@ -116,7 +117,7 @@ TEST_F(SigninUiDelegateImplAndroidTest, ShowSigninUI) {
   CoreAccountId account_id = identity_test_env()
                                  ->MakePrimaryAccountAvailable(
                                      kTestEmail, signin::ConsentLevel::kSignin)
-                                 .account_id;
+                                 .GetAccountId();
 
   NavigateAndCommit(GetTestUrl());
   TestTabModel tab_model(profile());
@@ -136,8 +137,8 @@ TEST_F(SigninUiDelegateImplAndroidTest, ShowSigninUI) {
       OpenAccountPickerBottomSheetForExtensions(
           _, GetTestUrl(), std::make_optional(account_id), kTestExtensionName));
 
-  delegate.ShowSigninUI(profile(), /*enable_sync=*/true, kTestAccessPoint,
-                        kTestPromoAction, kTestExtensionName);
+  delegate.ShowSigninUI(profile(), /*enable_history_sync=*/true,
+                        kTestAccessPoint, kTestPromoAction, kTestExtensionName);
 
   TabModelList::RemoveTabModel(&tab_model);
 }
@@ -160,8 +161,8 @@ TEST_F(SigninUiDelegateImplAndroidTest, ShowSigninUINoAccountsOnDevice) {
       *signin_bridge(),
       StartAddAccountFlow(_, std::string(), GetTestUrl(), kTestExtensionName));
 
-  delegate.ShowSigninUI(profile(), /*enable_sync=*/true, kTestAccessPoint,
-                        kTestPromoAction, kTestExtensionName);
+  delegate.ShowSigninUI(profile(), /*enable_history_sync=*/true,
+                        kTestAccessPoint, kTestPromoAction, kTestExtensionName);
 
   TabModelList::RemoveTabModel(&tab_model);
 }
@@ -170,7 +171,7 @@ TEST_F(SigninUiDelegateImplAndroidTest, ShowReauthUI) {
   CoreAccountId account_id = identity_test_env()
                                  ->MakePrimaryAccountAvailable(
                                      kTestEmail, signin::ConsentLevel::kSignin)
-                                 .account_id;
+                                 .GetAccountId();
   identity_test_env()->SetInvalidRefreshTokenForAccount(account_id);
 
   NavigateAndCommit(GetTestUrl());
@@ -186,10 +187,10 @@ TEST_F(SigninUiDelegateImplAndroidTest, ShowReauthUI) {
 
   signin_ui_util::SigninUiDelegateImplAndroid delegate;
 
-  EXPECT_CALL(*signin_bridge(),
-              StartUpdateCredentialsFlow(_, GetTestUrl(), account_id));
+  EXPECT_CALL(*signin_bridge(), StartUpdateCredentialsFlow(
+                                    _, GetTestUrl(), account_id, account_id));
 
-  delegate.ShowReauthUI(profile(), kTestEmail, /*enable_sync=*/true,
+  delegate.ShowReauthUI(profile(), kTestEmail, /*enable_history_sync=*/true,
                         kTestAccessPoint, kTestPromoAction);
 
   TabModelList::RemoveTabModel(&tab_model);

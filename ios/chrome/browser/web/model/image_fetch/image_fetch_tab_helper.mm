@@ -105,12 +105,16 @@ void ImageFetchTabHelper::GetImageData(const GURL& url,
                              ->GetWebFramesManager(web_state_)
                              ->GetFrameWithId(frame_id);
   if (!frame) {
-    FetchImageDataWithFetcher(url, referrer, callback);
+    FetchImageDataWithFetcher(url, referrer, frame_origin, callback);
     return;
   }
 
   if (frame->GetSecurityOrigin() != frame_origin) {
-    FetchImageDataWithFetcher(url, referrer, callback);
+    // An origin mismatch implies that the request is untrusted and pass an
+    // opaque `url::Origin()` so that no origin is treated as same-origin for
+    // credentials.
+    FetchImageDataWithFetcher(url, referrer, /*frame_origin=*/url::Origin(),
+                              callback);
     return;
   }
 
@@ -119,12 +123,14 @@ void ImageFetchTabHelper::GetImageData(const GURL& url,
   GetImageDataByJs(
       url, frame, kGetImageDataByJsTimeout,
       base::BindOnce(&ImageFetchTabHelper::JsCallbackOfGetImageData,
-                     base::Unretained(this), url, referrer, callback));
+                     base::Unretained(this), url, referrer, frame_origin,
+                     callback));
 }
 
 void ImageFetchTabHelper::FetchImageDataWithFetcher(
     const GURL& url,
     const web::Referrer& referrer,
+    const url::Origin& frame_origin,
     ImageDataCallback callback) {
   ImageFetcher::FromWebState(web_state_)
       ->FetchImageData(
@@ -137,19 +143,20 @@ void ImageFetchTabHelper::FetchImageDataWithFetcher(
           }),
           web::ReferrerHeaderValueForNavigation(url, referrer),
           web::PolicyForNavigation(url, referrer), NO_TRAFFIC_ANNOTATION_YET,
-          /*send_cookies=*/true);
+          frame_origin);
 }
 
 void ImageFetchTabHelper::JsCallbackOfGetImageData(
     const GURL& url,
     const web::Referrer& referrer,
+    const url::Origin& frame_origin,
     ImageDataCallback callback,
     const std::string* data) {
   if (data) {
     callback([NSData dataWithBytes:data->c_str() length:data->size()]);
     return;
   }
-  FetchImageDataWithFetcher(url, referrer, callback);
+  FetchImageDataWithFetcher(url, referrer, frame_origin, callback);
 }
 
 void ImageFetchTabHelper::GetImageDataByJs(const GURL& url,

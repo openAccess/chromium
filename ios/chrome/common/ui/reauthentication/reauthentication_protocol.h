@@ -18,13 +18,18 @@ enum class ReauthenticationResult {
 // Block taking a ReauthenticationResult as parameter.
 using ReauthenticationResultBlock = void (^)(ReauthenticationResult);
 
+// A help article on how to set up a passcode.
+inline constexpr char kPasscodeArticleURL[] =
+    "https://support.apple.com/HT204060";
+
 // Protocol for implementor of hardware reauthentication check.
 @protocol ReauthenticationProtocol <NSObject>
 
 // Checks whether biometric authentication is enabled for the device.
 - (BOOL)canAttemptReauthWithBiometrics;
 
-// Checks whether Touch ID and/or passcode is enabled for the device.
+// Checks whether Touch ID and/or passcode is enabled for the device. The
+// implementation of this method must be thread-safe.
 - (BOOL)canAttemptReauth;
 
 // Attempts to reauthenticate the user with Touch ID or Face ID, or passcode if

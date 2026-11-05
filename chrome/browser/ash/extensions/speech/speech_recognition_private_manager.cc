@@ -9,7 +9,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/extensions/speech/speech_recognition_private_recognizer.h"
 #include "chrome/browser/profiles/incognito_helpers.h"
-#include "chromeos/ash/experiences/extensions/api/speech_recognition_private.h"
+#include "chromeos/ash/experiences/extensions/common/api/speech_recognition_private.h"
 #include "content/public/browser/browser_context.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/event_router_factory.h"
@@ -75,9 +75,9 @@ void SpeechRecognitionPrivateManager::HandleSpeechRecognitionStopped(
   if (client_id.has_value())
     return_dict.Set("clientId", client_id.value());
 
-  base::ListValue event_args;
-  event_args.Append(std::move(return_dict));
-  std::unique_ptr<Event> event = std::make_unique<Event>(
+  auto event_args = base::MakeRefCounted<EventArgs>();
+  event_args->data.Append(std::move(return_dict));
+  auto event = std::make_unique<Event>(
       events::SPEECH_RECOGNITION_PRIVATE_ON_STOP,
       api::speech_recognition_private::OnStop::kEventName,
       std::move(event_args));
@@ -98,8 +98,9 @@ void SpeechRecognitionPrivateManager::HandleSpeechRecognitionResult(
   event.is_final = is_final;
   event.client_id = client_id;
 
-  auto event_args = api::speech_recognition_private::OnResult::Create(event);
-  std::unique_ptr<Event> event_ptr = std::make_unique<Event>(
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::speech_recognition_private::OnResult::Create(event));
+  auto event_ptr = std::make_unique<Event>(
       events::SPEECH_RECOGNITION_PRIVATE_ON_RESULT,
       api::speech_recognition_private::OnResult::kEventName,
       std::move(event_args));
@@ -118,8 +119,9 @@ void SpeechRecognitionPrivateManager::HandleSpeechRecognitionError(
   event.message = message;
   event.client_id = client_id;
 
-  auto event_args = api::speech_recognition_private::OnError::Create(event);
-  std::unique_ptr<Event> event_ptr = std::make_unique<Event>(
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::speech_recognition_private::OnError::Create(event));
+  auto event_ptr = std::make_unique<Event>(
       events::SPEECH_RECOGNITION_PRIVATE_ON_ERROR,
       api::speech_recognition_private::OnError::kEventName,
       std::move(event_args));

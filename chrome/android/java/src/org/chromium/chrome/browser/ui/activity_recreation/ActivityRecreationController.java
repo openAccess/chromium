@@ -11,6 +11,7 @@ import android.os.Handler;
 import android.os.PersistableBundle;
 import android.view.View;
 
+import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.OneshotSupplier;
@@ -30,6 +31,8 @@ import org.chromium.components.omnibox.OmniboxFocusReason;
 import org.chromium.components.omnibox.TextSelection;
 import org.chromium.ui.KeyboardVisibilityDelegate;
 
+import java.util.function.Supplier;
+
 /**
  * A utility class to handle saving and restoring the UI state across fold transitions, density
  * change or UI mode type change.
@@ -47,6 +50,7 @@ public class ActivityRecreationController {
     private final Handler mLayoutStateHandler;
     private @Nullable ActivityRecreationUiState mRetainedUiState;
     private @Nullable final ExclusiveAccessManager mExclusiveAccessManager;
+    private final Supplier<@Nullable View> mSidePanelContentViewSupplier;
 
     /**
      * Construct a {@link ActivityRecreationController} instance.
@@ -56,25 +60,29 @@ public class ActivityRecreationController {
      * @param activityTabProvider The current activity tab provider.
      * @param layoutStateHandler The {@link Handler} to post UI state restoration.
      * @param exclusiveAccessManager The {@link ExclusiveAccessManager} instance.
+     * @param sidePanelContentViewSupplier Supplies the content {@link View} currently shown in the
+     *     side panel, if any.
      */
     public ActivityRecreationController(
             OneshotSupplierImpl<ToolbarManager> toolbarManagerSupplier,
             MonotonicObservableSupplier<LayoutManager> layoutManagerSupplier,
             ActivityTabProvider activityTabProvider,
             Handler layoutStateHandler,
-            @Nullable ExclusiveAccessManager exclusiveAccessManager) {
+            @Nullable ExclusiveAccessManager exclusiveAccessManager,
+            Supplier<@Nullable View> sidePanelContentViewSupplier) {
         mToolbarManagerSupplier = toolbarManagerSupplier;
         mLayoutManagerSupplier = layoutManagerSupplier;
         mActivityTabProvider = activityTabProvider;
         mLayoutStateHandler = layoutStateHandler;
         mExclusiveAccessManager = exclusiveAccessManager;
+        mSidePanelContentViewSupplier = sidePanelContentViewSupplier;
     }
 
     /**
-     * Saves the relevant UI to {@link ActivityRecreationUiState} before the activity is recreated
-     * on a device fold transition, density change or UI mode type change. This preserves the actual
-     * UI state, that could change before {@code Activity#onSaveInstanceState()} is called. For e.g.
-     * url bar focus is cleared before {@code Activity#onSaveInstanceState()}.
+     * Saves the relevant UI state to {@link ActivityRecreationUiState} before the activity is
+     * recreated. This preserves the actual UI state that could change before {@code
+     * Activity#onSaveInstanceState()} is called (e.g. URL bar focus or side panel focus being
+     * cleared before {@code Activity#onSaveInstanceState()}).
      */
     public void prepareUiState() {
         mRetainedUiState = new ActivityRecreationUiState();
@@ -99,6 +107,10 @@ public class ActivityRecreationController {
             mRetainedUiState.mIsPointerLocked = mExclusiveAccessManager.isPointerLocked();
             mRetainedUiState.mIsKeyboardLocked = mExclusiveAccessManager.isKeyboardLocked();
         }
+
+        View sidePanelContentView = mSidePanelContentViewSupplier.get();
+        mRetainedUiState.mIsSidePanelFocused =
+                sidePanelContentView != null && sidePanelContentView.hasFocus();
     }
 
     /**
@@ -121,14 +133,14 @@ public class ActivityRecreationController {
      *
      * @param savedInstanceState The {@link Bundle} that is used to restore the UI state.
      */
-    public void restoreUiState(Bundle savedInstanceState) {
+    public void restoreUiState(@Nullable Bundle savedInstanceState) {
         LayoutManager layoutManager = mLayoutManagerSupplier.get();
         if (savedInstanceState == null || layoutManager == null) {
             return;
         }
 
         ActivityRecreationUiState uiState =
-                savedInstanceState.getParcelable(ACTIVITY_RECREATION_UI_STATE);
+                IntentUtils.safeGetParcelable(savedInstanceState, ACTIVITY_RECREATION_UI_STATE);
         if (uiState == null) {
             return;
         }
@@ -140,6 +152,10 @@ public class ActivityRecreationController {
         restoreKeyboardState(uiState, mActivityTabProvider, layoutManager, mLayoutStateHandler);
         restoreTabSwitcherState(uiState.mIsTabSwitcherShown, layoutManager);
         restoreExclusiveAccessState(uiState, mExclusiveAccessManager, mActivityTabProvider);
+        if (uiState.mIsSidePanelFocused) {
+            restoreSidePanelFocus(
+                    layoutManager, mLayoutStateHandler, mSidePanelContentViewSupplier);
+        }
     }
 
     /**
@@ -237,6 +253,9 @@ public class ActivityRecreationController {
                     new LayoutStateObserver() {
                         @Override
                         public void onFinishedShowing(int layoutType) {
+                            if (layoutType != LayoutType.BROWSING) {
+                                return;
+                            }
                             assert layoutManager.isLayoutVisible(LayoutType.BROWSING)
                                     : "LayoutType is "
                                             + layoutManager.getActiveLayoutType()
@@ -282,6 +301,23 @@ public class ActivityRecreationController {
             boolean isTabSwitcherShown, LayoutManager layoutManager) {
         if (!isTabSwitcherShown || TabSwitcherUtils.isGridTabSwitcherDisabled()) return;
         layoutManager.showLayout(LayoutType.HUB, false);
+    }
+
+    private static void restoreSidePanelFocus(
+            LayoutManager layoutManager,
+            Handler layoutStateHandler,
+            Supplier<@Nullable View> sidePanelContentViewSupplier) {
+        // The browsing layout requests focus for the current tab when it is done showing, so
+        // restore side panel focus afterwards.
+        restoreUiStateOnLayoutDoneShowing(
+                layoutManager,
+                layoutStateHandler,
+                () -> {
+                    View contentView = sidePanelContentViewSupplier.get();
+                    if (contentView != null) {
+                        contentView.requestFocus();
+                    }
+                });
     }
 
     private static void restoreExclusiveAccessState(

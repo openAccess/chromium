@@ -7,12 +7,14 @@
 #include <stddef.h>
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <utility>
 #include <vector>
 
 #include "base/check_op.h"
 #include "base/containers/adapters.h"
+#include "base/containers/map_util.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
@@ -468,26 +470,21 @@ void SurfaceAggregator::ProcessPixelMovingFilters(
     const gfx::Transform& parent_target_transform,
     const std::optional<gfx::Rect> dest_root_target_clip_rect,
     const gfx::Transform& dest_transform_to_root_target) {
-  const CompositorRenderPassId child_pass_id = render_pass_quad->render_pass_id;
-  const ResolvedPassData& child_resolved_pass =
-      resolved_frame.GetRenderPassDataById(child_pass_id);
-  const CompositorRenderPass& child_render_pass =
-      child_resolved_pass.render_pass();
 
   // Add damages from render passes with pixel-moving foreground filters or
   // backdrop filters to the surface damage list.
-  if (!child_render_pass.filters.HasFilterThatMovesPixels() &&
-      !child_render_pass.backdrop_filters.HasFilterThatMovesPixels()) {
+  if (!render_pass_quad->filters.HasFilterThatMovesPixels() &&
+      !render_pass_quad->backdrop_filters.HasFilterThatMovesPixels()) {
     return;
   }
 
   gfx::Rect filter_rect_in_target_space;
-  if (child_render_pass.filters.HasFilterThatMovesPixels()) {
+  if (render_pass_quad->filters.HasFilterThatMovesPixels()) {
     // The size of pixel-moving foreground filter is allowed to expand.
     // No intersecting shared_quad_state->clip_rect for the expanded rect.
-    filter_rect_in_target_space = GetTargetExpandedRectForPixelMovingFilters(
-        *render_pass_quad, child_render_pass.filters);
-  } else if (child_render_pass.backdrop_filters.HasFilterThatMovesPixels()) {
+    filter_rect_in_target_space =
+        GetTargetExpandedRectForPixelMovingFilters(*render_pass_quad);
+  } else if (render_pass_quad->backdrop_filters.HasFilterThatMovesPixels()) {
     const SharedQuadState* shared_quad_state =
         render_pass_quad->shared_quad_state;
     filter_rect_in_target_space = cc::MathUtil::MapEnclosingClippedRect(
@@ -672,19 +669,18 @@ ResolvedFrameData* SurfaceAggregator::GetResolvedFrame(
     const SurfaceRange& range) {
   // Find latest in flight surface and cache that result for the duration of
   // this aggregation, then find ResolvedFrameData for that surface.
-  auto iter = resolved_surface_ranges_.find(range);
-  if (iter == resolved_surface_ranges_.end()) {
-    auto* surface = manager_->GetLatestInFlightSurface(range);
-    SurfaceId surface_id = surface ? surface->surface_id() : SurfaceId();
-    iter = resolved_surface_ranges_.emplace(range, surface_id).first;
-  }
+  const SurfaceId& surface_id =
+      base::GetOrCreate(resolved_surface_ranges_, range, [&] {
+        auto* surface = manager_->GetLatestInFlightSurface(range);
+        return surface ? surface->surface_id() : SurfaceId();
+      });
 
-  if (!iter->second.is_valid()) {
+  if (!surface_id.is_valid()) {
     // There is no surface for `range`.
     return nullptr;
   }
 
-  return GetResolvedFrame(iter->second);
+  return GetResolvedFrame(surface_id);
 }
 
 ResolvedFrameData* SurfaceAggregator::GetResolvedFrame(
@@ -964,6 +960,22 @@ void SurfaceAggregator::EmitSurfaceContent(
   size_t num_render_passes = resolved_passes.size();
   size_t passes_to_copy =
       merge_pass ? num_render_passes - 1 : num_render_passes;
+
+  // Only retained root passes need backing-scale adjustment. Non-root effect
+  // passes are already sized at the external page scale. Preserve the source
+  // coordinate space throughout video capture.
+  float root_pass_backing_scale = 1.0f;
+  if (base::FeatureList::IsEnabled(
+          features::kRenderNonMergedSurfaceAtBackingScale) &&
+      !merge_pass && !has_video_capture) {
+    root_pass_backing_scale = frame_metadata.surface_backing_size_scale_factor;
+    if (!std::isfinite(root_pass_backing_scale) ||
+        root_pass_backing_scale <= 0.0f ||
+        !std::isfinite(1.0f / root_pass_backing_scale)) {
+      root_pass_backing_scale = 1.0f;
+    }
+  }
+
   for (size_t j = 0; j < passes_to_copy; ++j) {
     ResolvedPassData& resolved_pass = resolved_passes[j];
     const CompositorRenderPass& source = resolved_pass.render_pass();
@@ -972,7 +984,14 @@ void SurfaceAggregator::EmitSurfaceContent(
     size_t dq_size = source.quad_list.size();
     auto copy_pass = std::make_unique<AggregatedRenderPass>(sqs_size, dq_size);
 
-    gfx::Rect output_rect = source.output_rect;
+    const float pass_backing_scale =
+        resolved_pass.is_root() ? root_pass_backing_scale : 1.0f;
+    // Express the root pass output in backing coordinates. If it exceeds the
+    // render-target limit, crop the unavailable portion below without reducing
+    // the requested pixel scale.
+    gfx::Rect output_rect =
+        gfx::ScaleToEnclosingRect(source.output_rect, pass_backing_scale);
+
     if (max_render_target_size_ > 0) {
       output_rect.set_width(
           std::min(output_rect.width(), max_render_target_size_));
@@ -998,10 +1017,17 @@ void SurfaceAggregator::EmitSurfaceContent(
     copy_pass->transform_to_root_target.PostConcat(combined_transform);
     copy_pass->transform_to_root_target.PostConcat(
         dest_pass->transform_to_root_target);
+    // Scale quads into the adjusted backing and remove the same backing-only
+    // scale from the pass's mapping to the root target, preserving its
+    // on-screen geometry.
+    copy_pass->transform_to_root_target.Scale(1.0f / pass_backing_scale);
+    const gfx::Transform content_to_pass_transform =
+        gfx::Transform::MakeScale(pass_backing_scale);
 
     CopyQuadsToPass(resolved_frame, resolved_pass, copy_pass.get(),
-                    resolved_frame.device_scale_factor(), gfx::Transform(), {},
-                    dest_root_target_clip_rect, MaskFilterInfoExt(),
+                    resolved_frame.device_scale_factor(),
+                    content_to_pass_transform, {}, dest_root_target_clip_rect,
+                    MaskFilterInfoExt(),
                     surface_quad->override_child_filter_quality,
                     surface_quad->override_child_dynamic_range_limit);
 
@@ -1055,15 +1081,23 @@ void SurfaceAggregator::EmitSurfaceContent(
                     surface_quad->override_child_filter_quality,
                     surface_quad->override_child_dynamic_range_limit);
   } else {
+    // Remove the backing scale from the RenderPassDrawQuad's target transform.
+    gfx::Transform render_pass_quad_to_target_transform =
+        scaled_quad_to_target_transform;
+    render_pass_quad_to_target_transform.Scale(1.0f / root_pass_backing_scale);
+
+    // Convert surface quad rects back to root-pass content space, then express
+    // them in the scaled backing's coordinate space.
+    gfx::Transform render_pass_rect_transform = gfx::Transform::MakeScale(
+        inverse_extra_content_scale_x, inverse_extra_content_scale_y);
+    render_pass_rect_transform.Scale(root_pass_backing_scale);
+
     auto* shared_quad_state = CopyAndScaleSharedQuadState(
         surface_quad_sqs, embedder_client_namespace_id,
-        scaled_quad_to_target_transform, target_transform,
-        gfx::ScaleToEnclosingRect(surface_quad_sqs->quad_layer_rect,
-                                  inverse_extra_content_scale_x,
-                                  inverse_extra_content_scale_y),
-        gfx::ScaleToEnclosingRect(surface_quad_sqs->visible_quad_layer_rect,
-                                  inverse_extra_content_scale_x,
-                                  inverse_extra_content_scale_y),
+        render_pass_quad_to_target_transform, target_transform,
+        render_pass_rect_transform.MapRect(surface_quad_sqs->quad_layer_rect),
+        render_pass_rect_transform.MapRect(
+            surface_quad_sqs->visible_quad_layer_rect),
         added_clip_rect, mask_filter_info, dest_pass);
 
     // At this point, we need to calculate three values in order to construct
@@ -1072,8 +1106,8 @@ void SurfaceAggregator::EmitSurfaceContent(
     // |quad_rect| - A rectangle representing the RenderPass's output area in
     //   content space. This is equal to the root render pass (|last_pass|)
     //   output rect.
-    gfx::Rect quad_rect = resolved_root_pass.render_pass().output_rect;
-
+    const gfx::Rect quad_rect = gfx::ScaleToEnclosingRect(
+        resolved_root_pass.render_pass().output_rect, root_pass_backing_scale);
     // |quad_visible_rect| - A rectangle representing the visible portion of
     //   the RenderPass, in content space. As the SurfaceDrawQuad being
     //   embedded may be clipped further than its root render pass, we use the
@@ -1083,9 +1117,8 @@ void SurfaceAggregator::EmitSurfaceContent(
     //   render pass's content space to the surface's content space, we remove
     //   this so that |quad_visible_rect| is in the render pass's content
     //   space.
-    gfx::Rect quad_visible_rect(gfx::ScaleToEnclosingRect(
-        surface_quad->visible_rect, inverse_extra_content_scale_x,
-        inverse_extra_content_scale_y));
+    gfx::Rect quad_visible_rect =
+        render_pass_rect_transform.MapRect(surface_quad->visible_rect);
 
     // We can't produce content outside of |quad_rect|, so clip the visible
     // rect if necessary.
@@ -1103,12 +1136,6 @@ void SurfaceAggregator::EmitSurfaceContent(
       quad->SetNew(shared_quad_state, quad_rect, quad_visible_rect,
                    remapped_pass_id, kInvalidResourceId, gfx::RectF(),
                    gfx::Size(), /*force_anti_aliasing_off=*/false);
-      quad->SetFilters(resolved_root_pass.render_pass().filters,
-                       resolved_root_pass.render_pass().backdrop_filters,
-                       resolved_root_pass.render_pass().backdrop_filter_bounds,
-                       /*filters_scale=*/gfx::Vector2dF(1.0f, 1.0f),
-                       /*filters_origin=*/gfx::PointF(),
-                       /*backdrop_filter_quality=*/1.0f);
     }
   }
 
@@ -1441,12 +1468,12 @@ void SurfaceAggregator::CopyQuadsToPass(
       if (const auto* pass_quad =
               quad->DynamicCast<CompositorRenderPassDrawQuad>()) {
         CompositorRenderPassId original_pass_id = pass_quad->render_pass_id;
-        const ResolvedPassData& resolved_pass_data =
-            resolved_frame.GetRenderPassDataById(original_pass_id);
+        AggregatedRenderPassId remapped_pass_id =
+            resolved_frame.GetRenderPassDataById(original_pass_id)
+                .remapped_id();
 
         dest_quad = dest_pass->CopyFromAndAppendRenderPassDrawQuad(
-            pass_quad, resolved_pass_data.render_pass(),
-            resolved_pass_data.remapped_id());
+            pass_quad, remapped_pass_id);
 
         if (resolved_pass.aggregation().will_draw &&
             (needs_surface_damage_rect_list_ ||
@@ -1686,8 +1713,7 @@ gfx::Rect SurfaceAggregator::PrewalkRenderPass(
     resolved_pass.aggregation().in_cached_render_pass = true;
   }
 
-  if (render_pass.filters.HasFilterThatMovesPixels() ||
-      (parent_pass && parent_pass->aggregation().in_pixel_moving_filter_pass)) {
+  if (parent_pass && parent_pass->aggregation().in_pixel_moving_filter_pass) {
     resolved_pass.aggregation().in_pixel_moving_filter_pass = true;
   }
 
@@ -1823,8 +1849,6 @@ gfx::Rect SurfaceAggregator::PrewalkRenderPass(
 
       ResolvedPassData& child_resolved_pass =
           resolved_frame.GetRenderPassDataById(child_pass_id);
-      const CompositorRenderPass& child_render_pass =
-          child_resolved_pass.render_pass();
 
       gfx::Rect rect_in_target_space = cc::MathUtil::MapEnclosingClippedRect(
           quad->shared_quad_state->quad_to_target_transform, quad->rect);
@@ -1848,7 +1872,7 @@ gfx::Rect SurfaceAggregator::PrewalkRenderPass(
           intersects_damage_from_surface) {
         render_pass_quad->intersects_damage_under = true;
 
-        if (child_render_pass.backdrop_filters.HasFilterThatMovesPixels()) {
+        if (render_pass_quad->backdrop_filters.HasFilterThatMovesPixels()) {
           // The damage from under the quad intersects quad render pass output
           // rect and it has to be expanded because of the pixel-moving
           // backdrop filters. We expand the |damage_rect| to include quad
@@ -1878,10 +1902,9 @@ gfx::Rect SurfaceAggregator::PrewalkRenderPass(
 
       // Expand the damage to cover entire |output_rect| if the |render_pass|
       // has pixel-moving foreground filter.
-      if (child_render_pass.filters.HasFilterThatMovesPixels()) {
+      if (render_pass_quad->filters.HasFilterThatMovesPixels()) {
         gfx::Rect expanded_rect_in_target_space =
-            GetTargetExpandedRectForPixelMovingFilters(
-                *render_pass_quad, child_render_pass.filters);
+            GetTargetExpandedRectForPixelMovingFilters(*render_pass_quad);
 
         if (expanded_rect_in_target_space.Intersects(damage_rect) ||
             expanded_rect_in_target_space.Intersects(damage_from_parent) ||
@@ -1892,13 +1915,17 @@ gfx::Rect SurfaceAggregator::PrewalkRenderPass(
 
       resolved_pass.aggregation().embedded_passes.insert(&child_resolved_pass);
 
+      if (render_pass_quad->filters.HasFilterThatMovesPixels() ||
+          resolved_pass.aggregation().in_pixel_moving_filter_pass) {
+        child_resolved_pass.aggregation().in_pixel_moving_filter_pass = true;
+      }
+
       const gfx::Transform child_to_root_transform =
           target_to_root_transform *
           quad->shared_quad_state->quad_to_target_transform;
       quad_damage_rect =
           PrewalkRenderPass(resolved_frame, child_resolved_pass, gfx::Rect(),
                             child_to_root_transform, &resolved_pass, result);
-
     } else {
       // If this the next frame in sequence from last aggregation then per quad
       // damage_rects are valid so add them here. If not, either this is the
@@ -1945,7 +1972,7 @@ gfx::Rect SurfaceAggregator::PrewalkRenderPass(
     // included in the surface damage or `has_damage_from_contributing_content`.
     resolved_pass.aggregation().has_damage = true;
 
-    if (render_pass.filters.HasFilterThatMovesPixels()) {
+    if (resolved_pass.aggregation().in_pixel_moving_filter_pass) {
       // Expand the damage to cover entire |output_rect| if the |render_pass|
       // has pixel-moving foreground filter.
       damage_rect.Union(render_pass.output_rect);
@@ -2076,19 +2103,17 @@ gfx::Rect SurfaceAggregator::PrewalkSurface(ResolvedFrameData& resolved_frame,
   }
 
   for (auto& resolved_pass : resolved_frame.GetResolvedPasses()) {
-    auto& render_pass = resolved_pass.render_pass();
-
     // Checking for copy requests need to be done after the prewalk because
     // copy requests can get added after damage is computed.
-    if (!render_pass.copy_requests.empty()) {
+    if (resolved_pass.HasCopyOutputRequests()) {
       has_copy_requests_ = true;
       MarkAndPropagateCopyRequestPasses(resolved_pass);
     }
   }
 
   referenced_surfaces_.erase(surface->surface_id());
-  result.content_color_usage =
-      std::max(result.content_color_usage, frame_metadata.content_color_usage);
+  result.content_color_usage = std::max(
+      result.content_color_usage, surface->GetActiveFrameContentColorUsage());
 
   return damage_rect;
 }
@@ -2216,12 +2241,6 @@ AggregatedFrame SurfaceAggregator::Aggregate(
   AggregatedFrame frame;
   dest_pass_list_ = &frame.render_pass_list;
   surface_damage_rect_list_ = &frame.surface_damage_rect_list_;
-
-  auto& root_render_pass =
-      resolved_frame->GetRootRenderPassData().render_pass();
-
-  // The root render pass on the root surface can not have backdrop filters.
-  DCHECK(!root_render_pass.backdrop_filters.HasFilterThatMovesPixels());
 
   const gfx::Size viewport_bounds = resolved_frame->size_in_pixels();
   root_surface_transform_ = gfx::OverlayTransformToTransform(

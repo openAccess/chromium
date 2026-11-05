@@ -20,16 +20,21 @@
 #include "build/build_config.h"
 #include "components/soda/soda_util.h"
 #include "content/browser/browser_main_loop.h"
+#include "content/browser/permissions/permission_util.h"
 #include "content/browser/renderer_host/media/media_stream_manager.h"
 #include "content/browser/renderer_host/media/media_stream_ui_proxy.h"
 #include "content/browser/speech/network_speech_recognition_engine_impl.h"
 #include "content/browser/speech/speech_recognizer_impl.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/document_user_data.h"
 #include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/permission_controller.h"
+#include "content/public/browser/permission_descriptor_util.h"
+#include "content/public/browser/permission_result.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/speech_recognition_audio_forwarder_config.h"
 #include "content/public/browser/speech_recognition_event_listener.h"
@@ -49,6 +54,8 @@
 #include "media/mojo/mojom/speech_recognizer.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
+#include "third_party/blink/public/common/permissions/permission_utils.h"
+#include "third_party/blink/public/mojom/permissions/permission_status.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -113,13 +120,19 @@ class FrameSessionTracker
  public:
   using FrameDeletedCallback =
       base::RepeatingCallback<void(int /* session_id */)>;
+  using PermissionRevokedCallback =
+      base::RepeatingCallback<void(int /* session_id */)>;
 
   ~FrameSessionTracker() override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
-    for (auto session : sessions_) {
-      GetIOThreadTaskRunner({})->PostTask(
-          FROM_HERE, base::BindOnce(frame_deleted_callback_, session));
+    UnsubscribeFromPermissionController();
+
+    if (frame_deleted_callback_) {
+      for (auto session : sessions_) {
+        GetIOThreadTaskRunner({})->PostTask(
+            FROM_HERE, base::BindOnce(frame_deleted_callback_, session));
+      }
     }
   }
 
@@ -134,25 +147,42 @@ class FrameSessionTracker
         static_cast<WebContentsImpl*>(web_contents());
     if (!web_contents_impl || web_contents_impl->GetPageVisibilityState() !=
                                   PageVisibilityState::kVisible) {
-      for (int session : sessions_) {
-        GetIOThreadTaskRunner({})->PostTask(
-            FROM_HERE, base::BindOnce(frame_deleted_callback_, session));
+      UnsubscribeFromPermissionController();
+      if (frame_deleted_callback_) {
+        for (int session : sessions_) {
+          GetIOThreadTaskRunner({})->PostTask(
+              FROM_HERE, base::BindOnce(frame_deleted_callback_, session));
+        }
       }
       sessions_.clear();
+      mic_sessions_.clear();
     }
 #else
     (void)visibility;  // Suppress unused parameter warning
 #endif
   }
 
-  static void CreateObserverForSession(GlobalRenderFrameHostId global_id,
-                                       int session_id,
-                                       FrameDeletedCallback callback) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  static void CreateObserverForSession(
+      GlobalRenderFrameHostId global_id,
+      int session_id,
+      bool use_microphone,
+      FrameDeletedCallback frame_deleted_callback,
+      PermissionRevokedCallback permission_revoked_callback) {
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
     RenderFrameHost* render_frame_host = RenderFrameHost::FromID(global_id);
-    if (!render_frame_host)
+    if (!render_frame_host) {
+#if BUILDFLAG(IS_CHROMEOS)
+      if (!global_id.child_id) {
+        // Browser-initiated speech recognition requests on ChromeOS (such as
+        // Dictation) do not have an associated `RenderFrameHost`.
+        return;
+      }
+#endif
+      GetIOThreadTaskRunner({})->PostTask(
+          FROM_HERE, base::BindOnce(frame_deleted_callback, session_id));
       return;
+    }
 
 #if BUILDFLAG(IS_ANDROID)
     // On Android, background speech recognition is not permitted. (Desktop
@@ -161,8 +191,8 @@ class FrameSessionTracker
         content::WebContents::FromRenderFrameHost(render_frame_host));
     if (!web_contents || web_contents->GetPageVisibilityState() !=
                              PageVisibilityState::kVisible) {
-      GetIOThreadTaskRunner({})->PostTask(FROM_HERE,
-                                          base::BindOnce(callback, session_id));
+      GetIOThreadTaskRunner({})->PostTask(
+          FROM_HERE, base::BindOnce(frame_deleted_callback, session_id));
       return;
     }
 #endif
@@ -172,26 +202,30 @@ class FrameSessionTracker
 
     // This will clobber any previously set callback but it will always
     // be the same binding.
-    tracker->SetCallback(std::move(callback));
-    tracker->AddSession(session_id);
+    tracker->SetCallbacks(std::move(frame_deleted_callback),
+                          std::move(permission_revoked_callback));
+    tracker->AddSession(session_id, use_microphone);
   }
 
   static void RemoveObserverForSession(GlobalRenderFrameHostId global_id,
                                        int session_id) {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
     RenderFrameHost* render_frame_host = RenderFrameHost::FromID(global_id);
-    if (!render_frame_host)
+    if (!render_frame_host) {
       return;
+    }
 
     FrameSessionTracker* tracker = GetForCurrentDocument(render_frame_host);
-    if (!tracker)
+    if (!tracker) {
       return;
+    }
     tracker->RemoveSession(session_id);
   }
 
   static int GetSessionCountForTesting(  // IN-TEST
       GlobalRenderFrameHostId global_id) {
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
     RenderFrameHost* render_frame_host = RenderFrameHost::FromID(global_id);
     if (!render_frame_host) {
       return 0;
@@ -208,16 +242,83 @@ class FrameSessionTracker
   friend class content::DocumentUserData<FrameSessionTracker>;
   DOCUMENT_USER_DATA_KEY_DECL();
 
-  void AddSession(int session_id) { sessions_.insert(session_id); }
+  void AddSession(int session_id, bool use_microphone) {
+    sessions_.insert(session_id);
+    if (use_microphone) {
+      mic_sessions_.insert(session_id);
+      SubscribeToPermissionControllerIfNeeded();
+    }
+  }
 
-  void RemoveSession(int session_id) { sessions_.erase(session_id); }
+  void RemoveSession(int session_id) {
+    sessions_.erase(session_id);
+    mic_sessions_.erase(session_id);
+    UnsubscribeFromPermissionControllerIfNeeded();
+  }
 
-  void SetCallback(FrameDeletedCallback callback) {
-    frame_deleted_callback_ = std::move(callback);
+  void SetCallbacks(FrameDeletedCallback frame_deleted_callback,
+                    PermissionRevokedCallback permission_revoked_callback) {
+    frame_deleted_callback_ = std::move(frame_deleted_callback);
+    permission_revoked_callback_ = std::move(permission_revoked_callback);
+  }
+
+  void SubscribeToPermissionControllerIfNeeded() {
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+    if (mic_sessions_.empty() || permission_subscription_) {
+      return;
+    }
+    PermissionController* controller =
+        render_frame_host().GetBrowserContext()->GetPermissionController();
+    if (!controller) {
+      return;
+    }
+    permission_subscription_ = controller->SubscribeToPermissionResultChange(
+        PermissionDescriptorUtil::CreatePermissionDescriptorForPermissionType(
+            blink::PermissionType::AUDIO_CAPTURE),
+        /*render_process_host=*/nullptr, &render_frame_host(),
+        PermissionUtil::GetLastCommittedOriginAsURL(&render_frame_host()),
+        /*should_include_device_status=*/false,
+        base::BindRepeating(&FrameSessionTracker::OnPermissionChanged,
+                            weak_ptr_factory_.GetWeakPtr()));
+  }
+
+  void UnsubscribeFromPermissionControllerIfNeeded() {
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+    if (mic_sessions_.empty()) {
+      UnsubscribeFromPermissionController();
+    }
+  }
+
+  void UnsubscribeFromPermissionController() {
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+    permission_subscription_.reset();
+  }
+
+  void OnPermissionChanged(PermissionResult permission_result) {
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+    if (permission_result.status == blink::mojom::PermissionStatus::GRANTED) {
+      return;
+    }
+
+    std::set<int> mic_sessions_to_abort = std::exchange(mic_sessions_, {});
+    UnsubscribeFromPermissionController();
+
+    for (int session_id : mic_sessions_to_abort) {
+      if (permission_revoked_callback_) {
+        GetIOThreadTaskRunner({})->PostTask(
+            FROM_HERE,
+            base::BindOnce(permission_revoked_callback_, session_id));
+      }
+    }
   }
 
   FrameDeletedCallback frame_deleted_callback_;
+  PermissionRevokedCallback permission_revoked_callback_;
   std::set<int> sessions_;
+  std::set<int> mic_sessions_;
+  std::unique_ptr<PermissionController::PermissionSubscription>
+      permission_subscription_;
+  base::WeakPtrFactory<FrameSessionTracker> weak_ptr_factory_{this};
 };
 
 DOCUMENT_USER_DATA_KEY_IMPL(FrameSessionTracker);
@@ -266,13 +367,13 @@ SpeechRecognitionManagerImpl::SpeechRecognitionManagerImpl(
                     ->browser()
                     ->CreateSpeechRecognitionManagerDelegate()),
       requester_id_(next_requester_id_++) {
-  DCHECK(!g_speech_recognition_manager_impl);
+  CHECK(!g_speech_recognition_manager_impl, base::NotFatalUntil::M159);
   g_speech_recognition_manager_impl = this;
 }
 
 SpeechRecognitionManagerImpl::~SpeechRecognitionManagerImpl() {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(g_speech_recognition_manager_impl);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
+  CHECK(g_speech_recognition_manager_impl, base::NotFatalUntil::M159);
 
   g_speech_recognition_manager_impl = nullptr;
 }
@@ -303,7 +404,7 @@ int SpeechRecognitionManagerImpl::CreateSession(
 }
 
 void SpeechRecognitionManagerImpl::StartSession(int session_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!SessionExists(session_id))
     return;
 
@@ -335,7 +436,7 @@ void SpeechRecognitionManagerImpl::StartSession(int session_id) {
 void SpeechRecognitionManagerImpl::RecognitionAllowedCallback(int session_id,
                                                               bool ask_user,
                                                               bool is_allowed) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   auto iter = sessions_.find(session_id);
   if (iter == sessions_.end())
@@ -378,7 +479,7 @@ void SpeechRecognitionManagerImpl::MediaRequestPermissionCallback(
     int session_id,
     const blink::mojom::StreamDevicesSet& stream_devices_set,
     std::unique_ptr<MediaStreamUIProxy> stream_ui) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   auto iter = sessions_.find(session_id);
   if (iter == sessions_.end())
@@ -388,7 +489,8 @@ void SpeechRecognitionManagerImpl::MediaRequestPermissionCallback(
   // which is only supported in combination with the getAllScreensMedia API.
   // The |stream_devices| vector can be empty e.g. if the permission
   // was denied.
-  DCHECK_LE(stream_devices_set.stream_devices.size(), 1u);
+  CHECK_LE(stream_devices_set.stream_devices.size(), 1u,
+           base::NotFatalUntil::M159);
 
   blink::MediaStreamDevices devices_list =
       blink::ToMediaStreamDevicesList(stream_devices_set);
@@ -409,7 +511,7 @@ void SpeechRecognitionManagerImpl::MediaRequestPermissionCallback(
 }
 
 void SpeechRecognitionManagerImpl::AbortSession(int session_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   auto iter = sessions_.find(session_id);
   if (iter == sessions_.end())
     return;
@@ -423,7 +525,7 @@ void SpeechRecognitionManagerImpl::AbortSession(int session_id) {
 }
 
 void SpeechRecognitionManagerImpl::AbortSessionImpl(int session_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   auto iter = sessions_.find(session_id);
   if (iter == sessions_.end())
@@ -442,8 +544,31 @@ void SpeechRecognitionManagerImpl::AbortSessionImpl(int session_id) {
                      weak_factory_.GetWeakPtr(), session_id, EVENT_ABORT));
 }
 
+void SpeechRecognitionManagerImpl::AbortSessionForPermissionRevocation(
+    int session_id) {
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
+
+  auto iter = sessions_.find(session_id);
+  if (iter == sessions_.end()) {
+    return;
+  }
+
+  if (iter->second->abort_requested) {
+    return;
+  }
+
+  if (iter->second->use_microphone) {
+    OnRecognitionError(
+        session_id, media::mojom::SpeechRecognitionError(
+                        media::mojom::SpeechRecognitionErrorCode::kNotAllowed,
+                        media::mojom::SpeechAudioErrorDetails::kNone));
+  }
+
+  AbortSession(session_id);
+}
+
 void SpeechRecognitionManagerImpl::StopAudioCaptureForSession(int session_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   auto iter = sessions_.find(session_id);
   if (iter == sessions_.end())
@@ -484,7 +609,7 @@ void SpeechRecognitionManagerImpl::UpdateRecognitionContextForSession(
 // (if any).
 
 void SpeechRecognitionManagerImpl::OnRecognitionStart(int session_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!SessionExists(session_id))
     return;
 
@@ -492,9 +617,11 @@ void SpeechRecognitionManagerImpl::OnRecognitionStart(int session_id) {
   if (iter->second->ui) {
     // Notify the UI that the devices are being used.
     iter->second->ui->OnStarted(
-        base::OnceClosure(), MediaStreamUI::SourceCallback(),
-        MediaStreamUIProxy::WindowIdCallback(), /*label=*/std::string(),
-        /*screen_capture_ids=*/{}, MediaStreamUI::StateChangeCallback());
+        base::BindOnce(&SpeechRecognitionManagerImpl::AbortSession,
+                       weak_factory_.GetWeakPtr(), session_id),
+        MediaStreamUI::SourceCallback(), MediaStreamUIProxy::WindowIdCallback(),
+        /*label=*/std::string(),
+        /*screen_share_ids=*/{}, MediaStreamUI::StateChangeCallback());
   }
 
   if (SpeechRecognitionEventListener* delegate_listener = GetDelegateListener())
@@ -504,7 +631,7 @@ void SpeechRecognitionManagerImpl::OnRecognitionStart(int session_id) {
 }
 
 void SpeechRecognitionManagerImpl::OnAudioStart(int session_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!SessionExists(session_id))
     return;
 
@@ -515,7 +642,7 @@ void SpeechRecognitionManagerImpl::OnAudioStart(int session_id) {
 }
 
 void SpeechRecognitionManagerImpl::OnSoundStart(int session_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!SessionExists(session_id))
     return;
 
@@ -526,7 +653,7 @@ void SpeechRecognitionManagerImpl::OnSoundStart(int session_id) {
 }
 
 void SpeechRecognitionManagerImpl::OnSoundEnd(int session_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!SessionExists(session_id))
     return;
 
@@ -537,7 +664,7 @@ void SpeechRecognitionManagerImpl::OnSoundEnd(int session_id) {
 }
 
 void SpeechRecognitionManagerImpl::OnAudioEnd(int session_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!SessionExists(session_id))
     return;
 
@@ -554,7 +681,7 @@ void SpeechRecognitionManagerImpl::OnAudioEnd(int session_id) {
 void SpeechRecognitionManagerImpl::OnRecognitionResults(
     int session_id,
     const std::vector<media::mojom::WebSpeechRecognitionResultPtr>& results) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!SessionExists(session_id))
     return;
 
@@ -567,11 +694,16 @@ void SpeechRecognitionManagerImpl::OnRecognitionResults(
 void SpeechRecognitionManagerImpl::OnRecognitionError(
     int session_id,
     const media::mojom::SpeechRecognitionError& error) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!SessionExists(session_id))
     return;
 
   Session* session = GetSession(session_id);
+  if (session->has_error) {
+    return;
+  }
+  session->has_error = true;
+
   LogBackendSpecificErrorOccurred(session->config, error.code);
 
   if (SpeechRecognitionEventListener* delegate_listener = GetDelegateListener())
@@ -582,7 +714,7 @@ void SpeechRecognitionManagerImpl::OnRecognitionError(
 
 void SpeechRecognitionManagerImpl::OnAudioLevelsChange(
     int session_id, float volume, float noise_volume) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!SessionExists(session_id))
     return;
 
@@ -600,9 +732,9 @@ int SpeechRecognitionManagerImpl::CreateSession(
         client_remote,
     std::optional<SpeechRecognitionAudioForwarderConfig> audio_forwarder_config,
     bool can_render_frame_use_on_device) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   const int session_id = GetNextSessionID();
-  DCHECK(!SessionExists(session_id));
+  CHECK(!SessionExists(session_id), base::NotFatalUntil::M159);
 
   base::UmaHistogramBoolean(kWebSpeechAudioOnDeviceAvailableHistogram,
                             config.on_device_available);
@@ -792,6 +924,10 @@ int SpeechRecognitionManagerImpl::CreateSession(
     remote_engine_config.auth_token = config.auth_token;
     remote_engine_config.auth_scope = config.auth_scope;
     remote_engine_config.preamble = config.preamble;
+    if (delegate_) {
+      remote_engine_config.routing_params =
+          delegate_->GetRoutingParams(config.origin);
+    }
 
     std::unique_ptr<NetworkSpeechRecognitionEngineImpl> google_remote_engine =
         std::make_unique<NetworkSpeechRecognitionEngineImpl>(
@@ -812,21 +948,25 @@ int SpeechRecognitionManagerImpl::CreateSession(
   session->recognizer = new SpeechRecognizerImplAndroid(this, session_id);
 #endif  //! BUILDFLAG(IS_ANDROID)
 
+  const bool use_microphone = session->use_microphone;
   sessions_[session_id] = std::move(session);
 
   GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
           &FrameSessionTracker::CreateObserverForSession,
-          config.initial_context.global_id, session_id,
+          config.initial_context.global_id, session_id, use_microphone,
           base::BindRepeating(&SpeechRecognitionManagerImpl::AbortSessionImpl,
+                              weak_factory_.GetWeakPtr()),
+          base::BindRepeating(&SpeechRecognitionManagerImpl::
+                                  AbortSessionForPermissionRevocation,
                               weak_factory_.GetWeakPtr())));
 
   return session_id;
 }
 
 void SpeechRecognitionManagerImpl::OnRecognitionEnd(int session_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   if (!SessionExists(session_id))
     return;
 
@@ -857,7 +997,7 @@ bool SpeechRecognitionManagerImpl::UseOnDeviceSpeechRecognition(
 
 void SpeechRecognitionManagerImpl::AbortAllSessionsForRenderFrame(
     GlobalRenderFrameHostId global_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   for (const auto& session_pair : sessions_) {
     Session* session = session_pair.second.get();
@@ -870,7 +1010,7 @@ void SpeechRecognitionManagerImpl::AbortAllSessionsForRenderFrame(
 // -----------------------  Core FSM implementation ---------------------------
 void SpeechRecognitionManagerImpl::DispatchEvent(int session_id,
                                                  FSMEvent event) {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
 
   // There are some corner cases in which the session might be deleted (due to
   // an EndRecognition event) between a request (e.g. Abort) and its dispatch.
@@ -879,12 +1019,12 @@ void SpeechRecognitionManagerImpl::DispatchEvent(int session_id,
 
   Session* session = GetSession(session_id);
   FSMState session_state = GetSessionState(session_id);
-  DCHECK_LE(session_state, SESSION_STATE_MAX_VALUE);
-  DCHECK_LE(event, EVENT_MAX_VALUE);
+  CHECK_LE(session_state, SESSION_STATE_MAX_VALUE, base::NotFatalUntil::M159);
+  CHECK_LE(event, EVENT_MAX_VALUE, base::NotFatalUntil::M159);
 
   // Event dispatching must be sequential, otherwise it will break all the rules
   // and the assumptions of the finite state automata model.
-  DCHECK(!is_dispatching_event_);
+  CHECK(!is_dispatching_event_, base::NotFatalUntil::M159);
   is_dispatching_event_ = true;
   ExecuteTransitionAndGetNextState(session, session_state, event);
   is_dispatching_event_ = false;
@@ -981,9 +1121,9 @@ void SpeechRecognitionManagerImpl::SessionStart(const Session& session) {
     device_id = media::AudioDeviceDescription::kDefaultDeviceId;
   } else {
     // From the ask_user=true path, use the selected device.
-    DCHECK_EQ(1u, devices.size());
-    DCHECK_EQ(blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE,
-              devices.front().type);
+    CHECK_EQ(1u, devices.size(), base::NotFatalUntil::M159);
+    CHECK_EQ(blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE,
+             devices.front().type, base::NotFatalUntil::M159);
     device_id = devices.front().id;
   }
 
@@ -1000,13 +1140,13 @@ void SpeechRecognitionManagerImpl::SessionAbort(const Session& session) {
   if (microphone_session_id_ == session.id) {
     microphone_session_id_ = kSessionIDInvalid;
   }
-  DCHECK(session.recognizer.get());
+  CHECK(session.recognizer.get(), base::NotFatalUntil::M159);
   session.recognizer->AbortRecognition();
 }
 
 void SpeechRecognitionManagerImpl::SessionStopAudioCapture(
     const Session& session) {
-  DCHECK(session.recognizer.get());
+  CHECK(session.recognizer.get(), base::NotFatalUntil::M159);
   session.recognizer->StopAudioCapture();
 }
 
@@ -1016,8 +1156,9 @@ void SpeechRecognitionManagerImpl::ResetCapturingSessionId(
 }
 
 void SpeechRecognitionManagerImpl::SessionDelete(Session* session) {
-  DCHECK(session->recognizer.get() == nullptr ||
-         !session->recognizer->IsActive());
+  CHECK(
+      session->recognizer.get() == nullptr || !session->recognizer->IsActive(),
+      base::NotFatalUntil::M159);
   if (microphone_session_id_ == session->id) {
     microphone_session_id_ = kSessionIDInvalid;
   }
@@ -1051,7 +1192,7 @@ bool SpeechRecognitionManagerImpl::SessionExists(int session_id) const {
 
 SpeechRecognitionManagerImpl::Session*
 SpeechRecognitionManagerImpl::GetSession(int session_id) const {
-  DCHECK_CURRENTLY_ON(BrowserThread::IO);
+  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M159);
   auto iter = sessions_.find(session_id);
   CHECK(iter != sessions_.end());
   return iter->second.get();
@@ -1075,10 +1216,8 @@ SpeechRecognitionManagerImpl::GetSessionConfig(int session_id) {
   return GetSession(session_id)->config;
 }
 
-SpeechRecognitionManagerImpl::Session::Session()
-    : id(kSessionIDInvalid), abort_requested(false) {}
+SpeechRecognitionManagerImpl::Session::Session() = default;
 
-SpeechRecognitionManagerImpl::Session::~Session() {
-}
+SpeechRecognitionManagerImpl::Session::~Session() = default;
 
 }  // namespace content

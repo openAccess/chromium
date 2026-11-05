@@ -5,6 +5,7 @@
 #include "chrome/browser/chrome_content_browser_client.h"
 
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -17,8 +18,11 @@
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/browser/accessibility/page_colors_controller.h"
 #include "chrome/browser/accessibility/page_colors_controller_factory.h"
@@ -26,20 +30,25 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/custom_handlers/protocol_handler_registry_factory.h"
+#include "chrome/browser/enterprise/browser_management/management_service_factory.h"
 #include "chrome/browser/enterprise/connectors/test/fake_clipboard_request_handler.h"
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
+#include "chrome/browser/external_protocol/features.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
 #include "chrome/browser/glic/test_support/glic_test_environment.h"
 #include "chrome/browser/glic/test_support/glic_test_util.h"
+#include "chrome/browser/lifetime/browser_shutdown.h"
+#include "chrome/browser/policy/chrome_policy_blocklist_service_factory.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_settings_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/instant_service.h"
 #include "chrome/browser/search/instant_service_factory.h"
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/search/instant_test_base.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -47,6 +56,7 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -59,13 +69,17 @@
 #include "components/enterprise/connectors/core/cloud_content_scanning/clipboard_request_handler.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/common.h"
 #include "components/enterprise/data_controls/core/browser/test_utils.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/guest_view/browser/guest_view_base.h"
 #include "components/guest_view/browser/guest_view_manager.h"
 #include "components/guest_view/browser/guest_view_manager_delegate.h"
 #include "components/guest_view/browser/test_guest_view_manager.h"
 #include "components/input/native_web_keyboard_event.h"
+#include "components/policy/core/browser/url_list/policy_blocklist_service.h"
 #include "components/policy/core/browser/url_list/url_list_policy_pref_names.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
+#include "components/policy/core/common/features.h"
+#include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations.h"
@@ -75,6 +89,7 @@
 #include "components/safe_browsing/buildflags.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/site_isolation/site_isolation_policy.h"
+#include "components/webui/chrome_urls/pref_names.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
@@ -90,13 +105,15 @@
 #include "content/public/common/url_utils.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/frame_test_utils.h"
+#include "content/public/test/scoped_page_focus_override.h"
 #include "content/public/test/test_devtools_protocol_client.h"
 #include "content/public/test/test_frame_navigation_observer.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/url_loader_interceptor.h"
+#include "content/public/test/web_ui_browsertest_util.h"
 #include "extensions/browser/api/extensions_api_client.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
@@ -110,6 +127,8 @@
 #include "ui/base/clipboard/clipboard_buffer.h"
 #include "ui/base/clipboard/clipboard_monitor.h"
 #include "ui/base/data_transfer_policy/data_transfer_endpoint.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/color/color_provider.h"
 #include "ui/color/color_provider_key.h"
 #include "ui/color/color_provider_manager.h"
@@ -117,8 +136,13 @@
 #include "ui/color/color_provider_utils.h"
 #include "ui/native_theme/mock_os_settings_provider.h"
 #include "ui/native_theme/native_theme.h"
+#include "ui/webui/webui_allowlist.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/test/base/scoped_channel_override.h"
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "extensions/common/constants.h"
@@ -186,6 +210,27 @@ IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientBrowserTest,
   ASSERT_TRUE(entry != nullptr);
   EXPECT_EQ(url, entry->GetURL());
   EXPECT_EQ(url, entry->GetVirtualURL());
+}
+
+// Test that chrome://omnibox, the former name of chrome://omnibox-internals,
+// loads chrome://omnibox-internals and displays the new URL.
+IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientBrowserTest,
+                       LegacyOmniboxURLRedirectsToOmniboxInternals) {
+  g_browser_process->local_state()->SetBoolean(
+      chrome_urls::kInternalOnlyUisEnabled, true);
+
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL("chrome://omnibox/")));
+  content::NavigationEntry* entry = browser()
+                                        ->tab_strip_model()
+                                        ->GetActiveWebContents()
+                                        ->GetController()
+                                        .GetLastCommittedEntry();
+
+  ASSERT_TRUE(entry != nullptr);
+  const GURL expected_url(chrome::kChromeUIOmniboxInternalsURL);
+  EXPECT_EQ(expected_url, entry->GetURL());
+  EXPECT_EQ(expected_url, entry->GetVirtualURL());
 }
 
 // Helper class to mark "https://ntp.com/" as an isolated origin.
@@ -640,6 +685,45 @@ INSTANTIATE_TEST_SUITE_P(
                            "ColorProvider"});
     });
 
+class PrefersColorSchemeEnterpriseIsolatedTest : public InProcessBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    command_line->AppendSwitch(
+        enterprise_isolated_mode::switches::
+            kForceEnterpriseIsolatedModeReplacesIncognito);
+  }
+
+ private:
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+  chrome::ScopedChannelOverride channel_override_{
+      chrome::ScopedChannelOverride::Channel::kDev};
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+};
+
+IN_PROC_BROWSER_TEST_F(PrefersColorSchemeEnterpriseIsolatedTest,
+                       PrefersColorSchemeLightInIsolatedMode) {
+  BrowserWindowInterface* isolated_browser =
+      CreateIncognitoBrowser(browser()->GetProfile());
+  ASSERT_TRUE(
+      isolated_browser->GetProfile()->IsEnterpriseIsolatedModeProfile());
+
+  auto* tab_list = TabListInterface::From(isolated_browser);
+  ASSERT_TRUE(tab_list);
+  auto* web_contents = tab_list->GetActiveTab()->GetContents();
+
+  ASSERT_TRUE(content::NavigateToURL(
+      web_contents,
+      chrome_test_utils::GetTestUrl(
+          base::FilePath(base::FilePath::kCurrentDirectory),
+          base::FilePath(FILE_PATH_LITERAL("prefers-color-scheme.html")))));
+
+  EXPECT_EQ(u"light", web_contents->GetTitle());
+  EXPECT_EQ(
+      true,
+      EvalJs(web_contents,
+             "window.matchMedia('(prefers-color-scheme: light)').matches"));
+}
+
 class PreferredRootScrollbarColorSchemeChromeClientTest
     : public testing::WithParamInterface<std::tuple<bool, bool>>,
       public InProcessBrowserTest {
@@ -688,7 +772,9 @@ class PreferredRootScrollbarColorSchemeChromeClientTest
     if (!UsesCustomTheme()) {
       return !root_scrollbar_pref.has_value();
     }
-    EXPECT_TRUE(root_scrollbar_pref.has_value());
+    if (!root_scrollbar_pref.has_value()) {
+      return false;
+    }
     const SkColor root_scrollbar_color = root_scrollbar_pref.value();
     // `root_scrollbar_theme_color` is set based off the toolbar color, which is
     // generated using the theme's color. Because of this, we can't directly
@@ -724,9 +810,10 @@ IN_PROC_BROWSER_TEST_P(PreferredRootScrollbarColorSchemeChromeClientTest,
                        ScrollbarFollowsPreferredColorScheme) {
   auto* const web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
-  EXPECT_EQ(web_contents->GetOrCreateWebPreferences()
-                .preferred_root_scrollbar_color_scheme,
-            ExpectedColorScheme());
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return web_contents->GetOrCreateWebPreferences()
+               .preferred_root_scrollbar_color_scheme == ExpectedColorScheme();
+  }));
 }
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
@@ -734,7 +821,7 @@ IN_PROC_BROWSER_TEST_P(PreferredRootScrollbarColorSchemeChromeClientTest,
 // when using a custom theme.
 IN_PROC_BROWSER_TEST_P(PreferredRootScrollbarColorSchemeChromeClientTest,
                        VerifyRootScrollbarColorTheme) {
-  EXPECT_TRUE(ThemeColorMatches());
+  ASSERT_TRUE(base::test::RunUntil([&]() { return ThemeColorMatches(); }));
 }
 #endif  //  BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 
@@ -838,6 +925,59 @@ class ProtocolHandlerTest : public InProcessBrowserTest {
   }
 };
 
+class ProtocolHandlerLocalOnlyBaseTest : public ProtocolHandlerTest {
+ public:
+  ProtocolHandlerLocalOnlyBaseTest() {
+    feature_list_.InitWithFeatures(
+        {features::kLocalOnlyAppProtocolPrefix,
+         policy::features::kUseManagementServiceForSensitivePolicies},
+        {});
+  }
+
+  void SetUpOnMainThread() override {
+    ProtocolHandlerTest::SetUpOnMainThread();
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(
+        browser(), embedded_test_server()->GetURL("/empty.html")));
+  }
+
+ protected:
+  void SetURLAllowlistAndWait(const GURL& url) {
+    base::ListValue allowlist;
+    allowlist.Append("local+custom:*");
+    browser()->GetProfile()->GetPrefs()->SetList(
+        policy::policy_prefs::kUrlAllowlist, std::move(allowlist));
+    PolicyBlocklistService* policy_service =
+        ChromePolicyBlocklistServiceFactory::GetForProfile(
+            browser()->GetProfile());
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return policy_service->GetURLBlocklistState(url) ==
+             policy::URLBlocklist::URL_IN_ALLOWLIST;
+    }));
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+class ProtocolHandlerLocalOnlyTest : public ProtocolHandlerLocalOnlyBaseTest {
+ private:
+  policy::ScopedManagementServiceOverrideForTesting platform_management_{
+      policy::ManagementServiceFactory::GetForPlatform(),
+      policy::EnterpriseManagementAuthority::DOMAIN_LOCAL};
+};
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+// URLAllowlist is ignored on unmanaged Windows and macOS. Other platforms do
+// not gate this policy on the platform management service.
+class ProtocolHandlerLocalOnlyUnmanagedTest
+    : public ProtocolHandlerLocalOnlyBaseTest {
+ private:
+  policy::ScopedManagementServiceOverrideForTesting platform_management_{
+      policy::ManagementServiceFactory::GetForPlatform(),
+      policy::EnterpriseManagementAuthority::NONE};
+};
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+
 // TODO(crbug.com/40917055): Enable test when MacOS flake is fixed.
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_CustomHandler DISABLED_CustomHandler
@@ -888,6 +1028,7 @@ IN_PROC_BROWSER_TEST_F(ProtocolHandlerTest, ExternalProgramNotLaunched) {
       browser()->tab_strip_model()->GetActiveWebContents(), expected_title);
   EXPECT_EQ(expected_title, title_watcher.WaitAndGetTitle());
 }
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace {
 class FakeExternalProtocolHandlerWorker
@@ -954,6 +1095,7 @@ class ScopedFakeExternalProtocolHandlerDelegate
     EXPECT_EQ(program_name_, program_name);
     external_protocol_dialog_called_ = true;
     launched_url_with_security_check_ = url.spec();
+    initiating_origin_ = initiating_origin;
   }
 
   void LaunchUrlWithoutSecurityCheck(
@@ -976,6 +1118,9 @@ class ScopedFakeExternalProtocolHandlerDelegate
   std::string_view launched_url_with_security_check() const {
     return launched_url_with_security_check_;
   }
+  const std::optional<url::Origin>& initiating_origin() const {
+    return initiating_origin_;
+  }
 
  private:
   base::RunLoop launch_url_run_loop_;
@@ -983,10 +1128,74 @@ class ScopedFakeExternalProtocolHandlerDelegate
   bool external_protocol_dialog_called_ = false;
   std::string launched_url_without_security_check_;
   std::string launched_url_with_security_check_;
+  std::optional<url::Origin> initiating_origin_;
 };
 
 }  // namespace
 
+IN_PROC_BROWSER_TEST_F(ProtocolHandlerLocalOnlyTest,
+                       URLAllowlistOverridesLocalOnlyBlock) {
+  const GURL local_only_url("local+custom:test");
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  {
+    content::WebContentsConsoleObserver observer(web_contents);
+    observer.SetPattern("Not allowed to launch 'local+custom:'.");
+    ASSERT_TRUE(
+        content::ExecJs(web_contents, "location.href = 'local+custom:test';"));
+    ASSERT_TRUE(observer.Wait());
+    ASSERT_EQ(1u, observer.messages().size());
+  }
+
+  SetURLAllowlistAndWait(local_only_url);
+
+  ScopedFakeExternalProtocolHandlerDelegate delegate;
+  ASSERT_TRUE(
+      content::ExecJs(web_contents, "location.href = 'local+custom:test';"));
+  delegate.WaitExternalUrlLaunchCompleted();
+
+  EXPECT_FALSE(delegate.external_protocol_dialog_called());
+  EXPECT_EQ(local_only_url.spec(),
+            delegate.launched_url_without_security_check());
+  EXPECT_EQ("", delegate.launched_url_with_security_check());
+}
+
+IN_PROC_BROWSER_TEST_F(ProtocolHandlerLocalOnlyTest,
+                       AllowsBrowserInitiatedNavigation) {
+  const GURL local_only_url("local+custom:test");
+  EXPECT_EQ(ExternalProtocolHandler::UNKNOWN,
+            ExternalProtocolHandler::GetBlockState(
+                local_only_url.GetScheme(), nullptr, browser()->GetProfile()));
+
+  ScopedFakeExternalProtocolHandlerDelegate delegate;
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), local_only_url));
+  delegate.WaitExternalUrlLaunchCompleted();
+
+  EXPECT_TRUE(delegate.external_protocol_dialog_called());
+  EXPECT_EQ("", delegate.launched_url_without_security_check());
+  EXPECT_EQ(local_only_url.spec(), delegate.launched_url_with_security_check());
+  EXPECT_FALSE(delegate.initiating_origin().has_value());
+}
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+IN_PROC_BROWSER_TEST_F(ProtocolHandlerLocalOnlyUnmanagedTest,
+                       URLAllowlistDoesNotOverrideLocalOnlyBlock) {
+  const GURL local_only_url("local+custom:test");
+  SetURLAllowlistAndWait(local_only_url);
+
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::WebContentsConsoleObserver observer(web_contents);
+  observer.SetPattern("Not allowed to launch 'local+custom:'.");
+
+  ASSERT_TRUE(
+      content::ExecJs(web_contents, "location.href = 'local+custom:test';"));
+  ASSERT_TRUE(observer.Wait());
+  ASSERT_EQ(1u, observer.messages().size());
+}
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+
+#if BUILDFLAG(IS_CHROMEOS)
 // URLs which are explicitly allowlisted by policy can bypass security checks.
 // TODO: https://crbug.com/434758587 - Re-enable this test.
 IN_PROC_BROWSER_TEST_F(ProtocolHandlerTest,
@@ -1066,7 +1275,7 @@ class KeepaliveDurationOnShutdownTest : public InProcessBrowserTest,
   }
 
  protected:
-  const ChromeContentBrowserClient* client() const { return client_; }
+  ChromeContentBrowserClient* client() const { return client_; }
 
  private:
   raw_ptr<ChromeContentBrowserClient> client_ = nullptr;
@@ -1093,6 +1302,19 @@ IN_PROC_BROWSER_TEST_F(KeepaliveDurationOnShutdownTest, DynamicUpdate) {
   profile->GetPrefs()->SetInteger(prefs::kFetchKeepaliveDurationOnShutdown, 3);
 
   EXPECT_EQ(client()->GetKeepaliveTimerTimeout(profile), base::Seconds(3));
+}
+
+IN_PROC_BROWSER_TEST_F(KeepaliveDurationOnShutdownTest,
+                       DoesNotStartTimerAfterShutdownStarts) {
+  Profile* profile = browser()->GetProfile();
+  profile->GetPrefs()->SetInteger(prefs::kFetchKeepaliveDurationOnShutdown, 2);
+  const auto shutdown = browser_shutdown::SetShutdownTypeForTesting(
+      browser_shutdown::ShutdownType::kBrowserExit);
+
+  client()->OnKeepaliveRequestStarted(profile);
+
+  EXPECT_FALSE(client()->IsKeepaliveTimerRunningForTesting());
+  client()->OnKeepaliveRequestFinished();
 }
 
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -1252,9 +1474,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, BitmapAllowed) {
   clipboard_paste_data.png = StringToVector("allowed");
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1279,9 +1501,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, BitmapBlocked) {
   clipboard_paste_data.png = StringToVector("blocked");
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1313,9 +1535,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, TextAllowed) {
   clipboard_paste_data.text = u"allowed";
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1340,9 +1562,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, TextBlocked) {
   clipboard_paste_data.text = u"blocked";
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1374,9 +1596,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, HtmlAllowed) {
   clipboard_paste_data.html = u"allowed";
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1401,9 +1623,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, HtmlBlocked) {
   clipboard_paste_data.html = u"blocked";
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1435,9 +1657,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, SvgAllowed) {
   clipboard_paste_data.svg = u"allowed";
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1462,9 +1684,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, SvgBlocked) {
   clipboard_paste_data.svg = u"blocked";
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1495,9 +1717,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, RtfAllowed) {
   clipboard_paste_data.rtf = "allowed";
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1522,9 +1744,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, RtfBlocked) {
   clipboard_paste_data.rtf = "blocked";
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1556,9 +1778,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, CustomDataAllowed) {
   clipboard_paste_data.custom_data[u"custom/data"] = u"allowed";
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1587,9 +1809,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, CustomDataBlocked) {
   clipboard_paste_data.custom_data[u"custom/data"] = u"blocked";
 
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1629,9 +1851,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, DISABLED_AllFilesAllowed) {
   content::WebContents* contents =
       browser()->tab_strip_model()->GetWebContentsAt(0);
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1661,9 +1883,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, DISABLED_AllFilesBlocked) {
   content::WebContents* contents =
       browser()->tab_strip_model()->GetWebContentsAt(0);
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1699,9 +1921,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest, DISABLED_SomeFilesBlocked) {
   content::WebContents* contents =
       browser()->tab_strip_model()->GetWebContentsAt(0);
   client()->IsClipboardPasteAllowedByPolicy(
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForOutsideChrome(
           ui::DataTransferEndpoint(GURL("https://google.com"))),
-      content::ClipboardEndpoint(
+      content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [contents] { return contents->GetBrowserContext(); }),
@@ -1751,7 +1973,7 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest,
   // Initiates a copy request and verify that replacement is written as per the
   // policy.
   client()->IsClipboardCopyAllowedByPolicy(
-      /*source=*/content::ClipboardEndpoint(
+      /*source=*/content::ClipboardEndpoint::ForFrame(
           ui::DataTransferEndpoint(GURL("https://google.com")),
           base::BindLambdaForTesting(
               [&contents]() { return contents->GetBrowserContext(); }),
@@ -1779,6 +2001,9 @@ IN_PROC_BROWSER_TEST_F(IsClipboardPasteAllowedTest,
 
 class ChromeContentBrowserClientClipboardTest : public InProcessBrowserTest {
  public:
+  static constexpr std::string_view kPastedText =
+      "text copied from another app";
+
   ChromeContentBrowserClientClipboardTest() = default;
 
   void SetUpOnMainThread() override {
@@ -1820,116 +2045,93 @@ class ChromeContentBrowserClientClipboardTest : public InProcessBrowserTest {
             base::StrCat({"/cross_site_iframe_factory.html?", frame_tree}))));
   }
 
-  // This method sets both frame-scope and tab-wide UA states to mimic prod
-  // browser behavior.
-  // TODO(https://crbug.com/550284226): Update this when the browser-level
-  // state is fixed.
-  void SimulateUserInteraction(content::RenderFrameHost* rfh) {
-    input::NativeWebKeyboardEvent event{blink::WebInputEvent::Type::kKeyDown,
-                                        /*modifiers=*/0, base::TimeTicks()};
-    rfh->GetRenderWidgetHost()->SimulateUserInteraction(event);
-    ASSERT_TRUE(content::ExecJs(rfh, "// no-op"));
+  // Navigates to a page whose main frame, returned in `rfh`, has a focused
+  // textarea added by AddFocusedTextarea().
+  void NavigateToPageWithFocusedTextarea(content::RenderFrameHost** rfh) {
+    ASSERT_TRUE(embedded_test_server()->Start());
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(
+        browser(), embedded_test_server()->GetURL("/empty.html")));
+    *rfh = browser()
+               ->tab_strip_model()
+               ->GetActiveWebContents()
+               ->GetPrimaryMainFrame();
+    (*rfh)->GetRenderWidgetHost()->Focus();
+    ASSERT_NO_FATAL_FAILURE(AddFocusedTextarea(*rfh));
+  }
+
+  // Appends a focused textarea to `rfh`'s document without giving `rfh` user
+  // activation. Sets `window.pastedText` to a promise that resolves to the
+  // textarea's value once the next paste command has been handled, whether or
+  // not reading the clipboard was allowed.
+  void AddFocusedTextarea(content::RenderFrameHost* rfh) {
+    // The paste event is dispatched before the clipboard text is inserted, so
+    // read the textarea's value in a later task.
+    ASSERT_TRUE(content::ExecJs(rfh, R"(
+          const textarea = document.createElement('textarea');
+          document.body.appendChild(textarea);
+          window.pastedText = new Promise(resolve => {
+            document.addEventListener('paste', () => {
+              setTimeout(() => resolve(textarea.value));
+            }, {once: true});
+          });
+          textarea.focus();
+        )",
+                                content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  }
+
+  // Waits for the paste command to be handled in `rfh`, and returns the text
+  // pasted into the textarea added by AddFocusedTextarea().
+  content::EvalJsResult GetPastedText(content::RenderFrameHost* rfh) {
+    // Don't use a user gesture, as activating `rfh` before it handles the
+    // paste command could authorize reading the clipboard.
+    return content::EvalJs(rfh, "pastedText",
+                           content::EXECUTE_SCRIPT_NO_USER_GESTURE);
+  }
+
+  // Gives the page containing `rfh` focus again without changing which of its
+  // frames is focused, since the page loses focus whenever its browser window
+  // is deactivated, e.g. by another test's window when tests run in parallel.
+  void FocusPage(content::RenderFrameHost* rfh) {
+    rfh->GetRenderWidgetHost()->Focus();
   }
 };
 
-IN_PROC_BROWSER_TEST_F(
-    ChromeContentBrowserClientClipboardTest,
-    PasteAllowedByActivation_DoesNotInheritTopFrameInteraction) {
-  content::RenderFrameHost* parent_rfh = nullptr;
-  content::RenderFrameHost* child_rfh = nullptr;
-  ASSERT_NO_FATAL_FAILURE(
-      NavigateToPageWithCrossOriginIframe(&parent_rfh, &child_rfh));
-
-  ASSERT_NE(parent_rfh->GetRenderWidgetHost(),
-            child_rfh->GetRenderWidgetHost());
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-  EXPECT_FALSE(web_contents->HasRecentInteraction());
-  EXPECT_FALSE(child_rfh->HasTransientUserActivation());
-  EXPECT_FALSE(IsClipboardPasteAllowed(child_rfh));
-
-  ASSERT_NO_FATAL_FAILURE(SimulateUserInteraction(parent_rfh));
-
-  EXPECT_TRUE(web_contents->HasRecentInteraction());
-  EXPECT_FALSE(child_rfh->HasTransientUserActivation());
-  EXPECT_FALSE(IsClipboardPasteAllowed(child_rfh));
-  EXPECT_TRUE(IsClipboardPasteAllowed(parent_rfh));
-}
-
+// Verify that a frame still needs to be focused in order to read the
+// clipboard even if it has transient user activation.
+//
+// TODO(https://crbug.com/553327084): Disabled to land a revert for a related
+// fix (https://crbug.com/544222453)
 IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
-                       PasteAllowedByActivation_RequestingFrameActivated) {
-  content::RenderFrameHost* parent_rfh = nullptr;
-  content::RenderFrameHost* child_rfh = nullptr;
-  ASSERT_NO_FATAL_FAILURE(
-      NavigateToPageWithCrossOriginIframe(&parent_rfh, &child_rfh));
+                       DISABLED_PasteAllowedByActivation_RequiresFrameFocus) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL test_url = embedded_test_server()->GetURL("/empty.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url));
 
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-  EXPECT_FALSE(web_contents->HasRecentInteraction());
-  EXPECT_FALSE(child_rfh->HasTransientUserActivation());
-  EXPECT_FALSE(IsClipboardPasteAllowed(child_rfh));
+  content::RenderFrameHost* rfh = browser()
+                                      ->tab_strip_model()
+                                      ->GetActiveWebContents()
+                                      ->GetPrimaryMainFrame();
 
-  // Run a no-op with ExecJs's synthetic user gesture to activate the requesting
-  // frame without setting WebContents::HasRecentInteraction().
-  ASSERT_TRUE(content::ExecJs(child_rfh, "// no-op"));
+  // Arm transient user activation via ExecJs's synthetic user gesture.
+  ASSERT_TRUE(content::ExecJs(rfh, "// no-op"));
+  rfh->GetRenderWidgetHost()->Focus();
+  ASSERT_TRUE(rfh->HasTransientUserActivation());
 
-  EXPECT_FALSE(web_contents->HasRecentInteraction());
-  EXPECT_TRUE(child_rfh->HasTransientUserActivation());
-  EXPECT_TRUE(IsClipboardPasteAllowed(child_rfh));
-  EXPECT_TRUE(IsClipboardPasteAllowed(parent_rfh));
-}
+  // Activation on a focused frame is allowed.
+  EXPECT_TRUE(rfh->IsFocused());
+  EXPECT_TRUE(IsClipboardPasteAllowed(rfh));
 
-IN_PROC_BROWSER_TEST_F(
-    ChromeContentBrowserClientClipboardTest,
-    PasteAllowedByActivation_DoesNotPropagateToSiblingFrame) {
-  ASSERT_NO_FATAL_FAILURE(NavigateToCrossOriginFrameTree("a(b,c)"));
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-  content::RenderFrameHost* main_rfh = web_contents->GetPrimaryMainFrame();
-  content::RenderFrameHost* activated_child =
-      content::ChildFrameAt(main_rfh, 0);
-  content::RenderFrameHost* sibling_child = content::ChildFrameAt(main_rfh, 1);
-  ASSERT_TRUE(activated_child);
-  ASSERT_TRUE(sibling_child);
-  ASSERT_NE(activated_child->GetRenderWidgetHost(),
-            sibling_child->GetRenderWidgetHost());
+  // Blur does not clear transient activation, but an unfocused frame must not
+  // be allowed to read the clipboard on activation alone.
+  rfh->GetRenderWidgetHost()->Blur();
+  EXPECT_FALSE(rfh->IsFocused());
+  EXPECT_TRUE(rfh->HasTransientUserActivation());
+  EXPECT_FALSE(IsClipboardPasteAllowed(rfh));
 
-  ASSERT_NO_FATAL_FAILURE(SimulateUserInteraction(activated_child));
-
-  EXPECT_TRUE(web_contents->HasRecentInteraction());
-  EXPECT_TRUE(main_rfh->HasTransientUserActivation());
-  EXPECT_TRUE(activated_child->HasTransientUserActivation());
-  EXPECT_FALSE(sibling_child->HasTransientUserActivation());
-  EXPECT_TRUE(IsClipboardPasteAllowed(main_rfh));
-  EXPECT_TRUE(IsClipboardPasteAllowed(activated_child));
-  EXPECT_FALSE(IsClipboardPasteAllowed(sibling_child));
-}
-
-IN_PROC_BROWSER_TEST_F(
-    ChromeContentBrowserClientClipboardTest,
-    PasteAllowedByActivation_DoesNotPropagateToNestedChildFrame) {
-  ASSERT_NO_FATAL_FAILURE(NavigateToCrossOriginFrameTree("a(b(c))"));
-  content::WebContents* web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-  content::RenderFrameHost* main_rfh = web_contents->GetPrimaryMainFrame();
-  content::RenderFrameHost* activated_child =
-      content::ChildFrameAt(main_rfh, 0);
-  ASSERT_TRUE(activated_child);
-  content::RenderFrameHost* nested_child =
-      content::ChildFrameAt(activated_child, 0);
-  ASSERT_TRUE(nested_child);
-  ASSERT_NE(activated_child->GetRenderWidgetHost(),
-            nested_child->GetRenderWidgetHost());
-
-  ASSERT_NO_FATAL_FAILURE(SimulateUserInteraction(activated_child));
-
-  EXPECT_TRUE(web_contents->HasRecentInteraction());
-  EXPECT_TRUE(main_rfh->HasTransientUserActivation());
-  EXPECT_TRUE(activated_child->HasTransientUserActivation());
-  EXPECT_FALSE(nested_child->HasTransientUserActivation());
-  EXPECT_TRUE(IsClipboardPasteAllowed(main_rfh));
-  EXPECT_TRUE(IsClipboardPasteAllowed(activated_child));
-  EXPECT_FALSE(IsClipboardPasteAllowed(nested_child));
+  // Restoring focus allows clipboard access again.
+  rfh->GetRenderWidgetHost()->Focus();
+  EXPECT_TRUE(rfh->IsFocused());
+  EXPECT_TRUE(IsClipboardPasteAllowed(rfh));
 }
 
 // Verifies that even when persistent clipboard permission is granted,
@@ -1963,6 +2165,66 @@ IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
   rfh->GetRenderWidgetHost()->Focus();
   EXPECT_TRUE(rfh->IsFocused());
   EXPECT_TRUE(IsClipboardPasteAllowed(rfh));
+}
+
+IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
+                       PasteAllowedByPermission_FocusEmulation) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL test_url = embedded_test_server()->GetURL("/iframe.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url));
+
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::RenderFrameHost* parent_rfh = web_contents->GetPrimaryMainFrame();
+  content::RenderFrameHost* child_rfh = content::ChildFrameAt(parent_rfh, 0);
+  ASSERT_TRUE(child_rfh);
+
+  SetPermission(test_url, ContentSettingsType::CLIPBOARD_READ_WRITE,
+                CONTENT_SETTING_ALLOW);
+  parent_rfh->GetRenderWidgetHost()->Blur();
+  EXPECT_FALSE(parent_rfh->IsFocused());
+  EXPECT_FALSE(IsClipboardPasteAllowed(parent_rfh));
+
+  {
+    content::ScopedPageFocusOverride focus_override(web_contents);
+    EXPECT_TRUE(parent_rfh->IsFocused());
+    EXPECT_TRUE(IsClipboardPasteAllowed(parent_rfh));
+    EXPECT_FALSE(child_rfh->IsFocused());
+  }
+
+  EXPECT_FALSE(parent_rfh->IsFocused());
+  EXPECT_FALSE(IsClipboardPasteAllowed(parent_rfh));
+}
+
+IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
+                       FocusEmulationDoesNotPropagateToCrossProcessFrame) {
+  content::RenderFrameHost* parent_rfh = nullptr;
+  content::RenderFrameHost* child_rfh = nullptr;
+  ASSERT_NO_FATAL_FAILURE(
+      NavigateToPageWithCrossOriginIframe(&parent_rfh, &child_rfh));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  parent_rfh->GetRenderWidgetHost()->Focus();
+  ASSERT_TRUE(content::ExecJs(parent_rfh,
+                              "document.querySelector('iframe').focus();",
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  ASSERT_NE(parent_rfh->GetRenderWidgetHost(),
+            child_rfh->GetRenderWidgetHost());
+  ASSERT_TRUE(child_rfh->IsFocused());
+
+  parent_rfh->GetRenderWidgetHost()->Blur();
+  EXPECT_FALSE(parent_rfh->IsFocused());
+  EXPECT_FALSE(child_rfh->IsFocused());
+
+  {
+    content::ScopedPageFocusOverride focus_override(web_contents);
+    EXPECT_TRUE(parent_rfh->IsFocused());
+    EXPECT_FALSE(child_rfh->IsFocused());
+  }
+
+  EXPECT_FALSE(parent_rfh->IsFocused());
+  EXPECT_FALSE(child_rfh->IsFocused());
 }
 
 // Verifies that IsClipboardPasteAllowed mirrors Blink's Document::hasFocus()
@@ -2010,6 +2272,161 @@ IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
   EXPECT_FALSE(IsClipboardPasteAllowed(child_rfh));
   EXPECT_FALSE(parent_rfh->IsFocused());
   EXPECT_FALSE(IsClipboardPasteAllowed(parent_rfh));
+}
+
+// Verifies that chrome-untrusted:// pages holding an auto-granted clipboard
+// permission are subject to the same frame focus requirement as standard web
+// pages. chrome-untrusted:// pages render untrustworthy content and must not
+// get more clipboard access than an ordinary page with the same grant
+// (see docs/webui/chrome_untrusted.md).
+IN_PROC_BROWSER_TEST_F(
+    ChromeContentBrowserClientClipboardTest,
+    PasteAllowedByPermission_UntrustedWebUIRequiresFrameFocus) {
+  content::AddUntrustedDataSource(browser()->GetProfile(), "test-host");
+  GURL untrusted_url =
+      content::GetChromeUntrustedUIURL("test-host/title1.html");
+
+  // Grant the clipboard permission the same way production untrusted WebUIs
+  // receive it (e.g. TerminalSource): auto-granted via WebUIAllowlist.
+  WebUIAllowlist::GetOrCreate(browser()->GetProfile())
+      ->RegisterAutoGrantedPermission(
+          url::Origin::Create(untrusted_url),
+          ContentSettingsType::CLIPBOARD_READ_WRITE);
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), untrusted_url));
+  content::RenderFrameHost* rfh = browser()
+                                      ->tab_strip_model()
+                                      ->GetActiveWebContents()
+                                      ->GetPrimaryMainFrame();
+  ASSERT_FALSE(rfh->HasTransientUserActivation());
+
+  // The granted permission allows clipboard access while focused.
+  rfh->GetRenderWidgetHost()->Focus();
+  EXPECT_TRUE(rfh->IsFocused());
+  EXPECT_TRUE(IsClipboardPasteAllowed(rfh));
+
+  // Unlike trusted WebUI pages, chrome-untrusted:// pages are not exempt from
+  // the focus requirement, so clipboard access is disallowed while unfocused.
+  rfh->GetRenderWidgetHost()->Blur();
+  EXPECT_FALSE(rfh->IsFocused());
+  EXPECT_FALSE(IsClipboardPasteAllowed(rfh));
+
+  // Restoring focus allows clipboard access again.
+  rfh->GetRenderWidgetHost()->Focus();
+  EXPECT_TRUE(rfh->IsFocused());
+  EXPECT_TRUE(IsClipboardPasteAllowed(rfh));
+}
+
+// Verifies that trusted WebUI pages (chrome://) with a granted clipboard
+// permission may access clipboard data without frame focus. Trusted WebUI
+// system apps invoke clipboard commands via context menus, background UIs,
+// or standalone windows where the page lacks focus.
+IN_PROC_BROWSER_TEST_F(
+    ChromeContentBrowserClientClipboardTest,
+    PasteAllowedByPermission_TrustedWebUIDoesNotRequireFrameFocus) {
+  GURL webui_url(chrome::kChromeUIVersionURL);
+  WebUIAllowlist::GetOrCreate(browser()->GetProfile())
+      ->RegisterAutoGrantedPermission(
+          url::Origin::Create(webui_url),
+          ContentSettingsType::CLIPBOARD_READ_WRITE);
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), webui_url));
+  content::RenderFrameHost* rfh = browser()
+                                      ->tab_strip_model()
+                                      ->GetActiveWebContents()
+                                      ->GetPrimaryMainFrame();
+  ASSERT_FALSE(rfh->HasTransientUserActivation());
+
+  // Trusted WebUI pages may access the clipboard even while unfocused.
+  rfh->GetRenderWidgetHost()->Blur();
+  EXPECT_FALSE(rfh->IsFocused());
+  EXPECT_TRUE(IsClipboardPasteAllowed(rfh));
+}
+
+// Browser-issued paste (e.g. macOS Edit > Paste) serves as user activation,
+// allowing clipboard access without prior activation.
+// (https://crbug.com/559872994)
+IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
+                       PasteAllowedByPasteCommand_MainFrame) {
+  content::BrowserTestClipboardScope clipboard;
+  clipboard.SetText(std::string(kPastedText));
+  content::RenderFrameHost* rfh = nullptr;
+  ASSERT_NO_FATAL_FAILURE(NavigateToPageWithFocusedTextarea(&rfh));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  FocusPage(rfh);
+  ASSERT_TRUE(rfh->IsFocused());
+  ASSERT_FALSE(rfh->HasTransientUserActivation());
+  ASSERT_FALSE(web_contents->HasRecentInteraction());
+  ASSERT_FALSE(IsClipboardPasteAllowed(rfh));
+
+  web_contents->Paste();
+  EXPECT_TRUE(IsClipboardPasteAllowed(rfh));
+  EXPECT_EQ(kPastedText, GetPastedText(rfh));
+  EXPECT_FALSE(rfh->HasTransientUserActivation());
+  EXPECT_TRUE(web_contents->HasRecentInteraction());
+}
+
+// Browser-issued paste and match style serves as user activation, allowing
+// clipboard access without prior activation. (https://crbug.com/559872994)
+IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
+                       PasteAllowedByPasteAndMatchStyleCommand_MainFrame) {
+  content::BrowserTestClipboardScope clipboard;
+  clipboard.SetText(std::string(kPastedText));
+  content::RenderFrameHost* rfh = nullptr;
+  ASSERT_NO_FATAL_FAILURE(NavigateToPageWithFocusedTextarea(&rfh));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  FocusPage(rfh);
+  ASSERT_TRUE(rfh->IsFocused());
+  ASSERT_FALSE(rfh->HasTransientUserActivation());
+  ASSERT_FALSE(web_contents->HasRecentInteraction());
+  ASSERT_FALSE(IsClipboardPasteAllowed(rfh));
+
+  web_contents->PasteAndMatchStyle();
+  EXPECT_TRUE(IsClipboardPasteAllowed(rfh));
+  EXPECT_EQ(kPastedText, GetPastedText(rfh));
+  EXPECT_FALSE(rfh->HasTransientUserActivation());
+  EXPECT_TRUE(web_contents->HasRecentInteraction());
+}
+
+// Browser-issued paste in a cross-origin iframe serves as user activation,
+// allowing clipboard access without prior activation.
+// (https://crbug.com/559872994)
+IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientClipboardTest,
+                       PasteAllowedByPasteCommand_CrossOriginSubframe) {
+  content::BrowserTestClipboardScope clipboard;
+  clipboard.SetText(std::string(kPastedText));
+  content::RenderFrameHost* parent_rfh = nullptr;
+  content::RenderFrameHost* child_rfh = nullptr;
+  ASSERT_NO_FATAL_FAILURE(
+      NavigateToPageWithCrossOriginIframe(&parent_rfh, &child_rfh));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  parent_rfh->GetRenderWidgetHost()->Focus();
+  // If the page wasn't focused when the iframe loaded, e.g. because another
+  // test's window was active, focusing the page makes the iframe's renderer
+  // focus the main frame. Wait for that before focusing the iframe, so that it
+  // can't override focusing the iframe.
+  ASSERT_TRUE(
+      content::ExecJs(child_rfh, "", content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  ASSERT_TRUE(content::ExecJs(parent_rfh,
+                              "document.querySelector('iframe').focus();",
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  ASSERT_NO_FATAL_FAILURE(AddFocusedTextarea(child_rfh));
+  FocusPage(parent_rfh);
+  ASSERT_TRUE(child_rfh->IsFocused());
+  ASSERT_FALSE(parent_rfh->HasTransientUserActivation());
+  ASSERT_FALSE(child_rfh->HasTransientUserActivation());
+  ASSERT_FALSE(web_contents->HasRecentInteraction());
+  ASSERT_FALSE(IsClipboardPasteAllowed(child_rfh));
+
+  web_contents->Paste();
+  EXPECT_TRUE(IsClipboardPasteAllowed(child_rfh));
+  EXPECT_EQ(kPastedText, GetPastedText(child_rfh));
+  EXPECT_FALSE(parent_rfh->HasTransientUserActivation());
+  EXPECT_FALSE(child_rfh->HasTransientUserActivation());
+  EXPECT_TRUE(web_contents->HasRecentInteraction());
 }
 
 class TopChromeChromeContentBrowserClientTest
@@ -2154,7 +2571,7 @@ class DevToolsOverridesThirdPartyCookiesBrowserTest
   GURL GetURL(std::string_view host) { return https_server_.GetURL(host, "/"); }
 
   void NavigateToPageWithFrame(std::string_view host,
-                               Browser* browser_ptr = nullptr) {
+                               BrowserWindowInterface* browser_ptr = nullptr) {
     GURL main_url(https_server_.GetURL(host, "/iframe.html"));
     ASSERT_TRUE(ui_test_utils::NavigateToURL(
         browser_ptr ? browser_ptr : browser(), main_url));
@@ -2206,9 +2623,10 @@ IN_PROC_BROWSER_TEST_F(ChromeContentBrowserClientBrowserTest, OpenURL) {
                  GURL("https://www.chromium.org")};
 
   for (const GURL& url : urls) {
-    content::OpenURLParams params(url, content::Referrer(),
-                                  WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                  ui::PAGE_TRANSITION_AUTO_TOPLEVEL, false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
     // TODO(peter): We should have more in-depth browser tests for the window
     // opening functionality, which also covers Android. This test can currently
     // only be ran on platforms where OpenURL is implemented synchronously.

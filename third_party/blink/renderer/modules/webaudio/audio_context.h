@@ -29,7 +29,6 @@
 #include "third_party/blink/renderer/platform/audio/audio_frame_stats_accumulator.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_deque.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
-#include "third_party/blink/renderer/platform/heap/self_keep_alive.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_associated_receiver.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_associated_remote.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_receiver.h"
@@ -108,6 +107,9 @@ class MODULES_EXPORT AudioContext final
     // nullptr. Used when creating an exception with
     // V8ThrowDOMException::CreateOrEmpty.
     void Reject(v8::Local<v8::Value>);
+
+    // Detaches the resolver without resolving or rejecting.
+    void Detach();
 
     ScriptPromise<IDLUndefined> GetPromise();
 
@@ -291,7 +293,8 @@ class MODULES_EXPORT AudioContext final
   void invoke_onrendererror_from_platform_for_testing();
   void set_clock_for_testing(const base::TickClock* clock);
 
-  void RejectPendingResolvers() override;
+  void RejectPendingPromiseResolversWithException(
+      const String& message) override;
 
  private:
   // Dispatches the `sinkchange` event in a separate task. This is necessary to
@@ -337,6 +340,7 @@ class MODULES_EXPORT AudioContext final
   };
 
   void Uninitialize() override;
+  void DetachPendingResolvers() override;
 
   // Returns the AutoplayPolicy currently applying to this instance.
   AutoplayPolicy::Type GetAutoplayPolicy() const;
@@ -365,15 +369,13 @@ class MODULES_EXPORT AudioContext final
   void PerformInitialTransitionToRunning();
 
   // Performs the async transition of the context state to "suspended".
-  void PerformTransitionToSuspended();
+  void PerformTransitionToSuspended(ScriptPromiseResolver<IDLUndefined>*);
 
-  // Starts rendering via AudioDestinationNode. This sets the self-referencing
-  // pointer to this object.
+  // Starts rendering via AudioDestinationNode.
   void StartRendering() override;
 
   // Called when the context is being closed to stop rendering audio and clean
-  // up handlers. This clears the self-referencing pointer, making this object
-  // available for the potential GC.
+  // up handlers.
   void StopRendering() VALID_CONTEXT_REQUIRED(main_thread_sequence_checker_);
 
   // Called when suspending the context to stop rendering audio, but don't clean
@@ -526,8 +528,6 @@ class MODULES_EXPORT AudioContext final
   // all that's needed.
   size_t total_audible_renders_ = 0;
 
-  SelfKeepAlive<AudioContext> keep_alive_{{}, this};
-
   // Initially, we assume that the microphone permission is denied. But this
   // will be corrected after the actual construction.
   mojom::blink::PermissionStatus microphone_permission_status_ =
@@ -637,10 +637,12 @@ class MODULES_EXPORT AudioContext final
   // Also cleared by close(), which makes the already-scheduled task a no-op.
   bool pending_initial_transition_to_running_
       GUARDED_BY_CONTEXT(main_thread_sequence_checker_) = false;
-  // Whether the state transition to "suspended" is pending. Set when suspend()
-  // is called, cleared when it executes. Also cleared by close() or resume().
-  bool pending_transition_to_suspend_
-      GUARDED_BY_CONTEXT(main_thread_sequence_checker_) = false;
+  // Number of pending transitions to the "suspended" state. Increased when
+  // suspend() posts the transition task and decreased when the task runs.
+  // Reset to 0 by DidClose() (via close() or Uninitialize()), which makes
+  // the already-scheduled tasks a no-ops.
+  size_t pending_transition_to_suspend_count_
+      GUARDED_BY_CONTEXT(main_thread_sequence_checker_) = 0;
 
   // https://webaudio.github.io/web-audio-api/#dom-audiocontext-pending-resume-promises-slot
   HeapVector<Member<ScriptPromiseResolver<IDLUndefined>>>

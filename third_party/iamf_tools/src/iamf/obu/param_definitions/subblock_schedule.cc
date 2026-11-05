@@ -22,7 +22,6 @@
 #include "absl/base/nullability.h"
 #include "absl/functional/function_ref.h"
 #include "absl/log/absl_check.h"
-#include "absl/log/absl_log.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -119,16 +118,20 @@ absl::StatusOr<SubblockSchedule> SubblockSchedule::CreateFromBuffer(
 
 absl::StatusOr<SubblockSchedule::ScheduleAndParameterData>
 SubblockSchedule::CreateFromBufferWithParameterData(
-    absl::FunctionRef<std::unique_ptr<ParameterData>()> create_parameter_data,
+    absl::FunctionRef<
+        absl::StatusOr<std::unique_ptr<ParameterData>>(ReadBitBuffer&)>
+        create_parameter_data,
     ReadBitBuffer& rb) {
   std::vector<std::unique_ptr<ParameterData> absl_nonnull> parameter_data;
 
-  const auto create_parameter_data_on_subblock = [&]() {
-    auto param_data = create_parameter_data();
-    RETURN_IF_NOT_OK(
-        ValidateNotNull(param_data, "Failed to create parameter data."));
-    RETURN_IF_NOT_OK(param_data->ReadAndValidate(rb));
-    parameter_data.push_back(std::move(param_data));
+  const auto create_parameter_data_on_subblock = [&]() -> absl::Status {
+    auto param_data = create_parameter_data(rb);
+    if (!param_data.ok()) {
+      return param_data.status();
+    }
+    RETURN_IF_NOT_OK(ValidateNotNull(param_data.value(),
+                                     "Failed to create parameter data."));
+    parameter_data.push_back(std::move(*param_data));
     return absl::OkStatus();
   };
 
@@ -247,20 +250,6 @@ absl::StatusOr<DecodedUleb128> SubblockSchedule::GetSubblockDuration(
     // The first `num_subblocks_ - 1` subblocks have the constant subblock
     // duration.
     return constant_subblock_duration_;
-  }
-}
-
-void SubblockSchedule::Print() const {
-  ABSL_LOG(INFO) << "  duration= " << duration_;
-  ABSL_LOG(INFO) << "  constant_subblock_duration= "
-                 << constant_subblock_duration_;
-  ABSL_LOG(INFO) << "  num_subblocks= " << num_subblocks_;
-
-  if (constant_subblock_duration_ == 0) {
-    for (size_t i = 0; i < num_subblocks_; i++) {
-      ABSL_LOG(INFO) << "  subblock_durations[" << i
-                     << "]= " << subblock_durations_[i];
-    }
   }
 }
 

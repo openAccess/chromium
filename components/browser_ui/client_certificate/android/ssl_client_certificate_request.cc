@@ -18,6 +18,8 @@
 #include "base/containers/queue.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/memory/ptr_util.h"
+#include "base/memory/raw_ptr.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -32,16 +34,17 @@
 #include "net/ssl/ssl_cert_request_info.h"
 #include "net/ssl/ssl_platform_key_android.h"
 #include "net/ssl/ssl_private_key.h"
+#include "third_party/jni_zero/default_conversions.h"
 #include "ui/android/view_android.h"
 #include "ui/android/window_android.h"
 
-// Must come after all headers that specialize FromJniType() / ToJniType().
+// Must come after headers that provide symbols used by @JniType.
 #include "components/browser_ui/client_certificate/android/jni_headers/SSLClientCertificateRequest_jni.h"
 
 namespace browser_ui {
 namespace {
-using base::android::JavaRef;
-using base::android::ScopedJavaLocalRef;
+using jni_zero::JavaRef;
+using jni_zero::ScopedJavaLocalRef;
 
 class SSLClientCertPendingRequests;
 
@@ -97,6 +100,18 @@ class SSLClientCertPendingRequests
                        scoped_refptr<net::X509Certificate> cert,
                        scoped_refptr<net::SSLPrivateKey> key);
 
+  std::unique_ptr<ClientCertRequest> TakeActiveRequestForTesting() {
+    // Otherwise the request is owned by Java, which may still complete it.
+    CHECK(skip_system_selector_for_testing_);
+    ClientCertRequest* request = active_request_;
+    active_request_ = nullptr;
+    return base::WrapUnique(request);
+  }
+
+  void SkipSystemSelectorForTesting() {
+    skip_system_selector_for_testing_ = true;
+  }
+
   // Remove pending requests when |should_keep| returns false. Calls |on_drop|
   // before dropping a request.
   void FilterPendingRequests(
@@ -113,8 +128,9 @@ class SSLClientCertPendingRequests
   class CertificateDialogPolicy {
    public:
     // Has the maximum number of cert dialogs been exceeded?
-    bool MaxExceeded() { return count_ >= k_max_displayed_dialogs; }
-    // Resets counter. Should be called on navigation.
+    bool MaxExceeded() { return count_ >= kMaxDisplayedDialogs; }
+    // Resets counter. Should be called on navigation and when the user
+    // successfully selects a certificate.
     void ResetCount() { count_ = 0; }
     // Increment the counter.
     void IncrementCount() { count_++; }
@@ -122,15 +138,16 @@ class SSLClientCertPendingRequests
     size_t GetCount() { return count_; }
 
    private:
+    static constexpr size_t kMaxDisplayedDialogs = 5;
+
     size_t count_ = 0;
-    const size_t k_max_displayed_dialogs = 5;
   };
 
  private:
   void PumpRequests();
 
-  bool active_request_ = false;
-
+  raw_ptr<ClientCertRequest> active_request_ = nullptr;
+  bool skip_system_selector_for_testing_ = false;
   CertificateDialogPolicy dialog_policy_;
   base::queue<std::unique_ptr<ClientCertRequest>> pending_requests_;
   base::WeakPtrFactory<SSLClientCertPendingRequests> weak_factory_{this};
@@ -153,27 +170,30 @@ ui::WindowAndroid* GetWindowFromWebContents(
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(SSLClientCertPendingRequests);
 
-static void StartClientCertificateRequest(
+// If `skip_system_selector` is true, the request is not handed to Java.
+static bool StartClientCertificateRequest(
     std::unique_ptr<ClientCertRequest> request,
-    content::WebContents* web_contents) {
+    content::WebContents* web_contents,
+    bool skip_system_selector) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
   ui::WindowAndroid* window = GetWindowFromWebContents(web_contents);
   if (window == nullptr) {
     LOG(ERROR) << "Could not get Window";
-    return;
+    return false;
+  }
+
+  if (skip_system_selector) {
+    // The test owns the request until it calls
+    // CompleteActiveSSLClientCertificateRequestForTesting().
+    std::ignore = request.release();
+    return true;
   }
 
   // Build the |key_types| JNI parameter, as a String[]
   std::vector<std::string> key_types = net::SignatureAlgorithmsToJavaKeyTypes(
       request->cert_request_info()->signature_algorithms);
-  JNIEnv* env = base::android::AttachCurrentThread();
-  ScopedJavaLocalRef<jobjectArray> key_types_ref =
-      base::android::ToJavaArrayOfStrings(env, key_types);
-  if (key_types_ref.is_null()) {
-    LOG(ERROR) << "Could not create key types array (String[])";
-    return;
-  }
+  JNIEnv* env = jni_zero::AttachCurrentThread();
 
   // Build the |encoded_principals| JNI parameter, as a byte[][]
   ScopedJavaLocalRef<jobjectArray> principals_ref =
@@ -181,27 +201,22 @@ static void StartClientCertificateRequest(
           env, request->cert_request_info()->cert_authorities);
   if (principals_ref.is_null()) {
     LOG(ERROR) << "Could not create principals array (byte[][])";
-    return;
+    return false;
   }
-
-  // Build the |host_name| and |port| JNI parameters, as a String and
-  // a int32_t.
-  ScopedJavaLocalRef<jstring> host_name_ref =
-      base::android::ConvertUTF8ToJavaString(
-          env, request->cert_request_info()->host_and_port.host());
 
   // Pass the address of the delegate through to Java.
   int64_t request_id = reinterpret_cast<intptr_t>(request.get());
 
   if (!Java_SSLClientCertificateRequest_selectClientCertificate(
-          env, request_id, window->GetJavaObject(), key_types_ref,
-          principals_ref, host_name_ref,
+          env, request_id, window, key_types, principals_ref,
+          request->cert_request_info()->host_and_port.host(),
           request->cert_request_info()->host_and_port.port())) {
-    return;
+    return false;
   }
 
   // Ownership was transferred to Java.
   std::ignore = request.release();
+  return true;
 }
 
 void SSLClientCertPendingRequests::AddRequest(
@@ -236,7 +251,17 @@ void SSLClientCertPendingRequests::RequestComplete(
     net::SSLCertRequestInfo* info,
     scoped_refptr<net::X509Certificate> cert,
     scoped_refptr<net::SSLPrivateKey> key) {
-  active_request_ = false;
+  active_request_ = nullptr;
+
+  // The dialog limit exists to stop a page from repeatedly prompting a user who
+  // keeps dismissing the dialog. A successful selection means the user is
+  // engaging with the prompts, so reset the limit. Otherwise a page which
+  // legitimately needs client certificates for more than kMaxDisplayedDialogs
+  // hosts (every host needs its own selection) has its later requests silently
+  // dropped.
+  if (cert && key) {
+    dialog_policy_.ResetCount();
+  }
 
   // Deduplicate pending requests. Only keep pending requests whose host and
   // port differ from those of the completed request.
@@ -257,15 +282,30 @@ void SSLClientCertPendingRequests::PumpRequests() {
     return;
   }
 
-  active_request_ = true;
-  std::unique_ptr<ClientCertRequest> next =
-      std::move(pending_requests_.front());
-  pending_requests_.pop();
-
   // Check if this page is allowed to show any more client cert dialogs.
-  if (!dialog_policy_.MaxExceeded()) {
-    dialog_policy_.IncrementCount();
-    StartClientCertificateRequest(std::move(next), web_contents());
+  if (dialog_policy_.MaxExceeded()) {
+    LOG(WARNING) << "Dropping " << pending_requests_.size()
+                 << " client certificate request(s): too many certificate "
+                    "dialogs shown for this page";
+    auto should_keep = [](auto* req) { return false; };
+    FilterPendingRequests(should_keep);
+    return;
+  }
+
+  while (!pending_requests_.empty()) {
+    std::unique_ptr<ClientCertRequest> next =
+        std::move(pending_requests_.front());
+    pending_requests_.pop();
+
+    ClientCertRequest* raw_next = next.get();
+    // Java never completes the request synchronously (the completion callback
+    // is always posted), so `raw_next` is still valid if this returns true.
+    if (StartClientCertificateRequest(std::move(next), web_contents(),
+                                      skip_system_selector_for_testing_)) {
+      active_request_ = raw_next;
+      dialog_policy_.IncrementCount();
+      return;
+    }
   }
 }
 
@@ -305,7 +345,7 @@ void ClientCertRequest::OnCancel() {
 
 scoped_refptr<net::SSLPrivateKey> WrapPrivateKeyInBackground(
     scoped_refptr<net::X509Certificate> cert,
-    base::android::ScopedJavaGlobalRef<jobject> key) {
+    jni_zero::ScopedJavaGlobalRef<jobject> key) {
   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
                                                 base::BlockingType::MAY_BLOCK);
   return net::WrapJavaPrivateKey(cert.get(), key);
@@ -371,7 +411,7 @@ static void JNI_SSLClientCertificateRequest_OnSystemRequestCompletion(
     return;
   }
 
-  base::android::ScopedJavaGlobalRef<jobject> key_ref(env, private_key_ref);
+  jni_zero::ScopedJavaGlobalRef<jobject> key_ref(env, private_key_ref);
 
   // Wrapping the Java PrivateKey calls Android KeyStore signature and cipher
   // support checks which may involve blocking Binder IPC. Perform wrapping on
@@ -388,8 +428,7 @@ static void NotifyClientCertificatesChanged() {
 }
 
 static void
-JNI_SSLClientCertificateRequest_NotifyClientCertificatesChangedOnIOThread(
-    JNIEnv* env) {
+JNI_SSLClientCertificateRequest_NotifyClientCertificatesChangedOnIOThread() {
   if (content::BrowserThread::CurrentlyOn(content::BrowserThread::IO)) {
     NotifyClientCertificatesChanged();
   } else {
@@ -421,6 +460,26 @@ size_t GetCountOfSSLClientCertificateSelectorForTesting(  // IN-TEST
       SSLClientCertPendingRequests::FromWebContents(contents);
   DCHECK(active_requests);
   return active_requests->GetDialogCount();
+}
+
+void SkipSystemSSLClientCertificateSelectorForTesting(  // IN-TEST
+    content::WebContents* contents) {
+  SSLClientCertPendingRequests::CreateForWebContents(contents);
+  SSLClientCertPendingRequests::FromWebContents(contents)
+      ->SkipSystemSelectorForTesting();
+}
+
+void CompleteActiveSSLClientCertificateRequestForTesting(  // IN-TEST
+    content::WebContents* contents,
+    scoped_refptr<net::X509Certificate> cert,
+    scoped_refptr<net::SSLPrivateKey> key) {
+  SSLClientCertPendingRequests* active_requests =
+      SSLClientCertPendingRequests::FromWebContents(contents);
+  DCHECK(active_requests);
+  std::unique_ptr<ClientCertRequest> request =
+      active_requests->TakeActiveRequestForTesting();
+  DCHECK(request);
+  request->CertificateSelected(std::move(cert), std::move(key));
 }
 
 }  // namespace browser_ui

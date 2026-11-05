@@ -8,6 +8,7 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_login_pref_names.h"
+#include "ash/constants/ash_paths.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "base/command_line.h"
@@ -23,14 +24,12 @@
 #include "base/time/time.h"
 #include "chrome/browser/ash/drive/file_system_util.h"
 #include "chrome/browser/ash/login/login_constants.h"
-#include "chrome/browser/ash/login/onboarding_user_activity_counter.h"
 #include "chrome/browser/ash/login/oobe_configuration.h"
 #include "chrome/browser/ash/login/oobe_metrics_helper.h"
 #include "chrome/browser/ash/login/oobe_quick_start/oobe_quick_start_pref_names.h"
 #include "chrome/browser/ash/policy/enrollment/enrollment_token_provider.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_display_host_common.h"
-#include "chrome/common/chrome_paths.h"
 #include "chromeos/ash/components/dbus/oobe_config/oobe_configuration_client.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
@@ -82,7 +81,7 @@ base::FilePath GetOobeCompleteFlagPath() {
     return base::FilePath(kOobeCompleteFlagFilePath);
   } else {
     base::FilePath user_data_dir;
-    base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
+    base::PathService::Get(ash::DIR_USER_DATA, &user_data_dir);
     return user_data_dir.AppendASCII(".oobe_completed");
   }
 }
@@ -183,8 +182,6 @@ void StartupUtils::RegisterOobeProfilePrefs(PrefRegistrySimple* registry) {
   if (features::IsOobeDisplaySizeEnabled()) {
     registry->RegisterDoublePref(prefs::kOobeDisplaySizeFactorDeferred, 1.0);
   }
-
-  OnboardingUserActivityCounter::RegisterProfilePrefs(registry);
 }
 
 // static

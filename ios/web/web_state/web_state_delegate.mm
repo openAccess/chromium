@@ -4,6 +4,7 @@
 
 #import "ios/web/public/web_state_delegate.h"
 
+#import "base/functional/bind.h"
 
 namespace web {
 
@@ -70,6 +71,13 @@ void WebStateDelegate::HandlePermissionsDecisionRequest(
   handler(PermissionDecisionShowDefaultPrompt);
 }
 
+void WebStateDelegate::RequestGeolocationPermission(
+    WebState* source,
+    const GURL& origin,
+    WebStatePermissionDecisionHandler handler) {
+  handler(PermissionDecisionShowDefaultPrompt);
+}
+
 void WebStateDelegate::OnAuthRequired(WebState* source,
                                       NSURLProtectionSpace* protection_space,
                                       NSURLCredential* proposed_credential,
@@ -81,6 +89,21 @@ void WebStateDelegate::OnAuthRequired(WebState* source,
                                       NSURLProtectionSpace* protection_space,
                                       ClientCertAuthCallback callback) {
   std::move(callback).Run(nil);
+}
+
+void WebStateDelegate::OnProxyAuthChallenge(
+    WebState* source,
+    NSURLProtectionSpace* protection_space,
+    NSURLCredential* proposed_credential,
+    NSURLResponse* failure_response,
+    ProxyAuthCallback callback) {
+  OnAuthRequired(source, protection_space, proposed_credential,
+                 base::BindOnce(
+                     [](ProxyAuthCallback callback, NSString* username,
+                        NSString* password) {
+                       std::move(callback).Run(username, password, nil);
+                     },
+                     std::move(callback)));
 }
 
 UIView* WebStateDelegate::GetWebViewContainer(WebState* source) {

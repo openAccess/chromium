@@ -10,12 +10,15 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/command_line.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/feature_list.h"
+#include "base/i18n/language_tag.h"
 #include "base/no_destructor.h"
+#include "base/strings/escape.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
@@ -110,6 +113,11 @@ bool IsCanonicalHostGoogleHostname(std::string_view canonical_host,
   if (base_url.is_valid() && (canonical_host == base_url.host())) {
     return true;
   }
+  const GURL& base_suggestion_url(CommandLineGoogleBaseSuggestionURL());
+  if (base_suggestion_url.is_valid() &&
+      (canonical_host == base_suggestion_url.host())) {
+    return true;
+  }
 
   static constexpr auto google_tlds =
       base::MakeFixedFlatSet<std::string_view>({GOOGLE_TLD_LIST});
@@ -144,6 +152,39 @@ bool IsGoogleSearchSubdomainUrl(const GURL& url) {
   return google_subdomains.contains(host);
 }
 
+// Reads and caches a URL from a CommandLine switch, re-parsing if the switch
+// value changes (e.g. in unit tests).
+//
+// Use as a static base::NoDestructor<CommandLineURLFetcher>.
+class CommandLineURLFetcher {
+ public:
+  explicit CommandLineURLFetcher(std::string_view switch_name)
+      : switch_name_(switch_name) {}
+
+  // Return the GURL from command-line. As unit tests may change the
+  // command-line after the first call to this method, cache the command-line
+  // value and update the GURL if it changed.
+  const GURL& GetFromCommandLine(base::CommandLine* command_line) {
+    std::string switch_value =
+        command_line->GetSwitchValueASCII(switch_name_);
+    if (cached_switch_value_ != switch_value) {
+      cached_switch_value_ = std::move(switch_value);
+      cached_url_value_ = url_formatter::FixupURL(cached_switch_value_);
+      if (!cached_url_value_.is_valid() || cached_url_value_.has_query() ||
+          cached_url_value_.has_ref()) {
+        cached_url_value_ = GURL();
+      }
+    }
+
+    return cached_url_value_;
+  }
+
+ private:
+  const std::string_view switch_name_;
+  std::string cached_switch_value_;
+  GURL cached_url_value_;
+};
+
 }  // namespace
 
 BASE_FEATURE(kIsViewerGoogleSearchUrl, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -156,7 +197,8 @@ const char kGoogleSearchPrewarmPath[] = "/search/warmup.html";
 bool HasGoogleSearchQueryParam(std::string_view str) {
   url::Component query(0, static_cast<int>(str.length())), key, value;
   while (url::ExtractQueryKeyValue(str, &query, &key, &value)) {
-    std::string_view key_str = str.substr(key.begin, key.len);
+    std::string key_str = base::ToLowerASCII(
+        base::UnescapeBinaryURLComponent(str.substr(key.begin, key.len)));
     if (key_str == "q" || key_str == "as_q" || key_str == "imgurl") {
       return true;
     }
@@ -167,6 +209,15 @@ bool HasGoogleSearchQueryParam(std::string_view str) {
 std::string GetGoogleLocale(const std::string& application_locale) {
   // Google does not recognize "nb" for Norwegian Bokmal; it uses "no".
   return (application_locale == "nb") ? "no" : application_locale;
+}
+
+base::i18n::LanguageTag GetGoogleLocale(
+    const base::i18n::LanguageTag& application_locale) {
+  // Google does not recognize "nb" for Norwegian Bokmal; it uses "no".
+  if (application_locale == base::i18n::GetKnownLanguageTag("nb")) {
+    return base::i18n::GetKnownLanguageTag("no");
+  }
+  return application_locale;
 }
 
 GURL AppendGoogleLocaleParam(const GURL& url,
@@ -211,22 +262,15 @@ GURL GetGoogleSearchURL(const GURL& google_homepage_url) {
 }
 
 const GURL& CommandLineGoogleBaseURL() {
-  // Unit tests may add command-line flags after the first call to this
-  // function, so we don't simply initialize a static |base_url| directly and
-  // then unconditionally return it.
-  static base::NoDestructor<std::string> switch_value;
-  static base::NoDestructor<GURL> base_url;
-  std::string current_switch_value(
-      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-          switches::kGoogleBaseURL));
-  if (current_switch_value != *switch_value) {
-    *switch_value = current_switch_value;
-    *base_url = url_formatter::FixupURL(*switch_value);
-    if (!base_url->is_valid() || base_url->has_query() || base_url->has_ref()) {
-      *base_url = GURL();
-    }
-  }
-  return *base_url;
+  static base::NoDestructor<CommandLineURLFetcher> kFetcher(
+      switches::kGoogleBaseURL);
+  return kFetcher->GetFromCommandLine(base::CommandLine::ForCurrentProcess());
+}
+
+const GURL& CommandLineGoogleBaseSuggestionURL() {
+  static base::NoDestructor<CommandLineURLFetcher> kFetcher(
+      switches::kGoogleBaseSuggestionURL);
+  return kFetcher->GetFromCommandLine(base::CommandLine::ForCurrentProcess());
 }
 
 bool StartsWithCommandLineGoogleBaseURL(const GURL& url) {

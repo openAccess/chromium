@@ -64,13 +64,11 @@ std::unique_ptr<net::UploadDataStream> CreateUploadDataStream(
     base::SequencedTaskRunner* file_task_runner);
 
 // Computes the CookieSettingOverrides to use for a given `ResourceRequest`.
-// May also emit to histograms.
 COMPONENT_EXPORT(NETWORK_SERVICE)
 net::CookieSettingOverrides CalculateCookieSettingOverrides(
     net::CookieSettingOverrides factory_overrides,
     net::CookieSettingOverrides devtools_overrides,
-    const ResourceRequest& request,
-    bool emit_metrics);
+    const ResourceRequest& request);
 
 // Determines the IsolationInfo for a request, checking sources in priority:
 // 1. `factory_isolation_info` (if non-empty).
@@ -111,13 +109,16 @@ void ConfigureUrlRequest(const ResourceRequest& request,
 // Checks both the request's `credentials_mode` and relevant web platform
 // policies (COEP, DIP). May also add the `net::LOAD_BYPASS_CACHE` flag if web
 // policies disallow credentials.
+COMPONENT_EXPORT(NETWORK_SERVICE)
 void SetRequestCredentials(
     const GURL& url,
     const network::mojom::ClientSecurityStatePtr& client_security_state,
     mojom::RequestMode request_mode,
     mojom::CredentialsMode credentials_mode,
     const std::optional<url::Origin>& initiator,
-    net::URLRequest& url_request);
+    net::URLRequest& url_request,
+    const cors::OriginAccessList* origin_access_list,
+    bool disable_web_security);
 
 // Selects between the `client_security_state` fields in
 // `url_loader_factory_params` and the ClientSecurityState from

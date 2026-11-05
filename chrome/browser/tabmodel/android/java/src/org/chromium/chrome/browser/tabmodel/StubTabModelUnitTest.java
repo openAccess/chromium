@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.tabmodel;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.fail;
 
 import org.junit.Test;
@@ -48,20 +50,17 @@ public class StubTabModelUnitTest {
                             "getOrderedMultiSelectedTabs",
                             "findFirstNonPinnedTabIndex",
                             "getPinnedTabsCount",
-                            "getNativeSessionIdForTesting",
+                            "getNativeSessionId",
                             "isMuted",
                             "getTabStripCollection",
-                            "isClosingAllTabs",
                             "getTabModel",
                             "getRepresentativeTabList",
                             "getIndividualTabAndGroupCount",
-                            "getCurrentRepresentativeTabIndex",
-                            "getCurrentRepresentativeTab",
                             "getRepresentativeTabAt",
                             "representativeIndexOf",
                             "getTabGroupCount",
                             "getTabCountForGroup",
-                            "tabGroupExists",
+                            "containsTabGroup",
                             "getRelatedTabList",
                             "getTabsInGroup",
                             "isTabInTabGroup",
@@ -74,19 +73,16 @@ public class StubTabModelUnitTest {
                             "getTabGroupColorWithFallback",
                             "getTabGroupCollapsed",
                             "isTabGroupHiding",
-                            "isTabModelRestored",
+                            "isTabStateInitialized",
                             "associateWithBrowserWindow",
                             "dissociateWithBrowserWindow",
-                            "addDelegateModelObserver",
                             "addIncognitoObserver",
                             "removeIncognitoObserver",
                             "addObserver",
                             "removeObserver",
                             "addTabGroupObserver",
                             "removeTabGroupObserver",
-                            "getCurrentTabSupplier",
                             "getNextTabPolicySupplier",
-                            "getTabCountSupplier",
                             "getTabByIdChecked",
                             "getNextTabIfClosed",
                             "commitAllTabClosures",
@@ -100,24 +96,17 @@ public class StubTabModelUnitTest {
                             "recordPinnedDuration",
                             "getActivityTypeForTesting",
                             "setTabGroupCollapsed",
-                            "willMergingCreateNewGroup",
                             "performUndoGroupOperation",
                             "undoGroupOperationExpired",
-                            "getValidPosition",
                             "setTabGroupTitle",
                             "deleteTabGroupTitle",
                             "setTabGroupColor",
-                            "deleteTabGroupColor",
-                            "deleteTabGroupCollapsed",
                             "getTabAtChecked",
                             "spliterator",
                             "forEach",
                             "destroy",
                             // Default methods in interface that delegate to throwing methods.
                             // They are safe to inherit because they will eventually throw.
-                            "pinTab",
-                            "createSingleTabGroup",
-                            "mergeTabsToGroup",
                             "mergeListOfTabsToGroup"));
 
     @Test
@@ -149,5 +138,12 @@ public class StubTabModelUnitTest {
                             + "Please override them to throw error(), or add them to the safe"
                             + " read allowlist in this test.");
         }
+    }
+
+    @Test
+    public void testSuppliers() {
+        StubTabModel stubTabModel = new StubTabModel(/* isIncognito= */ false, /* profile= */ null);
+        assertNull(stubTabModel.getCurrentTabSupplier().get());
+        assertEquals(Integer.valueOf(0), stubTabModel.getTabCountSupplier().get());
     }
 }

@@ -9,22 +9,27 @@
 #include <string_view>
 
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/test/bind.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/browser/ui/views/permissions/chip/webui_permission_chip.h"
 #include "chrome/browser/ui/views/permissions/chip/webui_permission_dashboard.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_profile.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/omnibox/browser/test_location_bar_model.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
 #include "ui/gfx/paint_vector_icon.h"
 
 namespace {
+
+DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestPermissionChipElementId);
 
 class TestLocationBarViewDelegate : public LocationBarView::Delegate {
  public:
@@ -43,6 +48,15 @@ class TestLocationBarViewDelegate : public LocationBarView::Delegate {
 
  private:
   raw_ptr<LocationBarModel> model_;
+};
+
+class TestLocationBarObserver : public LocationBar::Observer {
+ public:
+  void OnLocationBarFocusChanged() override { focus_change_count_++; }
+  int focus_change_count() const { return focus_change_count_; }
+
+ private:
+  int focus_change_count_ = 0;
 };
 
 }  // namespace
@@ -70,11 +84,11 @@ class WebUILocationBarTest : public testing::Test {
     // web UI popups that require fully attached widgets and profiles.
     location_bar_->toolbar_delegate_ = toolbar_view_.get();
 
-    fetcher_ = toolbar_view_->GetNavigationControlsStateFetcher();
+    fetcher_ = toolbar_view_->GetToolbarStateFetcher();
   }
 
-  toolbar_ui_api::mojom::NavigationControlsStatePtr GetState() {
-    return fetcher_->GetNavigationControlsState();
+  toolbar_ui_api::mojom::ToolbarStatePtr GetState() {
+    return fetcher_->GetToolbarState();
   }
 
   bool WillNextBubbleShowBeSuppressed() const {
@@ -90,15 +104,31 @@ class WebUILocationBarTest : public testing::Test {
     return location_bar_->permission_dashboard_.get();
   }
 
+  // Returns the token pushed to the WebUI for the given permission chip, i.e.
+  // the token a click on that chip echoes back.
+  uint32_t GetPushedChipStateToken(
+      toolbar_ui_api::mojom::LhsChipIdentifier identifier) {
+    toolbar_ui_api::mojom::ToolbarStatePtr state = GetState();
+    const toolbar_ui_api::mojom::PermissionDashboardStatePtr& dashboard =
+        state->location_bar_state->lhs_chips_state->permission_dashboard;
+    return identifier ==
+                   toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionRequest
+               ? dashboard->request_chip->state_token
+               : dashboard->indicator_chip->state_token;
+  }
+
   content::BrowserTaskEnvironment browser_threads_;
   TestingProfile profile_;
+  // For WebUIToolbarWebView, which creates its WebContents in it with
+  // features::kTopChromeWebUISharedRenderer.
+  webui::ScopedTopChromeWebUIProfileForTesting scoped_top_chrome_webui_profile_;
   testing::NiceMock<MockBrowserWindowInterface> mock_browser_;
   ui::UnownedUserDataHost user_data_host_;
   std::unique_ptr<TestLocationBarModel> location_bar_model_;
   std::unique_ptr<TestLocationBarViewDelegate> delegate_;
   std::unique_ptr<WebUIToolbarWebView> toolbar_view_;
   raw_ptr<WebUILocationBar> location_bar_ = nullptr;
-  std::unique_ptr<toolbar_ui_api::NavigationControlsStateFetcher> fetcher_;
+  std::unique_ptr<toolbar_ui_api::ToolbarStateFetcher> fetcher_;
 };
 
 TEST_F(WebUILocationBarTest, StateManagement_SecurityChip) {
@@ -159,7 +189,7 @@ TEST_F(WebUILocationBarTest, StateManagement_SecurityChip) {
 }
 
 TEST_F(WebUILocationBarTest, StateManagement_PermissionChip) {
-  WebUIPermissionChip chip(location_bar_);
+  WebUIPermissionChip chip(location_bar_, kTestPermissionChipElementId);
 
   chip.SetVisible(true);
   chip.SetChipIcon(features::IsRoundedIconsEnabled() ? kPhotoCameraIcon
@@ -233,7 +263,8 @@ TEST_F(WebUILocationBarTest, MouseClickSuppression) {
   // consume the flag.
   location_bar_->OnLhsChipClicked(
       toolbar_ui_api::mojom::LhsChipIdentifier::kLocationIcon,
-      /*is_mouse_interaction=*/false);
+      /*is_mouse_interaction=*/false,
+      /*state_token=*/0);
   EXPECT_FALSE(WillNextBubbleShowBeSuppressed());
 
   // Re-arm suppression immediately.
@@ -245,7 +276,8 @@ TEST_F(WebUILocationBarTest, MouseClickSuppression) {
   // A true mouse click SHOULD consume the suppression flag and return early.
   location_bar_->OnLhsChipClicked(
       toolbar_ui_api::mojom::LhsChipIdentifier::kLocationIcon,
-      /*is_mouse_interaction=*/true);
+      /*is_mouse_interaction=*/true,
+      /*state_token=*/0);
   EXPECT_FALSE(WillNextBubbleShowBeSuppressed());
 }
 
@@ -301,7 +333,8 @@ TEST_F(WebUILocationBarTest, PermissionChipMouseEvents) {
   // Test Click events are forwarded.
   location_bar_->OnLhsChipClicked(
       toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionRequest,
-      /*is_mouse_interaction=*/true);
+      /*is_mouse_interaction=*/true,
+      permission_dashboard()->request_chip()->state_token());
   EXPECT_TRUE(request_chip_clicked);
   EXPECT_FALSE(indicator_chip_clicked);
 
@@ -309,10 +342,207 @@ TEST_F(WebUILocationBarTest, PermissionChipMouseEvents) {
 
   location_bar_->OnLhsChipClicked(
       toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionIndicator,
-      /*is_mouse_interaction=*/false);
+      /*is_mouse_interaction=*/false,
+      permission_dashboard()->indicator_chip()->state_token());
   EXPECT_TRUE(indicator_chip_clicked);
   EXPECT_FALSE(request_chip_clicked);
 
+  indicator_chip_clicked = false;
+
+  // Stale click events with mismatched state tokens should be dropped.
+  location_bar_->OnLhsChipClicked(
+      toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionRequest,
+      /*is_mouse_interaction=*/true,
+      permission_dashboard()->request_chip()->state_token() - 1);
+  EXPECT_FALSE(request_chip_clicked);
+
+  location_bar_->OnLhsChipClicked(
+      toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionRequest,
+      /*is_mouse_interaction=*/true,
+      permission_dashboard()->request_chip()->state_token() + 1);
+  EXPECT_FALSE(request_chip_clicked);
+
+  location_bar_->OnLhsChipClicked(
+      toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionIndicator,
+      /*is_mouse_interaction=*/false,
+      permission_dashboard()->indicator_chip()->state_token() - 1);
+  EXPECT_FALSE(indicator_chip_clicked);
+
+  location_bar_->OnLhsChipClicked(
+      toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionIndicator,
+      /*is_mouse_interaction=*/false,
+      permission_dashboard()->indicator_chip()->state_token() + 1);
+  EXPECT_FALSE(indicator_chip_clicked);
+
   permission_dashboard()->request_chip()->RemoveObserver(&request_observer);
   permission_dashboard()->indicator_chip()->RemoveObserver(&indicator_observer);
+}
+
+TEST_F(WebUILocationBarTest, TeardownWithActivePermissionChip) {
+  ASSERT_TRUE(permission_dashboard());
+  // Leave a permission chip visible to verify that WebUILocationBar teardown
+  // correctly handles chip hiding without accessing an already destroyed
+  // `weak_ptr_factory_`.
+  permission_dashboard()->request_chip()->SetVisible(true);
+}
+
+TEST_F(WebUILocationBarTest, StaleClickDroppedAfterChipRecreated) {
+  ASSERT_TRUE(permission_dashboard());
+
+  bool request_chip_clicked = false;
+  permission_dashboard()->request_chip()->SetPressedCallback(
+      base::BindLambdaForTesting([&](bool) { request_chip_clicked = true; }));
+
+  // Tab A displays an active permission chip with token A.
+  permission_dashboard()->request_chip()->SetVisible(true);
+  uint32_t tab_a_token = permission_dashboard()->request_chip()->state_token();
+
+  // User switches to Tab B: Tab A's chip is hidden; Tab B's chip is shown.
+  permission_dashboard()->request_chip()->SetVisible(false);
+  permission_dashboard()->request_chip()->SetVisible(true);
+
+  // Delayed click IPC from Tab A arrives with Tab A's token.
+  location_bar_->OnLhsChipClicked(
+      toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionRequest,
+      /*is_mouse_interaction=*/true, tab_a_token);
+
+  // Stale click from Tab A should be dropped and not execute on Tab B.
+  EXPECT_FALSE(request_chip_clicked);
+
+  // Positive control: clicking with the current active token succeeds.
+  location_bar_->OnLhsChipClicked(
+      toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionRequest,
+      /*is_mouse_interaction=*/true,
+      permission_dashboard()->request_chip()->state_token());
+  EXPECT_TRUE(request_chip_clicked);
+}
+
+TEST_F(WebUILocationBarTest,
+       StaleClickDroppedAfterTabSwitchWithPersistentIndicator) {
+  ASSERT_TRUE(permission_dashboard());
+  constexpr auto kIndicator =
+      toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionIndicator;
+
+  bool indicator_chip_clicked = false;
+  permission_dashboard()->indicator_chip()->SetPressedCallback(
+      base::BindLambdaForTesting(
+          [&indicator_chip_clicked](bool) { indicator_chip_clicked = true; }));
+
+  // Tab A displays an active indicator chip.
+  permission_dashboard()->indicator_chip()->SetVisible(true);
+  const uint32_t tab_a_token = GetPushedChipStateToken(kIndicator);
+
+  // Tab switch occurs where the indicator remains active on Tab B.
+  // `WebUILocationBar::Update()` invalidates the chip tokens via
+  // `WebUIPermissionDashboard::InvalidateStateTokens()`, then pushes them with
+  // `OnChanged()`.
+  permission_dashboard()->InvalidateStateTokens();
+  location_bar_->OnChanged();
+
+  // The indicator chip remains visible on Tab B, and the WebUI was sent an
+  // updated token.
+  EXPECT_TRUE(permission_dashboard()->indicator_chip()->GetVisible());
+  EXPECT_NE(tab_a_token, GetPushedChipStateToken(kIndicator));
+
+  // Stale click IPC from Tab A with old token should be dropped.
+  location_bar_->OnLhsChipClicked(kIndicator, /*is_mouse_interaction=*/false,
+                                  tab_a_token);
+  EXPECT_FALSE(indicator_chip_clicked);
+
+  // Positive control: clicking with the token the WebUI now has succeeds.
+  location_bar_->OnLhsChipClicked(kIndicator, /*is_mouse_interaction=*/false,
+                                  GetPushedChipStateToken(kIndicator));
+  EXPECT_TRUE(indicator_chip_clicked);
+}
+
+// `LocationBar::ResetTabState()` is called when a background tab's URL changes.
+// It must not invalidate the active tab's chip tokens, or clicks already in
+// flight for the active tab would be dropped.
+TEST_F(WebUILocationBarTest, BackgroundTabResetKeepsChipClicksWorking) {
+  ASSERT_TRUE(permission_dashboard());
+  constexpr auto kRequest =
+      toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionRequest;
+  constexpr auto kIndicator =
+      toolbar_ui_api::mojom::LhsChipIdentifier::kPermissionIndicator;
+
+  bool request_chip_clicked = false;
+  bool indicator_chip_clicked = false;
+  permission_dashboard()->request_chip()->SetPressedCallback(
+      base::BindLambdaForTesting(
+          [&request_chip_clicked](bool) { request_chip_clicked = true; }));
+  permission_dashboard()->indicator_chip()->SetPressedCallback(
+      base::BindLambdaForTesting(
+          [&indicator_chip_clicked](bool) { indicator_chip_clicked = true; }));
+
+  // The active tab shows both chips. These are the tokens the WebUI rendered.
+  permission_dashboard()->request_chip()->SetVisible(true);
+  permission_dashboard()->indicator_chip()->SetVisible(true);
+  const uint32_t request_token = GetPushedChipStateToken(kRequest);
+  const uint32_t indicator_token = GetPushedChipStateToken(kIndicator);
+
+  // A background tab's URL changes.
+  location_bar_->ResetTabState(nullptr);
+
+  EXPECT_EQ(request_token,
+            permission_dashboard()->request_chip()->state_token());
+  EXPECT_EQ(indicator_token,
+            permission_dashboard()->indicator_chip()->state_token());
+
+  // Clicks on the active tab's chips, echoing the rendered tokens, still run.
+  location_bar_->OnLhsChipClicked(kRequest, /*is_mouse_interaction=*/true,
+                                  request_token);
+  EXPECT_TRUE(request_chip_clicked);
+
+  location_bar_->OnLhsChipClicked(kIndicator, /*is_mouse_interaction=*/true,
+                                  indicator_token);
+  EXPECT_TRUE(indicator_chip_clicked);
+}
+
+TEST_F(WebUILocationBarTest, SetFocusWithinDeduplication) {
+  TestLocationBarObserver observer;
+  base::ScopedObservation<LocationBar, LocationBar::Observer> observation(
+      &observer);
+  observation.Observe(location_bar_);
+
+  EXPECT_FALSE(location_bar_->IsFocusWithin());
+  EXPECT_EQ(0, observer.focus_change_count());
+
+  // First call to SetFocusWithin(true) notifies observer and sets
+  // focus_within_.
+  location_bar_->SetFocusWithin(true);
+  EXPECT_TRUE(location_bar_->IsFocusWithin());
+  EXPECT_EQ(1, observer.focus_change_count());
+
+  // Duplicate call to SetFocusWithin(true) short-circuits and does not
+  // re-notify.
+  location_bar_->SetFocusWithin(true);
+  EXPECT_TRUE(location_bar_->IsFocusWithin());
+  EXPECT_EQ(1, observer.focus_change_count());
+
+  // Call to SetFocusWithin(false) notifies observer and resets focus_within_.
+  location_bar_->SetFocusWithin(false);
+  EXPECT_FALSE(location_bar_->IsFocusWithin());
+  EXPECT_EQ(2, observer.focus_change_count());
+
+  // Duplicate call to SetFocusWithin(false) short-circuits.
+  location_bar_->SetFocusWithin(false);
+  EXPECT_FALSE(location_bar_->IsFocusWithin());
+  EXPECT_EQ(2, observer.focus_change_count());
+}
+
+TEST_F(WebUILocationBarTest,
+       OnLocationBarFocusWithinChangedIgnoredWhenWebViewNotFocused) {
+  // `toolbar_view_`'s web_view_ does not have focus.
+  EXPECT_FALSE(location_bar_->IsFocusWithin());
+
+  // An async IPC indicating focus within should be ignored if web_view_ is not
+  // focused.
+  toolbar_view_->OnLocationBarFocusWithinChanged(true);
+  EXPECT_FALSE(location_bar_->IsFocusWithin());
+
+  // Blur IPC should still be processed.
+  location_bar_->SetFocusWithin(true);
+  EXPECT_TRUE(location_bar_->IsFocusWithin());
+  toolbar_view_->OnLocationBarFocusWithinChanged(false);
+  EXPECT_FALSE(location_bar_->IsFocusWithin());
 }

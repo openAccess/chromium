@@ -13,7 +13,6 @@
 #include "chrome/browser/ash/app_list/search/local_image_search/local_image_search_service.h"
 #include "chrome/browser/ash/app_list/search/local_image_search/local_image_search_service_factory.h"
 #include "chrome/browser/ash/app_list/search/types.h"
-#include "chrome/browser/profiles/profile.h"
 
 namespace app_list {
 namespace {
@@ -27,7 +26,7 @@ LocalImageSearchProvider::LocalImageSearchProvider(Profile* profile)
     : SearchProvider(SearchCategory::kImages),
       profile_(profile),
       thumbnail_loader_(profile) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 }
 
@@ -65,7 +64,8 @@ void LocalImageSearchProvider::OnSearchComplete(
 
   SearchProvider::Results results;
   for (const auto& search_result : file_search_results) {
-    DCHECK(search_result.relevance >= 0.0 && search_result.relevance <= 1.0);
+    CHECK(search_result.relevance >= 0.0 && search_result.relevance <= 1.0,
+          base::NotFatalUntil::M160);
     DVLOG(1) << search_result.file_path;
     results.push_back(MakeResult(search_result));
   }

@@ -11,9 +11,12 @@ found in the LICENSE file.
     <style name="Fusebox.PopupMenu"/>
     <style name="Fusebox.PopupMenu.Item" parent="@style/TextButton">
         <item name="android:layout_width">match_parent</item>
-        <item name="android:layout_height">?attr/listItemHeight</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">?attr/listItemHeight</item>
+        <item name="android:paddingStart">@dimen/fusebox_popup_item_horizontal_padding</item>
+        <item name="android:paddingEnd">@dimen/fusebox_popup_item_horizontal_padding</item>
+        <item name="android:paddingVertical">8dp</item>
         <item name="android:drawablePadding">8dp</item>
-        <item name="android:singleLine">true</item>
         <item name="android:textAlignment">viewStart</item>
         <item name="android:textAppearance">
             @style/TextAppearance.TextMedium.Primary
@@ -29,6 +32,9 @@ found in the LICENSE file.
         <item name="android:layout_height">1dp</item>
         <item name="android:layout_marginTop">4dp</item>
         <item name="android:layout_marginBottom">4dp</item>
+        <item name="android:layout_marginHorizontal">
+            @dimen/fusebox_popup_item_horizontal_padding
+        </item>
         <item name="android:background">?android:attr/listDivider</item>
     </style>
 
@@ -39,9 +45,21 @@ found in the LICENSE file.
         <item name="android:textAppearance">
             @style/TextAppearance.TextSmall.Secondary
         </item>
-        <item name="android:paddingHorizontal">8dp</item>
+        <item name="android:paddingHorizontal">@dimen/fusebox_popup_item_horizontal_padding</item>
         <item name="android:layout_marginTop">4dp</item>
         <item name="android:accessibilityHeading">true</item>
+    </style>
+
+    <style name="Fusebox.CarouselItem">
+        <item name="android:layout_width">@dimen/fusebox_scrollable_carousel_tile_width</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:layout_marginHorizontal">@dimen/fusebox_carousel_padding_horizontal</item>
+    </style>
+
+    <style name="Fusebox.CarouselItem.Weighted">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_weight">1</item>
     </style>
 
     <style name="OmniboxIcon" parent="LocationBarButton">
@@ -67,17 +85,6 @@ found in the LICENSE file.
             @dimen/omnibox_pedal_suggestion_text_vertical_padding
         </item>
         <item name="textAlignStart">true</item>
-    </style>
-
-    <style name="OmniboxIncognitoActionChipThemeOverlay">
-        <item name="chipStyle">@style/OmniboxIncognitoActionChip</item>
-    </style>
-
-    <style name="OmniboxIncognitoActionChip" parent="OmniboxActionChip">
-        <item name="chipColor">@color/default_bg_color_dark</item>
-        <item name="primaryTextAppearance">
-            @style/TextAppearance.TextSmall.Primary.Baseline.Light
-        </item>
     </style>
 
     <style name="OmniboxChipSizeOverlay" parent="SizeOverlay.Material3Expressive.Button.Xsmall">

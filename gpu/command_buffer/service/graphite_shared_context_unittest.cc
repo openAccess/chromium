@@ -4,7 +4,13 @@
 
 #include "gpu/command_buffer/service/graphite_shared_context.h"
 
+#include "base/functional/bind.h"
+#include "base/memory/raw_ptr.h"
+#include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/threading/thread.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
 #include "gpu/command_buffer/common/shm_count.h"
 #include "gpu/command_buffer/service/skia_utils.h"
 #include "skia/buildflags.h"
@@ -26,6 +32,7 @@ namespace {
 using testing::NiceMock;
 
 constexpr size_t kMaxPendingRecordings = 100;
+constexpr base::TimeDelta kMaxTimeBetweenSubmits = base::Milliseconds(500);
 
 class MockGpuProcessShmCount : public GpuProcessShmCount {
  public:
@@ -41,6 +48,8 @@ class MockDelegate : public GraphiteSharedContext::Delegate {
               (error::ContextLostReason reason),
               (override));
   MOCK_METHOD(bool, IsContextLost, (), (const, override));
+  MOCK_METHOD(void, ReportProgress, (), (override));
+  MOCK_METHOD(base::OnceClosure, CreateSubmitCleanupCallback, (), (override));
 };
 
 // Test fixture for GraphiteSharedContext with thread safety enabled.
@@ -109,9 +118,19 @@ class GraphiteSharedContextTest : public testing::TestWithParam<bool> {
         skgpu::graphite::ContextFactory::MakeDawn(backend_context,
                                                   context_options),
         &use_shader_cache_shm_count_, is_thread_safe(), kMaxPendingRecordings,
-        &delegate_);
+        kMaxTimeBetweenSubmits, &delegate_);
   }
 
+  void InsertEmptyRecording(skgpu::graphite::Recorder* recorder) {
+    auto recording = recorder->snap();
+    ASSERT_TRUE(recording);
+    skgpu::graphite::InsertRecordingInfo info = {};
+    info.fRecording = recording.get();
+    EXPECT_TRUE(graphite_shared_context_->insertRecording(info));
+  }
+
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   MockGpuProcessShmCount use_shader_cache_shm_count_;
   NiceMock<MockDelegate> delegate_;
   std::unique_ptr<GraphiteSharedContext> graphite_shared_context_;
@@ -193,14 +212,121 @@ TEST_P(GraphiteSharedContextTest, AsyncShaderCompilesFailed) {
 
   skgpu::graphite::InsertRecordingInfo info = {};
   info.fRecording = recording.get();
-  info.fSimulatedStatus =
-      skgpu::graphite::InsertStatus::kAsyncShaderCompilesFailed;
 
+  EXPECT_CALL(delegate_, IsContextLost()).WillOnce(testing::Return(false));
   EXPECT_CALL(use_shader_cache_shm_count_, Increment()).Times(1);
   EXPECT_CALL(use_shader_cache_shm_count_, Decrement()).Times(1);
 
+  graphite_shared_context_->set_simulated_insert_status(
+      skgpu::graphite::InsertStatus::kAsyncShaderCompilesFailed);
   EXPECT_FALSE(graphite_shared_context_->insertRecording(info));
 }
+
+TEST_P(GraphiteSharedContextTest, AsyncShaderCompilesFailedContextLost) {
+  auto recorder = graphite_shared_context_->makeRecorder();
+  EXPECT_TRUE(recorder);
+
+  auto ii = SkImageInfo::Make(64, 64, kN32_SkColorType, kPremul_SkAlphaType);
+  auto surface1 = SkSurfaces::RenderTarget(recorder.get(), ii);
+  surface1->getCanvas()->clear(SK_ColorRED);
+
+  auto surface2 = SkSurfaces::RenderTarget(recorder.get(), ii);
+  surface2->getCanvas()->drawImage(surface1->makeTemporaryImage(), 0, 0);
+
+  auto recording = recorder->snap();
+  EXPECT_TRUE(recording);
+
+  skgpu::graphite::InsertRecordingInfo info = {};
+  info.fRecording = recording.get();
+
+  EXPECT_CALL(delegate_, IsContextLost()).WillOnce(testing::Return(true));
+  EXPECT_CALL(use_shader_cache_shm_count_, Increment()).Times(0);
+  EXPECT_CALL(use_shader_cache_shm_count_, Decrement()).Times(0);
+
+  graphite_shared_context_->set_simulated_insert_status(
+      skgpu::graphite::InsertStatus::kAsyncShaderCompilesFailed);
+  EXPECT_FALSE(graphite_shared_context_->insertRecording(info));
+}
+
+TEST_P(GraphiteSharedContextTest, InsertRecordingContextLost) {
+  auto recorder = graphite_shared_context_->makeRecorder();
+  EXPECT_TRUE(recorder);
+
+  auto ii = SkImageInfo::Make(64, 64, kN32_SkColorType, kPremul_SkAlphaType);
+  auto surface = SkSurfaces::RenderTarget(recorder.get(), ii);
+  surface->getCanvas()->clear(SK_ColorRED);
+
+  auto recording = recorder->snap();
+  EXPECT_TRUE(recording);
+
+  skgpu::graphite::InsertRecordingInfo info = {};
+  info.fRecording = recording.get();
+
+  EXPECT_CALL(delegate_, IsContextLost()).WillOnce(testing::Return(true));
+  EXPECT_FALSE(graphite_shared_context_->insertRecording(info));
+}
+
+#if BUILDFLAG(IS_WIN)
+// Verifies that OOM on the first diagnostic line loses the context without
+// invalidating the shader cache, while later-line mentions are ignored.
+TEST_P(GraphiteSharedContextTest, AsyncShaderCompilesFailedOutOfMemory) {
+  struct TestCase {
+    const char* message;
+    bool out_of_memory;
+  };
+  constexpr TestCase kTestCases[] = {
+      {"FXC compile failed with error: E_OUTOFMEMORY.", true},
+      {"FXC compile failed with error: E_OUTOFMEMORY msg: out of memory during "
+       "compilation\n/* Generated HLSL: */\n",
+       true},
+      {"DXC compile failed with error: E_OUTOFMEMORY.", true},
+      {"DXC compile failed with error: E_OUTOFMEMORY msg: out of memory\n"
+       "/* Generated HLSL: */\n",
+       true},
+      {"DXC compile failed with E_OUTOFMEMORY (0x8007000E)", true},
+      {"DXC get status failed with E_OUTOFMEMORY (0x8007000E)", true},
+      {"DXC get error buffer failed with E_OUTOFMEMORY (0x8007000E)", true},
+      {"DXC get result failed with E_OUTOFMEMORY (0x8007000E)", true},
+      {"FXC compile failed with error: E_FAIL msg: compilation failed\n"
+       "/* Generated HLSL: */\n"
+       "// FXC compile failed with error: E_OUTOFMEMORY",
+       false},
+      {"DXC compile failed with error: E_FAIL.", false},
+      {"DXC compile failed with E_FAIL (0x80004005)", false},
+      {"Unknown compiler failed with E_OUTOFMEMORY", true},
+      {"DXC compile failed with E_FAIL (0x80004005)\nE_OUTOFMEMORY", false},
+      {"\nE_OUTOFMEMORY", false},
+      {"", false},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.message);
+    auto recorder = graphite_shared_context_->makeRecorder();
+    ASSERT_TRUE(recorder);
+    auto recording = recorder->snap();
+    ASSERT_TRUE(recording);
+
+    skgpu::graphite::InsertRecordingInfo info = {};
+    info.fRecording = recording.get();
+
+    EXPECT_CALL(delegate_, IsContextLost()).WillOnce(testing::Return(false));
+    EXPECT_CALL(delegate_, MarkContextLost(error::kOutOfMemory))
+        .Times(test_case.out_of_memory ? 1 : 0);
+    EXPECT_CALL(use_shader_cache_shm_count_, Increment())
+        .Times(test_case.out_of_memory ? 0 : 1);
+    EXPECT_CALL(use_shader_cache_shm_count_, Decrement())
+        .Times(test_case.out_of_memory ? 0 : 1);
+
+    graphite_shared_context_->set_simulated_insert_status(
+        {skgpu::graphite::InsertStatus::kAsyncShaderCompilesFailed,
+         test_case.message});
+    EXPECT_FALSE(graphite_shared_context_->insertRecording(info));
+
+    testing::Mock::VerifyAndClearExpectations(&delegate_);
+    testing::Mock::VerifyAndClearExpectations(&use_shader_cache_shm_count_);
+  }
+}
+#endif  // BUILDFLAG(IS_WIN)
 
 TEST_P(GraphiteSharedContextTest, OutOfOrderRecording) {
   auto recorder = graphite_shared_context_->makeRecorder();
@@ -243,11 +369,12 @@ TEST_P(GraphiteSharedContextTest, AddCommandsFailed) {
 
   skgpu::graphite::InsertRecordingInfo info = {};
   info.fRecording = recording.get();
-  info.fSimulatedStatus = skgpu::graphite::InsertStatus::kAddCommandsFailed;
 
   EXPECT_CALL(use_shader_cache_shm_count_, Increment()).Times(0);
   EXPECT_CALL(use_shader_cache_shm_count_, Decrement()).Times(0);
 
+  graphite_shared_context_->set_simulated_insert_status(
+      skgpu::graphite::InsertStatus::kAddCommandsFailed);
   EXPECT_FALSE(graphite_shared_context_->insertRecording(info));
 }
 
@@ -285,6 +412,160 @@ TEST_P(GraphiteSharedContextTest, MaxPendingRecordings) {
 
     EXPECT_TRUE(graphite_shared_context_->insertRecording(info));
   }
+}
+
+// Inserting a recording once the max time between submits has passed forces a
+// submit.
+TEST_P(GraphiteSharedContextTest, TimeBasedSubmit) {
+  auto recorder = graphite_shared_context_->makeRecorder();
+  ASSERT_TRUE(recorder);
+
+  // Start the time since the last submit.
+  graphite_shared_context_->submit();
+
+  EXPECT_CALL(delegate_, FlushBackend()).Times(1);
+
+  task_environment_.AdvanceClock(kMaxTimeBetweenSubmits);
+  // The recording arrives once the max time has passed, so it forces a submit.
+  InsertEmptyRecording(recorder.get());
+}
+
+// Inserting a recording before the max time between submits has passed doesn't
+// force a submit.
+TEST_P(GraphiteSharedContextTest, NoTimeBasedSubmitBeforeMaxTime) {
+  auto recorder = graphite_shared_context_->makeRecorder();
+  ASSERT_TRUE(recorder);
+
+  // Start the time since the last submit.
+  graphite_shared_context_->submit();
+
+  EXPECT_CALL(delegate_, FlushBackend()).Times(0);
+
+  task_environment_.AdvanceClock(kMaxTimeBetweenSubmits -
+                                 base::Milliseconds(1));
+  // The recording arrives just before the max time, so it doesn't force a
+  // submit.
+  InsertEmptyRecording(recorder.get());
+}
+
+// Test that async read pixels callbacks are skipped when the context is lost.
+TEST_P(GraphiteSharedContextTest, ReadPixelsContextLost) {
+  auto recorder = graphite_shared_context_->makeRecorder();
+  EXPECT_TRUE(recorder);
+
+  auto ii = SkImageInfo::Make(64, 64, kN32_SkColorType, kPremul_SkAlphaType);
+  auto surface = SkSurfaces::RenderTarget(recorder.get(), ii);
+  surface->getCanvas()->clear(SK_ColorRED);
+
+  auto recording = recorder->snap();
+  EXPECT_TRUE(recording);
+
+  skgpu::graphite::InsertRecordingInfo info = {};
+  info.fRecording = recording.get();
+  EXPECT_TRUE(graphite_shared_context_->insertRecording(info));
+
+  base::test::TestFuture<void*,
+                         std::unique_ptr<const SkSurface::AsyncReadResult>>
+      readback_future;
+
+  // When context is not lost, the callback should be invoked.
+  EXPECT_CALL(delegate_, IsContextLost()).WillOnce(testing::Return(false));
+  EXPECT_TRUE(graphite_shared_context_->asyncRescaleAndReadPixelsAndSubmit(
+      surface.get(), ii, SkIRect::MakeWH(64, 64), SkImage::RescaleGamma::kSrc,
+      SkImage::RescaleMode::kNearest, readback_future.GetCallback(), nullptr));
+  EXPECT_TRUE(readback_future.IsReady());
+
+  // When context is lost, the callback should not be invoked.
+  readback_future.Clear();
+  EXPECT_CALL(delegate_, IsContextLost()).WillOnce(testing::Return(true));
+  EXPECT_TRUE(graphite_shared_context_->asyncRescaleAndReadPixelsAndSubmit(
+      surface.get(), ii, SkIRect::MakeWH(64, 64), SkImage::RescaleGamma::kSrc,
+      SkImage::RescaleMode::kNearest, readback_future.GetCallback(), nullptr));
+  EXPECT_FALSE(readback_future.IsReady());
+}
+
+// Test that the delegate's cleanup callback runs once submitted work finishes.
+TEST_P(GraphiteSharedContextTest, SubmitRunsCleanupCallback) {
+  if (is_thread_safe()) {
+    GTEST_SKIP()
+        << "Cleanup callbacks only supported when context is not thread safe";
+  }
+
+  auto recorder = graphite_shared_context_->makeRecorder();
+  ASSERT_TRUE(recorder);
+
+  auto ii = SkImageInfo::Make(64, 64, kN32_SkColorType, kPremul_SkAlphaType);
+  auto surface = SkSurfaces::RenderTarget(recorder.get(), ii);
+  surface->getCanvas()->clear(SK_ColorRED);
+  auto recording = recorder->snap();
+  ASSERT_TRUE(recording);
+
+  skgpu::graphite::InsertRecordingInfo info = {};
+  info.fRecording = recording.get();
+  EXPECT_TRUE(graphite_shared_context_->insertRecording(info));
+
+  bool cleanup_ran = false;
+  EXPECT_CALL(delegate_, CreateSubmitCleanupCallback())
+      .WillOnce([&cleanup_ran]() {
+        return base::BindOnce([](bool* ran) { *ran = true; }, &cleanup_ran);
+      });
+  graphite_shared_context_->submit(skgpu::graphite::SyncToCpu::kYes);
+  EXPECT_TRUE(cleanup_ran);
+}
+
+// Test that a cleanup callback forces a submit even when there is no pending
+// GPU work, so deferred cleanup still makes progress.
+TEST_P(GraphiteSharedContextTest, CleanupCallbackWithoutPendingWork) {
+  if (is_thread_safe()) {
+    GTEST_SKIP()
+        << "Cleanup callbacks only supported when context is not thread safe";
+  }
+
+  bool cleanup_ran = false;
+  EXPECT_CALL(delegate_, CreateSubmitCleanupCallback())
+      .WillOnce([&cleanup_ran]() {
+        return base::BindOnce([](bool* ran) { *ran = true; }, &cleanup_ran);
+      })
+      .WillRepeatedly([]() { return base::OnceClosure(); });
+  graphite_shared_context_->submit(skgpu::graphite::SyncToCpu::kNo);
+  // Wait for all outstanding GPU work, which processes finished procs.
+  graphite_shared_context_->submit(skgpu::graphite::SyncToCpu::kYes);
+  EXPECT_TRUE(cleanup_ran);
+}
+
+// Test that the cleanup callback is chained with a caller provided finished
+// proc and that both run, with the finished proc running first.
+TEST_P(GraphiteSharedContextTest, CleanupCallbackChainsFinishedProc) {
+  if (is_thread_safe()) {
+    GTEST_SKIP()
+        << "Cleanup callbacks only supported when context is not thread safe";
+  }
+
+  struct FinishedState {
+    bool finished_proc_ran = false;
+    bool cleanup_ran = false;
+    bool finished_proc_ran_first = false;
+  } state;
+
+  EXPECT_CALL(delegate_, CreateSubmitCleanupCallback()).WillOnce([&state]() {
+    return base::BindOnce(
+        [](FinishedState* state) {
+          state->cleanup_ran = true;
+          state->finished_proc_ran_first = state->finished_proc_ran;
+        },
+        base::Unretained(&state));
+  });
+
+  skgpu::graphite::SubmitInfo submit_info(skgpu::graphite::SyncToCpu::kYes);
+  submit_info.fFinishedContext = &state;
+  submit_info.fFinishedProc = [](void* ctx, skgpu::CallbackResult) {
+    static_cast<FinishedState*>(ctx)->finished_proc_ran = true;
+  };
+  graphite_shared_context_->submit(submit_info);
+
+  EXPECT_TRUE(state.finished_proc_ran);
+  EXPECT_TRUE(state.cleanup_ran);
+  EXPECT_TRUE(state.finished_proc_ran_first);
 }
 
 INSTANTIATE_TEST_SUITE_P(, GraphiteSharedContextTest, testing::Bool());

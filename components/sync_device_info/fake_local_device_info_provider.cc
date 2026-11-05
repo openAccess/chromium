@@ -29,8 +29,6 @@ FakeLocalDeviceInfoProvider::FakeLocalDeviceInfoProvider()
                    "fake_full_hardware_class",
                    /*last_updated_timestamp=*/base::Time::Now(),
                    DeviceInfoUtil::GetPulseInterval(),
-                   /*send_tab_to_self_receiving_enabled=*/
-                   false,
                    /*send_tab_to_self_receiving_type=*/
                    DeviceInfo::SendTabReceivingType::kChromeOrUnspecified,
                    /*sharing_info=*/std::nullopt,
@@ -46,6 +44,7 @@ FakeLocalDeviceInfoProvider::FakeLocalDeviceInfoProvider()
                    DeviceInfo::GlicExperimentalTriggeringState::kUnavailable,
                    /*glic_experimental_triggering_version=*/
                    std::nullopt,
+                   /*glic_experimental_triggering_capabilities=*/{},
                    /*android_os_build_fingerprint_prefix=*/std::nullopt,
                    /*personal_context_info=*/std::nullopt) {}
 

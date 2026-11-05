@@ -10,7 +10,9 @@
 #include <string>
 
 #include "base/barrier_closure.h"
-#include "base/functional/callback_forward.h"
+#include "base/check.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -25,6 +27,7 @@
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/extensions/controlled_home_dialog_controller.h"
+#include "chrome/browser/ui/extensions/search_override_stack.h"
 #include "chrome/browser/ui/extensions/settings_api_bubble_helpers.h"
 #include "chrome/browser/ui/hats/survey_config.h"
 #include "chrome/common/chrome_features.h"
@@ -36,6 +39,8 @@
 #include "components/image_fetcher/core/image_fetcher.h"
 #include "components/image_fetcher/core/image_fetcher_service.h"
 #include "components/image_fetcher/core/request_metadata.h"
+#include "components/regional_capabilities/regional_capabilities_utils.h"
+#include "components/search_engines/search_engine_utils.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_data_util.h"
 #include "components/search_engines/template_url_service.h"
@@ -52,6 +57,7 @@
 #include "extensions/common/extension_features.h"
 #include "extensions/common/extension_set.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "third_party/search_engines_data/resources/definitions/prepopulated_engines.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/ui_base_features.h"
@@ -87,15 +93,13 @@ bool GoogleIsDefaultSearchProvider(Profile* profile) {
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 // Helper to determine if a search provider is known (prepopulated).
-bool IsPrepopulatedOrStarterPack(const TemplateURL* template_url,
-                                 TemplateURLService* template_url_service) {
-  auto has_prepopulated_ids = [](const TemplateURL* turl) {
-    return turl->prepopulate_id() > 0 ||
-           turl->starter_pack_id() !=
-               template_url_starter_pack_data::StarterPackId::kNone;
+bool IsPrepopulated(const TemplateURL* template_url,
+                    TemplateURLService* template_url_service) {
+  auto is_prepopulated = [](const TemplateURL* turl) {
+    return turl->prepopulate_id() > 0;
   };
 
-  if (has_prepopulated_ids(template_url)) {
+  if (is_prepopulated(template_url)) {
     return true;
   }
 
@@ -107,12 +111,17 @@ bool IsPrepopulatedOrStarterPack(const TemplateURL* template_url,
     return std::any_of(all_urls.begin(), all_urls.end(), [&](const auto& turl) {
       return turl.get() != template_url &&
              turl->keyword() == template_url->keyword() &&
-             turl->url() == template_url->url() &&
-             has_prepopulated_ids(turl.get());
+             turl->url() == template_url->url() && is_prepopulated(turl.get());
     });
   }
 
   return false;
+}
+
+// Formats a search URL for display in the explicit choice dialog.
+std::u16string FormatSearchUrl(const GURL& search_url) {
+  return url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
+      search_url);
 }
 
 // Returns the display name for a search engine based on whether it is
@@ -127,8 +136,34 @@ std::u16string GetDialogDisplayName(const TemplateURL* search_engine,
     return search_engine->short_name();
   }
 
-  return url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
-      search_url);
+  return FormatSearchUrl(search_url);
+}
+
+// Helper to find the matching built-in prepopulated engine for a search URL,
+// if any, by matching the URL's domain against known prepopulated engines.
+const TemplateURLPrepopulateData::PrepopulatedEngine*
+GetPrepopulatedEngineForSearchUrl(const GURL& search_url) {
+  CHECK(search_url.is_valid());
+
+  // First, look up the search engine type by matching the URL's domain against
+  // known prepopulated engines (including alternate URLs and migrated engines).
+  const SearchEngineType engine_type =
+      search_engine_utils::GetEngineType(search_url);
+  if (engine_type == SEARCH_ENGINE_OTHER) {
+    return nullptr;
+  }
+
+  // Next, locate the corresponding entry in the full list of prepopulated
+  // engines.
+  // TODO(http://crbug.com/562972276): Improve this lookup to disambiguate
+  // regional variants that share the same search engine type.
+  const auto all_engines = regional_capabilities::GetAllPrepopulatedEngines();
+  for (const auto& engine : all_engines) {
+    if (engine->type == engine_type) {
+      return engine.get();
+    }
+  }
+  return nullptr;
 }
 
 // Returns the number of extensions that are currently enabled that override the
@@ -178,7 +213,7 @@ SecondarySearchInfo GetSecondarySearchInfo(Profile* profile) {
       GetNumberOfExtensionsThatOverrideSearch(profile);
   // This method should only be called when there's an extension that overrides
   // the search engine.
-  DCHECK_GE(num_overriding_extensions, 1u);
+  CHECK_GE(num_overriding_extensions, 1u, base::NotFatalUntil::M162);
 
   // Another extension would take over.
   std::optional<const TemplateURL> secondary_extension_search;
@@ -192,11 +227,14 @@ SecondarySearchInfo GetSecondarySearchInfo(Profile* profile) {
     std::string primary_ext_id =
         extension_prefs_value_map->GetExtensionControllingPref(search_pref_key);
 
+    // Search overrides are registered in the regular profile
+    // (TemplateURLService is redirected to the original profile in OTR
+    // profiles), so always query the regular profile's effective pref value.
     const base::Value* secondary_pref =
         extension_prefs_value_map->GetEffectivePrefValue(
-            search_pref_key, profile->IsIncognitoProfile(),
-            /* from_incognito= */ nullptr,
-            /* ignore_extension_id= */ primary_ext_id);
+            search_pref_key, /*incognito=*/false,
+            /*from_incognito=*/nullptr,
+            /*ignore_extension_id=*/primary_ext_id);
 
     if (secondary_pref) {
       std::unique_ptr<TemplateURLData> url_data =
@@ -228,7 +266,7 @@ SecondarySearchInfo GetSecondarySearchInfo(Profile* profile) {
   SecondarySearchInfo search_info;
   search_info.origin = origin;
   search_info.is_prepopulated =
-      IsPrepopulatedOrStarterPack(secondary_search, template_url_service);
+      IsPrepopulated(secondary_search, template_url_service);
   search_info.name = GetDialogDisplayName(
       secondary_search, search_info.is_prepopulated, search_url);
 
@@ -272,10 +310,6 @@ struct IconFetchParams {
   // The URL from which to fetch.
   GURL url;
 
-  // If not empty, the name of the Extension to which this icon pertains. Used
-  // to generate a fallback icon if necessary.
-  std::string extension_name;
-
   // The destination image into which the fetched icon will be written.
   raw_ptr<ui::ImageModel> image = nullptr;
 };
@@ -313,12 +347,30 @@ inline constexpr net::NetworkTrafficAnnotationTag traffic_annotation =
 
 // A utility function that kicks off asynchronous resource load operations, to
 // collect one or more icon images. A supplied callback is invoked when all
-// requested icons have been loaded (or a placeholder supplied, if unavailable).
-void FetchIconsThenRun(std::vector<IconFetchParams>& lookups,
-                       Profile* profile,
-                       base::OnceClosure done_callback) {
+// requested icons have been loaded (leaving the param's image unchanged if the
+// fetch fails).
+void FetchIconsThenRun(
+    std::unique_ptr<ExtensionSettingsOverriddenDialog::Params> params,
+    Profile* profile,
+    base::OnceCallback<
+        void(std::unique_ptr<ExtensionSettingsOverriddenDialog::Params>)>
+        done_callback) {
   CHECK(base::FeatureList::IsEnabled(
       extensions_features::kSearchEngineExplicitChoiceDialog));
+  CHECK(params);
+  CHECK(profile);
+
+  std::vector<IconFetchParams> lookups;
+  if (params->content.previous_setting &&
+      !params->content.previous_setting->favicon_url.is_empty()) {
+    lookups.emplace_back(params->content.previous_setting->favicon_url,
+                         &params->content.previous_setting->image);
+  }
+  if (params->content.new_setting &&
+      !params->content.new_setting->favicon_url.is_empty()) {
+    lookups.emplace_back(params->content.new_setting->favicon_url,
+                         &params->content.new_setting->image);
+  }
 
   // A barrier closure will invoke the callback when called once per resource.
   // Post the callback task so it always runs asynchronously, even if all
@@ -326,10 +378,11 @@ void FetchIconsThenRun(std::vector<IconFetchParams>& lookups,
   // the code that's queuing it finishes (dangling pointer issues).
   base::RepeatingClosure barrier_closure = base::BarrierClosure(
       lookups.size(),
-      base::BindPostTask(base::SequencedTaskRunner::GetCurrentDefault(),
-                         std::move(done_callback)));
+      base::BindPostTask(
+          base::SequencedTaskRunner::GetCurrentDefault(),
+          base::BindOnce(std::move(done_callback), std::move(params))));
 
-  // If there were no lookups, the barrier closer will have just executed,
+  // If there were no lookups, the barrier closure will have just executed,
   // and we can bail out.
   if (lookups.empty()) {
     return;
@@ -340,9 +393,8 @@ void FetchIconsThenRun(std::vector<IconFetchParams>& lookups,
           ->GetImageFetcher(image_fetcher::ImageFetcherConfig::kNetworkOnly);
 
   for (auto& lookup : lookups) {
-    if (!lookup.url.is_valid() || !image_fetcher) {
-      // Fallback if the service is unavailable.
-      *lookup.image = CreateFallbackSearchIcon(lookup.extension_name);
+    if (!lookup.url.is_valid() || !lookup.url.SchemeIsHTTPOrHTTPS() ||
+        !image_fetcher) {
       barrier_closure.Run();
       continue;
     }
@@ -357,8 +409,8 @@ void FetchIconsThenRun(std::vector<IconFetchParams>& lookups,
     image_fetcher->FetchImage(
         lookup.url,
         base::BindOnce(
-            [](const std::string& extension_name, ui::ImageModel* image_spot,
-               base::RepeatingClosure barrier, const gfx::Image& image,
+            [](ui::ImageModel* image_spot, base::RepeatingClosure barrier,
+               const gfx::Image& image,
                const image_fetcher::RequestMetadata& metadata) {
               if (!image.IsEmpty()) {
                 // Resize the result to the intended icon size.
@@ -369,12 +421,10 @@ void FetchIconsThenRun(std::vector<IconFetchParams>& lookups,
                         skia, skia::ImageOperations::RESIZE_BEST, icon_size);
 
                 *image_spot = ui::ImageModel::FromImageSkia(resized);
-              } else {
-                *image_spot = CreateFallbackSearchIcon(extension_name);
               }
               barrier.Run();
             },
-            lookup.extension_name, lookup.image, barrier_closure),
+            lookup.image, barrier_closure),
         fetch_params);
   }
 }
@@ -415,7 +465,7 @@ std::optional<ExtensionSettingsOverriddenDialog::Params> GetNtpOverriddenParams(
       content::BrowserURLHandler::GetInstance()->GetPossibleRewrites(ntp_url,
                                                                      profile);
   // We already know that the extension is the primary NTP controller.
-  DCHECK(!possible_rewrites.empty());
+  CHECK(!possible_rewrites.empty(), base::NotFatalUntil::M162);
   DCHECK_EQ(extension->url().host(), possible_rewrites[0].host())
       << "Unexpected NTP URL: " << possible_rewrites[0];
 
@@ -461,8 +511,8 @@ std::optional<ExtensionSettingsOverriddenDialog::Params> GetNtpOverriddenParams(
         IDS_EXTENSION_NTP_OVERRIDDEN_DIALOG_TITLE_GENERIC);
     histogram_name = kGenericDialogHistogramName;
   }
-  DCHECK(!dialog_title.empty());
-  DCHECK(histogram_name);
+  CHECK(!dialog_title.empty(), base::NotFatalUntil::M162);
+  CHECK(histogram_name, base::NotFatalUntil::M162);
 
   std::u16string dialog_message = l10n_util::GetStringFUTF16(
       IDS_EXTENSION_NTP_OVERRIDDEN_DIALOG_BODY_GENERIC,
@@ -534,23 +584,37 @@ bool HasUnacknowledgedMatchingDseExtension(Profile* profile) {
       ControlledHomeDialogController::kAcknowledgedPreference);
 }
 
-void GetSearchOverriddenParamsThenRun(
-    content::WebContents* web_contents,
-    base::OnceCallback<
-        void(std::unique_ptr<ExtensionSettingsOverriddenDialog::Params>)>
-        done_callback) {
-  Profile* profile =
-      Profile::FromBrowserContext(web_contents->GetBrowserContext());
+namespace {
+
+std::unique_ptr<ExtensionSettingsOverriddenDialog::Params>
+GetSearchOverriddenParams(Profile* profile) {
   if (!profile) {
-    std::move(done_callback).Run(nullptr);
-    return;
+    return nullptr;
   }
 
   const extensions::Extension* extension =
       extensions::GetExtensionOverridingSearchEngine(profile);
   if (!extension) {
-    std::move(done_callback).Run(nullptr);
-    return;
+    return nullptr;
+  }
+
+  // Find the active search engine. This is normally the one provided by
+  // `extension`, but GetExtensionOverridingSearchEngine() only consults
+  // extension prefs, while a default search engine set (or disabled) by
+  // mandatory enterprise policy takes precedence over the extension's. In that
+  // case the extension isn't actually controlling search, so there is nothing
+  // to show.
+  TemplateURLService* template_url_service =
+      TemplateURLServiceFactory::GetForProfile(profile);
+  if (!template_url_service ||
+      !template_url_service->IsExtensionControlledDefaultSearch()) {
+    return nullptr;
+  }
+  const TemplateURL* default_search =
+      template_url_service->GetDefaultSearchProvider();
+  if (!default_search ||
+      default_search->type() != TemplateURL::NORMAL_CONTROLLED_BY_EXTENSION) {
+    return nullptr;
   }
 
   // For historical reasons, the search override preference is the same as the
@@ -559,16 +623,6 @@ void GetSearchOverriddenParamsThenRun(
   // an older version.
   const char* preference_name =
       ControlledHomeDialogController::kAcknowledgedPreference;
-
-  // Find the active search engine (which is provided by the extension).
-  TemplateURLService* template_url_service =
-      TemplateURLServiceFactory::GetForProfile(profile);
-  DCHECK(template_url_service->IsExtensionControlledDefaultSearch());
-  const TemplateURL* default_search =
-      template_url_service->GetDefaultSearchProvider();
-  DCHECK(default_search);
-  DCHECK_EQ(TemplateURL::NORMAL_CONTROLLED_BY_EXTENSION,
-            default_search->type());
 
   // NOTE: For most TemplateURLs, there's no guarantee that search_url is a
   // valid URL (it could contain placeholders, etc). However, for extension-
@@ -580,11 +634,16 @@ void GetSearchOverriddenParamsThenRun(
   // this synchronously before withholding a navigation; re-check here in case
   // extension state changed in between.
   if (ExtensionSearchOverrideMatchesExistingEngine(profile)) {
-    std::move(done_callback).Run(nullptr);
-    return;
+    return nullptr;
   }
 
   SecondarySearchInfo secondary_search = GetSecondarySearchInfo(profile);
+
+  // Extension preferences live on the original profile, so an incognito
+  // window sees the same stack.
+  std::optional<extensions::SearchOverrideStackInfo> search_override_stack =
+      extensions::GetSearchOverrideStackInfo(*profile->GetOriginalProfile(),
+                                             extension->id());
 
   constexpr char kGenericDialogHistogramName[] =
       "Extensions.SettingsOverridden.GenericSearchOverriddenDialogResult";
@@ -599,7 +658,7 @@ void GetSearchOverriddenParamsThenRun(
       histogram_name = kBackToGoogleHistogramName;
       break;
     case SecondarySearchInfo::Type::kNonGoogleInDefaultList:
-      DCHECK(!secondary_search.name.empty());
+      CHECK(!secondary_search.name.empty(), base::NotFatalUntil::M162);
       histogram_name = kBackToOtherHistogramName;
       break;
     case SecondarySearchInfo::Type::kOther:
@@ -610,11 +669,6 @@ void GetSearchOverriddenParamsThenRun(
   // The parameters fetched will depend on the style of dialog being shown.
   if (base::FeatureList::IsEnabled(
           extensions_features::kSearchEngineExplicitChoiceDialog)) {
-    const bool is_prepopulated =
-        IsPrepopulatedOrStarterPack(default_search, template_url_service);
-    std::u16string search_name =
-        GetDialogDisplayName(default_search, is_prepopulated, search_url);
-
     // Build an explicit-choice dialog.
     std::u16string dialog_title = l10n_util::GetStringUTF16(
         IDS_EXTENSION_SEARCH_OVERRIDDEN_DIALOG_TITLE_EXPLICIT_CHOICE);
@@ -631,6 +685,7 @@ void GetSearchOverriddenParamsThenRun(
     auto params = std::make_unique<ExtensionSettingsOverriddenDialog::Params>(
         extension->id(), extension->name(), preference_name, histogram_name,
         std::move(show_params));
+    params->search_override_stack = search_override_stack;
     if (base::FeatureList::IsEnabled(
             features::kHappinessTrackingSurveysForDesktopSEHijacking)) {
       params->hats_survey_trigger = kHatsSurveyTriggerSEHijacking;
@@ -642,35 +697,34 @@ void GetSearchOverriddenParamsThenRun(
         extensions_features::kSearchEngineExplicitChoiceDialogUnlimitedShows
             .Get();
 
-    std::vector<IconFetchParams> icon_lookups;
-
     // Previous search engine before the extension overrode it.
     SettingsOverriddenDialogController::SettingOption& previous_setting =
         params->content.previous_setting.emplace();
     previous_setting.text = secondary_search.name;
     previous_setting.description = l10n_util::GetStringUTF16(
         IDS_EXTENSION_SEARCH_OVERRIDDEN_DIALOG_PREVIOUS_CHOICE);
-
+    previous_setting.image =
+        CreateFallbackSearchIcon(/*extension_name=*/std::string());
     if (secondary_search.is_prepopulated) {
-      icon_lookups.emplace_back(secondary_search.favicon_url,
-                                /*extension_name=*/std::string(),
-                                &previous_setting.image);
-    } else {
-      previous_setting.image =
-          CreateFallbackSearchIcon(/*extension_name=*/std::string());
+      previous_setting.favicon_url = secondary_search.favicon_url;
     }
 
     // New search engine from the overriding extension:
     SettingsOverriddenDialogController::SettingOption& new_setting =
         params->content.new_setting.emplace();
-    new_setting.text = search_name;
     new_setting.description = l10n_util::GetStringUTF16(
         IDS_EXTENSION_SEARCH_OVERRIDDEN_DIALOG_RECENT_CHANGE);
 
-    if (is_prepopulated) {
-      icon_lookups.emplace_back(default_search->favicon_url(),
-                                extension->name(), &new_setting.image);
+    // Display the known name and favicon for the extension's search,
+    // if it is known by the browser. Otherwise, show the formatted search URL
+    // and a generic fallback icon.
+    if (const auto* prepopulated_engine =
+            GetPrepopulatedEngineForSearchUrl(search_url)) {
+      new_setting.text = prepopulated_engine->name;
+      new_setting.favicon_url = GURL(prepopulated_engine->favicon_url);
+      new_setting.image = CreateFallbackSearchIcon(extension->name());
     } else {
+      new_setting.text = FormatSearchUrl(search_url);
       new_setting.image =
           CreateFallbackSearchIcon(/*extension_name=*/std::string());
     }
@@ -685,11 +739,7 @@ void GetSearchOverriddenParamsThenRun(
           IDS_EXTENSION_SEARCH_OVERRIDDEN_DIALOG_DEFAULT_SEARCH_ENGINE);
     }
 
-    // Asynchronously look up icons (if needed) then continue.
-    FetchIconsThenRun(
-        icon_lookups, profile,
-        base::BindOnce(std::move(done_callback), std::move(params)));
-    return;
+    return params;
   }
 
   const gfx::VectorIcon* icon = nullptr;
@@ -703,7 +753,7 @@ void GetSearchOverriddenParamsThenRun(
 #endif
       break;
     case SecondarySearchInfo::Type::kNonGoogleInDefaultList:
-      DCHECK(!secondary_search.name.empty());
+      CHECK(!secondary_search.name.empty(), base::NotFatalUntil::M162);
       dialog_title = l10n_util::GetStringFUTF16(
           IDS_EXTENSION_SEARCH_OVERRIDDEN_DIALOG_TITLE_BACK_TO_OTHER,
           secondary_search.name);
@@ -725,14 +775,35 @@ void GetSearchOverriddenParamsThenRun(
   auto params = std::make_unique<ExtensionSettingsOverriddenDialog::Params>(
       extension->id(), extension->name(), preference_name, histogram_name,
       std::move(show_params));
+  params->search_override_stack = search_override_stack;
   if (base::FeatureList::IsEnabled(
           features::kHappinessTrackingSurveysForDesktopSEHijacking)) {
     params->hats_survey_trigger = kHatsSurveyTriggerSEHijacking;
   }
 
-  // There are no async operations needed for the non-explicit-choice dialog,
-  // so trigger the callback immediately.
-  std::move(done_callback).Run(std::move(params));
+  return params;
+}
+
+}  // namespace
+
+void GetSearchOverriddenParamsThenRun(
+    content::WebContents* web_contents,
+    base::OnceCallback<
+        void(std::unique_ptr<ExtensionSettingsOverriddenDialog::Params>)>
+        done_callback) {
+  Profile* profile =
+      web_contents
+          ? Profile::FromBrowserContext(web_contents->GetBrowserContext())
+          : nullptr;
+  std::unique_ptr<ExtensionSettingsOverriddenDialog::Params> params =
+      GetSearchOverriddenParams(profile);
+  if (!params || !base::FeatureList::IsEnabled(
+                     extensions_features::kSearchEngineExplicitChoiceDialog)) {
+    std::move(done_callback).Run(std::move(params));
+    return;
+  }
+
+  FetchIconsThenRun(std::move(params), profile, std::move(done_callback));
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 

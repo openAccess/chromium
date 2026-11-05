@@ -24,6 +24,7 @@ const char kGroupGraphiteDawnMetal[] = "GraphiteDawnMetal";
 const char kGroupGraphiteDawnD3D11[] = "GraphiteDawnD3D11";
 const char kGroupGraphiteDawnD3D12[] = "GraphiteDawnD3D12";
 const char kGroupGraphiteDawnOpenGLES[] = "GraphiteDawnOpenGLES";
+const char kGroupGraphiteVulkan[] = "GraphiteVulkan";
 
 }  // namespace
 
@@ -40,7 +41,7 @@ void ChromeBrowserMainExtraPartsGpu::PreCreateThreads() {
   // It's unsafe to append the gpu command line switches to the global
   // CommandLine::ForCurrentProcess object after threads are created.
   // 2) Must be after other parts' PreCreateThreads to pick up chrome://flags.
-  DCHECK(!content::GpuDataManager::Initialized());
+  CHECK(!content::GpuDataManager::Initialized(), base::NotFatalUntil::M161);
   content::GpuDataManager* manager = content::GpuDataManager::GetInstance();
   manager->AddObserver(this);
 }
@@ -83,6 +84,8 @@ const char* ChromeBrowserMainExtraPartsGpu::GetSkiaBackendName() const {
       return kGroupGraphiteDawnD3D12;
     case gpu::SkiaBackendType::kGraphiteDawnOpenGLES:
       return kGroupGraphiteDawnOpenGLES;
+    case gpu::SkiaBackendType::kGraphiteVulkan:
+      return kGroupGraphiteVulkan;
     case gpu::SkiaBackendType::kUnknown:
       return nullptr;
   }

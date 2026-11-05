@@ -46,7 +46,6 @@
 #include "chromeos/ash/components/mojo_service_manager/fake_mojo_service_manager.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
-#include "chromeos/ash/components/test/ash_test_suite.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "content/public/test/browser_task_environment.h"
@@ -89,9 +88,9 @@ constexpr mojom::TopRowKey kClassicTopRowKeys[] = {
     mojom::TopRowKey::kVolumeDown,
     mojom::TopRowKey::kVolumeUp};
 
-const std::vector<uint32_t> kInternalJinlonScanCodes = {
-    0xEA, 0xE7, 0x91, 0x92, 0x93, 0x94, 0x95,
-    0x96, 0x97, 0x98, 0xA0, 0xAE, 0xB0};
+constexpr uint32_t kInternalJinlonScanCodes[] = {0xEA, 0xE7, 0x91, 0x92, 0x93,
+                                                 0x94, 0x95, 0x96, 0x97, 0x98,
+                                                 0xA0, 0xAE, 0xB0};
 
 constexpr mojom::TopRowKey kInternalJinlonTopRowKeys[] = {
     mojom::TopRowKey::kBack,
@@ -497,7 +496,8 @@ class FakeInputDeviceInfoHelper : public InputDeviceInfoHelper {
           ui::KeyboardCapability::DeviceType::kDeviceInternalKeyboard;
       info->keyboard_top_row_layout =
           ui::KeyboardCapability::KeyboardTopRowLayout::kKbdTopRowLayoutCustom;
-      info->keyboard_scan_codes = kInternalJinlonScanCodes;
+      info->keyboard_scan_codes.assign(std::begin(kInternalJinlonScanCodes),
+                                       std::end(kInternalJinlonScanCodes));
 
       keyboard_info = std::make_unique<ui::KeyboardCapability::KeyboardInfo>();
       keyboard_info->device_type =
@@ -507,7 +507,9 @@ class FakeInputDeviceInfoHelper : public InputDeviceInfoHelper {
           std::end(kInternalJinlonActionKeys));
       keyboard_info->top_row_layout =
           ui::KeyboardCapability::KeyboardTopRowLayout::kKbdTopRowLayoutCustom;
-      keyboard_info->top_row_scan_codes = kInternalJinlonScanCodes;
+      keyboard_info->top_row_scan_codes.assign(
+          std::begin(kInternalJinlonScanCodes),
+          std::end(kInternalJinlonScanCodes));
       EXPECT_EQ(7, id);
     } else if (base_name == "event8") {
       device_caps = ui::kMicrosoftBluetoothNumberPad;
@@ -534,7 +536,8 @@ class FakeInputDeviceInfoHelper : public InputDeviceInfoHelper {
           ui::KeyboardCapability::DeviceType::kDeviceInternalKeyboard;
       info->keyboard_top_row_layout =
           ui::KeyboardCapability::KeyboardTopRowLayout::kKbdTopRowLayoutCustom;
-      info->keyboard_scan_codes = kInternalJinlonScanCodes;
+      info->keyboard_scan_codes.assign(std::begin(kInternalJinlonScanCodes),
+                                       std::end(kInternalJinlonScanCodes));
       // Set 0xC4 to be F8.
       info->keyboard_scan_codes[7] = 0xC4;
 
@@ -546,7 +549,9 @@ class FakeInputDeviceInfoHelper : public InputDeviceInfoHelper {
           std::end(kInternalJinlonActionKeys));
       keyboard_info->top_row_layout =
           ui::KeyboardCapability::KeyboardTopRowLayout::kKbdTopRowLayoutCustom;
-      keyboard_info->top_row_scan_codes = kInternalJinlonScanCodes;
+      keyboard_info->top_row_scan_codes.assign(
+          std::begin(kInternalJinlonScanCodes),
+          std::end(kInternalJinlonScanCodes));
       keyboard_info->top_row_scan_codes[7] = 0xC4;
       keyboard_info->top_row_action_keys[7] = ui::TopRowActionKey::kUnknown;
       EXPECT_EQ(11, id);
@@ -653,8 +658,6 @@ class InputDataProviderTest : public AshTestBase {
     scoped_feature_list_->InitAndEnableFeature(
         features::kEnableExternalKeyboardsInDiagnostics);
 
-    ui::ResourceBundle::CleanupSharedInstance();
-    AshTestSuite::LoadTestResources();
     AshTestBase::SetUp();
 
     // Note: some init for creating widgets is performed in base SetUp
@@ -2760,6 +2763,41 @@ TEST_F(InputDataProviderTest, SetA11yTouchPassthrough) {
 
   ASSERT_FALSE(window->GetProperty(
       aura::client::kAccessibilityTouchExplorationPassThrough));
+}
+
+TEST_F(InputDataProviderTest, DestructorDoesNotCrashWhenObserving) {
+  std::unique_ptr<FakeKeyboardObserver> fake_observer1 =
+      std::make_unique<FakeKeyboardObserver>();
+  std::unique_ptr<FakeKeyboardObserver> fake_observer2 =
+      std::make_unique<FakeKeyboardObserver>();
+
+  // Widget must be active and visible.
+  provider_->attached_widget_->Show();
+  provider_->attached_widget_->Activate();
+
+  // Add TWO keyboards (event6 and event4).
+  const ui::DeviceEvent event0(ui::DeviceEvent::DeviceType::INPUT,
+                               ui::DeviceEvent::ActionType::ADD,
+                               base::FilePath("/dev/input/event6"));
+  const ui::DeviceEvent event1(ui::DeviceEvent::DeviceType::INPUT,
+                               ui::DeviceEvent::ActionType::ADD,
+                               base::FilePath("/dev/input/event4"));
+  provider_->OnDeviceEvent(event0);
+  provider_->OnDeviceEvent(event1);
+  base::RunLoop().RunUntilIdle();
+
+  // Attach observers to BOTH keyboards.
+  provider_->ObserveKeyEvents(
+      6u, fake_observer1->receiver.BindNewPipeAndPassRemote());
+  provider_->ObserveKeyEvents(
+      4u, fake_observer2->receiver.BindNewPipeAndPassRemote());
+  base::RunLoop().RunUntilIdle();
+
+  // Ensure the watchers were successfully registered.
+  ASSERT_TRUE((*provider_->watchers_)[6]);
+  ASSERT_TRUE((*provider_->watchers_)[4]);
+
+  provider_.reset();
 }
 
 }  // namespace diagnostics

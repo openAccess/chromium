@@ -18,9 +18,9 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/safe_browsing/core/browser/db/safebrowsing.pb.h"
+#include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
+#include "components/safe_browsing/core/browser/db/sb_test_util.h"
 #include "components/safe_browsing/core/browser/db/util.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
-#include "components/safe_browsing/core/browser/db/v4_test_util.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "net/base/load_flags.h"
 #include "net/base/net_errors.h"
@@ -55,7 +55,7 @@ class V4GetHashProtocolManagerTest : public PlatformTest {
          ListIdentifier(CHROME_PLATFORM, URL, SUBRESOURCE_FILTER)});
     return V4GetHashProtocolManager::Create(test_shared_loader_factory_,
                                             stores_to_check,
-                                            GetTestV4ProtocolConfig());
+                                            GetTestSBProtocolConfig());
   }
 
   static void SetupFetcherToReturnResponse(V4GetHashProtocolManager* pm,
@@ -871,7 +871,7 @@ TEST_F(V4GetHashProtocolManagerTest,
           base::Unretained(this), /*expected_is_abusive=*/true));
 
   // The following two random looking strings value are two of the full hashes
-  // produced by UrlToFullHashes in v4_protocol_manager_util.h for the URL:
+  // produced by UrlToFullHashes in sb_protocol_manager_util.h for the URL:
   // "https://www.example.com"
   std::vector<TestV4HashResponseInfo> infos;
   FullHashStr full_hash;

@@ -7,21 +7,21 @@
 #include <utility>
 
 #include "base/functional/callback_helpers.h"
-#include "base/strings/stringprintf.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
+#include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
-#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_context_menu_delegate.h"
 #include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_iph_controller.h"
+#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_sub_menu_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/tabs/browser_tab_strip_controller.h"
@@ -38,26 +38,34 @@
 #include "chrome/test/user_education/interactive_feature_promo_test.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/send_tab_to_self/fake_send_tab_to_self_model.h"
-#include "components/send_tab_to_self/features.h"
+#include "components/send_tab_to_self/send_tab_to_self_entry.h"
 #include "components/send_tab_to_self/stub_send_tab_to_self_sync_service.h"
-#include "components/send_tab_to_self/target_device_info.h"
 #include "components/sync_device_info/device_info.h"
+#include "components/sync_device_info/remote_device_info.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/user_education/common/tutorial/tutorial_registry.h"
 #include "components/user_education/common/tutorial/tutorial_service.h"
+#include "components/user_education/common/user_education_features.h"
 #include "components/user_education/views/help_bubble_view.h"
 #include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/base/interaction/expect_call_in_scope.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/test/ui_controls.h"
+#include "ui/views/bubble/bubble_border.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/menu/menu_item_view.h"
 #include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "base/mac/mac_util.h"
+#endif
 
 namespace send_tab_to_self {
 
@@ -65,6 +73,9 @@ namespace {
 
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTabId);
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSecondTabId);
+DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kPromoTabId);
+DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kNtpTabId);
+DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSecondEligibleTabId);
 constexpr char kScreenshotBaselineCL[] = "8239773";
 constexpr char kSecondTabName[] = "SecondTab";
 constexpr char kTargetDeviceCacheGuid[] = "target_device_guid";
@@ -74,18 +85,53 @@ constexpr char kDeviceMenuItemName[] = "DeviceMenuItem";
 constexpr char16_t kTargetDeviceName16[] = u"Pixel 9";
 #endif
 
+// StubSendTabToSelfSyncService::GetEntryPointDisplayReason() ignores the URL
+// and always returns its configured reason. The production service returns
+// std::nullopt for non-HTTP(S) URLs. Mirror that here so the promo doesn't
+// trigger on the initial about:blank tab before the test navigates.
+class TestSendTabToSelfSyncService : public StubSendTabToSelfSyncService {
+ public:
+  std::optional<EntryPointDisplayReason> GetEntryPointDisplayReason(
+      const GURL& url_to_share) override {
+    if (!SendTabToSelfEntry::IsValidUrl(url_to_share)) {
+      return std::nullopt;
+    }
+    return StubSendTabToSelfSyncService::GetEntryPointDisplayReason(
+        url_to_share);
+  }
+};
+
 }  // namespace
 
 // -----------------------------------------------------------------------------
 // SendTabToSelfTutorialInteractiveUiTest
 //
 // Component-level tests for the Send Tab to Self User Education tutorial
-// definition. Verifies active tab anchor resolution, string IDs, step
+// definition. Verifies promo tab anchor resolution, string IDs, step
 // lifecycle callbacks, and metric emissions in isolation using synthetic
 // view elements.
 // -----------------------------------------------------------------------------
 class SendTabToSelfTutorialInteractiveUiTest : public InteractiveBrowserTest {
  public:
+  SendTabToSelfTutorialInteractiveUiTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        feature_engagement::kIPHSendTabToSelfTutorialFeature);
+  }
+
+  // Step 1 only anchors to an eligible promo tab. The real sync service never
+  // offers Send Tab to Self on about:blank or the NTP, so use the stub, which
+  // offers it on every tab. Unlike in SendTabToSelfIphInteractiveUiTest, the
+  // promo can't trigger on about:blank here because browser tests
+  // block all IPH by default.
+  void SetUpBrowserContextKeyedServices(
+      content::BrowserContext* context) override {
+    SendTabToSelfSyncServiceFactory::GetInstance()->SetTestingFactory(
+        context, base::BindOnce([](content::BrowserContext* context)
+                                    -> std::unique_ptr<KeyedService> {
+          return std::make_unique<StubSendTabToSelfSyncService>();
+        }));
+  }
+
   void SetUpOnMainThread() override {
     InteractiveBrowserTest::SetUpOnMainThread();
     MaybeRegisterChromeTutorials(*GetTutorialService()->tutorial_registry());
@@ -100,9 +146,9 @@ class SendTabToSelfTutorialInteractiveUiTest : public InteractiveBrowserTest {
   }
 
   user_education::TutorialService* GetTutorialService() {
-    return &UserEducationServiceFactory::GetForBrowserContext(
-                browser()->GetProfile())
-                ->tutorial_service();
+    return UserEducationServiceFactory::GetForBrowserContext(
+               browser()->GetProfile())
+        ->tutorial_service();
   }
 
   // Starts the Send Tab to Self tutorial with optional callbacks.
@@ -119,6 +165,15 @@ class SendTabToSelfTutorialInteractiveUiTest : public InteractiveBrowserTest {
     });
   }
 
+  // Records the tab at `tab_index` as the tab the intro promo was shown on, as
+  // ChooseSendTabToSelfPromoAnchorTab() does when the promo anchors.
+  auto SetPromoTab(int tab_index) {
+    return Do([this, tab_index]() {
+      SendTabToSelfIphController::From(browser())->SetPromoTab(
+          browser()->tab_strip_model()->GetTabAtIndex(tab_index)->GetHandle());
+    });
+  }
+
   // Cancels any running tutorial and waits for the bubble to hide.
   auto CancelTutorial() {
     return Steps(
@@ -127,23 +182,8 @@ class SendTabToSelfTutorialInteractiveUiTest : public InteractiveBrowserTest {
             user_education::HelpBubbleView::kHelpBubbleElementIdForTesting));
   }
 
-  // Verifies that the help bubble anchors to the specified tab index.
-  auto CheckHelpBubbleAnchor(int tab_index) {
-    return CheckView(
-        user_education::HelpBubbleView::kHelpBubbleElementIdForTesting,
-        [this, tab_index](user_education::HelpBubbleView* bubble) {
-          auto* const browser_view =
-              BrowserView::GetBrowserViewForBrowser(browser());
-          tabs::TabInterface* const tab =
-              browser()->tab_strip_model()->GetTabAtIndex(tab_index);
-          return tab && bubble->GetAnchorView() ==
-                            browser_view->tab_strip_view()->GetTabAnchorView(
-                                tab->GetHandle());
-        });
-  }
-
   // Verifies that the help bubble anchors to the specified element identifier.
-  auto CheckHelpBubbleAnchor(ui::ElementIdentifier id) {
+  auto CheckHelpBubbleAnchoredToElement(ui::ElementIdentifier id) {
     return CheckView(
         user_education::HelpBubbleView::kHelpBubbleElementIdForTesting,
         [this, id](user_education::HelpBubbleView* bubble) {
@@ -171,19 +211,46 @@ class SendTabToSelfTutorialInteractiveUiTest : public InteractiveBrowserTest {
         &views::Label::GetText, l10n_util::GetStringUTF16(string_id));
   }
 
+  // Verifies the help bubble arrow orientation.
+  auto CheckHelpBubbleArrow(views::BubbleBorder::Arrow arrow) {
+    return CheckView(
+        user_education::HelpBubbleView::kHelpBubbleElementIdForTesting,
+        [arrow](user_education::HelpBubbleView* bubble) {
+          return bubble->arrow() == arrow;
+        });
+  }
+
+  // Verifies that the help bubble anchors to the tab at `tab_index` in
+  // `browser`.
+  auto CheckHelpBubbleAnchoredToTab(BrowserWindowInterface* browser,
+                                    int tab_index) {
+    return CheckView(
+        user_education::HelpBubbleView::kHelpBubbleElementIdForTesting,
+        [browser, tab_index](user_education::HelpBubbleView* bubble) {
+          auto* const browser_view =
+              BrowserView::GetBrowserViewForBrowser(browser);
+          tabs::TabInterface* const tab =
+              browser->GetTabStripModel()->GetTabAtIndex(tab_index);
+          return tab && bubble->GetAnchorView() ==
+                            browser_view->tab_strip_view()->GetTabAnchorView(
+                                tab->GetHandle());
+        });
+  }
+
   // Injects a dummy view with the specified element identifier for testing.
   auto AddDummyElement(ui::ElementIdentifier id) {
     return Do([this, id]() {
       auto* const browser_view =
           BrowserView::GetBrowserViewForBrowser(browser());
-      views::View* const view = browser_view->contents_web_view()->AddChildView(
+      views::View* const view = browser_view->GetContentsView()->AddChildView(
           std::make_unique<views::View>());
       view->SetProperty(views::kElementIdentifierKey, id);
     });
   }
 
-  // Generates the test sequence verifying tutorial anchoring to active tabs.
-  auto TestAnchorsToActiveTabSequence() {
+  // Generates the test sequence verifying that Step 1 anchors to the promo tab
+  // rather than the active tab.
+  auto TestAnchorsToPromoTabSequence() {
     DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kSecondTabElementId);
 
     return Steps(
@@ -192,25 +259,42 @@ class SendTabToSelfTutorialInteractiveUiTest : public InteractiveBrowserTest {
         Check([this]() {
           return browser()->tab_strip_model()->active_index() == 1;
         }),
-        StartTutorial(),
+        SetPromoTab(1), StartTutorial(),
         WaitForShow(
             user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
-        CheckHelpBubbleAnchor(1), CancelTutorial(),
-        SelectTab(kTabStripElementId, 0), Check([this]() {
-          return browser()->tab_strip_model()->active_index() == 0;
-        }),
-        StartTutorial(),
+        CheckHelpBubbleAnchoredToTab(browser(), 1), CancelTutorial(),
+        // The promo tab is inactive; Step 1 still anchors to it.
+        SetPromoTab(0), StartTutorial(),
         WaitForShow(
             user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
-        CheckHelpBubbleAnchor(0), CancelTutorial());
+        CheckHelpBubbleAnchoredToTab(browser(), 0), CancelTutorial());
   }
 
+  base::test::ScopedFeatureList scoped_feature_list_;
   base::HistogramTester histogram_tester_;
 };
 
 IN_PROC_BROWSER_TEST_F(SendTabToSelfTutorialInteractiveUiTest,
-                       AnchorsToActiveTab) {
-  RunTestSequence(TestAnchorsToActiveTabSequence());
+                       AnchorsToPromoTab) {
+  RunTestSequence(TestAnchorsToPromoTabSequence());
+}
+
+IN_PROC_BROWSER_TEST_F(SendTabToSelfTutorialInteractiveUiTest,
+                       TutorialAbortsWithoutPromoTab) {
+  UNCALLED_MOCK_CALLBACK(user_education::TutorialService::CompletedCallback,
+                         completed);
+  UNCALLED_MOCK_CALLBACK(user_education::TutorialService::AbortedCallback,
+                         aborted);
+
+  EXPECT_CALL_IN_SCOPE(
+      aborted, Run,
+      RunTestSequence(
+          StartTutorial(completed.Get(), aborted.Get()),
+          EnsureNotPresent(
+              user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+          Check([this]() {
+            return !GetTutorialService()->IsRunningTutorial();
+          })));
 }
 
 IN_PROC_BROWSER_TEST_F(SendTabToSelfTutorialInteractiveUiTest, TutorialSteps) {
@@ -219,44 +303,47 @@ IN_PROC_BROWSER_TEST_F(SendTabToSelfTutorialInteractiveUiTest, TutorialSteps) {
   UNCALLED_MOCK_CALLBACK(user_education::TutorialService::AbortedCallback,
                          aborted);
 
-  EXPECT_CALL(completed, Run).Times(1);
+  EXPECT_CALL_IN_SCOPE(
+      completed, Run,
+      RunTestSequence(
+          // Step 1: Start tutorial and verify bubble on the promo tab.
+          SetPromoTab(0), StartTutorial(completed.Get(), aborted.Get()),
+          WaitForShow(
+              user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+          CheckHelpBubbleAnchoredToTab(browser(), 0),
+          CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_1_BODY),
 
-  RunTestSequence(
-      // Step 1: Start tutorial and verify bubble on active tab.
-      StartTutorial(completed.Get(), aborted.Get()),
-      WaitForShow(
-          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
-      CheckHelpBubbleAnchor(0),
-      CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_1_BODY),
+          // Step 2: Show the Send Tab to Self menu item view.
+          AddDummyElement(kTabSendTabToSelfMenuItem),
+          WaitForHide(
+              user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+          WaitForShow(
+              user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+          CheckHelpBubbleAnchoredToElement(kTabSendTabToSelfMenuItem),
+          CheckHelpBubbleArrow(views::BubbleBorder::BOTTOM_LEFT),
+          CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_2_BODY),
 
-      // Step 2: Show the Send Tab to Self menu item view.
-      AddDummyElement(kTabSendTabToSelfMenuItem),
-      WaitForHide(
-          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
-      WaitForShow(
-          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
-      CheckHelpBubbleAnchor(kTabSendTabToSelfMenuItem),
-      CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_2_BODY),
+          // Step 3: Show the ToastView.
+          AddDummyElement(toasts::ToastView::kToastViewId),
+          WaitForHide(
+              user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+          WaitForShow(
+              user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+          CheckHelpBubbleAnchoredToElement(toasts::ToastView::kToastViewId),
+          CheckHelpBubbleTitleText(IDS_TUTORIAL_SEND_TAB_TO_SELF_SUCCESS_TITLE),
+          CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_SUCCESS_BODY),
 
-      // Step 3: Show the ToastView.
-      AddDummyElement(toasts::ToastView::kToastViewId),
-      WaitForHide(
-          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
-      WaitForShow(
-          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
-      CheckHelpBubbleAnchor(toasts::ToastView::kToastViewId),
-      CheckHelpBubbleTitleText(IDS_TUTORIAL_SEND_TAB_TO_SELF_SUCCESS_TITLE),
-      CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_SUCCESS_BODY),
-
-      // Complete tutorial by clicking default button.
-      PressButton(user_education::HelpBubbleView::kDefaultButtonIdForTesting),
-      WaitForHide(
-          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
-      Check([this]() { return !GetTutorialService()->IsRunningTutorial(); }),
-      Do([this]() {
-        histogram_tester_.ExpectUniqueSample(
-            "Tutorial.SendTabToSelf.Completion", 1, 1);
-      }));
+          // Complete tutorial by clicking default button.
+          PressButton(
+              user_education::HelpBubbleView::kDefaultButtonIdForTesting),
+          WaitForHide(
+              user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+          Check(
+              [this]() { return !GetTutorialService()->IsRunningTutorial(); }),
+          Do([this]() {
+            histogram_tester_.ExpectUniqueSample(
+                "Tutorial.SendTabToSelf.Completion", 1, 1);
+          })));
 }
 
 IN_PROC_BROWSER_TEST_F(SendTabToSelfTutorialInteractiveUiTest,
@@ -266,30 +353,57 @@ IN_PROC_BROWSER_TEST_F(SendTabToSelfTutorialInteractiveUiTest,
   UNCALLED_MOCK_CALLBACK(user_education::TutorialService::AbortedCallback,
                          aborted);
 
-  EXPECT_CALL(aborted, Run).Times(1);
+  EXPECT_CALL_IN_SCOPE(
+      aborted, Run,
+      RunTestSequence(
+          // Step 1: Start tutorial and verify bubble on the promo tab.
+          SetPromoTab(0), StartTutorial(completed.Get(), aborted.Get()),
+          WaitForShow(
+              user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+          CheckHelpBubbleAnchoredToTab(browser(), 0),
 
-  RunTestSequence(
-      // Step 1: Start tutorial and verify bubble on active tab.
-      StartTutorial(completed.Get(), aborted.Get()),
-      WaitForShow(
-          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
-      CheckHelpBubbleAnchor(0),
+          // Dismiss the tutorial via the close button on the help bubble.
+          PressButton(user_education::HelpBubbleView::kCloseButtonIdForTesting),
+          WaitForHide(
+              user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+          Check(
+              [this]() { return !GetTutorialService()->IsRunningTutorial(); }),
+          Do([this]() {
+            histogram_tester_.ExpectUniqueSample(
+                "Tutorial.SendTabToSelf.Completion", 0, 1);
+          })));
+}
 
-      // Dismiss the tutorial via the close button on the help bubble.
-      PressButton(user_education::HelpBubbleView::kCloseButtonIdForTesting),
-      WaitForHide(
-          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
-      Check([this]() { return !GetTutorialService()->IsRunningTutorial(); }),
-      Do([this]() {
-        histogram_tester_.ExpectUniqueSample(
-            "Tutorial.SendTabToSelf.Completion", 0, 1);
-      }));
+IN_PROC_BROWSER_TEST_F(SendTabToSelfTutorialInteractiveUiTest,
+                       TutorialAbortsIfPromoTabClosed) {
+  UNCALLED_MOCK_CALLBACK(user_education::TutorialService::CompletedCallback,
+                         completed);
+  UNCALLED_MOCK_CALLBACK(user_education::TutorialService::AbortedCallback,
+                         aborted);
+
+  EXPECT_CALL_IN_SCOPE(
+      aborted, Run,
+      RunTestSequence(
+          // Record tab 0 as the promo tab, add a second tab, and close tab 0.
+          SetPromoTab(0), Do([this]() {
+            chrome::AddSelectedTabWithURL(browser(), GURL("about:blank"),
+                                          ui::PAGE_TRANSITION_LINK);
+            browser()->tab_strip_model()->CloseWebContentsAt(
+                0, TabCloseTypes::CLOSE_USER_GESTURE);
+          }),
+          // Starting tutorial fails because promo tab was closed.
+          StartTutorial(completed.Get(), aborted.Get()),
+          EnsureNotPresent(
+              user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+          Check([this]() {
+            return !GetTutorialService()->IsRunningTutorial();
+          })));
 }
 
 // -----------------------------------------------------------------------------
 // SendTabToSelfVerticalTabsInteractiveUiTest
 //
-// Verifies active tab anchoring for the Send Tab to Self tutorial when
+// Verifies promo tab anchoring for the Send Tab to Self tutorial when
 // vertical tabs are enabled.
 // -----------------------------------------------------------------------------
 class SendTabToSelfVerticalTabsInteractiveUiTest
@@ -297,8 +411,37 @@ class SendTabToSelfVerticalTabsInteractiveUiTest
           SendTabToSelfTutorialInteractiveUiTest> {};
 
 IN_PROC_BROWSER_TEST_F(SendTabToSelfVerticalTabsInteractiveUiTest,
-                       AnchorsToActiveTabView) {
-  RunTestSequence(TestAnchorsToActiveTabSequence());
+                       AnchorsToPromoTabView) {
+  RunTestSequence(TestAnchorsToPromoTabSequence());
+}
+
+// -----------------------------------------------------------------------------
+// SendTabToSelfIphControllerCreationTest
+//
+// Verifies which browser windows own a SendTabToSelfIphController.
+// -----------------------------------------------------------------------------
+class SendTabToSelfIphControllerCreationTest : public InteractiveBrowserTest {
+ public:
+  SendTabToSelfIphControllerCreationTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        feature_engagement::kIPHSendTabToSelfTutorialFeature);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(SendTabToSelfIphControllerCreationTest,
+                       CreatedOnlyForRegularNormalBrowser) {
+  EXPECT_NE(SendTabToSelfIphController::From(browser()), nullptr);
+  EXPECT_EQ(SendTabToSelfIphController::From(CreateIncognitoBrowser()),
+            nullptr);
+  EXPECT_EQ(SendTabToSelfIphController::From(
+                CreateBrowserForPopup(browser()->GetProfile())),
+            nullptr);
+#if !BUILDFLAG(IS_CHROMEOS)
+  EXPECT_EQ(SendTabToSelfIphController::From(CreateGuestBrowser()), nullptr);
+#endif
 }
 
 // -----------------------------------------------------------------------------
@@ -311,13 +454,16 @@ IN_PROC_BROWSER_TEST_F(SendTabToSelfVerticalTabsInteractiveUiTest,
 // -----------------------------------------------------------------------------
 class SendTabToSelfIphInteractiveUiTest : public InteractiveFeaturePromoTest {
  public:
-  SendTabToSelfIphInteractiveUiTest()
-      : InteractiveFeaturePromoTest(UseDefaultTrackerAllowingPromos(
-            {feature_engagement::kIPHSendTabToSelfTutorialFeature})) {
-    scoped_feature_list_.InitWithFeatures(
-        {send_tab_to_self::kSendTabToSelfEnhancedDesktopUI,
-         send_tab_to_self::kSendTabToSelfPostSendToast},
-        {});
+  explicit SendTabToSelfIphInteractiveUiTest(
+      InitialSessionState initial_session_state =
+          InitialSessionState::kOutsideGracePeriod)
+      : InteractiveFeaturePromoTest(
+            UseDefaultTrackerAllowingPromos(
+                {feature_engagement::kIPHSendTabToSelfTutorialFeature}),
+            ClockMode::kUseTestClock,
+            initial_session_state) {
+    scoped_feature_list_.InitAndEnableFeature(
+        user_education::features::kRaiseMacHelpBubbleAboveMenus);
   }
 
   ~SendTabToSelfIphInteractiveUiTest() override = default;
@@ -327,8 +473,7 @@ class SendTabToSelfIphInteractiveUiTest : public InteractiveFeaturePromoTest {
     SendTabToSelfSyncServiceFactory::GetInstance()->SetTestingFactory(
         context, base::BindOnce([](content::BrowserContext* context)
                                     -> std::unique_ptr<KeyedService> {
-          return std::make_unique<
-              send_tab_to_self::StubSendTabToSelfSyncService>();
+          return std::make_unique<TestSendTabToSelfSyncService>();
         }));
   }
 
@@ -342,10 +487,11 @@ class SendTabToSelfIphInteractiveUiTest : public InteractiveFeaturePromoTest {
             SendTabToSelfSyncServiceFactory::GetForProfile(
                 browser()->GetProfile()))
             ->GetFakeSendTabToSelfModel();
-    TargetDeviceInfo target_device(kTargetDeviceName, kTargetDeviceCacheGuid,
-                                   syncer::DeviceInfo::FormFactor::kPhone,
-                                   syncer::DeviceInfo::OsType::kAndroid,
-                                   base::Time::Now());
+    syncer::RemoteDeviceInfo target_device(
+        kTargetDeviceName, kTargetDeviceCacheGuid,
+        syncer::DeviceInfo::FormFactor::kPhone,
+        syncer::DeviceInfo::OsType::kAndroid, base::Time::Now(),
+        /*has_high_precision_timestamp=*/false);
     model->SetTargetDeviceInfoSortedList({target_device});
     model->SetHasValidTargetDevice(true);
     model->SetIsReady(true);
@@ -383,37 +529,73 @@ class SendTabToSelfIphInteractiveUiTest : public InteractiveFeaturePromoTest {
   }
 #endif
 
-  auto StopToastTimer() {
-    return Do([this]() {
-      browser()
-          ->GetFeatures()
-          .toast_controller()
-          ->GetToastCloseTimerForTesting()
-          ->Stop();
-    });
+  // Verifies that the help bubble anchors to the tab at `tab_index` in
+  // `browser`.
+  auto CheckHelpBubbleAnchoredToTab(BrowserWindowInterface* browser,
+                                    int tab_index) {
+    return CheckView(
+        user_education::HelpBubbleView::kHelpBubbleElementIdForTesting,
+        [browser, tab_index](user_education::HelpBubbleView* bubble) {
+          auto* const browser_view =
+              BrowserView::GetBrowserViewForBrowser(browser);
+          tabs::TabInterface* const tab =
+              browser->GetTabStripModel()->GetTabAtIndex(tab_index);
+          return tab && bubble->GetAnchorView() ==
+                            browser_view->tab_strip_view()->GetTabAnchorView(
+                                tab->GetHandle());
+        });
   }
 
-  // Submenu items in Cocoa context menus on macOS (MenuControllerCocoa) do not
-  // assign tags to submenu items (TYPE_SUBMENU), causing Kombucha's
-  // SelectMenuItem to fail. Additionally, Cocoa menu hierarchies do not expose
-  // views::MenuItemView widgets and run a modal tracking loop. This helper
-  // triggers the send action directly on macOS and dismisses the open context
-  // menu to exit modal tracking, while performing the live submenu UI
-  // interaction on other platforms.
+  auto CheckHelpBubbleBodyText(int string_id) {
+    return CheckViewProperty(
+        user_education::HelpBubbleView::kBodyTextIdForTesting,
+        &views::Label::GetText, l10n_util::GetStringUTF16(string_id));
+  }
+
+  void CloseTabContextMenu() {
+    static_cast<BrowserTabStripController*>(
+        BrowserView::GetBrowserViewForBrowser(browser())
+            ->horizontal_tab_strip_for_testing()
+            ->controller())
+        ->CloseContextMenuForTesting();
+  }
+
+#if BUILDFLAG(IS_MAC)
+  // Cocoa context menus (MenuControllerCocoa) run a modal tracking loop, do not
+  // assign tags to TYPE_SUBMENU items, and do not expose views::MenuItemView
+  // widgets, preventing Kombucha's SelectMenuItem from clicking submenu items.
+  // This helper triggers the send command directly on the active tab and
+  // dismisses the open context menu to exit modal tracking.
+  void SendTabAndCloseContextMenu() {
+    SendTabToSelfSubMenuModel::MaybeCreateForTab(
+        browser()->tab_strip_model()->GetActiveWebContents(),
+        ShareEntryPoint::kTabMenu)
+        ->ExecuteCommand(IDC_CONTENT_CONTEXT_SEND_TAB_TO_SELF_DEVICE1, 0);
+
+    CloseTabContextMenu();
+  }
+#endif
+
+  // Selects the target device from the Send Tab to Self submenu. On macOS, this
+  // delegates to SendTabAndCloseContextMenu() due to Cocoa menu tracking
+  // limitations; on other platforms, it drives the live submenu UI interaction.
   auto SelectSendTabToSelfDeviceItem() {
 #if BUILDFLAG(IS_MAC)
-    return Do([this]() {
-      content::WebContents* const web_contents =
-          browser()->tab_strip_model()->GetActiveWebContents();
-      SendTabToSelfContextMenuDelegate(web_contents, ShareEntryPoint::kTabMenu)
-          .ExecuteCommand(IDC_CONTENT_CONTEXT_SEND_TAB_TO_SELF_DEVICE1, 0);
-
-      static_cast<BrowserTabStripController*>(
-          BrowserView::GetBrowserViewForBrowser(browser())
-              ->horizontal_tab_strip_for_testing()
-              ->controller())
-          ->CloseContextMenuForTesting();
-    });
+    return Steps(
+        // Wait for Step 2's bubble to anchor to the context menu item.
+        InAnyContext(WaitForShow(
+            user_education::HelpBubbleView::kHelpBubbleElementIdForTesting)),
+        // Send the tab and dismiss the native menu without failing visibility
+        // checks when the menu closes before the async toast appears.
+        InAnyContext(WithElement(kTabSendTabToSelfMenuItem,
+                                 [this](ui::TrackedElement*) {
+                                   SendTabAndCloseContextMenu();
+                                 })
+                         .SetMustRemainVisible(false)),
+        // Ensure Step 2's bubble dismisses before awaiting Step 3's toast
+        // bubble.
+        InAnyContext(WaitForHide(
+            user_education::HelpBubbleView::kHelpBubbleElementIdForTesting)));
 #else
     return Steps(
         SelectMenuItem(kTabSendTabToSelfMenuItem),
@@ -436,8 +618,16 @@ IN_PROC_BROWSER_TEST_F(SendTabToSelfIphInteractiveUiTest,
       WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature));
 }
 
+// TODO(crbug.com/565062574): Re-enable on mac
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_TutorialFlowCompletesOnTabSend \
+  DISABLED_TutorialFlowCompletesOnTabSend
+#else
+#define MAYBE_TutorialFlowCompletesOnTabSend \
+  TutorialFlowCompletesOnTabSend
+#endif
 IN_PROC_BROWSER_TEST_F(SendTabToSelfIphInteractiveUiTest,
-                       TutorialFlowCompletesOnTabSend) {
+                       MAYBE_TutorialFlowCompletesOnTabSend) {
   const GURL eligible_url =
       embedded_https_test_server().GetURL("example.com", "/title1.html");
 
@@ -446,13 +636,18 @@ IN_PROC_BROWSER_TEST_F(SendTabToSelfIphInteractiveUiTest,
       WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
       PressDefaultPromoButton(),
       // Step 1: Bubble is shown on the active tab.
+      InAnyContext(WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting)),
+      CheckHelpBubbleAnchoredToTab(browser(), 0),
+      CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_1_BODY),
       MoveMouseTo(kTabElementId), ClickMouse(ui_controls::RIGHT),
       // Step 2: Context menu open, bubble on Send Tab to Self menu item.
-      WaitForShow(kTabSendTabToSelfMenuItem), SelectSendTabToSelfDeviceItem(),
+      InAnyContext(WaitForShow(kTabSendTabToSelfMenuItem)),
+      SelectSendTabToSelfDeviceItem(),
       // Completion step: bubble anchored to the toast notification.
-      WaitForShow(toasts::ToastView::kToastViewId),
-      WaitForShow(
-          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting));
+      InAnyContext(WaitForShow(toasts::ToastView::kToastViewId)),
+      InAnyContext(WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting)));
 }
 
 IN_PROC_BROWSER_TEST_F(SendTabToSelfIphInteractiveUiTest,
@@ -465,6 +660,10 @@ IN_PROC_BROWSER_TEST_F(SendTabToSelfIphInteractiveUiTest,
       WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
       PressDefaultPromoButton(),
       // Step 1: Bubble is shown on the active tab (second tab at index 1).
+      WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      CheckHelpBubbleAnchoredToTab(browser(), 1),
+      CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_1_BODY),
       NameDescendantViewByType<Tab>(kBrowserViewElementId, kSecondTabName, 1),
       MoveMouseTo(kSecondTabName), ClickMouse(ui_controls::RIGHT),
       // Step 2: Context menu open, bubble on Send Tab to Self menu item.
@@ -517,6 +716,322 @@ IN_PROC_BROWSER_TEST_F(SendTabToSelfIphInteractiveUiTest,
           user_education::HelpBubbleView::kHelpBubbleElementIdForTesting,
           /*screenshot_name=*/"SendTabToSelfTutorialStep3ToastSuccess",
           /*baseline_cl=*/kScreenshotBaselineCL)));
+}
+
+IN_PROC_BROWSER_TEST_F(SendTabToSelfIphInteractiveUiTest,
+                       Step2HelpBubbleAnchoredToContextMenuItem) {
+  const GURL eligible_url =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+  gfx::Rect menu_item_bounds;
+#if !BUILDFLAG(IS_MAC)
+  gfx::Rect submenu_item_bounds;
+#endif
+
+  RunTestSequence(
+      InstrumentTab(kTabId), AddInstrumentedTab(kSecondTabId, eligible_url),
+      WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
+      PressDefaultPromoButton(),
+      // Step 1: Wait for the bubble on the active tab.
+      WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      NameDescendantViewByType<Tab>(kBrowserViewElementId, kSecondTabName, 1),
+      MoveMouseTo(kSecondTabName), ClickMouse(ui_controls::RIGHT),
+      // Step 2: Context menu open, bubble anchored to Send Tab to Self item.
+      WaitForShow(kTabSendTabToSelfMenuItem),
+      WithElement(kTabSendTabToSelfMenuItem,
+                  [&menu_item_bounds](ui::TrackedElement* el) {
+                    menu_item_bounds = el->GetScreenBounds();
+                  }),
+      WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      CheckView(user_education::HelpBubbleView::kHelpBubbleElementIdForTesting,
+                [&menu_item_bounds](user_education::HelpBubbleView* bubble) {
+                  const gfx::Rect bubble_bounds = bubble->GetBoundsInScreen();
+                  if (!bubble->GetWidget()->IsVisible() ||
+                      bubble_bounds.IsEmpty()) {
+                    return false;
+                  }
+#if BUILDFLAG(IS_MAC)
+                  if (base::mac::MacOSMajorVersion() < 14) {
+                    return true;
+                  }
+#endif
+                  // Verify the bubble is positioned above the "Send to your
+                  // devices" menu item and does not cover the menu item.
+                  return bubble_bounds.bottom() <= menu_item_bounds.y() &&
+                         !bubble_bounds.Intersects(menu_item_bounds);
+                }),
+#if !BUILDFLAG(IS_MAC)
+      // Open the device submenu and verify the Step 2 help bubble remains
+      // visible and does not overlap the submenu item.
+      SelectMenuItem(kTabSendTabToSelfMenuItem),
+      NameMenuItemWithTitle(kDeviceMenuItemName, kTargetDeviceName16),
+      InAnyContext(WithView(kDeviceMenuItemName,
+                            [&submenu_item_bounds](views::View* item) {
+                              submenu_item_bounds = item->GetBoundsInScreen();
+                            })),
+      CheckView(user_education::HelpBubbleView::kHelpBubbleElementIdForTesting,
+                [&submenu_item_bounds](user_education::HelpBubbleView* bubble) {
+                  return bubble->GetWidget()->IsVisible() &&
+                         !bubble->GetBoundsInScreen().Intersects(
+                             submenu_item_bounds);
+                }),
+      InAnyContext(SelectMenuItem(kDeviceMenuItemName)),
+#else
+      SelectSendTabToSelfDeviceItem(),
+#endif
+      // Step 3: Completion bubble anchored to the toast notification.
+      WaitForShow(toasts::ToastView::kToastViewId),
+      WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting));
+}
+
+IN_PROC_BROWSER_TEST_F(SendTabToSelfIphInteractiveUiTest,
+                       TutorialStep1StaysOnPromoTabAfterSwitchingToNtp) {
+  const GURL eligible_url =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+
+  RunTestSequence(
+      InstrumentTab(kTabId), AddInstrumentedTab(kPromoTabId, eligible_url),
+      WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
+      CheckHelpBubbleAnchoredToTab(browser(), 1),
+      AddInstrumentedTab(kNtpTabId, GURL(chrome::kChromeUINewTabURL)),
+      EnsurePresent(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      PressDefaultPromoButton(),
+      WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      // Verify Step 1 help bubble points at the promo tab (index 1), not the
+      // newly activated NTP tab (index 2).
+      CheckHelpBubbleAnchoredToTab(browser(), 1),
+      CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_1_BODY),
+      // Right-clicking the promo tab (index 1) advances the tutorial to Step 2.
+      NameDescendantViewByType<Tab>(kBrowserViewElementId, kSecondTabName, 1),
+      MoveMouseTo(kSecondTabName), ClickMouse(ui_controls::RIGHT),
+      InAnyContext(WaitForShow(kTabSendTabToSelfMenuItem)),
+      InAnyContext(WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting)),
+      InAnyContext(
+          CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_2_BODY)),
+      InAnyContext(
+          WithElement(kTabSendTabToSelfMenuItem, [this](ui::TrackedElement*) {
+            CloseTabContextMenu();
+          }).SetMustRemainVisible(false)));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    SendTabToSelfIphInteractiveUiTest,
+    TutorialStep1StaysOnPromoTabAfterSwitchingToAnotherEligibleTab) {
+  const GURL eligible_url_a =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+  const GURL eligible_url_b =
+      embedded_https_test_server().GetURL("example.com", "/title2.html");
+
+  RunTestSequence(
+      InstrumentTab(kTabId), AddInstrumentedTab(kPromoTabId, eligible_url_a),
+      WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
+      CheckHelpBubbleAnchoredToTab(browser(), 1),
+      AddInstrumentedTab(kSecondEligibleTabId, eligible_url_b),
+      EnsurePresent(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      PressDefaultPromoButton(),
+      WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      // Step 1 bubble points at tab A (index 1), not tab B (index 2).
+      CheckHelpBubbleAnchoredToTab(browser(), 1),
+      CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_1_BODY));
+}
+
+IN_PROC_BROWSER_TEST_F(SendTabToSelfIphInteractiveUiTest,
+                       TutorialAbortsIfPromoTabBecomesIneligible) {
+  const GURL eligible_url =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+
+  RunTestSequence(
+      InstrumentTab(kTabId), AddInstrumentedTab(kPromoTabId, eligible_url),
+      WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
+      CheckHelpBubbleAnchoredToTab(browser(), 1),
+      // Navigating the promo tab to a page without the Send Tab to Self entry
+      // point leaves the promo showing.
+      NavigateWebContents(kPromoTabId, GURL(chrome::kChromeUIVersionURL)),
+      EnsurePresent(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      PressDefaultPromoButton(),
+      // The tutorial aborts instead of showing Step 1 on the ineligible tab.
+      EnsureNotPresent(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      Check([this]() {
+        return !UserEducationServiceFactory::GetForBrowserContext(
+                    browser()->GetProfile())
+                    ->tutorial_service()
+                    ->IsRunningTutorial();
+      }));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    SendTabToSelfIphInteractiveUiTest,
+    TutorialPromoAnchorsToActiveTabWhenFirstTabIsAlsoEligible) {
+  const GURL eligible_url_a =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+  const GURL eligible_url_b =
+      embedded_https_test_server().GetURL("example.com", "/title2.html");
+
+  RunTestSequence(
+      InstrumentTab(kTabId),
+      // Add a second tab while both are still at about:blank (ineligible),
+      // ensuring the promo doesn't trigger prematurely on tab 0.
+      AddInstrumentedTab(kSecondEligibleTabId, GURL("about:blank")),
+      NavigateWebContents(kTabId, eligible_url_a),
+      NavigateWebContents(kSecondEligibleTabId, eligible_url_b),
+      WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
+      // Verify the intro promo bubble anchors to the second tab (active tab).
+      CheckHelpBubbleAnchoredToTab(browser(), 1), PressDefaultPromoButton(),
+      WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      // Verify Step 1 bubble also points to the second tab.
+      CheckHelpBubbleAnchoredToTab(browser(), 1),
+      CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_1_BODY));
+}
+
+IN_PROC_BROWSER_TEST_F(SendTabToSelfIphInteractiveUiTest,
+                       TutorialPromoAnchorsToEligibleActiveTab) {
+  const GURL eligible_url =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+
+  RunTestSequence(
+      InstrumentTab(kTabId),
+      // Add a second tab while both are still at about:blank (ineligible),
+      // ensuring the promo doesn't trigger prematurely on tab 0.
+      AddInstrumentedTab(kSecondEligibleTabId, GURL("about:blank")),
+      // Navigate the active tab 1 to an eligible URL.
+      NavigateWebContents(kSecondEligibleTabId, eligible_url),
+      // Verify the promo shows anchored to active tab 1, not tab 0.
+      WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
+      CheckHelpBubbleAnchoredToTab(browser(), 1));
+}
+
+// -----------------------------------------------------------------------------
+// SendTabToSelfIphGracePeriodInteractiveUiTest
+//
+// Verifies that IPH_SendTabToSelfTutorial is blocked during the session start
+// grace period and shown on the next navigation or user tab switch once the
+// grace period expires.
+// -----------------------------------------------------------------------------
+class SendTabToSelfIphGracePeriodInteractiveUiTest
+    : public SendTabToSelfIphInteractiveUiTest {
+ public:
+  SendTabToSelfIphGracePeriodInteractiveUiTest()
+      : SendTabToSelfIphInteractiveUiTest(
+            InitialSessionState::kInsideGracePeriod) {}
+
+ protected:
+  base::HistogramTester histogram_tester_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    SendTabToSelfIphGracePeriodInteractiveUiTest,
+    PromoDeferredDuringGracePeriodAndShownOnSubsequentNavigation) {
+  const GURL eligible_url_a =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+  const GURL eligible_url_b =
+      embedded_https_test_server().GetURL("example.com", "/title2.html");
+
+  RunTestSequence(
+      InstrumentTab(kTabId), NavigateWebContents(kTabId, eligible_url_a),
+      Do([this]() {
+        histogram_tester_.ExpectBucketCount(
+            "UserEducation.MessageNotShown.IPH_SendTabToSelfTutorial",
+            user_education::FeaturePromoResult::kBlockedByGracePeriod, 1);
+      }),
+      AdvanceTime(user_education::features::GetSessionStartGracePeriod() +
+                  base::Minutes(1)),
+      NavigateWebContents(kTabId, eligible_url_b),
+      WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
+      CheckHelpBubbleAnchoredToTab(browser(), 0));
+}
+
+IN_PROC_BROWSER_TEST_F(SendTabToSelfIphGracePeriodInteractiveUiTest,
+                       PromoDeferredDuringGracePeriodAndShownOnUserTabSwitch) {
+  const GURL eligible_url_a =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+  const GURL eligible_url_b =
+      embedded_https_test_server().GetURL("example.com", "/title2.html");
+
+  RunTestSequence(
+      InstrumentTab(kTabId), NavigateWebContents(kTabId, eligible_url_a),
+      AddInstrumentedTab(kSecondTabId, eligible_url_b), Do([this]() {
+        histogram_tester_.ExpectBucketCount(
+            "UserEducation.MessageNotShown.IPH_SendTabToSelfTutorial",
+            user_education::FeaturePromoResult::kBlockedByGracePeriod, 2);
+      }),
+      AdvanceTime(user_education::features::GetSessionStartGracePeriod() +
+                  base::Minutes(1)),
+      SelectTab(kTabStripElementId, 0),
+      WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
+      CheckHelpBubbleAnchoredToTab(browser(), 0));
+}
+
+// -----------------------------------------------------------------------------
+// SendTabToSelfVerticalTabsIphInteractiveUiTest
+//
+// Verifies Send Tab to Self IPH promo and tutorial anchoring when vertical
+// tabs are enabled.
+// -----------------------------------------------------------------------------
+class SendTabToSelfVerticalTabsIphInteractiveUiTest
+    : public VerticalTabsBrowserTestMixin<SendTabToSelfIphInteractiveUiTest> {
+ public:
+  // Bypass VerticalTabsBrowserTestMixin::SetUpCommandLine so its
+  // ScopedFeatureList is not initialized after
+  // InteractiveFeaturePromoTestMixin::SetUp() and torn down out of LIFO order.
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    SendTabToSelfIphInteractiveUiTest::SetUpCommandLine(command_line);
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(
+    SendTabToSelfVerticalTabsIphInteractiveUiTest,
+    TutorialPromoAnchorsToActiveTabWhenFirstTabIsAlsoEligible_VerticalTabs) {
+  const GURL eligible_url_a =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+  const GURL eligible_url_b =
+      embedded_https_test_server().GetURL("example.com", "/title2.html");
+
+  RunTestSequence(
+      InstrumentTab(kTabId),
+      // Add a second tab while both are still at about:blank (ineligible),
+      // ensuring the promo doesn't trigger prematurely on tab 0.
+      AddInstrumentedTab(kSecondEligibleTabId, GURL("about:blank")),
+      NavigateWebContents(kTabId, eligible_url_a),
+      NavigateWebContents(kSecondEligibleTabId, eligible_url_b),
+      WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
+      // Verify the intro promo bubble anchors to the second tab (active tab).
+      CheckHelpBubbleAnchoredToTab(browser(), 1), PressDefaultPromoButton(),
+      WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      // Verify Step 1 bubble also points to the second tab on vertical tabs.
+      CheckHelpBubbleAnchoredToTab(browser(), 1),
+      CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_1_BODY));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    SendTabToSelfVerticalTabsIphInteractiveUiTest,
+    TutorialStep1StaysOnPromoTabAfterSwitchingToNtp_VerticalTabs) {
+  const GURL eligible_url =
+      embedded_https_test_server().GetURL("example.com", "/title1.html");
+
+  RunTestSequence(
+      InstrumentTab(kTabId), AddInstrumentedTab(kPromoTabId, eligible_url),
+      WaitForPromo(feature_engagement::kIPHSendTabToSelfTutorialFeature),
+      CheckHelpBubbleAnchoredToTab(browser(), 1),
+      AddInstrumentedTab(kNtpTabId, GURL(chrome::kChromeUINewTabURL)),
+      EnsurePresent(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      PressDefaultPromoButton(),
+      WaitForShow(
+          user_education::HelpBubbleView::kHelpBubbleElementIdForTesting),
+      // Step 1 bubble points at the promo tab (index 1), not the NTP (index 2).
+      CheckHelpBubbleAnchoredToTab(browser(), 1),
+      CheckHelpBubbleBodyText(IDS_TUTORIAL_SEND_TAB_TO_SELF_STEP_1_BODY));
 }
 
 }  // namespace send_tab_to_self

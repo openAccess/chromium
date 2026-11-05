@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/core/layout/inline/inline_box_state.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+
 #include "third_party/blink/renderer/core/layout/box_fragment_builder.h"
 #include "third_party/blink/renderer/core/layout/geometry/logical_offset.h"
 #include "third_party/blink/renderer/core/layout/geometry/logical_size.h"
@@ -32,7 +33,7 @@ void LogicalRubyColumn::Trace(Visitor* visitor) const {
   visitor->Trace(state_stack);
 }
 
-InlineBoxState::InlineBoxState(const InlineBoxState&& state)
+InlineBoxState::InlineBoxState(InlineBoxState&& state)
     : fragment_start(state.fragment_start),
       item(state.item),
       style(state.style),
@@ -78,29 +79,29 @@ void InlineBoxState::ResetStyle(const ComputedStyle& style_ref,
       break;
     case EAlignmentBaseline::kBeforeEdge:
     case EAlignmentBaseline::kTextBeforeEdge:
-      alignment_type = FontBaseline::kTextOverBaseline;
+      alignment_type = FontBaseline::kTextOver;
       break;
     case EAlignmentBaseline::kMiddle:
-      alignment_type = FontBaseline::kXMiddleBaseline;
+      alignment_type = FontBaseline::kXMiddle;
       break;
     case EAlignmentBaseline::kCentral:
-      alignment_type = FontBaseline::kCentralBaseline;
+      alignment_type = FontBaseline::kCentral;
       break;
     case EAlignmentBaseline::kAfterEdge:
     case EAlignmentBaseline::kTextAfterEdge:
-      alignment_type = FontBaseline::kTextUnderBaseline;
+      alignment_type = FontBaseline::kTextUnder;
       break;
     case EAlignmentBaseline::kIdeographic:
-      alignment_type = FontBaseline::kIdeographicUnderBaseline;
+      alignment_type = FontBaseline::kIdeographicUnder;
       break;
     case EAlignmentBaseline::kAlphabetic:
-      alignment_type = FontBaseline::kAlphabeticBaseline;
+      alignment_type = FontBaseline::kAlphabetic;
       break;
     case EAlignmentBaseline::kHanging:
-      alignment_type = FontBaseline::kHangingBaseline;
+      alignment_type = FontBaseline::kHanging;
       break;
     case EAlignmentBaseline::kMathematical:
-      alignment_type = FontBaseline::kMathBaseline;
+      alignment_type = FontBaseline::kMath;
       break;
   }
 }
@@ -134,11 +135,7 @@ void InlineBoxState::ComputeTextMetrics(const ComputedStyle& styleref,
   text_top = -text_metrics.ascent;
   text_height = text_metrics.LineHeight();
 
-  FontHeight emphasis_marks_outsets =
-      RuntimeEnabledFeatures::TextEmphasisAsRubyEnabled()
-          ? FontHeight::Empty()
-          : ComputeEmphasisMarkOutsets(styleref,
-                                       UsedFont(base_font, paint_scale));
+  FontHeight emphasis_marks_outsets = FontHeight::Empty();
   LayoutUnit line_height = styleref.ComputedLineHeightAsFixed(base_font);
   if (!styleref.LineHeight().IsFixed() && paint_scale != 1.0f) {
     line_height *= paint_scale;
@@ -271,18 +268,6 @@ LayoutUnit InlineBoxState::TextTop(FontBaseline baseline_type) const {
   NOTREACHED();
 }
 
-bool InlineBoxState::CanAddTextOfStyle(const ComputedStyle& text_style) const {
-  if (text_style.VerticalAlign() != EVerticalAlign::kBaseline)
-    return false;
-  DCHECK(style);
-  if (style == &text_style ||
-      base::ValuesEquivalent(style->GetFont(), text_style.GetFont()) ||
-      style->GetFont()->PrimaryFont() == text_style.GetFont()->PrimaryFont()) {
-    return true;
-  }
-  return false;
-}
-
 void InlineLayoutStateStack::Trace(Visitor* visitor) const {
   visitor->Trace(stack_);
   visitor->Trace(box_data_list_);
@@ -293,7 +278,7 @@ InlineBoxState* InlineLayoutStateStack::OnBeginPlaceItems(
     const InlineNode& node,
     const LineInfo& line_info,
     FontBaseline baseline_type,
-    bool line_height_quirk,
+    LineHeightMode line_height_mode,
     bool should_scale_line_height,
     LogicalLineItems* line_box) {
   const ComputedStyle& line_style = line_info.LineStyle();
@@ -313,12 +298,17 @@ InlineBoxState* InlineLayoutStateStack::OnBeginPlaceItems(
         DCHECK_NE(&box, stack_.data());
         TextFitBlockScale text_block_scale{line_info.TextFitScale(), nullptr};
         AddBoxFragmentPlaceholder(&box, text_block_scale, line_box,
-                                  baseline_type);
+                                  baseline_type,
+                                  /*has_non_empty_inline_box_start=*/false);
       }
-      if (!line_height_quirk)
+      // For `kLineClampDisplacedEllipsis`, we reset all text metrics. The root
+      // inline box does need a strut, but `box.text_metrics` could be empty in
+      // quirks mode cases, so we fix this below.
+      if (line_height_mode == LineHeightMode::kNormal) {
         box.metrics = box.text_metrics;
-      else
+      } else {
         box.ResetTextMetrics();
+      }
       if (box.has_start_edge) {
         // Existing box states are wrapped before they were closed, and hence
         // they do not have start edges, unless 'box-decoration-break: clone'.
@@ -335,6 +325,7 @@ InlineBoxState* InlineLayoutStateStack::OnBeginPlaceItems(
   // Initialize the box state for the line box.
   InlineBoxState& line_box_state = LineBoxState();
   if (line_box_state.style != &line_style ||
+      line_height_mode == LineHeightMode::kLineClampDisplacedEllipsis ||
       (line_style.GetTextFit().Type() != TextFitType::kNone &&
        line_style.GetTextFit().Target() != TextFitTarget::kConsistent)) {
     line_box_state.ResetStyle(line_style, node.IsSvgText(),
@@ -345,7 +336,7 @@ InlineBoxState* InlineLayoutStateStack::OnBeginPlaceItems(
     // https://drafts.csswg.org/css2/visudet.html#strut
     TextFitBlockScale text_scale{line_info.TextFitScale(), nullptr};
     line_box_state.text_fit_scale = text_scale.TotalScale(*line_box_state.font);
-    if (!line_height_quirk) {
+    if (line_height_mode != LineHeightMode::kQuirk) {
       line_box_state.ComputeTextMetrics(line_style, *line_box_state.font,
                                         baseline_type, &text_scale);
       // If ::first-line has a smaller computed line-height than its containing
@@ -381,8 +372,10 @@ InlineBoxState* InlineLayoutStateStack::OnOpenTag(
       OnOpenTag(space, item, item_result, baseline_type, *line_box);
   box->text_fit_scale = text_scale.TotalScale(*box->font);
   box->needs_box_fragment = item.ShouldCreateBoxFragment();
-  if (box->needs_box_fragment)
-    AddBoxFragmentPlaceholder(box, text_scale, line_box, baseline_type);
+  if (box->needs_box_fragment) {
+    AddBoxFragmentPlaceholder(box, text_scale, line_box, baseline_type,
+                              !item.IsEmptyItem());
+  }
   return box;
 }
 
@@ -502,7 +495,8 @@ void InlineLayoutStateStack::AddBoxFragmentPlaceholder(
     InlineBoxState* box,
     const TextFitBlockScale& text_scale,
     LogicalLineItems* line_box,
-    FontBaseline baseline_type) {
+    FontBaseline baseline_type,
+    bool has_non_empty_inline_box_start) {
   DCHECK(box != stack_.data() &&
          box->item->Type() != InlineItem::kAtomicInline);
   box->has_box_placeholder = true;
@@ -553,8 +547,10 @@ void InlineLayoutStateStack::AddBoxFragmentPlaceholder(
     block_size = metrics.LineHeight() + box->borders.BlockSum() +
                  box->padding.BlockSum();
   }
-  line_box->AddChild(block_offset, block_size);
-  DCHECK((*line_box)[line_box->size() - 1].IsPlaceholder());
+  LogicalLineItem placeholder(block_offset, block_size);
+  placeholder.has_non_empty_inline_box_start = has_non_empty_inline_box_start;
+  CHECK(placeholder.IsPlaceholder());
+  line_box->AddChild(std::move(placeholder));
 }
 
 // Add a |BoxData|, for each close-tag that needs a box fragment.
@@ -572,6 +568,8 @@ void InlineLayoutStateStack::AddBoxData(const ConstraintSpace& space,
       box->fragment_start, fragment_end, box->item, placeholder.Size());
   box_data.borders = box->borders;
   box_data.padding = box->padding;
+  box_data.relative_insets = ComputeRelativeInsets(
+      style, space.GetWritingDirection(), space.AvailableSize());
   box_data.margin_line_over = box->margins.line_over;
   box_data.margin_line_under = box->margins.line_under;
   if (box->has_start_edge) {
@@ -625,8 +623,8 @@ void InlineLayoutStateStack::AddBoxData(const ConstraintSpace& space,
   // An empty box fragment is still flat that we do not have to defer.
   // Also, placeholders cannot be reordred if empty.
   placeholder.rect.offset.inline_offset += box_data.margin_line_left;
-  placeholder.rect.offset +=
-      ComputeRelativeOffsetForInline(space, *box_data.item->Style());
+  placeholder.rect.offset += ComputeRelativeOffsetForInline(
+      box_data.relative_insets, space.GetWritingDirection());
   LayoutUnit advance = box_data.margin_border_padding_line_left +
                        box_data.margin_border_padding_line_right;
   box_data.rect.size.inline_size =
@@ -807,7 +805,7 @@ void InlineLayoutStateStack::UpdateFragmentedBoxDataEdges(
               DCHECK_NE(a.fragment_start, b.fragment_start);
               return a.fragment_start < b.fragment_start;
             });
-  for (BoxData& fragmented_box : base::Reversed(*fragmented_boxes)) {
+  for (BoxData& fragmented_box : std::views::reverse(*fragmented_boxes)) {
     // Insert the fragmented box to right after the box it was fragmented from.
     // The order in the |box_data_list_| is critical when propagating child
     // fragment data such as OOF to ancestors.
@@ -975,8 +973,8 @@ void InlineLayoutStateStack::ApplyRelativePositioning(
   for (BoxData& box_data : box_data_list_) {
     unsigned start = box_data.fragment_start;
     unsigned end = box_data.fragment_end;
-    const LogicalOffset relative_offset =
-        ComputeRelativeOffsetForInline(space, *box_data.item->Style());
+    const LogicalOffset relative_offset = ComputeRelativeOffsetForInline(
+        box_data.relative_insets, space.GetWritingDirection());
 
     // Move all children for this box.
     for (unsigned index = start; index < end; index++) {
@@ -1096,12 +1094,18 @@ const LayoutResult* InlineLayoutStateStack::BoxData::CreateBoxFragment(
 
     // Propagate any OOF-positioned descendants from any atomic-inlines, etc.
     if (child.layout_result) {
-      const ComputedStyle& child_style = child.GetPhysicalFragment()->Style();
+      const WritingDirectionMode writing_direction =
+          space.GetWritingDirection();
+      const PhysicalBoxStrut& child_relative_insets =
+          To<PhysicalBoxFragment>(*child.GetPhysicalFragment())
+              .UsedPositionInsets();
       box.PropagateFromLayoutResultAndFragment(
           *child.layout_result,
           child.rect.offset - rect.offset -
-              ComputeRelativeOffsetForInline(space, child_style),
-          ComputeRelativeOffsetForOOFInInline(space, child_style));
+              ComputeRelativeOffsetForInline(child_relative_insets,
+                                             writing_direction),
+          ComputeRelativeOffsetForOOFInInline(child_relative_insets,
+                                              writing_direction));
     }
   };
 
@@ -1143,7 +1147,13 @@ const LayoutResult* InlineLayoutStateStack::BoxData::CreateBoxFragment(
   item->GetLayoutObject()->SetShouldDoFullPaintInvalidation();
 
   box.MoveOutOfFlowDescendantCandidatesToDescendants();
-  return box.ToInlineBoxFragment();
+  const LayoutResult* result = box.ToInlineBoxFragment();
+  if (style.GetPosition() == EPosition::kRelative) {
+    To<PhysicalBoxFragment>(result->GetPhysicalFragment())
+        .GetMutableForPositioned()
+        .SetUsedPositionInsets(relative_insets);
+  }
+  return result;
 }
 
 void InlineLayoutStateStack::BoxData::Trace(Visitor* visitor) const {

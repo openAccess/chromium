@@ -12,6 +12,7 @@
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
+#include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/profiles/profile.h"
@@ -21,7 +22,6 @@
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/ui/profiles/profile_customization_util.h"
 #include "chrome/browser/ui/profiles/profile_picker.h"
-#include "chrome/browser/ui/views/profiles/profile_picker_utils.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -31,6 +31,7 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/browser_thread.h"
 
 namespace {
 bool IsFirstRunEligibleProfile(Profile* profile) {
@@ -95,7 +96,8 @@ bool FirstRunService::ShouldOpenFirstRun() const {
 
 void FirstRunService::TryMarkFirstRunAlreadyFinished(
     base::OnceClosure callback) {
-  DCHECK(ShouldOpenFirstRun());  // Caller should check.
+  CHECK(ShouldOpenFirstRun(),
+        base::NotFatalUntil::M162);  // Caller should check.
 
   // The method has multiple exit points, this ensures `callback` gets called.
   base::ScopedClosureRunner scoped_closure_runner(std::move(callback));
@@ -118,7 +120,7 @@ void FirstRunService::TryMarkFirstRunAlreadyFinished(
   }
 
   if (const std::optional<ProfilePicker::FirstRunFinishReason> skip_reason =
-          ComputeFirstRunSkipReason(*profile_, *identity_manager_);
+          ProfilePicker::ComputeFirstRunSkipReason(*profile_);
       skip_reason.has_value()) {
     FinishFirstRun(*skip_reason);
     return;
@@ -197,10 +199,10 @@ void FirstRunService::FinishFirstRun(
 }
 
 void FirstRunService::FinishProfileSetUp(std::u16string profile_name) {
-  DCHECK(IsFirstRunMarkedFinishedInPrefs());
+  CHECK(IsFirstRunMarkedFinishedInPrefs(), base::NotFatalUntil::M162);
 
   profile_name_resolver_.reset();
-  DCHECK(!profile_name.empty());
+  CHECK(!profile_name.empty(), base::NotFatalUntil::M162);
   FinalizeNewProfileSetup(&profile_.get(), profile_name,
                           /*is_default_name=*/false);
 }
@@ -231,16 +233,28 @@ void FirstRunService::OpenFirstRunInternal() {
                                           weak_ptr_factory_.GetWeakPtr())));
 }
 
+#if BUILDFLAG(IS_MAC)
 void FirstRunService::FinishFirstRunWithoutResumeTask() {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (!resume_task_callback_) {
     return;
   }
 
-  DCHECK(ProfilePicker::IsFirstRunOpen());
+  // On macOS, this can be called when quitting or creating a browser window
+  // while `resume_task_callback_` is still pending but the picker is not open
+  // (e.g., during early termination before the window is displayed or after
+  // the window has already begun closing). It is safe to proceed because
+  // `OnFirstRunHasExited()` cleanly completes the flow and
+  // `ProfilePicker::Hide()` is a no-op if the picker is not open.
+  base::UmaHistogramBoolean(
+      "ProfilePicker.FirstRun.FinishWithoutResumeTaskPickerOpen",
+      ProfilePicker::IsFirstRunOpen());
+
   OnFirstRunHasExited(ProfilePicker::FirstRunExitStatus::kAbandonedFlow,
                       ProfilePicker::FirstRunFinishReason::kFinishedFlow);
   ProfilePicker::Hide();
 }
+#endif
 
 // FirstRunServiceFactory ------------------------------------------------------
 

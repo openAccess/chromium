@@ -2,17 +2,23 @@
   "inherits": [
     {
       "path": "components/webapps/_agents/_harness/skills.json"
+    },
+    {
+      "path":"internal/agents/teams/webapps/agents/skills.json"
     }
   ],
   "entries": [
     {
-      "path": "components/webapps/_agents/skills/webapps-harness"
+      "path": "components/webapps/_agents/skills/webapps-dev"
     },
     {
       "path": "chrome/browser/web_applications/docs/skills/create-web-applications-browsertest"
     },
     {
       "path": "chrome/browser/web_applications/docs/skills/create-web-applications-unittest"
+    },
+    {
+      "path": "internal/agents/skills/security-review"
     }
   ]
 }

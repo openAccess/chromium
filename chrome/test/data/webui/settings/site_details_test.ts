@@ -9,12 +9,13 @@ import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import type {SiteDetailsElement, WebsiteUsageBrowserProxy} from 'chrome://settings/lazy_load.js';
 import {ChooserType, ContentSetting, ContentSettingsTypes, JavascriptOptimizerSetting, SiteSettingSource, SiteSettingsBrowserProxyImpl, WebsiteUsageBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
-import {loadTimeData, MetricsBrowserProxyImpl, PrivacyElementInteractions, Router, routes} from 'chrome://settings/settings.js';
+import {loadTimeData, MetricsBrowserProxyImpl, PrefService, PrefsBrowserProxy, PrivacyElementInteractions, Router, routes} from 'chrome://settings/settings.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 
 import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 import {TestSiteSettingsBrowserProxy} from './test_site_settings_browser_proxy.js';
 import type {SiteSettingsPref} from './test_util.js';
 import {createContentSettingTypeToValuePair, createRawChooserException, createRawSiteException, createSiteSettingsPrefs} from './test_util.js';
@@ -34,6 +35,16 @@ class TestWebsiteUsageBrowserProxy extends TestBrowserProxy implements
   clearUsage(origin: string) {
     this.methodCalled('clearUsage', origin);
   }
+}
+
+function getInitialPrefs(): chrome.settingsPrivate.PrefObject[] {
+  return [
+    {
+      key: 'generated.javascript_optimizer',
+      type: chrome.settingsPrivate.PrefType.NUMBER,
+      value: JavascriptOptimizerSetting.BLOCKED_FOR_UNFAMILIAR_SITES,
+    },
+  ];
 }
 
 /** Suite of tests for site-details. */
@@ -56,10 +67,18 @@ suite('SiteDetails', function() {
   //
   // It may also be required to add the ContentSettingsType in the constructor
   // in test_site_settings_prefs_browser_proxy.ts.
-  setup(function() {
+  setup(async function() {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    PrefService.resetInstanceForTesting();
+    const prefsBrowserProxy = new TestPrefsBrowserProxy(getInitialPrefs());
+    PrefsBrowserProxy.setInstance(prefsBrowserProxy);
+    await PrefService.getInstance().whenInitialized();
+
     loadTimeData.overrideValues({
-      // <if expr="is_chromeos">
+      // <if expr="enable_smart_card">
       enableSmartCardReadersContentSetting: true,
+      // </if>
+      // <if expr="is_chromeos">
       enableWebPrintingContentSetting: true,
       // </if>
     });
@@ -131,12 +150,14 @@ suite('SiteDetails', function() {
           createContentSettingTypeToValuePair(
               ContentSettingsTypes.PAYMENT_HANDLER,
               [createRawSiteException('https://foo.com:443')]),
-          // <if expr="is_chromeos">
+          // <if expr="enable_smart_card">
           createContentSettingTypeToValuePair(
               ContentSettingsTypes.SMART_CARD_READERS,
               [createRawSiteException('https://foo.com:443', {
                 setting: ContentSetting.BLOCK,
               })]),
+          // </if>
+          // <if expr="is_chromeos">
           createContentSettingTypeToValuePair(
               ContentSettingsTypes.WEB_PRINTING,
               [createRawSiteException('https://foo.com:443')]),
@@ -218,20 +239,16 @@ suite('SiteDetails', function() {
         ]);
 
     browserProxy = new TestSiteSettingsBrowserProxy();
+    browserProxy.setPrefs(prefs);
     SiteSettingsBrowserProxyImpl.setInstance(browserProxy);
     testMetricsBrowserProxy = new TestMetricsBrowserProxy();
     MetricsBrowserProxyImpl.setInstance(testMetricsBrowserProxy);
     websiteUsageProxy = new TestWebsiteUsageBrowserProxy();
     WebsiteUsageBrowserProxyImpl.setInstance(websiteUsageProxy);
-
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
   });
 
-  function createSiteDetails(origin: string, prefs?: Record<string, unknown>) {
+  function createSiteDetails(origin: string) {
     const siteDetailsElement = document.createElement('site-details');
-    if (prefs) {
-      siteDetailsElement.prefs = prefs;
-    }
     document.body.appendChild(siteDetailsElement);
     Router.getInstance().navigateTo(
         routes.SITE_SETTINGS_SITE_DETAILS,
@@ -240,7 +257,6 @@ suite('SiteDetails', function() {
   }
 
   test('usage heading shows properly', async function() {
-    browserProxy.setPrefs(prefs);
     testElement = createSiteDetails('https://foo.com:443');
     await websiteUsageProxy.whenCalled('fetchUsageTotal');
 
@@ -264,7 +280,6 @@ suite('SiteDetails', function() {
 
   test('storage gets trashed properly', async function() {
     const origin = 'https://foo.com:443';
-    browserProxy.setPrefs(prefs);
     testElement = createSiteDetails(origin);
 
     flush();
@@ -294,7 +309,6 @@ suite('SiteDetails', function() {
 
   test('cookies gets deleted properly', async function() {
     const origin = 'https://foo.com:443';
-    browserProxy.setPrefs(prefs);
     testElement = createSiteDetails(origin);
 
     const results = await Promise.all([
@@ -328,7 +342,6 @@ suite('SiteDetails', function() {
   });
 
   test('correct pref settings are shown', async function() {
-    browserProxy.setPrefs(prefs);
     testElement = createSiteDetails('https://foo.com:443');
 
     await browserProxy.whenCalled('isOriginValid');
@@ -352,10 +365,12 @@ suite('SiteDetails', function() {
       // For all the categories with non-user-set 'Allow' preferences,
       // update expected values.
       const categoriesWithNonUserSetAllow = [
-        ContentSettingsTypes.NOTIFICATIONS, ContentSettingsTypes.JAVASCRIPT,
-        ContentSettingsTypes.IMAGES, ContentSettingsTypes.POPUPS,
+        ContentSettingsTypes.NOTIFICATIONS,
+        ContentSettingsTypes.JAVASCRIPT,
+        ContentSettingsTypes.IMAGES,
+        ContentSettingsTypes.POPUPS,
         ContentSettingsTypes.FILE_SYSTEM_WRITE,
-        // <if expr="is_chromeos">
+        // <if expr="enable_smart_card">
         ContentSettingsTypes.SMART_CARD_READERS,
         // </if>
       ];
@@ -379,16 +394,16 @@ suite('SiteDetails', function() {
   test(
       'javascript optimizer pref sets use-block-if-unfamiliar-label-for-default property',
       async function() {
+        await PrefService.getInstance().whenInitialized();
         const testCases = [
           JavascriptOptimizerSetting.BLOCKED_FOR_UNFAMILIAR_SITES,
           JavascriptOptimizerSetting.BLOCKED,
         ];
 
         for (const testCase of testCases) {
-          const prefs = {
-            generated: {javascript_optimizer: {value: testCase}},
-          };
-          testElement = createSiteDetails('https://foo.com:443', prefs);
+          await PrefService.getInstance().setPrefValue(
+              'generated.javascript_optimizer', testCase);
+          testElement = createSiteDetails('https://foo.com:443');
 
           await browserProxy.whenCalled('isOriginValid');
           await browserProxy.whenCalled('getOriginPermissions');
@@ -407,11 +422,13 @@ suite('SiteDetails', function() {
                JavascriptOptimizerSetting.BLOCKED_FOR_UNFAMILIAR_SITES),
               javascriptOptimizerPermission!
                   .useBlockIfUnfamiliarLabelForDefault);
+
+          testElement.remove();
+          browserProxy.reset();
         }
       });
 
   test('categories can be hidden', async function() {
-    browserProxy.setPrefs(prefs);
     // Only the categories in this list should be visible to the user.
     browserProxy.setCategoryList(
         [ContentSettingsTypes.NOTIFICATIONS, ContentSettingsTypes.GEOLOCATION]);
@@ -432,7 +449,6 @@ suite('SiteDetails', function() {
   });
 
   test('show confirmation dialog on reset settings', async function() {
-    browserProxy.setPrefs(prefs);
     const origin = 'https://foo.com:443';
     testElement = createSiteDetails(origin);
     flush();
@@ -458,7 +474,6 @@ suite('SiteDetails', function() {
   });
 
   test('show confirmation dialog on clear storage', function() {
-    browserProxy.setPrefs(prefs);
     testElement = createSiteDetails('https://foo.com:443');
     flush();
 
@@ -477,7 +492,6 @@ suite('SiteDetails', function() {
   });
 
   test('permissions update dynamically', async function() {
-    browserProxy.setPrefs(prefs);
     const origin = 'https://foo.com:443';
     testElement = createSiteDetails(origin);
 
@@ -540,7 +554,6 @@ suite('SiteDetails', function() {
 
   test('call fetch block autoplay status', async function() {
     const origin = 'https://foo.com:443';
-    browserProxy.setPrefs(prefs);
     testElement = createSiteDetails(origin);
     await browserProxy.whenCalled('fetchBlockAutoplayStatus');
   });
@@ -549,7 +562,6 @@ suite('SiteDetails', function() {
       'check related website set membership label empty string',
       async function() {
         const origin = 'https://foo.com:443';
-        browserProxy.setPrefs(prefs);
         testElement = createSiteDetails(origin);
 
         const results = await Promise.all([
@@ -568,7 +580,6 @@ suite('SiteDetails', function() {
       'check related website set membership label populated string',
       async function() {
         const origin = 'https://foo.com:443';
-        browserProxy.setPrefs(prefs);
         testElement = createSiteDetails(origin);
 
         const results = await Promise.all([
@@ -595,7 +606,6 @@ suite('SiteDetails', function() {
       'related website set policy shown when managed key is set to true',
       async function() {
         const origin = 'https://foo.com:443';
-        browserProxy.setPrefs(prefs);
         testElement = createSiteDetails(origin);
 
         const results = await Promise.all([
@@ -622,7 +632,6 @@ suite('SiteDetails', function() {
       'clear data dialog warns about ad personalization data removal',
       function() {
         const origin = 'https://foo.com:443';
-        browserProxy.setPrefs(prefs);
         testElement = createSiteDetails(origin);
 
         flush();
@@ -663,7 +672,6 @@ suite('SiteDetails', function() {
       prefs.exceptions[category].push(createRawSiteException(isolatedAppOrigin));
     });
 
-    browserProxy.setPrefs(prefs);
     browserProxy.setSubAppsPermissionExplanation({
       isSubApp: true,
       hasSubApps: false,
@@ -736,7 +744,6 @@ suite('SiteDetails', function() {
       prefs.exceptions[category].push(createRawSiteException(parentAppOrigin));
     });
 
-    browserProxy.setPrefs(prefs);
     browserProxy.setSubAppsPermissionExplanation({
       isSubApp: true,
       hasSubApps: false,

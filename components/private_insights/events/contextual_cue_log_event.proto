@@ -1,8 +1,14 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 // Proto definition for Contextual Cue Log Events.
 
 syntax = "proto3";
 
 package private_insights.events;
+
+import "components/private_insights/events/coarse_system_profile.proto";
 
 option optimize_for = LITE_RUNTIME;
 
@@ -10,6 +16,7 @@ message ContextualCueLogEvent {
   message PageInfo {
     string url = 1;
     string title = 2;
+    string hostname = 3;
   }
 
   message CueContext {
@@ -37,14 +44,6 @@ message ContextualCueLogEvent {
     string promoted_feature = 5;
   }
 
-  message SystemProfile {
-    string country = 1;
-    string language = 2;
-    string chrome_version = 3;
-    string milestone = 4;
-    string chrome_channel = 5;
-  }
-
   enum EventType {
     UNSPECIFIED = 0;
     SHOWN = 1;
@@ -57,7 +56,11 @@ message ContextualCueLogEvent {
   string cue_id = 1;
   CueContext cue_context = 2;
   CueDetails cue_details = 3;
-  SystemProfile system_profile = 4;
+  CoarseSystemProfile system_profile = 4;
   EventType event_type = 5;
   int64 event_timestamp_ms = 6;
+
+  // Duration in milliseconds for which the cue was shown before the user
+  // interacted with it (e.g. CLICKED, DISMISSED). Always 0 for SHOWN events.
+  int64 shown_duration_ms = 7;
 }

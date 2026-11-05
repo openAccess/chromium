@@ -82,6 +82,20 @@ source_set("display_server_utils") {
     "//third_party/angle:angle_gpu_info_util",
     "//ui/base:features",
     "//ui/base:ozone_buildflags",
+    "//ui/gfx:gfx_switches",
+    "//ui/ozone",
+  ]
+}
+
+source_set("display_server_utils_unittests") {
+  testonly = true
+  sources = [ "display_server_utils_unittest.cc" ]
+  deps = [
+    ":display_server_utils",
+    "//base",
+    "//testing/gtest",
+    "//ui/base:ozone_buildflags",
+    "//ui/gfx:gfx_switches",
     "//ui/ozone",
   ]
 }
@@ -107,10 +121,10 @@ if (use_dbus) {
   # Observes the system color scheme and accent color via the
   # org.freedesktop.portal.Settings D-Bus interface, applying them to
   # NativeTheme.
-  source_set("dark_mode_manager") {
+  source_set("portal_settings") {
     sources = [
-      "dark_mode_manager_linux.cc",
-      "dark_mode_manager_linux.h",
+      "portal_settings_linux.cc",
+      "portal_settings_linux.h",
     ]
     deps = [
       ":linux_ui",
@@ -123,11 +137,11 @@ if (use_dbus) {
     ]
   }
 
-  source_set("dark_mode_manager_unittests") {
+  source_set("portal_settings_unittests") {
     testonly = true
-    sources = [ "dark_mode_manager_linux_unittest.cc" ]
+    sources = [ "portal_settings_linux_unittest.cc" ]
     deps = [
-      ":dark_mode_manager",
+      ":portal_settings",
       ":test_support",
       "//base",
       "//base/test:test_support",

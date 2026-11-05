@@ -4,19 +4,15 @@
 
 package org.chromium.chrome.browser.policy;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 
 /** Unit tests for CloudManagementAndroidConnection. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public final class CloudManagementAndroidConnectionTest {
     private static final String SAVED_CLIENT_ID = "saved-client-id";
     private static final String GSERVICES_ANDROID_ID = "gservices-android-id";
@@ -40,7 +36,6 @@ public final class CloudManagementAndroidConnectionTest {
     }
 
     @Test
-    @SmallTest
     public void testGetClientId_Generated() {
         Assert.assertEquals("", CloudManagementSharedPreferences.readClientId());
 
@@ -51,7 +46,6 @@ public final class CloudManagementAndroidConnectionTest {
     }
 
     @Test
-    @SmallTest
     public void testGetClientId_ReadFromSharedPreferences() {
         CloudManagementSharedPreferences.saveClientId(SAVED_CLIENT_ID);
 

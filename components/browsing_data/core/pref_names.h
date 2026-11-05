@@ -48,6 +48,7 @@ inline constexpr char kDeleteHostedAppsData[] =
     "browser.clear_data.hosted_apps_data";
 inline constexpr char kDeleteSiteSettings[] =
     "browser.clear_data.site_settings";
+inline constexpr char kDeleteSkills[] = "browser.clear_data.skills";
 inline constexpr char kCloseTabs[] = "browser.clear_data.close_tabs";
 
 // Other Clear Browsing Data preferences.
@@ -55,25 +56,12 @@ inline constexpr char kLastClearBrowsingDataTime[] =
     "browser.last_clear_browsing_data_time";
 inline constexpr char kClearBrowsingDataHistoryNoticeShownTimes[] =
     "browser.clear_data.history_notice_shown_times";
-inline constexpr char kMigratedToQuickDeletePrefValues[] =
-    "browser.migrated_to_quick_delete_pref_values";
 // LINT.IfChange(TipsPrefNames)
 inline constexpr char kQuickDeleteEverUsed[] = "browser.quick_delete_ever_used";
 // LINT.ThenChange(//chrome/browser/quick_delete/android/java/src/org/chromium/chrome/browser/quick_delete/QuickDeleteController.java:TipsPrefNames)
 
 // Registers the Clear Browsing Data UI prefs.
 void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry);
-
-#if BUILDFLAG(IS_IOS)
-// Migrates the values of the time period and tabs prefs to the new defaults for
-// Quick Delete. For users who have previously changed their time period pref
-// from the default value, then that value is still kept. If the migration has
-// already happened, then no-op.
-// TODO(crbug.com/471197613): When MaybeMigrateToQuickDeletePrefValues is
-// removed, set default value in iOS for the `kDeleteTimePeriod` pref to 15
-// minutes.
-void MaybeMigrateToQuickDeletePrefValues(PrefService* pref_service);
-#endif  // BUILDFLAG(IS_IOS)
 
 }  // namespace browsing_data::prefs
 

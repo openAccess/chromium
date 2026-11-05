@@ -37,6 +37,7 @@
 #include "components/guest_view/browser/test_guest_view_manager.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_view_host.h"
@@ -287,7 +288,7 @@ void WebViewAPITest::CloseAppWindows() {
 content::WebContents* WebViewAPITest::GetFirstAppWindowWebContents() {
   const AppWindowRegistry::AppWindowList& app_window_list =
       AppWindowRegistry::Get(profile())->app_windows();
-  DCHECK_EQ(1u, app_window_list.size());
+  CHECK_EQ(1u, app_window_list.size(), base::NotFatalUntil::M161);
   return (*app_window_list.begin())->web_contents();
 }
 

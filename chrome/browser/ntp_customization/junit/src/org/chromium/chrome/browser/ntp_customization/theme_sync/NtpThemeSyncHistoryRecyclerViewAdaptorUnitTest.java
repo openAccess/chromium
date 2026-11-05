@@ -26,6 +26,7 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 
+import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.core.app.ApplicationProvider;
@@ -53,13 +54,12 @@ import java.util.List;
 /** Unit tests for {@link NtpThemeSyncHistoryRecyclerViewAdaptor}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class NtpThemeSyncHistoryRecyclerViewAdaptorUnitTest {
+    private static final String TEST_CONTENT_DESCRIPTION = "Test Content Description";
+
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private OnItemClickCallback mOnItemClickCallback;
     @Mock private View.OnClickListener mOnClickListener;
-    @Mock private View mItemView;
-    @Mock private ImageView mBackgroundView;
-    @Mock private ImageView mBadgeView;
     @Mock private Drawable mDrawable;
     @Mock private Bitmap mBitmap;
     @Mock private NtpBackgroundDataBase mData1;
@@ -148,28 +148,23 @@ public class NtpThemeSyncHistoryRecyclerViewAdaptorUnitTest {
 
     @Test
     public void testBindViewHolder_setOnClickListener() {
-        when(mItemView.getContext()).thenReturn(mContext);
-        when(mItemView.findViewById(R.id.background_view)).thenReturn(mBackgroundView);
-        when(mItemView.findViewById(R.id.platform_badge)).thenReturn(mBadgeView);
-        when(mItemView.getResources()).thenReturn(mContext.getResources());
-        mViewHolder = new NtpThemeSyncHistoryRecyclerViewAdaptor.ImageViewHolder(mItemView);
+        ViewGroup parent = new FrameLayout(mContext);
+        mViewHolder = mAdapter.onCreateViewHolder(parent, /* viewType= */ 0);
 
         // Binds the first item view.
         int position = 0;
         mAdapter.onBindViewHolder(mViewHolder, position);
-        verify(mItemView).setOnClickListener(any(View.OnClickListener.class));
-
-        clearInvocations(mItemView);
-        verify(mItemView, never()).setOnClickListener(any(View.OnClickListener.class));
+        assertTrue(mViewHolder.itemView.hasOnClickListeners());
     }
 
     @Test
     public void testOnViewRecycled() {
-        when(mItemView.getContext()).thenReturn(mContext);
-        mViewHolder = new NtpThemeSyncHistoryRecyclerViewAdaptor.ImageViewHolder(mItemView);
+        ViewGroup parent = new FrameLayout(mContext);
+        mViewHolder = mAdapter.onCreateViewHolder(parent, /* viewType= */ 0);
+        mViewHolder.itemView.setOnClickListener(mOnClickListener);
 
         mAdapter.onViewRecycled(mViewHolder);
-        verify(mItemView).setOnClickListener(null);
+        assertFalse(mViewHolder.itemView.hasOnClickListeners());
     }
 
     @Test
@@ -293,5 +288,32 @@ public class NtpThemeSyncHistoryRecyclerViewAdaptorUnitTest {
         ImageView backgroundView = mViewHolder.itemView.findViewById(R.id.background_view);
         assertNotNull(backgroundView.getDrawable());
         verify(mData1, never()).getBitmapOrLoadImage(any());
+    }
+
+    @Test
+    public void testBindViewHolder_withContentDescription() {
+        testContentDescriptionImpl(TEST_CONTENT_DESCRIPTION);
+    }
+
+    @Test
+    public void testBindViewHolder_withoutContentDescription() {
+        testContentDescriptionImpl(null);
+    }
+
+    private void testContentDescriptionImpl(@Nullable String contentDescription) {
+        ViewGroup parent = new FrameLayout(mContext);
+        mViewHolder = mAdapter.onCreateViewHolder(parent, /* viewType= */ 0);
+
+        when(mData1.getContentDescription()).thenReturn(contentDescription);
+
+        mViewHolder.bindImpl(
+                mContext,
+                mData1,
+                mOnClickListener,
+                /* selectedPosition= */ 0,
+                /* bindingAdaptorPosition= */ 0);
+
+        assertEquals(contentDescription, mViewHolder.itemView.getContentDescription());
+        assertEquals(contentDescription, mViewHolder.itemView.getTooltipText());
     }
 }

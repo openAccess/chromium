@@ -8,29 +8,71 @@
 
 #include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "base/run_loop.h"
+#include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/profiles/profile_test_util.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/layout_constants.h"
+#include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
-#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+#include "chrome/browser/ui/views/location_bar/location_bar_view.h"
+#include "chrome/common/chrome_features.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
+#import "components/remote_cocoa/app_shim/bridged_content_view.h"
+#import "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
+#include "components/viz/common/frame_timing_details.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/browser_test.h"
+#include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
+#include "ui/compositor/compositor.h"
 #include "ui/compositor/layer.h"
 #include "ui/views/cocoa/native_widget_mac_ns_window_host.h"
 #include "ui/views/widget/native_widget_mac.h"
+#include "url/gurl.h"
+#include "url/url_constants.h"
 
 using BrowserNativeWidgetMacInteractiveTest = InProcessBrowserTest;
+
+@interface KeyEquivalentSpyView : NSView
+@property(nonatomic) BOOL receivedKeyEquivalent;
+@property(nonatomic) BOOL composing;
+@end
+
+@implementation KeyEquivalentSpyView
+@synthesize receivedKeyEquivalent = _receivedKeyEquivalent;
+@synthesize composing = _composing;
+
+- (BOOL)acceptsFirstResponder {
+  return YES;
+}
+- (BOOL)performKeyEquivalent:(NSEvent*)event {
+  self.receivedKeyEquivalent = YES;
+  // IME composition consumes the equivalent so it never bubbles. Matches
+  // RenderWidgetHostViewCocoa returning YES while composing.
+  return self.composing;
+}
+@end
 
 // Tests that closing the browser immediately after toggling fullscreen doesn't
 // crash and successfully closes the browser.
@@ -50,6 +92,66 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacInteractiveTest,
   // Wait for the browser to be destroyed. If there is a crash or if it hangs,
   // the test will fail/timeout.
   observer.Wait();
+}
+
+// Child widgets (WebUI omnibox popup) use DefaultCommandDispatcherDelegate,
+// which forwards reserved equivalents to the parent before the firstResponder.
+// A composing firstResponder must not consume Cmd+T; others still reach it.
+IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacInteractiveTest,
+                       ChildWindowKeyEquivalentDispatch) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+
+  auto child_widget = std::make_unique<views::Widget>();
+  views::Widget::InitParams params(
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
+      views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  params.parent = BrowserView::GetBrowserViewForBrowser(browser())
+                      ->GetWidget()
+                      ->GetNativeView();
+  params.activatable = views::Widget::InitParams::Activatable::kYes;
+  child_widget->Init(std::move(params));
+  child_widget->Show();
+
+  NSWindow* child_window = child_widget->GetNativeWindow().GetNativeNSWindow();
+  KeyEquivalentSpyView* spy = [[KeyEquivalentSpyView alloc] init];
+  [child_window.contentView addSubview:spy];
+  ASSERT_TRUE([child_window makeFirstResponder:spy]);
+  [child_window makeKeyWindow];
+
+  auto cmd_event = [&](NSString* character, unsigned short key_code) {
+    return [NSEvent keyEventWithType:NSEventTypeKeyDown
+                            location:NSZeroPoint
+                       modifierFlags:NSEventModifierFlagCommand
+                           timestamp:0
+                        windowNumber:child_window.windowNumber
+                             context:nil
+                          characters:character
+         charactersIgnoringModifiers:character
+                           isARepeat:NO
+                             keyCode:key_code];
+  };
+
+  // US-ANSI T/L hardware keycodes. Numeric to avoid Carbon.h.
+  constexpr unsigned short kKeyCodeT = 17;
+  constexpr unsigned short kKeyCodeL = 37;
+
+  TabStripModel* tabs = browser()->GetTabStripModel();
+  ASSERT_EQ(1, tabs->count());
+
+  // Korean IME composition: the firstResponder would consume the first Cmd+T
+  // (no-op) and only a second press after composition ended would fire.
+  spy.composing = YES;
+
+  // Cmd+T is reserved: handled by the parent on the first press, not the
+  // composing firstResponder.
+  EXPECT_TRUE([child_window performKeyEquivalent:cmd_event(@"t", kKeyCodeT)]);
+  EXPECT_EQ(2, tabs->count());
+  EXPECT_FALSE(spy.receivedKeyEquivalent);
+
+  // Cmd+L is not reserved: composing firstResponder still consumes it.
+  EXPECT_TRUE([child_window performKeyEquivalent:cmd_event(@"l", kKeyCodeL)]);
+  EXPECT_TRUE(spy.receivedKeyEquivalent);
+  EXPECT_EQ(2, tabs->count());
 }
 
 namespace {
@@ -331,7 +433,38 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest,
 
   ui_test_utils::ToggleFullscreenModeAndWait(browser());
 
-  EXPECT_TRUE([ns_window isOpaque]);
+  ASSERT_TRUE(base::test::RunUntil([&]() { return [ns_window isOpaque]; }));
+  auto [fs_glass_view, fs_tint_view, fs_opaque_view] =
+      GetGlassViews(content_view);
+  EXPECT_EQ(fs_glass_view, nil);
+  EXPECT_EQ(fs_opaque_view, nil);
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest,
+                       TabFullscreenWindowIsOpaque) {
+  if (!features::IsGlassFrameEnabled()) {
+    GTEST_SKIP() << "Glass frame feature is disabled.";
+  }
+
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  views::Widget* widget = browser_view->GetWidget();
+  NSWindow* ns_window = widget->GetNativeWindow().GetNativeNSWindow();
+  NSView* content_view = [ns_window contentView];
+
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+
+  EXPECT_FALSE([ns_window isOpaque]);
+  auto [glass_view, tint_view, opaque_view] = GetGlassViews(content_view);
+  EXPECT_NE(glass_view, nil);
+  EXPECT_NE(opaque_view, nil);
+
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  web_contents->GetDelegate()->EnterFullscreenModeForTab(
+      web_contents->GetPrimaryMainFrame(), {});
+
+  // Wait for Cocoa window to become opaque in tab fullscreen
+  ASSERT_TRUE(base::test::RunUntil([&]() { return [ns_window isOpaque]; }));
   auto [fs_glass_view, fs_tint_view, fs_opaque_view] =
       GetGlassViews(content_view);
   EXPECT_EQ(fs_glass_view, nil);
@@ -357,6 +490,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest,
   BrowserWindowInterface* second_browser =
       CreateBrowser(browser()->GetProfile());
   GlassFrameService::GetInstance()->OnBrowserActivated(second_browser);
+  ASSERT_TRUE(base::test::RunUntil([&]() { return [first_window isOpaque]; }));
   EXPECT_EQ(1.0, [[first_window backgroundColor] alphaComponent]);
   EXPECT_TRUE(first_view->GetWidget()->GetLayer()->fills_bounds_opaquely());
   auto [glass1_ineligible, tint1_ineligible, opaque1_ineligible] =
@@ -376,7 +510,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest,
 
   EXPECT_EQ(1.0, [[first_window backgroundColor] alphaComponent]);
   EXPECT_TRUE(first_view->GetWidget()->GetLayer()->fills_bounds_opaquely());
-  EXPECT_TRUE([second_window isOpaque]);
+  ASSERT_TRUE(base::test::RunUntil([&]() { return [second_window isOpaque]; }));
   EXPECT_EQ(1.0, [[second_window backgroundColor] alphaComponent]);
   auto [glass2_ineligible, tint2_ineligible, opaque2_ineligible] =
       GetGlassViews(second_content_view);
@@ -385,6 +519,75 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest,
 
   CloseBrowserSynchronously(third_browser);
   CloseBrowserSynchronously(second_browser);
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest,
+                       MultipleProfilesTintOpacity) {
+  if (!features::IsGlassFrameEnabled()) {
+    GTEST_SKIP() << "Glass frame feature is disabled.";
+  }
+
+  auto get_tint_alpha = [](BrowserWindowInterface* target_browser) {
+    BrowserView* view = BrowserView::GetBrowserViewForBrowser(target_browser);
+    NSWindow* window = view->GetWidget()->GetNativeWindow().GetNativeNSWindow();
+    auto [glass_view, tint_view, opaque_view] =
+        GetGlassViews([window contentView]);
+    CHECK(tint_view);
+    CHECK(tint_view.layer.backgroundColor);
+    NSColor* ns_color =
+        [NSColor colorWithCGColor:tint_view.layer.backgroundColor];
+    NSColor* srgb_color =
+        [ns_color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    return srgb_color.alphaComponent;
+  };
+
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  const CGFloat single_profile_alpha = get_tint_alpha(browser());
+
+  // Opening a second window in the same profile keeps the original opacity.
+  BrowserWindowInterface* same_profile_browser =
+      CreateBrowser(browser()->GetProfile());
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return GlassFrameService::GetInstance()->IsBrowserWindowEligible(
+        same_profile_browser);
+  }));
+  EXPECT_NEAR(get_tint_alpha(same_profile_browser), single_profile_alpha,
+              0.001);
+  CloseBrowserSynchronously(same_profile_browser);
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return GlassFrameService::GetInstance()->IsBrowserWindowEligible(browser());
+  }));
+
+  // Opening a window in a second profile increases the tint opacity.
+  constexpr double kMultipleProfileOpacityIncrease = 0.05;
+  ProfileManager* const profile_manager = g_browser_process->profile_manager();
+  const base::FilePath new_path =
+      profile_manager->GenerateNextProfileDirectoryPath();
+  Profile& second_profile =
+      profiles::testing::CreateProfileSync(profile_manager, new_path);
+  BrowserWindowInterface* second_profile_browser =
+      CreateBrowser(&second_profile);
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return GlassFrameService::GetInstance()->IsBrowserWindowEligible(
+        second_profile_browser);
+  }));
+  EXPECT_NEAR(get_tint_alpha(second_profile_browser),
+              single_profile_alpha + kMultipleProfileOpacityIncrease, 0.001);
+
+  // Switching back to the first profile window while the second profile window
+  // is still open also uses the increased tint opacity.
+  browser()->GetWindow()->Activate();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return GlassFrameService::GetInstance()->IsBrowserWindowEligible(browser());
+  }));
+  EXPECT_NEAR(get_tint_alpha(browser()),
+              single_profile_alpha + kMultipleProfileOpacityIncrease, 0.001);
+
+  // Closing the second profile window (while it is in the background and
+  // ineligible) restores the original tint opacity on the remaining active
+  // window.
+  CloseBrowserSynchronously(second_profile_browser);
+  EXPECT_NEAR(get_tint_alpha(browser()), single_profile_alpha, 0.001);
 }
 
 class BrowserNativeWidgetMacVerticalTabsGlassTest
@@ -477,7 +680,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacVerticalTabsGlassTest,
   // During drag resizing, glass view expands up to the maximum possible
   // vertical tab strip width.
   const int expected_resizing_width =
-      VerticalTabStripRegionView::kUncollapsedMaxWidth + corner_padding;
+      tabs::kVerticalTabStripUncollapsedMaxWidth + corner_padding;
   controller->SetIsResizing(true);
   EXPECT_EQ(NSWidth(glass_view.frame), expected_resizing_width);
   EXPECT_EQ(NSMinX(opaque_view.frame), expected_resizing_width);
@@ -515,7 +718,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacVerticalTabsGlassTest,
 
   const int corner_padding = GetGlassCornerPadding();
   const int expected_collapsed_width =
-      VerticalTabStripRegionView::kCollapsedWidth + corner_padding;
+      tabs::kVerticalTabStripCollapsedWidth + corner_padding;
   const int expected_uncollapsed_width =
       controller->GetUncollapsedWidth() + corner_padding;
 
@@ -536,4 +739,212 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacVerticalTabsGlassTest,
   EXPECT_EQ(NSMinX(opaque_view.frame), expected_uncollapsed_width);
   EXPECT_EQ(NSWidth(opaque_view.frame),
             NSWidth(content_view.bounds) - expected_uncollapsed_width);
+}
+
+class BrowserNativeWidgetMacDeferInputContextTestBase
+    : public InProcessBrowserTest {
+ protected:
+  explicit BrowserNativeWidgetMacDeferInputContextTestBase(bool enabled) {
+    feature_list_.InitWithFeatureStates(
+        {{features::kMacDeferInputContextUntilFirstPaint, enabled},
+         {features::kWebUILocationBar, false},
+         {features::kWebUIToolbar, false}});
+  }
+
+  // Creates a browser window with one tab showing `url`. The window is not
+  // shown.
+  BrowserWindowInterface* CreateUnshownBrowser(
+      const GURL& url = GURL(url::kAboutBlankURL)) {
+    BrowserWindowInterface* new_browser = CreateBrowserWindow(
+        BrowserWindowCreateParams(browser()->GetProfile(),
+                                  /*from_user_gesture=*/true));
+    chrome::AddSelectedTabWithURL(new_browser, url,
+                                  ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
+    return new_browser;
+  }
+
+  static views::Widget* GetWidget(BrowserWindowInterface* browser) {
+    return BrowserView::GetBrowserViewForBrowser(browser)->GetWidget();
+  }
+
+  static BridgedContentView* GetContentView(BrowserWindowInterface* browser) {
+    return views::NativeWidgetMacNSWindowHost::GetFromNativeWindow(
+               GetWidget(browser)->GetNativeWindow())
+        ->GetInProcessNSWindowBridge()
+        ->ns_view();
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+class BrowserNativeWidgetMacDeferInputContextTest
+    : public BrowserNativeWidgetMacDeferInputContextTestBase {
+ public:
+  BrowserNativeWidgetMacDeferInputContextTest()
+      : BrowserNativeWidgetMacDeferInputContextTestBase(/*enabled=*/true) {}
+};
+
+class BrowserNativeWidgetMacDeferInputContextDisabledTest
+    : public BrowserNativeWidgetMacDeferInputContextTestBase {
+ public:
+  BrowserNativeWidgetMacDeferInputContextDisabledTest()
+      : BrowserNativeWidgetMacDeferInputContextTestBase(/*enabled=*/false) {}
+};
+
+// With the feature disabled, a new browser window has its input context from
+// the start.
+IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacDeferInputContextDisabledTest,
+                       NewWindowDoesNotDeferInputContext) {
+  BridgedContentView* content_view = GetContentView(CreateUnshownBrowser());
+  ASSERT_TRUE(content_view);
+  EXPECT_FALSE(content_view.deferInputContextActivation);
+}
+
+// Closing a window before its first frame is presented does not crash.
+IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacDeferInputContextTest,
+                       CloseBeforeFirstFrame) {
+  BrowserWindowInterface* new_browser = CreateUnshownBrowser();
+  BridgedContentView* content_view = GetContentView(new_browser);
+  ASSERT_TRUE(content_view);
+  EXPECT_TRUE(content_view.deferInputContextActivation);
+
+  CloseBrowserSynchronously(new_browser);
+}
+
+// A new browser window opened on the New Tab Page focuses its location bar, as
+// Cmd+N does. It holds back its input context until its first frame is
+// presented, then ends the deferral in a task posted after that frame, which
+// activates the input method for the location bar. Typing then reaches it.
+IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacDeferInputContextTest,
+                       NewWindowDefersInputContextUntilFirstFrame) {
+  constexpr char kDuration[] = "InputMethod.Mac.DeferredActivation.Duration";
+  // Let the initial window end its own deferral, so only the new window
+  // records below.
+  BridgedContentView* initial_view = GetContentView(browser());
+  ASSERT_TRUE(initial_view);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !initial_view.deferInputContextActivation; }));
+  base::HistogramTester histograms;
+
+  BrowserWindowInterface* new_browser =
+      CreateUnshownBrowser(GURL(chrome::kChromeUINewTabURL));
+  views::Widget* widget = GetWidget(new_browser);
+  BridgedContentView* content_view = GetContentView(new_browser);
+  ASSERT_TRUE(content_view);
+
+  // The deferral starts when the widget is created, before it is shown.
+  EXPECT_TRUE(content_view.deferInputContextActivation);
+  EXPECT_FALSE(content_view.inputContext);
+
+  // BrowserNativeWidgetMac asked for the first frame's presentation before
+  // this callback, so its callback has run by now. It only posts the end of
+  // the deferral, so the input method is not activated inside the
+  // compositor's presentation callbacks.
+  base::RunLoop presented;
+  widget->GetCompositor()->RequestSuccessfulPresentationTimeForNextFrame(
+      base::BindLambdaForTesting(
+          [&](const viz::FrameTimingDetails& frame_timing_details) {
+            EXPECT_TRUE(content_view.deferInputContextActivation);
+            EXPECT_NE(
+                static_cast<id>(content_view),
+                static_cast<id>(NSTextInputContext.currentInputContext.client));
+            presented.Quit();
+          }));
+  // Make the window key as it shows, so the location bar takes focus before
+  // the first frame and the end of the deferral activates its input method.
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(new_browser));
+  presented.Run();
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return !content_view.deferInputContextActivation; }));
+
+  // Ending the deferral, not a later focus change, made the location bar's
+  // input context the current one.
+  ASSERT_TRUE(ui_test_utils::IsViewFocused(new_browser, VIEW_ID_OMNIBOX));
+  ASSERT_TRUE(content_view.inputContext);
+  EXPECT_EQ(content_view.inputContext, NSTextInputContext.currentInputContext);
+  histograms.ExpectTotalCount(kDuration, 1);
+
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(new_browser, ui::VKEY_A,
+                                              /*control=*/false,
+                                              /*shift=*/false, /*alt=*/false,
+                                              /*command=*/false));
+  EXPECT_EQ(u"a", BrowserView::GetBrowserViewForBrowser(new_browser)
+                      ->GetLocationBarView()
+                      ->GetOmniboxView()
+                      ->GetText());
+}
+
+// Opening a new window does not defer the input context of a window that is
+// already open.
+IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacDeferInputContextTest,
+                       NewWindowDoesNotDeferExistingWindow) {
+  BridgedContentView* existing_view = GetContentView(browser());
+  ASSERT_TRUE(existing_view);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !existing_view.deferInputContextActivation; }));
+
+  BridgedContentView* new_view = GetContentView(CreateUnshownBrowser());
+  ASSERT_TRUE(new_view);
+  EXPECT_TRUE(new_view.deferInputContextActivation);
+  EXPECT_FALSE(existing_view.deferInputContextActivation);
+}
+
+// Two windows opened back to back both end their deferral, and typing reaches
+// the location bar of the one in front.
+IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacDeferInputContextTest,
+                       TwoWindowsOpenedBackToBack) {
+  BrowserWindowInterface* first = CreateUnshownBrowser();
+  BrowserWindowInterface* second = CreateUnshownBrowser();
+  BridgedContentView* first_view = GetContentView(first);
+  BridgedContentView* second_view = GetContentView(second);
+  ASSERT_TRUE(first_view);
+  ASSERT_TRUE(second_view);
+  EXPECT_TRUE(first_view.deferInputContextActivation);
+  EXPECT_TRUE(second_view.deferInputContextActivation);
+
+  first->GetWindow()->Show();
+  second->GetWindow()->Show();
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return !first_view.deferInputContextActivation &&
+           !second_view.deferInputContextActivation;
+  }));
+
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(second));
+  ui_test_utils::FocusView(second, VIEW_ID_OMNIBOX);
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(second, ui::VKEY_A,
+                                              /*control=*/false,
+                                              /*shift=*/false, /*alt=*/false,
+                                              /*command=*/false));
+  EXPECT_EQ(u"a", BrowserView::GetBrowserViewForBrowser(second)
+                      ->GetLocationBarView()
+                      ->GetOmniboxView()
+                      ->GetText());
+}
+
+// A key press that arrives while the input context is deferred ends the
+// deferral and reaches the location bar, so the first typed key is not lost.
+IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacDeferInputContextTest,
+                       KeyPressDuringDeferralReachesLocationBar) {
+  BridgedContentView* content_view = GetContentView(browser());
+  ASSERT_TRUE(content_view);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !content_view.deferInputContextActivation; }));
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  ui_test_utils::FocusView(browser(), VIEW_ID_OMNIBOX);
+
+  // Arm the deferral again, as for a new window before its first frame.
+  content_view.deferInputContextActivation = YES;
+  ASSERT_FALSE(content_view.inputContext);
+
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_A,
+                                              /*control=*/false,
+                                              /*shift=*/false, /*alt=*/false,
+                                              /*command=*/false));
+  EXPECT_FALSE(content_view.deferInputContextActivation);
+  EXPECT_TRUE(content_view.inputContext);
+  EXPECT_EQ(u"a", BrowserView::GetBrowserViewForBrowser(browser())
+                      ->GetLocationBarView()
+                      ->GetOmniboxView()
+                      ->GetText());
 }

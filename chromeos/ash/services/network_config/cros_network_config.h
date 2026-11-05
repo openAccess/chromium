@@ -111,13 +111,6 @@ class CrosNetworkConfig
   void SetAlwaysOnVpn(chromeos::network_config::mojom::AlwaysOnVpnPropertiesPtr
                           properties) override;
   void GetSupportedVpnTypes(GetSupportedVpnTypesCallback callback) override;
-  void RequestTrafficCounters(const std::string& guid,
-                              RequestTrafficCountersCallback callback) override;
-  void ResetTrafficCounters(const std::string& guid) override;
-  void SetTrafficCountersResetDay(
-      const std::string& guid,
-      chromeos::network_config::mojom::UInt32ValuePtr day,
-      SetTrafficCountersResetDayCallback callback) override;
   void CreateCustomApn(const std::string& network_guid,
                        chromeos::network_config::mojom::ApnPropertiesPtr apn,
                        CreateCustomApnCallback callback) override;
@@ -130,10 +123,6 @@ class CrosNetworkConfig
   void ModifyCustomApn(
       const std::string& network_guid,
       chromeos::network_config::mojom::ApnPropertiesPtr apn) override;
-
-  // static
-  static chromeos::network_config::mojom::TrafficCounterSource
-  GetTrafficCounterEnumForTesting(const std::string& source);
 
  private:
   void OnGetManagedProperties(GetManagedPropertiesCallback callback,
@@ -172,9 +161,6 @@ class CrosNetworkConfig
   void SelectCellularMobileNetworkSuccess(int callback_id);
   void SelectCellularMobileNetworkFailure(int callback_id,
                                           const std::string& error_name);
-  void UpdateCustomApnList(
-      const NetworkState* network,
-      const chromeos::network_config::mojom::ConfigProperties* properties);
   std::vector<chromeos::network_config::mojom::ApnPropertiesPtr>
   GetCustomApnList(const std::string& guid);
 
@@ -188,8 +174,6 @@ class CrosNetworkConfig
   void OnGetSupportedVpnTypes(
       GetSupportedVpnTypesCallback callback,
       std::optional<base::DictValue> manager_properties);
-  void PopulateTrafficCounters(RequestTrafficCountersCallback callback,
-                               std::optional<base::Value> traffic_counters);
 
   // NetworkStateHandlerObserver:
   void NetworkListChanged() override;

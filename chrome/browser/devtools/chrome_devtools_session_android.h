@@ -15,6 +15,7 @@ class DevToolsAgentHostClientChannel;
 
 class AutofillHandler;
 class BrowserHandlerAndroid;
+class PageHandler;
 class TargetHandlerAndroid;
 
 class ChromeDevToolsSessionAndroid : public ChromeDevToolsSessionBase {
@@ -33,6 +34,7 @@ class ChromeDevToolsSessionAndroid : public ChromeDevToolsSessionBase {
  private:
   std::unique_ptr<AutofillHandler> autofill_handler_;
   std::unique_ptr<BrowserHandlerAndroid> browser_handler_;
+  std::unique_ptr<PageHandler> page_handler_;
   std::unique_ptr<TargetHandlerAndroid> target_handler_;
 };
 

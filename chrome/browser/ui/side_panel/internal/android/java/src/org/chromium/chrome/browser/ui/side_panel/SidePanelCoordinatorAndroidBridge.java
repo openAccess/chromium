@@ -6,11 +6,11 @@ package org.chromium.chrome.browser.ui.side_panel;
 
 import static org.chromium.chrome.browser.ui.side_panel.SidePanelUtils.log;
 
-import android.graphics.Rect;
 import android.view.View;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.CalledByNativeForTesting;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
@@ -18,15 +18,13 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask.NativeBrowserWindowInterface;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature;
 
 /** JNI bridge for communicating with the native {@code SidePanelCoordinatorAndroid}. */
 @NullMarked
 final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeature {
     private static final String TAG = "SidePanelCoordinatorAndroidBridge";
-
-    /** Sentinel value for invalid or unset coordinates. */
-    private static final int INVALID_COORDINATE = -1;
 
     private final SidePanelNativeBridgeSelector mNativeBridgeSelector;
 
@@ -42,9 +40,8 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
 
     @Override
     public void onAddedToTask(InitInfo initInfo) {
-        long nativeBrowserWindowPtr = initInfo.nativeBrowserWindowPtr;
-        log(TAG, "onAddedToTask", nativeBrowserWindowPtr);
-        createNativePtr(nativeBrowserWindowPtr);
+        log(TAG, "onAddedToTask");
+        createNativePtr(initInfo.nativeBrowserWindow);
     }
 
     @Override
@@ -57,14 +54,13 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
      * @see org.chromium.chrome.browser.ui.side_ui.SideUiContainer#hasContentToShow(Tab)
      */
     boolean hasContentToShow(Tab tab) {
-        // TODO(crbug.com/541376517): Update this method to actually pass the tab to native.
         boolean hasContentToShow =
                 mNativeSidePanelCoordinatorAndroid != 0
                         ? SidePanelCoordinatorAndroidBridgeJni.get()
-                                .hasContentToShow(mNativeSidePanelCoordinatorAndroid)
+                                .hasContentToShow(mNativeSidePanelCoordinatorAndroid, tab)
                         : false;
 
-        log(TAG, "hasContentToShow", hasContentToShow);
+        log(TAG, "hasContentToShow", hasContentToShow, "Tab#" + tab.getId());
         return hasContentToShow;
     }
 
@@ -94,6 +90,19 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
         if (mNativeSidePanelCoordinatorAndroid != 0) {
             SidePanelCoordinatorAndroidBridgeJni.get()
                     .onPanelContentReplaced(mNativeSidePanelCoordinatorAndroid);
+        }
+    }
+
+    /**
+     * Saves the width the user picked for the current side panel entry by resizing the side panel.
+     *
+     * @param widthDp The side panel container width in dp.
+     */
+    void onPanelResized(int widthDp) {
+        log(TAG, "onPanelResized", widthDp);
+        if (mNativeSidePanelCoordinatorAndroid != 0) {
+            SidePanelCoordinatorAndroidBridgeJni.get()
+                    .onPanelResized(mNativeSidePanelCoordinatorAndroid, widthDp);
         }
     }
 
@@ -133,13 +142,13 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
     }
 
     /**
-     * @see org.chromium.chrome.browser.ui.side_ui.SideUiContainer#onWillAutoClose()
+     * @see org.chromium.chrome.browser.ui.side_ui.SideUiContainer#onWillAutoClose
      */
-    void onWillAutoClose() {
-        log(TAG, "onWillAutoClose");
+    void onWillAutoClose(boolean isShowable) {
+        log(TAG, "onWillAutoClose", "isShowable:" + isShowable);
         if (mNativeSidePanelCoordinatorAndroid != 0) {
             SidePanelCoordinatorAndroidBridgeJni.get()
-                    .onWillAutoClose(mNativeSidePanelCoordinatorAndroid);
+                    .onWillAutoClose(mNativeSidePanelCoordinatorAndroid, isShowable);
         }
     }
 
@@ -154,15 +163,15 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
         }
     }
 
-    private void createNativePtr(long nativeBrowserWindowPtr) {
-        log(TAG, "createNativePtr", nativeBrowserWindowPtr);
-        assert nativeBrowserWindowPtr != 0
+    private void createNativePtr(@Nullable JniPtr<NativeBrowserWindowInterface> browserWindow) {
+        log(TAG, "createNativePtr");
+        assert browserWindow != null
                 : "Native BrowserWindowInterface pointer shouldn't be null. Is the"
                         + " ChromeAndroidTaskFeatureKey correct?";
         assert mNativeSidePanelCoordinatorAndroid == 0
                 : "Native SidePanelCoordinatorAndroid already exists";
         mNativeSidePanelCoordinatorAndroid =
-                SidePanelCoordinatorAndroidBridgeJni.get().create(this, nativeBrowserWindowPtr);
+                SidePanelCoordinatorAndroidBridgeJni.get().create(this, browserWindow);
     }
 
     private void destroyNativePtr() {
@@ -189,16 +198,14 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
             View sidePanelNativeView,
             @JniType("std::u16string_view") String title,
             boolean shouldShowHeader,
-            int x,
-            int y,
-            int width,
-            int height,
+            @JniType("std::optional<int32_t>") @Nullable Integer persistedPanelWidthDp,
             boolean suppressAnimations) {
-        log(TAG, "startOpeningPanel", profile, sidePanelNativeView, title, x, y, width, height);
+        log(TAG, "startOpeningPanel", profile, sidePanelNativeView, title, persistedPanelWidthDp);
         mNativeBridgeSelector.startOpeningPanel(
                 profile,
-                new SidePanelContent(sidePanelNativeView, title, shouldShowHeader),
-                createRectFromCoordinates(x, y, width, height),
+                new SidePanelContent(
+                        sidePanelNativeView, shouldShowHeader, /* icon= */ null, title),
+                persistedPanelWidthDp,
                 suppressAnimations || mDisableAnimationsForTesting);
     }
 
@@ -215,16 +222,26 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
             @JniType("Profile*") Profile profile,
             View sidePanelNativeView,
             @JniType("std::u16string_view") @Nullable String title,
-            boolean shouldShowHeader) {
-        log(TAG, "startReplacingPanelContent", profile, sidePanelNativeView, title);
+            boolean shouldShowHeader,
+            @JniType("std::optional<int32_t>") @Nullable Integer persistedPanelWidthDp) {
+        log(
+                TAG,
+                "startReplacingPanelContent",
+                profile,
+                sidePanelNativeView,
+                title,
+                persistedPanelWidthDp);
         mNativeBridgeSelector.startReplacingPanelContent(
-                profile, new SidePanelContent(sidePanelNativeView, title, shouldShowHeader));
+                profile,
+                new SidePanelContent(
+                        sidePanelNativeView, shouldShowHeader, /* icon= */ null, title),
+                persistedPanelWidthDp);
     }
 
     @CalledByNative
-    private void endAnimations(@JniType("Profile*") Profile profile) {
-        log(TAG, "endAnimations", profile);
-        mNativeBridgeSelector.endAnimations(profile);
+    private void endAnimations() {
+        log(TAG, "endAnimations");
+        mNativeBridgeSelector.endAnimations();
     }
 
     @CalledByNative
@@ -234,10 +251,15 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
     }
 
     @CalledByNativeForTesting
-    private void configDeferredViewReplacementForTesting(
-            @JniType("Profile*") Profile profile, boolean enable) {
-        log(TAG, "configDeferredViewReplacementForTesting", profile, enable);
-        mNativeBridgeSelector.configDeferredViewReplacementForTesting(profile, enable); // IN-TEST
+    private void pauseContentReplacementForTesting(@JniType("Profile*") Profile profile) {
+        log(TAG, "pauseContentReplacementForTesting", profile);
+        mNativeBridgeSelector.pauseContentReplacementForTesting(profile); // IN-TEST
+    }
+
+    @CalledByNativeForTesting
+    private void resumeContentReplacementForTesting(@JniType("Profile*") Profile profile) {
+        log(TAG, "resumeContentReplacementForTesting", profile);
+        mNativeBridgeSelector.resumeContentReplacementForTesting(profile); // IN-TEST
     }
 
     @CalledByNativeForTesting
@@ -250,6 +272,12 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
     private void simulateAutoRestoreConditionForTesting(@JniType("Profile*") Profile profile) {
         log(TAG, "simulateAutoRestoreConditionForTesting", profile);
         mNativeBridgeSelector.simulateAutoRestoreConditionForTesting(profile); // IN-TEST
+    }
+
+    @CalledByNativeForTesting
+    private void simulateTopControlsHeightChangeForTesting(@JniType("Profile*") Profile profile) {
+        log(TAG, "simulateTopControlsHeightChangeForTesting", profile);
+        mNativeBridgeSelector.simulateTopControlsHeightChangeForTesting(profile); // IN-TEST
     }
 
     @CalledByNativeForTesting
@@ -267,26 +295,18 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
         return view.getWidth();
     }
 
-    private @Nullable Rect createRectFromCoordinates(int x, int y, int width, int height) {
-        if (x == INVALID_COORDINATE
-                && y == INVALID_COORDINATE
-                && width == INVALID_COORDINATE
-                && height == INVALID_COORDINATE) {
-            return null;
-        }
-        return new Rect(x, y, x + width, y + height);
-    }
-
     @NativeMethods
     interface Natives {
         /**
          * Creates a native {@code SidePanelCoordinatorAndroid}.
          *
          * @param caller The Java object calling this method.
-         * @param nativeBrowserWindowPtr The pointer to the native {@code BrowserWindowInterface}.
+         * @param browserWindow The native {@code BrowserWindowInterface}.
          * @return The address of the native {@code SidePanelCoordinatorAndroid}.
          */
-        long create(SidePanelCoordinatorAndroidBridge caller, long nativeBrowserWindowPtr);
+        long create(
+                SidePanelCoordinatorAndroidBridge caller,
+                JniPtr<NativeBrowserWindowInterface> browserWindow);
 
         /**
          * Destroys the native {@code SidePanelCoordinatorAndroid}.
@@ -303,7 +323,8 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
         void init(long nativeSidePanelCoordinatorAndroid);
 
         /** See {@link SidePanelCoordinatorAndroidBridge#hasContentToShow}. */
-        boolean hasContentToShow(long nativeSidePanelCoordinatorAndroid);
+        boolean hasContentToShow(
+                long nativeSidePanelCoordinatorAndroid, @JniType("TabAndroid*") Tab tab);
 
         /** See {@link SidePanelCoordinatorAndroidBridge#onPanelContainerUpdated}. */
         void onPanelContainerUpdated(
@@ -312,11 +333,14 @@ final class SidePanelCoordinatorAndroidBridge implements ChromeAndroidTaskFeatur
         /** See {@link SidePanelCoordinatorAndroidBridge#onPanelContentReplaced}. */
         void onPanelContentReplaced(long nativeSidePanelCoordinatorAndroid);
 
+        /** See {@link SidePanelCoordinatorAndroidBridge#onPanelResized}. */
+        void onPanelResized(long nativeSidePanelCoordinatorAndroid, int widthDp);
+
         /** See {@link SidePanelCoordinatorAndroidBridge#onActiveChanged}. */
         void onActiveChanged(long nativeSidePanelCoordinatorAndroid, boolean active);
 
         /** See {@link SidePanelCoordinatorAndroidBridge#onWillAutoClose}. */
-        void onWillAutoClose(long nativeSidePanelCoordinatorAndroid);
+        void onWillAutoClose(long nativeSidePanelCoordinatorAndroid, boolean isShowable);
 
         /** See {@link SidePanelCoordinatorAndroidBridge#onWillAutoRestore}. */
         void onWillAutoRestore(long nativeSidePanelCoordinatorAndroid);

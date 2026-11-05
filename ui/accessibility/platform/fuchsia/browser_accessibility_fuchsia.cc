@@ -26,7 +26,7 @@ AccessibilityBridgeFuchsia*
 BrowserAccessibilityFuchsia::GetAccessibilityBridge() const {
   BrowserAccessibilityManagerFuchsia* manager_fuchsia =
       static_cast<BrowserAccessibilityManagerFuchsia*>(manager());
-  DCHECK(manager_fuchsia);
+  CHECK(manager_fuchsia, base::NotFatalUntil::M163);
 
   return manager_fuchsia->GetAccessibilityBridge();
 }
@@ -100,7 +100,7 @@ std::vector<uint32_t> BrowserAccessibilityFuchsia::GetFuchsiaChildIDs() const {
   for (const auto* child : AllChildren()) {
     const BrowserAccessibilityFuchsia* fuchsia_child =
         static_cast<const BrowserAccessibilityFuchsia*>(child);
-    DCHECK(fuchsia_child);
+    CHECK(fuchsia_child, base::NotFatalUntil::M163);
 
     child_ids.push_back(fuchsia_child->GetFuchsiaNodeID());
   }
@@ -296,11 +296,11 @@ BrowserAccessibilityFuchsia::GetFuchsiaAttributes() const {
 
   if (IsTable()) {
     fuchsia_accessibility_semantics::TableAttributes table_attributes;
-    auto col_count = GetTableColCount();
+    auto col_count = GetTableDomColCount();
     if (col_count)
       table_attributes.number_of_columns(*col_count);
 
-    auto row_count = GetTableRowCount();
+    auto row_count = GetTableDomRowCount();
     if (row_count)
       table_attributes.number_of_rows(*row_count);
 
@@ -320,19 +320,19 @@ BrowserAccessibilityFuchsia::GetFuchsiaAttributes() const {
   if (IsTableCellOrHeader()) {
     fuchsia_accessibility_semantics::TableCellAttributes table_cell_attributes;
 
-    auto col_index = GetTableCellColIndex();
+    auto col_index = GetTableCellDomColIndex();
     if (col_index)
       table_cell_attributes.column_index(*col_index);
 
-    auto row_index = GetTableCellRowIndex();
+    auto row_index = GetTableCellDomRowIndex();
     if (row_index)
       table_cell_attributes.row_index(*row_index);
 
-    auto col_span = GetTableCellColSpan();
+    auto col_span = GetTableCellDomColSpan();
     if (col_span)
       table_cell_attributes.column_span(*col_span);
 
-    auto row_span = GetTableCellRowSpan();
+    auto row_span = GetTableCellDomRowSpan();
     if (row_span)
       table_cell_attributes.row_span(*row_span);
 
@@ -441,7 +441,7 @@ bool BrowserAccessibilityFuchsia::AccessibilityPerformAction(
   if (action_data.action == ax::mojom::Action::kHitTest) {
     BrowserAccessibilityManager* root_manager =
         manager()->GetManagerForRootFrame();
-    DCHECK(root_manager);
+    CHECK(root_manager, base::NotFatalUntil::M163);
 
     AccessibilityBridgeFuchsia* accessibility_bridge = GetAccessibilityBridge();
     if (!accessibility_bridge)

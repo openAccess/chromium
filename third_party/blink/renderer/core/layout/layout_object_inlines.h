@@ -16,18 +16,18 @@ namespace blink {
 // to style_engine.h and inspector_trace_events.h for all users of
 // layout_object.h that don't use these methods.
 
-inline const ComputedStyle& LayoutObject::FirstLineStyleRef() const {
+inline const ComputedStyle& LayoutObject::FirstLineStyle() const {
   NOT_DESTROYED();
   if (GetDocument().GetStyleEngine().UsesFirstLineRules()) {
     if (const ComputedStyle* first_line_style = FirstLineStyleWithoutFallback())
       return *first_line_style;
   }
-  return StyleRef();
+  return Style();
 }
 
-inline const ComputedStyle& LayoutObject::StyleRef(bool first_line) const {
+inline const ComputedStyle& LayoutObject::Style(bool first_line) const {
   NOT_DESTROYED();
-  return first_line ? FirstLineStyleRef() : StyleRef();
+  return first_line ? FirstLineStyle() : Style();
 }
 
 // SetNeedsLayout() won't cause full paint invalidations as

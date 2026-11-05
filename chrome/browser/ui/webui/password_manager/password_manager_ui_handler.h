@@ -11,6 +11,7 @@
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate.h"
 #include "chrome/browser/password_manager/password_change/password_change_from_checkup_delegate.h"
 #include "chrome/browser/ui/webui/password_manager/password_manager.mojom.h"
+#include "components/password_manager/core/browser/ui/actor_login_permission.h"
 #include "components/password_manager/core/browser/ui/saved_passwords_presenter.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -64,7 +65,15 @@ class PasswordManagerUIHandler
 
   void RemoveBackupPassword(int id) override;
 
+  void RemoveCredential(
+      int id,
+      password_manager::mojom::PasswordStoreSet from_stores) override;
+
   void RemovePasswordException(int id) override;
+
+  void MuteInsecureCredential(int id) override;
+
+  void UnmuteInsecureCredential(int id) override;
 
   void StartBulkPasswordCheck() override;
 
@@ -76,7 +85,7 @@ class PasswordManagerUIHandler
       GetActorLoginPermissionsCallback callback) override;
 
   void RevokeActorLoginPermission(
-      password_manager::mojom::ActorLoginPermissionPtr site) override;
+      const password_manager::ActorLoginPermission& site) override;
 
   void ChangePasswordManagerPin(
       ChangePasswordManagerPinCallback callback) override;

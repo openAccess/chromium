@@ -27,6 +27,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_DOM_PSEUDO_ELEMENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_DOM_PSEUDO_ELEMENT_H_
 
+#include <utility>
+
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
@@ -60,6 +62,8 @@ class CORE_EXPORT PseudoElement : public Element {
   bool LayoutObjectIsNeeded(const DisplayStyle&) const override;
   bool CanGeneratePseudoElement(PseudoId) const override;
 
+  // Returns true if the PseudoElement can generates child boxes based on the
+  // CSS content property.
   bool CanGenerateContent() const;
   bool CanHaveNestedPseudoElement() const;
   bool CanStartSelection() const override { return false; }
@@ -71,6 +75,11 @@ class CORE_EXPORT PseudoElement : public Element {
   PseudoId GetPseudoIdForStyling() const override;
   void DefaultEventHandler(Event&) override;
   const AtomicString& GetPseudoArgument() const { return pseudo_argument_; }
+  // Returns the pseudo id and argument of the pseudo-element selector that
+  // refers to this pseudo-element, e.g. {kPseudoIdScrollButton, "block-start"}
+  // for ::scroll-button(block-start).
+  virtual std::pair<PseudoId, AtomicString> GetSelectorPseudoIdAndArgument()
+      const;
 
   // Return the adjusted style needed by layout. In some cases computed style
   // cannot be used as-is by layout. display:contents needs to be adjusted to

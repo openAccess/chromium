@@ -19,6 +19,9 @@
     (ComposeboxViewController*)viewController;
 // Indicates to the delegate to handle a change in horizontal size class.
 - (void)composeboxHorizontalSizeClassDidChange;
+// Indicates to the delegate that the close tab key command was triggered.
+- (void)composeboxViewControllerDidCloseTab:
+    (ComposeboxViewController*)viewController;
 @end
 
 // View Controller that contains the composebox, presenting it modally.
@@ -55,6 +58,9 @@
 // Whether the system anticipates a clipboard suggestion causing the incognito
 // view to remain hidden.
 - (void)setExpectsClipboardSuggestion:(BOOL)expectsClipboardSuggestion;
+
+// Updates the theme and re-applies layout and appearance constraints.
+- (void)updateTheme:(ComposeboxTheme*)theme;
 
 @end
 

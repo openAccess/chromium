@@ -37,8 +37,8 @@ namespace {
 constexpr base::MemoryConsumerTraits kFontGlobalContextTraits(
     // Platform font metadata cache; footprint under 10MB.
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    // Invalidation requires traversing maps and notifying clients.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    // Invalidation walks the maps, reading the entries being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     // Data structures can be reconstructed from descriptions.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Synchronously clears maps inline.
@@ -73,6 +73,12 @@ FontUniqueNameLookup* FontGlobalContext::GetFontUniqueNameLookup() {
         FontUniqueNameLookup::GetPlatformUniqueNameLookup();
   }
   return Get().font_unique_name_lookup_.get();
+}
+
+// static
+void FontGlobalContext::SetFontUniqueNameLookupForTesting(
+    std::unique_ptr<FontUniqueNameLookup> font_unique_name_lookup) {
+  Get().font_unique_name_lookup_ = std::move(font_unique_name_lookup);
 }
 
 void FontGlobalContext::Init() {

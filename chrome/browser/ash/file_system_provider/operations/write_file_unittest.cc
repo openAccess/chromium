@@ -14,9 +14,9 @@
 #include "base/values.h"
 #include "chrome/browser/ash/file_system_provider/icon_set.h"
 #include "chrome/browser/ash/file_system_provider/operations/test_util.h"
-#include "chrome/common/extensions/api/file_system_provider.h"
-#include "chrome/common/extensions/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
-#include "chrome/common/extensions/api/file_system_provider_internal.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider_internal.h"
 #include "extensions/browser/event_router.h"
 #include "net/base/io_buffer.h"
 #include "storage/browser/file_system/async_file_util.h"
@@ -69,7 +69,7 @@ TEST_F(FileSystemProviderOperationsWriteFileTest, Execute) {
   EXPECT_EQ(
       extensions::api::file_system_provider::OnWriteFileRequested::kEventName,
       event->event_name);
-  const base::ListValue& event_args = event->event_args;
+  const base::ListValue& event_args = event->args();
   ASSERT_EQ(1u, event_args.size());
 
   const base::Value* options_as_value = &event_args[0];

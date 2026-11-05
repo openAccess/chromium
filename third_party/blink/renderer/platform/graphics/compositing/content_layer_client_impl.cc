@@ -26,6 +26,7 @@
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 #if DCHECK_IS_ON()
+#include "cc/paint/raster_inducing_values.h"
 #include "cc/trees/layer_tree_host.h"
 #include "cc/trees/property_tree.h"
 #endif
@@ -79,17 +80,17 @@ void ContentLayerClientImpl::AppendAdditionalInfoAsJSON(
 #if DCHECK_IS_ON()
   if (flags & kLayerTreeIncludesPaintRecords) {
     LoggingCanvas canvas;
-    base::flat_map<cc::ElementId, gfx::PointF> raster_inducing_scroll_offsets;
+    cc::RasterInducingValues raster_inducing_values;
     for (auto& [scroll_element_id, _] :
          cc_display_item_list_->raster_inducing_scrolls()) {
-      raster_inducing_scroll_offsets[scroll_element_id] =
+      raster_inducing_values.scroll_offsets[scroll_element_id] =
           layer.layer_tree_host()
               ->property_trees()
               ->scroll_tree()
               .current_scroll_offset(scroll_element_id);
     }
     cc_display_item_list_->Raster(&canvas, /*image_provider=*/nullptr,
-                                  &raster_inducing_scroll_offsets);
+                                  &raster_inducing_values);
     json.SetValue("paintRecord", canvas.Log());
   }
 #endif
@@ -137,10 +138,11 @@ void ContentLayerClientImpl::UpdateCcPictureLayer(
             paint_chunks[0].id.client_id));
   }
 
-  if (const auto* state = layer_state.Effect().canvas_child_paint_state()) {
-    canvas_child_paint_state_ = std::make_unique<CanvasChildPaintState>(*state);
+  if (const auto* state = layer_state.Effect().canvas_drawable_paint_state()) {
+    canvas_drawable_paint_state_ =
+        std::make_unique<CanvasDrawablePaintState>(*state);
   } else {
-    canvas_child_paint_state_.reset();
+    canvas_drawable_paint_state_.reset();
   }
 
   // Note: cc::Layer API assumes the layer bounds start at (0, 0), but the
@@ -244,13 +246,13 @@ void ContentLayerClientImpl::InvalidateRect(const gfx::Rect& rect) {
   cc_picture_layer_->SetNeedsDisplayRect(rect);
 }
 
-std::optional<CanvasChildPaintRecord>
-ContentLayerClientImpl::GetCanvasChildPaintRecord() const {
-  if (!canvas_child_paint_state_) {
+std::optional<CanvasDrawablePaintRecord>
+ContentLayerClientImpl::GetCanvasDrawablePaintRecord() const {
+  if (!canvas_drawable_paint_state_) {
     return std::nullopt;
   }
   gfx::Vector2dF offset = cc_picture_layer_->offset_to_transform_parent() -
-                          canvas_child_paint_state_->reference_box_offset;
+                          canvas_drawable_paint_state_->reference_box_offset;
   cc::PaintRecord record;
   if (offset.IsZero()) {
     record = cc_display_item_list_->paint_op_buffer().DeepCopyAsRecord();
@@ -260,7 +262,8 @@ ContentLayerClientImpl::GetCanvasChildPaintRecord() const {
     *result += cc_display_item_list_->paint_op_buffer();
     record = result->ReleaseAsRecord();
   }
-  return CanvasChildPaintRecord{*canvas_child_paint_state_, std::move(record)};
+  return CanvasDrawablePaintRecord{*canvas_drawable_paint_state_,
+                                   std::move(record)};
 }
 
 size_t ContentLayerClientImpl::ApproximateUnsharedMemoryUsage() const {

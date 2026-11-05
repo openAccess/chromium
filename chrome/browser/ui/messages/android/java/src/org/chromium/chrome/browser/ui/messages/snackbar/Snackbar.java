@@ -18,6 +18,7 @@ import org.chromium.chrome.ui.messages.R;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Objects;
 
 /**
  * A snackbar shows a message at the bottom of the screen and optionally contains an action button.
@@ -45,8 +46,8 @@ public class Snackbar {
     /**
      * Snackbars that need to persist until acknowledged. These snackbars are stored in a queue and
      * are lower priority than both {@link #TYPE_ACTION}, and {@link #TYPE_NOTIFICATION}. These must
-     * be dismissed one by one via a click. As such, snackbars of this type MUST call
-     * {@link #setAction(String, Object)} so that there is a way to remove them.
+     * be dismissed one by one via a click. As such, snackbars of this type MUST call {@link
+     * #setAction(String, Object)} so that there is a way to remove them.
      */
     public static final int TYPE_PERSISTENT = 2;
 
@@ -124,8 +125,8 @@ public class Snackbar {
     public static final int UMA_SINGLE_TAB_GROUP_DELETE_UNDO = 66;
     public static final int UMA_SAFETY_HUB_REGRANT_SINGLE_PERMISSION = 67;
     public static final int UMA_SAFETY_HUB_REGRANT_MULTIPLE_PERMISSIONS = 68;
-    public static final int UMA_SAFETY_HUB_SINGLE_SITE_NOTIFICATIONS = 69;
-    public static final int UMA_SAFETY_HUB_MULTIPLE_SITE_NOTIFICATIONS = 70;
+    // Obsolete; don't use: UMA_SAFETY_HUB_SINGLE_SITE_NOTIFICATIONS = 69;
+    // Obsolete; don't use: UMA_SAFETY_HUB_MULTIPLE_SITE_NOTIFICATIONS = 70;
     public static final int UMA_SETTINGS_BATCH_UPLOAD = 71;
     public static final int UMA_REVOKE_FILE_EDIT_GRANT = 72;
     public static final int UMA_SEARCH_ENGINE_CHANGED_NOTIFICATION = 73;
@@ -152,10 +153,14 @@ public class Snackbar {
     public static final int UMA_FACILITATED_PAYMENTS_PIX_ACCOUNT_LINKING_ERROR = 94;
     public static final int UMA_GLIC_UNPIN_UNDO = 95;
     public static final int UMA_GLIC_MIC_DISABLED = 96;
+    public static final int UMA_AUTOFILL_AI_SUPPRESSION_UNDO = 97;
+    public static final int UMA_ACTOR_EXTERNAL_TRIGGER = 98;
+    public static final int UMA_IN_APP_UPDATE_DISCOVERY = 99;
+    public static final int UMA_IN_APP_UPDATE_RESTART = 100;
     // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/enums.xml:SnackbarIdentifier)
 
     private final @Nullable SnackbarController mController;
-    private final @Nullable CharSequence mText;
+    private @Nullable CharSequence mText;
     private @Nullable String mTemplateText;
     private @Nullable String mActionText;
     private @Nullable Object mActionData;
@@ -168,6 +173,7 @@ public class Snackbar {
     private final int mType;
     private int mIdentifier = UMA_UNKNOWN;
     private @Theme int mTheme = Theme.BASIC;
+    private boolean mAnimateIn = true;
 
     @IntDef({Theme.BASIC, Theme.GOOGLE})
     @Retention(RetentionPolicy.SOURCE)
@@ -219,6 +225,12 @@ public class Snackbar {
      */
     public Snackbar setHighPriority(boolean highPriority) {
         mIsHighPriority = highPriority;
+        return this;
+    }
+
+    /** Sets the text to show on the snackbar. */
+    public Snackbar setText(@Nullable CharSequence text) {
+        mText = text;
         return this;
     }
 
@@ -300,6 +312,12 @@ public class Snackbar {
         return this;
     }
 
+    /** Sets whether the snackbar should animate in when shown. */
+    public Snackbar setAnimateIn(boolean animateIn) {
+        mAnimateIn = animateIn;
+        return this;
+    }
+
     /**
      * @return The {@link SnackbarController} that controls this snackbar.
      */
@@ -325,7 +343,8 @@ public class Snackbar {
         return mActionData;
     }
 
-    boolean getDefaultLines() {
+    @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
+    public boolean getDefaultLines() {
         return mDefaultLines;
     }
 
@@ -378,8 +397,17 @@ public class Snackbar {
     /**
      * @return Whether the snackbar is high priority.
      */
-    boolean isHighPriority() {
+    @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
+    public boolean isHighPriority() {
         return mIsHighPriority;
+    }
+
+    /**
+     * @return Whether the snackbar should animate in when shown.
+     */
+    @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
+    public boolean shouldAnimateIn() {
+        return mAnimateIn;
     }
 
     public int getIdentifierForTesting() {
@@ -388,5 +416,44 @@ public class Snackbar {
 
     public @Nullable CharSequence getTextForTesting() {
         return mText;
+    }
+
+    @Override
+    public boolean equals(@Nullable Object obj) {
+        if (this == obj) return true;
+        if (!(obj instanceof Snackbar other)) return false;
+        return mController == other.mController
+                && Objects.equals(mText, other.mText)
+                && Objects.equals(mTemplateText, other.mTemplateText)
+                && Objects.equals(mActionText, other.mActionText)
+                && Objects.equals(mActionData, other.mActionData)
+                && mBackgroundColor == other.mBackgroundColor
+                && mTextAppearanceResId == other.mTextAppearanceResId
+                && mDefaultLines == other.mDefaultLines
+                && mIsHighPriority == other.mIsHighPriority
+                && mDurationMs == other.mDurationMs
+                && Objects.equals(mProfileImage, other.mProfileImage)
+                && mType == other.mType
+                && mIdentifier == other.mIdentifier
+                && mTheme == other.mTheme;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(
+                mController,
+                mText,
+                mTemplateText,
+                mActionText,
+                mActionData,
+                mBackgroundColor,
+                mTextAppearanceResId,
+                mDefaultLines,
+                mIsHighPriority,
+                mDurationMs,
+                mProfileImage,
+                mType,
+                mIdentifier,
+                mTheme);
     }
 }

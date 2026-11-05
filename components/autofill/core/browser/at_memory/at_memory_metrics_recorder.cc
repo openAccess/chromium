@@ -112,6 +112,11 @@ std::string_view MemoryDataTypeToCategoryString(MemoryDataType type) {
     case MemoryDataType::kKnownTravelerNumberExpirationDate:
       return "KnownTravelerNumber";
 
+    case MemoryDataType::kLoyaltyMembershipId:
+    case MemoryDataType::kLoyaltyMembershipProgram:
+    case MemoryDataType::kLoyaltyMembershipProvider:
+      return "LoyaltyCard";
+
     case MemoryDataType::kNationalIdCardName:
     case MemoryDataType::kNationalIdCardCountry:
     case MemoryDataType::kNationalIdCardNumber:
@@ -183,6 +188,39 @@ std::string_view GetQueryDatatypeCategory(const MemorySearchResults& result) {
   return category.value_or("Empty");
 }
 
+// Maps an AtMemory `trigger_source` to the corresponding metrics enum.
+AutofillMetrics::AtMemoryTriggerSource ToAtMemoryTriggerSource(
+    AutofillSuggestionTriggerSource trigger_source) {
+  switch (trigger_source) {
+    case AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
+      return AutofillMetrics::AtMemoryTriggerSource::kContextMenu;
+    case AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl:
+      return AutofillMetrics::AtMemoryTriggerSource::kDoubleCtrl;
+    case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
+      return AutofillMetrics::AtMemoryTriggerSource::kKeyboardShortcut;
+    case AutofillSuggestionTriggerSource::kUnspecified:
+    case AutofillSuggestionTriggerSource::kFormControlElementClicked:
+    case AutofillSuggestionTriggerSource::kTextareaFocusedWithoutClick:
+    case AutofillSuggestionTriggerSource::kContentEditableClicked:
+    case AutofillSuggestionTriggerSource::kTextFieldValueChanged:
+    case AutofillSuggestionTriggerSource::kTextFieldDidReceiveKeyDown:
+    case AutofillSuggestionTriggerSource::kOpenTextDataListChooser:
+    case AutofillSuggestionTriggerSource::kPasswordManager:
+    case AutofillSuggestionTriggerSource::kiOS:
+    case AutofillSuggestionTriggerSource::kManualFallbackPasswords:
+    case AutofillSuggestionTriggerSource::kComposeDialogLostFocus:
+    case AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
+    case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
+    case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
+    case AutofillSuggestionTriggerSource::kGmailOneTimePasswordAvailable:
+    case AutofillSuggestionTriggerSource::kGlic:
+    case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
+      break;
+  }
+  // This class should only be used for AtMemory searches.
+  NOTREACHED();
+}
+
 }  // namespace
 
 AtMemoryMetricsRecorder::AtMemoryMetricsRecorder(
@@ -232,13 +270,19 @@ AtMemoryMetricsRecorder::~AtMemoryMetricsRecorder() {
   }
   base::UmaHistogramEnumeration("Autofill.AtMemory.UiSessionOutcome",
                                 session_outcome);
+  if (session_outcome == AtMemoryUiSessionOutcome::kDismissedBeforeResults &&
+      query_to_suggestions_shown_timer_) {
+    base::UmaHistogramMediumTimes(
+        "Autofill.AtMemory.Latency.DismissedBeforeResults",
+        query_to_suggestions_shown_timer_->Elapsed());
+  }
 
   base::UmaHistogramBoolean("Autofill.AtMemory.QuerySubmitted",
                             query_count_ > 0);
   MaybeLogSuggestionAccepted();
   base::UmaHistogramBoolean("Autofill.AtMemory.SuggestionAcceptedInSession",
                             suggestion_accepted_in_session_);
-  if (suggestion_acceptance_.accepted_data_type.has_value()) {
+  if (suggestion_accepted_in_session_) {
     base::UmaHistogramBoolean("Autofill.AtMemory.SuggestionFilled",
                               suggestion_filled_in_session_);
     if (fetch_pii_.duration && fetch_pii_.source) {
@@ -268,16 +312,14 @@ AtMemoryMetricsRecorder::~AtMemoryMetricsRecorder() {
 
 void AtMemoryMetricsRecorder::OnPopupShown(
     AutofillSuggestionTriggerSource trigger_source,
-    base::optional_ref<const AutofillSuggestionDelegate::SuggestionMetadata>
-        parent_suggestion_metadata) {
-  if (parent_suggestion_metadata.has_value()) {
-    if (pending_log_entry_ &&
-        !parent_suggestion_metadata->multi_index.empty()) {
+    const AutofillSuggestionDelegate::SuggestionUiMetadata& metadata) {
+  if (metadata.is_subpopup()) {
+    if (pending_log_entry_) {
       optimization_guide::proto::AtMemoryQuality* quality =
           pending_log_entry_->log_ai_data_request()
               ->mutable_at_memory()
               ->mutable_quality();
-      size_t root_index = parent_suggestion_metadata->multi_index[0];
+      size_t root_index = metadata.multi_index[0];
       if (root_index < static_cast<size_t>(quality->suggestions_size())) {
         auto* root_suggestion = quality->mutable_suggestions(root_index);
         root_suggestion->set_action(
@@ -287,51 +329,37 @@ void AtMemoryMetricsRecorder::OnPopupShown(
     }
     return;
   }
-  if (source_.has_value()) {
+  // `OnPopupShown()` is called again whenever the suggestions of a visible
+  // popup are updated (e.g. while typing or fetching), so only the first call
+  // after the popup became visible counts as a new display.
+  if (is_popup_displayed_) {
     return;
   }
+  is_popup_displayed_ = true;
 
-  switch (trigger_source) {
-    case AutofillSuggestionTriggerSource::kAtMemoryContextMenu:
-      source_ = AutofillMetrics::AtMemoryTriggerSource::kContextMenu;
-      break;
-    case AutofillSuggestionTriggerSource::kAtMemoryDoubleCtrl:
-      source_ = AutofillMetrics::AtMemoryTriggerSource::kDoubleCtrl;
-      break;
-    case AutofillSuggestionTriggerSource::kAtMemoryKeyboardShortcut:
-      source_ = AutofillMetrics::AtMemoryTriggerSource::kKeyboardShortcut;
-      break;
-    case AutofillSuggestionTriggerSource::kAtMemoryTriggerString:
-      source_ = AutofillMetrics::AtMemoryTriggerSource::kTypedTrigger;
-      break;
-    case AutofillSuggestionTriggerSource::kUnspecified:
-    case AutofillSuggestionTriggerSource::kFormControlElementClicked:
-    case AutofillSuggestionTriggerSource::kTextareaFocusedWithoutClick:
-    case AutofillSuggestionTriggerSource::kContentEditableClicked:
-    case AutofillSuggestionTriggerSource::kTextFieldValueChanged:
-    case AutofillSuggestionTriggerSource::kTextFieldDidReceiveKeyDown:
-    case AutofillSuggestionTriggerSource::kOpenTextDataListChooser:
-    case AutofillSuggestionTriggerSource::kPasswordManager:
-    case AutofillSuggestionTriggerSource::kiOS:
-    case AutofillSuggestionTriggerSource::kManualFallbackPasswords:
-    case AutofillSuggestionTriggerSource::kComposeDialogLostFocus:
-    case AutofillSuggestionTriggerSource::kComposeDelayedProactiveNudge:
-    case AutofillSuggestionTriggerSource::kPasswordManagerProcessedFocusedField:
-    case AutofillSuggestionTriggerSource::kProactivePasswordRecovery:
-    case AutofillSuggestionTriggerSource::kGlic:
-    case AutofillSuggestionTriggerSource::kAtMemoryInactivityNudge:
-      // This class should only be used for AtMemory searches.
-      NOTREACHED();
+  const AutofillMetrics::AtMemoryTriggerSource source =
+      ToAtMemoryTriggerSource(trigger_source);
+  // `source_` keeps the trigger of the first display of the session. It serves
+  // as a signal that the user has actually seen the suggestions.
+  if (!source_) {
+    source_ = source;
   }
+  base::UmaHistogramEnumeration("Autofill.AtMemory.SearchBarDisplayed", source);
+}
 
-  // `source_` is set only when the popup is successfully displayed. This
-  // serves as a signal that the user has actually seen the suggestions.
-  base::UmaHistogramEnumeration("Autofill.AtMemory.SearchBarDisplayed",
-                                *source_);
+void AtMemoryMetricsRecorder::OnPopupHidden() {
+  is_popup_displayed_ = false;
+}
+
+void AtMemoryMetricsRecorder::OnStateRestored(
+    AtMemoryStateRestored state_restored) {
+  base::UmaHistogramEnumeration("Autofill.AtMemory.StateRestored",
+                                state_restored);
 }
 
 void AtMemoryMetricsRecorder::OnQuerySubmitted(std::u16string_view query) {
   ++query_count_;
+  query_results_count_ = 0;
 
   query_to_suggestions_shown_timer_.emplace();
 
@@ -367,9 +395,15 @@ void AtMemoryMetricsRecorder::OnSuggestionAccepted(
     MemorySourcesBitmask sources_bitmask,
     base::optional_ref<const AutofillSuggestionDelegate::SuggestionMetadata>
         metadata) {
-  suggestion_acceptance_.accepted_data_type = memory_data_type;
+  suggestion_acceptance_.suggestion_accepted = true;
   suggestion_accepted_in_session_ = true;
-  suggestion_acceptance_.accepted_sources_bitmask = sources_bitmask;
+
+  base::UmaHistogramEnumeration("Autofill.AtMemory.AcceptedSuggestionDataType",
+                                memory_data_type);
+  base::UmaHistogramCounts100("Autofill.AtMemory.QueryCountBeforeAcceptance",
+                              query_count_);
+  base::UmaHistogramSparse("Autofill.AtMemory.AcceptedSuggestionDataSources",
+                           sources_bitmask);
 
   if (ukm_search_query_builder_) {
     ukm_search_query_builder_->SetSuggestionAccepted(true);
@@ -419,6 +453,7 @@ void AtMemoryMetricsRecorder::OnSuggestionAccepted(
 void AtMemoryMetricsRecorder::OnQueryResponseReceived(
     const MemorySearchResults& result) {
   ++query_response_count_;
+  query_results_count_ = result.entries.size();
   if (std::optional<AtMemoryQueryCompletedStatus> status =
           GetQueryCompletedStatus(result)) {
     base::UmaHistogramEnumeration("Autofill.AtMemory.QueryCompleted", *status);
@@ -436,11 +471,12 @@ void AtMemoryMetricsRecorder::OnQueryResponseReceived(
 
   base::TimeDelta time_since_query_submitted =
       query_to_suggestions_shown_timer_->Elapsed();
-  base::UmaHistogramTimes("Autofill.AtMemory.Latency.Query",
-                          time_since_query_submitted);
-  base::UmaHistogramTimes(base::StrCat({"Autofill.AtMemory.Latency.Query.",
-                                        GetQueryDatatypeCategory(result)}),
-                          time_since_query_submitted);
+  base::UmaHistogramMediumTimes("Autofill.AtMemory.Latency.Query",
+                                time_since_query_submitted);
+  base::UmaHistogramMediumTimes(
+      base::StrCat({"Autofill.AtMemory.Latency.Query.",
+                    GetQueryDatatypeCategory(result)}),
+      time_since_query_submitted);
   if (ukm_search_query_builder_) {
     ukm_search_query_builder_->SetQueryLatencyMs(
         time_since_query_submitted.InMilliseconds());
@@ -485,11 +521,6 @@ void AtMemoryMetricsRecorder::OnFetchPiiCompleted() {
   fetch_pii_.duration.emplace(base::TimeTicks::Now() - *fetch_pii_.start_time);
 }
 
-void AtMemoryMetricsRecorder::OnFetchPersonalContextPiiDataFailed(
-    AtMemoryQueryService::SpiiRetrievalFailureReason reason) {
-  base::UmaHistogramEnumeration(
-      "Autofill.AtMemory.FetchPersonalContextPiiData.FailureReason", reason);
-}
 
 void AtMemoryMetricsRecorder::MarkFilled() {
   suggestion_filled_in_session_ = true;
@@ -500,20 +531,8 @@ void AtMemoryMetricsRecorder::MarkFilled() {
 
 void AtMemoryMetricsRecorder::MaybeLogSuggestionAccepted() {
   if (suggestion_acceptance_.suggestions_received) {
-    base::UmaHistogramBoolean(
-        "Autofill.AtMemory.SuggestionAccepted",
-        suggestion_acceptance_.accepted_data_type.has_value());
-  }
-  if (suggestion_acceptance_.accepted_data_type.has_value()) {
-    base::UmaHistogramEnumeration(
-        "Autofill.AtMemory.AcceptedSuggestionDataType",
-        *suggestion_acceptance_.accepted_data_type);
-    base::UmaHistogramCounts100("Autofill.AtMemory.QueryCountBeforeAcceptance",
-                                query_count_);
-  }
-  if (suggestion_acceptance_.accepted_sources_bitmask.has_value()) {
-    base::UmaHistogramSparse("Autofill.AtMemory.AcceptedSuggestionDataSources",
-                             *suggestion_acceptance_.accepted_sources_bitmask);
+    base::UmaHistogramBoolean("Autofill.AtMemory.SuggestionAccepted",
+                              suggestion_acceptance_.suggestion_accepted);
   }
 }
 

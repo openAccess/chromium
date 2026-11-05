@@ -161,6 +161,7 @@ crbug.com/41254976 [ Mac ] fast/events/pointerevents/pointer-event-in-slop-regio
 crbug.com/41254976 [ Mac ] fast/events/touch/gesture/* [ Skip ]
 crbug.com/41254976 [ Mac ] fast/scrolling/resize-corner-tracking-touch.html [ Skip ]
 crbug.com/41254976 [ Mac ] fast/scrolling/scrollbars/touch-scrolling-on-root-scrollbar.html [ Skip ]
+crbug.com/793771 [ Mac ] media/controls/scrubbing.html [ Skip ]
 crbug.com/41254976 [ Mac ] virtual/threaded/synthetic_gestures/synthetic-pinch-zoom-gesture-touchscreen.html [ Skip ]
 
 # Thumb snapping is not supported on Linux and Mac.
@@ -534,6 +535,10 @@ external/wpt/css/css-fonts/font-size-adjust-003.xht [ Skip ]
 external/wpt/css/css-fonts/font-weight-bolder-001.xht [ Skip ]
 external/wpt/css/css-fonts/font-weight-lighter-001.xht [ Skip ]
 external/wpt/css/css-fonts/font-weight-normal-001.xht [ Skip ]
+crbug.com/555893256 external/wpt/css/css-overflow/text-overflow-017.html [ Skip ]
+crbug.com/555893256 external/wpt/css/css-overflow/text-overflow-018.html [ Skip ]
+crbug.com/555893256 external/wpt/css/css-overflow/text-overflow-019.html [ Skip ]
+crbug.com/555893256 external/wpt/css/css-overflow/text-overflow.html [ Skip ]
 external/wpt/css/css-text-decor/text-decoration-line-014.xht [ Skip ]
 external/wpt/css/css-ui/canvas-cursor-001.html [ Skip ]
 external/wpt/css/css-ui/canvas-cursor-002.html [ Skip ]
@@ -757,10 +762,6 @@ external/wpt/css/css-ui/resize-018.html [ Skip ]
 external/wpt/css/css-ui/resize-019.html [ Skip ]
 external/wpt/css/css-ui/resize-020.html [ Skip ]
 external/wpt/css/css-ui/resize-021.html [ Skip ]
-external/wpt/css/css-ui/text-overflow-017.html [ Skip ]
-external/wpt/css/css-ui/text-overflow-018.html [ Skip ]
-external/wpt/css/css-ui/text-overflow-019.html [ Skip ]
-external/wpt/css/css-ui/text-overflow.html [ Skip ]
 external/wpt/css/css-writing-modes/background-position-vlr-003.xht [ Skip ]
 external/wpt/css/css-writing-modes/background-position-vlr-005.xht [ Skip ]
 external/wpt/css/css-writing-modes/background-position-vlr-007.xht [ Skip ]
@@ -838,6 +839,9 @@ paint/invalidation/compositing/subpixel-offset-scaled-transform-composited.html 
 
 # Tests that use too much storage for automation.
 http/tests/cachestorage/large-put.html [ Skip ]
+
+# System accent color has no override mechanism on mac
+[ Mac ] wpt_internal/html/canvas/drawElementImage/privacy/accent-color-ignored.html [ Skip ]
 
 # Below are manual tests from web-platform-tests without automation.
 external/wpt/css/CSS2/tables/table-footer-group-004.xht [ Skip ]
@@ -1864,7 +1868,3 @@ crbug.com/452389538 virtual/prefetch-force-off-the-main-thread-wculf/external/wp
 
 # OOM crash on Windows, marked as WontFix
 crbug.com/379516106 [ Win ] external/wpt/css/css-overflow/scrollbar-large-scale-in-iframe.html [ Skip ]
-
-# requestStorageAccessFor is disabled and will be removed.
-external/wpt/top-level-storage-access-api/* [ Skip ]
-external/wpt/html/anonymous-iframe/requestStorageAccessFor.tentative.https.window.html [ Skip ]

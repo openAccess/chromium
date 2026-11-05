@@ -28,9 +28,34 @@ namespace readaloud {
 // ReadAloudService initialization and destroyed with the service.
 class SpeechSynthesisBroker {
  public:
-  static constexpr char kDefaultVoiceId[] = "en-US-Wavenet-A";
+  static constexpr char kDefaultVoiceId[] = "msf00006";
+  static constexpr char kOverviewVoiceSpeaker1[] = "msf00006";
+  static constexpr char kOverviewVoiceSpeaker2[] = "msm00013";
   static inline const base::i18n::LanguageTag kDefaultLanguageTag =
       base::i18n::GetKnownLanguageTag("en");
+
+  // Abort reasons for speech synthesis pre-flight checks.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(SpeechSynthesisAbortReason)
+  enum class AbortReason {
+    kNullOptimizationGuideService = 0,
+    kEmptyTextChunk = 1,
+    kMaxValue = kEmptyTextChunk,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/readaloud/enums.xml:ReadAloudSynthesisModelExecutionAbortReason)
+
+  // Server results for speech synthesis remote execution.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(SpeechSynthesisServerResult)
+  enum class ServerResult {
+    kSuccess = 0,
+    kModelExecutionError = 1,
+    kEmptyResponse = 2,
+    kMaxValue = kEmptyResponse,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/readaloud/enums.xml:ReadAloudSynthesisModelExecutionServerResult)
 
   // Callback invoked when speech synthesis completes.
   // Receives raw response payload bytes (mojo_base::BigBuffer) and success
@@ -55,14 +80,20 @@ class SpeechSynthesisBroker {
   std::string_view language_code() const;
 
   // Constructs a ReadAloudSynthesizeRequest protobuf from the given text chunk
-  // and active voice/language settings.
+  // and active voice/language settings. If `voice_id_override` is non-empty, it
+  // overrides the broker's configured `voice_id_`.
   optimization_guide::proto::ReadAloudSynthesizeRequest BuildSynthesizeRequest(
-      std::u16string_view text_chunk) const;
+      std::u16string_view text_chunk,
+      std::string_view voice_id_override = {}) const;
 
   // Issues an asynchronous speech synthesis request via
   // OptimizationGuideKeyedService. Enforces Rule of Two security boundary by
   // returning raw payload bytes in BigBuffer without deserializing
   // ReadAloudSynthesizeResponse in the Browser process.
+  void SynthesizeSpeech(OptimizationGuideKeyedService* opt_guide_service,
+                        std::u16string_view text_chunk,
+                        std::string_view voice_id_override,
+                        SynthesizeSpeechCallback callback);
   void SynthesizeSpeech(OptimizationGuideKeyedService* opt_guide_service,
                         std::u16string_view text_chunk,
                         SynthesizeSpeechCallback callback);

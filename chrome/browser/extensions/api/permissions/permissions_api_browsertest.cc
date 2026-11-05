@@ -2,13 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/extensions/api/permissions/permissions_api.h"
+#include "extensions/browser/api/permissions/permissions_api.h"
 
 #include <memory>
 #include <optional>
 #include <string>
 
 #include "base/auto_reset.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/strings/string_number_conversions.h"
@@ -48,7 +49,6 @@
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/test/base/test_browser_window.h"
 #endif
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
@@ -1218,7 +1218,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
 
   // Grant one-time host access.
   ActiveTabPermissionGranter::FromWebContents(web_contents)
-      ->GrantIfRequested(extension.get());
+      ->GrantIfRequested(extension.get(), base::DoNothing());
 
   // Add host access request for requested.com. Request is invalid because
   // extension already has host access (even if it's just one-time).
@@ -1588,8 +1588,15 @@ IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
 
 // Test that adding and removing host access requests are throttled when
 // the cooldown is active.
+// TODO(crbug.com/565866457): Flaky on Debug, ASan, and MSan due to 200ms
+// real-time cooldown.
+#if !defined(NDEBUG) || defined(ADDRESS_SANITIZER) || defined(MEMORY_SANITIZER)
+#define MAYBE_HostAccessRequestCooldown DISABLED_HostAccessRequestCooldown
+#else
+#define MAYBE_HostAccessRequestCooldown HostAccessRequestCooldown
+#endif
 IN_PROC_BROWSER_TEST_F(PermissionsAPIHostAccessRequestsUnitTest,
-                       HostAccessRequestCooldown) {
+                       MAYBE_HostAccessRequestCooldown) {
   scoped_refptr<const Extension> extension =
       ExtensionBuilder("Extension")
           .AddHostPermission("*://*.requested.com/*")

@@ -12,8 +12,6 @@ source_set("password_protection") {
     "request_canceler.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   deps = [
     ":password_protection_metrics_util",
     "//base",
@@ -27,7 +25,7 @@ source_set("password_protection") {
     "//components/safe_browsing/core/browser:verdict_cache_manager",
     "//components/safe_browsing/core/browser/db:allowlist_checker_client",
     "//components/safe_browsing/core/browser/db:database_manager",
-    "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
+    "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
     "//components/safe_browsing/core/browser/sync",
     "//components/safe_browsing/core/common",
     "//components/safe_browsing/core/common:safe_browsing_prefs",
@@ -65,8 +63,6 @@ source_set("password_protection_metrics_util") {
     "metrics_util.cc",
     "metrics_util.h",
   ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   deps = [
     "//base",

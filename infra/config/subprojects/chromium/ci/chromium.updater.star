@@ -86,6 +86,7 @@ ci.builder(
     ),
     builderless = True,
     os = os.LINUX_DEFAULT,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|linux",
         short_name = "bld",
@@ -121,6 +122,7 @@ ci.builder(
     ),
     builderless = True,
     os = os.LINUX_DEFAULT,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|linux",
         short_name = "bld",
@@ -156,6 +158,7 @@ ci.thin_tester(
             "x86-64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|linux",
         short_name = "test",
@@ -191,6 +194,7 @@ ci.thin_tester(
             "x86-64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|linux",
         short_name = "test",
@@ -436,6 +440,7 @@ ci.thin_tester(
             "mac_13_arm64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|mac (arm64)",
         short_name = "13",
@@ -470,6 +475,7 @@ ci.thin_tester(
             "mac_13_x64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|mac (x64)",
         short_name = "13",
@@ -504,6 +510,7 @@ ci.thin_tester(
             "mac_14_arm64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|mac (arm64)",
         short_name = "14",
@@ -538,6 +545,7 @@ ci.thin_tester(
             "mac_14_arm64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|mac (arm64)",
         short_name = "14",
@@ -572,6 +580,7 @@ ci.thin_tester(
             "mac_14_x64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|mac (x64)",
         short_name = "14",
@@ -606,6 +615,7 @@ ci.thin_tester(
             "mac_14_x64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|mac (x64)",
         short_name = "14",
@@ -640,6 +650,7 @@ ci.thin_tester(
             "mac_15_arm64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|mac (arm64)",
         short_name = "15",
@@ -674,6 +685,7 @@ ci.thin_tester(
             "mac_15_arm64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|mac (arm64)",
         short_name = "15",
@@ -708,6 +720,7 @@ ci.thin_tester(
             "mac_15_x64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|mac (x64)",
         short_name = "15 (asan)",
@@ -742,9 +755,80 @@ ci.thin_tester(
             "mac_15_x64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|mac (x64)",
         short_name = "15",
+    ),
+    contact_team_email = "omaha-core@google.com",
+)
+
+ci.thin_tester(
+    name = "mac26-arm64-updater-tester-dbg",
+    description_html = _UPDATER_LINK + " macOS 26 arm64 debug tester.",
+    parent = "mac-updater-builder-arm64-dbg",
+    builder_spec = builder_config.builder_spec(
+        execution_mode = builder_config.execution_mode.TEST,
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = [
+                "mb",
+            ],
+            build_config = builder_config.build_config.DEBUG,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.MAC,
+        ),
+    ),
+    targets = targets.bundle(
+        targets = [
+            "updater_gtests_mac",
+        ],
+        mixins = [
+            "mac_26_arm64",
+        ],
+    ),
+    ssd = None,
+    console_view_entry = consoles.console_view_entry(
+        category = "debug|mac (arm64)",
+        short_name = "26",
+    ),
+    contact_team_email = "omaha-core@google.com",
+)
+
+ci.thin_tester(
+    name = "mac26-arm64-updater-tester-rel",
+    description_html = _UPDATER_LINK + " macOS 26 arm64 release tester.",
+    parent = "mac-updater-builder-arm64-rel",
+    builder_spec = builder_config.builder_spec(
+        execution_mode = builder_config.execution_mode.TEST,
+        gclient_config = builder_config.gclient_config(
+            config = "chromium",
+        ),
+        chromium_config = builder_config.chromium_config(
+            config = "chromium",
+            apply_configs = [
+                "mb",
+            ],
+            build_config = builder_config.build_config.RELEASE,
+            target_bits = 64,
+            target_platform = builder_config.target_platform.MAC,
+        ),
+    ),
+    targets = targets.bundle(
+        targets = [
+            "updater_gtests_mac",
+        ],
+        mixins = [
+            "mac_26_arm64",
+        ],
+    ),
+    ssd = None,
+    console_view_entry = consoles.console_view_entry(
+        category = "release|mac (arm64)",
+        short_name = "26",
     ),
     contact_team_email = "omaha-core@google.com",
 )
@@ -782,6 +866,7 @@ ci.builder(
     ),
     builderless = True,
     os = os.WINDOWS_DEFAULT,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|win (arm64)",
         short_name = "bld",
@@ -825,6 +910,7 @@ ci.builder(
     ),
     builderless = True,
     os = os.WINDOWS_DEFAULT,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|win (arm64)",
         short_name = "bld",
@@ -867,6 +953,7 @@ ci.builder(
     ),
     builderless = True,
     os = os.WINDOWS_DEFAULT,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|win (64)",
         short_name = "bld",
@@ -909,6 +996,7 @@ ci.builder(
     ),
     builderless = True,
     os = os.WINDOWS_DEFAULT,
+    ssd = None,
     free_space = builders.free_space.high,
     console_view_entry = consoles.console_view_entry(
         category = "debug|win (32)",
@@ -953,6 +1041,7 @@ ci.builder(
     ),
     builderless = True,
     os = os.WINDOWS_DEFAULT,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|win (64)",
         short_name = "bld",
@@ -995,6 +1084,7 @@ ci.builder(
     ),
     builderless = True,
     os = os.WINDOWS_DEFAULT,
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|win (32)",
         short_name = "bld",
@@ -1031,6 +1121,7 @@ ci.thin_tester(
             "x86-64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|win (64)",
         short_name = "10",
@@ -1066,6 +1157,7 @@ ci.thin_tester(
             "x86-64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|win (32)",
         short_name = "10 (x64)",
@@ -1101,6 +1193,7 @@ ci.thin_tester(
             "x86-64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|win (32)",
         short_name = "10 (x64)",
@@ -1136,6 +1229,7 @@ ci.thin_tester(
             "x86-64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|win (64)",
         short_name = "UAC10",
@@ -1171,6 +1265,7 @@ ci.thin_tester(
             "x86-64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|win (64)",
         short_name = "10",
@@ -1206,6 +1301,7 @@ ci.thin_tester(
             "x86-64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|win (64)",
         short_name = "UAC10",
@@ -1241,6 +1337,7 @@ ci.builder(
             "arm64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|win (arm64)",
         short_name = "11",
@@ -1276,6 +1373,7 @@ ci.thin_tester(
             "arm64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|win (arm64)",
         short_name = "11",
@@ -1311,6 +1409,7 @@ ci.thin_tester(
             "x86-64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "debug|win (64)",
         short_name = "UAC11",
@@ -1346,6 +1445,7 @@ ci.thin_tester(
             "x86-64",
         ],
     ),
+    ssd = None,
     console_view_entry = consoles.console_view_entry(
         category = "release|win (64)",
         short_name = "11",

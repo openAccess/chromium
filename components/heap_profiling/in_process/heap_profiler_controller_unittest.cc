@@ -354,9 +354,13 @@ class ProfilerSetUpMixin {
     // threads are started.
     feature_list_.InitWithFeaturesAndParameters(enabled_features,
                                                 disabled_features);
+    // Drain any accumulated churn samples from previous tests.
+    base::SamplingHeapProfiler::Get()->churn_profiler().TakeSamples();
   }
 
-  ~ProfilerSetUpMixin() = default;
+  ~ProfilerSetUpMixin() {
+    base::SamplingHeapProfiler::Get()->churn_profiler().TakeSamples();
+  }
 
   base::test::TaskEnvironment& task_env() { return task_environment_; }
 
@@ -781,6 +785,11 @@ class HeapProfilerControllerTest
   // subclasses.
   void RecordSampleReceived(base::TimeTicks,
                             metrics::SampledProfile sampled_profile) {
+    // Note: Tests expect regular heap profiles (PERIODIC_HEAP_COLLECTION) to be
+    // delivered before churn profiles (PERIODIC_HEAP_CHURN_COLLECTION). If
+    // HeapProfilerController ever changes the delivery order or reports churn
+    // samples first, tests expecting 1 sample will fail here or in
+    // ScopedCallbacks.
     EXPECT_EQ(sampled_profile.trigger_event(),
               metrics::SampledProfile::PERIODIC_HEAP_COLLECTION);
     EXPECT_EQ(sampled_profile.process(), expected_process_);
@@ -804,6 +813,9 @@ class HeapProfilerControllerTest
         base::DoNothing());
     metrics::CallStackProfileBuilder::
         ResetChildCallStackProfileCollectorForTesting();
+    // Clear any decision made by tests that call DecideIfCollectionIsEnabled()
+    // without creating a HeapProfilerController.
+    HeapProfilerController::ResetCollectionDecisionForTesting();
   }
 
   const FeatureTestParams& feature_params() const {
@@ -1189,6 +1201,50 @@ TEST_P(HeapProfilerControllerChannelTest, UnknownChannel) {
                                        profiling_enabled, 1);
   AddOneSampleAndWait();
   EXPECT_EQ(sample_received_, feature_params().stable.expect_browser_sample);
+}
+
+TEST_P(HeapProfilerControllerChannelTest,
+       SyntheticFieldTrialWithoutController) {
+  // Some embedders check DecideIfCollectionIsEnabled() and only create a
+  // HeapProfilerController if it returns true. The synthetic field trial should
+  // still be available when no controller is created.
+  const bool profiling_enabled = feature_params().feature_enabled &&
+                                 feature_params().stable.probability > 0.0;
+  EXPECT_EQ(HeapProfilerController::DecideIfCollectionIsEnabled(
+                version_info::Channel::STABLE, ProfilerProcessType::kBrowser),
+            profiling_enabled);
+  ASSERT_FALSE(HeapProfilerController::GetInstance());
+  histogram_tester_.ExpectUniqueSample(
+      "HeapProfiling.InProcess.Enabled.Browser", profiling_enabled, 1);
+  histogram_tester_.ExpectUniqueSample("HeapProfiling.InProcess.Enabled",
+                                       profiling_enabled, 1);
+
+  // A group is only assigned if the feature is enabled. Otherwise
+  // GetSyntheticFieldTrial() should leave `trial_name` and `group_name` empty.
+  const bool feature_enabled = feature_params().feature_enabled;
+  std::string trial_name, group_name;
+  EXPECT_EQ(
+      HeapProfilerController::GetSyntheticFieldTrial(trial_name, group_name),
+      feature_enabled);
+}
+
+TEST_P(HeapProfilerControllerChannelTest, ControllerReusesDecision) {
+  // Some embedders check DecideIfCollectionIsEnabled() before creating a
+  // HeapProfilerController. The controller should reuse that decision.
+  const bool profiling_enabled = feature_params().feature_enabled &&
+                                 feature_params().stable.probability > 0.0;
+  EXPECT_EQ(HeapProfilerController::DecideIfCollectionIsEnabled(
+                version_info::Channel::STABLE, ProfilerProcessType::kBrowser),
+            profiling_enabled);
+  CreateHeapProfiler(version_info::Channel::STABLE,
+                     ProfilerProcessType::kBrowser, profiling_enabled);
+
+  // The decision should only be made once, so the histogram is only recorded
+  // once.
+  histogram_tester_.ExpectUniqueSample(
+      "HeapProfiling.InProcess.Enabled.Browser", profiling_enabled, 1);
+  histogram_tester_.ExpectUniqueSample("HeapProfiling.InProcess.Enabled",
+                                       profiling_enabled, 1);
 }
 
 // Test the feature in various processes on the stable channel.

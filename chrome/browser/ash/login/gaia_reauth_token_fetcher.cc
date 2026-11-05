@@ -15,7 +15,6 @@
 #include "base/json/json_reader.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chromeos/ash/components/login/auth/recovery/service_constants.h"
 #include "google_apis/credentials_mode.h"
 #include "google_apis/google_api_keys.h"
@@ -49,13 +48,13 @@ GaiaReauthTokenFetcher::GaiaReauthTokenFetcher(
     : shared_url_loader_factory_(std::move(shared_url_loader_factory)),
       callback_(std::move(callback)) {
   CHECK(shared_url_loader_factory_);
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
 }
 
 GaiaReauthTokenFetcher::~GaiaReauthTokenFetcher() = default;
 
 void GaiaReauthTokenFetcher::Fetch() {
-  DCHECK(!simple_url_loader_);
+  CHECK(!simple_url_loader_, base::NotFatalUntil::M160);
   auto resource_request = std::make_unique<network::ResourceRequest>();
   resource_request->url = GetFetchReauthTokenUrl();
   resource_request->load_flags =
@@ -116,7 +115,7 @@ void GaiaReauthTokenFetcher::OnSimpleLoaderComplete(
   }
 
   // TODO(b/200782732): Add metrics to record error code.
-  if (response_code == net::HTTP_OK) {
+  if (response_code == net::HTTP_OK && response_body.has_value()) {
     auto message_value = base::JSONReader::Read(
         *response_body, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     if (message_value && message_value->is_dict()) {

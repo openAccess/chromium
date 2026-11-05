@@ -14,20 +14,58 @@
 // Handles updates to the NTP ViewController.
 @protocol NewTabPageConsumer <NSObject>
 
-// When the omnibox is focused, this value represents the scroll distance needed
-// to pin the omnibox to the top. It is 0 if no scrolling was done in order pin
-// the omnibox to the top (i.e. the NTP ScrollView was already scrolled far
-// enough down that the omnibo was already pinned to the top).
-@property(nonatomic, assign, readonly) CGFloat collectionShiftingOffset;
-
 // Whether the Most Visited module is visible on the NTP.
 @property(nonatomic, assign) BOOL mostVisitedVisible;
 
 // Whether the Magic Stack module is visible on the NTP.
 @property(nonatomic, assign) BOOL magicStackVisible;
 
+// Whether the Feed Top Section (promos) is visible on the NTP.
+@property(nonatomic, assign) BOOL feedTopSectionVisible;
+
 // Collection of trait-specific override values for customizing NTP appearance
 @property(nonatomic, readonly) id<UITraitOverrides> traitOverrides;
+
+// Sets the background image of the NTP. Removes the current background image
+// if nil is passed. If framing coordinates are non-nil, they will be used to
+// position the image.
+- (void)setBackgroundImage:(UIImage*)backgroundImage
+        framingCoordinates:
+            (HomeCustomizationFramingCoordinates*)framingCoordinates;
+
+// Sets an animated background on the NTP from the given local file path with
+// dynamic light and dark mode color providers, or removes it if nil is passed.
+- (void)setAnimatedBackgroundPath:(NSString*)animatedBackgroundPath
+           lightModeColorProvider:
+               (NSDictionary<NSString*, UIColor*>*)lightModeColorProvider
+            darkModeColorProvider:
+                (NSDictionary<NSString*, UIColor*>*)darkModeColorProvider;
+
+// Whether AIM is allowed.
+- (void)setAIMAllowed:(BOOL)allowed;
+
+// Sets whether AIM image generation and attaching images are allowed.
+- (void)setAIMImageGenerationAllowed:(BOOL)imageGenerationAllowed
+                 attachImagesAllowed:(BOOL)attachmentsAllowed;
+
+// Sets the title, icon, and accessibility label for the AI Mode button.
+- (void)setAIMTitle:(NSString*)title
+                  icon:(UIImage*)icon
+    accessibilityLabel:(NSString*)accessibilityLabel;
+
+// Sets whether the omnibox is in the bottom position.
+- (void)setOmniboxInBottomPosition:(BOOL)isBottomOmnibox;
+
+@end
+
+// Handles scroll-view and omnibox math specific to NewTabPageViewController.
+@protocol NewTabPageScrollConsumer
+
+// When the omnibox is focused, this value represents the scroll distance needed
+// to pin the omnibox to the top. It is 0 if no scrolling was done in order pin
+// the omnibox to the top (i.e. the NTP ScrollView was already scrolled far
+// enough down that the omnibo was already pinned to the top).
+@property(nonatomic, assign, readonly) CGFloat collectionShiftingOffset;
 
 // Indicates that the omnibox has become the first responder to the keyboard.
 - (void)omniboxDidBecomeFirstResponder;
@@ -57,19 +95,6 @@
 // Returns the Y value to use for the scroll view's contentOffset when scrolling
 // the omnibox to the top of the screen.
 - (CGFloat)pinnedOffsetY;
-
-// Sets the background image of the NTP. Removes the current background image
-// if nil is passed. If framing coordinates are non-nil, they will be used to
-// position the image.
-- (void)setBackgroundImage:(UIImage*)backgroundImage
-        framingCoordinates:
-            (HomeCustomizationFramingCoordinates*)framingCoordinates;
-
-// Whether AIM is allowed.
-- (void)setAIMAllowed:(BOOL)allowed;
-
-// Sets whether the omnibox is in the bottom position.
-- (void)setOmniboxInBottomPosition:(BOOL)isBottomOmnibox;
 
 // Sets the bottom inset for the feed to avoid overlap with bottom toolbars.
 - (void)setFeedBottomInset:(CGFloat)bottomInset;

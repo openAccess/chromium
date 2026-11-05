@@ -4,12 +4,9 @@
 
 package org.chromium.android_webview.robolectric;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.android_webview.WebAddressParser;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -19,10 +16,8 @@ import java.net.URISyntaxException;
 
 /** Unit tests for WebAddressParser. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class WebAddressParserTest {
     @Test
-    @SmallTest
     @Feature({"AndroidWebView", "Privacy"})
     public void testGoodInput() throws Throwable {
         Assert.assertEquals("https://www.example.com/", fixupUrl("https://www.example.com"));
@@ -90,7 +85,6 @@ public class WebAddressParserTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView", "Privacy"})
     public void testKnownBadInputButWithNoException() throws Throwable {
         // The below two cases are for crbug.com/779887
@@ -103,7 +97,6 @@ public class WebAddressParserTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView", "Privacy"})
     public void testInputWithURISyntaxException() {
         assertBadAddress("www.example.com:1234567890123");

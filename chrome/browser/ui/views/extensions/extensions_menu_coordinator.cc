@@ -11,6 +11,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/extensions_menu_view_model.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/extensions/extensions_container_views.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_delegate_desktop.h"
 #include "extensions/common/extension_features.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
@@ -27,18 +28,22 @@ ExtensionsMenuCoordinator::ExtensionsMenuCoordinator(
       extensions_container_(CHECK_DEREF(extensions_container)) {}
 
 ExtensionsMenuCoordinator::~ExtensionsMenuCoordinator() {
-  if (views::Widget* const menu = GetExtensionsMenuWidget()) {
-    // Close the menu widget synchronously as it may hold references back to the
-    // coordinator and its host Browser.
-    menu->CloseNow();
+  if (views::View* const bubble_contents =
+          bubble_view_observation_.GetSource()) {
+    if (views::Widget* const menu = bubble_contents->GetWidget()) {
+      // Close the menu widget synchronously as it may hold references back to
+      // the coordinator and its host Browser.
+      menu->CloseNow();
+    }
   }
 }
 
 void ExtensionsMenuCoordinator::Show(
     views::BubbleAnchor anchor,
     ExtensionsContainerViews* extensions_container_views) {
-  DCHECK(base::FeatureList::IsEnabled(
-      extensions_features::kExtensionsMenuAccessControl));
+  CHECK(base::FeatureList::IsEnabled(
+            extensions_features::kExtensionsMenuAccessControl),
+        base::NotFatalUntil::M162);
   std::unique_ptr<views::BubbleDialogDelegate> bubble_delegate =
       CreateExtensionsMenuBubbleDialogDelegate(anchor,
                                                extensions_container_views);
@@ -50,10 +55,18 @@ void ExtensionsMenuCoordinator::Show(
 }
 
 void ExtensionsMenuCoordinator::Hide() {
-  DCHECK(base::FeatureList::IsEnabled(
-      extensions_features::kExtensionsMenuAccessControl));
+  CHECK(base::FeatureList::IsEnabled(
+            extensions_features::kExtensionsMenuAccessControl),
+        base::NotFatalUntil::M162);
   if (views::Widget* const menu = GetExtensionsMenuWidget()) {
-    menu->CloseNow();
+    // Close the widget asynchronously so any views or delegate frames currently
+    // on the stack (e.g., when a synchronous accessibility event spins a nested
+    // message loop that invokes Hide()) can unwind safely before teardown.
+    menu->Close();
+    // Immediately stop tracking the view so IsShowing() returns false.
+    // `bubble_view_observation_` and `menu_delegate_` are reset when the widget
+    // finishes closing in OnViewIsDeleting() (or if reopened before then).
+    bubble_tracker_.SetView(nullptr);
   }
 }
 
@@ -77,19 +90,38 @@ std::unique_ptr<views::BubbleDialogDelegate>
 ExtensionsMenuCoordinator::CreateExtensionsMenuBubbleDialogDelegate(
     views::BubbleAnchor anchor,
     ExtensionsContainerViews* extensions_container_views) {
-  DCHECK(base::FeatureList::IsEnabled(
-      extensions_features::kExtensionsMenuAccessControl));
+  CHECK(base::FeatureList::IsEnabled(
+            extensions_features::kExtensionsMenuAccessControl),
+        base::NotFatalUntil::M162);
+  if (views::View* const prev_bubble = bubble_view_observation_.GetSource()) {
+    // If a previous bubble widget is still awaiting asynchronous teardown from
+    // Hide(), finish closing it now so OnViewIsDeleting() cleans up its
+    // observation and delegate in the proper view-destruction order before
+    // observing the new bubble contents.
+    if (views::Widget* const menu = prev_bubble->GetWidget()) {
+      menu->CloseNow();
+    } else {
+      bubble_tracker_.SetView(nullptr);
+      bubble_view_observation_.Reset();
+      menu_delegate_.reset();
+    }
+  }
+
+  views::BubbleBorder::Arrow arrow =
+      extensions_container_views ? extensions_container_views->GetPopupArrow()
+                                 : views::BubbleBorder::TOP_RIGHT;
   auto bubble_delegate = std::make_unique<views::BubbleDialogDelegate>(
-      anchor, views::BubbleBorder::TOP_RIGHT,
-      views::BubbleBorder::DIALOG_SHADOW, /*autosize=*/true);
+      anchor, arrow, views::BubbleBorder::DIALOG_SHADOW, /*autosize=*/true);
   bubble_delegate->SetOwnedByWidget(
       views::WidgetDelegate::OwnedByWidgetPassKey());
   bubble_delegate->set_margins(gfx::Insets(0));
   bubble_delegate->set_fixed_width(
       views::LayoutProvider::Get()->GetDistanceMetric(
           ChromeDistanceMetric::DISTANCE_EXTENSIONS_MENU_WIDTH));
-  // Let anchor view's MenuButtonController handle the highlight.
-  bubble_delegate->set_highlight_button_when_shown(false);
+  if (anchor.GetIfView()) {
+    // Let anchor view's MenuButtonController handle the highlight.
+    bubble_delegate->set_highlight_button_when_shown(false);
+  }
   bubble_delegate->SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   bubble_delegate->SetEnableArrowKeyTraversal(true);
 

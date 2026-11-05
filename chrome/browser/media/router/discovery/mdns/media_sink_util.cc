@@ -32,8 +32,8 @@ SinkIconType GetCastSinkIconType(
 
 CreateCastMediaSinkResult CreateCastMediaSink(const DnsSdService& service,
                                               MediaSinkInternal* cast_sink) {
-  DCHECK(cast_sink);
-  if (service.service_name.find(kCastServiceType) == std::string::npos) {
+  CHECK(cast_sink, base::NotFatalUntil::M161);
+  if (!service.service_name.contains(kCastServiceType)) {
     return CreateCastMediaSinkResult::kNotCastDevice;
   }
 

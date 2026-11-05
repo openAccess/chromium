@@ -17,9 +17,9 @@ enum class DamageReason {
   kUntracked,
   kAnimatedImage,
   kScrollbarFadeOutAnimation,
-  kVideoLayer,
   kCompositorScroll,
-  kMaxValue = kCompositorScroll,
+  kCompositorAnimation,
+  kMaxValue = kCompositorAnimation,
 };
 
 using DamageReasonSet = base::

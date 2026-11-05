@@ -21,20 +21,10 @@ namespace {
 
 const char kUmaPrefix[] = "Media.EME.CdmStorageManager.";
 
-const char kGetSizeForFileError[] = "GetSizeForFileError.";
-const char kGetSizeForStorageKeyError[] = "GetSizeForStorageKeyError.";
-const char kGetSizeForTimeFrameError[] = "GetSizeForTimeFrameError.";
 const char kWriteFileError[] = "WriteFileError.";
 const char kReadFileError[] = "ReadFileError.";
 const char kDatabaseOpenErrorNoPeriod[] = "DatabaseOpenError";
 const char kDatabaseOpenError[] = "DatabaseOpenError.";
-const char kDatabaseSizeName[] = "CurrentDatabaseUsageKB.";
-
-constexpr uint64_t kBytesPerKB = 1024;
-constexpr int kMinDatabaseSizeKB = 0;
-// Used for histogram reporting, the max size of the database we expect in KB.
-constexpr uint64_t kMaxDatabaseSizeKB = 512000 * 10;
-constexpr int kSizeKBBuckets = 1000;
 
 // Creates a task runner suitable for running SQLite database operations.
 scoped_refptr<base::SequencedTaskRunner> CreateDatabaseTaskRunner() {
@@ -143,47 +133,6 @@ void CdmStorageManager::WriteFile(const blink::StorageKey& storage_key,
                            weak_factory_.GetWeakPtr(), std::move(callback)));
 }
 
-void CdmStorageManager::GetSizeForFile(
-    const blink::StorageKey& storage_key,
-    const media::CdmType& cdm_type,
-    const std::string& file_name,
-    base::OnceCallback<void(uint64_t)> callback) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  db_.AsyncCall(&CdmStorageDatabase::GetSizeForFile)
-      .WithArgs(storage_key, cdm_type, file_name)
-      .Then(base::BindOnce(&CdmStorageManager::DidGetSize,
-                           weak_factory_.GetWeakPtr(), std::move(callback),
-                           kGetSizeForFileError));
-}
-
-void CdmStorageManager::GetSizeForStorageKey(
-    const blink::StorageKey& storage_key,
-    const base::Time begin,
-    const base::Time end,
-    base::OnceCallback<void(uint64_t)> callback) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  db_.AsyncCall(&CdmStorageDatabase::GetSizeForStorageKey)
-      .WithArgs(storage_key, begin, end)
-      .Then(base::BindOnce(&CdmStorageManager::DidGetSize,
-                           weak_factory_.GetWeakPtr(), std::move(callback),
-                           kGetSizeForStorageKeyError));
-}
-
-void CdmStorageManager::GetSizeForTimeFrame(
-    const base::Time begin,
-    const base::Time end,
-    base::OnceCallback<void(uint64_t)> callback) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  db_.AsyncCall(&CdmStorageDatabase::GetSizeForTimeFrame)
-      .WithArgs(begin, end)
-      .Then(base::BindOnce(&CdmStorageManager::DidGetSize,
-                           weak_factory_.GetWeakPtr(), std::move(callback),
-                           kGetSizeForTimeFrameError));
-}
-
 void CdmStorageManager::DeleteFile(const blink::StorageKey& storage_key,
                                    const media::CdmType& cdm_type,
                                    const std::string& file_name,
@@ -216,7 +165,7 @@ void CdmStorageManager::OnFileReceiverDisconnect(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   auto count = cdm_files_.erase(CdmFileId(name, cdm_type, storage_key));
-  DCHECK_GT(count, 0u);
+  CHECK_GT(count, 0u, base::NotFatalUntil::M160);
 }
 
 void CdmStorageManager::DidOpenFile(const blink::StorageKey& storage_key,
@@ -258,13 +207,6 @@ void CdmStorageManager::DidReadFile(
       GetCdmStorageManagerHistogramName(kReadFileError, in_memory()),
       !data.has_value());
 
-  if (!database_size_reported_) {
-    db_.AsyncCall(&CdmStorageDatabase::GetDatabaseSize)
-        .Then(base::BindOnce(&CdmStorageManager::DidGetDatabaseSize,
-                             weak_factory_.GetWeakPtr()));
-    database_size_reported_ = true;
-  }
-
   std::move(callback).Run(data);
 }
 
@@ -277,26 +219,6 @@ void CdmStorageManager::DidWriteFile(base::OnceCallback<void(bool)> callback,
       !success);
 
   std::move(callback).Run(success);
-}
-
-void CdmStorageManager::DidGetSize(base::OnceCallback<void(uint64_t)> callback,
-                                   const std::string& operation,
-                                   std::optional<uint64_t> size) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  base::UmaHistogramBoolean(
-      GetCdmStorageManagerHistogramName(operation, in_memory()),
-      !size.has_value());
-
-  std::move(callback).Run(size.value_or(0));
-}
-
-void CdmStorageManager::DidGetDatabaseSize(const uint64_t size) {
-  // One time report DatabaseSize.
-  base::UmaHistogramCustomCounts(
-      GetCdmStorageManagerHistogramName(kDatabaseSizeName, in_memory()),
-      size / kBytesPerKB, kMinDatabaseSizeKB, kMaxDatabaseSizeKB,
-      kSizeKBBuckets);
 }
 
 void CdmStorageManager::ReportDatabaseOpenError(CdmStorageOpenError error) {

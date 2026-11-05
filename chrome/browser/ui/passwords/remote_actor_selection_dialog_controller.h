@@ -12,6 +12,8 @@
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/passwords/password_combined_selector_controller.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "ui/gfx/range/range.h"
+#include "url/gurl.h"
 
 namespace content {
 class WebContents;
@@ -44,11 +46,17 @@ class RemoteActorSelectionDialogController
   // Show the dialog.
   virtual void Show();
 
+  // Must be called before `Show()`.
+  void SetActorIconUrl(GURL actor_icon_url);
+
   // PasswordCombinedSelectorController:
   DisplayType GetDisplayType() const override;
   bool ShouldShowTopIllustration() const override;
+  GURL GetActorIconUrl() const override;
   std::u16string GetTitle() const override;
   std::u16string GetSubtitle() const override;
+  gfx::Range GetSubtitleLinkRange() const override;
+  void OnSubtitleLinkClicked() override;
   std::u16string GetOkButtonLabel() const override;
   const FormsVector& GetLocalForms() const override;
   void OnChooseCredentials(
@@ -66,8 +74,12 @@ class RemoteActorSelectionDialogController
   FormsVector local_credentials_;
   // The domain of the site for which credentials are being requested.
   std::string credential_domain_;
+  // Cached range of the link inside the subtitle text.
+  mutable gfx::Range subtitle_link_range_;
   // Callback to run when the user selects a credential or closes the dialog.
   OnResultCallback callback_;
+  // Optional URL for a custom remote actor icon in the dialog header.
+  GURL actor_icon_url_;
 
   // The controller owns the view, which in turn owns the widget.
   std::unique_ptr<AccountChooserPrompt> view_;

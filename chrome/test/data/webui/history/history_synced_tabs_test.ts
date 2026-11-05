@@ -15,16 +15,17 @@ import {isChildVisible} from 'chrome://webui-test/test_util.js';
 
 import {FakeForeignSessionPageHandler} from './fake_foreign_session_page_handler.js';
 import {TestHistoryBrowserProxy} from './test_browser_proxy.js';
-import {createSession, createWindow} from './test_util.js';
+import {assertPx, createSession, createWindow} from './test_util.js';
 
 function getCards(manager: HistorySyncedDeviceManagerElement):
     NodeListOf<HistorySyncedDeviceCardElement> {
   return manager.shadowRoot.querySelectorAll('history-synced-device-card');
 }
 
-function numWindowSeparators(card: HistorySyncedDeviceCardElement): number {
-  return card.shadowRoot.querySelectorAll(':not([hidden]).window-separator')
-      .length;
+function getWindowHeaders(card: HistorySyncedDeviceCardElement):
+    NodeListOf<HTMLElement> {
+  return card.shadowRoot.querySelectorAll<HTMLElement>(
+      ':not([hidden]).window-header');
 }
 
 function assertNoSyncedTabsMessageShown(
@@ -83,7 +84,9 @@ suite('<history-synced-device-manager>', function() {
         'http://www.google.com',
         card.shadowRoot.querySelectorAll<HTMLElement>(
                            '.website-title')[0]!.textContent.trim());
-    assertEquals(2, card.tabs.length);
+    assertEquals(1, card.windows.length);
+    assertEquals(2, card.windows[0]!.tabs.length);
+    assertEquals(0, getWindowHeaders(card).length);
   });
 
   test('two cards, multiple windows', async () => {
@@ -104,9 +107,39 @@ suite('<history-synced-device-manager>', function() {
     const cards = getCards(element);
     assertEquals(2, cards.length);
 
-    // Ensure separators between windows are added appropriately.
-    assertEquals(0, numWindowSeparators(cards[0]!));
-    assertEquals(1, numWindowSeparators(cards[1]!));
+    // Single-window device card renders 0 window headers (progressive
+    // disclosure).
+    assertEquals(0, getWindowHeaders(cards[0]!).length);
+
+    // Multi-window device card renders one window header per window with
+    // singular/plural titles and an open-window button.
+    const windowHeaders = getWindowHeaders(cards[1]!);
+    assertEquals(2, windowHeaders.length);
+    assertEquals(
+        'Window 1 · 1 tab',
+        windowHeaders[0]!.querySelector('.window-title')!.textContent.trim());
+    assertEquals(
+        'Window 2 · 2 tabs',
+        windowHeaders[1]!.querySelector('.window-title')!.textContent.trim());
+    const openWindowButton0 =
+        windowHeaders[0]!.querySelector<HTMLElement>('.open-window-button')!;
+    assertEquals(
+        'Open Window 1 (1 tab) in a new window', openWindowButton0.title);
+    assertEquals(
+        'Open Window 1 (1 tab) in a new window',
+        openWindowButton0.getAttribute('aria-label'));
+    const openWindowButton1 =
+        windowHeaders[1]!.querySelector<HTMLElement>('.open-window-button')!;
+    assertEquals(
+        'Open Window 2 (2 tabs) in a new window', openWindowButton1.title);
+    assertEquals(
+        'Open Window 2 (2 tabs) in a new window',
+        openWindowButton1.getAttribute('aria-label'));
+    for (const header of windowHeaders) {
+      const openButton = header.querySelector<HTMLElement>(
+          'cr-icon-button.open-window-button[iron-icon="cr:open-in-new"]');
+      assertTrue(!!openButton);
+    }
   });
 
   test('updating sessions', async () => {
@@ -133,7 +166,14 @@ suite('<history-synced-device-manager>', function() {
     assertEquals(2, cards.length);
 
     // There are now 2 windows in the first device.
-    assertEquals(1, numWindowSeparators(cards[0]!));
+    const windowHeaders = getWindowHeaders(cards[0]!);
+    assertEquals(2, windowHeaders.length);
+    assertEquals(
+        'Window 1 · 2 tabs',
+        windowHeaders[0]!.querySelector('.window-title')!.textContent.trim());
+    assertEquals(
+        'Window 2 · 1 tab',
+        windowHeaders[1]!.querySelector('.window-title')!.textContent.trim());
     // Check that the actual link changes.
     assertEquals(
         'http://crbug.com/new',
@@ -160,27 +200,40 @@ suite('<history-synced-device-manager>', function() {
     let cards = getCards(element);
     assertEquals(2, cards.length);
 
-    // Ensure separators between windows are added appropriately.
-    assertEquals(0, numWindowSeparators(cards[0]!));
-    assertEquals(2, numWindowSeparators(cards[1]!));
+    // Ensure headers for windows are added appropriately.
+    assertEquals(0, getWindowHeaders(cards[0]!).length);
+    const card2Headers = getWindowHeaders(cards[1]!);
+    assertEquals(3, card2Headers.length);
+    assertEquals(
+        'Window 1 · 2 tabs',
+        card2Headers[0]!.querySelector('.window-title')!.textContent.trim());
+    assertEquals(
+        'Window 2 · 1 tab',
+        card2Headers[1]!.querySelector('.window-title')!.textContent.trim());
+    assertEquals(
+        'Window 3 · 2 tabs',
+        card2Headers[2]!.querySelector('.window-title')!.textContent.trim());
     element.searchTerm = 'g';
     await microtasksFinished();
 
     cards = getCards(element);
-    assertEquals(0, numWindowSeparators(cards[0]!));
-    assertEquals(1, cards[0]!.tabs.length);
-    assertEquals('http://www.google.com', cards[0]!.tabs[0]!.title);
-    assertEquals(1, numWindowSeparators(cards[1]!));
-    assertEquals(3, cards[1]!.tabs.length);
-    assertEquals('http://www.gmail.com', cards[1]!.tabs[0]!.title);
-    assertEquals('http://www.gmail.com', cards[1]!.tabs[1]!.title);
-    assertEquals('http://bagssl.com', cards[1]!.tabs[2]!.title);
+    assertEquals(0, getWindowHeaders(cards[0]!).length);
+    assertEquals(1, cards[0]!.windows.length);
+    assertEquals(1, cards[0]!.windows[0]!.tabs.length);
+    assertEquals('http://www.google.com', cards[0]!.windows[0]!.tabs[0]!.title);
+    assertEquals(0, getWindowHeaders(cards[1]!).length);
+    assertEquals(2, cards[1]!.windows.length);
+    assertEquals(1, cards[1]!.windows[0]!.tabs.length);
+    assertEquals('http://www.gmail.com', cards[1]!.windows[0]!.tabs[0]!.title);
+    assertEquals(2, cards[1]!.windows[1]!.tabs.length);
+    assertEquals('http://www.gmail.com', cards[1]!.windows[1]!.tabs[0]!.title);
+    assertEquals('http://bagssl.com', cards[1]!.windows[1]!.tabs[1]!.title);
 
     // Ensure the title text is rendered during searches.
-    assertEquals(
-        'http://www.google.com',
-        cards[0]!.shadowRoot.querySelectorAll<HTMLElement>(
-                                '.website-title')[0]!.textContent.trim());
+    const searchedLabel = cards[0]!.shadowRoot.querySelectorAll<HTMLElement>(
+        'history-searched-label.website-title')[0]!;
+    assertTrue(!!searchedLabel);
+    assertEquals('http://www.google.com', searchedLabel.textContent.trim());
 
     element.searchTerm = 'Sans';
     await microtasksFinished();
@@ -213,7 +266,7 @@ suite('<history-synced-device-manager>', function() {
     await microtasksFinished();
     cards = getCards(element);
     assertEquals(1, cards.length);
-    assertEquals('http://www.badssl.com', cards[0]!.tabs[0]!.title);
+    assertEquals('http://www.badssl.com', cards[0]!.windows[0]!.tabs[0]!.title);
   });
 
   test('delete a collapsed session', async () => {
@@ -276,6 +329,27 @@ suite('<history-synced-device-manager>', function() {
     assertTrue(modifiers.middleButton, 'middleButton is true');
   });
 
+  test('open foreign session window', async () => {
+    const win1 = createWindow(['https://example.com']);
+    win1.sessionId = 100;
+    const win2 = createWindow(['https://www.google.com', 'https://crbug.com']);
+    win2.sessionId = 200;
+    setForeignSessions([createSession('Chromebook', [win1, win2])]);
+    await microtasksFinished();
+
+    const cards = getCards(element);
+    const windowHeaders = getWindowHeaders(cards[0]!);
+    assertEquals(2, windowHeaders.length);
+    windowHeaders[1]!.querySelector<HTMLElement>(
+                         '.open-window-button')!.click();
+    assertEquals(
+        1, foreignSessionProxy.getCallCount('openForeignSessionWindow'));
+    const [sessionTag, windowId] =
+        await foreignSessionProxy.whenCalled('openForeignSessionWindow');
+    assertEquals('Chromebook', sessionTag);
+    assertEquals(200, windowId);
+  });
+
   test('show actions menu', async () => {
     setForeignSessions(
         [createSession('Chromebook', [createWindow(['https://example.com'])])]);
@@ -287,8 +361,8 @@ suite('<history-synced-device-manager>', function() {
 
   // <if expr="is_chromeos">
   // On ChromeOS, this promo may be shown depending on the
-  // kReplaceSyncPromosWithSignInPromos flag value. For other platforms, the
-  // flag is true so this promo is not shown (checked in other tests below).
+  // replaceSyncPromosWithSignInPromos loadTimeData value. For other platforms,
+  // the flag is true so this promo is not shown (checked in other tests below).
   test('show sign in promo', async () => {
     webUIListenerCallback('history-identity-state-changed', {
       signIn: HistorySignInState.SIGNED_OUT,
@@ -404,9 +478,49 @@ suite('<history-synced-device-manager>', function() {
     const cards = getCards(element);
     assertEquals(0, cards.length);
   });
+
+  test('WindowHeaderAlignsWithRows', async () => {
+    setForeignSessions([createSession('Nexus 6', [
+      createWindow(['http://test.com']),
+      createWindow(['http://www.gmail.com']),
+    ])]);
+    await microtasksFinished();
+    const card = getCards(element)[0]!;
+    const title = getWindowHeaders(card)[0]!.querySelector('.window-title');
+    const icon = card.shadowRoot.querySelector('.website-icon');
+    assertTrue(!!title);
+    assertTrue(!!icon);
+    assertPx(
+        icon.getBoundingClientRect().left, title.getBoundingClientRect().left);
+  });
+
+  // <if expr="is_android">
+  test('EmptyStateIllustrationAndroid', async () => {
+    assertNoSyncedTabsMessageShown(element, 'loading');
+    assertEquals(null, element.$.noSyncedTabs.querySelector('svg'));
+
+    setForeignSessions([]);
+    element.clearSyncedDevicesForTest();
+    await microtasksFinished();
+    assertNoSyncedTabsMessageShown(element, 'noSyncedResults');
+    assertTrue(!!element.$.noSyncedTabs.querySelector('svg'));
+  });
+  // </if>
+
+  // <if expr="not is_android">
+  test('EmptyStateNonAndroid', async () => {
+    setForeignSessions([]);
+    element.clearSyncedDevicesForTest();
+    await microtasksFinished();
+    assertNoSyncedTabsMessageShown(element, 'noSyncedResults');
+    assertEquals(null, element.$.noSyncedTabs.querySelector('svg'));
+  });
+  // </if>
 });
 
 // <if expr="not is_chromeos">
+import {AccessPoint} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
+
 // history-sync-optin elements is not shown for ChromeOS.
 suite('<history-sync-optin>', function() {
   let element: HistorySyncedDeviceManagerElement;
@@ -456,6 +570,15 @@ suite('<history-sync-optin>', function() {
     assertTrue(isChildVisible(element, '#account-name'));
     assertTrue(isChildVisible(element, '#account-email'));
     assertTrue(isChildVisible(element, '#profile-icon'));
+    assertTrue(
+        isChildVisible(element, '#web-only-signed-in-sync-history-promo-desc'));
+    assertFalse(isChildVisible(element, '#signed-out-sync-history-promo-desc'));
+    assertEquals(
+        loadTimeData.getString('syncHistoryPromoBodyWebOnlySignedIn'),
+        element.shadowRoot
+            .querySelector<HTMLElement>(
+                '#web-only-signed-in-sync-history-promo-desc')!.textContent
+            .trim());
   });
 
   test('check elements in signed out state', async () => {
@@ -476,6 +599,13 @@ suite('<history-sync-optin>', function() {
     // The history sync promo elements for SIGNED_OUT state are shown correctly.
     assertTrue(isChildVisible(element, '#sync-history-button'));
     assertTrue(isChildVisible(element, '#signed-out-sync-history-promo-desc'));
+    assertFalse(
+        isChildVisible(element, '#web-only-signed-in-sync-history-promo-desc'));
+    assertEquals(
+        loadTimeData.getString('syncHistoryPromoBodySignedOut'),
+        element.shadowRoot
+            .querySelector<HTMLElement>(
+                '#signed-out-sync-history-promo-desc')!.textContent.trim());
   });
 
   test('check elements in pending signin without tabs sync state', async () => {
@@ -597,7 +727,8 @@ suite('<history-sync-optin>', function() {
     assertTrue(!!button);
     button.click();
 
-    await testProxy.handler.whenCalled('turnOnHistorySync');
+    const accessPoint = await testProxy.handler.whenCalled('turnOnHistorySync');
+    assertEquals(AccessPoint.kRecentTabs, accessPoint);
   });
 
   test('check recorded metrics in pending signin', async () => {
@@ -609,6 +740,9 @@ suite('<history-sync-optin>', function() {
     });
     await microtasksFinished();
     assertEquals(1, testProxy.getCallCount('recordSigninPendingOffered'));
+    assertEquals(
+        AccessPoint.kRecentTabs,
+        await testProxy.whenCalled('recordSigninPendingOffered'));
 
     // Firing a sign in pending state again does not record again.
     webUIListenerCallback('history-identity-state-changed', {

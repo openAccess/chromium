@@ -33,7 +33,10 @@ include_rules = [
   "+components/browser_ui/styles/android",
   "+components/browser_ui/widget/android",
   "+components/browsing_data/content/android/java/src/org/chromium/components/browsing_data/content",
+  "+components/collaboration/public/android/java",
   "+components/crash/android",
+  "+components/data_sharing/public/android/java",
+  "+components/data_sharing/test_support/android/java",
   "+components/embedder_support/android",
   "+components/feature_engagement/public/android/java/src/org/chromium/components/feature_engagement",
   "+components/dom_distiller/core/android/java/src/org/chromium/components/dom_distiller/core",
@@ -73,6 +76,7 @@ include_rules = [
   "+content/public/test/android/javatests",
 
   "+services/device/public/java",
+  "+device/gamepad/android/java",
 ]
 
 specific_include_rules = {
@@ -96,9 +100,6 @@ specific_include_rules = {
   ],
   "DigitalCredentialProviderTest\\.java": [
     "+content/public/android/java/src/org/chromium/content/browser/webid/IdentityCredentialsDelegate.java",
-  ],
-  "Fido2CredentialRequestTest.java": [
-    "+content/public/android/java/src/org/chromium/content/browser/ClientDataJsonImpl.java",
   ],
   "PageInfoPopupTest\\.java": [
     "+content/public/android/java/src/org/chromium/content_public/common/ContentSwitches.java",

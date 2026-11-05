@@ -403,8 +403,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -447,8 +447,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -482,8 +482,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -517,8 +517,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -561,8 +561,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -597,8 +597,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -632,8 +632,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -652,11 +652,11 @@
           "--stable-jobs",
           "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-vulkan=native --disable-vulkan-fallback-to-gl-for-testing --enable-features=Vulkan --use-gl=angle --use-angle=gl --use-cmd-decoder=passthrough",
           "--enforce-browser-version",
-          "--git-revision=${got_cr_revision}",
+          "--jobs=4",
           "--dont-restore-color-profile-after-test",
           "--test-machine-name",
           "${buildername}",
-          "--jobs=4"
+          "--git-revision=${got_cr_revision}"
         ],
         "ci_only": true,
         "merge": {
@@ -677,8 +677,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -712,8 +712,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -749,8 +749,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -768,7 +768,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_linux_runtimes.json",
           "--jobs=4"
@@ -778,7 +778,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test",
         "module_scheme": "flat",
-        "name": "webgl_conformance_gl_passthrough_tests",
+        "name": "webgl_conformance_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -786,8 +786,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -826,8 +826,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -870,8 +870,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -905,8 +905,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -940,8 +940,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -984,8 +984,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -1020,8 +1020,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -1055,8 +1055,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -1075,11 +1075,11 @@
           "--stable-jobs",
           "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-vulkan=native --disable-vulkan-fallback-to-gl-for-testing --enable-features=Vulkan --use-gl=angle --use-angle=gl --use-cmd-decoder=passthrough",
           "--enforce-browser-version",
-          "--git-revision=${got_cr_revision}",
+          "--jobs=4",
           "--dont-restore-color-profile-after-test",
           "--test-machine-name",
           "${buildername}",
-          "--jobs=4"
+          "--git-revision=${got_cr_revision}"
         ],
         "ci_only": true,
         "merge": {
@@ -1100,8 +1100,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -1135,8 +1135,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -1153,7 +1153,7 @@
           "--passthrough",
           "-v",
           "--stable-jobs",
-          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --use-cmd-decoder=passthrough --use-gl=angle --use-angle=gl --force_high_performance_gpu",
+          "--extra-browser-args=--enable-logging=stderr --js-flags=--expose-gc --force_high_performance_gpu",
           "--enforce-browser-version",
           "--read-abbreviated-json-results-from=../../content/test/data/gpu/webgl1_conformance_linux_runtimes.json",
           "--jobs=4"
@@ -1163,7 +1163,7 @@
         },
         "module_name": "//chrome/test:telemetry_gpu_integration_test",
         "module_scheme": "flat",
-        "name": "webgl_conformance_gl_passthrough_tests",
+        "name": "webgl_conformance_tests",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1171,8 +1171,8 @@
         "swarming": {
           "dimensions": {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01",
-            "os": "Ubuntu-22.04",
+            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
+            "os": "Ubuntu-22.04|Ubuntu-24.04",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -2914,8 +2914,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -2949,8 +2949,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -2993,8 +2993,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -3037,8 +3037,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -3072,8 +3072,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -3107,8 +3107,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -3151,8 +3151,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -3195,8 +3195,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -3231,8 +3231,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -3267,8 +3267,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -3302,8 +3302,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -3337,8 +3337,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -3373,8 +3373,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,
@@ -3409,8 +3409,8 @@
         "swarming": {
           "dimensions": {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601",
-            "os": "Windows-10-19045",
+            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
+            "os": "Windows-10-19045|Windows-11-26200",
             "pool": "chromium.tests.gpu"
           },
           "idempotent": false,

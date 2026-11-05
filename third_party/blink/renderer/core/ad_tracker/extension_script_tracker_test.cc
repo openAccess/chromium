@@ -10,7 +10,9 @@
 #include "base/run_loop.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/scheme_registry.h"
+#include "third_party/blink/public/web/web_navigation_params.h"
 #include "third_party/blink/public/web/web_script_source.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/core/ad_tracker/ad_tracker.h"
 #include "third_party/blink/renderer/core/ad_tracker/script_initiation_monitor.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -21,6 +23,7 @@
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -38,6 +41,8 @@ class TestExtensionScriptTracker final : public ExtensionScriptTracker {
 
   using ExtensionScriptTracker::IsMarkedScript;
   using ExtensionScriptTracker::OnScriptRegistered;
+  using ScriptAncestryTracker::DidCreateFrame;
+  using ScriptAncestryTracker::GetInitiatingScriptId;
 
   void OnScriptRegistered(ExecutionContext& execution_context,
                           V8ScriptId script_id,
@@ -59,6 +64,22 @@ class TestExtensionScriptTracker final : public ExtensionScriptTracker {
 
  private:
   HashMap<V8ScriptId, String> registered_urls_;
+};
+
+class ExtensionTrackingWebFrameClient
+    : public frame_test_helpers::TestWebFrameClient {
+ public:
+  void BeginNavigation(std::unique_ptr<WebNavigationInfo> info) override {
+    last_script_injector_host_ = info->script_injector_host;
+    TestWebFrameClient::BeginNavigation(std::move(info));
+  }
+
+  const WebString& last_script_injector_host() const {
+    return last_script_injector_host_;
+  }
+
+ private:
+  WebString last_script_injector_host_;
 };
 
 }  // namespace
@@ -84,11 +105,51 @@ class ExtensionScriptTrackerTest : public SimTest {
       tracker_ = nullptr;
     }
     main_resource_.reset();
+    web_frame_client_ = nullptr;
     SimTest::TearDown();
+  }
+
+  std::unique_ptr<frame_test_helpers::TestWebFrameClient>
+  CreateWebFrameClientForMainFrame() override {
+    auto client = std::make_unique<ExtensionTrackingWebFrameClient>();
+    web_frame_client_ = client.get();
+    return client;
+  }
+
+  String last_script_injector_host() const {
+    return web_frame_client_->last_script_injector_host();
+  }
+
+  void EnableNavigationProtection() {
+    GetDocument()
+        .GetFrame()
+        ->Loader()
+        .GetDocumentLoader()
+        ->SetScriptInjectionPolicyForTesting(
+            mojom::blink::ScriptInjectionPolicy::kNavigationProtection);
+    GetDocument().GetFrame()->SetExtensionScriptTrackerForTesting(tracker_);
+  }
+
+  void ExecuteContentScriptInMainWorld(const String& extension_id,
+                                       const String& script) {
+    WebScriptSource source(script);
+    MainFrame().RequestExecuteScript(
+        DOMWrapperWorld::kMainWorldId, base::span_from_ref(source),
+        mojom::blink::UserActivationOption::kDoNotActivate,
+        mojom::blink::EvaluationTiming::kSynchronous,
+        mojom::blink::LoadEventBlockingOption::kDoNotBlock,
+        WebScriptExecutionCallback(), BackForwardCacheAware::kAllow,
+        mojom::blink::WantResultOption::kNoResult,
+        mojom::blink::PromiseResultOption::kDoNotWait, extension_id);
+  }
+
+  const HashMap<V8ScriptId, String>& extension_scripts() const {
+    return tracker_->extension_scripts_;
   }
 
   std::unique_ptr<SimRequest> main_resource_;
   Persistent<TestExtensionScriptTracker> tracker_;
+  raw_ptr<ExtensionTrackingWebFrameClient> web_frame_client_ = nullptr;
 };
 
 TEST_F(ExtensionScriptTrackerTest, ExtensionScriptDetectedBySchema) {
@@ -102,6 +163,64 @@ TEST_F(ExtensionScriptTrackerTest, ExtensionScriptDetectedBySchema) {
                                std::nullopt);
 
   EXPECT_TRUE(tracker_->IsMarkedScript(script_id));
+}
+
+TEST_F(ExtensionScriptTrackerTest, ExtensionIdTrackedAndInherited) {
+  main_resource_->Complete("");
+  ExecutionContext* execution_context = GetDocument().GetExecutionContext();
+  ASSERT_TRUE(execution_context);
+
+  V8ScriptId parent_id(100);
+  tracker_->OnScriptRegistered(
+      *execution_context, parent_id,
+      "chrome-extension://gomeoncjolbgiaildclhhbneblomedoa/script.js",
+      std::nullopt);
+
+  EXPECT_TRUE(tracker_->IsMarkedScript(parent_id));
+  auto it_parent = extension_scripts().find(parent_id);
+  ASSERT_NE(it_parent, extension_scripts().end());
+  EXPECT_EQ(it_parent->value, "gomeoncjolbgiaildclhhbneblomedoa");
+
+  // Child script loaded by the extension script inherits extension ID.
+  V8ScriptId child_id(101);
+  tracker_->OnScriptRegistered(*execution_context, child_id,
+                               "https://example.com/dynamic.js",
+                               std::make_optional(parent_id));
+
+  EXPECT_TRUE(tracker_->IsMarkedScript(child_id));
+  auto it_child = extension_scripts().find(child_id);
+  ASSERT_NE(it_child, extension_scripts().end());
+  EXPECT_EQ(it_child->value, "gomeoncjolbgiaildclhhbneblomedoa");
+}
+
+TEST_F(ExtensionScriptTrackerTest, InitiatorPrecedenceOverUrl) {
+  main_resource_->Complete("");
+  ExecutionContext* execution_context = GetDocument().GetExecutionContext();
+  ASSERT_TRUE(execution_context);
+
+  V8ScriptId parent_id(100);
+  tracker_->OnScriptRegistered(
+      *execution_context, parent_id,
+      "chrome-extension://aaaaaajcolbgiaildclhhbneblomedoa/script.js",
+      std::nullopt);
+
+  EXPECT_TRUE(tracker_->IsMarkedScript(parent_id));
+  auto it_parent = extension_scripts().find(parent_id);
+  ASSERT_NE(it_parent, extension_scripts().end());
+  EXPECT_EQ(it_parent->value, "aaaaaajcolbgiaildclhhbneblomedoa");
+
+  // Child script loaded by Extension A with Extension B's URL is attributed to
+  // Extension A.
+  V8ScriptId child_id(101);
+  tracker_->OnScriptRegistered(
+      *execution_context, child_id,
+      "chrome-extension://bbbbbbjcolbgiaildclhhbneblomedoa/script.js",
+      std::make_optional(parent_id));
+
+  EXPECT_TRUE(tracker_->IsMarkedScript(child_id));
+  auto it_child = extension_scripts().find(child_id);
+  ASSERT_NE(it_child, extension_scripts().end());
+  EXPECT_EQ(it_child->value, "aaaaaajcolbgiaildclhhbneblomedoa");
 }
 
 TEST_F(ExtensionScriptTrackerTest, VanillaScriptNotMarked) {
@@ -182,12 +301,35 @@ TEST_F(ExtensionScriptTrackerTest, InjectedExtensionScriptExecutionScope) {
 
   {
     ScriptInitiationMonitor::ScopedInjectedExtensionScriptExecution scope(
-        monitor);
+        monitor, "abcdefghijklmnop");
     tracker_->OnScriptRegistered(*execution_context, script_id, "",
                                  std::nullopt);
   }
 
   EXPECT_TRUE(tracker_->IsMarkedScript(script_id));
+  auto it = extension_scripts().find(script_id);
+  ASSERT_NE(it, extension_scripts().end());
+  EXPECT_EQ(it->value, "abcdefghijklmnop");
+}
+
+TEST_F(ExtensionScriptTrackerTest, NonExtensionHostInjectionNotTagged) {
+  main_resource_->Complete("");
+  ExecutionContext* execution_context = GetDocument().GetExecutionContext();
+  ASSERT_TRUE(execution_context);
+
+  V8ScriptId script_id(106);
+  ScriptInitiationMonitor* monitor =
+      GetDocument().GetFrame()->GetScriptInitiationMonitor();
+  ASSERT_TRUE(monitor);
+
+  // When a non-extension host (e.g. WebUI, ControlledFrame) injects a script,
+  // script_injector_id is empty, so no ScopedInjectedExtensionScriptExecution
+  // is entered. The script should not be marked or tracked as an extension
+  // script.
+  tracker_->OnScriptRegistered(*execution_context, script_id, "", std::nullopt);
+
+  EXPECT_FALSE(tracker_->IsMarkedScript(script_id));
+  EXPECT_TRUE(tracker_->ExtensionScriptInStack().empty());
 }
 
 TEST_F(ExtensionScriptTrackerTest, AsyncAdTrackerSideEffect) {
@@ -291,6 +433,40 @@ TEST_F(ExtensionScriptTrackerTest, FrameCreatedByExtensionScriptTagged) {
   V8ScriptId srcdoc_script_id = tracker_->FindScriptIdByUrl("{ id ");
   EXPECT_GT(srcdoc_script_id.value(), 0);
   EXPECT_TRUE(tracker_->IsMarkedScript(srcdoc_script_id));
+  auto it = extension_scripts().find(srcdoc_script_id);
+  ASSERT_NE(it, extension_scripts().end());
+  EXPECT_EQ(it->value, "abcdefghijklmnop");
+}
+
+TEST_F(ExtensionScriptTrackerTest, ExtensionScriptInStack) {
+  const char kExtensionUrl[] = "chrome-extension://abcdefghijklmnop/script.js";
+  SimSubresourceRequest extension_resource(kExtensionUrl, "text/javascript");
+
+  main_resource_->Complete(
+      "<body></body><script "
+      "src='chrome-extension://abcdefghijklmnop/script.js'></script>");
+
+  extension_resource.Complete(R"SCRIPT(
+    const iframe = document.createElement("iframe");
+    iframe.srcdoc = "<script>console.log('srcdoc');</script>";
+    document.body.appendChild(iframe);
+    )SCRIPT");
+
+  test::RunPendingTasks();
+
+  LocalFrame* child_frame =
+      To<LocalFrame>(GetDocument().GetFrame()->Tree().FirstChild());
+  ASSERT_TRUE(child_frame);
+
+  // Outside the child frame context, no extension script is in stack.
+  EXPECT_TRUE(tracker_->ExtensionScriptInStack().empty());
+
+  // Inside the child frame context, ExtensionScriptInStack returns the
+  // extension ID that created the frame.
+  v8::HandleScope handle_scope(Window().GetIsolate());
+  v8::Context::Scope context_scope(
+      ToScriptStateForMainWorld(child_frame)->GetContext());
+  EXPECT_EQ(tracker_->ExtensionScriptInStack(), "abcdefghijklmnop");
 }
 
 TEST_F(ExtensionScriptTrackerTest,
@@ -352,8 +528,7 @@ TEST_F(ExtensionScriptTrackerTest, ScriptInjectionPolicyLifecycle) {
 
   LocalFrame* frame = GetDocument().GetFrame();
   ASSERT_TRUE(frame);
-  auto* child_element = To<HTMLIFrameElement>(
-      GetDocument().getElementById(AtomicString("child")));
+  auto* child_element = To<HTMLIFrameElement>(GetElementById("child"));
   ASSERT_TRUE(child_element);
   LocalFrame* child_frame = To<LocalFrame>(child_element->ContentFrame());
   ASSERT_TRUE(child_frame);
@@ -381,4 +556,94 @@ TEST_F(ExtensionScriptTrackerTest, ScriptInjectionPolicyLifecycle) {
   EXPECT_EQ(nullptr, frame->GetExtensionScriptTracker());
   EXPECT_EQ(nullptr, child_frame->GetExtensionScriptTracker());
 }
+
+TEST_F(ExtensionScriptTrackerTest, ExtensionScriptUrlsTestingAPI) {
+  main_resource_->Complete("");
+  ScopedExtensionScriptTaggingTestingAPIForTest enable_testing_api(true);
+  ExecutionContext* execution_context = GetDocument().GetExecutionContext();
+  ASSERT_TRUE(execution_context);
+
+  V8ScriptId script_id(200);
+  tracker_->OnScriptRegistered(*execution_context, script_id,
+                               "chrome-extension://abcdefghijklmnop/script.js",
+                               std::nullopt);
+
+  EXPECT_TRUE(tracker_->IsExtensionScriptUrlMarked(
+      "chrome-extension://abcdefghijklmnop/script.js"));
+  EXPECT_FALSE(
+      tracker_->IsExtensionScriptUrlMarked("https://example.com/unrelated.js"));
+}
+
+TEST_F(ExtensionScriptTrackerTest,
+       MetaRefreshInjectedByMainWorldContentScript_IsTracked) {
+  main_resource_->Complete("<head></head><body></body>");
+  EnableNavigationProtection();
+  SimRequest dest_resource("https://example.com/dest.html", "text/html");
+
+  ExecuteContentScriptInMainWorld("abcdefghijklmnop", R"SCRIPT(
+    const meta = document.createElement('meta');
+    meta.httpEquiv = 'refresh';
+    meta.content = '0;url=https://example.com/dest.html';
+    document.head.appendChild(meta);
+  )SCRIPT");
+
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(last_script_injector_host(), "abcdefghijklmnop");
+  dest_resource.Complete("<body></body>");
+}
+
+TEST_F(ExtensionScriptTrackerTest,
+       MetaRefreshInjectedByVanillaScript_IsNotTracked) {
+  main_resource_->Complete("<head></head><body></body>");
+  EnableNavigationProtection();
+  SimRequest dest_resource("https://example.com/dest.html", "text/html");
+
+  MainFrame().ExecuteScript(WebScriptSource(R"SCRIPT(
+    const meta = document.createElement('meta');
+    meta.httpEquiv = 'refresh';
+    meta.content = '0;url=https://example.com/dest.html';
+    document.head.appendChild(meta);
+  )SCRIPT"));
+
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_TRUE(last_script_injector_host().empty());
+  dest_resource.Complete("<body></body>");
+}
+
+TEST_F(ExtensionScriptTrackerTest,
+       FormSubmissionTriggeredByMainWorldContentScript_IsTracked) {
+  main_resource_->Complete(
+      "<head></head><body><form id=\"f\" method=\"POST\" "
+      "action=\"https://example.com/dest.html\"></form></body>");
+  EnableNavigationProtection();
+  SimRequest dest_resource("https://example.com/dest.html", "text/html");
+
+  ExecuteContentScriptInMainWorld("abcdefghijklmnop",
+                                  "document.getElementById('f').submit();");
+
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(last_script_injector_host(), "abcdefghijklmnop");
+  dest_resource.Complete("<body></body>");
+}
+
+TEST_F(ExtensionScriptTrackerTest,
+       FormSubmissionTriggeredByVanillaScript_IsNotTracked) {
+  main_resource_->Complete(
+      "<head></head><body><form id=\"f\" method=\"POST\" "
+      "action=\"https://example.com/dest.html\"></form></body>");
+  EnableNavigationProtection();
+  SimRequest dest_resource("https://example.com/dest.html", "text/html");
+
+  MainFrame().ExecuteScript(
+      WebScriptSource("document.getElementById('f').submit();"));
+
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_TRUE(last_script_injector_host().empty());
+  dest_resource.Complete("<body></body>");
+}
+
 }  // namespace blink

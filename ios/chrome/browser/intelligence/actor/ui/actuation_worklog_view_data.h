@@ -16,6 +16,9 @@ enum class ActuationWorklogItemStyle {
   // Card style with an icon in a circle, and the title/subtitle inside a card
   // container. Optionally contains an `ActuationWorklogAccessoryItem`.
   kCard,
+  // Freeform text-only style (e.g. a question or clarification) spanning the
+  // full width, without any timeline decoration (no dot, icon or connector).
+  kFreeform,
 };
 
 // View data object describing a nested accessory card inside an actuation
@@ -112,6 +115,10 @@ enum class ActuationWorklogItemStyle {
                            active:(BOOL)active
                     accessoryItem:(ActuationWorklogAccessoryItem*)accessoryItem;
 
+// Creates a freeform text-only item without timeline decoration. `text` is
+// exposed through `title`.
++ (instancetype)freeformItemWithText:(NSString*)text;
+
 #pragma mark - Helpers
 
 // Returns a copy of the item with the active state updated.
@@ -133,6 +140,172 @@ enum class ActuationWorklogItemStyle {
                         icon:(UIImage*)icon NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+// Presentation modes of the actuation worklog.
+typedef NS_ENUM(NSInteger, ActuationWorklogDisplayMode) {
+  // Only the header is visible.
+  ActuationWorklogDisplayModeMinimized,
+  // The header and the current step are visible.
+  ActuationWorklogDisplayModeCompact,
+  // The header and the full timeline are visible.
+  ActuationWorklogDisplayModeExpanded,
+};
+
+// Visual layouts for an interactive intervention in the actuation worklog.
+enum class ActuationInterventionType {
+  // Card with `title`, optional `subtitle`, and a single action button.
+  kCard,
+  // Row of one or two action buttons, without `title` or `subtitle`.
+  kRow,
+  // Column of one to three action buttons, without `title` or `subtitle`.
+  kColumn,
+};
+
+// View data object describing an action of an `ActuationInterventionData`.
+@interface ActuationInterventionAction : NSObject
+
+// Caller-defined identifier, passed back when the action is triggered.
+@property(nonatomic, assign, readonly) NSInteger identifier;
+
+// Title of the button triggering the action.
+@property(nonatomic, copy, readonly) NSString* title;
+
+// TODO(crbug.com/573145076): Add an optional `icon` for `columnItem`.
+
+// Designated initializer.
+- (instancetype)initWithIdentifier:(NSInteger)identifier
+                             title:(NSString*)title NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+// View data object describing an intervention in the actuation worklog.
+@interface ActuationInterventionData : NSObject
+
+// The visual layout type of the intervention.
+@property(nonatomic, assign, readonly) ActuationInterventionType type;
+
+// Optional title text (mandatory if `type == kCard`).
+@property(nonatomic, copy, readonly) NSString* title;
+
+// Optional subtitle text (used if `type == kCard`).
+@property(nonatomic, copy, readonly) NSString* subtitle;
+
+// Actions of the intervention, in display order. Never empty.
+@property(nonatomic, copy, readonly)
+    NSArray<ActuationInterventionAction*>* actions;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+#pragma mark - Factory Constructors
+
+// Creates a card layout intervention with a single `action`.
++ (instancetype)cardItemWithTitle:(NSString*)title
+                         subtitle:(NSString*)subtitle
+                           action:(ActuationInterventionAction*)action;
+
+// Creates an intervention with a row of one or two `actions`, in display order.
++ (instancetype)rowItemWithActions:
+    (NSArray<ActuationInterventionAction*>*)actions;
+
+// Creates an intervention with a column of one to three `actions`, in display
+// order.
++ (instancetype)columnItemWithActions:
+    (NSArray<ActuationInterventionAction*>*)actions;
+
+@end
+
+// View data object describing the text displayed in the actuation header.
+@interface ActuationHeaderContent : NSObject
+
+// Main title text.
+@property(nonatomic, copy, readonly) NSString* title;
+
+// Optional subtitle text displayed below `title`.
+@property(nonatomic, copy, readonly) NSString* subtitle;
+
+// Designated initializer.
+- (instancetype)initWithTitle:(NSString*)title
+                     subtitle:(NSString*)subtitle NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+// View data object describing the header content to display in each
+// `ActuationWorklogDisplayMode`.
+@interface ActuationHeaderContentVariants : NSObject
+
+// Designated initializer.
+- (instancetype)initWithMinimizedContent:(ActuationHeaderContent*)minimized
+                          compactContent:(ActuationHeaderContent*)compact
+                         expandedContent:(ActuationHeaderContent*)expanded
+    NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+// Returns the content to display in `mode`.
+- (ActuationHeaderContent*)contentForDisplayMode:
+    (ActuationWorklogDisplayMode)mode;
+
+@end
+
+// Visual style of an `ActuationHeaderItem`.
+typedef NS_ENUM(NSInteger, ActuationHeaderItemStyle) {
+  // Icon-only button. `title` is used as the accessibility label.
+  ActuationHeaderItemStyleIcon,
+  // Prominent text-only capsule button displaying `title`.
+  ActuationHeaderItemStyleCallToAction,
+};
+
+// View data object describing a button in the actuation header. The button will
+// trigger `action` or presents `menu` on tap; exactly one of them is non-nil.
+@interface ActuationHeaderItem : NSObject
+
+// Visual style of the button, determined by the factory used.
+@property(nonatomic, assign, readonly) ActuationHeaderItemStyle style;
+
+// Icon displayed in the button. Nil for
+// `ActuationHeaderItemStyleCallToAction` items.
+@property(nonatomic, strong, readonly) UIImage* icon;
+
+// Title of the item. Displayed as the button text for
+// `ActuationHeaderItemStyleCallToAction` items, otherwise used as the
+// accessibility label of the icon-only button.
+@property(nonatomic, copy, readonly) NSString* title;
+
+// Optional accessibility identifier of the button.
+@property(nonatomic, copy, readonly) NSString* accessibilityIdentifier;
+
+// Action triggered on tap. Nil when `menu` is set.
+@property(nonatomic, strong, readonly) UIAction* action;
+
+// Menu presented on tap. Nil when `action` is set.
+@property(nonatomic, strong, readonly) UIMenu* menu;
+
+// Creates an `ActuationHeaderItemStyleIcon` item triggering `action` on tap.
++ (instancetype)itemWithIcon:(UIImage*)icon
+                       title:(NSString*)title
+     accessibilityIdentifier:(NSString*)accessibilityIdentifier
+                      action:(UIAction*)action;
+
+// Creates an `ActuationHeaderItemStyleIcon` item presenting `menu` on tap.
++ (instancetype)itemWithIcon:(UIImage*)icon
+                       title:(NSString*)title
+     accessibilityIdentifier:(NSString*)accessibilityIdentifier
+                        menu:(UIMenu*)menu;
+
+// Creates an `ActuationHeaderItemStyleCallToAction` item displaying `title`
+// and triggering `action` on tap.
++ (instancetype)callToActionWithTitle:(NSString*)title
+              accessibilityIdentifier:(NSString*)accessibilityIdentifier
+                               action:(UIAction*)action;
+
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)new NS_UNAVAILABLE;
 
 @end
 

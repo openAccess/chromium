@@ -7,5 +7,18 @@ source_set("public") {
     "autofill_settings_navigator.h",
     "autofill_settings_navigator.mm",
   ]
-  deps = [ "//components/autofill/core/browser" ]
+  deps = [
+    "//base",
+    "//components/autofill/core/browser",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "autofill_settings_navigator_unittest.mm" ]
+  deps = [
+    ":public",
+    "//components/autofill/core/browser",
+    "//testing/gtest",
+  ]
 }

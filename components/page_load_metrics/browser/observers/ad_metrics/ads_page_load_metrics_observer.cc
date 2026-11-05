@@ -12,6 +12,7 @@
 
 #include "base/check_op.h"
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/notreached.h"
 #include "base/rand_util.h"
@@ -19,6 +20,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/cancelable_task_tracker.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -366,8 +368,12 @@ void AdsPageLoadMetricsObserver::OnTimingUpdate(
     return;
   }
 
-  FrameTreeData* ancestor_data = FindFrameData(frame_rfh->GetFrameTreeNodeId());
-
+  const auto id_and_data =
+      ad_frames_data_.find(frame_rfh->GetFrameTreeNodeId());
+  if (id_and_data == ad_frames_data_.end()) {
+    return;
+  }
+  FrameTreeData* ancestor_data = id_and_data->second.Get();
   if (!ancestor_data) {
     return;
   }
@@ -391,11 +397,10 @@ void AdsPageLoadMetricsObserver::OnTimingUpdate(
     // Determine the offset of this ad-frame FCP from main frame navigation
     // start, and remember it if it's the lowest. The time calculation is
     // (frame_fcp + frame_nav_start) - main_frame_nav_start.
-    auto id_and_start =
-        frame_navigation_starts_.find(frame_rfh->GetFrameTreeNodeId());
-    if (id_and_start != frame_navigation_starts_.end()) {
+    base::TimeTicks navigation_start = id_and_data->second.navigation_start();
+    if (!navigation_start.is_null()) {
       base::TimeDelta time_since_top_nav_start =
-          (id_and_start->second +
+          (navigation_start +
            timing.paint_timing->first_contentful_paint.value()) -
           GetDelegate().GetNavigationStart();
 
@@ -419,7 +424,8 @@ void AdsPageLoadMetricsObserver::OnCpuTimingUpdate(
   FrameTreeData* ancestor_data =
       FindFrameData(subframe_rfh->GetFrameTreeNodeId());
   aggregate_frame_data_->UpdateCpuUsage(current_time, timing.task_time,
-                                        ancestor_data);
+                                        timing.ad_task_time,
+                                        ancestor_data != nullptr);
   if (ancestor_data) {
     ancestor_data->UpdateCpuUsage(current_time, timing.task_time);
     MaybeTriggerHeavyAdIntervention(subframe_rfh, ancestor_data);
@@ -434,9 +440,10 @@ void AdsPageLoadMetricsObserver::UpdateAdFrameData(
     bool should_ignore_detected_ad) {
   const content::FrameTreeNodeId ad_id =
       navigation_handle->GetFrameTreeNodeId();
+  const base::TimeTicks navigation_start = navigation_handle->NavigationStart();
   // If an existing subframe is navigating and it was an ad previously that
   // hasn't navigated yet, then we need to update it.
-  const auto& id_and_data = ad_frames_data_.find(ad_id);
+  const auto id_and_data = ad_frames_data_.find(ad_id);
   FrameTreeData* previous_data = id_and_data != ad_frames_data_.end()
                                      ? id_and_data->second.Get()
                                      : nullptr;
@@ -453,17 +460,14 @@ void AdsPageLoadMetricsObserver::UpdateAdFrameData(
                           true /* update_density_tracker */,
                           false /* record_metrics */);
 
-      ad_frames_data_.erase(id_and_data);
-
       // Replace the tracked frame with null frame reference. This
       // allows child frames to still be tracked as ads.
-      ad_frames_data_.emplace(std::piecewise_construct,
-                              std::forward_as_tuple(ad_id),
-                              std::forward_as_tuple());
-
+      id_and_data->second = FrameInstance();
+      id_and_data->second.set_navigation_start(navigation_start);
       return;
     }
 
+    id_and_data->second.set_navigation_start(navigation_start);
     // As the frame has already navigated, we need to process the new navigation
     // resource in the frame.
     ProcessOngoingNavigationResource(navigation_handle);
@@ -497,6 +501,11 @@ void AdsPageLoadMetricsObserver::UpdateAdFrameData(
           : content::RenderFrameHost::FromID(
                 navigation_handle->GetPreviousRenderFrameHostId());
 
+  // Frames who are the children of ad frames should be associated with the
+  // ads FrameInstance. Otherwise, |ad_id| should be associated with an empty
+  // FrameInstance to indicate it is not associated with an ad, but that the
+  // frames navigation has been observed.
+  FrameInstance& frame_instance = ad_frames_data_[ad_id];
   if (should_create_new_frame_data) {
     // Construct a new FrameTreeData to track this ad frame, and update it for
     // the navigation.
@@ -505,31 +514,12 @@ void AdsPageLoadMetricsObserver::UpdateAdFrameData(
         heavy_ad_threshold_noise_provider_->GetNetworkThresholdNoiseForFrame());
     frame_data->UpdateForNavigation(ad_host);
     frame_data->MaybeUpdateFrameDepth(ad_host);
-
-    FrameInstance frame_instance(std::move(frame_data));
-    ad_frames_data_[ad_id] = std::move(frame_instance);
-    return;
-  }
-
-  if (ad_data) {
+    frame_instance = FrameInstance(std::move(frame_data));
+  } else if (ad_data) {
     ad_data->MaybeUpdateFrameDepth(ad_host);
-  }
-
-  // Don't overwrite the frame id if it is associated with an ad.
-  if (previous_data) {
-    return;
-  }
-
-  // Frames who are the children of ad frames should be associated with the
-  // ads FrameInstance. Otherwise, |ad_id| should be associated with an empty
-  // FrameInstance to indicate it is not associated with an ad, but that the
-  // frames navigation has been observed.
-  FrameInstance frame_instance;
-  if (ad_data) {
     frame_instance = FrameInstance(ad_data->AsWeakPtr());
   }
-
-  ad_frames_data_[ad_id] = std::move(frame_instance);
+  frame_instance.set_navigation_start(navigation_start);
 }
 
 void AdsPageLoadMetricsObserver::ReadyToCommitNextNavigation(
@@ -560,9 +550,6 @@ void AdsPageLoadMetricsObserver::OnDidFinishSubFrameNavigation(
       subresource_filter::ContentSubresourceFilterThrottleManager::
           FromNavigationHandle(*navigation_handle);
   DCHECK(throttle_manager);
-
-  frame_navigation_starts_[navigation_handle->GetFrameTreeNodeId()] =
-      navigation_handle->NavigationStart();
 
   const bool is_adframe = throttle_manager->IsFrameTaggedAsAd(
       navigation_handle->GetFrameTreeNodeId());
@@ -760,8 +747,6 @@ void AdsPageLoadMetricsObserver::CheckForAdDensityViolation() {
 
 void AdsPageLoadMetricsObserver::OnSubFrameDeleted(
     content::FrameTreeNodeId frame_tree_node_id) {
-  frame_navigation_starts_.erase(frame_tree_node_id);
-
   const auto& id_and_data = ad_frames_data_.find(frame_tree_node_id);
   if (id_and_data == ad_frames_data_.end()) {
     return;
@@ -1020,6 +1005,9 @@ void AdsPageLoadMetricsObserver::RecordPageResourceTotalHistograms(
   // Record cpu metrics for the page.
   builder.SetAdCpuTime(
       aggregate_frame_data_->total_ad_cpu_usage().InMilliseconds());
+  builder.SetNonAdFrameAdCpuTimeMs(
+      ukm::GetExponentialBucketMinForFineUserTiming(
+          aggregate_frame_data_->non_ad_frame_ad_cpu_usage().InMilliseconds()));
   builder.Record(ukm_recorder->Get());
 }
 
@@ -1050,10 +1038,14 @@ void AdsPageLoadMetricsObserver::RecordHistograms(ukm::SourceId source_id) {
 }
 
 void AdsPageLoadMetricsObserver::RecordAggregateHistogramsForCpuUsage() {
-  // If the page has an ad with the relevant visibility and non-zero bytes.
-  if (aggregate_frame_data_
+  bool has_ad_frames =
+      aggregate_frame_data_
           ->get_ad_data_by_visibility(FrameVisibility::kAnyVisibility)
-          .frames == 0) {
+          .frames > 0;
+  bool has_non_ad_frame_ad_cpu =
+      !aggregate_frame_data_->non_ad_frame_ad_cpu_usage().is_zero();
+
+  if (!has_ad_frames && !has_non_ad_frame_ad_cpu) {
     return;
   }
 
@@ -1061,16 +1053,26 @@ void AdsPageLoadMetricsObserver::RecordAggregateHistogramsForCpuUsage() {
   // numbers do not change for different visibility types.
   FrameVisibility visibility = FrameVisibility::kAnyVisibility;
 
+  ADS_HISTOGRAM("Cpu.NonAdFrames.Aggregate.AdScripts.TotalUsage",
+                PAGE_LOAD_HISTOGRAM, visibility,
+                aggregate_frame_data_->non_ad_frame_ad_cpu_usage());
+  ADS_HISTOGRAM("Cpu.FullPage.TotalAdsUsage", PAGE_LOAD_HISTOGRAM, visibility,
+                aggregate_frame_data_->total_ad_cpu_usage());
+
+  if (!has_ad_frames) {
+    return;
+  }
+
   // Record the aggregate data, which is never considered activated.
   // TODO(crbug.com/40141881): Does it make sense to include an aggregate peak
   // windowed percent?  Obviously this would be a max of maxes, but might be
   // useful to have that for comparisons as well.
   ADS_HISTOGRAM("Cpu.AdFrames.Aggregate.TotalUsage2", PAGE_LOAD_HISTOGRAM,
-                visibility, aggregate_frame_data_->total_ad_cpu_usage());
+                visibility, aggregate_frame_data_->total_ad_frame_cpu_usage());
   ADS_HISTOGRAM("Cpu.NonAdFrames.Aggregate.TotalUsage2", PAGE_LOAD_HISTOGRAM,
                 visibility,
                 aggregate_frame_data_->total_cpu_usage() -
-                    aggregate_frame_data_->total_ad_cpu_usage());
+                    aggregate_frame_data_->total_ad_frame_cpu_usage());
   ADS_HISTOGRAM("Cpu.NonAdFrames.Aggregate.PeakWindowedPercent2",
                 base::UmaHistogramPercentage, visibility,
                 aggregate_frame_data_->peak_windowed_non_ad_cpu_percent());
@@ -1288,9 +1290,13 @@ void AdsPageLoadMetricsObserver::RecordPerFrameHistogramsForHeavyAds(
 
 void AdsPageLoadMetricsObserver::ProcessOngoingNavigationResource(
     content::NavigationHandle* navigation_handle) {
-  const auto& frame_id_and_request = ongoing_navigation_resources_.find(
+  // Extract the entry up front so the resource is owned locally for the rest
+  // of this call. Although the heavy ad intervention now runs asynchronously,
+  // extracting the node first defends against any synchronous re-entrancy into
+  // DidFinishNavigation observing or removing this entry again.
+  auto request_node = ongoing_navigation_resources_.extract(
       navigation_handle->GetFrameTreeNodeId());
-  if (frame_id_and_request == ongoing_navigation_resources_.end()) {
+  if (request_node.empty()) {
     return;
   }
 
@@ -1302,8 +1308,7 @@ void AdsPageLoadMetricsObserver::ProcessOngoingNavigationResource(
           : content::RenderFrameHost::FromID(
                 navigation_handle->GetPreviousRenderFrameHostId());
 
-  ProcessResourceForFrame(rfh, frame_id_and_request->second);
-  ongoing_navigation_resources_.erase(frame_id_and_request);
+  ProcessResourceForFrame(rfh, request_node.mapped());
 }
 
 FrameTreeData* AdsPageLoadMetricsObserver::FindFrameData(
@@ -1346,6 +1351,26 @@ void AdsPageLoadMetricsObserver::MaybeTriggerHeavyAdIntervention(
     content::RenderFrameHost* render_frame_host,
     FrameTreeData* frame_data) {
   DCHECK(render_frame_host);
+  if (frame_data->MaybeTriggerHeavyAdIntervention() == HeavyAdAction::kNone) {
+    return;
+  }
+
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&AdsPageLoadMetricsObserver::TriggerHeavyAdIntervention,
+                     ads_weak_factory_.GetWeakPtr(),
+                     render_frame_host->GetGlobalId(),
+                     frame_data->AsWeakPtr()));
+}
+
+void AdsPageLoadMetricsObserver::TriggerHeavyAdIntervention(
+    content::GlobalRenderFrameHostId render_frame_host_id,
+    base::WeakPtr<FrameTreeData> frame_data) {
+  content::RenderFrameHost* render_frame_host =
+      content::RenderFrameHost::FromID(render_frame_host_id);
+  if (!render_frame_host || !frame_data) {
+    return;
+  }
   HeavyAdAction action = frame_data->MaybeTriggerHeavyAdIntervention();
   if (action == HeavyAdAction::kNone) {
     return;

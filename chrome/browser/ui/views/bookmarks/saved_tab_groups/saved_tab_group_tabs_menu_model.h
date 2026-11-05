@@ -9,6 +9,8 @@
 #include <optional>
 #include <variant>
 
+#include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
@@ -17,7 +19,6 @@
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/menus/simple_menu_model.h"
-#include "url/gurl.h"
 
 class BrowserWindowInterface;
 
@@ -31,10 +32,12 @@ namespace tab_groups {
 class STGTabsMenuModel : public ui::SimpleMenuModel,
                          public ui::SimpleMenuModel::Delegate {
  public:
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kCloseGroup);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kDeleteGroupMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kLeaveGroupMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kMoveGroupToNewWindowMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kOpenGroup);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kToggleGroupFocusStateMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kToggleGroupPinStateMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kTabsTitleItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kTab);
@@ -50,8 +53,13 @@ class STGTabsMenuModel : public ui::SimpleMenuModel,
 
   ~STGTabsMenuModel() override;
 
-  void Build(const SavedTabGroup& saved_group,
-             base::RepeatingCallback<int()> get_next_command_id);
+  using OnExecuteCommandCallback =
+      base::RepeatingCallback<void(const TabGroupMenuAction&)>;
+
+  void Build(
+      const SavedTabGroup& saved_group,
+      base::RepeatingCallback<int()> get_next_command_id,
+      OnExecuteCommandCallback on_execute_command_callback = base::DoNothing());
 
   bool HasCommandId(int command_id) const;
 
@@ -71,9 +79,9 @@ class STGTabsMenuModel : public ui::SimpleMenuModel,
   raw_ptr<BrowserWindowInterface> browser_;
   base::CancelableTaskTracker cancelable_task_tracker_;
   bool should_enable_move_menu_item_;
-  bool should_enable_open_menu_item_;
   std::optional<base::Uuid> sync_id_;
   TabGroupMenuContext context_;
+  OnExecuteCommandCallback on_execute_command_callback_;
 
   // The key is a submenu command id, i.e. one of the following:
   //        Open Group

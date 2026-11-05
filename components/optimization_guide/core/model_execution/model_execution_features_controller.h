@@ -13,11 +13,9 @@
 #include "base/observer_list_types.h"
 #include "base/scoped_observation.h"
 #include "base/threading/thread_checker.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/feature_registry/mqls_feature_registry.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/optimization_guide/core/model_execution/settings_enabled_observer.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_change_event.h"
@@ -29,6 +27,11 @@ class ManagementService;
 }
 
 namespace optimization_guide {
+
+// Enables model quality logs regardless of other client-side settings, as long
+// as the client is a dogfood client.
+inline constexpr char kEnableModelQualityDogfoodLoggingSwitch[] =
+    "enable-model-quality-dogfood-logging";
 
 // Class that keeps track of user opt-in settings, including the visibility of
 // settings and the user's opt-in state.
@@ -58,8 +61,6 @@ class ModelExecutionFeaturesController
     // enums.xml.
     kMaxValue = kNotVisibleHardwareUnsupported
   };
-  using HistorySearchVisibilityCallback =
-      base::RepeatingCallback<SettingsVisibilityResult()>;
 
   enum class DogfoodStatus {
     DOGFOOD,
@@ -72,8 +73,7 @@ class ModelExecutionFeaturesController
       signin::IdentityManager* identity_manager,
       policy::ManagementService* management_service,
       DogfoodStatus dogfood_status,
-      bool is_official_build,
-      HistorySearchVisibilityCallback history_search_visibility_callback);
+      bool is_official_build);
 
   ~ModelExecutionFeaturesController() override;
 
@@ -107,10 +107,6 @@ class ModelExecutionFeaturesController
   // model execution. This does not perform any feature related checks such as
   // allowed by enterprise policy.
   bool ShouldModelExecutionBeAllowedForUser() const;
-
-  // Defines when History search setting is visible.  Returns
-  // kNotVisibleHardwareUnsupported.
-  static HistorySearchVisibilityCallback HistorySearchNotSupported();
 
   // Adds `observer` which can observe the change in feature settings.
   void AddObserver(SettingsEnabledObserver* observer);
@@ -221,8 +217,6 @@ class ModelExecutionFeaturesController
 
   // To check if the user is enterprise or not.
   raw_ptr<policy::ManagementService> management_service_;
-
-  HistorySearchVisibilityCallback history_search_visibility_callback_;
 
   // Whether this client is a (likely) dogfood client.
   const DogfoodStatus dogfood_status_;

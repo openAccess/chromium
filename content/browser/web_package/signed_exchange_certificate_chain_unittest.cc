@@ -7,6 +7,7 @@
 #include <optional>
 #include <string_view>
 
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
@@ -24,7 +25,7 @@ namespace content {
 namespace {
 
 cbor::Value CBORByteString(std::string_view str) {
-  return cbor::Value(str, cbor::Value::Type::BYTE_STRING);
+  return cbor::Value(base::as_byte_span(str));
 }
 
 scoped_refptr<net::X509Certificate> LoadCertificate(
@@ -59,8 +60,8 @@ TEST(SignedExchangeCertificateParseTest, EmptyChain) {
 
 TEST(SignedExchangeCertificateParseTest, MissingCert) {
   cbor::Value::MapValue cbor_map;
-  cbor_map[cbor::Value("sct")] = CBORByteString("SCT");
-  cbor_map[cbor::Value("ocsp")] = CBORByteString("OCSP");
+  cbor_map.emplace("sct", CBORByteString("SCT"));
+  cbor_map.emplace("ocsp", CBORByteString("OCSP"));
 
   cbor::Value::ArrayValue cbor_array;
   cbor_array.push_back(cbor::Value("\U0001F4DC\u26D3"));
@@ -83,9 +84,9 @@ TEST(SignedExchangeCertificateParseTest, OneCert) {
       net::x509_util::CryptoBufferAsStringPiece(certs[0]->cert_buffer());
 
   cbor::Value::MapValue cbor_map;
-  cbor_map[cbor::Value("sct")] = CBORByteString("SCT");
-  cbor_map[cbor::Value("cert")] = CBORByteString(cert_der);
-  cbor_map[cbor::Value("ocsp")] = CBORByteString("OCSP");
+  cbor_map.emplace("sct", CBORByteString("SCT"));
+  cbor_map.emplace("cert", CBORByteString(cert_der));
+  cbor_map.emplace("ocsp", CBORByteString("OCSP"));
 
   cbor::Value::ArrayValue cbor_array;
   cbor_array.push_back(cbor::Value("\U0001F4DC\u26D3"));
@@ -113,8 +114,8 @@ TEST(SignedExchangeCertificateParseTest, MissingOCSPInFirstCert) {
       net::x509_util::CryptoBufferAsStringPiece(certs[0]->cert_buffer());
 
   cbor::Value::MapValue cbor_map;
-  cbor_map[cbor::Value("sct")] = CBORByteString("SCT");
-  cbor_map[cbor::Value("cert")] = CBORByteString(cert_der);
+  cbor_map.emplace("sct", CBORByteString("SCT"));
+  cbor_map.emplace("cert", CBORByteString(cert_der));
 
   cbor::Value::ArrayValue cbor_array;
   cbor_array.push_back(cbor::Value("\U0001F4DC\u26D3"));
@@ -139,12 +140,12 @@ TEST(SignedExchangeCertificateParseTest, TwoCerts) {
       net::x509_util::CryptoBufferAsStringPiece(certs[1]->cert_buffer());
 
   cbor::Value::MapValue cbor_map1;
-  cbor_map1[cbor::Value("sct")] = CBORByteString("SCT");
-  cbor_map1[cbor::Value("cert")] = CBORByteString(cert1_der);
-  cbor_map1[cbor::Value("ocsp")] = CBORByteString("OCSP");
+  cbor_map1.emplace("sct", CBORByteString("SCT"));
+  cbor_map1.emplace("cert", CBORByteString(cert1_der));
+  cbor_map1.emplace("ocsp", CBORByteString("OCSP"));
 
   cbor::Value::MapValue cbor_map2;
-  cbor_map2[cbor::Value("cert")] = CBORByteString(cert2_der);
+  cbor_map2.emplace("cert", CBORByteString(cert2_der));
 
   cbor::Value::ArrayValue cbor_array;
   cbor_array.push_back(cbor::Value("\U0001F4DC\u26D3"));
@@ -177,13 +178,13 @@ TEST(SignedExchangeCertificateParseTest, HavingOCSPInSecondCert) {
       net::x509_util::CryptoBufferAsStringPiece(certs[1]->cert_buffer());
 
   cbor::Value::MapValue cbor_map1;
-  cbor_map1[cbor::Value("sct")] = CBORByteString("SCT");
-  cbor_map1[cbor::Value("cert")] = CBORByteString(cert1_der);
-  cbor_map1[cbor::Value("ocsp")] = CBORByteString("OCSP1");
+  cbor_map1.emplace("sct", CBORByteString("SCT"));
+  cbor_map1.emplace("cert", CBORByteString(cert1_der));
+  cbor_map1.emplace("ocsp", CBORByteString("OCSP1"));
 
   cbor::Value::MapValue cbor_map2;
-  cbor_map2[cbor::Value("cert")] = CBORByteString(cert2_der);
-  cbor_map2[cbor::Value("ocsp")] = CBORByteString("OCSP2");
+  cbor_map2.emplace("cert", CBORByteString(cert2_der));
+  cbor_map2.emplace("ocsp", CBORByteString("OCSP2"));
 
   cbor::Value::ArrayValue cbor_array;
   cbor_array.push_back(cbor::Value("\U0001F4DC\u26D3"));

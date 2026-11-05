@@ -11,6 +11,7 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/local_or_syncable_bookmark_sync_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/feedback/feedback_dialog.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -26,6 +27,7 @@
 #include "components/sync_bookmarks/bookmark_sync_service.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace {
 const char kExampleUrl[] = "https://example.com/";
@@ -67,7 +69,7 @@ class ShoppingUiHandlerDelegateBrowserTest : public InProcessBrowserTest {
 
   void NavigateToURL(const GURL& url) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), url, WindowOpenDisposition::CURRENT_TAB,
+        browser(), url, ui::mojom::WindowOpenDisposition::kCurrentTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     base::PlatformThread::Sleep(base::Seconds(2));
     base::RunLoop().RunUntilIdle();
@@ -75,7 +77,7 @@ class ShoppingUiHandlerDelegateBrowserTest : public InProcessBrowserTest {
 
   void OpenURLInNewTab(const GURL& url) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+        browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB |
             ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     base::PlatformThread::Sleep(base::Seconds(2));
@@ -84,10 +86,6 @@ class ShoppingUiHandlerDelegateBrowserTest : public InProcessBrowserTest {
 
   raw_ptr<Profile, DanglingUntriaged> profile_;
   raw_ptr<bookmarks::BookmarkModel, DanglingUntriaged> bookmark_model_;
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
-  base::test::ScopedFeatureList feature_list_{
-      syncer::kReplaceSyncPromosWithSignInPromos};
-#endif
 };
 
 IN_PROC_BROWSER_TEST_F(ShoppingUiHandlerDelegateBrowserTest,

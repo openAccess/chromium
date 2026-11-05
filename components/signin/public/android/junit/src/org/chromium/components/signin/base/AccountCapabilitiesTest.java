@@ -11,7 +11,6 @@ import org.junit.runner.RunWith;
 import org.robolectric.ParameterizedRobolectricTestRunner;
 import org.robolectric.ParameterizedRobolectricTestRunner.Parameter;
 import org.robolectric.ParameterizedRobolectricTestRunner.Parameters;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRule;
 import org.chromium.components.signin.AccountCapabilitiesConstants;
@@ -24,7 +23,6 @@ import java.util.Map;
 
 /** Test class for {@link AccountCapabilities}. */
 @RunWith(ParameterizedRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public final class AccountCapabilitiesTest {
 
     @Rule public BaseRobolectricTestRule mBaseRule = new BaseRobolectricTestRule();
@@ -46,8 +44,6 @@ public final class AccountCapabilitiesTest {
                 return capabilities.canHaveEmailAddressDisplayed();
             case AccountCapabilitiesConstants.CAN_OVERRIDE_ACCOUNT_INFO_CAPABILITY_NAME:
                 return capabilities.canOverrideAccountInfo();
-            case AccountCapabilitiesConstants.CAN_RUN_CHROME_PRIVACY_SANDBOX_TRIALS_CAPABILITY_NAME:
-                return capabilities.canRunChromePrivacySandboxTrials();
             case AccountCapabilitiesConstants
                     .CAN_SHOW_HISTORY_SYNC_OPT_INS_WITHOUT_MINOR_MODE_RESTRICTIONS_CAPABILITY_NAME:
                 return capabilities.canShowHistorySyncOptInsWithoutMinorModeRestrictions();
@@ -71,15 +67,25 @@ public final class AccountCapabilitiesTest {
             case AccountCapabilitiesConstants
                     .IS_SUBJECT_TO_ACCOUNT_LEVEL_ENTERPRISE_POLICIES_CAPABILITY_NAME:
                 return capabilities.isSubjectToAccountLevelEnterprisePolicies();
-            case AccountCapabilitiesConstants
-                    .IS_SUBJECT_TO_CHROME_PRIVACY_SANDBOX_RESTRICTED_MEASUREMENT_NOTICE:
-                return capabilities.isSubjectToChromePrivacySandboxRestrictedMeasurementNotice();
             case AccountCapabilitiesConstants.IS_SUBJECT_TO_ENTERPRISE_POLICIES_CAPABILITY_NAME:
                 return capabilities.isSubjectToEnterpriseFeatures();
             case AccountCapabilitiesConstants.IS_SUBJECT_TO_PARENTAL_CONTROLS_CAPABILITY_NAME:
                 return capabilities.isSubjectToParentalControls();
+            case AccountCapabilitiesConstants
+                    .IS_SUBJECT_TO_PARENTAL_CONTROLS_VIA_BUNDLE_CAPABILITY_NAME:
+                return capabilities.isSubjectToParentalControlsViaBundle();
             case AccountCapabilitiesConstants.IS_SUBJECT_TO_UNIVERSAL_OPT_OUT_CAPABILITY_NAME:
                 return capabilities.isSubjectToUniversalOptOut();
+            case AccountCapabilitiesConstants
+                    .MUST_SHOW_EQUALLY_WEIGHTED_BUTTONS_FOR_PRIVATE_PASSES_IN_CHROME_AUTOFILL_CAPABILITY_NAME:
+                return capabilities
+                        .mustShowEquallyWeightedButtonsForPrivatePassesInChromeAutofill();
+            case AccountCapabilitiesConstants.SHOULD_BE_ADDRESSED_IN_FEMININE_GRAMMATICAL_GENDER:
+                return capabilities.shouldBeAddressedInFeminineGrammaticalGender();
+            case AccountCapabilitiesConstants.SHOULD_BE_ADDRESSED_IN_MASCULINE_GRAMMATICAL_GENDER:
+                return capabilities.shouldBeAddressedInMasculineGrammaticalGender();
+            case AccountCapabilitiesConstants.SHOULD_BE_ADDRESSED_IN_NEUTER_GRAMMATICAL_GENDER:
+                return capabilities.shouldBeAddressedInNeuterGrammaticalGender();
             case AccountCapabilitiesConstants.SUPPORTS_WALLET_PRIVATE_PASSES_IN_AUTOFILL_NAME:
                 return capabilities.supportsWalletPrivatePassesInAutofill();
             /** keep-sorted end */

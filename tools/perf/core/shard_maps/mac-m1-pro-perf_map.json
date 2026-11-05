@@ -1,9 +1,6 @@
 {
     "0": {
         "benchmarks": {
-            "speedometer3": {
-                "abridged": false
-            },
             "jetstream2": {
                 "abridged": false
             }
@@ -12,14 +9,16 @@
             "speedometer3.crossbench": {
                 "crossbench_name": "speedometer_3",
                 "arguments": [
+                    "--network=live",
                     "--enable-field-trials=benchmarking"
                 ]
             },
             "browser_startup.crossbench": {
                 "crossbench_name": "browser-startup",
                 "arguments": [
-                    "--enable-features=InitialWebUI:high_stream_priority/true,WebUIReloadButton:WebUIReloadButtonDeferBrowserViewShow/true/WebUIReloadButtonKeepVisibleUntilPaint/true/WebUIReloadButtonPrewarmWebUI/true,SkipIPCChannelPausingForNonGuests,WebUIInProcessResourceLoadingV2,InitialWebUISyncNavStartToCommit,InitialWebUIWithoutExtensions,WebUIBundledCodeCache,SendGPUChannelEarly",
-                    "--enable-field-trials=benchmarking"
+                    "--enable-features=BypassOutdatedSurfaceActivation,DeferHistoryBackendInit,DeferLayoutDuringBrowserStartup,DeferSessionStorageScavengingOnStartup,DeferSpellcheckInitialization,InitialWebUI,InitialWebUISurfaceSync:deadline_in_frames/12000/renderer_commit_delay_ms/100000,InitialWebUIWithoutExtensions,InitialWebUIWithoutSpellCheckForNtp,InitialWebUIWithoutTranslateForNtp,LazyKeyedServiceInstantiation,OnlyUseWindowResizeHelperOnResize,PerDependencyDeadlines,PrioritizeResizeTaskRunnerOnStartup,SendGPUChannelEarly,SkipIPCChannelPausingForNonGuests,WebUIBackForwardButton,WebUIBundledCodeCache,WebUIBypassMojoConnections,WebUIHomeButton,WebUIReloadButton:WebUIReloadButtonBypassLoaderThrottles/true/WebUIReloadButtonDeferBrowserViewShow/false/WebUIReloadButtonKeepVisibleUntilPaint/true/WebUIReloadButtonPrewarmWebUI/true/WebUIReloadButtonPrewarmWebUIPreNavigate/true/WebUIReloadButtonRestartUnresponsive/true/WebUIReloadButtonRestartUnresponsiveRenderersTimeout/5s,WebUISplitTabsButton,WebUIToolbarFrameEvictionOptOut,WebiumMetricsMapping:config/CjsKOUV2ZW50TGF0ZW5jeS5HZXN0dXJlU2Nyb2xsVXBkYXRlLlRvdWNoc2NyZWVuLlRvdGFsTGF0ZW5jeQooCiZQYWdlTG9hZC5JbnRlcmFjdGl2ZVRpbWluZy5JbnB1dERlbGF5Mwo4CjZHcmFwaGljcy5TbW9vdGhuZXNzLlBlcmNlbnREcm9wcGVkRnJhbWVzMy5BbGxTZXF1ZW5jZXM=",
+                    "--enable-field-trials=benchmarking",
+                    "--repeat=10"
                 ]
             },
             "jetstream2.crossbench": {
@@ -31,15 +30,12 @@
         }
     },
     "1": {
-        "benchmarks": {
-            "speedometer3": {
-                "abridged": false
-            }
-        },
+        "benchmarks": {},
         "crossbench": {
             "speedometer3.crossbench": {
                 "crossbench_name": "speedometer_3",
                 "arguments": [
+                    "--network=live",
                     "--enable-field-trials=benchmarking"
                 ]
             },
@@ -59,15 +55,12 @@
         }
     },
     "2": {
-        "benchmarks": {
-            "speedometer3": {
-                "abridged": false
-            }
-        },
+        "benchmarks": {},
         "crossbench": {
             "speedometer3.crossbench": {
                 "crossbench_name": "speedometer_3",
                 "arguments": [
+                    "--network=live",
                     "--enable-field-trials=benchmarking"
                 ]
             },
@@ -81,9 +74,6 @@
     },
     "3": {
         "benchmarks": {
-            "speedometer3": {
-                "abridged": false
-            },
             "rendering.desktop.notracing": {
                 "abridged": false
             },
@@ -95,6 +85,7 @@
             "speedometer3.crossbench": {
                 "crossbench_name": "speedometer_3",
                 "arguments": [
+                    "--network=live",
                     "--enable-field-trials=benchmarking"
                 ]
             }

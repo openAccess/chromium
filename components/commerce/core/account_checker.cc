@@ -10,7 +10,6 @@
 #include "base/values.h"
 #include "components/commerce/core/commerce_constants.h"
 #include "components/commerce/core/commerce_feature_list.h"
-#include "components/commerce/core/commerce_utils.h"
 #include "components/commerce/core/pref_names.h"
 #include "components/endpoint_fetcher/endpoint_fetcher.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -18,7 +17,6 @@
 #include "components/signin/public/identity_manager/account_capabilities.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/sync/base/features.h"
 #include "components/sync/service/sync_service_utils.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "components/unified_consent/url_keyed_data_collection_consent_helper.h"
@@ -72,16 +70,8 @@ AccountChecker::AccountChecker(
 AccountChecker::~AccountChecker() = default;
 
 bool AccountChecker::IsSignedIn() {
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    return identity_manager_ &&
-           identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin);
-  }
-  // The feature is not enabled, fallback to old behavior.
-  // TODO(crbug.com/40067058): Delete ConsentLevel::kSync usage once
-  // kReplaceSyncPromosWithSignInPromos is launched on all platforms. See
-  // ConsentLevel::kSync documentation for details.
   return identity_manager_ &&
-         identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSync);
+         identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin);
 }
 
 bool AccountChecker::IsSyncTypeEnabled(syncer::UserSelectableType type) {
@@ -308,23 +298,15 @@ std::unique_ptr<EndpointFetcher> AccountChecker::CreateEndpointFetcher(
     const base::TimeDelta& timeout,
     const std::string& post_data,
     const net::NetworkTrafficAnnotationTag& annotation_tag) {
-  // TODO(crbug.com/40067058): Delete ConsentLevel::kSync usage once
-  // kReplaceSyncPromosWithSignInPromos is launched on all platforms. See
-  // ConsentLevel::kSync documentation for details.
-  signin::ConsentLevel consent_level =
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? signin::ConsentLevel::kSignin
-          : signin::ConsentLevel::kSync;
   EndpointFetcher::RequestParams::Builder request_params =
       EndpointFetcher::RequestParams::Builder(http_method, annotation_tag);
   request_params.SetUrl(url)
       .SetContentType(content_type)
       .SetAuthType(endpoint_fetcher::OAUTH)
       .SetOAuthConsumerId(oauth_consumer_id)
-      .SetConsentLevel(consent_level)
+      .SetConsentLevel(signin::ConsentLevel::kSignin)
       .SetTimeout(timeout)
       .SetPostData(post_data);
-  MaybeUseAlternateShoppingServer(request_params);
   return std::make_unique<EndpointFetcher>(
       url_loader_factory_, identity_manager_, request_params.Build());
 }

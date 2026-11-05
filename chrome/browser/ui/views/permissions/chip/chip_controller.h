@@ -103,7 +103,7 @@ class ChipController : public permissions::PermissionRequestManager::Observer,
   // manager and observes the prompt bubble.
   void InitializePermissionPrompt(
       base::WeakPtr<permissions::PermissionPrompt::Delegate> delegate,
-      base::OnceCallback<void()> = base::DoNothing());
+      base::OnceCallback<void()> callback = base::DoNothing());
 
   // Displays a permission chip. Call ShowPermissionPrompt() instead to show
   // both a chip and a prompt.
@@ -169,6 +169,16 @@ class ChipController : public permissions::PermissionRequestManager::Observer,
     dismiss_timer_.FireNow();
   }
 
+  bool is_delay_prompt_timer_running_for_testing() const {
+    CHECK_IS_TEST();
+    return delay_prompt_timer_.IsRunning();
+  }
+
+  void fire_delay_prompt_timer_for_testing() {
+    CHECK_IS_TEST();
+    delay_prompt_timer_.FireNow();
+  }
+
   views::View* get_prompt_bubble_view_for_testing() {
     CHECK_IS_TEST();
     return bubble_tracker_.view();
@@ -184,6 +194,11 @@ class ChipController : public permissions::PermissionRequestManager::Observer,
   bool is_waiting_for_confirmation_collapse_for_testing() const {
     CHECK_IS_TEST();
     return is_waiting_for_confirmation_collapse_;
+  }
+
+  bool is_waiting_for_anchor_for_testing() const {
+    CHECK_IS_TEST();
+    return is_waiting_for_anchor_;
   }
 
   void set_is_bubble_suppressed(bool is_bubble_suppressed) {
@@ -215,6 +230,13 @@ class ChipController : public permissions::PermissionRequestManager::Observer,
 
   // Permission prompt bubble functiontionality.
   void OpenPermissionPromptBubble();
+
+  // Called from `chip_->WaitForAnchor()` once the chip's anchor is ready.
+  // For native Views, this is invoked synchronously; for WebUI, this may be
+  // invoked asynchronously once the WebUI element registers over Mojo. The
+  // loud bubble then looks up the chip anchor itself when it's created, and
+  // the quiet bubble anchors to the location bar.
+  void OnPromptBubbleAnchorReady();
   void ClosePermissionPromptBubbleWithReason(
       views::Widget::ClosedReason reason);
 
@@ -242,6 +264,9 @@ class ChipController : public permissions::PermissionRequestManager::Observer,
   // Timer functionality.
   void StartCollapseTimer();
   void StartDismissTimer();
+  // Starts the dismiss timer if the chip is already collapsed, or the collapse
+  // timer otherwise.
+  void StartCollapseOrDismissTimer();
   void ResetTimers();
 
   // The location bar to which the chip is attached.
@@ -294,12 +319,22 @@ class ChipController : public permissions::PermissionRequestManager::Observer,
 
   base::ScopedClosureRunner disallowed_custom_cursors_scope_;
 
+  // Tracks whether we are currently waiting for `chip_->WaitForAnchor()` to
+  // run its callback. Prevents re-entrancy and duplicate prompt bubbles while
+  // WebUI chips wait asynchronously for the element to be rendered and
+  // registered over Mojo (native Views resolves synchronously).
+  bool is_waiting_for_anchor_ = false;
+
   base::ScopedObservation<PermissionChipInterface,
                           PermissionChipInterface::Observer>
       observation_{this};
 
   base::ObserverList<Observer> permission_prompt_observers_;
 
+  // Weak pointer factory used exclusively for anchor resolution callbacks,
+  // allowing pending asynchronous anchor requests (WebUI) to be invalidated
+  // independently when the prompt chip state resets.
+  base::WeakPtrFactory<ChipController> anchor_weak_factory_{this};
   base::WeakPtrFactory<ChipController> weak_factory_{this};
 };
 

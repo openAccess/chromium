@@ -6,8 +6,10 @@
 #define MEDIA_AUDIO_AUDIO_MANAGER_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/observer_list_types.h"
@@ -84,6 +86,11 @@ class MEDIA_EXPORT AudioManager {
   // AudioManager instance must not be deleted if shutdown failed.
   virtual bool Shutdown();
 
+  // Asynchronously closes all cached idle output streams on the audio thread
+  // so physical streams can be torn down before Shutdown() blocks on stopping
+  // the audio thread.
+  virtual void CloseIdleStreams() {}
+
   // Log callback used for sending log messages from a stream to the object
   // that manages the stream.
   using LogCallback = base::RepeatingCallback<void(const std::string&)>;
@@ -121,6 +128,15 @@ class MEDIA_EXPORT AudioManager {
   virtual AudioOutputStream* MakeAudioOutputStreamProxy(
       const AudioParameters& params,
       const std::string& device_id) = 0;
+
+  // Returns true if the output stream selected for `params` enqueues buffers
+  // into an OS-managed playback queue (for example
+  // `AVSampleBufferAudioRenderer`) instead of pulling one buffer per real-time
+  // hardware period. Such streams request data whenever their queue has room,
+  // so the playout delay cannot be predicted from the previous callback and
+  // may be non-zero when starting or resuming. Callers must use the `delay`
+  // reported by `OnMoreData()` instead of prefetching at zero delay.
+  virtual bool UsesQueuedOutputStream(const AudioParameters& params) const;
 
   // Factory to create audio recording streams.
   // |channels| can be 1 or 2.
@@ -161,6 +177,13 @@ class MEDIA_EXPORT AudioManager {
   virtual void AddOutputDeviceChangeListener(AudioDeviceListener* listener) = 0;
   virtual void RemoveOutputDeviceChangeListener(
       AudioDeviceListener* listener) = 0;
+
+  // Registers a callback for system microphone mute state changes. Must be
+  // called on AudioManager's thread (`GetTaskRunner()`), where the callback
+  // also runs. The callback is not invoked during registration. Returns
+  // `std::nullopt` when change notifications are not supported by the platform.
+  [[nodiscard]] virtual std::optional<base::CallbackListSubscription>
+  AddInputMuteStateChangeCallback(base::RepeatingCallback<void(bool)> callback);
 
   // Returns the device name if it is currently cached in the enumeration
   // snapshot. Returns an empty string if the ID is not found or the cache is

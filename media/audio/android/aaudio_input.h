@@ -65,6 +65,7 @@ class AAudioInputStream : public AudioInputStream,
   SEQUENCE_CHECKER(sequence_checker_);
 
   void CreateStreamWrapper();
+  bool RetryStart();
   void HandleDeviceChange();
   void OnFifoFilled(const AudioBus& output_bus, int frame_delay);
   void DeliverAudio(const AudioBus& audio_bus, base::TimeTicks capture_time);
@@ -89,10 +90,6 @@ class AAudioInputStream : public AudioInputStream,
   AudioTimestampHelper timestamp_helper_;
 
   std::unique_ptr<AAudioInputDiscontinuityReporter> discontinuity_reporter_;
-
-  // The number of frames requested during the current call to
-  // `OnAudioDataRequested()`, used to adjust underlying capture timestamps.
-  int32_t current_callback_num_frames_ = 0;
 
   base::RepeatingClosure handle_device_change_on_main_sequence_;
 

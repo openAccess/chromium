@@ -9,6 +9,7 @@
 #include "base/check.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_interface.h"
 
 namespace tabs {
@@ -47,7 +48,6 @@ void TabStripModelSelectionState::Clear() {
   selected_tabs_.clear();
   active_tab_ = nullptr;
   anchor_tab_ = nullptr;
-  focused_group_ = std::nullopt;
 }
 
 bool TabStripModelSelectionState::IsTabValidInFocusedGroup(
@@ -64,21 +64,6 @@ bool TabStripModelSelectionState::IsSelected(TabInterface* tab) const {
   return selected_tabs_.contains(tab);
 }
 
-void TabStripModelSelectionState::UpdateFocusGroupValidity() {
-  if (!focused_group_.has_value()) {
-    return;
-  }
-  if (selected_tabs_.empty()) {
-    focused_group_ = std::nullopt;
-    return;
-  }
-  for (TabInterface* tab : selected_tabs_) {
-    if (!IsTabValidInFocusedGroup(tab, focused_group_)) {
-      focused_group_ = std::nullopt;
-      return;
-    }
-  }
-}
 
 void TabStripModelSelectionState::AddTabToSelection(TabInterface* tab) {
   if (tab) {
@@ -153,8 +138,6 @@ void TabStripModelSelectionState::SetSelectedTabs(
   } else {
     anchor_tab_ = selected_tabs_.empty() ? nullptr : *selected_tabs_.begin();
   }
-  UpdateFocusGroupValidity();
-  CHECK(Valid());
 }
 
 bool TabStripModelSelectionState::Valid() const {
@@ -166,10 +149,8 @@ bool TabStripModelSelectionState::Valid() const {
     return false;
   }
   if (focused_group_.has_value()) {
-    for (TabInterface* tab : selected_tabs_) {
-      if (!IsTabValidInFocusedGroup(tab, focused_group_)) {
-        return false;
-      }
+    if (!IsTabValidInFocusedGroup(active_tab_, focused_group_)) {
+      return false;
     }
   }
   return true;

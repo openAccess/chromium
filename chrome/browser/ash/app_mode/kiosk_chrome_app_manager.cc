@@ -34,10 +34,13 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "base/version.h"
+#include "chrome/browser/ash/app_mode/chrome_kiosk_app_installer.h"
+#include "chrome/browser/ash/app_mode/chrome_kiosk_external_loader_broker.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_data.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_data_base.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_manager_observer.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
+#include "chrome/browser/ash/app_mode/kiosk_browser_session.h"
 #include "chrome/browser/ash/app_mode/kiosk_cryptohome_remover.h"
 #include "chrome/browser/ash/app_mode/kiosk_external_updater.h"
 #include "chrome/browser/ash/app_mode/kiosk_system_session.h"
@@ -46,12 +49,7 @@
 #include "chrome/browser/ash/login/session/user_session_manager.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_local_account.h"
-#include "chrome/browser/chromeos/app_mode/chrome_kiosk_app_installer.h"
-#include "chrome/browser/chromeos/app_mode/chrome_kiosk_external_loader_broker.h"
-#include "chrome/browser/chromeos/app_mode/kiosk_browser_session.h"
 #include "chrome/browser/extensions/external_provider_impl.h"
-#include "chrome/browser/net/system_network_context_manager.h"
-#include "chrome/common/chrome_paths.h"
 #include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
@@ -60,7 +58,6 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/known_user.h"
-#include "components/user_manager/user_manager.h"
 #include "extensions/browser/updater/extension_downloader_delegate.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/extension_urls.h"
@@ -83,7 +80,7 @@ KioskChromeAppManager::Overrides* g_test_overrides = nullptr;
 
 base::FilePath GetCrxCacheDir() {
   base::FilePath user_data_dir;
-  CHECK(base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir));
+  CHECK(base::PathService::Get(ash::DIR_USER_DATA, &user_data_dir));
   return user_data_dir.AppendASCII(kCrxCacheDir);
 }
 
@@ -120,7 +117,7 @@ base::Version GetPlatformVersion() {
 std::string GetSwitchString(const std::string& flag_name) {
   base::CommandLine cmd_line(base::CommandLine::NO_PROGRAM);
   cmd_line.AppendSwitch(flag_name);
-  DCHECK_EQ(2U, cmd_line.argv().size());
+  CHECK_EQ(2U, cmd_line.argv().size(), base::NotFatalUntil::M160);
   return cmd_line.argv()[1];
 }
 
@@ -178,7 +175,7 @@ bool KioskChromeAppManager::IsInitialized() {
 
 // static
 void KioskChromeAppManager::InitializeForTesting(Overrides* overrides) {
-  DCHECK(!g_instance);
+  CHECK(!g_instance, base::NotFatalUntil::M160);
   g_test_overrides = overrides;
 }
 
@@ -201,7 +198,7 @@ const std::string& KioskChromeAppManager::GetAutoLaunchApp() const {
 
 void KioskChromeAppManager::SetAppWasAutoLaunchedWithZeroDelay(
     const std::string& app_id) {
-  DCHECK_EQ(auto_launch_app_id_, app_id);
+  CHECK_EQ(auto_launch_app_id_, app_id, base::NotFatalUntil::M160);
   currently_auto_launched_with_zero_delay_app_ = app_id;
   auto_launched_with_zero_delay_ = true;
 }
@@ -240,7 +237,7 @@ bool KioskChromeAppManager::GetSwitchesForSessionRestore(
 
   for (const auto& it : current_command_line->argv()) {
     if (it == policy_switches_begin) {
-      DCHECK(!in_policy_switches_block);
+      CHECK(!in_policy_switches_block, base::NotFatalUntil::M160);
       in_policy_switches_block = true;
     }
 
@@ -249,12 +246,12 @@ bool KioskChromeAppManager::GetSwitchesForSessionRestore(
     }
 
     if (it == policy_switches_end) {
-      DCHECK(in_policy_switches_block);
+      CHECK(in_policy_switches_block, base::NotFatalUntil::M160);
       in_policy_switches_block = false;
     }
   }
 
-  DCHECK(!in_policy_switches_block);
+  CHECK(!in_policy_switches_block, base::NotFatalUntil::M160);
 
   if (auto_launched) {
     switches->AppendSwitch(switches::kAppAutoLaunched);
@@ -385,11 +382,11 @@ KioskAppInstallParams KioskChromeAppManager::CreatePrimaryAppInstallData(
 
   const std::string* crx_file_location =
       extension->FindString(extensions::ExternalProviderImpl::kExternalCrx);
-  DCHECK(crx_file_location);
+  CHECK(crx_file_location, base::NotFatalUntil::M160);
 
   const std::string* external_version =
       extension->FindString(extensions::ExternalProviderImpl::kExternalVersion);
-  DCHECK(external_version);
+  CHECK(external_version, base::NotFatalUntil::M160);
 
   return KioskAppInstallParams(id, *crx_file_location, *external_version,
                                is_store_app_bool);
@@ -407,7 +404,7 @@ void KioskChromeAppManager::OnKioskSessionStarted(const KioskAppId& app_id) {
     // restarted - e.g. due to crash. For example, this will ensure restarted
     // app session restores auto-launched state.
     UserSessionManager::GetInstance()->SetSwitchesForUser(
-        user_manager::UserManager::Get()->GetActiveUser()->GetAccountId(),
+        app_id.account_id,
         UserSessionManager::CommandLineSwitchesType::kPolicyAndKioskControl,
         flags);
   }

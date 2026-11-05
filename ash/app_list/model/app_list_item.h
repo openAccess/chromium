@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "ash/app_list/model/app_list_model_export.h"
@@ -111,7 +112,7 @@ class APP_LIST_MODEL_EXPORT AppListItem {
 
   // Returns the item matching |id| contained in this item (e.g. if the item is
   // a folder), or nullptr if the item was not found or this is not a container.
-  virtual AppListItem* FindChildItem(const std::string& id);
+  virtual AppListItem* FindChildItem(std::string_view id);
 
   // Returns the child item at the provided index in the child item list.
   // Returns nullptr for non-folder items.
@@ -160,7 +161,6 @@ class APP_LIST_MODEL_EXPORT AppListItem {
   // Subclasses also have mutable access to the metadata ptr.
   AppListItemMetadata* metadata() { return metadata_.get(); }
 
-  friend class AppsCollectionSectionViewTest;
   friend class AppListBadgeController;
   friend class AppListTestHelper;
   friend class AppListItemList;

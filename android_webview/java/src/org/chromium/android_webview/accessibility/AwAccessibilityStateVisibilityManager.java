@@ -6,9 +6,12 @@ package org.chromium.android_webview.accessibility;
 
 import org.chromium.android_webview.AppState;
 import org.chromium.android_webview.AwContentsLifecycleNotifier;
+import org.chromium.android_webview.common.AwFeatureMap;
+import org.chromium.android_webview.common.AwFeatures;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.accessibility.AccessibilityStateVisibilityManager;
 
 /** Manages webview accessibility state visibility. */
@@ -16,6 +19,18 @@ import org.chromium.ui.accessibility.AccessibilityStateVisibilityManager;
 public class AwAccessibilityStateVisibilityManager
         implements AccessibilityStateVisibilityManager, AwContentsLifecycleNotifier.Observer {
     private AccessibilityStateVisibilityManager.@Nullable Observer mObserver;
+
+    /** Starts observing Android OS accessibility setting changes. */
+    public static void initializeOnStartup() {
+        if (AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_OBSERVE_ACCESSIBILITY_STATE)) {
+            AccessibilityState.initializeOnStartup(new AwAccessibilityStateVisibilityManager());
+        }
+    }
+
+    @Override
+    public boolean isApplicationForegrounded() {
+        return AwContentsLifecycleNotifier.getInstance().getAppState() == AppState.FOREGROUND;
+    }
 
     @Override
     public void setObserver(@Nullable Observer observer) {
@@ -42,8 +57,7 @@ public class AwAccessibilityStateVisibilityManager
         }
 
         if (appState == AppState.FOREGROUND) {
-            mObserver.onApplicationForegrounded();
-            mObserver.onAnyActivityMadeVisible();
+            mObserver.onActivityOrApplicationForegrounded();
         } else {
             mObserver.onApplicationBackgrounded();
         }

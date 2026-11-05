@@ -9,7 +9,6 @@
 #include <string>
 #include <utility>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
@@ -19,7 +18,6 @@
 #include "base/logging.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
@@ -31,7 +29,6 @@
 #include "chrome/browser/ash/policy/server_backed_state/server_backed_state_keys_broker.h"
 #include "chrome/browser/ash/settings/device_settings_service.h"
 #include "chrome/browser/ash/settings/scoped_test_device_settings_service.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
@@ -55,6 +52,7 @@
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/http/http_util.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -109,11 +107,7 @@ class TestDeviceCloudPolicyManagerAsh : public DeviceCloudPolicyManagerAsh {
 
 class DeviceCommandQueryGeolocationJobTest : public testing::Test {
  public:
-  DeviceCommandQueryGeolocationJobTest() {
-    // Always enable the separate API key feature for these tests.
-    scoped_feature_list_.InitAndEnableFeature(
-        ash::features::kCrosSeparateGeoApiKey);
-  }
+  DeviceCommandQueryGeolocationJobTest() = default;
   DeviceCommandQueryGeolocationJobTest(
       const DeviceCommandQueryGeolocationJobTest&) = delete;
   DeviceCommandQueryGeolocationJobTest& operator=(
@@ -238,7 +232,6 @@ class DeviceCommandQueryGeolocationJobTest : public testing::Test {
 
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  base::test::ScopedFeatureList scoped_feature_list_;
   ash::ScopedStubInstallAttributes test_install_attributes_{
       ash::StubInstallAttributes::CreateCloudManaged("test_domain", "test_id")};
   network::TestURLLoaderFactory test_url_loader_factory_;

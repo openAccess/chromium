@@ -13,11 +13,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile_destroyer.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
-#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
-#include "chrome/browser/ui/navigator/browser_navigator.h"
-#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -30,13 +25,10 @@
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/test_utils.h"
-#include "ui/base/page_transition_types.h"
 
 #if defined(TOOLKIT_VIEWS)
 #include "chrome/browser/ui/views/chrome_constrained_window_views_client.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "components/constrained_window/constrained_window_views.h"
-#include "ui/views/test/views_test_utils.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -93,7 +85,7 @@ void BrowserWithTestWindowTest::SetUp() {
   {
     ash::AshTestHelper::InitParams ash_init;
     ash_init.local_state = g_browser_process->local_state();
-    ash_init.start_session = false;
+    ash_init.users.clear();
 
     // Do not auto create user pref service. PrefService will be created by
     // TestingProfile.
@@ -134,12 +126,6 @@ void BrowserWithTestWindowTest::SetUp() {
 #if BUILDFLAG(IS_CHROMEOS)
     SwitchActiveUser(*profile_name);
 #endif
-
-    auto window = CreateBrowserWindow();
-    window_ = window.get();
-
-    browser_ =
-        CreateBrowser(profile(), browser_type_, hosted_app_, window.release());
   }
 }
 
@@ -147,14 +133,6 @@ void BrowserWithTestWindowTest::TearDown() {
   // Some tests end up posting tasks to the DB thread that must be completed
   // before the profile can be destroyed and the test safely shut down.
   base::RunLoop().RunUntilIdle();
-
-  // Close the browser tabs and destroy the browser and window instances.
-  window_ = nullptr;
-  if (browser_) {
-    browser_->tab_strip_model()->CloseAllTabs();
-    browser_->GetFeatures().TearDownPreBrowserWindowDestruction();
-    browser_.reset();
-  }
 
 #if defined(TOOLKIT_VIEWS)
   constrained_window::SetConstrainedWindowViewsClient(nullptr);
@@ -218,11 +196,6 @@ void BrowserWithTestWindowTest::SetUpProfileManager(
       profile_manager_->SetUp(profiles_path, std::move(profile_manager)));
 }
 
-std::unique_ptr<Browser> BrowserWithTestWindowTest::release_browser() {
-  window_ = nullptr;
-  return std::move(browser_);
-}
-
 gfx::NativeWindow BrowserWithTestWindowTest::GetContext() {
 #if BUILDFLAG(IS_CHROMEOS)
   return ash_test_helper_->GetContext();
@@ -230,21 +203,6 @@ gfx::NativeWindow BrowserWithTestWindowTest::GetContext() {
   return views_test_helper_->GetContext();
 #else
   return nullptr;
-#endif
-}
-
-void BrowserWithTestWindowTest::AddTab(BrowserWindowInterface* browser,
-                                       const GURL& url) {
-  NavigateParams params(browser, url, ui::PAGE_TRANSITION_TYPED);
-  params.tabstrip_index = 0;
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-  Navigate(&params);
-  CommitPendingLoad(&params.navigated_or_inserted_contents->GetController());
-#if defined(TOOLKIT_VIEWS)
-  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
-  if (browser_view) {
-    views::test::RunScheduledLayout(browser_view);
-  }
 #endif
 }
 
@@ -262,10 +220,6 @@ void BrowserWithTestWindowTest::NavigateAndCommit(WebContents* web_contents,
   content::NavigationSimulator::NavigateAndCommitFromBrowser(web_contents, url);
 }
 
-void BrowserWithTestWindowTest::NavigateAndCommitActiveTab(const GURL& url) {
-  NavigateAndCommit(browser()->GetTabStripModel()->GetActiveWebContents(), url);
-}
-
 void BrowserWithTestWindowTest::NavigateAndCommitActiveTabWithTitle(
     BrowserWindowInterface* navigating_browser,
     const GURL& url,
@@ -275,11 +229,6 @@ void BrowserWithTestWindowTest::NavigateAndCommitActiveTabWithTitle(
   NavigateAndCommit(contents, url);
   contents->UpdateTitleForEntry(contents->GetController().GetActiveEntry(),
                                 title);
-}
-
-void BrowserWithTestWindowTest::FocusMainFrameOfActiveWebContents() {
-  WebContents* contents = browser()->tab_strip_model()->GetActiveWebContents();
-  content::FocusWebContentsOnFrame(contents, contents->GetPrimaryMainFrame());
 }
 
 std::optional<std::string> BrowserWithTestWindowTest::GetDefaultProfileName() {
@@ -296,10 +245,6 @@ TestingProfile* BrowserWithTestWindowTest::CreateProfile(
 
 void BrowserWithTestWindowTest::DeleteProfile(const std::string& profile_name) {
   if (profile_name == GetDefaultProfileName()) {
-    if (browser_) {
-      browser_->tab_strip_model()->CloseAllTabs();
-      browser_.reset();
-    }
     profile_ = nullptr;
   }
   profile_manager_->DeleteTestingProfile(profile_name);
@@ -308,41 +253,6 @@ void BrowserWithTestWindowTest::DeleteProfile(const std::string& profile_name) {
 TestingProfile::TestingFactories
 BrowserWithTestWindowTest::GetTestingFactories() {
   return {};
-}
-
-std::unique_ptr<BrowserWindow>
-BrowserWithTestWindowTest::CreateBrowserWindow() {
-  return std::make_unique<TestBrowserWindow>();
-}
-
-std::unique_ptr<Browser> BrowserWithTestWindowTest::CreateBrowser(
-    Profile* profile,
-    Browser::Type browser_type,
-    bool hosted_app,
-    BrowserWindow* browser_window) {
-  BrowserWindowCreateParams params(profile, true);
-  if (hosted_app) {
-    params = BrowserWindowCreateParams::CreateForApp(
-        "Test", /*trusted_source=*/true, /*window_bounds=*/gfx::Rect(), profile,
-        /*user_gesture=*/true);
-  } else if (browser_type == BrowserWindowInterface::Type::TYPE_DEVTOOLS) {
-    params = BrowserWindowCreateParams::CreateForDevTools(profile);
-  } else {
-    params.type = browser_type;
-  }
-  params.window = browser_window;
-  return base::WrapUnique(static_cast<Browser*>(
-      DeprecatedCreateOwnedBrowserWindowForTesting(std::move(params))
-          .release()));
-}
-
-std::unique_ptr<Browser> BrowserWithTestWindowTest::CreateBrowser(
-    Profile* profile,
-    Browser::Type browser_type,
-    bool hosted_app) {
-  auto browser_window = CreateBrowserWindow();
-  return CreateBrowser(profile, browser_type, hosted_app,
-                       browser_window.release());
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -375,6 +285,7 @@ void BrowserWithTestWindowTest::OnUserProfileCreated(const std::string& email,
   }
   // Do not use the member directly, because another UserManager instance
   // may be injected.
+  // TODO(crbug.com/40225390): Use ProfileUserManagerController instead.
   user_manager->OnUserProfileCreated(account_id, profile->GetPrefs());
   GetSessionControllerClient()->SetUnownedUserPrefService(account_id,
                                                           profile->GetPrefs());
@@ -429,7 +340,9 @@ void BrowserWithTestWindowTest::PostUserProfileCreation(
       AccountId::FromUserEmail(email));
   if (user) {
     OnUserProfileCreated(email, profile);
-    GetSessionControllerClient()->AddUserSession({email, user->GetType()});
+    GetSessionControllerClient()->AddUserSession(
+        {.account_id = AccountId::FromUserEmail(email),
+         .user_type = user->GetType()});
   }
 }
 
@@ -437,8 +350,6 @@ void BrowserWithTestWindowTest::PostUserProfileCreation(
 
 BrowserWithTestWindowTest::BrowserWithTestWindowTest(
     std::unique_ptr<content::BrowserTaskEnvironment> task_environment,
-    Browser::Type browser_type,
+    BrowserWindowInterface::Type browser_type,
     bool hosted_app)
-    : task_environment_(std::move(task_environment)),
-      browser_type_(browser_type),
-      hosted_app_(hosted_app) {}
+    : task_environment_(std::move(task_environment)) {}

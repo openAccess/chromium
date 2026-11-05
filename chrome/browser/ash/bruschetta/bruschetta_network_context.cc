@@ -83,14 +83,14 @@ class SSLPrivateKeyBridge : public network::mojom::SSLPrivateKey {
 BruschettaNetworkContext::BruschettaNetworkContext(Profile* profile,
                                                    PrefService& local_state)
     : profile_(profile), proxy_config_monitor_(&local_state) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 }
 
 BruschettaNetworkContext::~BruschettaNetworkContext() = default;
 
 network::mojom::URLLoaderFactory*
 BruschettaNetworkContext::GetURLLoaderFactory() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (!url_loader_factory_ || !url_loader_factory_.is_connected()) {
     EnsureNetworkContextExists();
@@ -222,6 +222,7 @@ void BruschettaNetworkContext::OnAuthRequired(
     int32_t request_id,
     const GURL& url,
     bool first_auth_attempt,
+    bool do_not_prompt_for_login,
     const net::AuthChallengeInfo& auth_info,
     const scoped_refptr<net::HttpResponseHeaders>& head_headers,
     mojo::PendingRemote<network::mojom::AuthChallengeResponder>
@@ -245,6 +246,8 @@ void BruschettaNetworkContext::OnPlatformLocalNetworkPermissionRequired(
 
 void BruschettaNetworkContext::OnClearSiteData(
     const GURL& url,
+    const std::optional<net::SchemefulSite>& top_level_site,
+    const std::optional<base::UnguessableToken>& nonce,
     const std::string& header_value,
     int32_t load_flags,
     const std::optional<net::CookiePartitionKey>& cookie_partition_key,

@@ -5,8 +5,6 @@
 package org.chromium.chrome.browser.omnibox.suggestions;
 
 import android.content.Context;
-import android.os.Handler;
-import android.os.Looper;
 import android.widget.FrameLayout;
 
 import androidx.annotation.VisibleForTesting;
@@ -20,11 +18,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.OmniboxMetrics;
 import org.chromium.components.omnibox.OmniboxCapabilities;
-import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.omnibox.suggestions.OmniboxSuggestionUiType;
-
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * RecyclerView pool that:
@@ -36,63 +30,13 @@ import java.util.List;
  */
 @NullMarked
 public class PreWarmingRecycledViewPool extends RecycledViewPool {
-    private static final long STEP_MILLIS = 50;
-
-    private static class ViewTypeAndCount {
-        public final int viewType;
-        public final int count;
-
-        public ViewTypeAndCount(int viewType, int count) {
-            this.viewType = viewType;
-            assert count > 0;
-            this.count = count;
-        }
-    }
-
     @VisibleForTesting static final int PRE_WARMED_EDIT_URL_SUGGESTION_VIEW_COUNT = 1;
     @VisibleForTesting static final int PRE_WARMED_TILE_NAVSUGGEST_VIEW_COUNT = 1;
     @VisibleForTesting static final int PRE_WARMED_CLIPBOARD_SUGGESTION_VIEW_COUNT = 1;
     @VisibleForTesting static final int PRE_WARMED_DEFAULT_VIEW_COUNT = 15;
     @VisibleForTesting static final int PRE_WARMED_ENTITY_SUGGESTION_VIEW_COUNT = 3;
 
-    private final ViewTypeAndCount[] mViewsToCreate =
-            new ViewTypeAndCount[] {
-                new ViewTypeAndCount(
-                        OmniboxSuggestionUiType.EDIT_URL_SUGGESTION,
-                        PRE_WARMED_EDIT_URL_SUGGESTION_VIEW_COUNT),
-                new ViewTypeAndCount(
-                        OmniboxSuggestionUiType.TILE_NAVSUGGEST,
-                        PRE_WARMED_TILE_NAVSUGGEST_VIEW_COUNT),
-                new ViewTypeAndCount(
-                        OmniboxSuggestionUiType.CLIPBOARD_SUGGESTION,
-                        PRE_WARMED_CLIPBOARD_SUGGESTION_VIEW_COUNT),
-                new ViewTypeAndCount(
-                        OmniboxSuggestionUiType.DEFAULT, PRE_WARMED_DEFAULT_VIEW_COUNT),
-                new ViewTypeAndCount(
-                        OmniboxSuggestionUiType.ENTITY_SUGGESTION,
-                        PRE_WARMED_ENTITY_SUGGESTION_VIEW_COUNT)
-            };
-
-    private final OmniboxViewHolderFactory mViewHolderFactory;
-    private final @Nullable Handler mHandler;
-    private final FrameLayout mPlaceholderParent;
-    private final Thread mThread = Thread.currentThread();
-    private boolean mStopCreatingViews;
-    private final List<ViewHolder> mPrewarmedViews = new ArrayList<>(22);
-    private long mCumulativePrewarmWallTimeMs;
-    private long mCumulativePrewarmThreadTimeMs;
-    private int mExpectedViewCount;
-
     PreWarmingRecycledViewPool(OmniboxViewHolderFactory factory, Context context) {
-        this(factory, context, createHandlerForPrewarming());
-    }
-
-    @VisibleForTesting
-    PreWarmingRecycledViewPool(
-            OmniboxViewHolderFactory factory, Context context, @Nullable Handler handler) {
-        mViewHolderFactory = factory;
-        mHandler = handler;
-        mPlaceholderParent = new FrameLayout(context);
         // The list below should include suggestions defined in OmniboxSuggestionUiType
         // and specify the maximum anticipated volume of suggestions of each type.
         // For readability reasons, keep the order of this list same as the order of
@@ -106,118 +50,77 @@ public class PreWarmingRecycledViewPool extends RecycledViewPool {
         setMaxRecycledViews(OmniboxSuggestionUiType.CLIPBOARD_SUGGESTION, 1);
         setMaxRecycledViews(OmniboxSuggestionUiType.TILE_NAVSUGGEST, 1);
 
-        if (OmniboxFeatures.sAsyncViewInflation.isEnabled()) {
-            startCreatingViews();
-        }
+        preWarmViews(factory, context);
     }
 
-    private static @Nullable Handler createHandlerForPrewarming() {
-        boolean shouldStagger =
-                !OmniboxFeatures.sAsyncViewInflation.isEnabled()
-                        || ThreadUtils.runningOnUiThread();
+    /**
+     * Immediately creates all pre-warmed views and places them into the pool.
+     *
+     * @param factory The factory used to create the ViewHolders.
+     * @param context The context used to create the placeholder parent view.
+     */
+    private void preWarmViews(OmniboxViewHolderFactory factory, Context context) {
+        try (TraceEvent t = TraceEvent.scoped("PreWarmingRecycledViewPool.preWarmViews")) {
+            if (!OmniboxCapabilities.shouldPreWarmRecyclerViewPool()) return;
+            OmniboxMetrics.recordPreWarmingThreadMatchesExpectedThread(
+                    !ThreadUtils.runningOnUiThread());
 
-        // Even if async view inflation is enabled, if we are forcing inflation on the main thread,
-        // we want to stagger the view creation so it doesn't cause jank.
-        return shouldStagger ? new Handler(Looper.getMainLooper()) : null;
-    }
+            TimeUtils.UptimeMillisTimer wallTimer = new TimeUtils.UptimeMillisTimer();
+            TimeUtils.CurrentThreadTimeMillisTimer threadTimer =
+                    new TimeUtils.CurrentThreadTimeMillisTimer();
 
+            FrameLayout parent = new FrameLayout(context);
+            preWarmViewType(
+                    factory,
+                    parent,
+                    OmniboxSuggestionUiType.EDIT_URL_SUGGESTION,
+                    PRE_WARMED_EDIT_URL_SUGGESTION_VIEW_COUNT);
+            preWarmViewType(
+                    factory,
+                    parent,
+                    OmniboxSuggestionUiType.TILE_NAVSUGGEST,
+                    PRE_WARMED_TILE_NAVSUGGEST_VIEW_COUNT);
+            preWarmViewType(
+                    factory,
+                    parent,
+                    OmniboxSuggestionUiType.CLIPBOARD_SUGGESTION,
+                    PRE_WARMED_CLIPBOARD_SUGGESTION_VIEW_COUNT);
+            preWarmViewType(
+                    factory,
+                    parent,
+                    OmniboxSuggestionUiType.DEFAULT,
+                    PRE_WARMED_DEFAULT_VIEW_COUNT);
+            preWarmViewType(
+                    factory,
+                    parent,
+                    OmniboxSuggestionUiType.ENTITY_SUGGESTION,
+                    PRE_WARMED_ENTITY_SUGGESTION_VIEW_COUNT);
 
-    public void destroy() {
-        stopCreatingViews();
-        clear();
-    }
-
-    public void onNativeInitialized() {
-        if (!OmniboxFeatures.sAsyncViewInflation.isEnabled()) {
-            startCreatingViews();
+            OmniboxMetrics.recordPreWarmingViewsThreadTime(threadTimer.getElapsedMillis());
+            OmniboxMetrics.recordPreWarmingViewsWallTime(wallTimer.getElapsedMillis());
         }
     }
 
     /**
-     * Starts creating views. If mHandler is not null (async view inflation disabled), this will
-     * immediately post a separate delayed task for every view we intend to create with a delay
-     * equal to STEP_MILLIS. If mHandler is null (async view inflation enabled), this will
-     * immediately create all views.
+     * Creates ViewHolders of the given type and places them into the pool.
+     *
+     * @param factory The factory used to create the ViewHolders.
+     * @param parent The placeholder parent passed to the factory.
+     * @param viewType The type of the ViewHolders to create.
+     * @param count The number of ViewHolders to create.
      */
-    public void startCreatingViews() {
-        assert mThread == Thread.currentThread()
-                : "startCreatingViews must be called on the same thread the pool was created on";
-        try (TraceEvent t = TraceEvent.scoped("PreWarmingRecycledViewPool.startCreatingViews")) {
-            if (mStopCreatingViews || !OmniboxCapabilities.shouldPreWarmRecyclerViewPool()) return;
-            boolean runsOnExpectedThread =
-                    OmniboxFeatures.sAsyncViewInflation.isEnabled()
-                            ? !ThreadUtils.runningOnUiThread()
-                            : ThreadUtils.runningOnUiThread();
-            OmniboxMetrics.recordPreWarmingThreadMatchesExpectedThread(runsOnExpectedThread);
-            for (var viewTypeAndCount : mViewsToCreate) {
-                mExpectedViewCount += viewTypeAndCount.count;
-                for (int index = 0; index < viewTypeAndCount.count; ++index) {
-                    if (mHandler != null) {
-                        Runnable createViewRunnable =
-                                () -> createViewHolder(viewTypeAndCount.viewType);
-                        final long delay = STEP_MILLIS * (index + 1);
-                        mHandler.postDelayed(createViewRunnable, delay);
-                    } else {
-                        createViewHolder(viewTypeAndCount.viewType);
-                    }
-                }
-            }
-
-            // Synchronously apply all views.
-            if (mHandler == null) {
-                stopCreatingViews();
-            }
+    private void preWarmViewType(
+            OmniboxViewHolderFactory factory,
+            FrameLayout parent,
+            @OmniboxSuggestionUiType int viewType,
+            int count) {
+        for (int index = 0; index < count; ++index) {
+            putRecycledView(factory.createViewHolderForPool(parent, viewType));
         }
-    }
-
-    /**
-     * Stops the task posted by {@link #startCreatingViews()} from creating any more views and
-     * removes it from the handler. Places any pre-created views into the pool.
-     */
-    @VisibleForTesting
-    void stopCreatingViews() {
-        if (mStopCreatingViews) return;
-        mStopCreatingViews = true;
-        if (mHandler != null) {
-            mHandler.removeCallbacksAndMessages(null);
-        }
-        OmniboxMetrics.recordPreWarmingViewsThreadTime(mCumulativePrewarmThreadTimeMs);
-        OmniboxMetrics.recordPreWarmingViewsWallTime(mCumulativePrewarmWallTimeMs);
-        OmniboxMetrics.recordPreWarmedViewsCount(mPrewarmedViews.size());
-
-        putViewsIntoPool();
-    }
-
-    private void createViewHolder(@OmniboxSuggestionUiType int viewType) {
-        if (mStopCreatingViews) return;
-        TimeUtils.UptimeMillisTimer wallTimer = new TimeUtils.UptimeMillisTimer();
-        TimeUtils.CurrentThreadTimeMillisTimer threadTimer =
-                new TimeUtils.CurrentThreadTimeMillisTimer();
-
-        try (TraceEvent t = TraceEvent.scoped("PreWarmingRecycledViewPool.createNextViewHolder")) {
-            mPrewarmedViews.add(
-                    mViewHolderFactory.createViewHolderForPool(mPlaceholderParent, viewType));
-        }
-
-        mCumulativePrewarmWallTimeMs += wallTimer.getElapsedMillis();
-        mCumulativePrewarmThreadTimeMs += threadTimer.getElapsedMillis();
-        if (mHandler != null) {
-            if (mPrewarmedViews.size() == mExpectedViewCount) {
-                stopCreatingViews();
-            }
-        }
-    }
-
-    private void putViewsIntoPool() {
-        for (var viewHolder : mPrewarmedViews) {
-            putRecycledView(viewHolder);
-        }
-        mPrewarmedViews.clear();
     }
 
     @Override
     public @Nullable ViewHolder getRecycledView(int viewType) {
-        stopCreatingViews();
         ViewHolder result = super.getRecycledView(viewType);
         if (result == null) {
             OmniboxMetrics.recordSuggestionsViewCreatedType(viewType);

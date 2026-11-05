@@ -126,6 +126,11 @@ class CONTENT_EXPORT BrowserAccessibilityAndroid
   bool HasImage() const;
   bool HasLayoutBasedActions() const;
 
+  // Returns true if all descendant nodes consist solely of `kGenericContainer`
+  // and text (`IsText()`), and contain no interactive controls, links,
+  // headings, tables, or focusable descendants.
+  bool HasOnlyTextAndGenericDescendants() const;
+
   const char* GetClassName() const;
   bool IsChildOfLeaf() const override;
   bool IsLeaf() const override;
@@ -325,7 +330,7 @@ class CONTENT_EXPORT BrowserAccessibilityAndroid
 
   // Used for tree dumps, generate a string representation of the
   // AccessibilityNodeInfo object for this node by calling through the
-  // manager to the web_contents_accessibility_android JNI.
+  // manager to the `WebContentsAccessibilityBase` JNI.
   std::u16string GenerateAccessibilityNodeInfoString() const;
 
   // Used to determine paint order to see in what order nodes are drawn.

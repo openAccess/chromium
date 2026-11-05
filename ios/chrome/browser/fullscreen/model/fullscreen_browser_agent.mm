@@ -5,12 +5,16 @@
 #import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h"
 
 #import <algorithm>
+#import <utility>
 
-#import "base/check.h"
+#import "base/auto_reset.h"
+#import "base/check_op.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
 #import "base/metrics/histogram_functions.h"
+#import "base/not_fatal_until.h"
 #import "ios/chrome/browser/fullscreen/model/fullscreen_constants.h"
+#import "ios/chrome/browser/fullscreen/model/fullscreen_progress_animator.h"
 #import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/common/material_timing.h"
@@ -109,12 +113,22 @@ constexpr FullscreenState SettledStateForTransition(
              ? FullscreenState::kUICollapsed
              : FullscreenState::kUIExpanded;
 }
+
+// Maximum number of observer broadcasts (state updates and transition
+// completions) drained by a single FlushPendingNotifications() call. One
+// nesting level queues at most two broadcasts, so this leaves room for the
+// state to settle before the queue is abandoned.
+constexpr int kMaxNotificationPasses = 4;
+
 }  // namespace
 
 FullscreenBrowserAgent::FullscreenBrowserAgent(Browser* browser)
     : BrowserUserData(browser) {}
 
 FullscreenBrowserAgent::~FullscreenBrowserAgent() {
+  // A scheduled CADisplayLink retains the animator, so it must be stopped
+  // explicitly rather than relying on the member going out of scope.
+  [progress_animator_ stop];
   for (auto& observer : observers_) {
     observer.WillShutDown(this);
   }
@@ -137,7 +151,7 @@ void FullscreenBrowserAgent::IncrementalScroll(CGFloat amount,
     return;
   }
 
-  if (IsFullscreenEasedTransitionsEnabled() && is_animating_) {
+  if (is_animating_) {
     return;
   }
 
@@ -160,12 +174,16 @@ void FullscreenBrowserAgent::IncrementalScroll(CGFloat amount,
     bottom_progress_ = top_progress_;
   } else {
     CGFloat top_delta = max_insets_.top - min_insets_.top;
-    UpdateProgress(top_progress_, amount, top_delta);
     CGFloat bottom_delta = max_insets_.bottom - min_insets_.bottom;
-    if (bottom_delta > 0) {
+    if (top_delta > 0 && bottom_delta > 0) {
+      UpdateProgress(top_progress_, amount, top_delta);
       UpdateProgress(bottom_progress_, amount, bottom_delta);
-    } else {
+    } else if (top_delta > 0) {
+      UpdateProgress(top_progress_, amount, top_delta);
       bottom_progress_ = top_progress_;
+    } else if (bottom_delta > 0) {
+      UpdateProgress(bottom_progress_, amount, bottom_delta);
+      top_progress_ = bottom_progress_;
     }
   }
 
@@ -174,15 +192,8 @@ void FullscreenBrowserAgent::IncrementalScroll(CGFloat amount,
     return;
   }
 
-  if (top_progress_ == 0.0 && bottom_progress_ == 0.0) {
-    base::UmaHistogramEnumeration(
-        kEnterFullscreenModeTransitionTriggerHistogram,
-        FullscreenModeTransitionTrigger::kUserControlled);
-  } else if (top_progress_ == 1.0 && bottom_progress_ == 1.0) {
-    base::UmaHistogramEnumeration(
-        kExitFullscreenModeTransitionTriggerHistogram,
-        FullscreenModeTransitionTrigger::kUserControlled);
-  }
+  RecordIncrementalScrollMetrics(pre_scroll_top_progress,
+                                 pre_scroll_bottom_progress);
 
   NotifyObserversOfUpdatedState();
 }
@@ -193,6 +204,9 @@ void FullscreenBrowserAgent::EnterFullscreen(
     bool animated) {
   base::UmaHistogramEnumeration(kEnterFullscreenModeTransitionTriggerHistogram,
                                 trigger);
+  if (top_progress_ > 0.0 || bottom_progress_ > 0.0) {
+    RecordEnterFullscreenTiming();
+  }
   UpdateProgressAndBroadcast(FullscreenTransition::kEnterFullscreen, trigger,
                              animated);
 }
@@ -203,8 +217,54 @@ void FullscreenBrowserAgent::ExitFullscreen(
     bool animated) {
   base::UmaHistogramEnumeration(kExitFullscreenModeTransitionTriggerHistogram,
                                 trigger);
+  if (trigger == FullscreenModeTransitionTrigger::kForcedByCode) {
+    time_entered_fullscreen_ = std::nullopt;
+    time_exited_fullscreen_ = base::TimeTicks::Now();
+  } else if (top_progress_ < 1.0 || bottom_progress_ < 1.0) {
+    RecordExitFullscreenTiming();
+  }
   UpdateProgressAndBroadcast(FullscreenTransition::kExitFullscreen, trigger,
                              animated);
+}
+
+void FullscreenBrowserAgent::RecordIncrementalScrollMetrics(
+    CGFloat pre_scroll_top_progress,
+    CGFloat pre_scroll_bottom_progress) {
+  if (top_progress_ == 0.0 && bottom_progress_ == 0.0) {
+    if (pre_scroll_top_progress > 0.0 || pre_scroll_bottom_progress > 0.0) {
+      base::UmaHistogramEnumeration(
+          kEnterFullscreenModeTransitionTriggerHistogram,
+          FullscreenModeTransitionTrigger::kUserControlled);
+      RecordEnterFullscreenTiming();
+    }
+  } else if (top_progress_ == 1.0 && bottom_progress_ == 1.0) {
+    if (pre_scroll_top_progress < 1.0 || pre_scroll_bottom_progress < 1.0) {
+      base::UmaHistogramEnumeration(
+          kExitFullscreenModeTransitionTriggerHistogram,
+          FullscreenModeTransitionTrigger::kUserControlled);
+      RecordExitFullscreenTiming();
+    }
+  }
+}
+
+void FullscreenBrowserAgent::RecordEnterFullscreenTiming() {
+  if (time_exited_fullscreen_.has_value()) {
+    base::UmaHistogramLongTimes(
+        kTimeNotInFullscreenHistogram,
+        base::TimeTicks::Now() - time_exited_fullscreen_.value());
+  }
+  time_entered_fullscreen_ = base::TimeTicks::Now();
+  time_exited_fullscreen_ = std::nullopt;
+}
+
+void FullscreenBrowserAgent::RecordExitFullscreenTiming() {
+  if (time_entered_fullscreen_.has_value()) {
+    base::UmaHistogramLongTimes(
+        kTimeInFullscreenHistogram,
+        base::TimeTicks::Now() - time_entered_fullscreen_.value());
+  }
+  time_exited_fullscreen_ = base::TimeTicks::Now();
+  time_entered_fullscreen_ = std::nullopt;
 }
 
 void FullscreenBrowserAgent::UpdateProgressAndBroadcast(
@@ -212,7 +272,11 @@ void FullscreenBrowserAgent::UpdateProgressAndBroadcast(
     FullscreenModeTransitionTrigger trigger,
     bool animated) {
   CGFloat target_progress = TargetProgressForTransition(transition);
-  if (top_progress_ == target_progress && bottom_progress_ == target_progress) {
+  // The target is already reached, so there is nothing to broadcast. A
+  // non-animated request is the exception: it must still run to interrupt an
+  // in-flight animation towards that same target and settle immediately.
+  if (top_progress_ == target_progress && bottom_progress_ == target_progress &&
+      (animated || !is_animating_)) {
     return;
   }
 
@@ -220,8 +284,22 @@ void FullscreenBrowserAgent::UpdateProgressAndBroadcast(
   top_progress_ = target_progress;
   bottom_progress_ = target_progress;
 
+  // Commit the settled state together with the progress: both describe the
+  // same target. Deferring it to the animation completion would let an
+  // interrupted animation leave the two permanently contradicting each other,
+  // which in turn makes the eased-transition clamps in IncrementalScroll() snap
+  // the progress back to a threshold value.
+  settled_state_ = SettledStateForTransition(transition);
+
+  // Take ownership of the animation state: the completion callback of any
+  // in-flight animation now belongs to a superseded generation and will be
+  // discarded.
+  ++animation_generation_;
+
   if (!animated) {
+    [progress_animator_ stop];
     is_animating_ = false;
+    interpolated_progress_ = target_progress;
     settled_state_ = SettledStateForTransition(transition);
     NotifyObserversOfUpdatedState();
     NotifyFullscreenDidTransition(transition);
@@ -240,12 +318,17 @@ void FullscreenBrowserAgent::UpdateProgressAndBroadcast(
   }
   scroll_velocity_ = 0.0;
 
+  // Started before the UIKit animation so both share the same duration and
+  // velocity. This must also precede NotifyObserversOfUpdatedState(), which
+  // clears `animation_initial_velocity_`.
+  StartInterpolatedProgressAnimation(start_progress, target_progress, duration);
+
   auto update_state = base::CallbackToBlock(
       base::BindOnce(&FullscreenBrowserAgent::NotifyObserversOfUpdatedState,
                      weak_ptr_factory_.GetWeakPtr(), duration));
-  auto completion_block = base::CallbackToBlock(
-      base::BindOnce(&FullscreenBrowserAgent::AnimationDidComplete,
-                     weak_ptr_factory_.GetWeakPtr(), transition));
+  auto completion_block = base::CallbackToBlock(base::BindOnce(
+      &FullscreenBrowserAgent::AnimationDidComplete,
+      weak_ptr_factory_.GetWeakPtr(), transition, animation_generation_));
 
   [UIView animateWithDuration:duration.InSecondsF()
                         delay:0.0
@@ -258,11 +341,55 @@ void FullscreenBrowserAgent::UpdateProgressAndBroadcast(
 
 void FullscreenBrowserAgent::NotifyObserversOfUpdatedState(
     base::TimeDelta duration) {
-  // Prevent reentrant calls that can occur when layout changes or scroll
-  // events are synchronously triggered while notifying observers.
-  if (updating_insets_) {
+  pending_notifications_.state_update_duration = duration;
+  FlushPendingNotifications();
+}
+
+void FullscreenBrowserAgent::NotifyFullscreenDidTransition(
+    FullscreenTransition transition) {
+  pending_notifications_.completed_transition = transition;
+  FlushPendingNotifications();
+}
+
+void FullscreenBrowserAgent::FlushPendingNotifications() {
+  if (notifying_observers_) {
     return;
   }
+
+  base::AutoReset<bool> notifying_observers(&notifying_observers_, true);
+
+  // Draining normally converges after the queued broadcasts run, because the
+  // insets stop changing and observers stop requesting updates. The cap only
+  // exists so observers that keep invalidating each other cannot spin forever.
+  for (int pass = 0;
+       pending_notifications_.HasAny() && pass < kMaxNotificationPasses;
+       ++pass) {
+    // Always broadcast state updates before transition completion so observers
+    // see final insets/progress before FullscreenDidTransition().
+    if (auto duration = std::exchange(
+            pending_notifications_.state_update_duration, std::nullopt)) {
+      BroadcastUpdatedState(*duration);
+    } else if (auto transition = std::exchange(
+                   pending_notifications_.completed_transition, std::nullopt)) {
+      BroadcastDidTransition(*transition);
+    }
+  }
+
+  // Discard any unsettled leftovers rather than replaying them from an
+  // unrelated notification later on.
+  pending_notifications_ = {};
+}
+
+UIEdgeInsets FullscreenBrowserAgent::content_insets() const {
+  UIEdgeInsets content_insets = insets_;
+  if (keyboard_obscured_inset_ > 0) {
+    content_insets.bottom =
+        std::max(content_insets.bottom, keyboard_obscured_inset_);
+  }
+  return content_insets;
+}
+
+void FullscreenBrowserAgent::BroadcastUpdatedState(base::TimeDelta duration) {
   animation_duration_ = duration;
   updating_insets_ = true;
   UIEdgeInsets old_insets = insets_;
@@ -270,15 +397,13 @@ void FullscreenBrowserAgent::NotifyObserversOfUpdatedState(
   for (auto& observer : observers_) {
     observer.WillUpdateState(this);
   }
-
-  // Apply keyboard height as overlapping.
-  if (keyboard_obscured_inset_ > 0) {
-    insets_.bottom = std::max(insets_.bottom, keyboard_obscured_inset_);
-  }
-
   updating_insets_ = false;
 
-  if (!UIEdgeInsetsEqualToEdgeInsets(old_insets, insets_)) {
+  UIEdgeInsets new_content_insets = content_insets();
+  if (!UIEdgeInsetsEqualToEdgeInsets(old_insets, insets_) ||
+      !UIEdgeInsetsEqualToEdgeInsets(last_broadcast_content_insets_,
+                                     new_content_insets)) {
+    last_broadcast_content_insets_ = new_content_insets;
     for (auto& observer : observers_) {
       observer.DidUpdateState(this);
     }
@@ -289,18 +414,66 @@ void FullscreenBrowserAgent::NotifyObserversOfUpdatedState(
 
 void FullscreenBrowserAgent::AnimationDidComplete(
     FullscreenTransition transition,
+    int generation,
     bool finished) {
-  is_animating_ = false;
-  if (finished) {
-    settled_state_ = SettledStateForTransition(transition);
-    NotifyFullscreenDidTransition(transition);
+  // A newer transition has already taken over the animation state; this
+  // completion belongs to the animation it superseded.
+  if (generation != animation_generation_) {
+    return;
   }
+
+  is_animating_ = false;
+
+  // The UIKit animation and the display link terminate independently, so
+  // settle the per-frame value here to guarantee opted-in observers land
+  // exactly on the target even if the display link is truncated.
+  if (progress_animator_) {
+    [progress_animator_ stop];
+    NotifyObserversOfInterpolatedProgress(top_progress_);
+  }
+
+  // `finished` is deliberately ignored. The progress and the settled state were
+  // committed when the transition started, and an interruption by an external
+  // layout pass snaps the observer views to that committed progress, so the
+  // target is reached either way. Skipping the notification here would strand
+  // observers that only react to completed transitions.
+  NotifyFullscreenDidTransition(transition);
 }
 
-void FullscreenBrowserAgent::NotifyFullscreenDidTransition(
+void FullscreenBrowserAgent::BroadcastDidTransition(
     FullscreenTransition transition) {
   for (auto& observer : observers_) {
     observer.FullscreenDidTransition(this, transition);
+  }
+}
+
+void FullscreenBrowserAgent::StartInterpolatedProgressAnimation(
+    CGFloat start_progress,
+    CGFloat target_progress,
+    base::TimeDelta duration) {
+  if (!progress_animator_) {
+    auto update_handler = base::CallbackToBlock(base::BindRepeating(
+        &FullscreenBrowserAgent::NotifyObserversOfInterpolatedProgress,
+        weak_ptr_factory_.GetWeakPtr()));
+    progress_animator_ =
+        [[FullscreenProgressAnimator alloc] initWithUpdateHandler:update_handler
+                                                       completion:nil];
+  }
+
+  [progress_animator_ animateFromProgress:start_progress
+                               toProgress:target_progress
+                                 duration:duration
+                          initialVelocity:animation_initial_velocity_];
+}
+
+void FullscreenBrowserAgent::NotifyObserversOfInterpolatedProgress(
+    CGFloat progress) {
+  interpolated_progress_ = progress;
+  // Broadcast unconditionally: the default implementation is empty, so
+  // filtering would cost an extra virtual call per observer per frame to avoid
+  // a virtual call that does nothing.
+  for (auto& observer : observers_) {
+    observer.DidUpdateInterpolatedProgress(this);
   }
 }
 
@@ -375,6 +548,8 @@ void FullscreenBrowserAgent::ExitForceFullscreen(PassKey pass_key) {
 
 void FullscreenBrowserAgent::InvalidateInsetRange() {
   invalidating_inset_range_ = true;
+  UIEdgeInsets old_min_insets = min_insets_;
+  UIEdgeInsets old_max_insets = max_insets_;
   min_insets_ = UIEdgeInsetsZero;
   max_insets_ = UIEdgeInsetsZero;
 
@@ -382,17 +557,13 @@ void FullscreenBrowserAgent::InvalidateInsetRange() {
   for (auto& observer : observers_) {
     observer.WillUpdateObscuredInsetRange(this);
   }
-
-  // Apply keyboard height as overlapping.
-  if (keyboard_obscured_inset_ > 0) {
-    min_insets_.bottom = std::max(min_insets_.bottom, keyboard_obscured_inset_);
-    max_insets_.bottom = std::max(max_insets_.bottom, keyboard_obscured_inset_);
-  }
-
   updating_obscured_insets_ = false;
 
-  for (auto& observer : observers_) {
-    observer.DidUpdateObscuredInsetRange(this);
+  if (!UIEdgeInsetsEqualToEdgeInsets(old_min_insets, min_insets_) ||
+      !UIEdgeInsetsEqualToEdgeInsets(old_max_insets, max_insets_)) {
+    for (auto& observer : observers_) {
+      observer.DidUpdateObscuredInsetRange(this);
+    }
   }
 
   NotifyObserversOfUpdatedState();
@@ -403,6 +574,7 @@ void FullscreenBrowserAgent::AddObscuredInsetRange(UIRectEdge edge,
                                                    CGFloat min,
                                                    CGFloat max) {
   CHECK(updating_obscured_insets_);
+  CHECK_LE(min, max, base::NotFatalUntil::M161);
   if (edge == UIRectEdgeTop) {
     min_insets_.top += min;
     max_insets_.top += max;
@@ -436,5 +608,5 @@ void FullscreenBrowserAgent::SetKeyboardObscuredInset(CGFloat inset) {
     return;
   }
   keyboard_obscured_inset_ = inset;
-  InvalidateInsetRange();
+  NotifyObserversOfUpdatedState();
 }

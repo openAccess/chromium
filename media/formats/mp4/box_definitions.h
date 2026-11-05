@@ -15,6 +15,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/time/time.h"
+#include "media/base/audio_codecs.h"
 #include "media/base/decrypt_config.h"
 #include "media/base/media_export.h"
 #include "media/base/media_log.h"
@@ -29,6 +30,7 @@
 #include "media/formats/mp4/dtsx.h"
 #include "media/formats/mp4/eac3.h"
 #include "media/formats/mp4/fourccs.h"
+#include "media/formats/mp4/stream_parser_metadata_track.h"
 #include "media/media_buildflags.h"
 
 namespace media {
@@ -404,11 +406,8 @@ struct MEDIA_EXPORT MetadataIT35SampleEntry : Box {
 
   uint16_t data_reference_index = 0;
 
-  enum class IT35PrefixType {
-    kUnknown,
-    kSmpteSt2094App5,
-  };
-  IT35PrefixType it35_prefix_type = IT35PrefixType::kUnknown;
+  MetadataTrack::IT35PrefixType it35_prefix_type =
+      MetadataTrack::IT35PrefixType::kUnknown;
 };
 
 struct MEDIA_EXPORT ElementaryStreamDescriptor : Box {
@@ -490,7 +489,7 @@ struct MEDIA_EXPORT IamfSpecificBox : Box {
                      uint32_t* obu_size);
   bool ReadLeb128Value(BufferReader* reader, uint32_t* value) const;
 
-  uint8_t profile;
+  AudioCodecProfile profile = AudioCodecProfile::kUnknown;
   bool redundant_copy = false;
 
   std::vector<uint8_t> ia_descriptors;

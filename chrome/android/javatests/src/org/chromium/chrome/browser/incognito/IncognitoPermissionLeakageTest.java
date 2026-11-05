@@ -26,7 +26,6 @@ import androidx.test.espresso.NoMatchingViewException;
 import androidx.test.filters.LargeTest;
 
 import org.hamcrest.Matchers;
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -67,6 +66,7 @@ import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.device.geolocation.LocationProviderOverrider;
 import org.chromium.device.geolocation.MockLocationProvider;
 import org.chromium.net.test.EmbeddedTestServer;
+import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -116,11 +116,6 @@ public class IncognitoPermissionLeakageTest {
         LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
 
         ModalDialogView.disableButtonTapProtectionForTesting();
-    }
-
-    @After
-    public void tearDown() {
-        mChromeActivityTestRule.closeAllWindowsAndDeleteInstanceAndTabState();
     }
 
     private void requestLocationPermission(Tab tab) throws TimeoutException, ExecutionException {
@@ -176,6 +171,7 @@ public class IncognitoPermissionLeakageTest {
     @LargeTest
     @UseMethodParameter(RegularAndIncognito.class)
     @DisableIf.Build(sdk_equals = Build.VERSION_CODES.S_V2, message = "crbug.com/40704641")
+    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/462595998
     public void testAllowPermissionDoNotLeakBetweenRegularAndIncognito(
             String activityType1, String activityType2) throws Exception {
         ActivityType activity1 = ActivityType.valueOf(activityType1);

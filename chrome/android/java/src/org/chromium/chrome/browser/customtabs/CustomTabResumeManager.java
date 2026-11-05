@@ -10,6 +10,8 @@ import android.view.View;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
+import org.chromium.base.ResettersForTesting;
+import org.chromium.base.TriState;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
@@ -60,7 +62,7 @@ public class CustomTabResumeManager {
     private static final long DEFAULT_RESUMPTION_TAB_TTL_MS = TimeUnit.DAYS.toMillis(5);
 
     private static final Map<String, TabState> sInMemoryStateCache =
-            new LinkedHashMap<String, TabState>(IN_MEMORY_CACHE_MAX_SIZE + 1, 0.75f, true) {
+            new LinkedHashMap<>(IN_MEMORY_CACHE_MAX_SIZE + 1, 0.75f, true) {
                 @Override
                 protected boolean removeEldestEntry(Map.Entry<String, TabState> eldest) {
                     return size() > IN_MEMORY_CACHE_MAX_SIZE;
@@ -421,7 +423,7 @@ public class CustomTabResumeManager {
         try {
             TabState state =
                     TabStateFileManager.restoreTabState(
-                            getStorageDirectory(), tabId, cipherFactory);
+                            getStorageDirectory(), tabId, cipherFactory, TriState.NOT_SET);
             Log.i(
                     TAG,
                     "restoreTabState: restoreTabState returned %s TabState",
@@ -580,5 +582,10 @@ public class CustomTabResumeManager {
                         public void onViewDetachedFromWindow(View v) {}
                     });
         }
+    }
+
+    static Map<String, TabState> getInMemoryStateCacheForTesting() {
+        ResettersForTesting.register(sInMemoryStateCache::clear);
+        return sInMemoryStateCache;
     }
 }

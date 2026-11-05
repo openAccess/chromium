@@ -17,8 +17,6 @@ import static org.mockito.Mockito.when;
 import static org.chromium.chrome.browser.magic_stack.HomeModulesUtils.getEducationalTipModuleList;
 import static org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType.SINGLE_TAB;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -29,7 +27,6 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -46,7 +43,6 @@ import java.util.Set;
 
 /** Unit tests for {@link ModuleRegistry}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ModuleRegistryUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -79,7 +75,6 @@ public class ModuleRegistryUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBuild() {
         mModuleRegistry.registerModule(REGISTERED_MODULE_TYPE, mModuleProviderBuilder);
 
@@ -92,7 +87,6 @@ public class ModuleRegistryUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRegisterAdapter() {
         mModuleRegistry.registerModule(REGISTERED_MODULE_TYPE, mModuleProviderBuilder);
 
@@ -103,7 +97,6 @@ public class ModuleRegistryUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testDestroy() {
         mModuleRegistry.registerModule(REGISTERED_MODULE_TYPE, mModuleProviderBuilder);
         mModuleRegistry.destroy();
@@ -112,7 +105,6 @@ public class ModuleRegistryUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnPauseWithNative() {
         mModuleRegistry.registerModule(REGISTERED_MODULE_TYPE, mModuleProviderBuilder);
 

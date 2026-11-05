@@ -11,7 +11,7 @@
 #include "components/autofill/core/browser/ui/payments/bubble_show_options.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
-#include "ui/color/color_provider.h"
+#include "ui/color/color_id.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_frame_view.h"
@@ -57,7 +57,7 @@ FilledCardInformationBubbleViews::FilledCardInformationBubbleViews(
     FilledCardInformationBubbleController* controller)
     : AutofillLocationBarBubble(anchor_view, web_contents),
       controller_(controller) {
-  DCHECK(controller_);
+  CHECK(controller_, base::NotFatalUntil::M162);
   SetShowIcon(true);
   SetShowCloseButton(true);
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
@@ -158,10 +158,12 @@ void FilledCardInformationBubbleViews::OnWidgetDestroying(
   if (!widget->IsClosed()) {
     return;
   }
-  DCHECK_NE(widget->closed_reason(),
-            views::Widget::ClosedReason::kAcceptButtonClicked);
-  DCHECK_NE(widget->closed_reason(),
-            views::Widget::ClosedReason::kCancelButtonClicked);
+  CHECK_NE(widget->closed_reason(),
+           views::Widget::ClosedReason::kAcceptButtonClicked,
+           base::NotFatalUntil::M162);
+  CHECK_NE(widget->closed_reason(),
+           views::Widget::ClosedReason::kCancelButtonClicked,
+           base::NotFatalUntil::M162);
 }
 
 std::unique_ptr<views::MdTextButton>
@@ -206,13 +208,7 @@ void FilledCardInformationBubbleViews::AddCardDescriptionView(
       std::make_unique<views::ThemeTrackingImageView>(
           /*light_image_model=*/card_images.first,
           /*dark_image_model=*/card_images.second.value_or(card_images.first),
-          /*get_background_color_callback=*/
-          base::BindRepeating(
-              [](views::View* view) {
-                return ui::ColorVariant(view->GetColorProvider()->GetColor(
-                    ui::kColorDialogBackground));
-              },
-              base::Unretained(this))));
+          /*background_color=*/ui::kColorDialogBackground));
   card_image_view->SetID(kCardImage);
 
   // Add a child container view for the two-line text view.
@@ -294,12 +290,16 @@ void FilledCardInformationBubbleViews::AddCardDetailButtons(
       FilledCardInformationBubbleField::kExpirationYear));
 
   // Cardholder name.
-  auto* cardholder_name_container =
-      parent->AddChildView(CreateButtonContainer());
-  cardholder_name_container->AddChildView(
-      CreateRowItemLabel(controller_->GetCardholderNameFieldLabel()));
-  cardholder_name_container->AddChildView(CreateRowItemButtonForField(
-      FilledCardInformationBubbleField::kCardholderName));
+  if (!controller_
+           ->GetValueForField(FilledCardInformationBubbleField::kCardholderName)
+           .empty()) {
+    auto* cardholder_name_container =
+        parent->AddChildView(CreateButtonContainer());
+    cardholder_name_container->AddChildView(
+        CreateRowItemLabel(controller_->GetCardholderNameFieldLabel()));
+    cardholder_name_container->AddChildView(CreateRowItemButtonForField(
+        FilledCardInformationBubbleField::kCardholderName));
+  }
 
   // CVC.
   auto* cvc_container = parent->AddChildView(CreateButtonContainer());

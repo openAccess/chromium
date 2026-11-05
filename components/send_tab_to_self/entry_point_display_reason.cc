@@ -4,9 +4,7 @@
 
 #include "components/send_tab_to_self/entry_point_display_reason.h"
 
-#include "base/feature_list.h"
 #include "components/prefs/pref_service.h"
-#include "components/send_tab_to_self/features.h"
 #include "components/send_tab_to_self/send_tab_to_self_entry.h"
 #include "components/send_tab_to_self/send_tab_to_self_model.h"
 #include "components/send_tab_to_self/send_tab_to_self_sync_service.h"
@@ -14,7 +12,6 @@
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/sync/service/sync_service.h"
-#include "components/sync/service/sync_user_settings.h"
 #include "url/gurl.h"
 
 namespace send_tab_to_self {
@@ -48,14 +45,45 @@ bool ShouldOfferReauth(syncer::SyncService* sync_service,
 #if !BUILDFLAG(ENABLE_DICE_SUPPORT)
   return false;
 #else
-  if (!base::FeatureList::IsEnabled(kSendTabToSelfEnhancedDesktopUI)) {
-    return false;
-  }
-
   return IsSigninPossible(sync_service, pref_service) &&
          sync_service->GetTransportState() ==
              syncer::SyncService::TransportState::PAUSED;
 #endif
+}
+
+bool HasUserActionableErrorBlockingSendTabToSelf(
+    const syncer::SyncService& sync_service) {
+  switch (sync_service.GetUserActionableError()) {
+    case syncer::SyncService::UserActionableError::kNone:
+    case syncer::SyncService::UserActionableError::
+        kNeedsTrustedVaultKeyForPasswords:
+    case syncer::SyncService::UserActionableError::
+        kTrustedVaultRecoverabilityDegradedForPasswords:
+    case syncer::SyncService::UserActionableError::
+        kTrustedVaultRecoverabilityDegradedForEverything:
+    case syncer::SyncService::UserActionableError::kBookmarksLimitExceeded:
+#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
+    case syncer::SyncService::UserActionableError::kPasskeysLocked:
+#endif
+#if BUILDFLAG(IS_ANDROID)
+    case syncer::SyncService::UserActionableError::kNeedsUPMBackendUpgrade:
+#endif
+      return false;
+
+    case syncer::SyncService::UserActionableError::kSignInNeedsUpdate:
+    case syncer::SyncService::UserActionableError::kNeedsPassphrase:
+    case syncer::SyncService::UserActionableError::
+        kNeedsTrustedVaultKeyForEverything:
+    case syncer::SyncService::UserActionableError::kNeedsClientUpgrade:
+#if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
+    case syncer::SyncService::UserActionableError::kNeedsSettingsConfirmation:
+    case syncer::SyncService::UserActionableError::kUnrecoverableError:
+#endif
+#if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
+    case syncer::SyncService::UserActionableError::kDeviceManagementError:
+#endif
+      return true;
+  }
 }
 
 }  // namespace
@@ -84,16 +112,11 @@ std::optional<EntryPointDisplayReason> GetEntryPointDisplayReason(
     return EntryPointDisplayReason::kOfferReauth;
   }
 
+  if (HasUserActionableErrorBlockingSendTabToSelf(*sync_service)) {
+    return std::nullopt;
+  }
+
   if (!send_tab_to_self_model->IsReady()) {
-    syncer::SyncUserSettings* settings = sync_service->GetUserSettings();
-    if (sync_service->IsEngineInitialized() &&
-        (settings->IsPassphraseRequiredForPreferredDataTypes() ||
-         settings->IsTrustedVaultKeyRequiredForPreferredDataTypes())) {
-      // There's an encryption error, the model won't become ready unless the
-      // user takes explicit action. But the error will be surfaced by dedicated
-      // non send-tab-to-self UI. So just treat this as the no device case.
-      return EntryPointDisplayReason::kInformNoTargetDevice;
-    }
     return std::nullopt;
   }
 

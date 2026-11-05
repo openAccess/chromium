@@ -5,21 +5,30 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <limits>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "base/types/expected.h"
+#include "base/unguessable_token.h"
 #include "build/build_config.h"
 #include "cc/mojom/render_frame_metadata.mojom.h"
 #include "cc/trees/render_frame_metadata.h"
@@ -40,12 +49,15 @@
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_delegate.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
+#include "content/browser/renderer_host/text_input_manager.h"
 #include "content/browser/renderer_host/visible_time_request_trigger.h"
 #include "content/browser/site_instance_group.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/common/content_constants_internal.h"
+#include "content/common/features.h"
 #include "content/public/browser/global_dom_node_id.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/drop_data.h"
@@ -65,10 +77,12 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "mojo/public/cpp/test_support/test_utils.h"
 #include "skia/ext/skia_utils_base.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/dom/dom_node_id.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
@@ -86,9 +100,9 @@
 #include "ui/events/gesture_detection/gesture_provider_config_helper.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/image/image.h"
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/strings/utf_string_conversions.h"
 #include "content/browser/renderer_host/render_widget_host_view_android.h"
 #include "ui/android/screen_android.h"
 #endif
@@ -265,6 +279,21 @@ class TestView : public TestRenderWidgetHostView {
     return TestRenderWidgetHostView::GetCompositorViewportPixelSize();
   }
 
+  // Holds copy requests so tests control when and how they complete.
+  void CopyFromSurfaceImpl(
+      const gfx::Rect& src_rect,
+      const gfx::Size& output_size,
+      bool is_copy_request_secure,
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const CopyFromSurfaceResult&)> callback)
+      override {
+    copy_from_surface_callbacks_.push_back(std::move(callback));
+  }
+  std::vector<base::OnceCallback<void(const CopyFromSurfaceResult&)>>
+  TakeCopyFromSurfaceCallbacks() {
+    return std::move(copy_from_surface_callbacks_);
+  }
+
  protected:
   WebMouseWheelEvent unhandled_wheel_event_;
   int unhandled_wheel_event_count_;
@@ -278,6 +307,8 @@ class TestView : public TestRenderWidgetHostView {
   viz::ParentLocalSurfaceIdAllocator local_surface_id_allocator_;
   display::ScreenInfo screen_info_;
   gfx::Insets insets_;
+  std::vector<base::OnceCallback<void(const CopyFromSurfaceResult&)>>
+      copy_from_surface_callbacks_;
 };
 
 // MockRenderViewHostDelegateView ------------------------------------------
@@ -411,6 +442,19 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
     prehandle_keyboard_event_ = handle;
   }
 
+  void set_prehandle_keyboard_event_result(
+      std::optional<KeyboardEventProcessingResult> result) {
+    prehandle_keyboard_event_result_ = result;
+  }
+
+  void set_prehandle_keyboard_event_closure(base::OnceClosure closure) {
+    prehandle_keyboard_event_closure_ = std::move(closure);
+  }
+
+  void set_handle_keyboard_event_result(bool handle) {
+    handle_keyboard_event_result_ = handle;
+  }
+
   void set_handle_wheel_event(bool handle) {
     handle_wheel_event_ = handle;
   }
@@ -422,6 +466,8 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
   bool handle_wheel_event_called() const { return handle_wheel_event_called_; }
 
   bool unresponsive_timer_fired() const { return unresponsive_timer_fired_; }
+  void reset_unresponsive_timer_fired() { unresponsive_timer_fired_ = false; }
+  int renderer_responsive_count() const { return renderer_responsive_count_; }
 
   MockRenderViewHostDelegateView* mock_delegate_view() {
     return render_view_host_delegate_view_.get();
@@ -468,6 +514,22 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
 
   void set_is_fullscreen(bool enabled) { is_fullscreen_ = enabled; }
 
+  TextInputManager* GetTextInputManager() override {
+    return &text_input_manager_;
+  }
+
+  gfx::Rect ConstrainPopupBounds(const gfx::Rect& bounds) override {
+    if (constrain_popup_bounds_callback_) {
+      return constrain_popup_bounds_callback_.Run(bounds);
+    }
+    return RenderWidgetHostDelegate::ConstrainPopupBounds(bounds);
+  }
+
+  void set_constrain_popup_bounds_callback(
+      base::RepeatingCallback<gfx::Rect(const gfx::Rect&)> callback) {
+    constrain_popup_bounds_callback_ = std::move(callback);
+  }
+
   MOCK_METHOD(bool,
               IsWaitingForPointerLockPrompt,
               (RenderWidgetHostImpl * host),
@@ -478,6 +540,12 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
       const input::NativeWebKeyboardEvent& event) override {
     prehandle_keyboard_event_type_ = event.GetType();
     prehandle_keyboard_event_called_ = true;
+    if (prehandle_keyboard_event_closure_) {
+      std::move(prehandle_keyboard_event_closure_).Run();
+    }
+    if (prehandle_keyboard_event_result_) {
+      return *prehandle_keyboard_event_result_;
+    }
     if (prehandle_keyboard_event_)
       return KeyboardEventProcessingResult::HANDLED;
     return prehandle_keyboard_event_is_shortcut_
@@ -489,7 +557,7 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
       const input::NativeWebKeyboardEvent& event) override {
     unhandled_keyboard_event_type_ = event.GetType();
     unhandled_keyboard_event_called_ = true;
-    return true;
+    return handle_keyboard_event_result_;
   }
 
   bool HandleWheelEvent(const blink::WebMouseWheelEvent& event) override {
@@ -501,6 +569,10 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
       RenderWidgetHostImpl* render_widget_host,
       base::RepeatingClosure hang_monitor_restarter) override {
     unresponsive_timer_fired_ = true;
+  }
+
+  void RendererResponsive(RenderWidgetHostImpl* render_widget_host) override {
+    ++renderer_responsive_count_;
   }
 
   bool ShouldIgnoreInputEvents() override { return ignore_input_events_; }
@@ -529,14 +601,18 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
   bool prehandle_keyboard_event_is_shortcut_;
   bool prehandle_keyboard_event_called_;
   WebInputEvent::Type prehandle_keyboard_event_type_;
+  std::optional<KeyboardEventProcessingResult> prehandle_keyboard_event_result_;
+  base::OnceClosure prehandle_keyboard_event_closure_;
 
   bool unhandled_keyboard_event_called_;
   WebInputEvent::Type unhandled_keyboard_event_type_;
+  bool handle_keyboard_event_result_ = true;
 
   bool handle_wheel_event_;
   bool handle_wheel_event_called_;
 
   bool unresponsive_timer_fired_;
+  int renderer_responsive_count_ = 0;
 
   bool ignore_input_events_;
 
@@ -552,6 +628,11 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
       viz::VerticalScrollDirection::kNull;
 
   bool is_fullscreen_ = false;
+
+  TextInputManager text_input_manager_;
+
+  base::RepeatingCallback<gfx::Rect(const gfx::Rect&)>
+      constrain_popup_bounds_callback_;
 
   VisibleTimeRequestTrigger visible_time_request_trigger_;
 };
@@ -693,7 +774,7 @@ class RenderWidgetHostTest : public testing::Test {
 
   virtual void ConfigureView(TestView* view) {}
 
-  void ReinitalizeHost() {
+  void ReinitializeHost() {
     host_->BindWidgetInterfaces(
         mojo::AssociatedRemote<blink::mojom::WidgetHost>()
             .BindNewEndpointAndPassDedicatedReceiver(),
@@ -945,6 +1026,31 @@ TEST_F(RenderWidgetHostTest, DoNotAcceptPopupBoundsUntilScreenRectsAcked) {
   EXPECT_EQ(new_popup_view_bounds, view_->GetViewBounds());
 }
 
+TEST_F(RenderWidgetHostTest, SetPopupBoundsConstrainedByDelegate) {
+  ClearScreenRects();
+  base::RunLoop().RunUntilIdle();
+
+  // Default delegate implementation does not constrain bounds.
+  gfx::Rect unconstrained_bounds(5, 5, 20, 20);
+  EXPECT_EQ(delegate_->ConstrainPopupBounds(unconstrained_bounds),
+            unconstrained_bounds);
+
+  // Set a custom constraint on the delegate.
+  delegate_->set_constrain_popup_bounds_callback(
+      base::BindRepeating([](const gfx::Rect& bounds) {
+        gfx::Rect constrained = bounds;
+        if (constrained.y() < 100) {
+          constrained.set_y(100);
+        }
+        return constrained;
+      }));
+
+  // When SetPopupBounds is called, bounds are constrained by the delegate.
+  static_cast<blink::mojom::PopupWidgetHost*>(host_.get())
+      ->SetPopupBounds(unconstrained_bounds, base::DoNothing());
+  EXPECT_EQ(gfx::Rect(5, 100, 20, 20), view_->GetViewBounds());
+}
+
 TEST_F(RenderWidgetHostTest, SynchronizeVisualProperties) {
   ClearVisualProperties();
 
@@ -1122,6 +1228,51 @@ TEST_F(RenderWidgetHostTest, SynchronizeVisualProperties) {
             host_->old_visual_properties_->new_size_device_px);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(1u, widget_.ReceivedVisualProperties().size());
+}
+
+// Verify that fullscreen transitions occurring while an ack is pending advance
+// `fullscreen_grant_count`, so a rapid enter/exit pair that reverts
+// `is_fullscreen_granted` before the ack arrives still triggers a
+// `VisualProperties` update with the incremented grant count once the ack is
+// received (https://crbug.com/561969557).
+TEST_F(RenderWidgetHostTest,
+       FullscreenChangeAndRevertWhileAckPendingSendsUpdatedGrantCountOnAck) {
+  // Put the host into a state where an ack is outstanding, so that any further
+  // update is subject to throttling.
+  ClearVisualProperties();
+  view_->SetBounds(gfx::Rect(0, 0, 100, 100));
+  ASSERT_TRUE(host_->SynchronizeVisualProperties());
+  ASSERT_TRUE(host_->visual_properties_ack_pending_);
+  ASSERT_FALSE(host_->old_visual_properties_->is_fullscreen_granted);
+  const uint64_t initial_grant_count =
+      host_->old_visual_properties_->fullscreen_grant_count;
+
+  ClearVisualProperties();
+
+  // Entering and immediately exiting fullscreen while
+  // `visual_properties_ack_pending_` is true is throttled, leaving
+  // `is_fullscreen_granted` back at `false`.
+  delegate_->set_is_fullscreen(true);
+  EXPECT_FALSE(host_->SynchronizeVisualProperties());
+  delegate_->set_is_fullscreen(false);
+  EXPECT_FALSE(host_->SynchronizeVisualProperties());
+  EXPECT_TRUE(widget_.ReceivedVisualProperties().empty());
+
+  // When the pending ack arrives, `StoredVisualPropertiesNeedsUpdate` detects
+  // that `fullscreen_grant_count` advanced and sends the update despite
+  // `is_fullscreen_granted` still being `false` and the size being unchanged.
+  cc::RenderFrameMetadata metadata;
+  metadata.viewport_size_in_pixels = gfx::Size(100, 100);
+  metadata.local_surface_id = std::nullopt;
+  static_cast<RenderFrameMetadataProvider::Observer&>(*host_)
+      .OnLocalSurfaceIdChanged(metadata);
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !widget_.ReceivedVisualProperties().empty(); }));
+  ASSERT_EQ(1u, widget_.ReceivedVisualProperties().size());
+  EXPECT_FALSE(widget_.ReceivedVisualProperties()[0].is_fullscreen_granted);
+  EXPECT_EQ(initial_grant_count + 1,
+            widget_.ReceivedVisualProperties()[0].fullscreen_grant_count);
 }
 
 // Test that a resize event is sent if SynchronizeVisualProperties() is called
@@ -1427,12 +1578,65 @@ TEST_F(RenderWidgetHostTest, ReceiveFrameTokenFromCrashedRenderer) {
   // RenderWidget is being created.
   blink::VisualProperties props = host_->GetInitialVisualProperties();
   // The RenderWidget is recreated with the initial VisualProperties.
-  ReinitalizeHost();
+  ReinitializeHost();
 
   // The new RenderWidget sends a frame token, which is lower than what the
   // previous RenderWidget sent. This should be okay, as the expected token has
   // been reset.
   host_->DidProcessFrame(1, base::TimeTicks::Now());
+}
+
+// A surface copy that fails after the renderer exited must not be retried
+// through the view, which is gone at that point.
+TEST_F(RenderWidgetHostTest, SurfaceSnapshotCopyFailsAfterRendererExited) {
+  // Issues the surface copy without waiting for a ForceRedraw() response,
+  // which MockWidget never sends.
+  base::test::ScopedFeatureList feature_list(
+      features::kCDPScreenshotNewSurface);
+  std::optional<gfx::Image> snapshot;
+  host_->GetSnapshotFromBrowser(
+      base::BindLambdaForTesting(
+          [&](const gfx::Image& image) { snapshot = image; }),
+      /*from_surface=*/true);
+  auto copy_callbacks = view_->TakeCopyFromSurfaceCallbacks();
+  ASSERT_EQ(1u, copy_callbacks.size());
+
+  // Simulate a renderer crash while the copy is in flight.
+  host_->SetView(nullptr);
+  host_->RendererExited();
+
+  std::move(copy_callbacks[0])
+      .Run(base::unexpected(CopyFromSurfaceError::kFrameGone));
+
+  ASSERT_TRUE(snapshot.has_value());
+  EXPECT_TRUE(snapshot->IsEmpty());
+}
+
+// Snapshots still waiting on the renderer when it exits are failed instead of
+// staying pending forever.
+TEST_F(RenderWidgetHostTest, PendingSnapshotsFailWhenRendererExits) {
+  std::optional<gfx::Image> surface_snapshot;
+  std::optional<gfx::Image> window_snapshot;
+  // MockWidget never answers ForceRedraw(), so both requests stay pending.
+  host_->GetSnapshotFromBrowser(
+      base::BindLambdaForTesting(
+          [&](const gfx::Image& image) { surface_snapshot = image; }),
+      /*from_surface=*/true);
+  host_->GetSnapshotFromBrowser(
+      base::BindLambdaForTesting(
+          [&](const gfx::Image& image) { window_snapshot = image; }),
+      /*from_surface=*/false);
+  EXPECT_FALSE(surface_snapshot.has_value());
+  EXPECT_FALSE(window_snapshot.has_value());
+
+  // Simulate a renderer crash.
+  host_->SetView(nullptr);
+  host_->RendererExited();
+
+  ASSERT_TRUE(surface_snapshot.has_value());
+  EXPECT_TRUE(surface_snapshot->IsEmpty());
+  ASSERT_TRUE(window_snapshot.has_value());
+  EXPECT_TRUE(window_snapshot->IsEmpty());
 }
 
 TEST_F(RenderWidgetHostTest, ReceiveFrameTokenFromDeletedRenderWidget) {
@@ -1529,7 +1733,7 @@ TEST_F(RenderWidgetHostTest, Background) {
   host_->set_owner_delegate(nullptr);
 #endif  // BUILDFLAG(IS_ANDROID)
   host_->SetView(nullptr);
-  view->Destroy();
+  view->DestroyOrDefer();
 }
 
 // Test that the RenderWidgetHost tells the renderer when it is hidden and
@@ -1673,6 +1877,122 @@ TEST_F(RenderWidgetHostTest, PreHandleRawKeyDownEvent) {
   EXPECT_TRUE(delegate_->unhandled_keyboard_event_called());
   EXPECT_EQ(WebInputEvent::Type::kRawKeyDown,
             delegate_->unhandled_keyboard_event_type());
+}
+
+TEST_F(RenderWidgetHostTest,
+       DismissUnboundedSurfaceOnHandledKeyboardShortcuts) {
+  // Pre-handled kRawKeyDown and kKeyDown dismiss; kKeyUp does not.
+  delegate_->set_prehandle_keyboard_event(true);
+  SimulateKeyboardEvent(WebInputEvent::Type::kKeyUp);
+  EXPECT_FALSE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+
+  SimulateKeyboardEvent(WebInputEvent::Type::kRawKeyDown);
+  EXPECT_TRUE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+
+  SimulateKeyboardEvent(WebInputEvent::Type::kKeyDown);
+  EXPECT_TRUE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+
+#if defined(USE_AURA)
+  // Pre-handled HANDLED_DONT_UPDATE_EVENT also dismisses on key-down only.
+  delegate_->set_prehandle_keyboard_event_result(
+      KeyboardEventProcessingResult::HANDLED_DONT_UPDATE_EVENT);
+  SimulateKeyboardEvent(WebInputEvent::Type::kKeyUp);
+  EXPECT_FALSE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+
+  SimulateKeyboardEvent(WebInputEvent::Type::kRawKeyDown);
+  EXPECT_TRUE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+  delegate_->set_prehandle_keyboard_event_result(std::nullopt);
+#endif
+
+  // Post-ack: unconsumed keyboard events handled by the browser delegate
+  // must not dismiss the surface (dismissal is restricted to
+  // PreHandleKeyboardEvent).
+  delegate_->set_prehandle_keyboard_event(false);
+  delegate_->set_handle_keyboard_event_result(false);
+  SimulateKeyboardEvent(WebInputEvent::Type::kRawKeyDown);
+  MockWidgetInputHandler::MessageVector dispatched_events =
+      host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+  ASSERT_EQ(1u, dispatched_events.size());
+  dispatched_events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  EXPECT_FALSE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+
+  delegate_->set_handle_keyboard_event_result(true);
+  SimulateKeyboardEvent(WebInputEvent::Type::kChar);
+  SimulateKeyboardEvent(WebInputEvent::Type::kKeyUp);
+  dispatched_events =
+      host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+  ASSERT_EQ(2u, dispatched_events.size());
+  dispatched_events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  dispatched_events[1]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  EXPECT_FALSE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+
+  SimulateKeyboardEvent(WebInputEvent::Type::kRawKeyDown);
+  dispatched_events =
+      host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+  ASSERT_EQ(1u, dispatched_events.size());
+  dispatched_events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  EXPECT_FALSE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+
+  // Non-reserved browser shortcuts (e.g. Ctrl+S, Ctrl+P) marked
+  // NOT_HANDLED_IS_SHORTCUT in PreHandleKeyboardEvent set
+  // `is_browser_shortcut`. When not consumed by the renderer and handled by
+  // the browser delegate post-ack, key-down must dismiss the surface; key-up
+  // or consumed events must not.
+  delegate_->set_prehandle_keyboard_event_result(
+      KeyboardEventProcessingResult::NOT_HANDLED_IS_SHORTCUT);
+  delegate_->set_handle_keyboard_event_result(true);
+
+  // KeyUp with is_browser_shortcut must not dismiss.
+  SimulateKeyboardEvent(WebInputEvent::Type::kKeyUp);
+  dispatched_events =
+      host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+  ASSERT_EQ(1u, dispatched_events.size());
+  dispatched_events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  EXPECT_FALSE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+
+  // Consumed kRawKeyDown must not dismiss.
+  SimulateKeyboardEvent(WebInputEvent::Type::kRawKeyDown);
+  dispatched_events =
+      host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+  ASSERT_EQ(1u, dispatched_events.size());
+  dispatched_events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kConsumed);
+  EXPECT_FALSE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+
+  // Unconsumed kRawKeyDown handled by delegate must dismiss.
+  SimulateKeyboardEvent(WebInputEvent::Type::kRawKeyDown);
+  dispatched_events =
+      host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+  ASSERT_EQ(1u, dispatched_events.size());
+  dispatched_events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  EXPECT_TRUE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+
+  // Unconsumed kKeyDown handled by delegate must dismiss.
+  SimulateKeyboardEvent(WebInputEvent::Type::kKeyDown);
+  dispatched_events =
+      host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+  ASSERT_EQ(1u, dispatched_events.size());
+  dispatched_events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kNotConsumed);
+  EXPECT_TRUE(view_->TakeDismissUnboundedSurfaceCalledForTesting());
+
+  delegate_->set_prehandle_keyboard_event_result(std::nullopt);
+
+  // Synchronous destruction of the host/view during PreHandleKeyboardEvent
+  // (e.g. Ctrl+W) must be guarded by WeakPtr without UAF.
+  delegate_->set_prehandle_keyboard_event(true);
+  delegate_->set_prehandle_keyboard_event_closure(
+      base::BindLambdaForTesting([this]() {
+        view_.reset();
+        host_.reset();
+      }));
+  SimulateKeyboardEvent(WebInputEvent::Type::kRawKeyDown);
 }
 
 TEST_F(RenderWidgetHostTest, RawKeyDownShortcutEvent) {
@@ -1886,6 +2206,53 @@ TEST_F(RenderWidgetHostTest, InputEventAckTimeoutDisabledForInputWhenHidden) {
   EXPECT_TRUE(delegate_->unresponsive_timer_fired());
 }
 
+// Hiding a widget whose renderer is unresponsive must not report the renderer
+// as responsive; only an ack for the pending input does that.
+TEST_F(RenderWidgetHostTest, HidingUnresponsiveWidgetDoesNotReportResponsive) {
+  SimulateKeyboardEvent(WebInputEvent::Type::kRawKeyDown);
+  WaitForHang();
+  ASSERT_TRUE(delegate_->unresponsive_timer_fired());
+  ASSERT_TRUE(host_->IsCurrentlyUnresponsive());
+
+  host_->WasHidden();
+  EXPECT_EQ(0, delegate_->renderer_responsive_count());
+  EXPECT_TRUE(host_->IsCurrentlyUnresponsive());
+
+  // The ack for the pending event arrives while hidden: that is a real
+  // recovery and is reported.
+  MockWidgetInputHandler::MessageVector dispatched_events =
+      host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+  ASSERT_EQ(1u, dispatched_events.size());
+  ASSERT_TRUE(dispatched_events[0]->ToEvent());
+  dispatched_events[0]->ToEvent()->CallCallback(
+      blink::mojom::InputEventResultState::kConsumed);
+  EXPECT_EQ(1, delegate_->renderer_responsive_count());
+  EXPECT_FALSE(host_->IsCurrentlyUnresponsive());
+}
+
+// An unresponsive widget that is hidden and shown again with input still in
+// flight re-arms the hang monitor and reports unresponsive again, without an
+// intervening responsive notification.
+TEST_F(RenderWidgetHostTest, ShowingUnresponsiveWidgetRestartsAckTimeout) {
+  SimulateKeyboardEvent(WebInputEvent::Type::kRawKeyDown);
+  WaitForHang();
+  ASSERT_TRUE(delegate_->unresponsive_timer_fired());
+
+  host_->WasHidden();
+  delegate_->reset_unresponsive_timer_fired();
+  WaitForHang();
+  EXPECT_FALSE(delegate_->unresponsive_timer_fired());
+
+  host_->WasShown({} /* record_tab_switch_time_request */);
+  EXPECT_EQ(0, delegate_->renderer_responsive_count());
+  // RenderWidgetHostImpl ignores ack timeouts within the hung renderer delay of
+  // being shown, so it takes two timeout cycles to report again.
+  WaitForHang();
+  WaitForHang();
+  EXPECT_TRUE(delegate_->unresponsive_timer_fired());
+  EXPECT_EQ(0, delegate_->renderer_responsive_count());
+}
+
 // Test that the hang monitor catches two input events but only one ack.
 // This can happen if the second input event causes the renderer to hang.
 // This test will catch a regression of crbug.com/111185.
@@ -1969,6 +2336,106 @@ TEST_F(RenderWidgetHostTest, KeyboardListenerSuppressFollowingEvents) {
   SimulateKeyboardEvent(WebInputEvent::Type::kChar);
   EXPECT_TRUE(host_->mock_input_router()->sent_keyboard_event_);
 }
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(RenderWidgetHostTest, KeyboardListenerKeyDownFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kAllowKeyDownInKeyPressListeners);
+
+  host_->SetupForInputRouterTest();
+  host_->AddKeyPressEventCallback(base::BindRepeating(
+      &RenderWidgetHostTest::KeyPressEventCallback, base::Unretained(this)));
+
+  handle_key_press_event_ = true;
+  input::NativeWebKeyboardEvent key_down_event =
+      CreateNativeWebKeyboardEvent(WebInputEvent::Type::kKeyDown);
+  key_down_event.is_confirmed_physical_keyboard_input = true;
+  host_->ForwardKeyboardEvent(key_down_event);
+
+  // KeyDown events should not be processed by key press listeners when the
+  // feature is disabled.
+  EXPECT_TRUE(host_->mock_input_router()->sent_keyboard_event_);
+}
+
+TEST_F(RenderWidgetHostTest, KeyboardListenerKeyDownFeatureEnabledNonPhysical) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAllowKeyDownInKeyPressListeners};
+
+  host_->SetupForInputRouterTest();
+  host_->AddKeyPressEventCallback(base::BindRepeating(
+      &RenderWidgetHostTest::KeyPressEventCallback, base::Unretained(this)));
+
+  handle_key_press_event_ = true;
+
+  // Non-physical KeyDown event should not be processed by listeners.
+  input::NativeWebKeyboardEvent non_physical_key_down =
+      CreateNativeWebKeyboardEvent(WebInputEvent::Type::kKeyDown);
+  non_physical_key_down.is_confirmed_physical_keyboard_input = false;
+  host_->ForwardKeyboardEvent(non_physical_key_down);
+  EXPECT_TRUE(host_->mock_input_router()->sent_keyboard_event_);
+}
+
+TEST_F(RenderWidgetHostTest,
+       KeyboardListenerKeyDownFeatureEnabledSkipIfUnhandled) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAllowKeyDownInKeyPressListeners};
+
+  host_->SetupForInputRouterTest();
+  host_->AddKeyPressEventCallback(base::BindRepeating(
+      &RenderWidgetHostTest::KeyPressEventCallback, base::Unretained(this)));
+
+  handle_key_press_event_ = true;
+
+  // Physical KeyDown event with skip_if_unhandled should not be processed.
+  input::NativeWebKeyboardEvent skip_key_down =
+      CreateNativeWebKeyboardEvent(WebInputEvent::Type::kKeyDown);
+  skip_key_down.is_confirmed_physical_keyboard_input = true;
+  skip_key_down.skip_if_unhandled = true;
+  host_->ForwardKeyboardEvent(skip_key_down);
+  EXPECT_TRUE(host_->mock_input_router()->sent_keyboard_event_);
+}
+
+TEST_F(RenderWidgetHostTest, KeyboardListenerKeyDownFeatureEnabledPhysical) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAllowKeyDownInKeyPressListeners};
+
+  host_->SetupForInputRouterTest();
+  host_->AddKeyPressEventCallback(base::BindRepeating(
+      &RenderWidgetHostTest::KeyPressEventCallback, base::Unretained(this)));
+
+  handle_key_press_event_ = true;
+
+  // Physical KeyDown event.
+  input::NativeWebKeyboardEvent physical_key_down =
+      CreateNativeWebKeyboardEvent(WebInputEvent::Type::kKeyDown);
+  physical_key_down.is_confirmed_physical_keyboard_input = true;
+  host_->ForwardKeyboardEvent(physical_key_down);
+
+  // On Android, the physical KeyDown event is handled.
+  EXPECT_FALSE(host_->mock_input_router()->sent_keyboard_event_);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(RenderWidgetHostTest, KeyboardListenerKeyDownIgnoredOnNonAndroid) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAllowKeyDownInKeyPressListeners};
+
+  host_->SetupForInputRouterTest();
+  host_->AddKeyPressEventCallback(base::BindRepeating(
+      &RenderWidgetHostTest::KeyPressEventCallback, base::Unretained(this)));
+
+  handle_key_press_event_ = true;
+
+  input::NativeWebKeyboardEvent key_down_event =
+      CreateNativeWebKeyboardEvent(WebInputEvent::Type::kKeyDown);
+  host_->ForwardKeyboardEvent(key_down_event);
+
+  // On other platforms, KeyDown is never processed by key press listeners.
+  EXPECT_TRUE(host_->mock_input_router()->sent_keyboard_event_);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(RenderWidgetHostTest, MouseEventCallbackCanHandleEvent) {
   host_->SetupForInputRouterTest();
@@ -2134,7 +2601,7 @@ TEST_F(RenderWidgetHostTest, RendererExitedResetsInputRouter) {
   // RenderWidget is being created.
   blink::VisualProperties props = host_->GetInitialVisualProperties();
   // The RenderWidget is recreated with the initial VisualProperties.
-  ReinitalizeHost();
+  ReinitializeHost();
 
   // Make sure the input router is in a fresh state.
   ASSERT_FALSE(host_->input_router()->HasPendingEvents());
@@ -2178,6 +2645,81 @@ TEST_F(RenderWidgetHostTest, DestroyingRenderWidgetResetsInputRouter) {
   EXPECT_EQ(0u, host_->GetRenderInputRouter()->in_flight_event_count());
 }
 
+TEST_F(RenderWidgetHostTest, RendererExitedResetsGestureScrollState) {
+  SimulateGestureEvent(WebInputEvent::Type::kGestureScrollBegin,
+                       blink::WebGestureDevice::kTouchscreen);
+  EXPECT_TRUE(host_->GetRenderInputRouter()->IsAnyScrollGestureInProgress());
+  EXPECT_TRUE(
+      host_->GetRenderInputRouter()->is_in_touchscreen_gesture_scroll());
+  host_->GetRenderInputRouter()->DidStartScrollingViewport();
+  EXPECT_TRUE(host_->GetRenderInputRouter()->is_currently_scrolling_viewport());
+
+  // RendererExited will delete the view.
+  host_->SetView(new TestView(host_.get()));
+  host_->RendererExited();
+
+  // The renderer is recreated.
+  host_->SetView(view_.get());
+  host_->GetInitialVisualProperties();
+  ReinitializeHost();
+  host_->input_router()->MakeActive();
+
+  EXPECT_FALSE(host_->GetRenderInputRouter()->IsAnyScrollGestureInProgress());
+  EXPECT_FALSE(
+      host_->GetRenderInputRouter()->is_in_touchscreen_gesture_scroll());
+  EXPECT_FALSE(
+      host_->GetRenderInputRouter()->is_currently_scrolling_viewport());
+
+  // A subsequent GestureScrollBegin on the recreated widget should not hit
+  // DCHECK(!is_in_gesture_scroll_).
+  SimulateGestureEvent(WebInputEvent::Type::kGestureScrollBegin,
+                       blink::WebGestureDevice::kTouchscreen);
+  EXPECT_TRUE(
+      host_->GetRenderInputRouter()->is_in_touchscreen_gesture_scroll());
+}
+
+TEST_F(RenderWidgetHostTest,
+       RendererExitedDuringFlingResetsGestureScrollState) {
+  view_->SetBounds(gfx::Rect(0, 0, 100, 100));
+
+  SimulateGestureEvent(WebInputEvent::Type::kGestureScrollBegin,
+                       blink::WebGestureDevice::kTouchscreen);
+  host_->GetRenderInputRouter()->DidStartScrollingViewport();
+  host_->ForwardGestureEvent(blink::SyntheticWebGestureEventBuilder::BuildFling(
+      0.f, -1000.f, blink::WebGestureDevice::kTouchscreen));
+  EXPECT_TRUE(host_->GetRenderInputRouter()->IsAnyScrollGestureInProgress());
+  EXPECT_TRUE(
+      host_->GetRenderInputRouter()->is_in_touchscreen_gesture_scroll());
+  EXPECT_TRUE(host_->GetRenderInputRouter()->is_currently_scrolling_viewport());
+  EXPECT_TRUE(static_cast<input::InputRouterImpl*>(host_->input_router())
+                  ->IsFlingActiveForTest());
+
+  // RendererExited will delete the view.
+  host_->SetView(new TestView(host_.get()));
+  host_->RendererExited();
+
+  // The renderer is recreated.
+  host_->SetView(view_.get());
+  host_->GetInitialVisualProperties();
+  ReinitializeHost();
+  host_->input_router()->MakeActive();
+
+  EXPECT_FALSE(host_->GetRenderInputRouter()->IsAnyScrollGestureInProgress());
+  EXPECT_FALSE(
+      host_->GetRenderInputRouter()->is_in_touchscreen_gesture_scroll());
+  EXPECT_FALSE(
+      host_->GetRenderInputRouter()->is_currently_scrolling_viewport());
+  EXPECT_FALSE(static_cast<input::InputRouterImpl*>(host_->input_router())
+                   ->IsFlingActiveForTest());
+
+  // A subsequent GestureScrollBegin on the recreated widget should not hit
+  // DCHECK(!is_in_gesture_scroll_).
+  SimulateGestureEvent(WebInputEvent::Type::kGestureScrollBegin,
+                       blink::WebGestureDevice::kTouchscreen);
+  EXPECT_TRUE(
+      host_->GetRenderInputRouter()->is_in_touchscreen_gesture_scroll());
+}
+
 TEST_F(RenderWidgetHostTest, RendererExitedResetsScreenRectsAck) {
   // Screen rects are sent during initialization, but we are waiting for an ack.
   base::RunLoop().RunUntilIdle();
@@ -2203,7 +2745,7 @@ TEST_F(RenderWidgetHostTest, RendererExitedResetsScreenRectsAck) {
   // RenderWidget is being created.
   blink::VisualProperties props = host_->GetInitialVisualProperties();
   // The RenderWidget is recreated with the initial VisualProperties.
-  ReinitalizeHost();
+  ReinitializeHost();
 
   // The RenderWidget is shown when navigation completes. This sends screen
   // rects again. The IPC is sent as it's not waiting for an ack.
@@ -2459,6 +3001,55 @@ TEST_F(RenderWidgetHostDragTest, SanitizeFilenameExtensionOnDrag) {
             FILE_PATH_LITERAL("payload.so"));
 }
 
+// Internal drag_id in DropData must never be exposed to untrusted
+// drop target renderers in outgoing DragData.
+TEST_F(RenderWidgetHostDragTest, DragIdNotExposedInOutgoingDragData) {
+  DropData drop_data;
+  drop_data.drag_id = base::UnguessableToken::Create();
+  drop_data.custom_data[u"application/x-custom-key"] = u"custom-value";
+
+  blink::mojom::DragDataPtr drag_data =
+      DropDataToDragData(drop_data, GetFileSystemAccessManager(),
+                         main_test_rfh()->GetProcess()->GetDeprecatedID(),
+                         GetChromeBlobStorageContext());
+
+  ASSERT_TRUE(drag_data);
+  ASSERT_EQ(drag_data->items.size(), 1u);
+  ASSERT_TRUE(drag_data->items[0]->is_string());
+  EXPECT_EQ(drag_data->items[0]->get_string()->string_type,
+            "application/x-custom-key");
+  EXPECT_EQ(drag_data->items[0]->get_string()->string_data, u"custom-value");
+}
+
+// Internal drag_id in DropData must never be exposed to renderers in
+// dragenter metadata.
+TEST_F(RenderWidgetHostDragTest, DragIdNotExposedInDragEnterMetaData) {
+  mojo::PendingAssociatedReceiver<blink::mojom::FrameWidget> receiver =
+      BindFakeFrameWidgetInterfaces(main_test_rfh());
+  DragCaptureFrameWidget mock_frame_widget(std::move(receiver));
+
+  DropData drop_data;
+  drop_data.drag_id = base::UnguessableToken::Create();
+  drop_data.custom_data[u"application/x-custom-key"] = u"custom-value";
+
+  base::RunLoop run_loop;
+  GetRenderWidgetHost()->DragTargetDragEnter(
+      drop_data, gfx::PointF(), gfx::PointF(),
+      blink::DragOperationsMask::kDragOperationEvery, 0,
+      base::BindOnce(
+          [](base::OnceClosure quit_closure, ui::mojom::DragOperation operation,
+             bool document_is_handling_drag) { std::move(quit_closure).Run(); },
+          run_loop.QuitClosure()));
+  run_loop.Run();
+
+  const auto& captured_drag_data = mock_frame_widget.drag_data();
+  ASSERT_TRUE(captured_drag_data);
+  ASSERT_EQ(captured_drag_data->items.size(), 1u);
+  ASSERT_TRUE(captured_drag_data->items[0]->is_string());
+  EXPECT_EQ(captured_drag_data->items[0]->get_string()->string_type,
+            "application/x-custom-key");
+}
+
 TEST_F(RenderWidgetHostDragTest, DragEnterDoesNotLeakPaths) {
   // Bind our mock frame widget.
   mojo::PendingAssociatedReceiver<blink::mojom::FrameWidget> receiver =
@@ -2474,6 +3065,15 @@ TEST_F(RenderWidgetHostDragTest, DragEnterDoesNotLeakPaths) {
       base::FilePath(FILE_PATH_LITERAL("/another/absolute/path/to/file2.txt")),
       base::FilePath());
 
+  // Regression test for https://crbug.com/553276670: `file_system_files` URLs
+  // must not be sent to hovered renderers on DragTargetDragEnter(), as they
+  // contain mount identifiers, user hashes, and full directory paths.
+  DropData::FileSystemFileInfo file_system_file;
+  file_system_file.url = GURL(
+      "filesystem:chrome://file-manager/external/"
+      "odfs:odfs:secret_username_hash/private/dir/report.pdf");
+  drop_data.file_system_files.push_back(file_system_file);
+
   // Call DragTargetDragEnter.
   base::RunLoop run_loop;
   GetRenderWidgetHost()->DragTargetDragEnter(
@@ -2485,10 +3085,10 @@ TEST_F(RenderWidgetHostDragTest, DragEnterDoesNotLeakPaths) {
           run_loop.QuitClosure()));
   run_loop.Run();
 
-  // Verify that the paths sent to renderer are sanitized to BaseName.
+  // Verify that the paths and filesystem URLs sent to renderer are sanitized.
   const auto& captured_drag_data = mock_frame_widget.drag_data();
   ASSERT_TRUE(captured_drag_data);
-  ASSERT_EQ(captured_drag_data->items.size(), 2u);
+  ASSERT_EQ(captured_drag_data->items.size(), 3u);
 
   const auto& item1 = captured_drag_data->items[0];
   ASSERT_TRUE(item1->is_file());
@@ -2502,6 +3102,10 @@ TEST_F(RenderWidgetHostDragTest, DragEnterDoesNotLeakPaths) {
   EXPECT_EQ(item2->get_file()->path,
             base::FilePath(FILE_PATH_LITERAL("file2.txt")));
   EXPECT_TRUE(item2->get_file()->display_name.empty());
+
+  const auto& item3 = captured_drag_data->items[2];
+  ASSERT_TRUE(item3->is_file_system_file());
+  EXPECT_TRUE(item3->get_file_system_file()->url.is_empty());
 }
 
 // A plain <img> drag on macOS populates `file_contents` but supplies neither a
@@ -2846,6 +3450,63 @@ TEST_F(RenderWidgetHostTest, PasteIntoNode) {
   }
 }
 
+TEST_F(RenderWidgetHostTest, GetTextPrecedingSelection) {
+  TextInputManager* text_input_manager = delegate_->GetTextInputManager();
+  ASSERT_TRUE(text_input_manager);
+
+  // Register the view with TextInputManager.
+  view_->GetTextInputManager();
+
+  ui::mojom::TextInputState state;
+  state.type = ui::TEXT_INPUT_TYPE_TEXT;
+  state.value = u"Hello world! How are you?";
+  state.selection = gfx::Range(12, 12);  // Caret after "Hello world!"
+  state.node_id = 42;
+
+  text_input_manager->UpdateTextInputState(view_.get(), state);
+
+  GlobalDOMNodeId matching_node_id;
+  matching_node_id.target_element_dom_id = blink::DOMNodeIdType(42);
+
+  // Retrieve text preceding selection.
+  std::optional<std::u16string_view> text =
+      host_->GetTextPrecedingSelection(matching_node_id);
+  ASSERT_TRUE(text.has_value());
+  EXPECT_EQ(text.value(), u"Hello world!");
+
+  // Caret at start of text.
+  state.selection = gfx::Range(0, 0);
+  text_input_manager->UpdateTextInputState(view_.get(), state);
+  text = host_->GetTextPrecedingSelection(matching_node_id);
+  ASSERT_TRUE(text.has_value());
+  EXPECT_EQ(text.value(), u"");
+
+  // Non-empty selection range (selection from index 6 to 11 for "world").
+  // Should return text preceding the selection start (index 6, which is "Hello
+  // ").
+  state.selection = gfx::Range(6, 11);
+  text_input_manager->UpdateTextInputState(view_.get(), state);
+  text = host_->GetTextPrecedingSelection(matching_node_id);
+  ASSERT_TRUE(text.has_value());
+  EXPECT_EQ(text.value(), u"Hello ");
+
+  // Target element node ID mismatch.
+  GlobalDOMNodeId different_node_id;
+  different_node_id.target_element_dom_id = blink::DOMNodeIdType(999);
+  EXPECT_EQ(host_->GetTextPrecedingSelection(different_node_id), std::nullopt);
+
+  // Null DOM node ID allows retrieving active state text.
+  GlobalDOMNodeId null_node_id;
+  text = host_->GetTextPrecedingSelection(null_node_id);
+  ASSERT_TRUE(text.has_value());
+  EXPECT_EQ(text.value(), u"Hello ");
+
+  // No text value.
+  state.value = std::nullopt;
+  text_input_manager->UpdateTextInputState(view_.get(), state);
+  EXPECT_EQ(host_->GetTextPrecedingSelection(matching_node_id), std::nullopt);
+}
+
 // Tests that vertical scroll direction changes are propagated to the delegate.
 TEST_F(RenderWidgetHostTest, OnVerticalScrollDirectionChanged) {
   const auto NotifyVerticalScrollDirectionChanged =
@@ -3038,6 +3699,286 @@ TEST_F(RenderWidgetHostTest, AnimateDoubleTapZoomEmptyBounds) {
 
   static_cast<blink::mojom::FrameWidgetHost*>(host_.get())
       ->AnimateDoubleTapZoomInMainFrame(tap_point, valid_rect);
+}
+
+TEST(RenderFrameMetadataMojoTraitsTest, ValidMetadata) {
+  cc::RenderFrameMetadata input;
+  input.device_scale_factor = 2.0f;
+  input.page_scale_factor = 1.0f;
+  input.external_page_scale_factor = 1.0f;
+  input.browser_controls_metadata.top_controls_height = 100.0f;
+  input.browser_controls_metadata.top_controls_shown_ratio = 1.0f;
+  input.viewport_size_in_pixels = gfx::Size(800, 600);
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+  input.browser_controls_metadata.bottom_controls_height = 50.0f;
+  input.browser_controls_metadata.bottom_controls_shown_ratio = 0.5f;
+  input.browser_controls_metadata.top_controls_min_height_offset = 10.0f;
+  input.browser_controls_metadata.bottom_controls_min_height_offset = 5.0f;
+  input.min_page_scale_factor = 0.5f;
+  input.max_page_scale_factor = 4.0f;
+  input.scrollable_viewport_size = gfx::SizeF(800.0f, 600.0f);
+  input.root_layer_size = gfx::SizeF(800.0f, 2000.0f);
+#endif
+
+  cc::RenderFrameMetadata output;
+  EXPECT_TRUE(
+      mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+          input, output));
+  EXPECT_EQ(input.device_scale_factor, output.device_scale_factor);
+  EXPECT_EQ(input.page_scale_factor, output.page_scale_factor);
+  EXPECT_EQ(input.external_page_scale_factor,
+            output.external_page_scale_factor);
+  EXPECT_EQ(input.browser_controls_metadata.top_controls_height,
+            output.browser_controls_metadata.top_controls_height);
+  EXPECT_EQ(input.browser_controls_metadata.top_controls_shown_ratio,
+            output.browser_controls_metadata.top_controls_shown_ratio);
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+  EXPECT_EQ(input.browser_controls_metadata.bottom_controls_height,
+            output.browser_controls_metadata.bottom_controls_height);
+  EXPECT_EQ(input.browser_controls_metadata.bottom_controls_shown_ratio,
+            output.browser_controls_metadata.bottom_controls_shown_ratio);
+  EXPECT_EQ(input.browser_controls_metadata.top_controls_min_height_offset,
+            output.browser_controls_metadata.top_controls_min_height_offset);
+  EXPECT_EQ(input.browser_controls_metadata.bottom_controls_min_height_offset,
+            output.browser_controls_metadata.bottom_controls_min_height_offset);
+  EXPECT_EQ(input.min_page_scale_factor, output.min_page_scale_factor);
+  EXPECT_EQ(input.max_page_scale_factor, output.max_page_scale_factor);
+#endif
+}
+
+TEST(RenderFrameMetadataMojoTraitsTest, BoundaryShownRatios) {
+  cc::RenderFrameMetadata input;
+  cc::RenderFrameMetadata output;
+
+  for (float ratio : {0.0f, 0.5f, 1.0f}) {
+    input.browser_controls_metadata.top_controls_shown_ratio = ratio;
+    EXPECT_TRUE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+    EXPECT_EQ(ratio, output.browser_controls_metadata.top_controls_shown_ratio);
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+    input.browser_controls_metadata.bottom_controls_shown_ratio = ratio;
+    EXPECT_TRUE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+    EXPECT_EQ(ratio,
+              output.browser_controls_metadata.bottom_controls_shown_ratio);
+#endif
+  }
+}
+
+TEST(RenderFrameMetadataMojoTraitsTest, InvalidScaleFactors) {
+  cc::RenderFrameMetadata input;
+  cc::RenderFrameMetadata output;
+
+  const float invalid_scales[] = {
+      0.0f,
+      -0.001f,
+      -1.0f,
+      std::numeric_limits<float>::infinity(),
+      -std::numeric_limits<float>::infinity(),
+      std::numeric_limits<float>::quiet_NaN(),
+  };
+
+  for (float scale : invalid_scales) {
+    input = cc::RenderFrameMetadata();
+    input.device_scale_factor = scale;
+    EXPECT_FALSE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+
+    input = cc::RenderFrameMetadata();
+    input.page_scale_factor = scale;
+    EXPECT_FALSE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+
+    input = cc::RenderFrameMetadata();
+    input.external_page_scale_factor = scale;
+    EXPECT_FALSE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+  }
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+  const float invalid_scale_limits[] = {
+      -0.001f,
+      -1.0f,
+      std::numeric_limits<float>::infinity(),
+      -std::numeric_limits<float>::infinity(),
+      std::numeric_limits<float>::quiet_NaN(),
+  };
+
+  for (float scale : invalid_scale_limits) {
+    input = cc::RenderFrameMetadata();
+    input.min_page_scale_factor = scale;
+    EXPECT_FALSE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+
+    input = cc::RenderFrameMetadata();
+    input.max_page_scale_factor = scale;
+    EXPECT_FALSE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+  }
+
+  // Max page scale factor less than min page scale factor.
+  input = cc::RenderFrameMetadata();
+  input.min_page_scale_factor = 2.0f;
+  input.max_page_scale_factor = 1.0f;
+  EXPECT_FALSE(
+      mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+          input, output));
+#endif
+}
+
+TEST(RenderFrameMetadataMojoTraitsTest, InvalidTopControlsValues) {
+  cc::RenderFrameMetadata input;
+  cc::RenderFrameMetadata output;
+
+  const float invalid_heights[] = {
+      -0.001f,
+      -1.0f,
+      -100.0f,
+      std::numeric_limits<float>::infinity(),
+      -std::numeric_limits<float>::infinity(),
+      std::numeric_limits<float>::quiet_NaN(),
+  };
+
+  for (float height : invalid_heights) {
+    input = cc::RenderFrameMetadata();
+    input.browser_controls_metadata.top_controls_height = height;
+    EXPECT_FALSE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+  }
+
+  const float invalid_ratios[] = {
+      -0.1f,
+      -0.001f,
+      1.001f,
+      1.1f,
+      100.0f,
+      std::numeric_limits<float>::infinity(),
+      -std::numeric_limits<float>::infinity(),
+      std::numeric_limits<float>::quiet_NaN(),
+  };
+
+  for (float ratio : invalid_ratios) {
+    input = cc::RenderFrameMetadata();
+    input.browser_controls_metadata.top_controls_shown_ratio = ratio;
+    EXPECT_FALSE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+  }
+}
+
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+TEST(RenderFrameMetadataMojoTraitsTest, InvalidBottomControlsAndOffsets) {
+  cc::RenderFrameMetadata input;
+  cc::RenderFrameMetadata output;
+
+  const float invalid_heights[] = {
+      -0.001f,
+      -1.0f,
+      -100.0f,
+      std::numeric_limits<float>::infinity(),
+      -std::numeric_limits<float>::infinity(),
+      std::numeric_limits<float>::quiet_NaN(),
+  };
+
+  for (float height : invalid_heights) {
+    input = cc::RenderFrameMetadata();
+    input.browser_controls_metadata.bottom_controls_height = height;
+    EXPECT_FALSE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+
+    input = cc::RenderFrameMetadata();
+    input.browser_controls_metadata.top_controls_min_height_offset = height;
+    EXPECT_FALSE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+
+    input = cc::RenderFrameMetadata();
+    input.browser_controls_metadata.bottom_controls_min_height_offset = height;
+    EXPECT_FALSE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+  }
+
+  const float invalid_ratios[] = {
+      -0.1f,
+      -0.001f,
+      1.001f,
+      1.1f,
+      100.0f,
+      std::numeric_limits<float>::infinity(),
+      -std::numeric_limits<float>::infinity(),
+      std::numeric_limits<float>::quiet_NaN(),
+  };
+
+  for (float ratio : invalid_ratios) {
+    input = cc::RenderFrameMetadata();
+    input.browser_controls_metadata.bottom_controls_shown_ratio = ratio;
+    EXPECT_FALSE(
+        mojo::test::SerializeAndDeserialize<cc::mojom::RenderFrameMetadata>(
+            input, output));
+  }
+}
+#endif
+
+TEST_F(RenderWidgetHostTest, RenderFrameMetadataOutOfRangeMessageDisconnects) {
+  mojo::Remote<cc::mojom::RenderFrameMetadataObserverClient> client_remote;
+  mojo::PendingRemote<cc::mojom::RenderFrameMetadataObserver> observer_remote;
+  mojo::PendingReceiver<cc::mojom::RenderFrameMetadataObserver>
+      observer_receiver = observer_remote.InitWithNewPipeAndPassReceiver();
+
+  host_->RegisterRenderFrameMetadataObserver(
+      client_remote.BindNewPipeAndPassReceiver(), std::move(observer_remote));
+
+  base::RunLoop run_loop;
+  client_remote.set_disconnect_handler(run_loop.QuitClosure());
+
+  cc::RenderFrameMetadata invalid_metadata;
+  invalid_metadata.browser_controls_metadata.top_controls_shown_ratio = 100.0f;
+
+  client_remote->OnRenderFrameMetadataChanged(1u, invalid_metadata);
+  run_loop.Run();
+
+  EXPECT_FALSE(client_remote.is_connected());
+}
+
+TEST_F(RenderWidgetHostTest, ExpectedUserActivationNotification) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      blink::features::kTrustedUserActivationTriggers);
+
+  // One event allows one activation notification.
+  SimulateMouseEvent(blink::WebInputEvent::Type::kMouseDown);
+  EXPECT_TRUE(host_->RemoveExpectedUserActivationNotificationIfAvailable());
+  EXPECT_FALSE(host_->RemoveExpectedUserActivationNotificationIfAvailable());
+
+  // Mouse move and up does not increase expected user activation notifications.
+  SimulateMouseEvent(blink::WebInputEvent::Type::kMouseMove);
+  SimulateMouseEvent(blink::WebInputEvent::Type::kMouseUp);
+  EXPECT_FALSE(host_->RemoveExpectedUserActivationNotificationIfAvailable());
+
+  // Two events allow 2 activation notifications.
+  SimulateMouseEvent(blink::WebInputEvent::Type::kMouseDown);
+  SimulateKeyboardEvent(blink::WebInputEvent::Type::kKeyDown);
+  EXPECT_TRUE(host_->RemoveExpectedUserActivationNotificationIfAvailable());
+  EXPECT_TRUE(host_->RemoveExpectedUserActivationNotificationIfAvailable());
+  EXPECT_FALSE(host_->RemoveExpectedUserActivationNotificationIfAvailable());
+
+  // Timer resets the expected activation notifications.
+  SimulateMouseEvent(blink::WebInputEvent::Type::kMouseDown);
+  SimulateMouseEvent(blink::WebInputEvent::Type::kMouseDown);
+  task_environment_.FastForwardBy(
+      RenderWidgetHostImpl::kUserActivationVerificationTimeout);
+  EXPECT_FALSE(host_->RemoveExpectedUserActivationNotificationIfAvailable());
 }
 
 }  // namespace content

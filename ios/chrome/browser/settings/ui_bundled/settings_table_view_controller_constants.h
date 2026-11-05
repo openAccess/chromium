@@ -47,7 +47,7 @@ typedef NS_ENUM(NSInteger, SettingsItemType) {
   SettingsItemTypePrivacy,
   SettingsItemTypeLanguageSettings,
   SettingsItemTypeContentSettings,
-  SettingsItemTypeSitePermissions,
+  SettingsItemTypeSiteSettings,
   SettingsItemTypeDownloadsSettings,
   SettingsItemTypeSafariDataImport,
   SettingsItemTypeBandwidth,
@@ -180,9 +180,6 @@ extern NSString* const kSettingsBlockPopupsCellId;
 // The accessibility identifier of the Show Link Preview cell.
 extern NSString* const kSettingsShowLinkPreviewCellId;
 
-// The accessibility identifier of the Show Reading Mode Available cell.
-extern NSString* const kSettingsShowReadingModeAvailableCellId;
-
 // The accessibility identifier of the Detect Addresses cell.
 extern NSString* const kSettingsDetectAddressesCellId;
 
@@ -200,6 +197,9 @@ extern NSString* const kSettingsClearBrowsingDataCellId;
 
 // The accessibility identifier of the Handoff cell.
 extern NSString* const kSettingsHandoffCellId;
+
+// The accessibility identifier of the Universal Opt Out cell.
+extern NSString* const kSettingsUniversalOptOutCellId;
 
 // The accessibility identifier of the Cookies cell.
 extern NSString* const kSettingsCookiesCellId;
@@ -251,7 +251,5 @@ extern NSString* const kSettingsDetectUnitsCellId;
 // The accessibility identifier of the default browser passive promo cell.
 extern NSString* const kSettingsDefaultBrowserPassiveCellId;
 
-// The accessibility identifier of the site permissions cell.
-extern NSString* const kSettingsSitePermissionsCellId;
 
 #endif  // IOS_CHROME_BROWSER_SETTINGS_UI_BUNDLED_SETTINGS_TABLE_VIEW_CONTROLLER_CONSTANTS_H_

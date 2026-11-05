@@ -40,6 +40,8 @@ class CONTENT_EXPORT TouchSelectionControllerClientAura
 
   ~TouchSelectionControllerClientAura() override;
 
+  void Detach();
+
   // Called when |rwhva_|'s window is moved, to update the quick menu's
   // position.
   void OnWindowMoved();
@@ -115,13 +117,16 @@ class CONTENT_EXPORT TouchSelectionControllerClientAura
   bool ShouldShowQuickMenu(bool can_paste) override;
   std::u16string GetSelectedText() override;
 
-  // Not owned, non-null for the lifetime of this object.
+  // Not owned. Non-null until `Detach()` is called when the owning
+  // RenderWidgetHostViewAura tears down; null afterwards.
   raw_ptr<RenderWidgetHostViewAura> rwhva_;
 
   class InternalClient final : public TouchSelectionControllerClient {
    public:
     explicit InternalClient(RenderWidgetHostViewAura* rwhva) : rwhva_(rwhva) {}
     ~InternalClient() final {}
+
+    void Detach() { rwhva_ = nullptr; }
 
     bool SupportsAnimation() const final;
     void SetNeedsAnimate() final;
@@ -136,7 +141,9 @@ class CONTENT_EXPORT TouchSelectionControllerClientAura
     void DidScroll() override;
 
    private:
-    raw_ptr<RenderWidgetHostViewAura, DanglingUntriaged> rwhva_;
+    // Cleared by `Detach()` when the owning RenderWidgetHostViewAura tears
+    // down, so it never dangles. All dereferences below are null-guarded.
+    raw_ptr<RenderWidgetHostViewAura> rwhva_;
   } internal_client_;
 
   // Keep track of which client interface to use.

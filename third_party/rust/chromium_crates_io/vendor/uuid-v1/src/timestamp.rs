@@ -221,10 +221,19 @@ impl TryFrom<std::time::SystemTime> for Timestamp {
 
 #[cfg(feature = "std")]
 impl From<Timestamp> for std::time::SystemTime {
+    /// Perform the conversion.
+    ///
+    /// If the conversion would fail, an undefined `SystemTime` will be returned instead.
+    /// This can happen if the `Timestamp` would overflow the max value allowed by `SystemTime` on the target platform.
+    /// Use `TryFrom` to catch conversion failures and handle them explicitly.
     fn from(ts: Timestamp) -> Self {
         let (seconds, subsec_nanos) = ts.to_unix();
 
-        Self::UNIX_EPOCH + std::time::Duration::new(seconds, subsec_nanos)
+        // NOTE: The actual value on overflow is undefined and may change
+        // See: https://github.com/rust-lang/rust/issues/151199
+        Self::UNIX_EPOCH
+            .checked_add(std::time::Duration::new(seconds, subsec_nanos))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
     }
 }
 
@@ -894,14 +903,22 @@ pub mod context {
 
                 if incoming.last_seed > self.last_seed {
                     // The incoming value is part of a new millisecond
+                    //
+                    // Return it unchanged, signalling that a counter reseed is also necessary
                     (incoming, true)
-                } else {
-                    // The incoming value is part of the same or an earlier millisecond
+                } else if incoming.last_seed == self.last_seed {
+                    // The incoming value is part of the same millisecond
+                    //
                     // We may still have advanced the subsecond portion, so use the larger value
                     let mut value = *self;
                     value.subsec_nanos = cmp::max(self.subsec_nanos, subsec_nanos);
 
                     (value, false)
+                } else {
+                    // The incoming value is part of an earlier millisecond
+                    //
+                    // Return our last seen value, relying entirely on the counter for monotonicity
+                    (*self, false)
                 }
             }
 
@@ -1225,6 +1242,20 @@ pub mod context {
                     Timestamp::from_unix(&context, seconds, subsec_nanos);
                 }
             }
+
+            #[test]
+            fn context_subsec_ordering() {
+                let context = ContextV7::new();
+
+                // Wall-clock order of incoming timestamps is b, a, c
+                // UUID order is a, b, c
+                let a = Timestamp::from_unix(&context, 100, 0);
+                let b = Timestamp::from_unix(&context, 99, 2_000_000);
+                let c = Timestamp::from_unix(&context, 100, 1_000_000);
+
+                assert!(Uuid::new_v7(a) < Uuid::new_v7(b), "a: {a:?} < b: {b:?}");
+                assert!(Uuid::new_v7(b) < Uuid::new_v7(c), "b: {b:?} < c: {c:?}");
+            }
         }
     }
 
@@ -1352,6 +1383,14 @@ mod tests {
 
             Timestamp::try_from(before_epoch)
                 .expect_err("Timestamp should not be created from before epoch");
+        }
+
+        #[test]
+        fn from_system_time_max() {
+            let ts = Timestamp::from_unix_time(u64::MAX, 999_999_999, 0, 0);
+
+            // Just make sure we don't panic
+            let _: SystemTime = ts.into();
         }
     }
 }

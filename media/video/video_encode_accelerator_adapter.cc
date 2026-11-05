@@ -187,10 +187,14 @@ VideoPixelFormat InputPixelFormat(VideoCodecProfile profile,
   }
   // AV1 profile 0 covers both 8 and 10 bit, so the requested bit depth is what
   // decides the input format, and the input format is in turn what tells the
-  // platform encoder which bit depth to code at. AV1 profile 1 is excluded: its
-  // 4:4:4 input format is 8 bit AYUV.
+  // platform encoder which bit depth to code at. AV1 profile 1 (high) is 4:4:4
+  // at the input's bit depth: 8 bit frames are converted to AYUV by the
+  // platform encoder, while 10 bit 4:4:4 frames arrive as P410LE.
   if (profile == AV1PROFILE_PROFILE_MAIN && opts.bit_depth.value_or(8) == 10) {
     return PIXEL_FORMAT_P010LE;
+  }
+  if (profile == AV1PROFILE_PROFILE_HIGH && opts.bit_depth.value_or(8) == 10) {
+    return PIXEL_FORMAT_P410LE;
   }
   return default_format;
 }
@@ -243,6 +247,13 @@ bool CanPassthroughGpuFrameFormat(
 }
 
 }  // namespace
+
+// static
+VideoPixelFormat VideoEncodeAcceleratorAdapter::GetInputPixelFormat(
+    VideoCodecProfile profile,
+    const Options& options) {
+  return InputPixelFormat(profile, options, kDefaultPixelFormat);
+}
 
 class VideoEncodeAcceleratorAdapter::MappableSharedImageVideoFramePool
     : public base::RefCountedThreadSafe<MappableSharedImageVideoFramePool> {
@@ -558,8 +569,7 @@ void VideoEncodeAcceleratorAdapter::InitializeOnAcceleratorThread(
   profile_ = profile;
   supported_rc_modes_ = supported_rc_modes;
   gpu_supported_pixel_formats_ = std::move(gpu_supported_pixel_formats);
-  input_pixel_format_ =
-      InputPixelFormat(profile_, options, kDefaultPixelFormat);
+  input_pixel_format_ = GetInputPixelFormat(profile_, options);
   // An empty list means no GPU formats were advertised, not that CPU conversion
   // is unsupported. Preserve the legacy fallback only when it matches
   // `input_pixel_format_`; otherwise it could bypass the required conversion.
@@ -679,7 +689,8 @@ void VideoEncodeAcceleratorAdapter::EncodeOnAcceleratorThread(
   if (input_buffer_preference_ == InputBufferKind::CpuMemBuf)
     use_gpu_buffer = false;
 
-  EncoderStatus::Or<scoped_refptr<VideoFrame>> result(nullptr);
+  base::expected<scoped_refptr<VideoFrame>, EncoderStatus> result(
+      scoped_refptr<VideoFrame>(nullptr));
   if (use_gpu_buffer)
     result = PrepareGpuFrame(frame);
   else
@@ -726,9 +737,14 @@ void VideoEncodeAcceleratorAdapter::ChangeOptionsOnAcceleratorThread(
     OutputCB output_cb,
     EncoderStatusCB done_cb) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(accelerator_sequence_checker_);
-  DCHECK(active_encodes_.empty());
-  DCHECK(pending_encodes_.empty());
-  CHECK(state_ == State::kReadyToEncode);
+  if (state_ != State::kReadyToEncode || !active_encodes_.empty() ||
+      !pending_encodes_.empty()) {
+    std::move(done_cb).Run(
+        EncoderStatus(EncoderStatus::Codes::kEncoderIllegalState,
+                      "Encoder can't change options now.")
+            .WithData("state", static_cast<int32_t>(state_)));
+    return;
+  }
 
   if (options.bitrate && options_.bitrate &&
       options.bitrate->mode() != options_.bitrate->mode()) {
@@ -816,13 +832,15 @@ void VideoEncodeAcceleratorAdapter::Flush(EncoderStatusCB done_cb) {
 void VideoEncodeAcceleratorAdapter::FlushOnAcceleratorThread(
     EncoderStatusCB done_cb) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(accelerator_sequence_checker_);
-  if (state_ != State::kReadyToEncode && state_ != State::kInitializing) {
+  if ((state_ != State::kReadyToEncode && state_ != State::kInitializing) ||
+      pending_flush_callback_) {
     std::move(done_cb).Run(EncoderStatus(
         EncoderStatus::Codes::kEncoderFailedFlush, "Encoder can't flush now"));
     return;
   }
 
-  if (active_encodes_.empty() && pending_encodes_.empty()) {
+  if (state_ == State::kReadyToEncode && active_encodes_.empty() &&
+      pending_encodes_.empty()) {
     // No active or pending encodes, nothing to flush.
     std::move(done_cb).Run(EncoderStatus::Codes::kOk);
     return;
@@ -906,6 +924,28 @@ void VideoEncodeAcceleratorAdapter::BitstreamBufferReady(
 
   if (metadata.encoded_size)
     result.encoded_size = metadata.encoded_size;
+
+  if (metadata.qp >= 0) {
+    std::optional<double> max_qp;
+    switch (VideoCodecProfileToVideoCodec(profile_)) {
+      case VideoCodec::kH264:
+      case VideoCodec::kHEVC:
+        max_qp = 51.0;
+        break;
+      case VideoCodec::kVP8:
+        max_qp = 127.0;
+        break;
+      case VideoCodec::kVP9:
+      case VideoCodec::kAV1:
+        max_qp = 255.0;
+        break;
+      default:
+        break;
+    }
+    if (max_qp.has_value()) {
+      result.qp = std::clamp(metadata.qp / *max_qp, 0.0, 1.0);
+    }
+  }
 
   if (buffer_id < 0 ||
       buffer_id >= static_cast<int>(output_buffer_handles_.size())) {
@@ -1034,9 +1074,7 @@ void VideoEncodeAcceleratorAdapter::NotifyErrorStatus(
     const EncoderStatus& status) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(accelerator_sequence_checker_);
   CHECK(!status.is_ok());
-  MEDIA_LOG(ERROR, media_log_)
-      << "VEA adapter error. Code: " << static_cast<int32_t>(status.code())
-      << ". Message: " << status.message();
+  media_log_->NotifyError(status);
   if (state_ == State::kInitializing) {
     InitCompleted(status);
     return;
@@ -1050,8 +1088,9 @@ void VideoEncodeAcceleratorAdapter::NotifyErrorStatus(
     return;
   }
 
-  if (state_ == State::kFlushing)
+  if (state_ == State::kFlushing || pending_flush_callback_) {
     FlushCompleted(false);
+  }
 
   // Report the error to all encoding-done callbacks
   for (auto& encode : active_encodes_) {
@@ -1081,10 +1120,7 @@ void VideoEncodeAcceleratorAdapter::InitCompleted(EncoderStatus status) {
   }
 
   if (!status.is_ok()) {
-    MEDIA_LOG(ERROR, media_log_) << "VEA adapter initialization error. Code: "
-                                 << static_cast<int32_t>(status.code())
-                                 << ". Message: " << status.message();
-
+    media_log_->NotifyError(status);
     // Report the error to all encoding-done callbacks
     for (auto& encode : pending_encodes_) {
       std::move(encode->done_callback).Run(status);
@@ -1114,12 +1150,7 @@ void VideoEncodeAcceleratorAdapter::InitCompleted(EncoderStatus status) {
   // If a Flush() came in during initialization, transition to flushing now that
   // all the pending encodes have been sent.
   if (pending_flush_callback_) {
-    state_ = State::kFlushing;
-    if (flush_support_.value()) {
-      accelerator_->Flush(
-          base::BindOnce(&VideoEncodeAcceleratorAdapter::FlushCompleted,
-                         weak_factory_.GetWeakPtr()));
-    }
+    FlushOnAcceleratorThread(std::move(pending_flush_callback_));
   }
 }
 
@@ -1147,7 +1178,7 @@ T VideoEncodeAcceleratorAdapter::WrapCallback(T cb) {
 // Copy a frame into a shared mem buffer and resize it as the same time. Input
 // frames can I420, NV12, P010, or RGB.
 // They'll be converted to `input_pixel_format_` if needed.
-EncoderStatus::Or<scoped_refptr<VideoFrame>>
+base::expected<scoped_refptr<VideoFrame>, EncoderStatus>
 VideoEncodeAcceleratorAdapter::PrepareCpuFrame(
     scoped_refptr<VideoFrame> src_frame) {
   TRACE_EVENT0("media", "VideoEncodeAcceleratorAdapter::PrepareCpuFrame");
@@ -1175,8 +1206,9 @@ VideoEncodeAcceleratorAdapter::PrepareCpuFrame(
 
   std::unique_ptr<ReadOnlyRegionPool::Handle> handle =
       input_pool_->MaybeAllocateBuffer();
-  if (!handle || !handle->IsValid())
-    return EncoderStatus(EncoderStatus::Codes::kOutOfMemoryError);
+  if (!handle || !handle->IsValid()) {
+    return base::unexpected(EncoderStatus::Codes::kOutOfMemoryError);
+  }
 
   const base::WritableSharedMemoryMapping* mapping = handle->mapping();
   auto mapped_src_frame = src_frame->HasMappableSharedImage()
@@ -1186,13 +1218,14 @@ VideoEncodeAcceleratorAdapter::PrepareCpuFrame(
       input_pixel_format_, dest_coded_size, dest_visible_rect,
       dest_visible_rect.size(), *mapping, src_frame->timestamp());
 
-  if (!shared_frame || !mapped_src_frame)
-    return EncoderStatus(EncoderStatus::Codes::kSystemAPICallError);
+  if (!shared_frame || !mapped_src_frame) {
+    return base::unexpected(EncoderStatus::Codes::kSystemAPICallError);
+  }
 
   auto status =
       frame_converter_.ConvertAndScale(*mapped_src_frame, *shared_frame);
   if (!status.is_ok()) {
-    return status;
+    return base::unexpected(status);
   }
 
   shared_frame->set_hdr_metadata(src_frame->hdr_metadata());
@@ -1205,7 +1238,7 @@ VideoEncodeAcceleratorAdapter::PrepareCpuFrame(
 // Copy a frame into a GPU buffer and resize it as the same time. Input frames
 // can I420, NV12, P010, or RGB -- they'll be converted to
 // `input_pixel_format_` if needed.
-EncoderStatus::Or<scoped_refptr<VideoFrame>>
+base::expected<scoped_refptr<VideoFrame>, EncoderStatus>
 VideoEncodeAcceleratorAdapter::PrepareGpuFrame(
     scoped_refptr<VideoFrame> src_frame) {
   TRACE_EVENT0("media", "VideoEncodeAcceleratorAdapter::PrepareGpuFrame");
@@ -1242,7 +1275,7 @@ VideoEncodeAcceleratorAdapter::PrepareGpuFrame(
   auto gpu_frame = gmb_frame_pool_->MaybeCreateVideoFrame(
       dest_visible_rect.size(), color_space);
   if (!gpu_frame)
-    return EncoderStatus(EncoderStatus::Codes::kOutOfMemoryError);
+    return base::unexpected(EncoderStatus::Codes::kOutOfMemoryError);
 
   gpu_frame->set_timestamp(src_frame->timestamp());
   gpu_frame->metadata().MergeMetadataFrom(src_frame->metadata());
@@ -1264,12 +1297,12 @@ VideoEncodeAcceleratorAdapter::PrepareGpuFrame(
                               ? ConvertToMemoryMappedFrame(src_frame)
                               : src_frame;
   if (!mapped_gpu_frame || !mapped_src_frame)
-    return EncoderStatus(EncoderStatus::Codes::kSystemAPICallError);
+    return base::unexpected(EncoderStatus::Codes::kSystemAPICallError);
 
   auto status =
       frame_converter_.ConvertAndScale(*mapped_src_frame, *mapped_gpu_frame);
   if (!status.is_ok()) {
-    return status;
+    return base::unexpected(status);
   }
 
   return gpu_frame;

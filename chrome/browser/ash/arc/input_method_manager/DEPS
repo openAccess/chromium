@@ -3,10 +3,6 @@ include_rules = [
   # details.
   "-chrome",
 
-  # This directory is in //chrome, which violates the rule above. Allow this
-  # directory to #include its own files.
-  "+chrome/browser/ash/arc/input_method_manager",
-
   # Existing dependencies within //chrome. There is an active effort to
   # refactor //chrome/browser/ash to break these dependencies; see b/332804822.
   # Whenever possible, avoid adding new //chrome dependencies to this list.
@@ -19,5 +15,17 @@ include_rules = [
   "+chrome/browser/ash/input_method",
   "+chrome/browser/profiles",
   "+chrome/browser/ui/ash/keyboard",
-  "+chrome/test/base",
 ]
+
+specific_include_rules = {
+  # Only tests need these //chrome dependencies.
+  "arc_input_method_manager_service_unittest\\.cc": [
+    "+chrome/test/base",
+  ],
+  "arc_input_method_state_unittest\\.cc": [
+    "+chrome/test/base",
+  ],
+  "input_method_prefs_unittest\\.cc": [
+    "+chrome/test/base",
+  ],
+}

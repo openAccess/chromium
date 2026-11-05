@@ -3,6 +3,11 @@
 // found in the LICENSE file.
 #include "third_party/blink/renderer/modules/media_controls/elements/media_control_track_selector_list_element.h"
 
+#include <algorithm>
+#include <initializer_list>
+#include <utility>
+#include <vector>
+
 #include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
@@ -22,57 +27,54 @@ namespace blink {
 namespace {
 
 template <typename TrackType>
-String GetLanguage(TrackType* track, Locale& locale) {
+String GetLanguage(TrackType* track) {
   return track->language();
 }
 template <typename TrackType>
-String GetLabel(TrackType* track, Locale& locale) {
+String GetLabel(TrackType* track) {
   return track->label();
 }
 template <typename TrackType>
-String GetKind(TrackType* track, Locale& locale) {
+String GetKind(TrackType* track) {
   return track->kind();
 }
-template <typename TrackType>
-String GetID(TrackType* track, Locale& locale) {
-  return locale.QueryString(IDS_MEDIA_TRACK_IDENTIFIER_VERBOSE_TITLE_NUMBERED,
-                            locale.ConvertToLocalizedNumber(track->id()));
+String GetTrackNumber(uint32_t track_number, Locale& locale) {
+  return locale.QueryString(
+      IDS_MEDIA_TRACK_IDENTIFIER_VERBOSE_TITLE_NUMBERED,
+      locale.ConvertToLocalizedNumber(String::Number(track_number)));
 }
 
-// Applies `pref`:(TrackType*, Locale&)->String to each track in `tracks`
-template <typename TrackType, typename Fn>
-std::vector<String> GetPreferenceList(const TrackListBase<TrackType>& tracks,
-                                      Locale& locale,
-                                      Fn pref) {
-  std::vector<String> extracted;
-  for (uint32_t i = 0; i < tracks.length(); i++) {
-    auto entry = pref(tracks.AnonymousIndexedGetter(i), locale);
-    if (entry != "") {
-      extracted.push_back(entry);
+// Given an ordered list of functions of type (TrackType*)->String,
+// this function will apply each function to the list of tracks and return the
+// first result where all the results are non-empty and unique, falling back to
+// 1-based track numbers if none qualify.
+template <typename TrackType>
+std::vector<String> GetPreferenceList(
+    const TrackListBase<TrackType>& tracks,
+    Locale& locale,
+    std::initializer_list<String (*)(TrackType*)> prefs) {
+  for (auto* pref : prefs) {
+    std::vector<String> extracted;
+    for (uint32_t i = 0; i < tracks.length(); i++) {
+      String entry = pref(tracks.AnonymousIndexedGetter(i));
+      // Linear search makes this loop O(n^2) in `tracks.length()`, which is
+      // acceptable because media elements typically have very few tracks.
+      if (entry.empty() || std::ranges::contains(extracted, entry)) {
+        break;
+      }
+      extracted.push_back(std::move(entry));
+    }
+    if (extracted.size() == tracks.length()) {
+      return extracted;
     }
   }
-  return extracted;
-}
 
-// Given an ordered list of closures of type (TrackType*, Locale&)->String,
-// this function will apply each closure to the list of tracks and return the
-// first result where all the results are non-empty and unique. The last closure
-// must return non-empty, unique strings for each track, so it's ideal to use
-// some identification number, stringified.
-template <typename TrackType, typename Fn, typename Fb, typename... Rest>
-std::vector<String> GetPreferenceList(const TrackListBase<TrackType>& tracks,
-                                      Locale& locale,
-                                      Fn pref,
-                                      Fb fallback,
-                                      Rest... rest) {
-  std::vector<String> extracted =
-      GetPreferenceList<TrackType>(tracks, locale, pref);
-  auto new_end = std::unique(extracted.begin(), extracted.end());
-  auto new_length = std::distance(extracted.begin(), new_end);
-  if (new_length >= 0 && static_cast<size_t>(new_length) == tracks.length()) {
-    return extracted;
+  std::vector<String> extracted;
+  extracted.reserve(tracks.length());
+  for (uint32_t i = 0; i < tracks.length(); i++) {
+    extracted.push_back(GetTrackNumber(i + 1, locale));
   }
-  return GetPreferenceList(tracks, locale, fallback, rest...);
+  return extracted;
 }
 
 const QualifiedName& SelectedTrackIdAttr() {
@@ -103,13 +105,19 @@ MediaControlTrackSelectorListElement::MediaControlTrackSelectorListElement(
 
 void MediaControlTrackSelectorListElement::SetIsWanted(bool wanted) {
   if (wanted) {
-    RemoveChildren();
     RepopulateTrackList();
   }
   if (!wanted && !GetMediaControls().OverflowMenuIsWanted()) {
     GetMediaControls().CloseOverflowMenu();
   }
   MediaControlPopupMenuElement::SetIsWanted(wanted);
+}
+
+void MediaControlTrackSelectorListElement::RefreshTrackList() {
+  if (!IsWanted()) {
+    return;
+  }
+  RepopulateTrackList();
 }
 
 void MediaControlTrackSelectorListElement::Trace(Visitor* visitor) const {
@@ -147,6 +155,9 @@ void MediaControlTrackSelectorListElement::DefaultEventHandler(Event& event) {
 }
 
 void MediaControlTrackSelectorListElement::RepopulateTrackList() {
+  // In order to repopulate, we must first de-populate
+  RemoveChildren();
+
   auto* header_item = MakeGarbageCollected<HTMLLabelElement>(GetDocument());
   header_item->SetShadowPseudoId(
       AtomicString("-internal-media-controls-track-selection-list-header"));
@@ -164,12 +175,13 @@ void MediaControlTrackSelectorListElement::RepopulateTrackList() {
   std::vector<String> labels;
   if (is_video_) {
     labels = GetPreferenceList<VideoTrack>(
-        MediaElement().videoTracks(), GetLocale(), &GetLabel<VideoTrack>,
-        &GetKind<VideoTrack>, &GetID<VideoTrack>);
+        MediaElement().videoTracks(), GetLocale(),
+        {&GetLabel<VideoTrack>, &GetKind<VideoTrack>});
   } else {
     labels = GetPreferenceList<AudioTrack>(
-        MediaElement().audioTracks(), GetLocale(), &GetLabel<AudioTrack>,
-        &GetLanguage<AudioTrack>, &GetKind<AudioTrack>, &GetID<AudioTrack>);
+        MediaElement().audioTracks(), GetLocale(),
+        {&GetLabel<AudioTrack>, &GetLanguage<AudioTrack>,
+         &GetKind<AudioTrack>});
   }
 
   int index = 0;

@@ -333,6 +333,120 @@ TEST_F(QueryContextualizerTest, Contextualize_WaitsForUploadsToFinish) {
       contextual_search::ContextUploadStatus::kUploadSuccessful, std::nullopt);
 }
 
+TEST_F(QueryContextualizerTest,
+       Contextualize_UploadsStartedCallbackInvokedImmediately) {
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  int32_t tab_id = 100;
+  SessionID session_id = SessionID::FromSerializedValue(1);
+  GURL kUrl("about:blank");
+  std::string kTitle = "about:blank";
+
+  // Setup context with a query containing a URL.
+  ContextualTask task(task_id);
+  UrlResource resource(kUrl, ResourceType::kWebpage);
+  resource.title = kTitle;
+  resource.tab_id = session_id;
+  task.AddUrlResource(resource);
+
+  auto context = std::make_unique<ContextualTaskContext>(task);
+
+  EXPECT_CALL(*service_,
+              GetContextForTask(
+                  task_id,
+                  testing::Contains(
+                      ContextualTaskContextSource::kSubmittedContextDecorator),
+                  testing::NotNull(), testing::_))
+      .WillOnce(
+          [&context](
+              const base::Uuid& task_id,
+              const std::set<ContextualTaskContextSource>& sources,
+              std::unique_ptr<ContextDecorationParams> params,
+              base::OnceCallback<void(std::unique_ptr<ContextualTaskContext>)>
+                  callback) { std::move(callback).Run(std::move(context)); });
+
+  EXPECT_CALL(*delegate_, GetTabUrl(tab_id))
+      .WillRepeatedly(testing::Return(kUrl));
+  EXPECT_CALL(*delegate_, GetTabSessionId(tab_id))
+      .WillRepeatedly(testing::Return(session_id));
+
+  EXPECT_CALL(*context_controller_, AddObserver(testing::_));
+  EXPECT_CALL(*context_controller_, RemoveObserver(testing::_));
+  EXPECT_CALL(*session_handle_, CreateContextToken()).Times(2);
+
+  EXPECT_CALL(*session_handle_,
+              StartUrlContextUploadFlow(testing::_, "https://example.com"));
+
+  EXPECT_CALL(*delegate_, GetPageContext(tab_id, testing::_))
+      .WillOnce([session_id](
+                    QueryContextualizer::TabId id,
+                    base::OnceCallback<void(
+                        std::unique_ptr<lens::ContextualInputData>)> callback) {
+        auto data = std::make_unique<lens::ContextualInputData>();
+        std::string new_content = "new content";
+        auto new_content_span = base::as_bytes(base::span(new_content));
+        std::vector<uint8_t> new_bytes(new_content_span.begin(),
+                                       new_content_span.end());
+        lens::ContextualInput new_input(std::move(new_bytes),
+                                        lens::MimeType::kPlainText);
+        data->context_input.emplace().push_back(std::move(new_input));
+        data->tab_session_id = session_id;
+        data->page_url = GURL("about:blank");
+        data->page_title = "about:blank";
+        data->context_id = 12345;
+        data->is_page_context_eligible = true;
+        std::move(callback).Run(std::move(data));
+      });
+
+  EXPECT_CALL(*delegate_, IsTabValid(tab_id)).WillOnce(testing::Return(true));
+
+  EXPECT_CALL(*session_handle_,
+              StartTabContextUploadFlow(testing::_, testing::_, testing::_));
+
+  // Mock GetFileInfo to return non-terminal status initially.
+  contextual_search::FileInfo mock_file_info;
+  mock_file_info.upload_status =
+      contextual_search::ContextUploadStatus::kUploadStarted;
+  EXPECT_CALL(*context_controller_, GetFileInfo(testing::_))
+      .WillRepeatedly(testing::Return(&mock_file_info));
+
+  base::MockCallback<QueryContextualizer::ContextualizedCallback>
+      uploads_started_callback;
+  base::MockCallback<QueryContextualizer::ContextualizedCallback> done_callback;
+
+  // Expect on_uploads_started_callback to be invoked immediately when uploads
+  // begin.
+  EXPECT_CALL(uploads_started_callback, Run(testing::_)).Times(1);
+  // The done_callback should NOT be called synchronously while uploads are
+  // ongoing.
+  EXPECT_CALL(done_callback, Run(testing::_)).Times(0);
+
+  QueryContextualizer::ContextualizeParams params;
+  params.task_id = task_id;
+  params.query_text = "Check out https://example.com";
+  params.tabs_to_recontextualize = {tab_id};
+  params.on_ineligible_callback = base::DoNothing();
+  params.on_processed_callback = base::DoNothing();
+  params.on_uploads_started_callback = uploads_started_callback.Get();
+  params.complete_callback = done_callback.Get();
+  params.enable_smart_tab_selection = false;
+
+  contextualizer_->Contextualize(std::move(params));
+
+  ASSERT_NE(captured_observer_, nullptr);
+  ASSERT_EQ(created_tokens_.size(), 2u);
+
+  // Simulate first upload finishing. done_callback should still not be called.
+  captured_observer_->OnContextUploadStatusChanged(
+      created_tokens_[0], lens::MimeType::kUnknown,
+      contextual_search::ContextUploadStatus::kUploadSuccessful, std::nullopt);
+
+  // Simulate second upload finishing. done_callback should now be invoked.
+  EXPECT_CALL(done_callback, Run(testing::_)).Times(1);
+  captured_observer_->OnContextUploadStatusChanged(
+      created_tokens_[1], lens::MimeType::kUnknown,
+      contextual_search::ContextUploadStatus::kUploadSuccessful, std::nullopt);
+}
+
 TEST_F(QueryContextualizerTest, Contextualize_ExtractsUrls) {
   base::Uuid task_id = base::Uuid::GenerateRandomV4();
   int32_t tab_id = 100;
@@ -2338,6 +2452,8 @@ TEST_F(QueryContextualizerTest,
         EXPECT_EQ(*data->upload_type,
                   lens::LensOverlayContextualInputUploadType::
                       CONTEXTUAL_INPUT_UPLOAD_TYPE_SMART_TAB_SELECTION);
+        EXPECT_TRUE(data->is_implicit_upload);
+        EXPECT_TRUE(data->was_smart_tab_selection);
       });
 
   base::MockCallback<QueryContextualizer::ContextualizedCallback> callback;
@@ -2347,6 +2463,237 @@ TEST_F(QueryContextualizerTest,
                     base::DoNothing(), callback.Get(),
                     /*enable_smart_tab_selection=*/true);
 
+  CompleteAllUploads();
+}
+
+TEST(QueryContextualizerStaticTest, IsDriveUrl) {
+  EXPECT_TRUE(QueryContextualizer::IsDriveUrl(GURL(
+      "https://docs.google.com/document/d/1aBcDeFgHiJkLmNoPqRsTuVwXyZ/edit")));
+  EXPECT_TRUE(QueryContextualizer::IsDriveUrl(
+      GURL("https://docs.google.com/spreadsheets/d/12345_abc-DEF/edit#gid=0")));
+  EXPECT_TRUE(QueryContextualizer::IsDriveUrl(
+      GURL("https://docs.google.com/presentation/d/12345/edit")));
+  EXPECT_TRUE(QueryContextualizer::IsDriveUrl(
+      GURL("https://drive.google.com/file/d/12345/view?usp=sharing")));
+  EXPECT_TRUE(QueryContextualizer::IsDriveUrl(
+      GURL("https://drive.google.com/open?id=12345")));
+
+  EXPECT_FALSE(QueryContextualizer::IsDriveUrl(GURL()));
+  EXPECT_FALSE(QueryContextualizer::IsDriveUrl(GURL("https://www.google.com")));
+  EXPECT_FALSE(QueryContextualizer::IsDriveUrl(
+      GURL("https://www.google.com/search?q=docs.google.com")));
+  EXPECT_FALSE(QueryContextualizer::IsDriveUrl(GURL("https://example.com")));
+}
+
+TEST_F(QueryContextualizerTest,
+       Contextualize_UploadsUrlForManuallyAddedDriveTab) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      lens::features::kLensSendDriveTabUrlsInComposeboxes);
+
+  const std::string kDriveUrl =
+      "https://docs.google.com/document/d/1aBcDeFgHiJkLmNoPqRsTuVwXyZ/edit";
+  contextual_search::FileInfo manual_drive_tab;
+  manual_drive_tab.tab_url = GURL(kDriveUrl);
+  manual_drive_tab.is_superceded = false;
+
+  contextual_search::FileInfo manual_non_drive_tab;
+  manual_non_drive_tab.tab_url = GURL("https://example.com");
+  manual_non_drive_tab.is_superceded = false;
+
+  contextual_search::FileInfo superseded_drive_tab;
+  superseded_drive_tab.tab_url =
+      GURL("https://docs.google.com/spreadsheets/d/99999/edit");
+  superseded_drive_tab.is_superceded = true;
+
+  EXPECT_CALL(*session_handle_, GetUploadedContextFileInfos())
+      .WillOnce(testing::Return(std::vector<contextual_search::FileInfo>{
+          manual_drive_tab, manual_non_drive_tab, superseded_drive_tab}));
+
+  EXPECT_CALL(*session_handle_,
+              StartUrlContextUploadFlow(testing::_, kDriveUrl))
+      .Times(1);
+
+  base::MockCallback<QueryContextualizer::ContextualizedCallback> done_callback;
+  EXPECT_CALL(done_callback, Run(testing::_)).Times(0);
+
+  CallContextualize(std::nullopt, "summarize this doc", {}, {},
+                    base::DoNothing(), base::DoNothing(), done_callback.Get(),
+                    /*enable_smart_tab_selection=*/false);
+
+  ASSERT_EQ(created_tokens_.size(), 1u);
+  EXPECT_CALL(done_callback, Run(testing::_)).Times(1);
+  CompleteAllUploads();
+}
+
+TEST_F(
+    QueryContextualizerTest,
+    Contextualize_DoesNotUploadUrlForManuallyAddedDriveTabWhenFeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      lens::features::kLensSendDriveTabUrlsInComposeboxes);
+
+  contextual_search::FileInfo manual_drive_tab;
+  manual_drive_tab.tab_url = GURL(
+      "https://docs.google.com/document/d/1aBcDeFgHiJkLmNoPqRsTuVwXyZ/edit");
+
+  ON_CALL(*session_handle_, GetUploadedContextFileInfos())
+      .WillByDefault(testing::Return(
+          std::vector<contextual_search::FileInfo>{manual_drive_tab}));
+
+  EXPECT_CALL(*session_handle_,
+              StartUrlContextUploadFlow(testing::_, testing::_))
+      .Times(0);
+
+  base::MockCallback<QueryContextualizer::ContextualizedCallback> done_callback;
+  EXPECT_CALL(done_callback, Run(testing::_)).Times(1);
+
+  CallContextualize(std::nullopt, "summarize this doc", {}, {},
+                    base::DoNothing(), base::DoNothing(), done_callback.Get(),
+                    /*enable_smart_tab_selection=*/false);
+}
+
+TEST_F(QueryContextualizerTest,
+       Contextualize_DeduplicatesDriveUrlAlreadyExtractedFromQuery) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      lens::features::kLensSendDriveTabUrlsInComposeboxes);
+
+  const std::string kDriveUrl =
+      "https://docs.google.com/document/d/1aBcDeFgHiJkLmNoPqRsTuVwXyZ/edit";
+  contextual_search::FileInfo manual_drive_tab;
+  manual_drive_tab.tab_url = GURL(kDriveUrl);
+
+  EXPECT_CALL(*session_handle_, GetUploadedContextFileInfos())
+      .WillOnce(testing::Return(
+          std::vector<contextual_search::FileInfo>{manual_drive_tab}));
+
+  // Should only be uploaded once even though it is both in the query text and
+  // in the manually attached tab.
+  EXPECT_CALL(*session_handle_,
+              StartUrlContextUploadFlow(testing::_, kDriveUrl))
+      .Times(1);
+
+  base::MockCallback<QueryContextualizer::ContextualizedCallback> done_callback;
+  EXPECT_CALL(done_callback, Run(testing::_)).Times(1);
+
+  CallContextualize(std::nullopt, "Check " + kDriveUrl, {}, {},
+                    base::DoNothing(), base::DoNothing(), done_callback.Get(),
+                    /*enable_smart_tab_selection=*/false);
+  CompleteAllUploads();
+}
+
+TEST_F(QueryContextualizerTest, Contextualize_UploadsUrlForImplicitDriveTabs) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      lens::features::kLensSendDriveTabUrlsInComposeboxes);
+
+  base::Uuid task_id = base::Uuid::GenerateRandomV4();
+  const int32_t kRecontextTabId = 10;
+  const int32_t kAutoSuggestTabId = 20;
+  const int32_t kCsbFirstTurnTabId = 30;
+  const int32_t kSmartTabId = 40;
+
+  const SessionID kRecontextSessionId = SessionID::FromSerializedValue(1);
+  const SessionID kAutoSuggestSessionId = SessionID::FromSerializedValue(2);
+  const SessionID kCsbFirstTurnSessionId = SessionID::FromSerializedValue(3);
+  const SessionID kSmartTabSessionId = SessionID::FromSerializedValue(4);
+
+  const GURL kRecontextDriveUrl(
+      "https://docs.google.com/document/d/doc_recontext/edit");
+  const GURL kAutoSuggestDriveUrl(
+      "https://docs.google.com/spreadsheets/d/sheet_autosuggest/edit");
+  const GURL kCsbDriveUrl(
+      "https://docs.google.com/presentation/d/slides_csb/edit");
+  const GURL kSmartDriveUrl("https://drive.google.com/file/d/file_smart/view");
+
+  ContextualTask task(task_id);
+  UrlResource resource(kRecontextDriveUrl, ResourceType::kWebpage);
+  resource.title = "Doc";
+  resource.tab_id = kRecontextSessionId;
+  task.AddUrlResource(resource);
+  auto context = std::make_unique<ContextualTaskContext>(task);
+
+  EXPECT_CALL(*service_,
+              GetContextForTask(
+                  task_id,
+                  testing::Contains(
+                      ContextualTaskContextSource::kSubmittedContextDecorator),
+                  testing::NotNull(), testing::_))
+      .WillOnce(
+          [&context](
+              const base::Uuid& task_id,
+              const std::set<ContextualTaskContextSource>& sources,
+              std::unique_ptr<ContextDecorationParams> params,
+              base::OnceCallback<void(std::unique_ptr<ContextualTaskContext>)>
+                  callback) { std::move(callback).Run(std::move(context)); });
+
+  EXPECT_CALL(*delegate_,
+              GetRelevantTabsForQuery("query", testing::_, testing::_))
+      .WillOnce(
+          [kSmartTabId](const auto& query, const auto& urls, auto callback) {
+            std::move(callback).Run({kSmartTabId});
+          });
+
+  // Setup FileInfo with expired status for recontextualized tab so it uploads.
+  std::vector<raw_ptr<const contextual_search::FileInfo>> file_info_list;
+  contextual_search::FileInfo expired_file_info;
+  expired_file_info.tab_session_id = kRecontextSessionId;
+  expired_file_info.upload_status =
+      contextual_search::ContextUploadStatus::kUploadExpired;
+  expired_file_info.request_id.emplace();
+  expired_file_info.request_id->set_context_id(12345);
+  file_info_list.push_back(&expired_file_info);
+  EXPECT_CALL(*context_controller_, GetFileInfoList())
+      .WillRepeatedly(testing::Return(file_info_list));
+
+  auto setup_tab = [&](int32_t tab_id, SessionID session_id, const GURL& url) {
+    EXPECT_CALL(*delegate_, IsTabValid(tab_id))
+        .WillRepeatedly(testing::Return(true));
+    EXPECT_CALL(*delegate_, GetTabUrl(tab_id))
+        .WillRepeatedly(testing::Return(url));
+    EXPECT_CALL(*delegate_, GetTabSessionId(tab_id))
+        .WillRepeatedly(testing::Return(session_id));
+    EXPECT_CALL(*delegate_, GetPageContext(tab_id, testing::_))
+        .WillOnce([session_id, url](auto id, auto callback) {
+          auto data = std::make_unique<lens::ContextualInputData>();
+          data->tab_session_id = session_id;
+          data->page_url = url;
+          data->is_page_context_eligible = true;
+          std::move(callback).Run(std::move(data));
+        });
+  };
+
+  setup_tab(kRecontextTabId, kRecontextSessionId, kRecontextDriveUrl);
+  setup_tab(kAutoSuggestTabId, kAutoSuggestSessionId, kAutoSuggestDriveUrl);
+  setup_tab(kCsbFirstTurnTabId, kCsbFirstTurnSessionId, kCsbDriveUrl);
+  setup_tab(kSmartTabId, kSmartTabSessionId, kSmartDriveUrl);
+
+  EXPECT_CALL(*session_handle_,
+              StartTabContextUploadFlow(testing::_, testing::_, testing::_))
+      .Times(4);
+  EXPECT_CALL(*session_handle_,
+              StartUrlContextUploadFlow(testing::_, kRecontextDriveUrl.spec()))
+      .Times(1);
+  EXPECT_CALL(*session_handle_, StartUrlContextUploadFlow(
+                                    testing::_, kAutoSuggestDriveUrl.spec()))
+      .Times(1);
+  EXPECT_CALL(*session_handle_,
+              StartUrlContextUploadFlow(testing::_, kCsbDriveUrl.spec()))
+      .Times(1);
+  EXPECT_CALL(*session_handle_,
+              StartUrlContextUploadFlow(testing::_, kSmartDriveUrl.spec()))
+      .Times(1);
+
+  base::MockCallback<QueryContextualizer::ContextualizedCallback> done_callback;
+  EXPECT_CALL(done_callback, Run(testing::_)).Times(1);
+
+  CallContextualize(task_id, "query", {kRecontextTabId}, {kAutoSuggestTabId},
+                    base::DoNothing(), base::DoNothing(), done_callback.Get(),
+                    /*enable_smart_tab_selection=*/true, {kCsbFirstTurnTabId});
+
+  // 4 tab tokens + 4 URL tokens = 8 tokens tracked by UploadTracker.
+  EXPECT_EQ(created_tokens_.size(), 8u);
   CompleteAllUploads();
 }
 

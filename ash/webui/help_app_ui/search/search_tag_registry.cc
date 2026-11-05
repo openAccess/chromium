@@ -8,6 +8,7 @@
 
 #include "ash/webui/help_app_ui/search/search_metadata.h"
 #include "base/functional/bind.h"
+#include "base/i18n/tag_converters.h"
 #include "base/strings/string_number_conversions.h"
 #include "chromeos/ash/components/local_search_service/public/cpp/local_search_service_proxy.h"
 
@@ -31,15 +32,16 @@ std::vector<local_search_service::Data> ConceptVectorToDataVector(
       ++tag_num;
     }
 
-    data_list.emplace_back(search_concept->id, std::move(content_list),
-                           search_concept->tag_locale);
+    // TODO(crbug.com/542711615): Make `SearchConcept::tag_locale` a
+    // mojo_base.mojom.LanguageTag so that it doesn't need to be parsed here.
+    data_list.emplace_back(
+        search_concept->id, std::move(content_list),
+        base::i18n::GetLanguageTagFromString(search_concept->tag_locale));
   }
   return data_list;
 }
 
 }  // namespace
-
-const SearchMetadata SearchTagRegistry::not_found_ = SearchMetadata();
 
 SearchTagRegistry::SearchTagRegistry(
     local_search_service::LocalSearchServiceProxy* local_search_service_proxy) {
@@ -88,13 +90,13 @@ void SearchTagRegistry::ClearAndUpdate(
                      std::move(search_tags), std::move(callback)));
 }
 
-const SearchMetadata& SearchTagRegistry::GetTagMetadata(
+const SearchMetadata* SearchTagRegistry::GetTagMetadata(
     const std::string& result_id) const {
   const auto it = result_id_to_metadata_list_map_.find(result_id);
   if (it == result_id_to_metadata_list_map_.end()) {
-    return not_found_;
+    return nullptr;
   }
-  return it->second;
+  return &it->second;
 }
 
 void SearchTagRegistry::NotifyRegistryUpdated() {

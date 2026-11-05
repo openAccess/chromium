@@ -32,9 +32,6 @@ const char kEnableGPUServiceLoggingGPU[]    = "enable-gpu-service-logging";
 // Enable logging of GPU driver debug messages.
 const char kEnableGPUDriverDebugLogging[] = "enable-gpu-driver-debug-logging";
 
-// Turn off gpu program caching
-const char kDisableGpuProgramCache[]        = "disable-gpu-program-cache";
-
 // Enforce GL minimums.
 const char kEnforceGLMinimums[]             = "enforce-gl-minimums";
 
@@ -68,5 +65,10 @@ const char kVulkanImplementationNameSwiftshader[] = "swiftshader";
 // Disables VK_KHR_surface extension. Instead of using swapchain, bitblt will be
 // used for present render result on screen.
 const char kDisableVulkanSurface[] = "disable-vulkan-surface";
+
+// Disable DumpWithoutCrashing on ANGLE portability messages.
+// This should be used by GPU integration tests to avoid failures on bots.
+const char kDisableDumpWithoutCrashingOnAnglePortabilityMessages[] =
+    "disable-dump-without-crashing-on-angle-portability-messages";
 
 }  // namespace switches

@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_WEBAUDIO_OFFLINE_AUDIO_DESTINATION_HANDLER_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBAUDIO_OFFLINE_AUDIO_DESTINATION_HANDLER_H_
 
+#include <atomic>
 #include <memory>
 
 #include "base/memory/scoped_refptr.h"
@@ -18,14 +19,12 @@ namespace blink {
 
 class BaseAudioContext;
 class AudioBus;
-class OfflineAudioContext;
 
 class OfflineAudioDestinationHandler final : public AudioDestinationHandler {
  public:
   static scoped_refptr<OfflineAudioDestinationHandler> Create(
       AudioNode&,
       unsigned number_of_channels,
-      uint32_t frames_to_process,
       float sample_rate);
   ~OfflineAudioDestinationHandler() override;
 
@@ -50,11 +49,19 @@ class OfflineAudioDestinationHandler final : public AudioDestinationHandler {
 
   double SampleRate() const override { return sample_rate_; }
 
-  // This is called when rendering of the offline context is started
-  // which will save the rendered audio data in `render_target`.  This
-  // allows creation of the AudioBuffer when startRendering is called
-  // instead of when the OfflineAudioContext is created.
-  void InitializeOfflineRenderThread(AudioBuffer* render_target);
+  // Ensures the render task runner is initialized before rendering starts.
+  void EnsureOfflineRenderThreadInitialized();
+
+  // Sets the destination buffer for the next render. Must be called on the
+  // main thread before `StartRendering()` and never while a render is in
+  // flight. `render_target` must have `number_of_channels_` channels.
+  void SetSharedRenderTarget(AudioBuffer* render_target);
+
+  // Requests that rendering stop at the next render quantum boundary and
+  // notifies the context after all previously posted render tasks return.
+  void RequestRenderStop();
+
+  void StopRenderThread();
 
   unsigned NumberOfChannels() const { return number_of_channels_; }
 
@@ -63,7 +70,6 @@ class OfflineAudioDestinationHandler final : public AudioDestinationHandler {
  private:
   OfflineAudioDestinationHandler(AudioNode&,
                                  unsigned number_of_channels,
-                                 uint32_t frames_to_process,
                                  float sample_rate);
 
   // Set up the rendering and start. After setting the context up, it will
@@ -81,9 +87,17 @@ class OfflineAudioDestinationHandler final : public AudioDestinationHandler {
   // promise with the rendered buffer.
   void FinishOfflineRendering();
 
-  // Suspend/completion callbacks for the main thread.
+  // Runs on the render sequence after all previously posted render tasks.
+  void AcknowledgeRenderStop();
+
+  bool WasStopRequested() const {
+    return stop_requested_.load(std::memory_order_relaxed);
+  }
+
+  // Suspend/completion/stop callbacks for the main thread.
   void NotifySuspend(size_t);
   void NotifyComplete();
+  void NotifyRenderStopped();
 
   // The offline version of render() method. If the rendering needs to be
   // suspended after checking, this stops the rendering and returns true.
@@ -118,12 +132,16 @@ class OfflineAudioDestinationHandler final : public AudioDestinationHandler {
   // These variables are for counting the number of frames for the current
   // progress and the remaining frames to be processed.
   size_t frames_processed_ = 0;
-  uint32_t frames_to_process_;
+  uint32_t frames_to_process_ = 0;
 
   // This flag is necessary to distinguish the state of the context between
   // 'created' and 'suspended'. If this flag is false and the current state
   // is 'suspended', it means the context is created and have not started yet.
   bool is_rendering_started_ = false;
+
+  // Set by the main thread and checked by the render thread between render
+  // quanta. Cleanup still waits for the render-sequence acknowledgment.
+  std::atomic<bool> stop_requested_{false};
 
   unsigned number_of_channels_;
   float sample_rate_;

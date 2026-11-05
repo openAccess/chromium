@@ -21,7 +21,6 @@ extern const char kExceptionMessageSessionDestroyed[];
 extern const char kExceptionMessageInvalidTemperatureAndTopKFormat[];
 extern const char kExceptionMessageInvalidTopK[];
 extern const char kExceptionMessageInvalidTemperature[];
-extern const char kExceptionMessageSamplingModeAndParamsConflict[];
 extern const char kExceptionMessageUnableToCreateSession[];
 extern const char kExceptionMessageUnableToCloneSession[];
 extern const char kExceptionMessageUnableToCalculateUsage[];
@@ -33,8 +32,6 @@ extern const char kExceptionMessageIncompatiblePreferenceOptions[];
 extern const char kExceptionMessageInvalidResponseJsonSchema[];
 extern const char kExceptionMessagePermissionPolicy[];
 extern const char kExceptionMessageUserActivationRequired[];
-extern const char kExceptionMessageSpeculativeDecodingSamplingConflict[];
-extern const char kExceptionMessageSpeculativeDecodingConstraintConflict[];
 
 void ThrowInvalidContextException(ExceptionState& exception_state);
 void ThrowDocumentNotActiveException(ExceptionState& exception_state);

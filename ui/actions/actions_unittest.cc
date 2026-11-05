@@ -5,6 +5,8 @@
 #include "ui/actions/actions.h"
 
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "base/callback_list.h"
 #include "base/functional/bind.h"
@@ -148,7 +150,7 @@ TEST_F(ActionManagerTest, ActionRegisterAndInvoke) {
       },
       &action_invoked_count, text));
   EXPECT_EQ(action_invoked_count, 0);
-  auto* action = manager.FindAction(kActionCut);
+  auto* action = manager.FindAction(kActionCut, nullptr);
   ASSERT_TRUE(action);
   EXPECT_EQ(action->GetText(), text);
   EXPECT_TRUE(action->GetEnabled());
@@ -164,7 +166,7 @@ TEST_F(ActionManagerTest, ActionRegisterAndInvoke) {
 
 TEST_F(ActionManagerTest, ActionNotFound) {
   auto& manager = ActionManager::GetForTesting();
-  auto* action = manager.FindAction(kActionPaste);
+  auto* action = manager.FindAction(kActionPaste, nullptr);
   EXPECT_FALSE(action);
 }
 
@@ -186,7 +188,7 @@ TEST_F(ActionItemTest, ScopedFindActionTest) {
   // clang-format on
   auto& manager = ActionManager::GetForTesting();
   manager.AddAction(std::move(builder).Build());
-  auto* action_test1 = manager.FindAction(kActionTest1);
+  auto* action_test1 = manager.FindAction(kActionTest1, nullptr);
   ASSERT_TRUE(action_test1);
   auto* action_test2 = manager.FindAction(kActionTest2, action_test1);
   ASSERT_TRUE(action_test2);
@@ -285,7 +287,7 @@ TEST_F(ActionItemTest, ActionBuilderTest) {
   auto& manager = ActionManager::GetForTesting();
   manager.AddAction(std::move(builder).Build());
 
-  auto* action = manager.FindAction(actions::kActionCopy);
+  auto* action = manager.FindAction(actions::kActionCopy, nullptr);
   ASSERT_TRUE(action);
   EXPECT_EQ(action->GetText(), text);
   EXPECT_FALSE(action->GetVisible());
@@ -446,7 +448,7 @@ TEST_F(ActionItemTest, TestActionItemPinnableKey) {
   // clang-format on
   auto& manager = ActionManager::GetForTesting();
   manager.AddAction(std::move(builder).Build());
-  auto* action_test1 = manager.FindAction(kActionTest1);
+  auto* action_test1 = manager.FindAction(kActionTest1, nullptr);
   ASSERT_TRUE(action_test1);
   ASSERT_EQ(action_test1->GetProperty(kActionItemPinnableKey),
             std::underlying_type_t<actions::ActionPinnableState>(
@@ -468,11 +470,47 @@ TEST_F(ActionItemTest, TestActionItemPinnableKey) {
           .SetEnabled(true);
 
   manager.AddAction(std::move(builder).Build());
-  auto* action_test2 = manager.FindAction(kActionTest2);
+  auto* action_test2 = manager.FindAction(kActionTest2, nullptr);
   ASSERT_TRUE(action_test2);
   ASSERT_EQ(action_test2->GetProperty(kActionItemPinnableKey),
             std::underlying_type_t<actions::ActionPinnableState>(
                 actions::ActionPinnableState::kPinnable));
+}
+
+// GetTextWithMnemonic() returns the text as set, for menus. GetText() returns
+// it without the mnemonic marker.
+TEST_F(ActionItemTest, GetTextRemovesMnemonic) {
+  auto action_item = ActionItem::Builder().SetText(u"Settin&gs").Build();
+  EXPECT_EQ(action_item->GetText(), u"Settings");
+  EXPECT_EQ(action_item->GetTextWithMnemonic(), u"Settin&gs");
+
+  // "&&" is a literal "&".
+  action_item->SetText(u"&Q&&A");
+  EXPECT_EQ(action_item->GetText(), u"Q&A");
+  EXPECT_EQ(action_item->GetTextWithMnemonic(), u"&Q&&A");
+
+  action_item->SetText(u"Options");
+  EXPECT_EQ(action_item->GetText(), u"Options");
+  EXPECT_EQ(action_item->GetTextWithMnemonic(), u"Options");
+}
+
+// Observers are notified when the text changes, even if only its mnemonic
+// marker does, but not when the same text is set again.
+TEST_F(ActionItemTest, TextChangesNotifyObservers) {
+  auto action_item = ActionItem::Builder().SetText(u"Settings").Build();
+  int changed_count = 0;
+  auto changed_subscription = action_item->AddActionChangedCallback(
+      base::BindRepeating([](int* count) { ++(*count); }, &changed_count));
+
+  action_item->SetText(u"Settings");
+  EXPECT_EQ(changed_count, 0);
+
+  // Only the marker is new. GetText() is unchanged.
+  action_item->SetText(u"Settin&gs");
+  EXPECT_EQ(changed_count, 1);
+
+  action_item->SetText(u"Settin&gs");
+  EXPECT_EQ(changed_count, 1);
 }
 
 TEST_F(ActionItemTest, TestActionProperties) {
@@ -485,7 +523,8 @@ TEST_F(ActionItemTest, TestActionProperties) {
       .SetEnabled(true)
       .SetAccessibleName(kActionAccessibleText)
       .SetTooltipText(kActionTooltipText)
-      .SetGroupId(kGroupId);
+      .SetGroupId(kGroupId)
+      .AddSynonyms({u"Synonym1", u"Synonym2"});
   // clang-format on
   auto action_item = std::move(builder).Build();
   EXPECT_EQ(action_item->GetText(), kActionText);
@@ -495,6 +534,13 @@ TEST_F(ActionItemTest, TestActionProperties) {
   EXPECT_EQ(action_item->GetAccessibleName(), kActionAccessibleText);
   EXPECT_EQ(action_item->GetTooltipText(), kActionTooltipText);
   EXPECT_EQ(action_item->GetGroupId(), kGroupId);
+  EXPECT_THAT(action_item->GetSynonyms(),
+              testing::ElementsAre(u"Synonym1", u"Synonym2"));
+
+  const std::vector<std::u16string> more_synonyms = {u"Synonym3"};
+  action_item->AddSynonyms(more_synonyms);
+  EXPECT_THAT(action_item->GetSynonyms(),
+              testing::ElementsAre(u"Synonym1", u"Synonym2", u"Synonym3"));
 }
 
 TEST_F(ActionItemTest, TestActionWeakPtr) {

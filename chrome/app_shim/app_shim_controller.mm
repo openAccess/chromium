@@ -25,7 +25,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_param_associator.h"
-#include "base/metrics/histogram_macros_local.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -62,6 +62,7 @@
 #include "mojo/public/cpp/platform/named_platform_channel.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
 #include "ui/accelerated_widget_mac/window_resize_helper_mac.h"
+#import "ui/base/cocoa/macos27_sdk.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/image/image.h"
@@ -137,6 +138,11 @@ constexpr base::TimeDelta kPollTimeoutSeconds = base::Seconds(60);
 // The period in between attempts to check of Chrome's AppShimListener is
 // ready.
 constexpr base::TimeDelta kPollPeriodMsec = base::Milliseconds(100);
+
+// The maximum amount of time to wait for launch files or URLs to be delivered
+// before connecting to Chrome, if the OS indicated this was not a default
+// launch.
+constexpr base::TimeDelta kLaunchFilesOrUrlsTimeout = base::Seconds(2);
 
 // Helper that keeps stops another sequence from executing any code while this
 // object is alive. The constructor waits for the other thread to be blocked,
@@ -299,10 +305,10 @@ void AppShimController::PreInitFeatureState(
       std::move(feature_list),
       {"AppShimLaunchChromeSilently", "AppShimNotificationAttribution",
        "CacheGurlSchemeIsHttpOrHttpsResult", "DcheckIsFatal",
-       "DisallowSpaceCharacterInURLHostParsing",
+       "DisallowSpaceCharacterInURLHostParsing", "LRUCacheMemoryConsumer",
        "NonSpecialLeadingSlashHandling", "PreservePercentEncodedDotInPath",
-       "UseIDNAContextJRules", "MojoBindingsInlineSLS", "MojoIpcz",
-       "MojoIpczMemV2", "MojoFixGeometricBufferGrowth",
+       "UseIDNAContextJRules", "MojoBindingsInlineSLS", "MojoIpczMemV2",
+       "MojoFixGeometricBufferGrowth", "MojoFixGeometricBufferGrowth2",
        "UseAdHocSigningForWebAppShims", "UseNSURLDataForGURLConversion",
        "SonomaAccessibilityActivationRefinements", "FeatureParamWithCache",
        "UseMachVouchers"});
@@ -343,11 +349,34 @@ void AppShimController::FinalizeFeatureState(
 }
 
 void AppShimController::OnAppFinishedLaunching(
-    bool launched_by_notification_action) {
+    bool launched_by_notification_action,
+    bool is_default_launch) {
   DCHECK_EQ(init_state_, InitState::kWaitingForAppToFinishLaunch);
-  init_state_ = InitState::kWaitingForChromeReady;
   launched_by_notification_action_ = launched_by_notification_action;
 
+  // If this launch was not a default launch (e.g. the app was launched by the
+  // OS to open files or URLs), but neither OpenFiles nor OpenUrls has been
+  // called yet, wait briefly for those events to be delivered via AppleEvents
+  // before connecting to Chrome.
+  if (!is_default_launch && launch_files_.empty() && launch_urls_.empty()) {
+    init_state_ = InitState::kWaitingForLaunchFilesOrUrls;
+    launch_files_or_urls_timeout_.Reset(base::BindOnce(
+        &AppShimController::StartChromeConnection, base::Unretained(this)));
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE, launch_files_or_urls_timeout_.callback(),
+        kLaunchFilesOrUrlsTimeout);
+    return;
+  }
+
+  StartChromeConnection();
+}
+
+void AppShimController::StartChromeConnection() {
+  DCHECK(init_state_ == InitState::kWaitingForAppToFinishLaunch ||
+         init_state_ == InitState::kWaitingForLaunchFilesOrUrls ||
+         init_state_ == InitState::kWaitingForChromeReady);
+  launch_files_or_urls_timeout_.Cancel();
+  init_state_ = InitState::kWaitingForChromeReady;
   if (FindOrLaunchChrome()) {
     // Start polling to see if Chrome is ready to connect.
     PollForChromeReady(kPollTimeoutSeconds);
@@ -512,6 +541,14 @@ void AppShimController::PollForChromeReady(
   if (chrome_to_connect_to_ && chrome_to_connect_to_.terminated) {
     if (chrome_launched_by_app_) {
       LOG(FATAL) << "Running chrome instance launched by shim terminated "
+                    "before connecting.";
+    } else if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+                   app_mode::kLaunchedByChromeProcessId)) {
+      // This shim was launched by Chrome, and that Chrome terminated before
+      // the shim could connect to it (e.g. because Chrome was shutting down).
+      // Kept separate from the case below so the two can be told apart in
+      // crash reports.
+      LOG(FATAL) << "Chrome instance that launched this shim terminated "
                     "before connecting.";
     } else {
       LOG(FATAL) << "Running chrome instance terminated before connecting.";
@@ -816,6 +853,9 @@ void AppShimController::UpdateProfileMenu(
     item.target = profile_menu_target_;
     gfx::Image icon(mojo_item->icon);
     item.image = icon.AsNSImage();
+    if (@available(macOS 27, *)) {
+      item.preferredImageVisibility = NSMenuItemImageVisibilityVisible;
+    }
     [menu insertItem:item atIndex:i];
   }
 }
@@ -875,8 +915,6 @@ void AppShimController::BindNotificationService(
       // notification actions to be triggered before the browser process tries
       // to connect to the notification service.
       notification_service_un()->Bind(std::move(service));
-      // TODO(crbug.com/40616749): Determine when to ask for permissions.
-      notification_service_un()->RequestPermission(base::DoNothing());
     }
   } else {
     // NSUserNotificationCenter is in the process of being replaced, and
@@ -920,8 +958,15 @@ void AppShimController::SetUserAttention(
 }
 
 void AppShimController::OpenFiles(const std::vector<base::FilePath>& files) {
-  if (init_state_ == InitState::kWaitingForAppToFinishLaunch) {
-    launch_files_ = files;
+  if (init_state_ < InitState::kHasSentOnShimConnected) {
+    launch_files_.insert(launch_files_.end(), files.begin(), files.end());
+    if (init_state_ == InitState::kWaitingForLaunchFilesOrUrls) {
+      launch_files_or_urls_timeout_.Cancel();
+      init_state_ = InitState::kWaitingForChromeReady;
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(&AppShimController::StartChromeConnection,
+                                    base::Unretained(this)));
+    }
   } else {
     host_->FilesOpened(files);
   }
@@ -937,8 +982,15 @@ void AppShimController::ProfileMenuItemSelected(uint32_t index) {
 }
 
 void AppShimController::OpenUrls(const std::vector<GURL>& urls) {
-  if (init_state_ == InitState::kWaitingForAppToFinishLaunch) {
-    launch_urls_ = urls;
+  if (init_state_ < InitState::kHasSentOnShimConnected) {
+    launch_urls_.insert(launch_urls_.end(), urls.begin(), urls.end());
+    if (init_state_ == InitState::kWaitingForLaunchFilesOrUrls) {
+      launch_files_or_urls_timeout_.Cancel();
+      init_state_ = InitState::kWaitingForChromeReady;
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(&AppShimController::StartChromeConnection,
+                                    base::Unretained(this)));
+    }
   } else {
     host_->UrlsOpened(urls);
   }
@@ -946,7 +998,8 @@ void AppShimController::OpenUrls(const std::vector<GURL>& urls) {
 
 void AppShimController::CommandFromDock(uint32_t index) {
   DCHECK(0 <= index && index < dock_menu_items_.size());
-  DCHECK(init_state_ != InitState::kWaitingForAppToFinishLaunch);
+  DCHECK(init_state_ != InitState::kWaitingForAppToFinishLaunch &&
+         init_state_ != InitState::kWaitingForLaunchFilesOrUrls);
 
   [NSApp activateIgnoringOtherApps:YES];
   host_->OpenAppWithOverrideUrl(dock_menu_items_[index]->url);
@@ -965,8 +1018,10 @@ void AppShimController::CommandDispatch(int command_id) {
 
 NSMenu* AppShimController::GetApplicationDockMenu() {
   if (init_state_ == InitState::kWaitingForAppToFinishLaunch ||
-      dock_menu_items_.size() == 0)
+      init_state_ == InitState::kWaitingForLaunchFilesOrUrls ||
+      dock_menu_items_.size() == 0) {
     return nullptr;
+  }
 
   NSMenu* dockMenu = [[NSMenu alloc] initWithTitle:@""];
 
@@ -988,8 +1043,7 @@ NSMenu* AppShimController::GetApplicationDockMenu() {
 }
 
 void AppShimController::ApplicationWillTerminate() {
-  // Local histogram to let tests verify that histograms are emitted properly.
-  LOCAL_HISTOGRAM_BOOLEAN("AppShim.WillTerminate", true);
+  base::UmaHistogramBoolean("Apps.AppShim.WillTerminate", true);
   host_->ApplicationWillTerminate();
 }
 

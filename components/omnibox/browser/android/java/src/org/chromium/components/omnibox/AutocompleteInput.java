@@ -20,6 +20,8 @@ import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
+import org.chromium.components.omnibox.AimModelsProtoIntDef.ModelMode;
+import org.chromium.components.omnibox.ToolModeProtoIntDef.ToolMode;
 import org.chromium.components.search_engines.StarterPackId;
 import org.chromium.url.GURL;
 
@@ -191,9 +193,10 @@ public class AutocompleteInput implements UserData {
     private @RefineActionUsage int mRefineActionUsage;
     private boolean mSuggestionsListScrolled;
     private @OmniboxFocusReason int mFocusReason;
-    private /* ModelMode */ int mModelMode;
+    private @ModelMode int mModelMode;
 
     private String mInitialUserText = "";
+    private @Nullable GURL mInitialPreviewMatchUrl;
     private final SettableNonNullObservableSupplier<String> mUserText =
             ObservableSuppliers.createNonNull("");
     private @Nullable String mPreviewText;
@@ -255,6 +258,7 @@ public class AutocompleteInput implements UserData {
         mPreviewText = other.mPreviewText;
         mAllowUserTextAutocompletion.set(other.mAllowUserTextAutocompletion.get());
         mInitialUserText = other.mInitialUserText;
+        mInitialPreviewMatchUrl = other.mInitialPreviewMatchUrl;
         mRequestTypeSupplier.set(other.mRequestTypeSupplier.get());
         mSiteSearchData.set(other.mSiteSearchData.get());
         mPreviewMatchUrlSupplier.set(other.mPreviewMatchUrlSupplier.get());
@@ -269,7 +273,8 @@ public class AutocompleteInput implements UserData {
                     PageClassification.NTP_OMNIBOX_COMPOSEBOX;
             case PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT ->
                     PageClassification.SRP_OMNIBOX_COMPOSEBOX;
-            case PageClassification.OTHER -> PageClassification.OTHER_OMNIBOX_COMPOSEBOX;
+            case PageClassification.OTHER, PageClassification.ANDROID_SHORTCUTS_WIDGET ->
+                    PageClassification.OTHER_OMNIBOX_COMPOSEBOX;
             // LINT.ThenChange(/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/fusebox/FuseboxCoordinator.java:FuseboxSupportedPageClassifications)
             default -> {
                 // TODO(crbug.com/474808407): address the issue with top resumed activity change and
@@ -416,7 +421,7 @@ public class AutocompleteInput implements UserData {
     }
 
     /** Returns the Autocomplete Tool that is currently selected. */
-    public int getToolMode() {
+    public @ToolMode int getToolMode() {
         return ToolModeUtils.getToolModeForRequestType(getRequestType(), mHasAttachments);
     }
 
@@ -469,18 +474,34 @@ public class AutocompleteInput implements UserData {
     }
 
     /**
-     * Set the Initial Input - the default value to fall back to if the input is reset.
-     *
-     * <p>This is the default "revert-to" value.
+     * Sets the user text and preview match URL to be restored via {@link #restoreInitialInput()}.
      */
-    public AutocompleteInput setInitialUserText(String userText) {
+    public AutocompleteInput setInitialInput(String userText, @Nullable GURL previewMatchUrl) {
         mInitialUserText = userText;
+        mInitialPreviewMatchUrl = previewMatchUrl;
         return this;
     }
 
-    /** Returns the Initial Input - the default value to fall back to if the input is reset. */
+    /** Restores the user text and preview match URL to their initial values. */
+    public AutocompleteInput restoreInitialInput() {
+        setUserText(mInitialUserText);
+        setPreviewMatchUrl(mInitialPreviewMatchUrl);
+        return this;
+    }
+
+    /** Sets the user text to be restored via {@link #restoreInitialInput()}. */
+    public AutocompleteInput setInitialUserText(String userText) {
+        return setInitialInput(userText, null);
+    }
+
+    /** Returns the user text to be restored via {@link #restoreInitialInput()}. */
     public String getInitialUserText() {
         return mInitialUserText;
+    }
+
+    /** Returns the preview match URL to be restored via {@link #restoreInitialInput()}. */
+    public @Nullable GURL getInitialPreviewMatchUrl() {
+        return mInitialPreviewMatchUrl;
     }
 
     /** Returns whether exact keyword match is allowed with current input. */
@@ -611,23 +632,11 @@ public class AutocompleteInput implements UserData {
 
     /** Returns whether current context enables suggestions caching. */
     public boolean isInCacheableContext() {
+        if (!OmniboxFeatures.sServeJavaCachedZeroSuggest.isEnabled()) return false;
         if (!isInZeroPrefixContext()) return false;
 
-        switch (mPageClassification) {
-            case PageClassification.ANDROID_SEARCH_WIDGET:
-            case PageClassification.ANDROID_SHORTCUTS_WIDGET:
-                return true;
-
-            case PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS:
-                return OmniboxFeatures.isJumpStartOmniboxEnabled();
-
-            case PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT:
-            case PageClassification.OTHER:
-                return OmniboxFeatures.sJumpStartOmniboxCoverRecentlyVisitedPage.getValue();
-
-            default:
-                return false;
-        }
+        return mPageClassification == PageClassification.ANDROID_SEARCH_WIDGET
+                || mPageClassification == PageClassification.ANDROID_SHORTCUTS_WIDGET;
     }
 
     public void setHasAttachments(boolean hasAttachments) {
@@ -683,6 +692,7 @@ public class AutocompleteInput implements UserData {
         mRequestTypeSupplier.set(AutocompleteRequestType.SEARCH);
         mSiteSearchData.set(null);
         mPreviewMatchUrlSupplier.set(null);
+        mInitialPreviewMatchUrl = null;
         mUrlFocusTime = 0;
         mSuggestionsListScrolled = false;
         mAutocompleteStateSupplier.set(AutocompleteState.ENABLED);
@@ -756,12 +766,12 @@ public class AutocompleteInput implements UserData {
     }
 
     /** Returns the current model mode or MODEL_MODE_UNSPECIFIED if never set. */
-    public /* ModelMode */ int getModelMode() {
+    public @ModelMode int getModelMode() {
         return mModelMode;
     }
 
     /** Sets the ModelMode that should be used. */
-    public void setModelMode(int modelMode) {
+    public void setModelMode(@ModelMode int modelMode) {
         mModelMode = modelMode;
     }
 

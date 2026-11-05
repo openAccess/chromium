@@ -133,11 +133,12 @@ class AutofillDriverIOS final : public AutofillDriver,
       const FieldGlobalId& field_id,
       const std::u16string& value) override;
   void TriggerFormExtractionInDriverFrame(
-      AutofillDriverRouterAndFormForestPassKey pass_key) override;
+      AutofillDriverRouterAndFormForestPassKey pass_key,
+      bool force) override;
   void TriggerFormExtractionInAllFrames(
+      bool force,
       base::OnceCallback<void(bool)> form_extraction_finished_callback)
       override;
-  void ClearFormCacheInAllFrames() override;
   void ObserveFieldVisibility(
       const FieldGlobalId& field_id,
       mojo::PendingRemote<mojom::AutofillVisibilityObserver> observer) override;
@@ -157,9 +158,6 @@ class AutofillDriverIOS final : public AutofillDriver,
   void SendEmailVerificationToken(FieldGlobalId email_field_id,
                                   const std::string& email,
                                   const std::string& token) override;
-  void UpdateEmailVerificationState(
-      const FieldGlobalId& email_field_id,
-      mojom::EmailVerificationState state) override;
   bool IsSafeToFill(const FormFieldData& field,
                     FieldType filled_type,
                     const url::Origin& main_origin,

@@ -30,6 +30,7 @@
 #include "components/app_restore/app_restore_utils.h"
 #include "components/app_restore/full_restore_utils.h"
 #include "components/app_restore/window_properties.h"
+#include "components/sessions/core/session_id.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_observer.h"
@@ -44,7 +45,7 @@ class BrowserWindowStateDelegate : public ash::WindowStateDelegate {
  public:
   explicit BrowserWindowStateDelegate(BrowserWindowInterface* browser)
       : browser_(browser) {
-    DCHECK(browser_);
+    CHECK(browser_, base::NotFatalUntil::M162);
   }
 
   BrowserWindowStateDelegate(const BrowserWindowStateDelegate&) = delete;
@@ -55,7 +56,8 @@ class BrowserWindowStateDelegate : public ash::WindowStateDelegate {
 
   // Overridden from ash::WindowStateDelegate.
   bool ToggleFullscreen(ash::WindowState* window_state) override {
-    DCHECK(window_state->IsFullscreen() || window_state->CanFullscreen());
+    CHECK(window_state->IsFullscreen() || window_state->CanFullscreen(),
+          base::NotFatalUntil::M162);
     if (!window_state->IsFullscreen() && !window_state->CanFullscreen()) {
       return true;
     }
@@ -64,7 +66,7 @@ class BrowserWindowStateDelegate : public ash::WindowStateDelegate {
   }
 
   // Overridden from ash::WindowStateDelegate.
-  void ToggleLockedFullscreen(ash::WindowState* window_state) override {
+  void ToggleTrustedPinned(ash::WindowState* window_state) override {
     ash::Shell::Get()->shell_delegate()->SetUpEnvironmentForLockedFullscreen(
         *window_state);
   }

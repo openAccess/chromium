@@ -35,8 +35,8 @@ bool GetControllerFromWindowID(ExtensionFunction* function,
                                extensions::WindowController::TypeFilter filter,
                                extensions::WindowController** out_controller,
                                std::string* error) {
-  DCHECK(out_controller);
-  DCHECK(error);
+  CHECK(out_controller, base::NotFatalUntil::M161);
+  CHECK(error, base::NotFatalUntil::M161);
 
   *out_controller = nullptr;
   if (window_id == extension_misc::kCurrentWindowId) {
@@ -107,7 +107,7 @@ IncognitoResult ShouldOpenIncognitoWindow(Profile* profile,
                                           std::vector<GURL>* urls,
                                           std::string* error) {
   const policy::IncognitoModeAvailability incognito_availability =
-      IncognitoModePrefs::GetAvailability(profile->GetPrefs());
+      IncognitoModePrefs::GetAvailability(profile);
   bool incognito_result = false;
   if (incognito.has_value()) {
     incognito_result = incognito.value();

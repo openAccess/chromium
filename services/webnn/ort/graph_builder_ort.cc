@@ -7,6 +7,7 @@
 #include <array>
 #include <numeric>
 #include <ranges>
+#include <utility>
 
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
@@ -402,9 +403,11 @@ const base::cstring_view GetRecurrentNetworkDirection(
 std::unique_ptr<ModelEditor::ModelInfo> GraphBuilderOrt::CreateAndBuild(
     const mojom::GraphInfo& graph_info,
     ContextProperties context_properties,
+    EpWorkarounds ep_workarounds,
     base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
         constant_operands) {
   GraphBuilderOrt graph_builder(graph_info, std::move(context_properties),
+                                std::move(ep_workarounds),
                                 std::move(constant_operands));
   return graph_builder.BuildModel();
 }
@@ -412,12 +415,14 @@ std::unique_ptr<ModelEditor::ModelInfo> GraphBuilderOrt::CreateAndBuild(
 GraphBuilderOrt::GraphBuilderOrt(
     const mojom::GraphInfo& graph_info,
     ContextProperties context_properties,
+    EpWorkarounds ep_workarounds,
     base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
         constant_operands)
     : next_operand_id_(graph_info.operands.size()),
       graph_info_(graph_info),
       constant_operands_(std::move(constant_operands)),
-      context_properties_(std::move(context_properties)) {}
+      context_properties_(std::move(context_properties)),
+      ep_workarounds_(std::move(ep_workarounds)) {}
 
 GraphBuilderOrt::~GraphBuilderOrt() = default;
 
@@ -425,10 +430,53 @@ const mojom::Operand& GraphBuilderOrt::GetOperand(OperandId operand_id) const {
   return *graph_info_->operands.at(operand_id.value());
 }
 
-std::string GraphBuilderOrt::GetOperandNameById(OperandId operand_id) const {
+std::string GraphBuilderOrt::GetRawOperandName(OperandId operand_id) const {
   const mojom::Operand& operand = GetOperand(operand_id);
-  return GetOperandName(operand.name.has_value() ? *operand.name : "",
-                        operand_id);
+  return GetOperandName(operand.name.value_or(""), operand_id);
+}
+
+std::string GraphBuilderOrt::GetOperandNameAsBool(OperandId operand_id) {
+  CHECK_EQ(GetOperand(operand_id).descriptor.data_type(),
+           OperandDataType::kUint8);
+
+  const auto it = bool_tensors_.find(operand_id);
+  if (it != bool_tensors_.end()) {
+    return it->second.name;
+  }
+
+  const std::string bool_name = CreateCastNode(
+      GetRawOperandName(operand_id), ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
+  CHECK(bool_tensors_
+            .emplace(operand_id,
+                     BoolTensor{.name = bool_name, .uint8_materialized = true})
+            .second);
+  return bool_name;
+}
+
+void GraphBuilderOrt::FlushPendingUint8Cast(OperandId operand_id) {
+  const auto it = bool_tensors_.find(operand_id);
+  if (it == bool_tensors_.end() || it->second.uint8_materialized) {
+    return;
+  }
+  const std::string bool_name = it->second.name;
+  it->second.uint8_materialized = true;
+  InsertCastNode(bool_name, GetRawOperandName(operand_id),
+                 ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8);
+}
+
+std::string GraphBuilderOrt::GetOperandNameById(OperandId operand_id) {
+  FlushPendingUint8Cast(operand_id);
+  return GetRawOperandName(operand_id);
+}
+
+void GraphBuilderOrt::RegisterLogicalOutput(OperandId output_id,
+                                            std::string bool_name) {
+  CHECK_EQ(GetOperand(output_id).descriptor.data_type(),
+           OperandDataType::kUint8);
+  CHECK(bool_tensors_
+            .emplace(output_id, BoolTensor{.name = std::move(bool_name),
+                                           .uint8_materialized = false})
+            .second);
 }
 
 std::string GraphBuilderOrt::GenerateNodeName(std::string_view label) {
@@ -849,16 +897,17 @@ std::string GraphBuilderOrt::ClampIndices(base::cstring_view indices,
   return output;
 }
 
-std::string GraphBuilderOrt::ClampGatherNDIndices(
+std::string GraphBuilderOrt::NormalizeGatherScatterNDIndices(
     base::cstring_view indices,
     base::span<const uint32_t> input_shape,
     base::span<const uint32_t> indices_shape) {
-  CHECK_GT(input_shape.size(), 0u);
   CHECK_GT(indices_shape.size(), 0u);
 
   uint32_t indices_last_dim_size = indices_shape[indices_shape.size() - 1];
-  std::array<int64_t, 1> min_max_shape = {
+  std::array<int64_t, 1> per_axis_shape = {
       static_cast<int64_t>(indices_last_dim_size)};
+
+  CHECK_GE(input_shape.size(), indices_last_dim_size);
 
   base::FixedArray<int64_t> min_value(indices_last_dim_size);
   base::FixedArray<int64_t> max_value(indices_last_dim_size);
@@ -868,8 +917,10 @@ std::string GraphBuilderOrt::ClampGatherNDIndices(
   }
 
   // ONNX Clip can only have `min` and `max` as scalars, so here use Min and Max
-  // to emulate a clamp operation.
-  std::string min = CreateInitializer<int64_t>(min_max_shape, min_value);
+  // to emulate a clamp operation. This ensures that all values in `indices`
+  // are within bounds [-s, s) along axis of size s, i.e. -input_shape[i] <=
+  // indices[..., i] <= input_shape[i] - 1.
+  std::string min = CreateInitializer<int64_t>(per_axis_shape, min_value);
   const std::string max_node_name =
       GenerateNodeName(base::JoinString({kInserted, kOpTypeMax}, kUnderscore));
   const std::string max_output = GenerateOperandName();
@@ -877,13 +928,53 @@ std::string GraphBuilderOrt::ClampGatherNDIndices(
   std::array<const char*, 1> max_outputs = {max_output.c_str()};
   model_editor_.AddNode(kOpTypeMax, max_node_name, max_inputs, max_outputs);
 
-  std::string max = CreateInitializer<int64_t>(min_max_shape, max_value);
+  std::string max = CreateInitializer<int64_t>(per_axis_shape, max_value);
   const std::string min_node_name =
       GenerateNodeName(base::JoinString({kInserted, kOpTypeMin}, kUnderscore));
-  const std::string output = GenerateOperandName();
+  const std::string clamped_indices = GenerateOperandName();
   std::array<const char*, 2> min_inputs = {max_output.c_str(), max.c_str()};
-  std::array<const char*, 1> min_outputs = {output.c_str()};
+  std::array<const char*, 1> min_outputs = {clamped_indices.c_str()};
   model_editor_.AddNode(kOpTypeMin, min_node_name, min_inputs, min_outputs);
+
+  if (!ep_workarounds_.gather_scatter_nd_indices_require_nonnegative) {
+    return clamped_indices;
+  }
+
+  // Shift any negative index to its equivalent non-negative value:
+  // where(indices < 0, indices + input_shape[axis], indices).
+  base::FixedArray<int64_t> boundary_value(indices_last_dim_size);
+  for (uint32_t axis = 0; axis < indices_last_dim_size; ++axis) {
+    boundary_value[axis] = static_cast<int64_t>(input_shape[axis]);
+  }
+
+  const std::string zero = CreateScalarInitializer<int64_t>(0);
+  const std::string less_node_name = GenerateNodeName(
+      base::JoinString({kInserted, kOpTypeLesser}, kUnderscore));
+  const std::string less_output = GenerateOperandName();
+  std::array<const char*, 2> less_inputs = {clamped_indices.c_str(),
+                                            zero.c_str()};
+  std::array<const char*, 1> less_outputs = {less_output.c_str()};
+  model_editor_.AddNode(kOpTypeLesser, less_node_name, less_inputs,
+                        less_outputs);
+
+  std::string boundary =
+      CreateInitializer<int64_t>(per_axis_shape, boundary_value);
+  const std::string add_node_name =
+      GenerateNodeName(base::JoinString({kInserted, kOpTypeAdd}, kUnderscore));
+  const std::string add_output = GenerateOperandName();
+  std::array<const char*, 2> add_inputs = {clamped_indices.c_str(),
+                                           boundary.c_str()};
+  std::array<const char*, 1> add_outputs = {add_output.c_str()};
+  model_editor_.AddNode(kOpTypeAdd, add_node_name, add_inputs, add_outputs);
+
+  const std::string where_node_name = GenerateNodeName(
+      base::JoinString({kInserted, kOpTypeWhere}, kUnderscore));
+  const std::string output = GenerateOperandName();
+  std::array<const char*, 3> where_inputs = {
+      less_output.c_str(), add_output.c_str(), clamped_indices.c_str()};
+  std::array<const char*, 1> where_outputs = {output.c_str()};
+  model_editor_.AddNode(kOpTypeWhere, where_node_name, where_inputs,
+                        where_outputs);
 
   return output;
 }
@@ -1308,54 +1399,30 @@ void GraphBuilderOrt::AddEluOperation(const mojom::Elu& elu) {
   model_editor_.AddNode(kOpTypeElu, node_name, inputs, outputs, attributes);
 }
 
-// TODO(crbug.com/426228071): Eliminate redundant cast ops for bool and uint8
-// data types conversion.
 void GraphBuilderOrt::AddLogicalBinaryOperation(
     const mojom::ElementWiseBinary& logical_binary,
     base::cstring_view op_type) {
   const std::string node_name = GenerateNodeName(logical_binary.label);
-  std::string lhs = GetOperandNameById(logical_binary.lhs_operand_id);
-  std::string rhs = GetOperandNameById(logical_binary.rhs_operand_id);
+  std::string lhs;
+  std::string rhs;
 
   // Some ONNX logical binary operations only support bool input.
   if (logical_binary.kind == mojom::ElementWiseBinary::Kind::kLogicalAnd ||
       logical_binary.kind == mojom::ElementWiseBinary::Kind::kLogicalOr ||
       logical_binary.kind == mojom::ElementWiseBinary::Kind::kLogicalXor) {
-    CHECK_EQ(GetOperand(logical_binary.lhs_operand_id).descriptor.data_type(),
-             OperandDataType::kUint8);
-    auto lhs_it = operand_to_bool_name_.find(logical_binary.lhs_operand_id);
-    if (lhs_it != operand_to_bool_name_.end()) {
-      lhs = lhs_it->second;
-    } else {
-      lhs = CreateCastNode(lhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
-    }
-
-    CHECK_EQ(GetOperand(logical_binary.rhs_operand_id).descriptor.data_type(),
-             OperandDataType::kUint8);
-    auto rhs_it = operand_to_bool_name_.find(logical_binary.rhs_operand_id);
-    if (rhs_it != operand_to_bool_name_.end()) {
-      rhs = rhs_it->second;
-    } else {
-      rhs = CreateCastNode(rhs, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
-    }
+    lhs = GetOperandNameAsBool(logical_binary.lhs_operand_id);
+    rhs = GetOperandNameAsBool(logical_binary.rhs_operand_id);
+  } else {
+    lhs = GetOperandNameById(logical_binary.lhs_operand_id);
+    rhs = GetOperandNameById(logical_binary.rhs_operand_id);
   }
   std::array<const char*, 2> inputs = {lhs.c_str(), rhs.c_str()};
 
-  const std::string bool_output = GenerateOperandName();
-  operand_to_bool_name_[logical_binary.output_operand_id] = bool_output;
-
+  std::string bool_output = GenerateOperandName();
   std::array<const char*, 1> outputs = {bool_output.c_str()};
   model_editor_.AddNode(op_type, node_name, inputs, outputs);
-
-  // ONNX logical operators only support bool output. WebNN logical operators
-  // support uint8 output. It is necessary to insert a cast operator after a
-  // logical operator.
-  const OperandDataType output_data_type =
-      GetOperand(logical_binary.output_operand_id).descriptor.data_type();
-  const std::string output =
-      GetOperandNameById(logical_binary.output_operand_id);
-  CHECK_EQ(output_data_type, OperandDataType::kUint8);
-  InsertCastNode(bool_output, output, WebnnToOnnxDataType(output_data_type));
+  RegisterLogicalOutput(logical_binary.output_operand_id,
+                        std::move(bool_output));
 }
 
 void GraphBuilderOrt::AddLogicalUnaryOperation(
@@ -1363,36 +1430,21 @@ void GraphBuilderOrt::AddLogicalUnaryOperation(
     base::cstring_view op_type) {
   const std::string node_name = GenerateNodeName(logical_unary.label);
 
-  std::string input = GetOperandNameById(logical_unary.input_operand_id);
+  std::string input;
 
   // LogicalNot operation in ONNX only supports bool input.
   if (op_type == kOpTypeLogicalNot) {
-    CHECK_EQ(GetOperand(logical_unary.input_operand_id).descriptor.data_type(),
-             OperandDataType::kUint8);
-    auto input_it = operand_to_bool_name_.find(logical_unary.input_operand_id);
-    if (input_it != operand_to_bool_name_.end()) {
-      input = input_it->second;
-    } else {
-      input = CreateCastNode(input, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
-    }
+    input = GetOperandNameAsBool(logical_unary.input_operand_id);
+  } else {
+    input = GetOperandNameById(logical_unary.input_operand_id);
   }
 
-  const std::string bool_output = GenerateOperandName();
-  operand_to_bool_name_[logical_unary.output_operand_id] = bool_output;
-
+  std::string bool_output = GenerateOperandName();
   std::array<const char*, 1> inputs = {input.c_str()};
   std::array<const char*, 1> outputs = {bool_output.c_str()};
   model_editor_.AddNode(op_type, node_name, inputs, outputs);
-
-  // ONNX logical operators only support bool output, while WebNN logical
-  // operators support uint8 output. Insert a `Cast` operator for type
-  // conversion.
-  const OperandDataType output_data_type =
-      GetOperand(logical_unary.output_operand_id).descriptor.data_type();
-  const std::string output =
-      GetOperandNameById(logical_unary.output_operand_id);
-  CHECK_EQ(output_data_type, OperandDataType::kUint8);
-  InsertCastNode(bool_output, output, WebnnToOnnxDataType(output_data_type));
+  RegisterLogicalOutput(logical_unary.output_operand_id,
+                        std::move(bool_output));
 }
 
 void GraphBuilderOrt::AddLogicalNotEqualOperation(
@@ -1410,23 +1462,13 @@ void GraphBuilderOrt::AddLogicalNotEqualOperation(
                         equal_outputs);
 
   // Step 2: calculate `logicalNot(equal_output)`
-  const std::string not_output = GenerateOperandName();
+  std::string not_output = GenerateOperandName();
   std::array<const char*, 1> not_outputs = {not_output.c_str()};
   const std::string not_node_name = GenerateNodeName(
       GenerateEmulatedOpLabel(kOpTypeLogicalNot, not_equal.label));
   model_editor_.AddNode(kOpTypeLogicalNot, not_node_name, equal_outputs,
                         not_outputs);
-
-  // ONNX logical operators only support bool output. To support output with the
-  // WebNN data type, it is necessary to insert a cast operator after a logical
-  // operator.
-  OperandId output_operand_id = not_equal.output_operand_id;
-  const OperandDataType output_data_type =
-      GetOperand(output_operand_id).descriptor.data_type();
-  std::string output = GetOperandNameById(output_operand_id);
-  CHECK_EQ(output_data_type, OperandDataType::kUint8);
-  operand_to_bool_name_[not_equal.output_operand_id] = not_output;
-  InsertCastNode(not_output, output, WebnnToOnnxDataType(output_data_type));
+  RegisterLogicalOutput(not_equal.output_operand_id, std::move(not_output));
 }
 
 void GraphBuilderOrt::AddElementWiseBinaryOperation(
@@ -1727,12 +1769,11 @@ void GraphBuilderOrt::AddGatherNDOperation(const mojom::GatherND& gather_nd) {
           ? indices
           : CreateCastNode(indices, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
 
-  // Clamp the indices operand to prevent out-of-bounds reading which will cause
-  // ORT CPU EP to throw a runtime error.
-  std::string clamped_indices = ClampGatherNDIndices(
+  std::string normalized_indices = NormalizeGatherScatterNDIndices(
       int64_indices, input_descriptor.shape(), indices_descriptor.shape());
 
-  std::array<const char*, 2> inputs = {input.c_str(), clamped_indices.c_str()};
+  std::array<const char*, 2> inputs = {input.c_str(),
+                                       normalized_indices.c_str()};
   std::array<const char*, 1> outputs = {output.c_str()};
 
   model_editor_.AddNode(kOpTypeGatherND, node_name, inputs, outputs);
@@ -2947,13 +2988,11 @@ void GraphBuilderOrt::AddScatterNDOperation(
           ? indices
           : CreateCastNode(indices, ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64);
 
-  // Clamp the indices operand to prevent out-of-bounds writing which will cause
-  // ORT CPU EP to throw a runtime error.
-  std::string clamped_indices = ClampGatherNDIndices(
+  std::string normalized_indices = NormalizeGatherScatterNDIndices(
       int64_indices, input_descriptor.shape(), indices_descriptor.shape());
 
-  std::array<const char*, 3> inputs = {input.c_str(), clamped_indices.c_str(),
-                                       updates.c_str()};
+  std::array<const char*, 3> inputs = {
+      input.c_str(), normalized_indices.c_str(), updates.c_str()};
   std::array<const char*, 1> outputs = {output.c_str()};
 
   model_editor_.AddNode(kOpTypeScatterND, node_name, inputs, outputs);
@@ -3173,7 +3212,6 @@ void GraphBuilderOrt::AddTriangularOperation(
 
 void GraphBuilderOrt::AddWhereOperation(const mojom::Where& where) {
   const std::string node_name = GenerateNodeName(where.label);
-  std::string condition = GetOperandNameById(where.condition_operand_id);
   const std::string true_value =
       GetOperandNameById(where.true_value_operand_id);
   const std::string false_value =
@@ -3193,13 +3231,8 @@ void GraphBuilderOrt::AddWhereOperation(const mojom::Where& where) {
   CHECK(data_type_limits.where_value.Supports(false_value_descriptor));
 
   // ONNX where operation only supports bool condition input.
-  CHECK_EQ(condition_descriptor.data_type(), OperandDataType::kUint8);
-  auto condition_it = operand_to_bool_name_.find(where.condition_operand_id);
-  if (condition_it != operand_to_bool_name_.end()) {
-    condition = condition_it->second;
-  } else {
-    condition = CreateCastNode(condition, ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL);
-  }
+  const std::string condition =
+      GetOperandNameAsBool(where.condition_operand_id);
 
   std::array<const char*, 3> inputs = {condition.c_str(), true_value.c_str(),
                                        false_value.c_str()};

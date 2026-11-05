@@ -22,6 +22,7 @@
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "url/gurl.h"
 
+class BrowserWindowInterface;
 class SessionID;
 class TabAndroid;
 class TabModelObserverJniBridge;
@@ -42,29 +43,26 @@ class TabModelJniBridge : public TabModel {
                     std::optional<chrome::android::CustomTabProfileType>
                         custom_tab_profile_type,
                     TabModelType tab_model_type);
-  void Destroy(JNIEnv* env);
+  void Destroy();
 
   TabModelJniBridge(const TabModelJniBridge&) = delete;
   TabModelJniBridge& operator=(const TabModelJniBridge&) = delete;
 
   ~TabModelJniBridge() override;
 
-  void AssociateWithBrowserWindow(JNIEnv* env,
-                                  long native_android_browser_window);
-  void DissociateWithBrowserWindow(JNIEnv* env);
-  void TabAddedToModel(JNIEnv* env, TabAndroid* tab);
-  TabAndroid* DuplicateTab(JNIEnv* env, TabAndroid* tab);
-  void MoveTabToWindowForTesting(JNIEnv* env,
-                                 TabAndroid* tab,
-                                 long android_browser_window_ptr,
+  void AssociateWithBrowserWindow(int64_t native_android_browser_window);
+  void DissociateWithBrowserWindow();
+  void TabAddedToModel(TabAndroid* tab);
+  TabAndroid* DuplicateTab(TabAndroid* tab);
+  void MoveTabToWindowForTesting(TabAndroid* tab,
+                                 BrowserWindowInterface* browser_window,
                                  int new_index);
-  bool MoveTabGroupToWindowForTesting(JNIEnv* env,
-                                      const base::Token& group_id,
-                                      long android_browser_window_ptr,
+  bool MoveTabGroupToWindowForTesting(const base::Token& group_id,
+                                      BrowserWindowInterface* browser_window,
                                       int new_index);
-  void SetMuteSetting(JNIEnv* env, std::vector<TabAndroid*> tabs, bool mute);
-  int32_t GetSessionIdForTesting(JNIEnv* env);
-  chrome::android::ActivityType GetActivityTypeForTesting(JNIEnv* env);
+  void SetMuteSetting(const std::vector<TabAndroid*>& tabs, bool mute);
+  int32_t GetNativeSessionId();
+  chrome::android::ActivityType GetActivityTypeForTesting();
 
   // TabModel::
   void AddTabListInterfaceObserver(TabListInterfaceObserver* observer) override;
@@ -77,7 +75,7 @@ class TabModelJniBridge : public TabModel {
   content::WebContents* GetWebContentsAt(int index) const override;
   TabAndroid* GetTabAt(int index) const override;
   bool HasTab(TabAndroid* tab) const override;
-  base::android::ScopedJavaLocalRef<jobject> GetJavaObject() const override;
+  jni_zero::ScopedJavaLocalRef<jobject> GetJavaObject() const override;
 
   void SetActiveIndex(int index) override;
   void ForceCloseAllTabs() override;
@@ -109,7 +107,7 @@ class TabModelJniBridge : public TabModel {
 
   // Instructs the TabModel to broadcast a notification that all tabs are now
   // loaded from storage.
-  void BroadcastSessionRestoreComplete(JNIEnv* env);
+  void BroadcastSessionRestoreComplete();
 
   int GetTabCountNavigatedInTimeWindow(
       const base::Time& begin_time,
@@ -121,14 +119,15 @@ class TabModelJniBridge : public TabModel {
   tabs::TabStripCollection* GetTabStripCollection(
       base::PassKey<tabs_api::AndroidTabStripModelAdapter>) override;
 
-  tabs::TabInterface* DuplicateTab(TabAndroid* tab);
-
   // TODO(crbug.com/415351293): Implement these.
   // TabListInterface implementation.
   void ActivateTab(tabs::TabHandle tab) override;
   tabs::TabInterface* OpenTab(const GURL& url,
                               int index,
                               bool foregrond) override;
+  tabs::TabInterface* OpenTab(const GURL& url,
+                              int index,
+                              TabLaunchType launch_type) override;
   void SetOpenerForTab(tabs::TabHandle target, tabs::TabHandle opener) override;
   tabs::TabInterface* GetOpenerForTab(tabs::TabHandle target) override;
   tabs::TabInterface* InsertWebContentsAt(
@@ -149,13 +148,17 @@ class TabModelJniBridge : public TabModel {
   void UnpinTab(tabs::TabHandle tab) override;
   bool ContainsTabGroup(tab_groups::TabGroupId group_id) override;
   std::vector<tab_groups::TabGroupId> ListTabGroups() override;
+  std::set<split_tabs::SplitTabId> ListSplits() override;
   std::optional<tab_groups::TabGroupVisualData> GetTabGroupVisualData(
       tab_groups::TabGroupId group_id) override;
+  std::optional<split_tabs::SplitTabVisualData> GetSplitTabVisualData(
+      split_tabs::SplitTabId split_id) override;
   gfx::Range GetTabGroupTabIndices(tab_groups::TabGroupId group_id) override;
   std::optional<tab_groups::TabGroupId> CreateTabGroup(
       const std::vector<tabs::TabHandle>& tabs) override;
   std::optional<split_tabs::SplitTabId> CreateSplit(
-      const std::vector<tabs::TabHandle>& tabs) override;
+      const std::vector<tabs::TabHandle>& tabs,
+      const split_tabs::SplitTabVisualData& visual_data) override;
   void SetTabGroupVisualData(
       tab_groups::TabGroupId group_id,
       const tab_groups::TabGroupVisualData& visual_data) override;
@@ -177,18 +180,13 @@ class TabModelJniBridge : public TabModel {
   // Returns a corresponding Java Class object.
   static jclass GetClazz(JNIEnv* env);
 
-  static TabModel* GetArchivedTabModelPtr();
-
   static bool IsTabLaunchedInForeground(TabLaunchType type,
                                         bool is_new_tab_incognito,
                                         bool is_current_model_incognito);
 
   static TabModel* FromJavaObject(const jni_zero::JavaRef<jobject>& obj);
 
- protected:
-  jni_zero::ScopedJavaLocalRef<jobject> GetActivityForWindow(
-      SessionID window_id);
-
+ private:
   JavaObjectWeakGlobalRef java_object_;
 
   // The observer bridge. This exists as long as there are registered observers.
@@ -196,11 +194,15 @@ class TabModelJniBridge : public TabModel {
   // Java TabModelJniBridge.
   std::unique_ptr<TabModelObserverJniBridge> observer_bridge_;
 
-  bool is_archived_tab_model_;
   // Cannot use a conventional member variable because this is initialized after
   // the constructor.
   std::unique_ptr<ui::ScopedUnownedUserData<TabListInterface>>
       scoped_unowned_user_data_;
+
+  // Whether restored background tabs have already been scheduled with
+  // BackgroundTabLoadingPolicy. Duplicate calls to
+  // BroadcastSessionRestoreComplete() can only happen in tests.
+  bool has_scheduled_restored_tabs_ = false;
 };
 
 namespace jni_zero {
@@ -208,14 +210,6 @@ template <>
 inline TabModel* FromJniType<TabModel*>(JNIEnv* env,
                                         const JavaRef<jobject>& j_tab_model) {
   return TabModelJniBridge::FromJavaObject(j_tab_model);
-}
-
-template <>
-inline TabModelJniBridge* FromJniType<TabModelJniBridge*>(
-    JNIEnv* env,
-    const JavaRef<jobject>& j_tab_model) {
-  return static_cast<TabModelJniBridge*>(
-      TabModelJniBridge::FromJavaObject(j_tab_model));
 }
 
 template <>

@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/settings/autofill/autofill_and_passwords/coordinator/autofill_and_passwords_signin_promo_mediator.h"
 
+#import <utility>
+
 #import "base/check_op.h"
 #import "base/memory/raw_ptr.h"
 #import "components/prefs/pref_service.h"
@@ -15,6 +17,7 @@
 #import "ios/chrome/browser/authentication/ui_bundled/change_profile/change_profile_autofill_and_passwords_continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin_promo_view_mediator.h"
 #import "ios/chrome/browser/settings/autofill/autofill_and_passwords/ui/autofill_and_passwords_signin_promo_consumer.h"
+#import "ios/chrome/browser/signin/model/account_preview_data_service_factory.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
@@ -44,6 +47,7 @@
   raw_ptr<AuthenticationService> _authService;
   raw_ptr<PrefService> _prefService;
   raw_ptr<signin::IdentityManager> _identityManager;
+  raw_ptr<signin::AccountPreviewDataService> _accountPreviewDataService;
   raw_ptr<syncer::SyncService> _syncService;
 
   // Whether the consumer's view is loaded.
@@ -56,6 +60,8 @@
                       authService:(AuthenticationService*)authService
                   identityManager:(signin::IdentityManager*)identityManager
                       prefService:(PrefService*)prefService
+        accountPreviewDataService:
+            (signin::AccountPreviewDataService*)accountPreviewDataService
                       syncService:(syncer::SyncService*)syncService {
   self = [super init];
   if (self) {
@@ -63,6 +69,7 @@
     _authService = authService;
     _identityManager = identityManager;
     _prefService = prefService;
+    _accountPreviewDataService = accountPreviewDataService;
     _syncService = syncService;
 
     _identityManagerObserverBridge =
@@ -90,6 +97,7 @@
   _authService = nullptr;
   _prefService = nullptr;
   _identityManager = nullptr;
+  _accountPreviewDataService = nullptr;
   _syncService = nullptr;
 }
 
@@ -100,11 +108,11 @@
   }
 
   [self configureSigninPromoWithShouldShow:YES];
-  [_signinPromoViewMediator signinPromoViewIsVisible];
+  [_signinPromoViewMediator signinPromoDidBecomeVisible];
 }
 
 - (void)updateSignInPromoVisibility {
-  if (_signinPromoViewMediator.showSpinner) {
+  if (_signinPromoViewMediator.spinnerVisible) {
     SigninPromoViewConfigurator* promoConfigurator =
         [_signinPromoViewMediator createConfigurator];
     [_consumer configureSigninPromoWithConfigurator:promoConfigurator];
@@ -133,8 +141,8 @@
   self.shouldShowSignInPromo = YES;
 }
 
-- (void)signinDidCompleteWithResult:(SigninCoordinatorResult)result {
-  [_signinPromoViewMediator signinDidCompleteWithResult:result];
+- (void)signinDidCompleteWithResult:(SigninCoordinatorResultOrIdentity)result {
+  [_signinPromoViewMediator signinDidCompleteWithResult:std::move(result)];
   [self updateSignInPromoVisibility];
 }
 
@@ -199,6 +207,7 @@
                   accountManagerService:_accountManagerService
                             authService:_authService
                             prefService:_prefService
+              accountPreviewDataService:_accountPreviewDataService
                             syncService:_syncService
                             accessPoint:signin_metrics::AccessPoint::
                                             kSettingsAutofillAndPasswords
@@ -230,11 +239,9 @@
 
   [self configureSigninPromoWithShouldShow:shouldShowSignInPromo];
   if (shouldShowSignInPromo) {
-    [_signinPromoViewMediator signinPromoViewIsVisible];
+    [_signinPromoViewMediator signinPromoDidBecomeVisible];
   } else {
-    if (_signinPromoViewMediator.isUsable) {
-      [_signinPromoViewMediator signinPromoViewIsHidden];
-    }
+    [_signinPromoViewMediator signinPromoViewIsHidden];
   }
 }
 

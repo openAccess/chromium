@@ -210,6 +210,21 @@ void OAuth2MintAccessTokenFetcherAdapter::OnMintTokenSuccess(
 }
 void OAuth2MintAccessTokenFetcherAdapter::OnMintTokenFailure(
     const GoogleServiceAuthError& error) {
+  // Reclassify `CREDENTIALS_REJECTED_BY_SERVER` for bound tokens according to
+  // the token binding assertion sent in the request (see
+  // `gaia::ClassifyTokenBindingAssertionFailure()`).
+  using Reason = GoogleServiceAuthError::InvalidGaiaCredentialsReason;
+  if (is_refresh_token_bound_ &&
+      error.state() == GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS &&
+      error.GetInvalidGaiaCredentialsReason() ==
+          Reason::CREDENTIALS_REJECTED_BY_SERVER) {
+    CHECK(!binding_key_assertion_.empty());
+    RecordMetricsAndFireError(
+        GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+            gaia::ClassifyTokenBindingAssertionFailure(
+                binding_key_assertion_)));
+    return;
+  }
   RecordMetricsAndFireError(error);
 }
 void OAuth2MintAccessTokenFetcherAdapter::OnRemoteConsentSuccess(

@@ -16,8 +16,7 @@ StubGpuService::~StubGpuService() = default;
 void StubGpuService::EstablishGpuChannel(
     int32_t client_id,
     uint64_t client_tracing_id,
-    bool is_gpu_host,
-    bool enable_extra_handles_validation,
+    mojom::GpuClientType client_type,
     mojo::ScopedMessagePipeHandle channel_handle,
     EstablishGpuChannelCallback callback) {}
 
@@ -85,8 +84,6 @@ void StubGpuService::LoadedBlob(const gpu::GpuDiskCacheHandle& handle,
                                 const std::string& data) {}
 
 void StubGpuService::WakeUpGpu() {}
-
-void StubGpuService::GpuSwitched() {}
 
 void StubGpuService::DisplayAdded() {}
 

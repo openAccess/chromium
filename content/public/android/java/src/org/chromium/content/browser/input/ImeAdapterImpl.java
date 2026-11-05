@@ -78,9 +78,11 @@ import org.chromium.content.browser.webcontents.WebContentsImpl;
 import org.chromium.content.common.ContentInternalFeatures;
 import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.content_public.browser.ContentFeatureMap;
+import org.chromium.content_public.browser.GlobalRenderFrameHostId;
 import org.chromium.content_public.browser.ImeAdapter;
 import org.chromium.content_public.browser.ImeEventObserver;
 import org.chromium.content_public.browser.InputMethodManagerWrapper;
+import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.StylusWritingImeCallback;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContents.UserDataFactory;
@@ -88,6 +90,8 @@ import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.mojo.system.MessagePipeHandle;
 import org.chromium.mojo.system.MojoException;
 import org.chromium.mojo.system.impl.CoreImpl;
+import org.chromium.ui.base.EventForwarder;
+import org.chromium.ui.base.EventForwarder.TouchSequenceObserver;
 import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.base.ime.TextInputAction;
@@ -130,7 +134,8 @@ public class ImeAdapterImpl
                 WindowEventObserver,
                 UserData,
                 InputMethodManagerWrapper.Delegate,
-                AutocorrectManager.Delegate {
+                AutocorrectManager.Delegate,
+                TouchSequenceObserver {
     private static final String TAG = "Ime";
     private static final boolean DEBUG_LOGS = false;
 
@@ -171,12 +176,16 @@ public class ImeAdapterImpl
     private int mTextInputFlags;
     private int mTextInputMode = WebTextInputMode.DEFAULT;
     private int mTextInputAction = TextInputAction.DEFAULT;
+    private int mTextInputNodeId;
     private boolean mNodeEditable;
     private boolean mNodePassword;
 
     // Viewport rect before the OSK was brought up.
-    // Used to tell View#onSizeChanged to focus a form element.
+    // Used to tell whether the current viewport rect changed because of the OSK.
     private final Rect mFocusPreOSKViewportRect = new Rect();
+
+    // Reusable scratch rect for querying the current visible display frame.
+    private final Rect mCurrentDisplayFrameRect = new Rect();
 
     // Keep the current configuration to detect the change when onConfigurationChanged() is called.
     private Configuration mCurrentConfig;
@@ -204,6 +213,8 @@ public class ImeAdapterImpl
     // system is active and stylus is used to edit input text. This is used to show the soft
     // keyboard from Direct writing toolbar.
     private boolean mForceShowKeyboardDuringStylusWriting;
+
+    private boolean mPendingShowKeyboardOnTouchUp;
 
     private final ImeKeyEventReplayer mImeKeyEventReplayer =
             new ImeKeyEventReplayer(this::sendReplayedKeyEvent);
@@ -696,6 +707,13 @@ public class ImeAdapterImpl
         return mSupportedMimeTypes;
     }
 
+    /** Retrieves the focused frame's GlobalRenderFrameHostId, or null if none is focused. */
+    public @Nullable GlobalRenderFrameHostId getFocusedFrameId() {
+        ImeUtils.checkOnUiThread();
+        RenderFrameHost rfh = mWebContents != null ? mWebContents.getFocusedFrame() : null;
+        return rfh != null ? rfh.getGlobalRenderFrameHostId() : null;
+    }
+
     /**
      * Updates internal representation of the text being edited and its selection and composition
      * properties.
@@ -719,6 +737,7 @@ public class ImeAdapterImpl
      * @param lastVkVisibilityRequest VK visibility request type if show/hide APIs are called from
      *     JS.
      * @param vkPolicy VK policy type whether it is manual or automatic.
+     * @param nodeId The DOM node ID of the focused editable element, or 0 if none.
      * @param imeTextSpans an array of span information (such as spelling and grammar markers).
      */
     @VisibleForTesting
@@ -738,6 +757,7 @@ public class ImeAdapterImpl
             boolean replyToRequest,
             int lastVkVisibilityRequest,
             int vkPolicy,
+            int nodeId,
             ImeTextSpan[] imeTextSpans) {
         TraceEvent.begin("ImeAdapter.updateState");
         try {
@@ -757,8 +777,16 @@ public class ImeAdapterImpl
             boolean needsRestart = false;
             boolean hide = false;
             if (mRestartInputOnNextStateUpdate) {
-                needsRestart = true;
+                if (mTextInputNodeId != nodeId || nodeId == 0) {
+                    needsRestart = true;
+                }
                 mRestartInputOnNextStateUpdate = false;
+            }
+            if (mTextInputNodeId != nodeId) {
+                mTextInputNodeId = nodeId;
+                if (textInputType != TextInputType.NONE) {
+                    needsRestart = true;
+                }
             }
 
             mTextInputFlags = textInputFlags;
@@ -899,9 +927,10 @@ public class ImeAdapterImpl
         }
         if (DEBUG_LOGS) Log.i(TAG, "showSoftKeyboard");
         View containerView = getContainerView();
+        EventForwarder forwarder = mWebContents.getEventForwarder();
 
         // Block showing soft keyboard during stylus handwriting.
-        int lastToolType = mWebContents.getEventForwarder().getLastToolType();
+        int lastToolType = forwarder.getLastToolType();
         if (mWebContents.getStylusWritingHandler() != null
                 && !mWebContents.getStylusWritingHandler().canShowSoftKeyboard()
                 && (lastToolType == MotionEvent.TOOL_TYPE_STYLUS
@@ -912,10 +941,57 @@ public class ImeAdapterImpl
             return;
         }
 
+        if (isRestrictInteractionsInSwipeRegionEnabled()
+                && isFullscreenOrImmersive(mWebContents, containerView)
+                && forwarder.hasTouchOriginatingInGestureInsets(containerView)) {
+            if (DEBUG_LOGS) {
+                Log.i(
+                        TAG,
+                        "showSoftKeyboard: deferred or suppressed due to touch in gesture insets");
+            }
+            if (!forwarder.hasCurrentTouchExceededTouchSlop()) {
+                setPendingShowKeyboardOnTouchUp(true);
+            }
+            return;
+        }
+
         mInputMethodManagerWrapper.showSoftInput(containerView, 0, getNewShowKeyboardReceiver());
         if (containerView.getResources().getConfiguration().keyboard
                 != Configuration.KEYBOARD_NOKEYS) {
             mWebContents.scrollFocusedEditableNodeIntoView();
+        }
+    }
+
+    @Override
+    public void onTouchSequenceEnded(boolean hasExceededTouchSlop) {
+        if (!mPendingShowKeyboardOnTouchUp) return;
+
+        setPendingShowKeyboardOnTouchUp(false);
+        if (!hasExceededTouchSlop && focusedNodeAllowsSoftKeyboard()) {
+            showSoftKeyboard();
+        }
+    }
+
+    /**
+     * Updates whether a soft keyboard show request is pending touch release, and manages {@link
+     * TouchSequenceObserver} registration accordingly.
+     *
+     * <p>The observer is registered lazily only while a deferred request is pending rather than in
+     * the constructor. {@link EventForwarder} instances are retained in the static {@code
+     * EventForwarder.sEventForwarders} map until native teardown, whereas {@link ImeAdapterImpl} is
+     * owned by {@code UserDataHost} (referenced weakly from {@code sNativeHelperMap}) and holds
+     * strong references back to {@code AwContents} via {@link ImeEventObserver}. Holding a
+     * permanent strong reference from {@link EventForwarder} to {@link ImeAdapterImpl} would bypass
+     * {@code AwContents}'s weak internals holder and prevent {@code AwContents} from being
+     * garbage-collected before native cleanup.
+     */
+    private void setPendingShowKeyboardOnTouchUp(boolean pending) {
+        if (mPendingShowKeyboardOnTouchUp == pending) return;
+        mPendingShowKeyboardOnTouchUp = pending;
+        if (pending) {
+            mWebContents.getEventForwarder().addTouchSequenceObserver(this);
+        } else {
+            mWebContents.getEventForwarder().removeTouchSequenceObserver(this);
         }
     }
 
@@ -933,6 +1009,7 @@ public class ImeAdapterImpl
     public void onShowKeyboardReceiveResult(int resultCode) {
         if (!isValid()) return;
         View containerView = getContainerView();
+        if (containerView == null) return;
         if (resultCode == InputMethodManager.RESULT_SHOWN) {
             // If OSK is newly shown, delay the form focus until
             // the onSizeChanged (in order to adjust relative to the
@@ -945,6 +1022,9 @@ public class ImeAdapterImpl
             // If the OSK was already there, focus the form immediately.
             // Also, the VR soft keyboard always reports RESULT_UNCHANGED_SHOWN as it
             // doesn't affect the size of the web contents.
+            if (isReshrinkScrollEnabled() && mFocusPreOSKViewportRect.isEmpty()) {
+                containerView.getWindowVisibleDisplayFrame(mFocusPreOSKViewportRect);
+            }
             mWebContents.scrollFocusedEditableNodeIntoView();
         }
     }
@@ -958,6 +1038,15 @@ public class ImeAdapterImpl
         mFocusPreOSKViewportRect.setEmpty();
     }
 
+    Rect getFocusPreOSKViewportRectForTesting() {
+        return new Rect(mFocusPreOSKViewportRect);
+    }
+
+    private static boolean isReshrinkScrollEnabled() {
+        return ContentFeatureMap.isEnabled(
+                ContentInternalFeatures.SCROLL_FOCUSED_NODE_ON_OSK_VIEWPORT_RESHRINK);
+    }
+
     @Override
     public ResultReceiver getNewShowKeyboardReceiver() {
         if (mShowKeyboardResultReceiver == null) {
@@ -969,6 +1058,8 @@ public class ImeAdapterImpl
 
     /** Hide soft keyboard. */
     private void hideKeyboard() {
+        setPendingShowKeyboardOnTouchUp(false);
+        cancelRequestToScrollFocusedEditableNodeIntoView();
         if (!isValid()) return;
         if (DEBUG_LOGS) Log.i(TAG, "hideKeyboard");
         View view = getContainerView();
@@ -1026,6 +1117,22 @@ public class ImeAdapterImpl
 
     @Override
     public void onWindowFocusChanged(boolean gainFocus) {
+        if (DEBUG_LOGS) Log.i(TAG, "onWindowFocusChanged: gainFocus [%b]", gainFocus);
+
+        if (ContentFeatureMap.isEnabled(
+                ContentFeatureList.ANDROID_FORCE_TEXT_INPUT_STATE_UPDATE_UPON_FOCUS)) {
+            if (gainFocus) {
+                if (isValid()) {
+                    requestTextInputStateUpdate();
+                }
+            } else {
+                // Due to crbug.com/560321831, we should not hide keyboard when the window loses
+                // focus. This is to prevent issues that the keyboard dialog disappears when users
+                // switch languages.
+                reset();
+            }
+        }
+
         if (mInputConnectionFactory != null) {
             mInputConnectionFactory.onWindowFocusChanged(gainFocus);
         }
@@ -1068,21 +1175,38 @@ public class ImeAdapterImpl
         }
     }
 
+    /** Resets IME adapter. */
+    public void reset() {
+        if (DEBUG_LOGS) Log.i(TAG, "reset");
+        mTextInputType = TextInputType.NONE;
+        mTextInputFlags = 0;
+        mTextInputMode = WebTextInputMode.DEFAULT;
+        mTextInputNodeId = 0;
+        mRestartInputOnNextStateUpdate = false;
+        updateNodeAttributes(/* isEditable= */ false, mNodePassword);
+    }
+
     /** Resets IME adapter and hides keyboard. Note that this will also unblock input connection. */
     @Override
     public void resetAndHideKeyboard() {
         if (DEBUG_LOGS) Log.i(TAG, "resetAndHideKeyboard");
-        mTextInputType = TextInputType.NONE;
-        mTextInputFlags = 0;
-        mTextInputMode = WebTextInputMode.DEFAULT;
-        mRestartInputOnNextStateUpdate = false;
-        updateNodeAttributes(/* isEditable= */ false, mNodePassword);
+        reset();
         // This will trigger unblocking if necessary.
         hideKeyboard();
     }
 
     private static boolean isTextInputType(int type) {
         return type != TextInputType.NONE && !InputDialogContainer.isDialogInputType(type);
+    }
+
+    private static boolean isFullscreenOrImmersive(WebContents webContents, View containerView) {
+        return webContents.isFullscreenForCurrentTab()
+                || ViewUtils.isStickyImmersiveMode(containerView);
+    }
+
+    private static boolean isRestrictInteractionsInSwipeRegionEnabled() {
+        return ContentFeatureMap.isEnabled(
+                ContentFeatures.RESTRICT_INTERACTIONS_IN_SWIPE_REGION_ON_FULLSCREEN);
     }
 
     /** See {@link View#dispatchKeyEvent(KeyEvent)} */
@@ -1099,9 +1223,11 @@ public class ImeAdapterImpl
     }
 
     @CalledByNative
-    private void destroyFromNative() {
+    @VisibleForTesting
+    void destroyFromNative() {
         if (mNativeImeAdapterAndroid == 0) return;
 
+        setPendingShowKeyboardOnTouchUp(false);
         resetAndHideKeyboard();
         mIsConnected = false;
         if (mCursorAnchorInfoController != null) {
@@ -1127,10 +1253,10 @@ public class ImeAdapterImpl
     /**
      * Update selection to input method manager.
      *
-     * @param selectionStart   The selection start.
-     * @param selectionEnd     The selection end.
+     * @param selectionStart The selection start.
+     * @param selectionEnd The selection end.
      * @param compositionStart The composition start.
-     * @param compositionEnd   The composition end.
+     * @param compositionEnd The composition end.
      */
     void updateSelection(
             int selectionStart, int selectionEnd, int compositionStart, int compositionEnd) {
@@ -1439,10 +1565,11 @@ public class ImeAdapterImpl
 
     /**
      * Send a request to the native counterpart to delete a given range of characters.
+     *
      * @param beforeLength Number of code points to extend the selection by before the existing
-     *                     selection.
+     *     selection.
      * @param afterLength Number of code points to extend the selection by after the existing
-     *                    selection.
+     *     selection.
      * @return Whether the native counterpart of ImeAdapter received the call.
      */
     boolean deleteSurroundingTextInCodePoints(int beforeLength, int afterLength) {
@@ -1530,6 +1657,7 @@ public class ImeAdapterImpl
 
     /**
      * Send a request to the native counterpart to set composing region to given indices.
+     *
      * @param start The start of the composition.
      * @param end The end of the composition.
      * @return Whether the native counterpart of ImeAdapter received the call.
@@ -1544,8 +1672,9 @@ public class ImeAdapterImpl
         return true;
     }
 
+    @VisibleForTesting
     @CalledByNative
-    private void focusedNodeChanged(
+    /*package*/ void focusedNodeChanged(
             boolean isEditable,
             int nodeLeftDip,
             int nodeTopDip,
@@ -1677,18 +1806,26 @@ public class ImeAdapterImpl
     }
 
     /**
-     * Sends rich content into the current focused text field
+     * Sends rich content into the target text field, if currently focused.
      *
-     * @param bytes binary data of therich content to be inserted
+     * @param targetFrameId the GlobalRenderFrameHostId targeted for media insertion
+     * @param bytes binary data of the rich content to be inserted
      * @param extension the file extension of the rich content to be inserted
      * @return whether the insertion is successful.
      */
-    boolean commitContent(byte[] bytes, String extension) {
+    boolean commitContent(
+            @Nullable GlobalRenderFrameHostId targetFrameId, byte[] bytes, String extension) {
         onImeEvent();
         boolean result =
                 isValid()
+                        && targetFrameId != null
                         && ImeAdapterImplJni.get()
-                                .insertMediaFromBytes(mNativeImeAdapterAndroid, bytes, extension);
+                                .insertMediaFromBytes(
+                                        mNativeImeAdapterAndroid,
+                                        targetFrameId.childId(),
+                                        targetFrameId.frameRoutingId(),
+                                        bytes,
+                                        extension);
         ImeMetricsUtils.recordCommitContentSuccess(extension, result);
         return result;
     }
@@ -1916,7 +2053,16 @@ public class ImeAdapterImpl
     }
 
     @CalledByNative
-    private void onResizeScrollableViewport(boolean contentsHeightReduced) {
+    @VisibleForTesting
+    void onResizeScrollableViewport(boolean contentsHeightReduced) {
+        if (!isValid()) return;
+        if (!focusedNodeEditable()) {
+            cancelRequestToScrollFocusedEditableNodeIntoView();
+            return;
+        }
+        View containerView = getContainerView();
+        if (containerView == null) return;
+
         if (!contentsHeightReduced) {
             // Note: When the keyboard is shown, the viewport height can grow and shrink as various
             // pieces of state are updated asynchronously. If we're waiting to scroll (non-empty
@@ -1925,23 +2071,46 @@ public class ImeAdapterImpl
             if (!ContentFeatureMap.isEnabled(
                     ContentInternalFeatures.SCROLL_AFTER_OSK_VIEWPORT_SHRINK_FIX)) {
                 cancelRequestToScrollFocusedEditableNodeIntoView();
+                return;
+            }
+            if (!mFocusPreOSKViewportRect.isEmpty()) {
+                containerView.getWindowVisibleDisplayFrame(mCurrentDisplayFrameRect);
+                if (mCurrentDisplayFrameRect.width() != mFocusPreOSKViewportRect.width()) {
+                    cancelRequestToScrollFocusedEditableNodeIntoView();
+                    return;
+                }
+                // Update the baseline when the visible display frame expands (e.g. switching the
+                // keyboard to floating mode) so a subsequent re-docking shrink scrolls into view.
+                // Non-IME viewport changes such as browser controls do not alter
+                // getWindowVisibleDisplayFrame().
+                if (isReshrinkScrollEnabled()
+                        && mCurrentDisplayFrameRect.height() > mFocusPreOSKViewportRect.height()) {
+                    mFocusPreOSKViewportRect.set(mCurrentDisplayFrameRect);
+                }
             }
             return;
         }
 
         // Execute a delayed form focus operation because the OSK was brought up earlier.
         if (!mFocusPreOSKViewportRect.isEmpty()) {
-            Rect rect = new Rect();
-            getContainerView().getWindowVisibleDisplayFrame(rect);
-            if (!rect.equals(mFocusPreOSKViewportRect)) {
+            containerView.getWindowVisibleDisplayFrame(mCurrentDisplayFrameRect);
+            if (!mCurrentDisplayFrameRect.equals(mFocusPreOSKViewportRect)) {
                 // Only assume the OSK triggered the onSizeChanged if width was preserved.
-                if (rect.width() == mFocusPreOSKViewportRect.width()) {
-                    assert mWebContents != null;
+                if (mCurrentDisplayFrameRect.width() != mFocusPreOSKViewportRect.width()) {
+                    cancelRequestToScrollFocusedEditableNodeIntoView();
+                    return;
+                }
+                if (mCurrentDisplayFrameRect.height() < mFocusPreOSKViewportRect.height()) {
                     mWebContents.scrollFocusedEditableNodeIntoView();
                 }
-                // Zero the rect to prevent the above operation from issuing the delayed
-                // form focus event.
-                cancelRequestToScrollFocusedEditableNodeIntoView();
+                if (isReshrinkScrollEnabled()) {
+                    // Keep tracking the display frame so later keyboard growth
+                    // (e.g. Gboard Translate) re-scrolls the node into view.
+                    mFocusPreOSKViewportRect.set(mCurrentDisplayFrameRect);
+                } else {
+                    // Legacy: only scroll once per keyboard show.
+                    cancelRequestToScrollFocusedEditableNodeIntoView();
+                }
             }
         }
     }
@@ -1970,15 +2139,6 @@ public class ImeAdapterImpl
                     imeTextSpans);
         }
         if (!(text instanceof SpannableString)) return;
-
-        final boolean blockMisspellingInComposition =
-                ContentFeatureMap.isEnabled(
-                        ContentFeatureList
-                                .ANDROID_BLOCK_MISSPELLING_SUGGESTION_SPAN_IN_COMPOSITION_MODE);
-        final boolean blockGrammarInComposition =
-                ContentFeatureMap.isEnabled(
-                        ContentFeatureList
-                                .ANDROID_BLOCK_GRAMMAR_SUGGESTION_SPAN_IN_COMPOSITION_MODE);
 
         SpannableString spannableString = ((SpannableString) text);
         CharacterStyle[] spans = spannableString.getSpans(0, text.length(), CharacterStyle.class);
@@ -2035,17 +2195,6 @@ public class ImeAdapterImpl
                         && !isMisspellingSpan
                         && !isGrammarSpan
                         && !isAutoCorrectionSpan) {
-                    continue;
-                }
-
-                // Some IMEs (Gboard) require the additional suggestion spans with FLAG_MISSPELLED
-                // present in the surrounding text to guide their custom spell check bar. We should
-                // not report these "artificial" suggestion spans to Blink.
-                if (!isEasyCorrectSpan && isMisspellingSpan && blockMisspellingInComposition) {
-                    continue;
-                }
-
-                if (!isEasyCorrectSpan && isGrammarSpan && blockGrammarInComposition) {
                     continue;
                 }
 
@@ -2190,7 +2339,12 @@ public class ImeAdapterImpl
                 String textStr,
                 int newCursorPosition);
 
-        boolean insertMediaFromBytes(long nativeImeAdapterAndroid, byte[] bytes, String extension);
+        boolean insertMediaFromBytes(
+                long nativeImeAdapterAndroid,
+                int renderProcessId,
+                int renderFrameId,
+                byte[] bytes,
+                String extension);
 
         void finishComposingText(long nativeImeAdapterAndroid);
 

@@ -4,6 +4,7 @@
 
 import("//build/buildflag_header.gni")
 import("//build/config/chrome_build.gni")
+import("//build/config/ozone.gni")
 import("//build/config/ui.gni")
 import("//components/signin/features.gni")
 import("//extensions/buildflags/buildflags.gni")
@@ -100,6 +101,7 @@ source_set("startup") {
     ]
 
     public_deps += [
+      "//chrome/browser/infobars",
       "//chrome/browser/startup",
       "//chrome/browser/ui:browser_tab_strip",
       "//chrome/browser/ui/tabs:tab_strip_model_observer",
@@ -143,6 +145,7 @@ source_set("impl") {
     "//chrome/browser/first_run",
     "//chrome/browser/headless",
     "//chrome/browser/infobars",
+    "//chrome/browser/policy",
     "//chrome/browser/profiles",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/profiles:profile_manager",
@@ -168,6 +171,7 @@ source_set("impl") {
     "//components/signin/public/base",
     "//components/signin/public/identity_manager",
     "//components/startup_metric_utils",
+    "//components/tabs:public",
     "//components/translate/core/common",
     "//components/vector_icons",
     "//content/public/browser",
@@ -187,10 +191,7 @@ source_set("impl") {
     "//ui/gfx:native_ui_types",
     "//url",
   ]
-  public_deps = [
-    "//chrome/browser:browser_public_dependencies",
-    "//ui/base/unowned_user_data",
-  ]
+  public_deps = [ "//ui/base/unowned_user_data" ]
 
   if (!is_android) {
     sources += [
@@ -233,6 +234,9 @@ source_set("impl") {
       "//chrome/browser/profiles/keep_alive",
       "//chrome/browser/search",
       "//chrome/browser/search_engines",
+      "//chrome/browser/ui:browser_commands",
+      "//chrome/browser/ui:browser_tabstrip",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:chrome_pages",
       "//chrome/browser/ui:session_crashed_bubble",
       "//chrome/browser/ui:ui_features",
@@ -422,6 +426,7 @@ source_set("unit_tests") {
     "//base",
     "//base/test:test_support",
     "//chrome/common:chrome_features",
+    "//chrome/test/base:testing_browser_process",
   ]
 
   if (!is_android) {
@@ -460,7 +465,10 @@ source_set("unit_tests") {
   }
   if (enable_dice_support) {
     sources += [ "first_run_service_unittest.cc" ]
-    deps += [ ":test_support_ui" ]
+    deps += [
+      ":test_support_ui",
+      "//chrome/browser/sync",
+    ]
   }
 }
 
@@ -495,7 +503,9 @@ if (!is_android) {
       "//chrome/browser/search",
       "//chrome/browser/sessions",
       "//chrome/browser/signin:signin_promo",
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui:browser_init_state",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/profiles",
@@ -538,10 +548,20 @@ if (!is_android) {
       "//third_party/abseil-cpp:absl",
       "//third_party/blink/public/common:headers",
       "//ui/base",
+      "//ui/base:ozone_buildflags",
       "//ui/views",
       "//ui/views/controls/webview",
       "//url",
     ]
+    if (use_ozone) {
+      deps += [ "//ui/ozone" ]
+    }
+    if (ozone_platform_x11) {
+      deps += [
+        "//ui/aura",
+        "//ui/gfx/x",
+      ]
+    }
     if (is_win) {
       sources += [
         "credential_provider_signin_dialog_win_browsertest.cc",
@@ -553,6 +573,8 @@ if (!is_android) {
         "//chrome/browser/profile_resetter",
         "//chrome/browser/ui:chrome_pages",
         "//chrome/credential_provider/common:common_constants",
+        "//chrome/test/base:testing_browser_process",
+        "//components/enterprise/isolated_mode",
       ]
     }
     if (enable_dice_support) {
@@ -587,6 +609,8 @@ if (!is_android && !is_chromeos_device) {
       "//chrome/browser:main_extra_parts",
       "//chrome/browser/prefs:util",
       "//chrome/browser/sessions",
+      "//chrome/browser/ui:browser_commands",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:simple_message_box_internal",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/tabs:tab_strip",
@@ -603,7 +627,10 @@ if (!is_android && !is_chromeos_device) {
 
     if (is_win) {
       sources += [ "startup_launch_infobar_interactive_uitest.cc" ]
-      deps += [ "//chrome/browser/ui/views/infobars" ]
+      deps += [
+        "//chrome/browser/infobars",
+        "//chrome/browser/ui/views/infobars",
+      ]
     }
 
     if (!is_chromeos) {

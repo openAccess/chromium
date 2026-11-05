@@ -4,9 +4,9 @@
 
 #include "chrome/browser/actor/actor_script_tool_receiver.h"
 
+#include "base/memory/self_deleting.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_task.h"
-#include "components/actor/core/actor_features.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 
@@ -16,13 +16,17 @@ namespace actor {
 void ActorScriptToolReceiver::Create(
     content::RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<blink::mojom::ScriptToolHost> receiver) {
-  new ActorScriptToolReceiver(*render_frame_host, std::move(receiver));
+  base::MakeSelfDeleting<ActorScriptToolReceiver>(*render_frame_host,
+                                                  std::move(receiver));
 }
 
 ActorScriptToolReceiver::ActorScriptToolReceiver(
     content::RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<blink::mojom::ScriptToolHost> receiver)
-    : DocumentService(render_frame_host, std::move(receiver)) {}
+    mojo::PendingReceiver<blink::mojom::ScriptToolHost> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key) {}
+
+ActorScriptToolReceiver::~ActorScriptToolReceiver() = default;
 
 void ActorScriptToolReceiver::PauseExecution() {
   auto* web_contents =
@@ -41,12 +45,7 @@ void ActorScriptToolReceiver::PauseExecution() {
     if (auto* mutable_task = service->GetTask(task->id())) {
       // TODO(crbug.com/484367299): Implement a proper actor task state for
       // interrupt-with-user-control.
-      if (base::FeatureList::IsEnabled(kActorFormScriptToolInterrupt)) {
-        mutable_task->Interrupt(/*retain_user_control*/ true);
-      } else {
-        mutable_task->Pause(/*from_actor=*/true,
-                            /*cancel_existing_action=*/false);
-      }
+      mutable_task->Interrupt(/*retain_user_control=*/true);
     }
   }
 }

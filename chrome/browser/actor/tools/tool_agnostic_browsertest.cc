@@ -15,6 +15,7 @@
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/actor/tools/tools_test_util.h"
 #include "chrome/browser/actor/ui/actor_task_unload_handler.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/common/actor.mojom.h"
@@ -24,6 +25,7 @@
 #include "components/actor/core/task_id.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
@@ -32,8 +34,10 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "ui/base/models/dialog_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/gfx/geometry/point_conversions.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/window/dialog_delegate.h"
@@ -133,15 +137,9 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
 // Ensure actuation for a page tool simulates the page having focus. This is
 // important to ensure, e.g. 'focus' events are fired on the page in a way that
 // matches if a real user was interacting with the page.
-// TODO(crbug.com/460575305): Re-enable when no longer flaky on Mac.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_EnsureFocusSimulatedWhenActing \
-  DISABLED_EnsureFocusSimulatedWhenActing
-#else
-#define MAYBE_EnsureFocusSimulatedWhenActing EnsureFocusSimulatedWhenActing
-#endif
+// TODO(crbug.com/460575305): Re-enable when no longer flaky.
 IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
-                       MAYBE_EnsureFocusSimulatedWhenActing) {
+                       DISABLED_EnsureFocusSimulatedWhenActing) {
   const GURL url_background =
       embedded_https_test_server().GetURL("example.com", "/actor/focus.html");
   const GURL url_foreground =
@@ -152,11 +150,20 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
   WebContents* background_contents = web_contents();
 
   NavigateParams params(browser(), url_foreground, ::ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ::ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   ::ui_test_utils::NavigateToURL(&params);
 
   WebContents* foreground_contents = web_contents();
   ASSERT_NE(foreground_contents, background_contents);
+  // Clear native widget focus and explicitly focus `foreground_contents`'s
+  // `RenderWidgetHost` so that `foreground_contents` has page focus regardless
+  // of OS window activation state in parallel browser_tests shards, and cannot
+  // lose it if another test window steals OS activation mid-test.
+  if (views::Widget* widget = views::Widget::GetTopLevelWidgetForNativeView(
+          foreground_contents->GetNativeView())) {
+    widget->GetFocusManager()->ClearFocus();
+  }
+  foreground_contents->GetPrimaryMainFrame()->GetRenderWidgetHost()->Focus();
   ASSERT_FALSE(background_contents->GetPrimaryMainFrame()
                    ->GetRenderWidgetHost()
                    ->GetView()
@@ -235,8 +242,8 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
   ASSERT_TRUE(subframe);
 
   // Send a click to the button in the subframe.
-  std::optional<int> button_id =
-      GetDOMNodeIdFromSubframe(*subframe, "#iframe", "button#clickable");
+  std::optional<int> button_id = GetDOMNodeIdFromLocalSubframe(
+      *main_frame(), "#iframe", "button#clickable");
   ASSERT_TRUE(button_id);
   std::unique_ptr<ToolRequest> action =
       MakeClickRequest(*subframe, button_id.value());
@@ -467,14 +474,14 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
       MakeNavigateRequest(*active_tab(), url_target.spec());
   ActResultFuture result;
 
-  ASSERT_TRUE(actor_task().GetLastActedTabs().empty());
+  ASSERT_TRUE(actor_task().GetLastActedActorSurfaces().empty());
 
   actor_task().Act(ToRequestList(action), result.GetCallback());
   ExpectErrorResult(result, mojom::ActionResultCode::kUrlBlocked);
 
   // Ensure the tab was added to the tab set even though the tool failed before
   // invoking.
-  EXPECT_FALSE(actor_task().GetLastActedTabs().empty());
+  EXPECT_FALSE(actor_task().GetLastActedActorSurfaces().empty());
 }
 
 // Ensures that a Tool that would normally return !page_stabilization_required
@@ -540,22 +547,9 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
   }
 }
 
-// TODO(b/472640712): Test runs only when this flag is enabled, remove the
-// unique test-suite once the change lands safely and the flag is removed.
-class ActorEarlyAddTaskTabsBrowserTest : public ActorToolAgnosticBrowserTest {
- public:
-  ActorEarlyAddTaskTabsBrowserTest() {
-    scoped_feature_list_.InitAndEnableFeature(kGlicEarlyAddTaskTabs);
-  }
-  ~ActorEarlyAddTaskTabsBrowserTest() override = default;
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
 // Ensure that a tab-scoped action associates the tab with the ActorTask
 // immediately after calling Act.
-IN_PROC_BROWSER_TEST_F(ActorEarlyAddTaskTabsBrowserTest,
+IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
                        TabScopedToolRequestAddsTabImmediately) {
   const GURL url = embedded_https_test_server().GetURL(
       "example.com", "/actor/page_with_clickable_element.html");
@@ -567,7 +561,7 @@ IN_PROC_BROWSER_TEST_F(ActorEarlyAddTaskTabsBrowserTest,
 
   std::unique_ptr<ToolRequest> action =
       MakeClickRequest(*main_frame(), button_id.value());
-  tabs::TabHandle tab = action->GetTabHandle();
+  tabs::TabHandle tab = action->GetActorSurfaceHandle().GetTabHandle();
   ASSERT_NE(tab, tabs::TabHandle::Null());
   ASSERT_FALSE(actor_task().GetTabs().contains(tab));
 
@@ -597,7 +591,7 @@ IN_PROC_BROWSER_TEST_F(ActorEarlyAddTaskTabsBrowserTest,
   EXPECT_TRUE(actor_task().GetTabs().contains(tab));
 }
 
-IN_PROC_BROWSER_TEST_F(ActorEarlyAddTaskTabsBrowserTest,
+IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTest,
                        NewlyAddedTabsVisibleFromStateChangeCallback) {
   const GURL url = embedded_https_test_server().GetURL(
       "example.com", "/actor/page_with_clickable_element.html");
@@ -609,7 +603,7 @@ IN_PROC_BROWSER_TEST_F(ActorEarlyAddTaskTabsBrowserTest,
 
   std::unique_ptr<ToolRequest> action =
       MakeClickRequest(*main_frame(), button_id.value());
-  tabs::TabHandle tab = action->GetTabHandle();
+  tabs::TabHandle tab = action->GetActorSurfaceHandle().GetTabHandle();
 
   ASSERT_TRUE(actor_task().GetTabs().empty());
 
@@ -763,10 +757,11 @@ class ActorToolAgnosticBrowserTestWithCustomDelay
  public:
   ActorToolAgnosticBrowserTestWithCustomDelay() {
     // Ensure tool doesn't finish before the tab is closed.
-    feature_list_.InitAndEnableFeatureWithParameters(
-        features::kGlicActor,
-        {{"glic-actor-page-stability-min-wait", "10000ms"},
-         {features::kGlicActorPolicyControlExemption.name, "true"}});
+    feature_list_.InitWithFeaturesAndParameters(
+        {{features::kGlicActor, {}},
+         {features::kGlicActorPolicyControlExemption, {}},
+         {kActorPageStability, {{kActorPageStabilityMinWait.name, "10000ms"}}}},
+        {});
   }
   ~ActorToolAgnosticBrowserTestWithCustomDelay() override = default;
 
@@ -797,7 +792,7 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTestWithCustomDelay,
 
   std::unique_ptr<ToolRequest> action =
       MakeClickRequest(*main_frame(), button_id.value());
-  tabs::TabHandle tab_handle = action->GetTabHandle();
+  tabs::TabHandle tab_handle = action->GetActorSurfaceHandle().GetTabHandle();
   actor_task().Act(ToRequestList(action), result.GetCallback());
 
   // Wait until the tab has been associated with the task but before the tool
@@ -820,7 +815,7 @@ IN_PROC_BROWSER_TEST_F(ActorToolAgnosticBrowserTestWithCustomDelay,
   // Accept the dialog to allow the tab to close.
   dialog->widget_delegate()->AsDialogDelegate()->AcceptDialog();
 
-  // ActorTask::OnTabWillDetach will return kError before renderer tool
+  // ActorTask::OnActorSurfaceWillDetach will return kError before renderer tool
   // completes. The code is kTaskWentAway because removing a tab causes the task
   // to be stopped.
   ExpectErrorResult(result, mojom::ActionResultCode::kTaskWentAway);

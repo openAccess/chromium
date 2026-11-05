@@ -42,6 +42,7 @@ const char kInspectorPushPermissionError[] =
 const char kInspectorNoSuchFrameError[] =
     "Frame with the given id was not found.";
 const char kNoTargetWithGivenIdError[] = "No target with given id found";
+const char kNoTargetFoundForTargetIdError[] = "No target found for targetId";
 const char kUniqueContextIdNotFoundError[] = "uniqueContextId not found";
 const char kNoNodeForBackendNodeIdError[] =
     "No node found for given backend id";
@@ -589,6 +590,7 @@ Status DevToolsClientImpl::SetUpDevTools() {
         "window.cdc_adoQpoasnfa76pfcZLmcfl_Object = window.Object;"
         "window.cdc_adoQpoasnfa76pfcZLmcfl_Promise = window.Promise;"
         "window.cdc_adoQpoasnfa76pfcZLmcfl_Proxy = window.Proxy;"
+        "window.cdc_adoQpoasnfa76pfcZLmcfl_ShadowRoot = window.ShadowRoot;"
         "window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol = window.Symbol;"
         "window.cdc_adoQpoasnfa76pfcZLmcfl_JSON = window.JSON;"
         "window.cdc_adoQpoasnfa76pfcZLmcfl_Window = window.Window;"
@@ -1511,7 +1513,8 @@ Status ParseInspectorError(const std::string& error_json) {
     }
     std::optional<int> error_code = error_dict->FindInt("code");
     if (error_code == kInvalidParamsInspectorCode) {
-      if (error_message == kNoTargetWithGivenIdError) {
+      if (error_message == kNoTargetWithGivenIdError ||
+          error_message == kNoTargetFoundForTargetIdError) {
         return Status(kNoSuchWindow, error_message);
       }
       return Status(kInvalidArgument, error_message);

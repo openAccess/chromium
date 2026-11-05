@@ -460,6 +460,7 @@ void VaapiVideoEncodeAccelerator::InitializeTask(const Config& config) {
 
   if (config.HasSpatialLayer() || config.HasTemporalLayer()) {
     DCHECK(!config.spatial_layers.empty());
+    CHECK_LE(config.spatial_layers.size(), VideoEncoderInfo::kMaxSpatialLayers);
     for (size_t i = 0; i < config.spatial_layers.size(); ++i) {
       encoder_info_.fps_allocation[i] =
           GetFpsAllocation(config.spatial_layers[i].num_of_temporal_layers);
@@ -539,13 +540,12 @@ void VaapiVideoEncodeAccelerator::ReturnBitstreamBuffer(
     const base::UnsafeSharedMemoryRegion& shm_region = buffer.region();
     DCHECK(shm_region.IsValid());
     base::WritableSharedMemoryMapping shm_mapping = shm_region.Map();
-    uint8_t* target_data = shm_mapping.GetMemoryAs<uint8_t>();
     size_t data_size = 0;
     // vaSyncSurface() is not necessary because GetEncodedChunkSize() has been
     // called in VaapiVideoEncoderDelegate::Encode().
     if (!vaapi_wrapper_->DownloadFromVABuffer(
             encode_result.coded_buffer_id(), /*sync_surface_id=*/std::nullopt,
-            target_data, shm_mapping.size(), &data_size)) {
+            shm_mapping.GetMemoryAsSpan<uint8_t>(), &data_size)) {
       NotifyError({EncoderStatus::Codes::kEncoderHardwareDriverError,
                    "Failed downloading coded buffer"});
       return;

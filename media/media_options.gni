@@ -14,24 +14,12 @@ import("//third_party/libaom/options.gni")
 # This flag sets defaults for the current generation of cast devices.
 is_cast_media_device = is_castos || is_cast_android
 
-# Out-of-process video decoding is a feature specific to Linux and ChromeOS
-# which makes the interaction with platform drivers (for the purposes of
-# hardware accelerated video decoding) happen on utility processes for stability
-# and security purposes. When |allow_oop_video_decoder| is true, code to
-# use this feature is compiled. Note that even if |allow_oop_video_decoder| is
-# true, the feature may be disabled by a runtime flag.
-#
-# When |allow_hosting_oop_video_decoder| is true, code to host the video decoder
-# utility processes is compiled. Note that even if
-# |allow_hosting_oop_video_decoder| is true, the hosting of these utility
-# processes may be disabled by a runtime flag.
-#
-# TODO(b/195769334): finish replacing usages of (is_linux || is_chromeos) with
-# allow_oop_video_decoder where appropriate. Also, finish replacing usages of
-# (is_linux || is_chromeos) with allow_hosting_oop_video_decoder where
-# appropriate.
-allow_hosting_oop_video_decoder = use_linux_video_acceleration
-allow_oop_video_decoder = allow_hosting_oop_video_decoder
+# Out-of-process video decoding is a feature specific to ChromeOS which makes
+# the interaction with platform drivers (for the purposes of hardware
+# accelerated video decoding) happen on utility processes for stability and
+# security purposes. When |enable_oop_video_decoder| is true, code to use this
+# feature is compiled.
+enable_oop_video_decoder = is_chromeos && use_linux_video_acceleration
 
 declare_args() {
   # Allows distributions to link pulseaudio directly (DT_NEEDED) instead of
@@ -123,9 +111,15 @@ declare_args() {
 
   enable_dav1d_decoder = use_blink
 
+  # set to `use_blink` when feature experimentation is ready.
+  enable_dav2d_decoder = false
+
   # Enable browser managed persistent metadata storage for EME persistent
   # session.
   enable_media_drm_storage = is_android || is_castos
+
+  # Enable the URL-based CDM provisioning fetcher.
+  enable_cdm_provision_fetcher = is_android || is_castos || is_fuchsia
 
   # Enable HLS manifest parser and demuxer.
   enable_hls_demuxer = proprietary_codecs
@@ -148,10 +142,12 @@ declare_args() {
   # Enable usage of Symphonia audio decoder within the media library.
   media_use_symphonia_decoder = media_use_symphonia
 
-  # Enable usage of Symphonia demuxer within the media library. Disabled on
-  # Android and Fuchsia by default to avoid binary bloat during development.
+  # Enable usage of Symphonia demuxer within the media library. Until it is
+  # fully functional, only enabled in non-official Linux and Mac builds so that
+  # it gets compile and test coverage without shipping in Chrome.
+  # TODO(crbug.com/550619039): enable in official builds once functional.
   media_use_symphonia_demuxer =
-      media_use_symphonia && !is_android && !is_fuchsia
+      media_use_symphonia && !is_official_build && (is_linux || is_mac)
 
   # If overriding this to false, possibly via its component values,
   # `enable_libaom` should likely also be overriddent to false.
@@ -405,19 +401,22 @@ declare_args() {
 media_subcomponent_deps = [
   "//media/audio",
   "//media/base",
-
-  # TODO(crbug.com/41237623): These files should not be in //media/base.
-  "//media/base/android",
   "//media/capabilities",
   "//media/cdm",
   "//media/device_monitors",
   "//media/filters",
   "//media/formats",
+  "//media/gfx",
   "//media/muxers",
   "//media/parsers",
   "//media/renderers",
   "//media/video",
 ]
+
+if (is_android) {
+  # TODO(crbug.com/41237623): These files should not be in //media/base.
+  media_subcomponent_deps += [ "//media/base/android" ]
+}
 
 if (is_fuchsia) {
   media_subcomponent_deps += [ "//media/fuchsia/common" ]

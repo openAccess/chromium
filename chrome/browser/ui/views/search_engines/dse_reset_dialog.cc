@@ -27,10 +27,15 @@
 #include "services/preferences/tracked/pref_hash_filter.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/controls/link.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 
 namespace search_engines {
 
@@ -45,9 +50,9 @@ void OpenLearnMoreLink(BrowserWindowInterface* browser,
   const GURL kLearnMoreUrl(
       "https://support.google.com/chrome?p=chrome_reset_settings");
   browser->OpenURL(
-      content::OpenURLParams(kLearnMoreUrl, content::Referrer(),
-                             WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                             ui::PAGE_TRANSITION_LINK, false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          kLearnMoreUrl, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK),
       {});
 }
 
@@ -139,7 +144,7 @@ void ShowSearchEngineResetNotification(
 
 void MaybeShowSearchEngineResetNotification(
     BrowserWindowInterface* browser,
-    AutocompleteMatch::Type match_type) {
+    omnibox::AutocompleteMatchType match_type) {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
   // Ensure it is a non-navigation search query.
   if (!AutocompleteMatch::IsSearchType(match_type)) {

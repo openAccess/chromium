@@ -11,13 +11,12 @@
 #include "ash/capture_mode/capture_mode_metrics.h"
 #include "ash/capture_mode/capture_mode_session.h"
 #include "ash/capture_mode/capture_mode_session_focus_cycler.h"
-#include "ash/capture_mode/capture_mode_util.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
 #include "ash/style/icon_button.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/style_util.h"
+#include "ash/style/system_decoration.h"
 #include "base/functional/bind.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -25,7 +24,6 @@
 #include "ui/compositor/layer.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/background.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout.h"
 
 namespace ash {
@@ -70,10 +68,7 @@ bool CaptureModeBarView::IsEventOnSettingsButton(
 
 // TODO(hewer): Add a check and/or test so that the behavior sets
 // `ShouldShowUserNudge()` to false if the `settings_button_` doesn't exist.
-CaptureModeBarView::CaptureModeBarView()
-    : shadow_(SystemShadow::CreateShadowOnNinePatchLayerForView(
-          this,
-          SystemShadow::Type::kElevation12)) {
+CaptureModeBarView::CaptureModeBarView() {
   SetPaintToLayer();
   SetBackground(views::CreateSolidBackground(
       chromeos::features::IsSystemBlurEnabled()
@@ -82,24 +77,24 @@ CaptureModeBarView::CaptureModeBarView()
 
   if (chromeos::features::IsSystemBlurEnabled()) {
     layer()->SetFillsBoundsOpaquely(false);
-    layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
-    layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+    layer()->SetBackgroundBlur(StyleUtil::kBackgroundBlurSigma);
+    layer()->SetBackdropFilterQuality(StyleUtil::kBackgroundBlurQuality);
   }
 
-  const int border_radius = capture_mode::kCaptureBarHeight / 2;
-  layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(border_radius));
+  const gfx::RoundedCornersF rounded_corners(capture_mode::kCaptureBarHeight /
+                                             2.0f);
+  layer()->SetRoundedCornerRadius(rounded_corners);
+
+  decoration_ = SystemDecoration::CreateForView(
+      this, SystemDecoration::ShadowType::kElevation12,
+      SystemDecoration::HighlightBorderMode::kHighlightBorder);
+  decoration_->SetRoundedCorners(rounded_corners);
 
   auto* box_layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal, kBarPadding,
       capture_mode::kBetweenChildSpacing));
   box_layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kCenter);
-
-  capture_mode_util::SetHighlightBorder(
-      this, border_radius,
-      views::HighlightBorder::Type::kHighlightBorderOnShadow);
-
-  shadow_->SetRoundedCorners(gfx::RoundedCornersF(border_radius));
 }
 
 void CaptureModeBarView::AppendSettingsButton() {

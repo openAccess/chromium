@@ -10,7 +10,7 @@
 #include "third_party/omnibox_proto/suggest_template_info.pb.h"
 
 AutocompleteMatch CreateAutocompleteMatch(std::string name,
-                                          AutocompleteMatchType::Type type,
+                                          omnibox::AutocompleteMatchType type,
                                           bool allowed_to_be_default_match,
                                           bool shortcut_boosted,
                                           int traditional_relevance,
@@ -57,18 +57,13 @@ AutocompleteMatch CreateHistoryUrlMlScoredMatch(
     int traditional_relevance,
     float ml_output);
 
-AutocompleteMatch CreateAnswerMlScoredMatch(std::string name,
-                                            bool allowed_to_be_default_match,
-                                            int traditional_relevance,
-                                            float ml_output);
-
 AutocompleteMatch CreateSearchMlScoredMatch(std::string name,
                                             bool allowed_to_be_default_match,
                                             int traditional_relevance,
                                             float ml_output);
 
 AutocompleteMatch CreateMlScoredMatch(std::string name,
-                                      AutocompleteMatchType::Type type,
+                                      omnibox::AutocompleteMatchType type,
                                       bool allowed_to_be_default_match,
                                       int traditional_relevance,
                                       float ml_output);

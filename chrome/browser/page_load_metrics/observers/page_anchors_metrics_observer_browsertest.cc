@@ -9,6 +9,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/scoped_run_loop_timeout.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/ukm/test_ukm_recorder.h"
@@ -28,7 +29,7 @@ class PageAnchorsMetricsObserverBrowserTest
   PageAnchorsMetricsObserverBrowserTest() {
     // Report all anchors to avoid non-deterministic behavior.
     std::map<std::string, std::string> params;
-    params["random_anchor_sampling_period"] = "1";
+    params["RandomAnchorSamplingPeriod"] = "1";
 
     feature_list_.InitAndEnableFeatureWithParameters(
         blink::features::kNavigationPredictor, params);

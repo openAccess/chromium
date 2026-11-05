@@ -6,6 +6,7 @@
 
 #include "base/test/scoped_feature_list.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sync/base/features.h"
 #include "components/sync/protocol/sync_enums.pb.h"
 #include "components/sync_sessions/mock_sync_sessions_client.h"
@@ -26,7 +27,8 @@ constexpr base::TimeDelta kSyncActiveTimeThreshold = base::Minutes(10);
 class TestSyncedTabDelegate : public TabContentsSyncedTabDelegate {
  public:
   explicit TestSyncedTabDelegate(content::WebContents* web_contents) {
-    SetWebContents(web_contents);
+    SetWebContents(web_contents, /*task_tab_helper=*/nullptr,
+                   /*supervised_user_navigation_observer=*/nullptr);
   }
 
   ~TestSyncedTabDelegate() override = default;

@@ -228,7 +228,7 @@ class USBDeviceImplTest : public testing::Test {
       base::span<const uint8_t> blocked_interface_classes,
       bool allow_security_key_requests,
       mojo::PendingRemote<mojom::UsbDeviceClient> client,
-      bool allow_unrestricted_control_transfers = false) {
+      bool allow_unrestricted_access = false) {
     mock_device_ =
         new MockUsbDevice(vendor_id, product_id, manufacturer, product, serial);
     mock_handle_ = new MockUsbDeviceHandle(mock_device_.get());
@@ -236,8 +236,7 @@ class USBDeviceImplTest : public testing::Test {
     mojo::Remote<mojom::UsbDevice> proxy;
     DeviceImpl::Create(mock_device_, proxy.BindNewPipeAndPassReceiver(),
                        std::move(client), blocked_interface_classes,
-                       allow_security_key_requests,
-                       allow_unrestricted_control_transfers);
+                       allow_security_key_requests, allow_unrestricted_access);
 
     // Set up mock handle calls to respond based on mock device configs
     // established by the test.
@@ -305,7 +304,7 @@ class USBDeviceImplTest : public testing::Test {
                        mojo::NullRemote(),
                        /*blocked_interface_classes=*/{},
                        /*allow_security_key_requests=*/false,
-                       /*allow_unrestricted_control_transfers=*/false);
+                       /*allow_unrestricted_access=*/false);
     return proxy;
   }
 
@@ -449,6 +448,11 @@ class USBDeviceImplTest : public testing::Test {
   }
 
   void ResetDevice(UsbDeviceHandle::ResultCallback& callback) {
+    if (base::FeatureList::IsEnabled(
+            features::kWebUsbResetInvalidatesConfiguration)) {
+      claimed_interfaces_.clear();
+      mock_device_->ActiveConfigurationChanged(0);
+    }
     std::move(callback).Run(allow_reset_);
   }
 
@@ -821,6 +825,206 @@ TEST_F(USBDeviceImplTest, Reset) {
     device->Reset(
         base::BindOnce(&ExpectResultAndThen, false, loop.QuitClosure()));
     loop.Run();
+  }
+
+  EXPECT_CALL(mock_handle(), Close());
+}
+
+// Verify that a successful Reset() invalidates the cached active configuration
+// (marking it as 0/unconfigured), preventing interface operations until a
+// configuration is explicitly selected again.
+TEST_F(USBDeviceImplTest, ResetInvalidatesActiveConfiguration) {
+  base::test::ScopedFeatureList feature_list(
+      features::kWebUsbResetInvalidatesConfiguration);
+
+  // Block interface class 3 (HID).
+  mojo::Remote<mojom::UsbDevice> device =
+      GetMockDeviceProxyWithBlockedInterfaces(
+          base::span_from_ref(device::mojom::kUsbHidClass));
+
+  EXPECT_CALL(mock_device(), OpenInternal(_));
+
+  {
+    base::test::TestFuture<mojom::UsbOpenDeviceResultPtr> future;
+    device->Open(future.GetCallback());
+    EXPECT_TRUE(future.Get()->is_success());
+  }
+
+  // Multi-configuration device:
+  //   config 1: interface 0 = HID             (0x03) -> BLOCKED
+  //   config 2: interface 0 = Vendor-specific (0xFF) -> ALLOWED
+  AddMockConfig(ConfigBuilder(/*configuration_value=*/1)
+                    .AddInterface(/*interface_number=*/0,
+                                  /*alternate_setting=*/0,
+                                  /*class_code=*/0x03, /*subclass_code=*/0,
+                                  /*protocol_code=*/0)
+                    .Build());
+  AddMockConfig(ConfigBuilder(/*configuration_value=*/2)
+                    .AddInterface(/*interface_number=*/0,
+                                  /*alternate_setting=*/0,
+                                  /*class_code=*/0xFF, /*subclass_code=*/0,
+                                  /*protocol_code=*/0)
+                    .Build());
+
+  // 1. Select configuration 2.
+  EXPECT_CALL(mock_handle(), SetConfigurationInternal(2, _));
+  {
+    base::test::TestFuture<bool> future;
+    device->SetConfiguration(2, future.GetCallback());
+    EXPECT_TRUE(future.Get());
+  }
+
+  // 2. Claim interface 0 (allowed under config 2).
+  EXPECT_CALL(mock_handle(), ClaimInterfaceInternal(0, _));
+  {
+    base::test::TestFuture<mojom::UsbClaimInterfaceResult> future;
+    device->ClaimInterface(0, future.GetCallback());
+    EXPECT_EQ(mojom::UsbClaimInterfaceResult::kSuccess, future.Get());
+  }
+
+  // 3. Release interface 0.
+  EXPECT_CALL(mock_handle(), ReleaseInterfaceInternal(0, _));
+  {
+    base::test::TestFuture<bool> future;
+    device->ReleaseInterface(0, future.GetCallback());
+    EXPECT_TRUE(future.Get());
+  }
+
+  // 4. Reset the device successfully.
+  EXPECT_CALL(mock_handle(), ResetDeviceInternal(_));
+  set_allow_reset(true);
+  {
+    base::test::TestFuture<bool> future;
+    device->Reset(future.GetCallback());
+    EXPECT_TRUE(future.Get());
+  }
+
+  // 5. Attempting to claim interface 0 or set alternate setting after reset
+  // must fail closed because active configuration is invalidated (0).
+  {
+    base::test::TestFuture<mojom::UsbClaimInterfaceResult> future;
+    device->ClaimInterface(0, future.GetCallback());
+    EXPECT_EQ(mojom::UsbClaimInterfaceResult::kFailure, future.Get());
+  }
+  {
+    base::test::TestFuture<bool> future;
+    device->SetInterfaceAlternateSetting(0, 0, future.GetCallback());
+    EXPECT_FALSE(future.Get());
+  }
+
+  // 6. Explicitly selecting configuration 2 again re-enables interface
+  // operations.
+  EXPECT_CALL(mock_handle(), SetConfigurationInternal(2, _));
+  {
+    base::test::TestFuture<bool> future;
+    device->SetConfiguration(2, future.GetCallback());
+    EXPECT_TRUE(future.Get());
+  }
+
+  EXPECT_CALL(mock_handle(), ClaimInterfaceInternal(0, _));
+  {
+    base::test::TestFuture<mojom::UsbClaimInterfaceResult> future;
+    device->ClaimInterface(0, future.GetCallback());
+    EXPECT_EQ(mojom::UsbClaimInterfaceResult::kSuccess, future.Get());
+  }
+
+  EXPECT_CALL(mock_handle(), Close());
+}
+
+// Verify that when kWebUsbResetInvalidatesConfiguration is disabled, a
+// successful Reset() preserves the active configuration (legacy behavior).
+TEST_F(USBDeviceImplTest, ResetFeatureDisabledPreservesActiveConfiguration) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kWebUsbResetInvalidatesConfiguration);
+
+  mojo::Remote<mojom::UsbDevice> device = GetMockDeviceProxy();
+
+  EXPECT_CALL(mock_device(), OpenInternal(_));
+
+  {
+    base::test::TestFuture<mojom::UsbOpenDeviceResultPtr> future;
+    device->Open(future.GetCallback());
+    EXPECT_TRUE(future.Get()->is_success());
+  }
+
+  AddMockConfig(ConfigBuilder(/*configuration_value=*/1)
+                    .AddInterface(/*interface_number=*/0,
+                                  /*alternate_setting=*/0,
+                                  /*class_code=*/0xFF, /*subclass_code=*/0,
+                                  /*protocol_code=*/0)
+                    .Build());
+
+  EXPECT_CALL(mock_handle(), SetConfigurationInternal(1, _));
+  {
+    base::test::TestFuture<bool> future;
+    device->SetConfiguration(1, future.GetCallback());
+    EXPECT_TRUE(future.Get());
+  }
+
+  EXPECT_CALL(mock_handle(), ResetDeviceInternal(_));
+  set_allow_reset(true);
+  {
+    base::test::TestFuture<bool> future;
+    device->Reset(future.GetCallback());
+    EXPECT_TRUE(future.Get());
+  }
+
+  // Active configuration is preserved when the feature is disabled.
+  EXPECT_CALL(mock_handle(), ClaimInterfaceInternal(0, _));
+  {
+    base::test::TestFuture<mojom::UsbClaimInterfaceResult> future;
+    device->ClaimInterface(0, future.GetCallback());
+    EXPECT_EQ(mojom::UsbClaimInterfaceResult::kSuccess, future.Get());
+  }
+
+  EXPECT_CALL(mock_handle(), Close());
+}
+
+// Verify that even if Reset() fails, the active configuration is invalidated
+// (assumed unconfigured), preventing interface operations until reconfigured.
+TEST_F(USBDeviceImplTest, ResetFailureInvalidatesActiveConfiguration) {
+  base::test::ScopedFeatureList feature_list(
+      features::kWebUsbResetInvalidatesConfiguration);
+
+  mojo::Remote<mojom::UsbDevice> device = GetMockDeviceProxy();
+
+  EXPECT_CALL(mock_device(), OpenInternal(_));
+
+  {
+    base::test::TestFuture<mojom::UsbOpenDeviceResultPtr> future;
+    device->Open(future.GetCallback());
+    EXPECT_TRUE(future.Get()->is_success());
+  }
+
+  AddMockConfig(ConfigBuilder(/*configuration_value=*/1)
+                    .AddInterface(/*interface_number=*/0,
+                                  /*alternate_setting=*/0,
+                                  /*class_code=*/0xFF, /*subclass_code=*/0,
+                                  /*protocol_code=*/0)
+                    .Build());
+
+  EXPECT_CALL(mock_handle(), SetConfigurationInternal(1, _));
+  {
+    base::test::TestFuture<bool> future;
+    device->SetConfiguration(1, future.GetCallback());
+    EXPECT_TRUE(future.Get());
+  }
+
+  EXPECT_CALL(mock_handle(), ResetDeviceInternal(_));
+  set_allow_reset(false);
+  {
+    base::test::TestFuture<bool> future;
+    device->Reset(future.GetCallback());
+    EXPECT_FALSE(future.Get());
+  }
+
+  // Even if reset failed, active configuration is invalidated (set to 0),
+  // so ClaimInterface fails closed.
+  {
+    base::test::TestFuture<mojom::UsbClaimInterfaceResult> future;
+    device->ClaimInterface(0, future.GetCallback());
+    EXPECT_EQ(mojom::UsbClaimInterfaceResult::kFailure, future.Get());
   }
 
   EXPECT_CALL(mock_handle(), Close());
@@ -1567,7 +1771,7 @@ TEST_F(USBDeviceImplTest, ClaimInterfaceFailsDuringSetConfigurationMultiPipe) {
                      /*client=*/mojo::NullRemote(),
                      /*blocked_interface_classes=*/{},
                      /*allow_security_key_requests=*/false,
-                     /*allow_unrestricted_control_transfers=*/false);
+                     /*allow_unrestricted_access=*/false);
 
   EXPECT_CALL(mock_device(), OpenInternal(_)).Times(2);
 
@@ -1856,6 +2060,7 @@ TEST_F(USBDeviceImplTest, ControlTransferStandardWriteBlocked) {
     base::test::TestFuture<mojom::UsbOpenDeviceResultPtr> future;
     device->Open(future.GetCallback());
     EXPECT_TRUE(future.Get()->is_success());
+    EXPECT_FALSE(mock_handle().allow_unrestricted_detach());
   }
 
   std::vector<uint8_t> fake_data = {1, 2, 3};
@@ -1889,13 +2094,14 @@ TEST_F(USBDeviceImplTest, ControlTransferStandardWriteAllowedWithBypass) {
       /*blocked_interface_classes=*/{},
       /*allow_security_key_requests=*/false,
       /*client=*/mojo::NullRemote(),
-      /*allow_unrestricted_control_transfers=*/true);
+      /*allow_unrestricted_access=*/true);
 
   EXPECT_CALL(mock_device(), OpenInternal(/*callback=*/_));
 
   base::test::TestFuture<mojom::UsbOpenDeviceResultPtr> open_future;
   device->Open(open_future.GetCallback());
   EXPECT_TRUE(open_future.Get()->is_success());
+  EXPECT_TRUE(mock_handle().allow_unrestricted_detach());
 
   AddMockConfig(ConfigBuilder(/*configuration_value=*/1)
                     .AddInterface(/*interface_number=*/7,
@@ -1918,8 +2124,8 @@ TEST_F(USBDeviceImplTest, ControlTransferStandardWriteAllowedWithBypass) {
   params->recipient = UsbControlTransferRecipient::DEVICE;
   // Request 9 is SetConfiguration (kUsbRequestSetConfiguration). In WebUSB, all
   // OUTBOUND standard requests and all non-allowlisted standard requests are
-  // blocked. Setting allow_unrestricted_control_transfers to true bypasses this
-  // allowlist entirely, permitting the request to go through.
+  // blocked. Setting allow_unrestricted_access to true bypasses this allowlist
+  // entirely, permitting the request to go through.
   params->request = 9; /*kUsbRequestSetConfiguration*/
   params->value = 1;
   params->index = 0;

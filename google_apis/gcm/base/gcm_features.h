@@ -1,4 +1,4 @@
-// Copyright 2021 The Chromium Authors
+// Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -8,18 +8,13 @@
 #include "base/feature_list.h"
 #include "google_apis/gcm/base/gcm_export.h"
 
-namespace gcm {
-namespace features {
+namespace gcm::features {
 
-// When enabled, the connection to the server won't be initiated when offline.
-GCM_EXPORT BASE_DECLARE_FEATURE(kGCMAvoidConnectionWhenNetworkUnavailable);
+// Kill switch for removing deprecated account mapping data and registrations
+// from GCMStore on load.
+// TODO(crbug.com/384891711): Remove after October 2027.
+GCM_EXPORT BASE_DECLARE_FEATURE(kGCMRemoveDeprecatedStoreData);
 
-// When enabled, the first connection attempt won't contribute to backoff
-// exponential delay. This will mitigate issues when there is no network
-// connection yet but a lot of network changes.
-GCM_EXPORT BASE_DECLARE_FEATURE(kGCMDoNotIncreaseBackoffDelayOnNetworkChange);
-
-}  // namespace features
-}  // namespace gcm
+}  // namespace gcm::features
 
 #endif  // GOOGLE_APIS_GCM_BASE_GCM_FEATURES_H_

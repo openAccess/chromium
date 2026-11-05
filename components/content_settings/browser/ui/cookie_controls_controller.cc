@@ -48,7 +48,7 @@ using ::base::UserMetricsAction;
 using ::site_engagement::SiteEngagementService;
 
 constexpr char kActivationsCountKey[] = "activations_count_key";
-constexpr base::TimeDelta kUserBypassUIReloadTime = base::Seconds(30);
+constexpr base::TimeDelta kCookieControlsUIReloadTime = base::Seconds(30);
 
 using CacheSizeType =
     base::LRUCacheSet<content_settings::AccessDetails>::size_type;
@@ -92,6 +92,8 @@ ThirdPartySiteDataAccessType GetSiteDataAccessType(int allowed_sites,
 
 namespace content_settings {
 
+DEFINE_USER_DATA(CookieControlsController);
+
 CookieControlsController::CookieControlsController(
     scoped_refptr<CookieSettings> cookie_settings,
     scoped_refptr<CookieSettings> original_cookie_settings,
@@ -102,6 +104,19 @@ CookieControlsController::CookieControlsController(
       settings_map_(settings_map) {
   CHECK(cookie_settings_);
   cookie_observation_.Observe(cookie_settings_.get());
+}
+
+CookieControlsController::CookieControlsController(
+    ui::UnownedUserDataHost& host,
+    scoped_refptr<CookieSettings> cookie_settings,
+    scoped_refptr<CookieSettings> original_cookie_settings,
+    HostContentSettingsMap* settings_map,
+    bool is_incognito_profile)
+    : CookieControlsController(cookie_settings,
+                               original_cookie_settings,
+                               settings_map,
+                               is_incognito_profile) {
+  scoped_unowned_user_data_.emplace(host, *this);
 }
 
 CookieControlsController::Status::Status(CookieControlsState controls_state,
@@ -124,6 +139,13 @@ void CookieControlsController::OnUiClosing() {
 
 void CookieControlsController::Update(content::WebContents* web_contents) {
   DCHECK(web_contents);
+  Update(web_contents, web_contents->GetLastCommittedURL());
+}
+
+void CookieControlsController::Update(content::WebContents* web_contents,
+                                      const GURL& site_url) {
+  DCHECK(web_contents);
+  site_url_ = site_url;
   if (!tab_observer_ || GetWebContents() != web_contents) {
     tab_observer_ = std::make_unique<TabObserver>(this, web_contents);
     SetStateChangedViaBypass(false);
@@ -132,25 +154,23 @@ void CookieControlsController::Update(content::WebContents* web_contents) {
   if (observers_.empty()) {
     return;
   }
-  auto status = GetStatus(web_contents);
-  const bool icon_visible =
-      ShouldUserBypassIconBeVisible(status.controls_state);
+  auto status = GetStatus();
+  const CookieControlsState icon_state =
+      GetCookieControlsIconState(status.controls_state);
   for (auto& observer : observers_) {
     observer.OnStatusChanged(status.controls_state, status.enforcement,
                              status.expiration);
-    observer.OnCookieControlsIconStatusChanged(icon_visible,
-                                               status.controls_state);
+    observer.OnCookieControlsIconStatusChanged(icon_state);
   }
 }
 
-CookieControlsController::Status CookieControlsController::GetStatus(
-    content::WebContents* web_contents) {
+CookieControlsController::Status CookieControlsController::GetStatus() {
   if (!cookie_settings_->ShouldBlockThirdPartyCookies()) {
     return {CookieControlsState::kHidden,
             CookieControlsEnforcement::kNoEnforcement, base::Time()};
   }
 
-  const GURL& url = web_contents->GetLastCommittedURL();
+  const GURL& url = site_url_;
   if (url.SchemeIs(content::kChromeUIScheme) ||
       url.SchemeIs(kExtensionScheme)) {
     return {CookieControlsState::kHidden,
@@ -227,20 +247,19 @@ bool CookieControlsController::HasOriginSandboxedTopLevelDocument() const {
 
 void CookieControlsController::OnCookieBlockingEnabledForSite(
     bool block_third_party_cookies) {
-  const GURL& url = GetWebContents()->GetLastCommittedURL();
+  const GURL url = site_url_;
   should_reload_ = true;
   if (block_third_party_cookies) {
     base::RecordAction(UserMetricsAction("CookieControls.Bubble.TurnOn"));
     cookie_settings_->ResetThirdPartyCookieSetting(url);
-    Update(GetWebContents());
+    Update(GetWebContents(), url);
     return;
   }
 
   CHECK(!block_third_party_cookies);
   base::RecordAction(UserMetricsAction("CookieControls.Bubble.TurnOff"));
   cookie_settings_->SetCookieSettingForUserBypass(url);
-  Update(GetWebContents());
-  // Record metadata for the newly created exception.
+  Update(GetWebContents(), url);
   base::DictValue metadata = GetMetadata(settings_map_, url);
   metadata.Set(kActivationsCountKey, GetActivationCount(metadata) + 1);
   ApplyMetadataChanges(settings_map_, url, std::move(metadata));
@@ -265,8 +284,7 @@ int CookieControlsController::GetAllowedThirdPartyCookiesSitesCount() const {
   }
 
   return browsing_data::GetUniqueThirdPartyCookiesHostCount(
-      GetWebContents()->GetLastCommittedURL(),
-      *(pscs->allowed_browsing_data_model()));
+      site_url_, *(pscs->allowed_browsing_data_model()));
 }
 
 int CookieControlsController::GetBlockedThirdPartyCookiesSitesCount() const {
@@ -277,8 +295,7 @@ int CookieControlsController::GetBlockedThirdPartyCookiesSitesCount() const {
   }
 
   return browsing_data::GetUniqueThirdPartyCookiesHostCount(
-      GetWebContents()->GetLastCommittedURL(),
-      *(pscs->blocked_browsing_data_model()));
+      site_url_, *(pscs->blocked_browsing_data_model()));
 }
 
 int CookieControlsController::GetStatefulBounceCount() const {
@@ -291,16 +308,15 @@ int CookieControlsController::GetStatefulBounceCount() const {
   }
 }
 
-void CookieControlsController::UpdateUserBypass() {
+void CookieControlsController::UpdateCookieControlsIcon() {
   if (observers_.empty()) {
     return;
   }
-  auto status = GetStatus(GetWebContents());
-  const bool icon_visible =
-      ShouldUserBypassIconBeVisible(status.controls_state);
+  auto status = GetStatus();
+  const CookieControlsState icon_state =
+      GetCookieControlsIconState(status.controls_state);
   for (auto& observer : observers_) {
-    observer.OnCookieControlsIconStatusChanged(icon_visible,
-                                               status.controls_state);
+    observer.OnCookieControlsIconStatusChanged(icon_state);
   }
 }
 
@@ -333,13 +349,13 @@ void CookieControlsController::OnPageFinishedLoading() {
 void CookieControlsController::OnThirdPartyCookieBlockingChanged(
     bool block_third_party_cookies) {
   if (GetWebContents()) {
-    UpdateUserBypass();
+    UpdateCookieControlsIcon();
   }
 }
 
 void CookieControlsController::OnCookieSettingChanged() {
   if (GetWebContents()) {
-    UpdateUserBypass();
+    UpdateCookieControlsIcon();
   }
 }
 
@@ -359,7 +375,8 @@ void CookieControlsController::RemoveObserver(CookieControlsObserver* obs) {
 }
 
 void CookieControlsController::RecordActivationMetrics() {
-  const GURL& url = GetWebContents()->GetLastCommittedURL();
+  const GURL& url = site_url_;
+
   auto site_data_access_type =
       GetSiteDataAccessType(GetAllowedThirdPartyCookiesSitesCount(),
                             GetBlockedThirdPartyCookiesSitesCount());
@@ -382,25 +399,27 @@ void CookieControlsController::RecordActivationMetrics() {
       .Record(ukm::UkmRecorder::Get());
 }
 
-bool CookieControlsController::ShouldUserBypassIconBeVisible(
+CookieControlsState CookieControlsController::GetCookieControlsIconState(
     CookieControlsState controls_state) {
-  if (controls_state == CookieControlsState::kHidden) {
-    return false;
+  if (controls_state != CookieControlsState::kBlocked3pc) {
+    return controls_state;
   }
-  return show_icon_as_confirmation_ ||
-         controls_state == CookieControlsState::kAllowed3pc ||
-         // 3PC blocking prevents SameSite=None cookies from being sent when the
-         // top-level document is sandboxed without `allow-origin`. For instance
-         // when loaded with: `Content-Security-Policy: sandbox`. In that case,
-         // we render the UI to allow the user to opt into sending SameSite=None
-         // cookies again in those contexts.
-         HasOriginSandboxedTopLevelDocument() ||
-         // If no 3P sites have attempted to access site data, nor were any
-         // stateful bounces recorded, the icon should not be displayed. Take
-         // into account both allow and blocked counts, since the breakage might
-         // be related to storage partitioning. Partitioned site will be allowed
-         // to access partitioned storage.
-         SiteDataAccessAttempted();
+  if (show_icon_as_confirmation_ ||
+      // 3PC blocking prevents SameSite=None cookies from being sent when the
+      // top-level document is sandboxed without `allow-origin`. For instance
+      // when loaded with: `Content-Security-Policy: sandbox`. In that case,
+      // we render the UI to allow the user to opt into sending SameSite=None
+      // cookies again in those contexts.
+      HasOriginSandboxedTopLevelDocument() ||
+      // If no 3P sites have attempted to access site data, nor were any
+      // stateful bounces recorded, the icon should not be displayed. Take
+      // into account both allow and blocked counts, since the breakage might
+      // be related to storage partitioning. Partitioned site will be allowed
+      // to access partitioned storage.
+      SiteDataAccessAttempted()) {
+    return controls_state;
+  }
+  return CookieControlsState::kHidden;
 }
 
 bool CookieControlsController::SiteDataAccessAttempted() {
@@ -425,7 +444,7 @@ CookieControlsController::TabObserver::~TabObserver() = default;
 void CookieControlsController::TabObserver::OnSiteDataAccessed(
     const AccessDetails& access_details) {
   if (access_details.site_data_type != SiteDataType::kCookies) {
-    cookie_controls_->UpdateUserBypass();
+    cookie_controls_->UpdateCookieControlsIcon();
     return;
   }
 
@@ -449,11 +468,11 @@ void CookieControlsController::TabObserver::OnSiteDataAccessed(
   }
 
   cookie_accessed_set_.Put(AccessDetails(access_details));
-  cookie_controls_->UpdateUserBypass();
+  cookie_controls_->UpdateCookieControlsIcon();
 }
 
 void CookieControlsController::TabObserver::OnStatefulBounceDetected() {
-  cookie_controls_->UpdateUserBypass();
+  cookie_controls_->UpdateCookieControlsIcon();
 }
 
 void CookieControlsController::TabObserver::PrimaryPageChanged(
@@ -467,12 +486,14 @@ void CookieControlsController::TabObserver::PrimaryPageChanged(
     timer_.Stop();
   } else {
     if (!timer_.IsRunning()) {
-      timer_.Start(FROM_HERE, kUserBypassUIReloadTime, this,
+      timer_.Start(FROM_HERE, kCookieControlsUIReloadTime, this,
                    &CookieControlsController::TabObserver::ResetReloadCounter);
     }
     reload_count_++;
   }
   last_visited_url_ = current_url;
+  cookie_controls_->site_url_ =
+      content::WebContentsObserver::web_contents()->GetLastCommittedURL();
   cookie_controls_->UpdatePageReloadStatus(reload_count_);
 }
 

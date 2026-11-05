@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "base/compiler_specific.h"
@@ -28,6 +29,7 @@ class WebDatabase;
 namespace autofill {
 
 class AutocompleteEntryLabelSensitive;
+struct AutocompleteTableStats;
 
 enum class MatchingType {
   kUnknown = 0,
@@ -41,7 +43,7 @@ constexpr MatchingType ToSafeMatchingType(
     std::underlying_type_t<MatchingType> matching_type) {
   const bool is_valid =
       matching_type >= 0 &&
-      matching_type <= static_cast<int>(MatchingType::kMaxValue);
+      matching_type <= std::to_underlying(MatchingType::kMaxValue);
   return is_valid ? static_cast<MatchingType>(matching_type)
                   : MatchingType::kUnknown;
 }
@@ -50,11 +52,13 @@ constexpr MatchingType ToSafeMatchingType(
 // suggestion in the UI layer and report appropriate metrics.
 class AutocompleteSearchResultLabelSensitive {
  public:
-  AutocompleteSearchResultLabelSensitive(std::u16string value,
-                                         MatchingType matching_type,
-                                         std::u16string query_name,
-                                         std::u16string query_label,
-                                         int count);
+  AutocompleteSearchResultLabelSensitive(
+      std::u16string value,
+      MatchingType matching_type,
+      std::u16string query_name,
+      std::u16string query_label,
+      int count,
+      base::Time date_last_used = base::Time());
   ~AutocompleteSearchResultLabelSensitive();
 
   AutocompleteSearchResultLabelSensitive(
@@ -76,6 +80,7 @@ class AutocompleteSearchResultLabelSensitive {
     return query_label_;
   }
   int count() const { return count_; }
+  base::Time date_last_used() const { return date_last_used_; }
 
   bool operator==(const AutocompleteSearchResultLabelSensitive& other) const {
     return value_ == other.value_;
@@ -98,7 +103,8 @@ class AutocompleteSearchResultLabelSensitive {
                        // name and label suggestions first).
   std::u16string query_name_;
   std::u16string query_label_;
-  int count_;
+  int count_ = 0;
+  base::Time date_last_used_;
 };
 
 // This class manages the Autocomplete table.
@@ -191,6 +197,9 @@ class AutocompleteTableLabelSensitive : public WebDatabaseTable {
   // Retrieves all of the entries in the autocomplete table.
   [[nodiscard]] bool GetAllAutocompleteEntries(
       std::vector<AutocompleteEntryLabelSensitive>* entries);
+
+  // Computes table-level statistics for the autocomplete table.
+  [[nodiscard]] AutocompleteTableStats GetTableStats() const;
 
   // Retrieves a single entry from the autocomplete table.
   [[nodiscard]] std::optional<AutocompleteEntryLabelSensitive>

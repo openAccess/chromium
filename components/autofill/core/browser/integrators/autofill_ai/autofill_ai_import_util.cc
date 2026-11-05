@@ -19,6 +19,7 @@
 #include "base/containers/flat_tree.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
+#include "base/feature_list.h"
 #include "base/i18n/icubridge/date_time_formatter.h"
 #include "base/i18n/icubridge/icu_bridge.h"
 #include "base/i18n/time_formatting.h"
@@ -39,8 +40,10 @@
 #include "components/autofill/core/browser/filling/autofill_ai/select_date_matching.h"
 #include "components/autofill/core/browser/form_processing/autofill_ai/determine_attribute_types.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
+#include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_wallet_util.h"
 #include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
 #include "components/autofill/core/browser/proto/server.pb.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/unique_ids.h"
 
@@ -68,6 +71,22 @@ bool AttributesMeetImportConstraints(EntityType entity_type,
                              [&](const DenseSet<AttributeType>& constraint) {
                                return attributes.contains_all(constraint);
                              });
+}
+
+bool ShouldImportValueForAttribute(AttributeType attribute,
+                                   std::u16string_view value) {
+  // At the moment, AutofillAI attributes can never save an email. At the same
+  // time, in some countries fields that accept either an AutofillAI type or an
+  // email address are common. This avoids mistakenly offering to save those.
+  if (value.empty() || IsValidEmailAddress(value)) {
+    return false;
+  }
+  // At the moment, additional validation only exists for redress number.
+  if (attribute.name() != AttributeTypeName::kRedressNumberNumber) {
+    return true;
+  }
+  return value.size() == 7 &&
+         std::ranges::all_of(value, &base::IsAsciiDigit<char16_t>);
 }
 
 struct ValueAndFormatString {
@@ -159,11 +178,7 @@ std::vector<EntityInstance> GetPossibleEntitiesFromSubmittedForm(
         const ValueAndFormatString value =
             GetValueAndFormatString(*field, attribute_type);
 
-        // At the moment, AutofillAI attributes can never save an email. At the
-        // same time, in some countries fields that accept either an AutofillAI
-        // type or an email address are common. This avoids mistakenly offering
-        // to save those.
-        if (value.value.empty() || IsValidEmailAddress(value.value)) {
+        if (!ShouldImportValueForAttribute(attribute_type, value.value)) {
           continue;
         }
 
@@ -218,7 +233,11 @@ std::vector<EntityInstance> GetPossibleEntitiesFromSubmittedForm(
           MayPerformAutofillAiAction(client, AutofillAiAction::kImportToWallet,
                                      entity_name)
               ? EntityInstance::RecordTypeData(
-                    EntityInstance::WalletRecordTypePayload{})
+                    // Observed entities extracted from form submissions do not
+                    // exist on Google Wallet servers yet. Their management URL
+                    // is empty until the pass is created by the Wallet service.
+                    EntityInstance::WalletRecordTypePayload{.management_url =
+                                                                GURL()})
               : EntityInstance::RecordTypeData(
                     EntityInstance::LocalRecordTypePayload{});
       EntityInstance entity = EntityInstance(
@@ -298,6 +317,14 @@ bool DidUserExplicitlyDeclineImportPrompt(
     case AutofillClient::AutofillAiBubbleResult::kLostFocus:
       return false;
   }
+}
+
+bool IsEligibleForWalletPassDisclosure(bool is_save_prompt,
+                                       const EntityInstance& entity) {
+  return is_save_prompt &&
+         IsEligibleForWalletNotice(entity.type(), entity.record_type()) &&
+         base::FeatureList::IsEnabled(
+             features::kAutofillEnableWalletDisclosureNoticePublicPass);
 }
 
 }  // namespace autofill

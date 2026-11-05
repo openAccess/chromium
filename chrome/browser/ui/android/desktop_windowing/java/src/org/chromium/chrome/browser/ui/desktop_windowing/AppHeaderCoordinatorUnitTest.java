@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.ui.desktop_windowing;
 
+import static android.view.WindowInsetsController.APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -15,18 +17,20 @@ import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import static org.chromium.chrome.browser.ui.desktop_windowing.AppHeaderCoordinator.INSTANCE_STATE_KEY_IS_APP_IN_UNFOCUSED_DW;
 
 import android.app.Activity;
+import android.app.PictureInPictureParams;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PersistableBundle;
 import android.view.View;
+import android.view.WindowInsetsController;
 
 import androidx.core.graphics.Insets;
 import androidx.core.view.WindowInsetsCompat;
@@ -42,6 +46,7 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 import org.robolectric.util.ReflectionHelpers;
 
@@ -95,24 +100,26 @@ public class AppHeaderCoordinatorUnitTest {
     @Mock private CaptionBarInsetsRectProvider mInsetsRectProvider;
     @Mock private ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
     @Mock private DesktopWindowStateManager.AppHeaderObserver mObserver;
+    @Mock private WindowInsetsController mInsetsController;
     @Captor private ArgumentCaptor<InsetsRectProvider.Consumer> mInsetRectConsumerCaptor;
 
     private BrowserStateBrowserControlsVisibilityDelegate mBrowserControlsVisDelegate;
     private AppHeaderCoordinator mAppHeaderCoordinator;
-    private Activity mSpyActivity;
-    private View mSpyRootView;
+    private Activity mActivity;
+    private View mRootView;
     private WindowInsetsCompat mLastSeenRawWindowInsets = new WindowInsetsCompat(null);
     private Bundle mSavedInstanceStateBundle;
     private PersistableBundle mPersistentStateBundle;
     private EdgeToEdgeStateProvider mEdgeToEdgeStateProvider;
     private boolean mInsetsRectUpdateConsumed;
+    private int mSystemBarsAppearance;
 
     @Before
     public void setup() {
         DisplayUtil.setIsOnDefaultDisplayForTesting(true);
-        mActivityScenarioRule.getScenario().onActivity(activity -> mSpyActivity = spy(activity));
-        mEdgeToEdgeStateProvider = new EdgeToEdgeStateProvider(mSpyActivity.getWindow());
-        mSpyRootView = spy(mSpyActivity.getWindow().getDecorView());
+        mActivityScenarioRule.getScenario().onActivity(activity -> mActivity = activity);
+        mEdgeToEdgeStateProvider = new EdgeToEdgeStateProvider(mActivity.getWindow());
+        mRootView = mActivity.getWindow().getDecorView();
         mBrowserControlsVisDelegate =
                 new BrowserStateBrowserControlsVisibilityDelegate(
                         ObservableSuppliers.alwaysFalse());
@@ -474,7 +481,7 @@ public class AppHeaderCoordinatorUnitTest {
 
     @Test
     public void onBackgroundColorChanged() {
-        var insetController = mSpyRootView.getWindowInsetsController();
+        var insetController = mRootView.getWindowInsetsController();
 
         mAppHeaderCoordinator.onBackgroundColorChanged(Color.BLACK);
         assertEquals(
@@ -491,7 +498,7 @@ public class AppHeaderCoordinatorUnitTest {
 
     @Test
     public void onScrimColorChanged() {
-        var insetController = mSpyRootView.getWindowInsetsController();
+        var insetController = mRootView.getWindowInsetsController();
 
         mAppHeaderCoordinator.onBackgroundColorChanged(Color.WHITE);
         assertEquals(
@@ -515,7 +522,7 @@ public class AppHeaderCoordinatorUnitTest {
 
     @Test
     public void onBackgroundColorChanged_withActiveScrim() {
-        var insetController = mSpyRootView.getWindowInsetsController();
+        var insetController = mRootView.getWindowInsetsController();
 
         int darkScrimColor = ColorUtils.setAlphaComponentWithFloat(Color.BLACK, 0.8f);
         mAppHeaderCoordinator.onScrimColorChanged(darkScrimColor);
@@ -533,7 +540,7 @@ public class AppHeaderCoordinatorUnitTest {
         // Simulate switching to desktop windowing mode, without any bottom insets.
         setupWithLeftAndRightBoundingRect();
         notifyInsetsRectConsumer();
-        verify(mSpyRootView, never()).setPadding(anyInt(), anyInt(), anyInt(), anyInt());
+        assertEquals("Root view bottom should not be padded.", 0, mRootView.getPaddingBottom());
     }
 
     @Test
@@ -548,7 +555,7 @@ public class AppHeaderCoordinatorUnitTest {
                 "Ime insets should not be consumed when root view is not adjusted.",
                 Insets.NONE,
                 insets.getInsets(WindowInsetsCompat.Type.ime()));
-        assertEquals("Root view bottom should not be padded.", 0, mSpyRootView.getPaddingBottom());
+        assertEquals("Root view bottom should not be padded.", 0, mRootView.getPaddingBottom());
 
         // Simulate switching to desktop windowing mode.
         setupWithLeftAndRightBoundingRect();
@@ -562,7 +569,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view bottom padding should be updated.",
                 KEYBOARD_INSET,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
 
         // Simulate switching out of desktop windowing mode.
         setupWithNoCaptionInsets();
@@ -572,8 +579,7 @@ public class AppHeaderCoordinatorUnitTest {
                 "Ime insets should not be consumed when root view is not adjusted.",
                 Insets.NONE,
                 insets.getInsets(WindowInsetsCompat.Type.ime()));
-        assertEquals(
-                "Root view bottom padding should be reset.", 0, mSpyRootView.getPaddingBottom());
+        assertEquals("Root view bottom padding should be reset.", 0, mRootView.getPaddingBottom());
     }
 
     @Test
@@ -588,7 +594,7 @@ public class AppHeaderCoordinatorUnitTest {
                 "Ime insets should not be consumed when root view is not adjusted.",
                 Insets.NONE,
                 insets.getInsets(WindowInsetsCompat.Type.ime()));
-        assertEquals("Root view bottom should not be padded.", 0, mSpyRootView.getPaddingBottom());
+        assertEquals("Root view bottom should not be padded.", 0, mRootView.getPaddingBottom());
 
         // Simulate switching to desktop windowing mode.
         setupWithLeftAndRightBoundingRect();
@@ -602,7 +608,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view bottom padding should be not padded again when E2E is active.",
                 0,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
 
         // Simulate switching out of desktop windowing mode.
         setupWithNoCaptionInsets();
@@ -612,8 +618,7 @@ public class AppHeaderCoordinatorUnitTest {
                 "Ime insets should not be consumed when root view is not adjusted.",
                 Insets.NONE,
                 insets.getInsets(WindowInsetsCompat.Type.ime()));
-        assertEquals(
-                "Root view bottom padding should be reset.", 0, mSpyRootView.getPaddingBottom());
+        assertEquals("Root view bottom padding should be reset.", 0, mRootView.getPaddingBottom());
     }
 
     @Test
@@ -632,7 +637,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view bottom padding should be updated.",
                 KEYBOARD_INSET,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
 
         // Simulate moving a desktop window that causes the keyboard inset to be updated.
         insets = applyWindowInsets(KEYBOARD_INSET + 100, UNSPECIFIED_INSET);
@@ -643,7 +648,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view bottom padding should be updated.",
                 KEYBOARD_INSET + 100,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
     }
 
     @Test
@@ -662,7 +667,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view bottom padding should be not updated when E2E is active.",
                 0,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
 
         // Simulate moving a desktop window that causes the keyboard inset to be updated.
         insets = applyWindowInsets(KEYBOARD_INSET + 100, UNSPECIFIED_INSET);
@@ -673,7 +678,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view bottom padding should be not padded again when E2E is active.",
                 0,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
     }
 
     @Test
@@ -688,7 +693,7 @@ public class AppHeaderCoordinatorUnitTest {
                 "Nav bar insets should not be consumed when root view is not adjusted.",
                 Insets.NONE,
                 insets.getInsets(WindowInsetsCompat.Type.navigationBars()));
-        assertEquals("Root view bottom should not be padded.", 0, mSpyRootView.getPaddingBottom());
+        assertEquals("Root view bottom should not be padded.", 0, mRootView.getPaddingBottom());
 
         // Simulate switching to desktop windowing mode.
         setupWithLeftAndRightBoundingRect();
@@ -702,7 +707,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view bottom padding should be updated.",
                 NAV_BAR_INSET,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
 
         // Simulate switching out of desktop windowing mode.
         setupWithNoCaptionInsets();
@@ -712,8 +717,7 @@ public class AppHeaderCoordinatorUnitTest {
                 "Nav bar insets should not be consumed when root view is not adjusted.",
                 Insets.NONE,
                 insets.getInsets(WindowInsetsCompat.Type.navigationBars()));
-        assertEquals(
-                "Root view bottom padding should be reset.", 0, mSpyRootView.getPaddingBottom());
+        assertEquals("Root view bottom padding should be reset.", 0, mRootView.getPaddingBottom());
     }
 
     @Test
@@ -728,7 +732,7 @@ public class AppHeaderCoordinatorUnitTest {
                 "Nav bar insets should not be consumed when root view is not adjusted.",
                 Insets.NONE,
                 insets.getInsets(WindowInsetsCompat.Type.navigationBars()));
-        assertEquals("Root view bottom should not be padded.", 0, mSpyRootView.getPaddingBottom());
+        assertEquals("Root view bottom should not be padded.", 0, mRootView.getPaddingBottom());
 
         // Simulate switching to desktop windowing mode.
         setupWithLeftAndRightBoundingRect();
@@ -742,7 +746,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view should be not padded again when E2E is active.",
                 0,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
 
         // Simulate switching out of desktop windowing mode.
         setupWithNoCaptionInsets();
@@ -752,8 +756,7 @@ public class AppHeaderCoordinatorUnitTest {
                 "Nav bar insets should not be consumed when root view is not adjusted.",
                 Insets.NONE,
                 insets.getInsets(WindowInsetsCompat.Type.navigationBars()));
-        assertEquals(
-                "Root view bottom padding should be reset.", 0, mSpyRootView.getPaddingBottom());
+        assertEquals("Root view bottom padding should be reset.", 0, mRootView.getPaddingBottom());
     }
 
     @Test
@@ -779,7 +782,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view bottom padding should be updated.",
                 NAV_BAR_INSET - 10,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
     }
 
     @Test
@@ -805,7 +808,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view should be not padded again when E2E is active.",
                 0,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
     }
 
     @Test
@@ -820,7 +823,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view bottom padding should be updated.",
                 KEYBOARD_INSET,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
     }
 
     @Test
@@ -835,7 +838,7 @@ public class AppHeaderCoordinatorUnitTest {
         assertEquals(
                 "Root view bottom padding should not be padded again when E2E is active.",
                 0,
-                mSpyRootView.getPaddingBottom());
+                mRootView.getPaddingBottom());
     }
 
     @Test
@@ -853,7 +856,7 @@ public class AppHeaderCoordinatorUnitTest {
                                 1)
                         .build();
 
-        doReturn(false).when(mSpyActivity).isInMultiWindowMode();
+        Shadows.shadowOf(mActivity).setInMultiWindowMode(false);
         setupWithNoCaptionInsets();
         mLastSeenRawWindowInsets =
                 new WindowInsetsCompat.Builder()
@@ -880,8 +883,7 @@ public class AppHeaderCoordinatorUnitTest {
                                 1)
                         .build();
 
-        doReturn(true).when(mSpyActivity).isInMultiWindowMode();
-        doReturn(false).when(mSpyActivity).isInPictureInPictureMode();
+        Shadows.shadowOf(mActivity).setInMultiWindowMode(true);
         setupWithNoCaptionInsets();
         mLastSeenRawWindowInsets =
                 new WindowInsetsCompat.Builder()
@@ -908,8 +910,8 @@ public class AppHeaderCoordinatorUnitTest {
                                 1)
                         .build();
 
-        doReturn(true).when(mSpyActivity).isInMultiWindowMode();
-        doReturn(true).when(mSpyActivity).isInPictureInPictureMode();
+        Shadows.shadowOf(mActivity).setInMultiWindowMode(true);
+        mActivity.enterPictureInPictureMode(new PictureInPictureParams.Builder().build());
         setupWithNoCaptionInsets();
         mLastSeenRawWindowInsets =
                 new WindowInsetsCompat.Builder()
@@ -950,11 +952,173 @@ public class AppHeaderCoordinatorUnitTest {
         watcher.assertExpected();
     }
 
+    @Test
+    public void keepsTransparentCaptionBarWhenNoCaptionInsets() {
+        // Simulate starting in fullscreen mode with no caption bar insets.
+        initAppHeaderCoordinatorWithMockInsetsController();
+        setupWithNoCaptionInsets();
+        notifyInsetsRectConsumer();
+
+        // Verify that the caption bar background is set to transparent.
+        verify(mInsetsController, times(1))
+                .setSystemBarsAppearance(
+                        APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND,
+                        APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+        assertNotEquals(0, mSystemBarsAppearance & APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+
+        // Simulate switching to desktop windowing mode.
+        setupWithLeftAndRightBoundingRect();
+        notifyInsetsRectConsumer();
+
+        // Verify that desktop windowing mode is enabled and no redundant appearance update is sent.
+        verifyDesktopWindowingEnabled();
+        verify(mInsetsController, times(1))
+                .setSystemBarsAppearance(
+                        APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND,
+                        APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+
+        // Simulate switching back to fullscreen mode with no caption bar insets.
+        setupWithNoCaptionInsets();
+        notifyInsetsRectConsumer();
+
+        // Verify that the caption bar background remains transparent.
+        verify(mInsetsController, never())
+                .setSystemBarsAppearance(0, APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+        assertNotEquals(0, mSystemBarsAppearance & APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+    }
+
+    @Test
+    public void keepsTransparentCaptionBarWhenBoundingRectsEmptyDuringTransition() {
+        // Simulate starting in fullscreen mode with no caption bar insets.
+        initAppHeaderCoordinatorWithMockInsetsController();
+        setupWithNoCaptionInsets();
+        notifyInsetsRectConsumer();
+
+        // Simulate an intermediate transition update where caption bar top insets are present but
+        // bounding rects are empty while the caption view is being measured.
+        setupInsetsRectProvider(
+                Insets.of(0, HEADER_HEIGHT, 0, 0), List.of(), new Rect(), WINDOW_RECT);
+        notifyInsetsRectConsumer();
+
+        // Verify that the caption bar background remains transparent while desktop windowing mode
+        // is still disabled.
+        verify(mInsetsController, never())
+                .setSystemBarsAppearance(0, APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+        verifyDesktopWindowingDisabled(
+                /* error= */ "Desktop windowing should not be enabled when bounding rects are"
+                        + " empty.");
+
+        // Simulate receiving the measured caption bar bounding rects to complete the transition.
+        setupWithLeftAndRightBoundingRect();
+        notifyInsetsRectConsumer();
+
+        // Verify that desktop windowing mode is enabled and the caption bar remains transparent.
+        verifyDesktopWindowingEnabled();
+        verify(mInsetsController, times(1))
+                .setSystemBarsAppearance(
+                        APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND,
+                        APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+    }
+
+    @Test
+    public void clearsTransparentCaptionBarWhenNotInDesktopWindowWithCaptionBoundingRects() {
+        // Simulate starting in fullscreen mode with no caption bar insets.
+        initAppHeaderCoordinatorWithMockInsetsController();
+        setupWithNoCaptionInsets();
+        notifyInsetsRectConsumer();
+        List<Rect> blockedRects =
+                List.of(
+                        new Rect(0, 0, LEFT_BLOCK, HEADER_HEIGHT),
+                        new Rect(LEFT_BLOCK, 0, WINDOW_WIDTH, HEADER_HEIGHT));
+
+        // Simulate a freeform window with caption bar bounding rects that leave no unoccluded
+        // width for Chrome to customize the header.
+        setupInsetsRectProvider(
+                Insets.of(0, HEADER_HEIGHT, 0, 0), blockedRects, new Rect(), WINDOW_RECT);
+        notifyInsetsRectConsumer();
+
+        // Verify that the transparent caption bar appearance is cleared so the OS draws an opaque
+        // caption bar.
+        verify(mInsetsController, times(1))
+                .setSystemBarsAppearance(0, APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+        assertEquals(0, mSystemBarsAppearance & APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+
+        // Simulate resizing the window while it remains ineligible for header customization.
+        Rect newWindowRect = new Rect(0, 0, WINDOW_WIDTH - 50, WINDOW_HEIGHT);
+        setupInsetsRectProvider(
+                Insets.of(0, HEADER_HEIGHT, 0, 0), blockedRects, new Rect(), newWindowRect);
+        notifyInsetsRectConsumer();
+
+        // Verify that no redundant appearance update is sent when the caption bar is already
+        // opaque.
+        verify(mInsetsController, times(1))
+                .setSystemBarsAppearance(0, APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+
+        // Simulate resizing the window so that it enters desktop windowing mode.
+        setupWithLeftAndRightBoundingRect();
+        notifyInsetsRectConsumer();
+
+        // Verify that desktop windowing mode is enabled and the caption bar background is set back
+        // to transparent.
+        verifyDesktopWindowingEnabled();
+        verify(mInsetsController, times(2))
+                .setSystemBarsAppearance(
+                        APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND,
+                        APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+    }
+
+    @Test
+    public void clearsTransparentCaptionBarWhenUnoccludedRegionIsComplex() {
+        // Simulate starting in fullscreen mode with no caption bar insets.
+        initAppHeaderCoordinatorWithMockInsetsController();
+        setupWithNoCaptionInsets();
+        notifyInsetsRectConsumer();
+
+        // Simulate a caption bar with bounding rects whose unoccluded region is complex (e.g.
+        // obscured by a floating window), preventing Chrome from customizing the header.
+        Insets insets = Insets.of(0, HEADER_HEIGHT, 0, 0);
+        List<Rect> blockedRects = List.of(new Rect(LEFT_BLOCK, 0, LEFT_BLOCK + 30, HEADER_HEIGHT));
+        Rect widestUnoccludedRect = new Rect(LEFT_BLOCK + 30, 0, WINDOW_WIDTH, HEADER_HEIGHT);
+        setupInsetsRectProvider(insets, blockedRects, widestUnoccludedRect, WINDOW_RECT);
+        doReturn(true).when(mInsetsRectProvider).isUnoccludedRegionComplex();
+        notifyInsetsRectConsumer();
+
+        // Verify that the transparent caption bar appearance is cleared so the OS draws an opaque
+        // caption bar.
+        verify(mInsetsController, times(1))
+                .setSystemBarsAppearance(0, APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+        assertEquals(0, mSystemBarsAppearance & APPEARANCE_TRANSPARENT_CAPTION_BAR_BACKGROUND);
+    }
+
+    private void initAppHeaderCoordinatorWithMockInsetsController() {
+        mAppHeaderCoordinator.destroy();
+        mSystemBarsAppearance = 0;
+        doAnswer(inv -> mSystemBarsAppearance).when(mInsetsController).getSystemBarsAppearance();
+        doAnswer(
+                        inv -> {
+                            int appearance = inv.getArgument(0);
+                            int mask = inv.getArgument(1);
+                            mSystemBarsAppearance =
+                                    (mSystemBarsAppearance & ~mask) | (appearance & mask);
+                            return null;
+                        })
+                .when(mInsetsController)
+                .setSystemBarsAppearance(anyInt(), anyInt());
+        mRootView =
+                new View(mActivity) {
+                    @Override
+                    public WindowInsetsController getWindowInsetsController() {
+                        return mInsetsController;
+                    }
+                };
+        initAppHeaderCoordinator();
+    }
+
     private void initAppHeaderCoordinator() {
         mAppHeaderCoordinator =
                 new AppHeaderCoordinator(
-                        mSpyActivity,
-                        mSpyRootView,
+                        mActivity,
+                        mRootView,
                         mBrowserControlsVisDelegate,
                         mInsetObserver,
                         mActivityLifecycleDispatcher,
@@ -1039,6 +1203,6 @@ public class AppHeaderCoordinatorUnitTest {
             windowInsetsBuilder.setInsets(
                     WindowInsetsCompat.Type.navigationBars(), Insets.of(0, 0, 0, navBarInset));
         }
-        return mAppHeaderCoordinator.onApplyWindowInsets(mSpyRootView, windowInsetsBuilder.build());
+        return mAppHeaderCoordinator.onApplyWindowInsets(mRootView, windowInsetsBuilder.build());
     }
 }

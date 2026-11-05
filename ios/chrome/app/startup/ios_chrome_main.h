@@ -6,11 +6,13 @@
 #define IOS_CHROME_APP_STARTUP_IOS_CHROME_MAIN_H_
 
 #include <memory>
+#include <optional>
 
 #include "ios/chrome/app/startup/ios_chrome_main_delegate.h"
 
 namespace base {
-class TimeTicks;
+class ElapsedNoSleepTimer;
+class TimeDelta;
 }
 
 namespace web {
@@ -29,9 +31,14 @@ class IOSChromeMain {
   // The time main() starts.  Only call from main().
   static void InitStartTime();
 
-  // Returns the time that main() started.  Used for performance tests.
-  // InitStartTime() must has been called before.
-  static base::TimeTicks StartTime();
+  // Returns a timer that started when main() started.
+  // InitStartTime() must have been called before.
+  static base::ElapsedNoSleepTimer StartTimer();
+
+  // Returns the duration between process creation and the call to main().
+  // Returns std::nullopt if process creation time is unavailable or
+  // invalid. InitStartTime() must have been called before.
+  static std::optional<base::TimeDelta> PreMainDuration();
 
  private:
   IOSChromeMainDelegate main_delegate_;

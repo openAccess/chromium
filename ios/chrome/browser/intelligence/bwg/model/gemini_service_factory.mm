@@ -4,6 +4,9 @@
 
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
 
+#import <utility>
+
+#import "base/check.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_impl.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
@@ -17,45 +20,27 @@ class GeminiService;
 
 namespace {
 
-std::unique_ptr<KeyedService> BuildGeminiService(ProfileIOS* profile) {
+std::unique_ptr<KeyedService> BuildGeminiService(ProfileIOS& profile) {
+  CHECK(!profile.IsOffTheRecord());
   if (!IsPageActionMenuEnabled()) {
     return nullptr;
   }
   return std::make_unique<GeminiServiceImpl>(
-      profile, AuthenticationServiceFactory::GetForProfile(profile),
-      IdentityManagerFactory::GetForProfile(profile), profile->GetPrefs(),
+      AuthenticationServiceFactory::GetForProfile(profile),
+      IdentityManagerFactory::GetForProfile(profile), profile.GetPrefs(),
       OptimizationGuideServiceFactory::GetForProfile(profile));
 }
 
 }  // namespace
 
-// static
-GeminiService* GeminiServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<GeminiService>(profile,
-                                                              /*create=*/true);
-}
-
-// static
-GeminiServiceFactory* GeminiServiceFactory::GetInstance() {
-  static base::NoDestructor<GeminiServiceFactory> instance;
-  return instance.get();
-}
-
-GeminiServiceFactory::GeminiServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("GeminiService") {
+GeminiServiceFactory::GeminiServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key), "GeminiService") {
   DependsOn(AuthenticationServiceFactory::GetInstance());
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(OptimizationGuideServiceFactory::GetInstance());
 }
 
-GeminiServiceFactory::~GeminiServiceFactory() = default;
-
-// static
-GeminiServiceFactory::TestingFactory GeminiServiceFactory::GetDefaultFactory() {
-  return base::BindOnce(&BuildGeminiService);
-}
-
 std::unique_ptr<KeyedService> GeminiServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   return BuildGeminiService(profile);
 }

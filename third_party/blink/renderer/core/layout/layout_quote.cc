@@ -23,6 +23,7 @@
 
 #include <algorithm>
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/core/css/style_containment_scope.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
@@ -30,7 +31,6 @@
 #include "third_party/blink/renderer/core/layout/layout_text_fragment.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/platform/text/layout_locale.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 
 namespace blink {
@@ -89,9 +89,9 @@ void LayoutQuote::StyleDidChange(
 }
 
 static scoped_refptr<const QuotesData> BasicQuotesData() {
-  DEFINE_STATIC_REF(QuotesData, static_basic_quotes,
-                    (QuotesData::Create(0x201c, 0x201d, 0x2018, 0x2019)));
-  return static_basic_quotes;
+  static const base::NoDestructor<scoped_refptr<QuotesData>>
+      static_basic_quotes(QuotesData::Create(0x201c, 0x201d, 0x2018, 0x2019));
+  return *static_basic_quotes;
 }
 
 void LayoutQuote::UpdateText() {
@@ -105,12 +105,12 @@ void LayoutQuote::UpdateText() {
   LayoutTextFragment* fragment = FindFragmentChild();
   if (fragment) {
     fragment->SetStyle(IsA<LayoutTextCombine>(fragment->Parent())
-                           ? &fragment->Parent()->StyleRef()
-                           : &StyleRef());
+                           ? fragment->Parent()->Style()
+                           : Style());
     fragment->SetContentString(text_.Impl());
   } else {
     fragment = LayoutTextFragment::CreateAnonymous(GetDocument(), text_.Impl());
-    fragment->SetStyle(&StyleRef());
+    fragment->SetStyle(Style());
     AddChild(fragment);
   }
 }
@@ -144,10 +144,11 @@ String LayoutQuote::ComputeText() const {
 
 scoped_refptr<const QuotesData> LayoutQuote::GetQuotesData() const {
   NOT_DESTROYED();
-  if (scoped_refptr<const QuotesData> custom_quotes = StyleRef().Quotes())
+  if (scoped_refptr<const QuotesData> custom_quotes = Style().Quotes()) {
     return custom_quotes;
+  }
 
-  if (const LayoutLocale* locale = StyleRef().GetFontDescription().Locale()) {
+  if (const LayoutLocale* locale = Style().GetFontDescription().Locale()) {
     if (scoped_refptr<const QuotesData> custom_quotes = locale->GetQuotesData())
       return custom_quotes;
   }

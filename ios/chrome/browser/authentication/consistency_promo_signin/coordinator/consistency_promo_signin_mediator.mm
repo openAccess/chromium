@@ -4,28 +4,20 @@
 
 #import "ios/chrome/browser/authentication/consistency_promo_signin/coordinator/consistency_promo_signin_mediator.h"
 
-#import "base/cancelable_callback.h"
-#import "base/feature_list.h"
 #import "base/functional/bind.h"
 #import "base/memory/raw_ptr.h"
-#import "base/strings/sys_string_conversions.h"
-#import "base/task/single_thread_task_runner.h"
 #import "components/prefs/pref_service.h"
 #import "components/signin/core/browser/account_reconcilor.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_metrics.h"
-#import "components/signin/public/base/signin_switches.h"
 #import "components/signin/public/browser/web_signin_tracker.h"
-#import "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_delegate.h"
-#import "ios/chrome/browser/authentication/ui_bundled/continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
@@ -135,57 +127,58 @@ constexpr base::TimeDelta kSigninTimeout = base::Seconds(10);
       << _identityManagerObserverBridge.get();
 }
 
-- (void)disconnectWithResult:(SigninCoordinatorResult)signinResult {
-  switch (signinResult) {
-    case SigninCoordinatorResultSuccess: {
-      CHECK(_signingIdentity);
-      id<SystemIdentity> signingIdentity = _signingIdentity;
-      id<SystemIdentity> defaultIdentity = signin::GetDefaultIdentityOnDevice(
-          _identityManager, _accountManagerService);
-      DCHECK(defaultIdentity);
-      if (!_initializedWithDefaultAccount) {
-        // Added identity, from having no existing account.
+- (void)disconnectWithResult:
+    (const SigninCoordinatorResultOrIdentity&)signinResult {
+  if (signinResult.has_value()) {
+    CHECK(_signingIdentity);
+    id<SystemIdentity> signingIdentity = _signingIdentity;
+    id<SystemIdentity> defaultIdentity = signin::GetDefaultIdentityOnDevice(
+        _identityManager, _accountManagerService);
+    DCHECK(defaultIdentity);
+    if (!_initializedWithDefaultAccount) {
+      // Added identity, from having no existing account.
+      RecordConsistencyPromoUserAction(
+          signin_metrics::AccountConsistencyPromoAction::
+              SIGNED_IN_WITH_NO_DEVICE_ACCOUNT,
+          _accessPoint);
+    } else if (_addedGaiaIDs.contains(signingIdentity.gaiaId)) {
+      // Added identity.
+      RecordConsistencyPromoUserAction(
+          signin_metrics::AccountConsistencyPromoAction::
+              SIGNED_IN_WITH_ADDED_ACCOUNT,
+          _accessPoint);
+    } else if ([defaultIdentity isEqual:signingIdentity]) {
+      // Default identity.
+      RecordConsistencyPromoUserAction(
+          signin_metrics::AccountConsistencyPromoAction::
+              SIGNED_IN_WITH_DEFAULT_ACCOUNT,
+          _accessPoint);
+    } else {
+      // Other identity.
+      RecordConsistencyPromoUserAction(
+          signin_metrics::AccountConsistencyPromoAction::
+              SIGNED_IN_WITH_NON_DEFAULT_ACCOUNT,
+          _accessPoint);
+    }
+  } else {
+    switch (signinResult.error()) {
+      case SigninCoordinatorResultCanceledByUser: {
         RecordConsistencyPromoUserAction(
-            signin_metrics::AccountConsistencyPromoAction::
-                SIGNED_IN_WITH_NO_DEVICE_ACCOUNT,
+            signin_metrics::AccountConsistencyPromoAction::DISMISSED_BUTTON,
             _accessPoint);
-      } else if (_addedGaiaIDs.contains(signingIdentity.gaiaId)) {
-        // Added identity.
-        RecordConsistencyPromoUserAction(
-            signin_metrics::AccountConsistencyPromoAction::
-                SIGNED_IN_WITH_ADDED_ACCOUNT,
-            _accessPoint);
-      } else if ([defaultIdentity isEqual:signingIdentity]) {
-        // Default identity.
-        RecordConsistencyPromoUserAction(
-            signin_metrics::AccountConsistencyPromoAction::
-                SIGNED_IN_WITH_DEFAULT_ACCOUNT,
-            _accessPoint);
-      } else {
-        // Other identity.
-        RecordConsistencyPromoUserAction(
-            signin_metrics::AccountConsistencyPromoAction::
-                SIGNED_IN_WITH_NON_DEFAULT_ACCOUNT,
-            _accessPoint);
+        break;
       }
-      break;
+      case SigninCoordinatorResultDisabled:
+      case SigninCoordinatorResultInterrupted:
+      case SigninCoordinatorProfileSwitch: {
+        RecordConsistencyPromoUserAction(
+            signin_metrics::AccountConsistencyPromoAction::DISMISSED_OTHER,
+            _accessPoint);
+        break;
+      }
+      case SigninCoordinatorUINotAvailable:
+        NOTREACHED();
     }
-    case SigninCoordinatorResultCanceledByUser: {
-      RecordConsistencyPromoUserAction(
-          signin_metrics::AccountConsistencyPromoAction::DISMISSED_BUTTON,
-          _accessPoint);
-      break;
-    }
-    case SigninCoordinatorResultDisabled:
-    case SigninCoordinatorResultInterrupted:
-    case SigninCoordinatorProfileSwitch: {
-      RecordConsistencyPromoUserAction(
-          signin_metrics::AccountConsistencyPromoAction::DISMISSED_OTHER,
-          _accessPoint);
-      break;
-    }
-    case SigninCoordinatorUINotAvailable:
-      NOTREACHED();
   }
   _accountManagerService = nullptr;
   _authenticationService = nullptr;
@@ -296,6 +289,10 @@ constexpr base::TimeDelta kSigninTimeout = base::Seconds(10);
                                          signinAccount:accountId
                                           withCallback:&callback
                                            withTimeout:kSigninTimeout];
+  // TODO(crbug.com/570450501): Stub the tracker in tests and remove this check.
+  if (_webSigninTracker) {
+    _webSigninTracker->Start();
+  }
 }
 
 - (void)authenticationFlowWillSwitchProfileWithReadyCompletion:
@@ -356,13 +353,10 @@ constexpr base::TimeDelta kSigninTimeout = base::Seconds(10);
           _accessPoint);
       break;
   }
-  __weak __typeof(self) weakSelf = self;
-  _authenticationService->SignOut(
-      signin_metrics::ProfileSignout::kAbortSignin, ^() {
-        [weakSelf.delegate consistencyPromoSigninMediator:weakSelf
-                                           errorDidHappen:error
-                                             withIdentity:signinIdentity];
-      });
+  _authenticationService->SignOut(signin_metrics::ProfileSignout::kAbortSignin);
+  [self.delegate consistencyPromoSigninMediator:self
+                                 errorDidHappen:error
+                                   withIdentity:signinIdentity];
 }
 
 #pragma mark - IdentityManagerObserving

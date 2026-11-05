@@ -71,9 +71,9 @@ GURL PermissionUtil::GetLastCommittedOriginAsURL(
     content::RenderFrameHost* render_frame_host) {
   CHECK(render_frame_host);
 
+#if BUILDFLAG(IS_ANDROID)
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(render_frame_host);
-#if BUILDFLAG(IS_ANDROID)
   // If `allow_universal_access_from_file_urls` flag is enabled, a file:/// can
   // change its url via history.pushState/replaceState to any other url,
   // including about:blank. To avoid user confusion we should always use a
@@ -88,54 +88,14 @@ GURL PermissionUtil::GetLastCommittedOriginAsURL(
   }
 #endif
 
-  GURL origin = render_frame_host->GetLastCommittedOrigin().GetURL();
-  if (origin.is_empty() && render_frame_host->IsInPrimaryMainFrame()) {
-    if (!web_contents->GetVisibleURL().is_empty()) {
-      origin = web_contents->GetVisibleURL().DeprecatedGetOriginAsURL();
-    }
+  const url::Origin& origin = render_frame_host->GetLastCommittedOrigin();
+  if (origin.opaque() && render_frame_host->IsInPrimaryMainFrame()) {
+    // For historical reasons we are supporting permission grants to sandboxed
+    // documents.
+    // TODO(https://crbug.com/571135408): Revisit this logic.
+    return origin.GetTupleOrPrecursorTupleIfOpaque().GetURL();
   }
-  return origin;
-}
-
-bool PermissionUtil::IsDomainOverride(
-    const PermissionDescriptorPtr& descriptor) {
-  return descriptor->extension &&
-         descriptor->extension->is_top_level_storage_access();
-}
-
-const url::Origin& PermissionUtil::ExtractDomainOverride(
-    const PermissionDescriptorPtr& descriptor) {
-  const blink::mojom::TopLevelStorageAccessPermissionDescriptorPtr&
-      override_descriptor =
-          descriptor->extension->get_top_level_storage_access();
-  return override_descriptor->requestedOrigin;
-}
-
-bool PermissionUtil::ValidateDomainOverride(
-    const std::vector<blink::mojom::PermissionDescriptorPtr>& types,
-    RenderFrameHost* rfh,
-    const blink::mojom::PermissionDescriptorPtr& descriptor) {
-  if (types.size() > 1) {
-    // Requests with domain overrides must be requested individually.
-    return false;
-  }
-  if (!rfh || !rfh->IsInPrimaryMainFrame()) {
-    // Requests with domain overrides must be requested from a top-level
-    // browsing context.
-    return false;
-  }
-
-  const url::Origin& overridden_origin =
-      PermissionUtil::ExtractDomainOverride(descriptor);
-
-  if (rfh->GetLastCommittedOrigin().IsSameOriginWith(overridden_origin)) {
-    // In case `overridden_origin` equals
-    // `render_frame_host->GetLastCommittedOrigin()` then you should use
-    // `GetPermissionStatusForCurrentDocument`.
-    return false;
-  }
-
-  return true;
+  return origin.GetURL();
 }
 
 bool PermissionUtil::IsDevicePermission(

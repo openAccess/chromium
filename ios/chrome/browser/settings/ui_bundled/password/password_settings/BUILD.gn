@@ -93,7 +93,6 @@ source_set("password_settings_ui") {
     "//ios/chrome/browser/shared/ui/table_view",
     "//ios/chrome/browser/shared/ui/table_view:utils",
     "//ios/chrome/common/ui/colors",
-    "//ios/chrome/common/ui/reauthentication",
     "//ios/chrome/common/ui/util:image_util",
     "//ui/base",
   ]
@@ -159,7 +158,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/sync/model:test_support",
     "//ios/chrome/browser/webauthn/model",
     "//ios/chrome/common/ui/reauthentication",
-    "//ios/chrome/common/ui/reauthentication:mock_reauthentication_module",
+    "//ios/chrome/common/ui/reauthentication:fake_reauthentication_module",
     "//ios/chrome/test:test_support",
     "//ios/testing:protocol_fake",
     "//ios/web/public/test",

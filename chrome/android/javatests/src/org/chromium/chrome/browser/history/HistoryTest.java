@@ -44,6 +44,7 @@ import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.ui.KeyboardUtils;
 import org.chromium.chrome.R;
@@ -76,6 +77,7 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
+@DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_WEB_UI_HISTORY)
 public class HistoryTest {
 
     private static class FaviconWaiter extends CallbackHelper
@@ -177,7 +179,7 @@ public class HistoryTest {
         // Verify that the promo is shown.
         waitForView(withId(R.id.signin_promo_view_container));
         // Click on the promo CTA.
-        expectView(withId(R.id.sync_promo_signin_button)).click();
+        expectView(withId(R.id.signin_promo_primary_button)).click();
 
         // Verify that the history sync screen is shown.
         waitForView(withId(R.id.history_sync_illustration));
@@ -217,7 +219,7 @@ public class HistoryTest {
         // Verify that the promo is shown.
         waitForView(withId(R.id.signin_promo_view_container));
         // Click on the promo CTA.
-        expectView(withId(R.id.sync_promo_signin_button)).click();
+        expectView(withId(R.id.signin_promo_primary_button)).click();
 
         // Verify that the history sync screen is shown.
         waitForView(withId(R.id.history_sync_illustration));

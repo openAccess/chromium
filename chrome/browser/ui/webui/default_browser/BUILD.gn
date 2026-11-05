@@ -30,6 +30,7 @@ source_set("default_browser_modal") {
     "//chrome/browser/ui/webui/default_browser:modal_mojo_bindings",
     "//chrome/browser/ui/webui/top_chrome",
     "//chrome/common",
+    "//components/strings:components_strings",
     "//content/public/browser",
     "//ui/base/interaction",
     "//ui/gfx",
@@ -57,8 +58,6 @@ if (is_win) {
     sources = [
       "guided_setter_overlay_window_win.cc",
       "guided_setter_overlay_window_win.h",
-      "settings_window_finder_win.cc",
-      "settings_window_finder_win.h",
       "visual_guided_setter_controller_win.cc",
       "visual_guided_setter_controller_win.h",
       "visual_guided_setter_layout_utils.cc",
@@ -72,10 +71,12 @@ if (is_win) {
     public_deps = [
       ":visual_guided_setter_mojo_bindings",
       "//base",
+      "//chrome/browser/default_browser/win",
       "//ui/gfx",
     ]
 
     deps = [
+      "//base:i18n",
       "//chrome/app/theme:chrome_unscaled_resources",
       "//chrome/browser/default_browser",
       "//chrome/browser/profiles:profile",
@@ -85,8 +86,10 @@ if (is_win) {
       "//chrome/browser/ui/webui/top_chrome",
       "//chrome/common",
       "//content/public/browser",
+      "//ui/base",
       "//ui/base/interaction",
       "//ui/display",
+      "//ui/gfx/animation",
       "//ui/gfx/geometry",
       "//ui/views",
       "//ui/web_dialogs",
@@ -99,20 +102,27 @@ if (is_win) {
     testonly = true
 
     sources = [
+      "default_browser_modal_handler_unittest.cc",
       "guided_setter_overlay_window_win_unittest.cc",
-      "settings_window_finder_win_unittest.cc",
       "visual_guided_setter_controller_win_unittest.cc",
       "visual_guided_setter_layout_utils_unittest.cc",
     ]
 
     deps = [
+      ":default_browser_modal",
+      ":modal_mojo_bindings",
       ":visual_guided_setter",
       "//base",
       "//base/test:test_support",
+      "//chrome/browser:shell_integration",
       "//chrome/browser/default_browser",
+      "//chrome/browser/ui/startup/default_browser_prompt",
       "//chrome/test:test_support",
       "//content/test:test_support",
+      "//mojo/public/cpp/bindings",
       "//testing/gtest",
+      "//ui/display",
+      "//ui/display:test_support",
       "//ui/gfx",
       "//ui/views",
       "//ui/views:test_support",
@@ -130,7 +140,7 @@ if (is_win) {
       ":default_browser_modal",
       "//base",
       "//chrome/browser/default_browser",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/navigator",
       "//chrome/browser/ui/tabs:tab_strip_model_observer",
       "//chrome/test:test_support",

@@ -21,11 +21,13 @@
 #include "base/check_op.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/map_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
@@ -57,6 +59,7 @@
 #include "components/autofill/core/browser/ui/popup_interaction.h"
 #include "components/autofill/core/common/autocomplete_parsing_util.h"
 #include "components/autofill/core/common/autofill_clock.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/html_field_types.h"
 #include "components/autofill/core/common/metrics_enums.h"
@@ -228,7 +231,7 @@ void AutofillMetrics::LogCardUnmaskAuthenticationSelectionDialogResultMetric(
 // static
 void AutofillMetrics::LogCardUnmaskAuthenticationSelectionDialogShown(
     size_t number_of_challenge_options) {
-  static_assert(static_cast<int>(CardUnmaskChallengeOptionType::kMaxValue) <
+  static_assert(std::to_underlying(CardUnmaskChallengeOptionType::kMaxValue) <
                 10);
   DCHECK_GE(number_of_challenge_options, 0U);
   // We are using an exact linear histogram, with a max of 10. This is a
@@ -298,12 +301,43 @@ void AutofillMetrics::LogScanCreditCardPromptMetric(
 }
 
 // static
-void AutofillMetrics::LogScanCreditCardCompleted(base::TimeDelta duration,
-                                                 bool completed) {
-  std::string suffix = completed ? "Completed" : "Cancelled";
-  base::UmaHistogramLongTimes("Autofill.ScanCreditCard.Duration_" + suffix,
-                              duration);
+void AutofillMetrics::LogScanCreditCardPromptShown(
+    ScanCreditCardPromptEntryPoint entry_point,
+    bool is_new_user) {
+  base::UmaHistogramEnumeration(
+      base::StrCat({"Autofill.ScanCreditCardPrompt.",
+                    is_new_user ? "NewUser" : "ExistingUser",
+                    ".Shown.EntryPoint"}),
+      entry_point);
+}
+
+// static
+void AutofillMetrics::LogScanCreditCardPromptSelected(
+    ScanCreditCardPromptEntryPoint entry_point,
+    bool is_new_user) {
+  base::UmaHistogramEnumeration(
+      base::StrCat({"Autofill.ScanCreditCardPrompt.",
+                    is_new_user ? "NewUser" : "ExistingUser",
+                    ".Selected.EntryPoint"}),
+      entry_point);
+}
+
+// static
+void AutofillMetrics::LogScanCreditCardCompleted(bool completed) {
   UMA_HISTOGRAM_BOOLEAN("Autofill.ScanCreditCard.Completed", completed);
+}
+
+// static
+void AutofillMetrics::LogScanCreditCardScreenType(
+    ScanCreditCardScreenType screen_type) {
+  base::UmaHistogramEnumeration("Autofill.ScanCreditCard.Completed.ScreenType",
+                                screen_type);
+}
+
+// static
+void AutofillMetrics::LogScanCreditCardCompletedNewUser(bool is_new_user) {
+  base::UmaHistogramBoolean("Autofill.ScanCreditCard.Completed.NewUser",
+                            is_new_user);
 }
 
 // static
@@ -639,13 +673,6 @@ void AutofillMetrics::LogEditedAutofilledFieldAtSubmission(
 }
 
 // static
-void AutofillMetrics::LogServerQueryMetric(ServerQueryMetric metric) {
-  DCHECK_LT(metric, NUM_SERVER_QUERY_METRICS);
-  UMA_HISTOGRAM_ENUMERATION("Autofill.ServerQueryResponse", metric,
-                            NUM_SERVER_QUERY_METRICS);
-}
-
-// static
 void AutofillMetrics::LogFormFillDurationFromLoadWithAutofill(
     base::TimeDelta duration) {
   LogFormFillDuration("Autofill.FillDuration.FromLoad.WithAutofill", duration);
@@ -746,8 +773,9 @@ void AutofillMetrics::LogStoredCreditCardMetrics(
             days_since_last_use);
         num_local_cards += 1;
         num_disused_local_cards += disused_delta;
-        if (card->HasNonEmptyValidNickname())
+        if (card->HasNonEmptyValidNickname()) {
           num_local_cards_with_nickname += 1;
+        }
         if (!card->HasValidCardNumber()) {
           num_local_cards_with_invalid_number += 1;
         }
@@ -758,8 +786,9 @@ void AutofillMetrics::LogStoredCreditCardMetrics(
             days_since_last_use);
         num_server_cards += 1;
         num_disused_server_cards += disused_delta;
-        if (card->HasNonEmptyValidNickname())
+        if (card->HasNonEmptyValidNickname()) {
           num_server_cards_with_nickname += 1;
+        }
         break;
       // These card types are not persisted in Chrome.
       case CreditCard::RecordType::kFullServerCard:
@@ -924,6 +953,18 @@ void AutofillMetrics::LogPopupInteraction(FillingProduct filling_product,
 }
 
 // static
+void AutofillMetrics::LogKeyboardAccessoryInteractionWithMouse(
+    FillingProduct filling_product,
+    AutofillKeyboardAccessoryInteraction interaction) {
+  base::UmaHistogramEnumeration(
+      "Autofill.KeyboardAccessoryInteraction.WithMouse", interaction);
+  base::UmaHistogramEnumeration(
+      base::StrCat({"Autofill.KeyboardAccessoryInteraction.WithMouse.",
+                    FillingProductToString(filling_product)}),
+      interaction);
+}
+
+// static
 void AutofillMetrics::LogServerResponseHasDataForForm(bool has_data) {
   UMA_HISTOGRAM_BOOLEAN("Autofill.ServerResponseHasDataForForm", has_data);
 }
@@ -1032,13 +1073,24 @@ uint8_t AutofillMetrics::CreditCardSeamlessness::BitmaskMetric() const {
 // static
 void AutofillMetrics::LogCreditCardSeamlessnessAtFillTime(
     const LogCreditCardSeamlessnessParam& p) {
-  auto GetSeamlessness = [&p](bool only_newly_filled_fields,
-                              bool only_after_security_policy,
-                              bool only_visible_fields) {
+  auto was_filled_before_security_policy =
+      [&skip_reasons = p.skip_reasons](FieldGlobalId field_id) {
+        const DenseSet<FieldFillingSkipReason>* reasons =
+            base::FindOrNull(skip_reasons, field_id);
+        return reasons &&
+               (reasons->empty() ||
+                *reasons ==
+                    DenseSet{FieldFillingSkipReason::kIframeSecurityPolicy});
+      };
+
+  auto GetSeamlessness = [&p, &was_filled_before_security_policy](
+                             bool only_newly_filled_fields,
+                             bool only_after_security_policy,
+                             bool only_visible_fields) {
     FieldTypeSet autofilled_types;
-    for (const auto& field : p.form) {
+    for (const std::unique_ptr<AutofillField>& field : p.form) {
       FieldGlobalId id = field->global_id();
-      if (only_newly_filled_fields && !p.newly_filled_fields.contains(id)) {
+      if (only_newly_filled_fields && !was_filled_before_security_policy(id)) {
         continue;
       }
       if (only_after_security_policy && !p.safe_fields.contains(id)) {
@@ -1122,7 +1174,7 @@ void AutofillMetrics::LogCreditCardSeamlessnessAtFillTime(
   // allow="autofill">. Whether it's enabled in the main frame is controller by
   // an HTTP header; by default, it is.
   auto requires_enabled_policy_controlled_feature_autofill =
-      [&](const AutofillField& field) {
+      [&p](const AutofillField& field) {
         auto IsSensitiveFieldType = [](FieldType field_type) {
           switch (field_type) {
             case CREDIT_CARD_TYPE:
@@ -1145,9 +1197,9 @@ void AutofillMetrics::LogCreditCardSeamlessnessAtFillTime(
 
   bool some_field_needs_shared_autofill = false;
   bool some_field_has_shared_autofill = false;
-  for (const auto& field : p.form) {
+  for (const std::unique_ptr<AutofillField>& field : p.form) {
     if (requires_enabled_policy_controlled_feature_autofill(*field) &&
-        p.newly_filled_fields.contains(field->global_id())) {
+        was_filled_before_security_policy(field->global_id())) {
       if (!p.safe_fields.contains(field->global_id())) {
         some_field_needs_shared_autofill = true;
       } else {
@@ -1218,25 +1270,118 @@ void AutofillMetrics::LogAutocompleteDaysSinceLastUse(size_t days) {
 }
 
 // static
-void AutofillMetrics::OnAutocompleteSuggestionsShown() {
-  AutofillMetrics::LogAutocompleteEvent(
-      AutocompleteEvent::AUTOCOMPLETE_SUGGESTIONS_SHOWN);
+void AutofillMetrics::LogAutocompleteTableStats(
+    const AutocompleteTableStats& stats) {
+  DCHECK_LE(stats.entries_with_label, stats.total_entries);
+  DCHECK_LE(stats.entries_reused, stats.total_entries);
+
+  base::UmaHistogramCounts10000("Autofill.Autocomplete.Table.EntriesCount",
+                                base::saturated_cast<int>(stats.total_entries));
+  base::UmaHistogramCounts10000(
+      "Autofill.Autocomplete.Table.EntriesCount.NameOnly",
+      base::saturated_cast<int>(stats.total_entries -
+                                stats.entries_with_label));
+  base::UmaHistogramCounts10000(
+      "Autofill.Autocomplete.Table.EntriesCount.NameAndLabel",
+      base::saturated_cast<int>(stats.entries_with_label));
+
+  if (stats.total_entries > 0) {
+    base::UmaHistogramPercentage(
+        "Autofill.Autocomplete.Table.LabelSaturation",
+        base::checked_cast<int>(100 * stats.entries_with_label /
+                                stats.total_entries));
+    base::UmaHistogramPercentage(
+        "Autofill.Autocomplete.Table.ReusedEntriesPercentage",
+        base::checked_cast<int>(100 * stats.entries_reused /
+                                stats.total_entries));
+  }
 }
 
+namespace {
+
+void LogAutocompleteMatchingTypeEvent(AutofillMetrics::AutocompleteEvent event,
+                                      MatchingType matching_type) {
+  DCHECK_LT(event, AutofillMetrics::AutocompleteEvent::NUM_AUTOCOMPLETE_EVENTS);
+  std::string_view histogram_name;
+  switch (matching_type) {
+    case MatchingType::kLabel:
+      histogram_name = "Autocomplete.LabelBasedSuggestions";
+      break;
+    case MatchingType::kName:
+      histogram_name = "Autocomplete.NameBasedSuggestions";
+      break;
+    case MatchingType::kNameAndLabel:
+      histogram_name = "Autocomplete.BothNameAndLabelBasedSuggestions";
+      break;
+    case MatchingType::kUnknown:
+      return;
+  }
+  base::UmaHistogramEnumeration(histogram_name, event,
+                                AutofillMetrics::NUM_AUTOCOMPLETE_EVENTS);
+}
+
+}  // namespace
+
 // static
-void AutofillMetrics::OnAutocompleteSuggestionDeleted(
-    SingleEntryRemovalMethod removal_method) {
+void AutofillMetrics::OnAutocompleteSuggestionsShown(
+    base::span<const Suggestion> suggestions) {
   AutofillMetrics::LogAutocompleteEvent(
-      AutocompleteEvent::AUTOCOMPLETE_SUGGESTION_DELETED);
-  base::UmaHistogramEnumeration(
-      "Autofill.Autocomplete.SingleEntryRemovalMethod", removal_method);
+      AutocompleteEvent::AUTOCOMPLETE_SUGGESTIONS_SHOWN);
+
+  if (!base::FeatureList::IsEnabled(
+          features::kAutofillLabelSensitiveAutocomplete)) {
+    return;
+  }
+
+  DenseSet<MatchingType> seen_matching_types;
+  for (const Suggestion& suggestion : suggestions) {
+    if (suggestion.type != SuggestionType::kAutocompleteEntry) {
+      continue;
+    }
+    const auto* entry = std::get_if<AutocompleteSearchResultLabelSensitive>(
+        &suggestion.payload);
+    if (!entry) {
+      continue;
+    }
+    seen_matching_types.insert(entry->matching_type());
+  }
+
+  for (MatchingType matching_type : seen_matching_types) {
+    LogAutocompleteMatchingTypeEvent(
+        AutocompleteEvent::AUTOCOMPLETE_SUGGESTIONS_SHOWN, matching_type);
+  }
 }
 
 // static
 void AutofillMetrics::LogAutocompleteEvent(AutocompleteEvent event) {
+  LogAutocompleteEvent(event, std::nullopt);
+}
+
+// static
+void AutofillMetrics::LogAutocompleteEvent(
+    AutocompleteEvent event,
+    std::optional<MatchingType> matching_type) {
   DCHECK_LT(event, AutocompleteEvent::NUM_AUTOCOMPLETE_EVENTS);
   base::UmaHistogramEnumeration("Autocomplete.Events3", event,
                                 NUM_AUTOCOMPLETE_EVENTS);
+  if (matching_type && base::FeatureList::IsEnabled(
+                           features::kAutofillLabelSensitiveAutocomplete)) {
+    LogAutocompleteMatchingTypeEvent(event, *matching_type);
+  }
+}
+
+// static
+void AutofillMetrics::LogAutocompleteEvent(AutocompleteEvent event,
+                                           const Suggestion& suggestion) {
+  std::optional<MatchingType> matching_type;
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillLabelSensitiveAutocomplete)) {
+    if (const auto* entry = std::get_if<AutocompleteSearchResultLabelSensitive>(
+            &suggestion.payload)) {
+      matching_type = entry->matching_type();
+    }
+  }
+  LogAutocompleteEvent(event, matching_type);
 }
 
 // static
@@ -1313,7 +1458,7 @@ void AutofillMetrics::LogAutofillFieldInfoAfterSubmission(
     }
 
     builder.SetSubmittedType1(submitted_type1)
-        .SetSubmissionSource(static_cast<int>(form.submission_source()))
+        .SetSubmissionSource(std::to_underlying(form.submission_source()))
         .SetMillisecondsFromFormParsedUntilSubmission(
             autofill_metrics::GetSemanticBucketMinForAutofillDurationTiming(
                 (form_submitted_timestamp - form.form_parsed_timestamp())
@@ -1326,8 +1471,8 @@ int64_t AutofillMetrics::FormTypesToBitVector(
     const DenseSet<FormTypeNameForLogging>& form_types) {
   int64_t form_type_bv = 0;
   for (FormTypeNameForLogging form_type : form_types) {
-    DCHECK_LT(static_cast<int64_t>(form_type), 63);
-    form_type_bv |= 1LL << static_cast<int64_t>(form_type);
+    DCHECK_LT(std::to_underlying(form_type), 63);
+    form_type_bv |= 1LL << std::to_underlying(form_type);
   }
   return form_type_bv;
 }
@@ -1361,8 +1506,9 @@ void AutofillMetrics::LogWebOTPPhoneCollectionMetricStateUkm(
     ukm::SourceId source_id,
     uint32_t phone_collection_metric_state) {
   // UKM recording is not supported for WebViews.
-  if (!recorder || source_id == ukm::kInvalidSourceId)
+  if (!recorder || source_id == ukm::kInvalidSourceId) {
     return;
+  }
 
   ukm::builders::WebOTPImpact builder(source_id);
   builder.SetPhoneCollection(phone_collection_metric_state);
@@ -1444,8 +1590,8 @@ void AutofillMetrics::LogAutocompletePredictionCollisionState(
   // The buckets are calculated by using the least significant two bits to
   // encode the `autocomplete_state`, and the next two bits to encode the
   // `prediction_state`.
-  int bucket = (static_cast<int>(prediction_state) << 2) |
-               static_cast<int>(autocomplete_state);
+  int bucket = (std::to_underlying(prediction_state) << 2) |
+               std::to_underlying(autocomplete_state);
   // Without (kNone, kNone), 4*4 - 1 = 15 possible pairs remain. Log the bucket
   // 0-based, in order to interpret the metric as an enum.
   DCHECK(1 <= bucket && bucket <= 15);

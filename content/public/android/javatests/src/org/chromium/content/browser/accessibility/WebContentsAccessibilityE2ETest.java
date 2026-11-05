@@ -38,13 +38,14 @@ import org.mockito.Mockito;
 import org.chromium.base.Log;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.DisabledTest;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.content.common.ContentInternalFeatures;
-import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.content_public.browser.test.ContentJUnit4ClassRunner;
+import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.ui.accessibility.testservice.EventMatcher;
 import org.chromium.ui.accessibility.testservice.IAccessibilityTestHelperService;
 import org.chromium.ui.accessibility.testservice.NodeMatcher;
@@ -60,6 +61,7 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Tests for Accessibility end-to-end. */
 @Batch(Batch.PER_CLASS)
 @RunWith(ContentJUnit4ClassRunner.class)
+@DisableFeatures(ContentFeatures.ACCESSIBILITY_REQUEST_SCOPED_CONTENT_CHANGED_EVENTS)
 public class WebContentsAccessibilityE2ETest {
     private static final String ACCESSIBILITY_TEST_SERVICE_PACKAGE =
             "org.chromium.ui.accessibility.testservice";
@@ -86,7 +88,6 @@ public class WebContentsAccessibilityE2ETest {
     // Extended selection offset types, defined in:
     // androidx.view.accessibility.AccessibilityNodeInfoCompat
     private static final int OFFSET_TYPE_TEXT = 0;
-    private static final int OFFSET_TYPE_CHILD = 1;
 
     private final AtomicReference<CompletableFuture<IAccessibilityTestHelperService>>
             mServiceFuture = new AtomicReference<>(new CompletableFuture<>());
@@ -504,7 +505,6 @@ WebView focusable focused actions:[CLEAR_FOCUS, AX_FOCUS] bundle:[chromeRole="ro
     @Test
     @SmallTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
-    @EnableFeatures({ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION})
     public void testDumpTreeWithInitialSelection() throws Throwable {
         Assume.assumeTrue(
                 "Requires Android 16 QPR2 (36.1) or higher",
@@ -708,10 +708,7 @@ WebView focusable focused actions:[CLEAR_FOCUS, AX_FOCUS] bundle:[chromeRole="ro
     @Test
     @SmallTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
-    @EnableFeatures({
-        ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN,
-        ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION
-    })
+    @EnableFeatures({ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN})
     public void testSelectionInContentEditable() throws Throwable {
         Assume.assumeTrue(
                 "Requires Android 16 QPR2 (36.1) or higher",
@@ -758,7 +755,7 @@ WebView focusable focused actions:[CLEAR_FOCUS, AX_FOCUS] bundle:[chromeRole="ro
         String expectedDump =
 """
 WebView focusable actions:[FOCUS, AX_FOCUS] bundle:[chromeRole="rootWebArea"]
-  EditText text:"Line one\\nLink text node" clickable editable focusable focused multiLine textSelectionStart:9 textSelectionEnd:10 actions:[CLEAR_FOCUS, CLICK, AX_FOCUS, NEXT, PREVIOUS, COPY, PASTE, CUT, SET_SELECTION, SET_TEXT, IME_ENTER] bundle:[chromeRole="genericContainer", clickableScore="200"] isInputFocusedViaFindFocus
+  EditText text:"Line one\\nLink text node" clickable editable focusable focused multiLine textSelectionStart:9 textSelectionEnd:18 actions:[CLEAR_FOCUS, CLICK, AX_FOCUS, NEXT, PREVIOUS, COPY, PASTE, CUT, SET_SELECTION, SET_TEXT, IME_ENTER] bundle:[chromeRole="genericContainer", clickableScore="200"] isInputFocusedViaFindFocus
     TextView text:"Line one" editable actions:[AX_FOCUS, NEXT, PREVIOUS] bundle:[chromeRole="staticText", clickableScore="100"]
     View text:"\\n" editable notVisibleToUser actions:[AX_FOCUS, NEXT, PREVIOUS] bundle:[chromeRole="lineBreak", clickableScore="100"]
     View text:"null" contentDescription:"Link text" viewIdResName:"link" clickable editable actions:[CLICK, AX_FOCUS, NEXT, PREVIOUS] bundle:[chromeRole="link", clickableScore="300", roleDescription="link", targetUrl="data:text/html;utf-8,%3Chtml%3E%3Cbody%3E%3Cdiv%20contenteditable%3E%0ALine%20one%3Cbr%3E%0A%3Ca%20id%3D%27link%27%20href%3D%27%23%27%3ELink%20text%3C%2Fa%3E%20node%0A%3C%2Fdiv%3E%3C%2Fbody%3E%3C%2Fhtml%3E%0A#"] extendedSelectionEnd:{1, child}
@@ -771,7 +768,6 @@ WebView focusable actions:[FOCUS, AX_FOCUS] bundle:[chromeRole="rootWebArea"]
     @Test
     @SmallTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.UPSIDE_DOWN_CAKE) // API Level 34
-    @DisabledTest(message = "https://crbug.com/549382408")
     public void fireGeneratedEvent_ariaInvalidTrue_firesContentInvalid() throws Throwable {
         // Create an HTML document where there is an input element and an element containing the
         // text for the input's aria-errormessage.
@@ -810,7 +806,6 @@ WebView focusable actions:[FOCUS, AX_FOCUS] bundle:[chromeRole="rootWebArea"]
     @Test
     @SmallTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.UPSIDE_DOWN_CAKE) // API Level 34
-    @DisabledTest(message = "https://crbug.com/549382408")
     public void fireGeneratedEvent_ariaInvalidChangesToFalse_firesContentInvalid()
             throws Throwable {
         // Create an HTML document where there is an input element and an element containing
@@ -919,13 +914,8 @@ WebView focusable actions:[FOCUS, AX_FOCUS] bundle:[chromeRole="rootWebArea"]
 
     @Test
     @SmallTest
-    @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
-    @EnableFeatures({ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION})
+    @MinAndroidSdkLevel(Build.VERSION_CODES.CINNAMON_BUN)
     public void testExtendedSelection() throws Throwable {
-        Assume.assumeTrue(
-                "Requires Android 16 QPR2 (36.1) or higher",
-                Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1);
-
         String html =
                 """
                 <p id="p1">Paragraph1</p>

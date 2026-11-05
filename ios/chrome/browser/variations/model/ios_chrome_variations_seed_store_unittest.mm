@@ -5,6 +5,8 @@
 #import "ios/chrome/browser/variations/model/ios_chrome_variations_seed_store.h"
 
 #import "base/base64.h"
+#import "base/functional/bind.h"
+#import "base/functional/callback_helpers.h"
 #import "base/metrics/persistent_histogram_allocator.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/task_environment.h"
@@ -15,6 +17,7 @@
 #import "components/variations/scoped_variations_ids_provider.h"
 #import "components/variations/seed_response.h"
 #import "components/variations/service/variations_service.h"
+#import "components/variations/variations_crash_keys.h"
 #import "components/variations/variations_switches.h"
 #import "components/variations/variations_test_utils.h"
 #import "ios/chrome/browser/flags/ios_chrome_field_trials.h"
@@ -117,6 +120,9 @@ class IOSChromeVariationsSeedStoreTest : public PlatformTest {
         std::vector<std::string>(),
         std::vector<base::FeatureList::FeatureOverrideInfo>(),
         std::move(feature_list), &ios_field_trials_);
+    // Remove the crash keys that SetUpFieldTrials() creates.
+    clear_crash_keys_ = base::ScopedClosureRunner(
+        base::BindOnce(&variations::ClearCrashKeysInstanceForTesting));
   }
 
   // Verify that the study in the test seed is `applied`.
@@ -139,6 +145,7 @@ class IOSChromeVariationsSeedStoreTest : public PlatformTest {
   // Variations service.
   std::unique_ptr<variations::VariationsService> variations_service_;
   IOSChromeFieldTrials ios_field_trials_;
+  base::ScopedClosureRunner clear_crash_keys_;
 };
 
 // Tests the scenario when a valid seed is fetched and stored.
@@ -197,8 +204,8 @@ TEST_F(IOSChromeVariationsSeedStoreTest, testNoSeedFetched) {
 // previous run crashes on FRE screens.
 TEST_F(IOSChromeVariationsSeedStoreTest, testLateSeedFetched) {
   // Simulate a seed in the core variations seed store.
-  GetLocalState()->SetString(variations::prefs::kVariationsSeedSignature,
-                             "seed");
+  GetLocalState()->SetTime(variations::prefs::kVariationsSeedDate,
+                           base::Time::Now());
 
   ASSERT_EQ([IOSChromeVariationsSeedStore seedApplicationStage],
             SeedApplicationStage::kNoSeed);

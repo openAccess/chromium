@@ -15,6 +15,7 @@
 
 #include "base/base64.h"
 #include "base/check.h"
+#include "base/containers/flat_map.h"
 #include "base/files/file.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
@@ -716,8 +717,6 @@ TEST_F(FakeDMServerTest, HandleExternalPolicyRequestSucceeds) {
   EXPECT_EQ(response.status, net::HTTP_OK);
   ASSERT_NO_FATAL_FAILURE(response.AssertValidProto());
   EXPECT_EQ(response.proto().policy_response().responses_size(), 1);
-  em::PolicyFetchResponse policy_fetch_response =
-      response.proto().policy_response().responses(0);
 
   em::PolicyData policy_data;
   ASSERT_TRUE(policy_data.ParseFromString(
@@ -1206,10 +1205,20 @@ TEST_F(FakeDMServerTest, HandlePolicyRequestWithJsonFormatSucceeds) {
     {
       "policy_user" : "tast-user@managedchrome.com",
       "machine": {
-        "AllowDinosaurEasterEgg": true
+        "AllowDinosaurEasterEgg": true,
+        "ExtensionInstallForcelist": [
+          "extension_id_1;https://example.com/update1",
+          "extension_id_2"
+        ]
       },
       "user": {
-        "HomepageLocation": "http://example.com"
+        "HomepageLocation": "http://example.com",
+        "ManagedBookmarks": [
+          {
+            "name": "Google",
+            "url": "google.com"
+          }
+        ]
       }
     }
   )"));
@@ -1249,7 +1258,7 @@ TEST_F(FakeDMServerTest, HandlePolicyRequestWithJsonFormatSucceeds) {
   ASSERT_NO_FATAL_FAILURE(response.AssertValidProto());
   EXPECT_EQ(response.proto().policy_response().responses_size(), 2);
 
-  std::map<std::string, em::PolicyFetchResponse> responses;
+  base::flat_map<std::string, em::PolicyFetchResponse> responses;
   for (const auto& r : response.proto().policy_response().responses()) {
     em::PolicyData policy_data;
     ASSERT_TRUE(policy_data.ParseFromString(r.policy_data()));
@@ -1265,16 +1274,142 @@ TEST_F(FakeDMServerTest, HandlePolicyRequestWithJsonFormatSucceeds) {
     ASSERT_TRUE(settings.ParseFromString(policy_data.policy_value()));
     EXPECT_TRUE(settings.has_allowdinosaureasteregg());
     EXPECT_TRUE(settings.allowdinosaureasteregg().value());
+    EXPECT_TRUE(settings.has_extensioninstallforcelist());
+    EXPECT_THAT(
+        settings.extensioninstallforcelist().value().entries(),
+        testing::ElementsAre("extension_id_1;https://example.com/update1",
+                             "extension_id_2"));
   }
 
   {
     em::PolicyData policy_data;
     ASSERT_TRUE(policy_data.ParseFromString(
-        responses[policy::dm_protocol::GetChromeUserPolicyType()].policy_data()));
+        responses[policy::dm_protocol::GetChromeUserPolicyType()]
+            .policy_data()));
     em::CloudPolicySettings settings;
     ASSERT_TRUE(settings.ParseFromString(policy_data.policy_value()));
     EXPECT_TRUE(settings.has_homepagelocation());
     EXPECT_EQ(settings.homepagelocation().value(), "http://example.com");
+    EXPECT_TRUE(settings.has_managedbookmarks());
+    EXPECT_EQ(settings.managedbookmarks().value(),
+              R"([{"name":"Google","url":"google.com"}])");
+    EXPECT_EQ(settings.managedbookmarks().policy_options().mode(),
+              em::PolicyOptions::MANDATORY);
+  }
+}
+
+TEST_F(FakeDMServerTest, HandlePolicyRequestWithRecommendedJsonFormatSucceeds) {
+  FakeDMServer fake_dmserver(policy_blob_path_.MaybeAsASCII(),
+                             client_state_path_.MaybeAsASCII(),
+                             grpc_unix_socket_uri_);
+  EXPECT_TRUE(fake_dmserver.Start());
+
+  ASSERT_TRUE(base::WriteFile(policy_blob_path_, R"(
+    {
+      "policy_user" : "tast-user@managedchrome.com",
+      "machine": {
+        "AllowDinosaurEasterEgg": true
+      },
+      "recommended_machine": {
+        "ShowHomeButton": false,
+        "RestoreOnStartup": 4
+      },
+      "user": {
+        "ShowHomeButton": true
+      },
+      "recommended_user": {
+        "BookmarkBarEnabled": true
+      }
+    }
+  )"));
+  ASSERT_TRUE(base::WriteFile(
+      client_state_path_,
+      base::StringPrintf(
+          R"(
+    {
+      "fake_device_id" : {
+        "device_id" : "fake_device_id",
+        "device_token" : "fake_device_token",
+        "machine_name" : "fake_machine_name",
+        "username" : "tast-user@managedchrome.com",
+        "state_keys" : [ "fake_state_key" ],
+        "allowed_policy_types" : [
+          "%s",
+          "%s"
+        ]
+      }
+    }
+  )",
+          policy::dm_protocol::kChromeMachineLevelUserCloudPolicyType,
+          policy::dm_protocol::GetChromeUserPolicyType())));
+
+  em::DeviceManagementRequest request_proto;
+  request_proto.mutable_policy_request()->add_requests()->set_policy_type(
+      policy::dm_protocol::kChromeMachineLevelUserCloudPolicyType);
+  request_proto.mutable_policy_request()->add_requests()->set_policy_type(
+      policy::dm_protocol::GetChromeUserPolicyType());
+
+  Response response =
+      SendRequest(fake_dmserver.GetServiceURL(),
+                  "/?apptype=Chrome&deviceid=fake_device_id&devicetype=2&"
+                  "oauth_token=fake_policy_token&request=policy",
+                  std::move(request_proto));
+  EXPECT_EQ(response.status, net::HTTP_OK);
+  ASSERT_NO_FATAL_FAILURE(response.AssertValidProto());
+  EXPECT_EQ(response.proto().policy_response().responses_size(), 2);
+
+  base::flat_map<std::string, em::PolicyFetchResponse> responses;
+  for (const auto& r : response.proto().policy_response().responses()) {
+    em::PolicyData policy_data;
+    ASSERT_TRUE(policy_data.ParseFromString(r.policy_data()));
+    responses[policy_data.policy_type()] = r;
+  }
+
+  {
+    em::PolicyData policy_data;
+    ASSERT_TRUE(policy_data.ParseFromString(
+        responses[policy::dm_protocol::kChromeMachineLevelUserCloudPolicyType]
+            .policy_data()));
+    em::CloudPolicySettings settings;
+    ASSERT_TRUE(settings.ParseFromString(policy_data.policy_value()));
+
+    EXPECT_TRUE(settings.has_allowdinosaureasteregg());
+    EXPECT_TRUE(settings.allowdinosaureasteregg().value());
+    EXPECT_EQ(settings.allowdinosaureasteregg().policy_options().mode(),
+              em::PolicyOptions::MANDATORY);
+
+    EXPECT_TRUE(settings.has_showhomebutton());
+    EXPECT_FALSE(settings.showhomebutton().value());
+    EXPECT_EQ(settings.showhomebutton().policy_options().mode(),
+              em::PolicyOptions::RECOMMENDED);
+
+    EXPECT_TRUE(settings.has_restoreonstartup());
+    EXPECT_EQ(settings.restoreonstartup().value(), 4);
+    EXPECT_EQ(settings.restoreonstartup().policy_options().mode(),
+              em::PolicyOptions::RECOMMENDED);
+  }
+
+  {
+    em::PolicyData policy_data;
+    ASSERT_TRUE(policy_data.ParseFromString(
+        responses[policy::dm_protocol::GetChromeUserPolicyType()]
+            .policy_data()));
+    em::CloudPolicySettings settings;
+    ASSERT_TRUE(settings.ParseFromString(policy_data.policy_value()));
+
+    // Verify machine policies did not leak into user policies.
+    EXPECT_FALSE(settings.has_allowdinosaureasteregg());
+    EXPECT_FALSE(settings.has_restoreonstartup());
+
+    EXPECT_TRUE(settings.has_showhomebutton());
+    EXPECT_TRUE(settings.showhomebutton().value());
+    EXPECT_EQ(settings.showhomebutton().policy_options().mode(),
+              em::PolicyOptions::MANDATORY);
+
+    EXPECT_TRUE(settings.has_bookmarkbarenabled());
+    EXPECT_TRUE(settings.bookmarkbarenabled().value());
+    EXPECT_EQ(settings.bookmarkbarenabled().policy_options().mode(),
+              em::PolicyOptions::RECOMMENDED);
   }
 }
 
@@ -1354,6 +1489,141 @@ TEST_F(FakeDMServerTest,
   EXPECT_EQ(extension_install_policy.reasons_size(), 1);
   EXPECT_EQ(extension_install_policy.reasons(0),
             em::ExtensionInstallPolicy::REASON_RISK_SCORE);
+}
+
+TEST_F(FakeDMServerTest, WriteDesktopReportRequestAsTextproto) {
+  FakeDMServer fake_dmserver(policy_blob_path_.MaybeAsASCII(),
+                             client_state_path_.MaybeAsASCII(),
+                             grpc_unix_socket_uri_);
+  EXPECT_TRUE(fake_dmserver.Start());
+
+  em::DeviceManagementRequest request_proto;
+  em::ChromeDesktopReportRequest* desktop_report =
+      request_proto.mutable_chrome_desktop_report_request();
+  em::BrowserReport* browser_report = desktop_report->mutable_browser_report();
+  browser_report->set_browser_version("130.0.6723.58");
+  browser_report->set_channel(em::Channel::CHANNEL_STABLE);
+  browser_report->set_executable_path("/opt/google/chrome/chrome");
+
+  em::OSReport* os_report = desktop_report->mutable_os_report();
+  os_report->set_name("Linux");
+  os_report->set_arch("x86_64");
+  os_report->set_version("6.6.0");
+
+  Response response = SendRequest(
+      fake_dmserver.GetServiceURL(),
+      base::StringPrintf("/?apptype=Chrome&deviceid=fake_device_id&"
+                         "devicetype=2&request=%s",
+                         policy::dm_protocol::kValueRequestChromeDesktopReport),
+      std::move(request_proto));
+  EXPECT_EQ(response.status, net::HTTP_OK);
+
+  base::FileEnumerator enumerator(
+      client_state_path_.DirName(),
+      /*recursive=*/false, base::FileEnumerator::FILES,
+      FILE_PATH_LITERAL("desktop_report_*.textproto"));
+  base::FilePath report_file = enumerator.Next();
+  ASSERT_FALSE(report_file.empty());
+  EXPECT_THAT(report_file.BaseName().MaybeAsASCII(),
+              testing::MatchesRegex(R"(desktop_report_[0-9]{14}\.textproto)"));
+  EXPECT_TRUE(enumerator.Next().empty());
+
+  std::string file_content;
+  ASSERT_TRUE(base::ReadFileToString(report_file, &file_content));
+  EXPECT_EQ(file_content,
+            "chrome_desktop_report_request {\n"
+            "  browser_report {\n"
+            "    browser_version: \"130.0.6723.58\"\n"
+            "    channel: CHANNEL_STABLE\n"
+            "    executable_path: \"/opt/google/chrome/chrome\"\n"
+            "  }\n"
+            "  os_report {\n"
+            "    name: \"Linux\"\n"
+            "    arch: \"x86_64\"\n"
+            "    version: \"6.6.0\"\n"
+            "  }\n"
+            "}\n");
+}
+
+TEST_F(FakeDMServerTest, WriteProfileReportRequestAsTextproto) {
+  FakeDMServer fake_dmserver(policy_blob_path_.MaybeAsASCII(),
+                             client_state_path_.MaybeAsASCII(),
+                             grpc_unix_socket_uri_);
+  EXPECT_TRUE(fake_dmserver.Start());
+
+  em::DeviceManagementRequest request_proto;
+  em::ChromeProfileReportRequest* profile_report =
+      request_proto.mutable_chrome_profile_report_request();
+  em::BrowserReport* browser_report = profile_report->mutable_browser_report();
+  browser_report->set_browser_version("130.0.6723.58");
+  browser_report->set_channel(em::Channel::CHANNEL_STABLE);
+
+  Response response = SendRequest(
+      fake_dmserver.GetServiceURL(),
+      base::StringPrintf("/?apptype=Chrome&deviceid=fake_device_id&"
+                         "devicetype=2&request=%s",
+                         policy::dm_protocol::kValueRequestChromeProfileReport),
+      std::move(request_proto));
+  EXPECT_EQ(response.status, net::HTTP_OK);
+
+  base::FileEnumerator enumerator(
+      client_state_path_.DirName(),
+      /*recursive=*/false, base::FileEnumerator::FILES,
+      FILE_PATH_LITERAL("profile_report_*.textproto"));
+  base::FilePath report_file = enumerator.Next();
+  ASSERT_FALSE(report_file.empty());
+  EXPECT_THAT(report_file.BaseName().MaybeAsASCII(),
+              testing::MatchesRegex(R"(profile_report_[0-9]{14}\.textproto)"));
+  EXPECT_TRUE(enumerator.Next().empty());
+
+  std::string file_content;
+  ASSERT_TRUE(base::ReadFileToString(report_file, &file_content));
+  EXPECT_EQ(file_content,
+            "chrome_profile_report_request {\n"
+            "  browser_report {\n"
+            "    browser_version: \"130.0.6723.58\"\n"
+            "    channel: CHANNEL_STABLE\n"
+            "  }\n"
+            "}\n");
+}
+
+TEST_F(FakeDMServerTest, WriteInvalidReportRequestDoesNotCrash) {
+  FakeDMServer fake_dmserver(policy_blob_path_.MaybeAsASCII(),
+                             client_state_path_.MaybeAsASCII(),
+                             grpc_unix_socket_uri_);
+  EXPECT_TRUE(fake_dmserver.Start());
+
+  std::string request_url = base::StringPrintf(
+      "http://%s:%s/?apptype=Chrome&deviceid=fake_device_id&devicetype=2&"
+      "request=%s",
+      fake_dmserver.GetServiceURL().GetHost().c_str(),
+      fake_dmserver.GetServiceURL().GetPort().c_str(),
+      policy::dm_protocol::kValueRequestChromeDesktopReport);
+
+  std::unique_ptr<network::ResourceRequest> resource_request =
+      std::make_unique<network::ResourceRequest>();
+  resource_request->method = net::HttpRequestHeaders::kPostMethod;
+  resource_request->url = GURL(request_url);
+
+  std::unique_ptr<network::SimpleURLLoader> url_loader =
+      network::SimpleURLLoader::Create(std::move(resource_request),
+                                       TRAFFIC_ANNOTATION_FOR_TESTS);
+  url_loader->AttachStringForUpload("invalid proto bytes",
+                                    "application/x-protobuffer");
+  scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
+      base::MakeRefCounted<network::TestSharedURLLoaderFactory>();
+
+  base::test::TestFuture<std::optional<std::string>> test_future;
+  url_loader->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+      url_loader_factory.get(), test_future.GetCallback());
+  EXPECT_TRUE(test_future.Take().has_value());
+  EXPECT_EQ(url_loader->ResponseInfo()->headers->response_code(), net::HTTP_OK);
+
+  base::FileEnumerator enumerator(
+      client_state_path_.DirName(),
+      /*recursive=*/false, base::FileEnumerator::FILES,
+      FILE_PATH_LITERAL("desktop_report_*.textproto"));
+  EXPECT_TRUE(enumerator.Next().empty());
 }
 
 }  // namespace fakedms

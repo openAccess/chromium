@@ -3,10 +3,6 @@ include_rules = [
   # details.
   "-chrome",
 
-  # This directory is in //chrome, which violates the rule above. Allow this
-  # directory to #include its own files.
-  "+chrome/browser/ash/login/screens",
-
   # Existing dependencies within //chrome. There is an active effort to
   # refactor //chrome/browser/ash to break these dependencies; see b/332804822.
   # Whenever possible, avoid adding new //chrome dependencies to this list.
@@ -16,7 +12,6 @@ include_rules = [
   # directory basis. See //tools/chromeos/gen_deps.sh for details.
   "+chrome/browser/app_mode",
   "+chrome/browser/apps",
-  "+chrome/browser/apps/app_service/app_install/app_install_service.h",
   "+chrome/browser/ash/accessibility",
   "+chrome/browser/ash/account_manager",
   "+chrome/browser/ash/app_list/arc",
@@ -33,7 +28,6 @@ include_rules = [
   "+chrome/browser/ash/policy/enrollment",
   "+chrome/browser/ash/policy/handlers",
   "+chrome/browser/ash/policy/server_backed_state",
-  "+chrome/browser/ash/policy/test_support",
   "+chrome/browser/ash/privacy_hub",
   "+chrome/browser/ash/profiles",
   "+chrome/browser/ash/settings",
@@ -41,34 +35,39 @@ include_rules = [
   "+chrome/browser/ash/tpm",
   "+chrome/browser/browser_process.h",
   "+chrome/browser/browser_process_platform_part_ash.h",
-  "+chrome/browser/browser_process_platform_part.h",
-  "+chrome/browser/consent_auditor",
   "+chrome/browser/enterprise/util",
   "+chrome/browser/metrics",
-  "+chrome/browser/net",
   "+chrome/browser/policy",
-  "+chrome/browser/prefs",
   "+chrome/browser/profiles",
-  "+chrome/browser/signin",
-  "+chrome/browser/speech/extension_api",
   "+chrome/browser/sync",
   "+chrome/browser/ui/ash/keyboard",
   "+chrome/browser/ui/ash/login",
-  "+chrome/browser/ui/ash/multi_user",
   "+chrome/browser/ui/ash/system",
-  "+chrome/browser/ui/webui/ash/internet",
-  "+chrome/browser/ui/webui/ash/login",
-  "+chrome/browser/ui/webui/ash/settings",
-  "+chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h",
   "+chrome/browser/ui/chrome_pages.h",
   "+chrome/browser/enterprise/browser_management/management_identity.h",
   "+chrome/browser/ui/webui/ash",
   "+chrome/browser/ui/webui/signin/ash",
-  "+chrome/browser/unified_consent",
-  "+chrome/common/chrome_features.h",
-  "+chrome/common/chrome_paths.h",
   "+chrome/common/url_constants.h",
   "+chrome/common/webui_url_constants.h",
   "+chrome/grit",
-  "+chrome/test/base",
 ]
+
+specific_include_rules = {
+  ".*browsertest\\.cc": [
+    "+chrome/browser/signin",
+    "+chrome/browser/speech/extension_api",
+  ],
+
+  # PrefServiceSyncableFromProfile() narrows the profile PrefService to the
+  # syncable one; everything after that is //components API.
+  "(marketing_opt_in|touchpad_scroll)_screen\\.cc": [
+    "+chrome/browser/prefs/pref_service_syncable_util.h",
+  ],
+
+  # Production resolves the ConsentAuditor through
+  # ash::ConsentAuditorProvider; only the browser test still installs one
+  # through the //chrome-side factory.
+  "consolidated_consent_screen_browsertest\\.cc": [
+    "+chrome/browser/consent_auditor",
+  ],
+}

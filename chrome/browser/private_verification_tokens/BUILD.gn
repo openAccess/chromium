@@ -2,14 +2,40 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-static_library("private_verification_tokens") {
+source_set("private_verification_tokens") {
   visibility = [
     ":*",
     "//chrome/browser:*",
     "//chrome/browser/browsing_data:*",
     "//chrome/browser/component_updater:*",
+    "//chrome/browser/devtools:*",
     "//chrome/browser/profiles:profiles_extra_parts_impl",
+    "//chrome/test:*",
   ]
+
+  public = [
+    "private_verification_tokens_service.h",
+    "private_verification_tokens_service_factory.h",
+    "private_verification_tokens_url_loader_throttle.h",
+  ]
+
+  public_deps = [
+    "//base",
+    "//chrome/browser/profiles:profile",
+    "//components/keyed_service/core",
+    "//components/private_verification_tokens/common:private_verification_tokens_fetcher",
+    "//components/private_verification_tokens/common:private_verification_tokens_issuer_config",
+    "//components/private_verification_tokens/common:private_verification_tokens_store",
+    "//third_party/blink/public/common",
+    "//url",
+  ]
+
+  deps = [ ":impl" ]
+}
+
+source_set("impl") {
+  visibility = [ ":*" ]
+  public = []
 
   sources = [
     "private_verification_tokens_service.cc",
@@ -29,6 +55,7 @@ static_library("private_verification_tokens") {
     "//components/private_verification_tokens/common:privacy_pass_athm_batch_request",
     "//components/private_verification_tokens/common:private_verification_tokens_fetcher",
     "//components/private_verification_tokens/common:private_verification_tokens_issuer_config",
+    "//components/private_verification_tokens/common:private_verification_tokens_metrics",
     "//components/private_verification_tokens/common:private_verification_tokens_parameters",
     "//components/private_verification_tokens/common:private_verification_tokens_store",
     "//content/public/browser",
@@ -48,10 +75,12 @@ source_set("browser_tests") {
     "//base/test:test_support",
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_utils",
     "//components/content_settings/core/common",
-    "//components/private_verification_tokens/common:athm_test_issuer",
     "//components/private_verification_tokens/common:private_verification_tokens_database",
     "//components/private_verification_tokens/common:private_verification_tokens_issuer_config",
+    "//components/private_verification_tokens/common:test_support",
+    "//components/private_verification_tokens/common/athm_ffi:athm_ffi_bindings",
     "//net:test_support",
     "//services/network:test_support",
     "//url",
@@ -72,11 +101,13 @@ source_set("unit_tests") {
     "//chrome/test:test_support",
     "//components/content_settings/core/browser",
     "//components/content_settings/core/common",
-    "//components/private_verification_tokens/common:athm_test_issuer",
+    "//components/private_verification_tokens/common:privacy_pass_athm_batch_request",
     "//components/private_verification_tokens/common:private_verification_tokens_database",
     "//components/private_verification_tokens/common:private_verification_tokens_issuer_config",
+    "//components/private_verification_tokens/common:private_verification_tokens_metrics",
     "//components/private_verification_tokens/common:private_verification_tokens_parameters",
     "//components/private_verification_tokens/common:test_support",
+    "//components/private_verification_tokens/common/athm_ffi:athm_ffi_bindings",
     "//content/test:test_support",
     "//net",
     "//services/network:test_support",

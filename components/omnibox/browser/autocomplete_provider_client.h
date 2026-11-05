@@ -56,10 +56,6 @@ namespace history_clusters {
 class HistoryClustersService;
 }
 
-namespace history_embeddings {
-class HistoryEmbeddingsSearch;
-}
-
 namespace network {
 class SharedURLLoaderFactory;
 }
@@ -67,6 +63,10 @@ class SharedURLLoaderFactory;
 namespace component_updater {
 class ComponentUpdateService;
 }
+
+namespace sessions {
+class TabRestoreService;
+}  // namespace sessions
 
 namespace signin {
 class IdentityManager;
@@ -95,8 +95,6 @@ class AutocompleteProviderClient : public OmniboxAction::Client {
   virtual AutocompleteClassifier* GetAutocompleteClassifier() = 0;
   virtual history::HistoryService* GetHistoryService() = 0;
   virtual history_clusters::HistoryClustersService* GetHistoryClustersService();
-  virtual history_embeddings::HistoryEmbeddingsSearch*
-  GetHistoryEmbeddingsSearch();
   virtual scoped_refptr<history::TopSites> GetTopSites() = 0;
   virtual bookmarks::BookmarkModel* GetBookmarkModel() = 0;
   virtual history::URLDatabase* GetInMemoryDatabase() = 0;
@@ -126,6 +124,7 @@ class AutocompleteProviderClient : public OmniboxAction::Client {
       LensOverlaySuggestInputsCallback callback) const = 0;
   virtual tab_groups::TabGroupSyncService* GetTabGroupSyncService() const = 0;
   virtual sync_sessions::SessionSyncService* GetSessionSyncService() const = 0;
+  virtual sessions::TabRestoreService* GetTabRestoreService() const;
   virtual AimEligibilityService* GetAimEligibilityService() const = 0;
   virtual AiModeButtonService* GetAiModeButtonService() const;
 
@@ -162,6 +161,7 @@ class AutocompleteProviderClient : public OmniboxAction::Client {
   // In mobile platforms, we don't have a guest mode and therefore, it returns
   // true only for Incognito mode.
   virtual bool IsOffTheRecord() const = 0;
+  virtual bool IsPrimaryOTRProfileWithRegularParent() const = 0;
   virtual bool IsIncognitoProfile() const = 0;
   virtual bool IsGuestSession() const = 0;
 
@@ -232,12 +232,6 @@ class AutocompleteProviderClient : public OmniboxAction::Client {
   // Returns true if the sharing hub command is enabled.
   virtual bool IsSharingHubAvailable() const;
 
-  // Returns true if history embeddings is enabled and user has opted in.
-  virtual bool IsHistoryEmbeddingsEnabled() const;
-
-  // Returns true if history embeddings is enabled and user can opt in/out.
-  virtual bool IsHistoryEmbeddingsSettingVisible() const;
-
   // Returns true if the current profile is eligible for Lens. This is used to
   // control whether Lens entrypoints can be shown during this browsing session.
   // Can be changed on demand via enterprise policy.
@@ -269,8 +263,6 @@ class AutocompleteProviderClient : public OmniboxAction::Client {
 
   virtual void set_in_background_state(bool in_background_state) {}
 
-  // Whether the "Omnibox Next" Lens search chip feature is enabled.
-  virtual bool IsOmniboxNextLensSearchChipEnabled() const;
 
   // Whether the Ask G search chip is enabled.
   virtual bool IsAskGShowChipEnabled() const;

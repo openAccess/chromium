@@ -1,5 +1,6 @@
 include_rules = [
   "+chrome/android/features/media_router/jni_headers",
+  "+chrome/services/redirection/public/mojom",
   "+components/cdm/common",
   "+components/webrtc",
   "+media/audio",
@@ -15,8 +16,10 @@ specific_include_rules = {
   "cast_mirroring_performance_browsertest\\.cc": [
     "+third_party/openscreen/src/platform/base/error.h"
   ],
-  "cast_remoting_connector\\.cc": [
-    "+chrome/browser/ui/views/media_router/media_remoting_dialog_view.h",
+  "cast_mirroring_service_host_browsertest\\.cc": [
+    "+ash/shell.h",
+    "+ash/system/privacy/screen_security_observer.h",
+    "+ash/system/tray/system_tray_notifier.h",
   ],
   "output_protection_proxy\\.h": [
     "+ash/display/output_protection_delegate.h",

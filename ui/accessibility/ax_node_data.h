@@ -12,6 +12,8 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -94,7 +96,7 @@ struct AX_BASE_EXPORT AXNodeData final {
     return string_attributes.Has(attribute);
   }
   const std::string& GetStringAttribute(
-      ax::mojom::StringAttribute attribute) const {
+      ax::mojom::StringAttribute attribute) const LIFETIME_BOUND {
     return string_attributes.Get(attribute);
   }
   std::u16string GetString16Attribute(
@@ -104,15 +106,15 @@ struct AX_BASE_EXPORT AXNodeData final {
   bool HasIntListAttribute(ax::mojom::IntListAttribute attribute) const {
     return intlist_attributes.Has(attribute);
   }
-  const std::vector<int32_t>& GetIntListAttribute(
-      ax::mojom::IntListAttribute attribute) const {
+  base::span<const int32_t> GetIntListAttribute(
+      ax::mojom::IntListAttribute attribute) const LIFETIME_BOUND {
     return intlist_attributes.Get(attribute);
   }
   bool HasStringListAttribute(ax::mojom::StringListAttribute attribute) const {
     return stringlist_attributes.Has(attribute);
   }
-  const std::vector<std::string>& GetStringListAttribute(
-      ax::mojom::StringListAttribute attribute) const {
+  base::span<const std::string> GetStringListAttribute(
+      ax::mojom::StringListAttribute attribute) const LIFETIME_BOUND {
     return stringlist_attributes.Get(attribute);
   }
 
@@ -322,6 +324,11 @@ struct AX_BASE_EXPORT AXNodeData final {
   bool IsClickable() const;
 
   // Helper to determine if the data belongs to a node that is part of an active
+  // ARIA live region regardless if it has a name. Used for detecting structural
+  // changes like reparenting nameless elements in a live region.
+  bool IsStructuralElementContainedInActiveLiveRegion() const;
+
+  // Helper to determine if the data belongs to a node that is part of an active
   // ARIA live region, and for which live announcements should be made.
   bool IsContainedInActiveLiveRegion() const;
 
@@ -396,6 +403,9 @@ struct AX_BASE_EXPORT AXNodeData final {
 
   bool HasChildTreeID() const;
   std::optional<AXTreeID> GetChildTreeID() const;
+
+  // Returns true if all node IDs are valid from an untrusted renderer.
+  bool HasValidAXNodeIDsFromRenderer() const;
 
   // Return a string representation of this data, for debugging.
   std::string ToString(bool verbose = true) const;

@@ -17,9 +17,12 @@ import threading
 from devil import base_error
 from devil.android import crash_handler
 from devil.android import device_errors
+from devil.android import device_utils
+from devil.android.sdk import adb_wrapper
 from devil.android.sdk import version_codes
 from devil.android.tools import device_recovery
 from devil.utils import signal_handler
+from devil.utils import timeout_retry
 from pylib.base import base_test_result
 from pylib.base import test_collection
 from pylib.base import test_exception
@@ -44,12 +47,56 @@ class TestsTerminated(Exception):
     pass
 
 
+# Rough runtime estimates (seconds) used only for shard balancing; unrelated
+# to test timeouts.
+ESTIMATED_RUNTIME_PER_CLASS_DEFAULT = 8.0
+ESTIMATED_RUNTIME_PER_TEST_DEFAULT = 1.0
+
+# Replaying android_browsertests (25 shards) over real durations: a lower cap
+# tightens the slowest shard for every weight estimator tried, with the
+# fraction of groups keeping their shard across test-list changes dropping
+# only from 99% (0.05) to 98% (0.02). 0.20 regressed in the original sweep.
+BOUNDED_LOAD_EPSILON = 0.02
+
+SHARDING_STRATEGY_HASH = 'hash'
+SHARDING_STRATEGY_BOUNDED_LOAD = 'bounded-load'
+SHARDING_STRATEGIES = (SHARDING_STRATEGY_HASH, SHARDING_STRATEGY_BOUNDED_LOAD)
+
+
+def _IsEmulator(dev):
+    """Returns whether |dev| is an emulator.
+
+    Checks AdbWrapper.is_emulator before DeviceUtils.is_emulator despite
+    AdbWrapper.is_emulator's deprecation note: AdbWrapper.is_emulator matches
+    emulator-* serials on the host with zero adb I/O even when the emulator is
+    already offline and DeviceUtils._cache is cold or cleared, while
+    dev.is_emulator covers TCP-connected Cuttlefish (vsoc_*) instances via
+    cached ro.product.device.
+    """
+    if (
+        isinstance(getattr(dev, 'adb', None), adb_wrapper.AdbWrapper)
+        and dev.adb.is_emulator
+    ):
+        return True
+    if isinstance(dev, device_utils.DeviceUtils):
+        try:
+            return bool(dev.is_emulator)
+        except base_error.BaseError:
+            return False
+    return False
+
+
 class LocalDeviceTestRun(test_run.TestRun):
     def __init__(self, env, test_instance):
         super().__init__(env, test_instance)
         # This is intended to be filled by a child class.
         self._installed_packages = []
         env.SetPreferredAbis(test_instance.GetPreferredAbis())
+
+    def _RetryOnSystemCrash(self, fn, dev):
+        return crash_handler.RetryOnSystemCrash(
+            fn, device=dev, retries=0 if _IsEmulator(dev) else 3
+        )
 
     @local_device_environment.handle_shard_failures
     def _RunTestsOnDevice(self, dev, tests, results, exit_now):
@@ -69,8 +116,8 @@ class LocalDeviceTestRun(test_run.TestRun):
             result = None
             rerun = None
             try:
-                result, rerun = crash_handler.RetryOnSystemCrash(
-                    lambda d, t=test: self._RunTest(d, t), device=dev
+                result, rerun = self._RetryOnSystemCrash(
+                    lambda d, t=test: self._RunTest(d, t), dev
                 )
                 consecutive_device_errors = 0
                 if isinstance(result, base_test_result.BaseTestResult):
@@ -81,7 +128,24 @@ class LocalDeviceTestRun(test_run.TestRun):
                     raise Exception(
                         'Unexpected result type: %s' % type(result).__name__
                     )
+            except _DeviceReadyTimeoutError as e:
+                exception_recorder.register(e)
+                raise
             except device_errors.CommandTimeoutError as e:
+                try:
+                    is_online = dev.IsOnline(timeout=10, retries=0)
+                except device_errors.CommandTimeoutError:
+                    is_online = False
+                if not is_online:
+                    try:
+                        raise device_errors.DeviceUnreachableError(
+                            str(dev)
+                        ) from e
+                    except (
+                        device_errors.DeviceUnreachableError
+                    ) as unreachable_e:
+                        exception_recorder.register(unreachable_e)
+                        raise
                 exception_recorder.register(e)
                 # Test timeouts don't count as device errors for the purpose
                 # of bad device detection.
@@ -116,6 +180,15 @@ class LocalDeviceTestRun(test_run.TestRun):
                             base_test_result.ResultType.TIMEOUT,
                         )
                     )
+                try:
+                    WaitUntilDeviceReady(
+                        dev,
+                        force_main_user=self._env.force_main_user,
+                        packages=self._installed_packages,
+                    )
+                except base_error.BaseError as wait_err:
+                    exception_recorder.register(wait_err)
+                    raise
             except device_errors.DeviceUnreachableError as e:
                 exception_recorder.register(e)
                 # If the device is no longer reachable then terminate this
@@ -143,6 +216,15 @@ class LocalDeviceTestRun(test_run.TestRun):
                     str(dev),
                     consecutive_device_errors,
                 )
+                try:
+                    WaitUntilDeviceReady(
+                        dev,
+                        force_main_user=self._env.force_main_user,
+                        packages=self._installed_packages,
+                    )
+                except base_error.BaseError as wait_err:
+                    exception_recorder.register(wait_err)
+                    raise
 
             finally:
                 if isinstance(tests, test_collection.TestCollection):
@@ -261,7 +343,15 @@ class LocalDeviceTestRun(test_run.TestRun):
             pass
 
     def _RecoverDevices(self):
-        self._env.parallel_devices.pMap(device_recovery.RecoverDevice, None)
+        def recover(device):
+            device_recovery.RecoverDevice(device, None)
+            # Recovery reboots the device, which brings HSUM devices back to
+            # the system user with the main user stopped and its storage
+            # locked ("Required key not available").
+            if self._env.force_main_user:
+                device.EnsureMainUser()
+
+        self._env.parallel_devices.pMap(recover)
 
     def _GetTestsToRetry(self, tests, try_results):
         """Get the tests to retry.
@@ -318,50 +408,100 @@ class LocalDeviceTestRun(test_run.TestRun):
             total_shards,
         )
 
-        if total_shards < 0 or shard_index < 0 or total_shards <= shard_index:
+        if total_shards <= 0 or shard_index < 0 or total_shards <= shard_index:
             raise test_exception.InvalidShardingSettings(
                 shard_index, total_shards
             )
 
-        sharded_tests = []
-
         grouped_tests = self._GroupTests(tests)
-        for test in grouped_tests:
-            test_name = self._GetUniqueTestName(test)
-            if self._DeterministicHash(test_name) % total_shards == shard_index:
-                sharded_tests.append(test)
+        groups = [(self._GetUniqueTestName(g), g) for g in grouped_tests]
+        # Placement order depends only on group names, never on other groups'
+        # weights.
+        groups.sort(
+            key=lambda item: (self._DeterministicHash(item[0]), item[0])
+        )
 
-        return sharded_tests
+        # Fingerprint so divergence between shards is detectable from logs: the
+        # partition is only valid if every shard computes it from the identical
+        # list.
+        fingerprint = hashlib.sha256(
+            '\n'.join(name for name, _ in groups).encode('utf-8')
+        ).hexdigest()[:12]
+        strategy = self._env.sharding_strategy
+        logging.info(
+            'Sharding %d test groups with strategy %s (input fingerprint %s)',
+            len(groups),
+            strategy,
+            fingerprint,
+        )
+
+        if strategy == SHARDING_STRATEGY_HASH:
+            return [
+                g
+                for name, g in groups
+                if self._DeterministicHash(name) % total_shards == shard_index
+            ]
+
+        # Bounded-load hashing: each group keeps its hash shard unless that
+        # would push the shard above (1 + eps) * mean estimated load, in which
+        # case it spills to the next shard with room. Only a small fraction of
+        # groups move when the test list changes, unlike LPT where a group's
+        # shard depends on every other group's weight.
+        weights = [self._EstimateTestGroupRuntime(g) for _, g in groups]
+        cap = (1 + BOUNDED_LOAD_EPSILON) * sum(weights) / total_shards
+        load = [0.0] * total_shards
+        shard_assigned = [[] for _ in range(total_shards)]
+
+        for (name, group), weight in zip(groups, weights):
+            preferred = self._DeterministicHash(name) % total_shards
+            for k in range(total_shards):
+                shard = (preferred + k) % total_shards
+                if load[shard] + weight <= cap or k == total_shards - 1:
+                    break
+            shard_assigned[shard].append(group)
+            load[shard] += weight
+
+        return shard_assigned[shard_index]
+
+    def _EstimateTestGroupRuntime(self, test):
+        """Returns a rough estimated runtime (seconds) for balancing shards.
+
+        This is NOT the test timeout; the numbers are coarse heuristics, not
+        measurements.
+        """
+        tests_in_group = test if isinstance(test, (list, tuple)) else [test]
+        assert tests_in_group, 'Empty test group'
+        return (
+            ESTIMATED_RUNTIME_PER_CLASS_DEFAULT
+            + len(tests_in_group) * ESTIMATED_RUNTIME_PER_TEST_DEFAULT
+        )
 
     def _DeterministicHash(self, test_name):
         """Return the deterministic hash for a test name, as an integer."""
-        # pylint: disable=no-self-use
         assert isinstance(test_name, str), 'Expecting a string.'
         hash_bytes = hashlib.sha256(test_name.encode('utf-8')).digest()
         # To speed thing up, only take the last 3 bytes
         return int.from_bytes(hash_bytes[-3:], byteorder='big')
 
-    # Sort by hash so we don't put all tests in a slow suite in the same shard.
-    def _SortTests(self, tests):
-        return sorted(
-            tests,
-            key=lambda t: self._DeterministicHash(self._GetUniqueTestName(t)),
-        )
-
     def _CreateShardsForDevices(self, tests):
         raise NotImplementedError
 
     def _GetUniqueTestName(self, test):
-        # pylint: disable=no-self-use
+        """Returns a string identifier for a single test.
+
+        Args:
+          test: A single test identifier. The base implementation only handles
+            str tests (e.g. gtests) and returns it unchanged; subclasses such as
+            LocalDeviceInstrumentationTestRun override this for dict tests.
+            Cannot be a test group or batch list.
+        """
         return test
 
     def _ShouldRetry(self, test, result):
-        # pylint: disable=no-self-use,unused-argument
         return True
 
     def _ShouldRetryFullGroup(self, test_group):
         """Whether should retry the full group if the group has test failure."""
-        # pylint: disable=no-self-use,unused-argument
         return False
 
     # override
@@ -405,7 +545,6 @@ class LocalDeviceTestRun(test_run.TestRun):
 
         Return a list whose element can be a test, or a list of tests.
         """
-        # pylint: disable=no-self-use
         return tests
 
     def _RunTest(self, device, test):
@@ -424,6 +563,96 @@ def FlattenTestList(values):
         else:
             ret.append(v)
     return ret
+
+
+_DEVICE_READY_MAX_TRIES = 60
+_DEVICE_READY_WAIT_PERIOD = 1
+_DEVICE_READY_SHELL_TIMEOUT = 5
+
+
+class _DeviceReadyTimeoutError(device_errors.CommandTimeoutError):
+    """Raised when WaitUntilDeviceReady times out waiting for unlock/storage."""
+
+
+def WaitUntilDeviceReady(device, force_main_user=False, packages=None):
+    """Waits for a device to be fully booted, unlocked, and storage-mounted.
+
+    During a userspace soft-reboot (e.g. when surfaceflinger or system_server
+    crashes and restarts zygote), adbd stays alive and sys.boot_completed
+    remains '1', so WaitUntilFullyBooted() alone can return while system_server
+    is still in an early boot phase with the target user locked and /sdcard
+    FUSE unmounted (via `vdc volume abort_fuse`). Starting instrumentation in
+    that window causes ActivityManagerService.startInstrumentation() to fail
+    internally and force-stop the package without notifying the
+    InstrumentationWatcher, hanging `am instrument -w` until the shard timeout
+    expires.
+    """
+    device.ClearCache()
+    device.WaitUntilFullyBooted()
+
+    main_user_ensured = not force_main_user
+    last_state = {'user_id': 0, 'storage_path': None}
+
+    def is_user_unlocked_and_storage_ready():
+        nonlocal main_user_ensured
+        try:
+            if not main_user_ensured:
+                device.EnsureMainUser()
+                if not isinstance(getattr(device, 'target_user', None), int):
+                    return False
+                main_user_ensured = True
+
+            user_id = (
+                device.target_user
+                if isinstance(getattr(device, 'target_user', None), int)
+                else 0
+            )
+            # On HSUM (force_main_user with non-zero user), ResolveSpecialPath()
+            # maps /sdcard to the lower /data/media/<user> directory, which
+            # remains present even while FUSE is unmounted. Probe the user's
+            # actual FUSE mount namespace instead.
+            storage_path = (
+                f'/mnt/user/{user_id}/emulated/{user_id}/Download'
+                if force_main_user and user_id != 0
+                else device.GetAppWritablePath()
+            )
+            last_state['user_id'] = user_id
+            last_state['storage_path'] = storage_path
+
+            output = device.RunShellCommand(
+                ['am', 'get-started-user-state', str(user_id)],
+                check_return=False,
+                timeout=_DEVICE_READY_SHELL_TIMEOUT,
+                retries=0,
+            )
+            if not any('RUNNING_UNLOCKED' in line for line in output):
+                return False
+            device.RunShellCommand(
+                ['test', '-d', storage_path],
+                check_return=True,
+                as_root=force_main_user,
+                timeout=_DEVICE_READY_SHELL_TIMEOUT,
+                retries=0,
+            )
+            return True
+        except (
+            device_errors.CommandFailedError,
+            device_errors.CommandTimeoutError,
+        ):
+            return False
+
+    if not timeout_retry.WaitFor(
+        is_user_unlocked_and_storage_ready,
+        wait_period=_DEVICE_READY_WAIT_PERIOD,
+        max_tries=_DEVICE_READY_MAX_TRIES,
+    ):
+        raise _DeviceReadyTimeoutError(
+            f'Timed out waiting for device {device} user '
+            f'{last_state["user_id"]} unlock and external storage '
+            f'({last_state["storage_path"]}).'
+        )
+    if packages:
+        SetAppCompatibilityFlagsIfNecessary(packages, device)
 
 
 def SetAppCompatibilityFlagsIfNecessary(packages, device):

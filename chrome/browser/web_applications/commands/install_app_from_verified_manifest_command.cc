@@ -115,14 +115,15 @@ void InstallAppFromVerifiedManifestCommand::StartWithLock(
 }
 
 void InstallAppFromVerifiedManifestCommand::OnManifestParsed(
-    blink::mojom::ManifestPtr manifest) {
+    ParseManifestResult parse_result) {
   parse_job_.reset();
 
-  if (!manifest) {
+  if (!parse_result.has_value()) {
     Abort(CommandResult::kFailure,
           webapps::InstallResultCode::kNotValidManifestForWebApp);
     return;
   }
+  blink::Manifest manifest = std::move(parse_result).value();
 
   auto icon_url_modifications = [](IconUrlSizeSet& icon_urls) {
     base::EraseIf(icon_urls, [](const IconUrlWithSize& url_with_size) {
@@ -145,7 +146,7 @@ void InstallAppFromVerifiedManifestCommand::OnManifestParsed(
 
   manifest_to_install_info_job_ =
       ManifestToWebAppInstallInfoJob::CreateAndStart(
-          *manifest, *data_retriever_.get(), /*background_installation=*/true,
+          manifest, *data_retriever_.get(), /*background_installation=*/true,
           install_source_,
           web_contents_lock_->shared_web_contents().GetWeakPtr(),
           icon_url_modifications, GetMutableDebugValue(),

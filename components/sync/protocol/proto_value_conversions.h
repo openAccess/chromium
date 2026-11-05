@@ -17,7 +17,6 @@ class AppSpecifics;
 class ArcPackageSpecifics;
 class AutofillProfileSpecifics;
 class AutofillSpecifics;
-class AutofillOfferSpecifics;
 class AutofillValuableMetadataSpecifics;
 class AutofillWalletCredentialSpecifics;
 class AutofillWalletSpecifics;
@@ -93,7 +92,6 @@ class WalletCreditCardCloudTokenData;
 class WalletMaskedCreditCard;
 class WalletMetadataSpecifics;
 class WalletPostalAddress;
-class WebApkSpecifics;
 class WebAppSpecifics;
 class WebauthnCredentialSpecifics;
 class WifiConfigurationSpecifics;
@@ -121,9 +119,6 @@ base::Value AppSpecificsToValue(const sync_pb::AppSpecifics& app_specifics);
 
 base::Value ArcPackageSpecificsToValue(
     const sync_pb::ArcPackageSpecifics& proto);
-
-base::Value AutofillOfferSpecificsToValue(
-    const sync_pb::AutofillOfferSpecifics& autofill_offer_specifics);
 
 base::Value AutofillProfileSpecificsToValue(
     const sync_pb::AutofillProfileSpecifics& autofill_profile_specifics);
@@ -339,9 +334,6 @@ base::Value WalletMetadataSpecificsToValue(
 
 base::Value WalletPostalAddressToValue(
     const sync_pb::WalletPostalAddress& wallet_postal_address);
-
-base::Value WebApkSpecificsToValue(
-    const sync_pb::WebApkSpecifics& web_apk_specifics);
 
 base::Value WebAppSpecificsToValue(
     const sync_pb::WebAppSpecifics& web_app_specifics);

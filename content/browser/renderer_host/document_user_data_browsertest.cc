@@ -38,6 +38,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/url_request/url_request_failed_job.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace content {
 
@@ -86,7 +87,7 @@ class PopupCreatedObserver : public WebContentsDelegate {
       WebContents* source_contents,
       std::unique_ptr<WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override {
@@ -619,9 +620,9 @@ IN_PROC_BROWSER_TEST_F(DocumentUserDataTest, CheckInPendingDeletionState) {
   // 5) Check DUD objects |data_a| and |data_b| are not cleared when rfh_a and
   // rfh_b are in pending deletion state.
   EXPECT_EQ(rfh_a->lifecycle_state(),
-            RenderFrameHostImpl::LifecycleStateImpl::kRunningUnloadHandlers);
+            RenderFrameHostLifecycleStateImpl::kRunningUnloadHandlers);
   EXPECT_EQ(rfh_b->lifecycle_state(),
-            RenderFrameHostImpl::LifecycleStateImpl::kRunningUnloadHandlers);
+            RenderFrameHostLifecycleStateImpl::kRunningUnloadHandlers);
   EXPECT_TRUE(data_a);
   EXPECT_TRUE(data_b);
 

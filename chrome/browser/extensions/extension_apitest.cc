@@ -45,6 +45,7 @@
 #include "net/test/embedded_test_server/install_default_websocket_handlers.h"
 #include "net/test/embedded_test_server/register_basic_auth_handler.h"
 #include "net/test/embedded_test_server/request_handler_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if BUILDFLAG(ENABLE_PLATFORM_APPS)
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
@@ -148,7 +149,8 @@ bool ExtensionApiTest::RunExtensionTest(const base::FilePath& extension_path,
   GURL url_to_open;
   if (run_options.page_url) {
     url_to_open = GURL(run_options.page_url);
-    DCHECK(url_to_open.has_scheme() && url_to_open.has_host());
+    CHECK(url_to_open.has_scheme() && url_to_open.has_host(),
+          base::NotFatalUntil::M161);
     // Note: We use is_valid() here in the expectation that the provided url
     // may lack a scheme & host and thus be a relative url within the loaded
     // extension.
@@ -162,7 +164,8 @@ bool ExtensionApiTest::RunExtensionTest(const base::FilePath& extension_path,
       }
     }
   } else if (run_options.extension_url) {
-    DCHECK(!url_to_open.has_scheme() && !url_to_open.has_host());
+    CHECK(!url_to_open.has_scheme() && !url_to_open.has_host(),
+          base::NotFatalUntil::M161);
     url_to_open = extension->GetResourceURL(run_options.extension_url);
     if (!url_to_open.is_valid()) {
       message_ = "Invalid extension URL.";
@@ -175,9 +178,10 @@ bool ExtensionApiTest::RunExtensionTest(const base::FilePath& extension_path,
     OpenURL(url_to_open, run_options.open_in_incognito);
   } else if (run_options.launch_as_platform_app) {
 #if BUILDFLAG(ENABLE_PLATFORM_APPS)
-    apps::AppLaunchParams params(
-        extension->id(), apps::LaunchContainer::kLaunchContainerNone,
-        WindowOpenDisposition::NEW_WINDOW, apps::LaunchSource::kFromTest);
+    apps::AppLaunchParams params(extension->id(),
+                                 apps::LaunchContainer::kLaunchContainerNone,
+                                 ui::mojom::WindowOpenDisposition::kNewWindow,
+                                 apps::LaunchSource::kFromTest);
     params.command_line = *base::CommandLine::ForCurrentProcess();
     apps::AppServiceProxyFactory::GetForProfile(
         run_options.profile ? run_options.profile.get() : profile())
@@ -211,7 +215,7 @@ void ExtensionApiTest::OpenURL(const GURL& url, bool open_in_incognito) {
 }
 
 bool ExtensionApiTest::OpenTestURL(const GURL& url, bool open_in_incognito) {
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M161);
 
   ResultCatcher catcher;
 

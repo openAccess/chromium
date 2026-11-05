@@ -56,6 +56,7 @@
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/testing/earl_grey/matchers.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/third_party/earl_grey2/src/CommonLib/Matcher/GREYLayoutConstraint.h"  // nogncheck
 #import "ios/web/public/test/element_selector.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -63,12 +64,12 @@
 using base::test::ios::kWaitForPageLoadTimeout;
 using base::test::ios::kWaitForUIElementTimeout;
 using base::test::ios::WaitUntilConditionOrTimeout;
+using chrome_test_util::AutofillAndPasswordsTableViewMatcher;
 using chrome_test_util::ButtonWithAccessibilityLabel;
 using chrome_test_util::ButtonWithAccessibilityLabelId;
 using chrome_test_util::NavigationBarCancelButton;
 using chrome_test_util::NavigationBarDoneButton;
 using chrome_test_util::PasswordsTableViewMatcher;
-using chrome_test_util::SettingsCollectionView;
 using chrome_test_util::SettingsDoneButton;
 using chrome_test_util::SettingsNavigationBar;
 using chrome_test_util::SwipeActionDeleteButton;
@@ -781,6 +782,7 @@ void OpenPasswordManagerWidgetPromoInstructions() {
 }
 
 // Tests the add password flow from the toolbar button.
+TAG_SMOKE_TEST(PasswordManagerAddTestCase, testAddNewPasswordCredential);
 - (void)testAddNewPasswordCredential {
   OpenPasswordManager();
 
@@ -838,12 +840,13 @@ void OpenPasswordManagerWidgetPromoInstructions() {
 
   [ReauthenticationAppInterface mockReauthenticationModuleReturnMockedResult];
 
-  // Password Manager should be dismissed leaving the Settings UI visible.
+  // Password Manager should be dismissed leaving the Autofill and Passwords UI
+  // visible.
   CheckVisibilityOfElement(/*matcher=*/AddPasswordSaveButton(),
                            /*is_visible=*/false);
   CheckVisibilityOfElement(/*matcher=*/ReauthenticationController(),
                            /*is_visible=*/false);
-  CheckVisibilityOfElement(/*matcher=*/SettingsCollectionView(),
+  CheckVisibilityOfElement(/*matcher=*/AutofillAndPasswordsTableViewMatcher(),
                            /*is_visible=*/true);
 }
 
@@ -1816,18 +1819,16 @@ void OpenPasswordManagerWidgetPromoInstructions() {
   [ReauthenticationAppInterface mockReauthenticationModuleExpectedResult:
                                     ReauthenticationResult::kFailure];
 
-  // Settings UI should be covered by Password Manager UI.
-  [[EarlGrey
-      selectElementWithMatcher:chrome_test_util::SettingsCollectionView()]
+  // Autofill and Passwords UI should be covered by Password Manager UI.
+  [[EarlGrey selectElementWithMatcher:AutofillAndPasswordsTableViewMatcher()]
       assertWithMatcher:grey_notVisible()];
 
   // Trigger local authentication by backgrounding the app.
   [[AppLaunchManager sharedManager] backgroundAndForegroundApp];
 
-  // Failed auth should dismiss the whole Password Manager leaving the Settings
-  // UI visible.
-  [[EarlGrey
-      selectElementWithMatcher:chrome_test_util::SettingsCollectionView()]
+  // Failed auth should dismiss the whole Password Manager leaving the Autofill
+  // and Passwords UI visible.
+  [[EarlGrey selectElementWithMatcher:AutofillAndPasswordsTableViewMatcher()]
       assertWithMatcher:grey_sufficientlyVisible()];
 }
 
@@ -2069,6 +2070,7 @@ void OpenPasswordManagerWidgetPromoInstructions() {
 // Tests that an alert is displayed when update GPM PIN flow returns an error.
 // For now, fake trusted vault backend returns the error unconditionally.
 - (void)testUpdateGPMPinErrorAlert {
+  [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
   OpenPasswordManager();
   OpenSettingsSubmenu();
   CheckChangePinVisibleInSettings();
@@ -2092,6 +2094,7 @@ void OpenPasswordManagerWidgetPromoInstructions() {
 // Tests that attempting to change GPM PIN with no passcode does not show the
 // dialog and displays an alert prompting the user to set a passcode.
 - (void)testUpdateGPMPinWithoutPasscodeSet {
+  [SigninEarlGrey signinWithFakeIdentity:[FakeSystemIdentity fakeIdentity1]];
   OpenPasswordManager();
   OpenSettingsSubmenu();
   CheckChangePinVisibleInSettings();
@@ -2272,14 +2275,15 @@ void OpenPasswordManagerWidgetPromoInstructions() {
 
   [ReauthenticationAppInterface mockReauthenticationModuleReturnMockedResult];
 
-  // The Password Manager UI should be gone leaving the Settings UI visible.
+  // The Password Manager UI should be gone leaving the Autofill and Passwords
+  // UI visible.
   CheckVisibilityOfElement(/*matcher=*/PasswordSettingsTableView(),
                            /*is_visible=*/false);
   CheckVisibilityOfElement(/*matcher=*/PasswordsTableViewMatcher(),
                            /*is_visible=*/false);
   CheckVisibilityOfElement(/*matcher=*/ReauthenticationController(),
                            /*is_visible=*/false);
-  CheckVisibilityOfElement(/*matcher=*/SettingsCollectionView(),
+  CheckVisibilityOfElement(/*matcher=*/AutofillAndPasswordsTableViewMatcher(),
                            /*is_visible=*/true);
 }
 
@@ -2403,11 +2407,11 @@ void OpenPasswordManagerWidgetPromoInstructions() {
   [[EarlGrey selectElementWithMatcher:PasswordsTableViewMatcher()]
       assertWithMatcher:grey_notVisible()];
 
-  // Failed auth should dismiss the Password Manager, the Settings menu is
-  // displayed.
+  // Failed auth should dismiss the Password Manager, leaving the Autofill and
+  // Passwords page displayed.
   [ReauthenticationAppInterface mockReauthenticationModuleReturnMockedResult];
-  [ChromeEarlGrey
-      waitForSufficientlyVisibleElementWithMatcher:SettingsCollectionView()];
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      AutofillAndPasswordsTableViewMatcher()];
 
   // Check password manager visit metric.
   CheckPasswordManagerVisitMetricCount(0);
@@ -2444,9 +2448,8 @@ void OpenPasswordManagerWidgetPromoInstructions() {
                    chrome_test_util::AlertItemWithAccessibilityLabelId(IDS_OK)]
         performAction:grey_tap()];
 
-    // Check for the Settings page after Password Manager is gone.
-    [[EarlGrey
-        selectElementWithMatcher:chrome_test_util::SettingsCollectionView()]
+    // Check for the Autofill and Passwords page after Password Manager is gone.
+    [[EarlGrey selectElementWithMatcher:AutofillAndPasswordsTableViewMatcher()]
         assertWithMatcher:grey_sufficientlyVisible()];
   }
 
@@ -2488,9 +2491,8 @@ void OpenPasswordManagerWidgetPromoInstructions() {
                    chrome_test_util::AlertItemWithAccessibilityLabelId(IDS_OK)]
         performAction:grey_tap()];
 
-    // Check for the Settings page after Password Manager is gone.
-    [[EarlGrey
-        selectElementWithMatcher:chrome_test_util::SettingsCollectionView()]
+    // Check for the Autofill and Passwords page after Password Manager is gone.
+    [[EarlGrey selectElementWithMatcher:AutofillAndPasswordsTableViewMatcher()]
         assertWithMatcher:grey_sufficientlyVisible()];
   }
 }
@@ -2912,8 +2914,7 @@ void OpenPasswordManagerWidgetPromoInstructions() {
   [GetInteractionForPasswordEntry(@"example1.com, 2 accounts")
       performAction:grey_tap()];
 
-  [[EarlGrey selectElementWithMatcher:NavigationBarEditButton()]
-      performAction:grey_tap()];
+  TapNavigationBarEditButton();
 
   // Delete first password.
   DeleteCredential(@"user1", @"https://example1.com/");

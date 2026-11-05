@@ -84,7 +84,6 @@ found in the LICENSE file.
       <command id="unmount" label="$i18n{UNMOUNT_DEVICE_BUTTON_LABEL}"
                shortcut="E|Shift|Ctrl">
       <command id="format" label="$i18n{FORMAT_DEVICE_BUTTON_LABEL}">
-      <command id="erase-device" label="$i18n{REPARTITION_DEVICE_BUTTON_LABEL}">
       <command id="configure" label="$i18n{CONFIGURE_VOLUME_BUTTON_LABEL}">
 
       <command id="files-settings" label="$i18n{FILES_SETTINGS_LABEL}">
@@ -118,8 +117,6 @@ found in the LICENSE file.
 
       <command id="manage-in-drive"
                label="$i18n{MANAGE_IN_DRIVE_BUTTON_LABEL}" disabled hidden>
-      <command id="manage-mirrorsync"
-               label="$i18n{DRIVE_MANAGE_MIRRORSYNC}" disabled hidden>
       <command id="share-with-linux" label="$i18n{SHARE_WITH_LINUX_BUTTON_LABEL}" disabled hidden>
       <command id="manage-linux-sharing" label="$i18n{MANAGE_LINUX_SHARING_BUTTON_LABEL}" disabled hidden>
       <command id="manage-linux-sharing-gear" label="$i18n{MANAGE_LINUX_SHARING_BUTTON_LABEL}" disabled hidden>
@@ -195,7 +192,6 @@ found in the LICENSE file.
         <cr-menu-item command="#configure"></cr-menu-item>
         <cr-menu-item command="#unmount"></cr-menu-item>
         <cr-menu-item command="#format"></cr-menu-item>
-        <cr-menu-item command="#erase-device"></cr-menu-item>
         <cr-menu-item command="#rename"></cr-menu-item>
         <cr-menu-item command="#unpin-folder"></cr-menu-item>
         <cr-menu-item command="#share-with-linux"></cr-menu-item>
@@ -257,8 +253,6 @@ found in the LICENSE file.
                       command="#manage-linux-sharing-gear"></cr-menu-item>
         <cr-menu-item id="gear-menu-drive-sync-settings"
                       command="#drive-sync-settings"></cr-menu-item>
-        <cr-menu-item id="gear-menu-manage-mirrorsync"
-                      command="#manage-mirrorsync"></cr-menu-item>
         <hr id="help-separator">
         <cr-menu-item id="gear-menu-files-settings"
                       command="#files-settings"></cr-menu-item>
@@ -274,7 +268,6 @@ found in the LICENSE file.
         <cr-menu-item id="gear-menu-providers" command="#show-providers-submenu"
             sub-menu="#providers-menu"></cr-menu-item>
         <cr-menu-item id="gear-menu-format" command="#format"></cr-menu-item>
-        <cr-menu-item id="gear-menu-erase" command="#erase-device"></cr-menu-item>
         <cr-menu-item id="volume-space-info" command="#volume-storage">
           <div id="volume-space-info-contents">
             <span id="volume-space-info-label"></span>

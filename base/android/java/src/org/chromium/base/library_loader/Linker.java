@@ -49,9 +49,15 @@ import javax.annotation.concurrent.GuardedBy;
  *
  * Security considerations:
  *
- * - The shared RELRO memory region is always forced read-only after creation, which means it is
+ * - The shared RELRO memory region is always forced readonly after creation, which means it is
  *   impossible for a compromised process to map it read-write (e.g. by calling mmap() or
  *   mprotect()) and modify its content, altering values seen in other processes.
+ *
+ * - The App Zygote process is guaranteed (by Android) to be uncompromised. See
+ *   //docs/security/android-sandbox.md#zygote.
+ *
+ * - When the RELRO region is taken from an isolated process, it should be done before any untrusted
+ *   data or code reaches that process.
  *
  * - The common library load addresses are randomized for each instance of the program on the
  *   device.
@@ -243,7 +249,10 @@ class Linker {
         assert !asRelroProducer || preference != PreferAddress.RESERVE_HINT
                 : "Producer does not accept hints from outside";
         synchronized (mLock) {
-            if (mState != State.UNINITIALIZED) return;
+            if (mState != State.UNINITIALIZED) {
+                if (DEBUG) Log.i(TAG, "ensureInitialized: early return");
+                return;
+            }
             chooseAndReserveMemoryRange(asRelroProducer, preference, addressHint);
             if (DEBUG) {
                 Log.i(
@@ -596,6 +605,9 @@ class Linker {
         assert status != RelroSharingStatus.NOT_ATTEMPTED;
         RecordHistogram.recordEnumeratedHistogram(
                 "ChromiumAndroidLinker.RelroSharingStatus2", status, RelroSharingStatus.COUNT);
+        RecordHistogram.recordCount100Histogram(
+                "ChromiumAndroidLinker.RelroNotSharedPercentage",
+                getLinkerJni().getRelroNotSharedPercentage());
     }
 
     /** Loads the Linker JNI library. Throws UnsatisfiedLinkError on error. */
@@ -774,6 +786,12 @@ class Linker {
          * @return RelroSharingStatus.
          */
         int getRelroSharingResult();
+
+        /**
+         * Returns the percentage (0..100) of the RELRO region that was not shared with the incoming
+         * RELRO region.
+         */
+        int getRelroNotSharedPercentage();
     }
 
     private static Linker.@Nullable Natives sNativesInstance;

@@ -427,6 +427,10 @@ class GLES2DecoderTestBase : public ::testing::TestWithParam<bool>,
 
   void DeleteIndexBuffer();
 
+  // |clear_error| is the error reported by the post-clear glGetError() that
+  // GLES2DecoderImpl::ClearLevel uses to decide whether the clear landed. Pass
+  // something other than GL_NO_ERROR to simulate a driver that failed the
+  // clear (e.g. GL_OUT_OF_MEMORY).
   void SetupClearTextureExpectations(GLuint service_id,
                                      GLuint old_service_id,
                                      GLenum bind_target,
@@ -438,7 +442,8 @@ class GLES2DecoderTestBase : public ::testing::TestWithParam<bool>,
                                      GLint yoffset,
                                      GLsizei width,
                                      GLsizei height,
-                                     GLuint bound_pixel_unpack_buffer);
+                                     GLuint bound_pixel_unpack_buffer,
+                                     GLenum clear_error = GL_NO_ERROR);
 
   void SetupClearTexture3DExpectations(GLsizeiptr buffer_size,
                                        GLenum target,
@@ -467,19 +472,25 @@ class GLES2DecoderTestBase : public ::testing::TestWithParam<bool>,
                                              GLsizei restore_scissor_width,
                                              GLsizei restore_scissor_height);
 
-  void SetupExpectationsForFramebufferClearing(GLenum target,
-                                               GLuint clear_bits,
-                                               GLclampf restore_red,
-                                               GLclampf restore_green,
-                                               GLclampf restore_blue,
-                                               GLclampf restore_alpha,
-                                               GLuint restore_stencil,
-                                               GLclampf restore_depth,
-                                               bool restore_scissor_test,
-                                               GLint restore_scissor_x,
-                                               GLint restore_scissor_y,
-                                               GLsizei restore_scissor_width,
-                                               GLsizei restore_scissor_height);
+  // |clear_error| is the error reported by the post-clear glGetError() that
+  // GLES2DecoderImpl::ClearUnclearedAttachments uses to decide whether the
+  // clear landed. Pass something other than GL_NO_ERROR to simulate a driver
+  // that failed the clear (e.g. GL_OUT_OF_MEMORY).
+  void SetupExpectationsForFramebufferClearing(
+      GLenum target,
+      GLuint clear_bits,
+      GLclampf restore_red,
+      GLclampf restore_green,
+      GLclampf restore_blue,
+      GLclampf restore_alpha,
+      GLuint restore_stencil,
+      GLclampf restore_depth,
+      bool restore_scissor_test,
+      GLint restore_scissor_x,
+      GLint restore_scissor_y,
+      GLsizei restore_scissor_width,
+      GLsizei restore_scissor_height,
+      GLenum clear_error = GL_NO_ERROR);
 
   void SetupExpectationsForFramebufferClearingMulti(
       GLuint read_framebuffer_service_id,
@@ -496,7 +507,8 @@ class GLES2DecoderTestBase : public ::testing::TestWithParam<bool>,
       GLint restore_scissor_x,
       GLint restore_scissor_y,
       GLsizei restore_scissor_width,
-      GLsizei restore_scissor_height);
+      GLsizei restore_scissor_height,
+      GLenum clear_error = GL_NO_ERROR);
 
   void SetupExpectationsForDepthMask(bool mask);
   void SetupExpectationsForEnableDisable(GLenum cap, bool enable);
@@ -526,6 +538,10 @@ class GLES2DecoderTestBase : public ::testing::TestWithParam<bool>,
   void AddExpectationsForRestoreAttribState(GLuint attrib);
 
   GLvoid* BufferOffset(unsigned i) { return reinterpret_cast<GLvoid*>(i); }
+
+  MockCopyTextureResourceManager* copy_texture_manager() const {
+    return copy_texture_manager_;
+  }
 
   template <typename Command, typename Result>
   bool IsObjectHelper(GLuint client_id) {
@@ -999,6 +1015,13 @@ class GLES2DecoderPassthroughTestBase : public testing::Test,
   size_t shared_memory_size_;
 
   uint32_t immediate_buffer_[64];
+
+  // Consumed at FeatureInfo construction in SetUp(); tests that need a
+  // driver-bug workaround set this in their constructor, before SetUp runs.
+  GpuDriverBugWorkarounds workarounds_for_test_;
+
+  base::test::SingleThreadTaskEnvironment task_environment_{
+      base::test::SingleThreadTaskEnvironment::TimeSource::MOCK_TIME};
 
  private:
   ContextType context_type_;

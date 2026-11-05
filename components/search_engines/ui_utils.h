@@ -14,6 +14,24 @@ struct TemplateURLData;
 
 namespace internal {
 
+// Comparator function to sort `TemplateURL`s alphabetically by short name,
+// falling back to keyword when short names are equal. No group (e.g. managed
+// or prepopulated engines) is prioritized.
+//
+// Alphabetical comparison is case-insensitive according to the current locale.
+// In case of loading errors for ICU, fallback to regular string comparison.
+class OrderTemplateUrlsAlphabetically {
+ public:
+  OrderTemplateUrlsAlphabetically();
+  OrderTemplateUrlsAlphabetically(const OrderTemplateUrlsAlphabetically& other);
+  ~OrderTemplateUrlsAlphabetically();
+
+  bool operator()(const TemplateURL* lhs, const TemplateURL* rhs) const;
+
+ private:
+  std::unique_ptr<icu::Collator> collator_;
+};
+
 // Comparator function to sort `TemplateURL`s by group (either created by the
 // SiteSearchSettings policy, or not created by policy) and alphabetically
 // inside each group.
@@ -60,14 +78,12 @@ class OrderTemplateUrlsByPrepopulatedAndManagedAndAlphabetically {
   base::flat_map<int, size_t> prepopulated_ranks_;
 };
 
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 // This partially sorts `recently_visited` by last visited time up to a
 // maximum threshold (`kMaxCustomSearchEngines`). Elements not meeting the
 // cut-off, as well as any entries older than `GetMaxVisitAge()`, are filtered
 // out and erased from the vector.
 void SortAndFilterRecentlyVisitedURLs(
     TemplateURL::TemplateURLVector& recently_visited);
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 template_url_starter_pack_data::StarterPackIdSet GetDisabledStarterPackIds(
     bool ai_mode_enabled,

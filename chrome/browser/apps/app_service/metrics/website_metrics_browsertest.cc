@@ -15,6 +15,7 @@
 #include "base/run_loop.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/time.h"
+#include "base/types/optional_ref.h"
 #include "chrome/browser/apps/app_service/metrics/website_metrics_browser_test_mixin.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
@@ -24,6 +25,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/common/chrome_switches.h"
@@ -78,7 +80,7 @@ class TestWebsiteMetrics : public WebsiteMetrics {
   void OnInstallableWebAppStatusUpdated(
       content::WebContents* web_contents,
       webapps::InstallableWebAppCheckResult result,
-      const std::optional<webapps::WebAppBannerData>& data) override {
+      base::optional_ref<const webapps::WebAppBannerData> data) override {
     WebsiteMetrics::OnInstallableWebAppStatusUpdated(web_contents, result,
                                                      data);
     if (webcontents_to_ukm_key_.find(web_contents) ==

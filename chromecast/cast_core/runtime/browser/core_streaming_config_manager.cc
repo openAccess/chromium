@@ -69,6 +69,7 @@ cast_streaming::ReceiverConfig CreateConfig(
     cast_streaming::ReceiverConfig::Display display;
     display.dimensions = gfx::Rect{*width, *height};
     display.max_frame_rate = *frame_rate;
+    display.can_scale_content = true;
     constraints.display_description = std::move(display);
   } else {
     DLOG(WARNING)
@@ -125,8 +126,8 @@ cast_streaming::ReceiverConfig CreateConfig(
         auto& limit = audio_limits.back();
         limit.codec = converted_codec;
         limit.max_sample_rate = info.max_samples_per_second;
-        limit.channel_layout =
-            ::media::GuessChannelLayout(info.max_audio_channels);
+        limit.channel_layout_config =
+            ::media::ChannelLayoutConfig::Guess(info.max_audio_channels);
         continue;
       }
 
@@ -140,7 +141,8 @@ cast_streaming::ReceiverConfig CreateConfig(
       } else {
         it->max_sample_rate = info.max_samples_per_second;
       }
-      it->channel_layout = ::media::GuessChannelLayout(info.max_audio_channels);
+      it->channel_layout_config =
+          ::media::ChannelLayoutConfig::Guess(info.max_audio_channels);
     }
   }
 
@@ -152,8 +154,8 @@ cast_streaming::ReceiverConfig CreateConfig(
     auto max_channels = deserializer.MaxChannels();
     if (max_channels && *max_channels) {
       constraints.audio_limits.emplace_back();
-      constraints.audio_limits.back().channel_layout =
-          ::media::GuessChannelLayout(*max_channels);
+      constraints.audio_limits.back().channel_layout_config =
+          ::media::ChannelLayoutConfig::Guess(*max_channels);
     }
   }
 

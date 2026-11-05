@@ -49,7 +49,7 @@ class ActorFillingObserver;
 
 // Implementation for the ActorOneTimeTokenFillingService. This is owned by
 // `actor::ExecutionEngine`. It's called by the AttemptOtpFillingTool and
-// interacts with the backend OneTimeTokenService.
+// interacts with the `GmailOtpService`.
 class ActorOneTimeTokenFillingServiceImpl
     : public ActorOneTimeTokenFillingService,
       public content::WebContentsObserver {
@@ -75,6 +75,7 @@ class ActorOneTimeTokenFillingServiceImpl
       const url::Origin& otp_frame_origin,
       const std::vector<FieldGlobalId>& trigger_field_ids,
       bool is_login_flow,
+      PredictedOtpType predicted_otp_type,
       base::OnceCallback<
           void(base::expected<std::string,
                               one_time_tokens::OneTimeTokenRetrievalError>)>
@@ -87,6 +88,8 @@ class ActorOneTimeTokenFillingServiceImpl
   FormFillingContextStatus ValidateFormFillingContext(
       tabs::TabHandle tab_handle,
       base::span<const FieldGlobalId> trigger_field_ids) const override;
+  void FetchUserDataProcessingConsent(
+      FetchUserDataProcessingConsentCallback callback) override;
   base::WeakPtr<ActorOneTimeTokenFillingService> GetWeakPtr() override;
 
   // content::WebContentsObserver:
@@ -97,8 +100,8 @@ class ActorOneTimeTokenFillingServiceImpl
       const GURL& url,
       base::expected<one_time_tokens::GmailOtpRetriever::Result,
                      one_time_tokens::OneTimeTokenRetrievalError> result);
-  // Receives log messages emitted by `OneTimeTokenService` (and underlying
-  // backend fetchers) via `LOG_OTT` and forwards them to `journal_`.
+  // Receives log messages emitted to the log sink of the `GmailOtpService` via
+  // `LOG_OTT` and forwards them to `journal_`.
   void OnBackendLogMessage(std::string_view message);
 
   raw_ptr<Profile> profile_ = nullptr;
@@ -110,6 +113,8 @@ class ActorOneTimeTokenFillingServiceImpl
   base::OnceCallback<void(
       base::expected<std::string, one_time_tokens::OneTimeTokenRetrievalError>)>
       retrieve_otp_callback_;
+  // The predicted OTP type of the request that owns `retrieve_otp_callback_`.
+  PredictedOtpType retrieve_otp_predicted_type_ = PredictedOtpType::kUnknown;
   std::unique_ptr<ActorFillingObserver> filling_observer_;
 
   base::WeakPtrFactory<ActorOneTimeTokenFillingServiceImpl> weak_ptr_factory_{

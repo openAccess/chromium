@@ -128,8 +128,9 @@ std::unique_ptr<ui::DialogModel> CreateFileSystemAccessPermissionDialog(
     content::WebContents* web_contents,
     const RequestData& request,
     base::OnceCallback<void(permissions::PermissionAction result)> callback) {
-  DCHECK(request.request_type == RequestType::kNewPermission);
-  DCHECK(request.file_request_data.size() == 1);
+  CHECK(request.request_type == RequestType::kNewPermission,
+        base::NotFatalUntil::M162);
+  CHECK(request.file_request_data.size() == 1, base::NotFatalUntil::M162);
 
   auto split_callback = base::SplitOnceCallback(std::move(callback));
   auto accept_callback = base::BindOnce(std::move(split_callback.first),
@@ -167,6 +168,7 @@ std::unique_ptr<ui::DialogModel> CreateFileSystemAccessPermissionDialog(
                                GetCancelButtonLabel(file_request_data))))
       .SetCloseActionCallback(std::move(cancel_callbacks.second))
       .SetInitiallyFocusedField(kCancelButtonId)
+      .OverrideDefaultButton(ui::mojom::DialogButton::kCancel)
       .SetEnableInputProtection(true);
   return dialog_builder.Build();
 }

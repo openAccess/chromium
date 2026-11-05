@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_SIGNIN_CROSS_DEVICE_SIGNIN_QR_BUBBLE_UI_H_
 #define CHROME_BROWSER_UI_WEBUI_SIGNIN_CROSS_DEVICE_SIGNIN_QR_BUBBLE_UI_H_
 
+#include "chrome/browser/signin/cross_device_signin_promo_manager.h"
 #include "chrome/browser/ui/webui/signin/cross_device_signin_qr_bubble/cross_device_signin_qr_bubble.mojom.h"
 #include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/webui_config.h"
@@ -12,6 +13,7 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "ui/webui/mojo_web_ui_controller.h"
+#include "url/gurl.h"
 
 class CrossDeviceSigninQrBubbleUI;
 
@@ -36,6 +38,12 @@ class CrossDeviceSigninQrBubbleUI
   CrossDeviceSigninQrBubbleUI& operator=(const CrossDeviceSigninQrBubbleUI&) =
       delete;
 
+  static GURL GetURLWithEntryPoint(CrossDeviceSigninPromoEntryPoint entry_point);
+
+  void Initialize(GURL qr_code_url);
+
+  const GURL& qr_code_url() const { return qr_code_url_; }
+
   void BindInterface(
       mojo::PendingReceiver<cross_device_signin::mojom::PageHandlerFactory>
           receiver);
@@ -46,6 +54,7 @@ class CrossDeviceSigninQrBubbleUI
       mojo::PendingReceiver<cross_device_signin::mojom::PageHandler> receiver)
       override;
 
+  GURL qr_code_url_;
   std::unique_ptr<cross_device_signin::mojom::PageHandler> page_handler_;
 
   mojo::Receiver<cross_device_signin::mojom::PageHandlerFactory>

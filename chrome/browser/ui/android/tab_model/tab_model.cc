@@ -18,7 +18,6 @@
 #include "chrome/browser/sync/sessions/sync_sessions_web_contents_router_factory.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "components/omnibox/browser/location_bar_model_impl.h"
 #include "components/sessions/core/session_id.h"
 #include "components/sync_sessions/open_tabs_ui_delegate.h"
 #include "components/sync_sessions/session_sync_service.h"
@@ -41,15 +40,19 @@ TabModel::TabModel(Profile* profile,
                    std::optional<chrome::android::CustomTabProfileType>
                        custom_tab_profile_type,
                    TabModelType tab_model_type)
-    : profile_(profile),
-      activity_type_(activity_type),
-      custom_tab_profile_type_(custom_tab_profile_type),
-      tab_model_type_(tab_model_type),
-      live_tab_context_(new AndroidLiveTabContext(this)),
-      synced_window_delegate_(new browser_sync::SyncedWindowDelegateAndroid(
+    : live_tab_context_(new AndroidLiveTabContext(this)),
+      synced_window_delegate_(new SyncedWindowDelegateAndroid(
           this,
           activity_type == ActivityType::kTabbed)),
-      session_id_(SessionID::InvalidValue()) {}
+      profile_(profile),
+      session_id_(SessionID::InvalidValue()),
+      activity_type_(activity_type),
+      tab_model_type_(tab_model_type) {
+  if (custom_tab_profile_type) {
+    custom_tab_profile_type_value_ = *custom_tab_profile_type;
+    has_custom_tab_profile_type_ = true;
+  }
+}
 
 TabModel::~TabModel() = default;
 
@@ -116,7 +119,8 @@ void TabModel::RecordActualSyncedTabsHistogram() {
   }
 
   // This check will early exit if there are no tabs in the local model.
-  if (GetTabCount() == 0) {
+  const int tab_count = GetTabCount();
+  if (tab_count == 0) {
     return;
   }
 
@@ -126,9 +130,8 @@ void TabModel::RecordActualSyncedTabsHistogram() {
   }
 
   int eligible_tabs_count = 0;
-  for (int i = 0; i < GetTabCount(); i++) {
-    if (SessionSyncServiceFactory::ShouldSyncURLForTestingAndMetrics(
-            GetTabAt(i)->GetURL())) {
+  for (int i = 0; i < tab_count; ++i) {
+    if (SessionSyncServiceFactory::ShouldSyncURL(GetTabAt(i)->GetURL())) {
       eligible_tabs_count++;
     }
   }
@@ -148,10 +151,10 @@ void TabModel::SetSessionId(SessionID session_id) {
 }
 
 bool TabModel::IsEmptyRegularModelForEphemeralOrIncognitoCct() const {
-  return !IsOffTheRecord() && custom_tab_profile_type_.has_value() &&
-         (custom_tab_profile_type_.value() ==
+  return !IsOffTheRecord() && has_custom_tab_profile_type_ &&
+         (custom_tab_profile_type_value_ ==
               chrome::android::CustomTabProfileType::kEphemeral ||
-          custom_tab_profile_type_.value() ==
+          custom_tab_profile_type_value_ ==
               chrome::android::CustomTabProfileType::kIncognito);
 }
 

@@ -13,6 +13,7 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/weak_ptr.h"
+#include "base/types/expected.h"
 #include "ui/events/event.h"
 #include "ui/gfx/image/image_skia.h"
 
@@ -21,10 +22,6 @@ class AppWindowShelfItemController;
 namespace aura {
 class Window;
 }  // namespace aura
-
-namespace gfx {
-class ImageSkia;
-}
 
 namespace ui {
 class SimpleMenuModel;
@@ -67,7 +64,7 @@ class ASH_PUBLIC_EXPORT ShelfItemDelegate {
     // The ID that will be used by ShelfApplicationMenuModel to represent this
     // item in the shelf app menu. This ID will be used when ExecuteCommand() is
     // called when this item is selected from the menu.
-    int command_id;
+    int command_id = 0;
     // The title and icon shown for this item in the app menu.
     std::u16string title;
     gfx::ImageSkia icon;
@@ -80,6 +77,12 @@ class ASH_PUBLIC_EXPORT ShelfItemDelegate {
                             ShelfLaunchSource source,
                             ItemSelectedCallback callback,
                             const ItemFilterPredicate& filter_predicate);
+
+  // Returns the window to preview for the application menu item for
+  // |command_id|. If there is no window to preview, returns the tooltip to show
+  // for the item instead, or an empty string to show neither.
+  virtual base::expected<aura::Window*, std::u16string> GetAppMenuItemWindow(
+      int command_id);
 
   // Returns items for the application menu; used for convenience and testing.
   // |filter_predicate| is used to filter items out of the menu based on their
@@ -108,6 +111,10 @@ class ASH_PUBLIC_EXPORT ShelfItemDelegate {
 
   // Closes all windows associated with this shelf item.
   virtual void Close() = 0;
+
+  base::WeakPtr<ShelfItemDelegate> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
 
  private:
   // The shelf id; empty if there is no app associated with the item.

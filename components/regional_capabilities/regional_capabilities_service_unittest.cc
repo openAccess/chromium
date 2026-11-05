@@ -18,7 +18,6 @@
 #include "base/location.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_base.h"
-#include "base/strings/strcat.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/country_codes/country_codes.h"
@@ -49,13 +48,15 @@ void PrintTo(const Program& program, std::ostream* os) {
     case Program::kWaffle:
       *os << "kWaffle";
       break;
+    case Program::kScone:
+      *os << "kScone";
+      break;
   }
 }
 
 namespace {
 
 using ::country_codes::CountryId;
-using ::testing::get;
 
 #if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID)
 const ui::DeviceFormFactorSet kPhoneFormFactors{
@@ -252,43 +253,13 @@ struct ProgramDeterminationTestParam {
   base::flat_map<std::string, HistogramExpectation> expected_histograms;
 };
 
-using TestParamWithTaiyakiFeatureState =
-    ::testing::tuple<ProgramDeterminationTestParam, bool>;
-
-auto WithCompatibleTaiyakiFeatureState(
-    std::vector<ProgramDeterminationTestParam> params_to_combine) {
-  return ::testing::Combine(
-      ::testing::ValuesIn(params_to_combine),
-#if BUILDFLAG(IS_IOS)
-      ::testing::Bool()  // All feature states are supported
-#else
-      ::testing::Values(
-          false)  // The feature is not supported, consider it only disabled.
-#endif
-  );
-}
-
-
 class RegionalCapabilitiesServiceProgramDeterminationTest
     : public RegionalCapabilitiesServiceTest,
-      public testing::WithParamInterface<TestParamWithTaiyakiFeatureState> {
+      public testing::WithParamInterface<ProgramDeterminationTestParam> {
  public:
-  RegionalCapabilitiesServiceProgramDeterminationTest() {
-#if BUILDFLAG(IS_IOS)
-    scoped_feature_list_.InitWithFeatureState(
-        switches::kTaiyakiAllSurfaces, GetTaiyakiAllSurfacesFeatureEnabled());
-#else
-    EXPECT_FALSE(GetTaiyakiAllSurfacesFeatureEnabled());
-    scoped_feature_list_.Init();
-#endif
-  }
-
   static std::string GetTestName(
-      const testing::TestParamInfo<TestParamWithTaiyakiFeatureState>& info) {
-    return base::StrCat(
-        {get<0>(info.param).test_name, get<1>(info.param)
-                                           ? "_taiyaki_all_surfaces_enabled"
-                                           : "_taiyaki_all_surfaces_disabled"});
+      const testing::TestParamInfo<ProgramDeterminationTestParam>& info) {
+    return info.param.test_name;
   }
 
   void SetUp() override {
@@ -298,12 +269,7 @@ class RegionalCapabilitiesServiceProgramDeterminationTest
     }
   }
 
-  ProgramDeterminationTestParam GetTestParam() { return get<0>(GetParam()); }
-
-  bool GetTaiyakiAllSurfacesFeatureEnabled() { return get<1>(GetParam()); }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  ProgramDeterminationTestParam GetTestParam() { return GetParam(); }
 };
 
 TEST_P(RegionalCapabilitiesServiceProgramDeterminationTest, Run) {
@@ -343,7 +309,7 @@ TEST_P(RegionalCapabilitiesServiceProgramDeterminationTest, Run) {
 INSTANTIATE_TEST_SUITE_P(
     Common,
     RegionalCapabilitiesServiceProgramDeterminationTest,
-    WithCompatibleTaiyakiFeatureState({
+    testing::ValuesIn<ProgramDeterminationTestParam>({
         ProgramDeterminationTestParam{
             .test_name = "fr_to_waffle",
             .client_fetched_country = CountryId("FR"),
@@ -400,6 +366,25 @@ INSTANTIATE_TEST_SUITE_P(
 #endif  // BUILDFLAG(IS_ANDROID)
 
         ProgramDeterminationTestParam{
+            .test_name = "gb_to_scone",
+            .client_fetched_country = CountryId("GB"),
+#if BUILDFLAG(IS_ANDROID)
+            .device_program_override = Program::kScone,
+#endif  // BUILDFLAG(IS_ANDROID)
+            .expected_program = Program::kScone,
+            .expected_is_in_choice_screen_region = false,
+            .expected_ose_list_type = SearchEngineListType::kTopN,
+            .expected_histograms =
+                {
+#if BUILDFLAG(IS_ANDROID)
+                    {"RegionalCapabilities.Debug.AndroidProgramResolution",
+                     ExpectHistogramBucket(AndroidProgramResolution::kSuccess)},
+#endif
+                    {"RegionalCapabilities.LoadedCountrySource",
+                     ExpectHistogramBucket(LoadedCountrySource::kCurrentOnly)},
+                },
+        },
+        ProgramDeterminationTestParam{
             .test_name = "us_to_default",
             .client_fetched_country = CountryId("US"),
             .expected_program = Program::kDefault,
@@ -445,7 +430,7 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     FeatureStateSpecific,
     RegionalCapabilitiesServiceProgramDeterminationTest,
-    WithCompatibleTaiyakiFeatureState({
+    testing::ValuesIn<ProgramDeterminationTestParam>({
 #if BUILDFLAG(IS_IOS)
         ProgramDeterminationTestParam{
             .test_name = "jp_to_taiyaki",
@@ -495,7 +480,7 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     RegionalPresence,
     RegionalCapabilitiesServiceProgramDeterminationTest,
-    WithCompatibleTaiyakiFeatureState({
+    testing::ValuesIn<ProgramDeterminationTestParam>({
         ProgramDeterminationTestParam{
             .test_name = "in_scope_and_variations_country_match",
             .client_fetched_country = CountryId("FR"),
@@ -941,7 +926,88 @@ TEST_F(RegionalCapabilitiesServiceTest,
       "RegionalCapabilities.LoadedCountrySource",
       static_cast<int>(LoadedCountrySource::kPersistedPreferred), 1);
 }
+
+TEST_F(RegionalCapabilitiesServiceTest,
+       GetDynamicCountryProgramForMetrics_DynamicProfileCountryIsDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures({}, {switches::kDynamicProfileCountry});
+
+  // Persisted country in Waffle scope, current country out of scope.
+  {
+    std::unique_ptr<RegionalCapabilitiesService> service =
+        InitService(/*fallback_country_id=*/CountryId("US"));
+    client()->SetFetchedCountry(CountryId("US"));
+    SetPrefCountryIDAtInstall(kBelgiumCountryId);
+
+    EXPECT_EQ(service->GetActiveProgramForMetrics(),
+              ActiveRegionalProgram::kWaffle);
+    EXPECT_EQ(service->GetDynamicCountryProgramForMetrics(),
+              ActiveRegionalProgram::kDefault);
+  }
+
+  // Persisted country out of scope, current country in Waffle scope.
+  {
+    pref_service().ClearPref(prefs::kCountryIDAtInstall);
+    std::unique_ptr<RegionalCapabilitiesService> service =
+        InitService(/*fallback_country_id=*/CountryId("US"));
+    client()->SetFetchedCountry(kBelgiumCountryId);
+    SetPrefCountryIDAtInstall(CountryId("US"));
+
+    EXPECT_EQ(service->GetActiveProgramForMetrics(),
+              ActiveRegionalProgram::kDefault);
+    EXPECT_EQ(service->GetDynamicCountryProgramForMetrics(),
+              ActiveRegionalProgram::kWaffle);
+  }
+
+  // The current country is only available from the fallback: the persisted
+  // country is preferred in both cases.
+  {
+    pref_service().ClearPref(prefs::kCountryIDAtInstall);
+    std::unique_ptr<RegionalCapabilitiesService> service =
+        InitService(/*fallback_country_id=*/CountryId("US"));
+    SetPrefCountryIDAtInstall(kBelgiumCountryId);
+
+    EXPECT_EQ(service->GetActiveProgramForMetrics(),
+              ActiveRegionalProgram::kWaffle);
+    EXPECT_EQ(service->GetDynamicCountryProgramForMetrics(),
+              ActiveRegionalProgram::kWaffle);
+  }
+
+  // Command line overrides apply to both.
+  {
+    std::unique_ptr<RegionalCapabilitiesService> service =
+        InitService(/*fallback_country_id=*/CountryId("US"));
+    client()->SetFetchedCountry(CountryId("US"));
+    SetCommandLineCountry(kBelgiumCountryCode);
+
+    EXPECT_EQ(service->GetActiveProgramForMetrics(),
+              ActiveRegionalProgram::kWaffle);
+    EXPECT_EQ(service->GetDynamicCountryProgramForMetrics(),
+              ActiveRegionalProgram::kWaffle);
+    ClearCommandLineCountry();
+  }
+}
 #endif  // !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
+
+TEST_F(RegionalCapabilitiesServiceTest,
+       GetDynamicCountryProgramForMetrics_MatchesActiveProgram) {
+  // The dynamic profile country is enabled by the fixture (or always enabled
+  // on mobile), so the dynamic country program matches the active one.
+  std::unique_ptr<RegionalCapabilitiesService> service =
+      InitService(/*fallback_country_id=*/CountryId("US")
+#if BUILDFLAG(IS_ANDROID)
+                      ,
+                  /*device_program=*/Program::kDefault
+#endif  // BUILDFLAG(IS_ANDROID)
+      );
+  client()->SetFetchedCountry(CountryId("US"));
+  SetPrefCountryIDAtInstall(kBelgiumCountryId);
+
+  EXPECT_EQ(service->GetActiveProgramForMetrics(),
+            ActiveRegionalProgram::kDefault);
+  EXPECT_EQ(service->GetDynamicCountryProgramForMetrics(),
+            ActiveRegionalProgram::kDefault);
+}
 
 TEST_F(RegionalCapabilitiesServiceTest, GetCountryId_PrefChangesAfterReading) {
   const auto kFallbackCountryId = CountryId("FR");
@@ -1033,6 +1099,26 @@ TEST_F(RegionalCapabilitiesServiceTest,
   EXPECT_EQ(GetPrefSerializedCountryID(), kBelgiumCountryId.Serialize());
 }
 
+TEST_F(RegionalCapabilitiesServiceTest, MayShowLinkedGoogleServicesSetting) {
+  std::unique_ptr<RegionalCapabilitiesService> service =
+      InitService(kBelgiumCountryId
+#if BUILDFLAG(IS_ANDROID)
+                  ,
+                  Program::kWaffle
+#endif  // BUILDFLAG(IS_ANDROID)
+      );
+  EXPECT_TRUE(service->MayShowLinkedGoogleServicesSetting());
+
+  SetCommandLineCountry("US");
+  EXPECT_FALSE(service->MayShowLinkedGoogleServicesSetting());
+
+  SetCommandLineCountry("JP");
+  EXPECT_FALSE(service->MayShowLinkedGoogleServicesSetting());
+
+  SetCommandLineCountry(kBelgiumCountryCode);
+  EXPECT_TRUE(service->MayShowLinkedGoogleServicesSetting());
+}
+
 TEST_F(RegionalCapabilitiesServiceTest, IsInEeaCountry) {
   std::unique_ptr<RegionalCapabilitiesService> service =
       InitService(kBelgiumCountryId
@@ -1080,23 +1166,9 @@ TEST_F(RegionalCapabilitiesServiceTest, IsInSearchEngineChoiceScreenRegion) {
           CountryId("NC")));
 
 #if BUILDFLAG(IS_IOS)
-  {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndEnableFeature(switches::kTaiyakiAllSurfaces);
-    EXPECT_EQ(
-        RegionalCapabilitiesService::IsInAnySearchEngineChoiceScreenRegion(
-            CountryId("JP")),
-        kPhoneFormFactors.Has(ui::GetDeviceFormFactor()));
-  }
-
-  {
-    base::test::ScopedFeatureList scoped_feature_list;
-    scoped_feature_list.InitAndDisableFeature(switches::kTaiyakiAllSurfaces);
-    EXPECT_EQ(
-        RegionalCapabilitiesService::IsInAnySearchEngineChoiceScreenRegion(
-            CountryId("JP")),
-        kPhoneFormFactors.Has(ui::GetDeviceFormFactor()));
-  }
+  EXPECT_EQ(RegionalCapabilitiesService::IsInAnySearchEngineChoiceScreenRegion(
+                CountryId("JP")),
+            kPhoneFormFactors.Has(ui::GetDeviceFormFactor()));
 #else
   EXPECT_FALSE(
       RegionalCapabilitiesService::IsInAnySearchEngineChoiceScreenRegion(

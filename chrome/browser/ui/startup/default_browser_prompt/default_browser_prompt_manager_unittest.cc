@@ -18,9 +18,14 @@
 #include "chrome/browser/ui/startup/default_browser_prompt/default_browser_surface_manager.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/test/base/testing_profile.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(IS_WIN)
+#include "base/test/scoped_os_info_override_win.h"
+#endif
 
 class DefaultBrowserPromptManagerTest : public testing::Test {
  public:
@@ -105,35 +110,49 @@ class DefaultBrowserPromptManagerTest : public testing::Test {
 };
 
 TEST_F(DefaultBrowserPromptManagerTest, ShowsAppMenuItem) {
+  TestingProfile profile;
   auto* manager = DefaultBrowserPromptManager::GetInstance();
-  ASSERT_FALSE(manager->show_app_menu_item());
+  ASSERT_FALSE(manager->ShouldShowAppMenuItem(&profile));
 
   manager->MaybeShowPrompt();
-  ASSERT_TRUE(manager->show_app_menu_item());
+  ASSERT_TRUE(manager->ShouldShowAppMenuItem(&profile));
+  EXPECT_FALSE(manager->ShouldShowAppMenuItem(nullptr));
+  EXPECT_FALSE(manager->ShouldShowAppMenuItem(
+      profile.GetPrimaryOTRProfile(/*create_if_needed=*/true)));
+
+  TestingProfile::Builder guest_builder;
+  guest_builder.SetGuestSession();
+  std::unique_ptr<TestingProfile> guest_profile = guest_builder.Build();
+  EXPECT_FALSE(manager->ShouldShowAppMenuItem(guest_profile.get()));
 }
 
 TEST_F(DefaultBrowserPromptManagerTest, AppMenuItemHiddenOnPromptAccept) {
+  TestingProfile profile;
   auto* manager = DefaultBrowserPromptManager::GetInstance();
   manager->MaybeShowPrompt();
-  ASSERT_TRUE(manager->show_app_menu_item());
+  ASSERT_TRUE(manager->ShouldShowAppMenuItem(&profile));
 
   manager->CloseAllPrompts(DefaultBrowserPromptManager::CloseReason::kAccept);
-  ASSERT_FALSE(manager->show_app_menu_item());
+  ASSERT_FALSE(manager->ShouldShowAppMenuItem(&profile));
 }
 
 TEST_F(DefaultBrowserPromptManagerTest, AppMenuItemPersistsOnPromptDismissed) {
+  TestingProfile profile;
   auto* manager = DefaultBrowserPromptManager::GetInstance();
   manager->MaybeShowPrompt();
-  ASSERT_TRUE(manager->show_app_menu_item());
+  ASSERT_TRUE(manager->ShouldShowAppMenuItem(&profile));
 
   manager->CloseAllPrompts(DefaultBrowserPromptManager::CloseReason::kDismiss);
-  ASSERT_TRUE(manager->show_app_menu_item());
+  ASSERT_TRUE(manager->ShouldShowAppMenuItem(&profile));
 }
 
 constexpr int kMaxPromptCount = 5;
 constexpr int kRepromptDurationDays = 21;
 
 TEST_F(DefaultBrowserPromptManagerTest, InfoBarMaxPromptCount) {
+  scoped_feature_list_.InitAndDisableFeature(
+      default_browser::kDefaultBrowserPromptSurfaces);
+
   // Show if the declined count is less than the max prompt count.
   TestShouldShowInfoBarPrompt(
       /*last_declined_time_delta=*/base::Days(kRepromptDurationDays) +
@@ -148,6 +167,9 @@ TEST_F(DefaultBrowserPromptManagerTest, InfoBarMaxPromptCount) {
 }
 
 TEST_F(DefaultBrowserPromptManagerTest, InfoBarRepromptDuration) {
+  scoped_feature_list_.InitAndDisableFeature(
+      default_browser::kDefaultBrowserPromptSurfaces);
+
   // After the prompt is declined once, show the prompt again if the time since
   // the last time the prompt was declined is strictly longer than the base
   // reprompt duration.
@@ -190,8 +212,13 @@ constexpr int kFrameworkMaxPromptCount = 5;
 constexpr int kFrameworkRepromptDurationDays = 14;
 
 TEST_F(DefaultBrowserPromptManagerTest, FrameworkInfoBarMaxPromptCount) {
-  scoped_feature_list_.InitWithFeatures(
-      /*enabled_features=*/{default_browser::kDefaultBrowserPromptSurfaces},
+  base::test::ScopedOSInfoOverride win11_os(
+      base::test::ScopedOSInfoOverride::Type::kWin11Pro);
+  scoped_feature_list_.InitWithFeaturesAndParameters(
+      /*enabled_features=*/{{default_browser::kDefaultBrowserPromptSurfaces,
+                             {{default_browser::
+                                   kDefaultBrowserPromptSurfaceParam.name,
+                               "infobar"}}}},
       /*disabled_features=*/{features::kSeparateDefaultAndPinPrompt});
 
   // Show if the declined count is less than the max prompt count.
@@ -210,8 +237,13 @@ TEST_F(DefaultBrowserPromptManagerTest, FrameworkInfoBarMaxPromptCount) {
 }
 
 TEST_F(DefaultBrowserPromptManagerTest, FrameworkInfoBarRepromptDuration) {
-  scoped_feature_list_.InitWithFeatures(
-      /*enabled_features=*/{default_browser::kDefaultBrowserPromptSurfaces},
+  base::test::ScopedOSInfoOverride win11_os(
+      base::test::ScopedOSInfoOverride::Type::kWin11Pro);
+  scoped_feature_list_.InitWithFeaturesAndParameters(
+      /*enabled_features=*/{{default_browser::kDefaultBrowserPromptSurfaces,
+                             {{default_browser::
+                                   kDefaultBrowserPromptSurfaceParam.name,
+                               "infobar"}}}},
       /*disabled_features=*/{features::kSeparateDefaultAndPinPrompt});
 
   // After the prompt is declined once, show the prompt again if the time since
@@ -258,6 +290,8 @@ TEST_F(DefaultBrowserPromptManagerTest, FrameworkInfoBarRepromptDuration) {
 }
 
 TEST_F(DefaultBrowserPromptManagerTest, FrameworkPromptSurfaceBecomesInfoBar) {
+  base::test::ScopedOSInfoOverride win11_os(
+      base::test::ScopedOSInfoOverride::Type::kWin11Pro);
   scoped_feature_list_.InitWithFeaturesAndParameters(
       /*enabled_features=*/{{default_browser::kDefaultBrowserPromptSurfaces,
                              {{default_browser::

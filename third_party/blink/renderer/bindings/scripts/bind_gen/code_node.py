@@ -32,8 +32,10 @@ def render_code_node(code_node):
         renderer.reset()
         code_node.render(renderer)
         accumulated_size = accumulator.total_size()
-        if (renderer.is_rendering_complete()
-                and accumulated_size == prev_accumulated_size):
+        if (
+            renderer.is_rendering_complete()
+            and accumulated_size == prev_accumulated_size
+        ):
             break
 
     return renderer.to_text()
@@ -223,12 +225,10 @@ class CodeNode(object):
         self._is_rendering = True
 
         try:
-            self._render(
-                renderer=renderer, last_render_state=last_render_state)
+            self._render(renderer=renderer, last_render_state=last_render_state)
             if CodeGenTracing.is_enabled():
                 if self._cg_tracing_caller_callframe:
-                    renderer.render_text(str(
-                        self._cg_tracing_caller_callframe))
+                    renderer.render_text(str(self._cg_tracing_caller_callframe))
         finally:
             self._is_rendering = False
 
@@ -249,7 +249,8 @@ class CodeNode(object):
         renderer.render(
             caller=self,
             template=self._template,
-            template_vars=self.template_vars)
+            template_vars=self.template_vars,
+        )
 
     @property
     def outer(self):
@@ -334,7 +335,8 @@ class CodeNode(object):
                 continue
             for name, value in node.own_template_vars.items():
                 assert name not in bindings, (
-                    "Duplicated template variable binding: {}".format(name))
+                    "Duplicated template variable binding: {}".format(name)
+                )
                 bindings[name] = value
 
         self._cached_template_vars = bindings
@@ -350,7 +352,8 @@ class CodeNode(object):
             self._own_template_vars = {}
         assert isinstance(name, str)
         assert name not in self._own_template_vars, (
-            "Duplicated template variable binding: {}".format(name))
+            "Duplicated template variable binding: {}".format(name)
+        )
         if isinstance(value, CodeNode):
             value.set_outer(self)
         self._own_template_vars[name] = value
@@ -428,9 +431,11 @@ class CodeNode(object):
         assert isinstance(symbol_node, SymbolNode)
         assert isinstance(symbol_scope_chain, tuple)
         assert all(
-            isinstance(scope, SymbolScopeNode) for scope in symbol_scope_chain)
+            isinstance(scope, SymbolScopeNode) for scope in symbol_scope_chain
+        )
         self.current_render_state.symbol_to_scope_chains.setdefault(
-            symbol_node, set()).add(symbol_scope_chain)
+            symbol_node, set()
+        ).add(symbol_scope_chain)
 
     def capture_caller_for_tracing(self):
         """Captures the caller function information for a debugging purpose."""
@@ -518,10 +523,25 @@ def FormatNode(format_string, *args, **argv):
 
 class CompositeNode(CodeNode):
     """
-    Represents a composition of multiple code nodes.  Composition will be done
-    by using |CodeNode.gensym| so that it won't contaminate a namespace of the
-    template variables.
+    Represents a composition of multiple code nodes.
+
+    Instead of generating globally unique symbol names via |CodeNode.gensym|
+    on every instantiation (which would produce a distinct |template_text|
+    each time and defeat |MakoTemplate._mako_template_cache|), this class uses
+    deterministic placeholder names ("__c_a0", "__c_k_<key>", etc.) and caches
+    the formatted |template_text| by
+    |(template_format_str, len(args), frozenset(kwargs))|.
+
+    To prevent those deterministic placeholder names from colliding across
+    nested CompositeNodes (since |CodeNode.template_vars| merges
+    |own_template_vars| from all outer nodes and disallows duplicates), the
+    placeholder bindings are stored in |self._composite_vars| and applied only
+    when rendering this CompositeNode's own template.
     """
+
+    # Cache mapping (template_format_str, len(args), frozenset(kwargs)) to
+    # (formatted_template_text, positional_var_names, keyword_var_names).
+    _template_cache = {}
 
     def __init__(self, template_format_str, *args, **kwargs):
         """
@@ -534,25 +554,58 @@ class CompositeNode(CodeNode):
                 passed in.
         """
         assert isinstance(template_format_str, str)
-        gensym_args = []
-        gensym_kwargs = {}
-        template_vars = {}
-        for arg in args:
+
+        # Reuse the formatted template text and placeholder variable names when
+        # the format string and argument signature match a previous instance.
+        cache_key = (template_format_str, len(args), frozenset(kwargs))
+        cached = self._template_cache.get(cache_key)
+        if cached is None:
+            arg_names = tuple("__c_a{}".format(i) for i in range(len(args)))
+            kwarg_names = {k: "__c_k_{}".format(k) for k in kwargs}
+            gensym_args = ["${{{}}}".format(n) for n in arg_names]
+            gensym_kwargs = {
+                k: "${{{}}}".format(n) for k, n in kwarg_names.items()
+            }
+            template_text = format_template(
+                template_format_str, *gensym_args, **gensym_kwargs
+            )
+            cached = (template_text, arg_names, kwarg_names)
+            self._template_cache[cache_key] = cached
+        else:
+            template_text, arg_names, kwarg_names = cached
+
+        composite_vars = {}
+        for i, arg in enumerate(args):
             assert isinstance(arg, (CodeNode, int, str))
-            gensym = CodeNode.gensym()
-            gensym_args.append("${{{}}}".format(gensym))
-            template_vars[gensym] = arg
+            composite_vars[arg_names[i]] = arg
         for key, value in kwargs.items():
             assert isinstance(key, (int, str))
             assert isinstance(value, (CodeNode, int, str))
-            gensym = CodeNode.gensym()
-            gensym_kwargs[key] = "${{{}}}".format(gensym)
-            template_vars[gensym] = value
-        template_text = format_template(template_format_str, *gensym_args,
-                                        **gensym_kwargs)
+            composite_vars[kwarg_names[key]] = value
 
-        CodeNode.__init__(
-            self, template_text=template_text, template_vars=template_vars)
+        CodeNode.__init__(self, template_text=template_text)
+        # Link child CodeNodes to |self| without registering placeholder names
+        # in |self._own_template_vars|, so nested CompositeNodes do not see or
+        # collide with outer placeholder names.
+        for value in composite_vars.values():
+            if isinstance(value, CodeNode):
+                value.set_outer(self)
+        self._composite_vars = composite_vars
+        self._composite_template_vars = None
+
+    def _render(self, renderer, last_render_state):
+        if self._composite_template_vars is None:
+            # Overlay this node's placeholder bindings onto the inherited
+            # template variables only for this node's own template evaluation.
+            self._composite_template_vars = {
+                **self.template_vars,
+                **self._composite_vars,
+            }
+        renderer.render(
+            caller=self,
+            template=self._template,
+            template_vars=self._composite_template_vars,
+        )
 
 
 class ListNode(CodeNode):
@@ -645,8 +698,7 @@ class ListNode(CodeNode):
             index += len(self._element_nodes)
         index = max(0, min(index, len(self._element_nodes)))
 
-        if (len(self._element_nodes) == 0
-                or index == len(self._element_nodes)):
+        if len(self._element_nodes) == 0 or index == len(self._element_nodes):
             return self.append(node)
 
         next_node = self._element_nodes[index]
@@ -683,7 +735,8 @@ class SequenceNode(ListNode):
             code_nodes=code_nodes,
             separator=separator,
             head=head,
-            tail=tail)
+            tail=tail,
+        )
 
         self._to_be_removed = []
 
@@ -694,7 +747,8 @@ class SequenceNode(ListNode):
             self._to_be_removed = []
 
         super(SequenceNode, self)._render(
-            renderer=renderer, last_render_state=last_render_state)
+            renderer=renderer, last_render_state=last_render_state
+        )
 
     def schedule_to_remove(self, node):
         """Schedules a task to remove the |node| in the next rendering cycle."""
@@ -716,7 +770,8 @@ class SymbolScopeNode(SequenceNode):
             code_nodes=code_nodes,
             separator=separator,
             head=head,
-            tail=tail)
+            tail=tail,
+        )
 
         self._likeliness = Likeliness.ALWAYS
         self._registered_code_symbols = set()
@@ -730,7 +785,8 @@ class SymbolScopeNode(SequenceNode):
                 self._insert_symbol_definition(symbol_node, last_render_state)
 
         super(SymbolScopeNode, self)._render(
-            renderer=renderer, last_render_state=last_render_state)
+            renderer=renderer, last_render_state=last_render_state
+        )
 
         if self.current_render_state.undefined_code_symbols:
             renderer.invalidate_rendering_result()
@@ -758,17 +814,20 @@ class SymbolScopeNode(SequenceNode):
 
             self_index = next(iter(scope_chains)).index(self)
             scope_chains = map(
-                lambda scope_chain: scope_chain[self_index + 1:], scope_chains)
+                lambda scope_chain: scope_chain[self_index + 1 :], scope_chains
+            )
             scope_to_likeliness = {}
             for scope_chain in scope_chains:
                 if not scope_chain:
                     counts[DIRECT_USES] += 1
                 else:
                     likeliness = min(
-                        map(lambda scope: scope.likeliness, scope_chain))
+                        map(lambda scope: scope.likeliness, scope_chain)
+                    )
                     scope = scope_chain[0]
                     scope_to_likeliness[scope] = max(
-                        likeliness, scope_to_likeliness.get(scope, likeliness))
+                        likeliness, scope_to_likeliness.get(scope, likeliness)
+                    )
             for likeliness in scope_to_likeliness.values():
                 counts[DIRECT_CHILD_SCOPES] += 1
                 counts[likeliness] += 1
@@ -778,22 +837,27 @@ class SymbolScopeNode(SequenceNode):
             counts = analyze_symbol_usage(render_state)
             if counts[DIRECT_USES] >= 1:
                 return Likeliness.ALWAYS
-            for likeliness in (Likeliness.ALWAYS, Likeliness.LIKELY,
-                               Likeliness.UNLIKELY):
+            for likeliness in (
+                Likeliness.ALWAYS,
+                Likeliness.LIKELY,
+                Likeliness.UNLIKELY,
+            ):
                 if counts[likeliness] > 0:
                     return likeliness
             return Likeliness.NEVER
 
         def insert_before_threshold(sequence_node, threshold):
             for index, node in enumerate(sequence_node):
-                if (isinstance(node, SequenceNode)
-                        and not isinstance(node, SymbolScopeNode)):
+                if isinstance(node, SequenceNode) and not isinstance(
+                    node, SymbolScopeNode
+                ):
                     did_insert = insert_before_threshold(node, threshold)
                     if did_insert:
                         return True
                 elif likeliness_at(node.last_render_state) >= threshold:
-                    sequence_node.insert(index,
-                                         symbol_node.create_definition_node())
+                    sequence_node.insert(
+                        index, symbol_node.create_definition_node()
+                    )
                     return True
             return False
 
@@ -932,7 +996,8 @@ class SymbolNode(CodeNode):
             # to a SymbolDefinitionNode.
             if CodeGenTracing.is_enabled():
                 self._cg_tracing_caller_callframe_of_symbol_node = (
-                    CodeGenTracing.capture_caller())
+                    CodeGenTracing.capture_caller()
+                )
 
             def constructor(symbol_node):
                 text_node = TextNode(template_text)
@@ -942,8 +1007,9 @@ class SymbolNode(CodeNode):
                     text_node._cg_tracing_caller_callframe = (
                         symbol_node._cg_tracing_caller_callframe_of_symbol_node
                     )
-                return SymbolDefinitionNode(symbol_node=symbol_node,
-                                            code_nodes=[text_node])
+                return SymbolDefinitionNode(
+                    symbol_node=symbol_node, code_nodes=[text_node]
+                )
 
             self._definition_constructor = constructor
         else:
@@ -962,8 +1028,11 @@ class SymbolNode(CodeNode):
 
     def _request_symbol_definition(self, renderer):
         symbol_scope_chain = tuple(
-            filter(lambda node: isinstance(node, SymbolScopeNode),
-                   renderer.callers_from_first_to_last))
+            filter(
+                lambda node: isinstance(node, SymbolScopeNode),
+                renderer.callers_from_first_to_last,
+            )
+        )
 
         for caller in renderer.callers_from_last_to_first:
             caller.on_code_symbol_referenced(self, symbol_scope_chain)
@@ -1014,7 +1083,8 @@ class SymbolDefinitionNode(SequenceNode):
         scope.on_code_symbol_defined(self._symbol_node)
 
         super(SymbolDefinitionNode, self)._render(
-            renderer=renderer, last_render_state=last_render_state)
+            renderer=renderer, last_render_state=last_render_state
+        )
 
     @property
     def target_symbol(self):
@@ -1158,8 +1228,9 @@ class SymbolSensitiveSelectionNode(CodeNode):
         for choice in self._choices:
             for name in choice.symbol_names:
                 symbol_node = scope.find_code_symbol(name)
-                if not (symbol_node
-                        and scope.is_code_symbol_defined(symbol_node)):
+                if not (
+                    symbol_node and scope.is_code_symbol_defined(symbol_node)
+                ):
                     break
             else:
                 return choice.code_node.render(renderer)

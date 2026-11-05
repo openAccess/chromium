@@ -376,8 +376,13 @@ struct ScanTextResult {
     return TextToString();
   }
 
-  base::raw_span<const Char, UnprotectedInRelease | DanglingUntriaged> text;
-  raw_ptr<UCharLiteralBufferType, UnprotectedInRelease | DanglingUntriaged>
+  // UnprotectedInReleaseForPerformance: Based on analysis of Speedometer 3
+  // (Editor-TipTap).
+  base::raw_span<const Char,
+                 UnprotectedInReleaseForPerformance | DanglingUntriaged>
+      text;
+  raw_ptr<UCharLiteralBufferType,
+          UnprotectedInReleaseForPerformance | DanglingUntriaged>
       escaped_text = nullptr;
   bool is_newline_then_whitespace_string = false;
   bool is_8bit = true;
@@ -428,10 +433,6 @@ String ScanTextResult<UChar>::TextToString() const {
 //   events that may be fired. Allowing this could be problematic if the fast
 //   path fails. For example, the 'onload' event of an <img> would be called
 //   multiple times if parsing fails.
-// - When the SplitLargeTextNodes feature is enabled, fails if a text is
-//   encountered larger than
-//   HTMLConstructionSite::kObsoleteTextNodeLengthLimit. This requires special
-//   processing.
 // - Fails if a deep hierarchy is encountered. This is both to avoid a crash,
 //   but also at a certain depth elements get added as siblings vs children (see
 //   use of HTMLConstructionSite::kMaximumHTMLParserDOMTreeDepth).
@@ -1351,19 +1352,9 @@ class HTMLFastPathParser {
       }
       DCHECK(scanned_text.text.empty() || !scanned_text.escaped_text);
       if (!scanned_text.text.empty()) {
-        const auto text = scanned_text.text;
-        if (RuntimeEnabledFeatures::SplitLargeTextNodesEnabled() &&
-            text.size() >= HTMLConstructionSite::kObsoleteTextNodeLengthLimit) {
-          return Fail(HtmlFastPathResult::kFailedBigText);
-        }
         parent->ParserAppendChildInDocumentFragment(
             Text::Create(document_, scanned_text.TryCanonicalizeString()));
       } else if (scanned_text.escaped_text) {
-        if (RuntimeEnabledFeatures::SplitLargeTextNodesEnabled() &&
-            scanned_text.escaped_text->size() >=
-                HTMLConstructionSite::kObsoleteTextNodeLengthLimit) {
-          return Fail(HtmlFastPathResult::kFailedBigText);
-        }
         parent->ParserAppendChildInDocumentFragment(
             Text::Create(document_, scanned_text.escaped_text->AsString()));
       }
@@ -1405,6 +1396,9 @@ class HTMLFastPathParser {
     // the empty atom instead. (An empty but non-null span, as in `alt=""`,
     // yields the empty atom as well.)
     if (value_span.first.data()) [[likely]] {
+      if (value_span.first.empty()) {
+        return g_empty_atom;
+      }
       return AtomicString(value_span.first);
     }
     return g_empty_atom;
@@ -1467,6 +1461,10 @@ class HTMLFastPathParser {
     if (size < 2) {
       return false;
     }
+    if (size == 2) {
+      return attribute_buffer_[0].LocalName().Impl() ==
+             attribute_buffer_[1].LocalName().Impl();
+    }
     // The limit is fairly arbitrary, it just needs to keep the quadratic scan
     // cheap for pathological input.
     constexpr wtf_size_t kMaxAttributesForQuadraticScan = kAttributePrealloc;
@@ -1492,6 +1490,20 @@ class HTMLFastPathParser {
 
   void ParseAttributes(Element* parent) {
     DCHECK(attribute_buffer_.empty());
+    if (GetNext() == '>') [[likely]] {
+      ++pos_;
+      parent->ParserSetAttributes(attribute_buffer_);
+      return;
+    }
+    if (GetNext() == '/') {
+      ++pos_;
+      SkipWhitespace();
+      if (ConsumeNext() != '>') {
+        return Fail(HtmlFastPathResult::kFailedParsingAttributes);
+      }
+      parent->ParserSetAttributes(attribute_buffer_);
+      return;
+    }
     while (true) {
       Span attr_name = ScanAttrName();
       if (attr_name.empty()) {
@@ -1529,6 +1541,18 @@ class HTMLFastPathParser {
         SkipWhitespace();
       }
       AppendAttribute(attr_name, attr_value);
+      if (GetNext() == '>') [[likely]] {
+        ++pos_;
+        break;
+      }
+      if (GetNext() == '/') {
+        ++pos_;
+        SkipWhitespace();
+        if (ConsumeNext() != '>') {
+          return Fail(HtmlFastPathResult::kFailedParsingAttributes);
+        }
+        break;
+      }
     }
     if (HasDuplicateAttributes()) [[unlikely]] {
       // We would have to ignore repeated attributes, but leave this to the

@@ -13,8 +13,10 @@ namespace switches {
 // All switches in alphabetical order. The switches should be documented
 // alongside the definition of their values in the .cc file.
 extern const char kAutofillAPIKey[];
+extern const char kAutofillCustomFormControlScriptsDir[];
 extern const char kAutofillServerURL[];
 extern const char kAutofillUploadThrottlingPeriodInDays[];
+extern const char kAutoGrantEmailVerificationPermissionForTesting[];
 extern const char kIgnoreAutocompleteOffForAutofill[];
 extern const char kShowAutofillTypePredictions[];
 extern const char kShowAutofillSignatures[];

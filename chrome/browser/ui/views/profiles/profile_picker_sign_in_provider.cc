@@ -12,7 +12,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/delete_profile_helper.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
-#include "chrome/browser/profiles/nuke_profile_directory_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
@@ -26,7 +25,6 @@
 #include "chrome/browser/trusted_vault/trusted_vault_encryption_keys_tab_helper.h"
 #include "chrome/browser/ui/views/profiles/profile_management_types.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_utils.h"
-#include "chrome/browser/ui/views/profiles/profile_picker_view.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_web_contents_host.h"
 #include "chrome/browser/ui/webui/signin/signin_ui_error.h"
 #include "chrome/common/url_constants.h"
@@ -43,13 +41,13 @@
 #include "content/public/browser/web_contents.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_urls.h"
-#include "net/base/url_util.h"
 #include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/views/controls/webview/web_contents_set_background_color.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-#include "chrome/browser/safe_browsing/chrome_password_reuse_detection_manager_client.h"
+#include "chrome/browser/safe_browsing/password_protection/chrome_password_reuse_detection_manager_client.h"
 #endif
 
 namespace {
@@ -59,15 +57,17 @@ constexpr char kProfilePickerSignInProviderStepHistogram[] =
 
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(ProfilePickerSignInProviderStep)
 enum class SigninProviderStep {
   kSwitchToSignin = 0,
   kGaiaBlankPageNavigation = 1,
   kFinishFlowSaml = 2,
-  kFinishFlowSyncConfirmation = 3,
+  // DEPRECATED: kFinishFlowSyncConfirmation = 3,
   kFinishFlowHistoryOptin = 4,
 
   kMaxValue = kFinishFlowHistoryOptin
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/profile/enums.xml:ProfilePickerSignInProviderStep)
 
 bool IsTwoFactorIntersitial(const GURL& url) {
   return base::StartsWith(url.spec(), chrome::kGoogleTwoFactorIntersitialURL);
@@ -139,7 +139,7 @@ void ProfilePickerSignInProvider::SwitchToSignIn(
   if (!profile_path_.empty()) {
     bool profile_exists = profile_manager->LoadProfileByPath(
         profile_path_, /*incognito=*/false, std::move(profile_init_callback));
-    DCHECK(profile_exists);
+    CHECK(profile_exists, base::NotFatalUntil::M162);
   } else {
     // Silently create the new profile for browsing on GAIA (so that the sign-in
     // cookies are stored in the right profile).
@@ -158,23 +158,6 @@ void ProfilePickerSignInProvider::ReloadSignInPage() {
   }
 }
 
-void ProfilePickerSignInProvider::NavigateBack() {
-  if (!IsInitialized() || !contents()) {
-    return;
-  }
-
-  if (contents()->GetController().CanGoBack()) {
-    contents()->GetController().GoBack();
-    return;
-  }
-
-  // Move from sign-in back to the previous screen of profile creation.
-  // Do not load any url because the desired screen is still loaded in the
-  // picker contents.
-  host_->ShowScreenInPickerContents(GURL(), base::OnceClosure());
-  host_->SetNativeToolbarSigninButtonsVisible(false);
-}
-
 bool ProfilePickerSignInProvider::HandleContextMenu(
     content::RenderFrameHost& render_frame_host,
     const content::ContextMenuParams& params) {
@@ -186,7 +169,7 @@ content::WebContents* ProfilePickerSignInProvider::AddNewContents(
     content::WebContents* source,
     std::unique_ptr<content::WebContents> new_contents,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture,
     bool* was_blocked) {
@@ -221,12 +204,6 @@ void ProfilePickerSignInProvider::NavigationStateChanged(
     return;
   }
 
-  // The first Gaia screen has no back history. If CanGoBack() is `false`, we
-  // are on the first screen and the "Don't sign in" button (if exists) should
-  // be visible.
-  host_->SetNativeToolbarDontSignInButtonVisible(
-      !contents_->GetController().CanGoBack());
-
   const GURL& visible_url = contents_->GetVisibleURL();
   auto primary_account =
       IdentityManagerFactory::GetForProfile(profile_)->GetPrimaryAccountInfo(
@@ -260,8 +237,8 @@ void ProfilePickerSignInProvider::NavigationStateChanged(
     return;
   }
 
-  // Attach DiceTabHelper to `contents_` so that sync consent dialog appears
-  // after a successful sign-in.
+  // Update `DiceTabHelper` on `contents_` so that the history sync opt-in step
+  // opens in the browser after a successful SAML sign-in.
   base::UmaHistogramEnumeration(kProfilePickerSignInProviderStepHistogram,
                                 SigninProviderStep::kFinishFlowSaml);
   DiceTabHelper* tab_helper = DiceTabHelper::FromWebContents(contents_.get());
@@ -285,8 +262,8 @@ void ProfilePickerSignInProvider::OnProfileInitialized(
     std::move(switch_finished_callback.value()).Run(false);
     return;
   }
-  DCHECK(!profile_);
-  DCHECK(!contents());
+  CHECK(!profile_, base::NotFatalUntil::M162);
+  CHECK(!contents(), base::NotFatalUntil::M162);
 
   profile_ = new_profile;
   profile_keep_alive_ = std::make_unique<ScopedProfileKeepAlive>(
@@ -343,24 +320,11 @@ bool ProfilePickerSignInProvider::IsInitialized() const {
 
 void ProfilePickerSignInProvider::FinishFlow(
     const CoreAccountInfo& account_info) {
-  DCHECK(IsInitialized());
+  CHECK(IsInitialized(), base::NotFatalUntil::M162);
   host_->SetNativeToolbarSigninButtonsVisible(false);
   ResetWebContentsDelegates();
   std::move(callback_).Run(profile_.get(), account_info, std::move(contents_),
                            StepSwitchFinishedCallback());
-}
-
-void ProfilePickerSignInProvider::FinishFlowInPickerWithSyncConfirmation(
-    Profile* profile,
-    signin_metrics::AccessPoint /*access_point*/,
-    signin_metrics::PromoAction /*promo_action*/,
-    content::WebContents* /*contents*/,
-    const CoreAccountInfo& account_info) {
-  CHECK_EQ(profile, profile_.get());
-  base::UmaHistogramEnumeration(
-      kProfilePickerSignInProviderStepHistogram,
-      SigninProviderStep::kFinishFlowSyncConfirmation);
-  FinishFlow(account_info);
 }
 
 void ProfilePickerSignInProvider::FinishFlowInPickerWithHistorySyncOptin(
@@ -429,9 +393,6 @@ void ProfilePickerSignInProvider::InitializeOrUpdateDiceTabHelper(
           /*redirect_url=*/GURL(),
           /*record_signin_started_metrics=*/true,
           base::BindRepeating(&ProfilePickerSignInProvider::
-                                  FinishFlowInPickerWithSyncConfirmation,
-                              weak_ptr_factory_.GetWeakPtr()),
-          base::BindRepeating(&ProfilePickerSignInProvider::
                                   FinishFlowInPickerWithHistorySyncOptin,
                               weak_ptr_factory_.GetWeakPtr()),
           DiceTabHelper::OnSigninHeaderReceived(),
@@ -445,8 +406,6 @@ void ProfilePickerSignInProvider::InitializeOrUpdateDiceTabHelper(
       // of Gaia).
       // Also triggered when a navigation outside of Gaia occurs (e.g. account
       // recovery in crbug.com/29524688).
-      helper.UpdateSyncCallback(
-          DiceTabHelper::GetEnableSyncCallbackForBrowser());
       helper.UpdateHistorySyncOptinCallback(
           DiceTabHelper::GetHistorySyncOptinCallbackForBrowser());
       helper.UpdateSigninErrorCallback(

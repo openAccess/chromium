@@ -21,6 +21,7 @@
 #include "base/supports_user_data.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#include "components/page_content_annotations/content/producer.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/jni_android.h"
@@ -116,7 +117,8 @@ class PageContentCacheHandler;
 // For a detailed integration guide, comparison matrix, and usage examples,
 // see `components/page_content_annotations/content/pces_guide.md`.
 class PageContentExtractionService : public KeyedService,
-                                     public base::SupportsUserData {
+                                     public base::SupportsUserData,
+                                     public Producer<PageContent> {
  public:
   using GetExtractedPageContentAndEligibilityCallback =
       base::OnceCallback<void(std::optional<ExtractedPageContentResult>)>;
@@ -128,12 +130,39 @@ class PageContentExtractionService : public KeyedService,
 
   class Observer : public base::CheckedObserver {
    public:
-    // Invoked when `page_content` is extracted for `page`. The extraction is
-    // triggered for every page once the page has sufficiently loaded. The
-    // `page_content` holds either the APC for a non-PDF page; or the PDF text
-    // for a PDF page.
+    // Invoked when `page_content` is extracted for `page`, whether
+    // automatically (once the page loads and settles, or when the tab is
+    // hidden, depending on configuration) or on demand. May be invoked multiple
+    // times for the same `page` (e.g., on eligible same-document navigations,
+    // tab hides, or on-demand refreshes), or not at all if extraction is
+    // skipped or fails. `page_content` holds either the APC for a non-PDF page
+    // or the PDF text for a PDF page.
+    //
+    // For non-PDF pages, the extracted content and its server upload
+    // eligibility are cached before this method is called, so synchronous
+    // calls to `GetExtractedPageContentAndEligibilityForPage(page)` and
+    // `GetServerUploadEligibilityForPage(page)` from within this method will
+    // return the newly extracted result.
     virtual void OnPageContentExtracted(content::Page& page,
                                         PageContent page_content) {}
+
+    // Invoked when a navigation of the primary main frame resets page content
+    // tracking for its tab (discarding any previously extracted content), i.e.
+    // whenever a new automatic extraction cycle begins. `current_page` is the
+    // new primary page if the primary page changed, or the existing primary
+    // page for a same-document navigation. This fires for every
+    // cross-document navigation, and for same-document navigations that are
+    // significant enough to trigger a new extraction (see
+    // `AnnotatedPageContentRequest`). A matching `OnPageContentExtracted()`
+    // for `current_page` follows if and when extraction succeeds, but is not
+    // guaranteed (e.g. `current_page` is not eligible, or is navigated away
+    // from first).
+    //
+    // By the time this is called, pending async requests for any discarded
+    // content have already resolved with `std::nullopt`. Observers must not
+    // synchronously call back into the service from this method.
+    virtual void OnPageContentReset(content::Page& current_page,
+                                    bool is_same_document) {}
   };
 
 #if BUILDFLAG(IS_ANDROID)
@@ -149,6 +178,10 @@ class PageContentExtractionService : public KeyedService,
 
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
+
+  // Producer<PageContent>:
+  base::CallbackListSubscription Subscribe(
+      ConsumerCallback<PageContent> callback) override;
 
   // Returns the reason why page content extraction is enabled. If
   // `is_on_demand` is true, also considers the on-demand observer-bypass
@@ -215,6 +248,12 @@ class PageContentExtractionService : public KeyedService,
   // Called when a closed tab is undone.
   void OnTabCloseUndone(int64_t tab_id);
 
+  // Migrates any cached page content from `old_tab_id` to `new_tab_id`. Both
+  // tab IDs must be positive. This should only be called during session restore
+  // on platforms where restored tabs are assigned a new tab ID instead of
+  // preserving their pre-restore ID.
+  void UpdateTabId(int64_t old_tab_id, int64_t new_tab_id);
+
   // Called when the visibility of a WebContents changes.
   void OnVisibilityChanged(std::optional<int64_t> tab_id,
                            content::WebContents* web_contents,
@@ -240,19 +279,22 @@ class PageContentExtractionService : public KeyedService,
   void GetOnDiskCachedTabIds(GetAllTabIdsCallback callback);
 
  protected:
-  // Invoked when `page_content` is extracted for `page`, to notify the
-  // observers. The `page_content` holds either the APC for a non-PDF page; or
-  // the PDF text for a PDF page. `tab_id` for the tab where page is loaded, if
-  // available.
+  // Invoked when `page_content` (either the APC for a non-PDF page or the PDF
+  // text for a PDF page) is extracted for `page`. Notifies observers and, if
+  // enabled for non-PDF pages, updates the on-disk cache using `tab_id` and
+  // `screenshot_data`.
   virtual void OnPageContentExtracted(
       content::Page& page,
       PageContent page_content,
       const std::vector<uint8_t>& screenshot_data,
-      std::optional<int> tab_id);
+      std::optional<int64_t> tab_id);
 
  private:
   friend class AnnotatedPageContentRequest;
   friend class PageContentCacheBrowserTest;
+
+  // Producer<PageContent>:
+  void OnDemandChanged() override;
 
   AnnotatedPageContentRequest* GetAnnotatedPageContentRequestFromWebContents(
       content::WebContents* web_contents);
@@ -260,6 +302,7 @@ class PageContentExtractionService : public KeyedService,
       content::Page& page);
 
   base::ObserverList<Observer> observers_;
+  SubscriberRegistry<PageContent> subscriber_registry_{*this};
 
   const bool is_page_content_cache_enabled_;
   const std::unique_ptr<PageContentCacheHandler> page_content_cache_handler_;

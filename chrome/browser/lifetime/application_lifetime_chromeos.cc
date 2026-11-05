@@ -11,7 +11,7 @@
 #include "chrome/browser/ash/boot_times_recorder/boot_times_recorder.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
-#include "chrome/browser/lifetime/application_lifetime_chromeos.h"
+#include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/lifetime/termination_notification.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -33,7 +33,7 @@ namespace {
 ash::UpdateEngineClient* GetUpdateEngineClient() {
   ash::UpdateEngineClient* update_engine_client =
       ash::UpdateEngineClient::Get();
-  DCHECK(update_engine_client);
+  CHECK(update_engine_client, base::NotFatalUntil::M161);
   return update_engine_client;
 }
 
@@ -89,6 +89,8 @@ void ReportSessionUMAMetrics() {
 
 void AttemptUserExit() {
   VLOG(1) << "AttemptUserExit";
+  browser_shutdown::SetShutdownTrigger(
+      browser_shutdown::ShutdownTrigger::kLogout);
   ash::BootTimesRecorder::Get()->AddLogoutTimeMarker("LogoutStarted", false);
 
   ReportSessionUMAMetrics();
@@ -96,11 +98,16 @@ void AttemptUserExit() {
   PrefService* state = g_browser_process->local_state();
   if (state) {
     ash::BootTimesRecorder::Get()->OnLogoutStarted(state);
-
-    if (SetLocaleForNextStart(state)) {
-      TRACE_EVENT0("shutdown", "CommitPendingWrite");
-      state->CommitPendingWrite();
-    }
+    SetLocaleForNextStart(state);
+    // Flush kLogoutStartedLast and any locale update before asking
+    // session_manager to stop the session. ShutdownPreThreadsStop() and
+    // BrowserProcessImpl::StartTearDown() will write and flush Local State
+    // again later in teardown (via ImportantFileWriter's atomic temp-file
+    // rename, preserving kLogoutStartedLast), but session_manager SIGABRTs a
+    // browser that has not exited 3 s after SIGTERM, which can happen before
+    // those later flushes run.
+    TRACE_EVENT0("shutdown", "CommitPendingWrite");
+    state->CommitPendingWrite();
   }
   ash::SessionTerminationManager::SetSendStopRequestToSessionManager();
   // On ChromeOS, always terminate the browser, regardless of the result of
@@ -123,7 +130,7 @@ void RelaunchIgnoreUnloadHandlers() {
 }
 
 void RelaunchForUpdate() {
-  DCHECK(UpdatePending());
+  CHECK(UpdatePending(), base::NotFatalUntil::M161);
   GetUpdateEngineClient()->RebootAfterUpdate();
 }
 
@@ -136,7 +143,7 @@ bool UpdatePending() {
          update_engine::UPDATED_NEED_REBOOT;
 }
 
-bool SetLocaleForNextStart(PrefService* local_state) {
+void SetLocaleForNextStart(PrefService* local_state) {
   // If a policy mandates the login screen locale, use it.
   ash::CrosSettings* cros_settings = ash::CrosSettings::Get();
   const base::ListValue* login_screen_locales = nullptr;
@@ -147,7 +154,7 @@ bool SetLocaleForNextStart(PrefService* local_state) {
     std::string login_screen_locale = login_screen_locales->front().GetString();
     local_state->SetString(language::prefs::kApplicationLocale,
                            login_screen_locale);
-    return true;
+    return;
   }
 
   // Login screen should show up in owner's locale.
@@ -158,14 +165,11 @@ bool SetLocaleForNextStart(PrefService* local_state) {
   if (!owner_locale.empty() && pref_locale != owner_locale &&
       !local_state->IsManagedPreference(language::prefs::kApplicationLocale)) {
     local_state->SetString(language::prefs::kApplicationLocale, owner_locale);
-    return true;
   }
-
-  return false;
 }
 
 void StopSession() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   // Only call this function once.
   static bool notified = false;
   if (notified) {

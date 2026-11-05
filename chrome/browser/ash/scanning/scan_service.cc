@@ -14,7 +14,9 @@
 #include "ash/webui/scanning/scanning_uma.h"
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
+#include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -80,7 +82,14 @@ std::string CreateFilename(const base::Time& start_time,
 // Returns whether the image was successfully written.
 bool WriteImage(const base::FilePath& file_path,
                 const std::string& scanned_image) {
-  if (!base::WriteFile(file_path, scanned_image)) {
+  // SECURITY: open with FLAG_CREATE (O_CREAT | O_EXCL) instead of
+  // base::WriteFile (creat(), which follows symlinks and truncates the
+  // target). O_EXCL fails if any directory entry - including a symlink
+  // planted in a guest-shared folder - already exists at |file_path|, and
+  // never follows a symlink in the final path component.
+  base::File file(file_path, base::File::FLAG_CREATE | base::File::FLAG_WRITE);
+  if (!file.IsValid() ||
+      !file.WriteAndCheck(0, base::as_byte_span(scanned_image))) {
     LOG(ERROR) << "Failed to save scanned image: " << file_path.value().c_str();
     return false;
   }
@@ -105,6 +114,20 @@ bool SaveAsPdf(const std::vector<std::string>& jpg_images,
           ? "Scanning.MultiPageScan.CombinedImageSizeInKbBeforePdf"
           : "Scanning.CombinedImageSizeInKbBeforePdf",
       total_image_size / 1024);
+
+  // SECURITY: create the destination exclusively (O_CREAT | O_EXCL) before
+  // handing the path to ConvertJpgImagesToPdf, whose SkFILEWStream opens
+  // with fopen("wb") (follows symlinks and truncates). This fails the scan
+  // if any directory entry - including a symlink planted in a guest-shared
+  // folder - already exists at |file_path|, instead of following it.
+  {
+    base::File pdf_file(file_path,
+                        base::File::FLAG_CREATE | base::File::FLAG_WRITE);
+    if (!pdf_file.IsValid()) {
+      LOG(ERROR) << "Failed to create PDF file: " << file_path.value().c_str();
+      return false;
+    }
+  }
 
   const base::TimeTicks pdf_start_time = base::TimeTicks::Now();
   const bool pdf_saved = chromeos::ConvertJpgImagesToPdf(
@@ -194,8 +217,8 @@ ScanService::ScanService(LorgnetteScannerManager* lorgnette_scanner_manager,
            base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN})),
       file_path_helper_(std::move(google_drive_path),
                         std::move(my_files_path)) {
-  DCHECK(lorgnette_scanner_manager_);
-  DCHECK(context_);
+  CHECK(lorgnette_scanner_manager_, base::NotFatalUntil::M160);
+  CHECK(context_, base::NotFatalUntil::M160);
 }
 
 ScanService::~ScanService() = default;
@@ -468,7 +491,7 @@ void ScanService::OnScannerCapabilitiesReceived(
 
 void ScanService::OnProgressPercentReceived(uint32_t progress_percent,
                                             uint32_t page_number) {
-  DCHECK_LE(progress_percent, kMaxProgressPercent);
+  CHECK_LE(progress_percent, kMaxProgressPercent, base::NotFatalUntil::M160);
   scan_job_observer_->OnPageProgress(page_number, progress_percent);
 }
 
@@ -493,7 +516,7 @@ void ScanService::OnPageReceived(
   } else {
     // Non-PDF scans do not save images in |scanned_images_| so the next index
     // is based off |page_number|.
-    DCHECK(!page_index_to_replace.has_value());
+    CHECK(!page_index_to_replace.has_value(), base::NotFatalUntil::M160);
     new_page_index = page_number - 1;
   }
   scan_job_observer_->OnPageComplete(
@@ -512,6 +535,8 @@ void ScanService::OnPageReceived(
     if (!page_index_to_replace.has_value()) {
       scanned_images_.push_back(std::move(scanned_image));
     } else {
+      // TODO(crbug.com/578890935): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
       DCHECK(page_index_to_replace.value() >= 0 &&
              page_index_to_replace.value() < scanned_images_.size());
       scanned_images_[page_index_to_replace.value()] = std::move(scanned_image);
@@ -520,7 +545,7 @@ void ScanService::OnPageReceived(
     // The output of multi-page PDF scans is a single file so only create and
     // append a single file path.
     if (scanned_file_paths_.empty()) {
-      DCHECK_EQ(1u, page_number);
+      CHECK_EQ(1u, page_number, base::NotFatalUntil::M160);
       scanned_file_paths_.push_back(scan_to_path.Append(CreateFilename(
           start_time_, /*not used*/ 0, mojo_ipc::FileType::kPdf)));
     }
@@ -540,7 +565,7 @@ void ScanService::OnScanCompleted(bool is_multi_page_scan,
   // |scanned_images_| only has data for PDF scans.
   if (failure_mode == lorgnette::SCAN_FAILURE_MODE_NO_FAILURE &&
       !scanned_images_.empty()) {
-    DCHECK(!scanned_file_paths_.empty());
+    CHECK(!scanned_file_paths_.empty(), base::NotFatalUntil::M160);
     timeout_callback_.Cancel();
     task_runner_->PostTaskAndReplyWithResult(
         FROM_HERE,

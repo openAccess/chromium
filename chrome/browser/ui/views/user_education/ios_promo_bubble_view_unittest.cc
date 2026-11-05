@@ -26,6 +26,7 @@
 #include "content/public/common/referrer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
@@ -120,8 +121,8 @@ class IOSPromoBubbleViewTest : public ChromeViewsTestBase {
   void CreateAndShowBubble(PromoType promo_type = PromoType::kLens,
                            BubbleType bubble_type = BubbleType::kQRCode) {
     auto bubble = std::make_unique<IOSPromoBubbleView>(
-        nullptr, GetProfile(), promo_type, bubble_type, anchor_view_,
-        views::BubbleBorder::TOP_RIGHT);
+        nullptr, GetProfile(), promo_type, bubble_type,
+        views::BubbleAnchor(anchor_view_), views::BubbleBorder::TOP_RIGHT);
     bubble_view_ = bubble.get();
     user_action_subscription_ =
         bubble_view_->AddUserActionCallback(user_action_callback_.Get());
@@ -257,7 +258,7 @@ TEST_F(IOSPromoBubbleViewTest, AcceptOpensUrl_QRCode) {
         EXPECT_TRUE(params.url.query().contains("ios-campaign"));
         EXPECT_TRUE(params.url.query().contains("android-campaign"));
         EXPECT_EQ(params.disposition,
-                  WindowOpenDisposition::NEW_FOREGROUND_TAB);
+                  ui::mojom::WindowOpenDisposition::kNewForegroundTab);
       });
 
   // Click Accept. Expect it to return true (close bubble).

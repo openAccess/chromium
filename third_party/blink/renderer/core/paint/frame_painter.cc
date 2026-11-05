@@ -23,7 +23,7 @@ namespace blink {
 bool FramePainter::in_paint_contents_ = false;
 
 void FramePainter::Paint(GraphicsContext& context, PaintFlags paint_flags) {
-  if ((paint_flags & PaintFlag::kPrivacyPreserving) &&
+  if ((paint_flags & PaintFlag::kReadBackAllowedRendering) &&
       GetFrameView().GetFrame().IsCrossOriginToParentOrOuterDocument()) {
     return;
   }
@@ -69,12 +69,6 @@ void FramePainter::Paint(GraphicsContext& context, PaintFlags paint_flags) {
   PaintLayerPainter layer_painter(*root_layer);
 
   layer_painter.Paint(context, paint_flags);
-
-  // Regions may have changed as a result of the visibility/z-index of element
-  // changing.
-  if (document->DraggableRegionsDirty()) {
-    GetFrameView().UpdateDocumentDraggableRegions();
-  }
 
   if (is_top_level_painter) {
     // Everything that happens after paintContents completions is considered

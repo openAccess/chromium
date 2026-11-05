@@ -212,6 +212,7 @@ class ShellContentRendererUrlLoaderThrottleProvider
               [](const blink::LocalFrameToken& token,
                  const scoped_refptr<base::SequencedTaskRunner>
                      main_thread_task_runner,
+                 network::mojom::RequestDestination destination,
                  const std::optional<url::Origin>& initiator,
                  const url::Origin& idp_origin,
                  blink::mojom::IdpSigninStatus status) {
@@ -424,7 +425,7 @@ ShellContentRendererClient::GetSupportedKeySystems(
   if (base::FeatureList::IsEnabled(media::kExternalClearKeyForTesting))
     key_systems.push_back(
         std::make_unique<cdm::ExternalClearKeyKeySystemInfo>());
-  std::move(cb).Run(std::move(key_systems));
+  std::move(cb).Run(std::move(key_systems), /*pending_key_systems=*/{});
   return nullptr;
 }
 #endif

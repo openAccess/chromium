@@ -26,7 +26,8 @@ using RendererColorMap = base::flat_map<color::mojom::RendererColorId, SkColor>;
 class COMPONENT_EXPORT(COLOR) ColorProviderUtilsCallbacks {
  public:
   virtual ~ColorProviderUtilsCallbacks();
-  virtual bool ColorIdName(ColorId color_id, std::string_view* color_name) = 0;
+  virtual bool ColorIdToCSSColorId(ColorId color_id,
+                                   std::string_view* css_name);
   virtual bool NameToColorId(std::string_view color_name, ColorId* color_id);
 };
 
@@ -36,6 +37,15 @@ class COMPONENT_EXPORT(COLOR) ColorProviderUtilsCallbacks {
 
 // Converts ColorId.
 std::string COMPONENT_EXPORT(COLOR) ColorIdName(ColorId color_id);
+
+// Converts a `ColorId` to its CSS variable name format (e.g.
+// "--color-primary-background") with zero runtime heap allocations.
+//
+// The mapping is backed by a compile-time `color_internal::CssColorIdTable` in
+// `.rodata`, providing an O(1) offset lookup that yields a persistent
+// `std::string_view`. Falls back to embedder callbacks (such as
+// `ChromeColorProviderUtils`) if the ID is not found in the core table.
+std::string_view COMPONENT_EXPORT(COLOR) ColorIdToCSSColorId(ColorId color_id);
 
 // Converts string representation of ColorId to its enum value.
 std::optional<ColorId> COMPONENT_EXPORT(COLOR)
@@ -50,6 +60,28 @@ std::string COMPONENT_EXPORT(COLOR) SkColorName(SkColor color);
 // "--color-X-X-X" for CSS
 std::string COMPONENT_EXPORT(COLOR)
     ConvertColorProviderColorIdToCSSColorId(std::string_view color_id_name);
+
+// Converts a CSS color variable name from "--color-x-x-x" back to its
+// C++ ColorId identifier format "kColorXXX".
+std::string COMPONENT_EXPORT(COLOR)
+    ConvertCSSColorIdToColorIdName(std::string_view css_color_id_name);
+
+// Converts `color` to a CSS hex color string formatted as `#RRGGBBAA` and
+// appends it directly into `out`.
+//
+// This avoids format string parsing (`base::StringPrintf`) and dynamic heap
+// allocations by extracting ARGB nibbles directly and indexing into a static
+// lookup table of hexadecimal digits.
+void COMPONENT_EXPORT(COLOR)
+    FastAppendCssHexColor(SkColor color, std::string& out);
+
+// Formats `color` as comma-separated RGB values ("R,G,B") and appends it
+// directly into `out`.
+//
+// Performs fast integer digit decomposition on each 8-bit channel (0-255) to
+// emit ASCII characters directly, avoiding heap allocations or division loops.
+void COMPONENT_EXPORT(COLOR)
+    FastAppendRgbColor(SkColor color, std::string& out);
 
 // Converts SkColor in ARGB format to CSS color in RGBA color. Returns the color
 // in a Hex string representation.

@@ -22,7 +22,6 @@
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_constants.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/ui/constants.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -38,6 +37,7 @@
 #import "ios/components/webui/web_ui_url_constants.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/base/url_util.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "net/test/embedded_test_server/http_response.h"
@@ -593,6 +593,7 @@ class TestResponseProvider {
 
 // Tests that the page can be translated and that translation can be reverted
 // using the banner and modal.
+TAG_SMOKE_TEST(TranslateInfobarTestCase, testInfobarTranslateRevert);
 - (void)testInfobarTranslateRevert {
   // Load a page with French text.
   GURL URL = self.testServer->GetURL(kFrenchPagePath);
@@ -1012,11 +1013,6 @@ class TestResponseProvider {
 // Test that tapping cancel in the Modal doesn't save changes to source/target
 // languages and doesn't start a Translate
 - (void)testTranslateModalCancel {
-  // TODO(crbug.com/516439940): Re-enable this flaky test on iOS below 26.
-  if (!base::ios::IsRunningOnIOS26OrLater()) {
-    EARL_GREY_TEST_DISABLED(@"Flaky on iOS below 26.");
-  }
-
   // Load a page with French text.
   GURL URL = self.testServer->GetURL(kFrenchPagePath);
   [ChromeEarlGrey loadURL:URL];
@@ -1081,6 +1077,13 @@ class TestResponseProvider {
                                           grey_accessibilityTrait(
                                               UIAccessibilityTraitButton),
                                           nil)] performAction:grey_tap()];
+
+  // Wait for the modal to dismiss before tapping the translate badge.
+  [ChromeEarlGrey
+      waitForUIElementToDisappearWithMatcher:grey_accessibilityID(
+                                                 kInfobarModalCancelButton)];
+  GREYAssertTrue([self isTranslateBadgeVisible],
+                 @"Translate badge was not found.");
 
   // Open modal by selecting the badge that shouldn't be accepted.
   [[EarlGrey

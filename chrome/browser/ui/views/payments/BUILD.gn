@@ -37,8 +37,13 @@ source_set("payments") {
 
   public_deps = [
     "//base",
+    "//chrome/browser/media/webrtc",
     "//chrome/browser/picture_in_picture",
+    "//chrome/browser/ui/views/location_bar",
+    "//chrome/browser/ui/views/location_bar:icon_label_bubble",
+    "//chrome/browser/ui/views/permissions/chip",
     "//components/autofill/core/browser",
+    "//components/omnibox/browser",
     "//components/payments/content",
     "//components/web_modal",
     "//ui/base",
@@ -79,38 +84,40 @@ source_set("impl") {
     ":payments",
     "//chrome/browser:primitives",
     "//chrome/browser/devtools",
-    "//chrome/browser/media/webrtc",
     "//chrome/browser/payments",
     "//chrome/browser/permissions",
     "//chrome/browser/ssl",
     "//chrome/browser/task_manager",
     "//chrome/browser/themes",
+    "//chrome/browser/ui:browser_element_identifiers",
+    "//chrome/browser/ui:browser_tabstrip",
     "//chrome/browser/ui:chrome_pages",
     "//chrome/browser/ui/color:color_headers",
     "//chrome/browser/ui/dialogs:browser_dialogs",
+    "//chrome/browser/ui/tabs/alert:tab_alert",
     "//chrome/browser/ui/views:layout_provider",
     "//chrome/browser/ui/views/accessibility",
     "//chrome/browser/ui/views/extensions:security_dialog_tracker",
+    "//chrome/browser/ui/views/page_info",
+    "//components/omnibox/browser:vector_icons",
     "//components/payments/content",
     "//components/payments/content:utils",
     "//components/payments/content/icon",
+    "//components/payments/core",
     "//components/payments/core:currency_formatter",
+    "//components/payments/core:error_strings",
     "//components/permissions",
+    "//components/security_state/core",
+    "//components/tabs:public",
     "//components/variations/service",
   ]
-
-  # payment_handler_web_flow_view_controller.cc and
-  # payment_sheet_view_controller.cc include headers still built as part of
-  # //chrome/browser/ui:ui (browser_tabstrip.h). Reach them via
-  # browser_public_dependencies; the reverse edge is expressed by the
-  # allow_circular_includes_from entry on //chrome/browser/ui:ui.
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("test_support") {
   testonly = true
 
   public = [
+    "payment_handler_web_flow_view_test_api.h",
     "payment_request_dialog_view_test_api.h",
     "test_chrome_payment_request_delegate.h",
     "test_secure_payment_confirmation_payment_request_delegate.h",
@@ -160,6 +167,7 @@ source_set("browser_tests") {
     "error_message_view_controller_browsertest.cc",
     "modifiers_browsertest.cc",
     "order_summary_view_controller_browsertest.cc",
+    "payment_handler_header_view_ui_browsertest.cc",
     "payment_handler_missing_icon_browsertest.cc",
     "payment_handler_web_flow_view_browsertest.cc",
     "payment_handler_window_size_browsertest.cc",
@@ -198,8 +206,13 @@ source_set("browser_tests") {
     "//chrome/browser/autofill",
     "//chrome/browser/payments",
     "//chrome/browser/permissions",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_commands",
+    "//chrome/browser/ui:browser_window_header",
+    "//chrome/browser/ui/tabs/alert:tab_alert",
     "//chrome/browser/ui/views:bubble_anchor_util_views",
+    "//chrome/browser/ui/views/frame:browser_view_header",
+    "//chrome/browser/ui/views/location_bar",
+    "//chrome/browser/ui/views/page_info",
     "//chrome/test:test_support_ui",
     "//chrome/test/payments:test_support",
     "//components/autofill/core/browser:test_support",
@@ -207,12 +220,15 @@ source_set("browser_tests") {
     "//components/payments/content:utils",
     "//components/payments/content/icon",
     "//components/payments/core:test_support",
+    "//components/permissions:test_support",
     "//components/sync:test_support",
     "//components/sync_preferences:test_support",
+    "//components/tabs:public",
     "//components/ukm:test_support",
     "//content/test:test_support",
     "//net:test_support",
     "//testing/gtest",
+    "//third_party/blink/public/common",
     "//ui/base:test_support",
     "//ui/views:test_support",
   ]
@@ -236,7 +252,6 @@ source_set("interactive_ui_tests") {
 
   deps = [
     ":payments",
-    "//chrome/browser/ui",
     "//chrome/test:test_support_ui",
     "//content/test:test_support",
     "//skia",

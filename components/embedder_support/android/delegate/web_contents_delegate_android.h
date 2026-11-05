@@ -22,6 +22,7 @@
 class GURL;
 
 namespace content {
+class InitiatorNavigationState;
 class WebContents;
 class WebContentsDelegate;
 class NavigationHandle;
@@ -67,6 +68,9 @@ class WebContentsDelegateAndroid : public content::WebContentsDelegate {
       SkColor color,
       const std::vector<blink::mojom::ColorSuggestionPtr>& suggestions)
       override;
+  std::unique_ptr<content::EyeDropper> OpenEyeDropper(
+      content::RenderFrameHost* frame,
+      content::EyeDropperListener* listener) override;
   void NavigationStateChanged(content::WebContents* source,
                               content::InvalidateTypes changed_flags) override;
   void VisibleSecurityStateChanged(content::WebContents* source) override;
@@ -130,6 +134,8 @@ class WebContentsDelegateAndroid : public content::WebContentsDelegate {
       const GURL& blocked_url,
       const GURL& initiator_url,
       const url::Origin& initiator_origin,
+      scoped_refptr<content::InitiatorNavigationState>
+          initiator_navigation_state,
       blink::mojom::NavigationBlockedReason reason) override;
   int GetTopControlsHeight() override;
   int GetTopControlsMinHeight() override;

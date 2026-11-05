@@ -33,8 +33,10 @@
 
 namespace blink {
 
+class CSSProperty;
 class CSSPropertyName;
 class CSSPropertyValueSet;
+class PropertyRegistry;
 class StylePropertyShorthand;
 
 enum class CSSGapDecorationPropertyDirection : int;
@@ -43,7 +45,9 @@ class CORE_EXPORT StylePropertySerializer {
   STACK_ALLOCATED();
 
  public:
-  explicit StylePropertySerializer(const CSSPropertyValueSet&);
+  explicit StylePropertySerializer(
+      const CSSPropertyValueSet&,
+      const PropertyRegistry* private_property_registry = nullptr);
 
   String AsText() const;
   String SerializeShorthand(CSSPropertyID) const;
@@ -55,6 +59,9 @@ class CORE_EXPORT StylePropertySerializer {
                              const StylePropertyShorthand&) const;
   String BorderImagePropertyValue() const;
   String BorderRadiusValue() const;
+  String BorderRadiusCornerShorthandValue(
+      const CSSProperty& first_corner,
+      const CSSProperty& second_corner) const;
   String CornerShapeValue() const;
   String CornersValue() const;
   String SingleCornerShorthandValue(const StylePropertyShorthand&) const;
@@ -119,15 +126,11 @@ class CORE_EXPORT StylePropertySerializer {
   String WhiteSpaceValue() const;
   String LineClampValue(bool is_webkit_line_clamp) const;
   String PositionTryValue(const StylePropertyShorthand&) const;
-  String GetPropertyText(const CSSPropertyName&,
-                         const String& value,
-                         bool is_important,
-                         bool is_not_first_decl) const;
-  bool IsPropertyShorthandAvailable(const StylePropertyShorthand&) const;
-  bool ShorthandHasOnlyInitialOrInheritedValue(
-      const StylePropertyShorthand&) const;
-  void AppendBackgroundPropertyAsText(StringBuilder& result,
-                                      unsigned& num_decls) const;
+  void AppendPropertyText(StringBuilder& result,
+                          const CSSPropertyName&,
+                          const String& value,
+                          bool is_important,
+                          bool is_not_first_decl) const;
 
   // This function does checks common to all shorthands, and returns:
   // - The serialization if the shorthand serializes as a css-wide keyword.
@@ -162,8 +165,9 @@ class CORE_EXPORT StylePropertySerializer {
     bool is_important_;
   };
 
-  String GetCustomPropertyText(const PropertyValueForSerializer&,
-                               bool is_not_first_decl) const;
+  void AppendCustomPropertyText(StringBuilder& result,
+                                const PropertyValueForSerializer&,
+                                bool is_not_first_decl) const;
 
   class CSSPropertyValueSetForSerializer final {
     DISALLOW_NEW();
@@ -240,6 +244,7 @@ class CORE_EXPORT StylePropertySerializer {
   };
 
   const CSSPropertyValueSetForSerializer property_set_;
+  const PropertyRegistry* private_property_registry_;
 };
 
 }  // namespace blink

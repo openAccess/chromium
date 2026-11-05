@@ -9,7 +9,7 @@
 
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 #include "components/glic/glic_pref_names.h"
 #include "components/prefs/pref_registry_simple.h"
 
@@ -40,13 +40,35 @@ inline constexpr char kGlicLauncherHotkey[] = "glic.launcher_hotkey";
 inline constexpr char kGlicHotkeyGlobalScopeEnabled[] =
     "glic.hotkey_global_scope_enabled";
 
-// Boolean pref that tracks if the hotkey scope has been migrated.
-inline constexpr char kGlicHotkeyGlobalScopeMigrated[] =
-    "glic.hotkey_global_scope_migrated";
+// Values for the "glic.default_hotkey_scope" pref.
+// TODO(b/563018760): Deprecate and remove after 6-12 months.
+enum class DefaultHotkeyScope {
+  kMinValue = 0,
+
+  kNotMigrated = kMinValue,
+  kGlobal = 1,
+  kLocal = 2,
+
+  kMaxValue = kLocal
+};
+
+// Integer pref that tracks the default hotkey scope determined during
+// migration: NotMigrated (0), Global (1), or Local (2).
+// TODO(b/563018760): Deprecate and remove after 6-12 months.
+inline constexpr char kGlicDefaultHotkeyScope[] = "glic.default_hotkey_scope";
+
+// Deprecated prefs to be removed after 6-12 months.
+// TODO(b/563018760): Deprecate and remove after 6-12 months.
+inline constexpr char kGlicHotkeyGlobalScopeMigratedV2[] =
+    "glic.hotkey_global_scope_migrated_v2";
 
 // String pref that keeps track of the non-localized version of the registered
 // selection hotkey for Glic.
 inline constexpr char kGlicSelectionHotkey[] = "glic.selection_hotkey";
+
+// Boolean pref set once the user accepts the Quick Answers FRE.
+inline constexpr char kGlicQuickAnswersFreAccepted[] =
+    "glic.quick_answers_fre_accepted";
 
 // String pref that keeps track of the non-localized version of the registered
 // hotkey for toggling focus between Glic and the browser window.
@@ -69,6 +91,17 @@ inline constexpr char kGlicWebContinuityOriginatingHostUrlPreset[] =
 
 // ************* PROFILE PREFS ***************
 // Prefs below are tied to a user profile.
+
+// Per-profile assistant selection preference. Evaluated once at profile
+// initialization by `geic::ShouldLatchToGeminiEnterprise()` (via
+// `GlicProviderLatchFactory`); changing it requires a browser restart.
+enum class AssistantSelection {
+  kAuto = 0,
+  kConsumer = 1,
+  kEnterprise = 2,
+  kMaxValue = kEnterprise,
+};
+inline constexpr char kGlicAssistantSelection[] = "glic.assistant_selection";
 
 // Values for the "glic.actuation_on_web" pref.
 enum class GlicActuationOnWebPolicyState {
@@ -172,18 +205,35 @@ inline constexpr char kGlicActuationOnWebAllowedForURLs[] =
 inline constexpr char kGlicActuationOnWebBlockedForURLs[] =
     "glic.actuation_on_web_blocked_for_urls";
 
-// Dict pref storing details for Gemini Enterprise.
-inline constexpr char kGlicGeminiEnterpriseSettings[] =
-    "glic.gemini_enterprise_settings";
+// String pref populated by the `GeminiEnterpriseUrl` enterprise policy. Stores
+// the enterprise's Gemini Enterprise web application URL (e.g.
+// `https://business.gemini.google/home/cid/<id>`). When `features::kGeic` is
+// enabled, a valid URL here configures the GEiC guest URL and enables GEiC for
+// the profile (unless overridden by `--geic-guest-url` or supplemented by
+// `features::kGeicGuestURL`).
+inline constexpr char kGlicGeminiEnterpriseUrl[] = "glic.gemini_enterprise_url";
 
 // Boolean pref that tracks if the Glic partition needs a cookie sync.
 inline constexpr char kGlicPartitionNeedsCookieSync[] =
     "glic.partition_needs_cookie_sync";
 
-// Boolean pref that tracks if the Glic local storage keys have been copied from
-// the Glic partition to the main partition.
+// Deprecated pref that tracked if the Glic local storage keys were copied from
+// the Glic partition to the main partition. Replaced by
+// `kGlicLocalStorageCopiedToPrefs`.
+// TODO(b/573595701): Remove after a few milestones.
 inline constexpr char kGlicLocalStorageCopiedToMainPartition[] =
     "glic.local_storage_copied_to_main_partition";
+
+// Boolean pref that tracks if the Glic local storage keys have been copied from
+// the Glic partition to prefs.
+inline constexpr char kGlicLocalStorageCopiedToPrefs[] =
+    "glic.local_storage_copied_to_prefs";
+
+// Dict pref that stores key-value pairs for the Glic web client's storage.
+// Each provider's items are a nested dict at its guest URL key
+// (`GlicProviderSpec::GetGuestUrlKey()`). `glic::kClientDataStorageVersionKey`
+// holds the layout version.
+inline constexpr char kGlicClientDataStorage[] = "glic.client_data_storage";
 
 // Boolean pref that tracks if the Glic profile was previously ineligible.
 inline constexpr char kGlicPreviouslyNotAllowed[] =
@@ -193,6 +243,11 @@ inline constexpr char kGlicPreviouslyNotAllowed[] =
 // auto-opened.
 inline constexpr char kGlicMarketingAutoOpenCount[] =
     "glic.marketing_auto_open_count";
+
+// String pref that records whether a Glic promotion page visit originated from
+// zss or a non-zss source.
+inline constexpr char kGlicPromotionSourceCohort[] =
+    "glic.promotion_source_cohort";
 
 #if BUILDFLAG(IS_MAC)
 inline constexpr char kGlicUseAltOSIcon[] = "glic.use_alt_os_icon";

@@ -4,8 +4,9 @@
 
 #include "chrome/browser/component_updater/dictation_connector_component_installer.h"
 
+#include <stdint.h>
+
 #include <array>
-#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -30,25 +31,25 @@ namespace {
 
 // The SHA256 of the SubjectPublicKeyInfo used to sign the component.
 // The component's id is: kbglekiebdohdafflpmiejhbfdmjdbbe
-const uint8_t kDictationConnectorPublicKeySHA256[32] = {
+constexpr uint8_t kDictationConnectorPublicKeySHA256[32] = {
     0xa1, 0x6b, 0x4a, 0x84, 0x13, 0xe7, 0x30, 0x55, 0xbf, 0xc8, 0x49,
     0x71, 0x53, 0xc9, 0x31, 0x14, 0x7c, 0xaa, 0x56, 0x41, 0xd3, 0xa6,
     0x25, 0xb9, 0x75, 0xec, 0xd4, 0xcb, 0xe1, 0xb9, 0xbf, 0x81};
 
-const char kDictationConnectorManifestName[] = "Dictation Connector";
+constexpr char kDictationConnectorManifestName[] = "Dictation Connector";
 
 // The relative path where the component will be installed.
-const base::FilePath::CharType kDictationConnectorRelativeInstallDir[] =
+constexpr base::FilePath::CharType kDictationConnectorRelativeInstallDir[] =
     FILE_PATH_LITERAL("DictationConnector");
 
 // Files in the extension
-const base::FilePath::CharType kBackgroundCompiledFileName[] =
+constexpr base::FilePath::CharType kBackgroundCompiledFileName[] =
     FILE_PATH_LITERAL("background_compiled.js");
-const base::FilePath::CharType kManifestFileName[] =
+constexpr base::FilePath::CharType kManifestFileName[] =
     FILE_PATH_LITERAL("manifest.json");
-const base::FilePath::CharType kOffscreenCompiledFileName[] =
+constexpr base::FilePath::CharType kOffscreenCompiledFileName[] =
     FILE_PATH_LITERAL("offscreen_compiled.js");
-const base::FilePath::CharType kOffscreenHtmlFileName[] =
+constexpr base::FilePath::CharType kOffscreenHtmlFileName[] =
     FILE_PATH_LITERAL("offscreen.html");
 
 class DictationConnectorDirectory {
@@ -60,7 +61,7 @@ class DictationConnectorDirectory {
 
   base::CallbackListSubscription Get(
       base::OnceCallback<void(const base::FilePath&)> callback) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     // Use BindPostTaskToCurrentDefault to ensure the callback is posted
     // asynchronously when run from Notify.
     base::CallbackListSubscription subscription =
@@ -72,20 +73,20 @@ class DictationConnectorDirectory {
   }
 
   void Set(const base::FilePath& new_dir) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     CHECK(!new_dir.empty());
     dir_ = new_dir;
     NotifyCallbacksAsync();
   }
 
   void ResetForTesting() {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     dir_ = base::FilePath();
   }
 
  private:
   void NotifyCallbacksAsync() {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     if (!dir_.empty()) {
       callbacks_.Notify(dir_);
     }
@@ -144,7 +145,8 @@ void DictationConnectorComponentInstallerPolicy::ComponentReady(
 base::CallbackListSubscription
 DictationConnectorComponentInstallerPolicy::GetExtensionDirectory(
     base::OnceCallback<void(const base::FilePath&)> callback) {
-  DCHECK(base::FeatureList::IsEnabled(dictation::kDictation));
+  CHECK(base::FeatureList::IsEnabled(dictation::kDictation),
+        base::NotFatalUntil::M161);
   return DictationConnectorDirectory::GetInstance().Get(std::move(callback));
 }
 
@@ -169,7 +171,12 @@ std::string DictationConnectorComponentInstallerPolicy::GetName() const {
 
 update_client::InstallerAttributes
 DictationConnectorComponentInstallerPolicy::GetInstallerAttributes() const {
-  return update_client::InstallerAttributes();
+  update_client::InstallerAttributes attributes;
+  std::string tag = dictation::kDictationConnectorTag.Get();
+  if (!tag.empty()) {
+    attributes["connector_tag"] = tag;
+  }
+  return attributes;
 }
 
 void RegisterDictationConnectorComponent(ComponentUpdateService* cus) {

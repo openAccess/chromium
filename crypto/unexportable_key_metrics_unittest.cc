@@ -9,6 +9,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -16,10 +17,18 @@
 #include "base/containers/to_vector.h"
 #include "base/containers/transparent_hash.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "crypto/signature_verifier.h"
+#include "build/build_config.h"
+#include "crypto/scoped_fake_unexportable_key_provider.h"
 #include "crypto/unexportable_key.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+
+#if BUILDFLAG(IS_MAC)
+#include "base/check_deref.h"
+#include "base/strings/strcat.h"
+#include "crypto/apple/scoped_fake_keychain_v2.h"
+#include "testing/gmock/include/gmock/gmock.h"
+#endif  // BUILDFLAG(IS_MAC)
 
 namespace crypto {
 
@@ -39,14 +48,12 @@ class MockTrackingUnexportableKeyProvider
   }
 
   // UnexportableKeyProvider:
-  std::optional<SignatureVerifier::SignatureAlgorithm> SelectAlgorithm(
-      base::span<const SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms) override {
+  std::optional<sign::SignatureKind> SelectAlgorithm(
+      base::span<const sign::SignatureKind> acceptable_algorithms) override {
     return key_provider_->SelectAlgorithm(acceptable_algorithms);
   }
   std::unique_ptr<UnexportableSigningKey> GenerateSigningKeySlowly(
-      base::span<const SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms) override {
+      base::span<const sign::SignatureKind> acceptable_algorithms) override {
     std::unique_ptr<UnexportableSigningKey> key =
         key_provider_->GenerateSigningKeySlowly(acceptable_algorithms);
     if (key) {
@@ -62,8 +69,7 @@ class MockTrackingUnexportableKeyProvider
   }
 
   std::unique_ptr<UnexportableAttestationKey> GenerateAttestationKeySlowly(
-      base::span<const SignatureVerifier::SignatureAlgorithm>
-          acceptable_algorithms) override {
+      base::span<const sign::SignatureKind> acceptable_algorithms) override {
     std::unique_ptr<UnexportableAttestationKey> key =
         key_provider_->GenerateAttestationKeySlowly(acceptable_algorithms);
     if (key) {
@@ -223,6 +229,125 @@ TEST_F(UnexportableKeyMetricTest, GatherAllMetrics) {
                   "Crypto.TPMOperation.WrappedAttestationKeyCreationECDSA"),
               BucketsAre(base::Bucket(true, 1)));
 }
+
+TEST(UnexportableKeyMetricNoProviderTest, RecordsNoSupport) {
+  ScopedNullUnexportableKeyProvider null_provider;
+  base::HistogramTester histogram_tester;
+
+  internal::MeasureTpmOperationsInternalForTesting();
+
+  EXPECT_THAT(histogram_tester.GetAllSamples("Crypto.TPMSupport2"),
+              BucketsAre(base::Bucket(internal::TPMSupport::kNone, 1)));
+  histogram_tester.ExpectTotalCount("Crypto.TPMDuration.NewKeyCreationECDSA",
+                                    0);
+  histogram_tester.ExpectTotalCount("Crypto.TPMOperation.NewKeyCreation", 0);
+}
+
+// Crypto.KeyHardwareSupport.{Win,Mac} doesn't depend on the key provider.
+TEST(UnexportableKeyMetricNoProviderTest, RecordsKeyHardwareSupport) {
+  ScopedNullUnexportableKeyProvider null_provider;
+  base::HistogramTester histogram_tester;
+
+  internal::MeasureTpmOperationsInternalForTesting();
+
+#if BUILDFLAG(IS_WIN)
+  // The bucket depends on the machine.
+  histogram_tester.ExpectTotalCount("Crypto.KeyHardwareSupport.Win", 1);
+  histogram_tester.ExpectTotalCount("Crypto.KeyHardwareSupport.Mac", 0);
+#elif BUILDFLAG(IS_MAC)
+  // The bucket depends on the machine.
+  histogram_tester.ExpectTotalCount("Crypto.KeyHardwareSupport.Mac", 1);
+  histogram_tester.ExpectTotalCount("Crypto.KeyHardwareSupport.Win", 0);
+#else
+  histogram_tester.ExpectTotalCount("Crypto.KeyHardwareSupport.Win", 0);
+  histogram_tester.ExpectTotalCount("Crypto.KeyHardwareSupport.Mac", 0);
+#endif
+}
+
+#if BUILDFLAG(IS_MAC)
+constexpr char kTestKeychainAccessGroup[] = "test-keychain-access-group";
+
+void GenerateKeyWithTag(std::string application_tag) {
+  std::unique_ptr<UnexportableKeyProvider> provider =
+      GetUnexportableKeyProvider({
+          .keychain_access_group = kTestKeychainAccessGroup,
+          .application_tag = std::move(application_tag),
+      });
+  ASSERT_TRUE(provider);
+  const sign::SignatureKind kAlgorithms[] = {sign::ECDSA_SHA256};
+  ASSERT_TRUE(provider->GenerateSigningKeySlowly(kAlgorithms));
+}
+
+// Returns the application tags of all keys in the test access group.
+std::vector<std::string> GetAllKeyTags() {
+  std::unique_ptr<UnexportableKeyProvider> provider =
+      GetUnexportableKeyProvider(
+          {.keychain_access_group = kTestKeychainAccessGroup});
+  std::optional<std::vector<std::unique_ptr<UnexportableSigningKey>>> keys =
+      CHECK_DEREF(
+          CHECK_DEREF(provider.get()).AsStatefulUnexportableKeyProvider())
+          .GetAllKeysSlowly();
+  return base::ToVector(keys.value(), [](const auto& key) {
+    return CHECK_DEREF(key->AsStatefulKey()).GetKeyTag();
+  });
+}
+
+// Tests that the benchmark deletes its own keys, including ones left behind
+// by an earlier interrupted run, and leaves keys with other tags alone.
+TEST(UnexportableKeyMetricMacTest, DeletesLeftoverKeys) {
+  apple::ScopedFakeKeychainV2 scoped_fake_keychain(kTestKeychainAccessGroup);
+  const std::string other_tag =
+      base::StrCat({kTestKeychainAccessGroup, ".other"});
+  GenerateKeyWithTag(base::StrCat({kTestKeychainAccessGroup, ".tpm-metrics"}));
+  GenerateKeyWithTag(other_tag);
+  GenerateKeyWithTag("");
+
+  base::HistogramTester histogram_tester;
+  MaybeMeasureTpmOperations(
+      {.keychain_access_group = kTestKeychainAccessGroup});
+
+  histogram_tester.ExpectUniqueSample("Crypto.TPMOperation.NewKeyCreationECDSA",
+                                      true, 1);
+  EXPECT_THAT(GetAllKeyTags(), testing::UnorderedElementsAre("", other_tag));
+}
+
+TEST(UnexportableKeyMetricMacTest, KeyHardwareSupportSecureEnclave) {
+  apple::ScopedFakeKeychainV2 scoped_fake_keychain(kTestKeychainAccessGroup);
+  base::HistogramTester histogram_tester;
+
+  MaybeMeasureTpmOperations(
+      {.keychain_access_group = kTestKeychainAccessGroup});
+
+  histogram_tester.ExpectUniqueSample(
+      "Crypto.KeyHardwareSupport.Mac",
+      internal::MacKeyHardwareSupport::kSecureEnclave, 1);
+}
+
+TEST(UnexportableKeyMetricMacTest, KeyHardwareSupportNoSecureEnclave) {
+  apple::ScopedFakeKeychainV2 scoped_fake_keychain(kTestKeychainAccessGroup);
+  scoped_fake_keychain.SetSecureEnclaveAvailable(false);
+  base::HistogramTester histogram_tester;
+
+  MaybeMeasureTpmOperations(
+      {.keychain_access_group = kTestKeychainAccessGroup});
+
+  histogram_tester.ExpectUniqueSample(
+      "Crypto.KeyHardwareSupport.Mac",
+      internal::MacKeyHardwareSupport::kNoSecureEnclave, 1);
+}
+
+TEST(UnexportableKeyMetricMacTest, KeyHardwareSupportMissingEntitlement) {
+  // The fake grants the entitlement for its own access group only.
+  apple::ScopedFakeKeychainV2 scoped_fake_keychain(kTestKeychainAccessGroup);
+  base::HistogramTester histogram_tester;
+
+  MaybeMeasureTpmOperations({.keychain_access_group = "other-access-group"});
+
+  histogram_tester.ExpectUniqueSample(
+      "Crypto.KeyHardwareSupport.Mac",
+      internal::MacKeyHardwareSupport::kMissingEntitlement, 1);
+}
+#endif  // BUILDFLAG(IS_MAC)
 
 }  // namespace
 

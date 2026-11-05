@@ -105,7 +105,6 @@ class AppListTestViewDelegate : public AppListViewDelegate,
   bool AppListTargetVisibility() const override;
   bool IsInTabletMode() const override;
   AppListNotifier* GetNotifier() override;
-  std::unique_ptr<ScopedIphSession> CreateLauncherSearchIphSession() override;
   void LoadIcon(const std::string& app_id) override {}
   bool HasValidProfile() const override;
   bool ShouldHideContinueSection() const override;
@@ -115,8 +114,7 @@ class AppListTestViewDelegate : public AppListViewDelegate,
                           bool enabled) override {}
   void RecordAppsDefaultVisibility(
       const std::vector<std::string>& apps_above_the_fold,
-      const std::vector<std::string>& apps_below_the_fold,
-      bool is_apps_collections_page) override {}
+      const std::vector<std::string>& apps_below_the_fold) override {}
 
   // Do a bulk replacement of the items in the model.
   void ReplaceTestModel(int item_count);

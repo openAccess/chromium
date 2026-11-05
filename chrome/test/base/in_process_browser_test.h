@@ -7,8 +7,10 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
+#include "base/auto_reset.h"
 #include "base/callback_list.h"
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
@@ -19,6 +21,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/feature_engagement/test/scoped_iph_feature_list.h"
 #include "content/public/test/browser_test_base.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/page_transition_types.h"
 
@@ -28,6 +31,10 @@
 #include "base/apple/scoped_nsautorelease_pool.h"
 #include "base/memory/stack_allocated.h"
 #include "ui/base/test/scoped_fake_full_keyboard_access.h"
+
+namespace ui::test {
+class ScopedFakeNSWindowFocus;
+}
 #endif
 
 namespace base {
@@ -349,6 +356,10 @@ class InProcessBrowserTest : public content::BrowserTestBase {
     open_about_blank_on_browser_launch_ = value;
   }
 
+  void set_force_in_process_storage_service(bool value) {
+    force_in_process_storage_service_ = value;
+  }
+
 #if BUILDFLAG(IS_CHROMEOS)
   void set_launch_browser_for_testing(
       std::unique_ptr<ash::full_restore::ScopedLaunchBrowserForTesting>
@@ -404,6 +415,10 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // True if the about:blank tab should be opened when the browser is launched.
   bool open_about_blank_on_browser_launch_ = true;
 
+  // True if the StorageService should be forced to run in-process in fast test
+  // builds (!EXPENSIVE_TEST_LOGIC_IS_ON()).
+  bool force_in_process_storage_service_ = true;
+
   // Use a default download directory to make sure downloads don't end up in the
   // system default location.
   base::ScopedTempDir default_download_dir_;
@@ -430,6 +445,7 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // more consistent with other platforms, where most views are focusable by
   // default.
   ui::test::ScopedFakeFullKeyboardAccess faked_full_keyboard_access_;
+  std::unique_ptr<ui::test::ScopedFakeNSWindowFocus> fake_window_focus_;
 #endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_WIN)
@@ -443,6 +459,10 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // Used to set up test factories for each browser context.
   base::CallbackListSubscription create_services_subscription_;
 
+  // Makes the omnibox popups create their WebUI content only when needed,
+  // unless `--disable-omnibox-popup-on-demand-creation` is passed.
+  std::optional<base::AutoReset<bool>> create_popup_webui_on_demand_;
+
 #if BUILDFLAG(IS_CHROMEOS)
   // ChromeOS does not create a browser by default when the full restore feature
   // is enabled. However almost all existing browser tests assume a browser is
@@ -450,6 +470,10 @@ class InProcessBrowserTest : public content::BrowserTestBase {
   // testing, when the full restore feature is enabled.
   std::unique_ptr<ash::full_restore::ScopedLaunchBrowserForTesting>
       launch_browser_for_testing_;
+#endif
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  std::optional<base::AutoReset<bool>> allow_unpacked_without_developer_mode_;
 #endif
 };
 

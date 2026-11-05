@@ -16,7 +16,6 @@
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/prefs/pref_service.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/service/sync_service_impl.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -41,13 +40,7 @@ class AutofillProfileDisabledChecker : public SingleClientStatusChangeChecker {
 
 class SingleClientAutofillProfileSyncTest : public SyncTest {
  public:
-  SingleClientAutofillProfileSyncTest() : SyncTest(SINGLE_CLIENT) {
-    features_override_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/{
-            syncer::kReplaceSyncPromosWithSignInPromos,
-            syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
-  }
+  SingleClientAutofillProfileSyncTest() : SyncTest(SINGLE_CLIENT) {}
 
   SingleClientAutofillProfileSyncTest(
       const SingleClientAutofillProfileSyncTest&) = delete;
@@ -77,9 +70,6 @@ class SingleClientAutofillProfileSyncTest : public SyncTest {
                                        identity_manager->GetPrimaryAccountInfo(
                                            signin::ConsentLevel::kSignin)));
   }
-
- private:
-  base::test::ScopedFeatureList features_override_;
 };
 
 IN_PROC_BROWSER_TEST_F(SingleClientAutofillProfileSyncTest,

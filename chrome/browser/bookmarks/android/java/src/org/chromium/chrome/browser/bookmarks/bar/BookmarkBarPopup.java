@@ -21,9 +21,11 @@ import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.View.OnTouchListener;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ListView;
+import android.widget.RadioGroup;
 import android.widget.TextView;
 
 import androidx.annotation.VisibleForTesting;
@@ -220,25 +222,26 @@ class BookmarkBarPopup implements FlyoutHandler<AnchoredPopupWindow> {
         RectProvider translatedRectProvider =
                 new TranslatedRectProvider(baseRectProvider, anchorView, mActivity);
 
-        mPopupWindow =
-                new AnchoredPopupWindow(
-                        mActivity,
-                        mActivity.getWindow().getDecorView(),
-                        new ColorDrawable(Color.TRANSPARENT),
-                        () -> contentView,
-                        translatedRectProvider,
-                        mBrowserControlsRectProvider);
-
-        mPopupWindow.setFocusable(true);
-        mPopupWindow.setOutsideTouchable(true);
+        AnchoredPopupWindow.Builder popupBuilder =
+                new AnchoredPopupWindow.Builder(
+                                mActivity,
+                                mActivity.getWindow().getDecorView(),
+                                new ColorDrawable(Color.TRANSPARENT),
+                                () -> contentView,
+                                translatedRectProvider)
+                        .setViewportRectProvider(mBrowserControlsRectProvider)
+                        .setFocusable(true)
+                        .setOutsideTouchable(true)
+                        .setPreferredVerticalOrientation(
+                                AnchoredPopupWindow.VerticalOrientation.BELOW)
+                        .setHorizontalOverlapAnchor(true)
+                        .setPreferredHorizontalOrientation(
+                                AnchoredPopupWindow.HorizontalOrientation.LAYOUT_DIRECTION)
+                        .setAnimateFromAnchor(true);
         if (touchInterceptor != null) {
-            mPopupWindow.setTouchInterceptor(touchInterceptor);
+            popupBuilder.setTouchInterceptor(touchInterceptor);
         }
-        mPopupWindow.setPreferredVerticalOrientation(AnchoredPopupWindow.VerticalOrientation.BELOW);
-        mPopupWindow.setHorizontalOverlapAnchor(true);
-        mPopupWindow.setPreferredHorizontalOrientation(
-                AnchoredPopupWindow.HorizontalOrientation.LAYOUT_DIRECTION);
-        mPopupWindow.setAnimateFromAnchor(true);
+        mPopupWindow = popupBuilder.build();
 
         mModelList = menuModel;
         mSizeObserver =
@@ -366,6 +369,11 @@ class BookmarkBarPopup implements FlyoutHandler<AnchoredPopupWindow> {
                         });
         menu.addOnScrollListener(scrollListener);
 
+        int radioItemCount = countRadioGroupItems(items);
+        if (radioItemCount > 0) {
+            setRadioGroupAccessibilityDelegate(menu.getListView(), radioItemCount);
+        }
+
         View contentView = createPopupContentView(menu.getContentView(), mIsIncognito);
         setupEmptyView(contentView);
 
@@ -400,6 +408,38 @@ class BookmarkBarPopup implements FlyoutHandler<AnchoredPopupWindow> {
 
         popupMenu.show();
         return popupMenu;
+    }
+
+    private void setRadioGroupAccessibilityDelegate(ListView listView, int itemCount) {
+        listView.setAccessibilityDelegate(
+                new View.AccessibilityDelegate() {
+                    @Override
+                    public void onInitializeAccessibilityNodeInfo(
+                            View host, AccessibilityNodeInfo info) {
+                        super.onInitializeAccessibilityNodeInfo(host, info);
+                        info.setClassName(RadioGroup.class.getName());
+                        info.setCollectionInfo(
+                                AccessibilityNodeInfo.CollectionInfo.obtain(
+                                        /* rowCount= */ itemCount,
+                                        /* columnCount= */ 1,
+                                        /* hierarchical= */ false,
+                                        AccessibilityNodeInfo.CollectionInfo
+                                                .SELECTION_MODE_SINGLE));
+                    }
+                });
+    }
+
+    private static int countRadioGroupItems(List<ListItem> items) {
+        int radioCount = 0;
+        for (ListItem item : items) {
+            if (item.model != null
+                    && item.model.containsKey(ListMenuItemProperties.CHECKABLE)
+                    && item.model.get(ListMenuItemProperties.CHECKABLE)
+                    && item.model.containsKey(ListMenuItemProperties.POSITION)) {
+                radioCount++;
+            }
+        }
+        return radioCount;
     }
 
     @Nullable HierarchicalMenuController<AnchoredPopupWindow>

@@ -16,7 +16,7 @@
 #include "chrome/browser/ui/tabs/recent_tabs_sub_menu_model.h"
 #include "components/favicon_base/favicon_types.h"
 #include "ui/actions/actions.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 // This class is meant to support the dynamic content needed for the recent tabs
 // submenu
@@ -30,6 +30,13 @@ class RecentTabsDynamicMenu {
   }
 
   void BuildRecentTabsActions(actions::BaseAction* parent_item);
+  void BuildOtherDeviceTabsActions(actions::BaseAction* parent_item);
+
+  void CreateRecentTabsActionForTesting(
+      actions::BaseAction* parent_item,
+      const std::vector<RecentTabItem>& recent_tabs) {
+    CreateRecentTabsAction(parent_item, recent_tabs);
+  }
 
  private:
   void CreateRecentTabsAction(actions::BaseAction* parent_item,
@@ -42,20 +49,18 @@ class RecentTabsDynamicMenu {
       const favicon_base::FaviconImageResult& image_result);
 
   void ExecuteRecentTab(const RecentTabItem& recent_item,
-                        WindowOpenDisposition disposition,
                         actions::ActionItem* item,
                         actions::ActionInvocationContext context);
 
-  void ExecuteRestoreEntry(SessionID id, WindowOpenDisposition disposition);
+  void ExecuteRestoreEntry(SessionID id,
+                           ui::mojom::WindowOpenDisposition disposition);
 
   void ExecuteRecentSplit(const RecentTabItem& recent_item,
-                          WindowOpenDisposition disposition,
                           actions::ActionItem* item,
                           actions::ActionInvocationContext context);
 
   actions::ActionItem::InvokeActionCallback GetInvokeCallback(
-      RecentTabItem recent_item,
-      WindowOpenDisposition disposition);
+      RecentTabItem recent_item);
 
   raw_ptr<BrowserWindowInterface> browser_window_interface_;
   base::CancelableTaskTracker cancelable_task_tracker_;

@@ -7,11 +7,11 @@
 #include <memory>
 
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/ttc/core/features.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model_factory.h"
 #include "chrome/browser/ui/toolbar/toolbar_pref_names.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/testing_profile.h"
@@ -355,46 +355,64 @@ IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelBrowserTest,
   EXPECT_TRUE(model()->Contains(kActionShowChromeLabs));
 }
 
-class PinnedToolbarActionsModelWithTabsFromOtherDevicesPinnedBrowserTest
+class PinnedToolbarActionsModelWithTtcPinnedBrowserTest
     : public PinnedToolbarActionsModelBrowserTest {
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kTabsFromOtherDevicesSidePanelPinnedByDefault};
+  base::test::ScopedFeatureList scoped_feature_list_{ttc::kTtc};
 };
 
-IN_PROC_BROWSER_TEST_F(
-    PinnedToolbarActionsModelWithTabsFromOtherDevicesPinnedBrowserTest,
-    PinActionByDefault) {
+IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelWithTtcPinnedBrowserTest,
+                       PinActionByDefault) {
   EXPECT_TRUE(model()->IsDefault());
-  EXPECT_TRUE(model()->Contains(kActionSidePanelShowTabsFromOtherDevices));
+  EXPECT_TRUE(model()->Contains(kActionTtcToolbar));
 }
 
-IN_PROC_BROWSER_TEST_F(
-    PinnedToolbarActionsModelWithTabsFromOtherDevicesPinnedBrowserTest,
-    MigrateActionForExistingProfile) {
+IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelWithTtcPinnedBrowserTest,
+                       MigrateActionForExistingProfile) {
   // Simulate an existing profile by unpinning the action and resetting the
   // migration pref.
-  model()->UpdatePinnedState(kActionSidePanelShowTabsFromOtherDevices, false);
+  model()->UpdatePinnedState(kActionTtcToolbar, false);
   browser()->GetProfile()->GetPrefs()->SetBoolean(
-      prefs::kTabsFromOtherDevicesAutoPinnedMigration, false);
+      prefs::kTtcAutoPinnedMigration, false);
 
-  EXPECT_FALSE(model()->Contains(kActionSidePanelShowTabsFromOtherDevices));
+  EXPECT_FALSE(model()->Contains(kActionTtcToolbar));
 
   // Run the migration.
   model()->MaybeMigrateExistingPinnedStates();
 
   // Verify it is pinned now.
-  EXPECT_TRUE(model()->Contains(kActionSidePanelShowTabsFromOtherDevices));
+  EXPECT_TRUE(model()->Contains(kActionTtcToolbar));
   EXPECT_TRUE(browser()->GetProfile()->GetPrefs()->GetBoolean(
-      prefs::kTabsFromOtherDevicesAutoPinnedMigration));
+      prefs::kTtcAutoPinnedMigration));
 
   // Simulate the user un-pinning the action.
-  model()->UpdatePinnedState(kActionSidePanelShowTabsFromOtherDevices, false);
+  model()->UpdatePinnedState(kActionTtcToolbar, false);
 
   // Run the migration a second time.
   model()->MaybeMigrateExistingPinnedStates();
 
   // Verify that it did *not* get auto-pinned again.
-  EXPECT_FALSE(model()->Contains(kActionSidePanelShowTabsFromOtherDevices));
+  EXPECT_FALSE(model()->Contains(kActionTtcToolbar));
+}
+
+class PinnedToolbarActionsModelWithTtcDisabledBrowserTest
+    : public PinnedToolbarActionsModelBrowserTest {
+  base::test::ScopedFeatureList scoped_feature_list_{
+      /*enabled_features=*/{}, /*disabled_features=*/{ttc::kTtc}};
+};
+
+IN_PROC_BROWSER_TEST_F(PinnedToolbarActionsModelWithTtcDisabledBrowserTest,
+                       DoNotPinActionWhenFeatureIsDisabled) {
+  EXPECT_TRUE(model()->IsDefault());
+  EXPECT_FALSE(model()->Contains(kActionTtcToolbar));
+
+  // Run the migration.
+  model()->MaybeMigrateExistingPinnedStates();
+
+  // Verify the action was not auto-pinned and that the migration was not
+  // marked as complete.
+  EXPECT_FALSE(model()->Contains(kActionTtcToolbar));
+  EXPECT_FALSE(browser()->GetProfile()->GetPrefs()->GetBoolean(
+      prefs::kTtcAutoPinnedMigration));
 }
 
 // TODO(dljames): Write tests for guest and incognito mode profile that check

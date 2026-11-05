@@ -83,11 +83,9 @@ UnifiedSystemTray::UnifiedSystemTray(Shelf* shelf)
   SetCallback(base::BindRepeating(&UnifiedSystemTray::OnButtonPressed,
                                   base::Unretained(this)));
 
-  if (features::IsUserEducationEnabled()) {
-    // NOTE: Set `kHelpBubbleContextKey` before `views::kElementIdentifierKey`
-    // in case registration causes a help bubble to be created synchronously.
-    SetProperty(kHelpBubbleContextKey, HelpBubbleContext::kAsh);
-  }
+  // NOTE: Set `kHelpBubbleContextKey` before `views::kElementIdentifierKey`
+  // in case registration causes a help bubble to be created synchronously.
+  SetProperty(kHelpBubbleContextKey, HelpBubbleContext::kAsh);
   SetProperty(views::kElementIdentifierKey, kUnifiedSystemTrayElementId);
 
   if (media::ShouldEnableAutoFraming()) {
@@ -178,11 +176,9 @@ void UnifiedSystemTray::OnButtonPressed(const ui::Event& event) {
     return;
   }
 
-  if (features::IsWelcomeTourEnabled()) {
-    welcome_tour_metrics::RecordInteraction(
-        Shell::Get()->session_controller()->GetLastActiveUserPrefService(),
-        welcome_tour_metrics::Interaction::kQuickSettings);
-  }
+  welcome_tour_metrics::RecordInteraction(
+      Shell::Get()->session_controller()->GetLastActiveUserPrefService(),
+      welcome_tour_metrics::Interaction::kQuickSettings);
 }
 
 bool UnifiedSystemTray::IsBubbleShown() const {
@@ -280,8 +276,7 @@ void UnifiedSystemTray::MaybeRecordFirstInteraction(FirstInteractionType type) {
   }
   first_interaction_recorded_ = true;
 
-  UMA_HISTOGRAM_ENUMERATION("ChromeOS.SystemTray.FirstInteraction", type,
-                            FirstInteractionType::kMaxValue);
+  UMA_HISTOGRAM_ENUMERATION("ChromeOS.SystemTray.FirstInteraction", type);
 }
 
 void UnifiedSystemTray::UpdateAfterLoginStatusChange() {

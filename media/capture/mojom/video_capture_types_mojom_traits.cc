@@ -188,6 +188,10 @@ EnumTraits<media::mojom::VideoCapturePixelFormat,
       return media::mojom::VideoCapturePixelFormat::P210LE;
     case media::VideoPixelFormat::PIXEL_FORMAT_P410LE:
       return media::mojom::VideoCapturePixelFormat::P410LE;
+    // Packed 10-bit YUV formats are decode-only and are intentionally not part
+    // of the capture mojom enum.
+    case media::VideoPixelFormat::PIXEL_FORMAT_Y410:
+      NOTREACHED();
   }
   NOTREACHED();
 }
@@ -481,10 +485,6 @@ EnumTraits<media::mojom::VideoCaptureError, media::VideoCaptureError>::ToMojom(
       return media::mojom::VideoCaptureError::
           kCrosHalV3BufferManagerFailedToDupFd;
     case media::VideoCaptureError::
-        kCrosHalV3BufferManagerFailedToWrapGpuMemoryHandle:
-      return media::mojom::VideoCaptureError::
-          kCrosHalV3BufferManagerFailedToWrapGpuMemoryHandle;
-    case media::VideoCaptureError::
         kCrosHalV3BufferManagerFailedToRegisterBuffer:
       return media::mojom::VideoCaptureError::
           kCrosHalV3BufferManagerFailedToRegisterBuffer;
@@ -527,10 +527,6 @@ EnumTraits<media::mojom::VideoCaptureError, media::VideoCaptureError>::ToMojom(
         kCrosHalV3BufferManagerReceivedFrameIsOutOfOrder:
       return media::mojom::VideoCaptureError::
           kCrosHalV3BufferManagerReceivedFrameIsOutOfOrder;
-    case media::VideoCaptureError::
-        kCrosHalV3BufferManagerFailedToUnwrapReleaseFenceFd:
-      return media::mojom::VideoCaptureError::
-          kCrosHalV3BufferManagerFailedToUnwrapReleaseFenceFd;
     case media::VideoCaptureError::
         kCrosHalV3BufferManagerSyncWaitOnReleaseFenceTimedOut:
       return media::mojom::VideoCaptureError::
@@ -804,6 +800,9 @@ EnumTraits<media::mojom::VideoCaptureError, media::VideoCaptureError>::ToMojom(
     case media::VideoCaptureError::kDesktopCaptureDeviceGpuAdapterChanged:
       return media::mojom::VideoCaptureError::
           kDesktopCaptureDeviceGpuAdapterChanged;
+    case media::VideoCaptureError::kVideoCaptureHostDuplicateDeviceId:
+      return media::mojom::VideoCaptureError::
+          kVideoCaptureHostDuplicateDeviceId;
   }
   // TODO(crbug.com/40929600): Remove media::VideoCaptureError in favor of the
   // mojo one, or define it as an alias.
@@ -974,10 +973,6 @@ EnumTraits<media::mojom::VideoCaptureError, media::VideoCaptureError>::
     case media::mojom::VideoCaptureError::kCrosHalV3BufferManagerFailedToDupFd:
       return media::VideoCaptureError::kCrosHalV3BufferManagerFailedToDupFd;
     case media::mojom::VideoCaptureError::
-        kCrosHalV3BufferManagerFailedToWrapGpuMemoryHandle:
-      return media::VideoCaptureError::
-          kCrosHalV3BufferManagerFailedToWrapGpuMemoryHandle;
-    case media::mojom::VideoCaptureError::
         kCrosHalV3BufferManagerFailedToRegisterBuffer:
       return media::VideoCaptureError::
           kCrosHalV3BufferManagerFailedToRegisterBuffer;
@@ -1020,10 +1015,6 @@ EnumTraits<media::mojom::VideoCaptureError, media::VideoCaptureError>::
         kCrosHalV3BufferManagerReceivedFrameIsOutOfOrder:
       return media::VideoCaptureError::
           kCrosHalV3BufferManagerReceivedFrameIsOutOfOrder;
-    case media::mojom::VideoCaptureError::
-        kCrosHalV3BufferManagerFailedToUnwrapReleaseFenceFd:
-      return media::VideoCaptureError::
-          kCrosHalV3BufferManagerFailedToUnwrapReleaseFenceFd;
     case media::mojom::VideoCaptureError::
         kCrosHalV3BufferManagerSyncWaitOnReleaseFenceTimedOut:
       return media::VideoCaptureError::
@@ -1303,6 +1294,8 @@ EnumTraits<media::mojom::VideoCaptureError, media::VideoCaptureError>::
     case media::mojom::VideoCaptureError::
         kDesktopCaptureDeviceGpuAdapterChanged:
       return media::VideoCaptureError::kDesktopCaptureDeviceGpuAdapterChanged;
+    case media::mojom::VideoCaptureError::kVideoCaptureHostDuplicateDeviceId:
+      return media::VideoCaptureError::kVideoCaptureHostDuplicateDeviceId;
   }
   NOTREACHED();
 }
@@ -1768,6 +1761,7 @@ bool StructTraits<media::mojom::VideoCaptureParamsDataView,
   out->enable_face_detection = data.enable_face_detection();
   out->is_high_dpi_enabled = data.is_high_dpi_enabled();
   out->capture_version_source = data.capture_version_source();
+  out->is_secure = data.is_secure();
   return true;
 }
 

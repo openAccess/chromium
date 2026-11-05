@@ -26,6 +26,7 @@
 #include "components/ntp_tiles/most_visited_sites.h"
 #include "components/ntp_tiles/section_type.h"
 #include "components/ntp_tiles/tile_source.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/gfx/android/java_bitmap.h"
 #include "url/android/gurl_android.h"
 
@@ -74,11 +75,11 @@ JavaHomepageClient::JavaHomepageClient(JNIEnv* env,
                                        const JavaRef<jobject>& obj,
                                        Profile* profile)
     : client_(env, obj), profile_(profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
 }
 
 void JavaHomepageClient::QueryHomepageTitle(TitleCallback title_callback) {
-  DCHECK(!title_callback.is_null());
+  CHECK(!title_callback.is_null(), base::NotFatalUntil::M161);
   GURL url = GetHomepageUrl();
   if (url.is_empty()) {
     std::move(title_callback).Run(std::nullopt);
@@ -166,22 +167,17 @@ void MostVisitedSitesBridge::JavaObserver::OnIconMadeAvailable(
   Java_MostVisitedSitesBridge_onIconMadeAvailable(env, observer_, site_url);
 }
 
-MostVisitedSitesBridge::MostVisitedSitesBridge(Profile* profile,
-                                               bool enable_custom_links)
+MostVisitedSitesBridge::MostVisitedSitesBridge(Profile* profile)
     : most_visited_(ChromeMostVisitedSitesFactory::NewForProfile(profile)),
       profile_(profile) {
-  DCHECK(!profile->IsOffTheRecord());
+  CHECK(!profile->IsOffTheRecord(), base::NotFatalUntil::M161);
   most_visited_->EnableTileTypes(
       ntp_tiles::MostVisitedSites::EnableTileTypesOptions()
           .with_top_sites(true)
-          .with_custom_links(enable_custom_links));
+          .with_custom_links(true));
 }
 
 MostVisitedSitesBridge::~MostVisitedSitesBridge() = default;
-
-void MostVisitedSitesBridge::Destroy() {
-  delete this;
-}
 
 void MostVisitedSitesBridge::OnHomepageStateChanged() {
   most_visited_->RefreshTiles();
@@ -245,16 +241,18 @@ void MostVisitedSitesBridge::AddOrRemoveBlockedUrl(const GURL& url,
   most_visited_->AddOrRemoveBlockedUrl(url, add_url);
 }
 
-void MostVisitedSitesBridge::RecordPageImpression(int32_t jtiles_count) {
+static void JNI_MostVisitedSitesBridge_RecordPageImpression(
+    int32_t jtiles_count) {
   ntp_tiles::metrics::RecordPageImpression(jtiles_count);
 }
 
-void MostVisitedSitesBridge::RecordTileImpression(int32_t jindex,
-                                                  int32_t jvisual_type,
-                                                  int32_t jicon_type,
-                                                  int32_t jtitle_source,
-                                                  int32_t jsource,
-                                                  const GURL& url) {
+static void JNI_MostVisitedSitesBridge_RecordTileImpression(
+    int32_t jindex,
+    int32_t jvisual_type,
+    int32_t jicon_type,
+    int32_t jtitle_source,
+    int32_t jsource,
+    const GURL& url) {
   TileTitleSource title_source = static_cast<TileTitleSource>(jtitle_source);
   TileSource source = static_cast<TileSource>(jsource);
   TileVisualType visual_type = static_cast<TileVisualType>(jvisual_type);
@@ -265,10 +263,11 @@ void MostVisitedSitesBridge::RecordTileImpression(int32_t jindex,
       jindex, source, title_source, visual_type, icon_type, url));
 }
 
-void MostVisitedSitesBridge::RecordOpenedMostVisitedItem(int32_t index,
-                                                         int32_t tile_type,
-                                                         int32_t title_source,
-                                                         int32_t source) {
+static void JNI_MostVisitedSitesBridge_RecordOpenedMostVisitedItem(
+    int32_t index,
+    int32_t tile_type,
+    int32_t title_source,
+    int32_t source) {
   ntp_tiles::metrics::RecordTileClick(ntp_tiles::NTPTileImpression(
       index, static_cast<TileSource>(source),
       static_cast<TileTitleSource>(title_source),
@@ -280,11 +279,9 @@ double MostVisitedSitesBridge::GetSuggestionScore(const GURL& url) {
   return most_visited_->GetSuggestionScore(url);
 }
 
-static int64_t JNI_MostVisitedSitesBridge_Init(Profile* profile,
-                                               bool enable_custom_links) {
-  MostVisitedSitesBridge* most_visited_sites =
-      new MostVisitedSitesBridge(profile, enable_custom_links);
-  return reinterpret_cast<intptr_t>(most_visited_sites);
+static jni_zero::JniUniquePtr<MostVisitedSitesBridge>
+JNI_MostVisitedSitesBridge_Init(Profile* profile) {
+  return jni_zero::MakeUnique<MostVisitedSitesBridge>(profile);
 }
 
 DEFINE_JNI(MostVisitedSitesBridge)

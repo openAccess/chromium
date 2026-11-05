@@ -4,8 +4,23 @@
 
 #include "base/memory_coordinator/memory_coordinator_features.h"
 
+#include "base/memory_coordinator/traits.h"
+#include "build/build_config.h"
+
 namespace base {
 
-BASE_FEATURE(kStatefulMemoryPressure, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kStatefulMemoryPressure,
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
+BASE_FEATURE(kLRUCacheMemoryConsumer, base::FEATURE_DISABLED_BY_DEFAULT);
+
+bool IsEffectivelyStateful(const MemoryConsumerTraits& traits) {
+  return FeatureList::IsEnabled(kStatefulMemoryPressure) &&
+         traits.is_stateful == MemoryConsumerTraits::IsStateful::kYes;
+}
 
 }  // namespace base

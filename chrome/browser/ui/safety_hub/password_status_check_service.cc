@@ -69,8 +69,7 @@ std::map<std::string, int> GetDayPrefWeightMap() {
 // randomly while respecting the weights.
 base::TimeDelta FindNewCheckTime() {
   // The password check will be scheculed starting from tomorrow.
-  base::Time tomorrow_midnight =
-      base::Time::Now().LocalMidnight() + base::Days(1);
+  base::Time tomorrow_midnight = base::Time::Now().NextLocalMidnight();
   base::Time::Exploded tomorrow_midnight_exploded;
   tomorrow_midnight.LocalExplode(&tomorrow_midnight_exploded);
   int tomorrow_day_of_week = tomorrow_midnight_exploded.day_of_week;
@@ -103,8 +102,8 @@ base::TimeDelta FindNewCheckTime() {
 
   // Find a random time in the selected day.
   base::Time beg_of_selected_day =
-      tomorrow_midnight + base::Days(selected_day_offset);
-  base::Time end_of_selected_day = beg_of_selected_day + base::Days(1);
+      tomorrow_midnight.LocalMidnightWithOffset(selected_day_offset);
+  base::Time end_of_selected_day = beg_of_selected_day.NextLocalMidnight();
 
   // Pick a random time in the selected day.
   return base::RandTimeDelta(beg_of_selected_day.ToDeltaSinceWindowsEpoch(),
@@ -344,7 +343,7 @@ PasswordStatusCheckService::PasswordStatusCheckService(Profile* profile)
   // ProfilePasswordStore may not exist for some cases like non-user profiles on
   // Ash. If ProfilePasswordStore does not exist, the service should not be
   // created by the factory.
-  DCHECK(profile_store);
+  CHECK(profile_store, base::NotFatalUntil::M162);
 
   profile_password_store_observation_.Observe(profile_store.get());
   if (account_store) {
@@ -409,7 +408,7 @@ void PasswordStatusCheckService::StartRepeatedUpdates() {
 }
 
 void PasswordStatusCheckService::UpdateInsecureCredentialCountAsync() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   // In infrastructure is initilizided OnInsecureCredentialsChanged() will
   // update cache anyway.
   if (IsInfrastructureReady()) {
@@ -423,7 +422,7 @@ void PasswordStatusCheckService::UpdateInsecureCredentialCountAsync() {
 }
 
 void PasswordStatusCheckService::RunPasswordCheckAsync() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   // In case there is a running check, do not start checks again.
   if (is_password_check_running()) {
     return;
@@ -475,7 +474,7 @@ void PasswordStatusCheckService::OnWeakAndReuseChecksDone() {
 
 void PasswordStatusCheckService::OnStateChanged(
     password_manager::BulkLeakCheckServiceInterface::State state) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   CHECK(IsInfrastructureReady());
 
   switch (state) {
@@ -644,7 +643,7 @@ void PasswordStatusCheckService::UpdateInsecureCredentialCount() {
 }
 
 void PasswordStatusCheckService::MaybeResetInfrastructure() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (IsUpdateRunning()) {
     return;
   }

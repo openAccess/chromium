@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Parolă incorectă</translation>
 <translation id="5059127710849015030">Nepaleză, transliterație</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> a setat reguli de modificare a proxy-ului</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> fișiere vor fi șterse</translation>
 <translation id="508423945471810158">Se mută <ph name="NUMBER_OF_ITEMS" /> elemente în <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">A apărut o eroare.</translation>
-<translation id="5102922915594634436">Gestionează dosarele sincronizate</translation>
 <translation id="5109254780565519649">A apărut o eroare. Este posibil ca unele elemente să nu fi fost restabilite.</translation>
 <translation id="5110329002213341433">Engleză (Canada)</translation>
 <translation id="5119780910075847424">Sincronizarea a fost întreruptă</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">Hindi</translation>
 <translation id="7665680517722058469">Încearcă altă căutare</translation>
 <translation id="7689532716264131859"><ph name="NUMBER_OF_ITEMS" /> articole au fost mutate în coșul de gunoi</translation>
-<translation id="7693909743393669729">Formatarea unității va șterge toate datele stocate pe unitate și va elimina toate partițiile existente, inclusiv partițiile care nu sunt vizibile. Această acțiune nu poate fi anulată.</translation>
 <translation id="7695430100978772476">Nu s-a putut formata <ph name="DRIVE_NAME" /></translation>
 <translation id="76959938259365003">Nu s-a golit coșul de gunoi.</translation>
 <translation id="7705251383879779343">Copiate: <ph name="FILE_NAME" />.</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">Tastatură SUA Workman internațională</translation>
 <translation id="7903984238293908205">Katakana</translation>
 <translation id="7908378463497120834">Ne pare rău, cel puțin o partiție de pe dispozitivul de stocare externă nu a putut fi montată.</translation>
-<translation id="7908793776359722643">Formatarea partiției va șterge toate datele stocate pe partiție. Această acțiune nu poate fi anulată.</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">Fișierele din Contul meu Drive se vor sincroniza automat cu Chromebookul, ca să le poți accesa fără conexiune la internet.</translation>
 <translation id="7925247922861151263">Verificarea AAA nu a reușit</translation>

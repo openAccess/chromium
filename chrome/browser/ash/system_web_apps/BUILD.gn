@@ -20,12 +20,9 @@ static_library("system_web_apps") {
     "system_web_app_manager_factory.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [
     "//base",
     "//chrome/browser:browser_process",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser:global_features",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/web_applications",
@@ -109,7 +106,6 @@ source_set("browser_tests") {
     "//chrome/browser/ash/system_web_apps/test_support:test_support_ui",
     "//chrome/browser/file_system_access",
     "//chrome/browser/policy:system_features_disable_list",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/ash/shelf",
     "//chrome/browser/ui/ash/system_web_apps",
     "//chrome/browser/ui/web_applications",
@@ -131,6 +127,7 @@ source_set("browser_tests") {
 
     # Tests from subdirectories:
     "//chrome/browser/ash/system_web_apps/apps:browser_tests",
+    "//chrome/test/base:testing_browser_process",
   ]
 }
 
@@ -150,6 +147,8 @@ source_set("unit_tests") {
     "//chrome/browser/web_applications/mojom:mojom_web_apps_enum",
     "//chrome/common:chrome_features",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/experiences/system_web_apps/types",
     "//chromeos/components/kiosk:test_support",
@@ -165,10 +164,6 @@ source_set("unit_tests") {
     # Tests from subdirectories:
     "//chrome/browser/ash/system_web_apps/apps:unit_tests",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 if (is_chromeos_device) {

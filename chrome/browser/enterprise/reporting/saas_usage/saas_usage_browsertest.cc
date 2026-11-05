@@ -10,7 +10,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/connectors/reporting/realtime_reporting_client.h"
 #include "chrome/browser/enterprise/connectors/reporting/realtime_reporting_client_factory.h"
-#include "chrome/browser/enterprise/reporting/prefs.h"
+#include "components/enterprise/browser/reporting/prefs.h"
 #include "chrome/browser/enterprise/reporting/saas_usage/saas_usage_reporting_delegate_factory_impl.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
 #include "chrome/browser/policy/policy_test_utils.h"
@@ -192,15 +192,9 @@ class SaasUsageProfileLevelTest : public policy::PolicyTest {
     if (client_) {
       for (auto* loaded_profile :
            g_browser_process->profile_manager()->GetLoadedProfiles()) {
-#if BUILDFLAG(IS_CHROMEOS)
-        enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
-            loaded_profile)
-            ->SetBrowserCloudPolicyClientForTesting(nullptr);
-#else
         enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
             loaded_profile)
             ->SetProfileCloudPolicyClientForTesting(nullptr);
-#endif
       }
       client_.reset();
     }
@@ -228,15 +222,9 @@ IN_PROC_BROWSER_TEST_F(SaasUsageProfileLevelTest, RecordsUsage) {
 
   for (auto* loaded_profile :
        g_browser_process->profile_manager()->GetLoadedProfiles()) {
-#if BUILDFLAG(IS_CHROMEOS)
-    enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
-        loaded_profile)
-        ->SetBrowserCloudPolicyClientForTesting(client_.get());
-#else
     enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
         loaded_profile)
         ->SetProfileCloudPolicyClientForTesting(client_.get());
-#endif
   }
 
   ASSERT_TRUE(embedded_test_server()->Start());

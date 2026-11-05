@@ -102,10 +102,23 @@ export function getImage(path: string): string {
 }
 
 function getBaseFaviconUrl(): URL {
-  const faviconUrl = new URL('chrome://favicon2/');
+  const baseUrl = window.location.protocol === 'chrome-extension:' ?
+      '/_favicon/' :
+      'chrome://favicon2/';
+  const faviconUrl = new URL(baseUrl, window.location.origin);
   faviconUrl.searchParams.set('size', '16');
   faviconUrl.searchParams.set('scaleFactor', 'SCALEFACTORx');
   return faviconUrl;
+}
+
+/**
+ * Returns whether `url` is a favicon request URL, i.e. one that was or could
+ * have been produced by `getFavicon()` or `getFaviconUrl()`. In extension pages
+ * this is the `/_favicon/` URL of the extension, otherwise chrome://favicon2.
+ */
+export function isFaviconUrl(url: string): boolean {
+  return url.startsWith('chrome://favicon2/') ||
+      /^chrome-extension:\/\/[^/]+\/_favicon\//.test(url);
 }
 
 /**
@@ -230,4 +243,21 @@ export function getFaviconForPageURL(
     forceEmptyDefaultFavicon,
     scaleFactor,
   }));
+}
+
+// Matches scheme-relative URLs for chrome://resources and chrome://image, e.g.
+// //resources/foo.svg or //image?url=...
+const WEBUI_SCHEME_RELATIVE_URL = /^\/\/(resources|image)(?=[/?])/;
+
+/**
+ * If `url` is a scheme-relative //resources or //image URL, returns the URL
+ * with an explicit chrome:// scheme if the page is a component extension.
+ * Returns the url unmodified otherwise.
+ */
+export function resolveSchemeRelativeUrl(url: string): string {
+  if (window.location.protocol !== 'chrome-extension:' ||
+      !WEBUI_SCHEME_RELATIVE_URL.test(url)) {
+    return url;
+  }
+  return `chrome:${url}`;
 }

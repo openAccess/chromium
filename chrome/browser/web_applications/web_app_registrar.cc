@@ -262,11 +262,6 @@ bool WebAppRegistrar::IsSupportedDisplayModeForNavigationCapture(
   }
 }
 
-FindBestAppInScopeOptions::FindBestAppInScopeOptions(WebAppFilter filter)
-    : filter(std::move(filter)) {}
-
-FindBestAppInScopeOptions::~FindBestAppInScopeOptions() = default;
-
 WebAppRegistrar::WebAppRegistrar(Profile* profile) : profile_(profile) {}
 
 WebAppRegistrar::~WebAppRegistrar() {
@@ -1019,6 +1014,9 @@ bool WebAppRegistrar::AppMatches(const webapps::AppId& app_id,
               case WebAppFilter::SimpleCondition::kIsolatedSubApp:
                 return app.parent_app_id() &&
                        IsIsolatedApp(*app.parent_app_id());
+              case WebAppFilter::SimpleCondition::kIsolatedSubAppDevMode:
+                return app.parent_app_id() &&
+                       IsIsolatedAppInDevMode(*app.parent_app_id());
               case WebAppFilter::SimpleCondition::kOpensInDedicatedWindow: {
                 DisplayMode display_mode = GetAppEffectiveDisplayMode(app_id);
                 return display_mode != DisplayMode::kBrowser &&
@@ -1048,14 +1046,6 @@ bool WebAppRegistrar::AppMatches(const webapps::AppId& app_id,
 std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
     const GURL& url,
     const WebAppFilter& filter,
-    WebAppScopeScoreOptions scope_score_options) const {
-  FindBestAppInScopeOptions options(filter);
-  options.scope_score_options = std::move(scope_score_options);
-  return FindBestAppWithUrlInScope(url, options);
-}
-
-std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
-    const GURL& url,
     const FindBestAppInScopeOptions& options) const {
   if (!url.is_valid()) {
     return std::nullopt;
@@ -1063,6 +1053,8 @@ std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
 
   std::optional<webapps::AppId> best_app_id;
   int best_score = 0;
+  const WebAppFilter is_isolated =
+      WebAppFilter::IsIsolatedApp() | WebAppFilter::IsIsolatedSubApp();
 
   for (const webapps::AppId& app_id : GetAppIds(options.eligibility_filter)) {
     std::optional<WebAppScope> scope = GetEffectiveScope(app_id);
@@ -1070,15 +1062,25 @@ std::optional<webapps::AppId> WebAppRegistrar::FindBestAppWithUrlInScope(
       continue;
     }
 
-    int score = scope->GetScopeScore(url, options.scope_score_options);
+    WebAppScopeScoreOptions scope_score_options = options.scope_score_options;
+    if (!options.include_isolated_web_app_scope_extensions &&
+        !scope_score_options.exclude_scope_extensions &&
+        !scope->validated_scope_extensions().empty() &&
+        AppMatches(app_id, is_isolated)) {
+      if (scope_score_options.only_consider_scope_extensions) {
+        continue;
+      }
+      scope_score_options.exclude_scope_extensions = true;
+    }
+
+    int score = scope->GetScopeScore(url, scope_score_options);
     if (score > 0 && score > best_score) {
       best_app_id = app_id;
       best_score = score;
     }
   }
 
-  if (best_app_id.has_value() &&
-      AppMatches(best_app_id.value(), options.filter)) {
+  if (best_app_id.has_value() && AppMatches(best_app_id.value(), filter)) {
     return best_app_id;
   }
 
@@ -1097,7 +1099,7 @@ std::vector<webapps::AppId> WebAppRegistrar::FindAllAppsNestedInUrl(
   std::vector<webapps::AppId> apps_in_outer_scope;
   for (const auto& app_id : GetAppIds(filter)) {
     std::string app_scope = GetAppScope(app_id).spec();
-    DCHECK(!app_scope.empty());
+    CHECK(!app_scope.empty(), base::NotFatalUntil::M162);
 
     if (!base::StartsWith(app_scope, outer_scope_spec,
                           base::CompareCase::SENSITIVE)) {
@@ -1899,7 +1901,8 @@ WebAppRegistrar::AppSet::AppSet(const WebAppRegistrar* registrar, Filter filter)
 
 WebAppRegistrar::AppSet::~AppSet() {
 #if DCHECK_IS_ON()
-  DCHECK_EQ(mutations_count_, registrar_->mutations_count_);
+  CHECK_EQ(mutations_count_, registrar_->mutations_count_,
+           base::NotFatalUntil::M162);
 #endif
 }
 
@@ -2027,7 +2030,7 @@ WebAppRegistrarMutable::WebAppRegistrarMutable(Profile* profile)
 WebAppRegistrarMutable::~WebAppRegistrarMutable() = default;
 
 void WebAppRegistrarMutable::InitRegistry(Registry&& registry) {
-  DCHECK(is_empty());
+  CHECK(is_empty(), base::NotFatalUntil::M162);
   SetRegistry(std::move(registry));
 }
 

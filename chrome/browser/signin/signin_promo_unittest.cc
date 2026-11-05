@@ -8,7 +8,10 @@
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/json/values_util.h"
+#include "base/strings/strcat.h"
 #include "base/strings/to_string.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -34,11 +37,13 @@
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/test_utils/test_profiles.h"
+#include "components/prefs/scoped_user_pref_update.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_prefs.h"
 #include "components/signin/public/base/signin_switches.h"
+#include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
@@ -52,9 +57,11 @@
 #include "components/sync/test/test_sync_service.h"
 #include "components/sync_bookmarks/switches.h"
 #include "content/public/test/browser_task_environment.h"
+#include "device/bluetooth/bluetooth_adapter.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/bluetooth/test/mock_bluetooth_adapter.h"
 #include "extensions/common/extension_builder.h"
+#include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -90,10 +97,140 @@ TEST(SigninPromoTest, TestReauthURL) {
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
+// Test that `GetChromeReauthURL()` targets `/AccountChooser` and appends
+// `ptc=1` after `Email` when `proceed_to_challenge` is set.
+TEST(SigninPromoTest, TestChromeReauthURLWithProceedToChallenge) {
+  EXPECT_EQ(GURL("https://accounts.google.com/"
+                 "AccountChooser?Email=example%40domain.com&ptc=1"),
+            GetChromeReauthURL(
+                {.email = "example@domain.com", .proceed_to_challenge = true}));
+}
+
+// Test that `ptc` is not appended by default.
+TEST(SigninPromoTest, TestChromeReauthURLWithoutProceedToChallenge) {
+  EXPECT_EQ(GURL("https://accounts.google.com/"
+                 "AccountChooser?Email=example%40domain.com"),
+            GetChromeReauthURL({.email = "example@domain.com"}));
+}
+
+// Test that `ptc` is not appended without an email, since Gaia cannot proceed
+// to a challenge for an unknown account.
+TEST(SigninPromoTest, TestChromeReauthURLWithProceedToChallengeNoEmail) {
+  EXPECT_EQ(GURL("https://accounts.google.com/AccountChooser"),
+            GetChromeReauthURL({.proceed_to_challenge = true}));
+}
+
+namespace {
+
+constexpr char kReauthTestEmail[] = "example@domain.com";
+constexpr char kReauthTestOtherEmail[] = "other@domain.com";
+constexpr char kReauthProceedToChallengeResultHistogram[] =
+    "Signin.Reauth.ProceedToChallengeResult";
+
+gaia::ListedAccount MakeListedAccount(const std::string& email,
+                                      bool valid,
+                                      bool signed_out) {
+  gaia::ListedAccount account;
+  account.email = email;
+  account.gaia_id = GaiaId(email);
+  account.valid = valid;
+  account.signed_out = signed_out;
+  return account;
+}
+
+}  // namespace
+
+// Test that reauth can proceed to challenge when the account is signed out of
+// the web.
+TEST(SigninPromoTest, TestCanReauthProceedToChallengeSignedOutAccount) {
+  base::HistogramTester histogram_tester;
+  EXPECT_TRUE(CanReauthProceedToChallenge(
+      kReauthTestEmail, AccountsInCookieJarInfo(
+                            /*accounts_are_fresh=*/true,
+                            {MakeListedAccount(kReauthTestEmail, /*valid=*/true,
+                                               /*signed_out=*/true)})));
+  histogram_tester.ExpectUniqueSample(
+      kReauthProceedToChallengeResultHistogram,
+      ReauthProceedToChallengeResult::kProceedToChallenge, 1);
+}
+
+// Test that reauth can proceed to challenge when the account is not in the
+// cookie jar.
+TEST(SigninPromoTest, TestCanReauthProceedToChallengeAccountNotInCookies) {
+  base::HistogramTester histogram_tester;
+  EXPECT_TRUE(CanReauthProceedToChallenge(
+      kReauthTestEmail,
+      AccountsInCookieJarInfo(
+          /*accounts_are_fresh=*/true,
+          {MakeListedAccount(kReauthTestOtherEmail, /*valid=*/true,
+                             /*signed_out=*/false)})));
+  EXPECT_TRUE(CanReauthProceedToChallenge(
+      kReauthTestEmail,
+      AccountsInCookieJarInfo(/*accounts_are_fresh=*/true, {})));
+  histogram_tester.ExpectUniqueSample(
+      kReauthProceedToChallengeResultHistogram,
+      ReauthProceedToChallengeResult::kAccountNotInCookies, 2);
+}
+
+// Test that reauth can proceed to challenge when the account session in the
+// cookie jar is invalid.
+TEST(SigninPromoTest, TestCanReauthProceedToChallengeInvalidSession) {
+  base::HistogramTester histogram_tester;
+  EXPECT_TRUE(CanReauthProceedToChallenge(
+      kReauthTestEmail,
+      AccountsInCookieJarInfo(
+          /*accounts_are_fresh=*/true,
+          {MakeListedAccount(kReauthTestEmail, /*valid=*/false,
+                             /*signed_out=*/false)})));
+  histogram_tester.ExpectUniqueSample(
+      kReauthProceedToChallengeResultHistogram,
+      ReauthProceedToChallengeResult::kProceedToChallenge, 1);
+}
+
+// Test that reauth cannot proceed to challenge when Gaia still has a valid
+// session for the account, since `/AccountChooser` would complete without a
+// new sign-in.
+TEST(SigninPromoTest, TestCanReauthProceedToChallengeValidSession) {
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(CanReauthProceedToChallenge(
+      kReauthTestEmail, AccountsInCookieJarInfo(
+                            /*accounts_are_fresh=*/true,
+                            {MakeListedAccount(kReauthTestEmail, /*valid=*/true,
+                                               /*signed_out=*/false)})));
+  // Emails are compared after canonicalization.
+  EXPECT_FALSE(CanReauthProceedToChallenge(
+      "Example@Domain.com",
+      AccountsInCookieJarInfo(
+          /*accounts_are_fresh=*/true,
+          {MakeListedAccount(kReauthTestEmail, /*valid=*/true,
+                             /*signed_out=*/false)})));
+  histogram_tester.ExpectUniqueSample(
+      kReauthProceedToChallengeResultHistogram,
+      ReauthProceedToChallengeResult::kAddSessionFallbackValidSession, 2);
+}
+
+// Test that reauth cannot proceed to challenge when the cookie jar info is
+// stale.
+TEST(SigninPromoTest, TestCanReauthProceedToChallengeStaleCookies) {
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(CanReauthProceedToChallenge(
+      kReauthTestEmail,
+      AccountsInCookieJarInfo(/*accounts_are_fresh=*/false, {})));
+  histogram_tester.ExpectUniqueSample(
+      kReauthProceedToChallengeResultHistogram,
+      ReauthProceedToChallengeResult::kAddSessionFallbackStaleCookies, 1);
+}
+
+// Test that reauth cannot proceed to challenge without an email.
+TEST(SigninPromoTest, TestCanReauthProceedToChallengeEmptyEmail) {
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(CanReauthProceedToChallenge(
+      std::string(), AccountsInCookieJarInfo(/*accounts_are_fresh=*/true, {})));
+  histogram_tester.ExpectTotalCount(kReauthProceedToChallengeResultHistogram,
+                                    0);
+}
+
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-// This test can be deleted once kReplaceSyncPromosWithSignInPromos is launched.
-// The behavior with the feature enabled is tested in
-// SigninURLForDiceWithHistorySyncOptin.
 class SigninPromoUrlTest : public testing::Test {
  public:
   void SetUp() override {
@@ -109,41 +246,7 @@ class SigninPromoUrlTest : public testing::Test {
   scoped_refptr<testing::NiceMock<device::MockBluetoothAdapter>> mock_adapter_;
 };
 
-TEST_F(SigninPromoUrlTest, SigninURLForDice) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{},
-      /*disabled_features=*/{
-          syncer::kReplaceSyncPromosWithSignInPromos,
-          syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
-
-  EXPECT_EQ(
-      "https://accounts.google.com/signin/chrome/sync?ssp=1&"
-      "color_scheme=dark&flow=promo&theme=mn",
-      GetChromeSyncURLForDice(
-          {.request_dark_scheme = true, .flow = Flow::PROMO}));
-  EXPECT_EQ(
-      "https://accounts.google.com/signin/chrome/sync?ssp=1&"
-      "email_hint=email%40gmail.com&continue=https%3A%2F%2Fcontinue_url%2F&"
-      "theme=mn",
-      GetChromeSyncURLForDice(
-          {"email@gmail.com", GURL("https://continue_url/")}));
-  EXPECT_EQ(
-      "https://accounts.google.com/signin/chrome/"
-      "sync?ssp=1&flow=embedded_promo&theme=mn",
-      GetChromeSyncURLForDice({.flow = Flow::EMBEDDED_PROMO}));
-  EXPECT_EQ(
-      "https://accounts.google.com/AddSession?"
-      "Email=email%40gmail.com&continue=https%3A%2F%2Fcontinue_url%2F",
-      GetAddAccountURLForDice("email@gmail.com",
-                              GURL("https://continue_url/")));
-}
-
 TEST_F(SigninPromoUrlTest, SigninURLForDiceWithHistorySyncOptin) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos},
-      /*disabled_features=*/{});
   EXPECT_EQ(
       "https://accounts.google.com/signin/chrome/sync?ssp=1&"
       "color_scheme=dark&flow=promo&theme=mn",
@@ -166,19 +269,74 @@ TEST_F(SigninPromoUrlTest, SigninURLForDiceWithHistorySyncOptin) {
                               GURL("https://continue_url/")));
 }
 
-TEST_F(SigninPromoUrlTest, SigninURLForDiceMagiChromeExperiments) {
+TEST_F(SigninPromoUrlTest, SigninURLForDiceForwardsGaiaExpBranch) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeaturesAndParameters(
-      /*enabled_features=*/{{switches::kMagiChromeSignInExperimentsBatch1,
-                             {{"magichrome_fre_exp_branch", "test_branch"}}},
-                            {syncer::kReplaceSyncPromosWithSignInPromos, {}}},
+      /*enabled_features=*/{{switches::kMagiChromePasskeySignIn,
+                             {{"flow_type", "autofill"},
+                              {"magichrome_fre_exp_branch", "2"}}}},
       /*disabled_features=*/{});
 
   EXPECT_EQ(
       "https://accounts.google.com/signin/chrome/sync?ssp=1&"
-      "flow=history_opt_in&theme=mn&magichrome_fre_exp_branch=test_branch",
+      "flow=history_opt_in&theme=mn&magichrome_fre_exp_branch=2",
       GetChromeSyncURLForDice({}));
 }
+
+TEST_F(SigninPromoUrlTest, SigninURLForDiceForwardsServerOnlyGaiaExpBranch) {
+  // A server-only arm sets no `flow_type`.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      /*enabled_features=*/{{switches::kMagiChromePasskeySignIn,
+                             {{"magichrome_fre_exp_branch", "3"}}}},
+      /*disabled_features=*/{});
+
+  EXPECT_EQ(
+      "https://accounts.google.com/signin/chrome/sync?ssp=1&"
+      "flow=history_opt_in&theme=mn&magichrome_fre_exp_branch=3",
+      GetChromeSyncURLForDice({}));
+}
+
+TEST_F(SigninPromoUrlTest, SigninURLForDiceUnsetGaiaExpBranchAddsNoParam) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      /*enabled_features=*/{{switches::kMagiChromePasskeySignIn,
+                             {{"flow_type", "autofill"}}}},
+      /*disabled_features=*/{});
+
+  EXPECT_EQ(
+      "https://accounts.google.com/signin/chrome/sync?ssp=1&"
+      "flow=history_opt_in&theme=mn",
+      GetChromeSyncURLForDice({}));
+}
+
+TEST_F(SigninPromoUrlTest, SigninURLForDiceNonNumericGaiaExpBranchAddsNoParam) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      /*enabled_features=*/{{switches::kMagiChromePasskeySignIn,
+                             {{"magichrome_fre_exp_branch", "autofill"}}}},
+      /*disabled_features=*/{});
+
+  EXPECT_EQ(
+      "https://accounts.google.com/signin/chrome/sync?ssp=1&"
+      "flow=history_opt_in&theme=mn",
+      GetChromeSyncURLForDice({}));
+}
+
+TEST_F(SigninPromoUrlTest, SigninURLForDicePasskeyFeatureDisabledAddsNoParam) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{},
+      /*disabled_features=*/{switches::kMagiChromePasskeySignIn});
+
+  EXPECT_EQ(
+      "https://accounts.google.com/signin/chrome/sync?ssp=1&"
+      "flow=history_opt_in&theme=mn",
+      GetChromeSyncURLForDice({}));
+}
+
+using HybridTransportFuture =
+    base::test::TestFuture<bool, scoped_refptr<device::BluetoothAdapter>>;
 
 TEST(SigninPromoTest,
      IsHybridTransportSupportedForQrCodeSignin_LeNotSupported) {
@@ -187,9 +345,10 @@ TEST(SigninPromoTest,
       device::BluetoothAdapterFactory::Get()->InitGlobalOverrideValues();
   bluetooth_override_values->SetLESupported(false);
 
-  base::test::TestFuture<bool> future;
+  HybridTransportFuture future;
   IsHybridTransportSupportedForQrCodeSignin(future.GetCallback());
-  EXPECT_FALSE(future.Get());
+  EXPECT_FALSE(future.Get<0>());
+  EXPECT_FALSE(future.Get<1>());
   task_environment.RunUntilIdle();
 }
 
@@ -204,9 +363,10 @@ TEST(SigninPromoTest,
   ON_CALL(*mock_adapter, IsPresent()).WillByDefault(testing::Return(false));
   device::BluetoothAdapterFactory::SetAdapterForTesting(mock_adapter);
 
-  base::test::TestFuture<bool> future;
+  HybridTransportFuture future;
   IsHybridTransportSupportedForQrCodeSignin(future.GetCallback());
-  EXPECT_FALSE(future.Get());
+  EXPECT_FALSE(future.Get<0>());
+  EXPECT_EQ(future.Get<1>().get(), mock_adapter.get());
   task_environment.RunUntilIdle();
 }
 
@@ -225,9 +385,10 @@ TEST(SigninPromoTest,
   ON_CALL(*mock_adapter, IsPowered()).WillByDefault(testing::Return(true));
   device::BluetoothAdapterFactory::SetAdapterForTesting(mock_adapter);
 
-  base::test::TestFuture<bool> future;
+  HybridTransportFuture future;
   IsHybridTransportSupportedForQrCodeSignin(future.GetCallback());
-  EXPECT_TRUE(future.Get());
+  EXPECT_TRUE(future.Get<0>());
+  EXPECT_EQ(future.Get<1>().get(), mock_adapter.get());
   task_environment.RunUntilIdle();
 }
 
@@ -246,9 +407,10 @@ TEST(SigninPromoTest,
   ON_CALL(*mock_adapter, IsPowered()).WillByDefault(testing::Return(false));
   device::BluetoothAdapterFactory::SetAdapterForTesting(mock_adapter);
 
-  base::test::TestFuture<bool> future;
+  HybridTransportFuture future;
   IsHybridTransportSupportedForQrCodeSignin(future.GetCallback());
-  EXPECT_FALSE(future.Get());
+  EXPECT_FALSE(future.Get<0>());
+  EXPECT_EQ(future.Get<1>().get(), mock_adapter.get());
   task_environment.RunUntilIdle();
 }
 
@@ -266,9 +428,10 @@ TEST(SigninPromoTest,
           testing::Return(device::BluetoothAdapter::PermissionStatus::kDenied));
   device::BluetoothAdapterFactory::SetAdapterForTesting(mock_adapter);
 
-  base::test::TestFuture<bool> future;
+  HybridTransportFuture future;
   IsHybridTransportSupportedForQrCodeSignin(future.GetCallback());
-  EXPECT_FALSE(future.Get());
+  EXPECT_FALSE(future.Get<0>());
+  EXPECT_EQ(future.Get<1>().get(), mock_adapter.get());
   task_environment.RunUntilIdle();
 }
 
@@ -286,9 +449,10 @@ TEST(SigninPromoTest,
           device::BluetoothAdapter::PermissionStatus::kUndetermined));
   device::BluetoothAdapterFactory::SetAdapterForTesting(mock_adapter);
 
-  base::test::TestFuture<bool> future;
+  HybridTransportFuture future;
   IsHybridTransportSupportedForQrCodeSignin(future.GetCallback());
-  EXPECT_FALSE(future.Get());
+  EXPECT_FALSE(future.Get<0>());
+  EXPECT_EQ(future.Get<1>().get(), mock_adapter.get());
   task_environment.RunUntilIdle();
 }
 
@@ -302,17 +466,18 @@ TEST(SigninPromoTest, IsSignInPromo_SendTabToSelf) {
 }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
-// ChromeOS currently does not show any sign in promos.
 #if BUILDFLAG(IS_CHROMEOS)
+// The extension install bubble access point counts as a sign in promo on
+// ChromeOS.
 TEST(SigninPromoTest, IsSignInPromo) {
   EXPECT_FALSE(IsSignInPromo(signin_metrics::AccessPoint::kPasswordBubble));
   EXPECT_FALSE(IsSignInPromo(signin_metrics::AccessPoint::kAddressBubble));
   EXPECT_FALSE(IsSignInPromo(signin_metrics::AccessPoint::kBookmarkBubble));
-  EXPECT_FALSE(
+  EXPECT_TRUE(
       IsSignInPromo(signin_metrics::AccessPoint::kExtensionInstallBubble));
   EXPECT_FALSE(IsSignInPromo(signin_metrics::AccessPoint::kSendTabToSelfPromo));
 }
-#endif  // !BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // Extensions explicit signin is not enabled in ChromeOS.
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -447,8 +612,7 @@ class ShowSigninPromoTestWithFeatureFlags : public ShowPromoTest {
     ShowPromoTest::SetUp();
     feature_list_.InitWithFeatures(
         /*enabled_features=*/
-        {syncer::kReplaceSyncPromosWithSignInPromos,
-         syncer::kUnoPhase2FollowUp},
+        {syncer::kUnoPhase2FollowUp},
         /*disabled_features=*/{});
   }
 
@@ -944,7 +1108,7 @@ class ShowSigninPromoTestWithoutPhase2FollowUp
   void SetUp() override {
     feature_list_.InitWithFeatures(
         /*enabled_features=*/
-        {syncer::kReplaceSyncPromosWithSignInPromos},
+        {},
         /*disabled_features=*/{syncer::kUnoPhase2FollowUp});
     ON_CALL(*sync_service(), GetDataTypesForTransportOnlyMode())
         .WillByDefault(testing::Return(syncer::DataTypeSet::All()));
@@ -1016,231 +1180,27 @@ TEST_F(ShowSigninPromoTestWithoutPhase2FollowUp,
   EXPECT_TRUE(ShouldShowBookmarkSignInPromo(*profile.get()));
 }
 
-class ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment
-    : public ShowSigninPromoTestWithFeatureFlags {
- public:
-  void SetUp() override {
-    ShowSigninPromoTestWithFeatureFlags::SetUp();
-    scoped_feature_list_.InitAndEnableFeature(
-        switches::kSigninPromoLimitsExperiment);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       DoNotShowAddressPromoAfterMaxTimesShown) {
-  ASSERT_TRUE(ShouldShowAddressSignInPromo(*profile(), CreateAddress()));
-
-  profile()->GetPrefs()->SetInteger(
-      prefs::kAddressSignInPromoShownCountPerProfileForLimitsExperiment,
-      switches::kContextualSigninPromoShownThreshold.Get());
-
-  EXPECT_FALSE(ShouldShowAddressSignInPromo(*profile(), CreateAddress()));
-  EXPECT_TRUE(ShouldShowPasswordSignInPromo(*profile()));
-}
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       DoNotShowPasswordPromoAfterMaxTimesShown) {
-  ASSERT_TRUE(ShouldShowPasswordSignInPromo(*profile()));
-
-  profile()->GetPrefs()->SetInteger(
-      prefs::kPasswordSignInPromoShownCountPerProfileForLimitsExperiment,
-      switches::kContextualSigninPromoShownThreshold.Get());
-
-  EXPECT_FALSE(ShouldShowPasswordSignInPromo(*profile()));
-  EXPECT_TRUE(ShouldShowAddressSignInPromo(*profile(), CreateAddress()));
-}
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       DoNotShowBookmarkPromoAfterMaxTimesShown) {
-  ASSERT_TRUE(ShouldShowBookmarkSignInPromo(*profile()));
-
-  profile()->GetPrefs()->SetInteger(
-      prefs::kBookmarkSignInPromoShownCountPerProfileForLimitsExperiment, 20);
-
-  EXPECT_FALSE(ShouldShowBookmarkSignInPromo(*profile()));
-  EXPECT_TRUE(ShouldShowAddressSignInPromo(*profile(), CreateAddress()));
-}
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       RecordSignInPromoShownWithoutAccount) {
-  // Add an account without cookies. The per-profile pref will be recorded.
-  AccountInfo account =
-      MakeAccountAvailable(identity_manager(), "test@email.com");
-
-  RecordSignInPromoShown(signin_metrics::AccessPoint::kPasswordBubble,
-                         profile());
-  RecordSignInPromoShown(signin_metrics::AccessPoint::kAddressBubble,
-                         profile());
-  RecordSignInPromoShown(signin_metrics::AccessPoint::kBookmarkBubble,
-                         profile());
-
-  EXPECT_EQ(
-      1,
-      profile()->GetPrefs()->GetInteger(
-          prefs::kPasswordSignInPromoShownCountPerProfileForLimitsExperiment));
-  EXPECT_EQ(
-      1,
-      profile()->GetPrefs()->GetInteger(
-          prefs::kAddressSignInPromoShownCountPerProfileForLimitsExperiment));
-  EXPECT_EQ(
-      1,
-      profile()->GetPrefs()->GetInteger(
-          prefs::kBookmarkSignInPromoShownCountPerProfileForLimitsExperiment));
-  EXPECT_EQ(0, SigninPrefs(*profile()->GetPrefs())
-                   .GetPasswordSigninPromoImpressionCount(account.GetGaiaId()));
-  EXPECT_EQ(0, SigninPrefs(*profile()->GetPrefs())
-                   .GetAddressSigninPromoImpressionCount(account.GetGaiaId()));
-  EXPECT_EQ(0, SigninPrefs(*profile()->GetPrefs())
-                   .GetBookmarkSigninPromoImpressionCount(account.GetGaiaId()));
-
-  EXPECT_TRUE(ShouldShowPasswordSignInPromo(*profile()));
-  EXPECT_TRUE(ShouldShowAddressSignInPromo(*profile(), CreateAddress()));
-  EXPECT_TRUE(ShouldShowBookmarkSignInPromo(*profile()));
-}
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       RecordSignInPromoShownWithAccount) {
-  // Test setup for adding an account with cookies.
-  network::TestURLLoaderFactory url_loader_factory =
-      network::TestURLLoaderFactory();
-
-  TestingProfile::Builder builder;
-  builder.AddTestingFactories(
-      IdentityTestEnvironmentProfileAdaptor::
-          GetIdentityTestEnvironmentFactoriesWithAppendedFactories(
-              {TestingProfile::TestingFactory{
-                  ChromeSigninClientFactory::GetInstance(),
-                  base::BindRepeating(&BuildChromeSigninClientWithURLLoader,
-                                      &url_loader_factory)}}));
-
-  std::unique_ptr<TestingProfile> profile = builder.Build();
-  auto identity_test_env_adaptor =
-      std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile.get());
-  auto* identity_test_env = identity_test_env_adaptor->identity_test_env();
-  identity_test_env->SetTestURLLoaderFactory(&url_loader_factory);
-
-  // Add an account with cookies, which will record the per-account prefs.
-  AccountInfo account = identity_test_env->MakeAccountAvailable(
-      identity_test_env->CreateAccountAvailabilityOptionsBuilder()
-          .WithCookie(true)
-          .Build("test@email.com"));
-
-  RecordSignInPromoShown(signin_metrics::AccessPoint::kPasswordBubble,
-                         profile.get());
-  RecordSignInPromoShown(signin_metrics::AccessPoint::kAddressBubble,
-                         profile.get());
-  RecordSignInPromoShown(signin_metrics::AccessPoint::kBookmarkBubble,
-                         profile.get());
-
-  EXPECT_EQ(
-      0,
-      profile.get()->GetPrefs()->GetInteger(
-          prefs::kPasswordSignInPromoShownCountPerProfileForLimitsExperiment));
-  EXPECT_EQ(
-      0,
-      profile.get()->GetPrefs()->GetInteger(
-          prefs::kAddressSignInPromoShownCountPerProfileForLimitsExperiment));
-  EXPECT_EQ(
-      0,
-      profile.get()->GetPrefs()->GetInteger(
-          prefs::kBookmarkSignInPromoShownCountPerProfileForLimitsExperiment));
-  EXPECT_EQ(1, SigninPrefs(*profile.get()->GetPrefs())
-                   .GetPasswordSigninPromoImpressionCount(account.GetGaiaId()));
-  EXPECT_EQ(1, SigninPrefs(*profile.get()->GetPrefs())
-                   .GetAddressSigninPromoImpressionCount(account.GetGaiaId()));
-  EXPECT_EQ(1, SigninPrefs(*profile.get()->GetPrefs())
-                   .GetBookmarkSigninPromoImpressionCount(account.GetGaiaId()));
-}
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       SkipCheckForNonExperimentNumberOfTimesShownForPasswordPromo) {
-  ASSERT_TRUE(ShouldShowPasswordSignInPromo(*profile()));
-
-  profile()->GetPrefs()->SetInteger(
-      prefs::kPasswordSignInPromoShownCountPerProfile, INT_MAX);
-
-  EXPECT_TRUE(ShouldShowPasswordSignInPromo(*profile()));
-}
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       SkipCheckForNonExperimentNumberOfTimesShownForAddressPromo) {
-  ASSERT_TRUE(ShouldShowAddressSignInPromo(*profile(), CreateAddress()));
-
-  profile()->GetPrefs()->SetInteger(
-      prefs::kAddressSignInPromoShownCountPerProfile, INT_MAX);
-
-  EXPECT_TRUE(ShouldShowAddressSignInPromo(*profile(), CreateAddress()));
-}
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       SkipCheckForNonExperimentNumberOfTimesShownForBookmarkPromo) {
-  ASSERT_TRUE(ShouldShowBookmarkSignInPromo(*profile()));
-
-  profile()->GetPrefs()->SetInteger(
-      prefs::kBookmarkSignInPromoShownCountPerProfile, INT_MAX);
-
-  EXPECT_TRUE(ShouldShowBookmarkSignInPromo(*profile()));
-}
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       DoNotShowPasswordPromoAfterMaxTimesDismissed) {
-  EXPECT_TRUE(ShouldShowPasswordSignInPromo(*profile()));
-
-  profile()->GetPrefs()->SetInteger(
-      prefs::kPasswordSignInPromoDismissCountPerProfileForLimitsExperiment,
-      switches::kContextualSigninPromoDismissedThreshold.Get());
-
-  EXPECT_FALSE(ShouldShowPasswordSignInPromo(*profile()));
-}
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       DoNotShowAddressPromoAfterMaxTimesDismissed) {
-  EXPECT_TRUE(ShouldShowAddressSignInPromo(*profile(), CreateAddress()));
-
-  profile()->GetPrefs()->SetInteger(
-      prefs::kAddressSignInPromoDismissCountPerProfileForLimitsExperiment,
-      switches::kContextualSigninPromoDismissedThreshold.Get());
-
-  EXPECT_FALSE(ShouldShowAddressSignInPromo(*profile(), CreateAddress()));
-}
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       DoNotShowBookmarkPromoAfterMaxTimesDismissed) {
-  base::test::ScopedFeatureList scoped_feature_list{syncer::kUnoPhase2FollowUp};
-
-  EXPECT_TRUE(ShouldShowBookmarkSignInPromo(*profile()));
-
-  profile()->GetPrefs()->SetInteger(
-      prefs::kBookmarkSignInPromoDismissCountPerProfileForLimitsExperiment,
-      switches::kContextualSigninPromoDismissedThreshold.Get());
-
-  EXPECT_FALSE(ShouldShowBookmarkSignInPromo(*profile()));
-}
-
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
-       SearchAIModePromoIgnoresOtherExperimentThresholds) {
+TEST_F(ShowSigninPromoTestWithFeatureFlags,
+       SearchAIModePromoIgnoresOtherPromoThresholds) {
   ASSERT_TRUE(ShouldShowSearchAIModeSignInPromo(*profile()));
   ASSERT_TRUE(ShouldShowBookmarkSignInPromo(*profile()));
 
-  // Set the bookmark promo shown limit to max (6 times).
+  // Set the bookmark promo shown limit to max (5 times).
   profile()->GetPrefs()->SetInteger(
-      prefs::kBookmarkSignInPromoShownCountPerProfileForLimitsExperiment, 6);
+      prefs::kBookmarkSignInPromoShownCountPerProfile, 5);
   EXPECT_FALSE(ShouldShowBookmarkSignInPromo(*profile()));
   EXPECT_TRUE(ShouldShowSearchAIModeSignInPromo(*profile()));
 
   // Set the bookmark promo impression and dismissal limit to max (2 times).
   profile()->GetPrefs()->SetInteger(
-      prefs::kBookmarkSignInPromoShownCountPerProfileForLimitsExperiment, 2);
+      prefs::kBookmarkSignInPromoShownCountPerProfile, 2);
   profile()->GetPrefs()->SetInteger(
-      prefs::kBookmarkSignInPromoDismissCountPerProfileForLimitsExperiment, 2);
+      prefs::kAutofillSignInPromoDismissCountPerProfile, 2);
   EXPECT_FALSE(ShouldShowBookmarkSignInPromo(*profile()));
   EXPECT_TRUE(ShouldShowSearchAIModeSignInPromo(*profile()));
 }
 
-TEST_F(ShowSigninPromoTestWithFeatureFlagsPromoLimitsExperiment,
+TEST_F(ShowSigninPromoTestWithFeatureFlags,
        SearchAIModePromoLimitsDoNotAffectOtherPromos) {
   ASSERT_TRUE(ShouldShowSearchAIModeSignInPromo(*profile()));
   ASSERT_TRUE(ShouldShowBookmarkSignInPromo(*profile()));
@@ -1264,12 +1224,8 @@ class AvatarButtonPromoManagerTest : public testing::Test {
  public:
   AvatarButtonPromoManagerTest()
       : identity_test_environment_(&test_url_loader_factory_) {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos,
-                              switches::kAvatarButtonSyncPromoForTesting,
-                              switches::
-                                  kSigninWindows10DepreciationStateForTesting},
-        /*disabled_features=*/{});
+    scoped_feature_list_.InitAndEnableFeature(
+        switches::kSigninWindows10DepreciationStateForTesting);
 
     AvatarButtonPromoManager::RegisterProfilePrefs(pref_service_.registry());
     SigninPrefs::RegisterProfilePrefs(pref_service_.registry());
@@ -1283,7 +1239,6 @@ class AvatarButtonPromoManagerTest : public testing::Test {
       case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
       case ProfileMenuAvatarButtonPromoInfo::Type::
           kBatchUploadWindows10DepreciationPromo:
-      case ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo:
         // Signed in.
         // Only sign in if the profile was not already signed in.
         if (!identity_manager()->HasPrimaryAccount(ConsentLevel::kSignin)) {
@@ -1311,11 +1266,11 @@ class AvatarButtonPromoManagerTest : public testing::Test {
       case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
       case ProfileMenuAvatarButtonPromoInfo::Type::
           kBatchUploadWindows10DepreciationPromo:
-      case ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo:
         break;
       case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
         task_environment_.FastForwardBy(
-            switches::kSigninPromoOnAvatarPillDelayForNextPromoAllowed.Get() +
+            AvatarButtonPromoManager::
+                kSigninPromoMinimumDelayForNextPromoAllowed +
             base::Days(1));
         break;
     }
@@ -1333,31 +1288,42 @@ class AvatarButtonPromoManagerTest : public testing::Test {
     return &test_url_loader_factory_;
   }
 
+  BatchUploadService* batch_upload_service() {
+    if (!batch_upload_service_) {
+      batch_upload_service_ =
+          batch_upload_test_helper_.CreateBatchUploadService(identity_manager(),
+                                                             &pref_service());
+    }
+    return batch_upload_service_.get();
+  }
+
  private:
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   network::TestURLLoaderFactory test_url_loader_factory_;
   IdentityTestEnvironment identity_test_environment_;
   TestingPrefServiceSimple pref_service_;
+  BatchUploadServiceTestHelper batch_upload_test_helper_;
+  std::unique_ptr<BatchUploadService> batch_upload_service_;
 
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 TEST_F(AvatarButtonPromoManagerTest, PromoTypesUseDifferentShownLimits) {
-  std::array<ProfileMenuAvatarButtonPromoInfo::Type, 6> promo_type_list{
+  std::array<ProfileMenuAvatarButtonPromoInfo::Type, 5> promo_type_list{
       ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo,
       ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo,
       ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo,
       ProfileMenuAvatarButtonPromoInfo::Type::
           kBatchUploadWindows10DepreciationPromo,
-      ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo,
       ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo,
   };
 
   const size_t max_shown_count = 4;
   AvatarButtonPromoManager manager(
       identity_manager(), /*account_preview_data_service=*/nullptr,
-      &pref_service(), max_shown_count, /*max_used_count=*/2);
+      batch_upload_service(), &pref_service(), max_shown_count,
+      /*max_used_count=*/2);
 
   for (auto promo_type : promo_type_list) {
     SCOPED_TRACE("Iteration: promo_type - " + base::ToString(promo_type));
@@ -1372,20 +1338,19 @@ TEST_F(AvatarButtonPromoManagerTest, PromoTypesUseDifferentShownLimits) {
 }
 
 TEST_F(AvatarButtonPromoManagerTest, PromoTypesUseDifferentUsedLimits) {
-  std::array<ProfileMenuAvatarButtonPromoInfo::Type, 6> promo_type_list{
+  std::array<ProfileMenuAvatarButtonPromoInfo::Type, 5> promo_type_list{
       ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo,
       ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo,
       ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo,
       ProfileMenuAvatarButtonPromoInfo::Type::
           kBatchUploadWindows10DepreciationPromo,
-      ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo,
       ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo,
   };
 
   const size_t max_used_count = 2;
   AvatarButtonPromoManager manager(identity_manager(),
                                    /*account_preview_data_service=*/nullptr,
-                                   &pref_service(),
+                                   batch_upload_service(), &pref_service(),
                                    /*max_shown_count=*/4, max_used_count);
 
   for (auto promo_type : promo_type_list) {
@@ -1406,7 +1371,8 @@ TEST_F(AvatarButtonPromoManagerTest,
   const int max_shown_count = 3;
   AvatarButtonPromoManager manager(
       identity_manager(), /*account_preview_data_service=*/nullptr,
-      &pref_service(), max_shown_count, /*max_used_count=*/2);
+      batch_upload_service(), &pref_service(), max_shown_count,
+      /*max_used_count=*/2);
   // Signed out state.
   {
     ASSERT_EQ(signin_util::GetSignedInState(identity_manager()),
@@ -1454,7 +1420,7 @@ TEST_F(AvatarButtonPromoManagerTest,
   const int max_used_count = 2;
   AvatarButtonPromoManager manager(identity_manager(),
                                    /*account_preview_data_service=*/nullptr,
-                                   &pref_service(),
+                                   batch_upload_service(), &pref_service(),
                                    /*max_shown_count=*/3, max_used_count);
   // Signed out state.
   {
@@ -1498,10 +1464,10 @@ TEST_F(AvatarButtonPromoManagerTest,
        SigninPromoHasShownTimeCheckForSignedOutState) {
   ProfileMenuAvatarButtonPromoInfo::Type signin_promo_type =
       ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo;
-  AvatarButtonPromoManager manager(identity_manager(),
-                                   /*account_preview_data_service=*/nullptr,
-                                   &pref_service(),
-                                   /*max_shown_count=*/3, /*max_used_count=*/2);
+  AvatarButtonPromoManager manager(
+      identity_manager(), /*account_preview_data_service=*/nullptr,
+      batch_upload_service(), &pref_service(), /*max_shown_count=*/3,
+      /*max_used_count=*/2);
 
   ASSERT_EQ(signin_util::GetSignedInState(identity_manager()),
             signin_util::SignedInState::kSignedOut);
@@ -1515,7 +1481,7 @@ TEST_F(AvatarButtonPromoManagerTest,
   // Fast forward by less than expected.
   base::TimeDelta time_remaining_for_promo_to_show = base::Days(1);
   FastForwardBy(
-      switches::kSigninPromoOnAvatarPillDelayForNextPromoAllowed.Get() -
+      AvatarButtonPromoManager::kSigninPromoMinimumDelayForNextPromoAllowed -
       time_remaining_for_promo_to_show);
   // Promo shown time check should still not allow the promo to show yet.
   ASSERT_FALSE(manager.ShouldShowPromo(signin_promo_type));
@@ -1530,10 +1496,10 @@ TEST_F(AvatarButtonPromoManagerTest,
        SigninPromoHasShownTimeCheckForWebSigninState) {
   ProfileMenuAvatarButtonPromoInfo::Type signin_promo_type =
       ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo;
-  AvatarButtonPromoManager manager(identity_manager(),
-                                   /*account_preview_data_service=*/nullptr,
-                                   &pref_service(),
-                                   /*max_shown_count=*/3, /*max_used_count=*/2);
+  AvatarButtonPromoManager manager(
+      identity_manager(), /*account_preview_data_service=*/nullptr,
+      batch_upload_service(), &pref_service(), /*max_shown_count=*/3,
+      /*max_used_count=*/2);
 
   signin::MakeAccountAvailable(
       identity_manager(),
@@ -1552,7 +1518,7 @@ TEST_F(AvatarButtonPromoManagerTest,
   // Fast forward by less than expected.
   base::TimeDelta time_remaining_for_promo_to_show = base::Days(1);
   FastForwardBy(
-      switches::kSigninPromoOnAvatarPillDelayForNextPromoAllowed.Get() -
+      AvatarButtonPromoManager::kSigninPromoMinimumDelayForNextPromoAllowed -
       time_remaining_for_promo_to_show);
   // Promo shown time check should still not allow the promo to show yet.
   ASSERT_FALSE(manager.ShouldShowPromo(signin_promo_type));
@@ -1566,10 +1532,10 @@ TEST_F(AvatarButtonPromoManagerTest,
 TEST_F(AvatarButtonPromoManagerTest, SigninPromoHasLastExternalEventTimeCheck) {
   ProfileMenuAvatarButtonPromoInfo::Type signin_promo_type =
       ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo;
-  AvatarButtonPromoManager manager(identity_manager(),
-                                   /*account_preview_data_service=*/nullptr,
-                                   &pref_service(),
-                                   /*max_shown_count=*/3, /*max_used_count=*/2);
+  AvatarButtonPromoManager manager(
+      identity_manager(), /*account_preview_data_service=*/nullptr,
+      batch_upload_service(), &pref_service(), /*max_shown_count=*/3,
+      /*max_used_count=*/2);
 
   AccountInfo account_info = signin::MakeAccountAvailable(
       identity_manager(),
@@ -1591,10 +1557,11 @@ TEST_F(AvatarButtonPromoManagerTest, SigninPromoHasLastExternalEventTimeCheck) {
 
   // Fast forward by less than expected.
   base::TimeDelta time_remaining_for_promo_to_show = base::Days(1);
-  // Uses `switches::kSigninPromoOnAvatarPillDelayForNextPromoAllowed`
+  // Uses
+  // `AvatarButtonPromoManager::kSigninPromoMinimumDelayForNextPromoAllowed`
   // explicitly as the threshold value is shared.
   FastForwardBy(
-      switches::kSigninPromoOnAvatarPillDelayForNextPromoAllowed.Get() -
+      AvatarButtonPromoManager::kSigninPromoMinimumDelayForNextPromoAllowed -
       time_remaining_for_promo_to_show);
   // Last external event time check should still not allow the promo to show
   // yet.
@@ -1614,10 +1581,10 @@ class AvatarButtonPromoManagerPromoTypeParamTest
 TEST_P(AvatarButtonPromoManagerPromoTypeParamTest, MaxShownCountReached) {
   SetSigninStateFromPromoType(GetParam());
   const int max_shown_count = 10;
-  AvatarButtonPromoManager manager(identity_manager(),
-                                   /*account_preview_data_service=*/nullptr,
-                                   &pref_service(), max_shown_count,
-                                   /*max_used_count=*/1);
+  AvatarButtonPromoManager manager(
+      identity_manager(), /*account_preview_data_service=*/nullptr,
+      batch_upload_service(), &pref_service(), max_shown_count,
+      /*max_used_count=*/1);
 
   for (int i = 0; i < max_shown_count; ++i) {
     SCOPED_TRACE("Iteration: " + base::ToString(i));
@@ -1636,7 +1603,7 @@ TEST_P(AvatarButtonPromoManagerPromoTypeParamTest, MaxUsedCountReached) {
   const int max_used_count = 5;
   AvatarButtonPromoManager manager(identity_manager(),
                                    /*account_preview_data_service=*/nullptr,
-                                   &pref_service(),
+                                   batch_upload_service(), &pref_service(),
                                    /*max_shown_count=*/10, max_used_count);
 
   for (int i = 0; i < max_used_count; ++i) {
@@ -1651,11 +1618,10 @@ TEST_P(AvatarButtonPromoManagerPromoTypeParamTest, MaxUsedCountReached) {
 }
 
 TEST_P(AvatarButtonPromoManagerPromoTypeParamTest, ShowPromoStateIfSignedOut) {
-  AvatarButtonPromoManager manager(identity_manager(),
-                                   /*account_preview_data_service=*/nullptr,
-                                   &pref_service(),
-                                   /*max_shown_count=*/10,
-                                   /*max_used_count=*/2);
+  AvatarButtonPromoManager manager(
+      identity_manager(), /*account_preview_data_service=*/nullptr,
+      batch_upload_service(), &pref_service(), /*max_shown_count=*/10,
+      /*max_used_count=*/2);
 
   switch (GetParam()) {
     case ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo:
@@ -1663,7 +1629,6 @@ TEST_P(AvatarButtonPromoManagerPromoTypeParamTest, ShowPromoStateIfSignedOut) {
     case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
     case ProfileMenuAvatarButtonPromoInfo::Type::
         kBatchUploadWindows10DepreciationPromo:
-    case ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo:
       EXPECT_FALSE(manager.ShouldShowPromo(GetParam()));
       break;
     case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
@@ -1681,11 +1646,10 @@ TEST_P(AvatarButtonPromoManagerPromoTypeParamTest,
 
   SetSigninStateFromPromoType(GetParam());
   signin::SetInvalidRefreshTokenForPrimaryAccount(identity_manager());
-  AvatarButtonPromoManager manager(identity_manager(),
-                                   /*account_preview_data_service=*/nullptr,
-                                   &pref_service(),
-                                   /*max_shown_count=*/10,
-                                   /*max_used_count=*/2);
+  AvatarButtonPromoManager manager(
+      identity_manager(), /*account_preview_data_service=*/nullptr,
+      batch_upload_service(), &pref_service(), /*max_shown_count=*/10,
+      /*max_used_count=*/2);
   EXPECT_FALSE(manager.ShouldShowPromo(GetParam()));
 }
 
@@ -1694,12 +1658,125 @@ TEST_P(AvatarButtonPromoManagerPromoTypeParamTest,
   TestingBrowserProcess::GetGlobal()->local_state()->SetBoolean(
       prefs::kPromotionsEnabled, false);
   SetSigninStateFromPromoType(GetParam());
-  AvatarButtonPromoManager manager(identity_manager(),
-                                   /*account_preview_data_service=*/nullptr,
-                                   &pref_service(),
-                                   /*max_shown_count=*/10,
-                                   /*max_used_count=*/2);
+  AvatarButtonPromoManager manager(
+      identity_manager(), /*account_preview_data_service=*/nullptr,
+      batch_upload_service(), &pref_service(), /*max_shown_count=*/10,
+      /*max_used_count=*/2);
   EXPECT_FALSE(manager.ShouldShowPromo(GetParam()));
+}
+
+TEST_P(AvatarButtonPromoManagerPromoTypeParamTest,
+       DoNotShowBatchUploadPromoIfSubsetUploaded) {
+  switch (GetParam()) {
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::
+        kBatchUploadWindows10DepreciationPromo:
+      break;
+    case ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
+      GTEST_SKIP() << "Not a batch upload promo type.";
+  }
+
+  SetSigninStateFromPromoType(GetParam());
+  AvatarButtonPromoManager manager(
+      identity_manager(), /*account_preview_data_service=*/nullptr,
+      batch_upload_service(), &pref_service(), /*max_shown_count=*/10,
+      /*max_used_count=*/5);
+
+  EXPECT_TRUE(manager.ShouldShowPromo(GetParam()));
+
+  const AccountInfo account = signin_ui_util::GetSingleAccountForPromos(
+      identity_manager(), /*account_preview_data_service=*/nullptr);
+  SigninPrefs(pref_service())
+      .SetBatchUploadLastUploadRemainingLocalDataCount(account.GetGaiaId(), 1);
+
+  EXPECT_FALSE(manager.ShouldShowPromo(GetParam()));
+}
+
+TEST_P(AvatarButtonPromoManagerPromoTypeParamTest,
+       EmptyGaiaFallbackRecordPromoAcceptedAtShownCount) {
+  // Seed distinct non-zero counts per promo type in the profile-scoped
+  // dictionary so that each type's key mapping is verified on the empty-GaiaId
+  // fallback path.
+  {
+    ScopedDictPrefUpdate update(&pref_service(),
+                                "signin.avatar_button_promo_dict");
+    update->Set("AvatarButtonHistorySyncPromoShownCount", 1);
+    update->Set("AvatarButtonBatchUploadPromoShownCount", 2);
+    update->Set("AvatarButtonBatchUploadBookmarkPromoShownCount", 3);
+    update->Set("AvatarButtonBatchUploadWindows10DepreciationPromoShownCount",
+                4);
+    update->Set("AvatarButtonSigninPromoShownCount", 5);
+  }
+
+  base::HistogramTester histogram_tester;
+  RecordAvatarButtonPromoAcceptedAtPromoShownCount(GetParam(), GaiaId(),
+                                                   pref_service());
+
+  std::string_view promo_type_suffix;
+  int expected_count = 0;
+  switch (GetParam()) {
+    case ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo:
+      promo_type_suffix = "HistorySync";
+      expected_count = 1;
+      break;
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo:
+      promo_type_suffix = "BatchUpload";
+      expected_count = 2;
+      break;
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
+      promo_type_suffix = "BatchUploadBookmarks";
+      expected_count = 3;
+      break;
+    case ProfileMenuAvatarButtonPromoInfo::Type::
+        kBatchUploadWindows10DepreciationPromo:
+      promo_type_suffix = "BatchUploadWindows10Depreciation";
+      expected_count = 4;
+      break;
+    case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
+      promo_type_suffix = "Signin";
+      expected_count = 5;
+      break;
+  }
+  histogram_tester.ExpectUniqueSample(
+      base::StrCat(
+          {"Signin.AvatarPillPromo.AcceptedAtShownCount.", promo_type_suffix}),
+      expected_count, 1);
+}
+
+TEST_F(AvatarButtonPromoManagerTest,
+       SigninPromoEmptyGaiaRecordPromoShownAndUsed) {
+  AvatarButtonPromoManager manager(
+      identity_manager(), /*account_preview_data_service=*/nullptr,
+      batch_upload_service(), &pref_service(), /*max_shown_count=*/10,
+      /*max_used_count=*/5);
+
+  ASSERT_EQ(signin_util::GetSignedInState(identity_manager()),
+            signin_util::SignedInState::kSignedOut);
+
+  const base::Time before_shown = base::Time::Now();
+  manager.RecordPromoShown(
+      ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo);
+  GaiaId returned_gaia = manager.RecordPromoUsed(
+      ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo);
+  EXPECT_TRUE(returned_gaia.empty());
+
+  const base::DictValue& profile_promo_dict =
+      pref_service().GetDict("signin.avatar_button_promo_dict");
+  EXPECT_EQ(profile_promo_dict.FindInt("AvatarButtonSigninPromoShownCount"), 1);
+  EXPECT_EQ(profile_promo_dict.FindInt("AvatarButtonSigninPromoUsedCount"), 1);
+  const base::Value* last_shown_value =
+      profile_promo_dict.Find("AvatarButtonSigninPromoLastShownTime");
+  ASSERT_TRUE(last_shown_value);
+  EXPECT_EQ(base::ValueToTime(*last_shown_value), before_shown);
+
+  base::HistogramTester histogram_tester;
+  RecordAvatarButtonPromoAcceptedAtPromoShownCount(
+      ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo, GaiaId(),
+      pref_service());
+  histogram_tester.ExpectUniqueSample(
+      "Signin.AvatarPillPromo.AcceptedAtShownCount.Signin", 1, 1);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1711,61 +1788,13 @@ INSTANTIATE_TEST_SUITE_P(
          ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo,
          ProfileMenuAvatarButtonPromoInfo::Type::
              kBatchUploadWindows10DepreciationPromo,
-         ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo,
          ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo}));
 
-class ComputeProfileMenuAvatarButtonPromoInfoParamTest
-    : public testing::Test,
-      public testing::WithParamInterface<
-          ProfileMenuAvatarButtonPromoInfo::Type> {
+// Sets up a profile with the services needed to compute the profile menu
+// avatar button promo info. Feature flags are configured by the derived
+// fixtures, which own their own `base::test::ScopedFeatureList`.
+class ComputeProfileMenuAvatarButtonPromoInfoTestBase : public testing::Test {
  public:
-  ComputeProfileMenuAvatarButtonPromoInfoParamTest() {
-    switch (GetParam()) {
-      case ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo:
-      case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo:
-      case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
-      case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
-        scoped_feature_list_.InitWithFeatures(
-            // Enabling both features to ensure that
-            // `syncer::kReplaceSyncPromosWithSignInPromos` takes over.
-            // Enable
-            // `switches::kSigninWindows10DepreciationStateBypassForTesting` to
-            // allow Windows machine to test the regular flow (non-Windows10
-            // specific flow).
-            /*enabled_features=*/
-            {syncer::kReplaceSyncPromosWithSignInPromos,
-             switches::kAvatarButtonSyncPromoForTesting,
-             switches::kSigninWindows10DepreciationStateBypassForTesting,
-             switches::kSigninPromoOnAvatarPill},
-            /*disabled_features=*/{});
-        break;
-      case ProfileMenuAvatarButtonPromoInfo::Type::
-          kBatchUploadWindows10DepreciationPromo:
-        scoped_feature_list_.InitWithFeatures(
-            // Enabling both features to ensure that
-            // `syncer::kReplaceSyncPromosWithSignInPromos` takes over. Also
-            // enabling `switches::kSigninWindows10DepreciationStateForTesting`
-            // to simulate Windows10 setup.
-            /*enabled_features=*/
-            {syncer::kReplaceSyncPromosWithSignInPromos,
-             switches::kAvatarButtonSyncPromoForTesting,
-             switches::kSigninWindows10DepreciationStateForTesting,
-             switches::kSigninPromoOnAvatarPill},
-            /*disabled_features=*/{});
-        break;
-      case ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo:
-        scoped_feature_list_.InitWithFeatures(
-            // For the Sync promo to be shown
-            // `syncer::kReplaceSyncPromosWithSignInPromos` must be off.
-            /*enabled_features=*/{switches::kAvatarButtonSyncPromoForTesting,
-                                  switches::kSigninPromoOnAvatarPill},
-            /*disabled_features=*/{
-                syncer::kReplaceSyncPromosWithSignInPromos,
-                syncer::kReplaceSyncPromosWithSigninPromosNewSignin});
-        break;
-    }
-  }
-
   void SetUp() override {
     TestingProfile::Builder builder;
     builder.AddTestingFactories(
@@ -1786,11 +1815,7 @@ class ComputeProfileMenuAvatarButtonPromoInfoParamTest
                            return static_cast<std::unique_ptr<KeyedService>>(
                                batch_upload_test_helper
                                    ->CreateBatchUploadService(
-                                       IdentityManagerFactory::GetForProfile(
-                                           Profile::FromBrowserContext(
-                                               context)),
-                                       std::make_unique<
-                                           BatchUploadUIDelegate>()));
+                                       Profile::FromBrowserContext(context)));
                          },
                          &batch_upload_test_helper_)}}));
     profile_ = builder.Build();
@@ -1815,17 +1840,6 @@ class ComputeProfileMenuAvatarButtonPromoInfoParamTest
 
     UpdateAccountInfoForAccount(identity_manager, account_info);
 
-    // This simplifies the setup for tests that expect to show the SyncPromo.
-    if (switches::IsAvatarSyncPromoFeatureEnabled()) {
-      // Simulate setting enough time passing for the cookie change.
-      profile()->GetPrefs()->SetDouble(
-          prefs::kGaiaCookieChangedTime,
-          (base::Time::Now() -
-           (switches::GetAvatarSyncPromoFeatureMinimumCookeAgeParam() +
-            base::Minutes(1)))
-              .InSecondsFSinceUnixEpoch());
-    }
-
     return account_info;
   }
 
@@ -1844,7 +1858,6 @@ class ComputeProfileMenuAvatarButtonPromoInfoParamTest
   size_t GetLocalDataCount(ProfileMenuAvatarButtonPromoInfo::Type promo_type) {
     switch (promo_type) {
       case ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo:
-      case ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo:
       case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
         return 0u;
       case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo:
@@ -1882,10 +1895,6 @@ class ComputeProfileMenuAvatarButtonPromoInfoParamTest
             syncer::BOOKMARKS, GetLocalDataCount(promo_type));
         break;
       }
-      case ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo:
-        Signin();
-        ASSERT_FALSE(identity_manager->HasPrimaryAccount(ConsentLevel::kSync));
-        break;
       case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
         ASSERT_FALSE(
             identity_manager->HasPrimaryAccount(ConsentLevel::kSignin));
@@ -1907,9 +1916,6 @@ class ComputeProfileMenuAvatarButtonPromoInfoParamTest
         SetHistorySyncPreferenceState(/*is_type_on=*/true);
         batch_upload_test_helper_.ClearReturnDescriptions();
         break;
-      case ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo:
-        Signin(ConsentLevel::kSync);
-        break;
       case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
         Signin();
         break;
@@ -1921,7 +1927,73 @@ class ComputeProfileMenuAvatarButtonPromoInfoParamTest
 
   std::unique_ptr<TestingProfile> profile_;
   BatchUploadServiceTestHelper batch_upload_test_helper_;
+};
 
+using ComputeProfileMenuAvatarButtonPromoInfoSignInPromoTest =
+    ComputeProfileMenuAvatarButtonPromoInfoTestBase;
+
+TEST_F(ComputeProfileMenuAvatarButtonPromoInfoSignInPromoTest,
+       SigninPromoWhenSignedOut) {
+  ASSERT_FALSE(
+      IdentityManagerFactory::GetForProfile(profile())->HasPrimaryAccount(
+          ConsentLevel::kSignin));
+
+  base::MockCallback<base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)>>
+      result_callback;
+  EXPECT_CALL(result_callback,
+              Run(ProfileMenuAvatarButtonPromoInfo{
+                  .type = ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo,
+                  .local_data_count = 0u}));
+  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get(),
+                                          /*allow_batch_upload_promos=*/true);
+}
+
+// Regression test for the sign in promo being shown even though signing in is
+// not possible, e.g. because it is disabled by the `BrowserSignin` enterprise
+// policy.
+TEST_F(ComputeProfileMenuAvatarButtonPromoInfoSignInPromoTest,
+       NoSigninPromoWhenSigninIsNotAllowed) {
+  ASSERT_FALSE(
+      IdentityManagerFactory::GetForProfile(profile())->HasPrimaryAccount(
+          ConsentLevel::kSignin));
+  profile()->GetPrefs()->SetBoolean(prefs::kSigninAllowed, false);
+
+  base::MockCallback<base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)>>
+      result_callback;
+  EXPECT_CALL(result_callback, Run(ProfileMenuAvatarButtonPromoInfo()));
+  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get(),
+                                          /*allow_batch_upload_promos=*/true);
+}
+
+class ComputeProfileMenuAvatarButtonPromoInfoParamTest
+    : public ComputeProfileMenuAvatarButtonPromoInfoTestBase,
+      public testing::WithParamInterface<
+          ProfileMenuAvatarButtonPromoInfo::Type> {
+ public:
+  ComputeProfileMenuAvatarButtonPromoInfoParamTest() {
+    switch (GetParam()) {
+      case ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo:
+      case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo:
+      case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
+      case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
+        // Enable
+        // `switches::kSigninWindows10DepreciationStateBypassForTesting` to
+        // allow Windows machine to test the regular flow (non-Windows10
+        // specific flow).
+        scoped_feature_list_.InitAndEnableFeature(
+            switches::kSigninWindows10DepreciationStateBypassForTesting);
+        break;
+      case ProfileMenuAvatarButtonPromoInfo::Type::
+          kBatchUploadWindows10DepreciationPromo:
+        // Enabling `switches::kSigninWindows10DepreciationStateForTesting`
+        // to simulate Windows10 setup.
+        scoped_feature_list_.InitAndEnableFeature(
+            switches::kSigninWindows10DepreciationStateForTesting);
+        break;
+    }
+  }
+
+ private:
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
@@ -1930,23 +2002,12 @@ TEST_P(ComputeProfileMenuAvatarButtonPromoInfoParamTest,
   base::MockCallback<base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)>>
       result_callback;
 
-  ProfileMenuAvatarButtonPromoInfo expected_info;
-  switch (GetParam()) {
-    case ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo:
-    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo:
-    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
-    case ProfileMenuAvatarButtonPromoInfo::Type::
-        kBatchUploadWindows10DepreciationPromo:
-    case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
-      expected_info.type = ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo;
-      break;
-    case ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo:
-      // When this promo is possible - the sign in promo should not be shown.
-      break;
-  }
-
-  EXPECT_CALL(result_callback, Run(expected_info));
-  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get());
+  EXPECT_CALL(
+      result_callback,
+      Run(ProfileMenuAvatarButtonPromoInfo{
+          .type = ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo}));
+  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get(),
+                                          /*allow_batch_upload_promos=*/true);
 }
 
 TEST_P(ComputeProfileMenuAvatarButtonPromoInfoParamTest,
@@ -1959,7 +2020,145 @@ TEST_P(ComputeProfileMenuAvatarButtonPromoInfoParamTest,
               Run(ProfileMenuAvatarButtonPromoInfo{
                   .type = GetParam(),
                   .local_data_count = GetLocalDataCount(GetParam())}));
-  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get());
+  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get(),
+                                          /*allow_batch_upload_promos=*/true);
+}
+
+TEST_P(ComputeProfileMenuAvatarButtonPromoInfoParamTest,
+       DisallowBatchUploadPromos) {
+  ASSERT_NO_FATAL_FAILURE(SetRequirementsForInputPromo(GetParam()));
+
+  base::MockCallback<base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)>>
+      result_callback;
+
+  ProfileMenuAvatarButtonPromoInfo expected_info;
+  switch (GetParam()) {
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::
+        kBatchUploadWindows10DepreciationPromo:
+      // In SetRequirementsForInputPromo, history sync was not turned off (or
+      // was explicitly enabled), so when batch upload promos are disallowed, no
+      // promo type is returned.
+      expected_info = {.type = std::nullopt,
+                       .local_data_count = GetLocalDataCount(GetParam())};
+      break;
+    case ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
+      // Non-batch upload promos are unaffected by allow_batch_upload_promos.
+      expected_info = {.type = GetParam(),
+                       .local_data_count = GetLocalDataCount(GetParam())};
+      break;
+  }
+
+  EXPECT_CALL(result_callback, Run(expected_info));
+  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get(),
+                                          /*allow_batch_upload_promos=*/false);
+}
+
+TEST_P(ComputeProfileMenuAvatarButtonPromoInfoParamTest,
+       DisallowBatchUploadPromosWhenSubsetUploaded) {
+  ASSERT_NO_FATAL_FAILURE(SetRequirementsForInputPromo(GetParam()));
+
+  IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(profile());
+  const GaiaId primary_gaia =
+      identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+          .gaia;
+  if (!primary_gaia.empty()) {
+    SigninPrefs(*profile()->GetPrefs())
+        .SetBatchUploadLastUploadRemainingLocalDataCount(primary_gaia, 1);
+  }
+
+  base::MockCallback<base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)>>
+      result_callback;
+
+  ProfileMenuAvatarButtonPromoInfo expected_info;
+  switch (GetParam()) {
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::
+        kBatchUploadWindows10DepreciationPromo:
+      expected_info = {.type = std::nullopt,
+                       .local_data_count = GetLocalDataCount(GetParam())};
+      break;
+    case ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
+      expected_info = {.type = GetParam(),
+                       .local_data_count = GetLocalDataCount(GetParam())};
+      break;
+  }
+
+  EXPECT_CALL(result_callback, Run(expected_info));
+  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get(),
+                                          /*allow_batch_upload_promos=*/true);
+}
+
+TEST_P(ComputeProfileMenuAvatarButtonPromoInfoParamTest,
+       BatchUploadPromoDisallowedFallsThroughToHistorySync) {
+  switch (GetParam()) {
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::
+        kBatchUploadWindows10DepreciationPromo:
+      break;
+    case ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
+      GTEST_SKIP() << "Not a batch upload promo type.";
+  }
+
+  ASSERT_NO_FATAL_FAILURE(SetRequirementsForInputPromo(GetParam()));
+  // Explicitly ensure history sync is off so history sync promo is eligible.
+  SetHistorySyncPreferenceState(/*is_type_on=*/false);
+
+  // When allow_batch_upload_promos is false, any batch upload promo falls
+  // through to history sync!
+  base::MockCallback<base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)>>
+      result_callback;
+  EXPECT_CALL(
+      result_callback,
+      Run(ProfileMenuAvatarButtonPromoInfo{
+          .type = ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo,
+          .local_data_count = GetLocalDataCount(GetParam())}));
+  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get(),
+                                          /*allow_batch_upload_promos=*/false);
+}
+
+TEST_P(ComputeProfileMenuAvatarButtonPromoInfoParamTest,
+       BatchUploadPromoNotShownIfSubsetUploaded) {
+  switch (GetParam()) {
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::
+        kBatchUploadWindows10DepreciationPromo:
+      break;
+    case ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo:
+    case ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo:
+      GTEST_SKIP() << "Not a batch upload promo type.";
+  }
+
+  ASSERT_NO_FATAL_FAILURE(SetRequirementsForInputPromo(GetParam()));
+  // Explicitly ensure history sync is off so history sync promo is eligible.
+  SetHistorySyncPreferenceState(/*is_type_on=*/false);
+
+  IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(profile());
+  const GaiaId primary_gaia =
+      identity_manager->GetPrimaryAccountInfo(ConsentLevel::kSignin).gaia;
+  SigninPrefs(*profile()->GetPrefs())
+      .SetBatchUploadLastUploadRemainingLocalDataCount(primary_gaia, 1);
+
+  // When a subset of local data was uploaded, batch upload promo is not
+  // allowed and falls through to history sync!
+  base::MockCallback<base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)>>
+      result_callback;
+  EXPECT_CALL(
+      result_callback,
+      Run(ProfileMenuAvatarButtonPromoInfo{
+          .type = ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo,
+          .local_data_count = GetLocalDataCount(GetParam())}));
+  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get(),
+                                          /*allow_batch_upload_promos=*/true);
 }
 
 TEST_P(ComputeProfileMenuAvatarButtonPromoInfoParamTest,
@@ -1970,7 +2169,8 @@ TEST_P(ComputeProfileMenuAvatarButtonPromoInfoParamTest,
   base::MockCallback<base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)>>
       result_callback;
   EXPECT_CALL(result_callback, Run(ProfileMenuAvatarButtonPromoInfo()));
-  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get());
+  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get(),
+                                          /*allow_batch_upload_promos=*/true);
 }
 
 TEST_P(ComputeProfileMenuAvatarButtonPromoInfoParamTest,
@@ -1984,7 +2184,8 @@ TEST_P(ComputeProfileMenuAvatarButtonPromoInfoParamTest,
   base::MockCallback<base::OnceCallback<void(ProfileMenuAvatarButtonPromoInfo)>>
       result_callback;
   EXPECT_CALL(result_callback, Run(ProfileMenuAvatarButtonPromoInfo()));
-  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get());
+  ComputeProfileMenuAvatarButtonPromoInfo(*profile(), result_callback.Get(),
+                                          /*allow_batch_upload_promos=*/true);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1996,9 +2197,7 @@ INSTANTIATE_TEST_SUITE_P(
          ProfileMenuAvatarButtonPromoInfo::Type::kBatchUploadBookmarksPromo,
          ProfileMenuAvatarButtonPromoInfo::Type::
              kBatchUploadWindows10DepreciationPromo,
-         ProfileMenuAvatarButtonPromoInfo::Type::kSyncPromo,
          ProfileMenuAvatarButtonPromoInfo::Type::kSigninPromo}));
-
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 }  // namespace signin

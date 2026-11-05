@@ -34,9 +34,8 @@ constexpr const char* usage_msg =
 )";
 
 // Video decoder tests help message.
-const std::string help_msg =
-    std::string(
-        R"""(Run the video decode accelerator tests on the video specified by
+constexpr const char* help_msg =
+    R"""(Run the video decode accelerator tests on the video specified by
 <video path>. If no <video path> is given the default
 "test-25fps.h264" video will be used.
 
@@ -72,14 +71,14 @@ The following arguments are supported:
                         "<testname>".
   --use-gl              specify which GPU backend to use, possible values
                         include desktop (GLX), egl (GLES w/ ANGLE), and
-                        swiftshader (software rendering)""") +
+                        swiftshader (software rendering)"""
 #if defined(ARCH_CPU_ARM_FAMILY)
     R"""(
   --disable-libyuv      use hw format conversion instead of libYUV.
                         libYUV will be used by default, unless the
                         video decoder format is not supported;
                         in that case the code will try to use the
-                        v4l2 image processor.)""" +
+                        v4l2 image processor.)"""
 #endif  // defined(ARCH_CPU_ARM_FAMILY)
     R"""(
   --gtest_help          display the gtest help and exit.
@@ -87,9 +86,6 @@ The following arguments are supported:
 )""";
 
 }  // namespace
-
-std::unique_ptr<base::test::TaskEnvironment>
-    VideoDecodeAcceleratorTestSuite::task_environment_;
 
 // static
 VideoDecodeAcceleratorTestSuite* VideoDecodeAcceleratorTestSuite::Create(
@@ -133,11 +129,13 @@ VideoDecodeAcceleratorTestSuite* VideoDecodeAcceleratorTestSuite::Create(
 
   for (base::CommandLine::SwitchMap::const_iterator it = switches.begin();
        it != switches.end(); ++it) {
-    if (it->first.find("gtest_") == 0 ||  // Handled by GoogleTest
-                                          // Options below are handled by Chrome
-        it->first == "use-gl" || it->first == "v" || it->first == "vmodule" ||
+    if (it->first.starts_with(
+            "gtest_") ||  // Handled by GoogleTest
+                          // Options below are handled by Chrome
+        it->first == "use-gl" ||
+        it->first == "v" || it->first == "vmodule" ||
         it->first == "enable-features" || it->first == "disable-features" ||
-        it->first.find("test-launcher-") == 0 ||
+        it->first.starts_with("test-launcher-") ||
         it->first == "enable-primary-node-access-for-vkms-testing" ||
         it->first == "single-process-tests" ||
         it->first == "enable-clear-hevc-for-testing") {

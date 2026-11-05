@@ -110,31 +110,50 @@ constexpr base::FeatureParam<int> kMvtScoringParamDailyVisitCountCap{
 BASE_FEATURE(kRazeOldHistoryDatabase,
              base::FeatureState::FEATURE_ENABLED_BY_DEFAULT);
 
-#if !BUILDFLAG(IS_IOS)
-// Whether Browsing History Actor Integration M3 is enabled.
-bool IsBrowsingHistoryActorIntegrationM3Enabled() {
-  return base::FeatureList::IsEnabled(kBrowsingHistoryActorIntegrationM3);
-}
-
-#if !BUILDFLAG(IS_ANDROID)
-
 // Enables improved chrome://history de-duplication logic, this includes
 // grouping entries by hostname and title per day.
 BASE_FEATURE(kBrowsingHistorySimilarVisitsGrouping,
-             base::FeatureState::FEATURE_ENABLED_BY_DEFAULT);
-#endif  // !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+             base::FEATURE_DISABLED_BY_DEFAULT
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT
+#endif
+);
 
-// Enables Milestone 3 of History-Actor integration, this includes improvements
-// in history entry grouping and filtering. Enabled by default on Android as
-// actor code are gated by the kGlic feature.
-BASE_FEATURE(kBrowsingHistoryActorIntegrationM3,
+// If enabled, improves hostname suffix matching for browsing history, so that
+// example.com matches example.com as well as subdomains like www.example.com.
+BASE_FEATURE(kBrowsingHistoryImprovedHostnameSuffixMatching,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Enables browser history filtering by device. Do not check this feature
+// directly; use `IsBrowsingHistoryFilterByDeviceEnabled()` instead.
+BASE_FEATURE(kBrowsingHistoryFilterByDevice, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables browser history filtering by domain on desktop.
+BASE_FEATURE(kBrowsingHistoryFilterByDomain, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables V2 of browser history filtering by domain.
+BASE_FEATURE(kBrowsingHistoryFilterByDomainV2,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables browser history filtering by time.
+BASE_FEATURE(kBrowsingHistoryFilterByTime, base::FEATURE_DISABLED_BY_DEFAULT);
+
+#if !BUILDFLAG(IS_IOS)
+// Enables browser history filtering by actor on Android. On desktop this
+// changes the existing actor filter UI to dropdown menu.
+BASE_FEATURE(kBrowsingHistoryFilterByActor, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // !BUILDFLAG(IS_IOS)
 
 // If enabled, the WebHistoryService will use a new API for querying browsing
 // history (https://footprints-pa.googleapis.com/...) instead of the old and
 // deprecated one (https://history.google.com/history/api/...).
-BASE_FEATURE(kWebHistoryUseNewApi, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kWebHistoryUseNewApi, base::FEATURE_ENABLED_BY_DEFAULT);
+
+bool IsBrowsingHistoryFilterByDeviceEnabled() {
+  return base::FeatureList::IsEnabled(kWebHistoryUseNewApi) &&
+         base::FeatureList::IsEnabled(kBrowsingHistoryFilterByDevice);
+}
 
 // Enables WAL (Write-Ahead Logging) mode on the main history database
 // and opens the InMemoryHistoryDB with PRAGMA locking_mode=NORMAL (a
@@ -143,19 +162,14 @@ BASE_FEATURE(kWebHistoryUseNewApi, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kHistoryDatabaseWriteAheadLogging,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Allows tuning the task priority of the History backend task runner during
-// startup.
-BASE_FEATURE(kHistoryInitPrioritySettings, base::FEATURE_DISABLED_BY_DEFAULT);
+// Defers HistoryBackend initialization to after startup or until it is needed.
+BASE_FEATURE(kDeferHistoryBackendInit, base::FEATURE_DISABLED_BY_DEFAULT);
 
-constexpr base::FeatureParam<base::TaskPriority>::Option
-    kHistoryInitPriorityOptions[] = {
-        {base::TaskPriority::BEST_EFFORT, "best_effort"},
-        {base::TaskPriority::USER_VISIBLE, "user_visible"},
-        {base::TaskPriority::USER_BLOCKING, "user_blocking"},
-};
+// If enabled, reports database metrics related to history clusters. Disabled
+// by default so that not all clients pay the cost of computing the metrics.
+BASE_FEATURE(kHistoryReportClusterDatabaseMetrics,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
-const base::FeatureParam<base::TaskPriority> kHistoryInitPriority{
-    &kHistoryInitPrioritySettings, "priority",
-    base::TaskPriority::USER_BLOCKING, &kHistoryInitPriorityOptions};
+BASE_FEATURE(kHistoryQueryBatchedLookups, base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace history

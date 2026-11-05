@@ -383,6 +383,15 @@ class COMPONENT_EXPORT(NATIVE_THEME) NativeTheme {
   static NativeTheme* GetInstanceForNativeUi();
   static NativeTheme* GetInstanceForWeb();
 
+  // A process-wide preferred color scheme that takes precedence over the
+  // `OsSettingsProvider` value, e.g. for an application-level light/dark
+  // setting. Initially kDark if `switches::kForceDarkMode` is present and unset
+  // otherwise. Changing it notifies observers of every instance that observes
+  // OS setting changes.
+  static void SetPreferredColorSchemeOverride(
+      std::optional<PreferredColorScheme> color_scheme);
+  static std::optional<PreferredColorScheme> GetPreferredColorSchemeOverride();
+
   // Convenience methods to scale a width/radius by a zoom factor.
   static float AdjustBorderWidthByZoom(float border_width, float zoom_level);
   static float AdjustBorderRadiusByZoom(Part part,
@@ -543,9 +552,6 @@ class COMPONENT_EXPORT(NATIVE_THEME) NativeTheme {
   explicit NativeTheme(SystemTheme system_theme = SystemTheme::kDefault);
   virtual ~NativeTheme();
 
-  // Whether dark mode is forced via command-line flag.
-  static bool IsForcedDarkMode();
-
   // Whether high contrast is forced via command-line flag.
   static bool IsForcedHighContrast();
 
@@ -574,6 +580,12 @@ class COMPONENT_EXPORT(NATIVE_THEME) NativeTheme {
   // anything changes or `force_notify` is set, notifies observers.
   virtual void OnToolkitSettingsChanged(bool force_notify);
 
+  // Returns the preferred color scheme for this instance. By default this is
+  // the process-wide override, if any, or else the `OsSettingsProvider` value.
+  // Instances that paint with a toolkit's colors (e.g. GTK or Qt) may override
+  // this so that the color scheme always matches those colors.
+  virtual PreferredColorScheme CalculatePreferredColorScheme() const;
+
   // Instructs this theme instance to mirror various appearance settings to
   // `associated_web_instance` when they change.
   void SetAssociatedWebInstance(NativeTheme* associated_web_instance);
@@ -592,11 +604,11 @@ class COMPONENT_EXPORT(NATIVE_THEME) NativeTheme {
 
   // Calculates and returns appropriate values based on flags and toolkit.
   ColorProviderKey::ForcedColors CalculateForcedColors() const;
-  PreferredColorScheme CalculatePreferredColorScheme() const;
   PreferredContrast CalculatePreferredContrast() const;
   bool CalculateUseOverlayScrollbar() const;
 
   base::CallbackListSubscription os_settings_changed_subscription_;
+  base::CallbackListSubscription color_scheme_override_subscription_;
   base::CallbackListSubscription update_delay_subscription_;
   // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
   base::ObserverList<

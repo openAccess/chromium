@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/frame/top_controls_slide_controller_chromeos.h"
 
+#include <tuple>
 #include <vector>
 
 #include "base/auto_reset.h"
@@ -13,8 +14,10 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/ssl/chrome_security_state_util.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
@@ -69,7 +72,7 @@ bool IsSpokenFeedbackEnabled() {
 // in TabStateBrowserControlsVisibilityDelegate.java).
 cc::BrowserControlsState GetBrowserControlsStateConstraints(
     content::WebContents* contents) {
-  DCHECK(contents);
+  CHECK(contents, base::NotFatalUntil::M162);
 
   if (!display::Screen::Get()->InTabletMode() || contents->IsFullscreen() ||
       contents->IsFocusedElementEditable() || contents->IsBeingDestroyed() ||
@@ -120,24 +123,13 @@ cc::BrowserControlsState GetBrowserControlsStateConstraints(
 // Triggers a visual properties synchrnoization event on |contents|' main
 // frame's view's widget.
 void SynchronizeVisualProperties(content::WebContents* contents) {
-  DCHECK(contents);
+  CHECK(contents, base::NotFatalUntil::M162);
 
-  content::RenderFrameHost* main_frame = contents->GetPrimaryMainFrame();
-  if (!main_frame) {
-    return;
-  }
-
-  auto* rvh = main_frame->GetRenderViewHost();
-  if (!rvh) {
-    return;
-  }
-
-  auto* widget = rvh->GetWidget();
-  if (!widget) {
-    return;
-  }
-
-  widget->SynchronizeVisualProperties();
+  std::ignore =
+      SafeInvoke(contents->GetPrimaryMainFrame())
+          .Then(&content::RenderFrameHost::GetRenderViewHost)
+          .Then(&content::RenderViewHost::GetWidget)
+          .Then(&content::RenderWidgetHost::SynchronizeVisualProperties);
 }
 
 }  // namespace
@@ -297,11 +289,11 @@ class TopControlsSlideTabObserver
 TopControlsSlideControllerChromeOS::TopControlsSlideControllerChromeOS(
     BrowserView* browser_view)
     : browser_view_(browser_view) {
-  DCHECK(browser_view);
-  DCHECK(browser_view->browser_widget());
-  DCHECK(browser_view->browser());
-  DCHECK(browser_view->GetIsNormalType());
-  DCHECK(browser_view->browser()->GetTabStripModel());
+  CHECK(browser_view, base::NotFatalUntil::M162);
+  CHECK(browser_view->browser_widget(), base::NotFatalUntil::M162);
+  CHECK(browser_view->browser(), base::NotFatalUntil::M162);
+  CHECK(browser_view->GetIsNormalType(), base::NotFatalUntil::M162);
+  CHECK(browser_view->browser()->GetTabStripModel(), base::NotFatalUntil::M162);
   if (LocationBar* location_bar = browser_view->GetLocationBar()) {
     observed_location_bar_.Observe(location_bar);
   }
@@ -336,7 +328,7 @@ float TopControlsSlideControllerChromeOS::GetShownRatio() const {
 void TopControlsSlideControllerChromeOS::SetShownRatio(
     content::WebContents* contents,
     float ratio) {
-  DCHECK(contents);
+  CHECK(contents, base::NotFatalUntil::M162);
 
   if (pause_updates_) {
     return;
@@ -344,7 +336,7 @@ void TopControlsSlideControllerChromeOS::SetShownRatio(
 
   // Make sure the value tracked per tab is always updated even when sliding is
   // disabled, so that we're always synchronized with the renderer.
-  DCHECK(observed_tabs_.count(contents));
+  CHECK(observed_tabs_.count(contents), base::NotFatalUntil::M162);
 
   // The only times the `DoBrowserControlsShrinkRendererSize` bit is allowed to
   // change are:
@@ -366,7 +358,7 @@ void TopControlsSlideControllerChromeOS::SetShownRatio(
     // However, if sliding is disabled, we don't update |shown_ratio_|, which is
     // the current value for the entire browser, and it must always be 1.f (i.e.
     // the top controls are fully shown).
-    DCHECK_EQ(shown_ratio_, 1.f);
+    CHECK_EQ(shown_ratio_, 1.f, base::NotFatalUntil::M162);
     return;
   }
 
@@ -419,8 +411,8 @@ void TopControlsSlideControllerChromeOS::SetTopControlsGestureScrollInProgress(
   is_gesture_scrolling_in_progress_ = in_progress;
 
   if (update_state_after_gesture_scrolling_ends_) {
-    DCHECK(!is_gesture_scrolling_in_progress_);
-    DCHECK(pause_updates_);
+    CHECK(!is_gesture_scrolling_in_progress_, base::NotFatalUntil::M162);
+    CHECK(pause_updates_, base::NotFatalUntil::M162);
     OnEnabledStateChanged(CanEnable(std::nullopt));
     update_state_after_gesture_scrolling_ends_ = false;
     pause_updates_ = false;
@@ -500,7 +492,8 @@ void TopControlsSlideControllerChromeOS::OnTabStripModelChanged(
   } else if (change.type() == TabStripModelChange::kReplaced) {
     auto* replace = change.GetReplace();
     observed_tabs_.erase(replace->old_contents);
-    DCHECK(!observed_tabs_.count(replace->new_contents));
+    CHECK(!observed_tabs_.count(replace->new_contents),
+          base::NotFatalUntil::M162);
     observed_tabs_.emplace(replace->new_contents,
                            std::make_unique<TopControlsSlideTabObserver>(
                                replace->new_contents, this));
@@ -511,7 +504,7 @@ void TopControlsSlideControllerChromeOS::OnTabStripModelChanged(
   }
 
   content::WebContents* new_active_contents = selection.new_contents;
-  DCHECK(observed_tabs_.count(new_active_contents));
+  CHECK(observed_tabs_.count(new_active_contents), base::NotFatalUntil::M162);
 
   // Restore the newly-activated tab's shown ratio. If this is a newly inserted
   // tab, its |shown_ratio_| is 1.0f.
@@ -716,10 +709,10 @@ void TopControlsSlideControllerChromeOS::Refresh() {
 }
 
 void TopControlsSlideControllerChromeOS::OnBeginSliding() {
-  DCHECK(IsEnabled());
+  CHECK(IsEnabled(), base::NotFatalUntil::M162);
 
   // It should never be called again.
-  DCHECK(!is_sliding_in_progress_);
+  CHECK(!is_sliding_in_progress_, base::NotFatalUntil::M162);
 
   // Explicitly update the `DoBrowserControlsShrinkRendererSize` bit here before
   // we begin sliding, and before we resize the browser view below, which will
@@ -781,17 +774,17 @@ void TopControlsSlideControllerChromeOS::OnBeginSliding() {
 }
 
 void TopControlsSlideControllerChromeOS::OnEndSliding() {
-  DCHECK(IsEnabled());
+  CHECK(IsEnabled(), base::NotFatalUntil::M162);
 
   // This should only be called at terminal values of the |shown_ratio_|.
-  DCHECK(shown_ratio_ == 1.f || shown_ratio_ == 0.f);
+  CHECK(shown_ratio_ == 1.f || shown_ratio_ == 0.f, base::NotFatalUntil::M162);
 
   // It should never be called while gesture scrolling is still in progress.
-  DCHECK(!is_gesture_scrolling_in_progress_);
+  CHECK(!is_gesture_scrolling_in_progress_, base::NotFatalUntil::M162);
 
   // If disabling is deferred, sliding should end only when top-chrome is fully
   // shown.
-  DCHECK(!defer_disabling_ || (shown_ratio_ == 1.f));
+  CHECK(!defer_disabling_ || (shown_ratio_ == 1.f), base::NotFatalUntil::M162);
 
   // It can, however, be called when sliding is not in progress as a result of
   // Setting the value directly (for example due to renderer crash), or a direct
@@ -850,7 +843,7 @@ void TopControlsSlideControllerChromeOS::OnEndSliding() {
 void TopControlsSlideControllerChromeOS::
     UpdateDoBrowserControlsShrinkRendererSize() {
   // It should never be called while sliding is in progress.
-  DCHECK(!is_sliding_in_progress_);
+  CHECK(!is_sliding_in_progress_, base::NotFatalUntil::M162);
 
   content::WebContents* active_contents = browser_view_->GetActiveWebContents();
   if (!active_contents) {

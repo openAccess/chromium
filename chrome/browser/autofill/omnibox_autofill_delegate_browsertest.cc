@@ -11,7 +11,6 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -155,6 +154,53 @@ IN_PROC_BROWSER_TEST_F(OmniboxAutofillDelegateBrowserTest,
 }
 
 // Checks that Omnibox Autofill is allowed when form fields are contained within
+// an iframe with the same origin as the main frame, even though that frame is
+// not in the allowlist.
+IN_PROC_BROWSER_TEST_F(OmniboxAutofillDelegateBrowserTest,
+                       FieldsInSameOriginIframe_Succeeds) {
+  base::HistogramTester histogram_tester;
+
+  SetUrlContent("/iframe.html", R"(<input autocomplete="cc-exp">)");
+
+  std::string main_content = base::StringPrintf(
+      R"(<form>
+           <input autocomplete="cc-name">
+           <input autocomplete="cc-number">
+           <iframe src="%s"></iframe>
+         </form>)",
+      embedded_https_test_server()
+          .GetURL("a.com", "/iframe.html")
+          .spec()
+          .c_str());
+
+  SetUrlContent("/form.html", main_content);
+
+  // Decider should not be queried for same origin iframes.
+  EXPECT_CALL(optimization_guide_decider(), IsUrlEligibleForOmniboxAutofill)
+      .Times(0);
+
+  GURL url = embedded_https_test_server().GetURL("a.com", "/form.html");
+  autofill_client().set_last_committed_primary_main_frame_url(url);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  content::RenderFrameHost* rfh = web_contents()->GetPrimaryMainFrame();
+  ContentAutofillDriver* driver =
+      ContentAutofillDriver::GetForRenderFrameHost(rfh);
+  AutofillManager& manager = driver->GetAutofillManager();
+
+  const FormStructure* form = WaitForMatchingForm(
+      &manager, base::BindRepeating([](const FormStructure& form) {
+        return form.field_count() == 3;
+      }));
+  ASSERT_TRUE(form);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return histogram_tester.GetBucketCount(
+               "Autofill.OmniboxAutofill.ShowChipDecisionPart1",
+               OmniboxAutofillShowChipDecisionPart1::kSuccess) == 1;
+  }));
+}
+
+// Checks that Omnibox Autofill is allowed when form fields are contained within
 // an iframe, as long as that iframe is allowlisted.
 IN_PROC_BROWSER_TEST_F(OmniboxAutofillDelegateBrowserTest,
                        FieldsInAllowlistedIframe_Succeeds) {
@@ -204,6 +250,15 @@ IN_PROC_BROWSER_TEST_F(OmniboxAutofillDelegateBrowserTest,
 
 // Checks that Omnibox Autofill is *not* allowed when form fields are contained
 // within an iframe, and that iframe is *not* allowlisted.
+//
+// `cc-number` is kept in the main frame (a.com) so that it is guaranteed to be
+// visible when forms are extracted (cross-origin iframes may extract forms
+// before their initial layout properties arrive from the parent frame).
+// `cc-name` is in the allowlisted iframe (b.com) and `cc-exp` is in the
+// non-allowlisted iframe (c.com), which is loaded after the allowlisted iframe
+// finishes loading so that the form is not considered complete until both
+// iframes have loaded. This prevents duplicate metric logging if the
+// non-allowlisted iframe loaded first (crbug.com/554201650).
 IN_PROC_BROWSER_TEST_F(OmniboxAutofillDelegateBrowserTest,
                        FieldInNonAllowlistedIframe_Aborts) {
   base::HistogramTester histogram_tester;
@@ -211,13 +266,15 @@ IN_PROC_BROWSER_TEST_F(OmniboxAutofillDelegateBrowserTest,
   SetUrlContent("/iframe_allowlisted.html",
                 R"(<input autocomplete="cc-name">)");
   SetUrlContent("/iframe_non_allowlisted.html",
-                R"(<input autocomplete="cc-number">)");
+                R"(<input autocomplete="cc-exp">)");
 
   std::string main_content = base::StringPrintf(
       R"(<form>
-           <iframe src="%s"></iframe>
-           <iframe src="%s"></iframe>
-           <input autocomplete="cc-exp">
+           <iframe src="%s"
+                   onload="document.getElementById('non_allowlisted').src='%s'">
+           </iframe>
+           <iframe id="non_allowlisted"></iframe>
+           <input autocomplete="cc-number">
          </form>)",
       embedded_https_test_server()
           .GetURL("b.com", "/iframe_allowlisted.html")

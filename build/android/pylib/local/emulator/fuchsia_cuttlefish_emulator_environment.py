@@ -35,7 +35,7 @@ _CUTTLEFISH_DIR = os.path.abspath(
 )
 
 
-# TODO(crbug.com/517946352): Fuchsia/Starview tests should explicitly pass
+# TODO(crbug.com/561302001): Fuchsia/Starview tests should explicitly pass
 # an emulator flag instead of inferring Cuttlefish from script existence
 # and environment variables.
 def IsSupported():
@@ -51,52 +51,83 @@ class FuchsiaCuttlefishEmulatorEnvironment(
 ):
     def __init__(self, args, output_manager, error_func):
         super().__init__(args, output_manager, error_func)
-        self._cuttlefish_script = CUTTLEFISH_SCRIPT
-        assert os.path.exists(self._cuttlefish_script), (
-            f'Cuttlefish script not found at {self._cuttlefish_script}'
-        )
-        self._cuttlefish_proc = None
+        self._instance = CuttlefishInstance(_DEFAULT_ADB_PORT)
 
     # override
     def SetUp(self):
-        adb_port = _DEFAULT_ADB_PORT
+        # Emulated Cuttlefish on nested QEMU runs slower than physical
+        # hardware. Set DEVICE_TIMEOUT_MULTIPLIER so list_tests and test
+        # runs have sufficient timeout headroom.
+        os.environ.setdefault('DEVICE_TIMEOUT_MULTIPLIER', '3')
+        self._device_serials = [self._instance.Start()]
+        super().SetUp()
+
+    # override
+    def TearDown(self):
+        try:
+            super().TearDown()
+        finally:
+            self._instance.Stop()
+
+
+class CuttlefishInstance:
+    """Manages the lifecycle of a Cuttlefish emulator instance."""
+
+    def __init__(self, adb_port=_DEFAULT_ADB_PORT, adb_path=None):
+        self._adb_port = adb_port
+        self._adb_path = adb_path
+        self._proc = None
+        self._orig_wait_until_fully_booted = None
+
+    def Start(self):
+        assert os.path.exists(CUTTLEFISH_SCRIPT), (
+            f'Cuttlefish script not found at {CUTTLEFISH_SCRIPT}'
+        )
         cmd = [
             sys.executable,
-            self._cuttlefish_script,
+            CUTTLEFISH_SCRIPT,
             '--adb-port',
-            str(adb_port),
+            str(self._adb_port),
             '--headless',
         ]
-        self._cuttlefish_proc = subprocess.Popen(
+        if self._adb_path:
+            cmd.extend(['--adb-path', str(self._adb_path)])
+        self._proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
         )
 
-        for line in iter(self._cuttlefish_proc.stdout.readline, ''):
+        ready = False
+        for line in iter(self._proc.stdout.readline, ''):
             logging.info('[Cuttlefish] %s', line.strip())
             if 'Press Ctrl+C to terminate the emulator.' in line:
+                ready = True
                 break
 
-        self._device_serials = [f'127.0.0.1:{adb_port}']
+        if not ready:
+            raise RuntimeError(
+                'Cuttlefish process exited prematurely with code '
+                f'{self._proc.poll()}'
+            )
 
-        orig_wait_until_fully_booted = (
+        self._orig_wait_until_fully_booted = (
             device_utils.DeviceUtils.WaitUntilFullyBooted
         )
 
         def _starnix_wait_until_fully_booted(device_self, *args, **kwargs):
             try:
-                # pylint: disable=protected-access
-                device_self._cache['external_storage'] = '/data/local/tmp'
+                device_self._cache['external_storage'] = '/sdcard'
                 device_self._cache['current_user'] = 0
                 device_self._cache['needs_su'] = False
-            except Exception:  # pylint: disable=broad-except
+            except Exception:
                 pass
 
             try:
-                orig_wait_until_fully_booted(device_self, *args, **kwargs)
-            except Exception as e:  # pylint: disable=broad-except
+                self._orig_wait_until_fully_booted(device_self, *args, **kwargs)
+            except Exception as e:
                 if 'is_sd_card_ready' in str(e):
                     logging.warning(
-                        'Ignoring is_sd_card_ready timeout on Starnix device: %s',
+                        'Ignoring is_sd_card_ready timeout on Starnix '
+                        'device: %s',
                         e,
                     )
                 else:
@@ -106,17 +137,19 @@ class FuchsiaCuttlefishEmulatorEnvironment(
             _starnix_wait_until_fully_booted
         )
 
-        super().SetUp()
+        return f'127.0.0.1:{self._adb_port}'
 
-    # override
-    def TearDown(self):
-        try:
-            super().TearDown()
-        finally:
-            if self._cuttlefish_proc:
-                logging.info('Terminating Cuttlefish process...')
-                self._cuttlefish_proc.terminate()
-                try:
-                    self._cuttlefish_proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    self._cuttlefish_proc.kill()
+    def Stop(self):
+        if self._orig_wait_until_fully_booted:
+            device_utils.DeviceUtils.WaitUntilFullyBooted = (
+                self._orig_wait_until_fully_booted
+            )
+            self._orig_wait_until_fully_booted = None
+        if self._proc:
+            logging.info('Terminating Cuttlefish process...')
+            self._proc.terminate()
+            try:
+                self._proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            self._proc = None

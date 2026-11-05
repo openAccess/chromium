@@ -28,7 +28,6 @@
 #include "third_party/blink/public/mojom/scroll/scrollbar_mode.mojom-blink.h"
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink.h"
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/frame/dom_window.h"
 #include "third_party/blink/renderer/core/frame/embedded_content_view.h"
 #include "third_party/blink/renderer/core/frame/frame_owner.h"
@@ -44,15 +43,18 @@
 
 namespace blink {
 
+class Document;
 class Frame;
+class FrameSwapScope;
 class LayoutEmbeddedContent;
 class LazyLoadFrameObserver;
-class WebPluginContainerImpl;
 class ResourceRequestHead;
 class SecurityOrigin;
 
 class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
                                           public FrameOwner {
+  friend class FrameSwapScope;
+
  public:
   ~HTMLFrameOwnerElement() override;
 
@@ -91,30 +93,10 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
   void SetColorScheme(mojom::blink::ColorScheme);
   void SetPreferredColorScheme(mojom::blink::PreferredColorScheme);
 
-  class PluginDisposeSuspendScope {
-    STACK_ALLOCATED();
-
-   public:
-    PluginDisposeSuspendScope() { suspend_count_ += 2; }
-    ~PluginDisposeSuspendScope() {
-      suspend_count_ -= 2;
-      if (suspend_count_ == 1)
-        PerformDeferredPluginDispose();
-    }
-
-   private:
-    void PerformDeferredPluginDispose();
-
-    // Low bit indicates if there are plugins to dispose.
-    static int suspend_count_;
-
-    friend class HTMLFrameOwnerElement;
-  };
-
   // Node overrides:
   Node::InsertionNotificationRequest InsertedInto(
       ContainerNode& insertion_point) override;
-  void DidChangeIsInCanvasSubtree() override;
+  void DidChangeIsInCanvasSubtree(CanvasSubtreePropagation) override;
   void RemovedFrom(ContainerNode& insertion_point) override;
   // Element overrides:
   void DidRecalcStyle(const StyleRecalcChange) override;
@@ -171,6 +153,8 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
   // a load was initiated.
   bool LoadImmediatelyIfLazy();
 
+  bool IsSwappingFrames() const { return is_swapping_frames_; }
+
   void Trace(Visitor*) const override;
 
  protected:
@@ -185,9 +169,8 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
       UpdateBehavior update_behavior =
           UpdateBehavior::kStyleAndLayout) const override;
   FocusgroupFlags NativeArrowKeyAxes() const final;
-  void FrameOwnerPropertiesChanged() override;
-
-  void DisposePluginSoon(WebPluginContainerImpl*);
+  void FrameOwnerPropertiesChanged();
+  virtual void DidChangeAttributes() {}
 
   // Return the origin which is to be used for permissions policy container
   // policies, as "the origin of the URL in the frame's src attribute" (see
@@ -232,8 +215,6 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
   virtual void CheckPotentialPermissionsPolicyViolation() {}
 
  protected:
-  bool is_swapping_frames() const { return is_swapping_frames_; }
-
   // Checks that the number of frames on the page are within the current limit.
   bool IsCurrentlyWithinFrameLimit() const;
 
@@ -246,7 +227,7 @@ class CORE_EXPORT HTMLFrameOwnerElement : public HTMLElement,
   bool IsLocal() const final { return true; }
   bool IsRemote() const final { return false; }
   bool IsFrameOwnerElement() const final { return true; }
-  void SetIsSwappingFrames(bool is_swapping) override {
+  void SetIsSwappingFrames(bool is_swapping) {
     is_swapping_frames_ = is_swapping;
   }
 

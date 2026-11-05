@@ -23,6 +23,7 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/gfx/animation/tween.h"
@@ -95,18 +96,16 @@ void BackForwardButton::NotifyClick(const ui::Event& event) {
   // If the focus is on web content the screen reader will announce the page
   // load; if not we want to make sure that something is still announced.
   if (GetFocusManager()->GetFocusedView() !=
-      BrowserView::GetBrowserViewForBrowser(browser_)->contents_web_view()) {
+      BrowserView::GetBrowserViewForBrowser(browser_)->GetContentsView()) {
     const std::u16string message = GetAccessiblePageLoadingMessage();
     if (!message.empty()) {
       GetViewAccessibility().AnnounceText(message);
     }
   }
 
-  content::WebContents* web_contents =
-      browser_->GetTabStripModel()->GetActiveWebContents();
-  if (web_contents) {
+  if (tabs::TabInterface* tab = browser_->GetTabStripModel()->GetActiveTab()) {
     ChainedBackNavigationTracker* tracker =
-        ChainedBackNavigationTracker::FromWebContents(web_contents);
+        ChainedBackNavigationTracker::From(tab);
     CHECK(tracker);
     tracker->RecordBackButtonClickForChainedBackNavigation();
   }
@@ -165,7 +164,7 @@ void BackForwardButton::OnMouseEntered(const ui::MouseEvent& event) {
     // Record this before the event triggers `StateChanged` via
     // `ToolbarButton::OnMouseEntered`.
     last_back_assumed_disposition_ = ui::DispositionFromEventFlags(
-        event.flags(), WindowOpenDisposition::CURRENT_TAB);
+        event.flags(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   }
 
   ToolbarButton::OnMouseEntered(event);
@@ -173,10 +172,6 @@ void BackForwardButton::OnMouseEntered(const ui::MouseEvent& event) {
 
 bool BackForwardButton::OnMousePressed(const ui::MouseEvent& event) {
   return ToolbarButton::OnMousePressed(event);
-}
-
-bool BackForwardButton::ShouldShowInkdropAfterIphInteraction() {
-  return false;
 }
 
 BEGIN_METADATA(BackForwardButton)

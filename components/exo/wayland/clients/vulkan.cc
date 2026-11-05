@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-
 #include <drm_fourcc.h>
+
+#include <array>
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
@@ -129,10 +130,11 @@ class ScopedVulkanRenderFrame {
             .extent = {256, 256},
         };
         vkCmdSetScissor(command_buffer_, 0, 1, &scissor);
+        VkDescriptorSet descriptor_set = client_->vk_descriptor_sets_[frame];
         vkCmdBindDescriptorSets(
             command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            client_->vk_pipeline_layout_->get(), 0, 1,
-            &(client_->vk_descriptor_sets_[frame]), 0, nullptr);
+            client_->vk_pipeline_layout_->get(), 0, 1, &descriptor_set, 0,
+            nullptr);
         vkCmdDraw(command_buffer_, 6, 1, 0, 0);
       }
     } else {
@@ -206,13 +208,13 @@ void VulkanClient::Run(const ClientBase::InitParams& params) {
       continue;
 
     {
-      static const SkColor kColors[] = {SK_ColorRED, SK_ColorBLACK,
-                                        SK_ColorGREEN};
+      static constexpr std::array<SkColor, 3> kColors = {
+          SK_ColorRED, SK_ColorBLACK, SK_ColorGREEN};
 
       int frame_parity = frame_count % 2;
       ScopedVulkanRenderFrame vulkan_frame(
           this, buffer->vk_framebuffer->get(),
-          kColors[frame_count % std::size(kColors)], frame_parity,
+          kColors[frame_count % kColors.size()], frame_parity,
           params.use_vulkan_texture,
           params.use_vulkan_blitter ? buffer->vk_image->get() : VK_NULL_HANDLE);
 

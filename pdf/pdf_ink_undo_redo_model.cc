@@ -7,12 +7,12 @@
 #include <stddef.h>
 
 #include <optional>
+#include <ranges>
 #include <set>
 #include <variant>
 #include <vector>
 
 #include "base/check.h"
-#include "base/containers/adapters.h"
 #include "base/containers/span.h"
 #include "base/types/expected.h"
 #include "pdf/pdf_ink_ids.h"
@@ -23,7 +23,8 @@ namespace {
 
 bool IsAllowedInCommandsStack(IdType id) {
   return std::holds_alternative<InkStrokeId>(id) ||
-         std::holds_alternative<InkTextId>(id);
+         std::holds_alternative<InkTextId>(id) ||
+         std::holds_alternative<InkSignatureId>(id);
 }
 
 }  // namespace
@@ -80,7 +81,7 @@ bool PdfInkUndoRedoModel::Add(IdType id) {
 
   // Check the last add in the commands stack to ensure IDs are added in
   // strictly increasing order.
-  for (const Commands& commands : base::Reversed(commands_stack_)) {
+  for (const Commands& commands : std::views::reverse(commands_stack_)) {
     if (!commands.adds.empty()) {
       // Checking the last ID in the set is sufficient because IDs are added in
       // strictly increasing order.
@@ -111,11 +112,8 @@ bool PdfInkUndoRedoModel::Remove(IdType id) {
     return false;  // Failed invariant 3.
   }
 
-  if (!HasIdInPreviousAddCommands(id)) {
-    if (std::holds_alternative<InkStrokeId>(id) ||
-        std::holds_alternative<InkTextId>(id)) {
-      return false;  // Failed invariant 4.
-    }
+  if (IsAllowedInCommandsStack(id) && !HasIdInPreviousAddCommands(id)) {
+    return false;  // Failed invariant 4.
   }
 
   commands_stack_.back().removes.insert(id);
@@ -141,40 +139,20 @@ bool PdfInkUndoRedoModel::Finish() {
 }
 
 std::optional<TextId> PdfInkUndoRedoModel::GetUndoTextId() const {
-  if (commands_stack_.empty() || stack_position_ == 0) {
-    return std::nullopt;
-  }
-
-  const auto& recorded = commands_stack_[stack_position_ - 1];
-  if (recorded.removes.size() != 1 || recorded.adds.size() > 1) {
-    return std::nullopt;
-  }
-
-  const IdType& id = *recorded.removes.begin();
-  if (std::holds_alternative<InkTextId>(id)) {
-    return std::get<InkTextId>(id);
-  }
-  if (std::holds_alternative<InkLoadedTextId>(id)) {
-    return std::get<InkLoadedTextId>(id);
-  }
-  return std::nullopt;
+  return GetUndoId<InkTextId, InkLoadedTextId>();
 }
 
 std::optional<InkTextId> PdfInkUndoRedoModel::GetRedoInkTextId() const {
-  if (commands_stack_.empty() || stack_position_ == commands_stack_.size()) {
-    return std::nullopt;
-  }
+  return GetRedoId<InkTextId>();
+}
 
-  const auto& recorded = commands_stack_[stack_position_];
-  if (recorded.adds.size() != 1 || recorded.removes.size() > 1) {
-    return std::nullopt;
-  }
+std::optional<SignatureId> PdfInkUndoRedoModel::GetUndoSignatureId() const {
+  return GetUndoId<InkSignatureId, InkLoadedSignatureId>();
+}
 
-  const IdType& id = *recorded.adds.begin();
-  if (!std::holds_alternative<InkTextId>(id)) {
-    return std::nullopt;
-  }
-  return std::get<InkTextId>(id);
+std::optional<InkSignatureId> PdfInkUndoRedoModel::GetRedoInkSignatureId()
+    const {
+  return GetRedoId<InkSignatureId>();
 }
 
 PdfInkUndoRedoModel::Commands PdfInkUndoRedoModel::Undo() {
@@ -204,6 +182,45 @@ PdfInkUndoRedoModel::Commands PdfInkUndoRedoModel::Redo() {
 
   // Result is the recorded commands as-is.
   return commands_stack_[stack_position_++];
+}
+
+template <typename T, typename LoadedT>
+std::optional<std::variant<T, LoadedT>> PdfInkUndoRedoModel::GetUndoId() const {
+  if (commands_stack_.empty() || stack_position_ == 0) {
+    return std::nullopt;
+  }
+
+  const auto& recorded = commands_stack_[stack_position_ - 1];
+  if (recorded.removes.size() != 1 || recorded.adds.size() > 1) {
+    return std::nullopt;
+  }
+
+  const IdType& id = *recorded.removes.begin();
+  if (std::holds_alternative<T>(id)) {
+    return std::get<T>(id);
+  }
+  if (std::holds_alternative<LoadedT>(id)) {
+    return std::get<LoadedT>(id);
+  }
+  return std::nullopt;
+}
+
+template <typename T>
+std::optional<T> PdfInkUndoRedoModel::GetRedoId() const {
+  if (commands_stack_.empty() || stack_position_ == commands_stack_.size()) {
+    return std::nullopt;
+  }
+
+  const auto& recorded = commands_stack_[stack_position_];
+  if (recorded.adds.size() != 1 || recorded.removes.size() > 1) {
+    return std::nullopt;
+  }
+
+  const IdType& id = *recorded.adds.begin();
+  if (!std::holds_alternative<T>(id)) {
+    return std::nullopt;
+  }
+  return std::get<T>(id);
 }
 
 bool PdfInkUndoRedoModel::HasIdInPreviousAddCommands(IdType id) const {

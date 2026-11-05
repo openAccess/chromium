@@ -18,7 +18,7 @@ class WebContents;
 
 namespace qrcode_generator {
 
-class QRCodeGeneratorBubbleView;
+class QRCodeGeneratorBubble;
 
 // Controller component of the QR Code Generator dialog bubble.
 // Responsible for showing and hiding an owned bubble.
@@ -39,7 +39,7 @@ class QRCodeGeneratorBubbleController
       content::WebContents* web_contents);
 
   // Displays the QR Code Generator bubble.
-  void ShowBubble(const GURL& url, bool show_back_button = false);
+  void ShowBubble(const GURL& url);
 
   // Hides the QR Code Generator bubble.
   void HideBubble();
@@ -47,10 +47,9 @@ class QRCodeGeneratorBubbleController
   bool IsBubbleShown() { return bubble_shown_; }
 
   // Returns nullptr if no bubble is currently shown.
-  QRCodeGeneratorBubbleView* qrcode_generator_bubble_view() const;
+  QRCodeGeneratorBubble* qrcode_generator_bubble_view() const;
 
   base::OnceClosure GetOnBubbleClosedCallback();
-  base::OnceClosure GetOnBackButtonPressedCallback();
 
  protected:
   explicit QRCodeGeneratorBubbleController(content::WebContents* web_contents);
@@ -60,8 +59,6 @@ class QRCodeGeneratorBubbleController
 
   // Handler for when the bubble is dismissed.
   void OnBubbleClosed();
-  // Handler for when the back button is pressed.
-  void OnBackButtonPressed();
 
   // Hides the bubble if the policy controlling the QR code generator is
   // disabled.
@@ -72,7 +69,7 @@ class QRCodeGeneratorBubbleController
   std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_;
 
   // Will be nullptr if no bubble is currently shown.
-  raw_ptr<QRCodeGeneratorBubbleView> qrcode_generator_bubble_ = nullptr;
+  raw_ptr<QRCodeGeneratorBubble> qrcode_generator_bubble_ = nullptr;
 
   // True if the bubble is currently shown.
   bool bubble_shown_ = false;

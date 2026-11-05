@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_EXTENSIONS_EXTENSIONS_TOOLBAR_VIEW_MODEL_H_
 
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/tab_list/tab_list_interface_observer.h"
 #include "chrome/browser/ui/extensions/extension_action_delegate.h"
@@ -17,6 +18,7 @@
 #include "extensions/browser/permissions_manager.h"
 #include "extensions/buildflags/buildflags.h"
 #include "ui/gfx/vector_icon_types.h"
+#include "url/origin.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -120,6 +122,7 @@ class ExtensionsToolbarViewModel
 
     std::vector<extensions::ExtensionId> extension_ids;
     std::u16string tooltip_text;
+    url::Origin origin;
   };
 
   ExtensionsToolbarViewModel(Delegate* delegate,
@@ -147,10 +150,10 @@ class ExtensionsToolbarViewModel
   void MovePinnedActionBy(const std::string& action_id, int move_by);
 
   // Returns the sorted list of the IDs of all installed actions.
-  const base::flat_set<ToolbarActionsModel::ActionId>& GetAllActionIds() const;
+  base::span<const ToolbarActionsModel::ActionId> GetAllActionIds() const;
 
   // Returns the ordered list of ids of pinned actions.
-  const std::vector<ToolbarActionsModel::ActionId>& GetPinnedActionIds() const;
+  base::span<const ToolbarActionsModel::ActionId> GetPinnedActionIds() const;
 
   // Returns whether the actions are initialized.
   bool AreActionsInitialized();
@@ -186,10 +189,12 @@ class ExtensionsToolbarViewModel
   void ExecuteUserAction(const ToolbarActionsModel::ActionId& action_id,
                          ToolbarActionViewModel::InvocationSource source);
 
-  // Grants site access to the given `extension_ids` for the `web_contents`.
+  // Grants site access to the given `extension_ids` for the `web_contents` on
+  // `expected_origin`.
   void GrantSiteAccess(
       content::WebContents* web_contents,
-      const std::vector<extensions::ExtensionId>& extension_ids);
+      const std::vector<extensions::ExtensionId>& extension_ids,
+      const url::Origin& expected_origin);
 
   // Returns RequestAccessButtonParams which contain information to be used in
   // the button's tooltip.

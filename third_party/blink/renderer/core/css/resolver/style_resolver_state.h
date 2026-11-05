@@ -41,6 +41,7 @@
 namespace blink {
 
 class AnchorEvaluator;
+struct ColorThemeInfo;
 class ComputedStyle;
 class FontDescription;
 class PseudoElement;
@@ -69,6 +70,8 @@ class CORE_EXPORT StyleResolverState {
   // grab the document from.  This is why we have to store the document
   // separately.
   Document& GetDocument() const { return *document_; }
+  bool CanExposeSystemAccentColor() const;
+  ColorThemeInfo GetColorThemeInfo() const;
   // Returns the element we are computing style for. This returns the same as
   // GetElement() unless this is a pseudo-element request or we are resolving
   // style for an SVG element instantiated in a <use> shadow tree. This method
@@ -132,13 +135,13 @@ class CORE_EXPORT StyleResolverState {
   CSSToLengthConversionData UnzoomedLengthConversionData();
 
   CSSToLengthConversionData::Flags TakeLengthConversionFlags() {
-    if (css_to_length_conversion_data_dirty_) {
-      UpdateLengthConversionData();
-    }
     CSSToLengthConversionData::Flags flags = length_conversion_flags_;
     length_conversion_flags_ = 0;
     return flags;
   }
+
+  // See StyleRecalcContext::anchor_evaluator.
+  AnchorEvaluator* GetAnchorEvaluator() const;
 
   void SubtractScrollbarsFromViewportUnits(const gfx::Size& scrollbars) {
     MutableCssToLengthConversionData().SubtractScrollbars(scrollbars);
@@ -155,9 +158,17 @@ class CORE_EXPORT StyleResolverState {
   // element, null otherwise.
   PseudoElement* GetPseudoElement() const;
 
-  void SetParentStyle(const ComputedStyle*);
+  void SetParentStyle(const ComputedStyle&);
   void EnsureParentStyle();
   const ComputedStyle* ParentStyle() const { return parent_style_; }
+  bool HasOverscrollContainerAncestor() const {
+    return parent_style_ && parent_style_->IsInOverscrollContainer();
+  }
+
+  bool HasAffectedByHoverAncestor() const {
+    return style_recalc_context_ &&
+           style_recalc_context_->has_hover_affected_ancestor;
+  }
 
   void SetLayoutParentStyle(const ComputedStyle*);
   const ComputedStyle* LayoutParentStyle() const {
@@ -268,6 +279,12 @@ class CORE_EXPORT StyleResolverState {
   void SetHasTreeScopedReference() { has_tree_scoped_reference_ = true; }
   bool HasTreeScopedReference() const { return has_tree_scoped_reference_; }
 
+  void SetHasAttrFunction() {
+    has_attr_function_ = true;
+    StyleBuilder().SetHasAttrFunction();
+  }
+  bool HasAttrFunction() const { return has_attr_function_; }
+
   void SetHasUnsupportedGuaranteedInvalid() {
     has_unsupported_guaranteed_invalid_ = true;
   }
@@ -309,8 +326,6 @@ class CORE_EXPORT StyleResolverState {
   // When resolving cq* units, this element is used to start the search
   // for suitable size containers.
   Element* ContainerUnitContext() const;
-  // See StyleRecalcContext::GetAnchorEvaluator().
-  AnchorEvaluator* GetAnchorEvaluator() const;
 
   ElementResolveContext element_context_;
   const StyleRecalcContext* style_recalc_context_ = nullptr;
@@ -324,14 +339,8 @@ class CORE_EXPORT StyleResolverState {
   // css_to_length_conversion_data_dirty_ is true. Do not access
   // css_to_length_conversion_data_ directly; prefer
   // CssToLengthConversionData() or MutableCssToLengthConversionData().
-  //
-  // Note that the initial state is clean, since the constructor
-  // initializes css_to_length_conversion_data_ from the given element.
-  // This is not just an optimization, it is needed for correctness;
-  // there is code that doesn't give us a ComputedStyleBuilder to make new
-  // conversion data from.
   mutable CSSToLengthConversionData::Flags length_conversion_flags_ = 0;
-  mutable bool css_to_length_conversion_data_dirty_ = false;
+  mutable bool css_to_length_conversion_data_dirty_ = true;
   mutable bool should_update_line_height_ = false;
   mutable CSSToLengthConversionData css_to_length_conversion_data_;
 
@@ -401,6 +410,9 @@ class CORE_EXPORT StyleResolverState {
 
   // True if the resolved ComputedStyle depends on tree-scoped references.
   bool has_tree_scoped_reference_ = false;
+
+  // True if the resolved style or value used the attr() function.
+  bool has_attr_function_ = false;
 
   // Tried to apply a guaranteed-invalid value to a custom property that doesn't
   // support it.

@@ -7,7 +7,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/history/history_service_factory.h"
@@ -16,17 +15,19 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/history/history_ui.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/history_clusters/core/features.h"
 #include "components/history_clusters/core/history_clusters_prefs.h"
 #include "components/history_clusters/core/url_constants.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/webui/resources/cr_components/history_clusters/history_clusters.mojom.h"
@@ -59,9 +60,7 @@ bool IsOpenInIncognitoEnabled(ui::MenuModel* menu) {
 
 class HistoryClustersHandlerBrowserTest : public InProcessBrowserTest {
  public:
-  HistoryClustersHandlerBrowserTest() {
-    feature_list_.InitWithFeatures({history_clusters::internal::kJourneys}, {});
-  }
+  HistoryClustersHandlerBrowserTest() = default;
   ~HistoryClustersHandlerBrowserTest() override = default;
 
   void SetUpOnMainThread() override {
@@ -83,9 +82,6 @@ class HistoryClustersHandlerBrowserTest : public InProcessBrowserTest {
 
  protected:
   raw_ptr<HistoryClustersHandler, AcrossTasksDanglingUntriaged> handler_;
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 // Tests whether the handler opens all the given URLs in the same tab group and
@@ -280,7 +276,7 @@ IN_PROC_BROWSER_TEST_F(HistoryClustersHandlerBrowserTest,
   const GURL url = embedded_test_server()->GetURL("/simple.html");
   // Open in a new tab to keep the history clusters UI open.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   history::QueryResults history_query_results;

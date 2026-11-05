@@ -11,6 +11,7 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "media/base/media_export.h"
 #include "media/gpu/buildflags.h"
@@ -98,6 +99,10 @@ MEDIA_EXPORT extern const char kAlsaOutputDevice[];
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
         // BUILDFLAG(IS_FREEBSD) || BUILDFLAG(IS_SOLARIS)
 
+#if BUILDFLAG(IS_MAC)
+MEDIA_EXPORT extern const char kUseFakeNativeScreenCapturePicker[];
+#endif  // BUILDFLAG(IS_MAC)
+
 #if BUILDFLAG(IS_WIN)
 MEDIA_EXPORT extern const char kEnableExclusiveAudio[];
 MEDIA_EXPORT extern const char kForceWaveAudio[];
@@ -126,14 +131,17 @@ MEDIA_EXPORT extern const char kHardwareVideoDevicePath[];
 
 namespace media {
 
+class AudioParameters;
+
 // All features in alphabetical order. The features should be documented
 // alongside the definition of their values in the .cc file.
 
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAVDColorSpaceChanges);
-// TODO(crbug.com/467555325): Remove after M153 reaches stable.
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kAccurateVideoFrameConverterColorSpace);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAomVpxUsePresentationThreadType);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAudioFocusDuckFlash);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kAudioRendererMixerImmediatePause);
+MEDIA_EXPORT extern const base::FeatureParam<base::TimeDelta>
+    kAudioRendererMixerImmediatePauseDelay;
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAutoPictureInPictureOnWindowOccluded);
 // Enables showing auto picture-in-picture permission details in page info.
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAutoPictureInPicturePageInfoDetails);
@@ -173,14 +181,15 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kCdmProcessPriorityElevation);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kCdmThreadPriorityElevation);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(
     kClearPipCachedBoundsWhenPermissionPromptVisible);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kCoarseWallClockTimeSource);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kContextMenuCopyVideoFrame);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kContextMenuSaveVideoFrameAs);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kContextMenuSearchForVideoFrame);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kD3D11VideoDecoderForceSingleTexture);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kD3D11VideoDecoderUseSharedHandle);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kDedicatedMediaServiceThread);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kDeferAudioFocusUntilAudible);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kDirectOpusAudioDecoding);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kDisallowMixedOpaqueMediaResponses);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kDocumentPictureInPictureAnimateResize);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kDocumentPictureInPictureCapture);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kDocumentPictureInPictureNavigation);
@@ -195,16 +204,19 @@ MEDIA_EXPORT extern const base::FeatureParam<std::string>
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kFailUrlProvisionFetcherForTesting);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kFallbackAfterDecodeError);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kFeatureManagementLiveTranslateCrOS);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kFFmpegDemuxerIT35MetadataTrack);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kForceSoftwareForRtcLowResolutions);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kGetDisplayMediaConfersActivation);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kGlobalMediaControlsAutoDismiss);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kGlobalMediaControlsSaveVideoFrame);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kGlobalMediaControlsSeamlessTransfer);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kGlobalVaapiLock);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kHardenUrlProvisionFetcher);
 // When enabled, H.264 keyframe detection becomes stricter for samples whose avc
 // config does not provide SPS/PPS. In that case, an IDR alone is not
 // sufficient, SPS+PPS must appear in-band to mark it as a keyframe.
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kH264IDRKeyframeRequiresParameterSets);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kH264SkipUnspecifiedNalus);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kHardwareMediaKeyHandling);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kHardwareSecureDecryption);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kHardwareSecureDecryptionAv1);
@@ -234,15 +246,15 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kLiveCaptionUseGreedyTextStabilizer);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kLiveCaptionUseWaitK);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kLiveCaptionWebAudio);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kLogSodaLoadFailures);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kMP4ApplyEmptyEditList);
 // Flag to enable or disable parsing of MP4 timed metadata tracks.
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMP4TimedMetadataTrack);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMatchSourceAudioChannelLayout);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaCapabilitiesQueryGpuFactories);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaCapabilitiesStrictMimeTypeValidation);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaCapabilitiesWithParameters);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaEngagementBypassAutoplayPolicies);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaEngagementHTTPSOnly);
-// Enable site-specific media link helpers.
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaLinkHelpers);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaLogToConsole);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaOptimizer);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaPowerExperiment);
@@ -254,12 +266,14 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaPowerExperiment);
 // around hardware decoders that don't handle non-IDR keyframes (some older
 // Intel/AMD devices mishandle SEI + SPS/PPS); see https://crbug.com/451536366.
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaSourceSeiRecoveryPointKeyframe);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaStreamAccurateDroppedFrameCount);
 // If enabled, chrome would inform Glic once it starts trasncribing, if Glic
 // requested to be informed.
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaTrasncriptsFlagInPageMetadata);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kOnDeviceWebSpeech);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kOnDeviceWebSpeechGeminiNano);
+// Kill switch for requiring sticky activation in SpeechRecognition.install()
+// for relaxed model downloads.
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kOnDeviceWebSpeechRequiresStickyActivation);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kOnDeviceWebSpeechSmallExpertModel);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(
     kOnDeviceWebSpeechSmallExpertModelMultiLanguage);
@@ -269,7 +283,6 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kOverlayFullscreenVideo);
 // Causes the AVC parser to output Treats H.264 SEI recovery points with a
 // `recovery_frame_cnt=0` as keyframes.
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kParseSEIRecoveryPoints);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kPauseBackgroundTimer);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kPauseMutedBackgroundAudio);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kPictureInPictureMuteControl);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kPlatformAudioEncoder);
@@ -283,10 +296,9 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kRenderMutedAudio);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kResolutionBasedDecoderPriority);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kResumeBackgroundVideo);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kRevokeMediaSourceObjectURLOnAttach);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kRustMpegAudioDataParser);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kSodaXnnpackDelegate);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kSpeakerChangeDetection);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kSpecCompliantCanPlayThrough);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kSuspendMediaForFrozenFrames);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kUnifiedAutoplay);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kUseAndroidOverlayForSecureOnly);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kUseFakeDeviceForMediaStream);
@@ -298,20 +310,14 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kVaapiLowPowerEncoderGen9x);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kVaapiOnNvidiaGPUs);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kVaapiVideoMinResolutionForPerformance);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kValidateEncryptionPatternSize);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kVideoBlitColorAccuracy);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kVideoDecodeBatching);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebCodecsDecoderFlushOptimizations);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebCodecsVideoEncoderFrameDrop);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRTCColorAccuracy);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRTCHardwareVideoEncoderFrameDrop);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRTCLogColorSpace);
 // When enabled, input audio processing in the audio process may use an ML-based
 // residual echo estimator instead of the default heuristics, when applying
 // WebRTC echo cancellation.
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRtcAudioNeuralResidualEchoEstimation);
-// When enabled, input audio processing in the audio process may use an ML-based
-// voice isolation denoiser.
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRtcVoiceIsolationDenoiser);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebrtcMediaCapabilitiesParameters);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kWidevinePersistentLicenseSupport);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kZeroCopyDesktopCapture);
@@ -330,16 +336,21 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kUseSequencedTaskRunnerForMojoVEAProvider);
 #endif  // !BUILDFLAG(IS_WIN)
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-// Note: please use IsOutOfProcessVideoDecodingEnabled() to determine if OOP-VD
-// is enabled instead of directly checking this feature flag. The reason is that
-// that function may perform checks beyond the feature flag.
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kUseOutOfProcessVideoDecoding);
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-
 #if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kChromeWideEchoCancellation);
+// When enabled, input audio processing in the audio process may use an ML-based
+// voice isolation denoiser.
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRtcVoiceIsolationDenoiser);
+// When enabled, VoiceIsolationHandler uses a dedicated ProcessingAudioFifo to
+// run voice isolation on its own real-time processing thread.
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kWebRtcVoiceIsolationProcessingFifo);
+MEDIA_EXPORT extern const base::FeatureParam<int>
+    kWebRtcVoiceIsolationProcessingFifoSize;
 #endif  // BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+
+#if BUILDFLAG(ENABLE_DAV2D_DECODER)
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kDav2dVideoDecoder);
+#endif  // BUILDFLAG(ENABLE_DAV2D_DECODER)
 
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaRecorderHEVCSupport);
@@ -356,7 +367,6 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kOpenH264SoftwareEncoder);
 #if BUILDFLAG(ENABLE_PLATFORM_ENCRYPTED_DOLBY_VISION)
 MEDIA_EXPORT BASE_DECLARE_FEATURE(
     kAllowClearDolbyVisionInMseWhenPlatformEncryptedDvEnabled);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kAllowClearDolbyVisionViaMFT);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kPlatformEncryptedDolbyVision);
 #endif  // BUILDFLAG(ENABLE_PLATFORM_ENCRYPTED_DOLBY_VISION)
 
@@ -365,9 +375,9 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kPlatformHEVCDecoderSupport);
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_ANDROID)
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kPlatformHEVCEncoderSupport);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_ANDROID)
-#if BUILDFLAG(IS_APPLE)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE)
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kPlatformHEVCHbdEncoderSupport);
-#endif  // BUILDFLAG(IS_APPLE)
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE)
 #endif  // BUILDFLAG(ENABLE_PLATFORM_HEVC)
 
 #if BUILDFLAG(ENABLE_SYMPHONIA)
@@ -396,7 +406,6 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kAllowMediaCodecSoftwareDecoder);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAndroidEnableBackgroundMediaCapturing);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAndroidSuspendWebRtcOnScreenOff);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAndroidZeroCopyVideoCapture);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kAutoDocPiPPermissionPromptAndroid);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kAutoPictureInPictureAndroid);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kContextMenuPictureInPictureAndroid);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kFullscreenVideoPictureInPicture);
@@ -415,6 +424,7 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kNoPauseMediaOnHeadphoneUnplug);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kPauseMediaOnSystemSleepAndroid);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kRequestSystemAudioFocus);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kSkipMediaCodecReallocation);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kStrictMediaCodecAudioDecoderSupport);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(
     kUseMediaCryptoRequiresSecureDecoderComponent);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kUseAudioLatencyFromHAL);
@@ -426,6 +436,9 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kUseMediaFormatCodedSize);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kVTVideoEncodeAcceleratorCalculatePSNR);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(
     kVTVideoEncodeAcceleratorOpaqueSharedImageEncode);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kVideoToolboxFullRangeOutput);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(
+    kVTVideoEncodeAcceleratorOpaqueRgbSharedImageEncode);
 #endif  // BUILDFLAG(IS_APPLE)
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -434,7 +447,6 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kBackgroundListening);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kCrOSDspBasedAecDeactivatedGroups);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kCrOSDspBasedAgcDeactivatedGroups);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kCrOSDspBasedNsDeactivatedGroups);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kCrOSEnforceMonoAudioCapture);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kCrOSEnforceSystemAec);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kCrOSEnforceSystemAecAgc);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kCrOSEnforceSystemAecNs);
@@ -474,8 +486,8 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kVaapiIgnoreDriverChecks);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kApplicationAudioCaptureMac);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kCastMacForceBaselineProfile);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kCastStreamingMacHardwareH264);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kMacAVFoundationPlayback);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMacCatapLoopbackAudioForCast);
-MEDIA_EXPORT BASE_DECLARE_FEATURE(kMacCatapLoopbackAudioForScreenShare);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kUseSCContentSharingPicker);
 #endif  // BUILDFLAG(IS_MAC)
 
@@ -510,10 +522,13 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationBatchRead);
 // Specify the batch read count between client renderer and remote renderer,
 // default value is 1.
 MEDIA_EXPORT extern const base::FeatureParam<int> kBatchReadCount;
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationChromiumCompatibilityMode);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationClearPlayback);
 // For feature check of kMediaFoundationD3D11VideoCapture at runtime,
 // please use IsMediaFoundationD3D11VideoCaptureEnabled() instead.
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationD3D11VideoCapture);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(
+    kMediaFoundationD3D11VideoCaptureUseSharedImage);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationD3D11VideoCaptureZeroCopy);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationD3DVideoProcessing);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationMultiGpuAdapterSelection);
@@ -522,6 +537,7 @@ MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationUseSoftwareRateCtrl);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationVideoCapture);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kMediaFoundationVideoEncodeAccelerator);
 MEDIA_EXPORT BASE_DECLARE_FEATURE(kProtectedMediaIdentifierIndicator);
+MEDIA_EXPORT BASE_DECLARE_FEATURE(kWasapiImproveGlitchDetection);
 #endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(SYSTEM_LOOPBACK_AS_AEC_REFERENCE)
@@ -561,6 +577,13 @@ MEDIA_EXPORT std::string GetEffectiveAutoplayPolicy(
 
 // Return bitmask of audio formats supported by EDID.
 MEDIA_EXPORT uint32_t GetPassthroughAudioFormats();
+
+// Whether `params` selects the macOS AVFoundation playback backend. This is
+// not a no-argument platform capability: macOS 27 or newer,
+// kMacAVFoundationPlayback, linear or low-latency PCM, and a playback latency
+// tag are all required. False on every other platform.
+MEDIA_EXPORT bool IsMacAVFoundationPlaybackSupported(
+    const AudioParameters& params);
 
 // Returns true if application audio loopback capture is implemented for the
 // current OS.
@@ -602,10 +625,6 @@ MEDIA_EXPORT bool IsSystemLoopbackAsAecReferenceForcedOn();
 MEDIA_EXPORT bool IsSystemLoopbackCaptureSupported();
 
 MEDIA_EXPORT bool IsVideoCaptureAcceleratedJpegDecodingEnabled();
-
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
-MEDIA_EXPORT bool IsOutOfProcessVideoDecodingEnabled();
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
 
 #if BUILDFLAG(IS_ANDROID)
 MEDIA_EXPORT bool IsAndroidZeroCopyVideoCaptureEnabled(

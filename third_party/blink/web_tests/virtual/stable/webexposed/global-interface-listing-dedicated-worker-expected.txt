@@ -499,6 +499,10 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method dispose
 [Worker]     method move
 [Worker]     method use
+[Worker] interface ElementImage
+[Worker]     attribute @@toStringTag
+[Worker]     method close
+[Worker]     method constructor
 [Worker] interface EncodedAudioChunk
 [Worker]     attribute @@toStringTag
 [Worker]     getter byteLength
@@ -922,6 +926,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter label
 [Worker]     method constructor
 [Worker]     method copyExternalImageToTexture
+[Worker]     method drawElementImageToTexture
 [Worker]     method onSubmittedWorkDone
 [Worker]     method submit
 [Worker]     method writeBuffer
@@ -1462,10 +1467,13 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter oncontextlost
 [Worker]     getter oncontextrestored
 [Worker]     getter width
+[Worker]     method clearElementGeometry
 [Worker]     method constructor
 [Worker]     method convertToBlob
 [Worker]     method getContext
+[Worker]     method getElementImageDefaultSize
 [Worker]     method transferToImageBitmap
+[Worker]     method updateElementGeometry
 [Worker]     setter height
 [Worker]     setter oncontextlost
 [Worker]     setter oncontextrestored
@@ -1513,6 +1521,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method createLinearGradient
 [Worker]     method createPattern
 [Worker]     method createRadialGradient
+[Worker]     method drawElementImage
 [Worker]     method drawImage
 [Worker]     method ellipse
 [Worker]     method fill
@@ -2052,15 +2061,21 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method error
 [Worker]     method next
 [Worker] interface SubtleCrypto
+[Worker]     static method supports
 [Worker]     attribute @@toStringTag
 [Worker]     method constructor
+[Worker]     method decapsulateBits
+[Worker]     method decapsulateKey
 [Worker]     method decrypt
 [Worker]     method deriveBits
 [Worker]     method deriveKey
 [Worker]     method digest
+[Worker]     method encapsulateBits
+[Worker]     method encapsulateKey
 [Worker]     method encrypt
 [Worker]     method exportKey
 [Worker]     method generateKey
+[Worker]     method getPublicKey
 [Worker]     method importKey
 [Worker]     method sign
 [Worker]     method unwrapKey
@@ -3144,6 +3159,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method stencilMaskSeparate
 [Worker]     method stencilOp
 [Worker]     method stencilOpSeparate
+[Worker]     method texElementSubImage2D
 [Worker]     method texImage2D
 [Worker]     method texImage3D
 [Worker]     method texParameterf
@@ -3646,6 +3662,7 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method stencilMaskSeparate
 [Worker]     method stencilOp
 [Worker]     method stencilOpSeparate
+[Worker]     method texElementSubImage2D
 [Worker]     method texImage2D
 [Worker]     method texParameterf
 [Worker]     method texParameteri
@@ -3747,17 +3764,27 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method close
 [Worker]     method constructor
 [Worker] interface WebTransport
+[Worker]     static getter supportsReliableOnly
 [Worker]     attribute @@toStringTag
+[Worker]     getter anticipatedConcurrentIncomingBidirectionalStreams
+[Worker]     getter anticipatedConcurrentIncomingUnidirectionalStreams
 [Worker]     getter closed
+[Worker]     getter congestionControl
 [Worker]     getter datagrams
+[Worker]     getter draining
 [Worker]     getter incomingBidirectionalStreams
 [Worker]     getter incomingUnidirectionalStreams
 [Worker]     getter protocol
 [Worker]     getter ready
+[Worker]     getter reliability
+[Worker]     getter responseHeaders
 [Worker]     method close
 [Worker]     method constructor
 [Worker]     method createBidirectionalStream
 [Worker]     method createUnidirectionalStream
+[Worker]     method exportKeyingMaterial
+[Worker]     setter anticipatedConcurrentIncomingBidirectionalStreams
+[Worker]     setter anticipatedConcurrentIncomingUnidirectionalStreams
 [Worker] interface WebTransportBidirectionalStream
 [Worker]     attribute @@toStringTag
 [Worker]     getter readable
@@ -3919,7 +3946,6 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method open
 [Worker]     method overrideMimeType
 [Worker]     method send
-[Worker]     method setAttributionReporting
 [Worker]     method setPrivateToken
 [Worker]     method setRequestHeader
 [Worker]     setter onreadystatechange

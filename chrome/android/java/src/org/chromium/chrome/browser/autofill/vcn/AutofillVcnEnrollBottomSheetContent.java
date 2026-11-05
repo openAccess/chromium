@@ -4,7 +4,6 @@
 
 package org.chromium.chrome.browser.autofill.vcn;
 
-import android.content.Context;
 import android.view.View;
 import android.widget.ScrollView;
 
@@ -14,10 +13,17 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
 
 /** The contents for the virtual card number (VCN) enrollment bottom sheet. */
 @NullMarked
 /*package*/ class AutofillVcnEnrollBottomSheetContent implements BottomSheetContent {
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder()
+                    .setUserCritical(UserCriticalFeature.AUTOFILL_VCN_ENROLL)
+                    .build();
+
     private final View mContentView;
     private final ScrollView mScrollView;
     private final Runnable mOnDismiss;
@@ -58,6 +64,11 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
     }
 
     @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
+    }
+
+    @Override
     public int getPriority() {
         return ContentPriority.HIGH;
     }
@@ -73,14 +84,14 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
     }
 
     @Override
-    public String getSheetContentDescription(Context context) {
-        return context.getString(R.string.autofill_virtual_card_enroll_content_description);
+    public boolean showHandlebar() {
+        return true;
     }
 
     @Override
     public @StringRes int getSheetHalfHeightAccessibilityStringId() {
         assert false : "Half height is disabled for virtual card enrollment bottom sheet";
-        return R.string.autofill_virtual_card_enroll_content_description;
+        return R.string.ok;
     }
 
     @Override

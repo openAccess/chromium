@@ -53,6 +53,7 @@ source_set("passwords_private") {
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/hats",
     "//chrome/browser/ui/passwords/settings",
+    "//chrome/browser/ui/toolbar",
     "//chrome/browser/ui/user_education",
     "//chrome/browser/ui/web_applications",
     "//chrome/browser/web_applications",
@@ -68,7 +69,6 @@ source_set("passwords_private") {
     "//components/password_manager/core/browser/leak_detection",
     "//components/password_manager/core/browser/sharing",
     "//components/sync/service",
-    "//components/user_prefs",
     "//content/public/browser",
     "//extensions/browser",
   ]

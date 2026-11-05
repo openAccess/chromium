@@ -56,6 +56,8 @@ void CriticalOriginTrialsThrottle::BeforeWillProcessResponse(
     const network::mojom::URLResponseHead& response_head,
     RestartWithURLReset* restart_with_url_reset) {
   if (is_navigation_request_) {
+    // TODO(crbug.com/571118321): CHECK-exclusion: Convert to a CHECK once
+    // we are confident it won't be triggered.
     DCHECK_EQ(response_url, request_url_);
     MaybeRestartWithTrials(response_head, restart_with_url_reset);
   }

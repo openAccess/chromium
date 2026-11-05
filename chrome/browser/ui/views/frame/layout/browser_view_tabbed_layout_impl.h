@@ -10,6 +10,7 @@
 
 #include "chrome/browser/ui/animation/browser_animation_types.h"
 #include "chrome/browser/ui/views/frame/layout/browser_view_layout.h"
+#include "chrome/browser/ui/views/frame/layout/browser_view_layout_delegate.h"
 #include "chrome/browser/ui/views/frame/layout/browser_view_layout_impl.h"
 #include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
 #include "ui/gfx/geometry/size.h"
@@ -52,9 +53,8 @@ class BrowserViewTabbedLayoutImpl : public BrowserViewLayoutImpl {
   struct SeparatorInfo;
   struct SidePanelContentAnimation;
   struct TransientLayoutData;
+  struct OrganizerPanelAnimation;
   struct VerticalTabStripAnimation;
-
-  enum class TabStripType { kNone, kVertical, kHorizontal };
 
   enum class VerticalTabStripCollapsedState {
     kExpanded,
@@ -82,15 +82,13 @@ class BrowserViewTabbedLayoutImpl : public BrowserViewLayoutImpl {
   // area to prevent subpixel seams on fractional displays.
   int GetVerticalTabStripContentOverlap() const;
 
-  // Returns the type of tabstrip present.
-  TabStripType GetTabStripType() const;
-
   // Returns the current state of the vertical tabstrip.
   VerticalTabStripCollapsedState GetVerticalTabStripCollapsedState() const;
 
   // These helper functions are called during `DoPreLayoutCalculations()` to set
   // up `layout_data_`.
   HorizontalLayout CalculateHorizontalLayout(BrowserLayoutParams& params) const;
+  OrganizerPanelAnimation CalculateOrganizerPanelAnimation() const;
   VerticalTabStripAnimation CalculateVerticalTabStripAnimation();
   int GetCollapsedVerticalTabStripRelativeTop() const;
   SeparatorInfo CalculateSeparatorInfo() const;

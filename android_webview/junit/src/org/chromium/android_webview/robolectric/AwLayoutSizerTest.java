@@ -7,19 +7,15 @@ package org.chromium.android_webview.robolectric;
 import android.view.View;
 import android.view.View.MeasureSpec;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.android_webview.AwLayoutSizer;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AwLayoutSizerTest {
     static class LayoutSizerDelegate implements AwLayoutSizer.Delegate {
         public int requestLayoutCallCount;
@@ -64,7 +60,6 @@ public class AwLayoutSizerTest {
     private static final double DIP_SCALE = 1.0;
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testCanQueryContentSize() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -86,7 +81,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testContentSizeChangeRequestsLayout() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -102,7 +96,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testContentSizeChangeDoesNotRequestLayoutIfMeasuredExcatly() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -121,7 +114,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testDuplicateContentSizeChangeDoesNotRequestLayout() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -140,7 +132,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testContentHeightGrowsTillAtMostSize() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -165,7 +156,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testContentHeightGrowthRequestsLayoutInAtMostSizeMode() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -191,7 +181,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testContentHeightShrinksAfterAtMostSize() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -230,7 +219,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testScaleChangeRequestsLayout() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -249,7 +237,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testDuplicateScaleChangeDoesNotRequestLayout() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -268,7 +255,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testScaleChangeGrowsTillAtMostSize() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -295,7 +281,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testFreezeAndUnfreezeDoesntCauseLayout() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -310,7 +295,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testFreezeInhibitsLayoutRequest() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -326,7 +310,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testUnfreezeIssuesLayoutRequest() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -344,7 +327,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testViewportWithExactMeasureSpec() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -366,7 +348,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testViewportDipSizeOverrideRounding() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -394,7 +375,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testViewportWithAtMostMeasureSpec() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -431,7 +411,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testFixedLayoutSizeDependsOnHeightWrapContent() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();
@@ -455,7 +434,6 @@ public class AwLayoutSizerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testFixedLayoutSizeDoesNotDependOnMeasureSpec() {
         AwLayoutSizer layoutSizer = new AwLayoutSizer();

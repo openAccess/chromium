@@ -17,7 +17,7 @@ account_manager::AccountAdditionSource GetAddAccountSourceFromAccessPoint(
     case signin_metrics::AccessPoint::kSettingsAutofillAndPasswords:
       return account_manager::AccountAdditionSource::
           kChromeSettingsTurnOnSyncButton;
-    case signin_metrics::AccessPoint::kAvatarBubbleSignIn:
+    case signin_metrics::AccessPoint::kProfileMenuPrimaryButton:
       return account_manager::AccountAdditionSource::
           kAvatarBubbleTurnOnSyncAddAccount;
     case signin_metrics::AccessPoint::kExtensions:
@@ -34,6 +34,7 @@ account_manager::AccountAdditionSource GetAddAccountSourceFromAccessPoint(
       return account_manager::AccountAdditionSource::
           kChromeSigninPromoAddAccount;
     case signin_metrics::AccessPoint::kGlicLaunchButton:
+    case signin_metrics::AccessPoint::kSkills:
       return account_manager::AccountAdditionSource::kGeminiInChromeReauth;
     default:
       NOTREACHED() << "Add account is requested from an unknown access point "
@@ -49,7 +50,7 @@ account_manager::AccountAdditionSource GetAccountReauthSourceFromAccessPoint(
     case signin_metrics::AccessPoint::kSettingsAutofillAndPasswords:
       return account_manager::AccountAdditionSource::
           kChromeSettingsReauthAccountButton;
-    case signin_metrics::AccessPoint::kAvatarBubbleSignIn:
+    case signin_metrics::AccessPoint::kProfileMenuPrimaryButton:
       return account_manager::AccountAdditionSource::
           kAvatarBubbleReauthAccountButton;
     case signin_metrics::AccessPoint::kExtensions:
@@ -65,6 +66,7 @@ account_manager::AccountAdditionSource GetAccountReauthSourceFromAccessPoint(
     case signin_metrics::AccessPoint::kMenu:
       return account_manager::AccountAdditionSource::kChromeMenuTurnOnSync;
     case signin_metrics::AccessPoint::kGlicLaunchButton:
+    case signin_metrics::AccessPoint::kSkills:
       return account_manager::AccountAdditionSource::kGeminiInChromeReauth;
     default:
       NOTREACHED() << "Reauth is requested from an unknown access point "

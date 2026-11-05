@@ -5,7 +5,6 @@
 #import "base/strings/sys_string_conversions.h"
 #import "components/policy/policy_constants.h"
 #import "components/regional_capabilities/regional_capabilities_switches.h"
-#import "components/regional_capabilities/regional_capabilities_test_utils.h"
 #import "components/search_engines/search_engine_choice/search_engine_choice_utils.h"
 #import "components/search_engines/search_engines_switches.h"
 #import "components/strings/grit/components_strings.h"
@@ -23,6 +22,7 @@
 #import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_constants.h"
 #import "ios/chrome/common/ui/promo_style/constants.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -60,15 +60,6 @@
   config.features_disabled.push_back(
       first_run::kAnimatedDefaultBrowserPromoInFRE);
 
-  if ([self isRunningTest:@selector
-            (testNoDefaultBrowserPromoAfterSearchEngineChoiceScreen)]) {
-    config.features_enabled.push_back(
-        first_run::kSkipDefaultBrowserPromoInFirstRun);
-  } else {
-    config.features_disabled.push_back(
-        first_run::kSkipDefaultBrowserPromoInFirstRun);
-  }
-
   return config;
 }
 
@@ -95,7 +86,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackSecondaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
   // Check that the choice screen is shown
   [SearchEngineChoiceEarlGreyUI verifySearchEngineChoiceScreenIsDisplayed];
@@ -137,7 +128,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackSecondaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
   // Check that the choice screen is shown
   [SearchEngineChoiceEarlGreyUI verifySearchEngineChoiceScreenIsDisplayed];
@@ -186,7 +177,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackPrimaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
 
   // Accept sync.
@@ -234,7 +225,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackSecondaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
   // Dismiss the default browser screen.
   [[self class] dismissDefaultBrowserAndRemainingScreens];
@@ -270,7 +261,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackSecondaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
   // Check that the choice screen is shown
   [SearchEngineChoiceEarlGreyUI verifySearchEngineChoiceScreenIsDisplayed];
@@ -348,7 +339,7 @@
   [[self elementInteractionWithGreyMatcher:chrome_test_util::
                                                ButtonStackPrimaryButton()
                       scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
+                          kButtonStackScrollViewAccessibilityIdentifier]
       performAction:grey_tap()];
   // Accept sync.
   [self acceptSyncOrHistory];
@@ -371,34 +362,6 @@
   [[[EarlGrey selectElementWithMatcher:continueButtonMatcher]
       assertWithMatcher:grey_notNil()] performAction:grey_tap()];
   [SearchEngineChoiceEarlGreyUI confirmSearchEngineChoiceScreen];
-}
-
-// Tests that the Default Browser Promo is not shown in the EEA region if
-// `kSkipDefaultBrowserInFirstRun` is enabled.
-- (void)testNoDefaultBrowserPromoAfterSearchEngineChoiceScreen {
-  // Skip sign-in.
-  [[self elementInteractionWithGreyMatcher:chrome_test_util::
-                                               ButtonStackSecondaryButton()
-                      scrollViewIdentifier:
-                          kPromoStyleScrollViewAccessibilityIdentifier]
-      performAction:grey_tap()];
-
-  // Select a search engine.
-  NSString* searchEngineToSelect = [SearchEngineChoiceEarlGreyUI
-      searchEngineNameWithPrepopulatedEngine:TemplateURLPrepopulateData::bing];
-  [SearchEngineChoiceEarlGreyUI
-      selectSearchEngineCellWithName:searchEngineToSelect
-                     scrollDirection:kGREYDirectionDown
-                              amount:50];
-
-  // Tap on the Continue button. This scrolls the table down to the bottom.
-  id<GREYMatcher> continueButtonMatcher =
-      grey_accessibilityID(kSearchEngineContinueButtonIdentifier);
-  [[[EarlGrey selectElementWithMatcher:continueButtonMatcher]
-      assertWithMatcher:grey_notNil()] performAction:grey_tap()];
-
-  // Verify that the Default Browser Promo doesn't appear.
-  [self verifyDefaultBrowserNotDisplayed];
 }
 
 @end

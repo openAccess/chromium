@@ -260,6 +260,7 @@ component("views") {
     "controls/views_text_services_context_menu.h",
     "controls/views_text_services_context_menu_base.h",
     "debug_utils.h",
+    "deprecated_layout_immediately_pass_key.h",
     "dialog_model_context_menu_controller.h",
     "drag_controller.h",
     "drag_utils.h",
@@ -276,7 +277,8 @@ component("views") {
     "input_protection/input_protection_policy.h",
     "input_protection/input_protection_specification.h",
     "input_protection/occluded_widget_input_protector.h",
-    "input_protection/occlusion_aware_input_protection_policy.h",
+    "input_protection/view_bounds_and_visibility_input_protection_policy.h",
+    "input_protection/widget_stationarity_monitor.h",
     "input_protection/window_activation_input_protection_policy.h",
     "interaction/element_highlighter_views.h",
     "interaction/element_tracker_views.h",
@@ -324,10 +326,12 @@ component("views") {
     "view.h",
     "view_class_properties.h",
     "view_constants.h",
+    "view_decoration.h",
+    "view_guard.h",
+    "view_hierarchy_changed_details.h",
     "view_model.h",
     "view_model_utils.h",
     "view_observer.h",
-    "view_shadow.h",
     "view_targeter.h",
     "view_targeter_delegate.h",
     "view_tracker.h",
@@ -372,7 +376,6 @@ component("views") {
     "window/window_button_order_provider.h",
     "window/window_resources.h",
     "window/window_shape.h",
-    "windows_stationarity_monitor.h",
     "word_lookup_client.h",
   ]
 
@@ -525,7 +528,8 @@ component("views") {
     "input_protection/input_protection_event_handler.cc",
     "input_protection/input_protection_specification.cc",
     "input_protection/occluded_widget_input_protector.cc",
-    "input_protection/occlusion_aware_input_protection_policy.cc",
+    "input_protection/view_bounds_and_visibility_input_protection_policy.cc",
+    "input_protection/widget_stationarity_monitor.cc",
     "input_protection/window_activation_input_protection_policy.cc",
     "interaction/element_highlighter_views.cc",
     "interaction/element_tracker_views.cc",
@@ -564,9 +568,10 @@ component("views") {
     "style/typography_provider.cc",
     "view.cc",
     "view_class_properties.cc",
+    "view_decoration.cc",
+    "view_guard.cc",
     "view_model.cc",
     "view_model_utils.cc",
-    "view_shadow.cc",
     "view_targeter.cc",
     "view_targeter_delegate.cc",
     "view_tracker.cc",
@@ -602,7 +607,6 @@ component("views") {
     "window/non_client_view.cc",
     "window/window_button_order_provider.cc",
     "window/window_shape.cc",
-    "windows_stationarity_monitor.cc",
   ]
 
   # Other targets in this file (e.g. tests) get access to the internal headers.
@@ -642,7 +646,7 @@ component("views") {
     "//ui/base/interaction",
     "//ui/color",
     "//ui/color:mixers",
-    "//ui/compositor_extra",
+    "//ui/decoration",
     "//ui/display",
     "//ui/gfx:native_ui_types",
     "//ui/latency",
@@ -689,8 +693,14 @@ component("views") {
   ]
 
   if (is_chromeos) {
-    public += [ "highlight_border.h" ]
-    sources += [ "highlight_border.cc" ]
+    public += [
+      "controls/native/native_view_host_aura_with_clip_window.h",
+      "highlight_border.h",
+    ]
+    sources += [
+      "controls/native/native_view_host_aura_with_clip_window.cc",
+      "highlight_border.cc",
+    ]
     deps += [
       "//ash/constants",
       "//chromeos/constants",
@@ -742,7 +752,6 @@ component("views") {
       "widget/native_widget_mac.h",
       "widget/widget_utils_mac.h",
       "window/native_frame_view_mac.h",
-      "windows_stationarity_monitor_mac.h",
     ]
     sources += [
       "accessibility/ax_virtual_view_mac.mm",
@@ -776,7 +785,6 @@ component("views") {
       "widget/native_widget_mac.mm",
       "widget/widget_utils_mac.mm",
       "window/native_frame_view_mac.mm",
-      "windows_stationarity_monitor_mac.mm",
     ]
     public_deps += [ "//components/remote_cocoa/common:mojo" ]
     deps += [
@@ -858,7 +866,6 @@ component("views") {
       "accessibility/ax_window_obj_wrapper.h",
       "accessibility/tree/views_ax_manager.h",
       "controls/native/native_view_host_aura.h",
-      "controls/native/native_view_host_aura_with_clip_window.h",
       "corewm/tooltip.h",
       "corewm/tooltip_aura.h",
       "corewm/tooltip_controller.h",
@@ -866,14 +873,11 @@ component("views") {
       "corewm/tooltip_view_aura.h",
       "event_monitor_aura.h",
       "touchui/touch_selection_controller_impl.h",
-      "view_constants_aura.h",
       "widget/focus_manager_event_handler.h",
-      "widget/legacy_window_reorderer.h",
       "widget/native_widget_aura.h",
       "widget/tooltip_manager_aura.h",
       "widget/widget_aura_utils.h",
       "widget/window_reorderer.h",
-      "windows_stationarity_monitor_aura.h",
     ]
 
     sources += [
@@ -890,7 +894,6 @@ component("views") {
       "controls/menu/menu_pre_target_handler_aura.cc",
       "controls/menu/menu_pre_target_handler_aura.h",
       "controls/native/native_view_host_aura.cc",
-      "controls/native/native_view_host_aura_with_clip_window.cc",
       "corewm/tooltip_aura.cc",
       "corewm/tooltip_controller.cc",
       "corewm/tooltip_state_manager.cc",
@@ -899,13 +902,10 @@ component("views") {
       "event_monitor_aura.cc",
       "metrics_aura.cc",
       "touchui/touch_selection_controller_impl.cc",
-      "view_constants_aura.cc",
       "widget/focus_manager_event_handler.cc",
-      "widget/legacy_window_reorderer.cc",
       "widget/native_widget_aura.cc",
       "widget/tooltip_manager_aura.cc",
       "widget/window_reorderer.cc",
-      "windows_stationarity_monitor_aura.cc",
     ]
     deps += [
       "//components/crash/core/common:crash_key",
@@ -949,10 +949,12 @@ component("views") {
         "widget/desktop_aura/desktop_window_tree_host.cc",
       ]
       if (is_win) {
-        public += [ "widget/desktop_aura/desktop_window_tree_host_win.h" ]
+        public += [
+          "widget/desktop_aura/desktop_drag_drop_client_win.h",
+          "widget/desktop_aura/desktop_window_tree_host_win.h",
+        ]
         sources += [
           "widget/desktop_aura/desktop_drag_drop_client_win.cc",
-          "widget/desktop_aura/desktop_drag_drop_client_win.h",
           "widget/desktop_aura/desktop_drop_target_win.cc",
           "widget/desktop_aura/desktop_native_cursor_manager_win.cc",
           "widget/desktop_aura/desktop_native_cursor_manager_win.h",
@@ -1279,10 +1281,6 @@ source_set("test_support") {
     ]
     deps += [ "//ui/ozone:ui_test_support" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 test("views_unittests") {
@@ -1374,7 +1372,8 @@ test("views_unittests") {
     "input_protection/default_input_protection_policy_unittest.cc",
     "input_protection/input_protection_event_handler_unittest.cc",
     "input_protection/occluded_widget_input_protector_unittest.cc",
-    "input_protection/occlusion_aware_input_protection_policy_unittest.cc",
+    "input_protection/view_bounds_and_visibility_input_protection_policy_unittest.cc",
+    "input_protection/widget_stationarity_monitor_unittest.cc",
     "input_protection/window_activation_input_protection_policy_unittest.cc",
     "layout/animating_layout_manager_unittest.cc",
     "layout/box_layout_unittest.cc",
@@ -1397,9 +1396,10 @@ test("views_unittests") {
     "scoped_paint_lock_unittest.cc",
     "selection_controller_unittest.cc",
     "test/widget_test_unittest.cc",
+    "view_decoration_unittest.cc",
+    "view_guard_unittest.cc",
     "view_model_unittest.cc",
     "view_model_utils_unittest.cc",
-    "view_shadow_unittest.cc",
     "view_targeter_unittest.cc",
     "view_tracker_unittest.cc",
     "view_unittest.cc",
@@ -1426,6 +1426,7 @@ test("views_unittests") {
     ":views",
     "//base",
     "//base:i18n",
+    "//base/i18n:test_support",
     "//base/test:test_support",
     "//cc:test_support",
     "//cc/paint",
@@ -1453,7 +1454,7 @@ test("views_unittests") {
     "//ui/color",
     "//ui/color:mixers",
     "//ui/compositor:test_support",
-    "//ui/compositor_extra",
+    "//ui/decoration",
     "//ui/display:test_support",
     "//ui/events:dom_keycode_converter",
     "//ui/events:events_base",
@@ -1515,10 +1516,11 @@ test("views_unittests") {
     ]
     deps += [
       "//ui/base/ime/linux",
+      "//ui/linux:display_server_utils_unittests",
       "//ui/linux:test_support",
     ]
     if (use_dbus) {
-      deps += [ "//ui/linux:dark_mode_manager_unittests" ]
+      deps += [ "//ui/linux:portal_settings_unittests" ]
     }
   }
 
@@ -1563,6 +1565,7 @@ test("views_unittests") {
 
     public_deps = [
       "//components/remote_cocoa/app_shim",
+      "//components/remote_cocoa/app_shim:features",
       "//ui/accelerated_widget_mac",
     ]
   }
@@ -1592,7 +1595,6 @@ test("views_unittests") {
       "corewm/tooltip_controller_unittest.cc",
       "touchui/touch_selection_controller_impl_unittest.cc",
       "view_unittest_aura.cc",
-      "widget/legacy_window_reorderer_unittest.cc",
       "widget/native_widget_aura_unittest.cc",
       "widget/window_reorderer_unittest.cc",
     ]
@@ -1600,16 +1602,14 @@ test("views_unittests") {
       "//ui/aura",
       "//ui/aura:test_support",
       "//ui/base/cursor/mojom:cursor_type",
+      "//ui/platform_window",
       "//ui/wm",
       "//ui/wm/public",
     ]
 
     if (is_mac) {
       # views_unittests not yet compiling on Mac. http://crbug.com/378134
-      sources -= [
-        "widget/legacy_window_reorderer_unittest.cc",
-        "widget/window_reorderer_unittest.cc",
-      ]
+      sources -= [ "widget/window_reorderer_unittest.cc" ]
     }
 
     if (is_win) {
@@ -1691,6 +1691,9 @@ source_set("views_interactive_ui_tests") {
   testonly = true
 
   sources = [
+    "input_protection/input_protection_interactive_test.cc",
+    "input_protection/input_protection_interactive_test.h",
+    "input_protection/input_protection_interactive_uitest.cc",
     "widget/any_widget_observer_interactive_uitest.cc",
     "widget/widget_interactive_uitest.cc",
   ]
@@ -1703,6 +1706,7 @@ source_set("views_interactive_ui_tests") {
     "//mojo/core/embedder",
     "//skia",
     "//testing/gtest",
+    "//ui/accessibility:test_support",
     "//ui/base:test_support",
     "//ui/base/ime",
     "//ui/compositor",
@@ -1711,6 +1715,7 @@ source_set("views_interactive_ui_tests") {
     "//ui/resources",
     "//ui/resources:ui_test_pak",
     "//ui/strings",
+    "//ui/views/interaction:test_support",
   ]
 
   public_deps = [ "//ui/base/mojom" ]

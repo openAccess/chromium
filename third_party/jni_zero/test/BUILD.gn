@@ -12,7 +12,10 @@ testonly = true
 # Runnable C++ tests. Built both as a standalone binary and as part of
 # base_unittests so that CQ bots cover them.
 source_set("jni_zero_unittests_sources") {
-  sources = [ "jni_unique_ptr_unittest.cc" ]
+  sources = [
+    "jni_raw_ptr_unittest.cc",
+    "jni_unique_ptr_unittest.cc",
+  ]
   deps = [
     "//testing/gtest",
     "//third_party/jni_zero",
@@ -29,7 +32,9 @@ test("jni_zero_unittests") {
 generate_jni("test_jni") {
   sources = [
     "java/src/org/jni_zero/SampleForAnnotationProcessor.java",
+    "java/src/org/jni_zero/SampleForKotlinTests.kt",
     "java/src/org/jni_zero/SampleForTests.java",
+    "java/src/org/jni_zero/SampleSafePointersKotlin.kt",
   ]
 }
 
@@ -44,7 +49,9 @@ android_library("test_java") {
   sources = [
     "java/src/org/jni_zero/NullMarked.java",
     "java/src/org/jni_zero/SampleForAnnotationProcessor.java",
+    "java/src/org/jni_zero/SampleForKotlinTests.kt",
     "java/src/org/jni_zero/SampleForTests.java",
+    "java/src/org/jni_zero/SampleSafePointersKotlin.kt",
     "java/src/org/jni_zero/SampleUnderSamePackage.java",
     "java/src/org/jni_zero/TinySample.java",
     "java/src/org/jni_zero/extrapackage/ImportsTinySample.java",
@@ -53,6 +60,7 @@ android_library("test_java") {
   deps = [
     ":stubs_java",
     ":test_jni_java",
+    "//third_party/android_deps:kotlin_stdlib_java",
     "//third_party/jni_zero:jni_zero_java",
   ]
 }

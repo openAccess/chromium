@@ -53,6 +53,7 @@ class IdentityTestEnvironment;
 }  // namespace signin
 
 namespace webauthn {
+class FakeCmtgDeviceKeyProvider;
 class PasskeyModel;
 }  // namespace webauthn
 
@@ -125,6 +126,12 @@ class EnclaveAuthenticatorTestBase : public SyncTest {
 
   void WaitForEnclaveLoaded();
 
+  // Returns the fake CMTG device key provider. It acts as the CryptAuth CMTG
+  // wrapper key service behind the real CryptauthCmtgDeviceKeyProvider.
+  webauthn::FakeCmtgDeviceKeyProvider& cmtg_device_key_provider_fake() {
+    return *cmtg_device_key_provider_fake_;
+  }
+
   scoped_refptr<base::TestMockTimeTaskRunner> timer_task_runner_;
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
   std::unique_ptr<TempDir> temp_dir_;
@@ -145,9 +152,12 @@ class EnclaveAuthenticatorTestBase : public SyncTest {
   std::unique_ptr<device::fido::mac::ScopedBiometricsOverride>
       biometrics_override_;
   std::unique_ptr<device::fido::icloud_keychain::Fake> fake_icloud_keychain_;
-  std::unique_ptr<ScopedICloudDriveOverride> scoped_icloud_drive_override_;
+  std::unique_ptr<ScopedICloudKeychainOverride>
+      scoped_icloud_keychain_override_;
 #endif
   std::unique_ptr<FakeRecoveryKeyStore> recovery_key_store_;
+  std::unique_ptr<webauthn::FakeCmtgDeviceKeyProvider>
+      cmtg_device_key_provider_fake_;
   std::unique_ptr<WebAuthnScopedFakeUnexportableKeyProvider> fake_hw_provider_;
   std::unique_ptr<crypto::ScopedUserVerifyingKeysSupportedOverride>
       uvkey_override_;

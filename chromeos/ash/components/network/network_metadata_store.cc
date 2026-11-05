@@ -50,8 +50,6 @@ const char kCustomApnList[] = "custom_apn_list";
 const char kCustomApnListV2[] = "custom_apn_list_v2";
 const char kHasFixedHiddenNetworks[] =
     "metadata_store.has_fixed_hidden_networks";
-const char kDayOfTrafficCountersAutoReset[] =
-    "day_of_traffic_counters_auto_reset";
 const char kUserTextMessageSuppressionState[] =
     "user_text_message_suppression_state";
 
@@ -517,30 +515,18 @@ bool NetworkMetadataStore::GetHasBadPassword(const std::string& network_guid) {
 
 void NetworkMetadataStore::SetCustomApnList(const std::string& network_guid,
                                             base::ListValue list) {
-  if (ash::features::IsApnRevampEnabled()) {
-    if (!IsApnListValid(list)) {
-      NET_LOG(ERROR) << "network_guid: " << network_guid << std::endl
-                     << "Invalid list passed to SetCustomApnList():" << list;
-      return;
-    }
-
-    SetPref(network_guid, kCustomApnListV2, base::Value(std::move(list)));
+  if (!IsApnListValid(list)) {
+    NET_LOG(ERROR) << "network_guid: " << network_guid << std::endl
+                   << "Invalid list passed to SetCustomApnList():" << list;
     return;
   }
 
-  SetPref(network_guid, kCustomApnList, base::Value(std::move(list)));
+  SetPref(network_guid, kCustomApnListV2, base::Value(std::move(list)));
 }
 
 const base::ListValue* NetworkMetadataStore::GetCustomApnList(
     const std::string& network_guid) {
-  if (ash::features::IsApnRevampEnabled()) {
-    if (const base::Value* pref = GetPref(network_guid, kCustomApnListV2)) {
-      return pref->GetIfList();
-    }
-    return nullptr;
-  }
-
-  if (const base::Value* pref = GetPref(network_guid, kCustomApnList)) {
+  if (const base::Value* pref = GetPref(network_guid, kCustomApnListV2)) {
     return pref->GetIfList();
   }
   return nullptr;
@@ -548,23 +534,10 @@ const base::ListValue* NetworkMetadataStore::GetCustomApnList(
 
 const base::ListValue* NetworkMetadataStore::GetPreRevampCustomApnList(
     const std::string& network_guid) {
-  DCHECK(ash::features::IsApnRevampEnabled());
   if (const base::Value* pref = GetPref(network_guid, kCustomApnList)) {
     return pref->GetIfList();
   }
   return nullptr;
-}
-
-void NetworkMetadataStore::SetDayOfTrafficCountersAutoReset(
-    const std::string& network_guid,
-    const std::optional<int>& day) {
-  auto value = day.has_value() ? base::Value(day.value()) : base::Value();
-  SetPref(network_guid, kDayOfTrafficCountersAutoReset, std::move(value));
-}
-
-const base::Value* NetworkMetadataStore::GetDayOfTrafficCountersAutoReset(
-    const std::string& network_guid) {
-  return GetPref(network_guid, kDayOfTrafficCountersAutoReset);
 }
 
 void NetworkMetadataStore::SetSecureDnsTemplatesWithIdentifiersActive(

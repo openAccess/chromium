@@ -100,10 +100,7 @@ const char kSbEnableEnhancedProtection[] =
     "safebrowsing-enable-enhanced-protection";
 const char kForceTreatUserAsAdvancedProtection[] =
     "safe-browsing-treat-user-as-advanced-protection";
-
-// Enable the keyboard lock trigger of Scam Detection via command line for
-// easier testing.
-const char kScamDetectionKeyboardLockTriggerAndroid[] =
-    "scam-detection-keyboard-lock-trigger-android";
+const char kSafeBrowsingNoProtectionDurationSeconds[] =
+    "safe-browsing-no-protection-duration-seconds";
 
 }  // namespace safe_browsing::switches

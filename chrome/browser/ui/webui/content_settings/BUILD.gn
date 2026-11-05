@@ -5,7 +5,6 @@
 import("//mojo/public/tools/bindings/mojom.gni")
 
 mojom("mojo_bindings") {
-  disable_variants = true
   public_deps = [
     "//components/content_settings/core/common:mojo_bindings",
     "//mojo/public/mojom/base",
@@ -78,7 +77,6 @@ if (!is_android) {
       "//base/test:test_support",
       "//chrome/browser/content_settings:content_settings_factory",
       "//chrome/browser/profiles:profile",
-      "//chrome/browser/ui",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/common",
       "//chrome/test:test_support",

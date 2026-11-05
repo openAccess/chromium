@@ -19,6 +19,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/gtest_util.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -33,6 +34,7 @@
 #include "ui/gfx/text_utils.h"
 #include "ui/views/accessibility/ax_virtual_view.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/table/table_grouper.h"
 #include "ui/views/controls/table/table_header.h"
@@ -74,6 +76,8 @@ class TableViewTestHelper {
   }
 
   TableHeader* header() { return table_->header_; }
+
+  void SetModel(ui::TableModel* model) { table_->SetModel(model); }
 
   void SetSelectionModel(const ui::ListSelectionModel& new_selection) {
     table_->SetSelectionModel(new_selection);
@@ -250,12 +254,14 @@ class TestTableModel2 : public ui::TableModel {
   // Allows overriding the tooltip for testing.
   void SetTooltip(const std::u16string& tooltip);
 
+  ui::TableModelObserver* observer() const { return observer_; }
+
   // ui::TableModel:
-  size_t RowCount() override;
-  std::u16string GetText(size_t row, int column_id) override;
-  std::u16string GetTooltip(size_t row) override;
+  size_t RowCount() const override;
+  std::u16string GetText(size_t row, int column_id) const override;
+  std::u16string GetTooltip(size_t row) const override;
   void SetObserver(ui::TableModelObserver* observer) override;
-  int CompareValues(size_t row1, size_t row2, int column_id) override;
+  int CompareValues(size_t row1, size_t row2, int column_id) const override;
 
  private:
   raw_ptr<ui::TableModelObserver> observer_ = nullptr;
@@ -351,15 +357,15 @@ void TestTableModel2::SetTooltip(const std::u16string& tooltip) {
   tooltip_ = tooltip;
 }
 
-size_t TestTableModel2::RowCount() {
+size_t TestTableModel2::RowCount() const {
   return rows_.size();
 }
 
-std::u16string TestTableModel2::GetText(size_t row, int column_id) {
+std::u16string TestTableModel2::GetText(size_t row, int column_id) const {
   return base::NumberToString16(rows_[row][column_id]);
 }
 
-std::u16string TestTableModel2::GetTooltip(size_t row) {
+std::u16string TestTableModel2::GetTooltip(size_t row) const {
   return tooltip_ ? *tooltip_ : u"Tooltip" + base::NumberToString16(row);
 }
 
@@ -367,7 +373,9 @@ void TestTableModel2::SetObserver(ui::TableModelObserver* observer) {
   observer_ = observer;
 }
 
-int TestTableModel2::CompareValues(size_t row1, size_t row2, int column_id) {
+int TestTableModel2::CompareValues(size_t row1,
+                                   size_t row2,
+                                   int column_id) const {
   return rows_[row1][column_id] - rows_[row2][column_id];
 }
 
@@ -1002,13 +1010,10 @@ TEST_P(TableViewTest, ColumnVisibility) {
   EXPECT_EQ(1, table_->GetVisibleColumn(0).column.id);
   EXPECT_EQ("rows=0 4 cols=0 1", helper_->GetPaintRegion(table_->bounds()));
 
-  // Hide the second column.
+  // The second column is the last visible one, so it cannot be hidden.
   table_->SetColumnVisibility(1, false);
-  EXPECT_EQ(0u, helper_->visible_col_count());
-
-  // Show the second column.
-  table_->SetColumnVisibility(1, true);
   ASSERT_EQ(1u, helper_->visible_col_count());
+  EXPECT_TRUE(table_->IsColumnVisible(1));
   EXPECT_EQ(1, table_->GetVisibleColumn(0).column.id);
   EXPECT_EQ("rows=0 4 cols=0 1", helper_->GetPaintRegion(table_->bounds()));
 
@@ -1020,17 +1025,30 @@ TEST_P(TableViewTest, ColumnVisibility) {
   EXPECT_EQ("rows=0 4 cols=0 2", helper_->GetPaintRegion(table_->bounds()));
 }
 
-// Regression tests for https://crbug.com/1283805, and
-// https://crbug.com/1283807.
-TEST_P(TableViewTest, NoCrashesWithAllColumnsHidden) {
-  // Set both initially visible columns hidden.
+// Regression test for https://crbug.com/1283805, https://crbug.com/1283807
+// and https://crbug.com/40836680: the table never ends up with rows but no
+// visible column, and the one remaining column keeps working.
+TEST_P(TableViewTest, LastVisibleColumnCannotBeHidden) {
+  EXPECT_FALSE(table_->IsLastVisibleColumn(0));
+  EXPECT_FALSE(table_->IsLastVisibleColumn(1));
   table_->SetColumnVisibility(0, false);
+  EXPECT_TRUE(table_->IsLastVisibleColumn(1));
+  EXPECT_FALSE(table_->IsLastVisibleColumn(0));
   table_->SetColumnVisibility(1, false);
-  EXPECT_EQ(0u, helper_->visible_col_count());
+  ASSERT_EQ(1u, helper_->visible_col_count());
+  EXPECT_TRUE(table_->IsColumnVisible(1));
+  EXPECT_FALSE(table_->IsColumnVisible(0));
 
-  // Remove and add rows in this state, there should be no crashes.
+  // Rows can still be removed and added.
   model_->RemoveRow(0);
   model_->AddRows(1, 2, /*value_multiplier=*/10);
+  EXPECT_EQ(1u, helper_->visible_col_count());
+
+  // Once another column is visible again, the previously last one can go.
+  table_->SetColumnVisibility(0, true);
+  table_->SetColumnVisibility(1, false);
+  ASSERT_EQ(1u, helper_->visible_col_count());
+  EXPECT_EQ(0, table_->GetVisibleColumn(0).column.id);
 }
 
 // Verifies resizing a column using the mouse works.
@@ -2592,6 +2610,50 @@ TEST_P(TableViewTest, TableHeaderColumnAccessibleViewsFocusable) {
             view_accessibility.GetActiveDescendantView());
 }
 
+TEST_P(TableViewTest, ClearModel) {
+  ASSERT_EQ(model_.get(), table_->model());
+  EXPECT_EQ(table_, model_->observer());
+  EXPECT_EQ(4u, table_->GetRowCount());
+  EXPECT_FALSE(table_->GetViewAccessibility().virtual_children().empty());
+
+  table_->SetTableStyle({.inset_focus_ring = true});
+  table_->RequestFocus();
+  table_->Select(1);
+  EXPECT_FALSE(table_->selection_model().empty());
+  EXPECT_EQ(1u, table_->GetFirstSelectedRow());
+  if constexpr (PlatformStyle::kTableViewSupportsKeyboardNavigationByCell) {
+    table_->SetActiveVisibleColumnIndex(0);
+    EXPECT_TRUE(table_->GetHasFocusIndicator());
+    ASSERT_NE(nullptr, FocusRing::Get(table_));
+    EXPECT_TRUE(FocusRing::Get(table_)->ShouldPaintForTesting());
+  }
+
+  table_->ClearModel();
+
+  EXPECT_EQ(nullptr, table_->model());
+  EXPECT_EQ(nullptr, model_->observer());
+  EXPECT_EQ(0u, table_->GetRowCount());
+  EXPECT_TRUE(table_->selection_model().empty());
+  EXPECT_EQ(std::nullopt, table_->GetFirstSelectedRow());
+  EXPECT_EQ("active=<none> anchor=<none> selection=", SelectionStateAsString());
+  EXPECT_TRUE(table_->GetViewAccessibility().virtual_children().empty());
+  if constexpr (PlatformStyle::kTableViewSupportsKeyboardNavigationByCell) {
+    EXPECT_FALSE(table_->GetHasFocusIndicator());
+    EXPECT_FALSE(FocusRing::Get(table_)->ShouldPaintForTesting());
+  }
+
+  // Mutating the detached model must not affect the table.
+  model_->AddRow(0, 9, 9);
+  model_->RemoveRow(0);
+  EXPECT_EQ(0u, table_->GetRowCount());
+  EXPECT_TRUE(table_->GetViewAccessibility().virtual_children().empty());
+
+  // Calling ClearModel() again when no model is set is a no-op.
+  table_->ClearModel();
+  EXPECT_EQ(nullptr, table_->model());
+  EXPECT_EQ(0u, table_->GetRowCount());
+}
+
 class TableViewFocusTest : public TableViewTest {
  public:
   TableViewFocusTest() = default;
@@ -2688,6 +2750,37 @@ TEST_F(TableViewDefaultConstructabilityTest, TestFunctionalWithoutModel) {
   widget()->client_view()->AddChildView(std::move(scroll_view));
 }
 
+TEST_F(TableViewDefaultConstructabilityTest, InitWithNullModel) {
+  std::vector<ui::TableColumn> columns(2);
+  columns[0].title = u"Title Column 0";
+  columns[1].title = u"Title Column 1";
+  columns[1].id = 1;
+
+  for (bool use_default_construction : {false, true}) {
+    std::unique_ptr<TableView> table;
+    if (use_default_construction) {
+      table = std::make_unique<TableView>();
+      table->Init(nullptr, columns, TableType::kTextOnly, false);
+    } else {
+      table = std::make_unique<TableView>(nullptr, columns,
+                                          TableType::kTextOnly, false);
+    }
+
+    EXPECT_EQ(nullptr, table->model());
+    EXPECT_EQ(0u, table->GetRowCount());
+    EXPECT_EQ(2u, table->visible_columns().size());
+    EXPECT_TRUE(table->GetViewAccessibility().virtual_children().empty());
+  }
+}
+
+using TableViewDeathTest = ViewsTestBase;
+
+TEST_F(TableViewDeathTest, SetModelNullptr) {
+  TableView table;
+  TableViewTestHelper helper(&table);
+  EXPECT_CHECK_DEATH(helper.SetModel(nullptr));
+}
+
 class TestTableModel3 : public TestTableModel2 {
  public:
   TestTableModel3() {
@@ -2698,7 +2791,7 @@ class TestTableModel3 : public TestTableModel2 {
 
   TestTableModel3(const TestTableModel3&) = delete;
   TestTableModel3& operator=(const TestTableModel3&) = delete;
-  ui::ImageModel GetIcon(size_t row) override {
+  ui::ImageModel GetIcon(size_t row) const override {
     return ui::ImageModel::FromImageSkia(
         gfx::ImageSkia::CreateFrom1xBitmap(icon_));
   }

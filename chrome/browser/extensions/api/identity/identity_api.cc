@@ -31,6 +31,7 @@
 #include "chrome/common/url_constants.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/primary_account_change_event.h"
+#include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_function_dispatcher.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/buildflags/buildflags.h"
@@ -69,15 +70,17 @@ IdentityAPI::IdentityAPI(content::BrowserContext* context)
 
 IdentityAPI::~IdentityAPI() = default;
 
-IdentityMintRequestQueue* IdentityAPI::mint_queue() { return &mint_queue_; }
+IdentityMintRequestQueue& IdentityAPI::mint_queue() {
+  return mint_queue_;
+}
 
-IdentityTokenCache* IdentityAPI::token_cache() {
-  return &token_cache_;
+IdentityTokenCache& IdentityAPI::token_cache() {
+  return token_cache_;
 }
 
 void IdentityAPI::SetGaiaIdForExtension(const std::string& extension_id,
                                         const GaiaId& gaia_id) {
-  DCHECK(!gaia_id.empty());
+  CHECK(!gaia_id.empty(), base::NotFatalUntil::M161);
   extension_prefs_->UpdateExtensionPref(extension_id, kIdentityGaiaIdPref,
                                         base::Value(gaia_id.ToString()));
 }
@@ -199,12 +202,10 @@ void IdentityAPI::MaybeShowChromeSigninDialog(
   }
   on_chrome_signin_dialog_completed_.push_back(std::move(on_complete));
   is_chrome_signin_dialog_open_ = true;
-  browser->GetFeatures()
-      .signin_view_controller()
-      ->MaybeShowChromeSigninDialogForExtensions(
-          extension_name_for_display,
-          base::BindOnce(&IdentityAPI::OnChromeSigninDialogDestroyed,
-                         weak_ptr_factory_.GetWeakPtr()));
+  SigninViewController::From(browser)->MaybeShowChromeSigninDialogForExtensions(
+      extension_name_for_display,
+      base::BindOnce(&IdentityAPI::OnChromeSigninDialogDestroyed,
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 void IdentityAPI::OnChromeSigninDialogDestroyed() {
@@ -250,6 +251,7 @@ void IdentityAPI::OnPrimaryAccountChanged(
       }
       break;
     case signin::PrimaryAccountChangeEvent::Type::kCleared:
+      token_cache_.EraseAllTokens();
       EraseStaleGaiaIdsForAllExtensions();
       base::flat_set<GaiaId> tracked_accounts;
       std::swap(tracked_accounts, accounts_known_to_extensions_);
@@ -276,18 +278,28 @@ void IdentityAPI::OnRefreshTokenUpdatedForAccount(
   FireOnAccountSignInChanged(account_info.gaia, true);
 }
 
+void IdentityAPI::OnErrorStateOfRefreshTokenUpdatedForAccount(
+    const CoreAccountInfo& account_info,
+    const GoogleServiceAuthError& error,
+    signin_metrics::SourceForRefreshTokenOperation /*token_operation_source*/) {
+  if (error.IsPersistentError()) {
+    token_cache_.EraseAllTokensForAccount(account_info.account_id);
+  }
+}
+
 void IdentityAPI::OnExtendedAccountInfoRemoved(
     const AccountInfo& account_info) {
-  DCHECK(!account_info.gaia.empty());
+  CHECK(!account_info.GetGaiaId().empty(), base::NotFatalUntil::M161);
+  token_cache_.EraseAllTokensForAccount(account_info.GetAccountId());
   EraseStaleGaiaIdsForAllExtensions();
 
-  auto it = accounts_known_to_extensions_.find(account_info.gaia);
+  auto it = accounts_known_to_extensions_.find(account_info.GetGaiaId());
   if (it == accounts_known_to_extensions_.end()) {
     // Account unknown to Extensions.
     return;
   }
   accounts_known_to_extensions_.erase(it);
-  FireOnAccountSignInChanged(account_info.gaia, false);
+  FireOnAccountSignInChanged(account_info.GetGaiaId(), false);
 }
 
 void IdentityAPI::FireOnAccountSignInChanged(const GaiaId& gaia_id,
@@ -296,11 +308,12 @@ void IdentityAPI::FireOnAccountSignInChanged(const GaiaId& gaia_id,
   api::identity::AccountInfo api_account_info;
   api_account_info.id = gaia_id.ToString();
 
-  auto args =
-      api::identity::OnSignInChanged::Create(api_account_info, is_signed_in);
-  std::unique_ptr<Event> event(new Event(
-      events::IDENTITY_ON_SIGN_IN_CHANGED,
-      api::identity::OnSignInChanged::kEventName, std::move(args), profile_));
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::identity::OnSignInChanged::Create(api_account_info, is_signed_in));
+  auto event =
+      std::make_unique<Event>(events::IDENTITY_ON_SIGN_IN_CHANGED,
+                              api::identity::OnSignInChanged::kEventName,
+                              std::move(event_args), profile_);
 
   if (on_signin_changed_callback_for_testing_) {
     on_signin_changed_callback_for_testing_.Run(event.get());

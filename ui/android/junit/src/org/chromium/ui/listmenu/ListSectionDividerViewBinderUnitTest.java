@@ -4,22 +4,16 @@
 
 package org.chromium.ui.listmenu;
 
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.when;
-
 import android.content.Context;
+import android.graphics.drawable.ColorDrawable;
 import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
-import androidx.test.filters.SmallTest;
-
+import org.junit.Assert;
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.junit.MockitoJUnit;
-import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -29,22 +23,20 @@ import org.chromium.ui.modelutil.PropertyModel;
 /** Tests for {@link ListSectionDividerViewBinder}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class ListSectionDividerViewBinderUnitTest {
-    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
-
-    @Mock private View mDividerView;
-    @Mock private View mDividerInternalView;
-
     private Context mContext;
+    private ViewGroup mDividerView;
+    private View mDividerInternalView;
 
     @Before
     public void setUp() {
-        mContext = RuntimeEnvironment.application;
-        when(mDividerView.getContext()).thenReturn(mContext);
-        when(mDividerView.findViewById(R.id.divider_view)).thenReturn(mDividerInternalView);
+        mContext = RuntimeEnvironment.getApplication();
+        mDividerView = new FrameLayout(mContext);
+        mDividerInternalView = new View(mContext);
+        mDividerInternalView.setId(R.id.divider_view);
+        mDividerView.addView(mDividerInternalView);
     }
 
     @Test
-    @SmallTest
     public void testColor() {
         PropertyModel propertyModel =
                 new PropertyModel.Builder(ListSectionDividerProperties.ALL_KEYS)
@@ -53,18 +45,18 @@ public class ListSectionDividerViewBinderUnitTest {
         ListSectionDividerViewBinder.bind(
                 propertyModel, mDividerView, ListSectionDividerProperties.COLOR_ID);
 
-        verify(mDividerInternalView)
-                .setBackgroundColor(mContext.getColor(R.color.divider_color_light));
+        Assert.assertEquals(
+                mContext.getColor(R.color.divider_color_light),
+                ((ColorDrawable) mDividerInternalView.getBackground()).getColor());
     }
 
     @Test
-    @SmallTest
     public void testColor_DefaultOrZero() {
         PropertyModel propertyModel =
                 new PropertyModel.Builder(ListSectionDividerProperties.ALL_KEYS).build();
         ListSectionDividerViewBinder.bind(
                 propertyModel, mDividerView, ListSectionDividerProperties.COLOR_ID);
 
-        verifyNoInteractions(mDividerInternalView);
+        Assert.assertNull(mDividerInternalView.getBackground());
     }
 }

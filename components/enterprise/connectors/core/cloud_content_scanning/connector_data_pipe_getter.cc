@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "base/byte_size.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
@@ -17,7 +18,6 @@
 #include "base/task/thread_pool.h"
 #include "components/enterprise/connectors/core/features.h"
 #include "net/base/net_errors.h"
-#include "services/network/public/cpp/resource_request_body.h"
 
 #if BUILDFLAG(IS_POSIX)
 #include <sys/mman.h>
@@ -277,19 +277,6 @@ ConnectorDataPipeGetter::CreateResumablePipeGetter(
                                                    std::move(mapping));
 }
 
-// static
-std::unique_ptr<ConnectorDataPipeGetter>
-ConnectorDataPipeGetter::CreateResumablePipeGetter(
-    scoped_refptr<network::ResourceRequestBody> request_body) {
-  if (!request_body) {
-    return nullptr;
-  }
-
-  return std::make_unique<ConnectorDataPipeGetter>(/*boundary*/ std::string(),
-                                                   /*metadata*/ std::string(),
-                                                   std::move(request_body));
-}
-
 #if BUILDFLAG(IS_CHROMEOS)
 ConnectorDataPipeGetter::ConnectorDataPipeGetter(
     std::unique_ptr<ChunkedFileDataPipeProducer> chunked_file_producer)
@@ -312,8 +299,7 @@ ConnectorDataPipeGetter::ConnectorDataPipeGetter(
     : ConnectorDataPipeGetter(boundary,
                               metadata,
                               std::move(file),
-                              /*page=*/base::ReadOnlySharedMemoryMapping(),
-                              /*request_body=*/nullptr) {
+                              /*page=*/base::ReadOnlySharedMemoryMapping()) {
   CHECK(file_->IsValid());
 
   if (is_obfuscated) {
@@ -329,32 +315,16 @@ ConnectorDataPipeGetter::ConnectorDataPipeGetter(
     : ConnectorDataPipeGetter(boundary,
                               metadata,
                               /*file=*/nullptr,
-                              std::move(page),
-                              /*request_body=*/nullptr) {
+                              std::move(page)) {
   CHECK(page_.IsValid());
 }
 
 ConnectorDataPipeGetter::ConnectorDataPipeGetter(
     const std::string& boundary,
     const std::string& metadata,
-    scoped_refptr<network::ResourceRequestBody> request_body)
-    : ConnectorDataPipeGetter(boundary,
-                              metadata,
-                              /*file=*/nullptr,
-                              /*page=*/base::ReadOnlySharedMemoryMapping(),
-                              std::move(request_body)) {
-  CHECK(request_body_);
-}
-
-ConnectorDataPipeGetter::ConnectorDataPipeGetter(
-    const std::string& boundary,
-    const std::string& metadata,
     std::unique_ptr<InternalMemoryMappedFile> file,
-    base::ReadOnlySharedMemoryMapping page,
-    scoped_refptr<network::ResourceRequestBody> request_body)
-    : file_(std::move(file)),
-      page_(std::move(page)),
-      request_body_(std::move(request_body)) {
+    base::ReadOnlySharedMemoryMapping page)
+    : file_(std::move(file)), page_(std::move(page)) {
   if (!boundary.empty() && !metadata.empty()) {
     PrepareMultipartRequestFormat(boundary, metadata);
   }
@@ -371,13 +341,15 @@ void ConnectorDataPipeGetter::Read(mojo::ScopedDataPipeProducerHandle pipe,
     auto overhead =
         deobfuscator_->CalculateDeobfuscationOverhead(file_->bytes());
     if (!overhead.has_value()) {
-      std::move(callback).Run(net::ERR_FAILED, 0);
+      std::move(callback).Run(base::unexpected(net::ERR_FAILED));
       return;
     }
     // Pass the size of the deobfuscated data to the data pipe producer.
-    std::move(callback).Run(net::OK, FullSize() - overhead.value());
+    std::move(callback).Run(base::ByteSize(
+        base::checked_cast<uint64_t>(FullSize() - overhead.value())));
   } else {
-    std::move(callback).Run(net::OK, FullSize());
+    std::move(callback).Run(
+        base::ByteSize(base::checked_cast<uint64_t>(FullSize())));
   }
 
   pipe_ = std::move(pipe);
@@ -646,10 +618,6 @@ bool ConnectorDataPipeGetter::is_chunked_file_data_pipe() const {
 
 bool ConnectorDataPipeGetter::is_page_data_pipe() const {
   return page_.data();
-}
-
-bool ConnectorDataPipeGetter::is_network_request_data_pipe() const {
-  return request_body_.get();
 }
 
 }  // namespace enterprise_connectors

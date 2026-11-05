@@ -15,6 +15,7 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "url/gurl.h"
 
@@ -39,8 +40,8 @@ void InfoRequestedByEvent(tabs::TabInterface* tab, int event_flags) {
   }
   tab->GetBrowserWindowInterface()->OpenGURL(
       GURL(lens::features::GetLensOverlayHelpCenterURL()),
-      ui::DispositionFromEventFlags(event_flags,
-                                    WindowOpenDisposition::NEW_FOREGROUND_TAB));
+      ui::DispositionFromEventFlags(
+          event_flags, ui::mojom::WindowOpenDisposition::kNewForegroundTab));
 }
 
 void ActivityRequestedByEvent(tabs::TabInterface* tab, int event_flags) {
@@ -50,7 +51,7 @@ void ActivityRequestedByEvent(tabs::TabInterface* tab, int event_flags) {
   }
   tab->GetBrowserWindowInterface()->OpenGURL(
       GURL(lens::features::GetLensOverlayActivityURL()),
-      ui::DispositionFromEventFlags(event_flags,
-                                    WindowOpenDisposition::NEW_FOREGROUND_TAB));
+      ui::DispositionFromEventFlags(
+          event_flags, ui::mojom::WindowOpenDisposition::kNewForegroundTab));
 }
 }  // namespace lens

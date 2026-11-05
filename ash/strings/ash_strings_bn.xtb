@@ -198,7 +198,6 @@
 <translation id="1525508553941733066">খারিজ করুন</translation>
 <translation id="152629053603783244">Linux রিস্টার্ট করুন</translation>
 <translation id="1526448108126799339">নতুন উইন্ডোতে নতুন ট্যাব খুলুন</translation>
-<translation id="1528259147807435347">গত সপ্তাহে এডিট করা হয়েছে</translation>
 <translation id="1536604384701784949"><ph name="USER_EMAIL_ADDRESS" /> থেকে সাইন করতে প্রথমে আপনাকে সব অ্যাকাউন্ট থেকে সাইন-আউট করতে হবে। সাইন আউট করতে, 'বাতিল করুন' বিকল্পটি বেছে নিয়ে ফিরে যান। তারপর 'স্ট্যাটাস এরিয়া' খুলতে টাইম বেছে নিয়ে সাইন আউট বেছে নিন। তারপর <ph name="USER_EMAIL_ADDRESS_2" />-এ আবার সাইন-ইন করুন।</translation>
 <translation id="15373452373711364">বড় মাউস কার্সার</translation>
 <translation id="1545331255323159851">আপনার ফোনের সাম্প্রতিক ফটো, মিডিয়া এবং বিজ্ঞপ্তি দেখুন</translation>
@@ -372,9 +371,7 @@
 <translation id="2075520525463668108"><ph name="CAPTURE_MEDIUM" /> টগল করুন। <ph name="CAPTURE_MEDIUM" /> <ph name="CAPTURE_STATE" /> হয়েছে।</translation>
 <translation id="2079545284768500474">আগের অবস্থায় ফিরুন</translation>
 <translation id="2086334242442703436">ইমোজি পিকার খুলুন</translation>
-<translation id="2088116547584365419">গেমস</translation>
 <translation id="2089550919269323883"><ph name="VM_NAME" /> ইনস্টল করার সুবিধা, এন্টারপ্রাইজ নীতির মাধ্যমে ব্লক করা হয়েছে। সহায়তার জন্য আপনার সিস্টেম অ্যাডমিনিস্ট্রেটরের সাথে যোগাযোগ করুন। সমস্যার কোড হল <ph name="ERROR" />।</translation>
-<translation id="2093792000875799555">Steam for Chromebook-এর খবর</translation>
 <translation id="209965399369889474">কোনও নেটওয়ার্কে কানেক্ট করা নেই</translation>
 <translation id="2107581415810719320">অন্য বোতাম <ph name="BUTTON_NUMBER" /></translation>
 <translation id="2107914222138020205">আপনার USB-C কেবল Thunderbolt-এ কাজ করে না। ডিভাইসের পারফর্ম্যান্স সীমিত হতে পারে।</translation>
@@ -424,6 +421,7 @@
 <translation id="2293443480080733021">আপনি কীসের উপর ফোকাস করতে চান? টাস্ক যোগ করতে Enter 'কী' প্রেস করুন।</translation>
 <translation id="229397294990920565">মোবাইল ডেটা বন্ধ করা হচ্ছে...</translation>
 <translation id="2295777434187870477">মাইক্রোফোন চালু করা আছে, টগল করলে এটি মিউট হয়ে যাবে।</translation>
+<translation id="2296880470921996802">আপনার আইটি অ্যাডমিন ক্লিপবোর্ড ইতিহাস বন্ধ করে দিয়েছেন</translation>
 <translation id="2302092602801625023">এই অ্যাকাউন্টটি Family Link দ্বারা ম্যানেজ করা</translation>
 <translation id="2303600792989757991">উইন্ডোর ওভারভিউ টগল করুন</translation>
 <translation id="2304702218354340897">আপনি কি সত্যিই ফেস কন্ট্রোল বন্ধ করতে চান?</translation>
@@ -472,7 +470,6 @@
 <translation id="240789602312469910">ব্যবহার এবং ডায়াগনস্টিক সম্পর্কিত ডেটা পাঠান। Google-এ ডায়াগনস্টিক, ডিভাইস এবং অ্যাপ ব্যবহারের ডেটা অটোমেটিক পাঠিয়ে, আপনার সন্তানের Android অভিজ্ঞতাকে উন্নত করতে সাহায্য করুন। এটি আপনার সন্তানকে শনাক্ত করতে ব্যবহার করা হবে না এবং সিস্টেম ও অ্যাপের স্থায়িত্ব বাড়াতে ও অন্যান্য উন্নতিতে সাহায্য করবে। কিছু পরিমাণ মোট ডেটা Android ডেভেলপারের মতো Google অ্যাপ এবং পার্টনারদেরও সাহায্য করবে। এই <ph name="BEGIN_LINK1" />সেটিং<ph name="END_LINK1" /> মালিকের নিয়ন্ত্রণে রয়েছে। এই ডিভাইসের জন্য ডায়াগনস্টিক এবং ব্যবহারের ডেটা Google-কে পাঠানোর বিষয়টি মালিক বেছে নিতে পারেন। অতিরিক্ত ওয়েব ও অ্যাপ অ্যাক্টিভিটি সেটিং আপনার সন্তানের ডিভাইসের জন্য চালু করা থাকলে, এই ডেটা তার Google অ্যাকাউন্টে সেভ করা হতে পারে। <ph name="BEGIN_LINK2" />মেট্রিক সম্পর্কে আরও জানুন<ph name="BEGIN_LINK2_END" />আরও জানুন<ph name="END_LINK2" /></translation>
 <translation id="2408955596600435184">আপনার পিন লিখুন</translation>
 <translation id="2412593942846481727">আপডেট উপলভ্য</translation>
-<translation id="2416438829169535743">ভিউ ছেড়ে বেরিয়ে আসবেন?</translation>
 <translation id="2417486498593892439">নেটওয়ার্কে সাইন-ইন করুন</translation>
 <translation id="2423619675829330672">অনেকবার ভুল পিন লিখেছেন। <ph name="TIME_LEFT" /> অপেক্ষা করে আবার চেষ্টা করুন।</translation>
 <translation id="2426051945783024481">ক্যামেরা ফ্রেম অটোমেটিক কেন্দ্রে আছে</translation>
@@ -480,7 +477,6 @@
 <translation id="2429753432712299108">ব্লুটুথ ডিভাইস "<ph name="DEVICE_NAME" />" যুক্ত করার অনুমতি চাইছে। স্বীকার করার আগে, এই পাস কীটি ডিভাইসে প্রদর্শিত হয়েছে কিনা নিশ্চিত করুন: <ph name="PASSKEY" /></translation>
 <translation id="2435457462613246316">পাসওয়ার্ড দেখান</translation>
 <translation id="2437771564543046790">ব্যাটারির চার্জ কম আছে। 'ব্যাটারি সেভার' চালু করা হয়েছে</translation>
-<translation id="243878895369688216">গতকাল খোলা হয়েছে</translation>
 <translation id="2440978926514840421">GIF রেকর্ডিং নেওয়া হয়েছে</translation>
 <translation id="2441427462554639370">ডিস্কে স্টোরেজের জায়গা খুবই কম থাকায় রেকর্ডিং বন্ধ হয়ে গেছে</translation>
 <translation id="2445449901874883781">উচ্চ রেজোলিউশন ব্যবহার করুন</translation>
@@ -689,7 +685,6 @@
 <translation id="3039491566278747710">ডিভাইসে অফলাইন নীতি ইনস্টল করা যায়নি।</translation>
 <translation id="3039939407102840004">স্টাইলাস ব্যাটারিতে <ph name="PERCENTAGE" /> শতাংশ চার্জ আছে।</translation>
 <translation id="304097922505898963">Key Shortcuts অ্যাপ খুলুন</translation>
-<translation id="3040982432432547149">Chromebook-এর জন্য Steam উন্নত করতে আমাদের সাহায্য করুন</translation>
 <translation id="304417730895741346">আপনার পিন করা ও খোলা অ্যাপ শেল্ফে আছে। শেল্ফে কোনও অ্যাপে পিন করতে, অ্যাপে ডানদিকের বোতামে ক্লিক বা দুটি আঙুলের মাধ্যমে আপনার টাচপ্যাডে ট্যাপ করুন।</translation>
 <translation id="3045670165536837541">উপরে ডানদিকের হ্যান্ডেল বেছে নেওয়া হয়েছে, সরাতে তীরচিহ্ন 'কী' ব্যবহার করুন</translation>
 <translation id="3046178388369461825">Linux-এর ডিস্কে খুবই কম জায়গা আছে</translation>
@@ -873,7 +868,6 @@
 <translation id="3563432852173030730">কিয়স্ক অ্যাপ্লিকেশানটি ডাউনলোড করা যাবে না।</translation>
 <translation id="3563558822383875692">DLC কনফিগার করা হচ্ছে।</translation>
 <translation id="3563775809269155755">হটস্পট চালু করুন</translation>
-<translation id="3566240529365775567">এইমাত্র খোলা হয়েছে</translation>
 <translation id="3571734092741541777">সেট-আপ করুন</translation>
 <translation id="3573179567135747900">"<ph name="FROM_LOCALE" />" তে ফেরান (পুনর্সূচনা প্রয়োজন)</translation>
 <translation id="3576141592585647168">টাইমজোন পরিবর্তন করা</translation>
@@ -911,7 +905,6 @@
 <translation id="363473492175527493">এটির উপরে ফোকাস করতে টাস্ক সেট করা হয়েছে: <ph name="TASK_NAME" />। টাস্ক এডিট করতে Enter 'কী' প্রেস করুন।</translation>
 <translation id="3638400994746983214">গোপনীয়তা স্ক্রিন টগল করুন। <ph name="STATE_TEXT" />।</translation>
 <translation id="3649256019230929621">উইন্ডো সংক্ষিপ্তায়ন করুন</translation>
-<translation id="3650952250015018111">"<ph name="APP_NAME" />" অ্যাপকে এগুলি অ্যাক্সেস করতে দিন:</translation>
 <translation id="3652817283076144888">শুরু হচ্ছে</translation>
 <translation id="3653999174677652346"><ph name="EVENT_POSITION" />
         <ph name="EVENT_SUMMARY" />,
@@ -934,7 +927,6 @@
 <translation id="3697991387880191195">'স্ক্রিনশট শর্টকাট' বিকল্পে প্রেস করুন</translation>
 <translation id="3702809606464356667">বর্তমান ডেস্ক থেকে উইন্ডো দেখানো হচ্ছে, সব ডেস্ক থেকে উইন্ডো দেখাতে 'উর্ধমুখী তীরচিহ্ন' কী প্রেস করুন</translation>
 <translation id="3705722231355495246">-</translation>
-<translation id="3706423975342040244">বিনোদন</translation>
 <translation id="370665806235115550">লোড হচ্ছে...</translation>
 <translation id="3707093869106077605"><ph name="UNAVAILABLE_DLC_ONE" /> এবং <ph name="UNAVAILABLE_DLC_TWO" /> উপলভ্য নেই।</translation>
 <translation id="3708186454126126312">আগে কানেক্ট করা ছিল</translation>
@@ -960,7 +952,6 @@
 <translation id="3756485814916578707">স্ক্রিন কাস্ট করা হচ্ছে</translation>
 <translation id="3765246971671567135">অফলাইন ডেমো মোড নীতি পড়া যায়নি।</translation>
 <translation id="3765841382945324995"><ph name="SIX_PACK_KEY_NAME" /> শর্টকার্ট <ph name="OLD_SHORTCUT" /> থেকে <ph name="NEW_SHORTCUT" />-এ আপডেট করা হয়েছে</translation>
-<translation id="3765841986579723851">আজ এডিট করা হয়েছে</translation>
 <translation id="3772109172035555611">আপনার TrackPoint কাস্টমাইজ করুন</translation>
 <translation id="3773700760453577392">একজন অ্যাডমিনিস্ট্রেটর <ph name="USER_EMAIL" />-র জন্য একাধিক সাইন-ইন বাতিল করেছেন। চালিয়ে যাওয়ার জন্য, সব ব্যবহারকারীকে অবশ্যই সাইন-আউট করতে হবে।</translation>
 <translation id="3779139509281456663"><ph name="NAME" /> কানেক্ট করা হচ্ছে</translation>
@@ -982,7 +973,6 @@
 <translation id="3824784079442479685">এর ফলে <ph name="APP_NAME" /> এবং ক্যামেরা ব্যবহার করার অনুমতি আছে এমন সমস্ত অ্যাপ ও ওয়েবসাইটে ক্যামেরা অ্যাক্সেস করা যায়। আপনাকে ওয়েব পেজ রিফ্রেশ করতে বা অ্যাপটি রিস্টার্ট করতে হতে পারে।</translation>
 <translation id="3826099427150913765">যাচাইকরণের জন্য পাসওয়ার্ড ব্যবহার করুন</translation>
 <translation id="383058930331066723">'ব্যাটারি সেভার' মোড চালু আছে</translation>
-<translation id="3831226344927851293">টিউটোরিয়াল ভিউ থেকে বেরিয়ে আসুন</translation>
 <translation id="383629559565718788">কীবোর্ড সেটিংস দেখান</translation>
 <translation id="384082539148746321">টেমপ্লেট মুছবেন?</translation>
 <translation id="3844627820291068572"><ph name="MODIFIER_ONE" /><ph name="MODIFIER_TWO" /> তারপর <ph name="KEY_ONE" /> বা <ph name="KEY_TWO" /> অথবা <ph name="KEY_THREE" /> কিংবা <ph name="KEY_FOUR" /></translation>
@@ -1000,7 +990,6 @@
 <translation id="3873915545594852654">ARC++ নিয়ে একটি সমস্যা হয়েছে।</translation>
 <translation id="3879748587602334249">ডাউনলোড ম্যানেজার</translation>
 <translation id="3884007280698606545">সর্বাধিক সংখ্যক USB ডিভাইস কানেক্ট করা হয়েছে</translation>
-<translation id="3886872229787704059">আজ খোলা হয়েছে</translation>
 <translation id="3892148308691398805">টেক্সট কপি করুন</translation>
 <translation id="3893630138897523026">ChromeVox (কথ্য প্রতিবার্তা)</translation>
 <translation id="3898464793473355515">ঘড়ির কাঁটার অভিমুখে ৯০ ডিগ্রি ঘোরান</translation>
@@ -1018,7 +1007,6 @@
 <translation id="394485226368336402">অডিও সেটিংস</translation>
 <translation id="3945319193631853098">সেট আপ করা সম্পূর্ণ করতে ট্যাপ করুন</translation>
 <translation id="3945867833895287237">হটস্পটে কানেক্ট করা হচ্ছে...</translation>
-<translation id="3950272133184491871">এখনই সাইন-আউট করবেন?</translation>
 <translation id="3950820424414687140">সাইন-ইন করুন</translation>
 <translation id="3953130726459169782">এখনও পর্যন্ত কোনও অ্যাসাইনমেন্ট সম্পূর্ণ হয়নি।</translation>
 <translation id="3957844511978444971">আপনি যে Google-এর এই পরিষেবাগুলির সেটিংস বেছে নিয়েছেন তা কনফার্ম করতে “স্বীকার করুন” বোতামে ট্যাপ করুন।</translation>
@@ -1031,6 +1019,7 @@
 <translation id="3977512764614765090">ব্যাটারি <ph name="PERCENTAGE" /> শতাংশ চার্জ করা হয়েছে এবং এখনও চার্জ করা চলছে।</translation>
 <translation id="3978162107953847778">আপনার অ্যাকাউন্টের ব্রাউজিং ইতিহাস ও Google Drive-এর মতো জায়গা থেকে লিঙ্ক যোগ করুন। এছাড়াও আপনি ইমোজি, ছবির ফাইল ও আরও অনেক কিছু ইনসার্ট করতে পারবেন। <ph name="LINK_TO_LEARN_MORE" /></translation>
 <translation id="3982013579989864579">অডিও আউটপুট পরিবর্তন করতে চান?</translation>
+<translation id="3983903378684256134">Chromebook-এ Steam</translation>
 <translation id="3984536049089846927">পরের পৃষ্ঠা</translation>
 <translation id="3986082989454912832">উত্তর</translation>
 <translation id="3990002060657467458">ওয়াই-ফাই, ব্লুটুথ এবং ভলিউমের মতো প্রায়শই ব্যবহার করা কন্ট্রোল 'দ্রুত সেটিংস'-এ আছে। এছাড়াও স্ক্রিনশট নিতে এখানে যেতে পারবেন।</translation>
@@ -1088,7 +1077,6 @@
 <translation id="4147911968024186208">আবার চেষ্টা করুন। সমস্যাটি আবার হলে, কাস্টমার সাপোর্টের সাথে যোগাযোগ করুন।</translation>
 <translation id="4150201353443180367">প্রদর্শন</translation>
 <translation id="4151054805501931758">পোর্ট্রেট টাচ-আপ</translation>
-<translation id="4151449637210235443">আপনার সাম্প্রতিক গেমপ্লে সম্পর্কে আমাদের বলুন</translation>
 <translation id="4156293514828496577"><ph name="PERCENTAGE" />% ব্যাটারির চার্জ আছে (প্রায় <ph name="TIME_LEFT" />)।
 ব্যাটারির আয়ু বাড়াতে কিছু ফিচার সীমিত করা হয়েছে।</translation>
 <translation id="4158003972857765638">নতুন ডেস্ক সাজান</translation>
@@ -1188,7 +1176,6 @@
 <translation id="4406883609789734330">লাইভ ক্যাপশন</translation>
 <translation id="4412698727486357573">সহায়তা কেন্দ্র</translation>
 <translation id="4412944820643904175"><ph name="FEATURE_NAME" /> বন্ধ আছে।</translation>
-<translation id="44141919652824029">"<ph name="APP_NAME" />" অ্যাপকে কানেক্ট করা ইউএসবি ডিভাইসগুলির তালিকা নিয়ে আসতে দেবেন?</translation>
 <translation id="4414242853388122273"><ph name="VM_NAME" /> সরানোর সময় সমস্যা হয়েছে। আবার চেষ্টা করুন।</translation>
 <translation id="4417647906073317561">ফোকাস মোড সংক্রান্ত সেটিংস। এটি ব্যবহার করতে, টাইমার, টাস্ক ও মিউজিক সেট করুন।</translation>
 <translation id="4418600384772451109">প্যানেল বন্ধ করুন</translation>
@@ -1589,10 +1576,8 @@
 <translation id="5551974246223970793">একটি পৃষ্ঠা সার্চ করার সময়, সার্চের জন্য পরবর্তী ম্যাচে যান</translation>
 <translation id="5556459405103347317">রিলোড করুন</translation>
 <translation id="5558091555391176027">'নিয়ারবাই শেয়ার হাই ভিজিবিলিটি' মোড টগল করুন</translation>
-<translation id="5558314826121965174">ক্রিয়েটিভিটি</translation>
 <translation id="556042886152191864">বোতাম</translation>
 <translation id="5570122939431135380">নতুন ছদ্মবেশী উইন্ডোতে নতুন ট্যাব খুলুন</translation>
-<translation id="5572632238877308040">প্রয়োজনীয়</translation>
 <translation id="5575528586625653441">ডেমো রেজিস্টার করার অনুরোধ নিয়ে একটি সমস্যা হয়েছে।</translation>
 <translation id="557563299383177668">পরবর্তী অনুচ্ছেদ</translation>
 <translation id="5577082622442191756">ব্লুটুথ টগল করুন। <ph name="STATE_TEXT" />।</translation>
@@ -1627,7 +1612,6 @@
 <translation id="5667546120811588575">Google Play সেট-আপ করা হচ্ছে...</translation>
 <translation id="5669267381087807207">সক্রিয় করা হচ্ছে</translation>
 <translation id="5671658447180261823"><ph name="SUGGESTION_NAME" /> সাজেশনটি সরিয়ে দিন</translation>
-<translation id="5672890847723042801">উপযোগিতা</translation>
 <translation id="5673434351075758678">সেটিংস সিঙ্ক করার পরে "<ph name="FROM_LOCALE" />" থেকে "<ph name="TO_LOCALE" />" সেট করা হয়েছে।</translation>
 <translation id="5675363643668471212">শেল্ফ আইটেম</translation>
 <translation id="5677022547882470786">কোনও অংশ সার্চ করার জন্য বেছে নিতে টেনে আনুন বা স্পেস প্রেস করুন</translation>
@@ -1652,6 +1636,7 @@
 <translation id="5727460725221669831">আপনি যদি আপনার পাসওয়ার্ড ভুলে গিয়ে থাকেন বা সম্প্রতি আপনার Google অ্যাকাউন্ট পাসওয়ার্ড পরিবর্তন করেন, তাহলে এই ব্যবহারকারীকে আগের অবস্থায় ফেরানোর চেষ্টা করুন।</translation>
 <translation id="5733630091161562207">ওয়েলকাম বিজ্ঞপ্তি</translation>
 <translation id="573413375004481890">এই ডিভাইসে সব ডিসপ্লে করা যাবে না তাই একটি ডিসকানেক্ট করা হয়েছে</translation>
+<translation id="5739548907438839901">ডিস্ক স্টোরেজে <ph name="SIZE" /> খালি জায়গা রয়েছে।</translation>
 <translation id="574392208103952083">মাঝারি</translation>
 <translation id="5745612484876805746">সূর্যাস্তের সময় নাইট লাইট অটোমেটিক চালু হয়ে যায়</translation>
 <translation id="5749214722697335450">ব্যবহার এবং ডায়াগনস্টিক সম্পর্কিত ডেটা পাঠান। Google-এ অটোমেটিক ডায়াগনস্টিক, ডিভাইস এবং অ্যাপ ব্যবহারের ডেটা পাঠিয়ে, আপনার Android অভিজ্ঞতাকে উন্নত করতে সাহায্য করুন। এটি সিস্টেম ও অ্যাপের স্থায়িত্ব বাড়াতে এবং অন্যান্য উন্নতিতে সাহায্য করবে। কিছু পরিমাণ মোট ডেটা Android ডেভেলপারের মতো Google অ্যাপ এবং পার্টনারদেরও সাহায্য করবে। আপনার অতিরিক্ত ওয়েব ও অ্যাপ অ্যাক্টিভিটি সেটিং চালু থাকলে, এই ডেটা আপনার Google অ্যাকাউন্টে সেভ করা হতে পারে। <ph name="BEGIN_LINK1" />মেট্রিক সম্পর্কে আরও জানুন<ph name="BEGIN_LINK1_END" />আরও জানুন<ph name="END_LINK1" /></translation>
@@ -1794,7 +1779,6 @@
 <translation id="6095008505822982596">স্পিচ রেট</translation>
 <translation id="6095425951508823973"><ph name="PROVIDER" />-এর মাধ্যমে কানেকশন যোগ করুন</translation>
 <translation id="6095541101974653012">আপনি লগ-আউট হয়ে গেছেন।</translation>
-<translation id="6099678161144790572">গত মাসে এডিট করা হয়েছে</translation>
 <translation id="6103838137565245112">সিস্টেম</translation>
 <translation id="6108952804512516814">AI-এর মাধ্যমে তৈরি করুন</translation>
 <translation id="6114505516289286752"><ph name="LANGUAGE" /> স্পিচ ফাইল ডাউনলোড করা হয়েছে</translation>
@@ -1804,7 +1788,6 @@
 <translation id="6127395413317891856">আপনি অফলাইন আছেন। আপনার ডিভাইসের কানেকশন ঠিক আছে কিনা দেখে নিয়ে আবার চেষ্টা করুন।</translation>
 <translation id="6129953537138746214">Space</translation>
 <translation id="6132714462430777655">স্কুলে নথিভুক্ত করা এড়িয়ে যাবেন?</translation>
-<translation id="6136872094979134163">Steam for Chromebook-এর খবর ফেরানো যাচ্ছে না।</translation>
 <translation id="6137566720514957455"><ph name="USER_EMAIL_ADDRESS" />-এর জন্য, 'অ্যাকাউন্ট সরিয়ে দিন' ডায়ালগ খুলুন</translation>
 <translation id="6141205840878048728">আপনি কীসের উপর ফোকাস করতে চান?</translation>
 <translation id="6141988275892716286">ডাউনলোড নিশ্চিত করুন</translation>
@@ -1884,7 +1867,6 @@
 <translation id="6348449481487610270"><ph name="MODIFIER_ONE" /><ph name="MODIFIER_TWO" /><ph name="KEY_ONE" /> তারপর <ph name="MODIFIER_THREE" /><ph name="KEY_TWO" /> বা <ph name="KEY_THREE" /></translation>
 <translation id="6352082849089527770">অজানা নেটওয়ার্ক</translation>
 <translation id="6359587239691116345">লেটেস্ট ফিচার এবং নিরাপত্তা সংক্রান্ত উন্নতি পান। আপনি এই আপডেটটি বাতিল করলে, আপনার ডিভাইস আর সঠিকভাবে কাজ নাও করতে পারে এবং আপনি নিরাপত্তা এবং পারফর্ম্যান্স সংক্রান্ত সমস্যার সম্মুখীন হতে পারেন।</translation>
-<translation id="6362833380917912748">আপনার বিল্ট-ইন অ্যাপ সম্পর্কে জানুন</translation>
 <translation id="6364386432014869981">বিল্ট-ইন টাচপ্যাড চালু করা আছে</translation>
 <translation id="6376931439017688372">ব্লুটুথ চালু আছে</translation>
 <translation id="6378515133128829137">ডানদিকে উইন্ডোটি পিন করুন</translation>
@@ -1951,7 +1933,6 @@
 <translation id="6555373427270923730">অ্যাড্রেস বারে ওয়েব অ্যাড্রেস টাইপ করুন, তারপর <ph name="MODIFIER" /><ph name="KEY" /> প্রেস করুন</translation>
 <translation id="655633303491376835"><ph name="APP_NAME" />
 নতুন ইনস্টল</translation>
-<translation id="6559158502366839560">আরও অ্যাপ ও গেম এক্সপ্লোর করুন</translation>
 <translation id="6560151649238390891">সাজেশন যোগ করা হয়েছে</translation>
 <translation id="6562447480759345110">ফোকাস মোড বন্ধ করুন</translation>
 <translation id="6565007273808762236">ই-সিম কানেকশন উপলভ্য নেই</translation>
@@ -2057,7 +2038,6 @@
 <translation id="6848716236260083778">আঙ্গুলের ছাপ সেট আপ করতে, আপনার সন্তানকে আঙ্গুলের ছাপের সেন্সর টাচ করতে বলুন। আপনার সন্তানের আঙ্গুলের ছাপ সম্পর্কিত ডেটা নিরাপদে সেভ করা হয় এবং সবসময় <ph name="DEVICE_TYPE" />-এ থাকে।</translation>
 <translation id="6852052252232534364">চালু করতে ক্লিক করুন</translation>
 <translation id="6852628153543175788">১০ মিনিট যোগ করুন</translation>
-<translation id="6855029042976311970">এইমাত্র এডিট করা হয়েছে</translation>
 <translation id="6856708615407876657">সার্চ ফলাফলের বিভাগ টগল করুন</translation>
 <translation id="6856756288284651804">Chromebook আপডেট করা হয়েছে</translation>
 <translation id="6857725247182211756"><ph name="SECONDS" /> সে</translation>
@@ -2111,7 +2091,6 @@
 <translation id="7014684956566476813"><ph name="DEVICE_NAME" /> নামের ডিভাইসে কানেক্ট করা হয়েছে</translation>
 <translation id="7015766095477679451"><ph name="COME_BACK_TIME" />-এ আবার ব্যবহার করতে পারবেন।</translation>
 <translation id="70168403932084660">ডেস্ক ৬</translation>
-<translation id="702252130983202758">আপনার অ্যাপ</translation>
 <translation id="7025533177575372252"><ph name="DEVICE_NAME" />-কে আপনার ফোনের সাথে কানেক্ট করুন</translation>
 <translation id="7026338066939101231">হ্রাস পেয়েছে</translation>
 <translation id="7029307918966275733">Crostini ইনস্টল করা হয়নি। ক্রেডিট দেখার জন্য Crostini ইনস্টল করুন।</translation>
@@ -2152,7 +2131,6 @@
 <translation id="7118597077555700347"><ph name="SEARCH_RESULT_TEXT" /> খুলুন</translation>
 <translation id="7119327711295338600">পরবর্তী শব্দ অথবা অক্ষর বেছে নিন</translation>
 <translation id="7124556000457919678">এটি চালু করলে মাউস কী পজ করুন এবং আবার চালু করুন</translation>
-<translation id="7126996685418858413">গত সপ্তাহে খোলা হয়েছে</translation>
 <translation id="7131634465328662194">আপনি নিজে থেকেই সাইন-আউট হয়ে যাবেন।</translation>
 <translation id="7143207342074048698">সংযুক্ত হচ্ছে</translation>
 <translation id="7144878232160441200">আবার চেষ্টা করুন</translation>
@@ -2184,7 +2162,6 @@
 <translation id="7256057185598509352">ExpressKey 2</translation>
 <translation id="7256634071279256947">পেছনের মাইক্রোফোন</translation>
 <translation id="7258225044283673131">অ্যাপ্লিকেশনটি কাজ করছে না। অ্যাপটি বন্ধ করতে "জোর করে বন্ধ করুন" বিকল্পটি বেছে নিন।</translation>
-<translation id="7258828758145722155">গতকাল এডিট করা হয়েছে</translation>
 <translation id="726276584504105859">বিভক্ত স্ক্রিন ব্যবহার করতে এখানে টেনে আনুন</translation>
 <translation id="7264788308526527464"><ph name="FOCUS_DURATION_DELTA" /> কমান</translation>
 <translation id="7267875682732693301">আপনার আঙুলের ছাপের বিভিন্ন অংশ যোগ করার জন্য বারবার আঙুল তুলে আবার টাচ করতে থাকুন</translation>
@@ -2237,6 +2214,7 @@
 <translation id="7413851974711031813">বন্ধ করতে এস্কেপ (Esc) বোতাম প্রেস করুন</translation>
 <translation id="7416471219712049036">বর্তমান পৃষ্ঠা সেভ করুন</translation>
 <translation id="742594950370306541">ক্যামেরা ব্যবহার করা হচ্ছে।</translation>
+<translation id="7430466159639897874">বন্ধ হয়ে যাওয়া ফিচার "Steam on Chromebook"-এর জন্য আপনার ডিস্ক স্টোরেজে খালি জায়গা (<ph name="SIZE" />) রয়ে গেছে।</translation>
 <translation id="743058460480092004">ক্যামেরা এবং মাইক্রোফোন ব্যবহার করা হচ্ছে।</translation>
 <translation id="7433708794692032816">আপনার <ph name="DEVICE_TYPE" /> ব্যবহার করা চালিয়ে যেতে স্মার্ট কার্ড প্রবেশ করান</translation>
 <translation id="7440404390546433462">Google Search</translation>
@@ -2257,7 +2235,6 @@
 <translation id="7491962110804786152">ট্যাব</translation>
 <translation id="7497767806359279797">ভাষা এবং কীবোর্ড বেছে নিন</translation>
 <translation id="7507162824403726948">আপনার পরিচয় যাচাই করার প্রক্রিয়া শেষ করুন</translation>
-<translation id="7508690557411636492">গত মাসে খোলা হয়েছে</translation>
 <translation id="7509246181739783082">আপনার পরিচয় যাচাই করুন</translation>
 <translation id="7512509370370076552">'ডানদিকের বোতামে ক্লিক করুন' শর্টকার্ট alt + click থেকে <ph name="LAUNCHER_KEY_NAME" /> কী + click-এ আপডেট করা হয়েছে</translation>
 <translation id="7512726380443357693"><ph name="BUTTON_LABEL" />, বেছে নেওয়া হয়নি</translation>
@@ -2379,6 +2356,7 @@
 <translation id="7781335840981796660">সব ব্যবহারকারী অ্যাকাউন্ট ও স্থানীয় ডেটা সরানো হবে।</translation>
 <translation id="7781829728241885113">গতকাল</translation>
 <translation id="7787212146956232129">ইনপুট ও আউটপুট ডিভাইস সেট করা হয়েছে। পরিবর্তন করতে 'সেটিংস' মেনু দেখুন।</translation>
+<translation id="7790757511772316441">ডিস্ক স্টোরেজে খালি জায়গা</translation>
 <translation id="7792590255364786396">দেখা যাচ্ছে</translation>
 <translation id="7796735576426975947">নতুন বিজ্ঞপ্তি লুকানো আছে</translation>
 <translation id="7798302898096527229">Search টিপুন বা বাতিল করতে Shift টিপুন</translation>
@@ -2399,7 +2377,6 @@
 <translation id="7850320739366109486">বিরক্ত করবে না</translation>
 <translation id="7851039877802112575">পপ-আপ এবং ডায়ালগে ফোকাস সরান</translation>
 <translation id="7851768487828137624">ক্যানারি</translation>
-<translation id="7862292329216937261">গেস্ট হিসেবে ডিভাইসটি ব্যবহার করতে, সাইন-আউট করার পরে আপনাকে স্ক্রিনের নিচ থেকে 'গেস্ট হিসেবে ব্রাউজ করুন' বিকল্প বেছে নিতে হবে।</translation>
 <translation id="7866482334467279021">চালু</translation>
 <translation id="7870790288828963061">এর থেকে আরও নতুন ভার্সনের কোনও কিয়স্ক অ্যাপ্লিকেশন পাওয়া যায়নি৷ USB স্টিক সরান৷</translation>
 <translation id="7872786842639831132">বন্ধ আছে</translation>
@@ -2555,7 +2532,6 @@
 <translation id="8277261673056602147">আপনার স্ক্রিনে টেক্সট হাইলাইট করুন</translation>
 <translation id="8281886186245836920">এড়িয়ে যান</translation>
 <translation id="8282784978194352587">আপনি পেরেছেন!</translation>
-<translation id="8287009018010202411">প্রোডাক্টিভিটি</translation>
 <translation id="828708037801473432">বন্ধ করা আছে</translation>
 <translation id="8289128870594824098">ডিস্ক সাইজ</translation>
 <translation id="8297006494302853456">দুর্বল</translation>
@@ -2614,7 +2590,6 @@
 <translation id="8473301994082929012"><ph name="ORGANIZATION_NAME" />-এর <ph name="FEATURE_NAME" /> <ph name="FEATURE_STATE" />।</translation>
 <translation id="8477270416194247200">Alt+Search টিপুন বা বাতিল করতে Shift টিপুন</translation>
 <translation id="8480418399907765580">সরঞ্জামদণ্ড দেখান</translation>
-<translation id="8481187309597259238">ইউএসবি অ্যাক্সেস করার অনুমতি নিশ্চিত করুন</translation>
 <translation id="8487660088084188539">আপনি এইসব ফিচার চালু করলে Google সার্ভারে ইনপুট টেক্সট, ডকুমেন্ট কন্টেন্ট ও ওয়েব পৃষ্ঠার URL পাঠানো হতে পারে। <ph name="LINK_TO_SERVICE_TERMS" /> অনুযায়ী লেখার সাজেশন তৈরি করতে, সারসংক্ষেপ তৈরি করতে, প্রশ্নের উত্তর দিতে এবং প্রোডাক্ট উন্নত করতে এই তথ্য ব্যবহার করা হয়। ব্যক্তিগত, সংবেদনশীল বা গোপনীয় তথ্য দেবেন না।</translation>
 <translation id="8487699605742506766">হটস্পট</translation>
 <translation id="8488561391784577756"><ph name="BEGIN_PARAGRAPH1" />Google-এর লোকেশন পরিষেবা ওয়াই-ফাই, মোবাইল নেটওয়ার্ক এবং সেন্সরের মতো সোর্স ব্যবহার করে এই ডিভাইসের লোকেশন অনুমান করে।<ph name="END_PARAGRAPH1" />
@@ -2650,7 +2625,6 @@
 <translation id="8598235756057743477">নাম বা রঙ অনুযায়ী অ্যাপ সাজান</translation>
 <translation id="8599864823732014237">এন্টারপ্রাইজে নথিভুক্ত করার প্রক্রিয়া এড়িয়ে যাবেন?</translation>
 <translation id="8609384513243082612">নতুন ট্যাব খুলুন</translation>
-<translation id="861045123704058818">অস্থায়ীভাবে অ্যাপ বিভাগ অনুযায়ী সাজানো হয়েছে</translation>
 <translation id="8612338981637220013">আপনি জমিয়ে দিয়েছেন!</translation>
 <translation id="8613164732773110792">শুধুমাত্র ছোট হাতের অক্ষর, সংখ্যা, আন্ডারস্কোর বা ড্যাশ</translation>
 <translation id="8614517853887502247">ভিউ সংক্রান্ত নিরাপত্তা চালু থাকার জন্য <ph name="APP_1_TITLE" /> এবং <ph name="APP_2_TITLE" />-এর বিজ্ঞপ্তি লুকানো আছে</translation>
@@ -2712,7 +2686,6 @@
 <translation id="8753368202781196133">এই মুহূর্তে এই ভাষাটি কাজ করবে না।</translation>
 <translation id="8755498163081687682">আপনার পরিচয় যাচাই করুন: <ph name="ORIGIN_NAME" /> আপনার পরিচয় যাচাই করতে চায়</translation>
 <translation id="875593634123171288">VPN সেটিংস দেখান</translation>
-<translation id="8756799553341497810">আপনি একবার এই ভিউ ছেড়ে বেরিয়ে এলে, নিজের অ্যাপের লেআউট কাস্টমাইজ করতে পারবেন।</translation>
 <translation id="8759408218731716181">একাধিক সাইন-ইন সেট-আপ করা যাবে না</translation>
 <translation id="8759753423332885148">আরও জানুন৷</translation>
 <translation id="8760172428247796445">আপনার <ph name="DEVICE_TYPE" /> এখনই লক হয়ে যাবে।
@@ -2843,7 +2816,6 @@
 <translation id="9129245940793250979">পিছনের বোতাম</translation>
 <translation id="9133335900048457298">সুরক্ষিত কন্টেন্ট রেকর্ড করা যাবে না</translation>
 <translation id="9139720510312328767">পরের অক্ষর মুছে দিন</translation>
-<translation id="9148058034647219655">প্রস্থান করুন</translation>
 <translation id="9151906066336345901">end</translation>
 <translation id="9159421884295554245">ক্লিপবোর্ড সার্চ করুন</translation>
 <translation id="9168436347345867845">এটি পরে করুন</translation>

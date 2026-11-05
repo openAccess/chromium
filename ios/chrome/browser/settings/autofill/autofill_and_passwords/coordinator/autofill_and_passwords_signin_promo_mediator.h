@@ -16,6 +16,7 @@ class PrefService;
 @protocol SigninPromoViewMediatorDelegate;
 
 namespace signin {
+class AccountPreviewDataService;
 class IdentityManager;
 }
 
@@ -39,6 +40,8 @@ class SyncService;
                       authService:(AuthenticationService*)authService
                   identityManager:(signin::IdentityManager*)identityManager
                       prefService:(PrefService*)prefService
+        accountPreviewDataService:
+            (signin::AccountPreviewDataService*)accountPreviewDataService
                       syncService:(syncer::SyncService*)syncService
     NS_DESIGNATED_INITIALIZER;
 
@@ -56,7 +59,7 @@ class SyncService;
 - (void)updateSignInPromoVisibility;
 
 // Notifies the mediator that the sign-in flow completed.
-- (void)signinDidCompleteWithResult:(SigninCoordinatorResult)result;
+- (void)signinDidCompleteWithResult:(SigninCoordinatorResultOrIdentity)result;
 
 @end
 

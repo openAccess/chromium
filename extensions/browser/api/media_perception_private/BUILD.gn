@@ -20,8 +20,6 @@ source_set("media_perception_private") {
     "media_perception_private_api.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [
     "//base",
     "//chromeos/ash/components/dbus/media_analytics",
@@ -29,6 +27,7 @@ source_set("media_perception_private") {
     "//chromeos/services/media_perception/public/mojom",
     "//extensions/browser:browser_sources",
     "//extensions/browser/api:extensions_api_client",
+    "//extensions/common",
     "//extensions/common/api",
     "//mojo/public/cpp/bindings",
     "//services/video_capture/public/mojom",

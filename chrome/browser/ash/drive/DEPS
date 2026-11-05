@@ -14,25 +14,21 @@ include_rules = [
   # Files residing in certain directories (e.g., //chrome/browser) are listed
   # individually. Other dependencies within //chrome are listed on a per-
   # directory basis. See //tools/chromeos/gen_deps.sh for details.
-  "+chrome/browser/ash/extensions/file_manager",
-  "+chrome/browser/ash/fileapi",
   "+chrome/browser/ash/file_manager",
-  "+chrome/browser/ash/login/users",
   "+chrome/browser/ash/profiles",
-  "+chrome/browser/chromeos/drivefs",
-  "+chrome/browser/download",
-  "+chrome/browser/net",
-  "+chrome/browser/notifications",
   "+chrome/browser/profiles",
-  "+chrome/browser/ui/browser.h",
   "+chrome/common/chrome_constants.h",
   "+chrome/common/chrome_paths.h",
-  "+chrome/common/chrome_paths_internal.h",
   "+chrome/test/base",
 ]
 
 specific_include_rules = {
+  "drive_integration_service\\.cc": [
+    "+ui/message_center/message_center.h",
+  ],
+
   "drive_integration_service_factory\\.cc": [
+    "+chrome/browser/download",
     "+chrome/browser/browser_process.h",
     "+chrome/browser/signin/identity_manager_factory.h",
   ],
@@ -40,5 +36,9 @@ specific_include_rules = {
   "drive_integration_service_browser_test_base\\.cc": [
     "+chrome/browser/browser_process.h",
     "+chrome/browser/signin/identity_manager_factory.h",
+  ],
+
+  "file_system_util_unittest\\.cc": [
+    "+chrome/browser/ash/login/test/chrome_user_session_test_environment_delegate.h",
   ],
 }

@@ -20,13 +20,11 @@
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registry_update.h"
 #include "chrome/browser/web_applications/web_app_sync_bridge.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/features.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/models/menu_model.h"
 #include "ui/gfx/image/image_unittest_util.h"
@@ -168,12 +166,7 @@ IN_PROC_BROWSER_TEST_F(WebAppMenuModelBrowserTest, HasPendingUpdate) {
   UninstallWebApp(app_id);
 }
 
-class WebAppMenuModelMigrationBrowserTest : public WebAppBrowserTestBase {
- public:
-  WebAppMenuModelMigrationBrowserTest()
-      : WebAppBrowserTestBase({blink::features::kWebAppMigrationApi}, {}) {}
-  ~WebAppMenuModelMigrationBrowserTest() override = default;
-};
+class WebAppMenuModelMigrationBrowserTest : public WebAppBrowserTestBase {};
 
 IN_PROC_BROWSER_TEST_F(WebAppMenuModelMigrationBrowserTest,
                        HasPendingMigration) {

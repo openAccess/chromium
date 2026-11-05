@@ -62,15 +62,6 @@ class Gpu::GpuPtrIO {
     }
   }
 
-#if BUILDFLAG(IS_CHROMEOS)
-  void CreateJpegDecodeAccelerator(
-      mojo::PendingReceiver<chromeos_camera::mojom::MjpegDecodeAccelerator>
-          receiver) {
-    DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-    gpu_remote_->CreateJpegDecodeAccelerator(std::move(receiver));
-  }
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
   void CreateVideoEncodeAcceleratorProvider(
       mojo::PendingReceiver<media::mojom::VideoEncodeAcceleratorProvider>
           receiver) {
@@ -82,6 +73,7 @@ class Gpu::GpuPtrIO {
   void ConnectionError();
   void OnEstablishedGpuChannel(
       int client_id,
+      const mojom::GpuClientType client_type,
       mojo::ScopedMessagePipeHandle channel_handle,
       const gpu::GPUInfo& gpu_info,
       const gpu::GpuFeatureInfo& gpu_feature_info,
@@ -172,13 +164,8 @@ class Gpu::EstablishRequest
     parent_->OnEstablishedGpuChannel();
   }
 
-  void OnEstablishedGpuChannel(
-      int client_id,
-      mojo::ScopedMessagePipeHandle channel_handle,
-      const gpu::GPUInfo& gpu_info,
-      const gpu::GpuFeatureInfo& gpu_feature_info,
-      const gpu::SharedImageCapabilities& shared_image_capabilities,
-      bool gpu_remote_disconnected) {
+  void OnEstablishedGpuChannel(scoped_refptr<gpu::GpuChannelHost> gpu_channel,
+                               bool gpu_remote_disconnected) {
     DCHECK(!main_task_runner_->BelongsToCurrentThread());
     base::AutoLock lock(lock_);
 
@@ -188,15 +175,7 @@ class Gpu::EstablishRequest
 
     DCHECK(!received_);
     received_ = true;
-    if (channel_handle.is_valid()) {
-      gpu_channel_ = gpu::GpuChannelHost::Create(
-          client_id, gpu_info, gpu_feature_info, shared_image_capabilities,
-          std::move(channel_handle));
-      // `GPUChannelHost::Create()` can't fail, since we pass in `gpu_info` etc
-      // directly instead of requesting the info from the GPU process (which can
-      // fail).
-      CHECK(gpu_channel_);
-    }
+    gpu_channel_ = gpu_channel;
     gpu_remote_disconnected_ = gpu_remote_disconnected;
 
     if (establish_event_) {
@@ -238,14 +217,14 @@ void Gpu::GpuPtrIO::ConnectionError() {
 
   // Make sure |establish_request_| fails so the main thread doesn't block
   // forever after calling Gpu::EstablishGpuChannelSync().
-  establish_request_->OnEstablishedGpuChannel(
-      0, mojo::ScopedMessagePipeHandle(), gpu::GPUInfo(), gpu::GpuFeatureInfo(),
-      gpu::SharedImageCapabilities(), /*gpu_remote_disconnected=*/true);
+  establish_request_->OnEstablishedGpuChannel(nullptr,
+                                              /*gpu_remote_disconnected=*/true);
   establish_request_.reset();
 }
 
 void Gpu::GpuPtrIO::OnEstablishedGpuChannel(
     int client_id,
+    const mojom::GpuClientType client_type,
     mojo::ScopedMessagePipeHandle channel_handle,
     const gpu::GPUInfo& gpu_info,
     const gpu::GpuFeatureInfo& gpu_feature_info,
@@ -253,18 +232,24 @@ void Gpu::GpuPtrIO::OnEstablishedGpuChannel(
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   DCHECK(establish_request_);
 
+  scoped_refptr<gpu::GpuChannelHost> gpu_channel;
+  if (channel_handle.is_valid()) {
+    gpu_channel = gpu::GpuChannelHost::Create(
+        client_id, client_type, gpu_info, gpu_feature_info,
+        shared_image_capabilities, std::move(channel_handle));
+    // `GPUChannelHost::Create()` can't fail, since we pass in `gpu_info` etc
+    // directly instead of requesting the info from the GPU process (which can
+    // fail).
+    CHECK(gpu_channel);
+  }
+
   establish_request_->OnEstablishedGpuChannel(
-      client_id, std::move(channel_handle), std::move(gpu_info),
-      std::move(gpu_feature_info), std::move(shared_image_capabilities),
-      /*gpu_remote_disconnected=*/false);
+      std::move(gpu_channel), /*gpu_remote_disconnected=*/false);
   establish_request_.reset();
 }
 
 Gpu::Gpu(mojo::PendingRemote<mojom::Gpu> gpu_remote,
-         scoped_refptr<base::SingleThreadTaskRunner> task_runner,
-         int client_id,
-         mojo::ScopedMessagePipeHandle initial_channel_handle,
-         gpu::GpuChannelEstablishedCallback callback)
+         scoped_refptr<base::SingleThreadTaskRunner> task_runner)
     : main_task_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()),
       io_task_runner_(std::move(task_runner)),
       gpu_(new GpuPtrIO(), base::OnTaskRunnerDeleter(io_task_runner_)) {
@@ -279,23 +264,26 @@ Gpu::Gpu(mojo::PendingRemote<mojom::Gpu> gpu_remote,
       FROM_HERE,
       base::BindOnce(&GpuPtrIO::Initialize, base::Unretained(gpu_.get()),
                      std::move(gpu_remote)));
+}
 
-  if (base::FeatureList::IsEnabled(features::kSendGPUChannelEarly) &&
-      initial_channel_handle.is_valid()) {
-    if (!callback.is_null()) {
-      establish_callbacks_.emplace_back(base::TimeTicks::Now(),
-                                        std::move(callback));
-    }
+void Gpu::PreestablishChannel(
+    int client_id,
+    mojom::GpuClientType client_type,
+    mojo::ScopedMessagePipeHandle initial_channel_handle,
+    gpu::GpuChannelEstablishedCallback callback) {
+  CHECK(base::FeatureList::IsEnabled(features::kSendGPUChannelEarly));
+  CHECK(initial_channel_handle.is_valid());
+  CHECK(!callback.is_null());
 
-    pending_initial_gpu_channel_builder_ =
-        gpu::GpuChannelHost::Builder::CreateAndGetGPUInfo(
-            base::PassKey<Gpu>(), client_id, std::move(initial_channel_handle),
-            io_task_runner_,
-            base::BindOnce(&Gpu::CompleteInitialChannelCreation,
-                           weak_ptr_factory_.GetWeakPtr()));
-  } else {
-    CHECK(!callback);
-  }
+  establish_callbacks_.emplace_back(base::TimeTicks::Now(),
+                                    std::move(callback));
+
+  pending_initial_gpu_channel_builder_ =
+      gpu::GpuChannelHost::Builder::CreateAndGetGPUInfo(
+          base::PassKey<Gpu>(), client_id, client_type,
+          std::move(initial_channel_handle), io_task_runner_,
+          base::BindOnce(&Gpu::CompleteInitialChannelCreation,
+                         weak_ptr_factory_.GetWeakPtr()));
 }
 
 Gpu::~Gpu() {
@@ -312,26 +300,26 @@ Gpu::~Gpu() {
 // static
 std::unique_ptr<Gpu> Gpu::Create(
     mojo::PendingRemote<mojom::Gpu> remote,
-    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
-    int client_id,
-    mojo::ScopedMessagePipeHandle channel_handle,
-    gpu::GpuChannelEstablishedCallback callback) {
-  return base::WrapUnique(new Gpu(std::move(remote), std::move(io_task_runner),
-                                  client_id, std::move(channel_handle),
-                                  std::move(callback)));
+    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner) {
+  return base::WrapUnique(
+      new Gpu(std::move(remote), std::move(io_task_runner)));
 }
 
-#if BUILDFLAG(IS_CHROMEOS)
-void Gpu::CreateJpegDecodeAccelerator(
-    mojo::PendingReceiver<chromeos_camera::mojom::MjpegDecodeAccelerator>
-        jda_receiver) {
-  DCHECK(main_task_runner_->BelongsToCurrentThread());
-  io_task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&GpuPtrIO::CreateJpegDecodeAccelerator,
-                     base::Unretained(gpu_.get()), std::move(jda_receiver)));
+// static
+std::unique_ptr<Gpu> Gpu::CreateWithMessagePipe(
+    mojo::PendingRemote<mojom::Gpu> remote,
+    scoped_refptr<base::SingleThreadTaskRunner> io_task_runner,
+    int client_id,
+    mojom::GpuClientType client_type,
+    mojo::ScopedMessagePipeHandle channel_handle,
+    gpu::GpuChannelEstablishedCallback callback) {
+  auto gpu =
+      base::WrapUnique(new Gpu(std::move(remote), std::move(io_task_runner)));
+  gpu->PreestablishChannel(client_id, client_type, std::move(channel_handle),
+                           std::move(callback));
+
+  return gpu;
 }
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
 void Gpu::CreateVideoEncodeAcceleratorProvider(
     mojo::PendingReceiver<media::mojom::VideoEncodeAcceleratorProvider>

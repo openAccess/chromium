@@ -7,8 +7,8 @@
 #include "base/feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager_factory.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager_factory.h"
 #include "chrome/browser/ssl/chrome_security_blocking_page_factory.h"
 #include "chrome/browser/ssl/https_first_mode_settings_tracker.h"
 #include "chrome/browser/ssl/https_upgrades_interceptor.h"
@@ -50,7 +50,8 @@ bool IsHostnameInHttpAllowlist(const GURL& url, PrefService* prefs) {
 
 void AllowHttpForHostnamesForTesting(const std::vector<std::string>& hostnames,
                                      PrefService* prefs) {
-  DCHECK(prefs->GetList(prefs::kHttpAllowlist).empty());
+  CHECK(prefs->GetList(prefs::kHttpAllowlist).empty(),
+        base::NotFatalUntil::M163);
 
   base::ListValue allowed_hosts;
   for (const std::string& hostname : hostnames) {
@@ -77,9 +78,12 @@ ComputeInterstitialState(content::WebContents* web_contents, const GURL& url) {
   interstitial_state.enabled_by_pref =
       prefs && prefs->GetBoolean(prefs::kHttpsOnlyModeEnabled);
 
-  if (base::FeatureList::IsEnabled(features::kHttpsFirstModeIncognito)) {
-    if (profile->IsIncognitoProfile() && prefs &&
-        prefs->GetBoolean(prefs::kHttpsFirstModeIncognito)) {
+  if (base::FeatureList::IsEnabled(features::kHttpsFirstModeIncognito) &&
+      profile->IsPrimaryOTRProfileWithRegularParent() && prefs &&
+      prefs->GetBoolean(prefs::kHttpsFirstModeIncognito)) {
+    if (profile->IsEnterpriseIsolatedModeProfile()) {
+      interstitial_state.enabled_by_isolated_mode = true;
+    } else {
       interstitial_state.enabled_by_incognito = true;
     }
   }
@@ -168,7 +172,7 @@ bool IsInterstitialEnabled(const HttpInterstitialState& state) {
   if (IsStrictInterstitialEnabled(state)) {
     return true;
   }
-  if (state.enabled_by_incognito) {
+  if (state.enabled_by_incognito || state.enabled_by_isolated_mode) {
     return true;
   }
   if (IsBalancedModeAvailable() && state.enabled_in_balanced_mode) {

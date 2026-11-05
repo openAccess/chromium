@@ -6,6 +6,8 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "chrome/browser/ui/omnibox/omnibox_controller.h"
+#include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_bubble_base_view.h"
 #include "chrome/browser/ui/views/permissions/permission_prompt_bubble_view_factory.h"
@@ -13,7 +15,6 @@
 #include "chrome/browser/ui/views/permissions/permission_prompt_style.h"
 #include "components/permissions/features.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/display/types/display_constants.h"
 
 PermissionPromptBubble::PermissionPromptBubble(
     content::WebContents* web_contents,
@@ -37,13 +38,6 @@ PermissionPromptBubble::~PermissionPromptBubble() {
 }
 
 void PermissionPromptBubble::ShowBubble() {
-  auto blocker =
-      web_contents()->ForSecurityDropFullscreen(display::kInvalidDisplayId);
-  if (!blocker) {
-    return;
-  }
-  fullscreen_blocker_ = std::move(*blocker);
-
   raw_ptr<PermissionPromptBubbleBaseView> prompt_bubble =
       CreatePermissionPromptBubbleView(web_contents(), delegate()->GetWeakPtr(),
                                        PermissionPromptStyle::kBubbleOnly);
@@ -75,9 +69,9 @@ void PermissionPromptBubble::CleanUpPromptBubble() {
 
     views::Widget* widget = GetPromptBubble()->GetWidget();
     widget->RemoveObserver(this);
-    widget->CloseWithReason(views::Widget::ClosedReason::kUnspecified);
     prompt_bubble_tracker_.SetView(nullptr);
     disallowed_custom_cursors_scope_.RunAndReset();
+    widget->CloseWithReason(views::Widget::ClosedReason::kUnspecified);
   }
 }
 
@@ -139,7 +133,12 @@ bool PermissionPromptBubble::UpdateAnchor() {
     // finally initialize it with the current permission request.
     LocationBar* lb = GetLocationBar();
 
-    if (lb && lb->IsDrawn() && !lb->IsFullscreen() && !lb->IsEditingOrEmpty()) {
+    const bool is_user_input_in_progress =
+        lb && lb->GetOmniboxController() &&
+        lb->GetOmniboxController()->edit_model()->user_input_in_progress();
+
+    if (lb && lb->IsDrawn() && !lb->IsFullscreen() &&
+        !is_user_input_in_progress) {
       auto* chip_controller = lb->GetChipController();
       chip_controller->InitializePermissionPrompt(delegate()->GetWeakPtr());
     }

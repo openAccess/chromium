@@ -114,6 +114,10 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNTensorImpl
   // context is destroyed.
   void DestroyAccessAndRepresentationAndWait();
 
+  // True when this tensor belongs to a context owned by a
+  // WebNNContextProviderInRenderer (renderer process).
+  bool IsInRenderer() const { return is_in_renderer_; }
+
  protected:
   ~WebNNTensorImpl() override;
 
@@ -165,7 +169,8 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNTensorImpl
   // mojom::WebNNTensor
   void ReadTensor(ReadTensorCallback callback) override;
   void WriteTensor(mojo_base::BigBuffer src_buffer) override;
-  void ImportTensor(uint64_t flow_id, const gpu::SyncToken& fence) override;
+  void ImportTensor(uint64_t flow_id,
+                    const std::vector<gpu::SyncToken>& fences) override;
   void ExportTensor(uint64_t flow_id, uint64_t release_count) override;
   void ExportTensorSync(uint64_t flow_id,
                         uint64_t release_count,
@@ -180,6 +185,8 @@ class COMPONENT_EXPORT(WEBNN_SERVICE) WebNNTensorImpl
 
   const OperandDescriptor descriptor_;
   const MLTensorUsage usage_;
+
+  const bool is_in_renderer_;
 };
 
 }  // namespace webnn

@@ -21,6 +21,7 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
+#include "ui/color/color_variant.h"
 #include "ui/gfx/animation/linear_animation.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_utils.h"
@@ -42,18 +43,7 @@ void AddPossiblyRoundRectToPath(
     path->addRect(gfx::RectToSkRect(rectangle));
     return;
   }
-  SkVector radii[4] = {{preferred_corner_radii.upper_left(),
-                        preferred_corner_radii.upper_left()},
-                       {preferred_corner_radii.upper_right(),
-                        preferred_corner_radii.upper_right()},
-                       {preferred_corner_radii.lower_right(),
-                        preferred_corner_radii.lower_right()},
-                       {preferred_corner_radii.lower_left(),
-                        preferred_corner_radii.lower_left()}};
-
-  SkRRect rr;
-  rr.setRectRadii(gfx::RectToSkRect(rectangle), radii);
-  path->addRRect(rr);
+  path->addRRect(gfx::RoundedRectToSkRRect(rectangle, preferred_corner_radii));
 }
 
 int RoundToPercent(double fractional_value) {
@@ -157,68 +147,37 @@ void ProgressBar::SetPaused(bool is_paused) {
 
 SkColor ProgressBar::GetForegroundColor() const {
   if (foreground_color_) {
-    return foreground_color_.value();
+    return foreground_color_->ResolveToSkColor(GetColorProvider());
   }
 
-  return GetColorProvider()->GetColor(foreground_color_id_.value_or(
-      GetPaused() ? ui::kColorProgressBarPaused : ui::kColorProgressBar));
+  return GetColorProvider()->GetColor(GetPaused() ? ui::kColorProgressBarPaused
+                                                  : ui::kColorProgressBar);
 }
 
-void ProgressBar::SetForegroundColor(SkColor color) {
+void ProgressBar::SetForegroundColor(std::optional<ui::ColorVariant> color) {
   if (foreground_color_ == color) {
     return;
   }
 
   foreground_color_ = color;
-  foreground_color_id_ = std::nullopt;
   OnPropertyChanged(&foreground_color_, PropertyEffects::kPaint);
 }
 
-std::optional<ui::ColorId> ProgressBar::GetForegroundColorId() const {
-  return foreground_color_id_;
-}
-
-void ProgressBar::SetForegroundColorId(std::optional<ui::ColorId> color_id) {
-  if (foreground_color_id_ == color_id) {
-    return;
-  }
-
-  foreground_color_id_ = color_id;
-  foreground_color_ = std::nullopt;
-  OnPropertyChanged(&foreground_color_id_, PropertyEffects::kPaint);
-}
-
 SkColor ProgressBar::GetBackgroundColor() const {
-  if (background_color_id_) {
-    return GetColorProvider()->GetColor(background_color_id_.value());
+  if (background_color_) {
+    return background_color_->ResolveToSkColor(GetColorProvider());
   }
 
-  return background_color_.value_or(
-      GetColorProvider()->GetColor(ui::kColorProgressBarBackground));
+  return GetColorProvider()->GetColor(ui::kColorProgressBarBackground);
 }
 
-void ProgressBar::SetBackgroundColor(SkColor color) {
+void ProgressBar::SetBackgroundColor(std::optional<ui::ColorVariant> color) {
   if (background_color_ == color) {
     return;
   }
 
   background_color_ = color;
-  background_color_id_ = std::nullopt;
   OnPropertyChanged(&background_color_, PropertyEffects::kPaint);
-}
-
-std::optional<ui::ColorId> ProgressBar::GetBackgroundColorId() const {
-  return background_color_id_;
-}
-
-void ProgressBar::SetBackgroundColorId(std::optional<ui::ColorId> color_id) {
-  if (background_color_id_ == color_id) {
-    return;
-  }
-
-  background_color_id_ = color_id;
-  background_color_ = std::nullopt;
-  OnPropertyChanged(&background_color_id_, PropertyEffects::kPaint);
 }
 
 int ProgressBar::GetPreferredHeight() const {
@@ -257,13 +216,15 @@ void ProgressBar::SetPreferredCornerRadii(
 }
 
 void ProgressBar::AnimationProgressed(const gfx::Animation* animation) {
-  DCHECK_EQ(animation, indeterminate_bar_animation_.get());
-  DCHECK(IsIndeterminate());
+  CHECK_EQ(animation, indeterminate_bar_animation_.get(),
+           base::NotFatalUntil::M163);
+  CHECK(IsIndeterminate(), base::NotFatalUntil::M163);
   SchedulePaint();
 }
 
 void ProgressBar::AnimationEnded(const gfx::Animation* animation) {
-  DCHECK_EQ(animation, indeterminate_bar_animation_.get());
+  CHECK_EQ(animation, indeterminate_bar_animation_.get(),
+           base::NotFatalUntil::M163);
   // Restarts animation.
   if (IsIndeterminate()) {
     indeterminate_bar_animation_->Start();
@@ -356,8 +317,6 @@ ADD_PROPERTY_METADATA(int, PreferredHeight)
 ADD_PROPERTY_METADATA(std::optional<gfx::RoundedCornersF>, PreferredCornerRadii)
 ADD_PROPERTY_METADATA(SkColor, ForegroundColor, ui::metadata::SkColorConverter)
 ADD_PROPERTY_METADATA(SkColor, BackgroundColor, ui::metadata::SkColorConverter)
-ADD_PROPERTY_METADATA(std::optional<ui::ColorId>, ForegroundColorId);
-ADD_PROPERTY_METADATA(std::optional<ui::ColorId>, BackgroundColorId);
 ADD_PROPERTY_METADATA(bool, Paused)
 END_METADATA
 

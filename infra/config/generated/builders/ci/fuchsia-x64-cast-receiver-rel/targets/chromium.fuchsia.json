@@ -567,7 +567,7 @@
             "os": "Ubuntu-22.04"
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 1
+          "shards": 2
         },
         "test": "content_unittests",
         "test_id_prefix": "ninja://content/test:content_unittests/"
@@ -1704,7 +1704,8 @@
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "angle_unittests",
-        "test_id_prefix": "ninja://third_party/angle/src/tests:angle_unittests/"
+        "test_id_prefix": "ninja://third_party/angle/src/tests:angle_unittests/",
+        "use_isolated_scripts_api": true
       },
       {
         "args": [
@@ -1798,7 +1799,6 @@
           "--platform=fuchsia",
           "--device-spec=x64-emu-large"
         ],
-        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"

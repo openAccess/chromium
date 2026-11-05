@@ -52,6 +52,7 @@
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/loader/frame_load_request.h"
 #include "third_party/blink/renderer/core/loader/frame_loader.h"
+#include "third_party/blink/renderer/core/page/create_window.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/script_tools/script_tool_context.h"
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
@@ -178,7 +179,7 @@ inline FormSubmission::FormSubmission(
     WebFrameLoadType load_type,
     LocalDOMWindow* origin_window,
     const LocalFrameToken& initiator_frame_token,
-    const base::UnguessableToken& initiator_state_token,
+    const InitiatorStateToken& initiator_state_token,
     const DocumentToken& initiator_document_token,
     bool has_rel_opener,
     SourceLocation* source_location,
@@ -377,6 +378,15 @@ FormSubmission* FormSubmission::Create(HTMLFormElement* form,
   AtomicString target_or_base_target = frame_request.CleanNavigationTarget(
       copied_attributes.Target().empty() ? document.BaseTarget()
                                          : copied_attributes.Target());
+  if (RuntimeEnabledFeatures::WindowOpenSplitTabEnabled()) {
+    WebWindowFeatures window_features = GetWindowFeaturesFromAttribute(
+        form->FastGetAttribute(html_names::kWindowfeaturesAttr));
+    frame_request.SetFeaturesForWindowOpen(window_features);
+    if (target_or_base_target.empty() &&
+        (window_features.is_split || window_features.is_popup)) {
+      target_or_base_target = AtomicString("_blank");
+    }
+  }
 
   if (form->HasRel(HTMLFormElement::kNoReferrer)) {
     frame_request.SetNoReferrer();
@@ -438,6 +448,11 @@ FormSubmission* FormSubmission::Create(HTMLFormElement* form,
       }
     }
   }
+
+  form_submission->async_task_context_.Schedule(
+      form->GetExecutionContext(), "formSubmission",
+      probe::AsyncTaskContext::StackOptions::kScan);
+
   return form_submission;
 }
 
@@ -460,6 +475,8 @@ void FormSubmission::NotifyInspector() {
 }
 
 void FormSubmission::Navigate() {
+  probe::AsyncTask async_task(origin_window_.Get(), &async_task_context_);
+
   FrameLoadRequest frame_request(origin_window_.Get(), *resource_request_);
   frame_request.SetNavigationPolicy(navigation_policy_);
   frame_request.SetClientNavigationReason(reason_);

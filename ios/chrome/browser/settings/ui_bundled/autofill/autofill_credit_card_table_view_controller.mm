@@ -34,7 +34,6 @@
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_info_button_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_link_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_switch_item.h"
@@ -43,7 +42,6 @@
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
 #import "ios/chrome/common/ui/reauthentication/reauthentication_protocol.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -101,7 +99,7 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   UIBarButtonItem* _addButtonInToolbar;
 
   // Reauthentication module.
-  ReauthenticationModule* _reauthenticationModule;
+  id<ReauthenticationProtocol> _reauthenticationModule;
 }
 
 @property(nonatomic, getter=isAutofillCreditCardEnabled)
@@ -128,9 +126,7 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
 
   self = [super initWithStyle:ChromeTableViewStyle()];
   if (self) {
-    self.title = l10n_util::GetNSString(IsYourSavedInfoSettingsPageIosEnabled()
-                                            ? IDS_AUTOFILL_PAYMENTS_TITLE
-                                            : IDS_AUTOFILL_PAYMENT_METHODS);
+    self.title = l10n_util::GetNSString(IDS_AUTOFILL_PAYMENTS_TITLE);
     self.shouldDisableDoneButtonOnEdit = YES;
     _browser = browser;
     _personalDataManager = autofill::PersonalDataManagerFactory::GetForProfile(
@@ -364,7 +360,9 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   footer.text =
       l10n_util::GetNSString(IDS_AUTOFILL_SETTINGS_GOOGLE_WALLET_LEGAL_NOTICE);
   footer.urls = @[ [[CrURL alloc]
-      initWithGURL:GURL("https://wallet.google.com/wallet/settings")] ];
+      initWithGURL:GURL("https://wallet.google.com/"
+                        "wallet?p=settings&utm_source=chrome&utm_medium="
+                        "settings&utm_campaign=settings")] ];
   return footer;
 }
 
@@ -372,8 +370,10 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
 - (TableViewItem*)itemForCreditCard:(const autofill::CreditCard&)creditCard {
   std::string guid(creditCard.guid());
   NSString* creditCardName = autofill::GetCreditCardName(
-      creditCard,
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get());
+      creditCard, std::string(GetApplicationContext()
+                                  ->GetApplicationLocaleStorage()
+                                  ->GetTag()
+                                  .tag_string()));
 
   AutofillCardItem* item = [[AutofillCardItem alloc] initWithType:ItemTypeCard];
   item.text = creditCardName;
@@ -967,24 +967,16 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   UIView* targetView = self.view;
   CHECK(targetView.window);
 
-  CGPoint anchorPoint = CGPointZero;
-  BubbleArrowDirection arrowDirection = BubbleArrowDirectionDown;
+  CGRect safeAreaFrame = targetView.safeAreaLayoutGuide.layoutFrame;
+  CGPoint anchorPointInView =
+      CGPointMake(CGRectGetMidX(safeAreaFrame), CGRectGetMaxY(safeAreaFrame));
+  CGPoint anchorPoint = [targetView convertPoint:anchorPointInView
+                                          toView:targetView.window];
 
-  if (self.tableView.visibleCells.count > 0) {
-    UITableViewCell* cell = self.tableView.visibleCells.firstObject;
-    if (cell.window) {
-      CGPoint anchorPointInCell =
-          CGPointMake(CGRectGetMidX(cell.bounds), CGRectGetMaxY(cell.bounds));
-      anchorPoint = [cell convertPoint:anchorPointInCell toView:cell.window];
-      arrowDirection = BubbleArrowDirectionUp;
-    }
-  } else {
-    anchorPoint = CGPointMake(0.5 * CGRectGetWidth(targetView.bounds),
-                              0.5 * CGRectGetHeight(targetView.bounds));
-  }
-
-  NSString* text =
-      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_WALKTHROUGH_OPEN_PAYMENT_METHODS);
+  NSString* title = l10n_util::GetNSString(
+      IDS_IOS_LEVEL_UP_WALKTHROUGH_PAYMENT_METHODS_IPH_TITLE);
+  NSString* text = l10n_util::GetNSString(
+      IDS_IOS_LEVEL_UP_WALKTHROUGH_PAYMENT_METHODS_IPH_TEXT);
 
   __weak __typeof(self) weakSelf = self;
   CallbackWithIPHDismissalReasonType dismissalCallback =
@@ -995,13 +987,13 @@ using autofill::autofill_metrics::MandatoryReauthOptInOrOutSource;
   BubbleViewControllerPresenter* presenter =
       [[BubbleViewControllerPresenter alloc]
                    initWithText:text
-                          title:nil
-                 arrowDirection:arrowDirection
-                      alignment:BubbleAlignmentBottomOrTrailing
+                          title:title
+                 arrowDirection:BubbleArrowDirectionDown
+                      alignment:BubbleAlignmentCenter
                      bubbleType:BubbleViewTypeRichWithNext
-                pageControlPage:BubblePageControlPageFourth
-          totalPageControlPages:4
-          customNextButtonTitle:l10n_util::GetNSString(IDS_IOS_IPH_BUBBLE_NEXT)
+                pageControlPage:BubblePageControlPageFifth
+          totalPageControlPages:5
+          customNextButtonTitle:nil
               dismissalCallback:dismissalCallback];
   presenter.dismissalTimerDisabled = YES;
 

@@ -29,7 +29,10 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.content.res.AppCompatResources;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
@@ -46,8 +49,10 @@ import org.chromium.ui.widget.Toast;
  * should be notified about credentials user have chosen and also if user haven't chosen anything.
  */
 @NullMarked
-public class AccountChooserDialog
-        implements DialogInterface.OnClickListener, DialogInterface.OnDismissListener {
+public class AccountChooserDialog implements DialogInterface.OnDismissListener {
+    @JniType("::AccountChooserDialogAndroid")
+    interface NativeAccountChooserDialogAndroid extends JniTypeToken {}
+
     private final Context mContext;
     private final Credential[] mCredentials;
 
@@ -61,7 +66,7 @@ public class AccountChooserDialog
     /** Holds the reference to the credentials which were chosen by the user. */
     private @Nullable Credential mCredential;
 
-    private long mNativeAccountChooserDialog;
+    private @Nullable JniRawPtr<NativeAccountChooserDialogAndroid> mNativeAccountChooserDialog;
     private @Nullable AlertDialog mDialog;
 
     /**
@@ -72,7 +77,7 @@ public class AccountChooserDialog
 
     private AccountChooserDialog(
             Context context,
-            long nativeAccountChooserDialog,
+            JniRawPtr<NativeAccountChooserDialogAndroid> nativeAccountChooserDialog,
             Credential[] credentials,
             String title,
             String origin,
@@ -96,15 +101,18 @@ public class AccountChooserDialog
      * @param origin Address of the web page, where dialog was triggered.
      */
     @CalledByNative
-    private static @Nullable AccountChooserDialog createAndShowAccountChooser(
+    static @Nullable AccountChooserDialog createAndShowAccountChooser(
             WindowAndroid windowAndroid,
-            long nativeAccountChooserDialog,
+            JniRawPtr<NativeAccountChooserDialogAndroid> nativeAccountChooserDialog,
             Credential[] credentials,
             @JniType("std::u16string") String title,
             @JniType("std::string") String origin,
             @JniType("std::u16string") String signinButtonText) {
         Activity activity = windowAndroid.getActivity().get();
-        if (activity == null) return null;
+        if (activity == null) {
+            nativeAccountChooserDialog.release();
+            return null;
+        }
         AccountChooserDialog chooser =
                 new AccountChooserDialog(
                         activity,
@@ -175,15 +183,11 @@ public class AccountChooserDialog
                 if (!originUrl.isEmpty()) {
                     pslInfoButton.setVisibility(View.VISIBLE);
                     pslInfoButton.setOnClickListener(
-                            new View.OnClickListener() {
-                                @Override
-                                public void onClick(View view) {
+                            view ->
                                     showTooltip(
                                             view,
                                             UrlFormatter.formatUrlForSecurityDisplay(originUrl),
-                                            R.layout.material_tooltip);
-                                }
-                            });
+                                            R.layout.material_tooltip));
                 }
 
                 return convertView;
@@ -202,17 +206,15 @@ public class AccountChooserDialog
         final AlertDialog.Builder builder =
                 new AlertDialog.Builder(mContext, R.style.ThemeOverlay_BrowserUI_AlertDialog)
                         .setCustomTitle(titleView)
-                        .setNegativeButton(R.string.cancel, this)
-                        .setAdapter(
-                                mAdapter,
-                                new DialogInterface.OnClickListener() {
-                                    @Override
-                                    public void onClick(DialogInterface dialog, int item) {
-                                        mCredential = mCredentials[item];
-                                    }
-                                });
+                        .setNegativeButton(R.string.cancel, (_, _) -> {})
+                        .setAdapter(mAdapter, (_, item) -> mCredential = mCredentials[item]);
         if (!TextUtils.isEmpty(mSigninButtonText)) {
-            builder.setPositiveButton(mSigninButtonText, this);
+            builder.setPositiveButton(
+                    mSigninButtonText,
+                    (_, _) -> {
+                        mCredential = mCredentials[0];
+                        mSigninButtonClicked = true;
+                    });
         }
         mDialog = builder.create();
         mDialog.setOnDismissListener(this);
@@ -279,7 +281,7 @@ public class AccountChooserDialog
 
     @CalledByNative
     private void imageFetchComplete(int index, Bitmap avatarBitmap) {
-        if (mNativeAccountChooserDialog == 0) return;
+        if (mNativeAccountChooserDialog == null) return;
         assert index >= 0 && index < mCredentials.length;
         assert mCredentials[index] != null;
         Drawable avatar =
@@ -299,22 +301,17 @@ public class AccountChooserDialog
 
     @CalledByNative
     private void notifyNativeDestroyed() {
-        mNativeAccountChooserDialog = 0;
-        if (mDialog != null) mDialog.dismiss();
-    }
-
-    @Override
-    public void onClick(DialogInterface dialog, int whichButton) {
-        if (whichButton == DialogInterface.BUTTON_POSITIVE) {
-            mCredential = mCredentials[0];
-            mSigninButtonClicked = true;
+        if (mNativeAccountChooserDialog != null) {
+            mNativeAccountChooserDialog.release();
+            mNativeAccountChooserDialog = null;
         }
+        if (mDialog != null) mDialog.dismiss();
     }
 
     @Override
     public void onDismiss(DialogInterface dialog) {
         mDialog = null;
-        if (mNativeAccountChooserDialog == 0) return;
+        if (mNativeAccountChooserDialog == null) return;
         if (mCredential != null) {
             AccountChooserDialogJni.get()
                     .onCredentialClicked(
@@ -324,15 +321,19 @@ public class AccountChooserDialog
         } else {
             AccountChooserDialogJni.get().cancelDialog(mNativeAccountChooserDialog);
         }
+        if (mNativeAccountChooserDialog != null) {
+            mNativeAccountChooserDialog.release();
+            mNativeAccountChooserDialog = null;
+        }
     }
 
     @NativeMethods
     interface Natives {
         void onCredentialClicked(
-                long nativeAccountChooserDialogAndroid,
+                JniPtr<NativeAccountChooserDialogAndroid> self,
                 int credentialId,
                 boolean signinButtonClicked);
 
-        void cancelDialog(long nativeAccountChooserDialogAndroid);
+        void cancelDialog(JniPtr<NativeAccountChooserDialogAndroid> self);
     }
 }

@@ -12,8 +12,6 @@ static_library("pip") {
     "arc_pip_bridge.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//base",
     "//chrome/browser/picture_in_picture",
@@ -23,6 +21,11 @@ static_library("pip") {
     "//content/public/browser",
     "//ui/aura",
     "//ui/gfx",
+
+    # TODO(crbug.com/556482973): Use //chrome/browser/ui/ash/shelf instead
+    # after fixing cyclic dependency.
+    "//chrome/browser/apps/almanac_api_client/proto",
+    "//chrome/browser/apps/app_preload_service/proto",
   ]
 }
 

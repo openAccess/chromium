@@ -15,6 +15,7 @@
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
 #include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_api_metrics.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/service/glic_instance_impl.h"
 #include "chrome/browser/glic/suggestions/caching_zero_state_suggestions_manager.h"
@@ -60,7 +61,7 @@ mojom::ZeroStateSuggestionsV2Ptr MakePendingSuggestionsPtr(
 }
 
 std::vector<raw_ptr<content::WebContents>> GetWebContentsFromTabs(
-    const std::vector<tabs::TabInterface*>& tabs) {
+    const std::vector<raw_ptr<tabs::TabInterface>>& tabs) {
   std::vector<raw_ptr<content::WebContents>> web_contents;
   web_contents.reserve(tabs.size());
   for (tabs::TabInterface* tab : tabs) {
@@ -169,7 +170,7 @@ void GlicZeroStateSuggestionsManager::
     NotifyZeroStateSuggestionsOnPinnedTabChanged(
         bool is_first_run,
         const std::vector<std::string>& supported_tools,
-        const std::vector<tabs::TabInterface*>& pinned_tabs) {
+        const std::vector<raw_ptr<tabs::TabInterface>>& pinned_tabs) {
   if (!glic_instance_->HasActiveEmbedder()) {
     return;
   }
@@ -286,6 +287,8 @@ void GlicZeroStateSuggestionsManager::GetZeroStateSuggestionsAndSubscribe(
     mojo::PendingRemote<mojom::ZeroStateSuggestionsClient> client,
     mojom::ZeroStateSuggestionsOptionsPtr options,
     GetZeroStateSuggestionsAndSubscribeCallback callback) {
+  LogApiRequestCount(
+      GlicHostApiRequestId::kGetZeroStateSuggestionsAndSubscribe);
   client_remote_.reset();
   if (client.is_valid()) {
     client_remote_.Bind(std::move(client));

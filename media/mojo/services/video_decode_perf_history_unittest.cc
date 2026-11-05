@@ -1045,18 +1045,16 @@ TEST_P(VideoDecodePerfHistoryParamTest,
   }
 }
 
-const PerfHistoryTestParams kPerfHistoryTestParams[] = {
-    {true, "", false},
-    {false, "", false},
-    {true, "com.widevine.alpha", false},
-    {false, "com.widevine.alpha", false},
-    {true, "com.widevine.alpha", true},
-    {false, "com.widevine.alpha", true},
-};
-
-INSTANTIATE_TEST_SUITE_P(VaryDBInitTiming,
-                         VideoDecodePerfHistoryParamTest,
-                         ::testing::ValuesIn(kPerfHistoryTestParams));
+INSTANTIATE_TEST_SUITE_P(
+    VaryDBInitTiming,
+    VideoDecodePerfHistoryParamTest,
+    ::testing::Values(PerfHistoryTestParams{true, "", false},
+                      PerfHistoryTestParams{false, "", false},
+                      PerfHistoryTestParams{true, "com.widevine.alpha", false},
+                      PerfHistoryTestParams{false, "com.widevine.alpha", false},
+                      PerfHistoryTestParams{true, "com.widevine.alpha", true},
+                      PerfHistoryTestParams{false, "com.widevine.alpha",
+                                            true}));
 
 TEST_P(VideoDecodePerfHistoryParamTest, GetPerfInfo_NoStatsPowerEfficiency) {
   PerfHistoryTestParams params = GetParam();
@@ -1077,7 +1075,7 @@ TEST_P(VideoDecodePerfHistoryParamTest, GetPerfInfo_NoStatsPowerEfficiency) {
 
   base::RunLoop run_loop;
   EXPECT_CALL(*this, MockGetPerfInfoCB(kIsSmooth, expected_power_efficient))
-      .WillOnce(testing::InvokeWithoutArgs([&]() { run_loop.Quit(); }));
+      .WillOnce([&]() { run_loop.Quit(); });
 
   perf_history_->GetPerfInfo(
       MakeFeaturesPtr(kUnknownProfile, kSize, kFrameRate, params.key_system,

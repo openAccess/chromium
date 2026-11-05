@@ -17,20 +17,13 @@ namespace {
 
 constexpr int kMaxRecords = RecentSessionTracker::kMaxRecentSessionRecords;
 
-// Gets midnight at the start of the next local day.
-// Note: inaccurate if the time is *exactly* midnight, but this will happen so
-// rarely that it's not worth worrying about.
-base::Time GetEndOfDay(base::Time time) {
-  return (time + base::Days(1)).LocalMidnight();
-}
-
 // Counts the number of active days in `recent_sessions` going back `num_days`
 // from `last_day`. Returns null if session data recording does not go back far
 // enough to cover the whole span.
 std::optional<int> CountActiveDays(const RecentSessionData& recent_sessions,
                                    base::Time last_day,
                                    int num_days) {
-  const base::Time end = GetEndOfDay(last_day);
+  const base::Time end = last_day.NextLocalMidnight();
   const base::Time start = end - base::Days(num_days);
 
   if (recent_sessions.enabled_time > start) {
@@ -69,8 +62,8 @@ bool RecentSessionPolicyImpl::DailyConstraint::ShouldSkipRecording(
   // of, say, 16-hour separations between sessions and only the first one would
   // be recorded, no matter how long the sequence lasted.
   return recent_sessions.recent_session_start_times.size() > 1U &&
-         GetEndOfDay(recent_sessions.recent_session_start_times[0]) ==
-             GetEndOfDay(recent_sessions.recent_session_start_times[1]);
+         recent_sessions.recent_session_start_times[0].NextLocalMidnight() ==
+             recent_sessions.recent_session_start_times[1].NextLocalMidnight();
 }
 
 std::optional<int> RecentSessionPolicyImpl::SessionCountConstraint::GetCount(

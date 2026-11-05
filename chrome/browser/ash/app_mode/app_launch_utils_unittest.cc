@@ -10,14 +10,13 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/test/task_environment.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/policy/device_local_account/device_local_account_type.h"
 #include "components/prefs/json_pref_store.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service_factory.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace ash {
@@ -48,16 +47,16 @@ class AppLaunchUtilsTest : public testing::Test {
   void SetUp() override {
     testing::Test::SetUp();
 
-    test_user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
             TestingBrowserProcess::GetGlobal()->local_state());
 
     const AccountId account_id =
         AccountId::FromUserEmail(policy::GenerateDeviceLocalAccountUserId(
             "lala", policy::DeviceLocalAccountType::kWebKioskApp));
-    ASSERT_TRUE(test_user_session_manager_->AddKioskWebAppUser(
+    ASSERT_TRUE(user_session_test_environment_->AddKioskWebAppUser(
         account_id.GetUserEmail()));
-    test_user_session_manager_->LogIn(account_id);
+    user_session_test_environment_->LogIn(account_id);
 
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
     input_file_ = temp_dir_.GetPath().AppendASCII("prefs.json");
@@ -67,7 +66,7 @@ class AppLaunchUtilsTest : public testing::Test {
   }
 
   void TearDown() override {
-    test_user_session_manager_.reset();
+    user_session_test_environment_.reset();
     testing::Test::TearDown();
   }
 
@@ -87,7 +86,8 @@ class AppLaunchUtilsTest : public testing::Test {
   scoped_refptr<JsonPrefStore> pref_store_;
   scoped_refptr<PrefRegistrySimple> registry_;
 
-  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
 };
 
 TEST_F(AppLaunchUtilsTest, ClearUserPrefs) {

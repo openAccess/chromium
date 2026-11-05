@@ -14,7 +14,6 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import android.view.View;
 
 import androidx.activity.OnBackPressedCallback;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -24,8 +23,8 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -34,12 +33,11 @@ import org.chromium.ui.modelutil.PropertyModel;
 
 /** Robolectric tests for {@link IncognitoReauthDialog}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class IncognitoReauthDialogTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private ModalDialogManager mModalDialogManagerMock;
-    @Mock private View mIncognitoReauthViewMock;
 
+    private final View mIncognitoReauthViewMock = new View(ContextUtils.getApplicationContext());
     private final OnBackPressedCallback mOnBackPressedCallbackMock =
             new OnBackPressedCallback(false) {
                 @Override
@@ -59,11 +57,10 @@ public class IncognitoReauthDialogTest {
 
     @After
     public void tearDown() {
-        verifyNoMoreInteractions(mModalDialogManagerMock, mIncognitoReauthViewMock);
+        verifyNoMoreInteractions(mModalDialogManagerMock);
     }
 
     @Test
-    @SmallTest
     public void testPropertyModelAttributes_CorrectlySet() {
         PropertyModel model = mIncognitoReauthDialog.getModalDialogPropertyModelForTesting();
         assertEquals(
@@ -80,7 +77,6 @@ public class IncognitoReauthDialogTest {
     }
 
     @Test
-    @SmallTest
     public void testShowIncognitoReauthDialog_Invokes_ModalDiaogManager() {
         PropertyModel model = mIncognitoReauthDialog.getModalDialogPropertyModelForTesting();
         doNothing()
@@ -100,7 +96,6 @@ public class IncognitoReauthDialogTest {
     }
 
     @Test
-    @SmallTest
     public void testdismissIncognitoReauthDialog_InvokesModalDiaogManager() {
         PropertyModel model = mIncognitoReauthDialog.getModalDialogPropertyModelForTesting();
         doNothing()

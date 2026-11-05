@@ -8,13 +8,13 @@
 #import "base/check.h"
 #import "base/task/sequenced_task_runner.h"
 #import "ios/chrome/browser/content_suggestions/magic_stack/public/magic_stack_utils.h"
+#import "ios/chrome/browser/content_suggestions/most_visited_tiles/public/most_visited_tiles_constants.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_item.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_tiles_collection_view_layout.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_tiles_commands.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_tiles_config.h"
 #import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_tiles_plus_button_item.h"
 #import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
-#import "ios/chrome/browser/content_suggestions/ui/cells/content_suggestions_cells_constants.h"
 #import "ios/chrome/browser/content_suggestions/ui/content_suggestions_image_data_source.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
@@ -55,6 +55,8 @@ const int kPlusButtonIdentifier = -1;
   __weak id<MostVisitedTilesCommands> _mostVisitedTilesHandler;
   /// Data source object powering the display of the collection view.
   UICollectionViewDiffableDataSource* _diffableDataSource;
+  /// Compositional layout of the collection view.
+  MostVisitedTilesCollectionViewLayout* _layout;
 }
 
 - (instancetype)initWithConfig:(MostVisitedTilesConfig*)config {
@@ -63,6 +65,7 @@ const int kPlusButtonIdentifier = -1;
           initWithItemCount:config.mostVisitedItems.count + 1];
   self = [super initWithFrame:CGRectZero collectionViewLayout:layout];
   if (self) {
+    _layout = layout;
     _items = config.mostVisitedItems;
     _imageDataSource = config.imageDataSource;
     _layoutGuideCenter = config.layoutGuideCenter;
@@ -71,6 +74,7 @@ const int kPlusButtonIdentifier = -1;
     self.backgroundColor = UIColor.clearColor;
     self.showsHorizontalScrollIndicator = NO;
     self.scrollEnabled = NO;  /// Disables vertical scrolling.
+    self.scrollsToTop = NO;
     self.dragDelegate = self;
     self.dropDelegate = self;
     self.dragInteractionEnabled = YES;
@@ -82,6 +86,14 @@ const int kPlusButtonIdentifier = -1;
     [self initializeDataSource];
   }
   return self;
+}
+
+- (NSUInteger)maxVisibleItems {
+  return _layout.maxVisibleItems;
+}
+
+- (void)setMaxVisibleItems:(NSUInteger)maxVisibleItems {
+  _layout.maxVisibleItems = maxVisibleItems;
 }
 
 - (void)setContentSize:(CGSize)contentSize {
@@ -179,11 +191,15 @@ const int kPlusButtonIdentifier = -1;
   [snapshot appendSectionsWithIdentifiers:@[ kSectionIdentifier ]];
   NSMutableArray* indices = [NSMutableArray array];
   NSUInteger count = _items.count;
+  NSUInteger regularCount = 0;
   for (NSUInteger i = 0; i < count; i++) {
     [indices addObject:@(i)];
+    if (_items[i].source != ntp_tiles::TileSource::AI_MODE) {
+      regularCount++;
+    }
   }
   /// Add the "+" button.
-  if (!_items.lastObject.isPinned || count < kMaximumItems) {
+  if (!_items.lastObject.isPinned || regularCount < kMaximumItems) {
     [indices addObject:@(kPlusButtonIdentifier)];
   }
   [snapshot appendItemsWithIdentifiers:indices
@@ -227,6 +243,9 @@ const int kPlusButtonIdentifier = -1;
 /// Loads the favicon for item with `identifier`.
 - (void)loadFaviconIfNeeded:(NSNumber*)identifier {
   MostVisitedItem* item = _items[identifier.unsignedIntValue];
+  if (item.source == ntp_tiles::TileSource::AI_MODE) {
+    return;
+  }
   if (!item.attributes) {
     __weak MostVisitedTilesCollectionView* weakSelf = self;
     void (^completion)(FaviconAttributes*) = ^(FaviconAttributes* attributes) {

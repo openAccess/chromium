@@ -27,7 +27,7 @@
 #include "components/unexportable_keys/unexportable_key_task_manager.h"
 #include "components/variations/scoped_variations_ids_provider.h"
 #include "crypto/scoped_fake_unexportable_key_provider.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key.h"
 #include "net/http/http_response_headers.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -97,9 +97,8 @@ MATCHER(TupleEqualsProto, "") {
                                      std::get<0>(arg), result_listener);
 }
 
-std::vector<crypto::SignatureVerifier::SignatureAlgorithm> CreateAlgArray() {
-  return {crypto::SignatureVerifier::SignatureAlgorithm::ECDSA_SHA256,
-          crypto::SignatureVerifier::SignatureAlgorithm::RSA_PKCS1_SHA256};
+std::vector<crypto::sign::SignatureKind> CreateAlgArray() {
+  return {crypto::sign::ECDSA_SHA256, crypto::sign::RSA_PKCS1_SHA256};
 }
 
 bound_session_credentials::Credential CreateTestBoundSessionCredential(
@@ -205,6 +204,10 @@ class BoundSessionRegistrationFetcherImplTest : public testing::Test {
         "Signin.BoundSessionCredentials."
         "SessionRegistrationGenerateRegistrationTokenDuration",
         1);
+  }
+
+  const base::HistogramTester& histogram_tester() const {
+    return histogram_tester_;
   }
 
  private:
@@ -408,6 +411,28 @@ TEST_F(BoundSessionRegistrationFetcherImplTest, NoKeyProvider) {
   EXPECT_FALSE(WasRequestSent());
   EXPECT_EQ(future.Get<>(), std::nullopt);
   ExpectRecordedMetrics(RegistrationError::kGenerateRegistrationTokenFailed);
+}
+
+// Regression test for https://crbug.com/567397860.
+TEST_F(BoundSessionRegistrationFetcherImplTest,
+       DestroyedWhileGeneratingRegistrationToken) {
+  std::unique_ptr<BoundSessionRegistrationFetcher> fetcher = CreateFetcher();
+  RegistrationResultFuture future;
+
+  fetcher->Start(future.GetCallback());
+  // The binding key generation is still pending as background tasks haven't
+  // run yet. Destroying the fetcher cancels the pending key generation, which
+  // must not invoke the completion callback.
+  fetcher.reset();
+  EXPECT_FALSE(future.IsReady());
+
+  RunBackgroundTasks();
+  EXPECT_FALSE(future.IsReady());
+  EXPECT_FALSE(WasRequestSent());
+  histogram_tester().ExpectTotalCount(
+      "Signin.BoundSessionCredentials.SessionRegistrationResult", 0);
+  histogram_tester().ExpectTotalCount(
+      "Signin.BoundSessionCredentials.SessionRegistrationTotalDuration", 0);
 }
 
 TEST_F(BoundSessionRegistrationFetcherImplTest, ParseCredentials) {

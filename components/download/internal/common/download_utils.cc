@@ -42,7 +42,9 @@
 #include "url/url_constants.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/android_info.h"
 #include "components/download/internal/common/android/download_collection_bridge.h"
+#include "components/download/internal/common/android/download_document_uri_bridge.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
 namespace download {
@@ -141,6 +143,25 @@ void AppendRangeHeader(net::HttpRequestHeaders* headers,
 }
 
 #if BUILDFLAG(IS_ANDROID)
+base::FilePath GetDisplayName(const base::FilePath& download_uri) {
+  if (DownloadDocumentUriBridge::IsDocumentUri(download_uri)) {
+    return DownloadDocumentUriBridge::GetDisplayName(download_uri);
+  }
+  return DownloadCollectionBridge::GetDisplayName(download_uri);
+}
+
+DisplayNames GetDisplayNamesOnBackgroundThread(
+    std::vector<base::FilePath> content_uris) {
+  auto result = std::make_unique<std::map<std::string, base::FilePath>>();
+  for (const auto& uri : content_uris) {
+    base::FilePath display_name = GetDisplayName(uri);
+    if (!display_name.empty()) {
+      result->emplace(uri.value(), std::move(display_name));
+    }
+  }
+  return result;
+}
+
 struct CreateIntermediateUriResult {
  public:
   CreateIntermediateUriResult(const base::FilePath& content_uri,
@@ -164,7 +185,7 @@ CreateIntermediateUriResult CreateIntermediateUri(
                 original_url, referrer_url, suggested_name, mime_type);
   base::FilePath file_name;
   if (!content_path.empty()) {
-    file_name = DownloadCollectionBridge::GetDisplayName(content_path);
+    file_name = GetDisplayName(content_path);
   }
   if (file_name.empty())
     file_name = suggested_name;
@@ -385,11 +406,15 @@ void HandleResponseHeaders(const net::HttpResponseHeaders* headers,
   if (!headers)
     return;
 
+  std::optional<std::string_view> last_modified =
+      headers->EnumerateHeader(nullptr, "Last-Modified");
+  if (create_info->save_info && last_modified.has_value()) {
+    create_info->save_info->last_modified = *last_modified;
+  }
+
   if (headers->HasStrongValidators()) {
     // If we don't have strong validators as per RFC 7232 section 2, then
     // we neither store nor use them for range requests.
-    std::optional<std::string_view> last_modified =
-        headers->EnumerateHeader(nullptr, "Last-Modified");
     create_info->last_modified = last_modified.value_or(std::string_view());
 
     std::optional<std::string_view> etag =
@@ -471,7 +496,13 @@ std::unique_ptr<network::ResourceRequest> CreateResourceRequest(
   // See also:
   // - https://crbug.com/952834
   // - https://github.com/whatwg/fetch/issues/896#issuecomment-484423278
-  request->mode = network::mojom::RequestMode::kNavigate;
+  //
+  // Note that while top-level navigations use kNavigate (which bypasses CORS
+  // restrictions in the network service), Background Fetch requests require
+  // strict adoption of the originating fetch request mode (kCors) to prevent
+  // cross-origin information leaks.
+  request->mode = params->fetch_request_mode();
+  request->credentials_mode = params->credentials_mode();
 
   bool has_upload_data = false;
   if (params->post_body()) {
@@ -615,6 +646,7 @@ DownloadDBEntry CreateDownloadDBEntryFromItem(const DownloadItemImpl& item) {
   in_progress_info.bytes_wasted = item.GetBytesWasted();
   in_progress_info.auto_resume_count = item.GetAutoResumeCount();
   in_progress_info.credentials_mode = item.GetCredentialsMode();
+  in_progress_info.fetch_request_mode = item.GetFetchRequestMode();
   auto range_request_offset = item.GetRangeRequestOffset();
   in_progress_info.range_request_from = range_request_offset.first;
   in_progress_info.range_request_to = range_request_offset.second;
@@ -646,6 +678,8 @@ std::unique_ptr<DownloadEntry> CreateDownloadEntryFromDownloadDBEntry(
       ukm_info->ukm_download_id);
   download_entry->fetched_via_service_worker =
       in_progress_info->fetched_via_service_worker;
+  download_entry->credentials_mode = in_progress_info->credentials_mode;
+  download_entry->fetch_request_mode = in_progress_info->fetch_request_mode;
   return download_entry;
 }
 
@@ -878,6 +912,20 @@ void DetermineSavePackagePath(const GURL& url,
     return;
   }
   std::move(callback).Run(mhtml_path, mhtml_path.BaseName());
+}
+
+void GetDisplayNamesForDownloads(std::vector<base::FilePath> content_uris,
+                                 GetDisplayNamesCallback callback) {
+  if (content_uris.empty() || base::android::android_info::sdk_int() <
+                                  base::android::android_info::SDK_VERSION_Q) {
+    std::move(callback).Run(nullptr);
+    return;
+  }
+  GetDownloadTaskRunner()->PostTaskAndReplyWithResult(
+      FROM_HERE,
+      base::BindOnce(&GetDisplayNamesOnBackgroundThread,
+                     std::move(content_uris)),
+      std::move(callback));
 }
 #endif
 

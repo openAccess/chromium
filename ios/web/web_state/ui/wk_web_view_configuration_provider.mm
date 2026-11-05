@@ -24,6 +24,7 @@
 #import "components/safe_browsing/core/common/features.h"
 #import "ios/public/provider/web/cobalt_api.h"
 #import "ios/web/common/features.h"
+#import "ios/web/extension/extension_controller_impl.h"
 #import "ios/web/js_messaging/java_script_feature_manager.h"
 #import "ios/web/js_messaging/java_script_feature_util_impl.h"
 #import "ios/web/js_messaging/web_frames_manager_java_script_feature.h"
@@ -130,7 +131,7 @@ void WKWebViewConfigurationProvider::Initialize() {
   // 1. Create Block Local List
   content_rule_list_provider_->UpdateRuleList(
       kBlockLocalResourcesRuleListKey,
-      base::SysNSStringToUTF8(CreateLocalBlockingJsonRuleList()),
+      base::SysNSStringToUTF8(CreateAppSpecificURLsJsonRuleList()),
       base::DoNothing());
   // 2. Create Mixed Content Autoupgrade List
   content_rule_list_provider_->UpdateRuleList(
@@ -211,6 +212,18 @@ void WKWebViewConfigurationProvider::ResetWithWebViewConfiguration(
         configuration_, browser_state_->IsOffTheRecord(), controller);
   }
 
+  if (@available(iOS 18.4, *)) {
+    web::ExtensionController* extension_controller =
+        GetWebClient()->GetExtensionController(browser_state_);
+    if (extension_controller) {
+      auto* extension_controller_impl =
+          static_cast<web::ExtensionControllerImpl*>(extension_controller);
+      [configuration_
+          setWebExtensionController:extension_controller_impl
+                                        ->GetWKWebExtensionController()];
+    }
+  }
+
   if (!scheme_handler_) {
     scoped_refptr<network::SharedURLLoaderFactory> shared_loader_factory =
         browser_state_->GetSharedURLLoaderFactory();
@@ -227,6 +240,29 @@ void WKWebViewConfigurationProvider::ResetWithWebViewConfiguration(
 
   content_rule_list_provider_->SetUserContentController(
       configuration_.userContentController);
+
+  if (@available(iOS 27, *)) {
+    // Materialize `defaultWebpagePreferences` before `configuration_` is copied
+    // by `GetWebViewConfiguration()`. `-[WKWebViewConfiguration
+    // defaultWebpagePreferences]` lazily allocates its `WKWebpagePreferences`
+    // instance on first access, and `-[WKWebViewConfiguration copyWithZone:]`
+    // copies the underlying ivar directly without invoking the getter. Ensuring
+    // `defaultWebpagePreferences` is initialized here guarantees that copied
+    // configurations share the same `WKWebpagePreferences` instance when
+    // `SetUniversalOptOutEnabled()` is called later in the session.
+    std::ignore = [configuration_ defaultWebpagePreferences];
+    bool is_universal_opt_out_enabled =
+        GetWebClient()->GetUniversalOptOutState(browser_state_) ==
+        UniversalOptOutState::kEnabled;
+    // On early versions of iOS 27 betas,
+    // `-[WKWebPagePreferences setGlobalPrivacyControlEnabled:]` was not defined
+    // correctly, causing crashes. As a workaround, only set the preference if
+    // Universal Opt-Out is enabled. Resetting the value to false using this
+    // method is not supported.
+    if (is_universal_opt_out_enabled) {
+      SetUniversalOptOutEnabled(true);
+    }
+  }
 }
 
 WKWebViewConfiguration*
@@ -239,6 +275,16 @@ WKWebViewConfigurationProvider::GetWebViewConfiguration() {
   // This is a shallow copy to prevent callers from changing the internals of
   // configuration.
   return [configuration_ copy];
+}
+
+void WKWebViewConfigurationProvider::SetUniversalOptOutEnabled(bool enabled) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(_sequence_checker_);
+#if defined(__IPHONE_27_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_27_0
+  if (@available(iOS 27, *)) {
+    [[configuration_ defaultWebpagePreferences]
+        setGlobalPrivacyControlEnabled:enabled];
+  }
+#endif
 }
 
 WKWebsiteDataStore* WKWebViewConfigurationProvider::GetWebsiteDataStore() {

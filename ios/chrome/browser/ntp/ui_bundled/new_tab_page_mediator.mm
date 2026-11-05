@@ -19,6 +19,7 @@
 #import "base/task/thread_pool.h"
 #import "base/time/time.h"
 #import "base/trace_event/trace_event.h"
+#import "base/values.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/image_fetcher/core/image_fetcher.h"
@@ -31,6 +32,7 @@
 #import "components/omnibox/common/omnibox_features.h"
 #import "components/prefs/ios/pref_observer_bridge.h"
 #import "components/prefs/pref_change_registrar.h"
+#import "components/prefs/pref_service.h"
 #import "components/regional_capabilities/regional_capabilities_service.h"
 #import "components/search/search.h"
 #import "components/signin/public/base/signin_switches.h"
@@ -38,7 +40,12 @@
 #import "components/strings/grit/components_strings.h"
 #import "components/subscription_eligibility/objc/subscription_eligibility_observer_bridge.h"
 #import "components/subscription_eligibility/subscription_eligibility_service.h"
+#import "ios/chrome/browser/aim/model/ai_mode_button_service_ios.h"
 #import "ios/chrome/browser/browser_view/model/browser_view_visibility_notifier_browser_agent.h"
+#import "ios/chrome/browser/composebox/coordinator/composebox_input_state_manager.h"
+#import "ios/chrome/browser/composebox/public/composebox_attachment_option.h"
+#import "ios/chrome/browser/composebox/public/composebox_mode.h"
+#import "ios/chrome/browser/composebox/ui/composebox_ui_input_state.h"
 #import "ios/chrome/browser/content_suggestions/coordinator/content_suggestions_mediator.h"
 #import "ios/chrome/browser/content_suggestions/ui/user_account_image_update_delegate.h"
 #import "ios/chrome/browser/discover_feed/model/discover_feed_service.h"
@@ -55,7 +62,6 @@
 #import "ios/chrome/browser/home_customization/utils/home_customization_constants.h"
 #import "ios/chrome/browser/metrics/model/new_tab_page_uma.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_tab_helper.h"
-#import "ios/chrome/browser/ntp/model/ntp_background_image_cache_service.h"
 #import "ios/chrome/browser/ntp/model/set_up_list_item_type.h"
 #import "ios/chrome/browser/ntp/model/set_up_list_prefs.h"
 #import "ios/chrome/browser/ntp/search_engine_logo/mediator/search_engine_logo_mediator.h"
@@ -106,8 +112,8 @@
 #import "ios/web/public/navigation/referrer.h"
 #import "ios/web/public/web_state.h"
 #import "skia/ext/skia_utils_ios.h"
-#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util.h"
+#import "ui/gfx/image/image.h"
 #import "url/gurl.h"
 
 @interface NewTabPageMediator (ImageFetcher)
@@ -129,9 +135,6 @@ enum class IOSNTPNewBadgeShownResult {
   // kNotShownButtonPressed = 2,  // Obsolete in M140
   kMaxValue = kShown,
 };
-
-// The point size of the entry point's symbol.
-const CGFloat kIconPointSize = 18.0;
 
 // The holdback period to wait after FRE completion before showing new badges
 // on the homepage.
@@ -253,21 +256,24 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
             std::get_if<sync_pb::NtpCustomBackground>(&custom_background)) {
       image_fetcher::ImageFetcher* imageFetcher =
           [strongMediator imageFetcherService]->GetImageFetcher(
-              image_fetcher::ImageFetcherConfig::kReducedMode);
+              image_fetcher::ImageFetcherConfig::kDiskCacheOnly);
       GURL imageURL = GURL(ntpBackground->url());
-      imageFetcher->FetchImageData(
+      image_fetcher::ImageFetcherParams params(kTrafficAnnotation,
+                                               kImageFetcherUmaClient);
+      params.set_transcode_format(
+          image_fetcher::ImageFetcherParams::TranscodeFormat::kJpeg);
+      imageFetcher->FetchImage(
           imageURL,
-          base::BindOnce(^(const std::string& imageData,
+          base::BindOnce(^(const gfx::Image& image,
                            const image_fetcher::RequestMetadata& metadata) {
-            bool success = !imageData.empty();
+            bool success = !image.IsEmpty();
             base::UmaHistogramEnumeration(
                 "IOS.HomeCustomization.Background.Ntp.CacheCleanupEvent",
                 success
                     ? NtpBackgroundCacheCleanupEvent::kCleanupCompletedSuccess
                     : NtpBackgroundCacheCleanupEvent::kCleanupCompletedFailure);
           }),
-          image_fetcher::ImageFetcherParams(kTrafficAnnotation,
-                                            kImageFetcherUmaClient));
+          params);
       base::UmaHistogramEnumeration(
           "IOS.HomeCustomization.Background.Ntp.CacheCleanupEvent",
           NtpBackgroundCacheCleanupEvent::kRefetchTriggered);
@@ -296,6 +302,7 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
 }  // namespace
 
 @interface NewTabPageMediator () <BooleanObserver,
+                                  ComposeboxInputStateManagerDelegate,
                                   FullscreenBrowserAgentObserving,
                                   HomeBackgroundCustomizationServiceObserving,
                                   IdentityManagerObserving,
@@ -321,8 +328,10 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
       _fullscreenBrowserAgentObserverBridge;
   // AIM eligibility service.
   raw_ptr<AimEligibilityService> _aimEligibilityService;
-  // AIM eligibility subscription.
-  base::CallbackListSubscription _aimEligibilitySubscription;
+  // Service vending the AI Mode button configuration.
+  raw_ptr<AIModeButtonServiceIOS> _aiModeButtonServiceIOS;
+  // AI Mode button state change subscription.
+  base::CallbackListSubscription _aiModeButtonStateSubscription;
   // Whether AIM is currently allowed.
   BOOL _isAIMAllowed;
   // Listen for default search engine changes.
@@ -361,8 +370,6 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
   // Observer for the customization service.
   std::unique_ptr<HomeBackgroundCustomizationServiceObserverBridge>
       _backgroundCustomizationServiceObserverBridge;
-  // Used to cache the background image.
-  raw_ptr<NTPBackgroundImageCacheService> _backgroundImageCacheService;
   // Used to fetch and cache images for the background.
   raw_ptr<image_fetcher::ImageFetcherService> _imageFetcherService;
   raw_ptr<UserUploadedImageManager, DanglingUntriaged>
@@ -380,11 +387,11 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
   BOOL _mediatorSetUp;
   // Callback for the thumbnail image fetch.
   std::unique_ptr<base::CancelableOnceCallback<
-      void(const std::string&, const image_fetcher::RequestMetadata&)>>
+      void(const gfx::Image&, const image_fetcher::RequestMetadata&)>>
       _thumbnailCallback;
   // Callback for the high-resolution image fetch.
   std::unique_ptr<base::CancelableOnceCallback<
-      void(const std::string&, const image_fetcher::RequestMetadata&)>>
+      void(const gfx::Image&, const image_fetcher::RequestMetadata&)>>
       _imageCallback;
   // The URL of the background image currently being fetched.
   GURL _pendingBackgroundURL;
@@ -419,8 +426,6 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
                    regionalCapabilitiesService
         backgroundCustomizationService:
             (HomeBackgroundCustomizationService*)backgroundCustomizationService
-           backgroundImageCacheService:
-               (NTPBackgroundImageCacheService*)backgroundImageCacheService
                    imageFetcherService:
                        (image_fetcher::ImageFetcherService*)imageFetcherService
               userUploadedImageManager:
@@ -433,6 +438,8 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
               featureEngagementTracker:(feature_engagement::Tracker*)tracker
                  aimEligibilityService:
                      (AimEligibilityService*)aimEligibilityService
+                aiModeButtonServiceIOS:
+                    (AIModeButtonServiceIOS*)aiModeButtonServiceIOS
                 fullscreenBrowserAgent:
                     (FullscreenBrowserAgent*)fullscreenBrowserAgent {
   self = [super init];
@@ -467,16 +474,16 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
     _subscriptionEligibilityService = subscriptionEligibilityService;
     _regionalCapabilitiesService = regionalCapabilitiesService;
     _backgroundCustomizationService = backgroundCustomizationService;
-    _backgroundImageCacheService = backgroundImageCacheService;
     _imageFetcherService = imageFetcherService;
     _userUploadedImageManager = userUploadedImageManager;
     _signedInIdentity = _authService->GetPrimaryIdentity();
     _tracker = tracker;
     _aimEligibilityService = aimEligibilityService;
-    if (_aimEligibilityService) {
+    _aiModeButtonServiceIOS = aiModeButtonServiceIOS;
+    if (_aiModeButtonServiceIOS) {
       __weak __typeof(self) weakSelf = self;
-      _aimEligibilitySubscription =
-          _aimEligibilityService->RegisterEligibilityChangedCallback(
+      _aiModeButtonStateSubscription =
+          _aiModeButtonServiceIOS->RegisterStateChangedCallback(
               base::BindRepeating(^(void) {
                 [weakSelf updateAIMAvailability];
               }));
@@ -504,8 +511,14 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
     if (IsBottomOmniboxAvailable()) {
       [self.consumer setOmniboxInBottomPosition:_bottomOmniboxEnabled.value];
     }
-    if (IsFullscreenRefactoringEnabled() && _fullscreenBrowserAgent) {
-      [self.consumer
+  }
+}
+
+- (void)setScrollConsumer:(id<NewTabPageScrollConsumer>)scrollConsumer {
+  _scrollConsumer = scrollConsumer;
+  if (IsChromeNextIaEnabled()) {
+    if (_fullscreenBrowserAgent && IsFullscreenRefactoringEnabled()) {
+      [self.scrollConsumer
           setFeedBottomInset:_fullscreenBrowserAgent->max_insets().bottom];
     }
   }
@@ -517,6 +530,22 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
     [self.headerConsumer
         setOmniboxInBottomPosition:_bottomOmniboxEnabled.value];
   }
+}
+
+- (void)setComposeboxInputStateManager:
+    (ComposeboxInputStateManager*)composeboxInputStateManager {
+  AimButtonRefactorArm arm = GetAimButtonRefactorArm();
+  if (arm != AimButtonRefactorArm::kImageGenerationQuickAction &&
+      arm != AimButtonRefactorArm::kAttachImageQuickAction) {
+    return;
+  }
+
+  if (composeboxInputStateManager == _composeboxInputStateManager) {
+    return;
+  }
+  _composeboxInputStateManager.delegate = nil;
+  _composeboxInputStateManager = composeboxInputStateManager;
+  _composeboxInputStateManager.delegate = self;
 }
 
 #pragma mark - NewTabPageMutator
@@ -583,8 +612,8 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
     // The DSE icon might have already been fetched. In this case, no updated
     // will be delivered. Therefore we should query the cache, as the icon store
     // might have already been updated.
-    UIImage* fetchedIcon =
-        self.placeholderService->GetDefaultSearchEngineIcon(kIconPointSize);
+    UIImage* fetchedIcon = self.placeholderService->GetDefaultSearchEngineIcon(
+        PlaceholderService::IconSize::k18pt);
     if (fetchedIcon) {
       [self.headerConsumer setDefaultSearchEngineImage:fetchedIcon];
     }
@@ -607,6 +636,9 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
       std::make_unique<HomeBackgroundCustomizationServiceObserverBridge>(
           _backgroundCustomizationService, self);
   [self updateAIMAvailability];
+  if (_aiModeButtonServiceIOS) {
+    _aiModeButtonServiceIOS->RecordEntrypointShown(_isAIMAllowed);
+  }
   _mediatorSetUp = YES;
 }
 
@@ -629,15 +661,22 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
   _syncService = nullptr;
   _regionalCapabilitiesService = nullptr;
   _identityManager = nullptr;
-  _aimEligibilitySubscription = {};
+  _aiModeButtonStateSubscription = {};
   _aimEligibilityService = nullptr;
+  _aiModeButtonServiceIOS = nullptr;
   _isAIMAllowed = NO;
   self.feedControlDelegate = nil;
   _backgroundCustomizationServiceObserverBridge = nullptr;
   _backgroundCustomizationService = nullptr;
   _imageFetcherService = nullptr;
-  _backgroundImageCacheService = nullptr;
   self.placeholderService = nullptr;
+  AimButtonRefactorArm arm = GetAimButtonRefactorArm();
+  if (arm == AimButtonRefactorArm::kImageGenerationQuickAction ||
+      arm == AimButtonRefactorArm::kAttachImageQuickAction) {
+    [self.composeboxInputStateManager disconnect];
+    self.composeboxInputStateManager.delegate = nil;
+    self.composeboxInputStateManager = nil;
+  }
   _fullscreenBrowserAgentObserverBridge.reset();
   _fullscreenBrowserAgent = nullptr;
   base::UmaHistogramBoolean("IOS.NTP.LandscapeMode", _wasNTPInLandscape);
@@ -649,7 +688,7 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
 }
 
 - (void)restoreNTPScrollPositionForWebState:(web::WebState*)webState {
-  [self.consumer
+  [self.scrollConsumer
       restoreScrollPosition:NewTabPageTabHelper::FromWebState(webState)
                                 ->GetNTPScrollPosition()];
 }
@@ -685,7 +724,7 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
 #pragma mark - FullscreenBrowserAgentObserving
 
 - (void)fullscreenDidUpdateObscuredInsetRange:(FullscreenBrowserAgent*)agent {
-  [self.consumer setFeedBottomInset:agent->max_insets().bottom];
+  [self.scrollConsumer setFeedBottomInset:agent->max_insets().bottom];
 }
 
 #pragma mark - BooleanObserver
@@ -731,7 +770,7 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
 }
 
 - (void)extendedAccountInfoDidUpdate:(const AccountInfo&)info {
-  if (info.gaia != _signedInIdentity.gaiaId) {
+  if (info.GetGaiaId() != _signedInIdentity.gaiaId) {
     return;
   }
   [self updateAccountImage];
@@ -748,7 +787,8 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
   __weak __typeof(self) weakSelf = self;
   if (self.placeholderService) {
     self.placeholderService->FetchDefaultSearchEngineIcon(
-        kIconPointSize, base::BindRepeating(^(UIImage* image) {
+        PlaceholderService::IconSize::k18pt,
+        base::BindRepeating(^(UIImage* image) {
           [weakSelf.headerConsumer setDefaultSearchEngineImage:image];
         }));
   }
@@ -798,28 +838,22 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
 }
 
 // Sets the background image through the consumer and updates the traits.
-// Caches the image when `cache` is YES.
 - (void)setCustomBackground:(HomeCustomBackground)customBackground
-                      image:(UIImage*)image
-                      cache:(BOOL)cache {
+                      image:(UIImage*)image {
   [self setCustomBackground:customBackground
                       image:image
-          originalImageSize:CGSizeZero
-                      cache:cache];
+          originalImageSize:CGSizeZero];
 }
 
 - (void)setCustomBackground:(HomeCustomBackground)customBackground
                       image:(UIImage*)image
-          originalImageSize:(CGSize)originalImageSize
-                      cache:(BOOL)cache {
-  if (cache && _backgroundImageCacheService &&
-      IsNTPBackgroundImageCacheEnabled()) {
-    _backgroundImageCacheService->SetCachedBackgroundImage(image,
-                                                           originalImageSize);
-  }
+          originalImageSize:(CGSize)originalImageSize {
   HomeCustomizationFramingCoordinates* coordinates =
       [self framingCoordinatesForCustomBackground:customBackground];
   coordinates.originalImageSize = originalImageSize;
+  [self.consumer setAnimatedBackgroundPath:nil
+                    lightModeColorProvider:nil
+                     darkModeColorProvider:nil];
   [self.consumer setBackgroundImage:image framingCoordinates:coordinates];
 
   CustomUITraitAccessor* traitAccessor = [[CustomUITraitAccessor alloc]
@@ -836,27 +870,6 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
   }
 }
 
-// Attempts to apply the cached background image. Returns YES if a cached image
-// was found and applied, NO otherwise.
-- (BOOL)applyCachedBackground:(const HomeCustomBackground&)customBackground {
-  if (!_backgroundImageCacheService) {
-    return NO;
-  }
-  UIImage* cachedImage =
-      _backgroundImageCacheService->GetCachedBackgroundImage();
-  if (!cachedImage) {
-    return NO;
-  }
-
-  CGSize originalImageSize =
-      _backgroundImageCacheService->GetCachedOriginalImageSize();
-  [self setCustomBackground:customBackground
-                      image:cachedImage
-          originalImageSize:originalImageSize
-                      cache:NO];
-  return YES;
-}
-
 // Records any necessary logging for after a custom background loaded..
 - (void)customBackgroundDidLoad:(HomeCustomBackground)customBackground {
   _tracker->NotifyEvent(feature_engagement::events::kNTPCustomBackgroundLoaded);
@@ -869,29 +882,72 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
                                 style);
 }
 
+// Updates NTP for AIM feature availability.
 - (void)updateAIMAvailability {
   BOOL aimAllowed = NO;
-  BOOL fuseboxEligible = NO;
-  if (_aimEligibilityService) {
-    const BOOL allowedOnDevice =
-        ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_PHONE ||
-        IsAIMNTPEntrypointTabletEnabled();
-    aimAllowed = _aimEligibilityService->IsAimEligible() && allowedOnDevice;
-    fuseboxEligible = _aimEligibilityService->IsFuseboxEligible();
+
+  if (_aiModeButtonServiceIOS) {
+    aimAllowed = _aiModeButtonServiceIOS->IsButtonAvailable();
+  }
+
+  AimButtonRefactorArm arm = GetAimButtonRefactorArm();
+  if (arm == AimButtonRefactorArm::kImageGenerationQuickAction ||
+      arm == AimButtonRefactorArm::kAttachImageQuickAction) {
+    [self updateAIMQuickActionsAvailability];
+  } else {
+    BOOL fuseboxEligible = NO;
+    if (_aimEligibilityService) {
+      fuseboxEligible = _aimEligibilityService->IsFuseboxEligible();
+    }
+    [self.headerConsumer setFuseboxEligible:fuseboxEligible];
   }
 
   [self.consumer setAIMAllowed:aimAllowed];
   [self.headerConsumer setAIMAllowed:aimAllowed];
-  [self.headerConsumer setFuseboxEligible:fuseboxEligible];
+
+  if (_aiModeButtonServiceIOS) {
+    [self.consumer
+               setAIMTitle:_aiModeButtonServiceIOS->GetTitle()
+                      icon:_aiModeButtonServiceIOS->GetIcon()
+        accessibilityLabel:_aiModeButtonServiceIOS->GetAccessibilityLabel()];
+  }
 
   if (aimAllowed == _isAIMAllowed) {
     return;
   }
   _isAIMAllowed = aimAllowed;
+  if (_mediatorSetUp && _aiModeButtonServiceIOS) {
+    _aiModeButtonServiceIOS->RecordEntrypointShown(aimAllowed);
+  }
   // Only update the modules if the mediator has already been set up.
   if (IsAIMEligibilityRefreshNTPModulesEnabled() && _mediatorSetUp) {
     [self.NTPContentDelegate updateModuleVisibility];
   }
+}
+
+// Updates the availability of the AI Mode buttons in the Quick Actions row
+// based on tool and input state availability.
+- (void)updateAIMQuickActionsAvailability {
+  AimButtonRefactorArm arm = GetAimButtonRefactorArm();
+  CHECK(arm == AimButtonRefactorArm::kImageGenerationQuickAction ||
+        arm == AimButtonRefactorArm::kAttachImageQuickAction);
+
+  BOOL fuseboxEligible = [self.composeboxInputStateManager isEligibleToAIM];
+
+  ComposeboxUIInputState* inputState =
+      [self.composeboxInputStateManager computeUIInputStateWithFavicon:nil
+                                                   attachedWebStateIDs:{}];
+  BOOL imageGenerationAllowed =
+      arm == AimButtonRefactorArm::kAttachImageQuickAction
+          ? NO
+          : [inputState isToolAvailable:ComposeboxMode::kImageGeneration];
+  BOOL attachImagesAllowed =
+      [inputState isAttachmentAvailable:ComposeboxAttachmentOption::kGallery] &&
+      inputState.remainingNumberOfImagesAllowed > 0;
+
+  [self.consumer setAIMImageGenerationAllowed:imageGenerationAllowed
+                          attachImagesAllowed:attachImagesAllowed];
+  [self.headerConsumer setFuseboxEligible:fuseboxEligible];
 }
 
 // Fetches and update user's avatar on NTP, or use default avatar if user is
@@ -993,10 +1049,8 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
       _backgroundCustomizationService->GetCurrentCustomBackground();
 
   if (customBackground) {
-    if (initialLoad && [self applyCachedBackground:customBackground.value()]) {
-      // Cached background image applied. Nothing else to do.
-    } else if (std::holds_alternative<sync_pb::NtpCustomBackground>(
-                   customBackground.value())) {
+    if (std::holds_alternative<sync_pb::NtpCustomBackground>(
+            customBackground.value())) {
       sync_pb::NtpCustomBackground background =
           std::get<sync_pb::NtpCustomBackground>(customBackground.value());
       [self fetchCustomBackground:background];
@@ -1011,8 +1065,7 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
                            UserUploadedImageError error) {
             [weakSelf setCustomBackground:userBackground
                                     image:image
-                        originalImageSize:originalSize
-                                    cache:YES];
+                        originalImageSize:originalSize];
             if (!image) {
               base::UmaHistogramEnumeration("IOS.HomeCustomization.Background."
                                             "Ntp.ImageUserUploadedFetchError",
@@ -1026,6 +1079,9 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
     return;
   }
 
+  [self.consumer setAnimatedBackgroundPath:nil
+                    lightModeColorProvider:nil
+                     darkModeColorProvider:nil];
   [self.consumer setBackgroundImage:nil framingCoordinates:nil];
 
   std::optional<sync_pb::UserColorTheme> colorTheme =
@@ -1042,6 +1098,27 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
     [traitAccessor setBoolForNewTabPageImageBackgroundTrait:NO];
     UIColor* tintColor = colorPalette.tintColor;
     [self.logoMediator setLogoTintColor:tintColor];
+    if (_backgroundCustomizationService->IsCurrentEphemeralTheme() &&
+        IsNTPEphemeralThemeEnabled()) {
+      NSDictionary<NSString*, UIColor*>* lightModeColorProvider = nil;
+      NSDictionary<NSString*, UIColor*>* darkModeColorProvider = nil;
+      if (_prefService) {
+        const base::DictValue& themeData =
+            _prefService->GetDict(prefs::kIosNtpEphemeralThemeData);
+        const base::DictValue* colorMapping =
+            themeData.FindDict(kEphemeralThemeAnimationColorMappingKey);
+        if (colorMapping) {
+          lightModeColorProvider = ColorProviderDictionaryFromDict(
+              colorMapping->FindDict(kEphemeralThemeLightModeColorsKey));
+          darkModeColorProvider = ColorProviderDictionaryFromDict(
+              colorMapping->FindDict(kEphemeralThemeDarkModeColorsKey));
+        }
+      }
+      [self.consumer
+          setAnimatedBackgroundPath:[self ephemeralThemeAnimatedBackgroundPath]
+             lightModeColorProvider:lightModeColorProvider
+              darkModeColorProvider:darkModeColorProvider];
+    }
     if (initialLoad) {
       base::UmaHistogramEnumeration(
           "IOS.HomeCustomization.Background.Ntp.Loaded",
@@ -1059,6 +1136,22 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
     base::UmaHistogramEnumeration("IOS.HomeCustomization.Background.Ntp.Loaded",
                                   HomeCustomizationBackgroundStyle::kDefault);
   }
+}
+
+// Returns the local file path for the ephemeral theme animated background from
+// preferences, or nil if unavailable.
+- (NSString*)ephemeralThemeAnimatedBackgroundPath {
+  if (!_prefService || !IsNTPEphemeralThemeEnabled()) {
+    return nil;
+  }
+  const base::DictValue& themeData =
+      _prefService->GetDict(prefs::kIosNtpEphemeralThemeData);
+  const std::string* path =
+      themeData.FindString(kEphemeralThemeAnimationPathKey);
+  if (!path || path->empty()) {
+    return nil;
+  }
+  return base::SysUTF8ToNSString(*path);
 }
 
 // Fetches and applies a custom background image.
@@ -1091,30 +1184,24 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
 
   image_fetcher::ImageFetcher* imageFetcher =
       _imageFetcherService->GetImageFetcher(
-          image_fetcher::ImageFetcherConfig::kReducedMode);
+          image_fetcher::ImageFetcherConfig::kDiskCacheOnly);
 
   __weak __typeof(self) weakSelf = self;
 
   _thumbnailCallback = std::make_unique<base::CancelableOnceCallback<void(
-      const std::string&, const image_fetcher::RequestMetadata&)>>(
-      base::BindOnce(^(const std::string& image_data,
+      const gfx::Image&, const image_fetcher::RequestMetadata&)>>(
+      base::BindOnce(^(const gfx::Image& image,
                        const image_fetcher::RequestMetadata& metadata) {
-        if (!image_data.empty()) {
-          NSData* data = [NSData dataWithBytes:image_data.data()
-                                        length:image_data.length()];
-          UIImage* image = [UIImage imageWithData:data];
-          if (image) {
-            // Temporarily sets the thumbnail as the background until the
-            // high-resolution image is loaded.
-            [weakSelf setCustomBackground:background image:image cache:NO];
-          }
-          return;
+        if (!image.IsEmpty()) {
+          // Temporarily sets the thumbnail as the background until the
+          // high-resolution image is loaded.
+          [weakSelf setCustomBackground:background image:image.ToUIImage()];
         }
       }));
 
   _imageCallback = std::make_unique<base::CancelableOnceCallback<void(
-      const std::string&, const image_fetcher::RequestMetadata&)>>(
-      base::BindOnce(^(const std::string& image_data,
+      const gfx::Image&, const image_fetcher::RequestMetadata&)>>(
+      base::BindOnce(^(const gfx::Image& image,
                        const image_fetcher::RequestMetadata& metadata) {
         __typeof(self) strongSelf = weakSelf;
         if (!strongSelf) {
@@ -1133,13 +1220,8 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
           strongSelf->_thumbnailCallback.reset();
         }
 
-        if (!image_data.empty()) {
-          NSData* data = [NSData dataWithBytes:image_data.data()
-                                        length:image_data.length()];
-          UIImage* image = [UIImage imageWithData:data];
-          if (image) {
-            [strongSelf setCustomBackground:background image:image cache:YES];
-          }
+        if (!image.IsEmpty()) {
+          [strongSelf setCustomBackground:background image:image.ToUIImage()];
         } else {
           base::UmaHistogramSparse(
               "IOS.HomeCustomization.Background.Ntp.ImageDownloadErrorCode",
@@ -1150,15 +1232,17 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
         strongSelf->_pendingBackgroundURL = GURL();
       }));
 
+  image_fetcher::ImageFetcherParams params(kTrafficAnnotation,
+                                           kImageFetcherUmaClient);
+  params.set_transcode_format(
+      image_fetcher::ImageFetcherParams::TranscodeFormat::kJpeg);
+
   // Retrieving the thumbnail URL should hit the cache, so it returns almost
   // instantly.
-  imageFetcher->FetchImageData(thumbnailURL, _thumbnailCallback->callback(),
-                               image_fetcher::ImageFetcherParams(
-                                   kTrafficAnnotation, kImageFetcherUmaClient));
+  imageFetcher->FetchImage(thumbnailURL, _thumbnailCallback->callback(),
+                           params);
 
-  imageFetcher->FetchImageData(imageURL, _imageCallback->callback(),
-                               image_fetcher::ImageFetcherParams(
-                                   kTrafficAnnotation, kImageFetcherUmaClient));
+  imageFetcher->FetchImage(imageURL, _imageCallback->callback(), params);
 }
 
 - (void)markSafariDataImportSetupListItemAsComplete {
@@ -1168,6 +1252,24 @@ void CleanupImageFetcherCacheIfNeeded(PrefService* pref_service,
 
 - (image_fetcher::ImageFetcherService*)imageFetcherService {
   return _imageFetcherService;
+}
+
+#pragma mark - ComposeboxInputStateManagerDelegate
+
+- (void)inputStateManager:(ComposeboxInputStateManager*)manager
+             didChangeMode:(ComposeboxMode)mode
+    invalidatedAttachments:(NSArray<ComposeboxInputItem*>*)invalidatedItems {
+  // No-op.
+}
+
+- (void)inputStateManagerDidUpdateUIState:
+    (ComposeboxInputStateManager*)manager {
+  AimButtonRefactorArm arm = GetAimButtonRefactorArm();
+  if (arm != AimButtonRefactorArm::kImageGenerationQuickAction &&
+      arm != AimButtonRefactorArm::kAttachImageQuickAction) {
+    return;
+  }
+  [self updateAIMQuickActionsAvailability];
 }
 
 #pragma mark - SubscriptionEligibilityServiceObserving

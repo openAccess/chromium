@@ -9,6 +9,7 @@
 
 #include <memory>
 
+#include "chrome/browser/browser_features.h"
 #include "chrome/browser/chrome_browser_main.h"
 #include "chrome/common/conflicts/module_watcher_win.h"
 #include "chrome/install_static/buildflags.h"
@@ -28,6 +29,13 @@ class CommandLine;
 // user to close the other chrome instance.
 int DoUninstallTasks(bool chrome_still_running);
 
+// If `features::kEagerlyResolveCoreDllsImports` is enabled and configured to
+// run at `timing`, resolves all delay-load imports for core DLLs (user32.dll,
+// uxtheme.dll, gdi32.dll, imm32.dll and dwmapi.dll), loading them if needed.
+// Must be called from the browser process main thread.
+void MaybeLoadAllImportsForCoreDlls(
+    features::EagerlyResolveCoreDllsImportsTiming timing);
+
 class ChromeBrowserMainPartsWin : public ChromeBrowserMainParts {
  public:
   ChromeBrowserMainPartsWin(bool is_integration_test,
@@ -42,7 +50,7 @@ class ChromeBrowserMainPartsWin : public ChromeBrowserMainParts {
   void ToolkitInitialized() override;
   void PreCreateMainMessageLoop() override;
   int PreCreateThreads() override;
-  void PostCreateThreads() override;
+  int PostCreateThreads() override;
   void PostMainMessageLoopRun() override;
 
   // ChromeBrowserMainParts overrides.
@@ -78,11 +86,6 @@ class ChromeBrowserMainPartsWin : public ChromeBrowserMainParts {
   // updates. Removes URL args, unnecessary switches, and the program name.
   static base::CommandLine GetRestartCommandLine(
       const base::CommandLine& command_line);
-
-  // Check if running elevated, and attempt to automatically de-elevate. Returns
-  // an exit code if browser should exit due to a restart, or std::nullopt if
-  // startup should continue.
-  std::optional<int> MaybeAutoDeElevate();
 
  private:
   void OnModuleEvent(const ModuleWatcher::ModuleEvent& event);

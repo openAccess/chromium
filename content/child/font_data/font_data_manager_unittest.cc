@@ -5,6 +5,7 @@
 #include "content/child/font_data/font_data_manager.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,11 +48,38 @@ class TestFontServiceApp : public font_data_service::mojom::FontDataService {
   void MatchFamilyName(const std::string& family_name,
                        font_data_service::mojom::TypefaceStylePtr style,
                        MatchFamilyNameCallback callback) override {
+    if (unmatched_family_ &&
+        base::EqualsCaseInsensitiveASCII(family_name, *unmatched_family_)) {
+      match_family_call_count_++;
+      last_match_family_name_ = family_name;
+      std::move(callback).Run(
+          font_data_service::mojom::MatchFamilyNameResponse::NewFailure(
+              font_data_service::mojom::MatchFamilyNameFailure::kNoSuchFamily));
+      return;
+    }
+    font_data_service::mojom::MatchFamilyNameResultPtr result =
+        MakeResult(family_name, std::move(style));
+    if (!result) {
+      std::move(callback).Run(
+          font_data_service::mojom::MatchFamilyNameResponse::NewFailure(
+              font_data_service::mojom::MatchFamilyNameFailure::kNoMatch));
+      return;
+    }
+    std::move(callback).Run(
+        font_data_service::mojom::MatchFamilyNameResponse::NewResult(
+            std::move(result)));
+  }
+
+  // Builds the reply for a family match. Every request answered this way,
+  // including MatchFamilyNameCharacter and LegacyMakeTypeface, counts towards
+  // match_family_call_count().
+  font_data_service::mojom::MatchFamilyNameResultPtr MakeResult(
+      const std::string& family_name,
+      font_data_service::mojom::TypefaceStylePtr style) {
     match_family_call_count_++;
     last_match_family_name_ = family_name;
     if (fail_match_family_) {
-      std::move(callback).Run(nullptr);
-      return;
+      return nullptr;
     }
 
     int ttc_index = 0;
@@ -62,8 +90,7 @@ class TestFontServiceApp : public font_data_service::mojom::FontDataService {
     sk_sp<SkTypeface> typeface =
         skia::MakeTypefaceFromName(family_to_match.c_str(), font_style);
     if (!typeface) {
-      std::move(callback).Run(nullptr);
-      return;
+      return nullptr;
     }
     std::unique_ptr<SkStreamAsset> asset = typeface->openStream(&ttc_index);
     auto result = font_data_service::mojom::MatchFamilyNameResult::New();
@@ -92,7 +119,7 @@ class TestFontServiceApp : public font_data_service::mojom::FontDataService {
           base::ReadOnlySharedMemoryRegion::Create(asset->getLength());
       EXPECT_TRUE(memory_map_region_.IsValid());
 
-      size_t bytes_read = asset->read(memory_map_region_.mapping.memory(),
+      size_t bytes_read = asset->read(memory_map_region_.mapping.data(),
                                       memory_map_region_.mapping.size());
       EXPECT_EQ(bytes_read, asset->getLength());
       font_data_service::mojom::TypefaceDataPtr typeface_data =
@@ -112,7 +139,7 @@ class TestFontServiceApp : public font_data_service::mojom::FontDataService {
               font_data_service::mojom::TypefaceFile::New(
                   std::move(font_file), GetUniqueFileId(file_path)));
     }
-    std::move(callback).Run(std::move(result));
+    return result;
   }
 
   void MatchFamilyNameCharacter(
@@ -124,7 +151,7 @@ class TestFontServiceApp : public font_data_service::mojom::FontDataService {
     ++match_family_character_call_count_;
     last_match_family_character_call_bcp47s_ = bcp47s;
     last_match_family_character_call_character_ = character;
-    MatchFamilyName(family_name, std::move(style), std::move(callback));
+    std::move(callback).Run(MakeResult(family_name, std::move(style)));
   }
 
   void GetAllFamilyNames(GetAllFamilyNamesCallback callback) override {
@@ -141,8 +168,8 @@ class TestFontServiceApp : public font_data_service::mojom::FontDataService {
     // font when passed a `null` font family name, which is the default font in
     // real code.
     ++legacy_make_typeface_call_count_;
-    MatchFamilyName(family_name ? *family_name : "", std::move(style),
-                    std::move(callback));
+    std::move(callback).Run(
+        MakeResult(family_name ? *family_name : "", std::move(style)));
   }
 
   void MatchLocalFont(const std::string& font_unique_name,
@@ -176,6 +203,9 @@ class TestFontServiceApp : public font_data_service::mojom::FontDataService {
   void set_matched_family_name(std::string family_name) {
     matched_family_name_ = std::move(family_name);
   }
+  void set_unmatched_family(const std::string& family_name) {
+    unmatched_family_ = family_name;
+  }
 
   size_t GetUniqueFileId(base::FilePath path) {
     size_t new_id = unique_path_ids_.size() + 1;
@@ -193,13 +223,9 @@ class TestFontServiceApp : public font_data_service::mojom::FontDataService {
   size_t legacy_make_typeface_call_count_ = 0;
   bool fail_match_family_ = false;
   std::string matched_family_name_;
+  std::optional<std::string> unmatched_family_;
   base::MappedReadOnlyRegion memory_map_region_;
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-  // On Linux/ChromeOS, only the shared memory fallback is supported.
-  bool use_memory_fallback_ = true;
-#else
   bool use_memory_fallback_ = false;
-#endif
   std::map<base::FilePath, size_t> unique_path_ids_;
 };
 
@@ -242,9 +268,9 @@ class TestFontDataManager : public font_data_service::FontDataManager {
   int expected_first_coordinate_value_;
 };
 
-class FontDataManagerUnitTest : public testing::Test {
+class FontDataManagerUnitTestBase : public testing::Test {
  protected:
-  FontDataManagerUnitTest()
+  FontDataManagerUnitTestBase()
       : skia_font_manager_(sk_make_sp<font_data_service::FontDataManager>()) {
     skia_font_manager_->SetFontServiceForTesting(
         test_font_data_service_app_.CreateRemote());
@@ -272,9 +298,19 @@ class FontDataManagerUnitTest : public testing::Test {
   bool prewarmer_initialized_ = false;
 };
 
-using FontDataManagerDeathTest = FontDataManagerUnitTest;
+class FontDataManagerUnitTest : public FontDataManagerUnitTestBase,
+                                public testing::WithParamInterface<bool> {
+ protected:
+  FontDataManagerUnitTest() {
+    test_font_data_service_app_.set_use_memory_fallback(use_memory_fallback());
+  }
 
-TEST_F(FontDataManagerUnitTest, PrewarmFamilyCachesTypeface) {
+  bool use_memory_fallback() const { return GetParam(); }
+};
+
+using FontDataManagerDeathTest = FontDataManagerUnitTestBase;
+
+TEST_P(FontDataManagerUnitTest, PrewarmFamilyCachesTypeface) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(features::kFontDataManagerPrewarming);
 #if BUILDFLAG(IS_WIN)
@@ -296,7 +332,7 @@ TEST_F(FontDataManagerUnitTest, PrewarmFamilyCachesTypeface) {
   EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 1u);
 }
 
-TEST_F(FontDataManagerUnitTest, FailedPrewarmDoesNotCacheFailure) {
+TEST_P(FontDataManagerUnitTest, FailedPrewarmDoesNotCacheFailure) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(features::kFontDataManagerPrewarming);
 #if BUILDFLAG(IS_WIN)
@@ -330,7 +366,7 @@ TEST_F(FontDataManagerDeathTest, PrewarmingRequiresEnabledFeature) {
       "");
 }
 
-TEST_F(FontDataManagerUnitTest, MatchFamilyStyle) {
+TEST_P(FontDataManagerUnitTest, MatchFamilyStyle) {
   SkFontStyle style(400, 5, SkFontStyle::kUpright_Slant);
 #if BUILDFLAG(IS_WIN)
   base::cstring_view family_name = "Segoe UI";
@@ -353,6 +389,7 @@ TEST_F(FontDataManagerUnitTest, MatchFamilyStyle) {
   // Same style.
   size_t mapped_files_count_before =
       skia_font_manager_->GetMappedFilesCountForTesting();
+  EXPECT_EQ(mapped_files_count_before, use_memory_fallback() ? 0u : 1u);
   result = skia_font_manager_->matchFamilyStyle(family_name.data(), style);
   EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 1u);
   EXPECT_EQ(skia_font_manager_->GetMappedFilesCountForTesting(),
@@ -383,7 +420,7 @@ TEST_F(FontDataManagerUnitTest, MatchFamilyStyle) {
   EXPECT_EQ(test_font_data_service_app_.legacy_make_typeface_call_count(), 1u);
 }
 
-TEST_F(FontDataManagerUnitTest, MatchFamilyStyleCacheIgnoresAsciiCase) {
+TEST_P(FontDataManagerUnitTest, MatchFamilyStyleCacheIgnoresAsciiCase) {
   const SkFontStyle style(400, 5, SkFontStyle::kUpright_Slant);
 #if BUILDFLAG(IS_WIN)
   constexpr char kFamilyName[] = "Segoe UI";
@@ -406,7 +443,7 @@ TEST_F(FontDataManagerUnitTest, MatchFamilyStyleCacheIgnoresAsciiCase) {
   EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 1u);
 }
 
-TEST_F(FontDataManagerUnitTest, MatchFamilyStyleCacheIgnoresUnicodeCase) {
+TEST_P(FontDataManagerUnitTest, MatchFamilyStyleCacheIgnoresUnicodeCase) {
   const SkFontStyle style(400, 5, SkFontStyle::kUpright_Slant);
   constexpr char kUppercaseFamilyName[] = "СКОРБЬ СХОДИТ ЩЕДРОТ";
   constexpr char kLowercaseFamilyName[] = "скорбь сходит щедрот";
@@ -430,7 +467,84 @@ TEST_F(FontDataManagerUnitTest, MatchFamilyStyleCacheIgnoresUnicodeCase) {
   EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 1u);
 }
 
-TEST_F(FontDataManagerUnitTest, LegacyMakeTypefaceNullFamilyName) {
+// A family the service has no font for is remembered by name, so asking for
+// it again in another style does not go back to the service. Families it can
+// find are still requested once per style.
+TEST_P(FontDataManagerUnitTest, UnmatchedFamilyIsCachedForAllStyles) {
+  test_font_data_service_app_.set_unmatched_family("Font From Elsewhere");
+  SkFontStyle style(400, 5, SkFontStyle::kUpright_Slant);
+  SkFontStyle bold_style(700, 5, SkFontStyle::kUpright_Slant);
+  SkFontStyle italic_style(400, 5, SkFontStyle::kItalic_Slant);
+
+  EXPECT_FALSE(
+      skia_font_manager_->matchFamilyStyle("Font From Elsewhere", style));
+  EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 1u);
+  EXPECT_FALSE(
+      skia_font_manager_->matchFamilyStyle("Font From Elsewhere", style));
+  EXPECT_FALSE(
+      skia_font_manager_->matchFamilyStyle("Font From Elsewhere", bold_style));
+  EXPECT_FALSE(skia_font_manager_->matchFamilyStyle("Font From Elsewhere",
+                                                    italic_style));
+  EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 1u);
+
+#if BUILDFLAG(IS_WIN)
+  base::cstring_view family_name = "Segoe UI";
+#else
+  base::cstring_view family_name = "Arimo";
+#endif
+  EXPECT_TRUE(skia_font_manager_->matchFamilyStyle(family_name.data(), style));
+  EXPECT_TRUE(
+      skia_font_manager_->matchFamilyStyle(family_name.data(), bold_style));
+  EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 3u);
+}
+
+// kNoMatch only concerns the requested style; other styles of the family are
+// still asked for.
+TEST_P(FontDataManagerUnitTest, NoMatchIsCachedPerStyle) {
+  test_font_data_service_app_.set_fail_match_family(true);
+  SkFontStyle style(400, 5, SkFontStyle::kUpright_Slant);
+  SkFontStyle bold_style(700, 5, SkFontStyle::kUpright_Slant);
+
+  EXPECT_FALSE(skia_font_manager_->matchFamilyStyle("Some Family", style));
+  EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 1u);
+  EXPECT_FALSE(skia_font_manager_->matchFamilyStyle("Some Family", bold_style));
+  EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 2u);
+  EXPECT_FALSE(skia_font_manager_->matchFamilyStyle("Some Family", style));
+  EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 2u);
+}
+
+TEST_P(FontDataManagerUnitTest, UnmatchedFamilyCacheIgnoresCase) {
+  test_font_data_service_app_.set_unmatched_family("Font From Elsewhere");
+
+  EXPECT_FALSE(skia_font_manager_->matchFamilyStyle(
+      "Font From Elsewhere", SkFontStyle(400, 5, SkFontStyle::kUpright_Slant)));
+  EXPECT_FALSE(skia_font_manager_->matchFamilyStyle(
+      "font from elsewhere", SkFontStyle(700, 5, SkFontStyle::kItalic_Slant)));
+  EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 1u);
+}
+
+TEST_P(FontDataManagerUnitTest, PrewarmSkipsUnmatchedFamily) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kFontDataManagerPrewarming);
+  InitializePrewarmer();
+  test_font_data_service_app_.set_unmatched_family("Font From Elsewhere");
+
+  base::RunLoop first;
+  skia_font_manager_->PrewarmFamilyForTesting(
+      blink::WebString::FromUtf8("Font From Elsewhere"), first.QuitClosure());
+  first.Run();
+  EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 1u);
+
+  base::RunLoop second;
+  skia_font_manager_->PrewarmFamilyForTesting(
+      blink::WebString::FromUtf8("Font From Elsewhere"), second.QuitClosure());
+  second.Run();
+  EXPECT_FALSE(skia_font_manager_->matchFamilyStyle(
+      "Font From Elsewhere", SkFontStyle(700, 5, SkFontStyle::kUpright_Slant)));
+  EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 1u);
+}
+
+TEST_P(FontDataManagerUnitTest, LegacyMakeTypefaceNullFamilyName) {
   SkFontStyle style(400, 5, SkFontStyle::kUpright_Slant);
 
   sk_sp<SkTypeface> result =
@@ -441,31 +555,10 @@ TEST_F(FontDataManagerUnitTest, LegacyMakeTypefaceNullFamilyName) {
   EXPECT_EQ(test_font_data_service_app_.legacy_make_typeface_call_count(), 1u);
 }
 
-TEST_F(FontDataManagerUnitTest, MatchFamilyStyleWithMemoryRegion) {
-  test_font_data_service_app_.set_use_memory_fallback(true);
-  SkFontStyle style(400, 5, SkFontStyle::kUpright_Slant);
-#if BUILDFLAG(IS_WIN)
-  base::cstring_view family_name = "Segoe UI";
-#else
-  base::cstring_view family_name = "Arimo";
-#endif
-  sk_sp<SkTypeface> expected_typeface =
-      skia::MakeTypefaceFromName(family_name.data(), style);
-
-  // Test the initial typeface matches family name and font style.
-  sk_sp<SkTypeface> result =
-      skia_font_manager_->matchFamilyStyle(family_name.data(), style);
-  EXPECT_EQ(result->fontStyle(), expected_typeface->fontStyle());
-  SkString result_family_name;
-  result->getFamilyName(&result_family_name);
-  EXPECT_STREQ(result_family_name.c_str(), family_name.data());
-  EXPECT_EQ(test_font_data_service_app_.match_family_call_count(), 1u);
-}
-
 // TODO(crbug.com/462090356): Find an available font in Linux/ChromeOS with
 // multiples axes.
 #if BUILDFLAG(IS_WIN)
-TEST_F(FontDataManagerUnitTest, FontArgumentTest) {
+TEST_P(FontDataManagerUnitTest, FontArgumentTest) {
   // Bahnschrift is a font family with 2 axes hence coordinate count should
   // be 2.
   SkFourByteTag axis =
@@ -484,7 +577,7 @@ TEST_F(FontDataManagerUnitTest, FontArgumentTest) {
 }
 #endif
 
-TEST_F(FontDataManagerUnitTest, MakeFromData) {
+TEST_P(FontDataManagerUnitTest, MakeFromData) {
   SkFontStyle style(400, 5, SkFontStyle::kUpright_Slant);
 #if BUILDFLAG(IS_WIN)
   base::cstring_view family_name = "Segoe UI";
@@ -503,7 +596,7 @@ TEST_F(FontDataManagerUnitTest, MakeFromData) {
   EXPECT_STREQ(result_family_name.c_str(), family_name.data());
 }
 
-TEST_F(FontDataManagerUnitTest, MatchFamilyStyleCharacter) {
+TEST_P(FontDataManagerUnitTest, MatchFamilyStyleCharacter) {
   SkFontStyle style(400, 5, SkFontStyle::kUpright_Slant);
   SkUnichar uni_char = 0x0041;  // 'A'
 #if BUILDFLAG(IS_WIN)
@@ -534,12 +627,12 @@ TEST_F(FontDataManagerUnitTest, MatchFamilyStyleCharacter) {
       kExpectedBcp47s);
 }
 
-TEST_F(FontDataManagerUnitTest, CountFamilies) {
+TEST_P(FontDataManagerUnitTest, CountFamilies) {
   // The TestFontServiceApp returns a vector of 2 family names.
   EXPECT_EQ(skia_font_manager_->countFamilies(), 2);
 }
 
-TEST_F(FontDataManagerUnitTest, GetFamilyName) {
+TEST_P(FontDataManagerUnitTest, GetFamilyName) {
   SkString family_name;
   skia_font_manager_->getFamilyName(0, &family_name);
   EXPECT_EQ(family_name, SkString("First Font"));
@@ -558,6 +651,8 @@ TEST_F(FontDataManagerUnitTest, GetFamilyName) {
   skia_font_manager_->getFamilyName(2, &empty_family_name);
   EXPECT_TRUE(empty_family_name.isEmpty());
 }
+
+INSTANTIATE_TEST_SUITE_P(All, FontDataManagerUnitTest, testing::Bool());
 
 // Methods are unused in FontDataManager.
 TEST_F(FontDataManagerDeathTest, CreateStyleSet) {

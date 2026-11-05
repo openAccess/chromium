@@ -36,6 +36,8 @@
 #include "extensions/browser/api_test_utils.h"
 #include "extensions/browser/event_router_factory.h"
 #include "extensions/browser/extension_prefs.h"
+#include "extensions/common/mojom/context_type.mojom.h"
+#include "url/gurl.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_features.h"
@@ -46,6 +48,7 @@
 #include "ui/base/ime/ash/input_method_util.h"
 #include "ui/base/ime/ash/mock_component_extension_ime_manager_delegate.h"
 #include "ui/base/ime/ash/mock_input_method_manager.h"
+#include "ui/base/ime/ash/scoped_input_method_manager_for_testing.h"
 #include "ui/base/l10n/l10n_util.h"
 #endif
 
@@ -292,6 +295,59 @@ TEST_F(LanguageSettingsPrivateApiTest, GetNeverTranslateLanguagesListTest) {
   }
 }
 
+namespace {
+
+template <typename T>
+bool HasPermission(mojom::ContextType context_type, const GURL& url) {
+  auto function = base::MakeRefCounted<T>();
+  function->SetName(function->static_function_name());
+  function->set_source_context_type(context_type);
+  function->set_source_url(url);
+  return function->HasPermission();
+}
+
+}  // namespace
+
+TEST_F(LanguageSettingsPrivateApiTest, FunctionPermissions) {
+  const GURL kLensOverlayUrl("chrome-untrusted://lens-overlay/");
+  const GURL kSettingsUrl("chrome://settings/");
+  const GURL kOtherUntrustedUrl("chrome-untrusted://other/");
+
+  // chrome-untrusted://lens-overlay/ should have permission for getLanguageList
+  // and getTranslateTargetLanguage.
+  EXPECT_TRUE(HasPermission<LanguageSettingsPrivateGetLanguageListFunction>(
+      mojom::ContextType::kUntrustedWebUi, kLensOverlayUrl));
+  EXPECT_TRUE(
+      HasPermission<LanguageSettingsPrivateGetTranslateTargetLanguageFunction>(
+          mojom::ContextType::kUntrustedWebUi, kLensOverlayUrl));
+
+  // chrome-untrusted://lens-overlay/ should NOT have permission for other
+  // languageSettingsPrivate functions like spellcheck or dictionary functions
+  // (crbug.com/561921279).
+  EXPECT_FALSE(HasPermission<LanguageSettingsPrivateGetSpellcheckWordsFunction>(
+      mojom::ContextType::kUntrustedWebUi, kLensOverlayUrl));
+  EXPECT_FALSE(HasPermission<LanguageSettingsPrivateAddSpellcheckWordFunction>(
+      mojom::ContextType::kUntrustedWebUi, kLensOverlayUrl));
+  EXPECT_FALSE(
+      HasPermission<LanguageSettingsPrivateRemoveSpellcheckWordFunction>(
+          mojom::ContextType::kUntrustedWebUi, kLensOverlayUrl));
+  EXPECT_FALSE(HasPermission<LanguageSettingsPrivateEnableLanguageFunction>(
+      mojom::ContextType::kUntrustedWebUi, kLensOverlayUrl));
+
+  // chrome://settings/ should have permission for all of these functions.
+  EXPECT_TRUE(HasPermission<LanguageSettingsPrivateGetLanguageListFunction>(
+      mojom::ContextType::kWebUi, kSettingsUrl));
+  EXPECT_TRUE(
+      HasPermission<LanguageSettingsPrivateGetTranslateTargetLanguageFunction>(
+          mojom::ContextType::kWebUi, kSettingsUrl));
+  EXPECT_TRUE(HasPermission<LanguageSettingsPrivateGetSpellcheckWordsFunction>(
+      mojom::ContextType::kWebUi, kSettingsUrl));
+
+  // Other untrusted WebUI should NOT have permission.
+  EXPECT_FALSE(HasPermission<LanguageSettingsPrivateGetLanguageListFunction>(
+      mojom::ContextType::kUntrustedWebUi, kOtherUntrustedUrl));
+}
+
 void LanguageSettingsPrivateApiTest::RunGetLanguageListTest() {
   struct LanguageToTest {
     std::string accept_language;
@@ -506,7 +562,8 @@ class TestInputMethodManager : public input_method::MockInputMethodManager {
 }  // namespace
 
 TEST_F(LanguageSettingsPrivateApiTest, GetInputMethodListsTest) {
-  TestInputMethodManager::Initialize(new TestInputMethodManager);
+  input_method::ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager;
 
   // Initialize relevant prefs.
   StringPrefMember enabled_imes;
@@ -557,12 +614,11 @@ TEST_F(LanguageSettingsPrivateApiTest, GetInputMethodListsTest) {
       }
     }
   }
-
-  TestInputMethodManager::Shutdown();
 }
 
 TEST_F(LanguageSettingsPrivateApiTest, AddInputMethodTest) {
-  TestInputMethodManager::Initialize(new TestInputMethodManager);
+  input_method::ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager;
 
   // Initialize relevant prefs.
   profile()->GetPrefs()->SetString(language::prefs::kPreferredLanguages,
@@ -643,12 +699,11 @@ TEST_F(LanguageSettingsPrivateApiTest, AddInputMethodTest) {
     EXPECT_EQ(GetComponentExtensionImeId(), preload_engines.GetValue());
     EXPECT_TRUE(language_menu_enabled.GetValue());
   }
-
-  TestInputMethodManager::Shutdown();
 }
 
 TEST_F(LanguageSettingsPrivateApiTest, RemoveInputMethodTest) {
-  TestInputMethodManager::Initialize(new TestInputMethodManager);
+  input_method::ScopedInputMethodManagerForTesting<TestInputMethodManager>
+      input_method_manager;
 
   // Initialize relevant prefs.
   StringPrefMember enabled_imes;
@@ -693,8 +748,6 @@ TEST_F(LanguageSettingsPrivateApiTest, RemoveInputMethodTest) {
     EXPECT_TRUE(enabled_imes.GetValue().empty());
     EXPECT_TRUE(preload_engines.GetValue().empty());
   }
-
-  TestInputMethodManager::Shutdown();
 }
 
 #endif  // BUILDFLAG(IS_CHROMEOS)

@@ -36,8 +36,21 @@ class StyleSelfAlignmentData {
     overflow_ = static_cast<unsigned>(overflow);
   }
 
-  ItemPosition GetPosition() const {
+  ItemPosition GetComputedPosition() const {
     return static_cast<ItemPosition>(position_);
+  }
+  // Returns the used position, which is the keyword that we are actually using
+  // internally. In the case of 'flex-start'/'flex-end', it aliases to
+  // 'flow-start'/'flow-end', which is what we use internally.
+  ItemPosition GetUsedPosition() const {
+    const ItemPosition position = GetComputedPosition();
+    if (position == ItemPosition::kFlexStart) {
+      return ItemPosition::kFlowStart;
+    }
+    if (position == ItemPosition::kFlexEnd) {
+      return ItemPosition::kFlowEnd;
+    }
+    return position;
   }
   ItemPositionType PositionType() const {
     return static_cast<ItemPositionType>(position_type_);
@@ -52,7 +65,7 @@ class StyleSelfAlignmentData {
   }
 
  private:
-  unsigned position_ : 4;       // ItemPosition
+  unsigned position_ : 5;       // ItemPosition
   unsigned position_type_ : 1;  // Whether or not alignment uses the 'legacy'
                                 // keyword.
   unsigned overflow_ : 2;       // OverflowAlignment

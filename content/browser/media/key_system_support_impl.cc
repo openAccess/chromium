@@ -16,12 +16,13 @@ namespace content {
 namespace {
 
 // All key systems must have either software or hardware secure capability
-// supported.
-bool IsValidKeySystemCapabilities(KeySystemCapabilities capabilities) {
+// supported, or have a capability query in progress.
+bool IsValidKeySystemCapabilities(const KeySystemCapabilities& capabilities) {
   for (const auto& entry : capabilities) {
     auto& capability = entry.second;
     if (!capability.sw_cdm_capability_or_status.has_value() &&
-        !capability.hw_cdm_capability_or_status.has_value()) {
+        !capability.hw_cdm_capability_or_status.has_value() &&
+        !capability.IsPending()) {
       return false;
     }
   }
@@ -34,15 +35,7 @@ bool IsValidKeySystemCapabilities(KeySystemCapabilities capabilities) {
 KeySystemSupportImpl::KeySystemSupportImpl(RenderFrameHost* render_frame_host)
     : DocumentUserData(render_frame_host) {}
 
-KeySystemSupportImpl::~KeySystemSupportImpl() {
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || \
-    BUILDFLAG(IS_FUCHSIA)
-  render_frame_host()
-      .GetBrowserContext()
-      ->GetPermissionController()
-      ->UnsubscribeFromPermissionResultChange(permission_subscription_id_);
-#endif
-}
+KeySystemSupportImpl::~KeySystemSupportImpl() = default;
 
 void KeySystemSupportImpl::SetGetKeySystemCapabilitiesUpdateCbForTesting(
     GetKeySystemCapabilitiesUpdateCB get_support_cb_for_testing) {
@@ -98,7 +91,7 @@ void KeySystemSupportImpl::SetObserver(
 // about://settings/content/protectedContent page. Namely, the default behaviour
 // of protected content IDs, and the site specific settings.
 void KeySystemSupportImpl::InitializePermissions() {
-  DCHECK(!are_permissions_initialized_);
+  CHECK(!are_permissions_initialized_, base::NotFatalUntil::M160);
 
   // Setup initial permission values.
   auto* web_contents = WebContentsImpl::FromRenderFrameHostImpl(
@@ -146,7 +139,7 @@ void KeySystemSupportImpl::SetUpPermissionListeners() {
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || \
     BUILDFLAG(IS_FUCHSIA)
   // Setup permission listeners.
-  permission_subscription_id_ =
+  permission_subscription_ =
       render_frame_host()
           .GetBrowserContext()
           ->GetPermissionController()
@@ -162,7 +155,7 @@ void KeySystemSupportImpl::SetUpPermissionListeners() {
                       OnProtectedMediaIdentifierPermissionUpdated,
                   weak_ptr_factory_.GetWeakPtr()));
 
-  if (permission_subscription_id_.is_null()) {
+  if (!permission_subscription_) {
     LOG(ERROR) << "Could not subscribe to permissions changes for "
                   "PROTECTED_MEDIA_IDENTIFIER";
     // Since we cannot observe changes to PROTECTED_MEDIA_IDENTIFIER, revert
@@ -233,7 +226,8 @@ void KeySystemSupportImpl::ObserveKeySystemCapabilities() {
 void KeySystemSupportImpl::OnKeySystemCapabilitiesUpdated(
     KeySystemCapabilities key_system_capabilities) {
   DVLOG(3) << __func__;
-  DCHECK(IsValidKeySystemCapabilities(key_system_capabilities));
+  CHECK(IsValidKeySystemCapabilities(key_system_capabilities),
+        base::NotFatalUntil::M160);
 
   if (key_system_capabilities_.has_value() &&
       key_system_capabilities_.value() == key_system_capabilities) {

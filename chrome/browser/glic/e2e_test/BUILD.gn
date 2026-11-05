@@ -25,7 +25,6 @@ source_set("e2e_test_support") {
 
   # Internal targets also use the dependencies by depending on this target.
   public_deps = [
-    "//chrome/browser",
     "//chrome/browser:browser_process",
     "//chrome/browser/autofill:test_support_ui",
     "//chrome/browser/glic",
@@ -36,19 +35,17 @@ source_set("e2e_test_support") {
     "//chrome/browser/ui:ui_features",
     "//chrome/common:constants",
     "//chrome/test:test_support",
-    "//chrome/test:test_support_ui",
     "//content/public/browser",
     "//content/test:test_support",
   ]
   if (checkout_glic_e2e_tests) {
     public_deps += [ "//chrome/browser/glic/e2e_test/internal:constants" ]
+
+    # internal/constants.h still defines a std::vector<std::string> global.
+    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   } else {
     public_deps += [ ":internal_test_placeholder_constants" ]
   }
-
-  # TODO(crbug.com/432285114): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 test("glic_internal_e2e_interactive_ui_tests") {
@@ -69,8 +66,8 @@ test("glic_internal_e2e_interactive_ui_tests") {
     ":e2e_test_support",
     "//chrome/browser/ui/views/translate:test_support",
     "//chrome/test:test_support",
-    "//chrome/test:test_support_ui",
     "//chrome/test/base:chrome_test_launcher",
+    "//chrome/test/base:chrome_test_suite",
   ]
 
   if (checkout_glic_e2e_tests) {

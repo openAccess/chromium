@@ -87,7 +87,7 @@ sync_pb::EntitySpecifics EncryptPasswordSpecificsWithNthKey(
     int n,
     const sync_pb::PasswordSpecificsData& unencrypted_password) {
   sync_pb::EntitySpecifics encrypted_specifics;
-  FakeCryptographer::FromSingleDefaultKey(GetNthKeyName(n))
+  FakeCryptographer::FromSinglePrimaryKey(GetNthKeyName(n))
       ->EncryptString(
           unencrypted_password.SerializeAsString(),
           encrypted_specifics.mutable_password()->mutable_encrypted());
@@ -295,7 +295,7 @@ class DataTypeWorkerTest : public ::testing::Test {
   }
 
   // Mimic a Nigori update with a keybag that cannot be decrypted, which means
-  // the cryptographer becomes unusable (no default key until the issue gets
+  // the cryptographer becomes unusable (no primary key until the issue gets
   // resolved, via DecryptPendingKey()).
   void AddPendingKey() {
     AddPendingKeyWithoutEnablingEncryption();
@@ -307,10 +307,10 @@ class DataTypeWorkerTest : public ::testing::Test {
 
   void AddPendingKeyWithoutEnablingEncryption() {
     DCHECK(encryption_keys_count_ == 0 ||
-           cryptographer_.GetDefaultEncryptionKeyName() ==
+           cryptographer_.GetPrimaryEncryptionKeyName() ==
                GetNthKeyName(encryption_keys_count_));
     encryption_keys_count_++;
-    cryptographer_.InvalidateDefaultEncryptionKey();
+    cryptographer_.InvalidatePrimaryEncryptionKey();
     if (worker()) {
       worker()->OnCryptographerChange();
     }
@@ -320,10 +320,10 @@ class DataTypeWorkerTest : public ::testing::Test {
   // Decrypts the pending key and adds it to the cryptographer.
   void DecryptPendingKey() {
     DCHECK_GT(encryption_keys_count_, 0);
-    DCHECK(cryptographer_.GetDefaultEncryptionKeyName().empty());
+    DCHECK(cryptographer_.GetPrimaryEncryptionKeyName().empty());
     std::string last_key_name = GetNthKeyName(encryption_keys_count_);
     cryptographer_.AddEncryptionKey(last_key_name);
-    cryptographer_.SelectDefaultEncryptionKey(last_key_name);
+    cryptographer_.SelectPrimaryEncryptionKey(last_key_name);
 
     if (worker()) {
       worker()->OnCryptographerChange();
@@ -339,7 +339,7 @@ class DataTypeWorkerTest : public ::testing::Test {
 
     specifics->Clear();
     AddDefaultFieldValue(data_type_, specifics);
-    FakeCryptographer::FromSingleDefaultKey(GetNthKeyName(n))
+    FakeCryptographer::FromSinglePrimaryKey(GetNthKeyName(n))
         ->EncryptString(plaintext, specifics->mutable_encrypted());
   }
 
@@ -547,8 +547,8 @@ class DataTypeWorkerTest : public ::testing::Test {
   SingleTypeMockServer* server() { return mock_server_.get(); }
   MockNudgeHandler* nudge_handler() { return &mock_nudge_handler_; }
   StatusController* status_controller() { return &status_controller_; }
-  std::string default_encryption_key_name() {
-    return cryptographer_.GetDefaultEncryptionKeyName();
+  std::string primary_encryption_key_name() {
+    return cryptographer_.GetPrimaryEncryptionKeyName();
   }
 
  private:
@@ -1174,7 +1174,7 @@ TEST_F(DataTypeWorkerTest, EncryptedCommit) {
   AddPendingKey();
   DecryptPendingKey();
   ASSERT_EQ(1U, processor()->GetNumUpdateResponses());
-  EXPECT_EQ(default_encryption_key_name(),
+  EXPECT_EQ(primary_encryption_key_name(),
             processor()->GetNthUpdateState(0).encryption_key_name());
 
   // Normal commit request stuff.
@@ -1206,7 +1206,7 @@ TEST_F(DataTypeWorkerTest, EncryptedDelete) {
   AddPendingKey();
   DecryptPendingKey();
   ASSERT_EQ(1U, processor()->GetNumUpdateResponses());
-  EXPECT_EQ(default_encryption_key_name(),
+  EXPECT_EQ(primary_encryption_key_name(),
             processor()->GetNthUpdateState(0).encryption_key_name());
 
   // Normal commit request stuff.
@@ -1354,7 +1354,7 @@ TEST_F(DataTypeWorkerTest, InitializeWithCryptographer) {
   // possible, so that it will have the chance to re-encrypt local data if
   // necessary.
   ASSERT_EQ(1U, processor()->GetNumUpdateResponses());
-  EXPECT_EQ(default_encryption_key_name(),
+  EXPECT_EQ(primary_encryption_key_name(),
             processor()->GetNthUpdateState(0).encryption_key_name());
 }
 
@@ -1372,7 +1372,7 @@ TEST_F(DataTypeWorkerTest, InitializeWithPendingCryptographer) {
   // Init the cryptographer, it'll push the EKN.
   DecryptPendingKey();
   ASSERT_EQ(1U, processor()->GetNumUpdateResponses());
-  EXPECT_EQ(default_encryption_key_name(),
+  EXPECT_EQ(primary_encryption_key_name(),
             processor()->GetNthUpdateState(0).encryption_key_name());
 }
 
@@ -1391,7 +1391,7 @@ TEST_F(DataTypeWorkerTest, FirstInitializeWithCryptographer) {
   // Now perform first sync and make sure the EKN makes it.
   TriggerTypeRootUpdateFromServer();
   ASSERT_EQ(1U, processor()->GetNumUpdateResponses());
-  EXPECT_EQ(default_encryption_key_name(),
+  EXPECT_EQ(primary_encryption_key_name(),
             processor()->GetNthUpdateState(0).encryption_key_name());
 }
 
@@ -1409,7 +1409,7 @@ TEST_F(DataTypeWorkerTest, CryptographerDuringInitialization) {
   // Now perform first sync and make sure the EKN makes it.
   TriggerTypeRootUpdateFromServer();
   ASSERT_EQ(1U, processor()->GetNumUpdateResponses());
-  EXPECT_EQ(default_encryption_key_name(),
+  EXPECT_EQ(primary_encryption_key_name(),
             processor()->GetNthUpdateState(0).encryption_key_name());
 }
 
@@ -1437,7 +1437,7 @@ TEST_F(DataTypeWorkerTest, ReceiveUndecryptableEntries) {
   const UpdateResponseData& update = processor()->GetUpdateResponse(kHash1);
   EXPECT_EQ(kTag1, update.entity.specifics.preference().name());
   EXPECT_EQ(kValue1, update.entity.specifics.preference().value());
-  EXPECT_EQ(default_encryption_key_name(), update.encryption_key_name);
+  EXPECT_EQ(primary_encryption_key_name(), update.encryption_key_name);
 }
 
 TEST_F(DataTypeWorkerTest, OverwriteUndecryptableUpdateWithDecryptableOne) {
@@ -1751,7 +1751,6 @@ TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
   sync_pb::SyncEntity entity;
   *entity.mutable_unique_position() = kUniquePosition.ToProto();
   entity.set_client_tag_hash("CLIENT_TAG");
-  entity.set_server_defined_unique_tag("SERVER_TAG");
   entity.mutable_specifics()->mutable_bookmark();
 
   UpdateResponseData response_data;
@@ -1770,7 +1769,6 @@ TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
   sync_pb::SyncEntity entity;
   entity.set_position_in_parent(5);
   entity.set_client_tag_hash("CLIENT_TAG");
-  entity.set_server_defined_unique_tag("SERVER_TAG");
   entity.mutable_specifics()->mutable_bookmark();
 
   UpdateResponseData response_data;
@@ -1789,7 +1787,6 @@ TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
   sync_pb::SyncEntity entity;
   entity.set_insert_after_item_id("ITEM_ID");
   entity.set_client_tag_hash("CLIENT_TAG");
-  entity.set_server_defined_unique_tag("SERVER_TAG");
   entity.mutable_specifics()->mutable_bookmark();
 
   UpdateResponseData response_data;
@@ -1807,7 +1804,6 @@ TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
      BookmarkWithMissingPositionFallsBackToRandom) {
   sync_pb::SyncEntity entity;
   entity.set_client_tag_hash("CLIENT_TAG");
-  entity.set_server_defined_unique_tag("SERVER_TAG");
   entity.mutable_specifics()->mutable_bookmark();
 
   UpdateResponseData response_data;
@@ -1935,24 +1931,6 @@ TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
   // The client tag hash makes it through.
   EXPECT_EQ(response_data.entity.client_tag_hash.value(),
             kTestClientTagHash.value());
-}
-
-TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
-     OfferDataWithMissingClientTagHash) {
-  UpdateResponseData response_data;
-
-  // Set up the entity with an arbitrary value for an arbitrary field in the
-  // specifics (so that it _has_ autofill offer specifics).
-  sync_pb::SyncEntity entity;
-  entity.mutable_specifics()->mutable_autofill_offer()->set_id(1234567);
-
-  ASSERT_EQ(
-      DataTypeWorker::SUCCESS,
-      DataTypeWorker::PopulateUpdateResponseData(
-          FakeCryptographer(), AUTOFILL_WALLET_OFFER, entity, &response_data));
-
-  // The client tag hash gets filled in by the worker.
-  EXPECT_FALSE(response_data.entity.client_tag_hash.value().empty());
 }
 
 TEST(DataTypeWorkerPopulateUpdateResponseDataTest,
@@ -2117,7 +2095,7 @@ TEST_F(DataTypeWorkerPasswordsTest, PasswordCommit) {
   AddPendingKey();
   DecryptPendingKey();
   ASSERT_EQ(1U, processor()->GetNumUpdateResponses());
-  EXPECT_EQ(default_encryption_key_name(),
+  EXPECT_EQ(primary_encryption_key_name(),
             processor()->GetNthUpdateState(0).encryption_key_name());
 
   EntitySpecifics specifics;
@@ -2161,7 +2139,7 @@ TEST_F(DataTypeWorkerPasswordsTest, PasswordCommitWithCustomPassphrase) {
   AddPendingKey();
   DecryptPendingKey();
   ASSERT_EQ(1U, processor()->GetNumUpdateResponses());
-  EXPECT_EQ(default_encryption_key_name(),
+  EXPECT_EQ(primary_encryption_key_name(),
             processor()->GetNthUpdateState(0).encryption_key_name());
 
   EntitySpecifics specifics;
@@ -2749,7 +2727,7 @@ TEST_F(DataTypeWorkerPasswordsTest,
   sync_pb::PasswordSpecificsData_Notes notes_backup;
   notes_backup.add_note()->set_value(kPasswordNoteBackup);
 
-  FakeCryptographer::FromSingleDefaultKey(GetNthKeyName(1))
+  FakeCryptographer::FromSinglePrimaryKey(GetNthKeyName(1))
       ->EncryptString(notes_backup.SerializeAsString(),
                       encrypted_specifics.mutable_password()
                           ->mutable_encrypted_notes_backup());
@@ -2794,7 +2772,7 @@ TEST_F(DataTypeWorkerPasswordsTest,
   sync_pb::PasswordSpecificsData_Notes notes_backup;
   notes_backup.add_note()->set_value(kPasswordNoteBackup);
 
-  FakeCryptographer::FromSingleDefaultKey(GetNthKeyName(1))
+  FakeCryptographer::FromSinglePrimaryKey(GetNthKeyName(1))
       ->EncryptString(notes_backup.SerializeAsString(),
                       encrypted_specifics.mutable_password()
                           ->mutable_encrypted_notes_backup());
@@ -2865,7 +2843,7 @@ TEST_F(DataTypeWorkerPasswordsTest, ShouldEmitNotesBackupCorrupted) {
   sync_pb::PasswordSpecificsData_Notes notes_backup;
   notes_backup.add_note()->set_value(kPasswordNoteBackup);
 
-  FakeCryptographer::FromSingleDefaultKey(GetNthKeyName(1))
+  FakeCryptographer::FromSinglePrimaryKey(GetNthKeyName(1))
       ->EncryptString(notes_backup.SerializeAsString(),
                       encrypted_specifics.mutable_password()
                           ->mutable_encrypted_notes_backup());
@@ -3023,7 +3001,7 @@ TEST_F(DataTypeWorkerSendTabToSelfTest,
   specifics.mutable_send_tab_to_self()->set_url("https://example.com");
   // Use a different cryptographer to encrypt, simulating another device.
   auto other_cryptographer =
-      FakeCryptographer::FromSingleDefaultKey(GetNthKeyName(1));
+      FakeCryptographer::FromSinglePrimaryKey(GetNthKeyName(1));
   ASSERT_TRUE(other_cryptographer->Encrypt(
       page_context,
       specifics.mutable_send_tab_to_self()->mutable_encrypted_page_context()));
@@ -3084,7 +3062,7 @@ TEST_F(DataTypeWorkerSendTabToSelfTest,
   // Use a different cryptographer to encrypt, simulating another device, using
   // a key that the worker does not have yet.
   auto other_cryptographer =
-      FakeCryptographer::FromSingleDefaultKey(GetNthKeyName(1));
+      FakeCryptographer::FromSinglePrimaryKey(GetNthKeyName(1));
   ASSERT_TRUE(other_cryptographer->Encrypt(
       page_context,
       specifics.mutable_send_tab_to_self()->mutable_encrypted_page_context()));
@@ -3195,7 +3173,7 @@ TEST_F(DataTypeWorkerSendTabToSelfTest,
   sync_pb::EntitySpecifics encrypted_specifics;
   // Use a different cryptographer to encrypt, simulating another device.
   auto other_cryptographer =
-      FakeCryptographer::FromSingleDefaultKey(GetNthKeyName(1));
+      FakeCryptographer::FromSinglePrimaryKey(GetNthKeyName(1));
   // Since the entire specifics is encrypted, the `page_context` field does not
   // get encrypted separately.
   ASSERT_TRUE(other_cryptographer->Encrypt(

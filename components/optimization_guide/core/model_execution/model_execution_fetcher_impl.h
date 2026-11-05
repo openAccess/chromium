@@ -14,7 +14,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/model_execution_fetcher.h"
 #include "url/gurl.h"
 
@@ -35,16 +35,10 @@ class IdentityManager;
 
 namespace optimization_guide {
 
-// Adds header to indicate to return debug logging data from the model execution
-// service via response header.
-inline constexpr char kModelExecutionEnableRemoteDebugLoggingSwitch[] =
-    "optimization-guide-model-execution-enable-remote-debug-logging";
-
 class ModelExecutionFetcherImpl : public ModelExecutionFetcher {
  public:
   ModelExecutionFetcherImpl(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      const GURL& optimization_guide_service_url,
       OptimizationGuideLogger* optimization_guide_logger);
 
   ModelExecutionFetcherImpl(const ModelExecutionFetcherImpl&) = delete;
@@ -65,6 +59,7 @@ class ModelExecutionFetcherImpl : public ModelExecutionFetcher {
   void OnAccessTokenReceived(ModelBasedCapabilityKey feature,
                              const std::string& serialized_request,
                              std::optional<base::TimeDelta> timeout,
+                             base::TimeTicks access_token_request_start_time,
                              const std::string& access_token);
 
   // URL loader completion callback.
@@ -82,10 +77,6 @@ class ModelExecutionFetcherImpl : public ModelExecutionFetcher {
 
   // Used for creating an `active_url_loader_` when needed for request hints.
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
-
-  // The start time of the current fetch, used to determine the latency in
-  // retrieving from the remote Optimization Guide Service.
-  base::TimeTicks fetch_start_time_;
 
   // The model execution feature the fetch is happening for.
   std::optional<ModelBasedCapabilityKey> model_execution_feature_;

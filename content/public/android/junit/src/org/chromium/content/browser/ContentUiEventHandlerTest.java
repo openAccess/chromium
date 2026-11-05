@@ -4,29 +4,36 @@
 
 package org.chromium.content.browser;
 
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.eq;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.view.InputDevice;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.blink_public.common.BlinkFeatures;
 import org.chromium.content.browser.webcontents.WebContentsImpl;
 import org.chromium.content.browser.webcontents.WebContentsImplJni;
 import org.chromium.content_public.browser.NavigationController;
@@ -45,7 +52,12 @@ public class ContentUiEventHandlerTest {
     @Mock private NavigationController mNavigationController;
     @Mock private WebContentsImpl.Natives mWebContentsJniMock;
     @Mock private ContentUiEventHandler.Natives mContentUiEventHandlerJniMock;
+    @Mock private Gamepad mGamepad;
+    @Mock private JoystickHandler mJoystickHandler;
+    @Mock private EventForwarder mEventForwarder;
+    @Captor private ArgumentCaptor<MotionEvent> mMotionEventCaptor;
 
+    private WebContentsImpl mWebContentsImpl;
     private ContentUiEventHandler mContentUiEventHandler;
 
     @Before
@@ -53,32 +65,34 @@ public class ContentUiEventHandlerTest {
         WebContentsImplJni.setInstanceForTesting(mWebContentsJniMock);
         ContentUiEventHandlerJni.setInstanceForTesting(mContentUiEventHandlerJniMock);
 
-        WebContentsImpl webContentsImpl =
+        mWebContentsImpl =
                 spy(WebContentsImpl.create(NATIVE_WEB_CONTENTS_ANDROID, mNavigationController));
-        webContentsImpl.initializeForTesting();
+        mWebContentsImpl.initializeForTesting();
 
-        Gamepad gamepad = mock(Gamepad.class);
-        when(gamepad.onGenericMotionEvent(any())).thenReturn(false);
-        webContentsImpl.setUserDataForTesting(Gamepad.class, gamepad);
+        when(mGamepad.onGenericMotionEvent(any())).thenReturn(false);
+        mWebContentsImpl.setUserDataForTesting(Gamepad.class, mGamepad);
 
-        JoystickHandler joystickHandler = mock(JoystickHandler.class);
-        when(joystickHandler.onGenericMotionEvent(any())).thenReturn(false);
-        webContentsImpl.setUserDataForTesting(JoystickHandler.class, joystickHandler);
+        when(mJoystickHandler.onGenericMotionEvent(any())).thenReturn(false);
+        mWebContentsImpl.setUserDataForTesting(JoystickHandler.class, mJoystickHandler);
 
-        EventForwarder eventForwarder = mock(EventForwarder.class);
-        when(eventForwarder.isTrackpadToMouseEventConversionEnabled()).thenReturn(true);
-        when(eventForwarder.createOffsetMotionEventIfNeeded(any()))
+        when(mEventForwarder.isTrackpadToMouseEventConversionEnabled()).thenReturn(true);
+        when(mEventForwarder.createOffsetMotionEventIfNeeded(any()))
                 .thenAnswer(
                         (Answer<MotionEvent>)
                                 invocation -> {
                                     Object[] args = invocation.getArguments();
                                     return (MotionEvent) args[0];
                                 });
-        doReturn(eventForwarder).when(webContentsImpl).getEventForwarder();
+        doReturn(mEventForwarder).when(mWebContentsImpl).getEventForwarder();
 
         mContentUiEventHandler =
                 ContentUiEventHandler.createForTesting(
-                        webContentsImpl, NATIVE_CONTENT_UI_EVENT_HANDLER);
+                        mWebContentsImpl, NATIVE_CONTENT_UI_EVENT_HANDLER);
+    }
+
+    @After
+    public void tearDown() {
+        mWebContentsImpl.destroy();
     }
 
     @Test
@@ -89,17 +103,32 @@ public class ContentUiEventHandlerTest {
         MotionEvent trackpadRightClickEvent = getTrackRightClickEvent();
         mContentUiEventHandler.onGenericMotionEvent(getTrackRightClickEvent());
 
-        ArgumentCaptor<MotionEvent> captor = ArgumentCaptor.forClass(MotionEvent.class);
         verify(mContentUiEventHandlerJniMock, times(2))
                 .sendMouseEvent(
                         eq(NATIVE_CONTENT_UI_EVENT_HANDLER),
-                        captor.capture(),
+                        mMotionEventCaptor.capture(),
                         eq(MotionEventUtils.getEventTimeNanos(trackpadLeftClickEvent)),
                         eq(EventForwarder.getMouseEventActionButton(trackpadLeftClickEvent)),
                         eq(MotionEvent.TOOL_TYPE_MOUSE));
 
-        MotionEventTestUtils.assertEquals(captor.getAllValues().get(0), trackpadLeftClickEvent);
-        MotionEventTestUtils.assertEquals(captor.getAllValues().get(1), trackpadRightClickEvent);
+        MotionEventTestUtils.assertEquals(
+                mMotionEventCaptor.getAllValues().get(0), trackpadLeftClickEvent);
+        MotionEventTestUtils.assertEquals(
+                mMotionEventCaptor.getAllValues().get(1), trackpadRightClickEvent);
+    }
+
+    @Test
+    @EnableFeatures(BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU)
+    public void testShouldPropagateKeyEvent_KeycodeMenuEnabled() {
+        KeyEvent menuEvent = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MENU);
+        assertTrue(ContentUiEventHandler.shouldPropagateKeyEvent(menuEvent));
+    }
+
+    @Test
+    @DisableFeatures(BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU)
+    public void testShouldPropagateKeyEvent_KeycodeMenuDisabled() {
+        KeyEvent menuEvent = new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MENU);
+        assertFalse(ContentUiEventHandler.shouldPropagateKeyEvent(menuEvent));
     }
 
     private static MotionEvent getTrackpadLeftClickEvent() {

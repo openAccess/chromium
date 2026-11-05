@@ -67,6 +67,7 @@ constexpr auto kKnownSettings = base::MakeFixedFlatSet<std::string_view>({
     kAccountsPrefDeviceLocalAccountAutoLoginId,
     kAccountsPrefDeviceLocalAccountPromptForNetworkWhenOffline,
     kAccountsPrefDeviceLocalAccounts,
+    kAccountsPrefDeviceMaxUserProfiles,
     kAccountsPrefEphemeralUsersEnabled,
     kAccountsPrefLoginScreenDomainAutoComplete,
     kAccountsPrefShowUserNamesOnSignIn,
@@ -389,6 +390,12 @@ void DecodeLoginPolicies(const em::ChromeDeviceSettingsProto& policy,
       policy.has_ephemeral_users_enabled() &&
           policy.ephemeral_users_enabled().has_ephemeral_users_enabled() &&
           policy.ephemeral_users_enabled().ephemeral_users_enabled());
+
+  if (policy.has_devicemaxuserprofiles() &&
+      policy.devicemaxuserprofiles().has_value()) {
+    new_values_cache->SetInteger(kAccountsPrefDeviceMaxUserProfiles,
+                                 policy.devicemaxuserprofiles().value());
+  }
 
   {
     base::ListValue list;
@@ -1539,7 +1546,7 @@ void DeviceSettingsProvider::OwnershipStatusChanged() {
     if (device_settings_service_->HasPrivateOwnerKey()) {
       // There shouldn't be any pending writes, since the cache writes are all
       // immediate.
-      DCHECK(!store_callback_factory_.HasWeakPtrs());
+      CHECK(!store_callback_factory_.HasWeakPtrs(), base::NotFatalUntil::M160);
 
       trusted_status_ = TEMPORARILY_UNTRUSTED;
       // Apply the locally-accumulated device settings on top of the initial
@@ -1676,8 +1683,6 @@ bool DeviceSettingsProvider::MitigateMissingPolicy() {
   LOG(ERROR) << "Corruption of the policy data has been detected."
              << "Switching to \"safe-mode\" policies until the owner logs in "
              << "to regenerate the policy data.";
-  base::UmaHistogramBoolean("Enterprise.DeviceSettings.MissingPolicyMitigated",
-                            true);
 
   device_settings_.Clear();
   device_settings_.mutable_allow_new_users()->set_allow_new_users(true);

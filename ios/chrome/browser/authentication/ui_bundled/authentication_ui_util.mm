@@ -5,34 +5,21 @@
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_ui_util.h"
 
 #import "base/check.h"
-#import "base/format_macros.h"
 #import "base/i18n/number_formatting.h"
 #import "base/metrics/user_metrics.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
 #import "components/browser_sync/sync_to_signin_migration.h"
 #import "components/signin/public/base/consent_level.h"
-#import "components/signin/public/base/gaia_id_hash.h"
 #import "components/signin/public/base/signin_metrics.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/strings/grit/components_strings.h"
-#import "components/sync/base/account_pref_utils.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync_bookmarks/constants.h"
-#import "google_apis/gaia/gaia_id.h"
-#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
-#import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/alert/alert_coordinator.h"
-#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/model/profile/features.h"
-#import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/model/profile/profile_ios_util.h"
-#import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
-#import "ios/chrome/browser/signin/model/account_profile_mapper.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -43,14 +30,22 @@
 
 namespace {
 
+// Returns the hosted domain for the primary account.
+std::u16string HostedDomainForPrimaryAccount(
+    signin::IdentityManager* identity_manager) {
+  return base::UTF8ToUTF16(
+      identity_manager
+          ->FindExtendedAccountInfo(identity_manager->GetPrimaryAccountInfo(
+              signin::ConsentLevel::kSignin))
+          .GetHostedDomain()
+          .value_or(std::string()));
+}
+
 // Returns the title associated to the given user sign-in state.
-// `account_profile_switch` is true if the flow was triggered for an account or
-// profile switching.
 // `signed_in_user_state` sign-in&sync state for the current primary account.
 NSString* GetActionSheetCoordinatorTitle(
     signin::IdentityManager* identity_manager,
-    SignedInUserState signed_in_user_state,
-    bool account_profile_switch) {
+    SignedInUserState signed_in_user_state) {
   switch (signed_in_user_state) {
     case SignedInUserState::kNotSyncingAndReplaceSyncWithSignin:
       // This dialog is triggered only if there is unsync data.
@@ -62,13 +57,6 @@ NSString* GetActionSheetCoordinatorTitle(
       return l10n_util::GetNSStringF(
           IDS_IOS_SIGNOUT_DIALOG_TITLE_WITH_SYNCING_MANAGED_ACCOUNT,
           hostedDomain);
-    }
-    case SignedInUserState::kManagedAccountClearsDataOnSignout: {
-      return account_profile_switch
-                 ? l10n_util::GetNSString(
-                       IDS_IOS_SWITCH_CLEARS_DATA_DIALOG_TITLE_WITH_MANAGED_ACCOUNT)
-                 : l10n_util::GetNSString(
-                       IDS_IOS_SIGNOUT_CLEARS_DATA_DIALOG_TITLE_WITH_MANAGED_ACCOUNT);
     }
   }
   NOTREACHED();
@@ -106,13 +94,6 @@ NSString* GetActionSheetCoordinatorMessage(
       return l10n_util::GetNSString(
           IDS_IOS_SIGNOUT_DIALOG_MESSAGE_WITH_NOT_SAVED_DATA);
     }
-    case SignedInUserState::kManagedAccountClearsDataOnSignout:
-      // Signing out may also cause tabs to be closed, see
-      // `MainControllerAuthenticationServiceDelegate::
-      //    ClearBrowsingDataForSignedinPeriod`.
-      return l10n_util::GetNSString(
-          IDS_IOS_SIGNOUT_CLOSES_TABS_AND_CLEARS_DATA_DIALOG_MESSAGE_WITH_MANAGED_ACCOUNT);
-
     case SignedInUserState::kManagedAccountAndMigratedFromSyncing: {
       return nil;
     }
@@ -121,16 +102,6 @@ NSString* GetActionSheetCoordinatorMessage(
 }
 
 }  // namespace
-
-std::u16string HostedDomainForPrimaryAccount(
-    signin::IdentityManager* identity_manager) {
-  return base::UTF8ToUTF16(
-      identity_manager
-          ->FindExtendedAccountInfo(identity_manager->GetPrimaryAccountInfo(
-              signin::ConsentLevel::kSignin))
-          .GetHostedDomain()
-          .value_or(std::string()));
-}
 
 AlertCoordinator* ErrorCoordinator(NSError* error,
                                    ProceduralBlock dismissAction,
@@ -210,42 +181,6 @@ NSString* ViewControllerPresentationStatusDescription(
   return @"Not presented";
 }
 
-AlertCoordinator* ManagedConfirmationDialogContentForHostedDomain(
-    NSString* hosted_domain,
-    Browser* browser,
-    UIViewController* view_controller,
-    ProceduralBlock accept_block,
-    ProceduralBlock cancel_block) {
-  CHECK(!AreSeparateProfilesForManagedAccountsEnabled());
-  NSString* title = l10n_util::GetNSString(IDS_IOS_MANAGED_SIGNIN_TITLE);
-  NSString* subtitle =
-      l10n_util::GetNSStringF(IDS_IOS_MANAGED_SIGNIN_WITH_USER_POLICY_SUBTITLE,
-                              base::SysNSStringToUTF16(hosted_domain));
-  // If we ever use this method in a test where migration was forced, the button
-  // should be IDS_IOS_ENTERPRISE_PROFILE_CREATION_GOTIT.
-  NSString* accept_label =
-      l10n_util::GetNSString(IDS_IOS_ENTERPRISE_PROFILE_CREATION_CONTINUE);
-  NSString* cancel_label = l10n_util::GetNSString(IDS_CANCEL);
-
-  AlertCoordinator* managed_confirmation_alert_coordinator =
-      [[AlertCoordinator alloc] initWithBaseViewController:view_controller
-                                                   browser:browser
-                                                     title:title
-                                                   message:subtitle];
-
-  [managed_confirmation_alert_coordinator
-      addItemWithTitle:cancel_label
-                action:cancel_block
-                 style:UIAlertActionStyleCancel];
-  [managed_confirmation_alert_coordinator
-      addItemWithTitle:accept_label
-                action:accept_block
-                 style:UIAlertActionStyleDefault];
-  managed_confirmation_alert_coordinator.noInteractionAction = cancel_block;
-  [managed_confirmation_alert_coordinator start];
-  return managed_confirmation_alert_coordinator;
-}
-
 SignedInUserState GetSignedInUserState(
     AuthenticationService* authentication_service,
     signin::IdentityManager* identity_manager,
@@ -258,37 +193,7 @@ SignedInUserState GetSignedInUserState(
   if (is_managed_account_migrated_from_syncing) {
     return SignedInUserState::kManagedAccountAndMigratedFromSyncing;
   }
-  if (authentication_service->ShouldClearDataForSignedInPeriodOnSignOut()) {
-    return SignedInUserState::kManagedAccountClearsDataOnSignout;
-  }
   return SignedInUserState::kNotSyncingAndReplaceSyncWithSignin;
-}
-
-bool ForceLeavingPrimaryAccountConfirmationDialog(
-    SignedInUserState signed_in_user_state,
-    ProfileIOS* profile,
-    const GaiaId& gaia_id_to_sign_in) {
-  switch (signed_in_user_state) {
-    case SignedInUserState::kNotSyncingAndReplaceSyncWithSignin:
-      return false;
-    case SignedInUserState::kManagedAccountClearsDataOnSignout:
-    case SignedInUserState::kManagedAccountAndMigratedFromSyncing:
-      if (!AreSeparateProfilesForManagedAccountsEnabled()) {
-        return true;
-      }
-
-      // Show the dialog only if a managed account is signing out from the
-      // personal profile. (This can only happen for managed accounts that were
-      // already signed in before there was multi-profile support.)
-      // If the new account is different from the one in the personal profile,
-      // we are not actually signing it out.
-      return IsPersonalProfile(profile) &&
-             (gaia_id_to_sign_in.empty() ||
-              IdentityManagerFactory::GetForProfile(profile)
-                      ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
-                      .gaia == gaia_id_to_sign_in);
-  }
-  NOTREACHED();
 }
 
 ActionSheetCoordinator* GetLeavingPrimaryAccountConfirmationDialog(
@@ -303,7 +208,7 @@ ActionSheetCoordinator* GetLeavingPrimaryAccountConfirmationDialog(
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
   NSString* title = GetActionSheetCoordinatorTitle(
-      identity_manager, signed_in_user_state, account_profile_switch);
+      identity_manager, signed_in_user_state);
   AuthenticationService* authentication_service =
       AuthenticationServiceFactory::GetForProfile(profile);
   syncer::SyncService* sync_service =
@@ -351,42 +256,6 @@ ActionSheetCoordinator* GetLeavingPrimaryAccountConfirmationDialog(
                           RecordSignoutConfirmationFromDataLossAlert(
                               signin_metrics::SignoutDataLossAlertReason::
                                   kSignoutWithUnsyncedData,
-                              false);
-                      completion(NO);
-                    }
-                     style:UIAlertActionStyleCancel];
-      break;
-    }
-    case SignedInUserState::kManagedAccountClearsDataOnSignout: {
-      actionSheetCoordinator.alertStyle = UIAlertControllerStyleAlert;
-      NSString* const signOutButtonTitle =
-          account_profile_switch
-              ? l10n_util::GetNSString(
-                    IDS_IOS_DATA_NOT_UPLOADED_SWITCH_DIALOG_BUTTON)
-              : l10n_util::GetNSString(
-                    IDS_IOS_SIGNOUT_AND_DELETE_DIALOG_SIGN_OUT_BUTTON);
-      [actionSheetCoordinator
-          addItemWithTitle:signOutButtonTitle
-                    action:^{
-                      base::RecordAction(base::UserMetricsAction(
-                          "Signin_Signout_Confirm_Managed_ClearDataOnSignout"));
-                      signin_metrics::
-                          RecordSignoutConfirmationFromDataLossAlert(
-                              signin_metrics::SignoutDataLossAlertReason::
-                                  kSignoutWithClearDataForManagedUser,
-                              true);
-                      completion(YES);
-                    }
-                     style:UIAlertActionStyleDestructive];
-      [actionSheetCoordinator
-          addItemWithTitle:l10n_util::GetNSString(IDS_CANCEL)
-                    action:^{
-                      base::RecordAction(base::UserMetricsAction(
-                          "Signin_Signout_Cancel_Managed_ClearDataOnSignout"));
-                      signin_metrics::
-                          RecordSignoutConfirmationFromDataLossAlert(
-                              signin_metrics::SignoutDataLossAlertReason::
-                                  kSignoutWithClearDataForManagedUser,
                               false);
                       completion(NO);
                     }

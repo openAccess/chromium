@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "base/containers/span.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "net/base/net_export.h"
 #include "net/device_bound_sessions/session.h"
 #include "net/device_bound_sessions/session_params.h"
@@ -26,8 +26,12 @@ namespace net::device_bound_sessions {
 //   Relying Party (RP).
 // - Federated sessions: where the RP reuses the same key and session from the
 //   IdP.
+// TODO(crbug.com/481629977): DBSC-SSO registrations only need `provider_key`.
+// Pass it as a plain string and keep this struct for federated registrations.
 struct NET_EXPORT ProviderRegistrationParams {
   std::string provider_key;
+  // `provider_url` is only set for federated session registrations. DBSC-SSO
+  // registrations ignore it and leave it empty.
   GURL provider_url;
   // `provider_session_id` is populated only during federated session
   // registrations when an RP reuses the same key as the IdP. It should be
@@ -71,12 +75,10 @@ class NET_EXPORT RegistrationFetcherParam {
   // Convenience constructor for testing.
   static RegistrationFetcherParam CreateInstanceForTesting(
       GURL registration_endpoint,
-      std::vector<crypto::SignatureVerifier::SignatureAlgorithm>
-          supported_algos,
+      std::vector<crypto::sign::SignatureKind> supported_algos,
       std::optional<std::string> challenge,
       std::optional<std::string> authorization,
-      std::optional<ProviderRegistrationParams> provider_params =
-          std::nullopt,
+      std::optional<ProviderRegistrationParams> provider_params = std::nullopt,
       AttestationMode attestation_mode = AttestationMode::kNone,
       std::optional<url::Origin> maybe_referring_origin = std::nullopt);
 
@@ -87,8 +89,7 @@ class NET_EXPORT RegistrationFetcherParam {
   // specified a different origin within the same site.
   const url::Origin& referring_origin() const { return referring_origin_; }
 
-  base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-  supported_algos() const {
+  base::span<const crypto::sign::SignatureKind> supported_algos() const {
     return supported_algos_;
   }
 
@@ -117,8 +118,7 @@ class NET_EXPORT RegistrationFetcherParam {
   RegistrationFetcherParam(
       GURL registration_endpoint,
       url::Origin referring_origin,
-      std::vector<crypto::SignatureVerifier::SignatureAlgorithm>
-          supported_algos,
+      std::vector<crypto::sign::SignatureKind> supported_algos,
       std::optional<std::string> challenge,
       std::optional<std::string> authorization,
       std::optional<ProviderRegistrationParams> provider_params,
@@ -130,7 +130,7 @@ class NET_EXPORT RegistrationFetcherParam {
 
   GURL registration_endpoint_;
   url::Origin referring_origin_;
-  std::vector<crypto::SignatureVerifier::SignatureAlgorithm> supported_algos_;
+  std::vector<crypto::sign::SignatureKind> supported_algos_;
   std::optional<std::string> challenge_;
   std::optional<std::string> authorization_;
   std::optional<ProviderRegistrationParams> provider_params_;

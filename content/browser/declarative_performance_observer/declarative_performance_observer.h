@@ -5,6 +5,8 @@
 #ifndef CONTENT_BROWSER_DECLARATIVE_PERFORMANCE_OBSERVER_DECLARATIVE_PERFORMANCE_OBSERVER_H_
 #define CONTENT_BROWSER_DECLARATIVE_PERFORMANCE_OBSERVER_DECLARATIVE_PERFORMANCE_OBSERVER_H_
 
+#include <optional>
+
 #include "base/containers/flat_set.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -83,6 +85,11 @@ class CONTENT_EXPORT DeclarativePerformanceObserver
           receiver);
 
   StoragePartition* GetStoragePartition() const;
+  // Queues `body` as a `performance-observer` report for `url` under
+  // `reporting_source_` and immediately triggers `SendReportsForSource()` so
+  // each report is dispatched without waiting for the periodic Reporting API
+  // delivery timer or being batched with subsequent lifecycle flushes.
+  void QueueAndSendReport(const GURL& url, base::DictValue body);
   void AddEntryToBuffer(base::DictValue entry);
   void FlushMetrics();
   void AppendSessionEndEntry();
@@ -116,7 +123,7 @@ class CONTENT_EXPORT DeclarativePerformanceObserver
   GURL committed_url_;
   net::NetworkAnonymizationKey network_anonymization_key_;
   base::UnguessableToken reporting_source_;
-  raw_ptr<StoragePartition> storage_partition_for_testing_ = nullptr;
+  std::optional<raw_ptr<StoragePartition>> storage_partition_for_testing_;
 
   mojo::Receiver<blink::mojom::DeclarativePerformanceObserverHost> receiver_{
       this};

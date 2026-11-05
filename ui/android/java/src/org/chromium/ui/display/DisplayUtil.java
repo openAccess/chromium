@@ -62,8 +62,9 @@ public abstract class DisplayUtil {
 
     /** Change the UI scaling factor on automotive devices for testing. */
     public static void setUiScalingFactorForAutomotiveForTesting(float scalingFactor) {
+        Float oldValue = sUiScalingFactorForAutomotiveForTesting;
         sUiScalingFactorForAutomotiveForTesting = scalingFactor;
-        ResettersForTesting.register(() -> sUiScalingFactorForAutomotiveForTesting = null);
+        ResettersForTesting.register(() -> sUiScalingFactorForAutomotiveForTesting = oldValue);
     }
 
     public static void setCurrentSmallestScreenWidthForTesting(int smallestScreenWidth) {
@@ -163,6 +164,7 @@ public abstract class DisplayUtil {
                 DisplayUtil.pxToDp(displayAndroid, DisplayUtil.getSmallestWidth(displayAndroid));
         sIsGlobalDefaultDisplayTabletSized =
                 smallestWidth >= DeviceFormFactor.MINIMUM_TABLET_WIDTH_DP;
+        ResettersForTesting.register(() -> sIsGlobalDefaultDisplayTabletSized = null);
         return sIsGlobalDefaultDisplayTabletSized;
     }
 
@@ -686,7 +688,8 @@ public abstract class DisplayUtil {
     }
 
     public static void setIsDisplayCompatAppForTesting(boolean isDisplayCompatAppForTesting) {
+        Boolean oldValue = sIsDisplayCompatAppForTesting;
         sIsDisplayCompatAppForTesting = isDisplayCompatAppForTesting;
-        ResettersForTesting.register(() -> sIsDisplayCompatAppForTesting = null);
+        ResettersForTesting.register(() -> sIsDisplayCompatAppForTesting = oldValue);
     }
 }

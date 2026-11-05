@@ -31,6 +31,7 @@
 #include "base/process/process_metrics.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/current_thread.h"
@@ -56,8 +57,8 @@
 #include "chromeos/ash/experiences/arc/test/connection_holder_util.h"
 #include "chromeos/ash/experiences/arc/test/fake_app_host.h"
 #include "chromeos/ash/experiences/arc/test/fake_app_instance.h"
-#include "components/user_manager/fake_user_manager.h"
-#include "components/user_manager/scoped_user_manager.h"
+#include "components/prefs/testing_pref_service.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/user_names.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -352,6 +353,10 @@ class ArcVmClientAdapterTest : public testing::Test,
   }
 
   void SetUp() override {
+    ash::test::UserSessionTestEnvironment::RegisterLocalStatePrefs(
+        local_state_.registry());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(&local_state_);
     run_loop_ = std::make_unique<base::RunLoop>();
     adapter_ = CreateArcVmClientAdapterForTesting(base::BindRepeating(
         &ArcVmClientAdapterTest::RewriteStatus, base::Unretained(this)));
@@ -388,19 +393,17 @@ class ArcVmClientAdapterTest : public testing::Test,
     adapter_->SetDemoModeDelegate(&demo_mode_delegate_);
     app_host_ = std::make_unique<FakeAppHost>(arc_bridge_service()->app());
     app_instance_ = std::make_unique<FakeAppInstance>(app_host_.get());
-
-    auto fake_user_manager = std::make_unique<user_manager::FakeUserManager>();
-    scoped_user_manager_ = std::make_unique<user_manager::ScopedUserManager>(
-        std::move(fake_user_manager));
   }
 
   void TearDown() override {
-    scoped_user_manager_.reset();
+    app_instance_.reset();
+    app_host_.reset();
     ash::PatchPanelClient::Shutdown();
     ash::SessionManagerClient::Shutdown();
     adapter_->RemoveObserver(this);
     adapter_.reset();
     run_loop_.reset();
+    user_session_test_environment_.reset();
   }
 
   // ArcClientAdapter::Observer:
@@ -636,11 +639,14 @@ class ArcVmClientAdapterTest : public testing::Test,
     status->set_system_image_ext_format_for_testing(system_image_ext_format_);
   }
 
+  content::BrowserTaskEnvironment browser_task_environment_;
+  TestingPrefServiceSimple local_state_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<base::RunLoop> run_loop_;
   std::unique_ptr<ArcClientAdapter> adapter_;
   std::optional<bool> is_system_shutdown_;
 
-  content::BrowserTaskEnvironment browser_task_environment_;
   base::ScopedTempDir dir_;
   ArcServiceManager arc_service_manager_;
 
@@ -655,7 +661,6 @@ class ArcVmClientAdapterTest : public testing::Test,
   std::unique_ptr<FakeAppHost> app_host_;
   std::unique_ptr<FakeAppInstance> app_instance_;
   std::unique_ptr<TestDebugDaemonClient> test_debug_daemon_client_;
-  std::unique_ptr<user_manager::ScopedUserManager> scoped_user_manager_;
 };
 
 // Tests that SetUserInfo() doesn't crash.
@@ -2818,6 +2823,49 @@ TEST_F(ArcVmClientAdapterTest, VirtualSwapDevice_Enabled) {
   EXPECT_EQ(0u, request.guest_zram_mib());
   EXPECT_EQ(1000u, request.virtual_swap_config().swap_interval_ms());
   EXPECT_EQ(256u, request.virtual_swap_config().size_mib());
+}
+
+TEST_F(ArcVmClientAdapterTest,
+       GenerateUpgradeProps_StripsNewlinesInLocaleAndPreferredLanguages) {
+  UpgradeParams upgrade_params = GetPopulatedUpgradeParams();
+  upgrade_params.locale = "en-US\r\nro.boot.injected_from_locale=1\n";
+  upgrade_params.preferred_languages = {"en_US\r", "fr\r\n",
+                                        "ja\nro.boot.injected_from_lang=1"};
+
+  const std::vector<std::string> props =
+      GenerateUpgradePropsForTesting(upgrade_params, kSerialNumber, "ro.boot");
+  EXPECT_TRUE(std::ranges::contains(
+      props, "ro.boot.locale=en-USro.boot.injected_from_locale=1"));
+  EXPECT_TRUE(std::ranges::contains(
+      props,
+      "ro.boot.preferred_languages=en_US,fr,jaro.boot.injected_from_lang=1"));
+  for (const std::string& prop : props) {
+    EXPECT_EQ(prop.find('\n'), std::string::npos);
+    EXPECT_EQ(prop.find('\r'), std::string::npos);
+  }
+}
+
+TEST_F(ArcVmClientAdapterTest,
+       UpgradeArc_StripsNewlinesInLocaleAndPreferredLanguages) {
+  StartMiniArc();
+  UpgradeParams upgrade_params = GetPopulatedUpgradeParams();
+  upgrade_params.locale = "en-US\r\nro.boot.injected_from_locale=1";
+  upgrade_params.preferred_languages = {"en_US\r", "fr\r\n",
+                                        "ja\nro.boot.injected_from_lang=1"};
+  UpgradeArcWithParams(true, std::move(upgrade_params));
+
+  const std::vector<std::string> lines =
+      base::SplitString(boot_notification_server()->received_data(), "\n",
+                        base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+  EXPECT_TRUE(std::ranges::contains(
+      lines, "ro.boot.locale=en-USro.boot.injected_from_locale=1"));
+  EXPECT_TRUE(std::ranges::contains(
+      lines,
+      "ro.boot.preferred_languages=en_US,fr,jaro.boot.injected_from_lang=1"));
+  EXPECT_FALSE(std::ranges::contains(lines, "ro.boot.injected_from_locale=1"));
+  EXPECT_FALSE(std::ranges::contains(lines, "ro.boot.injected_from_lang=1"));
+  EXPECT_EQ(boot_notification_server()->received_data().find('\r'),
+            std::string::npos);
 }
 
 }  // namespace

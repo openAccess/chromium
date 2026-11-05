@@ -10,6 +10,7 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabBuilder;
 import org.chromium.chrome.browser.tab.TabCreationState;
+import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabState;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
@@ -19,7 +20,6 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelType;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.url.GURL;
 
 import java.util.concurrent.CompletableFuture;
 
@@ -91,6 +91,11 @@ public class HeadlessTabCreator implements TabCreator, NeedsTabModel {
     }
 
     @Override
+    public boolean isReparenting(@TabId int id) {
+        return false;
+    }
+
+    @Override
     public @Nullable Tab launchUrl(String url, @TabLaunchType int type) {
         checkNotIncognito();
         return createNewTab(
@@ -107,7 +112,6 @@ public class HeadlessTabCreator implements TabCreator, NeedsTabModel {
             boolean shouldPin,
             WebContents webContents,
             @TabLaunchType int type,
-            GURL url,
             int index,
             CompletableFuture<Boolean> addTabToModel) {
         throw new UnsupportedOperationException("Headless does not support live web contents.");

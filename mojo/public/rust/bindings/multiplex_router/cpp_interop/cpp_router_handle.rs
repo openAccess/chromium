@@ -15,29 +15,27 @@ chromium::import! {
   "//mojo/public/rust/system";
 }
 
-use system::mojo_types::MessageHandle;
-use system::scoped_handle_interop::ScopedMessageHandleWrapper;
-
-use crate::message::{MojomMessage, ReadableWithHandlesMessage, SendableMessage};
+use crate::message::MojomMessage;
+use crate::multiplex_router::multiplex_router::MultiplexRouter;
 use crate::multiplex_router::response_sender::ResponseSender;
-use crate::multiplex_router::{EndpointInfo, InterfaceId};
+use crate::multiplex_router::{
+    EndpointInfo, InterfaceId, INVALID_INTERFACE_ID, PRIMARY_INTERFACE_ID,
+};
+use system::mojo_types::{RawMojoHandle, UntypedHandle};
 
 use super::cxx::ffi;
 
-/// A handle to a router that lives in C++ (as opposed to a Rust
-/// `MultiplexRouter`).
+/// A handle to a router that goes through C++ (as opposed to directly holding a
+/// Rust `MultiplexRouter`).
 ///
-/// Ultimately, this type is just a wrapper around
-/// `AssociatedEndpointRustAdapter`, which handles the actual translation into
-/// C++ concepts.
+/// Really, this is just a wrapper around `AssociatedEndpointRustAdapter`, which
+/// represents a "generic" router. It could be backed by either Rust or C++,
+/// and can be used to create either a Rust or a C++ associated endpoint.
+/// The type is implemented in C++, so this wrapper type lets us interact with
+/// it from Rust.
 pub struct CppRouterHandle {
+    /// Invariant: this should never be null
     adapter: cxx::UniquePtr<ffi::AssociatedEndpointRustAdapter>,
-}
-
-impl Drop for CppRouterHandle {
-    fn drop(&mut self) {
-        self.close();
-    }
 }
 
 impl CppRouterHandle {
@@ -56,11 +54,13 @@ impl CppRouterHandle {
     }
 
     /// Send a message through this C++ associated endpoint.
+    ///
+    /// Note: Unlike `MultiplexRouter::send_message`, the interface ID and any
+    /// serialized associated endpoints are already embedded in the message
+    /// payload, so the underlying C++ `InterfaceEndpointClient` handles
+    /// routing directly.
     pub fn send_message(&self, msg: MojomMessage) {
-        let sendable: SendableMessage = msg.into();
-        let handle = MessageHandle::from(sendable);
-        let wrapper = ScopedMessageHandleWrapper::from_message_handle(handle);
-        self.adapter.SendMessage(wrapper);
+        self.adapter.SendMessage(msg.into());
     }
 
     /// Register a new nested associated endpoint with the C++ group controller.
@@ -69,9 +69,13 @@ impl CppRouterHandle {
         interface_id: Option<InterfaceId>,
         endpoint_info: Option<EndpointInfo>,
     ) -> Option<Self> {
-        // `InterfaceId::MAX` is a signal for `RegisterNewEndpoint` to generate
-        // a fresh interface ID.
-        let id_val = interface_id.unwrap_or(InterfaceId::MAX);
+        assert!(
+            interface_id != Some(INVALID_INTERFACE_ID),
+            "kInvalidInterfaceId is not a valid interface ID"
+        );
+        // Here, INVALID_INTERFACE_ID is used as a signal to request a new ID be
+        // allocated.
+        let id_val = interface_id.unwrap_or(INVALID_INTERFACE_ID);
         let new_adapter = self.adapter.RegisterNewEndpoint(id_val);
         let mut handle = Self::new(new_adapter)?;
         if let Some(info) = endpoint_info {
@@ -88,15 +92,42 @@ impl CppRouterHandle {
     pub(crate) fn bind(&mut self, endpoint_info: EndpointInfo) {
         let task_runner = endpoint_info.runner.clone();
         let info = Box::new(endpoint_info);
-        let runner = task_runner.as_scoped_refptr();
+        let runner = task_runner.as_scoped_refptr().as_pin();
         self.adapter.pin_mut().Bind(runner, info);
     }
 
-    /// Close the endpoint and send disconnect notification over the IPC pipe.
-    pub fn close(&mut self) {
-        if let Some(adapter) = self.adapter.as_mut() {
-            adapter.Close();
-        }
+    /// Takes ownership of the underlying adapter without closing the endpoint.
+    pub fn into_adapter(self) -> cxx::UniquePtr<ffi::AssociatedEndpointRustAdapter> {
+        self.adapter
+    }
+
+    /// Returns true if this endpoint is already associated with a message pipe.
+    pub fn is_associated(&self) -> bool {
+        self.adapter().is_associated()
+    }
+
+    /// Returns the wrapped adapter.
+    fn adapter(&self) -> &ffi::AssociatedEndpointRustAdapter {
+        self.adapter.as_ref().expect("CppRouterHandle's adapter is never null")
+    }
+
+    /// Associates the peer of this unassociated C++ adapter with a Rust primary
+    /// router.
+    pub(crate) fn associate_with_rust_router(
+        mut self,
+        router: &MultiplexRouter,
+        interface_id: InterfaceId,
+    ) {
+        self.adapter
+            .pin_mut()
+            .AssociatePeerWithRustController(router.cpp_group_controller().as_pin(), interface_id);
+    }
+
+    /// Associates an unassociated C++ endpoint with this router's group
+    /// controller.
+    pub(crate) fn associate_interface(&self, other: CppRouterHandle) -> Option<InterfaceId> {
+        let id = self.adapter.AssociateInterface(other.into_adapter());
+        (id != PRIMARY_INTERFACE_ID && id != INVALID_INTERFACE_ID).then_some(id)
     }
 }
 
@@ -104,10 +135,7 @@ impl CppRouterHandle {
 // object, wrapping the same underlying adapter pointer.
 impl PartialEq for CppRouterHandle {
     fn eq(&self, other: &Self) -> bool {
-        match (self.adapter.as_ref(), other.adapter.as_ref()) {
-            (Some(self_adapter), Some(other_adapter)) => std::ptr::eq(self_adapter, other_adapter),
-            _ => false,
-        }
+        std::ptr::eq(self.adapter(), other.adapter())
     }
 }
 
@@ -126,23 +154,12 @@ impl CppResponseSender {
         Self { responder }
     }
 
-    /// Create a copy of this sender which can be used to register new
-    /// endpoints, but can't be used to send messages (since the underlying
-    /// C++ message sending part can't be cloned).
-    pub(crate) fn registrar_only(&self) -> Self {
-        Self::new(self.responder.CloneAsRegistrar())
-    }
-
-    pub(crate) fn send_message(&self, msg: MojomMessage) {
+    pub(crate) fn send_message(self, msg: MojomMessage) {
         assert!(
-            self.responder.CanSendResponse(),
-            "Tried to send a response to a message that didn't expect one \
-            (or via a ResponseSender that was cloned as registrar-only)."
+            !self.responder.is_null() && self.responder.CanSendResponse(),
+            "Tried to send a response to a message that didn't expect one."
         );
-        let sendable: SendableMessage = msg.into();
-        let handle = MessageHandle::from(sendable);
-        let wrapper = ScopedMessageHandleWrapper::from_message_handle(handle);
-        self.responder.Accept(wrapper);
+        self.responder.Accept(msg.into());
     }
 
     pub(crate) fn register_new_endpoint(
@@ -150,15 +167,32 @@ impl CppResponseSender {
         interface_id: Option<InterfaceId>,
         endpoint_info: Option<EndpointInfo>,
     ) -> Option<CppRouterHandle> {
-        // `InterfaceId::MAX` is a signal for `RegisterNewEndpoint` to generate
-        // a fresh interface ID.
-        let id_val = interface_id.unwrap_or(InterfaceId::MAX);
+        if self.responder.is_null() {
+            return None;
+        }
+        assert!(
+            interface_id != Some(INVALID_INTERFACE_ID),
+            "kInvalidInterfaceId is not a valid interface ID"
+        );
+        // Here, INVALID_INTERFACE_ID is used as a signal to request a new ID be
+        // allocated.
+        let id_val = interface_id.unwrap_or(INVALID_INTERFACE_ID);
         let new_adapter = self.responder.RegisterNewEndpoint(id_val);
         let mut handle = CppRouterHandle::new(new_adapter)?;
         if let Some(info) = endpoint_info {
             handle.bind(info);
         }
         Some(handle)
+    }
+
+    /// Associates an unassociated C++ endpoint with this responder's group
+    /// controller.
+    pub(crate) fn associate_interface(&self, other: CppRouterHandle) -> Option<InterfaceId> {
+        if self.responder.is_null() {
+            return None;
+        }
+        let id = self.responder.AssociateInterface(other.into_adapter());
+        (id != PRIMARY_INTERFACE_ID && id != INVALID_INTERFACE_ID).then_some(id)
     }
 }
 
@@ -174,15 +208,23 @@ impl CppResponseSender {
 ///
 /// Note that `responder` will always be capable of registering new endpoints,
 /// and will only be capable of sending a response if one is expected.
-pub(super) fn cxx_incoming_handler(
+///
+/// # Safety
+///  `handles` must contain only live, unowned raw handle values.
+/// Ownership of those handles is transferred into the function.
+pub(super) unsafe fn run_rust_incoming_handler(
     info: &EndpointInfo,
-    wrapper: cxx::UniquePtr<ffi::ScopedMessageHandleWrapper>,
+    payload: &[u8],
+    handles: Vec<RawMojoHandle>,
+    raw_message_handle: cxx::UniquePtr<ffi::ScopedMessageHandleWrapper>,
     responder: cxx::UniquePtr<ffi::MojoResponderWrapper>,
 ) -> bool {
-    let handle = ScopedMessageHandleWrapper::into_message_handle(wrapper)
-        .expect("Message handle must not be null");
-    let readable = ReadableWithHandlesMessage::from(handle);
-    let Some(msg) = MojomMessage::parse_raw_or_report_bad_message(readable) else {
+    // SAFETY: The caller guarantees `handles` contains live, unowned handles.
+    let untyped_handles =
+        handles.into_iter().map(|h| unsafe { UntypedHandle::wrap_raw_value(h) }).collect();
+    let Some(msg) =
+        super::cxx_shim::create_incoming_message_rust(payload, untyped_handles, raw_message_handle)
+    else {
         return false;
     };
     let sender = ResponseSender::cpp(CppResponseSender::new(responder));
@@ -194,7 +236,7 @@ pub(super) fn cxx_incoming_handler(
 /// disconnected. Its job is just to call the user-provided disconnect handler,
 /// and to drop `info`.
 #[allow(clippy::boxed_local)]
-pub(super) fn cxx_disconnect_handler(info: Box<EndpointInfo>) {
+pub(super) fn run_rust_disconnect_handler(info: Box<EndpointInfo>) {
     if let Some(handler) = info.disconnect_handler {
         let _ = info.runner.post_task(handler);
     }

@@ -5,14 +5,19 @@
 #include "chrome/browser/ui/signin/dice_web_signin_interceptor_delegate.h"
 
 #include <memory>
+#include <string_view>
 
 #include "base/cancelable_callback.h"
+#include "base/check_deref.h"
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
@@ -22,14 +27,16 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/signin/account_preview_utils.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
+#include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
+#include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/webui/signin/signin_utils.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/signin/public/identity_manager/tribool.h"
 #include "components/tabs/public/tab_interface.h"
 #include "google_apis/gaia/core_account_id.h"
 #include "google_apis/gaia/gaia_auth_util.h"
@@ -41,7 +48,7 @@ class ForcedProfileSwitchInterceptionHandle
  public:
   explicit ForcedProfileSwitchInterceptionHandle(
       base::OnceCallback<void(SigninInterceptionResult)> callback) {
-    DCHECK(callback);
+    CHECK(callback, base::NotFatalUntil::M162);
     cancelable_callback_.Reset(std::move(callback));
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(cancelable_callback_.callback(),
@@ -66,12 +73,11 @@ class OidcEnterpriseSigninInterceptionHandle
       : browser_(browser ? browser->GetWeakPtr() : nullptr),
         bubble_parameters_(bubble_parameters),
         callback_(std::move(callback)) {
-    DCHECK(browser_);
-    DCHECK(callback_);
+    CHECK(browser_, base::NotFatalUntil::M162);
+    CHECK(callback_, base::NotFatalUntil::M162);
     CHECK(bubble_parameters.interception_type ==
           WebSigninInterceptor::SigninInterceptionType::kEnterpriseOIDC);
-    browser_->GetFeatures()
-        .signin_view_controller()
+    SigninViewController::From(browser_.get())
         ->ShowModalManagedUserNoticeDialog(
             std::make_unique<signin::EnterpriseProfileCreationDialogParams>(
                 bubble_parameters.intercepted_account,
@@ -84,17 +90,16 @@ class OidcEnterpriseSigninInterceptionHandle
                                    OnEnterpriseInterceptionUserChoice,
                                weak_ptr_factory_.GetWeakPtr()),
                 /*done_callback=*/
-                base::BindOnce(&SigninViewController::CloseModalSignin,
-                               browser_->GetFeatures()
-                                   .signin_view_controller()
-                                   ->AsWeakPtr())
+                base::BindOnce(
+                    &SigninViewController::CloseModalSignin,
+                    SigninViewController::From(browser_.get())->AsWeakPtr())
                     .Then(std::move(dialog_closed_closure)),
                 /*retry_callback=*/std::move(retry_callback)));
   }
 
   ~OidcEnterpriseSigninInterceptionHandle() override {
     if (browser_) {
-      browser_->GetFeatures().signin_view_controller()->CloseModalSignin();
+      SigninViewController::From(browser_.get())->CloseModalSignin();
     }
     if (callback_) {
       DiceWebSigninInterceptorDelegate::RecordInterceptionResult(
@@ -144,17 +149,16 @@ class ForcedEnterpriseSigninInterceptionHandle
       BrowserWindowInterface* browser,
       const WebSigninInterceptor::Delegate::BubbleParameters& bubble_parameters,
       base::OnceCallback<void(SigninInterceptionResult)> callback)
-      : browser_(browser ? browser->GetWeakPtr() : nullptr),
+      : browser_(CHECK_DEREF(browser).GetWeakPtr()),
+        profile_(CHECK_DEREF(browser->GetProfile())),
         bubble_parameters_(bubble_parameters),
         profile_creation_required_by_policy_(
             bubble_parameters.interception_type ==
             WebSigninInterceptor::SigninInterceptionType::kEnterpriseForced),
         show_link_data_option_(bubble_parameters.show_link_data_option),
         callback_(std::move(callback)) {
-    DCHECK(browser_);
-    DCHECK(callback_);
-    browser_->GetFeatures()
-        .signin_view_controller()
+    CHECK(callback_, base::NotFatalUntil::M162);
+    SigninViewController::From(browser_.get())
         ->ShowModalManagedUserNoticeDialog(
             std::make_unique<signin::EnterpriseProfileCreationDialogParams>(
                 bubble_parameters.intercepted_account,
@@ -167,20 +171,18 @@ class ForcedEnterpriseSigninInterceptionHandle
                 base::BindOnce(&ForcedEnterpriseSigninInterceptionHandle::
                                    OnEnterpriseInterceptionDialogClosed,
                                weak_ptr_factory_.GetWeakPtr()),
-                base::BindOnce(&SigninViewController::CloseModalSignin,
-                               browser_->GetFeatures()
-                                   .signin_view_controller()
-                                   ->AsWeakPtr())));
+                base::BindOnce(
+                    &SigninViewController::CloseModalSignin,
+                    SigninViewController::From(browser_.get())->AsWeakPtr())));
   }
 
   ~ForcedEnterpriseSigninInterceptionHandle() override {
-    if (!browser_) {
-      return;
+    if (browser_) {
+      SigninViewController::From(browser_.get())->CloseModalSignin();
     }
-    browser_->GetFeatures().signin_view_controller()->CloseModalSignin();
     if (callback_) {
       DiceWebSigninInterceptorDelegate::RecordInterceptionResult(
-          bubble_parameters_, browser_->GetProfile(),
+          bubble_parameters_, &profile_.get(),
           SigninInterceptionResult::kDeclined);
       std::move(callback_).Run(SigninInterceptionResult::kDeclined);
     }
@@ -195,7 +197,8 @@ class ForcedEnterpriseSigninInterceptionHandle
         interception_result = SigninInterceptionResult::kAccepted;
         break;
       case signin::SIGNIN_CHOICE_CONTINUE:
-        DCHECK(!profile_creation_required_by_policy_ || show_link_data_option_);
+        CHECK(!profile_creation_required_by_policy_ || show_link_data_option_,
+              base::NotFatalUntil::M162);
         interception_result =
             SigninInterceptionResult::kAcceptedWithExistingProfile;
         break;
@@ -207,11 +210,12 @@ class ForcedEnterpriseSigninInterceptionHandle
         NOTREACHED();
     }
     DiceWebSigninInterceptorDelegate::RecordInterceptionResult(
-        bubble_parameters_, browser_->GetProfile(), interception_result);
+        bubble_parameters_, &profile_.get(), interception_result);
     std::move(callback_).Run(interception_result);
   }
 
   base::WeakPtr<BrowserWindowInterface> browser_;
+  const raw_ref<Profile> profile_;
   WebSigninInterceptor::Delegate::BubbleParameters bubble_parameters_;
   const bool profile_creation_required_by_policy_;
   const bool show_link_data_option_;
@@ -219,6 +223,61 @@ class ForcedEnterpriseSigninInterceptionHandle
   base::WeakPtrFactory<ForcedEnterpriseSigninInterceptionHandle>
       weak_ptr_factory_{this};
 };
+
+// LINT.IfChange(AccountPreviewDelayDurationVariant)
+std::string_view GetDelayDurationVariant(base::TimeDelta duration) {
+  static constexpr char kShortDelayHistogramVariant[] = ".ShortDelay";
+  static constexpr char kMediumDelayHistogramVariant[] = ".MediumDelay";
+  static constexpr char kLongDelayHistogramVariant[] = ".LongDelay";
+
+  if (duration < base::Milliseconds(300)) {
+    return kShortDelayHistogramVariant;
+  }
+  if (duration < base::Milliseconds(600)) {
+    return kMediumDelayHistogramVariant;
+  }
+  return kLongDelayHistogramVariant;
+}
+// LINT.ThenChange(//tools/metrics/histograms/metadata/signin/histograms.xml:AccountPreviewDelayDurationVariant)
+
+// Mirrors the subtitle resolution in `DiceWebSigninInterceptHandler` to check
+// whether `account_preview_preference` actually produces a personalized
+// subtitle for the interception bubble (as opposed to containing only data
+// types not used by the bubble), avoiding plumbing UI state back through the
+// interception delegate callbacks.
+bool IsInterceptBubblePersonalized(
+    const WebSigninInterceptor::Delegate::BubbleParameters& bubble_parameters) {
+  if (!bubble_parameters.account_preview_preference.has_value()) {
+    return false;
+  }
+
+  switch (bubble_parameters.interception_type) {
+    case WebSigninInterceptor::SigninInterceptionType::kChromeSignin:
+    case WebSigninInterceptor::SigninInterceptionType::
+        kChromeSigninNonIntercept: {
+      std::optional<std::string> subtitle =
+          signin::GetAccountPreviewPromoSubtitle(
+              *bubble_parameters.account_preview_preference);
+      return subtitle.has_value() && !subtitle->empty();
+    }
+    case WebSigninInterceptor::SigninInterceptionType::kMultiUser: {
+      std::optional<std::string> subtitle =
+          signin::GetAccountPreviewProfileSeparationSubtitle(
+              bubble_parameters.primary_account.GetGivenName().value_or(""),
+              bubble_parameters.intercepted_account.GetEmail(),
+              *bubble_parameters.account_preview_preference);
+      return subtitle.has_value() && !subtitle->empty();
+    }
+    case WebSigninInterceptor::SigninInterceptionType::kProfileSwitch:
+    case WebSigninInterceptor::SigninInterceptionType::kEnterprise:
+    case WebSigninInterceptor::SigninInterceptionType::kEnterpriseForced:
+    case WebSigninInterceptor::SigninInterceptionType::
+        kEnterpriseAcceptManagement:
+    case WebSigninInterceptor::SigninInterceptionType::kProfileSwitchForced:
+    case WebSigninInterceptor::SigninInterceptionType::kEnterpriseOIDC:
+      NOTREACHED();
+  }
+}
 
 }  // namespace
 
@@ -234,7 +293,25 @@ bool DiceWebSigninInterceptorDelegate::IsSigninInterceptionSupported(
   if (!browser) {
     return false;
   }
-  return IsSigninInterceptionSupportedInternal(*browser);
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
+  // WebUI Browser does not use BrowserView.
+  // TODO(webium): make a framework-agnostic way to get the avatar button.
+  if (!browser_view) {
+    return false;
+  }
+  // Some browsers, such as web apps, don't have an avatar toolbar button to
+  // anchor the bubble. Even if a web app has an avatar toolbar button, we
+  // still don't support signin interception.
+  if (web_app::AppBrowserController::IsWebApp(browser)) {
+    return false;
+  }
+  if (browser_view->toolbar_button_provider()
+          ->GetAvatarToolbarButtonInterface() != nullptr) {
+    return true;
+  }
+  return browser->GetType() == BrowserWindowInterface::Type::TYPE_POPUP &&
+         base::FeatureList::IsEnabled(
+             switches::kSupportSigninInterceptionInPopups);
 }
 
 std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle>
@@ -255,30 +332,30 @@ DiceWebSigninInterceptorDelegate::ShowSigninInterceptionBubble(
     return nullptr;
   }
 
-  if (bubble_parameters.interception_type ==
-          WebSigninInterceptor::SigninInterceptionType::kEnterpriseForced ||
-      bubble_parameters.interception_type ==
-          WebSigninInterceptor::SigninInterceptionType::
-              kEnterpriseAcceptManagement) {
-    BrowserWindowInterface* browser =
-        GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
-            web_contents);
-    if (!browser) {
-      std::move(callback).Run(SigninInterceptionResult::kNotDisplayed);
-      return nullptr;
-    }
-    return std::make_unique<ForcedEnterpriseSigninInterceptionHandle>(
-        browser, bubble_parameters, std::move(callback));
-  }
-
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
   if (!browser) {
     std::move(callback).Run(SigninInterceptionResult::kNotDisplayed);
     return nullptr;
   }
-  return ShowSigninInterceptionBubbleInternal(browser, bubble_parameters,
-                                              std::move(callback));
+
+  if (bubble_parameters.interception_type ==
+          WebSigninInterceptor::SigninInterceptionType::kEnterpriseForced ||
+      bubble_parameters.interception_type ==
+          WebSigninInterceptor::SigninInterceptionType::
+              kEnterpriseAcceptManagement) {
+    return std::make_unique<ForcedEnterpriseSigninInterceptionHandle>(
+        browser, bubble_parameters, std::move(callback));
+  }
+
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
+  if (!browser_view || !browser_view->toolbar_button_provider()
+                            ->GetAvatarToolbarButtonInterface()) {
+    std::move(callback).Run(SigninInterceptionResult::kNotDisplayed);
+    return nullptr;
+  }
+  return SigninViewController::From(browser)->ShowSigninInterceptionBubble(
+      bubble_parameters, std::move(callback));
 }
 
 std::unique_ptr<ScopedWebSigninInterceptionBubbleHandle>
@@ -301,8 +378,7 @@ void DiceWebSigninInterceptorDelegate::ShowFirstRunExperienceInNewProfile(
     BrowserWindowInterface* browser,
     const CoreAccountId& account_id,
     WebSigninInterceptor::SigninInterceptionType interception_type) {
-  browser->GetFeatures()
-      .signin_view_controller()
+  SigninViewController::From(browser)
       ->ShowModalInterceptFirstRunExperienceDialog(
           account_id,
           interception_type ==
@@ -323,9 +399,7 @@ void DiceWebSigninInterceptorDelegate::ShowSigninError(
     return;
   }
 
-  LoginUIServiceFactory::GetForProfile(
-      Profile::FromBrowserContext(web_contents->GetBrowserContext()))
-      ->DisplayLoginResult(browser->GetFeatures(), error);
+  SigninViewController::From(browser)->ShowModalSigninErrorDialog(error);
 }
 
 // static
@@ -343,6 +417,9 @@ std::string_view DiceWebSigninInterceptorDelegate::GetHistogramSuffix(
       return ".Switch";
     case WebSigninInterceptor::SigninInterceptionType::kChromeSignin:
       return ".ChromeSignin";
+    case WebSigninInterceptor::SigninInterceptionType::
+        kChromeSigninNonIntercept:
+      return ".ChromeSigninNonIntercept";
     case WebSigninInterceptor::SigninInterceptionType::kEnterpriseForced:
       return ".EnterpriseForced";
     case WebSigninInterceptor::SigninInterceptionType::kEnterpriseOIDC:
@@ -363,8 +440,7 @@ void DiceWebSigninInterceptorDelegate::RecordInterceptionResult(
 
   // Record histogram for users with ClearOnExit set for the Chrome Signin
   // Bubble.
-  if (bubble_parameters.interception_type ==
-          WebSigninInterceptor::SigninInterceptionType::kChromeSignin &&
+  if (bubble_parameters.IsChromeSignin() &&
       ChromeSigninClientFactory::GetForProfile(profile)
           ->AreSigninCookiesDeletedOnExit()) {
     base::UmaHistogramEnumeration(
@@ -386,18 +462,27 @@ void DiceWebSigninInterceptorDelegate::RecordInterceptionResult(
         base::StrCat({histogram_base_name, ".SigninPending"}), result);
   }
 
-  // For Enterprise, slice per enterprise status for each account.
-  if (bubble_parameters.interception_type ==
-      WebSigninInterceptor::SigninInterceptionType::kEnterprise) {
-    if (bubble_parameters.intercepted_account.IsManaged() ==
-        signin::Tribool::kTrue) {
+  // Record histograms sliced by account preview fetch delay and bubble
+  // personalization. The unsuffixed base histogram (`histogram_base_name`) is
+  // already recorded at the start of this function.
+  if (bubble_parameters.IsChromeSignin() ||
+      bubble_parameters.interception_type ==
+          WebSigninInterceptor::SigninInterceptionType::kMultiUser) {
+    std::string_view personalized_variant =
+        IsInterceptBubblePersonalized(bubble_parameters) ? ".Personalized"
+                                                         : ".NotPersonalized";
+    base::UmaHistogramEnumeration(
+        base::StrCat({histogram_base_name, personalized_variant}), result);
+
+    if (bubble_parameters.account_preview_fetch_duration.has_value()) {
+      std::string_view delay_variant = GetDelayDurationVariant(
+          *bubble_parameters.account_preview_fetch_duration);
       base::UmaHistogramEnumeration(
-          base::StrCat({histogram_base_name, ".NewIsEnterprise"}), result);
-    }
-    if (bubble_parameters.primary_account.IsManaged() ==
-        signin::Tribool::kTrue) {
+          base::StrCat({histogram_base_name, delay_variant}), result);
       base::UmaHistogramEnumeration(
-          base::StrCat({histogram_base_name, ".PrimaryIsEnterprise"}), result);
+          base::StrCat(
+              {histogram_base_name, delay_variant, personalized_variant}),
+          result);
     }
   }
 }

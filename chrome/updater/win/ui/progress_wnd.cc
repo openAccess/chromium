@@ -7,14 +7,17 @@
 #include <windows.h>
 
 #include <commctrl.h>
+#include <stddef.h>
 
 #include <algorithm>
 #include <array>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <typeinfo>
 #include <utility>
 
+#include "base/check.h"
 #include "base/check_op.h"
 #include "base/containers/span.h"
 #include "base/debug/dump_without_crashing.h"
@@ -28,6 +31,7 @@
 #include "base/time/time.h"
 #include "base/version.h"
 #include "base/win/current_module.h"
+#include "base/win/scoped_gdi_object.h"
 #include "base/win/scoped_hdc.h"
 #include "base/win/scoped_localalloc.h"
 #include "base/win/scoped_select_object.h"
@@ -146,9 +150,16 @@ void ProgressWnd::SetEventSink(ProgressWndEvents* events) {
 
 LRESULT ProgressWnd::OnSetAppLogo(UINT, WPARAM wparam, LPARAM lparam) {
   // Extract the `HBITMAP` handles passed in `WPARAM` (light) and `LPARAM`
-  // (dark).
-  SetAppLogo(reinterpret_cast<HBITMAP>(wparam),
-             reinterpret_cast<HBITMAP>(lparam));
+  // (dark) and transfer ownership to ScopedGDIObject. If both parameters refer
+  // to the same handle, set `dark` to null so two ScopedGDIObjects are never
+  // created for the same physical handle.
+  HBITMAP light = reinterpret_cast<HBITMAP>(wparam);
+  HBITMAP dark = reinterpret_cast<HBITMAP>(lparam);
+  if (light && light == dark) {
+    dark = nullptr;
+  }
+  SetAppLogo(base::win::ScopedGDIObject<HBITMAP>(light),
+             base::win::ScopedGDIObject<HBITMAP>(dark));
   return 0;
 }
 
@@ -166,8 +177,8 @@ RECT ProgressWnd::GetControlClientRect(HWND control) const {
   return rect;
 }
 
-HBITMAP ProgressWnd::GetCurrentAppLogoBitmap() const {
-  if (is_dark_mode()) {
+HBITMAP ProgressWnd::SelectLogoForTheme(bool is_dark) const {
+  if (is_dark) {
     return dark_app_logo_bmp_.is_valid() ? dark_app_logo_bmp_.get()
                                          : light_app_logo_bmp_.get();
   }
@@ -175,33 +186,67 @@ HBITMAP ProgressWnd::GetCurrentAppLogoBitmap() const {
                                         : dark_app_logo_bmp_.get();
 }
 
-void ProgressWnd::SetAppLogo(HBITMAP light_bitmap, HBITMAP dark_bitmap) {
+HBITMAP ProgressWnd::GetCurrentAppLogoBitmap() const {
+  return SelectLogoForTheme(is_dark_mode());
+}
+
+void ProgressWnd::SetAppLogo(base::win::ScopedGDIObject<HBITMAP> light_bitmap,
+                             base::win::ScopedGDIObject<HBITMAP> dark_bitmap) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (light_app_logo_bmp_.get() != light_bitmap) {
-    light_app_logo_bmp_.reset(light_bitmap);
-  }
-  if (dark_app_logo_bmp_.get() != dark_bitmap) {
-    dark_app_logo_bmp_.reset(dark_bitmap);
-  }
+  CHECK(!light_bitmap.is_valid() || light_bitmap.get() != dark_bitmap.get());
+
+  // Take ownership of existing bitmaps into temporaries to avoid self-reset
+  // abort() in ScopedGeneric or cross-aliasing use-after-free.
+  base::win::ScopedGDIObject<HBITMAP> old_light =
+      std::move(light_app_logo_bmp_);
+  base::win::ScopedGDIObject<HBITMAP> old_dark =
+      std::move(dark_app_logo_bmp_);
+
+  // If the caller passed a handle already held by `old_light` or `old_dark`,
+  // release the old holder so the incoming ScopedGDIObject retains unique
+  // ownership without double deletion when `old_light`/`old_dark` destructs.
+  // The `is_valid()` guard keeps null handles from matching each other.
+  auto release_if_aliased = [&](base::win::ScopedGDIObject<HBITMAP>& old) {
+    if (old.is_valid() && (old.get() == light_bitmap.get() ||
+                           old.get() == dark_bitmap.get())) {
+      std::ignore = old.release();
+    }
+  };
+  release_if_aliased(old_light);
+  release_if_aliased(old_dark);
+
+  ResetWindowIconCache();
+
+  light_app_logo_bmp_ = std::move(light_bitmap);
+  dark_app_logo_bmp_ = std::move(dark_bitmap);
+
   UpdateAppLogo();
 }
 
-void ProgressWnd::UpdateAppLogo() {
+void ProgressWnd::UpdateAppLogo(UINT target_dpi) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!IsWindow()) {
     return;
   }
 
+  const UINT effective_dpi = target_dpi ? target_dpi : GetWindowDpi(hwnd());
+
   const HWND app_bitmap_ctl = ::GetDlgItem(hwnd(), IDC_APP_BITMAP);
   if (!app_bitmap_ctl) {
+    UpdateWindowIcon(/*big_bitmap=*/nullptr, /*small_bitmap=*/nullptr,
+                     effective_dpi);
     return;
   }
 
-  auto clear_logo = [this, app_bitmap_ctl]() {
+  // Clears the logo image control and resets the window icon back to the
+  // unbadged default application icon (`IDI_APP`).
+  auto clear_logo = [this, app_bitmap_ctl, effective_dpi]() {
     const RECT ctl_rect = GetControlClientRect(app_bitmap_ctl);
     ::SendMessage(app_bitmap_ctl, STM_SETIMAGE, IMAGE_BITMAP, 0);
     scaled_app_logo_bmp_.reset();
     ::InvalidateRect(hwnd(), &ctl_rect, TRUE);
+    UpdateWindowIcon(/*big_bitmap=*/nullptr, /*small_bitmap=*/nullptr,
+                     effective_dpi);
   };
 
   HBITMAP current_logo = GetCurrentAppLogoBitmap();
@@ -219,12 +264,11 @@ void ProgressWnd::UpdateAppLogo() {
   }
 
   // Scale the bitmap dimensions based on the window's effective DPI.
-  const int dpi = ::GetDpiForWindow(hwnd());
-  const int effective_dpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+  const int dpi_val = effective_dpi ? effective_dpi : USER_DEFAULT_SCREEN_DPI;
   const int width_pixels =
-      ::MulDiv(bm.bmWidth, effective_dpi, USER_DEFAULT_SCREEN_DPI);
+      ::MulDiv(bm.bmWidth, dpi_val, USER_DEFAULT_SCREEN_DPI);
   const int height_pixels =
-      ::MulDiv(bm.bmHeight, effective_dpi, USER_DEFAULT_SCREEN_DPI);
+      ::MulDiv(bm.bmHeight, dpi_val, USER_DEFAULT_SCREEN_DPI);
 
   if (width_pixels <= 0 || height_pixels <= 0) {
     VLOG(1) << __func__ << " Invalid logo dimensions: " << width_pixels << "x"
@@ -233,13 +277,29 @@ void ProgressWnd::UpdateAppLogo() {
     return;
   }
 
-  HBITMAP scaled_bitmap = reinterpret_cast<HBITMAP>(
-      ::CopyImage(current_logo, IMAGE_BITMAP, width_pixels, height_pixels, 0));
-  if (!scaled_bitmap) {
+  base::win::ScopedGDIObject<HBITMAP> scaled_bitmap(reinterpret_cast<HBITMAP>(
+      ::CopyImage(current_logo, IMAGE_BITMAP, width_pixels, height_pixels, 0)));
+  if (!scaled_bitmap.is_valid()) {
     VLOG(1) << __func__ << " ::CopyImage failed to scale logo";
     clear_logo();
     return;
   }
+
+  // Support Windows hybrid theme mode ("Custom" mode in Windows Settings):
+  // ICON_BIG is used by the Windows taskbar and Alt-Tab switcher, which follows
+  // the Windows system theme (`SystemUsesLightTheme`).
+  // ICON_SMALL is used by the window titlebar and top-left system menu, which
+  // follows the application theme (`AppsUseLightTheme`).
+  // When the user sets the app theme to Dark but the taskbar to Light (or vice
+  // versa), using the corresponding theme logo for each target prevents dark
+  // logos on light taskbars or vice versa.
+  const bool is_titlebar_dark = is_dark_mode();
+  const bool is_taskbar_dark = is_system_dark_mode();
+
+  const HBITMAP small_logo = SelectLogoForTheme(is_titlebar_dark);
+  const HBITMAP big_logo = SelectLogoForTheme(is_taskbar_dark);
+
+  UpdateWindowIcon(big_logo, small_logo, effective_dpi, IDI_INSTALLER_BADGE);
 
   RECT client_rect = {};
   ::GetClientRect(hwnd(), &client_rect);
@@ -272,8 +332,8 @@ void ProgressWnd::UpdateAppLogo() {
 
   // Pass the scaled `HBITMAP` handle as `LPARAM` to `STM_SETIMAGE`.
   ::SendMessage(app_bitmap_ctl, STM_SETIMAGE, IMAGE_BITMAP,
-                reinterpret_cast<LPARAM>(scaled_bitmap));
-  scaled_app_logo_bmp_.reset(scaled_bitmap);
+                reinterpret_cast<LPARAM>(scaled_bitmap.get()));
+  scaled_app_logo_bmp_ = std::move(scaled_bitmap);
 }
 
 LRESULT ProgressWnd::OnInitDialog(UINT, WPARAM, LPARAM) {
@@ -284,13 +344,12 @@ LRESULT ProgressWnd::OnInitDialog(UINT, WPARAM, LPARAM) {
   const HWND app_bitmap_ctl = ::GetDlgItem(hwnd(), IDC_APP_BITMAP);
   if (app_bitmap_ctl) {
     const RECT ctl_rect = GetControlClientRect(app_bitmap_ctl);
-    const int dpi = ::GetDpiForWindow(hwnd());
-    const int effective_dpi = dpi ? dpi : USER_DEFAULT_SCREEN_DPI;
+    const UINT dpi = GetWindowDpi(hwnd());
     // Record the design-time baseline bottom coordinate in 96-DPI space if not
     // already captured.
     if (initial_app_logo_base_bottom_y_ < 0) {
       initial_app_logo_base_bottom_y_ =
-          ::MulDiv(ctl_rect.bottom, USER_DEFAULT_SCREEN_DPI, effective_dpi);
+          ::MulDiv(ctl_rect.bottom, USER_DEFAULT_SCREEN_DPI, dpi);
     }
   }
 
@@ -382,13 +441,13 @@ void ProgressWnd::UpdateWindowRgn() {
 }
 
 int ProgressWnd::GetScaledCornerRadius() const {
-  return ::MulDiv(11, ::GetDpiForWindow(hwnd()), USER_DEFAULT_SCREEN_DPI);
+  return ::MulDiv(11, GetWindowDpi(hwnd()), USER_DEFAULT_SCREEN_DPI);
 }
 
-void ProgressWnd::ApplyDpiScaling(int dpi) {
+void ProgressWnd::ApplyDpiScaling(UINT dpi) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   OmahaWnd::ApplyDpiScaling(dpi);
-  UpdateAppLogo();
+  UpdateAppLogo(dpi);
 }
 
 LRESULT ProgressWnd::OnEraseBkgnd(UINT, WPARAM wparam, LPARAM) {
@@ -455,8 +514,8 @@ LRESULT ProgressWnd::OnEraseBkgnd(UINT, WPARAM wparam, LPARAM) {
   // Draw a 1px border at 30% opacity (or 100% system theme color in High
   // Contrast Mode) using RAII objects.
   const int scaled_radius = GetScaledCornerRadius();
-  const int scaled_border = std::max(
-      1, ::MulDiv(1, ::GetDpiForWindow(hwnd()), USER_DEFAULT_SCREEN_DPI));
+  const int scaled_border =
+      std::max(1, ::MulDiv(1, GetWindowDpi(hwnd()), USER_DEFAULT_SCREEN_DPI));
   base::win::ScopedCreateDC hdc_blend(::CreateCompatibleDC(hdc));
   if (hdc_blend.is_valid()) {
     base::win::ScopedGDIObject<HBITMAP> hbmp_blend(
@@ -519,43 +578,78 @@ HBITMAP ProgressWnd::GetBackgroundBitmap(bool is_dark_mode) {
   }
 }
 
-LRESULT ProgressWnd::OnSettingChange(UINT, WPARAM, LPARAM lparam) {
-  SetMsgHandled(FALSE);
-  if (!lparam || std::wstring_view(reinterpret_cast<LPCWSTR>(lparam)) ==
-                     L"ImmersiveColorSet") {
-    // Refresh theme state early so `UpdateAppLogo()` (via `is_dark_mode()`)
-    // evaluates the new theme before parent and descendant layouts repaint in
-    // `OmahaWnd`. Calling `UpdateThemeState()` here is safe and idempotent,
-    // even though `OmahaWnd` will invoke it again when the message bubbles up.
-    UpdateThemeState();
-    light_bg_bmp_.reset();
-    dark_bg_bmp_.reset();
-    UpdateAppLogo();
+HBITMAP ProgressWnd::GetErrorIllustrationBitmap(bool is_dark_mode) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (is_dark_mode) {
+    if (!dark_error_illustration_bmp_.is_valid()) {
+      dark_error_illustration_bmp_.reset(static_cast<HBITMAP>(::LoadImage(
+          CURRENT_MODULE(), MAKEINTRESOURCE(IDB_ERROR_ILLUSTRATION_DARK),
+          IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION)));
+    }
+    return dark_error_illustration_bmp_.get();
   }
-  return 0;
+
+  if (!light_error_illustration_bmp_.is_valid()) {
+    light_error_illustration_bmp_.reset(static_cast<HBITMAP>(
+        ::LoadImage(CURRENT_MODULE(), MAKEINTRESOURCE(IDB_ERROR_ILLUSTRATION),
+                    IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION)));
+  }
+  return light_error_illustration_bmp_.get();
 }
 
-LRESULT ProgressWnd::OnThemeChanged(UINT, WPARAM, LPARAM) {
-  SetMsgHandled(FALSE);
-  // Refresh theme state early so `UpdateAppLogo()` (via `is_dark_mode()`)
-  // evaluates the new theme before parent and descendant layouts repaint in
-  // `OmahaWnd`. Calling `UpdateThemeState()` here is safe and idempotent,
-  // even though `OmahaWnd` will invoke it again when the message bubbles up.
-  UpdateThemeState();
+void ProgressWnd::UpdateErrorIllustration() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!IsWindow()) {
+    return;
+  }
+
+  const HWND error_ctl = ::GetDlgItem(hwnd(), IDC_ERROR_ILLUSTRATION);
+  if (!error_ctl || !(::GetWindowLongPtr(error_ctl, GWL_STYLE) & WS_VISIBLE)) {
+    return;
+  }
+
+  HBITMAP current_illustration = GetErrorIllustrationBitmap(is_dark_mode());
+  if (!current_illustration) {
+    return;
+  }
+
+  if (reinterpret_cast<HBITMAP>(::SendMessage(
+          error_ctl, STM_GETIMAGE, IMAGE_BITMAP, 0)) == current_illustration) {
+    return;
+  }
+
+  ::SendMessage(error_ctl, STM_SETIMAGE, IMAGE_BITMAP,
+                reinterpret_cast<LPARAM>(current_illustration));
+  const RECT ctl_rect = GetControlClientRect(error_ctl);
+  ::InvalidateRect(hwnd(), &ctl_rect, TRUE);
+  ::InvalidateRect(error_ctl, nullptr, TRUE);
+}
+
+void ProgressWnd::OnThemeStateChanged() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Theme-derived resources only. Fonts and system metrics are rebuilt from
+  // `ApplyDpiScaling()` on WM_DPICHANGED, not here.
+  ++theme_refresh_count_for_testing_;
   light_bg_bmp_.reset();
   dark_bg_bmp_.reset();
+  if (HWND error_ctl = ::GetDlgItem(hwnd(), IDC_ERROR_ILLUSTRATION)) {
+    ::SendMessage(error_ctl, STM_SETIMAGE, IMAGE_BITMAP, 0);
+  }
+  light_error_illustration_bmp_.reset();
+  dark_error_illustration_bmp_.reset();
+  // Dynamic theme change notifications (e.g. WM_SETTINGCHANGE) are broadcast
+  // after registry keys (e.g. `SystemUsesLightTheme`) have been synchronously
+  // committed by Windows Settings. Re-evaluating the logo updates taskbar and
+  // titlebar icons to match the new theme.
   UpdateAppLogo();
-  return 0;
+  UpdateErrorIllustration();
 }
 
 HBRUSH ProgressWnd::OnCtlColorStatic(HDC dc, HWND) {
   if (is_high_contrast()) {
     ::SetTextColor(dc, ::GetSysColor(COLOR_WINDOWTEXT));
     ::SetBkColor(dc, ::GetSysColor(COLOR_WINDOW));
-    ::SetBkMode(dc, TRANSPARENT);
-    return ::GetSysColorBrush(COLOR_WINDOW);
-  }
-  if (is_dark_mode()) {
+  } else if (is_dark_mode()) {
     ::SetTextColor(dc, kTextColorDark);
   }
   ::SetBkMode(dc, TRANSPARENT);
@@ -827,46 +921,6 @@ void ProgressWnd::DeterminePostInstallUrls(const ObserverCompletionInfo& info) {
     }
   }
   CHECK(!post_install_urls_.empty());
-}
-
-CompletionCodes ProgressWnd::GetBundleCompletionCode(
-    const ObserverCompletionInfo& info) {
-  if (info.completion_code == CompletionCodes::COMPLETION_CODE_ERROR ||
-      info.completion_code ==
-          CompletionCodes::COMPLETION_CODE_INSTALL_FINISHED_BEFORE_CANCEL) {
-    return info.completion_code;
-  }
-
-  CHECK_EQ(info.completion_code, CompletionCodes::COMPLETION_CODE_SUCCESS);
-
-  return info.apps_info.empty()
-             ? kCompletionCodesActionPriority[0]
-             : std::ranges::max_element(
-                   info.apps_info,
-                   [](const auto& app_info1, const auto& app_info2) {
-                     return GetPriority(app_info1.completion_code) <
-                            GetPriority(app_info2.completion_code);
-                   })
-                   ->completion_code;
-}
-
-std::wstring ProgressWnd::GetBundleCompletionErrorMessages(
-    const ObserverCompletionInfo& info) {
-  // Combine non-empty app installation completion messages. App-specific
-  // installation error message usually gives more details than the generic one.
-  std::vector<std::u16string> completion_texts;
-  for (const AppCompletionInfo& app_info : info.apps_info) {
-    if (!app_info.completion_message.empty()) {
-      completion_texts.push_back(app_info.completion_message);
-    }
-  }
-
-  // Or fallback to the default bundle failure message if nothing is available.
-  if (completion_texts.empty() && !info.completion_text.empty()) {
-    completion_texts.push_back(info.completion_text);
-  }
-
-  return base::UTF16ToWide(base::JoinString(completion_texts, u"\n"));
 }
 
 void ProgressWnd::OnComplete(const ObserverCompletionInfo& observer_info) {

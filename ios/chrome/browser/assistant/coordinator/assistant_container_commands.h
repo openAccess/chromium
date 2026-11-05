@@ -7,6 +7,7 @@
 
 #import <UIKit/UIKit.h>
 
+#import <optional>
 #import <vector>
 
 #import "base/ios/block_types.h"
@@ -33,6 +34,11 @@ enum class AssistantContainerDetent : NSInteger;
 - (void)setAssistantContainerDetents:
     (std::vector<AssistantContainerDetent>)detents;
 
+// Sets the largest detent that doesn't dim the view underneath the Assistant
+// Container.
+- (void)setAssistantContainerLargestUndimmedDetent:
+    (AssistantContainerDetent)detent;
+
 // Animates the container to a specific detent using default duration and curve.
 // If the detent is not found, acts as a no-op.
 - (void)animateAssistantContainerToDetent:(AssistantContainerDetent)detent;
@@ -45,6 +51,14 @@ enum class AssistantContainerDetent : NSInteger;
 
 // Sets the minimized detent height of the Assistant Container.
 - (void)setAssistantContainerMinimizedDetentHeight:(NSInteger)height;
+
+// Sets the medium detent height of the Assistant Container.
+// If std::nullopt, the default medium detent calculation is used.
+- (void)setAssistantContainerMediumDetentHeight:
+    (std::optional<NSInteger>)height;
+
+// Sets the medium detent height percentage of the Assistant Container.
+- (void)setAssistantContainerMediumDetentPercentage:(NSInteger)percentage;
 
 // Sets whether the grabber on the Assistant Container is hidden with optional
 // animation.

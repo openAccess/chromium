@@ -12,11 +12,12 @@ import static androidx.test.espresso.matcher.ViewMatchers.withParent;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.CoreMatchers.allOf;
+import static org.hamcrest.CoreMatchers.anyOf;
 import static org.mockito.Mockito.when;
 
+import static org.chromium.chrome.browser.settings.SettingsSearchTestUtils.assertHighlighted;
 import static org.chromium.chrome.browser.settings.SettingsSearchTestUtils.assertNoSearchResultsFound;
 import static org.chromium.chrome.browser.settings.SettingsSearchTestUtils.clickSearchResult;
-import static org.chromium.chrome.browser.settings.SettingsSearchTestUtils.highlighted;
 import static org.chromium.chrome.browser.settings.SettingsSearchTestUtils.typeSearchQuery;
 
 import android.view.View;
@@ -32,6 +33,7 @@ import org.mockito.Mockito;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
@@ -52,14 +54,11 @@ import org.chromium.chrome.browser.settings.SettingsActivityTestRule;
 import org.chromium.chrome.browser.signin.services.SigninPreferencesManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.user_prefs.UserPrefs;
+import org.chromium.ui.base.DeviceFormFactor;
 
 /** Tests for searching autofill settings. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@EnableFeatures({
-    ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID,
-    ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA
-})
-@DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
+@EnableFeatures({ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA})
 @Batch(Batch.PER_CLASS)
 public class AutofillSettingsSearchTest {
 
@@ -95,28 +94,6 @@ public class AutofillSettingsSearchTest {
 
     @Test
     @SmallTest
-    public void testSearchPasswordManager() {
-        searchSettings("password");
-
-        clickSearchResult(R.string.password_manager_settings_title);
-
-        assertAutofillAndPasswordsOpened();
-        onView(highlighted(R.string.password_manager_settings_title)).check(matches(isDisplayed()));
-    }
-
-    @Test
-    @SmallTest
-    public void testSearchPayment() {
-        searchSettings("payment");
-
-        clickSearchResult(R.string.autofill_payments_title);
-
-        assertAutofillAndPasswordsOpened();
-        onView(highlighted(R.string.autofill_payments_title)).check(matches(isDisplayed()));
-    }
-
-    @Test
-    @SmallTest
     public void testSearchSaveAndFillPaymentMethods() {
         searchSettings("payment");
 
@@ -124,8 +101,7 @@ public class AutofillSettingsSearchTest {
 
         onView(actionBarTitle(withText(R.string.autofill_payments_title)))
                 .check(matches(isDisplayed()));
-        onView(highlighted(R.string.autofill_enable_credit_cards_toggle_label))
-                .check(matches(isDisplayed()));
+        assertHighlighted(R.string.autofill_enable_credit_cards_toggle_label);
     }
 
     @Test
@@ -143,8 +119,7 @@ public class AutofillSettingsSearchTest {
 
         clickSearchResult(R.string.autofill_settings_page_bulk_remove_cvc_label);
 
-        onView(highlighted(R.string.autofill_settings_page_bulk_remove_cvc_label))
-                .check(matches(isDisplayed()));
+        assertHighlighted(R.string.autofill_settings_page_bulk_remove_cvc_label);
     }
 
     @Test
@@ -153,17 +128,6 @@ public class AutofillSettingsSearchTest {
         searchSettings("delete saved security codes");
 
         assertNoSearchResultsFound();
-    }
-
-    @Test
-    @SmallTest
-    public void testSearchContact() {
-        searchSettings("contact");
-
-        clickSearchResult(R.string.autofill_contact_info_title);
-
-        assertAutofillAndPasswordsOpened();
-        onView(highlighted(R.string.autofill_contact_info_title)).check(matches(isDisplayed()));
     }
 
     @Test
@@ -182,7 +146,7 @@ public class AutofillSettingsSearchTest {
 
         clickSearchResult(R.string.autofill_bnpl_settings_label);
 
-        onView(highlighted(R.string.autofill_bnpl_settings_label)).check(matches(isDisplayed()));
+        assertHighlighted(R.string.autofill_bnpl_settings_label);
     }
 
     @Test
@@ -220,19 +184,7 @@ public class AutofillSettingsSearchTest {
 
         onView(actionBarTitle(withText(R.string.autofill_contact_info_title)))
                 .check(matches(isDisplayed()));
-        onView(highlighted(R.string.autofill_enable_profiles_toggle_label))
-                .check(matches(isDisplayed()));
-    }
-
-    @Test
-    @SmallTest
-    public void testSearchTravel() {
-        searchSettings("travel");
-
-        clickSearchResult(R.string.autofill_travel_title);
-
-        assertAutofillAndPasswordsOpened();
-        onView(highlighted(R.string.autofill_travel_title)).check(matches(isDisplayed()));
+        assertHighlighted(R.string.autofill_enable_profiles_toggle_label);
     }
 
     @Test
@@ -244,19 +196,7 @@ public class AutofillSettingsSearchTest {
 
         onView(actionBarTitle(withText(R.string.autofill_travel_title)))
                 .check(matches(isDisplayed()));
-        onView(highlighted(R.string.autofill_travel_opt_in_toggle_label))
-                .check(matches(isDisplayed()));
-    }
-
-    @Test
-    @SmallTest
-    public void testSearchIdentity() {
-        searchSettings("identity");
-
-        clickSearchResult(R.string.autofill_identity_docs_title);
-
-        assertAutofillAndPasswordsOpened();
-        onView(highlighted(R.string.autofill_identity_docs_title)).check(matches(isDisplayed()));
+        assertHighlighted(R.string.autofill_travel_opt_in_toggle_label);
     }
 
     @Test
@@ -268,32 +208,7 @@ public class AutofillSettingsSearchTest {
 
         onView(actionBarTitle(withText(R.string.autofill_identity_docs_title)))
                 .check(matches(isDisplayed()));
-        onView(highlighted(R.string.autofill_identity_docs_opt_in_toggle_label))
-                .check(matches(isDisplayed()));
-    }
-
-    @Test
-    @SmallTest
-    public void testSearchAutofillSettings() {
-        searchSettings("Autofill settings");
-
-        clickSearchResult(R.string.autofill_settings_title);
-
-        assertAutofillAndPasswordsOpened();
-        onView(highlighted(R.string.autofill_settings_title)).check(matches(isDisplayed()));
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures(ChromeFeatureList.AUTOFILL_AI_WALLET_SHOPPING)
-    public void testSearchShopping_signInPromoNotDismissed() {
-        signInPromoDismissed(false);
-        searchSettings("shopping");
-
-        clickSearchResult(R.string.autofill_shopping_title);
-
-        assertAutofillAndPasswordsOpened();
-        onView(highlighted(R.string.autofill_shopping_title)).check(matches(isDisplayed()));
+        assertHighlighted(R.string.autofill_identity_docs_opt_in_toggle_label);
     }
 
     @Test
@@ -304,8 +219,7 @@ public class AutofillSettingsSearchTest {
 
         clickSearchResult(R.string.autofill_shopping_opt_in_toggle_label);
 
-        onView(highlighted(R.string.autofill_shopping_opt_in_toggle_label))
-                .check(matches(isDisplayed()));
+        assertHighlighted(R.string.autofill_shopping_opt_in_toggle_label);
     }
 
     @Test
@@ -318,11 +232,9 @@ public class AutofillSettingsSearchTest {
 
         searchSettings("find and fill");
 
-        clickSearchResult(
-                R.string.personal_context_autofill_settings_switch_title_android);
+        clickSearchResult(R.string.personal_context_autofill_settings_switch_title_android);
 
-        onView(highlighted(R.string.personal_context_autofill_settings_switch_title_android))
-                .check(matches(isDisplayed()));
+        assertHighlighted(R.string.personal_context_autofill_settings_switch_title_android);
     }
 
     @Test
@@ -332,73 +244,26 @@ public class AutofillSettingsSearchTest {
 
         clickSearchResult(R.string.autofill_settings_page_card_benefits_label);
 
-        onView(highlighted(R.string.autofill_settings_page_card_benefits_label))
-                .check(matches(isDisplayed()));
-    }
-
-    @Test
-    @SmallTest
-    @DisableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
-    public void testSearchAutofill_autofillAndPasswordsDisabled() {
-        var histogramWatcher =
-                HistogramWatcher.newSingleRecordWatcher(
-                        "Autofill.Settings.AutofillOptionsReferrerAndroid",
-                        AutofillOptionsReferrer.SETTINGS_SEARCH);
-        searchSettings("autofill");
-
-        clickSearchResult(R.string.autofill_settings_title);
-
-        onView(withText(R.string.settings_autofill_service_provider)).check(matches(isDisplayed()));
-        histogramWatcher.assertExpected();
-    }
-
-    @Test
-    @SmallTest
-    @DisableFeatures({
-        ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
-    })
-    public void testSearchAutofill_autofillAiAndAutofillAndPasswordsDisabled() {
-        var histogramWatcher =
-                HistogramWatcher.newSingleRecordWatcher(
-                        "Autofill.Settings.AutofillOptionsReferrerAndroid",
-                        AutofillOptionsReferrer.SETTINGS_SEARCH);
-        searchSettings("autofill");
-
-        clickSearchResult(R.string.autofill_options_title);
-
-        onView(withText(R.string.autofill_third_party_filling_default))
-                .check(matches(isDisplayed()));
-        histogramWatcher.assertExpected();
+        assertHighlighted(R.string.autofill_settings_page_card_benefits_label);
     }
 
     @Test
     @SmallTest
     @DisableFeatures(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA)
+    @DisableIf.Device(DeviceFormFactor.TABLET_OR_DESKTOP) // TODO(crbug.com/572883473): Re-enable.
     public void testSearchAutofill_autofillAiDisabled() {
         searchSettings("autofill");
 
         clickSearchResult(R.string.autofill_options_title);
 
         assertAutofillAndPasswordsOpened();
-        onView(highlighted(R.string.autofill_options_title)).check(matches(isDisplayed()));
-    }
-
-    @Test
-    @SmallTest
-    @EnableFeatures({
-        ChromeFeatureList.AUTOFILL_AI_ONLINE_MODEL_TOGGLE_NEW_TITLE,
-        ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID
-    })
-    public void testSearchAutofillSettingsChildren_yourSavedInfoSettingsPageEnabled() {
-        testSearchAutofillAiSwitch();
+        assertHighlighted(R.string.autofill_options_title);
     }
 
     @Test
     @SmallTest
     @EnableFeatures(ChromeFeatureList.AUTOFILL_AI_ONLINE_MODEL_TOGGLE_NEW_TITLE)
-    @DisableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
-    public void testSearchAutofillSettingsChildren_yourSavedInfoSettingsPageDisabled() {
+    public void testSearchAutofillSettingsChildren_yourSavedInfoSettingsPageEnabled() {
         testSearchAutofillAiSwitch();
     }
 
@@ -413,8 +278,7 @@ public class AutofillSettingsSearchTest {
 
         onView(actionBarTitle(withText(R.string.autofill_settings_title)))
                 .check(matches(isDisplayed()));
-        onView(highlighted(R.string.settings_autofill_ai_page_title_v2))
-                .check(matches(isDisplayed()));
+        assertHighlighted(R.string.settings_autofill_ai_page_title_v2);
         histogramWatcher.assertExpected();
     }
 
@@ -431,7 +295,12 @@ public class AutofillSettingsSearchTest {
     }
 
     private static Matcher<View> actionBarTitle(Matcher<View> matcher) {
-        return allOf(matcher, withParent(withId(R.id.action_bar)));
+        return allOf(
+                matcher,
+                anyOf(
+                        withParent(withId(R.id.action_bar)),
+                        withParent(withId(R.id.settings_title_in_detailed_pane))),
+                isDisplayed());
     }
 
     private static void signInPromoDismissed(boolean value) {

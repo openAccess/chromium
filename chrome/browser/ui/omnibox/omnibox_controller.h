@@ -8,9 +8,10 @@
 #include <memory>
 #include <optional>
 
+#include "base/callback_list.h"
 #include "base/compiler_specific.h"
 #include "base/functional/callback.h"
-#include "base/memory/advanced_memory_safety_checks.h"
+#include "base/memory/sanitized_object.h"
 #include "base/time/time.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_popup_state_manager.h"
@@ -25,7 +26,7 @@ class OmniboxView;
 // omnibox, including `AutocompleteController` and `OmniboxEditModel`.
 class OmniboxController : public AutocompleteController::Observer {
   // TODO(crbug.com/392015004): Remove this macro once it gets fixed.
-  ADVANCED_MEMORY_SAFETY_CHECKS();
+  SANITIZED_OBJECT();
 
  public:
   explicit OmniboxController(
@@ -111,6 +112,11 @@ class OmniboxController : public AutocompleteController::Observer {
                                const GURL& icon_url,
                                SkBitmap bitmap);
 
+  // Tells the client when the popup starts or stops showing suggestions or AI
+  // Mode. The Full popup stays open while the omnibox has focus, so it only
+  // counts as visible while it has suggestions.
+  void UpdatePopupVisibility();
+
   const std::unique_ptr<OmniboxClient> client_;
 
   std::unique_ptr<AutocompleteController> autocomplete_controller_;
@@ -128,6 +134,11 @@ class OmniboxController : public AutocompleteController::Observer {
   // Callback to validate popup state is in sync with widget visibility.
   base::RepeatingCallback<void(OmniboxPopupState)>
       popup_state_validation_callback_;
+
+  base::CallbackListSubscription popup_state_subscription_;
+
+  // The last visibility sent to `OmniboxClient::OnPopupVisibilityChanged()`.
+  bool last_reported_popup_visibility_ = false;
 
   base::WeakPtrFactory<OmniboxController> weak_ptr_factory_{this};
 };

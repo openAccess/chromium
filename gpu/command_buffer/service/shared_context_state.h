@@ -15,7 +15,9 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
+#include "base/memory_coordinator/memory_limit.h"
 #include "base/observer_list.h"
+#include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/trace_event/memory_dump_provider.h"
@@ -52,10 +54,6 @@ class GLShareGroup;
 class GLSurface;
 }  // namespace gl
 
-namespace viz {
-class VulkanContextProvider;
-}  // namespace viz
-
 namespace skgpu::graphite {
 class PrecompileContext;
 class Recorder;
@@ -68,6 +66,7 @@ class GpuDriverBugWorkarounds;
 class GpuProcessShmCount;
 class ServiceTransferCache;
 class GraphiteSharedContext;
+class VulkanContextProvider;
 struct GpuFeatureInfo;
 
 namespace gles2 {
@@ -110,7 +109,7 @@ class GPU_GLES2_EXPORT SharedContextState
       bool use_virtualized_gl_contexts,
       ContextLostCallback context_lost_callback,
       GrContextType gr_context_type,
-      viz::VulkanContextProvider* vulkan_context_provider = nullptr,
+      VulkanContextProvider* vulkan_context_provider = nullptr,
       DawnContextProvider* dawn_context_provider = nullptr,
       scoped_refptr<gpu::MemoryTracker::Observer> peak_memory_monitor = nullptr,
       bool direct_rendering_display_compositor_enabled = false,
@@ -141,6 +140,7 @@ class GPU_GLES2_EXPORT SharedContextState
   bool IsGraphiteDawnD3D12() const;
   bool IsGraphiteDawnVulkan() const;
   bool IsGraphiteDawnVulkanSwiftShader() const;
+  bool IsGraphiteVulkan() const;
 
   bool InitializeGL(const GpuPreferences& gpu_preferences,
                     const GpuDriverBugWorkarounds& gpu_driver_bug_workarounds,
@@ -154,6 +154,27 @@ class GPU_GLES2_EXPORT SharedContextState
   bool SubmitIfNecessary(std::vector<GrBackendSemaphore> signal_semaphores,
                          bool need_graphite_submit);
 
+  // Sets the active SharedContextState for the calling thread using
+  // thread-local storage. This is typically set by the thread owner (such as
+  // GpuChannelManager on the GPU main thread, CompositorGpuThread on the
+  // compositor thread, or OutputSurfaceProviderWebView on WebView render
+  // thread) to allow downstream multi-threaded components (such as
+  // CompoundImageBacking fallback copies) to look up the active context on the
+  // current thread.
+  // Note that this and other methods below
+  // GetForCurrentThread()/ClearForCurrentThread() are currently not applicable
+  // to webview(hence OutputSurfaceProviderWebView) and should not be used for
+  // webview.
+  static void SetForCurrentThread(SharedContextState* state);
+
+  // Returns the active SharedContextState for the current thread, or nullptr
+  // if none is registered.
+  static SharedContextState* GetForCurrentThread();
+
+  // Clears the active SharedContextState for the current thread. Must be
+  // called before the registered SharedContextState is destroyed.
+  static void ClearForCurrentThread();
+
   // Returns true if context state is using GL, either for Skia to run on
   // or if there is no skia context and context state exists for WebGL fallback
   // only.
@@ -165,11 +186,11 @@ class GPU_GLES2_EXPORT SharedContextState
 
   // Immediately evicts unlocked resources (scratch resources under moderate
   // pressure, or all resources under critical pressure) down to `memory_limit`.
-  void PurgeMemory(int memory_limit);
+  void PurgeMemory(base::MemoryLimit memory_limit);
 
   // Updates internal memory target budgets non-destructively without forcing
   // immediate resource purges.
-  void OnUpdateMemoryLimit(int memory_limit);
+  void OnUpdateMemoryLimit(base::MemoryLimit memory_limit);
 
   void UpdateSkiaOwnedMemorySize();
   uint64_t GetMemoryUsage();
@@ -189,7 +210,7 @@ class GPU_GLES2_EXPORT SharedContextState
   gl::GLContext* real_context() const { return real_context_.get(); }
   gl::GLSurface* surface() const;
   gl::GLDisplay* display();  // non const since it calls GLSurface::GetGLDisplay
-  viz::VulkanContextProvider* vk_context_provider() const {
+  VulkanContextProvider* vk_context_provider() const {
     return vk_context_provider_;
   }
   DawnContextProvider* dawn_context_provider() const {
@@ -253,8 +274,7 @@ class GPU_GLES2_EXPORT SharedContextState
   gpu::MemoryTypeTracker* memory_type_tracker() {
     return &memory_type_tracker_;
   }
-#if BUILDFLAG(ENABLE_VULKAN) && \
-    (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WIN))
+#if BUILDFLAG(ENABLE_VULKAN) && (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_FUCHSIA))
   ExternalSemaphorePool* external_semaphore_pool() {
     return external_semaphore_pool_.get();
   }
@@ -308,6 +328,7 @@ class GPU_GLES2_EXPORT SharedContextState
   void ScheduleSkiaCleanup();
 
   int32_t GetMaxTextureSize();
+  int32_t GetMaxArrayTextureLayers();
 
 #if BUILDFLAG(IS_WIN)
   // Get the D3D device and command queue used for compositing.
@@ -343,8 +364,8 @@ class GPU_GLES2_EXPORT SharedContextState
 
   std::optional<error::ContextLostReason> GetResetStatus(bool needs_gl);
 
-  void PurgeGaneshMemory(int memory_limit);
-  void PurgeGraphiteMemory(int memory_limit);
+  void PurgeGaneshMemory(base::MemoryLimit memory_limit);
+  void PurgeGraphiteMemory(base::MemoryLimit memory_limit);
 
   // gpu::GLContextVirtualDelegate implementation.
   bool initialized() const override;
@@ -374,7 +395,7 @@ class GPU_GLES2_EXPORT SharedContextState
   scoped_refptr<MemoryTracker> memory_tracker_shared_context_state_;
   scoped_refptr<MemoryTracker> memory_tracker_;
   gpu::MemoryTypeTracker memory_type_tracker_;
-  const raw_ptr<viz::VulkanContextProvider> vk_context_provider_ = nullptr;
+  const raw_ptr<VulkanContextProvider> vk_context_provider_ = nullptr;
   const raw_ptr<DawnContextProvider> dawn_context_provider_ = nullptr;
   raw_ptr<const GrContextOptionsProvider> gr_context_options_provider_ =
       nullptr;
@@ -425,8 +446,7 @@ class GPU_GLES2_EXPORT SharedContextState
   base::Time last_gl_check_graphics_reset_status_;
   bool disable_check_reset_status_throttling_for_test_ = false;
 
-#if BUILDFLAG(ENABLE_VULKAN) && \
-    (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_WIN))
+#if BUILDFLAG(ENABLE_VULKAN) && (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_FUCHSIA))
   std::unique_ptr<ExternalSemaphorePool> external_semaphore_pool_;
 #endif
 
@@ -444,7 +464,12 @@ class GPU_GLES2_EXPORT SharedContextState
       viz_compositor_graphite_cache_controller_;
 
   std::optional<int> max_texture_size_;
+  std::optional<int> max_array_texture_layers_;
   size_t max_resource_cache_bytes_ = 0;
+
+  // A SharedContextState is created on, and used from, a single gpu thread
+  // (the gpu main thread, or the CompositorGpuThread when DrDc is enabled).
+  THREAD_CHECKER(context_thread_checker_);
 
   base::WeakPtrFactory<SharedContextState> weak_ptr_factory_{this};
 };

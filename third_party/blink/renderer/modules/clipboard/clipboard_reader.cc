@@ -21,7 +21,6 @@
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/scheduler/public/worker_pool.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
@@ -352,11 +351,12 @@ class ClipboardCustomFormatReader final : public ClipboardReader {
 
 // static
 ClipboardReader* ClipboardReader::Create(
+    ExecutionContext* execution_context,
     SystemClipboard* system_clipboard,
     const String& mime_type,
     ClipboardReaderResultHandler* result_handler,
     bool sanitize_html) {
-  CHECK(ClipboardItem::supports(mime_type));
+  CHECK(ClipboardItem::supports(execution_context, mime_type));
   // If this is a web custom format then read the unsanitized version.
   if (!Clipboard::ParseWebCustomFormat(mime_type).empty()) {
     // We read the custom MIME type that has the "web " prefix.

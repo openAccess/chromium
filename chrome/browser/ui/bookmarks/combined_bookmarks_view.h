@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -129,8 +130,8 @@ class CombinedBookmarksView : public bookmarks_api::BookmarksView,
   void ExtensiveBookmarkChangesEnded() override;
 
  private:
+  void NotifyPermanentNodeAdded(const bookmarks::BookmarkNode* node);
   void Notify(std::vector<bookmarks_api::mojom::BookmarksEventPtr> events);
-  void RegisterAccountNodeOverrides();
 
   raw_ptr<bookmarks::BookmarkModel> model_;
   raw_ptr<bookmarks::ManagedBookmarkService> managed_bookmark_service_;

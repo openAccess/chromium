@@ -21,7 +21,6 @@
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/apps/app_service/menu_item_constants.h"
 #include "chrome/browser/apps/app_service/menu_util.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/bruschetta/bruschetta_util.h"
 #include "chrome/browser/ash/crostini/crostini_features.h"
 #include "chrome/browser/ash/crostini/crostini_util.h"
@@ -37,6 +36,7 @@
 #include "chrome/browser/ui/extensions/application_launch.h"
 #include "chrome/browser/ui/webui/ash/crostini_installer/crostini_installer_dialog.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "components/app_restore/app_launch_info.h"
 #include "components/app_restore/full_restore_save_handler.h"
@@ -45,12 +45,14 @@
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/services/app_service/public/cpp/intent_util.h"
 #include "components/services/app_service/public/cpp/menu.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/base/url_util.h"
 #include "storage/browser/file_system/external_mount_points.h"
 #include "storage/browser/file_system/file_system_url.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/color/color_provider_manager.h"
 #include "ui/color/color_provider_utils.h"
 #include "ui/native_theme/native_theme.h"
@@ -116,7 +118,7 @@ void LaunchTerminalImpl(Profile* profile,
   // LaunchSystemWebAppAsync.
 
   // Launch without a pinned home tab (settings page).
-  if (params.disposition == WindowOpenDisposition::NEW_POPUP) {
+  if (params.disposition == ui::mojom::WindowOpenDisposition::kNewPopup) {
     ash::LaunchSystemWebAppImpl(profile, ash::SystemWebAppType::TERMINAL, url,
                                 params);
     return;
@@ -133,7 +135,8 @@ void LaunchTerminalImpl(Profile* profile,
   }
   if (url != home) {
     browser->AddTab(url, /*index=*/1,
-                    ash::BrowserDelegate::TabDisposition::kForeground);
+                    ash::BrowserDelegate::TabDisposition::kForeground,
+                    ui::PAGE_TRANSITION_TYPED);
   }
   auto info = std::make_unique<app_restore::AppLaunchInfo>(
       kTerminalSystemAppId, browser->GetSessionID().id(), params.container,
@@ -313,7 +316,7 @@ void LaunchTerminalSettings(Profile* profile, int64_t display_id) {
   }
   std::string path = "html/terminal_settings.html";
   // Use an app pop window to host the settings page.
-  params->disposition = WindowOpenDisposition::NEW_POPUP;
+  params->disposition = ui::mojom::WindowOpenDisposition::kNewPopup;
 
   // Always launch asynchronously to avoid disturbing the caller. See
   // https://crbug.com/1262890#c12 for more details.

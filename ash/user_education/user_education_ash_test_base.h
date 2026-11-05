@@ -23,7 +23,9 @@ class UserEducationAshTestBase : public NoSessionAshTestBase {
 
  protected:
   // NoSessionAshTestBase:
-  void SetUp() override;
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override;
+
+  void TearDown() override;
 
   // Returns the mocked delegate which facilitates communication between Ash and
   // user education services in the browser.
@@ -34,7 +36,7 @@ class UserEducationAshTestBase : public NoSessionAshTestBase {
  private:
   // The mocked delegate which facilitates communication between Ash and user
   // education services in the browser. Created during `SetUp()`.
-  raw_ptr<testing::NiceMock<MockUserEducationDelegate>, DanglingUntriaged>
+  raw_ptr<testing::NiceMock<MockUserEducationDelegate>>
       user_education_delegate_ = nullptr;
 };
 

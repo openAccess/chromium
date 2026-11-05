@@ -94,7 +94,7 @@ chromium-metrics-reviews@google.com.
 </variants>
 
 <histogram name="Notifications.Actions" enum="NotificationActionType"
-    expires_after="2027-01-17">
+    expires_after="2027-03-21">
   <owner>dewittj@chromium.org</owner>
   <owner>newcomer@chromium.org</owner>
   <owner>cros-status-area-eng@google.com</owner>
@@ -131,6 +131,18 @@ chromium-metrics-reviews@google.com.
 
     This histogram was previously unused from 2024-12-31 to 2026-02-13, so data
     might be missing.
+  </summary>
+</histogram>
+
+<histogram name="Notifications.Android.ChannelMigration.Result"
+    enum="ChannelMigrationResult" expires_after="2027-09-02">
+  <owner>dibyapal@chromium.org</owner>
+  <owner>pwa-team@chromium.org</owner>
+  <summary>
+    Recorded when notification channels for a site are queried on Android (e.g.
+    when displaying a notification or requesting notification permissions).
+    Measures the migration result of the channel from default priority to high
+    priority, or vice versa, or whether no migration was needed.
   </summary>
 </histogram>
 
@@ -312,7 +324,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.Android.SitesChannel" enum="BooleanUsage"
-    expires_after="2027-02-13">
+    expires_after="2027-04-18">
   <owner>peter@chromium.org</owner>
   <summary>
     Recorded when the Sites channel (which we hope to deprecate) is used as a
@@ -327,7 +339,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram name="Notifications.Android.TrampolineActivity"
     enum="NotificationsAndroidTrampolineActivityEvent"
-    expires_after="2027-02-13">
+    expires_after="2027-04-18">
   <owner>qinmin@chromium.org</owner>
   <owner>peter@chromium.org</owner>
   <summary>
@@ -337,7 +349,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.Android.TrampolineActivity.Duration" units="ms"
-    expires_after="2027-02-13">
+    expires_after="2027-04-18">
   <owner>qinmin@chromium.org</owner>
   <owner>peter@chromium.org</owner>
   <summary>
@@ -768,7 +780,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.Engagement.{Type}.Volume{Volume}"
-    units="site-engagement-score*2" expires_after="2027-02-14">
+    units="site-engagement-score*2" expires_after="2027-04-18">
   <owner>antoniosartori@chromium.org</owner>
   <owner>feuunk@chromium.org</owner>
   <summary>
@@ -812,7 +824,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.macOS.AppShimProcess.UptimeOnDisconnect"
-    units="ms" expires_after="2027-03-01">
+    units="ms" expires_after="2027-05-02">
   <owner>mek@chromium.org</owner>
   <owner>pwa-team@google.com</owner>
   <summary>
@@ -824,7 +836,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Notifications.macOS.AppShimProcess.UptimeOnUnexpectedDisconnect"
-    units="ms" expires_after="2027-03-01">
+    units="ms" expires_after="2027-05-02">
   <owner>mek@chromium.org</owner>
   <owner>pwa-team@google.com</owner>
   <summary>
@@ -836,24 +848,52 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.macOS.AttributionOutcome"
-    enum="MacNotificationAttributionOutcome" expires_after="2027-03-01">
+    enum="MacNotificationAttributionOutcome" expires_after="2027-05-02">
   <owner>mek@chromium.org</owner>
   <owner>pwa-team@google.com</owner>
   <summary>
     Records the outcome of attempting to attribute a Web App notification to its
     App Shim on macOS. Recorded when displaying a notification that has a Web
-    App ID.
+    App ID: synchronously when no installed App Shim is eligible for
+    attribution, or asynchronously once the App Shim's DisplayNotification call
+    completes (or its Mojo connection fails).
   </summary>
 </histogram>
 
-<histogram name="Notifications.macOS.DeliveryResult.{Style}"
-    units="NSErrorCode" expires_after="2027-03-01">
+<histogram name="Notifications.macOS.DeliveryResult{Attempt}.{Style}"
+    enum="UNNotificationDeliveryResult" expires_after="2027-05-02">
   <owner>mek@chromium.org</owner>
   <owner>pwa-team@google.com</owner>
   <summary>
-    Records the result of adding a notification request to the macOS
-    UNUserNotificationCenter. Recorded when the macOS API completion handler is
-    called. Logs 0 for success, or the NSError code on failure.
+    Records the result of {Attempt} to the macOS UNUserNotificationCenter.
+    Recorded when the macOS API completion handler is called. Logs 0 for
+    success, or the NSError code on failure. Note that the NSError domain is not
+    recorded, so codes could in theory be ambiguous; labels assume the error is
+    either in the UNErrorDomain or, for codes in the 4096-4224 range, in the
+    NSCocoaErrorDomain.
+  </summary>
+  <token key="Attempt">
+    <variant name="" summary="adding a notification request"/>
+    <variant name=".RetryWithoutAttachment"
+        summary="retrying a notification request without attachments after an
+                 attachment error"/>
+  </token>
+  <token key="Style" variants="MacOSNotificationStyle"/>
+</histogram>
+
+<histogram name="Notifications.macOS.DisplayNotificationResult.{Style}"
+    enum="MacNotificationDisplayResult" expires_after="2027-03-01">
+  <owner>mek@chromium.org</owner>
+  <owner>pwa-team@google.com</owner>
+  <summary>
+    Records the browser-observed result of attempting to display a notification
+    via the {Style} macOS notification service over Mojo, including permission
+    states, OS delivery errors, and Mojo connection or process launch failures.
+    Recorded when the DisplayNotification Mojo call completes or its pipe
+    disconnects. Note that NSUserNotificationCenter-backed services always
+    report Success when connected (or ConnectionFailed on Mojo disconnect),
+    whereas UNUserNotificationCenter-backed services (such as AppShim) also
+    report OS permission and delivery errors.
   </summary>
   <token key="Style" variants="MacOSNotificationStyle"/>
 </histogram>
@@ -889,6 +929,23 @@ chromium-metrics-reviews@google.com.
     This histogram was previously unused from 2024-08-14 to 2026-02-13, so data
     might be missing.
   </summary>
+</histogram>
+
+<histogram name="Notifications.macOS.{ProcessType}.TimeToFirstResponse"
+    units="ms" expires_after="2027-03-01">
+  <owner>mek@chromium.org</owner>
+  <owner>pwa-team@google.com</owner>
+  <summary>
+    The time elapsed from launching or connecting to a macOS notification
+    service in {ProcessType} until the first response or action is received over
+    Mojo from that service instance. Logged at most once per service connection,
+    when the first response is received.
+  </summary>
+  <token key="ProcessType">
+    <variant name="AppShimProcess" summary="an app shim (PWA) process"/>
+    <variant name="ServiceProcess"
+        summary="the alert notification utility process"/>
+  </token>
 </histogram>
 
 <histogram name="Notifications.NonPersistentNotificationThirdPartyCount"
@@ -983,8 +1040,72 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Notifications.Permissions.AppShim.OSPermissionRequestResult"
+    enum="UNNotificationPermissionRequestResult" expires_after="2027-06-01">
+  <owner>mek@chromium.org</owner>
+  <owner>pwa-team@google.com</owner>
+  <summary>
+    The result of asking a web app's app shim to request macOS notification
+    permission. Recorded in the browser process after the user grants
+    notification permission in Chrome to a site that is attributed to an
+    installed web app with an app shim (macOS only). Unlike
+    Notifications.Permissions.UNNotification.AppShim.PermissionRequest (which is
+    recorded in the app shim process), this also captures requests that failed
+    because the app shim could not be launched or did not support the
+    UNNotification API.
+  </summary>
+</histogram>
+
+<histogram
+    name="Notifications.Permissions.AppShim.OSStatus.Chrome{ChromeSetting}"
+    enum="MacAppShimNotificationPermissionStatus" expires_after="2027-06-01">
+  <owner>mek@chromium.org</owner>
+  <owner>pwa-team@google.com</owner>
+  <summary>
+    The macOS system notification permission status of an installed web app's
+    app shim when Chrome's notification content setting for the app's start URL
+    is {ChromeSetting}. Recorded at most once per day per (profile, app) within
+    a browser session for each loaded profile where the app is installed with OS
+    integration when an app shim process reports a non-pending permission status
+    (macOS only). Note that if a user grants Chrome notification permission
+    while the app shim is not running, Chrome updates the content setting to
+    Allow and launches the shim in the background to request OS permission, so
+    that report on connect will record NotDetermined and suppress recording the
+    post-prompt status for the next day.
+  </summary>
+  <token key="ChromeSetting">
+    <variant name="Allow"/>
+    <variant name="Ask"/>
+    <variant name="Block"/>
+  </token>
+</histogram>
+
+<!-- LINT.IfChange(NotificationPermissionStatusVariant) -->
+
+<histogram
+    name="Notifications.Permissions.AppShim.StatusTransition.{OldStatus}"
+    enum="MacAppShimNotificationPermissionStatus" expires_after="2027-06-01">
+  <owner>mek@chromium.org</owner>
+  <owner>pwa-team@google.com</owner>
+  <summary>
+    The new macOS system notification permission status for an installed web
+    app's app shim when its status in AppShimRegistry changes from {OldStatus}
+    to a different status (macOS only). Apps without a previously persisted
+    status in Local State default to NotDetermined.
+  </summary>
+  <token key="OldStatus">
+    <variant name="ExplicitlyDenied"/>
+    <variant name="Granted"/>
+    <variant name="ImplicitlyDenied"/>
+    <variant name="NotDetermined"/>
+    <variant name="PromptPending"/>
+  </token>
+</histogram>
+
+<!-- LINT.ThenChange(//chrome/browser/web_applications/os_integration/mac/app_shim_registry.cc:NotificationPermissionStatusVariant) -->
+
 <histogram name="Notifications.Permissions.RevokeDeleteCount" units="units"
-    expires_after="2027-02-13">
+    expires_after="2027-04-18">
   <owner>knollr@chromium.org</owner>
   <owner>peter@chromium.org</owner>
   <summary>
@@ -998,7 +1119,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Notifications.Permissions.UNNotification.{Style}.PermissionRequest"
-    enum="UNNotificationPermissionRequestResult" expires_after="2027-03-01">
+    enum="UNNotificationPermissionRequestResult" expires_after="2027-05-02">
   <owner>mek@chromium.org</owner>
   <owner>peter@chromium.org</owner>
   <summary>
@@ -1012,7 +1133,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Notifications.Permissions.UNNotification.{Style}.PermissionStatus"
-    enum="UNNotificationPermissionStatus" expires_after="2027-03-01">
+    enum="UNNotificationPermissionStatus" expires_after="2027-05-02">
   <owner>mek@chromium.org</owner>
   <owner>peter@chromium.org</owner>
   <summary>
@@ -1025,7 +1146,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.Permissions.UNNotification.{Style}.Style"
-    enum="UNNotificationStyle" expires_after="2027-03-01">
+    enum="UNNotificationStyle" expires_after="2027-05-02">
   <owner>mek@chromium.org</owner>
   <owner>peter@chromium.org</owner>
   <summary>
@@ -1067,7 +1188,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.PersistentNotificationDisplayResult"
-    enum="PersistentNotificationDisplayResult" expires_after="2027-01-17">
+    enum="PersistentNotificationDisplayResult" expires_after="2027-03-21">
   <owner>knollr@chromium.org</owner>
   <owner>peter@chromium.org</owner>
   <summary>
@@ -1093,7 +1214,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.PersistentWebNotificationClickResult"
-    enum="PlatformNotificationStatus" expires_after="2027-02-13">
+    enum="PlatformNotificationStatus" expires_after="2027-04-18">
   <owner>peter@chromium.org</owner>
   <owner>deepak.m1@samsung.com</owner>
   <summary>
@@ -1106,7 +1227,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.PersistentWebNotificationCloseResult"
-    enum="PlatformNotificationStatus" expires_after="2027-02-13">
+    enum="PlatformNotificationStatus" expires_after="2027-04-18">
   <owner>peter@chromium.org</owner>
   <owner>knollr@chromium.org</owner>
   <summary>
@@ -1133,7 +1254,7 @@ chromium-metrics-reviews@google.com.
 <histogram
     name="Notifications.Scheduler.NotificationLifeCycleEvent{NotificationSchedulerClientType}"
     enum="NotificationSchedulerNotificationLifeCycleEvent"
-    expires_after="2027-02-14">
+    expires_after="2027-04-18">
   <owner>shaktisahu@chromium.org</owner>
   <owner>nyquist@chromium.org</owner>
   <summary>
@@ -1160,7 +1281,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Notifications.Scheduler.Tips.FeatureTypeAction{NotificationTipsFeatureType}"
-    enum="NotificationSchedulerUserActionType" expires_after="2027-02-14">
+    enum="NotificationSchedulerUserActionType" expires_after="2027-04-18">
   <owner>wylieb@google.com</owner>
   <owner>bjfong@google.com</owner>
   <summary>
@@ -1183,7 +1304,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.Scheduler.Tips.FeatureTypeShown"
-    enum="TipsNotificationsFeatureType" expires_after="2027-02-14">
+    enum="TipsNotificationsFeatureType" expires_after="2027-04-18">
   <owner>wylieb@google.com</owner>
   <owner>bjfong@google.com</owner>
   <summary>
@@ -1195,7 +1316,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Notifications.Tips.FeatureTipPromo.EventType{NotificationTipsFeatureType}"
-    enum="TipsNotificationsFeatureTipPromoEventType" expires_after="2027-02-14">
+    enum="TipsNotificationsFeatureTipPromoEventType" expires_after="2027-04-18">
   <owner>wylieb@google.com</owner>
   <owner>bjfong@google.com</owner>
   <summary>
@@ -1219,7 +1340,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.Tips.OptInPromo.EventType2"
-    enum="TipsNotificationsOptInPromoEventType" expires_after="2027-01-17">
+    enum="TipsNotificationsOptInPromoEventType" expires_after="2027-03-21">
   <owner>wylieb@google.com</owner>
   <owner>bjfong@google.com</owner>
   <summary>
@@ -1241,6 +1362,19 @@ chromium-metrics-reviews@google.com.
   <summary>
     Indicates if Chrome is using system notifications or the Chrome notification
     center. Logged on each start up.
+  </summary>
+</histogram>
+
+<histogram name="Notifications.Webapk.ChannelMigration.Result"
+    enum="ChannelMigrationResult" expires_after="2027-09-02">
+  <owner>dibyapal@chromium.org</owner>
+  <owner>pwa-team@chromium.org</owner>
+  <summary>
+    Recorded when a notification channel for a WebAPK is resolved on Android
+    (e.g. when displaying a WebAPK notification or requesting notification
+    permissions). Measures whether the WebAPK's notification channel migrated
+    from default priority to high priority, from high priority to default
+    priority, or whether no migration was needed.
   </summary>
 </histogram>
 
@@ -1320,7 +1454,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.Windows.DisplayFailure" enum="Hresult"
-    expires_after="2027-02-13">
+    expires_after="2027-04-18">
   <owner>finnur@chromium.org</owner>
   <owner>peter@chromium.org</owner>
   <summary>
@@ -1333,7 +1467,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Notifications.Windows.DisplayStatus"
-    enum="WindowsNotificationDisplayStatus" expires_after="2027-02-13">
+    enum="WindowsNotificationDisplayStatus" expires_after="2027-04-18">
   <owner>finnur@chromium.org</owner>
   <owner>peter@chromium.org</owner>
   <summary>

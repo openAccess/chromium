@@ -10,11 +10,11 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <ranges>
 #include <string_view>
 #include <tuple>
 #include <utility>
 
-#include "base/containers/adapters.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/functional/bind.h"
@@ -477,6 +477,7 @@ bool ModifyRequestHeadersForAction(
 // |header_actions| maps a header name to a list of operations to be performed
 // on the header.
 bool ModifyResponseHeadersForAction(
+    const GURL& url,
     const net::HttpResponseHeaders* original_response_headers,
     scoped_refptr<net::HttpResponseHeaders>* override_response_headers,
     const DNRRequestAction& request_action,
@@ -504,10 +505,15 @@ bool ModifyResponseHeadersForAction(
         }
       };
 
+  extensions::ExtensionsAPIClient* api_client =
+      extensions::ExtensionsAPIClient::Get();
   for (const DNRRequestAction::HeaderInfo& header_info :
        request_action.response_headers_to_modify) {
     bool header_modified = false;
     const std::string& header = header_info.header;
+    if (api_client && api_client->ShouldHideResponseHeader(url, header)) {
+      continue;
+    }
 
     DNRHeaderAction header_action(&header_info, &request_action.extension_id);
     auto iter = header_actions->find(header);
@@ -929,14 +935,16 @@ void MergeCancelOfResponses(
 // a higher precedence operation that redirects.
 // Returns whether a redirect occurred.
 static bool MergeRedirectUrlOfResponsesHelper(
-    const GURL& url,
+    const extensions::WebRequestInfo& request,
     const EventResponseDeltas& deltas,
     GURL* new_url,
     std::optional<extensions::ExtensionId>* extension_id,
     IgnoredActions* ignored_actions,
     bool consider_only_cancel_scheme_urls) {
-  // Redirecting WebSocket handshake request is prohibited.
-  if (url.SchemeIsWSOrWSS()) {
+  // Redirecting WebSocket or WebTransport handshake request is prohibited.
+  if (request.url.SchemeIsWSOrWSS() ||
+      request.web_request_type ==
+          extensions::WebRequestResourceType::WEB_TRANSPORT) {
     return false;
   }
 
@@ -965,14 +973,14 @@ static bool MergeRedirectUrlOfResponsesHelper(
 }
 
 void MergeRedirectUrlOfResponses(
-    const GURL& url,
+    const extensions::WebRequestInfo& request,
     const EventResponseDeltas& deltas,
     GURL* new_url,
     std::optional<extensions::ExtensionId>* extension_id,
     IgnoredActions* ignored_actions) {
   // First handle only redirects to data:// URLs and about:blank. These are a
   // special case as they represent a way of cancelling a request.
-  if (MergeRedirectUrlOfResponsesHelper(url, deltas, new_url, extension_id,
+  if (MergeRedirectUrlOfResponsesHelper(request, deltas, new_url, extension_id,
                                         ignored_actions, true)) {
     // If any extension cancelled a request by redirecting to a data:// URL or
     // about:blank, we don't consider the other redirects.
@@ -980,17 +988,17 @@ void MergeRedirectUrlOfResponses(
   }
 
   // Handle all other redirects.
-  MergeRedirectUrlOfResponsesHelper(url, deltas, new_url, extension_id,
+  MergeRedirectUrlOfResponsesHelper(request, deltas, new_url, extension_id,
                                     ignored_actions, false);
 }
 
 void MergeOnBeforeRequestResponses(
-    const GURL& url,
+    const extensions::WebRequestInfo& request,
     const EventResponseDeltas& deltas,
     GURL* new_url,
     std::optional<extensions::ExtensionId>* extension_id,
     IgnoredActions* ignored_actions) {
-  MergeRedirectUrlOfResponses(url, deltas, new_url, extension_id,
+  MergeRedirectUrlOfResponses(request, deltas, new_url, extension_id,
                               ignored_actions);
 }
 
@@ -1017,7 +1025,7 @@ static bool MergeAddRequestCookieModifications(
   bool modified = false;
   // We assume here that the deltas are sorted in decreasing extension
   // precedence (i.e. decreasing extension installation time).
-  for (const auto& delta : base::Reversed(deltas)) {
+  for (const auto& delta : std::views::reverse(deltas)) {
     const RequestCookieModifications& modifications =
         delta.request_cookie_modifications;
     for (auto mod = modifications.cbegin(); mod != modifications.cend();
@@ -1061,7 +1069,7 @@ static bool MergeEditRequestCookieModifications(
   bool modified = false;
   // We assume here that the deltas are sorted in decreasing extension
   // precedence (i.e. decreasing extension installation time).
-  for (const auto& delta : base::Reversed(deltas)) {
+  for (const auto& delta : std::views::reverse(deltas)) {
     const RequestCookieModifications& modifications =
         delta.request_cookie_modifications;
     for (auto mod = modifications.cbegin(); mod != modifications.cend();
@@ -1100,7 +1108,7 @@ static bool MergeRemoveRequestCookieModifications(
   bool modified = false;
   // We assume here that the deltas are sorted in decreasing extension
   // precedence (i.e. decreasing extension installation time).
-  for (const auto& delta : base::Reversed(deltas)) {
+  for (const auto& delta : std::views::reverse(deltas)) {
     const RequestCookieModifications& modifications =
         delta.request_cookie_modifications;
     for (auto mod = modifications.cbegin(); mod != modifications.cend();
@@ -1465,7 +1473,7 @@ static bool MergeAddResponseCookieModifications(
   bool modified = false;
   // We assume here that the deltas are sorted in decreasing extension
   // precedence (i.e. decreasing extension installation time).
-  for (const auto& delta : base::Reversed(deltas)) {
+  for (const auto& delta : std::views::reverse(deltas)) {
     const ResponseCookieModifications& modifications =
         delta.response_cookie_modifications;
     for (const auto& mod : modifications) {
@@ -1492,7 +1500,7 @@ static bool MergeEditResponseCookieModifications(
   bool modified = false;
   // We assume here that the deltas are sorted in decreasing extension
   // precedence (i.e. decreasing extension installation time).
-  for (const auto& delta : base::Reversed(deltas)) {
+  for (const auto& delta : std::views::reverse(deltas)) {
     const ResponseCookieModifications& modifications =
         delta.response_cookie_modifications;
     for (const auto& mod : modifications) {
@@ -1519,7 +1527,7 @@ static bool MergeRemoveResponseCookieModifications(
   bool modified = false;
   // We assume here that the deltas are sorted in decreasing extension
   // precedence (i.e. decreasing extension installation time).
-  for (const auto& delta : base::Reversed(deltas)) {
+  for (const auto& delta : std::views::reverse(deltas)) {
     const ResponseCookieModifications& modifications =
         delta.response_cookie_modifications;
     for (auto mod = modifications.cbegin(); mod != modifications.cend();
@@ -1549,7 +1557,7 @@ void MergeCookiesInOnHeadersReceivedResponses(
     scoped_refptr<net::HttpResponseHeaders>* override_response_headers) {
   // Skip all work if there are no registered cookie modifications.
   bool cookie_modifications_exist = false;
-  for (const auto& delta : base::Reversed(deltas)) {
+  for (const auto& delta : std::views::reverse(deltas)) {
     cookie_modifications_exist |= !delta.response_cookie_modifications.empty();
   }
 
@@ -1601,8 +1609,8 @@ void MergeOnHeadersReceivedResponses(
   std::map<std::string_view, std::vector<DNRHeaderAction>> dnr_header_actions;
   for (const auto& action : *request.dnr_actions) {
     bool headers_modified_for_action = ModifyResponseHeadersForAction(
-        original_response_headers, override_response_headers, action,
-        &dnr_header_actions);
+        request.url, original_response_headers, override_response_headers,
+        action, &dnr_header_actions);
 
     *response_headers_modified |= headers_modified_for_action;
     if (headers_modified_for_action) {
@@ -1682,7 +1690,7 @@ void MergeOnHeadersReceivedResponses(
       {
         for (const ResponseHeader& header : delta.added_response_headers) {
           ResponseHeader lowercase_header(ToLowerCase(header));
-          if (added_headers.find(lowercase_header) != added_headers.end()) {
+          if (added_headers.contains(lowercase_header)) {
             continue;
           }
           added_headers.insert(lowercase_header);
@@ -1703,7 +1711,7 @@ void MergeOnHeadersReceivedResponses(
 
   GURL new_url;
   std::optional<extensions::ExtensionId> extension_id;
-  MergeRedirectUrlOfResponses(request.url, deltas, &new_url, &extension_id,
+  MergeRedirectUrlOfResponses(request, deltas, &new_url, &extension_id,
                               ignored_actions);
   if (new_url.is_valid()) {
     // Only create a copy if we really want to modify the response headers.

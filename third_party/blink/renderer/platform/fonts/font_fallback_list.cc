@@ -39,7 +39,6 @@
 #include "third_party/blink/renderer/platform/fonts/font_performance.h"
 #include "third_party/blink/renderer/platform/fonts/segmented_font_data.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_uchar.h"
 
@@ -66,8 +65,8 @@ bool FontFallbackList::ShouldSkipDrawing() const {
   if (!has_loading_fallback_)
     return false;
 
-  unsigned num_fonts = font_list_.size();
-  for (unsigned i = 0; i < num_fonts; ++i) {
+  wtf_size_t num_fonts = font_list_.size();
+  for (wtf_size_t i = 0; i < num_fonts; ++i) {
     if (font_list_[i]->ShouldSkipDrawing())
       return true;
   }
@@ -91,7 +90,7 @@ const SimpleFontData* FontFallbackList::DeterminePrimarySimpleFontDataCore(
     bool should_contain_glyph) {
   bool should_load_custom_font = true;
 
-  for (unsigned font_index = 0;; ++font_index) {
+  for (wtf_size_t font_index = 0;; ++font_index) {
     const FontData* font_data = FontDataAt(font_description, font_index);
     if (!font_data) {
       // All fonts are custom fonts and are loading. Return the first FontData.
@@ -115,8 +114,7 @@ const SimpleFontData* FontFallbackList::DeterminePrimarySimpleFontDataCore(
         font_data->FontDataForCharacter(lookup_character);
     DCHECK(font_data_for_space);
 
-    if (RuntimeEnabledFeatures::FontFallbackForTabSizeEnabled() &&
-        should_contain_glyph &&
+    if (should_contain_glyph &&
         !font_data_for_space->GlyphForCharacter(lookup_character)) {
       continue;
     }
@@ -128,7 +126,7 @@ const SimpleFontData* FontFallbackList::DeterminePrimarySimpleFontDataCore(
       return font_data_for_space;
 
     if (segmented) {
-      for (unsigned i = 0; i < segmented->NumFaces(); i++) {
+      for (wtf_size_t i = 0; i < segmented->NumFaces(); ++i) {
         const SimpleFontData* range_font_data =
             segmented->FaceAt(i)->FontData();
         if (!range_font_data->IsLoadingFallback())
@@ -196,7 +194,7 @@ const FontData* FontFallbackList::GetFontData(
 
 const FontData* FontFallbackList::FontDataAt(
     const FontDescription& font_description,
-    unsigned realized_font_index) {
+    wtf_size_t realized_font_index) {
   // This fallback font is already in our list.
   if (realized_font_index < font_list_.size())
     return font_list_[realized_font_index].Get();

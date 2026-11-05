@@ -15,10 +15,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.view.View;
+import android.view.View.MeasureSpec;
 import android.view.ViewConfiguration;
+import android.view.ViewGroup;
 
-import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.ItemTouchHelper;
+import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.ViewHolder;
 
@@ -30,11 +32,15 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.TabGridItemLongPressOrchestrator.CancelLongPressTabItemEventListener;
 import org.chromium.chrome.browser.tasks.tab_management.TabGridItemLongPressOrchestrator.OnLongPressTabItemEventListener;
-import org.chromium.ui.modelutil.MVCListAdapter;
+import org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardProperties;
+import org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardProperties.ModelType;
+import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.util.RunnableTimer;
 
@@ -44,8 +50,26 @@ import java.util.function.Supplier;
 @RunWith(BaseRobolectricTestRunner.class)
 public class TabGridItemLongPressOrchestratorUnitTest {
     private static class MockViewHolder extends ViewHolder {
-        public MockViewHolder(@NonNull View itemView) {
+        public MockViewHolder(View itemView) {
             super(itemView);
+        }
+    }
+
+    /** An adapter with a single item (at {@code TAB_INDEX}) whose view is {@code mCardView}. */
+    private class SingleCardAdapter extends RecyclerView.Adapter<ViewHolder> {
+        private final ViewHolder mViewHolder = new MockViewHolder(mCardView);
+
+        @Override
+        public ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            return mViewHolder;
+        }
+
+        @Override
+        public void onBindViewHolder(ViewHolder holder, int position) {}
+
+        @Override
+        public int getItemCount() {
+            return TAB_INDEX + 1;
         }
     }
 
@@ -56,31 +80,35 @@ public class TabGridItemLongPressOrchestratorUnitTest {
     @Mock private TabListModel mModel;
     @Mock private OnLongPressTabItemEventListener mOnLongPressListener;
     @Mock private CancelLongPressTabItemEventListener mCancelListener;
-    @Mock private RecyclerView mRecyclerView;
-    @Mock private View mCardView;
     @Mock private RunnableTimer mTimer;
 
     private static final long TIMER_DURATION = ViewConfiguration.getLongPressTimeout();
     private static final int TAB_ID = 1;
     private static final int TAB_INDEX = 0;
 
+    private final RecyclerView mRecyclerView =
+            new RecyclerView(ContextUtils.getApplicationContext());
+    private final View mCardView = new View(ContextUtils.getApplicationContext());
     private final Supplier<RecyclerView> mRecyclerViewSupplier = () -> mRecyclerView;
-    private ViewHolder mViewHolder;
     private TabGridItemLongPressOrchestrator mOrchestrator;
+    private PropertyModel mPropertyModel;
 
     @Before
     public void setUp() {
-        PropertyModel propertyModel =
+        mPropertyModel =
                 new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
                         .with(TabProperties.TAB_ID, TAB_ID)
                         .build();
-        MVCListAdapter.ListItem listItem = new MVCListAdapter.ListItem(0, propertyModel);
+        ListItem listItem = new ListItem(0, mPropertyModel);
         when(mModel.get(TAB_INDEX)).thenReturn(listItem);
         when(mModel.size()).thenReturn(1);
-        when(mModel.indexFromTabId(TAB_ID)).thenReturn(TAB_INDEX);
-        when(mRecyclerView.getChildAt(TAB_INDEX)).thenReturn(mCardView);
-        mViewHolder = new MockViewHolder(mCardView);
-        when(mRecyclerView.findViewHolderForAdapterPosition(TAB_INDEX)).thenReturn(mViewHolder);
+        when(mModel.indexFromModel(mPropertyModel)).thenReturn(TAB_INDEX);
+        mRecyclerView.setLayoutManager(new LinearLayoutManager(mRecyclerView.getContext()));
+        mRecyclerView.setAdapter(new SingleCardAdapter());
+        mRecyclerView.measure(
+                MeasureSpec.makeMeasureSpec(100, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(100, MeasureSpec.EXACTLY));
+        mRecyclerView.layout(0, 0, 100, 100);
         when(mOnLongPressListener.onLongPressEvent(anyInt(), any())).thenReturn(mCancelListener);
 
         mOrchestrator =
@@ -103,6 +131,21 @@ public class TabGridItemLongPressOrchestratorUnitTest {
     public void testOnSelectedChangedDrag_InvalidIndex() {
         mOrchestrator.onSelectedChanged(
                 TabModel.INVALID_TAB_INDEX, ItemTouchHelper.ACTION_STATE_DRAG);
+
+        verify(mTimer, never()).startTimer(anyLong(), any(Runnable.class));
+    }
+
+    @Test
+    public void testOnSelectedChangedDrag_CardWithoutTabId() {
+        PropertyModel messageModel =
+                new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
+                        .with(CardProperties.CARD_TYPE, ModelType.MESSAGE)
+                        .with(TabProperties.TAB_ID, Tab.INVALID_TAB_ID)
+                        .build();
+        ListItem messageListItem = new ListItem(0, messageModel);
+        when(mModel.get(TAB_INDEX)).thenReturn(messageListItem);
+
+        mOrchestrator.onSelectedChanged(TAB_INDEX, ItemTouchHelper.ACTION_STATE_DRAG);
 
         verify(mTimer, never()).startTimer(anyLong(), any(Runnable.class));
     }
@@ -146,7 +189,7 @@ public class TabGridItemLongPressOrchestratorUnitTest {
     public void testLongPressOnTimerExpiry_invalidCardIndex() {
         enableForceLongPresses();
 
-        when(mModel.indexFromTabId(TAB_ID)).thenReturn(TabModel.INVALID_TAB_INDEX);
+        when(mModel.indexFromModel(mPropertyModel)).thenReturn(TabModel.INVALID_TAB_INDEX);
         mOrchestrator.onSelectedChanged(TAB_INDEX, ItemTouchHelper.ACTION_STATE_DRAG);
         verify(mTimer).startTimer(eq(TIMER_DURATION), any(Runnable.class));
 
@@ -177,7 +220,6 @@ public class TabGridItemLongPressOrchestratorUnitTest {
 
         mOrchestrator.processChildDisplacement(
                 LONG_PRESS_DP_CANCEL_THRESHOLD * LONG_PRESS_DP_CANCEL_THRESHOLD + 1.f);
-        verify(mRecyclerView).findViewHolderForAdapterPosition(TAB_INDEX);
         verify(mCancelListener).cancelLongPress();
 
         // We cancel before setting the timer and once on idle. So this should be invoked exactly

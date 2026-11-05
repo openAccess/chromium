@@ -11,9 +11,12 @@
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "chromeos/ash/components/dbus/cryptohome/UserDataAuth.pb.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "third_party/cros_system_api/dbus/login_manager/dbus-constants.h"
+
+namespace user_data_auth {
+class GetLoginStatusReply;
+}  // namespace user_data_auth
 
 namespace ash {
 
@@ -73,6 +76,10 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_LOGIN_SESSION)
   // callback.
   base::OnceClosure GetClosureNotifyingAppTerminating();
 
+  // Returns whether app termination has started (i.e. OnAppTerminating() has
+  // been called).
+  bool IsAppTerminating() const;
+
   // Returns true if we sent or are planning to send a stop session request to
   // session manager.
   static bool IsSendingStopRequestToSessionManager();
@@ -93,6 +100,7 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_LOGIN_SESSION)
   base::ObserverList<Observer> observers_;
   bool is_locked_to_single_user_ = false;
   bool should_reboot_on_signout_ = false;
+  bool is_app_terminating_ = false;
   base::OnceClosure before_reboot_callback_;
   base::WeakPtrFactory<SessionTerminationManager> weak_factory_{this};
 };

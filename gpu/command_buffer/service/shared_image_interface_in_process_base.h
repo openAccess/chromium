@@ -66,11 +66,8 @@ class GPU_GLES2_EXPORT SharedImageInterfaceInProcessBase
   void UpdateSharedImage(const SyncToken& sync_token,
                          std::unique_ptr<gfx::GpuFence> acquire_fence,
                          const Mailbox& mailbox) final;
-  void DestroySharedImage(const SyncToken& sync_token,
+  void DestroySharedImage(std::vector<SyncToken> sync_tokens,
                           const Mailbox& mailbox) final;
-  void DestroySharedImage(
-      const SyncToken& sync_token,
-      scoped_refptr<ClientSharedImage> client_shared_image) final;
   scoped_refptr<ClientSharedImage> ImportSharedImage(
       ExportedSharedImage exported_shared_image) override;
 #if BUILDFLAG(IS_FUCHSIA)

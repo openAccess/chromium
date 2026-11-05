@@ -12,6 +12,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "components/variations/scoped_variations_ids_provider.h"
 #include "content/browser/preloading/preload_pipeline_info_impl.h"
 #include "content/browser/preloading/preloading.h"
@@ -35,9 +36,9 @@
 #include "content/test/navigation_simulator_impl.h"
 #include "content/test/test_render_view_host.h"
 #include "content/test/test_web_contents.h"
-#include "net/base/load_flags.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/loader/mixed_content.mojom.h"
+#include "third_party/blink/public/mojom/navigation/navigation_params.mojom.h"
 #include "third_party/blink/public/mojom/speculation_rules/speculation_rules.mojom.h"
 
 namespace content {
@@ -360,6 +361,93 @@ TEST_F(PrerenderHostRegistryTest, CreateAndStartHost_SpeculationRule) {
   // recorded on every prerender activation.
   histogram_tester().ExpectTotalCount(
       "Navigation.TimeToActivatePrerender.SpeculationRule", 1u);
+}
+
+// Helper observer to trigger a prerender request and cancel the current
+// prerender while `is_starting_prerendering_` is true.
+class PrerenderStarterObserver : public WebContentsObserver {
+ public:
+  explicit PrerenderStarterObserver(WebContents* web_contents,
+                                    PrerenderHostRegistry* registry,
+                                    PrerenderAttributes attributes)
+      : WebContentsObserver(web_contents),
+        registry_(registry),
+        attributes_(std::move(attributes)) {}
+
+  void DidStartNavigation(NavigationHandle* navigation_handle) override {
+    if (triggered_) {
+      return;
+    }
+    triggered_ = true;
+    // 1. Trigger a new prerender (host1) while `is_starting_prerendering_` is
+    // true.
+    registry_->CreateAndStartHost(attributes_);
+
+    // 2. Cancel the starting prerender (host0) while
+    // `is_starting_prerendering_` is true. Because `is_starting_prerendering_`
+    // is true, CancelHosts's internal StartPrerendering is skipped, leaving
+    // host1 in `pending_prerenders_` with running_prerender_host_id_ null.
+    PrerenderHostId host_id0 = registry_->GetPrerenderHostIdForNavigation(
+        static_cast<NavigationRequest*>(navigation_handle));
+    if (host_id0) {
+      registry_->CancelHost(host_id0, PrerenderFinalStatus::kDestroyed);
+    }
+  }
+
+ private:
+  raw_ptr<PrerenderHostRegistry> registry_;
+  PrerenderAttributes attributes_;
+  bool triggered_ = false;
+};
+
+// Repro of https://crbug.com/553069087
+//
+// Tests that creating a new prerender host when another prerender is already
+// queued in `pending_prerenders_` triggers a CHECK failure due to host ID
+// mismatch.
+//
+// TODO(crbug.com/553069087): Fix.
+TEST_F(PrerenderHostRegistryTest,
+       DISABLED_CreateAndStartHost_WhenPendingPrerendersExist) {
+  const GURL kUrl0("https://example.com/page0");
+  const GURL kUrl1("https://example.com/page1");
+  const GURL kUrl2("https://example.com/page2");
+
+  // 1. Put tab in background.
+  contents()->WasHidden();
+
+  PrerenderStarterObserver observer(
+      contents(), &registry(),
+      GeneratePrerenderAttributes(
+          kUrl1, PreloadingTriggerType::kSpeculationRule, "",
+          blink::mojom::SpeculationEagerness::kImmediate,
+          contents()->GetPrimaryMainFrame()));
+
+  // 2. Create host0. While host0 is starting, DidStartNavigation creates host1
+  // and cancels host0. This leaves host1 in `pending_prerenders_` while
+  // `running_prerender_host_id_` is null and
+  // `PrerenderCanBeStartedWhenInitiatorIsInBackground()` is true.
+  const PrerenderHostId host_id0 =
+      registry().CreateAndStartHost(GeneratePrerenderAttributes(
+          kUrl0, PreloadingTriggerType::kSpeculationRule, "",
+          blink::mojom::SpeculationEagerness::kImmediate,
+          contents()->GetPrimaryMainFrame()));
+  EXPECT_FALSE(host_id0);
+  EXPECT_EQ(registry().GetPendingPrerendersCountForTesting(), 1u);
+
+  // 3. Create host2 while still in background.
+  // Because `running_prerender_host_id_` is null and background starting is
+  // allowed, CreateAndStartHost calls `StartPrerendering(PrerenderHostId())`,
+  // which dequeues and starts host1 from the front of `pending_prerenders_`.
+  // Prior to the fix, this triggers CHECK(started_prerender_host_id ==
+  // prerender_host_id) because started_prerender_host_id (host1) !=
+  // prerender_host_id (host2).
+  const PrerenderHostId host_id2 =
+      registry().CreateAndStartHost(GeneratePrerenderAttributes(
+          kUrl2, PreloadingTriggerType::kSpeculationRule, "",
+          blink::mojom::SpeculationEagerness::kImmediate,
+          contents()->GetPrimaryMainFrame()));
+  EXPECT_TRUE(host_id2);
 }
 
 TEST_F(PrerenderHostRegistryTest, CreateAndStartHost_Embedder_DirectURLInput) {
@@ -925,11 +1013,13 @@ TEST_P(PrerenderHostRegistryLimitGroupTest, Embedder) {
       histogram_suffix, 1);
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 TEST_P(PrerenderHostRegistryLimitGroupTest, StatefulNumberLimit) {
   // Set memory limit to 50%.
   {
     base::RunLoop run_loop;
-    test_registry_.NotifyUpdateMemoryLimitAsync(50, run_loop.QuitClosure());
+    test_registry_.NotifyUpdateMemoryLimitAsync(
+        base::MemoryLimit::FromPercent(50), run_loop.QuitClosure());
     run_loop.Run();
   }
 
@@ -960,6 +1050,7 @@ TEST_P(PrerenderHostRegistryLimitGroupTest, StatefulNumberLimit) {
             registry().GetHostCountByLimitGroupForTesting(
                 PrerenderLimitGroup::kSpeculationRulesImmediate));
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 class PrerenderHostRegistryLegacyMemoryControlsTest
     : public PrerenderHostRegistryTest {
@@ -986,7 +1077,8 @@ TEST_F(PrerenderHostRegistryLegacyMemoryControlsTest,
 
   {
     base::RunLoop run_loop;
-    test_registry_.NotifyUpdateMemoryLimitAsync(80, base::DoNothing());
+    test_registry_.NotifyUpdateMemoryLimitAsync(
+        base::MemoryLimit::FromPercent(80), base::DoNothing());
     test_registry_.NotifyReleaseMemoryAsync(run_loop.QuitClosure());
     run_loop.Run();
   }
@@ -994,6 +1086,7 @@ TEST_F(PrerenderHostRegistryLegacyMemoryControlsTest,
   EXPECT_TRUE(registry().FindNonReservedHostById(prerender_host_id));
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 TEST_F(PrerenderHostRegistryLegacyMemoryControlsTest,
        StatefulNumberLimit_Disabled_Critical) {
   const GURL prerendering_url("https://example.com/next");
@@ -1016,6 +1109,15 @@ TEST_F(PrerenderHostRegistryLegacyMemoryControlsTest,
   }
 
   EXPECT_FALSE(registry().FindNonReservedHostById(prerender_host_id));
+
+  // Reset memory limit back to normal (100%).
+  {
+    base::RunLoop run_loop;
+    test_registry_.NotifyUpdateMemoryLimitAsync(base::MemoryLimit::Default(),
+                                                base::DoNothing());
+    test_registry_.NotifyReleaseMemoryAsync(run_loop.QuitClosure());
+    run_loop.Run();
+  }
 
   // Verify that after critical memory pressure cancellation in legacy mode,
   // future prerenders are not prevented from being created.
@@ -1046,7 +1148,8 @@ TEST_P(PrerenderHostRegistryLimitGroupTest, StatefulNumberLimit_Critical) {
   // any new prerenders from starting.
   {
     base::RunLoop run_loop;
-    test_registry_.NotifyUpdateMemoryLimitAsync(0, base::DoNothing());
+    test_registry_.NotifyUpdateMemoryLimitAsync(
+        base::MemoryLimit::FromPercent(0), base::DoNothing());
     test_registry_.NotifyReleaseMemoryAsync(run_loop.QuitClosure());
     run_loop.Run();
   }
@@ -1065,11 +1168,13 @@ TEST_P(PrerenderHostRegistryLimitGroupTest, StatefulNumberLimit_Critical) {
   // Reset memory limit back to 100% for subsequent tests.
   {
     base::RunLoop run_loop;
-    test_registry_.NotifyUpdateMemoryLimitAsync(100, base::DoNothing());
+    test_registry_.NotifyUpdateMemoryLimitAsync(base::MemoryLimit::Default(),
+                                                base::DoNothing());
     test_registry_.NotifyReleaseMemoryAsync(run_loop.QuitClosure());
     run_loop.Run();
   }
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(PrerenderHostRegistryTest, MemoryControlsDisabled_NoOp) {
   const GURL prerendering_url("https://example.com/next");
@@ -1084,7 +1189,8 @@ TEST_F(PrerenderHostRegistryTest, MemoryControlsDisabled_NoOp) {
   // must be completely ignored as a no-op, avoiding CancelAllHosts.
   {
     base::RunLoop run_loop;
-    test_registry_.NotifyUpdateMemoryLimitAsync(0, base::DoNothing());
+    test_registry_.NotifyUpdateMemoryLimitAsync(
+        base::MemoryLimit::FromPercent(0), base::DoNothing());
     test_registry_.NotifyReleaseMemoryAsync(run_loop.QuitClosure());
     run_loop.Run();
   }
@@ -1092,6 +1198,7 @@ TEST_F(PrerenderHostRegistryTest, MemoryControlsDisabled_NoOp) {
   EXPECT_TRUE(registry().FindNonReservedHostById(prerender_host_id));
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 TEST_P(PrerenderHostRegistryLimitGroupTest, StatefulActiveEviction) {
   const int initial_count = 10;
   std::vector<PrerenderHostId> prerender_host_ids;
@@ -1108,7 +1215,8 @@ TEST_P(PrerenderHostRegistryLimitGroupTest, StatefulActiveEviction) {
 
   {
     base::RunLoop run_loop;
-    test_registry_.NotifyUpdateMemoryLimitAsync(50, base::DoNothing());
+    test_registry_.NotifyUpdateMemoryLimitAsync(
+        base::MemoryLimit::FromPercent(50), base::DoNothing());
     test_registry_.NotifyReleaseMemoryAsync(run_loop.QuitClosure());
     run_loop.Run();
   }
@@ -1175,7 +1283,8 @@ TEST_P(PrerenderHostRegistryLimitGroupTest,
 
   {
     base::RunLoop run_loop;
-    test_registry_.NotifyUpdateMemoryLimitAsync(50, base::DoNothing());
+    test_registry_.NotifyUpdateMemoryLimitAsync(
+        base::MemoryLimit::FromPercent(50), base::DoNothing());
     test_registry_.NotifyReleaseMemoryAsync(run_loop.QuitClosure());
     run_loop.Run();
   }
@@ -1222,7 +1331,8 @@ TEST_P(PrerenderHostRegistryLimitGroupTest,
   // Set memory limit to 50% (scaled limit becomes 2 * 50% = 1).
   {
     base::RunLoop run_loop;
-    test_registry_.NotifyUpdateMemoryLimitAsync(50, base::DoNothing());
+    test_registry_.NotifyUpdateMemoryLimitAsync(
+        base::MemoryLimit::FromPercent(50), base::DoNothing());
     test_registry_.NotifyReleaseMemoryAsync(run_loop.QuitClosure());
     run_loop.Run();
   }
@@ -1275,7 +1385,8 @@ TEST_P(PrerenderHostRegistryStatefulPerGroupTest, ScalingBehavior_AllGroups) {
   // Set memory limit to 50%.
   {
     base::RunLoop run_loop;
-    test_registry_.NotifyUpdateMemoryLimitAsync(50, run_loop.QuitClosure());
+    test_registry_.NotifyUpdateMemoryLimitAsync(
+        base::MemoryLimit::FromPercent(50), run_loop.QuitClosure());
     run_loop.Run();
   }
 
@@ -1331,7 +1442,8 @@ TEST_P(PrerenderHostRegistryStatefulPerGroupTest,
   // Trigger critical memory pressure (0%)
   {
     base::RunLoop run_loop;
-    test_registry_.NotifyUpdateMemoryLimitAsync(0, base::DoNothing());
+    test_registry_.NotifyUpdateMemoryLimitAsync(
+        base::MemoryLimit::FromPercent(0), base::DoNothing());
     test_registry_.NotifyReleaseMemoryAsync(run_loop.QuitClosure());
     run_loop.Run();
   }
@@ -1353,6 +1465,7 @@ INSTANTIATE_TEST_SUITE_P(
                       StatefulPerGroupScalingParams{false, true, false},
                       StatefulPerGroupScalingParams{false, false, true},
                       StatefulPerGroupScalingParams{true, true, true}));
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 TEST_F(PrerenderHostRegistryTest,
        ReserveHostToActivateBeforeReadyForActivation) {
@@ -1641,29 +1754,34 @@ TEST_F(PrerenderHostRegistryTest, PurposeHeaderIsIgnoredForParamMatching) {
 
 TEST_F(PrerenderHostRegistryTest,
        CompareInitialAndActivationBeginParams_LoadFlags) {
-  EXPECT_FALSE(CheckIsActivatedForParams(
-      base::BindLambdaForTesting([](NavigationSimulatorImpl* navigation) {
-        navigation->set_load_flags(net::LOAD_ONLY_FROM_CACHE);
-      })));
-  ExpectUniqueSampleOfActivationNavigationParamsMatch(
-      PrerenderHost::ActivationNavigationParamsMatch::kLoadFlags);
-
+  // Load flags for renderer-initiated navigations are derived by the browser
+  // from the navigation type, so set that rather than the flags directly.
+  //
   // If the potential activation request requires validation or bypass of the
   // browser cache, the prerendered page should not be activated.
+  //
+  // Note that there's no navigation type that results in
+  // net::LOAD_DISABLE_CACHE, so that case can't be tested.
+  //
+  // Also, the only navigation types that result in load flags that differ from
+  // those of the initial prerender navigation but aren't in prerender's
+  // kCacheLoadFlags set (resulting in
+  // ActivationNavigationParamsMatch::kLoadFlags) are history and restore
+  // navigations, which are browser-initiated, so would fail the
+  // kInitiatorFrameToken check first. So the kCacheLoadFlags also isn't tested.
   EXPECT_FALSE(CheckIsActivatedForParams(
       base::BindLambdaForTesting([](NavigationSimulatorImpl* navigation) {
-        navigation->set_load_flags(net::LOAD_VALIDATE_CACHE);
+        // Results in net::LOAD_VALIDATE_CACHE.
+        navigation->set_navigation_type(blink::mojom::NavigationType::RELOAD);
       })));
   EXPECT_FALSE(CheckIsActivatedForParams(
       base::BindLambdaForTesting([](NavigationSimulatorImpl* navigation) {
-        navigation->set_load_flags(net::LOAD_BYPASS_CACHE);
+        // Results in net::LOAD_BYPASS_CACHE.
+        navigation->set_navigation_type(
+            blink::mojom::NavigationType::RELOAD_BYPASSING_CACHE);
       })));
-  EXPECT_FALSE(CheckIsActivatedForParams(
-      base::BindLambdaForTesting([](NavigationSimulatorImpl* navigation) {
-        navigation->set_load_flags(net::LOAD_DISABLE_CACHE);
-      })));
-  ExpectBucketCountOfActivationNavigationParamsMatch(
-      PrerenderHost::ActivationNavigationParamsMatch::kCacheLoadFlags, 3);
+  ExpectUniqueSampleOfActivationNavigationParamsMatch(
+      PrerenderHost::ActivationNavigationParamsMatch::kCacheLoadFlags, 2);
 }
 
 TEST_F(PrerenderHostRegistryTest,

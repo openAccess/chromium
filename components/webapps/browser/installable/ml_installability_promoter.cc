@@ -5,6 +5,7 @@
 #include "components/webapps/browser/installable/ml_installability_promoter.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/check_is_test.h"
 #include "base/command_line.h"
@@ -21,6 +22,7 @@
 #include "components/segmentation_platform/public/result.h"
 #include "components/segmentation_platform/public/segmentation_platform_service.h"
 #include "components/segmentation_platform/public/types/processed_value.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/webapps/browser/banners/app_banner_manager.h"
 #include "components/webapps/browser/features.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
@@ -36,18 +38,18 @@
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/browser/web_contents_user_data.h"
 #include "services/metrics/public/cpp/metrics_utils.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
-#include "third_party/blink/public/common/manifest/manifest_util.h"
 #include "third_party/blink/public/mojom/favicon/favicon_url.mojom.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 namespace webapps {
+
+DEFINE_USER_DATA(MLInstallabilityPromoter);
 
 namespace {
 const char kDisableGuardrailsSwitch[] = "disable-ml-install-history-guardrails";
@@ -60,6 +62,23 @@ enum class ManifestUrlInvalid {
 };
 
 }  // namespace
+
+// static
+MLInstallabilityPromoter* MLInstallabilityPromoter::From(
+    tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
+
+// static
+MLInstallabilityPromoter* MLInstallabilityPromoter::FromWebContents(
+    content::WebContents* web_contents) {
+  if (!web_contents) {
+    return nullptr;
+  }
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents);
+  return From(tab);
+}
 
 MLInstallabilityPromoter::~MLInstallabilityPromoter() {
   if (service_worker_context_) {
@@ -150,13 +169,16 @@ void MLInstallabilityPromoter::StartPipeline(const GURL& validated_url) {
 }
 
 MLInstallabilityPromoter::MLInstallabilityPromoter(
+    tabs::TabInterface& tab,
     content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<MLInstallabilityPromoter>(*web_contents),
       sequenced_task_runner_(base::SequencedTaskRunner::GetCurrentDefault()),
-      storage_partition_(
-          web_contents->GetPrimaryMainFrame()->GetStoragePartition()),
-      service_worker_context_(nullptr) {
+      storage_partition_(nullptr),
+      service_worker_context_(nullptr),
+      scoped_unowned_user_data_(tab.GetUnownedUserDataHost(), *this) {
+  CHECK(web_contents);
+  storage_partition_ =
+      web_contents->GetPrimaryMainFrame()->GetStoragePartition();
   CHECK(storage_partition_);
   service_worker_context_ = storage_partition_->GetServiceWorkerContext();
   CHECK(service_worker_context_);
@@ -171,8 +193,9 @@ void MLInstallabilityPromoter::OnDidCollectSiteQualityMetrics(
 }
 
 void MLInstallabilityPromoter::OnDidGetManifestForCurrentURL(
-    blink::mojom::ManifestPtr manifest) {
-  manifest_ = std::move(manifest);
+    std::optional<blink::Manifest> manifest) {
+  manifest_ = manifest ? std::make_unique<blink::Manifest>(*std::move(manifest))
+                       : nullptr;
   site_manifest_metrics_task_.reset();
   MaybeCompleteMetricsCollection();
 }
@@ -221,15 +244,7 @@ GURL MLInstallabilityPromoter::GetProjectedManifestIdAfterMetricsCollection() {
     case MLPipelineState::kComplete:
       break;
   }
-  GURL manifest_id;
-  if (blink::IsEmptyManifest(manifest_)) {
-    manifest_id = site_url_.GetWithoutRef();
-  } else {
-    manifest_id = manifest_->id;
-    if (!manifest_id.is_valid()) {
-      manifest_id = site_url_.GetWithoutRef();
-    }
-  }
+  GURL manifest_id = manifest_ ? manifest_->id() : site_url_.GetWithoutRef();
   CHECK(manifest_id.is_valid()) << " invalid manifest_id: " << manifest_id;
   return manifest_id;
 }
@@ -258,7 +273,7 @@ void MLInstallabilityPromoter::EmitUKMs() {
 
   // Record Site.Manifest Event data.
   ukm::builders::Site_Manifest manifest_builder(source_id);
-  if (blink::IsEmptyManifest(manifest_)) {
+  if (!manifest_) {
     // See NullableBoolean in enums.xml for more information.
     manifest_builder
         .SetDisplayMode(
@@ -272,16 +287,16 @@ void MLInstallabilityPromoter::EmitUKMs() {
             -1)  // See ManifestUrlValidity in enums.xml for more information.
         .SetHasThemeColor(/*NullableBoolean::Null=*/2);
   } else {
-    manifest_builder.SetDisplayMode(static_cast<int>(manifest_->display))
-        .SetHasBackgroundColor(manifest_->background_color.has_value())
-        .SetHasName(manifest_->name.has_value())
-        .SetHasScreenshots(!manifest_->screenshots.empty())
-        .SetHasThemeColor(manifest_->theme_color.has_value());
+    manifest_builder.SetDisplayMode(static_cast<int>(manifest_->display()))
+        .SetHasBackgroundColor(manifest_->background_color().has_value())
+        .SetHasName(manifest_->name().has_value())
+        .SetHasScreenshots(!manifest_->screenshots().empty())
+        .SetHasThemeColor(manifest_->theme_color().has_value());
 
     // Set icon data in the UKM.
     bool has_manifest_icons_any = false;
     bool has_manifest_icons_maskable = false;
-    for (const auto& icon : manifest_->icons) {
+    for (const auto& icon : manifest_->icons()) {
       for (const auto manifest_purpose : icon.purpose) {
         if (manifest_purpose ==
             blink::mojom::ManifestImageResource_Purpose::ANY) {
@@ -300,16 +315,10 @@ void MLInstallabilityPromoter::EmitUKMs() {
         .SetHasIconsMaskable(has_manifest_icons_maskable);
 
     // Set Manifest start URL data in UKM.
-    if (!manifest_->has_valid_specified_start_url) {
-      manifest_builder.SetHasStartUrl(
-          static_cast<int>(ManifestUrlInvalid::kEmpty));
-    } else if (manifest_->start_url.is_valid()) {
-      manifest_builder.SetHasStartUrl(
-          static_cast<int>(ManifestUrlInvalid::kValid));
-    } else {
-      manifest_builder.SetHasStartUrl(
-          static_cast<int>(ManifestUrlInvalid::kInvalid));
-    }
+    manifest_builder.SetHasStartUrl(
+        static_cast<int>(manifest_->has_valid_specified_start_url()
+                             ? ManifestUrlInvalid::kValid
+                             : ManifestUrlInvalid::kEmpty));
   }
   manifest_builder.Record(ukm_recorder->Get());
   RequestMlClassification();
@@ -339,7 +348,7 @@ void MLInstallabilityPromoter::RequestMlClassification() {
     state_ = MLPipelineState::kComplete;
     return;
   }
-  if ((!manifest_ || !manifest_->has_valid_specified_start_url) &&
+  if ((!manifest_ || !manifest_->has_valid_specified_start_url()) &&
       WebappsClient::Get()->IsUrlControlledBySeenManifest(
           web_contents()->GetBrowserContext(), site_url_)) {
     state_ = MLPipelineState::kComplete;
@@ -384,7 +393,7 @@ void MLInstallabilityPromoter::OnClassificationResult(
   }
   GURL manifest_id = GetProjectedManifestIdAfterMetricsCollection();
   bool has_icons = site_quality_metrics_.non_default_favicons_count > 0 ||
-                   !manifest_->icons.empty();
+                   (manifest_ && !manifest_->icons().empty());
   bool blocked_by_history_guardrails =
       client->IsMlPromotionBlockedByHistoryGuardrail(
           web_contents()->GetBrowserContext(), manifest_id);
@@ -439,15 +448,19 @@ void MLInstallabilityPromoter::DidFinishNavigation(
   // a lot of subresources to wait for, etc.
   ResetRunningStagesAndTasksMaybeReportResult();
   if (handle->IsServedFromBackForwardCache()) {
-    StartPipeline(site_url_);
+    StartPipeline(handle->GetURL());
   }
 }
 
 void MLInstallabilityPromoter::DidFinishLoad(
-    content::RenderFrameHost* /*render_frame_host*/,
-    const GURL& /*validated_url*/ url) {
+    content::RenderFrameHost* render_frame_host,
+    const GURL& /*validated_url*/) {
+  if (!render_frame_host || !render_frame_host->IsInPrimaryMainFrame() ||
+      render_frame_host->IsErrorDocument()) {
+    return;
+  }
   ResetRunningStagesAndTasksMaybeReportResult();
-  StartPipeline(url);
+  StartPipeline(render_frame_host->GetLastCommittedURL());
 }
 
 void MLInstallabilityPromoter::OnVisibilityChanged(
@@ -540,6 +553,7 @@ void MLInstallabilityPromoter::ResetRunningStagesAndTasksMaybeReportResult() {
   app_banner_manager_.reset();
   site_manifest_metrics_task_.reset();
   site_quality_metrics_task_.reset();
+  manifest_.reset();
   is_timeout_complete_ = false;
   // Note: Destroying this will report the result to the classification system,
   // if it wasn't given to an installation tracker.
@@ -551,7 +565,5 @@ bool MLInstallabilityPromoter::IsTimeoutTaskOnlyPending() {
   return !site_manifest_metrics_task_ && !site_quality_metrics_task_ &&
          !is_timeout_complete_;
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(MLInstallabilityPromoter);
 
 }  // namespace webapps

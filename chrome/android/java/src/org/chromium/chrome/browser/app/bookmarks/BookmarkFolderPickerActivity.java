@@ -6,7 +6,9 @@ package org.chromium.chrome.browser.app.bookmarks;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
+import android.content.res.Configuration;
 import android.graphics.Color;
+import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.MotionEvent;
@@ -69,14 +71,32 @@ public class BookmarkFolderPickerActivity extends SynchronousInitializationActiv
     /** Result code sent when the picker wishes to dismiss all bookmark dialogs in the backstack. */
     public static final int RESULT_DISMISS_ALL = RESULT_FIRST_USER + 1;
 
+    private static final String STATE_CURRENT_FOLDER_ID =
+            "BookmarkFolderPickerActivity.CurrentFolderId";
+
     private @Nullable BookmarkFolderPickerCoordinator mCoordinator;
     private @Nullable BookmarkUiPrefs mBookmarkUiPrefs;
+    private @Nullable BookmarkImageFetcher mBookmarkImageFetcher;
     private boolean mOutcomeRecorded;
+
+    /** The folder that was shown before recreation, if any. */
+    private @Nullable BookmarkId mRestoredFolderId;
+
+    /** Whether this instance uses the desktop dialog rather than the full-screen presentation. */
+    private boolean mIsDesktopDialog;
+
+    /**
+     * Whether the display was tablet-width when this instance chose its presentation. With the
+     * desktop dialog, a fold/unfold that changes this recreates the activity to switch
+     * presentation.
+     */
+    private boolean mIsTabletDisplay;
 
     @Override
     @Initializer
     protected void onProfileAvailable(Profile profile) {
         super.onProfileAvailable(profile);
+        BookmarkUtils.makeTranslucentIfFloating(this);
         BookmarkModel bookmarkModel = BookmarkModel.getForProfile(profile);
 
         List<String> bookmarkIdsAsStrings =
@@ -90,7 +110,7 @@ public class BookmarkFolderPickerActivity extends SynchronousInitializationActiv
             return;
         }
 
-        BookmarkImageFetcher bookmarkImageFetcher =
+        mBookmarkImageFetcher =
                 new BookmarkImageFetcher(
                         profile,
                         this,
@@ -121,7 +141,7 @@ public class BookmarkFolderPickerActivity extends SynchronousInitializationActiv
                             recordOutcome(BookmarkFolderPickerOutcome.MOVED);
                             setResult(RESULT_OK);
                             finish();
-                            if (BookmarkUtils.isDesktopBookmarksLayoutEnabled()) {
+                            if (mIsDesktopDialog) {
                                 overridePendingTransition(0, 0);
                             }
                         },
@@ -129,12 +149,14 @@ public class BookmarkFolderPickerActivity extends SynchronousInitializationActiv
                         mBookmarkUiPrefs,
                         new ImprovedBookmarkRowCoordinator(
                                 this,
-                                bookmarkImageFetcher,
+                                mBookmarkImageFetcher,
                                 bookmarkModel,
                                 mBookmarkUiPrefs,
                                 shoppingService),
                         shoppingService,
-                        isFromBookmarkDialog);
+                        isFromBookmarkDialog,
+                        mIsDesktopDialog,
+                        mRestoredFolderId);
 
         getOnBackPressedDispatcher()
                 .addCallback(
@@ -147,19 +169,44 @@ public class BookmarkFolderPickerActivity extends SynchronousInitializationActiv
                         });
         BackPressHelper.create(this, getOnBackPressedDispatcher(), mCoordinator);
 
-        Toolbar toolbar = mCoordinator.getToolbar();
-        if (BookmarkUtils.isDesktopBookmarksLayoutEnabled()) {
-            toolbar.inflateMenu(R.menu.bookmark_folder_picker_menu_desktop);
-            toolbar.setOnMenuItemClickListener(this::onOptionsItemSelected);
+        if (mIsDesktopDialog) {
             setFinishOnTouchOutside(true);
-            getWindow().addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            int scrimColor = ContextCompat.getColor(this, R.color.modal_dialog_scrim_color_lff);
-            getWindow().setDimAmount(Color.alpha(scrimColor) / 255.0f);
+            // When launched from another bookmark dialog, the parent dialog's window remains
+            // visible underneath and keeps owning the dim. Requesting a second dim here would make
+            // WindowManager move the dim layer to this window, which shows up as a scrim flash.
+            // The floating dialog theme enables the dim by default, so it must be cleared
+            // explicitly.
+            if (isFromBookmarkDialog) {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            } else {
+                // FLAG_DIM_BEHIND is already set by the floating dialog theme; only the dim amount
+                // needs to match the modal dialog scrim.
+                int scrimColor = ContextCompat.getColor(this, R.color.modal_dialog_scrim_color_lff);
+                getWindow().setDimAmount(Color.alpha(scrimColor) / 255.0f);
+            }
         } else {
+            Toolbar toolbar = assumeNonNull(mCoordinator.getToolbar());
             setSupportActionBar(toolbar);
             assumeNonNull(getSupportActionBar()).setDisplayHomeAsUpEnabled(true);
         }
         setContentView(mCoordinator.getView());
+
+        if (mIsDesktopDialog) {
+            getWindow()
+                    .setLayout(
+                            WindowManager.LayoutParams.WRAP_CONTENT,
+                            WindowManager.LayoutParams.WRAP_CONTENT);
+            View closeButton = findViewById(R.id.close_button);
+            if (closeButton != null) {
+                closeButton.setOnClickListener(
+                        v -> {
+                            recordOutcome(BookmarkFolderPickerOutcome.CLOSED);
+                            setResult(RESULT_DISMISS_ALL);
+                            finish();
+                            overridePendingTransition(0, 0);
+                        });
+            }
+        }
 
         View cancelButton = findViewById(R.id.cancel_button);
         if (cancelButton != null) {
@@ -180,14 +227,14 @@ public class BookmarkFolderPickerActivity extends SynchronousInitializationActiv
     void onBackPressFromRoot() {
         recordOutcome(BookmarkFolderPickerOutcome.DISMISSED);
         finish();
-        if (BookmarkUtils.isDesktopBookmarksLayoutEnabled()) {
+        if (mIsDesktopDialog) {
             overridePendingTransition(0, 0);
         }
     }
 
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
-        if (!BookmarkUtils.isDesktopBookmarksLayoutEnabled()) {
+        if (!mIsDesktopDialog) {
             getMenuInflater().inflate(R.menu.bookmark_folder_picker_menu, menu);
             assumeNonNull(mCoordinator).updateToolbarButtons();
             return super.onCreateOptionsMenu(menu);
@@ -201,7 +248,7 @@ public class BookmarkFolderPickerActivity extends SynchronousInitializationActiv
             recordOutcome(BookmarkFolderPickerOutcome.CLOSED);
             setResult(RESULT_DISMISS_ALL);
             finish();
-            if (BookmarkUtils.isDesktopBookmarksLayoutEnabled()) {
+            if (mIsDesktopDialog) {
                 overridePendingTransition(0, 0);
             }
             return true;
@@ -220,7 +267,7 @@ public class BookmarkFolderPickerActivity extends SynchronousInitializationActiv
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         if (event.getAction() == MotionEvent.ACTION_DOWN
-                && BookmarkUtils.isDesktopBookmarksLayoutEnabled()
+                && mIsDesktopDialog
                 && isOutOfBounds(event)) {
             recordOutcome(BookmarkFolderPickerOutcome.DISMISSED);
             setResult(RESULT_DISMISS_ALL);
@@ -244,7 +291,8 @@ public class BookmarkFolderPickerActivity extends SynchronousInitializationActiv
 
     @Override
     protected void onDestroy() {
-        if (!mOutcomeRecorded) {
+        // Not a user outcome; skip while recreating (e.g. to switch presentation).
+        if (!mOutcomeRecorded && !isChangingConfigurations()) {
             recordOutcome(BookmarkFolderPickerOutcome.DISMISSED);
         }
 
@@ -257,6 +305,70 @@ public class BookmarkFolderPickerActivity extends SynchronousInitializationActiv
             mBookmarkUiPrefs = null;
         }
 
+        if (mBookmarkImageFetcher != null) {
+            mBookmarkImageFetcher.destroy();
+            mBookmarkImageFetcher = null;
+        }
+
         super.onDestroy();
+    }
+
+    @Override
+    protected void onCreateInternal(@Nullable Bundle savedInstanceState) {
+        super.onCreateInternal(savedInstanceState);
+        String folderId =
+                savedInstanceState == null
+                        ? null
+                        : savedInstanceState.getString(STATE_CURRENT_FOLDER_ID);
+        if (folderId != null) {
+            mRestoredFolderId = BookmarkId.getBookmarkIdFromString(folderId);
+        }
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        // Keep the open folder across recreation (e.g. to switch presentation). Before the model
+        // has loaded there is no current folder yet, so carry the restored one forward.
+        BookmarkId folderId = mCoordinator == null ? null : mCoordinator.getCurrentFolderId();
+        if (folderId == null) folderId = mRestoredFolderId;
+        if (folderId != null) {
+            outState.putString(STATE_CURRENT_FOLDER_ID, folderId.toString());
+        }
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        // Size changes don't relaunch this activity, so with the desktop dialog recreate it when a
+        // fold/unfold crosses the tablet width to switch between the dialog and full-screen
+        // presentation. Reads the live display width since smallestScreenWidthDp may be pinned.
+        if (!isFinishing()
+                && BookmarkUtils.isDesktopBookmarksDialogEnabled()
+                && mIsTabletDisplay != BookmarkUtils.isCurrentDisplayTabletWidth(this)) {
+            recreate();
+        }
+    }
+
+    @Override
+    protected void applyThemeOverlays() {
+        super.applyThemeOverlays();
+        mIsTabletDisplay = BookmarkUtils.isCurrentDisplayTabletWidth(this);
+        mIsDesktopDialog = BookmarkUtils.shouldShowDesktopBookmarkDialog(this);
+        if (mIsDesktopDialog) {
+            applySingleThemeOverlay(R.style.ThemeOverlay_Chromium_DialogWhenLarge_ContentWrapping);
+        }
+    }
+
+    @Override
+    protected boolean shouldDrawEdgeToEdgeOnCreate() {
+        // Floating modal dialogs should not draw edge-to-edge.
+        return super.shouldDrawEdgeToEdgeOnCreate() && !BookmarkUtils.isBookmarkDialog(this);
+    }
+
+    @Override
+    protected boolean wrapContentWithEdgeToEdgeLayout() {
+        // Floating modal dialogs should not be wrapped edge-to-edge.
+        return super.wrapContentWithEdgeToEdgeLayout() && !BookmarkUtils.isBookmarkDialog(this);
     }
 }

@@ -7,21 +7,19 @@
 #include <Foundation/Foundation.h>
 
 #include <algorithm>
+#include <array>
+#include <string_view>
 
 #include "base/apple/foundation_util.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/fixed_flat_set.h"
-#include "base/containers/flat_map.h"
-#include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_forward.h"
-#include "base/no_destructor.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/to_string.h"
 #include "base/time/time.h"
-#include "components/enterprise/platform_auth/platform_auth_features.h"
 #include "components/policy/core/common/policy_logger.h"
 #include "net/base/apple/url_conversions.h"
 #include "net/http/http_request_headers.h"
@@ -38,22 +36,51 @@ namespace {
 
 constexpr char kWildcardSegment[] = "*";
 
+// Allowlist for request headers on the Okta SSO URL request.
+// Header names must be lowercase.
+constexpr auto kRequestHeadersAllowlist =
+    base::MakeFixedFlatSet<std::string_view>({
+        "accept",
+        "accept-language",
+        "content-type",
+        "user-agent",
+        "x-okta-user-agent-extended",
+    });
+
+// Fixed request headers appended to the Okta SSO URL request.
+constexpr auto kFixedRequestHeaders =
+    base::MakeFixedFlatMap<std::string_view, std::string_view>({
+        {"Cache-Control", "no-cache"},
+        {"Pragma", "no-cache"},
+        {"Priority", "u=1, i"},
+        {"Sec-Fetch-Dest", "empty"},
+        {"Sec-Fetch-Mode", "cors"},
+        {"Sec-Fetch-Site", "same-origin"},
+    });
+
 // Splits both the pattern and the path into segments separated with |/|.
 // Compares corresponding segments. Wildcard |*| matches one whole segment.
 bool MatchOktaSSOUrlPattern(std::string_view path) {
-  static const base::NoDestructor<std::vector<std::string>> pattern_segments(
-      base::SplitString(enterprise_auth::kOktaSsoURLPattern.Get(), "/",
-                        base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY));
+  static constexpr auto kPatternSegments = []() consteval {
+    auto split = [] {
+      return base::SplitStringPiece(kOktaSsoURLPattern, "/",
+                                    base::TRIM_WHITESPACE,
+                                    base::SPLIT_WANT_NONEMPTY);
+    };
+    std::array<std::string_view, split().size()> result;
+    std::ranges::copy(split(), result.begin());
+    return result;
+  }();
   const std::vector<std::string_view> path_segments = base::SplitStringPiece(
       path, "/", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
 
-  if (path_segments.size() != pattern_segments->size()) {
+  if (path_segments.size() != kPatternSegments.size()) {
     return false;
   }
 
   for (size_t i = 0; i < path_segments.size(); ++i) {
-    if (pattern_segments->at(i) != kWildcardSegment &&
-        path_segments.at(i) != pattern_segments->at(i)) {
+    if (kPatternSegments[i] != kWildcardSegment &&
+        path_segments[i] != kPatternSegments[i]) {
       return false;
     }
   }
@@ -63,20 +90,6 @@ bool MatchOktaSSOUrlPattern(std::string_view path) {
 
 constexpr NSString* kNsOrigin = @"Origin";
 
-base::flat_set<std::string> ParseCommaSeparatedList(std::string raw_param) {
-  std::vector<std::string> parts = base::SplitString(
-      raw_param, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-  return base::flat_set<std::string>(std::move(parts));
-}
-
-base::flat_map<std::string, std::string> ParseFixedRequestHeaders() {
-  std::string raw_param = enterprise_auth::kOktaSsoFixedRequestHeaders.Get();
-  base::StringPairs pairs;
-  base::SplitStringIntoKeyValuePairs(raw_param, ';', '|', &pairs);
-  base::flat_map<std::string, std::string> headers(std::move(pairs));
-  return headers;
-}
-
 // Will ignore headers where conversion between std::string and NSString failed.
 // Never returns nil, if all headers were skipped an empty dictionary will be
 // returned.
@@ -85,12 +98,8 @@ NSMutableDictionary* ConvertHttpRequestHeaders(
     const net::HttpRequestHeaders& headers) {
   NSMutableDictionary* headers_dict = [NSMutableDictionary dictionary];
 
-  static const base::NoDestructor<base::flat_set<std::string>>
-      kRequestHeadersAllowlist(ParseCommaSeparatedList(
-          enterprise_auth::kOktaSsoRequestHeadersAllowlist.Get()));
-
   for (const auto& header : headers.GetHeaderVector()) {
-    if (kRequestHeadersAllowlist->contains(base::ToLowerASCII(header.key))) {
+    if (kRequestHeadersAllowlist.contains(base::ToLowerASCII(header.key))) {
       NSString* ns_key = base::SysUTF8ToNSString(header.key);
       NSString* ns_value = base::SysUTF8ToNSString(header.value);
       if (ns_key && ns_value) {
@@ -99,10 +108,7 @@ NSMutableDictionary* ConvertHttpRequestHeaders(
     }
   }
 
-  static const base::NoDestructor<base::flat_map<std::string, std::string>>
-      kFixedRequestHeaders(ParseFixedRequestHeaders());
-
-  for (const auto& [key, value] : *kFixedRequestHeaders) {
+  for (const auto& [key, value] : kFixedRequestHeaders) {
     NSString* ns_key = base::SysUTF8ToNSString(key);
     NSString* ns_value = base::SysUTF8ToNSString(value);
     if (ns_key && ns_value) {

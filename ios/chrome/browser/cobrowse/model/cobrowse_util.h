@@ -5,10 +5,27 @@
 #ifndef IOS_CHROME_BROWSER_COBROWSE_MODEL_COBROWSE_UTIL_H_
 #define IOS_CHROME_BROWSER_COBROWSE_MODEL_COBROWSE_UTIL_H_
 
+class AimEligibilityService;
+class PrefService;
 class ProfileIOS;
 
 // Returns true if AIM Cobrowse feature is enabled and the user is eligible for
-// AIM.
+// AIM and search content sharing.
+bool IsAimCobrowseEligible(AimEligibilityService* aim_eligibility_service,
+                           const PrefService* prefs);
 bool IsAimCobrowseEligible(ProfileIOS* profile);
+
+// Returns true if the AIM Cobrowse Add Tab entrypoint is enabled and the user
+// is eligible for AIM Cobrowse.
+bool IsAimCobrowseAddTabEligible(AimEligibilityService* aim_eligibility_service,
+                                 const PrefService* prefs);
+bool IsAimCobrowseAddTabEligible(ProfileIOS* profile);
+
+// Returns true if AIM Cobrowse Web Selection Search feature is enabled and the
+// user is eligible for AIM Cobrowse.
+bool IsAimCobrowseWebSelectionSearchEligible(
+    AimEligibilityService* aim_eligibility_service,
+    const PrefService* prefs);
+bool IsAimCobrowseWebSelectionSearchEligible(ProfileIOS* profile);
 
 #endif  // IOS_CHROME_BROWSER_COBROWSE_MODEL_COBROWSE_UTIL_H_

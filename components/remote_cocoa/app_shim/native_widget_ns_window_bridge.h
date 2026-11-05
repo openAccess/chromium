@@ -163,22 +163,28 @@ class REMOTE_COCOA_APP_SHIM_EXPORT NativeWidgetNSWindowBridge
   // being reordered in (or out of) the screen list.
   void OnVisibilityChanged();
 
-  // Called when -[NSWindow isOnActiveSpace] may have changed.
+  // Called when -[NSWindow isOnActiveSpace] or the window's on-screen
+  // visibility may have changed.
   //
-  // This value can change in two main scenarios,
+  // This value can change in two main scenarios:
   //   1. The user switches the active space.
   //      - Detected using NSWorkspaceActiveSpaceDidChangeNotification.
   //   2. The user moves the window to a different space (e.g., via Mission
-  //   Control).
+  //      Control, or gestures into view).
   //      - Detected using -windowDidChangeOcclusionState:.
   //
-  // Relying solely on windowDidChangeOcclusionState: is insufficient. It
-  // appears that during space switch this notification is sent before
-  // isOnActiveSpace is updated.
-  //
-  // Note that although `onActiveSpace` is a property, it cannot be KVO
-  // observed, thus this callback.
+  // During an interactive space swipe, the incoming space is immediately
+  // considered un-occluded (`NSWindowOcclusionStateVisible` is set), and
+  // -windowDidChangeOcclusionState: is sent before -[NSWindow isOnActiveSpace]
+  // is updated. Combining onActiveSpace with NSWindowOcclusionStateVisible
+  // allows detecting window visibility as soon as it enters the display during
+  // gestures.
   void OnSpaceActivationMayHaveChanged();
+
+  // Called by WindowOcclusionCheckerMac with its computed occlusion state for
+  // this window (possibly unchanged). Forwarded to the host, which uses it only
+  // to update compositor visibility.
+  void OnWindowOcclusionChanged(bool occluded);
 
   // Called by the NSWindowDelegate when the system colors change.
   void OnSystemColorsChanged();
@@ -209,7 +215,7 @@ class REMOTE_COCOA_APP_SHIM_EXPORT NativeWidgetNSWindowBridge
   // parent will close children before the parent closes, and children will be
   // raised above their parent when window z-order changes.
   NativeWidgetNSWindowBridge* parent() { return parent_; }
-  const std::vector<NativeWidgetNSWindowBridge*>& child_windows() {
+  const std::vector<raw_ptr<NativeWidgetNSWindowBridge>>& child_windows() {
     return child_windows_;
   }
 
@@ -285,15 +291,10 @@ class REMOTE_COCOA_APP_SHIM_EXPORT NativeWidgetNSWindowBridge
   void DestroyContentView() override;
   void CloseWindow() override;
   void CloseWindowNow() override;
-  void SetInitialBounds(const gfx::Rect& new_bounds,
-                        const gfx::Size& minimum_content_size) override;
-  void SetBounds(const gfx::Rect& new_bounds,
+  void SetBounds(const std::optional<gfx::Point>& origin,
+                 const gfx::Size& size,
                  const gfx::Size& minimum_content_size,
                  const std::optional<gfx::Size>& maximum_content_size) override;
-  void SetSize(const gfx::Size& new_size,
-               const gfx::Size& minimum_content_size) override;
-  void SetSizeAndCenter(const gfx::Size& content_size,
-                        const gfx::Size& minimum_content_size) override;
   void SetVisibilityState(
       remote_cocoa::mojom::WindowVisibilityState new_state) override;
   void SetAnimationEnabled(bool animation_enabled) override;
@@ -352,6 +353,10 @@ class REMOTE_COCOA_APP_SHIM_EXPORT NativeWidgetNSWindowBridge
   // TextInputClient.
   bool NeedsUpdateWindows();
 
+  // Sets -[BridgedContentView deferInputContextActivation]. While deferred,
+  // AppKit does not activate the input method for the focused text field.
+  void SetDeferInputContextActivation(bool defer);
+
   // Compute the window and content size, and forward them to |host_|. This will
   // update widget and compositor size.
   void UpdateWindowGeometry();
@@ -381,10 +386,13 @@ class REMOTE_COCOA_APP_SHIM_EXPORT NativeWidgetNSWindowBridge
   // frame.
   void OnLiveResizeToFrame(NSRect new_window_frame);
 
-  // Update `host_` and its compositor with a new NSWindow frame size. This
+  // Update `host_` and its compositor with a new NSWindow frame size.
   // can be done in response to the -[NSWindow frame] attribute changing, or
-  // in anticipation of a live-resize step.
-  void SendWindowFrameChangeToHost(NSRect new_window_frame);
+  // in anticipation of a live-resize, in which case
+  // `live_resize_.pending_window_frame` may be set to `pending_window_frame`.
+  // Returns true if `content_dip_size_` changed.
+  bool SendWindowFrameChangeToHost(
+      std::optional<NSRect> pending_window_frame = std::nullopt);
 
  private:
   friend class views::test::BridgedNativeWidgetTestApi;
@@ -431,6 +439,24 @@ class REMOTE_COCOA_APP_SHIM_EXPORT NativeWidgetNSWindowBridge
   // `MoveToActiveFullscreenSpace()`.
   void RestoreCollectionBehavior();
 
+  // Returns whether screenshots of this window are allowed, taking the window
+  // hierarchy into account: a window is excluded from capture if it or any of
+  // its ancestors disallows screenshots. This does not modify
+  // `allow_screenshots_` as that reflects the state requested by the
+  // host for this window.
+  bool ShouldAllowScreenshots() const;
+
+  // Applies the CoreGraphics window capture exclusion shape for this window and
+  // its child windows, which inherit this window's exclusion state. The shape
+  // is expressed in window coordinates, so this must also be called whenever
+  // the window is resized.
+  void UpdateCaptureExclusion();
+
+  // Registers or unregisters `window_` with `WindowOcclusionCheckerMac` based
+  // on whether this bridge currently represents an initialized, top-level,
+  // non-tooltip window.
+  void UpdateWindowOcclusionTracking();
+
   // CocoaMouseCaptureDelegate:
   bool PostCapturedEvent(NSEvent* event) override;
   void OnMouseCaptureLost() override;
@@ -454,11 +480,14 @@ class REMOTE_COCOA_APP_SHIM_EXPORT NativeWidgetNSWindowBridge
   std::unique_ptr<CocoaWindowMoveLoop> window_move_loop_;
   ui::mojom::ModalType modal_type_ = ui::mojom::ModalType::kNone;
   bool is_translucent_window_ = false;
+  bool is_tooltip_ = false;
+  bool window_initialized_ = false;
+  bool is_tracked_by_occlusion_checker_ = false;
   id __strong local_event_monitor_;
 
   raw_ptr<NativeWidgetNSWindowBridge> parent_ =
       nullptr;  // Weak. If non-null, owns this.
-  std::vector<NativeWidgetNSWindowBridge*> child_windows_;
+  std::vector<raw_ptr<NativeWidgetNSWindowBridge>> child_windows_;
 
   // The size of the content area of the window most recently sent to |host_|
   // (and its compositor).
@@ -537,6 +566,9 @@ class REMOTE_COCOA_APP_SHIM_EXPORT NativeWidgetNSWindowBridge
 
   base::RepeatingCallback<void(NSWindow*, bool)>
       capture_exclusion_applier_for_testing_;
+  // The screenshot state requested by the host for this window, ignoring any
+  // state inherited from ancestor windows. Use `ShouldAllowScreenshots()` to
+  // get the effective state.
   bool allow_screenshots_ = true;
 
   display::ScopedDisplayObserver display_observer_{this};

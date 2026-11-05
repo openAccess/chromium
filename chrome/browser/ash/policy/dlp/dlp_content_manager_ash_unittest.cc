@@ -28,7 +28,6 @@
 #include "chrome/browser/chromeos/policy/dlp/test/mock_dlp_rules_manager.h"
 #include "chrome/browser/enterprise/data_controls/dlp_reporting_manager.h"
 #include "chrome/browser/enterprise/data_controls/dlp_reporting_manager_test_helper.h"
-#include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/policy/messaging_layer/public/report_client_test_util.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -48,6 +47,7 @@
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/message_center/message_center.h"
 
 using ::testing::_;
 using ::testing::Mock;
@@ -61,40 +61,6 @@ constexpr GaiaId::Literal kGaiaId("12345");
 constexpr char kSrcPattern[] = "example";
 constexpr char kRuleName[] = "ruleName";
 constexpr char kRuleId[] = "obfuscatedId";
-const std::u16string kApplicationName = u"application";
-const DlpRulesManager::RuleMetadata kRuleMetadata(kRuleName, kRuleId);
-
-const DlpContentRestrictionSet kScreenshotRestricted(
-    DlpContentRestriction::kScreenshot,
-    DlpRulesManager::Level::kBlock);
-const DlpContentRestrictionSet kPrivacyScreenEnforced(
-    DlpContentRestriction::kPrivacyScreen,
-    DlpRulesManager::Level::kBlock);
-const DlpContentRestrictionSet kPrivacyScreenReported(
-    DlpContentRestriction::kPrivacyScreen,
-    DlpRulesManager::Level::kReport);
-const DlpContentRestrictionSet kPrintingRestricted(
-    DlpContentRestriction::kPrint,
-    DlpRulesManager::Level::kBlock);
-const DlpContentRestrictionSet kScreenShareRestricted(
-    DlpContentRestriction::kScreenShare,
-    DlpRulesManager::Level::kBlock);
-
-const DlpContentRestrictionSet kPrintingWarned(DlpContentRestriction::kPrint,
-                                               DlpRulesManager::Level::kWarn);
-const DlpContentRestrictionSet kScreenshotWarned(
-    DlpContentRestriction::kScreenshot,
-    DlpRulesManager::Level::kWarn);
-const DlpContentRestrictionSet kScreenShareWarned(
-    DlpContentRestriction::kScreenShare,
-    DlpRulesManager::Level::kWarn);
-
-const DlpContentRestrictionSet kScreenshotReported(
-    DlpContentRestriction::kScreenshot,
-    DlpRulesManager::Level::kReport);
-
-const DlpContentRestrictionSet kEmptyRestrictionSet;
-const DlpContentRestrictionSet kNonEmptyRestrictionSet = kScreenshotRestricted;
 
 class MockPrivacyScreenHelper : public ash::PrivacyScreenDlpHelper {
  public:
@@ -165,13 +131,16 @@ class DlpContentManagerAshTest : public testing::Test {
     // `WebContents` from `DlpContentManager`'s list of `WebContents`;
     // instantiate it here to make sure that cleanup happens even in unit
     // tests.
-    DlpContentTabHelper::MaybeCreateForWebContents(web_contents.get());
-    CHECK(DlpContentTabHelper::FromWebContents(web_contents.get()));
+    auto dlp_tab_helper = DlpContentTabHelper::MaybeCreate(web_contents.get());
+    CHECK(dlp_tab_helper);
+    dlp_tab_helpers_.push_back(std::move(dlp_tab_helper));
     return web_contents;
   }
 
   void SetUp() override {
     testing::Test::SetUp();
+
+    message_center::MessageCenter::Initialize();
 
     ASSERT_TRUE(profile_manager_.SetUp());
     LoginFakeUser();
@@ -183,9 +152,12 @@ class DlpContentManagerAshTest : public testing::Test {
   }
 
   void TearDown() override {
-    testing::Test::TearDown();
-
+    dlp_tab_helpers_.clear();
     helper_.ResetWarnNotifierForTesting();
+
+    message_center::MessageCenter::Shutdown();
+
+    testing::Test::TearDown();
   }
 
   void SetReportQueueForReportingManager() {
@@ -222,6 +194,32 @@ class DlpContentManagerAshTest : public testing::Test {
 
   TestingProfile* profile() { return profile_; }
 
+  const std::u16string application_name_ = u"application";
+  const DlpRulesManager::RuleMetadata rule_metadata_{kRuleName, kRuleId};
+
+  // Declared before `non_empty_restriction_set_`, which copies it.
+  const DlpContentRestrictionSet screenshot_restricted_{
+      DlpContentRestriction::kScreenshot, DlpRulesManager::Level::kBlock};
+  const DlpContentRestrictionSet screenshot_warned_{
+      DlpContentRestriction::kScreenshot, DlpRulesManager::Level::kWarn};
+  const DlpContentRestrictionSet screenshot_reported_{
+      DlpContentRestriction::kScreenshot, DlpRulesManager::Level::kReport};
+  const DlpContentRestrictionSet privacy_screen_enforced_{
+      DlpContentRestriction::kPrivacyScreen, DlpRulesManager::Level::kBlock};
+  const DlpContentRestrictionSet privacy_screen_reported_{
+      DlpContentRestriction::kPrivacyScreen, DlpRulesManager::Level::kReport};
+  const DlpContentRestrictionSet printing_restricted_{
+      DlpContentRestriction::kPrint, DlpRulesManager::Level::kBlock};
+  const DlpContentRestrictionSet printing_warned_{
+      DlpContentRestriction::kPrint, DlpRulesManager::Level::kWarn};
+  const DlpContentRestrictionSet screen_share_restricted_{
+      DlpContentRestriction::kScreenShare, DlpRulesManager::Level::kBlock};
+  const DlpContentRestrictionSet screen_share_warned_{
+      DlpContentRestriction::kScreenShare, DlpRulesManager::Level::kWarn};
+  const DlpContentRestrictionSet empty_restriction_set_;
+  const DlpContentRestrictionSet non_empty_restriction_set_ =
+      screenshot_restricted_;
+
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   std::unique_ptr<::reporting::ReportingClient::TestEnvironment>
@@ -234,6 +232,7 @@ class DlpContentManagerAshTest : public testing::Test {
   std::vector<DlpPolicyEvent> events_;
   raw_ptr<MockDlpRulesManager, DanglingUntriaged> mock_rules_manager_ = nullptr;
   MockPrivacyScreenHelper mock_privacy_screen_helper_;
+  std::vector<std::unique_ptr<DlpContentTabHelper>> dlp_tab_helpers_;
 
  private:
   void LoginFakeUser() {
@@ -260,63 +259,63 @@ class DlpContentManagerAshTest : public testing::Test {
 TEST_F(DlpContentManagerAshTest, NoConfidentialDataShown) {
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
 }
 
 TEST_F(DlpContentManagerAshTest, ConfidentialDataShown) {
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
 
-  helper_.ChangeConfidentiality(web_contents.get(), kNonEmptyRestrictionSet);
+  helper_.ChangeConfidentiality(web_contents.get(), non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
 
   helper_.DestroyWebContents(web_contents.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
 }
 
 TEST_F(DlpContentManagerAshTest, ConfidentialDataVisibilityChanged) {
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
 
-  helper_.ChangeConfidentiality(web_contents.get(), kNonEmptyRestrictionSet);
+  helper_.ChangeConfidentiality(web_contents.get(), non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
 
   web_contents->WasHidden();
   helper_.ChangeVisibility(web_contents.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
 
   web_contents->WasShown();
   helper_.ChangeVisibility(web_contents.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
 
   helper_.DestroyWebContents(web_contents.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
 }
 
 TEST_F(DlpContentManagerAshTest,
@@ -324,72 +323,75 @@ TEST_F(DlpContentManagerAshTest,
   std::unique_ptr<content::WebContents> web_contents1 = CreateWebContents();
   std::unique_ptr<content::WebContents> web_contents2 = CreateWebContents();
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
 
   // WebContents 1 becomes confidential.
-  helper_.ChangeConfidentiality(web_contents1.get(), kNonEmptyRestrictionSet);
+  helper_.ChangeConfidentiality(web_contents1.get(),
+                                non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
 
   web_contents2->WasHidden();
   helper_.ChangeVisibility(web_contents2.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
 
   // WebContents 1 becomes non-confidential.
-  helper_.ChangeConfidentiality(web_contents1.get(), kEmptyRestrictionSet);
+  helper_.ChangeConfidentiality(web_contents1.get(), empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
 
   // WebContents 2 becomes confidential.
-  helper_.ChangeConfidentiality(web_contents2.get(), kNonEmptyRestrictionSet);
+  helper_.ChangeConfidentiality(web_contents2.get(),
+                                non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
 
   web_contents2->WasShown();
   helper_.ChangeVisibility(web_contents2.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kNonEmptyRestrictionSet);
+            non_empty_restriction_set_);
 
   helper_.DestroyWebContents(web_contents1.get());
   helper_.DestroyWebContents(web_contents2.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
 }
 
 TEST_F(DlpContentManagerAshTest, PrivacyScreenEnforcement) {
   const std::string src_pattern("example.com");
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern(_, _, _, _))
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(src_pattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(src_pattern)));
   EXPECT_CALL(mock_privacy_screen_helper_, SetEnforced(testing::_)).Times(0);
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
 
@@ -397,7 +399,7 @@ TEST_F(DlpContentManagerAshTest, PrivacyScreenEnforcement) {
   EXPECT_CALL(mock_privacy_screen_helper_, IsSupported())
       .WillRepeatedly(::testing::Return(true));
   EXPECT_CALL(mock_privacy_screen_helper_, SetEnforced(true)).Times(1);
-  helper_.ChangeConfidentiality(web_contents.get(), kPrivacyScreenEnforced);
+  helper_.ChangeConfidentiality(web_contents.get(), privacy_screen_enforced_);
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kPrivacyScreenEnforcedUMA,
@@ -471,8 +473,9 @@ TEST_F(DlpContentManagerAshTest, PrivacyScreenEnforcement) {
 TEST_F(DlpContentManagerAshTest, PrivacyScreenReported) {
   const std::string src_pattern("example.com");
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern(_, _, _, _))
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(src_pattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(src_pattern)));
 
   // Privacy screen should never be enforced.
   EXPECT_CALL(mock_privacy_screen_helper_, IsSupported())
@@ -480,7 +483,7 @@ TEST_F(DlpContentManagerAshTest, PrivacyScreenReported) {
   EXPECT_CALL(mock_privacy_screen_helper_, SetEnforced(testing::_)).Times(0);
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
 
-  helper_.ChangeConfidentiality(web_contents.get(), kPrivacyScreenReported);
+  helper_.ChangeConfidentiality(web_contents.get(), privacy_screen_reported_);
   EXPECT_EQ(events_.size(), 1u);
   EXPECT_THAT(
       events_[0],
@@ -527,7 +530,7 @@ TEST_F(DlpContentManagerAshTest,
   // Privacy screen should never be enforced or reported.
   EXPECT_CALL(mock_privacy_screen_helper_, SetEnforced(testing::_)).Times(0);
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
-  helper_.ChangeConfidentiality(web_contents.get(), kPrivacyScreenEnforced);
+  helper_.ChangeConfidentiality(web_contents.get(), privacy_screen_enforced_);
   EXPECT_EQ(events_.size(), 0u);
 
   web_contents->WasHidden();
@@ -548,8 +551,9 @@ TEST_F(DlpContentManagerAshTest, VideoCaptureReportDuringRecording) {
   // Return |kSrcPattern| for reporting for both |kSrcUrl| and |kGoogleUrl|.
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(2)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   // Setup two web contents with different urls.
   std::unique_ptr<content::WebContents> web_contents1 = CreateWebContents();
@@ -559,20 +563,20 @@ TEST_F(DlpContentManagerAshTest, VideoCaptureReportDuringRecording) {
   content::WebContentsTester::For(web_contents2.get())
       ->NavigateAndCommit(kGoogleUrl);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
 
   // WebContents 1 becomes confidential. No reporting expected.
-  helper_.ChangeConfidentiality(web_contents1.get(), kScreenshotReported);
+  helper_.ChangeConfidentiality(web_contents1.get(), screenshot_reported_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kScreenshotReported);
+            screenshot_reported_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kScreenshotReported);
+            screenshot_reported_);
   EXPECT_TRUE(events_.empty());
 
   // Simulate starting video capture. Expect report event from WebContents 1.
@@ -587,14 +591,14 @@ TEST_F(DlpContentManagerAshTest, VideoCaptureReportDuringRecording) {
           DlpRulesManager::Level::kReport)));
 
   // WebContents 2 becomes confidential. Expect report event from WebContents 2.
-  helper_.ChangeConfidentiality(web_contents1.get(), kEmptyRestrictionSet);
-  helper_.ChangeConfidentiality(web_contents2.get(), kScreenshotReported);
+  helper_.ChangeConfidentiality(web_contents1.get(), empty_restriction_set_);
+  helper_.ChangeConfidentiality(web_contents2.get(), screenshot_reported_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kScreenshotReported);
+            screenshot_reported_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kScreenshotReported);
+            screenshot_reported_);
   ASSERT_EQ(events_.size(), 2u);
   EXPECT_THAT(
       events_[1],
@@ -604,25 +608,25 @@ TEST_F(DlpContentManagerAshTest, VideoCaptureReportDuringRecording) {
           DlpRulesManager::Level::kReport)));
 
   // Remove confidentiality for both web contents.
-  helper_.ChangeConfidentiality(web_contents2.get(), kEmptyRestrictionSet);
+  helper_.ChangeConfidentiality(web_contents2.get(), empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   EXPECT_EQ(events_.size(), 2u);
 
   // Both web contents become confidential. Expect no reporting event because
   // both urls were already reported during the current capture.
-  helper_.ChangeConfidentiality(web_contents1.get(), kScreenshotReported);
-  helper_.ChangeConfidentiality(web_contents2.get(), kScreenshotReported);
+  helper_.ChangeConfidentiality(web_contents1.get(), screenshot_reported_);
+  helper_.ChangeConfidentiality(web_contents2.get(), screenshot_reported_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents1.get()),
-            kScreenshotReported);
+            screenshot_reported_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents2.get()),
-            kScreenshotReported);
+            screenshot_reported_);
   EXPECT_EQ(GetManager()->GetOnScreenPresentRestrictions(),
-            kScreenshotReported);
+            screenshot_reported_);
   EXPECT_EQ(events_.size(), 2u);
 
   GetManager()->CheckStoppedVideoCapture(base::DoNothing());
@@ -630,18 +634,16 @@ TEST_F(DlpContentManagerAshTest, VideoCaptureReportDuringRecording) {
 
   // Remove confidentiality to avoid race condition in test case
   // deinitialization.
-  helper_.ChangeConfidentiality(web_contents1.get(), kEmptyRestrictionSet);
-  helper_.ChangeConfidentiality(web_contents2.get(), kEmptyRestrictionSet);
+  helper_.ChangeConfidentiality(web_contents1.get(), empty_restriction_set_);
+  helper_.ChangeConfidentiality(web_contents2.get(), empty_restriction_set_);
 }
 
 TEST_F(DlpContentManagerAshTest, PrintingRestricted) {
-  // Needs to be set because CheckPrintingRestriction() will show the blocked
-  // notification.
-  NotificationDisplayServiceTester display_service_tester(profile());
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   testing::InSequence s;
@@ -654,7 +656,7 @@ TEST_F(DlpContentManagerAshTest, PrintingRestricted) {
   content::GlobalRenderFrameHostId rfh_id =
       web_contents->GetPrimaryMainFrame()->GetGlobalId();
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   GetManager()->CheckPrintingRestriction(web_contents.get(), rfh_id, cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/0, /*warned_count=*/0,
@@ -663,9 +665,9 @@ TEST_F(DlpContentManagerAshTest, PrintingRestricted) {
       /*warned_suffix=*/data_controls::dlp::kPrintingWarnedUMA);
 
   // Block restriction is enforced for web_contents: block.
-  helper_.ChangeConfidentiality(web_contents.get(), kPrintingRestricted);
+  helper_.ChangeConfidentiality(web_contents.get(), printing_restricted_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kPrintingRestricted);
+            printing_restricted_);
   GetManager()->CheckPrintingRestriction(web_contents.get(), rfh_id, cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/1, /*warned_count=*/0,
@@ -683,7 +685,7 @@ TEST_F(DlpContentManagerAshTest, PrintingRestricted) {
   // Web contents are destroyed: allow.
   helper_.DestroyWebContents(web_contents.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   GetManager()->CheckPrintingRestriction(web_contents.get(), rfh_id, cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/1, /*warned_count=*/0,
@@ -699,8 +701,9 @@ TEST_F(DlpContentManagerAshTest, PrintingWarnedProceeded) {
   EXPECT_CALL(*mock_dlp_warn_notifier, ShowDlpWarningDialog).Times(1);
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(3)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   EXPECT_CALL(cb, Run(true)).Times(3);
@@ -710,9 +713,9 @@ TEST_F(DlpContentManagerAshTest, PrintingWarnedProceeded) {
       web_contents->GetPrimaryMainFrame()->GetGlobalId();
 
   // Warn restriction is enforced: allow and remember that the user proceeded.
-  helper_.ChangeConfidentiality(web_contents.get(), kPrintingWarned);
+  helper_.ChangeConfidentiality(web_contents.get(), printing_warned_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kPrintingWarned);
+            printing_warned_);
   GetManager()->CheckPrintingRestriction(web_contents.get(), rfh_id, cb.Get());
 
   EXPECT_EQ(events_.size(), 2u);
@@ -762,7 +765,7 @@ TEST_F(DlpContentManagerAshTest, PrintingWarnedProceeded) {
   // Web contents are destroyed: allow, no dialog is shown.
   helper_.DestroyWebContents(web_contents.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   GetManager()->CheckPrintingRestriction(web_contents.get(), rfh_id, cb.Get());
 
   EXPECT_EQ(events_.size(), 3u);
@@ -781,8 +784,9 @@ TEST_F(DlpContentManagerAshTest, PrintingWarnedCancelled) {
 
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(2)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   testing::InSequence s;
@@ -794,9 +798,9 @@ TEST_F(DlpContentManagerAshTest, PrintingWarnedCancelled) {
       web_contents->GetPrimaryMainFrame()->GetGlobalId();
 
   // Warn restriction is enforced: reject since the user canceled.
-  helper_.ChangeConfidentiality(web_contents.get(), kPrintingWarned);
+  helper_.ChangeConfidentiality(web_contents.get(), printing_warned_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kPrintingWarned);
+            printing_warned_);
   GetManager()->CheckPrintingRestriction(web_contents.get(), rfh_id, cb.Get());
   EXPECT_EQ(events_.size(), 1u);
   EXPECT_THAT(
@@ -835,7 +839,7 @@ TEST_F(DlpContentManagerAshTest, PrintingWarnedCancelled) {
   // Web contents are destroyed: allow, no dialog is shown.
   helper_.DestroyWebContents(web_contents.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   GetManager()->CheckPrintingRestriction(web_contents.get(), rfh_id, cb.Get());
   EXPECT_EQ(events_.size(), 2u);
   VerifyHistogramCounts(
@@ -846,13 +850,11 @@ TEST_F(DlpContentManagerAshTest, PrintingWarnedCancelled) {
 }
 
 TEST_F(DlpContentManagerAshTest, CaptureModeInitRestricted) {
-  // Needs to be set because CheckCaptureModeInitRestriction() will show the
-  // blocked notification.
-  NotificationDisplayServiceTester display_service_tester(profile());
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   testing::InSequence s;
@@ -869,9 +871,9 @@ TEST_F(DlpContentManagerAshTest, CaptureModeInitRestricted) {
       /*blocked_suffix=*/data_controls::dlp::kCaptureModeInitBlockedUMA,
       /*warned_suffix=*/data_controls::dlp::kCaptureModeInitWarnedUMA);
 
-  helper_.ChangeConfidentiality(web_contents.get(), kScreenshotRestricted);
+  helper_.ChangeConfidentiality(web_contents.get(), screenshot_restricted_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kScreenshotRestricted);
+            screenshot_restricted_);
   GetManager()->CheckCaptureModeInitRestriction(/*shutting_down=*/false,
                                                 cb.Get());
   VerifyHistogramCounts(
@@ -888,7 +890,7 @@ TEST_F(DlpContentManagerAshTest, CaptureModeInitRestricted) {
 
   helper_.DestroyWebContents(web_contents.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   GetManager()->CheckCaptureModeInitRestriction(/*shutting_down=*/false,
                                                 cb.Get());
   VerifyHistogramCounts(
@@ -905,8 +907,9 @@ TEST_F(DlpContentManagerAshTest, CaptureModeInitWarnedContinued) {
 
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   testing::InSequence s;
@@ -914,9 +917,9 @@ TEST_F(DlpContentManagerAshTest, CaptureModeInitWarnedContinued) {
 
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
 
-  helper_.ChangeConfidentiality(web_contents.get(), kScreenshotWarned);
+  helper_.ChangeConfidentiality(web_contents.get(), screenshot_warned_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kScreenshotWarned);
+            screenshot_warned_);
   GetManager()->CheckCaptureModeInitRestriction(/*shutting_down=*/false,
                                                 cb.Get());
 
@@ -963,8 +966,9 @@ TEST_F(DlpContentManagerAshTest, CaptureModeInitWarnedCancelled) {
 
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(2)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   testing::InSequence s;
@@ -972,9 +976,9 @@ TEST_F(DlpContentManagerAshTest, CaptureModeInitWarnedCancelled) {
 
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
   // Warn restriction is enforced: reject since the user canceled.
-  helper_.ChangeConfidentiality(web_contents.get(), kScreenshotWarned);
+  helper_.ChangeConfidentiality(web_contents.get(), screenshot_warned_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kScreenshotWarned);
+            screenshot_warned_);
   GetManager()->CheckCaptureModeInitRestriction(/*shutting_down=*/false,
                                                 cb.Get());
   VerifyHistogramCounts(
@@ -1014,13 +1018,11 @@ TEST_F(DlpContentManagerAshTest, CaptureModeInitWarnedCancelled) {
 }
 
 TEST_F(DlpContentManagerAshTest, ScreenshotRestricted) {
-  // Needs to be set because CheckScreenshotRestriction() will show the blocked
-  // notification.
-  NotificationDisplayServiceTester display_service_tester(profile());
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   testing::InSequence s;
@@ -1037,9 +1039,9 @@ TEST_F(DlpContentManagerAshTest, ScreenshotRestricted) {
       /*blocked_suffix=*/data_controls::dlp::kScreenshotBlockedUMA,
       /*warned_suffix=*/data_controls::dlp::kScreenshotWarnedUMA);
 
-  helper_.ChangeConfidentiality(web_contents.get(), kScreenshotRestricted);
+  helper_.ChangeConfidentiality(web_contents.get(), screenshot_restricted_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kScreenshotRestricted);
+            screenshot_restricted_);
   GetManager()->CheckScreenshotRestriction(area, cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/1, /*warned_count=*/0,
@@ -1057,7 +1059,7 @@ TEST_F(DlpContentManagerAshTest, ScreenshotRestricted) {
   // Web contents are destroyed: allow.
   helper_.DestroyWebContents(web_contents.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
+            empty_restriction_set_);
   GetManager()->CheckScreenshotRestriction(area, cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/1, /*warned_count=*/0,
@@ -1073,8 +1075,9 @@ TEST_F(DlpContentManagerAshTest, ScreenshotWarnedContinued) {
 
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   EXPECT_CALL(cb, Run(true)).Times(2);
@@ -1083,9 +1086,9 @@ TEST_F(DlpContentManagerAshTest, ScreenshotWarnedContinued) {
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
 
   // Warn restriction is enforced: allow and remember that the user proceeded.
-  helper_.ChangeConfidentiality(web_contents.get(), kScreenshotWarned);
+  helper_.ChangeConfidentiality(web_contents.get(), screenshot_warned_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kScreenshotWarned);
+            screenshot_warned_);
   GetManager()->CheckScreenshotRestriction(area, cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/0, /*warned_count=*/1,
@@ -1120,8 +1123,9 @@ TEST_F(DlpContentManagerAshTest, ScreenshotWarnedCancelled) {
 
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(2)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   EXPECT_CALL(cb, Run(false)).Times(2);
@@ -1130,9 +1134,9 @@ TEST_F(DlpContentManagerAshTest, ScreenshotWarnedCancelled) {
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
 
   // Warn restriction is enforced: reject since the user canceled.
-  helper_.ChangeConfidentiality(web_contents.get(), kScreenshotWarned);
+  helper_.ChangeConfidentiality(web_contents.get(), screenshot_warned_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kScreenshotWarned);
+            screenshot_warned_);
   GetManager()->CheckScreenshotRestriction(area, cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/0, /*warned_count=*/1,
@@ -1170,13 +1174,11 @@ TEST_F(DlpContentManagerAshTest, ScreenshotWarnedCancelled) {
 }
 
 TEST_F(DlpContentManagerAshTest, ScreenShareRestricted) {
-  // Needs to be set because CheckScreenShareRestriction() will show the blocked
-  // notification.
-  NotificationDisplayServiceTester display_service_tester(profile());
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   testing::InSequence s;
@@ -1191,7 +1193,7 @@ TEST_F(DlpContentManagerAshTest, ScreenShareRestricted) {
       content::WebContentsMediaCaptureId(
           web_contents->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID(),
           web_contents->GetPrimaryMainFrame()->GetRoutingID()));
-  GetManager()->CheckScreenShareRestriction(media_id, kApplicationName,
+  GetManager()->CheckScreenShareRestriction(media_id, application_name_,
                                             cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/0, /*warned_count=*/0,
@@ -1199,10 +1201,10 @@ TEST_F(DlpContentManagerAshTest, ScreenShareRestricted) {
       /*blocked_suffix=*/data_controls::dlp::kScreenShareBlockedUMA,
       /*warned_suffix=*/data_controls::dlp::kScreenShareWarnedUMA);
 
-  helper_.ChangeConfidentiality(web_contents.get(), kScreenShareRestricted);
+  helper_.ChangeConfidentiality(web_contents.get(), screen_share_restricted_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kScreenShareRestricted);
-  GetManager()->CheckScreenShareRestriction(media_id, kApplicationName,
+            screen_share_restricted_);
+  GetManager()->CheckScreenShareRestriction(media_id, application_name_,
                                             cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/1, /*warned_count=*/0,
@@ -1220,8 +1222,8 @@ TEST_F(DlpContentManagerAshTest, ScreenShareRestricted) {
   // Web contents are destroyed: allow.
   helper_.DestroyWebContents(web_contents.get());
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kEmptyRestrictionSet);
-  GetManager()->CheckScreenShareRestriction(media_id, kApplicationName,
+            empty_restriction_set_);
+  GetManager()->CheckScreenShareRestriction(media_id, application_name_,
                                             cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/1, /*warned_count=*/0,
@@ -1237,8 +1239,9 @@ TEST_F(DlpContentManagerAshTest, ScreenShareWarnedContinued) {
 
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   EXPECT_CALL(cb, Run(true)).Times(2);
@@ -1252,10 +1255,10 @@ TEST_F(DlpContentManagerAshTest, ScreenShareWarnedContinued) {
           web_contents->GetPrimaryMainFrame()->GetRoutingID()));
 
   // Warn restriction is enforced: allow and remember that the user proceeded.
-  helper_.ChangeConfidentiality(web_contents.get(), kScreenShareWarned);
+  helper_.ChangeConfidentiality(web_contents.get(), screen_share_warned_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kScreenShareWarned);
-  GetManager()->CheckScreenShareRestriction(media_id, kApplicationName,
+            screen_share_warned_);
+  GetManager()->CheckScreenShareRestriction(media_id, application_name_,
                                             cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/0, /*warned_count=*/1,
@@ -1270,7 +1273,7 @@ TEST_F(DlpContentManagerAshTest, ScreenShareWarnedContinued) {
           kRuleId, DlpRulesManager::Level::kWarn)));
 
   // Check again: allow based on cached user's response - no dialog is shown.
-  GetManager()->CheckScreenShareRestriction(media_id, kApplicationName,
+  GetManager()->CheckScreenShareRestriction(media_id, application_name_,
                                             cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/0, /*warned_count=*/2,
@@ -1291,8 +1294,9 @@ TEST_F(DlpContentManagerAshTest, ScreenShareWarnedCancelled) {
 
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(2)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   EXPECT_CALL(cb, Run(false)).Times(2);
@@ -1306,10 +1310,10 @@ TEST_F(DlpContentManagerAshTest, ScreenShareWarnedCancelled) {
           web_contents->GetPrimaryMainFrame()->GetRoutingID()));
 
   // Warn restriction is enforced: reject since the user canceled.
-  helper_.ChangeConfidentiality(web_contents.get(), kScreenShareWarned);
+  helper_.ChangeConfidentiality(web_contents.get(), screen_share_warned_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kScreenShareWarned);
-  GetManager()->CheckScreenShareRestriction(media_id, kApplicationName,
+            screen_share_warned_);
+  GetManager()->CheckScreenShareRestriction(media_id, application_name_,
                                             cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/0, /*warned_count=*/1,
@@ -1328,7 +1332,7 @@ TEST_F(DlpContentManagerAshTest, ScreenShareWarnedCancelled) {
           kRuleId, DlpRulesManager::Level::kWarn)));
 
   // Check again: since the user previously cancelled, dialog is shown again.
-  GetManager()->CheckScreenShareRestriction(media_id, kApplicationName,
+  GetManager()->CheckScreenShareRestriction(media_id, application_name_,
                                             cb.Get());
   VerifyHistogramCounts(
       /*blocked_count=*/0, /*warned_count=*/2,
@@ -1361,9 +1365,9 @@ TEST_F(DlpContentManagerAshTest, NoWarningOnShutdown) {
   EXPECT_CALL(cb, Run(false)).Times(1);
 
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
-  helper_.ChangeConfidentiality(web_contents.get(), kScreenshotWarned);
+  helper_.ChangeConfidentiality(web_contents.get(), screenshot_warned_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kScreenshotWarned);
+            screenshot_warned_);
 
   // For metrics purposes, we would still consider a warn on shutdown as a warn.
   GetManager()->CheckCaptureModeInitRestriction(/*shutting_down=*/true,
@@ -1388,17 +1392,18 @@ TEST_F(DlpContentManagerAshTest, RememberProceedOnShutdown) {
   EXPECT_CALL(*mock_dlp_warn_notifier, ShowDlpWarningDialog).Times(1);
   EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
       .Times(1)
-      .WillRepeatedly(testing::DoAll(::testing::SetArgPointee<3>(kRuleMetadata),
-                                     ::testing::Return(kSrcPattern)));
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
 
   MockWarningCallback cb;
   EXPECT_CALL(cb, Run(true)).Times(2);
 
   // Warn restriction is enforced: allow and remember that the user proceeded.
   std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
-  helper_.ChangeConfidentiality(web_contents.get(), kScreenshotWarned);
+  helper_.ChangeConfidentiality(web_contents.get(), screenshot_warned_);
   EXPECT_EQ(GetManager()->GetConfidentialRestrictions(web_contents.get()),
-            kScreenshotWarned);
+            screenshot_warned_);
 
   GetManager()->CheckCaptureModeInitRestriction(/*shutting_down=*/false,
                                                 cb.Get());
@@ -1428,6 +1433,46 @@ TEST_F(DlpContentManagerAshTest, RememberProceedOnShutdown) {
           data_controls::dlp::kScreenshotWarnProceededUMA,
       true, 1);
   EXPECT_EQ(events_.size(), 1u);
+}
+
+TEST_F(DlpContentManagerAshTest,
+       ActiveWebContentsChangedWithSelectionOnlyFalse) {
+  EXPECT_CALL(*mock_rules_manager_, GetSourceUrlPattern)
+      .Times(1)
+      .WillRepeatedly(
+          testing::DoAll(::testing::SetArgPointee<3>(rule_metadata_),
+                         ::testing::Return(kSrcPattern)));
+
+  std::unique_ptr<content::WebContents> web_contents = CreateWebContents();
+  const content::DesktopMediaID media_id(
+      content::DesktopMediaID::TYPE_WEB_CONTENTS,
+      content::DesktopMediaID::kNullId,
+      content::WebContentsMediaCaptureId(
+          web_contents->GetPrimaryMainFrame()->GetProcess()->GetDeprecatedID(),
+          web_contents->GetPrimaryMainFrame()->GetRoutingID()));
+
+  testing::StrictMock<
+      base::MockCallback<content::MediaStreamUI::StateChangeCallback>>
+      state_change_cb;
+  testing::StrictMock<base::MockCallback<base::RepeatingClosure>> stop_cb;
+
+  GetManager()->OnScreenShareStarted("label", {media_id}, application_name_,
+                                     stop_cb.Get(), state_change_cb.Get(),
+                                     /*source_callback=*/base::DoNothing());
+
+  // Update confidentiality without triggering CheckRunningScreenShares() to
+  // simulate a confidential tab being inserted and activated in a window.
+  helper_.UpdateConfidentiality(web_contents.get(), screen_share_restricted_);
+
+  EXPECT_CALL(state_change_cb,
+              Run(testing::_, blink::mojom::MediaStreamStateChange::PAUSE))
+      .Times(1);
+
+  static_cast<ash::BrowserController::TabObserver*>(GetManager())
+      ->OnActiveWebContentsChanged(/*browser=*/nullptr,
+                                   /*old_contents=*/nullptr, web_contents.get(),
+                                   /*selection_only=*/false);
+  GetManager()->OnScreenShareStopped("label", media_id);
 }
 
 }  // namespace policy

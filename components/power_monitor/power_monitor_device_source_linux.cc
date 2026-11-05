@@ -55,7 +55,7 @@ PowerMonitorDeviceSourceLinux::PowerMonitorDeviceSourceLinux(
                          weak_ptr_factory_.GetWeakPtr()));
 
   dbus_xdg::RequestXdgDesktopPortal(
-      session_bus_.get(),
+      session_bus_.get(), kPortalPowerProfileMonitorInterface,
       base::BindOnce(&PowerMonitorDeviceSourceLinux::OnPortalRequested,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -64,13 +64,14 @@ PowerMonitorDeviceSourceLinux::~PowerMonitorDeviceSourceLinux() = default;
 
 base::PowerStateObserver::BatteryPowerStatus
 PowerMonitorDeviceSourceLinux::GetBatteryPowerStatus() const {
-  if (power_saver_enabled_) {
-    return base::PowerStateObserver::BatteryPowerStatus::kBatteryPower;
-  }
   // TODO(crbug.com/40836663): Use org.freedesktop.UPower to check for
   // OnBattery. One possibility is to connect to the DeviceService's
   // BatteryMonitor.
   return base::PowerStateObserver::BatteryPowerStatus::kUnknown;
+}
+
+bool PowerMonitorDeviceSourceLinux::IsPowerSaverModeEnabled() const {
+  return power_saver_enabled_;
 }
 
 void PowerMonitorDeviceSourceLinux::OnPortalRequested(uint32_t portal_version) {
@@ -158,5 +159,5 @@ void PowerMonitorDeviceSourceLinux::SetPowerSaverEnabled(bool enabled) {
     return;
   }
   power_saver_enabled_ = enabled;
-  ProcessPowerEvent(POWER_STATE_EVENT);
+  ProcessPowerSaverModeEvent(enabled);
 }

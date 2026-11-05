@@ -420,6 +420,9 @@ class FrameRemoteTester : public content::FakeLocalFrame {
   // Sends an empty message and waits for it to be received. Returns true if any
   // other messages were received.
   bool FlushForTesting(RenderFrameHost* render_frame_host) {
+    // Run any pending async heavy ad intervention tasks so their Mojo report
+    // messages are queued before the empty sentinel report is sent.
+    base::RunLoop().RunUntilIdle();
     base::RunLoop run_loop;
     on_empty_report_callback_ = run_loop.QuitClosure();
     render_frame_host->SendInterventionReport("", "", nullptr);
@@ -519,8 +522,9 @@ class AdsPageLoadMetricsObserverTest
   }
 
   void OnCpuTimingUpdate(RenderFrameHost* render_frame_host,
-                         base::TimeDelta cpu_time_spent) {
-    mojom::CpuTiming cpu_timing(cpu_time_spent);
+                         base::TimeDelta cpu_time_spent,
+                         base::TimeDelta ad_time_spent = base::TimeDelta()) {
+    mojom::CpuTiming cpu_timing(cpu_time_spent, ad_time_spent);
     tester_->SimulateCpuTimingUpdate(cpu_timing, render_frame_host);
   }
 
@@ -1252,7 +1256,7 @@ TEST_P(AdsPageLoadMetricsObserverTest, CountAbortedNavigation) {
   auto navigation_simulator = CreateNavigationSimulator(kAdUrl, subframe_ad);
   // The sub-frame renavigates before it commits.
   navigation_simulator->Start();
-  SetIsAdFrame(subframe_ad, /*is_ad_frame=*/true);
+  UpdateToAdFrame(subframe_ad);
   navigation_simulator->Fail(net::ERR_ABORTED);
 
   // Load resources for the aborted frame (e.g., simulate the navigation
@@ -1282,7 +1286,7 @@ TEST_P(AdsPageLoadMetricsObserverTest, CountAbortedSecondNavigationForFrame) {
   auto navigation_simulator = CreateNavigationSimulator(kAdUrl, sub_frame);
   // The sub-frame renavigates before it commits.
   navigation_simulator->Start();
-  SetIsAdFrame(sub_frame, /*is_ad_frame=*/true);
+  UpdateToAdFrame(sub_frame);
   navigation_simulator->Fail(net::ERR_ABORTED);
 
   // Load resources for the aborted frame (e.g., simulate the navigation
@@ -1313,7 +1317,7 @@ TEST_P(AdsPageLoadMetricsObserverTest, TwoResourceLoadsBeforeCommit) {
 
   // The sub-frame renavigates before it commits.
   navigation_simulator->Start();
-  SetIsAdFrame(subframe_ad, /*is_ad_frame=*/true);
+  UpdateToAdFrame(subframe_ad);
   navigation_simulator->Fail(net::ERR_ABORTED);
 
   // Renavigate the subframe to a successful commit. But again, the resource
@@ -1328,30 +1332,6 @@ TEST_P(AdsPageLoadMetricsObserverTest, TwoResourceLoadsBeforeCommit) {
                  {{base::ByteSize(0), base::KiB(20)}},
                  /*non_ad_cached=*/base::KiB(0),
                  /*non_ad_uncached=*/base::KiB(10));
-}
-
-TEST_P(AdsPageLoadMetricsObserverTest, UntaggingAdFrame) {
-  RenderFrameHost* main_frame = NavigateMainFrame(kNonAdUrl);
-  RenderFrameHost* ad_frame = CreateAndNavigateSubFrame(kAdUrl, main_frame);
-
-  ResourceDataUpdate(main_frame, ResourceCached::kNotCached, base::KiB(10));
-  ResourceDataUpdate(ad_frame, ResourceCached::kNotCached, base::KiB(10));
-
-  // Renavigate and untag the ad frame.
-  auto navigation_simulator = CreateNavigationSimulator(kNonAdUrl, ad_frame);
-  SetIsAdFrame(ad_frame, /*is_ad_frame=*/false);
-  navigation_simulator->Commit();
-
-  ResourceDataUpdate(navigation_simulator->GetFinalRenderFrameHost(),
-                     ResourceCached::kNotCached, base::KiB(10));
-
-  // Navigate again to trigger histograms.
-  NavigateFrame(kNonAdUrl, main_frame);
-
-  // As the frame was untagged, no ad bytes should have been recorded.
-  TestHistograms(histogram_tester(), test_ukm_recorder(), {},
-                 /*non_ad_cached=*/base::KiB(0),
-                 /*non_ad_uncached=*/base::KiB(20));
 }
 
 TEST_P(AdsPageLoadMetricsObserverTest, MainFrameResource) {
@@ -1573,7 +1553,7 @@ TEST_P(AdsPageLoadMetricsObserverTest,
   RenderFrameHost* subframe = AppendChildFrame(main_frame);
   auto navigation_simulator =
       CreateNavigationSimulator("https://foo.com", subframe);
-  SetIsAdFrame(subframe, /*is_ad_frame=*/true);
+  UpdateToAdFrame(subframe);
   navigation_simulator->Commit();
 
   subframe = navigation_simulator->GetFinalRenderFrameHost();
@@ -1882,8 +1862,8 @@ TEST_P(AdsPageLoadMetricsObserverTest, AdCountDistributionMoments) {
   RenderFrameHost* main_frame = NavigateMainFrame(kNonAdUrl);
 
   page_load_metrics::mojom::FrameMetadata metadata;
-  metadata.main_frame_rect = gfx::Rect(0, 0, 1, 100);
-  metadata.main_frame_viewport_rect = gfx::Rect(0, 0, 1, 100);
+  metadata.main_frame_rect = gfx::Rect(0, 0, 100, 1000);
+  metadata.main_frame_viewport_rect = gfx::Rect(0, 0, 100, 1000);
   tester_->SimulateMetadataUpdate(metadata, main_frame);
 
   const int id1 = 1;
@@ -1891,8 +1871,8 @@ TEST_P(AdsPageLoadMetricsObserverTest, AdCountDistributionMoments) {
 
   // Simulate 2 ads being in the viewport for 1 millisecond.
   page_load_metrics::mojom::FrameMetadata metadata2;
-  metadata2.main_frame_ad_rects = {{id1, gfx::Rect(0, 0, 1, 10)},
-                                   {id2, gfx::Rect(0, 20, 1, 10)}};
+  metadata2.main_frame_ad_rects = {{id1, gfx::Rect(0, 0, 100, 100)},
+                                   {id2, gfx::Rect(0, 200, 100, 100)}};
 
   tester_->SimulateMetadataUpdate(metadata2, main_frame);
   AdvancePageDuration(base::Milliseconds(1));
@@ -2146,6 +2126,137 @@ TEST_P(AdsPageLoadMetricsObserverTest, TestCpuTimingMetricsOnActivation) {
   test_ukm_recorder().ExpectEntryMetric(
       entries.front(), ukm::builders::AdFrameLoad::kCpuTime_PreActivationName,
       1000);
+}
+
+TEST_P(AdsPageLoadMetricsObserverTest,
+       TestCpuTimingMetricsWithAdFramesAndNonAdFrameAdScripts) {
+  OverrideWithMockClock();
+  RenderFrameHost* main_frame = NavigateMainFrame(kNonAdUrl);
+  RenderFrameHost* non_ad_frame =
+      CreateAndNavigateSubFrame(kNonAdUrl, main_frame);
+  RenderFrameHost* ad_frame = CreateAndNavigateSubFrame(kAdUrl, main_frame);
+
+  // Add some data to the ad frame so it gets reported.
+  ResourceDataUpdate(ad_frame, ResourceCached::kNotCached, base::KiB(10),
+                     /*mime_type=*/"", /*is_ad_resource=*/true);
+
+  // Ad frame performs CPU work.
+  OnCpuTimingUpdate(ad_frame, base::Milliseconds(500));
+
+  // Non-ad subframe performs CPU work, including ad script time.
+  OnCpuTimingUpdate(non_ad_frame, base::Milliseconds(300),
+                    base::Milliseconds(100));
+
+  // Main frame performs CPU work, including ad script time.
+  OnCpuTimingUpdate(main_frame, base::Milliseconds(600),
+                    base::Milliseconds(200));
+
+  // Navigate away to record histograms and UKM.
+  AdvancePageDuration(base::Milliseconds(4000));
+  NavigateFrame(kNonAdUrl, main_frame);
+
+  // Verify UKM AdPageLoad.
+  auto entries = test_ukm_recorder().GetEntriesByName(
+      ukm::builders::AdPageLoad::kEntryName);
+  EXPECT_EQ(1u, entries.size());
+  // Total ad CPU time: 500 (ad frame) + 100 (non-ad subframe) + 200 (main
+  // frame) = 800ms
+  EXPECT_EQ(800,
+            *test_ukm_recorder().GetEntryMetric(
+                entries.front(), ukm::builders::AdPageLoad::kAdCpuTimeName));
+  // Non-ad frame ad CPU time: 100 + 200 = 300ms
+  EXPECT_EQ(ukm::GetExponentialBucketMinForFineUserTiming(300),
+            *test_ukm_recorder().GetEntryMetric(
+                entries.front(),
+                ukm::builders::AdPageLoad::kNonAdFrameAdCpuTimeMsName));
+
+  // Verify new UMA histograms.
+  histogram_tester().ExpectUniqueSample(
+      SuffixedHistogram("Cpu.NonAdFrames.Aggregate.AdScripts.TotalUsage"), 300,
+      1);
+  histogram_tester().ExpectUniqueSample(
+      SuffixedHistogram("Cpu.FullPage.TotalAdsUsage"), 800, 1);
+
+  // Verify existing frame-based UMA histograms maintain frame-based semantics.
+  histogram_tester().ExpectUniqueSample(
+      SuffixedHistogram("Cpu.AdFrames.Aggregate.TotalUsage2"), 500, 1);
+  histogram_tester().ExpectUniqueSample(
+      SuffixedHistogram("Cpu.NonAdFrames.Aggregate.TotalUsage2"), 300 + 600, 1);
+  histogram_tester().ExpectUniqueSample(
+      SuffixedHistogram("Cpu.FullPage.TotalUsage2"), 500 + 300 + 600, 1);
+}
+
+TEST_P(AdsPageLoadMetricsObserverTest,
+       TestCpuTimingMetricsWithNonAdFrameAdScriptsOnly_NoAdFrames) {
+  OverrideWithMockClock();
+  RenderFrameHost* main_frame = NavigateMainFrame(kNonAdUrl);
+
+  // Load an ad resource in the main frame so AdPageLoad UKM is recorded.
+  ResourceDataUpdate(main_frame, ResourceCached::kNotCached, base::KiB(10),
+                     /*mime_type=*/"", /*is_ad_resource=*/true);
+
+  // Main frame performs CPU work with ad script time (no ad frames exist on
+  // page).
+  OnCpuTimingUpdate(main_frame, base::Milliseconds(500),
+                    base::Milliseconds(250));
+
+  // Navigate away to record histograms and UKM.
+  AdvancePageDuration(base::Milliseconds(4000));
+  NavigateFrame(kNonAdUrl, main_frame);
+
+  // Verify UKM AdPageLoad.
+  auto entries = test_ukm_recorder().GetEntriesByName(
+      ukm::builders::AdPageLoad::kEntryName);
+  EXPECT_EQ(1u, entries.size());
+  // Total ad CPU time = 250ms (only from non-ad frame ad scripts).
+  EXPECT_EQ(250,
+            *test_ukm_recorder().GetEntryMetric(
+                entries.front(), ukm::builders::AdPageLoad::kAdCpuTimeName));
+  EXPECT_EQ(ukm::GetExponentialBucketMinForFineUserTiming(250),
+            *test_ukm_recorder().GetEntryMetric(
+                entries.front(),
+                ukm::builders::AdPageLoad::kNonAdFrameAdCpuTimeMsName));
+
+  // Verify new UMA histograms recorded even without ad frames.
+  histogram_tester().ExpectUniqueSample(
+      SuffixedHistogram("Cpu.NonAdFrames.Aggregate.AdScripts.TotalUsage"), 250,
+      1);
+  histogram_tester().ExpectUniqueSample(
+      SuffixedHistogram("Cpu.FullPage.TotalAdsUsage"), 250, 1);
+
+  // Existing frame-based aggregate histograms require frames > 0, so should not
+  // be recorded.
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("Cpu.AdFrames.Aggregate.TotalUsage2"), 0);
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("Cpu.NonAdFrames.Aggregate.TotalUsage2"), 0);
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("Cpu.FullPage.TotalUsage2"), 0);
+}
+
+TEST_P(AdsPageLoadMetricsObserverTest,
+       TestCpuTimingMetricsWithNoAdFramesAndNoAdScripts_HistogramsNotRecorded) {
+  OverrideWithMockClock();
+  RenderFrameHost* main_frame = NavigateMainFrame(kNonAdUrl);
+
+  // Main frame performs CPU work with no ad script time.
+  OnCpuTimingUpdate(main_frame, base::Milliseconds(500));
+
+  // Navigate away.
+  AdvancePageDuration(base::Milliseconds(4000));
+  NavigateFrame(kNonAdUrl, main_frame);
+
+  // Neither new nor old ad CPU histograms should be recorded.
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("Cpu.NonAdFrames.Aggregate.AdScripts.TotalUsage"), 0);
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("Cpu.FullPage.TotalAdsUsage"), 0);
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("Cpu.AdFrames.Aggregate.TotalUsage2"), 0);
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("Cpu.NonAdFrames.Aggregate.TotalUsage2"), 0);
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("Cpu.FullPage.TotalUsage2"), 0);
 }
 
 // Tests that creative origin status is computed as intended, i.e. as the origin
@@ -2410,6 +2521,184 @@ TEST_P(AdsPageLoadMetricsObserverTest, HeavyAdFeatureOff_UMARecorded) {
   // Histogram is not logged when no frames are unloaded.
   histogram_tester().ExpectTotalCount(
       SuffixedHistogram("HeavyAds.NetworkBytesAtFrameUnload"), 0);
+}
+
+// Checks re-entrancy: replaying a stashed navigation resource can trigger the
+// heavy ad intervention, which synchronously destroys another in-flight
+// NavigationRequest in the same frame. The resulting DidFinishNavigation
+// re-enters ProcessOngoingNavigationResource for the same frame while the
+// outer call is still in progress.
+TEST_P(AdsPageLoadMetricsObserverTest,
+       HeavyAdIntervention_ReentrantNavigationFinish) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {heavy_ad_intervention::features::kHeavyAdIntervention},
+      {heavy_ad_intervention::features::kHeavyAdPrivacyMitigations});
+
+  RenderFrameHost* main_frame = NavigateMainFrame(kNonAdUrl);
+  RenderFrameHost* subframe = AppendChildFrame(main_frame);
+
+  // Start a navigation in the subframe but don't commit it yet.
+  auto nav1 = CreateNavigationSimulator(kAdUrl, subframe);
+  nav1->Start();
+  nav1->ReadyToCommit();
+
+  // Start a second navigation in the same subframe to give us an in-flight
+  // NavigationRequest that will be cancelled when the intervention triggers.
+  auto nav2 = content::NavigationSimulator::CreateRendererInitiated(
+      GURL(kAdUrl), subframe);
+  nav2->Start();
+
+  // Stash a complete primary frame resource for the subframe under `nav1` that
+  // exceeds the heavy-ad network limit. It is replayed when nav1 finishes.
+  ResourceDataUpdate(subframe, ResourceCached::kNotCached,
+                     heavy_ad_thresholds::kMaxNetworkBytes + base::KiB(1));
+
+  // The intervention triggers synchronously during nav1's commit, canceling
+  // nav2 and navigating the frame to the error page. `waiter` confirms it.
+  ErrorPageWaiter waiter(web_contents());
+  nav1->Commit();
+
+  RenderFrameHost* final_ad_frame = nav1->GetFinalRenderFrameHost();
+  waiter.WaitForError();
+
+  // The stashed resource must be processed exactly once, even though the
+  // intervention re-enters this code path for the same frame.
+  histogram_tester().ExpectUniqueSample(
+      SuffixedHistogram("HeavyAds.InterventionType2"), HeavyAdStatus::kNetwork,
+      1);
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("HeavyAds.NetworkBytesAtFrameUnload"), 1);
+
+  content::RenderFrameHostTester* rfh_tester =
+      content::RenderFrameHostTester::For(final_ad_frame);
+  EXPECT_EQ(
+      rfh_tester->GetHeavyAdIssueCount(
+          content::RenderFrameHostTester::HeavyAdIssueType::kNetworkTotal),
+      1);
+  EXPECT_EQ(rfh_tester->GetHeavyAdIssueCount(
+                content::RenderFrameHostTester::HeavyAdIssueType::kAll),
+            1);
+}
+
+// Verify that metrics/timing IPCs from a pending-commit (uncommitted /
+// non-active) RenderFrameHost on a FrameTreeNode that already has an ad frame
+// are ignored.
+TEST_P(AdsPageLoadMetricsObserverTest,
+       HeavyAdIntervention_PendingCommitSubframeResourceUpdateIgnored) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {heavy_ad_intervention::features::kHeavyAdIntervention},
+      {heavy_ad_intervention::features::kHeavyAdPrivacyMitigations});
+
+  RenderFrameHost* main_frame = NavigateMainFrame(kNonAdUrl);
+  RenderFrameHost* ad_subframe = CreateAndNavigateSubFrame(kAdUrl, main_frame);
+
+  // Start a cross-site navigation in that ad subframe and advance to
+  // ReadyToCommit() so that a kPendingCommit RenderFrameHost exists on the same
+  // FrameTreeNode.
+  auto nav =
+      CreateNavigationSimulator("https://another-ad-site.com/ad", ad_subframe);
+  nav->Start();
+  nav->ReadyToCommit();
+
+  RenderFrameHost* pending_commit_rfh = nav->GetFinalRenderFrameHost();
+  ASSERT_NE(pending_commit_rfh, ad_subframe);
+  ASSERT_FALSE(pending_commit_rfh->IsActive());
+  ASSERT_TRUE(pending_commit_rfh->IsInLifecycleState(
+      RenderFrameHost::LifecycleState::kPendingCommit));
+
+  // Simulate a multi-resource update targeting the pending-commit RFH.
+  std::vector<mojom::ResourceDataUpdatePtr> resources;
+  mojom::ResourceDataUpdatePtr resource1 = mojom::ResourceDataUpdate::New();
+  resource1->received_data_length =
+      heavy_ad_thresholds::kMaxNetworkBytes + base::KiB(1);
+  resource1->delta_bytes = resource1->received_data_length;
+  resource1->encoded_body_length = resource1->received_data_length;
+  resource1->cache_type = mojom::CacheType::kNotCached;
+  resource1->is_complete = true;
+  resources.push_back(std::move(resource1));
+
+  mojom::ResourceDataUpdatePtr resource2 = mojom::ResourceDataUpdate::New();
+  resource2->received_data_length = base::KiB(10);
+  resource2->delta_bytes = resource2->received_data_length;
+  resource2->encoded_body_length = resource2->received_data_length;
+  resource2->cache_type = mojom::CacheType::kNotCached;
+  resource2->is_complete = true;
+  resources.push_back(std::move(resource2));
+
+  tester()->SimulateResourceDataUseUpdate(resources, pending_commit_rfh);
+
+  // Also simulate CPU timing update targeting pending_commit_rfh.
+  mojom::CpuTiming cpu_timing(
+      base::Milliseconds(heavy_ad_thresholds::kMaxCpuTime + 1),
+      base::TimeDelta());
+  tester()->SimulateCpuTimingUpdate(cpu_timing, pending_commit_rfh);
+
+  // Verify that the pending-commit RFH IPCs were ignored: no intervention fired
+  // and no reports were sent.
+  EXPECT_FALSE(HasInterventionReportsAfterFlush(ad_subframe));
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("HeavyAds.InterventionType2"), 0);
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("HeavyAds.NetworkBytesAtFrameUnload"), 0);
+}
+
+// Updates from a speculative RenderFrameHost (a navigation that hasn't been
+// asked to commit yet) must be ignored.
+TEST_P(AdsPageLoadMetricsObserverTest,
+       HeavyAdIntervention_SpeculativeRfhUpdateIgnored) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {heavy_ad_intervention::features::kHeavyAdIntervention},
+      {heavy_ad_intervention::features::kHeavyAdPrivacyMitigations});
+
+  RenderFrameHost* main_frame = NavigateMainFrame(kNonAdUrl);
+  RenderFrameHost* ad_frame = CreateAndNavigateSubFrame(kAdUrl, main_frame);
+
+  // Defer a cross-site navigation of the ad frame at WillProcessResponse, so
+  // that a speculative RenderFrameHost exists but hasn't been asked to commit.
+  content::TestNavigationThrottleInserter throttle_inserter(
+      web_contents(),
+      base::BindRepeating([](content::NavigationThrottleRegistry& registry) {
+        auto throttle = std::make_unique<TestNavigationThrottle>(registry);
+        throttle->SetResponse(TestNavigationThrottle::WILL_PROCESS_RESPONSE,
+                              TestNavigationThrottle::SYNCHRONOUS,
+                              content::NavigationThrottle::DEFER);
+        registry.AddThrottle(std::move(throttle));
+      }));
+  std::unique_ptr<NavigationSimulator> navigation =
+      NavigationSimulator::CreateRendererInitiated(GURL(kOtherAdUrl), ad_frame);
+  navigation->Start();
+  navigation->SetAutoAdvance(false);
+  navigation->ReadyToCommit();
+  ASSERT_TRUE(navigation->IsDeferred());
+  RenderFrameHost* speculative_rfh =
+      navigation->GetNavigationHandle()->GetRenderFrameHost();
+  ASSERT_NE(speculative_rfh, ad_frame);
+  ASSERT_FALSE(speculative_rfh->IsActive());
+  ASSERT_FALSE(speculative_rfh->IsInLifecycleState(
+      RenderFrameHost::LifecycleState::kPendingCommit));
+  content::RenderFrameDeletedObserver deleted_observer(speculative_rfh);
+
+  // Two resources, each over the heavy ad network limit.
+  std::vector<mojom::ResourceDataUpdatePtr> resources;
+  for (int i = 0; i < 2; ++i) {
+    mojom::ResourceDataUpdatePtr resource = mojom::ResourceDataUpdate::New();
+    resource->request_id = 1000 + i;
+    resource->received_data_length =
+        heavy_ad_thresholds::kMaxNetworkBytes + base::KiB(1);
+    resource->delta_bytes = resource->received_data_length;
+    resource->encoded_body_length = resource->received_data_length;
+    resource->cache_type = mojom::CacheType::kNotCached;
+    resources.push_back(std::move(resource));
+  }
+  tester()->SimulateResourceDataUseUpdate(resources, speculative_rfh);
+
+  EXPECT_FALSE(deleted_observer.deleted());
+  EXPECT_TRUE(navigation->IsDeferred());
+  histogram_tester().ExpectTotalCount(
+      SuffixedHistogram("HeavyAds.InterventionType2"), 0);
 }
 
 TEST_P(AdsPageLoadMetricsObserverTest, HeavyAdNetworkUsage_InterventionFired) {
@@ -2793,6 +3082,11 @@ TEST_P(AdsPageLoadMetricsObserverTest, HeavyAdPeakCpuUsage_InterventionFired) {
 
 TEST_P(AdsPageLoadMetricsObserverTest,
        ErrorPageNavigationReplaceNavigationEntry) {
+  if (WithFencedFrames()) {
+    // Fenced frames are deprecated and no longer have independent frame trees.
+    return;
+  }
+
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(
       heavy_ad_intervention::features::kHeavyAdIntervention);

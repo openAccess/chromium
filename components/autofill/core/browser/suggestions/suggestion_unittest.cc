@@ -26,6 +26,8 @@ TEST(SuggestionTest, IsAcceptable) {
           .IsAcceptable());
   EXPECT_FALSE(
       Suggestion(SuggestionType::kAtMemorySourceAttribution).IsAcceptable());
+  EXPECT_FALSE(
+      Suggestion(SuggestionType::kAutofillAiSourceAttribution).IsAcceptable());
 
   // Non-kSelectableAndAcceptable acceptability states return false for
   // acceptable types.
@@ -44,6 +46,23 @@ TEST(SuggestionTest, IsAcceptable) {
   EXPECT_TRUE(acceptable_suggestion.IsSelectable());
   EXPECT_TRUE(unacceptable_suggestion.IsSelectable());
   EXPECT_FALSE(unselectable_suggestion.IsSelectable());
+}
+
+// Tests that Suggestion icons, specifically `kMailAsterisk`, `kGmail`, and
+// `kOpenInNew`, are formatted properly into the debug print string.
+TEST(SuggestionTest, PrintToWithGmailAndOpenInNewIcons) {
+  using ::testing::PrintToString;
+
+  Suggestion suggestion(SuggestionType::kOneTimePasswordEntry);
+  suggestion.icon = Suggestion::Icon::kGmail;
+  suggestion.trailing_icon = Suggestion::Icon::kOpenInNew;
+  std::string printed = PrintToString(suggestion);
+  EXPECT_NE(printed.find("icon:kGmail"), std::string::npos);
+  EXPECT_NE(printed.find("trailing_icon:kOpenInNew"), std::string::npos);
+
+  suggestion.icon = Suggestion::Icon::kMailAsterisk;
+  EXPECT_NE(PrintToString(suggestion).find("icon:kMailAsterisk"),
+            std::string::npos);
 }
 
 }  // namespace

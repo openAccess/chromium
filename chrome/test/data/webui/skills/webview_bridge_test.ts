@@ -9,7 +9,7 @@ import type {PendingEditorData} from 'chrome://skills/skills.mojom-webui.js';
 import {SkillsWebview} from 'chrome://skills/v2/skills_webview.js';
 import type {SkillsWebviewBridgeDelegate} from 'chrome://skills/v2/skills_webview_bridge.js';
 import {SkillsWebviewBridge} from 'chrome://skills/v2/skills_webview_bridge.js';
-import {getChromePathForRemoteUrl, getLoadingStageHistogramName, getPrimarySkillsOrigin, getRemoteUrlForChromePath, getSkillsRemoteUrl, HANDSHAKE_TIMEOUT_MS, HISTOGRAM_HANDSHAKE_RESULT, LoadingStage, SKILLS_DIALOG_INFO_TYPE, SKILLS_GET_PROVIDED_SKILL, SKILLS_HANDSHAKE_ACK, SKILLS_HANDSHAKE_TYPE, SKILLS_INVOKE_SKILL, SKILLS_LOG_METRIC, SKILLS_LOG_UMA_ENUM, SKILLS_OPEN_FULL_PAGE_EDITOR, SKILLS_OPEN_URL, SKILLS_PROVIDED_SKILL_INFO_TYPE, SKILLS_SEND_PROMPT, SKILLS_SEND_PROVIDED_SKILLS_TYPE, SKILLS_SHOW_TOAST, SKILLS_TOAST_CLOSED_TYPE, SKILLS_UNDO_TYPE} from 'chrome://skills/v2/skills_webview_bridge_constants.js';
+import {getChromePathForRemoteUrl, getLoadingStageHistogramName, getPrimarySkillsOrigin, getRemoteUrlForChromePath, getSkillsRemoteUrl, HANDSHAKE_TIMEOUT_MS, HISTOGRAM_HANDSHAKE_RESULT, LoadingStage, SKILLS_DIALOG_INFO_TYPE, SKILLS_GET_PROVIDED_SKILL, SKILLS_HANDSHAKE_ACK, SKILLS_HANDSHAKE_TYPE, SKILLS_INVOKE_SKILL, SKILLS_LOG_METRIC, SKILLS_LOG_UMA_ENUM, SKILLS_OPEN_FULL_PAGE_EDITOR, SKILLS_OPEN_URL, SKILLS_PROVIDED_SKILL_INFO_TYPE, SKILLS_SEND_PROMPT, SKILLS_SEND_PROVIDED_SKILLS_TYPE, SKILLS_SHOW_TOAST, SKILLS_TOAST_CLOSED_TYPE, SKILLS_UNDO_TYPE, SKILLS_UPDATED_TYPE} from 'chrome://skills/v2/skills_webview_bridge_constants.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {MockTimer} from 'chrome://webui-test/mock_timer.js';
 
@@ -41,6 +41,7 @@ suite('SkillsWebviewBridgeTest', () => {
       curatedBy: '',
       imageUrl: '',
       source: SkillSource.kEnterprise,
+      enabled: true,
       creationTime: {internalValue: 0n},
       lastUpdateTime: {internalValue: 0n},
       category: '',
@@ -122,6 +123,7 @@ suite('SkillsWebviewBridgeTest', () => {
       chrome?: {
         histograms?: {
           recordMediumTime: (name: string, value: number) => void,
+          recordLongTime: (name: string, value: number) => void,
           recordBoolean: (name: string, value: boolean) => void,
           recordEnumerationValue: (
               name: string, sample: number, boundary: number) => void,
@@ -133,6 +135,9 @@ suite('SkillsWebviewBridgeTest', () => {
     windowWithChrome.chrome.histograms = {
       recordMediumTime: (name: string, value: number) => {
         recordedHistograms.push({name, value, type: 'medium-time'});
+      },
+      recordLongTime: (name: string, value: number) => {
+        recordedHistograms.push({name, value, type: 'long-time'});
       },
       recordBoolean: (name: string, value: boolean) => {
         recordedHistograms.push({name, value, type: 'boolean'});
@@ -164,11 +169,18 @@ suite('SkillsWebviewBridgeTest', () => {
     // element's `contentWindow` property is non-configurable and cannot be
     // redefined via Object.defineProperty.
     const div = document.createElement('div');
+    div.setAttribute('autosize', 'on');
+    div.setAttribute('minheight', '200');
+    div.setAttribute('maxheight', '710');
     Object.assign(div, {
       contentWindow: window,
     });
     webview = div as unknown as chrome.webviewTag.WebView;
   });
+
+  function findHistogram(name: string): RecordedHistogram|undefined {
+    return recordedHistograms.find(h => h.name === name);
+  }
 
   teardown(() => {
     onPostMessage = () => {};
@@ -711,9 +723,120 @@ suite('SkillsWebviewBridgeTest', () => {
 
     // Test without openStartTime
     const paramsEmpty = new URLSearchParams('');
+    const beforeEmpty = performance.now();
     const startTimeEmpty = webviewApp.getInitStartTimeForTesting(paramsEmpty);
-    const now = performance.now();
-    assertTrue(Math.abs(startTimeEmpty - now) < 50);
+    const afterEmpty = performance.now();
+    assertTrue(startTimeEmpty >= beforeEmpty && startTimeEmpty <= afterEmpty);
+
+    // A malformed value must fall back to "now" rather than yielding NaN,
+    // which would otherwise be misreported as clock skew.
+    const paramsMalformed = new URLSearchParams('?openStartTime=not-a-number');
+    const beforeMalformed = performance.now();
+    const startTimeMalformed =
+        webviewApp.getInitStartTimeForTesting(paramsMalformed);
+    const afterMalformed = performance.now();
+    assertTrue(
+        startTimeMalformed >= beforeMalformed &&
+        startTimeMalformed <= afterMalformed);
+
+    // Non-positive values (e.g. 0 or negative epoch) must also fall back to
+    // "now" rather than calculating multi-decade durations.
+    const paramsZero = new URLSearchParams('?openStartTime=0');
+    const beforeZero = performance.now();
+    const startTimeZero = webviewApp.getInitStartTimeForTesting(paramsZero);
+    const afterZero = performance.now();
+    assertTrue(startTimeZero >= beforeZero && startTimeZero <= afterZero);
+  });
+
+  test('SkillsWebview_HostLoadMetric', () => {
+    const webviewApp = new SkillsWebview();
+    webviewApp.beginInitMeasurementForTesting(
+        new URLSearchParams(`?openStartTime=${performance.timeOrigin - 5000}`));
+
+    const hostLoad =
+        findHistogram(getLoadingStageHistogramName(LoadingStage.HOST_LOAD));
+    assertTrue(!!hostLoad);
+    assertEquals('long-time', hostLoad.type);
+    assertTrue((hostLoad.value as number) >= 5000);
+
+    // Omitted or future openStartTime must not emit HOST_LOAD.
+    recordedHistograms = [];
+    webviewApp.beginInitMeasurementForTesting(new URLSearchParams(''));
+    webviewApp.beginInitMeasurementForTesting(new URLSearchParams(
+        `?openStartTime=${performance.timeOrigin + 60000}`));
+    assertFalse(
+        !!findHistogram(getLoadingStageHistogramName(LoadingStage.HOST_LOAD)));
+  });
+
+  test('SkillsWebview_HostDataFetchMetric', async () => {
+    webview.id = 'webview';
+    document.body.appendChild(webview);
+    const webviewApp = new SkillsWebview();
+    try {
+      Object.assign(webviewApp, {
+        handler: {
+          setPage: () => {},
+          syncCookies: () => Promise.resolve({success: true}),
+          getPendingEditorData: () => Promise.resolve({data: null}),
+          getProvidedSkills: () => Promise.resolve({skills: []}),
+        },
+      });
+
+      await webviewApp.init();
+
+      const hostDataFetch = findHistogram(
+          getLoadingStageHistogramName(LoadingStage.HOST_DATA_FETCH));
+      assertTrue(!!hostDataFetch);
+      assertEquals('long-time', hostDataFetch.type);
+
+      // The refactor to recordStageDuration() must not migrate pre-existing
+      // stages off medium-time, which would break their historical continuity.
+      const cookieSync =
+          findHistogram(getLoadingStageHistogramName(LoadingStage.COOKIE_SYNC));
+      assertTrue(!!cookieSync);
+      assertEquals('medium-time', cookieSync.type);
+    } finally {
+      (webviewApp as unknown as {
+        bridge?: SkillsWebviewBridge,
+      }).bridge?.destroy();
+      webview.remove();
+    }
+  });
+
+  test('SkillsWebview_HostDataFetchMetric_RecordsOnRejection', async () => {
+    webview.id = 'webview';
+    document.body.appendChild(webview);
+    const webviewApp = new SkillsWebview();
+    try {
+      Object.assign(webviewApp, {
+        handler: {
+          setPage: () => {},
+          syncCookies: () => Promise.resolve({success: true}),
+          getPendingEditorData: () => Promise.resolve({data: null}),
+          getProvidedSkills: () => Promise.reject(new Error('pipe closed')),
+        },
+      });
+
+      let rejected = false;
+      try {
+        await webviewApp.init();
+      } catch (e) {
+        rejected = true;
+      }
+      assertTrue(rejected);
+
+      // The `finally` must still report, so the histogram is not biased
+      // towards fetches that happened to succeed quickly.
+      const hostDataFetch = findHistogram(
+          getLoadingStageHistogramName(LoadingStage.HOST_DATA_FETCH));
+      assertTrue(!!hostDataFetch);
+      assertEquals('long-time', hostDataFetch.type);
+    } finally {
+      (webviewApp as unknown as {
+        bridge?: SkillsWebviewBridge,
+      }).bridge?.destroy();
+      webview.remove();
+    }
   });
 
   test('HostReceivesOpenUrlMessage', () => {
@@ -943,6 +1066,26 @@ suite('SkillsWebviewBridgeTest', () => {
 
     const sentMessage = postedMessages.find(
         msg => msg.type === SKILLS_PROVIDED_SKILL_INFO_TYPE);
+    assertTrue(!!sentMessage);
+  });
+
+  test('HostSendsSkillsUpdated', () => {
+    bridge = new SkillsWebviewBridge(webview, createMockDelegate());
+    triggerLoadCommit();
+
+    const ackEvent = new MessageEvent('message', {
+      data: {type: SKILLS_HANDSHAKE_ACK},
+      origin: new URL(getSkillsRemoteUrl()).origin,
+      source: window,
+    });
+    window.dispatchEvent(ackEvent);
+
+    assertTrue(bridge.isConnected());
+
+    bridge.sendSkillsUpdated();
+
+    const sentMessage =
+        postedMessages.find(msg => msg.type === SKILLS_UPDATED_TYPE);
     assertTrue(!!sentMessage);
   });
 });

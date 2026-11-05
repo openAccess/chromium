@@ -150,9 +150,10 @@ TEST_F(IOSEnterpriseInterstitialTest, EnterpriseBlock_MetricsRecorded) {
   histograms.ExpectTotalCount(kBlockDecisionHistogram, 0);
 
   // Creating the blocking page should trigger a blocked seen event.;
-  EXPECT_CALL(*event_router_,
-              OnUrlFilteringInterstitial(Eq(GURL(kTestUrl)),
-                                         Eq("ENTERPRISE_BLOCKED_SEEN"), _, _));
+  EXPECT_CALL(
+      *event_router_,
+      OnUrlFilteringInterstitial(
+          Eq(GURL(kTestUrl)), Eq("ENTERPRISE_BLOCKED_SEEN"), _, _, Eq(""), _));
 
   auto test_page = CreateBlockingPage(CreateBlockUnsafeResource());
   EXPECT_TRUE(test_page->ShouldCreateNewNavigation());
@@ -172,6 +173,17 @@ TEST_F(IOSEnterpriseInterstitialTest, EnterpriseBlock_MetricsRecorded) {
       security_interstitials::MetricsHelper::TOTAL_VISITS, 1);
 }
 
+TEST_F(IOSEnterpriseInterstitialTest, EnterpriseBlock_VerifyTitleString) {
+  // Creating the blocking page should trigger a blocked seen event with the
+  // title string.
+  EXPECT_CALL(
+      *event_router_,
+      OnUrlFilteringInterstitial(
+          Eq(GURL(kTestUrl)), Eq("ENTERPRISE_BLOCKED_SEEN"), _, _, Eq(""), _));
+
+  auto test_page = CreateBlockingPage(CreateBlockUnsafeResource());
+}
+
 TEST_F(IOSEnterpriseInterstitialTest, EnterpriseWarn_MetricsRecorded) {
   base::HistogramTester histograms;
   histograms.ExpectTotalCount(kWarnDecisionHistogram, 0);
@@ -179,13 +191,15 @@ TEST_F(IOSEnterpriseInterstitialTest, EnterpriseWarn_MetricsRecorded) {
   {
     InSequence seq;
     // Creating the warning page should trigger a warned seen event.;
+    EXPECT_CALL(
+        *event_router_,
+        OnUrlFilteringInterstitial(
+            Eq(GURL(kTestUrl)), Eq("ENTERPRISE_WARNED_SEEN"), _, _, Eq(""), _));
+    // Proceed command should trigger reporting a bypass event;
     EXPECT_CALL(*event_router_,
                 OnUrlFilteringInterstitial(Eq(GURL(kTestUrl)),
-                                           Eq("ENTERPRISE_WARNED_SEEN"), _, _));
-    // Proceed command should trigger repoting a bypass event;
-    EXPECT_CALL(*event_router_,
-                OnUrlFilteringInterstitial(
-                    Eq(GURL(kTestUrl)), Eq("ENTERPRISE_WARNED_BYPASS"), _, _));
+                                           Eq("ENTERPRISE_WARNED_BYPASS"), _, _,
+                                           Eq(""), _));
   }
 
   auto test_page = CreateWarningPage(CreateWarnUnsafeResource());

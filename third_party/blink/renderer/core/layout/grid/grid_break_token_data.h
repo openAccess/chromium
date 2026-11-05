@@ -9,7 +9,8 @@
 
 #include "base/check.h"
 #include "third_party/blink/renderer/core/layout/break_token_algorithm_data.h"
-#include "third_party/blink/renderer/core/layout/gap/gap_geometry.h"
+#include "third_party/blink/renderer/core/layout/gap/grid_gap_geometry.h"
+#include "third_party/blink/renderer/core/layout/grid/grid_item.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
@@ -17,7 +18,6 @@
 
 namespace blink {
 
-class GridItems;
 class GridLayoutSubtree;
 class LayoutBox;
 
@@ -25,9 +25,9 @@ struct GridItemPlacementData {
   GridItemPlacementData(
       LogicalOffset offset,
       bool has_descendant_that_depends_on_percentage_block_size,
-      std::optional<LogicalOffset> relative_offset = std::nullopt)
+      std::optional<PhysicalBoxStrut> relative_insets = std::nullopt)
       : offset(offset),
-        relative_offset(relative_offset),
+        relative_insets(relative_insets),
         has_descendant_that_depends_on_percentage_block_size(
             has_descendant_that_depends_on_percentage_block_size) {}
 
@@ -35,7 +35,7 @@ struct GridItemPlacementData {
   // Grid computes this because percentage offsets resolve against the grid
   // area. Other layout modes leave it unset so the fragment builder computes
   // relative positioning normally when the result is added.
-  std::optional<LogicalOffset> relative_offset;
+  std::optional<PhysicalBoxStrut> relative_insets;
   bool has_descendant_that_depends_on_percentage_block_size;
 };
 
@@ -49,7 +49,7 @@ struct GridBreakTokenData final : BreakTokenAlgorithmData {
       const Vector<LayoutUnit>& row_offset_adjustments,
       const Vector<EBreakBetween>& row_break_between,
       const HeapVector<Member<LayoutBox>>& oof_children,
-      const GapGeometry* full_gap_geometry,
+      const GridGapGeometry* full_gap_geometry,
       Vector<wtf_size_t>& track_idx_to_set_idx,
       Vector<wtf_size_t>& column_gaps_segment_ranges_start_indices,
       LayoutUnit cumulative_gap_offset_adjustment,
@@ -70,21 +70,23 @@ struct GridBreakTokenData final : BreakTokenAlgorithmData {
         cumulative_gap_offset_adjustment(cumulative_gap_offset_adjustment),
         first_unprocessed_row_gap_idx(first_unprocessed_row_gap_idx) {}
 
-  void Trace(Visitor* visitor) const override {
+  // Traces references after the type tag is checked.
+  void TraceAfterDispatch(Visitor* visitor) const {
     visitor->Trace(grid_items);
     visitor->Trace(grid_layout_subtree);
     visitor->Trace(oof_children);
     visitor->Trace(full_gap_geometry);
-    BreakTokenAlgorithmData::Trace(visitor);
+    BreakTokenAlgorithmData::TraceAfterDispatch(visitor);
   }
 
-  wtf_size_t GetTotalRowGapCount() const override {
+  // Counts all row gaps, including gaps suppressed by fragmentation.
+  wtf_size_t GetTotalRowGapCount() const {
     CHECK(full_gap_geometry);
     return full_gap_geometry->GetMainGaps().size();
   }
 
-  wtf_size_t GetFirstUnprocessedRowGapIndex(
-      std::optional<wtf_size_t> line_index) const override {
+  // Returns the first unprocessed row-gap index in the unfragmented grid.
+  wtf_size_t GetFirstUnprocessedRowGapIndex() const {
     return first_unprocessed_row_gap_idx;
   }
 
@@ -108,7 +110,7 @@ struct GridBreakTokenData final : BreakTokenAlgorithmData {
   // important for suppressing row gaps that cross fragmentainer boundaries, or
   // when they are the last content in a fragmentainer, and for building
   // fragment-specific gap geometry.
-  Member<const GapGeometry> full_gap_geometry;
+  Member<const GridGapGeometry> full_gap_geometry;
 
   // Represents the mapping where the index in the vector corresponds to the row
   // gap index, and the value at that index is the corresponding set index. It

@@ -12,7 +12,6 @@
 #include "media/muxers/box_byte_stream.h"
 #include "media/muxers/mp4_muxer_context.h"
 #include "media/muxers/mp4_type_conversion.h"
-#include "media/muxers/output_position_tracker.h"
 
 namespace media {
 
@@ -301,7 +300,7 @@ void Mp4MediaDataBoxWriter::Write(BoxByteStream& writer) {
     // Write base data offset to the entry of `base_data_offset` of the `trun`,
     // which was set with placeholder during its write.
     writer.FlushCurrentOffset();
-    writer.WriteBytes(data.data(), data.size());
+    writer.WriteBytes(data);
   }
 
   writer.EndBox();

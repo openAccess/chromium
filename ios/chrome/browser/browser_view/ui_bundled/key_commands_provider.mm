@@ -20,12 +20,13 @@
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_util.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_web_state_utils.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_browser_agent.h"
 #import "ios/chrome/browser/sessions/model/ios_chrome_tab_restore_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state_observer.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
@@ -56,12 +57,13 @@
 #import "ios/web/public/navigation/referrer.h"
 #import "ios/web/public/web_state.h"
 #import "ui/base/l10n/l10n_util_mac.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #import "url/gurl.h"
 
 using base::RecordAction;
 using base::UserMetricsAction;
 
-@interface KeyCommandsProvider () {
+@interface KeyCommandsProvider () <SceneStateObserver> {
   // The current browser object.
   base::WeakPtr<Browser> _browser;
 }
@@ -100,6 +102,7 @@ using base::UserMetricsAction;
   self = [super init];
   if (self) {
     _browser = browser->AsWeakPtr();
+    [browser->GetSceneState() addObserver:self];
     [[NSNotificationCenter defaultCenter]
         addObserver:self
            selector:@selector(keyboardDidShow)
@@ -128,9 +131,12 @@ using base::UserMetricsAction;
 
 - (NSArray<UIKeyCommand*>*)keyCommands {
   // On iOS 15+, key commands visible in the app's menu are created in
-  // MenuBuilder. Return the key commands that are not already present in the
-  // menu.
+  // MenuBuilder. Return key commands that are not already present in the menu,
+  // or that need to be declared on the responder chain (such as `cr_closeTab`,
+  // where `wantsPriorityOverSystemBehavior` must be evaluated on the responder
+  // chain to prevent iPadOS from closing the window when editing text).
   return @[
+    UIKeyCommand.cr_closeTab,
     UIKeyCommand.cr_openNewRegularTab,
     UIKeyCommand.cr_showNextTab_2,
     UIKeyCommand.cr_showPreviousTab_2,
@@ -248,6 +254,10 @@ using base::UserMetricsAction;
     // Don't open incognito tab if incognito is disabled by policy.
     return !IsIncognitoModeDisabled(_browser->GetProfile()->GetPrefs());
   }
+  if (sel_isEqual(action, @selector(keyCommand_openNewWindow)) ||
+      sel_isEqual(action, @selector(keyCommand_openNewIncognitoWindow))) {
+    return _browser->GetSceneState().multipleScenesAvailable;
+  }
   if (sel_isEqual(action, @selector(keyCommand_clearBrowsingData))) {
     // Clear Browsing Data shouldn't be available in incognito mode.
     return !_browser->GetProfile()->IsOffTheRecord();
@@ -280,6 +290,13 @@ using base::UserMetricsAction;
     command.discoverabilityTitle = newTitle;
   }
   [super validateCommand:command];
+}
+
+#pragma mark - SceneStateObserver
+
+- (void)sceneState:(SceneState*)sceneState
+    multipleScenesAvailabilityDidChange:(BOOL)multipleScenesAvailable {
+  [UIMenuSystem.mainSystem setNeedsRevalidate];
 }
 
 #pragma mark - Key Command Actions
@@ -337,7 +354,8 @@ using base::UserMetricsAction;
   }
 
   [_sceneHandler openURLInNewTab:[OpenNewTabCommand command]];
-  RestoreTab(entry->id, WindowOpenDisposition::CURRENT_TAB, _browser.get());
+  RestoreTab(entry->id, ui::mojom::WindowOpenDisposition::kCurrentTab,
+             _browser.get());
 }
 
 - (void)keyCommand_find {

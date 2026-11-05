@@ -19,11 +19,9 @@ _CWD = os.getcwd()
 class TsLibraryTest(unittest.TestCase):
   def setUp(self):
     self._out_folder = None
-    self._additional_flags = []
     self.maxDiff = None
 
   def tearDown(self):
-    self._additional_flags = []
     if self._out_folder:
       shutil.rmtree(self._out_folder)
 
@@ -49,7 +47,6 @@ class TsLibraryTest(unittest.TestCase):
         '--js_files',
         'legacy_file.js',
       ]
-      + self._additional_flags
     )
 
     # Build project1, which includes a mix of TS and definition files.
@@ -76,7 +73,7 @@ class TsLibraryTest(unittest.TestCase):
     if enable_source_maps:
       args += ['--enable_source_maps']
 
-    ts_library.main(args + self._additional_flags)
+    ts_library.main(args)
     return gen_dir
 
   def _assert_project1_output(self, gen_dir):
@@ -96,6 +93,12 @@ class TsLibraryTest(unittest.TestCase):
     self.assertFalse(
       os.path.exists(os.path.join(gen_dir, tsbuildinfo)), tsbuildinfo
     )
+
+    # Check that generated tsconfig files always use LF line endings and
+    # forward-slash path separators for cross-OS remote build determinism.
+    contents = self._read_file(gen_dir, 'tsconfig_build_ts.json')
+    self.assertNotIn('\r', contents)
+    self.assertNotIn('\\', contents)
 
   # Builds project2 which depends on files from project1 and project3, project6,
   # both via relative URLs, as well as via absolute chrome:// and
@@ -154,7 +157,6 @@ class TsLibraryTest(unittest.TestCase):
         '--tsconfig_base',
         os.path.relpath(os.path.join(root_dir, 'tsconfig_base.json'), gen_dir),
       ]
-      + self._additional_flags
     )
     return gen_dir
 
@@ -201,7 +203,6 @@ class TsLibraryTest(unittest.TestCase):
         ),
         '--composite',
       ]
-      + self._additional_flags
     )
     return gen_dir
 
@@ -248,7 +249,6 @@ class TsLibraryTest(unittest.TestCase):
         '--manifest_excludes',
         'exclude.ts',
       ]
-      + self._additional_flags
     )
     return gen_dir
 
@@ -303,7 +303,6 @@ class TsLibraryTest(unittest.TestCase):
         '--in_files',
         'bar.ts',
       ]
-      + self._additional_flags
     )
 
     # test:
@@ -326,7 +325,6 @@ class TsLibraryTest(unittest.TestCase):
         '--in_files',
         'bar_test.ts',
       ]
-      + self._additional_flags
     )
 
     return gen_dir
@@ -387,7 +385,6 @@ class TsLibraryTest(unittest.TestCase):
         'assert.ts',
         '--composite',
       ]
-      + self._additional_flags
     )
 
     return (gen_dir, out_dir)
@@ -415,7 +412,7 @@ class TsLibraryTest(unittest.TestCase):
 
   # Test success case where both project1 and project2 are compiled successfully
   # and no errors are thrown.
-  def _testSuccess(self):
+  def testSuccess(self):
     self._out_folder = tempfile.mkdtemp(dir=_CWD)
     project1_gen_dir = self._build_project1()
     self._assert_project1_output(project1_gen_dir)
@@ -437,16 +434,9 @@ class TsLibraryTest(unittest.TestCase):
     project5_gen_dir = self._build_project5()
     self._assert_project5_output(project5_gen_dir)
 
-  def testSuccess_v6(self):
-    self._testSuccess()
-
-  def testSuccess_v7(self):
-    self._additional_flags = ['--use_typescript_go']
-    self._testSuccess()
-
   # Test error case where a type violation exists, ensure that an error is
   # thrown.
-  def _testError(self):
+  def testError(self):
     self._out_folder = tempfile.mkdtemp(dir=_CWD)
     gen_dir = os.path.join(
       self._out_folder, 'tools', 'typescript', 'tests', 'project1'
@@ -470,7 +460,6 @@ class TsLibraryTest(unittest.TestCase):
           'errors.ts',
           '--composite',
         ]
-        + self._additional_flags
       )
     except RuntimeError as err:
       self.assertTrue(
@@ -481,13 +470,6 @@ class TsLibraryTest(unittest.TestCase):
       )
     else:
       self.fail('Failed to detect type error')
-
-  def testError_v6(self):
-    self._testError()
-
-  def testError_v7(self):
-    self._additional_flags = ['--use_typescript_go']
-    self._testError()
 
   # Test error case where the project's tsconfig file is failing validation.
   def testTsConfigValidationError(self):

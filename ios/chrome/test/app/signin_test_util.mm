@@ -36,6 +36,7 @@
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/gaia_auth_fetcher_ios.h"
@@ -164,17 +165,12 @@ void SignOutAndClearIdentities(ProceduralBlock completion) {
     // Sign out current user and clear all browsing data on the device.
     signin::IdentityManager* identity_manager =
         IdentityManagerFactory::GetForProfile(profile);
-    AuthenticationService* authentication_service =
-        AuthenticationServiceFactory::GetForProfile(profile);
     if (identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
-      ProceduralBlock signout_completion = ^{
-        ClearIdentities(completion);
-      };
-      authentication_service->SignOut(signin_metrics::ProfileSignout::kTest,
-                                      signout_completion);
-    } else {
-      ClearIdentities(completion);
+      AuthenticationService* authentication_service =
+          AuthenticationServiceFactory::GetForProfile(profile);
+      authentication_service->SignOut(signin_metrics::ProfileSignout::kTest);
     }
+    ClearIdentities(completion);
   }
 }
 

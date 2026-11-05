@@ -13,14 +13,10 @@
 #import <utility>
 
 #import "base/functional/callback.h"
-#import "base/ios/block_types.h"
-#import "base/time/time.h"
 #import "components/signin/public/identity_manager/account_info.h"
-#import "components/signin/public/identity_manager/tribool.h"
 #import "components/sync/base/data_type.h"
 #import "ios/chrome/app/change_profile_continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
-#import "ios/chrome/browser/signin/model/capabilities_types.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 
 class Browser;
@@ -129,24 +125,26 @@ void RecordFullscreenSigninPromoStarted(
     ChromeAccountManagerService* account_manager_service,
     const base::Version& current_version);
 
-// Converts a SystemIdentityCapabilityResult to a Tribool.
-Tribool TriboolFromCapabilityResult(SystemIdentityCapabilityResult result);
-
-// Returns the list of all accounts on the device, in the order provided by the
-// system, including the ones that are assigned to other profiles.
+// Returns the list of all accounts on the device that match
+// `prefs::kRestrictAccountsToPatterns`, in the order provided by the system,
+// including the ones that are assigned to other profiles.
 NSArray<id<SystemIdentity>>* GetIdentitiesOnDevice(
     signin::IdentityManager* identityManager,
     ChromeAccountManagerService* accountManagerService);
 // Convenience version that grabs the required services from the `profile`.
+// Only returns accounts that match `prefs::kRestrictAccountsToPatterns`.
 NSArray<id<SystemIdentity>>* GetIdentitiesOnDevice(ProfileIOS* profile);
 
 // Returns the default identity on the device, i.e. the first one returned by
-// GetIdentitiesOnDevice(), or nil if there are none.
+// `GetIdentitiesOnDevice()` (which only includes accounts matching
+// `prefs::kRestrictAccountsToPatterns`), or `nil` if there are none.
 id<SystemIdentity> GetDefaultIdentityOnDevice(
     signin::IdentityManager* identityManager,
     ChromeAccountManagerService* accountManagerService);
 
-// Returns the account info on the device with `email` or nullopt.
+// Returns the account info on the device with `email` (among accounts on the
+// device matching `prefs::kRestrictAccountsToPatterns`), or `std::nullopt`.
+// `email` does not need to correspond to an account on the device.
 std::optional<AccountInfo> GetAccountInfoOnDeviceWithEmail(
     signin::IdentityManager* identityManager,
     std::string_view email);

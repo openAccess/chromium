@@ -10,7 +10,6 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/url_loader_monitor.h"
 #include "content/shell/browser/shell.h"
 #include "content/shell/browser/shell_content_browser_client.h"
@@ -42,17 +41,17 @@ class TrustTokenParametersBrowsertest
 INSTANTIATE_TEST_SUITE_P(
     WithIssuanceParameters,
     TrustTokenParametersBrowsertest,
-    testing::ValuesIn(network::kIssuanceTrustTokenTestParameters));
+    testing::ValuesIn(network::GetIssuanceTrustTokenTestParameters()));
 
 INSTANTIATE_TEST_SUITE_P(
     WithRedemptionParameters,
     TrustTokenParametersBrowsertest,
-    testing::ValuesIn(network::kRedemptionTrustTokenTestParameters));
+    testing::ValuesIn(network::GetRedemptionTrustTokenTestParameters()));
 
 INSTANTIATE_TEST_SUITE_P(
     WithSigningParameters,
     TrustTokenParametersBrowsertest,
-    testing::ValuesIn(network::kSigningTrustTokenTestParameters));
+    testing::ValuesIn(network::GetSigningTrustTokenTestParameters()));
 
 IN_PROC_BROWSER_TEST_P(TrustTokenParametersBrowsertest,
                        PopulatesResourceRequestViaFetch) {
@@ -414,112 +413,5 @@ IN_PROC_BROWSER_TEST_F(TrustTokenPermissionsPolicyBrowsertest,
   run_loop.Run();
 }
 
-constexpr char kPrivateStateTokenRedemptionPolicyHeader[] =
-    "/set-header?Feature-Policy: private-state-token-redemption 'self'";
-
-constexpr char kPrivateStateTokenIssuancePolicyHeader[] =
-    "/set-header?Feature-Policy: private-state-token-issuance 'self'";
-
-class TrustTokenPermissionsPolicyFencedFrameTest
-    : public TrustTokenPermissionsPolicyBrowsertest,
-      public ::testing::WithParamInterface<std::tuple<bool, bool>> {
- public:
-  TrustTokenPermissionsPolicyFencedFrameTest()
-      : policy_header_in_primary_page_(std::get<0>(GetParam())),
-        policy_header_in_fenced_frame_page_(std::get<1>(GetParam())) {}
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
- protected:
-  const bool policy_header_in_primary_page_;
-  const bool policy_header_in_fenced_frame_page_;
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         TrustTokenPermissionsPolicyFencedFrameTest,
-                         ::testing::Combine(::testing::Bool(),
-                                            ::testing::Bool()));
-
-IN_PROC_BROWSER_TEST_P(TrustTokenPermissionsPolicyFencedFrameTest,
-                       PassesNegativeRedemptionValueToFactoryParams) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-
-  GURL primary_url(embedded_test_server()->GetURL(
-      "a.com", policy_header_in_primary_page_
-                   ? kPrivateStateTokenRedemptionPolicyHeader
-                   : "/title1.html"));
-
-  GURL fenced_frame_url(embedded_test_server()->GetURL(
-      "b.com", policy_header_in_fenced_frame_page_
-                   ? std::string(kPrivateStateTokenRedemptionPolicyHeader) +
-                         "&Supports-Loading-Mode: fenced-frame"
-                   : "/fenced_frames/title1.html"));
-
-  EXPECT_TRUE(NavigateToURL(shell(), primary_url));
-
-  base::RunLoop run_loop;
-  ShellContentBrowserClient::Get()->set_url_loader_factory_params_callback(
-      base::BindLambdaForTesting(
-          [&](const network::mojom::URLLoaderFactoryParams* params,
-              const url::Origin& origin, bool unused_is_for_isolated_world,
-              bool unused_is_for_service_worker) {
-            if (origin.host() != "b.com")
-              return;
-            EXPECT_TRUE(params);
-            EXPECT_THAT(
-                params->trust_token_redemption_policy,
-                network::mojom::TrustTokenOperationPolicyVerdict::kForbid);
-            run_loop.Quit();
-          }));
-
-  ASSERT_TRUE(fenced_frame_test_helper().CreateFencedFrame(
-      shell()->web_contents()->GetPrimaryMainFrame(), fenced_frame_url));
-
-  run_loop.Run();
-}
-
-IN_PROC_BROWSER_TEST_P(TrustTokenPermissionsPolicyFencedFrameTest,
-                       PassesNegativeIssuanceValueToFactoryParams) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-
-  GURL primary_url(embedded_test_server()->GetURL(
-      "a.com", policy_header_in_primary_page_
-                   ? kPrivateStateTokenIssuancePolicyHeader
-                   : "/title1.html"));
-
-  GURL fenced_frame_url(embedded_test_server()->GetURL(
-      "b.com", policy_header_in_fenced_frame_page_
-                   ? std::string(kPrivateStateTokenIssuancePolicyHeader) +
-                         "&Supports-Loading-Mode: fenced-frame"
-                   : "/fenced_frames/title1.html"));
-
-  EXPECT_TRUE(NavigateToURL(shell(), primary_url));
-
-  base::RunLoop run_loop;
-  ShellContentBrowserClient::Get()->set_url_loader_factory_params_callback(
-      base::BindLambdaForTesting(
-          [&](const network::mojom::URLLoaderFactoryParams* params,
-              const url::Origin& origin, bool unused_is_for_isolated_world,
-              bool unused_is_for_service_worker) {
-            if (origin.host() != "b.com") {
-              return;
-            }
-            EXPECT_TRUE(params);
-            EXPECT_THAT(
-                params->trust_token_issuance_policy,
-                network::mojom::TrustTokenOperationPolicyVerdict::kForbid);
-            run_loop.Quit();
-          }));
-
-  ASSERT_TRUE(fenced_frame_test_helper().CreateFencedFrame(
-      shell()->web_contents()->GetPrimaryMainFrame(), fenced_frame_url));
-
-  run_loop.Run();
-}
 
 }  // namespace content

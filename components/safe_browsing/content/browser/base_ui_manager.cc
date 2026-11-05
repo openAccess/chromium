@@ -9,12 +9,13 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
-#include "components/safe_browsing/content/browser/async_check_tracker.h"
 #include "components/safe_browsing/content/browser/base_blocking_page.h"
 #include "components/safe_browsing/content/browser/content_unsafe_resource_util.h"
+#include "components/safe_browsing/content/browser/url_checker/async_check_tracker.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/scheme_logger.h"
 #include "components/security_interstitials/content/security_interstitial_page.h"
@@ -197,8 +198,12 @@ class AllowlistUrlSet : public content::WebContentsUserData<AllowlistUrlSet> {
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(AllowlistUrlSet);
 
-// Returns the corresponding ThreatSeverity to a SBThreatType
-// Keep the same as sb_local_database_manager GetThreatSeverity()
+// Returns the corresponding ThreatSeverity to a SBThreatType.
+// v4: Keep the same as sb_local_database_manager GetThreatSeverity().
+// v5: Keep the severity values in sync with GetThreatSeverity() in
+// v5_search_hashes_util.cc.
+// TODO(crbug.com/372395685): deprecate v4 part of this comment.
+// LINT.IfChange(ThreatTypeSeverity)
 ThreatSeverity GetThreatSeverity(safe_browsing::SBThreatType threat_type) {
   using enum SBThreatType;
   switch (threat_type) {
@@ -223,7 +228,7 @@ ThreatSeverity GetThreatSeverity(safe_browsing::SBThreatType threat_type) {
       return 3;
     case SB_THREAT_TYPE_SUSPICIOUS_SITE:
     case SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE:
-      return 4;
+      return 7;
     case SB_THREAT_TYPE_BILLING:
       return 15;
     case SB_THREAT_TYPE_UNUSED:
@@ -232,14 +237,15 @@ ThreatSeverity GetThreatSeverity(safe_browsing::SBThreatType threat_type) {
     case SB_THREAT_TYPE_EXTENSION:
     case DEPRECATED_SB_THREAT_TYPE_URL_CLIENT_SIDE_MALWARE:
     case DEPRECATED_SB_THREAT_TYPE_URL_PASSWORD_PROTECTION_PHISHING:
-    case SB_THREAT_TYPE_BLOCKED_AD_REDIRECT:
+    case DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_REDIRECT:
+    case DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_POPUP:
     case SB_THREAT_TYPE_AD_SAMPLE:
-    case SB_THREAT_TYPE_BLOCKED_AD_POPUP:
     case SB_THREAT_TYPE_APK_DOWNLOAD:
     case SB_THREAT_TYPE_CSD_DOWNLOAD_ALLOWLIST:
       NOTREACHED();
   }
 }
+// LINT.ThenChange(//components/safe_browsing/core/browser/db/v5_search_hashes_util.cc:ThreatTypeSeverity)
 
 // Whether the warning triggered by this threat type can be bypassed.
 bool IsWarningBypassable(safe_browsing::SBThreatType threat_type) {
@@ -269,9 +275,9 @@ bool IsWarningBypassable(safe_browsing::SBThreatType threat_type) {
     case SB_THREAT_TYPE_EXTENSION:
     case DEPRECATED_SB_THREAT_TYPE_URL_CLIENT_SIDE_MALWARE:
     case DEPRECATED_SB_THREAT_TYPE_URL_PASSWORD_PROTECTION_PHISHING:
-    case SB_THREAT_TYPE_BLOCKED_AD_REDIRECT:
+    case DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_REDIRECT:
+    case DEPRECATED_SB_THREAT_TYPE_BLOCKED_AD_POPUP:
     case SB_THREAT_TYPE_AD_SAMPLE:
-    case SB_THREAT_TYPE_BLOCKED_AD_POPUP:
     case SB_THREAT_TYPE_APK_DOWNLOAD:
     case SB_THREAT_TYPE_CSD_DOWNLOAD_ALLOWLIST:
     case SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE:
@@ -430,12 +436,9 @@ void BaseUIManager::DisplayBlockingPage(const UnsafeResource& resource) {
       resource.navigation_id.has_value() &&
       report_sent_navigation_ids_.contains(resource.navigation_id.value());
   if (resource.threat_type != SB_THREAT_TYPE_SAFE &&
-      resource.threat_type != SB_THREAT_TYPE_BILLING &&
       resource.threat_type != SB_THREAT_TYPE_MANAGED_POLICY_BLOCK &&
       resource.threat_type != SB_THREAT_TYPE_MANAGED_POLICY_WARN &&
       !already_reported) {
-    // TODO(vakh): crbug/883462: The reports for SB_THREAT_TYPE_BILLING should
-    // be disabled for M70 but enabled for a later release (M71?).
     if (base::FeatureList::IsEnabled(
             safe_browsing::kCreateWarningShownClientSafeBrowsingReports)) {
       CreateAndSendClientSafeBrowsingWarningShownReport(resource);
@@ -603,7 +606,7 @@ void BaseUIManager::AddToAllowlistUrlSet(
 }
 
 const std::string BaseUIManager::app_locale() const {
-  return base::i18n::GetConfiguredLocale();
+  return std::string(base::i18n::GetDefaultIcuLocale().tag_string());
 }
 
 history::HistoryService* BaseUIManager::history_service(

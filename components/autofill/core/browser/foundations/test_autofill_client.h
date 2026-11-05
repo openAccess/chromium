@@ -37,7 +37,6 @@
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_quality/addresses/test_address_normalizer.h"
 #include "components/autofill/core/browser/filling/filling_product.h"
-#include "components/autofill/core/browser/form_predictions_tracker.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/autofill_driver_factory.h"
 #include "components/autofill/core/browser/foundations/test_autofill_driver_factory.h"
@@ -45,6 +44,7 @@
 #include "components/autofill/core/browser/integrators/autofill_ai/mock_autofill_ai_manager.h"
 #include "components/autofill/core/browser/integrators/compose/autofill_compose_delegate.h"
 #include "components/autofill/core/browser/integrators/identity_credential/identity_credential_delegate.h"
+#include "components/autofill/core/browser/integrators/one_time_tokens/otp_field_detector.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_metrics_tracker.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_phish_guard_delegate.h"
 #include "components/autofill/core/browser/integrators/optimization_guide/mock_autofill_optimization_guide_decider.h"
@@ -75,12 +75,14 @@
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/consent_auditor/fake_consent_auditor.h"
+#include "components/device_reauth/mock_device_auth_availability_checker.h"
 #include "components/device_reauth/mock_device_authenticator.h"
 #include "components/metrics/profile_metrics_service.h"
-#include "components/one_time_tokens/core/browser/one_time_token_service_impl.h"
-#include "components/one_time_tokens/core/browser/sms_otp_backend.h"
+#include "components/one_time_tokens/core/browser/gmail_otp_backend.h"
+#include "components/one_time_tokens/core/browser/gmail_otp_service.h"
+#include "components/one_time_tokens/core/browser/sms_otp_service.h"
+#include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/personal_context/core/personal_context_types.h"
 #include "components/personal_context/first_run/personal_context_first_run_service.h"
 #include "components/personal_context/first_run/test_personal_context_first_run_service.h"
@@ -93,7 +95,6 @@
 #include "components/translate/core/browser/language_state.h"
 #include "components/translate/core/browser/mock_translate_driver.h"
 #include "components/ukm/test_ukm_recorder.h"
-#include "components/version_info/channel.h"
 #include "services/metrics/public/cpp/delegating_ukm_recorder.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -132,10 +133,6 @@ class TestAutofillClientTemplate : public T {
   }
 
   const std::string& GetAppLocale() const override { return app_locale_; }
-
-  version_info::Channel GetChannel() const override {
-    return channel_for_testing_;
-  }
 
   bool IsOffTheRecord() const override { return is_off_the_record_; }
 
@@ -178,9 +175,7 @@ class TestAutofillClientTemplate : public T {
   }
 
   EntityDataManager* GetEntityDataManager() override {
-    return entity_data_manager_non_owning_
-               ? entity_data_manager_non_owning_.get()
-               : entity_data_manager_.get();
+    return entity_data_manager_.get();
   }
 
   WalletPassAccessManager* GetWalletPassAccessManager() override {
@@ -210,15 +205,6 @@ class TestAutofillClientTemplate : public T {
     personal_context_access_manager_ = personal_context_access_manager;
   }
 
-  EntitySuppressionManager* GetEntitySuppressionManager() override {
-    return entity_suppression_manager_;
-  }
-
-  void set_entity_suppression_manager(
-      EntitySuppressionManager* entity_suppression_manager) {
-    entity_suppression_manager_ = entity_suppression_manager;
-  }
-
   const subscription_eligibility::SubscriptionEligibilityService*
   GetSubscriptionEligibilityService() const override {
     return &subscription_eligibility_service_;
@@ -242,14 +228,8 @@ class TestAutofillClientTemplate : public T {
     return *single_field_fill_router_;
   }
 
-  void set_autocomplete_history_manager(
-      std::unique_ptr<AutocompleteHistoryManager> manager) {
-    autocomplete_history_manager_ = std::move(manager);
-  }
-
   AutocompleteHistoryManager* GetAutocompleteHistoryManager() override {
-    return autocomplete_history_manager_ ? autocomplete_history_manager_.get()
-                                         : &mock_autocomplete_history_manager_;
+    return &mock_autocomplete_history_manager_;
   }
 
   AtMemoryQueryService* GetAtMemoryQueryService() override {
@@ -288,9 +268,7 @@ class TestAutofillClientTemplate : public T {
     return compose_delegate_.get();
   }
 
-  test::AutofillTestingPrefService* GetPrefs() override {
-    return prefs_.get();
-  }
+  test::AutofillTestingPrefService* GetPrefs() override { return prefs_.get(); }
 
   const test::AutofillTestingPrefService* GetPrefs() const override {
     return const_cast<TestAutofillClientTemplate*>(this)->GetPrefs();
@@ -304,7 +282,7 @@ class TestAutofillClientTemplate : public T {
   }
 
   const signin::IdentityManager* GetIdentityManager() const override {
-    return identity_test_env_.identity_manager();
+    return identity_test_environment().identity_manager();
   }
 
   metrics::ProfileMetricsService* GetProfileMetricsService() override {
@@ -356,6 +334,14 @@ class TestAutofillClientTemplate : public T {
     password_ml_prediction_model_handler_ = std::move(handler);
   }
 
+  affiliations::AffiliationService* GetAffiliationService() override {
+    return affiliation_service_;
+  }
+
+  void set_affiliation_service(affiliations::AffiliationService* service) {
+    affiliation_service_ = service;
+  }
+
   const GURL& GetLastCommittedPrimaryMainFrameURL() const override {
     return last_committed_primary_main_frame_url_;
   }
@@ -367,7 +353,7 @@ class TestAutofillClientTemplate : public T {
   std::u16string_view GetPageTitle() const override { return page_title_; }
 
   security_state::SecurityLevel GetSecurityLevelForUmaHistograms() override {
-    return security_level_;
+    return security_state::SecurityLevel::NONE;
   }
 
   translate::LanguageState* GetLanguageState() override {
@@ -383,6 +369,9 @@ class TestAutofillClientTemplate : public T {
   }
 
   void ShowAutofillSettings(SuggestionType suggestion_type) override {}
+
+  void OpenGmailForOtps() override { opened_gmail_for_otps_ = true; }
+  bool opened_gmail_for_otps() const { return opened_gmail_for_otps_; }
 
   void ConfirmSaveAddressProfile(
       const AutofillProfile& profile,
@@ -401,6 +390,7 @@ class TestAutofillClientTemplate : public T {
   }
 
   void UpdateAutofillDataListValues(
+      const LocalFrameToken& frame_token,
       base::span<const SelectOption> options) override {}
 
   void SetAutofillSuggestions(std::vector<Suggestion> suggestions) {
@@ -457,12 +447,6 @@ class TestAutofillClientTemplate : public T {
   bool IsShowingWalletDirectOffersIph() {
     return autofill_iph_showing_ ==
            AutofillClient::IphFeature::kWalletDirectOffers;
-  }
-
-  void NotifyIphFeatureUsed(AutofillClient::IphFeature feature) override {
-    if (notify_iph_feature_used_mock_callback_) {
-      notify_iph_feature_used_mock_callback_->Run(feature);
-    }
   }
 
   bool IsTabInActorMode() const override { return is_tab_in_actor_mode_; }
@@ -536,6 +520,10 @@ class TestAutofillClientTemplate : public T {
 
   LogManager* GetCurrentLogManager() override { return log_manager_.get(); }
 
+  // Returns the LogRouter that receives the logs of `GetCurrentLogManager()`.
+  // Register a LogReceiver on it to inspect chrome://autofill-internals logs.
+  LogRouter& log_router() { return log_router_; }
+
   autofill_metrics::FormInteractionsUkmLogger& GetFormInteractionsUkmLogger()
       override {
     return form_interactions_ukm_logger_;
@@ -551,16 +539,22 @@ class TestAutofillClientTemplate : public T {
     return format_for_large_keyboard_accessory_;
   }
 
-  bool SupportsDeviceReauth() const override { return supports_device_reauth_; }
-
   std::unique_ptr<device_reauth::DeviceAuthenticator> GetDeviceAuthenticator(
       std::string histogram) const override {
-    if (device_authenticator_) {
-      return std::move(device_authenticator_);
-    }
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) || \
     BUILDFLAG(IS_CHROMEOS)
     return std::make_unique<device_reauth::MockDeviceAuthenticator>();
+#else
+    return nullptr;
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) ||
+        // BUILDFLAG(IS_CHROMEOS)
+  }
+
+  std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker>
+  GetDeviceAuthAvailabilityChecker() const override {
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) || \
+    BUILDFLAG(IS_CHROMEOS)
+    return std::make_unique<device_reauth::MockDeviceAuthAvailabilityChecker>();
 #else
     return nullptr;
 #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) ||
@@ -596,26 +590,6 @@ class TestAutofillClientTemplate : public T {
   GetPersonalContextFirstRunService() override {
     return &personal_context_first_run_service_;
   }
-
-#if BUILDFLAG(IS_ANDROID)
-  bool ShowAmbientAutoFillNotice(
-      base::WeakPtr<TouchToFillAutofillDelegate> delegate) override {
-    show_ambient_autofill_notice_called_ = true;
-    return show_ambient_autofill_notice_result_;
-  }
-  bool show_ambient_autofill_notice_called() const {
-    return show_ambient_autofill_notice_called_;
-  }
-  void set_show_ambient_autofill_notice_result(bool result) {
-    show_ambient_autofill_notice_result_ = result;
-  }
-  void HideAmbientAutoFillNotice() override {
-    hide_ambient_autofill_notice_called_ = true;
-  }
-  bool hide_ambient_autofill_notice_called() const {
-    return hide_ambient_autofill_notice_called_;
-  }
-#endif
 
   personal_context::PersonalContextEligibilityService*
   GetPersonalContextEligibilityService() const override {
@@ -663,8 +637,7 @@ class TestAutofillClientTemplate : public T {
     GetPrefs()->registry()->RegisterIntegerPref(
         optimization_guide::prefs::
             kAutofillPredictionImprovementsEnterprisePolicyAllowed,
-        std::to_underlying(optimization_guide::model_execution::prefs::
-                               ModelExecutionEnterprisePolicyValue::kAllow),
+        std::to_underlying(optimization_guide::EnterprisePolicyValue::kAllow),
         PrefRegistry::LOSSY_PREF);
     GetPrefs()->registry()->RegisterIntegerPref(
         optimization_guide::prefs::kGeminiSettings,
@@ -706,13 +679,7 @@ class TestAutofillClientTemplate : public T {
 
   void set_entity_data_manager(
       std::unique_ptr<EntityDataManager> entity_data_manager) {
-    entity_data_manager_non_owning_ = nullptr;
     entity_data_manager_ = std::move(entity_data_manager);
-  }
-
-  void set_entity_data_manager(EntityDataManager* entity_data_manager) {
-    entity_data_manager_.reset();
-    entity_data_manager_non_owning_ = entity_data_manager;
   }
 
   void set_wallet_pass_access_manager(
@@ -744,10 +711,6 @@ class TestAutofillClientTemplate : public T {
     test_sync_service_ = test_sync_service;
   }
 
-  void set_security_level(security_state::SecurityLevel security_level) {
-    security_level_ = security_level;
-  }
-
   void set_last_committed_primary_main_frame_url(const GURL& url) {
     last_committed_primary_main_frame_url_ = url;
     last_committed_primary_main_frame_origin_ = url::Origin::Create(url);
@@ -761,10 +724,6 @@ class TestAutofillClientTemplate : public T {
         .SetVariationCountryCode(variation_config_country_code);
   }
 
-  void set_should_save_autofill_profiles(bool value) {
-    should_save_autofill_profiles_ = value;
-  }
-
   void set_format_for_large_keyboard_accessory(
       bool format_for_large_keyboard_accessory) {
     format_for_large_keyboard_accessory_ = format_for_large_keyboard_accessory;
@@ -772,10 +731,6 @@ class TestAutofillClientTemplate : public T {
 
   void set_app_locale(std::string app_locale) {
     app_locale_ = std::move(app_locale);
-  }
-
-  void set_channel_for_testing(const version_info::Channel channel) {
-    channel_for_testing_ = channel;
   }
 
   void set_is_off_the_record(bool is_off_the_record) {
@@ -788,15 +743,6 @@ class TestAutofillClientTemplate : public T {
 
   void set_is_credit_card_upload_enabled(bool is_credit_card_upload_enabled) {
     is_credit_card_upload_enabled_ = is_credit_card_upload_enabled;
-  }
-
-  void set_supports_device_reauth(bool supports_device_reauth) {
-    supports_device_reauth_ = supports_device_reauth;
-  }
-
-  void set_device_authenticator(
-      std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator) {
-    device_authenticator_ = std::move(authenticator);
   }
 
   void set_crowdsourcing_manager(
@@ -812,11 +758,6 @@ class TestAutofillClientTemplate : public T {
   void set_at_memory_query_service(
       std::unique_ptr<AtMemoryQueryService> at_memory_query_service) {
     at_memory_query_service_ = std::move(at_memory_query_service);
-  }
-
-  void set_at_memory_manager(
-      std::unique_ptr<AtMemoryManager> at_memory_manager) {
-    at_memory_manager_ = std::move(at_memory_manager);
   }
 
   void set_identity_credential_delegate(
@@ -835,52 +776,46 @@ class TestAutofillClientTemplate : public T {
     compose_delegate_ = std::move(compose_delegate);
   }
 
-  void set_suggestion_ui_session_id(
-      std::optional<AutofillClient::SuggestionUiSessionId> session_id) {
-    suggestion_ui_session_id_ = session_id;
-  }
-
-  void set_notify_iph_feature_used_mock_callback(
-      base::RepeatingCallback<void(AutofillClient::IphFeature)> callback) {
-    notify_iph_feature_used_mock_callback_ = std::move(callback);
-  }
-
   signin::IdentityTestEnvironment& identity_test_environment() {
-    return identity_test_env_;
+    return const_cast<signin::IdentityTestEnvironment&>(
+        std::as_const(*this).identity_test_environment());
   }
 
-  // Allows to return an injected SMS OTP backend which can be set using the
-  // `set_sms_otp_backend`. If no backend is injected, it'll return null.
-  one_time_tokens::SmsOtpBackend* GetSmsOtpBackend() const {
-    return injected_sms_otp_backend_ ? injected_sms_otp_backend_.get()
-                                     : nullptr;
+  const signin::IdentityTestEnvironment& identity_test_environment() const {
+    if (!identity_test_env_) {
+      identity_test_env_.emplace();
+    }
+    return *identity_test_env_;
   }
 
-  void set_sms_otp_backend(
-      std::unique_ptr<one_time_tokens::SmsOtpBackend> sms_otp_backend) {
-    injected_sms_otp_backend_ = std::move(sms_otp_backend);
+  one_time_tokens::SmsOtpService* GetSmsOtpService() const override {
+    return injected_sms_otp_service_ ? injected_sms_otp_service_.get()
+                                     : T::GetSmsOtpService();
   }
 
-  one_time_tokens::OneTimeTokenService* GetOneTimeTokenService()
-      const override {
-    return injected_one_time_token_service_
-               ? injected_one_time_token_service_.get()
-               : T::GetOneTimeTokenService();
+  void set_sms_otp_service(
+      std::unique_ptr<one_time_tokens::SmsOtpService> sms_otp_service) {
+    injected_sms_otp_service_ = std::move(sms_otp_service);
   }
 
-  void set_one_time_token_service(
-      std::unique_ptr<one_time_tokens::OneTimeTokenService>
-          one_time_token_service) {
-    injected_one_time_token_service_ = std::move(one_time_token_service);
+  one_time_tokens::GmailOtpService* GetGmailOtpService() override {
+    return injected_gmail_otp_service_ ? injected_gmail_otp_service_.get()
+                                       : T::GetGmailOtpService();
   }
 
-  FormPredictionsTracker* GetFormPredictionsTracker() override {
-    return form_predictions_tracker_.get();
+  void set_gmail_otp_service(
+      std::unique_ptr<one_time_tokens::GmailOtpService> gmail_otp_service) {
+    injected_gmail_otp_service_ = std::move(gmail_otp_service);
   }
 
-  void set_form_predictions_tracker(
-      std::unique_ptr<FormPredictionsTracker> form_predictions_tracker) {
-    form_predictions_tracker_ = std::move(form_predictions_tracker);
+  one_time_tokens::GmailOtpBackend* GetGmailOtpBackend() const override {
+    return injected_gmail_otp_backend_ ? injected_gmail_otp_backend_.get()
+                                       : T::GetGmailOtpBackend();
+  }
+
+  void set_gmail_otp_backend(
+      std::unique_ptr<one_time_tokens::GmailOtpBackend> gmail_otp_backend) {
+    injected_gmail_otp_backend_ = std::move(gmail_otp_backend);
   }
 
   OtpMetricsTracker* GetOtpMetricsTracker() override {
@@ -892,15 +827,29 @@ class TestAutofillClientTemplate : public T {
     otp_metrics_tracker_ = std::move(otp_metrics_tracker);
   }
 
+  OtpFieldDetector* GetOtpFieldDetector() override {
+    return otp_field_detector_.get();
+  }
+
+  void set_otp_field_detector(
+      std::unique_ptr<OtpFieldDetector> otp_field_detector) {
+    otp_field_detector_ = std::move(otp_field_detector);
+  }
+
  private:
   ukm::TestAutoSetUkmRecorder test_ukm_recorder_;
-  signin::IdentityTestEnvironment identity_test_env_;
+  // Lazily initialized: `IdentityTestEnvironment` has platform-specific test
+  // dependencies (`TestNetworkConnectionTracker` on ChromeOS and
+  // `signin_java_test_support` on Android) that `content::ContentBrowserTest`
+  // does not set up by default. Lazy initialization allows
+  // `content::ContentBrowserTest` to use `TestAutofillClientTemplate` without
+  // those dependencies as long as `IdentityManager` is not used.
+  mutable std::optional<signin::IdentityTestEnvironment> identity_test_env_;
   metrics::ProfileMetricsService test_profile_metrics_service_{
       metrics::ProfileMetricsContext(1)};
   raw_ptr<syncer::SyncService> test_sync_service_ = nullptr;
   raw_ptr<AutofillAiPersonalContextAccessManager>
       personal_context_access_manager_ = nullptr;
-  raw_ptr<EntitySuppressionManager> entity_suppression_manager_ = nullptr;
   raw_ptr<personal_context::PersonalContextEligibilityService>
       personal_context_eligibility_service_ = nullptr;
 #if !BUILDFLAG(IS_FUCHSIA)
@@ -908,8 +857,8 @@ class TestAutofillClientTemplate : public T {
 #endif
   std::unique_ptr<OtpPhishGuardDelegate> otp_phish_guard_delegate_;
   std::unique_ptr<OtpMetricsTracker> otp_metrics_tracker_;
+  std::unique_ptr<OtpFieldDetector> otp_field_detector_;
   std::unique_ptr<AtMemoryQueryService> at_memory_query_service_;
-  std::unique_ptr<AtMemoryManager> at_memory_manager_;
   personal_context::PersonalContextEligibilityState
       personal_context_eligibility_state_ =
           personal_context::PersonalContextEligibilityState::kEligible;
@@ -925,12 +874,11 @@ class TestAutofillClientTemplate : public T {
           std::make_unique<testing::NiceMock<MockAutofillAiManager>>(
               this,
               /*strike_database=*/nullptr);
-  std::unique_ptr<AutocompleteHistoryManager> autocomplete_history_manager_;
   ::testing::NiceMock<MockAutocompleteHistoryManager>
       mock_autocomplete_history_manager_;
-  std::unique_ptr<one_time_tokens::SmsOtpBackend> injected_sms_otp_backend_;
-  std::unique_ptr<one_time_tokens::OneTimeTokenService>
-      injected_one_time_token_service_;
+  std::unique_ptr<one_time_tokens::SmsOtpService> injected_sms_otp_service_;
+  std::unique_ptr<one_time_tokens::GmailOtpService> injected_gmail_otp_service_;
+  std::unique_ptr<one_time_tokens::GmailOtpBackend> injected_gmail_otp_backend_;
 
   std::unique_ptr<FieldClassificationModelHandler>
       autofill_ml_prediction_model_handler_;
@@ -949,7 +897,6 @@ class TestAutofillClientTemplate : public T {
   std::unique_ptr<TestPersonalDataManager> test_personal_data_manager_;
   std::unique_ptr<ValuablesDataManager> valuables_data_manager_;
   std::unique_ptr<EntityDataManager> entity_data_manager_;
-  raw_ptr<EntityDataManager> entity_data_manager_non_owning_ = nullptr;
   // The below objects must be destroyed before `TestPersonalDataManager`
   // because they keep a reference to it.
   std::unique_ptr<payments::TestPaymentsAutofillClient>
@@ -958,20 +905,16 @@ class TestAutofillClientTemplate : public T {
   std::unique_ptr<SingleFieldFillRouter> single_field_fill_router_;
   std::unique_ptr<FormDataImporter> form_data_importer_;
   std::unique_ptr<WalletPassAccessManager> wallet_pass_access_manager_;
+  // Must be destroyed before `prefs_` because `AtMemoryPersistedStateManager`
+  // observes and references `prefs_`.
+  std::unique_ptr<AtMemoryManager> at_memory_manager_;
   std::unique_ptr<consent_auditor::FakeConsentAuditor> consent_auditor_;
 
   GeoIpCountryCode variation_config_country_code_;
 
-  security_state::SecurityLevel security_level_ =
-      security_state::SecurityLevel::NONE;
-
-  bool should_save_autofill_profiles_ = true;
-
   bool format_for_large_keyboard_accessory_ = false;
 
   std::string app_locale_ = "en-US";
-
-  version_info::Channel channel_for_testing_ = version_info::Channel::UNKNOWN;
 
   bool is_off_the_record_ = false;
 
@@ -981,23 +924,15 @@ class TestAutofillClientTemplate : public T {
 
   bool is_credit_card_upload_enabled_ = true;
 
-  bool supports_device_reauth_ = true;
-
-  mutable std::unique_ptr<device_reauth::DeviceAuthenticator>
-      device_authenticator_;
-
   bool is_tab_in_actor_mode_ = false;
-
-  bool show_ambient_autofill_notice_called_ = false;
-  bool show_ambient_autofill_notice_result_ = false;
-  bool hide_ambient_autofill_notice_called_ = false;
 
   personal_context::TestPersonalContextFirstRunService
       personal_context_first_run_service_;
 
   bool is_glic_enabled_ = false;
 
-  SuggestionHidingReason popup_hidden_reason_;
+  SuggestionHidingReason popup_hidden_reason_ =
+      SuggestionHidingReason::kNoSuggestions;
 
   std::optional<AutofillClient::IphFeature> autofill_iph_showing_;
 
@@ -1019,6 +954,7 @@ class TestAutofillClientTemplate : public T {
   GURL last_committed_primary_main_frame_url_{"https://example.test"};
   url::Origin last_committed_primary_main_frame_origin_ =
       url::Origin::Create(last_committed_primary_main_frame_url_);
+  bool opened_gmail_for_otps_ = false;
   std::u16string page_title_ = u"Test page title";
 
   std::optional<AutofillClient::SuggestionUiSessionId>
@@ -1028,9 +964,6 @@ class TestAutofillClientTemplate : public T {
       blocked_policy_categories_;
 
   base::WeakPtr<AutofillSuggestionDelegate> active_suggestion_delegate_;
-
-  std::optional<base::RepeatingCallback<void(AutofillClient::IphFeature)>>
-      notify_iph_feature_used_mock_callback_;
 
   LogRouter log_router_;
   struct LogToTerminal {
@@ -1049,7 +982,7 @@ class TestAutofillClientTemplate : public T {
   std::unique_ptr<AutofillCrowdsourcingManager> crowdsourcing_manager_;
   std::unique_ptr<TestVotesUploader> votes_uploader_;
 
-  std::unique_ptr<FormPredictionsTracker> form_predictions_tracker_;
+  raw_ptr<affiliations::AffiliationService> affiliation_service_ = nullptr;
 
   base::WeakPtrFactory<TestAutofillClientTemplate> weak_ptr_factory_{this};
 };

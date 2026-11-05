@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/callback_list.h"
 #include "base/files/file_path.h"
@@ -57,6 +58,16 @@ struct SiteSearchIntegrityReport {
   bool has_extension_url_search = false;
 };
 
+// A struct to hold the results of the duplicate keyword check.
+struct DuplicateKeywordDetailedReport {
+  int distinct_duplicated_keywords_count = 0;
+  std::vector<int> entries_per_duplicated_keyword;
+  bool has_trivial_duplicates = false;
+  bool has_mixed_extension_duplicate = false;
+  bool has_extension_only_duplicate = false;
+  bool has_starter_pack_duplicate = false;
+};
+
 // A struct to hold the results of the search integrity check.
 struct SearchIntegrityReport {
   bool has_custom_option = false;
@@ -64,6 +75,9 @@ struct SearchIntegrityReport {
   std::optional<SearchReferralParam> referral_param_found;
   bool is_default_custom_with_matching_policy_engine = false;
   bool is_default_enforced_without_policy = false;
+  bool is_default_set_by_policy = false;
+  bool is_default_set_by_policy_in_low_trust = false;
+  bool is_default_set_by_policy_without_matching_policy = false;
   bool custom_populated_default = false;
   SearchDuplicateKeyword duplicate_keyword_status =
       SearchDuplicateKeyword::kNoDuplicates;
@@ -104,6 +118,10 @@ class SearchIntegrity : public KeyedService {
   SearchIntegrityReport CheckSearchEnginesReport();
 
   SiteSearchIntegrityReport CheckSiteSearchReport();
+
+  DuplicateKeywordDetailedReport CheckDuplicateKeywordReport();
+
+  void LogDuplicateKeywordMetrics(const DuplicateKeywordDetailedReport& report);
 
   // The template URL service, used to access se list.
   raw_ptr<TemplateURLService> template_url_service_;

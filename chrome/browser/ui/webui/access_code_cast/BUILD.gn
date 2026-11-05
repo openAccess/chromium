@@ -12,8 +12,6 @@ mojom("mojo_bindings") {
   public_deps =
       [ "//components/media_router/common/mojom:route_request_result_code" ]
   webui_module_path = "/"
-
-  disable_variants = true
 }
 
 source_set("access_code_cast") {
@@ -54,8 +52,6 @@ source_set("impl") {
     "access_code_cast_ui.cc",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     ":access_code_cast",
     "//base",
@@ -66,6 +62,7 @@ source_set("impl") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/access_code_cast:resources",
     "//chrome/browser/signin",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/views:chrome_constrained_window_views_client",
     "//chrome/browser/ui/views:chrome_web_dialog_view",
     "//chrome/browser/ui/webui:metrics_handler",
@@ -102,7 +99,6 @@ source_set("interactive_ui_tests") {
     ":access_code_cast",
     "//chrome/browser/media/router/discovery/access_code:access_code_cast_feature",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
     "//chrome/test:test_support",
     "//chrome/test/media_router/access_code_cast:access_code_cast_integration_base",
     "//components/prefs",
@@ -130,6 +126,8 @@ source_set("unit_tests") {
     "//chrome/browser/ui/global_media_controls:test_support",
     "//chrome/browser/ui/media_router",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//chrome/test/base:testing_browser_process",
     "//components/media_router/browser",
     "//components/media_router/browser:test_support",
     "//components/media_router/common",

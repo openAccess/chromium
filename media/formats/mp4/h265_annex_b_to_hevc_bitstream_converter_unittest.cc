@@ -63,7 +63,7 @@ TEST(H265AnnexBToHevcBitstreamConverterTest, Success) {
       output.resize(desired_size);
 
       status = converter.ConvertChunk(input, output, &config_changed, nullptr);
-      EXPECT_TRUE(status.is_ok()) << status.message();
+      EXPECT_TRUE(status.is_ok()) << MediaSerializeForTesting(status);
 
       // Convert HEVC bitstream back to Annex-B bitstream, and validate if
       // parameter set are write to the output or not.
@@ -115,11 +115,11 @@ TEST(H265AnnexBToHevcBitstreamConverterTest, Success) {
       }
 
       auto& config = converter.GetCurrentConfig();
-      if (name.find("config") != std::string::npos) {
+      if (name.contains("config")) {
         // Chunks with configuration
         EXPECT_TRUE(config_changed);
 
-        EXPECT_EQ(config.configurationVersion, 1);
+        EXPECT_EQ(config.configuration_version, 1);
         EXPECT_EQ(config.general_profile_space, 0);
         EXPECT_EQ(config.general_tier_flag, 0);
         EXPECT_EQ(config.general_profile_idc, 1);
@@ -127,12 +127,12 @@ TEST(H265AnnexBToHevcBitstreamConverterTest, Success) {
         EXPECT_EQ(config.general_constraint_indicator_flags, 0x800000000000ull);
         EXPECT_EQ(config.general_level_idc, 60);
         EXPECT_EQ(config.min_spatial_segmentation_idc, 0);
-        EXPECT_EQ(config.parallelismType, 0);
-        EXPECT_EQ(config.chromaFormat, 1);
-        EXPECT_EQ(config.bitDepthLumaMinus8, 0);
-        EXPECT_EQ(config.bitDepthChromaMinus8, 0);
-        EXPECT_EQ(config.avgFrameRate, 0);
-        EXPECT_EQ(config.numOfArrays, 3);
+        EXPECT_EQ(config.parallelism_type, 0);
+        EXPECT_EQ(config.chroma_format, 1);
+        EXPECT_EQ(config.bit_depth_luma_minus8, 0);
+        EXPECT_EQ(config.bit_depth_chroma_minus8, 0);
+        EXPECT_EQ(config.avg_frame_rate, 0);
+        EXPECT_EQ(config.num_of_arrays, 3);
         EXPECT_EQ(config.arrays[0].first_byte,
                   add_parameter_sets_in_bitstream ? 32 : 160);
         EXPECT_EQ(config.arrays[0].units.size(), 1ul);
@@ -222,7 +222,7 @@ TEST(H265AnnexBToHevcBitstreamConverterTest, PPS_SwitchWithoutReconfig) {
 
     auto status =
         converter.ConvertChunk(first_chunk, output, &config_changed, nullptr);
-    EXPECT_TRUE(status.is_ok()) << status.message();
+    EXPECT_TRUE(status.is_ok()) << MediaSerializeForTesting(status);
     EXPECT_TRUE(config_changed);
 
     // Convert HEVC bitstream back to Annex-B bitstream, and validate if
@@ -276,7 +276,7 @@ TEST(H265AnnexBToHevcBitstreamConverterTest, PPS_SwitchWithoutReconfig) {
     }
 
     auto& config = converter.GetCurrentConfig();
-    EXPECT_EQ(config.numOfArrays, 3);
+    EXPECT_EQ(config.num_of_arrays, 3);
     EXPECT_EQ(config.arrays[0].first_byte,
               add_parameter_sets_in_bitstream ? 32 : 160);
     EXPECT_EQ(config.arrays[0].units.size(), 1ul);
@@ -288,7 +288,7 @@ TEST(H265AnnexBToHevcBitstreamConverterTest, PPS_SwitchWithoutReconfig) {
     EXPECT_EQ(config.arrays[2].units.size(), 2ul);
     status = converter.ConvertChunk(second_non_idr_chunk, output,
                                     &config_changed, nullptr);
-    EXPECT_TRUE(status.is_ok()) << status.message();
+    EXPECT_TRUE(status.is_ok()) << MediaSerializeForTesting(status);
     EXPECT_FALSE(config_changed);
   }
 }
@@ -383,7 +383,7 @@ TEST(H265AnnexBToHevcBitstreamConverterTest, HdrPrefixSeiInConfiguration) {
     EXPECT_TRUE(config_changed);
 
     const auto& config = converter.GetCurrentConfig();
-    ASSERT_EQ(config.numOfArrays, 4);
+    ASSERT_EQ(config.num_of_arrays, 4);
     EXPECT_EQ(config.arrays[0].first_byte & 0x3F, H265NALU::VPS_NUT);
     EXPECT_EQ(config.arrays[1].first_byte & 0x3F, H265NALU::SPS_NUT);
     EXPECT_EQ(config.arrays[2].first_byte & 0x3F, H265NALU::PPS_NUT);

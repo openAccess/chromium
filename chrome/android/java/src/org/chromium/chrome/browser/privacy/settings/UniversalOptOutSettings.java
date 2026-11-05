@@ -9,6 +9,7 @@ import android.os.Bundle;
 
 import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
@@ -40,6 +41,10 @@ public class UniversalOptOutSettings extends ChromeBaseSettingsFragment {
     @VisibleForTesting
     static final String PREF_UNIVERSAL_OPT_OUT_INFO_TEXT = "universal_opt_out_info_text";
 
+    @VisibleForTesting
+    static final String UNIVERSAL_OPT_OUT_LEARN_MORE_URL =
+            "https://support.google.com/chrome?p=opt_out_request";
+
     private final SettableMonotonicObservableSupplier<String> mPageTitle =
             ObservableSuppliers.createMonotonic();
 
@@ -58,20 +63,23 @@ public class UniversalOptOutSettings extends ChromeBaseSettingsFragment {
         universalOptOutSwitch.setOnPreferenceChangeListener(
                 (preference, newValue) -> {
                     prefService.setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, (boolean) newValue);
+                    if ((boolean) newValue) {
+                        RecordUserAction.record("Privacy.UniversalOptOut.SettingsToggleOn");
+                    } else {
+                        RecordUserAction.record("Privacy.UniversalOptOut.SettingsToggleOff");
+                    }
                     return true;
                 });
 
         ChromeBasePreference universalOptOutInfoText =
                 findPreference(PREF_UNIVERSAL_OPT_OUT_INFO_TEXT);
-        // TODO(b/552612002): Update link to a more specific article once it is ready.
+
         ChromeClickableSpan learnMoreLink =
                 new ChromeClickableSpan(
                         getContext(),
                         (view) -> {
                             getCustomTabLauncher()
-                                    .openUrlInCct(
-                                            getContext(),
-                                            "https://support.google.com/");
+                                    .openUrlInCct(getContext(), UNIVERSAL_OPT_OUT_LEARN_MORE_URL);
                         });
 
         universalOptOutInfoText.setSummary(
@@ -91,13 +99,14 @@ public class UniversalOptOutSettings extends ChromeBaseSettingsFragment {
     }
 
     public static boolean shouldShowUniversalOptOutSettings(Profile profile) {
-        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS)) {
+        if (!ChromeFeatureList.isEnabled(ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS)
+                || !ChromeFeatureList.isEnabled(ChromeFeatureList.UNIVERSAL_OPT_OUT)) {
             return false;
         }
 
         PrefService userPrefs = UserPrefs.get(profile);
         return userPrefs.getBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED)
-                || userPrefs.getBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE);
+                || PrivacyPreferencesManagerImpl.getInstance().isUniversalOptOutEligible(profile);
     }
 
     public static final ChromeBaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =

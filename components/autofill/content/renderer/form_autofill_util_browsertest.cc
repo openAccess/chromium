@@ -25,6 +25,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/with_feature_override.h"
 #include "base/types/optional_util.h"
@@ -295,7 +296,8 @@ class FormAutofillUtilsTest : public content::RenderViewTest {
   WebDocument GetDocument() { return GetMainFrame()->GetDocument(); }
 
   std::optional<FormData> ExtractFormData(WebFormElement form) {
-    return form_util::ExtractFormData(GetDocument(), form, field_data_manager(),
+    return form_util::ExtractFormData(GetDocument(), GetFormRendererId(form),
+                                      field_data_manager(),
                                       kCallTimerStateDummy,
                                       /*button_titles_cache=*/nullptr);
   }
@@ -444,9 +446,9 @@ TEST_F(FormAutofillUtilsTest, TruncateLargeOptionValuesAndContents) {
 
   FormData form_data = *ExtractFormData(web_form);
   ASSERT_EQ(form_data.fields().size(), 1u);
-  ASSERT_EQ(form_data.fields()[0].options().size(), 1u);
-  EXPECT_EQ(form_data.fields()[0].options()[0].value, trimmed_option);
-  EXPECT_EQ(form_data.fields()[0].options()[0].text, trimmed_option);
+  EXPECT_THAT(form_data.fields()[0].options(),
+              ElementsAre(SelectOption{.value = trimmed_option,
+                                       .text = trimmed_option}));
   EXPECT_TRUE(IsValidOption(form_data.fields()[0].options()[0]));
 }
 
@@ -901,6 +903,31 @@ TEST_F(FormAutofillUtilsTest, GetButtonTitles_NoForm) {
   EXPECT_EQ(GetButtonTitles(form, /*button_titles_cache=*/nullptr).size(), 0u);
 }
 
+TEST_F(FormAutofillUtilsTest,
+       GetButtonTitles_ButtonFeaturesWithNonAsciiAttributes) {
+  constexpr char kHtml[] =
+      "<form id='target'>"
+      "  <a id='é-Submit-按钮' value='Create account'>Ignored text</a>"
+      "  <div name='Ñoño_BTN'> Join </div>"
+      "  <span class='icono 🚀 Boton'> Start </span>"
+      "  <div class='button_🔥'> Continue </div>"
+      "  <span class='botón'> Ignored accented o </span>"
+      "  <div id='unrelated-ñ'> Ignored </div>"
+      "</form>";
+
+  LoadHTML(kHtml);
+  const WebFormElement form_target =
+      GetFormElementById(GetDocument(), "target");
+  const ButtonTitleList actual =
+      GetButtonTitles(form_target, /*button_titles_cache=*/nullptr);
+
+  EXPECT_THAT(actual,
+              ElementsAre(Pair(u"Create account", ButtonTitleType::HYPERLINK),
+                          Pair(u"Join", ButtonTitleType::DIV),
+                          Pair(u"Continue", ButtonTitleType::DIV),
+                          Pair(u"Start", ButtonTitleType::SPAN)));
+}
+
 TEST_F(FormAutofillUtilsTest, IsEnabled) {
   LoadHTML(
       "<input type='text' id='name1'>"
@@ -1230,11 +1257,8 @@ TEST_F(FormAutofillUtilsTest,
   WebDocument doc = GetDocument();
   auto web_control = GetElementById(doc, "i1").To<WebInputElement>();
   std::vector<SelectOption> options = GetDataListOptionsForTesting(web_control);
-  ASSERT_EQ(options.size(), 2u);
-  EXPECT_EQ(options[0].value, u"1");
-  EXPECT_EQ(options[1].value, u"2");
-  EXPECT_EQ(options[0].text, u"");
-  EXPECT_EQ(options[1].text, u"");
+  EXPECT_THAT(options, ElementsAre(SelectOption{.value = u"1", .text = u""},
+                                   SelectOption{.value = u"2", .text = u""}));
 }
 
 TEST_F(FormAutofillUtilsTest,
@@ -1246,11 +1270,9 @@ TEST_F(FormAutofillUtilsTest,
   WebDocument doc = GetDocument();
   auto web_control = GetElementById(doc, "i1").To<WebInputElement>();
   std::vector<SelectOption> options = GetDataListOptionsForTesting(web_control);
-  ASSERT_EQ(options.size(), 2u);
-  EXPECT_EQ(options[0].value, u"1");
-  EXPECT_EQ(options[1].value, u"2");
-  EXPECT_EQ(options[0].text, u"one");
-  EXPECT_EQ(options[1].text, u"two");
+  EXPECT_THAT(options,
+              ElementsAre(SelectOption{.value = u"1", .text = u"one"},
+                          SelectOption{.value = u"2", .text = u"two"}));
 }
 
 TEST_F(FormAutofillUtilsTest,
@@ -1267,11 +1289,9 @@ TEST_F(FormAutofillUtilsTest,
   ASSERT_TRUE(form_and_field);
   auto& [form, field] = *form_and_field;
   auto& options = form.fields().back().datalist_options();
-  ASSERT_EQ(options.size(), 2u);
-  EXPECT_EQ(options[0].value, u"1");
-  EXPECT_EQ(options[1].value, u"2");
-  EXPECT_EQ(options[0].text, u"one");
-  EXPECT_EQ(options[1].text, u"two");
+  EXPECT_THAT(options,
+              ElementsAre(SelectOption{.value = u"1", .text = u"one"},
+                          SelectOption{.value = u"2", .text = u"two"}));
   EXPECT_EQ(field.datalist_options().size(), options.size());
 }
 
@@ -1282,6 +1302,48 @@ TEST_F(FormAutofillUtilsTest,
   auto form_control = GetElementById(doc, "t").To<WebInputElement>();
   ExecuteJavaScriptForTests(R"(document.getElementById('t').remove();)");
   EXPECT_EQ(FindFormAndFieldForFormControlElement(form_control), std::nullopt);
+}
+
+// Regression test for crbug.com/565839464: Ensure that if forcing layout during
+// form/field extraction causes an ancestor <object> to render fallback content
+// and detach the frame, extraction does not UAF the destroyed RenderFrame.
+TEST_F(FormAutofillUtilsTest,
+       FindFormAndFieldForFormControlElement_FrameDetachedDuringLayout) {
+  LoadHTML(R"(<object id="obj" data="about:blank">fallback</object>)");
+  WebElement obj = GetElementById(GetDocument(), "obj");
+  ASSERT_TRUE(obj);
+  blink::WebFrame* child_frame = blink::WebFrame::FromFrameOwnerElement(obj);
+  ASSERT_TRUE(child_frame && child_frame->IsWebLocalFrame());
+  WebDocument child_doc = child_frame->ToWebLocalFrame()->GetDocument();
+
+  ExecuteJavaScriptForTests(R"(
+    const obj = document.getElementById('obj');
+    const doc = obj.contentDocument;
+    doc.body.innerHTML =
+        '<div style="content-visibility: hidden">' +
+        '<input id="i1"><input id="i2"><iframe></iframe></div>';
+    // Flush layout so the content-visibility DisplayLockContext is active, and
+    // detach `obj`'s LayoutObject (without detaching its ContentFrame) via
+    // display:none.
+    doc.body.offsetTop;
+    obj.style.display = 'none';
+    obj.offsetTop;
+    // Switch `obj` to an invalid image data URL while it has no LayoutObject,
+    // then mark it display:block without forcing layout. The next layout
+    // (triggered by BoundsInWidget()) will invoke CustomStyleForLayoutObject,
+    // which schedules an image load task (crbug.com/575053155) that
+    // subsequently invokes HTMLImageLoader -> RenderFallbackContent ->
+    // DisconnectContentFrame.
+    obj.data = 'data:image/png;base64,invalid';
+    obj.style.display = 'block';
+  )");
+
+  WebFormControlElement input = GetFormControlElementById(child_doc, "i1");
+  ASSERT_TRUE(input);
+  ASSERT_NE(child_doc.GetFrame(), nullptr);
+
+  EXPECT_NE(FindFormAndFieldForFormControlElement(input), std::nullopt);
+  EXPECT_TRUE(base::test::RunUntil([&] { return !child_doc.GetFrame(); }));
 }
 
 // Tests that Autofill form ownership follows Blink form's association, which,
@@ -1336,6 +1398,42 @@ TEST_F(FormAutofillUtilsTest,
       FindFormAndFieldForFormControlElement(t),
       Optional(Field(&FormAndField::form,
                      AllOf(HasRendererIdOf(f1),
+                           Property(&FormData::fields,
+                                    ElementsAre(HasRendererIdOf(t)))))));
+}
+
+// Tests that a form control inside a <form> in a Shadow DOM whose `form`
+// attribute points to a non-existent form is treated as unowned when the
+// shadow host has no <form> ancestor.
+// Regression test for crbug.com/347059988.
+TEST_F(FormAutofillUtilsTest,
+       FindFormAndFieldForFormControlElement_UnassociatedInShadowForm) {
+  LoadHTML(R"(
+    <!DOCTYPE html>
+    <div id=host>
+      <template shadowrootmode=open>
+        <form id=f>
+          <input id=t form=nonexistent>
+        </form>
+      </template>
+    </div>
+  )");
+
+  WebDocument doc = GetDocument();
+  WebNode shadow_root = GetElementById(doc, "host").ShadowRoot();
+  WebFormElement f = GetFormElementById(shadow_root, "f");
+  WebFormControlElement t = GetFormControlElementById(shadow_root, "t");
+
+  ASSERT_EQ(t.Form(), WebFormElement());  // nocheck
+  ASSERT_EQ(t.GetOwningFormForAutofill(), WebFormElement());
+  EXPECT_THAT(GetOwnedFormControlsForTesting(doc, f), IsEmpty());
+  EXPECT_THAT(GetOwnedFormControlsForTesting(doc, WebFormElement()),
+              ElementsAre(t));
+
+  EXPECT_THAT(
+      FindFormAndFieldForFormControlElement(t),
+      Optional(Field(&FormAndField::form,
+                     AllOf(HasRendererIdOf(WebFormElement()),
                            Property(&FormData::fields,
                                     ElementsAre(HasRendererIdOf(t)))))));
 }
@@ -1521,7 +1619,7 @@ TEST_F(FormAutofillUtilsTest, IsWebElementVisibleTest) {
         <div style="display: none;">     <input type="text" data-invisible></div>
         <div style="visibility: hidden;"><input type="text" data-invisible></div>
 
-        <input type="text" data-visible   style="width: 15px; height: 15px;">
+        <input type="text" data-visible   style="width: 20px; height: 15px;">
         <input type="text" data-invisible style="width: 15px; height:  5px;">
         <input type="text" data-invisible style="width:  5px; height: 15px;">
         <input type="text" data-invisible style="width:  5px; height:  5px;">
@@ -2860,12 +2958,9 @@ INSTANTIATE_TEST_SUITE_P(
                     std::pair("chrome:new-tab-page", false),
                     std::pair("chrome://autofill-internals", false)));
 
-// Tests that <div contenteditable> can be extracted from admissible URLs.
+// Tests that <form> can be extracted from admissible URLs.
 TEST_P(FormAutofillUtilsTest_AdmissibleUrls, ExtractFormData) {
-  LoadHTMLWithUrlOverride(R"(
-    "<form id=f><input></form>"
-  )",
-                          Url());
+  LoadHTMLWithUrlOverride(R"(<form id=f><input></form>)", Url());
   std::optional<FormData> form =
       ExtractFormData(GetFormElementById(GetDocument(), "f"));
   if (extractable()) {
@@ -2877,10 +2972,7 @@ TEST_P(FormAutofillUtilsTest_AdmissibleUrls, ExtractFormData) {
 
 // Tests that <div contenteditable> can be extracted from admissible URLs.
 TEST_P(FormAutofillUtilsTest_AdmissibleUrls, FindFormForContentEditable) {
-  LoadHTMLWithUrlOverride(R"(
-    "<div id=ce contenteditable></div>"
-  )",
-                          Url());
+  LoadHTMLWithUrlOverride(R"(<div id=ce contenteditable></div>)", Url());
   std::optional<FormData> form =
       FindFormForContentEditable(GetDocument().GetElementById("ce"));
   if (extractable()) {

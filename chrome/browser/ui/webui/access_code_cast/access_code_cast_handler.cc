@@ -180,7 +180,9 @@ void AccessCodeCastHandler::AddSink(
                            .Then(std::move(callback_with_default_invoker));
   add_sink_request_time_ = base::Time::Now();
 
-  if (!media_route_starter_) {
+  if (!media_route_starter_ || !media_route_starter_->GetProfile() ||
+      (!IsCastModeAvailable(MediaCastMode::DESKTOP_MIRROR) &&
+       !media_route_starter_->GetWebContents())) {
     std::move(add_sink_callback_).Run(AddSinkResultCode::UNKNOWN_ERROR);
     return;
   }
@@ -214,6 +216,13 @@ void AccessCodeCastHandler::CheckForDiscoveryCompletion() {
   DCHECK(sink_id_) << "Must have a sink id to complete!";
   DCHECK(media_route_starter_) << "Must have a MediaRouteStarter to complete!";
 
+  if (!media_route_starter_->GetProfile() ||
+      (!IsCastModeAvailable(MediaCastMode::DESKTOP_MIRROR) &&
+       !media_route_starter_->GetWebContents())) {
+    std::move(add_sink_callback_).Run(AddSinkResultCode::UNKNOWN_ERROR);
+    return;
+  }
+
   // Verify that the sink is in QRM.
   if (std::ranges::none_of(cast_mode_set_, [this](MediaCastMode cast_mode) {
         return media_route_starter_->SinkSupportsCastMode(*sink_id_, cast_mode);
@@ -228,7 +237,8 @@ void AccessCodeCastHandler::CheckForDiscoveryCompletion() {
 void AccessCodeCastHandler::OnSinkAddedResult(
     access_code_cast::mojom::AddSinkResultCode add_sink_result,
     std::optional<MediaSink::Id> sink_id) {
-  DCHECK(sink_id || add_sink_result != AddSinkResultCode::OK);
+  CHECK(sink_id || add_sink_result != AddSinkResultCode::OK,
+        base::NotFatalUntil::M162);
 
   if (add_sink_result == AddSinkResultCode::ACCESS_CODE_NOT_FOUND) {
     access_code_not_found_count_++;
@@ -271,7 +281,9 @@ void AccessCodeCastHandler::OnSinksUpdated(
 
 void AccessCodeCastHandler::CastToSink(CastToSinkCallback callback) {
   DCHECK(media_route_starter_) << "Must have a MediaRouteStarter";
-  if (!media_route_starter_) {
+  if (!media_route_starter_ || !media_route_starter_->GetProfile() ||
+      (!IsCastModeAvailable(MediaCastMode::DESKTOP_MIRROR) &&
+       !media_route_starter_->GetWebContents())) {
     std::move(callback).Run(RouteRequestResultCode::UNKNOWN_ERROR);
     return;
   }

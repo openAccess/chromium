@@ -14,6 +14,7 @@ import org.robolectric.internal.bytecode.ShadowProviders;
 
 import org.chromium.build.annotations.ServiceImpl;
 
+import java.util.Iterator;
 import java.util.Optional;
 import java.util.ServiceLoader;
 
@@ -43,13 +44,21 @@ public class ChromiumAndroidConfigurer extends AndroidConfigurer {
     public void withConfig(InstrumentationConfiguration.Builder builder, Config config) {
         super.withConfig(builder, config);
         try {
-            JSONArray instrumentedPackages = sConfigJson.getJSONArray("instrumentedPackages");
-            for (int i = 0, len = instrumentedPackages.length(); i < len; ++i) {
-                builder.addInstrumentedPackage(instrumentedPackages.getString(i));
-            }
-            JSONArray instrumentedClasses = sConfigJson.getJSONArray("instrumentedClasses");
-            for (int i = 0, len = instrumentedClasses.length(); i < len; ++i) {
-                builder.addInstrumentedClass(instrumentedClasses.getString(i));
+            JSONObject configs = sConfigJson.getJSONObject("configs");
+            for (Iterator<String> it = configs.keys(); it.hasNext(); ) {
+                JSONObject configObj = configs.getJSONObject(it.next());
+                JSONArray instrumentedPackages = configObj.optJSONArray("instrumentedPackages");
+                if (instrumentedPackages != null) {
+                    for (int i = 0, len = instrumentedPackages.length(); i < len; ++i) {
+                        builder.addInstrumentedPackage(instrumentedPackages.getString(i));
+                    }
+                }
+                JSONArray instrumentedClasses = configObj.optJSONArray("instrumentedClasses");
+                if (instrumentedClasses != null) {
+                    for (int i = 0, len = instrumentedClasses.length(); i < len; ++i) {
+                        builder.addInstrumentedClass(instrumentedClasses.getString(i));
+                    }
+                }
             }
         } catch (JSONException e) {
             throw new RuntimeException(e);
@@ -57,5 +66,12 @@ public class ChromiumAndroidConfigurer extends AndroidConfigurer {
         if (mExtraConfig.isPresent()) {
             mExtraConfig.get().withConfig(builder, config);
         }
+        // Exclude Mockito and ByteBuddy so they are loaded by the AppClassLoader,
+        // allowing them to be pre-warmed concurrently in JunitTestMain.
+        builder.doNotAcquirePackage("org.mockito.");
+        builder.doNotAcquirePackage("net.bytebuddy.");
+        // Exclude large pure-Java libraries to avoid instrumentation overhead.
+        builder.doNotAcquirePackage("com.google.common.");
+        builder.doNotAcquirePackage("com.google.protobuf.");
     }
 }

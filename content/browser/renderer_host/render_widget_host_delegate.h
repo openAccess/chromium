@@ -62,7 +62,6 @@ class RenderWidgetHostViewBase;
 class RenderViewHostDelegateView;
 class TextInputManager;
 class VisibleTimeRequestTrigger;
-class WebContents;
 enum class KeyboardEventProcessingResult;
 
 //
@@ -112,6 +111,15 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   virtual KeyboardEventProcessingResult PreHandleKeyboardEvent(
       const input::NativeWebKeyboardEvent& event);
 
+  // Callback to give the browser a chance to handle the specified mouse event
+  // before sending it to the renderer. Returns whether `event` was handled.
+  virtual bool PreHandleMouseEvent(const blink::WebMouseEvent& event);
+
+  // Callback to give the browser a chance to handle the specified gesture
+  // event before sending it to the renderer. Returns whether `event` was
+  // handled.
+  virtual bool PreHandleGestureEvent(const blink::WebGestureEvent& event);
+
   // Callback to inform the browser that the renderer did not process the
   // specified events. This gives an opportunity to the browser to process the
   // back/forward mouse buttons.
@@ -140,11 +148,6 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // Asks whether the page is in a state of ignoring input events.
   virtual bool ShouldIgnoreWebInputEvents(const blink::WebInputEvent& event);
   virtual bool ShouldIgnoreInputEvents();
-
-  // Callback to give the browser a chance to handle the specified gesture
-  // event before sending it to the renderer.
-  // Returns true if the |event| was handled.
-  virtual bool PreHandleGestureEvent(const blink::WebGestureEvent& event);
 
   // Get the root BrowserAccessibilityManager for this frame tree.
   virtual ui::BrowserAccessibilityManager* GetRootBrowserAccessibilityManager();
@@ -257,8 +260,8 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
   // desktopOSs and false for mobileOSs.
   virtual bool GetResizable();
 
-  // Returns whether the window is pinned always-on-top.
-  virtual bool GetIsAlwaysOnTop();
+  // Returns whether the window is an always-on-top popup.
+  virtual bool GetIsAlwaysOnTopPopup();
 
   // Returns the Window Control Overlay rectangle. Only applies to an
   // outermost main frame's widget. Other widgets always returns an empty rect.
@@ -339,9 +342,6 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
       DropData* drop_data,
       const GlobalRenderFrameHostToken& source_rfh_token) {}
 
-  // Notifies the delegate that a drag source has ended.
-  virtual void OnDragSourceEnded() {}
-
   // Returns the delegated ink point renderer associated with this WebContents
   // for dispatching delegated ink points to viz. This also attempts to setup
   // mojo connection using |compositor|, if the DelegatedInkPointRenderer
@@ -397,6 +397,11 @@ class CONTENT_EXPORT RenderWidgetHostDelegate {
                                  const gfx::Rect& initial_rect_in_dips,
                                  const gfx::Rect& initial_anchor_rect_in_dips) {
   }
+
+  // Constrain popup bounds so that the top of the popup is at or below the
+  // line of death (the top of the top-level main frame). See
+  // crbug.com/424995036.
+  virtual gfx::Rect ConstrainPopupBounds(const gfx::Rect& bounds);
 
   // Returns the amount that this view has been resized by a showing virtual
   // keyboard or 0 if the virtual keyboard is hidden or in a mode that doesn't

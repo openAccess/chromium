@@ -17,8 +17,6 @@ import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -35,11 +33,9 @@ import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
-import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
-import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
@@ -60,8 +56,6 @@ import org.chromium.ui.base.TestActivity;
 public class HubProviderUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    private final SettableNonNullObservableSupplier<Integer> mTabCountSupplier =
-            ObservableSuppliers.createNonNull(0);
     private final SettableNullableObservableSupplier<Tab> mTabSupplierMock =
             ObservableSuppliers.createNullable();
     private final SettableMonotonicObservableSupplier<TabModel> mTabModelSupplier =
@@ -110,7 +104,6 @@ public class HubProviderUnitTest {
                 .thenReturn(mReferenceButtonDataSupplier);
 
         when(mTabModelSelector.getCurrentTabSupplier()).thenReturn(mTabSupplierMock);
-        when(mTabModelSelector.getCurrentModelTabCountSupplier()).thenReturn(mTabCountSupplier);
         mActivityController = Robolectric.buildActivity(TestActivity.class).setup();
         onActivity(mActivityController.get());
     }
@@ -141,7 +134,6 @@ public class HubProviderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHubProvider() {
         PaneListBuilder builder = mHubProvider.getPaneListBuilder();
 
@@ -179,14 +171,10 @@ public class HubProviderUnitTest {
         verify(mTabModelSelector, never()).commitAllTabClosures();
         verify(mTabModelSelector, never()).selectModel(anyBoolean());
 
-        HistogramWatcher watcher =
-                HistogramWatcher.newSingleRecordWatcher(
-                        "Android.TabSwitcher.IncognitoClickedIsEmpty", true);
         paneManager.focusPane(PaneId.INCOGNITO_TAB_SWITCHER);
         assertEquals(mMockIncognitoTabSwitcherPane, paneManager.getFocusedPaneSupplier().get());
         verify(mTabModelSelector).commitAllTabClosures();
         verify(mTabModelSelector).selectModel(true);
-        watcher.assertExpected();
 
         when(mTabModelSelector.isIncognitoSelected()).thenReturn(true);
 
@@ -201,7 +189,6 @@ public class HubProviderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHubProviderDestroyBeforeOnAvailable() {
         PaneListBuilder builder = mHubProvider.getPaneListBuilder();
 
@@ -232,7 +219,6 @@ public class HubProviderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testHubProviderDestroyBeforeCreation() {
         PaneListBuilder builder = mHubProvider.getPaneListBuilder();
 

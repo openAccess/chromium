@@ -5,7 +5,8 @@
 #ifndef CHROME_UPDATER_CONFIGURATOR_H_
 #define CHROME_UPDATER_CONFIGURATOR_H_
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -65,6 +66,7 @@ class Configurator : public update_client::Configurator {
   std::string GetChannel() const override;
   std::string GetLang() const override;
   std::string GetOSLongName() const override;
+  std::string GetDeviceFormFactor() const override;
   base::flat_map<std::string, std::string> ExtraRequestParams() const override;
   std::string GetDownloadPreference() const override;
   scoped_refptr<update_client::NetworkFetcherFactory> GetNetworkFetcherFactory()

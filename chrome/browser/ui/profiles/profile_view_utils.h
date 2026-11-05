@@ -5,32 +5,48 @@
 #ifndef CHROME_BROWSER_UI_PROFILES_PROFILE_VIEW_UTILS_H_
 #define CHROME_BROWSER_UI_PROFILES_PROFILE_VIEW_UTILS_H_
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+class AccountInfo;
 class GURL;
 class Profile;
 class ProfileAttributesEntry;
-struct AccountInfo;
 
 namespace gfx {
 class ImageSkia;
 }
+
+namespace subscription_eligibility {
+struct AiSubscriptionTierDisplayInfo;
+}  // namespace subscription_eligibility
 
 namespace ui {
 class ColorProvider;
 class ImageModel;
 }  // namespace ui
 
-// LINT.IfChange(AvatarRingSpecs)
+// Thickness in DIPs of the surrounding gradient ring for small avatars (<=
+// 24px).
+inline constexpr int kAvatarRingThicknessSmallDip = 2;
+
+// LINT.IfChange(AvatarRingStandardSpecs)
 // Gap in DIPs between the circular avatar icon and the surrounding ring.
 inline constexpr int kAvatarRingGapDip = 2;
 
-// Thickness in DIPs of the surrounding gradient ring.
+// Thickness in DIPs of the surrounding gradient ring for default/large avatars
+// (> 24px).
 inline constexpr int kAvatarRingThicknessDip = 3;
-// LINT.ThenChange(//chrome/browser/resources/signin/profile_picker/profile_picker_shared.css:AvatarRingSpecs,
-// //chrome/browser/resources/webui_toolbar/avatar_button.css:AvatarRingSpecs)
+
+// Threshold in DIPs below which (or equal to which) an avatar is considered
+// small and receives a smaller gradient ring.
+inline constexpr int kSmallAvatarThresholdDip = 24;
+// LINT.ThenChange(//chrome/browser/resources/signin/profile_picker/profile_picker_shared.css:AvatarRingStandardSpecs)
+
+// Returns the gradient ring thickness in DIPs for the given avatar size.
+int GetAvatarRingThickness(int avatar_size);
 
 // Navigates to the Google Account page.
 void NavigateToGoogleAccountPage(Profile* profile, const std::string& email);
@@ -55,6 +71,9 @@ ProfileAttributesEntry* GetProfileAttributesFromProfile(const Profile* profile);
 std::u16string GetProfileMenuDisplayName(
     ProfileAttributesEntry* profile_attributes);
 
+// Returns the text for the status chip displayed in the profile menu item.
+std::u16string GetSigninStatusChipString(Profile* profile);
+
 // Returns all profile entries sorted by local profile name except for the
 // current or omitted profiles.
 std::vector<ProfileAttributesEntry*> GetAllOtherProfileEntriesForProfileSubMenu(
@@ -67,16 +86,25 @@ bool IsOtherProfileCommand(int command_id);
 // (e.g. a menu option to open the link in a new incognito window).
 bool IsOpenLinkOTREnabled(Profile* source_profie, const GURL& url);
 
-// Returns true if the AI subscription ring feature is enabled and the profile
-// is eligible (has an active subscription tier > 0).
-bool ShouldShowAvatarGradientRing(Profile* profile);
+// Returns how an avatar is decorated for the AI subscription `tier`. Nothing is
+// shown while `kEnableAiSubscriptionAvatarRing` is disabled.
+subscription_eligibility::AiSubscriptionTierDisplayInfo
+GetAvatarAiDecorationForTier(int tier);
+
+// Returns how an avatar is decorated for the AI subscription of `profile`.
+// Nothing is shown if `kEnableAiSubscriptionAvatarRing` is disabled, or if
+// `profile` is null or has no subscription eligibility service.
+subscription_eligibility::AiSubscriptionTierDisplayInfo GetAvatarAiDecoration(
+    Profile* profile);
 
 // Returns the avatar image with the linear gradient ring.
+// If `ring_thickness` is not provided, the default values for the
+// avatar's size are used.
 gfx::ImageSkia AddLinearGradientRingToAvatar(
     const ui::ImageModel& avatar_image,
     const ui::ColorProvider& color_provider,
     int avatar_size,
     int gap_width = kAvatarRingGapDip,
-    int ring_thickness = kAvatarRingThicknessDip);
+    std::optional<int> ring_thickness = std::nullopt);
 
 #endif  // CHROME_BROWSER_UI_PROFILES_PROFILE_VIEW_UTILS_H_

@@ -16,9 +16,15 @@ const char kAppProcessName[] = "app-process-name";
 
 const char kAndroidSdkInt[] = "android-sdk-int";
 
+const char kBrowserProcessBitness[] = "browser-process-bitness";
+
 const char kContextLossReason[] = "context-loss-reason";
 
+const char kPrimaryCpuAbiBitness[] = "primary-cpu-abi-bitness";
+
 const char kSupportLibraryWebkitVersion[] = "androidx-webkit-version";
+
+const char kSkippedDataDirLock[] = "skipped-data-dir-lock";
 
 // clang-format off
 const char* const kWebViewCrashKeyAllowList[] = {
@@ -26,8 +32,11 @@ const char* const kWebViewCrashKeyAllowList[] = {
     kAppPackageVersionCode,
     kAppProcessName,
     kAndroidSdkInt,
+    kBrowserProcessBitness,
     kContextLossReason,
+    kPrimaryCpuAbiBitness,
     kSupportLibraryWebkitVersion,
+    kSkippedDataDirLock,
 
     // process type
     "ptype",
@@ -48,6 +57,8 @@ const char* const kWebViewCrashKeyAllowList[] = {
     "gr-context-type",
     "oop_read_failure",
     "gpu-gl-error-message",
+    "skia-compile-error",
+    "skia-error-shader",
 
     // components/viz
     "viz_deserialization",

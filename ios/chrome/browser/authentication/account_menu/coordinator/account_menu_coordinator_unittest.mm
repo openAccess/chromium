@@ -5,19 +5,12 @@
 #import "ios/chrome/browser/authentication/account_menu/coordinator/account_menu_coordinator.h"
 
 #import "base/memory/raw_ptr.h"
-#import "base/test/scoped_feature_list.h"
-#import "components/sync/service/sync_service_utils.h"
 #import "components/sync/test/mock_sync_service.h"
-#import "components/trusted_vault/trusted_vault_server_constants.h"
-#import "ios/chrome/browser/authentication/account_menu/coordinator/account_menu_coordinator_delegate.h"
 #import "ios/chrome/browser/authentication/account_menu/coordinator/account_menu_mediator.h"
 #import "ios/chrome/browser/authentication/account_menu/coordinator/account_menu_mediator_delegate.h"
 #import "ios/chrome/browser/authentication/account_menu/public/account_menu_constants.h"
 #import "ios/chrome/browser/authentication/account_menu/ui/account_menu_view_controller.h"
-#import "ios/chrome/browser/authentication/add_account_signin/coordinator/add_account_signin_coordinator.h"
 #import "ios/chrome/browser/authentication/signin/reauth/coordinator/signin_reauth_coordinator.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator+protected.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signout_action_sheet/signout_action_sheet_coordinator.h"
 #import "ios/chrome/browser/settings/manage_sync/public/sync_error_settings_command_handler.h"
 #import "ios/chrome/browser/settings/ui_bundled/sync/sync_encryption_passphrase_table_view_controller.h"
@@ -33,18 +26,14 @@
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
-#import "ios/chrome/browser/shared/public/commands/quick_delete_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
-#import "ios/chrome/browser/signin/model/system_identity_manager.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/web_task_environment.h"
@@ -85,8 +74,7 @@ class AccountMenuCoordinatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         SyncServiceFactory::GetInstance(),
         base::BindRepeating(
@@ -363,11 +351,11 @@ TEST_F(AccountMenuCoordinatorTest, testDegradedRecoverability) {
   AssertOpenAndStop();
 }
 
-// Tests that `openMDMErrorDialogWithSystemIdentity:completion:` has no effects
-// on the mediator and view controller.
+// Tests that `openMDMErrorDialogWithSystemIdentity:` notifies the mediator once
+// the MDM dialog flow finishes.
 TEST_F(AccountMenuCoordinatorTest, testMDMError) {
-  [coordinator_ openMDMErrorDialogWithSystemIdentity:kPrimaryIdentity
-                                          completion:nil];
+  OCMExpect([mediator_ accountMenuIsUsable]);
+  [coordinator_ openMDMErrorDialogWithSystemIdentity:kPrimaryIdentity];
   AssertOpenAndStop();
 }
 

@@ -30,6 +30,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.ContextUtils;
@@ -57,16 +58,12 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 
 /** Tests {@link SafetyHubModuleDelegate} */
 @RunWith(BaseRobolectricTestRunner.class)
-@EnableFeatures({
-    SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-    SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-})
+@EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
 public class SafetyHubModuleDelegateTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Rule public SafetyHubTestRule mSafetyHubTestRule = new SafetyHubTestRule();
 
     @Mock private WindowAndroid mWindowAndroid;
-    @Mock private Activity mActivity;
     @Mock private ActivityResultTracker mActivityResultTracker;
     @Mock private DeviceLockActivityLauncher mDeviceLockActivityLauncher;
     @Mock private SnackbarManager mSnackbarManager;
@@ -77,6 +74,7 @@ public class SafetyHubModuleDelegateTest {
     @Mock private Context mContext;
     @Mock private SettingsCustomTabLauncher mSettingsCustomTabLauncher;
 
+    private Activity mActivity;
     private SafetyHubModuleDelegate mSafetyHubModuleDelegate;
     private Profile mProfile;
     private PendingIntent mPasswordCheckIntentForAccountCheckup;
@@ -85,6 +83,7 @@ public class SafetyHubModuleDelegateTest {
 
     @Before
     public void setUp() {
+        mActivity = Robolectric.buildActivity(Activity.class).get();
         mProfile = mSafetyHubTestRule.getProfile();
         mPasswordCheckIntentForAccountCheckup =
                 mSafetyHubTestRule.getIntentForAccountPasswordCheckup();
@@ -158,10 +157,7 @@ public class SafetyHubModuleDelegateTest {
     }
 
     @Test
-    @DisableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @DisableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testLaunchSigninPromo_legacy() {
         mSafetyHubTestRule.setSignedInState(false);
         when(mContext.getString(anyInt())).thenReturn("string");

@@ -33,6 +33,7 @@
 #include "gpu/command_buffer/service/scheduler_sequence.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "gpu/config/gpu_switches.h"
+#include "mojo/public/cpp/bindings/interface_endpoint_client.h"
 #include "ui/gfx/switches.h"
 
 #if BUILDFLAG(IS_OZONE)
@@ -102,8 +103,9 @@ std::unique_ptr<VizCompositorThreadType> CreateAndStartCompositorThread() {
   // IOWatcher like MessagePumpAndroid.
   const bool should_use_io_pump =
       features::IsVizWithIoMessagePumpEnabled() ||
-      features::IsVizDirectCompositorThreadIpcNonRootEnabled() ||
-      features::IsVizDirectCompositorThreadIpcFrameSinkManagerEnabled();
+      (mojo::IsDirectReceiverSupported() &&
+       (features::IsVizDirectCompositorThreadIpcNonRootEnabled() ||
+        features::IsVizDirectCompositorThreadIpcFrameSinkManagerEnabled()));
   if (should_use_io_pump) {
     thread_options.message_pump_type = base::MessagePumpType::IO;
   }

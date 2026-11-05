@@ -18,6 +18,7 @@
 #include "chrome/browser/ash/extensions/file_manager/scoped_suppress_drive_notifications_for_path.h"
 #include "chrome/browser/ui/ash/projector/projector_drivefs_provider.h"
 #include "chromeos/ash/components/drivefs/drivefs_host.h"
+#include "components/account_id/account_id.h"
 
 namespace drivefs {
 namespace mojom {
@@ -56,7 +57,7 @@ class PendingScreencastManager : drivefs::DriveFsHost::Observer {
   const ash::PendingScreencastContainerSet& GetPendingScreencasts() const;
 
   // Maybe observe the current active profile.
-  void MaybeSwitchDriveFsObservation();
+  void MaybeSwitchDriveFsObservation(const AccountId& account_id);
 
   // Adds `screencast_paths` to `paths_notifications_suppressors_` and
   // suppresses notification for these paths if `suppress` is true. Removes
@@ -86,6 +87,10 @@ class PendingScreencastManager : drivefs::DriveFsHost::Observer {
       base::OnceCallback<void(const std::string& file_id,
                               const std::string& request_body)>;
   void SetOnGetRequestBodyCallbackForTest(OnGetRequestBodyCallback callback);
+  // The account whose DriveFS is currently observed; empty before the first
+  // observation starts.
+  const AccountId& account_id() const { return account_id_; }
+
   void SetProjectorXhrSenderForTest(
       std::unique_ptr<ash::ProjectorXhrSender> xhr_sender);
 
@@ -110,6 +115,10 @@ class PendingScreencastManager : drivefs::DriveFsHost::Observer {
 
   // TODO(b/221902328): Fix the case that user might delete files through file
   // app.
+
+  // The account the observed DriveFS belongs to, recorded by
+  // MaybeSwitchDriveFsObservation(). Empty until the first observation.
+  AccountId account_id_;
 
   // A set that caches current pending screencast.
   ash::PendingScreencastContainerSet pending_screencast_cache_;

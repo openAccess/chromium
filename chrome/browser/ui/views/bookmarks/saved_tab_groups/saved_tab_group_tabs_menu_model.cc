@@ -22,6 +22,7 @@
 #include "components/favicon/core/favicon_service.h"
 #include "components/saved_tab_groups/public/features.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/views/controls/menu/menu_model_adapter.h"
@@ -30,11 +31,14 @@ namespace tab_groups {
 
 static constexpr int kUIUpdateIconSize = 16;
 
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(STGTabsMenuModel, kCloseGroup);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(STGTabsMenuModel, kDeleteGroupMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(STGTabsMenuModel, kLeaveGroupMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(STGTabsMenuModel,
                                       kMoveGroupToNewWindowMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(STGTabsMenuModel, kOpenGroup);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(STGTabsMenuModel,
+                                      kToggleGroupFocusStateMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(STGTabsMenuModel,
                                       kToggleGroupPinStateMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(STGTabsMenuModel, kTabsTitleItem);
@@ -53,29 +57,42 @@ STGTabsMenuModel::~STGTabsMenuModel() = default;
 
 void STGTabsMenuModel::Build(
     const SavedTabGroup& saved_group,
-    base::RepeatingCallback<int()> get_next_command_id) {
+    base::RepeatingCallback<int()> get_next_command_id,
+    OnExecuteCommandCallback on_execute_command_callback) {
   command_id_to_action_.clear();
+  on_execute_command_callback_ = std::move(on_execute_command_callback);
   should_enable_move_menu_item_ = true;
-  should_enable_open_menu_item_ = true;
   sync_id_ = saved_group.saved_guid();
-  // Add item: open in browser.
-  if (saved_group.local_group_id().has_value()) {
-    should_enable_open_menu_item_ = false;
-  }
 
+  const bool is_group_open = saved_group.local_group_id().has_value();
   int latest_command_id = get_next_command_id.Run();
-  AddItemWithStringIdAndIcon(
-      latest_command_id, IDS_OPEN_GROUP_IN_BROWSER_MENU,
-      ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
-                                         ? kOpenInBrowserIcon
-                                         : kOpenInBrowserOldIcon,
-                                     ui::kColorMenuIcon, kUIUpdateIconSize));
-  SetElementIdentifierAt(GetIndexOfCommandId(latest_command_id).value(),
-                         kOpenGroup);
-  command_id_to_action_.emplace(
-      latest_command_id,
-      TabGroupMenuAction{TabGroupMenuAction::Type::OPEN_IN_BROWSER,
-                         sync_id_.value()});
+  if (is_group_open) {
+    AddItemWithStringIdAndIcon(
+        latest_command_id, IDS_TAB_GROUP_HEADER_CXMENU_CLOSE_GROUP,
+        ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
+                                           ? kTabCloseIcon
+                                           : kCloseGroupRefreshOldIcon,
+                                       ui::kColorMenuIcon, kUIUpdateIconSize));
+    SetElementIdentifierAt(GetIndexOfCommandId(latest_command_id).value(),
+                           kCloseGroup);
+    command_id_to_action_.emplace(
+        latest_command_id,
+        TabGroupMenuAction{TabGroupMenuAction::Type::CLOSE_GROUP,
+                           sync_id_.value()});
+  } else {
+    AddItemWithStringIdAndIcon(
+        latest_command_id, IDS_OPEN_GROUP_IN_BROWSER_MENU,
+        ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
+                                           ? kOpenInBrowserIcon
+                                           : kOpenInBrowserOldIcon,
+                                       ui::kColorMenuIcon, kUIUpdateIconSize));
+    SetElementIdentifierAt(GetIndexOfCommandId(latest_command_id).value(),
+                           kOpenGroup);
+    command_id_to_action_.emplace(
+        latest_command_id,
+        TabGroupMenuAction{TabGroupMenuAction::Type::OPEN_IN_BROWSER,
+                           sync_id_.value()});
+  }
 
   // Add item: open or move to new window.
   const std::u16string move_or_open_group_text =
@@ -98,25 +115,54 @@ void STGTabsMenuModel::Build(
       TabGroupMenuAction{TabGroupMenuAction::Type::OPEN_OR_MOVE_TO_NEW_WINDOW,
                          sync_id_.value()});
 
+  // Add item: focus or unfocus group.
+  if (base::FeatureList::IsEnabled(features::kTabGroupsFocusing)) {
+    bool is_group_focused = false;
+    if (saved_group.local_group_id().has_value()) {
+      if (const BrowserWindowInterface* browser_with_group =
+              SavedTabGroupUtils::GetBrowserWithTabGroupId(
+                  saved_group.local_group_id().value())) {
+        is_group_focused =
+            browser_with_group->GetTabStripModel()->GetFocusedGroup() ==
+            saved_group.local_group_id();
+      }
+    }
+    latest_command_id = get_next_command_id.Run();
+    AddItemWithStringIdAndIcon(
+        latest_command_id,
+        is_group_focused ? IDS_TAB_GROUP_HEADER_CXMENU_UNFOCUS_GROUP
+                         : IDS_TAB_GROUP_HEADER_CXMENU_FOCUS_GROUP,
+        ui::ImageModel::FromVectorIcon(kFilterTiltShiftIcon, ui::kColorMenuIcon,
+                                       kUIUpdateIconSize));
+    SetElementIdentifierAt(GetIndexOfCommandId(latest_command_id).value(),
+                           kToggleGroupFocusStateMenuItem);
+    command_id_to_action_.emplace(
+        latest_command_id,
+        TabGroupMenuAction{TabGroupMenuAction::Type::FOCUS_OR_UNFOCUS_GROUP,
+                           sync_id_.value()});
+  }
+
   // Add item: pin or unpin.
-  latest_command_id = get_next_command_id.Run();
-  bool group_pinned = saved_group.is_pinned();
-  AddItemWithStringIdAndIcon(
-      latest_command_id,
-      group_pinned ? IDS_TAB_GROUP_HEADER_CXMENU_UNPIN_GROUP
-                   : IDS_TAB_GROUP_HEADER_CXMENU_PIN_GROUP,
-      ui::ImageModel::FromVectorIcon(
-          group_pinned ? features::IsRoundedIconsEnabled() ? kKeepOffIcon
-                                                           : kKeepOffOldIcon
-          : features::IsRoundedIconsEnabled() ? kKeepIcon
-                                              : kKeepOldIcon,
-          ui::kColorMenuIcon, kUIUpdateIconSize));
-  SetElementIdentifierAt(GetIndexOfCommandId(latest_command_id).value(),
-                         kToggleGroupPinStateMenuItem);
-  command_id_to_action_.emplace(
-      latest_command_id,
-      TabGroupMenuAction{TabGroupMenuAction::Type::PIN_OR_UNPIN_GROUP,
-                         sync_id_.value()});
+  if (context_ != TabGroupMenuContext::ORGANIZER_PANEL) {
+    latest_command_id = get_next_command_id.Run();
+    bool group_pinned = saved_group.is_pinned();
+    AddItemWithStringIdAndIcon(
+        latest_command_id,
+        group_pinned ? IDS_TAB_GROUP_HEADER_CXMENU_UNPIN_GROUP
+                     : IDS_TAB_GROUP_HEADER_CXMENU_PIN_GROUP,
+        ui::ImageModel::FromVectorIcon(
+            group_pinned ? features::IsRoundedIconsEnabled() ? kKeepOffIcon
+                                                             : kKeepOffOldIcon
+            : features::IsRoundedIconsEnabled() ? kKeepIcon
+                                                : kKeepOldIcon,
+            ui::kColorMenuIcon, kUIUpdateIconSize));
+    SetElementIdentifierAt(GetIndexOfCommandId(latest_command_id).value(),
+                           kToggleGroupPinStateMenuItem);
+    command_id_to_action_.emplace(
+        latest_command_id,
+        TabGroupMenuAction{TabGroupMenuAction::Type::PIN_OR_UNPIN_GROUP,
+                           sync_id_.value()});
+  }
 
   latest_command_id = get_next_command_id.Run();
   if (SavedTabGroupUtils::IsOwnerOfSharedTabGroup(browser_->GetProfile(),
@@ -125,8 +171,8 @@ void STGTabsMenuModel::Build(
     AddItemWithStringIdAndIcon(
         latest_command_id, IDS_TAB_GROUP_HEADER_CXMENU_DELETE_GROUP,
         ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
-                                           ? kTabCloseIcon
-                                           : kCloseGroupRefreshOldIcon,
+                                           ? kDeleteIcon
+                                           : kTrashCanRefreshOldIcon,
                                        ui::kColorMenuIcon, kUIUpdateIconSize));
     SetElementIdentifierAt(GetIndexOfCommandId(latest_command_id).value(),
                            kDeleteGroupMenuItem);
@@ -149,7 +195,6 @@ void STGTabsMenuModel::Build(
         TabGroupMenuAction{TabGroupMenuAction::Type::LEAVE_GROUP,
                            sync_id_.value()});
   }
-
 
   // Add a separator and title.
   AddSeparator(ui::NORMAL_SEPARATOR);
@@ -222,9 +267,6 @@ bool STGTabsMenuModel::IsCommandIdEnabled(int command_id) const {
   if (it->second.type == TabGroupMenuAction::Type::OPEN_OR_MOVE_TO_NEW_WINDOW) {
     return should_enable_move_menu_item_;
   }
-  if (it->second.type == TabGroupMenuAction::Type::OPEN_IN_BROWSER) {
-    return should_enable_open_menu_item_;
-  }
   return true;
 }
 
@@ -233,11 +275,17 @@ void STGTabsMenuModel::ExecuteCommand(int command_id, int event_flags) {
   CHECK(it != command_id_to_action_.end());
 
   TabGroupMenuAction action = it->second;
+  // Copied locally since performing the action may destroy `this`.
+  OnExecuteCommandCallback on_execute_command_callback =
+      on_execute_command_callback_;
   TabGroupSyncService* tab_group_service =
       tab_groups::TabGroupSyncServiceFactory::GetForProfile(
           browser_->GetProfile());
   SavedTabGroupUtils::PerformTabGroupMenuAction(action, context_, browser_,
                                                 tab_group_service);
+  if (on_execute_command_callback) {
+    on_execute_command_callback.Run(action);
+  }
 }
 
 void STGTabsMenuModel::OnFaviconDataAvailable(
@@ -249,7 +297,7 @@ void STGTabsMenuModel::OnFaviconDataAvailable(
   }
 
   const std::optional<size_t> index_in_menu = GetIndexOfCommandId(command_id);
-  DCHECK(index_in_menu.has_value());
+  CHECK(index_in_menu.has_value(), base::NotFatalUntil::M162);
   SetIcon(index_in_menu.value(), ui::ImageModel::FromImage(image_result.image));
 
   ui::MenuModelDelegate* delegate = menu_model_delegate();

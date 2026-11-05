@@ -181,6 +181,7 @@ export class MostVisitedElement extends MostVisitedElementBase {
       toastSource_: {type: Number, state: true},
 
       expandableTilesEnabled: {type: Boolean, reflect: true},
+      shortcutsReorderEnabled: {type: Boolean, reflect: true},
       maxTilesInCollapsedState: {type: Number, reflect: true},
       maxShortcutsInExpandedState: {type: Number, reflect: true},
       maxMostVisitedTilesInExpandedState: {type: Number, reflect: true},
@@ -197,6 +198,12 @@ export class MostVisitedElement extends MostVisitedElementBase {
         type: Boolean,
         reflect: true,
       },
+      inReorderMode_: {type: Boolean, reflect: true},
+      /**
+       * The width of the element's container. If null, the window's width is
+       * used for calculating the number of MVTs per row.
+       */
+      containerWidth: {type: Number},
     };
   }
 
@@ -206,14 +213,17 @@ export class MostVisitedElement extends MostVisitedElementBase {
   accessor reflowOnOverflow: boolean = false;
   accessor singleRow: boolean = false;
   accessor expandableTilesEnabled: boolean = false;
+  accessor shortcutsReorderEnabled: boolean = false;
   accessor maxTilesInCollapsedState: number = 6;
   accessor maxShortcutsInExpandedState: number = 10;
   accessor maxMostVisitedTilesInExpandedState: number = 8;
   accessor maxEnterpriseShortcuts: number = 10;
   accessor maxTiles: number = 0;
+  accessor containerWidth: number|null = null;
   private accessor showAll_: boolean = false;
   protected accessor showShowMore_: boolean = false;
   protected accessor showShowLess_: boolean = false;
+  protected accessor inReorderMode_: boolean = false;
   protected accessor useWhiteTileIcon_: boolean = false;
   protected accessor columnCount_: number = 3;
   protected accessor rowCount_: number = 1;
@@ -237,9 +247,10 @@ export class MostVisitedElement extends MostVisitedElementBase {
   protected accessor showAdd_: boolean = false;
   private accessor maxVisibleColumnCount_: number = 0;
   protected accessor tiles_: MostVisitedTile[] = [];
-  protected accessor toastSource_: TileSource = TileSource.CUSTOM_LINKS;
+  private accessor toastSource_: TileSource = TileSource.CUSTOM_LINKS;
   protected accessor visible_: boolean = false;
   private adding_: boolean = false;
+  private isTileMoveInProgress_: boolean = false;
   private browserProxy_: BrowserProxy;
   private windowProxy_: MostVisitedWindowProxy;
   private actionMenuTargetIndex_: number = -1;
@@ -315,6 +326,8 @@ export class MostVisitedElement extends MostVisitedElementBase {
         this.browserProxy_.handler.updateMostVisitedInfo();
       }
     });
+    this.eventTracker_.add(
+        document, 'click', (e: MouseEvent) => this.onDocumentClick_(e));
     this.browserProxy_.handler.updateMostVisitedInfo();
     FocusOutlineManager.forDocument(document);
   }
@@ -338,7 +351,10 @@ export class MostVisitedElement extends MostVisitedElementBase {
       this.isDark_ = this.computeIsDark_();
     }
 
-    if (changedPrivateProperties.has('info_') && this.info_ !== null) {
+    // Re-slice `tiles_` when `maxTiles` updates dynamically.
+    if ((changedPrivateProperties.has('info_') ||
+         changedProperties.has('maxTiles')) &&
+        this.info_ !== null) {
       this.visible_ = this.info_.visible;
       this.customLinksEnabled_ = this.info_.customLinksEnabled;
       this.enterpriseShortcutsEnabled_ = this.info_.enterpriseShortcutsEnabled;
@@ -389,7 +405,8 @@ export class MostVisitedElement extends MostVisitedElementBase {
     const changedPrivateProperties =
         changedProperties as Map<PropertyKey, unknown>;
 
-    if (changedProperties.has('singleRow')) {
+    if (changedProperties.has('singleRow') ||
+        changedProperties.has('containerWidth')) {
       this.onSingleRowChange_();
     }
 
@@ -785,25 +802,33 @@ export class MostVisitedElement extends MostVisitedElementBase {
       return;
     }
     this.mediaEventTracker_.removeAll();
-    const queryLists: MediaQueryList[] = [];
-    const updateCount = () => {
-      const index = queryLists.findIndex(listener => listener.matches);
-      this.maxVisibleColumnCount_ =
-          3 + (index > -1 ? queryLists.length - index : 0);
-    };
     const tileSize =
         parseInt(
             getComputedStyle(this).getPropertyValue('--most-visited-tile-size'),
             10) ||
         112;
     const maxColumnCount = this.singleRow ? 10 : 5;
-    for (let i = maxColumnCount; i >= 4; i--) {
-      const query = `(min-width: ${tileSize * (i + 1)}px)`;
-      const queryList = this.windowProxy_.matchMedia(query);
-      this.mediaEventTracker_.add(queryList, 'change', updateCount);
-      queryLists.push(queryList);
+    if (this.containerWidth !== null) {
+      // Same breakpoints as the media queries below: N columns need a width of
+      // at least N + 1 tiles.
+      this.maxVisibleColumnCount_ = Math.min(
+          maxColumnCount,
+          Math.max(3, Math.floor(this.containerWidth / tileSize) - 1));
+    } else {
+      const queryLists: MediaQueryList[] = [];
+      const updateCount = () => {
+        const index = queryLists.findIndex(listener => listener.matches);
+        this.maxVisibleColumnCount_ =
+            3 + (index > -1 ? queryLists.length - index : 0);
+      };
+      for (let i = maxColumnCount; i >= 4; i--) {
+        const query = `(min-width: ${tileSize * (i + 1)}px)`;
+        const queryList = this.windowProxy_.matchMedia(query);
+        this.mediaEventTracker_.add(queryList, 'change', updateCount);
+        queryLists.push(queryList);
+      }
+      updateCount();
     }
-    updateCount();
   }
 
   protected onAddClick_() {
@@ -997,6 +1022,17 @@ export class MostVisitedElement extends MostVisitedElementBase {
     this.$.dialog.showModal();
   }
 
+  protected async onReorderClick_() {
+    this.$.actionMenu.close();
+    this.inReorderMode_ = true;
+    this.reordering_ = true;
+    await this.updateComplete;
+    await new Promise(requestAnimationFrame);
+    if (this.inReorderMode_) {
+      this.tileFocus_(this.actionMenuTargetIndex_);
+    }
+  }
+
   protected onRestoreDefaultsClick_() {
     if (!this.$.toastManager.isToastOpen || this.$.toastManager.slottedHidden) {
       return;
@@ -1071,15 +1107,67 @@ export class MostVisitedElement extends MostVisitedElementBase {
 
     e.preventDefault();  // Prevents default browser action (navigation).
 
+    if (this.inReorderMode_) {
+      return;
+    }
+
     const index = this.getCurrentTargetIndex_(e);
     const item = this.tiles_[index]!;
     this.browserProxy_.handler.onMostVisitedTileNavigation(
         item, index, e.button || 0, e.altKey, e.ctrlKey, e.metaKey, e.shiftKey);
   }
 
-  protected onTileKeydown_(e: KeyboardEvent) {
+  protected async onTileKeydown_(e: KeyboardEvent) {
     if (hasKeyModifiers(e)) {
       return;
+    }
+
+    if (this.shortcutsReorderEnabled && this.inReorderMode_) {
+      if (!this.isReorderModeKey_(e.key)) {
+        return;
+      }
+
+      if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        const targetIndex = this.actionMenuTargetIndex_;
+        await this.exitReorderMode_();
+        this.tileElements_[targetIndex]
+            ?.querySelector<HTMLElement>('#actionMenuButton')
+            ?.focus();
+        return;
+      }
+
+      if (this.isTileMoveInProgress_) {
+        return;
+      }
+
+      // Handle reordering key events.
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        this.isTileMoveInProgress_ = true;
+        const currentIndex = this.actionMenuTargetIndex_;
+        const isForward = e.key === (this.isRtl_ ? 'ArrowLeft' : 'ArrowRight');
+        const direction = isForward ? 1 : -1;
+        const visibleTileCount = this.tileElements_.length;
+        const newIndex =
+            (currentIndex + direction + visibleTileCount) % visibleTileCount;
+
+        const [selectedTile] = this.tiles_.splice(currentIndex, 1);
+        assert(selectedTile);
+        this.tiles_.splice(newIndex, 0, selectedTile);
+        this.requestUpdate();
+
+        this.browserProxy_.handler.reorderMostVisitedTile(
+            selectedTile, newIndex);
+
+        this.actionMenuTargetIndex_ = newIndex;
+        await this.updateComplete;
+        if (this.inReorderMode_) {
+          this.tileFocus_(newIndex);
+        }
+        this.isTileMoveInProgress_ = false;
+        return;
+      }
     }
 
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' &&
@@ -1257,6 +1345,28 @@ export class MostVisitedElement extends MostVisitedElementBase {
     this.tileFocus_(index);
   }
 
+  private async exitReorderMode_() {
+    this.inReorderMode_ = false;
+    this.reordering_ = false;
+    this.actionMenuTargetIndex_ = -1;
+    await this.updateComplete;
+  }
+
+  private isReorderModeKey_(key: string): boolean {
+    return key === 'Escape' || key === 'Enter' || key === 'ArrowLeft' ||
+        key === 'ArrowRight' || key === 'Tab';
+  }
+
+  private async onDocumentClick_(e: MouseEvent) {
+    if (!this.inReorderMode_) {
+      return;
+    }
+
+    if (!e.composedPath().includes(this.$.container)) {
+      await this.exitReorderMode_();
+    }
+  }
+
   protected onTilesRendered_() {
     performance.measure('most-visited-rendered');
     assert(this.maxVisibleTiles_ > 0);
@@ -1274,6 +1384,13 @@ export class MostVisitedElement extends MostVisitedElementBase {
 
   protected getRemoveButtonText_(title: string): string {
     return this.i18n('linkRemoveA11y', htmlEscape(title));
+  }
+
+  protected getTileAriaLabel_(title: string): string {
+    if (this.shortcutsReorderEnabled && this.inReorderMode_) {
+      return this.i18n('shortcutReorderA11y', htmlEscape(title));
+    }
+    return title;
   }
 
   protected isFromEnterpriseShortcut_(source: number) {

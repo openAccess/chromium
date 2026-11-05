@@ -4,6 +4,7 @@
 
 #include "ash/wm/gestures/back_gesture/back_gesture_event_handler.h"
 
+#include <string_view>
 #include <utility>
 
 #include "ash/app_list/app_list_controller_impl.h"
@@ -304,9 +305,8 @@ void BackGestureEventHandler::OnTouchEvent(ui::TouchEvent* event) {
   }
 }
 
-const std::string& BackGestureEventHandler::GetName() const {
-  static const std::string name("BackGestureEventHandler");
-  return name;
+std::string_view BackGestureEventHandler::GetName() const {
+  return kName;
 }
 
 base::WeakPtr<ui::GestureConsumer> BackGestureEventHandler::GetWeakPtr() {
@@ -450,13 +450,13 @@ bool BackGestureEventHandler::CanStartGoingBack(
     return false;
   }
 
-  // Do not enable back gesture in locked fullscreen to prevent users from
+  // Do not enable back gesture in trusted pinned to prevent users from
   // exiting this mode.
   const ScreenPinningController* const screen_pinning_controller =
       shell->screen_pinning_controller();
   if (screen_pinning_controller->IsPinned() &&
       GetWindowPinType(screen_pinning_controller->pinned_window()) ==
-          chromeos::WindowPinType::kLockedFullscreen) {
+          chromeos::WindowPinType::kTrustedPinned) {
     return false;
   }
 

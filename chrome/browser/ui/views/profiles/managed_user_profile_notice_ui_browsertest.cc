@@ -8,7 +8,6 @@
 #include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/test/scoped_feature_list.h"
-#include "build/build_config.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/profiles/profile_ui_test_utils.h"
@@ -116,13 +115,13 @@ class ManagedUserProfileNoticeStepControllerForTest
   void Show(StepSwitchFinishedCallback step_shown_callback,
             bool reset_state) override {
     ManagedUserProfileNoticeParams::CreateForWebContents(
-        host()->GetPickerContents(),
+        host().GetPickerContents(),
         /*browser=*/nullptr,
         ManagedUserProfileNoticeUI::ScreenType::kProfilePicker,
         CreateEnterpriseProfileCreationDialogParams(account_info_));
 
     // Reload the WebUI in the picker contents.
-    host()->ShowScreenInPickerContents(
+    host().ShowScreenInPickerContents(
         managed_user_notice_url_,
         base::BindOnce(&ManagedUserProfileNoticeStepControllerForTest::
                            OnManagedUserProfileNoticeLoaded,
@@ -205,10 +204,11 @@ class ManagedUserProfileNoticeUIWindowPixelTest
   bool VerifyUi() override {
     views::Widget* widget = GetWidgetForScreenshot();
 
+    const std::string baseline = "8481376";
     const testing::TestInfo* test_info =
         testing::UnitTest::GetInstance()->current_test_info();
-    const std::string screenshot_name =
-        base::StrCat({test_info->test_suite_name(), "_", test_info->name()});
+    const std::string screenshot_name = base::StrCat(
+        {test_info->test_suite_name(), "_", test_info->name(), "_", baseline});
 
     return VerifyPixelUi(widget, "ManagedUserProfileNoticeUIWindowPixelTest",
                          screenshot_name) != ui::test::ActionResult::kFailed;
@@ -242,13 +242,6 @@ class ManagedUserProfileNoticeUIWindowPixelTest
 
 IN_PROC_BROWSER_TEST_P(ManagedUserProfileNoticeUIWindowPixelTest,
                        InvokeUi_default) {
-#if BUILDFLAG(IS_WIN)
-  if (base::FeatureList::IsEnabled(features::kInitialWebUI)) {
-    GTEST_SKIP() << "Skipping test because it fails with InitialWebUI enabled. "
-                    "See b/477426026.";
-  }
-#endif
-
   ShowAndVerifyUi();
 }
 

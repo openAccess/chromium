@@ -265,9 +265,10 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
   // Tells if the virtual resolution feature is enabled.
   bool IsDisplayUIScalingEnabled() const;
 
-  // Returns the current overscan insets for the specified |display_id|.
-  // Returns an empty insets (0, 0, 0, 0) if no insets are specified for the
-  // display.
+  // Returns the current overscan insets for the specified |display_id| in DIP,
+  // clamped so each edge does not exceed 1/4 of the display's pixel width or
+  // height. Returns an empty insets (0, 0, 0, 0) if no insets are specified for
+  // the display.
   gfx::Insets GetOverscanInsets(int64_t display_id) const;
 
   // Called when display configuration has changed. The new display
@@ -378,7 +379,7 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
   }
 
   void dec_screen_capture_active_counter() {
-    DCHECK_GT(screen_capture_active_counter_, 0);
+    CHECK_GT(screen_capture_active_counter_, 0, base::NotFatalUntil::M163);
     screen_capture_active_counter_--;
   }
 
@@ -764,13 +765,7 @@ class DISPLAY_MANAGER_EXPORT DisplayManager
   // time.
   base::OnceClosure created_mirror_window_;
 
-  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
-  base::ObserverList<
-      DisplayObserver,
-      /*check_empty=*/false,
-      /*reentrancy=*/
-      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
-      display_observers_;
+  base::ObserverList<DisplayObserver> display_observers_;
 
   // TODO(crbug.com/484371187): Investigate if this can be non reentrant.
   base::ObserverList<

@@ -11,6 +11,7 @@ assert(!is_ios || enable_webui_ntp)
 source_set("searchbox") {
   sources = [
     "contextual_searchbox_handler.h",
+    "contextual_searchbox_screenshare_controller.h",
     "contextual_searchbox_tab_favicon_helper.h",
     "searchbox_handler.h",
     "searchbox_omnibox_client.h",
@@ -18,7 +19,9 @@ source_set("searchbox") {
   ]
   public_deps = [
     "//chrome/browser/contextual_tasks",
+    "//components/contextual_search:public",
     "//components/contextual_search/footprints/public",
+    "//components/lens",
     "//components/tabs:public",
     "//third_party/omnibox_proto",
   ]
@@ -29,10 +32,8 @@ source_set("searchbox") {
     "//chrome/browser/ui/omnibox",
     "//chrome/browser/ui/views/permissions:permission_prompt_observer",
     "//components/contextual_search:prefs",
-    "//components/contextual_search:public",
     "//components/contextual_tasks/public",
     "//components/contextual_tasks/public:query_contextualizer",
-    "//components/lens",
     "//components/omnibox/browser",
     "//components/omnibox/browser:mojo_bindings",
     "//components/omnibox/browser:vector_icons",
@@ -54,6 +55,7 @@ source_set("searchbox") {
 source_set("searchbox_impl") {
   sources = [
     "contextual_searchbox_handler.cc",
+    "contextual_searchbox_screenshare_controller.cc",
     "contextual_searchbox_tab_favicon_helper.cc",
     "searchbox_handler.cc",
     "searchbox_omnibox_client.cc",
@@ -62,7 +64,6 @@ source_set("searchbox_impl") {
   deps = [
     ":searchbox",
     "//chrome/browser:browser_process",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/autocomplete",
     "//chrome/browser/autocomplete:aim_eligibility_service",
     "//chrome/browser/bookmarks",
@@ -97,12 +98,15 @@ source_set("searchbox_impl") {
     "//components/favicon/core",
     "//components/google/core/common",
     "//components/lens:buildflags",
-    "//components/omnibox/browser:fusebox_action_mojo_utils",
+    "//components/omnibox/browser:suggest_template_info_mojo_utils",
     "//components/omnibox/browser:vector_icons",
     "//components/omnibox/common:features",
     "//components/search",
+    "//components/search_engines",
+    "//components/security_state/core",
     "//components/sessions",
     "//components/vector_icons",
+    "//net",
   ]
   if (enable_lens_overlay_backend) {
     deps += [ "//chrome/browser/ui/lens:backend_logic_public" ]
@@ -110,6 +114,7 @@ source_set("searchbox_impl") {
   if (!is_android) {
     deps += [
       "//chrome/browser/new_tab_page",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/bookmarks",
       "//chrome/browser/ui/lens",
       "//chrome/browser/ui/tabs",
@@ -124,4 +129,35 @@ source_set("searchbox_impl") {
   if (enable_dice_support) {
     deps += [ "//chrome/browser/ui/views/search_ai_mode" ]
   }
+}
+
+source_set("plural_string_provider") {
+  sources = [
+    "plural_string_provider.cc",
+    "plural_string_provider.h",
+  ]
+  public_deps = [
+    "//base",
+    "//mojo/public/cpp/bindings",
+    "//ui/webui/resources/cr_components/search:mojo_bindings",
+  ]
+  deps = [
+    "//chrome/app:generated_resources",
+    "//ui/base",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "plural_string_provider_unittest.cc" ]
+  deps = [
+    ":plural_string_provider",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/app:generated_resources",
+    "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/test_support:test_utils",
+    "//testing/gtest",
+    "//ui/base",
+  ]
 }

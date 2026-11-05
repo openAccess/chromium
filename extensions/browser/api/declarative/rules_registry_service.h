@@ -52,7 +52,7 @@ class RulesRegistryService : public BrowserContextKeyedAPI,
     virtual void OnUpdateRules() = 0;
 
    protected:
-    virtual ~Observer() {}
+    virtual ~Observer() = default;
   };
 
   explicit RulesRegistryService(content::BrowserContext* context);
@@ -79,7 +79,10 @@ class RulesRegistryService : public BrowserContextKeyedAPI,
   // exist for `context`, nullptr is returned.
   static RulesRegistryService* GetIfExists(content::BrowserContext* context);
 
-  int GetNextRulesRegistryID();
+  // Returns a process-wide unique rules registry ID (strictly greater than
+  // `rules_registry_ids::kDefaultRulesRegistryID`) for non-default rules
+  // registries (e.g., `<webview>` instances). Must be called on the UI thread.
+  static int GetNextRulesRegistryID();
 
   // Registers a RulesRegistry and wraps it in an InitializingRulesRegistry.
   void RegisterRulesRegistry(scoped_refptr<RulesRegistry> rule_registry);
@@ -126,8 +129,8 @@ class RulesRegistryService : public BrowserContextKeyedAPI,
 
   // Maps <event name, rules registry ID> to RuleRegistries that handle these
   // events.
-  typedef std::map<RulesRegistryKey, scoped_refptr<RulesRegistry> >
-      RulesRegistryMap;
+  using RulesRegistryMap =
+      std::map<RulesRegistryKey, scoped_refptr<RulesRegistry>>;
 
   // ExtensionRegistryObserver implementation.
   void OnExtensionLoaded(content::BrowserContext* browser_context,
@@ -156,8 +159,6 @@ class RulesRegistryService : public BrowserContextKeyedAPI,
   }
   static const bool kServiceHasOwnInstanceInIncognito = true;
   static const bool kServiceIsNULLWhileTesting = true;
-
-  int current_rules_registry_id_ = rules_registry_ids::kDefaultRulesRegistryID;
 
   RulesRegistryMap rule_registries_;
 

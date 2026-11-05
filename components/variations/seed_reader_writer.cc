@@ -164,9 +164,11 @@ base::expected<StoredSeedInfo, LoadSeedResult> ReadSeedInfoFromFile(
 
 // Serializes, compresses, and returns the compressed seed info used during
 // write to disk. Will be run asynchronously on a background thread.
-std::optional<std::string> DoSerialize(StoredSeedInfo seed_info,
-                                       base::FilePath file_path,
-                                       std::string histogram_suffix) {
+std::optional<std::string> DoSerialize(
+    StoredSeedInfo seed_info,
+    base::FilePath file_path,
+    std::string histogram_suffix,
+    base::OnceClosure on_serialize_failed_callback) {
   if (!seed_info.has_data()) {
     // If the seed data was purged from memory, read it from the existing file
     // first to preserve the seed data and signature.
@@ -175,6 +177,7 @@ std::optional<std::string> DoSerialize(StoredSeedInfo seed_info,
     if (!read_result.has_value()) {
       // If we cannot read the existing seed file, we cannot safely write the
       // update without destroying the seed data.
+      std::move(on_serialize_failed_callback).Run();
       return std::nullopt;
     }
     seed_info.set_data(std::move(read_result.value().data()));
@@ -184,6 +187,7 @@ std::optional<std::string> DoSerialize(StoredSeedInfo seed_info,
   std::string compressed_seed_info;
   const base::TimeTicks start_time = base::TimeTicks::Now();
   if (!Compress(uncompressed_data, &compressed_seed_info)) {
+    std::move(on_serialize_failed_callback).Run();
     return std::nullopt;
   }
   base::UmaHistogramTimes(
@@ -321,6 +325,16 @@ void SetGeoLevel1Pref(const SeedFieldsPrefs& prefs,
   }
 }
 
+// Sets the seed date pref value if `seed_date` is not null. Keeps the stored
+// value otherwise.
+void SetSeedDatePref(const SeedFieldsPrefs& prefs,
+                     PrefService& local_state,
+                     base::Time seed_date) {
+  if (!seed_date.is_null()) {
+    local_state.SetTime(prefs.seed_date, seed_date);
+  }
+}
+
 // Gets the Geo Level1 pref value if its pref name exists. Returns an empty
 // string otherwise.
 std::string GetGeoLevel1Pref(const SeedFieldsPrefs& prefs,
@@ -411,7 +425,6 @@ SeedReaderWriter::SeedReaderWriter(
     PrefService* local_state,
     const base::FilePath& seed_file_dir,
     base::FilePath::StringViewType seed_filename,
-    base::FilePath::StringViewType old_seed_filename,
     const SeedFieldsPrefs& fields_prefs,
     version_info::Channel channel,
     const EntropyProviders* entropy_providers,
@@ -429,7 +442,6 @@ SeedReaderWriter::SeedReaderWriter(
     seed_writer_ = std::make_unique<base::ImportantFileWriter>(
         GetFilePath(seed_file_dir, seed_filename), file_task_runner_,
         /*interval=*/base::Seconds(1), kSeedWriterHistogramSuffix);
-    old_seed_file_path_ = GetFilePath(seed_file_dir, old_seed_filename);
   }
   if (IsEligibleForSeedFileTrial(channel, seed_file_dir, entropy_providers)) {
     SetUpSeedFileTrial(entropy_providers->default_entropy(), channel);
@@ -438,25 +450,13 @@ SeedReaderWriter::SeedReaderWriter(
       // reason for the error is that the seed file is missing.
       check_missing_seed_file_ = ShouldCheckMissingSeedFile(channel);
       ReadSeedFile();
-    } else if (ShouldMigrateToLocalState(channel)) {
-      // Because of the new group assignment, it is possible that a client that
-      // previously stored the seed data in the old seed file should now migrate
-      // back to local state.
-      MigrateToLocalState();
     }
-  } else if (ShouldMigrateToLocalState(channel)) {
-    // The old seed file experiment was affecting clients in stable and beta
-    // channels. Migrate if necessary the seed data from the old seed file to
-    // local state.
-    MigrateToLocalState();
   }
 }
 
 SeedReaderWriter::~SeedReaderWriter() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (HasPendingWrite()) {
-    seed_writer_->DoScheduledWrite();
-  }
+  CommitPendingWrite();
 }
 
 StoreSeedResult SeedReaderWriter::StoreValidatedSeedInfo(
@@ -478,8 +478,6 @@ void SeedReaderWriter::ClearSeedInfo() {
     local_state_->ClearPref(fields_prefs_->seed);
     local_state_->ClearPref(fields_prefs_->signature);
     local_state_->ClearPref(fields_prefs_->milestone);
-    local_state_->ClearPref(fields_prefs_->seed_date);
-    local_state_->ClearPref(fields_prefs_->client_fetch_time);
     // Although only clients in the treatment group write seeds to dedicated
     // seed files, attempt to delete the seed file for clients with
     // Local-State-based seeds. If a client switches experiment groups or
@@ -488,6 +486,8 @@ void SeedReaderWriter::ClearSeedInfo() {
       DeleteSeedFile();
     }
   }
+  local_state_->ClearPref(fields_prefs_->seed_date);
+  local_state_->ClearPref(fields_prefs_->client_fetch_time);
 }
 
 void SeedReaderWriter::ClearSessionCountry() {
@@ -503,15 +503,47 @@ void SeedReaderWriter::ClearSessionCountry() {
   }
 }
 
+bool SeedReaderWriter::SetSessionCountryAndGeoLevel1(
+    std::string_view country_code,
+    std::string_view geo_level1) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (country_code.empty()) {
+    return false;
+  }
+  SeedInfo current_info = GetSeedInfo();
+  const bool country_changed =
+      current_info.session_country_code != country_code;
+  // `session_geo_level1` is nullptr for safe seeds (`kSafeSeedFieldsPrefs`),
+  // which do not store geo level 1 in Local State or in the seed file.
+  const bool geo_level1_changed =
+      fields_prefs_->session_geo_level1 != nullptr &&
+      current_info.session_geo_level1 != geo_level1;
+  if (!country_changed && !geo_level1_changed) {
+    return false;
+  }
+  if (ShouldUseSeedFile()) {
+    stored_seed_info_.set_session_country_code(country_code);
+    stored_seed_info_.set_session_geo_level1(geo_level1);
+    seed_writer_->ScheduleWriteWithBackgroundDataSerializer(this);
+  }
+  // Always update Local State, even when using a seed file, as the session
+  // country code is still read directly from Local State by other features
+  // (and geo level 1 is kept in sync alongside it). See
+  // ScheduleSeedFileWrite() for details.
+  local_state_->SetString(fields_prefs_->session_country_code, country_code);
+  SetGeoLevel1Pref(*fields_prefs_, *local_state_, geo_level1);
+  return true;
+}
+
 SeedInfo SeedReaderWriter::GetSeedInfo() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (ShouldUseSeedFile()) {
     return SeedInfo(
         /*signature=*/stored_seed_info_.signature(),
         /*milestone=*/stored_seed_info_.milestone(),
-        /*seed_date=*/ProtoTimeToTime(stored_seed_info_.seed_date()),
+        /*seed_date=*/local_state_->GetTime(fields_prefs_->seed_date),
         /*client_fetch_time=*/
-        ProtoTimeToTime(stored_seed_info_.client_fetch_time()),
+        local_state_->GetTime(fields_prefs_->client_fetch_time),
         /*session_country_code=*/stored_seed_info_.session_country_code(),
         /*session_geo_level1=*/stored_seed_info_.session_geo_level1(),
         /*permanent_country_code=*/stored_seed_info_.permanent_country_code(),
@@ -542,27 +574,19 @@ void SeedReaderWriter::SetTimerForTesting(base::OneShotTimer* timer_override) {
   }
 }
 
-void SeedReaderWriter::SetSeedDate(base::Time server_date_fetched) {
+void SeedReaderWriter::SetSeedDate(base::Time seed_date) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  // Both groups write the seed date to local state.
-  // TODO(crbug.com/380465790): Update seed date in seed files instead of local
-  // state if the client is in the treatment group.
-  if (ShouldUseSeedFile()) {
-    stored_seed_info_.set_seed_date(TimeToProtoTime(server_date_fetched));
-    seed_writer_->ScheduleWriteWithBackgroundDataSerializer(this);
-  }
-  local_state_->SetTime(fields_prefs_->seed_date, server_date_fetched);
+  // Both groups store the seed date in local state. It is updated after every
+  // successful seed fetch, including "HTTP 304 Not Modified" responses, so
+  // avoid rewriting the whole seed file just to refresh a timestamp.
+  SetSeedDatePref(*fields_prefs_, *local_state_, seed_date);
 }
 
 void SeedReaderWriter::SetFetchTime(base::Time fetch_time) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  // Both groups write the fetch time to local state.
-  // TODO(crbug.com/380465790): Update fetch time in seed files instead of local
-  // state if the client is in the treatment group.
-  if (ShouldUseSeedFile()) {
-    stored_seed_info_.set_client_fetch_time(TimeToProtoTime(fetch_time));
-    seed_writer_->ScheduleWriteWithBackgroundDataSerializer(this);
-  }
+  // Both groups store the fetch time in local state. It is updated after every
+  // successful seed fetch, including "HTTP 304 Not Modified" responses, so
+  // avoid rewriting the whole seed file just to refresh a timestamp.
   local_state_->SetTime(fields_prefs_->client_fetch_time, fetch_time);
 }
 
@@ -624,6 +648,13 @@ void SeedReaderWriter::ReadSeedData(
   }
 }
 
+void SeedReaderWriter::CommitPendingWrite() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (HasPendingWrite()) {
+    seed_writer_->DoScheduledWrite();
+  }
+}
+
 void SeedReaderWriter::StoreRawSeedForTesting(std::string seed_data) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (ShouldUseSeedFile()) {
@@ -649,6 +680,17 @@ void SeedReaderWriter::StoreBase64EncodedSeedAndSignatureForTesting(
   StoreValidatedSeedInfo(
       ValidatedSeedInfo{.seed_data = std::move(uncompressed_seed_data),
                         .signature = std::move(base64_signature)});
+}
+
+bool SeedReaderWriter::IsEmpty() const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (ShouldUseSeedFile()) {
+    // Empty seeds are never purged from memory (see
+    // ShouldClearSeedDataFromMemory()), so `!stored_seed_info_.has_data()`
+    // means a non-empty seed was purged after being written to disk.
+    return stored_seed_info_.has_data() && stored_seed_info_.data().empty();
+  }
+  return local_state_->GetString(fields_prefs_->seed).empty();
 }
 
 bool SeedReaderWriter::IsIdenticalToSafeSeedSentinel() {
@@ -738,32 +780,42 @@ SeedReaderWriter::GetSerializedDataProducerForBackgroundSequence() {
   // use std::move here as we may attempt to read `seed_info_.data` from memory
   // after a write and before we modify `seed_info_.data` again, in which case
   // unexpected empty data would be read.
-  auto call_clear_seed_cb =
+  ++pending_background_writes_;
+  seed_writer_->RegisterOnNextWriteCallbacks(
+      base::OnceClosure(),
       base::BindPostTask(base::SequencedTaskRunner::GetCurrentDefault(),
                          base::BindOnce(&SeedReaderWriter::OnSeedWriteComplete,
-                                        weak_ptr_factory_.GetWeakPtr()));
-  seed_writer_->RegisterOnNextWriteCallbacks(base::OnceClosure(),
-                                             std::move(call_clear_seed_cb));
+                                        weak_ptr_factory_.GetWeakPtr())));
+  // ImportantFileWriter skips `after_write_callback` when the background data
+  // producer returns std::nullopt, so pass a failure callback to ensure
+  // OnSeedWriteComplete(/*write_success=*/false) still runs and decrements
+  // `pending_background_writes_`.
+  auto on_serialize_failed_cb = base::BindPostTask(
+      base::SequencedTaskRunner::GetCurrentDefault(),
+      base::BindOnce(&SeedReaderWriter::OnSeedWriteComplete,
+                     weak_ptr_factory_.GetWeakPtr(), /*write_success=*/false));
   // TODO(crbug.com/370539202): Potentially use std::move instead of copy if we
   // are able to move seed data out of memory before the write completes.
   return base::BindOnce(&DoSerialize, stored_seed_info_, seed_writer_->path(),
-                        histogram_suffix_);
+                        histogram_suffix_, std::move(on_serialize_failed_cb));
 }
 
 bool SeedReaderWriter::ShouldClearSeedDataFromMemory() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return seed_purgeable_from_memory_ && !HasPendingWrite() &&
-         stored_seed_info_.has_data() && !stored_seed_info_.data().empty() &&
+         pending_background_writes_ == 0 && stored_seed_info_.has_data() &&
+         !stored_seed_info_.data().empty() &&
          stored_seed_info_.data() != kIdenticalToSafeSeedSentinel;
 }
 
 void SeedReaderWriter::OnSeedWriteComplete(bool write_success) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK_GT(pending_background_writes_, 0);
+  --pending_background_writes_;
   if (migrating_from_old_source_ && write_success) {
-    // Clients using a seed file should clear seed from local state and the old
-    // seed file, as it will no longer be used.
+    // Clients using a seed file should clear seed from local state, as it will
+    // no longer be used.
     local_state_->ClearPref(fields_prefs_->seed);
-    DeleteOldSeedFile();
     migrating_from_old_source_ = false;
   }
   if (ShouldClearSeedDataFromMemory()) {
@@ -781,11 +833,19 @@ StoreSeedResult SeedReaderWriter::ScheduleSeedFileWrite(
   stored_seed_info_.set_data(seed_info.seed_data);
   stored_seed_info_.set_signature(seed_info.signature);
   stored_seed_info_.set_milestone(seed_info.milestone);
-  stored_seed_info_.set_seed_date(TimeToProtoTime(seed_info.seed_date));
+
+  // The timestamps are read from local state, see SetSeedDate(). Keep the copy
+  // in the seed file up to date too, since it is written anyway.
+  SetSeedDatePref(*fields_prefs_, *local_state_, seed_info.seed_date);
+  stored_seed_info_.set_seed_date(
+      TimeToProtoTime(local_state_->GetTime(fields_prefs_->seed_date)));
   stored_seed_info_.set_client_fetch_time(
       TimeToProtoTime(seed_info.client_fetch_time));
-  // Only update the latest country code and geo level if country code is not
-  // empty.
+  local_state_->SetTime(fields_prefs_->client_fetch_time,
+                        seed_info.client_fetch_time);
+
+  // Only update the latest country code and administrative area
+  // if country code is not empty.
   if (!seed_info.session_country_code.empty()) {
     stored_seed_info_.set_session_country_code(seed_info.session_country_code);
     stored_seed_info_.set_session_geo_level1(seed_info.session_geo_level1);
@@ -809,7 +869,8 @@ StoreSeedResult SeedReaderWriter::ScheduleSeedFileWrite(
   seed_writer_->ScheduleWriteWithBackgroundDataSerializer(this);
   // We still need to update the session country code in local state as it is
   // used by hash_realtime_utils::GetHashRealTimeSelectionConfiguringPrefs() and
-  // for some platform experience features.
+  // for some platform experience features. Keep geo level 1 in local state in
+  // sync with the session country code as well.
   // Note: It is possible for the country code to be empty, e.g. if the seed was
   // fetched over HTTP (and hence untrusted). Keep the existing values in this
   // case.
@@ -839,6 +900,7 @@ void SeedReaderWriter::ScheduleSeedFileClear() {
   stored_seed_info_.clear_milestone();
   stored_seed_info_.clear_seed_date();
   stored_seed_info_.clear_client_fetch_time();
+
   // `seed_writer_` will eventually call
   // GetSerializedDataProducerForBackgroundSequence() on *this* object to get
   // a callback that will be run asynchronously. This callback will be used to
@@ -856,12 +918,6 @@ void SeedReaderWriter::DeleteSeedFile() {
                                 seed_writer_->path()));
 }
 
-void SeedReaderWriter::DeleteOldSeedFile() {
-  file_task_runner_->PostTask(
-      FROM_HERE, base::BindOnce(base::IgnoreResult(&base::DeleteFile),
-                                old_seed_file_path_));
-}
-
 void SeedReaderWriter::ReadSeedFile() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   SeedSource seed_source = SeedSource::kNoSource;
@@ -874,13 +930,32 @@ void SeedReaderWriter::ReadSeedFile() {
     stored_seed_info_ = std::move(read_seed_info_result.value());
     // Record that the seed file was read successfully.
     seed_source = SeedSource::kSeedFile;
-    // If we're using the seed file, clear the seed from local state and the old
-    // seed file, as it will no longer be used. If they don't exist, this is a
+    // If we're using the seed file, clear the seed from local state,
+    // as it will no longer be used. If it doesn't exist, this is a
     // no-op.
     local_state_->ClearPref(fields_prefs_->seed);
-    // Do a scheduled write immediately instead of waiting to ensure that the
-    // migration to the new seed file is done as soon as possible.
-    DeleteOldSeedFile();
+    // Migrate the timestamps from the seed file to local state, which is now
+    // where they are read from and updated. Keep the most recent value: local
+    // state may be unset (in which case it reads back as a null base::Time) or
+    // stale, e.g. if the seed file was written by a more recent version of the
+    // browser.
+    if (stored_seed_info_.has_seed_date()) {
+      const base::Time seed_file_seed_date =
+          ProtoTimeToTime(stored_seed_info_.seed_date());
+      if (seed_file_seed_date >
+          local_state_->GetTime(fields_prefs_->seed_date)) {
+        local_state_->SetTime(fields_prefs_->seed_date, seed_file_seed_date);
+      }
+    }
+    if (stored_seed_info_.has_client_fetch_time()) {
+      const base::Time seed_file_client_fetch_time =
+          ProtoTimeToTime(stored_seed_info_.client_fetch_time());
+      if (seed_file_client_fetch_time >
+          local_state_->GetTime(fields_prefs_->client_fetch_time)) {
+        local_state_->SetTime(fields_prefs_->client_fetch_time,
+                              seed_file_client_fetch_time);
+      }
+    }
   } else if (read_seed_info_result.error() !=
                  LoadSeedResult::kErrorReadingFile &&
              read_seed_info_result.error() != LoadSeedResult::kFileNotFound) {
@@ -888,26 +963,11 @@ void SeedReaderWriter::ReadSeedFile() {
     // to an empty string so we keep it in memory and don't read it from
     // disk.
     stored_seed_info_.set_data("");
-  } else if (ReadOldSeedFile()) {
-    // When the file doesn't exist (kFileNotFound or kErrorReadingFile on
-    // stable), we can read from the old file instead. We only want to migrate
-    // the seed using the old Seed File or Local State the first time, when the
-    // Seed File doesn't exist yet. In posterior runs the file should exist. If
-    // there's an error for any other reason, we don't want to fallback, so we
-    // just initialize the seed data to empty. Note: base::ReadFileToString()
-    // doesn't provide info about why the read failed, but this is most probable
-    // due to the file not existing.
-
-    // Record that the seed file was read successfully.
-    seed_source = SeedSource::kOldSeedFile;
   } else if (MigrateFromLocalStateToSeedFile()) {
     // Export seed data from Local State to a seed file in the following cases.
-    // 1. Seed file does not exist because this is the first run. For Windows,
-    // the first run seed may be stored in Local State, see
-    // https://crsrc.org/s?q=file:chrome_feature_list_creator.cc+symbol:SetupInitialPrefs.
-    // 2. Seed file does not exist because this is the first time a client is
+    // 1. Seed file does not exist because this is the first time a client is
     // in the seed file experiment's treatment group.
-    // 3. Seed file exists and read failed.
+    // 2. Seed file exists and read failed.
     seed_source = SeedSource::kLocalState;
   }
 
@@ -916,56 +976,6 @@ void SeedReaderWriter::ReadSeedFile() {
   base::UmaHistogramBoolean(
       base::StrCat({"Variations.SeedFileRead.", histogram_suffix_}),
       seed_source == SeedSource::kSeedFile);
-}
-
-// TODO(b/510295477): Remove this function once the migration is complete.
-bool SeedReaderWriter::ReadOldSeedFile() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  std::string seed_file_data;
-  const bool success =
-      base::ReadFileToString(old_seed_file_path_, &seed_file_data);
-  if (!success) {
-    return false;
-  }
-  std::string raw_seed_data;
-  // The seed will be stored raw in memory, so we need to process it before
-  // storing it. If the seed is invalid, we will store an empty seed in memory.
-  auto result =
-      ProcessStoredSeedData(SeedStorageFormat::kCompressed, seed_file_data,
-                            local_state_->GetString(fields_prefs_->signature),
-                            &raw_seed_data, /*signature=*/nullptr);
-  if (result == LoadSeedResult::kSuccess) {
-    stored_seed_info_.set_data(std::move(raw_seed_data));
-  } else {
-    // Set seed data to an empty string so we keep it in memory and don't read
-    // it from disk.
-    stored_seed_info_.set_data("");
-  }
-  stored_seed_info_.set_signature(
-      local_state_->GetString(fields_prefs_->signature));
-  stored_seed_info_.set_milestone(
-      local_state_->GetInteger(fields_prefs_->milestone));
-  stored_seed_info_.set_seed_date(
-      TimeToProtoTime(local_state_->GetTime(fields_prefs_->seed_date)));
-  stored_seed_info_.set_client_fetch_time(
-      TimeToProtoTime(local_state_->GetTime(fields_prefs_->client_fetch_time)));
-  stored_seed_info_.set_session_country_code(
-      local_state_->GetString(fields_prefs_->session_country_code));
-  PermanentCountryVersion permanent_country_version =
-      GetPermanentCountryVersion(local_state_,
-                                 fields_prefs_->permanent_country_code_version);
-  stored_seed_info_.set_permanent_country_code(
-      permanent_country_version.country);
-  stored_seed_info_.set_permanent_version(permanent_country_version.version);
-
-  // Schedule a write to the new seed file for future Chrome sessions.
-  migrating_from_old_source_ = true;
-  seed_writer_->ScheduleWriteWithBackgroundDataSerializer(this);
-  // Do a scheduled write immediately instead of waiting to ensure that the
-  // migration to the new seed file is done as soon as possible.
-  seed_writer_->DoScheduledWrite();
-
-  return success;
 }
 
 bool SeedReaderWriter::MigrateFromLocalStateToSeedFile() {
@@ -1018,7 +1028,7 @@ StoreSeedResult SeedReaderWriter::ScheduleLocalStateWrite(
   local_state_->SetString(fields_prefs_->seed, seed_data);
   local_state_->SetString(fields_prefs_->signature, seed_info.signature);
   local_state_->SetInteger(fields_prefs_->milestone, seed_info.milestone);
-  local_state_->SetTime(fields_prefs_->seed_date, seed_info.seed_date);
+  SetSeedDatePref(*fields_prefs_, *local_state_, seed_info.seed_date);
   local_state_->SetTime(fields_prefs_->client_fetch_time,
                         seed_info.client_fetch_time);
   // Note: It is possible for the country code to be empty, e.g. if the seed was
@@ -1047,26 +1057,7 @@ bool SeedReaderWriter::ShouldUseSeedFile() const {
          base::FieldTrialList::FindFullName(kSeedFileTrial) == kSeedFilesGroup;
 }
 
-bool SeedReaderWriter::ShouldMigrateToLocalState(
-    version_info::Channel channel) const {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return seed_writer_ && base::PathExists(old_seed_file_path_);
-}
 
-void SeedReaderWriter::MigrateToLocalState() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  std::string seed_file_data;
-  const bool success =
-      base::ReadFileToString(old_seed_file_path_, &seed_file_data);
-  if (success && !seed_file_data.empty()) {
-    std::string seed_data = seed_file_data == kIdenticalToSafeSeedSentinel
-                                ? kIdenticalToSafeSeedSentinel
-                                : base::Base64EncodeEarlyStartup(
-                                      base::as_byte_span(seed_file_data));
-    local_state_->SetString(fields_prefs_->seed, seed_data);
-  }
-  DeleteOldSeedFile();
-}
 
 void SeedReaderWriter::ProcessStoredSeedDataAndRunCallback(
     ReadSeedDataCallback done_callback,
@@ -1124,7 +1115,8 @@ void SeedReaderWriter::GetSeedDataFromSeedFile(
         }
         std::move(done_callback)
             .Run(ReadSeedDataResult{
-                .result = LoadSeedResult::kSuccess,
+                .result = result->data().empty() ? LoadSeedResult::kEmpty
+                                                 : LoadSeedResult::kSuccess,
                 .seed_data = std::move(result->data()),
                 .signature = std::move(result->signature())});
       },

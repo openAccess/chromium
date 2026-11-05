@@ -112,10 +112,6 @@ std::string BuildOSCpuInfoFromOSVersionAndCpuType(const std::string& os_version,
 // Return the <unifiedPlatform> token of a reduced User-Agent header.
 std::string GetUnifiedPlatformForTesting();
 
-// Helper function to generate a full user agent string from a short
-// product name.
-std::string BuildUserAgentFromProduct(const std::string& product);
-
 // Helper function to generate a reduced user agent string with unified
 // platform from a given product name.
 std::string BuildUnifiedPlatformUserAgentFromProduct(
@@ -134,16 +130,14 @@ std::string BuildUserAgentFromProductAndExtraOSInfo(
     const std::string& extra_os_info,
     IncludeAndroidBuildNumber include_android_build_number);
 
-// Helper function to generate a reduced user agent string with unified
-// platform from a given product name and extra os information.
-std::string BuildUnifiedPlatformUAFromProductAndExtraOs(
-    const std::string& product,
-    const std::string& extra_os_info);
-
 // Helper function to generate just the OS info.
 std::string GetAndroidOSInfo(
     IncludeAndroidBuildNumber include_android_build_number,
     IncludeAndroidModel include_android_model);
+
+// Returns the CPU architecture for Android desktop or desktop mode ("arm" or
+// "x86").
+std::string GetAndroidDesktopCpuArchitecture();
 #endif
 
 // Builds a full user agent string given a string describing the OS and a

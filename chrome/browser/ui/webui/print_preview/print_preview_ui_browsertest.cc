@@ -21,6 +21,7 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/prefs/pref_service.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_ui.h"
@@ -29,6 +30,7 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "printing/buildflags/buildflags.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/url_constants.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -79,7 +81,7 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewBrowserTest, PrintCommands) {
 
   content::TestNavigationObserver reload_observer(
       browser()->GetTabStripModel()->GetActiveWebContents());
-  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   reload_observer.Wait();
 
   ASSERT_TRUE(chrome::IsCommandEnabled(browser(), IDC_PRINT));
@@ -135,7 +137,8 @@ IN_PROC_BROWSER_TEST_F(PrintPreviewBrowserTest,
   Print();
 
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL("about:blank"), WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), GURL("about:blank"),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   browser()->GetTabStripModel()->ActivateTabAt(

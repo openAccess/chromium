@@ -50,7 +50,6 @@
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager_factory.h"
 #include "chrome/browser/enterprise/data_controls/dlp_reporting_manager.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_util.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
@@ -519,9 +518,20 @@ void DlpFilesControllerAsh::IsFilesTransferRestricted(
     DlpRulesManager::RuleMetadata rule_metadata;
     if (destination.component()) {
       data_controls::Component dst_component = *destination.component();
-      level = rules_manager_->IsRestrictedComponent(
-          file.source_url, dst_component, DlpRulesManager::Restriction::kFiles,
-          &source_pattern, &rule_metadata);
+      if (dst_component == data_controls::Component::kUnknownComponent) {
+        // Passing empty URL will return restricted if there's a rule
+        // restricting the src against any dst (*), otherwise it will return
+        // ALLOW.
+        level = rules_manager_->IsRestrictedDestination(
+            file.source_url, GURL(), DlpRulesManager::Restriction::kFiles,
+            &source_pattern, /*out_destination_pattern=*/nullptr,
+            &rule_metadata);
+      } else {
+        level = rules_manager_->IsRestrictedComponent(
+            file.source_url, dst_component,
+            DlpRulesManager::Restriction::kFiles, &source_pattern,
+            &rule_metadata);
+      }
       actual_dst = DlpFileDestination(dst_component);
       MaybeReportEvent(file.inode, file.crtime, file.path,
                        file.source_url.spec(), actual_dst, rule_metadata,
@@ -529,7 +539,7 @@ void DlpFilesControllerAsh::IsFilesTransferRestricted(
     } else if (destination.IsFileSystem()) {
       level = DlpRulesManager::Level::kAllow;
     } else {
-      DCHECK(destination.url().has_value());
+      CHECK(destination.url().has_value(), base::NotFatalUntil::M160);
       level = rules_manager_->IsRestrictedDestination(
           GURL(file.source_url), GURL(*destination.url()),
           DlpRulesManager::Restriction::kFiles, &source_pattern,
@@ -723,7 +733,18 @@ DlpFilesControllerAsh::MapFilePathToPolicyComponent(
         service->GetProvidedFileSystemInfoList(provider_id);
     CHECK_EQ(one_drive_file_systems.size(), 1u);
 
-    if (one_drive_file_systems[0].mount_path().IsParent(file_path)) {
+    const base::FilePath& one_drive_mount_path =
+        one_drive_file_systems[0].mount_path();
+    if (one_drive_mount_path == file_path ||
+        one_drive_mount_path.IsParent(file_path)) {
+      return data_controls::Component::kOneDrive;
+    }
+
+    base::FilePath fusebox_mount_path =
+        ash::cloud_upload::GetODFSFuseboxMount(profile);
+    if (!fusebox_mount_path.empty() &&
+        (fusebox_mount_path == file_path ||
+         fusebox_mount_path.IsParent(file_path))) {
       return data_controls::Component::kOneDrive;
     }
   }
@@ -777,8 +798,10 @@ void DlpFilesControllerAsh::OnDlpWarnDialogReply(
     IsFilesTransferRestrictedCallback callback,
     std::optional<std::u16string> user_justification,
     bool should_proceed) {
-  DCHECK(warned_files.size() == warned_src_patterns.size());
-  DCHECK(warned_files.size() == warned_rules_metadata.size());
+  CHECK(warned_files.size() == warned_src_patterns.size(),
+        base::NotFatalUntil::M160);
+  CHECK(warned_files.size() == warned_rules_metadata.size(),
+        base::NotFatalUntil::M160);
   for (size_t i = 0; i < warned_files.size(); ++i) {
     if (should_proceed) {
       data_controls::DlpHistogramEnumeration(
@@ -814,7 +837,7 @@ void DlpFilesControllerAsh::ReturnDisallowedFiles(
   }
 
   for (const auto& file : response.files_paths()) {
-    DCHECK(files_map.find(file) != files_map.end());
+    CHECK(files_map.find(file) != files_map.end(), base::NotFatalUntil::M160);
     restricted_files_urls.push_back(files_map.at(file));
     restricted_files_paths.emplace_back(file);
   }
@@ -893,7 +916,7 @@ void DlpFilesControllerAsh::ReturnDlpMetadata(
         is_restricted_for_destination =
             dst_level == DlpRulesManager::Level::kBlock;
       } else {
-        DCHECK(destination->url());
+        CHECK(destination->url(), base::NotFatalUntil::M160);
         DlpRulesManager::Level dst_level =
             rules_manager_->IsRestrictedDestination(
                 GURL(metadata.source_url()), *destination->url(),
@@ -1026,7 +1049,7 @@ void DlpFilesControllerAsh::ContinueFilterDisallowedUploads(
     const DlpFileDestination& destination,
     FilterDisallowedUploadsCallback result_callback,
     std::vector<storage::FileSystemURL> uploaded_files) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (!chromeos::DlpClient::Get() || !chromeos::DlpClient::Get()->IsAlive()) {
     std::move(result_callback).Run(std::move(selected_files));
@@ -1041,7 +1064,7 @@ void DlpFilesControllerAsh::ContinueFilterDisallowedUploads(
     request.set_destination_component(
         dlp::MapPolicyComponentToProto(destination.component().value()));
   } else {
-    DCHECK(destination.url());
+    CHECK(destination.url(), base::NotFatalUntil::M160);
     request.set_destination_url(destination.url()->spec());
   }
   request.set_file_action(::dlp::FileAction::UPLOAD);

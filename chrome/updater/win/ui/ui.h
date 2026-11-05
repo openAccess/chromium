@@ -7,6 +7,7 @@
 
 #include <windows.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@
 #include "chrome/updater/win/ui/message_loop.h"
 #include "chrome/updater/win/ui/owner_draw_controls.h"
 #include "chrome/updater/win/ui/resources/resources.grh"
+#include "chrome/updater/win/ui/ui_util.h"
 #include "chrome/updater/win/ui/window_impl.h"
 #include "ui/gfx/win/msg_util.h"
 
@@ -95,7 +97,17 @@ class OmahaWnd : public DialogImpl,
   LRESULT OnSetCursor(UINT msg, WPARAM wparam, LPARAM lparam);
   void OnCancel(UINT notify_code, int id, HWND wnd_ctl);
 
-  void ApplyDpiScaling(int dpi);
+  virtual void ApplyDpiScaling(UINT dpi);
+
+  // Called after the cached theme flags were refreshed and before descendants
+  // are notified and the tree repaints. Subclasses drop and reload
+  // theme-dependent resources here.
+  virtual void OnThemeStateChanged() {}
+
+  void RepaintForThemeChange(bool notify_descendants,
+                             UINT msg,
+                             WPARAM wparam,
+                             LPARAM lparam);
 
   // Returns true if the window is closed.
   virtual bool MaybeCloseWindow() = 0;
@@ -112,6 +124,20 @@ class OmahaWnd : public DialogImpl,
   void SetControlAttributes(int control_id,
                             const ControlAttributes& attributes);
 
+  // Updates or clears the window icon derived from the given bitmaps for
+  // ICON_BIG (typically taskbar / Alt+Tab) and ICON_SMALL (titlebar). Supports
+  // Windows hybrid theme mode where the taskbar and titlebar require different
+  // theme logos (e.g. light logo for taskbar and dark logo for titlebar).
+  void UpdateWindowIcon(HBITMAP big_bitmap,
+                        HBITMAP small_bitmap,
+                        UINT dpi = 0,
+                        std::optional<int> badge_resource_id = std::nullopt);
+
+  // Clears cached window icon state (logo bitmap handles, DPI, and badge ID) to
+  // prevent false cache hits if Windows GDI recycles handle values when bitmaps
+  // are destroyed and reallocated.
+  void ResetWindowIconCache();
+
   void SetVisible(bool visible) {
     ::ShowWindow(hwnd(), visible ? SW_SHOWNORMAL : SW_HIDE);
   }
@@ -122,17 +148,25 @@ class OmahaWnd : public DialogImpl,
   bool is_close_enabled() { return is_close_enabled_; }
   UpdaterScope scope() { return scope_; }
   const std::u16string& bundle_name() { return bundle_name_; }
+  HBITMAP current_logo_big_for_testing() const { return current_logo_big_; }
+  HBITMAP current_logo_small_for_testing() const {
+    return current_logo_small_;
+  }
 
-  static const ControlAttributes kVisibleTextAttributes;
-  static const ControlAttributes kDefaultActiveButtonAttributes;
-  static const ControlAttributes kDisabledButtonAttributes;
-  static const ControlAttributes kNonDefaultActiveButtonAttributes;
-  static const ControlAttributes kVisibleImageAttributes;
-  static const ControlAttributes kDisabledNonButtonAttributes;
+  static constexpr ControlAttributes kVisibleTextAttributes = {
+      false, true, true, false, false};
+  static constexpr ControlAttributes kDefaultActiveButtonAttributes = {
+      false, true, true, true, true};
+  static constexpr ControlAttributes kDisabledButtonAttributes = {
+      false, false, false, true, false};
+  static constexpr ControlAttributes kNonDefaultActiveButtonAttributes = {
+      false, true, true, true, false};
+  static constexpr ControlAttributes kVisibleImageAttributes = {
+      false, true, false, false, false};
+  static constexpr ControlAttributes kDisabledNonButtonAttributes = {
+      false, false, false, false, false};
 
  private:
-  HRESULT SetWindowIcon();
-
   void MaybeRequestExitProcess();
   void RequestExitProcess();
 
@@ -150,8 +184,18 @@ class OmahaWnd : public DialogImpl,
   UpdaterScope scope_;
   std::u16string bundle_name_;
 
-  // Handle to large icon to show when ALT-TAB.
-  base::win::ScopedGDIObject<HICON> hicon_;
+  // Handles to icons to show when ALT-TAB (big) and in taskbar/titlebar
+  // (small).
+  WindowIcons window_icons_;
+  HBITMAP current_logo_big_ = nullptr;
+  HBITMAP current_logo_small_ = nullptr;
+  UINT current_dpi_ = 0;
+
+  // The badge overlay that was actually composited onto `window_icons_`, not
+  // merely the one requested. It stays `std::nullopt` when badge loading or
+  // compositing fell back to an unbadged icon, so the next `UpdateWindowIcon()`
+  // with the same arguments misses the cache and retries the badge.
+  std::optional<int> current_badge_resource_id_ = std::nullopt;
 
   base::win::ScopedGDIObject<HFONT> default_font_;
   base::win::ScopedGDIObject<HFONT> header_font_;

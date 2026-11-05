@@ -11,7 +11,6 @@
 #include "ash/constants/ash_switches.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
-#include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_writer.h"
 #include "base/metrics/histogram_functions.h"
@@ -24,7 +23,6 @@
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
-#include "components/sync/base/features.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "google_apis/credentials_mode.h"
@@ -83,7 +81,7 @@ base::RepeatingCallback<void(std::string)>*
 void MarketingBackendConnector::UpdateEmailPreferences(
     Profile* profile,
     const std::string& country_code) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
   VLOG(1) << "Subscribing the user to all chromebook email campaigns.";
 
   // Early exit for testing
@@ -98,19 +96,21 @@ void MarketingBackendConnector::UpdateEmailPreferences(
     return;
   }
 
-  auto* identity_manager = ash::IdentityManagerProvider::Get().Find(
-      CHECK_DEREF(ash::AnnotatedAccountId::Get(profile)));
-  scoped_refptr<MarketingBackendConnector> ref =
-      new MarketingBackendConnector(profile, identity_manager);
+  signin::IdentityManager& identity_manager =
+      CHECK_DEREF(ash::IdentityManagerProvider::Get().Find(
+          CHECK_DEREF(ash::AnnotatedAccountId::Get(profile))));
+  scoped_refptr<MarketingBackendConnector> ref = new MarketingBackendConnector(
+      profile->GetURLLoaderFactory(), identity_manager);
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&MarketingBackendConnector::PerformRequest, ref,
                                 country_code));
 }
 
 MarketingBackendConnector::MarketingBackendConnector(
-    Profile* profile,
-    signin::IdentityManager* identity_manager)
-    : profile_(profile), identity_manager_(CHECK_DEREF(identity_manager)) {}
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    signin::IdentityManager& identity_manager)
+    : identity_manager_(identity_manager),
+      url_loader_factory_(std::move(url_loader_factory)) {}
 
 void MarketingBackendConnector::PerformRequest(
     const std::string& country_code) {
@@ -125,9 +125,7 @@ void MarketingBackendConnector::StartTokenFetch() {
       base::BindOnce(&MarketingBackendConnector::OnAccessTokenRequestCompleted,
                      this),
       signin::PrimaryAccountAccessTokenFetcher::Mode::kImmediate,
-      base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos)
-          ? signin::ConsentLevel::kSignin
-          : signin::ConsentLevel::kSync);
+      signin::ConsentLevel::kSignin);
 }
 
 void MarketingBackendConnector::OnAccessTokenRequestCompleted(
@@ -183,7 +181,6 @@ void MarketingBackendConnector::SetTokenAndStartRequest() {
   simple_url_loader_->AttachStringForUpload(GetRequestContent(),
                                             "application/json");
 
-  url_loader_factory_ = profile_->GetURLLoaderFactory();
   simple_url_loader_->DownloadToString(
       url_loader_factory_.get(),
       base::BindOnce(&MarketingBackendConnector::OnSimpleLoaderComplete, this),

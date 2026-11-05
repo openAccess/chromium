@@ -7,6 +7,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "ui/accessibility/platform/ax_platform_node_base.h"
 #include "ui/native_theme/native_theme.h"
@@ -79,23 +80,24 @@ bool MenuRunnerImpl::IsRunning() const {
 }
 
 void MenuRunnerImpl::Release() {
+  // Swap in a different delegate. That way we know the original MenuDelegate
+  // won't be notified later on (when it's likely already been deleted).
+  if (!empty_delegate_) {
+    empty_delegate_ = std::make_unique<MenuDelegate>();
+    menu_->set_delegate(empty_delegate_.get());
+    for (MenuItemView* sibling_menu : sibling_menus_) {
+      sibling_menu->set_delegate(empty_delegate_.get());
+    }
+  }
+
   if (running_) {
     if (delete_after_run_) {
       return;  // We already canceled.
     }
 
-    // The menu is running a nested run loop, we can't delete it now
-    // otherwise the stack would be in a really bad state (many frames would
-    // have deleted objects on them). Instead cancel the menu, when it returns
-    // Holder will delete itself.
+    // The menu is currently running, we can't delete it immediately.
+    // Instead cancel the menu, and delete ourselves once the menu is closed.
     delete_after_run_ = true;
-
-    // Swap in a different delegate. That way we know the original MenuDelegate
-    // won't be notified later on (when it's likely already been deleted).
-    if (!empty_delegate_.get()) {
-      empty_delegate_ = std::make_unique<MenuDelegate>();
-    }
-    menu_->set_delegate(empty_delegate_.get());
 
     // Verify that the MenuController is still active. It may have been
     // destroyed out of order.
@@ -106,6 +108,15 @@ void MenuRunnerImpl::Release() {
       controller_->Cancel(MenuController::ExitType::kDestroyed);
       return;
     }
+  }
+
+  if (controller_ && controller_->IsStackActive()) {
+    // Invalidate the menu runner's weakptrs now because the menu runner is
+    // considered deleted at this point.
+    weak_factory_.InvalidateWeakPtrs();
+    // Transfer ownership to controller.
+    controller_->DeferMenuRunnerDestruction(base::WrapUnique(this));
+    return;
   }
 
   delete this;
@@ -123,9 +134,13 @@ void MenuRunnerImpl::RunMenuAt(
     std::optional<std::string> show_menu_host_duration_histogram) {
   closing_event_time_ = base::TimeTicks();
   if (running_) {
-    // Ignore requests to show the menu while it's already showing. MenuItemView
-    // doesn't handle this very well (meaning it crashes).
-    return;
+    if (controller_ && controller_->IsDismissAnimationRunning()) {
+      controller_->Cancel(MenuController::ExitType::kAll);
+    } else {
+      // Ignore requests to show the menu while it's already showing.
+      // MenuItemView doesn't handle this very well (meaning it crashes).
+      return;
+    }
   }
 
   MenuController* controller = nullptr;
@@ -142,16 +157,18 @@ void MenuRunnerImpl::RunMenuAt(
       controller->AddNestedDelegate(this);
     }
   } else if (MenuController::GetActiveInstance()) {
+    const bool was_dismiss_animation_running =
+        MenuController::GetActiveInstance()->IsDismissAnimationRunning();
     // There's some other menu open and we're not nested. Cancel the menu.
     MenuController::CancelAllActive();
-    if ((run_types & MenuRunner::FOR_DROP) == 0) {
-      // We can't open another menu, otherwise the message loop would become
-      // twice nested. This isn't necessarily a problem, but generally isn't
-      // expected.
+    if ((run_types & MenuRunner::FOR_DROP) == 0 &&
+        !was_dismiss_animation_running) {
+      // Avoid opening another non-drop menu while another active menu is
+      // being canceled, unless it was already playing its dismiss animation.
       return;
     }
-    // Drop menus don't block the message loop, so it's ok to create a new
-    // MenuController.
+    // Drop menus (or menus replacing a fading-out menu) are allowed to create a
+    // new MenuController immediately.
     controller = nullptr;
   }
 
@@ -165,8 +182,9 @@ void MenuRunnerImpl::RunMenuAt(
     owns_controller_ = true;
     controller->SetMenuRoundedCorners(corners);
   }
-  DCHECK((run_types & MenuRunner::COMBOBOX) == 0 ||
-         (run_types & MenuRunner::EDITABLE_COMBOBOX) == 0);
+  CHECK((run_types & MenuRunner::COMBOBOX) == 0 ||
+            (run_types & MenuRunner::EDITABLE_COMBOBOX) == 0,
+        base::NotFatalUntil::M163);
   using ComboboxType = MenuController::ComboboxType;
   if (run_types & MenuRunner::COMBOBOX) {
     controller->set_combobox_type(ComboboxType::kReadonly);
@@ -180,7 +198,7 @@ void MenuRunnerImpl::RunMenuAt(
   controller->set_use_ash_system_ui_layout(
       (run_types & MenuRunner::USE_ASH_SYS_UI_LAYOUT) != 0);
   controller_ = controller->AsWeakPtr();
-  menu_->set_controller(controller_.get());
+  menu_->SetController(controller_.get());
   menu_->PrepareForRun(has_mnemonics,
                        !for_drop_ && ShouldShowMnemonics(run_types));
   if (show_menu_host_duration_histogram.has_value() &&
@@ -217,6 +235,12 @@ base::TimeTicks MenuRunnerImpl::GetClosingEventTime() const {
   return closing_event_time_;
 }
 
+void MenuRunnerImpl::TakeOwnershipOfDelegate(
+    std::unique_ptr<MenuDelegate> delegate) {
+  CHECK(!owned_delegate_);
+  owned_delegate_ = std::move(delegate);
+}
+
 void MenuRunnerImpl::OnMenuClosed(NotifyType type,
                                   MenuItemView* menu,
                                   int mouse_event_flags) {
@@ -229,20 +253,24 @@ void MenuRunnerImpl::OnMenuClosed(NotifyType type,
     }
   }
 
-  menu_->set_controller(nullptr);
+  menu_->SetController(nullptr);
+  for (MenuItemView* sibling_menu : sibling_menus_) {
+    sibling_menu->SetController(nullptr);
+  }
 
   if (owns_controller_ && controller_) {
     // We created the controller and need to delete it.
-    delete controller_.get();
+    controller_->Destroy();
     owns_controller_ = false;
   }
-  controller_ = nullptr;
   // Make sure all the windows we created to show the menus have been
   // destroyed.
   menu_->DestroyAllMenuHosts();
+
   if (delete_after_run_) {
     FireFocusAfterMenuClose(parent_widget);
-    delete this;
+    running_ = false;
+    Release();
     return;
   }
   running_ = false;

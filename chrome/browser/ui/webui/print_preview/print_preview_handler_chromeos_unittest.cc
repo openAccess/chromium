@@ -17,6 +17,7 @@
 #include "base/test/bind.h"
 #include "base/test/values_test_util.h"
 #include "base/values.h"
+#include "chrome/browser/ash/login/users/profile_user_manager_controller.h"
 #include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/printing/cups_printers_manager_factory.h"
 #include "chrome/browser/ash/printing/fake_cups_printers_manager.h"
@@ -38,7 +39,7 @@
 #include "components/account_id/account_id.h"
 #include "components/account_id/account_id_literal.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_task_environment.h"
@@ -231,22 +232,25 @@ class PrintPreviewHandlerChromeOSTest : public testing::Test {
   ~PrintPreviewHandlerChromeOSTest() override = default;
 
   void SetUp() override {
-    test_user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
             TestingBrowserProcess::GetGlobal()->GetTestingLocalState());
     profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(profile_manager_->SetUp());
+    profile_user_manager_controller_ =
+        std::make_unique<ash::ProfileUserManagerController>(
+            profile_manager_->profile_manager(),
+            user_manager::UserManager::Get());
 
     ash::LoginState::Initialize();
 
-    ASSERT_TRUE(test_user_session_manager_->AddRegularUser(kAccountId));
-    test_user_session_manager_->LogIn(kAccountId);
+    ASSERT_TRUE(user_session_test_environment_->AddRegularUser(kAccountId));
+    user_session_test_environment_->LogIn(kAccountId);
 
+    ash::ScopedAccountIdAnnotator annotator(profile_manager_->profile_manager(),
+                                            kAccountId);
     profile_ = profile_manager_->CreateTestingProfile(kEmail);
-    ash::AnnotatedAccountId::Set(profile_, kAccountId);
-    user_manager::UserManager::Get()->OnUserProfileCreated(
-        kAccountId, profile_->GetPrefs());
 
     preview_web_contents_ = content::WebContents::Create(
         content::WebContents::CreateParams(profile_));
@@ -299,11 +303,11 @@ class PrintPreviewHandlerChromeOSTest : public testing::Test {
     web_ui_.reset();
     preview_web_contents_.reset();
     ash::LoginState::Shutdown();
-    user_manager::UserManager::Get()->OnUserProfileWillBeDestroyed(kAccountId);
     profile_ = nullptr;
     profile_manager_->DeleteAllTestingProfiles();
     profile_manager_.reset();
-    test_user_session_manager_.reset();
+    profile_user_manager_controller_.reset();
+    user_session_test_environment_.reset();
   }
 
   void AssertWebUIEventFired(const content::TestWebUI::CallData& data,
@@ -341,7 +345,10 @@ class PrintPreviewHandlerChromeOSTest : public testing::Test {
 
  private:
   content::BrowserTaskEnvironment task_environment_;
-  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
+  std::unique_ptr<ash::ProfileUserManagerController>
+      profile_user_manager_controller_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
   std::unique_ptr<TestPrintServersManager> test_print_servers_manager_;
   std::unique_ptr<ash::FakeLocalPrinter> local_printer_;

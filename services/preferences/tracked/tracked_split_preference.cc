@@ -46,12 +46,14 @@ void TrackedSplitPreference::OnNewValue(
   if (value && !value->is_dict()) {
     NOTREACHED();
   }
-  transaction->StoreSplitHash(pref_path_, value ? &value->GetDict() : nullptr);
+  transaction->StoreSplitHmac(pref_path_, value ? &value->GetDict() : nullptr);
 
   if (encryptor) {
     transaction->StoreSplitEncryptedHash(pref_path_,
                                          value ? &value->GetDict() : nullptr);
   }
+
+  helper_.ReportAuthDataCalculated();
 }
 
 bool TrackedSplitPreference::EnforceAndReport(
@@ -105,11 +107,10 @@ bool TrackedSplitPreference::EnforceAndReport(
   helper_.ReportAction(reset_action);
 
   if (reset_action == TrackedPreferenceHelper::DO_RESET ||
-      reset_action == TrackedPreferenceHelper::DO_RESET_LEGACY ||
       reset_action == TrackedPreferenceHelper::DO_RESET_ENCRYPTED) {
     base::ListValue* reset_prefs_list =
         pref_store_contents.EnsureList(user_prefs::kTrackedPreferencesReset);
-    if (value_state == ValueState::CHANGED ||
+    if (value_state == ValueState::CHANGED_HMAC ||
         value_state == ValueState::CHANGED_VIA_HMAC_FALLBACK ||
         value_state == ValueState::CHANGED_ENCRYPTED) {
       DCHECK(!invalid_keys.empty());
@@ -139,10 +140,10 @@ bool TrackedSplitPreference::EnforceAndReport(
     was_reset = true;
   }
 
-  if (value_state != ValueState::UNCHANGED &&
+  if (value_state != ValueState::UNCHANGED_HMAC &&
       value_state != ValueState::UNCHANGED_ENCRYPTED) {
-    // Store the hash for the new value (whether it was reset or not).
-    transaction->StoreSplitHash(
+    // Store authenticators for the new value (whether it was reset or not).
+    transaction->StoreSplitHmac(
         pref_path_, pref_store_contents.FindDictByDottedPath(pref_path_));
 
     if (encryptor) {
@@ -151,11 +152,12 @@ bool TrackedSplitPreference::EnforceAndReport(
     }
   }
 
-  // Update MACs in the external store if there is one and there either was a
-  // reset or external validation failed.
+  // Update authenticators in the external store if there is one and there
+  // either was a reset or external validation failed.
   if (external_validation_transaction &&
-      (was_reset || external_validation_value_state != ValueState::UNCHANGED)) {
-    external_validation_transaction->StoreSplitHash(
+      (was_reset ||
+       external_validation_value_state != ValueState::UNCHANGED_HMAC)) {
+    external_validation_transaction->StoreSplitHmac(
         pref_path_, pref_store_contents.FindDictByDottedPath(pref_path_));
     if (encryptor) {
       external_validation_transaction->StoreSplitEncryptedHash(

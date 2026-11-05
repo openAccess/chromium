@@ -137,6 +137,13 @@ void CreateAndAddPolicyUIHtmlSource(Profile* profile) {
       {"isAffiliatedYes", IDS_POLICY_IS_AFFILIATED_YES},
       {"isAffiliatedNo", IDS_POLICY_IS_AFFILIATED_NO},
       {"labelAssetId", IDS_POLICY_LABEL_ASSET_ID},
+#if BUILDFLAG(IS_WIN)
+      {"labelAzureAdJoinStatus", IDS_POLICY_LABEL_AZURE_AD_JOIN_STATUS},
+      {"azureAdNotJoined", IDS_POLICY_AZURE_AD_NOT_JOINED},
+      {"azureAdWorkplaceJoined", IDS_POLICY_AZURE_AD_WORKPLACE_JOINED},
+      {"azureAdDeviceJoined", IDS_POLICY_AZURE_AD_DEVICE_JOINED},
+      {"azureAdJoinedUnknown", IDS_POLICY_AZURE_AD_JOINED_UNKNOWN},
+#endif  // BUILDFLAG(IS_WIN)
       {"labelClientId", IDS_POLICY_LABEL_CLIENT_ID},
       {"labelDirectoryApiId", IDS_POLICY_LABEL_DIRECTORY_API_ID},
       {"labelError", IDS_POLICY_LABEL_ERROR},
@@ -331,6 +338,7 @@ void PolicyUI::CreateHandler(
     mojo::PendingRemote<policy::mojom::PolicyPageClient> client) {
   page_handler_ = std::make_unique<PolicyUIHandler>(
       std::move(handler), std::move(client), Profile::FromWebUI(web_ui()));
+  page_handler_->SendInitialState();
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(PolicyUI)
@@ -394,7 +402,8 @@ base::Value PolicyUI::GetSchema(Profile* profile) {
       continue;
     }
     for (const auto& [component_id, schema] : *components) {
-      DCHECK_EQ(schema.type(), base::Value::Type::DICT);
+      CHECK_EQ(schema.type(), base::Value::Type::DICT,
+               base::NotFatalUntil::M162);
       base::ListValue policy_names;
       auto it = schema.GetPropertiesIterator();
       for (; !it.IsAtEnd(); it.Advance()) {

@@ -29,19 +29,19 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
-#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_context_menu_delegate.h"
+#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_sub_menu_model.h"
+#include "chrome/browser/ui/tabs/contextual_tasks_tab_sub_menu_model.h"
 #include "chrome/browser/ui/tabs/existing_tab_group_sub_menu_model.h"
 #include "chrome/browser/ui/tabs/existing_window_sub_menu_model.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/glic_tab_sub_menu_model.h"
 #include "chrome/browser/ui/tabs/split_tab_menu_model.h"
+#include "chrome/browser/ui/tabs/split_tab_mute_menu_model.h"
 #include "chrome/browser/ui/tabs/split_tab_swap_menu_model.h"
-#include "chrome/browser/ui/tabs/split_view_layout_menu_model.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_menu_model_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
-#include "chrome/browser/ui/tabs/tab_utils.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
@@ -53,9 +53,10 @@
 #include "components/commerce/core/commerce_constants.h"
 #include "components/commerce/core/commerce_feature_list.h"
 #include "components/feed/feed_feature_list.h"
-#include "components/send_tab_to_self/features.h"
 #include "components/split_tabs/split_tab_visual_data.h"
+#include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_context_menu_command.h"
+#include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/context_menu_params.h"
@@ -83,6 +84,7 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TabMenuModel, kArrangeSplitTabsMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TabMenuModel, kSwapSplitTabsMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TabMenuModel, kAddNewTabAdjacentMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TabMenuModel, kDuplicateMenuItem);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(TabMenuModel, kFocusSelectionMenuItem);
 
 TabMenuModel::TabMenuModel(ui::SimpleMenuModel::Delegate* delegate,
                            TabMenuModelDelegate* tab_menu_model_delegate,
@@ -200,74 +202,38 @@ void TabMenuModel::BuildForWebApp(int index) {
   }
 }
 
-void TabMenuModel::BuildSendTabToSelfSubmenu(int index,
-                                             const std::vector<int>& indices) {
+void TabMenuModel::BuildSendTabToSelfItem(int index,
+                                          const std::vector<int>& indices) {
   std::vector<content::WebContents*> web_contents_list;
   web_contents_list.reserve(indices.size());
   for (int i : indices) {
     web_contents_list.push_back(tab_strip_->GetWebContentsAt(i));
   }
 
-  send_tab_to_self_submenu_delegate_ =
-      std::make_unique<send_tab_to_self::SendTabToSelfContextMenuDelegate>(
+  send_tab_to_self_submenu_ =
+      send_tab_to_self::SendTabToSelfSubMenuModel::MaybeCreateForMultipleTabs(
           tab_strip_->GetWebContentsAt(index), web_contents_list,
           send_tab_to_self::ShareEntryPoint::kTabMenu);
-  send_tab_to_self_submenu_ = std::make_unique<ui::SimpleMenuModel>(
-      send_tab_to_self_submenu_delegate_.get());
-
-  send_tab_to_self_submenu_delegate_->PopulateSubmenu(
-      send_tab_to_self_submenu_.get());
+  if (send_tab_to_self_submenu_) {
+    AddSubMenuWithStringId(TabStripModel::CommandSendTabToSelf,
+                           IDS_CONTEXT_MENU_SEND_TAB_TO_SELF,
+                           send_tab_to_self_submenu_.get());
+    SetElementIdentifierAt(GetItemCount() - 1, kTabSendTabToSelfMenuItem);
+  } else {
+    AddItemWithStringId(TabStripModel::CommandSendTabToSelf,
+                        IDS_CONTEXT_MENU_SEND_TAB_TO_SELF);
+  }
 
 #if BUILDFLAG(IS_MAC)
-  if (features::IsMenuSimplificationEnabled()) {
-    AddSubMenuWithStringIdAndIcon(
-        TabStripModel::CommandSendTabToSelf, IDS_MENU_SEND_TAB_TO_SELF,
-        send_tab_to_self_submenu_.get(),
-        ui::ImageModel::FromVectorIcon(
-            features::IsRoundedIconsEnabled() ? kDevicesIcon : kDevicesOldIcon,
-            ui::kColorMenuIcon, kTabMenuIconSize));
-  } else {
-    AddSubMenuWithStringId(TabStripModel::CommandSendTabToSelf,
-                           IDS_MENU_SEND_TAB_TO_SELF,
-                           send_tab_to_self_submenu_.get());
+  if (!features::IsMenuSimplificationEnabled()) {
+    return;
   }
-#else
-  AddSubMenuWithStringIdAndIcon(
-      TabStripModel::CommandSendTabToSelf, IDS_MENU_SEND_TAB_TO_SELF,
-      send_tab_to_self_submenu_.get(),
+#endif
+  SetIconForCommandId(
+      TabStripModel::CommandSendTabToSelf,
       ui::ImageModel::FromVectorIcon(
           features::IsRoundedIconsEnabled() ? kDevicesIcon : kDevicesOldIcon,
           ui::kColorMenuIcon, kTabMenuIconSize));
-#endif
-
-  SetElementIdentifierAt(GetItemCount() - 1, kTabSendTabToSelfMenuItem);
-
-  // TODO(crbug.com/516708776): Remove new feature tag when no longer new.
-  SetIsNewFeatureAt(GetItemCount() - 1,
-                    UserEducationService::MaybeShowNewBadge(
-                        tab_strip_->profile(),
-                        send_tab_to_self::kSendTabToSelfEnhancedDesktopUI));
-}
-
-void TabMenuModel::BuildLegacySendTabToSelfItem() {
-#if BUILDFLAG(IS_MAC)
-  if (features::IsMenuSimplificationEnabled()) {
-    AddItemWithIcon(TabStripModel::CommandSendTabToSelf,
-                    l10n_util::GetStringUTF16(IDS_MENU_SEND_TAB_TO_SELF),
-                    ui::ImageModel::FromVectorIcon(
-                        features::IsRoundedIconsEnabled() ? kDevicesIcon
-                                                          : kDevicesOldIcon));
-  } else {
-    AddItem(TabStripModel::CommandSendTabToSelf,
-            l10n_util::GetStringUTF16(IDS_MENU_SEND_TAB_TO_SELF));
-  }
-#else
-  AddItemWithIcon(
-      TabStripModel::CommandSendTabToSelf,
-      l10n_util::GetStringUTF16(IDS_MENU_SEND_TAB_TO_SELF),
-      ui::ImageModel::FromVectorIcon(
-          features::IsRoundedIconsEnabled() ? kDevicesIcon : kDevicesOldIcon));
-#endif
 }
 
 void TabMenuModel::AppendGlicItems(int index,
@@ -304,6 +270,36 @@ void TabMenuModel::AppendGlicItems(int index,
   }
 }
 
+void TabMenuModel::AppendAiModeItems(int index,
+                                     int num_tabs,
+                                     bool show_share,
+                                     bool show_unshare) {
+  if (!show_share && !show_unshare) {
+    return;
+  }
+
+  const ui::ImageModel ai_mode_icon = ui::ImageModel::FromVectorIcon(
+      glic::GlicVectorIconManager::GetVectorIcon(IDR_GLIC_BUTTON_VECTOR_ICON),
+      ui::kColorMenuIcon, kTabMenuIconSize);
+
+  if (show_share) {
+    contextual_tasks_tab_sub_menu_model_ =
+        std::make_unique<contextual_tasks::ContextualTasksTabSubMenuModel>(
+            tab_strip_, index);
+    AddSubMenuWithIcon(TabStripModel::CommandAiModeShare,
+                       l10n_util::GetPluralStringFUTF16(
+                           IDS_TAB_CXMENU_AI_MODE_SHARE, num_tabs),
+                       contextual_tasks_tab_sub_menu_model_.get(),
+                       ai_mode_icon);
+  }
+
+  if (show_unshare) {
+    AddItemWithIcon(TabStripModel::CommandAiModeUnshare,
+                    l10n_util::GetStringUTF16(IDS_TAB_CXMENU_AI_MODE_UNSHARE),
+                    ai_mode_icon);
+  }
+}
+
 // Capitalization Policy (go/chrome-capitalization):
 // Native right-click tab context menus on macOS use Title Case (`_MAC` string
 // variants) to follow Apple Human Interface Guidelines (HIG), while other
@@ -321,6 +317,13 @@ void TabMenuModel::Build(int index) {
   }
 
   int num_tabs = indices.size();
+  const std::vector<tabs::TabInterface*> tabs =
+      tab_strip_->GetTabsAtIndices(indices);
+  std::vector<tabs::TabHandle> tab_handles;
+  tab_handles.reserve(tabs.size());
+  for (tabs::TabInterface* tab : tabs) {
+    tab_handles.push_back(tab->GetHandle());
+  }
 
   auto* controller = tabs::VerticalTabStripStateController::From(
       tab_strip_->delegate()->GetBrowserWindowInterface());
@@ -352,42 +355,15 @@ void TabMenuModel::Build(int index) {
       SetEnabledAt(swap_with_split_index, num_tabs == 1);
       SetElementIdentifierAt(swap_with_split_index, kSwapSplitTabsMenuItem);
     } else {
-      if (tabs::IsSplitViewHorizontalDirectAccessEnabledForTab()) {
-        split_layout_submenu_ =
-            std::make_unique<SplitViewLayoutMenuModel>(base::BindOnce(
-                [](TabStripModel* tab_strip_model, tabs::TabHandle tab_handle,
-                   split_tabs::SplitTabLayout layout) {
-                  if (!tab_handle.Get()) {
-                    return;
-                  }
-
-                  int context_index =
-                      tab_strip_model->GetIndexOfTab(tab_handle.Get());
-                  tab_strip_model->ExecuteAddToNewSplitCommand(context_index,
-                                                               layout);
-                },
-                tab_strip_, tab_strip_->GetTabAtIndex(index)->GetHandle()));
-        AddSubMenuWithStringIdAndIcon(
-            TabStripModel::CommandAddToSplit,
-            index == tab_strip_->active_index()
-                ? IDS_TAB_CXMENU_ADD_TAB_TO_NEW_SPLIT
-                : IDS_TAB_CXMENU_NEW_SPLIT_WITH_CURRENT,
-            split_layout_submenu_.get(),
-            ui::ImageModel::FromVectorIcon(
-                features::IsRoundedIconsEnabled() ? kSplitSceneIcon
-                                                  : kSplitSceneOldIcon,
-                ui::kColorMenuIcon, kTabMenuIconSize));
-      } else {
-        AddItemWithStringIdAndIcon(
-            TabStripModel::CommandAddToSplit,
-            index == tab_strip_->active_index()
-                ? IDS_TAB_CXMENU_ADD_TAB_TO_NEW_SPLIT
-                : IDS_TAB_CXMENU_NEW_SPLIT_WITH_CURRENT,
-            ui::ImageModel::FromVectorIcon(
-                features::IsRoundedIconsEnabled() ? kSplitSceneIcon
-                                                  : kSplitSceneOldIcon,
-                ui::kColorMenuIcon, kTabMenuIconSize));
-      }
+      AddItemWithStringIdAndIcon(
+          TabStripModel::CommandAddToSplit,
+          index == tab_strip_->active_index()
+              ? IDS_TAB_CXMENU_ADD_TAB_TO_NEW_SPLIT
+              : IDS_TAB_CXMENU_NEW_SPLIT_WITH_CURRENT,
+          ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
+                                             ? kSplitSceneIcon
+                                             : kSplitSceneOldIcon,
+                                         ui::kColorMenuIcon, kTabMenuIconSize));
       const int add_to_split_index = GetItemCount() - 1;
       SetEnabledAt(add_to_split_index, num_tabs == 1 || num_tabs == 2);
       SetElementIdentifierAt(add_to_split_index, kSplitTabsMenuItem);
@@ -403,6 +379,54 @@ void TabMenuModel::Build(int index) {
                                            : kSplitSceneOldIcon,
                                        ui::kColorMenuIcon, kTabMenuIconSize));
     SetElementIdentifierAt(GetItemCount() - 1, kArrangeSplitTabsMenuItem);
+  }
+
+  if (tab_strip_->SupportsTabGroups() &&
+      base::FeatureList::IsEnabled(features::kTabGroupsFocusing) &&
+      std::ranges::none_of(
+          indices, [&](int idx) { return tab_strip_->IsTabPinned(idx); })) {
+    if (std::optional<tab_groups::TabGroupId> group =
+            tab_strip_->GetCommonGroupForTabs(tab_handles)) {
+      const bool is_focused = tab_strip_->GetFocusedGroup() == group;
+      if (tab_strip_->IsEphemeralTabGroup(*group)) {
+        const size_t group_tab_count =
+            tab_strip_->group_model()->GetTabGroup(*group)->ListTabs().length();
+        AddItem(TabStripModel::CommandToggleFocusGroup,
+                l10n_util::GetPluralStringFUTF16(
+                    is_focused ? IDS_TAB_CXMENU_UNFOCUS_TABS
+                               : IDS_TAB_CXMENU_FOCUS_TABS,
+                    group_tab_count));
+      } else {
+        AddItemWithStringId(TabStripModel::CommandToggleFocusGroup,
+                            is_focused ? IDS_TAB_CXMENU_UNFOCUS_TAB_GROUP
+                                       : IDS_TAB_CXMENU_FOCUS_TAB_GROUP);
+        if (!is_focused) {
+          const user_education::DisplayNewBadge show_badge =
+              UserEducationService::MaybeShowNewBadge(
+                  tab_strip_->profile(), features::kTabGroupsFocusing);
+          SetIsNewFeatureAt(GetItemCount() - 1, show_badge);
+        }
+      }
+    } else if (base::FeatureList::IsEnabled(features::kNonGroupFocus) &&
+               tab_strip_->AreAllUngrouped(tab_handles)) {
+      AddItem(TabStripModel::CommandToggleFocusGroup,
+              l10n_util::GetPluralStringFUTF16(IDS_TAB_CXMENU_FOCUS_TABS,
+                                               num_tabs));
+      const user_education::DisplayNewBadge show_badge =
+          UserEducationService::MaybeShowNewBadge(tab_strip_->profile(),
+                                                  features::kNonGroupFocus);
+      SetIsNewFeatureAt(GetItemCount() - 1, show_badge);
+    }
+
+    if (std::optional<size_t> focus_index =
+            GetIndexOfCommandId(TabStripModel::CommandToggleFocusGroup)) {
+      SetElementIdentifierAt(*focus_index, kFocusSelectionMenuItem);
+      if (features::IsMenuSimplificationEnabled()) {
+        SetIcon(*focus_index, ui::ImageModel::FromVectorIcon(
+                                  kFilterTiltShiftIcon, ui::kColorMenuIcon,
+                                  ui::SimpleMenuModel::kDefaultIconSize));
+      }
+    }
   }
 
   if (ExistingTabGroupSubMenuModel::ShouldShowSubmenu(
@@ -441,7 +465,9 @@ void TabMenuModel::Build(int index) {
   }
 
   for (const auto& selection : indices) {
-    if (tab_strip_->GetTabGroupForTab(selection).has_value()) {
+    std::optional<tab_groups::TabGroupId> group =
+        tab_strip_->GetTabGroupForTab(selection);
+    if (group.has_value() && !tab_strip_->IsEphemeralTabGroup(group.value())) {
       AddItemWithStringId(TabStripModel::CommandRemoveFromGroup,
                           IDS_TAB_CXMENU_REMOVE_TAB_FROM_GROUP);
       break;
@@ -485,7 +511,8 @@ void TabMenuModel::Build(int index) {
                       IDS_TAB_CXMENU_DUPLICATE);
   SetElementIdentifierAt(GetItemCount() - 1, kDuplicateMenuItem);
 
-  bool will_pin = tab_strip_->WillContextMenuPin(index);
+  bool will_pin = tab_strip_->WillContextMenuPin(
+      tab_strip_->GetTabAtIndex(index)->GetHandle());
   AddItemWithStringId(
       TabStripModel::CommandTogglePinned,
       will_pin ? IDS_TAB_CXMENU_PIN_TAB : IDS_TAB_CXMENU_UNPIN_TAB);
@@ -501,12 +528,33 @@ void TabMenuModel::Build(int index) {
             ui::kColorMenuIcon, ui::SimpleMenuModel::kDefaultIconSize));
   }
 
-  const bool will_mute = !AreAllSitesMuted(*tab_strip_, indices);
-  AddItem(TabStripModel::CommandToggleSiteMuted,
-          will_mute ? l10n_util::GetPluralStringFUTF16(
-                          IDS_TAB_CXMENU_SOUND_MUTE_SITE, num_tabs)
-                    : l10n_util::GetPluralStringFUTF16(
-                          IDS_TAB_CXMENU_SOUND_UNMUTE_SITE, num_tabs));
+  // When the menu targets a single split, "Mute sites" opens a submenu that can
+  // also mute the site in just one of the views.
+  const std::optional<split_tabs::SplitTabId> split =
+      tab_strip_->GetSplitForTab(index);
+  const bool is_single_split =
+      split.has_value() && std::ranges::all_of(indices, [&](int i) {
+        return tab_strip_->GetSplitForTab(i) == split;
+      });
+  // CommandToggleSiteMuted acts on every tab in a split, even when the split
+  // isn't selected.
+  const int num_mute_tabs =
+      is_single_split ? tab_strip_->GetSplitData(*split)->ListTabs().size()
+                      : num_tabs;
+  const bool will_mute = tab_strip_->WillContextMenuMuteSites(
+      tab_strip_->GetTabAtIndex(index)->GetHandle());
+  const std::u16string mute_label = l10n_util::GetPluralStringFUTF16(
+      will_mute ? IDS_TAB_CXMENU_SOUND_MUTE_SITE
+                : IDS_TAB_CXMENU_SOUND_UNMUTE_SITE,
+      num_mute_tabs);
+  if (is_single_split) {
+    split_mute_submenu_ =
+        std::make_unique<SplitTabMuteMenuModel>(tab_strip_, index, *split);
+    AddSubMenu(TabStripModel::CommandToggleSiteMuted, mute_label,
+               split_mute_submenu_.get());
+  } else {
+    AddItem(TabStripModel::CommandToggleSiteMuted, mute_label);
+  }
 
   if (features::IsMenuSimplificationEnabled()) {
     SetIconForCommandId(
@@ -532,19 +580,29 @@ void TabMenuModel::Build(int index) {
 
   const bool show_glic_items =
       glic::GlicEnabling::IsReadyForProfile(tab_strip_->profile());
+  const bool show_ai_mode_share = tab_strip_->IsContextMenuCommandEnabled(
+      index, TabStripModel::CommandAiModeShare);
+  const bool show_ai_mode_unshare = tab_strip_->IsContextMenuCommandEnabled(
+      index, TabStripModel::CommandAiModeUnshare);
+  const bool show_ai_mode_items = show_ai_mode_share || show_ai_mode_unshare;
   bool glic_displayed = false;
-  if (features::IsMenuSimplificationEnabled() && show_glic_items) {
+  if (features::IsMenuSimplificationEnabled() &&
+      (show_glic_items || show_ai_mode_items)) {
     AddSeparator(ui::NORMAL_SEPARATOR);
-    AppendGlicItems(index, num_tabs, indices);
+    if (show_glic_items) {
+      AppendGlicItems(index, num_tabs, indices);
+    }
+    if (show_ai_mode_items) {
+      AppendAiModeItems(index, num_tabs, show_ai_mode_share,
+                        show_ai_mode_unshare);
+    }
     AddSeparator(ui::NORMAL_SEPARATOR);
     glic_displayed = true;
   }
 
   const bool display_read_later = tab_strip_->delegate()->SupportsReadLater();
-  const std::optional<send_tab_to_self::EntryPointDisplayReason>
-      send_tab_to_self_reason = send_tab_to_self::GetEntryPointDisplayReason(
-          tab_strip_->GetWebContentsAt(index));
-  const bool display_send_to_self = send_tab_to_self_reason.has_value();
+  const bool display_send_to_self = send_tab_to_self::ShouldDisplayEntryPoint(
+      tab_strip_->GetWebContentsAt(index));
 
   if ((display_read_later || display_send_to_self) && !glic_displayed) {
     AddSeparator(ui::NORMAL_SEPARATOR);
@@ -560,22 +618,19 @@ void TabMenuModel::Build(int index) {
                                              ui::kColorMenuIcon,
                                              kTabMenuIconSize));
     SetEnabledAt(GetItemCount() - 1,
-                 tab_strip_->IsReadLaterSupportedForAny(indices));
+                 tab_strip_->IsReadLaterSupportedForAny(tab_handles));
   }
 
   if (show_glic_items && !glic_displayed) {
     AppendGlicItems(index, num_tabs, indices);
   }
+  if (show_ai_mode_items && !glic_displayed) {
+    AppendAiModeItems(index, num_tabs, show_ai_mode_share,
+                      show_ai_mode_unshare);
+  }
 
   if (display_send_to_self) {
-    if (base::FeatureList::IsEnabled(
-            send_tab_to_self::kSendTabToSelfEnhancedDesktopUI) &&
-        send_tab_to_self_reason ==
-            send_tab_to_self::EntryPointDisplayReason::kOfferFeature) {
-      BuildSendTabToSelfSubmenu(index, indices);
-    } else {
-      BuildLegacySendTabToSelfItem();
-    }
+    BuildSendTabToSelfItem(index, indices);
   }
 
   if (controller) {

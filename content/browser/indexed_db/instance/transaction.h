@@ -12,6 +12,7 @@
 #include <set>
 #include <tuple>
 
+#include "base/byte_size.h"
 #include "base/containers/queue.h"
 #include "base/containers/stack.h"
 #include "base/functional/callback.h"
@@ -22,9 +23,9 @@
 #include "base/time/time.h"
 #include "components/services/storage/indexed_db/locks/partitioned_lock_id.h"
 #include "components/services/storage/indexed_db/locks/partitioned_lock_manager.h"
-#include "components/services/storage/privileged/mojom/indexed_db_client_state_checker.mojom.h"
 #include "components/services/storage/privileged/mojom/indexed_db_internals_types.mojom-forward.h"
 #include "components/services/storage/public/cpp/inactivity_timer.h"
+#include "content/browser/indexed_db/indexed_db_client_state_checker.h"
 #include "content/browser/indexed_db/indexed_db_database_error.h"
 #include "content/browser/indexed_db/indexed_db_external_object_storage.h"
 #include "content/browser/indexed_db/instance/backing_store.h"
@@ -93,7 +94,7 @@ class CONTENT_EXPORT Transaction : public blink::mojom::IDBTransaction {
   // If the client is in BFCache and blocking live clients, this will kill it
   // and release the locks.
   void DontAllowInactiveClientToBlockOthers(
-      storage::mojom::DisallowInactiveClientReason reason);
+      DisallowInactiveClientReason reason);
 
   // Returns true if the given transaction wants to hold any locks that
   // other transactions *from other clients* are waiting for. If
@@ -348,7 +349,7 @@ class CONTENT_EXPORT Transaction : public blink::mojom::IDBTransaction {
   // quota usage.
   //
   // See crbug.com/1493696 for discussion of how this should be improved.
-  int64_t preliminary_size_estimate_ = 0;
+  base::ByteSizeDelta preliminary_size_estimate_;
 
   std::set<raw_ptr<Cursor, SetExperimental>> open_cursors_;
 

@@ -26,7 +26,7 @@ import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {getCss} from './item.css.js';
 import {getHtml} from './item.html.js';
 import {ItemMixin} from './item_mixin.js';
-import {canShowOpenReviewPageLink, computeInspectableViewLabel, createDummyExtensionInfo, EnableControl, getEnableControl, getEnableToggleAriaLabel, getItemSource, getItemSourceString, isEnabled, sortViews, SourceType, userCanChangeEnablement} from './item_util.js';
+import {computeInspectableViewLabel, createDummyExtensionInfo, EnableControl, getEnableControl, getEnableToggleAriaLabel, getItemSource, getItemSourceString, isEnabled, sortViews, SourceType, userCanChangeEnablement} from './item_util.js';
 import {UPLOAD_EXTENSION_TO_ACCOUNT_ITEMS_LIST_PAGE_HISTOGRAM_NAME} from './metrics_util.js';
 import {navigation, Page} from './navigation_helper.js';
 
@@ -419,6 +419,7 @@ export class ExtensionsItemElement extends ExtensionsItemElementBase {
     return this.data.disableReasons.corruptInstall ||
         this.data.disableReasons.suspiciousInstall ||
         this.data.disableReasons.unsupportedDeveloperExtension ||
+        this.isDisabledByAnotherExtension_() ||
         this.data.runtimeWarnings.length > 0 || !!this.data.blocklistText;
   }
 
@@ -468,8 +469,24 @@ export class ExtensionsItemElement extends ExtensionsItemElementBase {
   }
 
   protected showOpenReviewPageLink_(): boolean {
-    return canShowOpenReviewPageLink(this.data) && this.showDescription_() &&
-        !this.showRepairButton_() && !this.showReloadButton_();
+    // `canShowReviewPrompt` covers eligibility. `showDescription_()` adds the
+    // warning conditions C++ doesn't track (MV2 deprecation, runtime warnings,
+    // allowlist); don't invite a review while any of them is showing.
+    return this.data.canShowReviewPrompt && this.showDescription_();
+  }
+
+  protected getDisabledByExtensionWarningText_(): string {
+    if (!this.data.disableReasons.disabledByExtensionName) {
+      return this.i18n('itemDisabledByExtensionGeneric');
+    }
+
+    return this.i18n(
+        'itemDisabledByExtension',
+        this.data.disableReasons.disabledByExtensionName);
+  }
+
+  protected isDisabledByAnotherExtension_(): boolean {
+    return this.data.disableReasons.disabledByAnotherExtension;
   }
 
   protected showErrorsAsWarningsButtonLabel_(): boolean {

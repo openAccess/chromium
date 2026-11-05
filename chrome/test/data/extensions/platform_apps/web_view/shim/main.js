@@ -3265,6 +3265,17 @@ function testDialogInPdf() {
   document.body.appendChild(webview);
 }
 
+// Test that <webview>.executeScript({allFrames: true}) on a guest page
+// embedding a PDF does not execute scripts in the PDF extension frame or the
+// PDF content frame.
+function testExecuteScriptInEmbeddedPdf() {
+  let webview = document.createElement('webview');
+  webview.onloadstop = embedder.test.succeed;
+  webview.onloadabort = embedder.test.fail;
+  webview.src = embedder.baseGuestURL + '/page_with_embedded_pdf.html';
+  document.body.appendChild(webview);
+}
+
 // This test verifies that mailto links are enabled.
 function testMailtoLink() {
   var webview = new WebView();
@@ -3549,33 +3560,6 @@ function testBlankWebview() {
     // for the remainder of the test.
     embedder.test.succeed();
   });
-}
-
-function testAddFencedFrame() {
-  let fencedFrameHostURL = embedder.baseGuestURL +
-      '/extensions/platform_apps/web_view/shim/fenced_frame_host.html';
-
-  let webview = new WebView();
-  webview.src = fencedFrameHostURL;
-  webview.addEventListener('loadstop', () => {
-    embedder.test.succeed();
-  });
-  document.body.appendChild(webview);
-}
-
-function testZoomFencedFrame() {
-  let fencedFrameHostURL = embedder.baseGuestURL +
-      '/extensions/platform_apps/web_view/shim/fenced_frame_host.html';
-
-  let webview = new WebView();
-  webview.src = fencedFrameHostURL;
-  webview.addEventListener('loadstop', async () => {
-    // Adjust zoom. Verify in native test that the RenderWidgetHost for the
-    // FencedFrame has the expected zoom.
-    await setZoomP(webview, 0.95);
-    embedder.test.succeed();
-  });
-  document.body.appendChild(webview);
 }
 
 // This test and several tests below test scenarios where a webview element is
@@ -4238,6 +4222,7 @@ embedder.test.testList = {
   'testPDFInWebview': testPDFInWebview,
   'testNavigateToPDFInWebview': testNavigateToPDFInWebview,
   'testDialogInPdf': testDialogInPdf,
+  'testExecuteScriptInEmbeddedPdf': testExecuteScriptInEmbeddedPdf,
   'testMailtoLink': testMailtoLink,
   'testRendererNavigationRedirectWhileUnattached':
       testRendererNavigationRedirectWhileUnattached,
@@ -4249,8 +4234,6 @@ embedder.test.testList = {
   'testNewWindowNoDeadlock': testNewWindowNoDeadlock,
   'testSelectPopupPositionInMac': testSelectPopupPositionInMac,
   'testWebRequestBlockedNavigation': testWebRequestBlockedNavigation,
-  'testAddFencedFrame': testAddFencedFrame,
-  'testZoomFencedFrame': testZoomFencedFrame,
   'testInsertIntoIframe': testInsertIntoIframe,
   'testCreateAndInsertInIframe': testCreateAndInsertInIframe,
   'testInsertIntoMainFrameFromIframe': testInsertIntoMainFrameFromIframe,

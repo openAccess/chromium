@@ -41,6 +41,7 @@
 #include "components/autofill/core/browser/integrators/password_manager/password_manager_delegate.h"
 #include "components/autofill/core/browser/integrators/touch_to_fill/touch_to_fill_autofill_delegate.h"
 #include "components/autofill/core/browser/integrators/touch_to_fill/touch_to_fill_payment_method_delegate.h"
+#include "components/autofill/core/browser/metrics/autocomplete_key_metrics_logger.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/form_events/address_form_event_logger.h"
 #include "components/autofill/core/browser/metrics/form_events/credit_card_form_event_logger.h"
@@ -57,6 +58,10 @@
 #include "components/autofill/core/common/signatures.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "ui/gfx/image/image.h"
+
+namespace one_time_tokens {
+class OneTimeToken;
+}  // namespace one_time_tokens
 
 namespace autofill {
 
@@ -85,6 +90,17 @@ enum class ValuePatternsMetric {
   kMaxValue = kAchRoutingNumber,
 };
 
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(JavaScriptDropdownType)
+enum class JavaScriptDropdownType {
+  kNone = 0,
+  kEmail = 1,
+  kAddress = 2,
+  kMaxValue = kAddress,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/autofill/enums.xml:AutofillJavaScriptDropdownType)
+
 class BrowserAutofillManager;
 
 // Manages saving and restoring the user's personal information entered into web
@@ -104,6 +120,8 @@ class BrowserAutofillManager : public AutofillManager {
     autofill_metrics::CreditCardFormEventLogger credit_card_form_event_logger;
     autofill_metrics::LoyaltyCardFormEventLogger loyalty_card_form_event_logger;
     autofill_metrics::OtpFormEventLogger otp_form_event_logger;
+    autofill_metrics::AutocompleteKeyMetricsLogger
+        autocomplete_key_metrics_logger;
 
     // Have we logged whether Autofill is enabled for this page load?
     bool has_logged_autofill_enabled = false;
@@ -150,6 +168,13 @@ class BrowserAutofillManager : public AutofillManager {
   // in `filling_payload`.
   // `action_persistence` denotes whether the operation is a fill or preview.
   // `trigger_source` is the reason for triggering the filling operation.
+  // `require_user_confirmation` indicates if some form of user confirmation
+  // should always be required.
+  // Note that:
+  // - Setting it to `false` does not suppress all confirmation/reauth -
+  //   it may still happen.
+  // - This parameter is initially only respected for credit card filling on
+  //   Android.
   // `blocked_fields` are fields which must not be filled because another
   // filling product of higher priority claims them.
   virtual void FillOrPreviewForm(
@@ -158,6 +183,7 @@ class BrowserAutofillManager : public AutofillManager {
       const FieldGlobalId& trigger_field_id,
       const FillingPayload& filling_payload,
       AutofillTriggerSource trigger_source,
+      bool require_user_confirmation,
       const base::flat_set<FieldGlobalId>& blocked_fields);
 
   // Routes calls from external components to FormFiller::FillOrPreviewField.
@@ -206,8 +232,7 @@ class BrowserAutofillManager : public AutofillManager {
 
   void DidShowSuggestions(
       base::span<const Suggestion> suggestions,
-      base::optional_ref<const AutofillSuggestionDelegate::SuggestionMetadata>
-          parent_suggestion_metadata,
+      const AutofillSuggestionDelegate::SuggestionUiMetadata& metadata,
       const FormGlobalId& form_id,
       const FieldGlobalId& field_id,
       AutofillExternalDelegate::UpdateSuggestionsCallback
@@ -250,19 +275,15 @@ class BrowserAutofillManager : public AutofillManager {
 
   // Handles post-filling logic of `form`, like notifying observers and logging
   // form metrics.
-  // `filled_field_ids` are the IDs of fields that were filled by the browser.
-  // `safe_filled_fields` are the subset of `filled_fields` that were deemed
-  // safe to fill by `AutofillDriverRouter`, according to the iframe security
-  // policy.
+  // `safe_filled_fields` are the fields that were deemed safe to fill by
+  // `AutofillDriverRouter`, according to the iframe security policy.
   // `skip_reasons` tells us for each field (mapped by their IDs), whether the
   // field was skipped for filling or not and why.
-  // TODO(crbug.com/40227071): Remove `filled_field_ids`.
   void OnDidFillOrPreviewForm(
       mojom::ActionPersistence action_persistence,
       const FormStructure& form,
       const AutofillField& trigger_field,
       base::span<const AutofillField* const> safe_filled_fields,
-      const base::flat_set<FieldGlobalId>& filled_field_ids,
       const base::flat_map<FieldGlobalId, DenseSet<FieldFillingSkipReason>>&
           skip_reasons,
       const FillingPayload& filling_payload,
@@ -377,8 +398,8 @@ class BrowserAutofillManager : public AutofillManager {
   void OnDidDetectJavaScriptAutofillImpl(
       const FormData& form,
       const FieldGlobalId& trigger_field_id,
-      const std::vector<JavaScriptFieldModification>& field_modifications)
-      override;
+      const std::vector<JavaScriptFieldModification>& field_modifications,
+      base::TimeTicks detection_start_timestamp) override;
   void OnFormSubmittedImpl(const FormData& form,
                            mojom::SubmissionSource source) override;
   void OnFormWithEmailVerificationTokenSubmittedImpl(
@@ -466,6 +487,7 @@ class BrowserAutofillManager : public AutofillManager {
       const AutofillField& trigger_field,
       const CreditCard& credit_card,
       AutofillTriggerSource trigger_source,
+      bool require_user_confirmation,
       const base::flat_set<FieldGlobalId>& blocked_fields);
 
   // If `metrics_->initial_interaction_timestamp` is unset or is set to a later
@@ -500,7 +522,7 @@ class BrowserAutofillManager : public AutofillManager {
       const FormFieldData& field,
       const AutofillField& autofill_field,
       AutofillSuggestionTriggerSource trigger_source,
-      const std::vector<std::string>& one_time_passwords);
+      const std::vector<one_time_tokens::OneTimeToken>& one_time_tokens);
 
   // Called when all suggestion generators have finished generating their
   // suggestions. It combines the returned suggestions respecting their
@@ -523,24 +545,26 @@ class BrowserAutofillManager : public AutofillManager {
       const std::vector<Suggestion>& suggestions,
       AutofillSuggestionTriggerSource trigger_source);
 
-  // Shows the private inference notice on Android, if the list of suggestions
-  // has a private inference notice suggestion. The notice is shows as an
-  // message on android, unlike Desktop, where it's shown as a suggestion.
+  // Shows the private inference notice on mobile if `autofill_ai_suggestions`
+  // contains a private inference notice suggestion. Desktop shows the notice
+  // as a suggestion instead.
+  // On Android, if `features::kAutofillAiPrivateInferenceNoticeBottomSheet` is
+  // enabled, the notice is shown in the Touch To Fill bottom sheet instead and
+  // this is a no-op.
   bool MaybeShowPrivateInferenceNotice(
       base::span<const Suggestion> autofill_ai_suggestions);
 
-  // Creates passkey suggestions that will be used in
-  // `MergePasskeysAndExistingSuggestions`.
+  // Creates passkey suggestions that will be appended.
   // TODO(crbug.com/409962888): Remove after new suggestion generation logic is
   // launched.
   std::vector<Suggestion> CreatePasskeySuggestionsForMerge(
       const FormFieldData& field);
 
-  // Combines passkey suggestions and existing suggestions into a single list,
-  // prioritizing existing suggestions first.
-  static void MergePasskeysAndExistingSuggestions(
-      std::vector<Suggestion>& suggestions,
-      std::vector<Suggestion> passkey_suggestions);
+  // Creates Trusted Vault unlock suggestions that will be appended.
+  // TODO(crbug.com/409962888): Remove after new suggestion generation logic is
+  // launched.
+  std::vector<Suggestion> CreateTrustedVaultUnlockSuggestionsForMerge(
+      const FormFieldData& field);
 
   // Merges suggestions with `FillingProduct::kAddress` with the other
   // suggestions whose products supports merging with address suggestions (see
@@ -549,12 +573,6 @@ class BrowserAutofillManager : public AutofillManager {
       std::map<FillingProduct, std::vector<Suggestion>> suggestions_map,
       const AutofillField* trigger_field,
       AutofillSuggestionTriggerSource trigger_source);
-
-  // Combines identity credential suggestions and existing suggestions into a
-  // single list, prioritizing identity credential suggestions first.
-  static void MergeIdentityCredentialsAndAddressSuggestions(
-      std::vector<Suggestion>& suggestions,
-      std::vector<Suggestion> identity_credential_suggestions);
 
   // Combines autocomplete suggestions and existing suggestions into a
   // single list, prioritizing address suggestions and filtering out
@@ -589,7 +607,7 @@ class BrowserAutofillManager : public AutofillManager {
       AutofillSuggestionTriggerSource trigger_source,
       base::TimeTicks suggestion_generator_start_time,
       base::ScopedClosureRunner scoped_on_after,
-      std::vector<std::string> one_time_passwords);
+      std::vector<one_time_tokens::OneTimeToken> one_time_tokens);
   void GenerateFooter(const FormData& form,
                       const FormFieldData& field,
                       AutofillSuggestionTriggerSource trigger_source,
@@ -628,18 +646,14 @@ class BrowserAutofillManager : public AutofillManager {
   // each field and record into FieldInfo UKM event.
   void ProcessFieldLogEventsInForm(const FormStructure& form_structure);
 
-  // Log the number of log events of all types which have been recorded until
-  // the FieldInfo metric is recorded into UKM at form submission or form
-  // destruction time (whatever comes first).
-  void LogEventCountsUMAMetric(const FormStructure& form_structure);
-
   // Handles the credit card specific logic after `form` is filled, including
   // logging the fill operation and recording card usage.
   void LogAndRecordCreditCardFill(
       const FormStructure& form,
       const AutofillField& trigger_field,
-      const base::flat_set<FieldGlobalId>& filled_field_ids,
       const base::flat_set<FieldGlobalId>& safe_field_ids,
+      const base::flat_map<FieldGlobalId, DenseSet<FieldFillingSkipReason>>&
+          skip_reasons,
       const CreditCard& card,
       AutofillTriggerSource trigger_source,
       bool is_refill);
@@ -741,6 +755,15 @@ class BrowserAutofillManager : public AutofillManager {
   // Handles general Address on typing feature management, mainly the logic
   // behind its strike database.
   AddressOnTypingManager address_on_typing_manager_;
+
+  // Invalidated before GenerateSuggestionsAndMaybeShowUIPhase2() is called to
+  // ensure that there are never two simultaneous pending
+  // GenerateSuggestionsAndMaybeShowUIPhase2() calls.
+  // TODO(crbug.com/409962888): Remove as part of cleaning up
+  // kAutofillNewSuggestionGeneration.
+  base::WeakPtrFactory<BrowserAutofillManager>
+      generate_suggestions_and_maybe_show_ui_phase2_weak_ptr_factory_{this};
+
   base::WeakPtrFactory<BrowserAutofillManager> weak_ptr_factory_{this};
 };
 

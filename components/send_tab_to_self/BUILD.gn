@@ -36,8 +36,6 @@ static_library("send_tab_to_self") {
     "send_tab_to_self_model_observer.h",
     "send_tab_to_self_sync_service.cc",
     "send_tab_to_self_sync_service.h",
-    "target_device_info.cc",
-    "target_device_info.h",
     "target_device_list_waiter.cc",
     "target_device_list_waiter.h",
   ]
@@ -53,18 +51,15 @@ static_library("send_tab_to_self") {
     "//components/shared_highlighting/core/common",
     "//components/signin/public/base",
     "//components/signin/public/identity_manager",
-    "//components/strings",
     "//components/sync",
-    "//components/sync_device_info",
     "//components/sync_sessions",
     "//components/version_info",
-    "//google_apis",
-    "//ui/base",
     "//url",
   ]
   public_deps = [
     ":features",
     "//components/send_tab_to_self/proto:send_tab_to_self_proto",
+    "//components/sync_device_info",
   ]
 }
 
@@ -97,6 +92,7 @@ if (is_android) {
     deps = [ "//third_party/androidx:androidx_annotation_annotation_java" ]
   }
 }
+
 source_set("test_support") {
   testonly = true
   sources = [
@@ -106,15 +102,21 @@ source_set("test_support") {
     "stub_send_tab_to_self_sync_service.h",
     "test_matchers.cc",
     "test_matchers.h",
+    "test_send_tab_to_self_entity_builder.cc",
+    "test_send_tab_to_self_entity_builder.h",
+  ]
+  public_deps = [
+    "//base",
+    "//url",
   ]
   deps = [
     ":send_tab_to_self",
-    "//base",
     "//components/autofill/core/common",
+    "//components/shared_highlighting/core/common",
     "//components/sync:test_support",
+    "//components/sync/nigori",
     "//components/sync_device_info",
     "//testing/gmock",
-    "//url",
   ]
 }
 
@@ -129,7 +131,6 @@ source_set("unit_tests") {
     "send_tab_to_self_bridge_unittest.cc",
     "send_tab_to_self_commit_tracker_unittest.cc",
     "send_tab_to_self_entry_unittest.cc",
-    "target_device_info_unittest.cc",
     "target_device_list_waiter_unittest.cc",
   ]
   deps = [
@@ -142,10 +143,8 @@ source_set("unit_tests") {
     "//components/history/core/browser",
     "//components/prefs:test_support",
     "//components/send_tab_to_self/proto:send_tab_to_self_proto",
-    "//components/strings",
     "//components/sync:test_support",
     "//components/sync_device_info:test_support",
-    "//components/sync_preferences:test_support",
     "//components/sync_sessions:test_support",
     "//testing/gtest",
     "//url",

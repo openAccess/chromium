@@ -59,18 +59,30 @@ enum ResolutionChangePolicy {
 enum PowerLineFrequency {
   DEFAULT,
   HZ_50,
-  HZ_60
+  HZ_60,
 };
 
 enum VideoFacingMode {
   NONE,
   USER,
-  ENVIRONMENT
+  ENVIRONMENT,
 };
 
 enum CameraAvailability {
   kAvailable,
   kUnavailableExclusivelyUsedByOtherApplication,
+};
+
+// Controls how much information is collected while enumerating video capture
+// devices.
+enum VideoCaptureDeviceEnumerationMode {
+  // Returns the device list without supported formats or pan, tilt, and zoom
+  // support.
+  [EnableIf=is_win]
+  kDevicesOnly,
+  // Returns the device list, supported formats, and pan, tilt, and zoom
+  // support.
+  kDevicesWithCapabilities,
 };
 
 enum VideoCaptureApi {
@@ -91,15 +103,15 @@ enum VideoCaptureApi {
 };
 
 enum VideoCaptureTransportType {
-// For AVFoundation Api, identify devices that are built-in or USB.
+  // For AVFoundation Api, identify devices that are built-in or USB.
   APPLE_USB_OR_BUILT_IN,
-  OTHER_TRANSPORT
+  OTHER_TRANSPORT,
 };
 
 enum VideoCaptureBufferType {
   kSharedMemory,
   kGpuMemoryBuffer,
-  kSharedImage
+  kSharedImage,
 };
 
 // Represents capture device's support for different controls.
@@ -159,7 +171,6 @@ enum VideoCaptureError {
   kCrosHalV3BufferManagerFailedToMapGpuMemoryBuffer,
   kCrosHalV3BufferManagerUnsupportedVideoPixelFormat,
   kCrosHalV3BufferManagerFailedToDupFd,
-  kCrosHalV3BufferManagerFailedToWrapGpuMemoryHandle,
   kCrosHalV3BufferManagerFailedToRegisterBuffer,
   kCrosHalV3BufferManagerProcessCaptureRequestFailed,
   kCrosHalV3BufferManagerInvalidPendingResultId,
@@ -171,7 +182,6 @@ enum VideoCaptureError {
   kCrosHalV3BufferManagerReceivedInvalidShutterTime,
   kCrosHalV3BufferManagerFatalDeviceError,
   kCrosHalV3BufferManagerReceivedFrameIsOutOfOrder,
-  kCrosHalV3BufferManagerFailedToUnwrapReleaseFenceFd,
   kCrosHalV3BufferManagerSyncWaitOnReleaseFenceTimedOut,
   kCrosHalV3BufferManagerInvalidJpegBlob,
   kAndroidFailedToAllocate,
@@ -196,8 +206,8 @@ enum VideoCaptureError {
   kWinDirectShowFailedToStartTheCaptureDevice,
   kWinDirectShowFailedToStopTheCaptureGraph,
   kWinMediaFoundationEngineIsNull,
-  kWinMediaFoundationEngineGetSourceFailed ,
-  kWinMediaFoundationFillPhotoCapabilitiesFailed ,
+  kWinMediaFoundationEngineGetSourceFailed,
+  kWinMediaFoundationFillPhotoCapabilitiesFailed,
   kWinMediaFoundationFillVideoCapabilitiesFailed,
   kWinMediaFoundationNoVideoCapabilityFound,
   kWinMediaFoundationGetAvailableDeviceMediaTypeFailed,
@@ -261,6 +271,7 @@ enum VideoCaptureError {
   kWinMediaFoundationCameraBusy,
   kWebRtcStartCaptureFailed,
   kDesktopCaptureDeviceGpuAdapterChanged,
+  kVideoCaptureHostDuplicateDeviceId,
 };
 
 enum VideoCaptureFrameDropReason {
@@ -311,7 +322,7 @@ struct VideoCaptureFormat {
 enum CaptureSourceRequestType {
   [Default] kUnknown,
   kGetUserMedia,
-  kGetDisplayMedia
+  kGetDisplayMedia,
 };
 
 struct VideoCaptureParams {
@@ -331,6 +342,13 @@ struct VideoCaptureParams {
   uint32 capture_version_source;
 
   CaptureSourceRequestType request_type;
+
+  // Whether this video capture is secure.
+  // A capture is considered secure if the captured content is not easily
+  // accessible to JavaScript or users, and cannot be trivially shared or
+  // streamed out of the device. Used for capture prevention, e.g. for protected
+  // content or by enterprise policy.
+  bool is_secure;
 };
 
 struct VideoCaptureFeedback {
@@ -405,7 +423,7 @@ struct VideoCaptureDeviceInfo {
 
 enum SubCaptureTargetType {
   kCropTarget,
-  kRestrictionTarget
+  kRestrictionTarget,
 };
 
 // The result of an attempt by the client to start/stop cropping,
@@ -424,5 +442,5 @@ enum DeviceEnumerationResult {
   kSuccess,
   kUnknownError,
   kErrorCaptureServiceCrash,
-  kErrorCaptureServiceDroppedRequest
+  kErrorCaptureServiceDroppedRequest,
 };

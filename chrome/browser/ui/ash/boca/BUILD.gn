@@ -15,30 +15,11 @@ static_library("boca") {
     "//ash/constants",
     "//ash/public/cpp",
     "//base",
-    "//chrome/browser/ash/browser_delegate",
+    "//chromeos/ash/components/browser_delegate",
     "//components/app_constants",
     "//components/app_restore",
     "//components/sessions",
     "//content/public/browser",
-  ]
-}
-
-source_set("unit_tests") {
-  testonly = true
-
-  sources = [ "chrome_tab_strip_delegate_unittest.cc" ]
-
-  deps = [
-    ":boca",
-    "//ash",
-    "//ash:test_support",
-    "//ash/constants",
-    "//base",
-    "//chrome/common",
-    "//chrome/test:test_support",
-    "//chromeos/ui/base",
-    "//testing/gmock",
-    "//testing/gtest",
   ]
 }
 
@@ -56,7 +37,8 @@ source_set("browser_tests") {
     "//ash/public/cpp",
     "//base",
     "//chrome/browser/apps/platform_apps:browser_test_support",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_tabstrip",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/test:test_support",
     "//chrome/test/base/ash/util:test_support",
     "//components/prefs",

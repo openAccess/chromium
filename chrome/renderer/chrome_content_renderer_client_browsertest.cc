@@ -18,11 +18,13 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/mock_render_thread.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/web/web_local_frame.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -90,14 +92,14 @@ TEST_F(ChromeContentRendererClientSearchBoxTest, RewriteThumbnailURL) {
 namespace {
 
 struct FlashEmbedsTestData {
-  std::string name;
-  std::string host;
-  std::string path;
-  std::string type;
-  std::string expected_url;
+  const char* name;
+  const char* host;
+  const char* path;
+  const char* type;
+  const char* expected_url;
 };
 
-const FlashEmbedsTestData kFlashEmbedsTestData[] = {
+constexpr FlashEmbedsTestData kFlashEmbedsTestData[] = {
     {"Valid URL, no parameters", "www.youtube.com", "/v/deadbeef",
      "application/x-shockwave-flash", "/embed/deadbeef"},
     {"Valid URL, no parameters, subdomain", "www.foo.youtube.com",
@@ -206,9 +208,10 @@ IN_PROC_BROWSER_TEST_F(ChromeContentRendererClientBrowserTest,
   {
     const auto& map =
         extensions_client->GetFeatureDelegatedAvailabilityCheckMap();
-    EXPECT_TRUE(!map.empty());
-    for (const auto* feature :
-         extension_test_util::GetExpectedDelegatedFeaturesForTest()) {
+    const auto expected_features =
+        extension_test_util::GetExpectedDelegatedFeaturesForTest();
+    EXPECT_EQ(expected_features.size(), map.size());
+    for (const auto* feature : expected_features) {
       EXPECT_EQ(1u, map.count(feature));
     }
   }

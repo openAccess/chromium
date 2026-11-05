@@ -12,7 +12,6 @@
 #include "base/component_export.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/task/task_traits.h"
 #include "build/build_config.h"
 
 namespace history {
@@ -62,32 +61,55 @@ extern const base::FeatureParam<int> kMvtScoringParamDailyVisitCountCap;
 COMPONENT_EXPORT(HISTORY_FEATURES)
 BASE_DECLARE_FEATURE(kRazeOldHistoryDatabase);
 
-#if !BUILDFLAG(IS_IOS)
-COMPONENT_EXPORT(HISTORY_FEATURES)
-bool IsBrowsingHistoryActorIntegrationM3Enabled();
-
-#if !BUILDFLAG(IS_ANDROID)
 COMPONENT_EXPORT(HISTORY_FEATURES)
 BASE_DECLARE_FEATURE(kBrowsingHistorySimilarVisitsGrouping);
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 COMPONENT_EXPORT(HISTORY_FEATURES)
-BASE_DECLARE_FEATURE(kBrowsingHistoryActorIntegrationM3);
+BASE_DECLARE_FEATURE(kBrowsingHistoryImprovedHostnameSuffixMatching);
+
+// Do not check this feature directly; use
+// `IsBrowsingHistoryFilterByDeviceEnabled()` instead.
+COMPONENT_EXPORT(HISTORY_FEATURES)
+BASE_DECLARE_FEATURE(kBrowsingHistoryFilterByDevice);
+
+COMPONENT_EXPORT(HISTORY_FEATURES)
+BASE_DECLARE_FEATURE(kBrowsingHistoryFilterByDomain);
+
+COMPONENT_EXPORT(HISTORY_FEATURES)
+BASE_DECLARE_FEATURE(kBrowsingHistoryFilterByDomainV2);
+
+COMPONENT_EXPORT(HISTORY_FEATURES)
+BASE_DECLARE_FEATURE(kBrowsingHistoryFilterByTime);
+
+#if !BUILDFLAG(IS_IOS)
+COMPONENT_EXPORT(HISTORY_FEATURES)
+BASE_DECLARE_FEATURE(kBrowsingHistoryFilterByActor);
 #endif  // !BUILDFLAG(IS_IOS)
 
 COMPONENT_EXPORT(HISTORY_FEATURES)
 BASE_DECLARE_FEATURE(kWebHistoryUseNewApi);
 
+// Returns true if browsing history filtering by device is enabled (requires
+// both `kWebHistoryUseNewApi` and `kBrowsingHistoryFilterByDevice`).
+COMPONENT_EXPORT(HISTORY_FEATURES)
+bool IsBrowsingHistoryFilterByDeviceEnabled();
+
 COMPONENT_EXPORT(HISTORY_FEATURES)
 BASE_DECLARE_FEATURE(kHistoryDatabaseWriteAheadLogging);
 
-// Allows tuning the task priority of the History backend task runner during
-// startup.
+// Defers HistoryBackend initialization to after startup or until it is needed.
 COMPONENT_EXPORT(HISTORY_FEATURES)
-BASE_DECLARE_FEATURE(kHistoryInitPrioritySettings);
+BASE_DECLARE_FEATURE(kDeferHistoryBackendInit);
 
+// If enabled, reports database metrics related to history clusters. Disabled
+// by default so that not all clients pay the cost of computing the metrics.
 COMPONENT_EXPORT(HISTORY_FEATURES)
-extern const base::FeatureParam<base::TaskPriority> kHistoryInitPriority;
+BASE_DECLARE_FEATURE(kHistoryReportClusterDatabaseMetrics);
+
+// When enabled, replaces the 1 + 2N SQLite query loop in
+// HistoryBackend::QueryHistoryBasic with a two-phase batched fetch strategy.
+COMPONENT_EXPORT(HISTORY_FEATURES)
+BASE_DECLARE_FEATURE(kHistoryQueryBatchedLookups);
 
 }  // namespace history
 

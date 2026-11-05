@@ -15,6 +15,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -64,6 +65,7 @@
 #include "third_party/skia/include/core/SkSurface.h"
 
 using testing::_;
+using testing::NiceMock;
 using testing::Return;
 using testing::StrictMock;
 
@@ -1911,11 +1913,18 @@ class TileManagerDeferredRedrawTest : public TestLayerTreeHostBase {
     void NotifyTileStateChanged(const Tile* tile,
                                 bool update_damage,
                                 bool set_needs_redraw) override {
-      if (set_needs_redraw && tilings_to_remove_) {
+      if (!set_needs_redraw) {
+        return;
+      }
+      if (tilings_to_remove_) {
         ++notify_with_redraw_count_;
         PictureLayerTilingSet* tilings = tilings_to_remove_;
         tilings_to_remove_ = nullptr;
         tilings->RemoveAllTilings();
+      }
+      if (on_notify_with_redraw_) {
+        ++notify_with_redraw_count_;
+        std::move(on_notify_with_redraw_).Run(tile);
       }
     }
 
@@ -1927,11 +1936,16 @@ class TileManagerDeferredRedrawTest : public TestLayerTreeHostBase {
     void set_tilings_to_remove(PictureLayerTilingSet* tilings) {
       tilings_to_remove_ = tilings;
     }
+    void set_on_notify_with_redraw(
+        base::OnceCallback<void(const Tile*)> callback) {
+      on_notify_with_redraw_ = std::move(callback);
+    }
     int notify_with_redraw_count() const { return notify_with_redraw_count_; }
     int set_needs_redraw_count() const { return set_needs_redraw_count_; }
 
    private:
     raw_ptr<PictureLayerTilingSet> tilings_to_remove_ = nullptr;
+    base::OnceCallback<void(const Tile*)> on_notify_with_redraw_;
     int notify_with_redraw_count_ = 0;
     int set_needs_redraw_count_ = 0;
   };
@@ -2292,6 +2306,45 @@ TEST_F(PartialRasterTileManagerTest, CancelledTasksHaveNoContentId) {
 
   // Free our host_impl_ before the tile_task_manager we passed it, as it
   // will use that class in clean up.
+  ClearLayersAndHost();
+}
+
+// If the tile is destroyed while its raster task is still running, the task
+// completes without a tile and we cannot tell whether images were skipped, so
+// the resource must not be registered for reuse. See crbug.com/515542787.
+TEST_F(PartialRasterTileManagerTest,
+       OrphanedRasterCompletionHasNoPartialContentId) {
+  const uint64_t kOrphanTileId = 4242;  // Intentionally absent from tiles_.
+  const gfx::Size kTileSize(128, 128);
+
+  // Seed scheduled_draw_images_[kOrphanTileId] so the CHECK in
+  // OnRasterTaskCompleted passes; UnrefImages is a no-op on the empty vector.
+  host_impl()->tile_manager()->decode_tasks_for_testing(kOrphanTileId);
+
+  // A completed raster resource from the now-destroyed tile.
+  ResourcePool::InUsePoolResource resource =
+      host_impl()->resource_pool()->AcquireResource(
+          kTileSize, viz::SinglePlaneFormat::kBGRA_8888,
+          gfx::ColorSpace::CreateSRGB());
+  auto backing = std::make_unique<ResourcePool::Backing>(
+      resource.size(), resource.format(), resource.color_space());
+  backing->CreateSharedImageForTesting();
+  backing->mailbox_sync_token.Set(gpu::GPU_IO,
+                                  gpu::CommandBufferId::FromUnsafeValue(1), 1);
+  resource.set_backing(std::move(backing));
+
+  // Complete the raster for a tile that no longer exists.
+  host_impl()->tile_manager()->OnRasterTaskCompleted(
+      kOrphanTileId, std::move(resource), /*was_canceled=*/false);
+
+  // The orphaned resource must not be reacquirable as a partial-raster base.
+  gfx::Rect total_invalidated_rect;
+  ResourcePool::InUsePoolResource reused =
+      host_impl()->resource_pool()->TryAcquireResourceForPartialRaster(
+          kOrphanTileId + 1, gfx::Rect(), kOrphanTileId,
+          &total_invalidated_rect, gfx::ColorSpace::CreateSRGB());
+  EXPECT_FALSE(reused);
+
   ClearLayersAndHost();
 }
 
@@ -3190,6 +3243,139 @@ TEST_F(TileManagerReadyToDrawTest, SetBackIsLikelyToRequireADrawToFalse) {
   EXPECT_FALSE(host_impl()->is_likely_to_require_a_draw());
 }
 
+// Combines TileManagerDeferredRedrawTest's re-entrant host impl with a mock
+// raster buffer provider so that tiles waiting on GPU work can be simulated.
+class TileManagerDeferredRedrawPendingGpuWorkTest
+    : public TileManagerDeferredRedrawTest {
+ public:
+  void SetUp() override {
+    TileManagerDeferredRedrawTest::SetUp();
+    host_impl()->tile_manager()->SetRasterBufferProviderForTesting(
+        &mock_raster_buffer_provider_);
+  }
+
+  void SetupActiveTreeWithTiles() {
+    host_impl()->SetTreePriority(SMOOTHNESS_TAKES_PRIORITY);
+    const gfx::Size layer_bounds(1000, 1000);
+    host_impl()->active_tree()->SetDeviceViewportRect(gfx::Rect(layer_bounds));
+    SetupDefaultTrees(layer_bounds);
+    // Activate so that only the active tree's tiles are rastered below.
+    ActivateTree();
+  }
+
+  // Rasters the active tree's tiles while IsResourceReadyToDraw() reports
+  // false, so that each of them ends up waiting on GPU work, and returns the
+  // ready-to-draw callback that TileManager registers to re-check them.
+  base::OnceClosure RasterTilesWithPendingGpuWork() {
+    base::OnceClosure ready_check;
+    base::RunLoop run_loop;
+    EXPECT_CALL(mock_raster_buffer_provider_, IsResourceReadyToDraw(_))
+        .WillRepeatedly(Return(false));
+    EXPECT_CALL(mock_raster_buffer_provider_, SetReadyToDrawCallback(_, _, _))
+        .WillRepeatedly(
+            [&](const std::vector<const ResourcePool::InUsePoolResource*>&,
+                base::OnceClosure callback, uint64_t) {
+              if (!ready_check) {
+                ready_check = std::move(callback);
+                run_loop.Quit();
+              }
+              return 1;
+            });
+    host_impl()->tile_manager()->PrepareTiles(host_impl()->global_tile_state());
+    run_loop.Run();
+    testing::Mock::VerifyAndClearExpectations(&mock_raster_buffer_provider_);
+    return ready_check;
+  }
+
+  MockReadyToDrawRasterBufferProviderImpl* mock_raster_buffer_provider() {
+    return &mock_raster_buffer_provider_;
+  }
+
+ private:
+  NiceMock<MockReadyToDrawRasterBufferProviderImpl>
+      mock_raster_buffer_provider_;
+};
+
+TEST_F(TileManagerDeferredRedrawPendingGpuWorkTest,
+       DeferRedrawWhileCheckingPendingGpuWork) {
+  SetupActiveTreeWithTiles();
+
+  base::OnceClosure ready_check = RasterTilesWithPendingGpuWork();
+  ASSERT_TRUE(ready_check);
+
+  PictureLayerTiling* tiling = active_layer()->HighResTiling();
+  ASSERT_GT(tiling->AllTilesForTesting().size(), 1u);
+
+  // On the next check, keep the first queried resource waiting on GPU work so
+  // that it is retained for the next ready-to-draw callback registration, and
+  // report every other resource as ready so that the client is notified of
+  // their tiles' state changes mid-iteration.
+  int ready_queries = 0;
+  EXPECT_CALL(*mock_raster_buffer_provider(), IsResourceReadyToDraw(_))
+      .WillRepeatedly([&ready_queries](const ResourcePool::InUsePoolResource&) {
+        return ++ready_queries > 1;
+      });
+
+  // A tile state change notification that requests a redraw mid-iteration may
+  // re-enter the client, which can evict any other tile - including the one
+  // whose resource is retained above.
+  reentrant_host_impl()->set_on_notify_with_redraw(
+      base::BindLambdaForTesting([&](const Tile* tile) {
+        gfx::Rect keep(tile->content_rect().CenterPoint(), gfx::Size(1, 1));
+        tiling->SetTilePriorityRectsForTesting(keep, keep, keep, keep,
+                                               /*evicts_tiles=*/true);
+      }));
+
+  // The resources handed to the ready-to-draw callback registration must all
+  // still be alive.
+  bool ready_to_draw_callback_set = false;
+  EXPECT_CALL(*mock_raster_buffer_provider(), SetReadyToDrawCallback(_, _, _))
+      .WillRepeatedly(
+          [&ready_to_draw_callback_set](
+              const std::vector<const ResourcePool::InUsePoolResource*>&
+                  resources,
+              base::OnceClosure, uint64_t) {
+            ready_to_draw_callback_set = true;
+            for (const ResourcePool::InUsePoolResource* in_use : resources) {
+              EXPECT_TRUE(in_use->backing()->mailbox_sync_token.HasData());
+            }
+            return 2;
+          });
+
+  const int redraw_count = reentrant_host_impl()->set_needs_redraw_count();
+  std::move(ready_check).Run();
+
+  // Tile state change notifications must not request a redraw while the tiles
+  // waiting on GPU work are being iterated; a single SetNeedsRedraw() should
+  // be issued afterwards instead.
+  EXPECT_EQ(0, reentrant_host_impl()->notify_with_redraw_count());
+  EXPECT_LT(redraw_count, reentrant_host_impl()->set_needs_redraw_count());
+  EXPECT_TRUE(ready_to_draw_callback_set);
+}
+
+TEST_F(TileManagerDeferredRedrawPendingGpuWorkTest,
+       DeferRedrawWhenAllPendingGpuWorkTilesBecomeReady) {
+  SetupActiveTreeWithTiles();
+
+  base::OnceClosure ready_check = RasterTilesWithPendingGpuWork();
+  ASSERT_TRUE(ready_check);
+  ASSERT_GT(active_layer()->HighResTiling()->AllTilesForTesting().size(), 1u);
+
+  // Every resource becomes ready on the next check. Arm the host impl to
+  // remove the active tilings if it observes a tile state change notification
+  // that requests a redraw while the tiles waiting on GPU work are being
+  // iterated.
+  EXPECT_CALL(*mock_raster_buffer_provider(), IsResourceReadyToDraw(_))
+      .WillRepeatedly(Return(true));
+  reentrant_host_impl()->set_tilings_to_remove(active_layer()->tilings());
+
+  const int redraw_count = reentrant_host_impl()->set_needs_redraw_count();
+  std::move(ready_check).Run();
+
+  EXPECT_EQ(0, reentrant_host_impl()->notify_with_redraw_count());
+  EXPECT_LT(redraw_count, reentrant_host_impl()->set_needs_redraw_count());
+}
+
 PaintImage MakeCheckerablePaintImage(const gfx::Size& size) {
   auto image = CreateDiscardablePaintImage(size);
   return PaintImageBuilder::WithCopy(image)
@@ -3207,7 +3393,7 @@ class CheckerImagingTileManagerTest : public TestLayerTreeHostBase {
 
     MOCK_METHOD4(
         GetPixels,
-        bool(SkPixmap, size_t, PaintImage::GeneratorClientId, uint32_t));
+        bool(SkPixmap, size_t, PaintImage::GeneratorClientId, uint64_t));
   };
 
   void TearDown() override {
@@ -3291,6 +3477,69 @@ TEST_F(CheckerImagingTileManagerTest,
   static_cast<SynchronousTaskGraphRunner*>(task_graph_runner())->RunUntilIdle();
   base::RunLoop().RunUntilIdle();
   EXPECT_FALSE(host_impl()->tile_manager()->HasScheduledTileTasksForTesting());
+}
+
+// A raster that skipped checker-imaged images leaves gray placeholders in
+// its resource, so the resource must not be handed out again as a
+// partial-raster base. See crbug.com/515542787.
+TEST_F(CheckerImagingTileManagerTest,
+       CheckerImagedResourceNotReusedForPartialRaster) {
+  const gfx::Size layer_bounds(512, 512);
+
+  FakeRecordingSource recording_source(layer_bounds);
+  recording_source.set_fill_with_nonsolid_color(true);
+
+  auto generator =
+      sk_make_sp<testing::StrictMock<MockImageGenerator>>(gfx::Size(512, 512));
+  PaintImage image = PaintImageBuilder::WithDefault()
+                         .set_id(PaintImage::GetNextId())
+                         .set_paint_image_generator(generator)
+                         .set_decoding_mode(PaintImage::DecodingMode::kAsync)
+                         .TakePaintImage();
+  recording_source.add_draw_image(image, gfx::Point(0, 0));
+
+  recording_source.Rerecord();
+  scoped_refptr<RasterSource> raster_source =
+      recording_source.CreateRasterSource();
+
+  Region invalidation((gfx::Rect(layer_bounds)));
+  SetupPendingTree(raster_source, layer_bounds, invalidation);
+
+  PictureLayerTilingSet* tiling_set =
+      pending_layer()->picture_layer_tiling_set();
+  PictureLayerTiling* tiling = tiling_set->tiling_at(0);
+  tiling->set_resolution(HIGH_RESOLUTION);
+  tiling->CreateAllTilesForTesting(gfx::Rect(layer_bounds));
+  tiling->set_can_require_tiles_for_activation(true);
+
+  // Raster the checker-imaged tile to completion.
+  host_impl()->tile_manager()->PrepareTiles(host_impl()->global_tile_state());
+  static_cast<SynchronousTaskGraphRunner*>(task_graph_runner())->RunUntilIdle();
+  base::RunLoop().RunUntilIdle();
+
+  // Find the rastered, checker-imaged tile.
+  Tile* checker_tile = nullptr;
+  for (Tile* tile : host_impl()->tile_manager()->AllTilesForTesting()) {
+    if (tile->draw_info().has_resource() &&
+        tile->draw_info().is_checker_imaged()) {
+      checker_tile = tile;
+      break;
+    }
+  }
+  ASSERT_TRUE(checker_tile);
+  const uint64_t checker_tile_id = checker_tile->id();
+
+  // Release the resource back to the pool, as re-tiling would.
+  host_impl()->tile_manager()->ReleaseTileResourcesForTesting(
+      std::vector<Tile*>{checker_tile});
+
+  // The placeholder must not come back as a partial-raster base.
+  gfx::Rect total_invalidated_rect;
+  ResourcePool::InUsePoolResource reused =
+      host_impl()->resource_pool()->TryAcquireResourceForPartialRaster(
+          checker_tile_id + 1, gfx::Rect(), checker_tile_id,
+          &total_invalidated_rect, gfx::ColorSpace::CreateSRGB());
+  EXPECT_FALSE(reused);
 }
 
 class EmptyCacheTileManagerTest : public TileManagerTest {
@@ -3964,15 +4213,21 @@ class HdrImageTileManagerTest : public CheckerImagingTileManagerTest {
     host_impl()->tile_manager()->PrepareTiles(host_impl()->global_tile_state());
     ASSERT_TRUE(host_impl()->tile_manager()->HasScheduledTileTasksForTesting());
 
-    auto pending_tiles = pending_tiling->AllTilesForTesting();
-    ASSERT_FALSE(pending_tiles.empty());
+    Tile* image_tile = pending_tiling->TileAt(0, 0);
+    ASSERT_TRUE(image_tile);
+    Tile* other_tile = pending_tiling->TileAt(1, 0);
+    ASSERT_TRUE(other_tile);
 
     const auto raster_cs = gfx::ColorSpace::CreateDisplayP3D65().GetAsHDR();
     if (output_cs.IsHDR()) {
-      // Only the last tile will have any pending tasks.
+      // Only the tile covering the image at (0, 0) will have pending tasks.
+      EXPECT_TRUE(host_impl()
+                      ->tile_manager()
+                      ->decode_tasks_for_testing(other_tile->id())
+                      .empty());
       const auto& pending_tasks =
           host_impl()->tile_manager()->decode_tasks_for_testing(
-              pending_tiles.back()->id());
+              image_tile->id());
       EXPECT_FALSE(pending_tasks.empty());
       for (const auto& draw_info : pending_tasks) {
         EXPECT_EQ(draw_info.target_color_space(), raster_cs);

@@ -46,9 +46,8 @@ constexpr const char* usage_msg =
 )";
 
 // Video decoder perf tests help message.
-const std::string help_msg =
-    std::string(
-        R"""(Run the video decode accelerator performance tests on the video
+constexpr const char* help_msg =
+    R"""(Run the video decode accelerator performance tests on the video
 specified by <video path>. If no <video path> is given the default
 "test-25fps.h264" video will be used.
 
@@ -79,14 +78,14 @@ The following arguments are supported:
                         swiftshader (software rendering)
   --ozone-platform      specify which Ozone platform to use, possible values
                         depend on build configuration but normally include
-                        x11, drm, wayland, and headless.)""") +
+                        x11, drm, wayland, and headless.)"""
 #if defined(ARCH_CPU_ARM_FAMILY)
     R"""(
   --disable-libyuv      use hw format conversion instead of libYUV.
                         libYUV will be used by default, unless the
                         video decoder format is not supported;
                         in that case the code will try to use the
-                        v4l2 image processor.)""" +
+                        v4l2 image processor.)"""
 #endif  // defined(ARCH_CPU_ARM_FAMILY)
     R"""(
   --gtest_help          display the gtest help and exit.
@@ -478,10 +477,10 @@ int main(int argc, char** argv) {
   base::CommandLine::SwitchMap switches = cmd_line->GetSwitches();
   for (base::CommandLine::SwitchMap::const_iterator it = switches.begin();
        it != switches.end(); ++it) {
-    if (it->first.find("gtest_") == 0 ||  // Handled by GoogleTest
-        it->first == "ozone-platform" ||  // Handled by Chrome
-        it->first == "use-gl" ||          // Handled by Chrome
-                                          // Options below handled by Chrome
+    if (it->first.starts_with("gtest_") ||  // Handled by GoogleTest
+        it->first == "ozone-platform" ||    // Handled by Chrome
+        it->first == "use-gl" ||            // Handled by Chrome
+                                            // Options below handled by Chrome
         it->first == "v" || it->first == "vmodule" ||
         it->first == "enable-features" || it->first == "disable-features") {
       continue;

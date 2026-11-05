@@ -5,11 +5,11 @@
 #include "content/renderer/accessibility/render_accessibility_impl.h"
 
 #include <memory>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "base/containers/adapters.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -216,7 +216,7 @@ TEST_F(RenderAccessibilityImplTest, TestBoundsForFixedNodeAfterScroll) {
 
   // Prepare the expected information from the tree.
   const std::vector<ui::AXTreeUpdate>& updates = GetHandledAccUpdates();
-  for (const auto& update : base::Reversed(updates)) {
+  for (const auto& update : std::views::reverse(updates)) {
     for (const ui::AXNodeData& node : update.nodes) {
       if (node.GetStringAttribute(ax::mojom::StringAttribute::kName) ==
           "first") {
@@ -939,7 +939,10 @@ TEST_F(BlinkAXActionTargetTest, TestMethods) {
 
   scroller_action_target->SetScrollOffset(gfx::Point(0, 0));
   EXPECT_EQ(gfx::Point(0, 0), scroller_action_target->GetScrollOffset());
-  EXPECT_TRUE(scroller_child_action_target->ScrollToMakeVisible());
+  EXPECT_TRUE(scroller_child_action_target->ScrollToMakeVisible(
+      ax::mojom::ScrollAlignment::kScrollAlignmentCenter,
+      ax::mojom::ScrollAlignment::kScrollAlignmentCenter,
+      ax::mojom::ScrollBehavior::kDoNotScrollIfVisible));
   EXPECT_GE(scroller_action_target->GetScrollOffset().y(), 900);
 
   scroller_action_target->SetScrollOffset(gfx::Point(0, 0));

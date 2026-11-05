@@ -30,7 +30,7 @@ class CORE_EXPORT SimplifiedOofLayoutAlgorithm
                                const PhysicalBoxFragment& last_fragmentainer);
 
   const LayoutResult* Layout();
-  MinMaxSizesResult ComputeMinMaxSizes(const MinMaxSizesFloatInput&) {
+  MinMaxSizesResult ComputeMinMaxSizes(const MinMaxSizesInput&) {
     NOTREACHED();
   }
 
@@ -46,7 +46,7 @@ class CORE_EXPORT SimplifiedOofLayoutAlgorithm
     container_builder_.SetHasSubsequentChildren();
   }
 
-  void AppendOutOfFlowResult(const LayoutResult*);
+  void AppendOutOfFlowResult(const LayoutResult*, LogicalOffset);
 };
 
 }  // namespace blink

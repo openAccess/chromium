@@ -18,8 +18,6 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/scoped_feature_list.h"
-#include "chromeos/ash/components/test/ash_test_suite.h"
-#include "ui/base/resource/resource_bundle.h"
 #include "ui/gfx/image/image.h"
 
 namespace ash {
@@ -57,12 +55,7 @@ class EcheTrayStreamStatusObserverTest : public AshTestBase {
     // fake_phone_hub_manager_.fake_feature_status_provider()->SetStatus(
     //     phonehub::FeatureStatus::kEnabledAndConnected);
     fake_feature_status_provider_.SetStatus(FeatureStatus::kIneligible);
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kEcheSWA},
-        /*disabled_features=*/{});
     DCHECK(test_web_view_factory_.get());
-    ui::ResourceBundle::CleanupSharedInstance();
-    AshTestSuite::LoadTestResources();
     AshTestBase::SetUp();
     eche_tray_ =
         ash::StatusAreaWidgetTestHelper::GetStatusAreaWidget()->eche_tray();
@@ -79,8 +72,8 @@ class EcheTrayStreamStatusObserverTest : public AshTestBase {
 
   void TearDown() override {
     observer_.reset();
-    apps_launch_info_provider_.reset();
     stream_status_change_handler_.reset();
+    apps_launch_info_provider_.reset();
     connection_status_handler_.reset();
     eche_tray_ = nullptr;
     AshTestBase::TearDown();

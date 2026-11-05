@@ -12,15 +12,17 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/autofill/android/save_update_address_profile_prompt_mode.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/ui/autofill/autofill_message_model.h"
-#include "components/autofill/core/common/autofill_features.h"
-#include "chrome/browser/ui/autofill/autofill_message_model_test_api.h"
-#include "chrome/browser/ui/autofill/mock_autofill_dialog_controller.h"
-#include "chrome/browser/ui/autofill/mock_autofill_message_controller.h"
+#include "chrome/browser/ui/android/autofill/autofill_message_model.h"
+#include "chrome/browser/ui/android/autofill/autofill_message_model_test_api.h"
+#include "chrome/browser/ui/android/autofill/mock_autofill_dialog_controller.h"
+#include "chrome/browser/ui/android/autofill/mock_autofill_message_controller.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
+#include "components/autofill/core/browser/payments/legal_message_line.h"
+#include "components/autofill/core/browser/payments/test_legal_message_line.h"
 #include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/strings/grit/components_strings.h"
@@ -318,8 +320,24 @@ TEST_F(AutofillAiSaveUpdateEntityFlowManagerTest, ShowLocalSaveNotification) {
       IDS_AUTOFILL_AI_SNACK_BAR_CONFIRMATION_BUTTON_LABEL);
 
   EXPECT_CALL(autofill_dialog_controller(),
-              Show(title, description, button, _));
+              Show(title, description, /*positive_button_text=*/button,
+                   /*negative_button_text=*/std::u16string(), _));
   flow_manager().ShowLocalSaveNotification();
+}
+
+TEST_F(AutofillAiSaveUpdateEntityFlowManagerTest,
+       ShowSaveMessage_WithLegalMessageLines) {
+  std::unique_ptr<AutofillMessageModel> message_model;
+  EXPECT_CALL(message_controller(), Show(_))
+      .WillOnce(SaveArgByMove<0>(&message_model));
+  LegalMessageLines lines;
+  lines.push_back(TestLegalMessageLine("Legal message line"));
+  flow_manager().OfferSave(new_entity(), /*old_entity=*/std::nullopt,
+                           prompt_closed_callback().Get(), std::move(lines));
+
+  EXPECT_EQ(test_api(*message_model).GetMessage().GetTitle(),
+            l10n_util::GetStringUTF16(
+                IDS_AUTOFILL_AI_SAVE_PASSPORT_ENTITY_DIALOG_TITLE_ANDROID));
 }
 
 }  // namespace autofill

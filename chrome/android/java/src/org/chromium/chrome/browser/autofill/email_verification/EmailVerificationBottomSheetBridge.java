@@ -10,14 +10,16 @@ import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.autofill.anchored_dialog.AnchoredDialogCoordinator;
 import org.chromium.chrome.browser.autofill.anchored_dialog.AnchoredDialogCoordinatorProvider;
-import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.components.autofill.EmailVerificationPermissionUiStatus;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
@@ -31,7 +33,10 @@ import org.chromium.ui.base.WindowAndroid;
 @NullMarked
 public class EmailVerificationBottomSheetBridge
         implements EmailVerificationBottomSheetCoordinator.Delegate {
-    private long mNativeBridge;
+    @JniType("::autofill::EmailVerificationBottomSheetBridge")
+    interface NativeEmailVerificationBottomSheetBridge extends JniTypeToken {}
+
+    private @Nullable JniRawPtr<NativeEmailVerificationBottomSheetBridge> mNativeBridge;
     private final @Nullable Context mContext;
     private final @Nullable BottomSheetController mBottomSheetController;
     private final @Nullable AnchoredDialogCoordinator mAnchoredDialogCoordinator;
@@ -40,7 +45,8 @@ public class EmailVerificationBottomSheetBridge
     @CalledByNative
     @VisibleForTesting
     /*package*/ EmailVerificationBottomSheetBridge(
-            long nativeBridge, WindowAndroid window, TabModel tabModel) {
+            JniRawPtr<NativeEmailVerificationBottomSheetBridge> nativeBridge,
+            WindowAndroid window) {
         mNativeBridge = nativeBridge;
         mContext = window.getContext().get();
         mBottomSheetController = BottomSheetControllerProvider.from(window);
@@ -57,13 +63,19 @@ public class EmailVerificationBottomSheetBridge
     public void requestShowContent(
             @JniType("std::u16string") String title,
             @JniType("std::u16string") String description) {
-        if (mNativeBridge == 0) {
+        if (mNativeBridge == null) {
             return;
         }
         if (mContext == null
                 || mBottomSheetController == null
                 || mAnchoredDialogCoordinator == null) {
-            onUiDecision(EmailVerificationPermissionUiStatus.OTHER);
+            onUiDismissed(EmailVerificationPermissionUiStatus.OTHER);
+            return;
+        }
+
+        if (mCoordinator != null) {
+            // A bottom sheet is already showing. Do not replace it or disrupt an
+            // active loading state.
             return;
         }
 
@@ -81,32 +93,41 @@ public class EmailVerificationBottomSheetBridge
     /** Requests to hide the bottom sheet if showing. */
     @CalledByNative
     public void hide() {
-        if (mNativeBridge == 0) return;
-        if (mCoordinator != null) {
-            mCoordinator.hide(BottomSheetController.StateChangeReason.INTERACTION_COMPLETE);
-        }
+        if (mNativeBridge == null || mCoordinator == null) return;
+        mCoordinator.hide();
     }
 
     /** Called when the bottom sheet has been shown. */
     @Override
     public void onUiShown() {
-        if (mNativeBridge == 0) return;
+        if (mNativeBridge == null) return;
         EmailVerificationBottomSheetBridgeJni.get().onUiShown(mNativeBridge);
     }
 
-    /** Called when a UI decision has been made. */
+    /** Called when the confirm/verify button has been clicked. */
     @Override
-    public void onUiDecision(@EmailVerificationPermissionUiStatus int status) {
-        if (mNativeBridge == 0) return;
-        EmailVerificationBottomSheetBridgeJni.get().onUiDecision(mNativeBridge, status);
+    public void onUiAccepted() {
+        if (mNativeBridge == null) return;
+        EmailVerificationBottomSheetBridgeJni.get().onUiAccepted(mNativeBridge);
+    }
+
+    /** Called when the bottom sheet has been dismissed/hidden. */
+    @Override
+    public void onUiDismissed(@EmailVerificationPermissionUiStatus int reason) {
+        mCoordinator = null;
+        if (mNativeBridge == null) return;
+        EmailVerificationBottomSheetBridgeJni.get().onUiDismissed(mNativeBridge, reason);
     }
 
     @CalledByNative
     @VisibleForTesting
     /*package*/ void destroy() {
-        mNativeBridge = 0;
+        if (mNativeBridge != null) {
+            mNativeBridge.release();
+            mNativeBridge = null;
+        }
         if (mCoordinator == null) return;
-        mCoordinator.hide(BottomSheetController.StateChangeReason.NONE);
+        mCoordinator.destroy();
         mCoordinator = null;
     }
 
@@ -115,11 +136,13 @@ public class EmailVerificationBottomSheetBridge
     }
 
     @NativeMethods
-    public interface Natives {
-        void onUiShown(long nativeEmailVerificationBottomSheetBridge);
+    interface Natives {
+        void onUiShown(JniPtr<NativeEmailVerificationBottomSheetBridge> self);
 
-        void onUiDecision(
-                long nativeEmailVerificationBottomSheetBridge,
-                @EmailVerificationPermissionUiStatus int status);
+        void onUiAccepted(JniPtr<NativeEmailVerificationBottomSheetBridge> self);
+
+        void onUiDismissed(
+                JniPtr<NativeEmailVerificationBottomSheetBridge> self,
+                @EmailVerificationPermissionUiStatus int reason);
     }
 }

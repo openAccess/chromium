@@ -41,30 +41,8 @@ namespace content_settings {
 
 namespace {
 
-using net::cookie_util::StorageAccessResult;
 using ThirdPartyCookieAllowMechanism =
     CookieSettingsBase::ThirdPartyCookieAllowMechanism;
-
-constexpr StorageAccessResult GetStorageAccessResult(
-    ThirdPartyCookieAllowMechanism mechanism) {
-  using AllowMechanism = ThirdPartyCookieAllowMechanism;
-  switch (mechanism) {
-    case AllowMechanism::kNone:
-      return StorageAccessResult::ACCESS_BLOCKED;
-    case AllowMechanism::kAllowByExplicitSetting:
-    case AllowMechanism::kAllowByGlobalSetting:
-    case AllowMechanism::kAllowByEnterprisePolicyCookieAllowedForUrls:
-      return StorageAccessResult::ACCESS_ALLOWED;
-    case AllowMechanism::kAllowByStorageAccess:
-      return StorageAccessResult::ACCESS_ALLOWED_STORAGE_ACCESS_GRANT;
-    case AllowMechanism::kAllowByTopLevelStorageAccess:
-      return StorageAccessResult::ACCESS_ALLOWED_TOP_LEVEL_STORAGE_ACCESS_GRANT;
-    case AllowMechanism::kAllowByScheme:
-      return StorageAccessResult::ACCESS_ALLOWED_SCHEME;
-    case AllowMechanism::kAllowBySandboxValue:
-      return StorageAccessResult::ACCESS_ALLOWED_SANDBOX_VALUE;
-  }
-}
 
 // Returns true iff the request is considered third-party.
 bool IsThirdPartyRequest(const GURL& url,
@@ -107,6 +85,12 @@ bool IsStorageAccessAllowedByPermissionsPolicy(
       network::mojom::PermissionsPolicyFeature::kStorageAccessAPI, origin);
 }
 
+// Returns true if third-party storage partitioning is active.
+bool IsThirdPartyPartitionedStorageEnabled() {
+  return base::FeatureList::IsEnabled(
+      net::features::kThirdPartyStoragePartitioning);
+}
+
 }  // namespace
 
 
@@ -117,14 +101,12 @@ CookieSettingsBase::CookieSettingWithMetadata::CookieSettingWithMetadata(
     bool allow_partitioned_cookies,
     bool is_explicit_setting,
     ThirdPartyCookieAllowMechanism third_party_cookie_allow_mechanism,
-    bool is_third_party_request,
-    AllowedByStorageAccessType allowed_by_storage_access_type)
+    bool is_third_party_request)
     : cookie_setting_(cookie_setting),
       allow_partitioned_cookies_(allow_partitioned_cookies),
       is_explicit_setting_(is_explicit_setting),
       third_party_cookie_allow_mechanism_(third_party_cookie_allow_mechanism),
-      is_third_party_request_(is_third_party_request),
-      allowed_by_storage_access_type_(allowed_by_storage_access_type) {}
+      is_third_party_request_(is_third_party_request) {}
 
 bool CookieSettingsBase::CookieSettingWithMetadata::
     BlockedByThirdPartyCookieBlocking() const {
@@ -141,7 +123,6 @@ CookieSettingsBase::GetContentSettingsTypes() {
           ContentSettingsType::COOKIES,
           ContentSettingsType::LEGACY_COOKIE_ACCESS,
           ContentSettingsType::STORAGE_ACCESS,
-          ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS,
           ContentSettingsType::FEDERATED_IDENTITY_SHARING,
           ContentSettingsType::LEGACY_COOKIE_SCOPE,
       });
@@ -256,6 +237,56 @@ bool CookieSettingsBase::IsFullCookieAccessAllowed(
   return IsAllowed(setting.cookie_setting());
 }
 
+bool CookieSettingsBase::IsAnyStorageAccessAllowed(
+    const GURL& url,
+    const net::SiteForCookies& site_for_cookies,
+    base::optional_ref<const url::Origin> top_frame_origin,
+    net::CookieSettingOverrides overrides,
+    base::optional_ref<const net::CookiePartitionKey> cookie_partition_key,
+    CookieSettingWithMetadata* cookie_settings) const {
+  // Storage access permissions are evaluated by reusing
+  // `IsFullCookieAccessAllowed()`. As a side effect of reusing this cookie
+  // helper, passing a nonced partition key causes `IsFullCookieAccessAllowed()`
+  // to immediately reject access because nonced contexts (e.g. FencedFrames or
+  // Credentialless iframes) cannot access unpartitioned cookies. However, such
+  // contexts are permitted to access partitioned storage (e.g. CacheStorage,
+  // IndexedDB) unless cookies/storage are explicitly blocked for the site. See:
+  // - https://wicg.github.io/anonymous-iframe/#proposal-credentials
+  // -
+  // https://github.com/WICG/fenced-frame/blob/master/explainer/fenced_frame.md#storage-and-communication
+  // We therefore intentionally omit the nonce when passing the
+  // `cookie_partition_key` so that `IsFullCookieAccessAllowed()` evaluates the
+  // site-level permission and populates the metadata properly without
+  // triggering the nonced-cookie rejection.
+  std::optional<net::CookiePartitionKey> nonceless_partition_key =
+      cookie_partition_key.CopyAsOptional();
+  if (net::CookiePartitionKey::HasNonce(cookie_partition_key)) {
+    nonceless_partition_key = net::CookiePartitionKey::FromStorageKeyComponents(
+        cookie_partition_key->site(),
+        net::CookiePartitionKey::BoolToAncestorChainBit(
+            cookie_partition_key->IsThirdParty()),
+        /*nonce=*/std::nullopt);
+  }
+
+  CookieSettingWithMetadata setting_with_metadata;
+  bool allow = IsFullCookieAccessAllowed(
+      url, site_for_cookies, top_frame_origin, overrides,
+      nonceless_partition_key, &setting_with_metadata);
+
+  if (cookie_settings) {
+    *cookie_settings = setting_with_metadata;
+  }
+
+  return allow ||
+         (setting_with_metadata.BlockedByThirdPartyCookieBlocking() &&
+          IsThirdPartyPartitionedStorageEnabled()) ||
+         // Allow storage when --test-third-party-cookie-phaseout is used, but
+         // ensure that only partitioned storage is available. This developer
+         // flag is meant to simulate Chrome's behavior when 3P cookies are
+         // turned down to help developers test their site.
+         net::cookie_util::IsForceThirdPartyCookieBlockingEnabled();
+}
+
 bool CookieSettingsBase::IsCookieSessionOnly(const GURL& origin) const {
   // Pass GURL() as first_party_url since we don't know the context and
   // don't want to match against (*, exception) pattern.
@@ -322,25 +353,12 @@ std::optional<bool> CookieSettingsBase::MaybeBlockThirdPartyCookiesPerModifiers(
   }
 }
 
-bool CookieSettingsBase::IsAllowedByTopLevelStorageAccessGrant(
-    const GURL& url,
-    const GURL& first_party_url,
-    net::CookieSettingOverrides overrides) const {
-  return overrides.Has(
-             net::CookieSettingOverride::kTopLevelStorageAccessGrantEligible) &&
-         GetContentSetting(url, first_party_url,
-                           ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS,
-                           /*info=*/nullptr) == CONTENT_SETTING_ALLOW;
-}
-
 bool CookieSettingsBase::IsAllowedBySandboxValue(
     const GURL& url,
     const GURL& first_party_url,
     net::CookieSettingOverrides overrides) const {
   if (!overrides.Has(
-          net::CookieSettingOverride::kAllowSameSiteNoneCookiesInSandbox) ||
-      !base::FeatureList::IsEnabled(
-          net::features::kAllowSameSiteNoneCookiesInSandbox)) {
+          net::CookieSettingOverride::kAllowSameSiteNoneCookiesInSandbox)) {
     return false;
   }
 
@@ -380,17 +398,10 @@ CookieSettingsBase::DecideAccess(const GURL& url,
   }
 
   // Site controlled mechanisms (ex: web APIs, deprecation trial):
-  if (IsAllowedByTopLevelStorageAccessGrant(url, first_party_url, overrides)) {
-    return AllowAllCookies{
-        ThirdPartyCookieAllowMechanism::kAllowByTopLevelStorageAccess,
-        IsAllowedByStorageAccessGrant(url, first_party_url, overrides)
-            ? AllowedByStorageAccessType::kTopLevelAndStorageAccess
-            : AllowedByStorageAccessType::kTopLevelOnly};
-  }
   if (IsAllowedByStorageAccessGrant(url, first_party_url, overrides)) {
     return AllowAllCookies{
         ThirdPartyCookieAllowMechanism::kAllowByStorageAccess,
-        AllowedByStorageAccessType::kStorageAccessOnly};
+    };
   }
   if (IsAllowedBySandboxValue(url, first_party_url, overrides)) {
     return AllowAllCookies{
@@ -475,9 +486,6 @@ CookieSettingsBase::GetCookieSettingInternal(
     CHECK(is_third_party_request ||
           allow_cookies->mechanism == ThirdPartyCookieAllowMechanism::kNone);
 
-    FireStorageAccessHistogram(
-        GetStorageAccessResult(allow_cookies->mechanism));
-
     if (info) {
       *info = std::move(setting_info);
     }
@@ -487,7 +495,6 @@ CookieSettingsBase::GetCookieSettingInternal(
         is_explicit_setting,
         /*third_party_cookie_allow_mechanism=*/allow_cookies->mechanism,
         is_third_party_request,
-        allow_cookies->allowed_by_storage_access_type,
     };
     CHECK(!out.BlockedByThirdPartyCookieBlocking());
     CHECK(out.allow_partitioned_cookies());
@@ -498,8 +505,6 @@ CookieSettingsBase::GetCookieSettingInternal(
     CHECK(is_third_party_request);
     CHECK(block_third_party_cookies);
     CHECK(!is_explicit_setting);
-
-    FireStorageAccessHistogram(StorageAccessResult::ACCESS_BLOCKED);
 
     if (info) {
       *info = std::move(setting_info);
@@ -518,7 +523,6 @@ CookieSettingsBase::GetCookieSettingInternal(
 
   CHECK(std::holds_alternative<BlockAllCookies>(choice));
   CHECK_EQ(cookie_setting, CONTENT_SETTING_BLOCK);
-  FireStorageAccessHistogram(StorageAccessResult::ACCESS_BLOCKED);
 
   if (info) {
     *info = std::move(setting_info);

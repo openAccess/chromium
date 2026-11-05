@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/core/layout/inline/line_info.h"
 
-#include "base/containers/adapters.h"
+#include <ranges>
+
 #include "third_party/blink/renderer/core/layout/inline/inline_break_token.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_item_result_ruby_column.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_node.h"
@@ -15,7 +16,7 @@ namespace blink {
 
 namespace {
 inline bool IsHangingSpace(UChar c) {
-  return c == uchar::kSpace || Character::IsOtherSpaceSeparator(c);
+  return c == uchar::kSpace || unicode::IsOtherSpaceSeparator(c);
 }
 
 wtf_size_t GlyphCount(const InlineItemResult& item_result) {
@@ -85,7 +86,6 @@ void LineInfo::Reset() {
   needs_accurate_end_position_ = false;
   is_ruby_base_ = false;
   is_ruby_text_ = false;
-  may_have_text_combine_or_ruby_item_ = false;
   may_have_ruby_overhang_ = false;
   allow_hang_for_alignment_ = false;
   is_start_of_paragraph_ = false;
@@ -97,7 +97,7 @@ void LineInfo::SetLineStyle(const InlineNode& node,
   use_first_line_style_ = use_first_line_style;
   items_data_ = &items_data;
   const LayoutBox* box = node.GetLayoutBox();
-  line_style_ = box->StyleRef(use_first_line_style_);
+  line_style_ = box->Style(use_first_line_style_);
   needs_accurate_end_position_ = ComputeNeedsAccurateEndPosition();
 
   // Reset block start offset related members.
@@ -218,7 +218,7 @@ unsigned LineInfo::EndTextOffset() const {
 }
 
 unsigned LineInfo::InflowEndOffsetInternal(bool skip_forced_break) const {
-  for (const auto& item_result : base::Reversed(Results())) {
+  for (const auto& item_result : std::views::reverse(Results())) {
     DCHECK(item_result.item);
     const InlineItem& item = *item_result.item;
     if (skip_forced_break) {
@@ -257,7 +257,7 @@ bool LineInfo::GlyphCountIsGreaterThan(wtf_size_t limit) const {
 }
 
 bool LineInfo::IsHyphenated() const {
-  for (const InlineItemResult& item_result : base::Reversed(Results())) {
+  for (const InlineItemResult& item_result : std::views::reverse(Results())) {
     if (item_result.Length()) {
       return item_result.is_hyphenated;
     }
@@ -296,7 +296,7 @@ LayoutUnit LineInfo::ComputeTrailingSpaceWidth(unsigned* end_offset_out) const {
   }
 
   LayoutUnit trailing_spaces_width;
-  for (const auto& item_result : base::Reversed(Results())) {
+  for (const auto& item_result : std::views::reverse(Results())) {
     DCHECK(item_result.item);
     const InlineItem& item = *item_result.item;
 
@@ -423,17 +423,6 @@ LayoutUnit LineInfo::ComputeWidth() const {
 
   return inline_size;
 }
-
-#if DCHECK_IS_ON()
-float LineInfo::ComputeWidthInFloat() const {
-  float inline_size = TextIndent();
-  for (const InlineItemResult& item_result : Results()) {
-    inline_size += item_result.inline_size.ToFloat();
-  }
-
-  return inline_size;
-}
-#endif
 
 // Block start adjustment and annotation ovreflow
 //

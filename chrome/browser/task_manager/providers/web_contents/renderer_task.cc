@@ -20,6 +20,10 @@
 #include "chrome/browser/task_manager/task_manager_observer.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
+#include "content/public/browser/favicon_status.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
@@ -58,7 +62,8 @@ std::u16string GetRendererProfileName(
 }
 
 bool IsRendererResourceSamplingDisabled(int64_t flags) {
-  return (flags & (REFRESH_TYPE_V8_MEMORY | REFRESH_TYPE_WEBCACHE_STATS)) == 0;
+  return (flags & (REFRESH_TYPE_V8_MEMORY | REFRESH_TYPE_WEBCACHE_STATS |
+                   REFRESH_TYPE_CPPGC_MEMORY)) == 0;
 }
 
 }  // namespace
@@ -88,7 +93,7 @@ RendererTask::RendererTask(const std::u16string& title,
       render_process_host_(render_process_host),
       renderer_resources_sampler_(
           CreateRendererResourcesSampler(render_process_host_)),
-      render_process_id_(render_process_host_->GetDeprecatedID()),
+      render_process_id_(render_process_host_->GetID()),
       profile_name_(GetRendererProfileName(render_process_host_)) {
   OnNetworkBytesRead(base::ByteSize(0));
 
@@ -148,6 +153,10 @@ void RendererTask::Refresh(const base::TimeDelta& update_interval,
       base::ByteSize(renderer_resources_sampler_->GetV8MemoryAllocated());
   v8_memory_used_ =
       base::ByteSize(renderer_resources_sampler_->GetV8MemoryUsed());
+  cppgc_memory_allocated_ =
+      base::ByteSize(renderer_resources_sampler_->GetCppGCMemoryAllocated());
+  cppgc_memory_used_ =
+      base::ByteSize(renderer_resources_sampler_->GetCppGCMemoryUsed());
   webcache_stats_ = renderer_resources_sampler_->GetBlinkMemoryCacheStats();
 }
 
@@ -155,14 +164,14 @@ Task::Type RendererTask::GetType() const {
   return Task::RENDERER;
 }
 
-int RendererTask::GetChildProcessUniqueID() const {
+content::ChildProcessId RendererTask::GetChildProcessUniqueID() const {
   return render_process_id_;
 }
 
 void RendererTask::GetTerminationStatus(base::TerminationStatus* out_status,
                                         int* out_error_code) const {
-  DCHECK(out_status);
-  DCHECK(out_error_code);
+  CHECK(out_status, base::NotFatalUntil::M162);
+  CHECK(out_error_code, base::NotFatalUntil::M162);
 
   *out_status = termination_status_;
   *out_error_code = termination_error_code_;
@@ -182,6 +191,14 @@ std::optional<base::ByteSize> RendererTask::GetV8MemoryAllocated() const {
 
 std::optional<base::ByteSize> RendererTask::GetV8MemoryUsed() const {
   return v8_memory_used_;
+}
+
+std::optional<base::ByteSize> RendererTask::GetCppGCMemoryAllocated() const {
+  return cppgc_memory_allocated_;
+}
+
+std::optional<base::ByteSize> RendererTask::GetCppGCMemoryUsed() const {
+  return cppgc_memory_used_;
 }
 
 bool RendererTask::ReportsWebCacheStats() const {
@@ -206,7 +223,9 @@ void RendererTask::OnFaviconUpdated(favicon::FaviconDriver* favicon_driver,
   if (notification_icon_type == NON_TOUCH_LARGEST ||
       notification_icon_type == TOUCH_LARGEST) {
     const gfx::ImageSkia* icon = image.ToImageSkia();
-    set_icon(icon ? *icon : gfx::ImageSkia());
+    set_icon(icon ? *icon : gfx::ImageSkia(),
+             ShouldThemifyFaviconOfEntry(
+                 web_contents()->GetController().GetLastCommittedEntry()));
   }
 #endif
 }
@@ -218,7 +237,7 @@ base::WeakPtr<RendererTask> RendererTask::AsWeakPtr() {
 // static
 std::u16string RendererTask::GetTitleFromWebContents(
     content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
   std::u16string title = web_contents->GetTitle();
   if (title.empty()) {
     GURL url = web_contents->GetLastCommittedURL();
@@ -243,7 +262,7 @@ std::u16string RendererTask::GetTitleFromWebContents(
 // static
 std::unique_ptr<gfx::ImageSkia> RendererTask::GetFaviconFromWebContents(
     content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
 
 #if BUILDFLAG(IS_ANDROID)
   TabAndroid* tab_android = TabAndroid::FromWebContents(web_contents);
@@ -268,6 +287,13 @@ std::unique_ptr<gfx::ImageSkia> RendererTask::GetFaviconFromWebContents(
 
   return std::make_unique<gfx::ImageSkia>(*image.ToImageSkia());
 #endif
+}
+
+// static
+bool RendererTask::ShouldThemifyFaviconOfEntry(
+    content::NavigationEntry* entry) {
+  return entry && (!entry->GetFavicon().valid ||
+                   favicon::ShouldThemifyFaviconForEntry(entry));
 }
 
 // static
@@ -301,7 +327,9 @@ const std::u16string RendererTask::PrefixRendererTitle(
 void RendererTask::DefaultUpdateFaviconImpl() {
   std::unique_ptr<gfx::ImageSkia> icon =
       GetFaviconFromWebContents(web_contents());
-  set_icon(icon ? *icon : gfx::ImageSkia());
+  set_icon(icon ? *icon : gfx::ImageSkia(),
+           ShouldThemifyFaviconOfEntry(
+               web_contents()->GetController().GetLastCommittedEntry()));
 }
 
 }  // namespace task_manager

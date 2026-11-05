@@ -137,22 +137,23 @@ CSSValue* CSSValue::Create(const Length& value, float zoom) {
   }
 }
 
-bool CSSValue::HasFailedOrCanceledSubresources() const {
+bool CSSValue::HasFailedOrCanceledSubresources(ResourceFetcher* fetcher) const {
   if (IsValueList()) {
-    return To<CSSValueList>(this)->HasFailedOrCanceledSubresources();
+    return To<CSSValueList>(this)->HasFailedOrCanceledSubresources(fetcher);
   }
   if (GetClassType() == kFontFaceSrcClass) {
-    return To<CSSFontFaceSrcValue>(this)->HasFailedOrCanceledSubresources();
+    return To<CSSFontFaceSrcValue>(this)->HasFailedOrCanceledSubresources(
+        fetcher);
   }
   if (GetClassType() == kImageClass) {
-    return To<CSSImageValue>(this)->HasFailedOrCanceledSubresources();
+    return To<CSSImageValue>(this)->HasFailedOrCanceledSubresources(fetcher);
   }
   if (GetClassType() == kCrossfadeClass) {
     return To<cssvalue::CSSCrossfadeValue>(this)
-        ->HasFailedOrCanceledSubresources();
+        ->HasFailedOrCanceledSubresources(fetcher);
   }
   if (GetClassType() == kImageSetClass) {
-    return To<CSSImageSetValue>(this)->HasFailedOrCanceledSubresources();
+    return To<CSSImageSetValue>(this)->HasFailedOrCanceledSubresources(fetcher);
   }
 
   return false;
@@ -573,7 +574,12 @@ String CSSValue::CssText() const {
   NOTREACHED();
 }
 
-unsigned CSSValue::Hash() const {
+// static
+String CSSValue::CssTextOrEmptyString(const CSSValue* value) {
+  return value ? value->CssText() : String();
+}
+
+uint32_t CSSValue::Hash() const {
   switch (GetClassType()) {
     case kColorClass:
       return HashInts(GetClassType(),
@@ -1181,6 +1187,47 @@ String CSSValue::ClassTypeToString() const {
   NOTREACHED();
 }
 #endif
+
+bool CSSValue::IsComputationallyIndependent() const {
+  DCHECK(!IsCSSWideKeyword());
+
+  if (const auto* variable_reference_value =
+          DynamicTo<CSSUnparsedDeclarationValue>(this)) {
+    return !variable_reference_value->VariableDataValue()
+                ->NeedsVariableResolution();
+  }
+
+  if (const auto* value_list = DynamicTo<CSSValueList>(this)) {
+    for (const CSSValue* inner_value : *value_list) {
+      if (!inner_value->IsComputationallyIndependent()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (const auto* primitive_value = DynamicTo<CSSPrimitiveValue>(this)) {
+    return primitive_value->IsComputationallyIndependent();
+  }
+
+  switch (GetClassType()) {
+    case kAlphaColorClass:
+      return To<cssvalue::CSSAlphaColorValue>(this)
+          ->IsComputationallyIndependent();
+    case kColorMixClass:
+      return To<cssvalue::CSSColorMixValue>(this)
+          ->IsComputationallyIndependent();
+    case kRelativeColorClass:
+      return To<cssvalue::CSSRelativeColorValue>(this)
+          ->IsComputationallyIndependent();
+    case kUnresolvedColorClass:
+      return To<cssvalue::CSSUnresolvedColorValue>(this)
+          ->IsComputationallyIndependent();
+    default:
+      // TODO(timloh): Image values can also contain lengths.
+      return true;
+  }
+}
 
 bool CSSValue::HasRandomFunctions() const {
   switch (GetClassType()) {

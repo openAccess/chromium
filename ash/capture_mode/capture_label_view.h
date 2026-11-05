@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "ash/ash_export.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/system_decoration.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -76,7 +76,6 @@ class ASH_EXPORT CaptureLabelView : public views::View,
   void Layout(PassKey) override;
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override;
-  void OnThemeChanged() override;
 
   // gfx::AnimationDelegate:
   void AnimationEnded(const gfx::Animation* animation) override;
@@ -123,7 +122,7 @@ class ASH_EXPORT CaptureLabelView : public views::View,
   std::unique_ptr<DropToStopRecordingButtonAnimation>
       drop_to_stop_button_animation_;
 
-  std::unique_ptr<SystemShadow> shadow_;
+  std::unique_ptr<SystemDecoration> decoration_;
 
   base::WeakPtrFactory<CaptureLabelView> weak_factory_{this};
 };

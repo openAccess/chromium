@@ -53,6 +53,7 @@
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
@@ -66,6 +67,7 @@
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
 #include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/frame/immersive_mode_controller_chromeos.h"
 #include "chrome/browser/ui/views/frame/immersive_mode_tester.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
@@ -75,13 +77,12 @@
 #include "chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.h"
 #include "chrome/browser/ui/views/location_bar/zoom_bubble_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_view.h"
-#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view_base.h"
 #include "chrome/browser/ui/views/profiles/profile_indicator_icon.h"
 #include "chrome/browser/ui/views/tab_search_bubble_host.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
-#include "chrome/browser/ui/views/toolbar/app_menu.h"
 #include "chrome/browser/ui/views/toolbar/app_menu_control.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_view.h"
@@ -109,6 +110,7 @@
 #include "chromeos/ui/frame/multitask_menu/float_controller_base.h"
 #include "components/account_id/account_id.h"
 #include "components/account_id/account_id_literal.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
@@ -136,6 +138,7 @@
 #include "ui/aura/window.h"
 #include "ui/base/class_property.h"
 #include "ui/base/hit_test.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/compositor/layer_solid_color.h"
@@ -150,6 +153,7 @@
 #include "ui/native_theme/mock_os_settings_provider.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/test/views_test_utils.h"
@@ -160,7 +164,6 @@
 
 using BrowserFrameViewChromeOSTest =
     TopChromeMdParamTest<ChromeOSBrowserUITest>;
-
 
 class BrowserFrameViewChromeOSTestApi {
  public:
@@ -340,7 +343,6 @@ IN_PROC_BROWSER_TEST_P(BrowserFrameViewChromeOSTest,
 
 using BrowserFrameViewChromeOSTouchTest =
     TopChromeTouchTest<ChromeOSBrowserUITest>;
-
 
 // Test that the frame view does not do any painting in non-immersive
 // fullscreen.
@@ -560,7 +562,7 @@ class WebAppFrameViewChromeOSTest
   BrowserView* CreateWebAppPopup(BrowserWindowInterface* parent_browser) {
     NavigateParams navigate_params(parent_browser, GetAppURL(),
                                    ui::PAGE_TRANSITION_LINK);
-    navigate_params.disposition = WindowOpenDisposition::NEW_POPUP;
+    navigate_params.disposition = ui::mojom::WindowOpenDisposition::kNewPopup;
 
     content::TestNavigationObserver navigation_observer(GetAppURL());
     navigation_observer.StartWatchingNewWebContents();
@@ -570,8 +572,6 @@ class WebAppFrameViewChromeOSTest
     return BrowserView::GetBrowserViewForBrowser(navigate_params.browser);
   }
 
-  AppMenu* GetAppMenu() { return web_app_menu_button_->app_menu(); }
-
   SkColor GetActiveColor() const {
     return *web_app_frame_toolbar_->active_foreground_color_;
   }
@@ -580,10 +580,9 @@ class WebAppFrameViewChromeOSTest
     return web_app_frame_toolbar_->paint_as_active_;
   }
 
-  IconLabelBubbleView* GetPageActionView(actions::ActionId action_id) {
-    auto* provider = browser_view_->toolbar_button_provider();
-    return page_actions::GetIconLabelBubbleViewForTesting(
-        provider->GetPageActionViewInterface(action_id), action_id);
+  page_actions::PageActionTestAccessor GetPageActionAccessor(
+      actions::ActionId action_id) {
+    return page_actions::PageActionTestAccessor(app_browser_, action_id);
   }
 
   ContentSettingImageView* GrantGeolocationPermission() {
@@ -642,7 +641,8 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, PageInfoBubblePosition) {
   // Check the bubble anchors inside the main app window even if there's space
   // available outside the main app window.
   gfx::Rect page_info_bounds =
-      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting()
+      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(
+          app_browser_->GetTabStripModel()->GetActiveWebContents())
           ->GetWidget()
           ->GetWindowBoundsInScreen();
   EXPECT_TRUE(widget->GetWindowBoundsInScreen().Contains(page_info_bounds));
@@ -650,11 +650,11 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, PageInfoBubblePosition) {
 
 IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, FocusableViews) {
   SetUpWebApp();
-  EXPECT_TRUE(browser_view_->contents_web_view()->HasFocus());
+  EXPECT_TRUE(browser_view_->GetContentsView()->HasFocus());
   browser_view_->GetFocusManager()->AdvanceFocus(false);
   EXPECT_TRUE(web_app_menu_button_->HasFocus());
   browser_view_->GetFocusManager()->AdvanceFocus(false);
-  EXPECT_TRUE(browser_view_->contents_web_view()->HasFocus());
+  EXPECT_TRUE(browser_view_->GetContentsView()->HasFocus());
 }
 
 IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest,
@@ -702,23 +702,22 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, ShowManagePasswordsIcon) {
   SetUpWebApp();
   content::WebContents* web_contents =
       app_browser_->GetTabStripModel()->GetActiveWebContents();
-  IconLabelBubbleView* manage_passwords_icon =
-      GetPageActionView(kActionShowPasswordsBubbleOrPage);
+  page_actions::PageActionTestAccessor manage_passwords_icon =
+      GetPageActionAccessor(kActionShowPasswordsBubbleOrPage);
 
-  EXPECT_TRUE(manage_passwords_icon);
-  EXPECT_FALSE(manage_passwords_icon->GetVisible());
+  EXPECT_FALSE(manage_passwords_icon.GetVisible());
 
   password_manager::StoredCredential credential;
   credential.username_value = u"test";
   credential.url = GetAppURL().DeprecatedGetOriginAsURL();
-  credential.match_type = password_manager::PasswordForm::MatchType::kExact;
+  credential.match_type = affiliations::MatchType::kExact;
   std::vector<password_manager::StoredCredential> credentials;
   credentials.push_back(std::move(credential));
   PasswordsClientUIDelegateFromWebContents(web_contents)
       ->OnPasswordAutofilled(credentials,
                              url::Origin::Create(credentials[0].url), {});
   chrome::ManagePasswordsForPage(app_browser_);
-  EXPECT_TRUE(manage_passwords_icon->GetVisible());
+  EXPECT_TRUE(manage_passwords_icon.GetVisible());
 }
 
 IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, ShowZoomIcon) {
@@ -727,29 +726,29 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, ShowZoomIcon) {
       app_browser_->GetTabStripModel()->GetActiveWebContents();
   zoom::ZoomController* zoom_controller =
       zoom::ZoomController::FromWebContents(web_contents);
-  IconLabelBubbleView* zoom_icon = GetPageActionView(kActionShowZoomBubble);
+  page_actions::PageActionTestAccessor zoom_icon =
+      GetPageActionAccessor(kActionShowZoomBubble);
 
   ZoomBubbleCoordinator* zoom_bubble_coordinator =
       ZoomBubbleCoordinator::From(app_browser_);
 
-  EXPECT_TRUE(zoom_icon);
-  EXPECT_FALSE(zoom_icon->GetVisible());
+  EXPECT_FALSE(zoom_icon.GetVisible());
   EXPECT_FALSE(zoom_bubble_coordinator->bubble());
 
   zoom_controller->SetZoomLevel(blink::ZoomFactorToZoomLevel(1.5));
-  EXPECT_TRUE(zoom_icon->GetVisible());
+  EXPECT_TRUE(zoom_icon.GetVisible());
   EXPECT_TRUE(zoom_bubble_coordinator->bubble());
 }
 
 IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, ShowFindIcon) {
   SetUpWebApp();
 
-  IconLabelBubbleView* find_icon = GetPageActionView(kActionFind);
-  ASSERT_TRUE(find_icon);
-  EXPECT_FALSE(find_icon->GetVisible());
+  page_actions::PageActionTestAccessor find_icon =
+      GetPageActionAccessor(kActionFind);
+  EXPECT_FALSE(find_icon.GetVisible());
 
   chrome::Find(app_browser_);
-  EXPECT_TRUE(find_icon->GetVisible());
+  EXPECT_TRUE(find_icon.GetVisible());
 }
 
 // TODO(crbug.com/420040505): Fix failures on the Linux Chromium OS ASan LSan
@@ -761,10 +760,10 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, ShowFindIcon) {
 #endif
 IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, MAYBE_ShowTranslateIcon) {
   SetUpWebApp();
-  IconLabelBubbleView* translate_icon = GetPageActionView(kActionShowTranslate);
+  page_actions::PageActionTestAccessor translate_icon =
+      GetPageActionAccessor(kActionShowTranslate);
 
-  ASSERT_TRUE(translate_icon);
-  EXPECT_FALSE(translate_icon->GetVisible());
+  EXPECT_FALSE(translate_icon.GetVisible());
 
   chrome::Find(app_browser_);
   browser_view_->ShowTranslateBubble(browser_view_->GetActiveWebContents(),
@@ -772,7 +771,7 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, MAYBE_ShowTranslateIcon) {
                                      "en", "fr",
                                      translate::TranslateErrors::NONE, true);
 
-  EXPECT_TRUE(translate_icon->GetVisible());
+  EXPECT_TRUE(translate_icon.GetVisible());
 }
 
 // Tests that the focus toolbar command focuses the app menu button in web-app
@@ -780,7 +779,7 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, MAYBE_ShowTranslateIcon) {
 IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest,
                        BrowserCommandFocusToolbarAppMenu) {
   SetUpWebApp();
-  EXPECT_TRUE(browser_view_->contents_web_view()->HasFocus());
+  EXPECT_TRUE(browser_view_->GetContentsView()->HasFocus());
 
   EXPECT_FALSE(web_app_menu_button_->HasFocus());
   chrome::ExecuteCommand(app_browser_, IDC_FOCUS_TOOLBAR);
@@ -799,7 +798,7 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest,
   // visible and nonzero size).
   RunScheduledLayouts();
 
-  EXPECT_TRUE(browser_view_->contents_web_view()->HasFocus());
+  EXPECT_TRUE(browser_view_->GetContentsView()->HasFocus());
   EXPECT_FALSE(web_app_menu_button_->HasFocus());
   EXPECT_FALSE(geolocation_icon->HasFocus());
 
@@ -812,9 +811,9 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest,
 // Tests that the show app menu command opens the app menu for web-app windows.
 IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, BrowserCommandShowAppMenu) {
   SetUpWebApp();
-  EXPECT_EQ(nullptr, GetAppMenu());
+  EXPECT_FALSE(web_app_menu_button_->IsMenuShowing());
   chrome::ExecuteCommand(app_browser_, IDC_SHOW_APP_MENU);
-  EXPECT_NE(nullptr, GetAppMenu());
+  EXPECT_TRUE(web_app_menu_button_->IsMenuShowing());
 }
 
 // Tests that the focus next pane command focuses the app menu for web-app
@@ -822,7 +821,7 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, BrowserCommandShowAppMenu) {
 IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest,
                        BrowserCommandFocusNextPane) {
   SetUpWebApp();
-  EXPECT_TRUE(browser_view_->contents_web_view()->HasFocus());
+  EXPECT_TRUE(browser_view_->GetContentsView()->HasFocus());
   EXPECT_FALSE(web_app_menu_button_->HasFocus());
   chrome::ExecuteCommand(app_browser_, IDC_FOCUS_NEXT_PANE);
   EXPECT_TRUE(web_app_menu_button_->HasFocus());
@@ -839,7 +838,7 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, IconNotShownButTitleShown) {
 // Tests that the custom tab bar is focusable from the keyboard.
 IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, CustomTabBarIsFocusable) {
   SetUpWebApp();
-  EXPECT_TRUE(browser_view_->contents_web_view()->HasFocus());
+  EXPECT_TRUE(browser_view_->GetContentsView()->HasFocus());
 
   auto* browser_view = BrowserView::GetBrowserViewForBrowser(app_browser_);
 
@@ -862,7 +861,7 @@ IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest, CustomTabBarIsFocusable) {
 IN_PROC_BROWSER_TEST_P(WebAppFrameViewChromeOSTest,
                        BrowserCommandFocusPreviousPane) {
   SetUpWebApp();
-  EXPECT_TRUE(browser_view_->contents_web_view()->HasFocus());
+  EXPECT_TRUE(browser_view_->GetContentsView()->HasFocus());
   EXPECT_FALSE(web_app_menu_button_->HasFocus());
   chrome::ExecuteCommand(app_browser_, IDC_FOCUS_PREVIOUS_PANE);
   EXPECT_TRUE(web_app_menu_button_->HasFocus());
@@ -1696,21 +1695,58 @@ IN_PROC_BROWSER_TEST_P(HomeLauncherBrowserFrameViewChromeOSTest,
   EXPECT_FALSE(immersive_mode_controller->IsEnabled());
 }
 
-using LockedFullscreenBrowserFrameViewChromeOSTest =
-    TopChromeMdParamTest<ChromeOSBrowserUITest>;
+// TODO(crbug.com/438540029): Rename this test suite to "TrustedPinned" to
+// disambiguate between LockedFullscreen (which is for extension API) and OnTask
+// locked (which is for class tools).
+class LockedFullscreenBrowserFrameViewChromeOSTest
+    : public ChromeOSBrowserUITest,
+      public testing::WithParamInterface<std::tuple<bool, bool>> {
+ public:
+  LockedFullscreenBrowserFrameViewChromeOSTest()
+      : touch_ui_scoper_(std::get<0>(GetParam())) {
+    scoped_feature_list_.InitWithFeatureState(
+        features::kUseUnifiedLockedStateController,
+        is_unified_locked_state_controller_enabled_);
+  }
+
+ protected:
+  void PinWindow(aura::Window* window,
+                 bool trusted,
+                 bool locked_for_on_task = false) {
+    if (trusted && is_unified_locked_state_controller_enabled_) {
+      auto* controller = chromeos::LockedStateController::From(browser());
+      ASSERT_TRUE(controller);
+      if (locked_for_on_task) {
+        controller->Lock(chromeos::LockedState::kOnTaskLocked);
+      } else {
+        controller->Lock(chromeos::LockedState::kExtensionLocked);
+      }
+    } else {
+      if (!is_unified_locked_state_controller_enabled_) {
+        ash::boca::OnTaskLockedController::From(browser())
+            ->set_locked_for_on_task(locked_for_on_task);
+      }
+      ChromeOSBrowserUITest::PinWindow(window, trusted);
+    }
+  }
+
+ private:
+  const bool is_unified_locked_state_controller_enabled_ =
+      std::get<1>(GetParam());
+  ui::TouchUiController::TouchUiScoperForTesting touch_ui_scoper_;
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
 
 IN_PROC_BROWSER_TEST_P(LockedFullscreenBrowserFrameViewChromeOSTest,
                        ToggleTabletModeWhenNotLockedForOnTask) {
-  ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
-      false);
   BrowserView* const browser_view =
       BrowserView::GetBrowserViewForBrowser(browser());
   auto* const immersive_mode_controller =
       ImmersiveModeController::From(browser());
   EXPECT_FALSE(immersive_mode_controller->IsEnabled());
 
-  // Set locked fullscreen state.
-  PinWindow(browser_view->GetWidget()->GetNativeWindow(), /*trusted=*/true);
+  PinWindow(browser_view->GetWidget()->GetNativeWindow(), /*trusted=*/true,
+            /*locked_for_on_task=*/false);
 
   // We're fullscreen, immersive is disabled in locked fullscreen, and while
   // we're at it, also make sure that the shelf is hidden.
@@ -1744,16 +1780,14 @@ IN_PROC_BROWSER_TEST_P(LockedFullscreenBrowserFrameViewChromeOSTest,
 
 IN_PROC_BROWSER_TEST_P(LockedFullscreenBrowserFrameViewChromeOSTest,
                        ToggleTabletModeWhenLockedForOnTask) {
-  ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
-      true);
   BrowserView* const browser_view =
       BrowserView::GetBrowserViewForBrowser(browser());
   auto* const immersive_mode_controller =
       ImmersiveModeController::From(browser());
   EXPECT_FALSE(immersive_mode_controller->IsEnabled());
 
-  // Set locked fullscreen state.
-  PinWindow(browser_view->GetWidget()->GetNativeWindow(), /*trusted=*/true);
+  PinWindow(browser_view->GetWidget()->GetNativeWindow(), /*trusted=*/true,
+            /*locked_for_on_task=*/true);
 
   // Verify immersive mode is enabled in locked fullscreen mode and when locked
   // for OnTask. Also verify that the shelf is hidden.
@@ -1828,7 +1862,6 @@ class BrowserFrameViewAshAvatarTest : public BrowserFrameViewChromeOSTest {
   }
 
  private:
-
   ash::DeviceStateMixin device_state_{
       &mixin_host_,
       ash::DeviceStateMixin::State::OOBE_COMPLETED_PERMANENTLY_UNOWNED};
@@ -2212,13 +2245,13 @@ IN_PROC_BROWSER_TEST_P(BrowserFrameViewAshThemeChangeTest, ThemeChange) {
           ->BrowserAppLauncher()
           ->LaunchAppWithParamsForTesting(apps::AppLaunchParams(
               app_id, apps::LaunchContainer::kLaunchContainerWindow,
-              WindowOpenDisposition::CURRENT_TAB,
+              ui::mojom::WindowOpenDisposition::kCurrentTab,
               apps::LaunchSource::kFromTest));
   ASSERT_TRUE(web_contents);
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
-  auto* contents_web_view =
-      BrowserView::GetBrowserViewForBrowser(browser)->contents_web_view();
+  auto* contents_web_view = BrowserView::GetBrowserViewForBrowser(browser)
+                                ->contents_web_view_for_testing();
 
   // Verify background color is immediately resolved from the app controller
   // despite the fact that the web contents background color hasn't loaded
@@ -2303,7 +2336,9 @@ IN_PROC_BROWSER_TEST_P(BrowserFrameViewAshThemeChangeTest, ThemeChange) {
 INSTANTIATE_TEST_SUITE(BrowserFrameViewChromeOSTest);
 INSTANTIATE_TEST_SUITE(FloatBrowserFrameViewChromeOSTest);
 INSTANTIATE_TEST_SUITE(HomeLauncherBrowserFrameViewChromeOSTest);
-INSTANTIATE_TEST_SUITE(LockedFullscreenBrowserFrameViewChromeOSTest);
+INSTANTIATE_TEST_SUITE_P(All,
+                         LockedFullscreenBrowserFrameViewChromeOSTest,
+                         testing::Combine(testing::Bool(), testing::Bool()));
 INSTANTIATE_TEST_SUITE(WebAppFrameViewChromeOSTest);
 INSTANTIATE_TEST_SUITE(BrowserFrameViewAshTest);
 INSTANTIATE_TEST_SUITE(BrowserFrameViewAshAvatarTest);

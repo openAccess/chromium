@@ -467,6 +467,23 @@ class SaveCardBubbleViewsFullFormBrowserTest
         FindViewInBubbleById(DialogViewId::LEGAL_MESSAGE_VIEW)->GetVisible());
   }
 
+  void OfferUploadCardholderNameUpdate(const std::u16string& cardholder_name) {
+    ResetEventWaiterForSequence({DialogEvent::BUBBLE_AND_ICON_SHOWN});
+    CreditCard card = test::GetMaskedServerCard();
+    card.SetRawInfo(CREDIT_CARD_NAME_FULL, cardholder_name);
+    SaveCardBubbleControllerImpl::CreateForWebContents(GetActiveWebContents());
+    SaveCardBubbleControllerImpl* controller =
+        SaveCardBubbleControllerImpl::FromWebContents(GetActiveWebContents());
+    controller->OfferUploadSave(
+        card, /*legal_message_lines=*/{},
+        payments::PaymentsAutofillClient::SaveCreditCardOptions()
+            .with_card_save_type(payments::PaymentsAutofillClient::
+                                     CardSaveType::kCardholderNameUpdateOnly)
+            .with_show_prompt(true),
+        base::DoNothing());
+    ASSERT_TRUE(WaitForObservedEvent());
+  }
+
   void SubmitForm() {
     content::WebContents* web_contents = GetActiveWebContents();
     const std::string click_submit_button_js =
@@ -957,8 +974,6 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
   // in an UPLOAD_IN_PROGRESS state.
   ClickOnDialogViewWithId(DialogViewId::OK_BUTTON);
 
-
-
   EXPECT_TRUE(GetSaveCardBubbleViews()->IsDrawn());
 
   // Expect that the loading view is correctly shown.
@@ -987,8 +1002,6 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
 
   EXPECT_EQ(1, counter.GetCount(ax::mojom::Event::kAlert));
 }
-
-
 
 // Tests the local save bubble. Ensures that the bubble behaves correctly if
 // dismissed and then immediately torn down (e.g. by closing browser window)
@@ -1280,6 +1293,42 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_EQ(save_button->GetState(),
             views::LabelButton::ButtonState::STATE_DISABLED);
   // Setting a cardholder name should enable the [Save] button.
+  cardholder_name_textfield->InsertOrReplaceText(u"John Smith");
+  EXPECT_EQ(save_button->GetState(),
+            views::LabelButton::ButtonState::STATE_NORMAL);
+}
+
+// Tests the upload save bubble. Ensures that if the cardholder name textfield
+// contains an invalid cardholder name, the [Save] button is disabled.
+IN_PROC_BROWSER_TEST_P(
+    SaveCardBubbleViewsFullFormBrowserTestWithAutofillUpstream,
+    Upload_SaveButtonIsDisabledIfInvalidCardholderNameAndCardholderNameRequested) {
+  ASSERT_TRUE(SetupSyncAndHideAccountNameEmailProfile());
+
+  FillFormWithoutName();
+  SubmitFormAndWaitForCardUploadSaveBubble();
+
+  views::Textfield* cardholder_name_textfield = static_cast<views::Textfield*>(
+      FindViewInBubbleById(DialogViewId::CARDHOLDER_NAME_TEXTFIELD));
+  ASSERT_NE(nullptr, cardholder_name_textfield);
+  views::LabelButton* save_button = static_cast<views::LabelButton*>(
+      FindViewInBubbleById(DialogViewId::OK_BUTTON));
+  ASSERT_NE(nullptr, save_button);
+
+  // Name containing digits disables the [Save] button.
+  cardholder_name_textfield->SetText(u"");
+  cardholder_name_textfield->InsertOrReplaceText(u"John 123");
+  EXPECT_EQ(save_button->GetState(),
+            views::LabelButton::ButtonState::STATE_DISABLED);
+
+  // Name containing prohibited special characters disables the [Save] button.
+  cardholder_name_textfield->SetText(u"");
+  cardholder_name_textfield->InsertOrReplaceText(u"John@Smith");
+  EXPECT_EQ(save_button->GetState(),
+            views::LabelButton::ButtonState::STATE_DISABLED);
+
+  // Valid name re-enables the [Save] button.
+  cardholder_name_textfield->SetText(u"");
   cardholder_name_textfield->InsertOrReplaceText(u"John Smith");
   EXPECT_EQ(save_button->GetState(),
             views::LabelButton::ButtonState::STATE_NORMAL);
@@ -1717,7 +1766,7 @@ IN_PROC_BROWSER_TEST_P(
 
   // Set now to next month. Setting test_clock will not affect the dropdown to
   // be selected, so selecting the current January will always be expired.
-  TestAutofillClock test_clock;
+  TestAutofillClockDeprecated test_clock;
   test_clock.SetNow(base::Time::Now());
   test_clock.Advance(base::Days(40));
   // Selecting expired date will disable [Save] button.
@@ -1811,7 +1860,7 @@ IN_PROC_BROWSER_TEST_P(
   SetupSyncAndHideAccountNameEmailProfile();
   const base::Time kJune2017 =
       base::Time::FromSecondsSinceUnixEpoch(1497552271);
-  TestAutofillClock test_clock;
+  TestAutofillClockDeprecated test_clock;
   test_clock.SetNow(kJune2017);
   // Fill form with a valid month but a passed year.
   FillFormWithSpecificExpirationDate("03", "2017");
@@ -2238,7 +2287,7 @@ IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
 
   base::HistogramTester histogram_tester;
   EXPECT_EQ(
-      0, histogram_tester.GetAllSamples("Autofill.ManageCardsPrompt").size());
+      0u, histogram_tester.GetAllSamples("Autofill.ManageCardsPrompt").size());
   // No bubble should be showing now and metrics should be recorded correctly.
   EXPECT_EQ(nullptr, GetSaveCardBubbleViews());
 }
@@ -2265,6 +2314,123 @@ IN_PROC_BROWSER_TEST_P(
   views::View* view = FindViewInBubbleById(DialogViewId::USER_INFORMATION_VIEW);
   ASSERT_NE(nullptr, view);
   EXPECT_TRUE(view->GetVisible());
+}
+
+// Tests the cardholder name update offer bubble layout and contents.
+IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
+                       CardholderNameUpdate_BubbleLayoutAndPrefilledFormName) {
+  ASSERT_TRUE(SetupSync());
+
+  OfferUploadCardholderNameUpdate(u"Elisa B. Lee");
+
+  views::View* main_content_view =
+      FindViewInBubbleById(DialogViewId::MAIN_CONTENT_VIEW_UPLOAD);
+  ASSERT_NE(nullptr, main_content_view);
+  EXPECT_TRUE(main_content_view->GetVisible());
+
+  views::Textfield* cardholder_name_textfield = static_cast<views::Textfield*>(
+      FindViewInBubbleById(DialogViewId::CARDHOLDER_NAME_TEXTFIELD));
+  ASSERT_NE(nullptr, cardholder_name_textfield);
+  EXPECT_TRUE(cardholder_name_textfield->GetEnabled());
+  EXPECT_EQ(cardholder_name_textfield->GetText(), u"Elisa B. Lee");
+  // The cardholder name tooltip states that the name comes from the user's
+  // Google Account, so it must not be shown for the cardholder name update flow
+  // (where the name is prefilled from the form).
+  EXPECT_EQ(nullptr,
+            FindViewInBubbleById(DialogViewId::CARDHOLDER_NAME_TOOLTIP));
+  // SaveCardOfferBubbleViews::CreateMainContentView() inserts the cardholder
+  // name textfield at index 1 (between the explanation label and the card
+  // description view). If this check fails due to layout changes in
+  // SaveCardBubbleViews::CreateMainContentView(), the insertion index in
+  // SaveCardOfferBubbleViews::CreateMainContentView() may also need to be
+  // updated.
+  EXPECT_EQ(main_content_view->GetIndexOf(cardholder_name_textfield), 1u);
+
+  EXPECT_NE(nullptr, FindViewInBubbleById(DialogViewId::EXPIRATION_DATE_LABEL));
+  EXPECT_EQ(nullptr, FindViewInBubbleById(DialogViewId::LEGAL_MESSAGE_VIEW));
+
+  views::View* user_info_view =
+      FindViewInBubbleById(DialogViewId::USER_INFORMATION_VIEW);
+  if (IsWalletBrandingV2Enabled()) {
+    EXPECT_EQ(nullptr, user_info_view);
+  } else {
+    ASSERT_NE(nullptr, user_info_view);
+    EXPECT_TRUE(user_info_view->GetVisible());
+  }
+}
+
+// Tests dynamic input validation of the [Confirm] button in the cardholder name
+// update offer bubble using `IsValidNameOnCard`.
+IN_PROC_BROWSER_TEST_P(SaveCardBubbleViewsFullFormBrowserTest,
+                       CardholderNameUpdate_ConfirmButtonDynamicValidation) {
+  ASSERT_TRUE(SetupSync());
+
+  OfferUploadCardholderNameUpdate(u"Elisa B. Lee");
+
+  views::Textfield* cardholder_name_textfield = static_cast<views::Textfield*>(
+      FindViewInBubbleById(DialogViewId::CARDHOLDER_NAME_TEXTFIELD));
+  ASSERT_NE(nullptr, cardholder_name_textfield);
+  views::LabelButton* confirm_button = static_cast<views::LabelButton*>(
+      FindViewInBubbleById(DialogViewId::OK_BUTTON));
+  ASSERT_NE(nullptr, confirm_button);
+  EXPECT_EQ(confirm_button->GetState(),
+            views::LabelButton::ButtonState::STATE_NORMAL);
+
+  // Clear existing text with SetText(u"") before calling InsertOrReplaceText()
+  // because InsertOrReplaceText() appends at the cursor when no text is
+  // selected, while SetText() alone does not trigger ContentsChanged().
+  // Empty or whitespace-only name disables the [Confirm] button.
+  cardholder_name_textfield->SetText(u"");
+  cardholder_name_textfield->InsertOrReplaceText(u"   ");
+  EXPECT_EQ(confirm_button->GetState(),
+            views::LabelButton::ButtonState::STATE_DISABLED);
+
+  // Name containing digits disables the [Confirm] button.
+  cardholder_name_textfield->SetText(u"");
+  cardholder_name_textfield->InsertOrReplaceText(u"Elisa 123");
+  EXPECT_EQ(confirm_button->GetState(),
+            views::LabelButton::ButtonState::STATE_DISABLED);
+
+  // Name containing prohibited special characters disables the [Confirm]
+  // button.
+  cardholder_name_textfield->SetText(u"");
+  cardholder_name_textfield->InsertOrReplaceText(u"Elisa@Lee");
+  EXPECT_EQ(confirm_button->GetState(),
+            views::LabelButton::ButtonState::STATE_DISABLED);
+
+  // Valid name re-enables the [Confirm] button.
+  cardholder_name_textfield->SetText(u"");
+  cardholder_name_textfield->InsertOrReplaceText(u"Jane Doe");
+  EXPECT_EQ(confirm_button->GetState(),
+            views::LabelButton::ButtonState::STATE_NORMAL);
+}
+
+// Tests that clicking the [Confirm] button in the cardholder name update offer
+// bubble shows the loading throbber and disables the cardholder name textfield.
+IN_PROC_BROWSER_TEST_P(
+    SaveCardBubbleViewsFullFormBrowserTest,
+    CardholderNameUpdate_ClickingConfirm_ShowsLoadingViewAndDisablesTextfield) {
+  ASSERT_TRUE(SetupSync());
+
+  OfferUploadCardholderNameUpdate(u"Elisa B. Lee");
+
+  SaveCardBubbleViews* save_card_bubble_views = GetSaveCardBubbleViews();
+  views::View* loading_throbber =
+      FindViewInBubbleById(DialogViewId::LOADING_THROBBER);
+  ASSERT_NE(nullptr, loading_throbber);
+  EXPECT_FALSE(loading_throbber->IsDrawn());
+  views::Textfield* cardholder_name_textfield = static_cast<views::Textfield*>(
+      FindViewInBubbleById(DialogViewId::CARDHOLDER_NAME_TEXTFIELD));
+  ASSERT_NE(nullptr, cardholder_name_textfield);
+  EXPECT_TRUE(cardholder_name_textfield->GetEnabled());
+
+  ClickOnDialogViewWithId(DialogViewId::OK_BUTTON);
+
+  EXPECT_TRUE(save_card_bubble_views->GetWidget()->IsVisible());
+  EXPECT_TRUE(loading_throbber->IsDrawn());
+  EXPECT_FALSE(cardholder_name_textfield->GetEnabled());
+  EXPECT_EQ(nullptr, FindViewInBubbleById(DialogViewId::OK_BUTTON));
+  EXPECT_EQ(nullptr, FindViewInBubbleById(DialogViewId::CANCEL_BUTTON));
 }
 
 INSTANTIATE_TEST_SUITE_P(

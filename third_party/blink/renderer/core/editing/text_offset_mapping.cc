@@ -81,11 +81,12 @@ const LayoutBlockFlow& RootInlineContentsContainerOf(
     const LayoutBlockFlow& block_flow) {
   DCHECK(block_flow.ChildrenInline()) << block_flow;
   const LayoutBlockFlow* root_block_flow = &block_flow;
-  for (const LayoutBlock* runner = block_flow.ContainingBlock(); runner;
-       runner = runner->ContainingBlock()) {
+  for (const LayoutBox* runner = block_flow.ContainingBox(); runner;
+       runner = runner->ContainingBox()) {
     auto* containing_block_flow = DynamicTo<LayoutBlockFlow>(runner);
-    if (!containing_block_flow || !runner->ChildrenInline())
+    if (!containing_block_flow || !containing_block_flow->ChildrenInline()) {
       break;
+    }
     root_block_flow = containing_block_flow;
   }
   DCHECK(!root_block_flow->IsInline()) << block_flow << ' ' << root_block_flow;
@@ -153,9 +154,10 @@ const Node* FindLastNonPseudoNodeIn(const LayoutObject& container) {
 // |LayoutBlockFlow|.
 const LayoutBlockFlow* ComputeInlineContentsAsBlockFlow(
     const LayoutObject& layout_object) {
-  const auto* block = DynamicTo<LayoutBlock>(layout_object);
-  if (!block)
-    block = layout_object.ContainingBlock();
+  const LayoutObject* block = DynamicTo<LayoutBlock>(layout_object);
+  if (!block) {
+    block = layout_object.ContainingBox();
+  }
 
   DCHECK(block) << layout_object;
   const auto* block_flow = DynamicTo<LayoutBlockFlow>(block);
@@ -212,7 +214,7 @@ TextOffsetMapping::InlineContents CreateInlineContentsFromBlockFlow(
       if (target.IsDescendantOf(layout_object)) {
         // Note: We reach here when `target` is `position:absolute` or
         // `position:fixed`, aka `IsOutOfFlowPositioned()`, because
-        // `LayoutObject::ContainingBlock()` handles them specially.
+        // `LayoutObject::ContainingBox()` handles them specially.
         // See http://crbug.com/1324970
         last = first;
         break;

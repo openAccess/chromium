@@ -31,11 +31,15 @@ import org.robolectric.Shadows;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.IntentHandler;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxLoadUrlParams;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.IntentOrigin;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.SearchType;
+import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.common.ResourceRequestBody;
 import org.chromium.ui.base.PageTransition;
@@ -58,7 +62,7 @@ public class SearchActivityClientImplUnitTest {
 
     private final Activity mActivity = Robolectric.buildActivity(TestActivity.class).setup().get();
     private final SearchActivityClientImpl mClient =
-            new SearchActivityClientImpl(mActivity, IntentOrigin.CUSTOM_TAB);
+            new SearchActivityClientImpl(mActivity, IntentOrigin.HUB);
 
     @Before
     public void setUp() {
@@ -79,13 +83,17 @@ public class SearchActivityClientImplUnitTest {
                 new int[] {
                     IntentOrigin.SEARCH_WIDGET,
                     IntentOrigin.QUICK_ACTION_SEARCH_WIDGET,
-                    IntentOrigin.CUSTOM_TAB,
+                    IntentOrigin.HUB,
                 };
 
         for (int origin : origins) {
             String action =
                     String.format(
-                            SearchActivityClientImpl.ACTION_SEARCH_FORMAT, origin, SearchType.TEXT);
+                            SearchActivityClientImpl.ACTION_SEARCH_FORMAT,
+                            origin,
+                            SearchType.TEXT,
+                            AutocompleteRequestType.SEARCH,
+                            /* noHistory= */ 1);
 
             // null URL
             var client = new SearchActivityClientImpl(mActivity, origin);
@@ -114,7 +122,7 @@ public class SearchActivityClientImplUnitTest {
                 new int[] {
                     IntentOrigin.SEARCH_WIDGET,
                     IntentOrigin.QUICK_ACTION_SEARCH_WIDGET,
-                    IntentOrigin.CUSTOM_TAB,
+                    IntentOrigin.HUB,
                 };
 
         for (int origin : origins) {
@@ -122,7 +130,9 @@ public class SearchActivityClientImplUnitTest {
                     String.format(
                             SearchActivityClientImpl.ACTION_SEARCH_FORMAT,
                             origin,
-                            SearchType.VOICE);
+                            SearchType.VOICE,
+                            AutocompleteRequestType.SEARCH,
+                            /* noHistory= */ 1);
 
             // null URL
             var client = new SearchActivityClientImpl(mActivity, origin);
@@ -151,13 +161,17 @@ public class SearchActivityClientImplUnitTest {
                 new int[] {
                     IntentOrigin.SEARCH_WIDGET,
                     IntentOrigin.QUICK_ACTION_SEARCH_WIDGET,
-                    IntentOrigin.CUSTOM_TAB,
+                    IntentOrigin.HUB,
                 };
 
         for (int origin : origins) {
             String action =
                     String.format(
-                            SearchActivityClientImpl.ACTION_SEARCH_FORMAT, origin, SearchType.LENS);
+                            SearchActivityClientImpl.ACTION_SEARCH_FORMAT,
+                            origin,
+                            SearchType.LENS,
+                            AutocompleteRequestType.SEARCH,
+                            /* noHistory= */ 1);
 
             // null URL
             var client = new SearchActivityClientImpl(mActivity, origin);
@@ -177,6 +191,63 @@ public class SearchActivityClientImplUnitTest {
             assertEquals(SearchType.LENS, SearchActivityUtils.getIntentSearchType(intent));
             assertEquals(origin, SearchActivityUtils.getIntentOrigin(intent));
         }
+    }
+
+    @Test
+    public void intentBuilder_forAiModeRequest() {
+        var intent =
+                mClient.newIntentBuilder().setRequestType(AutocompleteRequestType.AI_MODE).build();
+
+        assertEquals(
+                AutocompleteRequestType.AI_MODE,
+                IntentUtils.safeGetIntExtra(
+                        intent,
+                        SearchActivityExtras.EXTRA_REQUEST_TYPE,
+                        AutocompleteRequestType.SEARCH));
+        // PendingIntent equality ignores extras, so the action must carry the request type.
+        assertEquals(
+                String.format(
+                        SearchActivityClientImpl.ACTION_SEARCH_FORMAT,
+                        IntentOrigin.HUB,
+                        SearchType.TEXT,
+                        AutocompleteRequestType.AI_MODE,
+                        /* noHistory= */ 1),
+                intent.getAction());
+    }
+
+    private static boolean hasNoHistoryFlag(Intent intent) {
+        return (intent.getFlags() & Intent.FLAG_ACTIVITY_NO_HISTORY) != 0;
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ONE_STEP_AIM_ACCESS)
+    public void intentBuilder_noHistoryByDefault() {
+        var intent = mClient.newIntentBuilder().build();
+        assertTrue(hasNoHistoryFlag(intent));
+        intent = mClient.newIntentBuilder().setMayLaunchChildActivities(false).build();
+        assertTrue(hasNoHistoryFlag(intent));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ONE_STEP_AIM_ACCESS)
+    public void intentBuilder_mayLaunchChildActivities_omitsNoHistory() {
+        var intent = mClient.newIntentBuilder().setMayLaunchChildActivities(true).build();
+        assertFalse(hasNoHistoryFlag(intent));
+        assertEquals(
+                String.format(
+                        SearchActivityClientImpl.ACTION_SEARCH_FORMAT,
+                        IntentOrigin.HUB,
+                        SearchType.TEXT,
+                        AutocompleteRequestType.SEARCH,
+                        /* noHistory= */ 0),
+                intent.getAction());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ONE_STEP_AIM_ACCESS)
+    public void intentBuilder_mayLaunchChildActivities_flagDisabled_keepsNoHistory() {
+        var intent = mClient.newIntentBuilder().setMayLaunchChildActivities(true).build();
+        assertTrue(hasNoHistoryFlag(intent));
     }
 
     @Test

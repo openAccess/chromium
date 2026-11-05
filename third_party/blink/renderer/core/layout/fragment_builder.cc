@@ -14,6 +14,7 @@
 #include "third_party/blink/renderer/core/animation/animation_trigger.h"
 #include "third_party/blink/renderer/core/display_lock/display_lock_utilities.h"
 #include "third_party/blink/renderer/core/dom/column_pseudo_element.h"
+#include "third_party/blink/renderer/core/dom/layout_tree_builder_traversal.h"
 #include "third_party/blink/renderer/core/layout/block_layout_algorithm_utils.h"
 #include "third_party/blink/renderer/core/layout/fragmentation_utils.h"
 #include "third_party/blink/renderer/core/layout/geometry/axis.h"
@@ -57,6 +58,32 @@ PhysicalAxes GetScrollSnapAlignAxes(const cc::ScrollSnapAlign& align,
     axes |= is_horizontal ? kPhysicalAxesHorizontal : kPhysicalAxesVertical;
   }
   return axes;
+}
+
+PhysicalAxes GetSnapAxesForPropagatedSnapAreas(
+    const cc::ScrollSnapType& snap_type,
+    WritingDirectionMode writing_direction) {
+  if (snap_type.is_none) {
+    return kPhysicalAxesNone;
+  }
+  bool is_horizontal = writing_direction.IsHorizontal();
+  switch (snap_type.axis) {
+    case cc::SnapAxis::kBoth:
+      return kPhysicalAxesBoth;
+    case cc::SnapAxis::kX:
+      return kPhysicalAxesHorizontal;
+    case cc::SnapAxis::kY:
+      return kPhysicalAxesVertical;
+    case cc::SnapAxis::kInline:
+      return is_horizontal ? kPhysicalAxesHorizontal : kPhysicalAxesVertical;
+    case cc::SnapAxis::kBlock:
+      return is_horizontal ? kPhysicalAxesVertical : kPhysicalAxesHorizontal;
+    case cc::SnapAxis::kPair:
+      // A propagated snap area only provides a single axis (the other having
+      // been consumed by a descendant container), so it cannot satisfy the
+      // simultaneous 2D constraint required by 2D paired snapping.
+      return kPhysicalAxesNone;
+  }
 }
 
 }  // namespace
@@ -122,7 +149,7 @@ PhysicalFragment::BoxType FragmentBuilder::GetBoxType() const {
   if (layout_object_->IsRenderedLegend()) {
     return PhysicalFragment::BoxType::kRenderedLegend;
   }
-  if (layout_object_->StyleRef().IsPageMarginBox()) {
+  if (layout_object_->Style().IsPageMarginBox()) {
     return PhysicalFragment::BoxType::kPageMargin;
   }
   if (layout_object_->IsAtomicInline()) {
@@ -223,10 +250,11 @@ void FragmentBuilder::PropagateSnapAreas(const PhysicalFragment& child) {
     if (!new_box) {
       return snap_areas.size();
     }
-    // Ensure that snap areas are added in DOM order.
+    // Ensure that snap areas are added in flat tree order.
     for (wtf_size_t i = snap_areas.size(); i >= 1; i--) {
-      auto* existing_box = snap_areas.at(i - 1).GetElement()->GetLayoutBox();
-      if (existing_box && existing_box->IsBeforeInPreOrder(*new_box)) {
+      const Element* existing_snap_area = snap_areas.at(i - 1).GetElement();
+      if (LayoutTreeBuilderTraversal::ComparePreorderTreePosition(
+              *existing_snap_area, *new_snap_area) < 0) {
         return i;
       }
     }
@@ -234,18 +262,45 @@ void FragmentBuilder::PropagateSnapAreas(const PhysicalFragment& child) {
   };
 
   HeapVector<SnapArea> resolved_child_snap_areas;
+  std::optional<wtf_size_t> child_snap_area_index;
   if (child.IsSnapArea()) {
     // Insert a new snap area *once* per node, when at the last fragment
     // (i.e. when there's no outgoing break token).
     if (!To<PhysicalBoxFragment>(child).GetBreakToken()) {
-      auto* element = To<Element>(child.GetLayoutObject()->GetNode());
-      resolved_child_snap_areas.push_back(ResolveSnapArea(SnapArea(element)));
+      Element* child_snap_area =
+          To<Element>(child.GetLayoutObject()->GetNode());
+      child_snap_area_index = resolved_child_snap_areas.size();
+      resolved_child_snap_areas.push_back(
+          ResolveSnapArea(SnapArea(child_snap_area), 0));
     }
   }
 
-  for (auto& item : child.SnapAreas()) {
+  // For each child snap area, record the nearest ancestor that remains in the
+  // propagated list. This bypasses an ancestor fully consumed by an inner snap
+  // container while preserving the ancestry chain for pending descendants.
+  Vector<std::optional<wtf_size_t>> propagated_snap_area_indices;
+  propagated_snap_area_indices.ReserveInitialCapacity(child.SnapAreas().size());
+  for (wtf_size_t i = 0; i < child.SnapAreas().size(); ++i) {
+    const SnapArea& item = child.SnapAreas()[i];
+    std::optional<wtf_size_t> parent_index = child_snap_area_index;
+    const wtf_size_t parent_offset = item.ParentSnapAreaOffset();
+    if (parent_offset) {
+      CHECK_LE(parent_offset, i);
+      parent_index = propagated_snap_area_indices[i - parent_offset];
+    }
+
     if (item.IsPending()) {
-      resolved_child_snap_areas.push_back(ResolveSnapArea(item));
+      const wtf_size_t item_index = resolved_child_snap_areas.size();
+      wtf_size_t resolved_parent_offset = 0;
+      if (parent_index) {
+        DCHECK_LT(*parent_index, item_index);
+        resolved_parent_offset = item_index - *parent_index;
+      }
+      resolved_child_snap_areas.push_back(
+          ResolveSnapArea(item, resolved_parent_offset));
+      propagated_snap_area_indices.push_back(item_index);
+    } else {
+      propagated_snap_area_indices.push_back(parent_index);
     }
   }
 
@@ -261,7 +316,7 @@ void FragmentBuilder::PropagateSnapAreas(const PhysicalFragment& child) {
 }
 
 void FragmentBuilder::AddSnapAreaForColumn(ColumnPseudoElement* column_pseudo) {
-  EnsureSnapAreas().push_back(ResolveSnapArea(SnapArea(column_pseudo)));
+  EnsureSnapAreas().push_back(ResolveSnapArea(SnapArea(column_pseudo), 0));
 }
 
 void FragmentBuilder::PropagateChildAnchors(const PhysicalFragment& child,
@@ -429,31 +484,47 @@ PhysicalAxes FragmentBuilder::GetScrollSnapAxes() const {
                                                    : kPhysicalAxesBoth;
 }
 
-SnapArea FragmentBuilder::ResolveSnapArea(const SnapArea& snap_area) const {
+SnapArea FragmentBuilder::ResolveSnapArea(
+    const SnapArea& snap_area,
+    wtf_size_t parent_snap_area_offset) const {
   PhysicalAxes scroll_snap_axes = GetScrollSnapAxes();
-  // If this fragment is not a scroll container, return the snap area
-  // unmodified.
-  if (scroll_snap_axes == kPhysicalAxesNone) {
-    return snap_area;
-  }
-
-  std::optional<WritingDirectionMode> writing_direction_mode;
+  std::optional<WritingDirectionMode> writing_direction_mode =
+      snap_area.ContainerWritingDirectionMode();
+  PhysicalAxes consumed_axes = kPhysicalAxesNone;
   PhysicalAxes pending_axes = kPhysicalAxesNone;
-  if (!snap_area.Resolved()) {
-    // If the snap area is not resolved to a scroll container yet, this fragment
-    // is the nearest ancestor scroll container. Resolve the snap area's logical
-    // axes using this container's writing direction mode.
-    writing_direction_mode = GetWritingDirection();
-    pending_axes = GetScrollSnapAlignAxes(
-        snap_area.GetElement()->ComputedStyleRef().GetScrollSnapAlign(),
-        *writing_direction_mode);
-  } else {
-    writing_direction_mode = snap_area.ContainerWritingDirectionMode();
+  if (snap_area.Resolved()) {
+    consumed_axes = snap_area.ConsumedAxes();
     pending_axes = snap_area.PendingAxes();
   }
 
-  auto [consumed, pending] = PartitionAxes(scroll_snap_axes, pending_axes);
-  return {snap_area.GetElement(), consumed, pending, writing_direction_mode};
+  if (scroll_snap_axes != kPhysicalAxesNone) {
+    if (!snap_area.Resolved()) {
+      // This is the nearest ancestor scroll container. Resolve the snap area's
+      // logical axes using this container's writing direction mode.
+      writing_direction_mode = GetWritingDirection();
+      pending_axes = GetScrollSnapAlignAxes(
+          snap_area.GetElement()->ComputedStyleRef().GetScrollSnapAlign(),
+          *writing_direction_mode);
+    }
+    const auto [consumed, pending] =
+        PartitionAxes(scroll_snap_axes, pending_axes);
+    consumed_axes = consumed;
+    pending_axes = pending;
+    if (snap_area.Resolved()) {
+      PhysicalAxes snap_type_axes = GetSnapAxesForPropagatedSnapAreas(
+          Style().GetScrollSnapType(), GetWritingDirection());
+      if ((consumed & snap_type_axes) != kPhysicalAxesNone) {
+        // Count when an ancestor scroll container consumes a snap axis
+        // propagated from a descendant scroll container and can snap in that
+        // axis.
+        snap_area.GetElement()->GetDocument().CountUse(
+            WebFeature::kSingleAxisScrollerPropagateSnapAxis);
+      }
+    }
+  }
+
+  return {snap_area.GetElement(), consumed_axes, pending_axes,
+          writing_direction_mode, parent_snap_area_offset};
 }
 
 // Propagate data in |child| to this fragment. The |child| will then be added as
@@ -624,27 +695,46 @@ void FragmentBuilder::AddChildInternal(const PhysicalFragment* child,
 
 void FragmentBuilder::AddOutOfFlowChildCandidate(
     const BlockNode& child,
-    const LogicalStaticPosition& static_pos,
+    LogicalStaticPosition static_pos,
+    const BlockBreakToken* child_break_token,
     bool allow_top_layer_nodes) {
   DCHECK(child);
+
+  OofInlineContainer<LogicalOffset> inline_container_info;
+  if (InvolvedInBlockFragmentation(
+          space_, DynamicTo<BlockBreakToken>(PreviousBreakToken()))) {
+    if (child_break_token) {
+      if (child_break_token->IsForcedBreak()) {
+        // It's not possible to explicitly insert a forced break before an OOF,
+        // but preceding in-flow content may have a break *after*, which ends up
+        // as a forced break before the OOF. Discard the break token, since in
+        // this case it's somewhat incomplete, in the sense that it doesn't
+        // provide the necessary offset info for the OOF.
+        child_break_token = nullptr;
+      } else if (RuntimeEnabledFeatures::FragmentedOofInCbEnabled()) {
+        // This OOF is either being resumed (after a break inside), or has been
+        // attempted placed earlier, and therefore has the correct offsets
+        // stored on the break token (and whatever passed from the calling
+        // layout algorithm won't be correct).
+        static_pos = LogicalStaticPosition();
+      }
+    } else if (fragmented_oof_container_) {
+      // The OOF will eventually be added from the FragmentedOofContainer at its
+      // containing block (which may or may not be this container).
+      DCHECK(RuntimeEnabledFeatures::FragmentedOofInCbEnabled());
+      return;
+    }
+  }
+
   // Top-layer elements are processed separately in the OutOfFlowLayoutPart.
   if (child.IsInTopOrViewTransitionLayer() && !allow_top_layer_nodes) {
     return;
   }
 
   oof_candidates_may_have_anchors_ |= child.MayContainAnchor();
-  oof_positioned_candidates_.emplace_back(child, /*break_token=*/nullptr,
-                                          static_pos,
-                                          RequiresContentBeforeBreaking());
-}
-
-void FragmentBuilder::AddOutOfFlowChildCandidate(
-    const BlockNode& child,
-    const BlockBreakToken& child_break_token) {
-  oof_candidates_may_have_anchors_ |= child.MayContainAnchor();
-  oof_positioned_candidates_.emplace_back(child, &child_break_token,
-                                          LogicalStaticPosition(),
-                                          RequiresContentBeforeBreaking());
+  oof_positioned_candidates_.emplace_back(child, child_break_token, static_pos,
+                                          RequiresContentBeforeBreaking(),
+                                          inline_container_info);
 }
 
 void FragmentBuilder::AddOutOfFlowInlineChildCandidate(
@@ -847,6 +937,7 @@ void FragmentBuilder::MoveOutOfFlowDescendantCandidatesToDescendants() {
     if (layout_inline->CanContainAbsolutePositionObjects()) {
       for (LogicalOofPositionedNode& candidate : oof_positioned_candidates_) {
         if (!candidate.InlineContainer() &&
+            !candidate.HasEscapedContainingBlock() &&
             IsInlineContainerForNode(candidate.Node(), layout_inline)) {
           candidate.SetInlineContainer(layout_inline);
         }
@@ -884,7 +975,7 @@ void FragmentBuilder::PropagateOOFPositionedInfo(
   // reason to be here.
   DCHECK(fragment.NeedsOOFPositionedInfoPropagation());
 
-  LogicalOffset adjusted_offset = offset + offset_adjustment + relative_offset;
+  LogicalOffset adjusted_offset = offset + offset_adjustment;
 
   // Collect the child's out of flow descendants.
   const WritingModeConverter converter(GetWritingDirection(), fragment.Size());
@@ -893,7 +984,28 @@ void FragmentBuilder::PropagateOOFPositionedInfo(
     BlockNode node = descendant.Node();
     LogicalOofPositionedNode logical_descendant =
         PhysicalOofPositionedNodeToLogical(descendant, converter);
+
+    if (descendant.HasEscapedContainingBlock()) {
+      // We're on the outside of the containing block of this OOF. We don't need
+      // to accumulate any offsets then. If we're still inside a block
+      // fragmentation context, just propagate the node all the way to the
+      // outermost fragmentation context root. If we're not (i.e. we're at the
+      // root), do nothing at all.
+      if (GetConstraintSpace().HasBlockFragmentation() ||
+          fragment.IsFragmentainerBox()) {
+        oof_positioned_candidates_.push_back(logical_descendant);
+      }
+      continue;
+    }
+
+    if (fragmented_oof_container_) {
+      // OOF discovery is managed by FragmentedOofContainer, so don't add it
+      // now.
+      continue;
+    }
+
     LogicalStaticPosition static_position = logical_descendant.StaticPosition();
+    LogicalOffset static_position_adjustment = adjusted_offset;
 
     OofInlineContainer<LogicalOffset>& new_inline_container =
         logical_descendant.InlineContainerInfo();
@@ -901,10 +1013,12 @@ void FragmentBuilder::PropagateOOFPositionedInfo(
         IsInlineContainerForNode(node, inline_container->Container())) {
       // Found an inline container for this OOF.
       new_inline_container = *inline_container;
-    } else if (!RuntimeEnabledFeatures::FragmentedOofInCbEnabled()) {
-      if (new_inline_container.Container()) {
-        new_inline_container.IncreaseRelativeOffset(relative_offset);
-      }
+    } else if (new_inline_container.Container()) {
+      new_inline_container.IncreaseRelativeOffset(relative_offset);
+    } else {
+      // This is so that any relative offsets in the containing block chain are
+      // taken into account. This matters for fixed-positioned descendants.
+      static_position_adjustment += relative_offset;
     }
 
     // If an OOF element is inside a fragmentation context, it will be laid out
@@ -952,7 +1066,7 @@ void FragmentBuilder::PropagateOOFPositionedInfo(
         continue;
       }
     }
-    static_position.offset += adjusted_offset;
+    static_position.offset += static_position_adjustment;
 
     // |oof_positioned_candidates_| should not have duplicated entries.
     DCHECK(!std::ranges::contains(oof_positioned_candidates_, node,
@@ -1143,8 +1257,9 @@ void FragmentBuilder::PropagateOOFFragmentainerDescendants(
     std::optional<LayoutUnit> clipped_container_block_offset =
         UpdatedClippedContainerBlockOffset(descendant.containing_block);
 
-    LogicalOffset inline_relative_offset = converter.ToLogical(
-        descendant.InlineContainerInfo().RelativeOffset(), PhysicalSize());
+    LogicalOffset inline_relative_offset =
+        converter.ToLogical(descendant.InlineContainerInfo().RelativeOffset(),
+                            containing_block_fragment->Size());
     OofInlineContainer<LogicalOffset> new_inline_container(
         descendant.InlineContainer(), inline_relative_offset);
 
@@ -1156,16 +1271,9 @@ void FragmentBuilder::PropagateOOFFragmentainerDescendants(
         descendant.StaticPosition().ConvertToLogical(
             containing_block_converter);
 
-    // The relative offset should be applied after fragmentation. Subtract out
-    // the accumulated relative offset from the inline container to the
-    // containing block so that it can be re-applied at the correct time.
-    if (new_inline_container.Container() && box_fragment &&
-        containing_block_fragment == box_fragment) {
-      static_position.offset -= inline_relative_offset;
-    }
-
     LogicalOffset fixedpos_inline_relative_offset = converter.ToLogical(
-        descendant.fixedpos_inline_container.RelativeOffset(), PhysicalSize());
+        descendant.fixedpos_inline_container.RelativeOffset(),
+        containing_block_fragment->Size());
     OofInlineContainer<LogicalOffset> new_fixedpos_inline_container(
         descendant.fixedpos_inline_container.Container(),
         fixedpos_inline_relative_offset);
@@ -1260,7 +1368,7 @@ void FragmentBuilder::AdjustFixedposContainerInfo(
       // Candidates whose containing block is inline are always positioned
       // inside closest parent block flow.
       if (box_fragment->GetLayoutObject() ==
-          fixedpos_inline_container->Container()->ContainingBlock()) {
+          fixedpos_inline_container->Container()->ContainingBox()) {
         *fixedpos_containing_block_fragment = box_fragment;
       }
     }

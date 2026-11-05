@@ -324,11 +324,6 @@ void TabCollectionNode::MoveChild(base::PassKey<TabCollectionNode> pass_key,
                 children_.begin() + old_index + 1);
   }
 
-  // Move the child view to the top of the z-order to ensure the moved child
-  // appears over the other tabs in its parent container.
-  TabCollectionNode* moved_node = children_[target_index].get();
-  node_view_->ReorderChildView(moved_node->node_view_,
-                               static_cast<int>(children_.size() - 1));
   node_view_->InvalidateLayout();
 
   EnsureFocusOrder(target_index);
@@ -351,14 +346,18 @@ void TabCollectionNode::MoveChild(base::PassKey<TabCollectionNode> pass_key,
         child_node->node_view_->GetBoundsInScreen();
     const bool was_focused = child_node->node_view_->HasFocus();
 
+    // Remove the node from `src_parent_node->children_` before detaching the
+    // view so that layout recalculations triggered during view removal do not
+    // include the removed node.
+    std::unique_ptr<TabCollectionNode> removed_node = std::move(*it);
+    src_parent_node->children_.erase(it);
+
     std::unique_ptr<views::View> removed_view =
         src_parent_node->detach_child_from_node_
             ? src_parent_node->detach_child_from_node_.Run(
                   child_node->node_view_)
             : src_parent_node->node_view_->RemoveChildViewT(
                   child_node->node_view_);
-    std::unique_ptr<TabCollectionNode> removed_node = std::move(*it);
-    src_parent_node->children_.erase(it);
 
     dst_parent_node->AddChildNode(std::move(removed_node), new_index);
     if (dst_parent_node->attach_child_to_node_) {
@@ -382,14 +381,6 @@ void TabCollectionNode::MoveChild(base::PassKey<TabCollectionNode> pass_key,
   NOTREACHED();
 }
 
-std::vector<views::View*> TabCollectionNode::GetDirectChildren() const {
-  std::vector<views::View*> child_views;
-  child_views.reserve(children_.size());
-  for (const auto& child : children_) {
-    child_views.push_back(child->node_view_);
-  }
-  return child_views;
-}
 
 std::unique_ptr<views::View> TabCollectionNode::CreateAndSetView() {
   auto node_view = CreateViewForNode(this);

@@ -4,16 +4,20 @@
 
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_coordinator.h"
 
+#import "base/apple/foundation_util.h"
 #import "base/memory/raw_ptr.h"
 #import "base/test/metrics/histogram_tester.h"
+#import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
 #import "components/commerce/core/mock_shopping_service.h"
 #import "components/sync/test/test_sync_service.h"
 #import "components/variations/scoped_variations_ids_provider.h"
+#import "ios/chrome/app/app_startup_parameters.h"
 #import "ios/chrome/browser/aim/model/ios_chrome_aim_eligibility_service_factory.h"
 #import "ios/chrome/browser/aim/model/mock_ios_chrome_aim_eligibility_service.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_model_factory.h"
 #import "ios/chrome/browser/browser_view/model/browser_view_visibility_notifier_browser_agent.h"
+#import "ios/chrome/browser/browser_view/public/browser_view_visibility_state.h"
 #import "ios/chrome/browser/commerce/model/shopping_service_factory.h"
 #import "ios/chrome/browser/content_suggestions/coordinator/content_suggestions_coordinator.h"
 #import "ios/chrome/browser/content_suggestions/coordinator/content_suggestions_mediator.h"
@@ -41,30 +45,35 @@
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_mediator.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_shortcuts_handler.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_view_controller.h"
+#import "ios/chrome/browser/omnibox/model/omnibox_focus/omnibox_focus_browser_agent.h"
+#import "ios/chrome/browser/omnibox/model/omnibox_focus/omnibox_state_provider.h"
 #import "ios/chrome/browser/safety_check/model/ios_chrome_safety_check_manager_factory.h"
 #import "ios/chrome/browser/saved_tab_groups/model/tab_group_sync_service_factory.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/segmentation_platform/model/segmentation_platform_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_scene_agent.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_controller.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
+#import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_opener.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
 #import "ios/chrome/browser/shared/public/commands/lens_commands.h"
+#import "ios/chrome/browser/shared/public/commands/level_up_commands.h"
 #import "ios/chrome/browser/shared/public/commands/omnibox_commands.h"
 #import "ios/chrome/browser/shared/public/commands/popup_menu_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
+#import "ios/chrome/browser/shared/public/commands/tab_picker_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/start_surface/ui_bundled/start_surface_recent_tab_browser_agent.h"
@@ -100,6 +109,8 @@ std::unique_ptr<KeyedService> BuildMockIOSChromeAimEligibilityService(
 
 @interface NewTabPageHeaderView (Testing)
 @property(nonatomic, readonly) UIButton* customizationMenuButton;
+@property(nonatomic, readonly) UIVisualEffectView* blurBackgroundView;
+- (void)updateFakeboxBackgroundWithProgress:(CGFloat)progress;
 @end
 
 // Test fixture for testing NewTabPageCoordinator class.
@@ -116,8 +127,7 @@ class NewTabPageCoordinatorTest : public PlatformTest {
         IOSChromeLargeIconServiceFactory::GetDefaultFactory());
     test_profile_builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     test_profile_builder.AddTestingFactory(
         commerce::ShoppingServiceFactory::GetInstance(),
         base::BindRepeating(
@@ -262,7 +272,10 @@ class NewTabPageCoordinatorTest : public PlatformTest {
     browser_->GetWebStateList()->InsertWebState(
         std::move(web_state),
         WebStateList::InsertionParams::Automatic().Activate());
-    web_state_ = browser_->GetWebStateList()->GetActiveWebState();
+  }
+
+  web::WebState* active_web_state() {
+    return browser_->GetWebStateList()->GetActiveWebState();
   }
 
   // Creates a FakeWebState and simulates that it is loaded with a given `url`.
@@ -283,12 +296,12 @@ class NewTabPageCoordinatorTest : public PlatformTest {
     return std::move(web_state);
   }
 
-  // Simulates loading the NTP in `web_state_`.
+  // Simulates loading the NTP in `active_web_state()`.
   void SetNTPAsCurrentURL() {
     web::FakeNavigationContext navigation_context;
     navigation_context.SetUrl(GURL("chrome://newtab"));
     web::FakeWebState* fake_web_state =
-        static_cast<web::FakeWebState*>(web_state_);
+        static_cast<web::FakeWebState*>(active_web_state());
     fake_web_state->SetVisibleURL(GURL("chrome://newtab"));
     fake_web_state->OnNavigationStarted(&navigation_context);
     fake_web_state->OnPageLoaded(web::PageLoadCompletionStatus::SUCCESS);
@@ -305,6 +318,8 @@ class NewTabPageCoordinatorTest : public PlatformTest {
     lens_handler_mock_ = OCMProtocolMock(@protocol(LensCommands));
     browser_coordinator_handler_mock_ =
         OCMProtocolMock(@protocol(BrowserCoordinatorCommands));
+    OCMStub([browser_coordinator_handler_mock_ dismissMultimodalActionsMenu]);
+
     popup_menu_commands_handler_mock_ =
         OCMProtocolMock(@protocol(PopupMenuCommands));
     [browser_.get()->GetCommandDispatcher()
@@ -331,6 +346,12 @@ class NewTabPageCoordinatorTest : public PlatformTest {
     [browser_.get()->GetCommandDispatcher()
         startDispatchingToTarget:popup_menu_commands_handler_mock_
                      forProtocol:@protocol(PopupMenuCommands)];
+    [browser_.get()->GetCommandDispatcher()
+        startDispatchingToTarget:OCMProtocolMock(@protocol(LevelUpCommands))
+                     forProtocol:@protocol(LevelUpCommands)];
+    [browser_.get()->GetCommandDispatcher()
+        startDispatchingToTarget:OCMProtocolMock(@protocol(TabPickerCommands))
+                     forProtocol:@protocol(TabPickerCommands)];
   }
 
   // Dynamically calls a selector on an object.
@@ -383,7 +404,6 @@ class NewTabPageCoordinatorTest : public PlatformTest {
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   TestProfileManagerIOS profile_manager_;
   raw_ptr<ProfileIOS> profile_;
-  raw_ptr<web::WebState, DanglingUntriaged> web_state_;
   id toolbar_delegate_;
   id delegate_;
   std::unique_ptr<Browser> browser_;
@@ -451,23 +471,25 @@ TEST_F(NewTabPageCoordinatorTest, StartIsStartShowing) {
       std::make_unique<ScopedBlockSwizzler>([NewTabPageMediator class],
                                             @selector(setUp), swizzle_block);
 
-  NewTabPageTabHelper::FromWebState(web_state_)->SetShowStartSurface(true);
+  NewTabPageTabHelper::FromWebState(active_web_state())
+      ->SetShowStartSurface(true);
   [coordinator_ start];
-  [coordinator_ didNavigateToNTPInWebState:web_state_];
+  [coordinator_ didNavigateToNTPInWebState:active_web_state()];
   // Test `-didNavigateAwayFromNTPWithinWebState` when currently showing Start
   // resets the configuration.
   [coordinator_ didNavigateAwayFromNTP];
-  EXPECT_FALSE(
-      NewTabPageTabHelper::FromWebState(web_state_)->ShouldShowStartSurface());
+  EXPECT_FALSE(NewTabPageTabHelper::FromWebState(active_web_state())
+                   ->ShouldShowStartSurface());
   [coordinator_ stop];
 
   // Test the active WebState updates NTP Start state to false if it
   // began as true.
-  NewTabPageTabHelper::FromWebState(web_state_)->SetShowStartSurface(true);
+  NewTabPageTabHelper::FromWebState(active_web_state())
+      ->SetShowStartSurface(true);
   [coordinator_ start];
-  [coordinator_ didNavigateToNTPInWebState:web_state_];
-  // Save reference before `web_state_` is set to new active WebState.
-  web::WebState* start_web_state = web_state_;
+  [coordinator_ didNavigateToNTPInWebState:active_web_state()];
+  // Save reference before `active_web_state()` is set to new active WebState.
+  web::WebState* start_web_state = active_web_state();
   // Simulate the active WebState change callback.
   InsertWebState(CreateWebStateWithURL(GURL("chrome://version")));
   [coordinator_ didNavigateAwayFromNTP];
@@ -487,9 +509,10 @@ TEST_F(NewTabPageCoordinatorTest, ShortcutsStartMetricLogging) {
   UrlLoadingNotifierBrowserAgent::CreateForBrowser(browser_.get());
   FakeUrlLoadingBrowserAgent::CreateForBrowser(browser_.get());
   SetupCommandHandlerMocks();
-  NewTabPageTabHelper::FromWebState(web_state_)->SetShowStartSurface(true);
+  NewTabPageTabHelper::FromWebState(active_web_state())
+      ->SetShowStartSurface(true);
   [coordinator_ start];
-  [coordinator_ didNavigateToNTPInWebState:web_state_];
+  [coordinator_ didNavigateToNTPInWebState:active_web_state()];
 
   histogram_tester_->ExpectUniqueSample("IOS.Start.Click",
                                         IOSHomeActionType::kShortcuts, 0);
@@ -507,7 +530,7 @@ TEST_F(NewTabPageCoordinatorTest, ShortcutsStartMetricLogging) {
   // URL load signal from the URLLoadingBrowserAgent.
   web::FakeNavigationContext navigation_context;
   navigation_context.SetUrl(GURL("chrome://version"));
-  static_cast<web::FakeWebState*>(web_state_)
+  static_cast<web::FakeWebState*>(active_web_state())
       ->OnNavigationStarted(&navigation_context);
   // Simulate BrowserCoordinator receiving NTPTabHelper's
   // newTabPageHelperDidChangeVisibility: callback.
@@ -525,8 +548,8 @@ TEST_F(NewTabPageCoordinatorTest, ShortcutsStartMetricLogging) {
   histogram_tester_->ExpectTotalCount(kStartTimeSpentHistogram, 1);
   histogram_tester_->ExpectTotalCount(kStartImpressionHistogram, 1);
   histogram_tester_->ExpectTotalCount(kHomeImpressionHistogram, 1);
-  EXPECT_FALSE(
-      NewTabPageTabHelper::FromWebState(web_state_)->ShouldShowStartSurface());
+  EXPECT_FALSE(NewTabPageTabHelper::FromWebState(active_web_state())
+                   ->ShouldShowStartSurface());
   [coordinator_ stop];
 }
 
@@ -542,14 +565,14 @@ TEST_F(NewTabPageCoordinatorTest, DidNavigateWithinWebState) {
     EXPECT_FALSE(coordinator_.visible);
 
     // Navigate to NTP within the web state and check that NTP is visible.
-    [coordinator_ didNavigateToNTPInWebState:web_state_];
+    [coordinator_ didNavigateToNTPInWebState:active_web_state()];
     EXPECT_TRUE(coordinator_.started);
     EXPECT_TRUE(coordinator_.visible);
 
     // Simulate navigating away from the NTP.
     web::FakeNavigationContext navigation_context;
     navigation_context.SetUrl(GURL("chrome://version"));
-    static_cast<web::FakeWebState*>(web_state_)
+    static_cast<web::FakeWebState*>(active_web_state())
         ->OnNavigationStarted(&navigation_context);
     [coordinator_ didNavigateAwayFromNTP];
 
@@ -579,7 +602,7 @@ TEST_F(NewTabPageCoordinatorTest, DidNavigateBetweenWebStates) {
 
     // Open an NTP in a new web state.
     InsertWebState(CreateWebStateWithURL(GURL("chrome://newtab")));
-    [coordinator_ didNavigateToNTPInWebState:web_state_];
+    [coordinator_ didNavigateToNTPInWebState:active_web_state()];
     if (!off_the_record) {
       histogram_tester_->ExpectTotalCount(kNTPTimeSpentHistogram, 0);
       histogram_tester_->ExpectTotalCount(kNTPImpressionHistogram, 1);
@@ -602,7 +625,7 @@ TEST_F(NewTabPageCoordinatorTest, DidNavigateBetweenWebStates) {
     // Close non-NTP web state to get back to NTP web state.
     browser_->GetWebStateList()->CloseWebStateAt(
         /*index=*/1, WebStateList::ClosingReason::kDefault);
-    [coordinator_ didNavigateToNTPInWebState:web_state_];
+    [coordinator_ didNavigateToNTPInWebState:active_web_state()];
     if (!off_the_record) {
       histogram_tester_->ExpectTotalCount(kNTPTimeSpentHistogram, 1);
       histogram_tester_->ExpectTotalCount(kNTPImpressionHistogram, 2);
@@ -632,13 +655,10 @@ TEST_F(NewTabPageCoordinatorTest, ProxiesNTPViewControllerMethods) {
   CreateCoordinator(/*off_the_record=*/false);
   SetupCommandHandlerMocks();
   [coordinator_ start];
-  [coordinator_ didNavigateToNTPInWebState:web_state_];
+  [coordinator_ didNavigateToNTPInWebState:active_web_state()];
 
   ExpectMethodToProxyToVC(@selector(willUpdateSnapshot),
                           @selector(willUpdateSnapshot));
-  if (!IsComposeboxIOSEnabled()) {
-    ExpectMethodToProxyToVC(@selector(focusFakebox), @selector(focusOmnibox));
-  }
   ExpectMethodToProxyToVC(@selector(locationBarDidResignFirstResponder),
                           @selector(omniboxDidEndEditing));
 
@@ -681,7 +701,7 @@ TEST_F(NewTabPageCoordinatorTest, TestSaveNTPState) {
   CreateCoordinator(/*off_the_record=*/false);
   SetupCommandHandlerMocks();
   [coordinator_ start];
-  [coordinator_ didNavigateToNTPInWebState:web_state_];
+  [coordinator_ didNavigateToNTPInWebState:active_web_state()];
 
   // Check that initial NTP is scrolled to top.
   CGFloat scrollPosition = coordinator_.NTPViewController.scrollPosition;
@@ -700,7 +720,7 @@ TEST_F(NewTabPageCoordinatorTest, TestSaveNTPState) {
 
   // Navigate to another NTP in the same web state.
   [coordinator_ start];
-  [coordinator_ didNavigateToNTPInWebState:web_state_];
+  [coordinator_ didNavigateToNTPInWebState:active_web_state()];
 
   // Check that newly opened NTP restores saved state.
   EXPECT_NEAR(coordinator_.NTPViewController.scrollPosition, scrollPosition, 1);
@@ -713,7 +733,7 @@ TEST_F(NewTabPageCoordinatorTest, TestShowsAndHidesFeed) {
   CreateCoordinator(/*off_the_record=*/false);
   SetupCommandHandlerMocks();
   [coordinator_ start];
-  [coordinator_ didNavigateToNTPInWebState:web_state_];
+  [coordinator_ didNavigateToNTPInWebState:active_web_state()];
 
   ASSERT_TRUE([coordinator_
       conformsToProtocol:@protocol(DiscoverFeedVisibilityObserver)]);
@@ -791,13 +811,12 @@ TEST_F(NewTabPageCoordinatorTest, NTPShortcutsMetricLogging) {
   CreateCoordinator(/*off_the_record=*/false);
   SetupCommandHandlerMocks();
   [coordinator_ start];
-  [coordinator_ didNavigateToNTPInWebState:web_state_];
+  [coordinator_ didNavigateToNTPInWebState:active_web_state()];
 
   // Stub mock handlers to avoid unexpected call failures.
   OCMStub([lens_handler_mock_ openLensInputSelection:[OCMArg any]]);
   OCMStub([browser_coordinator_handler_mock_ startVoiceSearch]);
   OCMStub([application_handler_mock_ openURLInNewTab:[OCMArg any]]);
-  OCMStub([browser_coordinator_handler_mock_ showMultimodalActionsMenu]);
 
   id<NewTabPageShortcutsHandler> shortcutsHandler =
       static_cast<id<NewTabPageShortcutsHandler>>(coordinator_);
@@ -852,7 +871,7 @@ TEST_F(NewTabPageCoordinatorTest, ActivityReporting) {
 
   // Navigate to NTP -> reports active.
   OCMExpect([mockInstance reportActiveWithIncognito:NO]);
-  [coordinator_ didNavigateToNTPInWebState:web_state_];
+  [coordinator_ didNavigateToNTPInWebState:active_web_state()];
   [mockInstance verify];
 
   // Navigate away -> reports inactive.
@@ -863,4 +882,185 @@ TEST_F(NewTabPageCoordinatorTest, ActivityReporting) {
   [coordinator_ stop];
   [coordinator_ setValue:nil forKey:@"activityReporter"];
   [mockInstance stopMocking];
+}
+
+// Tests that blurBackgroundView is created and updated according to fakebox
+// progress when kNewTabPageUICleanup is enabled and kChromeNextIa is disabled.
+TEST_F(NewTabPageCoordinatorTest, TestHeaderBlurBackgroundView) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures({kNewTabPageUICleanup}, {kChromeNextIa});
+
+  NewTabPageHeaderView* header_view =
+      [[NewTabPageHeaderView alloc] initWithUseNewBadgeForLensButton:NO
+                                     useNewBadgeForCustomizationMenu:NO];
+
+  ASSERT_NE(nil, header_view.blurBackgroundView);
+  ASSERT_NE(nil, header_view.blurBackgroundView.layer.mask);
+  EXPECT_FLOAT_EQ(0.0, header_view.blurBackgroundView.alpha);
+
+  // Layout header view to verify mask layer frame and gradient stops.
+  header_view.frame = CGRectMake(0, 0, 390, 100);
+  [header_view layoutIfNeeded];
+  EXPECT_FLOAT_EQ(130.0, header_view.blurBackgroundView.frame.size.height);
+  CAGradientLayer* mask_layer = base::apple::ObjCCast<CAGradientLayer>(
+      header_view.blurBackgroundView.layer.mask);
+  ASSERT_NE(nil, mask_layer);
+  ASSERT_EQ(3u, [mask_layer.locations count]);
+  EXPECT_FLOAT_EQ(0.0, [mask_layer.locations[0] floatValue]);
+  // 100pt header height / 130pt total blur height = stop at ~0.7692.
+  EXPECT_NEAR(100.0 / 130.0, [mask_layer.locations[1] floatValue], 0.001);
+  EXPECT_FLOAT_EQ(1.0, [mask_layer.locations[2] floatValue]);
+
+  // Updating progress should adjust blur alpha and keep background clear.
+  [header_view updateFakeboxBackgroundWithProgress:0.5];
+  EXPECT_FLOAT_EQ(0.5, header_view.blurBackgroundView.alpha);
+  EXPECT_TRUE([header_view.backgroundColor isEqual:UIColor.clearColor]);
+
+  [header_view updateFakeboxBackgroundWithProgress:1.0];
+  EXPECT_FLOAT_EQ(1.0, header_view.blurBackgroundView.alpha);
+}
+
+// Tests that blurBackgroundView is nil when kNewTabPageUICleanup is disabled.
+TEST_F(NewTabPageCoordinatorTest, TestHeaderBlurBackgroundViewDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kNewTabPageUICleanup);
+
+  NewTabPageHeaderView* header_view =
+      [[NewTabPageHeaderView alloc] initWithUseNewBadgeForLensButton:NO
+                                     useNewBadgeForCustomizationMenu:NO];
+
+  EXPECT_EQ(nil, header_view.blurBackgroundView);
+}
+
+// Tests that blurBackgroundView is nil when kChromeNextIa is enabled even if
+// kNewTabPageUICleanup is enabled.
+TEST_F(NewTabPageCoordinatorTest,
+       TestHeaderBlurBackgroundViewDisabledWhenChromeNextIaEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures({kNewTabPageUICleanup, kChromeNextIa}, {});
+
+  NewTabPageHeaderView* header_view =
+      [[NewTabPageHeaderView alloc] initWithUseNewBadgeForLensButton:NO
+                                     useNewBadgeForCustomizationMenu:NO];
+
+  EXPECT_EQ(nil, header_view.blurBackgroundView);
+}
+
+// Tests that handleChangeInModules properly handles feedTopSectionCoordinator
+// and does not leak or duplicate it when kNewTabPageRedesign is enabled.
+TEST_F(NewTabPageCoordinatorTest, TestHandleChangeInModulesWithRedesign) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kNewTabPageRedesign);
+
+  CreateCoordinator(/*off_the_record=*/false);
+  SetupCommandHandlerMocks();
+
+  [coordinator_ start];
+  EXPECT_NE(nil, coordinator_.feedTopSectionCoordinator);
+
+  // Calling handleChangeInModules should recreate feed and keep a single valid
+  // feedTopSectionCoordinator.
+  [coordinator_ handleChangeInModules];
+  EXPECT_NE(nil, coordinator_.feedTopSectionCoordinator);
+
+  [coordinator_ stop];
+  EXPECT_EQ(nil, coordinator_.feedTopSectionCoordinator);
+}
+
+// Tests that `-isNTPBypassed` returns `YES` when the omnibox is focused or
+// scheduled to be shown, or when a post-opening startup action is pending.
+TEST_F(NewTabPageCoordinatorTest, TestIsNTPBypassed) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kNewTabPageRedesign);
+
+  CreateCoordinator(/*off_the_record=*/false);
+  SetupCommandHandlerMocks();
+  [coordinator_ start];
+  [coordinator_ didNavigateToNTPInWebState:active_web_state()];
+
+  EXPECT_FALSE([coordinator_ isNTPBypassed]);
+
+  // Scheduled omnibox focus or other post-opening action via startup parameters
+  // (e.g. app icon long-press "Search" or "Voice Search" shortcut) should be
+  // treated as an NTP bypass.
+  AppStartupParameters* startup_params = [[AppStartupParameters alloc]
+       initWithExternalURL:GURL(kChromeUINewTabURL)
+               completeURL:GURL(kChromeUINewTabURL)
+           applicationMode:ApplicationModeForTabOpening::NORMAL
+      forceApplicationMode:NO];
+  startup_params.postOpeningAction = FOCUS_OMNIBOX;
+  id scene_controller_mock = OCMClassMock([SceneController class]);
+  OCMStub([scene_controller_mock startupParameters]).andReturn(startup_params);
+  scene_state_.controller = scene_controller_mock;
+  EXPECT_TRUE([coordinator_ isNTPBypassed]);
+
+  startup_params.postOpeningAction = START_VOICE_SEARCH;
+  EXPECT_TRUE([coordinator_ isNTPBypassed]);
+
+  startup_params.postOpeningAction = NO_ACTION;
+  EXPECT_FALSE([coordinator_ isNTPBypassed]);
+
+  scene_state_.controller = nil;
+  EXPECT_FALSE([coordinator_ isNTPBypassed]);
+
+  // Scheduled omnibox focus after a new tab animation (e.g. "New Search" or
+  // Cmd+T) should be treated as an NTP bypass, and navigating away from an old
+  // NTP during tab insertion should not prematurely reset the flag.
+  coordinator_.willFocusOmniboxAfterNewTabAnimation = YES;
+  EXPECT_TRUE([coordinator_ isNTPBypassed]);
+  [coordinator_ didNavigateAwayFromNTP];
+  [coordinator_ didNavigateToNTPInWebState:active_web_state()];
+  EXPECT_TRUE([coordinator_ isNTPBypassed]);
+  coordinator_.willFocusOmniboxAfterNewTabAnimation = NO;
+  EXPECT_FALSE([coordinator_ isNTPBypassed]);
+
+  // Focused omnibox reported by `OmniboxFocusBrowserAgent` should be treated
+  // as an NTP bypass.
+  OmniboxFocusBrowserAgent::CreateForBrowser(browser_.get());
+  __block BOOL is_omnibox_focused = YES;
+  id omnibox_state_provider_mock =
+      OCMProtocolMock(@protocol(OmniboxStateProvider));
+  OCMStub([omnibox_state_provider_mock isOmniboxFocused])
+      .andDo(^(NSInvocation* invocation) {
+        [invocation setReturnValue:&is_omnibox_focused];
+      });
+  OmniboxFocusBrowserAgent::FromBrowser(browser_.get())
+      ->SetOmniboxStateProvider(omnibox_state_provider_mock);
+  EXPECT_TRUE([coordinator_ isNTPBypassed]);
+
+  is_omnibox_focused = NO;
+  EXPECT_FALSE([coordinator_ isNTPBypassed]);
+
+  // Obscuring the browser view (e.g. Voice Search or omnibox popup) should
+  // also be treated as an NTP bypass, and transitioning back to `kVisible`
+  // should trigger deferred ephemeral card logging.
+  BrowserViewVisibilityStateChangedCallback visibility_callback =
+      BrowserViewVisibilityNotifierBrowserAgent::FromBrowser(browser_.get())
+          ->GetNotificationCallback();
+  visibility_callback.Run(BrowserViewVisibilityState::kCoveredByVoiceSearch,
+                          BrowserViewVisibilityState::kVisible);
+  EXPECT_TRUE([coordinator_ isNTPBypassed]);
+
+  visibility_callback.Run(BrowserViewVisibilityState::kVisible,
+                          BrowserViewVisibilityState::kCoveredByVoiceSearch);
+  EXPECT_FALSE([coordinator_ isNTPBypassed]);
+
+  [coordinator_ stop];
+}
+
+// Tests that opening the main customization menu from a Tip logs
+// `HomeCustomizationEntrypoint::kPromo` to `IOS.HomeCustomization.Opened`.
+TEST_F(NewTabPageCoordinatorTest,
+       TestOpenMainCustomizationMenuFromTipLogsOpenedMetric) {
+  CreateCoordinator(/*off_the_record=*/false);
+  SetupCommandHandlerMocks();
+  [coordinator_ start];
+
+  [coordinator_ openMainCustomizationMenuWithIconBubbleOnDismiss:YES
+                                                  scrollToBottom:NO];
+  histogram_tester_->ExpectUniqueSample(kHomeCustomizationOpenedHistogram,
+                                        HomeCustomizationEntrypoint::kPromo, 1);
+
+  OCMStub([snackbar_commands_handler_mock_ dismissAllSnackbars]);
+  [coordinator_ stop];
 }

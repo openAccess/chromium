@@ -9,8 +9,10 @@
 #include <string_view>
 
 #include "base/gtest_prod_util.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list_types.h"
 #include "base/scoped_observation.h"
+#include "chrome/browser/ui/extensions/extensions_toolbar_view_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
 #include "chrome/browser/ui/views/extensions/extensions_container_views.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_extensions_container_observer.h"
@@ -20,6 +22,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "ui/base/interaction/element_tracker.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/widget/widget_observer.h"
 
@@ -35,7 +38,8 @@ class IconTable;
 class WebUIToolbarExtensionsContainer
     : public ExtensionsContainer,
       public ExtensionsContainerViews,
-      public ToolbarActionsModel::Observer,
+      public ExtensionsToolbarViewModel::Delegate,
+      public ExtensionsToolbarViewModel::Observer,
       public extensions_bar::mojom::PageHandler,
       public views::WidgetObserver {
  public:
@@ -59,6 +63,10 @@ class WebUIToolbarExtensionsContainer
   void MoveExtensionActionBy(const std::string& extension_id, int32_t delta);
   std::vector<std::string> GetOrderedActionIds() const;
 
+  ExtensionsToolbarViewModel* GetToolbarViewModel() {
+    return &toolbar_view_model_;
+  }
+
   // ExtensionsContainer:
   ToolbarActionViewModel* GetActionForId(const std::string& action_id) override;
   void HideActivePopup() override;
@@ -67,6 +75,7 @@ class WebUIToolbarExtensionsContainer
                                         ShowPopupCallback callback) override;
   void ToggleExtensionsMenu() override;
   bool HasAnyExtensions() const override;
+  void ShowPinnedByDefaultIPH(const std::string& extension_id) override;
 
   // ExtensionsContainerViews:
   std::optional<extensions::ExtensionId> GetPoppedOutActionId() const override;
@@ -87,15 +96,25 @@ class WebUIToolbarExtensionsContainer
   views::BubbleAnchor GetReferenceButtonForPopup(
       const extensions::ExtensionId& action_id) override;
   views::BubbleAnchor GetExtensionsButtonAnchor() override;
+  views::BubbleBorder::Arrow GetPopupArrow() const override;
 
   void CollapseConfirmation() override;
 
-  // ToolbarActionsModel::Observer:
-  void OnToolbarModelInitialized() override;
-  void OnToolbarActionAdded(const ToolbarActionsModel::ActionId& id) override;
-  void OnToolbarActionRemoved(const ToolbarActionsModel::ActionId& id) override;
-  void OnToolbarActionUpdated(const ToolbarActionsModel::ActionId& id) override;
-  void OnToolbarPinnedActionsChanged() override;
+  // ExtensionsToolbarViewModel::Delegate:
+  std::unique_ptr<ExtensionActionViewModel> CreateActionViewModel(
+      const ToolbarActionsModel::ActionId& action_id,
+      ExtensionsContainer* extensions_container) override;
+  bool CanShowToolbarActionPopupForAPICall(
+      const ToolbarActionsModel::ActionId& action_id) override;
+
+  // ExtensionsToolbarViewModel::Observer:
+  void OnActionsInitialized() override;
+  void OnActionAdded(const ToolbarActionsModel::ActionId& id) override;
+  void OnActionRemoved(const ToolbarActionsModel::ActionId& id) override;
+  void OnActionUpdated(const ToolbarActionsModel::ActionId& id) override;
+  void OnPinnedActionsChanged() override;
+  void OnActiveWebContentsChanged(bool is_same_document,
+                                  content::WebContents* web_contents) override;
 
   void Bind(mojo::PendingRemote<extensions_bar::mojom::Page> page,
             mojo::PendingReceiver<extensions_bar::mojom::PageHandler> receiver);
@@ -108,11 +127,20 @@ class WebUIToolbarExtensionsContainer
   // empty.
   static ui::ElementIdentifier GetElementId(std::string_view extension_id);
 
+  // Returns the secondary identifier of TrackedElements registered by the
+  // extension button with `extension_id`.
+  static std::string GetSecondaryElementId(std::string_view extension_id);
+
   // Returns the TrackedElement representing the anchor for the extension button
   // with `extension_id`, or the extensions menu button (puzzle piece) if
   // `extension_id` is empty. Returns nullptr if the element has not registered
   // yet (e.g. while animating in).
   ui::TrackedElement* GetExtensionAnchor(std::string_view extension_id) const;
+
+  // Returns the TrackedElement registered with `element_id` by the extension
+  // button with `extension_id`, or nullptr if there is none.
+  ui::TrackedElement* GetExtensionElement(ui::ElementIdentifier element_id,
+                                          std::string_view extension_id) const;
 
   // extensions_bar::mojom::PageHandler:
   void ExecuteUserAction(const std::string& id) override;
@@ -122,6 +150,28 @@ class WebUIToolbarExtensionsContainer
 
   // views::WidgetObserver:
   void OnWidgetDestroying(views::Widget* widget) override;
+
+  // Returns the extension that's the pinned-by-default IPH anchor, if any. It's
+  // set when ShowPinnedByDefaultIPH() accepts a request (which it doesn't do
+  // while an action is popped out or there's already an IPH anchor), and
+  // cleared when the IPH is closed, fails to show, or is cancelled.
+  const std::optional<std::string>&
+  pinned_by_default_iph_extension_id_for_testing() const {
+    return pinned_by_default_iph_extension_id_;
+  }
+
+  // Accessors used by ExtensionsMenuTestUtil to drive this container the same
+  // way it drives ExtensionsToolbarDesktop.
+  ExtensionsMenuCoordinator* GetExtensionsMenuCoordinatorForTesting() {
+    return extensions_menu_coordinator_.get();
+  }
+  ToolbarActionViewModel* popup_owner_for_testing() { return popup_owner_; }
+  int GetNumberOfActionsForTesting() const { return actions_.size(); }
+
+  // Returns the icon currently shown in the toolbar for the action with
+  // `action_id`, rasterized with the widget's color provider. The action must
+  // exist.
+  gfx::ImageSkia GetActionIconForTesting(const std::string& action_id);
 
  private:
   FRIEND_TEST_ALL_PREFIXES(WebUIToolbarWebViewInteractiveUiTest,
@@ -150,7 +200,8 @@ class WebUIToolbarExtensionsContainer
   views::Widget* GetWidget() const;
   ui::TrackedElement* GetExtensionsMenuButtonAnchor() const;
 
-  void NotifyActionPoppedOut(base::OnceClosure closure);
+  void NotifyActionPoppedOut(const std::string& action_id,
+                             base::OnceClosure closure);
 
   void CreateActions();
   void CreateActionForId(const ToolbarActionsModel::ActionId& action_id);
@@ -158,14 +209,21 @@ class WebUIToolbarExtensionsContainer
   void OnContextMenuShownFromToolbar(const std::string& action_id);
   void OnContextMenuClosedFromToolbar();
 
+  // Returns true if the action must be visible on the toolbar, even if there's
+  // not enough room for it, e.g., because it's popped out, has an open context
+  // menu, has a widget anchored to it, or is the pinned-by-default IPH anchor.
+  // Doesn't consider whether the action is pinned.
+  bool ShouldForceVisibility(const std::string& action_id) const;
+
   const raw_ref<BrowserWindowInterface> browser_;
   const raw_ptr<views::Widget> widget_;
   const base::WeakPtr<content::WebContents> web_contents_;
   const bool push_icon_table_updates_;
   const raw_ptr<webui_toolbar::IconTable> icon_table_;
-  const raw_ref<ToolbarActionsModel> model_;
-  base::ScopedObservation<ToolbarActionsModel, ToolbarActionsModel::Observer>
-      observe_actions_{this};
+  ExtensionsToolbarViewModel toolbar_view_model_;
+  base::ScopedObservation<ExtensionsToolbarViewModel,
+                          ExtensionsToolbarViewModel::Observer>
+      toolbar_view_model_observation_{this};
 
   mojo::Receiver<extensions_bar::mojom::PageHandler> receiver_{this};
   mojo::Remote<extensions_bar::mojom::Page> page_;
@@ -188,6 +246,37 @@ class WebUIToolbarExtensionsContainer
                                       ui::TrackedElement* unused_anchor);
 
   std::vector<AnchoredWidget> anchored_widgets_;
+
+  // Pinned-by-default IPH support. The flow is:
+  //  1. ShowPinnedByDefaultIPH() marks the extension as the IPH anchor, which
+  //     causes the WebUI button to register
+  //     kExtensionsPinnedByDefaultElementId, then waits, via
+  //     NotifyActionPoppedOut(), for that element to be registered and any
+  //     animations to finish.
+  //  2. ShowPinnedByDefaultIPHNow() requests the promo.
+  //  3. When the promo closes (or fails to show) the anchor is cleared.
+  //
+  // IPH and PopOutAction() requests share the observer's single pending pop
+  // out callback. PopOutAction() takes priority: it cancels any IPH, and
+  // ShowPinnedByDefaultIPH() does nothing while an action is popped out. The
+  // first IPH request also takes priority over later ones, which are ignored
+  // until it's closed, fails to show, or is cancelled.
+  void ShowPinnedByDefaultIPHNow(const std::string& extension_id);
+
+  // If there's an IPH anchor, clears it and tells the observer to cancel the
+  // IPH's pending NotifyActionPoppedOut() callback, if it hasn't been run yet.
+  // Does nothing if there's no IPH anchor. Doesn't affect the promo itself, if
+  // it's already been requested.
+  void ClearPinnedByDefaultIphAnchor();
+
+  // Same as ClearPinnedByDefaultIphAnchor(), but also aborts the promo if it's
+  // already been requested, whether it's queued or showing.
+  void CancelPinnedByDefaultIph();
+
+  // The extension currently designated as the pinned-by-default IPH anchor.
+  std::optional<std::string> pinned_by_default_iph_extension_id_;
+
+  base::WeakPtrFactory<WebUIToolbarExtensionsContainer> weak_ptr_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_WEBUI_TOOLBAR_WEBUI_TOOLBAR_EXTENSIONS_CONTAINER_H_

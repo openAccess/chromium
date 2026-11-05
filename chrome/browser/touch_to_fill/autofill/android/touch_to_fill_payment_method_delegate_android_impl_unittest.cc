@@ -5,6 +5,7 @@
 #include "chrome/browser/touch_to_fill/autofill/android/touch_to_fill_payment_method_delegate_android_impl.h"
 
 #include <optional>
+#include <vector>
 
 #include "base/functional/callback.h"
 #include "base/notreached.h"
@@ -201,6 +202,7 @@ class MockBrowserAutofillManager : public TestBrowserAutofillManager {
                const FieldGlobalId& field_id,
                const FillingPayload& filling_payload,
                AutofillTriggerSource trigger_source,
+               bool require_user_confirmation,
                const base::flat_set<FieldGlobalId>& blocked_fields),
               (override));
   MOCK_METHOD(void,
@@ -423,7 +425,8 @@ TEST_F(TouchToFillPaymentMethodDelegateAndroidImplUnitTest,
                   mojom::ActionPersistence::kFill, form_.global_id(),
                   form_.fields()[0].global_id(),
                   ::testing::VariantWith<const CreditCard*>(Pointee(test_card)),
-                  AutofillTriggerSource::kKeyboardAccessoryOrBottomSheet, _));
+                  AutofillTriggerSource::kKeyboardAccessoryOrBottomSheet,
+                  /*require_user_confirmation=*/false, _));
 
   // Run the captured callback, simulating a successful VCN fetch.
   std::move(captured_callback).Run(test_card);
@@ -608,7 +611,7 @@ TEST_P(TouchToFillPaymentMethodDelegateAndroidImplPaymentMethodUnitTest,
 }
 
 TEST_P(TouchToFillPaymentMethodDelegateAndroidImplPaymentMethodUnitTest,
-       TryToShowTouchToFillFailsIfShownBeforeAndShouldNotReshow_FlagOff) {
+       TryToShowTouchToFillFailsIfShownBeforeAndShouldNotReshow) {
   TryToShowTouchToFill(/*expected_success=*/true);
 
   ASSERT_TRUE(touch_to_fill_delegate_->IsShowingTouchToFill());
@@ -627,28 +630,7 @@ TEST_P(TouchToFillPaymentMethodDelegateAndroidImplPaymentMethodUnitTest,
 }
 
 TEST_P(TouchToFillPaymentMethodDelegateAndroidImplPaymentMethodUnitTest,
-       TryToShowTouchToFillFailsIfShownBeforeAndShouldReshow_FlagOff) {
-  base::test::ScopedFeatureList feature;
-  feature.InitAndDisableFeature(
-      features::kAutofillEnableTouchToFillReshowForBnpl);
-  TryToShowTouchToFill(/*expected_success=*/true);
-
-  ASSERT_TRUE(touch_to_fill_delegate_->IsShowingTouchToFill());
-
-  touch_to_fill_delegate_->OnDismissed(/*dismissed_by_user=*/true,
-                                       /*should_reshow=*/true);
-
-  TryToShowTouchToFill(/*expected_success=*/false);
-
-  ASSERT_FALSE(touch_to_fill_delegate_->IsShowingTouchToFill());
-}
-
-TEST_P(TouchToFillPaymentMethodDelegateAndroidImplPaymentMethodUnitTest,
-       TryToShowTouchToFillShownIfShownBeforeAndShouldReshow_FlagOn) {
-  base::test::ScopedFeatureList feature;
-  feature.InitAndEnableFeature(
-      features::kAutofillEnableTouchToFillReshowForBnpl);
-
+       TryToShowTouchToFillShownIfShownBeforeAndShouldReshow) {
   TryToShowTouchToFill(/*expected_success=*/true);
 
   ASSERT_TRUE(touch_to_fill_delegate_->IsShowingTouchToFill());
@@ -659,24 +641,6 @@ TEST_P(TouchToFillPaymentMethodDelegateAndroidImplPaymentMethodUnitTest,
   TryToShowTouchToFill(/*expected_success=*/true);
 
   ASSERT_TRUE(touch_to_fill_delegate_->IsShowingTouchToFill());
-}
-
-TEST_P(TouchToFillPaymentMethodDelegateAndroidImplPaymentMethodUnitTest,
-       TryToShowTouchToFillFailsIfShownBeforeAndShouldNotReshow_FlagOn) {
-  base::test::ScopedFeatureList feature;
-  feature.InitAndEnableFeature(
-      features::kAutofillEnableTouchToFillReshowForBnpl);
-
-  TryToShowTouchToFill(/*expected_success=*/true);
-
-  ASSERT_TRUE(touch_to_fill_delegate_->IsShowingTouchToFill());
-
-  touch_to_fill_delegate_->OnDismissed(/*dismissed_by_user=*/true,
-                                       /*should_reshow=*/false);
-
-  TryToShowTouchToFill(/*expected_success=*/false);
-
-  ASSERT_FALSE(touch_to_fill_delegate_->IsShowingTouchToFill());
 }
 
 TEST_P(TouchToFillPaymentMethodDelegateAndroidImplPaymentMethodUnitTest,
@@ -769,17 +733,6 @@ TEST_P(TouchToFillPaymentMethodDelegateAndroidImplPaymentMethodUnitTest,
 
 class TouchToFillPaymentMethodDelegateAndroidImplCreditCardUnitTest
     : public TouchToFillPaymentMethodDelegateAndroidImplUnitTest {
- public:
-  static std::vector<CreditCard> GetCardsToSuggest(
-      std::vector<const CreditCard*> credit_cards) {
-    std::vector<CreditCard> cards_to_suggest;
-    cards_to_suggest.reserve(credit_cards.size());
-    for (const CreditCard* card : credit_cards) {
-      cards_to_suggest.push_back(*card);
-    }
-    return cards_to_suggest;
-  }
-
  protected:
   void SetUp() override {
     TouchToFillPaymentMethodDelegateAndroidImplUnitTest::SetUp();

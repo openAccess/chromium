@@ -57,7 +57,6 @@ component("modules") {
     ":modules_generated",
     "//third_party/blink/renderer/bindings/modules/v8",
     "//third_party/blink/renderer/modules/accessibility",
-    "//third_party/blink/renderer/modules/ad_auction",
     "//third_party/blink/renderer/modules/ai",
     "//third_party/blink/renderer/modules/animationworklet",
     "//third_party/blink/renderer/modules/app_banner",
@@ -82,6 +81,7 @@ component("modules") {
     "//third_party/blink/renderer/modules/content_index",
     "//third_party/blink/renderer/modules/cookie_store",
     "//third_party/blink/renderer/modules/credentialmanagement",
+    "//third_party/blink/renderer/modules/cross_origin_storage",
     "//third_party/blink/renderer/modules/crypto",
     "//third_party/blink/renderer/modules/csspaint",
     "//third_party/blink/renderer/modules/compression",
@@ -89,6 +89,8 @@ component("modules") {
     "//third_party/blink/renderer/modules/delegated_ink",
     "//third_party/blink/renderer/modules/device_orientation",
     "//third_party/blink/renderer/modules/device_posture",
+    "//third_party/blink/renderer/modules/deviceboundsessions",
+    "//third_party/blink/renderer/modules/dictation",
     "//third_party/blink/renderer/modules/document_metadata",
     "//third_party/blink/renderer/modules/document_picture_in_picture",
     "//third_party/blink/renderer/modules/donottrack",
@@ -144,7 +146,6 @@ component("modules") {
     "//third_party/blink/renderer/modules/serial",
     "//third_party/blink/renderer/modules/service_worker",
     "//third_party/blink/renderer/modules/shapedetection",
-    "//third_party/blink/renderer/modules/shared_storage",
     "//third_party/blink/renderer/modules/speech",
     "//third_party/blink/renderer/modules/srcobject",
     "//third_party/blink/renderer/modules/storage",
@@ -361,7 +362,7 @@ action_with_pydeps("modules_event_interfaces") {
 make_event_factory("make_modules_generated_event_factory") {
   in_files = [ "$blink_modules_output_dir/event_interface_modules_names.json5" ]
   outputs = [ "$blink_modules_output_dir/event_modules_factory.cc" ]
-  deps = make_core_generated_deps + [ ":modules_event_interfaces" ]
+  deps = [ ":modules_event_interfaces" ]
 }
 
 # make_names -------------------------------------------------------------------
@@ -369,7 +370,7 @@ make_event_factory("make_modules_generated_event_factory") {
 make_names("make_modules_generated_event_names") {
   in_files = [ "$blink_modules_output_dir/event_interface_modules_names.json5" ]
   output_dir = blink_modules_output_dir
-  deps = make_core_generated_deps + [ ":modules_event_interfaces" ]
+  deps = [ ":modules_event_interfaces" ]
 }
 
 make_names("make_modules_generated_event_target_names") {
@@ -380,7 +381,6 @@ make_names("make_modules_generated_event_target_names") {
 make_names("make_modules_generated_indexed_db_names") {
   in_files = [ "indexeddb/indexed_db_names.json5" ]
   output_dir = blink_modules_output_dir
-  deps = []  # Don't use default deps (otherwise it will be circular).
 }
 
 blink_modules_sources("modules_generated") {
@@ -412,6 +412,7 @@ source_set("unit_tests") {
     "accessibility/ax_range_test.cc",
     "accessibility/ax_selection_test.cc",
     "accessibility/blink_ax_tree_source_test.cc",
+    "accessibility/inspector_accessibility_agent_test.cc",
     "accessibility/testing/accessibility_dom_fuzztest.cc",
     "accessibility/testing/accessibility_selection_test.cc",
     "accessibility/testing/accessibility_selection_test.h",
@@ -422,6 +423,8 @@ source_set("unit_tests") {
     "ai/language_model_test.cc",
     "ai/language_model_tool_types_test.cc",
     "ai/model_execution_responder_test.cc",
+    "ai/on_device_translation/language_detector_test.cc",
+    "ai/on_device_translation/translator_test.cc",
     "ai/proofreader_test.cc",
     "ai/semantic_embedder_test.cc",
     "animationworklet/animation_worklet_global_scope_test.cc",
@@ -471,9 +474,12 @@ source_set("unit_tests") {
     "delegated_ink/delegated_ink_trail_presenter_unittest.cc",
     "device_orientation/device_motion_event_pump_unittest.cc",
     "device_orientation/device_orientation_event_pump_unittest.cc",
+    "deviceboundsessions/device_bound_session_registration_observer_test.cc",
+    "dictation/dictation_agent_impl_test.cc",
     "document_metadata/document_metadata_extractor_test.cc",
     "document_metadata/document_metadata_server_test.cc",
     "document_picture_in_picture/picture_in_picture_controller_test.cc",
+    "encoding/text_decoder_test.cc",
     "eventsource/event_source_parser_test.cc",
     "filesystem/dom_file_system_base_test.cc",
     "filesystem/file_writer_test.cc",
@@ -490,7 +496,6 @@ source_set("unit_tests") {
     "media/audio/audio_renderer_sink_cache_test.cc",
     "media/audio/mojo_audio_input_ipc_test.cc",
     "media/audio/mojo_audio_output_ipc_test.cc",
-    "media/web_media_player_util_unittest.cc",
     "media_capabilities/media_capabilities_test.cc",
     "media_controls/elements/media_control_animated_arrow_container_element_test.cc",
     "media_controls/elements/media_control_display_cutout_fullscreen_button_element_test.cc",
@@ -502,6 +507,7 @@ source_set("unit_tests") {
     "media_controls/elements/media_control_scrubbing_message_element_test.cc",
     "media_controls/elements/media_control_timeline_element_test.cc",
     "media_controls/elements/media_control_toggle_closed_captions_button_element_test.cc",
+    "media_controls/elements/media_control_track_selector_list_element_test.cc",
     "media_controls/media_controls_display_cutout_delegate_test.cc",
     "media_controls/media_controls_impl_test.cc",
     "media_controls/media_controls_orientation_lock_delegate_test.cc",
@@ -566,6 +572,7 @@ source_set("unit_tests") {
     "payments/payment_address_test.cc",
     "payments/payment_event_data_conversion_test.cc",
     "payments/payment_request_details_test.cc",
+    "payments/payment_request_disconnect_test.cc",
     "payments/payment_request_event_test.cc",
     "payments/payment_request_for_invalid_origin_or_ssl_test.cc",
     "payments/payment_request_optional_total_test.cc",
@@ -578,6 +585,7 @@ source_set("unit_tests") {
     "payments/payment_test_helper.h",
     "payments/payments_validators_test.cc",
     "payments/secure_payment_confirmation_helper_test.cc",
+    "peerconnection/diagnostic_logging/rtc_diagnostic_logging_test.cc",
     "peerconnection/media_stream_remote_video_source_test.cc",
     "peerconnection/media_stream_track_metrics_test.cc",
     "peerconnection/media_stream_video_webrtc_sink_test.cc",
@@ -624,6 +632,7 @@ source_set("unit_tests") {
     "push_messaging/push_subscription_test.cc",
     "remoteplayback/remote_playback_test.cc",
     "screen_orientation/screen_orientation_controller_test.cc",
+    "sensor/sensor_reading_remapper_test.cc",
     "sensor/sensor_test_utils.cc",
     "sensor/sensor_test_utils.h",
     "service_worker/service_worker_container_test.cc",
@@ -646,6 +655,7 @@ source_set("unit_tests") {
     "wake_lock/wake_lock_test.cc",
     "wake_lock/wake_lock_test_utils.cc",
     "wake_lock/wake_lock_test_utils.h",
+    "webaudio/analyser_node_test.cc",
     "webaudio/audio_buffer_source_handler_test.cc",
     "webaudio/audio_context_autoplay_test.cc",
     "webaudio/audio_context_test.cc",
@@ -653,14 +663,18 @@ source_set("unit_tests") {
     "webaudio/audio_param_handler_test.cc",
     "webaudio/audio_worklet_global_scope_test.cc",
     "webaudio/audio_worklet_thread_test.cc",
+    "webaudio/base_audio_context_test.cc",
     "webaudio/biquad_filter_handler_test.cc",
     "webaudio/convolver_handler_test.cc",
     "webaudio/convolver_node_test.cc",
     "webaudio/delay_handler_test.cc",
     "webaudio/dynamics_compressor_node_test.cc",
+    "webaudio/media_element_audio_source_node_test.cc",
     "webaudio/media_stream_audio_destination_handler_test.cc",
+    "webaudio/media_stream_audio_source_node_test.cc",
     "webaudio/offline_audio_context_test.cc",
     "webaudio/oscillator_handler_test.cc",
+    "webaudio/recursive_mutex_test.cc",
     "webaudio/script_processor_node_test.cc",
     "webaudio/stereo_panner_node_test.cc",
     "webaudio/testing/fake_audio_thread.cc",
@@ -682,6 +696,7 @@ source_set("unit_tests") {
     "worklet/worklet_thread_test_common.h",
     "xr/xr_rigid_transform_test.cc",
     "xr/xr_test_utils.cc",
+    "xr/xr_view_geometry_test.cc",
     "xr/xr_view_test.cc",
   ]
 
@@ -698,6 +713,7 @@ source_set("unit_tests") {
       # Inline text box tests do not apply to Android, which only loads
       # AXInlineTextBox tests for the focused node.
       "accessibility/ax_inline_text_box_test.cc",
+      "ai/decision_model_test.cc",
     ]
   }
 
@@ -773,6 +789,7 @@ source_set("unit_tests") {
     "//third_party/blink/renderer/modules/storage_access:unit_tests",
     "//third_party/blink/renderer/modules/web_install:unit_tests",
     "//third_party/blink/renderer/modules/webcodecs:unit_tests",
+    "//third_party/blink/renderer/modules/webgl:unit_tests",
     "//third_party/blink/renderer/modules/webgpu:unit_tests",
     "//third_party/blink/renderer/modules/webtransport:unit_tests",
     "//third_party/blink/renderer/platform",

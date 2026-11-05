@@ -42,6 +42,7 @@
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "ui/base/l10n/l10n_util.h"
 
@@ -165,6 +166,7 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
 }
 
 // Tests reopening a closed tab from a regular tab with history.
+TAG_SMOKE_TEST(RecentTabsTestCase, testOpenCloseTabFromRegularWithHistory);
 - (void)testOpenCloseTabFromRegularWithHistory {
   const GURL testPageURL = self.testServer->GetURL(kPageURL);
 
@@ -841,7 +843,6 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
                                      createFakeTabsForServerURL:self.testServer
                                                                     ->base_url()
                                                    numberOfTabs:numberOfTabs]];
-  [ChromeEarlGrey triggerSyncCycleForType:syncer::SESSIONS];
 
   OpenRecentTabsPanel();
 
@@ -899,7 +900,6 @@ std::unique_ptr<net::test_server::HttpResponse> StandardResponse(
                                           self.testServer->base_url()
                                                     numberOfTabs:numberOfTabs]];
   }
-  [ChromeEarlGrey triggerSyncCycleForType:syncer::SESSIONS];
 
   OpenRecentTabsPanel();
 

@@ -8,13 +8,12 @@
 #include <utility>
 
 #include "base/functional/bind.h"
-#include "chrome/browser/profiles/profile.h"
-#include "content/public/browser/storage_partition.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash {
 namespace network_diagnostics {
@@ -49,21 +48,16 @@ net::NetworkTrafficAnnotationTag GetTrafficAnnotation() {
 
 }  // namespace
 
-HttpRequestManager::HttpRequestManager(Profile* profile) {
-  // |profile| may be null in testing.
-  if (!profile) {
-    return;
-  }
-  shared_url_loader_factory_ = profile->GetDefaultStoragePartition()
-                                   ->GetURLLoaderFactoryForBrowserProcess();
-}
+HttpRequestManager::HttpRequestManager(
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory)
+    : shared_url_loader_factory_(std::move(shared_url_loader_factory)) {}
 
 HttpRequestManager::~HttpRequestManager() = default;
 
 void HttpRequestManager::MakeRequest(const GURL& url,
                                      const base::TimeDelta& timeout,
                                      HttpRequestCallback callback) {
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M161);
 
   auto request = std::make_unique<network::ResourceRequest>();
   request->credentials_mode = network::mojom::CredentialsMode::kOmit;
@@ -84,15 +78,10 @@ void HttpRequestManager::MakeRequest(const GURL& url,
                      base::Unretained(this), std::move(callback)));
 }
 
-void HttpRequestManager::SetURLLoaderFactoryForTesting(
-    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory) {
-  shared_url_loader_factory_ = shared_url_loader_factory;
-}
-
 void HttpRequestManager::OnURLLoadComplete(
     HttpRequestCallback callback,
     scoped_refptr<net::HttpResponseHeaders> headers) {
-  DCHECK(simple_url_loader_);
+  CHECK(simple_url_loader_, base::NotFatalUntil::M161);
   bool connected = headers && headers->response_code() == net::HTTP_NO_CONTENT;
   simple_url_loader_.reset();
   std::move(callback).Run(connected);

@@ -26,10 +26,12 @@ const nearby::Uuid kServiceUuid1 = nearby::Uuid("0000");
 const nearby::Uuid kServiceUuid2 = nearby::Uuid("1111");
 const nearby::Uuid kCharacteristicUuid1 = nearby::Uuid("2222");
 const nearby::Uuid kCharacteristicUuid2 = nearby::Uuid("3333");
-const std::vector<uint8_t> kReadCharacteristicValue = {0x01, 0x02, 0x03, 0x04,
-                                                       0x05};
 const char kServiceId1[] = "1234";
 const char kServiceId2[] = "5678";
+
+std::vector<uint8_t> ReadCharacteristicValue() {
+  return {0x01, 0x02, 0x03, 0x04, 0x05};
+}
 
 bluetooth::mojom::ServiceInfoPtr GenerateServiceInfo(nearby::Uuid service_uuid,
                                                      std::string service_id) {
@@ -261,7 +263,7 @@ TEST_F(BleV2GattClientTest, ReadCharacteristic_Success) {
   SuccessfullyDiscoverServiceAndCharacteristics(kServiceUuid1,
                                                 kCharacteristicUuid1);
   fake_device_->set_read_value_for_characteristic_response(
-      bluetooth::mojom::GattResult::SUCCESS, kReadCharacteristicValue);
+      bluetooth::mojom::GattResult::SUCCESS, ReadCharacteristicValue());
 
   base::RunLoop run_loop;
   base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()})
@@ -359,6 +361,37 @@ TEST_F(BleV2GattClientTest, DisconnectHandler) {
 
   run_loop.Run();
   EXPECT_TRUE(fake_gatt_service_destroyed);
+}
+
+TEST_F(BleV2GattClientTest, Disconnect_AfterMojoDisconnect) {
+  base::RunLoop mojo_disconnect_run_loop;
+  bool fake_gatt_service_destroyed = false;
+  fake_gatt_service_factory_->SetNextFakeGattServiceDestroyedCallback(
+      base::BindLambdaForTesting([&]() {
+        fake_gatt_service_destroyed = true;
+        mojo_disconnect_run_loop.Quit();
+      }));
+
+  SuccessfullyDiscoverServiceAndCharacteristics(kServiceUuid1,
+                                                kCharacteristicUuid1);
+
+  // Close the Device receiver and wait for OnMojoDisconnect() to reset
+  // `remote_device_` on `task_runner_`.
+  fake_device_ = nullptr;
+  device_receiver_->Close();
+  mojo_disconnect_run_loop.Run();
+  ASSERT_TRUE(fake_gatt_service_destroyed);
+
+  // Calling Disconnect() from a ThreadPool sequence after the Mojo pipe is
+  // closed should hop to `task_runner_` and return cleanly without crashing.
+  base::RunLoop disconnect_run_loop;
+  base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()})
+      ->PostTaskAndReply(
+          FROM_HERE,
+          base::BindOnce(&BleV2GattClient::Disconnect,
+                         base::Unretained(ble_v2_gatt_client_.get())),
+          disconnect_run_loop.QuitClosure());
+  disconnect_run_loop.Run();
 }
 
 // This test mimics the behavior of the Android GATT server where the GATT

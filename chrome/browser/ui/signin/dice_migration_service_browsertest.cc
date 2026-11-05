@@ -23,6 +23,8 @@
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
+#include "google_apis/gaia/gaia_urls.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace {
@@ -46,6 +48,10 @@ class DiceMigrationServiceBrowserTest : public InProcessBrowserTest {
   }
 
   void ImplicitlySignIn(const std::string& email) {
+    // Signing in on the web sets Gaia cookies. It must outlive the PRE_ test.
+    ASSERT_TRUE(content::SetCookie(
+        GetProfile(), GaiaUrls::GetInstance()->secure_google_url(),
+        "SAPISID=fake; Secure; Domain=.google.com; Max-Age=86400"));
     signin::MakeAccountAvailable(
         GetIdentityManager(),
         signin::AccountAvailabilityOptionsBuilder()
@@ -109,9 +115,9 @@ IN_PROC_BROWSER_TEST_F(DiceMigrationServiceBrowserTest,
       GetIdentityManager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
   // The user is signed in to the web only.
   signin::WaitForRefreshTokensLoaded(GetIdentityManager());
-  EXPECT_THAT(
-      GetIdentityManager()->GetAccountsWithRefreshTokens(),
-      testing::ElementsAre(testing::Field(&AccountInfo::email, kTestEmail)));
+  EXPECT_THAT(GetIdentityManager()->GetAccountsWithRefreshTokens(),
+              testing::ElementsAre(
+                  testing::Field(&CoreAccountInfo::email, kTestEmail)));
 
   histogram_tester_.ExpectUniqueSample(kForceMigratedHistogram, true, 1);
   histogram_tester_.ExpectUniqueSample(
@@ -187,8 +193,8 @@ IN_PROC_BROWSER_TEST_F(DiceMigrationServiceBrowserTest,
   // The user is signed in to the web only.
   signin::WaitForRefreshTokensLoaded(GetIdentityManager());
   EXPECT_THAT(GetIdentityManager()->GetAccountsWithRefreshTokens(),
-              testing::ElementsAre(
-                  testing::Field(&AccountInfo::email, kEnterpriseTestEmail)));
+              testing::ElementsAre(testing::Field(&CoreAccountInfo::email,
+                                                  kEnterpriseTestEmail)));
 
   histogram_tester_.ExpectUniqueSample(kForceMigratedHistogram, true, 1);
   histogram_tester_.ExpectUniqueSample(kForcedMigrationAccountManagedHistogram,
@@ -228,8 +234,8 @@ IN_PROC_BROWSER_TEST_F(DiceMigrationServiceBrowserTest,
   // The user is signed in to the web.
   signin::WaitForRefreshTokensLoaded(GetIdentityManager());
   EXPECT_THAT(GetIdentityManager()->GetAccountsWithRefreshTokens(),
-              testing::ElementsAre(
-                  testing::Field(&AccountInfo::email, kEnterpriseTestEmail)));
+              testing::ElementsAre(testing::Field(&CoreAccountInfo::email,
+                                                  kEnterpriseTestEmail)));
 
   histogram_tester_.ExpectUniqueSample(kForceMigratedHistogram, true, 1);
   histogram_tester_.ExpectUniqueSample(kForcedMigrationAccountManagedHistogram,

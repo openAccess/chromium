@@ -122,7 +122,10 @@ FFMPEG_TEST_CASE(Cr62127,
                  PIPELINE_ERROR_DECODE,
                  PIPELINE_ERROR_DECODE);
 FFMPEG_TEST_CASE(Cr93620, "security/93620.ogg", PIPELINE_OK, PIPELINE_OK);
-FFMPEG_TEST_CASE(Cr100492, "security/100492.webm", PIPELINE_OK, PIPELINE_OK);
+FFMPEG_TEST_CASE(Cr100492,
+                 "security/100492.webm",
+                 DECODER_ERROR_NOT_SUPPORTED,
+                 DECODER_ERROR_NOT_SUPPORTED);
 FFMPEG_TEST_CASE(Cr100543, "security/100543.webm", PIPELINE_OK, PIPELINE_OK);
 FFMPEG_TEST_CASE(Cr101458,
                  "security/101458.webm",
@@ -408,7 +411,7 @@ FFMPEG_TEST_CASE(WEBM_2,
 FFMPEG_TEST_CASE(WEBM_4,
                  "security/out.webm.68798.1929",
                  PIPELINE_OK,
-                 PIPELINE_OK);
+                 PIPELINE_ERROR_DECODE);
 FFMPEG_TEST_CASE(WEBM_5, "frame_size_change.webm", PIPELINE_OK, PIPELINE_OK);
 
 // General MKV test cases.
@@ -473,7 +476,9 @@ TEST_P(FFmpegRegressionTest, BasicPlayback) {
     if (GetParam().end_status == PIPELINE_OK) {
       ASSERT_TRUE(ended_);
 
-      // Tack a seek on the end to catch any seeking issues.
+      // Tack a seek on the end to catch any seeking issues. Pause first, since
+      // Seek() runs until idle, which would play the whole file again.
+      Pause();
       Seek(GetParam().seek_time == kNoTimestamp ? GetStartTime()
                                                 : GetParam().seek_time);
     }

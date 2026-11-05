@@ -14,6 +14,7 @@
 #include <utility>
 #include <variant>
 
+#include "base/check.h"
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
@@ -27,7 +28,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -36,8 +36,11 @@
 #include "base/threading/platform_thread.h"
 #include "base/threading/scoped_thread_priority.h"
 #include "base/threading/thread.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 
 namespace base {
 
@@ -275,6 +278,9 @@ bool ImportantFileWriter::WriteFileAtomicallyImpl(
     std::string_view histogram_suffix,
     bool from_instance,
     ReplaceFileCallback replace_file_callback) {
+  TRACE_EVENT("base", "ImportantFileWriter::WriteFileAtomicallyImpl",
+              "histogram_suffix", histogram_suffix, "path",
+              path.BaseName().AsUTF8Unsafe());
   const TimeTicks write_start = TimeTicks::Now();
   if (!from_instance) {
     ImportantFileWriterCleaner::AddDirectory(path.DirName());
@@ -288,20 +294,6 @@ bool ImportantFileWriter::WriteFileAtomicallyImpl(
   base::wcslcpy(path_copy, path.value().c_str(), std::size(path_copy));
   base::debug::Alias(path_copy);
 #endif  // BUILDFLAG(IS_WIN) && DCHECK_IS_ON()
-
-#if BUILDFLAG(IS_CHROMEOS)
-  // On Chrome OS, chrome gets killed when it cannot finish shutdown quickly,
-  // and this function seems to be one of the slowest shutdown steps.
-  // Include some info to the report for investigation. crbug.com/418627
-  // TODO(hashimoto): Remove this.
-  struct {
-    size_t data_size;
-    char path[128];
-  } file_info;
-  file_info.data_size = data.size();
-  strlcpy(file_info.path, path.value().c_str(), std::size(file_info.path));
-  debug::Alias(&file_info);
-#endif
 
   // Write the data to a temp file then rename to avoid data loss if we crash
   // while writing the file. Ensure that the temp file is on the same volume
@@ -400,7 +392,10 @@ bool ImportantFileWriter::WriteFileAtomicallyImpl(
     ::SetLastError(last_error);
 #endif
     DPLOG(WARNING) << "Failed to replace " << path << " with " << tmp_file_path;
-    DeleteTmpFileWithRetry(File(), tmp_file_path);
+    // Preserve the temp file as a recovery candidate if the target is missing.
+    if (PathExists(path)) {
+      DeleteTmpFileWithRetry(File(), tmp_file_path);
+    }
   }
 
   const TimeDelta write_duration = TimeTicks::Now() - write_start;
@@ -412,7 +407,7 @@ bool ImportantFileWriter::WriteFileAtomicallyImpl(
 
 ImportantFileWriter::ImportantFileWriter(
     const FilePath& path,
-    scoped_refptr<SequencedTaskRunner> task_runner,
+    TaskRunnerOrBlockCurrentSequence task_runner,
     std::string_view histogram_suffix)
     : ImportantFileWriter(path,
                           std::move(task_runner),
@@ -421,7 +416,7 @@ ImportantFileWriter::ImportantFileWriter(
 
 ImportantFileWriter::ImportantFileWriter(
     const FilePath& path,
-    scoped_refptr<SequencedTaskRunner> task_runner,
+    TaskRunnerOrBlockCurrentSequence task_runner,
     TimeDelta interval,
     std::string_view histogram_suffix)
     : path_(path),
@@ -429,7 +424,13 @@ ImportantFileWriter::ImportantFileWriter(
       commit_interval_(interval),
       histogram_suffix_(histogram_suffix),
       replace_file_callback_(BindRepeating(&ReplaceFile)) {
-  DCHECK(task_runner_);
+  std::visit(absl::Overload{
+                 [](const scoped_refptr<SequencedTaskRunner>& task_runner) {
+                   DCHECK(task_runner);
+                 },
+                 [](BlockCurrentSequenceTag) { AssertBlockingAllowed(); },
+             },
+             task_runner_);
   ImportantFileWriterCleaner::AddDirectory(path.DirName());
 }
 
@@ -464,20 +465,28 @@ void ImportantFileWriter::WriteNowWithBackgroundDataProducer(
     BackgroundDataProducerCallback background_data_producer) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  OnceClosure write_task = BindOnce(&ProduceAndWriteStringToFileAtomically,
-                                    path_, std::move(background_data_producer),
-                                    std::move(before_next_write_callback_),
-                                    std::move(after_next_write_callback_),
-                                    replace_file_callback_, histogram_suffix_);
-  if (!task_runner_->PostTask(
-          FROM_HERE, MakeCriticalClosure("ImportantFileWriter::WriteNow",
-                                         std::move(write_task),
-                                         /*is_immediate=*/true))) {
-    // Posting the task to background message loop is not expected
-    // to fail.
-    NOTREACHED();
-  }
+  OnceClosure write_task =
+      MakeCriticalClosure("ImportantFileWriter::WriteNow",
+                          BindOnce(&ProduceAndWriteStringToFileAtomically,
+                                   path_, std::move(background_data_producer),
+                                   std::move(before_next_write_callback_),
+                                   std::move(after_next_write_callback_),
+                                   replace_file_callback_, histogram_suffix_),
+                          /*is_immediate=*/true);
   ClearPendingWrite();
+
+  std::visit(
+      absl::Overload{
+          [&write_task](const scoped_refptr<SequencedTaskRunner>& task_runner) {
+            // Failing to post highlights an ordering problem between a desired
+            // write and the destination sequence's shutdown.
+            CHECK(task_runner->PostTask(FROM_HERE, std::move(write_task)));
+          },
+          [&write_task](BlockCurrentSequenceTag) {
+            std::move(write_task).Run();
+          },
+      },
+      task_runner_);
 }
 
 void ImportantFileWriter::ScheduleWrite(DataSerializer* serializer) {
@@ -496,6 +505,8 @@ void ImportantFileWriter::ScheduleWrite(DataSerializer* serializer) {
 void ImportantFileWriter::ScheduleWriteWithBackgroundDataSerializer(
     BackgroundDataSerializer* serializer) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(
+      std::holds_alternative<scoped_refptr<SequencedTaskRunner>>(task_runner_));
 
   DCHECK(serializer);
   serializer_.emplace<raw_ptr<BackgroundDataSerializer>>(serializer);
@@ -508,6 +519,10 @@ void ImportantFileWriter::ScheduleWriteWithBackgroundDataSerializer(
 }
 
 void ImportantFileWriter::DoScheduledWrite() {
+  TRACE_EVENT("base", "ImportantFileWriter::DoScheduledWrite",
+              "histogram_suffix", histogram_suffix_, "path",
+              path_.BaseName().AsUTF8Unsafe());
+
   // One of the serializers should be set.
   DCHECK(!std::holds_alternative<std::monostate>(serializer_));
 

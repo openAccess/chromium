@@ -9,6 +9,7 @@
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/renderer/platform/graphics/image_decoding_store.h"
 #include "third_party/blink/renderer/platform/graphics/image_frame_generator.h"
+#include "ui/gfx/geometry/skia_conversions.h"
 
 namespace blink {
 namespace {
@@ -211,6 +212,11 @@ bool ImageDecoderWrapper::Decode(ImageDecoderFactory* factory,
 bool ImageDecoderWrapper::ShouldDecodeToExternalMemory(
     wtf_size_t frame_count,
     bool resume_decoding) const {
+  // ImageDecoder::SetMemoryAllocator() only applies the allocator to frame 0.
+  if (frame_index_ != 0) {
+    return false;
+  }
+
   // Some multi-frame images need their decode cached in the decoder to allow
   // future frames to reference previous frames.
   //
@@ -308,7 +314,8 @@ std::unique_ptr<ImageDecoder> ImageDecoderWrapper::CreateDecoderWithData(
   return ImageDecoder::Create(
       data_, all_data_received_, PixmapAlphaOption(pixmap_),
       high_bit_depth_decoding_option, decoder_color_behavior_, aux_image_,
-      Platform::GetMaxDecodedImageBytes(), pixmap_.dimensions());
+      Platform::GetMaxDecodedImageBytes(),
+      gfx::SkISizeToSize(pixmap_.dimensions()));
 }
 
 }  // namespace blink

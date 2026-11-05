@@ -111,11 +111,6 @@ inline constexpr char kSyncCachedPersistentAuthErrorForMetrics[] =
 inline constexpr char kSyncCachedTrustedVaultAutoUpgradeExperimentGroup[] =
     "sync.cached_trusted_vault_auto_upgrade_experiment_group";
 
-// A string that can be used to restore sync encryption infrastructure on
-// startup so that the user doesn't need to provide credentials on each start.
-inline constexpr char kSyncEncryptionBootstrapToken[] =
-    "sync.encryption_bootstrap_token";
-
 // A dict that can be used to restore per-account the sync encryption
 // infrastructure on startup so that the user doesn't need to provide
 // credentials on each start.
@@ -146,6 +141,13 @@ inline constexpr char kMigrateExtensionsFromLocalToAccount[] =
 inline constexpr char kMigrateThemeFromLocalToAccount[] =
     "sync.migrate_theme_from_local_to_account";
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+// Whether SyncPrefs::MigrateGlobalDataTypePrefsToAccount() ran with the Reading
+// List toggle included (see crbug.com/568406887).
+inline constexpr char kReadingListPrefMigratedToAccount[] =
+    "sync.reading_list_pref_migrated_to_account";
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+
 // State of SyncPrefs::MaybeMigratePrefsForSyncToSigninPart1() and
 // MaybeMigratePrefsForSyncToSigninPart2(). Should be cleaned up after those
 // migration methods are gone.
@@ -160,6 +162,13 @@ inline constexpr char kSyncToSigninMigrationState[] =
 // sync-the-feature disabled.
 inline constexpr char kFirstTimeTriedToMigrateSyncFeaturePausedToSignin[] =
     "sync.first_time_tried_to_migrate_sync_feature_paused_to_signin";
+
+#if !BUILDFLAG(IS_CHROMEOS)
+// Name of a boolean pref recording whether legacy APPS and APP_SETTINGS data in
+// DataTypeStore went through a one-off wipe.
+inline constexpr char kWipedAppsAndAppSettingsData[] =
+    "sync.wiped_apps_and_app_settings_data";
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace internal
 }  // namespace syncer::prefs

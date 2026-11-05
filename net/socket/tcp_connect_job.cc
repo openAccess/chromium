@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <string_view>
 #include <utility>
@@ -14,7 +15,6 @@
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/adapters.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
@@ -91,7 +91,7 @@ bool IsEndpointInFreshList(const IPEndPoint& endpoint,
 
 TcpConnectJob::ServiceEndpointOverride::ServiceEndpointOverride(
     ServiceEndpoint endpoint,
-    std::set<std::string> dns_aliases)
+    base::flat_set<std::string> dns_aliases)
     : endpoints({std::move(endpoint)}), dns_aliases(std::move(dns_aliases)) {}
 TcpConnectJob::ServiceEndpointOverride::ServiceEndpointOverride(
     ServiceEndpointOverride&&) = default;
@@ -764,7 +764,7 @@ TcpConnectJob::IPEndPointInfo TcpConnectJob::GetNextIPEndPoint(
           // hasn't been tried yet, which should tend to find any untried
           // addresses sooner.
           for (const auto& disallowed_endpoint :
-               base::Reversed(*disallowed_endpoints)) {
+               std::views::reverse(*disallowed_endpoints)) {
             if (!attempted_addresses_.contains(disallowed_endpoint)) {
               return base::unexpected(ERR_IO_PENDING);
             }
@@ -986,7 +986,7 @@ bool TcpConnectJob::EndpointsCryptoReady() const {
   return true;
 }
 
-const std::set<std::string>& TcpConnectJob::GetDnsAliasResults() const {
+const base::flat_set<std::string>& TcpConnectJob::GetDnsAliasResults() const {
   if (dns_request_) {
     DCHECK(!endpoint_override_);
     return dns_request_->GetDnsAliasResults();

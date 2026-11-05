@@ -7,7 +7,6 @@
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/system_identity_manager_observer.h"
 #import "testing/gmock/include/gmock/gmock.h"
-#import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 
 namespace {
@@ -89,14 +88,8 @@ class TestSystemIdentityManager : public SystemIdentityManager {
   }
   void FetchCapabilities(id<SystemIdentity> identity,
                          const std::vector<std::string>& names,
-                         FetchCapabilitiesCallback callback) final {
-    NOTREACHED();
-  }
-  void FetchCapabilitiesWithPartial(
-      id<SystemIdentity> identity,
-      const std::vector<std::string>& names,
-      FetchCapabilitiesCompletion completion,
-      FetchPartialCapabilitiesCallback partial_callback) final {
+                         FetchPartialCapabilitiesCallback partial_callback,
+                         FetchCapabilitiesCompletion completion) final {
     NOTREACHED();
   }
   bool HandleMDMNotification(id<SystemIdentity> identity,
@@ -114,11 +107,6 @@ class TestSystemIdentityManager : public SystemIdentityManager {
     NOTREACHED();
   }
   bool IsMDMError(id<SystemIdentity> identity, NSError* error) final {
-    NOTREACHED();
-  }
-  void FetchTokenAuthURL(id<SystemIdentity> identity,
-                         NSURL* target_url,
-                         AuthenticatedURLCallback callback) final {
     NOTREACHED();
   }
   DismissViewCallback PresentAccountDetailsController(

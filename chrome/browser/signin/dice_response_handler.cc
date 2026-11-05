@@ -17,7 +17,7 @@
 #include "base/memory/raw_ref.h"
 #include "base/memory/singleton.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/strings/stringprintf.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -59,6 +59,15 @@ const char kDiceTokenBindingOutcomeHistogram[] =
     "Signin.DiceTokenBindingOutcome";
 const char kDiceEnableSyncHeaderAccountInfoIsPresent[] =
     "Signin.DiceEnableSyncHeaderAccountInfoIsPresent";
+const char kDiceLinkedAccountsLatencyInitiatorTokenFetch[] =
+    "Signin.Dice.LinkedAccounts.Latency.InitiatorTokenFetch";
+const char kDiceLinkedAccountsLatencyTotalSessionDuration[] =
+    "Signin.Dice.LinkedAccounts.Latency.TotalSessionDuration";
+constexpr char kDiceLinkedAccountsMultiAccountCount[] =
+    "Signin.Dice.LinkedAccounts.MultiAccountCount";
+
+// Maximum number of accounts that can be signed in to Gaia at the same time.
+constexpr int kMaxGaiaAccounts = 10;
 
 // Used for UMA. Do not reorder, append new values at the end.
 enum DiceResponseHeader {
@@ -98,12 +107,12 @@ void RecordDiceFetchTokenResult(DiceTokenFetchResult result) {
                                 kDiceTokenFetchResultCount);
 }
 
-// Creates a serialized string header value out of the input type, using
+// Creates a serialized string header value out of the input string, using
 // structured headers.
-template <typename T>
-std::string SerializeHeaderString(const T& value) {
+std::string SerializeHeaderString(const std::string& value) {
   return net::structured_headers::SerializeItem(
-             net::structured_headers::Item(value))
+             net::structured_headers::ItemView(
+                 net::structured_headers::ItemView::string, value))
       .value_or(std::string());
 }
 
@@ -269,6 +278,14 @@ void DiceResponseHandler::DiceSigninSession::NotifySessionComplete() {
   }
   session_completed_notified_ = true;
 
+  if (IsMultiAccount() && !session_duration_recorded_ &&
+      !session_start_time_.is_null()) {
+    session_duration_recorded_ = true;
+    base::UmaHistogramMediumTimes(
+        kDiceLinkedAccountsLatencyTotalSessionDuration,
+        base::TimeTicks::Now() - session_start_time_);
+  }
+
   std::vector<CoreAccountId> secondary_accounts;
   const auto* initiator = signin_info_.GetInitiator();
   if (initiator) {
@@ -299,6 +316,7 @@ DiceResponseHandler::DiceSigninSession::GetFetchMode() const {
 
 void DiceResponseHandler::DiceSigninSession::StartTokenFetches() {
   CHECK(signin_info_.GetInitiator());
+  session_start_time_ = base::TimeTicks::Now();
 
   // The user is signing in, which means that account fetching will shortly be
   // triggered.
@@ -329,8 +347,12 @@ void DiceResponseHandler::DiceSigninSession::FetchTokenForAccount(
     return;
   }
 
+  CoreAccountId account_id =
+      handler_->identity_manager_->PickAccountIdForAccount(
+          account.account_info.gaia_id, account.account_info.email);
+
   if (account.no_authorization_code) {
-    handler_->OnNoAuthorizationCode();
+    handler_->OnNoAuthorizationCode(account_id);
     return;
   }
 
@@ -338,9 +360,6 @@ void DiceResponseHandler::DiceSigninSession::FetchTokenForAccount(
       supported_algorithms_or_error = handler_->CheckTokenBindingEligibility(
           account.supported_algorithms_for_token_binding);
 
-  CoreAccountId account_id =
-      handler_->identity_manager_->PickAccountIdForAccount(
-          account.account_info.gaia_id, account.account_info.email);
   // Cancel any in-flight token fetchers for this account in other sessions.
   // Note: `DiceHeaderHelper` deduplicates accounts in the DICE SIGNIN header,
   // guaranteeing that all accounts within a single `DiceSigninSession` have
@@ -394,18 +413,25 @@ void DiceResponseHandler::DiceSigninSession::OnTokenExchangeSuccess(
   bool is_initiator =
       (fetcher->gaia_id() == signin_info_.GetInitiator()->account_info.gaia_id);
 
-  handler_->about_signin_internals_->OnRefreshTokenReceived(
-      base::StringPrintf("Successful (%s)", account_id.ToString().c_str()));
+  handler_->about_signin_internals_->OnRefreshTokenReceived("Successful",
+                                                            account_id);
 
   if (is_initiator) {
+    if (IsMultiAccount() && !session_start_time_.is_null()) {
+      base::UmaHistogramMediumTimes(
+          kDiceLinkedAccountsLatencyInitiatorTokenFetch,
+          base::TimeTicks::Now() - session_start_time_);
+    }
+
     delegate_->HandleTokenExchangeSuccess(
         account_id, is_new_account,
         signin_info_.linked_accounts_metadata().primary_is_connected);
 
     if (fetcher->should_enable_sync()) {
       delegate_->CompleteChromeSignInAfterGaiaSignin(
-          handler_->identity_manager_->FindExtendedAccountInfoByAccountId(
-              account_id));
+          handler_->identity_manager_
+              ->FindExtendedAccountInfoByAccountId(account_id)
+              .GetCoreAccountInfo());
     }
 
     if (GetFetchMode() == FetchMode::kInitiatorFirst) {
@@ -428,8 +454,8 @@ void DiceResponseHandler::DiceSigninSession::OnTokenExchangeFailure(
   CoreAccountId account_id =
       handler_->identity_manager_->PickAccountIdForAccount(fetcher->gaia_id(),
                                                            email);
-  handler_->about_signin_internals_->OnRefreshTokenReceived(
-      base::StringPrintf("Failure (%s)", account_id.ToString().c_str()));
+  handler_->about_signin_internals_->OnRefreshTokenReceived("Failure",
+                                                            account_id);
 
   bool is_initiator =
       (fetcher->gaia_id() == signin_info_.GetInitiator()->account_info.gaia_id);
@@ -487,7 +513,8 @@ bool DiceResponseHandler::DiceSigninSession::MarkEnableSyncIfFetching(
     const std::string& email) {
   for (const auto& fetcher : token_fetchers_) {
     if (fetcher->gaia_id() == gaia_id) {
-      DCHECK(gaia::AreEmailsSame(fetcher->email(), email));
+      CHECK(gaia::AreEmailsSame(fetcher->email(), email),
+            base::NotFatalUntil::M162);
       fetcher->set_should_enable_sync(true);
       return true;
     }
@@ -508,10 +535,10 @@ DiceResponseHandler::DiceResponseHandler(
       identity_manager_(identity_manager),
       account_reconcilor_(account_reconcilor),
       about_signin_internals_(about_signin_internals) {
-  DCHECK(signin_client_);
-  DCHECK(identity_manager_);
-  DCHECK(account_reconcilor_);
-  DCHECK(about_signin_internals_);
+  CHECK(signin_client_, base::NotFatalUntil::M162);
+  CHECK(identity_manager_, base::NotFatalUntil::M162);
+  CHECK(account_reconcilor_, base::NotFatalUntil::M162);
+  CHECK(about_signin_internals_, base::NotFatalUntil::M162);
 }
 
 DiceResponseHandler::~DiceResponseHandler() = default;
@@ -545,7 +572,8 @@ void DiceResponseHandler::ProcessDiceHeader(
       const signin::DiceResponseParams::SignoutInfo* signout_info =
           dice_params.signout_info();
       CHECK(signout_info);
-      DCHECK_GT(signout_info->account_infos.size(), 0u);
+      CHECK_GT(signout_info->account_infos.size(), 0u,
+               base::NotFatalUntil::M162);
       ProcessDiceSignoutHeader(signout_info->account_infos);
       return;
     }
@@ -560,6 +588,15 @@ void DiceResponseHandler::ProcessDiceSigninHeader(
     std::unique_ptr<ProcessDiceHeaderDelegate> delegate) {
   VLOG(1) << "Start processing Dice signin response";
   RecordDiceResponseHeader(kSignin);
+
+  // Single-account sign-ins are not recorded, as they would dominate the
+  // histogram.
+  if (signin_info.accounts().size() > 1) {
+    base::UmaHistogramExactLinear(
+        kDiceLinkedAccountsMultiAccountCount,
+        base::saturated_cast<int>(signin_info.accounts().size()),
+        kMaxGaiaAccounts + 1);
+  }
 
   if (signin_info.linked_accounts_metadata().primary_is_connected ==
       signin::Tribool::kTrue) {
@@ -593,11 +630,12 @@ size_t DiceResponseHandler::GetPendingDiceTokenFetchersCountForTesting() const {
   return count;
 }
 
-void DiceResponseHandler::OnNoAuthorizationCode() {
+void DiceResponseHandler::OnNoAuthorizationCode(
+    const CoreAccountId& account_id) {
   if (!lock_) {
     lock_ = std::make_unique<AccountReconcilor::Lock>(account_reconcilor_);
     about_signin_internals_->OnRefreshTokenReceived(
-        "Missing authorization code due to OAuth outage in Dice.");
+        "Missing authorization code due to OAuth outage in Dice.", account_id);
   }
   if (!timer_) {
     timer_ = std::make_unique<base::OneShotTimer>();
@@ -637,7 +675,8 @@ void DiceResponseHandler::ProcessEnableSyncHeader(
   if (account_info.IsEmpty()) {
     return;
   }
-  delegate->CompleteChromeSignInAfterGaiaSignin(account_info);
+  delegate->CompleteChromeSignInAfterGaiaSignin(
+      account_info.GetCoreAccountInfo());
 }
 
 void DiceResponseHandler::ProcessDiceSignoutHeader(

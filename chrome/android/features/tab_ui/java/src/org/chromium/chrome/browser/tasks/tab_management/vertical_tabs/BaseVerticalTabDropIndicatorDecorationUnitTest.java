@@ -11,7 +11,6 @@ import static org.junit.Assert.assertSame;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.content.Context;
@@ -23,7 +22,6 @@ import android.view.View;
 
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.ViewHolder;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -35,32 +33,26 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalExternalViewDragDropReorderStrategy.DropTargetResult;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 
 /** Unit tests for {@link BaseVerticalTabDropIndicatorDecoration}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        instrumentedPackages = {
-            "androidx.recyclerview.widget.RecyclerView" // required to mock final.
-        })
 public class BaseVerticalTabDropIndicatorDecorationUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private Canvas mCanvas;
-    @Mock private RecyclerView mRecyclerView;
     @Mock private RecyclerView.State mState;
 
     @Captor private ArgumentCaptor<RectF> mRectCaptor;
     @Captor private ArgumentCaptor<Paint> mPaintCaptor;
 
     private Activity mActivity;
+    private RecyclerView mRecyclerView;
     private TestDropIndicatorDecoration mDecoration;
     private int mThickness;
 
@@ -113,7 +105,7 @@ public class BaseVerticalTabDropIndicatorDecorationUnitTest {
         mThickness =
                 mActivity.getResources().getDimensionPixelSize(R.dimen.vertical_tab_spine_width);
 
-        when(mRecyclerView.getContext()).thenReturn(mActivity);
+        mRecyclerView = new RecyclerView(mActivity);
 
         mDecoration = new TestDropIndicatorDecoration(mActivity);
     }
@@ -122,7 +114,7 @@ public class BaseVerticalTabDropIndicatorDecorationUnitTest {
         return new DropTargetResult(
                 DropTargetResult.TargetType.MAIN_LIST,
                 /* destTabIndex= */ 0,
-                /* destGroupTabId= */ TabList.INVALID_TAB_INDEX,
+                /* destGroupId= */ null,
                 /* isPinned= */ false,
                 /* isZeroPinnedState= */ false,
                 /* isZeroNormalTabsState= */ false,
@@ -134,7 +126,6 @@ public class BaseVerticalTabDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testLifecycle_SetGetClear() {
         assertNull(mDecoration.getDropTargetResult());
 
@@ -147,7 +138,6 @@ public class BaseVerticalTabDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_NullTarget_NoOp() {
         mDecoration.setDropTargetResult(null);
         mDecoration.onDrawOver(mCanvas, mRecyclerView, mState);
@@ -156,7 +146,6 @@ public class BaseVerticalTabDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_ShouldDrawFalse_NoOp() {
         DropTargetResult result = createTestDropTargetResult(null);
         mDecoration.setDropTargetResult(result);
@@ -168,7 +157,6 @@ public class BaseVerticalTabDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_CalculateBoundsFalse_NoOp() {
         DropTargetResult result = createTestDropTargetResult(null);
         mDecoration.setDropTargetResult(result);
@@ -181,7 +169,6 @@ public class BaseVerticalTabDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDrawOver_RendersRoundRectWithPrimaryColor() {
         DropTargetResult result = createTestDropTargetResult(null);
         mDecoration.setDropTargetResult(result);
@@ -215,7 +202,6 @@ public class BaseVerticalTabDropIndicatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetAttachedTargetView() {
         DropTargetResult resultNullVh = createTestDropTargetResult(null);
         assertNull(mDecoration.callGetAttachedTargetView(resultNullVh, mRecyclerView));

@@ -49,6 +49,7 @@
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/immersive_playback_options.h"
 #include "content/public/browser/media_session.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/picture_in_picture_window_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
@@ -280,7 +281,7 @@ class OverlayWindowFrameView : public views::FrameView {
   // views::ViewTargeterDelegate:
   bool DoesIntersectRect(const View* target,
                          const gfx::Rect& rect) const override {
-    DCHECK_EQ(target, this);
+    CHECK_EQ(target, this, base::NotFatalUntil::M162);
     return false;
   }
 
@@ -1062,7 +1063,7 @@ void VideoOverlayWindowViews::SetUpViews() {
   window_background_view->SetBackground(
       views::CreateLayerBasedSolidBackground(kColorPipWindowBackground));
   window_background_view->GetBackground()->SetInternalName(
-      "WindowBackgroundView");
+      "VideoOverlayWindowViews:WindowBackgroundView");
 
   auto video_view = std::make_unique<views::View>();
 
@@ -1240,7 +1241,8 @@ void VideoOverlayWindowViews::SetUpViews() {
 
   auto live_caption_dialog = std::make_unique<OverlayWindowLiveCaptionDialog>(
       Profile::FromBrowserContext(
-          controller_->GetWebContents()->GetBrowserContext()));
+          controller_->GetWebContents()->GetBrowserContext())
+          ->GetOriginalProfile());
   live_caption_dialog->SetVisible(false);
 
   auto toggle_microphone_button =
@@ -1287,35 +1289,39 @@ void VideoOverlayWindowViews::SetUpViews() {
   video_view->SetPaintToLayer(ui::LAYER_SURFACE);
   video_view->layer()->SetMasksToBounds(true);
   video_view->layer()->SetFillsBoundsOpaquely(false);
-  video_view->layer()->SetName("VideoView");
+  video_view->layer()->SetName("VideoOverlayWindowViews:VideoView");
 
   // views::View that holds the scrim, which appears with the controls. -------
   controls_scrim_view->SetPaintToLayer(ui::LAYER_TEXTURED);
   controls_scrim_view->layer()->SetFillsBoundsOpaquely(false);
-  controls_scrim_view->layer()->SetName("ControlsScrimView");
+  controls_scrim_view->layer()->SetName(
+      "VideoOverlayWindowViews:ControlsScrimView");
 
   // views::View that is a parent of all the controls. Makes hiding and showing
   // all the controls at once easier.
   controls_container_view->SetPaintToLayer(ui::LAYER_TEXTURED);
   controls_container_view->layer()->SetFillsBoundsOpaquely(false);
-  controls_container_view->layer()->SetName("ControlsContainerView");
+  controls_container_view->layer()->SetName(
+      "VideoOverlayWindowViews:ControlsContainerView");
 
   // The scrim for the top controls. ----------------------------------------
   controls_top_scrim_view->SetPaintToLayer(ui::LAYER_TEXTURED);
   controls_top_scrim_view->layer()->SetFillsBoundsOpaquely(false);
-  controls_top_scrim_view->layer()->SetName("ControlsTopScrimView");
+  controls_top_scrim_view->layer()->SetName(
+      "VideoOverlayWindowViews:ControlsTopScrimView");
 
   // The scrim for the bottom controls. -------------------------------------
   controls_bottom_scrim_view->SetPaintToLayer(ui::LAYER_TEXTURED);
   controls_bottom_scrim_view->layer()->SetFillsBoundsOpaquely(false);
-  controls_bottom_scrim_view->layer()->SetName("ControlsBottomScrimView");
+  controls_bottom_scrim_view->layer()->SetName(
+      "VideoOverlayWindowViews:ControlsBottomScrimView");
 
   // views::View that displays the window title. The window title consists of
   // the origin and favicon. Always displayed together with the controls top
   // scrim view.
   title_view->SetPaintToLayer(ui::LAYER_TEXTURED);
   title_view->layer()->SetFillsBoundsOpaquely(false);
-  title_view->layer()->SetName("TitleView");
+  title_view->layer()->SetName("VideoOverlayWindowViews:TitleView");
 
   // Set up proper layer order. The scrims and title are on a separate layer
   // from the controls so we can animate their opacity individually (so that we
@@ -1406,7 +1412,7 @@ void VideoOverlayWindowViews::OnRootViewReady() {
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   GetRootView()->SetPaintToLayer(ui::LAYER_TEXTURED);
-  GetRootView()->layer()->SetName("RootView");
+  GetRootView()->layer()->SetName("VideoOverlayWindowViews:RootView");
   GetRootView()->layer()->SetMasksToBounds(true);
 
   views::View* const contents_view = GetContentsView();
@@ -1821,6 +1827,8 @@ gfx::Rect VideoOverlayWindowViews::GetBounds() {
 }
 
 void VideoOverlayWindowViews::UpdateNaturalSize(const gfx::Size& natural_size) {
+  // TODO(crbug.com/576771786): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!natural_size.IsEmpty());
   natural_size_ = natural_size;
   SetAspectRatio(gfx::SizeF(natural_size_));
@@ -2338,7 +2346,7 @@ const viz::FrameSinkId* VideoOverlayWindowViews::GetCurrentFrameSinkId() const {
 
 void VideoOverlayWindowViews::MaybeUnregisterFrameSinkHierarchy() {
   if (has_registered_frame_sink_hierarchy_) {
-    DCHECK(GetCurrentFrameSinkId());
+    CHECK(GetCurrentFrameSinkId(), base::NotFatalUntil::M162);
     GetCompositor()->RemoveChildFrameSink(*GetCurrentFrameSinkId());
     has_registered_frame_sink_hierarchy_ = false;
   }
@@ -2469,8 +2477,9 @@ bool VideoOverlayWindowViews::AreTitleAndScrimVisible() const {
 
   // If no animation is active, check the opacity of the layers. They should
   // also be in sync.
-  DCHECK_EQ(GetTitleView()->layer()->opacity(),
-            GetControlsTopScrimView()->layer()->opacity());
+  CHECK_EQ(GetTitleView()->layer()->opacity(),
+           GetControlsTopScrimView()->layer()->opacity(),
+           base::NotFatalUntil::M162);
   return GetTitleView()->layer()->opacity() > 0;
 }
 

@@ -18,12 +18,9 @@ import static org.mockito.Mockito.when;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.app.Activity;
-import android.content.Context;
-import android.content.res.Resources;
 import android.os.Looper;
 import android.view.ViewGroup;
-import android.view.Window;
-import android.view.WindowManager;
+import android.widget.FrameLayout;
 
 import org.junit.After;
 import org.junit.Before;
@@ -36,10 +33,10 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
-import org.robolectric.shadows.ShadowDisplay;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplierImpl;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -62,6 +59,7 @@ import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorItemSelectionId;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
 import org.chromium.content_public.browser.RenderWidgetHostView;
 import org.chromium.content_public.browser.WebContents;
@@ -76,36 +74,37 @@ import java.util.List;
 
 /** Unit tests for TabItemPickerCoordinator. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabItemPickerCoordinatorUnitTest {
+    private static final GURL LOCAL_PDF_URL =
+            new GURL(
+                    "chrome-native://pdf/link?url="
+                            + "content%3A%2F%2Fmedia%2Fexternal%2Fdownloads%2F1");
+
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private TabWindowManager mTabWindowManager;
     @Mock private Profile mProfile;
     @Mock private TabModelSelectorImpl mTabModelSelector;
     @Mock private Callback<Boolean> mCallback;
-    @Mock private Activity mActivity;
     @Mock private TabListEditorCoordinator mTabListEditorCoordinator;
-    @Mock private ViewGroup mRootView;
-    @Mock private ViewGroup mContainerView;
     @Mock private SnackbarManager mSnackbarManager;
     @Mock private TabListEditorCoordinator.TabListEditorController mTabListEditorController;
-    @Mock private Window mWindow;
-    @Mock private ViewGroup mDecorView;
-    @Mock private Resources mResources;
-    @Mock private WindowManager mWindowManager;
     @Mock private TabModel mRegularTabModel;
     @Mock private PageContentExtractionService mPageContentExtractionService;
     @Mock private WebContents mWebContents;
 
     @Mock private SelectionDelegate<TabListEditorItemSelectionId> mSelectionDelegateMock;
     @Captor private ArgumentCaptor<List<Tab>> mTabListCaptor;
+    private final ViewGroup mRootView = new FrameLayout(ContextUtils.getApplicationContext());
+    private final ViewGroup mContainerView = new FrameLayout(ContextUtils.getApplicationContext());
+    private Activity mActivity;
     private OneshotSupplierImpl<Profile> mProfileSupplierImpl;
     private TabItemPickerCoordinator mItemPickerCoordinator;
     private final int mWindowId = 5;
 
     @Before
     public void setUp() {
+        mActivity = Robolectric.buildActivity(Activity.class).get();
         mProfileSupplierImpl = new OneshotSupplierImpl<>();
         TabItemPickerCoordinator realCoordinator =
                 new TabItemPickerCoordinator(
@@ -117,19 +116,10 @@ public class TabItemPickerCoordinatorUnitTest {
                         mContainerView,
                         new ArrayList<Integer>(),
                         TabListEditorCoordinator.UNLIMITED_SELECTION,
-                        false);
+                        /* includePdfTabs= */ false);
         mItemPickerCoordinator = Mockito.spy(realCoordinator);
 
         TabWindowManagerSingleton.setTabWindowManagerForTesting(mTabWindowManager);
-
-        when(mActivity.getWindow()).thenReturn(mWindow);
-        when(mWindow.getDecorView()).thenReturn(mDecorView);
-
-        when(mActivity.getResources()).thenReturn(mResources);
-        when(mResources.getInteger(anyInt())).thenReturn(1);
-
-        when(mActivity.getSystemService(Context.WINDOW_SERVICE)).thenReturn(mWindowManager);
-        when(mWindowManager.getDefaultDisplay()).thenReturn(ShadowDisplay.getDefaultDisplay());
 
         when(mTabModelSelector.getModel(false)).thenReturn(mRegularTabModel);
         when(mRegularTabModel.index()).thenReturn(0);
@@ -204,7 +194,7 @@ public class TabItemPickerCoordinatorUnitTest {
                         mContainerView,
                         new ArrayList<Integer>(),
                         TabListEditorCoordinator.UNLIMITED_SELECTION,
-                        false);
+                        /* includePdfTabs= */ false);
 
         coordinatorWithInvalidId.showTabItemPicker(mCallback);
         mProfileSupplierImpl.set(mProfile);
@@ -402,6 +392,93 @@ public class TabItemPickerCoordinatorUnitTest {
         assertTrue("Should contain background tab", shownTabs.contains(tabBackground));
     }
 
+    private Tab mockNativePageTab(int tabId, GURL url, boolean isPdf, boolean isIncognito) {
+        Tab tab = mockTabActiveState(tabId, true);
+        NativePage nativePage = Mockito.mock(NativePage.class);
+        when(nativePage.isPdf()).thenReturn(isPdf);
+        when(tab.getUrl()).thenReturn(url);
+        when(tab.isNativePage()).thenReturn(true);
+        when(tab.getNativePage()).thenReturn(nativePage);
+        when(tab.isIncognitoBranded()).thenReturn(isIncognito);
+        return tab;
+    }
+
+    private List<Tab> showPickerAndGetShownTabs(boolean includePdfTabs, List<Tab> allTabs) {
+        TabItemPickerCoordinator coordinator =
+                Mockito.spy(
+                        new TabItemPickerCoordinator(
+                                mProfileSupplierImpl,
+                                mWindowId,
+                                mActivity,
+                                mSnackbarManager,
+                                mRootView,
+                                mContainerView,
+                                new ArrayList<Integer>(),
+                                TabListEditorCoordinator.UNLIMITED_SELECTION,
+                                includePdfTabs));
+        doReturn(mTabListEditorCoordinator)
+                .when(coordinator)
+                .createTabListEditorCoordinator(any(TabModelSelector.class));
+        when(TabWindowManagerSingleton.getInstance()
+                        .requestSelectorWithoutActivity(anyInt(), any(Profile.class)))
+                .thenReturn(mTabModelSelector);
+        when(mRegularTabModel.getCount()).thenReturn(allTabs.size());
+        for (int i = 0; i < allTabs.size(); i++) {
+            when(mRegularTabModel.getTabAt(i)).thenReturn(allTabs.get(i));
+        }
+        when(mRegularTabModel.iterator()).thenReturn(allTabs.iterator());
+        doAnswer(
+                        invocation -> {
+                            Callback<long[]> callback = invocation.getArgument(0);
+                            callback.onResult(new long[0]);
+                            return null;
+                        })
+                .when(mPageContentExtractionService)
+                .getAllCachedTabIds(any());
+
+        coordinator.showTabItemPicker(mCallback);
+        mProfileSupplierImpl.set(mProfile);
+        shadowOf(Looper.getMainLooper()).idle();
+
+        verify(mTabListEditorController).show(mTabListCaptor.capture(), any(), any());
+        return mTabListCaptor.getValue();
+    }
+
+    @Test
+    public void testOnCachedTabIdsRetrieved_LocalPdfTabIncludedWhenRequested() {
+        Tab webTab = mockTabActiveState(1, true);
+        Tab localPdfTab =
+                mockNativePageTab(2, LOCAL_PDF_URL, /* isPdf= */ true, /* isIncognito= */ false);
+        Tab ntpTab =
+                mockNativePageTab(
+                        3,
+                        JUnitTestGURLs.NTP_NATIVE_URL,
+                        /* isPdf= */ false,
+                        /* isIncognito= */ false);
+        Tab incognitoPdfTab =
+                mockNativePageTab(4, LOCAL_PDF_URL, /* isPdf= */ true, /* isIncognito= */ true);
+
+        List<Tab> shownTabs =
+                showPickerAndGetShownTabs(
+                        /* includePdfTabs= */ true,
+                        Arrays.asList(webTab, localPdfTab, ntpTab, incognitoPdfTab));
+
+        assertEquals(Arrays.asList(webTab, localPdfTab), shownTabs);
+    }
+
+    @Test
+    public void testOnCachedTabIdsRetrieved_LocalPdfTabExcludedByDefault() {
+        Tab webTab = mockTabActiveState(1, true);
+        Tab localPdfTab =
+                mockNativePageTab(2, LOCAL_PDF_URL, /* isPdf= */ true, /* isIncognito= */ false);
+
+        List<Tab> shownTabs =
+                showPickerAndGetShownTabs(
+                        /* includePdfTabs= */ false, Arrays.asList(webTab, localPdfTab));
+
+        assertEquals(Collections.singletonList(webTab), shownTabs);
+    }
+
     @Test
     public void testTabModelSelectorDestroyed_FinishesActivity() {
         when(TabWindowManagerSingleton.getInstance()
@@ -418,7 +495,7 @@ public class TabItemPickerCoordinatorUnitTest {
 
         observerCaptor.getValue().onDestroyed();
 
-        verify(mActivity).finish();
+        assertTrue(mActivity.isFinishing());
         verify(mTabModelSelector).removeObserver(observerCaptor.getValue());
     }
 
@@ -444,7 +521,7 @@ public class TabItemPickerCoordinatorUnitTest {
 
         observerCaptor.getValue().didBecomeEmpty();
 
-        verify(mActivity).finish();
+        assertTrue(mActivity.isFinishing());
         verify(incognitoTabModel).removeIncognitoObserver(observerCaptor.getValue());
     }
 

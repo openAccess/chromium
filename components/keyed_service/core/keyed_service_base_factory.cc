@@ -63,8 +63,22 @@ bool KeyedServiceBaseFactory::ServiceIsCreatedWithContext() const {
   return false;
 }
 
+bool KeyedServiceBaseFactory::ServiceIsCreatedAfterStartup() const {
+  return false;
+}
+
 bool KeyedServiceBaseFactory::ServiceIsNULLWhileTesting() const {
   return false;
+}
+
+bool KeyedServiceBaseFactory::ServiceIsAllowedWhenServicesDisabledByDefault()
+    const {
+  return false;
+}
+
+bool KeyedServiceBaseFactory::AreContextServicesDisabledByDefault(
+    void* context) const {
+  return dependency_manager_->AreContextServicesDisabledByDefault(context);
 }
 
 void KeyedServiceBaseFactory::ContextDestroyed(void* context) {

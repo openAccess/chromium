@@ -12,12 +12,14 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
+#include "third_party/blink/renderer/core/dom/tree_scope.h"
 #include "third_party/blink/renderer/core/layout/geometry/axis.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/writing_direction_mode.h"
 
 namespace blink {
@@ -56,8 +58,12 @@ ScrollTimeline* ScrollTimeline::Create(Document& document,
 ScrollTimeline* ScrollTimeline::Create(Document* document,
                                        Element* source,
                                        ScrollAxis axis) {
+  // Implements the IDL constructor new ScrollTimeline.
+  // Imperative timelines are attached directly to the animation via the
+  // web animations API and do not participate in name lookup, and have no
+  // CSS defining tree scope.
   ScrollTimeline* scroll_timeline = MakeGarbageCollected<ScrollTimeline>(
-      document, ReferenceType::kSource, source, axis);
+      document, ReferenceType::kSource, source, axis, /*tree_scope=*/nullptr);
   scroll_timeline->UpdateSnapshot();
 
   return scroll_timeline;
@@ -66,11 +72,13 @@ ScrollTimeline* ScrollTimeline::Create(Document* document,
 ScrollTimeline::ScrollTimeline(Document* document,
                                ReferenceType reference_type,
                                Element* reference,
-                               ScrollAxis axis)
+                               ScrollAxis axis,
+                               const TreeScope* tree_scope)
     : ScrollSnapshotTimeline(document),
       reference_type_(reference_type),
       reference_element_(reference),
-      axis_(axis) {}
+      axis_(axis),
+      tree_scope_(tree_scope) {}
 
 Element* ScrollTimeline::RetainingElement() const {
   return reference_element_.Get();
@@ -151,7 +159,7 @@ ScrollTimeline::TimelineState ScrollTimeline::ComputeTimelineState() const {
     return state;
   }
 
-  state.zoom = scroll_container->StyleRef().EffectiveZoom();
+  state.zoom = scroll_container->Style().EffectiveZoom();
   // Timeline is inactive unless the scroll offset range is positive.
   // github.com/w3c/csswg-drafts/issues/7401
   if (state.scroll_offsets->end - state.scroll_offsets->start > 0) {
@@ -175,23 +183,25 @@ void ScrollTimeline::CalculateOffsets(PaintLayerScrollableArea* scrollable_area,
 }
 
 Element* ScrollTimeline::source() const {
-  Element* source = ComputeSource();
+  return Sanitize(ComputeSource());
+}
 
-  if (!source) {
+/* static */
+Element* ScrollTimeline::Sanitize(Element* element) {
+  if (!element) {
     return nullptr;
   }
 
-  ShadowRoot* containing_shadow_root = source->ContainingShadowRoot();
-  while (containing_shadow_root && containing_shadow_root->IsUserAgent()) {
-    source = &containing_shadow_root->host();
-    containing_shadow_root = source->ContainingShadowRoot();
+  ShadowRoot* containing_shadow_root = element->ContainingShadowRoot();
+  if (containing_shadow_root && containing_shadow_root->IsUserAgent()) {
+    return Sanitize(&containing_shadow_root->host());
   }
 
-  if (PseudoElement* pseudo = DynamicTo<PseudoElement>(source)) {
-    source = &(pseudo->UltimateOriginatingElement());
+  if (PseudoElement* pseudo = DynamicTo<PseudoElement>(element)) {
+    return Sanitize(pseudo->parentElement());
   }
 
-  return source;
+  return element;
 }
 
 Element* ScrollTimeline::ComputeSource() const {
@@ -271,7 +281,7 @@ Element* ScrollTimeline::ComputeSourceNoLayout() const {
     // The content scroller for a FieldSet is an anonymous block.  In this case,
     // the parent's node is the fieldset element.
     const LayoutBox* parent = DynamicTo<LayoutBox>(source_object->Parent());
-    if (parent && parent->StyleRef().IsScrollContainer()) {
+    if (parent && parent->Style().IsScrollContainer()) {
       node = parent->GetNode();
     }
   }
@@ -312,43 +322,24 @@ Node* ScrollTimeline::ComputeResolvedSource() const {
 
 void ScrollTimeline::Trace(Visitor* visitor) const {
   visitor->Trace(reference_element_);
+  visitor->Trace(tree_scope_);
   ScrollSnapshotTimeline::Trace(visitor);
 }
 
 bool ScrollTimeline::Matches(ReferenceType reference_type,
                              Element* reference_element,
-                             ScrollAxis axis) const {
+                             ScrollAxis axis,
+                             const TreeScope* tree_scope) const {
+  if (RuntimeEnabledFeatures::CSSTreeScopedScrollTimelineEnabled() &&
+      tree_scope_.Get() != tree_scope) {
+    return false;
+  }
   return (reference_type_ == reference_type) &&
          (reference_element_ == reference_element) && (axis_ == axis);
 }
 
 ScrollAxis ScrollTimeline::GetAxis() const {
   return axis_;
-}
-
-std::optional<double> ScrollTimeline::GetMaximumScrollPosition() const {
-  std::optional<PhysicalDirection> direction = GetResolvedScrollDirection();
-  LayoutBox* scroll_container =
-      direction ? ScrollContainer(ToPhysicalAxis(*direction)) : nullptr;
-  if (!scroll_container) {
-    return std::nullopt;
-  }
-
-  std::optional<ScrollOffsets> scroll_offsets = GetResolvedScrollOffsets();
-  if (!scroll_offsets) {
-    return std::nullopt;
-  }
-
-  PaintLayerScrollableArea* scrollable_area =
-      scroll_container->GetScrollableArea();
-  if (!scrollable_area) {
-    return std::nullopt;
-  }
-  ScrollOffset scroll_dimensions = scrollable_area->MaximumScrollOffset() -
-                                   scrollable_area->MinimumScrollOffset();
-  return ToPhysicalAxis(*direction) == PhysicalAxis::kHorizontal
-             ? scroll_dimensions.x()
-             : scroll_dimensions.y();
 }
 
 std::optional<double> ScrollTimeline::GetCurrentScrollPosition() const {
@@ -392,7 +383,7 @@ ScrollTimeline::ComputeWritingDirectionNoLayout() const {
   if (!writing_direction_object) {
     return std::nullopt;
   }
-  return writing_direction_object->StyleRef().GetWritingDirection();
+  return writing_direction_object->Style().GetWritingDirection();
 }
 
 // static

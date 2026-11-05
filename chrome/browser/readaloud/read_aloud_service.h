@@ -10,14 +10,17 @@
 #include <string_view>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "chrome/browser/readaloud/read_aloud_audio_broker.h"
+#include "chrome/browser/readaloud/read_aloud_voice_catalog.h"
 #include "chrome/common/readaloud/read_aloud.mojom.h"
 #include "components/dom_distiller/core/task_tracker.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "mojo/public/cpp/base/big_buffer.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "url/gurl.h"
@@ -30,9 +33,11 @@ class Profile;
 
 namespace readaloud {
 
+class OverviewGenerationBroker;
 class ReadAloudPlaybackSession;
 class ReadAloudServiceTest;
 class SpeechSynthesisBroker;
+class VoicePreviewController;
 
 // Central lifecycle and state orchestrator for the Read Aloud feature in
 // Chrome, which allows users to listen to web page content.
@@ -53,24 +58,9 @@ class ReadAloudService
       public read_aloud::mojom::ReadAloudPlaybackControllerClient,
       public content::WebContentsObserver {
  public:
-  // TODO(b/522830940): Share this enum with Java using java_cpp_enum.
-  enum class PlaybackState {
-    // Unknown state.
-    kUnknown = 0,
-    // An error occurred during playback.
-    kError = 1,
-    // 2 is skipped to maintain alignment with the legacy Read Aloud on Android.
-    // Buffering (audio is loading and not playing).
-    kBuffering = 3,
-    // Playback is paused.
-    kPaused = 4,
-    // Audio is actively playing.
-    kPlaying = 5,
-    // Playback is stopped (represents the end of playback).
-    kStopped = 6,
-    // Playback session is currently being created.
-    kPlaybackCreation = 7,
-  };
+  // Maximum plausible duration for article playback, used to reject invalid or
+  // overflowing progress reports from the utility process.
+  static constexpr base::TimeDelta kMaxPlaybackDuration = base::Hours(24);
 
   enum class PlaybackMode {
     // Unspecified playback mode.
@@ -90,10 +80,32 @@ class ReadAloudService
     kNegative = 2,
   };
 
-  struct Voice {
-    std::string id;
-    std::string display_name;
+  // Outcome of overview generation and processing in ReadAloudService.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(OverviewOutcome)
+  enum class OverviewOutcome {
+    kSuccess = 0,
+    kGenerationFailed = 1,
+    kContentParsingFailed = 2,
+    kMaxValue = kContentParsingFailed,
   };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/readaloud/enums.xml:ReadAloudOverviewOutcome)
+
+  // Outcome of standard (Classic mode) playback preparation in
+  // ReadAloudService. These values are persisted to logs. Entries should not be
+  // renumbered and numeric values should never be reused.
+  // LINT.IfChange(StandardPlaybackOutcome)
+  enum class StandardPlaybackOutcome {
+    kSuccess = 0,
+    kDistillationFailed = 1,
+    kEmptyContent = 2,
+    kInitialSynthesisFailed = 3,
+    kPlayOnReadyTimeout = 4,
+    kUtilityDisconnected = 5,
+    kMaxValue = kUtilityDisconnected,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/readaloud/enums.xml:ReadAloudStandardPlaybackOutcome)
 
   // Interface for dispatching events from the native service to the UI.
   // State changes are sent to the UI via this delegate.
@@ -110,11 +122,11 @@ class ReadAloudService
                                            base::TimeDelta duration) = 0;
 
     // Called when playback state changes (e.g. playing, paused, buffering).
-    virtual void OnPlaybackStateChanged(PlaybackState playback_state) = 0;
+    virtual void OnPlaybackStateChanged(
+        read_aloud::mojom::PlaybackState playback_state) = 0;
 
-    // Called when the available voices list and currently selected voice are updated.
-    virtual void OnVoicesAvailable(const std::vector<Voice>& voices,
-                                   std::string_view selected_voice_id) = 0;
+    // Called when the available voices catalog is provided to the UI.
+    virtual void OnVoicesAvailable(base::span<const VoiceInfo> voices) = 0;
 
     // Called when a new word is reached, providing offsets for UI highlighting.
     virtual void OnWordHighlightUpdated(int absolute_start_index,
@@ -132,19 +144,25 @@ class ReadAloudService
     // Called when the playback state of a voice preview changes in settings.
     virtual void OnVoicePreviewPlaybackStateChanged(
         std::string_view voice_id,
-        PlaybackState playback_state) = 0;
+        read_aloud::mojom::PlaybackState playback_state) = 0;
 
     // Called with the result of a page readability assessment.
     virtual void OnReadabilityResult(const GURL& url, bool is_readable) = 0;
 
     // Called immediately before the native service is destroyed.
     virtual void OnNativeDestroyed() = 0;
+
+    // Called when the text content is chunked into sentences by the utility
+    // process.
+    virtual void OnTextChunked(const std::vector<std::u16string>& chunks) = 0;
   };
 
   // Callback type used to inject a fake or mock ReadAloudPlaybackController receiver
   // during unit testing without friending test classes or exposing ForTesting methods.
-  using PlaybackControllerBinder = base::RepeatingCallback<
-      void(mojo::PendingReceiver<read_aloud::mojom::ReadAloudPlaybackController>)>;
+  using PlaybackControllerBinder = base::RepeatingCallback<void(
+      mojo::PendingReceiver<read_aloud::mojom::ReadAloudPlaybackController>,
+      mojo::PendingRemote<
+          read_aloud::mojom::ReadAloudPlaybackControllerClient>)>;
 
   explicit ReadAloudService(
       Profile* profile,
@@ -169,8 +187,9 @@ class ReadAloudService
   // Stops audio playback and releases playback resources.
   void Stop();
 
-  // Seeks to the start of the word at the specified index in the text (e.g., tap-to-seek).
-  void SeekToWordIndex(int word_index);
+  // Seeks to the word at the specified segment index and character offset
+  // (e.g., tap-to-seek).
+  void SeekToWord(int segment_index, int character_offset);
 
   // Seeks to a specific absolute time offset from the beginning of the audio.
   void Seek(base::TimeDelta absolute_time);
@@ -187,8 +206,12 @@ class ReadAloudService
   // Sets the target language code for text-to-speech synthesis.
   void SetLanguageCode(std::string_view language_code);
 
-  // Plays a short audio sample of the specified voice.
-  void PreviewVoice(std::string_view voice_id);
+  // Plays or resumes a short audio sample of the specified voice.
+  void PreviewVoice(std::string_view voice_id,
+                    std::u16string_view preview_text);
+
+  // Pauses the active voice preview playback.
+  void PauseVoicePreview();
 
   // Stops the active voice preview playback.
   void StopVoicePreview();
@@ -206,11 +229,12 @@ class ReadAloudService
   // Initiates an asynchronous check to determine if the URL is readable.
   void CheckReadability(const GURL& url);
 
+  // Initializes and pushes the available synthesis voices to the delegate.
+  void InitVoices();
+
   // Methods called by ReadAloudPlaybackSession:
   void OnSessionSuspended();
   void OnSessionResumed();
-
-  bool IsPlaybackPaused() const;
 
   // content::WebContentsObserver:
   void WebContentsDestroyed() override;
@@ -218,17 +242,6 @@ class ReadAloudService
 
   // KeyedService:
   void Shutdown() override;
-
-  // Triggers distillation of a webpage using DomDistillerService.
-  void DistillPage(content::WebContents* web_contents);
-
-  // dom_distiller::ViewRequestDelegate:
-  void OnArticleReady(
-      const dom_distiller::DistilledArticleProto* article_proto) override;
-  void OnArticleUpdated(
-      dom_distiller::ArticleDistillationUpdate article_update) override;
-  void OnDistillationFailed(
-      dom_distiller::DistillationParseResult reason) override;
 
   // Stops any active playback session and restarts the service lifecycle for
   // the given `web_contents`, triggering page distillation and ensuring the
@@ -242,17 +255,28 @@ class ReadAloudService
 
   // read_aloud::mojom::ReadAloudPlaybackControllerClient (called by Utility):
   void OnPlaybackStateChanged(read_aloud::mojom::PlaybackState state) override;
-  void OnPlaybackDurationChanged(base::TimeDelta duration) override;
-  void OnWordBoundaryReached(uint32_t segment_index,
-                             uint32_t character_offset,
-                             base::TimeDelta audio_timestamp) override;
+  void OnPlaybackProgressChanged(base::TimeDelta elapsed,
+                                 base::TimeDelta duration) override;
+  void OnWordBoundaryReached(uint32_t start_character_offset,
+                             uint32_t end_character_offset) override;
+  void OnTextChunked(const std::vector<std::u16string>& chunks) override;
   void RequestSpeechSynthesis(
       const std::u16string& text_chunk,
+      read_aloud::mojom::Speaker speaker,
       uint64_t sequence_id,
       read_aloud::mojom::ReadAloudPlaybackControllerClient::
           RequestSpeechSynthesisCallback callback) override;
 
  private:
+  // Triggers distillation of a webpage using DomDistillerService.
+  void DistillPage(content::WebContents* web_contents);
+
+  // dom_distiller::ViewRequestDelegate:
+  void OnArticleReady(
+      const dom_distiller::DistilledArticleProto* article_proto) override;
+  void OnDistillationFailed(
+      dom_distiller::DistillationParseResult reason) override;
+
   // Sends page title and publisher metadata to the UI delegate.
   void ProvideInitialMetadata();
   void EnsurePlaybackControllerConnected();
@@ -263,7 +287,35 @@ class ReadAloudService
       media::mojom::ReadWriteAudioDataPipePtr data_pipe);
   void OnUtilityDisconnect();
   void ResetUtilityConnection();
-  PlaybackState GetCurrentPlaybackState() const;
+  // Requests overview script generation from the distilled page texts.
+  void RequestOverviewGeneration(
+      const std::vector<std::string_view>& page_texts);
+  // Called when the request for overview script
+  // generation has completed.
+  void OnOverviewGenerated(mojo_base::BigBuffer response_bytes, bool success);
+  // Called when the utility process has finished
+  // parsing the overview generation response.
+  void OnOverviewContentSet(bool success, const std::string& title);
+  // Returns true if in overview mode and overview content hasn't been set yet.
+  bool IsWaitingForOverviewContent() const;
+  void HandlePlaybackError(std::string_view error_message);
+  void NotifyPlaybackStateChanged(read_aloud::mojom::PlaybackState state);
+  void OnVoicePreviewStateChanged(std::string_view voice_id,
+                                  read_aloud::mojom::PlaybackState state);
+  // Stops any active voice preview and tears down preview session resources.
+  void ResetVoicePreview();
+  // Releases the media session, distillation and utility resources without
+  // notifying the delegate.
+  void ResetPlayback();
+  // Records successful standard playback startup and TTFA to UMA if waiting for
+  // the initial audio playback.
+  void MaybeRecordStartupSuccess();
+  // Records the outcome of the standard playback startup phase to UMA if
+  // waiting for the initial audio playback. Clears startup tracking state.
+  void MaybeRecordStartupOutcome(StandardPlaybackOutcome outcome);
+  // Clears transient startup tracking state. Does not reset
+  // `first_audio_emitted_` flag, which should persist across pause/resume.
+  void ClearStartupTrackingState();
 
   raw_ptr<Profile> profile_;
   PlaybackControllerBinder controller_binder_;
@@ -271,9 +323,13 @@ class ReadAloudService
   std::unique_ptr<dom_distiller::ViewerHandle> viewer_handle_;
   std::unique_ptr<Delegate> delegate_;
   base::TimeTicks distillation_start_time_;
-  std::string current_title_;
+  base::TimeTicks overview_generation_start_time_;
+  std::string article_title_;
   std::string current_publisher_;
-  base::TimeDelta current_duration_;
+  // Length of the highlighter coordinate space for the current document: the
+  // sum of (chunk.size() + 1) over the chunks forwarded by `OnTextChunked()`.
+  // Used to bounds-check the word offsets reported by the utility process.
+  size_t highlight_text_length_ = 0;
 
   // Connection to the Utility process Factory.
   mojo::Remote<read_aloud::mojom::ReadAloudPlaybackControllerFactory>
@@ -284,9 +340,26 @@ class ReadAloudService
   mojo::Receiver<read_aloud::mojom::ReadAloudPlaybackControllerClient>
       utility_observer_receiver_{this};
 
-  std::unique_ptr<ReadAloudPlaybackSession> active_session_;
+  std::unique_ptr<ReadAloudPlaybackSession> media_session_;
   std::unique_ptr<SpeechSynthesisBroker> speech_synthesis_broker_;
+  std::unique_ptr<OverviewGenerationBroker> overview_generation_broker_;
+  std::unique_ptr<VoicePreviewController> voice_preview_controller_;
   PlaybackMode playback_mode_ = PlaybackMode::kClassic;
+
+  // True if the overview script has been generated and set
+  // for the utility process.
+  bool overview_script_loaded_ = false;
+
+  // Tracks explicit user playback intent in the browser process across
+  // asynchronous distillation and overview generation operations.
+  bool user_requested_play_ = false;
+
+  // Tracks startup lifecycle (from Play() trigger to first audio rendering).
+  // Cleared on first audio chunk or startup error to prevent re-recording
+  // across subsequent pause/resume or mid-article buffering events.
+  base::TimeTicks standard_playback_start_time_;
+  bool waiting_for_first_audio_ = false;
+  bool first_audio_emitted_ = false;
 
   base::WeakPtrFactory<ReadAloudService> weak_factory_{this};
 };

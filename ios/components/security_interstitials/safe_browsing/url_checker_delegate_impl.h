@@ -7,7 +7,7 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
-#include "components/safe_browsing/core/browser/url_checker_delegate.h"
+#include "components/safe_browsing/core/browser/url_checker/url_checker_delegate.h"
 
 class SafeBrowsingClient;
 
@@ -60,7 +60,7 @@ class UrlCheckerDelegateImpl : public safe_browsing::UrlCheckerDelegate {
       const base::RepeatingCallback<content::WebContents*()>&
           web_contents_getter) override;
   void ShowSuspiciousSiteWarning(
-      int64_t navigation_id,
+      const security_interstitials::UnsafeResource& resource,
       const base::RepeatingCallback<content::WebContents*()>&
           web_contents_getter) override;
   bool AreSuspiciousSiteWarningsAllowed(

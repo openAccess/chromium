@@ -12,14 +12,17 @@
 #include "chrome/browser/ui/recently_audible_helper.h"
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
+#import "ui/base/cocoa/macos27_sdk.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 #include "ui/base/models/image_model.h"
@@ -60,9 +63,11 @@ void UpdateItemForWebContents(NSMenuItem* item,
         gfx::ElideMenuItemTitle(tab_ui_helper->GetTitle()));
   }
 
-
   item.image = NSImageFromImageSkia(
       tab_ui_helper->GetFavicon().Rasterize(&web_contents->GetColorProvider()));
+  if (@available(macOS 27, *)) {
+    item.preferredImageVisibility = NSMenuItemImageVisibilityVisible;
+  }
 }
 
 void RemoveMenuItems(NSArray* menu_items) {
@@ -236,7 +241,7 @@ void TabMenuBridge::OnDynamicItemChosen(NSMenuItem* item) {
     return;
   }
 
-  DCHECK_EQ(item.target, menu_listener_);
+  CHECK_EQ(item.target, menu_listener_, base::NotFatalUntil::M162);
   auto it = menu_item_to_tab_.find(item);
   if (it == menu_item_to_tab_.end()) {
     return;
@@ -256,8 +261,8 @@ void TabMenuBridge::OnTabStripModelChanged(
     TabStripModel* tab_strip_model,
     const TabStripModelChange& change,
     const TabStripSelectionChange& selection) {
-  DCHECK(tab_strip_model);
-  DCHECK_EQ(tab_strip_model, model_);
+  CHECK(tab_strip_model, base::NotFatalUntil::M162);
+  CHECK_EQ(tab_strip_model, model_, base::NotFatalUntil::M162);
 
   if (!force_rebuild_menu_ && ![menu_listener_ isMenuOpen]) {
     [menu_listener_ setRebuildMenu:YES];
@@ -292,7 +297,7 @@ void TabMenuBridge::OnTabStripModelChanged(
 
 void TabMenuBridge::OnTabChangedAt(tabs::TabInterface* tab,
                                    TabChangeType change_type) {
-  DCHECK(model_);
+  CHECK(model_, base::NotFatalUntil::M162);
 
   // Ignore loading state changes - they happen very often during page load and
   // are used to drive the load spinner, which is not interesting to this menu.
@@ -335,8 +340,8 @@ void TabMenuBridge::TabGroupedStateChanged(
     std::optional<tab_groups::TabGroupId> new_group,
     tabs::TabInterface* tab,
     int index) {
-  DCHECK(tab_strip_model);
-  DCHECK_EQ(tab_strip_model, model_);
+  CHECK(tab_strip_model, base::NotFatalUntil::M162);
+  CHECK_EQ(tab_strip_model, model_, base::NotFatalUntil::M162);
 
   if (!force_rebuild_menu_ && ![menu_listener_ isMenuOpen]) {
     [menu_listener_ setRebuildMenu:YES];

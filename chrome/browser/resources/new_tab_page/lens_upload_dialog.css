@@ -6,7 +6,6 @@
  * #type=style-lit
  * #import=chrome://resources/cr_elements/cr_icons_lit.css.js
  * #import=chrome://resources/cr_elements/cr_spinner_style_lit.css.js
- * #scheme=relative
  * #include=cr-icons-lit cr-spinner-style-lit
  * #css_wrapper_metadata_end */
 
@@ -144,7 +143,6 @@
 }
 
 #dragDropIllustration {
-  background: url(icons/drag_drop_illustration.svg) no-repeat center;
   display: inline-flex;
   height: 45px;
   margin-inline-end: 18px;
@@ -332,7 +330,6 @@
 }
 
 #offlineImage {
-  background: url(icons/offline_dialog.svg) no-repeat center;
   height: 51px;
   margin-bottom: 24px;
   width: 55px;

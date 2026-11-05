@@ -10,7 +10,6 @@
 
 class BrowserWindowInterface;
 class Profile;
-class SidePanelRegistry;
 class TabsFromOtherDevicesSidePanelMetrics;
 
 // TabsFromOtherDevicesSidePanelCoordinator handles the creation and
@@ -34,8 +33,6 @@ class TabsFromOtherDevicesSidePanelCoordinator {
   ~TabsFromOtherDevicesSidePanelCoordinator();
 
   static bool IsSupported(Profile* profile);
-
-  void CreateAndRegisterEntry(SidePanelRegistry* global_registry);
 
  private:
   ui::ScopedUnownedUserData<TabsFromOtherDevicesSidePanelCoordinator>

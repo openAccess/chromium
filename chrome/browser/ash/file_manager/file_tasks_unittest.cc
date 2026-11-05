@@ -10,6 +10,7 @@
 #include <string_view>
 #include <utility>
 
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/constants/web_app_id_constants.h"
@@ -54,7 +55,6 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
 #include "chromeos/ash/components/file_manager/app_id.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/services/app_service/public/cpp/app_types.h"
@@ -414,9 +414,7 @@ class FileManagerFileTaskVirtualTaskPolicyDefaultHandlersTest
   FileManagerFileTaskVirtualTaskPolicyDefaultHandlersTest() {
     // These feature flags are required to make different virtual tasks
     // discoverable.
-    features_.InitWithFeatures({features::kIsolatedWebAppUnmanagedInstall,
-                                chromeos::features::kUploadOfficeToCloud},
-                               {});
+    features_.InitAndEnableFeature(features::kIsolatedWebAppUnmanagedInstall);
   }
 
  private:
@@ -681,8 +679,8 @@ TEST_F(FileManagerFileTaskPreferencesTest,
   TaskDescriptor files_app_task(
       kFileManagerAppId, TASK_TYPE_FILE_BROWSER_HANDLER, "view-in-browser");
   // Define the text editor app for "foo.txt".
-  TaskDescriptor text_app_task(kTextEditorAppId, TASK_TYPE_FILE_HANDLER,
-                               "Text");
+  TaskDescriptor text_app_task(extension_misc::kTextEditorAppId,
+                               TASK_TYPE_FILE_HANDLER, "Text");
 
   auto resulting_tasks = std::make_unique<ResultingTasks>();
   std::vector<FullTaskDescriptor>& tasks = resulting_tasks->tasks;
@@ -714,8 +712,8 @@ TEST_F(FileManagerFileTaskPreferencesTest,
   TaskDescriptor files_app_task(
       kFileManagerAppId, TASK_TYPE_FILE_BROWSER_HANDLER, "view-in-browser");
   // Define the text editor app for "foo.html".
-  TaskDescriptor text_app_task(kTextEditorAppId, TASK_TYPE_FILE_HANDLER,
-                               "Text");
+  TaskDescriptor text_app_task(extension_misc::kTextEditorAppId,
+                               TASK_TYPE_FILE_HANDLER, "Text");
 
   auto resulting_tasks = std::make_unique<ResultingTasks>();
   std::vector<FullTaskDescriptor>& tasks = resulting_tasks->tasks;

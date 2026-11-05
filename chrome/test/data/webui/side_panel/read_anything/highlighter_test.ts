@@ -3,9 +3,9 @@
 // found in the LICENSE file.
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
-import type {NodeStore, ReadAloudHighlighter, VoiceLanguageController, WordBoundaries} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import type {NodeStore, ReadAloudHighlighter, Segment, VoiceLanguageController, WordBoundaries} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {previousReadHighlightClass, ReadAloudNode} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {assertEquals, assertFalse, assertStringContains, assertStringExcludes, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertStringContains, assertStringExcludes, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 
 import {createSpeechSynthesisVoice, setupTestEnvironment} from './common.js';
 import type {TestAudioBrowserProxy} from './test_audio_browser_proxy.js';
@@ -42,6 +42,44 @@ suite('Highlighter', () => {
         (nodeStore.getDomNode(id) as Element).innerHTML, partialHtml);
   }
 
+  const firstWordNodeId = 10;
+  const firstWordSentence = 'Hans Holbein goes around the world';
+
+  // Highlights the first word of firstWordSentence and returns the result of
+  // highlightCurrentGranularity, which is the word segments when word
+  // highlighting is used and null otherwise. The engine length (4) is shorter
+  // than the segment length (5), so a word highlight excludes the trailing
+  // space while a phrase highlight includes it.
+  function highlightFirstWord(): Segment[]|null {
+    wordBoundaries.updateBoundary(0, 4);
+    const sentence = document.createElement('p');
+    sentence.appendChild(document.createTextNode(firstWordSentence));
+    nodeStore.setDomNode(sentence, firstWordNodeId);
+    const node = ReadAloudNode.create(sentence);
+    readAloudModel.setHighlightForCurrentSegmentIndex(
+        [{node, start: 0, length: 5}]);
+    const segments = [{node, start: 0, length: firstWordSentence.length}];
+    readAloudModel.setCurrentTextSegments(segments);
+    return highlighter.highlightCurrentGranularity(
+        segments,
+        /*scrollIntoView=*/ false,
+        /*shouldUpdateSentenceHighlight=*/ true);
+  }
+
+  function assertWordHighlightUsed(wordSegments: Segment[]|null) {
+    assertTrue(!!wordSegments);
+    assertDeepEquals(
+        [[0, false]],
+        readAloudModel.getArgs('getHighlightForCurrentSegmentIndex'));
+  }
+
+  function assertPhraseHighlightUsed(wordSegments: Segment[]|null) {
+    assertEquals(null, wordSegments);
+    assertDeepEquals(
+        [[0, true]],
+        readAloudModel.getArgs('getHighlightForCurrentSegmentIndex'));
+  }
+
   setup(() => {
     const result = setupTestEnvironment();
     audioBrowserProxy = result.audioBrowserProxy;
@@ -63,17 +101,18 @@ suite('Highlighter', () => {
     sentence.appendChild(document.createTextNode(text1 + text2));
     nodeStore.setDomNode(sentence, nodeId);
     const segments = [{
-      node: ReadAloudNode.create(sentence)!,
+      node: ReadAloudNode.create(sentence),
       start: text1.length,
       length: text2.length,
     }];
     readAloudModel.setCurrentTextSegments(segments);
 
-    highlighter.highlightCurrentGranularity(
+    const wordSegments = highlighter.highlightCurrentGranularity(
         segments,
         /*scrollIntoView=*/ false,
         /*shouldUpdateSentenceHighlight=*/ true);
 
+    assertEquals(null, wordSegments);
     assertTrue(highlighter.hasCurrentGranularity());
     assertHtml(
         '<span class="previous-read-highlight">' + text1 + '</span>' +
@@ -95,8 +134,8 @@ suite('Highlighter', () => {
     nodeStore.setDomNode(sentence, id1);
     nodeStore.setDomNode(bold, id2);
     const segments = [
-      {node: ReadAloudNode.create(sentence)!, start: 0, length: text1.length},
-      {node: ReadAloudNode.create(bold)!, start: 0, length: text2.length},
+      {node: ReadAloudNode.create(sentence), start: 0, length: text1.length},
+      {node: ReadAloudNode.create(bold), start: 0, length: text2.length},
     ];
     readAloudModel.setCurrentTextSegments(segments);
 
@@ -110,6 +149,81 @@ suite('Highlighter', () => {
     assertFullNodeIsHighlighted(id2, text2);
   });
 
+  test(
+      'sentence highlight with wrapped superscript and subscript text nodes',
+      () => {
+        audioBrowserProxy.highlightGranularity =
+            audioBrowserProxy.sentenceHighlighting;
+        const paragraph = document.createElement('p');
+        const text1 = 'H';
+        const textNode1 = document.createTextNode(text1);
+        paragraph.appendChild(textNode1);
+
+        // Match createTextNode_ by mapping the inner text node in nodeStore
+        // while wrapping it in <sub> / <sup> in the DOM.
+        const sub = document.createElement('sub');
+        const text2 = '2';
+        const subTextNode = document.createTextNode(text2);
+        sub.appendChild(subTextNode);
+        paragraph.appendChild(sub);
+
+        const text3 = 'O.';
+        const textNode3 = document.createTextNode(text3);
+        paragraph.appendChild(textNode3);
+
+        const sup = document.createElement('sup');
+        const text4 = '1';
+        const supTextNode = document.createTextNode(text4);
+        sup.appendChild(supTextNode);
+        paragraph.appendChild(sup);
+
+        const id1 = 10;
+        const id2 = 11;
+        const id3 = 12;
+        const id4 = 13;
+        nodeStore.setDomNode(textNode1, id1);
+        nodeStore.setDomNode(subTextNode, id2);
+        nodeStore.setDomNode(textNode3, id3);
+        nodeStore.setDomNode(supTextNode, id4);
+
+        const segments = [
+          {
+            node: ReadAloudNode.create(textNode1),
+            start: 0,
+            length: text1.length,
+          },
+          {
+            node: ReadAloudNode.create(subTextNode),
+            start: 0,
+            length: text2.length,
+          },
+          {
+            node: ReadAloudNode.create(textNode3),
+            start: 0,
+            length: text3.length,
+          },
+          {
+            node: ReadAloudNode.create(supTextNode),
+            start: 0,
+            length: text4.length,
+          },
+        ];
+        readAloudModel.setCurrentTextSegments(segments);
+
+        highlighter.highlightCurrentGranularity(
+            segments,
+            /*scrollIntoView=*/ false,
+            /*shouldUpdateSentenceHighlight=*/ true);
+
+        assertTrue(highlighter.hasCurrentGranularity());
+        assertFullNodeIsHighlighted(id1, text1);
+        assertFullNodeIsHighlighted(id2, text2);
+        assertFullNodeIsHighlighted(id3, text3);
+        assertFullNodeIsHighlighted(id4, text4);
+        assertEquals(sub, (nodeStore.getDomNode(id2) as Element).parentElement);
+        assertEquals(sup, (nodeStore.getDomNode(id4) as Element).parentElement);
+      });
+
   test('with auto highlighting and rate of 2, sentence highlight used', () => {
     audioBrowserProxy.highlightGranularity = audioBrowserProxy.autoHighlighting;
     audioBrowserProxy.speechRate = 2;
@@ -120,7 +234,7 @@ suite('Highlighter', () => {
     sentence.appendChild(document.createTextNode(text));
     nodeStore.setDomNode(sentence, id);
     const segments = [
-      {node: ReadAloudNode.create(sentence)!, start: 0, length: text.length},
+      {node: ReadAloudNode.create(sentence), start: 0, length: text.length},
     ];
     readAloudModel.setCurrentTextSegments(segments);
 
@@ -142,14 +256,15 @@ suite('Highlighter', () => {
         'Will your your eyes still smile from your cheeks?'));
     nodeStore.setDomNode(sentence, id);
     const highlights =
-        [{node: ReadAloudNode.create(sentence)!, start: 5, length: 5}];
+        [{node: ReadAloudNode.create(sentence), start: 5, length: 5}];
     readAloudModel.setHighlightForCurrentSegmentIndex(highlights);
 
-    highlighter.highlightCurrentGranularity(
+    const wordSegments = highlighter.highlightCurrentGranularity(
         highlights,
         /*scrollIntoView=*/ false,
         /*shouldUpdateSentenceHighlight=*/ true);
 
+    assertEquals(highlights, wordSegments);
     assertTrue(highlighter.hasCurrentGranularity());
     assertHtml(
         '<span class="previous-read-highlight">Will </span>' +
@@ -165,10 +280,10 @@ suite('Highlighter', () => {
     const sentence = document.createElement('p');
     sentence.appendChild(document.createTextNode(text));
     nodeStore.setDomNode(sentence, id);
-    const word = [{node: ReadAloudNode.create(sentence)!, start: 5, length: 5}];
+    const word = [{node: ReadAloudNode.create(sentence), start: 5, length: 5}];
     readAloudModel.setHighlightForCurrentSegmentIndex(word);
     const segments = [{
-      node: ReadAloudNode.create(sentence)!,
+      node: ReadAloudNode.create(sentence),
       start: 0,
       length: text.length,
     }];
@@ -193,10 +308,10 @@ suite('Highlighter', () => {
     const sentence = document.createElement('p');
     sentence.appendChild(document.createTextNode(text));
     nodeStore.setDomNode(sentence, id);
-    const word = [{node: ReadAloudNode.create(sentence)!, start: 5, length: 5}];
+    const word = [{node: ReadAloudNode.create(sentence), start: 5, length: 5}];
     readAloudModel.setHighlightForCurrentSegmentIndex(word);
     const segments = [{
-      node: ReadAloudNode.create(sentence)!,
+      node: ReadAloudNode.create(sentence),
       start: 0,
       length: text.length,
     }];
@@ -223,7 +338,7 @@ suite('Highlighter', () => {
     nodeStore.setDomNode(sentence, id);
     const highlights = [
       {
-        node: ReadAloudNode.create(sentence)!,
+        node: ReadAloudNode.create(sentence),
         start: 0,
         length: segmenterLength,
       },
@@ -257,11 +372,11 @@ suite('Highlighter', () => {
         sentence.appendChild(document.createTextNode(text));
         nodeStore.setDomNode(sentence, id);
         const highlights =
-            [{node: ReadAloudNode.create(sentence)!, start: 0, length: 3}];
+            [{node: ReadAloudNode.create(sentence), start: 0, length: 3}];
         readAloudModel.setHighlightForCurrentSegmentIndex(highlights);
         const segments = [
           {
-            node: ReadAloudNode.create(sentence)!,
+            node: ReadAloudNode.create(sentence),
             start: 0,
             length: text.length,
           },
@@ -297,8 +412,8 @@ suite('Highlighter', () => {
     nodeStore.setDomNode(bold, id1);
     nodeStore.setDomNode(sentence, id2);
     const highlights = [
-      {node: ReadAloudNode.create(bold)!, start: 0, length: 3},
-      {node: ReadAloudNode.create(sentence)!, start: 0, length: 1},
+      {node: ReadAloudNode.create(bold), start: 0, length: 3},
+      {node: ReadAloudNode.create(sentence), start: 0, length: 1},
     ];
     readAloudModel.setHighlightForCurrentSegmentIndex(highlights);
 
@@ -331,8 +446,8 @@ suite('Highlighter', () => {
     nodeStore.setDomNode(bold, id1);
     nodeStore.setDomNode(sentence, id2);
     const highlights = [
-      {node: ReadAloudNode.create(bold)!, start: 0, length: text1.length},
-      {node: ReadAloudNode.create(sentence)!, start: 0, length: 3},
+      {node: ReadAloudNode.create(bold), start: 0, length: text1.length},
+      {node: ReadAloudNode.create(sentence), start: 0, length: 3},
     ];
     readAloudModel.setHighlightForCurrentSegmentIndex(highlights);
 
@@ -360,7 +475,7 @@ suite('Highlighter', () => {
 
     // Mock the backend to return a segment for just the punctuation.
     const highlights = [{
-      node: ReadAloudNode.create(sentence)!,
+      node: ReadAloudNode.create(sentence),
       start: sentenceText.length,
       length: 1,
     }];
@@ -390,7 +505,7 @@ suite('Highlighter', () => {
     nodeStore.setDomNode(sentence, id);
 
     const highlights = [{
-      node: ReadAloudNode.create(sentence)!,
+      node: ReadAloudNode.create(sentence),
       start: 0,
       length: 1,
     }];
@@ -407,6 +522,7 @@ suite('Highlighter', () => {
 
   test('phrase highlight', () => {
     audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+    audioBrowserProxy.baseLanguageForSpeech = 'en';
     audioBrowserProxy.highlightGranularity = audioBrowserProxy.autoHighlighting;
     wordBoundaries.updateBoundary(0);
     const id = 10;
@@ -415,14 +531,15 @@ suite('Highlighter', () => {
         'But darling I will be loving you till we\'re 70.'));
     nodeStore.setDomNode(sentence, id);
     const highlights =
-        [{node: ReadAloudNode.create(sentence)!, start: 12, length: 20}];
+        [{node: ReadAloudNode.create(sentence), start: 12, length: 20}];
     readAloudModel.setHighlightForCurrentSegmentIndex(highlights);
 
-    highlighter.highlightCurrentGranularity(
+    const wordSegments = highlighter.highlightCurrentGranularity(
         highlights,
         /*scrollIntoView=*/ false,
         /*shouldUpdateSentenceHighlight=*/ true);
 
+    assertEquals(null, wordSegments);
     assertTrue(highlighter.hasCurrentGranularity());
     assertHtml(
         '<span class="previous-read-highlight">But darling </span>' +
@@ -433,6 +550,7 @@ suite('Highlighter', () => {
 
   test('phrase highlight with engine length, ignores engine length', () => {
     audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+    audioBrowserProxy.baseLanguageForSpeech = 'en';
     audioBrowserProxy.highlightGranularity = audioBrowserProxy.autoHighlighting;
     wordBoundaries.updateBoundary(0, 1);
     const id = 10;
@@ -441,7 +559,7 @@ suite('Highlighter', () => {
         'But darling I will be loving you till we\'re 70.'));
     nodeStore.setDomNode(sentence, id);
     const highlights =
-        [{node: ReadAloudNode.create(sentence)!, start: 12, length: 20}];
+        [{node: ReadAloudNode.create(sentence), start: 12, length: 20}];
     readAloudModel.setHighlightForCurrentSegmentIndex(highlights);
 
     highlighter.highlightCurrentGranularity(
@@ -457,11 +575,88 @@ suite('Highlighter', () => {
         id);
   });
 
+  test('phrase highlight falls back to word highlight for non-English', () => {
+    audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+    audioBrowserProxy.baseLanguageForSpeech = 'es';
+    audioBrowserProxy.highlightGranularity =
+        audioBrowserProxy.phraseHighlighting;
+
+    const wordSegments = highlightFirstWord();
+
+    assertWordHighlightUsed(wordSegments);
+    assertTrue(highlighter.hasCurrentGranularity());
+    assertHtml(
+        '<span class="current-read-highlight">Hans</span> Holbein goes around' +
+            ' the world',
+        firstWordNodeId);
+  });
+
+  test('auto highlight at rate 1 uses word highlight for non-English', () => {
+    audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+    audioBrowserProxy.baseLanguageForSpeech = 'es';
+    audioBrowserProxy.highlightGranularity = audioBrowserProxy.autoHighlighting;
+    audioBrowserProxy.speechRate = 1;
+
+    assertWordHighlightUsed(highlightFirstWord());
+  });
+
+  test(
+      'auto highlight at rate 1.5 uses sentence highlight for non-English',
+      () => {
+        audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+        audioBrowserProxy.baseLanguageForSpeech = 'es';
+        audioBrowserProxy.highlightGranularity =
+            audioBrowserProxy.autoHighlighting;
+        audioBrowserProxy.speechRate = 1.5;
+
+        const wordSegments = highlightFirstWord();
+
+        assertEquals(null, wordSegments);
+        assertEquals(
+            0,
+            readAloudModel.getCallCount('getHighlightForCurrentSegmentIndex'));
+        assertFullNodeIsHighlighted(firstWordNodeId, firstWordSentence);
+      });
+
+  test('auto highlight at rate 1.5 uses phrase highlight for English', () => {
+    audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+    audioBrowserProxy.baseLanguageForSpeech = 'en';
+    audioBrowserProxy.highlightGranularity = audioBrowserProxy.autoHighlighting;
+    audioBrowserProxy.speechRate = 1.5;
+
+    assertPhraseHighlightUsed(highlightFirstWord());
+  });
+
+  // The base language may not be lowercase if it came from the page's lang
+  // attribute.
+  [{lang: 'en', usesPhrases: true},
+   {lang: 'EN', usesPhrases: true},
+   {lang: 'enm', usesPhrases: false},
+   {lang: 'es', usesPhrases: false},
+   {lang: '', usesPhrases: false},
+  ].forEach(({lang, usesPhrases}) => {
+    test(`phrase highlight with base language "${lang}"`, () => {
+      audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+      audioBrowserProxy.baseLanguageForSpeech = lang;
+      audioBrowserProxy.highlightGranularity =
+          audioBrowserProxy.phraseHighlighting;
+
+      const wordSegments = highlightFirstWord();
+
+      if (usesPhrases) {
+        assertPhraseHighlightUsed(wordSegments);
+      } else {
+        assertWordHighlightUsed(wordSegments);
+      }
+    });
+  });
+
   test(
       'onWillMoveToNextGranularity with phrase highlighting highlights the ' +
           'rest of the sentence',
       () => {
         audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+        audioBrowserProxy.baseLanguageForSpeech = 'en';
         audioBrowserProxy.highlightGranularity =
             audioBrowserProxy.autoHighlighting;
         wordBoundaries.updateBoundary(0);
@@ -471,12 +666,12 @@ suite('Highlighter', () => {
         sentence.appendChild(document.createTextNode(text));
         nodeStore.setDomNode(sentence, id);
         const highlights =
-            [{node: ReadAloudNode.create(sentence)!, start: 0, length: 2}];
+            [{node: ReadAloudNode.create(sentence), start: 0, length: 2}];
         readAloudModel.setHighlightForCurrentSegmentIndex(highlights);
 
         const segments = [
           {
-            node: ReadAloudNode.create(sentence)!,
+            node: ReadAloudNode.create(sentence),
             start: 0,
             length: text.length,
           },
@@ -497,6 +692,7 @@ suite('Highlighter', () => {
 
   test('phrase highlight across multiple nodes', () => {
     audioBrowserProxy.isPhraseHighlightingEnabledFlag = true;
+    audioBrowserProxy.baseLanguageForSpeech = 'en';
     audioBrowserProxy.highlightGranularity = audioBrowserProxy.autoHighlighting;
     // speechUtteranceLength should extend across multiple nodes.
     wordBoundaries.updateBoundary(0, 4);
@@ -511,8 +707,8 @@ suite('Highlighter', () => {
     nodeStore.setDomNode(sentence, id1);
     nodeStore.setDomNode(bold, id2);
     const highlights = [
-      {node: ReadAloudNode.create(sentence)!, start: 10, length: 9},
-      {node: ReadAloudNode.create(bold)!, start: 0, length: 23},
+      {node: ReadAloudNode.create(sentence), start: 10, length: 9},
+      {node: ReadAloudNode.create(bold), start: 0, length: 23},
     ];
     readAloudModel.setHighlightForCurrentSegmentIndex(highlights);
 
@@ -546,7 +742,7 @@ suite('Highlighter', () => {
             'Hungry for something that I can\'t eat. '));
         nodeStore.setDomNode(sentence, id);
         const highlights =
-            [{node: ReadAloudNode.create(sentence)!, start: 0, length: 20}];
+            [{node: ReadAloudNode.create(sentence), start: 0, length: 20}];
         readAloudModel.setHighlightForCurrentSegmentIndex(highlights);
 
         highlighter.highlightCurrentGranularity(
@@ -571,17 +767,18 @@ suite('Highlighter', () => {
     sentence.appendChild(document.createTextNode(text1 + text2));
     nodeStore.setDomNode(sentence, nodeId);
     const segments = [{
-      node: ReadAloudNode.create(sentence)!,
+      node: ReadAloudNode.create(sentence),
       start: text1.length,
       length: text2.length,
     }];
     readAloudModel.setCurrentTextSegments(segments);
 
-    highlighter.highlightCurrentGranularity(
+    const wordSegments = highlighter.highlightCurrentGranularity(
         segments,
         /*scrollIntoView=*/ false,
         /*shouldUpdateSentenceHighlight=*/ true);
 
+    assertEquals(null, wordSegments);
     assertTrue(highlighter.hasCurrentGranularity());
     assertHtml(
         '<span class="previous-read-highlight">' + text1 + '</span>' +
@@ -600,7 +797,7 @@ suite('Highlighter', () => {
     sentence.appendChild(document.createTextNode(text1 + text2));
     nodeStore.setDomNode(sentence, id);
     const segments = [{
-      node: ReadAloudNode.create(sentence)!,
+      node: ReadAloudNode.create(sentence),
       start: text1.length,
       length: text1.length + text2.length,
     }];
@@ -625,7 +822,7 @@ suite('Highlighter', () => {
     sentence.appendChild(document.createTextNode(text));
     nodeStore.setDomNode(sentence, id);
     const segments = [
-      {node: ReadAloudNode.create(sentence)!, start: 0, length: text.length},
+      {node: ReadAloudNode.create(sentence), start: 0, length: text.length},
     ];
     readAloudModel.setCurrentTextSegments(segments);
     highlighter.highlightCurrentGranularity(
@@ -648,7 +845,7 @@ suite('Highlighter', () => {
     sentence.appendChild(document.createTextNode(text));
     nodeStore.setDomNode(sentence, id);
     const segments = [
-      {node: ReadAloudNode.create(sentence)!, start: 0, length: text.length},
+      {node: ReadAloudNode.create(sentence), start: 0, length: text.length},
     ];
     readAloudModel.setCurrentTextSegments(segments);
     highlighter.highlightCurrentGranularity(segments, false, true);
@@ -673,7 +870,7 @@ suite('Highlighter', () => {
         nodeStore.setDomNode(sentence, id);
         const segments = [
           {
-            node: ReadAloudNode.create(sentence)!,
+            node: ReadAloudNode.create(sentence),
             start: 0,
             length: text.length,
           },
@@ -700,12 +897,12 @@ suite('Highlighter', () => {
         sentence.appendChild(document.createTextNode(text1 + text2));
         nodeStore.setDomNode(sentence, id);
         const sentence1 = [{
-          node: ReadAloudNode.create(sentence)!,
+          node: ReadAloudNode.create(sentence),
           start: 0,
           length: text1.length,
         }];
         const sentence2 = [{
-          node: ReadAloudNode.create(sentence)!,
+          node: ReadAloudNode.create(sentence),
           start: text1.length + 1,
           length: text2.length,
         }];

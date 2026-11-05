@@ -7,18 +7,23 @@
 #include <optional>
 
 #include "base/command_line.h"
+#include "base/notreached.h"
 #include "base/test/gtest_util.h"
 #include "base/test/test_switches.h"
 #include "build/build_config.h"
+#include "content/public/test/browser_test_utils.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_switches.h"
+#include "ui/views/controls/webview/webview.h"
+#include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/view.h"
+#include "ui/views/widget/widget.h"
+#include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
 #if defined(USE_AURA)
 #include "ui/aura/client/cursor_client.h"
 #include "ui/aura/window.h"
 #include "ui/events/test/event_generator.h"  // nogncheck
-#include "ui/views/view.h"
-#include "ui/views/widget/widget.h"
 #endif
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
@@ -114,6 +119,49 @@ ui::test::ActionResult TestBrowserUi::VerifyPixelUi(
 }
 
 ui::test::ActionResult TestBrowserUi::VerifyPixelUi(
+    ui::TrackedElement* element,
+    const std::string& screenshot_prefix,
+    const std::string& screenshot_name) {
+  return VerifyPixelUi(element, {}, screenshot_prefix, screenshot_name);
+}
+
+ui::test::ActionResult TestBrowserUi::VerifyPixelUi(
+    ui::TrackedElement* element,
+    const ScreenshotOptions& options,
+    const std::string& screenshot_prefix,
+    const std::string& screenshot_name) {
+  if (!element) {
+    return ui::test::ActionResult::kNotAttempted;
+  }
+  views::View* view = nullptr;
+  ScreenshotOptions effective_options = options;
+  if (auto* const view_el = element->AsA<views::TrackedElementViews>()) {
+    view = view_el->view();
+  } else if (auto* const webui_el = element->AsA<ui::TrackedElementWebUI>()) {
+    views::WebView* const web_view = webui_el->GetWebView();
+#ifdef SUPPORTS_PIXEL_TEST
+    if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+            switches::kVerifyPixels) &&
+        web_view && web_view->GetWebContents()) {
+      content::WaitForCopyableViewInWebContents(web_view->GetWebContents());
+    }
+#endif
+    view = web_view;
+    if (!effective_options.region.has_value()) {
+      effective_options.region = webui_el->GetBoundsInWebContents();
+    } else {
+      effective_options.region->Offset(
+          webui_el->GetBoundsInWebContents().OffsetFromOrigin());
+    }
+  }
+  if (!view) {
+    return ui::test::ActionResult::kNotAttempted;
+  }
+  return VerifyPixelUi(view, effective_options, screenshot_prefix,
+                       screenshot_name);
+}
+
+ui::test::ActionResult TestBrowserUi::VerifyPixelUi(
     views::View* view,
     const ScreenshotOptions& options,
     const std::string& screenshot_prefix,
@@ -171,9 +219,19 @@ ui::test::ActionResult TestBrowserUi::VerifyPixelUi(
     window_rect = region_rect;
   }
 
+  gfx::NativeWindow snapshot_window = widget->GetNativeWindow();
+  if (options.capture_root_window) {
+#if defined(USE_AURA)
+    aura::Window* const root = snapshot_window->GetRootWindow();
+    aura::Window::ConvertRectToTarget(snapshot_window, root, &window_rect);
+    snapshot_window = root;
+#else
+    NOTREACHED() << "capture_root_window requires Aura";
+#endif
+  }
+
   const bool success = pixel_diff.CompareNativeWindowScreenshot(
-      screenshot_name, widget->GetNativeWindow(), window_rect,
-      GetPixelMatchAlgorithm());
+      screenshot_name, snapshot_window, window_rect, GetPixelMatchAlgorithm());
   return success ? ui::test::ActionResult::kSucceeded
                  : ui::test::ActionResult::kFailed;
 #else

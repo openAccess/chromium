@@ -4,6 +4,7 @@
 
 #include "chrome/browser/notifications/mac/notification_platform_bridge_mac.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "base/barrier_closure.h"
@@ -27,6 +28,50 @@
 #include "third_party/blink/public/common/notifications/notification_constants.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_types.h"
+
+namespace {
+
+void RecordAttributionOutcome(MacNotificationAttributionOutcome outcome) {
+  base::UmaHistogramEnumeration("Notifications.macOS.AttributionOutcome",
+                                outcome);
+}
+
+base::RepeatingCallback<void(std::set<std::string>, bool)>
+CreateGetDisplayedBarrierCallback(
+    size_t num_callbacks,
+    GetDisplayedNotificationsCallback callback,
+    std::set<std::string> initial_notifications = {}) {
+  auto notifications =
+      std::make_unique<std::set<std::string>>(std::move(initial_notifications));
+  std::set<std::string>* notifications_ptr = notifications.get();
+  auto supports_synchronization = std::make_unique<bool>(true);
+  bool* supports_synchronization_ptr = supports_synchronization.get();
+  auto barrier_closure = base::BarrierClosure(
+      num_callbacks,
+      base::BindOnce(
+          [](std::unique_ptr<std::set<std::string>> notifications,
+             std::unique_ptr<bool> supports_synchronization,
+             GetDisplayedNotificationsCallback callback) {
+            std::move(callback).Run(std::move(*notifications),
+                                    *supports_synchronization);
+          },
+          std::move(notifications), std::move(supports_synchronization),
+          std::move(callback)));
+
+  return base::BindRepeating(
+             [](std::set<std::string>* notifications_ptr,
+                bool* supports_synchronization_ptr,
+                std::set<std::string> notifications,
+                bool supports_synchronization) {
+               notifications_ptr->insert(notifications.begin(),
+                                         notifications.end());
+               *supports_synchronization_ptr &= supports_synchronization;
+             },
+             notifications_ptr, supports_synchronization_ptr)
+      .Then(barrier_closure);
+}
+
+}  // namespace
 
 NotificationPlatformBridgeMac::NotificationPlatformBridgeMac(
     std::unique_ptr<NotificationDispatcherMac> banner_dispatcher,
@@ -75,34 +120,148 @@ void NotificationPlatformBridgeMac::Display(
     Profile* profile,
     const message_center::Notification& notification,
     std::unique_ptr<NotificationCommon::Metadata> metadata) {
-  NotificationDispatcherMac* dispatcher = nullptr;
+  MacNotificationIdentifier identifier = {
+      notification.id(), GetProfileId(profile), profile->IsOffTheRecord()};
+  pending_displays_.erase(identifier);
 
   if (notification.notifier_id().web_app_id.has_value()) {
-    bool attribution_enabled =
-        web_app::UseNotificationAttributionForWebAppShims();
-    bool is_installed = AppShimRegistry::Get()->IsAppInstalledInProfile(
-        *notification.notifier_id().web_app_id, profile->GetPath());
-
-    MacNotificationAttributionOutcome outcome;
-    if (!attribution_enabled) {
-      outcome = MacNotificationAttributionOutcome::kFallbackFeatureDisabled;
-    } else if (!is_installed) {
-      outcome = MacNotificationAttributionOutcome::kFallbackNoAppShim;
+    const webapps::AppId& web_app_id = *notification.notifier_id().web_app_id;
+    if (!web_app::UseNotificationAttributionForWebAppShims()) {
+      RecordAttributionOutcome(
+          MacNotificationAttributionOutcome::kFallbackFeatureDisabled);
+    } else if (!AppShimRegistry::Get()->IsAppInstalledInProfile(
+                   web_app_id, profile->GetPath())) {
+      RecordAttributionOutcome(
+          MacNotificationAttributionOutcome::kFallbackNoAppShim);
     } else {
-      outcome = MacNotificationAttributionOutcome::kAttributed;
-      dispatcher = GetOrCreateDispatcherForWebApp(
-          *notification.notifier_id().web_app_id);
+      uint64_t display_request_id = ++next_display_request_id_;
+      pending_displays_[identifier] = {display_request_id,
+                                       notification.origin_url()};
+      GetOrCreateDispatcherForWebApp(web_app_id)
+          ->DisplayNotification(
+              notification_type, profile, notification,
+              base::BindOnce(&NotificationPlatformBridgeMac::
+                                 OnAttributedNotificationDisplayed,
+                             weak_factory_.GetWeakPtr(), web_app_id,
+                             notification_type, profile->GetWeakPtr(),
+                             notification, identifier, display_request_id));
+      return;
     }
-    base::UmaHistogramEnumeration("Notifications.macOS.AttributionOutcome",
-                                  outcome);
   }
 
-  if (!dispatcher) {
-    bool is_alert = IsAlertNotificationMac(notification);
-    dispatcher = is_alert ? alert_dispatcher_.get() : banner_dispatcher_.get();
+  bool is_alert = IsAlertNotificationMac(notification);
+  NotificationDispatcherMac* dispatcher =
+      is_alert ? alert_dispatcher_.get() : banner_dispatcher_.get();
+  dispatcher->DisplayNotification(notification_type, profile, notification,
+                                  base::DoNothing());
+  CloseImpl(profile, notification.id(), {dispatcher});
+}
+
+void NotificationPlatformBridgeMac::OnAttributedNotificationDisplayed(
+    const webapps::AppId& web_app_id,
+    NotificationHandler::Type notification_type,
+    base::WeakPtr<Profile> profile,
+    const message_center::Notification& notification,
+    const MacNotificationIdentifier& identifier,
+    uint64_t display_request_id,
+    mac_notifications::mojom::DisplayNotificationResult result) {
+  using DisplayNotificationResult =
+      mac_notifications::mojom::DisplayNotificationResult;
+  using RegistryPermissionStatus =
+      AppShimRegistry::NotificationPermissionStatus;
+  bool should_fallback = false;
+  switch (result) {
+    case DisplayNotificationResult::kSuccess:
+      RecordAttributionOutcome(
+          MacNotificationAttributionOutcome::kAttributedPermissionGranted);
+      should_fallback = false;
+      break;
+    case DisplayNotificationResult::kPermissionDenied:
+      // macOS reports `Denied` both when the user explicitly denied/revoked
+      // permission and when a prompt was merely ignored before the shim
+      // restarted. Consult `AppShimRegistry` to distinguish the two; a cached
+      // `kGranted` means the user just turned off permission in macOS System
+      // Settings (`DisplayNotification` replied before `AppShimHost` synced),
+      // while any other non-denied state is an implicit denial.
+      switch (AppShimRegistry::Get()->GetNotificationPermissionStatusForApp(
+          web_app_id)) {
+        case RegistryPermissionStatus::kExplicitlyDenied:
+        case RegistryPermissionStatus::kGranted:
+          RecordAttributionOutcome(
+              MacNotificationAttributionOutcome::kAttributedPermissionDenied);
+          should_fallback = false;
+          break;
+        case RegistryPermissionStatus::kImplicitlyDenied:
+        case RegistryPermissionStatus::kNotDetermined:
+        case RegistryPermissionStatus::kPromptPending:
+          RecordAttributionOutcome(MacNotificationAttributionOutcome::
+                                       kFallbackPermissionImplicitlyDenied);
+          should_fallback = true;
+          break;
+      }
+      break;
+    case DisplayNotificationResult::kPermissionNotDetermined:
+      RecordAttributionOutcome(
+          MacNotificationAttributionOutcome::kFallbackPermissionNotDetermined);
+      should_fallback = true;
+      break;
+    case DisplayNotificationResult::kPermissionPromptPending:
+      RecordAttributionOutcome(
+          MacNotificationAttributionOutcome::kFallbackPermissionPromptPending);
+      should_fallback = true;
+      break;
+    case DisplayNotificationResult::kDeliveryFailed:
+      RecordAttributionOutcome(
+          MacNotificationAttributionOutcome::kAttributedDeliveryFailed);
+      should_fallback = false;
+      break;
+    case DisplayNotificationResult::kConnectionFailed:
+      if (AppShimRegistry::Get()->GetNotificationPermissionStatusForApp(
+              web_app_id) == RegistryPermissionStatus::kExplicitlyDenied) {
+        RecordAttributionOutcome(MacNotificationAttributionOutcome::
+                                     kAppShimConnectionFailedPermissionDenied);
+        should_fallback = false;
+      } else {
+        RecordAttributionOutcome(MacNotificationAttributionOutcome::
+                                     kFallbackAppShimConnectionFailed);
+        should_fallback = true;
+      }
+      break;
   }
-  dispatcher->DisplayNotification(notification_type, profile, notification);
-  CloseImpl(profile, notification.id(), dispatcher);
+
+  // The notification was closed or replaced while the IPC was in flight.
+  auto it = pending_displays_.find(identifier);
+  if (it == pending_displays_.end() ||
+      it->second.request_id != display_request_id) {
+    return;
+  }
+  pending_displays_.erase(it);
+
+  // The profile was destroyed while the IPC was in flight.
+  if (!profile) {
+    return;
+  }
+
+  NotificationDispatcherMac* web_app_dispatcher =
+      GetOrCreateDispatcherForWebApp(web_app_id);
+  // For non-attributed notifications `Display()` closes any existing
+  // notification with the same ID in other dispatchers immediately, whereas for
+  // attributed notifications we don't know which dispatchers to close until the
+  // AppShim display attempt finishes.
+  if (!should_fallback) {
+    CloseImpl(profile.get(), notification.id(), {web_app_dispatcher});
+  } else {
+    bool is_alert = IsAlertNotificationMac(notification);
+    NotificationDispatcherMac* fallback_dispatcher =
+        is_alert ? alert_dispatcher_.get() : banner_dispatcher_.get();
+    fallback_dispatcher->DisplayNotification(notification_type, profile.get(),
+                                             notification, base::DoNothing());
+    // Avoid calling `CloseNotificationWithId` on `web_app_dispatcher` when the
+    // AppShim lacks OS permission or failed to connect (any prior notifications
+    // are already gone or unreachable without relaunching).
+    CloseImpl(profile.get(), notification.id(),
+              {fallback_dispatcher, web_app_dispatcher});
+  }
 }
 
 void NotificationPlatformBridgeMac::Close(Profile* profile,
@@ -113,20 +272,27 @@ void NotificationPlatformBridgeMac::Close(Profile* profile,
 void NotificationPlatformBridgeMac::CloseImpl(
     Profile* profile,
     const std::string& notification_id,
-    NotificationDispatcherMac* excluded_dispatcher) {
+    base::span<const NotificationDispatcherMac* const> excluded_dispatchers) {
   std::string profile_id = GetProfileId(profile);
   bool incognito = profile->IsOffTheRecord();
+  pending_displays_.erase({notification_id, profile_id, incognito});
 
-  if (banner_dispatcher_.get() != excluded_dispatcher) {
+  // Closing across multiple dispatchers is needed because an updated
+  // notification may move between dispatchers (e.g. between banner and alert,
+  // or between Chrome and a web app if a PWA is installed or uninstalled).
+  if (!std::ranges::contains(excluded_dispatchers, banner_dispatcher_.get())) {
     banner_dispatcher_->CloseNotificationWithId(
         {notification_id, profile_id, incognito});
   }
-  if (alert_dispatcher_.get() != excluded_dispatcher) {
+  if (!std::ranges::contains(excluded_dispatchers, alert_dispatcher_.get())) {
     alert_dispatcher_->CloseNotificationWithId(
         {notification_id, profile_id, incognito});
   }
+  // TODO(crbug.com/574102798): Avoid fanning out to unrelated app dispatchers,
+  // as that can relaunch an unrelated app shim in the background if it had
+  // notifications on screen when it last quit.
   for (auto& [app_id, dispatcher] : app_specific_dispatchers_) {
-    if (dispatcher.get() == excluded_dispatcher) {
+    if (std::ranges::contains(excluded_dispatchers, dispatcher.get())) {
       continue;
     }
     dispatcher->CloseNotificationWithId(
@@ -154,24 +320,8 @@ void NotificationPlatformBridgeMac::GetDisplayed(
   std::string profile_id = GetProfileId(profile);
   bool incognito = profile->IsOffTheRecord();
 
-  auto notifications = std::make_unique<std::set<std::string>>();
-  std::set<std::string>* notifications_ptr = notifications.get();
-  auto barrier_closure = base::BarrierClosure(
-      2, base::BindOnce(
-             [](std::unique_ptr<std::set<std::string>> notifications,
-                GetDisplayedNotificationsCallback callback) {
-               std::move(callback).Run(std::move(*notifications),
-                                       /*supports_synchronization=*/true);
-             },
-             std::move(notifications), std::move(callback)));
-
-  auto get_notifications_callback = base::BindRepeating(
-      [](std::set<std::string>* notifications_ptr, base::OnceClosure callback,
-         std::set<std::string> notifications, bool supports_synchronization) {
-        notifications_ptr->insert(notifications.begin(), notifications.end());
-        std::move(callback).Run();
-      },
-      notifications_ptr, barrier_closure);
+  auto get_notifications_callback =
+      CreateGetDisplayedBarrierCallback(2, std::move(callback));
 
   banner_dispatcher_->GetDisplayedNotificationsForProfileId(
       profile_id, incognito, get_notifications_callback);
@@ -195,6 +345,10 @@ void NotificationPlatformBridgeMac::GetDisplayedForOrigin(
         if (!url::IsSameOriginWith(registrar.GetAppScope(app_id), origin)) {
           continue;
         }
+        if (!AppShimRegistry::Get()->IsAppInstalledInProfile(
+                app_id, profile->GetPath())) {
+          continue;
+        }
         web_app_ids.push_back(app_id);
       }
     }
@@ -202,28 +356,18 @@ void NotificationPlatformBridgeMac::GetDisplayedForOrigin(
     // notifications rather than all for the origin.
   }
 
-  auto notifications = std::make_unique<std::set<std::string>>();
-  std::set<std::string>* notifications_ptr = notifications.get();
-  auto barrier_closure = base::BarrierClosure(
-      2 + web_app_ids.size(),
-      base::BindOnce(
-          [](std::unique_ptr<std::set<std::string>> notifications,
-             GetDisplayedNotificationsCallback callback) {
-            std::move(callback).Run(std::move(*notifications),
-                                    /*supports_synchronization=*/true);
-          },
-          std::move(notifications), std::move(callback)));
+  std::set<std::string> initial_notifications;
+  for (const auto& [identifier, pending] : pending_displays_) {
+    if (identifier.profile_id == profile_id &&
+        identifier.incognito == incognito &&
+        url::IsSameOriginWith(pending.origin_url, origin)) {
+      initial_notifications.insert(identifier.notification_id);
+    }
+  }
 
-  auto get_notifications_callback =
-      base::BindRepeating(
-          [](std::set<std::string>* notifications_ptr,
-             std::set<std::string> notifications,
-             bool supports_synchronization) {
-            notifications_ptr->insert(notifications.begin(),
-                                      notifications.end());
-          },
-          notifications_ptr)
-          .Then(barrier_closure);
+  auto get_notifications_callback = CreateGetDisplayedBarrierCallback(
+      2 + web_app_ids.size(), std::move(callback),
+      std::move(initial_notifications));
 
   banner_dispatcher_->GetDisplayedNotificationsForProfileIdAndOrigin(
       profile_id, incognito, origin, get_notifications_callback);
@@ -263,9 +407,13 @@ void NotificationPlatformBridgeMac::AppShimWillTerminate(
 
 void NotificationPlatformBridgeMac::CloseAllNotificationsForProfile(
     Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M161);
   std::string profile_id = GetProfileId(profile);
   bool incognito = profile->IsOffTheRecord();
+  base::EraseIf(pending_displays_, [&](const auto& entry) {
+    return entry.first.profile_id == profile_id &&
+           entry.first.incognito == incognito;
+  });
 
   banner_dispatcher_->CloseNotificationsWithProfileId(profile_id, incognito);
   alert_dispatcher_->CloseNotificationsWithProfileId(profile_id, incognito);

@@ -30,7 +30,7 @@ ApiBindingsClient::ApiBindingsClient(
       fit::bind_member(this, &ApiBindingsClient::OnBindingsReceived));
 
   bindings_service_.set_error_handler([this](zx_status_t status) {
-    ZX_LOG(ERROR, status) << "ApiBindings disconnected.";
+    ZX_LOG_IF(ERROR, status != ZX_OK, status) << "ApiBindings disconnected.";
     std::move(on_initialization_complete_).Run();
   });
 }
@@ -42,6 +42,22 @@ ApiBindingsClient::~ApiBindingsClient() {
     // Remove all injected scripts using their automatically enumerated IDs.
     for (uint64_t i = 0; i < bindings_->size(); ++i)
       frame_->RemoveBeforeLoadJavaScript(kBindingsIdStart + i);
+  }
+}
+
+void ApiBindingsClient::SetOrigin(const url::Origin& origin) {
+  if (origin_.has_value()) {
+    if (origin.opaque() && origin_->opaque()) {
+      return;
+    }
+    if (origin == *origin_) {
+      return;
+    }
+  }
+  origin_ = origin;
+
+  if (bindings_service_) {
+    bindings_service_->SetOrigin(origin.opaque() ? "" : origin.Serialize());
   }
 }
 

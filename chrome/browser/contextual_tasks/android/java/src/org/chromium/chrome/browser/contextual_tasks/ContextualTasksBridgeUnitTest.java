@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.contextual_tasks;
 
+import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -16,6 +17,7 @@ import android.app.Activity;
 import android.graphics.Rect;
 import android.view.Display;
 
+import org.jni_zero.JniPtr;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -24,6 +26,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.Callback;
 import org.chromium.base.UnownedUserDataHost;
@@ -33,6 +36,7 @@ import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncher;
 import org.chromium.chrome.browser.feedback.HelpAndFeedbackLauncherFactory;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask.NativeBrowserWindowInterface;
 import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskFeature.InitInfo;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -51,29 +55,31 @@ public class ContextualTasksBridgeUnitTest {
     @Mock private SnackbarManager mSnackbarManager;
     @Mock private ContextualTasksBridge.Natives mMockJni;
     @Mock private HelpAndFeedbackLauncher mMockHelpAndFeedbackLauncher;
-    @Mock private Activity mMockActivity;
     @Mock private WebContents mWebContents;
     @Mock private FeedbackPolicyManager mFeedbackPolicyManager;
+    @Mock private JniPtr<NativeBrowserWindowInterface> mBrowserWindow;
 
+    private Activity mActivity;
     private ContextualTasksBridge mBridge;
     private final UnownedUserDataHost mUserDataHost = new UnownedUserDataHost();
 
     private static final String TEST_URL = "https://example.com";
-    private static final long TEST_NATIVE_BROWSER_WINDOW_INTERFACE_PTR = 5678L;
     private static final long TEST_NATIVE_BRIDGE_PTR = 1234L;
 
     @Before
     public void setUp() {
+        mActivity = Robolectric.buildActivity(Activity.class).get();
         ContextualTasksBridgeJni.setInstanceForTesting(mMockJni);
-        when(mMockJni.init(any(), eq(TEST_NATIVE_BROWSER_WINDOW_INTERFACE_PTR), eq(mProfile)))
+        when(mMockJni.init(any(), eq(mBrowserWindow), eq(mProfile)))
                 .thenReturn(TEST_NATIVE_BRIDGE_PTR);
         when(mWindowAndroid.getUnownedUserDataHost()).thenReturn(mUserDataHost);
-        when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(mMockActivity));
+        when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(mActivity));
 
         mBridge = new ContextualTasksBridge(mProfile, mWindowAndroid);
         mBridge.onAddedToTask(
                 new InitInfo(
-                        TEST_NATIVE_BROWSER_WINDOW_INTERFACE_PTR,
+                        /* nativeBrowserWindowPtr= */ 0,
+                        mBrowserWindow,
                         /* isVisible= */ true,
                         new Rect(),
                         new Rect(),
@@ -113,7 +119,7 @@ public class ContextualTasksBridgeUnitTest {
         mBridge.openFeedbackUi(TEST_URL);
 
         verify(mMockHelpAndFeedbackLauncher)
-                .showFeedback(eq(mMockActivity), eq(TEST_URL), eq("cobrowse"));
+                .showFeedback(eq(mActivity), eq(TEST_URL), eq("cobrowse"));
     }
 
     @Test
@@ -151,5 +157,33 @@ public class ContextualTasksBridgeUnitTest {
         ContextualTasksBridge.getTaskTitleForTab(tab, callback);
 
         verify(mMockJni).getTaskTitleForTab(eq(mWebContents), eq(callback));
+    }
+
+    @Test
+    public void testOnAddedToTask_regular_setsSupplier() {
+        assertEquals(mBridge, ContextualTasksBridge.getSupplier(mWindowAndroid).get());
+    }
+
+    @Test
+    public void testOnAddedToTask_incognito_doesNotSetSupplier() {
+        Profile incognitoProfile = mock(Profile.class);
+        when(incognitoProfile.isOffTheRecord()).thenReturn(true);
+        ContextualTasksBridge incognitoBridge =
+                new ContextualTasksBridge(incognitoProfile, mWindowAndroid);
+
+        // Add an incognito bridge to the same Activity as the regular bridge from setUp().
+        incognitoBridge.onAddedToTask(
+                new InitInfo(
+                        /* nativeBrowserWindowPtr= */ 0,
+                        mBrowserWindow,
+                        /* isVisible= */ true,
+                        new Rect(),
+                        new Rect(),
+                        Display.DEFAULT_DISPLAY));
+
+        // The native bridge is still created, but the Activity-scoped supplier keeps the regular
+        // bridge.
+        verify(mMockJni).init(eq(incognitoBridge), eq(mBrowserWindow), eq(incognitoProfile));
+        assertEquals(mBridge, ContextualTasksBridge.getSupplier(mWindowAndroid).get());
     }
 }

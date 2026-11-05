@@ -16,6 +16,7 @@
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
+#include "chrome/browser/glic/public/glic_api_metrics.h"
 #include "chrome/browser/glic/public/glic_instance_metrics_backwards_compatibility.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
@@ -153,6 +154,7 @@ GlicAnnotationManager::~GlicAnnotationManager() = default;
 void GlicAnnotationManager::ScrollTo(mojom::ScrollToParamsPtr params,
                                      ScrollToCallback callback) {
   CHECK(base::FeatureList::IsEnabled(features::kGlicScrollTo));
+  LogApiRequestCount(GlicHostApiRequestId::kScrollTo);
   if (annotation_task_ && annotation_task_->IsRunning()) {
     annotation_task_->FailTaskOrDropAnnotation(
         mojom::ScrollToErrorReason::kNewerScrollToCall);
@@ -241,7 +243,7 @@ void GlicAnnotationManager::ScrollTo(mojom::ScrollToParamsPtr params,
     }
   }
 
-  if (host_->instance().GetPanelState().kind ==
+  if (host_->instance().GetPanelState()->kind ==
       mojom::PanelStateKind::kHidden) {
     std::move(wrapped_callback).Run(mojom::ScrollToErrorReason::kNoFocusedTab);
     return;
@@ -311,6 +313,7 @@ void GlicAnnotationManager::ScrollTo(mojom::ScrollToParamsPtr params,
 }
 
 void GlicAnnotationManager::DropScrollToHighlight() {
+  LogApiRequestCount(GlicHostApiRequestId::kDropScrollToHighlight);
   RemoveAnnotation(mojom::ScrollToErrorReason::kDroppedByWebClient);
 }
 
@@ -350,7 +353,9 @@ GlicAnnotationManager::AnnotationTask::AnnotationTask(
       &AnnotationTask::RemoteDisconnected, base::Unretained(this)));
 
   // Listens to the panel-closing notification.
-  host_->instance().AddStateObserver(this);
+  panel_state_subscription_ =
+      host_->instance().GetPanelState().AddObserver(base::BindRepeating(
+          &AnnotationTask::PanelStateChanged, base::Unretained(this)));
 
   if (base::FeatureList::IsEnabled(features::kGlicDefaultTabContextSetting)) {
     host_->AddObserver(this);
@@ -370,7 +375,6 @@ GlicAnnotationManager::AnnotationTask::~AnnotationTask() {
     std::move(scroll_to_callback_)
         .Run(mojom::ScrollToErrorReason::kNotSupported);
   }
-  host_->instance().RemoveStateObserver(this);
   if (base::FeatureList::IsEnabled(features::kGlicDefaultTabContextSetting)) {
     host_->RemoveObserver(this);
   }
@@ -458,8 +462,8 @@ void GlicAnnotationManager::AnnotationTask::ResetConnections() {
   annotation_agent_.reset();
   annotation_agent_host_receiver_.reset();
   tab_change_subscription_ = base::CallbackListSubscription();
+  panel_state_subscription_ = base::CallbackListSubscription();
   content::WebContentsObserver::Observe(nullptr);
-  host_->instance().RemoveStateObserver(this);
   if (base::FeatureList::IsEnabled(features::kGlicDefaultTabContextSetting)) {
     host_->RemoveObserver(this);
   }

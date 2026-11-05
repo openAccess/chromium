@@ -128,6 +128,22 @@ public interface ExternalNavigationDelegate {
     /** Whether WebAPKs should be launched even on the initial Intent. */
     boolean shouldLaunchWebApksOnInitialIntent();
 
+    /**
+     * Per-package "Open supported links" setting, not per-host verification. Default true so
+     * embedders that do not read the setting keep existing incoming VIEW WebAPK launches.
+     */
+    default boolean isWebApkLinkHandlingAllowed(@Nullable String packageName) {
+        return packageName != null;
+    }
+
+    /**
+     * Cheap precheck for renderer navigations before querying non-default WebAPK handlers. Default
+     * true preserves behavior for embedders that do not keep an in-memory WebAPK registry.
+     */
+    default boolean maybeHasWebApkForUrl(GURL url) {
+        return true;
+    }
+
     /** Adds a target package to the Intent. Only called if isForTrustedCallingApp is true. */
     void setPackageForTrustedCallingApp(Intent intent);
 
@@ -165,8 +181,6 @@ public interface ExternalNavigationDelegate {
      * not exist if there was no form submission preceding the external navigation.
      */
     void notifyCctPasswordSavingRecorderOfExternalNavigation();
-
-    void reportIntentToSafeBrowsing(Intent intent);
 
     /**
      * Returns an intent that targets the embedder application if opening the url in incognito
@@ -213,6 +227,20 @@ public interface ExternalNavigationDelegate {
      * will be kept inside the browser to be opened by the user on demand at a later time.
      *
      * @param url The {@link GURL} of the current page.
+     * @param resolveInfoSupplier Supplier of {@link ResolveInfo}s that can handle the navigation.
      */
-    boolean allowExternalNavigationForHttpProtocols(GURL url);
+    boolean allowExternalNavigationForHttpProtocols(
+            GURL url, Supplier<List<ResolveInfo>> resolveInfoSupplier);
+
+    /**
+     * Returns whether the given URL is within the scope of the current PWA/TWA.
+     *
+     * @param url The {@link GURL} to check.
+     */
+    default boolean isUrlInPwaScope(GURL url) {
+        return false;
+    }
+
+    /** Reparents the tab associated with this delegate to a new instance of the same PWA. */
+    default void reparentTabToSamePwa() {}
 }

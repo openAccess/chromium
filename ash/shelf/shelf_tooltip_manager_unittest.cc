@@ -4,15 +4,20 @@
 
 #include "ash/shelf/shelf_tooltip_manager.h"
 
+#include <algorithm>
 #include <memory>
 
+#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/shelf_model.h"
 #include "ash/public/cpp/test/test_shelf_item_delegate.h"
 #include "ash/shelf/home_button.h"
 #include "ash/shelf/shelf.h"
 #include "ash/shelf/shelf_bubble.h"
+#include "ash/shelf/shelf_menu_model_adapter.h"
 #include "ash/shelf/shelf_view.h"
 #include "ash/shelf/shelf_view_test_api.h"
+#include "ash/shelf/shelf_widget.h"
+#include "ash/shelf/shelf_window_preview_bubble.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/wm/collision_detection/collision_detection_utils.h"
@@ -21,18 +26,55 @@
 #include "ash/wm/desks/desk_button/desk_switch_button.h"
 #include "ash/wm/desks/desks_test_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
+#include "ui/compositor/layer.h"
+#include "ui/compositor/layer_animator.h"
+#include "ui/compositor/layer_observer.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/events/test/test_event_handler.h"
+#include "ui/gfx/geometry/vector2d.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/view_tracker.h"
 #include "ui/views/widget/widget.h"
+#include "ui/wm/core/window_util.h"
 
 namespace ash {
+namespace {
+
+class LayerDestroyedChecker : public ui::LayerObserver {
+ public:
+  explicit LayerDestroyedChecker(ui::Layer* layer) {
+    observation_.Observe(layer);
+  }
+  LayerDestroyedChecker(const LayerDestroyedChecker&) = delete;
+  LayerDestroyedChecker& operator=(const LayerDestroyedChecker&) = delete;
+  ~LayerDestroyedChecker() override = default;
+
+  // ui::LayerObserver:
+  void LayerDestroyed(ui::Layer* layer) override {
+    observation_.Reset();
+    destroyed_ = true;
+  }
+
+  bool destroyed() const { return destroyed_; }
+
+ private:
+  bool destroyed_ = false;
+  base::ScopedObservation<ui::Layer, ui::LayerObserver> observation_{this};
+};
+
+}  // namespace
 
 class ShelfTooltipManagerTest : public AshTestBase {
  public:
-  ShelfTooltipManagerTest() = default;
+  explicit ShelfTooltipManagerTest(
+      base::test::TaskEnvironment::TimeSource time_source =
+          base::test::TaskEnvironment::TimeSource::DEFAULT)
+      : AshTestBase(time_source) {}
 
   ShelfTooltipManagerTest(const ShelfTooltipManagerTest&) = delete;
   ShelfTooltipManagerTest& operator=(const ShelfTooltipManagerTest&) = delete;
@@ -72,6 +114,29 @@ class ShelfTooltipManagerTest : public AshTestBase {
     EXPECT_GE(shelf_view_->number_of_visible_apps(), 1u);
     tooltip_manager_->ShowTooltip(
         shelf_view_->first_visible_button_for_testing());
+  }
+
+  // Adds an app item with `id` to the shelf and returns its view.
+  views::View* AddAppItem(const ShelfID& id) {
+    ShelfItem item;
+    item.id = id;
+    item.type = TYPE_APP;
+    const int index = shelf_view_->model()->Add(
+        item, std::make_unique<TestShelfItemDelegate>(item.id));
+    // Wait for the item addition animation to finish so subsequent layout
+    // changes update bounds synchronously.
+    test_api_->RunMessageLoopUntilAnimationsDone();
+    return test_api_->GetViewAt(index);
+  }
+
+  // Creates a window that belongs to the shelf item with `id`.
+  std::unique_ptr<aura::Window> CreateWindowForShelfItem(const ShelfID& id) {
+    std::unique_ptr<aura::Window> window =
+        CreateToplevelTestWindow({100, 100, 300, 200});
+    static_cast<TestShelfItemDelegate*>(
+        shelf_view_->model()->GetShelfItemDelegate(id))
+        ->AddWindow(window.get());
+    return window;
   }
 
  protected:
@@ -127,7 +192,452 @@ TEST_F(ShelfTooltipManagerTest, DoNotShowForInvalidView) {
   EXPECT_FALSE(tooltip_manager_->IsVisible());
   tooltip_manager_->ShowTooltipWithDelay(&view);
   EXPECT_FALSE(IsTimerRunning());
+}
 
+TEST_F(ShelfTooltipManagerTest,
+       SingleWindowNoPreviewBubbleWhenFeatureDisabled) {
+  // Feature is disabled by default.
+  const ShelfID id("app_with_one_window");
+  views::View* button = AddAppItem(id);
+  std::unique_ptr<aura::Window> window = CreateWindowForShelfItem(id);
+
+  tooltip_manager_->ShowTooltip(button);
+  EXPECT_TRUE(tooltip_manager_->IsVisible());
+  EXPECT_EQ(nullptr, tooltip_manager_->preview_bubble());
+}
+
+class ShelfTooltipManagerWindowPreviewTest : public ShelfTooltipManagerTest {
+ public:
+  ShelfTooltipManagerWindowPreviewTest()
+      : ShelfTooltipManagerTest(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+
+ protected:
+  // Sets the shelf `alignment`, shows the tooltip for an app item with a single
+  // window, and verifies that the preview bubble is placed within the work area
+  // above the tooltip for a horizontal shelf, or below the tooltip for a
+  // vertical shelf, without overlapping the shelf.
+  void VerifyPreviewBubblePlacement(ShelfAlignment alignment) {
+    const ShelfID id("app_with_one_window");
+    views::View* button = AddAppItem(id);
+    std::unique_ptr<aura::Window> window = CreateWindowForShelfItem(id);
+    GetPrimaryShelf()->SetAlignment(alignment);
+
+    tooltip_manager_->ShowTooltip(button);
+    EXPECT_TRUE(tooltip_manager_->IsVisible());
+    EXPECT_EQ(button, tooltip_manager_->GetCurrentAnchorView());
+
+    views::Widget* tooltip_widget = GetTooltip();
+    ASSERT_TRUE(tooltip_widget);
+
+    ShelfWindowPreviewBubble* preview_bubble =
+        tooltip_manager_->preview_bubble();
+    ASSERT_TRUE(preview_bubble);
+    ASSERT_TRUE(preview_bubble->GetWidget());
+
+    display::Display display = display::Screen::Get()->GetDisplayNearestWindow(
+        tooltip_widget->GetNativeWindow());
+    gfx::Rect tooltip_bounds = tooltip_widget->GetWindowBoundsInScreen();
+    gfx::Rect preview_bounds =
+        preview_bubble->GetWidget()->GetWindowBoundsInScreen();
+
+    EXPECT_TRUE(display.work_area().Contains(tooltip_bounds));
+    EXPECT_TRUE(display.work_area().Contains(preview_bounds));
+    if (GetPrimaryShelf()->IsHorizontalAlignment()) {
+      EXPECT_LE(preview_bubble->GetBoundsInScreen().bottom(),
+                tooltip_bounds.y());
+    } else {
+      EXPECT_GE(preview_bubble->GetBoundsInScreen().y(),
+                tooltip_bounds.bottom());
+    }
+    EXPECT_FALSE(preview_bubble->GetBoundsInScreen().Intersects(
+        GetPrimaryShelf()->shelf_widget()->GetWindowBoundsInScreen()));
+  }
+
+  // Sets the vertical shelf `alignment`, shows the tooltip for a single-window
+  // app item near the bottom of the screen where there is not enough space
+  // below the tooltip, and verifies that the preview bubble flips above the
+  // tooltip.
+  void VerifyPreviewBubbleFlipsNearBottom(ShelfAlignment alignment) {
+    // The item position depends on the display size, so set it explicitly.
+    UpdateDisplay("800x600");
+    for (int i = 0; i < 3; ++i) {
+      AddAppItem(ShelfID("filler", std::string(1, 'a' + i)));
+    }
+    const ShelfID id("bottom_app_with_one_window");
+    views::View* button = AddAppItem(id);
+    std::unique_ptr<aura::Window> window = CreateWindowForShelfItem(id);
+    GetPrimaryShelf()->SetAlignment(alignment);
+
+    tooltip_manager_->ShowTooltip(button);
+    ASSERT_TRUE(tooltip_manager_->preview_bubble());
+    const gfx::Rect tooltip_bounds = GetTooltip()->GetWindowBoundsInScreen();
+    const gfx::Rect preview_bounds =
+        tooltip_manager_->preview_bubble()->GetBoundsInScreen();
+
+    // Make sure that there is not enough space below the tooltip.
+    const gfx::Rect work_area =
+        display::Screen::Get()
+            ->GetDisplayNearestWindow(GetTooltip()->GetNativeWindow())
+            .work_area();
+    ASSERT_LT(work_area.bottom() - tooltip_bounds.bottom(),
+              preview_bounds.height());
+
+    EXPECT_LE(preview_bounds.bottom(), tooltip_bounds.y());
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      features::kWindowPreviewOnShelf};
+};
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest, PreviewBubbleOnBottomShelf) {
+  VerifyPreviewBubblePlacement(ShelfAlignment::kBottom);
+}
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest, PreviewBubbleOnLeftShelf) {
+  VerifyPreviewBubblePlacement(ShelfAlignment::kLeft);
+}
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest, PreviewBubbleOnRightShelf) {
+  VerifyPreviewBubblePlacement(ShelfAlignment::kRight);
+}
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest,
+       PreviewBubbleFlipsNearBottomOfLeftShelf) {
+  VerifyPreviewBubbleFlipsNearBottom(ShelfAlignment::kLeft);
+}
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest,
+       PreviewBubbleFlipsNearBottomOfRightShelf) {
+  VerifyPreviewBubbleFlipsNearBottom(ShelfAlignment::kRight);
+}
+
+// Destroying the source window closes the preview bubble immediately.
+TEST_F(ShelfTooltipManagerWindowPreviewTest,
+       WindowDestroyedClosesPreviewBubble) {
+  const ShelfID id("app_with_one_window");
+  views::View* button = AddAppItem(id);
+  std::unique_ptr<aura::Window> window = CreateWindowForShelfItem(id);
+
+  tooltip_manager_->ShowTooltip(button);
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+
+  window.reset();
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+}
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest,
+       SingleWindowPreviewBubbleFadeOutClosesWidgetImmediately) {
+  const ShelfID id("app_with_one_window");
+  views::View* button = AddAppItem(id);
+  std::unique_ptr<aura::Window> window = CreateWindowForShelfItem(id);
+
+  tooltip_manager_->ShowTooltip(button);
+  views::ViewTracker preview_tracker(tooltip_manager_->preview_bubble());
+  ASSERT_TRUE(preview_tracker.view());
+
+  ui::Layer* preview_layer =
+      tooltip_manager_->preview_bubble()->GetWidget()->GetLayer();
+  ASSERT_TRUE(preview_layer);
+  LayerDestroyedChecker layer_checker(preview_layer);
+
+  // Closing with animation detaches the layer for the fade-out animation and
+  // closes the widget immediately, while the detached layer remains alive until
+  // the fade-out animation finishes.
+  gfx::ScopedAnimationDurationScaleMode non_zero_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  tooltip_manager_->Close(/*animate=*/true);
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+  EXPECT_FALSE(preview_tracker.view());
+  EXPECT_FALSE(layer_checker.destroyed());
+  EXPECT_TRUE(preview_layer->GetAnimator()->is_animating());
+
+  preview_layer->GetAnimator()->StopAnimating();
+  EXPECT_TRUE(layer_checker.destroyed());
+}
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest, MultipleWindowsNoPreviewBubble) {
+  const ShelfID id("app_with_multiple_windows");
+  views::View* button = AddAppItem(id);
+  std::unique_ptr<aura::Window> window1 = CreateWindowForShelfItem(id);
+  std::unique_ptr<aura::Window> window2 = CreateWindowForShelfItem(id);
+
+  tooltip_manager_->ShowTooltip(button);
+  // An application menu is opened upon hover instead of a tooltip bubble.
+  EXPECT_FALSE(tooltip_manager_->IsVisible());
+  EXPECT_TRUE(shelf_view_->IsShowingMenu());
+  EXPECT_TRUE(
+      shelf_view_->shelf_menu_model_adapter_for_testing()->opened_by_hover());
+  EXPECT_EQ(nullptr, tooltip_manager_->preview_bubble());
+}
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest, StaysOpenWhileMouseOverPreview) {
+  const ShelfID id("app_with_one_window");
+  views::View* button = AddAppItem(id);
+  std::unique_ptr<aura::Window> window = CreateWindowForShelfItem(id);
+
+  ui::test::EventGenerator* generator = GetEventGenerator();
+  generator->MoveMouseTo(button->GetBoundsInScreen().CenterPoint());
+  tooltip_manager_->ShowTooltip(button);
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+
+  // Moving the mouse from the shelf item through the tooltip onto the preview
+  // bubble keeps both open.
+  generator->MoveMouseTo(GetTooltip()->GetWindowBoundsInScreen().CenterPoint());
+  EXPECT_TRUE(tooltip_manager_->IsVisible());
+  EXPECT_TRUE(tooltip_manager_->preview_bubble());
+
+  const gfx::Rect preview_bounds = tooltip_manager_->preview_bubble()
+                                       ->GetWidget()
+                                       ->GetWindowBoundsInScreen();
+  generator->MoveMouseTo(preview_bounds.CenterPoint());
+  EXPECT_TRUE(tooltip_manager_->IsVisible());
+  EXPECT_TRUE(tooltip_manager_->preview_bubble());
+
+  // Moving the mouse out of the preview bubble closes both.
+  generator->MoveMouseTo(preview_bounds.right_center() + gfx::Vector2d(50, 0));
+  EXPECT_FALSE(tooltip_manager_->IsVisible());
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+
+  // Moving sideways off the shelf item onto empty shelf area (still within a
+  // wide preview bubble's horizontal span) also closes both.
+  generator->MoveMouseTo(button->GetBoundsInScreen().CenterPoint());
+  tooltip_manager_->ShowTooltip(button);
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+  const gfx::Rect wide_preview_bounds = tooltip_manager_->preview_bubble()
+                                            ->GetWidget()
+                                            ->GetWindowBoundsInScreen();
+  const int empty_shelf_x = wide_preview_bounds.right() - 5;
+  ASSERT_GT(empty_shelf_x,
+            std::max(button->GetBoundsInScreen().right(),
+                     GetTooltip()->GetWindowBoundsInScreen().right()));
+  generator->MoveMouseTo(
+      {empty_shelf_x, button->GetBoundsInScreen().CenterPoint().y()});
+  EXPECT_FALSE(tooltip_manager_->IsVisible());
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+}
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest, ClickOnPreviewActivatesWindow) {
+  const ShelfID id("app_with_one_window");
+  views::View* button = AddAppItem(id);
+  std::unique_ptr<aura::Window> window = CreateWindowForShelfItem(id);
+  std::unique_ptr<aura::Window> other_window =
+      CreateToplevelTestWindow({400, 100, 300, 200});
+  wm::ActivateWindow(other_window.get());
+  ASSERT_FALSE(wm::IsActiveWindow(window.get()));
+
+  ui::test::EventGenerator* generator = GetEventGenerator();
+  generator->MoveMouseTo(button->GetBoundsInScreen().CenterPoint());
+  tooltip_manager_->ShowTooltip(button);
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+
+  // Right-clicking the preview closes it without activating the window.
+  generator->MoveMouseTo(tooltip_manager_->preview_bubble()
+                             ->GetWidget()
+                             ->GetWindowBoundsInScreen()
+                             .CenterPoint());
+  generator->ClickRightButton();
+  EXPECT_FALSE(wm::IsActiveWindow(window.get()));
+  EXPECT_FALSE(tooltip_manager_->IsVisible());
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+
+  // Left-clicking the preview activates the window and closes the preview.
+  generator->MoveMouseTo(button->GetBoundsInScreen().CenterPoint());
+  tooltip_manager_->ShowTooltip(button);
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+  generator->MoveMouseTo(tooltip_manager_->preview_bubble()
+                             ->GetWidget()
+                             ->GetWindowBoundsInScreen()
+                             .CenterPoint());
+  generator->ClickLeftButton();
+  EXPECT_TRUE(wm::IsActiveWindow(window.get()));
+  EXPECT_FALSE(tooltip_manager_->IsVisible());
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+}
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest, TouchOnAndOutsidePreview) {
+  const ShelfID id("app_with_one_window");
+  views::View* button = AddAppItem(id);
+  std::unique_ptr<aura::Window> window = CreateWindowForShelfItem(id);
+  ui::test::TestEventHandler other_window_handler;
+  std::unique_ptr<aura::Window> other_window =
+      CreateToplevelTestWindow({800, 600});
+  wm::ActivateWindow(other_window.get());
+  ASSERT_FALSE(wm::IsActiveWindow(window.get()));
+  other_window->AddPreTargetHandler(&other_window_handler);
+
+  ui::test::EventGenerator* generator = GetEventGenerator();
+  tooltip_manager_->ShowTooltip(button);
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+
+  // Touching outside the preview closes it without crashing or activating the
+  // previewed window.
+  generator->PressTouch(gfx::Point{10, 10});
+  generator->ReleaseTouch();
+  EXPECT_FALSE(wm::IsActiveWindow(window.get()));
+  EXPECT_FALSE(tooltip_manager_->IsVisible());
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+  EXPECT_GT(other_window_handler.num_touch_events(), 0);
+  other_window_handler.Reset();
+
+  // Touch-dragging off the preview does not activate the window or leak touch
+  // or gesture events to the window behind the preview.
+  tooltip_manager_->ShowTooltip(button);
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+  const gfx::Point preview_center = tooltip_manager_->preview_bubble()
+                                        ->GetWidget()
+                                        ->GetWindowBoundsInScreen()
+                                        .CenterPoint();
+  ASSERT_TRUE(other_window->GetBoundsInScreen().Contains(preview_center));
+  generator->PressTouch(preview_center);
+  EXPECT_FALSE(wm::IsActiveWindow(window.get()));
+  EXPECT_TRUE(tooltip_manager_->preview_bubble());
+  generator->MoveTouch({10, 10});
+  generator->ReleaseTouch();
+  EXPECT_FALSE(wm::IsActiveWindow(window.get()));
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+  EXPECT_EQ(0, other_window_handler.num_touch_events());
+  EXPECT_EQ(0, other_window_handler.num_gesture_events());
+
+  // Long-pressing and releasing on the preview does not activate the window or
+  // leak long-press/long-tap gestures to the window behind the preview.
+  generator->PressTouch(preview_center);
+  task_environment()->FastForwardBy(base::Seconds(5));
+  generator->ReleaseTouch();
+  EXPECT_FALSE(wm::IsActiveWindow(window.get()));
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+  EXPECT_EQ(0, other_window_handler.num_touch_events());
+  EXPECT_EQ(0, other_window_handler.num_gesture_events());
+
+  // Tapping the preview activates the window and closes the preview on release.
+  generator->PressTouch(preview_center);
+  EXPECT_FALSE(wm::IsActiveWindow(window.get()));
+  EXPECT_TRUE(tooltip_manager_->preview_bubble());
+  generator->ReleaseTouch();
+  EXPECT_TRUE(wm::IsActiveWindow(window.get()));
+  EXPECT_FALSE(tooltip_manager_->IsVisible());
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+
+  other_window->RemovePreTargetHandler(&other_window_handler);
+}
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest, PressingEscapeClosesPreview) {
+  const ShelfID id("app_with_one_window");
+  views::View* button = AddAppItem(id);
+  std::unique_ptr<aura::Window> window = CreateWindowForShelfItem(id);
+  wm::ActivateWindow(window.get());
+  ui::test::TestEventHandler key_handler;
+  window->AddPreTargetHandler(&key_handler);
+
+  ui::test::EventGenerator* generator = GetEventGenerator();
+  generator->MoveMouseTo(button->GetBoundsInScreen().CenterPoint());
+  tooltip_manager_->ShowTooltip(button);
+  ASSERT_TRUE(tooltip_manager_->IsVisible());
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+
+  // Moving the mouse over the preview keeps it visible.
+  const gfx::Rect preview_bounds = tooltip_manager_->preview_bubble()
+                                       ->GetWidget()
+                                       ->GetWindowBoundsInScreen();
+  generator->MoveMouseTo(preview_bounds.CenterPoint());
+  EXPECT_TRUE(tooltip_manager_->IsVisible());
+  EXPECT_TRUE(tooltip_manager_->preview_bubble());
+
+  // Pressing unmodified 'Esc' closes both the preview bubble and the tooltip,
+  // and consumes the key press so it does not reach the active window.
+  generator->PressKey(ui::VKEY_ESCAPE, ui::EF_NONE);
+  EXPECT_FALSE(tooltip_manager_->IsVisible());
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+  EXPECT_EQ(0, key_handler.num_key_events());
+  generator->ReleaseKey(ui::VKEY_ESCAPE, ui::EF_NONE);
+
+  // Modified 'Esc' (e.g. Shift+Esc) closes the preview without consuming the
+  // key event.
+  tooltip_manager_->ShowTooltip(button);
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+  key_handler.Reset();
+  generator->PressKey(ui::VKEY_ESCAPE, ui::EF_SHIFT_DOWN);
+  EXPECT_FALSE(tooltip_manager_->IsVisible());
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+  EXPECT_EQ(1, key_handler.num_key_events());
+  generator->ReleaseKey(ui::VKEY_ESCAPE, ui::EF_SHIFT_DOWN);
+
+  // Plain tooltips (without a preview bubble) close without consuming 'Esc'.
+  ShowTooltipForFirstAppIcon();
+  ASSERT_TRUE(tooltip_manager_->IsVisible());
+  ASSERT_FALSE(tooltip_manager_->preview_bubble());
+  key_handler.Reset();
+  generator->PressKey(ui::VKEY_ESCAPE, ui::EF_NONE);
+  EXPECT_FALSE(tooltip_manager_->IsVisible());
+  EXPECT_EQ(1, key_handler.num_key_events());
+  generator->ReleaseKey(ui::VKEY_ESCAPE, ui::EF_NONE);
+
+  window->RemovePreTargetHandler(&key_handler);
+}
+
+TEST_F(ShelfTooltipManagerWindowPreviewTest,
+       AutoHideShelfStaysShownWhileMouseOverPreview) {
+  const ShelfID id("app_with_one_window");
+  views::View* button = AddAppItem(id);
+  std::unique_ptr<aura::Window> window = CreateWindowForShelfItem(id);
+
+  Shelf* shelf = GetPrimaryShelf();
+  shelf->SetAutoHideBehavior(ShelfAutoHideBehavior::kAlways);
+
+  ui::test::EventGenerator* generator = GetEventGenerator();
+  generator->MoveMouseTo(
+      display::Screen::Get()->GetPrimaryDisplay().bounds().bottom_center());
+  task_environment()->FastForwardBy(base::Seconds(1));
+  ASSERT_EQ(SHELF_AUTO_HIDE_SHOWN, shelf->GetAutoHideState());
+
+  generator->MoveMouseTo(button->GetBoundsInScreen().CenterPoint());
+  tooltip_manager_->ShowTooltip(button);
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+
+  // Moving the mouse onto the preview bubble keeps both the auto-hide shelf and
+  // the preview bubble shown past the auto-hide delay.
+  const gfx::Rect preview_bounds = tooltip_manager_->preview_bubble()
+                                       ->GetWidget()
+                                       ->GetWindowBoundsInScreen();
+  generator->MoveMouseTo(preview_bounds.CenterPoint());
+  task_environment()->FastForwardBy(base::Seconds(1));
+  EXPECT_EQ(SHELF_AUTO_HIDE_SHOWN, shelf->GetAutoHideState());
+  EXPECT_TRUE(tooltip_manager_->IsVisible());
+  EXPECT_TRUE(tooltip_manager_->preview_bubble());
+
+  // Moving the mouse out of the preview bubble closes the preview and hides the
+  // auto-hide shelf.
+  generator->MoveMouseTo({10, 10});
+  task_environment()->FastForwardBy(base::Seconds(1));
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+  EXPECT_EQ(SHELF_AUTO_HIDE_HIDDEN, shelf->GetAutoHideState());
+
+  // Destroying the previewed window while hovering over the preview also
+  // re-enables auto-hide (when another window remains open).
+  std::unique_ptr<aura::Window> other_window =
+      CreateToplevelTestWindow({400, 100, 300, 200});
+  generator->MoveMouseTo(
+      display::Screen::Get()->GetPrimaryDisplay().bounds().bottom_center());
+  task_environment()->FastForwardBy(base::Seconds(1));
+  ASSERT_EQ(SHELF_AUTO_HIDE_SHOWN, shelf->GetAutoHideState());
+  generator->MoveMouseTo(button->GetBoundsInScreen().CenterPoint());
+  tooltip_manager_->ShowTooltip(button);
+  ASSERT_TRUE(tooltip_manager_->preview_bubble());
+  generator->MoveMouseTo(tooltip_manager_->preview_bubble()
+                             ->GetWidget()
+                             ->GetWindowBoundsInScreen()
+                             .CenterPoint());
+  task_environment()->FastForwardBy(base::Seconds(1));
+  ASSERT_EQ(SHELF_AUTO_HIDE_SHOWN, shelf->GetAutoHideState());
+
+  window.reset();
+  EXPECT_FALSE(tooltip_manager_->preview_bubble());
+  task_environment()->FastForwardBy(base::Seconds(1));
+  EXPECT_EQ(SHELF_AUTO_HIDE_HIDDEN, shelf->GetAutoHideState());
+}
+
+TEST_F(ShelfTooltipManagerTest, ShelfItemTimer) {
   // The manager should start the timer for a view on the shelf.
   ShelfModel* model = shelf_view_->model();
   ShelfItem item;

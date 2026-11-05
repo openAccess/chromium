@@ -7,6 +7,7 @@
 #import "base/test/scoped_feature_list.h"
 #import "components/regional_capabilities/regional_capabilities_switches.h"
 #import "components/regional_capabilities/regional_capabilities_utils.h"
+#import "components/search_engines/search_engine_split_metrics.h"
 #import "components/search_engines/template_url_data_util.h"
 #import "components/search_engines/template_url_prepopulate_data.h"
 #import "ios/chrome/browser/settings/ui_bundled/search_engine_table_view_controller.h"
@@ -241,9 +242,8 @@ TEST_F(SearchEngineTableViewControllerNonEEATest, TestChangeProvider) {
   histogram_tester_.ExpectTotalCount(kUmaSelectDefaultSearchEngine, 3);
 
   // Check that the selection was written back to the prefs.
-  const base::DictValue& searchProviderDict =
-      profile_->GetTestingPrefService()->GetDict(
-          DefaultSearchManager::kDefaultSearchProviderDataPrefName);
+  const base::DictValue& searchProviderDict = profile_->GetPrefs()->GetDict(
+      DefaultSearchManager::kDefaultSearchProviderDataPrefName);
   const std::string* short_name =
       searchProviderDict.FindString(DefaultSearchManager::kShortName);
   ASSERT_TRUE(short_name);
@@ -513,6 +513,65 @@ TEST_F(SearchEngineTableViewControllerNonEEATest,
   SearchEngineTableViewController* searchEngineController =
       static_cast<SearchEngineTableViewController*>(controller());
   EXPECT_FALSE([searchEngineController editButtonEnabled]);
+}
+
+// Tests that settings page load split metrics are not recorded in non-split
+// regions (e.g. US).
+TEST_F(SearchEngineTableViewControllerNonEEATest,
+       DoesNotRecordSplitMetricsInNonSplitRegion) {
+  std::unique_ptr<TemplateURLData> data = TemplateURLDataFromPrepopulatedEngine(
+      TemplateURLPrepopulateData::yahoo_jp);
+  TemplateURL* url =
+      template_url_service_->Add(std::make_unique<TemplateURL>(*data));
+  template_url_service_->SetUserSelectedDefaultSearchProvider(url);
+
+  CreateController();
+  CheckController();
+
+  histogram_tester_.ExpectTotalCount(
+      "Search.OseSplitYahooJapan.CountOnSettingsPageLoad", 0);
+}
+
+// Unit tests for SearchEngineTableViewController in a search engine split
+// region (Japan).
+class SearchEngineTableViewControllerSplitRegionTest
+    : public SearchEngineTableViewControllerTest {
+  void SetUp() override {
+    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
+        switches::kSearchEngineChoiceCountry, "JP");
+    SearchEngineTableViewControllerTest::SetUp();
+  }
+
+  base::test::ScopedFeatureList split_feature_list_{
+      switches::kApplySearchEngineTypeMigration};
+};
+
+// Tests that settings page load split metrics are recorded once per page load
+// in a split region (JP).
+TEST_F(SearchEngineTableViewControllerSplitRegionTest,
+       RecordsSplitMetricsOncePerSettingsPageLoad) {
+  std::unique_ptr<TemplateURLData> data = TemplateURLDataFromPrepopulatedEngine(
+      TemplateURLPrepopulateData::yahoo_jp);
+  TemplateURL* url =
+      template_url_service_->Add(std::make_unique<TemplateURL>(*data));
+  template_url_service_->SetUserSelectedDefaultSearchProvider(url);
+
+  CreateController();
+  CheckController();
+
+  histogram_tester_.ExpectUniqueSample(
+      "Search.OseSplitYahooJapan.CountOnSettingsPageLoad", 1, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Search.OseSplitYahooJapan.DseTypeOnSettingsPageLoad",
+      search_engines::OseSplitType::kLegacy, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Search.OseSplitYahooJapan.EngineStateOnSettingsPageLoad",
+      search_engines::OseSplitEngineState::kLegacyDse, 1);
+
+  // Subsequent reloads of the same controller instance must not record again.
+  [controller() loadModel];
+  histogram_tester_.ExpectTotalCount(
+      "Search.OseSplitYahooJapan.CountOnSettingsPageLoad", 1);
 }
 
 }  // namespace

@@ -23,9 +23,11 @@
 #include "components/feed/core/v2/public/stream_type.h"
 #include "components/feed/core/v2/public/types.h"
 #include "components/variations/variations_ids_provider.h"
+#include "third_party/jni_zero/default_conversions.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "url/android/gurl_android.h"
 
-// Must come after all headers that specialize FromJniType() / ToJniType().
+// Must come after headers that provide symbols used by @JniType.
 #include "chrome/browser/feed/android/jni_headers/FeedSurfaceRendererBridge_jni.h"
 
 using base::android::JavaRef;
@@ -47,16 +49,17 @@ SurfaceId FromJavaSurfaceId(int32_t surface_id) {
 
 }  // namespace
 
-static int64_t JNI_FeedSurfaceRendererBridge_Init(
+static jni_zero::JniUniquePtr<FeedSurfaceRendererBridge>
+JNI_FeedSurfaceRendererBridge_Init(
     JNIEnv* env,
     const JavaRef<jobject>& j_this,
     Profile* profile,
     int32_t stream_kind,
     int64_t native_feed_reliability_logging_bridge) {
-  return reinterpret_cast<intptr_t>(new FeedSurfaceRendererBridge(
+  return jni_zero::MakeUnique<FeedSurfaceRendererBridge>(
       j_this, profile, stream_kind,
       reinterpret_cast<FeedReliabilityLoggingBridge*>(
-          native_feed_reliability_logging_bridge)));
+          native_feed_reliability_logging_bridge));
 }
 
 FeedSurfaceRendererBridge::FeedSurfaceRendererBridge(
@@ -84,10 +87,6 @@ FeedSurfaceRendererBridge::~FeedSurfaceRendererBridge() {
     }
     feed_stream_api_->DestroySurface(surface_id_);
   }
-}
-
-void FeedSurfaceRendererBridge::Destroy(JNIEnv* env) {
-  delete this;
 }
 
 ReliabilityLoggingBridge&
@@ -209,17 +208,15 @@ void FeedSurfaceRendererBridge::SurfaceClosed(JNIEnv* env) {
 }
 
 static void JNI_FeedSurfaceRendererBridge_ReportOpenAction(
-    JNIEnv* env,
     Profile* profile,
     int32_t surface_id,
-    const JavaRef<jobject>& j_url,
+    const GURL& url,
     const std::string& slice_id,
     int action_type) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return;
   }
-  GURL url = url::GURLAndroid::ToNativeGURL(env, j_url);
   feed_api->ReportOpenAction(url, FromJavaSurfaceId(surface_id), slice_id,
                              static_cast<OpenActionType>(action_type));
 }
@@ -238,19 +235,14 @@ static void JNI_FeedSurfaceRendererBridge_ReportOpenVisitComplete(
 }
 
 static void JNI_FeedSurfaceRendererBridge_UpdateUserProfileOnLinkClick(
-    JNIEnv* env,
     Profile* profile,
-    const base::android::JavaRef<jobject>& j_url,
-    const base::android::JavaRef<jlongArray>& entity_mids) {
+    const GURL& url,
+    const std::vector<int64_t>& entity_mids) {
   FeedApi* feed_api = GetFeedApi(profile);
   if (!feed_api) {
     return;
   }
-  GURL url = url::GURLAndroid::ToNativeGURL(env, j_url);
-  std::vector<int64_t> entities_mids_vector;
-  base::android::JavaLongArrayToInt64Vector(env, entity_mids,
-                                            &entities_mids_vector);
-  feed_api->UpdateUserProfileOnLinkClick(url, entities_mids_vector);
+  feed_api->UpdateUserProfileOnLinkClick(url, entity_mids);
 }
 
 static void JNI_FeedSurfaceRendererBridge_ReportSliceViewed(

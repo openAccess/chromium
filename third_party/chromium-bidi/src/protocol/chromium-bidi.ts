@@ -16,6 +16,7 @@
  */
 
 import type * as Cdp from './cdp.js';
+import type * as WebDriverBidiAutofill from './generated/webdriver-bidi-autofill.js';
 import type * as WebDriverBidiBluetooth from './generated/webdriver-bidi-bluetooth.js';
 import type * as WebDriverBidiSpeculation from './generated/webdriver-bidi-nav-speculation.ts';
 import type * as WebDriverBidiPermissions from './generated/webdriver-bidi-permissions.js';
@@ -143,6 +144,7 @@ export type Command = (
   | ExternalSpecCommand<WebDriverBidiBluetooth.BluetoothCommand>
   | ExternalSpecCommand<WebDriverBidiUAClientHints.UserAgentClientHintsCommand>
   | ExternalSpecCommand<WebDriverBidiDigitalCredentials.DigitalCredentials.SetVirtualWalletBehavior>
+  | ExternalSpecCommand<WebDriverBidiAutofill.AutofillCommand>
 ) & {'goog:channel'?: GoogChannel};
 
 export type CommandResponse =
@@ -160,7 +162,7 @@ export type SpeculationEvent =
 export type Event =
   WebDriverBidi.Event | Cdp.Event | BluetoothEvent | SpeculationEvent;
 
-export const EVENT_NAMES = new Set([
+export const EVENT_NAMES: Set<string> = new Set([
   // keep-sorted start
   ...Object.values(BiDiModule),
   ...Object.values(Bluetooth.EventNames),
@@ -176,6 +178,10 @@ export const EVENT_NAMES = new Set([
 export type ResultData = WebDriverBidi.ResultData | Cdp.ResultData;
 
 export type GoogChannel = string | null;
+
+export type WithGoogParams<T> = T & {
+  'goog:params'?: Record<string, unknown>;
+};
 
 export type Message = (
   WebDriverBidi.Message | Cdp.Message | BluetoothEvent | SpeculationEvent

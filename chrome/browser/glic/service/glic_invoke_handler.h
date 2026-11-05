@@ -16,6 +16,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/glic/glic_enums.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
@@ -30,6 +31,7 @@ namespace glic {
 class GlicInstanceImpl;
 
 class SequentialTaskGroup;
+enum class GlicTaskType;
 
 // Handles an invocation of Glic, parsing options and communicating with the
 // instance's host.
@@ -45,12 +47,19 @@ class GlicInvokeHandler {
 
   using ResolvedTarget = std::variant<TabSurface, Floating>;
 
-  static bool RequiresClientInvoke(const mojom::InvokeOptionsPtr& mojo_options,
+  // Returns whether the invocation described by `options` will send an invoke
+  // message to the web client, as opposed to only showing the UI. Two
+  // invocations that both require a client invoke cannot run simultaneously on
+  // the same instance.
+  static bool RequiresClientInvoke(const GlicInvokeOptions& options,
                                    bool has_auto_submit_passkey);
 
   // Resolves the target surface to a specific tab.
   static ResolvedTarget ResolveTargetSurface(Profile* profile,
                                              const Target& target);
+
+  // Returns the embedder type `resolved_target` will be shown in.
+  static EmbedderType GetEmbedderType(const ResolvedTarget& resolved_target);
 
   // `tab` must be non-nullptr.
   // `completion_callback` should be called exactly once and results in
@@ -74,9 +83,25 @@ class GlicInvokeHandler {
   // Cancels the invocation, generating an error callback.
   void Cancel(GlicInvokeError error);
 
-  void set_completion_callback(CompletionCallback completion_callback) {
-    completion_callback_ = std::move(completion_callback);
-  }
+  // Cancels the invocation because its instance is being removed for `reason`.
+  // Fails with the matching kInstanceDestroyed* error.
+  void CancelForInstanceRemoval(InstanceRemovalReason reason);
+
+  // Returns the task type of the last active task, if the invocation sequence
+  // is currently running or failed. Returns std::nullopt if no tasks have been
+  // started or if the `main_task_` is not present.
+  std::optional<GlicTaskType> GetLastActiveTaskType() const;
+
+  // Whether this invocation will send an invoke message to the web client.
+  // See RequiresClientInvoke().
+  bool requires_client_invoke() const { return requires_client_invoke_; }
+
+  // Whether this invocation is waiting (or will wait) on the user completing
+  // the FRE in the panel before it can finish.
+  bool NeedsFreCompletion() const;
+
+  // The metrics invocation ID for this invocation.
+  uint64_t invocation_id() const { return metrics_->GetInvocationId(); }
 
  private:
   bool IsFloatingTarget() const;
@@ -88,12 +113,15 @@ class GlicInvokeHandler {
   // Deletes `this`. Exactly one of these methods will be called.
   void OnSuccess();
   void OnError(GlicInvokeError error);
+  // The timeout timer fired. Ends the invocation with kTimeout, or with
+  // kSignInRequired if it spent the time waiting for the user to sign in.
+  void OnTimeout();
 
   void OnTabWillDetach(tabs::TabInterface* tab,
                        tabs::TabInterface::DetachReason reason);
-  void OnInstanceWillBeDestroyed(GlicInstance* instance);
   void OnConversationInfoChanged(const mojom::ConversationInfo& info);
   void OnActuatingChanged(bool actuating);
+  // The coordinator cancels `this` before destroying the instance.
   const base::raw_ref<GlicInstanceImpl> instance_;
   ResolvedTarget resolved_target_;
   GlicInvokeOptions options_;
@@ -101,9 +129,9 @@ class GlicInvokeHandler {
   // Calling this synchronously destroys `this`.
   GlicInvokeWithAutoSubmitOptions auto_submit_options_;
   CompletionCallback completion_callback_;
+  const bool requires_client_invoke_;
 
   bool should_wait_for_load_ = false;
-  base::CallbackListSubscription instance_destruction_subscription_;
   base::CallbackListSubscription tab_destruction_subscription_;
   base::CallbackListSubscription conversation_subscription_;
   base::CallbackListSubscription actuating_subscription_;

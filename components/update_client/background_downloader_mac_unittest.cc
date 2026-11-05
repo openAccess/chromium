@@ -4,15 +4,20 @@
 
 #include "components/update_client/background_downloader_mac.h"
 
-#include <cstring>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+#include <algorithm>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "base/barrier_closure.h"
 #include "base/check.h"
 #include "base/command_line.h"
-#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -24,6 +29,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
@@ -42,7 +48,9 @@
 #include "components/update_client/crx_downloader.h"
 #include "components/update_client/task_traits.h"
 #include "components/update_client/update_client_errors.h"
+#include "net/http/http_byte_range.h"
 #include "net/http/http_status_code.h"
+#include "net/http/http_util.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
@@ -65,13 +73,18 @@ constexpr char kSmallDownloadData[] = "Hello, World!";
 constexpr char kDownloadUrlSwitchName[] = "download-url";
 constexpr char kDownloadSessionIdSwitchName[] = "download-session-id";
 
-// Returns the lower range from a range header value.
-int ParseRangeHeader(const std::string& header) {
-  int lower_range = 0;
-  // TODO(crbug.com/40285933): Don't use sscanf.
-  EXPECT_EQ(UNSAFE_TODO(std::sscanf(header.c_str(), "bytes=%d-", &lower_range)),
-            1);
-  return lower_range;
+// Returns the first byte position of the byte range in the value of a `Range`
+// request header, e.g. 1234 for "bytes=1234-". Fails the current test and
+// returns 0 if `header` does not contain exactly one bounded or right-unbounded
+// byte range.
+size_t ParseRangeHeaderFirstBytePosition(std::string_view header) {
+  std::vector<net::HttpByteRange> ranges;
+  if (!net::HttpUtil::ParseRangeHeader(header, &ranges) || ranges.size() != 1 ||
+      !ranges[0].HasFirstBytePosition()) {
+    ADD_FAILURE() << "Unexpected Range header: " << header;
+    return 0;
+  }
+  return base::checked_cast<size_t>(ranges[0].first_byte_position());
 }
 
 const std::string GetLargeDownloadData() {
@@ -101,10 +114,13 @@ class BackgroundDownloaderTest : public testing::Test {
   }
 
   void TearDown() override {
-    background_sequence_->PostTask(
+    base::RunLoop run_loop;
+    background_sequence_->PostTaskAndReply(
         FROM_HERE,
         base::BindOnce(&BackgroundDownloaderSharedSession::InvalidateAndCancel,
-                       shared_session_));
+                       shared_session_),
+        run_loop.QuitClosure());
+    run_loop.Run();
   }
 
  protected:
@@ -161,6 +177,7 @@ class BackgroundDownloaderTest : public testing::Test {
     return test_server_->base_url().ReplaceComponents(replacements);
   }
 
+  std::unique_ptr<base::test::TaskEnvironment> environment_;
   const base::FilePath download_cache_ =
       base::CreateUniqueTempDirectoryScopedToTest();
   scoped_refptr<base::SequencedTaskRunner> background_sequence_;
@@ -169,7 +186,6 @@ class BackgroundDownloaderTest : public testing::Test {
   base::RepeatingCallback<std::unique_ptr<HttpResponse>(
       const HttpRequest& request)>
       request_handler_;
-  std::unique_ptr<base::test::TaskEnvironment> environment_;
 
  private:
   std::unique_ptr<HttpResponse> HandleRequest(const HttpRequest& request) {
@@ -182,6 +198,7 @@ class BackgroundDownloaderTest : public testing::Test {
 };
 
 // TODO(crbug.com/40939899): Disabled due to excessive flakiness.
+// Tests that `BackgroundDownloader` can download a small file.
 TEST_F(BackgroundDownloaderTest, DISABLED_SimpleDownload) {
   request_handler_ = base::BindLambdaForTesting([](const HttpRequest&) {
     std::unique_ptr<BasicHttpResponse> response =
@@ -203,15 +220,16 @@ TEST_F(BackgroundDownloaderTest, DISABLED_SimpleDownload) {
                         ExpectDownloadMetrics(
                             metrics,
                             std::to_underlying(CrxDownloaderError::NONE), 0,
-                            std::strlen(kSmallDownloadData),
-                            std::strlen(kSmallDownloadData), true);
+                            strlen(kSmallDownloadData),
+                            strlen(kSmallDownloadData), true);
                       })
                       .Then(run_loop.QuitClosure()));
   run_loop.Run();
 }
 
-// TODO(crbug.com/40939899): Disabled due to excessive flakiness.
-TEST_F(BackgroundDownloaderTest, DISABLED_DownloadDiscoveredInCache) {
+// Tests that a download is served from `download_cache_` without reaching the
+// server.
+TEST_F(BackgroundDownloaderTest, DownloadDiscoveredInCache) {
   request_handler_ = base::BindLambdaForTesting([](const HttpRequest&) {
     EXPECT_TRUE(false) << "The download server was expected to not be reached.";
     return base::WrapUnique<HttpResponse>(nullptr);
@@ -234,8 +252,8 @@ TEST_F(BackgroundDownloaderTest, DISABLED_DownloadDiscoveredInCache) {
                         ExpectDownloadMetrics(
                             metrics,
                             std::to_underlying(CrxDownloaderError::NONE), 0,
-                            std::strlen(kSmallDownloadData),
-                            std::strlen(kSmallDownloadData), false);
+                            strlen(kSmallDownloadData),
+                            strlen(kSmallDownloadData), false);
                       })
                       .Then(run_loop.QuitClosure()));
   run_loop.Run();
@@ -275,15 +293,18 @@ TEST_F(BackgroundDownloaderTest, DISABLED_ServerHangup) {
       base::BindLambdaForTesting([&](const HttpRequest& request) {
         if (request.headers.contains("Range")) {
           EXPECT_EQ(request.headers.at("If-Range"), "42");
-          int lower_range = ParseRangeHeader(request.headers.at("Range"));
+          const size_t lower_range =
+              ParseRangeHeaderFirstBytePosition(request.headers.at("Range"));
+          EXPECT_LE(lower_range, data.size());
 
           std::unique_ptr<BasicHttpResponse> response =
               std::make_unique<BasicHttpResponse>();
           response->set_code(net::HTTP_PARTIAL_CONTENT);
           response->AddCustomHeader(
-              "Content-Range", absl::StrFormat("bytes %d-%zu/%zu", lower_range,
-                                               data.size(), data.size()));
-          response->set_content(data.substr(lower_range));
+              "Content-Range", absl::StrFormat("bytes %zu-%zu/%zu", lower_range,
+                                               data.size() - 1, data.size()));
+          response->set_content(
+              data.substr(std::min(lower_range, data.size())));
           return base::WrapUnique<HttpResponse>(response.release());
         } else {
           return base::WrapUnique<HttpResponse>(
@@ -309,6 +330,8 @@ TEST_F(BackgroundDownloaderTest, DISABLED_ServerHangup) {
 }
 
 // TODO(crbug.com/40939899): Disabled due to excessive flakiness.
+// Tests that a duplicate download request fails with
+// `CrxDownloaderError::MAC_BG_DUPLICATE_DOWNLOAD`.
 TEST_F(BackgroundDownloaderTest, DISABLED_DuplicateDownload) {
   scoped_refptr<base::SequencedTaskRunner> current_task_runner =
       base::SequencedTaskRunner::GetCurrentDefault();
@@ -394,6 +417,8 @@ TEST_F(BackgroundDownloaderTest, DISABLED_ConcurrentDownloaders) {
 }
 
 // TODO(crbug.com/40939899): Disabled due to excessive flakiness.
+// Tests that exceeding the maximum number of concurrent downloads fails with
+// `CrxDownloaderError::MAC_BG_SESSION_TOO_MANY_TASKS`.
 TEST_F(BackgroundDownloaderTest, DISABLED_MaxDownloads) {
   request_handler_ = base::BindLambdaForTesting([](const HttpRequest& request) {
     return base::WrapUnique<HttpResponse>(new HungResponse());
@@ -459,39 +484,20 @@ class BackgroundDownloaderPeriodicTasksTest : public BackgroundDownloaderTest {
   }
 };
 
-// TODO(crbug.com/40939899): Disabled due to excessive flakiness.
-TEST_F(BackgroundDownloaderPeriodicTasksTest, DISABLED_CleansStaleDownloads) {
-  request_handler_ = base::BindLambdaForTesting([](const HttpRequest&) {
-    std::unique_ptr<BasicHttpResponse> response =
-        std::make_unique<BasicHttpResponse>();
-    response->set_code(net::HTTP_OK);
-    response->set_content(kSmallDownloadData);
-    response->set_content_type("text/plain");
-    return base::WrapUnique<HttpResponse>(response.release());
-  });
-
+// Tests that periodic maintenance evicts stale files from `download_cache_`.
+TEST_F(BackgroundDownloaderPeriodicTasksTest, CleansStaleDownloads) {
   ASSERT_TRUE(
       base::WriteFile(download_cache_.Append("file1"), kSmallDownloadData));
   ASSERT_TRUE(
       base::WriteFile(download_cache_.Append("file2"), kSmallDownloadData));
   environment_->FastForwardBy(base::Days(3));
 
-  base::RunLoop run_loop;
-  DoStartDownload(GetURL(),
-                  base::BindLambdaForTesting(
-                      [](bool is_handled, const CrxDownloader::Result& result,
-                         const CrxDownloader::DownloadMetrics& metrics) {})
-                      .Then(run_loop.QuitClosure()));
-  run_loop.Run();
-
-  environment_->FastForwardBy(base::Minutes(30));
-  environment_->RunUntilIdle();
-
   EXPECT_FALSE(base::PathExists(download_cache_.Append("file1")));
   EXPECT_FALSE(base::PathExists(download_cache_.Append("file2")));
 }
 
 // TODO(crbug.com/40939899): Disabled due to excessive flakiness.
+// Tests that periodic maintenance cancels downloads that make no progress.
 TEST_F(BackgroundDownloaderPeriodicTasksTest,
        DISABLED_CancelsTasksWithNoProgress) {
   request_handler_ = base::BindLambdaForTesting([](const HttpRequest&) {
@@ -570,15 +576,18 @@ TEST_F(BackgroundDownloaderCrashingClientTest, DISABLED_ClientCrash) {
       base::BindLambdaForTesting([&](const HttpRequest& request) {
         if (request.headers.contains("Range")) {
           EXPECT_EQ(request.headers.at("If-Range"), "42");
-          int lower_range = ParseRangeHeader(request.headers.at("Range"));
+          const size_t lower_range =
+              ParseRangeHeaderFirstBytePosition(request.headers.at("Range"));
+          EXPECT_LE(lower_range, data.size());
 
           std::unique_ptr<BasicHttpResponse> response =
               std::make_unique<BasicHttpResponse>();
           response->set_code(net::HTTP_PARTIAL_CONTENT);
           response->AddCustomHeader(
-              "Content-Range", absl::StrFormat("bytes %d-%zu/%zu", lower_range,
-                                               data.size(), data.size()));
-          response->set_content(data.substr(lower_range));
+              "Content-Range", absl::StrFormat("bytes %zu-%zu/%zu", lower_range,
+                                               data.size() - 1, data.size()));
+          response->set_content(
+              data.substr(std::min(lower_range, data.size())));
           return base::WrapUnique<HttpResponse>(response.release());
         } else {
           return base::WrapUnique<HttpResponse>(

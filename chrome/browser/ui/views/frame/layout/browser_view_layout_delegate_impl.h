@@ -22,8 +22,7 @@ class BrowserViewLayoutDelegateImpl : public BrowserViewLayoutDelegate {
   void operator=(const BrowserViewLayoutDelegateImpl&) = delete;
   ~BrowserViewLayoutDelegateImpl() override;
 
-  bool ShouldDrawTabStrip() const override;
-  bool ShouldDrawVerticalTabStrip() const override;
+  TabStripType GetTabStripType() const override;
   bool IsVerticalTabStripCollapsed() const override;
   bool ShouldDrawWebAppFrameToolbar() const override;
   bool GetUnframedModeEnabled() const override;
@@ -40,6 +39,7 @@ class BrowserViewLayoutDelegateImpl : public BrowserViewLayoutDelegate {
   const ImmersiveModeController* GetImmersiveModeController() const override;
   BrowserAnimationController* GetAnimationController() const override;
   ExclusiveAccessBubbleViews* GetExclusiveAccessBubble() const override;
+  OrganizerPanelLocation GetOrganizerPanelLocation() const override;
   bool IsTopControlsSlideBehaviorEnabled() const override;
   float GetTopControlsSlideBehaviorShownRatio() const override;
   gfx::NativeView GetHostViewForAnchoring() const override;
@@ -50,10 +50,10 @@ class BrowserViewLayoutDelegateImpl : public BrowserViewLayoutDelegate {
       const gfx::Rect& available_titlebar_area) override;
   bool ShouldLayoutTabStrip() const override;
   int GetExtraInfobarOffset() const override;
-  bool IsOrganizerPanelVisible() const override;
   base::CallbackListSubscription AddOnGlassModeChangedCallback(
       base::RepeatingCallback<void(bool)> callback,
       bool* current_state_out) override;
+  int GetRestoredWindowCornerRadius() const override;
 
  protected:
   BrowserView& browser_view() { return browser_view_.get(); }

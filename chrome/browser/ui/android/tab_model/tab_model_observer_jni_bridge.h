@@ -9,7 +9,6 @@
 
 #include <vector>
 
-#include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/memory/raw_ref.h"
 #include "base/observer_list.h"
@@ -18,7 +17,6 @@
 
 class TabAndroid;
 class TabModel;
-class TabAndroid;
 
 namespace base {
 class Token;
@@ -40,69 +38,59 @@ class TabModelObserverJniBridge {
 
   ~TabModelObserverJniBridge();
 
-  void Destroy(JNIEnv* env);
-
   // The following functions are called by JNI.
 
-  void DidSelectTab(JNIEnv* env, TabAndroid* tab, int type, int last_id);
+  void DidSelectTab(TabAndroid* tab);
 
-  void WillCloseTabs(JNIEnv* env,
-                     const std::vector<TabAndroid*>& tabs,
+  void WillCloseTabs(const std::vector<TabAndroid*>& tabs,
                      bool is_all_tabs,
                      bool allow_undo);
 
-  void WillCloseTab(JNIEnv* env, TabAndroid* tab);
+  void WillCloseTab(TabAndroid* tab);
 
-  void DidRemoveTabForClosure(JNIEnv* env, TabAndroid* tab);
+  void DidRemoveTabForClosure(TabAndroid* tab);
 
-  void OnFinishingTabClosure(JNIEnv* env, TabAndroid* tab, int source);
+  void OnFinishingTabClosure(TabAndroid* tab, int source);
 
-  void OnFinishingMultipleTabClosure(JNIEnv* env,
-                                     const std::vector<TabAndroid*>& tabs,
+  void OnFinishingMultipleTabClosure(const std::vector<TabAndroid*>& tabs,
                                      bool can_restore);
 
-  void OnTabCloseCommitted(JNIEnv* env,
-                           const std::vector<TabAndroid*>& tabs,
+  void OnTabCloseCommitted(const std::vector<TabAndroid*>& tabs,
                            bool is_all_tabs,
                            bool can_restore,
                            int source);
 
-  void WillAddTab(JNIEnv* env, TabAndroid* tab, int type);
+  void DidAddTab(TabAndroid* tab, int type, int index);
 
-  void DidAddTab(JNIEnv* env, TabAndroid* tab, int type, int index);
+  void DidMoveTab(TabAndroid* tab, int new_index, int cur_index);
 
-  void DidMoveTab(JNIEnv* env, TabAndroid* tab, int new_index, int cur_index);
+  void OnTabClosePending(const std::vector<TabAndroid*>& tabs);
 
-  void OnTabClosePending(JNIEnv* env,
-                         const std::vector<TabAndroid*>& tabs,
-                         int source);
+  void TabClosureUndone(TabAndroid* tab, int index);
 
-  void TabClosureUndone(JNIEnv* env, TabAndroid* tab, int index);
-
-  void OnTabCloseUndone(JNIEnv* env,
-                        const std::vector<TabAndroid*>& tabs,
+  void OnTabCloseUndone(const std::vector<TabAndroid*>& tabs,
                         const std::vector<int>& indices);
 
-  void OnTabsSelectionChanged(JNIEnv* env);
+  void OnTabsSelectionChanged();
 
-  void TabClosureCommitted(JNIEnv* env, TabAndroid* tab);
+  void TabClosureCommitted(TabAndroid* tab);
 
-  void AllTabsClosureCommitted(JNIEnv* env);
+  void AllTabsClosureCommitted();
 
-  void AllTabsAreClosing(JNIEnv* env);
+  void AllTabsAreClosing();
 
-  void TabRemoved(JNIEnv* env, TabAndroid* tab);
+  void TabRemoved(TabAndroid* tab);
 
-  void OnTabGroupCreated(JNIEnv* env, base::Token group_id);
+  void OnTabGroupCreated(base::Token group_id);
 
-  void OnTabGroupRemoving(JNIEnv* env, base::Token group_id);
+  void OnTabGroupRemoving(base::Token group_id);
 
-  void OnTabGroupMoved(JNIEnv* env, base::Token group_id, int old_index);
+  void OnTabGroupMoved(base::Token group_id);
 
-  void OnTabGroupVisualsChanged(JNIEnv* env, base::Token group_id);
+  void OnTabGroupVisualsChanged(base::Token group_id);
 
-  void OnWillActiveStateChange(JNIEnv* env, TabModel* tab_model, bool active);
-  void OnDidActiveStateChange(JNIEnv* env, TabModel* tab_model, bool active);
+  void OnWillActiveStateChange(TabModel* tab_model, bool active);
+  void OnDidActiveStateChange(TabModel* tab_model, bool active);
 
   void AddObserver(TabModelObserver* observer);
   void AddTabListInterfaceObserver(TabListInterfaceObserver* observer);

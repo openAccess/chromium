@@ -81,13 +81,18 @@ if (is_win) {
     testonly = true
     sources = [
       "chrome_crash_reporter_client_win_unittest.cc",
+      "chrome_main_delegate_win_unittest.cc",
       "exit_code_watcher_win_unittest.cc",
     ]
     deps = [
       ":exit_code_watcher",
+      ":test_support",
       "//base",
       "//base/test:test_support",
       "//chrome/chrome_elf:crash",
+      "//chrome/common:non_code_constants",
+      "//components/version_info",
+      "//testing/gmock",
       "//testing/gtest",
     ]
   }
@@ -112,9 +117,11 @@ if (is_android) {
   java_strings_grd_prebuilt("branded_resources_grd") {
     generating_target = ":branded_strings"
   }
+
   java_strings_grd_prebuilt("generated_resources_grd") {
     generating_target = ":generated_resources"
   }
+
   java_group("java_strings_grd") {
     public_deps = [
       ":branded_resources_grd",
@@ -137,7 +144,9 @@ grit_strings("branded_strings") {
 static_library("test_support") {
   testonly = true
   visibility = [
+    ":win_unit_tests",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_suite",
     "//chrome/test/base/chromeos/crosier:test_support",
   ]
 
@@ -196,23 +205,40 @@ static_library("test_support") {
 
   if (is_mac) {
     sources += [
+      "chrome_crash_reporter_client.cc",
+      "chrome_crash_reporter_client_mac.mm",
       "chrome_main_mac.h",
       "chrome_main_mac.mm",
     ]
 
     deps += [
+      "//build:branding_buildflags",
       "//chrome/browser:chrome_browser_application_mac",
       "//chrome/browser/mac",
+      "//chrome/common:non_code_constants",
+      "//chrome/installer/util:with_no_strings",
+      "//components/crash/core/common",
+      "//components/metrics:client_info",
+      "//components/policy:generated",
+      "//components/version_info",
     ]
 
     data_deps = [ "//chrome:chrome_framework" ]
   }
 
   if (is_win) {
+    sources += [
+      "chrome_crash_reporter_client_win.cc",
+      "chrome_crash_reporter_client_win.h",
+    ]
     deps += [
       "//chrome/browser/win/isolated_browser:isolated_browser_support",
+      "//chrome/chrome_elf:constants",
       "//chrome/chrome_elf:test_stubs",
       "//chrome/install_static:install_static_util",
+      "//components/crash/core/common",
+      "//components/metrics:client_info",
+      "//components/version_info",
       "//sandbox/win:sandbox",
     ]
   }
@@ -248,4 +274,38 @@ static_library("test_support") {
   if (is_chrome_for_testing) {
     deps += [ "//chrome/browser/chrome_for_testing:browser" ]
   }
+}
+
+if (!is_android) {
+  source_set("browser_tests") {
+    testonly = true
+    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+    sources = [ "chrome_main_delegate_browsertest.cc" ]
+    deps = [
+      "//base",
+      "//base/test:test_support",
+      "//chrome/test:test_support",
+      "//components/metrics:content",
+      "//content/test:test_support",
+      "//testing/gtest",
+      "//third_party/abseil-cpp:absl",
+    ]
+  }
+}
+
+source_set("unit_tests") {
+  testonly = true
+
+  # llvm_profile_util.cc is otherwise only compiled directly into the chrome
+  # executable targets in //chrome/BUILD.gn, so compile it here too.
+  sources = [
+    "llvm_profile_util.cc",
+    "llvm_profile_util.h",
+    "llvm_profile_util_unittest.cc",
+  ]
+  deps = [
+    "//base",
+    "//build/config/compiler:compiler_buildflags",
+    "//testing/gtest",
+  ]
 }

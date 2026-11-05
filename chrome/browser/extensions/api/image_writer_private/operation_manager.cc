@@ -14,12 +14,14 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/api/image_writer_private/destroy_partitions_operation.h"
 #include "chrome/browser/extensions/api/image_writer_private/error_constants.h"
+#include "chrome/browser/extensions/api/image_writer_private/features.h"
 #include "chrome/browser/extensions/api/image_writer_private/operation.h"
 #include "chrome/browser/extensions/api/image_writer_private/write_from_file_operation.h"
 #include "chrome/browser/extensions/api/image_writer_private/write_from_url_operation.h"
 #include "chrome/browser/extensions/event_router_forwarder.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/common/chrome_features.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
 #include "extensions/browser/api/extensions_api_client.h"
@@ -35,6 +37,17 @@
 namespace image_writer_api = extensions::api::image_writer_private;
 
 namespace extensions {
+
+template <>
+bool BrowserContextKeyedAPIFactory<image_writer::OperationManager>::
+    ServiceIsCreatedWithBrowserContext() const {
+  if (base::FeatureList::IsEnabled(features::kLazyKeyedServiceInstantiation) &&
+      features::kLazyKeyedServiceInstantiationExtensionsApi.Get()) {
+    return false;
+  }
+  return true;
+}
+
 namespace image_writer {
 
 using content::BrowserThread;
@@ -61,6 +74,12 @@ void OperationManager::StartWriteFromUrl(
     const std::string& hash,
     const std::string& device_path,
     Operation::StartWriteCallback callback) {
+#if BUILDFLAG(IS_ANDROID)
+  if (!base::FeatureList::IsEnabled(kImageWriterPrivateAndroid)) {
+    std::move(callback).Run(false, error::kUnsupportedOperation);
+    return;
+  }
+#endif
 #if BUILDFLAG(IS_CHROMEOS)
   // Chrome OS can only support a single operation at a time.
   if (operations_.size() > 0) {
@@ -95,6 +114,12 @@ void OperationManager::StartWriteFromFile(
     const base::FilePath& path,
     const std::string& device_path,
     Operation::StartWriteCallback callback) {
+#if BUILDFLAG(IS_ANDROID)
+  if (!base::FeatureList::IsEnabled(kImageWriterPrivateAndroid)) {
+    std::move(callback).Run(false, error::kUnsupportedOperation);
+    return;
+  }
+#endif
 #if BUILDFLAG(IS_CHROMEOS)
   // Chrome OS can only support a single operation at a time.
   if (operations_.size() > 0) {
@@ -133,6 +158,12 @@ void OperationManager::DestroyPartitions(
     const ExtensionId& extension_id,
     const std::string& device_path,
     Operation::StartWriteCallback callback) {
+#if BUILDFLAG(IS_ANDROID)
+  if (!base::FeatureList::IsEnabled(kImageWriterPrivateAndroid)) {
+    std::move(callback).Run(false, error::kUnsupportedOperation);
+    return;
+  }
+#endif
   auto existing_operation = operations_.find(extension_id);
 
   if (existing_operation != operations_.end()) {
@@ -151,28 +182,30 @@ void OperationManager::DestroyPartitions(
 void OperationManager::OnProgress(const ExtensionId& extension_id,
                                   image_writer_api::Stage stage,
                                   int progress) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   image_writer_api::ProgressInfo info;
   info.stage = stage;
   info.percent_complete = progress;
 
-  auto args(image_writer_api::OnWriteProgress::Create(info));
-  std::unique_ptr<Event> event(new Event(
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      image_writer_api::OnWriteProgress::Create(info));
+  auto event = std::make_unique<Event>(
       events::IMAGE_WRITER_PRIVATE_ON_WRITE_PROGRESS,
-      image_writer_api::OnWriteProgress::kEventName, std::move(args)));
+      image_writer_api::OnWriteProgress::kEventName, std::move(event_args));
 
   EventRouter::Get(browser_context_)
       ->DispatchEventToExtension(extension_id, std::move(event));
 }
 
 void OperationManager::OnComplete(const ExtensionId& extension_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
-  auto args(image_writer_api::OnWriteComplete::Create());
-  std::unique_ptr<Event> event(new Event(
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      image_writer_api::OnWriteComplete::Create());
+  auto event = std::make_unique<Event>(
       events::IMAGE_WRITER_PRIVATE_ON_WRITE_COMPLETE,
-      image_writer_api::OnWriteComplete::kEventName, std::move(args)));
+      image_writer_api::OnWriteComplete::kEventName, std::move(event_args));
 
   EventRouter::Get(browser_context_)
       ->DispatchEventToExtension(extension_id, std::move(event));
@@ -184,7 +217,7 @@ void OperationManager::OnError(const ExtensionId& extension_id,
                                image_writer_api::Stage stage,
                                int progress,
                                const std::string& error_message) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   image_writer_api::ProgressInfo info;
 
   DLOG(ERROR) << "ImageWriter error: " << error_message;
@@ -192,10 +225,11 @@ void OperationManager::OnError(const ExtensionId& extension_id,
   info.stage = stage;
   info.percent_complete = progress;
 
-  auto args(image_writer_api::OnWriteError::Create(info, error_message));
-  std::unique_ptr<Event> event(
-      new Event(events::IMAGE_WRITER_PRIVATE_ON_WRITE_ERROR,
-                image_writer_api::OnWriteError::kEventName, std::move(args)));
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      image_writer_api::OnWriteError::Create(info, error_message));
+  auto event = std::make_unique<Event>(
+      events::IMAGE_WRITER_PRIVATE_ON_WRITE_ERROR,
+      image_writer_api::OnWriteError::kEventName, std::move(event_args));
 
   EventRouter::Get(browser_context_)
       ->DispatchEventToExtension(extension_id, std::move(event));
@@ -224,6 +258,8 @@ Operation* OperationManager::GetOperation(const ExtensionId& extension_id) {
 void OperationManager::DeleteOperation(const ExtensionId& extension_id) {
   auto existing_operation = operations_.find(extension_id);
   if (existing_operation != operations_.end()) {
+    existing_operation->second->PostTask(
+        base::BindOnce(&Operation::Cancel, existing_operation->second));
     operations_.erase(existing_operation);
   }
 }
@@ -236,7 +272,8 @@ void OperationManager::OnExtensionUnloaded(
 }
 
 void OperationManager::OnShutdown(ExtensionRegistry* registry) {
-  DCHECK(extension_registry_observation_.IsObservingSource(registry));
+  CHECK(extension_registry_observation_.IsObservingSource(registry),
+        base::NotFatalUntil::M161);
   extension_registry_observation_.Reset();
 }
 
@@ -245,7 +282,8 @@ void OperationManager::OnBackgroundHostClose(const ExtensionId& extension_id) {
 }
 
 void OperationManager::OnProcessManagerShutdown(ProcessManager* manager) {
-  DCHECK(process_manager_observation_.IsObservingSource(manager));
+  CHECK(process_manager_observation_.IsObservingSource(manager),
+        base::NotFatalUntil::M161);
   process_manager_observation_.Reset();
 }
 

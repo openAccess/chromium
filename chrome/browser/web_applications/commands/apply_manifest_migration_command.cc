@@ -41,7 +41,7 @@
 #include "components/sync/protocol/web_app_specifics.pb.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/browser/uninstall_result_code.h"
-#include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace web_app {
 
@@ -112,8 +112,6 @@ ApplyManifestMigrationCommand::~ApplyManifestMigrationCommand() = default;
 void ApplyManifestMigrationCommand::StartWithLock(
     std::unique_ptr<AllAppsLock> lock) {
   all_apps_lock_ = std::move(lock);
-
-  CHECK(base::FeatureList::IsEnabled(blink::features::kWebAppMigrationApi));
 
   // Exit early if the source app cannot be migrated to a different app.
   if (!all_apps_lock_->registrar().AppMatches(
@@ -351,7 +349,7 @@ void ApplyManifestMigrationCommand::AppUninstalledCompleteMigration(
                                apps::LaunchContainer::kLaunchContainerWindow,
                                // Note: This is overridden with the web app
                                // config, as per kOverrideWithWebAppConfig.
-                               WindowOpenDisposition::NEW_WINDOW,
+                               ui::mojom::WindowOpenDisposition::kNewWindow,
                                apps::LaunchSource::kFromMigration);
   LaunchWebAppWindowSetting launch_setting =
       LaunchWebAppWindowSetting::kOverrideWithWebAppConfig;

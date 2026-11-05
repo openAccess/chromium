@@ -7,6 +7,7 @@
 #include "build/build_config.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
+#include "extensions/buildflags/buildflags.h"
 #include "url/origin.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -63,7 +64,7 @@ bool ChromeCameraPanTiltZoomPermissionContextDelegate::
 
   extensions::KioskDelegate* const kiosk_delegate =
       extensions::ExtensionsBrowserClient::Get()->GetKioskDelegate();
-  DCHECK(kiosk_delegate);
+  CHECK(kiosk_delegate, base::NotFatalUntil::M161);
 
   if (!extension ||
       !extension->permissions_data()->HasAPIPermission(

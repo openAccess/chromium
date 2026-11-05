@@ -39,6 +39,7 @@ static_library("backend") {
     "//components/permissions",
     "//components/qr_code_generator",
     "//content/public/browser",
+    "//ui/base/mojom",
     "//ui/display",
     "//ui/gfx",
     "//ui/views",
@@ -46,10 +47,6 @@ static_library("backend") {
     "//ui/web_dialogs",
     "//url",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("unit_tests") {
@@ -71,7 +68,6 @@ source_set("unit_tests") {
     "//ash/webui/shimless_rma/mojom",
     "//base",
     "//base/test:test_support",
-    "//chromeos/ash/components:test_support",
     "//chromeos/ash/components/dbus:test_support",
     "//chromeos/ash/components/dbus/rmad",
     "//chromeos/ash/components/dbus/rmad:rmad_proto",

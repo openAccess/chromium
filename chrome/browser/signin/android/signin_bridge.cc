@@ -38,7 +38,7 @@ void SigninBridge::StartAddAccountFlow(TabAndroid* tab,
 void SigninBridge::OpenAccountManagementScreen(
     ui::WindowAndroid* window,
     signin::GAIAServiceType service_type) {
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M162);
   JNIEnv* env = base::android::AttachCurrentThread();
   Java_SigninBridge_openAccountManagementScreen(env, window->GetJavaObject(),
                                                 static_cast<int>(service_type));
@@ -71,15 +71,18 @@ void SigninBridge::OpenAccountPickerBottomSheetForExtensions(
       env, tab->GetJavaObject(), continue_url, account_id, extension_name);
 }
 
-void SigninBridge::StartUpdateCredentialsFlow(TabAndroid* tab,
-                                              const GURL& continue_url,
-                                              const CoreAccountId& account_id) {
+void SigninBridge::StartUpdateCredentialsFlow(
+    TabAndroid* tab,
+    const GURL& continue_url,
+    const CoreAccountId& account_to_reauth,
+    const CoreAccountId& target_account_id) {
   if (!tab) {
     return;
   }
   JNIEnv* env = base::android::AttachCurrentThread();
   Java_SigninBridge_startUpdateCredentialsFlow(env, tab->GetJavaObject(),
-                                               continue_url, account_id);
+                                               continue_url, account_to_reauth,
+                                               target_account_id);
 }
 
 void SigninBridge::WaitForCookiesAndRedirect(TabAndroid* tab,

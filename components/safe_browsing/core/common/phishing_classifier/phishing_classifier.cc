@@ -40,11 +40,12 @@ PhishingClassifier::~PhishingClassifier() {
 
 Scorer* PhishingClassifier::GetScorer() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-#if BUILDFLAG(IS_IOS)
-  return scorer_;
-#else
-  return ScorerStorage::GetInstance()->GetScorer();
+#if !BUILDFLAG(IS_IOS)
+  if (!has_explicit_scorer_) {
+    return ScorerStorage::GetInstance()->GetScorer();
+  }
 #endif
+  return scorer_;
 }
 
 bool PhishingClassifier::is_ready() const {
@@ -52,12 +53,11 @@ bool PhishingClassifier::is_ready() const {
   return !!GetScorer();
 }
 
-#if BUILDFLAG(IS_IOS)
 void PhishingClassifier::set_scorer(Scorer* scorer) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   scorer_ = scorer;
+  has_explicit_scorer_ = true;
 }
-#endif
 
 void PhishingClassifier::SetClientSideDetectionType(
     std::optional<safe_browsing::ClientSideDetectionType> request_type) {
@@ -92,14 +92,15 @@ void PhishingClassifier::BeginClassificationInternal(
   classification_url_ = url;
   image_ = image;
 
+  // The classification verdict can surface a warning to the user, so the
+  // (cheap) visual feature extraction must not be queued behind long-running
+  // `BEST_EFFORT` tasks, which can delay it by tens of seconds.
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE,
-      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+      {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
        base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
-      base::BindOnce(
-          static_cast<std::unique_ptr<VisualFeatures> (*)(const SkBitmap&)>(
-              &visual_utils::ExtractVisualFeatures),
-          image_.AsBitmap()),
+      base::BindOnce(&visual_utils::ExtractVisualFeatures,
+                     visual_utils::GetBitmapForVisualFeatures(image_)),
       base::BindOnce(&PhishingClassifier::OnVisualFeaturesExtracted,
                      weak_factory_.GetWeakPtr()));
 }

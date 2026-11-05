@@ -16,7 +16,6 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/i18n/time_formatting.h"
-#include "base/memory/raw_ref.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringize_macros.h"
@@ -57,7 +56,6 @@
 #include "ui/display/util/gpu_info_util.h"
 #include "ui/gfx/buffer_usage_util.h"
 #include "ui/gfx/gpu_extra_info.h"
-#include "ui/gl/gpu_switching_manager.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "base/win/windows_version.h"
@@ -149,9 +147,6 @@ base::ListValue GetBasicGpuInfo(const gpu::GPUInfo& gpu_info,
   basic_info.Append(display::BuildGpuInfoEntry(
       "AMD switchable", base::Value(gpu_info.amd_switchable)));
 #if BUILDFLAG(IS_WIN)
-  basic_info.Append(
-      display::BuildGpuInfoEntry("Desktop compositing", "Aero Glass"));
-
   basic_info.Append(display::BuildGpuInfoEntry(
       "Direct composition",
       base::Value(gpu_info.overlay_info.direct_composition)));
@@ -208,8 +203,6 @@ base::ListValue GetBasicGpuInfo(const gpu::GPUInfo& gpu_info,
                                                gpu_info.pixel_shader_version));
   basic_info.Append(display::BuildGpuInfoEntry("Vertex shader version",
                                                gpu_info.vertex_shader_version));
-  basic_info.Append(display::BuildGpuInfoEntry("Max. MSAA samples",
-                                               gpu_info.max_msaa_samples));
   basic_info.Append(display::BuildGpuInfoEntry("Machine model name",
                                                gpu_info.machine_model_name));
   basic_info.Append(display::BuildGpuInfoEntry("Machine model version",
@@ -567,15 +560,6 @@ base::ListValue GetVideoAcceleratorsInfo() {
   gpu::GPUInfo gpu_info = GpuDataManagerImpl::GetInstance()->GetGPUInfo();
   base::ListValue info;
 
-  struct {
-    const raw_ref<const gpu::VideoDecodeAcceleratorSupportedProfiles>
-        capabilities;
-    std::string name;
-  } kVideoDecoderImplementations[] = {
-      {raw_ref(gpu_info.video_decode_accelerator_supported_profiles),
-       "Decoding"},
-  };
-
   info.Append(display::BuildGpuInfoEntry("Decoding", ""));
   for (const auto& profile :
        gpu_info.video_decode_accelerator_supported_profiles) {
@@ -634,10 +618,8 @@ base::Value GetDawnInfo() {
 // This class receives javascript messages from the renderer.
 // Note that the WebUI infrastructure runs on the UI thread, therefore all of
 // this class's methods are expected to run on the UI thread.
-class GpuMessageHandler
-    : public WebUIMessageHandler,
-      public GpuDataManagerObserver,
-      public ui::GpuSwitchingObserver {
+class GpuMessageHandler : public WebUIMessageHandler,
+                          public GpuDataManagerObserver {
  public:
   GpuMessageHandler();
 
@@ -678,7 +660,7 @@ GpuMessageHandler::~GpuMessageHandler() {
 
 /* BrowserBridge.callAsync prepends a requestID to these messages. */
 void GpuMessageHandler::RegisterMessages() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   web_ui()->RegisterMessageCallback(
       "getGpuInfo", base::BindRepeating(&GpuMessageHandler::HandleGetGpuInfo,
@@ -717,13 +699,19 @@ void GpuMessageHandler::HandleGetLogMessages(const base::ListValue& args) {
 
 void GpuMessageHandler::HandleGetGpuInfo(const base::ListValue& args) {
   CHECK_EQ(1U, args.size());
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   AllowJavascript();
 
   // Tell GpuDataManager it should have full GpuInfo. If the
   // Gpu process has not run yet, this will trigger its launch.
+  uint32_t request = GpuDataManagerImpl::kGpuInfoRequestAll;
+  if (WebContents* web_contents = web_ui()->GetWebContents();
+      web_contents &&
+      web_contents->GetLastCommittedURL().query().contains("skip-dawn-info")) {
+    request &= ~GpuDataManagerImpl::kGpuInfoRequestDawnInfo;
+  }
   GpuDataManagerImpl::GetInstance()->RequestGpuInfoIfNeeded(
-      GpuDataManagerImpl::kGpuInfoRequestAll,
+      static_cast<GpuDataManagerImpl::GpuInfoRequest>(request),
       /*delayed=*/false);
 
   // Send current snapshot of gpu info. Any future updates will be communicated
@@ -733,7 +721,7 @@ void GpuMessageHandler::HandleGetGpuInfo(const base::ListValue& args) {
 }
 
 base::DictValue GpuMessageHandler::GetClientInfo() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   base::DictValue dict;
 
@@ -776,7 +764,7 @@ base::DictValue GpuMessageHandler::GetClientInfo() {
 }
 
 base::ListValue GpuMessageHandler::GetLogMessages() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   return GpuDataManagerImpl::GetInstance()->GetLogMessages();
 }

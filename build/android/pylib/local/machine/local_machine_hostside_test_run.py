@@ -43,6 +43,13 @@ LOGCAT_FILTERS = [
     'StrictMode:D',
 ]
 
+_TRADEFED_CONFIG_PATH = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__),
+        'local_machine_hostside_tradefed_config.xml',
+    )
+)
+
 
 @dataclasses.dataclass
 class _Job:
@@ -78,11 +85,7 @@ class LocalMachineHostsideTestRun(test_run.TestRun):
             self.webview_context = webview_app.UseWebViewProvider(
                 self.device, self._test_instance.use_webview_provider
             )
-            # Pylint is not smart enough to realize that this field has
-            # an __enter__ method, and will complain loudly.
-            # pylint: disable=no-member
             self.webview_context.__enter__()
-            # pylint: enable=no-member
 
     @staticmethod
     def _ApplyExternalSharding(tests, shard_index, total_shards):
@@ -100,21 +103,20 @@ class LocalMachineHostsideTestRun(test_run.TestRun):
         return tests[shard_index::total_shards]
 
     def _MakeModeArgs(self):
-        if self._test_instance.instant_mode:
-            mode_args = [
-                '--module-parameter',
-                'INSTANT_APP',
-            ]
-        else:
-            mode_args = [
-                '--exclude-filter',
-                f'{self.TestPackage()}[instant]',
-            ]
-        return mode_args
+        return [
+            '--exclude-filter',
+            f'{self.TestPackage()}[instant]',
+        ]
 
     def _MakeEnv(self):
         return dict(
             os.environ,
+            # Bypass ATS console to run Tradefed directly in-process and ensure
+            # environment variables (e.g. DISABLE_CLEARCUT) are inherited.
+            USE_ATS='false',
+            # Disable Tradefed Clearcut usage metrics to avoid remote
+            # network calls.
+            DISABLE_CLEARCUT='1',
             PATH=':'.join(
                 [
                     os.getenv('PATH'),
@@ -144,7 +146,6 @@ class LocalMachineHostsideTestRun(test_run.TestRun):
                         [
                             '--exclude-filter',
                             self.TestPackage()
-                            + '[instant]' * self._test_instance.instant_mode
                             + ' '
                             + '#'.join(exclude_filter.rsplit('.', 1)),
                         ]
@@ -155,7 +156,6 @@ class LocalMachineHostsideTestRun(test_run.TestRun):
                         [
                             '--include-filter',
                             self.TestPackage()
-                            + '[instant]' * self._test_instance.instant_mode
                             + ' '
                             + '#'.join(include_filter.rsplit('.', 1)),
                         ]
@@ -167,6 +167,8 @@ class LocalMachineHostsideTestRun(test_run.TestRun):
                 'run',
                 'commandAndExit',
                 'cts',
+                '--template:map',
+                f'reporters={_TRADEFED_CONFIG_PATH}',
             ]
             + self._MakeModeArgs()
             + filter_args
@@ -201,10 +203,7 @@ class LocalMachineHostsideTestRun(test_run.TestRun):
             filter_args.extend(
                 [
                     '--include-filter',
-                    self.TestPackage()
-                    + '[instant]' * self._test_instance.instant_mode
-                    + ' '
-                    + test,
+                    self.TestPackage() + ' ' + test,
                 ]
             )
 
@@ -223,16 +222,7 @@ class LocalMachineHostsideTestRun(test_run.TestRun):
                 '--max-testcase-run-count',
                 str(self._test_instance.max_tries),
                 '--template:map',
-                f'''reporters={
-                    (
-                        os.path.abspath(
-                            os.path.join(
-                                os.path.dirname(__file__),
-                                'local_machine_hostside_tradefed_config.xml',
-                            )
-                        )
-                    )
-                }''',
+                f'reporters={_TRADEFED_CONFIG_PATH}',
             ]
         )
 
@@ -271,11 +261,7 @@ class LocalMachineHostsideTestRun(test_run.TestRun):
                 if archive_logcat is not None:
                     archive_logcat.__exit__(None, None, None)
                 archive_logcat = self._ArchiveLogcat(self.device, current_test)
-                # Pylint is not smart enough to realize that this field has
-                # an __enter__ method, and will complain loudly.
-                # pylint: disable=no-member
                 archive_logcat.__enter__()
-                # pylint: enable=no-member
             else:
                 log_lines.append(line)
                 if _TEST_END_RE.match(line) and current_test:
@@ -288,11 +274,7 @@ class LocalMachineHostsideTestRun(test_run.TestRun):
 
         sys.stdout.flush()
         if archive_logcat is not None:
-            # Pylint is not smart enough to realize that this field has
-            # an __exit__ method, and will complain loudly.
-            # pylint: disable=no-member
             archive_logcat.__exit__(None, None, None)
-            # pylint: enable=no-member
 
         result_list = []
         if json_results_path:
@@ -330,11 +312,7 @@ class LocalMachineHostsideTestRun(test_run.TestRun):
     # override
     def TearDown(self):
         if self._test_instance.use_webview_provider:
-            # Pylint is not smart enough to realize that this field has
-            # an __exit__ method, and will complain loudly.
-            # pylint: disable=no-member
             self.webview_context.__exit__(*sys.exc_info())
-            # pylint: enable=no-member
 
     @contextlib.contextmanager
     def _ArchiveLogcat(self, device, test_name):

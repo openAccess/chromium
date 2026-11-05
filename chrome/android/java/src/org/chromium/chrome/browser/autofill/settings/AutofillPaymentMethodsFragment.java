@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.autofill.settings;
 
 import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.chrome.browser.autofill.AutofillClientProviderUtils.isPlatformAutofillEnabledForProfile;
 
 import android.content.Context;
 import android.graphics.PorterDuff;
@@ -30,20 +31,18 @@ import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.autofill.AndroidAutofillAvailabilityStatus;
-import org.chromium.chrome.browser.autofill.AutofillClientProviderUtils;
 import org.chromium.chrome.browser.autofill.AutofillEditorBase;
 import org.chromium.chrome.browser.autofill.AutofillImageFetcherFactory;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils;
 import org.chromium.chrome.browser.autofill.GoogleWalletLauncher;
 import org.chromium.chrome.browser.autofill.PersonalDataManager;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.CreditCard;
-import org.chromium.chrome.browser.autofill.PersonalDataManager.Iban;
 import org.chromium.chrome.browser.autofill.PersonalDataManagerFactory;
 import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsFragment;
 import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsReferrer;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
 import org.chromium.chrome.browser.device_reauth.BiometricStatus;
+import org.chromium.chrome.browser.device_reauth.DeviceAuthAvailabilityCheckerBridge;
 import org.chromium.chrome.browser.device_reauth.DeviceAuthSource;
 import org.chromium.chrome.browser.device_reauth.ReauthenticatorBridge;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -57,6 +56,7 @@ import org.chromium.components.autofill.IbanRecordType;
 import org.chromium.components.autofill.ImageSize;
 import org.chromium.components.autofill.MandatoryReauthAuthenticationFlowEvent;
 import org.chromium.components.autofill.VirtualCardEnrollmentState;
+import org.chromium.components.autofill.payments.Iban;
 import org.chromium.components.browser_ui.modaldialog.AppModalPresenter;
 import org.chromium.components.browser_ui.settings.CardWithButtonPreference;
 import org.chromium.components.browser_ui.settings.ChromeBasePreference;
@@ -67,7 +67,6 @@ import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.payments.AndroidPaymentAppFactory;
-import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogType;
 import org.chromium.ui.text.ChromeClickableSpan;
@@ -108,8 +107,6 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
 
     static final String MANDATORY_REAUTH_EDIT_CARD_HISTOGRAM =
             "Autofill.PaymentMethods.MandatoryReauth.AuthEvent.SettingsPage.EditCard";
-    static final String VIEWED_CARDS_WITHOUT_EXISTING_CARDS_HISTOGRAM =
-            "Autofill.PaymentMethodsSettingsPage.CardsViewedWithoutExistingCards";
     static final String MANDATORY_REAUTH_OPT_IN_HISTOGRAM =
             "Autofill.PaymentMethods.MandatoryReauth.OptChangeEvent.SettingsPage.OptIn";
     static final String MANDATORY_REAUTH_OPT_OUT_HISTOGRAM =
@@ -124,11 +121,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
 
     @Override
     public void onCreatePreferences(@Nullable Bundle savedInstanceState, @Nullable String rootKey) {
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)) {
-            mPageTitle.set(getString(R.string.autofill_payments_title));
-        } else {
-            mPageTitle.set(getString(R.string.autofill_payment_methods));
-        }
+        mPageTitle.set(getString(R.string.autofill_payments_title));
 
         requireActivity()
                 .addMenuProvider(new AutofillHelpMenuProvider(this), this, Lifecycle.State.RESUMED);
@@ -169,7 +162,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         getPreferenceScreen().removeAll();
         getPreferenceScreen().setOrderingAsAdded(true);
 
-        boolean disabledSettings = disabledSettingsInThirdPartyMode(getProfile());
+        boolean disabledSettings = isPlatformAutofillEnabledForProfile(getProfile());
 
         if (disabledSettings) {
             // Add the information string at the top.
@@ -184,7 +177,8 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
             disabledSettingsInfoPref.setOnButtonClick(
                     () -> {
                         SettingsNavigation settingsNavigation =
-                                SettingsNavigationFactory.createSettingsNavigation();
+                                SettingsNavigationFactory.createSettingsNavigation(
+                                        getPreferenceManager().getContext());
                         settingsNavigation.startSettings(
                                 getPreferenceManager().getContext(),
                                 AutofillOptionsFragment.class,
@@ -232,9 +226,8 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                                 ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT);
 
         if (shouldShowManagePix(personalDataManager, getProfile())) {
-            Preference pixFinancialAccountsPref = new Preference(getStyledContext());
+            Preference pixFinancialAccountsPref = new ChromeBasePreference(getStyledContext());
             pixFinancialAccountsPref.setKey(PREF_FINANCIAL_ACCOUNTS_MANAGEMENT);
-            pixFinancialAccountsPref.setSingleLineTitle(false);
             pixFinancialAccountsPref.setTitle(
                     getResources().getString(R.string.settings_manage_pix_title));
             pixFinancialAccountsPref.setSummary(
@@ -244,9 +237,8 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                     this::showOtherFinancialAccountsFragment);
         }
         if (shouldShowManageNonCardPayment(getProfile(), hasEwallets, showA2aToggle)) {
-            Preference nonCardPaymentMethodsPref = new Preference(getStyledContext());
+            Preference nonCardPaymentMethodsPref = new ChromeBasePreference(getStyledContext());
             nonCardPaymentMethodsPref.setKey(PREF_NON_CARD_PAYMENT_METHODS_MANAGEMENT);
-            nonCardPaymentMethodsPref.setSingleLineTitle(false);
             nonCardPaymentMethodsPref.setTitle(
                     getResources()
                             .getString(R.string.settings_manage_non_card_payment_methods_title));
@@ -259,9 +251,8 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
             getPreferenceScreen().addPreference(nonCardPaymentMethodsPref);
         }
         if (shouldShowOtherFinanceAccounts(getProfile(), hasEwallets, hasPixAccounts)) {
-            Preference otherFinancialAccountsPref = new Preference(getStyledContext());
+            Preference otherFinancialAccountsPref = new ChromeBasePreference(getStyledContext());
             otherFinancialAccountsPref.setKey(PREF_FINANCIAL_ACCOUNTS_MANAGEMENT);
-            otherFinancialAccountsPref.setSingleLineTitle(false);
             otherFinancialAccountsPref.setTitle(
                     getFacilitatedPaymentsTitleString(getContext(), hasEwallets, hasPixAccounts));
             otherFinancialAccountsPref.setSummary(
@@ -273,6 +264,8 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
 
         // The ReauthenticatorBridge is always needed for reauthentication to view/edit
         // payment methods.
+        // TODO(crbug.com/574399005): Instantiate the reauthenticator bridge only if biometric
+        // authentication is available/required.
         createReauthenticatorBridge();
 
         // TODO(crbug.com/40261690): Confirm with Product on the order of the toggles.
@@ -280,8 +273,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
             createMandatoryReauthSwitch();
         }
 
-        ChromeSwitchPreference saveCvcSwitch =
-                new ChromeSwitchPreference(getStyledContext(), null);
+        ChromeSwitchPreference saveCvcSwitch = new ChromeSwitchPreference(getStyledContext(), null);
         saveCvcSwitch.setTitle(R.string.autofill_settings_page_enable_cvc_storage_label);
         saveCvcSwitch.setSummary(R.string.autofill_settings_page_enable_cvc_storage_sublabel);
         saveCvcSwitch.setKey(PREF_SAVE_CVC);
@@ -291,8 +283,8 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                 personalDataManager.isAutofillPaymentMethodsEnabled() && !disabledSettings);
         saveCvcSwitch.setOnPreferenceChangeListener(
                 (preference, newValue) -> {
-                        personalDataManager.setAutofillPaymentCvcStorage((boolean) newValue);
-                        return true;
+                    personalDataManager.setAutofillPaymentCvcStorage((boolean) newValue);
+                    return true;
                 });
         getPreferenceScreen().addPreference(saveCvcSwitch);
 
@@ -311,7 +303,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         }
 
         if (shouldShowCardBenefitsPref(personalDataManager, getProfile())) {
-            Preference cardBenefitsPref = new Preference(getStyledContext());
+            Preference cardBenefitsPref = new ChromeBasePreference(getStyledContext());
             cardBenefitsPref.setTitle(R.string.autofill_settings_page_card_benefits_label);
             cardBenefitsPref.setSummary(
                     R.string.autofill_settings_page_card_benefits_preference_summary);
@@ -321,7 +313,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         }
 
         if (shouldShowBnplPref(personalDataManager, getProfile())) {
-            Preference buyNowPayLaterPref = new Preference(getStyledContext());
+            Preference buyNowPayLaterPref = new ChromeBasePreference(getStyledContext());
             buyNowPayLaterPref.setTitle(R.string.autofill_bnpl_settings_label);
             buyNowPayLaterPref.setKey(PREF_BUY_NOW_PAY_LATER);
             buyNowPayLaterPref.setFragment(AutofillBuyNowPayLaterFragment.class.getName());
@@ -329,11 +321,9 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         }
 
         for (CreditCard card : personalDataManager.getCreditCardsForSettings()) {
-            // Add a preference for the credit card.
-            Preference cardPref = new Preference(getStyledContext());
-            // Make the card_pref multi-line, since cards with long nicknames won't fit on a
-            // single line.
-            cardPref.setSingleLineTitle(false);
+            // Add a preference for the credit card. It's multi-line to support cards with long
+            // nicknames.
+            Preference cardPref = new ChromeBasePreference(getStyledContext());
             cardPref.setTitle(card.getCardLabel());
 
             // Show virtual card enabled status for enrolled cards, expiration date otherwise.
@@ -374,9 +364,8 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
 
         // Display all IBANs.
         for (Iban iban : personalDataManager.getIbansForSettings()) {
-            Preference ibanPref = new Preference(getStyledContext());
+            Preference ibanPref = new ChromeBasePreference(getStyledContext());
             ibanPref.setIcon(R.drawable.iban_icon);
-            ibanPref.setSingleLineTitle(false);
             ibanPref.setTitle(iban.getLabel());
             ibanPref.setSummary(iban.getNickname());
             if (iban.getRecordType() == IbanRecordType.LOCAL_IBAN) {
@@ -409,18 +398,16 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                             .getString(R.string.autofill_create_first_credit_card_button_text));
             addFirstCardPref.setOnButtonClick(
                     () ->
-                            SettingsNavigationFactory.createSettingsNavigation()
+                            SettingsNavigationFactory.createSettingsNavigation(requireActivity())
                                     .startSettings(
-                                            getActivity(),
+                                            requireActivity(),
                                             AutofillLocalCardEditor.class,
                                             /* fragmentArgs= */ null,
                                             /* addToBackStack= */ true));
             getPreferenceScreen().addPreference(addFirstCardPref);
-            RecordHistogram.recordBooleanHistogram(
-                    VIEWED_CARDS_WITHOUT_EXISTING_CARDS_HISTOGRAM, true);
         }
         if (shouldShowAddCardPref(personalDataManager, getProfile())) {
-            Preference addCardPref = new Preference(getStyledContext());
+            Preference addCardPref = new ChromeBasePreference(getStyledContext());
             Drawable plusIcon = ApiCompatibilityUtils.getDrawable(getResources(), R.drawable.plus);
             plusIcon.mutate();
             plusIcon.setColorFilter(
@@ -431,17 +418,12 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
             addCardPref.setFragment(AutofillLocalCardEditor.class.getName());
             addCardPref.setKey(PREF_ADD_CARD);
             getPreferenceScreen().addPreference(addCardPref);
-            // TODO: crbug.com/392952237 - Update histogram when feature flag is
-            // being cleaned up.
-            RecordHistogram.recordBooleanHistogram(
-                    VIEWED_CARDS_WITHOUT_EXISTING_CARDS_HISTOGRAM,
-                    personalDataManager.getCreditCardsForSettings().isEmpty());
         }
 
         // Add 'Add IBAN' button. Tapping it brings up the IBAN editor which allows users to
         // type in a new IBAN.
         if (shouldShowAddIbanPref(personalDataManager, getProfile())) {
-            Preference addIbanPref = new Preference(getStyledContext());
+            Preference addIbanPref = new ChromeBasePreference(getStyledContext());
             Drawable plusIcon = ApiCompatibilityUtils.getDrawable(getResources(), R.drawable.plus);
             plusIcon.mutate();
             plusIcon.setColorFilter(
@@ -455,7 +437,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         }
 
         // Add the link to payment apps only after the credit card list is rebuilt.
-        Preference paymentAppsPref = new Preference(getStyledContext());
+        Preference paymentAppsPref = new ChromeBasePreference(getStyledContext());
         paymentAppsPref.setTitle(R.string.payment_apps_title);
         paymentAppsPref.setFragment(AndroidPaymentAppsFragment.class.getCanonicalName());
         paymentAppsPref.setShouldDisableView(true);
@@ -464,7 +446,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         refreshPaymentAppsPrefForAndroidPaymentApps(paymentAppsPref);
 
         // Add the link to manage loyalty cards.
-        Preference loyaltyCardsPref = new Preference(getStyledContext());
+        Preference loyaltyCardsPref = new ChromeBasePreference(getStyledContext());
         loyaltyCardsPref.setTitle(R.string.payment_methods_settings_loyalty_cards_title);
         loyaltyCardsPref.setSummary(R.string.payment_methods_settings_loyalty_cards_description);
         loyaltyCardsPref.setKey(PREF_LOYALTY_CARDS);
@@ -507,11 +489,16 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         // party mode.
         // `getBiometricAvailabilityStatus` also checks if screen lock is available and returns
         // `ONLY_LSKF_AVAILABLE` if it is.
+        boolean isDeviceLockSetUp =
+                ChromeFeatureList.isEnabled(ChromeFeatureList.DEVICE_REAUTH_REFACTOR)
+                        ? DeviceAuthAvailabilityCheckerBridge.getBiometricAvailabilityStatus()
+                                != BiometricStatus.UNAVAILABLE
+                        : assumeNonNull(mReauthenticatorBridge).getBiometricAvailabilityStatus()
+                                != BiometricStatus.UNAVAILABLE;
         boolean enableReauthSwitch =
                 personalDataManager.isAutofillPaymentMethodsEnabled()
-                        && (assumeNonNull(mReauthenticatorBridge).getBiometricAvailabilityStatus()
-                                != BiometricStatus.UNAVAILABLE)
-                        && !disabledSettingsInThirdPartyMode(getProfile());
+                        && isDeviceLockSetUp
+                        && !isPlatformAutofillEnabledForProfile(getProfile());
         mandatoryReauthSwitch.setEnabled(enableReauthSwitch);
         mandatoryReauthSwitch.setOnPreferenceChangeListener(this::onMandatoryReauthSwitchToggled);
         getPreferenceScreen().addPreference(mandatoryReauthSwitch);
@@ -527,7 +514,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         // updated and is in sync with the mandatory reauth user pref.
         mandatoryReauthSwitch.setChecked(
                 personalDataManager.isPaymentMethodsMandatoryReauthEnabled()
-                        && !disabledSettingsInThirdPartyMode(getProfile()));
+                        && !isPlatformAutofillEnabledForProfile(getProfile()));
     }
 
     private void createWalletReminderNoticePreference() {
@@ -540,28 +527,11 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                                 CustomTabActivity.showInfoPage(
                                         getActivity(),
                                         AutofillPaymentMethodsConstants.WALLET_SETTINGS_URL));
-        ChromeClickableSpan paymentMethodsLink =
-                new ChromeClickableSpan(
-                        getContext(),
-                        view ->
-                                CustomTabActivity.showInfoPage(
-                                        getActivity(),
-                                        AutofillPaymentMethodsConstants
-                                                .WALLET_PAYMENT_METHODS_URL));
-        ChromeClickableSpan passesLink =
-                new ChromeClickableSpan(
-                        getContext(),
-                        view ->
-                                CustomTabActivity.showInfoPage(
-                                        getActivity(),
-                                        AutofillPaymentMethodsConstants.WALLET_PASSES_URL));
 
         SpannableString summary =
                 SpanApplier.applySpans(
                         getString(R.string.autofill_payment_methods_wallet_reminder_notice),
-                        new SpanApplier.SpanInfo("<link1>", "</link1>", dataAndPrivacyLink),
-                        new SpanApplier.SpanInfo("<link2>", "</link2>", paymentMethodsLink),
-                        new SpanApplier.SpanInfo("<link3>", "</link3>", passesLink));
+                        new SpanApplier.SpanInfo("<link>", "</link>", dataAndPrivacyLink));
         noticePref.setSummary(summary);
         noticePref.setKey(PREF_WALLET_REMINDER_NOTICE);
         noticePref.setDividerAllowedAbove(false);
@@ -611,8 +581,8 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                 histogramName,
                 MandatoryReauthAuthenticationFlowEvent.FLOW_STARTED,
                 MandatoryReauthAuthenticationFlowEvent.MAX_VALUE + 1);
-        // We require user authentication every time user tries to change this
-        // preference. Set useLastValidAuth=false to skip the grace period.
+        // We require user authentication every time user tries to change this preference. Set
+        // useLastValidAuth=false to skip the grace period.
         assertNonNull(mReauthenticatorBridge);
         mReauthenticatorBridge.reauthenticate(
                 success -> {
@@ -622,8 +592,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                         PersonalDataManagerFactory.getForProfile(getProfile())
                                 .setAutofillPaymentMethodsMandatoryReauth((boolean) newValue);
 
-                        // When the preference is updated, the page is expected to refresh
-                        // and show
+                        // When the preference is updated, the page is expected to refresh and show
                         // the updated preference. Fallback if the page does not load.
                         mandatoryReauthSwitch.setChecked(userIntendedState);
                         RecordHistogram.recordEnumeratedHistogram(
@@ -637,10 +606,10 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                                 MandatoryReauthAuthenticationFlowEvent.MAX_VALUE + 1);
                     }
                 });
-        // Returning false here holds the toggle to still display the old value while
-        // waiting for biometric auth. Once biometric is completed (either succeed or
-        // fail), OnResume will reload the page with the pref value, which will switch
-        // to the new value if biometric auth succeeded.
+        // Returning false here holds the toggle to still display the old value while waiting
+        // for biometric auth. Once biometric is completed (either succeed or fail), OnResume
+        // will reload the page with the pref value, which will switch to the new value if
+        // biometric auth succeeded.
         return false;
     }
 
@@ -693,9 +662,9 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
      */
     private void showLocalCardEditPage(Preference preference) {
         SettingsNavigation settingsNavigation =
-                SettingsNavigationFactory.createSettingsNavigation();
+                SettingsNavigationFactory.createSettingsNavigation(requireActivity());
         settingsNavigation.startSettings(
-                getActivity(),
+                requireActivity(),
                 AutofillLocalCardEditor.class,
                 preference.getExtras(),
                 /* addToBackStack= */ true);
@@ -774,9 +743,9 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                 FinancialAccountsManagementFragment.TITLE_KEY,
                 String.valueOf(preference.getTitle()));
         SettingsNavigation settingsNavigation =
-                SettingsNavigationFactory.createSettingsNavigation();
+                SettingsNavigationFactory.createSettingsNavigation(requireActivity());
         settingsNavigation.startSettings(
-                getActivity(),
+                requireActivity(),
                 FinancialAccountsManagementFragment.class,
                 args,
                 /* addToBackStack= */ true);
@@ -786,7 +755,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
     /** Show the page for managing non-card payment methods. */
     private boolean showNonCardPaymentMethodsManagementFragment(Preference preference) {
         SettingsNavigation settingsNavigation =
-                SettingsNavigationFactory.createSettingsNavigation();
+                SettingsNavigationFactory.createSettingsNavigation(getActivity());
         settingsNavigation.startSettings(
                 getActivity(),
                 NonCardPaymentMethodsManagementFragment.class,
@@ -819,6 +788,10 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
     @Override
     public void onDestroy() {
         super.onDestroy();
+        if (mAutofillPaymentMethodsDelegate != null) {
+            mAutofillPaymentMethodsDelegate.cleanup();
+            mAutofillPaymentMethodsDelegate = null;
+        }
         if (mReauthenticatorBridge != null) {
             mReauthenticatorBridge.destroy();
             mReauthenticatorBridge = null;
@@ -830,23 +803,12 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         return SettingsFragment.AnimationType.PROPERTY;
     }
 
-    @Override
-    public @Nullable String getMainMenuKey() {
-        return "autofill_payment_methods";
-    }
-
-    private static boolean disabledSettingsInThirdPartyMode(Profile profile) {
-        return (AutofillClientProviderUtils.getAndroidAutofillFrameworkAvailability(
-                                UserPrefs.get(profile))
-                        == AndroidAutofillAvailabilityStatus.AVAILABLE);
-    }
-
     static boolean shouldShowManagePix(PersonalDataManager manager, Profile profile) {
         // Feature flag + hasPixAccounts + !disabledSettings
         return ChromeFeatureList.isEnabled(
                         ChromeFeatureList.AUTOFILL_ENABLE_SEPARATE_PIX_PREFERENCE_ITEM)
                 && manager.getMaskedBankAccounts().length != 0
-                && !disabledSettingsInThirdPartyMode(profile);
+                && !isPlatformAutofillEnabledForProfile(profile);
     }
 
     private static boolean shouldShowManageNonCardPayment(
@@ -855,7 +817,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         return ChromeFeatureList.isEnabled(
                         ChromeFeatureList.AUTOFILL_ENABLE_SEPARATE_PIX_PREFERENCE_ITEM)
                 && (hasEwallets || showA2aToggle)
-                && !disabledSettingsInThirdPartyMode(profile);
+                && !isPlatformAutofillEnabledForProfile(profile);
     }
 
     static boolean shouldShowOtherFinanceAccounts(
@@ -864,7 +826,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         return !ChromeFeatureList.isEnabled(
                         ChromeFeatureList.AUTOFILL_ENABLE_SEPARATE_PIX_PREFERENCE_ITEM)
                 && (hasEwallets || hasPixAccounts)
-                && !disabledSettingsInThirdPartyMode(profile);
+                && !isPlatformAutofillEnabledForProfile(profile);
     }
 
     private static boolean shouldShowMandatoryReauthSwitch() {
@@ -875,31 +837,31 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
 
     private static boolean shouldShowCardBenefitsPref(
             PersonalDataManager manager, Profile profile) {
-        return !disabledSettingsInThirdPartyMode(profile)
+        return !isPlatformAutofillEnabledForProfile(profile)
                 && manager.isAutofillPaymentMethodsEnabled();
     }
 
     static boolean shouldShowBnplPref(PersonalDataManager manager, Profile profile) {
-        return !disabledSettingsInThirdPartyMode(profile)
+        return !isPlatformAutofillEnabledForProfile(profile)
                 && manager.isAutofillPaymentMethodsEnabled()
                 && manager.shouldShowBnplSettings();
     }
 
     private static boolean shouldShowAddFirstCardPref(
             PersonalDataManager manager, Profile profile) {
-        return !disabledSettingsInThirdPartyMode(profile)
+        return !isPlatformAutofillEnabledForProfile(profile)
                 && manager.isAutofillPaymentMethodsEnabled()
                 && manager.getCreditCardsForSettings().isEmpty();
     }
 
     private static boolean shouldShowAddCardPref(PersonalDataManager manager, Profile profile) {
-        return !disabledSettingsInThirdPartyMode(profile)
+        return !isPlatformAutofillEnabledForProfile(profile)
                 && manager.isAutofillPaymentMethodsEnabled()
                 && !manager.getCreditCardsForSettings().isEmpty();
     }
 
     private static boolean shouldShowAddIbanPref(PersonalDataManager manager, Profile profile) {
-        return !disabledSettingsInThirdPartyMode(profile)
+        return !isPlatformAutofillEnabledForProfile(profile)
                 && manager.isAutofillPaymentMethodsEnabled()
                 && manager.shouldShowAddIbanButtonOnSettingsPage();
     }
@@ -933,7 +895,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                                     && ChromeFeatureList.isEnabled(
                                             ChromeFeatureList
                                                     .FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT);
-                    if (disabledSettingsInThirdPartyMode(profile)) {
+                    if (isPlatformAutofillEnabledForProfile(profile)) {
                         indexData.addEntryForKey(
                                 frag,
                                 DISABLED_SETTINGS_INFO,
@@ -1036,7 +998,11 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                                 frag, PREF_ADD_IBAN, R.string.autofill_add_local_iban);
                     }
                     indexData.addEntryForKey(
-                            frag, PREF_PAYMENT_APPS, R.string.payment_apps_title, 0);
+                            frag,
+                            PREF_PAYMENT_APPS,
+                            R.string.payment_apps_title,
+                            0,
+                            AndroidPaymentAppsFragment.class.getName());
                     indexData.addEntryForKey(
                             frag,
                             PREF_LOYALTY_CARDS,

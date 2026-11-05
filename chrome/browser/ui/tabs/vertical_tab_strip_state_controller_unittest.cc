@@ -2,22 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
-
 #include <optional>
 
 #include "base/test/metrics/user_action_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
-#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
 #include "chrome/browser/ui/tabs/test_vertical_tab_strip_state_controller_delegate.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
+#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller_impl.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/common/pref_names.h"
 #include "components/pref_registry/pref_registry_syncable.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -51,7 +49,6 @@ class VerticalTabStripStateControllerTest : public testing::Test {
 
   void SetUp() override {
     testing::Test::SetUp();
-    feature_list_.InitAndEnableFeature(tabs::kVerticalTabsExpandOnHover);
     tabs::RegisterProfilePrefs(pref_service_.registry());
     SessionID test_session_id = SessionID::FromSerializedValue(kSessionIDValue);
 
@@ -61,8 +58,8 @@ class VerticalTabStripStateControllerTest : public testing::Test {
         .WillRepeatedly(testing::ReturnRef(browser_window_features_));
 
     // Action items like CollapseActionItem are tested in interactive ui tests.
-    controller_ = std::make_unique<VerticalTabStripStateController>(
-        &mock_browser_window_interface_, &pref_service_,
+    controller_ = std::make_unique<VerticalTabStripStateControllerImpl>(
+        mock_browser_window_interface_, &pref_service_,
         /*root_action_item=*/nullptr,
         /*session_service=*/nullptr, test_session_id,
         /*restored_state_collapsed=*/std::nullopt,
@@ -83,7 +80,6 @@ class VerticalTabStripStateControllerTest : public testing::Test {
   }
 
  protected:
-  base::test::ScopedFeatureList feature_list_;
   std::unique_ptr<TestVerticalTabStripStateControllerDelegate> delegate_;
   std::unique_ptr<VerticalTabStripStateController> controller_;
   sync_preferences::TestingPrefServiceSyncable pref_service_;
@@ -203,10 +199,10 @@ TEST_F(VerticalTabStripStateControllerTest, Resizing) {
           },
           &call_count, &is_resizing));
 
-  EXPECT_FALSE(controller()->is_resizing());
+  EXPECT_FALSE(controller()->IsResizing());
 
   controller()->SetIsResizing(true);
-  EXPECT_TRUE(controller()->is_resizing());
+  EXPECT_TRUE(controller()->IsResizing());
   EXPECT_TRUE(is_resizing);
   EXPECT_EQ(1, call_count);
 
@@ -215,7 +211,7 @@ TEST_F(VerticalTabStripStateControllerTest, Resizing) {
   EXPECT_EQ(1, call_count);
 
   controller()->SetIsResizing(false);
-  EXPECT_FALSE(controller()->is_resizing());
+  EXPECT_FALSE(controller()->IsResizing());
   EXPECT_FALSE(is_resizing);
   EXPECT_EQ(2, call_count);
 }

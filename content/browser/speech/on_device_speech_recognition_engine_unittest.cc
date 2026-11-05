@@ -130,8 +130,6 @@ TEST(OnDeviceSpeechRecognitionEngine, Reinitialization) {
   feature_config.set_feature(
       optimization_guide::proto::MODEL_EXECUTION_FEATURE_COMPOSE);
   config->feature_config = mojo_base::ProtoWrapper(feature_config);
-  config->text_safety_config = mojo_base::ProtoWrapper(
-      optimization_guide::proto::FeatureTextSafetyConfiguration());
   config->model_versions = mojo_base::ProtoWrapper(
       optimization_guide::proto::OnDeviceModelVersions());
 
@@ -223,8 +221,6 @@ TEST(OnDeviceSpeechRecognitionEngine, LanguagePropagation) {
   feature_config.set_feature(
       optimization_guide::proto::MODEL_EXECUTION_FEATURE_COMPOSE);
   config->feature_config = mojo_base::ProtoWrapper(feature_config);
-  config->text_safety_config = mojo_base::ProtoWrapper(
-      optimization_guide::proto::FeatureTextSafetyConfiguration());
   config->model_versions = mojo_base::ProtoWrapper(
       optimization_guide::proto::OnDeviceModelVersions());
 
@@ -271,8 +267,6 @@ TEST(OnDeviceSpeechRecognitionEngine, EmptyLanguagePropagation) {
   feature_config.set_feature(
       optimization_guide::proto::MODEL_EXECUTION_FEATURE_COMPOSE);
   config->feature_config = mojo_base::ProtoWrapper(feature_config);
-  config->text_safety_config = mojo_base::ProtoWrapper(
-      optimization_guide::proto::FeatureTextSafetyConfiguration());
   config->model_versions = mojo_base::ProtoWrapper(
       optimization_guide::proto::OnDeviceModelVersions());
 
@@ -334,6 +328,32 @@ TEST(OnDeviceSpeechRecognitionEngine, NullDelegateOnResponseAndDisconnect) {
 
   // AudioChunksEnded with nullptr delegate_ should not crash.
   engine.AudioChunksEnded();
+}
+
+TEST(OnDeviceSpeechRecognitionEngine, TimestampsPropagation) {
+  BrowserTaskEnvironment task_environment;
+  MockSpeechRecognitionEngineDelegate delegate;
+  OnDeviceSpeechRecognitionEngine engine(SpeechRecognitionSessionConfig{});
+  engine.set_delegate(&delegate);
+
+  EXPECT_CALL(delegate, OnSpeechRecognitionEngineResults(testing::_))
+      .WillOnce(
+          [](const std::vector<media::mojom::WebSpeechRecognitionResultPtr>&
+                 results) {
+            ASSERT_EQ(results.size(), 1u);
+            EXPECT_EQ(results[0]->audio_start_time, base::Seconds(1.0));
+            EXPECT_EQ(results[0]->audio_end_time, base::Seconds(2.5));
+          });
+
+  std::vector<on_device_model::mojom::SpeechRecognitionResultPtr> results;
+  auto r = on_device_model::mojom::SpeechRecognitionResult::New();
+  r->transcript = "hello";
+  r->is_final = true;
+  r->audio_start_time = base::Seconds(1.0);
+  r->audio_end_time = base::Seconds(2.5);
+  results.push_back(std::move(r));
+
+  engine.OnResponse(std::move(results));
 }
 
 }  // namespace content

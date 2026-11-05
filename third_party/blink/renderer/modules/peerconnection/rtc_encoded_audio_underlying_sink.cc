@@ -4,14 +4,26 @@
 
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_audio_underlying_sink.h"
 
+#include <utility>
+
+#include "base/check.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/threading/thread_checker.h"
 #include "base/unguessable_token.h"
+#include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoded_audio_frame.h"
-#include "third_party/blink/renderer/core/dom/dom_exception.h"
+#include "third_party/blink/renderer/core/streams/underlying_sink_base.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
 #include "third_party/blink/renderer/modules/peerconnection/rtc_encoded_audio_frame.h"
+#include "third_party/blink/renderer/modules/peerconnection/rtc_rtp_sender_encoded_source.h"
+#include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/bindings/script_state.h"
+#include "third_party/blink/renderer/platform/heap/visitor.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_encoded_audio_stream_transformer.h"
-#include "third_party/webrtc/api/frame_transformer_interface.h"
+#include "third_party/webrtc/api/encoded_audio_frame_injector_interface.h"
 
 namespace blink {
 
@@ -25,6 +37,17 @@ RTCEncodedAudioUnderlyingSink::RTCEncodedAudioUnderlyingSink(
                                     detach_frame_data_on_write,
                                     /*enable_frame_restrictions=*/false,
                                     base::UnguessableToken::Null()) {}
+
+RTCEncodedAudioUnderlyingSink::RTCEncodedAudioUnderlyingSink(
+    ScriptState* script_state,
+    scoped_refptr<webrtc::EncodedAudioFrameInjectorInterface> frame_injector,
+    RTCRtpSenderEncodedSource* encoded_source,
+    bool detach_frame_data_on_write)
+    : frame_injector_(std::move(frame_injector)),
+      encoded_source_(encoded_source),
+      detach_frame_data_on_write_(detach_frame_data_on_write),
+      enable_frame_restrictions_(false),
+      owner_id_(base::UnguessableToken::Null()) {}
 
 RTCEncodedAudioUnderlyingSink::RTCEncodedAudioUnderlyingSink(
     ScriptState* script_state,
@@ -69,7 +92,7 @@ ScriptPromise<IDLUndefined> RTCEncodedAudioUnderlyingSink::write(
 
   last_received_frame_counter_ = encoded_frame->Counter();
 
-  if (!transformer_broker_) {
+  if (!transformer_broker_ && !frame_injector_) {
     exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
                                       "Stream closed");
     return EmptyPromise();
@@ -83,7 +106,11 @@ ScriptPromise<IDLUndefined> RTCEncodedAudioUnderlyingSink::write(
     return EmptyPromise();
   }
 
-  transformer_broker_->SendFrameToSink(std::move(webrtc_frame));
+  if (transformer_broker_) {
+    transformer_broker_->SendFrameToSink(std::move(webrtc_frame));
+  } else if (frame_injector_) {
+    frame_injector_->InjectFrame(std::move(webrtc_frame));
+  }
   return ToResolvedUndefinedPromise(script_state);
 }
 
@@ -91,9 +118,9 @@ ScriptPromise<IDLUndefined> RTCEncodedAudioUnderlyingSink::close(
     ScriptState* script_state,
     ExceptionState&) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  // Disconnect from the transformer if the sink is closed.
-  if (transformer_broker_)
-    transformer_broker_.reset();
+  // Disconnect from the transformer/injector if the sink is closed.
+  transformer_broker_.reset();
+  frame_injector_.reset();
   return ToResolvedUndefinedPromise(script_state);
 }
 
@@ -109,10 +136,13 @@ ScriptPromise<IDLUndefined> RTCEncodedAudioUnderlyingSink::abort(
 
 void RTCEncodedAudioUnderlyingSink::ResetTransformerCallback() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  transformer_broker_->ResetTransformerCallback();
+  if (transformer_broker_) {
+    transformer_broker_->ResetTransformerCallback();
+  }
 }
 
 void RTCEncodedAudioUnderlyingSink::Trace(Visitor* visitor) const {
+  visitor->Trace(encoded_source_);
   UnderlyingSinkBase::Trace(visitor);
 }
 

@@ -10,6 +10,7 @@
 
 #import "base/test/bind.h"
 #import "base/test/mock_callback.h"
+#import "base/test/scoped_feature_list.h"
 #import "base/test/test_future.h"
 #import "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
 #import "components/autofill/core/browser/test_utils/autofill_test_util.h"
@@ -19,6 +20,7 @@
 #import "components/autofill/core/common/unique_ids.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_bridge.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_factory.h"
+#import "components/autofill/ios/browser/autofill_driver_ios_factory_test_api.h"
 #import "components/autofill/ios/browser/autofill_java_script_feature.h"
 #import "components/autofill/ios/browser/test_autofill_client_ios.h"
 #import "components/autofill/ios/common/features.h"
@@ -40,8 +42,14 @@
 - (void)setFetchFormsCompletionHandler:
     (base::RepeatingCallback<void(FormFetchCompletion)>)handler;
 - (const std::string&)lastScrolledFrameId;
+- (const std::string&)lastFilledFrameId;
 @property(nonatomic, assign) autofill::FieldRendererId lastScrolledField;
 @property(nonatomic, assign) int formsSeenRunCount;
+@property(nonatomic, assign) autofill::FieldRendererId lastFilledField;
+@property(nonatomic, assign) std::u16string lastFilledValue;
+@property(nonatomic, assign)
+    autofill::mojom::FieldActionType lastFilledActionType;
+@property(nonatomic, assign) int fillSpecificFormFieldRunCount;
 
 @end
 
@@ -49,12 +57,14 @@
   std::vector<autofill::FormData> _forms;
   base::RepeatingCallback<void(FormFetchCompletion)> _fetchHandler;
   std::string _lastScrolledFrameId;
+  std::string _lastFilledFrameId;
 }
 
 - (instancetype)init {
   if ((self = [super init])) {
     _forms = {};
     _formsSeenRunCount = 0;
+    _fillSpecificFormFieldRunCount = 0;
   }
   return self;
 }
@@ -76,6 +86,11 @@
                     withValue:(const std::u16string)value
                    actionType:(autofill::mojom::FieldActionType)actionType
                       inFrame:(web::WebFrame*)frame {
+  _lastFilledField = field;
+  _lastFilledValue = value;
+  _lastFilledActionType = actionType;
+  _lastFilledFrameId = frame ? frame->GetFrameId() : "";
+  _fillSpecificFormFieldRunCount++;
 }
 - (void)handleParsedForms:
             (const std::vector<raw_ref<const autofill::FormStructure>>&)forms
@@ -100,6 +115,9 @@
 - (const std::string&)lastScrolledFrameId {
   return _lastScrolledFrameId;
 }
+- (const std::string&)lastFilledFrameId {
+  return _lastFilledFrameId;
+}
 - (void)fetchFormsFiltered:(std::optional<std::u16string>)formNameFilter
                    inFrame:(web::WebFrame*)frame
          completionHandler:(FormFetchCompletion)completionHandler {
@@ -120,6 +138,13 @@ using testing::Eq;
 using testing::Optional;
 using testing::Property;
 
+// Origin of the frames used in tests.
+constexpr char kTestFrameOrigin[] = "https://example.com";
+// ID of a frame that is never registered in the frames manager.
+constexpr char kUnregisteredFrameId[] = "22222222222222222222222222222222";
+// Name of the form looked up by `FetchFormsFilteredByName`.
+constexpr char16_t kTestFormName[] = u"form";
+
 class AutofillDriverIOSTest : public web::WebTest {
  protected:
   void SetUp() override {
@@ -128,7 +153,7 @@ class AutofillDriverIOSTest : public web::WebTest {
     OverrideJavaScriptFeatures(
         {autofill::AutofillJavaScriptFeature::GetInstance()});
 
-    GURL url("https://example.com");
+    GURL url(kTestFrameOrigin);
     web_state_.SetCurrentURL(url);
     web_state_.SetBrowserState(GetBrowserState());
     web_state_.SetContentIsHTML(true);
@@ -172,6 +197,14 @@ class AutofillDriverIOSTest : public web::WebTest {
   AutofillDriverIOS* main_frame_driver() { return main_frame_driver_; }
   AutofillDriverIOS* iframe_driver() { return iframe_driver_; }
   FakeAutofillDriverIOSBridge* bridge() { return test_bridge_; }
+
+  // Returns the driver of `frame`, which isn't registered in the frames
+  // manager, so that the driver's `web_frame()` is null, as it is once the
+  // driver's frame is gone.
+  AutofillDriverIOS* DriverForUnregisteredFrame(web::WebFrame* frame) {
+    return test_api(autofill_client_->GetAutofillDriverFactory())
+        .DriverForFrame(frame);
+  }
 
   FormData MakeForm(bool main_frame) {
     FormGlobalId form_id{main_frame ? main_frame_driver()->GetFrameToken()
@@ -380,7 +413,8 @@ TEST_F(AutofillDriverIOSTest, TriggerFormExtractionInAllFrames_Success) {
   [bridge() setForms:bridge_result];
 
   base::test::TestFuture<bool> future;
-  main_frame_driver()->TriggerFormExtractionInAllFrames(future.GetCallback());
+  main_frame_driver()->TriggerFormExtractionInAllFrames(/*force=*/false,
+                                                        future.GetCallback());
 
   EXPECT_TRUE(future.Get());
   // Forms seen should be notified for both frames since bridge returns forms.
@@ -397,9 +431,112 @@ TEST_F(AutofillDriverIOSTest, TriggerFormExtractionInAllFrames_Failure) {
   [bridge() setFetchFormsCompletionHandler:std::move(callback)];
 
   base::test::TestFuture<bool> future;
-  main_frame_driver()->TriggerFormExtractionInAllFrames(future.GetCallback());
+  main_frame_driver()->TriggerFormExtractionInAllFrames(/*force=*/false,
+                                                        future.GetCallback());
 
   EXPECT_FALSE(future.Get());
+}
+
+// Tests that `FetchFormsFilteredByName` runs its completion with `std::nullopt`
+// when the driver's frame is gone, so that callers querying suggestion
+// availability don't stall.
+TEST_F(AutofillDriverIOSTest, FetchFormsFilteredByName_NoWebFrame) {
+  std::unique_ptr<web::FakeWebFrame> unregistered_frame =
+      web::FakeWebFrame::Create(kUnregisteredFrameId, /*is_main_frame=*/false,
+                                GURL(kTestFrameOrigin));
+  AutofillDriverIOS* driver =
+      DriverForUnregisteredFrame(unregistered_frame.get());
+  ASSERT_TRUE(driver);
+  ASSERT_FALSE(driver->web_frame());
+
+  base::test::TestFuture<std::optional<std::vector<FormData>>> future;
+  driver->FetchFormsFilteredByName(kTestFormName, future.GetCallback());
+
+  // Without a frame there is nothing to wait for: the completion must run
+  // synchronously.
+  ASSERT_TRUE(future.IsReady())
+      << "The completion handler did not run synchronously.";
+  EXPECT_EQ(future.Get(), std::nullopt);
+}
+
+// Test that `ApplyFieldAction` directly calls bridge when the frame has not
+// been registered in the router's form forest and the feature is enabled.
+TEST_F(AutofillDriverIOSTest, ApplyFieldActionFallbackWhenFrameNotRegistered) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kAutofillSupportContentEditableIos);
+
+  FieldRendererId field_id(123);
+  FieldGlobalId field_global_id{main_frame_driver()->GetFrameToken(), field_id};
+  std::u16string test_value = u"test_val";
+
+  main_frame_driver()->ApplyFieldAction(
+      mojom::FieldActionType::kReplaceSelectionForAtMemory,
+      mojom::ActionPersistence::kFill, field_global_id, test_value);
+
+  EXPECT_EQ(bridge().fillSpecificFormFieldRunCount, 1);
+  EXPECT_EQ(bridge().lastFilledField, field_id);
+  EXPECT_EQ(bridge().lastFilledValue, test_value);
+  EXPECT_EQ(bridge().lastFilledActionType,
+            mojom::FieldActionType::kReplaceSelectionForAtMemory);
+  EXPECT_EQ(bridge().lastFilledFrameId,
+            main_frame_driver()->web_frame()->GetFrameId());
+}
+
+// Test that `ApplyFieldAction` resolves and invokes the child frame driver
+// when the target field is in a child iframe not registered in the router's
+// form forest.
+TEST_F(AutofillDriverIOSTest,
+       ApplyFieldActionFallbackWhenChildFrameNotRegistered) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kAutofillSupportContentEditableIos);
+
+  FieldRendererId field_id(456);
+  FieldGlobalId field_global_id{iframe_driver()->GetFrameToken(), field_id};
+  std::u16string test_value = u"test_iframe_val";
+
+  main_frame_driver()->ApplyFieldAction(
+      mojom::FieldActionType::kReplaceSelectionForAtMemory,
+      mojom::ActionPersistence::kFill, field_global_id, test_value);
+
+  EXPECT_EQ(bridge().fillSpecificFormFieldRunCount, 1);
+  EXPECT_EQ(bridge().lastFilledField, field_id);
+  EXPECT_EQ(bridge().lastFilledValue, test_value);
+  EXPECT_EQ(bridge().lastFilledActionType,
+            mojom::FieldActionType::kReplaceSelectionForAtMemory);
+  EXPECT_EQ(bridge().lastFilledFrameId,
+            iframe_driver()->web_frame()->GetFrameId());
+}
+
+// Test that `ApplyFieldAction` does not fallback for non-AtMemory action types.
+TEST_F(AutofillDriverIOSTest, ApplyFieldActionNoFallbackForNonAtMemoryAction) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kAutofillSupportContentEditableIos);
+
+  FieldRendererId field_id(123);
+  FieldGlobalId field_global_id{main_frame_driver()->GetFrameToken(), field_id};
+  std::u16string test_value = u"test_val";
+
+  main_frame_driver()->ApplyFieldAction(mojom::FieldActionType::kReplaceAll,
+                                        mojom::ActionPersistence::kFill,
+                                        field_global_id, test_value);
+
+  EXPECT_EQ(bridge().fillSpecificFormFieldRunCount, 0);
+}
+
+// Test that `ApplyFieldAction` does not fallback when the feature is disabled.
+TEST_F(AutofillDriverIOSTest, ApplyFieldActionNoFallbackWhenFeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(kAutofillSupportContentEditableIos);
+
+  FieldRendererId field_id(123);
+  FieldGlobalId field_global_id{main_frame_driver()->GetFrameToken(), field_id};
+  std::u16string test_value = u"test_val";
+
+  main_frame_driver()->ApplyFieldAction(
+      mojom::FieldActionType::kReplaceSelectionForAtMemory,
+      mojom::ActionPersistence::kFill, field_global_id, test_value);
+
+  EXPECT_EQ(bridge().fillSpecificFormFieldRunCount, 0);
 }
 
 }  // namespace

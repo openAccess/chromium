@@ -30,17 +30,17 @@ if (enable_extensions_core) {
       "extensions_ui.h",
       "extensions_ui_prefs.cc",
       "extensions_ui_prefs.h",
+      "sidebar_promos.cc",
+      "sidebar_promos.h",
     ]
 
-    public_deps = [
-      ":headers",
-      "//chrome/browser:browser_public_dependencies",
-    ]
+    public_deps = [ ":headers" ]
 
     deps = [
       "//base",
       "//chrome/app:branded_strings",
       "//chrome/browser:browser_process",
+      "//chrome/browser/enterprise/isolated_mode",
       "//chrome/browser/extensions",
       "//chrome/browser/favicon",
       "//chrome/browser/feature_engagement",
@@ -96,18 +96,19 @@ if (enable_extensions_core) {
       "//chrome/browser/profiles:profile",
       "//chrome/common:constants",
       "//chrome/test:test_support",
+      "//chrome/test/base:web_ui_mocha_browser_test",
       "//extensions:test_support",
       "//extensions/browser",
       "//extensions/buildflags",
     ]
-    if (!is_android) {
-      deps += [ "//chrome/browser/ui" ]
-    }
   }
 
   source_set("unit_tests") {
     testonly = true
-    sources = [ "extensions_internals_unittest.cc" ]
+    sources = [
+      "extensions_internals_unittest.cc",
+      "sidebar_promos_unittest.cc",
+    ]
     deps = [
       ":extensions",
       ":headers",
@@ -139,6 +140,7 @@ if (enable_extensions_core) {
       "//chrome/browser/profiles:profile",
       "//chrome/common",
       "//chrome/test:test_support",
+      "//chrome/test/base:chrome_test_utils",
       "//content/public/browser",
       "//content/test:test_support",
       "//extensions/browser",

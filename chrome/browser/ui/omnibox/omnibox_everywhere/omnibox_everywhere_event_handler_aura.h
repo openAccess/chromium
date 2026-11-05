@@ -7,7 +7,9 @@
 
 #include <optional>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ref.h"
+#include "base/memory/weak_ptr.h"
 #include "ui/events/event.h"
 #include "ui/events/event_handler.h"
 #include "ui/gfx/geometry/point.h"
@@ -32,6 +34,12 @@ class OmniboxEverywhereEventHandlerAura : public ui::EventHandler {
 
   bool IsPointInDraggableRegion(const gfx::Point& point) const;
 
+  // Ends any pending drag hold, including its data-drag suppression. The owner
+  // must call this whenever this handler may stop seeing the widget's mouse
+  // events (e.g. when the widget is hidden or destroyed), since the handler
+  // would otherwise never see the release or capture loss that ends the hold.
+  void ResetDragState();
+
   // ui::EventHandler:
   void OnMouseEvent(ui::MouseEvent* event) override;
 
@@ -42,6 +50,12 @@ class OmniboxEverywhereEventHandlerAura : public ui::EventHandler {
   // drag. Null if a drag is not eligible (e.g. a mouse-released event happened
   // recently).
   std::optional<gfx::Point> drag_init_point_screen_;
+
+  // Suppresses renderer-initiated data drags while a left mouse press is held
+  // on a draggable region waiting to cross the window-drag threshold.
+  base::ScopedClosureRunner window_move_drag_suppression_;
+
+  base::WeakPtrFactory<OmniboxEverywhereEventHandlerAura> weak_factory_{this};
 };
 
 }  // namespace omnibox_everywhere

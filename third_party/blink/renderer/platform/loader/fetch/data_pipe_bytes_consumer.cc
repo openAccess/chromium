@@ -50,7 +50,7 @@ DataPipeBytesConsumer::DataPipeBytesConsumer(
   watcher_.Watch(
       data_pipe_.get(),
       MOJO_HANDLE_SIGNAL_READABLE | MOJO_HANDLE_SIGNAL_PEER_CLOSED,
-      BindRepeating(&DataPipeBytesConsumer::Notify, WrapPersistent(this)));
+      BindRepeating(&DataPipeBytesConsumer::Notify, WrapWeakPersistent(this)));
 }
 
 DataPipeBytesConsumer::~DataPipeBytesConsumer() {}
@@ -134,7 +134,11 @@ BytesConsumer::Result DataPipeBytesConsumer::EndRead(size_t read) {
   return Result::kOk;
 }
 
-mojo::ScopedDataPipeConsumerHandle DataPipeBytesConsumer::DrainAsDataPipe() {
+mojo::ScopedDataPipeConsumerHandle DataPipeBytesConsumer::DrainAsDataPipe(
+    DrainedDataPipeClient** client) {
+  if (client) {
+    *client = nullptr;
+  }
   DCHECK(!is_in_two_phase_read_);
   watcher_.Cancel();
   mojo::ScopedDataPipeConsumerHandle data_pipe = std::move(data_pipe_);

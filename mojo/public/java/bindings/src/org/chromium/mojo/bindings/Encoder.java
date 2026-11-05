@@ -117,8 +117,16 @@ public class Encoder {
 
     /** Returns a new encoder that will append to the current buffer. */
     public Encoder getEncoderAtDataOffset(DataHeader dataHeader) {
+        return getEncoderAtDataOffset(dataHeader.size, dataHeader.elementsOrVersion);
+    }
+
+    /**
+     * Returns a new encoder that will append to the current buffer, after encoding a data header
+     * with the given {@code size} and {@code elementsOrVersion}.
+     */
+    public Encoder getEncoderAtDataOffset(int size, int elementsOrVersion) {
         Encoder result = new Encoder(mEncoderState);
-        result.encode(dataHeader);
+        result.encodeDataHeader(size, elementsOrVersion);
         return result;
     }
 
@@ -127,9 +135,13 @@ public class Encoder {
      * (resizing the buffer if required).
      */
     public void encode(DataHeader s) {
-        mEncoderState.claimMemory(BindingsHelper.align(s.size));
-        encode(s.size, DataHeader.SIZE_OFFSET);
-        encode(s.elementsOrVersion, DataHeader.ELEMENTS_OR_VERSION_OFFSET);
+        encodeDataHeader(s.size, s.elementsOrVersion);
+    }
+
+    private void encodeDataHeader(int size, int elementsOrVersion) {
+        mEncoderState.claimMemory(BindingsHelper.align(size));
+        encode(size, DataHeader.SIZE_OFFSET);
+        encode(elementsOrVersion, DataHeader.ELEMENTS_OR_VERSION_OFFSET);
     }
 
     /** Encode a byte at the given offset. */
@@ -265,13 +277,61 @@ public class Encoder {
     /** Encode an associated interface request. Not yet supported. */
     public void encode(AssociatedInterfaceRequestNotSupported v, int offset, boolean nullable) {}
 
+    /** Encodes an array of {@link Struct}s. */
+    public void encode(
+            @Nullable Struct @Nullable [] v, int offset, int arrayNullability, int expectedLength) {
+        if (v == null) {
+            encodeNullPointer(offset, BindingsHelper.isArrayNullable(arrayNullability));
+            return;
+        }
+        Encoder e = encodePointerArray(v.length, offset, expectedLength);
+        boolean elementNullable = BindingsHelper.isElementNullable(arrayNullability);
+        for (int i = 0; i < v.length; ++i) {
+            e.encode(
+                    v[i],
+                    DataHeader.HEADER_SIZE + BindingsHelper.POINTER_SIZE * i,
+                    elementNullable);
+        }
+    }
+
+    /** Encodes an array of {@link Union}s. */
+    public void encode(
+            @Nullable Union @Nullable [] v, int offset, int arrayNullability, int expectedLength) {
+        if (v == null) {
+            encodeNullPointer(offset, BindingsHelper.isArrayNullable(arrayNullability));
+            return;
+        }
+        Encoder e = encodeUnionArray(v.length, offset, expectedLength);
+        boolean elementNullable = BindingsHelper.isElementNullable(arrayNullability);
+        for (int i = 0; i < v.length; ++i) {
+            e.encode(v[i], DataHeader.HEADER_SIZE + BindingsHelper.UNION_SIZE * i, elementNullable);
+        }
+    }
+
+    /** Encodes an array of Strings. */
+    public void encode(
+            @Nullable String @Nullable [] v, int offset, int arrayNullability, int expectedLength) {
+        if (v == null) {
+            encodeNullPointer(offset, BindingsHelper.isArrayNullable(arrayNullability));
+            return;
+        }
+        Encoder e = encodePointerArray(v.length, offset, expectedLength);
+        boolean elementNullable = BindingsHelper.isElementNullable(arrayNullability);
+        for (int i = 0; i < v.length; ++i) {
+            e.encode(
+                    v[i],
+                    DataHeader.HEADER_SIZE + BindingsHelper.POINTER_SIZE * i,
+                    elementNullable);
+        }
+    }
+
     /** Returns an {@link Encoder} suitable for encoding an array of pointer of the given length. */
     public Encoder encodePointerArray(int length, int offset, int expectedLength) {
         return encoderForArray(BindingsHelper.POINTER_SIZE, length, offset, expectedLength);
     }
 
     /** Returns an {@link Encoder} suitable for encoding an array of union of the given length. */
-    public Encoder encodeUnionArray(int length, int offset, int expectedLength) {
+    private Encoder encodeUnionArray(int length, int offset, int expectedLength) {
         return encoderForArray(BindingsHelper.UNION_SIZE, length, offset, expectedLength);
     }
 

@@ -36,6 +36,7 @@
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
+#include "third_party/blink/public/mojom/service_worker/service_worker_ancestor_frame_type.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration.mojom-forward.h"
 
 class GURL;
@@ -50,14 +51,11 @@ namespace content {
 class ServiceWorkerContainerHostForClient;
 class ServiceWorkerContextCoreObserver;
 class ServiceWorkerContextWrapper;
+class ServiceWorkerHidDelegateObserver;
 class ServiceWorkerJobCoordinator;
 class ServiceWorkerQuotaClient;
 class ServiceWorkerRegistration;
 struct ServiceWorkerContextSynchronousObserverList;
-
-#if !BUILDFLAG(IS_ANDROID)
-class ServiceWorkerHidDelegateObserver;
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
 class ServiceWorkerUsbDelegateObserver;
@@ -424,7 +422,9 @@ class CONTENT_EXPORT ServiceWorkerContextCore
           outside_fetch_client_settings_object,
       RegistrationCallback callback,
       const GlobalRenderFrameHostId& requesting_frame_id,
-      const PolicyContainerPolicies& policy_container_policies);
+      const PolicyContainerPolicies& policy_container_policies,
+      blink::mojom::AncestorFrameType ancestor_frame_type =
+          blink::mojom::AncestorFrameType::kNormalFrame);
 
   // If `is_immediate` is true, unregister clears the active worker from the
   // registration without waiting for the controlled clients to unload.
@@ -572,12 +572,10 @@ class CONTENT_EXPORT ServiceWorkerContextCore
     test_version_observers_.RemoveObserver(observer);
   }
 
-#if !BUILDFLAG(IS_ANDROID)
   ServiceWorkerHidDelegateObserver* hid_delegate_observer();
 
   void SetServiceWorkerHidDelegateObserverForTesting(
       std::unique_ptr<ServiceWorkerHidDelegateObserver> hid_delegate_observer);
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
   // In the service worker case, WebUSB is only available in extension service
@@ -704,9 +702,7 @@ class CONTENT_EXPORT ServiceWorkerContextCore
 
   bool is_processing_warming_up_ = false;
 
-#if !BUILDFLAG(IS_ANDROID)
   std::unique_ptr<ServiceWorkerHidDelegateObserver> hid_delegate_observer_;
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
   std::unique_ptr<ServiceWorkerUsbDelegateObserver> usb_delegate_observer_;

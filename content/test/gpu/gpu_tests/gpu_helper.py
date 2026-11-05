@@ -146,10 +146,6 @@ def GetGpuDeviceId(gpu_info: tgi.GPUInfo | None, index: int) -> int | str:
   return 0
 
 
-def IsIntel(vendor_id: int) -> bool:
-  return vendor_id == constants.GpuVendor.INTEL
-
-
 # Intel GPU architectures
 def IsIntelGen9(gpu_device_id: int) -> bool:
   return gpu_device_id & INTEL_DEVICE_ID_MASK in INTEL_GEN_9
@@ -226,12 +222,23 @@ def GetSkiaRenderer(gpu_info: tgi.GPUInfo | None) -> str:
       gpu_feature_status
       and gpu_feature_status.get('gpu_compositing') == 'enabled'
     )
-    if skia_renderer_enabled:
-      if HasVulkanSkiaRenderer(gpu_feature_status):
+    if skia_renderer_enabled and gpu_info.aux_attributes:
+      skia_backend_type = gpu_info.aux_attributes.get('skia_backend_type')
+      if skia_backend_type == 'GaneshVulkan':
         retval = 'renderer-skia-vulkan'
-      # The check for GL must come after Vulkan since the 'opengl' feature can
-      # be enabled for WebGL and interop even if SkiaRenderer is using Vulkan.
-      elif HasGlSkiaRenderer(gpu_feature_status):
+      elif skia_backend_type == 'GraphiteDawnD3D11':
+        retval = 'renderer-graphite-dawn-d3d11'
+      elif skia_backend_type == 'GraphiteDawnD3D12':
+        retval = 'renderer-graphite-dawn-d3d12'
+      elif skia_backend_type == 'GraphiteDawnMetal':
+        retval = 'renderer-graphite-dawn-metal'
+      elif skia_backend_type in (
+        'GaneshGL',
+        # TODO(crbug.com/41495111): Switch Graphite backends to generate
+        # renderer-graphite-dawn-* tags instead of renderer-skia-gl.
+        'GraphiteDawnOpenGLES',
+        'GraphiteDawnVulkan',
+      ):
         retval = 'renderer-skia-gl'
   return retval
 
@@ -266,20 +273,6 @@ def GetClangCoverage(gpu_info: tgi.GPUInfo | None) -> str:
   if gpu_info and gpu_info.aux_attributes.get('is_clang_coverage', False):
     return 'clang-coverage'
   return 'no-clang-coverage'
-
-
-def HasGlSkiaRenderer(gpu_feature_status: dict[str, str]) -> bool:
-  return (
-    bool(gpu_feature_status)
-    and gpu_feature_status.get('opengl') == 'enabled_on'
-  )
-
-
-def HasVulkanSkiaRenderer(gpu_feature_status: dict[str, str]) -> bool:
-  return (
-    bool(gpu_feature_status)
-    and gpu_feature_status.get('vulkan') == 'enabled_on'
-  )
 
 
 def ReplaceTags(tags: list[str]) -> list[str]:
@@ -335,6 +328,7 @@ def GetMockArgs(webgl_version: str = '1.0.0') -> mock.MagicMock:
   args.expected_device_id = 0
   args.browser_options = []
   args.use_worker = 'none'
+  args.clear_system_shader_cache = False
   return args
 
 
@@ -345,7 +339,6 @@ def MatchDriverTag(tag: str) -> re.Match[str] | None:
 # No good way to reduce the number of local variables, particularly since each
 # argument is also considered a local. Also no good way to reduce the number of
 # branches without harming readability.
-# pylint: disable=too-many-locals,too-many-branches
 def EvaluateVersionComparison(
   version: str,
   operation: str,
@@ -416,12 +409,8 @@ def EvaluateVersionComparison(
   return operation in ('eq', 'ge', 'le')
 
 
-# pylint: enable=too-many-locals,too-many-branches
-
-
 # No good way to reduce the number of return statements to the required level
 # without harming readability.
-# pylint: disable=too-many-return-statements,too-many-branches
 def IsDriverTagDuplicated(driver_tag1: str, driver_tag2: str) -> bool:
   if driver_tag1 == driver_tag2:
     return True
@@ -471,9 +460,6 @@ def IsDriverTagDuplicated(driver_tag1: str, driver_tag2: str) -> bool:
     return not EvaluateVersionComparison(version1, 'le', version2)
   assert False
   return False
-
-
-# pylint: enable=too-many-return-statements,too-many-branches
 
 
 def GetExpectationFileDriverTagsForOs(target_os: str) -> frozenset[str]:

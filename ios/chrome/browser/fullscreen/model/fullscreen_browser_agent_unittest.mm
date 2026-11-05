@@ -4,11 +4,15 @@
 
 #import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h"
 
+#import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
+#import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
+#import "ios/chrome/browser/fullscreen/model/fullscreen_constants.h"
 #import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/common/material_timing.h"
 #import "testing/platform_test.h"
 
@@ -58,6 +62,11 @@ class RangeTestFullscreenBrowserAgentObserver
                                           CGFloat max)
       : edge_(edge), min_(min), max_(max) {}
 
+  void SetRange(CGFloat min, CGFloat max) {
+    min_ = min;
+    max_ = max;
+  }
+
   void WillUpdateObscuredInsetRange(FullscreenBrowserAgent* agent) override {
     agent->AddObscuredInsetRange(edge_, min_, max_);
   }
@@ -75,10 +84,46 @@ class RangeTestFullscreenBrowserAgentObserver
   CGFloat max_;
 };
 
+// An observer that re-enters the agent from DidUpdateState(), mimicking the
+// overscroll actions fullscreen disabler that synchronously reacts to a
+// viewport inset change.
+class ReentrantFullscreenBrowserAgentObserver
+    : public FullscreenBrowserAgentObserver {
+ public:
+  explicit ReentrantFullscreenBrowserAgentObserver(
+      base::PassKey<FullscreenBrowserAgentTest> pass_key)
+      : pass_key_(pass_key) {}
+
+  void WillUpdateState(FullscreenBrowserAgent* agent) override {
+    will_update_count_++;
+  }
+
+  void DidUpdateState(FullscreenBrowserAgent* agent) override {
+    did_update_count_++;
+    if (!reenter_on_did_update_) {
+      return;
+    }
+    // Only re-enter once, so the nested update cannot recurse indefinitely if
+    // the guard regresses.
+    reenter_on_did_update_ = false;
+    agent->ExitFullscreen(pass_key_,
+                          FullscreenModeTransitionTrigger::kForcedByCode,
+                          /*animated=*/false);
+  }
+
+  bool reenter_on_did_update_ = false;
+  int will_update_count_ = 0;
+  int did_update_count_ = 0;
+
+ private:
+  base::PassKey<FullscreenBrowserAgentTest> pass_key_;
+};
+
 // Test fixture for testing FullscreenBrowserAgent class.
 class FullscreenBrowserAgentTest : public PlatformTest {
  protected:
-  FullscreenBrowserAgentTest() {
+  FullscreenBrowserAgentTest()
+      : task_environment_(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
     profile_ = TestProfileIOS::Builder().Build();
     browser_ = std::make_unique<TestBrowser>(profile_.get());
   }
@@ -138,21 +183,86 @@ TEST_F(FullscreenBrowserAgentTest, InvalidateInsetRange) {
   EXPECT_EQ(20.0, agent->min_insets().bottom);
   EXPECT_EQ(80.0, agent->max_insets().bottom);
 
+  // Calling `InvalidateInsetRange()` again when ranges are unchanged queries
+  // observers via `WillUpdateObscuredInsetRange`, but does not notify
+  // `DidUpdateObscuredInsetRange`.
+  base_observer.will_update_obscured_inset_range_called_ = false;
+  base_observer.did_update_obscured_inset_range_called_ = false;
+  agent->InvalidateInsetRange();
+  EXPECT_TRUE(base_observer.will_update_obscured_inset_range_called_);
+  EXPECT_FALSE(base_observer.did_update_obscured_inset_range_called_);
+
+  // Changing the reported range notifies `DidUpdateObscuredInsetRange`.
+  observer3.SetRange(25.0, 85.0);
+  base_observer.will_update_obscured_inset_range_called_ = false;
+  base_observer.did_update_obscured_inset_range_called_ = false;
+  agent->InvalidateInsetRange();
+  EXPECT_TRUE(base_observer.will_update_obscured_inset_range_called_);
+  EXPECT_TRUE(base_observer.did_update_obscured_inset_range_called_);
+  EXPECT_EQ(25.0, agent->min_insets().bottom);
+  EXPECT_EQ(85.0, agent->max_insets().bottom);
+
   agent->RemoveObserver(&base_observer);
   agent->RemoveObserver(&observer1);
   agent->RemoveObserver(&observer2);
   agent->RemoveObserver(&observer3);
 }
 
-// Tests that SetKeyboardObscuredInset correctly overrides bottom insets.
+// Tests that a state update requested from within a DidUpdateState()
+// notification is deferred until the in-flight notification finishes, instead
+// of iterating the observer list while an outer iteration is live.
+TEST_F(FullscreenBrowserAgentTest, DeferReentrantUpdateFromDidUpdateState) {
+  FullscreenBrowserAgent::CreateForBrowser(browser_.get());
+  FullscreenBrowserAgent* agent =
+      FullscreenBrowserAgent::FromBrowser(browser_.get());
+
+  RangeTestFullscreenBrowserAgentObserver range_observer(UIRectEdgeTop, 10.0,
+                                                         50.0);
+  ReentrantFullscreenBrowserAgentObserver reentrant_observer(PassKey());
+  agent->AddObserver(&range_observer);
+  agent->AddObserver(&reentrant_observer);
+
+  // Establish the inset range. The initial expanded state maps to the max
+  // inset, so collapsing below will change the insets and trigger
+  // DidUpdateState().
+  agent->InvalidateInsetRange();
+  ASSERT_EQ(50.0, agent->insets().top);
+
+  reentrant_observer.will_update_count_ = 0;
+  reentrant_observer.did_update_count_ = 0;
+  reentrant_observer.reenter_on_did_update_ = true;
+
+  agent->EnterFullscreen(PassKey(),
+                         FullscreenModeTransitionTrigger::kForcedByCode,
+                         /*animated=*/false);
+
+  // The collapse is broadcast first, then the ExitFullscreen() requested from
+  // DidUpdateState() is replayed, so observers end up in sync with the
+  // committed progress instead of rendering the collapsed insets.
+  EXPECT_EQ(2, reentrant_observer.will_update_count_);
+  EXPECT_EQ(2, reentrant_observer.did_update_count_);
+  EXPECT_EQ(1.0, agent->top_progress());
+  EXPECT_EQ(50.0, agent->insets().top);
+
+  agent->RemoveObserver(&range_observer);
+  agent->RemoveObserver(&reentrant_observer);
+}
+
+// Tests that SetKeyboardObscuredInset updates content_insets() while leaving
+// toolbar insets (min_insets, max_insets, insets) unaffected.
 TEST_F(FullscreenBrowserAgentTest, SetKeyboardObscuredInset) {
+  constexpr CGFloat kMinBottomToolbarInset = 20.0;
+  constexpr CGFloat kMaxBottomToolbarInset = 80.0;
+  constexpr CGFloat kLargeKeyboardInset = 100.0;
+  constexpr CGFloat kMediumKeyboardInset = 50.0;
+
   FullscreenBrowserAgent::CreateForBrowser(browser_.get());
   FullscreenBrowserAgent* agent =
       FullscreenBrowserAgent::FromBrowser(browser_.get());
 
   TestFullscreenBrowserAgentObserver base_observer;
-  RangeTestFullscreenBrowserAgentObserver observer1(UIRectEdgeBottom, 20.0,
-                                                    80.0);
+  RangeTestFullscreenBrowserAgentObserver observer1(
+      UIRectEdgeBottom, kMinBottomToolbarInset, kMaxBottomToolbarInset);
 
   agent->AddObserver(&base_observer);
   agent->AddObserver(&observer1);
@@ -160,30 +270,56 @@ TEST_F(FullscreenBrowserAgentTest, SetKeyboardObscuredInset) {
   // Initialize ranges.
   agent->InvalidateInsetRange();
 
-  EXPECT_EQ(20.0, agent->min_insets().bottom);
-  EXPECT_EQ(80.0, agent->max_insets().bottom);
-  EXPECT_EQ(80.0, agent->insets().bottom);
+  EXPECT_EQ(kMinBottomToolbarInset, agent->min_insets().bottom);
+  EXPECT_EQ(kMaxBottomToolbarInset, agent->max_insets().bottom);
+  EXPECT_EQ(kMaxBottomToolbarInset, agent->insets().bottom);
+  EXPECT_EQ(kMaxBottomToolbarInset, agent->content_insets().bottom);
 
-  // Set keyboard inset larger than max.
-  agent->SetKeyboardObscuredInset(100.0);
+  base_observer.will_update_obscured_inset_range_called_ = false;
+  base_observer.did_update_obscured_inset_range_called_ = false;
+  base_observer.did_update_called_ = false;
 
-  EXPECT_EQ(100.0, agent->min_insets().bottom);
-  EXPECT_EQ(100.0, agent->max_insets().bottom);
-  EXPECT_EQ(100.0, agent->insets().bottom);
+  // Set keyboard inset larger than max toolbar inset.
+  agent->SetKeyboardObscuredInset(kLargeKeyboardInset);
 
-  // Set keyboard inset between min and max.
-  agent->SetKeyboardObscuredInset(50.0);
+  // Inset ranges and toolbar insets must remain unaffected by the keyboard.
+  EXPECT_FALSE(base_observer.will_update_obscured_inset_range_called_);
+  EXPECT_FALSE(base_observer.did_update_obscured_inset_range_called_);
+  EXPECT_TRUE(base_observer.did_update_called_);
+  EXPECT_EQ(kMinBottomToolbarInset, agent->min_insets().bottom);
+  EXPECT_EQ(kMaxBottomToolbarInset, agent->max_insets().bottom);
+  EXPECT_EQ(kMaxBottomToolbarInset, agent->insets().bottom);
+  EXPECT_EQ(kLargeKeyboardInset, agent->content_insets().bottom);
 
-  EXPECT_EQ(50.0, agent->min_insets().bottom);
-  EXPECT_EQ(80.0, agent->max_insets().bottom);
-  EXPECT_EQ(80.0, agent->insets().bottom);
+  // Set keyboard inset between min and max toolbar insets.
+  base_observer.did_update_called_ = false;
+  agent->SetKeyboardObscuredInset(kMediumKeyboardInset);
 
-  // Set keyboard inset to 0.
+  EXPECT_TRUE(base_observer.did_update_called_);
+  EXPECT_EQ(kMinBottomToolbarInset, agent->min_insets().bottom);
+  EXPECT_EQ(kMaxBottomToolbarInset, agent->max_insets().bottom);
+  EXPECT_EQ(kMaxBottomToolbarInset, agent->insets().bottom);
+  // While expanded, content_insets().bottom reflects
+  // std::max(kMaxBottomToolbarInset, kMediumKeyboardInset).
+  EXPECT_EQ(kMaxBottomToolbarInset, agent->content_insets().bottom);
+
+  // When collapsed, content_insets().bottom reflects
+  // std::max(kMinBottomToolbarInset, kMediumKeyboardInset).
+  agent->EnterFullscreen(PassKey(),
+                         FullscreenModeTransitionTrigger::kForcedByCode,
+                         /*animated=*/false);
+  EXPECT_EQ(kMinBottomToolbarInset, agent->insets().bottom);
+  EXPECT_EQ(kMediumKeyboardInset, agent->content_insets().bottom);
+
+  // Set keyboard inset to 0 while collapsed.
+  base_observer.did_update_called_ = false;
   agent->SetKeyboardObscuredInset(0.0);
 
-  EXPECT_EQ(20.0, agent->min_insets().bottom);
-  EXPECT_EQ(80.0, agent->max_insets().bottom);
-  EXPECT_EQ(80.0, agent->insets().bottom);
+  EXPECT_TRUE(base_observer.did_update_called_);
+  EXPECT_EQ(kMinBottomToolbarInset, agent->min_insets().bottom);
+  EXPECT_EQ(kMaxBottomToolbarInset, agent->max_insets().bottom);
+  EXPECT_EQ(kMinBottomToolbarInset, agent->insets().bottom);
+  EXPECT_EQ(kMinBottomToolbarInset, agent->content_insets().bottom);
 
   agent->RemoveObserver(&base_observer);
   agent->RemoveObserver(&observer1);
@@ -246,6 +382,62 @@ TEST_F(FullscreenBrowserAgentTest, IncrementalScroll) {
   agent->RemoveObserver(&base_observer);
   agent->RemoveObserver(&observer1);
   agent->RemoveObserver(&observer2);
+}
+
+// Tests that IncrementalScroll synchronizes progress when only the bottom inset
+// has a non-zero range (e.g. bottom omnibox), and ignores scroll while
+// animating.
+TEST_F(FullscreenBrowserAgentTest, IncrementalScrollBottomOnly) {
+  FullscreenBrowserAgent::CreateForBrowser(browser_.get());
+  FullscreenBrowserAgent* agent =
+      FullscreenBrowserAgent::FromBrowser(browser_.get());
+
+  TestFullscreenBrowserAgentObserver base_observer;
+  RangeTestFullscreenBrowserAgentObserver top_observer(UIRectEdgeTop, 50.0,
+                                                       50.0);
+  RangeTestFullscreenBrowserAgentObserver bottom_observer(UIRectEdgeBottom,
+                                                          20.0, 80.0);
+
+  agent->AddObserver(&base_observer);
+  agent->AddObserver(&top_observer);
+  agent->AddObserver(&bottom_observer);
+
+  // Initialize ranges. Top delta = 0, Bottom delta = 60.
+  agent->InvalidateInsetRange();
+
+  EXPECT_EQ(1.0, agent->top_progress());
+  EXPECT_EQ(1.0, agent->bottom_progress());
+
+  // Scroll down partially (amount = 30 out of 60).
+  agent->IncrementalScroll(30.0, 0.0, PassKey());
+
+  EXPECT_EQ(0.5, agent->top_progress());
+  EXPECT_EQ(0.5, agent->bottom_progress());
+  EXPECT_EQ(50.0, agent->insets().top);
+  EXPECT_EQ(50.0, agent->insets().bottom);
+
+  // Scroll down to fully collapse.
+  agent->IncrementalScroll(30.0, 0.0, PassKey());
+
+  EXPECT_EQ(0.0, agent->top_progress());
+  EXPECT_EQ(0.0, agent->bottom_progress());
+  EXPECT_EQ(FullscreenState::kUICollapsed, agent->State());
+
+  // Start animated exit fullscreen.
+  agent->ExitFullscreen(
+      PassKey(), FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode,
+      /*animated=*/true);
+  EXPECT_TRUE(agent->is_animating());
+  EXPECT_EQ(FullscreenState::kUIExpanded, agent->settled_state());
+
+  // IncrementalScroll while animating must be ignored.
+  agent->IncrementalScroll(15.0, 0.0, PassKey());
+  EXPECT_EQ(1.0, agent->top_progress());
+  EXPECT_EQ(1.0, agent->bottom_progress());
+
+  agent->RemoveObserver(&base_observer);
+  agent->RemoveObserver(&top_observer);
+  agent->RemoveObserver(&bottom_observer);
 }
 
 // Tests that EnterFullscreen and ExitFullscreen correctly update progress.
@@ -340,6 +532,102 @@ TEST_F(FullscreenBrowserAgentTest, FullscreenDidTransition) {
   agent->ExitFullscreen(PassKey(),
                         FullscreenModeTransitionTrigger::kForcedByCode,
                         /*animated=*/false);
+  EXPECT_TRUE(observer.did_transition_called_);
+  EXPECT_EQ(FullscreenTransition::kExitFullscreen, observer.transition_);
+
+  agent->RemoveObserver(&observer);
+}
+
+// Tests that the settled state is committed as soon as an animated transition
+// starts, so that it cannot contradict the progress if the animation is later
+// interrupted.
+TEST_F(FullscreenBrowserAgentTest, SettledStateCommittedWhenAnimationStarts) {
+  FullscreenBrowserAgent::CreateForBrowser(browser_.get());
+  FullscreenBrowserAgent* agent =
+      FullscreenBrowserAgent::FromBrowser(browser_.get());
+
+  ASSERT_EQ(FullscreenState::kUIExpanded, agent->settled_state());
+
+  agent->EnterFullscreen(
+      PassKey(), FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode,
+      /*animated=*/true);
+
+  // The progress is committed synchronously, so the settled state must be too.
+  EXPECT_TRUE(agent->is_animating());
+  EXPECT_EQ(0.0, agent->top_progress());
+  EXPECT_EQ(0.0, agent->bottom_progress());
+  EXPECT_EQ(FullscreenState::kUICollapsed, agent->settled_state());
+}
+
+// Tests that a non-animated transition requested while an animation towards the
+// same target is in flight still settles the state and releases the animating
+// flag. Regression test for the app being backgrounded mid-animation, where the
+// background handler requests a non-animated exit while an animated exit is
+// already running.
+TEST_F(FullscreenBrowserAgentTest, NonAnimatedTransitionInterruptsAnimation) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {kFullscreenRefactoring, kFullscreenEasedTransitions}, {});
+
+  FullscreenBrowserAgent::CreateForBrowser(browser_.get());
+  FullscreenBrowserAgent* agent =
+      FullscreenBrowserAgent::FromBrowser(browser_.get());
+
+  agent->EnterFullscreen(PassKey(),
+                         FullscreenModeTransitionTrigger::kForcedByCode,
+                         /*animated=*/false);
+  ASSERT_EQ(FullscreenState::kUICollapsed, agent->settled_state());
+
+  // Start an animated exit. The progress reaches the target immediately, while
+  // the animation is still running.
+  agent->ExitFullscreen(
+      PassKey(), FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode,
+      /*animated=*/true);
+  ASSERT_TRUE(agent->is_animating());
+  ASSERT_EQ(1.0, agent->top_progress());
+
+  // The backgrounding handler requests the same target without animation.
+  agent->ExitFullscreen(PassKey(),
+                        FullscreenModeTransitionTrigger::kForcedByCode,
+                        /*animated=*/false);
+
+  EXPECT_FALSE(agent->is_animating());
+  EXPECT_EQ(FullscreenState::kUIExpanded, agent->settled_state());
+
+  // Scrolling must still be handled: a stuck animating flag would drop it.
+  agent->IncrementalScroll(kEasedTransitionScrollDistance / 2.0, 0.0,
+                           PassKey());
+  EXPECT_LT(agent->top_progress(), 1.0);
+}
+
+// Tests that the completion of an animation that was superseded by a newer
+// transition does not clobber the state owned by that newer transition.
+TEST_F(FullscreenBrowserAgentTest, SupersededAnimationDoesNotClobberState) {
+  FullscreenBrowserAgent::CreateForBrowser(browser_.get());
+  FullscreenBrowserAgent* agent =
+      FullscreenBrowserAgent::FromBrowser(browser_.get());
+
+  TestFullscreenBrowserAgentObserver observer;
+  agent->AddObserver(&observer);
+
+  agent->EnterFullscreen(
+      PassKey(), FullscreenModeTransitionTrigger::kUserInitiatedFinishedByCode,
+      /*animated=*/true);
+  ASSERT_TRUE(agent->is_animating());
+
+  // Supersede the enter animation before it completes.
+  agent->ExitFullscreen(PassKey(),
+                        FullscreenModeTransitionTrigger::kForcedByCode,
+                        /*animated=*/true);
+  EXPECT_EQ(FullscreenState::kUIExpanded, agent->settled_state());
+
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool {
+        return !agent->is_animating();
+      }));
+
+  EXPECT_EQ(1.0, agent->top_progress());
+  EXPECT_EQ(FullscreenState::kUIExpanded, agent->settled_state());
   EXPECT_TRUE(observer.did_transition_called_);
   EXPECT_EQ(FullscreenTransition::kExitFullscreen, observer.transition_);
 
@@ -503,4 +791,113 @@ TEST_F(FullscreenBrowserAgentTest, ForceFullscreenWithDisabledCounter) {
   agent->DecrementDisabledCounter(PassKey());
   EXPECT_TRUE(agent->IsEnabled());
   EXPECT_EQ(FullscreenState::kUICollapsed, agent->State());
+}
+
+// Test that TimeInFullscreen and TimeNotInFullscreen histograms are recorded
+// correctly on transitions, and that forced exits discard TimeInFullscreen.
+TEST_F(FullscreenBrowserAgentTest, FullscreenTimingHistograms) {
+  base::HistogramTester histogram_tester;
+  FullscreenBrowserAgent::CreateForBrowser(browser_.get());
+  FullscreenBrowserAgent* agent =
+      FullscreenBrowserAgent::FromBrowser(browser_.get());
+
+  // Advance time while not in fullscreen.
+  task_environment_.FastForwardBy(base::Seconds(5));
+
+  // Enter fullscreen.
+  agent->EnterFullscreen(PassKey(),
+                         FullscreenModeTransitionTrigger::kUserControlled,
+                         /*animated=*/false);
+  histogram_tester.ExpectTotalCount(kTimeNotInFullscreenHistogram, 1);
+  histogram_tester.ExpectTimeBucketCount(kTimeNotInFullscreenHistogram,
+                                         base::Seconds(5), 1);
+  histogram_tester.ExpectTotalCount(kTimeInFullscreenHistogram, 0);
+
+  // Advance time while in fullscreen.
+  task_environment_.FastForwardBy(base::Seconds(10));
+
+  // Exit fullscreen via user action.
+  agent->ExitFullscreen(PassKey(),
+                        FullscreenModeTransitionTrigger::kUserControlled,
+                        /*animated=*/false);
+  histogram_tester.ExpectTotalCount(kTimeInFullscreenHistogram, 1);
+  histogram_tester.ExpectTimeBucketCount(kTimeInFullscreenHistogram,
+                                         base::Seconds(10), 1);
+
+  // Advance time while not in fullscreen again.
+  task_environment_.FastForwardBy(base::Seconds(4));
+
+  // Enter fullscreen again.
+  agent->EnterFullscreen(PassKey(),
+                         FullscreenModeTransitionTrigger::kUserControlled,
+                         /*animated=*/false);
+  histogram_tester.ExpectTotalCount(kTimeNotInFullscreenHistogram, 2);
+  histogram_tester.ExpectTimeBucketCount(kTimeNotInFullscreenHistogram,
+                                         base::Seconds(4), 1);
+
+  // Advance time in fullscreen.
+  task_environment_.FastForwardBy(base::Seconds(8));
+
+  // Exit fullscreen via forced exit (e.g. navigation or code-driven).
+  agent->ExitFullscreen(PassKey(),
+                        FullscreenModeTransitionTrigger::kForcedByCode,
+                        /*animated=*/false);
+  // TimeInFullscreen should NOT be recorded for forced exits.
+  histogram_tester.ExpectTotalCount(kTimeInFullscreenHistogram, 1);
+
+  // Advance time after forced exit.
+  task_environment_.FastForwardBy(base::Seconds(12));
+
+  // Enter fullscreen again.
+  agent->EnterFullscreen(PassKey(),
+                         FullscreenModeTransitionTrigger::kUserControlled,
+                         /*animated=*/false);
+  // Timer should have reset at forced exit, recording 12s.
+  histogram_tester.ExpectTotalCount(kTimeNotInFullscreenHistogram, 3);
+  histogram_tester.ExpectTimeBucketCount(kTimeNotInFullscreenHistogram,
+                                         base::Seconds(12), 1);
+}
+
+// Test that TimeInFullscreen and TimeNotInFullscreen histograms are recorded
+// correctly on incremental scrolls.
+TEST_F(FullscreenBrowserAgentTest, IncrementalScrollTimingHistograms) {
+  base::HistogramTester histogram_tester;
+  FullscreenBrowserAgent::CreateForBrowser(browser_.get());
+  FullscreenBrowserAgent* agent =
+      FullscreenBrowserAgent::FromBrowser(browser_.get());
+
+  RangeTestFullscreenBrowserAgentObserver observer1(UIRectEdgeTop, 10.0, 50.0);
+  RangeTestFullscreenBrowserAgentObserver observer2(UIRectEdgeBottom, 20.0,
+                                                    80.0);
+  agent->AddObserver(&observer1);
+  agent->AddObserver(&observer2);
+  agent->InvalidateInsetRange();
+
+  // Advance time before scrolling.
+  task_environment_.FastForwardBy(base::Seconds(7));
+
+  // Scroll down completely into fullscreen mode.
+  agent->IncrementalScroll(200.0, 0.0, PassKey());
+  EXPECT_EQ(0.0, agent->top_progress());
+  EXPECT_EQ(0.0, agent->bottom_progress());
+
+  histogram_tester.ExpectTotalCount(kTimeNotInFullscreenHistogram, 1);
+  histogram_tester.ExpectTimeBucketCount(kTimeNotInFullscreenHistogram,
+                                         base::Seconds(7), 1);
+  histogram_tester.ExpectTotalCount(kTimeInFullscreenHistogram, 0);
+
+  // Advance time while in fullscreen mode.
+  task_environment_.FastForwardBy(base::Seconds(12));
+
+  // Scroll up completely out of fullscreen mode.
+  agent->IncrementalScroll(-500.0, 0.0, PassKey());
+  EXPECT_EQ(1.0, agent->top_progress());
+  EXPECT_EQ(1.0, agent->bottom_progress());
+
+  histogram_tester.ExpectTotalCount(kTimeInFullscreenHistogram, 1);
+  histogram_tester.ExpectTimeBucketCount(kTimeInFullscreenHistogram,
+                                         base::Seconds(12), 1);
+
+  agent->RemoveObserver(&observer1);
+  agent->RemoveObserver(&observer2);
 }

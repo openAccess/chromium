@@ -6,7 +6,6 @@
 
 #import <memory>
 
-#import "base/apple/foundation_util.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
 #import "base/memory/raw_ptr.h"
@@ -14,40 +13,34 @@
 #import "base/test/bind.h"
 #import "base/test/gtest_util.h"
 #import "base/test/metrics/histogram_tester.h"
-#import "base/test/run_until.h"
 #import "base/test/scoped_feature_list.h"
 #import "base/test/test_future.h"
-#import "components/keyed_service/core/service_access_type.h"
-#import "components/policy/core/common/policy_loader_ios_constants.h"
+#import "components/device_signals/core/browser/pref_names.h"
 #import "components/pref_registry/pref_registry_syncable.h"
-#import "components/prefs/pref_registry_simple.h"
-#import "components/signin/ios/browser/features.h"
 #import "components/signin/public/base/signin_pref_names.h"
 #import "components/signin/public/base/signin_switches.h"
-#import "components/signin/public/identity_manager/device_accounts_synchronizer.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/identity_test_environment.h"
 #import "components/signin/public/identity_manager/identity_test_utils.h"
+#import "components/signin/public/identity_manager/signin_constants.h"
 #import "components/signin/public/identity_manager/test_identity_manager_observer.h"
 #import "components/sync/test/mock_sync_service.h"
 #import "components/sync_preferences/pref_service_mock_factory.h"
 #import "components/sync_preferences/pref_service_syncable.h"
-#import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/model/profile/features.h"
+#import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
+#import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/shared/public/features/system_flags.h"
+#import "ios/chrome/browser/signin/model/account_profile_mapper.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_refresh_access_token_error.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
@@ -65,6 +58,7 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 
+using signin::constants::kNoHostedDomainFound;
 using testing::_;
 using testing::Return;
 
@@ -112,8 +106,7 @@ class AuthenticationServiceTest : public PlatformTest {
                               base::BindRepeating(&CreateMockSyncService));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
     fake_system_identity1_ = [FakeSystemIdentity fakeIdentity1];
@@ -233,15 +226,6 @@ class AuthenticationServiceTest : public PlatformTest {
     return GetCachedMDMInfo(identity) != nil;
   }
 
-  int ClearBrowsingDataCount() {
-    return authentication_service()->delegate_->clear_browsing_data_counter_;
-  }
-
-  int ClearBrowsingDataFromSigninCount() {
-    return authentication_service()
-        ->delegate_->clear_browsing_data_from_signin_counter_;
-  }
-
   AuthenticationService* authentication_service() {
     return AuthenticationServiceFactory::GetForProfile(profile_.get());
   }
@@ -279,6 +263,18 @@ class AuthenticationServiceTest : public PlatformTest {
 
   PrefService* local_state() {
     return GetApplicationContext()->GetLocalState();
+  }
+
+  // Returns whether the device signals consent pref is set.
+  bool HasConsent() {
+    return profile_->GetPrefs()->GetBoolean(
+        device_signals::prefs::kDeviceSignalsConsentReceived);
+  }
+
+  // Returns whether the device signals permanent consent pref is set.
+  bool HasPermanentConsent() {
+    return profile_->GetPrefs()->GetBoolean(
+        device_signals::prefs::kDeviceSignalsPermanentConsentReceived);
   }
 
   web::WebTaskEnvironment task_environment_{
@@ -486,84 +482,9 @@ TEST_F(AuthenticationServiceTest, MDMErrorsClearedOnSignout) {
 
   SetCachedMDMInfo(identity(0), CreateRefreshAccessTokenError(identity(0)));
   authentication_service()->SignOut(
-      signin_metrics::ProfileSignout::kAbortSignin, nil);
+      signin_metrics::ProfileSignout::kAbortSignin);
   EXPECT_FALSE(HasCachedMDMInfo(identity(0)));
   EXPECT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 2UL);
-}
-
-// Tests that (a) MDM errors are cleared, and (b) local data *only from the
-// signed-in period* are cleared, when signing out of a managed account.
-TEST_F(AuthenticationServiceTest, ManagedAccountSignOut_ClearDataFromSignin) {
-  FakeSystemIdentity* fake_system_identity =
-      [FakeSystemIdentity fakeManagedIdentity];
-  fake_system_identity_manager()->AddIdentity(fake_system_identity);
-
-  // The managed identity is assigned to a separate profile now.
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 2UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 2UL);
-  // Move the managed identity into the personal profile, to mimic the
-  // situation where the managed identity was already there before
-  // kSeparateProfilesForManagedAccounts was enabled.
-  GetApplicationContext()
-      ->GetAccountProfileMapper()
-      ->MoveManagedAccountToPersonalProfileForTesting(identity(2).gaiaId);
-
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 3UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-
-  authentication_service()->SignIn(identity(2),
-                                   signin_metrics::AccessPoint::kStartPage);
-  ASSERT_TRUE(authentication_service()->HasPrimaryIdentityManaged());
-  VerifyLastSigninTimestamp();
-
-  SetCachedMDMInfo(identity(2), CreateRefreshAccessTokenError(identity(2)));
-  authentication_service()->SignOut(
-      signin_metrics::ProfileSignout::kUserClickedSignoutSettings, nil);
-  EXPECT_FALSE(HasCachedMDMInfo(identity(2)));
-  EXPECT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-  EXPECT_EQ(ClearBrowsingDataCount(), 0);
-  EXPECT_EQ(ClearBrowsingDataFromSigninCount(), 1);
-}
-
-// Tests that (a) MDM errors are cleared, and (b) local data is *not* cleared,
-// when signing out of a managed account while the browser is managed.
-TEST_F(AuthenticationServiceTest,
-       ManagedAccountSignOut_DontClearIfManagedBrowser) {
-  // Add managed configuration so the browser is managed.
-  NSUserDefaults* userDefaults = [NSUserDefaults standardUserDefaults];
-  NSDictionary* dict = @{@"key" : @"value"};
-  [userDefaults setObject:dict forKey:kPolicyLoaderIOSConfigurationKey];
-  FakeSystemIdentity* fake_system_identity =
-      [FakeSystemIdentity fakeManagedIdentity];
-  fake_system_identity_manager()->AddIdentity(fake_system_identity);
-
-  // The managed identity is assigned to a separate profile now.
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 2UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 2UL);
-  // Move the managed identity into the personal profile, to mimic the
-  // situation where the managed identity was already there before
-  // kSeparateProfilesForManagedAccounts was enabled.
-  GetApplicationContext()
-      ->GetAccountProfileMapper()
-      ->MoveManagedAccountToPersonalProfileForTesting(identity(2).gaiaId);
-
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 3UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-
-  authentication_service()->SignIn(identity(2),
-                                   signin_metrics::AccessPoint::kStartPage);
-  ASSERT_TRUE(authentication_service()->HasPrimaryIdentityManaged());
-  VerifyLastSigninTimestamp();
-
-  SetCachedMDMInfo(identity(2), CreateRefreshAccessTokenError(identity(2)));
-  // Data should not be cleared if the browser is managed.
-  authentication_service()->SignOut(
-      signin_metrics::ProfileSignout::kAbortSignin, nil);
-  ASSERT_FALSE(HasCachedMDMInfo(identity(2)));
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-  EXPECT_EQ(ClearBrowsingDataCount(), 0);
-  EXPECT_EQ(ClearBrowsingDataFromSigninCount(), 0);
-  [userDefaults removeObjectForKey:kPolicyLoaderIOSConfigurationKey];
 }
 
 // Tests that MDM errors do not lead to seeding empty account ids.
@@ -603,48 +524,10 @@ TEST_F(AuthenticationServiceTest, MDMErrorsDontSeedEmptyAccountIds) {
   EXPECT_OCMOCK_VERIFY((id)mdm_error_mock);
 }
 
-// Tests that (a) MDM errors are cleared and (b) all browsing data is cleared
-// (not just from the signed-in period), when signing out of a managed account
-// that was migrated from sync consent.
-TEST_F(AuthenticationServiceTest, ManagedAccountSignOut_MigratedFromSyncing) {
-  FakeSystemIdentity* fake_system_identity =
-      [FakeSystemIdentity fakeManagedIdentity];
-  fake_system_identity_manager()->AddIdentity(fake_system_identity);
-
-  // The managed identity is assigned to a separate profile now.
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 2UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 2UL);
-  // Move the managed identity into the personal profile, to mimic the
-  // situation where the managed identity was already there before
-  // kSeparateProfilesForManagedAccounts was enabled.
-  GetApplicationContext()
-      ->GetAccountProfileMapper()
-      ->MoveManagedAccountToPersonalProfileForTesting(identity(2).gaiaId);
-
-  ASSERT_EQ([account_manager_->GetAllIdentities() count], 3UL);
-  ASSERT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-
-  authentication_service()->SignIn(identity(2),
-                                   signin_metrics::AccessPoint::kStartPage);
-  ASSERT_TRUE(authentication_service()->HasPrimaryIdentityManaged());
-  VerifyLastSigninTimestamp();
-
-  // Mark the signed-in user as "migrated from previously syncing".
-  MarkSignedinUserMigratedFromSyncing();
-
-  authentication_service()->SignOut(
-      signin_metrics::ProfileSignout::kAbortSignin, nil);
-  EXPECT_FALSE(HasCachedMDMInfo(identity(2)));
-  EXPECT_EQ(identity_manager()->GetAccountsWithRefreshTokens().size(), 3UL);
-  // Because the account was migrated from Sync-the-feature, all browsing data
-  // should be cleared, not just from the signed-in period.
-  EXPECT_EQ(ClearBrowsingDataCount(), 1);
-  EXPECT_EQ(ClearBrowsingDataFromSigninCount(), 0);
-}
-
 // Tests that potential MDM notifications are correctly handled and dispatched
 // to MDM service when necessary.
 TEST_F(AuthenticationServiceTest, HandleMDMNotification) {
+  base::HistogramTester histogram_tester;
   authentication_service()->SignIn(identity(0),
                                    signin_metrics::AccessPoint::kStartPage);
   VerifyLastSigninTimestamp();
@@ -664,11 +547,15 @@ TEST_F(AuthenticationServiceTest, HandleMDMNotification) {
   FireAccessTokenRefreshFailed(identity(0), mdm_error1);
   fake_system_identity_manager()->WaitForServiceCallbacksToComplete();
   EXPECT_EQ(invocation_counter1, 1u);
+  histogram_tester.ExpectBucketCount(
+      "Signin.IOSAutomaticMDMNotificationTriggered", true, 1);
 
   // Same notification won't show the MDM dialog the second time.
   FireAccessTokenRefreshFailed(identity(0), mdm_error1);
   fake_system_identity_manager()->WaitForServiceCallbacksToComplete();
   EXPECT_EQ(invocation_counter1, 1u);
+  histogram_tester.ExpectBucketCount(
+      "Signin.IOSAutomaticMDMNotificationTriggered", true, 1);
 
   uint32_t invocation_counter2 = 0;
   id<RefreshAccessTokenError> mdm_error2 =
@@ -680,6 +567,8 @@ TEST_F(AuthenticationServiceTest, HandleMDMNotification) {
   fake_system_identity_manager()->WaitForServiceCallbacksToComplete();
   EXPECT_EQ(invocation_counter1, 1u);
   EXPECT_EQ(invocation_counter2, 1u);
+  histogram_tester.ExpectBucketCount(
+      "Signin.IOSAutomaticMDMNotificationTriggered", true, 2);
 }
 
 // Tests that MDM notification is suppressed for scope limited errors.
@@ -708,6 +597,8 @@ TEST_F(AuthenticationServiceTest, HandleMDMNotificationSuppressed) {
   EXPECT_EQ(invocation_counter, 0u);
   histogram_tester.ExpectBucketCount("Signin.ScopeLimitedErrorSuppressed", true,
                                      1);
+  histogram_tester.ExpectTotalCount(
+      "Signin.IOSAutomaticMDMNotificationTriggered", 0);
 }
 
 // Tests that MDM blocked notifications are correctly signing out the user if
@@ -925,4 +816,184 @@ TEST_F(AuthenticationServiceTest,
   // IdentityManager.
   EXPECT_TRUE(
       authentication_service()->ShowMDMErrorDialogForIdentity(identity(0)));
+}
+
+// Tests that signing in and signing out with an unmanaged account in a personal
+// profile keeps device signals consent prefs false.
+TEST_F(AuthenticationServiceTest,
+       TestDeviceSignalsConsentPrefsUnmanagedAccount) {
+  authentication_service()->SignIn(
+      identity(0), signin_metrics::AccessPoint::kFullscreenSigninPromo);
+
+  EXPECT_FALSE(HasConsent());
+  EXPECT_FALSE(HasPermanentConsent());
+
+  authentication_service()->SignOut(
+      signin_metrics::ProfileSignout::kUserClickedSignoutSettings);
+
+  EXPECT_FALSE(HasConsent());
+  EXPECT_FALSE(HasPermanentConsent());
+}
+
+// Tests that signing in with a managed account in a managed profile sets device
+// signals consent prefs to true and does not flip them back to false.
+TEST_F(AuthenticationServiceTest, TestDeviceSignalsConsentPrefsManagedProfile) {
+  id<SystemIdentity> managed_identity =
+      [FakeSystemIdentity fakeManagedIdentity];
+  fake_system_identity_manager()->AddIdentity(managed_identity);
+  GetApplicationContext()
+      ->GetAccountProfileMapper()
+      ->MakePersonalProfileManagedWithGaiaID(managed_identity.gaiaId);
+
+  authentication_service()->SignIn(
+      managed_identity, signin_metrics::AccessPoint::kFullscreenSigninPromo);
+
+  EXPECT_TRUE(HasConsent());
+  EXPECT_TRUE(HasPermanentConsent());
+
+  // Even if extended account info is updated in a managed profile, the consent
+  // prefs must not flip back to false.
+  AccountInfo account_info =
+      identity_manager()->FindExtendedAccountInfoByAccountId(
+          GetAccountId(managed_identity));
+  account_info =
+      AccountInfo::Builder(account_info).SetFullName("Managed User").Build();
+  signin::UpdateAccountInfoForAccount(identity_manager(), account_info);
+
+  EXPECT_TRUE(HasConsent());
+  EXPECT_TRUE(HasPermanentConsent());
+}
+
+// Tests that signing in with a managed account in a personal profile sets
+// device signals consent prefs to true, does not flip them back to false on
+// account info updates while managed, and clears them on sign-out.
+TEST_F(AuthenticationServiceTest,
+       TestDeviceSignalsConsentPrefsManagedAccountInPersonalProfile) {
+  id<SystemIdentity> managed_identity =
+      [FakeSystemIdentity fakeManagedIdentity];
+  fake_system_identity_manager()->AddIdentity(managed_identity);
+  GetApplicationContext()
+      ->GetAccountProfileMapper()
+      ->MoveManagedAccountToPersonalProfileForTesting(managed_identity.gaiaId);
+
+  authentication_service()->SignIn(
+      managed_identity, signin_metrics::AccessPoint::kFullscreenSigninPromo);
+
+  EXPECT_TRUE(HasConsent());
+  EXPECT_TRUE(HasPermanentConsent());
+
+  // Updating extended account info for a secondary unmanaged account or the
+  // primary managed account should not flip the consent prefs back to false.
+  AccountInfo secondary_info =
+      identity_manager()->FindExtendedAccountInfoByAccountId(
+          GetAccountId(identity(0)));
+  secondary_info = AccountInfo::Builder(secondary_info)
+                       .SetHostedDomain(kNoHostedDomainFound)
+                       .Build();
+  signin::UpdateAccountInfoForAccount(identity_manager(), secondary_info);
+
+  EXPECT_TRUE(HasConsent());
+  EXPECT_TRUE(HasPermanentConsent());
+
+  // Signing out of the personal profile should clear the consent prefs.
+  authentication_service()->SignOut(
+      signin_metrics::ProfileSignout::kUserClickedSignoutSettings);
+
+  EXPECT_FALSE(HasConsent());
+  EXPECT_FALSE(HasPermanentConsent());
+}
+
+// Tests that when device signals consent prefs are set to true, they do not
+// flip back to false when the primary account's managed status is unknown
+// (e.g., before extended account info is fetched), and only clear if the
+// account is confirmed to be unmanaged.
+TEST_F(AuthenticationServiceTest,
+       TestDeviceSignalsConsentPrefsUnknownManagedStatus) {
+  // Prevent hosted domain fetches from ever completing, so that the hosted
+  // domain of `test_identity` stays unknown to SystemIdentityManager (and thus
+  // its managed status stays unknown to IdentityManager) during the test.
+  fake_system_identity_manager()->OverrideGetHostedDomainImplementation(
+      base::BindRepeating([](id<SystemIdentity>,
+                             SystemIdentityManager::HostedDomainCallback) {}));
+  id<SystemIdentity> test_identity = [FakeSystemIdentity fakeIdentity3];
+  fake_system_identity_manager()->AddIdentity(test_identity);
+
+  // Attach the identity to the personal profile while its hosted domain is
+  // still unknown in SystemIdentityManager (simulating an already-attached
+  // identity before hosted domain fetch completes).
+  profile_manager_.GetProfileAttributesStorage()
+      ->UpdateAttributesForProfileWithName(
+          profile_->GetProfileName(),
+          base::BindOnce(
+              [](const GaiaId& gaia_id, ProfileAttributesIOS& attr) {
+                auto gaia_ids = attr.GetAttachedGaiaIds();
+                gaia_ids.insert(gaia_id);
+                attr.SetAttachedGaiaIds(gaia_ids);
+              },
+              test_identity.gaiaId));
+
+  PrefService* prefs = profile_->GetPrefs();
+  prefs->SetBoolean(device_signals::prefs::kDeviceSignalsConsentReceived, true);
+  prefs->SetBoolean(
+      device_signals::prefs::kDeviceSignalsPermanentConsentReceived, true);
+
+  // Sign in while the primary account's managed status is still kUnknown.
+  authentication_service()->SignIn(
+      test_identity, signin_metrics::AccessPoint::kFullscreenSigninPromo);
+  const CoreAccountId test_account_id = GetAccountId(test_identity);
+  ASSERT_EQ(identity_manager()
+                ->FindExtendedAccountInfoByAccountId(test_account_id)
+                .IsManaged(),
+            signin::Tribool::kUnknown);
+
+  // The consent prefs must remain true and not flip back to false while the
+  // managed status is unknown.
+  EXPECT_TRUE(HasConsent());
+  EXPECT_TRUE(HasPermanentConsent());
+
+  // Updating extended account info without hosted domain (so managed status
+  // remains unknown) must also keep the consent prefs true.
+  AccountInfo account_info =
+      identity_manager()->FindExtendedAccountInfoByAccountId(test_account_id);
+  account_info =
+      AccountInfo::Builder(account_info).SetFullName("Test User").Build();
+  signin::UpdateAccountInfoForAccount(identity_manager(), account_info);
+  ASSERT_EQ(identity_manager()
+                ->FindExtendedAccountInfoByAccountId(test_account_id)
+                .IsManaged(),
+            signin::Tribool::kUnknown);
+
+  EXPECT_TRUE(HasConsent());
+  EXPECT_TRUE(HasPermanentConsent());
+
+  // Once extended account info confirms the account is unmanaged in a personal
+  // profile, the consent prefs are cleared.
+  // Note: this transition must be tested before the managed one, because
+  // AccountInfo::UpdateWith() never overwrites an already-known hosted domain
+  // with `kNoHostedDomainFound`.
+  account_info = AccountInfo::Builder(account_info)
+                     .SetHostedDomain(kNoHostedDomainFound)
+                     .Build();
+  signin::UpdateAccountInfoForAccount(identity_manager(), account_info);
+  ASSERT_EQ(identity_manager()
+                ->FindExtendedAccountInfoByAccountId(test_account_id)
+                .IsManaged(),
+            signin::Tribool::kFalse);
+
+  EXPECT_FALSE(HasConsent());
+  EXPECT_FALSE(HasPermanentConsent());
+
+  // Once extended account info confirms the account is managed, the consent
+  // prefs are set back to true.
+  account_info = AccountInfo::Builder(account_info)
+                     .SetHostedDomain("enterprise.com")
+                     .Build();
+  signin::UpdateAccountInfoForAccount(identity_manager(), account_info);
+  ASSERT_EQ(identity_manager()
+                ->FindExtendedAccountInfoByAccountId(test_account_id)
+                .IsManaged(),
+            signin::Tribool::kTrue);
+
+  EXPECT_TRUE(HasConsent());
+  EXPECT_TRUE(HasPermanentConsent());
 }

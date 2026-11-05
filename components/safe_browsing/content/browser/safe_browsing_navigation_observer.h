@@ -19,6 +19,7 @@
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -118,12 +119,17 @@ class SafeBrowsingNavigationObserver : public base::SupportsUserData::Data,
                                        public content::WebContentsObserver,
                                        public content_settings::Observer {
  public:
+  // Creates a SafeBrowsingNavigationObserver for `web_contents` if
+  // `observer_manager` is non-null and either Safe Browsing is enabled and
+  // ready, or `is_referrer_chain_needed_for_enterprise` is true (i.e. an
+  // enterprise feature relying on referrer chains is enabled by policy).
   static void MaybeCreateForWebContents(
       content::WebContents* web_contents,
       HostContentSettingsMap* host_content_settings_map,
       SafeBrowsingNavigationObserverManager* observer_manager,
       PrefService* prefs,
-      bool has_safe_browsing_service);
+      bool has_safe_browsing_service,
+      bool is_referrer_chain_needed_for_enterprise);
 
   static SafeBrowsingNavigationObserver* FromWebContents(
       content::WebContents* web_contents);
@@ -171,7 +177,7 @@ class SafeBrowsingNavigationObserver : public base::SupportsUserData::Data,
                            content::RenderFrameHost* source_render_frame_host,
                            const GURL& url,
                            const content::Referrer& referrer,
-                           WindowOpenDisposition disposition,
+                           ui::mojom::WindowOpenDisposition disposition,
                            ui::PageTransition transition,
                            bool started_from_context_menu,
                            bool renderer_initiated) override;

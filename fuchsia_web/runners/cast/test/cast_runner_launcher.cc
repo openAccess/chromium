@@ -31,6 +31,8 @@
 #include "base/fuchsia/fuchsia_logging.h"
 #include "base/fuchsia/process_context.h"
 #include "base/run_loop.h"
+#include "fuchsia_web/common/test/fake_feedback_service.h"
+#include "fuchsia_web/common/test/fake_settings_service.h"
 #include "fuchsia_web/common/test/test_realm_support.h"
 #include "media/fuchsia/audio/fake_audio_device_enumerator_local_component.h"
 
@@ -95,6 +97,7 @@ CastRunnerLauncher::CastRunnerLauncher(CastRunnerFeatures runner_features) {
   realm_builder.AddChild(kCastRunnerComponentName, "#meta/cast_runner.cm");
 
   base::CommandLine command_line = CommandLineFromFeatures(runner_features);
+  command_line.AppendSwitchASCII("use-scheduler-roles", "unused");
   static constexpr char const* kSwitchesToCopy[] = {"ozone-platform"};
   command_line.CopySwitchesFrom(*base::CommandLine::ForCurrentProcess(),
                                 kSwitchesToCopy);
@@ -105,7 +108,9 @@ CastRunnerLauncher::CastRunnerLauncher(CastRunnerFeatures runner_features) {
   // protocols to cast_runner.
   FakeFeedbackService::RouteToChild(realm_builder, kCastRunnerComponentName);
 
-  AddSyslogRoutesFromParent(realm_builder, kCastRunnerComponentName);
+  // Register the fake fuchsia.settings service component; plumbing its
+  // protocols to cast_runner.
+  FakeSettingsService::RouteToChild(realm_builder, kCastRunnerComponentName);
 
   // Run an isolated font service and route it to cast_runner.
   AddFontService(realm_builder, kCastRunnerComponentName);
@@ -136,7 +141,6 @@ CastRunnerLauncher::CastRunnerLauncher(CastRunnerFeatures runner_features) {
               Protocol{fuchsia::intl::PropertyProvider::Name_},
               Protocol{fuchsia::kernel::VmexResource::Name_},
               Dictionary{"diagnostics"},
-              Protocol{fuchsia::media::ProfileProvider::Name_},
               Protocol{"fuchsia.scheduler.RoleManager"},
               Protocol{fuchsia::memorypressure::Provider::Name_},
               Protocol{"fuchsia.process.Launcher"},
@@ -173,12 +177,6 @@ CastRunnerLauncher::CastRunnerLauncher(CastRunnerFeatures runner_features) {
                 },
             .source = ChildRef{kFakeCastAgentName},
             .targets = {ChildRef{kCastRunnerComponentName}}});
-
-  if (!(runner_features & kCastRunnerFeaturesHeadless)) {
-    // CastRunner sets ThemeType::DEFAULT when not headless.
-    AddRouteFromParent(realm_builder, kCastRunnerComponentName,
-                       fuchsia::settings::Display::Name_);
-  }
 
   if (runner_features & kCastRunnerFeaturesVulkan) {
     AddVulkanRoutesFromParent(realm_builder, kCastRunnerComponentName);
@@ -352,18 +350,11 @@ CastRunnerLauncher::CastRunnerLauncher(CastRunnerFeatures runner_features) {
 
   // Create the test realm and connect to the root component's exposed services,
   // for use by tests.
-  realm_root_ = realm_builder.Build();
+  realm_root_.emplace(std::move(realm_builder));
   exposed_services_ = std::make_unique<sys::ServiceDirectory>(
-      realm_root_->component().CloneExposedDir());
+      (*realm_root_)->component().CloneExposedDir());
 }
 
-CastRunnerLauncher::~CastRunnerLauncher() {
-  if (realm_root_.has_value()) {
-    base::RunLoop run_loop;
-    realm_root_.value().Teardown(
-        [quit = run_loop.QuitClosure()](auto result) { quit.Run(); });
-    run_loop.Run();
-  }
-}
+CastRunnerLauncher::~CastRunnerLauncher() = default;
 
 }  // namespace test

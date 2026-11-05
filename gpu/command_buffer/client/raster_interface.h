@@ -8,9 +8,9 @@
 #include <GLES2/gl2.h>
 
 #include "base/compiler_specific.h"
-#include "base/containers/flat_map.h"
 #include "base/containers/span.h"
 #include "base/functional/callback.h"
+#include "base/memory/scoped_refptr.h"
 #include "gpu/command_buffer/client/interface_base.h"
 #include "gpu/command_buffer/common/raster_cmd_enums.h"
 #include "gpu/command_buffer/common/sync_token.h"
@@ -26,13 +26,13 @@ class SkCanvas;
 namespace cc {
 class DisplayItemList;
 class ImageProvider;
-struct ElementId;
+class PaintRecord;
+struct RasterInducingValues;
 }  // namespace cc
 
 namespace gfx {
 class ColorSpace;
 class Point;
-class PointF;
 class Rect;
 class Size;
 class Vector2dF;
@@ -44,6 +44,8 @@ extern "C" typedef const struct _GLcolorSpace* GLcolorSpace;
 
 namespace gpu {
 
+struct Capabilities;
+class ClientSharedImage;
 struct Mailbox;
 
 namespace raster {
@@ -54,6 +56,24 @@ class RasterInterface : public InterfaceBase {
  public:
   RasterInterface() {}
   virtual ~RasterInterface() {}
+
+  virtual const Capabilities& GetCapabilities() const = 0;
+
+  struct CopySharedImageResult {
+    SyncToken source_sync_token;
+    SyncToken dest_sync_token;
+  };
+
+  // This function will not perform any color conversion during the copy.
+  // `source_rect` specifies the subregion of `source` to copy from, and
+  // `dest_offset` specifies the offset within `dest` to copy to.
+  virtual CopySharedImageResult CopySharedImage(
+      const scoped_refptr<ClientSharedImage>& source,
+      const SyncToken& source_sync_token,
+      const scoped_refptr<ClientSharedImage>& dest,
+      const SyncToken& dest_sync_token,
+      const gfx::Rect& source_rect,
+      const gfx::Point& dest_offset);
 
   // This function will not perform any color conversion during the copy.
   // The same width/height is assumed for the destination.
@@ -70,6 +90,16 @@ class RasterInterface : public InterfaceBase {
                                const gpu::Mailbox& dest_mailbox,
                                const gfx::Rect& source_rect,
                                const gfx::Rect& dest_rect) = 0;
+
+  // Asynchronously writes pixels from caller-owned memory inside
+  // `src_sk_pixmap` into `dest`.
+  // NOTE: This is only for single planar shared images (RGB). For multiplanar
+  // shared images, perform WritePixelsYUV.
+  virtual SyncToken WritePixels(const scoped_refptr<ClientSharedImage>& dest,
+                                const SyncToken& sync_token,
+                                int dst_x_offset,
+                                int dst_y_offset,
+                                const SkPixmap& src_sk_pixmap);
 
   // Asynchronously writes pixels from caller-owned memory inside
   // |src_sk_pixmap| into |dest_mailbox|.
@@ -91,13 +121,20 @@ class RasterInterface : public InterfaceBase {
 
   // OOP-Raster
 
+  SyncToken RasterSharedImage(
+      const scoped_refptr<ClientSharedImage>& dest,
+      const SyncToken& sync_token,
+      cc::PaintRecord record,
+      cc::ImageProvider* image_provider,
+      bool needs_clear,
+      base::RepeatingCallback<void(SkCanvas*, uint32_t)> custom_callback = {});
+
   // msaa_sample_count has no effect unless msaa_mode is set to kMSAA
   virtual void BeginRasterCHROMIUM(SkColor4f sk_color_4f,
                                    GLboolean needs_clear,
                                    GLuint msaa_sample_count,
                                    MsaaMode msaa_mode,
                                    GLboolean can_use_lcd_text,
-                                   GLboolean visible,
                                    const gfx::ColorSpace& color_space,
                                    float hdr_headroom,
                                    const GLbyte* mailbox) = 0;
@@ -105,7 +142,6 @@ class RasterInterface : public InterfaceBase {
   // Heuristic decided on UMA data. This covers 85% of the cases where we need
   // to serialize ops > 512k.
   static constexpr size_t kDefaultMaxOpSizeHint = 600 * 1024;
-  using ScrollOffsetMap = base::flat_map<cc::ElementId, gfx::PointF>;
   virtual void RasterCHROMIUM(
       const cc::DisplayItemList* list,
       cc::ImageProvider* provider,
@@ -115,7 +151,7 @@ class RasterInterface : public InterfaceBase {
       const gfx::Vector2dF& post_translate,
       const gfx::Vector2dF& post_scale,
       bool requires_clear,
-      const ScrollOffsetMap* raster_inducing_scroll_offsets,
+      const cc::RasterInducingValues* raster_inducing_values,
       size_t* max_op_size_hint,
       base::RepeatingCallback<void(SkCanvas*, uint32_t)>
           custom_raster_callback) = 0;
@@ -172,8 +208,10 @@ class RasterInterface : public InterfaceBase {
   // from |source_mailbox| into caller-owned memory |dst_pixels|. |plane_index|
   // applies to multiplanar textures in mailboxes, for example YUV images
   // produced by the VideoDecoder. |plane_index| as 0 should be passed for known
-  // single-plane textures.
+  // single-plane textures. |source_size| specifies the dimensions of the plane
+  // identified by |plane_index|.
   virtual bool ReadbackImagePixels(const gpu::Mailbox& source_mailbox,
+                                   const gfx::Size& source_size,
                                    const SkImageInfo& dst_info,
                                    GLuint dst_row_bytes,
                                    int src_x,

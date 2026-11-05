@@ -64,6 +64,7 @@
 #include "net/http/http_cache_writers.h"
 #include "net/http/http_log_util.h"
 #include "net/http/http_network_session.h"
+#include "net/http/http_request_headers.h"
 #include "net/http/http_request_info.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
@@ -100,14 +101,6 @@ enum ExternallyConditionalizedType {
   EXTERNALLY_CONDITIONALIZED_MISMATCHED_VALIDATORS,
   EXTERNALLY_CONDITIONALIZED_MAX
 };
-
-bool ShouldByPassCacheForFirstPartySets(
-    const std::optional<int64_t>& clear_at_run_id,
-    const std::optional<int64_t>& written_at_run_id) {
-  return clear_at_run_id.has_value() &&
-         (!written_at_run_id.has_value() ||
-          written_at_run_id.value() < clear_at_run_id.value());
-}
 
 // Methods other than "GET" or "HEAD" can have request bodies, which causes
 // problems for the request matching.
@@ -991,7 +984,6 @@ int HttpCache::Transaction::DoLoop(int result) {
         NOTREACHED() << "bad state " << state;
     }
     DCHECK(next_state_ != STATE_UNSET) << "Previous state was " << state;
-
   } while (rv != ERR_IO_PENDING && next_state_ != STATE_NONE);
 
   // Assert Start() state machine's allowed last state in successful cases when
@@ -1351,6 +1343,7 @@ int HttpCache::Transaction::DoOpenOrCreateEntryComplete(int result) {
     case UPDATE:
       // There is no cache entry to update; proceed without caching.
       DCHECK(!partial_);
+      UpdateCacheEntryStatus(CacheEntryStatus::ENTRY_NOT_IN_CACHE);
       mode_ = NONE;
       TransitionToState(STATE_SEND_REQUEST);
       break;
@@ -1601,17 +1594,18 @@ int HttpCache::Transaction::DoDoneHeadersAddToEntryComplete(int result) {
   TRACE_EVENT_INSTANT(TRACE_DISABLED_BY_DEFAULT("net"),
                       "DoDoneHeadersAddToEntryComplete",
                       track_for_state_change_, "result", result);
+  net_log_.EndEventWithNetErrorCode(NetLogEventType::HTTP_CACHE_ADD_TO_ENTRY,
+                                    result);
   // This transaction's response headers did not match its ActiveEntry so it
   // created a new ActiveEntry (new_entry_) to write to (and doomed the old
   // one). Now that the new entry has been created, start writing the response.
 
-  DCHECK_EQ(result, OK);
+  CHECK(result == OK || result == ERR_CACHE_RACE);
   DCHECK_EQ(mode_, WRITE);
   DCHECK(new_entry_);
   DCHECK(response_.headers);
 
   cache_pending_ = false;
-  done_headers_create_new_entry_ = false;
 
   // It is unclear exactly how this state is reached with an ERR_CACHE_RACE, but
   // this check appears to fix a rare crash. See crbug.com/959194.
@@ -1620,6 +1614,7 @@ int HttpCache::Transaction::DoDoneHeadersAddToEntryComplete(int result) {
     return OK;
   }
 
+  done_headers_create_new_entry_ = false;
   entry_ = std::move(new_entry_);
   DCHECK_NE(response_.headers->response_code(), HTTP_NOT_MODIFIED);
   DCHECK(entry_->CanTransactionWriteResponseHeaders(this, partial_ != nullptr,
@@ -1669,6 +1664,11 @@ int HttpCache::Transaction::DoCacheReadResponseComplete(int result) {
         TransitionToState(STATE_FINISH_HEADERS);
         return ERR_CACHE_MISS;
       }
+      if (IsUsingURLFromNoVarySearchCache()) {
+        return RestartWithoutNoVarySearchCache(
+            RestartCacheEntryAction::kErase,
+            NoVarySearchUseResult::kNotSuitable);
+      }
       DoneWithEntry(false);
       TransitionToState(STATE_SEND_REQUEST);
       return OK;
@@ -1692,6 +1692,11 @@ int HttpCache::Transaction::DoCacheReadResponseComplete(int result) {
       if (effective_load_flags_ & LOAD_ONLY_FROM_CACHE) {
         TransitionToState(STATE_FINISH_HEADERS);
         return ERR_CACHE_MISS;
+      }
+      if (IsUsingURLFromNoVarySearchCache()) {
+        return RestartWithoutNoVarySearchCache(
+            RestartCacheEntryAction::kErase,
+            NoVarySearchUseResult::kIncompleteBody);
       }
       DoneWithEntry(false);
       TransitionToState(STATE_SEND_REQUEST);
@@ -1737,18 +1742,14 @@ int HttpCache::Transaction::DoCacheReadResponseComplete(int result) {
       TransitionToState(STATE_FINISH_HEADERS);
       return ERR_CACHE_MISS;
     }
+    if (IsUsingURLFromNoVarySearchCache()) {
+      return RestartWithoutNoVarySearchCache(
+          RestartCacheEntryAction::kErase, NoVarySearchUseResult::kNotSuitable);
+    }
     DoneWithEntry(false);
     TransitionToState(STATE_SEND_REQUEST);
     return OK;
 #endif  // !defined(NET_DISABLE_ZSTD)
-  }
-
-  // If the read response matches the clearing filter of FPS, doom the entry
-  // and restart transaction.
-  if (ShouldByPassCacheForFirstPartySets(initial_request_->fps_cache_filter,
-                                         response_.browser_run_id)) {
-    result = ERR_CACHE_ENTRY_NOT_SUITABLE;
-    return OnCacheReadError(result, true);
   }
 
   // TODO(https://crbug.com/40516423): Only get data size if there is no other
@@ -1779,6 +1780,12 @@ int HttpCache::Transaction::DoCacheReadResponseComplete(int result) {
         !range_requested_ && content_length &&
         content_length->InBytes() > std::numeric_limits<int32_t>::max()) {
       DCHECK(!partial_);
+
+      if (IsUsingURLFromNoVarySearchCache()) {
+        return RestartWithoutNoVarySearchCache(
+            RestartCacheEntryAction::kErase,
+            NoVarySearchUseResult::kIncompleteBody);
+      }
 
       // Doom the entry so that no other transaction gets added to this entry
       // and avoid a race of not being able to check this condition because
@@ -2210,7 +2217,7 @@ int HttpCache::Transaction::DoUpdateCachedResponse() {
   // If the new response didn't have a vary header, we continue to use the
   // header from the stored response per the effect of headers->Update().
   // Update the data with the new/updated request headers.
-  response_.vary_data.Init(*request_, *response_.headers);
+  response_.vary_data.Init(request_->extra_headers, *response_.headers);
 
   if (UpdateAndReportCacheability(*response_.headers)) {
     if (!entry_->IsDoomed()) {
@@ -2320,10 +2327,6 @@ int HttpCache::Transaction::DoOverwriteCachedResponse() {
     TransitionToState(STATE_PARTIAL_HEADERS_RECEIVED);
     return OK;
   }
-  // Mark the response with browser_run_id before it gets written.
-  if (initial_request_->browser_run_id.has_value()) {
-    response_.browser_run_id = initial_request_->browser_run_id;
-  }
 
   TransitionToState(STATE_CACHE_WRITE_RESPONSE);
   return OK;
@@ -2413,18 +2416,42 @@ int HttpCache::Transaction::DoHeadersPhaseCannotProceed(int result) {
   // failure, restart this transaction.
   DCHECK(!reading_);
 
+  entry_.reset();
+  new_entry_.reset();
+  new_response_ = nullptr;
+
+  // If response headers were already received from the network during
+  // validation and we were only attempting to create a new replacement cache
+  // entry, do not restart the transaction over the network. Instead, fall back
+  // to un-cached pass-through (mode_ = NONE) and return the received response
+  // directly to the consumer without issuing a duplicate network fetch.
+  if (done_headers_create_new_entry_) {
+    base::UmaHistogramBoolean("HttpCache.RaceAfterHeadersHandled", true);
+    done_headers_create_new_entry_ = false;
+    mode_ = NONE;
+
+    // Safety invariant: Ensure the caller has a live network stream to read
+    // the response body from.
+    CHECK(network_trans_);
+
+    // Invariant: `done_headers_create_new_entry_` is only set when replacing an
+    // entry after validation mismatch. For range requests, a 206 response
+    // routes to STATE_PARTIAL_HEADERS_RECEIVED (bypassing entry replacement),
+    // and a 200 OK causes ValidatePartialResponse() to reset `partial_`.
+    CHECK(!partial_);
+
+    TransitionToState(STATE_NONE);
+    return OK;
+  }
+
   // Reset before invoking SetRequest() which can reset the request info sent to
   // network transaction.
   if (network_trans_) {
     network_trans_.reset();
   }
 
-  new_response_ = nullptr;
-
   SetRequest(net_log_);
 
-  entry_.reset();
-  new_entry_.reset();
   last_disk_cache_access_start_time_ = TimeTicks();
 
   // TODO(crbug.com/40772202): This should probably clear `response_`,
@@ -2546,6 +2573,10 @@ int HttpCache::Transaction::DoNetworkReadCacheWriteComplete(int result) {
 
 int HttpCache::Transaction::DoPartialNetworkReadCompleted(int result) {
   DCHECK(partial_);
+
+  if (result > 0 && handling_206_ && !partial_->IsNetworkReadOK(result)) {
+    result = ERR_CONTENT_LENGTH_MISMATCH;
+  }
 
   // Go to the next range if nothing returned or return the result.
   // TODO(shivanisha) Simplify this condition if possible. It was introduced
@@ -3143,6 +3174,11 @@ int HttpCache::Transaction::BeginExternallyConditionalizedRequest() {
     // The externally conditionalized request is not a validation request
     // for our existing cache entry. Proceed with caching disabled.
     UpdateCacheEntryStatusToOther(OtherStatusReason::kPreConditionalized);
+    if (IsUsingURLFromNoVarySearchCache()) {
+      return RestartWithoutNoVarySearchCache(
+          RestartCacheEntryAction::kDontErase,
+          NoVarySearchUseResult::kCouldntConditionalize);
+    }
     DoneWithEntry(true);
   }
 
@@ -3199,7 +3235,7 @@ ValidationType HttpCache::Transaction::RequiresValidation() {
   //  - watch out for cached responses that depend on authentication
 
   if (response_.vary_data.is_valid() &&
-      !response_.vary_data.MatchesRequest(*request_,
+      !response_.vary_data.MatchesRequest(request_->extra_headers,
                                           *response_.headers.get())) {
     vary_mismatch_ = true;
     return VALIDATION_SYNCHRONOUS;
@@ -4027,7 +4063,7 @@ void HttpCache::Transaction::SetResponse(const HttpResponseInfo& response) {
 
   if (response_.headers) {
     DCHECK(request_);
-    response_.vary_data.Init(*request_, *response_.headers);
+    response_.vary_data.Init(request_->extra_headers, *response_.headers);
   }
 
   // Clear zstd decompression state unconditionally. This covers:

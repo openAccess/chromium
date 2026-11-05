@@ -2,28 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import type {MenuSourceType} from 'chrome://resources/mojo/ui/base/mojom/menu_source_type.mojom-webui.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {ContextMenuType} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {BackForwardButtonElement} from 'chrome://webui-toolbar.top-chrome/back_forward_button.js';
-import type {BrowserProxy} from 'chrome://webui-toolbar.top-chrome/browser_proxy.js';
+import {BrowserProxyImpl} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {BackForwardButtonElement, BrowserProxy} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
-class TestToolbarUiHandler extends TestBrowserProxy {
-  constructor() {
-    super(['showContextMenu']);
-  }
-
-  showContextMenu(
-      type: ContextMenuType, rect: DOMRect, source: MenuSourceType) {
-    this.methodCalled('showContextMenu', [type, rect, source]);
-  }
-}
+import {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
 
 class TestBrowserControlsHandler extends TestBrowserProxy {
   constructor() {
@@ -92,8 +80,7 @@ suite('BackForwardButtonTest', function() {
     // defaults to 0px on ChromeOS Ash).
     backForwardButton.style.setProperty(
         '--toolbar-interior-margin-start', '6px');
-    const buttonWrapper =
-        backForwardButton.shadowRoot.querySelector('#buttonWrapper')!;
+    const buttonWrapper = backForwardButton.$.buttonWrapper;
 
     // Default: not maximized/fullscreen, attribute not present.
     assertFalse(
@@ -124,8 +111,7 @@ suite('BackForwardButtonTest', function() {
     backForwardButton.windowIsMaximizedOrFullscreen = true;
     await microtasksFinished();
 
-    const buttonWrapper =
-        backForwardButton.shadowRoot.querySelector('#buttonWrapper')!;
+    const buttonWrapper = backForwardButton.$.buttonWrapper;
     const button =
         backForwardButton.shadowRoot.querySelector('cr-icon-button')!;
     const rect = backForwardButton.getBoundingClientRect();
@@ -189,8 +175,7 @@ suite('BackForwardButtonTest', function() {
     backForwardButton.windowIsMaximizedOrFullscreen = true;
     await microtasksFinished();
 
-    const buttonWrapper =
-        backForwardButton.shadowRoot.querySelector('#buttonWrapper')!;
+    const buttonWrapper = backForwardButton.$.buttonWrapper;
     const button =
         backForwardButton.shadowRoot.querySelector('cr-icon-button')!;
 
@@ -235,8 +220,7 @@ suite('BackForwardButtonTest', function() {
         backForwardButton.direction = 'back';
         await microtasksFinished();
 
-        const buttonWrapper =
-            backForwardButton.shadowRoot.querySelector('#buttonWrapper')!;
+        const buttonWrapper = backForwardButton.$.buttonWrapper;
         const button =
             backForwardButton.shadowRoot.querySelector('cr-icon-button')!;
 
@@ -325,8 +309,7 @@ suite('BackForwardButtonTest', function() {
     document.body.appendChild(forwardButton);
     await microtasksFinished();
 
-    const buttonWrapper =
-        forwardButton.shadowRoot.querySelector('#buttonWrapper')!;
+    const buttonWrapper = forwardButton.$.buttonWrapper;
     const style = window.getComputedStyle(buttonWrapper);
     assertEquals('flex', style.display);
     assertEquals('0px', style.paddingLeft);
@@ -343,8 +326,7 @@ suite('BackForwardButtonTest', function() {
         backForwardButton.direction = 'back';
         await microtasksFinished();
 
-        const buttonWrapper =
-            backForwardButton.shadowRoot.querySelector('#buttonWrapper')!;
+        const buttonWrapper = backForwardButton.$.buttonWrapper;
         buttonWrapper.dispatchEvent(new PointerEvent('pointerdown', {
           button: 0,
           pointerType: 'mouse',
@@ -365,6 +347,50 @@ suite('BackForwardButtonTest', function() {
         }));
 
         assertEquals(0, browserControlsHandler.getCallCount('back'));
+      });
+
+  test(
+      'Disabled Button Uses Inactive Icon Color Without Extra Opacity',
+      async function() {
+        const rootStyle = document.documentElement.style;
+        rootStyle.setProperty('--color-toolbar-button-icon', 'rgb(1, 2, 3)');
+        rootStyle.setProperty(
+            '--color-toolbar-button-icon-inactive', 'rgb(4, 5, 6)');
+        try {
+          for (const direction of ['back', 'forward'] as const) {
+            backForwardButton.direction = direction;
+            backForwardButton.state = {
+              enabled: false,
+              shouldBeShown: true,
+              isContextMenuVisible: false,
+            };
+            await microtasksFinished();
+
+            let style = getComputedStyle(backForwardButton.$.button);
+            assertEquals(
+                'rgb(4, 5, 6)',
+                style.getPropertyValue('--cr-icon-button-fill-color').trim());
+            assertEquals('none', style.forcedColorAdjust);
+            assertEquals('1', style.opacity);
+
+            backForwardButton.state = {
+              enabled: true,
+              shouldBeShown: true,
+              isContextMenuVisible: false,
+            };
+            await microtasksFinished();
+
+            style = getComputedStyle(backForwardButton.$.button);
+            assertEquals(
+                'rgb(1, 2, 3)',
+                style.getPropertyValue('--cr-icon-button-fill-color').trim());
+            assertEquals('auto', style.forcedColorAdjust);
+            assertEquals('1', style.opacity);
+          }
+        } finally {
+          rootStyle.removeProperty('--color-toolbar-button-icon');
+          rootStyle.removeProperty('--color-toolbar-button-icon-inactive');
+        }
       });
 
   // Tests the Glow Up animation lifecycle for back/forward buttons:

@@ -4,8 +4,10 @@
 
 #include "net/device_bound_sessions/registration_fetcher.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/base64url.h"
@@ -23,6 +25,7 @@
 #include "base/test/gmock_callback_support.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/test/values_test_util.h"
 #include "components/unexportable_keys/background_task_origin.h"
@@ -32,6 +35,7 @@
 #include "components/unexportable_keys/unexportable_key_service_impl.h"
 #include "components/unexportable_keys/unexportable_key_task_manager.h"
 #include "crypto/scoped_fake_unexportable_key_provider.h"
+#include "crypto/sign.h"
 #include "net/base/features.h"
 #include "net/base/network_anonymization_key.h"
 #include "net/base/schemeful_site.h"
@@ -55,12 +59,15 @@
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "net/test/test_with_task_environment.h"
+#include "net/test/url_request/url_request_failed_job.h"
 #include "net/url_request/url_request_context.h"
 #include "net/url_request/url_request_context_builder.h"
+#include "net/url_request/url_request_filter.h"
 #include "net/url_request/url_request_test_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
+#include "third_party/abseil-cpp/absl/strings/str_format.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -113,6 +120,32 @@ constexpr char kBasicValidJson[] =
   }]
 })";
 
+std::string GetSubdomainValidJsonWithCustomPort(int port) {
+  constexpr char kSubdomainValidJson[] =
+      R"({
+  "session_identifier": "session_id",
+  "refresh_url": "/refresh",
+  "scope": {
+    "origin": "https://a.test:%v",
+    "include_site": true,
+    "scope_specification" : [
+      {
+        "type": "include",
+        "domain": "trusted.a.test",
+        "path": "/only_trusted_path"
+      }
+    ]
+  },
+  "credentials": [{
+    "type": "cookie",
+    "name": "auth_cookie",
+    "attributes": "Domain=a.test; Path=/; Secure; SameSite=None"
+  }]
+})";
+
+  return absl::StrFormat(kSubdomainValidJson, port);
+}
+
 constexpr char kSubdomainValidJsonIncludeSiteFalse[] =
     R"({
   "session_identifier": "session_id",
@@ -146,9 +179,8 @@ constexpr char kSessionIdHeaderName[] = "Sec-Secure-Session-Id";
 constexpr unexportable_keys::BackgroundTaskOrigin kTaskOrigin =
     unexportable_keys::BackgroundTaskOrigin::kDeviceBoundSessionCredentials;
 
-std::vector<crypto::SignatureVerifier::SignatureAlgorithm> CreateAlgArray() {
-  return {crypto::SignatureVerifier::SignatureAlgorithm::ECDSA_SHA256,
-          crypto::SignatureVerifier::SignatureAlgorithm::RSA_PKCS1_SHA256};
+std::vector<crypto::sign::SignatureKind> CreateAlgArray() {
+  return {crypto::sign::ECDSA_SHA256, crypto::sign::RSA_PKCS1_SHA256};
 }
 
 struct InvokeCallbackArgumentAction {};
@@ -173,6 +205,8 @@ class TestRegistrationCallback {
     closure_ = run_loop.QuitClosure();
     run_loop.Run();
   }
+
+  bool has_called() const { return outcome_.has_value(); }
 
   const RegistrationResult& outcome() {
     EXPECT_TRUE(outcome_.has_value());
@@ -303,6 +337,13 @@ std::unique_ptr<test_server::HttpResponse> ReturnResponse(
   response->set_content_type("application/json");
   response->set_content(response_text);
   return response;
+}
+
+std::unique_ptr<test_server::HttpResponse> ReturnSubdomainResponse(
+    const test_server::EmbeddedTestServer* server,
+    const test_server::HttpRequest& request) {
+  return ReturnResponse(
+      HTTP_OK, GetSubdomainValidJsonWithCustomPort(server->port()), request);
 }
 
 std::unique_ptr<test_server::HttpResponse> ReturnChallengeResponse(
@@ -476,8 +517,8 @@ MATCHER(IsErrorRegistrationResult, "") {
       }});
 }
 
-std::optional<std::string> GetRequestChallenge(
-    const test_server::HttpRequest& request) {
+std::optional<std::string> GetJwtClaim(const test_server::HttpRequest& request,
+                                       std::string_view claim_name) {
   auto resp_iter = request.headers.find(kSessionResponseHeaderName);
   if (resp_iter == request.headers.end()) {
     return std::nullopt;
@@ -499,12 +540,12 @@ std::optional<std::string> GetRequestChallenge(
   if (!payload_json.has_value()) {
     return std::nullopt;
   }
-  const std::string* challenge = payload_json->FindString("jti");
-  if (!challenge) {
+  const std::string* claim = payload_json->FindString(claim_name);
+  if (!claim) {
     return std::nullopt;
   }
 
-  return *challenge;
+  return *claim;
 }
 
 std::optional<base::DictValue> Base64UrlEncodedJsonToDict(
@@ -520,13 +561,65 @@ std::optional<base::DictValue> Base64UrlEncodedJsonToDict(
 TEST_F(RegistrationTest, BasicSuccess) {
   base::HistogramTester histogram_tester;
   crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
-  server_.RegisterRequestHandler(
-      base::BindRepeating([](const test_server::HttpRequest& request) {
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
         auto resp_iter = request.headers.find(kSessionResponseHeaderName);
         EXPECT_TRUE(resp_iter != request.headers.end());
         if (resp_iter != request.headers.end()) {
           EXPECT_TRUE(VerifyEs256Jwt(resp_iter->second));
         }
+        EXPECT_FALSE(GetJwtClaim(request, "aud").has_value());
+        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  RecordingNetLogObserver net_log_observer;
+  TestRegistrationCallback callback;
+
+  auto param = GetBasicParam();
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+  const Session& session = callback.outcome().SessionForTesting();
+  proto::Session session_proto = session.ToProto();
+  EXPECT_TRUE(session_proto.session_inclusion_rules().do_include_site());
+  EXPECT_THAT(
+      session_proto.session_inclusion_rules().url_rules(),
+      ElementsAre(
+          EqualsInclusionRule(proto::RuleType::INCLUDE, "trusted.a.test",
+                              "/only_trusted_path"),
+          EqualsInclusionRule(proto::RuleType::EXCLUDE, "a.test", "/refresh")));
+  EXPECT_THAT(
+      session_proto.cookie_cravings(),
+      ElementsAre(EqualsCredential(
+          "auth_cookie", "Domain=.a.test; Path=/; Secure; SameSite=None")));
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Registration.Network.Result", HTTP_OK, 1);
+}
+
+TEST_F(RegistrationTest, BasicSuccess_AudienceClaimEnabled) {
+  AddScopedFeatureList().InitAndEnableFeature(
+      features::kDeviceBoundSessionsIncludeAudienceClaim);
+  base::HistogramTester histogram_tester;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
+        auto resp_iter = request.headers.find(kSessionResponseHeaderName);
+        EXPECT_TRUE(resp_iter != request.headers.end());
+        if (resp_iter != request.headers.end()) {
+          EXPECT_TRUE(VerifyEs256Jwt(resp_iter->second));
+        }
+        EXPECT_EQ(GetJwtClaim(request, "aud"), GetBaseURL().spec());
         return ReturnResponse(HTTP_OK, kBasicValidJson, request);
       }));
   ASSERT_TRUE(server_.Start());
@@ -668,13 +761,9 @@ TEST_F(RegistrationTest, SigningKeyGenerationFailure) {
 TEST_F(RegistrationTest, AttestationKeyGenerationFailure) {
   unexportable_keys::MockUnexportableKeyService mock_service;
 
-  // Required because StartCreateTokenAndFetch concurrently calls both
-  // GenerateSigningKeySlowlyAsync and GenerateAttestationKeySlowlyAsync.
-  // Expecting it without invoking its callback is enough because the
-  // attestation failure immediately aborts the fetch flow, and omitting
-  // real service delegation prevents dispatching background tasks to the
-  // thread pool that could outlive the test.
-  EXPECT_CALL(mock_service, GenerateSigningKeySlowlyAsync);
+  // The attestation key fails synchronously, so the fetch has already failed
+  // and the fetcher must not start generating a signing key.
+  EXPECT_CALL(mock_service, GenerateSigningKeySlowlyAsync).Times(0);
 
   // Mock attestation key generation to fail
   EXPECT_CALL(mock_service, GenerateAttestationKeySlowlyAsync)
@@ -699,6 +788,43 @@ TEST_F(RegistrationTest, AttestationKeyGenerationFailure) {
   callback.WaitForCall();
 
   EXPECT_EQ(callback.outcome().SessionErrorForTesting()->type,
+            SessionError::kAttestationKeyGenerationError);
+}
+
+// `UnexportableKeyServiceProxied` fails requests synchronously once its Mojo
+// pipe is disconnected, and `SessionServiceImpl` deletes the fetcher from the
+// completion callback. The fetcher must not be used after that.
+TEST_F(RegistrationTest, AttestationKeyGenerationFailureDeletesFetcher) {
+  unexportable_keys::MockUnexportableKeyService mock_service;
+  EXPECT_CALL(mock_service, GenerateAttestationKeySlowlyAsync)
+      .WillOnce(RunOnceCallback<2>(base::unexpected(
+          unexportable_keys::ServiceError::kOperationCancelled)));
+  EXPECT_CALL(mock_service, GenerateSigningKeySlowlyAsync).Times(0);
+
+  auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
+  auto request_param = RegistrationRequestParam::CreateForTesting(
+      GURL("https://a.test"), /*session_identifier=*/std::nullopt, kChallenge,
+      /*authorization=*/std::nullopt, AttestationMode::kRequired);
+
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          request_param, session_service(), mock_service, context_.get(),
+          isolation_info, isolation_info.site_for_cookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  std::optional<RegistrationResult> result;
+  fetcher->StartCreateTokenAndFetch(
+      request_param, CreateAlgArray(),
+      base::BindLambdaForTesting(
+          [&](RegistrationFetcher*, RegistrationResult registration_result) {
+            fetcher.reset();
+            result = std::move(registration_result);
+          }));
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->SessionErrorForTesting()->type,
             SessionError::kAttestationKeyGenerationError);
 }
 
@@ -767,6 +893,8 @@ TEST_F(RegistrationTest, AttestationKeyGenerationSuccess) {
 }
 
 TEST_F(RegistrationTest, AttestationSuccessWithChallenge) {
+  AddScopedFeatureList().InitAndEnableFeature(
+      features::kDeviceBoundSessionsIncludeAudienceClaim);
   base::HistogramTester histogram_tester;
   crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
   std::string outer_jwt;
@@ -779,8 +907,10 @@ TEST_F(RegistrationTest, AttestationSuccessWithChallenge) {
   ASSERT_TRUE(server_.Start());
 
   TestRegistrationCallback callback;
+  GURL endpoint_with_query_and_fragment =
+      GURL(base::StrCat({GetBaseURL().spec(), "?query=param#fragment"}));
   auto param = RegistrationRequestParam::CreateForTesting(
-      GetBaseURL(), /*session_identifier=*/std::nullopt,
+      endpoint_with_query_and_fragment, /*session_identifier=*/std::nullopt,
       std::string(kChallenge),
       /*authorization=*/std::nullopt, AttestationMode::kRequired);
   auto fetcher = RegistrationFetcher::CreateFetcher(
@@ -822,6 +952,7 @@ TEST_F(RegistrationTest, AttestationSuccessWithChallenge) {
   EXPECT_THAT(att, DictionaryHasValue("fmt", base::Value("TPM")));
   EXPECT_THAT(att.FindString("stmt"), Pointee(Not(IsEmpty())));
   EXPECT_THAT(att.FindString("sig"), Pointee(Not(IsEmpty())));
+  EXPECT_THAT(att.FindString("sub_key"), Pointee(Not(IsEmpty())));
 
   const std::string& inner_jwt = CHECK_DEREF(outer_payload.FindString("jti"));
   EXPECT_TRUE(VerifyEs256Jwt(inner_jwt));
@@ -841,7 +972,10 @@ TEST_F(RegistrationTest, AttestationSuccessWithChallenge) {
   ASSERT_OK_AND_ASSIGN(base::DictValue inner_payload,
                        Base64UrlEncodedJsonToDict(inner_sections[1]));
   EXPECT_THAT(inner_payload,
+              DictionaryHasValue("aud", base::Value(GetBaseURL().spec())));
+  EXPECT_THAT(inner_payload,
               DictionaryHasValue("jti", base::Value(kChallenge)));
+  EXPECT_EQ(*outer_payload.FindString("aud"), *inner_payload.FindString("aud"));
 }
 
 TEST_F(RegistrationTest, AttestationCertificationFailure) {
@@ -1864,6 +1998,69 @@ TEST_F(RegistrationTest, ServerError500) {
             SessionError::kTransientHttpError);
 }
 
+TEST_F(RegistrationTest, ServerError429) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnResponse, HTTP_TOO_MANY_REQUESTS, kBasicValidJson));
+  ASSERT_TRUE(server_.Start());
+
+  TestRegistrationCallback callback;
+
+  RegistrationRequestParam param = GetBasicParam();
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+
+  EXPECT_EQ(callback.outcome().SessionErrorForTesting()->type,
+            SessionError::kTransientHttpError);
+}
+
+// A 429 on refresh is a transient error that does not terminate the session
+// and is not retried immediately.
+TEST_F(RegistrationTest, ServerError429OnRefresh) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kDeviceBoundSessionsRetryTransientRefreshErrors);
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  int request_count = 0;
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&request_count](const test_server::HttpRequest& request) {
+        request_count++;
+        return ReturnResponse(HTTP_TOO_MANY_REQUESTS, "", request);
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  TestRegistrationCallback callback;
+  auto param = RegistrationRequestParam::CreateForTesting(
+      GetBaseURL(), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartFetchWithExistingKey(param, CreateSigningKey(),
+                                     callback.callback());
+  callback.WaitForCall();
+
+  const SessionError* error = callback.outcome().SessionErrorForTesting();
+  ASSERT_TRUE(error);
+  EXPECT_EQ(error->type, SessionError::kTransientHttpError);
+  EXPECT_FALSE(error->GetDeletionReason().has_value());
+  EXPECT_EQ(request_count, 1);
+}
+
 TEST_F(RegistrationTest, ServerErrorReturnOne403ThenSuccess) {
   crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
 
@@ -1911,19 +2108,30 @@ TEST_F(RegistrationTest, ServerErrorReturnOne403ThenSuccess) {
           "auth_cookie", "Domain=.a.test; Path=/; Secure; SameSite=None")));
 }
 
+// Redirects to `path` on `host`. The port comes from `request.base_url`,
+// because `EmbeddedTestServer` assigns it dynamically.
 std::unique_ptr<test_server::HttpResponse> ReturnRedirect(
-    const std::string& location,
+    std::string_view host,
+    std::string_view path,
     const test_server::HttpRequest& request) {
-  if (request.relative_url != "/") {
-    return nullptr;
-  }
-
+  GURL::Replacements replacements;
+  replacements.SetHostStr(host);
+  replacements.SetPathStr(path);
   auto response = std::make_unique<test_server::BasicHttpResponse>();
   response->set_code(HTTP_FOUND);
-  response->AddCustomHeader("Location", location);
-  response->set_content("Redirected");
-  response->set_content_type("text/plain");
-  return std::move(response);
+  response->AddCustomHeader(
+      "Location", request.base_url.ReplaceComponents(replacements).spec());
+  return response;
+}
+
+// Counts requests in `hits` before running `callback`. `hits` is atomic
+// because `EmbeddedTestServer` runs handlers on its own thread.
+std::unique_ptr<test_server::HttpResponse> CountRequest(
+    std::atomic<int>* hits,
+    const test_server::EmbeddedTestServer::HandleRequestCallback& callback,
+    const test_server::HttpRequest& request) {
+  ++*hits;
+  return callback.Run(request);
 }
 
 std::unique_ptr<test_server::HttpResponse> CheckRedirect(
@@ -1941,8 +2149,9 @@ std::unique_ptr<test_server::HttpResponse> CheckRedirect(
 TEST_F(RegistrationTest, FollowHttpsToHttpsRedirect) {
   crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
   bool followed = false;
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnRedirect, kRedirectPath));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnForHostAndPath, "a.test", "/",
+      base::BindRepeating(&ReturnRedirect, "a.test", kRedirectPath)));
   server_.RegisterRequestHandler(
       base::BindRepeating(&CheckRedirect, &followed));
   // Required to add a certificate for a.test, which is used below.
@@ -2087,8 +2296,65 @@ std::unique_ptr<test_server::HttpResponse> ReturnResponseForRefreshRequest(
 TEST_F(RegistrationTest, BasicSuccessForExistingKey) {
   base::HistogramTester histogram_tester;
   crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
+        EXPECT_TRUE(request.headers.find(kSessionResponseHeaderName) !=
+                    request.headers.end());
+        EXPECT_FALSE(GetJwtClaim(request, "aud").has_value());
+        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+      }));
+  ASSERT_TRUE(server_.Start());
+
+  RecordingNetLogObserver net_log_observer;
+  TestRegistrationCallback callback;
+
+  auto isolation_info = IsolationInfo::CreateTransient(/*nonce=*/std::nullopt);
+  auto request_param = RegistrationRequestParam::CreateForTesting(
+      GetBaseURL(), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  UnexportableSigningKeyId key = CreateSigningKey();
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          request_param, session_service(), unexportable_key_service(),
+          context_.get(), isolation_info, isolation_info.site_for_cookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartFetchWithExistingKey(request_param, std::move(key),
+                                     callback.callback());
+  callback.WaitForCall();
+  const auto& session = callback.outcome().SessionForTesting();
+  proto::Session session_proto = session.ToProto();
+  EXPECT_TRUE(session_proto.session_inclusion_rules().do_include_site());
+  EXPECT_THAT(
+      session_proto.session_inclusion_rules().url_rules(),
+      ElementsAre(
+          EqualsInclusionRule(proto::RuleType::INCLUDE, "trusted.a.test",
+                              "/only_trusted_path"),
+          EqualsInclusionRule(proto::RuleType::EXCLUDE, "a.test", "/refresh")));
+  EXPECT_THAT(
+      session_proto.cookie_cravings(),
+      ElementsAre(EqualsCredential(
+          "auth_cookie", "Domain=.a.test; Path=/; Secure; SameSite=None")));
+
+  histogram_tester.ExpectBucketCount(
+      "Net.DeviceBoundSessions.Refresh.Network.Result", HTTP_OK, 1);
+}
+
+TEST_F(RegistrationTest, BasicSuccessForExistingKey_AudienceClaimEnabled) {
+  AddScopedFeatureList().InitAndEnableFeature(
+      features::kDeviceBoundSessionsIncludeAudienceClaim);
+  base::HistogramTester histogram_tester;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  server_.RegisterRequestHandler(base::BindLambdaForTesting(
+      [&](const test_server::HttpRequest& request)
+          -> std::unique_ptr<test_server::HttpResponse> {
+        EXPECT_TRUE(request.headers.find(kSessionResponseHeaderName) !=
+                    request.headers.end());
+        EXPECT_EQ(GetJwtClaim(request, "aud"), GetBaseURL().spec());
+        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+      }));
   ASSERT_TRUE(server_.Start());
 
   RecordingNetLogObserver net_log_observer;
@@ -2357,7 +2623,7 @@ TEST_F(RegistrationTest,
           -> std::unique_ptr<test_server::HttpResponse> {
         auto response = std::make_unique<test_server::BasicHttpResponse>();
         const std::optional<std::string> challenge =
-            GetRequestChallenge(request);
+            GetJwtClaim(request, "jti");
         if (!challenge.has_value()) {
           response->set_code(HTTP_FORBIDDEN);
           session->set_cached_challenge("updated_challenge");
@@ -2410,7 +2676,7 @@ TEST_F(RegistrationTest,
           -> std::unique_ptr<test_server::HttpResponse> {
         auto response = std::make_unique<test_server::BasicHttpResponse>();
         const std::optional<std::string> challenge =
-            GetRequestChallenge(request);
+            GetJwtClaim(request, "jti");
         if (*challenge == kChallenge) {
           response->set_code(HTTP_FORBIDDEN);
           session->set_cached_challenge("updated_challenge");
@@ -3070,8 +3336,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_Success) {
                           R"json({
                             "registering_origins": [ "https://subdomain.a.test:$1" ]
                           })json")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("subdomain.a.test", "/");
@@ -3100,8 +3366,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_WellKnownUnavailable) {
   server_.RegisterRequestHandler(base::BindRepeating(
       &ReturnForHostAndPath, "a.test", "/.well-known/device-bound-sessions",
       base::BindRepeating(&ReturnResponse, HTTP_BAD_REQUEST, "")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("subdomain.a.test", "/");
@@ -3132,8 +3398,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_WellKnownMalformed) {
   server_.RegisterRequestHandler(base::BindRepeating(
       &ReturnForHostAndPath, "a.test", "/.well-known/device-bound-sessions",
       base::BindRepeating(&ReturnResponse, HTTP_OK, "invalid JSON")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("subdomain.a.test", "/");
@@ -3165,8 +3431,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_WellKnownMalformedEntry) {
       &ReturnForHostAndPath, "a.test", "/.well-known/device-bound-sessions",
       base::BindRepeating(&ReturnResponse, HTTP_OK,
                           "{\"registering_origins\": [ 12345 ]}")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("subdomain.a.test", "/");
@@ -3200,8 +3466,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_Unauthorized) {
                           R"json({
                             "registering_origins": [ "https://subdomain.a.test:$1" ]
                           })json")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("not-allowed-subdomain.a.test", "/");
@@ -3268,8 +3534,8 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_MultipleAllowed) {
                               "https://other-subdomain.a.test:$1"
                             ]
                           })json")));
-  server_.RegisterRequestHandler(
-      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
   ASSERT_TRUE(server_.Start());
 
   GURL registration_url = server_.GetURL("subdomain.a.test", "/");
@@ -3316,6 +3582,40 @@ TEST_F(RegistrationTest, RegistrationBySubdomain_MultipleAllowed) {
   }
 }
 
+TEST_F(RegistrationTest,
+       RegistrationBySubdomain_DoesNotInheritSubdomainQueryOrFragment) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnForHostAndPath, "a.test", "/.well-known/device-bound-sessions",
+      base::BindRepeating(&ReturnWellKnown,
+                          R"json({
+                            "registering_origins": [ "https://subdomain.a.test:$1" ]
+                          })json")));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnSubdomainResponse, base::Unretained(&server_)));
+  ASSERT_TRUE(server_.Start());
+
+  // Registration URL includes query parameters and fragment.
+  GURL registration_url = server_.GetURL(
+      "subdomain.a.test", "/reg?evil=ATTACKER_CONTROLLED#fragment");
+
+  TestRegistrationCallback callback;
+  auto param = GetBasicParam(registration_url);
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context_.get(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  callback.WaitForCall();
+  callback.outcome().SessionForTesting();
+}
+
 TEST_F(RegistrationTest, RegistrationRedirectToSubdomain) {
   crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
   bool well_known_fetched = false;
@@ -3341,7 +3641,9 @@ TEST_F(RegistrationTest, RegistrationRedirectToSubdomain) {
         if (request.relative_url != "/dbsc") {
           return nullptr;
         }
-        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+        return ReturnResponse(
+            HTTP_OK, GetSubdomainValidJsonWithCustomPort(server_.port()),
+            request);
       }));
 
   // 3. Monitor well-known requests
@@ -3409,7 +3711,9 @@ TEST_F(RegistrationTest, FederatedWellKnownDiscoverySendsFetchMetadata) {
         if (request.relative_url != "/dbsc") {
           return nullptr;
         }
-        return ReturnResponse(HTTP_OK, kBasicValidJson, request);
+        return ReturnResponse(
+            HTTP_OK, GetSubdomainValidJsonWithCustomPort(server_.port()),
+            request);
       }));
 
   // 3. .well-known Interceptor: Capture the outbound GET metadata for the
@@ -3493,6 +3797,37 @@ TEST_F(RegistrationTest, FederatedSuccess) {
       /*authorization=*/std::nullopt);
   auto session_or_error =
       FetchWithFederatedKey(param, key, server_.GetURL("provider.a.test", "/"));
+  EXPECT_EQ(session_or_error.SessionForTesting().unexportable_key_id(), key);
+}
+
+TEST_F(RegistrationTest, Federated_DoesNotInheritQueryOrFragment) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnForHostAndPath, "provider.a.test",
+                          "/.well-known/device-bound-sessions",
+                          base::BindRepeating(&ReturnWellKnown,
+                                              R"json({
+                                                "relying_origins": [ "https://rp.a.test:$1" ]
+                                              })json")));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnForHostAndPath, "rp.a.test", "/.well-known/device-bound-sessions",
+      base::BindRepeating(&ReturnWellKnown,
+                          R"json({
+                            "provider_origin": "https://provider.a.test:$1"
+                          })json")));
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  ASSERT_TRUE(server_.Start());
+
+  UnexportableSigningKeyId key = CreateSigningKey();
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("rp.a.test", "/reg?rp_query=1#rp_frag"),
+      kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  GURL provider_url =
+      server_.GetURL("provider.a.test", "/path?provider_query=1#provider_frag");
+  auto session_or_error = FetchWithFederatedKey(param, key, provider_url);
   EXPECT_EQ(session_or_error.SessionForTesting().unexportable_key_id(), key);
 }
 
@@ -3711,6 +4046,7 @@ TEST_F(RegistrationTest, FederatedTooManyRelying) {
       /*authorization=*/std::nullopt);
   auto session_or_error =
       FetchWithFederatedKey(param, key, server_.GetURL("provider.a.test", "/"));
+  ASSERT_NE(session_or_error.SessionErrorForTesting(), nullptr);
   EXPECT_EQ(session_or_error.SessionErrorForTesting()->type,
             SessionError::kTooManyRelyingOriginLabels);
 }
@@ -3786,6 +4122,318 @@ TEST_F(RegistrationTest, FederatedNotRegistrableDoesNotCount) {
   auto session_or_error =
       FetchWithFederatedKey(param, key, server_.GetURL("provider.a.test", "/"));
   EXPECT_EQ(session_or_error.SessionForTesting().unexportable_key_id(), key);
+}
+
+TEST_F(RegistrationTest, FederatedInvalidRelyingOriginDoesNotBypassLabelLimit) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+  // "https://sneaky.a.test:99999" is not a valid URL (port out of range), but
+  // `GURL` still exposes "sneaky.a.test" as its host, so it must not be able to
+  // spend -- or bypass -- the relying origin label budget.
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnForHostAndPath, "provider.a.test",
+                          "/.well-known/device-bound-sessions",
+                          base::BindRepeating(&ReturnWellKnown,
+                                              R"json({
+                                                "relying_origins": [
+                                                  "https://sneaky.a.test:99999",
+                                                  "https://rp.b1.test:$1",
+                                                  "https://rp.b2.test:$1",
+                                                  "https://rp.b3.test:$1",
+                                                  "https://rp.b4.test:$1",
+                                                  "https://rp.b5.test:$1",
+                                                  "https://rp.a.test:$1"
+                                                ]
+                                              })json")));
+  ASSERT_TRUE(server_.Start());
+
+  UnexportableSigningKeyId key = CreateSigningKey();
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("rp.a.test", "/"), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  auto session_or_error =
+      FetchWithFederatedKey(param, key, server_.GetURL("provider.a.test", "/"));
+  EXPECT_EQ(session_or_error.SessionErrorForTesting()->type,
+            SessionError::kTooManyRelyingOriginLabels);
+}
+
+TEST_F(RegistrationTest, FederatedFifthLabelAllowed) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  // Verifies that when the target origin's label ("a") is the 5th distinct
+  // label (`kMaxLabels`), CheckRelyingOrigin matches on the label and allows
+  // registration even when another origin with the same label appears earlier
+  // and additional distinct labels follow.
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnForHostAndPath, "provider.a.test",
+                          "/.well-known/device-bound-sessions",
+                          base::BindRepeating(&ReturnWellKnown,
+                                              R"json({
+                                                "relying_origins": [
+                                                  "https://rp.b1.test:$1",
+                                                  "https://rp.b2.test:$1",
+                                                  "https://rp.b3.test:$1",
+                                                  "https://rp.b4.test:$1",
+                                                  "https://other.a.test:$1",
+                                                  "https://rp.b5.test:$1",
+                                                  "https://rp.a.test:$1"
+                                                ]
+                                              })json")));
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnForHostAndPath, "rp.a.test", "/.well-known/device-bound-sessions",
+      base::BindRepeating(&ReturnWellKnown,
+                          R"json({
+                            "provider_origin": "https://provider.a.test:$1"
+                          })json")));
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnResponse, HTTP_OK, kBasicValidJson));
+  ASSERT_TRUE(server_.Start());
+
+  UnexportableSigningKeyId key = CreateSigningKey();
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("rp.a.test", "/"), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  auto session_or_error =
+      FetchWithFederatedKey(param, key, server_.GetURL("provider.a.test", "/"));
+  EXPECT_EQ(session_or_error.SessionForTesting().unexportable_key_id(), key);
+}
+
+TEST_F(RegistrationTest, FederatedTargetOriginNonRegistrableRejected) {
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider;
+
+  // An IP address origin has no registrable domain label, so it cannot satisfy
+  // the label limit check even if explicitly listed in relying_origins.
+  server_.RegisterRequestHandler(
+      base::BindRepeating(&ReturnForHostAndPath, "provider.a.test",
+                          "/.well-known/device-bound-sessions",
+                          base::BindRepeating(&ReturnWellKnown,
+                                              R"json({
+                                                "relying_origins": [
+                                                  "https://127.0.0.1:$1"
+                                                ]
+                                              })json")));
+  ASSERT_TRUE(server_.Start());
+
+  UnexportableSigningKeyId key = CreateSigningKey();
+  auto param = RegistrationRequestParam::CreateForTesting(
+      server_.GetURL("127.0.0.1", "/"), kSessionIdentifier, kChallenge,
+      /*authorization=*/std::nullopt);
+  auto session_or_error =
+      FetchWithFederatedKey(param, key, server_.GetURL("provider.a.test", "/"));
+  EXPECT_EQ(session_or_error.SessionErrorForTesting()->type,
+            SessionError::kTooManyRelyingOriginLabels);
+}
+
+constexpr std::string_view kFederatedRedirectHistogram =
+    "Net.DeviceBoundSessions.FederatedRegistration.Redirect";
+// Buckets of `kFederatedRedirectHistogram`.
+constexpr int kNoRedirectBucket = 0;
+constexpr int kSameOriginBucket = 1;
+constexpr int kCrossOriginBucket = 2;
+
+// Federated registration of https://rp.a.test/redirect with provider.a.test
+// as the provider. Both .well-known files authorize the pair, and a.test lets
+// rp.a.test and other.a.test register the site-wide session in
+// `ReturnSubdomainResponse()`, so only the redirect handlers registered by each
+// test decide the outcome.
+class RegistrationFederatedRedirectTest : public RegistrationTest {
+ protected:
+  RegistrationFederatedRedirectTest() {
+    server_.RegisterRequestHandler(
+        base::BindRepeating(&ReturnForHostAndPath, "provider.a.test",
+                            "/.well-known/device-bound-sessions",
+                            base::BindRepeating(&ReturnWellKnown,
+                                                R"json({
+                                                  "relying_origins": [ "https://rp.a.test:$1" ]
+                                                })json")));
+    server_.RegisterRequestHandler(
+        base::BindRepeating(&ReturnForHostAndPath, "rp.a.test",
+                            "/.well-known/device-bound-sessions",
+                            base::BindRepeating(&ReturnWellKnown,
+                                                R"json({
+                              "provider_origin": "https://provider.a.test:$1"
+                            })json")));
+    // Registered last, because `ReturnForHostAndPath()` also matches the
+    // subdomains of a.test.
+    server_.RegisterRequestHandler(base::BindRepeating(
+        &ReturnForHostAndPath, "a.test", "/.well-known/device-bound-sessions",
+        base::BindRepeating(&ReturnWellKnown,
+                            R"json({
+                              "registering_origins": [
+                                "https://rp.a.test:$1",
+                                "https://other.a.test:$1"
+                              ]
+                            })json")));
+  }
+
+  void AddRedirect(std::string_view from_host,
+                   std::string_view from_path,
+                   std::string_view to_host,
+                   std::string_view to_path) {
+    server_.RegisterRequestHandler(base::BindRepeating(
+        &ReturnForHostAndPath, from_host, from_path,
+        base::BindRepeating(&ReturnRedirect, to_host, to_path)));
+  }
+
+  // Serves `ReturnSubdomainResponse()` at `host` + `path` and counts requests
+  // in `hits`.
+  void AddTarget(std::string_view host,
+                 std::string_view path,
+                 std::atomic<int>* hits) {
+    server_.RegisterRequestHandler(base::BindRepeating(
+        &ReturnForHostAndPath, host, path,
+        base::BindRepeating(
+            &CountRequest, hits,
+            base::BindRepeating(&ReturnSubdomainResponse, &server_))));
+  }
+
+  RegistrationResult Fetch() {
+    return FetchWithFederatedKey(
+        RegistrationRequestParam::CreateForTesting(
+            server_.GetURL("rp.a.test", "/redirect"),
+            /*session_identifier=*/std::nullopt, kChallenge,
+            /*authorization=*/std::nullopt),
+        CreateSigningKey(), server_.GetURL("provider.a.test", "/"));
+  }
+
+  void DisableBlockRedirects() {
+    AddScopedFeatureList().InitAndDisableFeature(
+        features::kDeviceBoundSessionsFederatedRegistrationBlockRedirects);
+  }
+
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider_;
+  base::HistogramTester histogram_tester_;
+};
+
+TEST_F(RegistrationFederatedRedirectTest, SameOriginBlocked) {
+  std::atomic<int> target_hits = 0;
+  AddRedirect("rp.a.test", "/redirect", "rp.a.test", "/reg");
+  AddTarget("rp.a.test", "/reg", &target_hits);
+  ASSERT_TRUE(server_.Start());
+
+  RegistrationResult result = Fetch();
+  ASSERT_NE(result.SessionErrorForTesting(), nullptr);
+  EXPECT_EQ(result.SessionErrorForTesting()->type,
+            SessionError::kFederatedRegistrationRedirected);
+  EXPECT_EQ(target_hits.load(), 0);
+  histogram_tester_.ExpectUniqueSample(kFederatedRedirectHistogram,
+                                       kSameOriginBucket, 1);
+}
+
+TEST_F(RegistrationFederatedRedirectTest, CrossOriginBlocked) {
+  std::atomic<int> target_hits = 0;
+  AddRedirect("rp.a.test", "/redirect", "other.a.test", "/reg");
+  AddTarget("other.a.test", "/reg", &target_hits);
+  ASSERT_TRUE(server_.Start());
+
+  RegistrationResult result = Fetch();
+  ASSERT_NE(result.SessionErrorForTesting(), nullptr);
+  EXPECT_EQ(result.SessionErrorForTesting()->type,
+            SessionError::kFederatedRegistrationRedirected);
+  EXPECT_EQ(target_hits.load(), 0);
+  histogram_tester_.ExpectUniqueSample(kFederatedRedirectHistogram,
+                                       kCrossOriginBucket, 1);
+}
+
+TEST_F(RegistrationFederatedRedirectTest, RoundTripBlockedAtFirstHop) {
+  std::atomic<int> bounce_hits = 0;
+  AddRedirect("rp.a.test", "/redirect", "other.a.test", "/bounce");
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnForHostAndPath, "other.a.test", "/bounce",
+      base::BindRepeating(
+          &CountRequest, &bounce_hits,
+          base::BindRepeating(&ReturnRedirect, "rp.a.test", "/reg"))));
+  ASSERT_TRUE(server_.Start());
+
+  RegistrationResult result = Fetch();
+  ASSERT_NE(result.SessionErrorForTesting(), nullptr);
+  EXPECT_EQ(result.SessionErrorForTesting()->type,
+            SessionError::kFederatedRegistrationRedirected);
+  EXPECT_EQ(bounce_hits.load(), 0);
+  histogram_tester_.ExpectUniqueSample(kFederatedRedirectHistogram,
+                                       kCrossOriginBucket, 1);
+}
+
+TEST_F(RegistrationFederatedRedirectTest,
+       SameOriginFollowedWithoutBlockRedirects) {
+  DisableBlockRedirects();
+  std::atomic<int> target_hits = 0;
+  AddRedirect("rp.a.test", "/redirect", "rp.a.test", "/reg");
+  AddTarget("rp.a.test", "/reg", &target_hits);
+  ASSERT_TRUE(server_.Start());
+
+  RegistrationResult result = Fetch();
+  EXPECT_EQ(result.SessionErrorForTesting(), nullptr);
+  EXPECT_EQ(target_hits.load(), 1);
+  histogram_tester_.ExpectUniqueSample(kFederatedRedirectHistogram,
+                                       kSameOriginBucket, 1);
+}
+
+TEST_F(RegistrationFederatedRedirectTest,
+       CrossOriginFollowedWithoutBlockRedirects) {
+  DisableBlockRedirects();
+  std::atomic<int> target_hits = 0;
+  AddRedirect("rp.a.test", "/redirect", "other.a.test", "/reg");
+  AddTarget("other.a.test", "/reg", &target_hits);
+  ASSERT_TRUE(server_.Start());
+
+  RegistrationResult result = Fetch();
+  EXPECT_EQ(result.SessionErrorForTesting(), nullptr);
+  EXPECT_EQ(target_hits.load(), 1);
+  histogram_tester_.ExpectUniqueSample(kFederatedRedirectHistogram,
+                                       kCrossOriginBucket, 1);
+}
+
+TEST_F(RegistrationFederatedRedirectTest,
+       RoundTripFollowedWithoutBlockRedirects) {
+  DisableBlockRedirects();
+  std::atomic<int> bounce_hits = 0;
+  std::atomic<int> target_hits = 0;
+  AddRedirect("rp.a.test", "/redirect", "other.a.test", "/bounce");
+  server_.RegisterRequestHandler(base::BindRepeating(
+      &ReturnForHostAndPath, "other.a.test", "/bounce",
+      base::BindRepeating(
+          &CountRequest, &bounce_hits,
+          base::BindRepeating(&ReturnRedirect, "rp.a.test", "/reg"))));
+  AddTarget("rp.a.test", "/reg", &target_hits);
+  ASSERT_TRUE(server_.Start());
+
+  RegistrationResult result = Fetch();
+  EXPECT_EQ(result.SessionErrorForTesting(), nullptr);
+  EXPECT_EQ(bounce_hits.load(), 1);
+  EXPECT_EQ(target_hits.load(), 1);
+  histogram_tester_.ExpectUniqueSample(kFederatedRedirectHistogram,
+                                       kCrossOriginBucket, 1);
+}
+
+// Only the first redirect is recorded.
+TEST_F(RegistrationFederatedRedirectTest,
+       MultiHopFollowedWithoutBlockRedirects) {
+  DisableBlockRedirects();
+  std::atomic<int> target_hits = 0;
+  AddRedirect("rp.a.test", "/redirect", "rp.a.test", "/redirect2");
+  AddRedirect("rp.a.test", "/redirect2", "other.a.test", "/reg");
+  AddTarget("other.a.test", "/reg", &target_hits);
+  ASSERT_TRUE(server_.Start());
+
+  RegistrationResult result = Fetch();
+  EXPECT_EQ(result.SessionErrorForTesting(), nullptr);
+  EXPECT_EQ(target_hits.load(), 1);
+  histogram_tester_.ExpectUniqueSample(kFederatedRedirectHistogram,
+                                       kSameOriginBucket, 1);
+}
+
+// The registration endpoint answers directly, so the request is recorded as
+// the baseline.
+TEST_F(RegistrationFederatedRedirectTest, NoRedirectRecorded) {
+  std::atomic<int> target_hits = 0;
+  AddTarget("rp.a.test", "/redirect", &target_hits);
+  ASSERT_TRUE(server_.Start());
+
+  RegistrationResult result = Fetch();
+  EXPECT_EQ(result.SessionErrorForTesting(), nullptr);
+  EXPECT_EQ(target_hits.load(), 1);
+  histogram_tester_.ExpectUniqueSample(kFederatedRedirectHistogram,
+                                       kNoRedirectBucket, 1);
 }
 
 TEST_F(RegistrationTest, RegistrationFailsIfCantSetCookies) {
@@ -3929,11 +4577,10 @@ TEST_F(RegistrationTest, RefreshRetryTransientErrorOnSecondRoundtrip) {
       .WillRepeatedly(Return(session.get()));
 
   EXPECT_CALL(session_service(), HandleResponseHeaders)
-      .WillRepeatedly([&session](DbscRequest& request,
-                                 HttpResponseHeaders* headers,
-                                 const FirstPartySetMetadata& fp) {
-        session->set_cached_challenge("new_challenge");
-      });
+      .WillRepeatedly(
+          [&session](DbscRequest& request, HttpResponseHeaders* headers) {
+            session->set_cached_challenge("new_challenge");
+          });
 
   EXPECT_CALL(session_service(), GetLatestSignedRefreshChallenge)
       .WillRepeatedly(Return(nullptr));
@@ -4010,11 +4657,10 @@ TEST_F(RegistrationTest, RefreshRetryTransientErrorOnBothRoundtrips) {
       .WillRepeatedly(Return(session.get()));
 
   EXPECT_CALL(session_service(), HandleResponseHeaders)
-      .WillRepeatedly([&session](DbscRequest& request,
-                                 HttpResponseHeaders* headers,
-                                 const FirstPartySetMetadata& fp) {
-        session->set_cached_challenge("new_challenge");
-      });
+      .WillRepeatedly(
+          [&session](DbscRequest& request, HttpResponseHeaders* headers) {
+            session->set_cached_challenge("new_challenge");
+          });
 
   EXPECT_CALL(session_service(), GetLatestSignedRefreshChallenge)
       .WillRepeatedly(Return(nullptr));
@@ -4147,6 +4793,117 @@ TEST_F(RegistrationTest, RegistrationNoRetryTransientError) {
       net::ERR_INVALID_HTTP_RESPONSE, 1);
   histogram_tester.ExpectTotalCount(
       "Net.DeviceBoundSessions.Refresh.Network.Result.FirstAttempt", 0);
+}
+
+class RegistrationTimeoutTest : public TestWithTaskEnvironment {
+ protected:
+  RegistrationTimeoutTest()
+      : TestWithTaskEnvironment(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME),
+        context_(CreateTestURLRequestContextBuilder()->Build()) {
+    URLRequestFailedJob::AddUrlHandler();
+  }
+
+  ~RegistrationTimeoutTest() override {
+    net::URLRequestFilter::GetInstance()->ClearHandlers();
+  }
+
+  URLRequestContext* context() { return context_.get(); }
+  unexportable_keys::UnexportableKeyService& unexportable_key_service() {
+    return unexportable_key_service_;
+  }
+  SessionServiceMock& session_service() { return session_service_; }
+
+  UnexportableSigningKeyId CreateSigningKey() {
+    base::test::TestFuture<
+        unexportable_keys::ServiceErrorOr<UnexportableSigningKeyId>>
+        future;
+    unexportable_key_service_.GenerateSigningKeySlowlyAsync(
+        CreateAlgArray(), kTaskPriority, future.GetCallback());
+    return *future.Take();
+  }
+
+ private:
+  testing::NiceMock<SessionServiceMock> session_service_;
+  std::unique_ptr<URLRequestContext> context_;
+  crypto::ScopedFakeUnexportableKeyProvider scoped_fake_key_provider_;
+  unexportable_keys::UnexportableKeyTaskManager task_manager_;
+  unexportable_keys::UnexportableKeyServiceImpl unexportable_key_service_{
+      task_manager_, kTaskOrigin, crypto::UnexportableKeyProvider::Config()};
+};
+
+TEST_F(RegistrationTimeoutTest, RefreshTimeout) {
+  base::HistogramTester histogram_tester;
+  URLRequestFailedJob::AddUrlHandlerForHostname("a.test");
+
+  GURL url =
+      URLRequestFailedJob::GetMockHttpsUrlForHostname(ERR_IO_PENDING, "a.test");
+  TestRegistrationCallback callback;
+  auto param = RegistrationRequestParam::CreateForTesting(
+      url, kSessionIdentifier, kChallenge, /*authorization=*/std::nullopt);
+
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kUserBlocking);
+
+  fetcher->StartFetchWithExistingKey(param, CreateSigningKey(),
+                                     callback.callback());
+  FastForwardBy(base::Seconds(20));
+  callback.WaitForCall();
+
+  EXPECT_THAT(callback.outcome(), IsErrorRegistrationResult());
+  const SessionError* error = callback.outcome().SessionErrorForTesting();
+  ASSERT_TRUE(error);
+  EXPECT_EQ(error->type, SessionError::kNetError);
+  ASSERT_TRUE(error->failed_request.has_value());
+  EXPECT_EQ(error->failed_request->net_error, net::ERR_TIMED_OUT);
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Refresh.Network.Result", net::ERR_TIMED_OUT, 1);
+}
+
+TEST_F(RegistrationTimeoutTest, RegistrationTimeout) {
+  base::HistogramTester histogram_tester;
+  URLRequestFailedJob::AddUrlHandlerForHostname("a.test");
+
+  GURL url =
+      URLRequestFailedJob::GetMockHttpsUrlForHostname(ERR_IO_PENDING, "a.test");
+  TestRegistrationCallback callback;
+  auto param = RegistrationRequestParam::CreateForTesting(
+      url, /*session_identifier=*/std::nullopt, kChallenge,
+      /*authorization=*/std::nullopt);
+
+  std::unique_ptr<RegistrationFetcher> fetcher =
+      RegistrationFetcher::CreateFetcher(
+          param, session_service(), unexportable_key_service(), context(),
+          IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+          SiteForCookies(),
+          /*net_log_source=*/std::nullopt,
+          /*original_request_initiator=*/std::nullopt,
+          unexportable_keys::BackgroundTaskPriority::kBestEffort);
+
+  fetcher->StartCreateTokenAndFetch(param, CreateAlgArray(),
+                                    callback.callback());
+  FastForwardBy(base::Seconds(20));
+  EXPECT_FALSE(callback.has_called());
+  FastForwardBy(base::Seconds(10));
+  callback.WaitForCall();
+
+  EXPECT_THAT(callback.outcome(), IsErrorRegistrationResult());
+  const SessionError* error = callback.outcome().SessionErrorForTesting();
+  ASSERT_TRUE(error);
+  EXPECT_EQ(error->type, SessionError::kNetError);
+  ASSERT_TRUE(error->failed_request.has_value());
+  EXPECT_EQ(error->failed_request->net_error, net::ERR_TIMED_OUT);
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.DeviceBoundSessions.Registration.Network.Result", net::ERR_TIMED_OUT,
+      1);
 }
 
 class RegistrationTokenHelperTest : public testing::Test {

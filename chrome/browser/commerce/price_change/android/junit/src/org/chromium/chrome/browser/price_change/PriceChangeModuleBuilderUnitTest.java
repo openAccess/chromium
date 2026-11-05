@@ -14,8 +14,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -46,9 +44,7 @@ import org.chromium.ui.shadows.ShadowAppCompatResources;
 
 /** Test relating to {@link PriceChangeModuleBuilder} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowAppCompatResources.class})
+@Config(shadows = {ShadowAppCompatResources.class})
 public class PriceChangeModuleBuilderUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -76,12 +72,13 @@ public class PriceChangeModuleBuilderUnitTest {
         profileProviderSupplier.set(mProfileProvider);
         mModuleBuilder =
                 new PriceChangeModuleBuilder(
-                        RuntimeEnvironment.application, profileProviderSupplier, mTabModelSelector);
+                        RuntimeEnvironment.getApplication(),
+                        profileProviderSupplier,
+                        mTabModelSelector);
         ShoppingServiceFactory.setShoppingServiceForTesting(mShoppingService);
     }
 
     @Test
-    @SmallTest
     public void testBuildModule_NotEligible() {
         doReturn(false).when(mCommerceFeatureUtilsJniMock).isPriceAnnotationsEnabled(anyLong());
         assertFalse(PriceTrackingUtilities.isTrackPricesOnTabsEnabled(mProfile));
@@ -91,25 +88,22 @@ public class PriceChangeModuleBuilderUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testBuildModule_NotEligibleWithoutProfileProvider() {
         mModuleBuilder =
                 new PriceChangeModuleBuilder(
-                        RuntimeEnvironment.application,
+                        RuntimeEnvironment.getApplication(),
                         new OneshotSupplierImpl<ProfileProvider>(),
                         mTabModelSelector);
         assertFalse(mModuleBuilder.isEligible());
     }
 
     @Test
-    @SmallTest
     public void testBuildModule_NotEligibleWithoutProfile() {
         when(mProfileProvider.getOriginalProfile()).thenReturn(null);
         assertFalse(mModuleBuilder.isEligible());
     }
 
     @Test
-    @SmallTest
     public void testBuildModule_Eligible() {
         PriceTrackingFeatures.setIsSignedInAndSyncEnabledForTesting(true);
         PriceTrackingFeatures.setPriceAnnotationsEnabledForTesting(true);

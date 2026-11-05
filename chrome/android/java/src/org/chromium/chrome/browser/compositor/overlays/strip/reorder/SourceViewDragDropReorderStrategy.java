@@ -230,6 +230,7 @@ class SourceViewDragDropReorderStrategy extends ReorderStrategyBase {
     }
 
     private boolean shouldShowUserPrompt(StripLayoutTab draggedTab) {
+        // TODO(crbug.com/552582355): Cleanup as this is no longer needed.
         if (mModel.isIncognitoBranded()) {
             return false;
         }
@@ -242,6 +243,7 @@ class SourceViewDragDropReorderStrategy extends ReorderStrategyBase {
     }
 
     private boolean isTabInCollaboration(int tabId) {
+        // TODO(crbug.com/552582355): Cleanup as this is no longer needed.
         var profile = assumeNonNull(mModel.getProfile());
         @Nullable TabGroupSyncService tabGroupSyncService =
                 TabGroupSyncServiceFactory.getForProfile(profile);
@@ -648,7 +650,6 @@ class SourceViewDragDropReorderStrategy extends ReorderStrategyBase {
             return mTabStripDragHandler.startGroupDragAction(
                     mContainerView,
                     draggedGroupTitle.getTabGroupId(),
-                    draggedGroupTitle.isGroupShared(),
                     startPoint,
                     draggedGroupTitle.getDrawX(),
                     draggedGroupTitle.getWidth());
@@ -663,7 +664,7 @@ class SourceViewDragDropReorderStrategy extends ReorderStrategyBase {
             // If this is not the case, attempt to restore the group to its original position.
             StripLayoutGroupTitle draggedGroupTitle = (StripLayoutGroupTitle) mViewBeingDragged;
             if (draggedGroupTitle != null
-                    && mModel.tabGroupExists(draggedGroupTitle.getTabGroupId())
+                    && mModel.containsTabGroup(draggedGroupTitle.getTabGroupId())
                     && draggedGroupTitle.isDraggedOffStrip()) {
                 mAnimationHost.finishAnimationsAndPushTabUpdates();
                 for (StripLayoutView view : mViewsBeingDragged) {

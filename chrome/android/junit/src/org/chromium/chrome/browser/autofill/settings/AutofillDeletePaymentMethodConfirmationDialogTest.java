@@ -11,7 +11,6 @@ import static org.mockito.Mockito.verify;
 import android.content.Context;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -50,7 +49,6 @@ public class AutofillDeletePaymentMethodConfirmationDialogTest {
     }
 
     @Test
-    @SmallTest
     public void testDeleteButtonPressed_handlesPositiveDialogDismissalCause() {
         mDialog =
                 new AutofillDeletePaymentMethodConfirmationDialog(
@@ -67,7 +65,6 @@ public class AutofillDeletePaymentMethodConfirmationDialogTest {
     }
 
     @Test
-    @SmallTest
     public void testCancelButtonPressed_handlesNegativeDialogDismissalCause() {
         mDialog =
                 new AutofillDeletePaymentMethodConfirmationDialog(
@@ -99,7 +96,6 @@ public class AutofillDeletePaymentMethodConfirmationDialogTest {
         }
 
         @Test
-        @SmallTest
         public void testDialogShowsPaymentMethodTitle() {
             mDialog =
                     new AutofillDeletePaymentMethodConfirmationDialog(
@@ -109,7 +105,7 @@ public class AutofillDeletePaymentMethodConfirmationDialogTest {
                             mTitleResId);
             mDialog.show();
 
-            Context context = RuntimeEnvironment.application.getApplicationContext();
+            Context context = RuntimeEnvironment.getApplication().getApplicationContext();
             CharSequence dialogTitle =
                     mModalDialogManager.getShownDialogModel().get(ModalDialogProperties.TITLE);
             assertThat(dialogTitle).isEqualTo(context.getString(mTitleResId));

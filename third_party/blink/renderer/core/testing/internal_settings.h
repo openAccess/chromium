@@ -29,14 +29,16 @@
 
 #include <unicode/uscript.h>
 
+#include <optional>
+
 #include "third_party/blink/renderer/core/testing/internal_settings_generated.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/skia/include/core/SkColor.h"
 
 namespace blink {
 
 class ExceptionState;
-class GenericFontFamilySettings;
 
 class InternalSettings final : public InternalSettingsGenerated {
   DEFINE_WRAPPERTYPEINFO();
@@ -68,15 +70,17 @@ class InternalSettings final : public InternalSettingsGenerated {
   void setAvailableHoverTypes(const String&, ExceptionState&);
   void setPrimaryHoverType(const String&, ExceptionState&);
   void setPreferCompositingToLCDTextEnabled(bool);
+  void setAccentColor(const String& color_value);
 
  private:
-  void SetFontFamily(
-      const AtomicString& family,
-      const String& script,
-      bool (GenericFontFamilySettings::*update_method)(const AtomicString&,
-                                                       UScriptCode));
+  void SetFontFamily(GenericFontFamily generic_family,
+                     const AtomicString& family,
+                     const String& script);
 
   GenericFontFamilySettings generic_font_family_settings_backup_;
+  // Needed because the original accent color can be std::nullopt.
+  bool did_set_accent_color_ = false;
+  std::optional<SkColor> original_accent_color_;
 };
 
 }  // namespace blink

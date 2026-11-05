@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TABS_VERTICAL_VERTICAL_TAB_STRIP_TOP_CONTAINER_H_
 #define CHROME_BROWSER_UI_VIEWS_TABS_VERTICAL_VERTICAL_TAB_STRIP_TOP_CONTAINER_H_
 
+#include "base/callback_list.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/layout/delegating_layout_manager.h"
@@ -13,6 +15,7 @@
 
 class TabStripComboButton;
 class TabStripFlatEdgeButton;
+class VerticalTabStripSegmentedControl;
 class BrowserWindowInterface;
 class ExpandOnHoverLock;
 
@@ -58,9 +61,8 @@ class VerticalTabStripTopContainer : public views::View,
   views::LabelButton* AddChildButtonFor(actions::ActionId action_id);
 
   TabStripComboButton* GetComboButton();
-  TabStripFlatEdgeButton* GetTabSearchButton();
+  VerticalTabStripSegmentedControl* GetSegmentedControl();
   views::LabelButton* GetCollapseButton() { return collapse_button_; }
-  views::LabelButton* GetUnfocusButton() { return unfocus_button_; }
 
   bool IsPositionInWindowCaption(const gfx::Point& point);
 
@@ -88,20 +90,32 @@ class VerticalTabStripTopContainer : public views::View,
  private:
   void OnCollapseButtonContextMenuClosed();
 
+  // Returns whether `segmented_control_` should be shown instead of
+  // `combo_button_` for the given `available_width`.
+  bool ShouldShowSegmentedControl(int available_width) const;
+
+  // Returns the preferred size of whichever trailing control
+  // (`segmented_control_` or `combo_button_`) should be shown horizontally.
+  gfx::Size GetTrailingControlPreferredSize(bool show_segmented_control) const;
+
   // Calculates the width of the visible buttons and returns the sum along with
   // the padding between them.
-  int GetPreferredWidth() const;
+  int GetPreferredWidth(bool show_segmented_control) const;
 
   // Returns the minimum height required for the top container to display all
   // its buttons at their baseline positions.
-  int GetBaselineMinHeight() const;
+  int GetBaselineMinHeight(bool show_segmented_control) const;
 
   raw_ptr<tabs::VerticalTabStripStateController> state_controller_ = nullptr;
   raw_ptr<actions::ActionItem> root_action_item_ = nullptr;
   raw_ptr<BrowserWindowInterface> browser_ = nullptr;
   raw_ptr<TabStripComboButton> combo_button_ = nullptr;
+  raw_ptr<VerticalTabStripSegmentedControl> segmented_control_ = nullptr;
   raw_ptr<views::LabelButton> collapse_button_ = nullptr;
-  raw_ptr<views::LabelButton> unfocus_button_ = nullptr;
+
+  PrefChangeRegistrar pref_registrar_;
+  base::CallbackListSubscription expand_on_hover_subscription_;
+  base::CallbackListSubscription mode_changed_subscription_;
 
   std::unique_ptr<views::ActionViewController> action_view_controller_;
 

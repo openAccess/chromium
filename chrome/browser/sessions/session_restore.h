@@ -16,7 +16,7 @@
 #include "base/observer_list.h"
 #include "chrome/browser/sessions/session_restore_observer.h"
 #include "components/sessions/core/session_types.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 class BrowserWindowInterface;
 class Profile;
@@ -44,6 +44,10 @@ class SessionRestore {
     int app_windows = 0;
   };
 
+  // Keys of the per-profile `kPreSmartRestartSessionState` dictionary pref,
+  // which holds the tab and window counts saved before a restart. Profile
+  // counts are saved separately in local state; see
+  // ProfileDiffAfterRestartRecorder.
   static constexpr char kNormalTabsKey[] = "normal_tabs";
   static constexpr char kNormalWindowsKey[] = "normal_windows";
   static constexpr char kAppTabsKey[] = "app_tabs";
@@ -115,11 +119,16 @@ class SessionRestore {
   static content::WebContents* RestoreForeignSessionTab(
       content::WebContents* source_web_contents,
       const sessions::SessionTab& tab,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       bool skip_renderer_creation = false);
 
   // Returns true if we're in the process of restoring |profile|.
   static bool IsRestoring(const Profile* profile);
+
+  // Returns true if any profile's own last session is currently being
+  // restored. Restores of sessions from other devices (foreign sessions) are
+  // ignored.
+  static bool IsAnySessionCurrentlyRestoring();
 
   // Returns true if any session has been restored during the current process
   // lifetime.

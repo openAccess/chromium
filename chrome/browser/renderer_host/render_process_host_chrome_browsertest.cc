@@ -17,12 +17,13 @@
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/search/search.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/performance_manager/public/features.h"
@@ -41,6 +42,7 @@
 #include "media/base/media_switches.h"
 #include "net/base/filename_util.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "content/public/browser/browser_child_process_host.h"
@@ -123,7 +125,7 @@ class ChromeRenderProcessHostTest : public extensions::ExtensionBrowserTest {
   // associated with the tab.
   WebContents* OpenBackgroundTab(const GURL& page) {
     ui_test_utils::NavigateToURLWithDisposition(
-        browser(), page, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+        browser(), page, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
         ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
     TabStripModel* tab_strip = browser()->tab_strip_model();
@@ -172,7 +174,7 @@ class ChromeRenderProcessHostTest : public extensions::ExtensionBrowserTest {
             browser()->tab_strip_model()->GetActiveWebContents()));
 
     // Change the first tab to be the omnibox page (WebUI).
-    GURL omnibox(chrome::kChromeUIOmniboxURL);
+    GURL omnibox(chrome::kChromeUIOmniboxInternalsURL);
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), omnibox));
 
     // The host objects from the page before the WebUI navigation stick around
@@ -299,7 +301,7 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest, DISABLED_ProcessPerTab) {
           browser()->tab_strip_model()->GetActiveWebContents()));
 
   // Change the first tab to be a WebUI page.
-  GURL omnibox(chrome::kChromeUIOmniboxURL);
+  GURL omnibox(chrome::kChromeUIOmniboxInternalsURL);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), omnibox));
 
   // The host objects from the page before the WebUI navigation stick around
@@ -342,7 +344,7 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest, DISABLED_ProcessPerTab) {
   // Create another omnibox tab.  It should share the process with the other
   // WebUI.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), omnibox, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), omnibox, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   tab_count++;
   EXPECT_EQ(tab_count, browser()->tab_strip_model()->count());
@@ -351,7 +353,7 @@ IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest, DISABLED_ProcessPerTab) {
   // Create another omnibox tab.  It should share the process with the other
   // WebUI.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), omnibox, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), omnibox, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   tab_count++;
   EXPECT_EQ(tab_count, browser()->tab_strip_model()->count());
@@ -362,8 +364,11 @@ class ChromeRenderProcessHostBackgroundingTest
     : public ChromeRenderProcessHostTest {
  public:
   ChromeRenderProcessHostBackgroundingTest() {
-    feature_list_.InitAndDisableFeature(
-        performance_manager::features::kPMLoadingPageVoter);
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            performance_manager::features::kPMLoadingPageVoter,
+            performance_manager::features::kPMLoadingPageVoterV2});
   }
 
   ChromeRenderProcessHostBackgroundingTest(
@@ -433,7 +438,7 @@ class ChromeRenderProcessHostBackgroundingTest
 IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostBackgroundingTest,
                        MAYBE_MultipleTabs) {
   // Change the first tab to be the omnibox page (TYPE_WEBUI).
-  GURL omnibox(chrome::kChromeUIOmniboxURL);
+  GURL omnibox(chrome::kChromeUIOmniboxInternalsURL);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), omnibox));
 
   // Create a new tab. It should be foreground.
@@ -623,7 +628,7 @@ class WindowDestroyer : public content::WebContentsObserver {
 // Disabled due to flakiness, see  http://crbug.com/41250793.
 IN_PROC_BROWSER_TEST_F(ChromeRenderProcessHostTest,
                        DISABLED_CloseAllTabsDuringProcessDied) {
-  GURL url(chrome::kChromeUIOmniboxURL);
+  GURL url(chrome::kChromeUIOmniboxInternalsURL);
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   WebContents* wc1 = browser()->tab_strip_model()->GetWebContentsAt(0);

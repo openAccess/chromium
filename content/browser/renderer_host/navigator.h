@@ -19,7 +19,7 @@
 #include "net/storage_access_api/status.h"
 #include "third_party/blink/public/mojom/frame/triggering_event_info.mojom-shared.h"
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom-forward.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 class GURL;
 
@@ -117,8 +117,9 @@ class CONTENT_EXPORT Navigator {
   // |navigation_request|. The NavigationController should be called back with
   // RendererDidNavigate on success or DiscardPendingEntry on failure. The
   // callbacks should be called in a future iteration of the message loop.
-  void Navigate(std::unique_ptr<NavigationRequest> request,
-                ReloadType reload_type);
+  std::optional<NavigationNotStartedReason> Navigate(
+      std::unique_ptr<NavigationRequest> request,
+      ReloadType reload_type);
 
   // The RenderFrameHostImpl has received a request to open a URL with the
   // specified |disposition|.
@@ -133,7 +134,7 @@ class CONTENT_EXPORT Navigator {
       const scoped_refptr<network::ResourceRequestBody>& post_body,
       const std::string& extra_headers,
       const Referrer& referrer,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       bool should_replace_current_entry,
       bool user_gesture,
       blink::mojom::TriggeringEventInfo triggering_event_info,
@@ -171,7 +172,9 @@ class CONTENT_EXPORT Navigator {
       bool is_unfenced_top_navigation = false,
       bool force_new_browsing_instance = false,
       bool is_container_initiated = false,
-      bool has_rel_opener = false);
+      bool has_rel_opener = false,
+      network::mojom::CSPDisposition should_check_main_world_csp =
+          network::mojom::CSPDisposition::CHECK);
 
   // Called after BeforeUnloadCompleted callback is invoked from the renderer.
   // If `frame_tree_node` has a NavigationRequest waiting for the renderer

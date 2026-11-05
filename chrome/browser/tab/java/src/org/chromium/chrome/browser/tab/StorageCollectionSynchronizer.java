@@ -5,10 +5,10 @@
 package org.chromium.chrome.browser.tab;
 
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
-import org.chromium.base.Token;
 import org.chromium.base.lifetime.Destroyable;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -24,7 +24,7 @@ public class StorageCollectionSynchronizer implements Destroyable {
      * @param profile The profile associated with the collection.
      * @param collection The {@link TabStripCollection} to track.
      */
-    public StorageCollectionSynchronizer(Profile profile, TabStripCollection collection) {
+    public StorageCollectionSynchronizer(Profile profile, JniPtr<TabStripCollection> collection) {
         mNativePtr = StorageCollectionSynchronizerJni.get().init(this, profile, collection);
     }
 
@@ -53,10 +53,22 @@ public class StorageCollectionSynchronizer implements Destroyable {
                 .consumeCollectionObserverFactory(mNativePtr, factory);
     }
 
-    /** Fully synchronizes the state of the collection and descendants with the storage layer. */
-    public void fullSave(Runnable callback) {
+    /**
+     * Saves a structural snapshot of the collection tree to storage.
+     *
+     * @param clearUnusedNodes Whether to prune unreferenced nodes in storage.
+     * @param callback Callback to run once the snapshot has been committed to storage.
+     */
+    public void saveStructureSnapshot(boolean clearUnusedNodes, Runnable callback) {
         assert mNativePtr != 0;
-        StorageCollectionSynchronizerJni.get().fullSave(mNativePtr, callback);
+        StorageCollectionSynchronizerJni.get()
+                .saveStructureSnapshot(mNativePtr, clearUnusedNodes, callback);
+    }
+
+    /** Flushes any pending structural snapshot to storage immediately if one is scheduled. */
+    public void flushPendingStructureSnapshot() {
+        assert mNativePtr != 0;
+        StorageCollectionSynchronizerJni.get().flushPendingStructureSnapshot(mNativePtr);
     }
 
     /** Cancels the restoration process. */
@@ -65,39 +77,22 @@ public class StorageCollectionSynchronizer implements Destroyable {
         StorageCollectionSynchronizerJni.get().cancelRestore(mNativePtr);
     }
 
-    /** Saves a tab to storage through the observer associated with the synchronizer. */
-    public void saveTab(Tab tab) {
-        assert mNativePtr != 0;
-        StorageCollectionSynchronizerJni.get().saveTab(mNativePtr, tab);
-    }
-
-    /**
-     * Saves a tab group payload to storage through the observer associated with the synchronizer.
-     */
-    public void saveTabGroupPayload(Token groupId) {
-        assert mNativePtr != 0;
-        StorageCollectionSynchronizerJni.get().saveTabGroupPayload(mNativePtr, groupId);
-    }
-
     @NativeMethods
     interface Natives {
         long init(
                 StorageCollectionSynchronizer self,
                 @JniType("Profile*") Profile profile,
-                @JniType("tabs::TabStripCollection*") TabStripCollection collection);
+                JniPtr<TabStripCollection> collection);
 
-        void fullSave(
+        /** Native implementation of {@link #saveStructureSnapshot}. */
+        void saveStructureSnapshot(
                 long nativeStorageCollectionSynchronizerAndroid,
+                boolean clearUnusedNodes,
                 @JniType("base::OnceClosure") Runnable callback);
 
+        void flushPendingStructureSnapshot(long nativeStorageCollectionSynchronizerAndroid);
+
         void cancelRestore(long nativeStorageCollectionSynchronizerAndroid);
-
-        void saveTab(
-                long nativeStorageCollectionSynchronizerAndroid, @JniType("TabAndroid*") Tab tab);
-
-        void saveTabGroupPayload(
-                long nativeStorageCollectionSynchronizerAndroid,
-                @JniType("base::Token") Token groupId);
 
         void destroy(long nativeStorageCollectionSynchronizerAndroid);
 

@@ -12,10 +12,10 @@
 #include <string>
 #include <vector>
 
+#include "components/webapps/browser/android/add_to_homescreen_params.h"
 #include "components/webapps/browser/android/webapp_icon.h"
 #include "components/webapps/common/web_page_metadata.mojom.h"
-#include "services/device/public/mojom/screen_orientation_lock_types.mojom-shared.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "url/gurl.h"
 
@@ -58,7 +58,7 @@ struct ShortcutInfo {
   static std::unique_ptr<ShortcutInfo> CreateShortcutInfo(
       const GURL& url,
       const GURL& manifest_url,
-      const blink::mojom::Manifest& manifest,
+      const blink::Manifest& manifest,
       const mojom::WebPageMetadata& web_page_metadata,
       const GURL& primary_icon_url,
       bool primary_icon_maskable);
@@ -135,14 +135,15 @@ struct ShortcutInfo {
       const mojom::WebPageMetadata& web_page_metadata);
 
   // Updates the info based on the given |manifest|.
-  void UpdateFromManifest(const blink::mojom::Manifest& manifest);
+  void UpdateFromManifest(const blink::Manifest& manifest);
 
   // Update the splash screen icon URL based on the given |manifest| for the
   // later download.
-  void UpdateBestSplashIcon(const blink::mojom::Manifest& manifest);
+  void UpdateBestSplashIcon(const blink::Manifest& manifest);
 
   // Update the display mode based on whether the web app is webapk_compatible.
   void UpdateDisplayMode(bool webapk_compatible);
+  void UpdateDisplayMode(AddToHomescreenParams::AppType app_type);
 
   // Returns a vector of icons including |best_primary_icon_url|,
   // |splash_image_url| and |best_shortcut_icon_urls| if they are not empty
@@ -177,7 +178,9 @@ struct ShortcutInfo {
   // Id specified in the manifest.
   GURL manifest_id;
 
-  // Both shortcut item related vectors have the same size.
+  // Both shortcut item related vectors have the same size:
+  // |best_shortcut_icon_urls[i]| is the icon chosen for |shortcut_items[i]|
+  // (an empty GURL if none qualified). UpdateFromManifest() replaces both.
   std::vector<blink::Manifest::ShortcutItem> shortcut_items;
   std::vector<GURL> best_shortcut_icon_urls;
 };

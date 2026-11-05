@@ -17,20 +17,12 @@ import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.junit.MockitoJUnit;
-import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.RobolectricUtil;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.components.omnibox.OmniboxCapabilities;
-import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.omnibox.suggestions.OmniboxSuggestionUiType;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
@@ -39,16 +31,15 @@ import java.util.Arrays;
 /** Unit tests for {@link PreWarmingRecycledViewPool}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class PreWarmingRecycledViewPoolUnitTest {
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
-    @Mock private View mView;
-
     private Context mContext;
+    private View mView;
     private OmniboxViewHolderFactory mFactory;
     private PreWarmingRecycledViewPool mPool;
 
     @Before
     public void setUp() {
         mContext = ApplicationProvider.getApplicationContext();
+        mView = new View(mContext);
         mFactory =
                 spy(
                         new OmniboxViewHolderFactory() {
@@ -103,51 +94,11 @@ public class PreWarmingRecycledViewPoolUnitTest {
         }
     }
 
-    @DisableFeatures(OmniboxFeatureList.OMNIBOX_ASYNC_VIEW_INFLATION)
     @Test
-    public void testCreateViewsSync() {
-        mPool.onNativeInitialized();
-        ensureNoViewsCreated();
-
-        // Run first, then cancel.
-        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
-        mPool.stopCreatingViews();
+    public void testCreateViews() {
         ensureAllViewsCreated();
     }
 
-    @DisableFeatures(OmniboxFeatureList.OMNIBOX_ASYNC_VIEW_INFLATION)
-    @Test
-    public void stopCreatingViews_noViewsCreatedWhenCanceled() {
-        mPool.onNativeInitialized();
-        ensureNoViewsCreated();
-
-        // Cancel, then run.
-        mPool.stopCreatingViews();
-        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
-        ensureNoViewsCreated();
-    }
-
-    @DisableFeatures(OmniboxFeatureList.OMNIBOX_ASYNC_VIEW_INFLATION)
-    @Test
-    public void destroy_cancelsViewCreation() {
-        mPool.onNativeInitialized();
-        ensureNoViewsCreated();
-
-        // Destroy, then run.
-        mPool.destroy();
-        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
-        ensureNoViewsCreated();
-    }
-
-    @EnableFeatures(OmniboxFeatureList.OMNIBOX_ASYNC_VIEW_INFLATION)
-    @Test
-    public void testCreateViewsAsync() {
-        mPool.destroy();
-        mPool = new PreWarmingRecycledViewPool(mFactory, mContext, /* handler= */ null);
-        ensureAllViewsCreated();
-    }
-
-    @EnableFeatures(OmniboxFeatureList.OMNIBOX_ASYNC_VIEW_INFLATION)
     @Test
     public void createViews_noViewsCreatedOnLowEndDevices() {
         OmniboxCapabilities.setIsLowMemoryDeviceForTesting(true);
@@ -155,7 +106,6 @@ public class PreWarmingRecycledViewPoolUnitTest {
         ensureNoViewsCreated();
     }
 
-    @EnableFeatures(OmniboxFeatureList.OMNIBOX_ASYNC_VIEW_INFLATION)
     @Test
     public void createViews_recordViewCreated() {
         mPool.clear();
@@ -169,13 +119,8 @@ public class PreWarmingRecycledViewPoolUnitTest {
         }
     }
 
-    @EnableFeatures(OmniboxFeatureList.OMNIBOX_ASYNC_VIEW_INFLATION)
     @Test
     public void createViews_recordViewReused() {
-        mPool.destroy();
-        mPool = new PreWarmingRecycledViewPool(mFactory, mContext, /* handler= */ null);
-        ensureAllViewsCreated();
-
         try (var watcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Android.Omnibox.SuggestionView.ReusedType",

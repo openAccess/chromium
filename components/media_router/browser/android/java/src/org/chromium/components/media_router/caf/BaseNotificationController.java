@@ -49,7 +49,6 @@ public abstract class BaseNotificationController
                         .setActions(MediaNotificationInfo.ACTION_STOP)
                         .setContentIntent(createContentIntent())
                         .setNotificationSmallIcon(R.drawable.ic_notification_media_route)
-                        .setDefaultNotificationLargeIcon(R.drawable.cast_playing_square)
                         .setId(getNotificationId())
                         .setListener(this);
 
@@ -169,14 +168,12 @@ public abstract class BaseNotificationController
     @Override
     public void onMediaSessionSeekTo(long pos) {}
 
-    protected Intent createBringTabToFrontIntent() {
+    private Intent createContentIntent() {
         return assumeNonNull(MediaRouterClient.getInstance())
                 .createBringTabToFrontIntent(
                         assumeNonNull(mSessionController.getRouteCreationInfo()).tabId);
     }
 
     // Abstract methods to be implemented by children.
-    public abstract Intent createContentIntent();
-
     public abstract int getNotificationId();
 }

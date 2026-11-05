@@ -15,18 +15,16 @@
 #include "base/functional/bind.h"
 #include "chrome/browser/android/restore_entity_tracker_android.h"
 #include "chrome/browser/android/tab_android.h"
-#include "chrome/browser/android/tab_group_collection_data_android.h"
 #include "chrome/browser/android/tab_state_storage_service_factory.h"
-#include "chrome/browser/tab/collection_save_forwarder.h"
 #include "chrome/browser/tab/storage_loaded_data.h"
 #include "chrome/browser/tab/storage_loading_context.h"
 #include "chrome/browser/tab/tab_group_collection_data.h"
 #include "components/tab_groups/tab_group_id.h"
-#include "components/tabs/public/android/jni_conversion.h"
 #include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/browser/tab/jni_headers/StorageLoadedData_jni.h"
+#include "chrome/browser/tab/jni_headers/TabGroupCollectionData_jni.h"
 
 namespace tabs {
 
@@ -55,9 +53,8 @@ base::android::ScopedJavaLocalRef<jobject> CreateLoadedTabState(
 
   base::android::ScopedJavaLocalRef<jobject> j_tab_state =
       Java_StorageLoadedData_createTabState(
-          env, tab_state.parent_id(), tab_state.root_id(),
-          tab_state.timestamp_millis(), j_web_contents_state_buffer,
-          tab_state.web_contents_state_version(),
+          env, tab_state.parent_id(), tab_state.timestamp_millis(),
+          j_web_contents_state_buffer, tab_state.web_contents_state_version(),
           j_web_contents_state_string_pointer, tab_state.opener_app_id(),
           tab_state.theme_color(), tab_state.launch_type_at_creation(),
           tab_state.user_agent(),
@@ -76,22 +73,24 @@ base::android::ScopedJavaLocalRef<jobject> CreateStorageLoadWarning(
       env, static_cast<int>(warning.status), warning.message);
 }
 
+base::android::ScopedJavaLocalRef<jobject> CreateTabGroupCollectionData(
+    JNIEnv* env,
+    const TabGroupCollectionData& data) {
+  return Java_TabGroupCollectionData_create(
+      env, data.tab_group_id_, data.title_, static_cast<int>(data.color_),
+      data.is_collapsed_);
+}
+
 StorageLoadedDataAndroid::StorageLoadedDataAndroid(
     JNIEnv* env,
     std::unique_ptr<StorageLoadedData> data)
     : data_(std::move(data)) {
-  std::vector<TabGroupCollectionDataAndroid*> tab_group_collection_data_android;
-  for (auto& loaded_group : data_->GetLoadedGroups()) {
-    auto* android_group =
-        new TabGroupCollectionDataAndroid(std::move(loaded_group));
-    tab_group_collection_data_android.push_back(android_group);
-  }
   const StorageLoadingContext& context = data_->GetLoadingContext();
 
   j_object_ = Java_StorageLoadedData_createData(
       env, reinterpret_cast<intptr_t>(this), data_->GetLoadedTabs(),
-      tab_group_collection_data_android,
-      data_->GetActiveTabIndex().value_or(-1), context.warnings());
+      data_->GetLoadedGroups(), data_->GetActiveTabIndex().value_or(-1),
+      context.warnings());
 }
 
 StorageLoadedDataAndroid::~StorageLoadedDataAndroid() = default;
@@ -134,3 +133,4 @@ StorageLoadedDataAndroid* StorageLoadedDataAndroid::FromJavaObject(
 }  // namespace tabs
 
 DEFINE_JNI(StorageLoadedData)
+DEFINE_JNI(TabGroupCollectionData)

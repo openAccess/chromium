@@ -32,8 +32,9 @@ class DevToolsDataSource : public content::URLDataSource {
  public:
   using GotDataCallback = content::URLDataSource::GotDataCallback;
 
-  explicit DevToolsDataSource(
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
+  DevToolsDataSource(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      std::string source_name);
 
   DevToolsDataSource(const DevToolsDataSource&) = delete;
   DevToolsDataSource& operator=(const DevToolsDataSource&) = delete;
@@ -42,10 +43,14 @@ class DevToolsDataSource : public content::URLDataSource {
 
   // content::URLDataSource implementation.
   std::string GetSource() override;
-
   void StartDataRequest(const GURL& url,
                         const content::WebContents::Getter& wc_getter,
                         GotDataCallback callback) override;
+  bool ShouldServiceRequest(const GURL& url,
+                            content::BrowserContext* browser_context,
+                            int render_process_id) override;
+  std::string GetAccessControlAllowOriginForOrigin(
+      const std::string& origin) override;
 
  private:
   friend class DevToolsUIDataSourceTest;
@@ -98,6 +103,7 @@ class DevToolsDataSource : public content::URLDataSource {
   };
 
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+  std::string source_name_;
   std::list<PendingRequest> pending_requests_;
 };
 

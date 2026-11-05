@@ -30,11 +30,12 @@
 
 #include <complex>
 #include <memory>
+#include <numbers>
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/memory/ptr_util.h"
 #include "third_party/blink/renderer/platform/audio/vector_math.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/fdlibm/ieee754.h"
 
@@ -44,71 +45,59 @@
 
 namespace blink {
 
-unsigned FFTFrame::MinFFTSize() {
-  if (RuntimeEnabledFeatures::WebAudioRustFftEnabled()) {
-    return 2;
-  }
-  return PlatformMinFFTSize();
+namespace {
+
+unsigned CheckedFftSize(unsigned fft_size) {
+  CHECK_GE(fft_size, FFTFrame::MinFFTSize());
+  CHECK_LE(fft_size, FFTFrame::MaxFFTSize());
+  return fft_size;
 }
 
-unsigned FFTFrame::MaxFFTSize() {
-  if (RuntimeEnabledFeatures::WebAudioRustFftEnabled()) {
-    return 1u << 30;
-  }
-  return PlatformMaxFFTSize();
-}
+}  // namespace
 
-void FFTFrame::Initialize(float sample_rate) {
-  if (RuntimeEnabledFeatures::WebAudioRustFftEnabled()) {
-    return;
-  }
-  PlatformInitialize(sample_rate);
-}
-
-void FFTFrame::Cleanup() {
-  if (RuntimeEnabledFeatures::WebAudioRustFftEnabled()) {
-    return;
-  }
-  PlatformCleanup();
+bool FFTFrame::InitializeBuffers() {
+  const unsigned packed_size = (fft_size_ + 1) / 2;
+  return real_data_.TryAllocate(packed_size) &&
+         imag_data_.TryAllocate(packed_size);
 }
 
 FFTFrame::FFTFrame(unsigned fft_size)
-    : fft_size_(fft_size),
-      log2fft_size_(static_cast<unsigned>(log2(fft_size))) {
-  CHECK_GE(fft_size_, MinFFTSize());
-  CHECK_LE(fft_size_, MaxFFTSize());
-  if (RuntimeEnabledFeatures::WebAudioRustFftEnabled()) {
-    const unsigned packed_size = (fft_size_ + 1) / 2;
-    real_data_.Allocate(packed_size);
-    imag_data_.Allocate(packed_size);
-    rust_fft_ = blink::rust_fft::rustfft_new(fft_size_);
-    return;
+    : FFTFrame(fft_size, /*allocate_buffers=*/true) {}
+
+FFTFrame::FFTFrame(unsigned fft_size, bool allocate_buffers)
+    : fft_size_(CheckedFftSize(fft_size)),
+      rust_fft_(blink::rust_fft::rustfft_new(fft_size_)) {
+  if (allocate_buffers) {
+    CHECK(InitializeBuffers());
   }
-  PlatformConstruct();
+}
+
+// static
+std::unique_ptr<FFTFrame> FFTFrame::TryCreate(unsigned fft_size) {
+  if (fft_size < MinFFTSize() || fft_size > MaxFFTSize()) {
+    return nullptr;
+  }
+  auto frame =
+      base::WrapUnique(new FFTFrame(fft_size, /*allocate_buffers=*/false));
+  if (!frame->InitializeBuffers()) {
+    return nullptr;
+  }
+  return frame;
 }
 
 void FFTFrame::DoFFT(base::span<const float> data) {
   CHECK_GE(data.size(), FftSize());
-  if (rust_fft_.has_value()) {
-    rust_fft_.value()->do_fft(
-        rust::Slice<const float>(data.data(), fft_size_),
-        rust::Slice<float>(real_data_.Data(), real_data_.size()),
-        rust::Slice<float>(imag_data_.Data(), imag_data_.size()));
-    return;
-  }
-  PlatformDoFFT(data);
+  rust_fft_->do_fft(rust::Slice<const float>(data.data(), fft_size_),
+                    rust::Slice<float>(real_data_.Data(), real_data_.size()),
+                    rust::Slice<float>(imag_data_.Data(), imag_data_.size()));
 }
 
 void FFTFrame::DoInverseFFT(base::span<float> data) {
   CHECK_GE(data.size(), FftSize());
-  if (rust_fft_.has_value()) {
-    rust_fft_.value()->do_inverse_fft(
-        rust::Slice<const float>(real_data_.Data(), real_data_.size()),
-        rust::Slice<const float>(imag_data_.Data(), imag_data_.size()),
-        rust::Slice<float>(data.data(), fft_size_));
-    return;
-  }
-  PlatformDoInverseFFT(data);
+  rust_fft_->do_inverse_fft(
+      rust::Slice<const float>(real_data_.Data(), real_data_.size()),
+      rust::Slice<const float>(imag_data_.Data(), imag_data_.size()),
+      rust::Slice<float>(data.data(), fft_size_));
 }
 
 void FFTFrame::DoPaddedFFT(base::span<const float> data) {
@@ -144,10 +133,8 @@ std::unique_ptr<FFTFrame> FFTFrame::CreateInterpolatedFrame(
 }
 
 void FFTFrame::ScaleFFT(float factor) {
-  vector_math::Vsmul(real_data_.as_span(), factor, real_data_.as_span(),
-                     real_data_.size());
-  vector_math::Vsmul(imag_data_.as_span(), factor, imag_data_.as_span(),
-                     imag_data_.size());
+  vector_math::Vsmul(real_data_.as_span(), factor, real_data_.as_span());
+  vector_math::Vsmul(imag_data_.as_span(), factor, imag_data_.as_span());
 }
 
 void FFTFrame::InterpolateFrequencyComponents(const FFTFrame& frame1,
@@ -164,7 +151,6 @@ void FFTFrame::InterpolateFrequencyComponents(const FFTFrame& frame1,
   const AudioFloatArray& imag2 = frame2.ImagData();
 
   fft_size_ = frame1.FftSize();
-  log2fft_size_ = frame1.Log2FFTSize();
 
   double s1base = (1.0 - interp);
   double s2base = interp;
@@ -231,26 +217,26 @@ void FFTFrame::InterpolateFrequencyComponents(const FFTFrame& frame1,
     last_phase2 = phase2;
 
     // Unwrap phase deltas
-    if (delta_phase1 > kPiDouble) {
+    if (delta_phase1 > std::numbers::pi) {
       delta_phase1 -= kTwoPiDouble;
     }
-    if (delta_phase1 < -kPiDouble) {
+    if (delta_phase1 < -std::numbers::pi) {
       delta_phase1 += kTwoPiDouble;
     }
-    if (delta_phase2 > kPiDouble) {
+    if (delta_phase2 > std::numbers::pi) {
       delta_phase2 -= kTwoPiDouble;
     }
-    if (delta_phase2 < -kPiDouble) {
+    if (delta_phase2 < -std::numbers::pi) {
       delta_phase2 += kTwoPiDouble;
     }
 
     // Blend group-delays
-    double delta_phase_blend;
+    double delta_phase_blend = 0.0;
 
-    if (delta_phase1 - delta_phase2 > kPiDouble) {
+    if (delta_phase1 - delta_phase2 > std::numbers::pi) {
       delta_phase_blend =
           s1 * delta_phase1 + s2 * (kTwoPiDouble + delta_phase2);
-    } else if (delta_phase2 - delta_phase1 > kPiDouble) {
+    } else if (delta_phase2 - delta_phase1 > std::numbers::pi) {
       delta_phase_blend =
           s1 * (kTwoPiDouble + delta_phase1) + s2 * delta_phase2;
     } else {
@@ -260,10 +246,10 @@ void FFTFrame::InterpolateFrequencyComponents(const FFTFrame& frame1,
     phase_accum += delta_phase_blend;
 
     // Unwrap
-    if (phase_accum > kPiDouble) {
+    if (phase_accum > std::numbers::pi) {
       phase_accum -= kTwoPiDouble;
     }
-    if (phase_accum < -kPiDouble) {
+    if (phase_accum < -std::numbers::pi) {
       phase_accum += kTwoPiDouble;
     }
 
@@ -297,10 +283,10 @@ double FFTFrame::ExtractAverageGroupDelay() {
     last_phase = phase;
 
     // Unwrap
-    if (delta_phase < -kPiDouble) {
+    if (delta_phase < -std::numbers::pi) {
       delta_phase += kTwoPiDouble;
     }
-    if (delta_phase > kPiDouble) {
+    if (delta_phase > std::numbers::pi) {
       delta_phase -= kTwoPiDouble;
     }
 
@@ -362,18 +348,11 @@ void FFTFrame::Multiply(const FFTFrame& frame) {
   const AudioFloatArray& real2 = frame2.RealData();
   const AudioFloatArray& imag2 = frame2.ImagData();
 
-  const unsigned packed_size = real1.size();
   float real0 = real1[0];
   float imag0 = imag1[0];
 
-  DCHECK_GE(real1.size(), packed_size);
-  DCHECK_GE(imag1.size(), packed_size);
-  DCHECK_GE(real2.size(), packed_size);
-  DCHECK_GE(imag2.size(), packed_size);
-
   vector_math::Zvmul(real1.as_span(), imag1.as_span(), real2.as_span(),
-                     imag2.as_span(), real1.as_span(), imag1.as_span(),
-                     packed_size);
+                     imag2.as_span(), real1.as_span(), imag1.as_span());
 
   // Multiply the packed DC/nyquist component
   real1[0] = real0 * real2[0];

@@ -5,8 +5,12 @@
 source_set("xdg") {
   visibility = [ "//components/dbus/*" ]
   sources = [
+    "background_portal.cc",
+    "background_portal.h",
     "file_transfer_portal.cc",
     "file_transfer_portal.h",
+    "inhibit_session_monitor.cc",
+    "inhibit_session_monitor.h",
     "portal.cc",
     "portal.h",
     "portal_constants.h",
@@ -27,8 +31,6 @@ source_set("xdg") {
     "//components/dbus/thread_linux",
     "//components/dbus/utils",
     "//dbus",
-    "//net",
-    "//url",
   ]
 
   # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
@@ -40,8 +42,11 @@ source_set("unit_tests") {
   testonly = true
   visibility = [ "//components/dbus:unit_tests" ]
   sources = [
+    "background_portal_unittest.cc",
     "file_transfer_portal_unittest.cc",
+    "inhibit_session_monitor_unittest.cc",
     "portal_unittest.cc",
+    "request_unittest.cc",
     "session_unittest.cc",
     "systemd_unittest.cc",
   ]

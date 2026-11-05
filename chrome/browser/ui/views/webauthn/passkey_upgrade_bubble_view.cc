@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
@@ -28,11 +29,14 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/vector_icons/vector_icons.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/color/color_id.h"
@@ -90,12 +94,13 @@ class PasskeyUpgradeBubbleController : public PasswordBubbleControllerBase {
     constexpr char kHelpCenterUrlBase[] =
         "https://support.google.com/chrome/?p=passkeys";
     GURL learn_more_url(kHelpCenterUrlBase);
-    google_util::AppendGoogleLocaleParam(learn_more_url,
-                                         base::i18n::GetConfiguredLocale());
-    content::OpenURLParams params(learn_more_url, content::Referrer(),
-                                  WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                  ui::PAGE_TRANSITION_LINK,
-                                  /*is_renderer_initiated=*/false);
+    google_util::AppendGoogleLocaleParam(
+        learn_more_url,
+        std::string(base::i18n::GetDefaultIcuLocale().tag_string()));
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            learn_more_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            ui::PAGE_TRANSITION_LINK);
     web_contents->OpenURL(params, /*navigation_handle_callback=*/{});
   }
 

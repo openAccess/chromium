@@ -173,7 +173,7 @@ class CORE_EXPORT WebFrameWidgetImpl
       bool is_for_scalable_page);
   ~WebFrameWidgetImpl() override;
 
-  virtual void Trace(Visitor*) const;
+  void Trace(Visitor*) const override;
 
   // Shutdown the widget.
   void Close(DetachReason detach_reason);
@@ -359,6 +359,7 @@ class CORE_EXPORT WebFrameWidgetImpl
                               int relative_cursor_pos) override;
   void ImeFinishComposingTextForPlugin(bool keep_selection) override;
   float GetCompositingScaleFactor() override;
+  float GetExternalPageScaleFactor() const override;
   const cc::LayerTreeDebugState* GetLayerTreeDebugState() override;
   void SetLayerTreeDebugState(const cc::LayerTreeDebugState& state) override;
   void SetMayThrottleIfUndrawnFrames(
@@ -375,11 +376,13 @@ class CORE_EXPORT WebFrameWidgetImpl
       base::TimeTicks) override;
   void OnFirstContentfulPaint() override;
   void MarkConditional(const AtomicString& name,
-                       base::TimeTicks start_time) override;
+                       base::TimeTicks start_time,
+                       LocalDOMWindow* window) override;
   void MeasureConditional(const AtomicString& name,
                           const AtomicString& start_mark,
                           const AtomicString& end_mark,
-                          base::TimeTicks end_time) override;
+                          base::TimeTicks end_time,
+                          LocalDOMWindow* window) override;
   // TODO(https://crbug.com/515098190): Below are not FrameWidget overrides.
 
   void SetVirtualKeyboardResizeHeightForTesting(int);
@@ -432,6 +435,9 @@ class CORE_EXPORT WebFrameWidgetImpl
   FrameWidgetTestHelper* GetFrameWidgetTestHelperForTesting() override;
   void PrepareForFinalLifecyclUpdateForTesting() override;
   void ApplyLocalSurfaceIdUpdate(const viz::LocalSurfaceId& id) override;
+  const display::ScreenInfo& GetScreenInfo() override;
+  const display::ScreenInfos& GetScreenInfos() override;
+  float GetOriginalDeviceScaleFactor() override;
 
   // Called when a drag-n-drop operation should begin.
   virtual void StartDragging(LocalFrame* source_frame,
@@ -495,10 +501,6 @@ class CORE_EXPORT WebFrameWidgetImpl
       const VisualProperties& visual_properties) override;
   bool PinchGestureActiveInMainFrame() override;
   float PageScaleInMainFrame() override;
-  const display::ScreenInfo& GetScreenInfo() override;
-  const display::ScreenInfos& GetScreenInfos() override;
-  const display::ScreenInfo& GetOriginalScreenInfo() override;
-  const display::ScreenInfos& GetOriginalScreenInfos() override;
   gfx::Rect WindowRect() override;
   gfx::Rect ViewRect() override;
   void SetScreenRects(const gfx::Rect& widget_screen_rect,
@@ -522,6 +524,7 @@ class CORE_EXPORT WebFrameWidgetImpl
   void BindInputTargetClient(
       mojo::PendingReceiver<viz::mojom::blink::InputTargetClient> receiver)
       override;
+  const display::ScreenInfos& GetOriginalScreenInfos() override;
 
   // mojom::blink::FrameWidget overrides:
   void SetViewportIntersection(
@@ -816,8 +819,6 @@ class CORE_EXPORT WebFrameWidgetImpl
   // compositor submits a frame.
   void PropagateHistorySequenceNumberToCompositor();
 
-  // Ask compositor to create the shared memory for dropped frames ukm region.
-  base::ReadOnlySharedMemoryRegion CreateSharedMemoryForDroppedFramesUkm();
 #if BUILDFLAG(IS_ANDROID)
   // Calculate and cache the most up to date line bounding boxes in the document
   // coordinate space.
@@ -829,6 +830,7 @@ class CORE_EXPORT WebFrameWidgetImpl
   bool WillBeDestroyed() const;
 
   bool IsScrollGestureActive() const;
+  cc::ElementId ScrollLatchedElementId() const;
 
   // Request the compositor thread to tell the GPU process to generate a
   // screenshot of the current viewport. The screenshot is tagged with `token`.
@@ -939,7 +941,8 @@ class CORE_EXPORT WebFrameWidgetImpl
                          const gfx::Rect& window_screen_rect) override;
   void OrientationChanged() override;
   void DidUpdateSurfaceAndScreen(
-      const display::ScreenInfos& previous_original_screen_infos) override;
+      const display::ScreenInfos& previous_original_screen_infos,
+      const display::ScreenInfos& previous_effective_screen_infos) override;
   gfx::Rect ViewportVisibleRect() override;
   std::optional<display::mojom::blink::ScreenOrientation>
   ScreenOrientationOverride() override;
@@ -1165,9 +1168,6 @@ class CORE_EXPORT WebFrameWidgetImpl
   bool DidChangeFullscreenState(
       const VisualProperties& visual_properties) const;
 
-  // Satisfy the render blocking condition for cross-document view transitions.
-  void NotifyViewTransitionRenderingHasBegun();
-
   // True when `this` should ignore input events.
   bool ShouldIgnoreInputEvents();
 
@@ -1234,6 +1234,9 @@ class CORE_EXPORT WebFrameWidgetImpl
   bool is_pinch_gesture_active_in_mainframe_ = false;
 
   bool is_scroll_gesture_active_ = false;
+  // ElementId of the container currently latched for a gesture scroll on the
+  // compositor thread, if any. Otherwise, ElementId().
+  cc::ElementId scroll_latched_element_id_;
 
   // If set, the (plugin) element which has mouse capture.
   Member<HTMLPlugInElement> mouse_capture_element_;
@@ -1299,8 +1302,10 @@ class CORE_EXPORT WebFrameWidgetImpl
 
   std::optional<gfx::Point> host_context_menu_location_;
 
-  // Indicates whether tab-initiated fullscreen was granted.
+  // Indicates whether tab-initiated fullscreen was granted, and the browser's
+  // count of how many times fullscreen has been granted.
   bool is_fullscreen_granted_ = false;
+  uint64_t fullscreen_grant_count_ = 0;
 
   // Indicates whether we need to consume scroll gestures to move cursor.
   bool swipe_to_move_cursor_activated_ = false;
@@ -1465,6 +1470,17 @@ class CORE_EXPORT WebFrameWidgetImpl
     void OnDismissed() override {
       if (widget_ && widget_->unbounded_surface_state_.Get() == this) {
         widget_->OnDismissed();
+      }
+    }
+
+    // Called when the browser destroys the native surface window or refuses
+    // `RequestUnboundedSurface()` (e.g. while hidden). Unlike `OnDismissed()`,
+    // the surface is already gone on the browser side, so dismissal must not be
+    // cancelable by `beforetoggle`.
+    void OnClientDisconnected() {
+      if (widget_ && widget_->unbounded_surface_state_.Get() == this) {
+        widget_->DismissUnboundedSurfaceState(
+            UnboundedDismissReason::kProgrammatic);
       }
     }
 

@@ -36,6 +36,7 @@
 #include "third_party/blink/renderer/core/html/forms/form_associated.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_image_loader.h"
+#include "third_party/blink/renderer/core/html/parser/html_srcset_parser.h"
 #include "third_party/blink/renderer/core/resize_observer/resize_observer.h"
 #include "third_party/blink/renderer/platform/graphics/image_orientation.h"
 #include "ui/gfx/geometry/size.h"
@@ -85,6 +86,20 @@ class CORE_EXPORT HTMLImageElement
 
   bool IsBeingRendered() const;
   bool AllowAutoSizes() const;
+
+  // https://html.spec.whatwg.org/#last-auto-sizes-size
+  std::optional<TargetBoxSize> LastAutoSizesSize() const {
+    return last_auto_sizes_size_;
+  }
+  // Updated during sizes attribute parsing, which runs on const paths
+  // (e.g. GetResourceWidth()); this is a cache of layout state.
+  void UpdateLastAutoSizes(const TargetBoxSize& size) const {
+    last_auto_sizes_size_ = size;
+  }
+  // The box size and 'object-fit' that sizes=auto resolves to for this
+  // (rendered) image. Without SrcsetTwoDimensionalSizes, only the width is
+  // populated.
+  TargetBoxSize AutoSizesSize() const;
 
   const String& currentSrc() const;
 
@@ -141,8 +156,6 @@ class CORE_EXPORT HTMLImageElement
   bool IsCollapsed() const;
   bool IsPrimaryContent() const;
 
-  void SetAutoSizesUsecounter();
-
   // CanvasImageSource interface implementation.
   gfx::SizeF DefaultDestinationSize(
       const gfx::SizeF&,
@@ -155,7 +168,10 @@ class CORE_EXPORT HTMLImageElement
   void SetIsFallbackImage() { is_fallback_image_ = true; }
 
   std::optional<float> GetResourceWidth() const;
-  float SourceSize(Element&);
+  TargetBoxSize SourceSize(Element&);
+
+  // Called by LayoutImage when the computed 'object-fit' changes.
+  void ObjectFitChanged();
 
   void ForceReload() const;
 
@@ -163,15 +179,6 @@ class CORE_EXPORT HTMLImageElement
   void AssociateWith(HTMLFormElement*) override;
 
   bool ElementCreatedByParser() const { return element_created_by_parser_; }
-
-  // Updates if any optimized image policy is violated. When any policy is
-  // violated, the image should be rendered as a placeholder image.
-  void SetImagePolicyViolated() {
-    is_legacy_format_or_unoptimized_image_ = true;
-  }
-  bool IsImagePolicyViolated() {
-    return is_legacy_format_or_unoptimized_image_;
-  }
 
   // Keeps track whether this image is an LCP element.
   // If the element is reused for loading another image, this flag might be
@@ -279,7 +286,6 @@ class CORE_EXPORT HTMLImageElement
   gfx::Size DensityCorrectedIntrinsicDimensions() const;
   HTMLImageLoader& GetImageLoader() const override { return *image_loader_; }
   void NotifyViewportChanged();
-  void CreateMediaQueryListIfDoesNotExist();
 
   // LocalFrameView::LifecycleNotificationObserver
   void DidFinishLayout() override;
@@ -296,15 +302,12 @@ class CORE_EXPORT HTMLImageElement
   bool form_was_set_by_parser_ : 1;
   bool element_created_by_parser_ : 1;
   bool is_fallback_image_ : 1;
-  // This flag indicates if the image violates one or more optimized image
-  // policies. When any policy is violated, the image should be rendered as a
-  // placeholder image.
-  bool is_legacy_format_or_unoptimized_image_ : 1;
   bool is_ad_related_ : 1;
   bool is_lcp_element_ : 1;
   bool is_auto_sized_ : 1;
   bool is_predicted_lcp_element_ : 1;
   bool is_lazy_load_issue_reported_ : 1;
+  mutable std::optional<TargetBoxSize> last_auto_sizes_size_;
 
   HashSet<String> creator_scripts_;
 };

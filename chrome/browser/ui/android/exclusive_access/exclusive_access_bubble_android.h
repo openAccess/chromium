@@ -5,11 +5,13 @@
 #ifndef CHROME_BROWSER_UI_ANDROID_EXCLUSIVE_ACCESS_EXCLUSIVE_ACCESS_BUBBLE_ANDROID_H_
 #define CHROME_BROWSER_UI_ANDROID_EXCLUSIVE_ACCESS_EXCLUSIVE_ACCESS_BUBBLE_ANDROID_H_
 
+#include <optional>
 #include <string>
 
 #include "chrome/browser/ui/exclusive_access/exclusive_access_bubble.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_bubble_hide_callback.h"
 #include "third_party/jni_zero/jni_zero.h"
+#include "url/origin.h"
 
 // The android implementation of ExclusiveAccessBubble, this class is used to
 // manage the exclusive access bubble for the APIs (fullscreen, keyboard lock &
@@ -25,6 +27,8 @@ class ExclusiveAccessBubbleAndroid : public ExclusiveAccessBubble {
     virtual void Update(const std::u16string& text) = 0;
     virtual bool IsVisible() const = 0;
     virtual bool IsKeyboardConnected() const = 0;
+    virtual std::u16string GetCustomFullscreenExitInstruction(
+        const std::optional<std::u16string>& origin) const = 0;
   };
 
   ExclusiveAccessBubbleAndroid(
@@ -57,6 +61,13 @@ class ExclusiveAccessBubbleAndroid : public ExclusiveAccessBubble {
   // Returns whether the popup is visible.
   bool IsVisible() const;
 
+  // Formats and budgets the origin to at most 40 characters for display in the
+  // exclusive access notice, front-eliding subdomain labels if necessary.
+  // Returns std::nullopt if the origin is opaque or if
+  // features::kFullscreenBubbleShowOrigin is disabled.
+  static std::optional<std::u16string> GetOriginStringForTesting(
+      const url::Origin& origin);
+
  private:
   // ExclusiveAccessBubble:
   void Hide() override;
@@ -68,7 +79,6 @@ class ExclusiveAccessBubbleAndroid : public ExclusiveAccessBubble {
   std::u16string GetBubbleText(ExclusiveAccessBubbleType bubble_type,
                                bool keyboard_connected) const;
 
-  ExclusiveAccessBubbleParams params_;
   bool notify_overridden_;
   bool was_shown_ = false;
   ExclusiveAccessBubbleHideCallback first_hide_callback_;

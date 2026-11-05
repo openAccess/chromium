@@ -151,12 +151,7 @@ suite('SimplifiedSelection', function() {
       rotation: 0,
       coordinateType: CenterRotatedBox_CoordinateType.kNormalized,
     };
-    textLayerElement.dispatchEvent(
-        new CustomEvent<CenterRotatedBox>('detect-text-in-region', {
-          bubbles: true,
-          composed: true,
-          detail: centerRotatedBox,
-        }));
+    textLayerElement.fire('detect-text-in-region', centerRotatedBox);
     await flushTasks();
   }
 
@@ -327,7 +322,10 @@ suite('SimplifiedSelection', function() {
 
   test(
       'SelectedRegionContextMenuAppearsAfterTimeoutElapsesNoText', async () => {
+        const receivedTextEventPromise =
+            eventToPromise('finished-receiving-text', document.body);
         callTextReceivedTimeout();
+        await receivedTextEventPromise;
 
         // When the detect text in region event is received, the context menu
         // should be shown without any detected text.
@@ -399,6 +397,36 @@ suite('SimplifiedSelection', function() {
     assertEquals(
         showSelectedRegionContextMenuEvent.detail.text, 'hello there\r\ntest');
   });
+
+  test(
+      'SelectedRegionContextMenuAppearsWithSmallTextInLargeRegion',
+      async () => {
+        await addGenericWordsToPageNormalized(callbackRouterRemote);
+
+        // Select the entire image so that the words occupy a small fraction of
+        // the region (overall selection IoU < 0.1) while still being fully
+        // contained within the region.
+        const showSelectedRegionContextMenuEventPromise =
+            eventToPromise<SelectedRegionContextMenuEvent>(
+                'show-selected-region-context-menu', document.body);
+        const largeRegionBox: CenterRotatedBox = {
+          box: {x: 0.5, y: 0.5, width: 1.0, height: 1.0},
+          rotation: 0,
+          coordinateType: CenterRotatedBox_CoordinateType.kNormalized,
+        };
+        textLayerElement.fire('detect-text-in-region', largeRegionBox);
+        await flushTasks();
+
+        const showSelectedRegionContextMenuEvent =
+            await showSelectedRegionContextMenuEventPromise;
+        assertEquals(
+            showSelectedRegionContextMenuEvent.detail.selectionStartIndex, 0);
+        assertEquals(
+            showSelectedRegionContextMenuEvent.detail.selectionEndIndex, 2);
+        assertEquals(
+            showSelectedRegionContextMenuEvent.detail.text,
+            'hello there\r\ntest');
+      });
 
   test('SelectedRegionContextMenuAppearsWithRegionText', async () => {
     // Two add text calls to have text be used from the region.
@@ -822,5 +850,38 @@ suite('SimplifiedSelection', function() {
         showSelectedRegionContextMenuEvent.detail.selectionStartIndex, -1);
     assertEquals(
         showSelectedRegionContextMenuEvent.detail.selectionEndIndex, -1);
+  });
+
+  test('ShowHighlightedRegionTextInjectedImageWithoutFullText', async () => {
+    // Verify that when an injected image's region text arrives without an
+    // accompanying full text response (e.g. region-only mode), the highlighted
+    // lines are still rendered from the region text response.
+    await addRegionTextToPage(
+        callbackRouterRemote, TOP_TO_BOTTOM_TEXT, /*isInjectedImage=*/ true);
+    await waitAfterNextRender(textLayerElement);
+    assertEquals(
+        2,
+        textLayerElement.shadowRoot.querySelectorAll('.highlighted-line')
+            .length);
+  });
+
+  test('EmptyRegionTextFallsBackToFullTextResponse', async () => {
+    // Add words to the full text response.
+    await addGenericWordsToPageNormalized(callbackRouterRemote);
+    // Add empty region text response (e.g. interaction response returned no
+    // words).
+    await addEmptyRegionTextToPage(callbackRouterRemote);
+    await waitAfterNextRender(textLayerElement);
+
+    const showSelectedRegionContextMenuEventPromise =
+        eventToPromise<SelectedRegionContextMenuEvent>(
+            'show-selected-region-context-menu', document.body);
+    await dispatchDetectTextInRegionEvent();
+    const showSelectedRegionContextMenuEvent =
+        await showSelectedRegionContextMenuEventPromise;
+    assertEquals(
+        showSelectedRegionContextMenuEvent.detail.selectionStartIndex, 0);
+    assertEquals(
+        showSelectedRegionContextMenuEvent.detail.selectionEndIndex, 2);
   });
 });

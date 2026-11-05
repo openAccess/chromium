@@ -56,7 +56,10 @@ gfx::Size MdTextButtonWithSpinner::CalculatePreferredSize(
     const SizeBounds& available_size) const {
   auto size = views::MdTextButton::CalculatePreferredSize(available_size);
   if (GetSpinnerVisible()) {
-    size.set_width(size.width() + kSpinnerDiameter + kSpinnerLabelSpacing);
+    // Only reserve spacing between the spinner and the label if there is a
+    // label to separate the spinner from.
+    const int spacing = GetText().empty() ? 0 : kSpinnerLabelSpacing;
+    size.set_width(size.width() + kSpinnerDiameter + spacing);
   }
   return size;
 }
@@ -76,16 +79,21 @@ views::ProposedLayout MdTextButtonWithSpinner::CalculateProposedLayout(
       break;
     }
   }
-  DCHECK(label_layout);
+  CHECK(label_layout, base::NotFatalUntil::M163);
 
   const int button_content_width =
       layouts.host_size.width() - GetInsets().left() - GetInsets().right();
 
   const int label_preferred_width = label_layout->bounds.width();
 
+  // Only add spacing between the spinner and the label if the label takes up
+  // space. Otherwise, e.g. when the text is empty, the spinner would be
+  // centered together with the unused spacing and end up off-center.
+  const int spacing = label_preferred_width > 0 ? kSpinnerLabelSpacing : 0;
+
   // Calculate the total width of the spinner and label.
   const int preferred_spinner_label_width =
-      kSpinnerDiameter + kSpinnerLabelSpacing + label_layout->bounds.width();
+      kSpinnerDiameter + spacing + label_preferred_width;
 
   int label_width;
   int spinner_label_width;
@@ -95,13 +103,13 @@ views::ProposedLayout MdTextButtonWithSpinner::CalculateProposedLayout(
     // Calculate the maximum width available for the label after accounting
     // for the fixed spinner and spacing.
     int max_available_label_width =
-        button_content_width - kSpinnerDiameter - kSpinnerLabelSpacing;
+        button_content_width - kSpinnerDiameter - spacing;
 
     // Ensure the available width for the label is not negative.
     label_width = std::max(0, max_available_label_width);
 
     // Update combined width to reflect the shrunk label width.
-    spinner_label_width = kSpinnerDiameter + kSpinnerLabelSpacing + label_width;
+    spinner_label_width = kSpinnerDiameter + spacing + label_width;
   } else {
     label_width = label_preferred_width;
     spinner_label_width = preferred_spinner_label_width;
@@ -110,7 +118,7 @@ views::ProposedLayout MdTextButtonWithSpinner::CalculateProposedLayout(
   // Account for different horizontal alignments.
   int combo_start_x;
   auto horizontal_alignment = GetHorizontalAlignment();
-  DCHECK_NE(gfx::ALIGN_TO_HEAD, horizontal_alignment);
+  CHECK_NE(gfx::ALIGN_TO_HEAD, horizontal_alignment, base::NotFatalUntil::M163);
   switch (horizontal_alignment) {
     case gfx::HorizontalAlignment::ALIGN_LEFT:
       combo_start_x = GetInsets().left();
@@ -134,7 +142,7 @@ views::ProposedLayout MdTextButtonWithSpinner::CalculateProposedLayout(
                                  kSpinnerDiameter);
 
   // Adjust label position relative to spinner.
-  const int label_x = spinner_x + kSpinnerDiameter + kSpinnerLabelSpacing;
+  const int label_x = spinner_x + kSpinnerDiameter + spacing;
   label_layout->bounds.set_x(label_x);
   label_layout->bounds.set_width(label_width);
 

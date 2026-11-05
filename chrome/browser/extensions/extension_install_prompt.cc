@@ -62,14 +62,6 @@ InstallPromptData::PromptType
     ExtensionInstallPrompt::g_last_prompt_type_for_tests =
         InstallPromptData::UNSET_PROMPT_TYPE;
 
-ExtensionInstallPrompt::DoneCallbackPayload::DoneCallbackPayload(Result result)
-    : DoneCallbackPayload(result, std::string()) {}
-
-ExtensionInstallPrompt::DoneCallbackPayload::DoneCallbackPayload(
-    Result result,
-    std::string justification)
-    : result(result), justification(std::move(justification)) {}
-
 // static
 InstallPromptData::PromptType
 ExtensionInstallPrompt::GetReEnablePromptTypeForExtension(
@@ -125,8 +117,8 @@ void ExtensionInstallPrompt::ShowDialog(
     const SkBitmap* icon,
     std::unique_ptr<const PermissionSet> custom_permissions,
     const ShowDialogCallback& show_dialog_callback) {
-  DCHECK(ui_thread_checker_.CalledOnValidThread());
-  DCHECK(prompt_);
+  CHECK(ui_thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M161);
+  CHECK(prompt_, base::NotFatalUntil::M161);
   CHECK_NE(InstallPromptData::UNSET_PROMPT_TYPE, prompt_->type());
 
   extension_ = extension;
@@ -174,7 +166,7 @@ void ExtensionInstallPrompt::SetSkipPostInstallUI(bool skip_ui) {
 void ExtensionInstallPrompt::ConfirmInstall(
     DoneCallback install_callback,
     const extensions::Extension* extension) {
-  DCHECK(prompt_);
+  CHECK(prompt_, base::NotFatalUntil::M161);
   // This is only called from CrxInstaller, which is always constructed with an
   // unset type.
   CHECK_EQ(InstallPromptData::UNSET_PROMPT_TYPE, prompt_->type());
@@ -188,7 +180,7 @@ void ExtensionInstallPrompt::ConfirmReEnable(
     DoneCallback install_callback,
     const extensions::Extension* extension,
     content::BrowserContext* browser_context) {
-  DCHECK(prompt_);
+  CHECK(prompt_, base::NotFatalUntil::M161);
   // This is only called from CrxInstaller, which is always constructed with an
   // unset type.
   CHECK_EQ(InstallPromptData::UNSET_PROMPT_TYPE, prompt_->type());
@@ -203,9 +195,19 @@ void ExtensionInstallPrompt::ConfirmReEnable(
 void ExtensionInstallPrompt::ShowInstallDialog(DoneCallback install_callback,
                                                const Extension* extension,
                                                const SkBitmap* icon) {
-  DCHECK(prompt_);
+  CHECK(prompt_, base::NotFatalUntil::M161);
   ShowDialog(std::move(install_callback), extension, icon,
              GetDefaultShowDialogCallback());
+}
+
+void ExtensionInstallPrompt::ConfirmPermissions(
+    DoneCallback done_callback,
+    const Extension* extension,
+    std::unique_ptr<const PermissionSet> custom_permissions) {
+  CHECK(prompt_, base::NotFatalUntil::M161);
+  CHECK(custom_permissions, base::NotFatalUntil::M161);
+  ShowDialog(std::move(done_callback), extension, nullptr,
+             std::move(custom_permissions), GetDefaultShowDialogCallback());
 }
 
 std::unique_ptr<InstallPromptData>

@@ -19,8 +19,9 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/link.h"
@@ -73,12 +74,12 @@ ForceInstalledDeprecatedAppsDialogView::ForceInstalledDeprecatedAppsDialogView(
   learn_more->SetCallback(base::BindRepeating(
       [](content::WebContents* web_contents, const ui::Event& event) {
         web_contents->OpenURL(
-            content::OpenURLParams(
+            content::OpenURLParams::CreateBrowserInitiated(
                 GURL(chrome::kChromeAppsDeprecationLearnMoreURL),
-                content::Referrer(),
                 ui::DispositionFromEventFlags(
-                    event.flags(), WindowOpenDisposition::NEW_FOREGROUND_TAB),
-                ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false),
+                    event.flags(),
+                    ui::mojom::WindowOpenDisposition::kNewForegroundTab),
+                ui::PAGE_TRANSITION_LINK),
             /*navigation_handle_callback=*/{});
       },
       web_contents));

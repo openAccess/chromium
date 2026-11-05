@@ -37,14 +37,14 @@
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 
-#if BUILDFLAG(USE_NSS_CERTS)
+#if BUILDFLAG(USE_NSS_CLIENT_CERTS)
 #include "chrome/browser/net/nss_service.h"
 #include "chrome/browser/net/nss_service_factory.h"
 #include "chrome/browser/ui/crypto_module_delegate_nss.h"
 #include "net/cert/nss_cert_database.h"
 #include "net/cert/x509_util_nss.h"
 #include "net/ssl/client_cert_store_nss.h"
-#endif  // BUILDFLAG(USE_NSS_CERTS)
+#endif  // BUILDFLAG(USE_NSS_CLIENT_CERTS)
 
 #if BUILDFLAG(IS_WIN)
 #include "net/ssl/client_cert_store_win.h"
@@ -66,13 +66,14 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_features.h"
+#include "base/check_deref.h"
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service_factory.h"
 #include "chrome/browser/ash/kcer/kcer_factory_ash.h"
 #include "chrome/browser/ash/net/client_cert_store_kcer.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/kcer/kcer.h"
-#include "chromeos/ash/components/kcer/kcer_histograms.h"
 #include "chromeos/components/certificate_provider/certificate_provider.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/user_manager/user.h"
@@ -705,7 +706,7 @@ class WritableClientCertSource
 
   void GotImportPassword(std::vector<uint8_t> file_bytes,
                          const std::optional<std::string>& password) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
     if (!password) {
       std::move(import_callback_).Run(nullptr);
       return;
@@ -728,7 +729,7 @@ class WritableClientCertSource
   static void GetCertDBOnIOThread(
       NssCertDatabaseGetter database_getter,
       base::OnceCallback<void(net::NSSCertDatabase*)> callback) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+    CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M162);
 
     auto split_callback = base::SplitOnceCallback(std::move(callback));
 
@@ -749,7 +750,7 @@ class WritableClientCertSource
                               std::string password,
                               int nss_import_result)> finished_import_callback,
       net::NSSCertDatabase* cert_db) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+    CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M162);
 
     crypto::ScopedPK11Slot slot;
     if (use_hardware_backed) {
@@ -774,12 +775,10 @@ class WritableClientCertSource
   void FinishedNSSImport(std::vector<uint8_t> file_bytes,
                          std::string password,
                          int nss_import_result) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
 #if BUILDFLAG(IS_CHROMEOS)
     if (nss_import_result == net::OK) {
-      kcer::RecordPkcs12MigrationUmaEvent(
-          kcer::Pkcs12MigrationUmaEvent::kPkcs12ImportNssSuccess);
       // `import_hardware_backed_` == false indicates that the cert came from
       // the "Import" button. By default it's imported into the software NSS
       // database (aka public slot). With the experiment enabled it should also
@@ -793,7 +792,9 @@ class WritableClientCertSource
         base::WeakPtr<kcer::Kcer> kcer =
             kcer::KcerFactoryAsh::GetKcer(profile_);
         if (kcer) {
-          kcer::KcerFactoryAsh::RecordPkcs12CertDualWritten();
+          kcer::KcerFactoryAsh::RecordPkcs12CertDualWritten(CHECK_DEREF(
+              ash::BrowserContextHelper::Get()->GetUserByBrowserContext(
+                  profile_)));
           return kcer->ImportPkcs12Cert(
               kcer::Token::kUser, kcer::Pkcs12Blob(std::move(file_bytes)),
               std::move(password),
@@ -804,9 +805,6 @@ class WritableClientCertSource
                              nss_import_result));
         }
       }
-    } else {
-      kcer::RecordPkcs12MigrationUmaEvent(
-          kcer::Pkcs12MigrationUmaEvent::kPkcs12ImportNssFailed);
     }
 #endif
 
@@ -816,16 +814,8 @@ class WritableClientCertSource
 #if BUILDFLAG(IS_CHROMEOS)
   void FinishedKcerImport(
       int nss_import_result,
-      base::expected<void, kcer::Error> kcer_import_result) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-
-    if (kcer_import_result.has_value()) {
-      kcer::RecordPkcs12MigrationUmaEvent(
-          kcer::Pkcs12MigrationUmaEvent::kPkcs12ImportKcerSuccess);
-    } else {
-      kcer::RecordPkcs12MigrationUmaEvent(
-          kcer::Pkcs12MigrationUmaEvent::kPkcs12ImportKcerFailed);
-    }
+      base::expected<void, kcer::Error> /*kcer_import_result*/) {
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
     // Just return the nss_import_result. Kcer will attempt to import only if
     // NSS succeeds and even if Kcer fails, the cert should be usable.
@@ -834,7 +824,7 @@ class WritableClientCertSource
 #endif
 
   void ReplyToImportCallback(int nss_import_result) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
     if (nss_import_result == net::OK) {
       // Refresh the certificate list to include the newly imported cert, and
@@ -874,7 +864,7 @@ class WritableClientCertSource
       const std::string& sha256hash_hex,
       CertificateManagerPageHandler::DeleteCertificateCallback callback,
       bool confirmed) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
     if (!confirmed) {
       std::move(callback).Run(nullptr);
       return;
@@ -910,7 +900,7 @@ class WritableClientCertSource
       ClientCertManagementAccessControls client_cert_policy,
       base::OnceCallback<void(bool nss_delete_result)> finished_delete_callback,
       net::NSSCertDatabase* cert_db) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+    CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M162);
 
     net::ScopedCERTCertificate nss_cert =
         net::x509_util::CreateCERTCertificateFromX509Certificate(cert.get());
@@ -952,7 +942,7 @@ class WritableClientCertSource
   void FinishedDelete(
       CertificateManagerPageHandler::DeleteCertificateCallback callback,
       bool delete_result) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
     if (delete_result) {
       // Refresh the certificate list to remove the deleted cert, and
@@ -1081,7 +1071,7 @@ ClientCertManagementAccessControls::ClientCertManagementAccessControls(
       client_cert_policy_(static_cast<ClientCertificateManagementPermission>(
           profile->GetPrefs()->GetInteger(
               prefs::kClientCertificateManagementAllowed))) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 }
 
 bool ClientCertManagementAccessControls::IsManagementAllowed(

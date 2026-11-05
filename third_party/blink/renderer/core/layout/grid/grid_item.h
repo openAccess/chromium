@@ -235,9 +235,8 @@ struct CORE_EXPORT GridItemData : public GarbageCollected<GridItemData> {
   GridTrackSizingDirection RelativeDirectionInSubgrid(
       GridTrackSizingDirection track_direction) const {
     DCHECK(IsSubgrid());
-    const bool is_for_columns =
-        is_parallel_with_root_grid == (track_direction == kForColumns);
-    return is_for_columns ? kForColumns : kForRows;
+    return is_parallel_with_root_grid ? track_direction
+                                      : OppositeDirection(track_direction);
   }
 
   // Returns the relative direction this subgrid's coordinate system. If
@@ -437,10 +436,11 @@ class CORE_EXPORT GridItems : public GarbageCollected<GridItems> {
       DCHECK_LE(current_index_, item_data_->size());
     }
 
-    bool operator!=(const Iterator& other) {
-      return current_index_ != other.current_index_ ||
-             item_data_ != other.item_data_;
+    bool operator==(const Iterator& other) {
+      return current_index_ == other.current_index_ &&
+             item_data_ == other.item_data_;
     }
+    bool operator!=(const Iterator& other) { return !(*this == other); }
 
     Iterator& operator++() {
       ++current_index_;

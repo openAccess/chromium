@@ -22,6 +22,7 @@
 #include "net/third_party/quiche/src/quiche/quic/core/http/http_constants.h"
 #include "net/third_party/quiche/src/quiche/quic/core/qpack/qpack_instruction_encoder.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_framer.h"
+#include "net/third_party/quiche/src/quiche/quic/core/quic_receive_time.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_stream.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_types.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_utils.h"
@@ -259,18 +260,14 @@ QuicTestPacketMaker::MakeRequestHeadersAndMultipleDataFramesPacket(
   return builder.Build();
 }
 
-std::unique_ptr<quic::QuicReceivedPacket>
-QuicTestPacketMaker::MakeRequestHeadersPacket(
-    uint64_t packet_number,
+void QuicTestPacketMaker::AddRequestHeadersFrames(
+    QuicTestPacketBuilder& builder,
     quic::QuicStreamId stream_id,
     bool fin,
     spdy::SpdyPriority spdy_priority,
     quiche::HttpHeaderBlock headers,
     size_t* spdy_headers_frame_length,
     bool should_include_priority_frame) {
-  auto& builder = Packet(packet_number);
-  builder.MaybeAddHttp3SettingsFrames();
-
   if (should_include_priority_frame) {
     std::string priority_data =
         GenerateHttp3PriorityData(spdy_priority, stream_id);
@@ -283,6 +280,22 @@ QuicTestPacketMaker::MakeRequestHeadersPacket(
   std::string data = QpackEncodeHeaders(stream_id, std::move(headers),
                                         spdy_headers_frame_length);
   builder.AddStreamFrame(stream_id, fin, data);
+}
+
+std::unique_ptr<quic::QuicReceivedPacket>
+QuicTestPacketMaker::MakeRequestHeadersPacket(
+    uint64_t packet_number,
+    quic::QuicStreamId stream_id,
+    bool fin,
+    spdy::SpdyPriority spdy_priority,
+    quiche::HttpHeaderBlock headers,
+    size_t* spdy_headers_frame_length,
+    bool should_include_priority_frame) {
+  auto& builder = Packet(packet_number);
+  builder.MaybeAddHttp3SettingsFrames();
+  AddRequestHeadersFrames(builder, stream_id, fin, spdy_priority,
+                          std::move(headers), spdy_headers_frame_length,
+                          should_include_priority_frame);
   return builder.Build();
 }
 
@@ -340,6 +353,28 @@ QuicTestPacketMaker::MakeRequestHeadersAndRstPacket(
   builder.AddStreamFrame(stream_id, fin, data);
   builder.AddStopSendingFrame(stream_id, error_code);
   builder.AddRstStreamFrame(stream_id, error_code);
+  return builder.Build();
+}
+
+std::unique_ptr<quic::QuicReceivedPacket>
+QuicTestPacketMaker::MakeAckAndRequestHeadersPacket(
+    uint64_t packet_number,
+    quic::QuicStreamId stream_id,
+    bool fin,
+    spdy::SpdyPriority spdy_priority,
+    quiche::HttpHeaderBlock headers,
+    uint64_t largest_received,
+    uint64_t smallest_received,
+    size_t* spdy_headers_frame_length,
+    bool should_include_priority_frame) {
+  DCHECK_GE(largest_received, smallest_received);
+  auto& builder = Packet(packet_number);
+  builder.MaybeAddHttp3SettingsFrames();
+  builder.AddAckFrame(/*first_received=*/1, largest_received,
+                      smallest_received);
+  AddRequestHeadersFrames(builder, stream_id, fin, spdy_priority,
+                          std::move(headers), spdy_headers_frame_length,
+                          should_include_priority_frame);
   return builder.Build();
 }
 
@@ -693,8 +728,10 @@ QuicTestPacketBuilder& QuicTestPacketBuilder::AddAckFrame(
   ack_frame->largest_acked = quic::QuicPacketNumber(largest_received);
   ack_frame->ack_delay_time = quic::QuicTime::Delta::Zero();
   for (uint64_t i = smallest_received; i <= largest_received; ++i) {
-    ack_frame->received_packet_times.emplace_back(quic::QuicPacketNumber(i),
-                                                  maker_->clock()->Now());
+    ack_frame->received_packet_times.emplace_back(
+        quic::QuicPacketNumber(i),
+        *quic::QuicReceiveTime::FromLocalTime(maker_->clock()->Now(),
+                                              quic::QuicTime::Zero()));
   }
   if (largest_received > 0) {
     DCHECK_GE(largest_received, first_received);

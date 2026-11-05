@@ -24,6 +24,8 @@ import android.widget.TextView;
 import androidx.appcompat.view.ContextThemeWrapper;
 import androidx.test.core.app.ApplicationProvider;
 
+import org.jni_zero.JniRawPtr;
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -33,7 +35,6 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
@@ -42,7 +43,6 @@ import java.lang.ref.WeakReference;
 
 /** Tests for {@link NoPasskeysBottomSheetBridge} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class NoPasskeysBottomSheetModuleTest {
     private static final long TEST_NATIVE = 42069;
     private static final String TEST_ORIGIN = "origin.com";
@@ -57,26 +57,33 @@ public class NoPasskeysBottomSheetModuleTest {
             new ContextThemeWrapper(
                     ApplicationProvider.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
 
+    private JniRawPtr<NoPasskeysBottomSheetBridge.NativeNoPasskeysBottomSheetBridge> mTestNative;
     private NoPasskeysBottomSheetBridge mBridge;
 
     @Before
     public void setUp() {
         NoPasskeysBottomSheetBridgeJni.setInstanceForTesting(mNativeMock);
+        mTestNative = JniRawPtr.createForTesting(TEST_NATIVE);
         doReturn(true)
                 .when(mBottomSheetController)
                 .requestShowContent(any(NoPasskeysBottomSheetContent.class), anyBoolean());
         mBridge =
                 new NoPasskeysBottomSheetBridge(
-                        TEST_NATIVE,
+                        mTestNative,
                         new WeakReference<>(mContext),
                         new WeakReference<>(mBottomSheetController));
+    }
+
+    @After
+    public void tearDown() {
+        mTestNative.release();
     }
 
     @Test
     public void callNativeOnDismissAfterShow() {
         mBridge.show(TEST_ORIGIN);
         mBridge.dismiss();
-        verify(mNativeMock).onDismissed(TEST_NATIVE);
+        verify(mNativeMock).onDismissed(mTestNative);
     }
 
     @Test
@@ -84,7 +91,7 @@ public class NoPasskeysBottomSheetModuleTest {
         mBridge.show(TEST_ORIGIN);
         mBridge.dismiss();
         mBridge.dismiss();
-        verify(mNativeMock).onDismissed(TEST_NATIVE);
+        verify(mNativeMock).onDismissed(mTestNative);
     }
 
     @Test
@@ -95,7 +102,7 @@ public class NoPasskeysBottomSheetModuleTest {
         verify(mBottomSheetController).requestShowContent(contentCaptor.capture(), eq(true));
 
         findOkButton(contentCaptor.getValue()).performClick();
-        verify(mNativeMock).onDismissed(TEST_NATIVE);
+        verify(mNativeMock).onDismissed(mTestNative);
     }
 
     @Test
@@ -106,7 +113,7 @@ public class NoPasskeysBottomSheetModuleTest {
         verify(mBottomSheetController).requestShowContent(contentCaptor.capture(), eq(true));
 
         findUseOtherDeviceButton(contentCaptor.getValue()).performClick();
-        verify(mNativeMock).onDismissed(TEST_NATIVE);
+        verify(mNativeMock).onDismissed(mTestNative);
     }
 
     @Test
@@ -118,7 +125,7 @@ public class NoPasskeysBottomSheetModuleTest {
 
         // {@code destroy()} is called when a sheet gets dismissed by action, tabs, or layouting.
         contentCaptor.getValue().destroy();
-        verify(mNativeMock).onDismissed(TEST_NATIVE);
+        verify(mNativeMock).onDismissed(mTestNative);
     }
 
     @Test

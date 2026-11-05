@@ -5,6 +5,7 @@
 #include "chrome/browser/actor/tools/navigate_tool.h"
 
 #include "base/feature_list.h"
+#include "chrome/browser/actor/actor_surface.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/site_policy.h"
 #include "chrome/browser/actor/tools/observation_delay_controller.h"
@@ -16,30 +17,29 @@
 #include "components/actor/core/actor_features.h"
 #include "components/actor/core/journal_details_builder.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
-#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/abseil-cpp/absl/strings/str_format.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
 using content::NavigationHandle;
 using content::WebContents;
-using tabs::TabInterface;
 
 namespace actor {
 
 NavigateTool::NavigateTool(TaskId task_id,
                            ToolDelegate& tool_delegate,
-                           TabInterface& tab,
+                           ActorSurface& actor_surface,
                            const GURL& url)
     : Tool(task_id, tool_delegate),
-      WebContentsObserver(tab.GetContents()),
+      WebContentsObserver(actor_surface.GetWebContents()),
       url_(url),
-      tab_handle_(tab.GetHandle()) {}
+      actor_surface_handle_(actor_surface.GetHandle()) {}
 
 NavigateTool::~NavigateTool() = default;
 
@@ -76,10 +76,10 @@ void NavigateTool::Invoke(ToolCallback callback) {
 
   // TODO(b/460113906): Legacy code path - remove once the
   // NavigateUsingLoadURL path lands safely.
-  content::OpenURLParams params(
-      url_, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-      ::ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL,
-      false /* is_renderer_initiated */);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          url_, ::ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ::ui::PageTransition::PAGE_TRANSITION_AUTO_TOPLEVEL);
 
   // TODO(b/460113906): Alternate to the NavigateUsingLoadURL path to fix for
   // this bug. Unfortunately, OpenURL has the side effect that a navigation
@@ -112,13 +112,8 @@ std::unique_ptr<ObservationDelayController> NavigateTool::GetObservationDelayer(
       page_stability_config);
 }
 
-void NavigateTool::UpdateTaskBeforeInvoke(ActorTask& task,
-                                          ToolCallback callback) const {
-  task.AddTab(tab_handle_, /*stop_task_on_detach=*/true, std::move(callback));
-}
-
-tabs::TabHandle NavigateTool::GetTargetTab() const {
-  return tab_handle_;
+ActorSurfaceHandle NavigateTool::GetTargetActorSurface() const {
+  return actor_surface_handle_;
 }
 
 void NavigateTool::DidFinishNavigation(NavigationHandle* navigation_handle) {

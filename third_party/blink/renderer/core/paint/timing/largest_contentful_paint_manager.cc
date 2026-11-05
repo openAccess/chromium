@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/paint/timing/largest_contentful_paint_manager.h"
 
 #include "base/check.h"
+#include "cc/layers/heads_up_display_layer.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "third_party/blink/renderer/core/dom/document.h"
@@ -13,7 +14,9 @@
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/paint/timing/paint_timing.h"
 #include "third_party/blink/renderer/core/paint/timing/paint_timing_utils.h"
+#include "third_party/blink/renderer/core/paint/timing/web_vitals_hud_helper.h"
 #include "third_party/blink/renderer/core/timing/dom_window_performance.h"
+#include "third_party/blink/renderer/core/timing/largest_contentful_paint.h"
 #include "third_party/blink/renderer/core/timing/performance_timing_for_reporting.h"
 #include "third_party/blink/renderer/platform/graphics/paint/ignore_paint_timing_scope.h"
 #include "third_party/blink/renderer/platform/loader/fetch/media_timing.h"
@@ -30,20 +33,18 @@ LargestContentfulPaintManager::LargestContentfulPaintManager(
 
 void LargestContentfulPaintManager::EmitLcpPerformanceEntry(
     const DOMPaintTimingInfo& paint_timing_info,
-    uint64_t paint_size,
-    base::TimeTicks load_time,
-    const AtomicString& id,
-    const String& url,
-    Element* element) {
+    LargestContentfulPaint* lcp_entry) {
   // `largest_contentful_paint_calculator_` can be null if input arrived between
   // paint and presentation time.
   // TODO(crbug.com/454082773): These values should count towards LCP.
   if (!largest_contentful_paint_calculator_) {
     return;
   }
-  DOMWindowPerformance::performance(*window_.Get())
-      ->OnLargestContentfulPaintUpdated(paint_timing_info, paint_size,
-                                        load_time, id, url, element);
+  WindowPerformance* performance =
+      DOMWindowPerformance::performance(*window_.Get());
+  lcp_entry->FinalizeEntry(paint_timing_info,
+                           performance->NavigationId().web_exposed_id);
+  performance->OnLargestContentfulPaintUpdated(lcp_entry);
 }
 
 void LargestContentfulPaintManager::OnLcpMetricsForReportingChanged() {
@@ -63,22 +64,10 @@ void LargestContentfulPaintManager::OnLcpMetricsForReportingChanged() {
   // Notify the browser of the updated largest contentful paint candidate so
   // that startup profiling can observe it (mirrors the FCP notification), and
   // pass the candidate's renderer-side presentation timestamp so the browser
-  // does not have to approximate the timing on IPC arrival. The candidate is
-  // the larger of the image and text records, with ties broken by the earlier
-  // paint time, matching LargestContentfulPaintCalculator's own selection in
-  // UpdateLatestLcpDetailsTypeIfNeeded().
-  const bool text_is_larger = lcp_details.largest_text_paint_size >
-                                  lcp_details.largest_image_paint_size ||
-                              (lcp_details.largest_text_paint_size ==
-                                   lcp_details.largest_image_paint_size &&
-                               lcp_details.largest_text_paint_time <
-                                   lcp_details.largest_image_paint_time);
-  const base::TimeTicks presentation_time =
-      text_is_larger ? lcp_details.largest_text_paint_time
-                     : lcp_details.largest_image_paint_time;
+  // does not have to approximate the timing on IPC arrival.
   // LocalFrame::OnLargestContentfulPaint() filters to the outermost main frame.
   if (LocalFrame* frame = window_->GetFrame()) {
-    frame->OnLargestContentfulPaint(presentation_time);
+    frame->OnLargestContentfulPaint(lcp_details.PresentationTime());
   }
 }
 
@@ -106,11 +95,15 @@ void LargestContentfulPaintManager::Trace(Visitor* visitor) const {
   visitor->Trace(largest_ignored_image_);
 }
 
+PaintTimingClient::Type LargestContentfulPaintManager::GetType() const {
+  return Type::kLargestContentfulPaint;
+}
+
 void LargestContentfulPaintManager::OnElementFirstContentfulPaint(
     ImageRecord* record) {
   CHECK(largest_contentful_paint_calculator_);
-  if (!largest_contentful_paint_calculator_->ShouldTrackForPaintTiming(
-          *record)) {
+  if (!largest_contentful_paint_calculator_->IsEligibleForLcp(*record) ||
+      !largest_contentful_paint_calculator_->IsNewLargestCandidate(*record)) {
     return;
   }
   // Inform the `largest_contentful_paint_calculator_` so it can update the
@@ -118,44 +111,52 @@ void LargestContentfulPaintManager::OnElementFirstContentfulPaint(
   largest_contentful_paint_calculator_->OnImageFirstPaint(record);
 }
 
-void LargestContentfulPaintManager::OnElementLastContentfulPaint(
-    ImageRecord* record) {
-  contains_full_viewport_image_ |=
-      record->GetEffectiveVisualSizeResult().is_viewport_covered;
+OptionalPaintTimingCallback LargestContentfulPaintManager::OnPaintFinished(
+    const HeapVector<Member<ImageRecord>>& image_records,
+    const HeapVector<Member<TextRecord>>& text_records) {
   CHECK(largest_contentful_paint_calculator_);
-  record->SetIsNeededForLargestContentfulPaint(
-      largest_contentful_paint_calculator_->ShouldTrackForPaintTiming(*record));
-}
 
-void LargestContentfulPaintManager::OnElementLastContentfulPaint(
-    TextRecord* record,
-    bool was_previously_reported) {
-  CHECK(largest_contentful_paint_calculator_);
-  // Note: unlike images, this tracks any records that are eligible for LCP,
-  // even if they're not larger than the current candidate. This affects the
-  // HUD, but doesn't affect LCP.
-  record->SetIsNeededForLargestContentfulPaint(
-      !was_previously_reported &&
-      largest_contentful_paint_calculator_->IsEligibleForLcp(*record));
-}
+  LocalFrame* frame = window_->GetFrame();
+  CHECK(frame);
+  WebVitalsHudHelper hud_helper(
+      cc::WebVitalMetricType::kNavigationContentfulPaint, frame->View());
 
-void LargestContentfulPaintManager::OnImageRemoved(ImageRecord* record,
-                                                   const LayoutObject& object,
-                                                   const MediaTiming* timing) {
-  CHECK(largest_contentful_paint_calculator_);
-  // `record` is non-null if the image was removed while pending. In that case,
-  // notify the lcp calculator so it can clear the largest pending image, if
-  // that was removed.
-  if (record) {
-    largest_contentful_paint_calculator_->OnPendingImageRemoved(record);
+  for (const auto& record : image_records) {
+    contains_full_viewport_image_ |=
+        record->GetEffectiveVisualSizeResult().is_viewport_covered;
+    if (!largest_contentful_paint_calculator_->IsEligibleForLcp(*record)) {
+      continue;
+    }
+    hud_helper.AddWebVitalsDebugRect(*record);
+    if (largest_contentful_paint_calculator_->IsNewLargestCandidate(*record)) {
+      record->SetIsNeededForLargestContentfulPaint(true);
+    }
   }
+
+  for (const auto& record : text_records) {
+    if (record->WasPreviouslyReported() ||
+        !largest_contentful_paint_calculator_->IsEligibleForLcp(*record)) {
+      continue;
+    }
+    hud_helper.AddWebVitalsDebugRect(*record);
+    if (largest_contentful_paint_calculator_->IsNewLargestCandidate(*record)) {
+      record->SetIsNeededForLargestContentfulPaint(true);
+    }
+  }
+  return std::nullopt;
+}
+
+void LargestContentfulPaintManager::OnImageRemoved(const LayoutObject& object,
+                                                   const MediaTiming* timing) {
+  // Notify the lcp calculator so it can clear the largest pending image, if
+  // that was removed.
+  CHECK(largest_contentful_paint_calculator_);
+  largest_contentful_paint_calculator_->OnImageRemoved(object, timing);
   // Also check if the `largest_ignored_image_` was removed. Compare
-  // `LayoutObject`s as well since the `MediaTiming` can be shared. Note that
-  // `LayoutObject` may have been detached, in which case `record` will be null
-  // here.
-  record = GetLargestIgnoredImageIfNotRemoved();
+  // `LayoutObject`s as well since the `MediaTiming` can be shared.
+  ImageRecord* record = GetLargestIgnoredImageIfNotRemoved();
   if (!record || (record->GetMediaTiming() == timing &&
-                  record->GetNode()->GetLayoutObject() == &object)) {
+                  record->ImageGeneratingLayoutObject() == &object)) {
     largest_ignored_image_ = nullptr;
   }
 }
@@ -163,7 +164,6 @@ void LargestContentfulPaintManager::OnImageRemoved(ImageRecord* record,
 void LargestContentfulPaintManager::OnFramePresented(
     const HeapVector<Member<ImageRecord>>& image_records,
     const HeapVector<Member<TextRecord>>& text_records,
-    const GCedHeapVector<Member<ElementTimingInfo>>*,
     const DOMPaintTimingInfo&) {
   // `largest_contentful_paint_calculator_` can be null if input arrived between
   // paint and presentation time.

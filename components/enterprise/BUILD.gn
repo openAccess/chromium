@@ -33,6 +33,8 @@ static_library("enterprise") {
     "browser/reporting/policy_info.h",
     "browser/reporting/pref_url_list_matcher.cc",
     "browser/reporting/pref_url_list_matcher.h",
+    "browser/reporting/prefs.cc",
+    "browser/reporting/prefs.h",
     "browser/reporting/profile_report_generator.cc",
     "browser/reporting/profile_report_generator.h",
     "browser/reporting/real_time_report_controller.cc",
@@ -100,10 +102,7 @@ static_library("enterprise") {
     ]
   }
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   deps = [
     "//base",
@@ -114,15 +113,18 @@ static_library("enterprise") {
     "//components/enterprise/connectors/core:constants",
     "//components/enterprise/device_attestation",
     "//components/enterprise/device_attestation:common",
+    "//components/enterprise/isolated_mode",
     "//components/policy/core/browser",
     "//components/policy/core/common",
     "//components/policy/proto",
+    "//components/pref_registry",
     "//components/prefs",
     "//components/reporting/client:report_queue_provider",
     "//components/strings",
     "//components/url_matcher",
     "//components/version_info",
     "//crypto",
+    "//extensions/buildflags",
     "//google_apis",
     "//net",
     "//services/network/public/cpp",
@@ -131,6 +133,7 @@ static_library("enterprise") {
   # Include certain intermediate targets as public deps so consumers
   # can start using them as needed.
   public_deps = [
+    "//components/enterprise/client_certificates/core",
     "//components/enterprise/common/proto:browser_events_proto",
     "//components/reporting/client:report_queue_configuration",
     "//components/reporting/util:status",
@@ -147,10 +150,6 @@ static_library("enterprise") {
       "//components/enterprise/device_trust/core",
       "//third_party/abseil-cpp:absl",
     ]
-  }
-
-  if (enterprise_client_certificates) {
-    public_deps += [ "//components/enterprise/client_certificates/core" ]
   }
 
   if (!is_ios && !is_android) {
@@ -208,6 +207,7 @@ source_set("unit_tests") {
     "browser/reporting/browser_launch/browser_launch_event_controller_unittest.cc",
     "browser/reporting/chrome_profile_request_generator_unittest.cc",
     "browser/reporting/pref_url_list_matcher_unittest.cc",
+    "browser/reporting/report_generation_config_unittest.cc",
     "browser/reporting/report_uploader_unittest.cc",
     "browser/reporting/report_util_unittest.cc",
     "browser/reporting/saas_usage/saas_usage_aggregation_utils_unittest.cc",
@@ -237,10 +237,12 @@ source_set("unit_tests") {
     "//components/device_signals/core/common:features",
     "//components/enterprise/browser/identifiers",
     "//components/enterprise/browser/identifiers:test_support",
+    "//components/enterprise/client_certificates:unit_tests",
     "//components/enterprise/common/proto:browser_events_proto",
     "//components/enterprise/common/proto:saas_usage_report_event",
     "//components/enterprise/connectors/core:constants",
     "//components/enterprise/device_attestation:test_support",
+    "//components/enterprise/isolated_mode",
     "//components/policy/core/common:test_support",
     "//components/prefs:test_support",
     "//components/version_info",
@@ -279,10 +281,6 @@ source_set("unit_tests") {
     ]
   }
 
-  if (enterprise_client_certificates) {
-    deps += [ "//components/enterprise/client_certificates:unit_tests" ]
-  }
-
   if (is_android) {
     sources += [
       "device_attestation/android/attestation_utils_unittest.cc",
@@ -299,7 +297,7 @@ source_set("unit_tests") {
         [ "device_attestation/ios/device_attestation_service_ios_unittest.mm" ]
   }
 
-  if (is_win || is_linux || is_chromeos || is_mac) {
+  if (is_win || is_linux || is_chromeos || is_mac || is_android) {
     deps +=
         [ "//components/enterprise/network_header_injection/core:unit_tests" ]
   }

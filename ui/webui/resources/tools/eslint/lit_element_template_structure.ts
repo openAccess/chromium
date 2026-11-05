@@ -4,14 +4,50 @@
 
 import {AST_NODE_TYPES as Node, ESLintUtils} from '/third_party/node/node_modules/@typescript-eslint/utils/dist/index.js';
 import type {TSESTree} from '/third_party/node/node_modules/@typescript-eslint/utils/dist/index.js';
+import esquery from '/third_party/node/node_modules/esquery/dist/esquery.esm.min.js';
 import assert from 'node:assert';
 
 import {dashCaseToCamelCase, isIdentifier, LIT_IMPORT_REGEX} from './query_utils.js';
 
 type Options = [];
-type MessageIds =
-    'ifStatementFound'|'forStatementFound'|'variableDeclarationFound'|
-    'functionDefinitionFound'|'incorrectEventListenerNameFound';
+type MessageIds = 'ifStatementFound'|'switchStatementFound'|'forStatementFound'|
+    'variableDeclarationFound'|'functionDefinitionFound'|
+    'incorrectEventListenerNameFound'|'invalidGetHtmlReturn'|
+    'invalidTernaryConsequent'|'invalidTernaryAlternate'|
+    'invalidArrowFunctionReturn'|'unnecessaryNestedHtml';
+
+const litTemplateQuery =
+    esquery.parse('TaggedTemplateExpression[tag.name="html"]');
+
+function isLitTemplate(node: TSESTree.Node): boolean {
+  return node.type === Node.TaggedTemplateExpression &&
+      node.tag.type === Node.Identifier && node.tag.name === 'html';
+}
+
+function hasLitTemplate(node: TSESTree.Node): boolean {
+  return isLitTemplate(node) ||
+      esquery.match(node, litTemplateQuery).length > 0;
+}
+
+function isValidAlternate(node: TSESTree.Node): boolean {
+  if (isLitTemplate(node)) {
+    return true;
+  }
+  // Case of returning "" or ''
+  if (node.type === Node.Literal && node.value === '') {
+    return true;
+  }
+  // Case of returning ``
+  if (node.type === Node.TemplateLiteral && node.quasis.length === 1 &&
+      node.quasis[0]!.value.raw === '') {
+    return true;
+  }
+  // Case of returning Lit's nothing identifier.
+  if (node.type === Node.Identifier && node.name === 'nothing') {
+    return true;
+  }
+  return false;
+}
 
 export const litElementTemplateStructure = ESLintUtils.RuleCreator.withoutDocs<
     Options, MessageIds>({
@@ -24,6 +60,10 @@ export const litElementTemplateStructure = ESLintUtils.RuleCreator.withoutDocs<
     messages: {
       ifStatementFound:
           'If statement found in getHtml() method. Use ternary statements for conditional rendering, and delegate more complex logic to the class definition file',
+      switchStatementFound:
+          'Switch statement found in getHtml() method. Use ternary ' +
+          'statements for conditional rendering, and delegate more complex ' +
+          'logic to the class definition file',
       forStatementFound:
           'For loop found in getHtml() method. Use Array#map() to render the same HTML for an array of items, and delegate more complex logic to the class definition file',
       variableDeclarationFound:
@@ -32,6 +72,20 @@ export const litElementTemplateStructure = ESLintUtils.RuleCreator.withoutDocs<
           'Extra function definition \'{{functionName}}\' found in the HTML template file. Complex logic should be delegated to the class definition file. Standalone/separate chunks of templates may need a dedicated custom element',
       incorrectEventListenerNameFound:
           'Incorrect event listener naming found for event \'{{eventName}}\'. Rename \'{{listenerName}}\' to follow the \'{{suggestedListenerName}}\' pattern',
+      invalidGetHtmlReturn:
+          'getHtml() function does not return a tagged template literal. Use the following format: \'return html`<all template and template logic goes here>`;\'',
+      invalidTernaryConsequent:
+          'Ternary operator in template must return a tagged template literal (html`...`) in its true branch. Invert the condition if necessary',
+      invalidTernaryAlternate:
+          'Ternary operator in template must return a tagged template literal (html`...`). Nested ternaries should be within the literal, i.e. \'${cond1 ? html`<template>` : html`${cond2 ? html`<template>` : \'\'}`}\'',
+      invalidArrowFunctionReturn:
+          'Arrow function in template returning Lit HTML must return a ' +
+          'single tagged template literal directly, i.e. ' +
+          '\'(item) => html`<template>`\'',
+      unnecessaryNestedHtml:
+          'Unnecessary nested html`...` tagged template literal found ' +
+          'inside template expression. Inline the HTML directly into the ' +
+          'parent template',
     },
     schema: [],
   },
@@ -63,6 +117,19 @@ export const litElementTemplateStructure = ESLintUtils.RuleCreator.withoutDocs<
       },
       ['FunctionDeclaration[id.name="getHtml"] TemplateLiteral'](
           node: TSESTree.TemplateLiteral) {
+        if (!hasLitImport) {
+          return;
+        }
+
+        for (const expression of node.expressions) {
+          if (isLitTemplate(expression)) {
+            context.report({
+              node: expression,
+              messageId: 'unnecessaryNestedHtml',
+            });
+          }
+        }
+
         const listenerExpressionRegex = /@(?<eventName>[a-zA-Z-]+)="$/;
         for (let i = 0; i < node.quasis.length; i++) {
           const match = listenerExpressionRegex.exec(node.quasis[i]!.value.raw);
@@ -112,6 +179,24 @@ export const litElementTemplateStructure = ESLintUtils.RuleCreator.withoutDocs<
           }
         }
       },
+      ['FunctionDeclaration[id.name="getHtml"]'](
+          node: TSESTree.FunctionDeclaration) {
+        if (!hasLitImport) {
+          return;
+        }
+
+        const returnStatement = node.body.body.find(
+            (statement): statement is TSESTree.ReturnStatement =>
+                statement.type === Node.ReturnStatement);
+        const argument = returnStatement ? returnStatement.argument : null;
+
+        if (!argument || argument.type !== Node.TaggedTemplateExpression) {
+          context.report({
+            node: returnStatement ? returnStatement : node,
+            messageId: 'invalidGetHtmlReturn',
+          });
+        }
+      },
       ['FunctionDeclaration[id.name="getHtml"] ForStatement'](
           node: TSESTree.ForStatement) {
         if (!hasLitImport) {
@@ -145,6 +230,30 @@ export const litElementTemplateStructure = ESLintUtils.RuleCreator.withoutDocs<
           messageId: 'ifStatementFound',
         });
       },
+      ['FunctionDeclaration[id.name="getHtml"] SwitchStatement'](
+          node: TSESTree.SwitchStatement) {
+        if (!hasLitImport) {
+          return;
+        }
+
+        context.report({
+          node,
+          messageId: 'switchStatementFound',
+        });
+      },
+      ['FunctionDeclaration[id.name="getHtml"] ArrowFunctionExpression'](
+          node: TSESTree.ArrowFunctionExpression) {
+        if (!hasLitImport) {
+          return;
+        }
+
+        if (!isLitTemplate(node.body) && hasLitTemplate(node.body)) {
+          context.report({
+            node: node.body,
+            messageId: 'invalidArrowFunctionReturn',
+          });
+        }
+      },
       ['VariableDeclaration'](node: TSESTree.VariableDeclaration) {
         if (!hasLitImport) {
           return;
@@ -159,6 +268,29 @@ export const litElementTemplateStructure = ESLintUtils.RuleCreator.withoutDocs<
               variableName: declaration.id.name,
             },
           });
+        }
+      },
+      ['ConditionalExpression'](node: TSESTree.ConditionalExpression) {
+        if (!hasLitImport) {
+          return;
+        }
+
+        if (isLitTemplate(node.consequent)) {
+          if (!isValidAlternate(node.alternate)) {
+            context.report({
+              node: node.alternate,
+              messageId: 'invalidTernaryAlternate',
+            });
+          }
+          return;
+        }
+
+        if (hasLitTemplate(node.consequent) || hasLitTemplate(node.alternate)) {
+          context.report({
+            node: node.consequent,
+            messageId: 'invalidTernaryConsequent',
+          });
+          return;
         }
       },
     };

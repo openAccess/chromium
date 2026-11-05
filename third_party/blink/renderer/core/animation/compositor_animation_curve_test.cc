@@ -26,7 +26,7 @@ class CompositorAnimationCurveTest : public PageTestBase {
   // may affect multiple properties.
   Animation* GetAnimation() {
     UpdateAllLifecyclePhasesForTest();
-    Element* target = GetDocument().getElementById(AtomicString("target"));
+    Element* target = GetElementById("target");
     ElementAnimations* element_animations = target->GetElementAnimations();
     EXPECT_TRUE(element_animations);
     EXPECT_EQ(element_animations->Animations().size(), 1u);
@@ -190,6 +190,22 @@ TEST_F(CompositorAnimationCurveTest, StyleDependentColorMix) {
   curve = ExtractColorCurve(CSSPropertyID::kBackgroundColor);
   EXPECT_TRUE(curve->HasStyleDependency());
   EXPECT_EQ(curve->GetTypedKeyframe(0).value.Rgb(), 0xFF4D4DFF);
+}
+
+TEST_F(CompositorAnimationCurveTest, SampleAndIntervalCacheForwardAndBackward) {
+  const auto curve = CompositorAnimationColorCurve::CreateForTesting(
+      {Color(255, 0, 0), Color(0, 255, 0), Color(0, 0, 255),
+       Color(255, 255, 255)},
+      {0.0, 0.25, 0.75, 1.0}, CSSPropertyName(CSSPropertyID::kBackgroundColor));
+  EXPECT_EQ(curve->ComputeKeyframeIndex(0.1), 0u);
+  EXPECT_EQ(curve->ComputeKeyframeIndex(0.5), 1u);
+  EXPECT_EQ(curve->ComputeKeyframeIndex(0.9), 2u);
+  EXPECT_EQ(curve->ComputeKeyframeIndex(0.5), 1u);
+  EXPECT_EQ(curve->ComputeKeyframeIndex(0.1), 0u);
+
+  SkColor4f sampled = SkColors::kTransparent;
+  curve->Sample(0.25f, &sampled);
+  EXPECT_EQ(sampled, SkColors::kGreen);
 }
 
 }  // end namespace blink

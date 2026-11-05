@@ -4,20 +4,17 @@
 
 #include "chromecast/starboard/chromecast/starboard_adapter/src/cast_starboard_api_adapter_impl.h"
 
-#include "base/at_exit.h"
-#include "base/functional/bind.h"
+#include <dlfcn.h>
+#include <starboard/event.h>
+#include <starboard/system.h>
+
+#include <thread>
+
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/no_destructor.h"
+#include "base/threading/thread_restrictions.h"
 #include "chromecast/common/timing_tracker.h"
-
-// TODO(b/333961720): remove all the macros in this file and split the impl into
-// two different classes: one for SB 15+, one for older versions of starboard.
-// Only include the relevant one in the BUILD.gn file.
-#if SB_API_VERSION >= 15
-#include <starboard/event.h>
-#else  // SB_API_VERSION >=15
-#include <cast_starboard_api.h>
-#endif  // SB_API_VERSION >= 15
 
 namespace chromecast {
 
@@ -25,7 +22,6 @@ namespace {
 
 CastStarboardApiAdapterImpl* g_instance = nullptr;
 
-// Returns a lock for accessing g_instance.
 base::Lock& GetGInstanceLock() {
   static base::NoDestructor<base::Lock> lock;
   return *lock;
@@ -33,34 +29,57 @@ base::Lock& GetGInstanceLock() {
 
 }  // namespace
 
-CastStarboardApiAdapter* CastStarboardApiAdapter::GetInstance() {
+// static
+CastStarboardApiAdapterImpl* CastStarboardApiAdapterImpl::GetInstance() {
   base::AutoLock lock(GetGInstanceLock());
   if (!g_instance) {
-    // The instance is assigned by the class's constructor.
+    // The instance is assigned by the class's constructor and kept alive for
+    // the lifetime of the process so that late teardown callers (e.g.,
+    // media_thread_ destructing after AtExitManager) never dereference a
+    // dangling pointer.
     new CastStarboardApiAdapterImpl();
-
-    // We use an AtExitManager as a signal that the runtime is shutting down.
-    // Note that this callback is not guaranteed to run after all other cast
-    // code has been shut down. For example, the media_thread_ in
-    // CastContentBrowserClient is sometimes destructed after AtExitManager runs
-    // its callbacks (meaning StarboardApiWrapperBase or other media code may
-    // still be subscribed).
-    //
-    // base::Unretained is safe because the AtExitManager is responsible for
-    // deleting g_instance.
-    base::AtExitManager::RegisterTask(base::BindOnce(
-        &CastStarboardApiAdapterImpl::Release, base::Unretained(g_instance)));
   }
 
   return g_instance;
 }
 
-CastStarboardApiAdapterImpl::CastStarboardApiAdapterImpl() {
+// Overridden by the strong proxy definition in cast_starboard_api_adapter_proxy
+// when starboard_adapter_static is linked, and used directly as a fallback by
+// unit tests that link only starboard_adapter_impl.
+WEAK_SYMBOL CastStarboardApiAdapter* CastStarboardApiAdapter::GetInstance() {
+  return CastStarboardApiAdapterImpl::GetInstance();
+}
+
+CastStarboardApiAdapterImpl::CastStarboardApiAdapterImpl()
+    : starboard_started_(base::WaitableEvent::ResetPolicy::MANUAL,
+                         base::WaitableEvent::InitialState::NOT_SIGNALED),
+      starboard_stopped_(base::WaitableEvent::ResetPolicy::MANUAL,
+                         base::WaitableEvent::InitialState::NOT_SIGNALED) {
   CHECK(!g_instance);
   g_instance = this;
+  LOG(INFO) << "Initialized CastStarboardApiAdapterImpl";
 }
 
 CastStarboardApiAdapterImpl::~CastStarboardApiAdapterImpl() = default;
+
+void CastStarboardApiAdapterImpl::SetSbApiVersion(int version) {
+  sb_api_version_.store(version, std::memory_order_relaxed);
+}
+
+int CastStarboardApiAdapterImpl::sb_api_version() const {
+  return sb_api_version_.load(std::memory_order_relaxed);
+}
+
+void CastStarboardApiAdapterImpl::ResetForTesting() {
+  base::AutoLock autolock(lock_);
+  subscribers_.clear();
+  window_ = kSbWindowInvalid;
+  initialized_ = false;
+  released_ = false;
+  at_exit_ran_ = false;
+  starboard_started_.Reset();
+  starboard_stopped_.Reset();
+}
 
 SbEglNativeDisplayType CastStarboardApiAdapterImpl::GetEglNativeDisplayType() {
   return SB_EGL_DEFAULT_DISPLAY;
@@ -84,10 +103,42 @@ void CastStarboardApiAdapterImpl::SbEventHandleInternal(const SbEvent* event) {
       starboard_stopped_.Signal();
       break;
     default: {
+      const SbEvent* event_to_dispatch = event;
+      // Starboard 17+ removed kSbEventTypeUser (10),
+      // kSbEventTypeVerticalSync (12),
+      // kSbEventTypeAccessibilitySettingsChanged (14),
+      // kSbEventTypeOnScreenKeyboard* (17..21), and
+      // kSbEventTypeAccessibilityCaptionSettingsChanged (22), and moved
+      // kSbEventTypeAccessibilityTextToSpeechSettingsChanged after
+      // kSbEventDateTimeConfigurationChanged. Subscribers in core_runtime are
+      // compiled once against the base Starboard headers (SB15/16), so map
+      // SB17+ ordinals 10..17 back to their base SB15/16 enum values before
+      // dispatching.
+      SbEvent normalized_event;
+      const int raw_type = static_cast<int>(event->type);
+      if (sb_api_version_.load(std::memory_order_relaxed) >= 17 &&
+          raw_type >= 10) {
+        static constexpr auto kSb17EventTypeMap = std::to_array<SbEventType>({
+            kSbEventTypeLink,                                      // 10 -> 11
+            kSbEventTypeScheduled,                                 // 11 -> 13
+            kSbEventTypeLowMemory,                                 // 12 -> 15
+            kSbEventTypeWindowSizeChanged,                         // 13 -> 16
+            kSbEventTypeOsNetworkDisconnected,                     // 14 -> 24
+            kSbEventTypeOsNetworkConnected,                        // 15 -> 25
+            kSbEventDateTimeConfigurationChanged,                  // 16 -> 26
+            kSbEventTypeAccessibilityTextToSpeechSettingsChanged,  // 17 -> 23
+        });
+        const size_t idx = static_cast<size_t>(raw_type - 10);
+        if (idx < kSb17EventTypeMap.size()) {
+          normalized_event = *event;
+          normalized_event.type = kSb17EventTypeMap[idx];
+          event_to_dispatch = &normalized_event;
+        }
+      }
       base::AutoLock autolock(lock_);
       for (const auto p : subscribers_) {
         if (p.second) {
-          p.second(p.first, event);
+          p.second(p.first, event_to_dispatch);
         }
       }
       break;
@@ -96,37 +147,63 @@ void CastStarboardApiAdapterImpl::SbEventHandleInternal(const SbEvent* event) {
 }
 
 void CastStarboardApiAdapterImpl::EnsureInitialized() {
-  LOG(INFO) << "CastStarboardApiAdapterImpl::EnsureInitialized";
-
-  bool need_to_start_starboard = false;
+  bool already_initialized = false;
   {
     base::AutoLock autolock(lock_);
-    CHECK(!released_) << "Starboard should not be re-initialized after the the "
-                         "AtExitManager has run.";
-    if (!initialized_) {
-      need_to_start_starboard = true;
+    if (initialized_) {
+      already_initialized = true;
+    } else {
+      CHECK(!at_exit_ran_)
+          << "Starboard should not be re-initialized after the AtExitManager "
+             "has run.";
+      initialized_ = true;
     }
-    initialized_ = true;
   }
 
-  if (need_to_start_starboard) {
-    LOG(INFO) << "Starting starboard";
-    CHROMECAST_TIMING_TRACKER;
-#if SB_API_VERSION >= 15
-    sb_main_ = std::make_unique<std::thread>(
-        &SbRunStarboardMain, /*argc=*/0, /*argv=*/nullptr,
-        &CastStarboardApiAdapterImpl::SbEventHandle);
-    sb_main_->detach();
-#else   // SB_API_VERSION >=15
-    CastStarboardApiInitialize(/*argc=*/0, /*argv=*/nullptr,
-                               &CastStarboardApiAdapterImpl::SbEventHandle);
-#endif  // SB_API_VERSION >= 15
+  if (already_initialized) {
+    // If starboard was started earlier, this will return immediately. If
+    // another thread started starboard but starboard has not yet sent the
+    // kSbEventTypeStart event, we still need to wait for it outside lock_.
+    starboard_started_.Wait();
+    return;
   }
 
-  // If starboard was started earlier, this will return immediately. Regardless
-  // of whether we start starboard in this function call, we still need to call
-  // this (e.g. if another thread started starboard but starboard has not yet
-  // sent the kSbEventTypeStart event).
+  const int version = sb_api_version_.load(std::memory_order_relaxed);
+  LOG(INFO) << "Starting starboard (SB_API_VERSION " << version << ")";
+  CHROMECAST_TIMING_TRACKER;
+
+  if (version >= 15) {
+    using SbRunStarboardMainFn = int (*)(int, char**, void (*)(const SbEvent*));
+    auto run_main = reinterpret_cast<SbRunStarboardMainFn>(
+        dlsym(RTLD_DEFAULT, "SbRunStarboardMain"));
+    if (run_main) {
+      LOG(INFO) << "Initializing Starboard via SbRunStarboardMain (SB"
+                << version << ").";
+      // SbRunStarboardMain only returns once Starboard has stopped, so the
+      // thread is detached and never joined.
+      std::thread(run_main, /*argc=*/0, /*argv=*/nullptr,
+                  &CastStarboardApiAdapterImpl::SbEventHandle)
+          .detach();
+    } else {
+      LOG(FATAL) << "Failed to find SbRunStarboardMain for Starboard "
+                 << version;
+    }
+  } else {
+    using CastStarboardApiInitializeFn =
+        int (*)(int, char**, void (*)(const SbEvent*));
+    auto init_fn = reinterpret_cast<CastStarboardApiInitializeFn>(
+        dlsym(RTLD_DEFAULT, "CastStarboardApiInitialize"));
+    if (init_fn) {
+      LOG(INFO)
+          << "Initializing Starboard via CastStarboardApiInitialize (Legacy).";
+      init_fn(/*argc=*/0, /*argv=*/nullptr,
+              &CastStarboardApiAdapterImpl::SbEventHandle);
+    } else {
+      LOG(FATAL)
+          << "Failed to find CastStarboardApiInitialize for Legacy Starboard";
+    }
+  }
+
   starboard_started_.Wait();
 }
 
@@ -136,6 +213,9 @@ void CastStarboardApiAdapterImpl::Release() {
   bool need_to_stop_starboard = false;
   {
     base::AutoLock autolock(lock_);
+    if (released_ && subscribers_.empty() && !initialized_) {
+      return;
+    }
     released_ = true;
 
     if (!subscribers_.empty()) {
@@ -148,16 +228,34 @@ void CastStarboardApiAdapterImpl::Release() {
       need_to_stop_starboard = true;
     }
     initialized_ = false;
+    window_ = kSbWindowInvalid;
   }
 
   if (need_to_stop_starboard) {
     if (!starboard_stopped_.IsSignaled()) {
-      LOG(INFO) << "Stopping Starboard";
-#if SB_API_VERSION >= 15
-      SbSystemRequestStop(0);
-#else   // SB_API_VERSION >=15
-      CastStarboardApiFinalize();
-#endif  // SB_API_VERSION >= 15
+      const int version = sb_api_version_.load(std::memory_order_relaxed);
+      LOG(INFO) << "Stopping Starboard (SB_API_VERSION " << version << ")";
+      if (version >= 15) {
+        using SbSystemRequestStopFn = void (*)(int);
+        auto stop_fn = reinterpret_cast<SbSystemRequestStopFn>(
+            dlsym(RTLD_DEFAULT, "SbSystemRequestStop"));
+        if (stop_fn) {
+          stop_fn(0);
+        } else {
+          LOG(ERROR) << "Failed to find SbSystemRequestStop for Starboard "
+                     << version;
+        }
+      } else {
+        using CastStarboardApiFinalizeFn = void (*)();
+        auto finalize_fn = reinterpret_cast<CastStarboardApiFinalizeFn>(
+            dlsym(RTLD_DEFAULT, "CastStarboardApiFinalize"));
+        if (finalize_fn) {
+          finalize_fn();
+        } else {
+          LOG(ERROR)
+              << "Failed to find CastStarboardApiFinalize for Legacy Starboard";
+        }
+      }
     }
     LOG(INFO) << "Waiting for starboard to stop.";
     starboard_stopped_.Wait();
@@ -168,10 +266,32 @@ void CastStarboardApiAdapterImpl::Release() {
            "released.";
   }
 
-  base::AutoLock lock(GetGInstanceLock());
-  LOG(INFO) << "Destroying CastStarboardApiAdapterImpl instance.";
-  delete g_instance;
-  g_instance = nullptr;
+  // INVARIANT: starboard_started_ and starboard_stopped_ are never Reset.
+  //
+  // Resetting them here would race EnsureInitialized() callers that have
+  // already left the critical section but not yet reached
+  // starboard_started_.Wait(), wedging them forever because Starboard emits
+  // kSbEventTypeStart exactly once.
+  //
+  // Leaving them signaled is only safe because Starboard is never restarted:
+  // the sole production caller of Release() is ReleaseForAtExit(), which
+  // latches at_exit_ran_, and EnsureInitialized() CHECKs on it. Release() is
+  // deliberately absent from the public CastStarboardApiAdapter interface to
+  // keep that true.
+  //
+  // If you add a Release() caller that does not set at_exit_ran_, you break
+  // this: a later EnsureInitialized() would return on generation N's stale
+  // start signal before generation N+1 is up, and a later Release() would skip
+  // stop_fn() because starboard_stopped_ is still signaled. Reset both events
+  // under lock_ on the need_to_start_starboard path instead.
+}
+
+void CastStarboardApiAdapterImpl::ReleaseForAtExit() {
+  {
+    base::AutoLock autolock(lock_);
+    at_exit_ran_ = true;
+  }
+  Release();
 }
 
 void CastStarboardApiAdapterImpl::Subscribe(void* context,
@@ -213,11 +333,38 @@ SbWindow CastStarboardApiAdapterImpl::GetWindow(
   EnsureInitialized();
 
   base::AutoLock autolock(lock_);
-  if (!SbWindowIsValid(window_)) {
-    window_ = SbWindowCreate(options);
+  if (!::SbWindowIsValid(window_)) {
+    using SbWindowCreateFn = SbWindow (*)(const SbWindowOptions*);
+    auto create_fn = reinterpret_cast<SbWindowCreateFn>(
+        dlsym(RTLD_DEFAULT, "SbWindowCreate"));
+    if (create_fn) {
+      window_ = create_fn(options);
+    }
   }
 
   return window_;
+}
+
+bool CastStarboardApiAdapterImpl::SbWindowIsValid(SbWindow window) {
+  return ::SbWindowIsValid(window);
+}
+
+void* CastStarboardApiAdapterImpl::SbWindowGetPlatformHandle(SbWindow window) {
+  using SbWindowGetPlatformHandleFn = void* (*)(SbWindow);
+  auto get_handle_fn = reinterpret_cast<SbWindowGetPlatformHandleFn>(
+      dlsym(RTLD_DEFAULT, "SbWindowGetPlatformHandle"));
+  return get_handle_fn ? get_handle_fn(window) : nullptr;
+}
+
+const void* CastStarboardApiAdapterImpl::GetExtension(const char* name) {
+  EnsureInitialized();
+  using SbSystemGetExtensionFn = const void* (*)(const char*);
+  auto get_extension_fn = reinterpret_cast<SbSystemGetExtensionFn>(
+      dlsym(RTLD_DEFAULT, "SbSystemGetExtension"));
+  if (get_extension_fn) {
+    return get_extension_fn(name);
+  }
+  return nullptr;
 }
 
 }  // namespace chromecast

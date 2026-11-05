@@ -10,12 +10,9 @@ import os
 from pathlib import Path
 import re
 import shutil
-import socket
-import struct
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import zipfile
 
@@ -24,7 +21,7 @@ STARVIEW_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Setup import path for common testing utils
 sys.path.append(os.path.abspath(os.path.join(STARVIEW_DIR, '..', 'test')))
-import common
+import common  # noqa: E402
 
 AVBTOOL = os.path.join(STARVIEW_DIR, 'avbtool.py')
 CVD_AVB_TESTKEY = os.path.join(STARVIEW_DIR, 'cvd_avb_testkey_rsa4096.pem')
@@ -42,9 +39,9 @@ if (
 
 
 sys.path.append(STARVIEW_DIR)
-import partition_creator
-import simg2img
-from hvc_mock import start_hvc_mock_responder
+import partition_creator  # noqa: E402
+import simg2img  # noqa: E402
+from hvc_mock import start_hvc_mock_responder  # noqa: E402
 
 
 IS_HEADLESS_BY_DEFAULT = not (
@@ -52,6 +49,10 @@ IS_HEADLESS_BY_DEFAULT = not (
     or 'WAYLAND_DISPLAY' in os.environ
     or 'XDG_CURRENT_DESKTOP' in os.environ
 )
+
+# Standard Android phone display metrics (matching standard Chromium test bots).
+_DISPLAY_SIZE = '1080x1920'
+_DISPLAY_DENSITY = 480
 
 
 def sign_uboot_env_image(image_path, partition_size=73728):
@@ -107,7 +108,26 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
         zip_ref.extractall(temp_dir)
 
     super_img = os.path.join(temp_dir, 'super.img')
-    simg2img.unsparse_super_image(super_img)
+    assert os.path.exists(super_img), f"super.img not found in {temp_dir}"
+    simg2img.unsparse_in_place(super_img)
+    # The extracted super.img contains the Fuchsia Fxfs system blobs and has
+    # almost 0 bytes free. When Fuchsia boots, fshost allocates mutable storage
+    # volumes (e.g., 'unencrypted' and 'data') inside Fxfs. Expanding super.img
+    # with spare space as a sparse file provides the needed space for volume
+    # creation.
+    with open(super_img, 'r+b') as f:
+        f.truncate(f.seek(0, os.SEEK_END) + 8 * 1024 * 1024 * 1024)
+
+    userdata_img = os.path.join(temp_dir, 'userdata.img')
+    # Generate a fresh, blank userdata partition with 16GB capacity for
+    # installing large test APKs (such as components_unittests) and writing
+    # runtime dex caches. Because userdata is flagged with formattable in
+    # Android's fstab, Android fs_mgr will format the partition to fill the full
+    # disk size on first boot. Overwriting the prebuilt userdata.img avoids
+    # inheriting a fixed-size ext4 filesystem that truncate cannot expand without
+    # resize2fs.
+    partition_creator.create_zero_image(userdata_img, 16384)
+
     partition_creator.create_zero_image(
         os.path.join(temp_dir, 'metadata.img'), 16
     )
@@ -124,7 +144,17 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
             'bootcmd': 'virtio scan && verified_boot_android virtio 1 _a',
             'bootcmd_android': 'verified_boot_android virtio 1 _a',
             'bootdelay': '0',
-            'bootargs': 'earlyprintk=ttyS0 console=ttyS0 androidboot.console=ttyS0 androidboot.boot_devices=pci0000:00/0000:00:04.0 androidboot.fstab_suffix=cf.ext4.hctr2',
+            'bootargs': ' '.join(
+                [
+                    'earlyprintk=ttyS0',
+                    'console=ttyS0',
+                    'androidboot.console=ttyS0',
+                    'androidboot.boot_devices=pci0000:00/0000:00:04.0',
+                    'androidboot.fstab_suffix=cf.ext4.hctr2',
+                    'androidboot.force_normal_boot=1',
+                    'androidboot.apex_updatable=0',
+                ]
+            ),
         },
         os.path.join(temp_dir, 'uboot_env.img'),
     )
@@ -132,12 +162,6 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
 
     create_persistent_vbmeta_image(
         os.path.join(temp_dir, 'persistent_vbmeta.img')
-    )
-
-    # Always create a fresh empty userdata.img of 16GB to avoid leaking states
-    logging.info("Creating a fresh empty 16GB userdata.img...")
-    partition_creator.create_zero_image(
-        os.path.join(temp_dir, 'userdata.img'), 16384
     )
 
     partition_creator.create_gpt_and_vmdk(
@@ -184,9 +208,9 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
         '-m',
         '28672',
         '-smp',
-        '8',
+        '6',
         '-machine',
-        'pc',
+        'q35',
         '-cpu',
         'host',
         '-enable-kvm',
@@ -196,17 +220,23 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
         # Load U-Boot vars flash (read-write environment)
         '-drive',
         f'if=pflash,format=raw,file={os.path.join(temp_dir, "u-boot-vars.img")}',
+        # Disable default VGA so we can configure VGA at slot 1.0 with multifunction=on,
+        # allowing virtio-net to attach to function 1.2 matching Fuchsia/Starnix network slot spec.
+        '-vga',
+        'none',
+        '-device',
+        'VGA,addr=1.0,multifunction=on',
         # Shift our main system disk to virtio 1 (second slot) by mapping a dummy disk
         # to virtio 0, since Cuttlefish U-Boot and fstab expect Android on virtio 1.
         '-drive',
         f'file={os.path.join(temp_dir, "dummy.img")},format=raw,if=none,id=drive-disk0',
         '-device',
-        'virtio-blk-pci-non-transitional,drive=drive-disk0,id=virtio-disk0,bootindex=1',
+        'virtio-blk-pci-non-transitional,drive=drive-disk0,id=virtio-disk0,bootindex=1,addr=3.0',
         # Map our partitioned VMDK disk as virtio 1
         '-drive',
         f'file={os.path.join(temp_dir, "disk.vmdk")},format=vmdk,if=none,id=drive-disk1',
         '-device',
-        'virtio-blk-pci-non-transitional,drive=drive-disk1,id=virtio-disk1',
+        'virtio-blk-pci-non-transitional,drive=drive-disk1,id=virtio-disk1,addr=4.0',
         # User-mode networking with static hostfwd for ADB and SSH
         '-netdev',
         f'user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::{args.adb_port}-:5555',
@@ -233,37 +263,140 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
     return qemu_proc, hvc_stop_event
 
 
-def _check_adb_health(adb_path, adb_port, is_root=False):
-    """Checks if guest ADB is connected and responsive via shell echo ready."""
-    role = " (root)" if is_root else ""
-    logging.info(f"Attempting to connect to ADB on port {adb_port}{role}...")
-    for _ in range(240):
-        subprocess.run(
-            [adb_path, 'connect', f'127.0.0.1:{adb_port}'],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+def _wait_adb_shell(adb_path, adb_port, cmd, pattern):
+    """Waits for an ADB shell command output to match regex pattern or times out."""
+    target = f'127.0.0.1:{adb_port}'
+    start_time = time.time()
+    while time.time() - start_time < 480:
         res = subprocess.run(
-            [adb_path, 'devices'], capture_output=True, text=True
+            [adb_path, '-s', target, 'shell'] + cmd,
+            capture_output=True,
+            text=True,
         )
-        if f"127.0.0.1:{adb_port}\tdevice" in res.stdout:
-            echo_res = subprocess.run(
-                [
-                    adb_path,
-                    '-s',
-                    f'127.0.0.1:{adb_port}',
-                    'shell',
-                    'echo',
-                    'ready',
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if echo_res.returncode == 0 and 'ready' in echo_res.stdout:
-                return True
-        time.sleep(2)
-    logging.error(f"Error: Timed out waiting for guest ADB connection{role}.")
+        if res.returncode == 0 and re.fullmatch(
+            pattern, res.stdout.strip(), re.DOTALL
+        ):
+            return True
+        time.sleep(10)
+        subprocess.run([adb_path, 'connect', target])
     return False
+
+
+def _configure_display(adb_path, adb_port):
+    """Configures guest Android display size and density."""
+    target = f'127.0.0.1:{adb_port}'
+    logging.info(f"Configuring display size to {_DISPLAY_SIZE}...")
+    res = subprocess.run(
+        [
+            adb_path,
+            '-s',
+            target,
+            'shell',
+            'wm',
+            'size',
+            _DISPLAY_SIZE,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if res.stdout.strip():
+        logging.info(f"wm size output: {res.stdout.strip()}")
+    if res.stderr.strip():
+        logging.warning(f"wm size stderr: {res.stderr.strip()}")
+
+    logging.info(f"Configuring display density to {_DISPLAY_DENSITY}...")
+    res = subprocess.run(
+        [
+            adb_path,
+            '-s',
+            target,
+            'shell',
+            'wm',
+            'density',
+            str(_DISPLAY_DENSITY),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if res.stdout.strip():
+        logging.info(f"wm density output: {res.stdout.strip()}")
+    if res.stderr.strip():
+        logging.warning(f"wm density stderr: {res.stderr.strip()}")
+
+
+def _bind_mount_test_data_root(adb_path, adb_port):
+    """Configures a bind mount for /sdcard/chromium_tests_root.
+
+    On Starnix emulators, file-backed mmap() is unsupported over Android's
+    FUSE filesystem (/sdcard). Bind-mounting the test data root directly
+    from underlying media storage bypasses FUSE while ensuring unprivileged
+    test processes have permissions for both mmap() and creating temporary
+    directories. Also ensures standard Download directories exist for test
+    output XML artifacts.
+    """
+    target = f'127.0.0.1:{adb_port}'
+    logging.info("Configuring mmap-capable test data root on Starnix...")
+    logging.info("Waiting for /sdcard to be mounted...")
+    if not _wait_adb_shell(
+        adb_path,
+        adb_port,
+        [
+            'grep -q /storage/emulated /proc/mounts && '
+            'test -d /mnt/pass_through/0/emulated/0 && echo ready'
+        ],
+        'ready',
+    ):
+        logging.error("Timed out waiting for /sdcard to be mounted.")
+        return False
+
+    def _run_shell_cmd(cmd):
+        res = subprocess.run(
+            [adb_path, '-s', target, 'shell'] + cmd,
+            capture_output=True,
+            text=True,
+        )
+        if res.returncode != 0 or res.stderr.strip():
+            logging.warning(
+                f"{' '.join(cmd)} failed (code {res.returncode}): "
+                f"{res.stdout.strip()} {res.stderr.strip()}"
+            )
+            return False
+        return True
+
+    source_root = '/mnt/pass_through/0/emulated/0/chromium_tests_root'
+    _run_shell_cmd(['mkdir', '-p', source_root])
+    _run_shell_cmd(['chmod', '777', source_root])
+    _run_shell_cmd(
+        ['chcon', '-R', 'u:object_r:media_rw_data_file:s0', source_root]
+    )
+    _run_shell_cmd(['mkdir', '-p', '/sdcard/chromium_tests_root'])
+    if _run_shell_cmd(
+        ['mount', '--bind', source_root, '/sdcard/chromium_tests_root']
+    ):
+        logging.info(
+            f"Successfully bind-mounted {source_root} "
+            "over /sdcard/chromium_tests_root"
+        )
+
+    # Ensure Download directories exist and are writable so test runners can
+    # write gtest output XML files and adb pull succeeds during list_tests.
+    download_root = '/mnt/pass_through/0/emulated/0/Download'
+    _run_shell_cmd(['mkdir', '-p', download_root])
+    _run_shell_cmd(['chmod', '777', download_root])
+    _run_shell_cmd(
+        ['chcon', '-R', 'u:object_r:media_rw_data_file:s0', download_root]
+    )
+    _run_shell_cmd(
+        [
+            'mkdir',
+            '-p',
+            '/storage/emulated/0/Download',
+            '/sdcard/Download',
+        ]
+    )
+    _run_shell_cmd(['chmod', '777', '/storage/emulated/0/Download'])
+    _run_shell_cmd(['chmod', '777', '/sdcard/Download'])
+    return True
 
 
 def main():
@@ -332,20 +465,18 @@ def main():
         f"Running in {'headless' if args.headless else 'headfull'} mode."
     )
 
-    if not os.path.exists(args.qemu_path) and not shutil.which(args.qemu_path):
-        logging.error(f"Error: QEMU not found at {args.qemu_path}")
-        return 1
+    assert os.path.exists(args.qemu_path) or shutil.which(args.qemu_path), (
+        f"QEMU not found at {args.qemu_path}"
+    )
 
-    if not os.path.exists(args.adb_path) and not shutil.which(args.adb_path):
-        logging.error(f"Error: ADB not found at {args.adb_path}")
-        return 1
+    assert os.path.exists(args.adb_path) or shutil.which(args.adb_path), (
+        f"ADB not found at {args.adb_path}"
+    )
 
     cuttlefish_dir = args.packages / 'cuttlefish'
-    if not cuttlefish_dir.exists():
-        logging.error(
-            f"Error: Cuttlefish directory does not exist: {cuttlefish_dir}"
-        )
-        return 1
+    assert cuttlefish_dir.exists(), (
+        f"Cuttlefish directory does not exist: {cuttlefish_dir}"
+    )
 
     cuttlefish_zip = None
     for f in os.listdir(cuttlefish_dir):
@@ -353,19 +484,24 @@ def main():
             cuttlefish_zip = os.path.join(cuttlefish_dir, f)
             break
 
-    if not cuttlefish_zip:
-        logging.error(
-            f"Error: No Cuttlefish guest image ZIP found in {cuttlefish_dir}"
-        )
-        return 1
+    assert cuttlefish_zip, (
+        f"No Cuttlefish guest image ZIP found in {cuttlefish_dir}"
+    )
 
-    bootloader = args.packages / 'uboot' / 'u-boot.rom'
-    if not bootloader.exists():
-        logging.error(f"Error: Bootloader not found at {bootloader}")
-        return 1
+    bootloader = args.packages / 'uboot_q35' / 'u-boot.rom'
+    assert bootloader.exists(), f"Bootloader not found at {bootloader}"
 
     hvc_stop_event = None
     qemu_proc = None
+
+    subprocess.run(['killall', '-9', 'qemu-system-x86_64'])
+    subprocess.run([args.adb_path, 'kill-server'])
+    subprocess.run(['killall', '-9', 'adb'])
+
+    tmp_dir = tempfile.gettempdir()
+    for item in os.listdir(tmp_dir):
+        if item.startswith('cf_qemu_'):
+            shutil.rmtree(os.path.join(tmp_dir, item), ignore_errors=True)
 
     with tempfile.TemporaryDirectory(prefix='cf_qemu_') as temp_dir:
         try:
@@ -373,65 +509,58 @@ def main():
                 args, cuttlefish_zip, bootloader, temp_dir
             )
 
-            logging.info("Waiting 15 seconds for guest to boot...")
-            time.sleep(15)
+            target = f'127.0.0.1:{args.adb_port}'
+            subprocess.run([args.adb_path, 'connect', target])
 
-            if not _check_adb_health(
-                args.adb_path, args.adb_port, is_root=False
+            logging.info(
+                f"Waiting for guest ADB to respond on port {args.adb_port}..."
+            )
+            if not _wait_adb_shell(
+                args.adb_path, args.adb_port, ['echo', 'ready'], 'ready'
             ):
+                logging.error("Timed out waiting for guest ADB to respond.")
                 return 1
+            logging.info("Guest ADB is ready.")
 
             logging.info("Restarting ADB daemon as root...")
-            subprocess.run(
-                [args.adb_path, '-s', f'127.0.0.1:{args.adb_port}', 'root'],
-                capture_output=True,
-                text=True,
-            )
+            subprocess.run([args.adb_path, '-s', target, 'root'])
 
-            if not _check_adb_health(
-                args.adb_path, args.adb_port, is_root=True
+            # Wait for ADB to reconnect as root after daemon restart.
+            if not _wait_adb_shell(
+                args.adb_path, args.adb_port, ['echo', 'ready'], 'ready'
             ):
-                return 1
-            # Known Starnix / Android guest boot workarounds (b/539219514, b/540947081):
-            # 1. Pre-create missing dalvik-cache, tmp, and storage directories.
-            # 2. Ensure /data/local/tmp permissions allow ADB transfers.
-            # 3. Clear sys.init.updatable_crashing flag and restart zygote to
-            #    recover from cold-boot crash loops.
-            for setup_cmd in [
-                'mkdir -p /data/local/tmp',
-                'mkdir -p /data/misc/credstore',
-                'mkdir -p /data/dalvik-cache/x86_64',
-                'mkdir -p /data/dalvik-cache/x86',
-                'mkdir -p /data/dalvik-cache/arm64',
-                'mkdir -p "${EXTERNAL_STORAGE:-/sdcard}"',
-                'mkdir -p /sdcard',
-                'mkdir -p /storage/emulated/0',
-                'mkdir -p /mnt/sdcard',
-                'chmod 777 /data/local/tmp',
-                'setprop sys.init.updatable_crashing 0',
-                'setprop ctl.start zygote',
-                'setprop ctl.restart zygote',
-            ]:
-                res = subprocess.run(
-                    [
-                        args.adb_path,
-                        '-s',
-                        f'127.0.0.1:{args.adb_port}',
-                        'shell',
-                        setup_cmd,
-                    ],
-                    capture_output=True,
-                    text=True,
+                logging.error(
+                    "Timed out waiting for guest ADB after root restart."
                 )
-                if res.returncode != 0:
-                    logging.warning(
-                        'ADB setup command %r failed (exit code %d): %s',
-                        setup_cmd,
-                        res.returncode,
-                        res.stderr.strip(),
-                    )
-                else:
-                    logging.info('Executed ADB setup command: %s', setup_cmd)
+                return 1
+
+            # Wait for Android to complete boot.
+            logging.info("Waiting for Android to complete boot...")
+            if not _wait_adb_shell(
+                args.adb_path,
+                args.adb_port,
+                ['getprop', 'sys.boot_completed'],
+                '1',
+            ):
+                logging.warning("Timed out waiting for sys.boot_completed=1.")
+
+            # Wait for package manager to become responsive.
+            logging.info(
+                "Waiting for Android package manager to become ready..."
+            )
+            if not _wait_adb_shell(
+                args.adb_path,
+                args.adb_port,
+                ['pm', 'list', 'packages'],
+                'package:.*',
+            ):
+                logging.error("Timed out waiting for package manager.")
+                return 1
+
+            _configure_display(args.adb_path, args.adb_port)
+
+            if not _bind_mount_test_data_root(args.adb_path, args.adb_port):
+                return 1
 
             logging.info("Successfully connected to guest ADB!")
 

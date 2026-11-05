@@ -16,8 +16,8 @@
 #include "base/containers/circular_deque.h"
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
-#include "base/power_monitor/power_monitor.h"
 #include "base/time/time.h"
+#include "base/types/expected.h"
 #include "base/win/scoped_handle.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gl/dc_layer_overlay_image.h"
@@ -33,7 +33,7 @@ gfx::Size GetMonitorSizeForWindow(HWND window);
 // SwapChainPresenter holds a swap chain, direct composition visuals, and other
 // associated resources for a single overlay layer.  It is updated by calling
 // PresentToSwapChain(), and can update or recreate resources as necessary.
-class SwapChainPresenter : public base::PowerStateObserver {
+class SwapChainPresenter {
  public:
   SwapChainPresenter(DCLayerTree* layer_tree,
                      Microsoft::WRL::ComPtr<ID3D11Device> d3d11_device,
@@ -42,7 +42,7 @@ class SwapChainPresenter : public base::PowerStateObserver {
   SwapChainPresenter(const SwapChainPresenter&) = delete;
   SwapChainPresenter& operator=(const SwapChainPresenter&) = delete;
 
-  ~SwapChainPresenter() override;
+  ~SwapChainPresenter();
 
   // Indicates the modification overlay position required to display the swap
   // chain image.
@@ -54,7 +54,7 @@ class SwapChainPresenter : public base::PowerStateObserver {
   // new overlay image representing the video. Also returns
   // `overlay_position_adjustment` if the overlay position needs to be adjusted,
   // e.g. the handle the swap chain being resized in the full screen case.
-  std::optional<DCLayerOverlayImage> PresentToSwapChain(
+  base::expected<DCLayerOverlayImage, CommitError> PresentToSwapChain(
       DCLayerOverlayParams& overlay,
       std::optional<OverlayPositionAdjustment>& overlay_position_adjustment);
 
@@ -124,9 +124,8 @@ class SwapChainPresenter : public base::PowerStateObserver {
   // The backing content may not match `overlay.quad_rect` (e.g. in the case of
   // full screen) so this method returns a modified `visual_transform` and
   // `visual_clip_rect` that should be used instead of the ones on `overlay`.
-  //
-  // Returns true on success.
-  bool SetupPresentToSwapChain(DCLayerOverlayParams& overlay);
+  base::expected<void, CommitError> SetupPresentToSwapChain(
+      DCLayerOverlayParams& overlay);
 
   // Attempt to disable the desktop primary plane by expanding the video swap
   // chain to fill `monitor_size`, fully occluding any content behind it with
@@ -134,24 +133,26 @@ class SwapChainPresenter : public base::PowerStateObserver {
   bool TryDisablePrimaryPlane(const gfx::Size& monitor_size,
                               const DCLayerOverlayParams& overlay);
 
-  bool FinishPresentToSwapChain();
+  base::expected<void, CommitError> FinishPresentToSwapChain();
 
   // Upload given YUV buffers to an NV12 texture that can be used to create
-  // video processor input view.  Returns nullptr on failure.
-  UNSAFE_BUFFER_USAGE Microsoft::WRL::ComPtr<ID3D11Texture2D> UploadVideoImage(
-      const gfx::Size& size,
-      base::span<const uint8_t> shm_video_pixmap,
-      size_t stride);
+  // video processor input view.
+  UNSAFE_BUFFER_USAGE
+  base::expected<Microsoft::WRL::ComPtr<ID3D11Texture2D>, CommitError>
+  UploadVideoImage(const gfx::Size& size,
+                   base::span<const uint8_t> shm_video_pixmap,
+                   size_t stride);
 
   // Releases resources that might hold indirect references to the swap chain.
   void ReleaseSwapChainResources();
 
   // Recreate swap chain using given size.  Use preferred YUV format if
   // |use_yuv_swap_chain| is true, or BGRA otherwise.  Sets flags based on
-  // |protected_video_type|. Returns true on success.
-  bool ReallocateSwapChain(const gfx::Size& swap_chain_size,
-                           DXGI_FORMAT swap_chain_format,
-                           gfx::ProtectedVideoType protected_video_type);
+  // |protected_video_type|.
+  base::expected<void, CommitError> ReallocateSwapChain(
+      const gfx::Size& swap_chain_size,
+      DXGI_FORMAT swap_chain_format,
+      gfx::ProtectedVideoType protected_video_type);
 
   // Returns DXGI format that swap chain uses.
   // This changes over time based on stats recorded in |presentation_history|.
@@ -165,7 +166,7 @@ class SwapChainPresenter : public base::PowerStateObserver {
   // is the index of the texture in the texture array. |content_rect| is the
   // sub-rectangle of the input texture that should be blitted to swap chain,
   // and |src_color_space| is the color space of the video.
-  bool VideoProcessorBlt(
+  base::expected<void, CommitError> VideoProcessorBlt(
       Microsoft::WRL::ComPtr<ID3D11Texture2D> input_texture,
       UINT input_level,
       const gfx::Rect& content_rect,
@@ -204,10 +205,6 @@ class SwapChainPresenter : public base::PowerStateObserver {
   // decode swap chain.
   void RecordPresentationStatistics();
 
-  // base::PowerStateObserver
-  void OnBatteryPowerStatusChange(
-      PowerStateObserver::BatteryPowerStatus battery_power_status) override;
-
   // If connected with a power source, let the Intel video processor to do
   // the upscaling because it produces better results.
   bool ShouldUseVideoProcessorScaling();
@@ -221,12 +218,13 @@ class SwapChainPresenter : public base::PowerStateObserver {
   Microsoft::WRL::ComPtr<IDXGISwapChainMedia> GetSwapChainMedia() const;
 
   // Present the Direct Composition surface from MediaFoundationRenderer.
-  bool PresentDCOMPSurface(DCLayerOverlayParams& overlay);
+  base::expected<void, CommitError> PresentDCOMPSurface(
+      DCLayerOverlayParams& overlay);
 
   // Release resources related to `PresentDCOMPSurface()`.
   void ReleaseDCOMPSurfaceResourcesIfNeeded();
 
-  bool RevertSwapChainToSDR(
+  base::expected<void, CommitError> RevertSwapChainToSDR(
       Microsoft::WRL::ComPtr<ID3D11VideoDevice1> video_device,
       Microsoft::WRL::ComPtr<ID3D11VideoProcessor> video_processor,
       Microsoft::WRL::ComPtr<ID3D11VideoProcessorEnumerator>
@@ -313,7 +311,7 @@ class SwapChainPresenter : public base::PowerStateObserver {
 
   std::optional<uint32_t> pending_swap_buffer_;
 
-  bool is_on_battery_power_;
+  bool is_on_battery_power_ = false;
 
   bool enable_vp_auto_hdr_ = false;
   bool enable_vp_super_resolution_ = false;

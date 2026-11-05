@@ -4,6 +4,9 @@
 
 #include "media/audio/android/aaudio_input.h"
 
+#include "base/android/device_info.h"
+#include "base/feature_list.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/task/bind_post_task.h"
 #include "media/audio/android/audio_device.h"
@@ -16,12 +19,6 @@
 
 namespace media {
 
-// Adjusts the AAudio capture timestamp to point to the first (oldest) sample,
-// aligning with the media pipeline's expectation.
-// TODO(b/538642984): Remove this flag and make it the default behavior once
-// M153 hits stable.
-BASE_FEATURE(kAAudioFixCaptureTimestamp, base::FEATURE_ENABLED_BY_DEFAULT);
-
 using Error = AudioInputStream::AudioInputCallback::Error;
 
 class AAudioInputDiscontinuityReporter {
@@ -32,73 +29,43 @@ class AAudioInputDiscontinuityReporter {
                                                params.sample_rate())),
         discontinuity_threshold_(buffer_duration_ / 10) {}
 
-  void CheckAndRecordDiscontinuity(base::TimeTicks capture_time,
-                                   base::TimeTicks capture_time_adjusted) {
+  void CheckAndRecordDiscontinuity(base::TimeTicks capture_time) {
     base::TimeTicks now = base::TimeTicks::Now();
-    if (last_report_time_.is_null()) {
+
+    if (!last_capture_time_.has_value()) {
+      last_capture_time_ = capture_time;
       last_report_time_ = now;
+      return;
     }
 
-    Check(capture_time, &legacy_state_,
-          "Media.Audio.Android.AAudio.InputTimestampDiscontinuitySize");
+    const base::TimeDelta delta = capture_time - *last_capture_time_;
+    const base::TimeDelta discontinuity_size =
+        (delta - buffer_duration_).magnitude();
 
-    Check(capture_time_adjusted, &adjusted_state_,
-          "Media.Audio.Android.AAudio.InputTimestampDiscontinuitySizeV2");
+    if (discontinuity_size > discontinuity_threshold_) {
+      discontinuity_count_++;
+      base::UmaHistogramTimes(
+          "Media.Audio.Android.AAudio.InputTimestampDiscontinuitySizeV2",
+          discontinuity_size);
+    }
+
+    last_capture_time_ = capture_time;
 
     if (now - last_report_time_ >= base::Seconds(10)) {
       base::UmaHistogramCounts100(
-          "Media.Audio.Android.AAudio.TimestampDiscontinuitiesPer10s",
-          legacy_state_.discontinuity_count);
-      legacy_state_.discontinuity_count = 0;
-
-      base::UmaHistogramCounts100(
           "Media.Audio.Android.AAudio.TimestampDiscontinuitiesPer10sV2",
-          adjusted_state_.discontinuity_count);
-      adjusted_state_.discontinuity_count = 0;
-
+          discontinuity_count_);
+      discontinuity_count_ = 0;
       last_report_time_ = now;
     }
   }
 
  private:
-  struct State {
-    std::optional<base::TimeTicks> last_capture_time;
-    int discontinuity_count = 0;
-  };
-
-  void Check(base::TimeTicks capture_time,
-             State* state,
-             const char* size_metric) {
-    if (!state->last_capture_time.has_value()) {
-      state->last_capture_time = capture_time;
-      return;
-    }
-
-    const base::TimeDelta delta = capture_time - *state->last_capture_time;
-    const base::TimeDelta discontinuity_size =
-        (delta - buffer_duration_).magnitude();
-
-    if (discontinuity_size > discontinuity_threshold_) {
-      state->discontinuity_count++;
-      base::UmaHistogramTimes(size_metric, discontinuity_size);
-    }
-
-    state->last_capture_time = capture_time;
-  }
-
   const base::TimeDelta buffer_duration_;
   const base::TimeDelta discontinuity_threshold_;
+  std::optional<base::TimeTicks> last_capture_time_;
   base::TimeTicks last_report_time_;
-
-  // Tracks capture times as we've historically calculated them. These capture
-  // times might point to the last (newest) sample, deviating from the media
-  // pipeline's expectations.
-  // TODO(b/538642984): Remove this legacy state and the associated V1 metrics
-  // once M153 hits stable.
-  State legacy_state_;
-  // Tracks our adjusted capture times, which should point to the first (oldest)
-  // sample, in line with the media pipeline's expectations.
-  State adjusted_state_;
+  int discontinuity_count_ = 0;
 };
 
 AAudioInputStream::AAudioInputStream(AudioManagerAndroid* manager,
@@ -171,7 +138,7 @@ void AAudioInputStream::Start(AudioInputCallback* callback) {
   // Acquire the Bluetooth SCO state before starting the stream. The Android
   // framework requires SCO to be active before the stream is started.
   audio_manager_->AcquireScoState(this);
-  if (stream_wrapper_->Start()) {
+  if (stream_wrapper_->Start() || RetryStart()) {
     return;
   }
   // Release the SCO state if the stream failed to start.
@@ -181,6 +148,39 @@ void AAudioInputStream::Start(AudioInputCallback* callback) {
     callback_->OnError(Error::kStartupFailed);
     callback_ = nullptr;
   }
+}
+
+bool AAudioInputStream::RetryStart() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (device_.IsDefault() || !base::android::device_info::is_desktop() ||
+      !base::FeatureList::IsEnabled(
+          features::kAAudioInputRetryOnStartFailure)) {
+    return false;
+  }
+
+  // On initial creation, the renderer IPC gap between `Open()` and `Start()`
+  // gives lower-priority background captures time to re-attach to our Android
+  // input and start first, which makes our explicit-device `Start()` fail.
+  // Reopening and calling `Start()` right after `Open()` avoids that gap.
+  stream_wrapper_->Close();
+  stream_wrapper_.reset();
+  CreateStreamWrapper();
+  if (!stream_wrapper_->Open()) {
+    base::AutoLock al(lock_);
+    error_during_device_change_ = true;
+    LOG(ERROR) << "AAudio input stream failed to reopen on retry for device "
+               << device_.GetId().ToAAudioDeviceId();
+    return false;
+  }
+  if (stream_wrapper_->Start()) {
+    LOG(WARNING) << "AAudio input stream started on retry for device "
+                 << device_.GetId().ToAAudioDeviceId();
+    return true;
+  }
+  LOG(ERROR) << "AAudio input stream failed to start on retry for device "
+             << device_.GetId().ToAAudioDeviceId();
+  return false;
 }
 
 void AAudioInputStream::Stop() {
@@ -231,10 +231,17 @@ bool AAudioInputStream::OnAudioDataRequested(base::span<float> audio_data) {
     return false;
   }
 
-  // The time at which the first frame in `audio_data` was captured.
-  auto capture_timestamp = stream_wrapper_->GetCaptureTimestamp();
-
-  current_callback_num_frames_ = audio_data.size() / params_.channels();
+  // `GetCaptureTimestamp()` returns the capture time of the *next* sample to be
+  // read, and AAudio has already advanced the read head past `audio_data` by
+  // the time this callback runs. Subtract the callback's duration so that
+  // `capture_timestamp` points at the first (oldest) frame in `audio_data`, as
+  // the rest of the media pipeline expects.
+  const base::TimeTicks os_capture_timestamp =
+      stream_wrapper_->GetCaptureTimestamp();
+  const size_t num_frames = audio_data.size() / params_.channels();
+  const base::TimeTicks capture_timestamp =
+      os_capture_timestamp -
+      AudioTimestampHelper::FramesToTime(num_frames, params_.sample_rate());
 
   if (push_fifo_) {
     const size_t channels = params_.channels();
@@ -290,23 +297,9 @@ void AAudioInputStream::DeliverAudio(const AudioBus& audio_bus,
 
   peak_detector_.FindPeak(&audio_bus);
 
-  // `capture_time` points to the end of the buffer (most recently captured
-  // sample). However, the rest of the pipeline expects a timestamp for the
-  // first sample (oldest). We calculate `capture_time_adjusted` to point to the
-  // first sample for comparison metrics.
-  const base::TimeDelta adjustment = AudioTimestampHelper::FramesToTime(
-      current_callback_num_frames_, params_.sample_rate());
-  const base::TimeTicks capture_time_adjusted = capture_time - adjustment;
+  discontinuity_reporter_->CheckAndRecordDiscontinuity(capture_time);
 
-  discontinuity_reporter_->CheckAndRecordDiscontinuity(capture_time,
-                                                       capture_time_adjusted);
-
-  const base::TimeTicks final_capture_time =
-      base::FeatureList::IsEnabled(kAAudioFixCaptureTimestamp)
-          ? capture_time_adjusted
-          : capture_time;
-
-  callback_->OnData(&audio_bus, final_capture_time, 0.0, {});
+  callback_->OnData(&audio_bus, capture_time, 0.0, {});
 }
 
 void AAudioInputStream::OnError() {
@@ -355,7 +348,7 @@ void AAudioInputStream::HandleDeviceChange() {
   // audio routing (e.g. Bluetooth SCO) can be configured correctly.
   audio_manager_->OnAAudioInputStreamDeviceChanged(this);
 
-  if (!stream_wrapper_->Start()) {
+  if (!stream_wrapper_->Start() && !RetryStart()) {
     // Release the SCO state as the stream failed to start.
     audio_manager_->ReleaseScoState(this);
     base::AutoLock al(lock_);
@@ -395,7 +388,7 @@ bool AAudioInputStream::GetAutomaticGainControl() {
 }
 
 bool AAudioInputStream::IsMuted() {
-  return false;
+  return audio_manager_->IsMicrophoneMuted();
 }
 
 void AAudioInputStream::SetOutputDeviceForAec(

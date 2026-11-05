@@ -5,9 +5,11 @@
 #include "third_party/blink/renderer/platform/fonts/font.h"
 
 #include "cc/paint/paint_flags.h"
+#include "third_party/blink/renderer/platform/fonts/font_platform_data.h"
 #include "third_party/blink/renderer/platform/fonts/font_variant_emoji.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_view.h"
+#include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
 #include "third_party/blink/renderer/platform/fonts/text_fragment_paint_info.h"
 #include "third_party/blink/renderer/platform/testing/font_test_base.h"
 #include "third_party/blink/renderer/platform/testing/font_test_helpers.h"
@@ -76,10 +78,32 @@ TEST_F(FontTest, ConvertBaseline) {
   const FontMetrics& metrics = font_data->GetFontMetrics();
   EXPECT_EQ(metrics.FixedAscent(), 80);
   EXPECT_EQ(metrics.FixedDescent(), 20);
-  EXPECT_EQ(metrics.FixedAlphabetic(FontBaseline::kAlphabeticBaseline), 0);
-  EXPECT_EQ(metrics.FixedAlphabetic(FontBaseline::kCentralBaseline), -30);
-  EXPECT_EQ(metrics.FixedCapHeight(FontBaseline::kAlphabeticBaseline), 80);
-  EXPECT_EQ(metrics.FixedCapHeight(FontBaseline::kCentralBaseline), 50);
+  EXPECT_EQ(metrics.FixedAlphabetic(FontBaseline::kAlphabetic), 0);
+  EXPECT_EQ(metrics.FixedAlphabetic(FontBaseline::kCentral), -30);
+  EXPECT_EQ(metrics.FixedCapHeight(FontBaseline::kAlphabetic), 80);
+  EXPECT_EQ(metrics.FixedCapHeight(FontBaseline::kCentral), 50);
+}
+
+TEST_F(FontTest, FixedPitchMatchesTypeface) {
+  for (const char* path :
+       {"Ahem.woff", "third_party/Roboto/roboto-regular.woff2"}) {
+    SCOPED_TRACE(path);
+    Font* font = CreateTestFont(AtomicString("test"),
+                                test::PlatformTestDataPath(path), 16);
+    const SimpleFontData* font_data = font->PrimaryFont();
+    ASSERT_TRUE(font_data);
+    const FontPlatformData& platform_data = font_data->PlatformData();
+    ASSERT_TRUE(platform_data.Typeface());
+    EXPECT_EQ(font_data->IsFixedPitch(),
+              platform_data.Typeface()->isFixedPitch());
+
+    const auto* zero_size_platform_data =
+        MakeGarbageCollected<FontPlatformData>(platform_data, 0);
+    const auto* zero_size_font_data =
+        MakeGarbageCollected<SimpleFontData>(zero_size_platform_data);
+    EXPECT_EQ(zero_size_font_data->IsFixedPitch(),
+              platform_data.Typeface()->isFixedPitch());
+  }
 }
 
 TEST_F(FontTest, IdeographicFullWidthAhem) {
@@ -169,7 +193,7 @@ TEST_F(FontTest, TextIntercepts) {
   Vector<Font::TextIntercept> text_intercepts;
   // 4 intercept ranges for below baseline p glyphs in the test string
   font->GetTextIntercepts(text_paint_info,
-                          Font::InkSkipCJKHandling::kExcludeCJK, default_paint,
+                          Font::InkSkipCjkHandling::kExcludeCjk, default_paint,
                           below_baseline_bounds, text_intercepts);
   EXPECT_EQ(text_intercepts.size(), 4u);
   for (auto text_intercept : text_intercepts) {
@@ -179,7 +203,7 @@ TEST_F(FontTest, TextIntercepts) {
   std::tuple<float, float> above_baseline_bounds = std::make_tuple(-4, -2);
   // 5 intercept ranges for the above baseline E ACUTE glyphs
   font->GetTextIntercepts(text_paint_info,
-                          Font::InkSkipCJKHandling::kExcludeCJK, default_paint,
+                          Font::InkSkipCjkHandling::kExcludeCjk, default_paint,
                           above_baseline_bounds, text_intercepts);
   EXPECT_EQ(text_intercepts.size(), 5u);
   for (auto text_intercept : text_intercepts) {

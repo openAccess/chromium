@@ -8,6 +8,11 @@
 #include <sys/prctl.h>
 
 #include <limits>
+#include <map>
+#include <set>
+#include <string>
+#include <string_view>
+#include <utility>
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
@@ -22,6 +27,7 @@
 #include "build/chromeos_buildflags.h"
 #include "components/crash/core/app/crash_reporter_client.h"
 #include "components/crash/core/app/crash_switches.h"
+#include "components/crash/core/app/shared_memory_user_stream_args.h"
 #include "content/public/common/content_descriptors.h"
 #include "sandbox/linux/services/namespace_sandbox.h"
 #include "third_party/crashpad/crashpad/client/crashpad_client.h"
@@ -185,22 +191,23 @@ bool PlatformCrashpadInitialization(
     crash_reporter_client->GetProductInfo(&product_info);
 
     std::map<std::string, std::string> annotations;
-    annotations["prod"] = product_info.product_name;
-    annotations["ver"] = product_info.version;
+    annotations["prod"] = std::string(product_info.product_name());
+    annotations["ver"] = std::string(product_info.version());
 
+    std::string_view channel = product_info.channel();
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
     // Empty means stable.
     const bool allow_empty_channel = true;
-    if (product_info.channel == "extended") {
+    if (channel == "extended") {
       // Extended stable reports as stable (empty string) with an extra bool.
-      product_info.channel.clear();
+      channel = "";
       annotations["extended_stable_channel"] = "true";
     }
 #else
     const bool allow_empty_channel = false;
 #endif
-    if (allow_empty_channel || !product_info.channel.empty()) {
-      annotations["channel"] = product_info.channel;
+    if (allow_empty_channel || !channel.empty()) {
+      annotations["channel"] = std::string(channel);
     }
 
     annotations["plat"] = std::string("Linux");
@@ -219,10 +226,20 @@ bool PlatformCrashpadInitialization(
     // where crash_reporter provides it's own values for lsb-release.
     annotations["lsb-release"] = base::GetLinuxDistro();
 #endif
+    for (auto& [key, value] :
+         crash_reporter_client->GetExtraProcessAnnotations()) {
+      annotations.insert_or_assign(key, std::move(value));
+    }
 
     std::vector<std::string> arguments;
     if (crash_reporter_client->ShouldMonitorCrashHandlerExpensively()) {
       arguments.push_back("--monitor-self");
+    }
+    if (!crash_reporter_client->ShouldRateLimitUploads()) {
+      arguments.push_back("--no-rate-limit");
+    }
+    if (!crash_reporter_client->ShouldCompressUploads()) {
+      arguments.push_back("--no-upload-gzip");
     }
 
     // Set up --monitor-self-annotation even in the absence of --monitor-self
@@ -240,9 +257,15 @@ bool PlatformCrashpadInitialization(
     }
 #endif
 
+    std::vector<base::ReadOnlySharedMemoryRegion> user_streams =
+        crash_reporter_client->GetUserStreamSharedMemoryRegions();
+    std::set<crashpad::FileHandle> preserve_handles;
+    internal::AppendSharedMemoryUserStreamArgs(user_streams, &arguments,
+                                               &preserve_handles);
+
     CHECK(client.StartHandler(handler_path, *database_path, metrics_path, url,
-                              annotations, arguments, false, false,
-                              attachments));
+                              annotations, arguments, false, false, attachments,
+                              preserve_handles));
   } else {
     int fd = base::GlobalDescriptors::GetInstance()->Get(kCrashDumpSignal);
 

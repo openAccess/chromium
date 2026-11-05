@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/webui_browser/webui_browser_web_contents_delegate.h"
 
 #include "base/logging.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.h"
 #include "chrome/browser/ui/webui_browser/webui_browser_window.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
@@ -84,10 +83,4 @@ void WebUIBrowserWebContentsDelegate::RequestPointerLock(
 
 void WebUIBrowserWebContentsDelegate::LostPointerLock() {
   BrowserWebContentsDelegate::From(window_->browser())->LostPointerLock();
-}
-
-bool WebUIBrowserWebContentsDelegate::IsWaitingForPointerLockPrompt(
-    content::WebContents* web_contents) {
-  return BrowserWebContentsDelegate::From(window_->browser())
-      ->IsWaitingForPointerLockPrompt(web_contents);
 }

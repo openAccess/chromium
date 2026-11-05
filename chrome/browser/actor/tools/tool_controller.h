@@ -77,6 +77,11 @@ class ToolController {
       mojom::ActionResultPtr action_result,
       ObservationDelayController::Result observation_result);
 
+  // Validates the target surface of `tool`. Returns OK if the tool has no
+  // target, kTabWentAway if the surface is gone, and kActionTargetCrossProfile
+  // if it belongs to another profile.
+  mojom::ActionResultPtr ValidateTarget(const Tool& tool) const;
+
   AggregatedJournal& journal() { return tool_delegate_->GetJournal(); }
 
   State state_ = State::kInit;
@@ -104,6 +109,10 @@ class ToolController {
 
   ObservationDelayController::PageStabilityConfig
       observation_page_stability_config_;
+
+  // Whether the active request asked to skip waiting for the page to settle
+  // after invocation. See `ToolRequest::ShouldSkipObservationDelay()`.
+  bool skip_observation_delay_ = false;
 
   // Set while a tool invocation is in progress, delays invocation of the
   // completion_callback until the page is ready for observation.

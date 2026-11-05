@@ -26,6 +26,7 @@
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
@@ -128,8 +129,7 @@ class InlineLocationSignalingE2EInteractiveUiTest
           {{"display_order", GetParam().display_order},
            {"wording", GetParam().wording}}},
          {omnibox::kPlatformAgnosticXGeo, {}}},
-        {::features::kInitialWebUI,
-         ::features::kWebUIToolbarProcessOverheadExperiment});
+        {::features::kInitialWebUI});
 
     // Architectural Fix: Initialize the mock environment early so startup WebUI
     // toolbar autocomplete requests are intercepted immediately instead of
@@ -298,7 +298,8 @@ IN_PROC_BROWSER_TEST_P(InlineLocationSignalingE2EInteractiveUiTest,
     EXPECT_TRUE(base::test::RunUntil([&]() {
       return controller->done() &&
              std::ranges::any_of(controller->result(), [](const auto& match) {
-               return match.type == AutocompleteMatchType::SEARCH_SUGGEST;
+               return match.type ==
+                      omnibox::AutocompleteMatchType::kSearchSuggest;
              });
     }));
   }

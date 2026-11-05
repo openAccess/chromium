@@ -25,7 +25,8 @@ void SiteTokenURLLoaderHeaderClient::Create(
         receiver,
     mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>
         target_client) {
-  DCHECK(base::FeatureList::IsEnabled(features::kSiteTokenProviderEnabled));
+  CHECK(base::FeatureList::IsEnabled(features::kSiteTokenProviderEnabled),
+        base::NotFatalUntil::M162);
   mojo::MakeSelfOwnedReceiver(
       base::WrapUnique(new SiteTokenURLLoaderHeaderClient(
           std::move(service), std::move(target_client))),
@@ -97,6 +98,15 @@ void SiteTokenURLLoaderHeaderClient::OnLoaderForCorsPreflightCreated(
   if (target_client_.is_bound()) {
     target_client_->OnLoaderForCorsPreflightCreated(request,
                                                     std::move(receiver));
+  }
+}
+
+void SiteTokenURLLoaderHeaderClient::OnLoaderFailedWithRemoteEndpoint(
+    int32_t request_id,
+    const net::IPEndPoint& remote_endpoint) {
+  if (target_client_.is_bound()) {
+    target_client_->OnLoaderFailedWithRemoteEndpoint(request_id,
+                                                     remote_endpoint);
   }
 }
 

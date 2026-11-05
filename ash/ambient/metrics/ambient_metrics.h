@@ -5,9 +5,6 @@
 #ifndef ASH_AMBIENT_METRICS_AMBIENT_METRICS_H_
 #define ASH_AMBIENT_METRICS_AMBIENT_METRICS_H_
 
-#include <optional>
-#include <string>
-
 #include "ash/ash_export.h"
 #include "ash/public/cpp/ambient/ambient_mode_photo_source.h"
 #include "ash/webui/personalization_app/mojom/personalization_app.mojom-shared.h"
@@ -62,10 +59,6 @@ ASH_EXPORT void RecordAmbientModeTimeElapsed(base::TimeDelta time_delta,
 
 ASH_EXPORT void RecordAmbientModeTopicSource(
     ash::personalization_app::mojom::TopicSource topic_source);
-
-ASH_EXPORT void RecordAmbientModeTotalNumberOfAlbums(int num_albums);
-
-ASH_EXPORT void RecordAmbientModeSelectedNumberOfAlbums(int num_albums);
 
 ASH_EXPORT void RecordAmbientModeAnimationSmoothness(
     int smoothness,

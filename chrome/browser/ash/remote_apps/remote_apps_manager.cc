@@ -24,11 +24,11 @@
 #include "chrome/browser/ash/app_list/app_list_util.h"
 #include "chrome/browser/ash/app_list/chrome_app_list_item.h"
 #include "chrome/browser/ash/app_list/chrome_app_list_model_updater.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/remote_apps/remote_apps_impl.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/apps/platform_apps/api/enterprise_remote_apps.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "components/account_id/account_id.h"
 #include "components/services/app_service/public/cpp/menu.h"
 #include "components/user_manager/user.h"
@@ -78,9 +78,10 @@ class ImageDownloaderImpl : public RemoteAppsManager::ImageDownloader {
 
   void Download(const GURL& url, DownloadCallback callback) override {
     ash::ImageDownloader* image_downloader = ash::ImageDownloader::Get();
-    DCHECK(image_downloader);
-    auto* const user = ProfileHelper::Get()->GetUserByProfile(profile_);
-    DCHECK(user);
+    CHECK(image_downloader, base::NotFatalUntil::M160);
+    auto* const user = BrowserContextHelper::Get()->GetUserByBrowserContext(
+        const_cast<Profile*>(profile_.get()));
+    CHECK(user, base::NotFatalUntil::M160);
     const AccountId& account_id = user->GetAccountId();
     image_downloader->Download(url, kTrafficAnnotation, account_id,
                                std::move(callback));
@@ -168,7 +169,7 @@ RemoteAppsManager::RemoteAppsManager(Profile* profile)
 RemoteAppsManager::~RemoteAppsManager() = default;
 
 void RemoteAppsManager::Initialize() {
-  DCHECK(app_list_syncable_service_->IsInitialized());
+  CHECK(app_list_syncable_service_->IsInitialized(), base::NotFatalUntil::M160);
   is_initialized_ = true;
 }
 
@@ -210,7 +211,7 @@ void RemoteAppsManager::MaybeAddFolder(const std::string& folder_id) {
   if (model_updater_->FindFolderItem(folder_id))
     return;
 
-  DCHECK(!model_updater_->FindItem(folder_id));
+  CHECK(!model_updater_->FindItem(folder_id), base::NotFatalUntil::M160);
 
   // The folder to be added.
   auto remote_folder =
@@ -221,7 +222,8 @@ void RemoteAppsManager::MaybeAddFolder(const std::string& folder_id) {
   if (sync_item) {
     // If the specified folder's sync data exists, fill `remote_folder` with
     // the sync data.
-    DCHECK_EQ(sync_pb::AppListSpecifics::TYPE_FOLDER, sync_item->item_type);
+    CHECK_EQ(sync_pb::AppListSpecifics::TYPE_FOLDER, sync_item->item_type,
+             base::NotFatalUntil::M160);
     remote_folder->SetMetadata(
         app_list::GenerateItemMetadataFromSyncItem(*sync_item));
     remote_folder->SetIsSystemFolder(true);
@@ -231,7 +233,7 @@ void RemoteAppsManager::MaybeAddFolder(const std::string& folder_id) {
   }
 
   // Handle the case that the specified folder's sync data does not exist.
-  DCHECK(model_->HasFolder(folder_id));
+  CHECK(model_->HasFolder(folder_id), base::NotFatalUntil::M160);
   const RemoteAppsModel::FolderInfo& info = model_->GetFolderInfo(folder_id);
   remote_folder->SetChromeName(info.name);
   remote_folder->SetIsSystemFolder(true);
@@ -341,12 +343,14 @@ void RemoteAppsManager::LaunchApp(const std::string& app_id) {
     return;
   std::string source_id = it->second;
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      chrome_apps::api::enterprise_remote_apps::OnRemoteAppLaunched::Create(
+          app_id));
   std::unique_ptr<extensions::Event> event = std::make_unique<
       extensions::Event>(
       extensions::events::ENTERPRISE_REMOTE_APPS_ON_REMOTE_APP_LAUNCHED,
       chrome_apps::api::enterprise_remote_apps::OnRemoteAppLaunched::kEventName,
-      chrome_apps::api::enterprise_remote_apps::OnRemoteAppLaunched::Create(
-          app_id));
+      std::move(event_args));
 
   event_router_->DispatchEventToExtension(source_id, std::move(event));
 
@@ -381,7 +385,7 @@ apps::MenuItems RemoteAppsManager::GetMenuModel(const std::string& id) {
 }
 
 void RemoteAppsManager::OnSyncModelUpdated() {
-  DCHECK(!is_initialized_);
+  CHECK(!is_initialized_, base::NotFatalUntil::M160);
   Initialize();
   app_list_syncable_service_observation_.Reset();
 }

@@ -7,9 +7,11 @@
 #include <stdint.h>
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 #include "ash/constants/ash_features.h"
@@ -21,7 +23,9 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/hash/hash.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/string_compare.h"
+#include "base/i18n/tag_converters.h"
 #include "base/location.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
@@ -35,14 +39,14 @@
 #include "chrome/browser/ash/input_method/assistive_window_controller.h"
 #include "chrome/browser/ash/input_method/candidate_window_controller.h"
 #include "chrome/browser/ash/input_method/input_method_persistence.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part_ash.h"
 #include "chrome/browser/ui/ash/input_method/assistive_delegate.h"
 #include "chrome/browser/ui/ash/input_method/input_method_menu_item.h"
 #include "chrome/browser/ui/ash/input_method/input_method_menu_manager.h"
 #include "chrome/browser/ui/ash/keyboard/chrome_keyboard_controller_client.h"
-#include "chrome/common/chrome_features.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/language_preferences/language_preferences.h"
+#include "chromeos/ash/components/login/session/process_shutdown.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user_manager.h"
@@ -63,12 +67,16 @@ namespace input_method {
 
 namespace {
 
-const char* const kNonPositionalLayouts[] = {
-    "de(neo)",    "gb(dvorak)", "tr(f)",       "us(colemak)",
-    "us(dvorak)", "us(dvp)",    "us(workman)", "us(workman-intl)",
-};
-
-const size_t kNonPositionalLayoutsLength = std::size(kNonPositionalLayouts);
+constexpr auto kNonPositionalLayouts = std::to_array<std::string_view>({
+    "de(neo)",
+    "gb(dvorak)",
+    "tr(f)",
+    "us(colemak)",
+    "us(dvorak)",
+    "us(dvp)",
+    "us(workman)",
+    "us(workman-intl)",
+});
 
 enum InputMethodCategory {
   INPUT_METHOD_CATEGORY_UNKNOWN = 0,
@@ -124,10 +132,6 @@ std::string KeysetToString(ImeKeyset keyset) {
     case ImeKeyset::kVoice:
       return "voice";
   }
-}
-
-bool IsShuttingDown() {
-  return !g_browser_process || g_browser_process->IsShuttingDown();
 }
 
 }  // namespace
@@ -209,7 +213,7 @@ InputMethodDescriptors InputMethodManagerImpl::StateImpl::
   UErrorCode error_code = U_ZERO_ERROR;
   std::unique_ptr<icu::Collator> collator(
       icu::Collator::createInstance(error_code));  // use current ICU locale
-  DCHECK(U_SUCCESS(error_code));
+  CHECK(U_SUCCESS(error_code), base::NotFatalUntil::M160);
   const InputMethodUtil& util = manager_->util_;
 
   std::sort(
@@ -248,9 +252,9 @@ InputMethodManagerImpl::StateImpl::GetInputMethodFromId(
 }
 
 void InputMethodManagerImpl::StateImpl::EnableLoginLayouts(
-    const std::string& language_code,
+    const base::i18n::LanguageTag& language_code,
     const std::vector<std::string>& initial_layouts) {
-  if (IsShuttingDown()) {
+  if (IsProcessShuttingDown()) {
     return;
   }
 
@@ -262,7 +266,7 @@ void InputMethodManagerImpl::StateImpl::EnableLoginLayouts(
   // Add input methods associated with the language.
   std::vector<std::string> layouts_from_locale;
   manager_->util_.GetInputMethodIdsFromLanguageCode(
-      language_code, kKeyboardLayoutsOnly, &layouts_from_locale);
+      language_code.tag_string(), kKeyboardLayoutsOnly, &layouts_from_locale);
   candidates.insert(candidates.end(), layouts_from_locale.begin(),
                     layouts_from_locale.end());
 
@@ -306,9 +310,9 @@ void InputMethodManagerImpl::StateImpl::EnableLoginLayouts(
 }
 
 void InputMethodManagerImpl::StateImpl::EnableOobeInputMethods(
-    const std::string& language_code,
+    const base::i18n::LanguageTag& language_code,
     const std::vector<std::string>& initial_input_methods) {
-  if (IsShuttingDown()) {
+  if (IsProcessShuttingDown()) {
     return;
   }
 
@@ -320,7 +324,7 @@ void InputMethodManagerImpl::StateImpl::EnableOobeInputMethods(
   // Add input methods associated with the language.
   std::vector<std::string> input_methods_from_locale;
   manager_->util_.GetInputMethodIdsFromLanguageCode(
-      language_code, kAllInputMethods, &input_methods_from_locale);
+      language_code.tag_string(), kAllInputMethods, &input_methods_from_locale);
   candidates.insert(candidates.end(), input_methods_from_locale.begin(),
                     input_methods_from_locale.end());
 
@@ -417,7 +421,7 @@ bool InputMethodManagerImpl::StateImpl::EnableInputMethodImpl(
     return false;
   }
 
-  DCHECK(new_enabled_input_method_ids);
+  CHECK(new_enabled_input_method_ids, base::NotFatalUntil::M160);
   if (!manager_->util_.IsValidInputMethodId(input_method_id)) {
     DVLOG(1) << "EnableInputMethod: Invalid ID: " << input_method_id;
     return false;
@@ -442,7 +446,7 @@ bool InputMethodManagerImpl::StateImpl::EnableInputMethod(
 
 bool InputMethodManagerImpl::StateImpl::ReplaceEnabledInputMethods(
     const std::vector<std::string>& new_enabled_input_method_ids) {
-  if (IsShuttingDown()) {
+  if (IsProcessShuttingDown()) {
     return false;
   }
 
@@ -496,7 +500,7 @@ bool InputMethodManagerImpl::StateImpl::SetAllowedInputMethods(
       // Kiosk users are not able to go to the settings and manually enable
       // allowed input methods, thus it has to be done automatically for
       // non-empty list.
-      DCHECK(user_manager::UserManager::Get());
+      CHECK(user_manager::UserManager::Get(), base::NotFatalUntil::M160);
       if (user_manager::UserManager::Get()->IsLoggedInAsAnyKioskApp()) {
         EnableInputMethod(migrated_id);
       }
@@ -544,7 +548,7 @@ InputMethodManagerImpl::StateImpl::GetAllowedFallBackKeyboardLayout() const {
 void InputMethodManagerImpl::StateImpl::ChangeInputMethod(
     const std::string& input_method_id,
     bool show_message) {
-  if (IsShuttingDown()) {
+  if (IsProcessShuttingDown()) {
     return;
   }
 
@@ -614,11 +618,11 @@ void InputMethodManagerImpl::StateImpl::AddInputMethodExtension(
     const std::string& extension_id,
     const InputMethodDescriptors& descriptors,
     TextInputMethod* engine) {
-  if (IsShuttingDown()) {
+  if (IsProcessShuttingDown()) {
     return;
   }
 
-  DCHECK(engine);
+  CHECK(engine, base::NotFatalUntil::M160);
 
   manager_->engine_map_[profile_][extension_id] = engine;
   VLOG(1) << "Add an engine for \"" << extension_id << "\"";
@@ -770,7 +774,7 @@ void InputMethodManagerImpl::StateImpl::SetInputMethodLoginDefaultFromVPD(
       // The output list |input_method_ids| is sorted by popularity, hence
       // input_method_ids[0] now contains the most popular keyboard layout
       // for the given locale.
-      DCHECK_GE(input_method_ids.size(), 1U);
+      CHECK_GE(input_method_ids.size(), 1U, base::NotFatalUntil::M160);
       input_method_id = input_method_ids[0];
     }
   }
@@ -796,7 +800,9 @@ void InputMethodManagerImpl::StateImpl::SetInputMethodLoginDefaultFromVPD(
   manager_->util_.UpdateHardwareLayoutCache();
 
   // This function is called only during system setup in OOBE.
-  EnableOobeInputMethods(locale, input_method_ids);
+  EnableOobeInputMethods(base::i18n::GetLanguageTagFromString(locale).value_or(
+                             base::i18n::GetKnownLanguageTag("und")),
+                         input_method_ids);
   LoadNecessaryComponentExtensions();
 }
 
@@ -804,7 +810,8 @@ void InputMethodManagerImpl::StateImpl::SetInputMethodLoginDefault(
     bool is_in_oobe_context) {
   // Set up keyboards. For example, when |locale| is "en-US", enable US qwerty
   // and US dvorak keyboard layouts.
-  const std::string locale = manager_->application_locale_storage_->Get();
+  const base::i18n::LanguageTag locale =
+      manager_->application_locale_storage_->GetTag();
   std::vector<std::string> input_method_ids_to_be_enabled;
   if (!GetAllowedInputMethodIds().empty()) {
     // Prefer policy-set input methods.
@@ -963,7 +970,7 @@ InputMethodManagerImpl::StateImpl::LookupInputMethod(
   // Sanity check
   if (!InputMethodIsEnabled(input_method_id)) {
     InputMethodDescriptors input_methods(GetEnabledInputMethods());
-    DCHECK(!input_methods.empty());
+    CHECK(!input_methods.empty(), base::NotFatalUntil::M160);
     input_method_id_to_switch = input_methods.at(0).id();
     if (!input_method_id.empty()) {
       DVLOG(1) << "Can't change the current input method to " << input_method_id
@@ -975,8 +982,9 @@ InputMethodManagerImpl::StateImpl::LookupInputMethod(
   const InputMethodDescriptor* descriptor = nullptr;
   if (extension_ime_util::IsExtensionIME(input_method_id_to_switch) ||
       extension_ime_util::IsArcIME(input_method_id_to_switch)) {
-    DCHECK(available_input_methods_.find(input_method_id_to_switch) !=
-           available_input_methods_.end());
+    CHECK(available_input_methods_.find(input_method_id_to_switch) !=
+              available_input_methods_.end(),
+          base::NotFatalUntil::M160);
     descriptor = &(available_input_methods_[input_method_id_to_switch]);
   } else {
     descriptor = manager_->util_.GetInputMethodDescriptorFromId(
@@ -985,7 +993,7 @@ InputMethodManagerImpl::StateImpl::LookupInputMethod(
       LOG(ERROR) << "Unknown input method id: " << input_method_id_to_switch;
     }
   }
-  DCHECK(descriptor);
+  CHECK(descriptor, base::NotFatalUntil::M160);
   return descriptor;
 }
 
@@ -1019,7 +1027,7 @@ bool InputMethodManagerImpl::GetMigratedInputMethodIDs(
 // Starts or stops the system input method framework as needed.
 void InputMethodManagerImpl::ReconfigureIMFramework(
     InputMethodManagerImpl::StateImpl* state) {
-  DCHECK(state);
+  CHECK(state, base::NotFatalUntil::M160);
   state->LoadNecessaryComponentExtensions();
 
   // Initialize candidate window controller and widgets such as
@@ -1033,11 +1041,26 @@ void InputMethodManagerImpl::ReconfigureIMFramework(
 
 void InputMethodManagerImpl::SetState(
     scoped_refptr<InputMethodManager::State> state) {
+  // TODO(crbug.com/568716634): CHECK-exclusion: Convert to a CHECK once we
+  // are confident it won't be triggered.
   DCHECK(state.get());
   auto* new_impl_state =
       static_cast<InputMethodManagerImpl::StateImpl*>(state.get());
 
+  Profile* old_profile = state_ ? state_->GetProfile() : nullptr;
   state_ = new_impl_state;
+  Profile* new_profile = state_ ? state_->GetProfile() : nullptr;
+
+  // Tear down the signin profile's active engine and ImeService process when
+  // transitioning to the user profile.
+  if (old_profile != nullptr && old_profile != new_profile &&
+      !ash::AnnotatedAccountId::Get(old_profile->GetOriginalProfile())) {
+    if (TextInputMethod* engine = IMEBridge::Get()->GetCurrentEngineHandler()) {
+      engine->Disable();
+      IMEBridge::Get()->SetCurrentEngineHandler(nullptr);
+    }
+    ime_service_connectors_.erase(old_profile);
+  }
 
   if (state_.get() && state_->GetNumEnabledInputMethods()) {
     // Initialize candidate window controller and widgets such as
@@ -1077,9 +1100,9 @@ InputMethodManagerImpl::InputMethodManagerImpl(
       features_enabled_state_(InputMethodManager::FEATURE_ALL) {
   if (::features::IsImprovedKeyboardShortcutsEnabled()) {
     // Create a set of layouts that do not use positional shortcuts.
-    non_positional_layouts_.reserve(kNonPositionalLayoutsLength);
-    for (size_t i = 0; i < kNonPositionalLayoutsLength; i++) {
-      non_positional_layouts_.emplace(UNSAFE_TODO(kNonPositionalLayouts[i]));
+    non_positional_layouts_.reserve(kNonPositionalLayouts.size());
+    for (std::string_view layout : kNonPositionalLayouts) {
+      non_positional_layouts_.emplace(layout);
     }
   }
 
@@ -1152,7 +1175,7 @@ void InputMethodManagerImpl::ChangeInputMethodInternalFromActiveState(
     bool show_message,
     bool notify_menu) {
   // No need to switch input method when terminating.
-  if (IsShuttingDown()) {
+  if (IsProcessShuttingDown()) {
     VLOG(1) << "No need to switch input method when terminating.";
     return;
   }
@@ -1236,7 +1259,7 @@ void InputMethodManagerImpl::NotifyInputMethodChanged(bool show_message,
 
 void InputMethodManagerImpl::ActivateInputMethodMenuItem(
     const std::string& key) {
-  DCHECK(!key.empty());
+  CHECK(!key.empty(), base::NotFatalUntil::M160);
 
   if (ui::ime::InputMethodMenuManager::GetInstance()
           ->HasInputMethodMenuItemForKey(key)) {
@@ -1252,7 +1275,7 @@ void InputMethodManagerImpl::ActivateInputMethodMenuItem(
 
 void InputMethodManagerImpl::ConnectInputEngineManager(
     mojo::PendingReceiver<ime::mojom::InputEngineManager> receiver) {
-  DCHECK(state_);
+  CHECK(state_, base::NotFatalUntil::M160);
   ImeServiceConnectorMap::iterator iter =
       ime_service_connectors_.find(state_->GetProfile());
   if (iter == ime_service_connectors_.end()) {
@@ -1268,7 +1291,7 @@ void InputMethodManagerImpl::ConnectInputEngineManager(
 
 void InputMethodManagerImpl::BindInputMethodUserDataService(
     mojo::PendingReceiver<ime::mojom::InputMethodUserDataService> receiver) {
-  DCHECK(state_);
+  CHECK(state_, base::NotFatalUntil::M160);
   ImeServiceConnectorMap::iterator iter =
       ime_service_connectors_.find(state_->GetProfile());
   if (iter == ime_service_connectors_.end()) {

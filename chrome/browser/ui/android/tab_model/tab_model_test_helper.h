@@ -95,6 +95,9 @@ class TestTabModel : public TabModel {
   tabs::TabInterface* OpenTab(const GURL& url,
                               int index,
                               bool foreground) override;
+  tabs::TabInterface* OpenTab(const GURL& url,
+                              int index,
+                              TabLaunchType launch_type) override;
   void SetOpenerForTab(tabs::TabHandle target, tabs::TabHandle opener) override;
   tabs::TabInterface* GetOpenerForTab(tabs::TabHandle target) override;
   tabs::TabInterface* InsertWebContentsAt(
@@ -115,13 +118,17 @@ class TestTabModel : public TabModel {
   void UnpinTab(tabs::TabHandle tab) override;
   bool ContainsTabGroup(tab_groups::TabGroupId group_id) override;
   std::vector<tab_groups::TabGroupId> ListTabGroups() override;
+  std::set<split_tabs::SplitTabId> ListSplits() override;
   std::optional<tab_groups::TabGroupVisualData> GetTabGroupVisualData(
       tab_groups::TabGroupId group_id) override;
+  std::optional<split_tabs::SplitTabVisualData> GetSplitTabVisualData(
+      split_tabs::SplitTabId split_id) override;
   gfx::Range GetTabGroupTabIndices(tab_groups::TabGroupId group_id) override;
   std::optional<tab_groups::TabGroupId> CreateTabGroup(
       const std::vector<tabs::TabHandle>& tabs) override;
   std::optional<split_tabs::SplitTabId> CreateSplit(
-      const std::vector<tabs::TabHandle>& tabs) override;
+      const std::vector<tabs::TabHandle>& tabs,
+      const split_tabs::SplitTabVisualData& visual_data) override;
   void SetTabGroupVisualData(
       tab_groups::TabGroupId group_id,
       const tab_groups::TabGroupVisualData& visual_data) override;
@@ -168,7 +175,9 @@ class OwningTestTabModel : public TabModel {
       Profile* profile,
       chrome::android::ActivityType activity_type =
           chrome::android::ActivityType::kTabbed,
-      TabModelType tab_model_type = TabModelType::kStandard);
+      TabModelType tab_model_type = TabModelType::kStandard,
+      std::optional<chrome::android::CustomTabProfileType>
+          custom_tab_profile_type = std::nullopt);
 
   ~OwningTestTabModel() override;
 
@@ -244,6 +253,9 @@ class OwningTestTabModel : public TabModel {
   tabs::TabInterface* OpenTab(const GURL& url,
                               int index,
                               bool foreground) override;
+  tabs::TabInterface* OpenTab(const GURL& url,
+                              int index,
+                              TabLaunchType launch_type) override;
   void SetOpenerForTab(tabs::TabHandle target, tabs::TabHandle opener) override;
   tabs::TabInterface* GetOpenerForTab(tabs::TabHandle target) override;
   tabs::TabInterface* InsertWebContentsAt(
@@ -264,13 +276,17 @@ class OwningTestTabModel : public TabModel {
   void UnpinTab(tabs::TabHandle tab) override;
   bool ContainsTabGroup(tab_groups::TabGroupId group_id) override;
   std::vector<tab_groups::TabGroupId> ListTabGroups() override;
+  std::set<split_tabs::SplitTabId> ListSplits() override;
   std::optional<tab_groups::TabGroupVisualData> GetTabGroupVisualData(
       tab_groups::TabGroupId group_id) override;
+  std::optional<split_tabs::SplitTabVisualData> GetSplitTabVisualData(
+      split_tabs::SplitTabId split_id) override;
   gfx::Range GetTabGroupTabIndices(tab_groups::TabGroupId group_id) override;
   std::optional<tab_groups::TabGroupId> CreateTabGroup(
       const std::vector<tabs::TabHandle>& tabs) override;
   std::optional<split_tabs::SplitTabId> CreateSplit(
-      const std::vector<tabs::TabHandle>& tabs) override;
+      const std::vector<tabs::TabHandle>& tabs,
+      const split_tabs::SplitTabVisualData& visual_data) override;
   void SetTabGroupVisualData(
       tab_groups::TabGroupId group_id,
       const tab_groups::TabGroupVisualData& visual_data) override;
@@ -290,7 +306,7 @@ class OwningTestTabModel : public TabModel {
   bool IsClosingAllTabs() override;
 
  private:
-  void SelectTab(TabAndroid* tab, TabModel::TabSelectionType selection_type);
+  void SelectTab(TabAndroid* tab);
 
   SEQUENCE_CHECKER(sequence_checker_);
 

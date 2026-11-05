@@ -19,7 +19,7 @@ import time
 from xml.dom import minidom
 import zipfile
 
-from google.protobuf import text_format  # pylint: disable=import-error
+from google.protobuf import text_format
 
 from devil import base_error
 from devil.android import apk_helper
@@ -118,7 +118,6 @@ class AvdException(Exception):
             )
 
         # avd.py is executed with python2.
-        # pylint: disable=R1725
         super(AvdException, self).__init__('\n'.join(message_parts))
 
 
@@ -136,8 +135,6 @@ def _Load(avd_proto_path):
     """
     with open(avd_proto_path) as avd_proto_file:
         # python generated codes are simplified since Protobuf v3.20.0 and cause
-        # pylint error: https://github.com/protocolbuffers/protobuf/issues/9730
-        # pylint: disable=no-member
         return text_format.Merge(avd_proto_file.read(), avd_pb2.Avd())
 
 
@@ -219,7 +216,8 @@ def _ProcessSourceProps(source_prop_path, image_version):
 
     # These props are mandatory to form a valid image path.
     api_level = source_props['AndroidVersion.ApiLevel']
-    tag_id = source_props['SystemImage.TagId']
+    # tag_id can have comma which is not accepted by QEMU so need to replace it
+    tag_id = '_'.join(source_props['SystemImage.TagId'].split(','))
     abi = source_props['SystemImage.Abi']
 
     # Rest props that need to be present in the package.xml.
@@ -366,7 +364,6 @@ class _AvdManagerAgent:
                 logging.info('  %s', line)
         except subprocess.CalledProcessError as e:
             # avd.py is executed with python2.
-            # pylint: disable=W0707
             raise AvdException(
                 'AVD deletion failed: %s' % str(e), command=delete_cmd
             )
@@ -824,23 +821,10 @@ class AvdConfig:
                         package_version,
                     )
 
-            # Skip Marshmallow as svc commands fail on this version.
-            if instance.device.build_version_sdk != 23:
-                # Always disable the network to prevent built-in system apps from
-                # updating themselves, which could take over package manager and
-                # cause shell command timeout.
-                # Use svc as this also works on the images with build type "user", and
-                # does not require a reboot or broadcast compared to setting the
-                # airplane_mode_on in "settings/global".
-                logging.info('Disabling the network.')
-                instance.device.RunShellCommand(
-                    ['svc', 'wifi', 'disable'], as_root=True, check_return=True
-                )
-                # Certain system image like tablet does not have data service
-                # So don't check return status here.
-                instance.device.RunShellCommand(
-                    ['svc', 'data', 'disable'], as_root=True, check_return=False
-                )
+            # Always disable the network to prevent built-in system apps from
+            # updating themselves, which could take over package manager and
+            # cause shell command timeout.
+            _SetNetwork(instance.device, False)
 
             if snapshot:
                 logging.info(
@@ -925,7 +909,6 @@ class AvdConfig:
                             logging.info('    %s', line)
                     except subprocess.CalledProcessError as e:
                         # avd.py is executed with python2.
-                        # pylint: disable=W0707
                         raise AvdException(
                             'CIPD package creation failed: %s' % str(e),
                             command=cipd_create_cmd,
@@ -1030,8 +1013,6 @@ class AvdConfig:
 
     def GetAvdSettings(self, avd_variant_name=None):
         # python generated codes are simplified since Protobuf v3.20.0 and cause
-        # pylint error: https://github.com/protocolbuffers/protobuf/issues/9730
-        # pylint: disable=no-member
         avd_settings = avd_pb2.AvdSettings()
         avd_settings.MergeFrom(self.avd_settings)
 
@@ -1110,7 +1091,8 @@ class AvdConfig:
             #   name1:version1
             #   name2:version2
             installed = [
-                l.strip().split(':', 1) for l in stdout.splitlines()[1:]
+                l.strip().split(':', 1)
+                for l in stdout.splitlines()[1:]  # noqa: E741
             ]
 
             if any([p.package_name, p.version] not in installed for p in pkgs):
@@ -1159,7 +1141,6 @@ class AvdConfig:
                     logging.info('    %s', line)
             except subprocess.CalledProcessError as e:
                 # avd.py is executed with python2.
-                # pylint: disable=W0707
                 raise AvdException(
                     'Failed to uninstall CIPD packages: %s' % str(e),
                     command=ensure_cmd,
@@ -1315,7 +1296,6 @@ class AvdConfig:
                     logging.info('    %s', line)
             except subprocess.CalledProcessError as e:
                 exception_recorder.register(e)
-                # pylint: disable=W0707
                 raise AvdException(
                     'Failed to install CIPD packages: %s' % str(e),
                     command=ensure_cmd,
@@ -1449,7 +1429,7 @@ class _AvdInstance:
         enable_network=False,
         no_mouse_reposition=False,
         # TODO(crbug.com/364943269): Remove after clean all the references.
-        require_fast_start=False,  # pylint: disable=unused-argument
+        require_fast_start=False,
         retries=0,
     ):
         """Starts the emulator running an instance of the given AVD.
@@ -1630,9 +1610,9 @@ class _AvdInstance:
                 )
                 logging.info('Device fully booted, verifying system settings.')
                 _EnsureSystemSettings(self.device)
-
-            if enable_network:
-                _EnableNetwork(self.device)
+                # The network state don't retain in certain API level so set
+                # the network again to avoid any surprise.
+                _SetNetwork(self.device, enable_network)
 
         except base_error.BaseError as e:
             self.UploadCrashreport()
@@ -1785,16 +1765,17 @@ def _EnsureSystemSettings(device):
                 gboard_prefs.SetBoolean('pk_always_show_vk', True)
 
 
-def _EnableNetwork(device):
-    logging.info('Enable the network on the emulator.')
-    # TODO(crbug.com/40282869): Remove airplane_mode once all AVD
-    # are rolled to svc-based version.
+def _SetNetwork(device, enable_network):
+    # Use svc as this also works on the images with build type "user", and
+    # does not require a reboot or broadcast compared to setting the
+    # airplane_mode_on in "settings/global".
+    state = 'enable' if enable_network else 'disable'
+    logging.info('%s the network on the emulator.', state.capitalize())
     device.RunShellCommand(
-        ['settings', 'put', 'global', 'airplane_mode_on', '0'], as_root=True
+        ['svc', 'wifi', state], as_root=True, check_return=True
     )
+    # Certain system image like tablet does not have data service.
+    # So don't check return status here.
     device.RunShellCommand(
-        ['am', 'broadcast', '-a', 'android.intent.action.AIRPLANE_MODE'],
-        as_root=True,
+        ['svc', 'data', state], as_root=True, check_return=False
     )
-    device.RunShellCommand(['svc', 'wifi', 'enable'], as_root=True)
-    device.RunShellCommand(['svc', 'data', 'enable'], as_root=True)

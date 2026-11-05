@@ -12,6 +12,8 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.text.TextUtils;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -281,21 +283,18 @@ public class SettingsIndexData {
                 String key = keys.next();
                 try {
                     Object value = json.get(key);
-                    if (value instanceof Integer) {
-                        bundle.putInt(key, (Integer) value);
-                    } else if (value instanceof Long) {
-                        bundle.putLong(key, (Long) value);
-                    } else if (value instanceof Double) {
-                        bundle.putDouble(key, (Double) value);
-                    } else if (value instanceof Boolean) {
-                        bundle.putBoolean(key, (Boolean) value);
-                    } else if (value instanceof String) {
-                        bundle.putString(key, (String) value);
-                    } else {
-                        // Complex types are not expected in the Bundle object used for extras.
-                        // Report the exception if it actually occurs.
-                        throw new IllegalArgumentException(
-                                "Unsupported complex type in extras: " + key);
+                    switch (value) {
+                        case Integer intVal -> bundle.putInt(key, intVal);
+                        case Long longVal -> bundle.putLong(key, longVal);
+                        case Double doubleVal -> bundle.putDouble(key, doubleVal);
+                        case Boolean boolVal -> bundle.putBoolean(key, boolVal);
+                        case String strVal -> bundle.putString(key, strVal);
+                        default -> {
+                            // Complex types are not expected in the Bundle object used for extras.
+                            // Report the exception if it actually occurs.
+                            throw new IllegalArgumentException(
+                                    "Unsupported complex type in extras: " + key);
+                        }
                     }
                 } catch (JSONException e) {
                     // Skip restoring the element that causes an exception.
@@ -794,13 +793,15 @@ public class SettingsIndexData {
     }
 
     /**
-     * Finalizes the index by resolving the correct header for each entry based on the currently
-     * visible preferences and removes any orphaned entries that no longer have a valid parent path.
+     * Finalizes the index in-place by resolving the correct header for each entry based on the
+     * currently visible preferences and removes any orphaned entries that no longer have a valid
+     * parent path.
      *
      * @param rootFragmentName The class name of the root fragment (e.g., MainSettings).
+     * @return The list of orphaned {@link Entry} objects pruned and removed from the index.
      */
-    public void resolveIndex(String rootFragmentName) {
-        List<String> entriesToRemove = new ArrayList<>();
+    public List<Entry> resolveIndex(String rootFragmentName) {
+        List<Entry> entriesToRemove = new ArrayList<>();
 
         for (Entry entry : mEntries.values()) {
             // Root entries have their own title as the header if they do not inherit one from the
@@ -818,7 +819,7 @@ public class SettingsIndexData {
                     getBreadcrumbEntries(
                             entry.parentFragment, /* arguments= */ null, rootFragmentName);
             if (path == null && !entry.parentFragment.equals(rootFragmentName)) {
-                entriesToRemove.add(entry.id);
+                entriesToRemove.add(entry);
                 continue;
             }
 
@@ -839,14 +840,20 @@ public class SettingsIndexData {
             }
         }
 
-        for (String key : entriesToRemove) {
-            removeEntry(key);
+        for (Entry entry : entriesToRemove) {
+            removeEntry(entry.id);
         }
+
+        return entriesToRemove;
     }
 
-    /** Invokes {@link #resolveIndex} with MainSettings.class.getName(). */
-    public void resolveIndex() {
-        resolveIndex(sMainSettingsClassName);
+    /**
+     * Invokes {@link #resolveIndex} with MainSettings.class.getName().
+     *
+     * @return The list of orphaned {@link Entry} objects pruned and removed from the index.
+     */
+    public List<Entry> resolveIndex() {
+        return resolveIndex(sMainSettingsClassName);
     }
 
     private boolean hasSearchablePathToRoot(String fragmentName, String rootFragmentName) {
@@ -1123,11 +1130,13 @@ public class SettingsIndexData {
         return results;
     }
 
-    Map<String, Entry> getEntriesForTesting() {
+    @VisibleForTesting
+    public Map<String, Entry> getEntriesForTesting() {
         return mEntries;
     }
 
-    Map<String, List<String>> getChildFragmentToParentKeysForTesting() {
+    @VisibleForTesting
+    public Map<String, List<String>> getChildFragmentToParentKeysForTesting() {
         return mChildFragmentToParentKeys;
     }
 }

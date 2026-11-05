@@ -58,6 +58,7 @@ source_set("impl") {
     "//chrome/browser/ui:browser_actions",
     "//chrome/browser/ui:browser_element_identifiers",
     "//chrome/browser/ui:chrome_pages",
+    "//chrome/browser/ui:scoped_tabbed_browser_displayer",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/actions:actions_headers",
     "//chrome/browser/ui/page_action:icon_type",
@@ -65,6 +66,7 @@ source_set("impl") {
     "//chrome/browser/ui/translate:impl",
     "//chrome/browser/ui/views:layout_provider",
     "//chrome/browser/ui/views/controls",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/browser/ui/views/frame:toolbar_button_provider",
     "//components/language_detection/core",
     "//components/prefs",
@@ -74,7 +76,6 @@ source_set("impl") {
     "//services/network/public/cpp",
     "//ui/strings:ui_strings",
   ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("test_support") {
@@ -83,7 +84,6 @@ source_set("test_support") {
   deps = [
     ":translate",
     "//base",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/translate",
     "//chrome/browser/ui/translate:test_support",
@@ -134,8 +134,9 @@ source_set("browser_tests") {
     "//chrome/app:generated_resources",
     "//chrome/browser/translate",
     "//chrome/browser/translate:test_support",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_commands",
     "//chrome/browser/ui:browser_element_identifiers",
+    "//chrome/browser/ui:browser_tabstrip",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/browser/ui/test:test_support",
@@ -149,6 +150,7 @@ source_set("browser_tests") {
     "//components/translate/core/common",
     "//content/public/browser",
     "//content/test:test_support",
+    "//pdf:buildflags",
     "//ui/base",
     "//ui/views:test_support",
   ]
@@ -168,13 +170,15 @@ source_set("interactive_ui_tests") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/translate",
     "//chrome/browser/translate:test_support",
-    "//chrome/browser/ui",
     "//chrome/browser/ui:browser_actions",
+    "//chrome/browser/ui:browser_commands",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/actions:actions_headers",
+    "//chrome/browser/ui/actions:actions_util",
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/interaction",
     "//chrome/browser/ui/views/frame",
+    "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/browser/ui/views/frame:toolbar_button_provider",
     "//chrome/browser/ui/views/page_action",
     "//chrome/browser/ui/views/page_action:page_action_test_support",
@@ -185,6 +189,7 @@ source_set("interactive_ui_tests") {
     "//components/translate/core/common",
     "//content/public/browser",
     "//content/test:test_support",
+    "//pdf:buildflags",
     "//testing/gmock",
     "//ui/accessibility",
     "//ui/base",

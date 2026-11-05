@@ -26,7 +26,6 @@
 #include "device/fido/public/fido_transport_protocol.h"
 #include "device/fido/public/fido_types.h"
 #include "device/fido/public/public_key_credential_descriptor.h"
-#include "url/gurl.h"
 
 namespace device {
 class FidoAuthenticator;
@@ -171,6 +170,14 @@ class CONTENT_EXPORT AuthenticatorRequestClientDelegate
       RequestSource request_source,
       device::FidoRequestType request_type,
       device::AuthenticatorType authenticator_type);
+
+  // Called when the request fails for `reason`, right before
+  // `DoesBlockRequestOnFailure`. `authenticator_type` is the type of the
+  // authenticator whose response caused the failure, or `std::nullopt` if the
+  // failure is not attributable to a specific authenticator (e.g. a timeout).
+  virtual void OnTransactionFailed(
+      std::optional<device::AuthenticatorType> authenticator_type,
+      InterestingFailureReason reason);
 
   // Supplies callbacks that the embedder can invoke to initiate certain
   // actions, namely: cancel the request, report no immediate mechanisms, start

@@ -11,28 +11,32 @@
 #include "base/callback_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/weak_ptr.h"
 #include "base/test/bind.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/views/bubble/webui_bubble_dialog_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
-#include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "chrome/browser/ui/views/toolbar/browser_app_menu_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/interaction/tracked_element_webcontents.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "ui/base/clipboard/clipboard_format_type.h"
+#include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/interaction_sequence.h"
@@ -40,15 +44,17 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/compositor/layer_tree_owner.h"
 #include "ui/display/screen.h"
 #include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/native_ui_types.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/event_monitor.h"
 #include "ui/views/interaction/element_tracker_views.h"
@@ -67,6 +73,45 @@ namespace {
 constexpr char kDocumentWithNamedElement[] = "/select.html";
 constexpr char kDocumentWithTitle[] = "/title3.html";
 constexpr char kDocumentWithTextField[] = "/form_interaction.html";
+
+// Observes when the WebUI toolbar's `WebContents` has produced a copyable
+// compositor frame after its layout has settled.
+class ToolbarCopyableViewStateObserver : public ui::test::StateObserver<bool> {
+ public:
+  explicit ToolbarCopyableViewStateObserver(
+      BrowserElementsViews* browser_elements) {
+    auto* const webui_toolbar =
+        browser_elements->GetViewAs<WebUIToolbarWebView>(
+            kWebUIToolbarElementIdentifier);
+    content::WebContents* const web_contents =
+        webui_toolbar ? webui_toolbar->GetWebViewForTesting()->GetWebContents()
+                      : nullptr;
+    if (!web_contents || !web_contents->GetRenderWidgetHostView()) {
+      ready_ = true;
+      return;
+    }
+    content::NotifyCopyableViewInWebContents(
+        web_contents,
+        base::BindOnce(&ToolbarCopyableViewStateObserver::OnCopyableViewReady,
+                       weak_ptr_factory_.GetWeakPtr()));
+  }
+  ~ToolbarCopyableViewStateObserver() override = default;
+
+  bool GetStateObserverInitialState() const override { return ready_; }
+
+ private:
+  void OnCopyableViewReady() {
+    ready_ = true;
+    OnStateObserverStateChanged(true);
+  }
+
+  bool ready_ = false;
+  base::WeakPtrFactory<ToolbarCopyableViewStateObserver> weak_ptr_factory_{
+      this};
+};
+
+DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(ToolbarCopyableViewStateObserver,
+                                    kToolbarCopyableViewState);
 }  // namespace
 
 class InteractiveBrowserTestUiTest : public InteractiveBrowserTest {
@@ -90,6 +135,49 @@ class InteractiveBrowserTestUiTest : public InteractiveBrowserTest {
   void TearDownOnMainThread() override {
     EXPECT_TRUE(embedded_test_server()->ShutdownAndWaitUntilComplete());
     InteractiveBrowserTest::TearDownOnMainThread();
+  }
+
+  // When `WebUIToolbar` is enabled, the toolbar's responsive layout and
+  // `TrackedElementManager`'s debounced bounds update run asynchronously after
+  // the elements are first registered with `ElementTracker`. In Incognito
+  // windows, `<avatar-button>` also expands asynchronously once its profile
+  // label state arrives, temporarily overlapping `#app-menu` until
+  // `#location-bar` shrinks. Wait until the toolbar layout and its compositor
+  // frame settle before targeting `#app-menu` with screen-coordinate mouse
+  // actions or anchoring bubbles to it.
+  auto WaitForAppMenuButtonLayout(BrowserWindowInterface* target_browser) {
+    return Steps(
+        WaitForElementMatching(
+            kToolbarAppMenuButtonElementId,
+            [target_browser](const ui::TrackedElement* el) {
+              auto* const browser_view =
+                  BrowserView::GetBrowserViewForBrowser(target_browser);
+              const gfx::Rect bounds = el->GetScreenBounds();
+              if (bounds.width() <= 1 || bounds.height() <= 1 ||
+                  bounds.right() < browser_view->GetBoundsInScreen().right() -
+                                       bounds.width()) {
+                return false;
+              }
+              if (target_browser->GetProfile()->IsOffTheRecord()) {
+                auto* const avatar =
+                    ui::ElementTracker::GetElementTracker()
+                        ->GetFirstMatchingElement(kToolbarAvatarButtonElementId,
+                                                  el->context());
+                if (!avatar) {
+                  return false;
+                }
+                const gfx::Rect avatar_bounds = avatar->GetScreenBounds();
+                if (avatar_bounds.width() <= avatar_bounds.height() ||
+                    avatar_bounds.right() > bounds.x()) {
+                  return false;
+                }
+              }
+              return true;
+            }),
+        ObserveState(kToolbarCopyableViewState,
+                     BrowserElementsViews::From(target_browser)),
+        WaitForState(kToolbarCopyableViewState, true),
+        StopObservingState(kToolbarCopyableViewState));
   }
 };
 
@@ -132,7 +220,7 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest,
 
   RunTestSequence(
       // Ensure the mouse isn't over the app menu button.
-      MoveMouseTo(kTabStripElementId),
+      MoveMouseTo(kTabStripElementId), WaitForAppMenuButtonLayout(browser()),
       // Simulate press of the menu button and ensure the button activates and
       // the menu appears.
       PressButton(kToolbarAppMenuButtonElementId),
@@ -161,7 +249,7 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest, TestNameAndDrag) {
       NameViewRelative(
           kBrowserViewElementId, kWebContentsName,
           base::BindOnce([](BrowserView* browser_view) -> views::View* {
-            return browser_view->contents_web_view();
+            return browser_view->GetContentsView();
           })),
       WithView(kWebContentsName,
                base::BindLambdaForTesting([&p1](views::View* view) {
@@ -209,6 +297,7 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest,
   RunTestSequenceInContext(
       context, WaitForShow(kBrowserViewElementId),
       ActivateSurface(kBrowserViewElementId),
+      WaitForAppMenuButtonLayout(incognito),
       MoveMouseTo(kToolbarAppMenuButtonElementId), ClickMouse(),
       SelectMenuItem(AppMenuModel::kDownloadsMenuItem),
       WaitForHide(AppMenuModel::kDownloadsMenuItem),
@@ -229,6 +318,7 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest,
 
   RunTestSequenceInContext(
       context, ActivateSurface(kBrowserViewElementId),
+      WaitForAppMenuButtonLayout(incognito),
       MoveMouseTo(kToolbarAppMenuButtonElementId), ClickMouse(),
       SelectMenuItem(AppMenuModel::kDownloadsMenuItem),
       WaitForHide(AppMenuModel::kDownloadsMenuItem),
@@ -255,10 +345,12 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest, ActivateMultipleSurfaces) {
                               "programmatically raising/activating windows. "
                               "This invalidates the rest of the test."),
       InContext(context, ActivateSurface(kBrowserViewElementId),
+                WaitForAppMenuButtonLayout(incognito),
                 MoveMouseTo(kToolbarAppMenuButtonElementId), ClickMouse(),
                 SelectMenuItem(AppMenuModel::kDownloadsMenuItem),
                 WaitForHide(AppMenuModel::kDownloadsMenuItem)),
       ActivateSurface(kBrowserViewElementId),
+      WaitForAppMenuButtonLayout(browser()),
       MoveMouseTo(kToolbarAppMenuButtonElementId), ClickMouse(),
       WaitForShow(AppMenuModel::kDownloadsMenuItem));
 }
@@ -277,6 +369,7 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest,
                               "This invalidates the rest of the test."),
       ObserveState(views::test::kCurrentWidgetFocus),
       InContext(context, ActivateSurface(kBrowserViewElementId),
+                WaitForAppMenuButtonLayout(incognito),
                 MoveMouseTo(kToolbarAppMenuButtonElementId), ClickMouse(),
                 SelectMenuItem(AppMenuModel::kDownloadsMenuItem),
                 WaitForHide(AppMenuModel::kDownloadsMenuItem)),
@@ -301,6 +394,7 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest,
                               "This invalidates the rest of the test."),
       ObserveState(views::test::kCurrentWidgetFocus),
       InContext(context, ActivateSurface(kBrowserViewElementId),
+                WaitForAppMenuButtonLayout(incognito),
                 MoveMouseTo(kToolbarAppMenuButtonElementId), ClickMouse(),
                 SelectMenuItem(AppMenuModel::kDownloadsMenuItem),
                 WaitForHide(AppMenuModel::kDownloadsMenuItem)),
@@ -349,6 +443,7 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest,
                               "This invalidates the rest of the test."),
       ObserveState(views::test::kCurrentWidgetFocus),
       InContext(context, ActivateSurface(kBrowserViewElementId),
+                WaitForAppMenuButtonLayout(incognito),
                 MoveMouseTo(kToolbarAppMenuButtonElementId), ClickMouse(),
                 SelectMenuItem(AppMenuModel::kDownloadsMenuItem),
                 WaitForHide(AppMenuModel::kDownloadsMenuItem)),
@@ -405,7 +500,7 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest,
         BrowserView* const browser_view =
             BrowserView::GetBrowserViewForBrowser(browser());
         const gfx::Rect web_contents_bounds =
-            browser_view->contents_web_view()->GetBoundsInScreen();
+            browser_view->GetContentsView()->GetBoundsInScreen();
         const gfx::Point point = display::Screen::Get()->GetCursorScreenPoint();
         if (!web_contents_bounds.Contains(point)) {
           LOG(ERROR) << "Expected cursor pos " << point.ToString() << " to in "
@@ -500,19 +595,36 @@ IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest, SendKeyToWebContents) {
 
 IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest, FocusElement) {
   RunTestSequence(
-      FocusElement(kToolbarAppMenuButtonElementId),
-      CheckViewProperty(kToolbarAppMenuButtonElementId, &views::View::HasFocus,
-                        true),
-      FocusElement(kOmniboxElementId),
-      CheckViewProperty(kOmniboxElementId, &views::View::HasFocus, true));
+      FocusElement(kNewTabButtonElementId),
+      CheckViewProperty(kNewTabButtonElementId, &views::View::HasFocus, true),
+      FocusElement(kTabSearchButtonElementId),
+      CheckViewProperty(kTabSearchButtonElementId, &views::View::HasFocus,
+                        true));
 }
 
 IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest, SendKeyPress) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTextfieldId);
+
+  auto delegate = std::make_unique<views::BubbleDialogDelegate>(
+      BrowserView::GetBrowserViewForBrowser(browser())->toolbar(),
+      views::BubbleBorder::TOP_LEFT);
+  auto textfield = std::make_unique<views::Textfield>();
+  textfield->SetProperty(views::kElementIdentifierKey, kTextfieldId);
+  textfield->SetAccessibleName(u"Test Textfield");
+  textfield->SetPreferredSize(gfx::Size(100, 30));
+  delegate->SetContentsView(std::move(textfield));
+
+  auto bubble_widget =
+      views::BubbleDialogDelegate::CreateBubble(delegate.get());
+  bubble_widget->Show();
+
   RunTestSequence(
-      FocusElement(kOmniboxElementId),
-      SendKeyPress(kOmniboxElementId, ui::VKEY_A),
-      SendKeyPress(kOmniboxElementId, ui::VKEY_B, ui::EF_SHIFT_DOWN),
-      CheckViewProperty(kOmniboxElementId, &OmniboxViewViews::GetText, u"aB"));
+      WaitForShow(kTextfieldId), FocusElement(kTextfieldId),
+      SendKeyPress(kTextfieldId, ui::VKEY_A),
+      SendKeyPress(kTextfieldId, ui::VKEY_B, ui::EF_SHIFT_DOWN),
+      CheckViewProperty(kTextfieldId, &views::Textfield::GetText, u"aB"));
+
+  bubble_widget->CloseNow();
 }
 
 IN_PROC_BROWSER_TEST_F(InteractiveBrowserTestUiTest,
@@ -693,8 +805,8 @@ class HoverDetectionBubbleView : public views::FlexLayoutView,
   METADATA_HEADER(HoverDetectionBubbleView, views::FlexLayoutView)
 
  public:
-  explicit HoverDetectionBubbleView(views::View* anchor_view)
-      : BubbleDialogDelegate(anchor_view, views::BubbleBorder::TOP_RIGHT) {
+  explicit HoverDetectionBubbleView(views::BubbleAnchor anchor)
+      : BubbleDialogDelegate(anchor, views::BubbleBorder::TOP_RIGHT) {
     SetOwnedByWidget(OwnedByWidgetPassKey());
 
     auto* view = AddChildView(std::make_unique<HoverDetectionView>());
@@ -743,10 +855,12 @@ class InteractiveBrowserTestHoverUiTest : public InteractiveBrowserTestUiTest {
             gfx::Vector2d(10, 10)));
 
     // Create and show the bubble.
-    auto* const anchor_view = BrowserElementsViews::From(browser())->GetView(
+    RunTestSequence(WaitForAppMenuButtonLayout(browser()));
+    auto* const anchor = BrowserElements::From(browser())->GetElement(
         kToolbarAppMenuButtonElementId);
-    CHECK(anchor_view);
-    auto bubble_view = std::make_unique<HoverDetectionBubbleView>(anchor_view);
+    ASSERT_TRUE(anchor);
+    auto bubble_view =
+        std::make_unique<HoverDetectionBubbleView>(views::BubbleAnchor(anchor));
     bubble_view_ = bubble_view.get();
     bubble_widget_ = views::BubbleDialogDelegate::CreateBubble(
         std::move(bubble_view).release());
@@ -839,6 +953,18 @@ class DraggableView : public views::View {
 
   bool CanDrop(const OSExchangeData& data) override { return true; }
 
+  views::View::DropCallback GetDropCallback(
+      const ui::DropTargetEvent& event) override {
+    return base::BindOnce(
+        [](DraggableView* view, const ui::DropTargetEvent& /*event*/,
+           ui::mojom::DragOperation& output_drag_op,
+           std::unique_ptr<ui::LayerTreeOwner> /*drag_image_layer_owner*/) {
+          view->dropped_ = true;
+          output_drag_op = ui::mojom::DragOperation::kMove;
+        },
+        base::Unretained(this));
+  }
+
   bool GetDropFormats(
       int* formats,
       std::set<ui::ClipboardFormatType>* format_types) override {
@@ -847,9 +973,11 @@ class DraggableView : public views::View {
   }
 
   gfx::Point last_drag_position() const { return last_drag_position_; }
+  bool dropped() const { return dropped_; }
 
  private:
   gfx::Point last_drag_position_;
+  bool dropped_ = false;
 };
 
 BEGIN_METADATA(DraggableView)
@@ -864,8 +992,9 @@ class DragInteractiveUiTest : public InteractiveBrowserTest {
     views::Widget::InitParams params(
         views::Widget::InitParams::CLIENT_OWNS_WIDGET,
         views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
-    params.bounds = gfx::Rect(0, 0, 1000, 1000);
+    params.bounds = gfx::Rect(0, 0, 800, 800);
     params.context = browser()->GetWindow()->GetNativeWindow();
+    params.activatable = views::Widget::InitParams::Activatable::kYes;
     test_widget_ = std::make_unique<views::Widget>();
     test_widget_->Init(std::move(params));
     draggable_view_ =
@@ -895,15 +1024,12 @@ class DragInteractiveUiTest : public InteractiveBrowserTest {
 
 // A simple test that verifies widget dragging works by moving a view around.
 // The bounds of the view are expected to change as the mouse moves.
-// TODO(crbug.com/40249472): Dragging views does not work on all platforms.
-#if BUILDFLAG(IS_LINUX)
-#define MAYBE_DragView DragView
-#else
-#define MAYBE_DragView DISABLED_DragView
-#endif
-IN_PROC_BROWSER_TEST_F(DragInteractiveUiTest, MAYBE_DragView) {
-  RunTestSequence(
-      InAnyContext(MoveMouseTo(kDraggableViewId)), Log("Start drag"),
+IN_PROC_BROWSER_TEST_F(DragInteractiveUiTest, DragView) {
+  ui::ElementContext widget_context =
+      views::ElementTrackerViews::GetContextForWidget(test_widget_.get());
+  RunTestSequenceInContext(
+      widget_context, WaitForShow(kDraggableViewId),
+      MoveMouseTo(kDraggableViewId), Log("Start drag"),
       DragMouseTo(gfx::Point(50, 50), false),
       // The initial drag movement isn't checked because some platforms consume
       // the initial input event, preventing the view from getting the "drag
@@ -913,5 +1039,6 @@ IN_PROC_BROWSER_TEST_F(DragInteractiveUiTest, MAYBE_DragView) {
       CheckLastDragPosition({100, 100}), Log("Continue drag to (400, 400)"),
       MoveMouseTo(gfx::Point(400, 400)), CheckLastDragPosition({400, 400}),
       Log("Continue drag to (200, 200)"), MoveMouseTo(gfx::Point(200, 200)),
-      CheckLastDragPosition({200, 200}), Log("End drag"), ReleaseMouse());
+      CheckLastDragPosition({200, 200}), Log("End drag"), ReleaseMouse(),
+      CheckResult([this]() { return draggable_view_->dropped(); }, true));
 }

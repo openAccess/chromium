@@ -31,8 +31,7 @@
               },
               "legacy_gclient_config": {
                 "apply_configs": [
-                  "android",
-                  "enable_wpr_tests"
+                  "android"
                 ],
                 "config": "chromium"
               }
@@ -51,8 +50,7 @@
     }
   },
   "$build/flakiness": {
-    "check_for_flakiness": true,
-    "check_for_flakiness_with_resultdb": true
+    "check_for_flakiness": true
   },
   "$build/siso": {
     "configs": [

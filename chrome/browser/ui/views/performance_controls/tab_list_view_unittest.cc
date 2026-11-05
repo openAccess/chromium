@@ -12,6 +12,7 @@
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/performance_controls/tab_list_row_view.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_profile.h"
@@ -65,8 +66,7 @@ class TabListViewUnitTest : public ChromeViewsTestBase {
     tab_model->GetTabFeatures()->SetTabUIHelperForTesting(
         std::make_unique<TabUIHelper>(*tab_model));
 
-    // Insert at the beginning to match BrowserWithTestWindowTest::AddTab
-    // behavior where newly added tabs are placed at index 0.
+    // Insert at the beginning so that newly added tabs are placed at index 0.
     tab_models_.insert(tab_models_.begin(), std::move(tab_model));
   }
 

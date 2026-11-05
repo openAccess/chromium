@@ -32,15 +32,12 @@ static_library("settings") {
     "supervised_user_cros_settings_provider.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     "//ash/constants",
     "//ash/public/cpp",
     "//base",
     "//chrome/browser:flags",
     "//chrome/browser/ash/tpm",
-    "//chrome/browser/profiles:profile",
     "//chrome/browser/site_isolation",
     "//chrome/common:constants",
     "//chromeos/ash/components/cryptohome",
@@ -55,6 +52,7 @@ static_library("settings") {
     "//components/policy/core/common:common_constants",
     "//components/policy/proto",
     "//components/prefs",
+    "//components/session_manager/core",
     "//components/user_manager",
     "//components/webui/flags",
     "//content/public/browser",
@@ -94,7 +92,6 @@ static_library("test_support") {
     "//chrome/browser/ash/policy/core:test_support",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/net:test_support",
-    "//chrome/browser/profiles:profile",
     "//chrome/test/base:testing_browser_process",
     "//chrome/test/base:testing_profile",
     "//chromeos/ash/components/browser_context_helper",
@@ -144,6 +141,7 @@ source_set("unit_tests") {
     "//chrome/browser/profiles:profile",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/install_attributes",
     "//chromeos/ash/components/install_attributes:test_support",

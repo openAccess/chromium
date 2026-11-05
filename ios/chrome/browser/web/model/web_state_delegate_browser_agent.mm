@@ -4,18 +4,28 @@
 
 #import "ios/chrome/browser/web/model/web_state_delegate_browser_agent.h"
 
+#import <optional>
+
+#import "base/functional/callback_helpers.h"
 #import "base/notimplemented.h"
+#import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/task/sequenced_task_runner.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
 #import "components/content_settings/core/common/content_settings.h"
 #import "components/enterprise/client_certificates/ios/certificate_provisioning_service_ios.h"
 #import "components/enterprise/client_certificates/ios/client_identity_ios.h"
+#import "components/prefs/pref_service.h"
+#import "ios/chrome/browser/app_launcher/model/app_launcher_tab_helper.h"
 #import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
 #import "ios/chrome/browser/context_menu/ui_bundled/context_menu_configuration_provider.h"
 #import "ios/chrome/browser/dialogs/ui_bundled/nsurl_protection_space_util.h"
 #import "ios/chrome/browser/enterprise/client_certificates/client_certificates_service_ios.h"
 #import "ios/chrome/browser/enterprise/client_certificates/client_certificates_service_ios_factory.h"
 #import "ios/chrome/browser/enterprise/data_controls/model/data_controls_tab_helper.h"
+#import "ios/chrome/browser/enterprise/proxy/model/proxy_service_controller.h"
+#import "ios/chrome/browser/enterprise/proxy/model/proxy_service_controller_factory.h"
+#import "ios/chrome/browser/geolocation/model/geolocation_manager.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_callback_manager.h"
@@ -25,10 +35,15 @@
 #import "ios/chrome/browser/overlays/model/public/overlay_response.h"
 #import "ios/chrome/browser/overlays/model/public/web_content_area/http_auth_overlay.h"
 #import "ios/chrome/browser/overlays/model/public/web_content_area/insecure_form_overlay.h"
+#import "ios/chrome/browser/permissions/model/geolocation_system_permission_infobar_delegate.h"
+#import "ios/chrome/browser/permissions/model/permissions_metrics.h"
 #import "ios/chrome/browser/permissions/model/permissions_tab_helper.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
+#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
 #import "ios/chrome/browser/supervised_user/model/supervised_user_capabilities.h"
 #import "ios/chrome/browser/tab_insertion/model/tab_insertion_browser_agent.h"
@@ -42,6 +57,7 @@
 #import "ios/web/public/permissions/permissions.h"
 #import "ios/web/public/ui/context_menu_params.h"
 #import "ios/web/public/ui/crw_web_view_proxy.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace {
 // Callback for HTTP authentication dialogs. This callback is a standalone
@@ -85,6 +101,18 @@ void OnInsecureFormWarningResponse(base::OnceCallback<void(bool)> callback,
   std::move(callback).Run(false);
 }
 
+// Returns whether window open or close requests should be dropped because a
+// system-prompted call launch (e.g. facetime:, tel:) is pending in
+// `active_web_state`.
+bool ShouldDropWindowRequests(web::WebState* active_web_state) {
+  if (!active_web_state) {
+    return false;
+  }
+  AppLauncherTabHelper* helper =
+      AppLauncherTabHelper::FromWebState(active_web_state);
+  return helper && helper->IsCallPromptLaunchPending();
+}
+
 // Returns true if a supervised user attempts to access the microphone or camera
 // content setting when a parent has explicitly set site settings controls to
 // block permissions.
@@ -95,7 +123,7 @@ bool IsMicOrCameraAccessSubjectToParentalControls(
     return false;
   }
 
-  HostContentSettingsMap* host_content_settings_map =
+  scoped_refptr<HostContentSettingsMap> host_content_settings_map =
       ios::HostContentSettingsMapFactory::GetForProfile(profile);
   CHECK(host_content_settings_map);
 
@@ -111,6 +139,57 @@ bool IsMicOrCameraAccessSubjectToParentalControls(
          ([permissions containsObject:@(web::PermissionCamera)] &&
           default_camera_setting == ContentSetting::CONTENT_SETTING_BLOCK);
 }
+
+// Helper to determine the permission decision based on domain settings.
+// Returns std::nullopt if the decision should fall back to user prompt.
+std::optional<web::PermissionDecision> DetermineDomainLevelDecision(
+    HostContentSettingsMap* settings_map,
+    const GURL& url,
+    NSArray<NSNumber*>* permissions) {
+  if (!settings_map || !url.is_valid()) {
+    return std::nullopt;
+  }
+
+  bool has_explicit_allow = false;
+  bool has_unconfigured = false;
+
+  for (NSNumber* permission_number in permissions) {
+    web::Permission permission =
+        static_cast<web::Permission>(permission_number.unsignedIntegerValue);
+    ContentSettingsType type = ContentSettingsTypeForPermission(permission);
+    ContentSetting setting = settings_map->GetContentSetting(url, url, type);
+    switch (setting) {
+      case CONTENT_SETTING_BLOCK:
+        // Any explicit block denies immediately.
+        return web::PermissionDecisionDeny;
+      case CONTENT_SETTING_ALLOW:
+        has_explicit_allow = true;
+        break;
+      case CONTENT_SETTING_ASK:
+      case CONTENT_SETTING_DEFAULT:
+        has_unconfigured = true;
+        break;
+      case CONTENT_SETTING_SESSION_ONLY:
+      case CONTENT_SETTING_NUM_SETTINGS:
+        NOTREACHED();
+    }
+  }
+
+  if (has_explicit_allow && !has_unconfigured) {
+    return web::PermissionDecisionGrant;
+  }
+
+  return std::nullopt;
+}
+
+// Asynchronously invokes the permission decision handler to prevent
+// re-entrancy issues with WebKit.
+void PostPermissionDecision(web::WebStatePermissionDecisionHandler handler,
+                            web::PermissionDecision decision) {
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(handler, decision));
+}
+
 
 }  // namespace
 
@@ -197,6 +276,10 @@ web::WebState* WebStateDelegateBrowserAgent::CreateNewWebState(
     return nullptr;
   }
 
+  if (ShouldDropWindowRequests(web_state_list_->GetActiveWebState())) {
+    return nullptr;
+  }
+
   // Check if requested web state is a popup and block it if necessary.
   if (!initiated_by_user) {
     auto* helper = BlockedPopupTabHelper::FromWebState(source);
@@ -222,7 +305,8 @@ web::WebState* WebStateDelegateBrowserAgent::CreateNewWebState(
 
 void WebStateDelegateBrowserAgent::CloseWebState(web::WebState* source) {
   int index = web_state_list_->GetIndexOfWebState(source);
-  if (index != WebStateList::kInvalidIndex) {
+  if (index != WebStateList::kInvalidIndex &&
+      !ShouldDropWindowRequests(web_state_list_->GetActiveWebState())) {
     web_state_list_->CloseWebStateAt(index,
                                      WebStateList::ClosingReason::kUserAction);
   }
@@ -243,26 +327,46 @@ web::WebState* WebStateDelegateBrowserAgent::OpenURLFromWebState(
   insertion_params.parent = source;
 
   switch (params.disposition) {
-    case WindowOpenDisposition::NEW_FOREGROUND_TAB:
-    case WindowOpenDisposition::NEW_BACKGROUND_TAB: {
-      insertion_params.in_background =
-          params.disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB;
+    case ui::mojom::WindowOpenDisposition::kNewForegroundTab:
+    case ui::mojom::WindowOpenDisposition::kNewBackgroundTab:
+    case ui::mojom::WindowOpenDisposition::kNewPopup: {
+      // Under some circumstances, this callback may be triggered from WebKit
+      // synchronously as part of handling some other WebStateList mutation
+      // (typically deleting a WebState and then activating another as a side
+      // effect). See crbug.com/988504 for details. In this case, the request to
+      // create a new WebState is silently dropped.
+      if (web_state_list_->IsMutating()) {
+        return nullptr;
+      }
+
+      // Under certain circumstances, it is possible for this callback to be
+      // called while the WebState has been removed from the WebStateList but
+      // before the delegate could be updated. See crbug.com/520318841 for
+      // details. In that case, the request to create a new WebState is
+      // silently dropped.
+      int index = web_state_list_->GetIndexOfWebState(source);
+      if (index == WebStateList::kInvalidIndex) {
+        return nullptr;
+      }
+
+      if (params.disposition == ui::mojom::WindowOpenDisposition::kNewPopup) {
+        insertion_params.opened_by_dom = true;
+      } else {
+        insertion_params.in_background =
+            params.disposition ==
+            ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
+      }
       return tab_insertion_agent()->InsertWebState(load_params,
                                                    insertion_params);
     }
-    case WindowOpenDisposition::CURRENT_TAB: {
+    case ui::mojom::WindowOpenDisposition::kCurrentTab: {
       source->GetNavigationManager()->LoadURLWithParams(load_params);
       return source;
-    }
-    case WindowOpenDisposition::NEW_POPUP: {
-      insertion_params.opened_by_dom = true;
-      return tab_insertion_agent()->InsertWebState(load_params,
-                                                   insertion_params);
     }
     default:
       NOTIMPLEMENTED();
       return nullptr;
-  };
+  }
 }
 
 void WebStateDelegateBrowserAgent::ShowRepostFormWarningDialog(
@@ -314,13 +418,105 @@ void WebStateDelegateBrowserAgent::HandlePermissionsDecisionRequest(
   // For supervised users, sites can be denied permission to access camera or
   // mic by default. In this case, we do not show the dialog.
   if (IsMicOrCameraAccessSubjectToParentalControls(profile, permissions)) {
+    RecordPermissionRequestResolution(
+        permissions, IOSPermissionRequestResolution::kBlockedBySupervisedUser);
     handler(web::PermissionDecisionDeny);
     return;
   }
 
-  PermissionsTabHelper::FromWebState(source)
-      ->PresentPermissionsDecisionDialogWithCompletionHandler(permissions,
-                                                              handler);
+  if (IsDomainLevelSitePermissionsEnabled()) {
+    if (!source->IsVisible()) {
+      RecordPermissionRequestResolution(
+          permissions, IOSPermissionRequestResolution::kDeniedInBackground);
+      PostPermissionDecision(handler, web::PermissionDecisionDeny);
+      return;
+    }
+
+    scoped_refptr<HostContentSettingsMap> settings_map =
+        ios::HostContentSettingsMapFactory::GetForProfile(profile);
+    GURL url = source->GetLastCommittedURL();
+
+    std::optional<web::PermissionDecision> decision =
+        DetermineDomainLevelDecision(settings_map.get(), url, permissions);
+    if (decision) {
+      RecordPermissionRequestResolution(
+          permissions,
+          *decision == web::PermissionDecisionGrant
+              ? IOSPermissionRequestResolution::kAllowedBySavedSetting
+              : IOSPermissionRequestResolution::kDeniedBySavedSetting);
+      PostPermissionDecision(handler, *decision);
+      return;
+    }
+  }
+
+  PermissionsTabHelper* permissions_tab_helper =
+      PermissionsTabHelper::FromWebState(source);
+  if (permissions_tab_helper) {
+    RecordPermissionRequestResolution(
+        permissions, IOSPermissionRequestResolution::kPromptShown);
+    permissions_tab_helper
+        ->PresentPermissionsDecisionDialogWithCompletionHandler(permissions,
+                                                                handler);
+    return;
+  }
+
+  handler(web::PermissionDecisionDeny);
+}
+
+void WebStateDelegateBrowserAgent::RequestGeolocationPermission(
+    web::WebState* source,
+    const GURL& origin,
+    web::WebStatePermissionDecisionHandler handler) {
+  CLAuthorizationStatus status =
+      [GeolocationManager sharedInstance].authorizationStatus;
+
+  if (status == kCLAuthorizationStatusRestricted) {
+    handler(web::PermissionDecisionDeny);
+    return;
+  }
+
+  if (status != kCLAuthorizationStatusDenied) {
+    handler(web::PermissionDecisionShowDefaultPrompt);
+    return;
+  }
+  PrefService* local_state = GetApplicationContext()->GetLocalState();
+  const base::Time shown =
+      local_state->GetTime(prefs::kIosGeolocationSystemPromptLastShownTime);
+
+  if (!shown.is_null()) {
+    handler(web::PermissionDecisionDeny);
+    return;
+  }
+  local_state->SetTime(prefs::kIosGeolocationSystemPromptLastShownTime,
+                       base::Time::Now());
+
+  GeolocationSystemPermissionInfoBarDelegate::Create(source, handler);
+}
+
+void WebStateDelegateBrowserAgent::OnProxyAuthChallenge(
+    web::WebState* source,
+    NSURLProtectionSpace* protection_space,
+    NSURLCredential* proposed_credential,
+    NSURLResponse* failure_response,
+    web::WebStateDelegate::ProxyAuthCallback callback) {
+  auto [proxy_callback, fallback_callback] =
+      base::SplitOnceCallback(std::move(callback));
+  ProfileIOS* profile = ProfileIOS::FromBrowserState(source->GetBrowserState());
+  ProxyServiceController* proxy_service_controller =
+      ProxyServiceControllerFactory::GetForProfile(profile);
+  if (proxy_service_controller &&
+      proxy_service_controller->MaybeHandleProxyAuthChallenge(
+          source, protection_space, proposed_credential, failure_response,
+          std::move(proxy_callback))) {
+    return;
+  }
+  // If enterprise proxy logic does not handle the challenge (e.g., for
+  // non-managed profiles or non-enterprise proxies), delegate to the base
+  // `WebStateDelegate::OnProxyAuthChallenge` implementation, which handles
+  // forwarding the challenge to `OnAuthRequired`.
+  web::WebStateDelegate::OnProxyAuthChallenge(
+      source, protection_space, proposed_credential, failure_response,
+      std::move(fallback_callback));
 }
 
 void WebStateDelegateBrowserAgent::OnAuthRequired(

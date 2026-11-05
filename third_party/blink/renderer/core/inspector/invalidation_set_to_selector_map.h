@@ -55,6 +55,7 @@ class CORE_EXPORT InvalidationSetToSelectorMap final
     kCustomPseudoName,
     kAttribute,
     kPart,
+    kFocused,
     kWholeSubtree
   };
 
@@ -192,7 +193,7 @@ template <>
 struct HashTraits<Member<InvalidationSetToSelectorMap::IndexedSelector>>
     : MemberHashTraits<InvalidationSetToSelectorMap::IndexedSelector> {
   using IndexedSelector = InvalidationSetToSelectorMap::IndexedSelector;
-  static unsigned GetHash(const Member<IndexedSelector>& key) {
+  static uint32_t GetHash(const Member<IndexedSelector>& key) {
     return blink::GetHash(*key);
   }
   static bool Equal(const Member<IndexedSelector>& a,

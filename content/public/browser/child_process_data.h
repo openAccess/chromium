@@ -8,7 +8,6 @@
 #include <optional>
 #include <string>
 
-#include "base/process/process.h"
 #include "content/common/content_export.h"
 #include "content/public/common/child_process_id.h"
 #include "sandbox/policy/mojom/sandbox.mojom.h"
@@ -28,32 +27,26 @@ struct CONTENT_EXPORT ChildProcessData {
   // The non-localized name of the process used for metrics reporting.
   std::string metrics_name;
 
-  // TODO(crbug.com/379869738): Deprecated, please use GetChildProcessId().
-  int id = 0;
-
   // The Sandbox that this process was launched at. May be invalid prior to
   // process launch.
   std::optional<sandbox::mojom::Sandbox> sandbox_type;
 
   const ChildProcessId& GetChildProcessId() const;
 
-  const base::Process& GetProcess() const { return process_; }
-  // Since base::Process is non-copyable, the caller has to provide a rvalue.
-  void SetProcess(base::Process process) { process_ = std::move(process); }
-
   ChildProcessData(int process_type, ChildProcessId id);
   ~ChildProcessData();
 
-  ChildProcessData(ChildProcessData&& rhs);
+  ChildProcessData(const ChildProcessData&);
+  ChildProcessData& operator=(const ChildProcessData&);
+
+  ChildProcessData(ChildProcessData&&);
+  ChildProcessData& operator=(ChildProcessData&&);
 
  private:
   // The unique identifier for this child process. This identifier is NOT a
   // process ID, and will be unique for all types of child process for
   // one run of the browser.
   ChildProcessId child_process_id_;
-
-  // May be invalid if the process isn't started or is the current process.
-  base::Process process_;
 };
 
 }  // namespace content

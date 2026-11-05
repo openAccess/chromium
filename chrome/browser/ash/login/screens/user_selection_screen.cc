@@ -17,7 +17,6 @@
 #include "ash/public/cpp/login/login_utils.h"
 #include "ash/public/cpp/login_screen.h"
 #include "ash/public/cpp/login_screen_model.h"
-#include "ash/public/cpp/token_handle_store.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
@@ -38,18 +37,18 @@
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_storage.h"
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_utils.h"
 #include "chrome/browser/ash/login/reauth_stats.h"
+#include "chrome/browser/ash/login/signin/token_handle_store.h"
 #include "chrome/browser/ash/login/signin/token_handle_store_factory.h"
 #include "chrome/browser/ash/login/smart_lock/smart_lock_service.h"
 #include "chrome/browser/ash/login/users/default_user_image/default_user_images.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/system/system_clock.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_screen_client_impl.h"
 #include "chrome/browser/ui/webui/ash/login/l10n_util.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
+#include "chromeos/ash/components/dbus/cryptohome/UserDataAuth.pb.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
@@ -75,6 +74,8 @@
 #include "services/device/public/mojom/wake_lock.mojom.h"
 #include "services/device/public/mojom/wake_lock_provider.mojom.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "ui/base/ime/ash/component_extension_ime_manager.h"
+#include "ui/base/ime/ash/input_method_manager.h"
 #include "ui/base/l10n/l10n_util.h"
 
 // Enable VLOG level 1.
@@ -123,9 +124,12 @@ base::ListValue GetPublicSessionLocales(
 
   // Construct the list of available locales. This list consists of the
   // recommended locales, followed by all others.
-  auto available_locales =
-      GetUILanguageList(application_locale, &recommended_locales, std::string(),
-                        input_method::InputMethodManager::Get());
+  input_method::InputMethodManager& input_method_manager =
+      CHECK_DEREF(input_method::InputMethodManager::Get());
+  auto available_locales = GetUILanguageList(
+      application_locale, &recommended_locales, std::string(),
+      CHECK_DEREF(input_method_manager.GetComponentExtensionIMEManager())
+          .GetXkbIMEAsInputMethodDescriptor());
 
   // Select the the first recommended locale that is actually available or the
   // current UI locale if none of them are available.
@@ -190,14 +194,13 @@ bool CanRemoveUser(PrefService& local_state, const user_manager::User* user) {
 // Returns a pair of 1) whether it is allowed to be part of the current
 // multi user sign-in session, and 2) that policy for the user.
 std::tuple<bool, user_manager::MultiUserSignInPolicy> GetMultiUserSignInPolicy(
+    const user_manager::MultiUserSignInPolicyController& controller,
     const user_manager::User* user) {
+  CHECK(user);
   const std::string& user_id = user->GetAccountId().GetUserEmail();
-  user_manager::MultiUserSignInPolicyController* controller =
-      g_browser_process->platform_part()
-          ->multi_user_sign_in_policy_controller();
   return {
-      controller->IsUserAllowedInSession(user_id),
-      controller->GetCachedValue(user_id),
+      controller.IsUserAllowedInSession(user_id),
+      controller.GetCachedValue(user_id),
   };
 }
 
@@ -487,11 +490,17 @@ UserSelectionScreen::UserSelectionScreen(
     const ApplicationLocaleStorage* application_locale_storage,
     scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     const policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    const user_manager::MultiUserSignInPolicyController*
+        multi_user_sign_in_policy_controller,
+    system::SystemClock* system_clock,
     DisplayedScreen display_type)
     : local_state_(CHECK_DEREF(local_state)),
       application_locale_storage_(CHECK_DEREF(application_locale_storage)),
       shared_url_loader_factory_(std::move(shared_url_loader_factory)),
       browser_policy_connector_ash_(CHECK_DEREF(browser_policy_connector_ash)),
+      multi_user_sign_in_policy_controller_(
+          CHECK_DEREF(multi_user_sign_in_policy_controller)),
+      system_clock_(CHECK_DEREF(system_clock)),
       display_type_(display_type) {
   CHECK(shared_url_loader_factory_);
 
@@ -626,7 +635,7 @@ void UserSelectionScreen::CheckUserStatus(const AccountId& account_id) {
 }
 
 void UserSelectionScreen::HandleFocusPod(const AccountId& account_id) {
-  DCHECK(!pending_focused_account_id_.has_value());
+  CHECK(!pending_focused_account_id_.has_value(), base::NotFatalUntil::M161);
   const session_manager::SessionState session_state =
       session_manager::SessionManager::Get()->session_state();
   if (session_state == session_manager::SessionState::ACTIVE) {
@@ -656,9 +665,8 @@ void UserSelectionScreen::HandleFocusPod(const AccountId& account_id) {
     if (focused_user_clock_type_.has_value()) {
       focused_user_clock_type_->UpdateClockType(clock_type);
     } else {
-      focused_user_clock_type_ = g_browser_process->platform_part()
-                                     ->GetSystemClock()
-                                     ->CreateScopedHourClockType(clock_type);
+      focused_user_clock_type_ =
+          system_clock_->CreateScopedHourClockType(clock_type);
     }
   }
 
@@ -674,7 +682,8 @@ void UserSelectionScreen::HandleNoPodFocused() {
 }
 
 void UserSelectionScreen::OnAllowedInputMethodsChanged() {
-  DCHECK_EQ(display_type_, DisplayedScreen::SIGN_IN_SCREEN);
+  CHECK_EQ(display_type_, DisplayedScreen::SIGN_IN_SCREEN,
+           base::NotFatalUntil::M161);
   if (focused_pod_account_id_.is_valid()) {
     std::string user_input_method_id =
         lock_screen_utils::GetUserLastInputMethodId(local_state_.get(),
@@ -710,9 +719,11 @@ void UserSelectionScreen::SetAuthType(const AccountId& account_id,
     return;
   }
 
-  DCHECK(GetAuthType(account_id) !=
-             proximity_auth::mojom::AuthType::FORCE_OFFLINE_PASSWORD ||
-         auth_type == proximity_auth::mojom::AuthType::FORCE_OFFLINE_PASSWORD);
+  CHECK(
+      GetAuthType(account_id) !=
+              proximity_auth::mojom::AuthType::FORCE_OFFLINE_PASSWORD ||
+          auth_type == proximity_auth::mojom::AuthType::FORCE_OFFLINE_PASSWORD,
+      base::NotFatalUntil::M161);
   user_auth_type_map_[account_id] = auth_type;
 
   LoginScreen::Get()->GetModel()->SetTapToUnlockEnabledForUser(
@@ -766,7 +777,7 @@ void UserSelectionScreen::EnableInput() {
 }
 
 void UserSelectionScreen::Unlock(const AccountId& account_id) {
-  DCHECK_EQ(GetScreenType(), LOCK_SCREEN);
+  CHECK_EQ(GetScreenType(), LOCK_SCREEN, base::NotFatalUntil::M161);
 
   // TODO(crbug.com/539761804): Avoid circular dependency.
   ScreenLockerController::Get().HideLockScreen();
@@ -777,7 +788,8 @@ void UserSelectionScreen::OnSessionStateChanged() {
   if (!pending_focused_account_id_.has_value()) {
     return;
   }
-  DCHECK(session_manager::SessionManager::Get()->IsUserSessionBlocked());
+  CHECK(session_manager::SessionManager::Get()->IsUserSessionBlocked(),
+        base::NotFatalUntil::M161);
 
   AccountId focused_pod(pending_focused_account_id_.value());
   pending_focused_account_id_.reset();
@@ -879,7 +891,8 @@ UserSelectionScreen::UpdateAndReturnUserListForAsh() {
     } else {
       std::tie(user_info.is_multi_user_sign_in_allowed,
                user_info.multi_user_sign_in_policy) =
-          ash::GetMultiUserSignInPolicy(user);
+          ash::GetMultiUserSignInPolicy(
+              multi_user_sign_in_policy_controller_.get(), user);
     }
 
     // Fill public session data.
@@ -899,10 +912,10 @@ UserSelectionScreen::UpdateAndReturnUserListForAsh() {
               : &public_session_recommended_locales_[account_id];
       std::string selected_locale;
       bool has_multiple_locales;
-      auto available_locales =
-          GetPublicSessionLocales(application_locale_storage_->Get(),
-                                  public_session_recommended_locales,
-                                  &selected_locale, &has_multiple_locales);
+      auto available_locales = GetPublicSessionLocales(
+          std::string(application_locale_storage_->GetTag().tag_string()),
+          public_session_recommended_locales, &selected_locale,
+          &has_multiple_locales);
       user_info.public_account_info->available_locales =
           lock_screen_utils::FromListValueToLocaleItem(
               std::move(available_locales));
@@ -956,7 +969,7 @@ SmartLockService* UserSelectionScreen::GetSmartLockServiceForUser(
   // some valid scenarios where |profile| exists but the active screen is not
   // the lock screen.
   if (GetScreenType() == LOCK_SCREEN) {
-    DCHECK(profile);
+    CHECK(profile, base::NotFatalUntil::M161);
   }
 
   if (!profile) {

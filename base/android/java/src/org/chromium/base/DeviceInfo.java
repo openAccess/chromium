@@ -11,6 +11,8 @@ import android.content.pm.FeatureInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.hardware.Sensor;
+import android.hardware.SensorManager;
 import android.os.Build;
 import android.os.Build.VERSION_CODES;
 import android.os.Process;
@@ -36,8 +38,9 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /**
- * Caches device info during app start-up. For values that might change during the lifetime of the
- * app, refer to @see org.chromium.ui.base.DeviceFormFactor.java
+ * Caches device info for the lifetime of the process. Most fields are initialized during app
+ * start-up, while GMS info is initialized on first use. For values that might change during the
+ * lifetime of the app, refer to @see org.chromium.ui.base.DeviceFormFactor.java
  */
 @JNINamespace("base::android::device_info")
 @NullMarked
@@ -47,7 +50,9 @@ public final class DeviceInfo {
     @VisibleForTesting
     static final String XR_OPENXR_FEATURE_NAME = "android.software.xr.api.openxr";
 
+    @GuardedBy("GMS_INFO_LOCK")
     private static @Nullable String sGmsVersionCodeForTesting;
+
     private static @Nullable Boolean sIsAutomotiveForTesting;
     private static @Nullable Boolean sIsTVForTesting;
     private static boolean sInitialized;
@@ -55,9 +60,13 @@ public final class DeviceInfo {
     private static @Nullable Boolean sIsRetailDemoModeForTesting;
     private static @Nullable Boolean sIsDesktopForTesting;
     private static @Nullable Boolean sIsFoldableForTesting;
+    // Test override for Settings.Global.DEVICE_NAME used by native and Robolectric unit tests.
+    private static @Nullable String sDeviceNameForTesting;
     private final IDeviceInfo mIDeviceInfo;
+    // Test builds only: value of --force-desktop-android when this instance was created, used
+    // to detect switches added after creation (see getInstance()). Always false otherwise.
+    private final boolean mForceDesktopSwitchForTesting;
     private @Nullable Boolean mIsRetailDemoMode;
-    private @Nullable ApplicationInfo mGmsAppInfo;
 
     // This is the minimum width in DP that defines a large display device
     public static final int LARGE_DISPLAY_MIN_SCREEN_WIDTH_600_DP = 600;
@@ -66,6 +75,11 @@ public final class DeviceInfo {
     private static @Nullable DeviceInfo sInstance;
 
     private static final Object CREATION_LOCK = new Object();
+
+    private static final Object GMS_INFO_LOCK = new Object();
+
+    @GuardedBy("GMS_INFO_LOCK")
+    private static @Nullable GmsInfo sGmsInfo;
 
     @IntDef({FormFactor.TV, FormFactor.AUTOMOTIVE, FormFactor.DESKTOP, FormFactor.XR})
     @Retention(RetentionPolicy.SOURCE)
@@ -77,6 +91,17 @@ public final class DeviceInfo {
     }
 
     private static boolean sIsNativeLoaded;
+    private static volatile boolean sIsGmsVersionNativeLoaded;
+
+    private static final class GmsInfo {
+        final String mVersionCode;
+        final @Nullable ApplicationInfo mApplicationInfo;
+
+        GmsInfo(String versionCode, @Nullable ApplicationInfo applicationInfo) {
+            mVersionCode = versionCode;
+            mApplicationInfo = applicationInfo;
+        }
+    }
 
     @VisibleForTesting
     static final class SystemFeatureSnapshot {
@@ -136,7 +161,6 @@ public final class DeviceInfo {
     public static void sendToNative(IDeviceInfo info) {
         DeviceInfoJni.get()
                 .fillFields(
-                        /* gmsVersionCode= */ info.gmsVersionCode,
                         /* isTV= */ info.isTv,
                         /* isAutomotive= */ info.isAutomotive,
                         /* isFoldable= */ (sIsFoldableForTesting != null)
@@ -148,37 +172,68 @@ public final class DeviceInfo {
                         /* vulkanDeqpLevel= */ info.vulkanDeqpLevel,
                         /* isXr= */ (sIsXrForTesting != null) ? sIsXrForTesting : info.isXr,
                         /* wasLaunchedOnLargeDisplay= */ info.wasLaunchedOnLargeDisplay);
+        // Child processes receive GMS through AIDL. The browser's early capability snapshot leaves
+        // this null so that initializing the other fields does not trigger the package query.
+        if (info.gmsVersionCode != null) {
+            DeviceInfoJni.get().setGmsVersionCode(info.gmsVersionCode);
+        }
     }
 
     public static IDeviceInfo getAidlInfo() {
-        return getInstance().mIDeviceInfo;
+        IDeviceInfo info = getInstance().mIDeviceInfo;
+        // Native-only child processes cannot query Java, so materialize the lazy value before
+        // parceling this snapshot.
+        info.gmsVersionCode = getGmsVersionCode();
+        return info;
     }
 
     public static String getGmsVersionCode() {
-        return getInstance().mIDeviceInfo.gmsVersionCode;
+        synchronized (GMS_INFO_LOCK) {
+            return sGmsVersionCodeForTesting != null
+                    ? sGmsVersionCodeForTesting
+                    : getGmsInfoLocked().mVersionCode;
+        }
+    }
+
+    @CalledByNative
+    private static @JniType("std::string") String getGmsVersionCodeForNative() {
+        sIsGmsVersionNativeLoaded = true;
+        return getGmsVersionCode();
     }
 
     public static @Nullable ApplicationInfo getGmsAppInfo() {
-        return getInstance().mGmsAppInfo;
+        synchronized (GMS_INFO_LOCK) {
+            return getGmsInfoLocked().mApplicationInfo;
+        }
     }
 
     @CalledByNativeForTesting
     public static void setGmsVersionCodeForTest(@JniType("std::string") String gmsVersionCode) {
-        sGmsVersionCodeForTesting = gmsVersionCode;
-        // Every time we call getInstance in a test we reconstruct the mIDeviceInfo object, so we
-        // don't need to set mIDeviceInfo's copy here as it'll just get reconstructed.
-        ResettersForTesting.register(() -> sGmsVersionCodeForTesting = null);
-        if (sIsNativeLoaded) {
-            sendToNative(getInstance().mIDeviceInfo);
+        synchronized (GMS_INFO_LOCK) {
+            sGmsVersionCodeForTesting = gmsVersionCode;
+        }
+        ResettersForTesting.register(
+                () -> {
+                    synchronized (GMS_INFO_LOCK) {
+                        sGmsVersionCodeForTesting = null;
+                    }
+                });
+        if (sIsNativeLoaded || sIsGmsVersionNativeLoaded) {
+            DeviceInfoJni.get().setGmsVersionCode(gmsVersionCode);
         }
     }
 
     public static void setIsAutomotiveForTesting(boolean isAutomotive) {
         sIsAutomotiveForTesting = isAutomotive;
-        ResettersForTesting.register(() -> sIsAutomotiveForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsAutomotiveForTesting = null;
+                    resetInstance();
+                });
         if (isAutomotive) {
             setExclusiveFormFactorForTesting(FormFactor.AUTOMOTIVE);
         }
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -186,10 +241,15 @@ public final class DeviceInfo {
 
     public static void setIsTVForTesting(boolean isTV) {
         sIsTVForTesting = isTV;
-        ResettersForTesting.register(() -> sIsTVForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsTVForTesting = null;
+                    resetInstance();
+                });
         if (isTV) {
             setExclusiveFormFactorForTesting(FormFactor.TV);
         }
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -206,13 +266,16 @@ public final class DeviceInfo {
     /**
      * Checks whether the current device is a foldable device.
      *
-     * <p><b>Limitation:</b> This implementation relies entirely on the presence of the {@code
-     * PackageManager.FEATURE_SENSOR_HINGE_ANGLE} system feature to identify foldables. Because this
-     * feature was officially introduced in Android 11 (API level 30), early foldable devices that
-     * launched on Android 9 or 10 (such as the original Samsung Galaxy Fold, Z Fold2, and Z Flip)
-     * use proprietary implementations instead of the standard AOSP hinge sensor feature.
-     * Consequently, this method will incorrectly return {@code false} for those specific legacy
-     * devices.
+     * <p>A device is considered foldable if it both declares the {@code
+     * PackageManager.FEATURE_SENSOR_HINGE_ANGLE} system feature and exposes a real {@code
+     * Sensor.TYPE_HINGE_ANGLE} sensor. The sensor is required because some system images (notably
+     * emulators) declare the feature statically even when no hinge exists.
+     *
+     * <p><b>Limitation:</b> The hinge angle sensor was officially introduced in Android 11 (API
+     * level 30), so early foldable devices that launched on Android 9 or 10 (such as the original
+     * Samsung Galaxy Fold, Z Fold2, and Z Flip) use proprietary implementations instead of the
+     * standard AOSP hinge sensor. Consequently, this method will incorrectly return {@code false}
+     * for those specific legacy devices.
      *
      * @return {@code true} if the device is recognized by the OS as having a hinge angle sensor,
      *     {@code false} otherwise (including on legacy Samsung foldables).
@@ -237,6 +300,7 @@ public final class DeviceInfo {
         return (sIsXrForTesting != null) ? sIsXrForTesting : getInstance().mIDeviceInfo.isXr;
     }
 
+    @CalledByNative
     public static boolean isRetailDemoMode() {
         if (sIsRetailDemoModeForTesting != null) {
             return sIsRetailDemoModeForTesting;
@@ -260,21 +324,67 @@ public final class DeviceInfo {
 
     @CalledByNative
     public static @JniType("std::string") @Nullable String getDeviceName() {
-        return Settings.Global.getString(
-                ContextUtils.getApplicationContext().getContentResolver(), "device_name");
+        if (sDeviceNameForTesting != null) {
+            return sDeviceNameForTesting;
+        }
+        try {
+            return Settings.Global.getString(
+                    ContextUtils.getApplicationContext().getContentResolver(),
+                    Settings.Global.DEVICE_NAME);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Overrides the value returned by {@link #getDeviceName()} in unit tests so tests can simulate
+     * custom or unset device names without modifying global system settings.
+     *
+     * @param deviceName The test device name override to return from {@link #getDeviceName()}.
+     */
+    @CalledByNativeForTesting
+    public static void setDeviceNameForTesting(@JniType("std::string") String deviceName) {
+        String prev = sDeviceNameForTesting;
+        sDeviceNameForTesting = deviceName;
+        ResettersForTesting.register(() -> sDeviceNameForTesting = prev);
+    }
+
+    /** Clears the test override set by {@link #setDeviceNameForTesting(String)}. */
+    @CalledByNativeForTesting
+    public static void resetDeviceNameForTesting() {
+        sDeviceNameForTesting = null;
     }
 
     public static boolean isInitializedForTesting() {
         return sInitialized;
     }
 
+    static boolean isGmsInfoInitializedForTesting() {
+        synchronized (GMS_INFO_LOCK) {
+            return sGmsInfo != null;
+        }
+    }
+
+    static void resetGmsInfoForTesting() {
+        synchronized (GMS_INFO_LOCK) {
+            sGmsInfo = null;
+            sGmsVersionCodeForTesting = null;
+        }
+        sIsGmsVersionNativeLoaded = false;
+    }
+
     @CalledByNativeForTesting
     public static void setIsXrForTesting(boolean value) {
         sIsXrForTesting = value;
-        ResettersForTesting.register(() -> sIsXrForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsXrForTesting = null;
+                    resetInstance();
+                });
         if (value) {
             setExclusiveFormFactorForTesting(FormFactor.XR);
         }
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -283,20 +393,31 @@ public final class DeviceInfo {
     @CalledByNativeForTesting
     public static void resetIsXrForTesting() {
         sIsXrForTesting = null;
+        resetInstance();
     }
 
     public static void setIsRetailDemoModeForTesting(boolean value) {
         sIsRetailDemoModeForTesting = value;
-        ResettersForTesting.register(() -> sIsRetailDemoModeForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsRetailDemoModeForTesting = null;
+                    resetInstance();
+                });
+        resetInstance();
     }
 
     @CalledByNativeForTesting
     public static void setIsDesktopForTesting(boolean isDesktop) {
         sIsDesktopForTesting = isDesktop;
-        ResettersForTesting.register(() -> sIsDesktopForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsDesktopForTesting = null;
+                    resetInstance();
+                });
         if (isDesktop) {
             setExclusiveFormFactorForTesting(FormFactor.DESKTOP);
         }
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -305,6 +426,7 @@ public final class DeviceInfo {
     @CalledByNativeForTesting
     public static void resetIsDesktopForTesting() {
         sIsDesktopForTesting = null;
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -313,7 +435,12 @@ public final class DeviceInfo {
     @CalledByNativeForTesting
     public static void setIsFoldableForTesting(boolean value) {
         sIsFoldableForTesting = value;
-        ResettersForTesting.register(() -> sIsFoldableForTesting = null);
+        ResettersForTesting.register(
+                () -> {
+                    sIsFoldableForTesting = null;
+                    resetInstance();
+                });
+        resetInstance();
         if (sIsNativeLoaded) {
             sendToNative(getInstance().mIDeviceInfo);
         }
@@ -322,21 +449,64 @@ public final class DeviceInfo {
     @CalledByNativeForTesting
     public static void resetIsFoldableForTesting() {
         sIsFoldableForTesting = null;
+        resetInstance();
+    }
+
+    public static void resetInstanceForTesting() {
+        resetInstance();
+    }
+
+    private static void resetInstance() {
+        synchronized (CREATION_LOCK) {
+            sInstance = null;
+        }
+    }
+
+    private static boolean hasForceDesktopSwitch() {
+        return CommandLine.getInstance().hasSwitch(BaseSwitches.FORCE_DESKTOP_ANDROID);
     }
 
     private static DeviceInfo getInstance() {
-        // Some tests mock out things DeviceInfo is based on, so disable caching in tests to ensure
-        // such mocking is not defeated by caching.
-        if (BuildConfig.IS_FOR_TEST) {
-            return new DeviceInfo();
-        }
-
+        // Tests that mock out things DeviceInfo is based on must call resetInstanceForTesting()
+        // so that cached values are invalidated. The *ForTesting setters in this class do this
+        // automatically.
         synchronized (CREATION_LOCK) {
+            // In test builds, --force-desktop-android can be added after the instance was created
+            // (e.g. native browser tests read flags from a command-line file after the Java
+            // CommandLine was initialized, and ResettersForTesting does not run there). Rebuild
+            // the instance if the switch changed so that isDesktop() reflects it.
+            if (BuildConfig.IS_FOR_TEST
+                    && sInstance != null
+                    && sInstance.mForceDesktopSwitchForTesting != hasForceDesktopSwitch()) {
+                sInstance = null;
+            }
             if (sInstance == null) {
                 sInstance = new DeviceInfo();
+                // Robolectric resets shadow state (e.g. ShadowPackageManager system features)
+                // between tests, so the cached instance must be dropped too. On devices the
+                // underlying values do not change between tests, and the *ForTesting setters
+                // register their own resetters.
+                if (BuildConfig.IS_ROBOLECTRIC) {
+                    ResettersForTesting.register(DeviceInfo::resetInstance);
+                }
             }
             return sInstance;
         }
+    }
+
+    @GuardedBy("GMS_INFO_LOCK")
+    private static GmsInfo getGmsInfoLocked() {
+        if (sGmsInfo == null) {
+            PackageInfo packageInfo = PackageUtils.getPackageInfo("com.google.android.gms", 0);
+            String versionCode = "gms versionCode not available.";
+            ApplicationInfo applicationInfo = null;
+            if (packageInfo != null) {
+                versionCode = String.valueOf(packageVersionCode(packageInfo));
+                applicationInfo = packageInfo.applicationInfo;
+            }
+            sGmsInfo = new GmsInfo(versionCode, applicationInfo);
+        }
+        return sGmsInfo;
     }
 
     /**
@@ -385,22 +555,23 @@ public final class DeviceInfo {
         }
     }
 
+    /**
+     * Returns whether the device actually has a hinge angle sensor. Devices with a real hinge are
+     * required to expose a {@link Sensor#TYPE_HINGE_ANGLE} sensor, but some system images (notably
+     * emulators) declare {@code PackageManager.FEATURE_SENSOR_HINGE_ANGLE} without having one.
+     */
+    private static boolean hasHingeAngleSensor(Context context) {
+        // TYPE_HINGE_ANGLE was added in Android 11 (API 30).
+        if (Build.VERSION.SDK_INT < VERSION_CODES.R) return false;
+
+        var sensorManager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
+        return sensorManager != null
+                && sensorManager.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE) != null;
+    }
+
     private DeviceInfo() {
         mIDeviceInfo = new IDeviceInfo();
         sInitialized = true;
-        PackageInfo gmsPackageInfo = PackageUtils.getPackageInfo("com.google.android.gms", 0);
-        String gmsVersionCode;
-        if (gmsPackageInfo != null) {
-            mGmsAppInfo = gmsPackageInfo.applicationInfo;
-            gmsVersionCode = String.valueOf(packageVersionCode(gmsPackageInfo));
-        } else {
-            gmsVersionCode = "gms versionCode not available.";
-        }
-        if (sGmsVersionCodeForTesting != null) {
-            gmsVersionCode = sGmsVersionCodeForTesting;
-        }
-        mIDeviceInfo.gmsVersionCode = gmsVersionCode;
-
         Context appContext = ContextUtils.getApplicationContext();
         PackageManager pm = appContext.getPackageManager();
         // See https://developer.android.com/training/tv/start/hardware.html#runtime-check.
@@ -439,6 +610,7 @@ public final class DeviceInfo {
             mIDeviceInfo.isAutomotive = sIsAutomotiveForTesting;
         }
 
+        mForceDesktopSwitchForTesting = BuildConfig.IS_FOR_TEST && hasForceDesktopSwitch();
         mIDeviceInfo.isDesktop =
                 (sIsDesktopForTesting != null)
                         ? sIsDesktopForTesting
@@ -450,13 +622,20 @@ public final class DeviceInfo {
                                 || CommandLine.getInstance()
                                         .hasSwitch(BaseSwitches.FORCE_DESKTOP_ANDROID);
 
-        // Detect whether device is foldable.
+        // Detect whether device is foldable. The system feature alone is not sufficient: emulator
+        // system images declare FEATURE_SENSOR_HINGE_ANGLE in
+        // /vendor/etc/permissions/handheld_core_hardware.xml even for AVDs configured without a
+        // hinge (hw.sensor.hinge = no), so phone-sized emulators look like foldables. Devices with
+        // a real hinge must also expose a TYPE_HINGE_ANGLE sensor (CDD 7.3.12), so require the
+        // sensor itself. The sensor lookup is short-circuited by the feature check, so it is only
+        // performed on the few devices that declare the feature. See crbug.com/555859584.
         mIDeviceInfo.isFoldable =
                 !mIDeviceInfo.isDesktop
                         && Build.VERSION.SDK_INT >= VERSION_CODES.R
                         && (systemFeatures != null
                                 ? systemFeatures.mHasHingeAngle
-                                : pm.hasSystemFeature(PackageManager.FEATURE_SENSOR_HINGE_ANGLE));
+                                : pm.hasSystemFeature(PackageManager.FEATURE_SENSOR_HINGE_ANGLE))
+                        && hasHingeAngleSensor(appContext);
         if (sIsFoldableForTesting != null) {
             mIDeviceInfo.isFoldable = sIsFoldableForTesting;
         }
@@ -478,26 +657,42 @@ public final class DeviceInfo {
     private static void setExclusiveFormFactorForTesting(@FormFactor int activeFormFactor) {
         if (activeFormFactor != FormFactor.TV) {
             sIsTVForTesting = false;
-            ResettersForTesting.register(() -> sIsTVForTesting = null);
+            ResettersForTesting.register(
+                    () -> {
+                        sIsTVForTesting = null;
+                        resetInstance();
+                    });
         }
         if (activeFormFactor != FormFactor.AUTOMOTIVE) {
             sIsAutomotiveForTesting = false;
-            ResettersForTesting.register(() -> sIsAutomotiveForTesting = null);
+            ResettersForTesting.register(
+                    () -> {
+                        sIsAutomotiveForTesting = null;
+                        resetInstance();
+                    });
         }
         if (activeFormFactor != FormFactor.DESKTOP) {
             sIsDesktopForTesting = false;
-            ResettersForTesting.register(() -> sIsDesktopForTesting = null);
+            ResettersForTesting.register(
+                    () -> {
+                        sIsDesktopForTesting = null;
+                        resetInstance();
+                    });
         }
         if (activeFormFactor != FormFactor.XR) {
             sIsXrForTesting = false;
-            ResettersForTesting.register(() -> sIsXrForTesting = null);
+            ResettersForTesting.register(
+                    () -> {
+                        sIsXrForTesting = null;
+                        resetInstance();
+                    });
         }
+        resetInstance();
     }
 
     @NativeMethods
     interface Natives {
         void fillFields(
-                @JniType("std::string") String gmsVersionCode,
                 boolean isTV,
                 boolean isAutomotive,
                 boolean isFoldable,
@@ -505,5 +700,7 @@ public final class DeviceInfo {
                 int vulkanDeqpLevel,
                 boolean isXr,
                 boolean wasLaunchedOnLargeDisplay);
+
+        void setGmsVersionCode(@JniType("std::string") String gmsVersionCode);
     }
 }

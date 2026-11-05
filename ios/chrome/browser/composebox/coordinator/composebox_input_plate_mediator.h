@@ -22,7 +22,9 @@
 #import "ios/chrome/browser/omnibox/ui/text_field_view_containing.h"
 #import "ios/public/provider/chrome/browser/voice_search/voice_search_controller.h"
 #import "ios/web/public/web_state_id.h"
+#import "third_party/omnibox_proto/model_mode.pb.h"
 
+@class AssistantAIMMetricsRecorder;
 @protocol BrowserCoordinatorCommands;
 @class ComposeboxAttachmentSelection;
 @class ComposeboxFocusParams;
@@ -34,6 +36,7 @@ class CobrowseBrowserAgent;
 @protocol SceneCommands;
 enum class FuseboxAttachmentButtonType;
 class AimEligibilityService;
+struct ComposeboxTabSelection;
 class FaviconLoader;
 class PersistTabContextBrowserAgent;
 class PrefService;
@@ -58,6 +61,8 @@ class ContextualSearchSessionHandle;
 - (void)showAttachmentLimitError;
 // Informs the delegate that item upload has failed.
 - (void)showSnackbarForItemUploadDidFail;
+// Informs the delegate that input state was updated.
+- (void)inputStateManagerDidUpdateUIState;
 @end
 
 // Mediator for the composebox composebox.
@@ -81,7 +86,10 @@ class ContextualSearchSessionHandle;
 // The delegate for this mediator.
 @property(nonatomic, weak) id<ComposeboxInputPlateMediatorDelegate> delegate;
 // The metrics recorder of the composebox.
-@property(nonatomic, weak) ComposeboxMetricsRecorder* metricsRecorder;
+@property(nonatomic, strong) ComposeboxMetricsRecorder* metricsRecorder;
+// The metrics recorder for the Assistant AIM bottom sheet session.
+@property(nonatomic, strong)
+    AssistantAIMMetricsRecorder* assistantMetricsRecorder;
 // Delegate for logging events.
 @property(nonatomic, weak) id<ComposeboxDebuggerLogger> debugLogger;
 
@@ -136,12 +144,17 @@ class ContextualSearchSessionHandle;
 // Unpacks and attaches all items within the selection wrapper.
 - (void)updateAttachments:(ComposeboxAttachmentSelection*)attachments;
 
-// Removes the shared tab with the given `serverToken`.
-- (void)removeSharedTabWithServerToken:
-    (const base::UnguessableToken&)serverToken;
+// Removes the shared tab with the given `inputItemIdentifier`.
+- (void)removeSharedTabWithInputItemIdentifier:
+    (const base::UnguessableToken&)inputItemIdentifier;
 
 // Applies the focus parameters to initialize the session state.
 - (void)applyFocusParams:(ComposeboxFocusParams*)params;
+
+// Sets the `model` to use in queries, specifying whether the choice was caused
+// by an `explicitUserAction` (e.g. picked from the menu).
+- (void)setModel:(omnibox::ModelMode)model
+    explicitUserAction:(BOOL)explicitUserAction;
 
 // Processes the picked Google Drive file metadata and triggers contextual
 // session upload.
@@ -161,16 +174,8 @@ class ContextualSearchSessionHandle;
 // Returns the maximum number of tab attachments allowed.
 - (NSUInteger)maxTabAttachmentCount;
 
-// Attaches the selected tabs.
-- (void)attachSelectedTabsWithWebStateIDs:
-            (std::set<web::WebStateID>)selectedWebStateIDs
-                        cachedWebStateIDs:
-                            (std::set<web::WebStateID>)cachedWebStateIDs;
-
-// Processes a webpage context from a context library signal. Called on the
-// cobrowse context only.
-- (void)processContextLibraryWebpageSignalWithURL:(const GURL&)url
-                                            title:(NSString*)title;
+// Attaches the tabs from the given `selection`.
+- (void)attachTabSelection:(const ComposeboxTabSelection&)selection;
 
 @end
 

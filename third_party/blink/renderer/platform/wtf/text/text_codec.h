@@ -98,8 +98,8 @@ class WTF_EXPORT TextCodec {
   virtual std::string Encode(base::span<const UChar>, UnencodableHandling) = 0;
   virtual std::string Encode(base::span<const LChar>, UnencodableHandling) = 0;
 
-  // EncodeInto is meant only to encode UTF8 bytes into an unsigned char*
-  // buffer; therefore this method is only usefully overridden by TextCodecUTF8.
+  // EncodeInto is meant only to encode UTF8 bytes into an uint8_t*
+  // buffer; therefore this method is only usefully overridden by TextCodecUtf8.
   virtual EncodeIntoResult EncodeInto(base::span<const LChar>,
                                       base::span<uint8_t> destination) {
     NOTREACHED();
@@ -116,7 +116,8 @@ class WTF_EXPORT TextCodec {
 using EncodingNameRegistrar = void (*)(const char* alias,
                                        const AtomicString& canonical_name);
 
-typedef std::unique_ptr<TextCodec> (*NewTextCodecFunction)(const TextEncoding&);
+using NewTextCodecFunction =
+    std::unique_ptr<TextCodec> (*)(const TextEncoding&);
 using TextCodecRegistrar = void (*)(const char* canonical_name,
                                     NewTextCodecFunction);
 

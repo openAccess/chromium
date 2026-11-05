@@ -13,11 +13,13 @@
 #include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/time/time.h"
 #include "chrome/browser/nearby_sharing/certificates/fake_nearby_share_certificate_manager.h"
 #include "chrome/browser/nearby_sharing/certificates/nearby_share_decrypted_public_certificate.h"
 #include "chrome/browser/nearby_sharing/certificates/test_util.h"
 #include "chrome/browser/nearby_sharing/incoming_frames_reader.h"
+#include "chrome/browser/nearby_sharing/nearby_share_metrics.h"
 #include "chrome/browser/nearby_sharing/share_target.h"
 #include "chrome/services/sharing/public/proto/wire_format.pb.h"
 #include "chromeos/ash/components/nearby/common/connections_manager/fake_nearby_connection.h"
@@ -29,26 +31,35 @@
 namespace {
 
 const char kEndpointId[] = "test_endpoint_id";
-const std::vector<uint8_t> kAuthToken = {0, 1, 2};
-
-const std::vector<uint8_t> kPrivateCertificateHashAuthToken = {
-    0x8b, 0xcb, 0xa2, 0xf8, 0xe4, 0x06};
-const std::vector<uint8_t> kIncomingConnectionSignedData = {
-    0x30, 0x45, 0x02, 0x20, 0x4f, 0x83, 0x72, 0xbd, 0x02, 0x70, 0xd9, 0xda,
-    0x62, 0x83, 0x5d, 0xb2, 0xdc, 0x6e, 0x3f, 0xa6, 0xa8, 0xa1, 0x4f, 0x5f,
-    0xd3, 0xe3, 0xd9, 0x1a, 0x5d, 0x2d, 0x61, 0xd2, 0x6c, 0xdd, 0x8d, 0xa5,
-    0x02, 0x21, 0x00, 0xd4, 0xe1, 0x1d, 0x14, 0xcb, 0x58, 0xf7, 0x02, 0xd5,
-    0xab, 0x48, 0xe2, 0x2f, 0xcb, 0xc0, 0x53, 0x41, 0x06, 0x50, 0x65, 0x95,
-    0x19, 0xa9, 0x22, 0x92, 0x00, 0x42, 0x01, 0x26, 0x25, 0xcb, 0x8c};
-const std::vector<uint8_t> kIncomingConnectionInvalidSignedData = {
-    0x72, 0xe5, 0x40, 0xa6, 0xdd, 0x1d, 0xfd, 0x44, 0xf2, 0x55, 0xd5, 0x15,
-    0x61, 0xe1, 0xe6, 0x15, 0x93, 0xa5, 0xf9, 0x94, 0x16, 0xcd, 0x8b, 0x0a,
-    0xb3, 0xca, 0xe6, 0x10, 0x6d, 0x22, 0x3e, 0x1e, 0x3f, 0x34, 0x23, 0x4f,
-    0xc2, 0x07, 0xae, 0xcc, 0xb0, 0xb2, 0x5e, 0x26, 0xca, 0x01, 0xd8, 0xe2,
-    0x3e, 0xc4, 0x54, 0x0b, 0xfd, 0xc4, 0xf1, 0xa7, 0xf5, 0xa8, 0x63, 0x10,
-    0x46, 0x48, 0xdc, 0x98, 0x0b, 0x8f, 0xc3, 0xee, 0xb4, 0x99, 0xb6};
-
 const base::TimeDelta kTimeout = base::Seconds(1);
+
+std::vector<uint8_t> AuthToken() {
+  return {0, 1, 2};
+}
+
+std::vector<uint8_t> PrivateCertificateHashAuthToken() {
+  return {0x8b, 0xcb, 0xa2, 0xf8, 0xe4, 0x06};
+}
+
+std::vector<uint8_t> IncomingConnectionSignedData() {
+  return {0x30, 0x45, 0x02, 0x20, 0x4f, 0x83, 0x72, 0xbd, 0x02, 0x70, 0xd9,
+          0xda, 0x62, 0x83, 0x5d, 0xb2, 0xdc, 0x6e, 0x3f, 0xa6, 0xa8, 0xa1,
+          0x4f, 0x5f, 0xd3, 0xe3, 0xd9, 0x1a, 0x5d, 0x2d, 0x61, 0xd2, 0x6c,
+          0xdd, 0x8d, 0xa5, 0x02, 0x21, 0x00, 0xd4, 0xe1, 0x1d, 0x14, 0xcb,
+          0x58, 0xf7, 0x02, 0xd5, 0xab, 0x48, 0xe2, 0x2f, 0xcb, 0xc0, 0x53,
+          0x41, 0x06, 0x50, 0x65, 0x95, 0x19, 0xa9, 0x22, 0x92, 0x00, 0x42,
+          0x01, 0x26, 0x25, 0xcb, 0x8c};
+}
+
+std::vector<uint8_t> IncomingConnectionInvalidSignedData() {
+  return {0x72, 0xe5, 0x40, 0xa6, 0xdd, 0x1d, 0xfd, 0x44, 0xf2, 0x55, 0xd5,
+          0x15, 0x61, 0xe1, 0xe6, 0x15, 0x93, 0xa5, 0xf9, 0x94, 0x16, 0xcd,
+          0x8b, 0x0a, 0xb3, 0xca, 0xe6, 0x10, 0x6d, 0x22, 0x3e, 0x1e, 0x3f,
+          0x34, 0x23, 0x4f, 0xc2, 0x07, 0xae, 0xcc, 0xb0, 0xb2, 0x5e, 0x26,
+          0xca, 0x01, 0xd8, 0xe2, 0x3e, 0xc4, 0x54, 0x0b, 0xfd, 0xc4, 0xf1,
+          0xa7, 0xf5, 0xa8, 0x63, 0x10, 0x46, 0x48, 0xdc, 0x98, 0x0b, 0x8f,
+          0xc3, 0xee, 0xb4, 0x99, 0xb6};
+}
 
 class MockIncomingFramesReader : public IncomingFramesReader {
  public:
@@ -125,7 +136,7 @@ class PairedKeyVerificationRunnerTest : public testing::Test {
             : std::nullopt;
 
     PairedKeyVerificationRunner runner(
-        share_target_, kEndpointId, kAuthToken, &connection_,
+        share_target_, kEndpointId, AuthToken(), &connection_,
         std::move(public_certificate), &certificate_manager_,
         nearby_share::mojom::Visibility::kAllContacts, restricted_to_contacts,
         &frames_reader_, kTimeout);
@@ -159,22 +170,22 @@ class PairedKeyVerificationRunnerTest : public testing::Test {
               if (frame_type == ReturnFrameType::kValid) {
                 mojo_v1frame = sharing::mojom::V1Frame::NewPairedKeyEncryption(
                     sharing::mojom::PairedKeyEncryptionFrame::New(
-                        kIncomingConnectionSignedData,
-                        kPrivateCertificateHashAuthToken, std::nullopt));
+                        IncomingConnectionSignedData(),
+                        PrivateCertificateHashAuthToken(), std::nullopt));
               } else if (frame_type ==
                          ReturnFrameType::kOptionalSignedDataValid) {
                 mojo_v1frame = sharing::mojom::V1Frame::NewPairedKeyEncryption(
                     sharing::mojom::PairedKeyEncryptionFrame::New(
-                        kIncomingConnectionInvalidSignedData,
-                        kPrivateCertificateHashAuthToken,
-                        kIncomingConnectionSignedData));
+                        IncomingConnectionInvalidSignedData(),
+                        PrivateCertificateHashAuthToken(),
+                        IncomingConnectionSignedData()));
               } else if (frame_type ==
                          ReturnFrameType::kOptionalSignedDataInvalid) {
                 mojo_v1frame = sharing::mojom::V1Frame::NewPairedKeyEncryption(
                     sharing::mojom::PairedKeyEncryptionFrame::New(
-                        kIncomingConnectionInvalidSignedData,
-                        kPrivateCertificateHashAuthToken,
-                        kIncomingConnectionInvalidSignedData));
+                        IncomingConnectionInvalidSignedData(),
+                        PrivateCertificateHashAuthToken(),
+                        IncomingConnectionInvalidSignedData()));
               } else {
                 mojo_v1frame = sharing::mojom::V1Frame::NewPairedKeyEncryption(
                     sharing::mojom::PairedKeyEncryptionFrame::New());
@@ -274,6 +285,127 @@ TEST_F(PairedKeyVerificationRunnerTest,
 
   ExpectPairedKeyEncryptionFrameSent();
   ExpectPairedKeyResultFrameSent(sharing::nearby::PairedKeyResultFrame::UNABLE);
+}
+
+TEST_F(PairedKeyVerificationRunnerTest, ReplayedIncomingAuthTokenRejected) {
+  share_target_.is_known = true;
+  SetUpPairedKeyEncryptionFrame(ReturnFrameType::kValid);
+  SetUpPairedKeyResultFrame(
+      ReturnFrameType::kValid,
+      sharing::mojom::PairedKeyResultFrame_Status::kSuccess);
+
+  RunVerification(
+      /*use_valid_public_certificate=*/true,
+      /*restricted_to_contacts=*/false,
+      PairedKeyVerificationRunner::PairedKeyVerificationResult::kSuccess);
+  ExpectPairedKeyEncryptionFrameSent();
+  ExpectPairedKeyResultFrameSent(
+      sharing::nearby::PairedKeyResultFrame::SUCCESS);
+
+  // A second incoming connection reusing the same authentication token must
+  // be rejected immediately before sending or reading any frames.
+  base::HistogramTester histogram_tester;
+  FakeNearbyConnection replay_connection;
+  testing::NiceMock<MockIncomingFramesReader> replay_frames_reader(
+      &process_manager_, &replay_connection);
+  EXPECT_CALL(replay_frames_reader,
+              ReadFrame(testing::_, testing::_, testing::_))
+      .Times(0);
+
+  PairedKeyVerificationRunner replay_runner(
+      share_target_, kEndpointId, AuthToken(), &replay_connection,
+      GetNearbyShareTestDecryptedPublicCertificate(), &certificate_manager_,
+      nearby_share::mojom::Visibility::kAllContacts,
+      /*restrict_to_contacts=*/false, &replay_frames_reader, kTimeout);
+
+  base::RunLoop run_loop;
+  replay_runner.Run(base::BindLambdaForTesting(
+      [&](PairedKeyVerificationRunner::PairedKeyVerificationResult result) {
+        EXPECT_EQ(
+            PairedKeyVerificationRunner::PairedKeyVerificationResult::kFail,
+            result);
+        run_loop.Quit();
+      }));
+  run_loop.Run();
+  EXPECT_TRUE(replay_connection.GetWrittenData().empty());
+  histogram_tester.ExpectUniqueSample("Nearby.Share.PairedKeyVerificationError",
+                                      NearbySharePairedKeyVerificationError::
+                                          kInvalidOrReplayedAuthenticationToken,
+                                      1);
+}
+
+TEST_F(PairedKeyVerificationRunnerTest, EmptyIncomingAuthTokenRejected) {
+  base::HistogramTester histogram_tester;
+  EXPECT_CALL(frames_reader_, ReadFrame(testing::_, testing::_, testing::_))
+      .Times(0);
+
+  PairedKeyVerificationRunner runner(
+      share_target_, kEndpointId, /*token=*/{}, &connection_,
+      GetNearbyShareTestDecryptedPublicCertificate(), &certificate_manager_,
+      nearby_share::mojom::Visibility::kAllContacts,
+      /*restrict_to_contacts=*/false, &frames_reader_, kTimeout);
+
+  base::RunLoop run_loop;
+  runner.Run(base::BindLambdaForTesting(
+      [&](PairedKeyVerificationRunner::PairedKeyVerificationResult result) {
+        EXPECT_EQ(
+            PairedKeyVerificationRunner::PairedKeyVerificationResult::kFail,
+            result);
+        run_loop.Quit();
+      }));
+  run_loop.Run();
+  EXPECT_TRUE(connection_.GetWrittenData().empty());
+  histogram_tester.ExpectUniqueSample("Nearby.Share.PairedKeyVerificationError",
+                                      NearbySharePairedKeyVerificationError::
+                                          kInvalidOrReplayedAuthenticationToken,
+                                      1);
+}
+
+TEST_F(PairedKeyVerificationRunnerTest, ReflectedOutgoingAuthTokenRejected) {
+  share_target_.is_incoming = false;
+  SetUpPairedKeyEncryptionFrame(ReturnFrameType::kEmpty);
+  SetUpPairedKeyResultFrame(
+      ReturnFrameType::kValid,
+      sharing::mojom::PairedKeyResultFrame_Status::kUnable);
+
+  RunVerification(
+      /*use_valid_public_certificate=*/false,
+      /*restricted_to_contacts=*/false,
+      PairedKeyVerificationRunner::PairedKeyVerificationResult::kUnable);
+  ExpectPairedKeyEncryptionFrameSent();
+  ExpectPairedKeyResultFrameSent(sharing::nearby::PairedKeyResultFrame::UNABLE);
+
+  // An incoming connection attempting to reflect the authentication token that
+  // was just signed on an outgoing connection must be rejected immediately.
+  share_target_.is_incoming = true;
+  base::HistogramTester histogram_tester;
+  FakeNearbyConnection reflected_connection;
+  testing::NiceMock<MockIncomingFramesReader> reflected_frames_reader(
+      &process_manager_, &reflected_connection);
+  EXPECT_CALL(reflected_frames_reader,
+              ReadFrame(testing::_, testing::_, testing::_))
+      .Times(0);
+
+  PairedKeyVerificationRunner reflected_runner(
+      share_target_, kEndpointId, AuthToken(), &reflected_connection,
+      GetNearbyShareTestDecryptedPublicCertificate(), &certificate_manager_,
+      nearby_share::mojom::Visibility::kAllContacts,
+      /*restrict_to_contacts=*/false, &reflected_frames_reader, kTimeout);
+
+  base::RunLoop run_loop;
+  reflected_runner.Run(base::BindLambdaForTesting(
+      [&](PairedKeyVerificationRunner::PairedKeyVerificationResult result) {
+        EXPECT_EQ(
+            PairedKeyVerificationRunner::PairedKeyVerificationResult::kFail,
+            result);
+        run_loop.Quit();
+      }));
+  run_loop.Run();
+  EXPECT_TRUE(reflected_connection.GetWrittenData().empty());
+  histogram_tester.ExpectUniqueSample("Nearby.Share.PairedKeyVerificationError",
+                                      NearbySharePairedKeyVerificationError::
+                                          kInvalidOrReplayedAuthenticationToken,
+                                      1);
 }
 
 struct TestParameters {

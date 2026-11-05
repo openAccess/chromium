@@ -6,7 +6,6 @@
 
 #include "ash/constants/ash_switches.h"
 #include "base/path_service.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/login/lock/screen_locker_tester.h"
 #include "chrome/browser/ash/login/test/device_state_mixin.h"
@@ -16,12 +15,10 @@
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/policy/extension_force_install_mixin.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/common/switches.h"
@@ -111,16 +108,6 @@ class AuthenticationScreenExtensionsExternalLoaderBrowserTest
 
   void LockSession() { ash::ScreenLockerTester().Lock(); }
 
-  void UnlockSession() {
-    const std::string kPassword = "pass";
-    const AccountId account_id =
-        user_manager::UserManager::Get()->GetPrimaryUser()->GetAccountId();
-    ash::ScreenLockerTester screen_locker_tester;
-    screen_locker_tester.SetUnlockPassword(account_id, kPassword);
-    screen_locker_tester.UnlockWithPassword(account_id, kPassword);
-    screen_locker_tester.WaitForUnlock();
-  }
-
   ExtensionForceInstallMixin* extension_force_install_mixin() {
     return &extension_force_install_mixin_;
   }
@@ -181,8 +168,6 @@ class AuthenticationScreenExtensionsExternalLoaderBrowserTest
     ASSERT_TRUE(IsExtensionEnabledOnSigninScreen(kOtherExtensionId));
   }
 
-  base::test::ScopedFeatureList scoped_feature_list_{
-      chromeos::features::kLockScreenBadgeAuth};
   ash::DeviceStateMixin device_state_mixin_{
       &mixin_host_,
       ash::DeviceStateMixin::State::OOBE_COMPLETED_CLOUD_ENROLLED};

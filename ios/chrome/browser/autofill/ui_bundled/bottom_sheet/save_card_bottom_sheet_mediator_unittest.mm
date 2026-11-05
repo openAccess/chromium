@@ -276,25 +276,11 @@ TEST_F(SaveCardBottomSheetMediatorTest, SetConsumer) {
 }
 
 // Test that mediator provides logoType and logoAccessibilityLabel as a data
-// source for upload save bottomsheet with Wallet branding.
+// source for upload save bottomsheet.
 TEST_F(SaveCardBottomSheetMediatorTest, DataSource) {
-  base::test::ScopedFeatureList feature_list(
-      autofill::features::kAutofillEnableWalletBranding);
   EXPECT_EQ(kGoogleWalletLogo, mediator_.logoType);
   EXPECT_NSEQ(base::SysUTF16ToNSString(l10n_util::GetStringUTF16(
                   IDS_AUTOFILL_GOOGLE_WALLET_LOGO_ACCESSIBLE_NAME)),
-              mediator_.logoAccessibilityLabel);
-}
-
-// Test that mediator provides logoType and logoAccessibilityLabel as a data
-// source for upload save bottomsheet.
-TEST_F(SaveCardBottomSheetMediatorTest, DataSource_BrandingFlagOff) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      autofill::features::kAutofillEnableWalletBranding);
-  EXPECT_EQ(kGoogleWalletLogo, mediator_.logoType);
-  EXPECT_NSEQ(base::SysUTF16ToNSString(l10n_util::GetStringUTF16(
-                  IDS_AUTOFILL_GOOGLE_PAY_LOGO_ACCESSIBLE_NAME)),
               mediator_.logoAccessibilityLabel);
 }
 
@@ -562,10 +548,10 @@ TEST_F(SaveCardBottomSheetMediatorTest,
   base::HistogramTester histogram_tester;
 
   EXPECT_EQ([mediator_ isDismissingForTesting], NO);
-  EXPECT_CALL(*model_, OnAccepted()).WillOnce(testing::InvokeWithoutArgs([&]() {
+  EXPECT_CALL(*model_, OnAccepted()).WillOnce([&]() {
     model_->SetSaveCardStateForTesting(
         autofill::SaveCardBottomSheetModel::SaveCardState::kSaveInProgress);
-  }));
+  });
   [mediator_ didAccept];
 
   [mediator_ onBottomSheetDismissedWithLinkClicked:NO];
@@ -845,10 +831,10 @@ TEST_F(SaveCardBottomSheetMediatorTestForLocalSave,
   base::HistogramTester histogram_tester;
 
   EXPECT_EQ([mediator_ isDismissingForTesting], NO);
-  EXPECT_CALL(*model_, OnAccepted()).WillOnce(testing::InvokeWithoutArgs([&]() {
+  EXPECT_CALL(*model_, OnAccepted()).WillOnce([&]() {
     model_->SetSaveCardStateForTesting(
         autofill::SaveCardBottomSheetModel::SaveCardState::kSaved);
-  }));
+  });
   [mediator_ didAccept];
   EXPECT_EQ(model_->save_card_state(),
             autofill::SaveCardBottomSheetModel::SaveCardState::kSaved);

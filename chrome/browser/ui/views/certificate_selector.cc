@@ -39,11 +39,14 @@
 #include "ui/base/models/table_model_observer.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/events/base_event_utils.h"
+#include "ui/events/event.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/table/table_view.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/window/dialog_client_view.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
@@ -82,8 +85,8 @@ class CertificateSelector::CertificateTableModel : public ui::TableModel {
   CertificateTableModel& operator=(const CertificateTableModel&) = delete;
 
   // ui::TableModel:
-  size_t RowCount() override;
-  std::u16string GetText(size_t index, int column_id) override;
+  size_t RowCount() const override;
+  std::u16string GetText(size_t index, int column_id) const override;
   void SetObserver(ui::TableModelObserver* observer) override;
 
  private:
@@ -99,7 +102,7 @@ class CertificateSelector::CertificateTableModel : public ui::TableModel {
 CertificateSelector::CertificateTableModel::CertificateTableModel(
     const net::ClientCertIdentityList& identities,
     const std::vector<std::string>& provider_names) {
-  DCHECK_EQ(identities.size(), provider_names.size());
+  CHECK_EQ(identities.size(), provider_names.size(), base::NotFatalUntil::M162);
   for (size_t i = 0; i < identities.size(); i++) {
     net::X509Certificate* cert = identities[i]->certificate();
     Row row;
@@ -113,14 +116,14 @@ CertificateSelector::CertificateTableModel::CertificateTableModel(
   }
 }
 
-size_t CertificateSelector::CertificateTableModel::RowCount() {
+size_t CertificateSelector::CertificateTableModel::RowCount() const {
   return rows_.size();
 }
 
 std::u16string CertificateSelector::CertificateTableModel::GetText(
     size_t index,
-    int column_id) {
-  DCHECK_LT(index, rows_.size());
+    int column_id) const {
+  CHECK_LT(index, rows_.size(), base::NotFatalUntil::M162);
 
   const Row& row = rows_[index];
   switch (column_id) {
@@ -200,7 +203,7 @@ CertificateSelector::CertificateSelector(net::ClientCertIdentityList identities,
 }
 
 CertificateSelector::~CertificateSelector() {
-  table_->SetModel(nullptr);
+  table_->ClearModel();
 }
 
 // static
@@ -300,7 +303,7 @@ net::ClientCertIdentity* CertificateSelector::GetSelectedCert() const {
   if (!selected.has_value()) {
     return nullptr;
   }
-  DCHECK_LT(selected.value(), identities_.size());
+  CHECK_LT(selected.value(), identities_.size(), base::NotFatalUntil::M162);
   return identities_[selected.value()].get();
 }
 
@@ -310,7 +313,7 @@ bool CertificateSelector::Accept() {
     return false;
   }
 
-  DCHECK_LT(selected.value(), identities_.size());
+  CHECK_LT(selected.value(), identities_.size(), base::NotFatalUntil::M162);
   AcceptCertificate(std::move(identities_[selected.value()]));
   return true;
 }
@@ -325,7 +328,7 @@ bool CertificateSelector::IsDialogButtonEnabled(
 }
 
 views::View* CertificateSelector::GetInitiallyFocusedView() {
-  DCHECK(table_);
+  CHECK(table_, base::NotFatalUntil::M162);
   return table_;
 }
 
@@ -344,9 +347,23 @@ void CertificateSelector::OnSelectionChanged() {
 }
 
 void CertificateSelector::OnDoubleClick() {
-  if (GetSelectedCert()) {
-    AcceptDialog();
+  if (!GetSelectedCert()) {
+    return;
   }
+
+  views::DialogClientView* const client_view = GetDialogClientView();
+  if (client_view) {
+    const ui::MouseEvent event(ui::EventType::kMousePressed, gfx::Point(),
+                               gfx::Point(), ui::EventTimeForNow(),
+                               ui::EF_LEFT_MOUSE_BUTTON,
+                               ui::EF_LEFT_MOUSE_BUTTON);
+    if (client_view->IsPossiblyUnintendedInteraction(
+            event, ShouldAllowKeyEventsDuringInputProtection())) {
+      return;
+    }
+  }
+
+  AcceptDialog();
 }
 
 BEGIN_METADATA(CertificateSelector)

@@ -49,6 +49,14 @@ class MockAutofillWebDataService : public AutofillWebDataService {
                std::u16string_view label,
                std::u16string_view value),
               (override));
+  MOCK_METHOD(void,
+              MigrateDataFromLegacyTable,
+              (WebDataServiceRequestCallback),
+              (override));
+  MOCK_METHOD(WebDataServiceBase::Handle,
+              GetAutocompleteTableStats,
+              (WebDataServiceRequestCallback),
+              (override));
 
  protected:
   ~MockAutofillWebDataService() override;

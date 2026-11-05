@@ -18,6 +18,7 @@
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/content_settings/content_setting_image_model.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -46,6 +47,7 @@
 #include "net/test/embedded_test_server/http_response.h"
 #include "services/device/public/cpp/test/scoped_geolocation_overrider.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
@@ -209,11 +211,11 @@ class GeolocationHeaderBrowserTest : public InProcessBrowserTest {
 
     GURL search_url = test_server_.GetURL("/search?q=test");
 
-    content::OpenURLParams params(
-        search_url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-        ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                  ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-        false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+            ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
+                                      ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
     content::TestNavigationObserver navigation_observer(
         browser()->tab_strip_model()->GetActiveWebContents());
@@ -260,19 +262,6 @@ class GeolocationHeaderBrowserTest : public InProcessBrowserTest {
   testing::NiceMock<policy::MockConfigurationPolicyProvider> policy_provider_;
 };
 
-class GeolocationHeaderFencedFrameBrowserTest
-    : public GeolocationHeaderBrowserTest {
- public:
-  GeolocationHeaderFencedFrameBrowserTest() {
-    feature_list_.Reset();
-    feature_list_.InitWithFeatures(
-        {omnibox::kPlatformAgnosticXGeo, blink::features::kFencedFrames,
-         features::kPrivacySandboxAdsAPIsOverride},
-        {});
-  }
-};
-
-
 // Test that the X-Geo header is correctly appended for allowed searches.
 IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, AppendsXGeoHeader) {
   base::HistogramTester histogram_tester;
@@ -298,11 +287,11 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, AppendsXGeoHeader) {
   // Perform navigation to the search provider mimicking the Omnibox.
   GURL search_url = test_server_.GetURL("/search?q=test");
 
-  content::OpenURLParams params(
-      search_url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-      false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
   content::TestNavigationObserver navigation_observer(
       browser()->GetTabStripModel()->GetActiveWebContents());
@@ -322,18 +311,14 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, AppendsXGeoHeader) {
   // that use Views (Linux, Windows, ChromeOS) while safely skipping it on
   // Mac (if not using Views).
 #if defined(TOOLKIT_VIEWS)
-  LocationBarView* location_bar_view = static_cast<LocationBarView*>(
-      BrowserWindow::FromBrowser(browser())->GetLocationBar());
-  const auto& image_views = location_bar_view->GetContentSettingViewsForTest();
-  bool geo_icon_visible = false;
-  for (const auto& view : image_views) {
-    if (view->GetType() ==
-        toolbar_ui_api::mojom::ContentSettingImageType::kGeolocation) {
-      geo_icon_visible = view->GetVisible();
-      break;
-    }
-  }
-  EXPECT_TRUE(geo_icon_visible)
+  LocationBarTesting* location_bar_testing =
+      BrowserWindow::FromBrowser(browser())
+          ->GetLocationBar()
+          ->GetLocationBarForTesting();
+  ASSERT_TRUE(location_bar_testing);
+  EXPECT_TRUE(location_bar_testing->IsContentSettingImageVisible(
+      ContentSettingImageModel::GetContentSettingImageModelIndexForTesting(
+          ContentSettingImageModel::ImageType::kGeolocation)))
       << "Geolocation usage indicator icon should be visible in the Omnibox.";
 #endif
   histogram_tester.ExpectUniqueSample("Omnibox.Search.XGeoHeaderAttached", true,
@@ -351,11 +336,11 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, NoHeaderInIncognito) {
   // Perform navigation in incognito mimicking the Omnibox.
   GURL search_url = test_server_.GetURL("/search?q=test");
 
-  content::OpenURLParams params(
-      search_url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-      false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
   content::TestNavigationObserver navigation_observer(
       incognito_browser->GetTabStripModel()->GetActiveWebContents());
@@ -399,11 +384,11 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest,
   // Perform navigation to the search provider mimicking the Omnibox.
   GURL search_url = test_server_.GetURL("/search?q=test");
 
-  content::OpenURLParams params(
-      search_url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-      false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
   content::TestNavigationObserver navigation_observer(
       browser()->GetTabStripModel()->GetActiveWebContents());
@@ -444,11 +429,11 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, NoHeaderForNonDse) {
   // Perform navigation to a non-search URL.
   GURL search_url = test_server_.GetURL("/not-search?q=test");
 
-  content::OpenURLParams params(
-      search_url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-      false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
   content::TestNavigationObserver navigation_observer(
       browser()->GetTabStripModel()->GetActiveWebContents());
@@ -488,11 +473,11 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, RedirectToNonDse) {
   // Perform navigation to a URL that redirects to a non-search URL.
   GURL redirect_url = test_server_.GetURL("/search?q=redirect-non-dse");
 
-  content::OpenURLParams params(
-      redirect_url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-      false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          redirect_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
   content::TestNavigationObserver navigation_observer(
       browser()->GetTabStripModel()->GetActiveWebContents());
@@ -534,11 +519,11 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, RedirectToSameOrigin) {
   // origin).
   GURL redirect_url = test_server_.GetURL("/search?q=redirect-same-origin");
 
-  content::OpenURLParams params(
-      redirect_url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-      false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          redirect_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
   content::TestNavigationObserver navigation_observer(
       browser()->GetTabStripModel()->GetActiveWebContents());
@@ -552,70 +537,6 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest, RedirectToSameOrigin) {
   EXPECT_TRUE(GetXGeoHeader().starts_with("w "));
   histogram_tester.ExpectBucketCount("Omnibox.Search.XGeoHeaderAttached", true,
                                      2);
-}
-
-IN_PROC_BROWSER_TEST_F(GeolocationHeaderFencedFrameBrowserTest,
-                       NoHeaderForFencedFrame) {
-  device::ScopedGeolocationOverrider overrider(
-      /*latitude=*/12.34, /*longitude=*/56.78);
-
-  Profile* profile = browser()->GetProfile();
-  GeolocationHeaderService* geo_service =
-      GeolocationHeaderServiceFactory::GetForProfile(profile);
-  ASSERT_TRUE(geo_service);
-
-  // Trigger priming by typing in the Omnibox.
-  OmniboxView* omnibox_view =
-      BrowserWindow::FromBrowser(browser())->GetLocationBar()->GetOmniboxView();
-  omnibox_view->OnBeforePossibleChange();
-  omnibox_view->SetUserText(u"test");
-  omnibox_view->OnAfterPossibleChange(true);
-
-  // Wait until the geolocation service completes the query and caches it.
-  EXPECT_TRUE(
-      base::test::RunUntil([&]() { return geo_service->HasCachedLocation(); }));
-
-  // Load a main page first to ensure service is active and primed.
-  GURL main_url = test_server_.GetURL("/search?q=main");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url));
-
-  // Create a Fenced Frame manually via JS.
-  content::WebContents* web_contents =
-      browser()->GetTabStripModel()->GetActiveWebContents();
-  content::RenderFrameHost* main_frame = web_contents->GetPrimaryMainFrame();
-
-  EXPECT_TRUE(
-      content::ExecJs(main_frame,
-                      "const ff = document.createElement('fencedframe');"
-                      "ff.id = 'my_fenced_frame';"
-                      "document.body.appendChild(ff);"));
-
-  // Find the Fenced Frame RFH.
-  content::RenderFrameHost* fenced_frame_rfh = nullptr;
-  main_frame->ForEachRenderFrameHost([&](content::RenderFrameHost* rfh) {
-    if (rfh->IsFencedFrameRoot()) {
-      fenced_frame_rfh = rfh;
-    }
-  });
-  ASSERT_TRUE(fenced_frame_rfh);
-
-  // Navigate the Fenced Frame manually via JS.
-  GURL fenced_frame_url = test_server_.GetURL("/search?q=fenced");
-
-  content::TestFrameNavigationObserver navigation_observer(fenced_frame_rfh);
-  EXPECT_TRUE(content::ExecJs(
-      fenced_frame_rfh, base::StringPrintf("location.href = '%s';",
-                                           fenced_frame_url.spec().c_str())));
-  navigation_observer.Wait();
-
-  // Verify that the header was NOT sent for the fenced frame request.
-  std::string captured_header;
-  {
-    base::AutoLock lock(header_lock_);
-    captured_header = xgeo_header_;
-  }
-  EXPECT_TRUE(captured_header.empty())
-      << "X-Geo header should not be sent for Fenced Frame navigations.";
 }
 
 IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest,
@@ -643,11 +564,11 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderBrowserTest,
   // Perform navigation to a URL that redirects to a cross-origin non-DSE URL.
   GURL redirect_url = test_server_.GetURL("/search?q=redirect-cross-origin");
 
-  content::OpenURLParams params(
-      redirect_url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-      false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          redirect_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
   content::TestNavigationObserver navigation_observer(
       browser()->GetTabStripModel()->GetActiveWebContents());
@@ -754,11 +675,11 @@ IN_PROC_BROWSER_TEST_F(GeolocationHeaderDisabledBrowserTest,
 
   GURL search_url = test_server_.GetURL("/search?q=test");
 
-  content::OpenURLParams params(
-      search_url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-      ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-      false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          search_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR));
 
   content::TestNavigationObserver navigation_observer(
       browser()->GetTabStripModel()->GetActiveWebContents());

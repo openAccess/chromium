@@ -30,18 +30,6 @@
 
 namespace viz {
 
-namespace {
-
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_OZONE)
-// Helper function for moving a GpuFence from a fence handle to a unique_ptr.
-std::unique_ptr<gfx::GpuFence> TakeGpuFence(gfx::GpuFenceHandle fence) {
-  return fence.is_null() ? nullptr
-                         : std::make_unique<gfx::GpuFence>(std::move(fence));
-}
-#endif
-
-}  // namespace
-
 OutputPresenterGL::OutputPresenterGL(scoped_refptr<gl::Presenter> presenter,
                                      SkiaOutputSurfaceDependency* deps)
     : presenter_(presenter), dependency_(deps) {}
@@ -54,8 +42,6 @@ void OutputPresenterGL::InitializeCapabilities(
   capabilities->supports_post_sub_buffer = true;
   capabilities->supports_viewporter = presenter_->SupportsViewporter();
 
-  // Set supports_surfaceless to enable overlays.
-  capabilities->supports_surfaceless = true;
   // We expect origin of buffers is at top left.
   capabilities->output_surface_origin = gfx::SurfaceOrigin::kTopLeft;
   // Set resize_based_on_root_surface to omit platform proposed size.
@@ -103,7 +89,7 @@ void OutputPresenterGL::Present(SwapCompletionCallback completion_callback,
                                 BufferPresentedCallback presentation_callback,
                                 gfx::FrameData data) {
   presenter_->Present(std::move(completion_callback),
-                      std::move(presentation_callback), data);
+                      std::move(presentation_callback), std::move(data));
 }
 
 void OutputPresenterGL::ScheduleOverlayPlane(
@@ -143,32 +129,29 @@ void OutputPresenterGL::ScheduleOverlayPlane(
   }
 #endif  // DCHECK_IS_ON()
 
-  std::unique_ptr<gfx::GpuFence> acquire_fence;
+  gfx::GpuFenceHandle acquire_fence;
   if (access) {
-    auto access_fence = TakeGpuFence(access->TakeAcquireFence());
-    if (access_fence) {
-      DCHECK(!acquire_fence);
-      acquire_fence = std::move(access_fence);
-    }
+    acquire_fence = access->TakeAcquireFence();
   }
 
-  presenter_->ScheduleOverlayPlane(
-      std::move(overlay_image), std::move(acquire_fence),
-      gfx::OverlayPlaneData(
-          overlay_plane_candidate.plane_z_order,
-          overlay_plane_candidate.transform,
-          overlay_plane_candidate.display_rect, overlay_plane_candidate.uv_rect,
-          !overlay_plane_candidate.is_opaque,
-          ToEnclosingRect(overlay_plane_candidate.damage_rect),
-          overlay_plane_candidate.opacity,
-          overlay_plane_candidate.priority_hint,
-          overlay_plane_candidate.rounded_corners,
-          overlay_plane_candidate.color_space,
-          overlay_plane_candidate.hdr_metadata, overlay_plane_candidate.color,
-          overlay_plane_candidate.is_solid_color,
-          overlay_plane_candidate.is_root_render_pass,
-          overlay_plane_candidate.clip_rect,
-          overlay_plane_candidate.overlay_type));
+  gfx::OverlayPlaneData overlay_plane_data(
+      overlay_plane_candidate.plane_z_order, overlay_plane_candidate.transform,
+      overlay_plane_candidate.display_rect, overlay_plane_candidate.uv_rect,
+      !overlay_plane_candidate.is_opaque,
+      ToEnclosingRect(overlay_plane_candidate.damage_rect),
+      overlay_plane_candidate.opacity, overlay_plane_candidate.priority_hint,
+      overlay_plane_candidate.rounded_corners,
+      overlay_plane_candidate.color_space, overlay_plane_candidate.hdr_metadata,
+      overlay_plane_candidate.color, overlay_plane_candidate.is_solid_color,
+      overlay_plane_candidate.is_root_render_pass,
+      overlay_plane_candidate.clip_rect, overlay_plane_candidate.overlay_type);
+#if BUILDFLAG(IS_ANDROID)
+  overlay_plane_data.desired_brightness_ratio =
+      overlay_plane_candidate.desired_brightness_ratio;
+#endif
+  presenter_->ScheduleOverlayPlane(std::move(overlay_image),
+                                   std::move(acquire_fence),
+                                   std::move(overlay_plane_data));
 #elif BUILDFLAG(IS_APPLE)
   gfx::ScopedIOSurface io_surface;
   gfx::ColorSpace io_surface_color_space;

@@ -29,6 +29,7 @@ BrowserViewTabbedLayoutImplUiTest.*
 BubbleFrameViewBrowserTest.*
 BubbleSignInPromoInteractiveUITest.*
 CaptionBubbleBrowserTest.*
+CastBrowserControllerTest.*
 ChromeLabs*UiTest.*
 ChromeSignoutConfirmationPromptPixelTest.*
 ChromeSignoutConfirmationPromptWithExtensionsPixelTest.*
@@ -40,6 +41,7 @@ CookieClearOnExitMigrationNoticePixelTest.*
 CookieControlsBubbleViewPixelTest.*
 *CreatePopupRowViewTest.*
 *CreatePopupRowViewWithNoUserEducationRateLimitTest.*
+CrossDeviceSigninQrBubbleUIPixelTest.*
 CryptoModulePasswordDialogTest.*
 *DataControlsDialogUiTest.*
 DashboardKombuchaInteractiveUITest.*
@@ -55,7 +57,8 @@ DesktopMediaPickerViewsBrowserTest.*
 DesktopPaymentsWindowManagerInteractiveUiTest*
 *DeviceSignalsDisclaimerModalPixelTest.*
 *DeviceSignalsDisclaimerProfilePickerPixelTest.*
-DocumentPictureInPicturePixelTest.*
+*DocumentPictureInPicturePixelTest.*
+*DocumentPipDialogPixelTest.*
 EditAddressProfileDialogControllerImplTest.InvokeUi_*
 *EmbeddedPermissionPromptUiTest.InvokeUi_*
 MahiMenuPixelBrowserTest.*
@@ -73,6 +76,7 @@ FirstRunFinishOrContinuePixelTest.*
 FirstRunIntroPixelTest.*
 FirstRunSignInCelebrationPixelTest.*
 GlobalErrorBubbleTest.*
+*GmailOtpOptInBubbleViewBrowsertest.*
 HatsBubbleTest.*
 HistorySyncOptinUIDialogPixelTest.*
 HomeButtonUiTest.*
@@ -100,7 +104,8 @@ NewTabPageTest.*
 NtpPromoVisualUiTest.*
 NtpRealboxUiScreenshotTest.*
 OfferNotificationBubbleViewPixelBrowserTest.*
-OmniboxAimWebUiInteractiveTest.QueryWithTabContext*
+OmniboxAimWebUiEagerPopupInteractiveTest.QueryWithTabContext*
+OrganizerPanelPixelTest.*
 OutdatedUpgradeBubbleTest.*
 PageActionPixelIconsHiddenTest.*
 PageActionPixelShowIconTest.*
@@ -153,10 +158,12 @@ ReportUnsafeSiteDialogInteractiveUiTest.ExcludeScreenshotPixelTest
 SafetyTipPageInfoBubbleViewDialogTest.*
 ScreenCaptureNotificationUiBrowserTest.*
 SearchEngineChoiceUIPixelTest.*
+SearchEnginePickerPixelBrowserTest.*
 SecurePaymentConfirmationDialogViewTest.InvokeUi_*
 *SendTabToSelfBubbleTest.*
 SendTabToSelfInteractiveUiTest.*
-SendTabToSelfToolbarIconControllerInteractiveUiTest.*
+SendTabToSelfIphInteractiveUiTest.CaptureTutorialScreenshots
+SendTabToSelfReceivingUiHandlerInteractiveUiTest.*
 SessionCrashedBubbleViewTest.*
 SettingsOverriddenExplicitChoiceDialogInteractiveUiTest.*
 *SharedPasswordsNotificationBubbleInteractiveUiTest.*
@@ -165,8 +172,6 @@ SingleBookmarkUploadDialogPixelTest.InvokeUi
 SearchAIModeSignInPromoViewPixelTest.*
 *SkillsPageScreenshotInteractiveUITest.*
 SplitTabButtonInteractiveTest.ButtonUpdatesOnSplit
-SyncConfirmationUIDialogPixelTest.*
-SyncConfirmationUIWindowPixelTest.*
 SyncPassphraseDialogBrowserTest.*
 TabDialogManagerPixelTest.*
 TabGroupEditorBubbleViewDialogBrowserTest.*
@@ -185,6 +190,7 @@ WebAppConfirmViewBrowserTest.*
 WebAppInstallDialogBrowserTest.*
 WebAppMenuBrowserTest.*
 WebAppUpdateReviewDialog.*
+WebUIToolbarGlicPixelInteractiveUiTest.*
 WebUIToolbarPixelInteractiveUiTest.*
 ZoomBubbleDialogTest.*
 

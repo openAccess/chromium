@@ -8,8 +8,15 @@
 
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
+#include "chrome/browser/enterprise/isolated_mode/isolated_mode_settings_service_factory.h"
 #include "chrome/browser/extensions/extension_management.h"
+#include "chrome/browser/extensions/extension_util.h"
+#include "chrome/browser/extensions/low_trust_policy_install_block_manager.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/policy/core/common/policy_logger.h"
+#include "extensions/browser/extension_util.h"
 #include "extensions/browser/managed_installation_mode.h"
 #include "extensions/browser/manifest_v2_handler.h"
 #include "extensions/buildflags/buildflags.h"
@@ -18,6 +25,10 @@
 #include "extensions/common/manifest.h"
 #include "extensions/strings/grit/extensions_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#include "chrome/browser/extensions/policy_dse_ntp_override_metrics_reporter.h"
+#endif
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -164,6 +175,44 @@ void StandardManagementPolicyProvider::UserMayInstall(
     base::OnceCallback<void(ManagementPolicy::Decision)> callback) const {
   std::u16string error;
 
+  // Evaluate DSE/NTP policy overrides first so they take precedence over
+  // general policy abuse mitigations (such as off-store or greylist rules).
+  // This blocks the policy installation and transitions the extension to an
+  // effective user-allowed state rather than force-disabling it.
+  //
+  // TODO(crbug.com/536913423): Currently this also intercepts user-initiated
+  // installs if a corresponding policy is configured. A follow-up CL will
+  // allow user installs (e.g. from Chrome Web Store) while keeping policy
+  // installs blocked.
+  if (settings_->ShouldBlockPolicyInstalledDseNtpOverrideExtension(
+          *extension)) {
+    if (auto* block_manager = settings_->low_trust_block_manager()) {
+      std::string update_url =
+          settings_->GetEffectiveUpdateURL(*extension).spec();
+      block_manager->MarkBlocked(
+          extension->id(),
+          BlockedExtensionInfo{
+              .override_type = util::GetDseNtpOverrideType(*extension),
+              .update_url = std::move(update_url),
+              .timestamp = base::Time::Now()});
+    }
+    LOG_POLICY(WARNING, POLICY_PROCESSING)
+        << "[BlockLowTrustExtension] Blocked installation of policy extension "
+        << extension->id()
+        << ": Extension is not allowed to override DSE/NTP settings in "
+           "low-trust environments.";
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+    PolicyDseNtpOverrideMetricsReporter::LogBlockAction(
+        LowTrustPolicyBlockAction::kBlockedOnInstall);
+#endif
+    error = l10n_util::GetStringFUTF16(
+        IDS_EXTENSION_CANT_POLICY_INSTALL_IN_LOW_TRUST,
+        base::UTF8ToUTF16(extension->name()),
+        base::UTF8ToUTF16(extension->id()));
+    std::move(callback).Run({false, error});
+    return;
+  }
+
   ManagedInstallationMode installation_mode =
       settings_->GetInstallationMode(extension.get());
 
@@ -284,6 +333,23 @@ bool StandardManagementPolicyProvider::ShouldForceUninstall(
     return true;
   }
   return false;
+}
+
+bool StandardManagementPolicyProvider::MustRemainIsolatedModeEnabled(
+    const Extension* extension,
+    std::u16string* error) const {
+  if (!util::CanBeIncognitoEnabled(extension)) {
+    return false;
+  }
+  if (!enterprise_isolated_mode::IsolatedModeReplacesIncognito(profile_)) {
+    return false;
+  }
+
+  // TODO(crbug.com/576672136): Return false when the
+  // IsolatedModeExtensionForcedInstalledSettings policy allows users to disable
+  // force-installed extensions in Isolated Mode.
+  return settings_->GetInstallationMode(extension) ==
+         ManagedInstallationMode::kForced;
 }
 
 std::u16string StandardManagementPolicyProvider::GetLoadErrorMessage(

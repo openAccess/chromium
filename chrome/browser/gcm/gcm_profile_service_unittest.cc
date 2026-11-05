@@ -17,7 +17,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/gcm/gcm_product_util.h"
 #include "chrome/browser/gcm/gcm_profile_service_factory.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/gcm_driver/fake_gcm_app_handler.h"
@@ -56,8 +55,9 @@ void RequestProxyResolvingSocketFactoryOnUIThread(
     base::WeakPtr<gcm::GCMProfileService> service,
     mojo::PendingReceiver<network::mojom::ProxyResolvingSocketFactory>
         receiver) {
-  if (!service)
+  if (!service) {
     return;
+  }
   return profile->GetDefaultStoragePartition()
       ->GetNetworkContext()
       ->CreateProxyResolvingSocketFactory(std::move(receiver));
@@ -81,14 +81,13 @@ std::unique_ptr<KeyedService> BuildGCMProfileService(
       base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
   return std::make_unique<gcm::GCMProfileService>(
-      profile->GetPrefs(), profile->GetPath(),
+      profile->GetPath(),
       base::BindRepeating(&RequestProxyResolvingSocketFactory, profile),
       profile->GetDefaultStoragePartition()
           ->GetURLLoaderFactoryForBrowserProcess(),
       network::TestNetworkConnectionTracker::GetInstance(),
       chrome::GetChannel(),
       gcm::GetProductCategoryForSubtypes(profile->GetPrefs()),
-      IdentityManagerFactory::GetForProfile(profile),
       std::make_unique<gcm::FakeGCMClientFactory>(
           content::GetUIThreadTaskRunner({}),
           content::GetIOThreadTaskRunner({})),
@@ -187,8 +186,8 @@ void GCMProfileServiceTest::CreateGCMProfileService() {
       GCMProfileServiceFactory::GetInstance()->SetTestingFactoryAndUse(
           profile_.get(),
           base::BindRepeating(&BuildGCMProfileService, os_crypt_.get())));
-  gcm_profile_service_->driver()->AddAppHandler(
-      kTestAppID, gcm_app_handler_.get());
+  gcm_profile_service_->driver()->AddAppHandler(kTestAppID,
+                                                gcm_app_handler_.get());
 }
 
 void GCMProfileServiceTest::RegisterAndWaitForCompletion(

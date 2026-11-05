@@ -225,7 +225,7 @@ TEST_F(WindowStateTest, UnresizableWindowSnap) {
   const std::array<bool, 2> orientation_params{false, true};
 
   for (const auto is_landscape : orientation_params) {
-    UpdateDisplay(is_landscape ? "900x600,200x100" : "600x900,100x200");
+    UpdateDisplay(is_landscape ? "900x600,320x200" : "600x900,200x320");
     auto* const screen = display::Screen::Get();
     ASSERT_EQ(2, screen->GetNumDisplays());
 
@@ -248,14 +248,14 @@ TEST_F(WindowStateTest, UnresizableWindowSnap) {
     EXPECT_FALSE(window_state->CanSnapOnDisplay(secondary_small_display));
 
     auto* const opposite_orientation_size =
-        is_landscape ? new gfx::Size(0, 300) : new gfx::Size(300, 0);
+        is_landscape ? new gfx::Size{0, 400} : new gfx::Size{400, 0};
     window->SetProperty(kUnresizableSnappedSizeKey, opposite_orientation_size);
     EXPECT_FALSE(window_state->CanSnap());
     EXPECT_FALSE(window_state->CanSnapOnDisplay(primary_display));
     EXPECT_FALSE(window_state->CanSnapOnDisplay(secondary_small_display));
 
     auto* const correct_orientation_size =
-        is_landscape ? new gfx::Size(300, 0) : new gfx::Size(0, 300);
+        is_landscape ? new gfx::Size{400, 0} : new gfx::Size{0, 400};
     window->SetProperty(kUnresizableSnappedSizeKey, correct_orientation_size);
     EXPECT_TRUE(window_state->CanSnap());
     EXPECT_TRUE(window_state->CanSnapOnDisplay(primary_display));
@@ -841,13 +841,13 @@ TEST_F(WindowStateTest, DoNotResizeMaximizedWindowInFullscreen) {
             maximized->GetBoundsInScreen().ToString());
 }
 
-TEST_F(WindowStateTest, LockedFullscreen) {
+TEST_F(WindowStateTest, TrustedPinned) {
   std::unique_ptr<aura::Window> window(
       CreateTestWindowInShell({.window_id = 0}));
   WindowState* window_state = WindowState::Get(window.get());
-  EXPECT_FALSE(window_state->IsLockedFullscreen());
+  EXPECT_FALSE(window_state->IsTrustedPinned());
   window_util::PinWindow(window.get(), true /* trusted */);
-  EXPECT_TRUE(window_state->IsLockedFullscreen());
+  EXPECT_TRUE(window_state->IsTrustedPinned());
 
   gfx::Rect work_area = display::Screen::Get()->GetPrimaryDisplay().work_area();
   EXPECT_EQ(work_area.ToString(), window->bounds().ToString());
@@ -857,15 +857,15 @@ TEST_F(WindowStateTest, LockedFullscreen) {
     const WMEvent fullscreen_event(WM_EVENT_FULLSCREEN);
     window_state->OnWMEvent(&fullscreen_event);
   }
-  EXPECT_TRUE(window_state->IsLockedFullscreen());
+  EXPECT_TRUE(window_state->IsTrustedPinned());
 
   // Update display triggers workspace event.
-  UpdateDisplay("300x200");
-  EXPECT_EQ("0,0 300x200", window->GetBoundsInScreen().ToString());
+  UpdateDisplay("320x200");
+  EXPECT_EQ("0,0 320x200", window->GetBoundsInScreen().ToString());
 
   // Unpin should work.
   window_state->Restore();
-  EXPECT_FALSE(window_state->IsLockedFullscreen());
+  EXPECT_FALSE(window_state->IsTrustedPinned());
 }
 
 TEST_F(WindowStateTest, AllowSetBoundsDirect) {
@@ -1859,8 +1859,8 @@ TEST_F(WindowStateTest, TransitionInTheSameLayerKeepSameRestoreHistory) {
 }
 
 // TODO(minch): Check the expected behavior of restoring from window state like
-// kPinned, kLockedFullscreen that do not support the window state restore
-// history. Test the restore behaviors of kPinned and kLockedFullscreen window
+// kPinned, kTrustedPinned that do not support the window state restore
+// history. Test the restore behaviors of kPinned and kTrustedPinned window
 // state. They are different with kFullscreen restore behaviors.
 TEST_F(WindowStateTest, PinnedRestoreTest) {
   UpdateDisplay("800x600");
@@ -1914,7 +1914,7 @@ TEST_F(WindowStateTest, PinnedRestoreTest) {
   EXPECT_EQ(window_state->GetRestoreWindowState(), WindowStateType::kNormal);
   EXPECT_EQ(window_state->GetRestoreBoundsInScreen(), gfx::Rect());
 
-  // Same should happen for kLockedFullscreen as well.
+  // Same should happen for kTrustedPinned as well.
   window_state->OnWMEvent(&snap_primary);
   window_state->OnWMEvent(&maximize_event);
   restore_stack = window_state->GetWindowStateTypeRestoreHistoryForTesting();
@@ -1923,8 +1923,8 @@ TEST_F(WindowStateTest, PinnedRestoreTest) {
             WindowStateType::kPrimarySnapped);
   EXPECT_EQ(window_state->GetRestoreBoundsInScreen(), work_area_bounds);
 
-  const WMEvent locked_fullscreen_event(WM_EVENT_LOCKED_FULLSCREEN);
-  window_state->OnWMEvent(&locked_fullscreen_event);
+  const WMEvent trusted_pin_event(WM_EVENT_TRUSTED_PIN);
+  window_state->OnWMEvent(&trusted_pin_event);
   restore_stack = window_state->GetWindowStateTypeRestoreHistoryForTesting();
   EXPECT_EQ(window->GetBoundsInScreen(), fullscreen_bounds);
   EXPECT_TRUE(restore_stack.empty());

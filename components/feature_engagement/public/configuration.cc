@@ -52,16 +52,10 @@ std::ostream& operator<<(std::ostream& os, Blocking::Type type) {
 
 }  // namespace
 
-Comparator::Comparator() : type(ANY), value(0) {}
-
-Comparator::Comparator(ComparatorType type, uint32_t value)
-    : type(type), value(value) {}
-
-Comparator::~Comparator() = default;
-
 bool Comparator::MeetsCriteria(uint32_t v) const {
   switch (type) {
     case ANY:
+    case ANY_RELAXED:
       return true;
     case LESS_THAN:
       return v < value;
@@ -84,6 +78,7 @@ bool Comparator::MeetsCriteria(uint32_t v) const {
 std::ostream& operator<<(std::ostream& os, const Comparator& comparator) {
   switch (comparator.type) {
     case ANY:
+    case ANY_RELAXED:
       return os << "ANY";
     case LESS_THAN:
       return os << "<" << comparator.value;
@@ -105,12 +100,16 @@ std::ostream& operator<<(std::ostream& os, const Comparator& comparator) {
 
 EventConfig::EventConfig() : window(0), storage(0) {}
 
-EventConfig::EventConfig(const std::string& name,
+EventConfig::EventConfig(std::string_view name,
                          Comparator comparator,
                          uint32_t window,
                          uint32_t storage)
     : name(name), comparator(comparator), window(window), storage(storage) {}
 
+EventConfig::EventConfig(const EventConfig&) = default;
+EventConfig& EventConfig::operator=(const EventConfig&) = default;
+EventConfig::EventConfig(EventConfig&&) noexcept = default;
+EventConfig& EventConfig::operator=(EventConfig&&) noexcept = default;
 EventConfig::~EventConfig() = default;
 
 std::ostream& operator<<(std::ostream& os, const EventConfig& event_config) {

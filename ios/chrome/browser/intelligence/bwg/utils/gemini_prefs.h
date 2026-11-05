@@ -12,8 +12,14 @@
 
 class PrefService;
 
+namespace user_prefs {
+class PrefRegistrySyncable;
+}  // namespace user_prefs
+
 namespace gemini {
-// TODO(crbug.com/485892276): Move ProfilePrefs registration here.
+
+// Registers the profile prefs associated with Gemini.
+void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
 // Enterprise policies allow for Gemini usage within Chrome.
 bool GeminiAllowedByPolicy(PrefService* prefs);
@@ -22,13 +28,17 @@ bool GeminiAllowedByEnterprise(PrefService* prefs);
 
 // Functions that interact with the Gemini consent.
 void ResetGeminiConsent(PrefService* prefs);
-FirstRunState CurrentFirstRunState(PrefService* prefs);
-bool DidUserConsentToGemini(PrefService* prefs);
-bool DidUserConsentToGeminiLive(PrefService* prefs);
-bool DidUserSeeGeminiPromo(PrefService* prefs);
-bool DidGeminiLiveIntroPlay(PrefService* prefs);
+// Returns the current `FirstRunState` for Gemini based on user prefs.
+FirstRunState CurrentFirstRunState(const PrefService* prefs);
+bool DidUserConsentToGemini(const PrefService* prefs);
+bool DidUserConsentToGeminiLive(const PrefService* prefs);
+bool DidUserSeeGeminiPromo(const PrefService* prefs);
+bool DidGeminiLiveIntroPlay(const PrefService* prefs);
 void SetGeminiLiveIntroPlayed(PrefService* prefs);
 void UpdateUserConsentPrefs(bool consent, PrefService* prefs);
+
+// Updates the user consent preference for Gemini Live. When consenting
+// (`consent` is true), also approves the Live microphone setting.
 void UpdateUserConsentToLivePrefs(bool consent, PrefService* prefs);
 
 // Creates a new Gemini session in the prefs, or updates an existing one, with

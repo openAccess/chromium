@@ -6,6 +6,7 @@
 
 #include "base/check.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
@@ -21,6 +22,7 @@
 #include "chrome/browser/ui/profiles/profile_picker.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_constants.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
@@ -34,7 +36,9 @@
 #include "content/public/browser/browsing_data_remover.h"
 #include "ui/base/l10n/l10n_util.h"
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/flags/android/chrome_feature_list.h"
+#else
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #endif
 
@@ -58,11 +62,18 @@ namespace profiles {
 
 bool IsMultipleProfilesEnabled() {
 #if BUILDFLAG(IS_ANDROID)
-  return false;
+  return base::FeatureList::IsEnabled(chrome::android::kAndroidMultiprofile);
 #else
   return true;
 #endif
 }
+
+#if BUILDFLAG(IS_ANDROID)
+bool IsAndroidMultiprofileStartupDataEnabled() {
+  return base::FeatureList::IsEnabled(
+      features::kAndroidMultiprofileStartupData);
+}
+#endif
 
 base::FilePath GetDefaultProfileDir(const base::FilePath& user_data_dir) {
   base::FilePath default_profile_dir(user_data_dir);
@@ -102,7 +113,7 @@ void SetLastUsedProfile(const base::FilePath& profile_dir) {
     return;
 
   PrefService* local_state = g_browser_process->local_state();
-  DCHECK(local_state);
+  CHECK(local_state, base::NotFatalUntil::M162);
   local_state->SetFilePath(prefs::kProfileLastUsed, profile_dir);
 }
 
@@ -195,7 +206,7 @@ bool IsGuestModeRequested(const base::CommandLine& command_line,
                           bool show_warning) {
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || \
     BUILDFLAG(IS_MAC)
-  DCHECK(local_state);
+  CHECK(local_state, base::NotFatalUntil::M162);
 
   // Check if guest mode enforcement commandline switch or policy are provided.
   if (command_line.HasSwitch(switches::kGuest) ||
@@ -214,14 +225,14 @@ bool IsGuestModeRequested(const base::CommandLine& command_line,
 
 bool IsProfileCreationAllowed() {
   const PrefService* const pref_service = g_browser_process->local_state();
-  DCHECK(pref_service);
+  CHECK(pref_service, base::NotFatalUntil::M162);
   return pref_service->GetBoolean(prefs::kBrowserAddPersonEnabled);
 }
 
 // Whether guest mode is globally disabled (for all entry points and users).
 bool IsGuestModeGloballyDisabledInternal() {
   const PrefService* const pref_service = g_browser_process->local_state();
-  DCHECK(pref_service);
+  CHECK(pref_service, base::NotFatalUntil::M162);
   return !pref_service->GetBoolean(prefs::kBrowserGuestModeEnabled);
 }
 
@@ -273,7 +284,7 @@ bool IsProfileLocked(const base::FilePath& profile_path) {
 
 #if !BUILDFLAG(IS_CHROMEOS)
 void UpdateGaiaProfileInfoIfNeeded(Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
 
   GAIAInfoUpdateService* service =
       GAIAInfoUpdateServiceFactory::GetInstance()->GetForProfile(profile);
@@ -337,7 +348,7 @@ std::u16string GetDefaultNameForNewEnterpriseProfile(
 
 std::u16string GetDefaultNameForNewSignedInProfile(
     const AccountInfo& account_info) {
-  DCHECK(account_info.IsValid());
+  CHECK(account_info.IsValid(), base::NotFatalUntil::M162);
   if (account_info.IsManaged() != signin::Tribool::kTrue) {
     std::u16string given_name = base::UTF8ToUTF16(*account_info.GetGivenName());
     CHECK(!given_name.empty());

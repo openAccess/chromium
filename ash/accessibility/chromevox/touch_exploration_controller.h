@@ -7,6 +7,7 @@
 
 #include <map>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include "ash/ash_export.h"
@@ -279,7 +280,7 @@ class ASH_EXPORT TouchExplorationController
                       ui::GestureEvent* gesture) override;
 
   // ui::GestureConsumer:
-  const std::string& GetName() const override;
+  std::string_view GetName() const override;
   base::WeakPtr<ui::GestureConsumer> GetWeakPtr() override;
 
   // Process the gesture events that have been created.
@@ -556,6 +557,8 @@ class ASH_EXPORT TouchExplorationController
 
   // The maximum touch points seen in the current gesture.
   size_t max_gesture_touch_points_ = 0;
+
+  static constexpr std::string_view kName = "TouchExplorationController";
 
   base::WeakPtrFactory<TouchExplorationController> weak_ptr_factory_{this};
 };

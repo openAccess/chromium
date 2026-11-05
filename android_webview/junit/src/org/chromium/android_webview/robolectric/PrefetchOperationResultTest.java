@@ -6,27 +6,22 @@ package org.chromium.android_webview.robolectric;
 
 import android.os.Bundle;
 
-import androidx.test.filters.SmallTest;
-
 import com.android.webview.chromium.PrefetchOperationResult;
 import com.android.webview.chromium.PrefetchOperationStatusCode;
 
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.RobolectricTestRunner;
-import org.robolectric.annotation.Config;
 
 import org.chromium.android_webview.AwPrefetchCallback;
 import org.chromium.android_webview.AwPrefetchCallback.StatusCode;
+import org.chromium.base.test.BaseRobolectricTestRunner;
 
 /** Unit tests for {@link PrefetchOperationResult}. */
-@RunWith(RobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
+@RunWith(BaseRobolectricTestRunner.class)
 public class PrefetchOperationResultTest {
 
     @Test
-    @SmallTest
     public void testFromPrefetchStatusCode_Success() {
         PrefetchOperationResult result =
                 PrefetchOperationResult.fromPrefetchStatusCode(
@@ -36,7 +31,6 @@ public class PrefetchOperationResultTest {
     }
 
     @Test
-    @SmallTest
     public void testFromPrefetchStatusCode_StartFailed() {
         PrefetchOperationResult result =
                 PrefetchOperationResult.fromPrefetchStatusCode(
@@ -46,7 +40,6 @@ public class PrefetchOperationResultTest {
     }
 
     @Test
-    @SmallTest
     public void testFromPrefetchStatusCode_GenericError() {
         PrefetchOperationResult result =
                 PrefetchOperationResult.fromPrefetchStatusCode(
@@ -56,7 +49,6 @@ public class PrefetchOperationResultTest {
     }
 
     @Test
-    @SmallTest
     public void testFromPrefetchStatusCode_ServerErrorNoExtras() {
         PrefetchOperationResult result =
                 PrefetchOperationResult.fromPrefetchStatusCode(
@@ -66,7 +58,6 @@ public class PrefetchOperationResultTest {
     }
 
     @Test
-    @SmallTest
     public void testFromPrefetchStatusCode_ServerErrorWithExtras() {
         Bundle extras = new Bundle();
         extras.putInt(AwPrefetchCallback.EXTRA_HTTP_RESPONSE_CODE, 404);
@@ -78,7 +69,6 @@ public class PrefetchOperationResultTest {
     }
 
     @Test
-    @SmallTest
     public void testFromPrefetchStatusCode_DuplicateRequest() {
         PrefetchOperationResult result =
                 PrefetchOperationResult.fromPrefetchStatusCode(
@@ -88,7 +78,6 @@ public class PrefetchOperationResultTest {
     }
 
     @Test(expected = IllegalArgumentException.class)
-    @SmallTest
     public void testFromPrefetchStatusCode_InvalidStatusCode() {
         PrefetchOperationResult.fromPrefetchStatusCode(-1, null);
     }

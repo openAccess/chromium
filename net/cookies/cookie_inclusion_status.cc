@@ -102,14 +102,9 @@ void CookieInclusionStatus::MaybeClearThirdPartyPhaseoutReason() {
   if (!IsInclude()) {
     RemoveWarningReason(WarningReason::WARN_THIRD_PARTY_PHASEOUT);
   }
-  if (!ExclusionReasonsWithout(
-           {ExclusionReason::EXCLUDE_THIRD_PARTY_PHASEOUT,
-            ExclusionReason::
-                EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET})
+  if (!ExclusionReasonsWithout({ExclusionReason::EXCLUDE_THIRD_PARTY_PHASEOUT})
            .empty()) {
-    RemoveExclusionReasons(
-        {ExclusionReason::EXCLUDE_THIRD_PARTY_PHASEOUT,
-         ExclusionReason::EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET});
+    RemoveExclusionReasons({ExclusionReason::EXCLUDE_THIRD_PARTY_PHASEOUT});
   }
 }
 
@@ -173,8 +168,6 @@ std::string CookieInclusionStatus::GetDebugString() const {
       {ExclusionReason::EXCLUDE_ATTRIBUTE_VALUE_EXCEEDS_MAX_SIZE,
        "EXCLUDE_ATTRIBUTE_VALUE_EXCEEDS_MAX_SIZE"},
       {ExclusionReason::EXCLUDE_DOMAIN_NON_ASCII, "EXCLUDE_DOMAIN_NON_ASCII"},
-      {ExclusionReason::EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET,
-       "EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET"},
       {ExclusionReason::EXCLUDE_PORT_MISMATCH, "EXCLUDE_PORT_MISMATCH"},
       {ExclusionReason::EXCLUDE_SCHEME_MISMATCH, "EXCLUDE_SCHEME_MISMATCH"},
       {ExclusionReason::EXCLUDE_SHADOWING_DOMAIN, "EXCLUDE_SHADOWING_DOMAIN"},
@@ -187,6 +180,7 @@ std::string CookieInclusionStatus::GetDebugString() const {
       {ExclusionReason::EXCLUDE_INVALID_PATH, "EXCLUDE_INVALID_PATH"},
       {ExclusionReason::EXCLUDE_AMBIGUOUS_SERIALIZATION,
        "EXCLUDE_AMBIGUOUS_SERIALIZATION"},
+      {ExclusionReason::EXCLUDE_INVALID_HOST, "EXCLUDE_INVALID_HOST"},
   };
   static_assert(
       std::size(exclusion_reasons) == ExclusionReasonBitset::kValueCount,
@@ -217,6 +211,9 @@ std::string CookieInclusionStatus::GetDebugString() const {
        "WARN_SECURE_ACCESS_GRANTED_NON_CRYPTOGRAPHIC"},
       {WarningReason::WARN_CROSS_SITE_REDIRECT_DOWNGRADE_CHANGES_INCLUSION,
        "WARN_CROSS_SITE_REDIRECT_DOWNGRADE_CHANGES_INCLUSION"},
+      {WarningReason::
+           WARN_CROSS_SITE_REDIRECT_DOWNGRADE_CHANGES_INCLUSION_NO_INITIATOR,
+       "WARN_CROSS_SITE_REDIRECT_DOWNGRADE_CHANGES_INCLUSION_NO_INITIATOR"},
       {WarningReason::WARN_ATTRIBUTE_VALUE_EXCEEDS_MAX_SIZE,
        "WARN_ATTRIBUTE_VALUE_EXCEEDS_MAX_SIZE"},
       {WarningReason::WARN_DOMAIN_NON_ASCII, "WARN_DOMAIN_NON_ASCII"},
@@ -226,6 +223,7 @@ std::string CookieInclusionStatus::GetDebugString() const {
        "WARN_TENTATIVELY_ALLOWING_SECURE_SOURCE_SCHEME"},
       {WarningReason::WARN_SHADOWING_DOMAIN, "WARN_SHADOWING_DOMAIN"},
       {WarningReason::WARN_THIRD_PARTY_PHASEOUT, "WARN_THIRD_PARTY_PHASEOUT"},
+      {WarningReason::WARN_INVALID_HOST, "WARN_INVALID_HOST"},
   };
   static_assert(std::size(warning_reasons) == WarningReasonBitset::kValueCount,
                 "Please ensure all WarningReason variants are enumerated in "
@@ -253,9 +251,6 @@ std::string CookieInclusionStatus::GetDebugString() const {
       break;
     case ExemptionReason::kStorageAccess:
       reason = "ExemptionStorageAccess";
-      break;
-    case ExemptionReason::kTopLevelStorageAccess:
-      reason = "ExemptionTopLevelStorageAccess";
       break;
     case ExemptionReason::kScheme:
       reason = "ExemptionScheme";
@@ -332,15 +327,8 @@ std::optional<CookieInclusionStatus> CookieInclusionStatus::MakeFromComponents(
 }
 
 bool CookieInclusionStatus::ExcludedByUserPreferencesOrTPCD() const {
-  if (HasOnlyExclusionReason(ExclusionReason::EXCLUDE_USER_PREFERENCES) ||
-      HasOnlyExclusionReason(ExclusionReason::EXCLUDE_THIRD_PARTY_PHASEOUT)) {
-    return true;
-  }
-  return exclusion_reasons_ ==
-         ExclusionReasonBitset(
-             {ExclusionReason::EXCLUDE_THIRD_PARTY_PHASEOUT,
-              ExclusionReason::
-                  EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET});
+  return HasOnlyExclusionReason(ExclusionReason::EXCLUDE_USER_PREFERENCES) ||
+         HasOnlyExclusionReason(ExclusionReason::EXCLUDE_THIRD_PARTY_PHASEOUT);
 }
 
 }  // namespace net

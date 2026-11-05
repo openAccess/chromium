@@ -342,7 +342,7 @@ class HostResolverManager::Job : public PrioritizedDispatcher::Job,
   void OnIntermediateTransactionsComplete(
       std::optional<HostResolverDnsTask::SingleTransactionResults>
           single_transaction_results) override;
-  bool IsHappyEyeballsV3Enabled() const override;
+  bool ShouldSortTransactionsIndividually() const override;
   void AddTransactionTimeQueued(base::TimeDelta time_queued) override;
 
   // DnsTaskResultsManager::Delegate implementation:
@@ -471,11 +471,11 @@ class HostResolverManager::Job : public PrioritizedDispatcher::Job,
   std::unique_ptr<HostResolverNat64Task> nat64_task_;
 
   // All Requests waiting for the result of this Job. Some can be canceled.
-  base::LinkedList<RequestImpl> requests_;
+  base::UnsafeLinkedList<RequestImpl> requests_;
 
   // All ServiceEndpointRequests waiting for the result of this Job. Some can
   // be canceled.
-  base::LinkedList<ServiceEndpointRequestImpl> service_endpoint_requests_;
+  base::UnsafeLinkedList<ServiceEndpointRequestImpl> service_endpoint_requests_;
 
   // Builds and updates intermediate service endpoints while executing
   // a DnsTransaction.

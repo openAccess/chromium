@@ -26,6 +26,12 @@ class SharedImageFormatUtilsTest : public testing::Test {
   }
 };
 
+TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeSinglePlaneY410) {
+  SharedImageFormat format = SinglePlaneFormat::kY410;
+  std::vector<SkColorType> expected_types = {kRGBA_1010102_SkColorType};
+  TestToClosestSkColorType(expected_types, format);
+}
+
 TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneNV12) {
   // 8-bit 4:2:0 Y_UV biplanar format (YUV_420_BIPLANAR)
   SharedImageFormat format = MultiPlaneFormat::kNV12;
@@ -119,13 +125,6 @@ TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeSinglePlaneRGBX) {
   // Single planar RGBX_8888
   SharedImageFormat format = SinglePlaneFormat::kRGBX_8888;
   std::vector<SkColorType> expected_types = {kRGB_888x_SkColorType};
-  TestToClosestSkColorType(expected_types, format);
-}
-
-TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeSinglePlaneAlpha) {
-  // Single planar ALPHA_8
-  SharedImageFormat format = SinglePlaneFormat::kALPHA_8;
-  std::vector<SkColorType> expected_types = {kAlpha_8_SkColorType};
   TestToClosestSkColorType(expected_types, format);
 }
 

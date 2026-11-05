@@ -8,7 +8,6 @@
 #include <optional>
 
 #include "base/containers/flat_map.h"
-#include "base/feature_list.h"
 #include "base/files/file_enumerator.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/utf_string_conversions.h"
@@ -39,7 +38,6 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/ash/fusebox/fusebox_server.h"
-#include "components/enterprise/connectors/core/features.h"
 #include "content/public/browser/storage_partition.h"
 #include "storage/browser/file_system/file_system_context.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -124,7 +122,7 @@ void CompletionCallback(
 
   // For file drag-drops, block file paths depending on the verdict obtained for
   // child paths.
-  DCHECK(files_scan_data);
+  CHECK(files_scan_data, base::NotFatalUntil::M162);
   absl::flat_hash_set<size_t> file_indexes_to_block =
       files_scan_data->IndexesToBlock(result.paths_results);
 
@@ -144,8 +142,8 @@ void CompletionCallback(
   // A specific index could be blocked due to its parent folder being
   // blocked and not because it got a bad verdict itself, so `result` needs
   // to be updated to reflect that.
-  DCHECK_EQ(data.paths.size(),
-            files_scan_data->expanded_paths_indexes().size());
+  CHECK_EQ(data.paths.size(), files_scan_data->expanded_paths_indexes().size(),
+           base::NotFatalUntil::M162);
   for (size_t i = 0; i < data.paths.size(); ++i) {
     int parent_index =
         files_scan_data->expanded_paths_indexes().at(data.paths[i]);
@@ -164,21 +162,18 @@ void CompletionCallback(
   drop_data.filenames = std::move(final_filenames);
 
 #if BUILDFLAG(IS_CHROMEOS)
-  if (base::FeatureList::IsEnabled(
-          enterprise_connectors::kEnableDlpFileSystemApi)) {
-    std::vector<content::DropData::FileSystemFileInfo> final_file_system_files;
-    for (size_t i = 0; i < drop_data.file_system_files.size(); ++i) {
-      if (virtual_file_to_scan_file_index.contains(i)) {
-        int scan_file_index = virtual_file_to_scan_file_index[i];
-        if (file_indexes_to_block.contains(scan_file_index)) {
-          continue;
-        }
+  std::vector<content::DropData::FileSystemFileInfo> final_file_system_files;
+  for (size_t i = 0; i < drop_data.file_system_files.size(); ++i) {
+    if (virtual_file_to_scan_file_index.contains(i)) {
+      int scan_file_index = virtual_file_to_scan_file_index[i];
+      if (file_indexes_to_block.contains(scan_file_index)) {
+        continue;
       }
-      final_file_system_files.push_back(
-          std::move(drop_data.file_system_files[i]));
     }
-    drop_data.file_system_files = std::move(final_file_system_files);
+    final_file_system_files.push_back(
+        std::move(drop_data.file_system_files[i]));
   }
+  drop_data.file_system_files = std::move(final_file_system_files);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   std::move(callback).Run(std::move(drop_data));
@@ -205,7 +200,7 @@ class HandleDropScanData : public content::WebContentsObserver {
 
   void ScanData(
       std::unique_ptr<enterprise_connectors::FilesScanData> files_scan_data) {
-    DCHECK(web_contents());
+    CHECK(web_contents(), base::NotFatalUntil::M162);
     if (files_scan_data) {
       for (const auto& path : files_scan_data->expanded_paths()) {
         analysis_data_.paths.push_back(path);
@@ -254,10 +249,13 @@ void HandleOnPerformingDrop(
     // scanning) here. This is intended because we will run DLP scanning for
     // the payload as part of the Glic invocation, and if that fails the user
     // won't see the content anyway.
-    if (glic::IsGlicWebDrag(drop_data)) {
+    if (glic::IsChromeWebDrag(drop_data)) {
       glic::StartDragAndDropInvoke(web_contents, drop_data);
-      drop_data.document_is_handling_drag = true;
-      std::move(callback).Run(std::move(drop_data));
+      // Do not forward the DOM drop to the guest renderer (`std::nullopt`
+      // triggers `DragTargetDragLeave` to dismiss the guest drop-target
+      // overlay). The dropped content is delivered asynchronously via Glic
+      // Invoke only after DLP policy checks succeed.
+      std::move(callback).Run(std::nullopt);
       return;
     }
   } else {
@@ -328,15 +326,12 @@ void HandleOnPerformingDrop(
   // `drop_data.file_system_file` indices and `paths_to_scan` indices.
   base::flat_map<int, int> virtual_file_to_scan_file_index;
 #if BUILDFLAG(IS_CHROMEOS)
-  if (base::FeatureList::IsEnabled(
-          enterprise_connectors::kEnableDlpFileSystemApi)) {
-    for (size_t i = 0; i < drop_data.file_system_files.size(); ++i) {
-      base::FilePath resolved_path = MaybeSubstituteFuseboxFilePath(
-          profile, scan_target, drop_data.file_system_files[i].url);
-      if (!resolved_path.empty()) {
-        virtual_file_to_scan_file_index[i] = paths_to_scan.size();
-        paths_to_scan.push_back(resolved_path);
-      }
+  for (size_t i = 0; i < drop_data.file_system_files.size(); ++i) {
+    base::FilePath resolved_path = MaybeSubstituteFuseboxFilePath(
+        profile, scan_target, drop_data.file_system_files[i].url);
+    if (!resolved_path.empty()) {
+      virtual_file_to_scan_file_index[i] = paths_to_scan.size();
+      paths_to_scan.push_back(resolved_path);
     }
   }
 #endif
@@ -361,9 +356,8 @@ void HandleOnPerformingDrop(
         std::move(files_scan_data)));
   }
 #else
-  // If content analysis is not available, make sure that the renderer never
-  // forces a default action.
-  drop_data.document_is_handling_drag = true;
+  // Without content analysis there is nothing to scan; `cleanup` forwards the
+  // drop unchanged.
   return;
 #endif  // !BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) ||
         // !BUILDFLAG(SAFE_BROWSING_AVAILABLE)

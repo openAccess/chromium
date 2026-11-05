@@ -113,7 +113,7 @@ void WaylandBufferManagerGpu::OnSubmission(
     const std::vector<wl::WaylandPresentationInfo>& presentation_infos) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
 
-  DCHECK_LE(commit_thread_runners_.count(widget), 1u);
+  CHECK_LE(commit_thread_runners_.count(widget), 1u, base::NotFatalUntil::M163);
   // Return back to the same thread where the commit request came from.
   auto it = commit_thread_runners_.find(widget);
   if (it == commit_thread_runners_.end())
@@ -137,7 +137,7 @@ void WaylandBufferManagerGpu::OnPresentation(
     const std::vector<wl::WaylandPresentationInfo>& presentation_infos) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
 
-  DCHECK_LE(commit_thread_runners_.count(widget), 1u);
+  CHECK_LE(commit_thread_runners_.count(widget), 1u, base::NotFatalUntil::M163);
   // Return back to the same thread where the commit request came from.
   auto it = commit_thread_runners_.find(widget);
   if (it == commit_thread_runners_.end())
@@ -156,7 +156,7 @@ void WaylandBufferManagerGpu::OnPresentation(
 
 void WaylandBufferManagerGpu::RegisterSurface(gfx::AcceleratedWidget widget,
                                               WaylandSurfaceGpu* surface) {
-  DCHECK(gpu_thread_runner_);
+  CHECK(gpu_thread_runner_, base::NotFatalUntil::M163);
   gpu_thread_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(
@@ -169,7 +169,7 @@ void WaylandBufferManagerGpu::RegisterSurface(gfx::AcceleratedWidget widget,
 }
 
 void WaylandBufferManagerGpu::UnregisterSurface(gfx::AcceleratedWidget widget) {
-  DCHECK(gpu_thread_runner_);
+  CHECK(gpu_thread_runner_, base::NotFatalUntil::M163);
   gpu_thread_runner_->PostTask(
       FROM_HERE,
       base::BindOnce(
@@ -201,7 +201,7 @@ void WaylandBufferManagerGpu::CreateDmabufBasedBuffer(
     const gfx::ColorSpace& color_space,
     const gfx::HDRMetadata& hdr_metadata,
     uint32_t buffer_id) {
-  DCHECK(gpu_thread_runner_);
+  CHECK(gpu_thread_runner_, base::NotFatalUntil::M163);
   if (!gpu_thread_runner_->BelongsToCurrentThread()) {
     // Do the mojo call on the GpuMainThread.
     gpu_thread_runner_->PostTask(
@@ -226,7 +226,7 @@ void WaylandBufferManagerGpu::CreateShmBasedBuffer(base::ScopedFD shm_fd,
                                                    size_t length,
                                                    gfx::Size size,
                                                    uint32_t buffer_id) {
-  DCHECK(gpu_thread_runner_);
+  CHECK(gpu_thread_runner_, base::NotFatalUntil::M163);
   // Do the mojo call on the GpuMainThread.
   if (!gpu_thread_runner_->BelongsToCurrentThread()) {
     gpu_thread_runner_->PostTask(
@@ -245,7 +245,7 @@ void WaylandBufferManagerGpu::CreateShmBasedBuffer(base::ScopedFD shm_fd,
 
 void WaylandBufferManagerGpu::CreateSinglePixelBuffer(SkColor4f color,
                                                       uint32_t buf_id) {
-  DCHECK(gpu_thread_runner_);
+  CHECK(gpu_thread_runner_, base::NotFatalUntil::M163);
   if (!gpu_thread_runner_->BelongsToCurrentThread()) {
     // Do the mojo call on the GpuMainThread.
     gpu_thread_runner_->PostTask(
@@ -281,8 +281,8 @@ void WaylandBufferManagerGpu::CommitBuffer(gfx::AcceleratedWidget widget,
           gfx::OverlayPriorityHint::kNone,
           gfx::RRectF(gfx::RectF(bounds_rect), corners), gfx::ColorSpace(),
           std::nullopt),
-      nullptr, buffer_id, surface_scale_factor);
-  CommitOverlays(widget, frame_id, data, std::move(overlay_configs));
+      gfx::GpuFenceHandle(), buffer_id, surface_scale_factor);
+  CommitOverlays(widget, frame_id, std::move(data), std::move(overlay_configs));
 }
 
 void WaylandBufferManagerGpu::CommitOverlays(
@@ -290,24 +290,24 @@ void WaylandBufferManagerGpu::CommitOverlays(
     uint32_t frame_id,
     gfx::FrameData data,
     std::vector<wl::WaylandOverlayConfig> overlays) {
-  DCHECK(gpu_thread_runner_);
+  CHECK(gpu_thread_runner_, base::NotFatalUntil::M163);
   if (!gpu_thread_runner_->BelongsToCurrentThread()) {
     // Do the mojo call on the GpuMainThread.
     gpu_thread_runner_->PostTask(
         FROM_HERE, base::BindOnce(&WaylandBufferManagerGpu::CommitOverlays,
                                   base::Unretained(this), widget, frame_id,
-                                  data, std::move(overlays)));
+                                  std::move(data), std::move(overlays)));
     return;
   }
 
   base::OnceClosure task = base::BindOnce(
       &WaylandBufferManagerGpu::CommitOverlaysTask, base::Unretained(this),
-      widget, frame_id, data, std::move(overlays));
+      widget, frame_id, std::move(data), std::move(overlays));
   RunOrQueueTask(std::move(task));
 }
 
 void WaylandBufferManagerGpu::DestroyBuffer(uint32_t buffer_id) {
-  DCHECK(gpu_thread_runner_);
+  CHECK(gpu_thread_runner_, base::NotFatalUntil::M163);
   if (!gpu_thread_runner_->BelongsToCurrentThread()) {
     // Do the mojo call on the GpuMainThread.
     gpu_thread_runner_->PostTask(
@@ -371,7 +371,13 @@ bool WaylandBufferManagerGpu::AllowsImplicitModifierForFormat(
 }
 
 uint32_t WaylandBufferManagerGpu::AllocateBufferID() {
-  return ++next_buffer_id_ ? next_buffer_id_ : ++next_buffer_id_;
+  // This may be called concurrently on the GPU main and IO threads. Skip 0,
+  // which is not a valid buffer ID.
+  uint32_t id;
+  do {
+    id = next_buffer_id_.fetch_add(1, std::memory_order_relaxed) + 1;
+  } while (id == 0);
+  return id;
 }
 
 bool WaylandBufferManagerGpu::SupportsFormat(
@@ -383,7 +389,8 @@ void WaylandBufferManagerGpu::BindHostInterface(
     mojo::PendingRemote<ozone::mojom::WaylandBufferManagerHost> remote_host) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
 
-  DCHECK(!remote_host_.is_bound() && !associated_receiver_.is_bound());
+  CHECK(!remote_host_.is_bound() && !associated_receiver_.is_bound(),
+        base::NotFatalUntil::M163);
   remote_host_.Bind(std::move(remote_host));
   // WaylandBufferManagerHost may bind host again after an error. See
   // WaylandBufferManagerHost::BindInterface for more details.
@@ -394,7 +401,7 @@ void WaylandBufferManagerGpu::BindHostInterface(
   mojo::PendingAssociatedRemote<ozone::mojom::WaylandBufferManagerGpu>
       client_remote;
   associated_receiver_.Bind(client_remote.InitWithNewEndpointAndPassReceiver());
-  DCHECK(remote_host_);
+  CHECK(remote_host_, base::NotFatalUntil::M163);
   remote_host_->SetWaylandBufferManagerGpu(std::move(client_remote));
 }
 
@@ -403,7 +410,7 @@ void WaylandBufferManagerGpu::SaveTaskRunnerForWidgetOnIOThread(
     scoped_refptr<base::SingleThreadTaskRunner> origin_runner) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
 
-  DCHECK_NE(widget, gfx::kNullAcceleratedWidget);
+  CHECK_NE(widget, gfx::kNullAcceleratedWidget, base::NotFatalUntil::M163);
   commit_thread_runners_.emplace(widget, origin_runner);
 }
 
@@ -411,7 +418,7 @@ void WaylandBufferManagerGpu::ForgetTaskRunnerForWidgetOnIOThread(
     gfx::AcceleratedWidget widget) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
 
-  DCHECK_NE(widget, gfx::kNullAcceleratedWidget);
+  CHECK_NE(widget, gfx::kNullAcceleratedWidget, base::NotFatalUntil::M163);
   commit_thread_runners_.erase(widget);
 }
 
@@ -421,7 +428,7 @@ void WaylandBufferManagerGpu::HandleSubmissionOnOriginThread(
     gfx::SwapResult swap_result,
     gfx::GpuFenceHandle release_fence,
     const std::vector<wl::WaylandPresentationInfo>& presentation_infos) {
-  DCHECK_NE(widget, gfx::kNullAcceleratedWidget);
+  CHECK_NE(widget, gfx::kNullAcceleratedWidget, base::NotFatalUntil::M163);
   auto* surface = GetSurface(widget);
   // The surface might be destroyed by the time the swap result is provided.
   if (surface)
@@ -433,7 +440,7 @@ void WaylandBufferManagerGpu::HandleSubmissionOnOriginThread(
 void WaylandBufferManagerGpu::HandlePresentationOnOriginThread(
     gfx::AcceleratedWidget widget,
     const std::vector<wl::WaylandPresentationInfo>& presentation_infos) {
-  DCHECK_NE(widget, gfx::kNullAcceleratedWidget);
+  CHECK_NE(widget, gfx::kNullAcceleratedWidget, base::NotFatalUntil::M163);
 
   auto* surface = GetSurface(widget);
   // The surface might be destroyed by the time the presentation feedback is
@@ -507,7 +514,7 @@ void WaylandBufferManagerGpu::RunOrQueueTask(base::OnceClosure task) {
 
 void WaylandBufferManagerGpu::ProcessPendingTasks() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
-  DCHECK(remote_host_);
+  CHECK(remote_host_, base::NotFatalUntil::M163);
 
   for (auto& task : pending_tasks_)
     std::move(task).Run();
@@ -527,7 +534,7 @@ void WaylandBufferManagerGpu::CreateDmabufBasedBufferTask(
     const gfx::HDRMetadata& hdr_metadata,
     uint32_t buffer_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
-  DCHECK(remote_host_);
+  CHECK(remote_host_, base::NotFatalUntil::M163);
 
   remote_host_->CreateDmabufBasedBuffer(
       mojo::PlatformHandle(std::move(dmabuf_fd)), size, strides, offsets,
@@ -540,7 +547,7 @@ void WaylandBufferManagerGpu::CreateShmBasedBufferTask(base::ScopedFD shm_fd,
                                                        gfx::Size size,
                                                        uint32_t buffer_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
-  DCHECK(remote_host_);
+  CHECK(remote_host_, base::NotFatalUntil::M163);
 
   remote_host_->CreateShmBasedBuffer(mojo::PlatformHandle(std::move(shm_fd)),
                                      length, size, buffer_id);
@@ -549,7 +556,7 @@ void WaylandBufferManagerGpu::CreateShmBasedBufferTask(base::ScopedFD shm_fd,
 void WaylandBufferManagerGpu::CreateSinglePixelBufferTask(SkColor4f color,
                                                           uint32_t buf_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
-  DCHECK(remote_host_);
+  CHECK(remote_host_, base::NotFatalUntil::M163);
 
   remote_host_->CreateSinglePixelBuffer(color, buf_id);
 }
@@ -560,14 +567,14 @@ void WaylandBufferManagerGpu::CommitOverlaysTask(
     gfx::FrameData data,
     std::vector<wl::WaylandOverlayConfig> overlays) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
-  DCHECK(remote_host_);
+  CHECK(remote_host_, base::NotFatalUntil::M163);
 
   remote_host_->CommitOverlays(widget, frame_id, data, std::move(overlays));
 }
 
 void WaylandBufferManagerGpu::DestroyBufferTask(uint32_t buffer_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
-  DCHECK(remote_host_);
+  CHECK(remote_host_, base::NotFatalUntil::M163);
 
   remote_host_->DestroyBuffer(buffer_id);
 }

@@ -5,14 +5,21 @@
 #ifndef IOS_CHROME_BROWSER_CREDENTIAL_PROVIDER_MODEL_CREDENTIAL_PROVIDER_SERVICE_H_
 #define IOS_CHROME_BROWSER_CREDENTIAL_PROVIDER_MODEL_CREDENTIAL_PROVIDER_SERVICE_H_
 
+#include <string>
+#include <vector>
+
+#include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
-#import "base/memory/raw_ptr.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/time/time.h"
+#include "base/types/expected.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_store/password_store_backend_error.h"
 #include "components/password_manager/core/browser/password_store/password_store_consumer.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
 #include "components/prefs/pref_member.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/protocol/webauthn_credential_specifics.pb.h"
@@ -91,8 +98,11 @@ class CredentialProviderService
 
   // Replaces all data with credentials created from the passed forms and then
   // syncs to disk. Errors are treated as an empty list of credentials.
-  void SyncAllCredentials(password_manager::PasswordStoreInterface* store,
-                          password_manager::LoginsResultOrError forms_or_error);
+  void SyncAllCredentials(
+      password_manager::PasswordStoreInterface* store,
+      base::expected<std::vector<password_manager::StoredCredential>,
+                     password_manager::PasswordStoreBackendError>
+          forms_or_error);
 
   // Helper for completion of `AddCredentials` in `SyncAllCredentials`.
   void CompleteSyncAllCredentials(
@@ -119,19 +129,18 @@ class CredentialProviderService
       MemoryCredentialStore* store,
       std::vector<password_manager::StoredCredential> forms);
 
-  // Add credentials from `forms`. This is the refactored version for better
-  // performance.
+  // Adds credentials from `forms` to `store` synchronously and executes
+  // `completion`. If `forms` contains valid URLs, asynchronously fetches stale
+  // favicons on a background thread.
   void AddCredentialsRefactored(
       MemoryCredentialStore* store,
       std::vector<password_manager::StoredCredential> forms,
       base::OnceClosure completion);
 
-  // Helper for asynchronous portion of `AddCredentialsRefactored`.
-  void ContinueAddCredentialsRefactored(
-      MemoryCredentialStore* store,
-      std::vector<password_manager::StoredCredential> forms,
-      base::OnceClosure completion,
-      NSDictionary<NSString*, NSDate*>* favicon_dict);
+  // Helper for asynchronous favicon fetching in `AddCredentialsRefactored`.
+  // Fetches stale favicons from `favicon_urls` using `favicon_map` timestamps.
+  void FetchStaleFavicons(std::vector<GURL> favicon_urls,
+                          base::flat_map<std::string, base::Time> favicon_map);
 
   // Add credentials from passkeys.
   void AddCredentials(
@@ -167,14 +176,18 @@ class CredentialProviderService
   // PasswordStoreConsumer:
   void OnGetPasswordStoreResultsOrErrorFrom(
       password_manager::PasswordStoreInterface* store,
-      password_manager::LoginsResultOrError results_or_error) override;
+      base::expected<std::vector<password_manager::StoredCredential>,
+                     password_manager::PasswordStoreBackendError>
+          results_or_error) override;
 
   // Completion called after the affiliations are injected in the added forms.
   // If no affiliation matcher is available, it is called right away. Errors are
   // treated as an empty list of credentials.
   void OnInjectedAffiliationAfterLoginsChanged(
       password_manager::PasswordStoreInterface* store,
-      password_manager::LoginsResultOrError results_or_error);
+      base::expected<std::vector<password_manager::StoredCredential>,
+                     password_manager::PasswordStoreBackendError>
+          results_or_error);
 
   // PasskeyModel::Observer:
   void OnPasskeysChanged(

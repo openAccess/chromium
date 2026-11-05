@@ -41,7 +41,7 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
     private static final @DrawableRes int SAFE_ICON = R.drawable.material_ic_check_24dp;
     private static final @DrawableRes int INFO_ICON = R.drawable.btn_info;
     private static final @DrawableRes int MANAGED_ICON = R.drawable.ic_domain;
-    private static final @DrawableRes int WARNING_ICON = R.drawable.ic_error;
+    private static final @DrawableRes int WARNING_ICON = R.drawable.ic_error_24dp;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -391,5 +391,29 @@ public class SafetyHubLocalPasswordsModuleMediatorTest {
         assertNull(mPreference.getIcon());
         assertNull(mPreference.getPrimaryButtonText());
         assertNull(mPreference.getSecondaryButtonText());
+    }
+
+    @Test
+    public void triggerNewCredentialFetch() {
+        verify(mDataSource, times(0)).triggerNewCredentialFetch();
+
+        mModuleMediator.triggerNewCredentialFetch();
+
+        verify(mDataSource, times(1)).triggerNewCredentialFetch();
+    }
+
+    @Test
+    public void triggerNewCredentialFetch_whileLoading() {
+        mockTriggerCheckup(true);
+
+        SafetyHubLocalPasswordsModuleMediator moduleMediator =
+                new SafetyHubLocalPasswordsModuleMediator(
+                        mPreference, mDataSource, mMediatorDelegateMock, mModuleDelegateMock);
+        moduleMediator.setUpModule();
+        verify(mDataSource, times(0)).triggerNewCredentialFetch();
+
+        moduleMediator.triggerNewCredentialFetch();
+
+        verify(mDataSource, times(0)).triggerNewCredentialFetch();
     }
 }

@@ -24,6 +24,7 @@
 
 #include "base/check_op.h"
 #include "base/containers/queue.h"
+#include "base/debug/leak_annotations.h"
 #include "base/numerics/checked_math.h"
 #include "base/trace_event/memory_usage_estimator.h"  // no-presubmit-check
 
@@ -440,16 +441,15 @@ void SubstringSetMatcher::AhoCorasickNode::SetEdge(uint32_t label,
 
   if (edges_capacity_ == 0 && num_free_edges_ > 0) {
     // Still space in the inline storage, so use that.
-    UNSAFE_TODO(edges_.inline_edges[num_edges()]) =
-        AhoCorasickEdge{label, node};
+    edges_.inline_edges[num_edges()] = AhoCorasickEdge{label, node};
     if (label == kFailureNodeLabel) {
       // Make sure that kFailureNodeLabel is first.
       // NOTE: We don't use std::swap here, because the compiler doesn't
       // understand that inline_edges[] is 4-aligned and can give
       // a warning or error.
       AhoCorasickEdge temp = edges_.inline_edges[0];
-      edges_.inline_edges[0] = UNSAFE_TODO(edges_.inline_edges[num_edges()]);
-      UNSAFE_TODO(edges_.inline_edges[num_edges()]) = temp;
+      edges_.inline_edges[0] = edges_.inline_edges[num_edges()];
+      edges_.inline_edges[num_edges()] = temp;
     }
     --num_free_edges_;
     return;
@@ -465,6 +465,11 @@ void SubstringSetMatcher::AhoCorasickNode::SetEdge(uint32_t label,
     unsigned new_capacity = std::min(old_capacity * 2, kEmptyLabel + 1);
     DCHECK_EQ(0u, new_capacity % 4);
     AhoCorasickEdge* new_edges = new AhoCorasickEdge[new_capacity];
+    // AhoCorasickNode is packed, so the pointer to this array may be stored
+    // at an unaligned address, where LeakSanitizer doesn't look for pointers.
+    // Exclude the array from leak checking to avoid false positives. (A real
+    // leak of the whole matcher is still caught via the `tree_` buffer.)
+    ANNOTATE_LEAKING_OBJECT_PTR(new_edges);
     UNSAFE_TODO(
         memcpy(new_edges, edges(), sizeof(AhoCorasickEdge) * old_capacity));
     for (unsigned edge_idx = old_capacity; edge_idx < new_capacity;

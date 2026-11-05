@@ -7,6 +7,7 @@
 #include <set>
 #include <utility>
 
+#include "base/memory/weak_ptr.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "content/browser/media/media_web_contents_observer.h"
 #include "content/browser/media/session/media_session_impl.h"
@@ -49,8 +50,8 @@ VideoPictureInPictureWindowControllerImpl::
 }
 
 void VideoPictureInPictureWindowControllerImpl::Show() {
-  DCHECK(window_);
-  DCHECK(surface_id_.is_valid());
+  CHECK(window_, base::NotFatalUntil::M159);
+  CHECK(surface_id_.is_valid(), base::NotFatalUntil::M159);
 
   MediaSessionImpl* media_session = MediaSessionImpl::Get(web_contents());
   media_session_action_play_handled_ = media_session->ShouldRouteAction(
@@ -136,8 +137,8 @@ void VideoPictureInPictureWindowControllerImpl::EmbedSurface(
   if (!window_)
     return;
 
-  DCHECK(active_session_);
-  DCHECK(surface_id.is_valid());
+  CHECK(active_session_, base::NotFatalUntil::M159);
+  CHECK(surface_id.is_valid(), base::NotFatalUntil::M159);
 
   surface_id_ = surface_id;
 
@@ -225,7 +226,9 @@ void VideoPictureInPictureWindowControllerImpl::UpdateMediaPosition() {
 bool VideoPictureInPictureWindowControllerImpl::TogglePlayPause() {
   // This comes from the window, rather than the renderer, so we must actually
   // have a window at this point.
-  DCHECK(window_);
+  CHECK(window_, base::NotFatalUntil::M159);
+  // TODO(crbug.com/563908053): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(active_session_);
 
   if (IsPlayerActive()) {
@@ -237,7 +240,9 @@ bool VideoPictureInPictureWindowControllerImpl::TogglePlayPause() {
 void VideoPictureInPictureWindowControllerImpl::Play() {
   // This comes from the window, rather than the renderer, so we must actually
   // have a window at this point.
-  DCHECK(window_);
+  CHECK(window_, base::NotFatalUntil::M159);
+  // TODO(crbug.com/572378290): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(active_session_);
 
   PlayInternal();
@@ -246,7 +251,9 @@ void VideoPictureInPictureWindowControllerImpl::Play() {
 void VideoPictureInPictureWindowControllerImpl::Pause() {
   // This comes from the window, rather than the renderer, so we must actually
   // have a window at this point.
-  DCHECK(window_);
+  CHECK(window_, base::NotFatalUntil::M159);
+  // TODO(crbug.com/561460780): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(active_session_);
 
   PauseInternal();
@@ -314,7 +321,11 @@ PictureInPictureResult VideoPictureInPictureWindowControllerImpl::StartSession(
   WebContentsDelegate* delegate = web_contents()->GetDelegate();
   if (delegate && (IsImmersive() ? delegate->IsImmersivePlaybackEnabled()
                                  : delegate->IsPictureInPictureEnabled())) {
+    base::WeakPtr<WebContents> weak_web_contents = web_contents()->GetWeakPtr();
     result = GetWebContentsImpl()->EnterPictureInPicture();
+    if (!weak_web_contents) {
+      return PictureInPictureResult::kNotSupported;
+    }
   }
 
   // Picture-in-Picture may not be supported by all embedders, so we should only
@@ -421,6 +432,15 @@ void VideoPictureInPictureWindowControllerImpl::SetPlaybackControlsVisibility(
   }
 }
 
+void VideoPictureInPictureWindowControllerImpl::OnPictureInPictureStateChanged(
+    const MediaPlayerId& player_id,
+    bool is_picture_in_picture) {
+  if (WebContentsImpl* web_contents = GetWebContentsImpl()) {
+    web_contents->media_web_contents_observer()->OnPictureInPictureStateChanged(
+        player_id, is_picture_in_picture);
+  }
+}
+
 void VideoPictureInPictureWindowControllerImpl::SkipAd() {
   if (media_session_action_skip_ad_handled_)
     MediaSession::Get(web_contents())->SkipAd();
@@ -466,7 +486,7 @@ void VideoPictureInPictureWindowControllerImpl::HangUp() {
 }
 
 void VideoPictureInPictureWindowControllerImpl::RequestMute(bool mute) {
-  DCHECK(active_session_);
+  CHECK(active_session_, base::NotFatalUntil::M159);
   active_session_->GetMediaPlayerRemote()->RequestMute(mute);
 }
 
@@ -666,7 +686,7 @@ void VideoPictureInPictureWindowControllerImpl::WebContentsDestroyed() {
 
 void VideoPictureInPictureWindowControllerImpl::OnLeavingPictureInPicture(
     bool should_pause_video) {
-  DCHECK(active_session_);
+  CHECK(active_session_, base::NotFatalUntil::M159);
 
   if (IsPlayerActive() && should_pause_video) {
     // Pause the current video so there is only one video playing at a time.

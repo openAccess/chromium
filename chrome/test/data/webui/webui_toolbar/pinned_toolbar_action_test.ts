@@ -2,11 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
-import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/app.js';
+import {BrowserProxyImpl, DownloadProgressRingStatus, IconTable, IconType, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 suite('PinnedToolbarAction', function() {
   let action: any;
@@ -25,6 +25,7 @@ suite('PinnedToolbarAction', function() {
       stopTracking: (element: HTMLElement) => {
         stopTrackingCalls.push(element);
       },
+      notifyElementActivated: () => {},
     };
     TrackedElementManager.setInstance(mockManager as any);
 
@@ -108,7 +109,7 @@ suite('PinnedToolbarAction', function() {
   });
 
   test('Sets draggable attribute based on enabled state', async () => {
-    const button = action.shadowRoot!.querySelector('cr-icon-button');
+    const button = action.shadowRoot!.querySelector('toolbar-chip-button');
     assertEquals('true', button.getAttribute('draggable'));
 
     action.state = {
@@ -119,8 +120,109 @@ suite('PinnedToolbarAction', function() {
     assertEquals('false', button.getAttribute('draggable'));
   });
 
+  test('Renders the progress ring', async () => {
+    // `action` is untyped, so hold the shadow root in a typed local to be able
+    // to use querySelector()'s type parameter.
+    const shadowRoot: ShadowRoot = action.shadowRoot;
+    const getRing = () =>
+        shadowRoot.querySelector<SVGElement>('.progress-ring');
+    const getFillDashArray = () =>
+        getRing()!.querySelector<SVGElement>('.fill')!.style.strokeDasharray;
+
+    // No ring is rendered unless the state asks for one.
+    assertEquals(null, getRing());
+
+    // DownloadProgressRingStatus.kDownloading
+    action.state = {
+      ...action.state,
+      progressRing: {
+        status: DownloadProgressRingStatus.kDownloading,
+        progressPercentage: 40,
+      },
+    };
+    await microtasksFinished();
+    assertEquals('downloading', getRing()!.getAttribute('status'));
+    assertEquals(40, parseFloat(getFillDashArray()));
+
+    // DownloadProgressRingStatus.kScanning. The percentage doesn't apply to
+    // indeterminate rings, so the dash pattern comes from the stylesheet.
+    action.state = {
+      ...action.state,
+      progressRing: {
+        status: DownloadProgressRingStatus.kScanning,
+        progressPercentage: null,
+      },
+    };
+    await microtasksFinished();
+    assertEquals('scanning', getRing()!.getAttribute('status'));
+    assertEquals('', getFillDashArray());
+
+    // DownloadProgressRingStatus.kDormant
+    action.state = {
+      ...action.state,
+      progressRing: {
+        status: DownloadProgressRingStatus.kDormant,
+        progressPercentage: null,
+      },
+    };
+    await microtasksFinished();
+    assertEquals('dormant', getRing()!.getAttribute('status'));
+
+    action.state = {
+      ...action.state,
+      progressRing: null,
+    };
+    await microtasksFinished();
+    assertEquals(null, getRing());
+  });
+
+  test('Renders the badge', async () => {
+    const shadowRoot: ShadowRoot = action.shadowRoot;
+    const getBadge = () => shadowRoot.querySelector<HTMLElement>('.badge');
+
+    // No badge rendered by default.
+    assertEquals(null, getBadge());
+
+    action.state = {
+      ...action.state,
+      badgeNumber: 1,
+    };
+    await microtasksFinished();
+    assertEquals('1', getBadge()!.textContent.trim());
+
+    action.state = {
+      ...action.state,
+      badgeNumber: 2,
+    };
+    await microtasksFinished();
+    assertEquals('2', getBadge()!.textContent.trim());
+
+    action.state = {
+      ...action.state,
+      badgeNumber: 5,
+    };
+    await microtasksFinished();
+    assertEquals('5', getBadge()!.textContent.trim());
+
+    // Count greater than 9 renders 9+.
+    action.state = {
+      ...action.state,
+      badgeNumber: 10,
+    };
+    await microtasksFinished();
+    assertEquals('9+', getBadge()!.textContent.trim());
+
+    // Setting badgeNumber to null removes the badge.
+    action.state = {
+      ...action.state,
+      badgeNumber: null,
+    };
+    await microtasksFinished();
+    assertEquals(null, getBadge());
+  });
+
   test('Sets draggable attribute based on poppedOut state', async () => {
-    const button = action.shadowRoot!.querySelector('cr-icon-button')!;
+    const button = action.shadowRoot!.querySelector('toolbar-chip-button')!;
     assertEquals('true', button.getAttribute('draggable'));
 
     action.poppedOut = true;
@@ -149,7 +251,7 @@ suite('PinnedToolbarAction', function() {
     };
     BrowserProxyImpl.setInstance({toolbarUIHandler: mockHandler} as any);
 
-    const button = action.shadowRoot!.querySelector('cr-icon-button');
+    const button = action.shadowRoot!.querySelector('toolbar-chip-button');
     button.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'ArrowLeft',
       ctrlKey: true,
@@ -170,4 +272,209 @@ suite('PinnedToolbarAction', function() {
     assertEquals(1, movedByCalls[1]![0]);
     assertEquals(1, movedByCalls[1]![1]);
   });
+
+  test('Sets aria-pressed based on highlighted state', async () => {
+    const button = action.shadowRoot!.querySelector('toolbar-chip-button')!
+                       .shadowRoot!.querySelector('#button')!;
+    assertEquals('false', button.getAttribute('aria-pressed'));
+
+    action.state = {
+      ...action.state,
+      highlighted: true,
+    };
+    await microtasksFinished();
+    assertEquals('true', button.getAttribute('aria-pressed'));
+
+    action.state = {
+      ...action.state,
+      highlighted: false,
+    };
+    await microtasksFinished();
+    assertEquals('false', button.getAttribute('aria-pressed'));
+
+    action.trackedHighlighted = true;
+    await microtasksFinished();
+    assertEquals('true', button.getAttribute('aria-pressed'));
+
+    action.trackedHighlighted = false;
+    await microtasksFinished();
+    assertEquals('false', button.getAttribute('aria-pressed'));
+  });
+
+  test('Sets preventOverflow based on highlighted state', async () => {
+    assertFalse(action.preventOverflow);
+
+    let layoutRequested = 0;
+    action.addEventListener('request-layout', () => {
+      layoutRequested++;
+    });
+
+    action.state = {
+      ...action.state,
+      highlighted: true,
+    };
+    await microtasksFinished();
+    assertTrue(action.preventOverflow);
+    assertEquals(1, layoutRequested);
+
+    action.state = {
+      ...action.state,
+      highlighted: false,
+    };
+    await microtasksFinished();
+    assertFalse(action.preventOverflow);
+    assertEquals(2, layoutRequested);
+
+    action.trackedHighlighted = true;
+    await microtasksFinished();
+    assertTrue(action.preventOverflow);
+    assertEquals(3, layoutRequested);
+
+    action.trackedHighlighted = false;
+    await microtasksFinished();
+    assertFalse(action.preventOverflow);
+    assertEquals(4, layoutRequested);
+  });
+
+  test('Skips click execution when active bubble is highlighted', async () => {
+    let invokeCalls = 0;
+    const mockHandler = {
+      invokePinnedToolbarAction: () => {
+        invokeCalls++;
+      },
+    };
+    BrowserProxyImpl.setInstance({toolbarUIHandler: mockHandler} as any);
+
+    const button = action.shadowRoot!.querySelector('toolbar-chip-button')!;
+    // `HighlightTracker` initializes `lastUnhighlightedTime` to 0 and skips
+    // clicks when `performance.now() - lastUnhighlightedTime < 100`. Ensure the
+    // initial click is outside that 100ms suppression window even if the test
+    // runs within the first 100ms of page load.
+    action.highlightTracker.lastUnhighlightedTime = performance.now() - 200;
+
+    // When not highlighted, pointerdown + click invokes the action.
+    button.dispatchEvent(new PointerEvent(
+        'pointerdown', {button: 0, pointerType: 'mouse', bubbles: true}));
+    button.dispatchEvent(new PointerEvent(
+        'click', {button: 0, pointerType: 'mouse', bubbles: true}));
+    assertEquals(1, invokeCalls);
+
+    // When highlightTracker is highlighted on pointerdown, the following click
+    // is skipped.
+    action.highlightTracker.onHighlightChanged(true);
+    action.trackedHighlighted = true;
+    await microtasksFinished();
+    button.dispatchEvent(new PointerEvent(
+        'pointerdown', {button: 0, pointerType: 'mouse', bubbles: true}));
+    button.dispatchEvent(new PointerEvent(
+        'click', {button: 0, pointerType: 'mouse', bubbles: true}));
+    assertEquals(1, invokeCalls);
+
+    // Subsequent click when no longer highlighted invokes the action again.
+    // Advance `lastUnhighlightedTime` past the 100ms post-close suppression
+    // window that `onHighlightChanged(false)` starts at `performance.now()`.
+    action.highlightTracker.onHighlightChanged(false);
+    action.highlightTracker.lastUnhighlightedTime = performance.now() - 200;
+    action.trackedHighlighted = false;
+    await microtasksFinished();
+    button.dispatchEvent(new PointerEvent(
+        'pointerdown', {button: 0, pointerType: 'mouse', bubbles: true}));
+    button.dispatchEvent(new PointerEvent(
+        'click', {button: 0, pointerType: 'mouse', bubbles: true}));
+    assertEquals(2, invokeCalls);
+  });
+
+  test('Disabled action ignores pointer events', async () => {
+    const button = action.shadowRoot!.querySelector('toolbar-chip-button')!;
+    assertFalse(getComputedStyle(button).pointerEvents === 'none');
+
+    action.state = {
+      ...action.state,
+      enabled: false,
+    };
+    await microtasksFinished();
+    // Prevents hover/pressed highlights, clicks and context menus.
+    assertEquals('none', getComputedStyle(button).pointerEvents);
+
+    action.state = {
+      ...action.state,
+      enabled: true,
+    };
+    await microtasksFinished();
+    assertFalse(getComputedStyle(button).pointerEvents === 'none');
+  });
+
+  test('Does not set an accessible description', () => {
+    const button = action.shadowRoot!.querySelector('toolbar-chip-button')!
+                       .shadowRoot!.querySelector('#button')!;
+    assertEquals('', button.getAttribute('aria-description'));
+  });
+
+  test('Icon uses the button foreground color', async () => {
+    const iconTable = IconTable.getInstance();
+    iconTable.applyUpdates([{
+      handleId: 1n,
+      iconUrlOrName: 'puppy.svg',
+      iconType: IconType.kMaskUrl,
+      color: {value: 0xFFFF0000},
+    }]);
+
+    const button = action.shadowRoot!.querySelector('toolbar-chip-button')!;
+    button.style.setProperty('--toolbar-chip-fg-color', 'rgb(0, 255, 0)');
+    action.state = {
+      ...action.state,
+      icon: {handleId: 1n},
+    };
+    await microtasksFinished();
+
+    const iconFromTable = action.shadowRoot!.querySelector('icon-from-table')!;
+    await iconFromTable.updateComplete;
+    const renderer =
+        iconFromTable.shadowRoot!.querySelector('#maskIconContainer');
+    assertTrue(!!renderer);
+    // The icon table's color is ignored in favor of the button's foreground
+    // color, as in native PinnedActionToolbarButton.
+    assertEquals('rgb(0, 255, 0)', getComputedStyle(renderer).color);
+
+    iconTable.reset();
+  });
+
+  test(
+      'Disabled action uses inactive icon color without extra opacity',
+      async () => {
+        const rootStyle = document.documentElement.style;
+        rootStyle.setProperty('--color-toolbar-button-icon', 'rgb(1, 2, 3)');
+        rootStyle.setProperty(
+            '--color-toolbar-button-icon-inactive', 'rgb(4, 5, 6)');
+        try {
+          const button =
+              action.shadowRoot!.querySelector('toolbar-chip-button')!;
+          const innerButton = button.shadowRoot!.querySelector('#button')!;
+
+          action.state = {
+            ...action.state,
+            enabled: false,
+          };
+          await microtasksFinished();
+
+          let style = getComputedStyle(button);
+          assertEquals('rgb(4, 5, 6)', style.color);
+          assertEquals('none', style.forcedColorAdjust);
+          assertEquals('1', getComputedStyle(innerButton).opacity);
+
+          action.state = {
+            ...action.state,
+            enabled: true,
+          };
+          await microtasksFinished();
+
+          style = getComputedStyle(button);
+          assertEquals('rgb(1, 2, 3)', style.color);
+          assertEquals('auto', style.forcedColorAdjust);
+          assertEquals('1', getComputedStyle(innerButton).opacity);
+        } finally {
+          rootStyle.removeProperty('--color-toolbar-button-icon');
+          rootStyle.removeProperty('--color-toolbar-button-icon-inactive');
+        }
+      });
 });

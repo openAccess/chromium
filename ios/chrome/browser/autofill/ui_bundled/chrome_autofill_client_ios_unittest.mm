@@ -10,14 +10,21 @@
 #import "base/functional/callback.h"
 #import "base/functional/callback_helpers.h"
 #import "base/memory/raw_ptr.h"
+#import "base/strings/utf_string_conversions.h"
 #import "base/test/scoped_feature_list.h"
+#import "base/test/test_future.h"
 #import "base/test/values_test_util.h"
 #import "base/time/time.h"
 #import "base/values.h"
+#import "components/affiliations/core/browser/fake_affiliation_service.h"
+#import "components/autofill/core/browser/data_manager/autofill_ai/personal_context_entity_metadata_manager.h"
 #import "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #import "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #import "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #import "components/autofill/core/browser/integrators/password_form_classification.h"
+#import "components/autofill/core/browser/suggestions/suggestion.h"
+#import "components/autofill/core/browser/suggestions/suggestion_type.h"
+#import "components/autofill/core/browser/ui/mock_autofill_suggestion_delegate.h"
 #import "components/autofill/core/common/autofill_debug_features.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/autofill/core/common/autofill_prefs.h"
@@ -27,25 +34,43 @@
 #import "components/autofill/ios/browser/autofill_agent.h"
 #import "components/autofill/ios/browser/autofill_driver_ios.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_factory.h"
+#import "components/autofill/ios/browser/autofill_java_script_feature.h"
+#import "components/autofill/ios/browser/form_suggestion.h"
 #import "components/autofill/ios/browser/test_autofill_client_ios.h"
 #import "components/autofill/ios/browser/test_autofill_manager_injector.h"
 #import "components/infobars/core/infobar.h"
 #import "components/infobars/core/infobar_delegate.h"
 #import "components/infobars/core/infobar_manager.h"
+#import "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#import "components/personal_context/core/mock_personal_context_eligibility_service.h"
+#import "ios/chrome/browser/affiliations/model/ios_chrome_affiliation_service_factory.h"
+#import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
 #import "ios/chrome/browser/autofill/model/autofill_agent_delegate.h"
 #import "ios/chrome/browser/autofill/model/autofill_policy_service_factory.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
+#import "ios/chrome/browser/intelligence/bwg/model/fake_gemini_service.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_prefs.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/page_context_extractor_java_script_feature.h"
+#import "ios/chrome/browser/personal_context/model/ios_personal_context_eligibility_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/autofill_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/form_input_accessory_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/web/model/chrome_web_client.h"
 #import "ios/chrome/browser/webdata_services/model/web_data_service_factory.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
+#import "ios/web/public/js_messaging/content_world.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
+#import "ios/web/public/test/fakes/fake_web_frame.h"
+#import "ios/web/public/test/fakes/fake_web_frames_manager.h"
+#import "ios/web/public/test/fakes/fake_web_state.h"
+#import "ios/web/public/test/js_test_util.h"
 #import "ios/web/public/test/scoped_testing_web_client.h"
 #import "ios/web/public/test/task_observer_util.h"
 #import "ios/web/public/test/web_state_test_util.h"
@@ -56,9 +81,14 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 
+using personal_context::MockPersonalContextEligibilityService;
+using personal_context::PersonalContextEligibilityState;
+
 namespace autofill {
 
 namespace {
+
+using ::testing::HasSubstr;
 
 class TestAutofillManager : public BrowserAutofillManager {
  public:
@@ -87,6 +117,26 @@ class ChromeAutofillClientIOSTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(ios::WebDataServiceFactory::GetInstance(),
                               ios::WebDataServiceFactory::GetDefaultFactory());
+    builder.AddTestingFactory(
+        IOSChromeAffiliationServiceFactory::GetInstance(),
+        base::BindOnce([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
+          return std::make_unique<affiliations::FakeAffiliationService>();
+        }));
+    builder.AddTestingFactory(
+        GeminiServiceFactory::GetInstance(),
+        base::BindRepeating([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
+          return std::make_unique<FakeGeminiService>();
+        }));
+    builder.AddTestingFactory(
+        IOSPersonalContextEligibilityServiceFactory::GetInstance(),
+        base::BindRepeating([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
+          auto service = std::make_unique<
+              testing::NiceMock<MockPersonalContextEligibilityService>>();
+          ON_CALL(*service, GetEligibilityState())
+              .WillByDefault(
+                  testing::Return(PersonalContextEligibilityState::kEligible));
+          return service;
+        }));
     profile_ = std::move(builder).Build();
 
     browser_ = std::make_unique<TestBrowser>(profile_.get(), scene_state_);
@@ -121,11 +171,14 @@ class ChromeAutofillClientIOSTest : public PlatformTest {
             profile_.get(), web_state_.get(),
             InfoBarManagerImpl::FromWebState(web_state_.get()), autofill_agent);
     autofill_manager_injector_ =
-        std::make_unique<TestAutofillManagerInjector<TestAutofillManager>>(
+        std::make_unique<TestAutofillManagerInjectorIOS<TestAutofillManager>>(
             web_state_.get());
+    autofill_agent_ = autofill_agent;
   }
 
   void TearDown() override {
+    [browser_->GetCommandDispatcher()
+        stopDispatchingToTarget:mock_snackbar_handler_];
     web::test::WaitForBackgroundTasks();
     PlatformTest::TearDown();
   }
@@ -147,6 +200,25 @@ class ChromeAutofillClientIOSTest : public PlatformTest {
 
   web::WebState* web_state() { return web_state_.get(); }
 
+  // Returns the suggestions the agent last pushed to the keyboard accessory.
+  // `-retrieveSuggestionsForForm:webState:completionHandler:` runs its
+  // completion synchronously, so the result is available upon return.
+  NSArray<FormSuggestion*>* LastSuggestionsSentToKeyboard() {
+    __block BOOL completion_called = NO;
+    __block NSArray<FormSuggestion*>* suggestions = nil;
+    [autofill_agent_
+        retrieveSuggestionsForForm:nil
+                          webState:web_state()
+                 completionHandler:^(NSArray<FormSuggestion*>* form_suggestions,
+                                     id<FormSuggestionProvider> provider) {
+                   completion_called = YES;
+                   suggestions = form_suggestions;
+                 }];
+    // Guards against the completion becoming asynchronous.
+    EXPECT_TRUE(completion_called);
+    return suggestions;
+  }
+
   id autofill_agent_delegate_;
   id mock_snackbar_handler_;
 
@@ -161,12 +233,19 @@ class ChromeAutofillClientIOSTest : public PlatformTest {
   web::ScopedTestingWebClient web_client_;
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<web::WebState> web_state_;
+  // Declared after `web_state_` so that the agent, which holds a raw_ptr to the
+  // profile's `PrefService`, is released before the profile goes away.
+  AutofillAgent* autofill_agent_;
   std::unique_ptr<ChromeAutofillClientIOS> autofill_client_;
-  std::unique_ptr<TestAutofillManagerInjector<TestAutofillManager>>
+  std::unique_ptr<TestAutofillManagerInjectorIOS<TestAutofillManager>>
       autofill_manager_injector_;
   std::unique_ptr<TestBrowser> browser_;
   SceneState* scene_state_;
 };
+
+TEST_F(ChromeAutofillClientIOSTest, GetAffiliationService) {
+  EXPECT_NE(nullptr, client().GetAffiliationService());
+}
 
 // Tests that GetAutofillManagerForPrimaryMainFrame() returns the main frame's
 // AutofillManager.
@@ -536,11 +615,344 @@ TEST_F(ChromeAutofillClientIOSTest, OnActorTaskStateChange_ReparsesForms) {
   EXPECT_TRUE(client().IsTabInActorMode());
 }
 
-// Test that `GetEntitySuppressionManager` returns the manager for the profile.
-TEST_F(ChromeAutofillClientIOSTest, GetEntitySuppressionManager) {
+// Test that `GetPersonalContextEntityMetadataManager` returns the manager for
+// the profile.
+TEST_F(ChromeAutofillClientIOSTest, GetPersonalContextEntityMetadataManager) {
   base::test::ScopedFeatureList feature_list(
       features::kAutofillAmbientAutofillSuppression);
-  EXPECT_NE(client().GetEntitySuppressionManager(), nullptr);
+  PersonalContextEntityMetadataManager* manager =
+      client().GetPersonalContextEntityMetadataManager();
+  ASSERT_NE(manager, nullptr);
+  EXPECT_NE(manager->GetSyncControllerDelegate(), nullptr);
+}
+
+// Test that `HideSuggestions` dismisses AtMemory when product is `kAtMemory`,
+// but not when product is `std::nullopt` or other products.
+TEST_F(ChromeAutofillClientIOSTest, HideSuggestionsDismissesAtMemory) {
+  id mock_at_memory_handler =
+      OCMStrictProtocolMock(@protocol(AtMemoryCommands));
+  client().set_at_memory_handler(mock_at_memory_handler);
+
+  // When product is kAtMemory, dismissAtMemory should be called.
+  OCMExpect([mock_at_memory_handler dismissAtMemory]);
+  client().HideSuggestions(SuggestionHidingReason::kUserAborted,
+                           FillingProduct::kAtMemory);
+  EXPECT_OCMOCK_VERIFY(mock_at_memory_handler);
+
+  // When product is nullopt, dismissAtMemory should not be called.
+  [[mock_at_memory_handler reject] dismissAtMemory];
+  client().HideSuggestions(SuggestionHidingReason::kTabGone, std::nullopt);
+  EXPECT_OCMOCK_VERIFY(mock_at_memory_handler);
+
+  // When product is a different product, dismissAtMemory should not be called.
+  [[mock_at_memory_handler reject] dismissAtMemory];
+  client().HideSuggestions(SuggestionHidingReason::kUserAborted,
+                           FillingProduct::kAddress);
+  EXPECT_OCMOCK_VERIFY(mock_at_memory_handler);
+
+  client().set_at_memory_handler(nil);
+}
+
+// Test that suggestion updates are attributed to the form and field the popup
+// was opened for. `UpdateAutofillSuggestions()` carries no `PopupOpenArgs`, so
+// the client has to reuse the IDs captured by `ShowAutofillSuggestions()`.
+TEST_F(ChromeAutofillClientIOSTest, UpdateSuggestionsKeepsFormAndFieldId) {
+  const FormGlobalId form_id = test::MakeFormGlobalId();
+  const FieldGlobalId field_id = test::MakeFieldGlobalId();
+
+  AutofillClient::PopupOpenArgs open_args;
+  open_args.form_id = form_id;
+  open_args.field_id = field_id;
+  open_args.suggestions = {
+      Suggestion(u"", SuggestionType::kFetchingAmbientData)};
+
+  testing::NiceMock<MockAutofillSuggestionDelegate> delegate;
+  client().ShowAutofillSuggestions(open_args, delegate.GetWeakPtr());
+
+  client().UpdateAutofillSuggestions(
+      {Suggestion(u"John Doe", SuggestionType::kAddressEntry)},
+      FillingProduct::kAddress,
+      AutofillSuggestionTriggerSource::kFormControlElementClicked,
+      AutofillSuggestionsIgnoreFocusLoss(false));
+
+  NSArray<FormSuggestion*>* suggestions = LastSuggestionsSentToKeyboard();
+  ASSERT_EQ(1U, suggestions.count);
+  EXPECT_EQ(SuggestionType::kAddressEntry, suggestions[0].type);
+  EXPECT_EQ(form_id, suggestions[0].metadata.form_id);
+  EXPECT_EQ(field_id, suggestions[0].metadata.field_id);
+}
+
+// Test that `IsGlicEnabled` reflects Gemini eligibility for the profile.
+TEST_F(ChromeAutofillClientIOSTest, IsGlicEnabled) {
+  base::test::ScopedFeatureList feature_list(kPageActionMenu);
+  FakeGeminiService* fake_gemini_service = static_cast<FakeGeminiService*>(
+      GeminiServiceFactory::GetForProfile(profile()));
+  ASSERT_TRUE(fake_gemini_service);
+
+  fake_gemini_service->SetIsEligible(false);
+  EXPECT_FALSE(client().IsGlicEnabled());
+
+  fake_gemini_service->SetIsEligible(true);
+  EXPECT_TRUE(client().IsGlicEnabled());
+}
+
+// Tests that `GetAiPageContent` extracts page content in default mode when
+// `kAutofillActionableAIPageContent` is disabled.
+TEST_F(ChromeAutofillClientIOSTest, GetAiPageContent_Default) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kAutofillActionableAIPageContent);
+
+  // Note: attributeType 1 = CONTENT_ATTRIBUTE_ROOT,
+  //       attributeType 8 = CONTENT_ATTRIBUTE_FORM,
+  //       attributeType 24 = CONTENT_ATTRIBUTE_FORM_CONTROL.
+  base::Value js_result = base::test::ParseJson(R"json({
+    "currentNodeInnerText": "Example text",
+    "title": "Example",
+    "rootNode": {
+      "contentAttributes": {
+        "attributeType": 1
+      },
+      "childrenNodes": [{
+        "contentAttributes": {
+          "attributeType": 8,
+          "formData": {}
+        },
+        "childrenNodes": [{
+          "contentAttributes": {
+            "attributeType": 24,
+            "formControlData": {
+              "fieldName": "username"
+            }
+          }
+        }]
+      }]
+    }
+  })json");
+
+  web::test::OverrideJavaScriptFeatures(
+      profile(), {PageContextExtractorJavaScriptFeature::GetInstance(),
+                  AutofillJavaScriptFeature::GetInstance()});
+
+  web::FakeWebState fake_web_state;
+  fake_web_state.SetBrowserState(profile());
+  fake_web_state.SetVisibleURL(GURL("https://example.com/"));
+  fake_web_state.SetContentsMimeType("text/html");
+
+  auto frames_manager = std::make_unique<web::FakeWebFramesManager>();
+  web::FakeWebFramesManager* frames_manager_ptr = frames_manager.get();
+  fake_web_state.SetWebFramesManager(web::ContentWorld::kIsolatedWorld,
+                                     std::move(frames_manager));
+  fake_web_state.SetWebFramesManager(
+      web::ContentWorld::kPageContentWorld,
+      std::make_unique<web::FakeWebFramesManager>());
+
+  std::unique_ptr<web::FakeWebFrame> main_frame =
+      web::FakeWebFrame::CreateMainWebFrame(GURL("https://example.com/"));
+  main_frame->set_browser_state(profile());
+  web::FakeWebFrame* main_frame_ptr = main_frame.get();
+  frames_manager_ptr->AddWebFrame(std::move(main_frame));
+  main_frame_ptr->AddJsResultForFunctionCall(
+      &js_result, "pageContextExtractor.extractPageContext");
+
+  ActorTabHelper::CreateForWebState(&fake_web_state);
+  InfoBarManagerImpl::CreateForWebState(&fake_web_state);
+  WithFakedFromWebState<ChromeAutofillClientIOS> fake_client(
+      profile(), &fake_web_state,
+      InfoBarManagerImpl::FromWebState(&fake_web_state), nil);
+
+  base::test::TestFuture<
+      std::optional<optimization_guide::proto::AnnotatedPageContent>>
+      future;
+  fake_client.GetAiPageContent(future.GetCallback());
+
+  std::optional<optimization_guide::proto::AnnotatedPageContent> result =
+      future.Get();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->mode(),
+            optimization_guide::proto::ANNOTATED_PAGE_CONTENT_MODE_DEFAULT);
+  // Expected arguments after `nonce` in
+  // `pageContextExtractor.extractPageContext`:
+  // - `include_cross_origin_frame_content`: true
+  // - `use_rich_extraction`: true
+  // - `use_rich_extraction_with_actionable`: false
+  // - `extract_paid_content`: true
+  // - `attempt_paid_content_json_fixing`: false
+  // - `include_sensitive_payments_for_redaction`: false
+  // - `extract_autofill_otp_redactions`: false
+  // - `extract_password_screenshot_redactions`: true
+  EXPECT_THAT(
+      base::UTF16ToUTF8(main_frame_ptr->GetLastJavaScriptCall()),
+      HasSubstr(", true, true, false, true, false, false, false, true]);"));
+  ASSERT_EQ(result->root_node().children_nodes_size(), 1);
+  const optimization_guide::proto::ContentNode& form_node =
+      result->root_node().children_nodes(0);
+  EXPECT_EQ(form_node.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_FORM);
+  ASSERT_EQ(form_node.children_nodes_size(), 1);
+  const optimization_guide::proto::ContentNode& input_node =
+      form_node.children_nodes(0);
+  EXPECT_EQ(input_node.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_FORM_CONTROL);
+  EXPECT_EQ(input_node.content_attributes().form_control_data().field_name(),
+            "username");
+}
+
+// Tests that `GetAiPageContent` extracts page content in actionable mode when
+// `kAutofillActionableAIPageContent` is enabled.
+TEST_F(ChromeAutofillClientIOSTest, GetAiPageContent_Actionable) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAutofillActionableAIPageContent);
+
+  // Note: attributeType 1 = CONTENT_ATTRIBUTE_ROOT,
+  //       attributeType 8 = CONTENT_ATTRIBUTE_FORM,
+  //       attributeType 24 = CONTENT_ATTRIBUTE_FORM_CONTROL.
+  base::Value js_result = base::test::ParseJson(R"json({
+    "currentNodeInnerText": "Example text",
+    "title": "Example",
+    "rootNode": {
+      "contentAttributes": {
+        "attributeType": 1
+      },
+      "childrenNodes": [{
+        "contentAttributes": {
+          "attributeType": 8,
+          "formData": {}
+        },
+        "childrenNodes": [{
+          "contentAttributes": {
+            "attributeType": 24,
+            "formControlData": {
+              "fieldName": "username"
+            }
+          }
+        }]
+      }]
+    }
+  })json");
+
+  web::test::OverrideJavaScriptFeatures(
+      profile(), {PageContextExtractorJavaScriptFeature::GetInstance(),
+                  AutofillJavaScriptFeature::GetInstance()});
+
+  web::FakeWebState fake_web_state;
+  fake_web_state.SetBrowserState(profile());
+  fake_web_state.SetVisibleURL(GURL("https://example.com/"));
+  fake_web_state.SetContentsMimeType("text/html");
+
+  auto frames_manager = std::make_unique<web::FakeWebFramesManager>();
+  web::FakeWebFramesManager* frames_manager_ptr = frames_manager.get();
+  fake_web_state.SetWebFramesManager(web::ContentWorld::kIsolatedWorld,
+                                     std::move(frames_manager));
+  fake_web_state.SetWebFramesManager(
+      web::ContentWorld::kPageContentWorld,
+      std::make_unique<web::FakeWebFramesManager>());
+
+  std::unique_ptr<web::FakeWebFrame> main_frame =
+      web::FakeWebFrame::CreateMainWebFrame(GURL("https://example.com/"));
+  main_frame->set_browser_state(profile());
+  web::FakeWebFrame* main_frame_ptr = main_frame.get();
+  frames_manager_ptr->AddWebFrame(std::move(main_frame));
+  main_frame_ptr->AddJsResultForFunctionCall(
+      &js_result, "pageContextExtractor.extractPageContext");
+
+  ActorTabHelper::CreateForWebState(&fake_web_state);
+  InfoBarManagerImpl::CreateForWebState(&fake_web_state);
+  WithFakedFromWebState<ChromeAutofillClientIOS> fake_client(
+      profile(), &fake_web_state,
+      InfoBarManagerImpl::FromWebState(&fake_web_state), nil);
+
+  base::test::TestFuture<
+      std::optional<optimization_guide::proto::AnnotatedPageContent>>
+      future;
+  fake_client.GetAiPageContent(future.GetCallback());
+
+  std::optional<optimization_guide::proto::AnnotatedPageContent> result =
+      future.Get();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->mode(),
+            optimization_guide::proto::
+                ANNOTATED_PAGE_CONTENT_MODE_ACTIONABLE_ELEMENTS);
+  // Expected arguments after `nonce` in
+  // `pageContextExtractor.extractPageContext`:
+  // - `include_cross_origin_frame_content`: true
+  // - `use_rich_extraction`: true
+  // - `use_rich_extraction_with_actionable`: true
+  // - `extract_paid_content`: true
+  // - `attempt_paid_content_json_fixing`: false
+  // - `include_sensitive_payments_for_redaction`: false
+  // - `extract_autofill_otp_redactions`: false
+  // - `extract_password_screenshot_redactions`: true
+  EXPECT_THAT(
+      base::UTF16ToUTF8(main_frame_ptr->GetLastJavaScriptCall()),
+      HasSubstr(", true, true, true, true, false, false, false, true]);"));
+  ASSERT_EQ(result->root_node().children_nodes_size(), 1);
+  const optimization_guide::proto::ContentNode& form_node =
+      result->root_node().children_nodes(0);
+  EXPECT_EQ(form_node.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_FORM);
+  ASSERT_EQ(form_node.children_nodes_size(), 1);
+  const optimization_guide::proto::ContentNode& input_node =
+      form_node.children_nodes(0);
+  EXPECT_EQ(input_node.content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_FORM_CONTROL);
+  EXPECT_EQ(input_node.content_attributes().form_control_data().field_name(),
+            "username");
+}
+
+// Test that `HideSuggestions` with `kAcceptSuggestion` calls
+// `resetAutofillSuggestionsLoadingStates` on the FormInputAccessoryCommands
+// handler.
+TEST_F(ChromeAutofillClientIOSTest,
+       HideSuggestions_ResetsLoadingStatesOnAccept) {
+  id mock_form_input_accessory_handler =
+      OCMStrictProtocolMock(@protocol(FormInputAccessoryCommands));
+  client().set_form_input_accessory_commands_handler(
+      mock_form_input_accessory_handler);
+
+  OCMExpect([mock_form_input_accessory_handler
+      resetAutofillSuggestionsLoadingStates]);
+
+  client().HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
+                           std::nullopt);
+
+  EXPECT_OCMOCK_VERIFY(mock_form_input_accessory_handler);
+
+  // For other reasons, it should not be called.
+  OCMReject([mock_form_input_accessory_handler
+      resetAutofillSuggestionsLoadingStates]);
+  client().HideSuggestions(SuggestionHidingReason::kUserAborted, std::nullopt);
+  EXPECT_OCMOCK_VERIFY(mock_form_input_accessory_handler);
+}
+
+// Test that `GetPersonalContextEligibilityState` requires Gemini consent.
+TEST_F(ChromeAutofillClientIOSTest,
+       GetPersonalContextEligibilityStateRequiresConsent) {
+  EXPECT_EQ(client().GetPersonalContextEligibilityState(),
+            PersonalContextEligibilityState::kDisabledNotEligible);
+
+  gemini::UpdateUserConsentPrefs(true, profile()->GetPrefs());
+  EXPECT_EQ(client().GetPersonalContextEligibilityState(),
+            PersonalContextEligibilityState::kEligible);
+
+  gemini::UpdateUserConsentPrefs(false, profile()->GetPrefs());
+  EXPECT_EQ(client().GetPersonalContextEligibilityState(),
+            PersonalContextEligibilityState::kDisabledNotEligible);
+}
+
+// Tests that `GetAtMemoryManager` creates an `AtMemoryManager` when AtMemory
+// Search UI is enabled and returns `nullptr` when disabled.
+TEST_F(ChromeAutofillClientIOSTest, GetAtMemoryManager) {
+  base::test::ScopedFeatureList feature_list{features::kAutofillAtMemory};
+
+  EXPECT_EQ(client().GetAtMemoryManager(), nullptr);
+
+  gemini::UpdateUserConsentPrefs(true, profile()->GetPrefs());
+  AtMemoryManager* manager = client().GetAtMemoryManager();
+  EXPECT_EQ(client().GetAtMemoryManager(), manager);
+
+  gemini::UpdateUserConsentPrefs(false, profile()->GetPrefs());
+  EXPECT_EQ(client().GetAtMemoryManager(), nullptr);
 }
 
 }  // namespace autofill

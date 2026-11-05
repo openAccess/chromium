@@ -27,6 +27,7 @@ import org.chromium.build.annotations.EnsuresNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.components.omnibox.OmniboxUrlEmphasizer.UrlEmphasisSpan;
 import org.chromium.ui.accessibility.AccessibilityState;
 import org.chromium.ui.text.EmptyTextWatcher;
 import org.chromium.ui.widget.EditTextWithLeading;
@@ -50,8 +51,18 @@ public class AutocompleteEditText extends EditTextWithLeading
      */
     private boolean mDisableTextScrollingFromAutocomplete;
 
-    /** Local copy of the OnKeyListener. */
     private @Nullable OnKeyListener mOnKeyListener;
+
+    /**
+     * Whether Omnibox-specific focus handling is skipped. Set while the view is being reparented,
+     * so the transient focus loss/gain does not reach the model or trigger UrlBar's focus
+     * presentation changes (cursor, scroll, ellipsis). IME session preservation is handled
+     * separately by the temporarily-detached state, see {@link #beginReparenting()}.
+     */
+    private boolean mIgnoreFocusChangesWhileReparenting;
+
+    /** Whether {@link #beginReparenting()} put the view into the temporarily-detached state. */
+    private boolean mTemporarilyDetachedForReparenting;
 
     public AutocompleteEditText(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -194,10 +205,77 @@ public class AutocompleteEditText extends EditTextWithLeading
     }
 
     @Override
-    protected void onFocusChanged(boolean focused, int direction, Rect previouslyFocusedRect) {
+    protected void onFocusChanged(
+            boolean focused, int direction, @Nullable Rect previouslyFocusedRect) {
+        if (mIgnoreFocusChangesWhileReparenting) {
+            super.onFocusChanged(focused, direction, previouslyFocusedRect);
+            return;
+        }
         if (mModel != null) mModel.onFocusChanged(focused);
         super.onFocusChanged(focused, direction, previouslyFocusedRect);
         if (!focused) setCursorVisible(false);
+    }
+
+    /** Returns whether the view is being reparented and Omnibox focus handling is suspended. */
+    boolean isReparenting() {
+        return mIgnoreFocusChangesWhileReparenting;
+    }
+
+    /**
+     * Prepares the view to be moved to a new parent without disturbing the IME session.
+     *
+     * <p>ViewGroup#removeView() unfocuses the removed subtree. For a focused editor that means
+     * TextView/Editor strip the IME ComposingSpan and InputMethodManager finishes and later
+     * restarts the input session, which makes CJK IMEs commit the in-progress composition. While
+     * the view is marked temporarily detached, TextView, Editor and InputMethodManager ignore these
+     * focus transitions, and Omnibox-specific focus handling is suspended as well.
+     *
+     * <p>Must be paired with {@link #endReparenting(boolean)}.
+     */
+    void beginReparenting() {
+        mIgnoreFocusChangesWhileReparenting = true;
+        // An unfocused view has no IME session to protect.
+        if (isFocused()) {
+            mTemporarilyDetachedForReparenting = true;
+            dispatchStartTemporaryDetach();
+        }
+    }
+
+    /**
+     * Completes a move started with {@link #beginReparenting()} and applies the target focus state.
+     *
+     * @param focused Whether the view should be focused once reparenting has completed.
+     */
+    void endReparenting(boolean focused) {
+        if (focused) {
+            // Normally a no-op: LocationBarMediator keeps the focus chain intact through the
+            // reparenting. If the framework did move focus, this restores it while the view is
+            // still temporarily detached, so TextView/IMM do not restart the input session.
+            // Restoring focus the move dropped is not a real transition, so keep Omnibox focus
+            // handling suspended for it; a genuine focus gain (view was not focused at
+            // beginReparenting()) must run the regular handling.
+            mIgnoreFocusChangesWhileReparenting = mTemporarilyDetachedForReparenting;
+            requestFocus();
+            mIgnoreFocusChangesWhileReparenting = false;
+            // Ending the temporary detach re-registers the focused view as the one served by
+            // InputMethodManager, an association dropped when the view left the window. Without
+            // it, the pending IMM focus check would see no served view, finish the current input
+            // (committing the composition) and restart it.
+            finishTemporaryDetachForReparenting();
+        } else {
+            mIgnoreFocusChangesWhileReparenting = false;
+            finishTemporaryDetachForReparenting();
+            // With focus handling re-enabled, this performs the regular unfocus cleanup.
+            clearFocus();
+        }
+    }
+
+    private void finishTemporaryDetachForReparenting() {
+        // The temporarily-detached state is sticky; only undo what beginReparenting() started, and
+        // never leave it set, or TextView and IMM would ignore every future focus change.
+        if (!mTemporarilyDetachedForReparenting) return;
+        mTemporarilyDetachedForReparenting = false;
+        dispatchFinishTemporaryDetach();
     }
 
     @Override
@@ -277,13 +355,26 @@ public class AutocompleteEditText extends EditTextWithLeading
     public void setText(CharSequence text, BufferType type) {
         if (DEBUG) Log.i(TAG, "setText -- text: %s", text);
         mDisableTextScrollingFromAutocomplete = false;
-        if (TextUtils.equals(getText(), text)) {
+        if (isTextEquivalentToExistingText(text)) {
             if (mModel != null) mModel.onSetText(text);
             return;
         }
 
         super.setText(text, type);
         if (mModel != null) mModel.onSetText(text);
+    }
+
+    /**
+     * Returns whether setting {@code text} would leave the URL-emphasis state unchanged. Subclasses
+     * may extend this policy for other persistent spans. Framework, selection, composing, watcher,
+     * and IME spans are intentionally ignored so they do not defeat the no-reset path.
+     */
+    protected boolean isTextEquivalentToExistingText(CharSequence text) {
+        Editable currentText = getText();
+        return currentText != null
+                && TextUtils.equals(currentText, text)
+                && OmniboxViewUtil.haveEquivalentSpans(
+                        currentText, text, UrlEmphasisSpan.class);
     }
 
     @Override
@@ -400,9 +491,6 @@ public class AutocompleteEditText extends EditTextWithLeading
     }
 
     @Override
-    public void onUpdateSelectionForTesting(int selStart, int selEnd) {}
-
-    @Override
     public String getKeyboardPackageName() {
         String defaultIme =
                 Settings.Secure.getString(
@@ -412,14 +500,6 @@ public class AutocompleteEditText extends EditTextWithLeading
 
     @Override
     public void setInputIsMultilineEligible(boolean isMultilineEligible) {}
-
-    /* package */ void setModelForTesting(AutocompleteEditTextModelBase model) {
-        mModel = model;
-    }
-
-    /* package */ @Nullable AutocompleteEditTextModelBase getModelForTesting() {
-        return mModel;
-    }
 
     @Override
     public void setSiteSearchChip(@Nullable String keyword) {
@@ -440,5 +520,16 @@ public class AutocompleteEditText extends EditTextWithLeading
         setOnKeyListener(null);
         dispatchKeyEventToModel(event);
         setOnKeyListener(onKeyListener);
+    }
+
+    @Override
+    public void onUpdateSelectionForTesting(int selStart, int selEnd) {}
+
+    /* package */ void setModelForTesting(AutocompleteEditTextModelBase model) {
+        mModel = model;
+    }
+
+    /* package */ @Nullable AutocompleteEditTextModelBase getModelForTesting() {
+        return mModel;
     }
 }

@@ -4,9 +4,13 @@
 
 #include "components/history/core/browser/url_database.h"
 
+#include <algorithm>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/check.h"
+#include "base/containers/flat_map.h"
 #include "base/i18n/case_conversion.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
@@ -132,6 +136,74 @@ bool URLDatabase::GetURLRow(URLID url_id, URLRow* info) {
     return FillURLRow(statement, info);
   }
   return false;
+}
+
+bool URLDatabase::GetURLRows(base::span<const URLID> url_ids,
+                             base::flat_map<URLID, URLRow>* url_rows) {
+  CHECK(url_rows);
+  url_rows->clear();
+  if (url_ids.empty()) {
+    return true;
+  }
+
+  std::vector<std::pair<URLID, URLRow>> rows;
+  rows.reserve(url_ids.size());
+
+  // 250 items easily fits the default 150-item page size in a single query
+  // while staying well below SQLite's max variable limits.
+  constexpr size_t kBatchSize = 250;
+  // At or below 12 IDs, per-row lookups through GetURLRow()'s cached statement
+  // beat preparing an uncached IN statement in local microbenchmarks.
+  constexpr size_t kMaxPerRowLookups = 12;
+
+  if (url_ids.size() <= kMaxPerRowLookups) {
+    for (URLID url_id : url_ids) {
+      URLRow row;
+      if (GetURLRow(url_id, &row)) {
+        rows.emplace_back(row.id(), std::move(row));
+      }
+    }
+    *url_rows = base::flat_map<URLID, URLRow>(std::move(rows));
+    // Unlike the batched path below, SQL errors still return true here since
+    // the single-row helper returns false for both missing rows and SQL
+    // errors.
+    return true;
+  }
+
+  for (size_t chunk_start = 0; chunk_start < url_ids.size();
+       chunk_start += kBatchSize) {
+    const size_t chunk_end = std::min(chunk_start + kBatchSize, url_ids.size());
+    const size_t chunk_size = chunk_end - chunk_start;
+
+    std::string sql = "SELECT" HISTORY_URL_ROW_FIELDS "FROM urls WHERE id IN (";
+    sql.reserve(sql.size() + chunk_size * 2);
+    for (size_t j = 0; j < chunk_size; ++j) {
+      if (j > 0) {
+        sql.push_back(',');
+      }
+      sql.push_back('?');
+    }
+    sql.push_back(')');
+
+    sql::Statement statement(GetDB().GetUniqueStatement(sql));
+
+    for (size_t j = 0; j < chunk_size; ++j) {
+      statement.BindInt64(static_cast<int>(j), url_ids[chunk_start + j]);
+    }
+
+    while (statement.Step()) {
+      URLRow row;
+      if (FillURLRow(statement, &row)) {
+        rows.emplace_back(row.id(), std::move(row));
+      }
+    }
+
+    if (!statement.Succeeded()) {
+      return false;
+    }
+  }
+  *url_rows = base::flat_map<URLID, URLRow>(std::move(rows));
+  return true;
 }
 
 URLID URLDatabase::GetRowForURL(const GURL& url, URLRow* info) {
@@ -289,6 +361,18 @@ bool URLDatabase::InitURLEnumeratorForEverything(URLEnumerator* enumerator) {
   DCHECK(!enumerator->initialized_);
   enumerator->statement_.Assign(GetDB().GetCachedStatement(
       SQL_FROM_HERE, "SELECT " HISTORY_URL_ROW_FIELDS " FROM urls"));
+  enumerator->initialized_ = enumerator->statement_.is_valid();
+  return enumerator->statement_.is_valid();
+}
+
+bool URLDatabase::InitURLEnumeratorForTypedOrSearched(
+    URLEnumerator* enumerator) {
+  DCHECK(!enumerator->initialized_);
+  DCHECK(has_keyword_search_terms_);
+  enumerator->statement_.Assign(GetDB().GetCachedStatement(
+      SQL_FROM_HERE, "SELECT" HISTORY_URL_ROW_FIELDS
+                     "FROM urls WHERE typed_count > 0 OR "
+                     "id IN (SELECT url_id FROM keyword_search_terms)"));
   enumerator->initialized_ = enumerator->statement_.is_valid();
   return enumerator->statement_.is_valid();
 }
@@ -534,7 +618,7 @@ bool URLDatabase::SetKeywordSearchTermsForURL(URLID url_id,
   sql::Statement exist_statement(GetDB().GetCachedStatement(SQL_FROM_HERE,
       "SELECT term FROM keyword_search_terms "
       "WHERE keyword_id = ? AND url_id = ?"));
-  exist_statement.BindInt64(0, keyword_id);
+  exist_statement.BindInt64(0, keyword_id.value());
   exist_statement.BindInt64(1, url_id);
 
   if (exist_statement.Step())
@@ -547,10 +631,23 @@ bool URLDatabase::SetKeywordSearchTermsForURL(URLID url_id,
       SQL_FROM_HERE,
       "INSERT INTO keyword_search_terms (keyword_id, url_id, term, "
       "normalized_term) VALUES (?,?,?,?)"));
-  statement.BindInt64(0, keyword_id);
+  statement.BindInt64(0, keyword_id.value());
   statement.BindInt64(1, url_id);
   statement.BindString16(2, term);
   statement.BindString16(3, NormalizeTerm(term));
+  return statement.Run();
+}
+
+bool URLDatabase::InsertKeywordSearchTermRow(const KeywordSearchTermRow& row) {
+  DCHECK(has_keyword_search_terms_);
+  sql::Statement statement(GetDB().GetCachedStatement(
+      SQL_FROM_HERE,
+      "INSERT INTO keyword_search_terms (keyword_id, url_id, term, "
+      "normalized_term) VALUES (?,?,?,?)"));
+  statement.BindInt64(0, row.keyword_id.value());
+  statement.BindInt64(1, row.url_id);
+  statement.BindString16(2, row.term);
+  statement.BindString16(3, row.normalized_term);
   return statement.Run();
 }
 
@@ -590,7 +687,7 @@ bool URLDatabase::GetKeywordSearchTermRow(URLID url_id,
 
   if (row) {
     row->url_id = url_id;
-    row->keyword_id = statement.ColumnInt64(0);
+    row->keyword_id = KeywordID(statement.ColumnInt64(0));
     row->term = statement.ColumnString16(1);
     row->normalized_term = statement.ColumnString16(2);
   }
@@ -612,7 +709,7 @@ bool URLDatabase::GetKeywordSearchTermRows(
   while (statement.Step()) {
     KeywordSearchTermRow row;
     row.url_id = statement.ColumnInt64(1);
-    row.keyword_id = statement.ColumnInt64(0);
+    row.keyword_id = KeywordID(statement.ColumnInt64(0));
     row.term = term;
     row.normalized_term = statement.ColumnString16(2);
     rows->push_back(std::move(row));
@@ -625,7 +722,7 @@ void URLDatabase::DeleteAllSearchTermsForKeyword(
   DCHECK(keyword_id);
   sql::Statement statement(GetDB().GetCachedStatement(SQL_FROM_HERE,
       "DELETE FROM keyword_search_terms WHERE keyword_id=?"));
-  statement.BindInt64(0, keyword_id);
+  statement.BindInt64(0, keyword_id.value());
 
   statement.Run();
 }
@@ -663,7 +760,7 @@ URLDatabase::CreateKeywordSearchTermVisitEnumerator(
   // This magic gives us a prefix search.
   std::u16string next_prefix = normalized_prefix;
   next_prefix.back() = next_prefix.back() + 1;
-  enumerator->statement_.BindInt64(0, keyword_id);
+  enumerator->statement_.BindInt64(0, keyword_id.value());
   enumerator->statement_.BindString16(1, normalized_prefix);
   enumerator->statement_.BindString16(2, next_prefix);
   enumerator->initialized_ = enumerator->statement_.is_valid();
@@ -694,8 +791,22 @@ URLDatabase::CreateKeywordSearchTermVisitEnumerator(KeywordID keyword_id) {
         kst.normalized_term <> ''
       ORDER BY kst.normalized_term, u.last_visit_time
       )"));
-  enumerator->statement_.BindInt64(0, keyword_id);
+  enumerator->statement_.BindInt64(0, keyword_id.value());
   enumerator->initialized_ = enumerator->statement_.is_valid();
+  return enumerator;
+}
+
+std::unique_ptr<KeywordSearchTermRowEnumerator>
+URLDatabase::CreateKeywordSearchTermRowEnumerator() {
+  DCHECK(has_keyword_search_terms_);
+  auto enumerator = base::WrapUnique(new KeywordSearchTermRowEnumerator());
+  enumerator->statement_.Assign(GetDB().GetCachedStatement(
+      SQL_FROM_HERE,
+      "SELECT keyword_id, url_id, term, normalized_term "
+      "FROM keyword_search_terms"));
+  if (!enumerator->statement_.is_valid()) {
+    return nullptr;
+  }
   return enumerator;
 }
 
@@ -714,7 +825,7 @@ bool URLDatabase::DeleteKeywordSearchTermForNormalizedTerm(
       GetDB().GetCachedStatement(SQL_FROM_HERE,
                                  "DELETE FROM keyword_search_terms WHERE "
                                  "keyword_id = ? AND normalized_term=?"));
-  statement.BindInt64(0, keyword_id);
+  statement.BindInt64(0, keyword_id.value());
   statement.BindString16(1, normalized_term);
 
   return statement.Run();
@@ -762,8 +873,8 @@ bool URLDatabase::CreateURLTable(bool is_temporary) {
        "typed_count INTEGER DEFAULT 0 NOT NULL,"
        "last_visit_time INTEGER NOT NULL,"
        "hidden INTEGER DEFAULT 0 NOT NULL)"});
-  // IMPORTANT: If you change the columns, also update in_memory_database.cc
-  // where the values are copied (InitFromDisk).
+  // IMPORTANT: If you change the columns, also update FillURLRow() and
+  // InsertOrUpdateURLRowByID(), which InMemoryDatabase uses to copy rows.
 
   return GetDB().Execute(sql);
 }

@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "base/files/file_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/test_future.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
@@ -21,11 +22,14 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/install_prefs_helper.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/browser/unpacked_installer.h"
 #include "extensions/browser/user_script_loader.h"
 #include "extensions/browser/user_script_manager.h"
+#include "extensions/common/constants.h"
+#include "extensions/common/file_util.h"
 #include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/background_info.h"
 #include "extensions/common/manifest_handlers/content_scripts_handler.h"
@@ -418,9 +422,15 @@ bool ChromeTestExtensionLoader::VerifyPermissions(const Extension* extension) {
       prefs->AllowFileAccess(extension->id()) != *allow_file_access_) {
     return false;
   }
-  if (allow_incognito_access_.has_value() &&
-      prefs->IsIncognitoEnabled(extension->id()) != *allow_incognito_access_) {
-    return false;
+  if (allow_incognito_access_.has_value()) {
+    const bool incognito_enabled =
+        ExtensionsBrowserClient::Get()->IsolatedModeReplacesIncognito(
+            browser_context_)
+            ? prefs->IsIsolatedModeEnabled(extension->id())
+            : prefs->IsIncognitoEnabled(extension->id());
+    if (incognito_enabled != *allow_incognito_access_) {
+      return false;
+    }
   }
   return true;
 }
@@ -430,6 +440,13 @@ bool ChromeTestExtensionLoader::CheckInstallWarnings(
   if (ignore_manifest_warnings_)
     return true;
 
+  // CRX installs can legitimately contain a _metadata directory, and
+  // ValidateExtension warns on any top-level underscore name; production
+  // ignores install warnings, so the test loader shouldn't fail on this one.
+  const std::string metadata_reserved_name_warning =
+      base::UTF16ToUTF8(file_util::ReservedFilenameWarning(
+          base::FilePath(kMetadataFolder)));
+
   const std::vector<InstallWarning>& install_warnings =
       extension.install_warnings();
   std::string install_warnings_string;
@@ -438,6 +455,8 @@ bool ChromeTestExtensionLoader::CheckInstallWarnings(
     // TODO(crbug.com/40804030): Stop skipping this warning when all
     // tests are updated to MV3.
     if (warning.message == manifest_errors::kManifestV2IsDeprecatedWarning)
+      continue;
+    if (warning.message == metadata_reserved_name_warning)
       continue;
     install_warnings_string += "  " + warning.message + "\n";
   }

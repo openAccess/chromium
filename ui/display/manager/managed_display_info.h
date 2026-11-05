@@ -6,6 +6,7 @@
 #define UI_DISPLAY_MANAGER_MANAGED_DISPLAY_INFO_H_
 
 #include <stdint.h>
+
 #include <algorithm>
 #include <map>
 #include <string>
@@ -15,6 +16,8 @@
 #include "ui/display/display.h"
 #include "ui/display/manager/display_manager_export.h"
 #include "ui/display/types/display_constants.h"
+#include "ui/display/types/drm_formats_and_modifiers.h"
+#include "ui/gfx/display_color_spaces.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
@@ -220,7 +223,9 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
   // |panel_orientation_| taking into account.
   gfx::Size GetSizeInPixelWithPanelOrientation() const;
 
-  // The overscan insets for the display in DIP.
+  // The overscan insets for the display in DIP. Negative edges are clamped to
+  // 0, and when native bounds are non-empty, each edge is clamped so its pixel
+  // inset does not exceed 1/4 of the display's pixel dimensions.
   const gfx::Insets& overscan_insets_in_dip() const {
     return overscan_insets_in_dip_;
   }
@@ -269,8 +274,10 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
   // and rotation settings.
   void UpdateDisplaySize();
 
-  // Sets/Clears the overscan insets.
+  // Sets/Clears the overscan insets, clamping negative and oversized edges.
   void SetOverscanInsets(const gfx::Insets& insets_in_dip);
+  // Returns the overscan insets in pixels, with each edge clamped to <= 1/4 of
+  // the display's pixel dimensions (when native bounds are non-empty).
   gfx::Insets GetOverscanInsetsInPixel() const;
 
   // Snapshot ColorSpace is only valid for Ash Chrome.
@@ -372,6 +379,11 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
   }
 
  private:
+  // Clamps |overscan_insets_in_dip_| to >= 0, and when native bounds are
+  // non-empty, clamps each edge so its pixel inset does not exceed 1/4 of the
+  // display's pixel dimensions.
+  void ClampOverscanInsets();
+
   // Return the rotation with the panel orientation applied.
   Display::Rotation GetRotationWithPanelOrientation(
       Display::Rotation rotation) const;

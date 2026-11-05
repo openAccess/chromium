@@ -44,6 +44,7 @@ import org.chromium.base.SelectionActionMenuClientWrapper.MenuType;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
@@ -79,6 +80,7 @@ import java.util.concurrent.Callable;
 
 /** Integration tests for text selection-related behavior. */
 @RunWith(ContentJUnit4ClassRunner.class)
+@Batch(Batch.PER_CLASS)
 public class ContentTextSelectionTest {
     @Rule
     public ContentShellActivityTestRule mActivityTestRule = new ContentShellActivityTestRule();
@@ -394,10 +396,15 @@ public class ContentTextSelectionTest {
 
         List<ItemMatcher> matchers =
                 List.of(
+                        hasId(R.id.select_action_menu_cut),
+                        hasId(R.id.select_action_menu_copy),
                         hasId(android.R.id.paste),
+                        hasId(android.R.id.pasteAsPlainText),
                         hasId(R.id.select_action_menu_select_all),
                         isDivider(),
-                        hasTitle("testNonSelectionItem"));
+                        hasTitle("testNonSelectionItem"),
+                        hasId(R.id.select_action_menu_web_search),
+                        hasId(R.id.select_action_menu_share));
         TestSelectionDropdownMenuDelegate dropdownDelegate =
                 new TestSelectionDropdownMenuDelegate();
         MVCListAdapter.ModelList items = menu.getMenuAsDropdown(dropdownDelegate);
@@ -450,12 +457,6 @@ public class ContentTextSelectionTest {
         setUpTestCorrectSelectionMenuItemsAddedForInputSelection();
         PendingSelectionMenu menu =
                 mSelectionPopupController.getPendingSelectionMenu(MenuType.DROPDOWN);
-        boolean shareAllowed =
-                mSelectionPopupController.isSelectActionModeAllowed(
-                        ActionModeCallbackHelper.MENU_ITEM_SHARE);
-        boolean webSearchAllowed =
-                mSelectionPopupController.isSelectActionModeAllowed(
-                        ActionModeCallbackHelper.MENU_ITEM_WEB_SEARCH);
 
         List<ItemMatcher> matchers = new ArrayList<>();
         matchers.add(hasTitle("Phone"));
@@ -463,10 +464,11 @@ public class ContentTextSelectionTest {
         matchers.add(hasId(R.id.select_action_menu_cut));
         matchers.add(hasId(R.id.select_action_menu_copy));
         matchers.add(hasId(android.R.id.paste));
+        matchers.add(hasId(android.R.id.pasteAsPlainText));
         matchers.add(hasId(R.id.select_action_menu_select_all));
         matchers.add(isDivider());
-        if (webSearchAllowed) matchers.add(hasId(R.id.select_action_menu_web_search));
-        if (shareAllowed) matchers.add(hasId(R.id.select_action_menu_share));
+        matchers.add(hasId(R.id.select_action_menu_web_search));
+        matchers.add(hasId(R.id.select_action_menu_share));
         matchers.add(isDivider());
         matchers.add(hasTitle("testTextProcessingItem"));
 
@@ -905,7 +907,8 @@ public class ContentTextSelectionTest {
     @Test
     @SmallTest
     @Feature({"TextInput"})
-    public void testSelectActionBarPlainTextCopy() throws Exception {
+    public void testSelectActionBarPlainTextCopy() throws Throwable {
+        copyStringToClipboard("SampleTextToCopy");
         DOMUtils.longPressNode(mWebContents, "plain_text_1");
         waitForSelectActionBarVisible(true);
         Assert.assertTrue(mSelectionPopupController.hasSelection());

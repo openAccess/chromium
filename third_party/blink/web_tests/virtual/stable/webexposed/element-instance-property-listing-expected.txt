@@ -231,6 +231,7 @@ namespace http://www.w3.org/1999/xhtml
     property onfullscreenerror
     property ongotpointercapture
     property oninput
+    property oninstallresult
     property oninvalid
     property onkeydown
     property onkeypress
@@ -379,7 +380,6 @@ namespace http://www.w3.org/1999/xhtml
     property when
     property writingSuggestions
 html element a
-    property attributionSrc
     property charset
     property coords
     property download
@@ -412,7 +412,6 @@ html element acronym
 html element address
 html element area
     property alt
-    property attributionSrc
     property coords
     property download
     property hash
@@ -556,12 +555,21 @@ html element camera
     property setConstraints
     property track
 html element canvas
+    property captureElementImage
     property captureStream
+    property clearElementGeometry
+    property content
     property getContext
+    property getElementImageDefaultSize
+    property getElementTransform
     property height
+    property onelementgeometryupdate
+    property onpaint
+    property requestPaint
     property toBlob
     property toDataURL
     property transferControlToOffscreen
+    property updateElementGeometry
     property width
 html element caption
     property align
@@ -733,12 +741,10 @@ html element html
     property version
 html element i
 html element iframe
-    property adAuctionHeaders
     property align
     property allow
     property allowFullscreen
     property allowPaymentRequest
-    property browsingTopics
     property contentDocument
     property contentWindow
     property credentialless
@@ -762,9 +768,7 @@ html element iframe
 html element img
     property align
     property alt
-    property attributionSrc
     property border
-    property browsingTopics
     property complete
     property crossOrigin
     property currentSrc
@@ -853,6 +857,12 @@ html element input
 html element ins
     property cite
     property dateTime
+html element install
+    property invalidReason
+    property isValid
+    property manifest
+    property manifestId
+    property onvalidationstatuschange
 html element kbd
 html element label
     property control
@@ -1019,7 +1029,6 @@ html element s
 html element samp
 html element script
     property async
-    property attributionSrc
     property blocking
     property charset
     property crossOrigin
@@ -1526,6 +1535,7 @@ namespace http://www.w3.org/2000/svg
     property onfullscreenerror
     property ongotpointercapture
     property oninput
+    property oninstallresult
     property oninvalid
     property onkeydown
     property onkeypress
@@ -2418,6 +2428,7 @@ svg element textPath
     property nearestViewportElement
     property requiredExtensions
     property selectSubString
+    property side
     property spacing
     property startOffset
     property systemLanguage

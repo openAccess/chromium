@@ -75,6 +75,7 @@
 #include "chrome/installer/setup/configure_app_container_sandbox.h"
 #include "chrome/installer/setup/downgrade_cleanup.h"
 #include "chrome/installer/setup/install.h"
+#include "chrome/installer/setup/install_component.h"
 #include "chrome/installer/setup/install_params.h"
 #include "chrome/installer/setup/install_worker.h"
 #include "chrome/installer/setup/installer_crash_reporting.h"
@@ -603,8 +604,6 @@ installer::InstallStatus RenameChromeExecutables(
       google_update::kRegCriticalVersionField);
   installer::AppCommand(installer::kCmdRenameChromeExe, {})
       .AddDeleteAppCommandWorkItems(reg_root, install_list.get());
-  installer::AppCommand(installer::kCmdAlternateRenameChromeExe, {})
-      .AddDeleteAppCommandWorkItems(reg_root, install_list.get());
 
   if (!installer_state->system_install()) {
     install_list->AddDeleteRegValueWorkItem(
@@ -997,7 +996,8 @@ int EnableSystemTracing(const installer::InstallerState& installer_state,
       base::CommandLine(base::CommandLine::NO_PROGRAM),
       install_static::GetClientStateKeyPath(),
       {install_static::GetTracingServiceClsid()},
-      {install_static::GetTracingServiceIid()});
+      {install_static::GetTracingServiceIid()},
+      install_static::GetOldTracingServiceIids());
   if (work_item.Do()) {
     return installer::INSTALL_REPAIRED;
   }
@@ -1254,6 +1254,20 @@ bool HandleNonInstallCmdLineOptions(installer::ModifyParams& modify_params,
         break;
     }
 #endif
+  } else if (cmd_line.HasSwitch(installer::switches::kInstallComponent)) {
+    // Hold the singleton so that component installation cannot race with an
+    // update or uninstall or with another component installation.
+    std::unique_ptr<installer::SetupSingleton> setup_singleton(
+        installer::SetupSingleton::Acquire(cmd_line, prefs, original_state,
+                                           installer_state));
+    if (!setup_singleton) {
+      *exit_code = installer::SETUP_SINGLETON_ACQUISITION_FAILED;
+    } else {
+      const base::FilePath source_file =
+          cmd_line.GetSwitchValuePath(installer::switches::kInstallComponent);
+      *exit_code =
+          installer::InstallComponent(source_file, *installer_state, cmd_line);
+    }
   } else if (cmd_line.HasSwitch(installer::switches::kCreateShortcuts)) {
     std::string install_op_arg =
         cmd_line.GetSwitchValueASCII(installer::switches::kCreateShortcuts);
@@ -1331,8 +1345,8 @@ InstallStatus InstallProductsHelper(InstallationState& original_state,
     return TEMP_DIR_FAILED;
   }
 
-  RETURN_IF_ERROR(UnpackChromeArchive(unpack_path, original_state, setup_exe,
-                                      cmd_line, installer_state));
+  RETURN_IF_ERROR(
+      UnpackChromeArchive(unpack_path, setup_exe, cmd_line, installer_state));
 
   VLOG(1) << "unpacked to " << unpack_path.value();
 

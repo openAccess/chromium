@@ -10,13 +10,9 @@
 #include <vector>
 
 #include "base/check_deref.h"
-#include "base/containers/to_vector.h"
-#include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
-#include "components/affiliations/core/browser/affiliation_utils.h"
-#include "components/autofill/core/browser/autofill_browser_util.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/valuables/valuables_data_manager.h"
@@ -37,10 +33,8 @@
 #include "components/autofill/core/browser/suggestions/payments/payments_suggestion_generator_util.h"
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
-#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_internals/log_message.h"
 #include "components/autofill/core/common/autofill_internals/logging_scope.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_util.h"
 #include "components/autofill/core/common/logging/log_macros.h"
 #include "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
@@ -312,19 +306,18 @@ bool TouchToFillPaymentMethodDelegateAndroidImpl::TryToShowTouchToFill(
       /*product=*/std::nullopt);
   if (std::get_if<std::vector<CreditCard>>(&dry_run.items_to_suggest)) {
     manager_->DidShowSuggestions({Suggestion(SuggestionType::kCreditCardEntry)},
-                                 /*parent_suggestion_metadata=*/std::nullopt,
-                                 form.global_id(), field.global_id(),
+                                 /*metadata=*/{}, form.global_id(),
+                                 field.global_id(),
                                  /*update_suggestions_callback=*/{});
   } else if (std::get_if<std::vector<LoyaltyCard>>(&dry_run.items_to_suggest)) {
     manager_->DidShowSuggestions(
         {Suggestion(SuggestionType::kLoyaltyCardEntry)},
-        /*parent_suggestion_metadata=*/std::nullopt, form.global_id(),
-        field.global_id(),
+        /*metadata=*/{}, form.global_id(), field.global_id(),
         /*update_suggestions_callback=*/{});
   } else {
     manager_->DidShowSuggestions({Suggestion(SuggestionType::kIbanEntry)},
-                                 /*parent_suggestion_metadata=*/std::nullopt,
-                                 form.global_id(), field.global_id(),
+                                 /*metadata=*/{}, form.global_id(),
+                                 field.global_id(),
                                  /*update_suggestions_callback=*/{});
   }
   return true;
@@ -353,8 +346,8 @@ bool TouchToFillPaymentMethodDelegateAndroidImpl::
       SuggestionHidingReason::kOverlappingWithTouchToFillSurface,
       /*product=*/std::nullopt);
   manager_->DidShowSuggestions({Suggestion(SuggestionType::kLoyaltyCardEntry)},
-                               /*parent_suggestion_metadata=*/std::nullopt,
-                               form.global_id(), field.global_id(),
+                               /*metadata=*/{}, form.global_id(),
+                               field.global_id(),
                                /*update_suggestions_callback=*/{});
   return true;
 }
@@ -404,6 +397,7 @@ void TouchToFillPaymentMethodDelegateAndroidImpl::OnCreditCardScanned(
   manager_->FillOrPreviewForm(mojom::ActionPersistence::kFill,
                               query_form_.global_id(), query_field_.global_id(),
                               &card, AutofillTriggerSource::kScanCreditCard,
+                              /*require_user_confirmation=*/false,
                               /*blocked_fields=*/{});
 }
 
@@ -424,10 +418,13 @@ void TouchToFillPaymentMethodDelegateAndroidImpl::
   }
   const CreditCard& card_to_fill =
       is_virtual ? CreditCard::CreateVirtualCard(*card) : *card;
+  // TODO(crbug.com/561395976): Propagate `require_user_confirmation` flag from
+  // Java.
   manager_->FillOrPreviewForm(
       mojom::ActionPersistence::kFill, query_form_.global_id(),
       query_field_.global_id(), &card_to_fill,
       AutofillTriggerSource::kKeyboardAccessoryOrBottomSheet,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 }
 
@@ -447,6 +444,7 @@ void TouchToFillPaymentMethodDelegateAndroidImpl::BnplSuggestionSelected(
                   delegate->query_form_.global_id(),
                   delegate->query_field_.global_id(), &card,
                   AutofillTriggerSource::kKeyboardAccessoryOrBottomSheet,
+                  /*require_user_confirmation=*/false,
                   /*blocked_fields=*/{});
             }
           },
@@ -517,10 +515,8 @@ void TouchToFillPaymentMethodDelegateAndroidImpl::OnDismissed(
 
   if (IsShowingTouchToFill()) {
     ttf_payment_method_state_ =
-        should_reshow && base::FeatureList::IsEnabled(
-                             features::kAutofillEnableTouchToFillReshowForBnpl)
-            ? TouchToFillState::kShownAndShouldBeShownAgain
-            : TouchToFillState::kShownAndShouldNotBeShownAgain;
+        should_reshow ? TouchToFillState::kShownAndShouldBeShownAgain
+                      : TouchToFillState::kShownAndShouldNotBeShownAgain;
     dismissed_by_user_ = dismissed_by_user;
   }
 }

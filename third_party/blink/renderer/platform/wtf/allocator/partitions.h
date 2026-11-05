@@ -34,11 +34,14 @@
 #include "base/check.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/numerics/checked_math.h"
-#include "partition_alloc/partition_alloc_forward.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_export.h"
 
 namespace base {
 class SequencedTaskRunner;
+}
+
+namespace partition_alloc {
+class PartitionRoot;
 }
 
 namespace blink {
@@ -71,12 +74,6 @@ class WTF_EXPORT Partitions {
   ALWAYS_INLINE static partition_alloc::PartitionRoot* BufferPartition() {
     DCHECK(initialized_);
     return buffer_root_;
-  }
-
-  ALWAYS_INLINE static size_t ComputeAllocationSize(size_t count, size_t size) {
-    base::CheckedNumeric<size_t> total = count;
-    total *= size;
-    return total.ValueOrDie();
   }
 
   static size_t TotalSizeOfCommittedPages();

@@ -12,6 +12,7 @@
 #include "chrome/browser/tab_list/tab_list_interface_observer.h"
 #include "components/sessions/core/session_id.h"
 #include "components/split_tabs/split_tab_id.h"
+#include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/tabs/public/tab_interface.h"
@@ -88,9 +89,14 @@ class MockTabListInterface : public TabListInterface {
               ListTabGroups,
               (),
               (override));
+  MOCK_METHOD(std::set<split_tabs::SplitTabId>, ListSplits, (), (override));
   MOCK_METHOD(std::optional<tab_groups::TabGroupVisualData>,
               GetTabGroupVisualData,
               (tab_groups::TabGroupId),
+              (override));
+  MOCK_METHOD(std::optional<split_tabs::SplitTabVisualData>,
+              GetSplitTabVisualData,
+              (split_tabs::SplitTabId),
               (override));
   MOCK_METHOD(gfx::Range,
               GetTabGroupTabIndices,
@@ -102,7 +108,8 @@ class MockTabListInterface : public TabListInterface {
               (override));
   MOCK_METHOD(std::optional<split_tabs::SplitTabId>,
               CreateSplit,
-              (const std::vector<tabs::TabHandle>&),
+              (const std::vector<tabs::TabHandle>&,
+               const split_tabs::SplitTabVisualData&),
               (override));
   MOCK_METHOD(void,
               SetTabGroupVisualData,

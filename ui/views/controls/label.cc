@@ -13,6 +13,7 @@
 #include <string_view>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/i18n/rtl.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
@@ -43,6 +44,7 @@
 #include "ui/views/property_effects.h"
 #include "ui/views/selection_controller.h"
 #include "ui/views/style/typography_provider.h"
+#include "ui/views/views_features.h"
 
 namespace {
 
@@ -110,8 +112,29 @@ std::u16string_view Label::GetText() const {
 }
 
 void Label::SetText(std::u16string_view new_text) {
-  if (new_text == GetText()) {
+  // Compare with the raw text ("&New" and u"New" have the same
+  // GetText() but a different mnemonic).
+  if (new_text == raw_text_) {
     return;
+  }
+
+  raw_text_ = std::u16string(new_text);
+  UpdateText();
+}
+
+void Label::UpdateText() {
+  std::u16string new_text = raw_text_;
+  mnemonic_range_ = gfx::Range::InvalidRange();
+  if (mnemonic_mode_ != MnemonicMode::kNone) {
+    int mnemonic_position = -1;
+    int mnemonic_span = 0;
+    new_text = gfx::LocateAndRemoveAcceleratorChar(
+        raw_text_, &mnemonic_position, &mnemonic_span);
+    if (mnemonic_position >= 0) {
+      const size_t start = static_cast<size_t>(mnemonic_position);
+      mnemonic_range_ =
+          gfx::Range(start, start + static_cast<size_t>(mnemonic_span));
+    }
   }
 
   std::u16string current_text(GetText());
@@ -132,7 +155,7 @@ void Label::SetText(std::u16string_view new_text) {
       GetViewAccessibility().SetName(
           std::u16string(), ax::mojom::NameFrom::kAttributeExplicitlyEmpty);
     } else {
-      GetViewAccessibility().SetName(std::u16string(new_text));
+      GetViewAccessibility().SetName(new_text);
     }
   }
 
@@ -153,7 +176,7 @@ void Label::SetText(std::u16string_view new_text) {
 void Label::AdjustAccessibleName(std::u16string& new_name,
                                  ax::mojom::NameFrom& name_from) {
   if (new_name.empty()) {
-    new_name = std::u16string(full_text_->GetDisplayText());
+    new_name = std::u16string(GetText());
   }
 }
 
@@ -215,15 +238,39 @@ void Label::SetTextStyleRange(int style, const gfx::Range& range) {
   const auto details = typography_provider.GetFontDetails(text_context_, style);
   // This function is not prepared to handle style requests that vary by
   // anything other than weight.
-  DCHECK_EQ(
+  CHECK_EQ(
       details.typeface,
-      typography_provider.GetFontDetails(text_context_, text_style_).typeface);
-  DCHECK_EQ(details.size_delta,
-            typography_provider.GetFontDetails(text_context_, text_style_)
-                .size_delta);
+      typography_provider.GetFontDetails(text_context_, text_style_).typeface,
+      base::NotFatalUntil::M163);
+  CHECK_EQ(
+      details.size_delta,
+      typography_provider.GetFontDetails(text_context_, text_style_).size_delta,
+      base::NotFatalUntil::M163);
   full_text_->ApplyWeight(details.weight, range);
   ClearDisplayText();
   PreferredSizeChanged();
+}
+
+Label::MnemonicMode Label::GetMnemonicMode() const {
+  return mnemonic_mode_;
+}
+
+void Label::SetMnemonicMode(MnemonicMode mode) {
+  if (mode == mnemonic_mode_) {
+    return;
+  }
+
+  // The text only changes when switching to or from kNone. Between kHide and
+  // kUnderline, only the underline changes.
+  const bool text_changes =
+      mode == MnemonicMode::kNone || mnemonic_mode_ == MnemonicMode::kNone;
+  mnemonic_mode_ = mode;
+  if (text_changes) {
+    UpdateText();
+  } else {
+    ClearDisplayText();
+  }
+  OnPropertyChanged(&mnemonic_mode_, PropertyEffects::kPaint);
 }
 
 bool Label::GetAutoColorReadabilityEnabled() const {
@@ -414,8 +461,9 @@ bool Label::GetMultiLine() const {
 }
 
 void Label::SetMultiLine(bool multi_line) {
-  DCHECK(!multi_line || (elide_behavior_ == gfx::ELIDE_TAIL ||
-                         elide_behavior_ == gfx::NO_ELIDE));
+  CHECK(!multi_line || (elide_behavior_ == gfx::ELIDE_TAIL ||
+                        elide_behavior_ == gfx::NO_ELIDE),
+        base::NotFatalUntil::M163);
   if (this->GetMultiLine() == multi_line) {
     return;
   }
@@ -517,8 +565,9 @@ gfx::ElideBehavior Label::GetElideBehavior() const {
 }
 
 void Label::SetElideBehavior(gfx::ElideBehavior elide_behavior) {
-  DCHECK(!GetMultiLine() || (elide_behavior == gfx::ELIDE_TAIL ||
-                             elide_behavior == gfx::NO_ELIDE));
+  CHECK(!GetMultiLine() || (elide_behavior == gfx::ELIDE_TAIL ||
+                            elide_behavior == gfx::NO_ELIDE),
+        base::NotFatalUntil::M163);
   if (elide_behavior_ == elide_behavior) {
     return;
   }
@@ -574,7 +623,9 @@ std::u16string_view Label::GetComputedTooltip() {
   }
 
   if (ShouldShowDefaultTooltip()) {
-    return full_text_->GetDisplayText();
+    // Not `full_text_->GetDisplayText()`: it is elided when there is a maximum
+    // single-line width, but the tooltip should show the full text.
+    return GetText();
   }
 
   return {};
@@ -599,8 +650,8 @@ int Label::GetFixedWidth() const {
 }
 
 void Label::SizeToFit(int fixed_width) {
-  DCHECK(GetMultiLine());
-  DCHECK_EQ(0, max_width_);
+  CHECK(GetMultiLine(), base::NotFatalUntil::M163);
+  CHECK_EQ(0, max_width_, base::NotFatalUntil::M163);
   fixed_width_ = fixed_width;
   SizeToPreferredSize();
 }
@@ -610,8 +661,8 @@ int Label::GetMaximumWidth() const {
 }
 
 void Label::SetMaximumWidth(int max_width) {
-  DCHECK(GetMultiLine());
-  DCHECK_EQ(0, fixed_width_);
+  CHECK(GetMultiLine(), base::NotFatalUntil::M163);
+  CHECK_EQ(0, fixed_width_, base::NotFatalUntil::M163);
   if (max_width_ == max_width) {
     return;
   }
@@ -620,7 +671,7 @@ void Label::SetMaximumWidth(int max_width) {
 }
 
 void Label::SetMaximumWidthSingleLine(int max_width) {
-  DCHECK(!GetMultiLine());
+  CHECK(!GetMultiLine(), base::NotFatalUntil::M163);
   if (max_width_single_line_ == max_width) {
     return;
   }
@@ -677,7 +728,7 @@ bool Label::SetSelectable(bool value) {
     return true;
   }
 
-  DCHECK(!stored_selection_range_.IsValid());
+  CHECK(!stored_selection_range_.IsValid(), base::NotFatalUntil::M163);
   if (!IsSelectionSupported()) {
     return false;
   }
@@ -879,6 +930,9 @@ std::unique_ptr<gfx::RenderText> Label::CreateRenderText() const {
   render_text->SetMultiline(multiline);
   render_text->SetMaxLines(multiline ? GetMaxLines() : size_t{0});
   render_text->SetWordWrapBehavior(full_text_->word_wrap_behavior());
+  if (mnemonic_mode_ == MnemonicMode::kUnderline && mnemonic_range_.IsValid()) {
+    render_text->ApplyStyle(gfx::TEXT_STYLE_UNDERLINE, true, mnemonic_range_);
+  }
 
   // Setup render text for selection controller.
   if (GetSelectable()) {
@@ -920,7 +974,7 @@ void Label::PaintText(gfx::Canvas* canvas) {
     display_text_->Draw(canvas);
   }
 
-#if DCHECK_IS_ON() && !BUILDFLAG(IS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS)
   // TODO(crbug.com/40725997): Enable this DCHECK on ChromeOS by fixing either
   // this check (to correctly idenfify more paints-on-opaque cases), refactoring
   // parents to use background() or by fixing subpixel-rendering issues that the
@@ -952,11 +1006,11 @@ void Label::PaintText(gfx::Canvas* canvas) {
     if (view->layer()) {
       // If we aren't painted to an opaque background, we must paint to an
       // opaque layer.
-      DCHECK(view->layer()->fills_bounds_opaquely());
+      CHECK(view->layer()->fills_bounds_opaquely(), base::NotFatalUntil::M163);
       break;
     }
   }
-#endif
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 }
 
 void Label::OnBoundsChanged(const gfx::Rect& previous_bounds) {
@@ -1084,7 +1138,7 @@ bool Label::OnKeyPressed(const ui::KeyEvent& event) {
     case ui::VKEY_A:
       if (control && !alt && !GetText().empty()) {
         SelectAll();
-        DCHECK(HasSelection());
+        CHECK(HasSelection(), base::NotFatalUntil::M163);
         UpdateSelectionClipboard();
         return true;
       }
@@ -1099,7 +1153,10 @@ bool Label::OnKeyPressed(const ui::KeyEvent& event) {
 bool Label::AcceleratorPressed(const ui::Accelerator& accelerator) {
   // Allow the "Copy" action from the Chrome menu to be invoked. E.g., if a user
   // selects a Label on a web modal dialog. "Select All" doesn't appear in the
-  // Chrome menu so isn't handled here.
+  // Chrome menu so isn't handled here. The Label does not register this
+  // accelerator with the FocusManager: BrowserView::CutCopyPaste() calls this
+  // on the focused view directly, and the Ctrl+C key itself is handled in
+  // OnKeyPressed().
   if (accelerator.key_code() == ui::VKEY_C && accelerator.IsCtrlDown()) {
     CopyToClipboard();
     return true;
@@ -1256,7 +1313,7 @@ int Label::GetDragSelectionDelay() const {
 void Label::OnBeforePointerAction() {}
 
 void Label::OnAfterPointerAction(bool text_changed, bool selection_changed) {
-  DCHECK(!text_changed);
+  CHECK(!text_changed, base::NotFatalUntil::M163);
   if (selection_changed) {
     SchedulePaint();
   }
@@ -1297,7 +1354,7 @@ void Label::ExecuteCommand(int command_id, int event_flags) {
       break;
     case MenuCommands::kSelectAll:
       SelectAll();
-      DCHECK(HasSelection());
+      CHECK(HasSelection(), base::NotFatalUntil::M163);
       UpdateSelectionClipboard();
       break;
     default:
@@ -1366,11 +1423,11 @@ void Label::Init(std::u16string_view text,
   set_context_menu_controller(this);
   GetViewAccessibility().set_needs_ax_tree_manager(true);
 
-  // This allows the BrowserView to pass the copy command from the Chrome menu
-  // to the Label.
-  AddAccelerator(ui::Accelerator(ui::VKEY_C, ui::EF_CONTROL_DOWN));
-
-  UpdateTooltipText();
+  if (!base::FeatureList::IsEnabled(features::kLabelDefaultTooltipFastPath)) {
+    // Redundant: SetText() above already updated the tooltip if `text` is
+    // non-empty. Otherwise, the tooltip is already empty, as it should be.
+    UpdateTooltipText();
+  }
 }
 
 void Label::MaybeBuildDisplayText() const {
@@ -1402,7 +1459,7 @@ gfx::Size Label::GetBoundedTextSize(const SizeBounds& available_size) const {
   if (GetText().empty() || (w == 0 && GetMultiLine())) {
     size = gfx::Size(0, base_line_height);
   } else if (max_width_single_line_ > 0) {
-    DCHECK(!GetMultiLine());
+    CHECK(!GetMultiLine(), base::NotFatalUntil::M163);
     // Enable eliding during text width calculation. This allows the RenderText
     // to report an accurate width given the constraints and how it determines
     // to elide the text. If we simply clamp the width to the max after the
@@ -1531,6 +1588,18 @@ void Label::UpdateColorsFromTheme() {
 }
 
 bool Label::ShouldShowDefaultTooltip() const {
+  if (base::FeatureList::IsEnabled(features::kLabelDefaultTooltipFastPath)) {
+    // Avoid computing the text size, which requires shaping, when the answer is
+    // known without it.
+    if (GetObscured() || GetText().empty()) {
+      return false;
+    }
+    if (GetContentsBounds().width() == 0) {
+      // No text fits in zero width (e.g. the label isn't laid out yet).
+      return true;
+    }
+  }
+
   const gfx::Size text_size = GetTextSize();
   const gfx::Size size = GetContentsBounds().size();
   return !GetObscured() &&
@@ -1590,6 +1659,7 @@ void Label::OnDisplayTextTruncation() {
 
 BEGIN_METADATA(Label)
 ADD_PROPERTY_METADATA(std::u16string, Text)
+ADD_PROPERTY_METADATA(Label::MnemonicMode, MnemonicMode)
 ADD_PROPERTY_METADATA(int, TextContext)
 ADD_PROPERTY_METADATA(int, TextStyle)
 ADD_PROPERTY_METADATA(bool, AutoColorReadabilityEnabled)
@@ -1618,3 +1688,8 @@ ADD_PROPERTY_METADATA(int, MaximumWidth)
 END_METADATA
 
 }  // namespace views
+
+DEFINE_ENUM_CONVERTERS(views::Label::MnemonicMode,
+                       {views::Label::MnemonicMode::kNone, u"kNone"},
+                       {views::Label::MnemonicMode::kHide, u"kHide"},
+                       {views::Label::MnemonicMode::kUnderline, u"kUnderline"})

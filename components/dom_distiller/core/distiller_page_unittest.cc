@@ -16,19 +16,13 @@
 #include "components/dom_distiller/core/dom_distiller_constants.h"
 #include "components/dom_distiller/core/dom_distiller_features.h"
 #include "components/dom_distiller/core/extraction_utils.h"
-#include "components/dom_distiller/core/readability_options.h"
+#include "components/dom_distiller/core/proto/distilled_page.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/dom_distiller_js/dom_distiller.pb.h"
 #include "url/gurl.h"
 
 namespace dom_distiller {
 
 namespace {
-
-constexpr char kReadabilityTitle[] = "title";
-constexpr char kReadabilityContent[] = "content";
-constexpr char kReadabilityDir[] = "dir";
-constexpr char kReadabilityTextContent[] = "textContent";
 
 // This is a minimal concrete class that inherits from DistillerPage. It
 // overrides the implementation of distillation to immediately call the
@@ -45,7 +39,7 @@ class TestDistillerPage : public DistillerPage {
   };
 
   TestDistillerPage() {
-    SetMinimumAllowableDistilledContentLengthForTesting(0);
+    SetMinimumAllowableDistilledContentLength(0);
   }
 
   // Configures the mock to simulate a specific result.
@@ -55,12 +49,6 @@ class TestDistillerPage : public DistillerPage {
   void SetNextResultValue(std::optional<base::Value> val) {
     simulate_result_ = SimulatedResult::kCustomResult;
     simulate_result_val_ = std::move(val);
-  }
-
-  bool ShouldFetchOfflineData() override { return false; }
-
-  DistillerType GetDistillerType() override {
-    return DistillerType::kReadability;
   }
 
   // The overridden implementation now simulates one of three outcomes based on
@@ -164,44 +152,46 @@ TEST_F(DistillerPageTest, RecordsNullResultMetric) {
                                        DistillationParseResult::kNoData, 1);
 }
 
-// Asserts the fields exist in the DomDistillerResult.
-void AssertCorrectDomDistillerResult(proto::DomDistillerResult& result,
+// Asserts the fields exist in the DistilledPageProto.
+void AssertCorrectDistilledPageProto(const DistilledPageProto& result,
                                      const std::string& title,
                                      const std::string& content,
+                                     const std::string& text_content,
                                      const std::string& dir,
                                      const int word_count) {
   ASSERT_EQ(title, result.title());
-  ASSERT_EQ(content, result.distilled_content().html());
+  ASSERT_EQ(content, result.html());
+  ASSERT_EQ(text_content, result.text_content());
   ASSERT_EQ(dir, result.text_direction());
-  ASSERT_EQ(word_count, result.statistics_info().word_count());
+  ASSERT_EQ(word_count, result.word_count());
 }
 
-TEST_F(DistillerPageTest, ReadabilityObjectIsExtracted) {
-  base::DictValue readability_result;
+TEST_F(DistillerPageTest, DistillerObjectIsExtracted) {
+  base::DictValue distiller_result;
   const std::string title = "test_title";
-  readability_result.Set(kReadabilityTitle, title);
+  distiller_result.Set(kDistilledTitleKey, title);
   const std::string content = "test content";
-  readability_result.Set(kReadabilityContent, content);
+  distiller_result.Set(kDistilledContentKey, content);
   const std::string dir = "ltr";
-  readability_result.Set(kReadabilityDir, dir);
+  distiller_result.Set(kDistilledTextDirectionKey, dir);
   const std::string text_content =
       "one two; three. four!  fivefive six, seven, eight nine ten";
-  readability_result.Set(kReadabilityTextContent, text_content);
+  distiller_result.Set(kDistilledTextContentKey, text_content);
   TestDistillerPage distiller_page;
-  distiller_page.SetNextResultValue(base::Value(std::move(readability_result)));
+  distiller_page.SetNextResultValue(base::Value(std::move(distiller_result)));
 
   base::RunLoop run_loop;
   DistillerPage::DistillerPageCallback cb =
       base::BindOnce(
-          [](std::string title, std::string content, std::string dir,
-             int word_count,
-             std::unique_ptr<proto::DomDistillerResult> distilled_page,
+          [](std::string title, std::string content, std::string text_content,
+             std::string dir, int word_count,
+             std::unique_ptr<DistilledPageProto> distilled_page,
              DistillationParseResult result) {
             EXPECT_EQ(DistillationParseResult::kSuccess, result);
-            AssertCorrectDomDistillerResult(*distilled_page.get(), title,
-                                            content, dir, 10);
+            AssertCorrectDistilledPageProto(*distilled_page, title, content,
+                                            text_content, dir, 10);
           },
-          title, content, dir, 10)
+          title, content, text_content, dir, 10)
           .Then(run_loop.QuitClosure());
   distiller_page.DistillPage(GURL("http://example.com/success"),
                              DistillerOptions(), std::move(cb));
@@ -210,32 +200,31 @@ TEST_F(DistillerPageTest, ReadabilityObjectIsExtracted) {
                                        DistillationParseResult::kSuccess, 1);
 }
 
-TEST_F(DistillerPageTest,
-       ReadabilityObjectIsExtracted_AutoDirWhenNoneProvided) {
-  base::DictValue readability_result;
+TEST_F(DistillerPageTest, DistillerObjectIsExtracted_AutoDirWhenNoneProvided) {
+  base::DictValue distiller_result;
   const std::string title = "test_title";
-  readability_result.Set(kReadabilityTitle, title);
+  distiller_result.Set(kDistilledTitleKey, title);
   const std::string content = "test content";
-  readability_result.Set(kReadabilityContent, content);
+  distiller_result.Set(kDistilledContentKey, content);
   const std::string dir = "auto";
   const std::string text_content =
       "one two; three. four!  fivefive six, seven, eight nine ten";
-  readability_result.Set(kReadabilityTextContent, text_content);
+  distiller_result.Set(kDistilledTextContentKey, text_content);
   TestDistillerPage distiller_page;
-  distiller_page.SetNextResultValue(base::Value(std::move(readability_result)));
+  distiller_page.SetNextResultValue(base::Value(std::move(distiller_result)));
 
   base::RunLoop run_loop;
   DistillerPage::DistillerPageCallback cb =
       base::BindOnce(
-          [](std::string title, std::string content, std::string dir,
-             int word_count,
-             std::unique_ptr<proto::DomDistillerResult> distilled_page,
+          [](std::string title, std::string content, std::string text_content,
+             std::string dir, int word_count,
+             std::unique_ptr<DistilledPageProto> distilled_page,
              DistillationParseResult result) {
             EXPECT_EQ(DistillationParseResult::kSuccess, result);
-            AssertCorrectDomDistillerResult(*distilled_page.get(), title,
-                                            content, dir, 10);
+            AssertCorrectDistilledPageProto(*distilled_page, title, content,
+                                            text_content, dir, 10);
           },
-          title, content, dir, 10)
+          title, content, text_content, dir, 10)
           .Then(run_loop.QuitClosure());
   distiller_page.DistillPage(GURL("http://example.com/success"),
                              DistillerOptions(), std::move(cb));
@@ -244,19 +233,17 @@ TEST_F(DistillerPageTest,
                                        DistillationParseResult::kSuccess, 1);
 }
 
-TEST_F(DistillerPageTest, ReadabilityObjectIsExtracted_FailureWhenNotDict) {
-  base::Value readability_result("undefined");
+TEST_F(DistillerPageTest, DistillerObjectIsExtracted_FailureWhenNotDict) {
+  base::Value distiller_result("undefined");
   TestDistillerPage distiller_page;
-  distiller_page.SetNextResultValue(base::Value(std::move(readability_result)));
+  distiller_page.SetNextResultValue(base::Value(std::move(distiller_result)));
 
   base::RunLoop run_loop;
   DistillerPage::DistillerPageCallback cb =
-      base::BindOnce(
-          [](std::unique_ptr<proto::DomDistillerResult> distilled_page,
-             DistillationParseResult result) {
-            EXPECT_EQ(DistillationParseResult::kParseFailure, result);
-          })
-          .Then(run_loop.QuitClosure());
+      base::BindOnce([](std::unique_ptr<DistilledPageProto> distilled_page,
+                        DistillationParseResult result) {
+        EXPECT_EQ(DistillationParseResult::kParseFailure, result);
+      }).Then(run_loop.QuitClosure());
   distiller_page.DistillPage(GURL("http://example.com/success"),
                              DistillerOptions(), std::move(cb));
   run_loop.Run();
@@ -268,26 +255,25 @@ TEST_F(DistillerPageTest, ReadabilityObjectIsExtracted_FailureWhenNotDict) {
 
 #if BUILDFLAG(IS_ANDROID)
 TEST_F(DistillerPageTest, DistillationFailsWhenMinContentLengthNotMet) {
-  base::DictValue readability_result;
+  base::DictValue distiller_result;
   const std::string title = "test_title";
-  readability_result.Set(kReadabilityTitle, title);
+  distiller_result.Set(kDistilledTitleKey, title);
   const std::string content = "test content";
-  readability_result.Set(kReadabilityContent, content);
+  distiller_result.Set(kDistilledContentKey, content);
   const std::string dir = "ltr";
-  readability_result.Set(kReadabilityDir, dir);
+  distiller_result.Set(kDistilledTextDirectionKey, dir);
   const std::string text_content =
       "one two; three. four!  fivefive six, seven, eight nine ten";
-  readability_result.Set(kReadabilityTextContent, text_content);
+  distiller_result.Set(kDistilledTextContentKey, text_content);
   TestDistillerPage distiller_page;
-  distiller_page.SetMinimumAllowableDistilledContentLengthForTesting(1000);
-  distiller_page.SetNextResultValue(base::Value(std::move(readability_result)));
+  distiller_page.SetMinimumAllowableDistilledContentLength(1000);
+  distiller_page.SetNextResultValue(base::Value(std::move(distiller_result)));
 
   base::RunLoop run_loop;
   DistillerPage::DistillerPageCallback cb =
       base::BindOnce(
           [](std::string title, std::string content, std::string dir,
-             int word_count,
-             std::unique_ptr<proto::DomDistillerResult> distilled_page,
+             int word_count, std::unique_ptr<DistilledPageProto> distilled_page,
              DistillationParseResult result) {
             EXPECT_EQ(DistillationParseResult::kContentTooShort, result);
           },
@@ -300,16 +286,55 @@ TEST_F(DistillerPageTest, DistillationFailsWhenMinContentLengthNotMet) {
       "DomDistiller.Distillation.Result",
       DistillationParseResult::kContentTooShort, 1);
 }
+
+TEST_F(DistillerPageTest,
+       DistillationSucceedsWhenCustomLowerMinContentLengthMet) {
+  base::DictValue distiller_result;
+  const std::string title = "test_title";
+  distiller_result.Set(kDistilledTitleKey, title);
+  const std::string content = "test content";
+  distiller_result.Set(kDistilledContentKey, content);
+  const std::string dir = "ltr";
+  distiller_result.Set(kDistilledTextDirectionKey, dir);
+  const std::string text_content =
+      "one two; three. four!  fivefive six, seven, eight nine ten";
+  distiller_result.Set(kDistilledTextContentKey, text_content);
+
+  // Use a threshold (10 words) lower than the 100-word Android default and
+  // verify that a 10-word article succeeds.
+  TestDistillerPage distiller_page;
+  distiller_page.SetMinimumAllowableDistilledContentLength(10);
+  distiller_page.SetNextResultValue(base::Value(std::move(distiller_result)));
+
+  base::RunLoop run_loop;
+  DistillerPage::DistillerPageCallback cb =
+      base::BindOnce(
+          [](std::string title, std::string content, std::string text_content,
+             std::string dir, int word_count,
+             std::unique_ptr<DistilledPageProto> distilled_page,
+             DistillationParseResult result) {
+            EXPECT_EQ(DistillationParseResult::kSuccess, result);
+            AssertCorrectDistilledPageProto(*distilled_page, title, content,
+                                            text_content, dir, word_count);
+          },
+          title, content, text_content, dir, 10)
+          .Then(run_loop.QuitClosure());
+  distiller_page.DistillPage(GURL("http://example.com/success"),
+                             DistillerOptions(), std::move(cb));
+  run_loop.Run();
+  histogram_tester_.ExpectUniqueSample("DomDistiller.Distillation.Result",
+                                       DistillationParseResult::kSuccess, 1);
+}
 #endif
 
-// Test that the readability script options are injected correctly.
-TEST_F(DistillerPageTest, ReadabilityScriptOptionsHandling) {
-  ReadabilityOptions custom_options;
-  std::string default_script = GetReadabilityDistillerScript(custom_options);
+// Test that the distiller script options are injected correctly.
+TEST_F(DistillerPageTest, DistillerScriptOptionsHandling) {
+  DistillerOptions custom_options;
+  std::string default_script = GetDistillerScript(custom_options);
   EXPECT_NE(std::string::npos, default_script.find("})(undefined);"));
 
   custom_options.allowed_video_regex = "youtube|vimeo";
-  std::string custom_script = GetReadabilityDistillerScript(custom_options);
+  std::string custom_script = GetDistillerScript(custom_options);
   EXPECT_NE(std::string::npos, custom_script.find("})(\"youtube|vimeo\");"));
 }
 

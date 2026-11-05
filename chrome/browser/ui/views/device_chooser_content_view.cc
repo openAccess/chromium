@@ -158,7 +158,7 @@ DeviceChooserContentView::DeviceChooserContentView(
 DeviceChooserContentView::~DeviceChooserContentView() {
   chooser_controller_->set_view(nullptr);
   table_view_->set_observer(nullptr);
-  table_view_->SetModel(nullptr);
+  table_view_->ClearModel();
 }
 
 gfx::Size DeviceChooserContentView::GetMinimumSize() const {
@@ -166,12 +166,13 @@ gfx::Size DeviceChooserContentView::GetMinimumSize() const {
   return gfx::Size();
 }
 
-size_t DeviceChooserContentView::RowCount() {
+size_t DeviceChooserContentView::RowCount() const {
   return chooser_controller_->NumOptions();
 }
 
-std::u16string DeviceChooserContentView::GetText(size_t row, int column_id) {
-  DCHECK_LT(row, RowCount());
+std::u16string DeviceChooserContentView::GetText(size_t row,
+                                                 int column_id) const {
+  CHECK_LT(row, RowCount(), base::NotFatalUntil::M162);
   std::u16string text = chooser_controller_->GetOption(row);
   return chooser_controller_->IsPaired(row)
              ? l10n_util::GetStringFUTF16(
@@ -181,9 +182,10 @@ std::u16string DeviceChooserContentView::GetText(size_t row, int column_id) {
 
 void DeviceChooserContentView::SetObserver(ui::TableModelObserver* observer) {}
 
-ui::ImageModel DeviceChooserContentView::GetIcon(size_t row) {
-  DCHECK(chooser_controller_->ShouldShowIconBeforeText());
-  DCHECK_LT(row, RowCount());
+ui::ImageModel DeviceChooserContentView::GetIcon(size_t row) const {
+  CHECK(chooser_controller_->ShouldShowIconBeforeText(),
+        base::NotFatalUntil::M162);
+  CHECK_LT(row, RowCount(), base::NotFatalUntil::M162);
 
   if (chooser_controller_->IsConnected(row)) {
     return ui::ImageModel::FromVectorIcon(
@@ -201,8 +203,9 @@ ui::ImageModel DeviceChooserContentView::GetIcon(size_t row) {
   static constexpr std::array kSignalStrengthLevelImageIds{
       IDR_SIGNAL_0_BAR, IDR_SIGNAL_1_BAR, IDR_SIGNAL_2_BAR, IDR_SIGNAL_3_BAR,
       IDR_SIGNAL_4_BAR};
-  DCHECK_GE(level, 0);
-  DCHECK_LT(static_cast<size_t>(level), kSignalStrengthLevelImageIds.size());
+  CHECK_GE(level, 0, base::NotFatalUntil::M162);
+  CHECK_LT(static_cast<size_t>(level), kSignalStrengthLevelImageIds.size(),
+           base::NotFatalUntil::M162);
   return ui::ImageModel::FromImageSkia(
       *ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(
           kSignalStrengthLevelImageIds[level]));
@@ -417,7 +420,7 @@ void DeviceChooserContentView::UpdateTableView() {
 }
 
 void DeviceChooserContentView::SelectAllCheckboxChanged() {
-  DCHECK(select_all_view_ && table_view_);
+  CHECK(select_all_view_ && table_view_, base::NotFatalUntil::M162);
   table_view_->SetSelectionAll(/*select=*/select_all_view_->GetChecked());
 }
 
@@ -438,7 +441,7 @@ void DeviceChooserContentView::HideThrobber() {
 }
 
 void DeviceChooserContentView::ShowReScanButton(bool enabled) {
-  DCHECK(re_scan_button_);
+  CHECK(re_scan_button_, base::NotFatalUntil::M162);
   re_scan_button_->SetVisible(true);
   re_scan_button_->SetEnabled(enabled);
   throbber_->Stop();

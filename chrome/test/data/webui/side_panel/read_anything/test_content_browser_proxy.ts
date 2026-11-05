@@ -13,6 +13,7 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
   onImageDownloaded = new FakeChromeEvent();
   onMainFrameSameDocumentNavigation = new FakeChromeEvent();
   onRenderedTextMappingReady = new FakeChromeEvent();
+  onTranslationStateChanged = new FakeChromeEvent();
   showEmpty = new FakeChromeEvent();
   showLoading = new FakeChromeEvent();
   updateImages = new FakeChromeEvent();
@@ -26,7 +27,9 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
   endOffset: number = -1;
   hasValidSelectionVal: boolean = true;
   readabilityEnabled: boolean = true;
-  isReadabilitySelectTextEnabledFlag: boolean = false;
+  contentTranslated: boolean = false;
+  translatePdfEnabled: boolean = false;
+  sendFeedbackEnabled: boolean = false;
   textContentMap: {[key: number]: string} = {2: 'some text content'};
   prefixText: string = '';
   rootId: number = 1;
@@ -34,7 +37,6 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
   htmlContent: string = '';
   documentUrl: string = '';
   googleDocs: boolean = false;
-  docsLoadMoreButtonVisible: boolean = false;
   unexpectedUpdateContentStopSource: number = 0;
   axMapping: AxSegment[] = [];
   htmlTagMap: {[key: number]: string} = {1: 'div'};
@@ -46,6 +48,8 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
   languageMap: {[key: number]: string} = {};
   childrenMap: {[key: number]: number[]} = {1: [2]};
   isOverlineMap: {[key: number]: boolean} = {};
+  isSuperscriptMap: {[key: number]: boolean} = {};
+  isSubscriptMap: {[key: number]: boolean} = {};
   shouldBoldMap: {[key: number]: boolean} = {};
   imageBitmap: SkiaImageBitmap|null = null;
   axTreeAnchorsVal: Record<string, AxTreeAnchorMetadata[]> = {};
@@ -62,7 +66,9 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
       'getEndOffset',
       'hasValidSelection',
       'isReadabilityEnabled',
-      'isReadabilitySelectTextEnabled',
+      'isContentTranslated',
+      'isTranslatePdfEnabled',
+      'isReadAnythingSendFeedbackEnabled',
       'getActiveDistillationMethod',
       'getDistillationTypeReadability',
       'getDistillationTypeScreen2x',
@@ -71,7 +77,6 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
       'attemptLogEarlySelection',
       'onSelectionChange',
       'onScroll',
-      'onScrolledToBottom',
       'getTextContent',
       'getPrefixText',
       'getRootId',
@@ -79,7 +84,6 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
       'getHtmlContent',
       'getDocumentUrl',
       'isGoogleDocs',
-      'isDocsLoadMoreButtonVisible',
       'getUnexpectedUpdateContentStopSource',
       'getAxMapping',
       'getHtmlTag',
@@ -91,6 +95,8 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
       'getLanguage',
       'getChildren',
       'isOverline',
+      'isSuperscript',
+      'isSubscript',
       'shouldBold',
       'getImageBitmap',
       'getAxTreeAnchors',
@@ -100,6 +106,7 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
       'onDistilled',
       'onLinkClicked',
       'onRenderedTextBlocksAvailable',
+      'onSendFeedback',
     ]);
   }
 
@@ -133,9 +140,19 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
     return this.readabilityEnabled;
   }
 
-  isReadabilitySelectTextEnabled(): boolean {
-    this.methodCalled('isReadabilitySelectTextEnabled');
-    return this.isReadabilitySelectTextEnabledFlag;
+  isContentTranslated(): boolean {
+    this.methodCalled('isContentTranslated');
+    return this.contentTranslated;
+  }
+
+  isTranslatePdfEnabled(): boolean {
+    this.methodCalled('isTranslatePdfEnabled');
+    return this.translatePdfEnabled;
+  }
+
+  isReadAnythingSendFeedbackEnabled(): boolean {
+    this.methodCalled('isReadAnythingSendFeedbackEnabled');
+    return this.sendFeedbackEnabled;
   }
 
   onConnected(): void {
@@ -252,6 +269,16 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
     return this.isOverlineMap[nodeId] || false;
   }
 
+  isSuperscript(nodeId: number): boolean {
+    this.methodCalled('isSuperscript', nodeId);
+    return this.isSuperscriptMap[nodeId] || false;
+  }
+
+  isSubscript(nodeId: number): boolean {
+    this.methodCalled('isSubscript', nodeId);
+    return this.isSubscriptMap[nodeId] || false;
+  }
+
   shouldBold(nodeId: number): boolean {
     this.methodCalled('shouldBold', nodeId);
     return this.shouldBoldMap[nodeId] || false;
@@ -294,15 +321,6 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
     return this.distillationTypeScreen2x;
   }
 
-  isDocsLoadMoreButtonVisible(): boolean {
-    this.methodCalled('isDocsLoadMoreButtonVisible');
-    return this.docsLoadMoreButtonVisible;
-  }
-
-  onScrolledToBottom(): void {
-    this.methodCalled('onScrolledToBottom');
-  }
-
   onCopy(): void {
     this.methodCalled('onCopy');
   }
@@ -314,5 +332,9 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
 
   onDistilled(wordCount: number): void {
     this.methodCalled('onDistilled', wordCount);
+  }
+
+  onSendFeedback(): void {
+    this.methodCalled('onSendFeedback');
   }
 }

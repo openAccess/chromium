@@ -32,6 +32,7 @@ found in the LICENSE file.
         android:layout_height="wrap_content"
         android:paddingStart="@dimen/autofill_bottom_sheet_padding_horizontal"
         android:paddingEnd="@dimen/autofill_bottom_sheet_padding_horizontal"
+        android:paddingBottom="@dimen/autofill_bottom_sheet_spacing_medium"
         android:layout_marginTop=
             "@dimen/autofill_bottom_sheet_spacing_extra_small">
 
@@ -42,7 +43,7 @@ found in the LICENSE file.
           android:layout_height="@dimen/autofill_bottom_sheet_logo_height"
           android:layout_marginTop=
               "@dimen/autofill_bottom_sheet_spacing_medium"
-          android:src="@drawable/ic_email_googblue_36dp" />
+          android:src="@drawable/ic_mark_email_read_24dp" />
 
       <TextView
           android:id="@+id/email_verification_title_text"
@@ -63,16 +64,36 @@ found in the LICENSE file.
           android:textAppearance="@style/TextAppearance.TextMedium.Secondary"
           android:textAlignment="center" />
 
-      <org.chromium.ui.widget.ButtonCompat
-          android:id="@+id/email_verification_confirm_button"
-          style="@style/FilledButton"
+      <!-- The spinner is overlaid on top of the confirm button so that the
+         button keeps its size and color while verification is in progress. -->
+      <FrameLayout
           android:layout_width="match_parent"
           android:layout_height="wrap_content"
-          android:textAlignment="center"
           android:layout_marginTop=
-              "@dimen/autofill_bottom_sheet_confirm_button_top_margin"
-          android:minHeight="@dimen/min_touch_target_size"
-          android:minWidth="@dimen/min_touch_target_size" />
+              "@dimen/autofill_bottom_sheet_confirm_button_top_margin">
+
+        <org.chromium.ui.widget.ButtonCompat
+            android:id="@+id/email_verification_confirm_button"
+            style="@style/FilledButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textAlignment="center"
+            android:accessibilityLiveRegion="polite"
+            android:minHeight="@dimen/min_touch_target_size"
+            android:minWidth="@dimen/min_touch_target_size" />
+
+        <ProgressBar
+            android:id="@+id/email_verification_confirm_button_spinner"
+            android:layout_width=
+                "@dimen/autofill_bottom_sheet_button_spinner_size"
+            android:layout_height=
+                "@dimen/autofill_bottom_sheet_button_spinner_size"
+            android:layout_gravity="center"
+            android:importantForAccessibility="no"
+            android:indeterminate="true"
+            android:indeterminateTint="@macro/default_text_color_on_accent1"
+            android:visibility="gone" />
+      </FrameLayout>
 
       <org.chromium.ui.widget.ButtonCompat
           android:id="@+id/email_verification_cancel_button"
@@ -81,8 +102,6 @@ found in the LICENSE file.
           android:layout_height="wrap_content"
           android:textAlignment="center"
           android:layout_marginTop=
-              "@dimen/autofill_bottom_sheet_spacing_extra_small"
-          android:layout_marginBottom=
               "@dimen/autofill_bottom_sheet_spacing_extra_small"
           android:minHeight="@dimen/min_touch_target_size"
           android:minWidth="@dimen/min_touch_target_size" />

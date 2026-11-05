@@ -32,6 +32,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
+#include "base/values.h"
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate.h"
 #include "chrome/browser/ui/passwords/settings/fake_password_import_controller.h"
 #include "chrome/browser/ui/passwords/settings/mock_password_import_controller.h"
@@ -64,6 +65,7 @@
 #include "components/version_info/channel.h"
 #include "components/webauthn/core/browser/test_passkey_model.h"
 #include "content/public/test/browser_task_environment.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -113,7 +115,7 @@ constexpr char kTestUserId[] = "12345";
 constexpr char kTestUserName[] = "Theo Tester";
 constexpr char kTestEmail[] = "theo@example.com";
 constexpr char kTestProfileImageUrl[] =
-    "https://3837fjsdjaka.image.example.com";
+    "https://3837fjsdjaka.image.example.com/";
 constexpr char kTestPublicKeyBase64[] =
     "MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTIzNDU2Nzg5MTI=";
 constexpr uint32_t kTestPublicKeyVersion = 42;
@@ -219,15 +221,26 @@ class PasswordsPrivateDelegateImplTest : public testing::Test {
 
   scoped_refptr<PasswordsPrivateDelegateImpl> CreateDelegate() {
     return base::MakeRefCounted<PasswordsPrivateDelegateImpl>(
-        &testing_pref_service_, identity_test_env_.identity_manager(),
-        base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
-            &test_url_loader_factory_),
-        &password_sender_service_, &sync_service_,
-        /*trust_safety_sentiment_service=*/nullptr,
-        /*affiliation_service=*/&mock_affiliation_service_, profile_store_,
-        account_store_, &passkey_model_, &mock_bulk_leak_check_service_,
-        /*event_router=*/nullptr, &web_app_install_manager_, &enclave_manager_,
-        base::NullCallback(), base::DoNothing());
+        PasswordsPrivateDelegateImpl::Dependencies{
+            .prefs = &testing_pref_service_,
+            .identity_manager = identity_test_env_.identity_manager(),
+            .url_loader_factory = base::MakeRefCounted<
+                network::WeakWrapperSharedURLLoaderFactory>(
+                &test_url_loader_factory_),
+            .password_sender_service = &password_sender_service_,
+            .sync_service = &sync_service_,
+            .trust_safety_sentiment_service = nullptr,
+            .affiliation_service = &mock_affiliation_service_,
+            .profile_password_store = profile_store_,
+            .account_password_store = account_store_,
+            .passkey_model = &passkey_model_,
+            .bulk_leak_check_service = &mock_bulk_leak_check_service_,
+            .event_router = nullptr,
+            .web_app_install_manager = &web_app_install_manager_,
+            .enclave_manager = &enclave_manager_,
+            .device_authenticator_factory = base::NullCallback(),
+            .maybe_show_profile_switch_iph_cb = base::DoNothing(),
+        });
   }
 
   // Queries and returns the list of saved credentials, blocking until finished.
@@ -498,6 +511,61 @@ TEST_F(PasswordsPrivateDelegateImplTest, AddPassword) {
                   PasswordUiEntryDataEquals(testing::ByRef(expected_entry1)),
                   PasswordUiEntryDataEquals(testing::ByRef(expected_entry2)))));
   delegate->GetSavedPasswordsList(callback.Get());
+}
+
+TEST_F(PasswordsPrivateDelegateImplTest, AddPassword_BlockedByMandatoryPolicy) {
+  prefs()->SetManagedPref(password_manager::prefs::kCredentialsEnableService,
+                          base::Value(false));
+  scoped_refptr<PasswordsPrivateDelegateImpl> delegate = CreateDelegate();
+  RunUntilIdle();
+
+  EXPECT_FALSE(delegate->AddPassword(/*url=*/"example1.com",
+                                     /*username=*/u"username1",
+                                     /*password=*/u"password1", /*note=*/u"",
+                                     /*use_account_store=*/true));
+  RunUntilIdle();
+
+  EXPECT_THAT(GetCredentials(*delegate), IsEmpty());
+}
+
+TEST_F(PasswordsPrivateDelegateImplTest,
+       ImportPasswords_BlockedByMandatoryPolicy) {
+  prefs()->SetManagedPref(password_manager::prefs::kCredentialsEnableService,
+                          base::Value(false));
+  scoped_refptr<PasswordsPrivateDelegateImpl> delegate = CreateDelegate();
+
+  auto mock_controller = std::make_unique<MockPasswordImportController>();
+  auto* mock_controller_ptr = mock_controller.get();
+  delegate->SetImportControllerForTesting(std::move(mock_controller));
+
+  EXPECT_CALL(*mock_controller_ptr, Import).Times(0);
+
+  base::MockCallback<PasswordsPrivateDelegate::ImportResultsCallback>
+      import_callback;
+  EXPECT_CALL(
+      import_callback,
+      Run(Field(&ImportResults::status,
+                api::passwords_private::ImportResultsStatus::kUnknownError)))
+      .Times(1);
+
+  delegate->ImportPasswords(api::passwords_private::PasswordStoreSet::kDevice,
+                            import_callback.Get(), /*web_contents=*/nullptr);
+}
+
+TEST_F(PasswordsPrivateDelegateImplTest,
+       ImportPasswords_AllowedWhenDisabledByUser) {
+  prefs()->SetUserPref(password_manager::prefs::kCredentialsEnableService,
+                       base::Value(false));
+  scoped_refptr<PasswordsPrivateDelegateImpl> delegate = CreateDelegate();
+
+  auto mock_controller = std::make_unique<MockPasswordImportController>();
+  auto* mock_controller_ptr = mock_controller.get();
+  delegate->SetImportControllerForTesting(std::move(mock_controller));
+
+  EXPECT_CALL(*mock_controller_ptr, Import).Times(1);
+
+  delegate->ImportPasswords(api::passwords_private::PasswordStoreSet::kDevice,
+                            base::DoNothing(), /*web_contents=*/nullptr);
 }
 
 TEST_F(PasswordsPrivateDelegateImplTest, TestReauthFailedOnImport) {
@@ -1219,6 +1287,9 @@ TEST_F(PasswordsPrivateDelegateImplTest,
   EXPECT_CALL(*biometric_authenticator_ptr, Cancel).Times(0);
   EXPECT_CALL(result_callback, Run(false));
   delegate->SwitchBiometricAuthBeforeFillingState(result_callback.Get());
+  testing::Mock::VerifyAndClearExpectations(biometric_authenticator_ptr);
+
+  EXPECT_CALL(*biometric_authenticator_ptr, Cancel);
 }
 #endif
 

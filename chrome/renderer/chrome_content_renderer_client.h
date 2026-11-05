@@ -76,11 +76,18 @@ namespace web_cache {
 class WebCacheImpl;
 }
 
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+namespace extensions {
+class ScopedChromeExtensionsClient;
+}
+#endif
+
 class ChromeContentRendererClient
     : public content::ContentRendererClient,
       public service_manager::LocalInterfaceProvider {
  public:
   ChromeContentRendererClient();
+  explicit ChromeContentRendererClient(bool create_extensions_client);
 
   ChromeContentRendererClient(const ChromeContentRendererClient&) = delete;
   ChromeContentRendererClient& operator=(const ChromeContentRendererClient&) =
@@ -101,6 +108,7 @@ class ChromeContentRendererClient
                                  const GURL& original_url,
                                  const std::string& mime_type) override;
   bool IsDomStorageDisabled() const override;
+  bool AreDedicatedWorkersDisabled() const override;
   v8::Local<v8::Object> GetScriptableObject(
       const blink::WebElement& plugin_element,
       v8::Isolate* isolate) override;
@@ -131,9 +139,13 @@ class ChromeContentRendererClient
       base::SingleThreadTaskRunner* compositor_thread_task_runner) override;
   bool RunIdleHandlerWhenWidgetsHidden() override;
   bool AllowPopup() override;
+  bool IsUnboundedElementAllowed(
+      const blink::WebSecurityOrigin& origin) override;
   bool ShouldNotifyServiceWorkerOnWebSocketActivity(
       v8::Local<v8::Context> context) override;
   blink::ProtocolHandlerSecurityLevel GetProtocolHandlerSecurityLevel(
+      const url::Origin& origin) override;
+  bool ShouldUsePerBrowsingInstanceWindowAgent(
       const url::Origin& origin) override;
   void WillSendRequest(blink::WebLocalFrame* frame,
                        ui::PageTransition transition_type,
@@ -267,6 +279,9 @@ class ChromeContentRendererClient
       phishing_model_setter_;
 #endif
 
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  std::unique_ptr<extensions::ScopedChromeExtensionsClient> extensions_client_;
+#endif
   scoped_refptr<blink::ThreadSafeBrowserInterfaceBrokerProxy>
       browser_interface_broker_;
 };

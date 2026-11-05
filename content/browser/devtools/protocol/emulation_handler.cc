@@ -26,9 +26,11 @@
 #include "content/browser/idle/idle_manager_impl.h"
 #include "content/browser/renderer_host/input/touch_emulator_impl.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_impl.h"
 #include "content/browser/screen_orientation/screen_orientation_provider.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/url_constants.h"
 #include "net/http/http_util.h"
@@ -124,11 +126,12 @@ bool ValidateClientHintString(const std::string& s) {
 
 }  // namespace
 
-EmulationHandler::EmulationHandler()
+EmulationHandler::EmulationHandler(DevToolsAgentHostClient* client)
     : DevToolsDomainHandler(Emulation::Metainfo::domainName),
       touch_emulation_enabled_(false),
       device_emulation_enabled_(false),
       focus_emulation_enabled_(false),
+      client_(client),
       host_(nullptr) {}
 
 EmulationHandler::~EmulationHandler() = default;
@@ -144,18 +147,21 @@ void EmulationHandler::SetRenderer(int process_host_id,
                                    RenderFrameHostImpl* frame_host) {
   if (host_ == frame_host)
     return;
+  RenderWidgetHostImpl* old_render_widget_host =
+      host_ ? host_->render_view_host()->GetWidget() : nullptr;
+  RenderWidgetHostImpl* new_render_widget_host =
+      frame_host ? frame_host->render_view_host()->GetWidget() : nullptr;
+  if (focus_emulation_enabled_) {
+    if (old_render_widget_host &&
+        old_render_widget_host != new_render_widget_host) {
+      old_render_widget_host->SetFocusEmulationEnabled(false);
+    }
+    if (new_render_widget_host) {
+      new_render_widget_host->SetFocusEmulationEnabled(true);
+    }
+  }
   if (!frame_host) {
-    sensor_overrides_.clear();
-#if BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
-    pressure_overrides_.clear();
-#endif  // BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
-    if (screen_orientation_lock_emulation_enabled_) {
-      screen_orientation_lock_emulation_enabled_ = false;
-      UpdateScreenOrientationEmulation(false);
-    }
-    if (device_posture_emulation_enabled_) {
-      ClearDevicePostureOverride();
-    }
+    ResetWebContentsEmulation();
   }
   host_ = frame_host;
   if (touch_emulation_enabled_)
@@ -165,19 +171,29 @@ void EmulationHandler::SetRenderer(int process_host_id,
         blink::mojom::DeviceEmulationCacheBehavior::kKeepCache);
 }
 
+bool EmulationHandler::MayApplyOverridesTo(const GURL& url) const {
+  return client_ && client_->MayAttachToURL(url, host_ && host_->web_ui());
+}
+
 void EmulationHandler::Wire(UberDispatcher* dispatcher) {
   frontend_ = std::make_unique<Emulation::Frontend>(dispatcher->channel());
   Emulation::Dispatcher::wire(dispatcher, this);
 }
 
-Response EmulationHandler::Disable() {
+// Reverts emulation that lives on the WebContents or its frame widgets rather
+// than on this handler. Must run while |host_| is still set: once |host_| is
+// null, these overrides are unreachable (their cleanup early-returns) and
+// would silently outlive the debugging session for the rest of the
+// WebContents' lifetime (e.g. when a session is orphaned by
+// DisconnectWebContents on prerender activation).
+void EmulationHandler::ResetWebContentsEmulation() {
   if (touch_emulation_enabled_) {
     touch_emulation_enabled_ = false;
     UpdateTouchEventEmulationState();
   }
-  user_agent_ = std::string();
   if (device_emulation_enabled_) {
     device_emulation_enabled_ = false;
+    device_emulation_params_ = blink::DeviceEmulationParams();
     // Restore the view size changed by SetDeviceMetricsOverride(), as
     // ClearDeviceMetricsOverride() does. Otherwise a client that disconnects
     // without clearing its override leaves the view at the emulated size, and
@@ -188,25 +204,32 @@ Response EmulationHandler::Disable() {
         web_contents->ClearDeviceEmulationSize();
       }
     }
-    if (screen_orientation_lock_emulation_enabled_) {
-      screen_orientation_lock_emulation_enabled_ = false;
-      UpdateScreenOrientationEmulation(false);
-    }
     UpdateDeviceEmulationState();
   }
+  if (screen_orientation_lock_emulation_enabled_) {
+    screen_orientation_lock_emulation_enabled_ = false;
+    UpdateScreenOrientationEmulation(false);
+  }
+  sensor_overrides_.clear();
+#if BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
+  pressure_overrides_.clear();
+#endif  // BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
+  if (device_posture_emulation_enabled_) {
+    ClearDevicePostureOverride();
+  }
+  if (geolocation_overridden_) {
+    ClearGeolocationOverride();
+  }
+}
+
+Response EmulationHandler::Disable() {
+  ResetWebContentsEmulation();
+  user_agent_ = std::string();
   if (focus_emulation_enabled_)
     SetFocusEmulationEnabled(false);
   prefers_color_scheme_ = "";
   prefers_reduced_motion_ = "";
   prefers_reduced_transparency_ = "";
-  sensor_overrides_.clear();
-#if BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
-  pressure_overrides_.clear();
-#endif  // BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
-  ClearDevicePostureOverride();
-  if (geolocation_overridden_) {
-    ClearGeolocationOverride();
-  }
   return Response::Success();
 }
 
@@ -672,7 +695,9 @@ Response EmulationHandler::SetDeviceMetricsOverride(
     std::unique_ptr<protocol::Emulation::DisplayFeature> display_feature,
     std::unique_ptr<protocol::Emulation::DevicePosture> device_posture,
     std::optional<std::string> scrollbar_type,
-    std::optional<bool> screen_orientation_lock_emulation) {
+    std::optional<bool> screen_orientation_lock_emulation,
+    std::optional<std::string> viewport_meta,
+    std::optional<std::string> text_layout_mode) {
   const static int max_size = 10000000;
   const static double max_scale = 10;
   const static int max_orientation_angle = 360;
@@ -798,6 +823,18 @@ Response EmulationHandler::SetDeviceMetricsOverride(
   } else {
     params.force_android_overlay_scrollbar = false;
   }
+
+  params.force_viewport_meta =
+      mobile ||
+      (viewport_meta &&
+       *viewport_meta ==
+           Emulation::SetDeviceMetricsOverride::ViewportMetaEnum::Enable);
+
+  params.force_text_size_adjust =
+      mobile ||
+      (text_layout_mode &&
+       *text_layout_mode ==
+           Emulation::SetDeviceMetricsOverride::TextLayoutModeEnum::Mobile);
 
   if (viewport) {
     params.viewport_offset.SetPoint(viewport->GetX(), viewport->GetY());
@@ -1012,6 +1049,9 @@ Response EmulationHandler::SetUserAgentOverride(
 }
 
 Response EmulationHandler::SetFocusEmulationEnabled(bool enabled) {
+  if (host_) {
+    host_->render_view_host()->GetWidget()->SetFocusEmulationEnabled(enabled);
+  }
   if (enabled == focus_emulation_enabled_)
     return Response::FallThrough();
   focus_emulation_enabled_ = enabled;
@@ -1064,9 +1104,9 @@ blink::DeviceEmulationParams EmulationHandler::GetDeviceEmulationParams() {
 
 void EmulationHandler::SetDeviceEmulationParams(
     const blink::DeviceEmulationParams& params) {
-  DCHECK(host_);
+  CHECK(host_, base::NotFatalUntil::M159);
   // Device emulation only happens on the outermost main frame.
-  DCHECK(!host_->GetParentOrOuterDocument());
+  CHECK(!host_->GetParentOrOuterDocument(), base::NotFatalUntil::M159);
 
   bool enabled = params != blink::DeviceEmulationParams();
   bool enable_changed = enabled != device_emulation_enabled_;
@@ -1081,7 +1121,7 @@ void EmulationHandler::SetDeviceEmulationParams(
 }
 
 WebContentsImpl* EmulationHandler::GetWebContents() {
-  DCHECK(host_);  // Only call if |host_| is set.
+  CHECK(host_, base::NotFatalUntil::M159);  // Only call if |host_| is set.
   return static_cast<WebContentsImpl*>(WebContents::FromRenderFrameHost(host_));
 }
 
@@ -1091,7 +1131,7 @@ void EmulationHandler::UpdateTouchEventEmulationState() {
 
   // We only have a single TouchEmulator for all frames, so let the main frame's
   // EmulationHandler enable/disable it.
-  DCHECK(!host_->GetParentOrOuterDocument());
+  CHECK(!host_->GetParentOrOuterDocument(), base::NotFatalUntil::M159);
 
   if (touch_emulation_enabled_) {
     if (auto* touch_emulator = host_->GetRenderWidgetHost()->GetTouchEmulator(
@@ -1117,7 +1157,7 @@ void EmulationHandler::UpdateDeviceEmulationState(
     return;
 
   // Device emulation only happens on the outermost main frame.
-  DCHECK(!host_->GetParentOrOuterDocument());
+  CHECK(!host_->GetParentOrOuterDocument(), base::NotFatalUntil::M159);
 
   // TODO(eseckler): Once we change this to mojo, we should wait for an ack to
   // these messages from the renderer. The renderer should send the ack once the
@@ -1162,6 +1202,9 @@ Response EmulationHandler::SetDevicePostureOverride(
 }
 
 Response EmulationHandler::ClearDevicePostureOverride() {
+  if (!host_) {
+    return Response::InternalError();
+  }
   if (device_posture_emulation_enabled_) {
     device_posture_emulation_enabled_ = false;
     if (WebContentsImpl* web_contents = GetWebContents()) {
@@ -1246,7 +1289,7 @@ void EmulationHandler::ApplyOverrides(net::HttpRequestHeaders* headers,
   *accept_language_overridden = !accept_language_.empty();
   if (!prefers_color_scheme_.empty()) {
     const auto& prefers_color_scheme_client_hint_name =
-        network::GetClientHintToNameMap().at(
+        network::kClientHintToNameMap.at(
             network::mojom::WebClientHintsType::kPrefersColorScheme);
     if (headers->HasHeader(prefers_color_scheme_client_hint_name)) {
       headers->SetHeader(prefers_color_scheme_client_hint_name,
@@ -1255,7 +1298,7 @@ void EmulationHandler::ApplyOverrides(net::HttpRequestHeaders* headers,
   }
   if (!prefers_reduced_motion_.empty()) {
     const auto& prefers_reduced_motion_client_hint_name =
-        network::GetClientHintToNameMap().at(
+        network::kClientHintToNameMap.at(
             network::mojom::WebClientHintsType::kPrefersReducedMotion);
     if (headers->HasHeader(prefers_reduced_motion_client_hint_name)) {
       headers->SetHeader(prefers_reduced_motion_client_hint_name,
@@ -1264,7 +1307,7 @@ void EmulationHandler::ApplyOverrides(net::HttpRequestHeaders* headers,
   }
   if (!prefers_reduced_transparency_.empty()) {
     const auto& prefers_reduced_transparency_client_hint_name =
-        network::GetClientHintToNameMap().at(
+        network::kClientHintToNameMap.at(
             network::mojom::WebClientHintsType::kPrefersReducedTransparency);
     if (headers->HasHeader(prefers_reduced_transparency_client_hint_name)) {
       headers->SetHeader(prefers_reduced_transparency_client_hint_name,
@@ -1285,6 +1328,9 @@ bool EmulationHandler::ApplyUserAgentMetadataOverrides(
 
 void EmulationHandler::ApplyNetworkOverridesForDownload(
     download::DownloadUrlParameters* parameters) {
+  if (!MayApplyOverridesTo(parameters->url())) {
+    return;
+  }
   net::HttpRequestHeaders headers;
   bool user_agent_overridden;
   bool accept_language_overridden;

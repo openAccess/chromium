@@ -4,8 +4,6 @@
 
 import {loadTimeData} from '//resources/js/load_time_data.js';
 
-import type {VisualBrowserProxy} from '../app/visual_browser_proxy.js';
-import {VisualBrowserProxyImpl} from '../app/visual_browser_proxy.js';
 import {NodeStore} from '../content/node_store.js';
 import type {ContentPosition} from '../content/read_anything_types.js';
 import {ContentPositionSource} from '../content/read_anything_types.js';
@@ -59,8 +57,6 @@ export class SpeechController {
       AudioBrowserProxyImpl.getInstance();
   private metricsBrowserProxy_: MetricsBrowserProxy =
       MetricsBrowserProxyImpl.getInstance();
-  private visualBrowserProxy_: VisualBrowserProxy =
-      VisualBrowserProxyImpl.getInstance();
   private model_: SpeechModel = new SpeechModel();
   private speech_: SpeechBrowserProxy = SpeechBrowserProxyImpl.getInstance();
   private logger_: ReadAnythingLogger = ReadAnythingLogger.getInstance();
@@ -88,10 +84,12 @@ export class SpeechController {
   }
 
   resetForNewContent() {
-    if (!this.audioBrowserProxy_.isPhraseHighlightingEnabled()) {
-      // Reset the read aloud model because there's new content.
-      this.readAloudModel_.resetModel?.();
+    if (!this.model_.getSavedSpeechPlayingState()) {
+      this.logSpeechPlaybackSessionPerPage_();
     }
+
+    // Reset the read aloud model because there's new content.
+    this.readAloudModel_.resetModel();
 
     this.clearReadAloudState();
   }
@@ -198,31 +196,39 @@ export class SpeechController {
   }
 
   onLineFocusChange(position: CaretPosition|null) {
-    if (!this.visualBrowserProxy_.isLineFocusEnabled()) {
+    if (!position) {
+      this.clearCurrentContentPosition_(ContentPositionSource.LINE_FOCUS);
       return;
     }
-
-    let contentPosition: ContentPosition|null = null;
-    if (position) {
-      let node: Node = position.offsetNode;
-      let offset: number = position.offset;
-      if (node && this.nodeStore_.getAncestor(node)) {
-        const ancestor = this.nodeStore_.getAncestor(node)!;
-        node = ancestor.node;
-        offset += ancestor.offset;
-      }
-      contentPosition = {
-        node,
-        offset,
-        source: ContentPositionSource.LINE_FOCUS,
-      };
+    let node: Node = position.offsetNode;
+    let offset: number = position.offset;
+    if (node && this.nodeStore_.getAncestor(node)) {
+      const ancestor = this.nodeStore_.getAncestor(node)!;
+      node = ancestor.node;
+      offset += ancestor.offset;
     }
-    this.model_.setCurrentContentPosition(contentPosition);
+    this.model_.setCurrentContentPosition({
+      node,
+      offset,
+      source: ContentPositionSource.LINE_FOCUS,
+    });
   }
 
   onSelectionChange(position: ContentPosition|null) {
-    this.model_.setCurrentContentPosition(position);
+    if (position) {
+      this.model_.setCurrentContentPosition(position);
+    } else {
+      this.clearCurrentContentPosition_(ContentPositionSource.SELECTION);
+    }
     this.highlighter_.clearHighlightFormatting();
+  }
+
+  // Clears the current content position only if `source` set it, so losing a
+  // selection doesn't drop a line focus position and vice versa.
+  private clearCurrentContentPosition_(source: ContentPositionSource) {
+    if (this.model_.getCurrentContentPosition()?.source === source) {
+      this.model_.setCurrentContentPosition(null);
+    }
   }
 
   // If the screen is locked during speech, we should stop speaking.
@@ -240,6 +246,7 @@ export class SpeechController {
     // TODO: crbug.com/466967616 - Log when this is called when isSpeechActive
     // is false, as this is likely indicative of a bug.
     this.stopSpeech_(PauseActionSource.DEFAULT);
+    this.logSpeechPlaybackSessionPerPage_();
   }
 
   onTabMuteStateChange(muted: boolean) {
@@ -276,6 +283,8 @@ export class SpeechController {
   }
 
   onHighlightGranularityChange(newGranularity: number) {
+    this.maybePrefetchPhraseBoundaries_();
+
     // Rehighlight the new granularity.
     if (this.hasSpeechBeenTriggered() &&
         newGranularity !== this.audioBrowserProxy_.getNoHighlighting()) {
@@ -399,29 +408,12 @@ export class SpeechController {
     this.setHasSpeechBeenTriggered(true);
     this.model_.setIsSpeechBeingRepositioned(false);
 
-    // When the TS segmentation flag is enabled, playFromContentPosition_ needs
-    // to be called after initializeSpeechTree. While this change is probably
-    // okay to introduce for the non-TS segmentation flag case, the original
-    // order is maintained when the flag is disabled to reduce the risk of
-    // introducing unexpected bugs to the V8 segmentation method.
-    if (this.audioBrowserProxy_.isPhraseHighlightingEnabled()) {
-      if (this.playFromContentPosition_()) {
-        return;
-      }
-    }
+    // TODO: crbug.com/440400392- The speech tree should also be initialized
+    // before the play button is pressed.
+    this.initializeSpeechTree(context);
 
-    if (!this.audioBrowserProxy_.isPhraseHighlightingEnabled()) {
-      // TODO: crbug.com/440400392- The speech tree should also be initialized
-      // before the play button is pressed.
-      this.initializeSpeechTree(context);
-    } else {
-      this.initializeSpeechTree();
-    }
-
-    if (!this.audioBrowserProxy_.isPhraseHighlightingEnabled()) {
-      if (this.playFromContentPosition_()) {
-        return;
-      }
+    if (this.playFromContentPosition_()) {
+      return;
     }
     if (this.isSpeechTreeInitialized() && !this.highlightAndPlayMessage_()) {
       // Ensure we're updating Read Aloud state if there's no text to speak.
@@ -462,11 +454,7 @@ export class SpeechController {
         startOffset = 0;
       }
 
-      const readAloudNode = ReadAloudNode.create(startNode);
-      if (!readAloudNode) {
-        return;
-      }
-      this.movePlaybackToNode_(readAloudNode, startOffset);
+      this.movePlaybackToNode_(ReadAloudNode.create(startNode), startOffset);
       // Play the next granularity, which includes the selection.
       if (this.highlightAndPlayMessage_()) {
         this.logger_.logSpeechControlClick(speechControl);
@@ -517,6 +505,11 @@ export class SpeechController {
       return this.skipCurrentPosition_(isInterrupted, isMovingBackward);
     }
 
+    this.maybePrefetchPhraseBoundaries_();
+
+    let textToPlay = utteranceText;
+    let boundaryIndex = 0;
+
     // If we're resuming a previously interrupted message, use word
     // boundaries (if available) to resume at the beginning of the current
     // word.
@@ -542,35 +535,18 @@ export class SpeechController {
         }
 
         return skippedPosition;
+      }
 
-      } else {
-        if (this.visualBrowserProxy_.isLineFocusEnabled()) {
-          // When line focus is enabled, highlight and position the current
-          // granularity before notifying word boundaries and playing audio so
-          // line focus is properly aligned to the text before speech starts.
-          this.highlightCurrentGranularity_(segments);
-          this.notifyWordBoundary_(resumeBoundary);
-          this.playText_(utteranceTextForWordBoundary);
-        } else {
-          this.notifyWordBoundary_(resumeBoundary);
-          this.playText_(utteranceTextForWordBoundary);
-          this.highlightCurrentGranularity_(segments);
-        }
-      }
-    } else {
-      if (this.visualBrowserProxy_.isLineFocusEnabled()) {
-        // When line focus is enabled, highlight and position the current
-        // granularity before notifying word boundaries and playing audio so
-        // line focus is properly aligned to the text before speech starts.
-        this.highlightCurrentGranularity_(segments);
-        this.notifyWordBoundary_(0);
-        this.playText_(utteranceText);
-      } else {
-        this.notifyWordBoundary_(0);
-        this.playText_(utteranceText);
-        this.highlightCurrentGranularity_(segments);
-      }
+      textToPlay = utteranceTextForWordBoundary;
+      boundaryIndex = resumeBoundary;
     }
+
+    // Highlight and position the current granularity before notifying word
+    // boundaries and playing audio so line focus is properly aligned to the
+    // text before speech starts.
+    const wordSegments = this.highlightCurrentGranularity_(segments);
+    this.notifyWordBoundary_(boundaryIndex, wordSegments);
+    this.playText_(textToPlay);
 
     return true;
   }
@@ -583,6 +559,14 @@ export class SpeechController {
       this.moveToNextGranularity_();
     }
     return this.highlightAndPlayMessage_(isInterrupted, isMovingBackward);
+  }
+
+  // Requests phrase boundaries for the upcoming sentences so they're ready by
+  // the time they're highlighted.
+  private maybePrefetchPhraseBoundaries_() {
+    if (this.highlighter_.willHighlightPhrases()) {
+      this.readAloudModel_.prefetchPhraseBoundaries();
+    }
   }
 
   private playText_(utteranceText: string) {
@@ -795,26 +779,27 @@ export class SpeechController {
 
         this.wordBoundaries_.updateBoundary(event.charIndex, event.charLength);
 
+        // No need to update the highlight on word boundary events if
+        // highlighting is off or if sentence highlighting is used.
+        // Therefore, we don't need to pass in axIds because these are
+        // calculated downstream.
+        const wordSegments = this.highlightCurrentGranularity_(
+            [], /* scrollIntoView= */ true,
+            /*shouldUpdateSentenceHighlight= */ false);
+
         const {
           speechUtteranceStartIndex,
           previouslySpokenIndex,
         } = this.wordBoundaries_.state;
         const index = speechUtteranceStartIndex + previouslySpokenIndex;
-        this.notifyWordBoundary_(index);
-
-        // No need to update the highlight on word boundary events if
-        // highlighting is off or if sentence highlighting is used.
-        // Therefore, we don't need to pass in axIds because these are
-        // calculated downstream.
-        this.highlightCurrentGranularity_(
-            [], /* scrollIntoView= */ true,
-            /*shouldUpdateSentenceHighlight= */ false);
+        this.notifyWordBoundary_(index, wordSegments);
       }
     };
   }
 
-  private notifyWordBoundary_(index: number) {
-    const highlightSegments =
+  private notifyWordBoundary_(
+      index: number, precomputedSegments: Segment[]|null = null) {
+    const highlightSegments = precomputedSegments ??
         this.readAloudModel_.getHighlightForCurrentSegmentIndex(
             index, /* highlightPhrases= */ false);
     this.listeners_.forEach(l => l.onWordBoundary(highlightSegments));
@@ -890,11 +875,10 @@ export class SpeechController {
   }
 
   private onSpeechInterrupted_(utterance: SpeechSynthesisUtterance) {
-    // It's possible for there to be a race condition where onSpeechInterrupted
-    // is triggered on an old utterance, which can lead to an indeterminate
-    // state. When this happens, return early.
+    // Ignore late interrupted callbacks for stale utterances arriving after
+    // speech has already stopped or moved to a new utterance.
     const activeUtterance = this.model_.getActiveUtterance();
-    if (activeUtterance && utterance !== activeUtterance) {
+    if (!activeUtterance || utterance !== activeUtterance) {
       return;
     }
 
@@ -1026,24 +1010,7 @@ export class SpeechController {
       // prevent the previous highlights from being added. However, not
       // showing the previous highlight is preferred to 10+ second speech
       // delays / crashes.
-      // This is technically a bug with both line focus and playing from
-      // selection. However, this bug is much more noticeable with line focus.
-      // Therefore, this change is being temporarily guarded with the line
-      // focus flag to allow it to be more safely tested in case it causes
-      // unexpected bugs. Longer term, moveSpeechForward should be the default
-      // regardless of the line focus flag OR reading mode should implement
-      // a better searching algorithm for finding the node in the DOM instead
-      // of looking through every element one-by-one.
-      if (this.visualBrowserProxy_.isLineFocusEnabled()) {
-        this.readAloudModel_.moveSpeechForward();
-      } else {
-        this.highlightCurrentGranularity_(
-            currentSegments, /*scrollIntoView=*/ false,
-            /*shouldUpdateSentenceHighlight=*/ true,
-            /*shouldSetLastReadingPos=*/ false);
-        this.moveToNextGranularity_();
-      }
-
+      this.readAloudModel_.moveSpeechForward();
       currentSegments = this.readAloudModel_.getCurrentTextSegments();
       hasCurrentText = currentSegments.length > 0;
       foundSegment = this.findSegment_(currentSegments, node, offset);
@@ -1070,16 +1037,10 @@ export class SpeechController {
   private findSegment_(
       segments: Segment[], node: ReadAloudNode, offset: number): Segment
       |undefined {
-    // When the PhraseHighlighting flag is disabled, findSegment_ should count a
-    // match if the selection node contains the read aloud node (i.e. the read
-    // aloud node is a child of the selection node) - otherwise there
-    // won't be a match on the first run of playFromSelection()
-    if (this.audioBrowserProxy_.isPhraseHighlightingEnabled()) {
-      return segments.find(
-          segment => segment.node.equals(node) &&
-              (segment.start + segment.length > offset));
-    }
-
+    // findSegment_ should count a match if the selection node contains the
+    // read aloud node (i.e. the read aloud node is a child of the selection
+    // node) - otherwise there won't be a match on the first run of
+    // playFromSelection()
     const selectedDomNode = node.domNode();
     if (!selectedDomNode) {
       return undefined;
@@ -1117,14 +1078,14 @@ export class SpeechController {
   private highlightCurrentGranularity_(
       segments: Segment[], scrollIntoView: boolean = true,
       shouldUpdateSentenceHighlight: boolean = true,
-      shouldSetLastReadingPos: boolean = true) {
+      shouldSetLastReadingPos: boolean = true): Segment[]|null {
     if (shouldSetLastReadingPos && segments.length && segments[0]) {
       this.model_.setLastPosition({
         node: segments[0].node,
         offset: segments[0].start,
       });
     }
-    this.highlighter_.highlightCurrentGranularity(
+    return this.highlighter_.highlightCurrentGranularity(
         segments, scrollIntoView, shouldUpdateSentenceHighlight);
   }
 
@@ -1235,9 +1196,21 @@ export class SpeechController {
   private logSpeechPlaySession_() {
     const startTime = this.model_.getPlaySessionStartTime();
     if (startTime) {
+      const sessionDuration = Date.now() - startTime;
+      if (sessionDuration > 0) {
+        this.model_.addPagePlaybackTime(sessionDuration);
+      }
       this.logger_.logSpeechPlaySession(
           startTime, this.voiceLanguageController_.getCurrentVoice());
       this.model_.setPlaySessionStartTime(null);
+    }
+  }
+
+  private logSpeechPlaybackSessionPerPage_() {
+    const pagePlaybackTime = this.model_.getPagePlaybackTime();
+    if (pagePlaybackTime > 0) {
+      this.logger_.logSpeechPlaybackSessionPerPage(pagePlaybackTime);
+      this.model_.resetPagePlaybackTime();
     }
   }
 

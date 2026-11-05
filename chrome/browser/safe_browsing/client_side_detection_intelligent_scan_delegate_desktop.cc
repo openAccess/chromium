@@ -5,9 +5,12 @@
 #include "chrome/browser/safe_browsing/client_side_detection_intelligent_scan_delegate_desktop.h"
 
 #include "base/containers/fixed_flat_set.h"
+#include "base/json/values_util.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/time/time.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/safe_browsing/client_side_detection_intelligent_scan_delegate_util.h"
+#include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom-shared.h"
 #include "components/policy/core/common/management/management_service.h"
@@ -62,20 +65,26 @@ namespace safe_browsing {
 class ClientSideDetectionIntelligentScanDelegateDesktop::Inquiry {
  public:
   Inquiry(ClientSideDetectionIntelligentScanDelegateDesktop* parent,
-          const base::UnguessableToken& session_id,
+          const base::UnguessableToken& scan_id,
           IntelligentScanDoneCallback callback);
   ~Inquiry();
 
-  void Start(const std::string& rendered_texts);
+  void Start(const std::string& rendered_texts,
+             const std::string& url,
+             std::optional<std::string> tab_screenshot);
 
  private:
   void ModelExecutionCallback(
       optimization_guide::OptimizationGuideModelStreamingExecutionResult
           result);
+  void RemoteExecutionCallback(
+      base::TimeTicks remote_execution_start_time,
+      optimization_guide::OptimizationGuideModelExecutionResult result,
+      std::unique_ptr<optimization_guide::ModelQualityLogEntry>);
 
   const raw_ptr<ClientSideDetectionIntelligentScanDelegateDesktop> parent_;
   std::unique_ptr<optimization_guide::OnDeviceSession> session_;
-  base::UnguessableToken session_id_;
+  base::UnguessableToken scan_id_;
   IntelligentScanDoneCallback callback_;
   std::string rendered_texts_;
   base::TimeTicks session_execution_start_time_;
@@ -85,17 +94,39 @@ class ClientSideDetectionIntelligentScanDelegateDesktop::Inquiry {
 
 ClientSideDetectionIntelligentScanDelegateDesktop::Inquiry::Inquiry(
     ClientSideDetectionIntelligentScanDelegateDesktop* parent,
-    const base::UnguessableToken& session_id,
+    const base::UnguessableToken& scan_id,
     IntelligentScanDoneCallback callback)
-    : parent_(parent),
-      session_id_(session_id),
-      callback_(std::move(callback)) {}
+    : parent_(parent), scan_id_(scan_id), callback_(std::move(callback)) {}
 
 ClientSideDetectionIntelligentScanDelegateDesktop::Inquiry::~Inquiry() =
     default;
 
 void ClientSideDetectionIntelligentScanDelegateDesktop::Inquiry::Start(
-    const std::string& rendered_texts) {
+    const std::string& rendered_texts,
+    const std::string& url,
+    std::optional<std::string> tab_screenshot) {
+  if (parent_->is_server_model_enabled_) {
+    parent_->AddIntelligentScanQuota();
+    ScamDetectionRequest request;
+    request.set_rendered_text(rendered_texts);
+    if (base::FeatureList::IsEnabled(
+            kClientSideDetectionScamDetectionRequestWithUrl)) {
+      request.set_url(url);
+    }
+    if (tab_screenshot.has_value()) {
+      request.set_tab_screenshot(*tab_screenshot);
+    }
+    parent_->remote_model_executor_->ExecuteModel(
+        optimization_guide::ModelBasedCapabilityKey::kScamDetection, request,
+        /*options=*/{},
+        base::BindOnce(&ClientSideDetectionIntelligentScanDelegateDesktop::
+                           Inquiry::RemoteExecutionCallback,
+                       weak_factory_.GetWeakPtr(), base::TimeTicks::Now()));
+    // Do not access `parent_` at this point. The callback may be called
+    // immediately and this object will delete itself.
+    return;
+  }
+
   session_ = parent_->GetModelExecutorSession();
 
   base::TimeTicks session_creation_start_time = base::TimeTicks::Now();
@@ -182,19 +213,82 @@ void ClientSideDetectionIntelligentScanDelegateDesktop::Inquiry::
         model_version, kOnDeviceModelType, scam_score));
   }
 
-  // Reset session immediately so that future inference is not affected by the
+  // Reset inquiry immediately so that future inference is not affected by the
   // old context.
-  parent_->CancelIntelligentScan(session_id_);
+  parent_->CancelIntelligentScan(scan_id_);
+}
+
+void ClientSideDetectionIntelligentScanDelegateDesktop::Inquiry::
+    RemoteExecutionCallback(
+        base::TimeTicks remote_execution_start_time,
+        optimization_guide::OptimizationGuideModelExecutionResult result,
+        std::unique_ptr<optimization_guide::ModelQualityLogEntry>) {
+  CHECK(callback_);
+  bool execution_success = result.response.has_value();
+  base::UmaHistogramBoolean("SBClientPhishing.ServerSideModelExecutionSuccess",
+                            execution_success);
+  base::UmaHistogramMediumTimes(
+      "SBClientPhishing.ServerSideModelExecutionDuration",
+      base::TimeTicks::Now() - remote_execution_start_time);
+  // Server model does not return model version. Check the rollout feature flag
+  // to set the model version.
+  int model_version =
+      base::FeatureList::IsEnabled(
+          kClientSideDetectionServerModelRolloutDesktop)
+          ? kClientSideDetectionServerModelRolloutVersionDesktop.Get()
+          : IntelligentScanResult::kDefaultServerModelVersion;
+  if (!execution_success) {
+    base::UmaHistogramEnumeration(
+        "SBClientPhishing.ServerSideModelExecutionError",
+        result.response.error().error());
+    std::move(callback_).Run(IntelligentScanResult::Failure(
+        model_version, ModelType::kServerSide,
+        IntelligentScanInfo::SERVER_SIDE_MODEL_OUTPUT_MISSING));
+    parent_->CancelIntelligentScan(scan_id_);
+    return;
+  }
+
+  auto scam_detection_response = optimization_guide::ParsedAnyMetadata<
+      optimization_guide::proto::ScamDetectionResponse>(
+      result.response.value());
+
+  if (!scam_detection_response) {
+    std::move(callback_).Run(IntelligentScanResult::Failure(
+        model_version, ModelType::kServerSide,
+        IntelligentScanInfo::SERVER_SIDE_MODEL_OUTPUT_MISSING));
+    parent_->CancelIntelligentScan(scan_id_);
+    return;
+  }
+  std::optional<float> scam_score;
+  if (scam_detection_response->has_scam_score()) {
+    scam_score = scam_detection_response->scam_score();
+  }
+  std::move(callback_).Run(IntelligentScanResult::Success(
+      scam_detection_response->brand(), scam_detection_response->intent(),
+      model_version, ModelType::kServerSide, scam_score));
+
+  // Reset this inquiry immediately so that future inference is not affected by
+  // the old context.
+  parent_->CancelIntelligentScan(scan_id_);
 }
 
 ClientSideDetectionIntelligentScanDelegateDesktop::
     ClientSideDetectionIntelligentScanDelegateDesktop(
         PrefService& pref,
         OptimizationGuideKeyedService* opt_guide,
-        policy::ManagementService* management_service)
+        policy::ManagementService* management_service,
+        optimization_guide::RemoteModelExecutor* remote_model_executor)
     : pref_(pref),
       opt_guide_(opt_guide),
-      management_service_(management_service) {
+      management_service_(management_service),
+      remote_model_executor_(remote_model_executor),
+      is_feature_enabled_(
+          !base::FeatureList::IsEnabled(kClientSideDetectionKillswitch)),
+      is_server_model_enabled_(base::FeatureList::IsEnabled(
+          kClientSideDetectionServerModelForScamDetectionDesktop)) {
+  if (!is_feature_enabled_) {
+    return;
+  }
   pref_change_registrar_.Init(&pref);
   pref_change_registrar_.Add(
       prefs::kSafeBrowsingEnhanced,
@@ -210,8 +304,19 @@ ClientSideDetectionIntelligentScanDelegateDesktop::
 
 bool ClientSideDetectionIntelligentScanDelegateDesktop::
     ShouldRequestIntelligentScan(ClientPhishingRequest* verdict) {
+  if (!is_feature_enabled_) {
+    return false;
+  }
+
   if (!IsEnhancedProtectionEnabled(*pref_)) {
     return false;
+  }
+
+  if (verdict->client_side_detection_type() ==
+          ClientSideDetectionType::IMAGE_EMBEDDING_MATCH &&
+      verdict->is_phishing() &&
+      kCsdImageEmbeddingMatchWithIntelligentScan.Get()) {
+    return true;
   }
 
   bool is_keyboard_lock_requested =
@@ -219,6 +324,8 @@ bool ClientSideDetectionIntelligentScanDelegateDesktop::
       ClientSideDetectionType::KEYBOARD_LOCK_REQUESTED;
 
   bool is_intelligent_scan_requested =
+      verdict->client_side_detection_type() ==
+          ClientSideDetectionType::FORCE_REQUEST &&
       verdict->has_llama_forced_trigger_info() &&
       verdict->llama_forced_trigger_info().intelligent_scan();
 
@@ -228,6 +335,14 @@ bool ClientSideDetectionIntelligentScanDelegateDesktop::
 ModelType
 ClientSideDetectionIntelligentScanDelegateDesktop::GetIntelligentScanModelType(
     bool log_failed_eligibility_reason) {
+  if (!is_feature_enabled_) {
+    return is_server_model_enabled_ ? ModelType::kNotSupportedServerSide
+                                    : ModelType::kNotSupportedOnDevice;
+  }
+  if (is_server_model_enabled_) {
+    return !!remote_model_executor_ ? ModelType::kServerSide
+                                    : ModelType::kNotSupportedServerSide;
+  }
   if (log_failed_eligibility_reason && !on_device_model_available_) {
     LogOnDeviceModelEligibilityReason();
   }
@@ -243,6 +358,10 @@ bool ClientSideDetectionIntelligentScanDelegateDesktop::ShouldShowScamWarning(
       *verdict == IntelligentScanVerdict::INTELLIGENT_SCAN_VERDICT_SAFE ||
       *verdict == IntelligentScanVerdict::SCAM_EXPERIMENT_CATCH_ALL_TELEMETRY) {
     return false;
+  }
+
+  if (*verdict == IntelligentScanVerdict::SCAM_EXPERIMENT_VERDICT_BILLING) {
+    return base::FeatureList::IsEnabled(kClientSideDetectionTrickToBill);
   }
 
   return *verdict == IntelligentScanVerdict::SCAM_EXPERIMENT_VERDICT_1 ||
@@ -261,7 +380,9 @@ void ClientSideDetectionIntelligentScanDelegateDesktop::OnPrefsUpdated() {
   bool is_managed = management_service_ && management_service_->IsManaged();
 
   if (IsEnhancedProtectionEnabled(*pref_) && !is_managed) {
-    StartListeningToOnDeviceModelUpdate();
+    if (!is_server_model_enabled_) {
+      StartListeningToOnDeviceModelUpdate();
+    }
   } else {
     StopListeningToOnDeviceModelUpdate();
   }
@@ -270,24 +391,41 @@ void ClientSideDetectionIntelligentScanDelegateDesktop::OnPrefsUpdated() {
 std::optional<base::UnguessableToken>
 ClientSideDetectionIntelligentScanDelegateDesktop::StartIntelligentScan(
     std::string rendered_texts,
+    std::string url,
+    std::optional<std::string> tab_screenshot,
     IntelligentScanDoneCallback callback) {
   // We have checked the model availability prior to calling this function, but
   // we want to check one last time before creating a session.
-  if (!IntelligentScanDelegate::IsIntelligentScanAvailable(
-          GetIntelligentScanModelType(
-              /*log_failed_eligibility_reason=*/false))) {
+  ModelType model_type =
+      GetIntelligentScanModelType(/*log_failed_eligibility_reason=*/false);
+  if (!IntelligentScanDelegate::IsIntelligentScanAvailable(model_type)) {
     std::move(callback).Run(IntelligentScanResult::Failure(
-        IntelligentScanResult::kModelVersionUnavailable, kOnDeviceModelType,
-        IntelligentScanInfo::ON_DEVICE_MODEL_UNAVAILABLE));
+        IntelligentScanResult::kModelVersionUnavailable, model_type,
+        is_server_model_enabled_
+            ? IntelligentScanInfo::SERVER_SIDE_MODEL_UNAVAILABLE
+            : IntelligentScanInfo::ON_DEVICE_MODEL_UNAVAILABLE));
     return std::nullopt;
   }
 
-  base::UnguessableToken session_id = base::UnguessableToken::Create();
+  bool is_at_quota = IsAtIntelligentScanQuota();
+  if (is_server_model_enabled_) {
+    // Only server model checks quota at inquiry time.
+    base::UmaHistogramBoolean(
+        "SBClientPhishing.ServerSideModelHitQuotaAtInquiryTime", is_at_quota);
+  }
+  if (is_at_quota) {
+    std::move(callback).Run(IntelligentScanResult::Failure(
+        IntelligentScanResult::kModelVersionUnavailable, ModelType::kServerSide,
+        IntelligentScanInfo::SERVER_SIDE_MODEL_EXCEED_QUOTA));
+    return std::nullopt;
+  }
+
+  base::UnguessableToken scan_id = base::UnguessableToken::Create();
   std::unique_ptr<Inquiry> new_inquiry =
-      std::make_unique<Inquiry>(this, session_id, std::move(callback));
-  inquiries_[session_id] = std::move(new_inquiry);
-  inquiries_[session_id]->Start(rendered_texts);
-  return session_id;
+      std::make_unique<Inquiry>(this, scan_id, std::move(callback));
+  inquiries_[scan_id] = std::move(new_inquiry);
+  inquiries_[scan_id]->Start(rendered_texts, url, std::move(tab_screenshot));
+  return scan_id;
 }
 
 bool ClientSideDetectionIntelligentScanDelegateDesktop::CancelIntelligentScan(
@@ -300,10 +438,10 @@ bool ClientSideDetectionIntelligentScanDelegateDesktop::CancelIntelligentScan(
   return true;
 }
 
-bool ClientSideDetectionIntelligentScanDelegateDesktop::ResetAllSessions() {
-  bool did_reset_session = !inquiries_.empty();
+bool ClientSideDetectionIntelligentScanDelegateDesktop::ResetAllInquiries() {
+  bool did_reset_inquiries = !inquiries_.empty();
   inquiries_.clear();
-  return did_reset_session;
+  return did_reset_inquiries;
 }
 
 void ClientSideDetectionIntelligentScanDelegateDesktop::
@@ -327,7 +465,7 @@ void ClientSideDetectionIntelligentScanDelegateDesktop::
 void ClientSideDetectionIntelligentScanDelegateDesktop::
     StopListeningToOnDeviceModelUpdate() {
   on_device_model_available_ = false;
-  ResetAllSessions();
+  ResetAllInquiries();
   if (!observing_on_device_model_availability_) {
     return;
   }
@@ -341,6 +479,7 @@ void ClientSideDetectionIntelligentScanDelegateDesktop::Shutdown() {
   client_side_detection::LogOnDeviceModelSessionAliveOnDelegateShutdown(
       !inquiries_.empty());
   StopListeningToOnDeviceModelUpdate();
+  remote_model_executor_ = nullptr;
   pref_change_registrar_.RemoveAll();
 }
 
@@ -386,5 +525,62 @@ ClientSideDetectionIntelligentScanDelegateDesktop::GetModelExecutorSession() {
   return opt_guide_->StartSession(
       optimization_guide::mojom::OnDeviceFeature::kScamDetection,
       ::optimization_guide::SessionConfigParams{}, nullptr);
+}
+
+void ClientSideDetectionIntelligentScanDelegateDesktop::OnScamWarningShown() {
+  if (!is_server_model_enabled_) {
+    return;
+  }
+
+  base::UmaHistogramCounts100(
+      "SBClientPhishing.ServerSideModelQuotaCountOnScamWarningShown",
+      pref_->GetList(prefs::kSafeBrowsingCsdIntelligentScanTimestamps).size());
+
+  // The scan shows a warning and is effective, so we refund the quota.
+  RemoveLastIntelligentScanQuota();
+}
+
+bool ClientSideDetectionIntelligentScanDelegateDesktop::
+    IsAtIntelligentScanQuota() {
+  if (!is_server_model_enabled_) {
+    return false;
+  }
+  // Clear the expired timestamps
+  ScopedListPrefUpdate update(pref_.get(),
+                              prefs::kSafeBrowsingCsdIntelligentScanTimestamps);
+  update->EraseIf([&](const base::Value& timestamp_value) {
+    constexpr base::TimeDelta kIntelligentScanQuotaInterval = base::Days(1);
+    std::optional<base::Time> report_time = base::ValueToTime(timestamp_value);
+    if (!report_time.has_value()) {
+      // If the value cannot be converted to a time, consider it invalid and
+      // remove it.
+      return true;
+    }
+    return *report_time + kIntelligentScanQuotaInterval < base::Time::Now();
+  });
+  return update->size() >=
+         static_cast<size_t>(
+             kClientSideDetectionServerModelMaxScansPerDayDesktop.Get());
+}
+
+void ClientSideDetectionIntelligentScanDelegateDesktop::
+    AddIntelligentScanQuota() {
+  ScopedListPrefUpdate update(pref_.get(),
+                              prefs::kSafeBrowsingCsdIntelligentScanTimestamps);
+  update->Append(base::TimeToValue(base::Time::Now()));
+  base::UmaHistogramCounts100(
+      "SBClientPhishing.ServerSideModelQuotaCountOnLookup", update->size());
+}
+
+void ClientSideDetectionIntelligentScanDelegateDesktop::
+    RemoveLastIntelligentScanQuota() {
+  ScopedListPrefUpdate update(pref_.get(),
+                              prefs::kSafeBrowsingCsdIntelligentScanTimestamps);
+  base::UmaHistogramBoolean(
+      "SBClientPhishing.ServerSideModelPrefEmptyWhenRemovingQuota",
+      update->empty());
+  if (!update->empty()) {
+    update->erase(update->end() - 1);
+  }
 }
 }  // namespace safe_browsing

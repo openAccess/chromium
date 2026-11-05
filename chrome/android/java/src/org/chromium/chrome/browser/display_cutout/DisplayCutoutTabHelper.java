@@ -4,30 +4,28 @@
 
 package org.chromium.chrome.browser.display_cutout;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
 
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.UserData;
-import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.blink.mojom.DisplayMode;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.customtabs.BaseCustomTabActivity;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.customtabs.features.WebappInsetsConsumer;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabSelectionType;
-import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
 import org.chromium.components.browser_ui.display_cutout.DisplayCutoutController;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.ui.base.WindowAndroid;
-import org.chromium.ui.edge_to_edge.EdgeToEdgeManager;
-import org.chromium.ui.edge_to_edge.EdgeToEdgeStateProvider;
-import org.chromium.ui.edge_to_edge.EdgeToEdgeTokenHolder;
 import org.chromium.ui.insets.InsetObserver;
+import org.chromium.ui.util.TokenHolder;
 import org.chromium.url.GURL;
 
 /**
@@ -85,17 +83,22 @@ public class DisplayCutoutTabHelper implements UserData {
             };
 
     public static DisplayCutoutTabHelper from(Tab tab) {
-        UserDataHost host = tab.getUserDataHost();
-        DisplayCutoutTabHelper tabHelper = host.getUserData(USER_DATA_KEY);
-        return tabHelper == null
-                ? host.setUserData(USER_DATA_KEY, new DisplayCutoutTabHelper(tab))
-                : tabHelper;
+        DisplayCutoutTabHelper tabHelper = get(tab);
+        return tabHelper != null
+                ? tabHelper
+                : tab.getUserDataHost().setUserData(USER_DATA_KEY, new DisplayCutoutTabHelper(tab));
+    }
+
+    /** Returns the helper of {@code tab}, or null when the tab never set a viewport fit. */
+    public static @Nullable DisplayCutoutTabHelper get(Tab tab) {
+        return tab.getUserDataHost().getUserData(USER_DATA_KEY);
     }
 
     @VisibleForTesting
     static class ChromeDisplayCutoutDelegate implements DisplayCutoutController.Delegate {
         private final Tab mTab;
-        private @Nullable EdgeToEdgeTokenHolder mEdgeToEdgeTokenHolder;
+        private @Nullable WebappInsetsConsumer mWebappInsetsConsumer;
+        private int mWebappInsetsToken = TokenHolder.INVALID_TOKEN;
 
         ChromeDisplayCutoutDelegate(Tab tab) {
             mTab = tab;
@@ -133,11 +136,13 @@ public class DisplayCutoutTabHelper implements UserData {
         @Override
         public @DisplayMode.EnumType int getDisplayMode() {
             Activity activity = getAttachedActivity();
-            if (!(activity instanceof BaseCustomTabActivity)) {
+            if (!(activity instanceof BaseCustomTabActivity baseCustomTabActivity)) {
                 return DisplayMode.BROWSER;
             }
-            return ((BaseCustomTabActivity) activity)
-                    .getIntentDataProvider()
+            // The resolved display mode comes from the launch intent and does not change when
+            // app mode ends.
+            if (!baseCustomTabActivity.isInAppMode()) return DisplayMode.BROWSER;
+            return assumeNonNull(baseCustomTabActivity.getIntentDataProvider())
                     .getResolvedDisplayMode();
         }
 
@@ -148,50 +153,50 @@ public class DisplayCutoutTabHelper implements UserData {
 
         @Override
         public boolean isShortEdgesCutoutModeEnabled() {
-            return ChromeFeatureList.sWebAppShortEdgesCutoutMode.isEnabled();
+            Activity activity = getAttachedActivity();
+            if (!(activity instanceof BaseCustomTabActivity baseCustomTabActivity)) return false;
+            return baseCustomTabActivity.isInAppMode()
+                    && BaseCustomTabActivity.isShortEdgesCutoutModeEnabledForApp(
+                            assumeNonNull(baseCustomTabActivity.getIntentDataProvider()));
         }
 
         /**
-         * Returns the activity's {@link EdgeToEdgeManager}, or null if this delegate is not
-         * attached to a {@link BaseCustomTabActivity} (or the manager has not been created yet).
+         * Returns the inset consumer of the attached activity, or null if this delegate is not
+         * attached to a {@link BaseCustomTabActivity} running the short-edges cutout paths.
          */
-        private @Nullable EdgeToEdgeManager getEdgeToEdgeManagerOrNull() {
+        private @Nullable WebappInsetsConsumer getWebappInsetsConsumerOrNull() {
             Activity activity = getAttachedActivity();
-            if (!(activity instanceof BaseCustomTabActivity)) return null;
-            return ((BaseCustomTabActivity) activity).getEdgeToEdgeManager();
+            if (!(activity instanceof BaseCustomTabActivity baseCustomTabActivity)) return null;
+            return baseCustomTabActivity.getWebappInsetsConsumer();
         }
 
         @Override
         public void setEdgeToEdgeState(boolean drawEdgeToEdge) {
-            EdgeToEdgeManager edgeToEdgeManager = getEdgeToEdgeManagerOrNull();
-            // currentProvider is null whenever the currently attached activity isn't a
-            // BaseCustomTabActivity at all (e.g. the tab was reparented into the regular tabbed
-            // browser activity), not just when it's a *different* BaseCustomTabActivity.
-            EdgeToEdgeStateProvider currentProvider =
-                    edgeToEdgeManager == null
-                            ? null
-                            : edgeToEdgeManager.getEdgeToEdgeStateProvider();
-            if (mEdgeToEdgeTokenHolder != null
-                    && mEdgeToEdgeTokenHolder.getProvider() != currentProvider) {
-                // The tab is no longer attached to the activity/window whose provider this token
-                // holder was bound to (it may have been reparented into a different
-                // BaseCustomTabActivity, or into a non-CCT activity entirely). Release the token
-                // so this delegate stops pinning the old (possibly destroyed) activity in memory.
-                mEdgeToEdgeTokenHolder.release();
-                mEdgeToEdgeTokenHolder = null;
+            WebappInsetsConsumer consumer = getWebappInsetsConsumerOrNull();
+            if (mWebappInsetsConsumer != null && mWebappInsetsConsumer != consumer) {
+                // The tab was reparented into a different activity (another web app, or a
+                // non-CCT activity entirely). Release the token so this delegate stops pinning
+                // the old (possibly destroyed) activity in memory.
+                releaseWebappInsetsToken();
             }
-            if (edgeToEdgeManager == null) return;
-            if (mEdgeToEdgeTokenHolder == null) {
-                mEdgeToEdgeTokenHolder =
-                        new EdgeToEdgeTokenHolder(edgeToEdgeManager.getEdgeToEdgeStateProvider());
-            }
+            if (consumer == null) return;
+
             if (drawEdgeToEdge) {
-                mEdgeToEdgeTokenHolder.acquireTokenIfEmpty();
+                if (mWebappInsetsToken == TokenHolder.INVALID_TOKEN) {
+                    mWebappInsetsConsumer = consumer;
+                    mWebappInsetsToken = consumer.acquireEdgeToEdgeToken();
+                }
             } else {
-                mEdgeToEdgeTokenHolder.release();
+                releaseWebappInsetsToken();
             }
-            edgeToEdgeManager.setContentFitsWindowInsets(
-                    !drawEdgeToEdge && !EdgeToEdgeUtils.isEdgeToEdgeEverywhereEnabled());
+        }
+
+        private void releaseWebappInsetsToken() {
+            if (mWebappInsetsConsumer == null) return;
+
+            mWebappInsetsConsumer.releaseEdgeToEdgeToken(mWebappInsetsToken);
+            mWebappInsetsConsumer = null;
+            mWebappInsetsToken = TokenHolder.INVALID_TOKEN;
         }
     }
 
@@ -217,6 +222,11 @@ public class DisplayCutoutTabHelper implements UserData {
         mCutoutController.setViewportFit(value);
     }
 
+    /** Re-evaluates the window's cutout mode and edge-to-edge state for the current page. */
+    public void maybeUpdateLayout() {
+        mCutoutController.maybeUpdateLayout();
+    }
+
     /**
      * Set whether there are safe area constraint on the current web page.
      *
@@ -232,7 +242,7 @@ public class DisplayCutoutTabHelper implements UserData {
         mCutoutController.destroy();
     }
 
-    static void initForTesting(Tab tab, DisplayCutoutController controller) {
+    public static void initForTesting(Tab tab, DisplayCutoutController controller) {
         DisplayCutoutTabHelper tabHelper = new DisplayCutoutTabHelper(tab);
         tabHelper.mCutoutController = controller;
         tab.getUserDataHost().setUserData(USER_DATA_KEY, tabHelper);

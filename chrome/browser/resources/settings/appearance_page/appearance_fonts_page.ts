@@ -89,11 +89,11 @@ export class SettingsAppearanceFontsPageElement extends
       chrome.settingsPrivate.PrefObject<number>|undefined;
   protected accessor defaultFontSizePref_:
       chrome.settingsPrivate.PrefObject<number>|undefined;
-  protected accessor fixedFontPref_: chrome.settingsPrivate.PrefObject<string>|
+  private accessor fixedFontPref_: chrome.settingsPrivate.PrefObject<string>|
       undefined;
   protected accessor mathFontPref_: chrome.settingsPrivate.PrefObject<string>|
       undefined;
-  protected accessor minimumFontSizePref_:
+  private accessor minimumFontSizePref_:
       chrome.settingsPrivate.PrefObject<number>|undefined;
   protected accessor sansSerifFontPref_:
       chrome.settingsPrivate.PrefObject<string>|undefined;
@@ -159,6 +159,10 @@ export class SettingsAppearanceFontsPageElement extends
     }
     // </if>
     return this.fixedFontPref_.value;
+  }
+
+  protected computeFontFamilyStyle_(fontFamily?: string): string {
+    return fontFamily ? JSON.stringify(fontFamily) : 'inherit';
   }
 
   // SettingsViewMixinLit implementation.

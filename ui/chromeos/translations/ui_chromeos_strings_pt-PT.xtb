@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Palavra-passe incorrecta</translation>
 <translation id="5059127710849015030">Transliteração de nepalês</translation>
 <translation id="5068919226082848014">Piza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> definiu regras de substituição de proxy</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> de ficheiros serão eliminados</translation>
 <translation id="508423945471810158">A mover <ph name="NUMBER_OF_ITEMS" /> itens para <ph name="FOLDER_NAME" />…</translation>
 <translation id="509429900233858213">Ocorreu um erro.</translation>
-<translation id="5102922915594634436">Gerir pastas sincronizadas</translation>
 <translation id="5109254780565519649">Ocorreu um erro. Alguns itens podem não ter sido restaurados.</translation>
 <translation id="5110329002213341433">Inglês (Canadá)</translation>
 <translation id="5119780910075847424">Sincronização pausada</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">Hindi</translation>
 <translation id="7665680517722058469">Experimente outra pesquisa</translation>
 <translation id="7689532716264131859"><ph name="NUMBER_OF_ITEMS" /> itens movidos para o lixo</translation>
-<translation id="7693909743393669729">A formatação de uma unidade elimina todos os dados armazenados na mesma e remove todas as partições existentes, incluindo as partições que podem não estar visíveis. Não é possível anular esta ação.</translation>
 <translation id="7695430100978772476">Não foi possível formatar <ph name="DRIVE_NAME" />.</translation>
 <translation id="76959938259365003">Falha ao esvaziar o lixo.</translation>
 <translation id="7705251383879779343"><ph name="FILE_NAME" /> copiado.</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">EUA Workman internacional</translation>
 <translation id="7903984238293908205">Katakana</translation>
 <translation id="7908378463497120834">Lamentamos, mas não foi possível montar, pelo menos, uma partição no aparelho de armazenamento externo.</translation>
-<translation id="7908793776359722643">A formatação de uma partição elimina todos os dados armazenados na mesma. Não é possível anular esta ação.</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">Os seus ficheiros em O meu disco são sincronizados automaticamente com o Chromebook para que possa aceder-lhes sem uma ligação à Internet.</translation>
 <translation id="7925247922861151263">A verificação AAA falhou</translation>
@@ -985,7 +983,7 @@
 <translation id="8425213833346101688">Alterar</translation>
 <translation id="8428213095426709021">Definições</translation>
 <translation id="8429998526804961548"><ph name="NUMBER_OF_ITEMS" /> pastas partilhadas com <ph name="VM_NAME" /></translation>
-<translation id="8431909052837336408">Alterar o PIN do cartão SIM</translation>
+<translation id="8431909052837336408">Altere o PIN do SIM</translation>
 <translation id="8452135315243592079">Cartão SIM em falta</translation>
 <translation id="8456681095658380701">Nome inválido</translation>
 <translation id="8457767749626250697">O SIM está bloqueado</translation>

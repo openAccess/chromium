@@ -33,16 +33,13 @@ namespace ash {
 
 class AnchoredNudge;
 class FeatureTile;
-class GameDashboardBatteryView;
 class GameDashboardButton;
 class GameDashboardButtonRevealController;
 class GameDashboardMainMenuCursorHandler;
 class GameDashboardMainMenuView;
-class GameDashboardNetworkView;
 class GameDashboardToolbarView;
 class IconButton;
 class PillButton;
-class TimeView;
 class Switch;
 
 // Wrapper for `GameDashboardContext` that exposes its internals to test
@@ -80,9 +77,6 @@ class GameDashboardContextTestApi {
   views::Button* GetMainMenuScreenSizeSettingsButton();
   views::Button* GetMainMenuGameControlsDetailsButton();
   PillButton* GetMainMenuGameControlsSetupButton();
-  TimeView* GetMainMenuClockView();
-  GameDashboardBatteryView* GetMainMenuBatteryView();
-  GameDashboardNetworkView* GetMainMenuNetworkView();
   Switch* GetMainMenuGameControlsFeatureSwitch();
   views::LabelButton* GetMainMenuFeedbackButton();
   IconButton* GetMainMenuHelpButton();
@@ -162,7 +156,7 @@ class GameDashboardContextTestApi {
   // `view_id`.
   views::View* GetMainMenuViewById(int view_id);
 
-  const raw_ptr<GameDashboardContext, DanglingUntriaged> context_;
+  const raw_ptr<GameDashboardContext> context_;
   const raw_ptr<ui::test::EventGenerator> event_generator_;
 };
 

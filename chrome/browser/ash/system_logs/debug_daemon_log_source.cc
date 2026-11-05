@@ -21,8 +21,7 @@
 #include "base/strings/string_util.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/ash/os_feedback/chrome_os_feedback_delegate.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/common/chrome_switches.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/debug_daemon/debug_daemon_client.h"
 #include "components/feedback/feedback_util.h"
@@ -162,9 +161,9 @@ DebugDaemonLogSource::DebugDaemonLogSource(bool scrub)
 DebugDaemonLogSource::~DebugDaemonLogSource() = default;
 
 void DebugDaemonLogSource::Fetch(SysLogsSourceCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!callback.is_null());
-  DCHECK(callback_.is_null());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(!callback.is_null(), base::NotFatalUntil::M160);
+  CHECK(callback_.is_null(), base::NotFatalUntil::M160);
 
   callback_ = std::move(callback);
   ash::DebugDaemonClient* client = ash::DebugDaemonClient::Get();
@@ -206,7 +205,7 @@ void DebugDaemonLogSource::Fetch(SysLogsSourceCallback callback) {
 void DebugDaemonLogSource::OnGetRoutes(
     bool is_ipv6,
     std::optional<std::vector<std::string>> routes) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   std::string key = is_ipv6 ? kRoutesv6KeyName : kRoutesKeyName;
   (*response_)[key] = routes.has_value()
                           ? base::JoinString(routes.value(), "\n")
@@ -216,7 +215,7 @@ void DebugDaemonLogSource::OnGetRoutes(
 
 void DebugDaemonLogSource::OnGetOneLog(std::string key,
                                        std::optional<std::string> status) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   (*response_)[std::move(key)] = std::move(status).value_or(kNotAvailable);
   RequestCompleted();
@@ -225,7 +224,7 @@ void DebugDaemonLogSource::OnGetOneLog(std::string key,
 void DebugDaemonLogSource::OnGetLogs(const base::TimeTicks get_start_time,
                                      bool succeeded,
                                      const KeyValueMap& logs) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // We are interested in the performance of gathering the logs for feedback
   // reports only where the logs will always be scrubbed. GetBigFeedbackLogs is
@@ -272,7 +271,7 @@ void DebugDaemonLogSource::OnGetLogs(const base::TimeTicks get_start_time,
 }
 
 void DebugDaemonLogSource::GetLoggedInUsersLogFiles() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // List all logged-in users' profile directories.
   std::vector<base::FilePath> profile_dirs;
@@ -284,7 +283,8 @@ void DebugDaemonLogSource::GetLoggedInUsersLogFiles() {
     }
 
     profile_dirs.emplace_back(
-        ash::ProfileHelper::GetProfilePathByUserIdHash(user->username_hash()));
+        ash::BrowserContextHelper::Get()->GetBrowserContextPathByUserIdHash(
+            user->username_hash()));
   }
 
   auto response = std::make_unique<SystemLogsResponse>();
@@ -304,13 +304,13 @@ void DebugDaemonLogSource::MergeUserLogFilesResponse(
 
   auto response_to_return = std::make_unique<SystemLogsResponse>();
   std::swap(response_to_return, response_);
-  DCHECK(!callback_.is_null());
+  CHECK(!callback_.is_null(), base::NotFatalUntil::M160);
   std::move(callback_).Run(std::move(response_to_return));
 }
 
 void DebugDaemonLogSource::RequestCompleted() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!callback_.is_null());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(!callback_.is_null(), base::NotFatalUntil::M160);
 
   --num_pending_requests_;
   if (num_pending_requests_ > 0) {

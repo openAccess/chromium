@@ -37,6 +37,7 @@
 #include "components/sync/protocol/autofill_valuable_specifics.pb.h"
 #include "components/sync/protocol/entity_data.h"
 #include "third_party/icu/source/i18n/unicode/timezone.h"
+#include "url/gurl.h"
 
 namespace autofill {
 
@@ -165,8 +166,7 @@ void AddAttribute(
     std::optional<AttributeInstance::MarkAsMaskedPasskey> passkey,
     base::flat_set<AttributeInstance, AttributeInstance::CompareByType>&
         attributes) {
-  if (value.empty() && base::FeatureList::IsEnabled(
-                           features::kAutofillAiImportConstraintsForSync)) {
+  if (value.empty()) {
     return;
   }
   AttributeInstance attribute{AttributeType(type)};
@@ -195,9 +195,7 @@ void AddDateAttribute(
     const sync_pb::NaiveDate& date,
     base::flat_set<AttributeInstance, AttributeInstance::CompareByType>&
         attributes) {
-  if ((!date.has_year() || !date.has_month() || !date.has_day()) &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillAiImportConstraintsForSync)) {
+  if (!date.has_year() || !date.has_month() || !date.has_day()) {
     return;
   }
   AddAttribute(type,
@@ -709,7 +707,7 @@ ChromeValuablesMetadata SerializeChromeValuablesMetadata(
           entry.set_field_type(field_type);
           entry.set_value(base::UTF16ToUTF8(attribute.GetRawInfo(field_type)));
           entry.set_verification_status(
-              static_cast<int>(attribute.GetVerificationStatus(field_type)));
+              std::to_underlying(attribute.GetVerificationStatus(field_type)));
         }
         break;
       }
@@ -726,17 +724,20 @@ ChromeValuablesMetadata SerializeChromeValuablesMetadata(
 
 std::unique_ptr<syncer::EntityData> CreateEntityDataFromEntityInstance(
     const EntityInstance& entity,
-    const sync_pb::AutofillValuableSpecifics& base_specifics) {
+    const sync_pb::AutofillValuableSpecifics& base_specifics,
+    std::string_view legal_message_token) {
   // WARNING: if you are adding support for new `AutofillValuableSpecifics`
   // fields, you need to update the
   // `TrimAutofillValuableSpecificsDataForCaching` function accordingly
   DCHECK_EQ(0u, TrimAutofillValuableSpecificsDataForCaching(
                     CreateSpecificsFromEntityInstance(entity,
-                                                      /*base_specifics=*/{}))
+                                                      /*base_specifics=*/{},
+                                                      legal_message_token))
                     .ByteSizeLong());
 
   sync_pb::AutofillValuableSpecifics valuable_specifics =
-      CreateSpecificsFromEntityInstance(entity, base_specifics);
+      CreateSpecificsFromEntityInstance(entity, base_specifics,
+                                        legal_message_token);
   std::unique_ptr<syncer::EntityData> entity_data =
       std::make_unique<syncer::EntityData>();
   entity_data->name = valuable_specifics.id();
@@ -748,28 +749,51 @@ std::unique_ptr<syncer::EntityData> CreateEntityDataFromEntityInstance(
 
 sync_pb::AutofillValuableSpecifics CreateSpecificsFromEntityInstance(
     const EntityInstance& entity,
-    const sync_pb::AutofillValuableSpecifics& base_specifics) {
+    const sync_pb::AutofillValuableSpecifics& base_specifics,
+    std::string_view legal_message_token) {
+  sync_pb::AutofillValuableSpecifics specifics;
   switch (entity.type().name()) {
     case EntityTypeName::kFlightReservation:
-      return GetFlightReservationSpecifics(entity, base_specifics);
+      specifics = GetFlightReservationSpecifics(entity, base_specifics);
+      break;
     case EntityTypeName::kVehicle:
-      return GetVehicleInformationSpecifics(entity, base_specifics);
+      specifics = GetVehicleInformationSpecifics(entity, base_specifics);
+      break;
     case EntityTypeName::kPassport:
-      return GetPassportSpecifics(entity, base_specifics);
+      specifics = GetPassportSpecifics(entity, base_specifics);
+      break;
     case EntityTypeName::kDriversLicense:
-      return GetDriversLicenseSpecifics(entity, base_specifics);
+      specifics = GetDriversLicenseSpecifics(entity, base_specifics);
+      break;
     case EntityTypeName::kNationalIdCard:
-      return GetNationalIdCardSpecifics(entity, base_specifics);
+      specifics = GetNationalIdCardSpecifics(entity, base_specifics);
+      break;
     case EntityTypeName::kRedressNumber:
-      return GetRedressNumberSpecifics(entity, base_specifics);
+      specifics = GetRedressNumberSpecifics(entity, base_specifics);
+      break;
     case EntityTypeName::kKnownTravelerNumber:
-      return GetKnownTravelerNumberSpecifics(entity, base_specifics);
+      specifics = GetKnownTravelerNumberSpecifics(entity, base_specifics);
+      break;
     case EntityTypeName::kOrder:
-      return GetOrderSpecifics(entity, base_specifics);
+      specifics = GetOrderSpecifics(entity, base_specifics);
+      break;
     case EntityTypeName::kShipment:
-      return GetShipmentSpecifics(entity, base_specifics);
+      specifics = GetShipmentSpecifics(entity, base_specifics);
+      break;
   }
-  NOTREACHED();
+
+  if (!legal_message_token.empty()) {
+    specifics.set_legal_message_token(std::string(legal_message_token));
+  }
+
+  if (const auto* wallet_payload =
+          std::get_if<EntityInstance::WalletRecordTypePayload>(
+              &entity.record_type_data());
+      wallet_payload && !wallet_payload->management_url.is_empty()) {
+    specifics.set_pass_view_url(wallet_payload->management_url.spec());
+  }
+
+  return specifics;
 }
 
 std::optional<EntityInstance> CreateEntityInstanceFromSpecifics(
@@ -787,7 +811,9 @@ std::optional<EntityInstance> CreateEntityInstanceFromSpecifics(
         EntityType(entity_type_name), std::move(attributes),
         EntityInstance::EntityId(specifics.id()),
         /*nickname=*/"", /*date_modified=*/{}, /*use_count=*/{},
-        /*use_date=*/{}, EntityInstance::WalletRecordTypePayload{},
+        /*use_date=*/{},
+        EntityInstance::WalletRecordTypePayload{
+            .management_url = GURL(specifics.pass_view_url())},
         EntityInstance::AreAttributesReadOnly(!specifics.is_editable()),
         std::move(frecency_overwrite));
   };

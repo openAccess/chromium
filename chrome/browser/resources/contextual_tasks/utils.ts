@@ -4,6 +4,13 @@
 
 import type {BigBuffer} from 'chrome://resources/mojo/mojo/public/mojom/base/big_buffer.mojom-webui.js';
 
+export function recordBoolean(metricName: string, value: boolean) {
+  const metricsService = chrome.histograms || chrome.metricsPrivate;
+  if (metricsService) {
+    metricsService.recordBoolean(metricName, value);
+  }
+}
+
 export function recordAction(actionName: string) {
   const metricsService = chrome.histograms || chrome.metricsPrivate;
   if (metricsService) {
@@ -12,69 +19,14 @@ export function recordAction(actionName: string) {
   }
 }
 
-export interface UnboundedDialog extends HTMLDialogElement {
+export interface UnboundedElement extends HTMLElement {
   showUnboundedElement?: () => Promise<void>;
   hideUnboundedElement?: () => Promise<void>;
 }
 
-const toggleListeners = new WeakMap<UnboundedDialog, (event: Event) => void>();
-
-interface MenuWithDialog {
-  getDialog(): HTMLDialogElement;
-  close(): void;
-}
-
-export function showUnboundedMenu(
-    menu: MenuWithDialog, enabled: boolean, menuName: string) {
-  const dialogEl = menu.getDialog() as UnboundedDialog;
-  if (enabled && dialogEl.showUnboundedElement) {
-    const existingListener = toggleListeners.get(dialogEl);
-    if (existingListener) {
-      dialogEl.removeEventListener('beforetoggle', existingListener);
-    }
-
-    dialogEl.setAttribute('unbounded', '');
-
-    const onUnboundedToggle = (event: Event) => {
-      const toggleEvent = event as ToggleEvent;
-      if (toggleEvent.newState === 'closed') {
-        menu.close();
-      }
-    };
-    toggleListeners.set(dialogEl, onUnboundedToggle);
-    dialogEl.addEventListener('beforetoggle', onUnboundedToggle);
-
-    dialogEl.showUnboundedElement().catch((err: unknown) => {
-      console.warn(`Failed to show unbounded ${menuName} menu:`, err);
-      if (toggleListeners.get(dialogEl) === onUnboundedToggle) {
-        dialogEl.removeAttribute('unbounded');
-        dialogEl.removeEventListener('beforetoggle', onUnboundedToggle);
-        toggleListeners.delete(dialogEl);
-      }
-    });
-  }
-}
-
-export function hideUnboundedMenu(
-    menu: MenuWithDialog, enabled: boolean, isOpen: boolean,
-    menuName: string) {
-  const dialogEl = menu.getDialog() as UnboundedDialog;
-  if (!isOpen && dialogEl) {
-    const listener = toggleListeners.get(dialogEl);
-    if (listener) {
-      dialogEl.removeEventListener('beforetoggle', listener);
-      toggleListeners.delete(dialogEl);
-    }
-    const wasUnbounded = dialogEl.hasAttribute('unbounded');
-    if (wasUnbounded) {
-      dialogEl.removeAttribute('unbounded');
-      if (enabled && dialogEl.hideUnboundedElement) {
-        dialogEl.hideUnboundedElement().catch((err: unknown) => {
-          console.warn(`Failed to hide unbounded ${menuName} menu:`, err);
-        });
-      }
-    }
-  }
+export interface UnboundedDialog extends HTMLDialogElement {
+  showUnboundedElement?: () => Promise<void>;
+  hideUnboundedElement?: () => Promise<void>;
 }
 
 export function isGoogleOrigin(origin: string): boolean {

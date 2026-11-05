@@ -31,8 +31,11 @@ class MEDIA_GPU_EXPORT D3D12VideoEncoderWrapper {
   // process. This is used to allocate the necessary resources for the encoder
   // output metadata. If using SubregionFrameEncoding =
   // D3D12_VIDEO_ENCODER_FRAME_SUBREGION_LAYOUT_MODE_FULL_FRAME, this value
-  // should be 1.
-  virtual bool Initialize(uint32_t max_subregions_number);
+  // should be 1. |bitstream_buffer_size| is the size the delegate computed and
+  // advertised to the client; the bitstream buffer is allocated at exactly
+  // this size so the two never disagree on the capacity of a frame.
+  virtual bool Initialize(uint32_t max_subregions_number,
+                          uint64_t bitstream_buffer_size);
 
   // Wait for the fence to reach the value before executing further commands.
   // The fence must not be null. Returns whether the wait is successful.
@@ -44,8 +47,8 @@ class MEDIA_GPU_EXPORT D3D12VideoEncoderWrapper {
       const D3D12_VIDEO_ENCODER_RECONSTRUCTED_PICTURE& reconstructed_picture);
 
   // Get the encoder output metadata or log the encoding error.
-  virtual EncoderStatus::Or<ScopedD3D12ResourceMap> GetEncoderOutputMetadata()
-      const;
+  virtual base::expected<ScopedD3D12ResourceMap, EncoderStatus>
+  GetEncoderOutputMetadata() const;
 
   // Readback bitstream from GPU memory to |data|. The |data.size()| must be no
   // greater than the value in the result from |GetEncoderOutputMetadata()|.

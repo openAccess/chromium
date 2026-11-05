@@ -33,26 +33,6 @@ constexpr base::wcstring_view kOnnxRuntimeLibraryName = L"onnxruntime.dll";
 PlatformFunctions* PlatformFunctions::g_instance_ = nullptr;
 
 // static
-bool PlatformFunctions::InitializeFromCommandLine() {
-  CHECK(!g_instance_);
-
-  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kWebNNOrtLibraryPathForTesting)) {
-    return false;
-  }
-
-  base::FilePath base_path =
-      base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
-          switches::kWebNNOrtLibraryPathForTesting);
-  if (base_path.empty()) {
-    LOG(ERROR) << "[WebNN] The specified ONNX Runtime library path is empty.";
-    return false;
-  }
-
-  return InitializeFromPath(base_path.Append(kOnnxRuntimeLibraryName));
-}
-
-// static
 bool PlatformFunctions::InitializeWinML() {
   CHECK(!g_instance_);
 
@@ -74,8 +54,11 @@ bool PlatformFunctions::EnsureInitialized() {
   // The static local with a lambda initializer guarantees thread-safe
   // one-time initialization per the C++ standard ([stmt.dcl]).
   static bool initialized = []() {
-    if (InitializeFromCommandLine()) {
-      return true;
+    base::FilePath base_path =
+        base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
+            switches::kWebNNOrtLibraryPathForTesting);
+    if (!base_path.empty()) {
+      return InitializeFromPath(base_path.Append(kOnnxRuntimeLibraryName));
     }
     return InitializeWinML();
   }();
@@ -92,11 +75,12 @@ PlatformFunctions* PlatformFunctions::GetInstance() {
 // static
 bool PlatformFunctions::InitializeFromPath(
     const base::FilePath& ort_library_path) {
-  base::ScopedNativeLibrary ort_library = base::ScopedNativeLibrary(
-      base::LoadNativeLibrary(ort_library_path, nullptr));
+  base::NativeLibraryLoadError error;
+  base::ScopedNativeLibrary ort_library(
+      base::LoadNativeLibrary(ort_library_path, &error));
   if (!ort_library.is_valid()) {
-    LOG(ERROR) << "[WebNN] Failed to load ONNX Runtime library from the path: "
-               << ort_library_path;
+    LOG(ERROR) << "[WebNN] Failed to load ONNX Runtime library from: "
+               << ort_library_path << ", error: " << error.ToString();
     return false;
   }
 

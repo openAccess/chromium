@@ -30,7 +30,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "third_party/metrics_proto/omnibox_scoring_signals.pb.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 using ScoringSignals = ::metrics::OmniboxEventProto::Suggestion::ScoringSignals;
 using OmniboxScoringSignals = ::metrics::OmniboxScoringSignals;
@@ -42,7 +42,7 @@ class OmniboxMetricsProviderTest : public testing::Test {
 
   void SetUp() override {
     autocomplete_provider_ =
-        new FakeAutocompleteProvider(AutocompleteProvider::TYPE_SEARCH);
+        new FakeAutocompleteProvider(AutocompleteProvider::Type::kSearch);
     metrics_provider_ = std::make_unique<OmniboxMetricsProvider>();
   }
 
@@ -59,7 +59,7 @@ class OmniboxMetricsProviderTest : public testing::Test {
         metrics::OmniboxEventProto_KeywordModeEntryMethod_INVALID,
         /*is_popup_open=*/false,
         /*selection=*/OmniboxPopupSelection(selected_index),
-        /*disposition=*/WindowOpenDisposition::CURRENT_TAB,
+        /*disposition=*/ui::mojom::WindowOpenDisposition::kCurrentTab,
         /*is_paste_and_go=*/false,
         /*tab_id=*/SessionID::FromSerializedValue(1),
         /*current_page_classification=*/
@@ -73,7 +73,7 @@ class OmniboxMetricsProviderTest : public testing::Test {
         /*session=*/session_data);
   }
 
-  AutocompleteMatch BuildMatch(AutocompleteMatch::Type type) {
+  AutocompleteMatch BuildMatch(omnibox::AutocompleteMatchType type) {
     return AutocompleteMatch(autocomplete_provider_.get(), /*relevance=*/0,
                              /*deletable=*/false, type);
   }
@@ -84,6 +84,10 @@ class OmniboxMetricsProviderTest : public testing::Test {
 
   void RecordContextualSearchPrecisionRecallUsage(const OmniboxLog& log) {
     metrics_provider_->RecordContextualSearchPrecisionRecallUsage(log);
+  }
+
+  void RecordAgenticUpdatePrecisionRecallUsage(const OmniboxLog& log) {
+    metrics_provider_->RecordAgenticUpdatePrecisionRecallUsage(log);
   }
 
   void RecordLogAndVerifyScoringSignals(
@@ -153,7 +157,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_SingleURL) {
 
     AutocompleteResult result;
     result.AppendMatches(
-        {BuildMatch(AutocompleteMatch::Type::URL_WHAT_YOU_TYPED)});
+        {BuildMatch(omnibox::AutocompleteMatchType::kUrlWhatYouTyped)});
     SessionData session;
     session.typed_suggestions_shown_in_session = true;
     session.typed_url_suggestions_shown_in_session = true;
@@ -199,7 +203,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_SingleURL) {
 
     AutocompleteResult result;
     result.AppendMatches(
-        {BuildMatch(AutocompleteMatch::Type::URL_WHAT_YOU_TYPED)});
+        {BuildMatch(omnibox::AutocompleteMatchType::kUrlWhatYouTyped)});
     SessionData session;
     session.zero_prefix_suggestions_shown_in_session = true;
     session.zero_prefix_url_suggestions_shown_in_session = true;
@@ -247,7 +251,8 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_SingleSearch) {
     ukm::TestAutoSetUkmRecorder ukm_recorder;
 
     AutocompleteResult result;
-    result.AppendMatches({BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST)});
+    result.AppendMatches(
+        {BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest)});
     SessionData session;
     session.typed_suggestions_shown_in_session = true;
     session.typed_search_suggestions_shown_in_session = true;
@@ -292,7 +297,8 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_SingleSearch) {
     ukm::TestAutoSetUkmRecorder ukm_recorder;
 
     AutocompleteResult result;
-    result.AppendMatches({BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST)});
+    result.AppendMatches(
+        {BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest)});
     SessionData session;
     session.zero_prefix_suggestions_shown_in_session = true;
     session.zero_prefix_search_suggestions_shown_in_session = true;
@@ -340,7 +346,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordContextualSearchMetrics) {
     ukm::TestAutoSetUkmRecorder ukm_recorder;
 
     AutocompleteMatch match =
-        BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST);
+        BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest);
     match.subtypes.insert(omnibox::SUBTYPE_CONTEXTUAL_SEARCH);
     match.takeover_action =
         base::MakeRefCounted<ContextualSearchFulfillmentAction>(
@@ -348,7 +354,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordContextualSearchMetrics) {
 
     AutocompleteResult result;
     result.AppendMatches(
-        {BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST), match});
+        {BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest), match});
 
     SessionData session;
     session.contextual_search_suggestions_shown_in_session = true;
@@ -402,7 +408,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordContextualSearchMetrics) {
     ukm::TestAutoSetUkmRecorder ukm_recorder;
 
     AutocompleteMatch match =
-        BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST);
+        BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest);
     match.subtypes.insert(omnibox::SUBTYPE_CONTEXTUAL_SEARCH);
     match.takeover_action =
         base::MakeRefCounted<ContextualSearchFulfillmentAction>(
@@ -410,7 +416,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordContextualSearchMetrics) {
 
     AutocompleteResult result;
     result.AppendMatches(
-        {BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST), match});
+        {BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest), match});
 
     SessionData session;
     session.contextual_search_suggestions_shown_in_session = true;
@@ -463,14 +469,14 @@ TEST_F(OmniboxMetricsProviderTest, RecordContextualSearchMetrics) {
     ukm::TestAutoSetUkmRecorder ukm_recorder;
 
     AutocompleteMatch match =
-        BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST);
+        BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest);
     match.subtypes.insert(omnibox::SUBTYPE_CONTEXTUAL_SEARCH);
     match.takeover_action =
         base::MakeRefCounted<ContextualSearchOpenLensAction>();
 
     AutocompleteResult result;
     result.AppendMatches(
-        {BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST), match});
+        {BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest), match});
 
     SessionData session;
     session.lens_action_shown_in_session = true;
@@ -516,14 +522,14 @@ TEST_F(OmniboxMetricsProviderTest, RecordContextualSearchMetrics) {
     ukm::TestAutoSetUkmRecorder ukm_recorder;
 
     AutocompleteMatch match =
-        BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST);
+        BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest);
     match.subtypes.insert(omnibox::SUBTYPE_CONTEXTUAL_SEARCH);
     match.takeover_action =
         base::MakeRefCounted<ContextualSearchOpenLensAction>();
 
     AutocompleteResult result;
     result.AppendMatches(
-        {BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST), match});
+        {BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest), match});
 
     SessionData session;
     session.lens_action_shown_in_session = true;
@@ -564,6 +570,71 @@ TEST_F(OmniboxMetricsProviderTest, RecordContextualSearchMetrics) {
   }
 }
 
+TEST_F(OmniboxMetricsProviderTest, RecordAgenticUpdateMetrics) {
+  AutocompleteMatch agentic_update_match =
+      BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggestPersonalized);
+  agentic_update_match.subtypes.insert(
+      omnibox::SUBTYPE_PERSONAL_UPDATE_AIM_THREAD_EXPLICIT);
+
+  AutocompleteResult result;
+  result.AppendMatches(
+      {BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest),
+       agentic_update_match});
+
+  // No agentic update suggestion shown in the session.
+  {
+    base::HistogramTester histogram_tester;
+
+    RecordAgenticUpdatePrecisionRecallUsage(
+        BuildOmniboxLog(result, /*selected_index=*/0, SessionData()));
+
+    histogram_tester.ExpectTotalCount(
+        "Omnibox.AgenticUpdateSuggestion.Precision", /*expected_count=*/0);
+    histogram_tester.ExpectUniqueSample(
+        "Omnibox.AgenticUpdateSuggestion.Recall", false,
+        /*expected_bucket_count=*/1);
+    histogram_tester.ExpectUniqueSample("Omnibox.AgenticUpdateSuggestion.Usage",
+                                        false, /*expected_bucket_count=*/1);
+  }
+
+  SessionData session;
+  session.agentic_update_suggestions_shown_in_session = true;
+
+  // Agentic update suggestion shown, but another suggestion selected.
+  {
+    base::HistogramTester histogram_tester;
+
+    RecordAgenticUpdatePrecisionRecallUsage(
+        BuildOmniboxLog(result, /*selected_index=*/0, session));
+
+    histogram_tester.ExpectUniqueSample(
+        "Omnibox.AgenticUpdateSuggestion.Precision", false,
+        /*expected_bucket_count=*/1);
+    histogram_tester.ExpectUniqueSample(
+        "Omnibox.AgenticUpdateSuggestion.Recall", true,
+        /*expected_bucket_count=*/1);
+    histogram_tester.ExpectUniqueSample("Omnibox.AgenticUpdateSuggestion.Usage",
+                                        false, /*expected_bucket_count=*/1);
+  }
+
+  // Agentic update suggestion shown and selected.
+  {
+    base::HistogramTester histogram_tester;
+
+    RecordAgenticUpdatePrecisionRecallUsage(
+        BuildOmniboxLog(result, /*selected_index=*/1, session));
+
+    histogram_tester.ExpectUniqueSample(
+        "Omnibox.AgenticUpdateSuggestion.Precision", true,
+        /*expected_bucket_count=*/1);
+    histogram_tester.ExpectUniqueSample(
+        "Omnibox.AgenticUpdateSuggestion.Recall", true,
+        /*expected_bucket_count=*/1);
+    histogram_tester.ExpectUniqueSample("Omnibox.AgenticUpdateSuggestion.Usage",
+                                        true, /*expected_bucket_count=*/1);
+  }
+}
+
 TEST_F(OmniboxMetricsProviderTest, RecordMetrics_MultipleSearch) {
   {
     base::HistogramTester histogram_tester;
@@ -571,9 +642,9 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_MultipleSearch) {
 
     AutocompleteResult result;
     result.AppendMatches(
-        {BuildMatch(AutocompleteMatch::Type::URL_WHAT_YOU_TYPED),
-         BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST),
-         BuildMatch(AutocompleteMatch::Type::URL_WHAT_YOU_TYPED)});
+        {BuildMatch(omnibox::AutocompleteMatchType::kUrlWhatYouTyped),
+         BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest),
+         BuildMatch(omnibox::AutocompleteMatchType::kUrlWhatYouTyped)});
     SessionData session;
     session.typed_suggestions_shown_in_session = true;
     session.typed_search_suggestions_shown_in_session = true;
@@ -680,9 +751,10 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_MultipleSearch) {
     ukm::TestAutoSetUkmRecorder ukm_recorder;
 
     AutocompleteResult result;
-    result.AppendMatches({BuildMatch(AutocompleteMatch::Type::HISTORY_URL),
-                          BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST),
-                          BuildMatch(AutocompleteMatch::Type::HISTORY_URL)});
+    result.AppendMatches(
+        {BuildMatch(omnibox::AutocompleteMatchType::kHistoryUrl),
+         BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest),
+         BuildMatch(omnibox::AutocompleteMatchType::kHistoryUrl)});
     SessionData session;
     session.zero_prefix_suggestions_shown_in_session = true;
     session.zero_prefix_search_suggestions_shown_in_session = true;
@@ -792,7 +864,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_InvalidUkmSourceId) {
   ukm::TestAutoSetUkmRecorder ukm_recorder;
   AutocompleteResult result;
   result.AppendMatches(
-      {BuildMatch(AutocompleteMatch::Type::URL_WHAT_YOU_TYPED)});
+      {BuildMatch(omnibox::AutocompleteMatchType::kUrlWhatYouTyped)});
   OmniboxLog log =
       BuildOmniboxLog(result, /*selected_index=*/0, /*session_data=*/{});
   RecordMetrics(log);
@@ -815,7 +887,8 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_ToolAndModelModes) {
     base::HistogramTester histogram_tester;
 
     AutocompleteResult result;
-    result.AppendMatches({BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST)});
+    result.AppendMatches(
+        {BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest)});
     OmniboxLog log = BuildOmniboxLog(result, /*selected_index=*/0,
                                      /*session_data=*/{});
     log.ukm_source_id = ukm::NoURLSourceId();
@@ -853,7 +926,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_ToolAndModelModes) {
     AutocompleteResult result;
     // SEARCH_WHAT_YOU_TYPED is verbatim type.
     result.AppendMatches(
-        {BuildMatch(AutocompleteMatch::Type::SEARCH_WHAT_YOU_TYPED)});
+        {BuildMatch(omnibox::AutocompleteMatchType::kSearchWhatYouTyped)});
 
     OmniboxLog log = BuildOmniboxLog(result, /*selected_index=*/0,
                                      /*session_data=*/{});
@@ -890,7 +963,8 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_ToolAndModelModes) {
     base::HistogramTester histogram_tester;
 
     AutocompleteResult result;
-    result.AppendMatches({BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST)});
+    result.AppendMatches(
+        {BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest)});
 
     // Here we don't set an input state. It should default to Unspecified.
     OmniboxLog log = BuildOmniboxLog(result, /*selected_index=*/0,
@@ -914,7 +988,8 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_ToolAndModelModes) {
     base::HistogramTester histogram_tester;
 
     AutocompleteResult result;
-    result.AppendMatches({BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST)});
+    result.AppendMatches(
+        {BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest)});
     OmniboxLog log = BuildOmniboxLog(result, /*selected_index=*/0,
                                      /*session_data=*/{});
     log.ukm_source_id = ukm::NoURLSourceId();
@@ -948,7 +1023,8 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_ToolAndModelModes) {
     base::HistogramTester histogram_tester;
 
     AutocompleteResult result;
-    result.AppendMatches({BuildMatch(AutocompleteMatch::Type::SEARCH_SUGGEST)});
+    result.AppendMatches(
+        {BuildMatch(omnibox::AutocompleteMatchType::kSearchSuggest)});
     OmniboxLog log = BuildOmniboxLog(result, /*selected_index=*/0,
                                      /*session_data=*/{});
     log.ukm_source_id = ukm::NoURLSourceId();
@@ -997,7 +1073,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_CrossDeviceTab) {
   auto BuildCrossDeviceMatch = [&](bool with_action) {
     AutocompleteMatch match(cross_device_provider.get(), /*relevance=*/100,
                             /*deletable=*/false,
-                            AutocompleteMatchType::CROSS_DEVICE_TAB);
+                            omnibox::AutocompleteMatchType::kCrossDeviceTab);
     if (with_action) {
       match.actions.push_back(
           base::MakeRefCounted<CrossDeviceTabAction>(tab_last_active_time));
@@ -1017,7 +1093,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_CrossDeviceTab) {
 
     OmniboxLog log = BuildOmniboxLog(result, /*selected_index=*/0,
                                      /*session_data=*/session);
-    log.selection.state = OmniboxPopupSelection::NORMAL;
+    log.selection.state = OmniboxPopupSelection::LineState::kNormal;
     log.elapsed_time_since_user_focused_omnibox = base::Seconds(3);
     log.ukm_source_id = ukm::NoURLSourceId();
 
@@ -1039,7 +1115,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_CrossDeviceTab) {
     AutocompleteResult result;
     result.AppendMatches(
         {BuildCrossDeviceMatch(/*with_action=*/true),
-         BuildMatch(AutocompleteMatch::Type::URL_WHAT_YOU_TYPED)});
+         BuildMatch(omnibox::AutocompleteMatchType::kUrlWhatYouTyped)});
 
     SessionData session;
     session.zero_prefix_suggestions_shown_in_session = true;
@@ -1048,7 +1124,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_CrossDeviceTab) {
     // Select the second match (index 1), which is NOT cross device.
     OmniboxLog log = BuildOmniboxLog(result, /*selected_index=*/1,
                                      /*session_data=*/session);
-    log.selection.state = OmniboxPopupSelection::NORMAL;
+    log.selection.state = OmniboxPopupSelection::LineState::kNormal;
     log.elapsed_time_since_user_focused_omnibox = base::Seconds(3);
     log.ukm_source_id = ukm::NoURLSourceId();
 
@@ -1077,7 +1153,8 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_CrossDeviceTab) {
     OmniboxLog log = BuildOmniboxLog(result, /*selected_index=*/0,
                                      /*session_data=*/session);
     // Select the action on match 0.
-    log.selection.state = OmniboxPopupSelection::FOCUSED_BUTTON_ACTION;
+    log.selection.state =
+        OmniboxPopupSelection::LineState::kFocusedButtonAction;
     log.selection.action_index = 0;
     log.elapsed_time_since_user_focused_omnibox = base::Seconds(5);
     log.ukm_source_id = ukm::NoURLSourceId();
@@ -1115,7 +1192,7 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_CrossDeviceTab) {
 
     OmniboxLog log = BuildOmniboxLog(result, /*selected_index=*/0,
                                      /*session_data=*/session);
-    log.selection.state = OmniboxPopupSelection::NORMAL;
+    log.selection.state = OmniboxPopupSelection::LineState::kNormal;
     log.elapsed_time_since_user_focused_omnibox = base::Seconds(3);
     log.ukm_source_id = ukm::NoURLSourceId();
 
@@ -1152,7 +1229,8 @@ TEST_F(OmniboxMetricsProviderTest, RecordMetrics_CrossDeviceTab) {
     OmniboxLog log = BuildOmniboxLog(result, /*selected_index=*/0,
                                      /*session_data=*/session);
     // Select the action at index 1 (the CrossDeviceTabAction).
-    log.selection.state = OmniboxPopupSelection::FOCUSED_BUTTON_ACTION;
+    log.selection.state =
+        OmniboxPopupSelection::LineState::kFocusedButtonAction;
     log.selection.action_index = 1;
     log.elapsed_time_since_user_focused_omnibox = base::Seconds(5);
     log.ukm_source_id = ukm::NoURLSourceId();
@@ -1193,8 +1271,8 @@ TEST_F(OmniboxMetricsProviderTest, LogScoringSignals) {
   // Create matches and populate the scoring signals. Signals should only be
   // logged for non-search suggestions.
   ACMatches matches = {
-      BuildMatch(AutocompleteMatchType::Type::BOOKMARK_TITLE),
-      BuildMatch(AutocompleteMatchType::Type::SEARCH_WHAT_YOU_TYPED)};
+      BuildMatch(omnibox::AutocompleteMatchType::kBookmarkTitle),
+      BuildMatch(omnibox::AutocompleteMatchType::kSearchWhatYouTyped)};
   for (auto& match : matches) {
     match.scoring_signals = AutocompleteMatch::IsSearchHistoryType(match.type)
                                 ? expected_search_scoring_signals
@@ -1213,3 +1291,30 @@ TEST_F(OmniboxMetricsProviderTest, LogScoringSignals) {
   RecordLogAndVerifyScoringSignals(log, *matches[0].scoring_signals);
 }
 #endif  // !(BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID))
+
+// Every result type the client can log needs a summarized type, so that the
+// client histograms agree with the server-side summary of the same events.
+TEST_F(OmniboxMetricsProviderTest, GetClientSummarizedResultType_MapsAllTypes) {
+  using Suggestion = metrics::OmniboxEventProto::Suggestion;
+  for (int i = Suggestion::ResultType_MIN; i <= Suggestion::ResultType_MAX;
+       ++i) {
+    if (!Suggestion::ResultType_IsValid(i) ||
+        i == Suggestion::UNKNOWN_RESULT_TYPE) {
+      continue;
+    }
+    const auto type = static_cast<Suggestion::ResultType>(i);
+    EXPECT_NE(ClientSummarizedResultType::kUnknown,
+              OmniboxMetricsProvider::GetClientSummarizedResultType(type))
+        << Suggestion::ResultType_Name(type);
+  }
+
+  EXPECT_EQ(ClientSummarizedResultType::kUnknown,
+            OmniboxMetricsProvider::GetClientSummarizedResultType(
+                Suggestion::UNKNOWN_RESULT_TYPE));
+  EXPECT_EQ(ClientSummarizedResultType::kUrl,
+            OmniboxMetricsProvider::GetClientSummarizedResultType(
+                Suggestion::TAB_GROUP));
+  EXPECT_EQ(ClientSummarizedResultType::kOnDevice,
+            OmniboxMetricsProvider::GetClientSummarizedResultType(
+                Suggestion::NULL_RESULT_MESSAGE));
+}

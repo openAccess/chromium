@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include <algorithm>
+#include <memory>
 #include <optional>
 
 #include "base/base64.h"
@@ -32,12 +33,13 @@
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_window.h"
-#include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
 #include "chrome/browser/ssl/cert_verifier_browser_test.h"
 #include "chrome/browser/ssl/chrome_security_state_util.h"
+#include "chrome/browser/ssl/https_only_mode_tab_helper.h"
 #include "chrome/browser/ssl/https_upgrades_util.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
@@ -45,13 +47,8 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/content/browser/password_protection/password_protection_request_content.h"
-#include "components/safe_browsing/content/browser/password_protection/password_protection_test_util.h"
-#include "components/safe_browsing/core/browser/password_protection/metrics_util.h"
-#include "components/safe_browsing/core/common/features.h"
-#include "components/safe_browsing/core/common/proto/csd.pb.h"
+#include "components/safe_browsing/buildflags.h"
 #include "components/security_interstitials/content/security_interstitial_tab_helper.h"
 #include "components/security_interstitials/content/ssl_blocking_page.h"
 #include "components/security_interstitials/core/pref_names.h"
@@ -73,7 +70,6 @@
 #include "content/public/common/referrer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/signed_exchange_browser_test_helper.h"
@@ -94,6 +90,7 @@
 #include "net/ssl/ssl_cipher_suite_names.h"
 #include "net/ssl/ssl_connection_status_flags.h"
 #include "net/test/cert_test_util.h"
+#include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
@@ -103,12 +100,22 @@
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/boringssl/src/include/openssl/ssl.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
+
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#include "chrome/browser/safe_browsing/password_protection/chrome_password_protection_service.h"
+#include "components/password_manager/core/browser/password_manager_metrics_util.h"
+#include "components/safe_browsing/content/browser/password_protection/password_protection_test_util.h"
+#include "components/safe_browsing/core/common/proto/csd.pb.h"
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 namespace {
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 using password_manager::metrics_util::PasswordType;
 using safe_browsing::LoginReputationClientResponse;
-using safe_browsing::RequestOutcome;
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 const char kCreateFilesystemUrlJavascript[] =
     "new Promise(resolve => {"
@@ -847,6 +854,7 @@ IN_PROC_BROWSER_TEST_F(SecurityStateTabHelperTest,
   EXPECT_EQ(content::SSLStatus::NORMAL_CONTENT, entry->GetSSL().content_status);
 }
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 // Tests the security level and malicious content status for sign-in password
 // reuse threat type.
 IN_PROC_BROWSER_TEST_F(
@@ -941,6 +949,7 @@ IN_PROC_BROWSER_TEST_F(
   // Since these are non-Gaia enterprise passwords, Gaia password change won't
   // have any impact here.
 }
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 class PKPModelClientTest : public SecurityStateTabHelperTest {
  public:
@@ -991,7 +1000,7 @@ class PKPModelClientTest : public SecurityStateTabHelperTest {
         browser()->GetProfile()->GetDefaultStoragePartition();
     {
       base::test::TestFuture<void> future;
-      partition->GetNetworkContext()->EnableStaticKeyPinningForTesting(
+      partition->GetNetworkContext()->ReinitializeKeyPinningForTesting(
           future.GetCallback());
       EXPECT_TRUE(future.Wait());
     }
@@ -1077,13 +1086,116 @@ IN_PROC_BROWSER_TEST_F(SecurityStateLoadingTest, NavigationStateChanges) {
 
   // Navigate to a page that doesn't finish loading. Test that the
   // security state is neutral while the page is loading.
-  browser()->OpenURL(
-      content::OpenURLParams(
-          embedded_test_server()->GetURL("/title1.html"), content::Referrer(),
-          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED, false),
-      /*navigation_handle_callback=*/{});
+  browser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                         embedded_test_server()->GetURL("/title1.html"),
+                         ui::mojom::WindowOpenDisposition::kCurrentTab,
+                         ui::PAGE_TRANSITION_TYPED),
+                     /*navigation_handle_callback=*/{});
   CheckSecurityInfoForNonCommitted(
       browser()->GetTabStripModel()->GetActiveWebContents());
+}
+
+// Tests that GetCommittedSecurityState() and GetCommittedSecurityLevel()
+// continue to reflect the committed document's security state while a
+// browser-initiated navigation is pending (whereas GetVisibleSecurityState()
+// and GetSecurityLevel() become neutral).
+IN_PROC_BROWSER_TEST_F(SecurityStateLoadingTest,
+                       CommittedSecurityStatePreservedDuringPendingNavigation) {
+  net::test_server::ControllableHttpResponse hung_https_response(&https_server_,
+                                                                 "/hung");
+  ASSERT_TRUE(https_server_.Start());
+  SetUpMockCertVerifierForHttpsServer(0, net::OK);
+
+  content::WebContents* const contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(contents);
+
+  const GURL secure_https_url = https_server_.GetURL("/ssl/google.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), secure_https_url));
+  EXPECT_EQ(security_state::SECURE,
+            chrome_security_state::GetCommittedSecurityLevel(contents));
+
+  // Start a pending browser-initiated HTTP navigation.
+  browser()->OpenURL(
+      content::OpenURLParams::CreateBrowserInitiated(
+          embedded_test_server()->GetURL("/title1.html"),
+          WindowOpenDisposition::kCurrentTab, ui::PAGE_TRANSITION_TYPED),
+      /*navigation_handle_callback=*/{});
+  CheckSecurityInfoForNonCommitted(contents);
+  EXPECT_EQ(security_state::SECURE,
+            chrome_security_state::GetCommittedSecurityLevel(contents));
+  const std::unique_ptr<security_state::VisibleSecurityState>
+      secure_committed_state =
+          chrome_security_state::GetCommittedSecurityState(contents);
+  EXPECT_EQ(secure_https_url, secure_committed_state->url);
+  EXPECT_TRUE(secure_committed_state->connection_info_initialized);
+
+  // Now commit a broken HTTPS page on a separate server (so an existing
+  // keep-alive TLS connection to `https_server_` is not reused) after clicking
+  // through the interstitial, and verify that a stalled pending HTTPS
+  // navigation does not mask its DANGEROUS committed security level.
+  net::EmbeddedTestServer https_server_expired(
+      net::EmbeddedTestServer::TYPE_HTTPS);
+  https_server_expired.SetSSLConfig(net::EmbeddedTestServer::CERT_EXPIRED);
+  https_server_expired.ServeFilesFromSourceDirectory(GetChromeTestDataDir());
+  ASSERT_TRUE(https_server_expired.Start());
+  const scoped_refptr<net::X509Certificate> expired_cert =
+      https_server_expired.GetCertificate();
+  net::CertVerifyResult expired_verify_result;
+  expired_verify_result.is_issued_by_known_root = false;
+  expired_verify_result.verified_cert = expired_cert;
+  expired_verify_result.cert_status = net::CERT_STATUS_DATE_INVALID;
+  mock_cert_verifier()->AddResultForCert(expired_cert, expired_verify_result,
+                                         net::ERR_CERT_DATE_INVALID);
+
+  const GURL broken_https_url = https_server_expired.GetURL("/title1.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), broken_https_url));
+  ASSERT_TRUE(chrome_browser_interstitials::IsShowingInterstitial(contents));
+  EXPECT_EQ(security_state::DANGEROUS,
+            chrome_security_state::GetCommittedSecurityLevel(contents));
+
+  // Verify that an HTTPS-Upgrades pending navigation does not leak
+  // `is_https_only_mode_upgraded` onto the committed certificate-error
+  // interstitial (which would downgrade DANGEROUS to WARNING).
+  browser()->OpenURL(
+      content::OpenURLParams::CreateBrowserInitiated(
+          embedded_test_server()->GetURL("/title2.html"),
+          WindowOpenDisposition::kCurrentTab, ui::PAGE_TRANSITION_TYPED),
+      /*navigation_handle_callback=*/{});
+  ASSERT_NE(nullptr, contents->GetController().GetPendingEntry());
+  HttpsOnlyModeTabHelper* const https_only_helper =
+      HttpsOnlyModeTabHelper::FromWebContents(contents);
+  ASSERT_NE(nullptr, https_only_helper);
+  https_only_helper->set_is_navigation_upgraded(true);
+  EXPECT_FALSE(chrome_security_state::GetCommittedSecurityState(contents)
+                   ->is_https_only_mode_upgraded);
+  EXPECT_EQ(security_state::DANGEROUS,
+            chrome_security_state::GetCommittedSecurityLevel(contents));
+
+  // Re-open the interstitial, click through it, and verify that a stalled
+  // pending HTTPS navigation does not mask the committed DANGEROUS level.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), broken_https_url));
+  ASSERT_TRUE(chrome_browser_interstitials::IsShowingInterstitial(contents));
+  ProceedThroughInterstitial(contents);
+  EXPECT_EQ(security_state::DANGEROUS,
+            chrome_security_state::GetCommittedSecurityLevel(contents));
+
+  browser()->OpenURL(
+      content::OpenURLParams::CreateBrowserInitiated(
+          https_server_.GetURL("/hung"), WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_TYPED),
+      /*navigation_handle_callback=*/{});
+  hung_https_response.WaitForRequest();
+
+  EXPECT_EQ(security_state::NONE,
+            chrome_security_state::GetSecurityLevel(contents));
+  EXPECT_EQ(security_state::DANGEROUS,
+            chrome_security_state::GetCommittedSecurityLevel(contents));
+  const std::unique_ptr<security_state::VisibleSecurityState>
+      broken_committed_state =
+          chrome_security_state::GetCommittedSecurityState(contents);
+  EXPECT_EQ(broken_https_url, broken_committed_state->url);
+  EXPECT_TRUE(net::IsCertStatusError(broken_committed_state->cert_status));
 }
 
 // Tests the default security level on blob URLs.
@@ -1278,7 +1390,7 @@ IN_PROC_BROWSER_TEST_F(DidChangeVisibleSecurityStateTest,
             observer.latest_security_level());
 
   content::LoadStopObserver back_nav_load_observer(web_contents);
-  chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   back_nav_load_observer.Wait();
 
   EXPECT_EQ(security_state::SecurityLevel::SECURE,
@@ -1616,110 +1728,6 @@ IN_PROC_BROWSER_TEST_F(SecurityStateTabHelperPrerenderTest,
 
   // Shutdown server.
   ASSERT_TRUE(test_server->ShutdownAndWaitUntilComplete());
-}
-
-// For tests which use fenced frame.
-class SecurityStateTabHelperFencedFrameTest
-    : public SecurityStateTabHelperTest,
-      public testing::WithParamInterface<bool> {
- public:
-  SecurityStateTabHelperFencedFrameTest() {
-    // Enable or disable MixedContentAutoupgrade feature based on the test
-    // parameter.
-    scoped_feature_list_.InitWithFeatureState(
-        blink::features::kMixedContentAutoupgrade, GetParam());
-  }
-  ~SecurityStateTabHelperFencedFrameTest() override = default;
-  SecurityStateTabHelperFencedFrameTest(
-      const SecurityStateTabHelperFencedFrameTest&) = delete;
-
-  SecurityStateTabHelperFencedFrameTest& operator=(
-      const SecurityStateTabHelperFencedFrameTest&) = delete;
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
-  content::WebContents* web_contents() {
-    return browser()->GetTabStripModel()->GetActiveWebContents();
-  }
-
-  bool IsAutoupgradeEnabled() { return GetParam(); }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         SecurityStateTabHelperFencedFrameTest,
-                         testing::Bool());
-
-IN_PROC_BROWSER_TEST_P(SecurityStateTabHelperFencedFrameTest,
-                       ChangeSecurityStateWhenLoadingInsecureContent) {
-  // Setup a mock certificate verifier.
-  SetUpMockCertVerifierForHttpsServer(0, net::OK);
-
-  // Load a valid HTTPS page.
-  auto primary_url = https_server_.GetURL("/empty.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), primary_url));
-  CheckSecurityInfoForSecure(web_contents(), security_state::SECURE, false,
-                             false, false,
-                             false /* expect cert status error */);
-
-  // Create a fenced frame with a page that displays insecure content.
-  GURL fenced_frame_url =
-      https_server_.GetURL("/ssl/page_displays_insecure_content.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          web_contents()->GetPrimaryMainFrame(), fenced_frame_url);
-  EXPECT_NE(nullptr, fenced_frame_host);
-
-  if (IsAutoupgradeEnabled()) {
-    // The security state of the web contents should not be changed because
-    // the MixedContentAutoupgrade feature changes the internal insecure url
-    // from http to https.
-    CheckSecurityInfoForSecure(web_contents(), security_state::SECURE, false,
-                               false, false,
-                               false /* expect cert status error */);
-  } else {
-    // The security state of the web contents should be changed to WARNING.
-    CheckSecurityInfoForSecure(web_contents(), security_state::WARNING, false,
-                               true, false,
-                               false /* expect cert status error */);
-  }
-}
-
-IN_PROC_BROWSER_TEST_P(SecurityStateTabHelperFencedFrameTest,
-                       LoadFencedFrameViaInsecureURL) {
-  // Setup a mock certificate verifier.
-  SetUpMockCertVerifierForHttpsServer(0, net::OK);
-
-  // Load a valid HTTPS page.
-  auto primary_url = https_server_.GetURL("/empty.html");
-
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), primary_url));
-  CheckSecurityInfoForSecure(web_contents(), security_state::SECURE, false,
-                             false, false,
-                             false /* expect cert status error */);
-
-  // Create a fenced frame with an insecure url.
-  GURL fenced_frame_url =
-      embedded_test_server()->GetURL("b.com", "/fenced_frames/title1.html");
-
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          web_contents()->GetPrimaryMainFrame(), fenced_frame_url);
-  EXPECT_NE(nullptr, fenced_frame_host);
-  // Check that nothing has been loaded in the fenced frame.
-  EXPECT_EQ(
-      0, content::EvalJs(fenced_frame_host, "document.body.childElementCount"));
-
-  // Since we are blocking http content in a fenced frame, the security
-  // indicator should not change, and there should be no mixed content loaded.
-  CheckSecurityInfoForSecure(web_contents(), security_state::SECURE, false,
-                             false, false /* expect no mixed content loaded */,
-                             false /* expect cert status error */);
 }
 
 }  // namespace

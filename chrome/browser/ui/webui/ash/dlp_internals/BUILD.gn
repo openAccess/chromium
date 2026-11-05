@@ -14,15 +14,12 @@ static_library("dlp_internals") {
     "dlp_internals_ui.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     ":mojo_bindings",
     "//ash/constants",
     "//base",
     "//chrome/browser/chromeos/policy/dlp",
     "//chrome/browser/enterprise/data_controls",
-    "//chrome/browser/profiles:profile",
     "//chrome/browser/resources/chromeos/dlp_internals:resources",
     "//chrome/common",
     "//chromeos/dbus/dlp",

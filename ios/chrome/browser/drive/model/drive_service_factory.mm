@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/drive/model/drive_service_factory.h"
 
+#import <utility>
+
 #import "base/feature_list.h"
 #import "ios/chrome/app/tests_hook.h"
 #import "ios/chrome/browser/drive/model/drive_service.h"
@@ -17,29 +19,17 @@
 
 namespace drive {
 
-// static
-DriveService* DriveServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<DriveService>(profile,
-                                                             /*create=*/true);
-}
-
-// static
-DriveServiceFactory* DriveServiceFactory::GetInstance() {
-  static base::NoDestructor<DriveServiceFactory> instance;
-  return instance.get();
-}
-
-DriveServiceFactory::DriveServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("DriveService",
-                                    ProfileSelection::kRedirectedInIncognito) {
+DriveServiceFactory::DriveServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "DriveService",
+          ProfileSelection::kRedirectedInIncognito) {
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(ChromeAccountManagerServiceFactory::GetInstance());
 }
 
-DriveServiceFactory::~DriveServiceFactory() = default;
-
 std::unique_ptr<KeyedService> DriveServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   std::unique_ptr<DriveService> overridden_drive_service =
       tests_hook::GetOverriddenDriveService();
   if (overridden_drive_service) {
@@ -48,7 +38,7 @@ std::unique_ptr<KeyedService> DriveServiceFactory::BuildServiceInstanceFor(
 
   drive::DriveServiceConfiguration configuration{};
   configuration.sso_service = GetApplicationContext()->GetSingleSignOnService();
-  configuration.pref_service = profile->GetPrefs();
+  configuration.pref_service = profile.GetPrefs();
   configuration.identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
   configuration.account_manager_service =

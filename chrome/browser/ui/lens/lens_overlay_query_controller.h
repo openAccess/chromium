@@ -188,9 +188,7 @@ class LensOverlayQueryController : public lens::LensUploadChunker::Delegate {
   uint64_t gen204_id() const { return gen204_id_; }
 
   // Returns the search session id for the current query flow.
-  std::string search_session_id() const {
-    return cluster_info_->search_session_id();
-  }
+  virtual std::string search_session_id() const;
 
   // Testing method to reset the cluster info state.
   void ResetRequestClusterInfoStateForTesting();
@@ -203,10 +201,15 @@ class LensOverlayQueryController : public lens::LensUploadChunker::Delegate {
   // Returns the latest visual search interaction data sent to the server.
   // This does not take into account whether the selection was cleared by the
   // user.
-  std::optional<lens::LensOverlayVisualSearchInteractionData>
-  GetVisualSearchInteractionData() {
-    return visual_search_interaction_data_;
-  }
+  virtual std::optional<lens::LensOverlayVisualSearchInteractionData>
+  GetVisualSearchInteractionData();
+
+  // Updates the request id based on the given update mode and returns the
+  // request id proto. Also updates the suggest signals with the new request id
+  // and runs the suggest inputs callback.
+  virtual std::unique_ptr<lens::LensOverlayRequestId> GetNextRequestId(
+      lens::RequestIdUpdateMode update_mode,
+      lens::LensOverlayRequestId::MediaType media_type);
 
   // After this is called, for the remainder of the current session, requests do
   // not need to check prefs for whether the user has granted permissions
@@ -272,17 +275,17 @@ class LensOverlayQueryController : public lens::LensUploadChunker::Delegate {
       lens::mojom::SemanticEvent event,
       std::optional<lens::LensOverlayRequestId> request_id);
 
-  // Updates the request id based on the given update mode and returns the
-  // request id proto. Also updates the suggest signals with the new request id
-  // and runs the suggest inputs callback.
-  std::unique_ptr<lens::LensOverlayRequestId> GetNextRequestId(
-      lens::RequestIdUpdateMode update_mode,
-      lens::LensOverlayRequestId::MediaType media_type);
-
   // Updates the suggest inputs with the feature params and latest cluster info
   // response, then runs the callback. The request id in the suggest inputs will
   // if the parameter is not null.
   virtual void RunSuggestInputsCallback();
+
+  // Fetches the OAuth headers and calls the callback with the headers. If the
+  // OAuth cannot be retrieve (like if the user is not logged in), the callback
+  // will be called with an empty vector. Returns the access token fetcher
+  // making the request so it can be kept alive.
+  virtual std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
+  CreateOAuthHeadersAndContinue(OAuthHeadersCreatedCallback callback);
 
   // The callback for full image requests, including upon query flow start
   // and interaction retries.
@@ -388,6 +391,7 @@ class LensOverlayQueryController : public lens::LensUploadChunker::Delegate {
   // tried, just without the server session id.
   void ClusterInfoFetchResponseHandler(
       base::TimeTicks query_start_time,
+      std::vector<std::string> request_headers,
       std::unique_ptr<endpoint_fetcher::EndpointResponse> response);
 
   // Processes the screenshot and fetches a full image request.
@@ -592,7 +596,7 @@ class LensOverlayQueryController : public lens::LensUploadChunker::Delegate {
       lens::LensOverlayServerRequest* request,
       std::vector<std::string>* request_headers,
       base::TimeDelta timeout,
-      base::OnceCallback<
+      base::RepeatingCallback<
           void(std::unique_ptr<endpoint_fetcher::EndpointFetcher>)>
           fetcher_created_callback,
       endpoint_fetcher::EndpointFetcherCallback response_received_callback,
@@ -606,22 +610,31 @@ class LensOverlayQueryController : public lens::LensUploadChunker::Delegate {
       std::string request_string,
       std::vector<std::string>* request_headers,
       base::TimeDelta timeout,
-      base::OnceCallback<
+      base::RepeatingCallback<
           void(std::unique_ptr<endpoint_fetcher::EndpointFetcher>)>
           fetcher_created_callback,
       endpoint_fetcher::EndpointFetcherCallback response_received_callback,
       UploadProgressCallback upload_progress_callback,
       GURL fetch_url);
 
+  // Handles the response from a fetch request, retrying once without the
+  // Authorization header if identity delegation is enabled and the server
+  // returns HTTP 401.
+  void OnFetchResponseReceived(
+      std::string request_string,
+      std::vector<std::string> request_headers,
+      std::vector<std::string> cors_exempt_headers,
+      GURL fetch_url,
+      base::TimeDelta timeout,
+      base::RepeatingCallback<
+          void(std::unique_ptr<endpoint_fetcher::EndpointFetcher>)>
+          fetcher_created_callback,
+      endpoint_fetcher::EndpointFetcherCallback response_received_callback,
+      UploadProgressCallback upload_progress_callback,
+      std::unique_ptr<endpoint_fetcher::EndpointResponse> response);
+
   // Creates a client context proto to be attached to a server request.
   lens::LensOverlayClientContext CreateClientContext();
-
-  // Fetches the OAuth headers and calls the callback with the headers. If the
-  // OAuth cannot be retrieve (like if the user is not logged in), the callback
-  // will be called with an empty vector. Returns the access token fetcher
-  // making the request so it can be kept alive.
-  std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>
-  CreateOAuthHeadersAndContinue(OAuthHeadersCreatedCallback callback);
 
   // Builds the LensOverlayVisualSearchInteractionData proto from the given
   // parameters.
@@ -946,18 +959,9 @@ class LensOverlayQueryController : public lens::LensUploadChunker::Delegate {
   // permanently.
   bool has_permission_for_session_ = false;
 
-  // True if the session began without permanent permissions in a flow requiring
-  // restricted initial uploads (e.g. image context menu search).
+  // True if the session is in a flow requiring restricted uploads (e.g. image
+  // context menu search).
   bool initial_query_restricted_ = false;
-
-  // True if the initial page content upload was blocked because the user
-  // performed a context menu image search but had not granted permissions
-  // permanently.
-  bool initial_page_content_blocked_ = false;
-
-  // True if the full screenshot and page context have been sent after the
-  // initial query of the non-blocking image context menu search flow.
-  bool deferred_screenshot_and_page_context_sent_ = false;
 
   base::WeakPtrFactory<LensOverlayQueryController> weak_ptr_factory_{this};
 };

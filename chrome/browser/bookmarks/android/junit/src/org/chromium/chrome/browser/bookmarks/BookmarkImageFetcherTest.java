@@ -11,7 +11,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -33,7 +32,6 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -51,14 +49,12 @@ import org.chromium.components.power_bookmarks.PowerBookmarkMeta;
 import org.chromium.components.power_bookmarks.PowerBookmarkMeta.Image;
 import org.chromium.components.power_bookmarks.ShoppingSpecifics;
 import org.chromium.ui.base.TestActivity;
-import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
 import java.util.Arrays;
 
 /** Unit tests for {@link BookmarkImageFetcher}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class BookmarkImageFetcherTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -78,8 +74,6 @@ public class BookmarkImageFetcherTest {
 
     @Captor private ArgumentCaptor<Drawable> mDrawableCaptor;
     @Captor private ArgumentCaptor<Pair<Drawable, Drawable>> mFolderDrawablesCaptor;
-    @Captor private ArgumentCaptor<Callback<GURL>> mGURLCallbackCaptor;
-    @Captor private ArgumentCaptor<Callback<Bitmap>> mBitmapCallbackCaptor;
 
     private final BookmarkId mFolderId = new BookmarkId(/* id= */ 1, BookmarkType.NORMAL);
     private final BookmarkId mBookmarkId1 = new BookmarkId(/* id= */ 2, BookmarkType.NORMAL);
@@ -139,7 +133,7 @@ public class BookmarkImageFetcherTest {
                 .getScenario()
                 .onActivity(
                         (activity) -> {
-                            mActivity = spy(activity);
+                            mActivity = activity;
 
                             // Setup BookmarkModel.
                             doReturn(true).when(mBookmarkModel).doesBookmarkExist(any());
@@ -261,6 +255,38 @@ public class BookmarkImageFetcherTest {
     }
 
     @Test
+    public void testFetchImageForBookmarkWithFaviconFallback_withShoppingSpecifics_nonHttpsUrl() {
+        doReturn(createShoppingMeta("http://shoppingmeta.com/"))
+                .when(mBookmarkModel)
+                .getPowerBookmarkMeta(mBookmarkId1);
+        mBookmarkImageFetcher.fetchImageForBookmarkWithFaviconFallback(
+                mAccountBookmark1, 100, mDrawableCallback);
+
+        // The lead image should be ignored and the image service used instead.
+        verify(mImageFetcher, times(0)).fetchImage(any(), any());
+        verify(mImageServiceBridge).fetchImageFor(anyBoolean(), any(), anyInt(), any());
+
+        verify(mDrawableCallback).onResult(mDrawableCaptor.capture());
+        assertNotNull(mDrawableCaptor.getValue());
+    }
+
+    @Test
+    public void testFetchImageForBookmarkWithFaviconFallback_withShoppingSpecifics_invalidUrl() {
+        doReturn(createShoppingMeta("not a url"))
+                .when(mBookmarkModel)
+                .getPowerBookmarkMeta(mBookmarkId1);
+        mBookmarkImageFetcher.fetchImageForBookmarkWithFaviconFallback(
+                mAccountBookmark1, 100, mDrawableCallback);
+
+        // The lead image should be ignored and the image service used instead.
+        verify(mImageFetcher, times(0)).fetchImage(any(), any());
+        verify(mImageServiceBridge).fetchImageFor(anyBoolean(), any(), anyInt(), any());
+
+        verify(mDrawableCallback).onResult(mDrawableCaptor.capture());
+        assertNotNull(mDrawableCaptor.getValue());
+    }
+
+    @Test
     public void testFetchImageForBookmarkWithFaviconFallback_fallbackToFavicon() {
         doCallback(
                         3,
@@ -297,5 +323,13 @@ public class BookmarkImageFetcherTest {
                 .getLocalFaviconImageForURL(any(), any(), anyInt(), anyBoolean(), any());
 
         assertNotNull(mDrawableCaptor.getValue());
+    }
+
+    private PowerBookmarkMeta createShoppingMeta(String leadImageUrl) {
+        return PowerBookmarkMeta.newBuilder()
+                .setShoppingSpecifics(
+                        ShoppingSpecifics.newBuilder().setProductClusterId(1234L).build())
+                .setLeadImage(Image.newBuilder().setUrl(leadImageUrl).build())
+                .build();
     }
 }

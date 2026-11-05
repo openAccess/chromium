@@ -1,11 +1,14 @@
 include_rules = [
-  # Nothing from base.
+  # In general, nothing from base is permitted. Exceptions are made on a
+  # case-by-case basis for header-only code.
   "-base",
   # This header contains macros and such that abstract away non-standard
   # compiler features. It does not bring a dependency on the base library.
   "+base/compiler_specific.h",
   # For base::HeapArray.
   "+base/containers/heap_array.h",
+  # For base::span.
+  "+base/containers/span.h",
   # For the version_info::Channel enum.
   "+base/version_info/channel.h",
   # For the compile-time PRODUCT_VERSION macro.
@@ -25,6 +28,11 @@ include_rules = [
 ]
 
 specific_include_rules = {
+  # Sources in the `secondary_module` target may use //base since they are
+  # not linked into chrome_elf.dll.
+  "get_primary_module_path\\.": [
+    "+base",
+  ],
   ".*_unittest\\.cc": [
     "+base",
   ],

@@ -36,7 +36,10 @@
 #include "third_party/blink/renderer/core/editing/selection_template.h"
 #include "third_party/blink/renderer/core/editing/testing/editing_test_base.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
+#include "third_party/blink/renderer/core/html/forms/html_select_element.h"
 #include "third_party/blink/renderer/core/html/forms/text_control_element.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
+#include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -140,7 +143,7 @@ std::string TextIteratorTest::IterateWithIterator(
     text_chunks.Append(iterator.GetTextState().GetTextForTesting());
     text_chunks.Append(']');
   }
-  return text_chunks.ToString().Utf8();
+  return text_chunks.Utf8();
 }
 
 Range* TextIteratorTest::GetBodyRange() const {
@@ -327,7 +330,7 @@ TEST_F(TextIteratorTest, StartingAtNodeInShadowRoot) {
   SetBodyContent(body_content);
   ShadowRoot* shadow_root = CreateShadowRootForElementWithIdAndSetInnerHtml(
       GetDocument(), "host", shadow_content);
-  Node* outer_div = GetDocument().getElementById(AtomicString("outer"));
+  Node* outer_div = GetElementById("outer");
   Node* span_in_shadow = shadow_root->firstChild();
   Position start = Position::FirstPositionInNode(*span_in_shadow);
   Position end = Position::LastPositionInNode(*outer_div);
@@ -352,7 +355,7 @@ TEST_F(TextIteratorTest, FinishingAtNodeInShadowRoot) {
   SetBodyContent(body_content);
   ShadowRoot* shadow_root = CreateShadowRootForElementWithIdAndSetInnerHtml(
       GetDocument(), "host", shadow_content);
-  Node* outer_div = GetDocument().getElementById(AtomicString("outer"));
+  Node* outer_div = GetElementById("outer");
   Node* span_in_shadow = shadow_root->firstChild();
   Position start = Position::FirstPositionInNode(*outer_div);
   Position end = Position::LastPositionInNode(*span_in_shadow);
@@ -467,7 +470,7 @@ TEST_F(TextIteratorTest, RangeLengthWithReplacedElements) {
   SetBodyContent(body_content);
   UpdateAllLifecyclePhasesForTest();
 
-  Node* div_node = GetDocument().getElementById(AtomicString("div"));
+  Node* div_node = GetElementById("div");
   const EphemeralRange range(Position(div_node, 0), Position(div_node, 3));
 
   EXPECT_EQ(3, TextIterator::RangeLength(range));
@@ -488,7 +491,7 @@ TEST_F(TextIteratorTest, RangeLengthInMultilineSpan) {
   SetBodyContent(body_content);
   UpdateAllLifecyclePhasesForTest();
 
-  Node* span_node = GetDocument().getElementById(AtomicString("span1"));
+  Node* span_node = GetElementById("span1");
   Node* text_node = span_node->firstChild();
 
   // Select the word "two", this is the last word on the line.
@@ -602,7 +605,7 @@ TEST_F(TextIteratorTest, characterAt) {
   SetBodyContent(body_content);
   SetShadowContent(shadow_content, "host");
 
-  Element* host = GetDocument().getElementById(AtomicString("host"));
+  Element* host = GetElementById("host");
 
   EphemeralRangeTemplate<EditingStrategy> range1(
       EphemeralRangeTemplate<EditingStrategy>::RangeOfContents(*host));
@@ -668,8 +671,7 @@ TEST_F(TextIteratorTest, EndingConditionWithDisplayNoneInShadowTree) {
   SetBodyContent(body_content);
   SetShadowContent(shadow_content, "host");
 
-  ShadowRoot* shadow_root =
-      GetDocument().getElementById(AtomicString("host"))->OpenShadowRoot();
+  ShadowRoot* shadow_root = GetElementById("host")->OpenShadowRoot();
   Node* b_in_shadow_tree = shadow_root->getElementById(AtomicString("end"));
 
   Position start(&GetDocument(), 0);
@@ -701,8 +703,7 @@ TEST_F(TextIteratorTest, PreserveOnlyLeadingSpace) {
   SetBodyContent(
       "<div style='width: 2em;'><b><i id='foo'>foo </i></b> bar</div>");
   Element* div = QuerySelector("div");
-  Position start(
-      GetDocument().getElementById(AtomicString("foo"))->firstChild(), 0);
+  Position start(GetElementById("foo")->firstChild(), 0);
   Position end(div->lastChild(), 4);
   EXPECT_EQ("foo bar",
             PlainText(EphemeralRange(start, end), EmitsImageAltTextBehavior()));
@@ -977,8 +978,7 @@ TEST_F(TextIteratorTest, BasicIterationOnChildrenWithStyle) {
 
 TEST_F(TextIteratorTest, BasicIterationInput) {
   SetBodyContent("<input id='a' value='b'>");
-  auto* input_element =
-      ToTextControl(GetDocument().getElementById(AtomicString("a")));
+  auto* input_element = ToTextControl(GetElementById("a"));
   const ShadowRoot* shadow_root = input_element->UserAgentShadowRoot();
   const Position start = Position::FirstPositionInNode(*shadow_root);
   const Position end = Position::LastPositionInNode(*shadow_root);
@@ -987,8 +987,7 @@ TEST_F(TextIteratorTest, BasicIterationInput) {
 
 TEST_F(TextIteratorTest, BasicIterationInputiWithBr) {
   SetBodyContent("<input id='a' value='b'>");
-  auto* input_element =
-      ToTextControl(GetDocument().getElementById(AtomicString("a")));
+  auto* input_element = ToTextControl(GetElementById("a"));
   Element* inner_editor = input_element->InnerEditorElement();
   Element* br = GetDocument().CreateRawElement(html_names::kBrTag);
   inner_editor->AppendChild(br);
@@ -1025,7 +1024,7 @@ TEST_F(TextIteratorTest, NoZWSForSpaceAfterNoWrapSpace) {
 TEST_F(TextIteratorTest, PositionInShadowTree) {
   // Flat Tree: <div id=host>A<slot name=c><img slot=c alt=C></slot></div>
   SetBodyContent("<div id=host><a></a><b></b><img slot=c alt=C></div>");
-  Element& host = *GetDocument().getElementById(AtomicString("host"));
+  Element& host = *GetElementById("host");
   ShadowRoot& shadow_root =
       host.AttachShadowRootForTesting(ShadowRootMode::kOpen);
   shadow_root.SetInnerHTMLWithoutTrustedTypes("A<slot name=c></slot>");
@@ -1083,11 +1082,11 @@ TEST_F(TextIteratorTest, EmitsSpaceForNbsp) {
 
 TEST_F(TextIteratorTest, IterateWithLockedSubtree) {
   SetBodyContent("<div id='parent'>foo<div id='locked'>text</div>bar</div>");
-  auto* locked = GetDocument().getElementById(AtomicString("locked"));
+  auto* locked = GetElementById("locked");
   locked->setAttribute(html_names::kStyleAttr,
                        AtomicString("content-visibility: auto"));
   GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
-  auto* parent = GetDocument().getElementById(AtomicString("parent"));
+  auto* parent = GetElementById("parent");
   const Position start_position = Position::FirstPositionInNode(*parent);
   const Position end_position = Position::LastPositionInNode(*parent);
   EXPECT_EQ(6, TextIterator::RangeLength(start_position, end_position));
@@ -1098,8 +1097,8 @@ TEST_F(TextIteratorTest, IterateRangeEndingAtLockedSubtree) {
       <div id=start>start</div><div hidden=until-found><div id=end>end</div>
       foo</div>
     )HTML");
-  auto* start = GetDocument().getElementById(AtomicString("start"));
-  auto* end = GetDocument().getElementById(AtomicString("end"));
+  auto* start = GetElementById("start");
+  auto* end = GetElementById("end");
   GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
 
   const Position start_position = Position::FirstPositionInNode(*start);
@@ -1175,6 +1174,72 @@ TEST_F(TextIteratorTest, BasicIterationWithButtonInInlineElement) {
   SetBodyContent(body_content);
   EXPECT_EQ("[test][][;]", Iterate<DomTree>());
   EXPECT_EQ("[test][][;]", Iterate<FlatTree>());
+}
+
+TEST_F(TextIteratorTest, ExcludeAutofilledValueSelect) {
+  SetBodyContent(
+      "<select id='sel'>"
+      "<option value='1' selected>One</option>"
+      "<option value='2'>Two</option>"
+      "</select>");
+  auto* select = To<HTMLSelectElement>(GetElementById("sel"));
+  select->SetSuggestedValue("2");
+  ASSERT_TRUE(select->IsPreviewed());
+  test::RunPendingTasks();
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* popover = select->GetAutofillPreviewElement();
+  ASSERT_TRUE(popover);
+
+  const Position start = Position::FirstPositionInNode(*popover);
+  const Position end = Position::LastPositionInNode(*popover);
+
+  // Without ExcludeAutofilledValue, the preview text in the popover is emitted.
+  EXPECT_EQ("[Two]", IteratePartial<DomTree>(start, end));
+
+  // With ExcludeAutofilledValue, the preview text must be suppressed when the
+  // fix is enabled.
+  TextIteratorBehavior behavior =
+      TextIteratorBehavior::Builder().SetExcludeAutofilledValue(true).Build();
+  EXPECT_EQ("", IteratePartial<DomTree>(start, end, behavior));
+
+  // When the feature is disabled, the previous behavior is restored (preview
+  // text is emitted).
+  ScopedTextIteratorExcludeAutofilledSelectFixForTest disable_fix(false);
+  EXPECT_EQ("[Two]", IteratePartial<DomTree>(start, end, behavior));
+}
+
+TEST_F(TextIteratorTest, ExcludeAutofilledValueListboxSelect) {
+  SetBodyContent(
+      "<select id='sel' size='2'>"
+      "<option value='1' selected>One</option>"
+      "<option value='2'>Two</option>"
+      "</select>");
+  auto* select = To<HTMLSelectElement>(GetElementById("sel"));
+  select->SetSuggestedValue("2");
+  ASSERT_TRUE(select->IsPreviewed());
+  test::RunPendingTasks();
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* popover = select->GetAutofillPreviewElement();
+  ASSERT_TRUE(popover);
+
+  const Position start = Position::FirstPositionInNode(*popover);
+  const Position end = Position::LastPositionInNode(*popover);
+
+  // Without ExcludeAutofilledValue, the preview text in the popover is emitted.
+  EXPECT_EQ("[Two]", IteratePartial<DomTree>(start, end));
+
+  // With ExcludeAutofilledValue, the preview text must be suppressed when the
+  // fix is enabled.
+  TextIteratorBehavior behavior =
+      TextIteratorBehavior::Builder().SetExcludeAutofilledValue(true).Build();
+  EXPECT_EQ("", IteratePartial<DomTree>(start, end, behavior));
+
+  // When the feature is disabled, the previous behavior is restored (preview
+  // text is emitted).
+  ScopedTextIteratorExcludeAutofilledSelectFixForTest disable_fix(false);
+  EXPECT_EQ("[Two]", IteratePartial<DomTree>(start, end, behavior));
 }
 
 }  // namespace text_iterator_test

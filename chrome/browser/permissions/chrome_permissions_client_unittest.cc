@@ -15,21 +15,19 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if !BUILDFLAG(IS_ANDROID)
+#include <optional>
+#include <string>
+
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"  // nogncheck
 #include "chrome/browser/ui/hats/mock_hats_service.h"     // nogncheck
 #include "chrome/browser/ui/hats/survey_config.h"         // nogncheck
+#include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/permissions/constants.h"
 #include "components/permissions/permission_hats_trigger_helper.h"
 #include "components/prefs/pref_service.h"
 #include "components/unified_consent/pref_names.h"
-#endif
-
-#if BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_ANDROID)
-#include <optional>
-#include <string>
-
-#include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "components/variations/scoped_variations_ids_provider.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/test/browser_test_utils.h"
@@ -42,7 +40,13 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "url/gurl.h"
 #include "url/origin.h"
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+#include "components/contextual_tasks/public/features.h"
+#include "extensions/common/constants.h"
+#include "extensions/common/extension_features.h"
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 class ChromePermissionsClientTest : public ChromeRenderViewHostTestHarness {
  public:
@@ -159,7 +163,8 @@ TEST_F(ChromePermissionsClientMimeHandlerTest,
       embedder->GetFrameTreeNodeId(), "internal_id",
       extensions::mime_handler::GenerateSampleStreamContainer(1),
       std::make_unique<testing::NiceMock<
-          extensions::mime_handler::MockMimeHandlerStreamDelegate>>());
+          extensions::mime_handler::MockMimeHandlerStreamDelegate>>(),
+      extensions::mime_handler::kFakeNavigationId);
   manager->ClaimStreamInfoForTesting(embedder);
   manager->SetExtensionFrameTreeNodeIdForTesting(
       embedder, extension_host->GetFrameTreeNodeId());
@@ -445,8 +450,26 @@ TEST_F(ChromePermissionsClientTest, AllowEmbeddedPermissionPromptForSurface) {
       omnibox_everywhere_url, omnibox_everywhere_url);
   ASSERT_TRUE(google_url.has_value());
 
-  // By default, the embedded permission prompt flag is disabled.
-  // Verify that Omnibox Everywhere bypasses the flag and returns true.
+  // Verify that surfaces return true by default when the flag is enabled.
+  GURL omnibox_url(chrome::kChromeUIOmniboxPopupURL);
+  content::OverrideLastCommittedOrigin(web_contents()->GetPrimaryMainFrame(),
+                                       url::Origin::Create(omnibox_url));
+  EXPECT_TRUE(ChromePermissionsClient::AllowEmbeddedPermissionPromptForSurface(
+      web_contents()));
+  EXPECT_TRUE(client->IsPrivilegedInternalWebUI(
+      web_contents(), *google_url, /*already_overrode_requester=*/true));
+
+  GURL ntp_url = chrome::ChromeUINewTabPageURLAsGURL();
+  content::OverrideLastCommittedOrigin(web_contents()->GetPrimaryMainFrame(),
+                                       url::Origin::Create(ntp_url));
+  EXPECT_TRUE(ChromePermissionsClient::AllowEmbeddedPermissionPromptForSurface(
+      web_contents()));
+
+  // When the embedded permission prompt flag is disabled,
+  // verify that Omnibox Everywhere bypasses the flag and returns true.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      omnibox_feature_configs::kEmbeddedPermissionEnabled);
   content::OverrideLastCommittedOrigin(
       web_contents()->GetPrimaryMainFrame(),
       url::Origin::Create(omnibox_everywhere_url));
@@ -456,7 +479,6 @@ TEST_F(ChromePermissionsClientTest, AllowEmbeddedPermissionPromptForSurface) {
       web_contents(), *google_url, /*already_overrode_requester=*/true));
 
   // Verify that other surfaces return false when the flag is disabled.
-  GURL omnibox_url(chrome::kChromeUIOmniboxPopupURL);
   content::OverrideLastCommittedOrigin(web_contents()->GetPrimaryMainFrame(),
                                        url::Origin::Create(omnibox_url));
   EXPECT_FALSE(ChromePermissionsClient::AllowEmbeddedPermissionPromptForSurface(
@@ -464,10 +486,80 @@ TEST_F(ChromePermissionsClientTest, AllowEmbeddedPermissionPromptForSurface) {
   EXPECT_FALSE(client->IsPrivilegedInternalWebUI(
       web_contents(), *google_url, /*already_overrode_requester=*/true));
 
-  GURL ntp_url = chrome::ChromeUINewTabPageURLAsGURL();
   content::OverrideLastCommittedOrigin(web_contents()->GetPrimaryMainFrame(),
                                        url::Origin::Create(ntp_url));
   EXPECT_FALSE(ChromePermissionsClient::AllowEmbeddedPermissionPromptForSurface(
       web_contents()));
 }
+
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+TEST_F(ChromePermissionsClientTest,
+       GetCanonicalOriginOverrideContextualTasksExtension) {
+  auto* client = ChromePermissionsClient::GetInstance();
+
+  GURL contextual_tasks_ext_url(
+      std::string(extensions::kExtensionScheme) + "://" +
+      extension_misc::kContextualTasksExtensionId + "/input_plate.html");
+  GURL other_ext_url(std::string(extensions::kExtensionScheme) +
+                     "://someotherextensionid/page.html");
+  GURL google_search_url("https://www.google.com/search?q=test");
+  GURL contextual_tasks_webui_url(chrome::kChromeUIContextualTasksURL);
+
+  // When features are disabled, no delegation occurs.
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        {}, {extensions_features::kApiContextualTasksPrivate,
+             contextual_tasks::kContextualTasksRearchitecture});
+
+    EXPECT_EQ(client->GetCanonicalOriginOverride(contextual_tasks_ext_url,
+                                                 google_search_url),
+              contextual_tasks_ext_url);
+    EXPECT_EQ(client->GetCanonicalOriginOverride(contextual_tasks_ext_url,
+                                                 contextual_tasks_webui_url),
+              contextual_tasks_ext_url);
+  }
+
+  // When only one feature is enabled, no delegation occurs.
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        {extensions_features::kApiContextualTasksPrivate},
+        {contextual_tasks::kContextualTasksRearchitecture});
+
+    EXPECT_EQ(client->GetCanonicalOriginOverride(contextual_tasks_ext_url,
+                                                 google_search_url),
+              contextual_tasks_ext_url);
+  }
+
+  // When both features are enabled:
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        {extensions_features::kApiContextualTasksPrivate,
+         contextual_tasks::kContextualTasksRearchitecture},
+        {});
+
+    // Contextual tasks extension embedded in Google Search -> Returns nullopt
+    // to allow standard permission delegation to the embedding origin
+    // (https://www.google.com):
+    EXPECT_EQ(client->GetCanonicalOriginOverride(contextual_tasks_ext_url,
+                                                 google_search_url),
+              std::nullopt);
+
+    // Contextual tasks extension embedded in Contextual Tasks WebUI ->
+    // Overridden to DSE (Google) origin:
+    std::optional<GURL> webui_override = client->GetCanonicalOriginOverride(
+        contextual_tasks_ext_url, contextual_tasks_webui_url);
+    ASSERT_TRUE(webui_override.has_value());
+    EXPECT_EQ(webui_override->host(), "www.google.com");
+
+    // Other extensions embedded in Google Search -> Returns requesting origin
+    // (no delegation):
+    EXPECT_EQ(
+        client->GetCanonicalOriginOverride(other_ext_url, google_search_url),
+        other_ext_url);
+  }
+}
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 #endif  // !BUILDFLAG(IS_ANDROID)

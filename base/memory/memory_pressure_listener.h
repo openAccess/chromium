@@ -18,6 +18,7 @@
 #include "base/memory/memory_pressure_level.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/memory_coordinator/memory_limit.h"
 #include "base/observer_list_types.h"
 #include "base/sequence_checker.h"
 #include "base/threading/thread_checker.h"
@@ -33,7 +34,7 @@ enum class MemoryPressureListenerTag {
   kTest = 0,
   // kHangWatcher = 1,
   kMemBackend = 2,
-  kLevelDb = 3,
+  // kLevelDb = 3,
   kSSLClientSessionCache = 4,
   kVulkanInProcessContextProvider = 5,
   // kDemuxerManager = 6,
@@ -177,10 +178,7 @@ class BASE_EXPORT MemoryPressureListener : public CheckedObserver {
   // See base/memory_coordinator/memory_consumer.h for more details on the
   // memory limit. This is a helper function to facilitate the migration to
   // MemoryConsumer.
-  int GetMemoryLimit() const;
-
-  // Same as `GetMemoryLimit()`, but expressed as a ratio.
-  double GetMemoryLimitRatio() const;
+  MemoryLimit GetMemoryLimit() const;
 
  protected:
   virtual void OnMemoryPressure(MemoryPressureLevel memory_pressure_level) = 0;

@@ -301,6 +301,7 @@ std::optional<SkColor4f> SolidColorAnalyzer::DetermineIfSolidColor(
       case PaintOpType::kDrawSkottie:
       case PaintOpType::kDrawSlug:
       case PaintOpType::kDrawTextBlob:
+      case PaintOpType::kDrawTextSlugs:
       // Anything that has to do a save layer is probably not solid. As it will
       // likely need more than one draw op.
       // TODO(vmpstr): We could investigate handling these.
@@ -314,6 +315,12 @@ std::optional<SkColor4f> SolidColorAnalyzer::DetermineIfSolidColor(
         return std::nullopt;
       case PaintOpType::kClipRRect: {
         const auto& rrect_op = static_cast<const ClipRRectOp&>(op);
+        // The covers-canvas shortcut below only holds for kIntersect. An RRect
+        // that covers the canvas makes a kDifference clip empty rather than a
+        // no-op, so bail out as kClipRect does.
+        if (rrect_op.op == SkClipOp::kDifference) {
+          return std::nullopt;
+        }
         bool does_cover_canvas =
             CheckIfRRectClipCoversCanvas(canvas, rrect_op.rrect);
         // If the clip covers the full canvas, we can treat it as if there's no

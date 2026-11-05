@@ -14,7 +14,7 @@
 #include "base/functional/bind.h"
 #include "base/test/bind.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -26,6 +26,7 @@
 #include "partition_alloc/pointers/raw_ptr.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/views/widget/any_widget_observer.h"
 
 using ::testing::_;
@@ -59,7 +60,7 @@ class TabInfoCollectorTest : public InProcessBrowserTest {
     // Create a new tab and make sure the urls have loaded.
     for (const auto& url : urls) {
       ui_test_utils::NavigateToURLWithDisposition(
-          browser, url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          browser, url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
     }
     return browser;

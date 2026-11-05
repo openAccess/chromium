@@ -4,6 +4,7 @@
 
 #include "services/webnn/webnn_test_environment.h"
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
@@ -11,10 +12,9 @@
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
-#include "mojo/public/cpp/bindings/shared_remote.h"
-#include "services/viz/privileged/mojom/gl/gpu_host.mojom.h"
 #include "services/webnn/buildflags.h"
 #include "services/webnn/host/weights_file_provider.h"
+#include "services/webnn/public/mojom/features.mojom-features.h"
 #include "services/webnn/webnn_context_impl.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/origin.h"
@@ -22,6 +22,11 @@
 #if BUILDFLAG(WEBNN_USE_TFLITE) || BUILDFLAG(WEBNN_USE_LITERT)
 #include "services/webnn/host/weights_file_creator_impl.h"
 #include "services/webnn/public/cpp/in_process_context_provider.h"  // nogncheck
+#endif
+
+#if BUILDFLAG(IS_APPLE)
+#include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -113,88 +118,89 @@ class InProcessFallbackContextProvider : public mojom::WebNNContextProvider {
 
 }  // namespace
 
-FakeGpuHostForTesting::FakeGpuHostForTesting() : receiver_(this) {}
+FakeWebNNBrowserHostForTesting::FakeWebNNBrowserHostForTesting()
+    : receiver_(this) {}
 
-FakeGpuHostForTesting::~FakeGpuHostForTesting() = default;
+FakeWebNNBrowserHostForTesting::~FakeWebNNBrowserHostForTesting() = default;
 
-void FakeGpuHostForTesting::Bind(
-    mojo::PendingReceiver<viz::mojom::GpuHost> receiver) {
+void FakeWebNNBrowserHostForTesting::Bind(
+    mojo::PendingReceiver<mojom::WebNNBrowserHost> receiver) {
   receiver_.Bind(std::move(receiver));
 }
 
-void FakeGpuHostForTesting::DidInitialize(
-    const gpu::GPUInfo& gpu_info,
-    const gpu::GpuFeatureInfo& gpu_feature_info,
-    const std::optional<gpu::GPUInfo>& gpu_info_for_hardware_gpu,
-    const std::optional<gpu::GpuFeatureInfo>& gpu_feature_info_for_hardware_gpu,
-    const gfx::GpuExtraInfo& gpu_extra_info) {}
-
-void FakeGpuHostForTesting::DidFailInitialize() {}
-
-void FakeGpuHostForTesting::DidCreateContextSuccessfully() {}
-
-void FakeGpuHostForTesting::DidCreateOffscreenContext(const GURL& url) {}
-
-void FakeGpuHostForTesting::DidDestroyOffscreenContext(const GURL& url) {}
-
-void FakeGpuHostForTesting::DidDestroyChannel(int32_t client_id) {}
-
-void FakeGpuHostForTesting::DidDestroyAllChannels() {}
-
-void FakeGpuHostForTesting::DidLoseContext(gpu::error::ContextLostReason reason,
-                                           const GURL& active_url) {}
-
-void FakeGpuHostForTesting::DisableGpuCompositing() {}
-
-void FakeGpuHostForTesting::DidUpdateGPUInfo(const gpu::GPUInfo& gpu_info) {}
-
-void FakeGpuHostForTesting::GetIsolationKey(
-    int32_t client_id,
-    const blink::WebGPUExecutionContextToken& token,
-    GetIsolationKeyCallback cb) {}
-
-void FakeGpuHostForTesting::StoreBlobToDisk(
-    const gpu::GpuDiskCacheHandle& handle,
-    const std::string& key,
-    const std::string& shader) {}
-
-void FakeGpuHostForTesting::ClearGrShaderDiskCache() {}
-
 #if BUILDFLAG(IS_WIN)
-void FakeGpuHostForTesting::DidUpdateOverlayInfo(
-    const gpu::OverlayInfo& overlay_info) {}
-
-void FakeGpuHostForTesting::DidUpdateDXGIInfo(
-    gfx::mojom::DXGIInfoPtr dxgi_info) {}
-
-void FakeGpuHostForTesting::EnsureWebNNExecutionProvidersReady(
-    EnsureWebNNExecutionProvidersReadyCallback callback) {
+void FakeWebNNBrowserHostForTesting::EnsureExecutionProvidersReady(
+    EnsureExecutionProvidersReadyCallback callback) {
   // Initializes the execution providers used by the WebNN ORT backend.
   webnn::EnsureExecutionProvidersReady(std::move(callback));
 }
+#endif
 
-void FakeGpuHostForTesting::RequestWebNNCompilerContext(
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE)
+void FakeWebNNBrowserHostForTesting::RequestCompilerContext(
     webnn::mojom::CreateContextOptionsPtr context_options,
     const webnn::ContextProperties& context_properties,
+#if BUILDFLAG(IS_WIN)
     const webnn::EpDeviceInfo& target_device,
+#endif
     mojo::PendingReceiver<webnn::mojom::WebNNCompilerContext>
         compiler_context_receiver,
     mojo::PendingRemote<webnn::mojom::WebNNModelLoader> model_loader_remote,
-    RequestWebNNCompilerContextCallback callback) {
+    mojo::PendingReceiver<webnn::mojom::WebNNCompilerHost>
+        compiler_host_receiver,
+    RequestCompilerContextCallback callback) {
+#if BUILDFLAG(IS_APPLE)
+  if (!base::FeatureList::IsEnabled(mojom::features::kWebNNCompilerProcess) ||
+      !base::FeatureList::IsEnabled(mojom::features::kWebNNCoreML)) {
+    std::move(callback).Run(false);
+    return;
+  }
+  if (!compiler_service_) {
+    compiler_service_ = std::make_unique<WebNNCompilerServiceImpl>(
+        compiler_service_remote_.BindNewPipeAndPassReceiver());
+  }
+  compiler_host_receivers_.Add(this, std::move(compiler_host_receiver));
+  compiler_service_remote_->CreateCompilerContext(
+      std::move(context_options), context_properties,
+      std::move(model_loader_remote), std::move(compiler_context_receiver),
+      std::move(callback));
+#else
   std::move(callback).Run(false);
+#endif
 }
 #endif
 
-void FakeGpuHostForTesting::CreateWebNNWeightsFile(
-    CreateWebNNWeightsFileCallback callback) {
+void FakeWebNNBrowserHostForTesting::CreateWeightsFile(
+    CreateWeightsFileCallback callback) {
   webnn::CreateWeightsFile(std::move(callback));
 }
 
 #if BUILDFLAG(IS_APPLE)
-void FakeGpuHostForTesting::CopyWebNNCompiledModel(
+void FakeWebNNBrowserHostForTesting::CopyCompiledModel(
     const base::FilePath& compiler_model_path,
-    CopyWebNNCompiledModelCallback callback) {
-  std::move(callback).Run(compiler_model_path);
+    CopyCompiledModelCallback callback) {
+  base::ScopedTempDir gpu_temp_dir;
+  if (!gpu_temp_dir.CreateUniqueTempDir()) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+  base::FilePath dest_path =
+      gpu_temp_dir.GetPath().Append(compiler_model_path.BaseName());
+  if (!base::CopyDirectory(compiler_model_path, dest_path,
+                           /*recursive=*/true)) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+  // Release ownership; ContextImplCoreml::OnCompiledModelCopied adopts
+  // dest_path.DirName() into its own ScopedTempDir.
+  std::ignore = gpu_temp_dir.Take();
+  std::move(callback).Run(dest_path);
+}
+
+void FakeWebNNBrowserHostForTesting::Terminate() {
+  compiler_service_.reset();
+  compiler_service_remote_.reset();
+  compiler_host_receivers_.Clear();
 }
 #endif
 
@@ -233,14 +239,15 @@ WebNNTestEnvironment::WebNNTestEnvironment(
   static base::NoDestructor<gpu::Scheduler> g_webnn_scheduler{
       g_webnn_sync_point_manager.get()};
 
-  mojo::PendingRemote<viz::mojom::GpuHost> gpu_host_proxy;
-  fake_gpu_host_.Bind(gpu_host_proxy.InitWithNewPipeAndPassReceiver());
+  mojo::PendingRemote<mojom::WebNNBrowserHost> webnn_browser_host_proxy;
+  fake_webnn_browser_host_.Bind(
+      webnn_browser_host_proxy.InitWithNewPipeAndPassReceiver());
   context_provider_ = WebNNContextProviderImpl::Create(
       std::move(gpu_feature_info), std::move(gpu_info),
       /*shared_image_manager=*/nullptr, /*peak_memory_monitor=*/nullptr,
       std::move(lose_all_contexts_callback),
       task_environment_->GetMainThreadTaskRunner(), g_webnn_scheduler.get(),
-      mojo::SharedRemote(std::move(gpu_host_proxy)));
+      std::move(webnn_browser_host_proxy));
   context_provider_->SetDisconnectHandlerForTesting(base::BindRepeating(
       &WebNNTestEnvironment::OnReceiverDisconnected, base::Unretained(this)));
 }

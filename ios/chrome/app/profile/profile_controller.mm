@@ -8,7 +8,9 @@
 #import <memory>
 #import <utility>
 
+#import "base/callback_list.h"
 #import "base/critical_closure.h"
+#import "base/feature_list.h"
 #import "base/files/file_path.h"
 #import "base/files/file_util.h"
 #import "base/functional/bind.h"
@@ -33,11 +35,12 @@
 #import "components/language/core/browser/pref_names.h"
 #import "components/prefs/pref_service.h"
 #import "components/translate/core/browser/translate_metrics_logger_impl.h"
+#import "components/webauthn/core/browser/device_authorization/device_authorization_features.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/application_delegate/metrics_mediator.h"
 #import "ios/chrome/app/deferred_initialization_runner.h"
 #import "ios/chrome/app/deferred_initialization_task_names.h"
-#import "ios/chrome/app/profile/app_icon_launched_profile_agent.h"
+#import "ios/chrome/app/profile/actor_profile_agent.h"
 #import "ios/chrome/app/profile/application_storage_metrics.h"
 #import "ios/chrome/app/profile/certificate_policy_profile_agent.h"
 #import "ios/chrome/app/profile/features.h"
@@ -51,7 +54,6 @@
 #import "ios/chrome/app/profile/search_engine_choice_profile_agent.h"
 #import "ios/chrome/app/profile/session_metrics_profile_agent.h"
 #import "ios/chrome/app/profile/synced_set_up_profile_agent.h"
-#import "ios/chrome/app/profile/welcome_back_screen_profile_agent.h"
 #import "ios/chrome/app/spotlight/spotlight_manager.h"
 #import "ios/chrome/app/tests_hook.h"
 #import "ios/chrome/browser/backend_promo/model/backend_promo_profile_agent.h"
@@ -65,6 +67,8 @@
 #import "ios/chrome/browser/external_files/model/external_file_remover_factory.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/first_run/public/features.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/level_up/model/level_up_promo_profile_agent.h"
 #import "ios/chrome/browser/mailto_handler/model/mailto_handler_service_factory.h"
 #import "ios/chrome/browser/ntp/model/home_background_customization_promo_profile_agent.h"
 #import "ios/chrome/browser/profile_metrics/model/profile_activity_profile_agent.h"
@@ -91,8 +95,10 @@
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/snapshots/model/constants.h"
 #import "ios/chrome/browser/translate/model/chrome_ios_translate_client.h"
+#import "ios/chrome/browser/web_extension/model/extension_service.h"
+#import "ios/chrome/browser/web_extension/model/extension_service_factory.h"
 #import "ios/chrome/browser/web_state_list/model/web_usage_enabler/web_usage_enabler_browser_agent.h"
-#import "ios/chrome/browser/welcome_back/model/features.h"
+#import "ios/chrome/browser/webauthn/model/device_authorization_profile_agent.h"
 #import "ios/components/cookie_util/cookie_util.h"
 #import "ios/public/provider/chrome/browser/raccoon/raccoon_api.h"
 #import "ios/web/public/thread/web_task_traits.h"
@@ -101,7 +107,6 @@
 #import "net/url_request/url_request_context.h"
 #import "net/url_request/url_request_context_getter.h"
 #import "ui/base/device_form_factor.h"
-
 #if BUILDFLAG(IOS_CREDENTIAL_PROVIDER_ENABLED)
 #import "ios/chrome/browser/credential_provider/model/credential_provider_service_factory.h"  // nogncheck
 #import "ios/chrome/browser/credential_provider/model/credential_provider_util.h"  // nogncheck
@@ -222,6 +227,10 @@ void RemoveSessionsFromSessionsToDiscard(const SessionIds& session_ids,
 
   // Used to control whether the animations should be cancelled.
   base::OneShotTimer _cancelAnimationTimer;
+
+  // Subscription waiting for ExtensionService to be ready before continuing
+  // initialization.
+  base::CallbackListSubscription _extensionReadySubscription;
 }
 
 - (instancetype)initWithAppState:(AppState*)appState
@@ -277,6 +286,8 @@ void RemoveSessionsFromSessionsToDiscard(const SessionIds& session_ids,
 
   // Inform the AppState of the ProfileState destruction.
   [_state.appState profileStateDestroyed:_state];
+
+  _extensionReadySubscription = {};
 
   // Clear the -profile property of ProfileState before unloading the object.
   [_state setProfile:nullptr];
@@ -604,13 +615,6 @@ void RemoveSessionsFromSessionsToDiscard(const SessionIds& session_ids,
   [_state addAgent:[[SearchEngineChoiceProfileAgent alloc] init]];
   [_state addAgent:[[SessionMetricsProfileAgent alloc] init]];
 
-  if (IsDockingPromoV2Enabled()) {
-    [_state addAgent:[[AppIconLaunchedProfileAgent alloc] init]];
-  }
-
-  if (IsWelcomeBackEnabled()) {
-    [_state addAgent:[[WelcomeBackScreenProfileAgent alloc] init]];
-  }
 
   [_state addAgent:[[SyncedSetUpProfileAgent alloc] init]];
 
@@ -619,10 +623,34 @@ void RemoveSessionsFromSessionsToDiscard(const SessionIds& session_ids,
   }
 
   [_state addAgent:[[HomeBackgroundCustomizationPromoProfileAgent alloc] init]];
+
+  if (IsLevelUpEnabled()) {
+    [_state addAgent:[[LevelUpPromoProfileAgent alloc] init]];
+  }
+
+  if (base::FeatureList::IsEnabled(
+          webauthn::features::kFetchDeviceAuthorizationKeys)) {
+    [_state addAgent:[[DeviceAuthorizationProfileAgent alloc] init]];
+  }
+
+  if (IsGeminiActorBackgroundingEnabled()) {
+    [_state addAgent:[[ActorProfileAgent alloc] init]];
+  }
 }
 
 - (void)maybeContinueForegroundInitialization {
   if (_state.initStage != ProfileInitStage::kPrepareUI) {
+    return;
+  }
+
+  ExtensionService* extensionService =
+      ExtensionServiceFactory::GetForProfile(_state.profile);
+  if (extensionService && !extensionService->IsReady()) {
+    __weak ProfileController* weakSelf = self;
+    _extensionReadySubscription =
+        extensionService->RunWhenReady(base::BindOnce(^{
+          [weakSelf maybeContinueForegroundInitialization];
+        }));
     return;
   }
 

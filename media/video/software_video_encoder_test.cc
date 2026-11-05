@@ -199,10 +199,8 @@ class SoftwareVideoEncoderTest
     enforcer->location = loc.ToString();
     auto check_callback = base::BindLambdaForTesting(
         [enforcer{std::move(enforcer)}](EncoderStatus s) {
-          ASSERT_TRUE(s.is_ok())
-              << " Callback created: " << enforcer->location
-              << " Code: " << std::hex << static_cast<StatusCodeType>(s.code())
-              << " Error: " << s.message();
+          ASSERT_TRUE(s.is_ok()) << " Callback created: " << enforcer->location
+                                 << " Error: " << MediaSerializeForTesting(s);
           enforcer->called = true;
         });
 
@@ -231,8 +229,7 @@ class SoftwareVideoEncoderTest
     return base::BindLambdaForTesting(
         [enforcer{std::move(enforcer)}](DecoderStatus s) {
           EXPECT_TRUE(s.is_ok()) << " Callback created: " << enforcer->location
-                                 << " Code: " << static_cast<int>(s.code())
-                                 << " Error: " << s.message();
+                                 << " Error: " << MediaSerializeForTesting(s);
           enforcer->called = true;
         });
   }
@@ -245,8 +242,7 @@ class SoftwareVideoEncoderTest
                      base::BindLambdaForTesting([&](DecoderStatus status) {
                        EXPECT_TRUE(status.is_ok())
                            << " Callback created: " << location.ToString()
-                           << " Code: " << static_cast<int>(status.code())
-                           << " Error: " << status.message();
+                           << " Error: " << MediaSerializeForTesting(status);
                        run_loop.Quit();
                      }));
     run_loop.Run(location);
@@ -462,6 +458,9 @@ TEST_P(SoftwareVideoEncoderTest, OutputCountEqualsFrameCount) {
           std::optional<VideoEncoder::CodecDescription> desc) {
         EXPECT_FALSE(output.data.empty());
         EXPECT_EQ(output.timestamp, frame_duration * outputs_count);
+        ASSERT_TRUE(output.qp.has_value());
+        EXPECT_GE(*output.qp, 0.0);
+        EXPECT_LE(*output.qp, 1.0);
         outputs_count++;
       });
 
@@ -499,6 +498,9 @@ TEST_P(SoftwareVideoEncoderTest, PerFrameQpEncoding) {
       [&](VideoEncoderOutput output,
           std::optional<VideoEncoder::CodecDescription> desc) {
         EXPECT_FALSE(output.data.empty());
+        ASSERT_TRUE(output.qp.has_value());
+        EXPECT_GE(*output.qp, 0.0);
+        EXPECT_LE(*output.qp, 1.0);
         outputs_count++;
       });
 
@@ -551,6 +553,12 @@ TEST_P(LargeTimestampOverflowTest, LargeTimestampOverflow) {
 }
 
 #if BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
+
+// 4 seconds of video at 25fps (100 frames) is enough to verify the initial
+// keyframe, delta frames, and a periodic keyframe at the 3s mark while keeping
+// the round-trip encode/decode test fast.
+constexpr int kEncodeDecodeClipDurationSeconds = 4;
+
 TEST_P(SoftwareVideoEncoderTest, EncodeAndDecode) {
   VideoEncoder::Options options = CreateDefaultOptions();
   options.frame_size = gfx::Size(320, 200);
@@ -560,8 +568,8 @@ TEST_P(SoftwareVideoEncoderTest, EncodeAndDecode) {
     options.avc.produce_annexb = true;
   options.keyframe_interval = options.framerate.value() * 3;  // every 3s
   base::circular_deque<scoped_refptr<VideoFrame>> frames_to_encode;
-  int total_frames_count =
-      options.framerate.value() * 10;  // total duration 10s
+  const int total_frames_count =
+      options.framerate.value() * kEncodeDecodeClipDurationSeconds;
   int total_decoded_frames = 0;
 
   auto frame_duration = base::Seconds(1.0 / options.framerate.value());
@@ -586,12 +594,19 @@ TEST_P(SoftwareVideoEncoderTest, EncodeAndDecode) {
                   original_frame->visible_rect().size());
         EXPECT_EQ(decoded_frame->format(),
                   GetExpectedOutputPixelFormat(profile_));
-        if (decoded_frame->format() == original_frame->format()) {
-          EXPECT_LE(
-              CountDifferentPixels(*decoded_frame, *original_frame,
-                                   GetTolerance(original_frame->format())),
-              GetMaxDiffPixels(*original_frame));
+        scoped_refptr<VideoFrame> ref_frame = original_frame;
+        if (decoded_frame->format() != original_frame->format()) {
+          ref_frame = frame_pool_.CreateFrame(
+              decoded_frame->format(), original_frame->coded_size(),
+              original_frame->visible_rect(), original_frame->natural_size(),
+              original_frame->timestamp());
+          ASSERT_TRUE(
+              frame_converter_.ConvertAndScale(*original_frame, *ref_frame)
+                  .is_ok());
         }
+        EXPECT_LE(CountDifferentPixels(*decoded_frame, *ref_frame,
+                                       GetTolerance(ref_frame->format())),
+                  GetMaxDiffPixels(*ref_frame));
         ++total_decoded_frames;
       });
 
@@ -676,7 +691,7 @@ TEST_P(SoftwareVideoEncoderTest, EncodeAndDecodeWithEnablingDrop) {
 
   base::circular_deque<scoped_refptr<VideoFrame>> frames_to_encode;
   const int total_frames_count =
-      options.framerate.value() * 10;  // total duration 10s
+      options.framerate.value() * kEncodeDecodeClipDurationSeconds;
   int total_decoded_frames = 0;
   int dropped_frames_count = 0;
   base::circular_deque<base::TimeDelta> dropped_frame_timestamps;
@@ -719,12 +734,19 @@ TEST_P(SoftwareVideoEncoderTest, EncodeAndDecodeWithEnablingDrop) {
                   original_frame->visible_rect().size());
         EXPECT_EQ(decoded_frame->format(),
                   GetExpectedOutputPixelFormat(profile_));
-        if (decoded_frame->format() == original_frame->format()) {
-          EXPECT_LE(
-              CountDifferentPixels(*decoded_frame, *original_frame,
-                                   GetTolerance(original_frame->format())),
-              GetMaxDiffPixels(*original_frame));
+        scoped_refptr<VideoFrame> ref_frame = original_frame;
+        if (decoded_frame->format() != original_frame->format()) {
+          ref_frame = frame_pool_.CreateFrame(
+              decoded_frame->format(), original_frame->coded_size(),
+              original_frame->visible_rect(), original_frame->natural_size(),
+              original_frame->timestamp());
+          ASSERT_TRUE(
+              frame_converter_.ConvertAndScale(*original_frame, *ref_frame)
+                  .is_ok());
         }
+        EXPECT_LE(CountDifferentPixels(*decoded_frame, *ref_frame,
+                                       GetTolerance(ref_frame->format())),
+                  GetMaxDiffPixels(*ref_frame));
         ++total_decoded_frames;
       });
 
@@ -1677,6 +1699,7 @@ SwVideoTestParams kVpxParams[] = {
     {VideoCodec::kVP9, VP9PROFILE_PROFILE3, PIXEL_FORMAT_XRGB},
     {VideoCodec::kVP9, VP9PROFILE_PROFILE3, PIXEL_FORMAT_YUV444P10},
     {VideoCodec::kVP8, VP8PROFILE_ANY, PIXEL_FORMAT_I420},
+    {VideoCodec::kVP8, VP8PROFILE_ANY, PIXEL_FORMAT_NV12},
     {VideoCodec::kVP8, VP8PROFILE_ANY, PIXEL_FORMAT_XRGB},
     {VideoCodec::kVP8, VP8PROFILE_ANY, PIXEL_FORMAT_YUV420P10}};
 

@@ -9,6 +9,7 @@
 
 #include "base/i18n/icubridge/date_time_formatter.h"
 #include "base/i18n/icubridge/icu_bridge.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/time_formatting.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -164,9 +165,9 @@ std::string DataUseTracker::GetCurrentMeasurementDateAsString() const {
   using base::i18n::datetime_options::YMD;
 
   return base::UTF16ToUTF8(
-      IcuBridge::GetInstance().date_time_formatter().Format(
-          GetCurrentMeasurementDate(), GetKnownLanguageTag("en-US"),
-          YMD::Short()));
+      IcuBridge::GetInstance()
+          .date_time_formatter(GetKnownLanguageTag("en-US"))
+          .Format(GetCurrentMeasurementDate(), YMD::Short()));
 }
 
 }  // namespace metrics

@@ -10,7 +10,7 @@
 #include "base/functional/callback_helpers.h"
 #include "media/base/win/d3d11_mocks.h"
 #include "media/gpu/windows/d3d11_copying_texture_wrapper.h"
-#include "media/gpu/windows/d3d11_texture_wrapper.h"
+#include "media/gpu/windows/d3d_texture_wrapper.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/color_space_win.h"
@@ -98,8 +98,8 @@ TEST_F(D3D11VideoProcessorProxyUnittest, EnsureMethodPassthrough) {
                                 proc_.Get(), dxgi_color_space));
   proxy->CreateVideoProcessorOutputView(texture, out_desc, nullptr);
   proxy->CreateVideoProcessorInputView(texture, in_desc, nullptr);
-  proxy->SetStreamColorSpace(color_space);
-  proxy->SetOutputColorSpace(color_space);
+  proxy->SetStreamColorSpace(dxgi_color_space);
+  proxy->SetOutputColorSpace(dxgi_color_space);
   proxy->VideoProcessorBlt(out_view, 6, 7, streams);
 }
 

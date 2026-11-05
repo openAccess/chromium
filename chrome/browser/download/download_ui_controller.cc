@@ -21,6 +21,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/security_state/core/security_state.h"
 #include "content/public/browser/download_item_utils.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 
@@ -94,7 +95,10 @@ class DownloadBubbleUIControllerDelegate
   // |profile| is required to outlive DownloadBubbleUIControllerDelegate.
   explicit DownloadBubbleUIControllerDelegate(Profile* profile)
       : profile_(profile) {
-    if (profile_->IsOffTheRecord()) {
+    // Enterprise Isolated Mode follows the regular profile's "Ask where to
+    // save each file" setting instead of always prompting like Incognito.
+    if (profile_->IsOffTheRecord() &&
+        !profile_->IsEnterpriseIsolatedModeProfile()) {
       profile_->GetPrefs()->SetBoolean(prefs::kPromptForDownload, true);
     }
   }

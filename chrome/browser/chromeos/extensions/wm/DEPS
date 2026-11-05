@@ -14,11 +14,16 @@ include_rules = [
   # refactor chromeos codes in //chrome to break these dependencies; see
   # b/332804822. Whenever possible, avoid adding new //chrome dependencies to
   # this list.
-  "+chrome/browser/extensions/extension_apitest.h",
-  "+chrome/browser/extensions/extension_service_test_with_install.h",
   "+chrome/browser/profiles/profile.h",
   "+chrome/browser/ui/ash/desks",
-  "+chrome/browser/ui/browser.h",
-  "+chrome/common",
   "+chrome/test",
 ]
+specific_include_rules = {
+  # Only tests need these //chrome dependencies.
+  "wm_desks_private_events_unittest\\.cc": [
+    "+chrome/browser/extensions/extension_service_test_with_install.h",
+  ],
+  "wm_desks_private_apitest\\.cc": [
+    "+chrome/browser/extensions/extension_apitest.h",
+  ],
+}

@@ -45,6 +45,9 @@ class CORE_EXPORT ExclusionSpaceInternal final
     visitor->Trace(derived_geometry_);
   }
 
+  bool IsShared() const { return is_shared_; }
+  void MarkShared() const { is_shared_ = true; }
+
   void Add(const ExclusionArea* exclusion);
 
   LayoutOpportunity FindLayoutOpportunity(
@@ -210,8 +213,9 @@ class CORE_EXPORT ExclusionSpaceInternal final
 
   // See |ExclusionSpace::MoveAndUpdateDerivedGeometry|.
   void MoveAndUpdateDerivedGeometry(const ExclusionSpaceInternal& other) {
-    if (!other.derived_geometry_)
+    if (!other.derived_geometry_ || this == &other) {
       return;
+    }
 
     MoveDerivedGeometry(other);
 
@@ -234,8 +238,9 @@ class CORE_EXPORT ExclusionSpaceInternal final
 
   // See |ExclusionSpace::MoveDerivedGeometry|.
   void MoveDerivedGeometry(const ExclusionSpaceInternal& other) {
-    if (!other.derived_geometry_)
+    if (!other.derived_geometry_ || this == &other) {
       return;
+    }
 
     track_shape_exclusions_ = other.track_shape_exclusions_;
     derived_geometry_ = std::move(other.derived_geometry_);
@@ -322,7 +327,8 @@ class CORE_EXPORT ExclusionSpaceInternal final
                                : nullptr),
           has_shape_exclusions(false) {}
 
-    // The copy constructor explicitly copies the shape_exclusions member.
+    // The copy constructor and copy assignment operator explicitly copy the
+    // shape_exclusions member.
     Shelf(const Shelf& other)
         : block_offset(other.block_offset),
           line_left(other.line_left),
@@ -334,6 +340,22 @@ class CORE_EXPORT ExclusionSpaceInternal final
                                      *other.shape_exclusions)
                                : nullptr),
           has_shape_exclusions(other.has_shape_exclusions) {}
+    Shelf(Shelf&&) noexcept = default;
+
+    Shelf& operator=(const Shelf& other) {
+      block_offset = other.block_offset;
+      line_left = other.line_left;
+      line_right = other.line_right;
+      line_left_edges = other.line_left_edges;
+      line_right_edges = other.line_right_edges;
+      shape_exclusions =
+          other.shape_exclusions
+              ? MakeGarbageCollected<ShapeExclusions>(*other.shape_exclusions)
+              : nullptr;
+      has_shape_exclusions = other.has_shape_exclusions;
+      return *this;
+    }
+    Shelf& operator=(Shelf&&) noexcept = default;
 
     void Trace(Visitor* visitor) const { visitor->Trace(shape_exclusions); }
 
@@ -452,6 +474,10 @@ class CORE_EXPORT ExclusionSpaceInternal final
   unsigned has_break_inside_left_float_ : 1;
   unsigned has_break_inside_right_float_ : 1;
 
+  // True if multiple `ExclusionSpace` instances share this object. Mutating
+  // operations on `ExclusionSpace` must clone this object before modifying it.
+  mutable unsigned is_shared_ : 1 = false;
+
   // The derived geometry struct, is the data-structure which handles all of the
   // queries on the exclusion space. It can always be rebuilt from exclusions_
   // and num_exclusions_. This is mutable as it is passed down a chain of
@@ -554,42 +580,38 @@ class CORE_EXPORT ExclusionSpace {
  public:
   ExclusionSpace() = default;
   ExclusionSpace(const ExclusionSpace& other)
-      : exclusion_space_(other.exclusion_space_
-                             ? MakeGarbageCollected<ExclusionSpaceInternal>(
-                                   *other.exclusion_space_)
-                             : nullptr) {}
+      : exclusion_space_(CopyInternal(other.exclusion_space_.Get())) {}
   ExclusionSpace(ExclusionSpace&& other) noexcept = default;
 
-  // This moves the cached `derived_geometry_`, see also `CopyFrom()`.
+  // This moves the cached `derived_geometry_` when `ExclusionSpaceCopyOnWrite`
+  // is disabled (or on copy-on-write clone), see also `CopyFrom()`.
   ExclusionSpace& operator=(const ExclusionSpace& other) {
-    exclusion_space_ = other.exclusion_space_
-                           ? MakeGarbageCollected<ExclusionSpaceInternal>(
-                                 *other.exclusion_space_)
-                           : nullptr;
+    if (this == &other) {
+      return *this;
+    }
+    exclusion_space_ = CopyInternal(other.exclusion_space_.Get());
     return *this;
   }
   ExclusionSpace& operator=(ExclusionSpace&& other) = default;
-  // Same as `operator=`, except that `operator=` moves the cached
-  // `derived_geometry_` for when the copied instance is more likely to be used,
-  // while `CopyFrom` doesn't.
+  // Same as `operator=`, except that when `ExclusionSpaceCopyOnWrite` is
+  // disabled, `operator=` moves the cached `derived_geometry_` for when the
+  // copied instance is more likely to be used, while `CopyFrom` doesn't.
   void CopyFrom(const ExclusionSpace&);
 
   void Trace(Visitor* visitor) const { visitor->Trace(exclusion_space_); }
 
   void Add(const ExclusionArea* exclusion) {
-    if (!exclusion_space_)
-      exclusion_space_ = MakeGarbageCollected<ExclusionSpaceInternal>();
-    exclusion_space_->Add(std::move(exclusion));
+    EnsureWritable().Add(std::move(exclusion));
   }
 
   void SetHasBreakBeforeFloat(EFloat type) {
     DCHECK(exclusion_space_);
-    exclusion_space_->SetHasBreakBeforeFloat(type);
+    EnsureWritable().SetHasBreakBeforeFloat(type);
   }
 
   void SetHasBreakInsideFloat(EFloat type) {
     DCHECK(exclusion_space_);
-    exclusion_space_->SetHasBreakInsideFloat(type);
+    EnsureWritable().SetHasBreakInsideFloat(type);
   }
 
   // Return true if an in-flow node (i.e. not another float, for instance) with
@@ -755,12 +777,7 @@ class CORE_EXPORT ExclusionSpace {
     if (old_input == old_output)
       return new_output;
 
-    if (!new_output.exclusion_space_) {
-      new_output.exclusion_space_ =
-          MakeGarbageCollected<ExclusionSpaceInternal>();
-    }
-
-    new_output.exclusion_space_->MergeExclusionSpaces(
+    new_output.EnsureWritable().MergeExclusionSpaces(
         offset_delta, *old_output.exclusion_space_,
         old_input.exclusion_space_.Get());
 
@@ -784,6 +801,10 @@ class CORE_EXPORT ExclusionSpace {
 #endif
 
  private:
+  static ExclusionSpaceInternal* CopyInternal(
+      ExclusionSpaceInternal* other_internal);
+  ExclusionSpaceInternal& EnsureWritable();
+
   mutable Member<ExclusionSpaceInternal> exclusion_space_;
 };
 

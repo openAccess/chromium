@@ -146,10 +146,6 @@ TEST_F(StatsTest, SegmentSwitchWithMultiOutput) {
       test_utils::GetTestOutputConfigForBinnedClassifier(),
       /*timestamp=*/base::Time::Now(), /*model_version=*/1);
 
-  auto result_underflow = metadata_utils::CreatePredictionResult(
-      /*model_scores=*/{0.1},
-      test_utils::GetTestOutputConfigForBinnedClassifier(),
-      /*timestamp=*/base::Time::Now(), /*model_version=*/1);
 
   // Low -> Low. No switched histograms.
   RecordClassificationResultUpdated(config, &result_low, result_low);
@@ -209,10 +205,6 @@ TEST_F(StatsTest, SegmentComputedWithMultiOutput) {
       test_utils::GetTestOutputConfigForBinnedClassifier(),
       /*timestamp=*/base::Time::Now(), /*model_version=*/1);
 
-  auto result_underflow = metadata_utils::CreatePredictionResult(
-      /*model_scores=*/{0.1},
-      test_utils::GetTestOutputConfigForBinnedClassifier(),
-      /*timestamp=*/base::Time::Now(), /*model_version=*/1);
 
   RecordClassificationResultComputed(config, result_low);
   RecordClassificationResultComputed(config, result_medium);
@@ -376,6 +368,19 @@ TEST_F(StatsTest, SegmentIdToHistogramVariant) {
                 SegmentId::OPTIMIZATION_TARGET_WEB_APP_INSTALLATION_PROMO));
   EXPECT_EQ("Other", SegmentIdToHistogramVariant(
                          proto::SegmentId::OPTIMIZATION_TARGET_UNKNOWN));
+}
+
+TEST_F(StatsTest, ClassificationRequestTotalDuration) {
+  base::HistogramTester tester;
+  Config config;
+  config.segmentation_key = kDeviceSwitcherKey;
+  config.segmentation_uma_name = kDeviceSwitcherUmaName;
+
+  stats::RecordClassificationRequestTotalDuration(config, base::Seconds(45));
+  tester.ExpectUniqueTimeSample(
+      "SegmentationPlatform.ClassificationRequest.TotalDuration2."
+      "DeviceSwitcher",
+      base::Seconds(45), 1);
 }
 
 class BackgroundRecorderTest : public testing::Test {

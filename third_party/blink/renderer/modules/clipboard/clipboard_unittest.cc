@@ -6,6 +6,7 @@
 
 #include "base/functional/bind.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -16,7 +17,6 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_blob.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_dom_exception.h"
-#include "third_party/blink/renderer/bindings/modules/v8/v8_clipboard_read_options.h"
 #include "third_party/blink/renderer/core/clipboard/paste_mode.h"
 #include "third_party/blink/renderer/core/clipboard/system_clipboard.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
@@ -30,41 +30,22 @@
 #include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/page/scoped_page_pauser.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
+#include "third_party/blink/renderer/core/workers/worker_thread_test_helper.h"
 #include "third_party/blink/renderer/modules/clipboard/clipboard_item.h"
 #include "third_party/blink/renderer/modules/clipboard/clipboard_promise.h"
 #include "third_party/blink/renderer/modules/clipboard/mock_clipboard_permission_service.h"
+#include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "ui/base/clipboard/clipboard_constants.h"
 
 namespace blink {
 
 using ::testing::WithArg;
-
-// Helper class that validates ClipboardItem types match expected format list.
-class ClipboardItemTypesValidator final
-    : public ThenCallable<IDLSequence<ClipboardItem>,
-                          ClipboardItemTypesValidator,
-                          IDLBoolean> {
- public:
-  explicit ClipboardItemTypesValidator(const Vector<String>& expected_types)
-      : expected_types_(expected_types) {}
-
-  bool React(ScriptState* script_state,
-             HeapVector<Member<ClipboardItem>> clipboard_items) {
-    if (clipboard_items.empty()) {
-      return expected_types_.empty();
-    }
-    auto& clipboard_item = clipboard_items[0];
-    Vector<String> available_types = clipboard_item->types();
-    std::sort(available_types.begin(), available_types.end(),
-              CodeUnitCompareLessThan);
-    return available_types == expected_types_;
-  }
-
- private:
-  Vector<String> expected_types_;
-};
 
 class ClipboardItemGetType final
     : public ThenCallable<IDLSequence<ClipboardItem>,
@@ -209,22 +190,23 @@ TEST_F(ClipboardTest, ClipboardPromiseReadText) {
       mojom::blink::PermissionService::Name_, {});
 }
 
-// Tests reading specific clipboard formats using ClipboardReadOptions.
-// Verifies that only requested formats are returned when clipboard contains
-// multiple formats.
-TEST_F(ClipboardTest, SelectiveClipboardFormatRead) {
+// Focus is validated synchronously when readText() is invoked, but the document
+// can lose focus during the asynchronous permission round-trip, before the
+// clipboard is actually read. The read must be rejected in that case rather
+// than leaking clipboard contents copied while the page was unfocused.
+TEST_F(ClipboardTest, ReadTextRejectedWhenFocusLostBeforePermissionResponse) {
   V8TestingScope scope;
   ExecutionContext* executionContext = GetFrame().DomWindow();
-  String testing_string = "TestStringForClipboardTesting";
-  String html_to_paste = "<p>TestHtmlForClipboardTesting</p>";
-  WritePlainTextToClipboard(testing_string);
-  WriteHtmlToClipboard(html_to_paste);
+  WritePlainTextToClipboard("SensitiveClipboardData");
 
-  // Async read clipboard API requires the clipboard read permission.
+  // Grant permission, but drop the document's focus while the permission
+  // request is being handled -- i.e. after the synchronous precondition check
+  // in ValidatePreconditions() but before the read continuation runs.
   EXPECT_CALL(permission_service_, RequestPermission)
       .WillOnce(WithArg<1>(
-          [](mojom::blink::PermissionService::RequestPermissionCallback
-                 callback) {
+          [this](mojom::blink::PermissionService::RequestPermissionCallback
+                     callback) {
+            SetPageFocus(false);
             std::move(callback).Run(
                 mojom::blink::PermissionStatusWithDetails::New(
                     mojom::blink::PermissionStatus::GRANTED, nullptr));
@@ -232,70 +214,21 @@ TEST_F(ClipboardTest, SelectiveClipboardFormatRead) {
   BindMockPermissionService(executionContext);
 
   SetSecureOrigin(executionContext);
-  SetPageFocus(true);
-  // Create ClipboardReadOptions to filter for specific formats only.
-  ClipboardReadOptions* options = ClipboardReadOptions::Create();
-  Vector<String> requested_types;
-  requested_types.emplace_back("text/plain");
-  options->setTypes(requested_types);
-
-  ScriptPromise<IDLSequence<ClipboardItem>> promise =
-      ClipboardPromise::CreateForRead(executionContext, scope.GetScriptState(),
-                                      options, scope.GetExceptionState());
-  Vector<String> expected_types_in_result;
-  expected_types_in_result.emplace_back("text/plain");
-  // Validate that only plain text format is returned by the clipboard read.
-  auto chained_promise = promise.Then(
-      scope.GetScriptState(), MakeGarbageCollected<ClipboardItemTypesValidator>(
-                                  expected_types_in_result));
-  ScriptPromiseTester promise_tester(scope.GetScriptState(), chained_promise);
-  promise_tester.WaitUntilSettled();
-  EXPECT_TRUE(promise_tester.IsFulfilled());
-  String validation_result;
-  promise_tester.Value().ToString(validation_result);
-  EXPECT_EQ(validation_result, "true");
-}
-
-// Verifies that all formats are returned when no specific types are requested.
-TEST_F(ClipboardTest, ReadAllClipboardFormats) {
-  V8TestingScope scope;
-  ExecutionContext* executionContext = GetFrame().DomWindow();
-  String testing_string = "TestStringForClipboardTesting";
-  String html_to_paste = "<p>TestHtmlForClipboardTesting</p>";
-  WritePlainTextToClipboard(testing_string);
-  WriteHtmlToClipboard(html_to_paste);
-
-  // Async read clipboard API requires the clipboard read permission.
-  EXPECT_CALL(permission_service_, RequestPermission)
-      .WillOnce(WithArg<1>(
-          [](mojom::blink::PermissionService::RequestPermissionCallback
-                 callback) {
-            std::move(callback).Run(
-                mojom::blink::PermissionStatusWithDetails::New(
-                    mojom::blink::PermissionStatus::GRANTED, nullptr));
-          }));
-  BindMockPermissionService(executionContext);
-
-  SetSecureOrigin(executionContext);
+  // Focused at invocation time so ValidatePreconditions() passes.
   SetPageFocus(true);
 
-  // Pass nullptr for options to read all available clipboard formats without
-  // filtering.
-  ScriptPromise<IDLSequence<ClipboardItem>> promise =
-      ClipboardPromise::CreateForRead(executionContext, scope.GetScriptState(),
-                                      nullptr, scope.GetExceptionState());
-  Vector<String> expected_types_in_result;
-  expected_types_in_result.emplace_back("text/html");
-  expected_types_in_result.emplace_back("text/plain");
-  auto chained_promise = promise.Then(
-      scope.GetScriptState(), MakeGarbageCollected<ClipboardItemTypesValidator>(
-                                  expected_types_in_result));
-  ScriptPromiseTester promise_tester(scope.GetScriptState(), chained_promise);
-  promise_tester.WaitUntilSettled();
-  EXPECT_TRUE(promise_tester.IsFulfilled());
-  String validation_result;
-  promise_tester.Value().ToString(validation_result);
-  EXPECT_EQ(validation_result, "true");
+  ScriptPromise<IDLString> promise = ClipboardPromise::CreateForReadText(
+      executionContext, scope.GetScriptState(), scope.GetExceptionState());
+  ScriptPromiseTester promise_tester(scope.GetScriptState(), promise);
+  promise_tester.WaitUntilSettled();  // Runs a nested event loop.
+
+  EXPECT_TRUE(promise_tester.IsRejected())
+      << "resolved with " << promise_tester.ValueAsString().Utf8();
+  EXPECT_EQ(promise_tester.ValueAsString(),
+            "NotAllowedError: Document is not focused.");
+
+  executionContext->GetBrowserInterfaceBroker().SetBinderForTesting(
+      mojom::blink::PermissionService::Name_, {});
 }
 
 // Test verifies that CreateForRead performs lazy loading by directly checking
@@ -1356,6 +1289,52 @@ TEST_F(ClipboardTest, GlobalSelectionPasteEventReadTextRequiresPermission) {
 
   executionContext->GetBrowserInterfaceBroker().SetBinderForTesting(
       mojom::blink::PermissionService::Name_, {});
+}
+
+// ClipboardItem::supports() reports what write() will actually accept. A worker
+// cannot write html or svg, because building either runs a DOMParser on the
+// main thread, so supports() has to say no there even though the spec says it
+// returns true for html.
+TEST_F(ClipboardTest, SupportsRejectsHtmlAndSvgInWorkers) {
+  ExecutionContext* window_context = GetFrame().DomWindow();
+  EXPECT_TRUE(ClipboardItem::supports(window_context, ui::kMimeTypeHtml));
+  EXPECT_TRUE(ClipboardItem::supports(window_context, ui::kMimeTypeSvg));
+
+  MockWorkerReportingProxy proxy;
+  EXPECT_CALL(proxy,
+              DidEvaluateTopLevelScriptMock(/*success=*/true, testing::_));
+  WorkerThreadForTest worker_thread(proxy);
+  const KURL worker_url("https://example.com/worker.js");
+  // The test window's opaque origin is incompatible with this script URL.
+  scoped_refptr<SecurityOrigin> worker_origin =
+      SecurityOrigin::Create(worker_url);
+  worker_thread.StartWithSourceCode(worker_origin.get(),
+                                    "/* no worker script */", worker_url);
+  proxy.WaitUntilDidEvaluateTopLevelScript();
+
+  scoped_refptr<base::SingleThreadTaskRunner> worker_task_runner =
+      worker_thread.GetWorkerBackingThread().BackingThread().GetTaskRunner();
+  PostCrossThreadTask(
+      *worker_task_runner, FROM_HERE,
+      CrossThreadBindOnce(
+          [](WorkerThread* worker_thread) {
+            ExecutionContext* context = worker_thread->GlobalScope();
+            EXPECT_FALSE(ClipboardItem::supports(context, ui::kMimeTypeHtml));
+            EXPECT_FALSE(ClipboardItem::supports(context, ui::kMimeTypeSvg));
+            EXPECT_TRUE(
+                ClipboardItem::supports(context, ui::kMimeTypePlainText));
+            EXPECT_TRUE(ClipboardItem::supports(context, ui::kMimeTypePng));
+          },
+          CrossThreadUnretained(&worker_thread)));
+
+  base::WaitableEvent done;
+  PostCrossThreadTask(*worker_task_runner, FROM_HERE,
+                      CrossThreadBindOnce(&base::WaitableEvent::Signal,
+                                          CrossThreadUnretained(&done)));
+  done.Wait();
+
+  worker_thread.Terminate();
+  worker_thread.WaitForShutdownForTesting();
 }
 
 }  // namespace blink

@@ -13,7 +13,6 @@
 #include "chrome/browser/infobars/test_support/infobar_responder.h"
 #include "chrome/browser/media/webrtc/webrtc_browsertest_base.h"
 #include "chrome/browser/media/webrtc/webrtc_browsertest_common.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_switches.h"
@@ -188,9 +187,12 @@ class WebRtcApprtcBrowserTest : public WebRtcTestBase {
     if (!EvalInJavascriptFile(tab_contents, GetSourceDir().Append(
         FILE_PATH_LITERAL("chrome/test/data/webrtc/test_functions.js"))))
       return false;
-    if (!EvalInJavascriptFile(tab_contents, GetSourceDir().Append(
-        FILE_PATH_LITERAL("chrome/test/data/webrtc/video_detector.js"))))
+    if (!EvalInJavascriptFile(
+            tab_contents,
+            GetSourceDir().Append(FILE_PATH_LITERAL(
+                "chrome/test/data/webrtc/video_frame_detector.js")))) {
       return false;
+    }
 
     StartDetectingVideo(tab_contents, video_tag);
     WaitForVideoToPlay(tab_contents);

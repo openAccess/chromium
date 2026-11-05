@@ -7,6 +7,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
@@ -86,7 +87,7 @@ class DseResetDialogBrowserTest : public DialogBrowserTest {
 
   void ShowUi(const std::string& name) override {
     search_engines::MaybeShowSearchEngineResetNotification(
-        browser(), AutocompleteMatch::Type::SEARCH_WHAT_YOU_TYPED);
+        browser(), omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
 
     views::BubbleDialogDelegate* bubble = GetDseResetBubble(browser());
     ASSERT_NE(nullptr, bubble);
@@ -164,7 +165,7 @@ IN_PROC_BROWSER_TEST_F(DseResetDialogBrowserTest,
 // Verifies the dialog is not shown for non-search match types (e.g., a URL).
 IN_PROC_BROWSER_TEST_F(DseResetDialogBrowserTest, DialogNotShownForUrlMatch) {
   search_engines::MaybeShowSearchEngineResetNotification(
-      browser(), AutocompleteMatch::Type::URL_WHAT_YOU_TYPED);
+      browser(), omnibox::AutocompleteMatchType::kUrlWhatYouTyped);
   EXPECT_EQ(nullptr, GetDseResetBubble(browser()));
 }
 
@@ -187,7 +188,7 @@ IN_PROC_BROWSER_TEST_F(DseResetDialogFeatureDisabledBrowserTest,
       prefs::kUnacknowledgedDefaultSearchEngineResetOccurred, true);
 
   search_engines::MaybeShowSearchEngineResetNotification(
-      browser(), AutocompleteMatch::Type::SEARCH_WHAT_YOU_TYPED);
+      browser(), omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
 
   EXPECT_EQ(nullptr, GetDseResetBubble(browser()));
 }
@@ -231,7 +232,7 @@ IN_PROC_BROWSER_TEST_P(DseResetDialogShouldShowTest, DialogShownLogic) {
           param.mirror_reset_time);
   PrefHashFilter::SetResetTimeForTesting(prefs, param.hash_reset_time);
   search_engines::MaybeShowSearchEngineResetNotification(
-      browser(), AutocompleteMatch::Type::SEARCH_WHAT_YOU_TYPED);
+      browser(), omnibox::AutocompleteMatchType::kSearchWhatYouTyped);
 
   views::BubbleDialogDelegate* bubble = GetDseResetBubble(browser());
   if (param.expected_show_dialog) {

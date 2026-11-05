@@ -12,13 +12,20 @@ import android.os.Message;
 import android.util.ArraySet;
 
 import androidx.annotation.IntDef;
+import androidx.annotation.VisibleForTesting;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.Log;
+import org.chromium.base.MathUtils;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.cc.input.BrowserControlsState;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProviderSupplier;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsUtils;
 import org.chromium.chrome.browser.device.DeviceClassManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.util.ChromeAccessibilityUtil;
@@ -49,6 +56,8 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
 
     /** The maximum amount of time to wait for a page to load before entering fullscreen. */
     private static final long MAX_FULLSCREEN_LOAD_DELAY_MS = 3000;
+
+    private static final long SECURITY_MIN_LOCKOUT_DURATION_MS = 1000;
 
     // These values are persisted to logs. Entries should not be renumbered and
     // numeric values should never be reused.
@@ -88,6 +97,9 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
     // There shouldn't be very many outstanding navigations at once so an ArraySet should be fine.
     private final Set<Long> mOutstandingNavigations = new ArraySet<>();
 
+    // Outstanding navigations that skipped the load lock (ClankOmniboxSameOriginMinimization).
+    private final Set<Long> mKeepHiddenNavigationIds = new ArraySet<>();
+
     /**
      * Basic constructor.
      *
@@ -110,23 +122,6 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
                                 }
                             };
 
-                    private long getLoadDelayMs() {
-                        return sDisableLoadingCheck ? 0 : MAX_FULLSCREEN_LOAD_DELAY_MS;
-                    }
-
-                    private void cancelEnableFullscreenLoadDelay() {
-                        mHandler.removeMessages(MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD);
-                        updateWaitingForLoad(false);
-                    }
-
-                    private void scheduleEnableFullscreenLoadDelayIfNecessary() {
-                        if (mIsFullscreenWaitingForLoad
-                                && !mHandler.hasMessages(MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD)) {
-                            mHandler.sendEmptyMessageDelayed(
-                                    MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD, getLoadDelayMs());
-                        }
-                    }
-
                     @Override
                     public void onContentChanged(Tab tab) {
                         onWebContentsUpdated(tab.getWebContents());
@@ -135,10 +130,6 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
                     @Override
                     public void onDidStartNavigationInPrimaryMainFrame(
                             Tab tab, NavigationHandle navigation) {
-                        if (!ChromeFeatureList.sControlsVisibilityFromNavigations.isEnabled()) {
-                            return;
-                        }
-
                         if (navigation.isSameDocument()) return;
 
                         boolean changed = mOutstandingNavigations.add(navigation.getNavigationId());
@@ -146,6 +137,13 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
                                 "Android.BrowserControls.OutstandingChangedOnStart", changed);
 
                         mHandler.removeMessages(MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD);
+
+                        if (shouldKeepControlsHiddenOnStart(navigation)) {
+                            // Keep any existing lock: another navigation may commit cross-origin.
+                            // TODO(crbug.com/579544014): Schedule the slow-load reveal.
+                            mKeepHiddenNavigationIds.add(navigation.getNavigationId());
+                            return;
+                        }
                         boolean safe = DomDistillerUrlUtils.isDistilledPage(navigation.getUrl());
                         updateWaitingForLoad(!safe);
                     }
@@ -153,61 +151,36 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
                     @Override
                     public void onDidFinishNavigationInPrimaryMainFrame(
                             Tab tab, NavigationHandle navigation) {
-                        if (ChromeFeatureList.sControlsVisibilityFromNavigations.isEnabled()) {
-                            if (navigation.isSameDocument()) return;
+                        if (navigation.isSameDocument()) return;
 
-                            boolean changed =
-                                    mOutstandingNavigations.remove(navigation.getNavigationId());
-                            RecordHistogram.recordBooleanHistogram(
-                                    "Android.BrowserControls.OutstandingChangedOnFinish", changed);
+                        boolean changed =
+                                mOutstandingNavigations.remove(navigation.getNavigationId());
+                        RecordHistogram.recordBooleanHistogram(
+                                "Android.BrowserControls.OutstandingChangedOnFinish", changed);
 
-                            if (mOutstandingNavigations.isEmpty()) {
-                                mHandler.removeMessages(MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD);
-                                mHandler.sendEmptyMessageDelayed(
-                                        MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD, getLoadDelayMs());
-                            }
-                            RecordHistogram.recordCount100Histogram(
-                                    "Android.BrowserControls.OutstandingNavigationsOnFinish",
-                                    mOutstandingNavigations.size());
-                        } else {
-                            if (!navigation.hasCommitted()) return;
+                        onKeptHiddenNavigationFinished(navigation);
+
+                        if (mOutstandingNavigations.isEmpty()) {
                             mHandler.removeMessages(MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD);
                             mHandler.sendEmptyMessageDelayed(
                                     MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD, getLoadDelayMs());
                         }
-                    }
-
-                    @Override
-                    public void onPageLoadStarted(Tab tab, GURL url) {
-                        if (!ChromeFeatureList.sControlsVisibilityFromNavigations.isEnabled()) {
-                            mHandler.removeMessages(MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD);
-                            updateWaitingForLoad(!DomDistillerUrlUtils.isDistilledPage(url));
-                        }
-                    }
-
-                    @Override
-                    public void onPageLoadFinished(Tab tab, GURL url) {
-                        // Handle the case where a commit or prerender swap notification failed to
-                        // arrive and the enable fullscreen message was never enqueued.
-                        if (!ChromeFeatureList.sControlsVisibilityFromNavigations.isEnabled()) {
-                            scheduleEnableFullscreenLoadDelayIfNecessary();
-                        }
-                    }
-
-                    @Override
-                    public void onPageLoadFailed(Tab tab, int errorCode) {
-                        // TODO(crbug.com/40926082): Associate events with navigation ids or
-                        // urls, so that we can fully unlock controls here possible here.
-                        // May have already received the start of a different navigation. Do not
-                        // cancel the outstanding delay. See https://crbug.com/40064686.
-                        if (!ChromeFeatureList.sControlsVisibilityFromNavigations.isEnabled()) {
-                            scheduleEnableFullscreenLoadDelayIfNecessary();
-                        }
+                        RecordHistogram.recordCount100Histogram(
+                                "Android.BrowserControls.OutstandingNavigationsOnFinish",
+                                mOutstandingNavigations.size());
                     }
 
                     @Override
                     public void onHidden(Tab tab, @TabHidingType int type) {
-                        cancelEnableFullscreenLoadDelay();
+                        mHandler.removeMessages(MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD);
+                        // While a main frame navigation is still in flight the controls must stay
+                        // locked when the tab is shown again, otherwise hiding and showing the tab
+                        // lets a page scroll the real URL away before the navigation commits. The
+                        // lock is released as usual once the outstanding navigations finish.
+                        // TODO(crbug.com/579544014): Lock navigations in mKeepHiddenNavigationIds,
+                        // and clear the set in onWebContentsUpdated() to drop stale IDs.
+                        if (!mOutstandingNavigations.isEmpty()) return;
+                        updateWaitingForLoad(false);
                     }
 
                     @Override
@@ -316,6 +289,52 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
         return enableHidingBrowserControls;
     }
 
+    /** Returns whether a navigation can skip the load lock (ClankOmniboxSameOriginMinimization). */
+    private boolean shouldKeepControlsHiddenOnStart(NavigationHandle navigation) {
+        // TODO(crbug.com/579544759): Filter by navigation type.
+        return ChromeFeatureList.sClankOmniboxSameOriginMinimization.isEnabled()
+                && canKeepOmniboxHiddenInTab()
+                && areBrowserControlsOffScreen()
+                && isSameOriginHttpOrHttpsNavigation(navigation);
+    }
+
+    private boolean isSameOriginHttpOrHttpsNavigation(NavigationHandle navigation) {
+        WebContents webContents = mTab.getWebContents();
+        if (webContents == null) return false;
+        GURL targetUrl = navigation.getUrl();
+        GURL currentUrl = webContents.getLastCommittedUrl();
+        // Check both schemes: the origin of a filesystem: URL is its inner origin.
+        return UrlUtilities.isHttpOrHttps(targetUrl)
+                && UrlUtilities.isHttpOrHttps(currentUrl)
+                && targetUrl.getOrigin().equals(currentUrl.getOrigin());
+    }
+
+    /** Returns whether the Omnibox can stay hidden across navigations in this tab. */
+    private boolean canKeepOmniboxHiddenInTab() {
+        // A hidden tab reads the controls offset of the foreground tab, which does not show
+        // whether the user saw the URL of this tab. Keep the load lock for hidden tabs.
+        if (!mTab.isTabInBrowser() || mTab.isHidden()) return false;
+        if (DeviceInfo.isAutomotive() || DeviceInfo.isTV() || DeviceInfo.isXr()) return false;
+        BrowserControlsStateProvider provider = getBrowserControlsStateProvider();
+        return provider != null && provider.getControlsPosition() == ControlsPosition.TOP;
+    }
+
+    private boolean areBrowserControlsOffScreen() {
+        BrowserControlsStateProvider provider = getBrowserControlsStateProvider();
+        return provider != null && BrowserControlsUtils.areBrowserControlsOffScreen(provider);
+    }
+
+    private @Nullable BrowserControlsStateProvider getBrowserControlsStateProvider() {
+        // Not cached: the provider belongs to the activity, and the tab can change windows.
+        return BrowserControlsStateProviderSupplier.getValueOrNullFrom(mTab.getWindowAndroid());
+    }
+
+    private void onKeptHiddenNavigationFinished(NavigationHandle navigation) {
+        if (!mKeepHiddenNavigationIds.remove(navigation.getNavigationId())) return;
+        // TODO(crbug.com/579544758): Re-check the origin and error state at commit.
+        // TODO(crbug.com/579544014): Cancel the slow-load reveal.
+    }
+
     /**
      * @return The constraints that determine the visibility of the browser controls.
      */
@@ -328,6 +347,20 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
     /** Updates the browser controls visibility constraints based on the current configuration. */
     protected void updateVisibilityConstraints() {
         set(calculateVisibilityConstraints());
+    }
+
+    @VisibleForTesting
+    static long getLoadDelayMs() {
+        if (sDisableLoadingCheck) {
+            return 0;
+        }
+        if (ChromeFeatureList.sBrowserControlsLockoutDuration.isEnabled()) {
+            return MathUtils.clamp(
+                    ChromeFeatureList.sBrowserControlsLockoutFullscreenLoadDelayMs.getValue(),
+                    SECURITY_MIN_LOCKOUT_DURATION_MS,
+                    MAX_FULLSCREEN_LOAD_DELAY_MS);
+        }
+        return MAX_FULLSCREEN_LOAD_DELAY_MS;
     }
 
     /** Disables the logic that prevents hiding the top controls during page load for testing. */

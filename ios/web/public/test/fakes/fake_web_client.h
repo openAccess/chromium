@@ -10,16 +10,15 @@
 #include <optional>
 #include <vector>
 
+#import "base/memory/raw_ptr.h"
 #import "ios/web/public/web_client.h"
 #include "net/ssl/ssl_info.h"
 #include "url/gurl.h"
 
-@class CRWFakeFindSession;
-@class UIFindSession;
-
 namespace web {
 
 class BrowserState;
+class ExtensionController;
 
 // A WebClient used for testing purposes.
 class FakeWebClient : public web::WebClient {
@@ -54,19 +53,28 @@ class FakeWebClient : public web::WebClient {
   UserAgentType GetDefaultUserAgent(web::WebState* web_state,
                                     const GURL& url) const override;
   bool IsSmoothScrollingSupported() const override;
-
-  // Sets `plugin_not_supported_text_`.
-  void SetPluginNotSupportedText(const std::u16string& text);
+  UniversalOptOutState GetUniversalOptOutState(
+      BrowserState* browser_state) const override;
+  ExtensionController* GetExtensionController(
+      BrowserState* browser_state) const override API_AVAILABLE(ios(18.4));
 
   // Changes Java Script Features for testing.
   void SetJavaScriptFeatures(std::vector<JavaScriptFeature*> features);
 
   void SetDefaultUserAgent(UserAgentType type) { default_user_agent_ = type; }
+  void SetUniversalOptOutState(UniversalOptOutState state) {
+    universal_opt_out_state_ = state;
+  }
+  void SetExtensionController(ExtensionController* extension_controller)
+      API_AVAILABLE(ios(18.4));
 
  private:
-  std::u16string plugin_not_supported_text_;
   std::vector<JavaScriptFeature*> java_script_features_;
   UserAgentType default_user_agent_ = UserAgentType::MOBILE;
+  UniversalOptOutState universal_opt_out_state_ =
+      UniversalOptOutState::kNotEligible;
+  API_AVAILABLE(ios(18.4))
+  raw_ptr<ExtensionController> extension_controller_ = nullptr;
 };
 
 }  // namespace web

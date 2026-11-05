@@ -121,14 +121,8 @@ class ContentParentBackground : public views::Background {
   }
 
   void Paint(gfx::Canvas* canvas, views::View* view) const override {
-    gfx::RoundedCornersF radii = get_rounded_corners_callback_.Run();
-    SkVector sk_radii[4] = {{radii.upper_left(), radii.upper_left()},
-                            {radii.upper_right(), radii.upper_right()},
-                            {radii.lower_right(), radii.lower_right()},
-                            {radii.lower_left(), radii.lower_left()}};
-    SkRRect rrect;
-    rrect.setRectRadii(gfx::RectToSkRect(view->GetLocalBounds()), sk_radii);
-    SkPath path = SkPath::RRect(rrect);
+    SkPath path = SkPath::RRect(gfx::RoundedRectToSkRRect(
+        view->GetLocalBounds(), get_rounded_corners_callback_.Run()));
     canvas->ClipPath(path, /*do_anti_alias=*/true);
 
       ThemedBackground::PaintBackground(canvas, view, browser_view_);
@@ -224,12 +218,10 @@ class ContentParentView : public views::View, public views::ViewObserver {
   }
 
   gfx::RoundedCornersF GetRoundedCorners() {
-    ChromeDistanceMetric corner_radius =
-        ChromeDistanceMetric::DISTANCE_SIDE_PANEL_CONTENT_RADIUS;
-    return GetLayoutProvider()
-               ? gfx::RoundedCornersF(
-                     GetLayoutProvider()->GetDistanceMetric(corner_radius))
-               : gfx::RoundedCornersF();
+    return GetLayoutProvider() ? gfx::RoundedCornersF(
+                                     GetLayoutProvider()->GetCornerRadiusMetric(
+                                         kSidePanelContentRadius))
+                               : gfx::RoundedCornersF();
   }
 
   const raw_ptr<BrowserView> browser_view_;
@@ -343,18 +335,6 @@ void SidePanel::SetPanelWidth(int width) {
   SetPreferredSize(gfx::Size(width, 1));
 }
 
-bool SidePanel::ShouldRestrictMaxWidth() const {
-  // TODO(crbug.com/394339052): Only restricting width for only non-read
-  // anything content is a temporary solution and UX will investigate a better
-  // long term solution.
-  SidePanelUI* side_panel_ui = SidePanelUI::From(browser_view_->browser());
-  if (!side_panel_ui) {
-    return true;
-  }
-  return !side_panel_ui->IsSidePanelEntryShowing(
-      SidePanelEntryKey(SidePanelEntryId::kReadAnything));
-}
-
 void SidePanel::SetBackgroundRadii(const gfx::RoundedCornersF& radii) {
   if (radii == background_radii_) {
     return;
@@ -394,6 +374,18 @@ void SidePanel::UpdateWidthOnEntryChanged() {
   }
 }
 
+void SidePanel::OverrideContentsWidth(int width) {
+  if (CanOverrideWidth()) {
+    SetPanelWidth(ClampPanelWidth(width + GetBorderInsets().width()));
+  }
+}
+
+void SidePanel::ResetContentsWidthOverride() {
+  if (CanOverrideWidth()) {
+    UpdateWidthOnEntryChanged();
+  }
+}
+
 bool SidePanel::IsRightAligned() const {
   return horizontal_alignment() == HorizontalAlignment::kRight;
 }
@@ -409,6 +401,15 @@ bool SidePanel::IsClosing() {
   return SidePanelAnimations::kClose ==
          BrowserAnimationController::From(browser_view_->browser())
              ->GetCurrentMotion(kAnimationGroup);
+}
+
+bool SidePanel::CanOverrideWidth() const {
+  return state_ != State::kClosed && state_ != State::kClosing &&
+         starting_width_on_resize_ < 0;
+}
+
+int SidePanel::ClampPanelWidth(int width) const {
+  return std::max(width, GetMinimumSize().width());
 }
 
 gfx::Rect SidePanel::GetContentAnimationBounds(
@@ -530,8 +531,7 @@ void SidePanel::OnResize(int resize_amount, bool done_resizing) {
     starting_width_on_resize_ = -1;
   }
 
-  const int minimum_width = GetMinimumSize().width();
-  proposed_width = std::max(proposed_width, minimum_width);
+  proposed_width = ClampPanelWidth(proposed_width);
 
   if (width() != proposed_width) {
     if (SidePanelUI* side_panel_ui =
@@ -711,8 +711,7 @@ void SidePanel::AnnounceResize() {
 void SidePanel::UpdateHorizontalAlignment(
     std::optional<SidePanelEntryId> entry_id) {
   if (!entry_id) {
-    if (auto* side_panel_ui =
-            browser_view_->browser()->GetFeatures().side_panel_ui()) {
+    if (auto* side_panel_ui = SidePanelUI::From(browser_view_->browser())) {
       entry_id = side_panel_ui->GetCurrentEntryId();
     }
   }

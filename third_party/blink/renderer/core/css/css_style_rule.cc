@@ -37,7 +37,7 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/heap/disallow_new_wrapper.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
-#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -48,6 +48,7 @@ static SelectorTextCache& GetSelectorTextCache() {
   using SelectorTextCacheHolder = DisallowNewWrapper<SelectorTextCache>;
   DEFINE_STATIC_LOCAL(Persistent<SelectorTextCacheHolder>, cache,
                       (MakeGarbageCollected<SelectorTextCacheHolder>()));
+  CHECK(IsMainThread());
   return cache->Value();
 }
 
@@ -73,6 +74,9 @@ CSSStyleDeclaration* CSSStyleRule::style() const {
 }
 
 String CSSStyleRule::selectorText() const {
+  if (style_rule_->IsPrivateRule()) {
+    return g_empty_string;
+  }
   if (HasCachedSelectorText()) {
     DCHECK(GetSelectorTextCache().Contains(this));
     return GetSelectorTextCache().at(this);
@@ -87,6 +91,9 @@ String CSSStyleRule::selectorText() const {
 
 void CSSStyleRule::setSelectorText(const ExecutionContext* execution_context,
                                    const String& selector_text) {
+  if (style_rule_->IsPrivateRule()) {
+    return;
+  }
   CSSStyleSheet::RuleMutationScope mutation_scope(this);
 
   const auto* context = MakeGarbageCollected<CSSParserContext>(
@@ -138,10 +145,17 @@ String CSSStyleRule::cssText() const {
   // Step 1.
   StringBuilder result;
   result.Append(selectorText());
+  AppendBlockText(result, /*private_property_registry=*/nullptr);
+  return result.ReleaseString();
+}
+
+void CSSStyleRule::AppendBlockText(
+    StringBuilder& result,
+    const PropertyRegistry* private_property_registry) const {
   result.Append(" {");
 
   // Step 2.
-  String decls = style_rule_->Properties().AsText();
+  String decls = style_rule_->Properties().AsText(private_property_registry);
 
   // Step 3.
   StringBuilder rules;
@@ -158,7 +172,7 @@ String CSSStyleRule::cssText() const {
   // Step 4.
   if (decls.empty() && rules.empty()) {
     result.Append(" }");
-    return result.ReleaseString();
+    return;
   }
 
   // Step 5.
@@ -166,7 +180,7 @@ String CSSStyleRule::cssText() const {
     result.Append(' ');
     result.Append(decls);
     result.Append(" }");
-    return result.ReleaseString();
+    return;
   }
 
   // Step 6.
@@ -180,7 +194,6 @@ String CSSStyleRule::cssText() const {
   result.Append(rules);
 
   result.Append("\n}");
-  return result.ReleaseString();
 }
 
 void CSSStyleRule::Reattach(StyleRuleBase* rule) {
@@ -250,9 +263,9 @@ unsigned CSSStyleRule::insertRule(const ExecutionContext* execution_context,
     if (index > 0) {
       exception_state.ThrowDOMException(
           DOMExceptionCode::kIndexSizeError,
-          StrCat(
-              {"the index ", String::Number(index),
-               " must be less than or equal to the length of the rule list."}));
+          Format("the index {} must be less than or equal to the length of the "
+                 "rule list.",
+                 index));
       return 0;
     }
     style_rule_->EnsureChildRules();
@@ -281,8 +294,8 @@ void CSSStyleRule::deleteRule(unsigned index, ExceptionState& exception_state) {
       index >= style_rule_->ChildRules()->size()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kIndexSizeError,
-        StrCat({"the index ", String::Number(index),
-                " is greated than the length of the rule list."}));
+        Format("the index {} is greater than the length of the rule list.",
+               index));
     return;
   }
 

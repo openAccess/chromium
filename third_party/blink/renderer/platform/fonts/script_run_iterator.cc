@@ -97,8 +97,10 @@ void FixScriptsByEastAsianWidth(UChar32 ch,
   if (eaw == U_EA_WIDE || eaw == U_EA_FULLWIDTH || eaw == U_EA_HALFWIDTH) {
     // Replace the list with the list of Han ideographic scripts, as seen for
     // U+300C in https://www.unicode.org/Public/UNIDATA/ScriptExtensions.txt.
-    DEFINE_STATIC_LOCAL(ScriptRunIterator::UScriptCodeList, han_scripts,
-                        (GetHanScriptExtensions()));
+    // Text can be segmented on multiple threads (e.g. OffscreenCanvas in
+    // workers). The list is immutable once initialized.
+    DEFINE_THREAD_SAFE_STATIC_LOCAL(const ScriptRunIterator::UScriptCodeList,
+                                    han_scripts, (GetHanScriptExtensions()));
     if (han_scripts.empty()) [[unlikely]] {
       // When |GetHanScriptExtensions| returns an empty list, replacing with it
       // will crash later, which makes the analysis complicated.
@@ -111,11 +113,11 @@ void FixScriptsByEastAsianWidth(UChar32 ch,
 
 }  // namespace
 
-typedef ScriptData::PairedBracketType PairedBracketType;
+using PairedBracketType = ScriptData::PairedBracketType;
 
 ScriptData::~ScriptData() = default;
 
-void ICUScriptData::GetScripts(UChar32 ch, UScriptCodeList& dst) const {
+void IcuScriptData::GetScripts(UChar32 ch, UScriptCodeList& dst) const {
   IcuError status;
   UScriptCode primary_script = GetScriptForOpenType(ch, &status);
   if (primary_script == USCRIPT_HIRAGANA && U_SUCCESS(status)) {
@@ -214,22 +216,22 @@ void ICUScriptData::GetScripts(UChar32 ch, UScriptCodeList& dst) const {
   }
 }
 
-UChar32 ICUScriptData::GetPairedBracket(UChar32 ch) const {
+UChar32 IcuScriptData::GetPairedBracket(UChar32 ch) const {
   return u_getBidiPairedBracket(ch);
 }
 
-PairedBracketType ICUScriptData::GetPairedBracketType(UChar32 ch) const {
+PairedBracketType IcuScriptData::GetPairedBracketType(UChar32 ch) const {
   return static_cast<PairedBracketType>(
       u_getIntPropertyValue(ch, UCHAR_BIDI_PAIRED_BRACKET_TYPE));
 }
 
-const ICUScriptData* ICUScriptData::Instance() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(const ICUScriptData, icu_script_data_instance,
+const IcuScriptData* IcuScriptData::Instance() {
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(const IcuScriptData, icu_script_data_instance,
                                   ());
   return &icu_script_data_instance;
 }
 
-ScriptData::RunExtensionLookups ICUScriptData::GetSafeToExtendExistingRun(
+ScriptData::RunExtensionLookups IcuScriptData::GetSafeToExtendExistingRun(
     UScriptCode script) const {
   base::AutoLock lock(bits_cache_lock_);
   std::unique_ptr<UnicodeBitSet>& bits =
@@ -292,13 +294,6 @@ ScriptRunIterator::ScriptRunIterator(base::span<const UChar> text,
                                      const ScriptData* data)
     : text_(text.data()),
       length_(base::checked_cast<wtf_size_t>(text.size())),
-      brackets_fixup_depth_(0),
-      next_set_(std::make_unique<UScriptCodeList>()),
-      ahead_set_(std::make_unique<UScriptCodeList>()),
-      // The initial value of ahead_character_ is not used.
-      ahead_character_(0),
-      ahead_pos_(0),
-      common_preferred_(USCRIPT_COMMON),
       script_data_(data) {
   DCHECK(text.data());
   DCHECK(data);
@@ -315,14 +310,14 @@ ScriptRunIterator::ScriptRunIterator(base::span<const UChar> text,
 }
 
 ScriptRunIterator::ScriptRunIterator(base::span<const UChar> text)
-    : ScriptRunIterator(text, ICUScriptData::Instance()) {}
+    : ScriptRunIterator(text, IcuScriptData::Instance()) {}
 
-ALWAYS_INLINE static bool IsSet(unsigned ch,
+ALWAYS_INLINE static bool IsSet(uint32_t ch,
                                 const ScriptData::UnicodeBitSet* set) {
   return ch < ScriptData::kFirstSurrogate && set->test(ch);
 }
 
-bool ScriptRunIterator::Consume(unsigned* limit, UScriptCode* script) {
+bool ScriptRunIterator::Consume(wtf_size_t* limit, UScriptCode* script) {
   if (current_set_.empty()) {
     return false;
   }
@@ -435,7 +430,7 @@ void ScriptRunIterator::OpenBracket(UChar32 ch) {
       --brackets_fixup_depth_;
     }
   }
-  FixScriptsByEastAsianWidth(ch, next_set_.get());
+  FixScriptsByEastAsianWidth(ch, next_set_);
   brackets_.push_back(BracketRec({ch, USCRIPT_COMMON}));
   ++brackets_fixup_depth_;
 }

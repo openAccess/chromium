@@ -17,6 +17,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
@@ -25,11 +26,13 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
 import org.chromium.chrome.browser.omnibox.UrlBarEditingTextStateProvider;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteUIContext;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionHost;
 import org.chromium.chrome.browser.omnibox.suggestions.basic.BasicSuggestionProcessor.BookmarkState;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatchBuilder;
@@ -43,10 +46,10 @@ import java.util.function.Supplier;
 /** Tests for {@link TailSuggestionProcessor}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class TailSuggestionProcessorUnitTest {
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private SuggestionHost mSuggestionHost;
-    @Mock private AutocompleteInput mInput;
     @Mock private UrlBarEditingTextStateProvider mTextProvider;
     @Mock private OmniboxImageSupplier mImageSupplier;
     @Mock private Supplier<Tab> mTabSupplier;
@@ -54,15 +57,21 @@ public class TailSuggestionProcessorUnitTest {
     @Mock private BookmarkState mBookmarkState;
     @Mock private OmniboxActionDelegate mActionDelegate;
 
+    private final AutocompleteInput mInput = new AutocompleteInput();
     private TailSuggestionProcessor mProcessor;
     private AutocompleteMatch mSuggestion;
     private PropertyModel mModel;
+    private OmniboxResourceProvider mResourceProvider;
 
     @Before
     public void setUp() {
+        mResourceProvider =
+                new OmniboxResourceProvider(
+                        RuntimeEnvironment.getApplication(), BrandedColorScheme.APP_DEFAULT);
         AutocompleteUIContext uiContext =
                 new AutocompleteUIContext(
-                        RuntimeEnvironment.application,
+                        RuntimeEnvironment.getApplication(),
+                        mResourceProvider,
                         mSuggestionHost,
                         mTextProvider,
                         mImageSupplier,

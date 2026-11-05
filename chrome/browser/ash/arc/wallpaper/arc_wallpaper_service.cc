@@ -107,13 +107,13 @@ ArcWallpaperService::ArcWallpaperService(content::BrowserContext* context,
 }
 
 ArcWallpaperService::~ArcWallpaperService() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   arc_bridge_service_->wallpaper()->SetHost(nullptr);
 }
 
 void ArcWallpaperService::SetWallpaper(const std::vector<uint8_t>& data,
                                        int32_t wallpaper_id) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (wallpaper_id == 0)
     wallpaper_id = -1;
@@ -127,7 +127,7 @@ void ArcWallpaperService::SetWallpaper(const std::vector<uint8_t>& data,
 }
 
 void ArcWallpaperService::SetDefaultWallpaper() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   // Cancel pending decoding request if any.
   weak_ptr_factory_for_decode_.InvalidateWeakPtrs();
@@ -144,14 +144,14 @@ void ArcWallpaperService::SetDefaultWallpaper() {
 }
 
 void ArcWallpaperService::GetWallpaper(GetWallpaperCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   gfx::ImageSkia image = ash::WallpaperController::Get()->GetWallpaperImage();
   if (!image.isNull())
     image.SetReadOnly();
 
   base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::BindOnce(&EncodeImagePng, image), std::move(callback));
 }
 
@@ -163,7 +163,7 @@ void ArcWallpaperService::SetImageDecoderForTesting(
 
 void ArcWallpaperService::OnImageDecoded(int wallpaper_id,
                                          const SkBitmap& bitmap) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (bitmap.isNull()) {
     DLOG(ERROR) << "Failed to decode wallpaper image.";

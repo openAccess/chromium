@@ -22,7 +22,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/metrics/metrics_memory_details.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -36,7 +35,6 @@
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/common/switches.h"
@@ -46,6 +44,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/base/page_transition_types.h"
 
 using base::Bucket;
 using content::WebContents;
@@ -607,14 +606,13 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, DISABLED_IsolateExtensions) {
 
 // Exercises accounting in the case where an extension has two different-site
 // web iframes.
-#if BUILDFLAG(IS_WIN)
-#define MAYBE_ExtensionWithTwoWebIframes DISABLED_ExtensionWithTwoWebIframes
-#else
-#define MAYBE_ExtensionWithTwoWebIframes ExtensionWithTwoWebIframes
-#endif
-IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest,
-                       MAYBE_ExtensionWithTwoWebIframes) {
-  size_t baseline_count = GetRenderProcessCount() - 1;
+IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest, ExtensionWithTwoWebIframes) {
+  using RenderProcessCountMode =
+      content::RenderProcessHost::RenderProcessCountMode;
+  int baseline_count =
+      content::RenderProcessHost::GetCurrentRenderProcessCountForTesting(
+          RenderProcessCountMode::kExcludePrerenderOnlyOrEmptyProcess) -
+      1;
   scoped_refptr<TestMemoryDetails> details =
       base::MakeRefCounted<TestMemoryDetails>();
   details->StartFetchAndWait();
@@ -629,8 +627,12 @@ IN_PROC_BROWSER_TEST_F(SiteDetailsBrowserTest,
   details = base::MakeRefCounted<TestMemoryDetails>();
   details->StartFetchAndWait();
   EXPECT_EQ(GetRenderProcessCountFromUma(details->uma()),
-            GetRenderProcessCount());
-  int active_processes = GetRenderProcessCount() - baseline_count;
+            content::RenderProcessHost::GetCurrentRenderProcessCountForTesting(
+                RenderProcessCountMode::kIncludePrerenderOnlyOrEmptyProcess));
+  int active_processes =
+      content::RenderProcessHost::GetCurrentRenderProcessCountForTesting(
+          RenderProcessCountMode::kExcludePrerenderOnlyOrEmptyProcess) -
+      baseline_count;
   if (content::AreAllSitesIsolatedForTesting()) {
     EXPECT_THAT(active_processes, DependingOnPolicy(1, 3, 3));
   } else {
@@ -877,57 +879,9 @@ IN_PROC_BROWSER_TEST_F(PrerenderSiteDetailsBrowserTest,
   EXPECT_EQ(baseline_count, GetGlobalPageTitleCount());
 }
 
-class FencedFrameSiteDetailsBrowserTest : public InProcessBrowserTest {
- public:
-  FencedFrameSiteDetailsBrowserTest() = default;
-  ~FencedFrameSiteDetailsBrowserTest() override = default;
 
-  FencedFrameSiteDetailsBrowserTest(const FencedFrameSiteDetailsBrowserTest&) =
-      delete;
-  FencedFrameSiteDetailsBrowserTest& operator=(
-      const FencedFrameSiteDetailsBrowserTest&) = delete;
 
-  void SetUpOnMainThread() override {
-    host_resolver()->AddRule("*", "127.0.0.1");
-    ASSERT_TRUE(embedded_test_server()->Start());
-  }
 
- protected:
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-  content::WebContents* web_contents() const {
-    return browser()->tab_strip_model()->GetActiveWebContents();
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(FencedFrameSiteDetailsBrowserTest,
-                       MemoryDetailsForFencedFrame) {
-  content::IsolateAllSitesForTesting(base::CommandLine::ForCurrentProcess());
-  auto initial_url = embedded_test_server()->GetURL("a.com", "/empty.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initial_url));
-  size_t baseline_count = GetGlobalPageTitleCount();
-
-  // Load a fenced frame.
-  GURL fenced_frame_url =
-      embedded_test_server()->GetURL("b.com", "/fenced_frames/iframe.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          web_contents()->GetPrimaryMainFrame(), fenced_frame_url);
-  ASSERT_TRUE(fenced_frame_host);
-
-  scoped_refptr<TestMemoryDetails> details =
-      base::MakeRefCounted<TestMemoryDetails>();
-  details->StartFetchAndWait();
-  // Currently we don't collect the title of the fenced frame.
-  EXPECT_EQ(baseline_count, details->CountPageTitles());
-
-  // Expect we encountered one fenced frame.
-  EXPECT_EQ(1, details->GetOutOfProcessInnerFrameTreesCount());
-}
 
 class BackForwardCacheSiteDetailsBrowserTest : public InProcessBrowserTest {
  public:

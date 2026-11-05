@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_TAB_UI_HELPER_H_
 #define CHROME_BROWSER_UI_TAB_UI_HELPER_H_
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -16,9 +17,14 @@
 #include "chrome/browser/ui/tabs/contents_observing_tab_feature.h"
 #include "components/tabs/public/tab_network_state.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/base/models/image_model.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 class BrowserUiController;
+
+namespace base {
+class CancelableTaskTracker;
+}  // namespace base
 
 namespace content {
 class NavigationEntry;
@@ -26,13 +32,13 @@ class NavigationHandle;
 class Page;
 }  // namespace content
 
+namespace favicon_base {
+struct FaviconImageResult;
+}  // namespace favicon_base
+
 namespace tabs {
 class TabInterface;
 }  // namespace tabs
-
-namespace ui {
-class ImageModel;
-}  // namespace ui
 
 // TabUIHelper is used by UI code to obtain the title and favicon for a
 // WebContents. The values returned by TabUIHelper differ from the WebContents
@@ -79,6 +85,14 @@ class TabUIHelper : public tabs::ContentsObservingTabFeature {
 
   GURL GetLastCommittedURL();
 
+  // Overrides the tab's title and queries the favicon service for `url`'s
+  // favicon while a navigation is pending for a background tab. Notifies UI
+  // change callbacks immediately and again if a favicon is fetched.
+  void SetPendingNavigationState(const GURL& url, const std::u16string& title);
+
+  // Clears any pending navigation state and notifies UI change callbacks.
+  void ClearPendingNavigationState();
+
   // tabs::ContentsObservingTabFeature override:
   void TitleWasSet(content::NavigationEntry* entry) override;
   void DidStopLoading() override;
@@ -115,6 +129,20 @@ class TabUIHelper : public tabs::ContentsObservingTabFeature {
   tabs::TabNetworkState GetTabNetworkState();
 
  private:
+  struct PendingNavigationState {
+    explicit PendingNavigationState(std::u16string title);
+    PendingNavigationState(const PendingNavigationState&) = delete;
+    PendingNavigationState& operator=(const PendingNavigationState&) = delete;
+    ~PendingNavigationState();
+
+    std::u16string title;
+    ui::ImageModel favicon;
+    std::unique_ptr<base::CancelableTaskTracker> favicon_tracker;
+  };
+
+  void OnGetPendingNavigationFaviconImageResult(
+      const favicon_base::FaviconImageResult& result);
+
   void OnTabPinnedStatusChange(tabs::TabInterface* tab_interface,
                                bool new_pinned_state);
 
@@ -122,6 +150,15 @@ class TabUIHelper : public tabs::ContentsObservingTabFeature {
   bool created_by_session_restore_ = false;
   bool needs_attention_ = false;
   base::CallbackListSubscription pin_tab_subscription_;
+
+  std::optional<PendingNavigationState> pending_navigation_state_;
+
+  // Cached tab-background-aware default globe favicon, returned for tabs with
+  // no page-provided favicon. Created once (bound to this tab) so repeated
+  // GetFavicon() calls return an equal model -- TabData compares favicons by
+  // value -- while the bound generator still re-resolves the light/dark variant
+  // at raster time. crbug.com/544891511
+  ui::ImageModel default_favicon_model_;
 
   base::RepeatingClosureList tab_ui_change_callbacks_;
 

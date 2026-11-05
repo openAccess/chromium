@@ -10,30 +10,12 @@ for more details on the presubmit API built into depot_tools.
 
 
 def CommonChecks(input_api, output_api):
+  if not (
+    input_api.HasAffectedFiles(extensions='.py')
+    or input_api.HasAffectedFiles(path='run_tests')
+  ):
+    return []
   output = []
-  files_to_skip = []
-  disabled_warnings = [
-    'anomalous-backslash-in-string',
-    'bad-indentation',
-    'consider-using-enumerate',
-    'consider-using-with',
-    'duplicate-code',
-    'logging-not-lazy',
-    'missing-module-docstring',
-    'protected-access',
-    'unnecessary-semicolon',
-    'unspecified-encoding',
-    'unused-import',
-  ]
-  output.extend(
-    input_api.canned_checks.RunPylint(
-      input_api,
-      output_api,
-      disabled_warnings=disabled_warnings,
-      files_to_skip=files_to_skip,
-      version='3.2',
-    )
-  )
   # These tests don't run on Windows and give verbose and cryptic failure
   # messages.
   if input_api.sys.platform != 'win32':

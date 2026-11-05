@@ -3,10 +3,14 @@
 // found in the LICENSE file.
 
 #include "components/crash/core/app/crashpad.h"
+#include "components/crash/core/app/shared_memory_user_stream_args.h"
 
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
+#include <utility>
 
 #include "base/debug/crash_logging.h"
 #include "base/environment.h"
@@ -94,6 +98,10 @@ bool PlatformCrashpadInitialization(
 
     std::map<std::string, std::string> process_annotations;
     GetPlatformCrashpadAnnotations(&process_annotations);
+    for (auto& [key, value] :
+         crash_reporter_client->GetExtraProcessAnnotations()) {
+      process_annotations.insert_or_assign(key, std::move(value));
+    }
 
     std::string url = crash_reporter_client->GetUploadUrl();
 
@@ -141,6 +149,12 @@ bool PlatformCrashpadInitialization(
                             start_argument);
       }
     }
+    if (!crash_reporter_client->ShouldRateLimitUploads()) {
+      arguments.push_back("--no-rate-limit");
+    }
+    if (!crash_reporter_client->ShouldCompressUploads()) {
+      arguments.push_back("--no-upload-gzip");
+    }
 
     // Set up --monitor-self-annotation even in the absence of --monitor-self so
     // that minidumps produced by Crashpad's generate_dump tool will contain
@@ -148,10 +162,16 @@ bool PlatformCrashpadInitialization(
     arguments.push_back(std::string("--monitor-self-annotation=ptype=") +
                         switches::kCrashpadHandler);
 
+    std::vector<base::ReadOnlySharedMemoryRegion> user_streams =
+        crash_reporter_client->GetUserStreamSharedMemoryRegions();
+    std::set<crashpad::FileHandle> preserve_handles;
+    internal::AppendSharedMemoryUserStreamArgs(user_streams, &arguments,
+                                               &preserve_handles);
+
     initialized = GetCrashpadClient().StartHandler(
         exe_file, *database_path, metrics_path, url, process_annotations,
         arguments, /*restartable=*/false, /*asynchronous_start=*/false,
-        attachments);
+        attachments, preserve_handles);
 
     if (initialized) {
       // If we're the browser, push the pipe name into the environment so child

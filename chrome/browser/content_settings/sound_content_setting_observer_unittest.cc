@@ -12,11 +12,11 @@
 #include "build/build_config.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/recently_audible_helper.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_muted_utils.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/tabs/public/mock_tab_interface.h"
 #include "components/ukm/content/source_url_recorder.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/test/web_contents_tester.h"
@@ -50,8 +50,8 @@ class SoundContentSettingObserverTest : public ChromeRenderViewHostTestHarness {
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
 
-    RecentlyAudibleHelper::CreateForWebContents(web_contents());
-    SoundContentSettingObserver::CreateForWebContents(web_contents());
+    sound_content_setting_observer_ =
+        std::make_unique<SoundContentSettingObserver>(tab_, web_contents());
     ukm::InitializeSourceUrlRecorderForWebContents(web_contents());
     host_content_settings_map_ = HostContentSettingsMapFactory::GetForProfile(
         Profile::FromBrowserContext(web_contents()->GetBrowserContext()));
@@ -61,6 +61,7 @@ class SoundContentSettingObserverTest : public ChromeRenderViewHostTestHarness {
   }
 
   void TearDown() override {
+    sound_content_setting_observer_.reset();
     host_content_settings_map_ = nullptr;
     ChromeRenderViewHostTestHarness::TearDown();
   }
@@ -78,8 +79,7 @@ class SoundContentSettingObserverTest : public ChromeRenderViewHostTestHarness {
   }
 
   void SimulateAudioStarting() {
-    SoundContentSettingObserver::FromWebContents(web_contents())
-        ->OnAudioStateChanged(true);
+    SoundContentSettingObserver::From(&tab_)->OnAudioStateChanged(true);
   }
 
   void SimulateAudioPlaying() {
@@ -106,6 +106,8 @@ class SoundContentSettingObserverTest : public ChromeRenderViewHostTestHarness {
   }
 
  private:
+  tabs::MockTabInterface tab_;
+  std::unique_ptr<SoundContentSettingObserver> sound_content_setting_observer_;
   raw_ptr<HostContentSettingsMap> host_content_settings_map_;
   std::unique_ptr<ukm::TestUkmRecorder> test_ukm_recorder_;
   base::test::ScopedFeatureList scoped_feature_list_;

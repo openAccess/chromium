@@ -4,6 +4,8 @@
 
 #include "ios/chrome/browser/bookmarks/model/bookmark_model_factory.h"
 
+#include <utility>
+
 #include "base/containers/extend.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
@@ -20,15 +22,15 @@ namespace ios {
 
 namespace {
 
-std::unique_ptr<KeyedService> BuildBookmarkModel(ProfileIOS* profile) {
+std::unique_ptr<KeyedService> BuildBookmarkModel(ProfileIOS& profile) {
   auto bookmark_model = std::make_unique<bookmarks::BookmarkModel>(
       std::make_unique<BookmarkClientImpl>(
-          profile, ManagedBookmarkServiceFactory::GetForProfile(profile),
+          &profile, ManagedBookmarkServiceFactory::GetForProfile(profile),
           ios::LocalOrSyncableBookmarkSyncServiceFactory::GetForProfile(
               profile),
           ios::AccountBookmarkSyncServiceFactory::GetForProfile(profile),
           ios::BookmarkUndoServiceFactory::GetForProfile(profile)));
-  bookmark_model->Load(profile->GetStatePath());
+  bookmark_model->Load(profile.GetStatePath());
   ios::BookmarkUndoServiceFactory::GetForProfile(profile)
       ->StartObservingBookmarkModel(bookmark_model.get());
   return bookmark_model;
@@ -37,41 +39,22 @@ std::unique_ptr<KeyedService> BuildBookmarkModel(ProfileIOS* profile) {
 }  // namespace
 
 // static
-bookmarks::BookmarkModel* BookmarkModelFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<bookmarks::BookmarkModel>(
-      profile, /*create=*/true);
-}
-
-// static
-bookmarks::BookmarkModel* BookmarkModelFactory::GetForProfileIfExists(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<bookmarks::BookmarkModel>(
-      profile, /*create=*/false);
-}
-
-// static
-BookmarkModelFactory* BookmarkModelFactory::GetInstance() {
-  static base::NoDestructor<BookmarkModelFactory> instance;
-  return instance.get();
-}
-
-// static
-BookmarkModelFactory::TestingFactory BookmarkModelFactory::GetDefaultFactory() {
+BookmarkModelFactory::TestingFactoryByRef
+BookmarkModelFactory::GetDefaultFactory() {
   return base::BindOnce(&BuildBookmarkModel);
 }
 
-BookmarkModelFactory::BookmarkModelFactory()
-    : ProfileKeyedServiceFactoryIOS("BookmarkModel",
-                                    ProfileSelection::kRedirectedInIncognito,
-                                    TestingCreation::kNoServiceForTests) {
+BookmarkModelFactory::BookmarkModelFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "BookmarkModel",
+          ProfileSelection::kRedirectedInIncognito,
+          TestingCreation::kNoServiceForTests) {
   DependsOn(ios::AccountBookmarkSyncServiceFactory::GetInstance());
   DependsOn(ios::LocalOrSyncableBookmarkSyncServiceFactory::GetInstance());
   DependsOn(ios::BookmarkUndoServiceFactory::GetInstance());
   DependsOn(ManagedBookmarkServiceFactory::GetInstance());
 }
-
-BookmarkModelFactory::~BookmarkModelFactory() = default;
 
 void BookmarkModelFactory::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
@@ -79,7 +62,7 @@ void BookmarkModelFactory::RegisterProfilePrefs(
 }
 
 std::unique_ptr<KeyedService> BookmarkModelFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   return BuildBookmarkModel(profile);
 }
 

@@ -6,6 +6,7 @@
 
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -33,16 +34,18 @@ std::string GetTestName(const ::testing::TestParamInfo<UiTestData>& info) {
 
 AutofillOfferData CreateTestOffer(const std::vector<GURL>& merchant_origins,
                                   const std::string& promo_code) {
-  int64_t offer_id = 2468;
+  std::string offer_id = "2468";
   base::Time expiry = base::Time::Now() + base::Days(2);
   DisplayStrings display_strings;
   display_strings.value_prop_text = "5% off on shoes. Up to $50";
   display_strings.see_details_text = "See details";
   display_strings.usage_instructions_text =
       "Click the promo code field at checkout to autofill it.";
-  return AutofillOfferData::GPayPromoCodeOffer(
-      offer_id, expiry, merchant_origins, /*offer_details_url=*/GURL(),
-      display_strings, promo_code);
+  return AutofillOfferData(offer_id, expiry, merchant_origins,
+                           /*offer_details_url=*/GURL("https://pay.google.com"),
+                           display_strings, promo_code,
+                           /*offer_short_title=*/"5% off",
+                           /*issue_time=*/base::Time());
 }
 
 class OfferNotificationIconViewBrowserTest
@@ -82,7 +85,7 @@ class OfferNotificationIconViewBrowserTest
 
     if (test_name.find("InvokeUi_show_offer_notification_icon_only") !=
         std::string::npos) {
-      EXPECT_FALSE(accessor.IsChipVisible());
+      EXPECT_FALSE(accessor.ShouldShowSuggestionChip());
     }
 
     return true;

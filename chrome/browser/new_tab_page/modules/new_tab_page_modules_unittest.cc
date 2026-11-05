@@ -31,6 +31,7 @@
 #include "components/sync/test/test_sync_service.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -218,18 +219,6 @@ TEST_F(NewTabPageModulesTest, HasModulesEnabled) {
       {{kSampleUserEmail, signin::GetTestGaiaIdForEmail(kSampleUserEmail)}});
   ASSERT_TRUE(ntp::HasModulesEnabled(GetSampleModules(),
                                      identity_test_env().identity_manager()));
-}
-
-TEST_F(NewTabPageModulesTest, HasModulesEnabled_NtpModulesLoadFlag) {
-  base::test::ScopedFeatureList features;
-  features.InitWithFeatures(
-      /*enabled_features=*/{ntp_features::kNtpModulesLoad},
-      /*disabled_features=*/{});
-
-  identity_test_env().SetCookieAccounts(
-      {{kSampleUserEmail, signin::GetTestGaiaIdForEmail(kSampleUserEmail)}});
-  ASSERT_FALSE(ntp::HasModulesEnabled(GetSampleModules(),
-                                      identity_test_env().identity_manager()));
 }
 
 TEST_F(NewTabPageModulesTest, MakeModuleIdDetails_MicrosoftCards) {

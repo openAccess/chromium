@@ -72,6 +72,8 @@ namespace content::protocol {
 
 namespace {
 
+bool g_did_adopt_startup_session = false;
+
 const double kMinimumReportingInterval = 250.0;
 
 const char kRecordModeParam[] = "record_mode";
@@ -251,6 +253,8 @@ StringToMemoryDumpLevelOfDetail(const std::string& str) {
   return {};
 }
 
+const char kNeverMatchingProducerName[] = "org.chromium-0";
+
 bool IsChromeDataSource(const std::string& data_source_name) {
   return base::StartsWith(data_source_name, "org.chromium.") ||
          data_source_name == "track_event";
@@ -320,8 +324,8 @@ class TracingHandler::PerfettoTracingSession {
   void EnableTracing(const perfetto::TraceConfig& perfetto_config,
                      base::OnceCallback<void(const std::string& /*error_msg*/)>
                          start_callback) {
-    DCHECK(!tracing_session_);
-    DCHECK(!tracing_active_);
+    CHECK(!tracing_session_, base::NotFatalUntil::M159);
+    CHECK(!tracing_active_, base::NotFatalUntil::M159);
 
     g_any_agent_tracing = true;
     tracing_active_ = true;
@@ -360,7 +364,8 @@ class TracingHandler::PerfettoTracingSession {
   void AdoptStartupTracingSession(
       const perfetto::TraceConfig& perfetto_config) {
     // Start a perfetto tracing session, which will claim startup tracing data.
-    DCHECK(!TracingController::GetInstance()->IsTracing());
+    CHECK(!TracingController::GetInstance()->IsTracing(),
+          base::NotFatalUntil::M159);
     waiting_for_startup_tracing_enabled_ = true;
     EnableTracing(
         perfetto_config,
@@ -379,7 +384,8 @@ class TracingHandler::PerfettoTracingSession {
     for (auto& data_source : *(config_without_filters.mutable_data_sources())) {
       data_source.clear_producer_name_filter();
     }
-    DCHECK(config_without_filters == last_perfetto_config_);
+    CHECK(config_without_filters == last_perfetto_config_,
+          base::NotFatalUntil::M159);
     last_perfetto_config_ = std::move(config_without_filters);
 #endif
 
@@ -388,7 +394,7 @@ class TracingHandler::PerfettoTracingSession {
 
   void DisableTracing(
       scoped_refptr<TracingController::TraceDataEndpoint> endpoint) {
-    DCHECK(endpoint);
+    CHECK(endpoint, base::NotFatalUntil::M159);
     if (waiting_for_startup_tracing_enabled_) {
       pending_disable_tracing_task_ =
           base::BindOnce(&PerfettoTracingSession::DisableTracing,
@@ -419,7 +425,7 @@ class TracingHandler::PerfettoTracingSession {
                                               float percent_full,
                                               size_t approximate_event_count)>
                           on_buffer_usage_callback) {
-    DCHECK(on_buffer_usage_callback);
+    CHECK(on_buffer_usage_callback, base::NotFatalUntil::M159);
     if (!tracing_session_) {
       std::move(on_buffer_usage_callback).Run(false, 0.0f, 0);
       return;
@@ -449,7 +455,7 @@ class TracingHandler::PerfettoTracingSession {
 
  private:
   void OnStartupTracingEnabled(const std::string& error_msg) {
-    DCHECK(error_msg.empty());
+    CHECK(error_msg.empty(), base::NotFatalUntil::M159);
     waiting_for_startup_tracing_enabled_ = false;
     if (pending_disable_tracing_task_)
       std::move(pending_disable_tracing_task_).Run();
@@ -476,7 +482,7 @@ class TracingHandler::PerfettoTracingSession {
   }
 
   void OnTracingSessionStopped() {
-    DCHECK(tracing_session_);
+    CHECK(tracing_session_, base::NotFatalUntil::M159);
 
     auto weak_ptr = weak_factory_.GetWeakPtr();
 
@@ -567,6 +573,7 @@ TracingHandler::TracingHandler(DevToolsAgentHostImpl* host,
       return_as_stream_(false),
       gzip_compression_(false),
       buffer_usage_reporting_interval_(0) {
+  CHECK(is_trusted_ || session_for_process_filter_);
   video_consumer_ = std::make_unique<DevToolsVideoConsumer>(base::BindRepeating(
       &TracingHandler::OnFrameFromVideoConsumer, base::Unretained(this)));
 }
@@ -631,6 +638,8 @@ void TracingHandler::OnTraceComplete() {
   if (!trace_data_buffer_state_.data.empty())
     OnTraceDataCollected(std::make_unique<std::string>(""));
 
+  // TODO(crbug.com/575410219): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(trace_data_buffer_state_.data.empty());
   DCHECK_EQ(0u, trace_data_buffer_state_.pos);
   DCHECK_EQ(0, trace_data_buffer_state_.open_braces);
@@ -667,6 +676,8 @@ std::string TracingHandler::UpdateTraceDataBuffer(
         break;
       case '}':
         if (!state.in_string && !state.slashed) {
+          // TODO(crbug.com/573976460): CHECK-exclusion: Convert to a CHECK once
+          // we are confident it won't be triggered.
           DCHECK_GT(state.open_braces, 0);
           state.open_braces--;
           if (state.open_braces == 0)
@@ -785,6 +796,16 @@ void TracingHandler::Start(
                                                proto_format);
   }
 
+  if (!is_trusted_) {
+    FilterUntrustedDataSources(trace_config);
+    if (!trace_config.data_sources_size()) {
+      callback->sendFailure(Response::InvalidParams(
+          "Supplied perfettoConfig doesn't have any allowed data sources "
+          "specified"));
+      return;
+    }
+  }
+
   std::optional<perfetto::BackendType> backend = GetBackendTypeFromParameters(
       tracing_backend.value_or(Tracing::TracingBackendEnum::Auto),
       trace_config);
@@ -853,21 +874,34 @@ void TracingHandler::Start(
   screenshot_max_count_ = resolved_screenshot_max_count;
 
   if (session_for_process_filter_) {
+    std::erase_if(*trace_config_.mutable_data_sources(),
+                  [](const perfetto::TraceConfig::DataSource& data_source) {
+                    return !IsChromeDataSource(data_source.config().name());
+                  });
     process_set_monitor_ = TracingProcessSetMonitor::Start(
         *session_for_process_filter_,
         base::BindRepeating(&TracingHandler::AddProcessToFilter,
                             base::Unretained(this)));
     std::unordered_set<base::ProcessId> pids = process_set_monitor_->GetPids();
 
-    base::ProcessId browser_pid = base::Process::Current().Pid();
-    pids.insert(browser_pid);
-    if (auto* gpu_process_host =
-            GpuProcessHost::Get(GPU_PROCESS_KIND_SANDBOXED,
-                                /* force_create */ false)) {
-      base::ProcessId gpu_pid = gpu_process_host->process_id();
-      if (gpu_pid != base::kNullProcessId) {
-        pids.insert(gpu_pid);
+    if (is_trusted_) {
+      base::ProcessId browser_pid = base::Process::Current().Pid();
+      pids.insert(browser_pid);
+      if (auto* gpu_process_host =
+              GpuProcessHost::Get(GPU_PROCESS_KIND_SANDBOXED,
+                                  /* force_create */ false)) {
+        base::ProcessId gpu_pid = gpu_process_host->process_id();
+        if (gpu_pid != base::kNullProcessId) {
+          pids.insert(gpu_pid);
+        }
       }
+    } else {
+      pids.erase(base::Process::Current().Pid());
+    }
+
+    for (auto& data_source : *trace_config_.mutable_data_sources()) {
+      data_source.clear_producer_name_regex_filter();
+      data_source.clear_producer_name_filter();
     }
     AddPidsToProcessFilter(pids, trace_config_);
   }
@@ -896,6 +930,9 @@ perfetto::TraceConfig TracingHandler::CreatePerfettoConfiguration(
 void TracingHandler::AddProcessToFilter(base::ProcessId pid) {
   CHECK(did_initiate_recording_);
   CHECK(session_);
+  if (!is_trusted_ && pid == base::Process::Current().Pid()) {
+    return;
+  }
   AddPidsToProcessFilter({pid}, trace_config_);
   session_->ChangeTraceConfig(trace_config_);
 }
@@ -909,11 +946,15 @@ void TracingHandler::AttemptAdoptStartupSession(
   if (session_for_process_filter_) {
     return;
   }
-  auto& startup_config = tracing::TraceStartupConfig::GetInstance();
-  if (!startup_config.AttemptAdoptBySessionOwner(
+  if (g_did_adopt_startup_session) {
+    return;
+  }
+  const auto& startup_config = tracing::TraceStartupConfig::GetInstance();
+  if (!startup_config.ShouldAdoptBySessionOwner(
           tracing::TraceStartupConfig::SessionOwner::kDevToolsTracingHandler)) {
     return;
   }
+  g_did_adopt_startup_session = true;
 
   return_as_stream_ = return_as_stream;
   gzip_compression_ = gzip_compression;
@@ -1037,6 +1078,10 @@ void TracingHandler::RequestMemoryDump(
     std::optional<bool> deterministic,
     std::optional<std::string> level_of_detail,
     std::unique_ptr<RequestMemoryDumpCallback> callback) {
+  if (!is_trusted_) {
+    callback->sendFailure(Response::ServerError("Not allowed"));
+    return;
+  }
   if (!IsTracing()) {
     callback->sendFailure(Response::ServerError("Tracing is not started"));
     return;
@@ -1096,7 +1141,7 @@ void TracingHandler::OnFrameFromVideoConsumer(
                       std::make_unique<DevToolsTraceableScreenshot>(skbitmap));
 
   ++number_of_screenshots_from_video_consumer_;
-  DCHECK(video_consumer_);
+  CHECK(video_consumer_, base::NotFatalUntil::M159);
   if (number_of_screenshots_from_video_consumer_ >= screenshot_max_count_) {
     video_consumer_->StopCapture();
   }
@@ -1132,7 +1177,7 @@ void TracingHandler::UpdateBufferUsage() {
 
 void TracingHandler::StopTracing(
     const scoped_refptr<TracingController::TraceDataEndpoint>& endpoint) {
-  DCHECK(session_);
+  CHECK(session_, base::NotFatalUntil::M159);
   buffer_usage_poll_timer_.reset();
   process_set_monitor_.reset();
   if (endpoint) {
@@ -1185,8 +1230,9 @@ void TracingHandler::WillInitiatePrerender(FrameTreeNode* frame_tree_node) {
 
 void TracingHandler::ReadyToCommitNavigation(
     NavigationRequest* navigation_request) {
-  if (!did_initiate_recording_)
+  if (!did_initiate_recording_) {
     return;
+  }
   auto data = std::make_unique<base::trace_event::TracedValue>();
   RenderFrameHostImpl* frame_host = navigation_request->GetRenderFrameHost();
   FillFrameData(data.get(), frame_host, navigation_request->GetURL());
@@ -1200,8 +1246,9 @@ void TracingHandler::ReadyToCommitNavigation(
 }
 
 void TracingHandler::FrameDeleted(FrameTreeNodeId frame_tree_node_id) {
-  if (!did_initiate_recording_)
+  if (!did_initiate_recording_) {
     return;
+  }
   FrameTreeNode* node = FrameTreeNode::GloballyFindByID(frame_tree_node_id);
 
   if (!node->current_frame_host()) {
@@ -1217,16 +1264,21 @@ void TracingHandler::FrameDeleted(FrameTreeNodeId frame_tree_node_id) {
 }
 
 // static
+void TracingHandler::FilterUntrustedDataSources(
+    perfetto::TraceConfig& trace_config) {
+  std::erase_if(
+      *trace_config.mutable_data_sources(),
+      [](const perfetto::TraceConfig::DataSource& data_source) {
+        return data_source.config().name() != tracing::kMetaData2SourceName &&
+               data_source.config().name() != kTrackEventDataSourceName;
+      });
+}
+
+// static
 void TracingHandler::AddPidsToProcessFilter(
     const std::unordered_set<base::ProcessId>& included_process_ids,
     perfetto::TraceConfig& trace_config) {
   for (auto& data_source : *(trace_config.mutable_data_sources())) {
-    auto* source_config = data_source.mutable_config();
-    if (IsChromeDataSource(source_config->name())) {
-      if (data_source.producer_name_regex_filter_size() > 0) {
-        data_source.clear_producer_name_regex_filter();
-        data_source.clear_producer_name_filter();
-      }
       std::unordered_set<std::string> existing_filters(
           data_source.producer_name_filter().begin(),
           data_source.producer_name_filter().end());
@@ -1238,7 +1290,14 @@ void TracingHandler::AddPidsToProcessFilter(
           *data_source.add_producer_name_filter() = std::move(new_filter);
         }
       }
-    }
+
+      if (data_source.producer_name_filter_size() == 0) {
+        // An empty `producer_name_filter` in Perfetto matches all
+        // producers. Insert a never-matching producer name so the filter
+        // remains non-empty and matches no processes until a valid process
+        // is added.
+        *data_source.add_producer_name_filter() = kNeverMatchingProducerName;
+      }
   }
 }
 

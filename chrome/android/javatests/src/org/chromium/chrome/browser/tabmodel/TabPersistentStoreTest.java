@@ -201,11 +201,6 @@ public class TabPersistentStoreTest {
         public void requestToShowTab(Tab tab, @TabSelectionType int type) {}
 
         @Override
-        public boolean isTabModelRestored() {
-            return true;
-        }
-
-        @Override
         public @Nullable Profile getProfile(boolean offTheRecord) {
             return getModel(offTheRecord).getProfile();
         }
@@ -215,7 +210,6 @@ public class TabPersistentStoreTest {
         public final CallbackHelper initializedCallback = new CallbackHelper();
         public final CallbackHelper detailsReadCallback = new CallbackHelper();
         public final CallbackHelper stateLoadedCallback = new CallbackHelper();
-        public final CallbackHelper stateMergedCallback = new CallbackHelper();
         public final CallbackHelper listWrittenCallback = new CallbackHelper();
         public final ArrayList<TabRestoredDetails> details = new ArrayList<>();
 
@@ -253,11 +247,6 @@ public class TabPersistentStoreTest {
         }
 
         @Override
-        public void onStateMerged() {
-            stateMergedCallback.notifyCalled();
-        }
-
-        @Override
         public void onMetadataSavedAsynchronously() {
             listWrittenCallback.notifyCalled();
         }
@@ -272,7 +261,7 @@ public class TabPersistentStoreTest {
                         OneshotSupplier<ProfileProvider> profileProviderSupplier,
                         TabCreatorManager tabCreatorManager,
                         NextTabPolicySupplier nextTabPolicySupplier,
-                        int supportedProfileType) {
+                        @SupportedProfileType int supportedProfileType) {
                     try {
                         return new TestTabModelSelector(
                                 context, profileProviderSupplier, tabCreatorManager);
@@ -1366,6 +1355,7 @@ public class TabPersistentStoreTest {
         assertEquals(3, TabRestoreMethod.FAILED_TO_RESTORE);
         assertEquals(4, TabRestoreMethod.SKIPPED_NTP);
         assertEquals(5, TabRestoreMethod.SKIPPED_EMPTY_URL);
+        assertEquals(6, TabRestoreMethod.REPARENTING);
     }
 
     private TestTabModelSelector createAndRestoreRealTabModelImpls(TabModelMetaDataInfo info)

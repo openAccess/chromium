@@ -13,7 +13,6 @@ import android.content.Context;
 
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -23,26 +22,27 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
 
 /** Robolectric unit tests for {@link BottomSheetRecyclerScrollListener}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class BottomSheetRecyclerScrollListenerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private BottomSheetController mMockBottomSheetController;
+    @Mock private BottomSheetContent mMockBottomSheetContent;
 
     private BottomSheetRecyclerScrollListener mScrollListener;
     private Context mContext;
 
     @Before
     public void setUp() {
-        mContext = Robolectric.setupActivity(Activity.class);
-        mScrollListener = new BottomSheetRecyclerScrollListener(mMockBottomSheetController);
+        mContext = Robolectric.buildActivity(Activity.class).setup().get();
+        mScrollListener =
+                new BottomSheetRecyclerScrollListener(
+                        mMockBottomSheetController, mMockBottomSheetContent);
     }
 
     /** Creates a test RecyclerView with deterministic scroll offset. */
@@ -60,7 +60,6 @@ public class BottomSheetRecyclerScrollListenerTest {
 
     /** Tests that listener starts in scrolled-to-top state. */
     @Test
-    @SmallTest
     public void testInitialState() {
         assertTrue(mScrollListener.isScrolledToTop());
     }
@@ -69,7 +68,6 @@ public class BottomSheetRecyclerScrollListenerTest {
      * Tests that {@link BottomSheetRecyclerScrollListener#reset} returns to scrolled-to-top state.
      */
     @Test
-    @SmallTest
     public void testReset() {
         RecyclerView recyclerView = createRecyclerViewWithOffset(100);
 
@@ -84,7 +82,6 @@ public class BottomSheetRecyclerScrollListenerTest {
      * Tests that scroll listener correctly identifies conditions that trigger layout suppression.
      */
     @Test
-    @SmallTest
     public void testSuppressLayoutConditionsMet() {
         RecyclerView recyclerView = createRecyclerViewWithOffset(0);
 
@@ -97,7 +94,6 @@ public class BottomSheetRecyclerScrollListenerTest {
 
     /** Tests that layout suppression is not triggered when RecyclerView is not at top position. */
     @Test
-    @SmallTest
     public void testNoSuppressLayoutWhenNotAtTop() {
         RecyclerView recyclerView = createRecyclerViewWithOffset(100);
 
@@ -110,7 +106,6 @@ public class BottomSheetRecyclerScrollListenerTest {
 
     /** Tests that layout suppression is not triggered when bottom sheet is not in half state. */
     @Test
-    @SmallTest
     public void testNoSuppressLayoutWhenSheetNotHalf() {
         RecyclerView recyclerView = createRecyclerViewWithOffset(0);
 
@@ -124,12 +119,12 @@ public class BottomSheetRecyclerScrollListenerTest {
 
     /** Tests that layout suppression is applied in standard mode at half state and top position. */
     @Test
-    @SmallTest
     public void testSuppressLayout_StandardMode() {
         RecyclerView recyclerView = createRecyclerViewWithOffset(0);
 
         when(mMockBottomSheetController.getSheetState()).thenReturn(SheetState.HALF);
-        when(mMockBottomSheetController.isLargeFormFactorUiEnabled(null)).thenReturn(false);
+        when(mMockBottomSheetController.isLargeFormFactorUiEnabled(mMockBottomSheetContent))
+                .thenReturn(false);
 
         mScrollListener.onScrolled(recyclerView, 0, 0);
 
@@ -139,12 +134,12 @@ public class BottomSheetRecyclerScrollListenerTest {
 
     /** Tests that layout suppression is NOT applied on desktop. */
     @Test
-    @SmallTest
     public void testNoSuppressLayout_Desktop() {
         RecyclerView recyclerView = createRecyclerViewWithOffset(0);
 
         when(mMockBottomSheetController.getSheetState()).thenReturn(SheetState.HALF);
-        when(mMockBottomSheetController.isLargeFormFactorUiEnabled(null)).thenReturn(true);
+        when(mMockBottomSheetController.isLargeFormFactorUiEnabled(mMockBottomSheetContent))
+                .thenReturn(true);
 
         mScrollListener.onScrolled(recyclerView, 0, 0);
 

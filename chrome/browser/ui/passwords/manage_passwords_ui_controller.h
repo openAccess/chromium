@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/auto_reset.h"
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
@@ -21,12 +22,14 @@
 #include "chrome/browser/ui/passwords/passwords_model_delegate.h"
 #include "chrome/common/buildflags.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
+#include "components/password_manager/core/browser/password_manager_metrics_util.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/ui/post_save_compromised_helper.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/browser/web_contents_user_data.h"
+#include "google_apis/gaia/core_account_id.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 namespace base {
 class TimeDelta;
@@ -34,6 +37,10 @@ class TimeDelta;
 
 namespace content {
 class WebContents;
+}
+
+namespace tabs {
+class TabInterface;
 }
 
 namespace password_manager {
@@ -67,18 +74,25 @@ class ManagePasswordsAutoSigninToastDelegate;
 // Per-tab class to control the Omnibox password icon and bubble.
 class ManagePasswordsUIController
     : public content::WebContentsObserver,
-      public content::WebContentsUserData<ManagePasswordsUIController>,
       public password_manager::PasswordStoreInterface::Observer,
       public PasswordsLeakDialogDelegate,
       public PasswordsModelDelegate,
       public PasswordsClientUIDelegate,
       public autofill::BubbleControllerBase {
  public:
+  DECLARE_USER_DATA(ManagePasswordsUIController);
+
+  ManagePasswordsUIController(tabs::TabInterface& tab,
+                              content::WebContents* web_contents);
   ManagePasswordsUIController(const ManagePasswordsUIController&) = delete;
   ManagePasswordsUIController& operator=(const ManagePasswordsUIController&) =
       delete;
 
   ~ManagePasswordsUIController() override;
+
+  static ManagePasswordsUIController* From(tabs::TabInterface* tab);
+  static ManagePasswordsUIController* FromWebContents(
+      content::WebContents* web_contents);
 
   // PasswordsClientUIDelegate:
   void OnPasswordSubmitted(
@@ -216,7 +230,9 @@ class ManagePasswordsUIController
   // Ensures that the password will be saved after resolution of the trusted
   // vault error (or saves the password immediately if the trusted vault error
   // is already resolved).
-  void SavePasswordAfterTrustedVaultErrorResolution() override;
+  void SavePasswordAfterTrustedVaultErrorResolution(
+      const std::u16string& username,
+      const password_manager::PasswordString& password) override;
   // Starts the UI flow that allows to fix the trusted vault error.
   void StartTrustedVaultErrorResolutionFlow() override;
   // Skips user os level authentication during the life time of the returned
@@ -259,8 +275,6 @@ class ManagePasswordsUIController
   void ShowAutoSignInToast();
 
  protected:
-  explicit ManagePasswordsUIController(content::WebContents* web_contents);
-
   // Called when a PasswordForm is autofilled, when a new PasswordForm is
   // submitted, or when a navigation occurs to update the visibility of the
   // manage passwords icon and bubble.
@@ -308,8 +322,6 @@ class ManagePasswordsUIController
   PasswordsLeakDialogDelegate* GetPasswordsLeakDialogDelegate() override;
 
  private:
-  friend class content::WebContentsUserData<ManagePasswordsUIController>;
-
   void OnReauthCompleted();
 
   enum class BubbleStatus {
@@ -350,6 +362,26 @@ class ManagePasswordsUIController
   bool IsStoreUsedForSavingPendingCredentials(
       password_manager::PasswordStoreInterface* store) const;
 
+  // Returns true if the pending password should be (and can be) automatically
+  // saved after trusted vault error resolution.
+  bool IsAutoSaveAfterErrorResolutionValid() const;
+
+  // Resets the state tracking automatic password saving after trusted vault
+  // error resolution and, if `outcome` is provided and an error-resolution save
+  // was pending, records `*outcome` to
+  // `PasswordManager.SaveWithTrustedVaultError.Outcome`.
+  void ResetAutoSaveAfterErrorResolution(
+      std::optional<
+          password_manager::metrics_util::SaveWithTrustedVaultErrorOutcome>
+          outcome);
+
+  // Completes saving the password after the trusted vault error is resolved.
+  void CompleteSavePasswordAfterTrustedVaultErrorResolution();
+
+  // Saves the pending password currently held in the form manager and performs
+  // post-save actions.
+  void SavePendingPassword();
+
   // Returns the timeout for the manual save fallback.
   static base::TimeDelta GetTimeoutForSaveFallback();
 
@@ -366,6 +398,7 @@ class ManagePasswordsUIController
 
   // content::WebContentsObserver:
   void WebContentsDestroyed() override;
+  void Cleanup();
 
   void OnTriggerPostSaveCompromisedBubble(
       password_manager::PostSaveCompromisedHelper::BubbleType type,
@@ -453,9 +486,19 @@ class ManagePasswordsUIController
   // is resolved).
   bool save_password_after_trusted_vault_error_resolution_ = false;
 
+  // The account for which trusted vault error resolution was started. Used to
+  // verify that the primary account hasn't changed before automatically saving
+  // the password once the error is resolved.
+  CoreAccountId account_id_for_trusted_vault_error_resolution_;
+
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
   bool was_biometric_authentication_for_filling_promo_shown_ = false;
 #endif
+
+  base::CallbackListSubscription tab_will_detach_subscription_;
+
+  ui::ScopedUnownedUserData<ManagePasswordsUIController>
+      scoped_unowned_user_data_;
 
   // The bubbles of different types can pop up unpredictably superseding each
   // other. However, closing the bubble may affect the state of
@@ -467,8 +510,6 @@ class ManagePasswordsUIController
   // with the old bubble.
   // Invalidating all the weak pointers will detach the current bubble.
   base::WeakPtrFactory<ManagePasswordsUIController> weak_ptr_factory_{this};
-
-  WEB_CONTENTS_USER_DATA_KEY_DECL();
 };
 
 #endif  // CHROME_BROWSER_UI_PASSWORDS_MANAGE_PASSWORDS_UI_CONTROLLER_H_

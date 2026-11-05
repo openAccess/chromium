@@ -36,7 +36,7 @@ using ::chromeos::network_config::mojom::NetworkStatePropertiesPtr;
 using ::chromeos::network_config::mojom::NetworkType;
 using ::chromeos::network_config::mojom::PortalState;
 
-const std::string kCellular = "cellular";
+constexpr char kCellular[] = "cellular";
 constexpr char kCellularDevicePath[] = "/device/cellular_device";
 
 constexpr char kWifi[] = "Wifi";
@@ -405,7 +405,7 @@ TEST_F(NetworkDetailedViewControllerTest, WifiNetworkListItemSelected) {
 
   // Login as secondary user, and make sure network is not connected to,
   // but settings page is opened.
-  SimulateUserLogin({kUser1Email});
+  SimulateUserLogin(AccountId::FromUserEmail(kUser1Email));
   GetSessionControllerClient()->SetSessionState(
       session_manager::SessionState::LOGIN_SECONDARY);
   base::RunLoop().RunUntilIdle();

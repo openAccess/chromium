@@ -10,6 +10,7 @@
 #include "ash/public/cpp/login_screen.h"
 #include "ash/public/cpp/login_screen_model.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/notreached.h"
@@ -32,6 +33,9 @@
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_type.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "ui/base/ime/ash/component_extension_ime_manager.h"
+#include "ui/base/ime/ash/input_method_manager.h"
 
 namespace ash {
 
@@ -40,11 +44,16 @@ ChromeUserSelectionScreen::ChromeUserSelectionScreen(
     const ApplicationLocaleStorage* application_locale_storage,
     scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
     const policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
+    const user_manager::MultiUserSignInPolicyController*
+        multi_user_sign_in_policy_controller,
+    system::SystemClock* system_clock,
     DisplayedScreen display_type)
     : UserSelectionScreen(local_state,
                           application_locale_storage,
                           std::move(shared_url_loader_factory),
                           browser_policy_connector_ash,
+                          multi_user_sign_in_policy_controller,
+                          system_clock,
                           display_type) {
   device_local_account_policy_service_ =
       browser_policy_connector_ash->GetDeviceLocalAccountPolicyService();
@@ -92,7 +101,7 @@ void ChromeUserSelectionScreen::CheckForPublicSessionDisplayNameChange(
   user_manager::KnownUser known_user(&local_state_.get());
   const AccountId account_id = known_user.GetAccountId(
       broker->user_id(), std::string() /* id */, AccountType::UNKNOWN);
-  DCHECK(account_id.is_valid());
+  CHECK(account_id.is_valid(), base::NotFatalUntil::M161);
   const std::string& display_name = broker->GetDisplayName();
   if (display_name == public_session_display_names_[account_id])
     return;
@@ -125,7 +134,7 @@ void ChromeUserSelectionScreen::CheckForPublicSessionLocalePolicyChange(
   user_manager::KnownUser known_user(&local_state_.get());
   const AccountId account_id = known_user.GetAccountId(
       broker->user_id(), std::string() /* id */, AccountType::UNKNOWN);
-  DCHECK(account_id.is_valid());
+  CHECK(account_id.is_valid(), base::NotFatalUntil::M161);
   const policy::PolicyMap::Entry* entry =
       broker->core()->store()->policy_map().Get(policy::key::kSessionLocales);
 
@@ -180,15 +189,19 @@ void ChromeUserSelectionScreen::SetPublicSessionLocales(
 
   // Construct the list of available locales. This list consists of the
   // recommended locales, followed by all others.
+  input_method::InputMethodManager& input_method_manager =
+      CHECK_DEREF(input_method::InputMethodManager::Get());
   base::ListValue available_locales = GetUILanguageList(
-      application_locale_storage_->Get(), &recommended_locales, std::string(),
-      input_method::InputMethodManager::Get());
+      std::string(application_locale_storage_->GetTag().tag_string()),
+      &recommended_locales, std::string(),
+      CHECK_DEREF(input_method_manager.GetComponentExtensionIMEManager())
+          .GetXkbIMEAsInputMethodDescriptor());
 
   // Set the initially selected locale to the first recommended locale that is
   // actually available or the current UI locale if none of them are available.
-  const std::string default_locale =
-      FindMostRelevantLocale(recommended_locales, available_locales,
-                             application_locale_storage_->Get());
+  const std::string default_locale = FindMostRelevantLocale(
+      recommended_locales, available_locales,
+      std::string(application_locale_storage_->GetTag().tag_string()));
 
   // Set a flag to indicate whether the list of recommended locales contains at
   // least two entries. This is used to decide whether the public session pod

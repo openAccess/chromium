@@ -5,7 +5,7 @@
 <script src="/resources/testharnessreport.js"></script>
 <script src="/webmcp/resources/helpers.js"></script>
 
-<form toolname="crash_test" tooldescription="the crashy form!" toolautosubmit target="iframe" action="about:blank">
+<form toolname="crash_test" tooldescription="the crashy form!" toolautosubmit target="iframe" action="/common/blank.html">
   <input name="dummy" type="text">
 </form>
 <iframe name="iframe"></iframe>
@@ -36,7 +36,7 @@ promise_test(async t => {
   // Execute the tool. This asynchronously fires the `submit` event at the form.
   // The tool execution should resolve successfully even if the form is removed
   // from the document during submission.
-  const promise = document.modelContext.executeTool(tool, '{}');
+  const promise = document.modelContext.executeTool(tool);
   await promise;
 
   assert_true(submitFired);

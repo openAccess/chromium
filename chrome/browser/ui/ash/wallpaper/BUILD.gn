@@ -12,10 +12,7 @@ static_library("wallpaper") {
     "wallpaper_controller_client_impl.h",
   ]
 
-  public_deps = [
-    "//ash/public/mojom",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ "//ash/public/mojom" ]
 
   deps = [
     "//ash/constants",
@@ -25,7 +22,6 @@ static_library("wallpaper") {
     "//base",
     "//chrome/browser/apps/app_service",
     "//chrome/browser/ash/arc/wallpaper",
-    "//chrome/browser/ash/browser_delegate",
     "//chrome/browser/ash/customization",
     "//chrome/browser/ash/drive",
     "//chrome/browser/ash/file_manager",
@@ -37,9 +33,11 @@ static_library("wallpaper") {
     "//chrome/browser/ash/wallpaper_handlers",
     "//chrome/browser/chromeos/extensions/wallpaper",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/profiles:profile_manager",
     "//chrome/browser/ui/ash/login",
     "//chrome/browser/ui/ash/system_web_apps",
     "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/browser_delegate",
     "//chromeos/ash/components/cryptohome",
     "//chromeos/ash/components/settings",
     "//chromeos/ash/components/system_web_apps:system_web_app_type",
@@ -99,6 +97,7 @@ source_set("unit_tests") {
     "//chrome/browser/ash/settings:test_support",
     "//chrome/browser/ash/wallpaper_handlers:test_support",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/cryptohome",
     "//components/user_manager",

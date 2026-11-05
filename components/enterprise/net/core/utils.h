@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/values.h"
@@ -15,7 +16,13 @@
 #include "net/base/proxy_server.h"
 #include "net/http/http_request_headers.h"
 
+class PrefService;
+
 namespace enterprise_net {
+
+// Returns a string representation of a `ProvisioningDomainProxyConfig::State`.
+std::string_view ProvisioningDomainStateToString(
+    ProvisioningDomainProxyConfig::State state);
 
 // Parses a Provisioning Domain proxy protocol string (e.g., "socks5",
 // "http-connect", "https-connect") to the corresponding
@@ -84,8 +91,20 @@ base::DictValue ProvisioningDomainProxyConfigToDict(
 
 // Parses a single "proxy-match" routing rule dictionary into a RoutingRule
 // struct.
+// On iOS the `ports` field is ignored: WebKit's proxy configuration API cannot
+// match on port, so the returned rule is widened to all ports of the matched
+// destinations. If no domains/subnets are declared, stripping ports widens the
+// rule to all traffic (`*`). See crbug.com/552534571.
+// On iOS, `domains` entries naming a single host are rewritten to `*.<host>` to
+// mirror WebKit's suffix-based proxy domain matching. Since `*.` entries also
+// add the bare domain, the rule matches both `<host>` and its subdomains. See
+// crbug.com/567512841.
 std::optional<ProvisioningDomainProxyConfig::RoutingRule> ParseRoutingRule(
     const base::DictValue& match_dict);
+
+// Returns true if Secure Gateway is enabled and its privacy disclosure
+// should be displayed (currently applicable on Android and iOS).
+bool IsSecureGatewayEnabled(PrefService* prefs);
 
 }  // namespace enterprise_net
 

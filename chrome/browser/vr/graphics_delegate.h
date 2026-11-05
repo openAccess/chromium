@@ -6,16 +6,17 @@
 #define CHROME_BROWSER_VR_GRAPHICS_DELEGATE_H_
 
 #include "base/functional/callback_forward.h"
+#include "base/memory/scoped_refptr.h"
 #include "chrome/browser/vr/fov_rectangle.h"
 #include "chrome/browser/vr/frame_type.h"
 #include "chrome/browser/vr/render_info.h"
 #include "chrome/browser/vr/vr_export.h"
 #include "device/vr/public/mojom/vr_service.mojom.h"
-#include "ui/gfx/gpu_memory_buffer_handle.h"
+#include "gpu/command_buffer/client/client_shared_image.h"
+#include "ui/gfx/geometry/rect_f.h"
 
 namespace gfx {
 class Transform;
-class RectF;
 class Size;
 }  // namespace gfx
 
@@ -42,14 +43,18 @@ class VR_EXPORT GraphicsDelegate {
   gfx::RectF GetLeft();
 
   FovRectangles GetRecommendedFovs();
+  // Computes per-eye camera models for the given frame type and head pose, and
+  // initializes the per-eye normalized overlay UV bounds.
   RenderInfo GetRenderInfo(FrameType frame_type,
                            const gfx::Transform& head_pose);
+  // Updates the per-eye normalized overlay UV bounds (`left_bounds_` and
+  // `right_bounds_`) to tightly bound the active overlay elements' FOVs.
   RenderInfo GetOptimizedRenderInfoForFovs(const FovRectangles& fovs);
 
   virtual void Initialize(base::OnceClosure on_initialized) = 0;
   virtual bool PreRender() = 0;
   virtual void PostRender() = 0;
-  virtual gfx::GpuMemoryBufferHandle GetTexture() = 0;
+  virtual scoped_refptr<gpu::ClientSharedImage> GetTexture() = 0;
   virtual gpu::SyncToken GetSyncToken() = 0;
   virtual void ResetMemoryBuffer() = 0;
   virtual bool BindContext() = 0;
@@ -63,7 +68,12 @@ class VR_EXPORT GraphicsDelegate {
  private:
   device::mojom::XRViewPtr left_;
   device::mojom::XRViewPtr right_;
+  // Normalized [0, 1] UV bounding boxes of the rendered overlay per eye.
+  gfx::RectF left_bounds_{0.0f, 0.0f, 1.0f, 1.0f};
+  gfx::RectF right_bounds_{0.0f, 0.0f, 1.0f, 1.0f};
 
+  // Last RenderInfo computed by GetRenderInfo(), reused by
+  // GetOptimizedRenderInfoForFovs().
   RenderInfo cached_info_ = {};
 };
 

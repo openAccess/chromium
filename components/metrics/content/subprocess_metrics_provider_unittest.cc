@@ -158,13 +158,13 @@ class SubprocessMetricsProviderTest : public testing::Test {
   }
 
   void RegisterSubprocessAllocator(
-      int id,
+      content::ChildProcessId id,
       std::unique_ptr<base::PersistentHistogramAllocator> allocator) {
     SubprocessMetricsProvider::GetInstance()->RegisterSubprocessAllocator(
         id, std::move(allocator));
   }
 
-  void DeregisterSubprocessAllocator(int id) {
+  void DeregisterSubprocessAllocator(content::ChildProcessId id) {
     SubprocessMetricsProvider::GetInstance()->DeregisterSubprocessAllocator(id);
   }
 
@@ -186,9 +186,12 @@ class SubprocessMetricsProviderTest : public testing::Test {
 };
 
 TEST_F(SubprocessMetricsProviderTest, SnapshotMetrics) {
-  base::HistogramBase* foo = base::Histogram::FactoryGet("_foo", 1, 100, 10, 0);
-  base::HistogramBase* bar = base::Histogram::FactoryGet("_bar", 1, 100, 10, 0);
-  base::HistogramBase* baz = base::Histogram::FactoryGet("_baz", 1, 100, 10, 0);
+  base::HistogramBase* foo = base::Histogram::FactoryGet("_foo", 1, 100, 10,
+      base::HistogramBase::kUmaTargetedHistogramFlag);
+  base::HistogramBase* bar = base::Histogram::FactoryGet("_bar", 1, 100, 10,
+      base::HistogramBase::kUmaTargetedHistogramFlag);
+  base::HistogramBase* baz = base::Histogram::FactoryGet("_baz", 1, 100, 10,
+      base::HistogramBase::kUmaTargetedHistogramFlag);
   base::HistogramBase* foobar = base::SparseHistogram::FactoryGet(
       "_foobar", base::HistogramBase::kUmaTargetedHistogramFlag);
   foo->Add(42);
@@ -204,7 +207,8 @@ TEST_F(SubprocessMetricsProviderTest, SnapshotMetrics) {
   bool duplicate_allocator_destroyed = false;
   duplicate_allocator->SetDestroyedCallback(base::BindLambdaForTesting(
       [&] { duplicate_allocator_destroyed = true; }));
-  RegisterSubprocessAllocator(123, std::move(duplicate_allocator));
+  RegisterSubprocessAllocator(content::ChildProcessId(123),
+                              std::move(duplicate_allocator));
 
   // Recording should find the two histograms created in persistent memory.
   SubprocessMetricsProvider::MergeHistogramDeltasForTesting();
@@ -234,7 +238,7 @@ TEST_F(SubprocessMetricsProviderTest, SnapshotMetrics) {
   // Ensure that deregistering does a final merge of the data.
   foo->Add(10);
   bar->Add(20);
-  DeregisterSubprocessAllocator(123);
+  DeregisterSubprocessAllocator(content::ChildProcessId(123));
   // Do not call MergeHistogramDeltas() here, because the call to
   // DeregisterSubprocessAllocator() should have already scheduled a task to
   // merge the histograms.
@@ -255,9 +259,12 @@ TEST_F(SubprocessMetricsProviderTest, SnapshotMetrics) {
 }
 
 TEST_F(SubprocessMetricsProviderTest, SnapshotMetricsAsync) {
-  base::HistogramBase* foo = base::Histogram::FactoryGet("_foo", 1, 100, 10, 0);
-  base::HistogramBase* bar = base::Histogram::FactoryGet("_bar", 1, 100, 10, 0);
-  base::HistogramBase* baz = base::Histogram::FactoryGet("_baz", 1, 100, 10, 0);
+  base::HistogramBase* foo = base::Histogram::FactoryGet("_foo", 1, 100, 10,
+      base::HistogramBase::kUmaTargetedHistogramFlag);
+  base::HistogramBase* bar = base::Histogram::FactoryGet("_bar", 1, 100, 10,
+      base::HistogramBase::kUmaTargetedHistogramFlag);
+  base::HistogramBase* baz = base::Histogram::FactoryGet("_baz", 1, 100, 10,
+      base::HistogramBase::kUmaTargetedHistogramFlag);
   base::HistogramBase* foobar = base::SparseHistogram::FactoryGet(
       "_foobar", base::HistogramBase::kUmaTargetedHistogramFlag);
   foo->Add(42);
@@ -269,7 +276,8 @@ TEST_F(SubprocessMetricsProviderTest, SnapshotMetricsAsync) {
   // Register a new allocator that duplicates the global one.
   base::GlobalHistogramAllocator* global_allocator(
       base::GlobalHistogramAllocator::ReleaseForTesting());
-  RegisterSubprocessAllocator(123, CreateDuplicateAllocator(global_allocator));
+  RegisterSubprocessAllocator(content::ChildProcessId(123),
+                              CreateDuplicateAllocator(global_allocator));
 
   // Recording should find the two histograms created in persistent memory.
   SubprocessMetricsProvider::MergeHistogramDeltasForTesting(
@@ -308,7 +316,7 @@ TEST_F(SubprocessMetricsProviderTest, SnapshotMetricsAsync) {
   // Ensure that deregistering does a final merge of the data.
   foo->Add(10);
   bar->Add(20);
-  DeregisterSubprocessAllocator(123);
+  DeregisterSubprocessAllocator(content::ChildProcessId(123));
   // Do not call MergeHistogramDeltas() here, because the call to
   // DeregisterSubprocessAllocator() should have already scheduled a task to
   // merge the histograms.
@@ -332,8 +340,10 @@ TEST_F(SubprocessMetricsProviderTest, SnapshotMetricsAsync) {
 // Verifies that it is fine to deregister an allocator even if background tasks
 // that access it are still pending/running.
 TEST_F(SubprocessMetricsProviderTest, AllocatorRefCounted) {
-  base::HistogramBase* foo = base::Histogram::FactoryGet("_foo", 1, 100, 10, 0);
-  base::HistogramBase* bar = base::Histogram::FactoryGet("_bar", 1, 100, 10, 0);
+  base::HistogramBase* foo = base::Histogram::FactoryGet("_foo", 1, 100, 10,
+      base::HistogramBase::kUmaTargetedHistogramFlag);
+  base::HistogramBase* bar = base::Histogram::FactoryGet("_bar", 1, 100, 10,
+      base::HistogramBase::kUmaTargetedHistogramFlag);
   base::HistogramBase* baz = base::SparseHistogram::FactoryGet(
       "_baz", base::HistogramBase::kUmaTargetedHistogramFlag);
   base::HistogramBase* foobar = base::SparseHistogram::FactoryGet(
@@ -354,13 +364,14 @@ TEST_F(SubprocessMetricsProviderTest, AllocatorRefCounted) {
   bool duplicate_allocator_destroyed = false;
   duplicate_allocator->SetDestroyedCallback(base::BindLambdaForTesting(
       [&] { duplicate_allocator_destroyed = true; }));
-  RegisterSubprocessAllocator(123, std::move(duplicate_allocator));
+  RegisterSubprocessAllocator(content::ChildProcessId(123),
+                              std::move(duplicate_allocator));
 
   // Merge histogram deltas. This will be done asynchronously.
   SubprocessMetricsProvider::MergeHistogramDeltasForTesting(
       /*async=*/true, /*done_callback=*/base::DoNothing());
   // Deregister the allocator. This will be done asynchronously.
-  DeregisterSubprocessAllocator(123);
+  DeregisterSubprocessAllocator(content::ChildProcessId(123));
 
   // The call to DeregisterSubprocessAllocator() above will have removed the
   // allocator from the internal map. However, the allocator should not have

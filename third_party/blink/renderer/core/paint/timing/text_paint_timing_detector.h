@@ -5,7 +5,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_TEXT_PAINT_TIMING_DETECTOR_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_TEXT_PAINT_TIMING_DETECTOR_H_
 
-#include "base/functional/function_ref.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
@@ -19,10 +18,8 @@
 #include "ui/gfx/geometry/rect_conversions.h"
 
 namespace blink {
-struct DOMPaintTimingInfo;
 class LargestContentfulPaintManager;
 class LayoutBoxModelObject;
-class PaintTimingClient;
 class PaintTimingDetector;
 class PropertyTreeStateOrAlias;
 
@@ -50,7 +47,11 @@ class CORE_EXPORT TextPaintTimingDetector final
   void RecordAggregatedText(const LayoutBoxModelObject& aggregator,
                             const gfx::Rect& aggregated_visual_rect,
                             const PropertyTreeStateOrAlias&);
-  OptionalPaintTimingDetectorCallback<TextRecord> TakePaintTimingCallback();
+
+  // Returns the set of `TextRecord`s that were rendered in the current frame
+  // and need paint and presentation time. Called by `PaintTiming` at the end of
+  // the current frame's paint stage.
+  HeapVector<Member<TextRecord>> TakeTextRecordsOnPaintFinished();
 
   // Mark that the `LayoutObject` should be considered for paint timing, even if
   // it's already been painted, because it was modified as part of an
@@ -58,21 +59,20 @@ class CORE_EXPORT TextPaintTimingDetector final
   // timing entries to be emitted.
   void ResetPaintTrackingOnInteraction(const LayoutObject&);
 
+  // Called at the start of paint when the documentElement is not invisible
+  // (i.e. has nonzero opacity) and there might be ignored content. Makes the
+  // largest text that was previously painted while the documentElement was
+  // invisible eligible for paint timing. Does nothing if no ignored content was
+  // previously painted.
   void ReportLargestIgnoredText();
+
   void Trace(Visitor*) const;
 
  private:
-  void SendRectsToHud();
   friend class LargestContentfulPaintCalculatorTest;
 
   // The state of `LayoutObject`s being tracked in the `recorded_set_`.
   enum class TextPaintStatus { kPainted, kAllowRepaint };
-
-  void AssignPaintTimeToQueuedRecords(
-      uint32_t frame_index,
-      const base::TimeTicks&,
-      const DOMPaintTimingInfo&,
-      HeapVector<Member<TextRecord>>& settled_records);
 
   TextRecord* CreateTextRecord(
       const LayoutObject& object,
@@ -81,27 +81,16 @@ class CORE_EXPORT TextPaintTimingDetector final
       const gfx::Rect& frame_visual_rect,
       const gfx::RectF& root_visual_rect);
 
-  inline void QueueToMeasurePaintTime(TextRecord* record) {
-    record->SetFrameIndex(frame_index_);
-    texts_queued_for_paint_time_.push_back(record);
-    added_entry_in_latest_frame_ = true;
-  }
-
-  void ForEachPaintTimingClient(base::FunctionRef<void(PaintTimingClient*)>);
-
   LargestContentfulPaintManager* GetLargestContentfulPaintManager() const;
 
   // LayoutObjects for which text has been aggregated.
   HeapHashMap<WeakMember<const LayoutObject>, TextPaintStatus> recorded_set_;
 
-  // Text records queued for paint time.
-  HeapDeque<Member<TextRecord>> texts_queued_for_paint_time_;
+  // Text records queued for paint time for the current frame. This is returned
+  // and cleared in `TakeTextRecordsOnPaintFinished()`.
+  HeapVector<Member<TextRecord>> texts_queued_for_paint_time_;
 
   Member<PaintTimingDetector> paint_timing_detector_;
-
-  // Used to decide which frame a record belongs to, monotonically increasing.
-  uint32_t frame_index_ = 1;
-  bool added_entry_in_latest_frame_ = false;
 };
 
 }  // namespace blink

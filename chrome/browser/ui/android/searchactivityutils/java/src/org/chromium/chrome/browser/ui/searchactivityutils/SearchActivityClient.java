@@ -7,10 +7,12 @@ package org.chromium.chrome.browser.ui.searchactivityutils;
 import android.app.Activity;
 import android.content.Intent;
 
+import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.ResolutionType;
 import org.chromium.chrome.browser.ui.searchactivityutils.SearchActivityExtras.SearchType;
+import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.url.GURL;
 
@@ -71,6 +73,31 @@ public interface SearchActivityClient {
          */
         IntentBuilder setResolutionType(@ResolutionType int resolutionType);
 
+        /**
+         * Sets the request type for the intent. The default value is
+         * AutocompleteRequestType.SEARCH.
+         *
+         * @param requestType The type of request to start the search session with.
+         * @return The IntentBuilder instance for method chaining.
+         */
+        IntentBuilder setRequestType(@AutocompleteRequestType int requestType);
+
+        /**
+         * Sets whether the search session may launch child activities for result, e.g. Camera or a
+         * file picker for AI Mode attachments. The default value is `false`: SearchActivity is
+         * launched with FLAG_ACTIVITY_NO_HISTORY and finishes as soon as the user leaves it. When
+         * `true`, the flag is omitted so SearchActivity survives the child activity and receives
+         * its result.
+         *
+         * <p>Intent flags are not part of {@link Intent#filterEquals}, so PendingIntents that only
+         * differ in this setting resolve to the same PendingIntent. Such callers must also vary the
+         * action, e.g. through {@link #setRequestType}.
+         *
+         * @param mayLaunchChildActivities Whether the session may launch child activities.
+         * @return The IntentBuilder instance for method chaining.
+         */
+        IntentBuilder setMayLaunchChildActivities(boolean mayLaunchChildActivities);
+
         /** Returns the intent capturing all the relevant details. */
         Intent build();
     }
@@ -96,7 +123,8 @@ public interface SearchActivityClient {
      * @param intent the intent data received in {@link Activity#onActivityResult}
      * @return true if the response captures legitimate Omnibox result.
      */
-    boolean isOmniboxResult(int requestCode, Intent intent);
+    @Contract("_, null -> false")
+    boolean isOmniboxResult(int requestCode, @Nullable Intent intent);
 
     /**
      * Process the {@link Activity#onActivityResult} payload for Omnibox navigation result.

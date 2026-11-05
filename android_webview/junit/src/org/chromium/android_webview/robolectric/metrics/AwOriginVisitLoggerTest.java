@@ -9,12 +9,9 @@ import static org.junit.Assert.assertEquals;
 import static org.chromium.base.metrics.RecordHistogram.getHistogramTotalCountForTesting;
 import static org.chromium.base.metrics.RecordHistogram.getHistogramValueCountForTesting;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.android_webview.metrics.AwOriginVisitLogger;
 import org.chromium.base.FakeTimeTestRule;
@@ -24,7 +21,6 @@ import org.chromium.base.test.util.Feature;
 
 /** Unit tests for {@link AwOriginVisitLogger}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AwOriginVisitLoggerTest {
     private static final long MILLIS_PER_DAY = TimeUtils.SECONDS_PER_DAY * 1000;
     private static final long ORIGIN_HASH_A = 1778564728L;
@@ -35,7 +31,6 @@ public class AwOriginVisitLoggerTest {
     @Rule public FakeTimeTestRule mFakeTimeTestRule = new FakeTimeTestRule();
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testOneVisit() {
         // Visiting one distinct origin does not trigger histogram recording.
@@ -50,7 +45,6 @@ public class AwOriginVisitLoggerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testTwoVisits() {
         // Visiting two distinct origins does not trigger histogram recording.
@@ -66,7 +60,6 @@ public class AwOriginVisitLoggerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testRepeatVisits() {
         // Visiting one distinct origin repeatedly does not trigger histogram recording.
@@ -82,7 +75,6 @@ public class AwOriginVisitLoggerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testMultipleDaysHavePassed() {
         // Visiting one distinct origin does not trigger histogram recording.
@@ -98,7 +90,6 @@ public class AwOriginVisitLoggerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testMultipleDaysOfUsage() {
         // Visit one origin.

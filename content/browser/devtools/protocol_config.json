@@ -75,6 +75,10 @@
                 "domain": "DigitalCredentials"
             },
             {
+                "domain": "FindInPage",
+                "async": ["findFirst", "findNext", "findPrev"]
+            },
+            {
                 "domain": "Input",
                 "async": ["dispatchKeyEvent", "insertText", "imeSetComposition", "dispatchMouseEvent", "dispatchDragEvent", "dispatchTouchEvent", "cancelDragging", "synthesizePinchGesture", "synthesizeScrollGesture", "synthesizeTapGesture"]
             },
@@ -120,6 +124,7 @@
                   "setRequestInterception",
                   "continueInterceptedRequest",
                   "getResponseBody",
+                  "searchInResponseBody",
                   "getResponseBodyForInterception",
                   "setCacheDisabled",
                   "takeResponseBodyForInterceptionAsStream",
@@ -144,6 +149,7 @@
                   "setCookies",
                   "continueInterceptedRequest",
                   "getResponseBody",
+                  "searchInResponseBody",
                   "getResponseBodyForInterception",
                   "takeResponseBodyForInterceptionAsStream",
                   "loadNetworkResource"
@@ -157,12 +163,12 @@
                 "domain": "Page",
                 "include": ["enable", "disable", "reload", "navigate", "stopLoading", "getNavigationHistory", "navigateToHistoryEntry", "resetNavigationHistory", "captureScreenshot",
                     "startScreencast", "stopScreencast", "startScreenRecording", "stopScreenRecording", "screencastFrameAck", "handleJavaScriptDialog", "setColorPickerEnabled",
-                    "bringToFront", "setDownloadBehavior", "getAppManifest", "crash", "close", "setWebLifecycleState", "captureSnapshot", "getInstallabilityErrors", "getManifestIcons", "setBypassCSP", "getAppId", "addCompilationCache", "setPrerenderingAllowed", "getAnnotatedPageContent",
+                    "bringToFront", "setDownloadBehavior", "getAppManifest", "crash", "close", "setWebLifecycleState", "captureSnapshot", "getInstallabilityErrors", "getManifestIcons", "setBypassCSP", "getAppId", "getSubApps", "getSiblingSubApps", "addCompilationCache", "setPrerenderingAllowed",
                     "addScriptToEvaluateOnNewDocument", "removeScriptToEvaluateOnNewDocument", "addScriptToEvaluateOnLoad", "removeScriptToEvaluateOnLoad"],
                 "include_events": ["frameDetached", "colorPicked", "interstitialShown", "interstitialHidden", "javascriptDialogOpening",
                      "javascriptDialogClosed", "downloadWillBegin", "downloadProgress", "screencastVisibilityChanged", "screencastFrame",
                      "backForwardCacheNotUsed", "frameStartedLoading", "frameStoppedLoading", "frameStartedNavigating"],
-                "async": ["captureScreenshot", "navigate", "getAppManifest", "reload", "captureSnapshot", "getInstallabilityErrors", "getManifestIcons", "getAppId", "getAnnotatedPageContent", "stopScreenRecording"]
+                "async": ["captureScreenshot", "navigate", "getAppManifest", "reload", "captureSnapshot", "getInstallabilityErrors", "getManifestIcons", "getAppId", "getSubApps", "getSiblingSubApps", "startScreenRecording", "stopScreenRecording"]
             },
             {
                 "domain": "Preload",
@@ -186,7 +192,7 @@
             },
             {
                 "domain": "Storage",
-                "exclude": ["runBounceTrackingMitigations", "getRelatedWebsiteSets"],
+                "exclude": ["runBounceTrackingMitigations", "getPrivateVerificationTokens", "getPrivateVerificationTokensIssuerConfigs", "clearPrivateVerificationTokens", "deletePrivateVerificationToken", "setPrivateVerificationTokensTracking"],
                 "async": ["getUsageAndQuota", "clearDataForOrigin", "clearDataForStorageKey", "getCookies", "setCookies", "clearCookies", "overrideQuotaForOrigin", "getTrustTokens", "clearTrustTokens", "getStorageBucketList"]
             },
             {
@@ -252,6 +258,7 @@
             {
                 "domain": "Debugger",
                 "include": [
+                    "SearchMatch",
                     "setBreakpointByUrl",
                     "removeBreakpoint"
                 ],

@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "build/build_config.h"
+#include "chrome/browser/chrome_browser_interface_binders.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -11,8 +12,13 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_accessibility_state.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/test/accessibility_notification_waiter.h"
 #include "content/public/test/browser_test.h"
+#include "mojo/public/cpp/bindings/binder_map.h"
+#include "mojo/public/cpp/bindings/generic_pending_receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "services/image_annotation/public/mojom/image_annotation.mojom.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
@@ -27,8 +33,14 @@
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if !BUILDFLAG(IS_ANDROID)
+#include <tuple>
+
+#include "base/test/test_future.h"
 #include "chrome/browser/accessibility/accessibility_labels_service.h"
 #include "chrome/browser/accessibility/accessibility_labels_service_factory.h"
+#include "chrome/browser/manta/manta_service_factory.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #endif
 
 class AccessibilityLabelsBrowserTest : public InProcessBrowserTest {
@@ -40,7 +52,15 @@ class AccessibilityLabelsBrowserTest : public InProcessBrowserTest {
   AccessibilityLabelsBrowserTest& operator=(
       const AccessibilityLabelsBrowserTest&) = delete;
 
+#if BUILDFLAG(IS_CHROMEOS)
   // InProcessBrowserTest overrides:
+  void SetUpOnMainThread() override {
+    InProcessBrowserTest::SetUpOnMainThread();
+    content::BrowserAccessibilityState::GetInstance()
+        ->SetActivationFromPlatformEnabled(true);
+  }
+#endif
+
   void TearDownOnMainThread() override { EnableScreenReader(false); }
 
   void EnableScreenReader(bool enabled) {
@@ -61,7 +81,8 @@ class AccessibilityLabelsBrowserTest : public InProcessBrowserTest {
       screen_reader_override_.reset();
     } else if (!screen_reader_override_) {
       screen_reader_override_.emplace(ui::AXMode::kWebContents |
-                                      ui::AXMode::kExtendedProperties);
+                                      ui::AXMode::kExtendedProperties |
+                                      ui::AXMode::kScreenReader);
     }
 #endif  // BUILDFLAG(IS_CHROMEOS)
   }
@@ -154,9 +175,87 @@ IN_PROC_BROWSER_TEST_F(AccessibilityLabelsBrowserTest, EnableOnce) {
       AccessibilityLabelsServiceFactory::GetForProfile(profile);
   labels_service->EnableLabelsServiceOnce(web_contents);
 
-  // EnableOnce does not change the mode flags for the WebContents, so it's not
-  // trivial to verify that the change took place.
+  ax_mode = web_contents->GetAccessibilityMode();
+  EXPECT_TRUE(ax_mode.has_mode(ui::AXMode::kLabelImages));
+
+  // Navigating away to a new page in the same tab should destroy the
+  // ScopedAccessibilityMode for the previous page.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), GURL("data:text/html,<html><body>Second Page</body></html>")));
+  ax_mode = web_contents->GetAccessibilityMode();
+  EXPECT_FALSE(ax_mode.has_mode(ui::AXMode::kLabelImages));
+
+  // Requesting "just once" again on the new page should re-enable it.
+  labels_service->EnableLabelsServiceOnce(web_contents);
+  ax_mode = web_contents->GetAccessibilityMode();
+  EXPECT_TRUE(ax_mode.has_mode(ui::AXMode::kLabelImages));
 }
+
+IN_PROC_BROWSER_TEST_F(AccessibilityLabelsBrowserTest,
+                       AnnotatorBindingGatedOnAXMode) {
+  EnableScreenReader(true);
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::RenderFrameHost* frame = web_contents->GetPrimaryMainFrame();
+
+  mojo::BinderMapWithContext<content::RenderFrameHost*> map;
+  chrome::internal::PopulateChromeFrameBinders(&map, frame);
+
+  // 1. Without kLabelImages, binding is dropped.
+  {
+    mojo::Remote<image_annotation::mojom::Annotator> remote;
+    mojo::GenericPendingReceiver receiver(remote.BindNewPipeAndPassReceiver());
+    ASSERT_TRUE(map.TryBind(frame, &receiver));
+    remote.FlushForTesting();
+    EXPECT_FALSE(remote.is_connected());
+  }
+
+  // 2. With kLabelImages enabled via pref, binding succeeds.
+  {
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
+        prefs::kAccessibilityImageLabelsEnabled, true);
+    mojo::Remote<image_annotation::mojom::Annotator> remote;
+    mojo::GenericPendingReceiver receiver(remote.BindNewPipeAndPassReceiver());
+    ASSERT_TRUE(map.TryBind(frame, &receiver));
+    remote.FlushForTesting();
+    EXPECT_TRUE(remote.is_connected());
+  }
+}
+
+#if !BUILDFLAG(IS_CHROMEOS)
+IN_PROC_BROWSER_TEST_F(AccessibilityLabelsBrowserTest,
+                       BindImageAnnotatorInGuestProfile) {
+  BrowserWindowInterface* guest_browser = CreateGuestBrowser();
+  ASSERT_TRUE(guest_browser);
+  Profile* guest_profile = guest_browser->GetProfile();
+  ASSERT_TRUE(guest_profile->IsGuestSession());
+  ASSERT_TRUE(guest_profile->IsOffTheRecord());
+  ASSERT_EQ(nullptr, manta::MantaServiceFactory::GetForProfile(guest_profile));
+
+  auto* labels_service =
+      AccessibilityLabelsServiceFactory::GetForProfile(guest_profile);
+  ASSERT_NE(nullptr, labels_service);
+
+  mojo::Remote<image_annotation::mojom::Annotator> remote;
+  labels_service->BindImageAnnotator(remote.BindNewPipeAndPassReceiver());
+  remote.FlushForTesting();
+  EXPECT_TRUE(remote.is_connected());
+
+  // Exercise AnnotateImage with a non-empty page language so
+  // ImageAnnotatorClient::GetAcceptLanguages() and GetTopLanguages() run in
+  // the Off-The-Record Guest profile.
+  mojo::PendingRemote<image_annotation::mojom::ImageProcessor> processor_remote;
+  std::ignore = processor_remote.InitWithNewPipeAndPassReceiver();
+  base::test::TestFuture<image_annotation::mojom::AnnotateImageResultPtr>
+      future;
+  remote->AnnotateImage("https://www.example.com/image.jpg", "en",
+                        std::move(processor_remote), future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+  ASSERT_TRUE(future.Get()->is_error_code());
+  EXPECT_EQ(image_annotation::mojom::AnnotateImageError::kCanceled,
+            future.Get()->get_error_code());
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 #endif
 
 IN_PROC_BROWSER_TEST_F(AccessibilityLabelsBrowserTest,

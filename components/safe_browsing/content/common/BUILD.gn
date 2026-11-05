@@ -6,12 +6,13 @@ import("//components/safe_browsing/buildflags.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 
 mojom("interfaces") {
+  generate_rust = true
   sources = [ "safe_browsing.mojom" ]
 
   public_deps = [
     "//components/safe_browsing/core/common:interfaces",
     "//mojo/public/mojom/base:protobuf_support",
-    "//services/network/public/mojom",
+    "//services/network/public/mojom:mojom_http_request_headers",
     "//third_party/blink/public/mojom/tokens",
     "//url/mojom:url_mojom_gurl",
   ]
@@ -20,73 +21,24 @@ mojom("interfaces") {
   if (safe_browsing_mode > 0) {
     enabled_features += [ "full_safe_browsing" ]
   }
-}
 
-if (safe_browsing_mode != 0) {
-  source_set("file_type_policies") {
-    sources = [
-      "file_type_policies.cc",
-      "file_type_policies.h",
-      "file_type_policies_policy_util.cc",
-      "file_type_policies_policy_util.h",
-      "file_type_policies_prefs.cc",
-      "file_type_policies_prefs.h",
-    ]
-
-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
-    public_deps = [
-      "//base",
-      "//components/safe_browsing/content/common/proto:download_file_types_proto",
-      "//url",
-    ]
-
-    deps = [
-      "//components/policy/core/browser",
-      "//components/prefs",
-      "//components/resources:components_resources",
-      "//components/url_matcher",
-      "//ui/base",
-    ]
-  }
-
-  source_set("file_type_policies_test_support") {
-    testonly = true
-    sources = [
-      "file_type_policies_test_util.cc",
-      "file_type_policies_test_util.h",
-    ]
-
-    deps = [ ":file_type_policies" ]
-  }
-
-  source_set("file_type_policies_policy_util_unittest") {
-    testonly = true
-    sources = [ "file_type_policies_policy_util_unittest.cc" ]
-
-    deps = [
-      ":file_type_policies",
-      ":file_type_policies_test_support",
-      "//base",
-      "//components/policy/core/browser:test_support",
-      "//components/prefs:test_support",
-      "//testing/gmock",
-      "//testing/gtest",
-    ]
-  }
-
-  source_set("file_type_policies_unittest") {
-    testonly = true
-    sources = [ "file_type_policies_unittest.cc" ]
-
-    deps = [
-      ":file_type_policies",
-      ":file_type_policies_test_support",
-      "//base",
-      "//components/policy/core/browser:test_support",
-      "//components/prefs:test_support",
-      "//testing/gmock",
-      "//testing/gtest",
-    ]
-  }
+  cpp_typemaps = [
+    {
+      types = [
+        {
+          mojom = "safe_browsing.mojom.WebRequestProtocolType"
+          cpp = "::safe_browsing::ExtensionTelemetryReportRequest::SignalInfo::RemoteHostContactedInfo::RemoteHostInfo::ProtocolType"
+        },
+        {
+          mojom = "safe_browsing.mojom.WebRequestContactInitiatorType"
+          cpp = "::safe_browsing::ExtensionTelemetryReportRequest::SignalInfo::RemoteHostContactedInfo::RemoteHostInfo::ContactInitiator"
+        },
+      ]
+      traits_headers = [ "//components/safe_browsing/content/common/safe_browsing_mojom_traits.h" ]
+      traits_public_deps = [
+        "//base",
+        "//components/safe_browsing/core/common/proto:csd_proto",
+      ]
+    },
+  ]
 }

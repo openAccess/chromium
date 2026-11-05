@@ -176,6 +176,7 @@ static int gAnyContext = 0;
 }
 
 - (void)dealloc {
+  [self.underlyingScrollView setDelegate:nil];
   [self.class stopObservingScrollView:self.underlyingScrollView proxy:self];
 }
 
@@ -314,7 +315,7 @@ static int gAnyContext = 0;
 
 + (NSArray*)scrollViewObserverKeyPaths {
   CHECK(web::features::ShouldUseBroadcasterForSmoothScrolling());
-  return @[ @"frame", @"contentSize", @"contentInset" ];
+  return @[ @"frame", @"contentSize" ];
 }
 
 + (void)startObservingScrollView:(UIScrollView*)scrollView
@@ -379,11 +380,17 @@ static int gAnyContext = 0;
   DCHECK_EQ(object, self.underlyingScrollView);
   CHECK(web::features::ShouldUseBroadcasterForSmoothScrolling());
 
+  NSValue* oldValue =
+      base::apple::ObjCCast<NSValue>(change[NSKeyValueChangeOldKey]);
+  NSValue* newValue =
+      base::apple::ObjCCast<NSValue>(change[NSKeyValueChangeNewKey]);
+  // If the value is unchanged, return without notifying observers.
+  if ([newValue isEqualToValue:oldValue]) {
+    return;
+  }
+
   if ([keyPath isEqualToString:@"frame"]) {
     [_observers webViewScrollViewFrameDidChange:self];
-  }
-  if ([keyPath isEqualToString:@"contentInset"]) {
-    [_observers webViewScrollViewDidResetContentInset:self];
   }
   if ([keyPath isEqualToString:@"contentSize"]) {
     [_observers webViewScrollViewDidResetContentSize:self];

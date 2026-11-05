@@ -64,17 +64,14 @@ class CORE_EXPORT ScrollbarThemeMac : public ScrollbarTheme {
   bool JumpOnTrackClick() const override;
 
   bool ShouldRepaintAllPartsOnInvalidation() const override { return false; }
-  ScrollbarPart PartsToInvalidateOnThumbPositionChange(
-      const Scrollbar&,
-      float old_position,
-      float new_position) const override;
+  int PartsToInvalidateOnThumbPositionChange(const Scrollbar&,
+                                             float old_position,
+                                             float new_position) const override;
   void UpdateEnabledState(const Scrollbar&) override;
   int ScrollbarThickness(float scale_from_dip,
                          EScrollbarWidth scrollbar_width) const override;
   using ScrollbarTheme::OverlayScrollbarsEnabled;
   bool UsesOverlayScrollbars() const override;
-
-  void SetNewPainterForScrollbar(Scrollbar&);
 
   void PaintThumb(const PaintInfo&,
                   const Scrollbar& scrollbar,

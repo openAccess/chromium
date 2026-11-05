@@ -506,7 +506,8 @@ ResultCode GenerateConfigForSandboxedProcess(const base::CommandLine& cmd_line,
     if (!cmd_line.HasSwitch(switches::kAllowThirdPartyModules) &&
         sandbox_type != Sandbox::kScreenAI &&
         sandbox_type != Sandbox::kSpeechRecognition &&
-        sandbox_type != Sandbox::kMediaFoundationCdm) {
+        sandbox_type != Sandbox::kMediaFoundationCdm &&
+        sandbox_type != Sandbox::kPlatformRuntime) {
       mitigations |= MITIGATION_FORCE_MS_SIGNED_BINS;
     }
 
@@ -1084,6 +1085,8 @@ std::string SandboxWin::GetSandboxTypeInEnglish(
       return "Audio";
     case Sandbox::kScreenAI:
       return "Screen AI";
+    case Sandbox::kPlatformRuntime:
+      return "Platform Runtime";
     case Sandbox::kSpeechRecognition:
       return "Speech Recognition";
     case Sandbox::kPdfConversion:
@@ -1118,7 +1121,7 @@ std::optional<size_t> SandboxWin::GetJobMemoryLimit(Sandbox sandbox_type) {
   constexpr uint64_t GB = 1024 * 1024 * 1024;
 
   // Returns a memory limit scaled to the available physical memory, up to
-  // 64 GB. Used by GPU and ODML process sandboxes.
+  // 64 GB. Used by ODML process sandboxes.
   auto get_scaled_physical_memory_based_limit = []() -> size_t {
     const base::ByteSize physical_memory =
         base::SysInfo::AmountOfTotalPhysicalMemory();
@@ -1134,14 +1137,8 @@ std::optional<size_t> SandboxWin::GetJobMemoryLimit(Sandbox sandbox_type) {
 
   switch (sandbox_type) {
     case Sandbox::kGpu:
-      // Allow up to 1 TB for the GPU process when the feature
-      // `kWinSboxHighGPUJobMemoryLimits` is enabled.
-      if (base::FeatureList::IsEnabled(
-              features::kWinSboxHighGPUJobMemoryLimits)) {
-        return 1024 * GB;
-      }
-      // Otherwise, scale based on physical memory, up to 64 GB.
-      return get_scaled_physical_memory_based_limit();
+      // Allow up to 1 TB for the GPU process.
+      return 1024 * GB;
     case Sandbox::kOnDeviceModelExecution:
       // Scale based on available physical memory, up to 64 GB.
       return get_scaled_physical_memory_based_limit();

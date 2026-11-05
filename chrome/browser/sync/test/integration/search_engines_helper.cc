@@ -145,7 +145,8 @@ TemplateURLBuilder::TemplateURLBuilder(const std::string& keyword) {
   hex_encoded_hash.resize(12);
   data_.sync_guid =
       base::StrCat({"12345678-0000-4000-8000-", hex_encoded_hash});
-  DCHECK(base::Uuid::ParseCaseInsensitive(data_.sync_guid).is_valid());
+  CHECK(base::Uuid::ParseCaseInsensitive(data_.sync_guid).is_valid(),
+        base::NotFatalUntil::M163);
 }
 
 TemplateURLBuilder::~TemplateURLBuilder() = default;
@@ -248,6 +249,7 @@ HasSearchEngineChecker::HasSearchEngineChecker(int profile_index,
 HasSearchEngineChecker::~HasSearchEngineChecker() = default;
 
 bool HasSearchEngineChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for search engine with keyword " << keyword_;
   return service_->GetTemplateURLForKeyword(keyword_) != nullptr;
 }
 
@@ -261,6 +263,7 @@ FakeServerHasSearchEngineChecker::FakeServerHasSearchEngineChecker(
 
 bool FakeServerHasSearchEngineChecker::IsExitConditionSatisfied(
     std::ostream* os) {
+  *os << "Waiting for search engine in FakeServer with keyword " << keyword_;
   return HasSearchEngineInFakeServer(keyword_, fake_server());
 }
 

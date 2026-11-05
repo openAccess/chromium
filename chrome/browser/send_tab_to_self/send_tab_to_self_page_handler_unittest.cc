@@ -12,6 +12,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
@@ -39,6 +40,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/link_to_text/link_to_text.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 namespace send_tab_to_self {
@@ -52,11 +54,13 @@ std::unique_ptr<KeyedService> BuildStubSendTabToSelfSyncService(
   return std::make_unique<StubSendTabToSelfSyncService>();
 }
 
+using base::HistogramTester;
 using base::test::ScopedFeatureList;
 using base::test::TestFuture;
 using testing::_;
 using testing::Eq;
 using testing::Invoke;
+using testing::IsEmpty;
 using testing::Return;
 
 MATCHER(IsValidNavigationHistory, "") {
@@ -140,15 +144,8 @@ class MockTextFragmentReceiver : public blink::mojom::TextFragmentReceiver {
 class SendTabToSelfPageHandlerTest : public ChromeRenderViewHostTestHarness {
  public:
   SendTabToSelfPageHandlerTest()
-      : SendTabToSelfPageHandlerTest(std::vector<base::test::FeatureRef>{
-            kSendTabToSelfPropagateScrollPosition}) {}
-
-  explicit SendTabToSelfPageHandlerTest(
-      const std::vector<base::test::FeatureRef>& enabled_features)
       : ChromeRenderViewHostTestHarness(
-            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
-    scoped_feature_list_.InitWithFeatures(enabled_features, {});
-  }
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
   ~SendTabToSelfPageHandlerTest() override = default;
 
   void SetUp() override {
@@ -189,7 +186,6 @@ class SendTabToSelfPageHandlerTest : public ChromeRenderViewHostTestHarness {
   }
 
  protected:
-  ScopedFeatureList scoped_feature_list_;
   MockTextFragmentReceiver mock_receiver_;
 
  private:
@@ -292,6 +288,39 @@ TEST_F(SendTabToSelfPageHandlerTest,
                   .scroll_position.text_fragment.text_start.empty());
 }
 
+// Tests that when selector generation fails because the page is not scrolled,
+// the entry is sent without a scroll position and the kPageNotScrolled outcome
+// is recorded in the histogram.
+TEST_F(SendTabToSelfPageHandlerTest,
+       ShouldSendEntryWithoutScrollPositionWhenPageNotScrolled) {
+  HistogramTester histogram_tester;
+  const GURL url(kExampleUrl);
+  const std::string title = "Title";
+  const std::string device_id = "device_id";
+
+  SendTabToSelfPageHandler* handler =
+      SendTabToSelfPageHandler::GetOrCreateForWebContents(web_contents());
+  handler->SetSelectorGenerationTimeoutForTesting(base::Milliseconds(200));
+
+  TestFuture<const SendTabToSelfEntry*> future;
+  model()->SetSendEntryCallback(future.GetRepeatingCallback());
+
+  handler->SendTabToDevice(device_id, url, title, base::DoNothing(),
+                           ShareEntryPoint::kShareSheet);
+
+  mock_receiver_.WaitForRequestSelector();
+
+  mock_receiver_.RespondToSelectorRequestWithError(
+      shared_highlighting::LinkGenerationError::kNotScrolled);
+
+  EXPECT_TRUE(future.Get()
+                  ->GetPageContext()
+                  .scroll_position.text_fragment.text_start.empty());
+  histogram_tester.ExpectUniqueSample(
+      "Sharing.SendTabToSelf.ScrollPosition.GenerationOutcome",
+      ScrollPositionGenerationOutcome::kPageNotScrolled, 1);
+}
+
 TEST_F(SendTabToSelfPageHandlerTest,
        ShouldSendEntryWithoutScrollPositionWhenPageNavigatesDuringGeneration) {
   const GURL url(kExampleUrl);
@@ -364,10 +393,9 @@ TEST_F(SendTabToSelfPageHandlerTest,
 
 class SendTabToSelfPageHandlerWithNavigationHistoryTest
     : public SendTabToSelfPageHandlerTest {
- public:
-  SendTabToSelfPageHandlerWithNavigationHistoryTest()
-      : SendTabToSelfPageHandlerTest(std::vector<base::test::FeatureRef>{
-            kSendTabToSelfPropagateNavigationHistory}) {}
+ private:
+  ScopedFeatureList scoped_feature_list_{
+      kSendTabToSelfPropagateNavigationHistory};
 };
 
 TEST_F(SendTabToSelfPageHandlerWithNavigationHistoryTest,
@@ -387,6 +415,26 @@ TEST_F(SendTabToSelfPageHandlerWithNavigationHistoryTest,
                            ShareEntryPoint::kShareSheet);
 
   EXPECT_THAT(future.Get()->GetNavigationHistory(), IsValidNavigationHistory());
+}
+
+// Tests that navigation history from the current tab is not attached when
+// sharing a link URL that differs from the last committed URL.
+TEST_F(SendTabToSelfPageHandlerWithNavigationHistoryTest,
+       ShouldNotSendNavigationHistoryWhenSharingLink) {
+  SendTabToSelfPageHandler* handler =
+      SendTabToSelfPageHandler::GetOrCreateForWebContents(web_contents());
+
+  const GURL link_url("https://www.other.com");
+  const std::string title = "Title";
+  const std::string device_id = "device_id";
+
+  TestFuture<const SendTabToSelfEntry*> future;
+  model()->SetSendEntryCallback(future.GetRepeatingCallback());
+
+  handler->SendTabToDevice(device_id, link_url, title, base::DoNothing(),
+                           ShareEntryPoint::kShareSheet);
+
+  EXPECT_THAT(future.Get()->GetNavigationHistory().navigations, IsEmpty());
 }
 
 TEST_F(SendTabToSelfPageHandlerTest,

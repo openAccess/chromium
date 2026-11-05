@@ -106,6 +106,9 @@ class CORE_EXPORT HTMLAnchorElementBase : public HTMLElement,
   bool IsKeyboardFocusableSlow(UpdateBehavior update_behavior) const override;
   void DefaultEventHandler(Event&) final;
   bool HasActivationBehavior() const override;
+  void RunActivationBehaviorBeforeDOMActivate(
+      Event&,
+      EventDispatchHandlingState*) override;
   void SetActive(bool active) final;
   bool IsURLAttribute(const Attribute&) const final;
   bool HasLegalLinkAttribute(const QualifiedName&) const final;
@@ -162,14 +165,10 @@ class CORE_EXPORT HTMLAnchorElement : public HTMLAnchorElementBase {
 
 template <>
 struct DowncastTraits<HTMLAnchorElementBase> {
-  static bool AllowFrom(const Element& element) {
-    return element.HasTagName(html_names::kATag) ||
-           element.HasTagName(html_names::kAreaTag);
-  }
-
   static bool AllowFrom(const Node& node) {
-    return node.IsHTMLElement() &&
-           IsA<HTMLAnchorElementBase>(UnsafeTo<HTMLElement>(node));
+    const ElementType type = node.GetElementType();
+    return type == ElementType::kHTMLAnchorElement ||
+           type == ElementType::kHTMLAreaElement;
   }
 };
 

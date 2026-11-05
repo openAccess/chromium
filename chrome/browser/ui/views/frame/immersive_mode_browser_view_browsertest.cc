@@ -7,6 +7,7 @@
 
 #include "base/functional/function_ref.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/ash/test_util.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -16,6 +17,8 @@
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/bubble/webui_bubble_manager.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view_chromeos.h"
@@ -54,7 +57,9 @@ namespace {
 class ImmersiveModeBrowserViewTest
     : public TopChromeMdParamTest<ChromeOSBrowserUITest> {
  public:
-  ImmersiveModeBrowserViewTest() = default;
+  ImmersiveModeBrowserViewTest() {
+    feature_list_.InitAndDisableFeature(organizer_panel::kOrganizerPanel);
+  }
   ImmersiveModeBrowserViewTest(const ImmersiveModeBrowserViewTest&) = delete;
   ImmersiveModeBrowserViewTest& operator=(const ImmersiveModeBrowserViewTest&) =
       delete;
@@ -72,6 +77,9 @@ class ImmersiveModeBrowserViewTest
             ->controller())
         .SetupForTest();
   }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
 }  // namespace
@@ -506,8 +514,7 @@ IN_PROC_BROWSER_TEST_P(ImmersiveModeBrowserViewTest,
   EnterImmersiveFullscreenMode(browser());
 
   chrome::Find(browser());
-  FindBar* find_bar =
-      browser()->GetFeatures().GetFindBarController()->find_bar();
+  FindBar* find_bar = FindBarController::From(browser())->find_bar();
   ASSERT_TRUE(find_bar);
 
   gfx::Rect unrevealed_bounds =

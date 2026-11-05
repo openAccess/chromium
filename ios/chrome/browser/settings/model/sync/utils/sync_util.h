@@ -12,6 +12,7 @@
 
 @class AccountErrorUIInfo;
 class ProfileIOS;
+@protocol PrimaryAccountReauthCommands;
 @protocol SyncPresenterCommands;
 
 namespace web {
@@ -24,11 +25,6 @@ enum class SyncErrorInfoBarTrigger {
   kNewTabOpened,
   kPasswordFormParsed,
 };
-
-// Gets the top-level description message associated with the sync error state
-// of `syncService`. Returns nil if there is no sync error.
-NSString* GetSyncErrorDescriptionForSyncService(
-    syncer::SyncService* syncService);
 
 // Gets the title of the Sync error info bar.
 std::u16string GetSyncErrorInfoBarTitleForProfile(ProfileIOS* profile);
@@ -48,10 +44,12 @@ bool ShouldShowSyncSettings(syncer::SyncService::UserActionableError error);
 
 // Check for sync errors, and display any that ought to be shown to the user.
 // Returns true if an infobar was brought up.
-bool DisplaySyncErrors(ProfileIOS* profile,
-                       web::WebState* web_state,
-                       id<SyncPresenterCommands> sync_presenter_handler,
-                       SyncErrorInfoBarTrigger trigger);
+bool DisplaySyncErrors(
+    ProfileIOS* profile,
+    web::WebState* web_state,
+    id<SyncPresenterCommands> sync_presenter_handler,
+    id<PrimaryAccountReauthCommands> primary_account_reauth_handler,
+    SyncErrorInfoBarTrigger trigger);
 
 // Logs sync error infobar dismissal metric for a given `error`.
 void LogSyncErrorInfobarDismissed(

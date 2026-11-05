@@ -31,7 +31,7 @@ namespace {
 
 user_manager::UserManager::EphemeralModeConfig CreateEphemeralModeConfig(
     ash::CrosSettings* cros_settings) {
-  DCHECK(cros_settings);
+  CHECK(cros_settings, base::NotFatalUntil::M161);
 
   bool ephemeral_users_enabled = false;
   // Only `UserManagerImpl` is allowed to directly use this setting. All
@@ -83,7 +83,7 @@ PolicyUserManagerController::PolicyUserManagerController(
     CHECK_IS_TEST();
   }
 
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // UserManager outlives PolicyUserManagerController, and subscriptions are
   // destroyed on destroying PolicyUserManagerController. So, base::Unretained
@@ -113,6 +113,11 @@ PolicyUserManagerController::PolicyUserManagerController(
 
   cros_settings_subscriptions_.push_back(cros_settings_->AddSettingsObserver(
       kAccountsPrefEphemeralUsersEnabled,
+      base::BindRepeating(
+          &PolicyUserManagerController::RetrieveTrustedDevicePolicies,
+          weak_factory_.GetWeakPtr())));
+  cros_settings_subscriptions_.push_back(cros_settings_->AddSettingsObserver(
+      kAccountsPrefDeviceMaxUserProfiles,
       base::BindRepeating(
           &PolicyUserManagerController::RetrieveTrustedDevicePolicies,
           weak_factory_.GetWeakPtr())));
@@ -202,6 +207,16 @@ void PolicyUserManagerController::RetrieveTrustedDevicePolicies() {
 
   user_manager_->SetEphemeralModeConfig(
       CreateEphemeralModeConfig(cros_settings_));
+
+  int max_user_profiles = 0;
+  if (cros_settings_->GetInteger(kAccountsPrefDeviceMaxUserProfiles,
+                                 &max_user_profiles) &&
+      max_user_profiles > 0) {
+    user_manager_->SetMaxUserProfiles(max_user_profiles);
+  } else {
+    user_manager_->SetMaxUserProfiles(std::nullopt);
+  }
+
   UpdateOwnerId();
   UpdateGuestSessionAllowed();
   UpdateShowUsersOnSignIn();
@@ -221,9 +236,11 @@ void PolicyUserManagerController::RetrieveTrustedDevicePolicies() {
   bool changed = user_manager_->UpdateDeviceLocalAccountUser(
       device_local_account_info_list);
 
-  // Remove ephemeral regular users (except the owner) when on the login screen.
+  // Remove ephemeral regular users (except the owner) and excess users when on
+  // the login screen.
   if (!user_manager_->IsUserLoggedIn()) {
     changed |= user_manager_->RemoveStaleEphemeralUsers();
+    changed |= user_manager_->TrimExcessUsers();
   }
 
   if (changed) {

@@ -38,6 +38,7 @@
 #include "chrome/browser/permissions/system/system_permission_settings.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profiles_state.h"
+#include "chrome/browser/pwc/privileged_web_contents.h"
 #include "chrome/browser/search_engines/ui_thread_search_terms_data.h"
 #include "chrome/browser/serial/serial_chooser_context.h"
 #include "chrome/browser/serial/serial_chooser_context_factory.h"
@@ -114,12 +115,14 @@
 #include "chrome/browser/ash/shimless_rma/chrome_shimless_rma_delegate.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/components/kiosk/kiosk_utils.h"
-#include "components/user_manager/user.h"
-#include "components/user_manager/user_manager.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "components/contextual_tasks/public/features.h"
 #include "extensions/common/constants.h"
+#include "extensions/common/extension_features.h"
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_ANDROID)
@@ -193,17 +196,19 @@ bool ShouldUseQuietUI(content::WebContents* web_contents,
 std::optional<url::Origin> GetCurrentKioskOrigin() {
   if (chromeos::IsWebKioskSession()) {
     const AccountId& account_id =
-        user_manager::UserManager::Get()->GetPrimaryUser()->GetAccountId();
-    DCHECK(ash::KioskWebAppManager::IsInitialized());
+        CHECK_DEREF(session_manager::SessionManager::Get()->GetPrimarySession())
+            .account_id();
+    CHECK(ash::KioskWebAppManager::IsInitialized(), base::NotFatalUntil::M162);
     const ash::KioskWebAppData* app_data =
         ash::KioskWebAppManager::Get()->GetAppByAccountId(account_id);
-    DCHECK(app_data);
+    CHECK(app_data, base::NotFatalUntil::M162);
     return url::Origin::Create(app_data->install_url());
   }
 
   if (chromeos::IsIwaKioskSession()) {
     const AccountId& account_id =
-        user_manager::UserManager::Get()->GetPrimaryUser()->GetAccountId();
+        CHECK_DEREF(session_manager::SessionManager::Get()->GetPrimarySession())
+            .account_id();
     const ash::KioskIwaData* iwa_data =
         CHECK_DEREF(ash::KioskIwaManager::Get()).GetApp(account_id);
     return CHECK_DEREF(iwa_data).origin();
@@ -776,10 +781,22 @@ std::optional<GURL> ChromePermissionsClient::GetCanonicalOriginOverride(
     return requesting_origin;
   }
 
+  bool requester_is_delegatable_extension = false;
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  requester_is_delegatable_extension =
+      requester.scheme() == extensions::kExtensionScheme &&
+      requester.host() == extension_misc::kContextualTasksExtensionId &&
+      base::FeatureList::IsEnabled(
+          extensions_features::kApiContextualTasksPrivate) &&
+      base::FeatureList::IsEnabled(
+          contextual_tasks::kContextualTasksRearchitecture);
+#endif
+
   // Contextual Tasks:
   // Transform chrome:// origins to the DSE origin so that permissions are
   // stored under and shared with the DSE.
-  if (embedder == requester && embedder == GetContextualTasksOrigin()) {
+  if (embedder == GetContextualTasksOrigin() &&
+      (embedder == requester || requester_is_delegatable_extension)) {
     return GURL(UIThreadSearchTermsData().GoogleBaseURLValue())
         .DeprecatedGetOriginAsURL();
   }
@@ -799,6 +816,14 @@ std::optional<GURL> ChromePermissionsClient::GetCanonicalOriginOverride(
   // should remove this at some point, but for now always use the requesting
   // origin for embedded extensions. https://crbug.com/40435309.
   if (requesting_origin.SchemeIs(extensions::kExtensionScheme)) {
+    // Exception: The Contextual Tasks component extension is allowed to
+    // delegate permissions to the embedding origin so that permissions (such as
+    // microphone for voice search) are shared with the embedder (e.g. Google
+    // Search) when both kApiContextualTasksPrivate and
+    // kContextualTasksRearchitecture are enabled.
+    if (requester_is_delegatable_extension) {
+      return std::nullopt;
+    }
     return requesting_origin;
   }
 #endif
@@ -806,36 +831,13 @@ std::optional<GURL> ChromePermissionsClient::GetCanonicalOriginOverride(
   return std::nullopt;
 }
 
+#if BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_ANDROID)
 std::optional<GURL> ChromePermissionsClient::GetEmbeddingOriginOverride(
     const GURL& requesting_origin,
     content::RenderFrameHost* render_frame_host) {
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(render_frame_host);
-  content::WebContents* embedder_web_contents =
-      web_contents->GetOutermostWebContents();
-  url::Origin embedder =
-      embedder_web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
 
-  // New Tab Page:
-  // Use the WebContents origin as the embedding origin when the requesting
-  // origin is the NTP (chrome://new-tab-page).
-  // Note that the embedding origin is later transformed to the DSE origin via
-  // `GetCanonicalOriginOverride()`.
-  if (embedder == GetNewTabOrigin() || embedder == GetNtpOrigin()) {
-    return embedder.GetURL();
-  }
-
-  if (embedder == GetContextualTasksOrigin() ||
-      embedder == GetOmniboxPopupOrigin() ||
-      embedder == GetOmniboxEverywhereOrigin()) {
-    // Omnibox Popup, Omnibox Everywhere, and Contextual Tasks:
-    // Use the WebContents origin as the embedding origin.
-    // Note that the embedding origin is later transformed to the DSE origin via
-    // `GetCanonicalOriginOverride()`.
-    return embedder.GetURL();
-  }
-
-#if BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_ANDROID)
   // When a MIME handler extension is rendered as an OOPIF, key the
   // embedding origin to the extension so prompts and content settings
   // are attributed to the extension that produced the streamed content,
@@ -861,9 +863,40 @@ std::optional<GURL> ChromePermissionsClient::GetEmbeddingOriginOverride(
       }
     }
   }
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_ANDROID)
 
   return std::nullopt;
+}
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS) && !BUILDFLAG(IS_ANDROID)
+
+std::optional<content::PermissionResult>
+ChromePermissionsClient::GetPermissionResultOverride(
+    content::RenderFrameHost* render_frame_host,
+    const GURL& requesting_origin,
+    ContentSettingsType permission) {
+  if (!render_frame_host || url::Origin::Create(requesting_origin) !=
+                                render_frame_host->GetLastCommittedOrigin()) {
+    return std::nullopt;
+  }
+  auto override_result = pwc::PrivilegedWebContents::GetPermissionStatus(
+      render_frame_host, permission);
+  if (!override_result) {
+    return std::nullopt;
+  }
+  // Callers such as GeolocationServiceImpl::GetPermissionLevel and permission
+  // subscription handlers CHECK that `retrieved_permission_setting` is
+  // populated when status is GRANTED (e.g. GeolocationSetting when approximate
+  // geolocation is enabled).
+  if (override_result->status == blink::mojom::PermissionStatus::GRANTED &&
+      !override_result->retrieved_permission_setting.has_value()) {
+    const content_settings::PermissionSettingsInfo* info =
+        content_settings::PermissionSettingsRegistry::GetInstance()->Get(
+            permission);
+    if (info) {
+      override_result->retrieved_permission_setting =
+          info->delegate().ToPermissionSetting(CONTENT_SETTING_ALLOW);
+    }
+  }
+  return override_result;
 }
 
 // Considers any `new tab page` or `new tab` origins as being from the new tab
@@ -927,6 +960,17 @@ bool ChromePermissionsClient::IsPrivilegedInternalWebUIForUIRouting(
   return IsPrivilegedInternalWebUIForUIRouting(embedding_origin);
 }
 
+// When adding a new privileged WebUI surface here for embedded permission
+// prompts (PEPC), ensure that:
+// 1. The WebUI surface handles `@voice-permission-changed`
+//    from `composebox_voice_search.ts` and applies
+//    `--cr_composebox_minimum_height` and `--cr_composebox_minimum_width` in
+//    CSS so the container resizes to fit the permission prompt.
+// 2. `EmbeddedPermissionPromptContentScrimView::GetScrimBounds()` (and its
+//    rounded corner handling, if applicable) is updated if the surface's
+//    `WebContents` includes transparent padding or shadow margins around the
+//    visible card.
+// LINT.IfChange(PrivilegedPepcSurfaces)
 bool ChromePermissionsClient::
     IsPrivilegedInternalWebUIForUIRouting(  // overloaded private version
         const url::Origin& embedding_origin) {
@@ -934,6 +978,7 @@ bool ChromePermissionsClient::
          embedding_origin == GetOmniboxPopupOrigin() ||
          embedding_origin == GetOmniboxEverywhereOrigin();
 }
+// LINT.ThenChange(//chrome/browser/ui/views/permissions/embedded_permission_prompt_content_scrim_view.cc:PrivilegedPepcSurfaces)
 
 bool ChromePermissionsClient::IsOmniboxEverywhere(
     content::WebContents* web_contents) {
@@ -1122,9 +1167,8 @@ bool ChromePermissionsClient::IsActorOperatingOnWebContents(
     return false;
   }
 
-  const auto* tab_interface =
-      tabs::TabInterface::MaybeGetFromContents(web_contents);
-  return tab_interface && actor_service->IsActiveOnTab(*tab_interface);
+  return actor_service->GetActingActorTaskForWebContents(web_contents) !=
+         nullptr;
 }
 
 url::Origin ChromePermissionsClient::GetEmbeddingOrigin(

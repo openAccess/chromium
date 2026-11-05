@@ -11,6 +11,8 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
+#include "build/branding_buildflags.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_features.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_navigation_controller.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_overlay_view.h"
@@ -19,12 +21,13 @@
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/chrome_enterprise_url_lookup_service_factory.h"
+#include "chrome/browser/safe_browsing/realtime/chrome_enterprise_url_lookup_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -38,15 +41,25 @@
 #include "components/enterprise/data_controls/core/browser/test_utils.h"
 #include "components/enterprise/data_protection/features.h"
 #include "components/enterprise/data_protection/utils.h"
+#include "components/enterprise/watermarking/content/watermark_text_container.h"
+#include "components/enterprise/watermarking/mojom/watermark.mojom.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/core/browser/realtime/fake_url_lookup_service.h"
+#include "components/sessions/core/session_id.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/test/base/scoped_channel_override.h"
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
 
 namespace enterprise_watermark {
 
@@ -348,6 +361,10 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest, Apply_NoWatermark) {
                    ->GetContentsContainerViews()[0]
                    ->data_protection_overlay_view()
                    ->has_text_for_testing());
+  auto* watermark_text_container = WatermarkTextContainer::FromWebContents(
+      browser()->GetTabStripModel()->GetActiveWebContents());
+  ASSERT_TRUE(watermark_text_container);
+  EXPECT_FALSE(watermark_text_container->Serialize());
 }
 
 IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
@@ -402,8 +419,9 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
   EXPECT_TRUE(overlay_view->has_text_for_testing());
   std::string text = overlay_view->watermark_text_for_testing();
   EXPECT_NE(text.find("custom_message"), std::string::npos);
-  EXPECT_TRUE(base::MatchPattern(text, "*????-??-??T??:??:??+??:??") ||
-              base::MatchPattern(text, "*????-??-??T??:??:??-??:??"))
+  std::string timestamp = text.substr(text.rfind('\n') + 1);
+  EXPECT_TRUE(base::MatchPattern(timestamp, "????-??-??T??:??:??+??:??") ||
+              base::MatchPattern(timestamp, "????-??-??T??:??:??-??:??"))
       << "Actual watermark text: " << text;
 }
 
@@ -416,7 +434,8 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTestDisabled,
   EXPECT_TRUE(overlay_view->has_text_for_testing());
   std::string text = overlay_view->watermark_text_for_testing();
   EXPECT_NE(text.find("custom_message"), std::string::npos);
-  EXPECT_TRUE(base::MatchPattern(text, "*????-??-??T??:??:??.???Z"))
+  std::string timestamp = text.substr(text.rfind('\n') + 1);
+  EXPECT_TRUE(base::MatchPattern(timestamp, "????-??-??T??:??:??.???Z"))
       << "Actual watermark text: " << text;
 }
 
@@ -428,6 +447,10 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
                   ->GetContentsContainerViews()[0]
                   ->data_protection_overlay_view()
                   ->has_text_for_testing());
+  auto* watermark_text_container = WatermarkTextContainer::FromWebContents(
+      browser()->GetTabStripModel()->GetActiveWebContents());
+  ASSERT_TRUE(watermark_text_container);
+  EXPECT_TRUE(watermark_text_container->Serialize());
 
   // Navigate to a page that should not show a watermark.  The watermark should
   // still show while the page loads.
@@ -443,6 +466,10 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
                    ->GetContentsContainerViews()[0]
                    ->data_protection_overlay_view()
                    ->has_text_for_testing());
+  watermark_text_container =
+      WatermarkTextContainer::FromWebContents(web_contents);
+  ASSERT_TRUE(watermark_text_container);
+  EXPECT_FALSE(watermark_text_container->Serialize());
 }
 
 IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
@@ -478,7 +505,7 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
   NavigateParams params(browser(), GURL("chrome://version"),
                         ui::PAGE_TRANSITION_LINK);
   params.tabstrip_index = 1;
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   Navigate(&params);
   EXPECT_FALSE(BrowserView::GetBrowserViewForBrowser(browser())
                    ->GetContentsContainerViews()[0]
@@ -518,7 +545,7 @@ IN_PROC_BROWSER_TEST_F(WatermarkBrowserNavigationTest,
   NavigateParams params(browser(), GURL("https://nowatermark.com"),
                         ui::PAGE_TRANSITION_LINK);
   params.tabstrip_index = 1;
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   Navigate(&params);
   EXPECT_FALSE(BrowserView::GetBrowserViewForBrowser(browser())
                    ->GetContentsContainerViews()[0]
@@ -790,6 +817,10 @@ class WatermarkSettingsCommandLineBrowserTest : public InProcessBrowserTest {
   }
 
  private:
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+  chrome::ScopedChannelOverride channel_override_{
+      chrome::ScopedChannelOverride::Channel::kDev};
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
   base::test::ScopedFeatureList scoped_feature_list_{
       kEnableWatermarkCustomization};
 };

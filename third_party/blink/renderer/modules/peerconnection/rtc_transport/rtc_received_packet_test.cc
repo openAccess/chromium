@@ -4,11 +4,19 @@
 
 #include "third_party/blink/renderer/modules/peerconnection/rtc_transport/rtc_received_packet.h"
 
+#include <cstdint>
+#include <utility>
+
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_union_arraybufferallowshared_arraybufferviewallowshared.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
+#include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
@@ -65,7 +73,7 @@ TEST_F(RtcReceivedPacketTest, CopyPayloadToDetachedDestination) {
 
   auto* destination =
       DOMArrayBuffer::Create(/*num_elements=*/6, /*element_byte_size=*/1);
-  destination->Detach();
+  destination->DetachForTesting();
   DummyExceptionStateForTesting exception_state;
   packet->copyPayloadTo(
       MakeGarbageCollected<

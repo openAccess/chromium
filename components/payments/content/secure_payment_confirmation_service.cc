@@ -17,9 +17,9 @@
 #include "base/timer/elapsed_timer.h"
 #include "components/payments/content/browser_binding/browser_bound_key.h"
 #include "components/payments/content/browser_binding/browser_bound_key_store.h"
-#include "components/payments/content/web_payments_web_data_service.h"
 #include "components/payments/core/features.h"
 #include "components/payments/core/secure_payment_confirmation_credential.h"
+#include "components/payments/core/web_payments_web_data_service.h"
 #include "components/webauthn/core/browser/internal_authenticator.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_handle.h"
@@ -66,8 +66,9 @@ SecurePaymentConfirmationService::SecurePaymentConfirmationService(
     mojo::PendingReceiver<mojom::SecurePaymentConfirmationService> receiver,
     scoped_refptr<WebPaymentsWebDataService> web_data_service,
     std::unique_ptr<webauthn::InternalAuthenticator> authenticator,
-    std::string browser_bound_key_store_keychain_access_group)
-    : DocumentService(render_frame_host, std::move(receiver)),
+    std::string browser_bound_key_store_keychain_access_group,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key),
       web_data_service_(web_data_service),
       authenticator_(std::move(authenticator)),
       browser_bound_key_store_keychain_access_group_(

@@ -9,8 +9,10 @@
 #include "chrome/browser/ui/views/frame/browser_root_view.h"
 #include "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.h"
+#include "chrome/browser/ui/views/tabs/common/tab_collection_z_order_manager.h"
+#include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "ui/base/metadata/metadata_header_macros.h"
-#include "ui/views/layout/delegating_layout_manager.h"
+#include "ui/views/layout/layout_manager_base.h"
 #include "ui/views/view.h"
 
 class TabCollectionNode;
@@ -19,11 +21,10 @@ class TabCollectionNode;
 // tab strip. It manages the layout of all the pinned tabs and serves
 // as the drag target for pinned tabs.
 class PinnedTabContainerView
-    : public views::View,
-      public views::LayoutDelegate,
+    : public TabCollectionZOrderManager,
       public DraggedTabsContainer,
       public TabCollectionAnimatingLayoutManager::Delegate {
-  METADATA_HEADER(PinnedTabContainerView, views::View)
+  METADATA_HEADER(PinnedTabContainerView, TabCollectionZOrderManager)
 
  public:
   explicit PinnedTabContainerView(TabCollectionNode* collection_node);
@@ -31,12 +32,16 @@ class PinnedTabContainerView
   PinnedTabContainerView& operator=(const PinnedTabContainerView&) = delete;
   ~PinnedTabContainerView() override;
 
-  // LayoutDelegate:
-  views::ProposedLayout CalculateProposedLayout(
-      const views::SizeBounds& size_bounds) const override;
+  class LayoutManager : public views::LayoutManagerBase {
+   protected:
+    // views::LayoutManagerBase:
+    void OnInstalled(views::View* host) override;
 
-  // views::View:
-  gfx::Size GetMinimumSize() const override;
+    // Casts host_view() to a PinnedTabContainerView const ref, using
+    // static_cast. Avoids views::AsViewClass as it incurs overhead when
+    // checking metadata.
+    const class PinnedTabContainerView& PinnedTabContainerView() const;
+  };
 
   // TabCollectionAnimatingLayoutManager::Delegate:
   bool IsDragging() const override;
@@ -44,11 +49,17 @@ class PinnedTabContainerView
   bool ShouldAnimateOpacityForAddAndRemove(
       const views::View& child_view) const override;
   bool ShouldSnapToTarget(const views::View& child_view) const override;
+  bool ShouldAnimateLayout() override;
 
   std::optional<BrowserRootView::DropIndex> GetLinkDropIndex(
       const gfx::Point& loc_in_container);
 
  private:
+  friend class PinnedTabContainerViewVerticalLayout;
+  friend class PinnedTabContainerViewHorizontalLayout;
+
+  static constexpr int kTabPadding = 4;
+
   // DraggedTabsContainer:
   views::ScrollView* GetScrollViewForContainer() const override;
   void UpdateTargetLayoutForDrag(
@@ -56,11 +67,6 @@ class PinnedTabContainerView
   const views::ProposedLayout& GetLayoutForDrag() const override;
   const TabCollectionNode* GetCollectionNodeFromView(
       const views::View& view) const override;
-
-  views::ProposedLayout CalculateHorizontalLayout(
-      const views::SizeBounds& size_bounds) const;
-  views::ProposedLayout CalculateVerticalLayout(
-      const views::SizeBounds& size_bounds) const;
 
   // While in horizontal orientation, the x-coordinate of the single row is
   // used to determine the drop index.
@@ -79,7 +85,8 @@ class PinnedTabContainerView
   void ResetCollectionNode();
   void OnCollapseStateChanged(tabs::VerticalTabStripCollapseState state);
 
-  raw_ptr<TabCollectionNode> collection_node_;
+  const TabStripOrientation orientation_;
+  raw_ptr<TabCollectionNode> collection_node_ = nullptr;
   const raw_ref<TabCollectionAnimatingLayoutManager> layout_manager_;
 
   base::CallbackListSubscription node_destroyed_subscription_;

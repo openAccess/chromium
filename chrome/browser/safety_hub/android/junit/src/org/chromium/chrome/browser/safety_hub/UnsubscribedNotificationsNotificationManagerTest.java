@@ -14,7 +14,6 @@ import android.app.Notification;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
@@ -28,10 +27,9 @@ import java.util.List;
 
 /** JUnit tests for {@link UnsubscribedNotificationsNotificationManager} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures({
     NotificationFeatureMap.CACHE_NOTIIFICATIONS_ENABLED,
-    ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION + ":shadow_run/false"
+    ChromeFeatureList.SAFETY_HUB_DISRUPTIVE_NOTIFICATION_REVOCATION
 })
 public class UnsubscribedNotificationsNotificationManagerTest {
     private MockNotificationManagerProxy mMockNotificationManager;

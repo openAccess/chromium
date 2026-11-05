@@ -31,7 +31,6 @@
 #include "components/permissions/permission_actions_history.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/permissions/permission_request.h"
-#include "components/permissions/permission_request_data.h"
 #include "components/permissions/permission_uma_constants.h"
 #include "components/permissions/permission_util.h"
 #include "components/permissions/permissions_client.h"
@@ -152,8 +151,6 @@ std::string GetPermissionRequestString(RequestTypeForUma type) {
       return "HandTracking";
     case RequestTypeForUma::PERMISSION_STORAGE_ACCESS:
       return "StorageAccess";
-    case RequestTypeForUma::PERMISSION_TOP_LEVEL_STORAGE_ACCESS:
-      return "TopLevelStorageAccess";
     case RequestTypeForUma::PERMISSION_CAMERA_PAN_TILT_ZOOM:
       return "CameraPanTiltZoom";
     case RequestTypeForUma::PERMISSION_WINDOW_MANAGEMENT:
@@ -192,13 +189,15 @@ std::string GetPermissionRequestString(RequestTypeForUma type) {
       return "GeolocationApproximate";
     case RequestTypeForUma::PERMISSION_GEOLOCATION_UPGRADE:
       return "GeolocationUpgrade";
+    case RequestTypeForUma::PERMISSION_AMBIENT_LOGIN:
+      return "AmbientLogin";
 
     case RequestTypeForUma::UNKNOWN:
     case RequestTypeForUma::NUM:
       NOTREACHED();
   }
 }
-// LINT.ThenChange(//components/permissions/permission_uma_util.h:RequestTypeForUma)
+// LINT.ThenChange(//components/permissions/permission_uma_constants.h:RequestTypeForUma)
 
 // Helper to check if the current render frame host is cross-origin with top
 // level frame. Note: in case of nested frames like A(B(A)), the bottom frame A
@@ -673,8 +672,6 @@ std::string GetPermissionStringForUma(
       return "HandTracking";
     case ContentSettingsType::STORAGE_ACCESS:
       return "StorageAccess";
-    case ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS:
-      return "TopLevelStorageAccess";
     case ContentSettingsType::CAMERA_PAN_TILT_ZOOM:
       return "CameraPanTiltZoom";
     case ContentSettingsType::WINDOW_MANAGEMENT:
@@ -1125,7 +1122,7 @@ void PermissionUmaUtil::PermissionPromptResolved(
   base::UmaHistogramEnumeration(
       base::StrCat({"Permissions.Action.WithDisposition.",
                     GetPromptDispositionString(ui_disposition)}),
-      permission_action, PermissionAction::NUM);
+      permission_action);
 
   RequestTypeForUma type = PermissionUtil::GetUmaValueForRequests(requests);
 
@@ -1136,7 +1133,7 @@ void PermissionUmaUtil::PermissionPromptResolved(
   base::UmaHistogramEnumeration(
       base::StrCat({"Permissions.Prompt.", permission_type, ".",
                     permission_disposition, ".Action"}),
-      permission_action, PermissionAction::NUM);
+      permission_action);
 
   if (!time_to_action.is_zero()) {
     base::UmaHistogramLongTimes(
@@ -1206,8 +1203,7 @@ void PermissionUmaUtil::PermissionPromptResolved(
         {"Permissions.PredictionService.Action.", permission_type, ".",
          GetPredictionGrantLikelihoodString(predicted_grant_likelihood.value()),
          ".", prominence_string});
-    base::UmaHistogramEnumeration(histogram_name, permission_action,
-                                  PermissionAction::NUM);
+    base::UmaHistogramEnumeration(histogram_name, permission_action);
   }
 
   if (predicted_grant_likelihood.has_value() &&
@@ -1264,8 +1260,7 @@ void PermissionUmaUtil::PermissionPromptResolved(
       std::string histogram_name = base::StrCat(
           {"Permissions.PredictionService.Action.", permission_type,
            gesture_suffix, ".", prominence_string});
-      base::UmaHistogramEnumeration(histogram_name, permission_action,
-                                    PermissionAction::NUM);
+      base::UmaHistogramEnumeration(histogram_name, permission_action);
     }
   }
 }  // namespace permissions
@@ -1317,7 +1312,7 @@ void PermissionUmaUtil::RecordMissingPermissionInfobarAction(
     base::UmaHistogramEnumeration(
         "Permissions.MissingOSLevelPermission.Action." +
             PermissionUtil::GetPermissionString(content_settings_type),
-        action, PermissionAction::NUM);
+        action);
   }
 }
 
@@ -1559,7 +1554,7 @@ void PermissionUmaUtil::RecordPermissionAction(
   base::UmaHistogramEnumeration(
       base::StrCat(
           {"Permissions.Action.", GetPermissionStringForUma(permission)}),
-      action, PermissionAction::NUM);
+      action);
 }
 
 // static
@@ -1800,7 +1795,6 @@ void PermissionUmaUtil::RecordPageInfoPermissionChangeWithin1m(
     case PermissionAction::IGNORED:    // ignoring has no effect on content
                                        // settings
     case PermissionAction::REVOKED:  // not a relevant use case for this metric
-    case PermissionAction::NUM:      // placeholder
       break;                         // NOP
   }
 }
@@ -1820,7 +1814,7 @@ void PermissionUmaUtil::RecordPageInfoCameraMicPermissionChange(
       GetPermissionRequestString(PermissionUtil::GetUmaValueForRequestType(
           ContentSettingsTypeToRequestType(type)));
   std::string histogram_name =
-      "Permissions.PageInfo.Changed." + permission_type;
+      "Permissions.PageInfo.OnChanged." + permission_type;
 
   if (is_subscribed_to_permission_change_event) {
     histogram_name = histogram_name + ".ReloadInfobarNotShown";
@@ -1932,6 +1926,8 @@ std::string PermissionUmaUtil::GetPromptDispositionString(
       return "LocationBarLeftQuietChip";
     case PermissionPromptDisposition::LOCATION_BAR_LEFT_QUIET_ABUSIVE_CHIP:
       return "LocationBarLeftQuietAbusiveChip";
+    case PermissionPromptDisposition::LOCATION_BAR_LEFT_CHIP:
+      return "LocationBarLeftChip";
     case PermissionPromptDisposition::LOCATION_BAR_LEFT_CHIP_AUTO_BUBBLE:
       return "LocationBarLeftChipAutoBubble";
     case PermissionPromptDisposition::LOCATION_BAR_RIGHT_ANIMATED_ICON:
@@ -1948,8 +1944,6 @@ std::string PermissionUmaUtil::GetPromptDispositionString(
       return "NoneVisible";
     case PermissionPromptDisposition::NOT_APPLICABLE:
       return "NotApplicable";
-    case PermissionPromptDisposition::MAC_OS_PROMPT:
-      return "MacOsPrompt";
     case PermissionPromptDisposition::MESSAGE_UI_LOUD:
       return "MessageUILoud";
     case PermissionPromptDisposition::LOCATION_BAR_LEFT_QUIET_ICON:
@@ -2129,7 +2123,7 @@ void PermissionUmaUtil::RecordCrossOriginFrameActionAndPolicyConfiguration(
       base::StrCat({kPermissionsActionPrefix,
                     PermissionUtil::GetPermissionString(content_settings_type),
                     ".CrossOriginFrame"});
-  base::UmaHistogramEnumeration(histogram, action, PermissionAction::NUM);
+  base::UmaHistogramEnumeration(histogram, action);
   RecordTopLevelPermissionsHeaderPolicy(
       content_settings_type, base::StrCat({histogram, ".TopLevelHeaderPolicy"}),
       render_frame_host);

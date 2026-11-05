@@ -180,7 +180,7 @@ class PermissionManagerTest : public content::RenderViewHostTestHarness {
         std::move(content::PermissionRequestDescription(
             content::PermissionDescriptorUtil::
                 CreatePermissionDescriptorForPermissionType(type),
-            /*user_gesture=*/true, rfh->GetLastCommittedOrigin().GetURL())),
+            /*user_gesture=*/true)),
         base::BindOnce(
             [](base::OnceCallback<void(content::PermissionResult)> callback,
                const std::vector<content::PermissionResult>& result) {
@@ -200,7 +200,7 @@ class PermissionManagerTest : public content::RenderViewHostTestHarness {
         content::PermissionRequestDescription(
             content::PermissionDescriptorUtil::
                 CreatePermissionDescriptorForPermissionType(type),
-            /*user_gesture=*/true, rfh->GetLastCommittedOrigin().GetURL()),
+            /*user_gesture=*/true),
         base::BindOnce(
             [](base::OnceCallback<void(content::PermissionResult)> callback,
                const std::vector<content::PermissionResult>& result) {
@@ -896,7 +896,7 @@ TEST_F(PermissionManagerTest,
        GetPermissionContextForNotAddedPermissionContext) {
   PermissionContextBase* context =
       GetPermissionManager()->GetPermissionContextForTesting(
-          ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS);
+          ContentSettingsType::LOCAL_FONTS);
 
   // Context is null because it is not added to PermissionContextMap.
   EXPECT_TRUE(!context);
@@ -928,6 +928,34 @@ TEST_F(PermissionManagerTest, StorageAccessPermissionRequestMasksDenied) {
                                        main_rfh());
   EXPECT_TRUE(callback_called());
   EXPECT_EQ(PermissionStatus::ASK, callback_result());
+}
+
+// Regression test for https://crbug.com/571195939: an opaque initial empty
+// document must not be able to use the permission grants of the origin it is
+// navigating to while that navigation is still pending.
+TEST_F(PermissionManagerTest,
+       InitialEmptyDocumentDoesNotUseGrantOfPendingNavigation) {
+  SetPermission(PermissionType::GEOLOCATION, PermissionStatus::GRANTED);
+
+  std::unique_ptr<content::WebContents> contents = CreateTestWebContents();
+  content::RenderFrameHost* rfh = contents->GetPrimaryMainFrame();
+  content::RenderFrameHostTester::For(rfh)->InitializeRenderFrameIfNeeded();
+  ASSERT_TRUE(rfh->GetLastCommittedOrigin().opaque());
+
+  // Start, but do not commit, a navigation to an origin with a grant. This
+  // makes the pending URL the visible URL of the WebContents.
+  auto navigation = content::NavigationSimulator::CreateBrowserInitiated(
+      url(), contents.get());
+  navigation->Start();
+  ASSERT_EQ(url(), contents->GetVisibleURL());
+  ASSERT_EQ(rfh, contents->GetPrimaryMainFrame());
+
+  EXPECT_EQ(PermissionStatus::DENIED, GetPermissionStatusForCurrentDocument(
+                                          PermissionType::GEOLOCATION, rfh));
+
+  RequestPermissionFromCurrentDocument(PermissionType::GEOLOCATION, rfh);
+  EXPECT_TRUE(callback_called());
+  EXPECT_EQ(PermissionStatus::DENIED, callback_result());
 }
 
 class PermissionManagerWithGeolocationTest : public PermissionManagerTest {

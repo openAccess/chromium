@@ -251,9 +251,6 @@ table {
     border-spacing: 2px;
     border-collapse: separate;
     text-indent: initial;
-    @supports not blink-feature(TableDefaultBorderColorCurrentColor) {
-        border-color: gray;
-    }
 }
 
 thead {
@@ -520,24 +517,6 @@ input::-webkit-textfield-decoration-container {
     writing-mode: inherit !important;
 }
 
-@supports not blink-feature(HTMLInputElementDropWebkitClearButton) {
-    input::-webkit-clear-button {
-        appearance: auto;
-        display: inline-block;
-        cursor: default;
-        flex: none;
-        -webkit-user-modify: read-only !important;
-        margin-inline-start: 2px;
-        opacity: 0;
-        pointer-events: none;
-    }
-
-    input:enabled:read-write:-webkit-any(:focus,:hover)::-webkit-clear-button {
-        opacity: 1;
-        pointer-events: auto;
-    }
-}
-
 input[type="search" i]::-webkit-search-cancel-button {
     appearance: auto;
     display: block;
@@ -632,6 +611,42 @@ input::-internal-input-suggested {
     text-overflow: inherit;
     white-space: nowrap;
     overflow: hidden;
+}
+
+textarea::-internal-input-suggested {
+    max-inline-size: 100%;
+    max-block-size: 100%;
+    overflow: hidden;
+}
+
+input::-internal-input-suggested,
+textarea::-internal-input-suggested {
+    pointer-events: none !important;
+}
+
+/* Date and time inputs render a previewed value as text in their UA shadow
+   tree. Keep it out of copy and drag text, like the text control and <select>
+   previews. */
+input:-internal-autofill-previewed::-webkit-datetime-edit,
+input:-internal-autofill-previewed::-webkit-datetime-edit-ampm-field,
+input:-internal-autofill-previewed::-webkit-datetime-edit-day-field,
+input:-internal-autofill-previewed::-webkit-datetime-edit-hour-field,
+input:-internal-autofill-previewed::-webkit-datetime-edit-millisecond-field,
+input:-internal-autofill-previewed::-webkit-datetime-edit-minute-field,
+input:-internal-autofill-previewed::-webkit-datetime-edit-month-field,
+input:-internal-autofill-previewed::-webkit-datetime-edit-second-field,
+input:-internal-autofill-previewed::-webkit-datetime-edit-week-field,
+input:-internal-autofill-previewed::-webkit-datetime-edit-year-field,
+input:-internal-autofill-previewed::-webkit-datetime-edit-text,
+input:-internal-autofill-previewed::-webkit-datetime-edit-fields-wrapper {
+    user-select: none !important;
+    -webkit-user-modify: read-only !important;
+}
+/* Separate from the rule above because ::-webkit-date-and-time-value is
+   invalid in configurations which don't expose the pseudo-element. */
+input:-internal-autofill-previewed::-webkit-date-and-time-value {
+    user-select: none !important;
+    -webkit-user-modify: read-only !important;
 }
 
 @supports blink-feature(AutofillPreviewIgnoreAuthorFont) {
@@ -783,17 +798,17 @@ input[type="image" i] {
 
 input[type="radio" i],
 input[type="checkbox" i] {
+    cursor: default;
+
     @supports not blink-feature(AppearanceBase) {
         padding: initial;
         background-color: initial;
         border: initial;
-        cursor: default;
     }
     @supports blink-feature(AppearanceBase) {
         padding: -internal-auto-base(initial, unset);
         background-color: -internal-auto-base(initial, transparent);
         border: -internal-auto-base(initial, 1px solid currentColor);
-        cursor: -internal-auto-base(default, unset);
 
         block-size: -internal-auto-base(unset, 1em);
         inline-size: -internal-auto-base(unset, 1em);
@@ -861,10 +876,20 @@ input[type="button" i], input[type="submit" i], input[type="reset" i] {
 input[type="file" i]::-webkit-file-upload-button {
     appearance: auto;
     -webkit-user-modify: read-only !important;
-    white-space: nowrap;
-    margin: 0;
-    margin-inline-end: 4px; /* See FileUploadControlIntrinsicInlineSize() */
-    font-size: inherit;
+
+    @supports not blink-feature(AppearanceBase) {
+        white-space: nowrap;
+        margin: 0;
+        margin-inline-end: 4px; /* See FileUploadControlIntrinsicInlineSize() */
+        font-size: inherit;
+    }
+
+    @supports blink-feature(AppearanceBase) {
+        white-space: -internal-auto-base(nowrap, revert-rule);
+        margin: -internal-auto-base(0, revert-rule);
+        margin-inline-end: -internal-auto-base(4px, revert-rule); /* See FileUploadControlIntrinsicInlineSize() */
+        font-size: -internal-auto-base(inherit, revert-rule);
+    }
 }
 
 input[type="button" i],
@@ -877,7 +902,6 @@ button {
 
     @supports not blink-feature(AppearanceBase) {
         text-align: center;
-        cursor: default;
         padding-block: 1px;
         padding-inline: 6px;
         border: 2px outset ButtonBorder;
@@ -978,6 +1002,7 @@ button:disabled {
         background-color: -internal-auto-base(light-dark(rgba(239, 239, 239, 0.3), rgba(19, 1, 1, 0.3)), revert-rule);
         border-color: -internal-auto-base(light-dark(rgba(118, 118, 118, 0.3), rgba(195, 195, 195, 0.3)), revert-rule);
         color: -internal-auto-base(light-dark(rgba(16, 16, 16, 0.3), rgba(255, 255, 255, 0.3)), color-mix(currentColor 50%, transparent));
+        cursor: -internal-auto-base(default, not-allowed);
     }
 }
 
@@ -986,6 +1011,7 @@ input[type="color" i]:disabled {
         background-color: -internal-auto-base(light-dark(rgba(239, 239, 239, 0.3), rgba(19, 1, 1, 0.3)), transparent);
         border-color: -internal-auto-base(light-dark(rgba(118, 118, 118, 0.3), rgba(195, 195, 195, 0.3)), currentColor);
         color: -internal-auto-base(light-dark(rgba(16, 16, 16, 0.3), rgba(255, 255, 255, 0.3)), color-mix(currentColor 50%, transparent));
+        cursor: -internal-auto-base(default, not-allowed);
     }
     @supports not blink-feature(AppearanceBase) {
         background-color: light-dark(rgba(239, 239, 239, 0.3), rgba(19, 1, 1, 0.3));
@@ -1013,14 +1039,14 @@ input[type="button" i]:active:disabled, input[type="submit" i]:active:disabled, 
 }
 
 input:disabled, textarea:disabled {
-    cursor: default;
-
     @supports not blink-feature(AppearanceBase) {
+        cursor: default;
         background-color: light-dark(rgba(239, 239, 239, 0.3), rgba(59, 59, 59, 0.3));
         color: light-dark(#545454, #aaaaaa);
     }
 
     @supports blink-feature(AppearanceBase) {
+        cursor: -internal-auto-base(default, not-allowed);
         background-color: -internal-auto-base(light-dark(rgba(239, 239, 239, 0.3), rgba(59, 59, 59, 0.3)), unset);
         color: -internal-auto-base(light-dark(#545454, #aaaaaa), color-mix(currentColor 50%, transparent));
     }
@@ -1041,12 +1067,7 @@ input[type="image" i] {
 }
 
 /* https://html.spec.whatwg.org/multipage/rendering.html#hidden-elements */
-@supports blink-feature(HTMLAreaElementDisplayNone) {
-  area {
-    display: none;
-  }
-}
-base, basefont, datalist, head, link, meta, noembed,
+area, base, basefont, datalist, head, link, meta, noembed,
 noframes, param, rp, script, style, template, title {
   display: none;
 }
@@ -1079,6 +1100,7 @@ input[type="radio" i] {
 input[type="color" i] {
     appearance: auto;
     box-sizing: border-box;
+    cursor: default;
 
     @supports not blink-feature(AppearanceBase) {
         inline-size: 50px;
@@ -1086,7 +1108,6 @@ input[type="color" i] {
         /* Same as native_theme_base. */
         border: 1px solid ButtonBorder;
         padding: 1px 2px;
-        cursor: default;
         background-color: ButtonFace;
         color: ButtonText;
     }
@@ -1097,7 +1118,6 @@ input[type="color" i] {
         /* Same as native_theme_base when auto. */
         border: 1px solid -internal-auto-base(ButtonBorder, currentColor);
         padding: -internal-auto-base(1px 2px, 0);
-        cursor: -internal-auto-base(default, inherit);
         background-color: -internal-auto-base(ButtonFace, transparent);
         color: -internal-auto-base(ButtonText, inherit);
 
@@ -1172,34 +1192,6 @@ input[type="color" i]::-webkit-color-swatch {
     }
 }
 
-input::-internal-email-verification-indicator {
-    display: none;
-    inline-size: 16px;
-    block-size: 16px;
-    padding: 2px;
-    -webkit-user-modify: read-only !important;
-    cursor: default;
-    background-repeat: no-repeat;
-    background-position: center;
-    background-size: contain;
-}
-
-input::-internal-email-verification-indicator[data-state="verified"] {
-    display: inline-block;
-    background-image: url("images/email_verification_verified.svg");
-}
-
-input::-internal-email-verification-indicator[data-state="loading"] {
-    display: inline-block;
-    background-image: url("images/email_verification_loading.svg");
-    animation: -internal-email-verification-spin 1s linear infinite;
-}
-
-@keyframes -internal-email-verification-spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-}
-
 input::-webkit-calendar-picker-indicator {
     display: inline-block;
     inline-size: 0.66em;
@@ -1233,19 +1225,6 @@ input[type="month" i][readonly]::-webkit-inner-spin-button,
 input[type="week" i][readonly]::-webkit-inner-spin-button,
 input[readonly]::-webkit-calendar-picker-indicator {
     visibility: hidden;
-}
-
-@supports not blink-feature(HTMLInputElementDropWebkitClearButton) {
-    input[type="date" i]:disabled::-webkit-clear-button,
-    input[type="datetime-local" i]:disabled::-webkit-clear-button,
-    input[type="month" i]:disabled::-webkit-clear-button,
-    input[type="week" i]:disabled::-webkit-clear-button,
-    input[type="date" i][readonly]::-webkit-clear-button,
-    input[type="datetime-local" i][readonly]::-webkit-clear-button,
-    input[type="month" i][readonly]::-webkit-clear-button,
-    input[type="week" i][readonly]::-webkit-clear-button {
-        visibility: hidden;
-    }
 }
 
 /* Form controls that measure the inline size without doing actual layout
@@ -1418,6 +1397,9 @@ textarea:disabled {
 }
 select:disabled {
   border-color: -internal-auto-base(rgba(118, 118, 118, 0.3), currentColor);
+  @supports blink-feature(CustomizableSelectNewUAStyles) {
+    cursor: -internal-auto-base(default, not-allowed);
+  }
 }
 
 select:disabled,
@@ -1444,13 +1426,27 @@ output {
 /* meter */
 
 meter {
--webkit-user-modify: read-only !important;
-appearance: auto;
-block-size: 1em;
-box-sizing: border-box;
-display: inline-block;
-inline-size: 5em;
-vertical-align: -0.2em;
+    -webkit-user-modify: read-only !important;
+    appearance: auto;
+    box-sizing: border-box;
+
+    @supports not blink-feature(AppearanceBase) {
+        block-size: 1em;
+        display: inline-block;
+        inline-size: 5em;
+        vertical-align: -0.2em;
+    }
+
+    @supports blink-feature(AppearanceBase) {
+        block-size: -internal-auto-base(1em, revert-rule);
+        display: -internal-auto-base(inline-block, revert-rule);
+        inline-size: -internal-auto-base(5em, 100%);
+        vertical-align: -internal-auto-base(-0.2em, revert-rule);
+
+        color: -internal-auto-base(revert-rule, inherit);
+        font: -internal-auto-base(revert-rule, inherit);
+        background-color: -internal-auto-base(revert-rule, transparent);
+    }
 }
 
 meter::-webkit-meter-inner-element {
@@ -1462,25 +1458,55 @@ display: grid;
 grid-template-rows: 1fr [line1] 2fr [line2] 1fr;
 inline-size: 100%;
 position: relative;
+
+@supports blink-feature(AppearanceBase) {
+    /** This pseudo element doesn't exist in the base layout. */
+    display: -internal-auto-base(revert-rule, contents) !important;
+}
 }
 
 meter::-webkit-meter-bar {
--webkit-user-modify: read-only !important;
-align-self: unsafe center;
-background: linear-gradient(to bottom, #ddd, #eee 20%, #ccc 45%, #ccc 55%, #ddd);
-block-size: 100%;
-box-sizing: border-box;
-grid-row-end: line2;
-grid-row-start: line1;
-inline-size: 100%;
-overflow: hidden;
-position: absolute;
+    -webkit-user-modify: read-only !important;
+    box-sizing: border-box;
+    inline-size: 100%;
+
+    @supports not blink-feature(AppearanceBase) {
+        align-self: unsafe center;
+        background: linear-gradient(to bottom, #ddd, #eee 20%, #ccc 45%, #ccc 55%, #ddd);
+        block-size: 100%;
+        grid-row-end: line2;
+        grid-row-start: line1;
+        overflow: hidden;
+        position: absolute;
+    }
+
+    @supports blink-feature(AppearanceBase) {
+        /* TODO(crbug.com/450139531): These styles are for meter::slider-track,
+         * for now use the webkit pseudo elements. */
+        align-self: -internal-auto-base(unsafe center, revert-rule);
+        background: -internal-auto-base(linear-gradient(to bottom, #ddd, #eee 20%, #ccc 45%, #ccc 55%, #ddd), revert-rule);
+        block-size: -internal-auto-base(100%, 1em);
+        grid-row-end: -internal-auto-base(line2, revert-rule);
+        grid-row-start: -internal-auto-base(line1, revert-rule);
+        overflow: -internal-auto-base(hidden, revert-rule);
+        position: -internal-auto-base(absolute, revert-rule);
+    }
 }
 
 meter::-webkit-meter-bar:-internal-shadow-host-has-non-auto-appearance {
-background: light-dark(#efefef, #3B3B3B);
-border-radius: 20px;
-border: thin solid light-dark(rgba(118, 118, 118, 0.3), #858585);
+    @supports not blink-feature(AppearanceBase) {
+        background: light-dark(#efefef, #3B3B3B);
+        border-radius: 20px;
+        border: thin solid light-dark(rgba(118, 118, 118, 0.3), #858585);
+    }
+
+    @supports blink-feature(AppearanceBase) {
+        /* TODO(crbug.com/450139531): These styles are for meter::slider-track,
+         * for now use the webkit pseudo elements. */
+        background: -internal-auto-base(light-dark(#efefef, #3B3B3B), transparent);
+        border-radius: -internal-auto-base(20px, revert-rule);
+        border: -internal-auto-base(thin solid light-dark(rgba(118, 118, 118, 0.3), #858585), 1px solid currentColor);
+    }
 }
 
 meter::-webkit-meter-optimum-value {
@@ -1491,7 +1517,15 @@ box-sizing: border-box;
 }
 
 meter::-webkit-meter-optimum-value:-internal-shadow-host-has-non-auto-appearance {
-background: light-dark(#107c10, #74b374);
+    @supports not blink-feature(AppearanceBase) {
+        background: light-dark(#107c10, #74b374);
+    }
+
+    @supports blink-feature(AppearanceBase) {
+        /* TODO(crbug.com/450139531): These styles are for meter::slider-fill,
+         * for now use the webkit pseudo elements. */
+        background: -internal-auto-base(light-dark(#107c10, #74b374), green);
+    }
 }
 
 meter::-webkit-meter-suboptimum-value {
@@ -1502,7 +1536,15 @@ box-sizing: border-box;
 }
 
 meter::-webkit-meter-suboptimum-value:-internal-shadow-host-has-non-auto-appearance {
-background: light-dark(#ffb900, #f2c812);
+    @supports not blink-feature(AppearanceBase) {
+        background: light-dark(#ffb900, #f2c812);
+    }
+
+    @supports blink-feature(AppearanceBase) {
+        /* TODO(crbug.com/450139531): These styles are for meter::slider-fill,
+         * for now use the webkit pseudo elements. */
+        background: -internal-auto-base(light-dark(#ffb900, #f2c812), orange);
+    }
 }
 
 meter::-webkit-meter-even-less-good-value {
@@ -1513,7 +1555,24 @@ box-sizing: border-box;
 }
 
 meter::-webkit-meter-even-less-good-value:-internal-shadow-host-has-non-auto-appearance {
-background: light-dark(#d83b01, #e98f6d);
+    @supports not blink-feature(AppearanceBase) {
+        background: light-dark(#d83b01, #e98f6d);
+    }
+
+    @supports blink-feature(AppearanceBase) {
+        /* TODO(crbug.com/450139531): These styles are for meter::slider-fill,
+         * for now use the webkit pseudo elements. */
+        background: -internal-auto-base(light-dark(#d83b01, #e98f6d), red);
+    }
+}
+
+/* The meter gauge is drawn with CSS backgrounds. Keep it visible when
+ * printing without background graphics. crbug.com/41198413 */
+meter::-webkit-meter-bar,
+meter::-webkit-meter-optimum-value,
+meter::-webkit-meter-suboptimum-value,
+meter::-webkit-meter-even-less-good-value {
+    print-color-adjust: exact;
 }
 
 /* progress */
@@ -1665,15 +1724,13 @@ button[interestfor] {
 }
 
 [interestfor]::interest-button {
-  position: absolute;
-  position-anchor: auto;
-  position-area: inline-end;
+  display: inline-block;
+  vertical-align: middle;
   color: inherit;
   background-color: transparent;
   box-sizing: border-box;
   min-inline-size: 24px;
   min-block-size: max(24px, 1lh);
-  margin-block: min(-24px, -1lh);
   align-content: center;
   text-align: center;
   user-select: none;
@@ -2118,7 +2175,9 @@ select:not(:-internal-list-box) {
   text-align: -internal-auto-base(start, initial);
   text-indent: -internal-auto-base(0px, initial);
   -webkit-rtl-ordering: -internal-auto-base(logical, inherit);
-  cursor: -internal-auto-base(default, inherit);
+  @supports not blink-feature(CustomizableSelectNewUAStyles) {
+    cursor: -internal-auto-base(default, inherit);
+  }
   white-space: -internal-auto-base(pre, inherit);
   /* This text-autospace rule won't work because it is set with !important
    * earlier in the UA stylesheet. After merging with the rest of the UA
@@ -2158,7 +2217,9 @@ select {
   text-align: -internal-auto-base(start, initial);
   text-indent: -internal-auto-base(0px, initial);
   -webkit-rtl-ordering: -internal-auto-base(logical, inherit);
-  cursor: -internal-auto-base(default, inherit);
+  @supports not blink-feature(CustomizableSelectNewUAStyles) {
+    cursor: -internal-auto-base(default, inherit);
+  }
   white-space: -internal-auto-base(pre, inherit);
   /* See note in CustomizableSelect feature block about text-autospace. */
   text-autospace: -internal-auto-base(no-autospace !important, inherit);
@@ -2354,6 +2415,11 @@ select::-internal-select-autofill-preview[popover]:popover-open {
   padding: 0;
   border: 1px solid black;
 }
+select::-internal-select-autofill-preview,
+select::-internal-select-autofill-preview-text {
+  user-select: none !important;
+  -webkit-user-modify: read-only !important;
+}
 select::-internal-select-autofill-preview-text {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2490,11 +2556,13 @@ select optgroup optgroup {
     background-color: Canvas;
     border: 1px solid currentColor;
     padding: 0.25em;
-  }
 
-  menulist:-internal-menulist-popover-with-menubar-anchor {
     /* Below and span-right, by default. */
     position-area: block-end span-inline-end;
+  }
+
+  menulist:-internal-popover-in-top-layer::backdrop {
+    pointer-events: none !important;
   }
 
   menulist:-internal-menulist-popover-with-menulist-anchor {
@@ -2520,11 +2588,13 @@ select optgroup optgroup {
     border-block-start: 1px solid currentColor;
   }
 
-  menuitem::checkmark {
+  menuitemcheckbox::checkmark,
+  menuitemradio::checkmark {
     content: '\2713' / '';
   }
 
-  menuitem:not(:checked)::checkmark {
+  menuitemcheckbox:not(:checked)::checkmark,
+  menuitemradio:not(:checked)::checkmark {
     visibility: hidden;
   }
 
@@ -2539,11 +2609,19 @@ select optgroup optgroup {
     display: contents;
   }
 
-  menuitem {
+  menuitem,
+  menuitemcheckbox,
+  menuitemradio {
     display: inline-flex;
     /* menuitems in a menubar do not open on interest (hover), unless a menu
      * is already open (see below) */
     interest-delay-start: calc(infinity * 1s);
+  }
+
+  menulist menuitem,
+  menulist menuitemcheckbox,
+  menulist menuitemradio {
+    display: flex;
   }
 
   /* menuitems in a menubar that has an open menu trigger instantly on
@@ -2554,12 +2632,11 @@ select optgroup optgroup {
   }
 
   menulist menuitem {
-    display: flex;
     interest-delay-start: normal;
   }
 
   menubar, menulist {
-    menuitem {
+    menuitem, menuitemcheckbox, menuitemradio {
       align-items: center;
       user-select: none;
       gap: 0.5em;
@@ -2576,10 +2653,14 @@ select optgroup optgroup {
       padding-inline: 0.5em;
     }
 
-    menuitem:enabled:hover {
+    menuitem:enabled:hover,
+    menuitemcheckbox:enabled:hover,
+    menuitemradio:enabled:hover {
       background-color: color-mix(currentColor 10%, transparent);
     }
-    menuitem:disabled {
+    menuitem:disabled,
+    menuitemcheckbox:disabled,
+    menuitemradio:disabled {
       color: color-mix(currentColor 50%, transparent);
     }
 
@@ -2594,14 +2675,6 @@ select optgroup optgroup {
 
 [overscrollcontainer] {
   -internal-overscroll-container: auto;
-}
-
-[overscrollcontainer] > [overscrollarea] {
-  -internal-overscroll-position: auto;
-}
-
-[overscrollcontainer] > [overscrollarea]:not(:overscroll-open) {
-  interactivity: inert;
 }
 
 [overscrollcontainer] > [overscrollarea]::overscroll-backdrop {

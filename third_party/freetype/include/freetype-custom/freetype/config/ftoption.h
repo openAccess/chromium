@@ -673,6 +673,7 @@ FT_BEGIN_HEADER
 #define TT_CONFIG_CMAP_FORMAT_12
 #define TT_CONFIG_CMAP_FORMAT_13
 #define TT_CONFIG_CMAP_FORMAT_14
+#define TT_CONFIG_CMAP_FORMAT_15
 
 
   /*************************************************************************/
@@ -790,7 +791,7 @@ FT_BEGIN_HEADER
    * by allowing glyphs to be composed from other glyphs with variable
    * transformations and axis value overrides.
    */
-#define TT_CONFIG_OPTION_VARC
+#undef TT_CONFIG_OPTION_VARC
 
 
   /**************************************************************************

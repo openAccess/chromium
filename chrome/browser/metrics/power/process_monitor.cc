@@ -13,6 +13,7 @@
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/observer_list.h"
+#include "base/process/process.h"
 #include "base/process/process_handle.h"
 #include "base/process/process_metrics.h"
 #include "base/strings/utf_string_conversions.h"
@@ -153,7 +154,7 @@ ProcessMonitor::Metrics GetLastIntervalMetrics(
 
 ProcessInfo::Key GetMonitoredProcessInfoKeyForRenderProcess(
     content::RenderProcessHost* host) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   content::BrowserContext* browser_context = host->GetBrowserContext();
   if (extensions::ChromeContentBrowserClientExtensionsPart::
@@ -271,8 +272,10 @@ ProcessMonitor::ProcessMonitor()
           CreateProcessMetricsDelegate(base::GetCurrentProcessHandle())) {
   // Ensure ProcessMonitor is created before any child process so that none is
   // missed.
-  DCHECK(content::BrowserChildProcessHostIterator().Done());
-  DCHECK(content::RenderProcessHost::AllHostsIterator().IsAtEnd());
+  CHECK(content::BrowserChildProcessHostIterator().Done(),
+        base::NotFatalUntil::M161);
+  CHECK(content::RenderProcessHost::AllHostsIterator().IsAtEnd(),
+        base::NotFatalUntil::M161);
 
   content::BrowserChildProcessObserver::Add(this);
 }
@@ -282,7 +285,7 @@ ProcessMonitor::~ProcessMonitor() {
 }
 
 void ProcessMonitor::SampleAllProcesses(Observer* observer) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Accumulate all the different processes.
   std::vector<ProcessInfo*> process_infos;
@@ -349,7 +352,7 @@ void ProcessMonitor::SampleAllProcesses(Observer* observer) {
 }
 
 void ProcessMonitor::AddChildProcessInfoForTesting(
-    int id,
+    content::ChildProcessId id,
     ProcessInfo::Key key,
     std::unique_ptr<ProcessMetricsDelegate> process_metrics) {
   browser_child_process_infos_.emplace(
@@ -359,7 +362,7 @@ void ProcessMonitor::AddChildProcessInfoForTesting(
 
 void ProcessMonitor::OnRenderProcessHostCreated(
     content::RenderProcessHost* render_process_host) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   // If the host is reused after the process exited, it is possible to get a
   // second created notification for the same host.
   if (!render_process_host_observations_.IsObservingSource(render_process_host))
@@ -383,13 +386,13 @@ void ProcessMonitor::RenderProcessReady(
                        CreateProcessMetricsDelegate(
                            render_process_host->GetProcess().Handle())))
           .second;
-  DCHECK(inserted);
+  CHECK(inserted, base::NotFatalUntil::M161);
 }
 
 void ProcessMonitor::RenderProcessExited(
     content::RenderProcessHost* render_process_host,
     const content::ChildProcessTerminationInfo& info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   auto it = render_process_infos_.find(render_process_host);
   if (it == render_process_infos_.end()) {
     // This process was never ready.
@@ -408,13 +411,14 @@ void ProcessMonitor::RenderProcessExited(
 
 void ProcessMonitor::RenderProcessHostDestroyed(
     content::RenderProcessHost* render_process_host) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   render_process_host_observations_.RemoveObservation(render_process_host);
 }
 
 void ProcessMonitor::BrowserChildProcessLaunchedAndConnected(
-    const content::ChildProcessData& data) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    const content::ChildProcessData& data,
+    const base::Process& process) {
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 #if BUILDFLAG(IS_WIN)
   // Cannot gather process metrics for elevated process as browser has no
   // access to them.
@@ -428,45 +432,46 @@ void ProcessMonitor::BrowserChildProcessLaunchedAndConnected(
       GetMonitoredProcessInfoKeyForNonRendererChildProcess(data);
   bool inserted =
       browser_child_process_infos_
-          .emplace(std::piecewise_construct, std::forward_as_tuple(data.id),
-                   std::forward_as_tuple(key, CreateProcessMetricsDelegate(
-                                                  data.GetProcess().Handle())))
+          .emplace(std::piecewise_construct,
+                   std::forward_as_tuple(data.GetChildProcessId()),
+                   std::forward_as_tuple(
+                       key, CreateProcessMetricsDelegate(process.Handle())))
           .second;
-  DCHECK(inserted);
+  CHECK(inserted, base::NotFatalUntil::M161);
 }
 
 void ProcessMonitor::BrowserChildProcessHostDisconnected(
     const content::ChildProcessData& data) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(browser_child_process_infos_.find(data.id) ==
-         browser_child_process_infos_.end());
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(!browser_child_process_infos_.contains(data.GetChildProcessId()),
+        base::NotFatalUntil::M161);
 }
 
 void ProcessMonitor::BrowserChildProcessCrashed(
     const content::ChildProcessData& data,
     const content::ChildProcessTerminationInfo& info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   OnBrowserChildProcessExited(data, info);
 }
 
 void ProcessMonitor::BrowserChildProcessKilled(
     const content::ChildProcessData& data,
     const content::ChildProcessTerminationInfo& info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   OnBrowserChildProcessExited(data, info);
 }
 
 void ProcessMonitor::BrowserChildProcessExitedNormally(
     const content::ChildProcessData& data,
     const content::ChildProcessTerminationInfo& info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
   OnBrowserChildProcessExited(data, info);
 }
 
 void ProcessMonitor::OnBrowserChildProcessExited(
     const content::ChildProcessData& data,
     const content::ChildProcessTerminationInfo& info) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
 #if BUILDFLAG(IS_WIN)
   // Cannot gather process metrics for elevated process as browser has no
   // access to them.
@@ -475,14 +480,13 @@ void ProcessMonitor::OnBrowserChildProcessExited(
     return;
   }
 #endif
-  auto it = browser_child_process_infos_.find(data.id);
+  auto it = browser_child_process_infos_.find(data.GetChildProcessId());
   if (it == browser_child_process_infos_.end()) {
     // It is possible to receive this notification without a launch-and-connect
     // notification. See https://crbug.com/41447174 for a similar issue.
     return;
   }
 
-  CHECK(it != browser_child_process_infos_.end());
   // Remember the metrics from when the process exited, if available.
   if (info.cpu_usage.has_value()) {
     const ProcessInfo& process_info = it->second;

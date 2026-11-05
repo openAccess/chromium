@@ -41,7 +41,8 @@ void ArcAppsPrivateAPI::Shutdown() {
 
 void ArcAppsPrivateAPI::OnListenerAdded(
     const extensions::EventListenerInfo& details) {
-  DCHECK_EQ(details.event_name, api::arc_apps_private::OnInstalled::kEventName);
+  CHECK_EQ(details.event_name, api::arc_apps_private::OnInstalled::kEventName,
+           base::NotFatalUntil::M161);
   auto* prefs = ArcAppListPrefs::Get(Profile::FromBrowserContext(context_));
   if (prefs && !scoped_prefs_observation_.IsObservingSource(prefs))
     scoped_prefs_observation_.Observe(prefs);
@@ -62,10 +63,12 @@ void ArcAppsPrivateAPI::OnAppRegistered(
     return;
   api::arc_apps_private::AppInfo app_info_result;
   app_info_result.package_name = app_info.package_name;
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      api::arc_apps_private::OnInstalled::Create(app_info_result));
   auto event = std::make_unique<extensions::Event>(
       extensions::events::ARC_APPS_PRIVATE_ON_INSTALLED,
-      api::arc_apps_private::OnInstalled::kEventName,
-      api::arc_apps_private::OnInstalled::Create(app_info_result), context_);
+      api::arc_apps_private::OnInstalled::kEventName, std::move(event_args),
+      context_);
   extensions::EventRouter::Get(context_)->BroadcastEvent(std::move(event));
 }
 

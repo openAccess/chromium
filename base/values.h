@@ -230,10 +230,10 @@ class BASE_EXPORT GSL_OWNER ListValue {
 
   // Shared implementation of public `contains()` methods.
   template <typename T, typename R>
-    requires std::equality_comparable_with<T, R>
-  bool contains(const T& val,
-                bool (Value::*test)() const,
-                R (Value::*get)() const) const;
+    requires std::equality_comparable_with<
+        T,
+        typename std::pointer_traits<R>::element_type>
+  bool contains(const T& val, R (Value::*get_if)() const) const;
 
   std::vector<Value> storage_;
 };
@@ -430,6 +430,17 @@ class BASE_EXPORT GSL_OWNER DictValue {
   // Similar to `Remove()`, but returns the value corresponding to the removed
   // entry or `std::nullopt` otherwise.
   std::optional<Value> Extract(std::string_view key);
+
+  // Erases all entries for which `predicate` evaluates to true from this
+  // dictionary. `predicate` is passed each entry as a `DictValue::value_type`
+  // (`std::pair<const std::string&, const Value&>`). Returns the number of
+  // entries erased.
+  template <typename Predicate>
+  size_t EraseIf(Predicate predicate) {
+    return base::EraseIf(storage_, [&](const auto& pair) {
+      return predicate(value_type(pair.first, *pair.second));
+    });
+  }
 
   // Equivalent to the above methods but operating on paths instead of keys.
   // A path is shorthand syntax for referring to a key nested inside
@@ -656,6 +667,8 @@ class BASE_EXPORT GSL_OWNER DictValue {
 // - `Extract()`: If the key is present in the dictionary, removes the key from
 //       the dictionary and transfers ownership of `Value` to the caller.
 //       Otherwise, returns `std::nullopt`.
+// - `EraseIf()`: Erase all entries matching an arbitrary predicate from the
+//       dictionary.
 //
 // Dictionaries also support an additional set of helper methods that operate on
 // "paths": `FindByDottedPath()`, `SetByDottedPath()`, `RemoveByDottedPath()`,
@@ -1073,12 +1086,12 @@ BASE_EXPORT std::ostream& operator<<(std::ostream& out,
                                      const Value::Type& type);
 
 template <typename T, typename R>
-  requires std::equality_comparable_with<T, R>
-bool ListValue::contains(const T& val,
-                         bool (Value::*test)() const,
-                         R (Value::*get)() const) const {
+  requires std::
+      equality_comparable_with<T, typename std::pointer_traits<R>::element_type>
+    bool ListValue::contains(const T& val, R (Value::*get_if)() const) const {
   return std::ranges::any_of(storage_, [&](const Value& value) {
-    return (value.*test)() && (value.*get)() == val;
+    const auto v = (value.*get_if)();
+    return v && *v == val;
   });
 }
 

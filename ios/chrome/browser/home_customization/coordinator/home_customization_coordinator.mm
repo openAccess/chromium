@@ -5,15 +5,18 @@
 #import "ios/chrome/browser/home_customization/coordinator/home_customization_coordinator.h"
 
 #import "base/feature_list.h"
+#import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/image_fetcher/ios/ios_image_data_fetcher_wrapper.h"
 #import "components/prefs/pref_service.h"
+#import "components/segmentation_platform/embedder/home_modules/tips_manager/signal_constants.h"
 #import "components/sync/base/features.h"
 #import "ios/chrome/browser/commerce/model/shopping_service_factory.h"
 #import "ios/chrome/browser/discover_feed/model/discover_feed_visibility_browser_agent.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/google/model/google_logo_service_factory.h"
 #import "ios/chrome/browser/home_customization/coordinator/home_customization_background_configuration_mediator.h"
+#import "ios/chrome/browser/home_customization/coordinator/home_customization_background_photo_picker_coordinator.h"
 #import "ios/chrome/browser/home_customization/coordinator/home_customization_background_picker_action_sheet_coordinator.h"
 #import "ios/chrome/browser/home_customization/coordinator/home_customization_delegate.h"
 #import "ios/chrome/browser/home_customization/coordinator/home_customization_mediator.h"
@@ -34,6 +37,7 @@
 #import "ios/chrome/browser/ntp/model/set_up_list_prefs.h"
 #import "ios/chrome/browser/ntp/search_engine_logo/mediator/search_engine_logo_mediator.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_color_palette_util.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/promos_manager/coordinator/promos_manager_ui_handler.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
@@ -45,6 +49,8 @@
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/tips_manager/model/tips_manager_ios.h"
+#import "ios/chrome/browser/tips_manager/model/tips_manager_ios_factory.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_browser_agent.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_params.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
@@ -60,10 +66,14 @@ CGFloat const kSheetCornerRadius = 30;
     HomeCustomizationBackgroundPickerPresentationDelegate,
     HomeCustomizationMainViewControllerDelegate,
     HomeCustomizationSearchEngineLogoMediatorProvider,
+    HomeCustomizationBackgroundPhotoPickerCoordinatorDelegate,
     UISheetPresentationControllerDelegate> {
   // Displays the background picker action sheet.
   HomeCustomizationBackgroundPickerActionSheetCoordinator*
       _backgroundPickerActionSheetCoordinator;
+
+  // Displays the photo picker for user-uploaded backgrounds.
+  HomeCustomizationBackgroundPhotoPickerCoordinator* _photoPickerCoordinator;
 
   // Holds strong references to all active SearchEngineLogoMediator instances.
   // This ensures that each mediator remains alive long enough to complete its
@@ -124,32 +134,39 @@ CGFloat const kSheetCornerRadius = 30;
       _geminiHandler = HandlerForProtocol(dispatcher, GeminiCommands);
     }
   }
+  ProfileIOS* profile = self.profile;
   _activeSearchEngineLogoMediator = [NSMutableDictionary dictionary];
   _backgroundService =
-      HomeBackgroundCustomizationServiceFactory::GetForProfile(self.profile);
+      HomeBackgroundCustomizationServiceFactory::GetForProfile(profile);
 
   _mediator = [[HomeCustomizationMediator alloc]
                      initWithPrefService:self.profile->GetPrefs()
       discoverFeedVisibilityBrowserAgent:DiscoverFeedVisibilityBrowserAgent::
                                              FromBrowser(self.browser)
                          shoppingService:commerce::ShoppingServiceFactory::
-                                             GetForProfile(self.profile)];
+                                             GetForProfile(profile)
+                             tipsManager:TipsManagerIOSFactory::GetForProfile(
+                                             profile)];
   _mediator.navigationDelegate = self;
 
   if (!_backgroundService->IsCustomizationDisabledOrColorManagedByPolicy()) {
     UserUploadedImageManager* userUploadedImageManager =
-        UserUploadedImageManagerFactory::GetForProfile(self.profile);
+        UserUploadedImageManagerFactory::GetForProfile(profile);
     image_fetcher::ImageFetcherService* imageFetcherService =
-        ImageFetcherServiceFactory::GetForProfile(self.profile);
+        ImageFetcherServiceFactory::GetForProfile(profile);
     image_fetcher::ImageFetcher* imageFetcher =
         imageFetcherService->GetImageFetcher(
-            image_fetcher::ImageFetcherConfig::kReducedMode);
+            image_fetcher::ImageFetcherConfig::kDiskCacheOnly);
     _backgroundConfigurationMediator =
         [[HomeCustomizationBackgroundConfigurationMediator alloc]
             initWithBackgroundCustomizationService:_backgroundService
                                       imageFetcher:imageFetcher
                         homeBackgroundImageService:nil
-                          userUploadedImageManager:userUploadedImageManager];
+                          userUploadedImageManager:userUploadedImageManager
+                                       prefService:profile->GetPrefs()
+                          featureEngagementTracker:
+                              feature_engagement::TrackerFactory::GetForProfile(
+                                  profile)];
   }
 
   // The Customization menu consists of a stack of presenting view controllers.
@@ -167,6 +184,21 @@ CGFloat const kSheetCornerRadius = 30;
 }
 
 - (void)stop {
+  // Notify `TipsManagerIOS` only when a non-default background or color theme
+  // was actually selected and kept during this session (ignoring sessions where
+  // no changes were made, a preview was canceled, or the background was reset
+  // to default). Must be checked before `saveCurrentTheme` resets
+  // `themeHasChanged`.
+  if (_backgroundConfigurationMediator.themeHasChanged &&
+      (_backgroundService->GetCurrentCustomBackground() ||
+       _backgroundService->GetCurrentColorTheme())) {
+    if (TipsManagerIOS* tipsManager =
+            TipsManagerIOSFactory::GetForProfile(self.profile)) {
+      tipsManager->NotifySignal(
+          segmentation_platform::tips_manager::signals::kNTPBackgroundSelected);
+    }
+  }
+
   [_backgroundConfigurationMediator saveCurrentTheme];
 
   if (IsPageActionMenuEnabled()) {
@@ -185,6 +217,8 @@ CGFloat const kSheetCornerRadius = 30;
   }
 
   [self dismissBackgroundPickerActionSheet];
+  [_photoPickerCoordinator stop];
+  _photoPickerCoordinator = nil;
 
   for (SearchEngineLogoMediator* mediator in _activeSearchEngineLogoMediator
            .allValues) {
@@ -193,13 +227,6 @@ CGFloat const kSheetCornerRadius = 30;
   [_activeSearchEngineLogoMediator removeAllObjects];
 
   if (self.openedForUserEducation) {
-    feature_engagement::Tracker* tracker =
-        feature_engagement::TrackerFactory::GetForProfile(self.profile);
-    if (tracker) {
-      tracker->Dismissed(
-          feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature);
-    }
-
     [self.promosManagerUIHandler promoWasDismissed];
   }
 
@@ -245,6 +272,23 @@ CGFloat const kSheetCornerRadius = 30;
   }
 }
 
+- (void)scrollMainPageToBottom {
+  self.mainViewController.shouldScrollToBottomOnPresentation = YES;
+}
+
+- (void)presentPhotoPicker {
+  if (_photoPickerCoordinator) {
+    [_photoPickerCoordinator stop];
+  }
+  _photoPickerCoordinator =
+      [[HomeCustomizationBackgroundPhotoPickerCoordinator alloc]
+          initWithBaseViewController:self.currentPageViewController
+                             browser:self.browser];
+  _photoPickerCoordinator.delegate = self;
+  _photoPickerCoordinator.searchEngineLogoMediatorProvider = self;
+  [_photoPickerCoordinator start];
+}
+
 #pragma mark - HomeCustomizationNavigationDelegate
 
 - (void)presentCustomizationMenuPage:(CustomizationMenuPage)page {
@@ -256,6 +300,10 @@ CGFloat const kSheetCornerRadius = 30;
     if (tracker) {
       tracker->NotifyUsedEvent(
           feature_engagement::kIPHiOSPromoBackgroundCustomizationFeature);
+      if (IsNTPEphemeralThemeEnabled()) {
+        tracker->NotifyUsedEvent(
+            feature_engagement::kIPHiOSPromoEphemeralThemeFeature);
+      }
     }
   }
 
@@ -619,6 +667,25 @@ CGFloat const kSheetCornerRadius = 30;
   // largest could have changed activation state.
   viewController.sheetPresentationController.largestUndimmedDetentIdentifier =
       [self currentLargestUndimmedDetentIdentifier];
+}
+
+#pragma mark - HomeCustomizationBackgroundPhotoPickerCoordinatorDelegate
+
+- (void)photoPickerCoordinatorDidCancel:
+    (HomeCustomizationBackgroundPhotoPickerCoordinator*)coordinator {
+  [_photoPickerCoordinator stop];
+  _photoPickerCoordinator = nil;
+  [self.delegate dismissCustomizationMenu];
+}
+
+- (void)photoPickerCoordinatorDidFinish:
+    (HomeCustomizationBackgroundPhotoPickerCoordinator*)coordinator {
+  [_photoPickerCoordinator stop];
+  _photoPickerCoordinator = nil;
+  if (_backgroundConfigurationMediator.themeHasChanged) {
+    [self schedulePhotoNotSyncedSnackbarOnDismiss];
+  }
+  [self.delegate dismissCustomizationMenu];
 }
 
 @end

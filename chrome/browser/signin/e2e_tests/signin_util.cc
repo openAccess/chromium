@@ -12,8 +12,8 @@
 #include "chrome/browser/signin/e2e_tests/sign_in_test_observer.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/signin/login_ui_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/signin/core/browser/account_reconcilor.h"
@@ -21,12 +21,12 @@
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/test_accounts.h"
-#include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "google_apis/gaia/gaia_urls.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -34,7 +34,6 @@
 #include "chrome/browser/ui/webui/signin/history_sync_optin/history_sync_optin_ui.h"
 #include "chrome/browser/ui/webui/signin/signout_confirmation/signout_confirmation_ui.h"
 #include "chrome/browser/ui/webui/signin/signout_confirmation/test_signout_confirmation_handler_waiter.h"
-#include "chrome/browser/ui/webui/signin/sync_confirmation_ui.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/signin/public/base/signin_metrics.h"
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -57,16 +56,6 @@ SignInFunctions::SignInFunctions(
     const base::RepeatingCallback<bool(int, const GURL&, ui::PageTransition)>
         add_tab_function)
     : browser_(browser), add_tab_function_(add_tab_function) {}
-
-SignInFunctions::SignInFunctions(
-    const base::RepeatingCallback<Browser*()> browser,
-    const base::RepeatingCallback<bool(int, const GURL&, ui::PageTransition)>
-        add_tab_function)
-    : browser_(base::BindRepeating(
-          [](base::RepeatingCallback<Browser*()> cb)
-              -> BrowserWindowInterface* { return cb.Run(); },
-          browser)),
-      add_tab_function_(add_tab_function) {}
 
 SignInFunctions::~SignInFunctions() = default;
 
@@ -103,7 +92,8 @@ void SignInFunctions::SignInFromSettings(
   ASSERT_TRUE(content::WaitForLoadStop(gaia_login_tab));
   if (complete_signin_operation) {
     SignInFromCurrentPage(gaia_login_tab, test_account,
-                          previously_signed_in_accounts);
+                          previously_signed_in_accounts,
+                          PrimaryAccountWait::kWaitForAdded);
   }
 }
 
@@ -114,53 +104,26 @@ void SignInFunctions::SignInFromSettingsWithSyncChoice(
 #if !BUILDFLAG(ENABLE_DICE_SUPPORT)
   NOTREACHED();
 #else
-  SignInTestObserver observer(identity_manager(browser_.Run()),
-                              account_reconcilor(browser_.Run()),
-                              ConsentLevel::kSignin);
-
-  std::unique_ptr<content::TestNavigationObserver> sync_confirmation_observer =
-      std::make_unique<content::TestNavigationObserver>(
-          AppendSyncConfirmationQueryParams(
-              GURL("chrome://sync-confirmation"),
-              SyncConfirmationStyle::kDefaultModal,
-              /*is_sync_promo=*/true));
   std::unique_ptr<content::TestNavigationObserver> history_sync_observer =
       std::make_unique<content::TestNavigationObserver>(
           HistorySyncOptinUI::AppendHistorySyncOptinQueryParams(
               GURL("chrome://history-sync-optin"),
               HistorySyncOptinLaunchContext::kModal));
-  sync_confirmation_observer->StartWatchingNewWebContents();
   history_sync_observer->StartWatchingNewWebContents();
 
   SignInFromSettings(test_account, previously_signed_in_accounts,
                      /*complete_signin_operation=*/true);
-  observer.WaitForAccountChanges(previously_signed_in_accounts + 1,
-                                 PrimaryAccountWait::kWaitForAdded);
 
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    history_sync_observer->Wait();
-    switch (sync_choice) {
-      case SyncChoice::kAcceptAllOptionalDataTypesSync:
-        EXPECT_TRUE(login_ui_test_utils::ConfirmHistorySyncOptinDialog(
-            browser_.Run(), kDialogTimeout));
-        break;
-      case SyncChoice::kRejectOptionalDateTypesSync:
-        EXPECT_TRUE(login_ui_test_utils::RejectHistorySyncOptinDialog(
-            browser_.Run(), kDialogTimeout));
-        break;
-    }
-  } else {
-    sync_confirmation_observer->Wait();
-    switch (sync_choice) {
-      case SyncChoice::kAcceptAllOptionalDataTypesSync:
-        EXPECT_TRUE(login_ui_test_utils::ConfirmSyncConfirmationDialog(
-            browser_.Run(), kDialogTimeout));
-        break;
-      case SyncChoice::kRejectOptionalDateTypesSync:
-        EXPECT_TRUE(login_ui_test_utils::CancelSyncConfirmationDialog(
-            browser_.Run(), kDialogTimeout));
-        break;
-    }
+  history_sync_observer->Wait();
+  switch (sync_choice) {
+    case SyncChoice::kAcceptAllOptionalDataTypesSync:
+      EXPECT_TRUE(login_ui_test_utils::ConfirmHistorySyncOptinDialog(
+          browser_.Run(), kDialogTimeout));
+      break;
+    case SyncChoice::kRejectOptionalDateTypesSync:
+      EXPECT_TRUE(login_ui_test_utils::RejectHistorySyncOptinDialog(
+          browser_.Run(), kDialogTimeout));
+      break;
   }
 #endif  // BUILDFLAG(!ENABLE_DICE_SUPPORT)
 }
@@ -168,7 +131,8 @@ void SignInFunctions::SignInFromSettingsWithSyncChoice(
 void SignInFunctions::SignInFromCurrentPage(
     content::WebContents* web_contents,
     const TestAccountSigninCredentials& test_account,
-    int previously_signed_in_accounts) {
+    int previously_signed_in_accounts,
+    PrimaryAccountWait primary_account_wait) {
   ASSERT_TRUE(content::WaitForLoadStop(web_contents));
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
@@ -178,7 +142,7 @@ void SignInFunctions::SignInFromCurrentPage(
   login_ui_test_utils::ExecuteJsToSigninInSigninFrame(
       web_contents, test_account.user, test_account.password);
   observer.WaitForAccountChanges(previously_signed_in_accounts + 1,
-                                 PrimaryAccountWait::kNotWait);
+                                 primary_account_wait);
 }
 
 void SignInFunctions::SignOutFromWeb() {
@@ -209,8 +173,7 @@ void SignInFunctions::SignOut() {
 
   SignInTestObserver clear_observer(
       id_manager, account_reconcilor(browser_.Run()), ConsentLevel::kSignin);
-  auto* signin_view_controller =
-      browser_.Run()->GetFeatures().signin_view_controller();
+  auto* signin_view_controller = SigninViewController::From(browser_.Run());
   signin_view_controller->SignoutOrReauthWithPrompt(
       signin_metrics::AccessPoint::kProfileMenuSignoutConfirmationPrompt,
       signin_metrics::ProfileSignout::kUserClickedSignoutProfileMenu,

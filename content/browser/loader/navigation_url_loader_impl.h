@@ -11,6 +11,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "content/browser/loader/navigation_url_loader.h"
 #include "content/browser/loader/response_head_update_params.h"
 #include "content/browser/navigation_subresource_loader_params.h"
@@ -124,6 +125,7 @@ class CONTENT_EXPORT NavigationURLLoaderImpl
 
   void TriggerTimeoutForTesting();
   const network::ResourceRequest& GetResourceRequestForTesting() const;
+  bool HasEarlyHintsManagerForTesting() const { return !!early_hints_manager_; }
 
  private:
   FRIEND_TEST_ALL_PREFIXES(NavigationURLLoaderImplTest,
@@ -165,12 +167,14 @@ class CONTENT_EXPORT NavigationURLLoaderImpl
 
   // Creates a SharedURLLoaderFactory for network-service-bound requests.
   static scoped_refptr<network::SharedURLLoaderFactory>
-  CreateNetworkLoaderFactory(BrowserContext* browser_context,
-                             StoragePartitionImpl* storage_partition,
-                             FrameTreeNode* frame_tree_node,
-                             const ukm::SourceIdObj& ukm_id,
-                             bool* bypass_redirect_checks,
-                             bool allow_same_site_none_cookies_override);
+  CreateNetworkLoaderFactory(
+      BrowserContext* browser_context,
+      StoragePartitionImpl* storage_partition,
+      FrameTreeNode* frame_tree_node,
+      const ukm::SourceIdObj& ukm_id,
+      bool* bypass_redirect_checks,
+      bool allow_same_site_none_cookies_override,
+      scoped_refptr<base::SingleThreadTaskRunner> network_response_task_runner);
 
   void BindAndInterceptNonNetworkURLLoaderFactoryReceiver(
       const GURL& url,
@@ -288,6 +292,9 @@ class CONTENT_EXPORT NavigationURLLoaderImpl
   // Record ServiceWorker and the static routing API evaluation related results.
   void MaybeRecordServiceWorkerMainResourceInfo(
       const network::mojom::URLResponseHeadPtr& head);
+
+  scoped_refptr<base::SingleThreadTaskRunner>
+  GetNavigationNetworkResponseTaskRunner() const;
 
   const network::ResourceRequest& resource_request() const;
 

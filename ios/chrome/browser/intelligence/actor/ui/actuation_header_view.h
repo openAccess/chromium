@@ -7,13 +7,37 @@
 
 #import <UIKit/UIKit.h>
 
+@class ActuationHeaderItem;
+
+// Vertical padding density of an `ActuationHeaderView`.
+typedef NS_ENUM(NSInteger, ActuationHeaderDensity) {
+  // Standard padding.
+  ActuationHeaderDensityRegular,
+  // Reduced padding, for space-constrained presentations.
+  ActuationHeaderDensityCondensed,
+};
+
 // Header view anchored above the actuation worklog.
 //
+// One secondary item:
 // +----------------------------------------------------+
 // | (*)  Task Title              [secondary] [primary] |
 // |      Subtitle (optional)                           |
 // +----------------------------------------------------+
-// (*) = Icon, [x] = Accessory buttons (optional)
+//
+// Two or more icon secondary items:
+// +----------------------------------------------------+
+// | (*)  Task Title              ( [a] [b] ) [primary] |
+// |      Subtitle (optional)                           |
+// +----------------------------------------------------+
+//
+// Call-to-action secondary item:
+// +----------------------------------------------------+
+// | (*)  Task Title             [ Call to action ] [x] |
+// |      Subtitle (optional)                           |
+// +----------------------------------------------------+
+// (*) = Icon, [x] = Accessory button, ( [a] [b] ) = Grouped capsule,
+// [ Call to action ] = Blue text capsule
 @interface ActuationHeaderView : UIView
 
 // Main title text.
@@ -25,18 +49,25 @@
 // Whether actuation is currently in progress. Default is NO (static logo).
 @property(nonatomic, assign, getter=isActuating) BOOL actuating;
 
-// Primary accessory button. Setting nil removes the button from the header.
-@property(nonatomic, strong) UIButton* primaryAccessoryButton;
+// Vertical padding around the content. Default is
+// `ActuationHeaderDensityRegular`. Not affected by `reset`.
+@property(nonatomic, assign) ActuationHeaderDensity density;
 
-// Secondary accessory button. Setting nil removes the button from the header.
-@property(nonatomic, strong) UIButton* secondaryAccessoryButton;
+// Primary accessory button, rendered according to its `style`. Setting nil
+// removes the button from the header.
+@property(nonatomic, strong) ActuationHeaderItem* primaryItem;
+
+// Items displayed before `primaryItem`, in the given order. Two or more items
+// that are all `ActuationHeaderItemStyleIcon` are grouped in a capsule; any
+// other composition renders each item as a standalone button according to its
+// `style`. Setting nil or an empty array removes them from the header.
+@property(nonatomic, copy) NSArray<ActuationHeaderItem*>* secondaryItems;
 
 - (instancetype)initWithFrame:(CGRect)frame NS_DESIGNATED_INITIALIZER;
 - (instancetype)initWithCoder:(NSCoder*)coder NS_UNAVAILABLE;
 
-// Helper to create a circular icon button for header accessories.
-+ (UIButton*)createCircularIconButtonWithIcon:(UIImage*)icon
-                                       action:(UIAction*)action;
+// Resets the header state, clearing all internal properties.
+- (void)reset;
 
 @end
 

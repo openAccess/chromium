@@ -34,7 +34,6 @@
 #include "components/trusted_vault/trusted_vault_service.h"
 #include "content/public/browser/browser_thread.h"
 
-namespace browser_sync {
 namespace {
 
 using content::BrowserThread;
@@ -84,23 +83,23 @@ ChromeSyncClient::ChromeSyncClient(
       engine_factory_(this,
                       device_info_sync_service->GetDeviceInfoTracker(),
                       data_type_store_service->GetSyncDataPath()) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M163);
 }
 
 ChromeSyncClient::~ChromeSyncClient() = default;
 
 PrefService* ChromeSyncClient::GetPrefService() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M163);
   return pref_service_;
 }
 
 signin::IdentityManager* ChromeSyncClient::GetIdentityManager() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M163);
   return identity_manager_;
 }
 
 network_time::NetworkTimeTracker* ChromeSyncClient::GetNetworkTimeTracker() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M163);
   return g_browser_process->network_time_tracker();
 }
 
@@ -199,5 +198,3 @@ void ChromeSyncClient::RegisterTrustedVaultAutoUpgradeSyntheticFieldTrial(
 bool ChromeSyncClient::IsMetricsAndCrashReportingEnabled() {
   return ChromeMetricsServiceAccessor::IsMetricsAndCrashReportingEnabled();
 }
-
-}  // namespace browser_sync

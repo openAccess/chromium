@@ -8,7 +8,6 @@
 #import <utility>
 
 #import "base/check_deref.h"
-#import "base/no_destructor.h"
 #import "components/image_fetcher/ios/ios_image_decoder_impl.h"
 #import "components/pref_registry/pref_registry_syncable.h"
 #import "components/signin/internal/identity_manager/account_tracker_service.h"
@@ -31,30 +30,15 @@ void IdentityManagerFactory::RegisterProfilePrefs(
   signin::IdentityManager::RegisterProfilePrefs(registry);
 }
 
-IdentityManagerFactory::IdentityManagerFactory()
-    : ProfileKeyedServiceFactoryIOS("IdentityManager") {
+IdentityManagerFactory::IdentityManagerFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key), "IdentityManager") {
   DependsOn(ChromeAccountManagerServiceFactory::GetInstance());
   DependsOn(SigninClientFactory::GetInstance());
   DependsOn(IOSProfileMetricsServiceFactory::GetInstance());
 }
 
-IdentityManagerFactory::~IdentityManagerFactory() {}
-
-// static
-signin::IdentityManager* IdentityManagerFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<signin::IdentityManager>(
-      profile, /*create=*/true);
-}
-
-// static
-IdentityManagerFactory* IdentityManagerFactory::GetInstance() {
-  static base::NoDestructor<IdentityManagerFactory> instance;
-  return instance.get();
-}
-
 std::unique_ptr<KeyedService> IdentityManagerFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   signin::IdentityManagerBuildParams params;
   ChromeAccountManagerService* chrome_account_manager_service =
       ChromeAccountManagerServiceFactory::GetForProfile(profile);
@@ -63,7 +47,7 @@ std::unique_ptr<KeyedService> IdentityManagerFactory::BuildServiceInstanceFor(
           chrome_account_manager_service);
   params.image_decoder = image_fetcher::CreateIOSImageDecoder();
   params.local_state = GetApplicationContext()->GetLocalState();
-  params.pref_service = profile->GetPrefs();
+  params.pref_service = profile.GetPrefs();
   params.profile_path = base::FilePath();
   params.signin_client = SigninClientFactory::GetForProfile(profile);
   params.account_tracker_service = std::make_unique<AccountTrackerService>(

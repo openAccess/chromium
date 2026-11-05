@@ -10,10 +10,7 @@ assert(!is_android)
 build_webui("build") {
   grd_prefix = "webui_toolbar"
 
-  static_files = [
-    "webui_toolbar.html",
-    "webui_toolbar.css",
-  ]
+  static_files = [ "webui_toolbar.html" ]
 
   ts_files = [
     "app.html.ts",
@@ -27,6 +24,7 @@ build_webui("build") {
     "battery_saver_button.html.ts",
     "battery_saver_button.ts",
     "browser_proxy.ts",
+    "collapsible_label_button.ts",
     "content_setting_icon.html.ts",
     "content_setting_icon.ts",
     "content_settings_icons.html.ts",
@@ -36,6 +34,8 @@ build_webui("build") {
     "extension.ts",
     "extensions.html.ts",
     "extensions.ts",
+    "glic_button.html.ts",
+    "glic_button.ts",
     "page_action_icon.html.ts",
     "page_action_icon.ts",
     "page_action_icons.html.ts",
@@ -47,8 +47,11 @@ build_webui("build") {
     "location_bar.html.ts",
     "location_icon.ts",
     "location_icon.html.ts",
+    "media_button.html.ts",
+    "media_button.ts",
     "metrics_recorder.ts",
-    "responsive_control.ts",
+    "overflowable_toolbar_action_container_mixin.ts",
+    "overflowable_toolbar_action_mixin.ts",
     "overflowable_button.ts",
     "overflow_button.ts",
     "overflow_button.html.ts",
@@ -63,18 +66,18 @@ build_webui("build") {
     "readonly_omnibox.html.ts",
     "reload_button.html.ts",
     "reload_button.ts",
+    "responsive_control.ts",
     "selected_keyword.ts",
     "selected_keyword.html.ts",
     "split_tabs_button.html.ts",
     "split_tabs_button.ts",
-    "timer_helper.ts",
     "toolbar_action_mixin.ts",
     "toolbar_action_container_mixin.ts",
-    "toolbar_button.ts",
     "toolbar_chip_button.html.ts",
     "toolbar_chip_button.ts",
     "toolbar_divider.html.ts",
     "toolbar_divider.ts",
+    "webui_toolbar.ts",
   ]
 
   if (is_chrome_branded) {
@@ -88,11 +91,15 @@ build_webui("build") {
     "back_forward_button.css",
     "content_setting_icon.css",
     "content_settings_icons.css",
+    "extension.css",
+    "overflowable_action.css",
+    "glic_button.css",
     "page_action_icon.css",
     "page_action_icons.css",
     "location_bar.css",
     "location_icon.css",
     "performance_intervention_button.css",
+    "pinned_toolbar_action.css",
     "readonly_omnibox.css",
     "reload_button.css",
     "selected_keyword.css",
@@ -109,7 +116,7 @@ build_webui("build") {
   generate_code_cache = enable_webui_generate_code_cache
   if (optimize) {
     optimize_webui_host = "webui-toolbar.top-chrome"
-    optimize_webui_in_files = [ "app.js" ]
+    optimize_webui_in_files = [ "webui_toolbar.js" ]
     optimize_webui_external_paths = [
       "chrome://webui-toolbar.top-chrome|" +
           rebase_path(

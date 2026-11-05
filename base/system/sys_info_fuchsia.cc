@@ -13,6 +13,7 @@
 
 #include "base/byte_size.h"
 #include "base/containers/flat_map.h"
+#include "base/cpu.h"
 #include "base/files/file_util.h"
 #include "base/fuchsia/fuchsia_logging.h"
 #include "base/fuchsia/system_info.h"
@@ -140,7 +141,7 @@ std::optional<int64_t> SysInfo::AmountOfFreeDiskSpace(const FilePath& path) {
   // Report the actual amount of free space in |path|'s filesystem.
   int64_t available;
   if (GetDiskSpaceInfo(path, &available, nullptr)) {
-    CHECK(available >= 0, base::NotFatalUntil::M150);
+    CHECK(available >= 0);
     return available;
   }
 
@@ -163,7 +164,7 @@ std::optional<int64_t> SysInfo::AmountOfTotalDiskSpace(const FilePath& path) {
 
   // Report the actual space in |path|'s filesystem.
   if (GetDiskSpaceInfo(path, nullptr, &total_space)) {
-    CHECK(total_space >= 0, base::NotFatalUntil::M150);
+    CHECK(total_space >= 0);
     return total_space;
   }
 
@@ -267,9 +268,7 @@ std::string SysInfo::OperatingSystemArchitecture() {
 
 // static
 std::string SysInfo::CPUModelName() {
-  // TODO(crbug.com/40191727): Implement this when Fuchsia supports it.
-  NOTIMPLEMENTED_LOG_ONCE();
-  return std::string();
+  return CPU().cpu_brand();
 }
 
 // static
@@ -279,7 +278,9 @@ size_t SysInfo::VMAllocationGranularity() {
 
 // static
 int SysInfo::NumberOfEfficientProcessorsImpl() {
-  NOTIMPLEMENTED();
+  // Zircon's scheduling profiles take care of efficient-core affinity, so
+  // return 0 to allow the default thread pool behavior to function
+  // reasonably on both symmetric and asymmetric cores.
   return 0;
 }
 

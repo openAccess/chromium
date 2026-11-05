@@ -5,6 +5,7 @@
 module ai_overlay_dialog.mojom;
 
 import "mojo/public/mojom/base/empty.mojom";
+import "mojo/public/mojom/base/values.mojom";
 import "third_party/blink/public/mojom/dom/dom_node_id.mojom";
 import "url/mojom/url.mojom";
 
@@ -158,12 +159,29 @@ interface AiOverlayTools {
       => result<mojo_base.mojom.Empty, string>;
 
   // @NON_BLOCKING
-  // Opens the Gemini in Chrome side panel to handle complex multi-step browser
-  // tasks, autonomous actuation (e.g. multi-step workflows, shopping, booking,
-  // filling multi-page forms), image generation, or conversational queries.
+  // Opens the Gemini side panel in Chrome. Use this for image generation or
+  // when the user explicitly asks to open Gemini or the side panel.
   //
-  // prompt: The request or instruction to send to Gemini in the side panel.
-  InvokeGlic(string prompt) => result<string, string>;
+  // prompt: The request, question, or prompt to send to the Gemini side panel.
+  OpenGeminiPanel(string prompt) => result<string, string>;
+
+  // @NON_BLOCKING
+  // Closes the Gemini side panel in Chrome if it is currently open.
+  CloseGeminiPanel() => result<mojo_base.mojom.Empty, string>;
+
+  // @NON_BLOCKING
+  // Analyzes or manages the user's open browser tabs, tab groups, and windows
+  // (including page topic summaries, memory usage, idle time, and unsaved
+  // state) by delegating the request to a tab sub-agent. Use this to answer
+  // questions about open tabs or to organize tabs (such as grouping tabs by
+  // topic, adding tabs to a group, ungrouping tabs, closing specific tabs,
+  // switching to a tab, reordering tabs, or undoing the last tab change).
+  //
+  // request: The question, search criteria, or organization instruction to
+  // evaluate across all open windows, tab groups, and tabs.
+  // Returns a dictionary value containing {"facts": "...",
+  // "actions_taken": [...], "skipped": [...]}.
+  AnalyzeAndManageTabs(string request) => result<mojo_base.mojom.Value, string>;
 };
 
 // Infrastructure interface for tool manifest discovery.

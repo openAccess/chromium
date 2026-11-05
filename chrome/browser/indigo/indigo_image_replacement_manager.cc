@@ -5,13 +5,14 @@
 #include "chrome/browser/indigo/indigo_image_replacement_manager.h"
 
 #include "base/check.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/user_metrics.h"
 #include "chrome/browser/indigo/api_client.h"
 #include "chrome/browser/indigo/indigo_image_replacement.h"
+#include "chrome/browser/indigo/indigo_metrics.h"
 #include "chrome/browser/indigo/indigo_page_action_controller.h"
 #include "chrome/browser/indigo/indigo_service.h"
 #include "chrome/browser/indigo/indigo_service_factory.h"
@@ -33,11 +34,15 @@
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/mojom/event_dispatcher.mojom.h"
+#include "net/base/data_url.h"
+#include "services/data_decoder/public/cpp/decode_image.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
+#include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "url/url_constants.h"
 
 namespace indigo {
 
@@ -121,6 +126,35 @@ IndigoImageReplacementManager::GetImageReplacementForFrame(
   return nullptr;
 }
 
+void IndigoImageReplacementManager::GetReplacementImageForExport(
+    const content::RenderFrameHost& rfh,
+    base::OnceCallback<void(const SkBitmap&)> callback) {
+  auto* replacement = GetImageReplacementForFrame(rfh);
+  if (!replacement) {
+    std::move(callback).Run(SkBitmap());
+    return;
+  }
+
+  const GURL& image_url = replacement->GetReplacementImageURL();
+  if (!image_url.is_valid() || !image_url.SchemeIs(url::kDataScheme)) {
+    std::move(callback).Run(SkBitmap());
+    return;
+  }
+
+  std::string mime_type;
+  std::string charset;
+  std::string image_data;
+  if (!net::DataURL::Parse(image_url, &mime_type, &charset, &image_data)) {
+    std::move(callback).Run(SkBitmap());
+    return;
+  }
+
+  data_decoder::DecodeImageIsolated(
+      base::as_byte_span(image_data), data_decoder::mojom::ImageCodec::kDefault,
+      /*shrink_to_fit=*/false, data_decoder::kDefaultMaxSizeInBytes,
+      /*desired_image_frame_size=*/gfx::Size(), std::move(callback));
+}
+
 bool IndigoImageReplacementManager::HasCachedImage() const {
   return base::FeatureList::IsEnabled(features::kIndigoGeneratedImageCache) &&
          !generated_image_url_.is_empty() &&
@@ -174,10 +208,12 @@ bool IndigoImageReplacementManager::RegenerateImage() {
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(&page().GetMainDocument());
   content::BrowserContext* browser_context = web_contents->GetBrowserContext();
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      extensions::api::indigo_private::OnRegenerateStarted::Create());
   auto event = std::make_unique<extensions::Event>(
       extensions::events::INDIGO_PRIVATE_ON_REGENERATE_STARTED,
       extensions::api::indigo_private::OnRegenerateStarted::kEventName,
-      extensions::api::indigo_private::OnRegenerateStarted::Create());
+      std::move(event_args));
 
   // Enable browser-side filtering by populating EventFilteringInfo with
   // instance_id (set to invocation_id).
@@ -363,9 +399,7 @@ void IndigoImageReplacementManager::OnReplacementImageGenerated(
 
 void IndigoImageReplacementManager::NotifyReplacementsReady(bool is_cache_hit) {
   base::UmaHistogramBoolean("Indigo.Transformation.IsCacheHit", is_cache_hit);
-  base::UmaHistogramEnumeration("Indigo.Transformation.Result",
-                                IndigoTransformationResult::kSuccess);
-  base::RecordAction(base::UserMetricsAction("Indigo.Transformation.Success"));
+  RecordTransformationResult(IndigoTransformationResult::kSuccess);
 
   for (auto& [_, image_replacement] : receivers_.GetAllContexts()) {
     image_replacement->ReplacementImageURLReady();

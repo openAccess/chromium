@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <memory>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 #include "ash/accelerators/accelerator_controller_impl.h"
@@ -17,6 +18,7 @@
 #include "ash/app_list/test/app_list_test_helper.h"
 #include "ash/app_list/views/app_list_view.h"
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/drag_drop/drag_drop_controller.h"
 #include "ash/focus/focus_cycler.h"
@@ -75,9 +77,13 @@
 #include "ash/wm/wm_event.h"
 #include "ash/wm/work_area_insets.h"
 #include "ash/wm/workspace_controller.h"
+#include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
+#include "base/i18n/tag_converters.h"
+#include "base/i18n/test/scoped_icu_locale.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
@@ -85,7 +91,9 @@
 #include "base/test/icu_test_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
+#include "base/test/scoped_amount_of_physical_memory_override.h"
 #include "base/test/scoped_feature_list.h"
+#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "components/prefs/pref_service.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -101,6 +109,8 @@
 #include "ui/base/ui_base_switches.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
+#include "ui/compositor/layer_test_api.h"
+#include "ui/compositor/test/draw_waiter_for_test.h"
 #include "ui/display/display.h"
 #include "ui/display/display_layout.h"
 #include "ui/display/display_observer.h"
@@ -261,7 +271,13 @@ class AutoHideStateDetector : public ShelfLayoutManagerObserver {
 
 class ShelfLayoutManagerTest : public ShelfLayoutManagerTestBase {
  public:
-  ShelfLayoutManagerTest() { set_add_default_shelf_icon(false); }
+  ShelfLayoutManagerTest() = default;
+
+  // ShelfLayoutManagerTestBase:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    ShelfLayoutManagerTestBase::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
 
   // Sets up a Kiosk session after the app has launched.
   void SetUpKioskSession() {
@@ -1080,7 +1096,7 @@ TEST_F(ShelfLayoutManagerTest, OpenAppListWithShelfAutoHideState) {
 // hidden shelf.
 TEST_F(ShelfLayoutManagerTest, DualDisplayOpenAppListWithShelfAutoHideState) {
   // Create two displays.
-  UpdateDisplay("0+0-200x300,+200+0-100x200");
+  UpdateDisplay("0+0-200x320,+200+0-200x400");
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
   EXPECT_EQ(root_windows.size(), 2U);
 
@@ -1353,7 +1369,7 @@ TEST_F(ShelfLayoutManagerTest, ShelfWithSystemModalWindowSingleDisplay) {
 // open when we have dual display.
 TEST_F(ShelfLayoutManagerTest, ShelfWithSystemModalWindowDualDisplay) {
   // Create two displays.
-  UpdateDisplay("200x300,100x200");
+  UpdateDisplay("200x320,200x400");
   aura::Window::Windows root_windows = Shell::GetAllRootWindows();
   EXPECT_EQ(2U, root_windows.size());
 
@@ -2823,32 +2839,34 @@ TEST_F(ShelfLayoutManagerTest, RtlPlacement) {
   // Helper function to check that the given widget is placed symmetrically
   // between LTR and RTL.
   auto check_mirrored_placement = [](views::Widget* widget) {
-    base::i18n::SetICUDefaultLocale("en");
-    EXPECT_FALSE(base::i18n::IsRTL());
-    GetShelfLayoutManager()->LayoutShelf();
-    const int ltr_left_position =
-        widget->GetNativeWindow()->GetBoundsInScreen().x();
+    int ltr_left_position = 0;
+    {
+      base::i18n::ScopedDefaultIcuLocale scoped_locale(
+          base::i18n::GetKnownLanguageTag("en"));
+      EXPECT_FALSE(base::i18n::IsRTL());
+      GetShelfLayoutManager()->LayoutShelf();
+      ltr_left_position = widget->GetNativeWindow()->GetBoundsInScreen().x();
+    }
 
-    base::i18n::SetICUDefaultLocale("ar");
-    EXPECT_TRUE(base::i18n::IsRTL());
-    GetShelfLayoutManager()->LayoutShelf();
-    const int rtl_right_position =
-        widget->GetNativeWindow()->GetBoundsInScreen().right();
+    int rtl_right_position = 0;
+    {
+      base::i18n::ScopedDefaultIcuLocale scoped_locale(
+          base::i18n::GetKnownLanguageTag("ar"));
+      EXPECT_TRUE(base::i18n::IsRTL());
+      GetShelfLayoutManager()->LayoutShelf();
+      rtl_right_position =
+          widget->GetNativeWindow()->GetBoundsInScreen().right();
+    }
 
     EXPECT_EQ(
         GetShelfWidget()->GetWindowBoundsInScreen().width() - ltr_left_position,
         rtl_right_position);
   };
 
-  const std::string locale = base::i18n::GetConfiguredLocale();
-
   ShelfWidget* shelf_widget = GetPrimaryShelf()->shelf_widget();
   check_mirrored_placement(shelf_widget->navigation_widget());
   check_mirrored_placement(shelf_widget->status_area_widget());
   check_mirrored_placement(shelf_widget);
-
-  // Reset the lauguage setting.
-  base::i18n::SetICUDefaultLocale(locale);
 }
 
 // Tests the auto-hide shelf status when opening and closing a context menu.
@@ -4174,6 +4192,104 @@ TEST_F(ShelfLayoutManagerTest, ShelfBoundsUpdateAfterOverviewAnimation) {
   EXPECT_EQ(bottom_shelf_bounds, GetShelfWidget()->GetWindowBoundsInScreen());
 }
 
+// Parameterized by whether the window is maximized and whether system blur is
+// enabled.
+class ShelfLayoutManagerOverviewExitTest
+    : public ShelfLayoutManagerTestBase,
+      public testing::WithParamInterface<std::tuple<bool, bool>> {
+ public:
+  // Uses mock time so that animations only advance by a frame interval per
+  // frame, regardless of how slow the test runs.
+  ShelfLayoutManagerOverviewExitTest()
+      : ShelfLayoutManagerTestBase(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
+    if (!IsSystemBlurEnabled()) {
+      // Simulates a low-end device, on which system blur is disabled.
+      memory_override_.emplace(base::MiB(512));
+    }
+  }
+
+  bool TestMaximized() const { return std::get<0>(GetParam()); }
+  bool IsSystemBlurEnabled() const { return std::get<1>(GetParam()); }
+
+ private:
+  std::optional<base::test::ScopedAmountOfPhysicalMemoryOverride>
+      memory_override_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         ShelfLayoutManagerOverviewExitTest,
+                         testing::Combine(testing::Bool(), testing::Bool()));
+
+// Tests that the shelf background is updated without animation when the
+// overview exit animation starts, rather than when it completes.
+TEST_P(ShelfLayoutManagerOverviewExitTest, BackgroundUpdatedWhenExitStarts) {
+  ASSERT_EQ(IsSystemBlurEnabled(), chromeos::features::IsSystemBlurEnabled());
+
+  views::Widget* widget = CreateTestWidget();
+  if (TestMaximized()) {
+    widget->Maximize();
+  }
+
+  ShelfLayoutManager* layout_manager = GetShelfLayoutManager();
+  ShelfWidget* shelf_widget = GetShelfWidget();
+  ui::Layer* background_layer = shelf_widget->GetOpaqueBackground();
+  const ShelfBackgroundType expected_type =
+      TestMaximized() ? ShelfBackgroundType::kMaximized
+                      : ShelfBackgroundType::kDefaultBg;
+  const SkColor default_color =
+      ShelfConfig::Get()->GetDefaultShelfColor(shelf_widget);
+  const SkColor expected_color =
+      TestMaximized() ? ShelfConfig::Get()->GetMaximizedShelfColor(shelf_widget)
+                      : default_color;
+  const bool expected_blur = !TestMaximized() && IsSystemBlurEnabled();
+  ASSERT_EQ(expected_type, layout_manager->shelf_background_type());
+  ASSERT_EQ(expected_color, shelf_widget->GetShelfBackgroundColor());
+  ASSERT_EQ(expected_blur, background_layer->background_blur() > 0);
+  ASSERT_EQ(TestMaximized(),
+            background_layer->rounded_corner_radii().IsEmpty());
+
+  gfx::ScopedAnimationDurationScaleMode regular_animations(
+      gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
+  EnterOverview();
+  WaitForOverviewAnimation(/*enter=*/true);
+  shelf_widget->background_animator_for_testing()
+      ->CompleteAnimationForTesting();
+  EXPECT_EQ(ShelfBackgroundType::kOverview,
+            layout_manager->shelf_background_type());
+  EXPECT_EQ(default_color, shelf_widget->GetShelfBackgroundColor());
+
+  ExitOverview();
+  EXPECT_EQ(expected_type, layout_manager->shelf_background_type());
+  EXPECT_EQ(expected_color, shelf_widget->GetShelfBackgroundColor());
+  EXPECT_TRUE(background_layer->visible());
+  EXPECT_EQ(TestMaximized(),
+            background_layer->rounded_corner_radii().IsEmpty());
+  EXPECT_EQ(expected_blur, background_layer->background_blur() > 0);
+  ui::LayerTestApi background_layer_test_api(background_layer);
+  EXPECT_FALSE(background_layer_test_api.damaged_region().IsEmpty());
+
+  // Wait for a commit so that the damage from the exit start is sent, while
+  // the exit animation is still running.
+  ui::DrawWaiterForTest::WaitForCommit(
+      shelf_widget->GetNativeWindow()->layer()->GetCompositor());
+  ASSERT_TRUE(background_layer_test_api.damaged_region().IsEmpty());
+  ASSERT_TRUE(
+      Shell::Get()->overview_controller()->IsCompletingShutdownAnimations());
+
+  // Complete the exit animation without producing a frame. The background
+  // should not be repainted when the animation ends.
+  Shell::GetPrimaryRootWindow()->layer()->CompleteAllAnimations();
+  ASSERT_FALSE(
+      Shell::Get()->overview_controller()->IsCompletingShutdownAnimations());
+  EXPECT_TRUE(background_layer_test_api.damaged_region().IsEmpty());
+  EXPECT_EQ(expected_type, layout_manager->shelf_background_type());
+  EXPECT_EQ(expected_color, shelf_widget->GetShelfBackgroundColor());
+  EXPECT_EQ(TestMaximized(),
+            background_layer->rounded_corner_radii().IsEmpty());
+  EXPECT_EQ(expected_blur, background_layer->background_blur() > 0);
+}
+
 // Tests that the shelf on a second display is properly centered.
 TEST_F(ShelfLayoutManagerTest, ShelfRemainsCenteredOnSecondDisplay) {
   // Create two displays.
@@ -4318,10 +4434,14 @@ TEST_F(ShelfLayoutManagerTest, ShelfShowsPinnedAppsOnOtherDisplays) {
 class QuickActionShowBubbleTest : public ShelfLayoutManagerTestBase,
                                   public testing::WithParamInterface<bool> {
  public:
-  QuickActionShowBubbleTest() : scoped_locale_(GetParam() ? "ar" : "") {
-    set_add_default_shelf_icon(false);
-  }
+  QuickActionShowBubbleTest() : scoped_locale_(GetParam() ? "ar" : "") {}
   ~QuickActionShowBubbleTest() override = default;
+
+  // ShelfLayoutManagerTestBase:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    ShelfLayoutManagerTestBase::SetUpInitParams(init_params);
+    init_params.add_default_shelf_icon = false;
+  }
 
  private:
   base::test::ScopedRestoreICUDefaultLocale scoped_locale_;
@@ -4660,20 +4780,19 @@ TEST_F(NoSessionShelfLayoutManagerTest, UpdateShelfVisibilityAfterLogin) {
   constexpr char kUser[] = "user1@test.com";
   const AccountId kUserAccount = AccountId::FromUserEmail(kUser);
 
-  auto user_prefs = std::make_unique<TestingPrefServiceSimple>();
-  RegisterUserProfilePrefs(user_prefs->registry(), /*country=*/"",
-                           /*for_test=*/true);
-  SetShelfAutoHideBehaviorPref(user_prefs.get(),
-                               WindowTreeHostManager::GetPrimaryDisplayId(),
-                               ShelfAutoHideBehavior::kAlways);
-
   // Create a window that covers the full height of the in-session work area.
   const int kExpectedWindowHeight = 800 - ShelfConfig::Get()->shelf_size();
   auto window = CreateWindowWithAppType(chromeos::AppType::NON_APP,
                                         {400, kExpectedWindowHeight});
 
   // Simulate login.
-  SimulateUserLogin({}, kUserAccount, std::move(user_prefs));
+  SimulateUserLogin(
+      {.account_id = kUserAccount,
+       .init_pref_service_value = base::DictValue()
+                                      .Set(prefs::kShelfAutoHideBehaviorLocal,
+                                           kShelfAutoHideBehaviorAlways)
+                                      .Set(prefs::kShelfAutoHideBehavior,
+                                           kShelfAutoHideBehaviorAlways)});
 
   // The window should be the same height.
   EXPECT_EQ(kExpectedWindowHeight, window->bounds().height());
@@ -5104,15 +5223,12 @@ class ShelfLayoutManagerWithEcheTest : public ShelfLayoutManagerTestBase {
   template <typename... TaskEnvironmentTraits>
   explicit ShelfLayoutManagerWithEcheTest(TaskEnvironmentTraits&&... traits)
       : ShelfLayoutManagerTestBase(
-            std::forward<TaskEnvironmentTraits>(traits)...) {
-    scoped_feature_list_.InitAndEnableFeature(features::kEcheSWA);
-  }
+            std::forward<TaskEnvironmentTraits>(traits)...) {}
 
  protected:
   void SetUp() override { ShelfLayoutManagerTestBase::SetUp(); }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
   // Calling the factory constructor is enough to set it up.
   TestAshWebViewFactory test_web_view_factory_;
 };
@@ -5153,15 +5269,14 @@ TEST_F(ShelfLayoutManagerWithEcheTest, AutoHideShelfWithEcheHidden) {
   EXPECT_EQ(SHELF_AUTO_HIDE_HIDDEN, shelf->GetAutoHideState());
 }
 
-class LockedFullscreenShelfLayoutManagerTest
+class TrustedPinnedShelfLayoutManagerTest
     : public ShelfLayoutManagerTestBase,
       public testing::WithParamInterface<bool> {
  protected:
-  bool IsLocked() const { return GetParam(); }
+  bool IsTrustedPinned() const { return GetParam(); }
 };
 
-TEST_P(LockedFullscreenShelfLayoutManagerTest,
-       HotseatVisibilityWithPinnedWindow) {
+TEST_P(TrustedPinnedShelfLayoutManagerTest, HotseatVisibilityWithPinnedWindow) {
   TabletModeControllerTestApi().EnterTabletMode();
 
   // Create test window.
@@ -5173,14 +5288,14 @@ TEST_P(LockedFullscreenShelfLayoutManagerTest,
   ASSERT_EQ(GetShelfLayoutManager()->hotseat_state(), HotseatState::kExtended);
 
   // Verify hotseat visibility after the window is pinned.
-  PinWindow(window.get(), /*trusted=*/IsLocked());
+  PinWindow(window.get(), /*trusted=*/IsTrustedPinned());
   const HotseatState expected_hotseat_state =
-      IsLocked() ? HotseatState::kHidden : HotseatState::kExtended;
+      IsTrustedPinned() ? HotseatState::kHidden : HotseatState::kExtended;
   EXPECT_EQ(GetShelfLayoutManager()->hotseat_state(), expected_hotseat_state);
 }
 
-INSTANTIATE_TEST_SUITE_P(LockedFullscreenShelfLayoutManagerTests,
-                         LockedFullscreenShelfLayoutManagerTest,
+INSTANTIATE_TEST_SUITE_P(TrustedPinnedShelfLayoutManagerTests,
+                         TrustedPinnedShelfLayoutManagerTest,
                          testing::Bool());
 
 }  // namespace ash

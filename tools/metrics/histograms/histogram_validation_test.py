@@ -5,9 +5,10 @@
 import pathlib
 import unittest
 from unittest import mock
-import xml.dom.minidom
+import xml.etree.ElementTree as ET
 
 import setup_modules  # pylint: disable=unused-import
+
 
 import chromium_src.tools.metrics.common.path_util as path_util
 import chromium_src.tools.metrics.histograms.histogram_validation as histogram_validation
@@ -375,7 +376,7 @@ class HistogramValidationTest(unittest.TestCase):
       '<variant name="V1"/><variant'
       ' name="V2"/></variants></histogram-configuration>'
     )
-    variants_doc = xml.dom.minidom.parseString(variants_xml)
+    variants_doc = ET.fromstring(variants_xml)
 
     names = histogram_validation.get_histogram_names(contents, variants_doc)
     self.assertEqual(names, {'Test.V1', 'Test.V2'})

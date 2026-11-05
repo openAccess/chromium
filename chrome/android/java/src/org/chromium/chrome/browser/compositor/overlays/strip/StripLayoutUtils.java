@@ -114,7 +114,7 @@ public class StripLayoutUtils {
     public static boolean isNonTrailingTabInGroup(TabModel tabModel, StripLayoutTab stripTab) {
         Tab tab = assumeNonNull(tabModel.getTabById(stripTab.getTabId()));
         if (tabModel.isTabInTabGroup(tab)) {
-            List<Tab> relatedTabs = tabModel.getRelatedTabList(tab.getId());
+            List<Tab> relatedTabs = tabModel.getTabsInGroup(tab.getTabGroupId());
             Tab lastTab = relatedTabs.get(relatedTabs.size() - 1);
             return tab.getId() != lastTab.getId();
         }
@@ -127,8 +127,7 @@ public class StripLayoutUtils {
      * @return Whether the view is the last pinned tab.
      */
     public static boolean isLastPinnedTab(StripLayoutTab[] stripTabs, StripLayoutView view) {
-        StripLayoutTab tab = (view instanceof StripLayoutTab) ? (StripLayoutTab) view : null;
-        if (tab == null) return false;
+        if (!(view instanceof StripLayoutTab tab)) return false;
         for (int i = 0; i < stripTabs.length; i++) {
             if (!stripTabs[i].getIsPinned()) {
                 if (i > 0) {
@@ -392,13 +391,13 @@ public class StripLayoutUtils {
 
     private static <T> void moveElementUp(T[] array, int oldIndex, int newIndex) {
         assert oldIndex <= newIndex;
-        if (oldIndex == newIndex || oldIndex + 1 == newIndex) return;
+        if (oldIndex == newIndex) return;
 
         T elem = array[oldIndex];
-        for (int i = oldIndex; i < newIndex - 1; i++) {
+        for (int i = oldIndex; i < newIndex; i++) {
             array[i] = array[i + 1];
         }
-        array[newIndex - 1] = elem;
+        array[newIndex] = elem;
     }
 
     private static <T> void moveElementDown(T[] array, int oldIndex, int newIndex) {
@@ -492,6 +491,7 @@ public class StripLayoutUtils {
     /**
      * Get the x and y coordinates of the position of the hover card, in px.
      *
+     * @param hoverCardView The {@link TabHoverCardView} being positioned.
      * @param isSelectedTab Whether the tab is the selected tab, {@code true} if the hovered tab is
      *     also the selected tab, {@code false} otherwise.
      * @param tabX The tab x-position to compute hover card positioning.

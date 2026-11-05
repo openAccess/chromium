@@ -27,38 +27,6 @@ constexpr char kProviderUrlParamKey[] = "provider_url";
 constexpr char kProviderSessionIdParamKey[] = "provider_session_id";
 constexpr char kAikRequiredParamKey[] = "aik_required";
 
-constexpr char kES256[] = "ES256";
-constexpr char kRS256[] = "RS256";
-
-std::optional<crypto::SignatureVerifier::SignatureAlgorithm> AlgoFromString(
-    const std::string_view& algo) {
-  if (algo == kES256) {
-    return crypto::SignatureVerifier::SignatureAlgorithm::ECDSA_SHA256;
-  }
-
-  if (algo == kRS256) {
-    return crypto::SignatureVerifier::SignatureAlgorithm::RSA_PKCS1_SHA256;
-  }
-
-  return std::nullopt;
-}
-
-std::vector<crypto::SignatureVerifier::SignatureAlgorithm>
-ParseSupportedAlgorithms(
-    const net::structured_headers::ParameterizedMember& session_registration) {
-  std::vector<crypto::SignatureVerifier::SignatureAlgorithm> supported_algos;
-  for (const auto& algo_token : session_registration.member) {
-    if (const std::string* token = algo_token.item.GetIfToken()) {
-      std::optional<crypto::SignatureVerifier::SignatureAlgorithm> algo =
-          AlgoFromString(*token);
-      if (algo) {
-        supported_algos.push_back(*algo);
-      }
-    }
-  }
-  return supported_algos;
-}
-
 GURL ResolveRegistrationEndpoint(const GURL& request_url,
                                  const std::string& path) {
   std::string unescaped_path = base::UnescapeURLComponent(
@@ -88,26 +56,22 @@ ProviderRegistrationParseResult ParseProviderRegistrationParams(
     std::optional<GURL> provider_url,
     std::optional<net::device_bound_sessions::Session::Id>
         provider_session_id) {
-  // `provider_key` and `provider_url` must either both be present or
-  // both be absent.
-  if (provider_key.has_value() != provider_url.has_value()) {
-    return {.is_valid = false};
+  // An SSO registration names a pre-provisioned key by `provider_key` alone.
+  // `provider_url` is ignored: the key is looked up by digest and RP origin
+  // (https://github.com/WICG/dbsc-sso/pull/18).
+  if (provider_key.has_value() && !provider_session_id.has_value() &&
+      base::FeatureList::IsEnabled(
+          net::features::kDeviceBoundSessionsForSingleSignOn)) {
+    return {.is_valid = true,
+            .params = net::device_bound_sessions::ProviderRegistrationParams{
+                .provider_key = std::move(*provider_key)}};
   }
 
-  if (base::FeatureList::IsEnabled(
-          net::features::kDeviceBoundSessionsForSingleSignOn)) {
-    // In SSO scenarios, `provider_session_id` can be absent.
-    // However, if `provider_session_id` is present, then `provider_key`
-    // (and by extension `provider_url`) must also be present.
-    if (provider_session_id.has_value() && !provider_key.has_value()) {
-      return {.is_valid = false};
-    }
-  } else {
-    // In non-SSO scenarios, `provider_session_id` must be present
-    // if and only if `provider_key` is present.
-    if (provider_session_id.has_value() != provider_key.has_value()) {
-      return {.is_valid = false};
-    }
+  // `provider_key`, `provider_url` and `provider_session_id` must either all
+  // be present (federated registration) or all be absent.
+  if (provider_key.has_value() != provider_url.has_value() ||
+      provider_key.has_value() != provider_session_id.has_value()) {
+    return {.is_valid = false};
   }
 
   if (provider_url.has_value() &&
@@ -142,7 +106,7 @@ RegistrationFetcherParam::~RegistrationFetcherParam() = default;
 RegistrationFetcherParam::RegistrationFetcherParam(
     GURL registration_endpoint,
     url::Origin referring_origin,
-    std::vector<crypto::SignatureVerifier::SignatureAlgorithm> supported_algos,
+    std::vector<crypto::sign::SignatureKind> supported_algos,
     std::optional<std::string> challenge,
     std::optional<std::string> authorization,
     std::optional<ProviderRegistrationParams> provider_params,
@@ -158,8 +122,14 @@ RegistrationFetcherParam::RegistrationFetcherParam(
 std::optional<RegistrationFetcherParam> RegistrationFetcherParam::ParseItem(
     const GURL& request_url,
     const structured_headers::ParameterizedMember& session_registration) {
-  std::vector<crypto::SignatureVerifier::SignatureAlgorithm> supported_algos =
-      ParseSupportedAlgorithms(session_registration);
+  const net::structured_headers::InnerList* inner_list =
+      session_registration.GetIfInnerList();
+  if (!inner_list) {
+    return std::nullopt;
+  }
+
+  std::vector<crypto::sign::SignatureKind> supported_algos =
+      ParseSupportedAlgorithms(inner_list->items);
   if (supported_algos.empty()) {
     return std::nullopt;
   }
@@ -171,7 +141,7 @@ std::optional<RegistrationFetcherParam> RegistrationFetcherParam::ParseItem(
   std::optional<GURL> provider_url;
   std::optional<Session::Id> provider_session_id;
   bool aik_required = false;
-  for (const auto& [key, value] : session_registration.params) {
+  for (const auto& [key, value] : inner_list->params) {
     // The keys for the parameters are unique and must be lower case.
     // Quiche (https://quiche.googlesource.com/quiche), used here,
     // will currently pick the last if there is more than one.
@@ -278,12 +248,10 @@ std::vector<RegistrationFetcherParam> RegistrationFetcherParam::CreateIfValid(
   }
 
   for (const auto& item : *list) {
-    if (item.member_is_inner_list) {
-      std::optional<RegistrationFetcherParam> fetcher_param =
-          ParseItem(request_url, item);
-      if (fetcher_param) {
-        params.push_back(std::move(*fetcher_param));
-      }
+    std::optional<RegistrationFetcherParam> fetcher_param =
+        ParseItem(request_url, item);
+    if (fetcher_param) {
+      params.push_back(std::move(*fetcher_param));
     }
   }
 
@@ -293,7 +261,7 @@ std::vector<RegistrationFetcherParam> RegistrationFetcherParam::CreateIfValid(
 // static
 RegistrationFetcherParam RegistrationFetcherParam::CreateInstanceForTesting(
     GURL registration_endpoint,
-    std::vector<crypto::SignatureVerifier::SignatureAlgorithm> supported_algos,
+    std::vector<crypto::sign::SignatureKind> supported_algos,
     std::optional<std::string> challenge,
     std::optional<std::string> authorization,
     std::optional<ProviderRegistrationParams> provider_params,

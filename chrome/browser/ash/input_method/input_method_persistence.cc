@@ -13,10 +13,10 @@
 #include "base/system/sys_info.h"
 #include "chrome/browser/ash/login/lock/screen_locker_controller.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/login_screen_client_impl.h"
 #include "chromeos/ash/components/language_preferences/language_preferences.h"
+#include "chromeos/ash/components/login/session/process_shutdown.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -77,7 +77,7 @@ InputMethodPersistence::~InputMethodPersistence() {
 }
 
 void InputMethodPersistence::PersistInputMethod(Profile* profile) {
-  if (!g_browser_process || g_browser_process->IsShuttingDown()) {
+  if (IsProcessShuttingDown()) {
     return;
   }
 
@@ -98,8 +98,9 @@ void InputMethodPersistence::PersistInputMethod(Profile* profile) {
       return;
     case InputMethodManager::UIStyle::kLock:
       // We are either in unit test, or screen should be locked.
-      DCHECK(!LoginScreenClientImpl::HasInstance() ||
-             ScreenLockerController::Get().screen_locker());
+      CHECK(!LoginScreenClientImpl::HasInstance() ||
+                ScreenLockerController::Get().screen_locker(),
+            base::NotFatalUntil::M160);
       return;
     case InputMethodManager::UIStyle::kSecondaryLogin:
       // We use a special set of input methods on the screen. Do not update.

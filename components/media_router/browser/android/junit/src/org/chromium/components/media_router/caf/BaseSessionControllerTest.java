@@ -54,9 +54,7 @@ import java.util.List;
 
 /** Robolectric tests for BaseSessionController. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowMediaRouter.class, ShadowCastContext.class})
+@Config(shadows = {ShadowMediaRouter.class, ShadowCastContext.class})
 public class BaseSessionControllerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     private static final String PRESENTATION_ID = "presentation-id";
@@ -81,7 +79,7 @@ public class BaseSessionControllerTest {
 
     @Before
     public void setUp() {
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
         mMediaRouterHelper = new MediaRouterTestHelper();
         MediaRouterClient.setInstance(new TestMediaRouterClient());
         ShadowCastContext.setInstance(mCastContext);
@@ -89,7 +87,7 @@ public class BaseSessionControllerTest {
                 new MediaRouteSelector.Builder()
                         .addControlCategory(CastMediaControlIntent.categoryForCast(APP_ID))
                         .build();
-        mController = new TestSessionController(mProvider, mNotificationController);
+        mController = new TestSessionController(mProvider);
         mController.addCallback(mNotificationController);
         mRequestInfo =
                 new CreateRouteRequestInfo(
@@ -176,18 +174,6 @@ public class BaseSessionControllerTest {
     }
 
     @Test
-    public void testSessionLifecyleNotNotifiedAfterCallbackRemoved() {
-        mController.removeCallback(mNotificationController);
-
-        mController.attachToCastSession(mCastSession);
-        mController.onSessionStarted();
-        verify(mNotificationController, never()).onSessionStarted();
-
-        mController.onSessionEnded();
-        verify(mNotificationController, never()).onSessionEnded();
-    }
-
-    @Test
     public void testGetCapabilities() {
         mController.attachToCastSession(mCastSession);
 
@@ -236,18 +222,8 @@ public class BaseSessionControllerTest {
     }
 
     private static class TestSessionController extends BaseSessionController {
-        public final BaseNotificationController mNotificationController;
-
-        public TestSessionController(
-                CafBaseMediaRouteProvider provider,
-                BaseNotificationController notificationController) {
+        public TestSessionController(CafBaseMediaRouteProvider provider) {
             super(provider);
-            mNotificationController = notificationController;
-        }
-
-        @Override
-        public BaseNotificationController getNotificationController() {
-            return mNotificationController;
         }
     }
 }

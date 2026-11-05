@@ -6,12 +6,15 @@ import("//extensions/buildflags/buildflags.gni")
 
 source_set("organizer") {
   sources = [
-    "organizer_panel_state_controller.h",
+    "organizer_panel_controller.h",
+    "organizer_panel_utils.h",
     "organizer_prefs.h",
   ]
 
   public_deps = [
     "//base",
+    "//chrome/browser/ui/animation",
+    "//chrome/browser/ui/views/tabs/organizer:organizer_panel_host",
     "//extensions/buildflags",
     "//ui/base/unowned_user_data",
   ]
@@ -23,7 +26,8 @@ source_set("organizer") {
 
 source_set("impl") {
   sources = [
-    "organizer_panel_state_controller.cc",
+    "organizer_panel_controller.cc",
+    "organizer_panel_utils.cc",
     "organizer_prefs.cc",
   ]
 
@@ -34,45 +38,39 @@ source_set("impl") {
     "//chrome/app/vector_icons",
     "//chrome/browser:primitives",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui:browser_element_identifiers",
     "//chrome/browser/ui/actions:actions_headers",
     "//chrome/browser/ui/actions:actions_util",
     "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/tabs",
     "//chrome/browser/ui/tabs:features",
     "//chrome/browser/ui/user_education",
+    "//chrome/browser/ui/views/animations",
     "//chrome/browser/ui/views/tabs/organizer",
     "//chrome/common:constants",
     "//components/pref_registry",
     "//components/prefs",
+    "//ui/base",
     "//ui/views",
   ]
+
+  if (enable_extensions) {
+    deps += [ "//extensions/browser" ]
+  }
 }
 
 source_set("unit_tests") {
   testonly = true
-  sources = [ "organizer_panel_state_controller_unittest.cc" ]
+  sources = [ "organizer_panel_controller_unittest.cc" ]
   deps = [
     ":impl",
     "//base/test:test_support",
+    "//chrome/browser/ui/tabs:test_support",
+    "//chrome/browser/ui/views/animations",
+    "//chrome/browser/ui/views/tabs/organizer:unit_test_support",
     "//chrome/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
     "//ui/base",
-  ]
-}
-
-source_set("interactive_ui_tests") {
-  testonly = true
-  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
-  sources = [ "organizer_panel_state_controller_interactive_uitest.cc" ]
-  deps = [
-    ":impl",
-    "//chrome/browser/ui",
-    "//chrome/browser/ui:browser_element_identifiers",
-    "//chrome/browser/ui/tabs",
-    "//chrome/browser/ui/views/tabs/organizer",
-    "//chrome/test:test_support",
-    "//content/test:test_support",
-    "//ui/base",
-    "//ui/views",
   ]
 }

@@ -108,7 +108,8 @@ void PictureLayer::SetForceUpdateRecordingSource() {
 
 bool PictureLayer::RequiresSetNeedsDisplayOnHdrHeadroomChange() const {
   if (const DisplayItemList* display_list = GetDisplayItemList()) {
-    return display_list->content_color_usage() == gfx::ContentColorUsage::kHDR;
+    return display_list->content_color_volume().GetContentColorUsage() ==
+           gfx::ContentColorUsage::kHDR;
   }
   return false;
 }
@@ -138,7 +139,7 @@ bool PictureLayer::Update() {
 
   updated |= recording_source.Update(
       bounds(), layer_tree_host()->recording_scale_factor(), *client_,
-      last_updated_invalidation_.Write(*this));
+      last_updated_invalidation_.Write(*this), id());
 
   if (!updated) {
     return false;
@@ -159,20 +160,23 @@ sk_sp<const SkPicture> PictureLayer::GetPicture() const {
   SkCanvas* canvas =
       recorder.beginRecording(bounds().width(), bounds().height());
   canvas->clear(SK_ColorTRANSPARENT);
-  ScrollOffsetMap raster_inducing_scroll_offsets;
+  RasterInducingValues raster_inducing_values;
   const ScrollTree& scroll_tree =
       layer_tree_host()->property_trees()->scroll_tree();
   for (auto [element_id, _] : display_list->raster_inducing_scrolls()) {
-    raster_inducing_scroll_offsets[element_id] =
+    raster_inducing_values.scroll_offsets[element_id] =
         scroll_tree.current_scroll_offset(element_id);
   }
   display_list->Raster(canvas, /*image_provider=*/nullptr,
-                       &raster_inducing_scroll_offsets);
+                       &raster_inducing_values);
   return recorder.finishRecordingAsPicture();
 }
 
 void PictureLayer::ClearClient() {
   client_ = nullptr;
+  if (IsAttached() && layer_tree_host()->in_will_commit()) {
+    return;
+  }
   UpdateDrawsContent();
 }
 

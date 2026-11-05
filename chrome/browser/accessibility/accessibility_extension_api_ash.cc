@@ -33,8 +33,8 @@
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/settings_window_manager_chromeos.h"
-#include "chrome/common/extensions/api/accessibility_private.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chromeos/ash/experiences/extensions/common/api/accessibility_private.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
 #include "components/infobars/core/infobar.h"
@@ -169,9 +169,9 @@ void DispatchAccessibilityFocusChangedEvent(
 
   if (histogram_value ==
       extensions::events::ACCESSIBILITY_PRIVATE_ON_CHROMEVOX_FOCUS_CHANGED) {
-    auto event_args =
+    auto event_args = base::MakeRefCounted<extensions::EventArgs>(
         extensions::api::accessibility_private::OnChromeVoxFocusChanged::Create(
-            bounds);
+            bounds));
     event = std::make_unique<extensions::Event>(
         histogram_value,
         extensions::api::accessibility_private::OnChromeVoxFocusChanged::
@@ -180,8 +180,9 @@ void DispatchAccessibilityFocusChangedEvent(
   } else if (histogram_value ==
              extensions::events::
                  ACCESSIBILITY_PRIVATE_ON_SELECT_TO_SPEAK_FOCUS_CHANGED) {
-    auto event_args = extensions::api::accessibility_private::
-        OnSelectToSpeakFocusChanged::Create(bounds);
+    auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+        extensions::api::accessibility_private::OnSelectToSpeakFocusChanged::
+            Create(bounds));
     event = std::make_unique<extensions::Event>(
         histogram_value,
         extensions::api::accessibility_private::OnSelectToSpeakFocusChanged::
@@ -517,9 +518,6 @@ AccessibilityPrivateIsFeatureEnabledFunction::Run() {
       enabled = ::features::
           IsExperimentalAccessibilityDictationContextCheckingEnabled();
       break;
-    case accessibility_private::AccessibilityFeature::kCaptionsOnBrailleDisplay:
-      enabled = ::features::IsAccessibilityCaptionsOnBrailleDisplayEnabled();
-      break;
     case accessibility_private::AccessibilityFeature::
         kGoogleTtsAutomaticReconnect:
       enabled = ::features::IsAccessibilityGoogleTtsAutomaticReconnectEnabled();
@@ -539,7 +537,7 @@ AccessibilityPrivateMagnifierCenterOnPointFunction::Run() {
   gfx::Point point_in_screen(params->point.x, params->point.y);
 
   auto* magnification_manager = ash::MagnificationManager::Get();
-  DCHECK(magnification_manager);
+  CHECK(magnification_manager, base::NotFatalUntil::M161);
   magnification_manager->HandleMagnifierCenterOnPointIfEnabled(point_in_screen);
 
   return RespondNow(NoArguments());
@@ -554,7 +552,7 @@ AccessibilityPrivateMoveMagnifierToRectFunction::Run() {
                    params->rect.height);
 
   auto* magnification_manager = ash::MagnificationManager::Get();
-  DCHECK(magnification_manager);
+  CHECK(magnification_manager, base::NotFatalUntil::M161);
   magnification_manager->HandleMoveMagnifierToRectIfEnabled(bounds);
 
   return RespondNow(NoArguments());
@@ -631,7 +629,7 @@ AccessibilityPrivateSendSyntheticKeyEventFunction::Run() {
 
   auto* host = ash::GetWindowTreeHostForDisplay(
       display::Screen::Get()->GetPrimaryDisplay().id());
-  DCHECK(host);
+  CHECK(host, base::NotFatalUntil::M161);
 
   bool dictation_enabled = AccessibilityManager::Get()->IsDictationEnabled();
   bool from_accessibility_common =
@@ -896,10 +894,6 @@ AccessibilityPrivateSetChromeVoxFocusFunction::Run() {
   std::optional<accessibility_private::SetChromeVoxFocus::Params> params(
       accessibility_private::SetChromeVoxFocus::Params::Create(args()));
   EXTENSION_FUNCTION_VALIDATE(params);
-
-  if (!features::IsAccessibilityMagnifierFollowsChromeVoxEnabled()) {
-    return RespondNow(NoArguments());
-  }
 
   if (!ash::AccessibilityController::Get()->fullscreen_magnifier().enabled() &&
       !ash::AccessibilityController::Get()->docked_magnifier().enabled()) {

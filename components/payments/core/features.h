@@ -39,10 +39,6 @@ BASE_DECLARE_FEATURE(kDelayNativePaymentAppScrimShow);
 // Used to reject the apps with partial delegation.
 BASE_DECLARE_FEATURE(kEnforceFullDelegation);
 
-// If enabled, the GooglePayPaymentApp handles communications between the native
-// GPay app and the browser for dynamic updates on shipping and payment data.
-BASE_DECLARE_FEATURE(kGPayAppDynamicUpdate);
-
 // Approach for discovering available Secure Payment Confirmation credentials.
 // Different platforms use different approaches, due to differing capabilities
 // of the authenticators in use by SPC.
@@ -81,13 +77,9 @@ extern const base::FeatureParam<CredentialDiscoveryMode>
 // user-profile database).
 BASE_DECLARE_FEATURE(kSecurePaymentConfirmationStoreCredentialsInOS);
 
-// Used to control the usage of the renderer URL loader in the payment request.
-BASE_DECLARE_FEATURE(kPaymentRequestUseRendererUrlLoader);
-
 // Used to control whether Payment Request/Handler dialogs are rejected if the
 // browser window is too small to contain them.
 BASE_DECLARE_FEATURE(kPaymentRequestRejectTooSmallWindows);
-
 
 // Used to control whether Payment Handler dialog includes an initiator during
 // the URL load.
@@ -101,18 +93,37 @@ BASE_DECLARE_FEATURE(kPaymentHandlerHtmlHeadThemeColor);
 // before resolving a success payment response.
 BASE_DECLARE_FEATURE(kPaymentRequestMandatoryPaymentAppUi);
 
-// Used to control whether camera access is allowed in Payment Handler windows.
-BASE_DECLARE_FEATURE(kPaymentHandlerCameraAccess);
-
 // Used to control whether camera access with interactive permission prompt
 // and indicator is allowed in Payment Handler windows.
 BASE_DECLARE_FEATURE(kPaymentHandlerCameraAccessUx);
+
+// Used to control whether the top-level page of a Payment Handler window can
+// resize the window at runtime through window.resizeTo(). The arguments are
+// interpreted as the size of the payment handler web contents.
+BASE_DECLARE_FEATURE(kPaymentHandlerDynamicCustomSize);
 
 // Used to control whether SPC supports validating locale.
 BASE_DECLARE_FEATURE(kSPCLocaleValidation);
 
 // Used to control whether 3D-Secure telemetry is collected.
 BASE_DECLARE_FEATURE(kThreeDSecureTelemetry);
+
+// Used to control whether 3D-Secure telemetry is collected on iOS.
+BASE_DECLARE_FEATURE(kThreeDSecureTelemetryForIos);
+
+// Used to control whether modal dialogs triggered from a web-based payment
+// handler are parented to the Payment Request dialog widget native view
+// instead of the browser tab.
+BASE_DECLARE_FEATURE(kPaymentHandlerModalDialogHost);
+
+// Used to enforce Local Network Access (LNA) for payment requests by setting
+// the client security state on the resource request.
+BASE_DECLARE_FEATURE(kPaymentRequestEnforceLNAWithClientSecurityState);
+
+// Used to control whether user-initiated browser reloads on non-error
+// documents reset the once-per-navigation activationless PaymentRequest.show()
+// allowance.
+BASE_DECLARE_FEATURE(kPaymentRequestResetActivationlessShowOnReload);
 
 }  // namespace features
 }  // namespace payments

@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_ENTERPRISE_CONNECTORS_CORE_REPORTING_UTILS_H_
 #define COMPONENTS_ENTERPRISE_CONNECTORS_CORE_REPORTING_UTILS_H_
 
+#include <string_view>
+
 #include "components/enterprise/buildflags/buildflags.h"
 #include "components/enterprise/common/proto/synced/browser_events.pb.h"
 #include "components/enterprise/connectors/core/common.h"
@@ -79,7 +81,7 @@ GetPasswordReuseEvent(const GURL& url,
                       const ReferrerChain& referrer_chain);
 
 chrome::cros::reporting::proto::SafeBrowsingPasswordChangedEvent
-GetPasswordChangedEvent(const std::string& user_name,
+GetPasswordChangedEvent(std::string_view user_name,
                         const std::string& profile_identifier,
                         const std::string& profile_username);
 
@@ -99,7 +101,8 @@ GetInterstitialEvent(const GURL& url,
                      EventResult event_result,
                      const std::string& profile_identifier,
                      const std::string& profile_username,
-                     const ReferrerChain& referrer_chain);
+                     const ReferrerChain& referrer_chain,
+                     const std::string& tab_title);
 
 chrome::cros::reporting::proto::UrlFilteringInterstitialEvent
 GetUrlFilteringInterstitialEvent(
@@ -120,7 +123,7 @@ chrome::cros::reporting::proto::UnscannedFileEvent GetUnscannedFileEvent(
     const std::string& file_name,
     const std::string& download_digest_sha256,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& scan_id,
     const std::string& reason,
     const std::string& content_transfer_method,
@@ -138,7 +141,7 @@ chrome::cros::reporting::proto::DlpSensitiveDataEvent GetDlpSensitiveDataEvent(
     const std::string& file_name,
     const std::string& download_digest_sha256,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& scan_id,
     const std::string& content_transfer_method,
     const std::string& source_active_user_email,
@@ -161,7 +164,7 @@ GetDangerousDownloadEvent(const GURL& url,
                           const std::string& download_digest_sha256,
                           const std::string& threat_type,
                           const std::string& mime_type,
-                          const std::string& trigger,
+                          DataTransferEventTrigger trigger,
                           const std::string& scan_id,
                           const std::string& content_transfer_method,
                           const std::string& profile_identifier,
@@ -185,7 +188,7 @@ GetDataControlsSensitiveDataEvent(
     const std::string& source,
     const std::string& destination,
     const std::string& mime_type,
-    const std::string& trigger,
+    DataTransferEventTrigger trigger,
     const std::string& source_active_user_email,
     const std::string& content_area_account_email,
     const std::string& profile_identifier,

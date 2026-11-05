@@ -13,6 +13,7 @@
 #include "components/unexportable_keys/unexportable_key_service_impl.h"
 #include "components/unexportable_keys/unexportable_key_task_manager.h"
 #include "crypto/scoped_fake_unexportable_key_provider.h"
+#include "crypto/sign.h"
 #include "net/base/schemeful_site.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_options.h"
@@ -153,7 +154,6 @@ class DeviceBoundSessionManagerTest : public ::testing::Test {
             /*client_cert_handler=*/base::DoNothing())),
         cookie_manager_(std::make_unique<CookieManager>(
             context_.get(),
-            nullptr,
             base::MakeRefCounted<SessionCleanupCookieStore>(
                 base::MakeRefCounted<net::SQLitePersistentCookieStore>(
                     base::FilePath(),
@@ -174,7 +174,7 @@ class DeviceBoundSessionManagerTest : public ::testing::Test {
     base::test::TestFuture<unexportable_keys::ServiceErrorOr<
         unexportable_keys::UnexportableSigningKeyId>>
         generate_key_future;
-    auto supported_algorithm = {crypto::SignatureVerifier::ECDSA_SHA256};
+    auto supported_algorithm = {crypto::sign::ECDSA_SHA256};
     unexportable_key_service_.GenerateSigningKeySlowlyAsync(
         supported_algorithm,
         unexportable_keys::BackgroundTaskPriority::kBestEffort,
@@ -214,8 +214,8 @@ TEST_F(DeviceBoundSessionManagerTest, ObserverNotifiesChangeOnlyOnSite) {
                         off_site_observer.GetPendingRemote());
 
   auto fetch_param = RegistrationFetcherParam::CreateInstanceForTesting(
-      url, {crypto::SignatureVerifier::SignatureAlgorithm::ECDSA_SHA256},
-      "challenge", /*authorization=*/std::nullopt);
+      url, {crypto::sign::ECDSA_SHA256}, "challenge",
+      /*authorization=*/std::nullopt);
   service().RegisterBoundSession(
       base::NullCallback(), std::move(fetch_param),
       net::IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),

@@ -29,6 +29,10 @@
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
+namespace sessions {
+class TabRestoreService;
+}  // namespace sessions
+
 namespace sync_sessions {
 class SessionSyncService;
 }  // namespace sync_sessions
@@ -146,6 +150,10 @@ class MockAutocompleteProviderClient
     return session_sync_service_;
   }
 
+  sessions::TabRestoreService* GetTabRestoreService() const override {
+    return tab_restore_service_;
+  }
+
   AimEligibilityService* GetAimEligibilityService() const override {
     return nullptr;
   }
@@ -155,20 +163,20 @@ class MockAutocompleteProviderClient
   MOCK_METHOD0(GetBuiltinURLs, std::vector<std::u16string>());
   MOCK_METHOD0(GetBuiltinsToProvideAsUserTypes, std::vector<std::u16string>());
   MOCK_CONST_METHOD0(IsOffTheRecord, bool());
+  MOCK_CONST_METHOD0(IsPrimaryOTRProfileWithRegularParent, bool());
   MOCK_CONST_METHOD0(IsIncognitoProfile, bool());
   MOCK_CONST_METHOD0(IsGuestSession, bool());
   MOCK_CONST_METHOD0(SearchSuggestEnabled, bool());
   MOCK_CONST_METHOD0(IsUrlDataCollectionActive, bool());
   MOCK_CONST_METHOD0(IsPersonalizedUrlDataCollectionActive, bool());
   MOCK_CONST_METHOD0(IsAuthenticated, bool());
-  MOCK_CONST_METHOD0(IsHistoryEmbeddingsEnabled, bool());
-  MOCK_CONST_METHOD0(IsHistoryEmbeddingsSettingVisible, bool());
   MOCK_CONST_METHOD0(IsLensEnabled, bool());
   MOCK_CONST_METHOD0(AreLensEntrypointsVisible, bool());
   MOCK_CONST_METHOD0(IsPagePaywalled, std::optional<bool>());
   MOCK_METHOD(bool, ShouldSendContextualUrlSuggestParam, (), (const));
   MOCK_METHOD(bool, ShouldSendPageTitleSuggestParam, (), (const));
   MOCK_METHOD(bool, IsAskGShowChipEnabled, (), (const, override));
+  MOCK_METHOD(bool, IsOmniboxNextAimPopupEnabled, (), (const, override));
   MOCK_METHOD(bool, IsWebUiNtpEnabledForDesktopAndroid, (), (const, override));
   MOCK_CONST_METHOD1(GetLensSuggestInputsWhenReady,
                      base::CallbackListSubscription(
@@ -214,6 +222,11 @@ class MockAutocompleteProviderClient
     session_sync_service_ = session_sync_service;
   }
 
+  void set_tab_restore_service(
+      sessions::TabRestoreService* tab_restore_service) {
+    tab_restore_service_ = tab_restore_service;
+  }
+
   network::TestURLLoaderFactory* test_url_loader_factory() {
     return &test_url_loader_factory_;
   }
@@ -233,7 +246,7 @@ class MockAutocompleteProviderClient
   MOCK_METHOD(void, OpenComposeboxForAskG, (), (override));
   MOCK_METHOD3(IssueContextualSearchRequest,
                void(const GURL& destination_url,
-                    AutocompleteMatchType::Type match_type,
+                    omnibox::AutocompleteMatchType match_type,
                     bool is_zero_prefix_suggestion));
 
  private:
@@ -255,6 +268,8 @@ class MockAutocompleteProviderClient
   MockTabMatcher tab_matcher_;
   raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;  // Not owned.
   raw_ptr<sync_sessions::SessionSyncService> session_sync_service_ =
+      nullptr;  // Not owned.
+  raw_ptr<sessions::TabRestoreService> tab_restore_service_ =
       nullptr;  // Not owned.
   std::unique_ptr<tab_groups::MockTabGroupSyncService>
       mock_tab_group_sync_service_;

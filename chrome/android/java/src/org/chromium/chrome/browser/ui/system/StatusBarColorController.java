@@ -80,7 +80,30 @@ public class StatusBarColorController
     public static final @ColorInt int UNDEFINED_STATUS_BAR_COLOR = Color.TRANSPARENT;
     public static final @ColorInt int DEFAULT_STATUS_BAR_COLOR = Color.argb(0x01, 0, 0, 0);
 
-    private static final Map<Activity, Integer> sTaskDescriptionColors = new WeakHashMap<>();
+    private static final class TaskDescriptionColors {
+        final @ColorInt int mPrimaryColor;
+        final @ColorInt int mBackgroundColor;
+
+        TaskDescriptionColors(@ColorInt int primaryColor, @ColorInt int backgroundColor) {
+            mPrimaryColor = primaryColor;
+            mBackgroundColor = backgroundColor;
+        }
+
+        @Override
+        public boolean equals(@Nullable Object obj) {
+            return obj instanceof TaskDescriptionColors other
+                    && mPrimaryColor == other.mPrimaryColor
+                    && mBackgroundColor == other.mBackgroundColor;
+        }
+
+        @Override
+        public int hashCode() {
+            return 31 * mPrimaryColor + mBackgroundColor;
+        }
+    }
+
+    private static final Map<Activity, TaskDescriptionColors> sTaskDescriptionColors =
+            new WeakHashMap<>();
 
     /** Provides the base status bar color. */
     public interface StatusBarColorProvider {
@@ -120,7 +143,6 @@ public class StatusBarColorController
     private boolean mToolbarColorChanged;
     private @ColorInt int mToolbarColor;
     private @ColorInt int mBackgroundColorForNtp;
-    private @ColorInt int mTaskDescriptionBackgroundColor = Color.TRANSPARENT;
 
     // A flag to force using a light status bar icon color for NTP. When a customized background
     // image is set for NTP, a light status bar icon color is used. However, when NTP is scrolling
@@ -291,6 +313,9 @@ public class StatusBarColorController
                     mCallbackController.makeCancelable(
                             layoutManager -> {
                                 assert layoutManager != null;
+                                if (mLayoutStateProvider != null) {
+                                    mLayoutStateProvider.removeObserver(mLayoutStateObserver);
+                                }
                                 mLayoutStateProvider = layoutManager;
                                 mLayoutStateProvider.addObserver(mLayoutStateObserver);
                             }));
@@ -499,12 +524,9 @@ public class StatusBarColorController
     /** Calculate and update the status bar's color. */
     public void updateStatusBarColor() {
         @ColorInt int statusBarColor = calculateFinalStatusBarColor();
-        setStatusBarColor(
-                mEdgeToEdgeSystemBarColorHelper,
-                mActivity,
-                statusBarColor,
-                mForceLightIconColorForNtp && isStandardNtp() && !mIsOmniboxFocused);
-
+        // TaskDescription.Builder#setBackgroundColor is only supported on Android T+ (where 0 /
+        // Color.TRANSPARENT means no custom Recents background color is set).
+        @ColorInt int backgroundColor = Color.TRANSPARENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             @ColorInt
             int tabStripColor =
@@ -514,16 +536,14 @@ public class StatusBarColorController
                             AppHeaderUtils.isAppInDesktopWindow(mDesktopWindowStateManager),
                             mIsTopResumedActivity);
 
-            @ColorInt int opaqueBgColor = ColorUtils.getOpaqueColor(tabStripColor);
-
-            if (mTaskDescriptionBackgroundColor != opaqueBgColor) {
-                mTaskDescriptionBackgroundColor = opaqueBgColor;
-                mActivity.setTaskDescription(
-                        new ActivityManager.TaskDescription.Builder()
-                                .setBackgroundColor(opaqueBgColor)
-                                .build());
-            }
+            backgroundColor = ColorUtils.getOpaqueColor(tabStripColor);
         }
+        setStatusBarColor(
+                mEdgeToEdgeSystemBarColorHelper,
+                mActivity,
+                statusBarColor,
+                mForceLightIconColorForNtp && isStandardNtp() && !mIsOmniboxFocused,
+                backgroundColor);
     }
 
     /**
@@ -629,8 +649,16 @@ public class StatusBarColorController
             @Nullable EdgeToEdgeSystemBarColorHelper edgeToEdgeSystemBarColorHelper,
             Activity activity,
             @ColorInt int color) {
+        TaskDescriptionColors currentColors = sTaskDescriptionColors.get(activity);
+        @ColorInt
+        int backgroundColor =
+                currentColors != null ? currentColors.mBackgroundColor : Color.TRANSPARENT;
         setStatusBarColor(
-                edgeToEdgeSystemBarColorHelper, activity, color, /* forceLightIconColor= */ false);
+                edgeToEdgeSystemBarColorHelper,
+                activity,
+                color,
+                /* forceLightIconColor= */ false,
+                backgroundColor);
     }
 
     /**
@@ -642,18 +670,20 @@ public class StatusBarColorController
      * @param activity The current Activity.
      * @param color The color that the status bar should be set to.
      * @param forceLightIconColor Force to use light icon color.
+     * @param taskDescriptionBackgroundColor The background color for {@link
+     *     ActivityManager.TaskDescription} on Android T+ (or {@link Color#TRANSPARENT} if unset).
      */
-    public static void setStatusBarColor(
+    static void setStatusBarColor(
             @Nullable EdgeToEdgeSystemBarColorHelper edgeToEdgeSystemBarColorHelper,
             Activity activity,
             @ColorInt int color,
-            boolean forceLightIconColor) {
+            boolean forceLightIconColor,
+            @ColorInt int taskDescriptionBackgroundColor) {
         Window window = activity.getWindow();
         final View root = window.getDecorView().getRootView();
         boolean needsDarkStatusBarIcons = !ColorUtils.shouldUseLightForegroundOnBackground(color);
-        // The helper is the single source of truth whenever it is allowed to color the status bar
-        // (including activities like webapps in short-edges cutout mode that opt in on API 29).
-        // Otherwise fall back to writing the window directly, matching legacy Tabbed Chrome.
+        // The helper is the single source of truth whenever it is allowed to color the status
+        // bar. Otherwise fall back to writing the window directly, matching legacy Tabbed Chrome.
         if (edgeToEdgeSystemBarColorHelper != null
                 && edgeToEdgeSystemBarColorHelper.canSetStatusBarColor()) {
             edgeToEdgeSystemBarColorHelper.setStatusBarColor(color, forceLightIconColor);
@@ -663,16 +693,20 @@ public class StatusBarColorController
         }
 
         @ColorInt int opaqueColor = ColorUtils.getOpaqueColor(color);
-        Integer currentPrimaryColor = sTaskDescriptionColors.get(activity);
+        TaskDescriptionColors newColors =
+                new TaskDescriptionColors(opaqueColor, taskDescriptionBackgroundColor);
 
-        if (currentPrimaryColor == null || currentPrimaryColor != opaqueColor) {
-            sTaskDescriptionColors.put(activity, opaqueColor);
+        if (!newColors.equals(sTaskDescriptionColors.get(activity))) {
+            sTaskDescriptionColors.put(activity, newColors);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                activity.setTaskDescription(
+                ActivityManager.TaskDescription.Builder builder =
                         new ActivityManager.TaskDescription.Builder()
                                 .setPrimaryColor(opaqueColor)
-                                .setStatusBarColor(opaqueColor)
-                                .build());
+                                .setStatusBarColor(opaqueColor);
+                if (taskDescriptionBackgroundColor != Color.TRANSPARENT) {
+                    builder.setBackgroundColor(taskDescriptionBackgroundColor);
+                }
+                activity.setTaskDescription(builder.build());
             } else {
                 activity.setTaskDescription(
                         new ActivityManager.TaskDescription(null, null, opaqueColor));

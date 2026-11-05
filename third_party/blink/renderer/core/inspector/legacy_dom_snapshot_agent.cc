@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/inspector/legacy_dom_snapshot_agent.h"
 
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/core/css/properties/css_property_ref.h"
 #include "third_party/blink/renderer/core/dom/attribute.h"
@@ -62,8 +63,8 @@ std::unique_ptr<protocol::DOM::Rect> LegacyBuildRectForPhysicalRect(
 
 struct LegacyDOMSnapshotAgent::VectorStringHashTraits
     : public GenericHashTraits<Vector<String>> {
-  static unsigned GetHash(const Vector<String>& vec) {
-    unsigned h = blink::GetHash(vec.size());
+  static uint32_t GetHash(const Vector<String>& vec) {
+    uint32_t h = blink::GetHash(vec.size());
     for (const String& s : vec) {
       h = HashInts(h, blink::GetHash(s));
     }
@@ -185,16 +186,15 @@ int LegacyDOMSnapshotAgent::VisitNode(Node* node,
           .setNodeValue(node_value)
           .setBackendNodeId(IdentifiersFactory::IntIdForNode(node))
           .build();
-  if (origin_url_map_ &&
-      origin_url_map_->map.Contains(owned_value->getBackendNodeId())) {
-    String origin_url =
-        origin_url_map_->map.at(owned_value->getBackendNodeId());
+  DOMNodeIdType backend_node_id(owned_value->getBackendNodeId());
+  if (origin_url_map_ && origin_url_map_->map.Contains(backend_node_id)) {
+    String origin_url = origin_url_map_->map.at(backend_node_id);
     // In common cases, it is implicit that a child node would have the same
     // origin url as its parent, so no need to mark twice.
     if (!node->parentNode()) {
       owned_value->setOriginURL(std::move(origin_url));
     } else {
-      DOMNodeId parent_id = node->parentNode()->GetDomNodeId();
+      DOMNodeIdType parent_id(node->parentNode()->GetDomNodeId());
       auto it = origin_url_map_->map.find(parent_id);
       String parent_url =
           it != origin_url_map_->map.end() ? it->value : String();
@@ -403,8 +403,9 @@ int LegacyDOMSnapshotAgent::VisitLayoutTreeNode(LayoutObject* layout_object,
   if (style_index != -1)
     layout_tree_node->setStyleIndex(style_index);
 
-  if (layout_object->Style() && layout_object->IsStackingContext())
+  if (layout_object->IsStackingContext()) {
     layout_tree_node->setIsStackingContext(true);
+  }
 
   if (paint_order_map_) {
     PaintLayer* paint_layer = layout_object->EnclosingLayer();
@@ -449,7 +450,7 @@ const ComputedStyle* ComputedStyleForNode(Node& node) {
     return nullptr;
   }
   if (LayoutObject* layout_object = node.GetLayoutObject()) {
-    return layout_object->Style();
+    return &layout_object->Style();
   }
   if (Element* parent_element = FlatTreeTraversal::ParentElement(node)) {
     return parent_element->EnsureComputedStyle();

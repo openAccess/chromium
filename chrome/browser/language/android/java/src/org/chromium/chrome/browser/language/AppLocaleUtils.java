@@ -17,6 +17,7 @@ import androidx.annotation.RequiresApi;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.LocaleUtils;
 import org.chromium.build.BuildConfig;
+import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.lifetime.ApplicationLifetime;
@@ -53,9 +54,11 @@ public class AppLocaleUtils {
      * The |ApplocaleUtils.APP_LOCALE_USE_SYSTEM_LANGUAGE| constant acts as a signal that no app
      * override language is set and when this is the case the app UI language tracks the device
      * language.
+     *
      * @param overrideLanguage String to compare to the default system language value.
      * @return Whether or not |overrideLanguage| is the default system language.
      */
+    @Contract("null -> true")
     public static boolean isFollowSystemLanguage(@Nullable String overrideLanguage) {
         return TextUtils.equals(overrideLanguage, APP_LOCALE_USE_SYSTEM_LANGUAGE);
     }
@@ -154,8 +157,10 @@ public class AppLocaleUtils {
                     if (success) {
                         // The locale change will trigger a process restart to apply the new
                         // language and reopen chrome when SettingsInTab is enabled. See
-                        // https://crbug.com/545907093.
-                        if (SettingsInTab.isEnabled()) {
+                        // crbug.com/545907093.
+                        // TODO(crbug.com/562619494): Consider passing shownInTab from callers
+                        // rather than querying the global.
+                        if (SettingsInTab.shouldOpenSettingsInTab()) {
                             ApplicationLifetime.setRestartForLocaleSwitch(true);
                         }
                         if (shouldUseSystemManagedLocale()) {

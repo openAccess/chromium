@@ -4,6 +4,8 @@
 
 package org.chromium.ui.base;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.ContentResolver;
@@ -16,23 +18,31 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.VelocityTracker;
 import android.view.View;
+import android.view.ViewConfiguration;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.CalledByNativeForTesting;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.AconfigFlaggedApiDelegate;
+import org.chromium.base.ContentUriOwner;
 import org.chromium.base.ContentUriUtils;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
+import org.chromium.base.ObserverList;
+import org.chromium.base.StrictModeContext;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.input.InputFeatureMap;
 import org.chromium.ui.dragdrop.DropDataAndroid;
+import org.chromium.ui.dragdrop.DropDataProviderUtils;
 import org.chromium.ui.util.MotionEventUtils;
 
 import java.lang.reflect.UndeclaredThrowableException;
@@ -56,11 +66,16 @@ public class EventForwarder {
     private final boolean mIsDragDropEnabled;
     private final boolean mConvertTrackpadEventsToMouse;
     private final boolean mUseBufferedInput;
+    private boolean mAllowIntraAppImageDrops;
 
     private final MotionEvent.PointerCoords mTmpPointerCoords = new MotionEvent.PointerCoords();
 
     private final boolean mIsAtLeastU =
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE;
+
+    private final int mScaledTouchSlop;
+    private final ObserverList<TouchSequenceObserver> mTouchSequenceObservers =
+            new ObserverList<>();
 
     // The mime type for a URL.
     private static final String URL_MIME_TYPE = "text/x-moz-url";
@@ -71,6 +86,10 @@ public class EventForwarder {
     private float mCurrentTouchOffsetX;
     private float mCurrentTouchOffsetY;
 
+    // Origin of the container view in the compositor surface, in pixels.
+    private float mContainerViewOriginX;
+    private float mContainerViewOriginY;
+
     // Offset for the drag events that's dispatching through other views.
     private float mDragDispatchingOffsetX;
     private float mDragDispatchingOffsetY;
@@ -79,6 +98,12 @@ public class EventForwarder {
 
     // Track the last tool type of touch sequence.
     private int mLastToolType;
+
+    // Active touch sequence state tracking.
+    private boolean mIsTouchDown;
+    private float mLastDownX;
+    private float mLastDownY;
+    private boolean mHasExceededTouchSlop;
 
     // Tracks the starting position of the last trackpad scroll.
     // Only used when isTrackpadScrollEventFromAtLeastU() is true.
@@ -99,6 +124,22 @@ public class EventForwarder {
     private @Nullable StylusWritingDelegate mStylusWritingDelegate;
 
     private final PointerLockEventHelper mPointerLockEventHelper = new PointerLockEventHelper();
+
+    /**
+     * Observer for touch sequence lifecycle events. Used by consumers to monitor touches and
+     * distinguish taps from swipes, such as protecting interactions originating in system gesture
+     * insets.
+     */
+    @FunctionalInterface
+    public interface TouchSequenceObserver {
+        /**
+         * Called when an active touch sequence has ended (ACTION_UP or ACTION_CANCEL).
+         *
+         * @param hasExceededTouchSlop Whether the touch sequence moved beyond the scaled touch slop
+         *     threshold (indicating a drag or swipe rather than a tap).
+         */
+        void onTouchSequenceEnded(boolean hasExceededTouchSlop);
+    }
 
     /** Interface to provide stylus writing functionality. */
     public interface StylusWritingDelegate {
@@ -126,6 +167,17 @@ public class EventForwarder {
         return mLastToolType;
     }
 
+    /**
+     * Delivers images dragged out of this app's own web contents to this target as image bytes
+     * (DropData::file_contents), as desktop platforms do for every drop target. Opt-in on Android
+     * so that ordinary tabs continue receiving intra-app image drags as file URIs
+     * (DropData::filenames); see the ACTION_DROP handling in {@link #onDragEvent}.
+     */
+    @CalledByNative
+    void setAllowIntraAppImageDrops(boolean allow) {
+        mAllowIntraAppImageDrops = allow;
+    }
+
     @CalledByNative
     private static EventForwarder create(long nativeEventForwarder, boolean isDragDropEnabled) {
         final boolean convertTrackpadEventsToMouse =
@@ -136,7 +188,8 @@ public class EventForwarder {
                 nativeEventForwarder,
                 isDragDropEnabled,
                 convertTrackpadEventsToMouse,
-                useBufferedInput);
+                useBufferedInput,
+                getInitialTouchSlop());
     }
 
     @VisibleForTesting
@@ -144,11 +197,13 @@ public class EventForwarder {
             long nativeEventForwarder,
             boolean isDragDropEnabled,
             boolean convertTrackpadEventsToMouse,
-            boolean useBufferedInput) {
+            boolean useBufferedInput,
+            int scaledTouchSlop) {
         mNativeEventForwarder = nativeEventForwarder;
         mIsDragDropEnabled = isDragDropEnabled;
         mConvertTrackpadEventsToMouse = convertTrackpadEventsToMouse;
         mUseBufferedInput = useBufferedInput;
+        mScaledTouchSlop = scaledTouchSlop;
         mVelocityTracker = VelocityTracker.obtain();
         var oldValue = sEventForwarders.put(nativeEventForwarder, this);
         assert oldValue == null;
@@ -216,10 +271,12 @@ public class EventForwarder {
             return false;
         }
 
-        if (event.getAction() == MotionEvent.ACTION_DOWN) {
+        int actionMasked = event.getActionMasked();
+        if (actionMasked == MotionEvent.ACTION_DOWN) {
             mLastToolType = event.getToolType(0);
             logActionDown(event);
         }
+        updateTouchSequence(actionMasked, event.getX(), event.getY());
 
         if (touchEventRequiresSpecialHandling(event)) {
             return true;
@@ -227,6 +284,81 @@ public class EventForwarder {
 
         final boolean isTouchHandleEvent = false;
         return sendTouchEvent(event, isTouchHandleEvent);
+    }
+
+    /**
+     * Adds an observer for touch sequence lifecycle events.
+     *
+     * @param observer The observer to add.
+     */
+    public void addTouchSequenceObserver(TouchSequenceObserver observer) {
+        mTouchSequenceObservers.addObserver(observer);
+    }
+
+    /**
+     * Removes an observer for touch sequence lifecycle events.
+     *
+     * @param observer The observer to remove.
+     */
+    public void removeTouchSequenceObserver(TouchSequenceObserver observer) {
+        mTouchSequenceObservers.removeObserver(observer);
+    }
+
+    /**
+     * Returns whether there is an active touch sequence whose initial touch-down point falls within
+     * the system gesture insets of the specified view.
+     *
+     * @param view The view whose gesture insets are used.
+     * @return True if a touch sequence is active and originated in gesture insets.
+     */
+    public boolean hasTouchOriginatingInGestureInsets(View view) {
+        if (!mIsTouchDown) return false;
+        return ViewUtils.isPointInGestureInsets(view, mLastDownX, mLastDownY);
+    }
+
+    /**
+     * Returns whether the current active touch sequence has moved beyond the scaled touch slop
+     * threshold.
+     */
+    public boolean hasCurrentTouchExceededTouchSlop() {
+        return mHasExceededTouchSlop;
+    }
+
+    private void updateTouchSequence(int actionMasked, float x, float y) {
+        switch (actionMasked) {
+            case MotionEvent.ACTION_DOWN -> {
+                // Touch sequence started; record starting position and reset slop state.
+                mIsTouchDown = true;
+                mLastDownX = x;
+                mLastDownY = y;
+                mHasExceededTouchSlop = false;
+            }
+            case MotionEvent.ACTION_MOVE -> {
+                // Track movement to see if the gesture exceeds the touch slop threshold.
+                if (mIsTouchDown && !mHasExceededTouchSlop) {
+                    mHasExceededTouchSlop =
+                            hasExceededTouchSlop(mLastDownX, mLastDownY, x, y, mScaledTouchSlop);
+                }
+            }
+            case MotionEvent.ACTION_UP -> {
+                // Touch sequence completed normally; notify observers with the final slop state.
+                mIsTouchDown = false;
+                notifyTouchSequenceEnded(mHasExceededTouchSlop);
+            }
+            case MotionEvent.ACTION_CANCEL -> {
+                // Touch sequence cancelled (e.g. system gesture takeover); treat as exceeded slop.
+                mIsTouchDown = false;
+                mHasExceededTouchSlop = true;
+                notifyTouchSequenceEnded(true);
+            }
+            default -> {}
+        }
+    }
+
+    private void notifyTouchSequenceEnded(boolean hasExceededTouchSlop) {
+        for (TouchSequenceObserver observer : mTouchSequenceObservers) {
+            observer.onTouchSequenceEnded(hasExceededTouchSlop);
+        }
     }
 
     /**
@@ -282,14 +414,17 @@ public class EventForwarder {
         return false;
     }
 
+    // Returns the offset that maps compositor surface coordinates to web contents coordinates.
+    // Used when a touch sequence is transferred to Viz, which receives events in compositor surface
+    // coordinates rather than in container view coordinates.
     @CalledByNative
     private float getWebContentsOffsetXInWindow() {
-        return mCurrentTouchOffsetX;
+        return mCurrentTouchOffsetX - mContainerViewOriginX;
     }
 
     @CalledByNative
     private float getWebContentsOffsetYInWindow() {
-        return mCurrentTouchOffsetY;
+        return mCurrentTouchOffsetY - mContainerViewOriginY;
     }
 
     private boolean sendTouchEvent(MotionEvent event, boolean isTouchHandleEvent) {
@@ -412,6 +547,19 @@ public class EventForwarder {
     }
 
     /**
+     * Sets the origin of the container view in the compositor surface. Only affects touch sequences
+     * transferred to Viz, which receive events in compositor surface coordinates. Needed when the
+     * container view isn't placed at the origin of the compositor surface.
+     *
+     * @param x The X origin in pixels.
+     * @param y The Y origin in pixels.
+     */
+    public void setContainerViewOriginInCompositorSurface(float x, float y) {
+        mContainerViewOriginX = x;
+        mContainerViewOriginY = y;
+    }
+
+    /**
      * Creates a new motion event differed from the given event by current touch offset if the
      * offset is not zero.
      *
@@ -471,7 +619,8 @@ public class EventForwarder {
                                     MotionEventUtils.getEventTimeNanos(event),
                                     MotionEvent.ACTION_BUTTON_RELEASE,
                                     MotionEvent.BUTTON_PRIMARY,
-                                    event.getToolType(0));
+                                    event.getToolType(0),
+                                    /* skipDipScale= */ false);
                 }
                 mLastMouseButtonState = 0;
             }
@@ -542,7 +691,8 @@ public class EventForwarder {
                 isTrackpadToMouseEventConversionEnabled()
                         && isTrackpadToMouseConversionEvent(event);
 
-        mPointerLockEventHelper.onNonCapturedPointerEvent(event.getX(), event.getY());
+        mPointerLockEventHelper.onNonCapturedPointerEvent(
+                event.getX(), event.getY(), event.getRawX(), event.getRawY());
 
         EventForwarderJni.get()
                 .onMouseEvent(
@@ -553,7 +703,8 @@ public class EventForwarder {
                         getMouseEventActionButton(event),
                         shouldConvertToMouseEvent
                                 ? MotionEvent.TOOL_TYPE_MOUSE
-                                : event.getToolType(0));
+                                : event.getToolType(0),
+                        /* skipDipScale= */ false);
         return true;
     }
 
@@ -671,15 +822,83 @@ public class EventForwarder {
                         || event.getActionMasked() == MotionEvent.ACTION_CANCEL);
     }
 
+    private static boolean isUriSafeForDrop(Uri uri) {
+        if (!ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            return false;
+        }
+        @ContentUriOwner int owner = ContentUriUtils.resolveContentUriOwner(uri);
+        if (owner == ContentUriOwner.NON_EXPORTED_FROM_CURRENT_APP) {
+            // The only internal provider allowed is to drag-drop images between tabs.
+            return DropDataProviderUtils.isDropDataProviderUri(uri);
+        }
+        return owner != ContentUriOwner.EXPORTED_FROM_CURRENT_APP;
+    }
+
     /**
      * @see View#onDragEvent(DragEvent)
      * @param event {@link DragEvent} instance.
      * @param containerView A view on which the drag event is taking place.
      */
     public boolean onDragEvent(DragEvent event, View containerView) {
-        ClipDescription clipDescription = event.getClipDescription();
+        int[] locationOnScreen = new int[2];
+        containerView.getLocationOnScreen(locationOnScreen);
+
+        // All coordinates are in device pixel. Conversion to DIP happens in the native.
+        float x = event.getX() + mCurrentTouchOffsetX + mDragDispatchingOffsetX;
+        float y = event.getY() + mCurrentTouchOffsetY + mDragDispatchingOffsetY;
+        float screenX = x + locationOnScreen[0];
+        float screenY = y + locationOnScreen[1];
+
+        return forwardDragEvent(
+                event.getAction(),
+                x,
+                y,
+                screenX,
+                screenY,
+                event.getClipDescription(),
+                event.getClipData());
+    }
+
+    /**
+     * Dispatches a drag event carrying {@code clipData} as if it were delivered to {@link
+     * #onDragEvent(DragEvent, View)}, so that its {@link ClipData} parsing and content URI
+     * filtering run. Used by browser tests to replay drags captured from a {@link
+     * org.chromium.ui.dragdrop.DragAndDropDelegate}. Coordinates are in device pixels.
+     */
+    @CalledByNativeForTesting
+    void dispatchDragEventForTesting(
+            int action,
+            float x,
+            float y,
+            float screenX,
+            float screenY,
+            @Nullable ClipData clipData) {
+        // Mirror android.view.DragEvent's action-dependent data availability:
+        // - getClipDescription() is populated on all actions except ACTION_DRAG_ENDED.
+        // - getClipData() is only populated on ACTION_DROP.
+        forwardDragEvent(
+                action,
+                x,
+                y,
+                screenX,
+                screenY,
+                action != DragEvent.ACTION_DRAG_ENDED && clipData != null
+                        ? clipData.getDescription()
+                        : null,
+                action == DragEvent.ACTION_DROP ? clipData : null);
+    }
+
+    private boolean forwardDragEvent(
+            int action,
+            float x,
+            float y,
+            float screenX,
+            float screenY,
+            @Nullable ClipDescription clipDescription,
+            @Nullable ClipData clipData) {
         // Do not forward browser content events to native eventForwarder.
-        if (MimeTypeUtils.clipDescriptionHasBrowserContent(clipDescription)) {
+        if (clipDescription != null
+                && MimeTypeUtils.clipDescriptionHasBrowserContent(clipDescription)) {
             return false;
         }
         if (mNativeEventForwarder == 0) {
@@ -690,38 +909,60 @@ public class EventForwarder {
                 extras != null ? extras.getString(DropDataAndroid.EXTRA_CUSTOM_DATA) : null;
         String effectAllowed =
                 extras != null ? extras.getString(DropDataAndroid.EXTRA_EFFECT_ALLOWED) : null;
+        String dragId = extras != null ? extras.getString(DropDataAndroid.EXTRA_DRAG_ID) : null;
 
         String[] mimeTypes =
                 new String[clipDescription != null ? clipDescription.getMimeTypeCount() : 0];
         for (int i = 0; i < mimeTypes.length; i++) {
+            assumeNonNull(clipDescription);
             mimeTypes[i] = clipDescription.getMimeType(i);
         }
 
-        if (event.getAction() == DragEvent.ACTION_DRAG_STARTED) {
+        boolean hasFiles = false;
+        if (UiAndroidFeatureMap.isEnabled(UiAndroidFeatures.HAS_CONTENT_URI)) {
+            AconfigFlaggedApiDelegate delegate = AconfigFlaggedApiDelegate.getInstance();
+            if (delegate != null && clipDescription != null) {
+                hasFiles = delegate.hasContentUri(clipDescription);
+            }
+        }
+
+        if (action == DragEvent.ACTION_DRAG_STARTED) {
             return mIsDragDropEnabled;
         }
 
-        String content = "";
         List<String[]> filenames = new ArrayList<String[]>();
         String text = null;
         String html = null;
         String url = null;
-        if (event.getAction() == DragEvent.ACTION_DROP) {
+        DropDataProviderUtils.CachedImage image = null;
+        if (action == DragEvent.ACTION_DROP && clipData != null) {
             try {
-                ClipData clipData = event.getClipData();
-                final int itemCount = clipData == null ? 0 : clipData.getItemCount();
+                final int itemCount = clipData.getItemCount();
                 for (int i = 0; i < itemCount; i++) {
                     // If there are any Uris, set them as files.
                     Uri uri = clipData.getItemAt(i).getUri();
                     if (uri != null) {
+                        // An image dragged out of this app's own web contents is served by its
+                        // DropDataProvider. Hand its bytes to an opted-in target directly, as
+                        // desktop platforms do (see WebContentsViewAura::PrepareDropData), instead
+                        // of populating `filenames` as a file drop. The provider only returns the
+                        // bytes while the drag is in progress and carries the drag ID they were
+                        // cached with; any other DropDataProvider URI (e.g. a stale or replayed
+                        // URI) is dropped rather than falling through to `filenames`.
+                        if (mAllowIntraAppImageDrops
+                                && DropDataProviderUtils.isDropDataProviderUri(uri)) {
+                            if (image == null) {
+                                image = DropDataProviderUtils.getCachedImage(uri, dragId);
+                            }
+                            continue;
+                        }
+
                         // Reject non-URIs or URIs originating from this app to prevent the browser
                         // from opening private files on behalf of an untrusted paste request.
                         if (UiAndroidFeatureMap.isEnabled(
-                                UiAndroidFeatures.CLIPBOARD_CONFUSED_DEPUTY_DEFENSE_FILES)) {
-                            if (!ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())
-                                    || ContentUriUtils.isUriFromThisApp(uri)) {
-                                continue;
-                            }
+                                        UiAndroidFeatures.CLIPBOARD_CONFUSED_DEPUTY_DEFENSE_FILES)
+                                && !isUriSafeForDrop(uri)) {
+                            continue;
                         }
 
                         String uriString = uri.toString();
@@ -739,7 +980,9 @@ public class EventForwarder {
                     CharSequence temp = item.getText();
                     if (temp != null) {
                         text = temp.toString();
-                        if (clipDescription.hasMimeType(URL_MIME_TYPE)) {
+                        // clipDescription is @Nullable on forwardDragEvent (null on
+                        // ACTION_DRAG_ENDED).
+                        if (clipDescription != null && clipDescription.hasMimeType(URL_MIME_TYPE)) {
                             url = text;
                         }
                     }
@@ -748,44 +991,39 @@ public class EventForwarder {
                         html = temp.toString();
                     }
                 }
-                content = "";
             } catch (UndeclaredThrowableException e) {
                 // When dropped item is not successful for whatever reason, catch before we crash.
                 // While ClipData.Item does capture most common failures, there could be exceptions
                 // that's wrapped by Chrome classes (e.g. ServiceTracingProxyProvider) which changed
                 // the exception signiture. See crbug.com/1406777.
                 Log.e(TAG, "Parsing clip data content failed.", e);
-                content = "";
             }
+        }
+        if (action == DragEvent.ACTION_DROP) {
             RecordHistogram.recordCount100Histogram(
                     "Android.DragDrop.Files.Count", filenames.size());
         }
 
-        int[] locationOnScreen = new int[2];
-        containerView.getLocationOnScreen(locationOnScreen);
-
-        // All coordinates are in device pixel. Conversion to DIP happens in the native.
-        float x = event.getX() + mCurrentTouchOffsetX + mDragDispatchingOffsetX;
-        float y = event.getY() + mCurrentTouchOffsetY + mDragDispatchingOffsetY;
-        float screenX = x + locationOnScreen[0];
-        float screenY = y + locationOnScreen[1];
-
         EventForwarderJni.get()
                 .onDragEvent(
                         mNativeEventForwarder,
-                        event.getAction(),
+                        action,
                         x,
                         y,
                         screenX,
                         screenY,
                         mimeTypes,
-                        content,
+                        hasFiles,
                         filenames.toArray(new String[][] {}),
                         text,
                         html,
                         url,
                         customData,
-                        effectAllowed);
+                        effectAllowed,
+                        dragId,
+                        image != null ? image.bytes : null,
+                        image != null ? image.extension : null,
+                        image != null ? image.filename : null);
         return true;
     }
 
@@ -848,6 +1086,20 @@ public class EventForwarder {
         boolean shouldConvertToMouseEvent =
                 isTrackpadToMouseEventConversionEnabled()
                         && event.isFromSource(InputDevice.SOURCE_TOUCHPAD);
+        // The MotionEvent.obtain() overload used by transformCapturedPointerEvent() does not
+        // preserve actionButton. Save it before transforming physical mouse events. A captured
+        // trackpad may also use SOURCE_MOUSE_RELATIVE, but is identified by TOOL_TYPE_FINGER and
+        // must continue passing 0 so WebMouseEventBuilder::Build() in
+        // web_input_event_builders_android.cc derives the changed button from buttonState.
+        int actionButton =
+                event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
+                                && event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE
+                        ? getMouseEventActionButton(event)
+                        : 0;
+        boolean skipDipScale =
+                event.isFromSource(InputDevice.SOURCE_MOUSE_RELATIVE)
+                        && UiAndroidFeatureList.sPointerLockMouseScaling.isEnabled()
+                        && UiAndroidFeatureList.sPointerLockMouseDensityCompensation.isEnabled();
         event = mPointerLockEventHelper.transformCapturedPointerEvent(event, deviceRotation);
 
         if (!event.isFromSource(InputDevice.SOURCE_MOUSE)) {
@@ -879,7 +1131,8 @@ public class EventForwarder {
         }
 
         // Update the last event position
-        mPointerLockEventHelper.updateLastPointerPosition(event.getX(), event.getY());
+        mPointerLockEventHelper.updateLastPointerPosition(
+                event.getX(), event.getY(), event.getRawX(), event.getRawY());
 
         if (event.getAction() == MotionEvent.ACTION_SCROLL) {
             return EventForwarderJni.get()
@@ -895,10 +1148,11 @@ public class EventForwarder {
                             event,
                             MotionEventUtils.getEventTimeNanos(event),
                             event.getActionMasked(),
-                            getMouseEventActionButton(event),
+                            actionButton,
                             shouldConvertToMouseEvent
                                     ? MotionEvent.TOOL_TYPE_MOUSE
-                                    : event.getToolType(0));
+                                    : event.getToolType(0),
+                            skipDipScale);
         }
 
         return true;
@@ -1021,6 +1275,19 @@ public class EventForwarder {
         return true;
     }
 
+    private static int getInitialTouchSlop() {
+        try (StrictModeContext ignored = StrictModeContext.allowAllVmPolicies()) {
+            return ViewConfiguration.get(ContextUtils.getApplicationContext()).getScaledTouchSlop();
+        }
+    }
+
+    private static boolean hasExceededTouchSlop(
+            float startX, float startY, float currentX, float currentY, int slopThreshold) {
+        float dx = currentX - startX;
+        float dy = currentY - startY;
+        return (dx * dx + dy * dy) > (slopThreshold * slopThreshold);
+    }
+
     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
     @NativeMethods
     interface Natives {
@@ -1045,7 +1312,8 @@ public class EventForwarder {
                 long timeNs,
                 int action,
                 int changedButton,
-                int toolType);
+                int toolType,
+                boolean skipDipScale);
 
         void onDragEvent(
                 long nativeEventForwarder,
@@ -1055,13 +1323,17 @@ public class EventForwarder {
                 float screenX,
                 float screenY,
                 String[] mimeTypes,
-                String content,
+                boolean hasFiles,
                 String[][] filenames,
                 @Nullable String text,
                 @Nullable String html,
                 @Nullable String url,
                 @Nullable String customData,
-                @Nullable String effectAllowed);
+                @Nullable String effectAllowed,
+                @Nullable String dragId,
+                byte @Nullable [] imageBytes,
+                @Nullable String imageExtension,
+                @Nullable String imageFilename);
 
         boolean onGestureEvent(long nativeEventForwarder, int type, long timeMs, float delta);
 

@@ -15,6 +15,8 @@
 class PrefService;
 @protocol TipsMagicStackMediatorDelegate;
 @class TipsModuleConfig;
+@class MagicStackModule;
+class HomeBackgroundCustomizationService;
 namespace bookmarks {
 class BookmarkModel;
 }  // namespace bookmarks
@@ -34,6 +36,9 @@ enum class TipIdentifier;
 // Used by the Tips module for the current module configuration.
 @property(nonatomic, strong, readonly) TipsModuleConfig* config;
 
+// Returns the currently active module config.
+@property(nonatomic, strong, readonly) MagicStackModule* activeConfig;
+
 // Delegate.
 @property(nonatomic, weak) id<TipsMagicStackMediatorDelegate> delegate;
 
@@ -42,13 +47,17 @@ enum class TipIdentifier;
     presentationAudience;
 
 // Default initializer.
-- (instancetype)
-    initWithIdentifier:(segmentation_platform::TipIdentifier)identifier
-    profilePrefService:(PrefService*)profilePrefService
-       shoppingService:(commerce::ShoppingService*)shoppingService
-         bookmarkModel:(bookmarks::BookmarkModel*)bookmarkModel
-          imageFetcher:
-              (std::unique_ptr<image_fetcher::ImageDataFetcher>)imageFetcher
+- (instancetype)initWithIdentifier:
+                    (segmentation_platform::TipIdentifier)identifier
+                profilePrefService:(PrefService*)profilePrefService
+                   shoppingService:(commerce::ShoppingService*)shoppingService
+                     bookmarkModel:(bookmarks::BookmarkModel*)bookmarkModel
+                      imageFetcher:
+                          (std::unique_ptr<image_fetcher::ImageDataFetcher>)
+                              imageFetcher
+    backgroundCustomizationService:
+        (HomeBackgroundCustomizationService*)backgroundCustomizationService
+             localStatePrefService:(PrefService*)localStatePrefService
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
@@ -65,6 +74,14 @@ enum class TipIdentifier;
 // on the current homepage but does not affect its functionality elsewhere.
 // The `completion` is called after the removal is finished.
 - (void)removeModuleWithCompletion:(ProceduralBlock)completion;
+
+// Commits any pending in-place interaction (such as a selected NTP theme
+// swatch) and removes the module from the Magic Stack.
+- (void)completeInPlaceInteractionIfNeeded;
+
+// Updates the inline switch state for the Tips Notifications module if the
+// state changed.
+- (void)setTipsNotificationsSwitchEnabled:(BOOL)enabled;
 
 @end
 

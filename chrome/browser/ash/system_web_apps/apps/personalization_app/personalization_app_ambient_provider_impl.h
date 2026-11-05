@@ -61,7 +61,6 @@ class PersonalizationAppAmbientProviderImpl
   void SetAlbumSelected(const std::string& id,
                         mojom::TopicSource topic_source,
                         bool selected) override;
-  void SetPageViewed() override;
   void FetchSettingsAndAlbums() override;
   void StartScreenSaverPreview() override;
   void ShouldShowTimeOfDayBanner(
@@ -171,9 +170,6 @@ class PersonalizationAppAmbientProviderImpl
 
   // Whether to update previews when `UpdateSettings()` returns successfully.
   bool needs_update_previews_ = false;
-
-  // A flag to record if the user has seen the ambient mode page.
-  bool page_viewed_ = false;
 
   base::ScopedObservation<AmbientUiModel, AmbientUiModelObserver>
       ambient_ui_model_observer_{this};

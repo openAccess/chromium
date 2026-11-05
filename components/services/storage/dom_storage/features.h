@@ -24,12 +24,36 @@ COMPONENT_EXPORT(STORAGE_FEATURES) BASE_DECLARE_FEATURE(kDomStorageSqlite);
 COMPONENT_EXPORT(STORAGE_FEATURES)
 BASE_DECLARE_FEATURE(kDomStorageSqliteInMemory);
 
+// Enable to migrate on-disk LevelDB databases to SQLite after they become idle.
+// Also, uses SQLite for new databases.
+COMPONENT_EXPORT(STORAGE_FEATURES)
+BASE_DECLARE_FEATURE(kDomStorageSqliteMigration);
+
+// How long an on-disk LevelDB must stay idle before it is migrated to SQLite.
+// Exposed as a feature param so field trials can tune it and tests can
+// shorten it.
+COMPONENT_EXPORT(STORAGE_FEATURES)
+BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
+                           kDomStorageSqliteMigrationInactivityTimeoutParam);
+
+// Verifies the contents of the database after migration.  This is expensive,
+// requiring a full read of both the source database and the destination
+// database.
+COMPONENT_EXPORT(STORAGE_FEATURES)
+BASE_DECLARE_FEATURE_PARAM(bool, kDomStorageSqliteMigrationVerification);
+
+inline constexpr base::TimeDelta kDomStorageSqliteMigrationInactivityTimeout =
+    base::Seconds(45);
+
 // Used as a feature param by `kDomStorageSqliteNewDatabases`. Adding, removing
 // and reordering values is fine; just make sure to update
 // `kDomStorageSqliteNewDatabasesStages` when adding new values.
 enum class DomStorageSqliteRolloutStage {
   // Use LevelDB exclusively. All on-disk stores emit metrics to "OnDisk".
   kUseLevelDbOnly,
+  // Use LevelDB for new databases and keep existing SQLite databases on
+  // SQLite. All on-disk stores emit metrics to "OnDisk".
+  kUseLevelDbForNewDatabases,
   // Functionally the same as `kUseLevelDbOnly`. On-disk stores created during
   // this stage emit metrics to "OnDiskExperimental"; previously existing stores
   // emit to "OnDisk".

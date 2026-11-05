@@ -100,7 +100,6 @@ base::flat_set<HoldingSpaceFile::FileSystemType> GetAllFileSystemTypes() {
       HoldingSpaceFile::FileSystemType::kDragged,
       HoldingSpaceFile::FileSystemType::kDriveFs,
       HoldingSpaceFile::FileSystemType::kExternal,
-      HoldingSpaceFile::FileSystemType::kForTransientFile,
       HoldingSpaceFile::FileSystemType::kFuseBox,
       HoldingSpaceFile::FileSystemType::kIsolated,
       HoldingSpaceFile::FileSystemType::kLocal,
@@ -201,7 +200,7 @@ bool ExecuteInProgressCommand(const HoldingSpaceItem* item,
 }
 
 // NOTE: These values are persisted to histograms and must remain unchanged.
-std::string ToString(HoldingSpaceFile::FileSystemType type) {
+std::string_view ToString(HoldingSpaceFile::FileSystemType type) {
   switch (type) {
     case HoldingSpaceFile::FileSystemType::kArcContent:
       return "ArcContent";
@@ -217,8 +216,6 @@ std::string ToString(HoldingSpaceFile::FileSystemType type) {
       return "DriveFs";
     case HoldingSpaceFile::FileSystemType::kExternal:
       return "External";
-    case HoldingSpaceFile::FileSystemType::kForTransientFile:
-      return "ForTransientFile";
     case HoldingSpaceFile::FileSystemType::kFuseBox:
       return "FuseBox";
     case HoldingSpaceFile::FileSystemType::kIsolated:
@@ -249,7 +246,7 @@ std::string ToString(HoldingSpaceFile::FileSystemType type) {
 }
 
 // NOTE: These values are persisted to histograms and must remain unchanged.
-std::string ToString(HoldingSpaceItem::Type type) {
+std::string_view ToString(HoldingSpaceItem::Type type) {
   switch (type) {
     case HoldingSpaceItem::Type::kArcDownload:
       return "ArcDownload";

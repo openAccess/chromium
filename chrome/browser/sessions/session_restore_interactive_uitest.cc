@@ -17,6 +17,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/startup/startup_tab.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -25,6 +26,7 @@
 #include "components/keep_alive_registry/keep_alive_types.h"
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/sessions/content/content_test_helper.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
@@ -270,6 +272,39 @@ IN_PROC_BROWSER_TEST_F(SessionRestoreVerticalTabsInteractiveTest,
   // Verify states persist after session restore.
   ASSERT_TRUE(controller->IsCollapsed() == kIsCollapsed);
   ASSERT_TRUE(controller->GetUncollapsedWidth() == kUncollapsedWidth);
+}
+
+// Verify that when SessionService resets and rebuilds its command log from
+// open browsers (e.g. after kWritesPerReset commands), the vertical tab strip's
+// collapsed state and uncollapsed width are still preserved on restore.
+IN_PROC_BROWSER_TEST_F(SessionRestoreVerticalTabsInteractiveTest,
+                       VerifyVerticalTabsSessionRestoreAfterReset) {
+  // Enable vertical tabs.
+  auto* controller = tabs::VerticalTabStripStateController::From(browser());
+  controller->SetVerticalTabsEnabled(true);
+
+  // Set Collapsed State and Uncollapsed Width.
+  controller->RequestCollapse(kIsCollapsed);
+  controller->SetUncollapsedWidth(kUncollapsedWidth);
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return controller->IsCollapsed() == kIsCollapsed; }));
+  ASSERT_EQ(controller->GetUncollapsedWidth(), kUncollapsedWidth);
+
+  // Simulate SessionService resetting and rebuilding commands from current
+  // browsers (which happens every 250 commands during normal usage).
+  SessionService* const session_service =
+      SessionServiceFactory::GetForProfile(browser()->GetProfile());
+  session_service->ResetFromCurrentBrowsers();
+
+  // Quit and restore.
+  BrowserWindowInterface* const restored_browser =
+      QuitBrowserAndRestore(browser());
+  controller = tabs::VerticalTabStripStateController::From(restored_browser);
+
+  // Verify states persist after session restore.
+  EXPECT_EQ(controller->IsCollapsed(), kIsCollapsed);
+  EXPECT_EQ(controller->GetUncollapsedWidth(), kUncollapsedWidth);
 }
 
 #if BUILDFLAG(IS_CHROMEOS)

@@ -9,8 +9,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.when;
 
 import android.view.View;
 
@@ -54,8 +52,8 @@ public class XrSceneCoreSessionManagerImplTest {
     private ComponentActivity mActivity;
     private ActivityController<ComponentActivity> mActivityController;
     @Mock private Runnable mCallback;
-    @Mock private View mView;
 
+    private View mView;
     private Session mSessionDelegate;
     private Scene mScene;
     private ActivitySpace mActivitySpace;
@@ -67,7 +65,8 @@ public class XrSceneCoreSessionManagerImplTest {
         MockitoAnnotations.openMocks(this);
 
         mActivityController = Robolectric.buildActivity(ComponentActivity.class);
-        mActivity = spy(mActivityController.create().start().get());
+        mActivity = mActivityController.create().start().visible().get();
+        mView = new View(mActivity);
 
         SessionCreateResult result = Session.create(mActivity);
         assertTrue(result instanceof SessionCreateSuccess);
@@ -96,11 +95,27 @@ public class XrSceneCoreSessionManagerImplTest {
     public void testCreate() {
         assertNotNull(mManager);
         assertFalse(mManager.isXrFullSpaceMode());
+        assertEquals(mScene.getMainPanelEntity(), mScene.getKeyEntity());
+    }
+
+    @Test
+    public void testSetKeyEntity_OverridesAndRestoresMainPanelEntity() {
+        assertEquals(mScene.getMainPanelEntity(), mScene.getKeyEntity());
+
+        XrPanelEntityHolder customPanel = mManager.createPanelEntity(mView, "custom-panel");
+        mManager.setKeyEntity(customPanel);
+        assertEquals(customPanel.getEntity(), mScene.getKeyEntity());
+
+        mManager.setKeyEntity(null);
+        assertNull(mScene.getKeyEntity());
+
+        mManager.setKeyEntity(mManager.getMainPanelEntity());
+        assertEquals(mScene.getMainPanelEntity(), mScene.getKeyEntity());
     }
 
     @Test
     public void testRequestSpaceModeChange_Success() {
-        when(mActivity.hasWindowFocus()).thenReturn(true);
+        mActivityController.windowFocusChanged(true);
 
         boolean result = mManager.requestSpaceModeChange(true, mCallback);
         ShadowLooper.idleMainLooper();
@@ -110,8 +125,22 @@ public class XrSceneCoreSessionManagerImplTest {
     }
 
     @Test
+    public void testRequestSpaceModeChange_RequestInProgress() {
+        mActivityController.windowFocusChanged(true);
+
+        boolean result = mManager.requestSpaceModeChange(true, mCallback);
+        assertTrue(result);
+
+        boolean secondResult = mManager.requestSpaceModeChange(false, mCallback);
+        assertFalse(secondResult);
+
+        ShadowLooper.idleMainLooper();
+        assertTrue(mManager.isXrFullSpaceMode());
+    }
+
+    @Test
     public void testRequestSpaceModeChange_NoFocus() {
-        when(mActivity.hasWindowFocus()).thenReturn(false);
+        mActivityController.windowFocusChanged(false);
 
         boolean result = mManager.requestSpaceModeChange(true, mCallback);
         ShadowLooper.idleMainLooper();
@@ -122,7 +151,7 @@ public class XrSceneCoreSessionManagerImplTest {
 
     @Test
     public void testRequestSpaceModeChange_AlreadyInMode() {
-        when(mActivity.hasWindowFocus()).thenReturn(true);
+        mActivityController.windowFocusChanged(true);
 
         // Make it full space first
         mManager.requestSpaceModeChange(true, mCallback);
@@ -137,7 +166,7 @@ public class XrSceneCoreSessionManagerImplTest {
 
     @Test
     public void testRequestSpaceModeChange_HomeMode() {
-        when(mActivity.hasWindowFocus()).thenReturn(true);
+        mActivityController.windowFocusChanged(true);
 
         // Make it full space first
         mManager.requestSpaceModeChange(true, mCallback);

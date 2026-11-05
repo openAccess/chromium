@@ -8,6 +8,7 @@
 
 #include "base/android/jni_string.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/scoped_refptr.h"
 #include "components/origin_matcher/origin_matcher.h"
 #include "content/browser/android/java/gin_java_bridge_dispatcher_host.h"
 #include "content/browser/preloading/prerender/prerender_final_status.h"
@@ -32,7 +33,8 @@ JavascriptInjector::JavascriptInjector(
     : WebContentsUserData<JavascriptInjector>(*web_contents),
       java_ref_(env, obj) {
   java_bridge_dispatcher_host_ =
-      new GinJavaBridgeDispatcherHost(web_contents, retained_objects);
+      base::MakeRefCounted<GinJavaBridgeDispatcherHost>(web_contents,
+                                                        retained_objects);
   web_contents->SetUserData(UserDataKey(), base::WrapUnique(this));
 }
 
@@ -45,7 +47,7 @@ JavascriptInjector::~JavascriptInjector() {
 }
 
 void JavascriptInjector::SetAllowInspection(JNIEnv* env, bool allow) {
-  DCHECK(java_bridge_dispatcher_host_);
+  CHECK(java_bridge_dispatcher_host_, base::NotFatalUntil::M159);
   java_bridge_dispatcher_host_->SetAllowObjectContentsInspection(allow);
 }
 
@@ -55,7 +57,7 @@ void JavascriptInjector::AddInterface(
     const JavaRef<jstring>& name,
     const JavaRef<jclass>& safe_annotation_clazz,
     origin_matcher::OriginMatcher matcher) {
-  DCHECK(java_bridge_dispatcher_host_);
+  CHECK(java_bridge_dispatcher_host_, base::NotFatalUntil::M159);
 
   // If a new js object is added or removed when a page is in BFCache or
   // prerendered, the change won't apply after activating the page. To avoid
@@ -76,7 +78,7 @@ void JavascriptInjector::AddInterface(
 
 void JavascriptInjector::RemoveInterface(JNIEnv* env,
                                          const JavaRef<jstring>& name) {
-  DCHECK(java_bridge_dispatcher_host_);
+  CHECK(java_bridge_dispatcher_host_, base::NotFatalUntil::M159);
 
   GetWebContents().GetController().GetBackForwardCache().Flush(
       content::BackForwardCache::NotRestoredReason::
@@ -99,7 +101,8 @@ static int64_t JNI_JavascriptInjectorImpl_Init(
     const JavaRef<jobject>& retained_objects) {
   auto* web_contents = WebContents::FromJavaWebContents(jweb_contents);
   CHECK(web_contents) << "Should be created with a valid WebContents.";
-  DCHECK(!JavascriptInjector::FromWebContents(web_contents));
+  CHECK(!JavascriptInjector::FromWebContents(web_contents),
+        base::NotFatalUntil::M159);
 
   // Owned by |web_contents|.
   auto* injector =

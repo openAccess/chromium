@@ -14,8 +14,8 @@
 #include "base/feature_list.h"
 #include "base/i18n/char_iterator.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/string_util.h"
 #include "base/time/time.h"
-#include "components/autofill/core/browser/autofill_browser_util.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
 #include "components/autofill/core/browser/field_type_util.h"
@@ -24,6 +24,7 @@
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics_util.h"
 #include "components/autofill/core/browser/metrics/field_filling_stats_and_score_metrics.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
 #include "components/autofill/core/browser/metrics/prediction_quality_metrics.h"
@@ -152,6 +153,49 @@ GetAlternativeNameFieldValueCharacterSet(
   return AutofillAlternativeNameFieldValueCharacterSet::kOther;
 }
 
+// TODO(crbug.com/40264633): Remove this metric after feature
+// `AutofillDisallowCountryCodeFilling` is launched.
+void LogSubmittedCountryCodeMetric(const FormStructure& form) {
+  for (const std::unique_ptr<AutofillField>& field : form) {
+    if (field->IsSelectElement() ||
+        field->Type().GetAddressType() != ADDRESS_HOME_COUNTRY ||
+        !field->is_focusable() || field->all_modifiers().empty()) {
+      // Fields must satisfy all of the following in order to be logged:
+      // * Must not be a select elements because these have a separate filling
+      //   process which is not affected by the experiment.
+      // * Must be an address country field.
+      // * Must be focusable and touched by a user (either edited or autofilled)
+      //   to avoid logging metrics for hidden fields that are synchronized by
+      //   JavaScript.
+      continue;
+    }
+    const std::u16string_view value =
+        base::TrimWhitespace(field->value(), base::TRIM_ALL);
+    if (value.empty()) {
+      continue;
+    }
+
+    const bool is_valid_country_code =
+        data_util::IsValidCountryCode(base::ToUpperASCII(value));
+
+    base::UmaHistogramBoolean("Autofill.SubmittedCountryCode2",
+                              is_valid_country_code);
+    const std::string_view filling_method = [&] {
+      switch (*field->last_modifier()) {
+        case FieldModifier::kAutofill:
+          return "Autofilled";
+        case FieldModifier::kUser:
+          return "ManuallyFilled";
+      }
+      NOTREACHED();
+    }();
+
+    base::UmaHistogramBoolean(
+        base::StrCat({"Autofill.SubmittedCountryCode2.", filling_method}),
+        is_valid_country_code);
+  }
+}
+
 // Records the character set of the submitted value for each alternative name
 // field in the form.
 void LogSubmittedAlternativeNameCharacterSetValues(const FormStructure& form) {
@@ -242,6 +286,7 @@ void LogQualityMetrics(
   LogFillingMetrics(form_structure, form_interactions_ukm_logger, source_id,
                     observed_submission, now, ac_unrecognized_behavior);
   if (observed_submission) {
+    LogSubmittedCountryCodeMetric(form_structure);
     // TODO(crbug.com/359768803): Remove this metric once the feature is
     // launched.
     LogSubmittedAlternativeNameCharacterSetValues(form_structure);

@@ -33,6 +33,7 @@
 
 #include <memory>
 
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/scoped_refptr.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/invalidation/invalidation_flags.h"
@@ -177,12 +178,16 @@ class CORE_EXPORT InvalidationSet
     return invalidation_flags_.InvalidatesTreeCounting();
   }
 
+  void SetInvalidatesFocused() { invalidates_focused_ = true; }
+  bool InvalidatesFocused() const { return invalidates_focused_; }
+
   bool IsEmpty() const {
     return HasEmptyBackings() &&
            !invalidation_flags_.InsertionPointCrossing() &&
            !invalidation_flags_.InvalidatesSlotted() &&
            !invalidation_flags_.InvalidatesParts() &&
-           !invalidation_flags_.InvalidatesTreeCounting();
+           !invalidation_flags_.InvalidatesTreeCounting() &&
+           !invalidates_focused_;
   }
 
   void WriteIntoTrace(perfetto::TracedValue context) const;
@@ -213,6 +218,7 @@ class CORE_EXPORT InvalidationSet
   //  I - Insertion point crossing.
   //  S - Invalidates slotted.
   //  P - Invalidates parts.
+  //  F - Invalidates the focused element.
   //  ~ - Max direct siblings is kDirectAdjacentMax.
   //  <integer> - Max direct siblings is specified number (omitted if 1).
   String ToString() const;
@@ -376,7 +382,8 @@ class CORE_EXPORT InvalidationSet
     void SetIsHashSet(Flags& flags) { flags.bits_ |= GetMask(); }
 
     AtomicString string_{};
-    HashSet<AtomicString>* hash_set_;
+    // RAW_PTR_EXCLUSION: #union
+    RAW_PTR_EXCLUSION HashSet<AtomicString>* hash_set_;
   };
 
  protected:
@@ -457,6 +464,9 @@ class CORE_EXPORT InvalidationSet
   // (unless we know for sure no child can be affected by a
   // selector of the :nth-child type).
   unsigned invalidates_nth_ : 1;
+
+  // If true, the focused element needs to be invalidated.
+  unsigned invalidates_focused_ : 1;
 };
 
 class CORE_EXPORT DescendantInvalidationSet final : public InvalidationSet {

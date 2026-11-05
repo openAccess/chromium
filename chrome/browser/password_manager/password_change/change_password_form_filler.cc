@@ -12,7 +12,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
-#include "chrome/browser/password_manager/password_change/change_password_form_waiter.h"
 #include "chrome/browser/password_manager/password_change/model_quality_logs_uploader.h"
 #include "chrome/browser/password_manager/password_change/password_change_logging_util.h"
 #include "components/password_manager/core/browser/browser_save_password_progress_logger.h"
@@ -44,26 +43,25 @@ ChangePasswordFormFiller::ChangePasswordFormFiller(
       client_(client),
       logs_uploader_(logs_uploader) {}
 
-ChangePasswordFormFiller::~ChangePasswordFormFiller() = default;
+ChangePasswordFormFiller::~ChangePasswordFormFiller() {
+  if (form_waiter_ && logs_uploader_) {
+    logs_uploader_->RecordDiscardedForms(form_waiter_->GetDiscardedForms());
+  }
+}
 
 void ChangePasswordFormFiller::FillForm(
     password_manager::PasswordFormManager* form_manager,
     const std::u16string& username,
-    const std::u16string& login_password,
-    const std::u16string& generated_password,
+    const password_manager::PasswordString& login_password,
+    const password_manager::PasswordString& generated_password,
     base::OnceCallback<void(FillingResult)> callback) {
   CHECK(form_manager);
   CHECK(form_manager->GetParsedObservedForm());
   CHECK(form_manager->GetDriver());
 
   username_ = username;
-  // TODO(crbug.com/513276101): Explicit construction of std::u16string
-  // R-Value to be removed once FillForm converted to take PasswordString
-  // argument for login_password
-  login_password_ =
-      password_manager::PasswordString(std::u16string(login_password));
-  generated_password_ =
-      password_manager::PasswordString(std::u16string(generated_password));
+  login_password_ = login_password;
+  generated_password_ = generated_password;
   callback_ = std::move(callback);
 
   const password_manager::PasswordForm& parsed_form =
@@ -110,15 +108,16 @@ void ChangePasswordFormFiller::TriggerFilling(
       base::BindOnce(&ChangePasswordFormFiller::ChangePasswordFormFilled,
                      weak_ptr_factory_.GetWeakPtr());
 
+  // Keep the task's password copies protected until the driver serializes
+  // them for the renderer's Mojo call.
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
       base::BindOnce(
           &password_manager::PasswordManagerDriver::FillChangePasswordForm,
           driver, form.password_element_renderer_id,
           form.new_password_element_renderer_id,
-          form.confirmation_password_element_renderer_id,
-          login_password_.value(), generated_password_.value(),
-          std::move(filling_callback)));
+          form.confirmation_password_element_renderer_id, login_password_,
+          generated_password_, std::move(filling_callback)));
 
   password_manager::PasswordForm form_to_save(form);
   form_to_save.username_value = username_;
@@ -154,11 +153,8 @@ void ChangePasswordFormFiller::ChangePasswordFormFilled(
             web_contents_, client_,
             base::BindOnce(&ChangePasswordFormFiller::OnChangePasswordFormFound,
                            weak_ptr_factory_.GetWeakPtr()))
-            .SetTimeoutCallback(
-                base::BindOnce(&ChangePasswordFormFiller::OnFormFillingFailed,
-                               weak_ptr_factory_.GetWeakPtr()))
+            .EnableTimeout()
             .SetFieldsToIgnore(observed_fields_)
-            .SetLogsUploader(logs_uploader_)
             .Build();
     return;
   }
@@ -182,10 +178,17 @@ void ChangePasswordFormFiller::OnFormFillingFailed() {
 }
 
 void ChangePasswordFormFiller::OnChangePasswordFormFound(
-    password_manager::PasswordFormManager* form_manager) {
+    ChangePasswordFormWaiter::Result result) {
   form_waiter_.reset();
-  CHECK(form_manager);
+  if (logs_uploader_) {
+    logs_uploader_->RecordDiscardedForms(result.discarded_forms);
+  }
+  if (!result.form_manager) {
+    OnFormFillingFailed();
+    return;
+  }
 
+  password_manager::PasswordFormManager* form_manager = result.form_manager;
   CHECK(form_manager->GetParsedObservedForm());
   CHECK(form_manager->GetDriver());
 

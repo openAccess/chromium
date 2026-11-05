@@ -73,6 +73,7 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image_skia_operations.h"
 
@@ -304,14 +305,16 @@ arc::mojom::OpenUrlsRequestPtr ConstructOpenUrlsRequest(
   arc::mojom::OpenUrlsRequestPtr request = arc::mojom::OpenUrlsRequest::New();
   request->action_type = GetArcActionType(intent->action);
   request->activity_name = activity.Clone();
-  DCHECK_EQ(content_urls.size(), intent->files.size());
+  CHECK_EQ(content_urls.size(), intent->files.size(),
+           base::NotFatalUntil::M161);
   for (size_t i = 0; i < content_urls.size(); i++) {
     auto content_url = content_urls[i];
     arc::mojom::ContentUrlWithMimeTypePtr url_with_type =
         arc::mojom::ContentUrlWithMimeType::New();
     url_with_type->content_url = content_url;
-    DCHECK(intent->files[i]->mime_type.has_value() ||
-           intent->mime_type.has_value());
+    CHECK(intent->files[i]->mime_type.has_value() ||
+              intent->mime_type.has_value(),
+          base::NotFatalUntil::M161);
     // Save the file's original mimetype to the URL if it exists. Otherwise, use
     // the common intent mime type instead.
     url_with_type->mime_type = intent->files[i]->mime_type.has_value()
@@ -334,6 +337,14 @@ void OnContentUrlResolved(const base::FilePath& file_path,
                           apps::WindowInfoPtr window_info,
                           base::OnceCallback<void(bool)> callback,
                           const std::vector<GURL>& content_urls) {
+  // arc::ConvertToContentUrlsAndShare() returns an empty list if sharing the
+  // paths with ARCVM fails. Otherwise, it returns one URL per file.
+  if (content_urls.empty()) {
+    LOG(ERROR) << "Share files failed, file urls are empty";
+    std::move(callback).Run(/*success=*/false);
+    return;
+  }
+  CHECK_EQ(content_urls.size(), intent->files.size());
   for (const auto& content_url : content_urls) {
     if (!content_url.is_valid()) {
       LOG(ERROR) << "Share files failed, file urls are not valid";
@@ -348,7 +359,7 @@ void OnContentUrlResolved(const base::FilePath& file_path,
     return;
   }
 
-  DCHECK(window_info);
+  CHECK(window_info, base::NotFatalUntil::M161);
   int32_t session_id = window_info->window_id;
   int64_t display_id = window_info->display_id;
 
@@ -804,7 +815,8 @@ void ArcApps::LaunchAppWithIntent(const std::string& app_id,
         std::move(callback).Run(LaunchResult::kFailed);
         return;
       }
-      DCHECK(arc::IsArcPlayStoreEnabledForProfile(profile_));
+      CHECK(arc::IsArcPlayStoreEnabledForProfile(profile_),
+            base::NotFatalUntil::M161);
 
       // PlayStore item has special handling for shelf controllers. In order
       // to avoid unwanted initial animation for PlayStore item do not create
@@ -817,7 +829,7 @@ void ArcApps::LaunchAppWithIntent(const std::string& app_id,
       }
     } else {
       // Only reachable when ARC always starts.
-      DCHECK(arc::ShouldArcAlwaysStart());
+      CHECK(arc::ShouldArcAlwaysStart(), base::NotFatalUntil::M161);
     }
   }
   std::move(callback).Run(LaunchResult::kSuccess);
@@ -1237,7 +1249,7 @@ void ArcApps::OnTaskDestroyed(int32_t task_id) {
 
   const std::string app_id = it->second;
   task_id_to_app_id_.erase(it);
-  DCHECK(app_id_to_task_ids_.contains(app_id));
+  CHECK(app_id_to_task_ids_.contains(app_id), base::NotFatalUntil::M161);
   app_id_to_task_ids_[app_id].erase(task_id);
   if (app_id_to_task_ids_[app_id].empty()) {
     app_id_to_task_ids_.erase(app_id);
@@ -1336,7 +1348,7 @@ void ArcApps::OnArcSupportedLinksChanged(
 
 void ArcApps::OnArcNotificationManagerInitialized(
     ash::ArcNotificationManagerBase* arc_notification_manager) {
-  DCHECK(arc_notification_manager);
+  CHECK(arc_notification_manager, base::NotFatalUntil::M161);
   notification_observation_.Observe(arc_notification_manager);
 }
 
@@ -1379,7 +1391,8 @@ void ArcApps::OnNotificationRemoved(const std::string& notification_id) {
 
 void ArcApps::OnArcNotificationManagerDestroyed(
     ash::ArcNotificationManagerBase* notification_manager) {
-  DCHECK(notification_observation_.IsObservingSource(notification_manager));
+  CHECK(notification_observation_.IsObservingSource(notification_manager),
+        base::NotFatalUntil::M161);
   notification_observation_.Reset();
 }
 

@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "build/build_config.h"
 #include "chrome/browser/download/chrome_download_manager_delegate.h"
@@ -13,6 +14,7 @@
 #include "chrome/browser/download/download_stats.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/download/public/common/download_danger_type.h"
+#include "components/download/public/common/download_features.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/common/content_features.h"
 #include "extensions/common/extension.h"
@@ -30,7 +32,7 @@ DownloadUiContextMenu::~DownloadUiContextMenu() {
 DownloadUiContextMenu::DownloadUiContextMenu(
     base::WeakPtr<DownloadUIModel> download)
     : download_(download), download_commands_(new DownloadCommands(download)) {
-  DCHECK(download_);
+  CHECK(download_, base::NotFatalUntil::M161);
 }
 
 void DownloadUiContextMenu::RecordCommandsEnabled(ui::SimpleMenuModel* model) {
@@ -172,6 +174,9 @@ std::u16string DownloadUiContextMenu::GetLabelForCommandId(
     case DownloadCommands::PLATFORM_OPEN:
       id = IDS_DOWNLOAD_MENU_PLATFORM_OPEN;
       break;
+    case DownloadCommands::OPEN_WITH:
+      id = IDS_DOWNLOAD_MENU_OPEN_WITH;
+      break;
     case DownloadCommands::CANCEL:
       id = IDS_DOWNLOAD_MENU_CANCEL;
       break;
@@ -306,6 +311,14 @@ ui::SimpleMenuModel* DownloadUiContextMenu::GetFinishedMenuModel(
       GetLabelForCommandId(DownloadCommands::PLATFORM_OPEN));
 
   if (is_download) {
+#if BUILDFLAG(IS_WIN)
+    if (base::FeatureList::IsEnabled(
+            download::features::kEnableDownloadOpenWithContextMenu)) {
+      finished_download_menu_model_->AddItem(
+          DownloadCommands::OPEN_WITH,
+          GetLabelForCommandId(DownloadCommands::OPEN_WITH));
+    }
+#endif
     AddAutoOpenToMenu(finished_download_menu_model_.get());
   }
   finished_download_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);

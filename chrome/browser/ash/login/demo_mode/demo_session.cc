@@ -34,8 +34,6 @@
 #include "base/task/thread_pool.h"
 #include "base/timer/timer.h"
 #include "base/trace_event/trace_event.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/browser_app_launcher.h"
 #include "chrome/browser/apps/app_service/policy_util.h"
 #include "chrome/browser/apps/platform_apps/app_load_service.h"
@@ -46,7 +44,6 @@
 #include "chrome/browser/ash/login/demo_mode/demo_setup_controller.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
-#include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/system/system_tray_client_impl.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
@@ -56,7 +53,6 @@
 #include "chromeos/ash/components/growth/growth_metrics.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "chromeos/constants/chromeos_features.h"
-#include "components/account_manager_core/pref_names.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/policy/core/common/policy_pref_names.h"
@@ -250,7 +246,7 @@ std::vector<CountryCodeAndFullNamePair> GetSortedCountryCodeAndNamePairList(
   UErrorCode error_code = U_ZERO_ERROR;
   std::unique_ptr<icu::Collator> collator(
       icu::Collator::createInstance(error_code));
-  DCHECK(U_SUCCESS(error_code));
+  CHECK(U_SUCCESS(error_code), base::NotFatalUntil::M160);
 
   std::sort(result.begin(), result.end(),
             [&collator](const CountryCodeAndFullNamePair& pair1,
@@ -282,7 +278,7 @@ std::string DemoSession::DemoConfigToString(
 // static
 DemoSession::DemoModeConfig DemoSession::GetDemoConfig(
     const PrefService& local_state) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (g_force_demo_config.has_value())
     return *g_force_demo_config;
@@ -542,10 +538,10 @@ DemoSession::~DemoSession() {
 // static
 
 void DemoSession::InstallDemoResources() {
-  DCHECK(components_->resources_component_loaded());
+  CHECK(components_->resources_component_loaded(), base::NotFatalUntil::M160);
 
   Profile* const profile = ProfileManager::GetActiveUserProfile();
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
   const base::FilePath downloads =
       file_manager::util::GetDownloadsFolderForProfile(profile);
   auto install_media = base::BindOnce(
@@ -598,8 +594,7 @@ void DemoSession::OnSessionStateChanged() {
       if (features::IsDemoModeSecondaryGoogleAccountSigninAllowedFalse()) {
         // Prevent users from signing in with their own account.
         ProfileManager::GetActiveUserProfile()->GetPrefs()->SetBoolean(
-            account_manager::prefs::kSecondaryGoogleAccountSigninAllowed,
-            false);
+            policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed, false);
       }
 
       RestoreDefaultLocaleForNextSession();
@@ -660,8 +655,9 @@ void DemoSession::OnSessionStateChanged() {
 }
 
 base::FilePath DemoSession::GetDemoAppComponentPath() {
-  DCHECK(components_);
-  DCHECK(!components_->default_app_component_path().empty());
+  CHECK(components_, base::NotFatalUntil::M160);
+  CHECK(!components_->default_app_component_path().empty(),
+        base::NotFatalUntil::M160);
   return base::FilePath(
       GetSwitchOrDefault(switches::kDemoModeSwaContentDirectory,
                          components_->default_app_component_path().value()));
@@ -722,7 +718,8 @@ void DemoSession::ShowSplashScreen(base::FilePath image_path) {
 }
 
 void DemoSession::ConfigureAndStartSplashScreen() {
-  const std::string current_locale = application_locale_storage_->Get();
+  const std::string current_locale(
+      application_locale_storage_->GetTag().tag_string());
   base::FilePath localized_image_path = components_->resources_component_path()
                                             .Append(kSplashScreensPath)
                                             .Append(current_locale + ".jpg");
@@ -773,7 +770,7 @@ void DemoSession::RestoreDefaultLocaleForNextSession() {
     return;
   }
   Profile* profile = ProfileManager::GetActiveUserProfile();
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
   const std::string current_locale =
       profile->GetPrefs()->GetString(language::prefs::kApplicationLocale);
   if (current_locale.empty()) {

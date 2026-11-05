@@ -2,10 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/startup/default_browser_prompt/default_browser_prompt.h"
+
 #include <cstdint>
 
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chrome_browser_main.h"
@@ -17,13 +20,14 @@
 #include "chrome/browser/ui/accelerator_utils.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/startup/default_browser_prompt/default_browser_prompt.h"
 #include "chrome/browser/ui/startup/default_browser_prompt/default_browser_prompt_manager.h"
 #include "chrome/browser/ui/startup/infobar_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
-#include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/infobars/confirm_infobar.h"
+#include "chrome/browser/ui/views/toolbar/test_support/app_menu_test_accessor.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/browser/ui/webui/test_support/webui_interactive_test_mixin.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
@@ -58,8 +62,10 @@ class DefaultBrowserPromptInteractiveTest
     : public WebUiInteractiveTestMixin<InteractiveBrowserTest> {
  public:
   DefaultBrowserPromptInteractiveTest() {
-    scoped_feature_list_.InitAndDisableFeature(
-        default_browser::kDefaultBrowserFramework);
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{default_browser::kDefaultBrowserFramework,
+                               default_browser::kDefaultBrowserPromptSurfaces});
   }
 
   void SetUp() override {
@@ -67,15 +73,17 @@ class DefaultBrowserPromptInteractiveTest
     InteractiveBrowserTest::SetUp();
   }
 
+  void SetUpOnMainThread() override {
+    WebUiInteractiveTestMixin<InteractiveBrowserTest>::SetUpOnMainThread();
+    WaitForInitialWebUIToolbar(browser());
+  }
+
   InteractiveTestApi::MultiStep DoesAppMenuItemExist(bool exists) {
     return Steps(
         PressButton(kToolbarAppMenuButtonElementId),
         exists ? EnsurePresent(AppMenuModel::kSetBrowserAsDefaultMenuItem)
                : EnsureNotPresent(AppMenuModel::kSetBrowserAsDefaultMenuItem),
-        WithView(kToolbarAppMenuButtonElementId,
-                 [](AppMenuButton* app_menu_button) {
-                   app_menu_button->CloseMenu();
-                 }));
+        Do([this]() { AppMenuTestAccessor(browser()).CloseMenu(); }));
   }
 
   InteractiveTestApi::MultiStep RemovesAllBrowserDefaultPromptsWhen(
@@ -97,8 +105,16 @@ class DefaultBrowserPromptInteractiveTest
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
+// TODO(crbug.com/571643040): Failing on Linux MSan.
+#if BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER)
+#define MAYBE_ShowsDefaultBrowserPromptOnNewTab \
+  DISABLED_ShowsDefaultBrowserPromptOnNewTab
+#else
+#define MAYBE_ShowsDefaultBrowserPromptOnNewTab \
+  ShowsDefaultBrowserPromptOnNewTab
+#endif
 IN_PROC_BROWSER_TEST_F(DefaultBrowserPromptInteractiveTest,
-                       ShowsDefaultBrowserPromptOnNewTab) {
+                       MAYBE_ShowsDefaultBrowserPromptOnNewTab) {
   DefaultBrowserPromptManager::GetInstance()->MaybeShowPrompt();
   RunTestSequence(
       WaitForShow(ConfirmInfoBar::kInfoBarElementId),
@@ -349,5 +365,13 @@ class DefaultBrowserPromptHeadlessBrowserTest
 
 IN_PROC_BROWSER_TEST_F(DefaultBrowserPromptHeadlessBrowserTest, DoesNotCrash) {
   DefaultBrowserPromptManager::GetInstance()->MaybeShowPrompt();
-  RunTestSequence(WaitForHide(ConfirmInfoBar::kInfoBarElementId));
+  // Infobars that require confirmation (like this one) are not suppressed in
+  // headless mode, so the infobar may or may not be visible by the time the
+  // test sequence starts. Explicitly close the prompts so that waiting for the
+  // infobar to hide is deterministic regardless of timing.
+  RunTestSequence(Do([]() {
+                    DefaultBrowserPromptManager::GetInstance()->CloseAllPrompts(
+                        DefaultBrowserPromptManager::CloseReason::kDismiss);
+                  }),
+                  WaitForHide(ConfirmInfoBar::kInfoBarElementId));
 }

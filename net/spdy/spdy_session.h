@@ -869,9 +869,9 @@ class NET_EXPORT SpdySession
   // Inserts a newly-activated stream into |active_streams_|.
   void InsertActivatedStream(std::unique_ptr<SpdyStream> stream);
 
-  // Remove all internal references to |stream|, call OnClose() on it,
-  // and process any pending stream requests before deleting it.  Note
-  // that |stream| may hold the last reference to the session.
+  // Remove all internal references to `stream`, call OnClose() on it, and
+  // process any pending stream requests before deleting it. Note that `stream`
+  // may hold the last reference to the session.
   void DeleteStream(std::unique_ptr<SpdyStream> stream, int status);
 
   void RecordHistograms();
@@ -1140,6 +1140,12 @@ class NET_EXPORT SpdySession
   AvailabilityState availability_state_ = STATE_AVAILABLE;
   ReadState read_state_ = READ_STATE_DO_READ;
   WriteState write_state_ = WRITE_STATE_IDLE;
+
+  // True when DoDrainSessionAsync() has made the session unavailable and posted
+  // a task to run DoDrainSession(). Prevents further reads and suppresses
+  // premature synchronous draining (e.g., when closing the last active stream)
+  // before the posted DoDrainSession() task runs.
+  bool drain_session_pending_ = false;
 
   // If the session is closing (i.e., |availability_state_| is STATE_DRAINING),
   // then |error_on_close_| holds the error with which it was closed, which

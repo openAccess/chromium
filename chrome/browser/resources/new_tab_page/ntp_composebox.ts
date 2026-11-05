@@ -2,37 +2,37 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import '//resources/cr_components/composebox/composebox_dropdown.js';
-import '//resources/cr_components/composebox/composebox_file_inputs.js';
-import '//resources/cr_components/composebox/composebox_submit.js';
-import '//resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
-import '//resources/cr_components/composebox/composebox_input.js';
-import '//resources/cr_components/composebox/error_scrim.js';
-import '//resources/cr_components/composebox/file_carousel.js';
-import '//resources/cr_components/composebox/composebox_tool_chip.js';
-import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
-import '//resources/cr_components/composebox/composebox_voice_search.js';
-import '//resources/cr_components/search/animated_glow.js';
-import '//resources/cr_components/localized_link/localized_link.js';
+import 'chrome://resources/cr_components/composebox/composebox_aim_button.js';
+import 'chrome://resources/cr_components/composebox/composebox_dropdown.js';
+import 'chrome://resources/cr_components/composebox/composebox_file_inputs.js';
+import 'chrome://resources/cr_components/composebox/composebox_submit.js';
+import 'chrome://resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
+import 'chrome://resources/cr_components/composebox/composebox_input.js';
+import 'chrome://resources/cr_components/composebox/error_scrim.js';
+import 'chrome://resources/cr_components/composebox/file_carousel.js';
+import 'chrome://resources/cr_components/composebox/composebox_tool_chip.js';
+import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
+import 'chrome://resources/cr_components/composebox/composebox_voice_search.js';
+import 'chrome://resources/cr_components/search/animated_glow.js';
+import 'chrome://resources/cr_components/localized_link/localized_link.js';
 
-import {getLoadTimeBoolean, GlifAnimationState} from '//resources/cr_components/composebox/common.js';
-import type {ComposeboxFile, ComposeboxFuseboxActionRequest} from '//resources/cr_components/composebox/common.js';
-import type {PageHandlerRemote} from '//resources/cr_components/composebox/composebox.mojom-webui.js';
-import type {ComposeboxDropdownElement} from '//resources/cr_components/composebox/composebox_dropdown.js';
-import type {ComposeboxFileInputsElement} from '//resources/cr_components/composebox/composebox_file_inputs.js';
-import type {ComposeboxInputElement} from '//resources/cr_components/composebox/composebox_input.js';
-import {ComposeboxEmbedderMixin} from '//resources/cr_components/composebox/composebox_mixin.js';
-import type {ComposeboxEmbedderMixinInterface} from '//resources/cr_components/composebox/composebox_mixin.js';
-import {ComposeboxProxyImpl} from '//resources/cr_components/composebox/composebox_proxy.js';
-import type {ContextualEntrypointAndMenuElement} from '//resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
-import type {ErrorScrimElement} from '//resources/cr_components/composebox/error_scrim.js';
-import type {ComposeboxFileCarouselElement} from '//resources/cr_components/composebox/file_carousel.js';
-import {GlowAnimationState} from '//resources/cr_components/search/constants.js';
-import {EventTracker} from '//resources/js/event_tracker.js';
-import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
-import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
-import type {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import type {UnguessableToken} from '//resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
+import {getLoadTimeBoolean, GlifAnimationState} from 'chrome://resources/cr_components/composebox/common.js';
+import type {ComposeboxFile, ComposeboxFuseboxActionRequest} from 'chrome://resources/cr_components/composebox/common.js';
+import type {PageHandlerRemote} from 'chrome://resources/cr_components/composebox/composebox.mojom-webui.js';
+import type {ComposeboxDropdownElement} from 'chrome://resources/cr_components/composebox/composebox_dropdown.js';
+import type {ComposeboxFileInputsElement} from 'chrome://resources/cr_components/composebox/composebox_file_inputs.js';
+import type {ComposeboxInputElement} from 'chrome://resources/cr_components/composebox/composebox_input.js';
+import {ComposeboxEmbedderMixin} from 'chrome://resources/cr_components/composebox/composebox_mixin.js';
+import type {ComposeboxEmbedderMixinInterface} from 'chrome://resources/cr_components/composebox/composebox_mixin.js';
+import {ComposeboxProxyImpl} from 'chrome://resources/cr_components/composebox/composebox_proxy.js';
+import type {ContextualEntrypointAndMenuElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
+import {GlowAnimationState} from 'chrome://resources/cr_components/search/constants.js';
+import {EventTracker} from 'chrome://resources/js/event_tracker.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import {SearchboxTutorial} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
+import type {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {UnguessableToken} from 'chrome://resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 
 import {getCss} from './ntp_composebox.css.js';
 import {getHtml} from './ntp_composebox.html.js';
@@ -43,8 +43,6 @@ export interface NtpComposeboxElement extends ComposeboxEmbedderMixinInterface {
     composebox: HTMLElement,
     matches: ComposeboxDropdownElement,
     fileInputs: ComposeboxFileInputsElement,
-    carousel: ComposeboxFileCarouselElement,
-    errorScrim: ErrorScrimElement,
   };
 }
 
@@ -69,6 +67,7 @@ export class NtpComposeboxElement extends ComposeboxEmbedderMixin
         reflect: true,
         type: String,
       },
+      focused: {type: Boolean},
       /*
       `expanding_` property is used in composebox.css styles. It is added
       so that the imported styles work well. Remove this property once each
@@ -82,18 +81,30 @@ export class NtpComposeboxElement extends ComposeboxEmbedderMixin
         reflect: true,
         type: Boolean,
       },
+      persistentAimButtonEnabled_: {
+        type: Boolean,
+        reflect: true,
+      },
+      showAimButtonExitIcon_: {type: Boolean},
     };
   }
 
   accessor entrypointName: string = 'Realbox';
   accessor glifAnimationState: GlifAnimationState =
       GlifAnimationState.INELIGIBLE;
+  accessor focused: boolean = true;
   private searchboxCallbackRouter_: SearchboxPageCallbackRouter;
   private pageHandler_: PageHandlerRemote;
   private searchboxHandler_: SearchboxPageHandlerRemote;
   private eventTracker_: EventTracker = new EventTracker();
+  private outsideClickEnabled_: boolean =
+      getLoadTimeBoolean('composeboxRealboxOutsideClick', false);
   protected accessor expanding_: boolean = true;
   protected accessor shouldRemainFolded_: boolean = true;
+  protected accessor persistentAimButtonEnabled_: boolean =
+      getLoadTimeBoolean('composeboxPersistentAimButton', false);
+  protected accessor showAimButtonExitIcon_: boolean =
+      getLoadTimeBoolean('composeboxPersistentAimButtonWithX', false);
 
   override get keepMenuOpenOnTabSelect(): boolean {
     return getLoadTimeBoolean('keepMenuOpenOnTabSelectForRealbox', false);
@@ -156,6 +167,9 @@ export class NtpComposeboxElement extends ComposeboxEmbedderMixin
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
+    if (this.outsideClickEnabled_ && changedProperties.has('focused')) {
+      this.showDropdown = this.computeShowDropdown();
+    }
     this.shouldRemainFolded_ = this.computeShouldRemainFolded();
   }
 
@@ -169,7 +183,14 @@ export class NtpComposeboxElement extends ComposeboxEmbedderMixin
     if (this.inToolMode) {
       return false;
     }
-    if ((this.result?.matches?.length ?? 0) > 0) {
+    if (this.outsideClickEnabled_) {
+      if (this.input) {
+        return false;
+      }
+      if ((this.result?.matches?.length ?? 0) > 0 && this.focused) {
+        return false;
+      }
+    } else if ((this.result?.matches?.length ?? 0) > 0) {
       return false;
     }
     if (this.hasTabs()) {
@@ -189,6 +210,10 @@ export class NtpComposeboxElement extends ComposeboxEmbedderMixin
     return true;
   }
 
+  override shouldWaitForDelayedTabContext(): boolean {
+    return true;
+  }
+
   override deleteFile(uuidToDelete: UnguessableToken, fromUserAction?: boolean):
       ComposeboxFile|null {
     const file = super.deleteFile(uuidToDelete, fromUserAction);
@@ -199,15 +224,22 @@ export class NtpComposeboxElement extends ComposeboxEmbedderMixin
   }
 
   override async handleFuseboxAction(request: ComposeboxFuseboxActionRequest) {
-    // TODO(crbug.com/548681676): Wire to TutorialId once server proto rolls.
     if (this.energyEffectAnimationEnabled &&
-        getLoadTimeBoolean('scaledActionChipsInTestMode', false)) {
+        request.fuseboxAction?.searchboxTutorial ===
+            SearchboxTutorial.kGlowPlusButton) {
       this.glifAnimationState = GlifAnimationState.INELIGIBLE;
       requestAnimationFrame(() => {
         this.glifAnimationState = GlifAnimationState.STARTED;
       });
     }
     await super.handleFuseboxAction(request);
+  }
+
+  override computeShowDropdown(): boolean {
+    if (this.outsideClickEnabled_ && !this.focused) {
+      return false;
+    }
+    return super.computeShowDropdown();
   }
 }
 

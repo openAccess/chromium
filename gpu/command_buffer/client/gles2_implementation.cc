@@ -442,19 +442,6 @@ void GLES2Implementation::OnGpuControlErrorMessage(const char* message,
   SendErrorMessage(message, id);
 }
 
-void GLES2Implementation::OnGpuSwitched() {
-  gpu_switched_ = true;
-}
-
-GLboolean GLES2Implementation::DidGpuSwitch(gl::GpuPreference* active_gpu) {
-  if (gpu_switched_) {
-    *active_gpu = gl::GpuPreference::kDefault;
-  }
-  GLboolean result = gpu_switched_ ? GL_TRUE : GL_FALSE;
-  gpu_switched_ = false;
-  return result;
-}
-
 bool GLES2Implementation::CanCopySharedImageDirectlyToGLTexture(
     bool is_opaque,
     ClientSharedImage* shared_image,
@@ -4646,7 +4633,8 @@ GLboolean GLES2Implementation::ReadbackARGBImagePixelsINTERNAL(
       SkColorTypeBytesPerPixel(static_cast<SkColorType>(dst_sk_color_type));
   RelaxedAtomicWriteMemcpyImageRowsSkippingPadding(
       /*dst=*/dst, /*src=*/src, /*row_bytes=*/min_row_bytes,
-      /*height=*/dst_height, /*stride=*/dst_row_bytes);
+      /*height=*/dst_height, /*dst_stride=*/dst_row_bytes,
+      /*src_stride=*/dst_row_bytes);
   return GL_TRUE;
 }
 

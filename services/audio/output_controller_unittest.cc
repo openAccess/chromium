@@ -23,6 +23,8 @@
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/power_monitor_test.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_message_loop.h"
 #include "base/threading/thread.h"
@@ -158,7 +160,7 @@ class MockAudioOutputStream : public AudioOutputStream,
   }
 
   void Start(AudioOutputStream::AudioSourceCallback* cb) override {
-    EXPECT_EQ(nullptr, callback_.get());
+    EXPECT_EQ(nullptr, callback_);
     callback_ = cb;
     if (impl_) {
       impl_->Start(this);
@@ -551,6 +553,35 @@ TEST_F(OutputControllerTest, PlayDeviceChangeDeviceChangeClose) {
   Play();
   ChangeDevice();
   ChangeDevice();
+  Close();
+}
+
+TEST_F(OutputControllerTest, ProcessDeviceChangeTimeHistogram) {
+  base::HistogramTester histogram_tester;
+  Create();
+  Play();
+
+  ChangeDevice();
+  histogram_tester.ExpectTotalCount(
+      "Media.AudioOutputController.ProcessDeviceChangeTime2", 1);
+  histogram_tester.ExpectTotalCount(
+      "Media.AudioOutputController.ProcessDeviceChangeTime", 0);
+
+  // Simulate a device change while the system is suspended.
+  base::test::ScopedPowerMonitorTestSource power_monitor_source;
+  power_monitor_source.Suspend();
+
+  ChangeDevice();
+  // Expect no additional samples recorded to Time2 while suspended.
+  histogram_tester.ExpectTotalCount(
+      "Media.AudioOutputController.ProcessDeviceChangeTime2", 1);
+
+  power_monitor_source.Resume();
+  ChangeDevice();
+  // Expect a new sample recorded to Time2 after resuming.
+  histogram_tester.ExpectTotalCount(
+      "Media.AudioOutputController.ProcessDeviceChangeTime2", 2);
+
   Close();
 }
 

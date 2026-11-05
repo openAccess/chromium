@@ -263,8 +263,8 @@ bool CompressProgramBinaries() {
 constexpr base::MemoryConsumerTraits kMemoryProgramCacheTraits(
     // Default capacity is small, under 10MB.
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kSmall,
-    // Evicting entries requires traversing the LRU cache.
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    // Eviction walks the LRU cache, reading the entries being freed.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kReads,
     // Shaders can be re-compiled and re-linked if evicted.
     base::MemoryConsumerTraits::InformationRetention::kLossless,
     // Asynchronous since AsyncMemoryConsumerRegistration is used.
@@ -605,7 +605,7 @@ void MemoryProgramCache::OnReleaseMemory() {
     return;
   }
 
-  int limit = memory_limit();
+  base::MemoryLimit limit = memory_limit();
   if (limit <= base::kCriticalMemoryPressureThreshold) {
     Trim(0);
   } else if (limit <= base::kModerateMemoryPressureThreshold) {

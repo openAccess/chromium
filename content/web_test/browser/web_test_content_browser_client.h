@@ -23,9 +23,11 @@
 #include "third_party/blink/public/test/mojom/cookie_manager/cookie_manager_automation.test-mojom-forward.h"
 #include "third_party/blink/public/test/mojom/device_posture/device_posture_provider_automation.test-mojom-forward.h"
 #include "third_party/blink/public/test/mojom/permissions/permission_automation.test-mojom-forward.h"
+#include "third_party/blink/public/test/mojom/select_file_dialog/select_file_dialog_automation.test-mojom-forward.h"
 #include "third_party/blink/public/test/mojom/sensor/web_sensor_provider_automation.test-mojom-forward.h"
 #include "third_party/blink/public/test/mojom/storage_access/storage_access_automation.test-mojom-forward.h"
 #include "third_party/blink/public/test/mojom/webid/federated_auth_request_automation.test-mojom-forward.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 namespace blink {
 namespace web_pref {
@@ -81,6 +83,7 @@ class WebTestContentBrowserClient : public ShellContentBrowserClient {
   void OverrideWebPreferences(WebContents* web_contents,
                               SiteInstance& main_frame_site,
                               blink::web_pref::WebPreferences* prefs) override;
+  bool ShouldUpdateFontRendererPreferencesFromSystemSettings() const override;
   void CreateThrottlesForNavigation(
       content::NavigationThrottleRegistry& registry) override;
   void AppendExtraCommandLineSwitches(base::CommandLine* command_line,
@@ -98,7 +101,7 @@ class WebTestContentBrowserClient : public ShellContentBrowserClient {
                        const GURL& target_url,
                        const content::Referrer& referrer,
                        const std::string& frame_name,
-                       WindowOpenDisposition disposition,
+                       ui::mojom::WindowOpenDisposition disposition,
                        const blink::mojom::WindowFeatures& features,
                        bool user_gesture,
                        bool opener_suppressed,
@@ -119,18 +122,13 @@ class WebTestContentBrowserClient : public ShellContentBrowserClient {
       const GURL& url,
       scoped_refptr<net::HttpResponseHeaders> response_headers,
       bool first_auth_attempt,
+      bool do_not_prompt_for_login,
       GuestPageHolder* guest,
       LoginDelegate::LoginAuthRequiredCallback auth_required_callback) override;
-#if BUILDFLAG(IS_WIN)
-  bool PreSpawnChild(sandbox::TargetConfig* config,
-                     sandbox::mojom::Sandbox sandbox_type,
-                     ChildSpawnFlags flags) override;
-#endif
   std::string GetAcceptLangs(BrowserContext* context) override;
   bool IsPrivacySandboxReportingDestinationAttested(
       content::BrowserContext* browser_context,
-      const url::Origin& destination_origin,
-      content::PrivacySandboxInvokingAPI invoking_api) override;
+      const url::Origin& destination_origin) override;
   void GetHyphenationDictionary(
       base::OnceCallback<void(const base::FilePath&)>) override;
   void RegisterMojoBinderPoliciesForSameOriginPrerendering(
@@ -175,6 +173,11 @@ class WebTestContentBrowserClient : public ShellContentBrowserClient {
   void BindFedCmAutomation(
       RenderFrameHost* render_frame_host,
       mojo::PendingReceiver<blink::test::mojom::FederatedAuthRequestAutomation>
+          receiver);
+
+  void BindSelectFileDialogAutomation(
+      RenderFrameHost* render_frame_host,
+      mojo::PendingReceiver<blink::test::mojom::SelectFileDialogAutomation>
           receiver);
 
   void BindWebSensorProviderAutomation(

@@ -27,6 +27,7 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/test/browser_test.h"
@@ -34,8 +35,8 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -224,10 +225,10 @@ class GlicTabObserverBrowserTest
 
   void NavigateTab(tabs::TabInterface* tab, const GURL& url) {
     content::TestNavigationObserver navigation_observer(tab->GetContents());
-    content::OpenURLParams params(url, content::Referrer(),
-                                  WindowOpenDisposition::CURRENT_TAB,
-                                  ui::PAGE_TRANSITION_TYPED,
-                                  /*is_renderer_initiated=*/false);
+    content::OpenURLParams params =
+        content::OpenURLParams::CreateBrowserInitiated(
+            url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+            ui::PAGE_TRANSITION_TYPED);
     tab->GetContents()->OpenURL(params, base::DoNothing());
     navigation_observer.Wait();
   }
@@ -478,10 +479,10 @@ IN_PROC_BROWSER_TEST_F(GlicTabObserverBrowserTest, LinkClickTracking) {
   ASSERT_TRUE(first_tab);
 
   GURL target_url("about:blank");
-  content::OpenURLParams params(target_url, content::Referrer(),
-                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK,
-                                /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          target_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK);
   ASSERT_OK_AND_ASSIGN(auto creation, OpenURLAndWaitForTabCreation(
                                           first_tab, params, collector));
   ASSERT_TRUE(creation.new_tab);
@@ -497,10 +498,10 @@ IN_PROC_BROWSER_TEST_F(GlicTabObserverBrowserTest, LinkClickNewWindowTracking) {
   ASSERT_TRUE(first_tab);
 
   GURL target_url("about:blank");
-  content::OpenURLParams params(target_url, content::Referrer(),
-                                WindowOpenDisposition::NEW_WINDOW,
-                                ui::PAGE_TRANSITION_LINK,
-                                /*is_renderer_initiated=*/false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          target_url, ui::mojom::WindowOpenDisposition::kNewWindow,
+          ui::PAGE_TRANSITION_LINK);
   params.source_render_process_id = first_tab->GetContents()
                                         ->GetPrimaryMainFrame()
                                         ->GetProcess()

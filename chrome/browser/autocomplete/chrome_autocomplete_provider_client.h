@@ -34,6 +34,10 @@ class StoragePartition;
 class WebContents;
 }  // namespace content
 
+namespace sessions {
+class TabRestoreService;
+}  // namespace sessions
+
 namespace sync_sessions {
 class SessionSyncService;
 }  // namespace sync_sessions
@@ -65,8 +69,6 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   AutocompleteClassifier* GetAutocompleteClassifier() override;
   history::HistoryService* GetHistoryService() override;
   history_clusters::HistoryClustersService* GetHistoryClustersService()
-      override;
-  history_embeddings::HistoryEmbeddingsSearch* GetHistoryEmbeddingsSearch()
       override;
   scoped_refptr<history::TopSites> GetTopSites() override;
   bookmarks::BookmarkModel* GetBookmarkModel() override;
@@ -104,10 +106,12 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   ProviderStateService* GetProviderStateService() const override;
   tab_groups::TabGroupSyncService* GetTabGroupSyncService() const override;
   sync_sessions::SessionSyncService* GetSessionSyncService() const override;
+  sessions::TabRestoreService* GetTabRestoreService() const override;
   AimEligibilityService* GetAimEligibilityService() const override;
   AiModeButtonService* GetAiModeButtonService() const override;
 
   bool IsOffTheRecord() const override;
+  bool IsPrimaryOTRProfileWithRegularParent() const override;
   bool IsIncognitoProfile() const override;
   bool IsGuestSession() const override;
   bool SearchSuggestEnabled() const override;
@@ -131,14 +135,11 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   const TabMatcher& GetTabMatcher() const override;
   bool IsIncognitoModeAvailable() const override;
   bool IsSharingHubAvailable() const override;
-  bool IsHistoryEmbeddingsEnabled() const override;
-  bool IsHistoryEmbeddingsSettingVisible() const override;
   bool IsLensEnabled() const override;
   bool AreLensEntrypointsVisible() const override;
   std::optional<bool> IsPagePaywalled() const override;
   bool ShouldSendContextualUrlSuggestParam() const override;
   bool ShouldSendPageTitleSuggestParam() const override;
-  bool IsOmniboxNextLensSearchChipEnabled() const override;
   bool IsAskGShowChipEnabled() const override;
   bool IsOmniboxNextAimPopupEnabled() const override;
   bool IsGeminiStarterPackEnabled() const override;
@@ -162,7 +163,7 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   bool ShouldOpenComposeboxForAskG() const override;
   void OpenComposeboxForAskG() override;
   void IssueContextualSearchRequest(const GURL& destination_url,
-                                    AutocompleteMatchType::Type match_type,
+                                    omnibox::AutocompleteMatchType match_type,
                                     bool is_zero_prefix_suggestion) override;
 
   // For testing.

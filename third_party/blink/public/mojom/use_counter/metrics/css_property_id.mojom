@@ -34,7 +34,10 @@ enum CSSSampleId {
     kInternalVisitedColor = 0,
     kInternalVisitedColumnRuleColor = 0,
     kInternalVisitedFill = 0,
+    kInternalVisitedFloodColor = 0,
+    kInternalVisitedLightingColor = 0,
     kInternalVisitedOutlineColor = 0,
+    kInternalVisitedStopColor = 0,
     kInternalVisitedStroke = 0,
     kInternalVisitedTextDecorationColor = 0,
     kInternalVisitedTextEmphasisColor = 0,
@@ -49,7 +52,6 @@ enum CSSSampleId {
     kInternalOverflowBlock = 0,
     kInternalOverflowInline = 0,
     kInternalOverscrollContainer = 0,
-    kInternalOverscrollPosition = 0,
     kInternalUnbounded = 0,
 
     // This CSSSampleId represents page load for CSS histograms. It is recorded once
@@ -869,7 +871,7 @@ enum CSSSampleId {
     kTextWrapMode = 805,
     kTextWrapStyle = 806,
     // kMasonryTrack = 807,
-    kFlowTolerance = 808,
+    kFitTolerance = 808,
     kCaretAnimation = 809,
     // kViewTransitionCaptureMode = 810,
     kInteractivity = 811,
@@ -1036,7 +1038,15 @@ enum CSSSampleId {
     kMaxContentSizing = 963,
     kTextDecorationInset = 964,
     kOverscrollContainerType = 965,
-
+    kLinkParameters = 966,
+    kBorderBlockEndRadius = 967,
+    kBorderBlockStartRadius = 968,
+    kBorderInlineEndRadius = 969,
+    kBorderInlineStartRadius = 970,
+    kBorderBottomRadius = 971,
+    kBorderLeftRadius = 972,
+    kBorderRightRadius = 973,
+    kBorderTopRadius = 974,
     // 1. Add new features above this line (don't change the assigned numbers of
     //    the existing items).
     // 2. Run the src/tools/metrics/histograms/update_use_counter_css.py script

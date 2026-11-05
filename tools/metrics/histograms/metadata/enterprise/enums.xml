@@ -72,6 +72,25 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//components/policy/core/common/enterprise_management_status_util.h:BrowserManagementStatus) -->
 
+<!-- LINT.IfChange(BrowserSigninMode) -->
+
+<enum name="BrowserSigninMode">
+  <int value="0" label="Disabled"/>
+  <int value="1" label="Enabled"/>
+  <int value="2" label="Forced"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/policy/browser_signin_policy_handler.h:BrowserSigninMode) -->
+
+<!-- LINT.IfChange(BrowserSigninUserScopeSignoutAction) -->
+
+<enum name="BrowserSigninUserScopeSignoutAction">
+  <int value="0" label="Signed Out"/>
+  <int value="1" label="Delete Profile Prompted"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/signin/accounts_policy_manager.h:BrowserSigninUserScopeSignoutAction) -->
+
 <enum name="CertificatePrivateKeySource">
   <int value="0" label="Unexportable"/>
   <int value="1" label="Software"/>
@@ -116,6 +135,20 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="Invalid Upload URL"/>
 </enum>
 
+<!-- LINT.IfChange(CertificateValidationResult) -->
+
+<enum name="CertificateValidationResult">
+  <int value="0" label="Valid"/>
+  <int value="1" label="Expiring Soon"/>
+  <int value="2" label="Expired"/>
+  <int value="3" label="Empty Subject Common Name"/>
+  <int value="4" label="Identity Mismatch"/>
+  <int value="5" label="Missing Context Identity"/>
+  <int value="6" label="Issued Certificate Identity Mismatch"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/enterprise/client_certificates/core/metrics_util.h:CertificateValidationResult) -->
+
 <enum name="ClankClientCertificatesBrowserKeySecurityLevel">
   <summary>
     The security level of a private key created for client certificate
@@ -126,6 +159,18 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="StrongBox"/>
   <int value="3" label="Unknown"/>
 </enum>
+
+<!-- LINT.IfChange(ClientCertificateCommonNameSanitization) -->
+
+<enum name="ClientCertificateCommonNameSanitization">
+  <int value="0" label="None"/>
+  <int value="1" label="Whitespace Trimmed"/>
+  <int value="2" label="Control Characters or Invalid UTF-8 Stripped"/>
+  <int value="3" label="Truncated"/>
+  <int value="4" label="Empty Result"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/enterprise/client_certificates/core/metrics_util.h:CommonNameSanitizationType) -->
 
 <enum name="ClientIdentityIOSError">
   <summary>
@@ -200,11 +245,18 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//components/device_signals/core/browser/metrics_utils.h:CertificateCollectionError) -->
 
+<!-- LINT.IfChange(DeviceSignalsHarmfulAppsStatus) -->
+
 <enum name="DeviceSignalsHarmfulAppsStatus">
   <int value="0" label="Success"/>
   <int value="1" label="Timeout"/>
   <int value="2" label="Failed"/>
+  <int value="3" label="API failure (SafetyNet status code)"/>
+  <int value="4" label="Local failure (error in Chrome)"/>
+  <int value="5" label="Unknown failure"/>
 </enum>
+
+<!-- LINT.ThenChange(//components/safe_browsing/android/safe_browsing_api_handler_util.h:HasHarmfulAppsResultStatus) -->
 
 <enum name="DeviceSignalsParsingError">
   <int value="0" label="Hit max data size"/>
@@ -234,7 +286,27 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="Agent"/>
   <int value="5" label="OS Signals"/>
   <int value="6" label="Browser Context Signals"/>
+  <int value="7" label="Certificates"/>
+  <int value="8" label="Verify Apps"/>
 </enum>
+
+<!-- LINT.IfChange(DeviceSignalsStorageEncryptionStatus) -->
+
+<enum name="DeviceSignalsStorageEncryptionStatus">
+  <summary>
+    Android DevicePolicyManager.getStorageEncryptionStatus() values. Values 0-5
+    match the DevicePolicyManager.ENCRYPTION_STATUS_* constants.
+  </summary>
+  <int value="0" label="Unsupported"/>
+  <int value="1" label="Inactive"/>
+  <int value="2" label="Activating"/>
+  <int value="3" label="Active"/>
+  <int value="4" label="Active (default key)"/>
+  <int value="5" label="Active (per user)"/>
+  <int value="6" label="Unrecognized"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/device_signals/core/browser/android/java/src/org/chromium/components/device_signals/DeviceSignalsUtils.java:DeviceSignalsStorageEncryptionStatus) -->
 
 <enum name="DeviceSignalsUserPermission">
   <int value="0" label="Unaffiliated"/>
@@ -393,6 +465,7 @@ chromium-metrics-reviews@google.com.
 <enum name="DTKeyType">
   <int value="0" label="RSA"/>
   <int value="1" label="EC"/>
+  <int value="2" label="Unknown"/>
 </enum>
 
 <enum name="DTLoadPersistedKeyResult">
@@ -486,6 +559,16 @@ chromium-metrics-reviews@google.com.
   <int value="4" label="Organisational account, domain is verified"/>
   <int value="5" label="Dasher account"/>
 </enum>
+
+<!-- LINT.IfChange(EnterpriseAttestationBlobResult) -->
+
+<enum name="EnterpriseAttestationBlobResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="Generation failed"/>
+  <int value="2" label="Service unavailable"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/enterprise/device_attestation/device_attestation_metrics.h:AttestationBlobResult) -->
 
 <enum name="EnterpriseAttributesTPMConsistencyType">
   <int value="0" label="no attributes, other mode, TPM unlocked">
@@ -1094,6 +1177,50 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="Error with obfuscation scheme"/>
 </enum>
 
+<!-- LINT.IfChange(EnterprisePasteProtectionEventResult) -->
+
+<enum name="EnterprisePasteProtectionEventResult">
+  <summary>The event result for a paste protection scan.</summary>
+  <int value="0" label="Allow"/>
+  <int value="1" label="Warn"/>
+  <int value="2" label="Block"/>
+</enum>
+
+<!-- LINT.ThenChange(//ios/chrome/browser/enterprise/cloud_content_scanning/model/paste_protection_metrics.h:EnterprisePasteProtectionEventResult) -->
+
+<!-- LINT.IfChange(EnterprisePasteProtectionInvalidatedType) -->
+
+<enum name="EnterprisePasteProtectionInvalidatedType">
+  <summary>
+    Type of the scenario that can invalidate an ongoing scan request for paste
+    protection scan.
+  </summary>
+  <int value="0" label="Pasteboard Changed">
+    Pasteboard content was changed before a scan finishes.
+  </int>
+  <int value="1" label="Navigated Away">
+    User navigated away from the current webpage.
+  </int>
+  <int value="2" label="Invalid Tab State">
+    The tab originated the paste event is hidden.
+  </int>
+  <int value="3" label="Spinning Overlay Dismissed">
+    The in-progress spinning overlay is dimissed by other process (alerts, etc.)
+  </int>
+</enum>
+
+<!-- LINT.ThenChange(//ios/chrome/browser/enterprise/cloud_content_scanning/model/paste_protection_metrics.h:EnterprisePasteProtectionInvalidatedType) -->
+
+<!-- LINT.IfChange(EnterprisePasteProtectionScanType) -->
+
+<enum name="EnterprisePasteProtectionScanType">
+  <summary>Type of the clipboard content of the paste protection scan.</summary>
+  <int value="0" label="Text"/>
+  <int value="1" label="Image"/>
+</enum>
+
+<!-- LINT.ThenChange(//ios/chrome/browser/enterprise/cloud_content_scanning/model/paste_protection_metrics.h:EnterprisePasteProtectionScanType) -->
+
 <enum name="EnterprisePolicies">
 <!-- Generated from components/policy/resources/templates/policies.yaml -->
 
@@ -1551,10 +1678,6 @@ chromium-metrics-reviews@google.com.
   <int value="467" label="NetBiosShareDiscoveryEnabled"/>
   <int value="468" label="WebAppInstallForceList"/>
   <int value="469" label="SmsMessagesAllowed"/>
-  <int value="470" label="ReportVersionData"/>
-  <int value="471" label="ReportPolicyData"/>
-  <int value="472" label="ReportMachineIDData"/>
-  <int value="473" label="ReportUserIDData"/>
   <int value="474" label="PrintingAllowedColorModes"/>
   <int value="475" label="PrintingAllowedDuplexModes"/>
   <int value="477" label="PrintingColorDefault"/>
@@ -1579,7 +1702,6 @@ chromium-metrics-reviews@google.com.
   <int value="496" label="BrowserSwitcherUrlList"/>
   <int value="497" label="BrowserSwitcherUrlGreylist"/>
   <int value="498" label="BrowserSwitcherUseIeSitelist"/>
-  <int value="499" label="ReportExtensionsAndPluginsData"/>
   <int value="500" label="ReportSafeBrowsingData"/>
   <int value="501" label="DeviceWiFiFastTransitionEnabled"/>
   <int value="502" label="DeviceDisplayResolution"/>
@@ -2278,8 +2400,6 @@ chromium-metrics-reviews@google.com.
   <int value="1214" label="GoogleLocationServicesEnabled"/>
   <int value="1215" label="ProvisionManagedClientCertificateForUser"/>
   <int value="1216" label="LocalUserFilesAllowed"/>
-  <int value="1218"
-      label="SubAppsAPIsAllowedWithoutGestureAndAuthorizationForOrigins"/>
   <int value="1219" label="DefaultWebPrintingSetting"/>
   <int value="1220" label="WebPrintingAllowedForUrls"/>
   <int value="1221" label="WebPrintingBlockedForUrls"/>
@@ -2357,9 +2477,6 @@ chromium-metrics-reviews@google.com.
   <int value="1300" label="AutofillPredictionSettings"/>
   <int value="1301" label="ArcOpenLinksInBrowserByDefault"/>
   <int value="1302" label="EnterpriseProfileBadgeToolbarSettings"/>
-  <int value="1303" label="DefaultDirectSocketsPrivateNetworkAccessSetting"/>
-  <int value="1304" label="DirectSocketsPrivateNetworkAccessAllowedForUrls"/>
-  <int value="1305" label="DirectSocketsPrivateNetworkAccessBlockedForUrls"/>
   <int value="1306" label="SelectParserRelaxationEnabled"/>
   <int value="1307" label="ClassManagementEnabled"/>
   <int value="1308" label="EnterpriseSearchAggregatorSettings"/>
@@ -2507,7 +2624,6 @@ chromium-metrics-reviews@google.com.
   <int value="1454" label="HttpHeaderInjection"/>
   <int value="1455" label="ChromeSuggestionsSettings"/>
   <int value="1456" label="RestrictBackgroundFetchFromServiceWorkerEnabled"/>
-  <int value="1457" label="GeminiEnterpriseSettings"/>
   <int value="1458" label="RestrictYouTubeCookiesDeletion"/>
   <int value="1459" label="AutofillSettings"/>
   <int value="1460" label="IsolateOriginsShortlist"/>
@@ -2519,17 +2635,32 @@ chromium-metrics-reviews@google.com.
   <int value="1466" label="ProxyProvisioningDomains"/>
   <int value="1467" label="ThirdPartyAiChatSettings"/>
   <int value="1468" label="ProcessIsolationEnabled"/>
-  <int value="1469" label="Indigo"/>
+  <int value="1469" label="TryOnYouSettings"/>
   <int value="1470" label="DeviceOnlinePasswordMismatchBehavior"/>
   <int value="1471" label="UpdateOnZeroWindowEnabled"/>
   <int value="1472" label="BackForwardCacheForWebSocketsAllowed"/>
   <int value="1473" label="GeminiChromeFileUploadSettings"/>
-  <int value="1474" label="FindAndFillWithGeminiSettings"/>
+  <int value="1474" label="AutofillGenAiSettings"/>
   <int value="1475" label="OnNetworkRequestEnterpriseConnector"/>
   <int value="1476" label="EnterprisePublishedSkills"/>
   <int value="1477" label="OnDataCopiedEnterpriseConnector"/>
   <int value="1481" label="DeviceOsMigrationTargetDate"/>
   <int value="1482" label="RendererAccessibilityEnabled"/>
+  <int value="1483" label="ExtensionReviewPromptsEnabled"/>
+  <int value="1484" label="BackgroundTabFreezingEnabled"/>
+  <int value="1485" label="ShowInputOptionsInShelfEnabled"/>
+  <int value="1486" label="AdminInstalledChromeAppsForceAllowed"/>
+  <int value="1487" label="DeviceMaxUserProfiles"/>
+  <int value="1488" label="AutoLaunchAndroidApps"/>
+  <int value="1489" label="LaunchOnStartupEnabled"/>
+  <int value="1490" label="DynamicPatchingEnabled"/>
+  <int value="1491" label="AllHttpAuthSchemesAllowedForProxies"/>
+  <int value="1492" label="ClipboardHistoryEnabled"/>
+  <int value="1493"
+      label="ExtensionForceInstallWithSearchOrNewTabOverridesEnabled"/>
+  <int value="1494" label="ManagedClientCertificateForBrowserConfig"/>
+  <int value="1495" label="ManagedClientCertificateForUserConfig"/>
+  <int value="1496" label="GeminiEnterpriseUrl"/>
 </enum>
 
 <enum name="EnterprisePoliciesSources">
@@ -2671,6 +2802,20 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Failed (Permanent Error)"/>
 </enum>
 
+<!-- LINT.IfChange(EnterpriseSignalsDisclaimerDismissalCause) -->
+
+<enum name="EnterpriseSignalsDisclaimerDismissalCause">
+  <int value="0" label="Tapped accept"/>
+  <int value="1" label="Tapped sign out"/>
+  <int value="2" label="Dismissed by back press"/>
+  <int value="3" label="Dismissed by swipe down"/>
+  <int value="4" label="Dismissed by tap outside"/>
+  <int value="5" label="Dismissed by close button"/>
+  <int value="6" label="Dismissed without explicit user action"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/ui/android/enterprise_signals_disclaimer/java/src/org/chromium/chrome/browser/ui/enterprise_signals_disclaimer/EnterpriseSignalsDisclaimerHost.java:EnterpriseSignalsDisclaimerDismissalCause) -->
+
 <!-- LINT.IfChange(EnterpriseSignalsDisclaimerModalResult) -->
 
 <enum name="EnterpriseSignalsDisclaimerModalResult">
@@ -2702,6 +2847,16 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/enterprise/signin/signals_disclaimer_metrics.h:EnterpriseSignalsDisclaimerProfilePickerResult) -->
+
+<!-- LINT.IfChange(EnterpriseSignalsDisclaimerShownOn) -->
+
+<enum name="EnterpriseSignalsDisclaimerShownOn">
+  <int value="0" label="Startup"/>
+  <int value="1" label="Sign-in"/>
+  <int value="2" label="Sign-in state recovery"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/ui/android/enterprise_signals_disclaimer/java/src/org/chromium/chrome/browser/ui/enterprise_signals_disclaimer/EnterpriseSignalsDisclaimerController.java:EnterpriseSignalsDisclaimerShownOn) -->
 
 <!-- LINT.IfChange(EnterpriseSkillValidationResult) -->
 
@@ -3184,6 +3339,38 @@ chromium-metrics-reviews@google.com.
   <int value="7" label="[Deprecated] Google News"/>
   <int value="8" label="Explore"/>
 </enum>
+
+<!-- LINT.IfChange(UserCloudManagementStatusFetchResult) -->
+
+<enum name="UserCloudManagementStatusFetchResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="Access token error"/>
+  <int value="2" label="DM Server error"/>
+  <int value="3" label="Missing response">
+    The DM Server request succeeded but the response has no
+    user_management_status_and_policies_response.
+  </int>
+  <int value="4" label="Fetcher timeout"/>
+  <int value="5" label="Cancelled">
+    The fetcher was destroyed before completion (e.g. the caller timed out, was
+    reset or shut down).
+  </int>
+</enum>
+
+<!-- LINT.ThenChange(//components/policy/core/browser/cloud/user_cloud_management_status_fetcher.h:UserCloudManagementStatusFetchResult) -->
+
+<!-- LINT.IfChange(UserCloudPolicyParseResult) -->
+
+<enum name="UserCloudPolicyParseResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="No policy fetch response"/>
+  <int value="2" label="Policy fetch response error"/>
+  <int value="3" label="PolicyData parse error"/>
+  <int value="4" label="Missing policy value"/>
+  <int value="5" label="CloudPolicySettings parse error"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/policy/core/browser/cloud/user_cloud_management_status_fetcher.h:UserCloudPolicyParseResult) -->
 
 <enum name="WatermarkTimestampTimezoneType">
   <int value="0" label="Default">Default local wall-clock time.</int>

@@ -388,6 +388,7 @@ message ClipboardExtractedData {
 }
 
 // Verdict based on IntelligentScanInfo included in ClientPhishingRequest
+// LINT.IfChange(IntelligentScanVerdict)
 enum IntelligentScanVerdict {
   INTELLIGENT_SCAN_VERDICT_UNSPECIFIED = 0;
   INTELLIGENT_SCAN_VERDICT_SAFE = 1;
@@ -395,9 +396,11 @@ enum IntelligentScanVerdict {
   SCAM_EXPERIMENT_VERDICT_2 = 3;
   SCAM_EXPERIMENT_VERDICT_3 = 4;
   SCAM_EXPERIMENT_VERDICT_4 = 5;
+  SCAM_EXPERIMENT_VERDICT_BILLING = 6;
   SCAM_EXPERIMENT_CATCH_ALL_ENFORCEMENT = 999;
   SCAM_EXPERIMENT_CATCH_ALL_TELEMETRY = 1000;
 }
+// LINT.ThenChange(//tools/metrics/histograms/metadata/sb_client/enums.xml:IntelligentScanVerdict)
 
 message ClientPhishingResponse {
   required bool phishy = 1;
@@ -1430,6 +1433,8 @@ enum ClientSideDetectionType {
   USER_REPORT = 11;
   // Unfamiliar login page triggered.
   UNFAMILIAR_LOGIN_PAGE = 12;
+  // Policy engine requests.
+  POLICY_ENGINE = 13;
 }
 
 // LINT.ThenChange(/tools/metrics/histograms/metadata/sb_client/enums.xml:ClientSideDetectionType,/tools/metrics/histograms/metadata/sb_client/histograms.xml:ClientSideDetectionRequestType)
@@ -1519,6 +1524,14 @@ message ClientDownloadResponse {
   // ClientDownloadRequest. A `token` to use in the follow-up request must be
   // provided if there are any `visual_features_requested`.
   repeated int32 visual_features_requested = 24 [packed = true];
+
+  // Reserved server-side fields.
+  reserved 25 to 28;
+
+  // Whether the downloaded APK is a Registered App Store (RAS) installer
+  // downloaded from the store's approved distribution domain. Used by Chrome to
+  // suppress download warnings when verdict is SAFE.
+  optional bool is_registered_app_store = 29;
 }
 
 // The following protocol buffer holds the feedback report gathered
@@ -1830,8 +1843,8 @@ message ClientSafeBrowsingReportRequest {
     URL_SUSPICIOUS = 15;
     BILLING = 16;
     APK_DOWNLOAD = 17;
-    BLOCKED_AD_REDIRECT = 19;
-    BLOCKED_AD_POPUP = 20;
+    BLOCKED_AD_REDIRECT = 19 [deprecated = true];
+    BLOCKED_AD_POPUP = 20 [deprecated = true];
     HASH_PREFIX_REAL_TIME_EXPERIMENT = 21 [deprecated = true];
     PHISHY_SITE_INTERACTIONS = 22;
     WARNING_SHOWN = 23;
@@ -1847,7 +1860,7 @@ message ClientSafeBrowsingReportRequest {
     URL_REALTIME_AND_HASH_REALTIME_DISCREPANCY = 27;
     // Triggered by a redirect to an external app, either through an
     // external protocol scheme (e.g. mailto://) or an Intent.
-    EXTERNAL_APP_REDIRECT = 28;
+    EXTERNAL_APP_REDIRECT = 28 [deprecated = true];
     // Analogous to DANGEROUS_DOWNLOAD_RECOVERY and DANGEROUS_DOWNLOAD_WARNING,
     // but used only for download warnings in Chrome on Android.
     DANGEROUS_DOWNLOAD_WARNING_ANDROID = 29;
@@ -2200,7 +2213,7 @@ message ClientSafeBrowsingReportRequest {
     // import "..." with { type: "json" }
     JSON = 27;
     // sharedStorage.createWorklet(), sharedStorage.worklet.addModule()
-    SHARED_STORAGE_WORKLET = 28;
+    SHARED_STORAGE_WORKLET = 28 [deprecated = true];
   }
 
   // Only populated for interstitial reports (URL_PHISHING, URL_MALWARE,
@@ -2294,6 +2307,7 @@ message ClientSafeBrowsingReportRequest {
       UWS_INTERSTITIAL = 4;
       BILLING_INTERSTITIAL = 5;
       BINARY_MALWARE_DOWNLOAD_WARNING = 6;
+      SUSPICIOUS_SITE_WARNING = 7;
     }
     optional WarningUXType warning_type = 1;
 

@@ -132,7 +132,7 @@ AudioParameters GetFallbackHighLatencyOutputParams(
   // Choose AudioParameters appropriate for opening the device in high latency
   // mode.  |kMinLowLatencyFrameSize| is arbitrarily based on Pepper Flash's
   // MAXIMUM frame size for low latency.
-  static const int kMinLowLatencyFrameSize = 2048;
+  constexpr int kMinLowLatencyFrameSize = 2048;
   const int frames_per_buffer = std::max(
       original_output_params.frames_per_buffer(), kMinLowLatencyFrameSize);
 
@@ -157,9 +157,8 @@ AudioParameters GetFallbackLowLatencyOutputParams(
     int effects = output_params.effects();
     effects |= original_output_params.effects();
     output_params.set_effects(effects);
-    output_params.SetChannelLayoutConfig(
-        original_output_params.channel_layout(),
-        original_output_params.channels());
+    output_params.set_channel_layout_config(
+        original_output_params.channel_layout_config());
     return output_params;
   }
   // If we fail to get preferred audio parameters, return empty(invalid)
@@ -169,8 +168,10 @@ AudioParameters GetFallbackLowLatencyOutputParams(
 #endif
 
 // This enum must match the numbering for
-// AudioOutputResamplerOpenLowLatencyStreamResult in enums.xml. Do not reorder
-// or remove items, only add new items before OPEN_STREAM_MAX.
+// AudioOutputResamplerLowLatencyOpenStreamResult in
+// tools/metrics/histograms/metadata/media/enums.xml. Do not reorder or remove
+// items, only add new items before kMaxValue.
+// LINT.IfChange(OpenStreamResult)
 enum class OpenStreamResult {
   kFail = 0,
   kFallbackToFake = 1,
@@ -186,6 +187,7 @@ enum class OpenStreamResult {
   kOffloadSuccess = 11,
   kMaxValue = kOffloadSuccess,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:AudioOutputResamplerLowLatencyOpenStreamResult)
 
 OpenStreamResult GetSubsequentStreamCreationResultBucket(
     const AudioParameters& current_params,
@@ -470,12 +472,18 @@ void AudioOutputResampler::FlushStream(AudioOutputProxy* stream_proxy) {
   dispatcher_->FlushStream(stream_proxy);
 }
 
+void AudioOutputResampler::CloseAllIdleStreams() {
+  DCHECK(audio_manager()->GetTaskRunner()->BelongsToCurrentThread());
+  if (dispatcher_) {
+    dispatcher_->CloseAllIdleStreams();
+  }
+}
+
 void AudioOutputResampler::StopStreamInternal(
     const CallbackMap::value_type& item) {
   DCHECK(audio_manager()->GetTaskRunner()->BelongsToCurrentThread());
   DCHECK(dispatcher_);
-  AudioOutputProxy* stream_proxy = item.first;
-  OnMoreDataConverter* callback = item.second.get();
+  const auto& [stream_proxy, callback] = item;
   DCHECK(callback->started());
 
   // Stop the underlying physical stream.

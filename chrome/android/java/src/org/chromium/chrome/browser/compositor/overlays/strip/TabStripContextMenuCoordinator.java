@@ -20,6 +20,7 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.ContextUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.KeyboardShortcuts;
 import org.chromium.chrome.browser.bookmarks.BookmarkAllTabsHandler;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabContextMenuCoordinator.TabStripLayoutType;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabStripMenuMetricsUtils.StripMenuAction;
@@ -34,8 +35,10 @@ import org.chromium.chrome.browser.tabmodel.TabModel.RecentlyClosedEntryType;
 import org.chromium.chrome.browser.task_manager.TaskManager;
 import org.chromium.chrome.browser.task_manager.TaskManagerFactory;
 import org.chromium.chrome.browser.tasks.tab_management.TabOverflowMenuCoordinator;
+import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabCollapseButtonContextMenuCoordinator;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
+import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils.ExpandOnHoverToggleEntryPoint;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils.LayoutSwitchEntryPoint;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.widget.ListItemBuilder;
@@ -55,6 +58,7 @@ import org.chromium.ui.widget.RectProvider;
 
 import java.util.Set;
 import java.util.function.BooleanSupplier;
+import java.util.function.Function;
 
 /**
  * Coordinator for the context menu on the tab strip. It is responsible for creating a list of menu
@@ -72,6 +76,7 @@ public class TabStripContextMenuCoordinator {
     private final @Nullable BooleanSupplier mCanActivateTabLayoutToggleMenuSupplier;
     private final @TabStripLayoutType int mTabStripLayout;
     private @Nullable AnchoredPopupWindow mMenuWindow;
+    private @Nullable Runnable mOnMenuDismissedCallback;
 
     /**
      * Creates the TabStripContextMenuCoordinator object.
@@ -84,6 +89,7 @@ public class TabStripContextMenuCoordinator {
      * @param canActivateTabLayoutToggleMenuSupplier Supplies whether tab layout toggle menu can be
      *     activated.
      * @param tabStripLayout The active {@link TabStripLayoutType}.
+     * @param onMenuDismissedCallback Callback invoked when the context menu is dismissed.
      */
     public static TabStripContextMenuCoordinator createContextMenuCoordinator(
             TabModel tabModel,
@@ -92,7 +98,8 @@ public class TabStripContextMenuCoordinator {
             SnackbarManager snackbarManager,
             Runnable onNewTabClick,
             @Nullable BooleanSupplier canActivateTabLayoutToggleMenuSupplier,
-            @TabStripLayoutType int tabStripLayout) {
+            @TabStripLayoutType int tabStripLayout,
+            @Nullable Runnable onMenuDismissedCallback) {
         return new TabStripContextMenuCoordinator(
                 tabModel,
                 multiInstanceManager,
@@ -100,7 +107,8 @@ public class TabStripContextMenuCoordinator {
                 snackbarManager,
                 onNewTabClick,
                 canActivateTabLayoutToggleMenuSupplier,
-                tabStripLayout);
+                tabStripLayout,
+                onMenuDismissedCallback);
     }
 
     private TabStripContextMenuCoordinator(
@@ -110,7 +118,8 @@ public class TabStripContextMenuCoordinator {
             SnackbarManager snackbarManager,
             Runnable onNewTabClick,
             @Nullable BooleanSupplier canActivateTabLayoutToggleMenuSupplier,
-            @TabStripLayoutType int tabStripLayout) {
+            @TabStripLayoutType int tabStripLayout,
+            @Nullable Runnable onMenuDismissedCallback) {
         mTabModel = tabModel;
         mMultiInstanceManager = multiInstanceManager;
         mWindowAndroid = windowAndroid;
@@ -119,6 +128,7 @@ public class TabStripContextMenuCoordinator {
         mOnNewTabClick = onNewTabClick;
         mCanActivateTabLayoutToggleMenuSupplier = canActivateTabLayoutToggleMenuSupplier;
         mTabStripLayout = tabStripLayout;
+        mOnMenuDismissedCallback = onMenuDismissedCallback;
     }
 
     /**
@@ -130,70 +140,19 @@ public class TabStripContextMenuCoordinator {
      */
     public void showMenu(
             RectProvider anchorViewRectProvider, boolean isIncognito, Activity activity) {
-        ModelList modelList = new ModelList();
-        configureMenuItems(modelList, isIncognito);
-        if (modelList.isEmpty()) return;
-
-        Drawable background = TabOverflowMenuCoordinator.getMenuBackground(mContext, isIncognito);
-
-        // TODO (crbug.com/436283175): Update the name of this resource for generic use.
-        View contentView =
-                LayoutInflater.from(mContext)
-                        .inflate(R.layout.tab_switcher_action_menu_layout, null);
-        ListMenuUtils.clipContentViewOutline(contentView, R.attr.popupBgCornerRadius);
-
-        // TODO (crbug.com/436283175): Update the name of this resource for generic use.
-        TouchTrackingListView touchTrackingListView =
-                contentView.findViewById(R.id.tab_group_action_menu_list);
-        ListMenuItemAdapter adapter =
-                createAdapter(modelList, Set.of(), getListMenuDelegate(contentView));
-        touchTrackingListView.setItemsCanFocus(true);
-        touchTrackingListView.setAdapter(adapter);
+        View contentView = buildMenuView(isIncognito);
+        if (contentView == null) return;
 
         View decorView = activity.getWindow().getDecorView();
-
-        // Similar to Chrome Desktop (W/M/L), compute the translated strings' width
-        // dynamically, clamp the value between a preselected
-        // tab_strip_context_menu_(min_width/max_width), and apply the result as the
-        // DesiredContentWidth. This ensures that each context menu item is always one line long,
-        // and does not wrap to 2 or more lines for long strings.
-        int[] contentDimensions =
-                UiUtils.computeListAdapterContentDimensions(adapter, touchTrackingListView);
-        int minWidthPx =
-                mContext.getResources()
-                        .getDimensionPixelSize(R.dimen.tab_strip_context_menu_min_width);
-        int maxWidthPx =
-                mContext.getResources()
-                        .getDimensionPixelSize(R.dimen.tab_strip_context_menu_max_width);
-        int marginPx =
-                mContext.getResources().getDimensionPixelSize(R.dimen.menu_horizontal_margin);
-        int windowWidthPx = mContext.getResources().getDisplayMetrics().widthPixels;
-        int popupWidthPx =
-                UiUtils.computeMenuWidth(
-                        contentDimensions[0], minWidthPx, maxWidthPx, marginPx, windowWidthPx);
-
-        AnchoredPopupWindow.Builder builder =
-                new AnchoredPopupWindow.Builder(
-                                mContext,
-                                decorView,
-                                background,
-                                () -> contentView,
-                                anchorViewRectProvider)
-                        .setFocusable(true)
-                        .setOutsideTouchable(true)
-                        .setHorizontalOverlapAnchor(true)
-                        .setVerticalOverlapAnchor(true)
-                        .setAllowOverlapCaptionBar(true)
-                        .setPreferredHorizontalOrientation(HorizontalOrientation.LAYOUT_DIRECTION)
-                        .setMaxWidth(maxWidthPx)
-                        .setDesiredContentWidth(popupWidthPx)
-                        .setAllowNonTouchableSize(true)
-                        .setElevation(
-                                contentView
-                                        .getResources()
-                                        .getDimension(R.dimen.tab_overflow_menu_elevation))
-                        .setAnimateFromAnchor(true);
-        mMenuWindow = builder.build();
+        mMenuWindow =
+                buildMenuWindow(
+                        mContext, decorView, contentView, anchorViewRectProvider, isIncognito);
+        mMenuWindow.addOnDismissListener(
+                () -> {
+                    if (mOnMenuDismissedCallback != null) {
+                        mOnMenuDismissedCallback.run();
+                    }
+                });
         mMenuWindow.show();
     }
 
@@ -204,6 +163,7 @@ public class TabStripContextMenuCoordinator {
                         .withTitleRes(R.string.menu_new_tab)
                         .withMenuId(R.id.new_tab_menu_id)
                         .withIsIncognito(isIncognito)
+                        .withShortcutText(KeyboardShortcuts.getShortcutText(R.id.new_tab_menu_id))
                         .build());
         // Add "Reopen closed tab/tabs/group" option.
         @RecentlyClosedEntryType
@@ -218,8 +178,10 @@ public class TabStripContextMenuCoordinator {
                 new ListItemBuilder()
                         .withTitleRes(titleRes)
                         .withMenuId(R.id.reopen_closed_entry)
-                        .withIsIncognito(false)
+                        .withIsIncognito(isIncognito)
                         .withEnabled(recentlyClosedEntryType != RecentlyClosedEntryType.NONE)
+                        .withShortcutText(
+                                KeyboardShortcuts.getShortcutText(R.id.reopen_closed_entry))
                         .build());
         // Add "Bookmark all tabs" option.
         if (!isIncognito) {
@@ -229,6 +191,8 @@ public class TabStripContextMenuCoordinator {
                             .withMenuId(R.id.bookmark_all_tabs)
                             .withIsIncognito(false)
                             .withEnabled(mTabModel.getCount() > 1)
+                            .withShortcutText(
+                                    KeyboardShortcuts.getShortcutText(R.id.bookmark_all_tabs))
                             .build());
         }
         // Add "Name window" option.
@@ -244,7 +208,7 @@ public class TabStripContextMenuCoordinator {
         Profile profile = mTabModel.getProfile();
         if (profile != null) {
             profile = profile.getOriginalProfile();
-            if (GlicUtils.isTabStripGlicSupported(profile)) {
+            if (GlicUtils.isTabStripGlicSupported(mContext, profile)) {
                 itemList.add(BasicListMenu.buildMenuDivider(isIncognito));
 
                 boolean isPinned = GlicUtils.isButtonPinnedToTabStrip(profile);
@@ -272,12 +236,11 @@ public class TabStripContextMenuCoordinator {
 
             boolean showNewBadge =
                     isEnablingVerticalTabs
-                            && VerticalTabUtils.shouldShowNewBadgeForVerticalTabs(mContext);
+                            && VerticalTabUtils.shouldShowNewBadgeForVerticalTabs(
+                                    mContext, profile);
 
             CharSequence title;
             if (showNewBadge) {
-                // Increment view count every time the badge is shown.
-                VerticalTabUtils.incrementNewBadgeViewCount();
                 // Prepare the title with the "New" badge.
                 title = VerticalTabUtils.getTitleWithNewBadge(mContext, layoutTitleRes);
             } else {
@@ -293,6 +256,14 @@ public class TabStripContextMenuCoordinator {
                             .withEnabled(enabled)
                             .build();
             itemList.add(item);
+
+            // Add the checkable "Auto expand tabs on hover" option for the vertical tab strip.
+            if (mTabStripLayout == TabStripLayoutType.VERTICAL
+                    && VerticalTabUtils.isExpandOnHoverFeatureEnabled()) {
+                itemList.add(
+                        VerticalTabCollapseButtonContextMenuCoordinator.buildExpandOnHoverMenuItem(
+                                mContext, isIncognito));
+            }
         }
 
         // Add "Task Manager" option with divider.
@@ -303,13 +274,24 @@ public class TabStripContextMenuCoordinator {
                             .withTitleRes(R.string.menu_task_manager)
                             .withMenuId(R.id.task_manager)
                             .withIsIncognito(isIncognito)
+                            .withShortcutText(KeyboardShortcuts.getShortcutText(R.id.task_manager))
                             .build());
         }
     }
 
     @VisibleForTesting
-    @Nullable AnchoredPopupWindow getPopupWindow() {
+    @Nullable
+    public AnchoredPopupWindow getPopupWindow() {
         return mMenuWindow;
+    }
+
+    @VisibleForTesting
+    public @Nullable View buildMenuView(boolean isIncognito) {
+        ModelList modelList = new ModelList();
+        configureMenuItems(modelList, isIncognito);
+        if (modelList.isEmpty()) return null;
+
+        return inflateMenuContentView(mContext, modelList, this::getListMenuDelegate);
     }
 
     @VisibleForTesting
@@ -347,6 +329,10 @@ public class TabStripContextMenuCoordinator {
                     controller.onMenuOrKeyboardAction(
                             R.id.toggle_tab_layout_menu_id, /* fromMenu= */ false);
                 }
+            } else if (model.get(MENU_ITEM_ID) == R.id.toggle_expand_tabs_on_hover_menu_id) {
+                VerticalTabUtils.setExpandOnHoverEnabledInSharedPref(
+                        !VerticalTabUtils.isExpandOnHoverEnabled(),
+                        ExpandOnHoverToggleEntryPoint.TAB_STRIP_CONTEXT_MENU);
             } else if (model.get(MENU_ITEM_ID) == R.id.pin_glic) {
                 TabStripMenuMetricsUtils.recordStripMenuUserAction(
                         StripMenuAction.PIN_GLIC, mTabStripLayout);
@@ -382,14 +368,103 @@ public class TabStripContextMenuCoordinator {
 
     /** Permanently cleans up this component. */
     public void destroy() {
+        mOnMenuDismissedCallback = null;
         dismiss();
         mMenuWindow = null;
     }
 
-    /**
-     * @return Whether the context menu is currently showing.
-     */
+    /** Returns whether the context menu is currently showing. */
     public boolean isMenuShowing() {
         return mMenuWindow != null && mMenuWindow.isShowing();
+    }
+
+    /**
+     * Inflates the content view of a menu styled like the tab strip context menu, and populates it
+     * with the given items.
+     *
+     * @param context The {@link Context} used to inflate the view.
+     * @param modelList The menu items to show.
+     * @param delegateForContentView Returns the {@link Delegate} handling item clicks for the given
+     *     content view.
+     * @return The inflated content view.
+     */
+    public static View inflateMenuContentView(
+            Context context, ModelList modelList, Function<View, Delegate> delegateForContentView) {
+        // TODO (crbug.com/436283175): Update the name of this resource for generic use.
+        View contentView =
+                LayoutInflater.from(context)
+                        .inflate(R.layout.tab_switcher_action_menu_layout, /* root= */ null);
+        ListMenuUtils.clipContentViewOutline(contentView, R.attr.popupBgCornerRadius);
+
+        // TODO (crbug.com/436283175): Update the name of this resource for generic use.
+        TouchTrackingListView touchTrackingListView =
+                contentView.findViewById(R.id.tab_group_action_menu_list);
+        ListMenuItemAdapter adapter =
+                createAdapter(modelList, Set.of(), delegateForContentView.apply(contentView));
+        touchTrackingListView.setItemsCanFocus(true);
+        touchTrackingListView.setAdapter(adapter);
+        return contentView;
+    }
+
+    /**
+     * Builds, but does not show, a popup window styled and sized like the tab strip context menu.
+     *
+     * @param context The {@link Context} used to build the popup.
+     * @param decorView The decor view of the window in which the popup is shown.
+     * @param contentView The content view, inflated by {@link #inflateMenuContentView}.
+     * @param anchorViewRectProvider The {@link RectProvider} to anchor the popup to.
+     * @param isIncognito Whether the popup is shown in incognito mode.
+     * @return The popup window.
+     */
+    public static AnchoredPopupWindow buildMenuWindow(
+            Context context,
+            View decorView,
+            View contentView,
+            RectProvider anchorViewRectProvider,
+            boolean isIncognito) {
+        Drawable background = TabOverflowMenuCoordinator.getMenuBackground(context, isIncognito);
+        TabOverflowMenuCoordinator.offsetPopupRect(
+                context, isIncognito, anchorViewRectProvider.getRect());
+
+        TouchTrackingListView touchTrackingListView =
+                contentView.findViewById(R.id.tab_group_action_menu_list);
+        ListMenuItemAdapter adapter = (ListMenuItemAdapter) touchTrackingListView.getAdapter();
+
+        // Similar to Chrome Desktop (W/M/L), compute the translated strings' width
+        // dynamically, clamp the value between a preselected
+        // tab_strip_context_menu_(min_width/max_width), and apply the result as the
+        // DesiredContentWidth. This ensures that each context menu item is always one line long,
+        // and does not wrap to 2 or more lines for long strings.
+        int[] contentDimensions =
+                UiUtils.computeListAdapterContentDimensions(adapter, touchTrackingListView);
+        int minWidthPx =
+                context.getResources()
+                        .getDimensionPixelSize(R.dimen.tab_strip_context_menu_min_width);
+        int maxWidthPx =
+                context.getResources()
+                        .getDimensionPixelSize(R.dimen.tab_strip_context_menu_max_width);
+        int marginPx = context.getResources().getDimensionPixelSize(R.dimen.menu_horizontal_margin);
+        int windowWidthPx = context.getResources().getDisplayMetrics().widthPixels;
+        int popupWidthPx =
+                UiUtils.computeMenuWidth(
+                        contentDimensions[0], minWidthPx, maxWidthPx, marginPx, windowWidthPx);
+
+        return new AnchoredPopupWindow.Builder(
+                        context, decorView, background, () -> contentView, anchorViewRectProvider)
+                .setFocusable(true)
+                .setOutsideTouchable(true)
+                .setHorizontalOverlapAnchor(true)
+                .setVerticalOverlapAnchor(true)
+                .setAllowOverlapCaptionBar(true)
+                .setPreferredHorizontalOrientation(HorizontalOrientation.LAYOUT_DIRECTION)
+                .setMaxWidth(maxWidthPx)
+                .setDesiredContentWidth(popupWidthPx)
+                .setAllowNonTouchableSize(true)
+                .setElevation(
+                        contentView
+                                .getResources()
+                                .getDimension(R.dimen.tab_overflow_menu_elevation))
+                .setAnimateFromAnchor(true)
+                .build();
     }
 }

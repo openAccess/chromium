@@ -552,10 +552,6 @@ id<GREYMatcher> VoiceSearchButton() {
   return [ChromeMatchersAppInterface voiceSearchButton];
 }
 
-id<GREYMatcher> VoiceSearchInputAccessoryButton() {
-  return [ChromeMatchersAppInterface voiceSearchInputAccessoryButton];
-}
-
 id<GREYMatcher> SettingsCollectionView() {
   return [ChromeMatchersAppInterface settingsCollectionView];
 }
@@ -938,6 +934,10 @@ id<GREYMatcher> DefaultBrowserSettingsTableViewMatcher() {
 
 id<GREYMatcher> SafetyCheckTableViewMatcher() {
   return [ChromeMatchersAppInterface safetyCheckTableViewMatcher];
+}
+
+id<GREYMatcher> AutofillAndPasswordsTableViewMatcher() {
+  return [ChromeMatchersAppInterface autofillAndPasswordsTableViewMatcher];
 }
 
 id<GREYMatcher> AlertAction(NSString* title) {

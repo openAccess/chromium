@@ -10,7 +10,6 @@
 #import "base/memory/scoped_refptr.h"
 #import "base/task/sequenced_task_runner.h"
 #import "base/test/bind.h"
-#import "base/test/scoped_feature_list.h"
 #import "base/time/time.h"
 #import "components/password_manager/core/browser/password_manager_test_utils.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
@@ -35,7 +34,6 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -53,8 +51,6 @@ namespace {
 class IOSChromeSafetyCheckManagerTest : public PlatformTest {
  public:
   void SetUp() override {
-    feature_list_.InitAndEnableFeature(kOmahaServiceRefactor);
-
     TestProfileIOS::Builder builder;
 
     builder.AddTestingFactory(
@@ -63,8 +59,7 @@ class IOSChromeSafetyCheckManagerTest : public PlatformTest {
                        ProfileIOS, password_manager::TestPasswordStore>));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
 
@@ -101,12 +96,11 @@ class IOSChromeSafetyCheckManagerTest : public PlatformTest {
 
   // Helper method to sign out.
   void SignOut() {
-    auth_service_->SignOut(signin_metrics::ProfileSignout::kTest, nil);
+    auth_service_->SignOut(signin_metrics::ProfileSignout::kTest);
   }
 
   web::WebTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  base::test::ScopedFeatureList feature_list_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   TestProfileManagerIOS profile_manager_;
   raw_ptr<IOSChromeSafetyCheckManager> safety_check_manager_;
@@ -368,20 +362,6 @@ TEST_F(IOSChromeSafetyCheckManagerTest, HandlesExpiredOmahaResponse) {
 
   EXPECT_EQ(safety_check_manager_->GetUpdateChromeCheckState(),
             UpdateChromeSafetyCheckState::kOmahaError);
-}
-
-// Tests that the Omaha check is queued if the Omaha service has not yet
-// started.
-TEST_F(IOSChromeSafetyCheckManagerTest, OmahaCheckQueuedIfServiceNotStarted) {
-  // Start the Safety Check, which includes the Omaha check.
-  safety_check_manager_->StartSafetyCheck();
-
-  // Verify that the Update Chrome check is not marked as running, and the Omaha
-  // check is queued.
-  EXPECT_EQ(safety_check_manager_->GetUpdateChromeCheckState(),
-            UpdateChromeSafetyCheckState::kDefault);
-
-  EXPECT_TRUE(safety_check_manager_->IsOmahaCheckQueuedForTesting());
 }
 
 // Tests a valid, app-up-to-date Omaha response is properly handled.

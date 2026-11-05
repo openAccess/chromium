@@ -7,6 +7,8 @@
 
 #include <optional>
 
+#include "base/dcheck_is_on.h"
+#include "build/build_config.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_item.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_item_text_index.h"
@@ -22,7 +24,17 @@ class OffsetMapping;
 
 // Represents a text content with a list of InlineItem. A node may have an
 // additional InlineItemsData for ::first-line pseudo-element.
+//
+// The MSVC ABI does not place derived class members in base class tail
+// padding, so on 64-bit Windows this is packed to 4 bytes to let the flags of
+// InlineNodeData fill the space after `data_type_`.
+#if BUILDFLAG(IS_WIN) && defined(ARCH_CPU_64_BITS)
+#pragma pack(push, 4)
+#endif
 struct CORE_EXPORT InlineItemsData : public GarbageCollected<InlineItemsData> {
+#if BUILDFLAG(IS_WIN) && defined(ARCH_CPU_64_BITS)
+#pragma pack(pop)
+#endif
  public:
   InlineItemTextIndex End() const {
     return {items.size(), text_content.length()};
@@ -74,6 +86,21 @@ struct CORE_EXPORT InlineItemsData : public GarbageCollected<InlineItemsData> {
   void CheckConsistency() const;
 #endif
 
+  void LogCapacity() {
+#if EXPENSIVE_DCHECKS_ARE_ON()
+    items_capacity_after_shrink_ = items.capacity();
+#endif
+  }
+  void ValidateCapacity() const {
+#if EXPENSIVE_DCHECKS_ARE_ON()
+    DCHECK(!items_capacity_after_shrink_ ||
+           items.capacity() <= *items_capacity_after_shrink_)
+        << "items grew from " << *items_capacity_after_shrink_ << " to "
+        << items.capacity()
+        << " after InlineNode::PrepareLayout() shrank it to fit";
+#endif
+  }
+
   InlineItemsData() = default;
 
   void Trace(Visitor* visitor) const;
@@ -97,6 +124,10 @@ struct CORE_EXPORT InlineItemsData : public GarbageCollected<InlineItemsData> {
 
  private:
   DataType data_type_ = DataType::kBase;
+
+#if EXPENSIVE_DCHECKS_ARE_ON()
+  std::optional<wtf_size_t> items_capacity_after_shrink_;
+#endif
 };
 
 // Represents inline items data with a text offset map.

@@ -25,6 +25,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_DOM_CONTAINER_NODE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_DOM_CONTAINER_NODE_H_
 
+#include "build/build_config.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink-forward.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_set_html_options.h"
 #include "third_party/blink/renderer/core/core_export.h"
@@ -50,7 +51,7 @@ class HTMLCollection;
 class RadioNodeList;
 class ScriptState;
 class SetHTMLOptions;
-class V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions;
+class V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions;
 class StyleRecalcContext;
 class WhitespaceAttacher;
 class WritableStream;
@@ -94,7 +95,19 @@ using NodeVector = HeapVector<Member<Node>, kInitialNodeVectorSize>;
 // firstChild, lastChild) use web-style naming to shadow the corresponding
 // methods on Node. This is a performance optimization, as it avoids a virtual
 // dispatch if the type is statically known to be ContainerNode.
+//
+// ContainerNode ends with a 32-bit member. The MSVC ABI does not place derived
+// class members in base class tail padding, so on 64-bit Windows ContainerNode
+// is packed to 4 bytes to let Element's first member fill that space. Its
+// members stay naturally aligned, since the MSVC ABI places polymorphic bases
+// first.
+#if BUILDFLAG(IS_WIN) && defined(ARCH_CPU_64_BITS)
+#pragma pack(push, 4)
+#endif
 class CORE_EXPORT ContainerNode : public Node {
+#if BUILDFLAG(IS_WIN) && defined(ARCH_CPU_64_BITS)
+#pragma pack(pop)
+#endif
  public:
   ~ContainerNode() override;
 
@@ -404,11 +417,11 @@ class CORE_EXPORT ContainerNode : public Node {
 
   WritableStream* streamAppendHTMLUnsafe(
       ScriptState*,
-      V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions*,
+      V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions*,
       ExceptionState&);
   WritableStream* streamHTMLUnsafe(
       ScriptState*,
-      V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions*,
+      V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions*,
       ExceptionState&);
   WritableStream* streamHTML(ScriptState*, SetHTMLOptions*, ExceptionState&);
   WritableStream* streamAppendHTML(ScriptState*,
@@ -419,7 +432,7 @@ class CORE_EXPORT ContainerNode : public Node {
                   ExceptionState& exception_state);
   WritableStream* streamPrependHTMLUnsafe(
       ScriptState*,
-      V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions*,
+      V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions*,
       ExceptionState&);
   WritableStream* streamPrependHTML(ScriptState*,
                                     SetHTMLOptions*,
@@ -427,7 +440,7 @@ class CORE_EXPORT ContainerNode : public Node {
 
   void appendHTMLUnsafe(
       const V8UnionStringOrTrustedHTML* html,
-      V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions* options,
+      V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions* options,
       ExceptionState& exception_state);
 
   void prependHTML(const String& html,
@@ -436,7 +449,7 @@ class CORE_EXPORT ContainerNode : public Node {
 
   void prependHTMLUnsafe(
       const V8UnionStringOrTrustedHTML* html,
-      V8UnionSetHTMLUnsafeOptionsOrTrustedParserOptions* options,
+      V8UnionSetHTMLUnsafeOptionsOrTrustedHTMLParserOptions* options,
       ExceptionState& exception_state);
 
   void InsertHTMLBefore(Node* ref_child,
@@ -449,6 +462,12 @@ class CORE_EXPORT ContainerNode : public Node {
                             const FragmentParserConfig&,
                             const FragmentParserOptions&,
                             ExceptionState&);
+
+  // Throws a "HierarchyRequestError" DOMException and returns false if this
+  // cannot be the parent for an HTML insertion that does not replace all
+  // children (every HTML insertion and streaming method except setHTML* and
+  // streamHTML*), i.e. if this is an <html> element.
+  bool CheckValidParentForPartialInsertion(ExceptionState&);
 
   // DocumentOrElementEventHandlers:
   // These event listeners are only actually web-exposed on interfaces that
@@ -535,8 +554,6 @@ class CORE_EXPORT ContainerNode : public Node {
   void AppendChildCommon(Node& child);
   void WillRemoveChildren();
   void WillRemoveChild(Node& child);
-  void RemoveDetachedChildrenInContainer(ContainerNode&);
-  void AddChildNodesToDeletionQueue(Node*&, Node*&, ContainerNode&);
 
   void NotifyNodeInserted(Node&,
                           ChildrenChangeSource = ChildrenChangeSource::kAPI);

@@ -26,7 +26,6 @@ import androidx.browser.customtabs.EngagementSignalsCallback;
 import androidx.browser.customtabs.PostMessageServiceConnection;
 
 import org.chromium.base.ContextUtils;
-import org.chromium.base.SysUtils;
 import org.chromium.base.TriState;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
@@ -112,38 +111,9 @@ class ClientManager {
         @VisibleForTesting int NUM_ENTRIES = 5;
     }
 
-    // These values are persisted to logs. Entries should not be renumbered and
-    // numeric values should never be reused.
-    // Values for the "CustomTabs.SessionDisconnectStatus" UMA histogram. Append-only.
-    @IntDef({
-        SessionDisconnectStatus.UNKNOWN,
-        SessionDisconnectStatus.CT_FOREGROUND,
-        SessionDisconnectStatus.CT_FOREGROUND_KEEP_ALIVE,
-        SessionDisconnectStatus.CT_BACKGROUND,
-        SessionDisconnectStatus.CT_BACKGROUND_KEEP_ALIVE,
-        SessionDisconnectStatus.LOW_MEMORY_CT_FOREGROUND,
-        SessionDisconnectStatus.LOW_MEMORY_CT_FOREGROUND_KEEP_ALIVE,
-        SessionDisconnectStatus.LOW_MEMORY_CT_BACKGROUND,
-        SessionDisconnectStatus.LOW_MEMORY_CT_BACKGROUND_KEEP_ALIVE,
-        SessionDisconnectStatus.NUM_ENTRIES
-    })
-    @Retention(RetentionPolicy.SOURCE)
-    @interface SessionDisconnectStatus {
-        @VisibleForTesting int UNKNOWN = 0;
-        @VisibleForTesting int CT_FOREGROUND = 1;
-        @VisibleForTesting int CT_FOREGROUND_KEEP_ALIVE = 2;
-        @VisibleForTesting int CT_BACKGROUND = 3;
-        @VisibleForTesting int CT_BACKGROUND_KEEP_ALIVE = 4;
-        @VisibleForTesting int LOW_MEMORY_CT_FOREGROUND = 5;
-        @VisibleForTesting int LOW_MEMORY_CT_FOREGROUND_KEEP_ALIVE = 6;
-        @VisibleForTesting int LOW_MEMORY_CT_BACKGROUND = 7;
-        @VisibleForTesting int LOW_MEMORY_CT_BACKGROUND_KEEP_ALIVE = 8;
-        @VisibleForTesting int NUM_ENTRIES = 9;
-    }
-
     /** To be called when a client gets disconnected. */
     public interface DisconnectCallback {
-        void run(SessionHolder<?> session);
+        void run(SessionHolder session);
     }
 
     private static class KeepAliveServiceConnection implements ServiceConnection {
@@ -228,8 +198,6 @@ class ClientManager {
         private boolean mAllowParallelRequest;
         private boolean mAllowResourcePrefetch;
         private boolean mShouldGetPageLoadMetrics;
-        private boolean mCustomTabIsInForeground;
-        private boolean mWasSessionDisconnectStatusLogged;
         private @Nullable Supplier<Boolean> mEngagementSignalsAvailableSupplier;
         private final @Nullable EngagementSignalsHandler mEngagementSignalsHandler;
 
@@ -352,7 +320,7 @@ class ClientManager {
 
     private final InstalledAppProviderWrapper mInstalledAppProviderWrapper;
 
-    private final Map<SessionHolder<?>, SessionParams> mSessionParams = new HashMap<>();
+    private final Map<SessionHolder, SessionParams> mSessionParams = new HashMap<>();
 
     private final SparseBooleanArray mUidHasCalledWarmup = new SparseBooleanArray();
     private boolean mWarmupHasBeenCalled;
@@ -376,7 +344,7 @@ class ClientManager {
      * @return true for success.
      */
     public synchronized boolean newSession(
-            SessionHolder<?> session,
+            SessionHolder session,
             int uid,
             int pid,
             DisconnectCallback onDisconnect,
@@ -388,21 +356,22 @@ class ClientManager {
                         && serviceConnection != null
                         && engagementSignalsHandler != null);
 
-        BrowserCallbackWrapper callbackWrapper;
-        if (session.isAuthTab()) {
-            var callback = session.getSessionAsAuthTab().getCallback();
-            if (callback == null) return false;
-            callbackWrapper = new BrowserCallbackWrapper(callback);
-        } else {
-            var callback = session.getSessionAsCustomTab().getCallback();
-            if (callback == null) return false;
-            callbackWrapper = new BrowserCallbackWrapper(callback);
-        }
+        @Nullable BrowserCallbackWrapper callbackWrapper =
+                switch (session) {
+                    case SessionHolder.AuthTab authTab -> {
+                        var callback = authTab.getToken().getCallback();
+                        yield callback == null ? null : new BrowserCallbackWrapper(callback);
+                    }
+                    case SessionHolder.CustomTab customTab -> {
+                        var callback = customTab.getToken().getCallback();
+                        yield callback == null ? null : new BrowserCallbackWrapper(callback);
+                    }
+                };
+        if (callbackWrapper == null) return false;
 
         if (mSessionParams.containsKey(session)) {
             SessionParams params = mSessionParams.get(session);
             params.setCallback(callbackWrapper);
-            params.mWasSessionDisconnectStatusLogged = false;
         } else {
             SessionParams params =
                     new SessionParams(
@@ -431,9 +400,9 @@ class ClientManager {
     /**
      * @return all the sessions originating from a given {@code uid}.
      */
-    public synchronized List<SessionHolder<?>> uidToSessions(int uid) {
-        List<SessionHolder<?>> sessions = new ArrayList<>();
-        for (Map.Entry<SessionHolder<?>, SessionParams> entry : mSessionParams.entrySet()) {
+    public synchronized List<SessionHolder> uidToSessions(int uid) {
+        List<SessionHolder> sessions = new ArrayList<>();
+        for (Map.Entry<SessionHolder, SessionParams> entry : mSessionParams.entrySet()) {
             if (entry.getValue().uid == uid) sessions.add(entry.getKey());
         }
         return sessions;
@@ -451,7 +420,7 @@ class ClientManager {
      * @return true if speculation is allowed.
      */
     public synchronized boolean updateStatsAndReturnWhetherAllowed(
-            SessionHolder<?> session, int uid, @Nullable String url, boolean lowConfidence) {
+            SessionHolder session, int uid, @Nullable String url, boolean lowConfidence) {
         SessionParams params = mSessionParams.get(session);
         if (params == null || params.uid != uid) return false;
         boolean firstLowConfidencePrediction =
@@ -463,7 +432,7 @@ class ClientManager {
     }
 
     @VisibleForTesting
-    synchronized @CalledWarmup int getWarmupState(@Nullable SessionHolder<?> session) {
+    synchronized @CalledWarmup int getWarmupState(@Nullable SessionHolder session) {
         SessionParams params = mSessionParams.get(session);
         boolean hasValidSession = params != null;
         boolean hasUidCalledWarmup =
@@ -491,7 +460,7 @@ class ClientManager {
      */
     @VisibleForTesting
     synchronized @PredictionStatus int getPredictionOutcome(
-            @Nullable SessionHolder<?> session, String url) {
+            @Nullable SessionHolder session, String url) {
         SessionParams params = mSessionParams.get(session);
         if (params == null) return PredictionStatus.NONE;
 
@@ -505,12 +474,12 @@ class ClientManager {
         return urlsMatch ? PredictionStatus.GOOD : PredictionStatus.BAD;
     }
 
-    public boolean isSessionValid(SessionHolder<?> session) {
+    public boolean isSessionValid(SessionHolder session) {
         return mSessionParams.get(session) != null;
     }
 
     /** Registers that a client has launched a URL inside a Custom Tab. */
-    public synchronized void registerLaunch(@Nullable SessionHolder<?> session, String url) {
+    public synchronized void registerLaunch(@Nullable SessionHolder session, String url) {
         @PredictionStatus int outcome = getPredictionOutcome(session, url);
 
         SessionParams params = mSessionParams.get(session);
@@ -540,7 +509,7 @@ class ClientManager {
         params.resetPredictionMetrics();
     }
 
-    public int postMessage(SessionHolder<?> session, String message) {
+    public int postMessage(SessionHolder session, String message) {
         return callOnSession(
                 session,
                 CustomTabsService.RESULT_FAILURE_MESSAGING_ERROR,
@@ -551,7 +520,7 @@ class ClientManager {
     /**
      * See {@link PostMessageServiceConnection#bindSessionToPostMessageService(Context, String)}.
      */
-    public boolean bindToPostMessageServiceForSession(SessionHolder<?> session) {
+    public boolean bindToPostMessageServiceForSession(SessionHolder session) {
         return callOnSession(
                 session,
                 false,
@@ -563,7 +532,7 @@ class ClientManager {
 
     /** See {@link PostMessageHandler#initializeWithPostMessageUri(Uri, Uri)}. */
     public void initializeWithPostMessageOriginForSession(
-            SessionHolder<?> session, Uri origin, @Nullable Uri targetOrigin) {
+            SessionHolder session, Uri origin, @Nullable Uri targetOrigin) {
         callOnSession(
                 session,
                 params ->
@@ -572,13 +541,13 @@ class ClientManager {
     }
 
     public synchronized boolean validateRelationship(
-            SessionHolder<?> session, int relation, Origin origin, @Nullable Bundle extras) {
+            SessionHolder session, int relation, Origin origin, @Nullable Bundle extras) {
         return validateRelationshipInternal(session, relation, origin, null, false, null);
     }
 
     /** Validates the link between the client and the origin. */
     public synchronized void verifyAndInitializeWithPostMessageOriginForSession(
-            SessionHolder<?> session,
+            SessionHolder session,
             Origin origin,
             @Nullable Origin targetOrigin,
             @Relation int relation) {
@@ -594,7 +563,7 @@ class ClientManager {
      * @param callback callback to be called after verification is finished.
      */
     public synchronized void validateSourceOriginOfPrefetch(
-            SessionHolder<?> session, Origin sourceOrigin, Runnable callback) {
+            SessionHolder session, Origin sourceOrigin, Runnable callback) {
         validateRelationshipInternal(
                 session,
                 CustomTabsService.RELATION_USE_AS_ORIGIN,
@@ -606,7 +575,7 @@ class ClientManager {
 
     /** Can't be called on UI Thread. */
     private synchronized boolean validateRelationshipInternal(
-            SessionHolder<?> session,
+            SessionHolder session,
             int relation,
             Origin origin,
             @Nullable Origin targetOrigin,
@@ -667,7 +636,7 @@ class ClientManager {
     /**
      * @return The postMessage origin for the given session.
      */
-    @Nullable Uri getPostMessageOriginForSessionForTesting(SessionHolder<?> session) {
+    @Nullable Uri getPostMessageOriginForSessionForTesting(SessionHolder session) {
         return callOnSession(
                 session,
                 null,
@@ -680,7 +649,7 @@ class ClientManager {
     /**
      * @return The postMessage target origin for the given session.
      */
-    @Nullable Uri getPostMessageTargetOriginForSessionForTesting(SessionHolder<?> session) {
+    @Nullable Uri getPostMessageTargetOriginForSessionForTesting(SessionHolder session) {
         return callOnSession(
                 session,
                 null,
@@ -692,7 +661,7 @@ class ClientManager {
 
     /** See {@link PostMessageHandler#reset(WebContents)}. */
     public void resetPostMessageHandlerForSession(
-            SessionHolder<?> session, @Nullable WebContents webContents) {
+            @Nullable SessionHolder session, @Nullable WebContents webContents) {
         callOnSession(
                 session,
                 params -> {
@@ -706,7 +675,7 @@ class ClientManager {
      * @return The referrer that is associated with the client owning given session.
      */
     public synchronized @Nullable Referrer getDefaultReferrerForSession(
-            SessionHolder<?> sessionHolder) {
+            SessionHolder sessionHolder) {
         return IntentHandler.constructValidReferrerForAuthority(
                 getClientPackageNameForSession(sessionHolder));
     }
@@ -714,21 +683,21 @@ class ClientManager {
     /**
      * @return The package name associated with the client owning the given session.
      */
-    public @Nullable String getClientPackageNameForSession(@Nullable SessionHolder<?> session) {
+    public @Nullable String getClientPackageNameForSession(@Nullable SessionHolder session) {
         return callOnSession(session, null, SessionParams::getPackageName);
     }
 
     /**
      * @return The UID associated with the client owning the given session.
      */
-    public int getClientUidForSession(@Nullable SessionHolder<?> session) {
+    public int getClientUidForSession(@Nullable SessionHolder session) {
         return callOnSession(session, -1, params -> params.uid);
     }
 
     /**
      * @return The PID associated with the client owning the given session.
      */
-    public int getClientPidForSession(@Nullable SessionHolder<?> session) {
+    public int getClientPidForSession(@Nullable SessionHolder session) {
         return callOnSession(session, -1, params -> params.pid);
     }
 
@@ -736,18 +705,16 @@ class ClientManager {
      * Overrides the package name for the given session to be the given package name. To be used for
      * testing only.
      */
-    public void overridePackageNameForSessionForTesting(
-            SessionHolder<?> session, String packageName) {
+    public void overridePackageNameForSessionForTesting(SessionHolder session, String packageName) {
         callOnSession(
                 session, params -> params.overridePackageNameForTesting(packageName) // IN-TEST
                 );
     }
 
     /**
-     * @return The callback {@link SessionHolder<?>} for the given session.
+     * @return The callback {@link SessionHolder} for the given session.
      */
-    public @Nullable BrowserCallbackWrapper getCallbackForSession(
-            @Nullable SessionHolder<?> session) {
+    public @Nullable BrowserCallbackWrapper getCallbackForSession(@Nullable SessionHolder session) {
         return callOnSession(session, null, SessionParams::getCallback);
     }
 
@@ -755,31 +722,31 @@ class ClientManager {
      * @return Whether the urlbar should be hidden for the session on first page load. Urls are
      *     foced to show up after the user navigates away.
      */
-    public boolean shouldHideDomainForSession(SessionHolder<?> session) {
+    public boolean shouldHideDomainForSession(SessionHolder session) {
         return callOnSession(session, false, params -> params.mShouldHideDomain);
     }
 
     /** Sets whether the urlbar should be hidden for a given session. */
-    public void setHideDomainForSession(SessionHolder<?> session, boolean hide) {
+    public void setHideDomainForSession(SessionHolder session, boolean hide) {
         callOnSession(session, params -> params.mShouldHideDomain = hide);
     }
 
     /**
      * @return Whether bottom bar scrolling state should be recorded and shared for the session.
      */
-    public boolean shouldSendBottomBarScrollStateForSession(SessionHolder<?> session) {
+    public boolean shouldSendBottomBarScrollStateForSession(SessionHolder session) {
         return callOnSession(session, false, params -> params.mShouldSendBottomBarScrollState);
     }
 
     /** Sets whether bottom bar scrolling state should be recorded and shared for the session. */
-    public void setSendBottomBarScrollingStateForSessionn(SessionHolder<?> session, boolean send) {
+    public void setSendBottomBarScrollingStateForSessionn(SessionHolder session, boolean send) {
         callOnSession(session, params -> params.mShouldSendBottomBarScrollState = send);
     }
 
     /**
      * @return Whether navigation info should be recorded and shared for the session.
      */
-    public boolean shouldSendNavigationInfoForSession(@Nullable SessionHolder<?> session) {
+    public boolean shouldSendNavigationInfoForSession(@Nullable SessionHolder session) {
         return callOnSession(session, false, params -> params.mShouldSendNavigationInfo);
     }
 
@@ -787,26 +754,26 @@ class ClientManager {
      * Sets whether navigation info should be recorded and shared for the current navigation in this
      * session.
      */
-    public void setSendNavigationInfoForSession(@Nullable SessionHolder<?> session, boolean send) {
+    public void setSendNavigationInfoForSession(@Nullable SessionHolder session, boolean send) {
         callOnSession(session, params -> params.mShouldSendNavigationInfo = send);
     }
 
     /**
      * @return Whether the fragment should be ignored for speculation matching.
      */
-    public boolean getIgnoreFragmentsForSession(@Nullable SessionHolder<?> session) {
+    public boolean getIgnoreFragmentsForSession(@Nullable SessionHolder session) {
         return callOnSession(session, false, params -> params.mIgnoreFragments);
     }
 
     /** Sets whether the fragment should be ignored for speculation matching. */
-    public void setIgnoreFragmentsForSession(SessionHolder<?> session, boolean value) {
+    public void setIgnoreFragmentsForSession(SessionHolder session, boolean value) {
         callOnSession(session, params -> params.mIgnoreFragments = value);
     }
 
     /**
      * @return Whether load speculation should be turned on for cellular networks for given session.
      */
-    public boolean shouldSpeculateLoadOnCellularForSession(SessionHolder<?> session) {
+    public boolean shouldSpeculateLoadOnCellularForSession(SessionHolder session) {
         return callOnSession(session, false, params -> params.mShouldSpeculateLoadOnCellular);
     }
 
@@ -815,7 +782,7 @@ class ClientManager {
      * turned on, hidden tab speculation is turned on as well.
      */
     public void setSpeculateLoadOnCellularForSession(
-            SessionHolder<?> session, boolean shouldSpeculate) {
+            SessionHolder session, boolean shouldSpeculate) {
         callOnSession(
                 session,
                 params -> {
@@ -825,36 +792,36 @@ class ClientManager {
     }
 
     /** Sets whether hidden tab speculation can be used. */
-    public void setCanUseHiddenTab(SessionHolder<?> session, boolean canUseHiddenTab) {
+    public void setCanUseHiddenTab(SessionHolder session, boolean canUseHiddenTab) {
         callOnSession(session, params -> params.mCanUseHiddenTab = canUseHiddenTab);
     }
 
     /** Get whether hidden tab speculation can be used. The default is false. */
-    public boolean getCanUseHiddenTab(SessionHolder<?> session) {
+    public boolean getCanUseHiddenTab(SessionHolder session) {
         return callOnSession(session, false, params -> params.mCanUseHiddenTab);
     }
 
-    public void setAllowParallelRequestForSession(SessionHolder<?> session, boolean allowed) {
+    public void setAllowParallelRequestForSession(SessionHolder session, boolean allowed) {
         callOnSession(session, params -> params.mAllowParallelRequest = allowed);
     }
 
-    public boolean getAllowParallelRequestForSession(@Nullable SessionHolder<?> session) {
+    public boolean getAllowParallelRequestForSession(@Nullable SessionHolder session) {
         return callOnSession(session, false, params -> params.mAllowParallelRequest);
     }
 
-    public void setAllowResourcePrefetchForSession(SessionHolder<?> session, boolean allowed) {
+    public void setAllowResourcePrefetchForSession(SessionHolder session, boolean allowed) {
         callOnSession(session, params -> params.mAllowResourcePrefetch = allowed);
     }
 
-    public boolean getAllowResourcePrefetchForSession(@Nullable SessionHolder<?> session) {
+    public boolean getAllowResourcePrefetchForSession(@Nullable SessionHolder session) {
         return callOnSession(session, false, params -> params.mAllowResourcePrefetch);
     }
 
-    public void setShouldGetPageLoadMetricsForSession(SessionHolder<?> session, boolean allowed) {
+    public void setShouldGetPageLoadMetricsForSession(SessionHolder session, boolean allowed) {
         callOnSession(session, params -> params.mShouldGetPageLoadMetrics = allowed);
     }
 
-    public boolean shouldGetPageLoadMetrics(SessionHolder<?> session) {
+    public boolean shouldGetPageLoadMetrics(SessionHolder session) {
         return ChromeFeatureList.isEnabled(ChromeFeatureList.CCT_NAVIGATION_METRICS)
                 || callOnSession(session, false, params -> params.mShouldGetPageLoadMetrics);
     }
@@ -868,7 +835,7 @@ class ClientManager {
      * @param origin Origin to verify
      */
     public synchronized boolean isFirstPartyOriginForSession(
-            @Nullable SessionHolder<?> session, Origin origin) {
+            @Nullable SessionHolder session, Origin origin) {
         return ChromeOriginVerifier.wasPreviouslyVerified(
                 getClientPackageNameForSession(session),
                 origin,
@@ -877,7 +844,7 @@ class ClientManager {
 
     /** Tries to bind to a client to keep it alive, and returns true for success. */
     public synchronized boolean keepAliveForSession(
-            @Nullable SessionHolder<?> session, @Nullable Intent intent) {
+            @Nullable SessionHolder session, @Nullable Intent intent) {
         // When an application is bound to a service, its priority is raised to
         // be at least equal to the application's one. This binds to a placeholder
         // service (no calls to this service are made).
@@ -906,7 +873,7 @@ class ClientManager {
     }
 
     /** Unbind from the KeepAlive service for a client. */
-    public void dontKeepAliveForSession(@Nullable SessionHolder<?> session) {
+    public void dontKeepAliveForSession(@Nullable SessionHolder session) {
         callOnSession(
                 session,
                 params -> {
@@ -940,8 +907,8 @@ class ClientManager {
     /** Cleans up all data associated with all sessions. */
     public synchronized void cleanupAll() {
         // cleanupSessionInternal modifies mSessionParams therefore we need a copy
-        List<SessionHolder<?>> sessions = new ArrayList<>(mSessionParams.keySet());
-        for (SessionHolder<?> session : sessions) cleanupSession(session);
+        List<SessionHolder> sessions = new ArrayList<>(mSessionParams.keySet());
+        for (SessionHolder session : sessions) cleanupSession(session);
     }
 
     /**
@@ -949,11 +916,10 @@ class ClientManager {
      *
      * @param session The session that has been destroyed.
      */
-    private void cleanupSessionInternal(SessionHolder<?> session) {
+    private void cleanupSessionInternal(SessionHolder session) {
         callOnSession(
                 session,
                 params -> {
-                    logConnectionClosed(params);
                     mSessionParams.remove(session);
                     if (params.serviceConnection != null) {
                         params.serviceConnection.cleanup(ContextUtils.getApplicationContext());
@@ -969,11 +935,9 @@ class ClientManager {
      *
      * @param session The session with invalid callback.
      */
-    public synchronized void cleanupSession(SessionHolder<?> session) {
+    public synchronized void cleanupSession(SessionHolder session) {
         if (session.hasId() && mSessionParams.containsKey(session)) {
             SessionParams params = mSessionParams.get(session);
-            // Logging as soon as we know a session has been disconnected.
-            logConnectionClosed(params);
             // Leave session parameters, so client might update callback later.
             // The session will be completely removed when system runs low on memory.
             // {@see #cleanupUnusedSessions}
@@ -986,8 +950,8 @@ class ClientManager {
     /** Clean up all sessions which are not currently used. */
     public synchronized void cleanupUnusedSessions() {
         // cleanupSessionInternal modifies mSessionParams therefore we need a copy
-        List<SessionHolder<?>> sessions = new ArrayList<>(mSessionParams.keySet());
-        for (SessionHolder<?> session : sessions) {
+        List<SessionHolder> sessions = new ArrayList<>(mSessionParams.keySet());
+        for (SessionHolder session : sessions) {
             var params = assumeNonNull(mSessionParams.get(session));
             if (params.getCallback() == null) {
                 cleanupSessionInternal(session);
@@ -995,68 +959,29 @@ class ClientManager {
         }
     }
 
-    public void setCustomTabIsInForeground(
-            @Nullable SessionHolder<?> session, boolean isInForeground) {
-        callOnSession(
-                session,
-                (SessionParams params) -> params.mCustomTabIsInForeground = isInForeground);
-    }
-
     public void setEngagementSignalsCallbackForSession(
-            SessionHolder<?> session, EngagementSignalsCallback callback) {
+            SessionHolder session, EngagementSignalsCallback callback) {
         callOnSession(session, params -> params.setEngagementSignalsCallback(callback));
     }
 
     public @Nullable EngagementSignalsCallback getEngagementSignalsCallbackForSession(
-            SessionHolder<?> session) {
+            SessionHolder session) {
         return callOnSession(session, null, SessionParams::getEngagementSignalsCallback);
     }
 
     public void setEngagementSignalsAvailableSupplierForSession(
-            SessionHolder<?> session, @Nullable Supplier<Boolean> supplier) {
+            SessionHolder session, @Nullable Supplier<Boolean> supplier) {
         callOnSession(session, params -> params.setEngagementSignalsAvailableSupplier(supplier));
     }
 
     public @Nullable Supplier<Boolean> getEngagementSignalsAvailableSupplierForSession(
-            SessionHolder<?> session) {
+            SessionHolder session) {
         return callOnSession(session, null, SessionParams::getEngagementSignalsAvailableSupplier);
     }
 
     public @Nullable EngagementSignalsHandler getEngagementSignalsHandlerForSession(
-            @Nullable SessionHolder<?> session) {
+            @Nullable SessionHolder session) {
         return callOnSession(session, null, SessionParams::getEngagementSignalsHandler);
-    }
-
-    private void logConnectionClosed(SessionParams sessionParams) {
-        if (sessionParams.mWasSessionDisconnectStatusLogged) return;
-
-        boolean isCustomTabInForeground = sessionParams.mCustomTabIsInForeground;
-        boolean isKeepAlive = sessionParams.getKeepAliveConnection() != null;
-        boolean isLowMemory = SysUtils.isCurrentlyLowMemory();
-
-        @SessionDisconnectStatus int status = SessionDisconnectStatus.UNKNOWN;
-        if (isLowMemory && isCustomTabInForeground && isKeepAlive) {
-            status = SessionDisconnectStatus.LOW_MEMORY_CT_FOREGROUND_KEEP_ALIVE;
-        } else if (isLowMemory && isCustomTabInForeground && !isKeepAlive) {
-            status = SessionDisconnectStatus.LOW_MEMORY_CT_FOREGROUND;
-        } else if (isLowMemory && !isCustomTabInForeground && isKeepAlive) {
-            status = SessionDisconnectStatus.LOW_MEMORY_CT_BACKGROUND_KEEP_ALIVE;
-        } else if (isLowMemory && !isCustomTabInForeground && !isKeepAlive) {
-            status = SessionDisconnectStatus.LOW_MEMORY_CT_BACKGROUND;
-        } else if (isCustomTabInForeground && !isKeepAlive) {
-            status = SessionDisconnectStatus.CT_FOREGROUND;
-        } else if (isCustomTabInForeground && isKeepAlive) {
-            status = SessionDisconnectStatus.CT_FOREGROUND_KEEP_ALIVE;
-        } else if (!isCustomTabInForeground && !isKeepAlive) {
-            status = SessionDisconnectStatus.CT_BACKGROUND;
-        } else if (!isCustomTabInForeground && isKeepAlive) {
-            status = SessionDisconnectStatus.CT_BACKGROUND_KEEP_ALIVE;
-        }
-
-        RecordHistogram.recordEnumeratedHistogram(
-                "CustomTabs.SessionDisconnectStatus", status, SessionDisconnectStatus.NUM_ENTRIES);
-
-        sessionParams.mWasSessionDisconnectStatusLogged = true;
     }
 
     private interface SessionParamsCallback<T> {
@@ -1065,7 +990,7 @@ class ClientManager {
 
     @Contract("_, !null, _ -> !null")
     private synchronized <T> @Nullable T callOnSession(
-            @Nullable SessionHolder<?> session,
+            @Nullable SessionHolder session,
             @Nullable T fallback,
             SessionParamsCallback<T> callback) {
         SessionParams params = mSessionParams.get(session);
@@ -1078,7 +1003,7 @@ class ClientManager {
     }
 
     private synchronized void callOnSession(
-            @Nullable SessionHolder<?> session, SessionParamsRunnable runnable) {
+            @Nullable SessionHolder session, SessionParamsRunnable runnable) {
         SessionParams params = mSessionParams.get(session);
         if (params == null) return;
         runnable.run(params);

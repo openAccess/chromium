@@ -64,6 +64,7 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotationTag =
       "Metadata: File name, file size, file type, etc."
       "ACCESS_TOKEN: Help identify if the user calling has access to the group"
     destination: GOOGLE_OWNED_SERVICE
+    api_service_name: "drive.googleapis.com"
     internal {
       contacts{email : "save-to-drive-eng-all@google.com"}
     }
@@ -73,7 +74,7 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotationTag =
       type: OTHER
       type: ACCESS_TOKEN
     }
-    last_reviewed: "2025-08-27"
+    last_reviewed: "2026-10-29"
   }
   policy {
     cookies_allowed: NO
@@ -191,22 +192,22 @@ DriveUploader::DriveUploader(DriveUploaderType drive_uploader_type,
       url_loader_factory_(profile->GetDefaultStoragePartition()
                               ->GetURLLoaderFactoryForBrowserProcess()),
       content_reader_(content_reader) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   CHECK(content_reader_);
 }
 
 DriveUploader::~DriveUploader() = default;
 
 void DriveUploader::Start() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   if (!identity_manager_->HasAccountWithRefreshToken(
-          account_info_.account_id)) {
+          account_info_.GetAccountId())) {
     NotifyError(SaveToDriveErrorType::kOauthError);
     return;
   }
   scoped_identity_manager_observation_.Observe(identity_manager_);
   access_token_fetcher_ = identity_manager_->CreateAccessTokenFetcherForAccount(
-      account_info_.account_id, signin::OAuthConsumerId::kSaveToDrive,
+      account_info_.GetAccountId(), signin::OAuthConsumerId::kSaveToDrive,
       base::BindOnce(&DriveUploader::OnFetchAccessToken,
                      weak_ptr_factory_.GetWeakPtr()),
       signin::AccessTokenFetcher::Mode::kImmediate);
@@ -273,7 +274,7 @@ DriveUploader::CreateEndpointFetcher(
     std::string_view request_string,
     const std::vector<std::string>& request_headers,
     endpoint_fetcher::UploadProgressCallback upload_progress_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   auto request_params =
       endpoint_fetcher::EndpointFetcher::RequestParams::Builder(
           http_method, kTrafficAnnotationTag)
@@ -343,7 +344,7 @@ void DriveUploader::NotifyError(SaveToDriveErrorType error_type) {
 
 void DriveUploader::OnRefreshTokenRemovedForAccount(
     const CoreAccountId& account_id) {
-  if (account_info_.account_id == account_id) {
+  if (account_info_.GetAccountId() == account_id) {
     NotifyError(SaveToDriveErrorType::kOauthError);
   }
 }

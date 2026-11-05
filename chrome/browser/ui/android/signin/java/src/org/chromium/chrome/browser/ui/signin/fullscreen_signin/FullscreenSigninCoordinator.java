@@ -20,10 +20,13 @@ import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManager;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.signin.services.BadgeConfig;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
+import org.chromium.chrome.browser.ui.signin.ConfirmManagedSyncDataDialogCoordinator;
+import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
 import org.chromium.components.signin.metrics.AccountConsistencyPromoAction;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
+import org.chromium.components.signin.metrics.SigninFunnelEvent;
 import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyKey;
@@ -71,11 +74,22 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
          *
          * @param slowestLoadPoint The slowest load point to be recorded.
          */
-        void recordLoadCompletedHistograms(
-                @FullscreenSigninMediator.LoadPoint int slowestLoadPoint);
+        void recordLoadCompletedHistograms(@FullscreenSigninLoadPoint int slowestLoadPoint);
 
         /** Records *.FromLaunch.NativeInitialized histogram. */
         void recordNativeInitializedHistogram();
+
+        /**
+         * Called when the user navigates back to the fullscreen sign-in page to log the
+         * Signin.SigninFunnel promo shown event. Flows that reuse the {@link
+         * FullscreenSigninCoordinator} on back press (e.g. the FRE) should log the event, otherwise
+         * the new coordinator already logs it when it's shown.
+         *
+         * @param accessPoint The access point that initiated the sign-in flow.
+         * @param event The promo shown event, with or without an account.
+         */
+        void logPromoShownFunnelEventOnBackPress(
+                @SigninAccessPoint int accessPoint, @SigninFunnelEvent int event);
 
         /**
          * Shows an informational web page. The page doesn't show navigation control. Only
@@ -118,9 +132,50 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
         default boolean canUsePreferredAccount() {
             return false;
         }
+
+        /**
+         * Called to display the management notice for {@code account}, when {@code
+         * ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE} is enabled. The host is responsible for
+         * dismissing the notice and must report the user's decision via {@code listener}.
+         */
+        default void displayManagementNotice(
+                CoreAccountInfo account,
+                ConfirmManagedSyncDataDialogCoordinator.Listener listener) {}
     }
 
-    private final FullscreenSigninMediator mMediator;
+    /** Mediator for the fullscreen sign-in MVC. */
+    interface Mediator {
+        PropertyModel getModel();
+
+        void destroy();
+
+        void reset();
+
+        boolean isContinueOrDismissClicked();
+
+        void onAccountAdded(String accountEmail);
+
+        void setConfig(FullscreenSigninConfig config);
+
+        void onAddAccountCanceled();
+
+        void onDeviceLockCanceled();
+
+        void proceedWithSignIn();
+
+        void dismiss();
+
+        // Test-only accessors.
+        Drawable getProfilePictureForTesting();
+
+        void setStartAnimationForTesting(boolean start);
+
+        @Nullable BadgeConfig getSigninAnimationBadgeConfigForTesting();
+
+        @Nullable BadgeConfig getContinueButtonBadgeConfigForTesting();
+    }
+
+    private final Mediator mMediator;
     private final Delegate mDelegate;
     @Nullable private IdentityManager mIdentityManager;
     private boolean mDestroyed;
@@ -191,8 +246,10 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
     }
 
     /**
-     * Resets model properties in {@link FullscreenSigninMediator}. This method is called when the
-     * user advances to the next page and then presses back and returns to the FRE again.
+     * Resets model properties in {@link FullscreenSigninMediator}. Must only be called when the
+     * user advances to the next page and then presses back to return to the sign-in screen, as it
+     * also logs that the promo is shown again (see {@link
+     * Delegate#logPromoShownFunnelEventOnBackPress}).
      */
     public void reset() {
         mMediator.reset();
@@ -218,12 +275,24 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
         }
     }
 
-    public void onAccountAdded(String accountName) {
-        mMediator.onAccountAdded(accountName);
+    public void onAccountAdded(String accountEmail) {
+        mMediator.onAccountAdded(accountEmail);
+    }
+
+    public void setConfig(FullscreenSigninConfig config) {
+        mMediator.setConfig(config);
     }
 
     public void onAddAccountCanceled() {
         mMediator.onAddAccountCanceled();
+    }
+
+    /**
+     * Called when the device lock activity launched via {@link Delegate#displayDeviceLockPage}
+     * finishes without a device lock being set (e.g. the user backs out).
+     */
+    public void onDeviceLockCanceled() {
+        mMediator.onDeviceLockCanceled();
     }
 
     /** Continue the sign-in process with the currently selected account. */
@@ -234,6 +303,11 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
     /** Abandon the sign-in process and dismiss the sign-in page. */
     public void cancelSignInAndDismiss() {
         mMediator.dismiss();
+    }
+
+    /** Disables the sign-in animation for the duration of the test. */
+    public static void disableAnimationsForTesting() {
+        FullscreenSigninMediator.disableAnimationsForTesting(); // IN-TEST
     }
 
     public Drawable getProfilePictureForTesting() {

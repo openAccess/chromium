@@ -11,11 +11,13 @@
 #include "base/auto_reset.h"
 #include "base/functional/callback_forward.h"
 #include "build/buildflag.h"
+#include "chrome/browser/signin/cross_device_signin_promo_manager.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_metrics.h"
+#include "url/gurl.h"
 
-struct AccountInfo;
+class AccountInfo;
 struct CoreAccountInfo;
 class Profile;
 class ProfileAttributesEntry;
@@ -35,7 +37,9 @@ namespace signin_ui_util {
 // device.
 void ShowCrossDeviceSigninQrBubble(
     BrowserWindowInterface* browser_window_interface,
-    base::OnceClosure closing_callback);
+    GURL qr_code_url,
+    base::OnceClosure closing_callback,
+    CrossDeviceSigninPromoEntryPoint entry_point);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 // Enables history sync for the primary account.
@@ -79,41 +83,40 @@ void SignInFromSingleAccountPromo(Profile* profile,
                                   const CoreAccountInfo& account,
                                   signin_metrics::AccessPoint access_point);
 
-// This function is used to enable sync or the history sync for a given account:
-// Which screen is shown depends on the feature
-// `kReplaceSyncPromosWithSignInPromos`.
-// * This function does nothing if the user is already signed in to Chrome.
-// * If |account| is empty, then it presents the Chrome sign-in page.
-// * If token service has an invalid refresh token for account |account|,
-//   then it presents the Chrome sign-in page with |account.email| prefilled.
-// * If token service has a valid refresh token for |account|, then it
-//   shows to the user the sync consent screen is
-//   `kReplaceSyncPromosWithSignInPromos` is disabled or the history sync optin
-//   screen if `kReplaceSyncPromosWithSignInPromos` is enabled.
-// TODO(crbug.com/457398017): Consider renaming this method.
-void EnableSyncFromSingleAccountPromo(Profile* profile,
-                                      const CoreAccountInfo& account,
-                                      signin_metrics::AccessPoint access_point);
+// This function is used to sign in and enable history sync for a given account:
+// * This function does nothing if the user is already syncing in Chrome.
+// * If `account` is empty, then it presents the Chrome sign-in page.
+// * If token service has an invalid refresh token for account `account`,
+//   then it presents the Chrome sign-in page with `account.email` prefilled.
+// * If token service has a valid refresh token for `account`, then it
+//   signs in `account` if not already signed in and shows the history sync
+//   opt-in screen.
+void EnableHistorySyncFromSingleAccountPromo(
+    Profile* profile,
+    const CoreAccountInfo& account,
+    signin_metrics::AccessPoint access_point);
 
-// This function is used to enable sync for a given account. It has the same
-// behavior as |EnableSyncFromSingleAccountPromo()| except that it also logs
-// some additional information if the action is started from a promo that
-// supports selecting the account that may be used for sync.
+// This function is used to sign in and enable history sync for a given account.
+// It has the same behavior as `EnableHistorySyncFromSingleAccountPromo()`
+// except that it also logs some additional information if the action is started
+// from a promo that supports selecting the account.
 //
-// |is_default_promo_account| is true if |account| corresponds to the default
-// account in the promo. It is ignored if |account| is empty.
-// TODO(crbug.com/457398017): Consider renaming this method.
-void EnableSyncFromMultiAccountPromo(Profile* profile,
-                                     const CoreAccountInfo& account,
-                                     signin_metrics::AccessPoint access_point,
-                                     bool is_default_promo_account);
+// `is_default_promo_account` is true if `account` corresponds to the default
+// account in the promo. It is ignored if `account` is empty.
+void EnableHistorySyncFromMultiAccountPromo(
+    Profile* profile,
+    const CoreAccountInfo& account,
+    signin_metrics::AccessPoint access_point,
+    bool is_default_promo_account);
 
-// Returns the list of all accounts that have a token. The default (first
-// account in the cookie jar) account will be the first account in the list. If
-// `restrict_to_accounts_eligible_for_signin` is true, removes the account that
-// are not suitable for signin promos. If `account_preview_data_service` is
-// provided and has a preferred account for promo, that account is placed at the
-// front of the list.
+// Returns the list of all accounts that have a token. If the user is signed
+// in to Chrome, the primary account is always returned first. Otherwise, the
+// default (first account in the cookie jar) account will be the first account
+// in the list. If `restrict_to_accounts_eligible_for_signin` is true, removes
+// accounts that are not suitable for signin promos. If
+// `account_preview_data_service` is provided and has a preferred account for
+// signin, that account is placed at the front of the list when the user is not
+// signed in.
 std::vector<AccountInfo> GetOrderedAccountsForDisplay(
     const signin::IdentityManager* identity_manager,
     const signin::AccountPreviewDataService* account_preview_data_service,
@@ -121,7 +124,7 @@ std::vector<AccountInfo> GetOrderedAccountsForDisplay(
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 // Returns single account to use in promos. If `account_preview_data_service` is
-// non-null and has a preferred account for promo, that account is returned.
+// non-null and has a preferred account for signin, that account is returned.
 // Otherwise, returns the default account for promo.
 AccountInfo GetSingleAccountForPromos(
     const signin::IdentityManager* identity_manager,
@@ -150,6 +153,11 @@ bool ShouldShowAnimatedIdentityOnOpeningWindow(Profile& profile);
 // replay zero.
 base::AutoReset<std::optional<base::TimeDelta>>
 CreateZeroOverrideDelayForCrossWindowAnimationReplayForTesting();
+
+// Creates a scoped override that makes the delay for cross window animation
+// replay infinite.
+base::AutoReset<std::optional<base::TimeDelta>>
+CreateInfiniteOverrideDelayForCrossWindowAnimationReplayForTesting();
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 base::AutoReset<SigninUiDelegate*> SetSigninUiDelegateForTesting(

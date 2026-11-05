@@ -7,10 +7,11 @@
 #include "base/metrics/field_trial_params.h"
 #include "chrome/browser/notifications/notification_display_service.h"  // nogncheck
 #include "chrome/browser/notifications/notification_display_service_factory.h"  // nogncheck
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/updates/announcement_notification/announcement_notification_delegate.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
@@ -68,7 +69,7 @@ void AnnouncementNotificationHandler::OpenAnnouncement(Profile* profile) {
   // Open the announcement URL in a new tab.
   GURL url = AnnouncementNotificationService::GetAnnouncementURL();
   NavigateParams params(profile, url, ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.window_action = NavigateParams::WindowAction::kShowWindow;
   Navigate(&params);
 }

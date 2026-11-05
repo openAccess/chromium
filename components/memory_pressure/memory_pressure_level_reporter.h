@@ -9,7 +9,7 @@
 #include <optional>
 #include <string>
 
-#include "base/memory/memory_pressure_listener.h"
+#include "base/memory/memory_pressure_level.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 
@@ -33,34 +33,44 @@ class MemoryPressureLevelReporter {
       base::MemoryPressureLevel initial_pressure_level,
       std::optional<std::string> histogram_name = "Memory.PressureLevel2",
       std::optional<std::string> transition_prefix =
-          "Memory.PressureWindowDuration.");
+          "Memory.PressureWindowDuration2.");
   ~MemoryPressureLevelReporter();
 
   // Should be called whenever the current memory pressure level changes.
-  void OnMemoryPressureLevelChanged(base::MemoryPressureLevel new_level);
+  // |new_disk_only_critical| is true if |new_level| is CRITICAL solely because
+  // of low disk space. Both are updated together so the elapsed interval is
+  // attributed to the previous state exactly once.
+  void OnMemoryPressureLevelChanged(base::MemoryPressureLevel new_level,
+                                    bool new_disk_only_critical = false);
 
-  // Called when disk pressure state changes. |new_os_pressure_level| indicates
-  // the current OS-reported memory pressure level, so that time is only
-  // attributed to the disk bucket when the OS is not also critical.
-  void UpdateDiskPressureState(bool new_is_disk_pressure,
-                               base::MemoryPressureLevel new_os_pressure_level);
+  // Updates whether critical pressure is caused solely by low disk space, in
+  // which case critical duration is attributed to the disk bucket. Used when
+  // the level stays CRITICAL.
+  void SetDiskOnlyCritical(bool new_disk_only_critical);
 
  private:
   void ReportHistogram(base::TimeTicks now);
   void StartPeriodicTimer();
+  void OnPeriodicReportingTimer();
 
   const std::optional<std::string> histogram_name_;
   const std::optional<std::string> transition_prefix_;
   base::MemoryPressureLevel current_pressure_level_;
+
+  // The timestamp when the current memory pressure level started. Used to
+  // calculate the duration of memory pressure episodes for the
+  // `Memory.PressureWindowDuration2.*` histograms upon a level transition.
   base::TimeTicks current_pressure_level_begin_ = base::TimeTicks::Now();
 
-  // Tracks whether the current critical pressure is due to low disk space.
-  // When true, |os_pressure_level_| indicates the OS-reported level so that
-  // time is only attributed to the disk bucket when the OS is not also
-  // critical.
-  bool is_disk_pressure_ = false;
-  base::MemoryPressureLevel os_pressure_level_ =
-      base::MEMORY_PRESSURE_LEVEL_NONE;
+  // The timestamp of the last time ReportHistogram() accumulated time into
+  // the `Memory.PressureLevel2` histogram. Decoupled from
+  // `current_pressure_level_begin_` so periodic flushes do not move the
+  // episode start marker.
+  base::TimeTicks last_report_time_ = base::TimeTicks::Now();
+
+  // Tracks whether the current critical pressure is caused solely by low disk
+  // space.
+  bool is_disk_only_critical_ = false;
 
   // The reporting of the pressure level histogram is done in seconds, the
   // duration in a given pressure state will be floored. This means that some

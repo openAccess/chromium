@@ -18,6 +18,7 @@
 #include "cc/paint/paint_op.h"
 #include "cc/paint/paint_op_buffer_iterator.h"
 #include "cc/paint/paint_op_writer.h"
+#include "cc/paint/raster_inducing_values.h"
 #include "cc/paint/scoped_raster_flags.h"
 #include "skia/ext/legacy_display_globals.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
@@ -64,8 +65,7 @@ PlaybackParams PaintOpBufferSerializer::MakeParams(
   PlaybackCallbacks callbacks;
   callbacks.custom_callback = options_.custom_callback;
   PlaybackParams params(nullptr, canvas->getLocalToDevice(), callbacks);
-  params.raster_inducing_scroll_offsets =
-      options_.raster_inducing_scroll_offsets;
+  params.raster_inducing_values = options_.raster_inducing_values;
   params.is_analyzing = true;
   return params;
 }
@@ -284,9 +284,10 @@ bool PaintOpBufferSerializer::WillSerializeNextOp<float>(
   if (op.GetType() == PaintOpType::kDrawScrollingContents) {
     auto& scrolling_contents_op =
         static_cast<const DrawScrollingContentsOp&>(op);
-    CHECK(params.raster_inducing_scroll_offsets);
-    gfx::PointF scroll_offset = params.raster_inducing_scroll_offsets->at(
-        scrolling_contents_op.scroll_element_id);
+    CHECK(params.raster_inducing_values);
+    gfx::PointF scroll_offset =
+        params.raster_inducing_values->scroll_offsets.at(
+            scrolling_contents_op.scroll_element_id);
     int save_count = canvas->getSaveCount();
     if (!scroll_offset.IsOrigin()) {
       Save(canvas, params);
@@ -402,12 +403,19 @@ bool PaintOpBufferSerializer::SerializeOp(SkCanvas* canvas,
   if (!valid_)
     return false;
 
+  std::optional<DrawTextSlugsOp> text_slugs_op;
+  if (op.GetType() == PaintOpType::kDrawTextBlob) {
+    text_slugs_op.emplace(static_cast<const DrawTextBlobOp&>(op));
+  }
+  const PaintOp& op_to_serialize = text_slugs_op ? *text_slugs_op : op;
+
   // Playback on analysis canvas first to make sure the canvas transform is set
   // correctly for analysis of records in filters.
-  PlaybackOnAnalysisCanvas(canvas, op, flags_to_serialize, params);
+  PlaybackOnAnalysisCanvas(canvas, op_to_serialize, flags_to_serialize, params);
 
-  size_t bytes = serialize_cb_(callback_data_, op, options_, flags_to_serialize,
-                               canvas->getLocalToDevice(), params.original_ctm);
+  size_t bytes = serialize_cb_(callback_data_, op_to_serialize, options_,
+                               flags_to_serialize, canvas->getLocalToDevice(),
+                               params.original_ctm);
   if (!bytes) {
     valid_ = false;
     return false;
@@ -428,10 +436,10 @@ void PaintOpBufferSerializer::PlaybackOnAnalysisCanvas(
   //    we need the correct ctm at which text and images will be rasterized, and
   //    the clip rect so we can skip sending data for ops which will not be
   //    rasterized.
-  // 2) kDrawtextblob ops since they need to be analyzed by the cache diff
-  // canvas
-  //    to serialize/lock the requisite glyphs for this op.
-  if (op.IsDrawOp() && op.GetType() != PaintOpType::kDrawTextBlob) {
+  // 2) kDrawTextSlugsOps since they need to be analyzed by the cache diff
+  //    canvas to serialize/lock the requisite glyphs for this op.
+  DCHECK(op.GetType() != PaintOpType::kDrawTextBlob);
+  if (op.IsDrawOp() && op.GetType() != PaintOpType::kDrawTextSlugs) {
     return;
   }
 

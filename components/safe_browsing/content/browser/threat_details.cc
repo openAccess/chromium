@@ -23,12 +23,12 @@
 #include "base/strings/stringprintf.h"
 #include "components/back_forward_cache/back_forward_cache_disable.h"
 #include "components/history/core/browser/history_service.h"
-#include "components/safe_browsing/content/browser/async_check_tracker.h"
 #include "components/safe_browsing/content/browser/base_ui_manager.h"
 #include "components/safe_browsing/content/browser/client_report_util.h"
 #include "components/safe_browsing/content/browser/content_unsafe_resource_util.h"
 #include "components/safe_browsing/content/browser/threat_details_cache.h"
 #include "components/safe_browsing/content/browser/threat_details_history.h"
+#include "components/safe_browsing/content/browser/url_checker/async_check_tracker.h"
 #include "components/safe_browsing/content/browser/web_contents_key.h"
 #include "components/safe_browsing/content/browser/web_ui/safe_browsing_ui.h"
 #include "components/safe_browsing/core/browser/referrer_chain_provider.h"
@@ -311,7 +311,8 @@ ThreatDetails::ThreatDetails(
     bool trim_to_ad_tags,
     ThreatDetailsDoneCallback done_callback)
     : url_loader_factory_(url_loader_factory),
-      web_contents_(web_contents),
+      web_contents_(web_contents->GetWeakPtr()),
+      web_contents_key_(GetWebContentsKey(web_contents)),
       ui_manager_(ui_manager),
       browser_context_(web_contents->GetBrowserContext()),
       resource_(resource),
@@ -334,7 +335,8 @@ ThreatDetails::ThreatDetails(
 // TODO(lpz): Consider making this constructor delegate to the parameterized one
 // above.
 ThreatDetails::ThreatDetails()
-    : cache_result_(false),
+    : web_contents_key_(GetWebContentsKey(nullptr)),
+      cache_result_(false),
       did_proceed_(false),
       num_visits_(0),
       trim_to_ad_tags_(false),
@@ -674,6 +676,8 @@ void ThreatDetails::FinishCollection(
 
   all_done_expected_ = true;
 
+  is_tab_closed_ = !web_contents_ || web_contents_->IsBeingDestroyed();
+
   // Do a second pass over the elements and update iframe elements to have
   // references to their children. Children may have been received from a
   // different renderer than the iframe element.
@@ -805,7 +809,7 @@ bool ThreatDetails::ShouldFillReferrerChain() {
 void ThreatDetails::FillReferrerChain(
     google::protobuf::RepeatedPtrField<ReferrerChainEntry>*
         out_referrer_chain) {
-  if (!referrer_chain_provider_) {
+  if (!referrer_chain_provider_ || !web_contents_) {
     return;
   }
   // We would have cancelled a prerender if it was blocked, so we can use the
@@ -848,8 +852,7 @@ void ThreatDetails::MaybeAttachThreatDetailsAndLaunchSurvey() {
 void ThreatDetails::AllDone() {
   is_all_done_ = true;
   content::GetUIThreadTaskRunner({})->PostTask(
-      FROM_HERE, base::BindOnce(std::move(done_callback_),
-                                GetWebContentsKey(web_contents_)));
+      FROM_HERE, base::BindOnce(std::move(done_callback_), web_contents_key_));
 }
 
 base::WeakPtr<ThreatDetails> ThreatDetails::GetWeakPtr() {

@@ -13,9 +13,6 @@
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
-#include "components/prefs/pref_service.h"
 
 namespace glic {
 
@@ -39,6 +36,10 @@ bool JNI_GlicEnabling_IsProfileEligible(JNIEnv* env, Profile* profile) {
 bool JNI_GlicEnabling_IsEnabledForProfile(JNIEnv* env, Profile* profile) {
   return GlicEnabling::IsEnabledForProfile(profile);
 }
+bool JNI_GlicEnabling_IsEnabledAndConsentForProfile(JNIEnv* env,
+                                                    Profile* profile) {
+  return GlicEnabling::IsEnabledAndConsentForProfile(profile);
+}
 bool JNI_GlicEnabling_WasPreviouslyNotAllowed(JNIEnv* env, Profile* profile) {
   return GlicEnabling::WasPreviouslyNotAllowed(profile);
 }
@@ -56,6 +57,14 @@ bool JNI_GlicEnabling_ShouldShowWebActuationToggle(JNIEnv* env,
          glic_service->enabling().ShouldShowWebActuationToggle();
 }
 
+bool JNI_GlicEnabling_ShouldShowExperimentalTriggeringToggle(JNIEnv* env,
+                                                             Profile* profile) {
+  auto* glic_service =
+      glic::GlicKeyedServiceFactory::GetGlicKeyedService(profile);
+  return glic_service &&
+         glic_service->enabling().ShouldShowExperimentalTriggeringToggle();
+}
+
 bool JNI_GlicEnabling_IsDisabledByPolicy(JNIEnv* env, Profile* profile) {
   return GlicEnabling::EnablementForProfile(profile).DisallowedByAdmin();
 }
@@ -64,15 +73,6 @@ bool JNI_GlicEnabling_IsProfileManaged(JNIEnv* env, Profile* profile) {
   policy::ManagementService* management_service =
       policy::ManagementServiceFactory::GetForProfile(profile);
   return management_service && management_service->IsManaged();
-}
-
-bool JNI_GlicEnabling_IsPolicyEnforced(JNIEnv* env, Profile* profile) {
-  if (!profile) {
-    return false;
-  }
-  PrefService* prefs = profile->GetPrefs();
-  return prefs &&
-         prefs->IsManagedPreference(optimization_guide::prefs::kGeminiSettings);
 }
 
 void JNI_GlicEnabling_SetBypassEnablementChecksForTesting(JNIEnv* env,
@@ -85,5 +85,17 @@ void JNI_GlicEnabling_SetBypassEnablementChecksForTesting(JNIEnv* env,
     stack.pop_back();
   }
 }
+
+jboolean JNI_GlicEnabling_ExperimentalOptInIsNeeded(JNIEnv* env,
+                                                    Profile* profile) {
+  CHECK(glic::GlicEnabling::IsEnabledForProfile(profile));
+
+  auto* glic_service =
+      glic::GlicKeyedServiceFactory::GetGlicKeyedService(profile);
+  CHECK(glic_service);
+  return glic_service->enabling().GetRequiredExperimentalOptIn() !=
+         glic::RequiredExperimentalOptIn::kNotNeeded;
+}
+
 }  // namespace glic
 DEFINE_JNI(GlicEnabling)

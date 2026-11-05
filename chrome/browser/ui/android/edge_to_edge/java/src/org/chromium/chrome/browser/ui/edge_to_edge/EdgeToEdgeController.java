@@ -41,6 +41,15 @@ public interface EdgeToEdgeController extends Destroyable, EdgeToEdgeSupplier, T
     int getSystemBottomInsetPx();
 
     /**
+     * @return the inset in pixels representing the system top inset (e.g. status bar height). This
+     *     value will persist even if the controller is not currently drawing the page to the top
+     *     edge.
+     */
+    default int getSystemTopInsetPx() {
+        return 0;
+    }
+
+    /**
      * Whether the system is drawing "toEdge" (i.e. the edge-to-edge wrapper has no bottom padding).
      * This could be due to the current page being opted into edge-to-edge, or a partial
      * edge-to-edge with the bottom chin present.
@@ -59,6 +68,12 @@ public interface EdgeToEdgeController extends Destroyable, EdgeToEdgeSupplier, T
      *     and has been fully scrolled off.
      */
     boolean isPageOptedIntoEdgeToEdge();
+
+    /**
+     * @return Whether the current tab supports drawing top edge-to-edge with no top scalp (e.g. a
+     *     native page that supports top edge-to-edge).
+     */
+    boolean tabShouldDrawFullTopEdgeToEdge();
 
     @Override
     default void addObserver(TopInsetProvider.Observer observer) {}

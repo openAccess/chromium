@@ -22,6 +22,7 @@
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/browser/ash/arc/enterprise/cert_store/cert_store_service_factory.h"
 #include "chrome/browser/ash/arc/session/arc_service_launcher.h"
 #include "chrome/browser/ash/login/test/cryptohome_mixin.h"
@@ -35,7 +36,6 @@
 #include "chrome/browser/net/nss_service.h"
 #include "chrome/browser/net/nss_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/common/net/x509_certificate_model_nss.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chrome/test/base/testing_profile.h"
@@ -519,8 +519,9 @@ void CertStoreServiceTest::SetUpOnMainThread() {
             CHECK(out_installer);
             CHECK(!*out_installer);
             *out_installer = installer.get();
-            return std::make_unique<CertStoreService>(profile,
-                                                      std::move(installer));
+            return std::make_unique<CertStoreService>(
+                profile, NssServiceFactory::GetForContext(profile),
+                std::move(installer));
           },
           base::Unretained(&installer_)));
 

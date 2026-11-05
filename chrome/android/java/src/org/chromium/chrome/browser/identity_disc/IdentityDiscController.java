@@ -36,7 +36,7 @@ import org.chromium.chrome.browser.signin.services.ProfileDataCache;
 import org.chromium.chrome.browser.subscription_eligibility.SubscriptionEligibilityService;
 import org.chromium.chrome.browser.subscription_eligibility.SubscriptionEligibilityServiceFactory;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
-import org.chromium.chrome.browser.sync.settings.SyncSettingsUtils;
+import org.chromium.chrome.browser.sync.SyncSettingsUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.optional_button.ButtonData;
@@ -266,7 +266,7 @@ public class IdentityDiscController
 
             int aiTierRingThicknessPx =
                     mContext.getResources()
-                            .getDimensionPixelSize(R.dimen.ai_tier_ring_thickness_identity_disc);
+                            .getDimensionPixelSize(R.dimen.ai_tier_ring_thickness_small);
             int aiTierImageSizePx =
                     mContext.getResources()
                             .getDimensionPixelSize(R.dimen.toolbar_identity_disc_size_with_ring);
@@ -275,11 +275,17 @@ public class IdentityDiscController
                             mContext,
                             identityManager,
                             subscriptionEligibilityService,
+                            // TODO(crbug.com/578866423): Pass the SyncService and let the
+                            // cache handle the error badge too.
+                            // No SyncService: on an identity error,
+                            // maybeUpdateIdentityErrorAndBadge() sets a badge on the avatar,
+                            // and the cache never draws the ring on a badged avatar.
+                            /* syncService= */ null,
                             aiTierImageSizePx,
                             aiTierRingThicknessPx);
         } else {
             mProfileDataCache =
-                    ProfileDataCache.createWithoutBadge(
+                    ProfileDataCache.create(
                             mContext, identityManager, R.dimen.toolbar_identity_disc_size);
         }
         mProfileDataCache.addObserver(this);

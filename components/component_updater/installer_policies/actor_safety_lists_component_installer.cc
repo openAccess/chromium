@@ -4,7 +4,8 @@
 
 #include "components/component_updater/installer_policies/actor_safety_lists_component_installer.h"
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -15,33 +16,29 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
-#include "base/path_service.h"
-#include "base/task/thread_pool.h"
 #include "base/version.h"
 #include "components/actor/core/safety_list_manager.h"
-#include "components/component_updater/component_updater_paths.h"
 
 namespace {
 
-const base::FilePath::CharType kActorSafetyListsComponentFileName[] =
+constexpr base::FilePath::CharType kActorSafetyListsComponentFileName[] =
     FILE_PATH_LITERAL("listdata.json");
 
 // The SHA256 of the SubjectPublicKeyInfo used to sign the extension.
 // The extension id is: ninodabcejpeglfjbkhdplaoglpcbffj
-const uint8_t kActorSafetyListsPublicKeySHA256[32] = {
+constexpr uint8_t kActorSafetyListsPublicKeySHA256[32] = {
     0xd8, 0xde, 0x30, 0x12, 0x49, 0xf4, 0x6b, 0x59, 0x1a, 0x73, 0xfb,
     0x0e, 0x6b, 0xf2, 0x15, 0x59, 0x82, 0x1b, 0x44, 0xa6, 0xa6, 0x71,
     0x3b, 0x51, 0x57, 0xd0, 0xab, 0xa7, 0x61, 0xb9, 0x6a, 0x20};
 
-const char kActorSafetyListsManifestName[] = "Actor Safety Lists";
+constexpr char kActorSafetyListsManifestName[] = "Actor Safety Lists";
 
 constexpr base::FilePath::CharType kRelInstallDir[] =
     FILE_PATH_LITERAL("ActorSafetyLists");
 
-// Runs on a thread pool.
+// Runs on a thread pool when the component data is first needed.
 std::optional<std::string> ReadComponentFromDisk(
     const base::FilePath& file_path) {
   VLOG(1) << "Reading Actor Safety Lists data from file: " << file_path.value();
@@ -99,11 +96,8 @@ void ActorSafetyListsComponentInstallerPolicy::ComponentReady(
   VLOG(1) << "Actor Safety Lists ready, version " << version.GetString()
           << " in " << install_dir.value();
 
-  // Given `BEST_EFFORT` since we don't need to be USER_BLOCKING.
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
-      base::BindOnce(&ReadComponentFromDisk, GetInstalledPath(install_dir)),
-      base::BindOnce(on_component_ready_cb_));
+  on_component_ready_cb_.Run(
+      base::BindOnce(&ReadComponentFromDisk, GetInstalledPath(install_dir)));
 }
 
 // Called during startup and installation before ComponentReady().
@@ -141,16 +135,10 @@ void RegisterActorSafetyListsComponent(
   auto policy = base::MakeRefCounted<ComponentInstaller>(
       std::make_unique<ActorSafetyListsComponentInstallerPolicy>(
           base::BindRepeating(
-              [](const std::optional<std::string>& raw_metadata) {
-                if (raw_metadata.has_value()) {
-                  // The safety lists are used by the actor component which will
-                  // not need them until long after startup completes. So we are
-                  // fine passing NullCallback and having
-                  // SafetyListManager::Find return kNone in the time before the
-                  // list is parsed.
-                  actor::SafetyListManager::GetInstance()->ParseSafetyLists(
-                      *raw_metadata, base::NullCallback());
-                }
+              [](ActorSafetyListsComponentInstallerPolicy::ReadComponentCallback
+                     read_component_cb) {
+                actor::SafetyListManager::GetInstance()
+                    ->SetLoadSafetyListsClosure(std::move(read_component_cb));
               })));
   policy->Register(cus, std::move(callback));
 }

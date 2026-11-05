@@ -21,6 +21,8 @@
 #include "ash/system/tray/hover_highlight_view.h"
 #include "ash/test/ash_test_base.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/live_caption/pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -37,13 +39,13 @@
 namespace ash {
 namespace {
 
-const std::u16string kInitialFeatureViewSubtitleText = u"This is a test";
-const std::u16string kSodaDownloaded = u"Speech files downloaded";
-const std::u16string kSodaInProgress25 =
+constexpr char16_t kInitialFeatureViewSubtitleText[] = u"This is a test";
+constexpr char16_t kSodaDownloaded[] = u"Speech files downloaded";
+constexpr char16_t kSodaInProgress25[] =
     u"Downloading speech recognition files… 25%";
-const std::u16string kSodaInProgress50 =
+constexpr char16_t kSodaInProgress50[] =
     u"Downloading speech recognition files… 50%";
-const std::u16string kSodaFailed =
+constexpr char16_t kSodaFailed[] =
     u"Can't download speech files. Try again later.";
 
 void SetScreenMagnifierEnabled(bool enabled) {
@@ -161,10 +163,8 @@ class AccessibilityDetailedViewTest : public AshTestBase,
                                       public AccessibilityObserver {
  public:
   AccessibilityDetailedViewTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {ash::features::kOnDeviceSpeechRecognition,
-         ::features::kAccessibilityReducedAnimationsInKiosk},
-        {});
+    scoped_feature_list_.InitAndEnableFeature(
+        ash::features::kOnDeviceSpeechRecognition);
   }
   AccessibilityDetailedViewTest(const AccessibilityDetailedViewTest&) = delete;
   AccessibilityDetailedViewTest& operator=(
@@ -625,6 +625,12 @@ class AccessibilityDetailedViewTest : public AshTestBase,
   HoverHighlightView* color_correction_top_view() const {
     return detailed_menu_->color_correction_top_view_;
   }
+  HoverHighlightView* hover_text_view() const {
+    return detailed_menu_->hover_text_view_;
+  }
+  HoverHighlightView* hover_text_top_view() const {
+    return detailed_menu_->hover_text_top_view_;
+  }
 
  private:
   // AccessibilityObserver:
@@ -961,6 +967,89 @@ TEST_F(AccessibilityDetailedViewTest, StickyKeysTopView) {
   ClickView(sticky_keys_top_view());
   EXPECT_FALSE(IsSwitchToggled(sticky_keys_top_view()));
   EXPECT_FALSE(IsCheckedForAccessibility(sticky_keys_top_view()));
+  EXPECT_FALSE(controller()->sticky_keys().enabled());
+}
+
+TEST_F(AccessibilityDetailedViewTest,
+       SpokenFeedbackUpdatesConflictingFeaturesInOpenMenu) {
+  SetFocusHighlightEnabled(true);
+  EnableStickyKeys(true);
+  CreateDetailedMenu();
+
+  HoverHighlightView* focus_highlight_item =
+      views::AsViewClass<HoverHighlightView>(highlight_keyboard_focus_view());
+  HoverHighlightView* sticky_keys_item =
+      views::AsViewClass<HoverHighlightView>(sticky_keys_view());
+  ASSERT_TRUE(focus_highlight_item);
+  ASSERT_TRUE(highlight_keyboard_focus_top_view());
+  ASSERT_TRUE(sticky_keys_item);
+  ASSERT_TRUE(sticky_keys_top_view());
+  EXPECT_TRUE(IsSwitchToggled(focus_highlight_item));
+  EXPECT_TRUE(focus_highlight_item->GetEnabled());
+  EXPECT_TRUE(IsSwitchToggled(highlight_keyboard_focus_top_view()));
+  EXPECT_TRUE(highlight_keyboard_focus_top_view()->GetEnabled());
+  EXPECT_TRUE(IsSwitchToggled(sticky_keys_item));
+  EXPECT_TRUE(sticky_keys_item->GetEnabled());
+  EXPECT_TRUE(IsSwitchToggled(sticky_keys_top_view()));
+  EXPECT_TRUE(sticky_keys_top_view()->GetEnabled());
+
+  // Enabling Spoken Feedback while the menu is already open should update the
+  // existing Focus Highlight and Sticky Keys rows to unchecked and disabled.
+  EnableSpokenFeedback(true);
+  EXPECT_FALSE(controller()->focus_highlight().enabled());
+  EXPECT_FALSE(controller()->sticky_keys().enabled());
+  EXPECT_FALSE(IsSwitchToggled(focus_highlight_item));
+  EXPECT_FALSE(IsCheckedForAccessibility(focus_highlight_item));
+  EXPECT_FALSE(focus_highlight_item->GetEnabled());
+  EXPECT_FALSE(IsSwitchToggled(highlight_keyboard_focus_top_view()));
+  EXPECT_FALSE(IsCheckedForAccessibility(highlight_keyboard_focus_top_view()));
+  EXPECT_FALSE(highlight_keyboard_focus_top_view()->GetEnabled());
+  EXPECT_FALSE(IsSwitchToggled(sticky_keys_item));
+  EXPECT_FALSE(IsCheckedForAccessibility(sticky_keys_item));
+  EXPECT_FALSE(sticky_keys_item->GetEnabled());
+  EXPECT_FALSE(IsSwitchToggled(sticky_keys_top_view()));
+  EXPECT_FALSE(IsCheckedForAccessibility(sticky_keys_top_view()));
+  EXPECT_FALSE(sticky_keys_top_view()->GetEnabled());
+
+  // Disabling Spoken Feedback restores Focus Highlight and Sticky Keys.
+  EnableSpokenFeedback(false);
+  EXPECT_TRUE(controller()->focus_highlight().enabled());
+  EXPECT_TRUE(controller()->sticky_keys().enabled());
+  EXPECT_TRUE(IsSwitchToggled(focus_highlight_item));
+  EXPECT_TRUE(IsCheckedForAccessibility(focus_highlight_item));
+  EXPECT_TRUE(focus_highlight_item->GetEnabled());
+  EXPECT_TRUE(IsSwitchToggled(highlight_keyboard_focus_top_view()));
+  EXPECT_TRUE(IsCheckedForAccessibility(highlight_keyboard_focus_top_view()));
+  EXPECT_TRUE(highlight_keyboard_focus_top_view()->GetEnabled());
+  EXPECT_TRUE(IsSwitchToggled(sticky_keys_item));
+  EXPECT_TRUE(IsCheckedForAccessibility(sticky_keys_item));
+  EXPECT_TRUE(sticky_keys_item->GetEnabled());
+  EXPECT_TRUE(IsSwitchToggled(sticky_keys_top_view()));
+  EXPECT_TRUE(IsCheckedForAccessibility(sticky_keys_top_view()));
+  EXPECT_TRUE(sticky_keys_top_view()->GetEnabled());
+
+  // Turn off Focus Highlight and Sticky Keys, then enable Spoken Feedback and
+  // verify that clicking the conflicting rows in the open menu is ignored.
+  SetFocusHighlightEnabled(false);
+  EnableStickyKeys(false);
+  EnableSpokenFeedback(true);
+  ClickView(focus_highlight_item);
+  ClickView(highlight_keyboard_focus_top_view());
+  ClickView(sticky_keys_item);
+  ClickView(sticky_keys_top_view());
+  EXPECT_FALSE(controller()->focus_highlight().enabled());
+  EXPECT_FALSE(controller()->sticky_keys().enabled());
+  EXPECT_FALSE(IsSwitchToggled(focus_highlight_item));
+  EXPECT_FALSE(IsSwitchToggled(sticky_keys_item));
+
+  // Reopen the menu while Spoken Feedback is active (so conflicting row
+  // pointers are nullptr) and verify disabling Spoken Feedback does not crash.
+  CloseDetailMenu();
+  CreateDetailedMenu();
+  EXPECT_FALSE(highlight_keyboard_focus_view());
+  EXPECT_FALSE(sticky_keys_view());
+  EnableSpokenFeedback(false);
+  EXPECT_FALSE(controller()->focus_highlight().enabled());
   EXPECT_FALSE(controller()->sticky_keys().enabled());
 }
 
@@ -1408,16 +1497,129 @@ TEST_F(AccessibilityDetailedViewTest, FaceGazeEnterpriseKiosk) {
   EXPECT_FALSE(IsFaceGazeShownOnDetailMenu());
 }
 
+TEST_F(AccessibilityDetailedViewTest, HoverText) {
+  {
+    base::test::ScopedFeatureList disabled_feature_list;
+    disabled_feature_list.InitAndDisableFeature(
+        ::features::kAccessibilityHoverText);
+    controller()->hover_text().SetEnabled(true);
+    EXPECT_FALSE(controller()->hover_text().enabled());
+    EXPECT_TRUE(controller()->GetEnabledFeaturesInQuickSettings().empty());
+    controller()->hover_text().SetEnabled(false);
+  }
+
+  base::test::ScopedFeatureList feature_list(
+      ::features::kAccessibilityHoverText);
+  base::UserActionTester user_action_tester;
+  base::HistogramTester histogram_tester;
+  EXPECT_FALSE(controller()->hover_text().enabled());
+
+  CreateDetailedMenu();
+  ASSERT_TRUE(hover_text_view());
+  EXPECT_FALSE(hover_text_top_view());
+  EXPECT_FALSE(IsEnabledOnDetailMenu(controller()->hover_text().enabled(),
+                                     hover_text_view()));
+  EXPECT_EQ(0,
+            user_action_tester.GetActionCount("StatusArea_HoverTextEnabled"));
+  EXPECT_EQ(0,
+            user_action_tester.GetActionCount("StatusArea_HoverTextDisabled"));
+  histogram_tester.ExpectTotalCount("Accessibility.CrosStatusArea.HoverText",
+                                    0);
+
+  ClickView(hover_text_view());
+  EXPECT_TRUE(controller()->hover_text().enabled());
+  EXPECT_TRUE(IsEnabledOnDetailMenu(controller()->hover_text().enabled(),
+                                    hover_text_view()));
+  EXPECT_EQ(1,
+            user_action_tester.GetActionCount("StatusArea_HoverTextEnabled"));
+  EXPECT_EQ(0,
+            user_action_tester.GetActionCount("StatusArea_HoverTextDisabled"));
+  histogram_tester.ExpectBucketCount("Accessibility.CrosStatusArea.HoverText",
+                                     true, 1);
+  histogram_tester.ExpectBucketCount("Accessibility.CrosStatusArea.HoverText",
+                                     false, 0);
+  CloseDetailMenu();
+
+  CreateDetailedMenu();
+  ASSERT_TRUE(hover_text_view());
+  ASSERT_TRUE(hover_text_top_view());
+  EXPECT_TRUE(IsSwitchToggled(hover_text_view()));
+  EXPECT_TRUE(hover_text_view()->GetEnabled());
+  EXPECT_TRUE(IsSwitchToggled(hover_text_top_view()));
+  EXPECT_TRUE(IsCheckedForAccessibility(hover_text_top_view()));
+  EXPECT_TRUE(hover_text_top_view()->GetEnabled());
+
+  // Enabling Spoken Feedback while the menu is already open should update the
+  // existing Hover Text rows to unchecked and disabled.
+  EnableSpokenFeedback(true);
+  EXPECT_FALSE(controller()->hover_text().enabled());
+  EXPECT_FALSE(IsSwitchToggled(hover_text_view()));
+  EXPECT_FALSE(IsCheckedForAccessibility(hover_text_view()));
+  EXPECT_FALSE(hover_text_view()->GetEnabled());
+  EXPECT_FALSE(IsSwitchToggled(hover_text_top_view()));
+  EXPECT_FALSE(IsCheckedForAccessibility(hover_text_top_view()));
+  EXPECT_FALSE(hover_text_top_view()->GetEnabled());
+
+  // Disabling Spoken Feedback restores Hover Text to checked and enabled.
+  EnableSpokenFeedback(false);
+  EXPECT_TRUE(controller()->hover_text().enabled());
+  EXPECT_TRUE(IsSwitchToggled(hover_text_view()));
+  EXPECT_TRUE(IsCheckedForAccessibility(hover_text_view()));
+  EXPECT_TRUE(hover_text_view()->GetEnabled());
+  EXPECT_TRUE(IsSwitchToggled(hover_text_top_view()));
+  EXPECT_TRUE(IsCheckedForAccessibility(hover_text_top_view()));
+  EXPECT_TRUE(hover_text_top_view()->GetEnabled());
+
+  // Turn off Hover Text, then enable Spoken Feedback and verify that clicking
+  // the conflicting rows in the open menu is ignored.
+  ClickView(hover_text_top_view());
+  EXPECT_FALSE(controller()->hover_text().enabled());
+  EXPECT_EQ(1,
+            user_action_tester.GetActionCount("StatusArea_HoverTextEnabled"));
+  EXPECT_EQ(1,
+            user_action_tester.GetActionCount("StatusArea_HoverTextDisabled"));
+  histogram_tester.ExpectBucketCount("Accessibility.CrosStatusArea.HoverText",
+                                     true, 1);
+  histogram_tester.ExpectBucketCount("Accessibility.CrosStatusArea.HoverText",
+                                     false, 1);
+  EnableSpokenFeedback(true);
+  ClickView(hover_text_view());
+  ClickView(hover_text_top_view());
+  EXPECT_FALSE(controller()->hover_text().enabled());
+  EXPECT_FALSE(IsSwitchToggled(hover_text_view()));
+  EXPECT_FALSE(IsSwitchToggled(hover_text_top_view()));
+  EXPECT_EQ(1,
+            user_action_tester.GetActionCount("StatusArea_HoverTextEnabled"));
+  EXPECT_EQ(1,
+            user_action_tester.GetActionCount("StatusArea_HoverTextDisabled"));
+  histogram_tester.ExpectTotalCount("Accessibility.CrosStatusArea.HoverText",
+                                    2);
+
+  // Reopen the menu while Spoken Feedback is active (so the conflicting row
+  // pointer is nullptr) and verify disabling Spoken Feedback does not crash.
+  CloseDetailMenu();
+  CreateDetailedMenu();
+  EXPECT_FALSE(hover_text_view());
+  EnableSpokenFeedback(false);
+  EXPECT_FALSE(controller()->hover_text().enabled());
+  CloseDetailMenu();
+}
+
 class AccessibilityDetailedViewSodaTest
     : public AccessibilityDetailedViewTest,
       public testing::WithParamInterface<SodaFeature> {
  public:
-  AccessibilityDetailedViewSodaTest() { set_start_session(false); }
+  AccessibilityDetailedViewSodaTest() = default;
   AccessibilityDetailedViewSodaTest(const AccessibilityDetailedViewSodaTest&) =
       delete;
   AccessibilityDetailedViewSodaTest& operator=(
       const AccessibilityDetailedViewSodaTest&) = delete;
   ~AccessibilityDetailedViewSodaTest() override = default;
+
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AccessibilityDetailedViewTest::SetUpInitParams(init_params);
+    init_params.users.clear();
+  }
 
   void SetUp() override {
     AccessibilityDetailedViewTest::SetUp();
@@ -1567,8 +1769,14 @@ class AccessibilityDetailedViewLoginScreenTest
       const AccessibilityDetailedViewLoginScreenTest&) = delete;
 
  protected:
-  AccessibilityDetailedViewLoginScreenTest() { set_start_session(false); }
+  AccessibilityDetailedViewLoginScreenTest() = default;
   ~AccessibilityDetailedViewLoginScreenTest() override = default;
+
+  // AccessibilityDetailedViewTest:
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AccessibilityDetailedViewTest::SetUpInitParams(init_params);
+    init_params.users.clear();
+  }
 };
 
 TEST_F(AccessibilityDetailedViewLoginScreenTest, NothingCheckedByDefault) {

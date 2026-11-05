@@ -7,5 +7,5 @@ found in the LICENSE file.
 -->
 
 <resources>
-    <dimen name="composeplate_view_lateral_margin">32dp</dimen>
+  <dimen name="composeplate_view_lateral_margin">32dp</dimen>
 </resources>

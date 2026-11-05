@@ -33,6 +33,7 @@ enum class Channel;
 }
 
 class PrefRegistrySimple;
+class PrefService;
 class SigninClient;
 
 // Many values in SigninStatus are also associated with a timestamp.
@@ -41,12 +42,13 @@ using TimedSigninStatusValue = std::pair<std::string, std::string>;
 
 // This class collects authentication, signin and token information
 // to propagate to about:signin-internals via SigninInternalsUI.
-class AboutSigninInternals : public KeyedService,
-                             public content_settings::Observer,
-                             SigninErrorController::Observer,
-                             signin::IdentityManager::Observer,
-                             signin::IdentityManager::DiagnosticsObserver,
-                             AccountReconcilor::Observer {
+class AboutSigninInternals
+    : public KeyedService,
+      public content_settings::Observer,
+      public SigninErrorController::Observer,
+      public signin::IdentityManager::Observer,
+      public signin::IdentityManager::DiagnosticsObserver,
+      public AccountReconcilor::Observer {
  public:
   class Observer {
    public:
@@ -58,6 +60,7 @@ class AboutSigninInternals : public KeyedService,
     virtual void OnCookieAccountsFetched(const base::DictValue& info) = 0;
   };
 
+  // `signin_error_controller` and `account_reconcilor` may be nullptr.
   AboutSigninInternals(signin::IdentityManager* identity_manager,
                        SigninErrorController* signin_error_controller,
                        signin::AccountConsistencyMethod account_consistency,
@@ -72,6 +75,12 @@ class AboutSigninInternals : public KeyedService,
   // Registers the preferences used by AboutSigninInternals.
   static void RegisterPrefs(PrefRegistrySimple* user_prefs);
 
+  // Resets all preferences used by `AboutSigninInternals` to empty strings.
+  // Should be called before creating an `AboutSigninInternals` instance for an
+  // off-the-record profile so that it does not inherit persisted signin status
+  // values from the parent profile.
+  static void ResetSigninPrefs(PrefService* prefs);
+
   // Each instance of SigninInternalsUI adds itself as an observer to be
   // notified of all updates that AboutSigninInternals receives.
   void AddObserver(Observer* observer);
@@ -80,7 +89,8 @@ class AboutSigninInternals : public KeyedService,
   // Pulls all signin values that have been persisted in the user prefs.
   void RefreshSigninPrefs();
 
-  void OnRefreshTokenReceived(const std::string& status);
+  void OnRefreshTokenReceived(const std::string& status,
+                              const CoreAccountId& account_id);
   void OnAuthenticationResultReceived(const std::string& status);
 
   // KeyedService implementation.
@@ -152,6 +162,19 @@ class AboutSigninInternals : public KeyedService,
     std::string source;
   };
 
+  struct AccountReconcilorEvent {
+    std::string GetTriggerAsString() const;
+    std::string GetOperationAsString() const;
+    std::string GetResultAsString() const;
+
+    const base::Time timestamp = base::Time::Now();
+    AccountReconcilor::Trigger trigger =
+        AccountReconcilor::Trigger::kInitialized;
+    AccountReconcilor::Operation operation =
+        AccountReconcilor::Operation::kNoop;
+    GoogleServiceAuthError error;
+  };
+
   // Encapsulates both authentication and token related information. Used
   // by SigninInternals to maintain information that needs to be shown in
   // the about:signin-internals page.
@@ -165,6 +188,9 @@ class AboutSigninInternals : public KeyedService,
     // All the events that affected the refresh tokens.
     std::deque<RefreshTokenEvent> refresh_token_events;
 
+    // All the events from the account reconcilor.
+    std::deque<AccountReconcilorEvent> account_reconcilor_events;
+
     SigninStatus();
     ~SigninStatus();
 
@@ -173,6 +199,7 @@ class AboutSigninInternals : public KeyedService,
                          const signin::ScopeSet& scopes);
 
     void AddRefreshTokenEvent(const RefreshTokenEvent& event);
+    void AddAccountReconcilorEvent(const AccountReconcilorEvent& event);
 
     // Returns a dictionary with the following form:
     // { "signin_info" :
@@ -248,6 +275,9 @@ class AboutSigninInternals : public KeyedService,
   void OnBlockReconcile() override;
   void OnUnblockReconcile() override;
   void OnStateChanged(signin_metrics::AccountReconcilorState state) override;
+  void OnReconcileFinished(AccountReconcilor::Trigger trigger,
+                           AccountReconcilor::Operation operation,
+                           const GoogleServiceAuthError& error) override;
 
   // Weak pointer to the identity manager.
   raw_ptr<signin::IdentityManager> identity_manager_;

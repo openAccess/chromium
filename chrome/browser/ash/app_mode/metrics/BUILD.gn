@@ -22,6 +22,7 @@ static_library("metrics") {
   deps = [
     "//ash/constants",
     "//chrome/common:constants",
+    "//chromeos/ash/components/dbus/userdataauth:userdataauth_proto",
     "//services/preferences/public/cpp",
     "//ui/base",
   ]
@@ -40,10 +41,10 @@ source_set("unit_tests") {
     "//chrome/browser/ash/app_mode/metrics",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/dbus/userdataauth",
     "//chromeos/ash/components/network",
     "//chromeos/ash/components/network:test_support",
-    "//chromeos/ash/components/sync_wifi:test_support",
     "//components/prefs:test_support",
     "//content/test:test_support",
     "//testing/gtest",

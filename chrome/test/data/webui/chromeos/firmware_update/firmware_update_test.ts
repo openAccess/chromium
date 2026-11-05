@@ -127,38 +127,6 @@ suite('FirmwareUpdateAppTest', () => {
     return update;
   }
 
-  test('HeaderDependsOnFlexFlag', async () => {
-    loadTimeData.overrideValues({
-      IsFlexFirmwareUpdateEnabled: true,
-    });
-
-    // Setup the app.
-    initializePage();
-    await flushTasks();
-    assert(page);
-
-    let header = strictQuery(`#header`, page.shadowRoot, HTMLElement);
-    assertEquals(header.innerText.trim(), 'Firmware updates');
-
-
-    // Clear app element to reset the test.
-    page.remove();
-    await flushTasks();
-
-    loadTimeData.overrideValues({
-      IsFlexFirmwareUpdateEnabled: false,
-    });
-
-    initializePage();
-    await flushTasks();
-    assert(page);
-
-
-    header = strictQuery(`#header`, page.shadowRoot, HTMLElement);
-    assertEquals(
-        header.innerText.trim(), 'Firmware updates for external devices');
-  });
-
   test('SettingGettingTestProvider', () => {
     initializePage();
     const fake_provider = new FakeUpdateProvider();
@@ -173,7 +141,7 @@ suite('FirmwareUpdateAppTest', () => {
     // Open dialog for first firmware update card.
     const whenFired = eventToPromise('cr-dialog-open', page);
     const button = strictQuery(
-        `#updateButton`, getUpdateCards()[0]!.shadowRoot, CrButtonElement);
+        '#updateButton', getUpdateCards()[0]!.shadowRoot, CrButtonElement);
     button.click();
     await flushTasks();
     await whenFired;
@@ -195,7 +163,7 @@ suite('FirmwareUpdateAppTest', () => {
     // Open dialog for first firmware update card.
     const whenFired = eventToPromise('cr-dialog-open', page);
     const button = strictQuery(
-        `#updateButton`, getUpdateCards()[0]!.shadowRoot, CrButtonElement);
+        '#updateButton', getUpdateCards()[0]!.shadowRoot, CrButtonElement);
     button.click();
     await flushTasks();
     await whenFired;
@@ -214,7 +182,7 @@ suite('FirmwareUpdateAppTest', () => {
 
     const whenFired = eventToPromise('cr-dialog-open', page);
     const button = strictQuery(
-        `#updateButton`, getUpdateCards()[0]!.shadowRoot, CrButtonElement);
+        '#updateButton', getUpdateCards()[0]!.shadowRoot, CrButtonElement);
     button.click();
     await flushTasks();
     await whenFired;
@@ -240,7 +208,7 @@ suite('FirmwareUpdateAppTest', () => {
 
     const whenFired = eventToPromise('cr-dialog-open', page);
     const button = strictQuery(
-        `#updateButton`, getUpdateCards()[5]!.shadowRoot, CrButtonElement);
+        '#updateButton', getUpdateCards()[5]!.shadowRoot, CrButtonElement);
     button.click();
     await flushTasks();
     await whenFired;
@@ -264,7 +232,7 @@ suite('FirmwareUpdateAppTest', () => {
     await flushTasks();
     // Open dialog for first firmware update card.
     const button = strictQuery(
-        `#updateButton`, getUpdateCards()[0]!.shadowRoot, CrButtonElement);
+        '#updateButton', getUpdateCards()[0]!.shadowRoot, CrButtonElement);
     button.click();
     await flushTasks();
     const whenFired = eventToPromise('cr-dialog-open', page!);
@@ -279,7 +247,7 @@ suite('FirmwareUpdateAppTest', () => {
     await flushTasks();
     // Open dialog for firmware update.
     const button = strictQuery(
-        `#updateButton`, getUpdateCards()[1]!.shadowRoot, CrButtonElement);
+        '#updateButton', getUpdateCards()[1]!.shadowRoot, CrButtonElement);
     button.click();
     await flushTasks();
     const whenFired = eventToPromise('cr-dialog-open', page!);
@@ -314,7 +282,7 @@ suite('FirmwareUpdateAppTest', () => {
     await flushTasks();
     // Open dialog for firmware update.
     const button = strictQuery(
-        `#updateButton`, getUpdateCards()[5]!.shadowRoot, CrButtonElement);
+        '#updateButton', getUpdateCards()[5]!.shadowRoot, CrButtonElement);
     button.click();
     await flushTasks();
     const whenFired = eventToPromise('cr-dialog-open', page!);
@@ -350,7 +318,7 @@ suite('FirmwareUpdateAppTest', () => {
     // Open dialog for firmware update. The third fake update in the list
     // will fail.
     const button = strictQuery(
-        `#updateButton`, getUpdateCards()[2]!.shadowRoot, CrButtonElement);
+        '#updateButton', getUpdateCards()[2]!.shadowRoot, CrButtonElement);
     button.click();
     await flushTasks();
     const whenFired = eventToPromise('cr-dialog-open', page!);

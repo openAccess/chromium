@@ -22,10 +22,12 @@
 #include "chrome/browser/download/download_item_warning_data.h"
 #include "chrome/browser/enterprise/connectors/common.h"
 #include "chrome/browser/enterprise/connectors/connectors_manager.h"
+#include "chrome/browser/enterprise/connectors/reporting/event_initiator_utils.h"
 #include "chrome/browser/enterprise/connectors/reporting/reporting_event_router_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager_factory.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager_factory.h"
+#include "chrome/browser/safe_browsing/db/v5_get_hash_protocol_manager_factory.h"
 #include "chrome/browser/safe_browsing/download_protection/check_client_download_request.h"
 #include "chrome/browser/safe_browsing/download_protection/check_file_system_access_write_request.h"
 #include "chrome/browser/safe_browsing/download_protection/download_item_metadata.h"
@@ -35,7 +37,6 @@
 #include "chrome/browser/safe_browsing/safe_browsing_metrics_collector_factory.h"
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
 #include "chrome/browser/safe_browsing/services_delegate.h"
-#include "chrome/browser/safe_browsing/v5_get_hash_protocol_manager_factory.h"
 #include "chrome/common/safe_browsing/binary_feature_extractor.h"
 #include "chrome/common/safe_browsing/download_type_util.h"
 #include "chrome/common/url_constants.h"
@@ -60,9 +61,12 @@
 #include "content/public/browser/download_item_utils.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/buildflags/buildflags.h"
 #include "net/base/url_util.h"
 #include "net/cert/x509_util.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 #include "chrome/browser/extensions/api/safe_browsing_private/safe_browsing_private_event_router.h"
@@ -83,8 +87,6 @@ namespace {
 
 constexpr int kDownloadAttributionUserGestureLimit = 2;
 constexpr int kDownloadAttributionUserGestureLimitForExtendedReporting = 5;
-
-constexpr base::TimeDelta kDownloadRequestTimeoutMs = base::Milliseconds(7000);
 
 bool IsDownloadSecuritySensitive(safe_browsing::DownloadCheckResult result) {
   using Result = safe_browsing::DownloadCheckResult;
@@ -166,12 +168,12 @@ DownloadProtectionService::DownloadProtectionService(
           DownloadProtectionDelegate::CreateForPlatform()) {}
 
 DownloadProtectionService::~DownloadProtectionService() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   CancelPendingRequests();
 }
 
 void DownloadProtectionService::SetEnabled(bool enabled) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   if (enabled == enabled_) {
     return;
   }
@@ -251,7 +253,7 @@ bool DownloadProtectionService::MaybeCheckClientDownload(
   }
 
   if (settings.has_value()) {
-    DCHECK(report_only_scan);
+    CHECK(report_only_scan, base::NotFatalUntil::M162);
     // Since this branch implies that CheckClientDownload was not called, the
     // pre-deep scanning DownloadCheckResult is considered UNKNOWN.
     UploadForDeepScanning(
@@ -290,7 +292,7 @@ bool DownloadProtectionService::ShouldCheckDownloadUrl(
 void DownloadProtectionService::CheckDownloadUrl(
     download::DownloadItem* item,
     CheckDownloadCallback callback) {
-  DCHECK(!item->GetUrlChain().empty());
+  CHECK(!item->GetUrlChain().empty(), base::NotFatalUntil::M162);
   content::WebContents* web_contents =
       content::DownloadItemUtils::GetWebContents(item);
   // |web_contents| can be null in tests.
@@ -349,19 +351,19 @@ void DownloadProtectionService::CheckFileSystemAccessWrite(
 base::CallbackListSubscription
 DownloadProtectionService::RegisterClientDownloadRequestCallback(
     const ClientDownloadRequestCallback& callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   return client_download_request_callbacks_.Add(callback);
 }
 
 base::CallbackListSubscription
 DownloadProtectionService::RegisterFileSystemAccessWriteRequestCallback(
     const FileSystemAccessWriteRequestCallback& callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   return file_system_access_write_request_callbacks_.Add(callback);
 }
 
 void DownloadProtectionService::CancelPendingRequests() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   // It is sufficient to delete the list of CheckClientDownloadRequests.
   context_download_requests_.clear();
 }
@@ -370,10 +372,12 @@ void DownloadProtectionService::RequestFinished(
     CheckClientDownloadRequestBase* request,
     content::BrowserContext* browser_context,
     DownloadCheckResult result) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   MaybeLogSecuritySensitiveDownloadEvent(browser_context, result);
-  DCHECK(context_download_requests_.contains(browser_context));
-  DCHECK(context_download_requests_[browser_context].contains(request));
+  CHECK(context_download_requests_.contains(browser_context),
+        base::NotFatalUntil::M162);
+  CHECK(context_download_requests_[browser_context].contains(request),
+        base::NotFatalUntil::M162);
   context_download_requests_[browser_context].erase(request);
 }
 
@@ -400,9 +404,9 @@ void DownloadProtectionService::ShowDetailsForDownload(
   }
 
   navigator->OpenURL(
-      content::OpenURLParams(learn_more_url, content::Referrer(),
-                             WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                             ui::PAGE_TRANSITION_LINK, false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          learn_more_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
 
@@ -416,11 +420,13 @@ void DownloadProtectionService::SetDownloadProtectionData(
     download::DownloadItem* item,
     const std::string& token,
     const ClientDownloadResponse::Verdict& verdict,
-    const ClientDownloadResponse::TailoredVerdict& tailored_verdict) {
+    const ClientDownloadResponse::TailoredVerdict& tailored_verdict,
+    bool is_registered_app_store) {
   if (item) {
-    item->SetUserData(kDownloadProtectionDataKey,
-                      std::make_unique<DownloadProtectionData>(
-                          token, verdict, tailored_verdict));
+    item->SetUserData(
+        kDownloadProtectionDataKey,
+        std::make_unique<DownloadProtectionData>(
+            token, verdict, tailored_verdict, is_registered_app_store));
   }
 }
 
@@ -467,10 +473,25 @@ DownloadProtectionService::GetDownloadProtectionTailoredVerdict(
     return ClientDownloadResponse::TailoredVerdict();
 }
 
+// static
+bool DownloadProtectionService::WasFromRegisteredAppStore(
+    const download::DownloadItem* item) {
+  if (!item) {
+    return false;
+  }
+  const base::SupportsUserData::Data* protection_data =
+      item->GetUserData(kDownloadProtectionDataKey);
+  if (protection_data) {
+    return static_cast<const DownloadProtectionData*>(protection_data)
+        ->is_registered_app_store();
+  }
+  return false;
+}
+
 void DownloadProtectionService::MaybeSendDangerousDownloadOpenedReport(
     download::DownloadItem* item,
     bool show_download_in_folder) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   content::BrowserContext* browser_context =
       content::DownloadItemUtils::GetBrowserContext(item);
   Profile* profile = Profile::FromBrowserContext(browser_context);
@@ -513,9 +534,6 @@ void DownloadProtectionService::ReportSensitiveFileBypassEnterpriseEvent(
     const google::protobuf::RepeatedPtrField<ReferrerChainEntry>&
         referrer_chain,
     const google::protobuf::RepeatedPtrField<std::string>& frame_urls) {
-  if (!IsDeepScanningEnabled()) {
-    return;
-  }
   auto* reporting_event_router =
       enterprise_connectors::ReportingEventRouterFactory::GetForBrowserContext(
           profile);
@@ -528,12 +546,13 @@ void DownloadProtectionService::ReportSensitiveFileBypassEnterpriseEvent(
       item->GetURL(), item->GetTabUrl(), /*source=*/"",
       /*destination=*/"", metadata.filename, metadata.sha256,
       metadata.mime_type,
-      enterprise_connectors::kFileDownloadDataTransferEventTrigger,
+      enterprise_connectors::DataTransferEventTrigger::FILE_DOWNLOAD,
       metadata.scan_response.request_token(),
       /*content_transfer_method=*/"", /*source_email=*/"",
       info.GetContentAreaAccountEmail(),
       /*user_justification=*/std::nullopt, result, metadata.size,
-      referrer_chain, frame_urls, enterprise_connectors::EventResult::BYPASSED);
+      referrer_chain, frame_urls, enterprise_connectors::EventResult::BYPASSED,
+      info.extension_initiator());
 }
 
 void DownloadProtectionService::ReportDangerousDownloadOpenedEnterpriseEvent(
@@ -543,9 +562,6 @@ void DownloadProtectionService::ReportDangerousDownloadOpenedEnterpriseEvent(
     const google::protobuf::RepeatedPtrField<ReferrerChainEntry>&
         referrer_chain,
     const google::protobuf::RepeatedPtrField<std::string>& frame_urls) {
-  if (!IsDeepScanningEnabled()) {
-    return;
-  }
   enterprise_connectors::ReportingEventRouter* reporting_event_router =
       enterprise_connectors::ReportingEventRouterFactory::GetForBrowserContext(
           profile);
@@ -556,9 +572,10 @@ void DownloadProtectionService::ReportDangerousDownloadOpenedEnterpriseEvent(
   reporting_event_router->OnDangerousDownloadEvent(
       item->GetURL(), item->GetTabUrl(), metadata.filename, metadata.sha256,
       item->GetDangerType(), metadata.mime_type,
-      enterprise_connectors::kFileDownloadDataTransferEventTrigger,
+      enterprise_connectors::DataTransferEventTrigger::FILE_DOWNLOAD,
       metadata.scan_response.request_token(), metadata.size, referrer_chain,
-      frame_urls, enterprise_connectors::EventResult::BYPASSED);
+      frame_urls, enterprise_connectors::EventResult::BYPASSED,
+      enterprise_connectors::GetExtensionInitiatorInfo(item));
 }
 
 void DownloadProtectionService::ReportDangerousDownloadOpenedEnterpriseEvent(
@@ -567,9 +584,6 @@ void DownloadProtectionService::ReportDangerousDownloadOpenedEnterpriseEvent(
     const google::protobuf::RepeatedPtrField<ReferrerChainEntry>&
         referrer_chain,
     const google::protobuf::RepeatedPtrField<std::string>& frame_urls) {
-  if (!IsDeepScanningEnabled()) {
-    return;
-  }
   enterprise_connectors::ReportingEventRouter* reporting_event_router =
       enterprise_connectors::ReportingEventRouterFactory::GetForBrowserContext(
           profile);
@@ -582,9 +596,10 @@ void DownloadProtectionService::ReportDangerousDownloadOpenedEnterpriseEvent(
       item->GetTargetFilePath().AsUTF8Unsafe(),
       base::HexEncode(item->GetHash()), item->GetDangerType(),
       item->GetMimeType(),
-      enterprise_connectors::kFileDownloadDataTransferEventTrigger,
+      enterprise_connectors::DataTransferEventTrigger::FILE_DOWNLOAD,
       /*scan_id*/ "", item->GetTotalBytes(), referrer_chain, frame_urls,
-      enterprise_connectors::EventResult::BYPASSED);
+      enterprise_connectors::EventResult::BYPASSED,
+      enterprise_connectors::GetExtensionInitiatorInfo(item));
 }
 
 void DownloadProtectionService::ReportDangerousDownloadOpenedSafeBrowsingEvent(
@@ -679,8 +694,13 @@ const GURL& DownloadProtectionService::GetDownloadRequestUrl() const {
   return delegate_->GetDownloadRequestUrl();
 }
 
+void DownloadProtectionService::SetDownloadRequestTimeoutForTesting(
+    base::TimeDelta timeout) {
+  download_request_timeout_ = timeout;
+}
+
 base::TimeDelta DownloadProtectionService::GetDownloadRequestTimeout() const {
-  return kDownloadRequestTimeoutMs;
+  return download_request_timeout_;
 }
 
 bool DownloadProtectionService::MaybeBeginFeedbackForDownload(
@@ -707,13 +727,13 @@ void DownloadProtectionService::UploadForDeepScanning(
     DownloadCheckResult download_check_result,
     enterprise_connectors::AnalysisSettings analysis_settings,
     base::optional_ref<const std::string> password) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   content::BrowserContext* browser_context = metadata->GetBrowserContext();
   auto request = std::make_unique<DeepScanningRequest>(
       std::move(metadata), trigger, download_check_result, callback, this,
       std::move(analysis_settings), password);
   auto insertion_result = deep_scanning_requests_.insert(std::move(request));
-  DCHECK(insertion_result.second);
+  CHECK(insertion_result.second, base::NotFatalUntil::M162);
   insertion_result.first->get()->Start();
 
   Profile* profile = Profile::FromBrowserContext(browser_context);
@@ -747,10 +767,10 @@ void DownloadProtectionService::UploadForConsumerDeepScanning(
   DownloadCoreService* download_core_service =
       DownloadCoreServiceFactory::GetForBrowserContext(
           content::DownloadItemUtils::GetBrowserContext(item));
-  DCHECK(download_core_service);
+  CHECK(download_core_service, base::NotFatalUntil::M162);
   ChromeDownloadManagerDelegate* delegate =
       download_core_service->GetDownloadManagerDelegate();
-  DCHECK(delegate);
+  CHECK(delegate, base::NotFatalUntil::M162);
 
   // Create an analysis settings object for UploadForDeepScanning().
   // Make sure it specifies a cloud analysis is required and does not
@@ -789,10 +809,10 @@ void DownloadProtectionService::CheckDownloadWithLocalDecryption(
   DownloadCoreService* download_core_service =
       DownloadCoreServiceFactory::GetForBrowserContext(
           content::DownloadItemUtils::GetBrowserContext(item));
-  DCHECK(download_core_service);
+  CHECK(download_core_service, base::NotFatalUntil::M162);
   ChromeDownloadManagerDelegate* delegate =
       download_core_service->GetDownloadManagerDelegate();
-  DCHECK(delegate);
+  CHECK(delegate, base::NotFatalUntil::M162);
 
   DownloadItemWarningData::SetHasShownLocalDecryptionPrompt(item, true);
 
@@ -812,13 +832,13 @@ void DownloadProtectionService::UploadSavePackageForDeepScanning(
     base::flat_map<base::FilePath, base::FilePath> save_package_files,
     CheckDownloadRepeatingCallback callback,
     enterprise_connectors::AnalysisSettings analysis_settings) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   auto request = std::make_unique<DeepScanningRequest>(
       std::make_unique<DownloadItemMetadata>(item),
       DownloadCheckResult::UNKNOWN, callback, this,
       std::move(analysis_settings), std::move(save_package_files));
   auto insertion_result = deep_scanning_requests_.insert(std::move(request));
-  DCHECK(insertion_result.second);
+  CHECK(insertion_result.second, base::NotFatalUntil::M162);
   insertion_result.first->get()->Start();
 }
 

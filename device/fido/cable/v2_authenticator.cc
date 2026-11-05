@@ -11,7 +11,6 @@
 #include "base/containers/flat_set.h"
 #include "base/containers/to_array.h"
 #include "base/containers/to_vector.h"
-#include "base/feature_list.h"
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -31,7 +30,6 @@
 #include "device/fido/ctap_get_assertion_request.h"
 #include "device/fido/ctap_make_credential_request.h"
 #include "device/fido/network_context_factory.h"
-#include "device/fido/public/features.h"
 #include "device/fido/public/fido_constants.h"
 #include "net/base/isolation_info.h"
 #include "net/cookies/site_for_cookies.h"
@@ -107,7 +105,7 @@ std::vector<uint8_t> BuildGetInfoResponse() {
   response_map.emplace(4, std::move(options));
   response_map.emplace(9, std::move(transports));
 
-  return cbor::Writer::Write(cbor::Value(std::move(response_map))).value();
+  return cbor::Writer::Write(response_map).value();
 }
 
 std::array<uint8_t, device::cablev2::kNonceSize> RandomNonce() {
@@ -234,10 +232,8 @@ class TunnelTransport : public Transport {
   void StartWebSocket() {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-    uint32_t options = network::mojom::kWebSocketOptionBlockAllCookies;
-    if (base::FeatureList::IsEnabled(kWebAuthnSocketMaxPriorityMode)) {
-      options |= network::mojom::kWebSocketOptionMaximumPriority;
-    }
+    const uint32_t options = network::mojom::kWebSocketOptionBlockAllCookies |
+                             network::mojom::kWebSocketOptionMaximumPriority;
     network_context_factory_.Run()->CreateWebSocket(
         target_, {device::kCableWebSocketProtocol},
         net::StorageAccessApiStatus::kNone, net::IsolationInfo(),
@@ -254,7 +250,8 @@ class TunnelTransport : public Transport {
         // tunnel. It does not belong to any webpage, so we bypass connection
         // allowlists.
         /*network_restrictions_id=*/network::GetNoOpNetworkRestrictionsId(),
-        /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown);
+        /*target_address_space=*/network::mojom::IPAddressSpace::kUnknown,
+        /*target_network=*/std::nullopt);
     FIDO_LOG(DEBUG) << "Creating WebSocket to " << target_.spec();
   }
 
@@ -339,8 +336,7 @@ class TunnelTransport : public Transport {
         }
 
         std::optional<std::vector<uint8_t>> post_handshake_msg_bytes;
-        post_handshake_msg_bytes =
-            cbor::Writer::Write(cbor::Value(std::move(post_handshake_msg)));
+        post_handshake_msg_bytes = cbor::Writer::Write(post_handshake_msg);
         if (!post_handshake_msg_bytes) {
           FIDO_LOG(ERROR) << "failed to encode post-handshake message";
           return;
@@ -377,8 +373,7 @@ class TunnelTransport : public Transport {
             cbor::Value::MapValue update_msg_for_measurement;
             update_msg_for_measurement.emplace(1, pairing_data->Clone());
             std::optional<std::vector<uint8_t>> cbor_bytes =
-                cbor::Writer::Write(
-                    cbor::Value(std::move(update_msg_for_measurement)));
+                cbor::Writer::Write(update_msg_for_measurement);
 
             if (cbor_bytes && cbor_bytes->size() < padding_length) {
               padding_length -= cbor_bytes->size();
@@ -394,7 +389,7 @@ class TunnelTransport : public Transport {
           }
 
           std::optional<std::vector<uint8_t>> update_msg_bytes =
-              cbor::Writer::Write(cbor::Value(std::move(update_msg)));
+              cbor::Writer::Write(update_msg);
           if (!update_msg_bytes) {
             FIDO_LOG(ERROR) << "failed to encode update message";
             return;
@@ -597,7 +592,7 @@ class CTAP2Processor : public Transaction {
         return Platform::Error::INVALID_CTAP;
       }
       FIDO_LOG(DEBUG) << "<- (" << base::HexEncode(command) << ") "
-                      << cbor::DiagnosticWriter::Write(*payload);
+                      << cbor::WriteDiagnostic(*payload);
     } else {
       FIDO_LOG(DEBUG) << "<- (" << base::HexEncode(command) << ") <no payload>";
     }

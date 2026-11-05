@@ -5,8 +5,8 @@
 #include "chrome/browser/web_applications/commands/apply_manifest_migration_command.h"
 
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/ui/web_applications/web_app_browsertest_base.h"
@@ -22,7 +22,6 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/common/features.h"
 #include "ui/views/test/dialog_test.h"
 #include "ui/views/widget/any_widget_observer.h"
 
@@ -73,9 +72,6 @@ class ApplyManifestMigrationCommandBrowserTest : public WebAppBrowserTestBase {
     provider().command_manager().AwaitAllCommandsCompleteForTesting();
     return testing::AssertionSuccess();
   }
-
-  base::test::ScopedFeatureList scoped_feature_list_{
-      blink::features::kWebAppMigrationApi};
 
   base::HistogramTester histogram_tester_;
 };

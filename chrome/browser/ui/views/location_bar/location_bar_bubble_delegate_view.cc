@@ -10,6 +10,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
+#include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/grit/generated_resources.h"
@@ -19,7 +20,9 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_frame_view.h"
+#include "ui/views/event_monitor.h"
 #include "url/origin.h"
 
 namespace {
@@ -55,8 +58,8 @@ LocationBarBubbleDelegateView::WebContentMouseHandler::WebContentMouseHandler(
     LocationBarBubbleDelegateView* bubble,
     content::WebContents* web_contents)
     : bubble_(bubble), web_contents_(web_contents) {
-  DCHECK(bubble_);
-  DCHECK(web_contents_);
+  CHECK(bubble_, base::NotFatalUntil::M162);
+  CHECK(web_contents_, base::NotFatalUntil::M162);
   // In unittests `web_contents_` might not have a containing top-level window.
   if (web_contents_->GetTopLevelNativeWindow()) {
     event_monitor_ = views::EventMonitor::CreateWindowMonitor(
@@ -100,9 +103,7 @@ LocationBarBubbleDelegateView::LocationBarBubbleDelegateView(
       BrowserWindowInterface* const browser = tab->GetBrowserWindowInterface();
       if (browser) {
         FullscreenController* const fullscreen_controller =
-            browser->GetFeatures()
-                .exclusive_access_manager()
-                ->fullscreen_controller();
+            ExclusiveAccessManager::From(browser)->fullscreen_controller();
         fullscreen_subscription_ =
             fullscreen_controller->RegisterOnFullscreenStateChanged(
                 base::BindRepeating(
@@ -150,6 +151,7 @@ void LocationBarBubbleDelegateView::ShowForReason(DisplayReason reason,
   set_adjust_if_offscreen(true);
   GetBubbleFrameView()->SetPreferredArrowAdjustment(
       views::BubbleFrameView::PreferredArrowAdjustment::kOffset);
+  SizeToContents();
 
   if (reason == USER_GESTURE) {
     GetWidget()->Show();

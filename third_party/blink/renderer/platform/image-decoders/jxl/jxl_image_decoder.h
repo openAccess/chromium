@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_JXL_JXL_IMAGE_DECODER_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_IMAGE_DECODERS_JXL_JXL_IMAGE_DECODER_H_
 
+#include <cstdint>
 #include <optional>
 
 #include "base/memory/scoped_refptr.h"
@@ -14,7 +15,7 @@
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_size_t.h"
-#include "third_party/rust/jxl/v0_6/wrapper/lib.rs.h"
+#include "third_party/rust/jxl/v0_8/wrapper/lib.rs.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
 
 namespace blink {
@@ -44,6 +45,9 @@ class PLATFORM_EXPORT JXLImageDecoder final : public ImageDecoder {
   base::TimeDelta FrameDurationAtIndex(wtf_size_t) const override;
   wtf_size_t ClearCacheExceptFrame(wtf_size_t) override;
   void OnSetData(scoped_refptr<SegmentReader>) override;
+  bool GetGainmapInfoAndData(
+      SkGainmapInfo& out_gainmap_info,
+      scoped_refptr<SegmentReader>& out_gainmap_data) const override;
 
   // Returns true if the data in fast_reader begins with a valid JXL signature.
   static bool MatchesJXLSignature(const FastSharedBufferReader& fast_reader);
@@ -81,7 +85,9 @@ class PLATFORM_EXPORT JXLImageDecoder final : public ImageDecoder {
 
   // Sets the pixel format that the decoder uses. Should only be called when
   // basic info is available.
-  void SetPixelFormat(jxl_rs::JxlRsDecoder* decoder);
+  bool SetPixelFormat(jxl_rs::JxlRsDecoder* decoder);
+  bool HasBlackChannel() const;
+  void ApplyColorTransform(ImageFrame& frame);
 
   // Process basic info after it has been parsed by either the scanner or
   // decoder. Sets size, bit depth, color profile, etc. Returns false on
@@ -93,11 +99,24 @@ class PLATFORM_EXPORT JXLImageDecoder final : public ImageDecoder {
   // Must be called when decoder_state_ >= kHaveBasicInfo and scanner_ is valid.
   void SeekToFrame(wtf_size_t index);
 
+  // Fills gain_map_ once the scanner has run out of frames and the whole file
+  // has arrived; the gain map box may follow the last frame.
+  void CollectGainMapIfComplete();
+
+  // Whether the frame at `index`, which is ahead of the decoder, can be
+  // reached by decoding forward from the decoder's current position with less
+  // work than a seek would do. True only when the decoder is positioned
+  // between frames and already holds everything `index` depends on.
+  bool CanDecodeForwardTo(wtf_size_t index);
+
   // Lightweight frame scanner -- discovers frame count, durations, and seek
   // offsets without decoding any pixels.
   std::optional<JxlRsDecoderPtr> scanner_;
   size_t scanner_input_offset_ = 0;
   bool scanner_done_ = false;
+  // Set when a decode-start probe rewound the scanner's parser state; the
+  // scanner is recreated and replayed from the start on the next scan.
+  bool scanner_needs_replay_ = false;
 
   // Full pixel decoder with state machine.
   std::optional<JxlRsDecoderPtr> decoder_;
@@ -107,12 +126,18 @@ class PLATFORM_EXPORT JXLImageDecoder final : public ImageDecoder {
 
   // Cached metadata.
   std::optional<jxl_rs::JxlRsBasicInfo> basic_info_;
+  std::optional<jxl_rs::JxlRsGainMap> gain_map_;
+  sk_sp<skia::ColorProfile> cmyk_color_profile_;
 
   // Per-frame info populated by the scanner. frame_infos_ stores the Rust
   // struct directly (seek offsets, keyframe flag, etc.); frame_timings_ stores
   // Blink-specific cumulative timestamps.
   Vector<jxl_rs::JxlRsVisibleFrameInfo> frame_infos_;
   Vector<FrameTiming> frame_timings_;
+
+  // Per-frame file offset that a seek to that frame rewinds to, populated
+  // lazily by CanDecodeForwardTo().
+  Vector<std::optional<uint64_t>> frame_decode_start_offsets_;
 
   // Cumulative wall time spent inside the jxl-rs decoder for the frame
   // currently being decoded. Used to log decode throughput (MP/s).

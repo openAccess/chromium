@@ -47,15 +47,16 @@ PrimaryAccountMutatorImpl::SetPrimaryAccount(
     ConsentLevel consent_level,
     signin_metrics::AccessPoint access_point,
     base::OnceClosure prefs_committed_callback) {
+  CHECK(!primary_account_manager_->IsCallingPrimaryAccountObservers());
   DCHECK(!account_id.empty());
   AccountInfo account_info = account_tracker_->GetAccountInfo(account_id);
   if (account_info.IsEmpty()) {
     return PrimaryAccountError::kAccountInfoEmpty;
   }
 
-  DCHECK_EQ(account_info.account_id, account_id);
-  DCHECK(!account_info.email.empty());
-  DCHECK(!account_info.gaia.empty());
+  DCHECK_EQ(account_info.GetAccountId(), account_id);
+  DCHECK(!account_info.GetEmail().empty());
+  DCHECK(!account_info.GetGaiaId().empty());
 
 #if !BUILDFLAG(IS_CHROMEOS)
   bool is_signin_allowed = pref_service_->GetBoolean(prefs::kSigninAllowed);
@@ -82,7 +83,7 @@ PrimaryAccountMutatorImpl::SetPrimaryAccount(
               syncer::kReplaceSyncPromosWithSignInPromos)) {
         if (primary_account_manager_->HasPrimaryAccount(
                 ConsentLevel::kSignin)) {
-          CHECK_EQ(account_info,
+          CHECK_EQ(account_info.GetCoreAccountInfo(),
                    primary_account_manager_->GetPrimaryAccountInfo(
                        ConsentLevel::kSignin));
         }
@@ -98,15 +99,16 @@ PrimaryAccountMutatorImpl::SetPrimaryAccount(
   }
   if (primary_account_manager_->HasPrimaryAccount(
           signin::ConsentLevel::kSignin) &&
-      account_info.account_id != primary_account_manager_->GetPrimaryAccountId(
-                                     signin::ConsentLevel::kSignin) &&
+      account_info.GetAccountId() !=
+          primary_account_manager_->GetPrimaryAccountId(
+              signin::ConsentLevel::kSignin) &&
       !signin_client_->IsClearPrimaryAccountAllowed()) {
     DVLOG(1) << "Changing the primary account is not allowed.";
     return PrimaryAccountError::kPrimaryAccountChangeNotAllowed;
   }
 
   primary_account_manager_->SetPrimaryAccountInfo(
-      account_info, consent_level, access_point,
+      account_info.GetCoreAccountInfo(), consent_level, access_point,
       std::move(prefs_committed_callback));
   return PrimaryAccountError::kNoError;
 }
@@ -118,6 +120,7 @@ PrimaryAccountMutatorImpl::SetPrimaryAccount(
 // assume that an account will always be available at sync consent level in Ash.
 void PrimaryAccountMutatorImpl::RevokeSyncConsent(
     signin_metrics::ProfileSignout source_metric) {
+  CHECK(!primary_account_manager_->IsCallingPrimaryAccountObservers());
   // TODO(crbug.com/40066949): `RevokeSyncConsent` shouldn't be available on iOS
   //     when kSync is no longer used. See ConsentLevel::kSync documentation for
   //     details.
@@ -127,6 +130,7 @@ void PrimaryAccountMutatorImpl::RevokeSyncConsent(
 
 bool PrimaryAccountMutatorImpl::ClearPrimaryAccount(
     signin_metrics::ProfileSignout source_metric) {
+  CHECK(!primary_account_manager_->IsCallingPrimaryAccountObservers());
   if (!primary_account_manager_->HasPrimaryAccount(ConsentLevel::kSignin)) {
     return false;
   }
@@ -137,6 +141,7 @@ bool PrimaryAccountMutatorImpl::ClearPrimaryAccount(
 
 bool PrimaryAccountMutatorImpl::RemovePrimaryAccountButKeepTokens(
     signin_metrics::ProfileSignout source_metric) {
+  CHECK(!primary_account_manager_->IsCallingPrimaryAccountObservers());
   if (!primary_account_manager_->HasPrimaryAccount(ConsentLevel::kSignin)) {
     return false;
   }

@@ -13,7 +13,6 @@ import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.LargeTest;
 
 import org.hamcrest.Matchers;
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -28,8 +27,11 @@ import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.browser.customtabs.CustomTabsIntentTestUtils;
 import org.chromium.chrome.browser.customtabs.IncognitoCustomTabActivityTestRule;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.history.BrowsingHistoryBridge;
 import org.chromium.chrome.browser.history.HistoryItem;
@@ -43,9 +45,11 @@ import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.page.WebPageStation;
+import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.content_public.browser.NavigationEntry;
 import org.chromium.content_public.browser.NavigationHistory;
 import org.chromium.net.test.EmbeddedTestServer;
+import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -58,6 +62,8 @@ import java.util.concurrent.TimeoutException;
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
+@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class IncognitoHistoryLeakageTest {
     private static final String TEST_PAGE_1 = "/chrome/test/data/android/google.html";
     private static final String TEST_PAGE_2 = "/chrome/test/data/android/test.html";
@@ -83,11 +89,6 @@ public class IncognitoHistoryLeakageTest {
         mTestPage2 = mTestServer.getURL(TEST_PAGE_2);
     }
 
-    @After
-    public void tearDown() {
-        mChromeActivityTestRule.closeAllWindowsAndDeleteInstanceAndTabState();
-    }
-
     /**
      * Returns browsing history for the profile related to |tab|. If |tab| is null, the regular
      * profile is used.
@@ -103,7 +104,7 @@ public class IncognitoHistoryLeakageTest {
                     BrowsingHistoryBridge historyService = new BrowsingHistoryBridge(profile);
                     historyService.setObserver(historyObserver);
                     String historyQueryFilter = "";
-                    historyService.queryHistory(historyQueryFilter, null);
+                    historyService.queryHistory(historyQueryFilter);
                 });
         historyObserver.getQueryCallback().waitForCallback(0);
         return historyObserver.getHistoryQueryResults();
@@ -152,6 +153,7 @@ public class IncognitoHistoryLeakageTest {
     @Test
     @LargeTest
     @UseMethodParameter(AllTypesToAllTypes.class)
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/568490859
     public void testTabNavigationHistoryDoNotLeakBetweenActivities(
             String activityType1, String activityType2) throws TimeoutException {
         ActivityType activity1 = ActivityType.valueOf(activityType1);
@@ -185,17 +187,13 @@ public class IncognitoHistoryLeakageTest {
         assertEquals(mTestPage2, entry2.getOriginalUrl().getSpec());
     }
 
-    private static boolean isNtpOrAboutBlank(String url) {
-        return url.equals("chrome-native://newtab/") || url.equals("about:blank");
-    }
-
     /**
      * Returns the number of entries in the history that are not the new tab page or about:blank.
      */
     private static int getRealEntryCount(NavigationHistory history) {
         int count = 0;
         for (int i = 0; i < history.getEntryCount(); ++i) {
-            if (!isNtpOrAboutBlank(history.getEntryAtIndex(i).getOriginalUrl().getSpec())) {
+            if (!UrlUtilities.isNtpOrAboutBlank(history.getEntryAtIndex(i).getOriginalUrl())) {
                 count++;
             }
         }
@@ -209,7 +207,7 @@ public class IncognitoHistoryLeakageTest {
     private static NavigationEntry getFirstRealEntry(NavigationHistory history) {
         for (int i = 0; i < history.getEntryCount(); ++i) {
             NavigationEntry entry = history.getEntryAtIndex(i);
-            if (!isNtpOrAboutBlank(entry.getOriginalUrl().getSpec())) {
+            if (!UrlUtilities.isNtpOrAboutBlank(entry.getOriginalUrl())) {
                 return entry;
             }
         }

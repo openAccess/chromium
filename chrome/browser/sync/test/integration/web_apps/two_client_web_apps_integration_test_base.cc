@@ -17,6 +17,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/sync/base/user_selectable_type.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/multi_user/multi_user_window_manager.h"
@@ -120,13 +121,17 @@ void TwoClientWebAppsIntegrationTestBase::SyncSignOut(Profile* profile) {
 #if BUILDFLAG(IS_CHROMEOS)
   NOTREACHED();
 #else
+  bool signed_out = false;
   for (int i = 0; i < num_clients(); ++i) {
     if (GetProfile(i) != profile) {
       continue;
     }
     GetClient(i)->SignOutPrimaryAccount();
+    signed_out = true;
   }
-  AwaitWebAppQuiescence();
+  if (signed_out) {
+    AwaitWebAppQuiescence();
+  }
 #endif
 }
 
@@ -205,7 +210,6 @@ void TwoClientWebAppsIntegrationTestBase::SetUpOnMainThread() {
               })));
     } else {
       ASSERT_TRUE(GetClient(i)->SignInNoWaitForCompletion());
-      ASSERT_TRUE(GetClient(i)->AwaitSyncTransportActive());
       ASSERT_TRUE(GetClient(i)->DisableAllSelectableTypes());
 #if BUILDFLAG(IS_CHROMEOS)
       ASSERT_TRUE(GetClient(i)->DisableAllSelectableOsTypes());

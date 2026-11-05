@@ -36,7 +36,7 @@ export class XfDlpRestrictionDetailsDialog extends HTMLElement {
   showDlpRestrictionDetailsDialog(
       details: chrome.fileManagerPrivate.DlpRestrictionDetails[]) {
     if (details.length === 0) {
-      console.error(`No DLP restriction details to display.`);
+      console.error('No DLP restriction details to display.');
       return;
     }
     this.details = details;
@@ -104,13 +104,13 @@ export class XfDlpRestrictionDetailsDialog extends HTMLElement {
 
     const wildcardIdx = urls.indexOf('*');
     if (wildcardIdx !== -1) {
-      const excludedUrls = [];
+      const excludedUrls: string[] = [];
       // Append "except" all higher levels.
       const higherLevels = this.getHigherLevels(level);
       for (const level of higherLevels) {
         const exceptDetails = this.details.find((d) => d.level === level);
         if (exceptDetails && exceptDetails.urls.length > 0) {
-          excludedUrls.push(exceptDetails.urls);
+          excludedUrls.push(...exceptDetails.urls);
         }
       }
       if (excludedUrls.length === 0) {

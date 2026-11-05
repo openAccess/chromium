@@ -16,7 +16,8 @@ void WakeLockServiceImpl::Create(
     RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<blink::mojom::WakeLockService> receiver) {
   CHECK(render_frame_host);
-  new WakeLockServiceImpl(*render_frame_host, std::move(receiver));
+  base::MakeSelfDeleting<WakeLockServiceImpl>(*render_frame_host,
+                                              std::move(receiver));
 }
 
 void WakeLockServiceImpl::GetWakeLock(
@@ -29,7 +30,11 @@ void WakeLockServiceImpl::GetWakeLock(
     return;
   }
 
-  if (!render_frame_host().IsFeatureEnabled(
+  // The `screen-wake-lock` permissions policy applies to the Web Wake Lock API
+  // and shouldn't affect internal video playback wake locks (e.g., in
+  // cross-origin iframes or Picture-in-Picture windows).
+  if (reason != device::mojom::WakeLockReason::kVideoPlayback &&
+      !render_frame_host().IsFeatureEnabled(
           network::mojom::PermissionsPolicyFeature::kScreenWakeLock)) {
     return;
   }
@@ -47,7 +52,8 @@ void WakeLockServiceImpl::GetWakeLock(
 
 WakeLockServiceImpl::WakeLockServiceImpl(
     RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<blink::mojom::WakeLockService> receiver)
-    : DocumentService(render_frame_host, std::move(receiver)) {}
+    mojo::PendingReceiver<blink::mojom::WakeLockService> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key) {}
 
 }  // namespace content

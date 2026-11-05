@@ -32,16 +32,15 @@ enum class SearchCategory {
   kApps = 1,
   kAppShortcuts = 2,
   kFiles = 3,
-  kGames = 4,
-  kHelp = 5,
-  kImages = 6,
-  kPlayStore = 7,
-  kWeb = 8,
-  kSettings = 9,
-  kOmnibox = 10,
-  kDesksAdmin = 11,
-  kAssistant = 12,
-  kSystemInfoCard = 13
+  kHelp = 4,
+  kImages = 5,
+  kPlayStore = 6,
+  kWeb = 7,
+  kSettings = 8,
+  kOmnibox = 9,
+  kDesksAdmin = 10,
+  kAssistant = 11,
+  kSystemInfoCard = 12
 };
 
 class SearchProvider {
@@ -58,6 +57,9 @@ class SearchProvider {
   SearchProvider& operator=(const SearchProvider&) = delete;
 
   virtual ~SearchProvider();
+
+  // Invoked to initialize the provider when the launcher is opened.
+  virtual void Initialize() {}
 
   // Invoked to start a query search. |query| is guaranteed to be non-empty.
   virtual void Start(const std::u16string& query,

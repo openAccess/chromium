@@ -37,7 +37,7 @@ class SimplifiedBackwardsTextIteratorTest : public EditingTestBase {
       is_first = false;
       builder.Append(iterator.GetTextState().GetTextForTesting());
     }
-    return builder.ToString().Utf8();
+    return builder.Utf8();
   }
 };
 
@@ -248,7 +248,7 @@ TEST_F(SimplifiedBackwardsTextIteratorTest, SubrangeWithReplacedElements) {
   SetBodyContent(body_content);
   SetShadowContent(shadow_content, "host");
 
-  Element* host = GetDocument().getElementById(AtomicString("host"));
+  Element* host = GetElementById("host");
 
   // We should not apply DOM tree version to containing shadow tree in
   // general. To record current behavior, we have this test. even if it
@@ -268,7 +268,7 @@ TEST_F(SimplifiedBackwardsTextIteratorTest, characterAt) {
   SetBodyContent(body_content);
   SetShadowContent(shadow_content, "host");
 
-  Element* host = GetDocument().getElementById(AtomicString("host"));
+  Element* host = GetElementById("host");
 
   EphemeralRangeTemplate<EditingStrategy> range1(
       EphemeralRangeTemplate<EditingStrategy>::RangeOfContents(*host));

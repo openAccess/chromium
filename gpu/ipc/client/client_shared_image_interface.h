@@ -79,11 +79,11 @@ class GPU_IPC_CLIENT_EXPORT ClientSharedImageInterface
   // later to get the shared memory mapping.
   scoped_refptr<ClientSharedImage> CreateSharedImageForSoftwareCompositor(
       const SharedImageInfo& si_info) override;
-  void CopyToGpuMemoryBuffer(const SyncToken& sync_token,
+  void CopyToGpuMemoryBuffer(std::vector<SyncToken> sync_tokens,
                              const Mailbox& mailbox) override;
 #if BUILDFLAG(IS_WIN)
   void CopyToGpuMemoryBufferAsync(
-      const SyncToken& sync_token,
+      std::vector<SyncToken> sync_tokens,
       const Mailbox& mailbox,
       base::OnceCallback<void(bool)> callback) override;
   void UpdateSharedImage(const SyncToken& sync_token,
@@ -98,11 +98,8 @@ class GPU_IPC_CLIENT_EXPORT ClientSharedImageInterface
       base::OnceCallback<void(bool)> callback) override;
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
 
-  void DestroySharedImage(const SyncToken& sync_token,
+  void DestroySharedImage(std::vector<SyncToken> sync_tokens,
                           const Mailbox& mailbox) override;
-  void DestroySharedImage(
-      const SyncToken& sync_token,
-      scoped_refptr<ClientSharedImage> client_shared_image) override;
   scoped_refptr<ClientSharedImage> NotifyMailboxAdded(
       const Mailbox& mailbox,
       viz::SharedImageFormat format,

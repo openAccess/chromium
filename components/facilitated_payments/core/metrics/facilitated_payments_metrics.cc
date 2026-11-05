@@ -4,18 +4,29 @@
 
 #include "components/facilitated_payments/core/metrics/facilitated_payments_metrics.h"
 
+#include <string_view>
+
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/time/time.h"
-#include "components/facilitated_payments/core/mojom/pix_code_validator.mojom.h"
 #include "components/facilitated_payments/core/utils/facilitated_payments_utils.h"
 #include "components/facilitated_payments/core/validation/payment_link_validator.h"
-#include "components/facilitated_payments/core/validation/pix_code_validator.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 
 namespace payments::facilitated {
 namespace {
+
+// Variant suffixes of `FacilitatedPayments.QrCode.HeuristicSignals`.
+constexpr std::string_view kQrFoundSuffix = "QrFound";
+constexpr std::string_view kQrNotFoundSuffix = "QrNotFound";
+
+// The largest `FacilitatedPayments.QrCode.SuccessfulAttemptIndex`, which is the
+// number of QR code checks per page.
+// LINT.IfChange(MaxQrCodeAttemptIndex)
+constexpr int kMaxQrCodeAttemptIndex = 3;
+// LINT.ThenChange(/components/facilitated_payments/content/browser/content_facilitated_payments_driver_factory.cc:MaxQrCodeChecksPerPage)
 
 static constexpr std::string_view kPixAccountLinkingHistogramPrefix =
     "FacilitatedPayments.Pix.AccountLinking.";
@@ -79,19 +90,6 @@ std::string PaymentLinkFopSelectorTypesToString(
   }
 }
 
-std::string PixCodeValidationResultToString(PixCodeValidationResult result) {
-  switch (result) {
-    case PixCodeValidationResult::kDynamic:
-      return "DynamicCode";
-    case PixCodeValidationResult::kStatic:
-      return "StaticCode";
-    case PixCodeValidationResult::kInvalid:
-      return "InvalidCode";
-    case PixCodeValidationResult::kValidatorFailed:
-      return "ValidatorFailed";
-  }
-}
-
 std::string AccountLinkingPromptUserActionToString(
     AccountLinkingPromptUserAction user_action) {
   switch (user_action) {
@@ -144,6 +142,28 @@ void LogPixCodeCopiedInIframe() {
 void LogPixIframeUrlType(PixIframeUrlType url_type) {
   base::UmaHistogramEnumeration("FacilitatedPayments.Pix.Iframe.UrlType",
                                 url_type);
+}
+
+void LogQrCodeDetectionResult(QrCodeDetectionResult result) {
+  base::UmaHistogramEnumeration("FacilitatedPayments.QrCode.Result", result);
+}
+
+void LogQrCodeHeuristicSignals(QrCodeHeuristicSignals signals,
+                               bool qr_code_found) {
+  // One bucket for every combination of signals, i.e. every bitmask up to the
+  // one with all signals set.
+  static constexpr int kExclusiveMax =
+      1 << (static_cast<int>(QrCodeHeuristicSignal::kMaxValue) + 1);
+  base::UmaHistogramExactLinear(
+      base::StrCat({"FacilitatedPayments.QrCode.HeuristicSignals.",
+                    qr_code_found ? kQrFoundSuffix : kQrNotFoundSuffix}),
+      base::checked_cast<int>(signals.ToEnumBitmask()), kExclusiveMax);
+}
+
+void LogQrCodeSuccessfulAttemptIndex(int attempt_index) {
+  base::UmaHistogramExactLinear(
+      "FacilitatedPayments.QrCode.SuccessfulAttemptIndex", attempt_index,
+      kMaxQrCodeAttemptIndex + 1);
 }
 
 void LogPixIframeIsSameOriginAsMainFrame(bool is_same_origin) {
@@ -236,38 +256,6 @@ void LogPaymentCodeRustValidationResult(
     PixCodeRustValidationResult rust_result) {
   base::UmaHistogramEnumeration(
       "FacilitatedPayments.Pix.PaymentCodeValidation.RustResult", rust_result);
-}
-
-void LogPaymentCodeValidationResultAndLatency(
-    PixCodeValidationResult result,
-    std::optional<PixCodeRustValidationResult> rust_validation_result,
-    base::TimeDelta duration) {
-  base::UmaHistogramEnumeration(
-      "FacilitatedPayments.Pix.PaymentCodeValidation.Result", result);
-  PixCodeValidationResult translated_rust_result = [&] {
-    if (!rust_validation_result) {
-      return PixCodeValidationResult::kInvalid;
-    }
-    switch (*rust_validation_result) {
-      case PixCodeRustValidationResult::kDynamic:
-        return PixCodeValidationResult::kDynamic;
-      case PixCodeRustValidationResult::kStatic:
-        return PixCodeValidationResult::kStatic;
-      case PixCodeRustValidationResult::kNonPixMerchantPresentedCode:
-      case PixCodeRustValidationResult::kEmptyAdditionalDataFieldTemplate:
-      case PixCodeRustValidationResult::kNonFinalCrc:
-      case PixCodeRustValidationResult::kUnknownPixCodeType:
-        return PixCodeValidationResult::kInvalid;
-    }
-  }();
-  base::UmaHistogramEnumeration(
-      base::StrCat({"FacilitatedPayments.Pix.PaymentCodeValidation.",
-                    PixCodeValidationResultToString(result), ".ResultVsRust"}),
-      translated_rust_result);
-  base::UmaHistogramLongTimes(
-      base::StrCat({"FacilitatedPayments.Pix.PaymentCodeValidation.",
-                    PixCodeValidationResultToString(result), ".Latency"}),
-      duration);
 }
 
 void LogApiAvailabilityCheckResultAndLatency(
@@ -603,12 +591,6 @@ void LogAccountLinkingPromptInteractionDuration(
                     ".AccountLinking.PromptInteractionDuration.",
                     AccountLinkingPromptUserActionToString(user_action)}),
       duration);
-}
-
-void LogPixAccountLinkingPromptAccepted() {
-  base::UmaHistogramBoolean(
-      base::StrCat({kPixAccountLinkingHistogramPrefix, "PromptAccepted"}),
-      /*sample=*/true);
 }
 
 void LogPixAccountLinkingPromptShown() {

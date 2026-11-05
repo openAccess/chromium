@@ -26,8 +26,10 @@ use mojom_value_parser_core::{MojomType, MojomValue};
 
 use crate::interface::DynMojomInterface;
 use crate::marker_types::IsRemote;
+use crate::multiplex_router::cpp_interop::CppRouterHandle;
 use crate::multiplex_router::{
-    AssociatedRouterHandle, EndpointInfo, InterfaceId, MultiplexRouterHandle,
+    AssociatedRouterHandle, EndpointInfo, InterfaceId, MultiplexRouterHandle, INVALID_INTERFACE_ID,
+    PRIMARY_INTERFACE_ID,
 };
 use crate::pending_associated_endpoint::{
     AssociatedEndpointState, AssociatedState, PendingAssociatedEndpoint,
@@ -47,16 +49,19 @@ use crate::pending_associated_endpoint::{
 /// `RouterHandle`, since sometimes during parsing/desparsing we don't
 /// have an actual handle but we still have enough information to register an
 /// endpoint.
-pub trait Registrar: Send + Sync {
+pub trait Registrar: Send {
     // The trait needs to be public so we can name it in generated bindings code
-    // (as part of `MojomParse<dyn Registrar>`), but we don't actually need to
-    // expose any more information about it than the name.
+    // (as part of `MojomParse<Self, dyn Registrar>`), but we don't actually
+    // need to expose any more information about it than the name.
     #[allow(private_interfaces)]
     fn register_new_endpoint(
         &self,
         interface_id: Option<InterfaceId>,
         endpoint_info: Option<EndpointInfo>,
     ) -> Option<AssociatedRouterHandle>;
+
+    #[allow(private_interfaces)]
+    fn associate_interface(&self, handle: CppRouterHandle) -> Option<InterfaceId>;
 }
 
 impl Registrar for MultiplexRouterHandle {
@@ -66,6 +71,10 @@ impl Registrar for MultiplexRouterHandle {
         endpoint_info: Option<EndpointInfo>,
     ) -> Option<AssociatedRouterHandle> {
         self.register_new_endpoint(interface_id, endpoint_info).map(AssociatedRouterHandle::Rust)
+    }
+
+    fn associate_interface(&self, handle: CppRouterHandle) -> Option<InterfaceId> {
+        self.associate_interface(handle)
     }
 }
 
@@ -77,6 +86,11 @@ impl Registrar for () {
         _interface_id: Option<InterfaceId>,
         _endpoint_info: Option<EndpointInfo>,
     ) -> Option<AssociatedRouterHandle> {
+        panic!("This implementation only exists for testing, and should never be called!")
+    }
+
+    #[allow(private_interfaces)]
+    fn associate_interface(&self, _handle: CppRouterHandle) -> Option<InterfaceId> {
         panic!("This implementation only exists for testing, and should never be called!")
     }
 }
@@ -98,9 +112,14 @@ impl Registrar for DummyRegistrarForTesting {
     ) -> Option<AssociatedRouterHandle> {
         self.0.register_new_endpoint(interface_id, endpoint_info).map(AssociatedRouterHandle::Rust)
     }
+
+    #[allow(private_interfaces)]
+    fn associate_interface(&self, handle: CppRouterHandle) -> Option<InterfaceId> {
+        self.0.associate_interface(handle)
+    }
 }
 
-impl<Context, T, Marker> mojom_value_parser::MojomParse<Context>
+impl<Context, T, Marker> mojom_value_parser::MojomParse<Self, Context>
     for PendingAssociatedEndpoint<T, Marker>
 where
     T: DynMojomInterface + ?Sized + 'static,
@@ -120,13 +139,32 @@ where
         // Specifically, we need to register our peer endpoint with the router,
         // and get back the interface ID that was assigned to it so we can
         // register ourselves on the other side of the pipe.
-        let AssociatedEndpointState::Shared(shared_state) = self.state else {
-            panic!("Cannot serialize an associated interface which has already been sent through a message pipe.")
+        let interface_id = match self.state {
+            AssociatedEndpointState::Shared(shared_state) => {
+                AssociatedState::register_with_router(shared_state, context)
+            }
+            AssociatedEndpointState::Singleton(AssociatedRouterHandle::Cpp(cpp_handle)) => {
+                if cpp_handle.is_associated() {
+                    panic!("Cannot serialize an associated endpoint that is already associated with a message pipe");
+                }
+                context
+                    .associate_interface(cpp_handle)
+                    .expect("Failed to allocate interface ID on message pipe router")
+            }
+            AssociatedEndpointState::Singleton(AssociatedRouterHandle::Rust(_)) => {
+                panic!("Cannot serialize an associated endpoint that is already associated with a message pipe")
+            }
         };
 
-        let interface_id = AssociatedState::register_with_router(shared_state, context);
-        let interface_id_nonzero =
-            interface_id.try_into().expect("Should never try to serialize a zero interface ID!");
+        // The primary interface ID will never be associated, and
+        // `INVALID_INTERFACE_ID` used as a sentinel.
+        assert!(
+            interface_id != PRIMARY_INTERFACE_ID && interface_id != INVALID_INTERFACE_ID,
+            "Associated interface ID must be valid and non-zero to be serialized"
+        );
+        let interface_id_nonzero = interface_id
+            .try_into()
+            .expect("Associated interface ID must be non-zero to be serialized");
 
         if Marker::IS_REMOTE {
             MojomValue::PendingAssociatedRemote(interface_id_nonzero)
@@ -137,8 +175,8 @@ where
 
     fn try_from_mojom_value(value: MojomValue, context: &Context) -> anyhow::Result<Self> {
         // When we read an associated endpoint from a pipe, we need to alert the
-        // router managing the pipe that it exists, so that it knows how to route
-        // messages it receives for that interface ID.
+        // router managing the pipe that it exists, so that it knows how to
+        // route messages it receives for that interface ID.
         let is_remote = Marker::IS_REMOTE;
         let interface_id = match value {
             MojomValue::PendingAssociatedRemote(interface_id) if is_remote => interface_id,
@@ -147,12 +185,14 @@ where
             _ => anyhow::bail!("Expected PendingAssociatedReceiver, got {:?}", value),
         };
 
-        let handle =
-            context.register_new_endpoint(Some(interface_id.into()), None).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Interface ID {interface_id} was already registered with the router!"
-                )
-            })?;
+        let id_val: u32 = interface_id.into();
+        if id_val == INVALID_INTERFACE_ID {
+            anyhow::bail!("Invalid associated interface ID: {id_val}");
+        }
+
+        let handle = context.register_new_endpoint(Some(id_val), None).ok_or_else(|| {
+            anyhow::anyhow!("Interface ID {id_val} was already registered with the router!")
+        })?;
         Ok(Self::new_singleton(handle))
     }
 }

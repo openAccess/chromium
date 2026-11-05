@@ -7,6 +7,8 @@
 #include <stddef.h>
 #include <sys/prctl.h>
 
+#include <string_view>
+
 #include "base/android/java_exception_reporter.h"
 #include "base/android/jni_string.h"
 #include "base/android/jni_utils.h"
@@ -17,6 +19,7 @@
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "build/robolectric_buildflags.h"
+#include "partition_alloc/pointers/raw_ptr.h"
 #include "third_party/jni_zero/jni_zero.h"
 #include "third_party/jni_zero/system_jni/Throwable_jni.h"
 
@@ -26,6 +29,19 @@
 namespace base {
 namespace android {
 namespace {
+
+// Increments raw_ptr bookkeeping (BackupRefPtr refcount) while Java holds ptr.
+uintptr_t WrapRawPtrImpl(uintptr_t ptr) {
+  return reinterpret_cast<uintptr_t>(
+      base::raw_ptr_traits::ImplForTraits<base::RawPtrTraits::kEmpty>::
+          WrapRawPtr(reinterpret_cast<void*>(ptr)));
+}
+
+// Decrements raw_ptr bookkeeping when Java releases a JniRawPtr.
+void ReleaseWrappedPtrImpl(uintptr_t ptr) {
+  base::raw_ptr_traits::ImplForTraits<base::RawPtrTraits::kEmpty>::
+      ReleaseWrappedPtr(reinterpret_cast<void*>(ptr));
+}
 
 #if !BUILDFLAG(IS_ROBOLECTRIC)
 thread_local const JNINativeInterface* g_previous_functions = nullptr;
@@ -46,6 +62,19 @@ jclass g_out_of_memory_error_class = nullptr;
 
 #if !BUILDFLAG(IS_ROBOLECTRIC)
 jclass FindClassHook(JNIEnv* env, const char* class_name) {
+  // If a Chromium browser process attempts to dynamically load a library that
+  // itself contains a copy of JniZero (such as the system WebView provider)
+  // then that library may run its JniZero bootstrap code on the main thread and
+  // trigger this hook; the hook would resolve this to the Chromium host app's
+  // copy of JniZero instead of the library's and break the library.
+  //
+  // Instead, resolve the JniZero bootstrap class without using the hook. The
+  // Chromium host app has already bootstrapped JniZero before the hook is
+  // installed so isn't affected.
+  if (std::string_view(class_name) == "org/jni_zero/JniZero") {
+    return g_previous_functions->FindClass(env, class_name);
+  }
+
   // * For env->FindClass(), class_name with be in the form "foo/bar/Baz".
   // * jni_zero::GetClass() expects "foo.bar.Baz" because it uses
   //   ClassLoader.load() to load classes.
@@ -87,8 +116,9 @@ const char kOomInGetJavaExceptionInfoMessage[] =
     "Unable to obtain Java stack trace due to OutOfMemoryError";
 
 void InitVM(JavaVM* vm) {
-  jni_zero::InitVM(vm);
+  jni_zero::SetRawPtrHooks(&WrapRawPtrImpl, &ReleaseWrappedPtrImpl);
   jni_zero::SetExceptionHandler(CheckException);
+  jni_zero::InitVM(vm);
   JNIEnv* env = jni_zero::AttachCurrentThread();
   g_out_of_memory_error_class = static_cast<jclass>(
       env->NewGlobalRef(env->FindClass("java/lang/OutOfMemoryError")));

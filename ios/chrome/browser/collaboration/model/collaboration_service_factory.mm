@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/collaboration/model/collaboration_service_factory.h"
 
 #import <memory>
+#import <utility>
 
 #import "components/collaboration/internal/collaboration_service_impl.h"
 #import "components/collaboration/internal/empty_collaboration_service.h"
@@ -18,34 +19,21 @@
 
 namespace collaboration {
 
-// static
-CollaborationService* CollaborationServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<CollaborationService>(
-      profile, /*create=*/true);
-}
-
-// static
-CollaborationServiceFactory* CollaborationServiceFactory::GetInstance() {
-  static base::NoDestructor<CollaborationServiceFactory> instance;
-  return instance.get();
-}
-
-CollaborationServiceFactory::CollaborationServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("CollaborationService",
-                                    ProfileSelection::kOwnInstanceInIncognito) {
+CollaborationServiceFactory::CollaborationServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "CollaborationService",
+          ProfileSelection::kOwnInstanceInIncognito) {
   DependsOn(tab_groups::TabGroupSyncServiceFactory::GetInstance());
   DependsOn(data_sharing::DataSharingServiceFactory::GetInstance());
   DependsOn(IdentityManagerFactory::GetInstance());
 }
 
-CollaborationServiceFactory::~CollaborationServiceFactory() = default;
-
 std::unique_ptr<KeyedService>
 CollaborationServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   if (!data_sharing::features::IsDataSharingFunctionalityEnabled() ||
-      profile->IsOffTheRecord()) {
+      profile.IsOffTheRecord()) {
     return std::make_unique<EmptyCollaborationService>();
   }
 
@@ -54,7 +42,7 @@ CollaborationServiceFactory::BuildServiceInstanceFor(
   auto* data_sharing_service =
       data_sharing::DataSharingServiceFactory::GetForProfile(profile);
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
-  auto* profile_prefs = profile->GetPrefs();
+  auto* profile_prefs = profile.GetPrefs();
   auto* local_prefs = GetApplicationContext()->GetLocalState();
   return std::make_unique<CollaborationServiceImpl>(
       tab_group_sync_service, data_sharing_service, identity_manager,

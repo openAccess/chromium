@@ -4,7 +4,10 @@
 
 #include "content/browser/webid/navigation_interceptor.h"
 
+#include <optional>
+
 #include "base/auto_reset.h"
+#include "base/compiler_specific.h"
 #include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/strings/string_split.h"
@@ -31,19 +34,24 @@
 #include "services/service_manager/public/cpp/interface_provider.h"
 #include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace content::webid {
 
 namespace {
 
-std::string* GetIfString(net::structured_headers::Dictionary& dict,
+std::string* GetIfString(net::structured_headers::Dictionary& dict
+                             LIFETIME_BOUND,
                          std::string_view key) {
   auto it = dict.find(key);
-  if (it == dict.end() || it->second.member_is_inner_list ||
-      it->second.member.size() != 1) {
+  if (it == dict.end()) {
     return nullptr;
   }
-  return it->second.member.front().item.GetIfString();
+  net::structured_headers::ParameterizedItem* item = it->second.GetIfItem();
+  if (!item) {
+    return nullptr;
+  }
+  return item->item.GetIfString();
 }
 
 std::optional<std::string> TakeIfString(
@@ -56,7 +64,7 @@ std::optional<std::string> TakeIfString(
 }  // namespace
 
 using MediationRequirement = ::password_manager::CredentialMediationRequirement;
-using RequestTokenCallback = Request::RequestTokenCallback;
+using RequestTokenCallback = RequestHandler::RequestTokenCallback;
 
 // static
 void NavigationInterceptor::MaybeCreateAndAdd(
@@ -166,6 +174,21 @@ NavigationThrottle::ThrottleCheckResult NavigationInterceptor::ProcessRequest(
   RenderFrameHost* rfh = document_.AsRenderFrameHostIfValid();
 
   if (!rfh) {
+    return PROCEED;
+  }
+
+  const std::optional<url::Origin>& initiator_origin =
+      navigation_handle()->GetInitiatorOrigin();
+  if (!initiator_origin ||
+      !initiator_origin->IsSameOriginWith(rfh->GetLastCommittedOrigin())) {
+    // The FedCM request is made on behalf of `rfh`, the document currently
+    // shown in the navigated frame, so only intercept navigations that a
+    // document with the same origin initiated. Otherwise, a document could
+    // start a request on behalf of a cross-origin document that it is allowed
+    // to navigate, e.g. its popup. Popups that the RP opens are still
+    // intercepted, because their initial empty document inherits the RP's
+    // origin. Navigations without an initiator origin, e.g. ones the user
+    // starts from the browser UI, are not intercepted.
     return PROCEED;
   }
 
@@ -350,8 +373,8 @@ void NavigationInterceptor::OnTokenResponse(
 
   // The token response is not used in the navigation interception flow because
   // the IdP is expected to respond with a "redirect_to" field which is handled
-  // in Request.
-  // We cancel this specific navigation, assuming that the Request
+  // in RequestHandler.
+  // We cancel this specific navigation, assuming that the RequestHandler
   // will have already started a new navigation.
   CancelDeferredNavigation(CANCEL);
 }
@@ -387,17 +410,19 @@ NavigationInterceptor::RequestBuilder::Build(
   idp_options->domain_hint = TakeIfString(dict, "domain_hint").value_or("");
   idp_options->params_json = TakeIfString(dict, "params");
 
-  if (auto it = dict.find("fields");
-      it != dict.end() && it->second.member_is_inner_list) {
-    std::vector<std::string> fields;
-    for (auto& member_item : it->second.member) {
-      std::string* field_str = member_item.item.GetIfString();
-      if (!field_str) {
-        return std::nullopt;
+  if (auto it = dict.find("fields"); it != dict.end()) {
+    if (net::structured_headers::InnerList* inner_list =
+            it->second.GetIfInnerList()) {
+      std::vector<std::string> fields;
+      for (auto& member_item : inner_list->items) {
+        std::string* field_str = member_item.item.GetIfString();
+        if (!field_str) {
+          return std::nullopt;
+        }
+        fields.emplace_back(std::move(*field_str));
       }
-      fields.emplace_back(std::move(*field_str));
+      idp_options->fields = std::move(fields);
     }
-    idp_options->fields = std::move(fields);
   }
 
   blink::mojom::RpContext context = blink::mojom::RpContext::kSignIn;

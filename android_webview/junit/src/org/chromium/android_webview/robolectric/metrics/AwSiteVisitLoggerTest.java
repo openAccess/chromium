@@ -9,12 +9,9 @@ import static org.junit.Assert.assertEquals;
 import static org.chromium.base.metrics.RecordHistogram.getHistogramTotalCountForTesting;
 import static org.chromium.base.metrics.RecordHistogram.getHistogramValueCountForTesting;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.android_webview.metrics.AwSiteVisitLogger;
 import org.chromium.base.FakeTimeTestRule;
@@ -24,7 +21,6 @@ import org.chromium.base.test.util.Feature;
 
 /** Unit tests for {@link AwSiteVisitLogger}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AwSiteVisitLoggerTest {
     // We test for 1 millisecond after a week has passed as our logic checks are
     // for after a week has passed
@@ -37,7 +33,6 @@ public class AwSiteVisitLoggerTest {
     @Rule public FakeTimeTestRule mFakeTimeTestRule = new FakeTimeTestRule();
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testOneVisit() {
         // Visiting one distinct site does not trigger histogram recording.
@@ -51,7 +46,6 @@ public class AwSiteVisitLoggerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testTwoVisits() {
         // Visiting two distinct sites does not trigger histogram recording.
@@ -67,7 +61,6 @@ public class AwSiteVisitLoggerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testRepeatVisits() {
         // Visiting one distinct site repeatedly does not trigger histogram recording.
@@ -84,7 +77,6 @@ public class AwSiteVisitLoggerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testMultipleWeeksHavePassed() {
         // Visiting one distinct site does not trigger histogram recording.
@@ -100,7 +92,6 @@ public class AwSiteVisitLoggerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testMultipleWeeksOfUsage() {
         // Visit one site.

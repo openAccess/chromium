@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -17,7 +18,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
+#include "base/test/bind.h"
 #include "base/test/gtest_util.h"
+#include "base/test/mock_callback.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
@@ -68,8 +71,10 @@
 #include "ui/views/test/test_views.h"
 #include "ui/views/test/test_widget_observer.h"
 #include "ui/views/test/views_test_utils.h"
+#include "ui/views/test/widget_activation_waiter.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view_test_api.h"
+#include "ui/views/view_tracker.h"
 #include "ui/views/views_features.h"
 #include "ui/views/views_test_suite.h"
 #include "ui/views/widget/native_widget_delegate.h"
@@ -82,6 +87,7 @@
 #include "ui/views/widget/widget_utils.h"
 #include "ui/views/window/dialog_delegate.h"
 #include "ui/views/window/native_frame_view.h"
+#include "ui/views/window/non_client_view.h"
 
 #if defined(USE_AURA)
 #include "ui/aura/window.h"
@@ -1823,7 +1829,8 @@ TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest,
 }
 
 TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest, OnNativeWidgetCreated) {
-  EXPECT_DCHECK_DEATH(widget()->OnNativeWidgetCreated());
+  EXPECT_CHECK_DEATH(widget()->OnNativeWidgetCreated(),
+                     base::NotFatalUntil::M163);
 }
 
 TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest,
@@ -1833,7 +1840,8 @@ TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest,
 
 TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest,
        OnNativeWidgetDestroying) {
-  EXPECT_DCHECK_DEATH(widget()->OnNativeWidgetDestroying());
+  EXPECT_CHECK_DEATH(widget()->OnNativeWidgetDestroying(),
+                     base::NotFatalUntil::M163);
 }
 
 TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest,
@@ -1899,10 +1907,6 @@ TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest, OnScrollEvent) {
 TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest,
        OnSizeConstraintsChanged) {
   widget()->OnSizeConstraintsChanged();
-}
-
-TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest, LayerTreeChanged) {
-  widget()->LayerTreeChanged();
 }
 
 TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest,
@@ -1971,8 +1975,9 @@ TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest, ReorderNativeViews) {
 }
 
 TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest, ReparentNativeView) {
-  EXPECT_DCHECK_DEATH(
-      Widget::ReparentNativeView(widget()->GetNativeView(), gfx::NativeView()));
+  EXPECT_CHECK_DEATH(
+      Widget::ReparentNativeView(widget()->GetNativeView(), gfx::NativeView()),
+      base::NotFatalUntil::M163);
 }
 
 TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest, Restore) {
@@ -2159,7 +2164,8 @@ TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest, ThemeChanged) {
 TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest, UnlockPaintAsActive) {
   // UnlockPaintAsActive() is called in the destructor of PaintAsActiveLock.
   // External invocation is not allowed.
-  EXPECT_DCHECK_DEATH(widget()->UnlockPaintAsActive());
+  EXPECT_CHECK_DEATH(widget()->UnlockPaintAsActive(),
+                     base::NotFatalUntil::M163);
 }
 
 TEST_P(WidgetWithDestroyedNativeViewOrNativeWidgetTest, UpdateWindowIcon) {
@@ -3813,6 +3819,164 @@ TEST_F(DesktopWidgetTest, LockPaintAsActiveAndCloseParent) {
 
   // Ensure that child widget has been destroyed.
   ASSERT_TRUE(child && child->IsClosed());
+}
+
+// Regression tests for https://crbug.com/558945747
+class WidgetDestroyedDuringPaintAsActiveChangeTest : public WidgetTest {
+ public:
+  WidgetDestroyedDuringPaintAsActiveChangeTest() = default;
+  ~WidgetDestroyedDuringPaintAsActiveChangeTest() override = default;
+
+  void SetUp() override {
+    WidgetTest::SetUp();
+    ResetCallbackBehavior();
+
+    parent1_ = CreateTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET,
+                                Widget::InitParams::TYPE_WINDOW);
+    parent1_->MakeCloseSynchronous(base::BindLambdaForTesting(
+        [this](Widget::ClosedReason) { parent1_.reset(); }));
+    parent1_->Show();
+    subscriptions_.emplace_back(parent1_->RegisterPaintAsActiveChangedCallback(
+        parent1_callback_.Get()));
+    parent2_ = CreateTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET,
+                                Widget::InitParams::TYPE_WINDOW);
+    parent2_->MakeCloseSynchronous(base::BindLambdaForTesting(
+        [this](Widget::ClosedReason) { parent2_.reset(); }));
+    parent2_->ShowInactive();
+    subscriptions_.emplace_back(parent2_->RegisterPaintAsActiveChangedCallback(
+        parent2_callback_.Get()));
+    WaitForWidgetActive(parent1_.get(), true);
+
+    Widget::InitParams params(Widget::InitParams::CLIENT_OWNS_WIDGET,
+                              Widget::InitParams::TYPE_BUBBLE);
+    params.parent = parent1_->GetNativeView();
+    widget_ = CreateTestWidget(std::move(params));
+    widget_->MakeCloseSynchronous(base::BindLambdaForTesting(
+        [this](Widget::ClosedReason) { widget_.reset(); }));
+    widget_->Show();
+    CHECK_EQ(parent1_.get(), widget_->parent());
+    WaitForWidgetActive(widget_.get(), true);
+    subscriptions_.emplace_back(
+        widget_->RegisterPaintAsActiveChangedCallback(widget_callback_.Get()));
+
+    CHECK(widget_->ShouldPaintAsActive());
+    CHECK(parent1_->ShouldPaintAsActive());
+    CHECK(!parent2_->ShouldPaintAsActive());
+  }
+
+  void TearDown() override {
+    subscriptions_.clear();
+    if (widget_) {
+      widget_->Close();
+    }
+    if (parent1_) {
+      parent1_->Close();
+    }
+    if (parent2_) {
+      parent2_->Close();
+    }
+    WidgetTest::TearDown();
+  }
+
+ protected:
+  void ResetCallbackBehavior() {
+    EXPECT_CALL(widget_callback_, Run).Times(testing::AnyNumber());
+    EXPECT_CALL(parent1_callback_, Run).Times(testing::AnyNumber());
+    EXPECT_CALL(parent2_callback_, Run).Times(testing::AnyNumber());
+  }
+
+  base::MockCallback<Widget::PaintAsActiveCallbackList::CallbackType>
+      widget_callback_;
+  base::MockCallback<Widget::PaintAsActiveCallbackList::CallbackType>
+      parent1_callback_;
+  base::MockCallback<Widget::PaintAsActiveCallbackList::CallbackType>
+      parent2_callback_;
+  std::unique_ptr<Widget> widget_;
+  std::unique_ptr<Widget> parent1_;
+  std::unique_ptr<Widget> parent2_;
+
+ private:
+  std::vector<base::CallbackListSubscription> subscriptions_;
+};
+
+TEST_F(WidgetDestroyedDuringPaintAsActiveChangeTest,
+       ChecksOnDestructionDuringPaintAsActiveFalse) {
+  auto lock = widget_->LockPaintAsActive();
+  parent2_->Activate();
+  WaitForWidgetActive(parent2_.get(), true);
+  WaitForWidgetActive(parent1_.get(), false);
+  WaitForWidgetActive(widget_.get(), false);
+  EXPECT_CALL(widget_callback_, Run).WillRepeatedly([this]() {
+    if (widget_ && !widget_->ShouldPaintAsActive()) {
+      EXPECT_CHECK_DEATH_WITH(widget_->Close(), "Check failed: !iterating_.");
+    }
+  });
+  lock.reset();
+}
+
+TEST_F(WidgetDestroyedDuringPaintAsActiveChangeTest,
+       ChecksOnDestructionDuringPaintAsActiveTrue) {
+  parent2_->Activate();
+  WaitForWidgetActive(parent2_.get(), true);
+  WaitForWidgetActive(parent1_.get(), false);
+  WaitForWidgetActive(widget_.get(), false);
+  EXPECT_CALL(widget_callback_, Run).WillRepeatedly([this]() {
+    if (widget_ && widget_->ShouldPaintAsActive()) {
+      EXPECT_CHECK_DEATH_WITH(widget_->Close(), "Check failed: !iterating_.");
+    }
+  });
+  auto lock = widget_->LockPaintAsActive();
+}
+
+TEST_F(WidgetDestroyedDuringPaintAsActiveChangeTest,
+       DestroysOnParentPaintAsActiveFalse) {
+  auto lock = widget_->LockPaintAsActive();
+  parent2_->Activate();
+  WaitForWidgetActive(parent2_.get(), true);
+  WaitForWidgetActive(parent1_.get(), false);
+  WaitForWidgetActive(widget_.get(), false);
+  EXPECT_CALL(parent1_callback_, Run).WillOnce([this]() {
+    if (!parent1_->ShouldPaintAsActive()) {
+      widget_->Close();
+    }
+  });
+  lock.reset();
+}
+
+TEST_F(WidgetDestroyedDuringPaintAsActiveChangeTest,
+       DestroysOnParentPaintAsActiveTrue) {
+  parent2_->Activate();
+  WaitForWidgetActive(parent2_.get(), true);
+  WaitForWidgetActive(parent1_.get(), false);
+  WaitForWidgetActive(widget_.get(), false);
+  EXPECT_CALL(parent1_callback_, Run).WillRepeatedly([this]() {
+    if (widget_ && parent1_->ShouldPaintAsActive()) {
+      widget_->Close();
+    }
+  });
+  auto lock = widget_->LockPaintAsActive();
+}
+
+TEST_F(WidgetDestroyedDuringPaintAsActiveChangeTest,
+       DestroysOnReparentWhenOriginalParentLosesPaintAsActive) {
+  widget_->LockPaintAsActive();
+  EXPECT_CALL(parent1_callback_, Run).WillOnce([this]() {
+    if (!parent1_->ShouldPaintAsActive()) {
+      widget_->Close();
+    }
+  });
+  widget_->Reparent(parent2_.get());
+}
+
+TEST_F(WidgetDestroyedDuringPaintAsActiveChangeTest,
+       DestroysOnReparentWhenNewParentGainsPaintAsActive) {
+  widget_->LockPaintAsActive();
+  EXPECT_CALL(parent2_callback_, Run).WillRepeatedly([this]() {
+    if (widget_ && parent2_->ShouldPaintAsActive()) {
+      widget_->Close();
+    }
+  });
+  widget_->Reparent(parent2_.get());
 }
 
 // Widget used to destroy itself when OnNativeWidgetDestroyed is called.
@@ -6600,7 +6764,8 @@ TEST_F(WidgetTest, ReplaceClientContentsView) {
   EXPECT_EQ(client_view_ptr, widget->GetClientContentsView());
 }
 
-// Ensure that view accelerators unregistered when closing a chid widget.
+// Ensure that view accelerators unregistered when closing a chid widget, and
+// that other targets of the same accelerator stay registered.
 TEST_F(WidgetTest, ClosingChildWidgetUnregisterAccelerators) {
   auto parent_widget = base::WrapUnique<Widget>(
       CreateTopLevelNativeWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
@@ -6619,15 +6784,28 @@ TEST_F(WidgetTest, ClosingChildWidgetUnregisterAccelerators) {
   auto* focus_manager = parent_widget->GetFocusManager();
   ui::Accelerator accelerator(ui::VKEY_F10,
                               ui::EF_SHIFT_DOWN | ui::EF_ALT_DOWN);
+  ui::Accelerator shared_accelerator(ui::VKEY_F11, ui::EF_NONE);
   ASSERT_FALSE(focus_manager->IsAcceleratorRegistered(accelerator));
+  ASSERT_FALSE(focus_manager->IsAcceleratorRegistered(shared_accelerator));
   View* view =
       child_widget->GetContentsView()->AddChildView(std::make_unique<View>());
   view->AddAccelerator(accelerator);
+  view->AddAccelerator(shared_accelerator);
   ASSERT_EQ(view->GetFocusManager(), parent_widget->GetFocusManager());
 
+  // A view in the parent widget registers `shared_accelerator` as well.
+  View* parent_view =
+      parent_widget->GetContentsView()->AddChildView(std::make_unique<View>());
+  parent_view->AddAccelerator(shared_accelerator);
+
   ASSERT_TRUE(focus_manager->IsAcceleratorRegistered(accelerator));
+  ASSERT_TRUE(focus_manager->IsAcceleratorRegistered(shared_accelerator));
   child_widget.reset();
   EXPECT_FALSE(focus_manager->IsAcceleratorRegistered(accelerator));
+  EXPECT_TRUE(focus_manager->IsAcceleratorRegistered(shared_accelerator));
+
+  parent_view->ResetAccelerators();
+  EXPECT_FALSE(focus_manager->IsAcceleratorRegistered(shared_accelerator));
 }
 
 TEST_F(WidgetTest, IsDragging) {
@@ -6882,6 +7060,30 @@ TEST_F(WidgetTest, InputProtectionEventHandlerInterceptsEvents) {
   EXPECT_EQ(click_count, 1);
 }
 
+TEST_F(WidgetTest, EnableInputProtectionIdempotentAndRejectsLateCustom) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(features::kEnableInputProtection);
+
+  std::unique_ptr<Widget> widget =
+      CreateTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET);
+
+  widget->EnableInputEventActivationProtection();
+  InputEventActivationProtector* initial_protector =
+      widget->GetInputEventActivationProtector();
+  ASSERT_NE(initial_protector, nullptr);
+
+  // Calling `EnableInputEventActivationProtection()` again with `nullptr` is a
+  // no-op and preserves the existing protector instance.
+  widget->EnableInputEventActivationProtection();
+  EXPECT_EQ(widget->GetInputEventActivationProtector(), initial_protector);
+
+  // Passing a custom protector after input protection has already been enabled
+  // must fail.
+  EXPECT_CHECK_DEATH(widget->EnableInputEventActivationProtection(
+      std::make_unique<
+          testing::NiceMock<MockInputEventActivationProtector>>()));
+}
+
 namespace {
 
 class ThemeChangeTrackingView : public View {
@@ -6901,9 +7103,22 @@ class ThemeChangeTrackingView : public View {
 BEGIN_METADATA(ThemeChangeTrackingView)
 END_METADATA
 
+class TestSetNativeThemeWidget : public Widget {
+ public:
+  using Widget::SetNativeTheme;
+};
+
 }  // namespace
 
-TEST_F(WidgetTest, ThemeChangedShortCircuitRedundantUpdates) {
+// TODO(crbug.com/555907780): Re-enable this test on Mac.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_ThemeChangedShortCircuitRedundantUpdates \
+  DISABLED_ThemeChangedShortCircuitRedundantUpdates
+#else
+#define MAYBE_ThemeChangedShortCircuitRedundantUpdates \
+  ThemeChangedShortCircuitRedundantUpdates
+#endif
+TEST_F(WidgetTest, MAYBE_ThemeChangedShortCircuitRedundantUpdates) {
   base::test::ScopedFeatureList feature_list(
       ::features::kThemeChangeOptimization);
 
@@ -6962,7 +7177,119 @@ TEST_F(WidgetTest, ThemeChangedDoesNotShortCircuitWhenFeatureDisabled) {
   EXPECT_EQ(tracking_view->theme_changed_count(), initial_count + 1);
 }
 
-TEST_F(WidgetTest, ChildWidgetObservesParentThemeChanges) {
+// Tests that `Widget::SetNativeTheme()` skips a redundant `ThemeChanged()` pass
+// when the effective `NativeTheme` does not change.
+TEST_F(WidgetTest, SetNativeThemeSkipsRedundantThemeChanged) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kSkipRedundantSetNativeThemeUpdate},
+      /*disabled_features=*/{::features::kThemeChangeOptimization});
+
+  auto widget = std::make_unique<TestSetNativeThemeWidget>();
+  widget->Init(
+      CreateParamsForTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
+  auto* tracking_view =
+      widget->SetContentsView(std::make_unique<ThemeChangeTrackingView>());
+
+  const int initial_count = tracking_view->theme_changed_count();
+  EXPECT_GT(initial_count, 0);
+
+  // Calling `SetNativeTheme(nullptr)` when `native_theme_` is already `nullptr`
+  // should not trigger `ThemeChanged()`, and should keep observing the
+  // effective `NativeTheme`.
+  widget->SetNativeTheme(nullptr);
+  EXPECT_EQ(tracking_view->theme_changed_count(), initial_count);
+  widget->GetNativeTheme()->NotifyOnNativeThemeUpdated();
+  EXPECT_EQ(tracking_view->theme_changed_count(), initial_count + 1);
+
+  const int count_after_notify = tracking_view->theme_changed_count();
+  // Calling `SetNativeTheme()` with the same `NativeTheme` that
+  // `GetNativeTheme()` already returns should not trigger another
+  // `ThemeChanged()` pass.
+  widget->SetNativeTheme(widget->GetNativeTheme());
+  EXPECT_EQ(tracking_view->theme_changed_count(), count_after_notify);
+
+  // Calling `SetNativeTheme()` again with the same already-set `NativeTheme`
+  // should also not trigger `ThemeChanged()`.
+  widget->SetNativeTheme(widget->GetNativeTheme());
+  EXPECT_EQ(tracking_view->theme_changed_count(), count_after_notify);
+
+  // Resetting to `nullptr` when `native_theme_` equals the fallback
+  // `GetNativeTheme()` keeps the same effective theme and should not trigger a
+  // theme update.
+  widget->SetNativeTheme(nullptr);
+  EXPECT_EQ(tracking_view->theme_changed_count(), count_after_notify);
+
+  // Assigning a different `NativeTheme` while `native_theme_` is `nullptr`
+  // should trigger a theme update.
+  ASSERT_NE(widget->GetNativeTheme(), ui::NativeTheme::GetInstanceForWeb());
+  widget->SetNativeTheme(ui::NativeTheme::GetInstanceForWeb());
+  EXPECT_EQ(tracking_view->theme_changed_count(), count_after_notify + 1);
+
+  // Updating from one non-null `NativeTheme` to another (`is_update`) should
+  // also trigger a theme update.
+  widget->SetNativeTheme(ui::NativeTheme::GetInstanceForNativeUi());
+  EXPECT_EQ(tracking_view->theme_changed_count(), count_after_notify + 2);
+
+  // Resetting from a non-default `NativeTheme` back to `nullptr` changes the
+  // effective theme, triggers a theme update, and switches observation back to
+  // the fallback `GetNativeTheme()`.
+  widget->SetNativeTheme(ui::NativeTheme::GetInstanceForWeb());
+  EXPECT_EQ(tracking_view->theme_changed_count(), count_after_notify + 3);
+  widget->SetNativeTheme(nullptr);
+  EXPECT_EQ(tracking_view->theme_changed_count(), count_after_notify + 4);
+  widget->GetNativeTheme()->NotifyOnNativeThemeUpdated();
+  EXPECT_EQ(tracking_view->theme_changed_count(), count_after_notify + 5);
+
+  // Calling `SetNativeTheme()` before `Init()` should record the theme without
+  // crashing or double-observing during `Init()`, and skip a redundant
+  // post-`Init()` `SetNativeTheme()` with the same theme.
+  auto pre_init_widget = std::make_unique<TestSetNativeThemeWidget>();
+  pre_init_widget->SetNativeTheme(ui::NativeTheme::GetInstanceForWeb());
+  pre_init_widget->Init(
+      CreateParamsForTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
+  EXPECT_EQ(pre_init_widget->GetNativeTheme(),
+            ui::NativeTheme::GetInstanceForWeb());
+  auto* pre_init_tracking_view = pre_init_widget->SetContentsView(
+      std::make_unique<ThemeChangeTrackingView>());
+  const int pre_init_count = pre_init_tracking_view->theme_changed_count();
+  pre_init_widget->SetNativeTheme(ui::NativeTheme::GetInstanceForWeb());
+  EXPECT_EQ(pre_init_tracking_view->theme_changed_count(), pre_init_count);
+  ui::NativeTheme::GetInstanceForWeb()->NotifyOnNativeThemeUpdated();
+  EXPECT_EQ(pre_init_tracking_view->theme_changed_count(), pre_init_count + 1);
+}
+
+// Tests that `Widget::SetNativeTheme()` still triggers `ThemeChanged()` when
+// `kSkipRedundantSetNativeThemeUpdate` is disabled.
+TEST_F(WidgetTest, SetNativeThemeDoesNotShortCircuitWhenFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{},
+      /*disabled_features=*/{features::kSkipRedundantSetNativeThemeUpdate,
+                             ::features::kThemeChangeOptimization});
+
+  auto widget = std::make_unique<TestSetNativeThemeWidget>();
+  widget->Init(
+      CreateParamsForTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
+  auto* tracking_view =
+      widget->SetContentsView(std::make_unique<ThemeChangeTrackingView>());
+
+  const int initial_count = tracking_view->theme_changed_count();
+  EXPECT_GT(initial_count, 0);
+
+  widget->SetNativeTheme(widget->GetNativeTheme());
+  EXPECT_EQ(tracking_view->theme_changed_count(), initial_count + 1);
+}
+
+// TODO(crbug.com/555468642): Re-enable this test on Mac.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_ChildWidgetObservesParentThemeChanges \
+  DISABLED_ChildWidgetObservesParentThemeChanges
+#else
+#define MAYBE_ChildWidgetObservesParentThemeChanges \
+  ChildWidgetObservesParentThemeChanges
+#endif
+TEST_F(WidgetTest, MAYBE_ChildWidgetObservesParentThemeChanges) {
   base::test::ScopedFeatureList feature_list(
       ::features::kThemeChangeOptimization);
 
@@ -7000,7 +7327,15 @@ TEST_F(WidgetTest, ChildWidgetObservesParentThemeChanges) {
   }));
 }
 
-TEST_F(WidgetTest, ScheduleThemeChangedCoalescesUpdates) {
+// TODO(crbug.com/555304813) Re-enable.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_ScheduleThemeChangedCoalescesUpdates \
+  DISABLED_ScheduleThemeChangedCoalescesUpdates
+#else
+#define MAYBE_ScheduleThemeChangedCoalescesUpdates \
+  ScheduleThemeChangedCoalescesUpdates
+#endif
+TEST_F(WidgetTest, MAYBE_ScheduleThemeChangedCoalescesUpdates) {
   base::test::ScopedFeatureList feature_list(
       ::features::kThemeChangeOptimization);
 
@@ -7054,6 +7389,199 @@ TEST_F(WidgetTest, ScheduleThemeChangedRunsSynchronouslyWhenDisabled) {
   widget->ScheduleThemeChanged();
   // When feature is disabled, ScheduleThemeChanged runs synchronously.
   EXPECT_EQ(tracking_view->theme_changed_count(), initial_count + 1);
+}
+
+TEST_F(WidgetTest,
+       ChildWidgetShortCircuitsUnchangedKeyAndIgnoresParentDestruction) {
+  base::test::ScopedFeatureList feature_list(
+      ::features::kThemeChangeOptimization);
+
+  ui::MockOsSettingsProvider os_settings_provider;
+  os_settings_provider.SetPreferredColorScheme(
+      ui::NativeTheme::PreferredColorScheme::kLight);
+
+  std::unique_ptr<Widget> parent_widget =
+      CreateTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET);
+
+  Widget::InitParams child_params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_POPUP);
+  child_params.parent = parent_widget->GetNativeView();
+  child_params.child = true;
+  std::unique_ptr<Widget> child_widget =
+      CreateTestWidget(std::move(child_params));
+
+  auto* child_tracking_view = child_widget->SetContentsView(
+      std::make_unique<ThemeChangeTrackingView>());
+
+  // Override child widget's color mode to kDark.
+  child_widget->SetColorModeOverride(ui::ColorProviderKey::ColorMode::kDark);
+  child_widget->ThemeChanged();
+  const int count_after_child_override =
+      child_tracking_view->theme_changed_count();
+  EXPECT_GT(count_after_child_override, 0);
+
+  // Changing parent widget's color mode to kDark does not change child_widget's
+  // effective ColorProviderKey (since child already overrides color_mode to
+  // kDark), so child_widget should short-circuit ThemeChanged().
+  parent_widget->SetColorModeOverride(ui::ColorProviderKey::ColorMode::kDark);
+  parent_widget->ThemeChanged();
+  RunPendingMessages();
+  EXPECT_EQ(child_tracking_view->theme_changed_count(),
+            count_after_child_override);
+
+  // Changing parent widget's user color DOES change child_widget's effective
+  // ColorProviderKey, so child_widget must run ThemeChanged().
+  parent_widget->SetUserColorOverride(SK_ColorBLUE);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return child_tracking_view->theme_changed_count() ==
+           count_after_child_override + 1;
+  }));
+
+  // Detach the native view so `child_widget`'s NativeWidget survives
+  // `parent_widget` destruction while `child_widget->parent_` and
+  // `parent_theme_observer_` remain attached until `~ColorProviderSource()`.
+  // Destroying `parent_widget` must not trigger a spurious ThemeChanged() on
+  // `child_widget`, and must transition `child_widget` back to observing
+  // NativeTheme directly.
+  internal::NativeWidgetPrivate::ReparentNativeView(
+      child_widget->GetNativeView(), gfx::NativeView());
+  ASSERT_EQ(child_widget->parent(), parent_widget.get());
+  parent_widget.reset();
+  EXPECT_EQ(child_widget->parent(), nullptr);
+  RunPendingMessages();
+  EXPECT_EQ(child_tracking_view->theme_changed_count(),
+            count_after_child_override + 1);
+
+  // Clearing child_widget's override and toggling OS color scheme should update
+  // the orphaned child_widget via its fallback NativeTheme observation.
+  child_widget->SetColorModeOverride(std::nullopt);
+  child_widget->ThemeChanged();
+  const int count_after_orphan_reset =
+      child_tracking_view->theme_changed_count();
+  os_settings_provider.SetPreferredColorScheme(
+      ui::NativeTheme::PreferredColorScheme::kDark);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return child_tracking_view->theme_changed_count() ==
+           count_after_orphan_reset + 1;
+  }));
+}
+
+TEST_F(WidgetTest, ChildWidgetDoesNotDoubleUpdateOnNativeThemeChange) {
+  base::test::ScopedFeatureList feature_list(
+      ::features::kThemeChangeOptimization);
+
+  ui::MockOsSettingsProvider os_settings_provider;
+  os_settings_provider.SetPreferredColorScheme(
+      ui::NativeTheme::PreferredColorScheme::kLight);
+
+  std::unique_ptr<Widget> parent_widget =
+      CreateTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET);
+
+  Widget::InitParams child_params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_POPUP);
+  child_params.parent = parent_widget->GetNativeView();
+  child_params.child = true;
+  std::unique_ptr<Widget> child_widget =
+      CreateTestWidget(std::move(child_params));
+
+  auto* child_tracking_view = child_widget->SetContentsView(
+      std::make_unique<ThemeChangeTrackingView>());
+
+  parent_widget->ThemeChanged();
+  child_widget->ThemeChanged();
+  RunPendingMessages();
+  const int child_initial_count = child_tracking_view->theme_changed_count();
+  EXPECT_GT(child_initial_count, 0);
+
+  // Toggling OS color scheme updates parent_widget via NativeTheme, which then
+  // notifies child_widget via ParentThemeObserver once (without child_widget
+  // also observing NativeTheme directly).
+  os_settings_provider.SetPreferredColorScheme(
+      ui::NativeTheme::PreferredColorScheme::kDark);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return child_tracking_view->theme_changed_count() ==
+           child_initial_count + 1;
+  }));
+  RunPendingMessages();
+  EXPECT_EQ(child_tracking_view->theme_changed_count(),
+            child_initial_count + 1);
+
+  // Reparenting `child_widget` to nullptr must restore direct NativeTheme
+  // observation.
+  child_widget->Reparent(nullptr);
+  RunPendingMessages();
+  const int count_after_reparent = child_tracking_view->theme_changed_count();
+  os_settings_provider.SetPreferredColorScheme(
+      ui::NativeTheme::PreferredColorScheme::kLight);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return child_tracking_view->theme_changed_count() ==
+           count_after_reparent + 1;
+  }));
+}
+
+TEST_F(WidgetTest, ScheduledThemeChangeCancelledOnNativeWidgetDestruction) {
+  base::test::ScopedFeatureList feature_list(
+      ::features::kThemeChangeOptimization);
+
+  std::unique_ptr<Widget> widget =
+      CreateTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET);
+  auto* tracking_view =
+      widget->SetContentsView(std::make_unique<ThemeChangeTrackingView>());
+
+  widget->ThemeChanged();
+  RunPendingMessages();
+  const int initial_count = tracking_view->theme_changed_count();
+  EXPECT_GT(initial_count, 0);
+
+  // Schedule a forced theme update, then synchronously destroy the native
+  // widget while keeping the CLIENT_OWNS_WIDGET `widget` instance alive.
+  widget->ResetLastColorProviderKey();
+  widget->ScheduleThemeChanged();
+  widget->CloseNow();
+  RunPendingMessages();
+
+  EXPECT_EQ(tracking_view->theme_changed_count(), initial_count);
+}
+
+TEST_F(WidgetTest, NonClientViewOverlayViewOwnership) {
+  ViewTracker initial_tracker;
+  auto delegate = std::make_unique<WidgetDelegate>();
+  delegate->SetOverlayViewFactory(
+      base::BindLambdaForTesting([&initial_tracker]() {
+        auto view = std::make_unique<View>();
+        initial_tracker.SetView(view.get());
+        return view;
+      }));
+
+  auto widget = std::make_unique<Widget>();
+  Widget::InitParams params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_WINDOW);
+  params.delegate = delegate.get();
+  widget->Init(std::move(params));
+
+  NonClientView* non_client_view = widget->non_client_view();
+  ASSERT_TRUE(non_client_view);
+  ASSERT_TRUE(initial_tracker.view());
+  EXPECT_EQ(initial_tracker.view()->parent(), non_client_view);
+
+  ViewTracker tracker1;
+  auto overlay1 = std::make_unique<View>();
+  tracker1.SetView(overlay1.get());
+  non_client_view->SetOverlayView(std::move(overlay1));
+  EXPECT_FALSE(initial_tracker.view());
+  EXPECT_TRUE(tracker1.view());
+  EXPECT_EQ(tracker1.view()->parent(), non_client_view);
+
+  ViewTracker tracker2;
+  auto overlay2 = std::make_unique<View>();
+  tracker2.SetView(overlay2.get());
+  non_client_view->SetOverlayView(std::move(overlay2));
+  EXPECT_FALSE(tracker1.view());
+  EXPECT_TRUE(tracker2.view());
+  EXPECT_EQ(tracker2.view()->parent(), non_client_view);
+
+  non_client_view->SetOverlayView(std::unique_ptr<View>());
+  EXPECT_FALSE(tracker2.view());
 }
 
 }  // namespace views::test

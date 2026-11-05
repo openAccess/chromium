@@ -23,6 +23,8 @@
 #include "content/public/browser/web_contents.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace login_detection {
 
@@ -91,14 +93,14 @@ LoginDetectionTabHelper::LoginDetectionTabHelper(
       oauth_login_detector_(std::make_unique<OAuthLoginDetector>()),
       ukm_source_id_(
           web_contents->GetPrimaryMainFrame()->GetPageUkmSourceId()) {
-  DCHECK(IsLoginDetectionFeatureEnabled());
+  CHECK(IsLoginDetectionFeatureEnabled(), base::NotFatalUntil::M161);
 }
 
 LoginDetectionTabHelper::~LoginDetectionTabHelper() = default;
 
 void LoginDetectionTabHelper::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
-  DCHECK(navigation_handle);
+  CHECK(navigation_handle, base::NotFatalUntil::M161);
   if (!navigation_handle->IsInPrimaryMainFrame())
     return;
   if (!navigation_handle->HasCommitted())
@@ -137,12 +139,13 @@ void LoginDetectionTabHelper::DidOpenRequestedURL(
     content::RenderFrameHost* source_render_frame_host,
     const GURL& url,
     const content::Referrer& referrer,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     ui::PageTransition transition,
     bool started_from_context_menu,
     bool renderer_initiated) {
-  if (disposition != WindowOpenDisposition::NEW_POPUP)
+  if (disposition != ui::mojom::WindowOpenDisposition::kNewPopup) {
     return;
+  }
   // DidOpenRequestedURL may be called before `new_contents` has been added to
   // the tab strip, and as such tab helpers may not yet have been initialized.
   // Explicitly instantiate the login detector for the `new_contents` here to

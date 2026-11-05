@@ -39,7 +39,7 @@ public class TopToolbarOverlayCoordinator implements SceneOverlay {
     private final TopToolbarSceneLayer mSceneLayer;
 
     /** Handles processing updates to the model. */
-    private final CompositorModelChangeProcessor mChangeProcessor;
+    private final @Nullable CompositorModelChangeProcessor mChangeProcessor;
 
     /** Business logic for this overlay. */
     private final TopToolbarOverlayMediator mMediator;
@@ -150,7 +150,9 @@ public class TopToolbarOverlayCoordinator implements SceneOverlay {
 
     /** Clean up this component. */
     public void destroy() {
-        mChangeProcessor.destroy();
+        if (mChangeProcessor != null) {
+            mChangeProcessor.destroy();
+        }
         mMediator.destroy();
         mSceneLayer.destroy();
     }

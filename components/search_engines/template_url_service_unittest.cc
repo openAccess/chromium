@@ -14,13 +14,20 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_ostream_operators.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/with_feature_override.h"
+#include "base/test/task_environment.h"
 #include "components/regional_capabilities/regional_capabilities_switches.h"
+#include "components/search_engines/choice_made_location.h"
+#include "components/search_engines/default_search_manager.h"
 #include "components/search_engines/search_engine_choice/search_engine_choice_service.h"
 #include "components/search_engines/search_engine_choice/search_engine_choice_utils.h"
+#include "components/search_engines/search_engine_type.h"
+#include "components/search_engines/search_engines_pref_names.h"
 #include "components/search_engines/search_engines_switches.h"
+#include "components/search_engines/search_engines_test_environment.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_data_util.h"
@@ -29,64 +36,13 @@
 #include "components/search_engines/template_url_service_client.h"
 #include "components/search_engines/template_url_service_observer.h"
 #include "components/search_engines/template_url_service_test_util.h"
-#include "components/search_engines/template_url_starter_pack_data.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/search_engines_data/resources/definitions/prepopulated_engines.h"
 #include "url/origin.h"
 
-namespace {
-
-// Matcher to check TemplateURL by short_name.
-MATCHER_P(HasShortName, name, "") {
-  return base::UTF16ToASCII(arg->short_name()) == name;
-}
-
-}  // namespace
-
-class TemplateURLServiceUnitTest : public TemplateURLServiceUnitTestBase {
- public:
-  TemplateURL* AddTemplateURL(
-      const std::u16string_view& short_name,
-      const std::u16string_view& keyword,
-      int prepopulate_id = 0,
-      bool created_by_policy = false,
-      TemplateURLData::ActiveStatus active_status =
-          TemplateURLData::ActiveStatus::kTrue,
-      template_url_starter_pack_data::StarterPackId starter_pack_id =
-          template_url_starter_pack_data::StarterPackId::kNone) {
-    TemplateURLData data;
-
-    data.SetShortName(short_name);
-    data.SetKeyword(keyword);
-    data.SetURL("http://google.com/search?q={searchTerms}");
-    data.prepopulate_id = prepopulate_id;
-    data.policy_origin = created_by_policy
-                             ? TemplateURLData::PolicyOrigin::kSiteSearch
-                             : TemplateURLData::PolicyOrigin::kNoPolicy;
-    data.featured_by_policy = created_by_policy;
-    data.is_active = active_status;
-    data.starter_pack_id = static_cast<int>(starter_pack_id);
-    data.last_visited = base::Time::Now();
-
-    return template_url_service().Add(std::make_unique<TemplateURL>(data));
-  }
-
-  TemplateURL* AddExtension(const std::u16string_view& short_name,
-                            const std::u16string_view& keyword,
-                            TemplateURLData::ActiveStatus active_status) {
-    TemplateURLData data;
-
-    data.SetShortName(short_name);
-    data.SetKeyword(keyword);
-    data.is_active = active_status;
-
-    return template_url_service().Add(std::make_unique<TemplateURL>(
-        data, TemplateURL::OMNIBOX_API_EXTENSION, base::UTF16ToASCII(keyword),
-        base::Time::Now(), false));
-  }
-};
+class TemplateURLServiceUnitTest : public TemplateURLServiceUnitTestBase {};
 
 TEST_F(TemplateURLServiceUnitTest, SessionToken) {
   // Subsequent calls always get the same token.
@@ -164,6 +120,30 @@ TEST_F(TemplateURLServiceUnitTest, UpdateUserSelectedDefaultSearchEnginePref) {
   const std::string* pref_url = dict.FindString(DefaultSearchManager::kURL);
   ASSERT_TRUE(pref_url);
   EXPECT_EQ("https://custom2.com/search2?q={searchTerms}", *pref_url);
+}
+
+// Regression test: the engine type cached by TemplateURL::GetEngineType() must
+// be invalidated when the engine's URL is changed through Update().
+TEST_F(TemplateURLServiceUnitTest, EngineTypeUpdatedAfterResetTemplateURL) {
+  template_url_service().Load();
+  TemplateURLServiceLoadWaiter().WaitForLoadComplete(template_url_service());
+
+  TemplateURLData data;
+  data.SetShortName(u"custom");
+  data.SetKeyword(u"custom");
+  data.SetURL("https://www.google.com/search?q={searchTerms}");
+  TemplateURL* turl =
+      template_url_service().Add(std::make_unique<TemplateURL>(data));
+  ASSERT_TRUE(turl);
+  EXPECT_EQ(SEARCH_ENGINE_GOOGLE,
+            turl->GetEngineType(template_url_service().search_terms_data()));
+
+  template_url_service().ResetTemplateURL(
+      turl, u"custom", u"custom", "https://example.com/search?q={searchTerms}");
+
+  EXPECT_EQ("https://example.com/search?q={searchTerms}", turl->url());
+  EXPECT_EQ(SEARCH_ENGINE_OTHER,
+            turl->GetEngineType(template_url_service().search_terms_data()));
 }
 
 TEST_F(TemplateURLServiceUnitTest, UpdateRecommendedDefaultSearchEnginePref) {
@@ -278,16 +258,7 @@ TEST_F(TemplateURLServiceUnitTest, SwitchDefaultFromRecommendedPolicyEngine) {
             template_url_service().GetDefaultSearchProvider());
 }
 
-class TemplateURLServiceUpdateLastVisitedTest
-    : public base::test::WithFeatureOverride,
-      public TemplateURLServiceUnitTest {
- public:
-  TemplateURLServiceUpdateLastVisitedTest()
-      : base::test::WithFeatureOverride(
-            switches::kVisitCustomSearchOnUndefaulting) {}
-};
-
-TEST_P(TemplateURLServiceUpdateLastVisitedTest,
+TEST_F(TemplateURLServiceUnitTest,
        UpdateLastVisitedOnDefaultSearchProviderChange) {
   template_url_service().Load();
   TemplateURLServiceLoadWaiter().WaitForLoadComplete(template_url_service());
@@ -338,17 +309,34 @@ TEST_P(TemplateURLServiceUpdateLastVisitedTest,
   template_url_service().SetUserSelectedDefaultSearchProvider(
       custom_turl2, search_engines::ChoiceMadeLocation::kOther);
 
-  // custom_turl1 was replaced. If the feature is enabled, since it's a custom
-  // engine, its last_visited should have been updated.
-  if (IsParamFeatureEnabled()) {
-    EXPECT_NE(custom_turl1->last_visited(), kOldTime);
-  } else {
-    EXPECT_EQ(custom_turl1->last_visited(), kOldTime);
-  }
-}
+  // custom_turl1 was replaced. Since it's a custom engine, its last_visited
+  // should have been updated.
+  EXPECT_NE(custom_turl1->last_visited(), kOldTime);
 
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(
-    TemplateURLServiceUpdateLastVisitedTest);
+  // Overriding custom_turl2 with an extension should NOT update custom_turl2's
+  // last_visited time, nor should removing the extension update the extension
+  // engine's last_visited time.
+  custom_turl2 = template_url_service().GetTemplateURLForGUID("custom-guid2");
+  ASSERT_TRUE(custom_turl2);
+  TemplateURLData ext_data;
+  ext_data.SetShortName(u"ext");
+  ext_data.SetKeyword(u"ext");
+  ext_data.SetURL("https://ext.com/search?q={searchTerms}");
+  ext_data.sync_guid = "ext-guid";
+  ext_data.last_visited = kOldTime;
+  TemplateURL* ext_turl =
+      template_url_service().Add(std::make_unique<TemplateURL>(
+          ext_data, TemplateURL::NORMAL_CONTROLLED_BY_EXTENSION, "ext_id",
+          base::Time::FromTimeT(200), /*wants_to_be_default_engine=*/true));
+  ASSERT_TRUE(ext_turl);
+  template_url_service().ApplyDefaultSearchChangeForTesting(
+      &ext_turl->data(), DefaultSearchManager::FROM_EXTENSION);
+  EXPECT_EQ(custom_turl2->last_visited(), base::Time());
+
+  template_url_service().ApplyDefaultSearchChangeForTesting(
+      &custom_turl2->data(), DefaultSearchManager::FROM_USER);
+  EXPECT_EQ(ext_turl->last_visited(), kOldTime);
+}
 
 TEST_F(TemplateURLServiceUnitTest, GenerateSearchURL) {
   // Set the default search provider to a custom one.
@@ -364,6 +352,21 @@ TEST_F(TemplateURLServiceUnitTest, GenerateSearchURL) {
   EXPECT_EQ(
       "https://www.example.com/?q=",
       template_url_service().GenerateSearchURLForDefaultSearchProvider(u""));
+}
+
+TEST_F(TemplateURLServiceUnitTest, ExpandUrlTemplate) {
+  EXPECT_EQ(template_url_service().ExpandUrlTemplate(
+                "https://example.com/?q={searchTerms}", u"cat pictures"),
+            GURL("https://example.com/?q=cat+pictures"));
+  EXPECT_EQ(template_url_service().ExpandUrlTemplate(
+                "https://example.com/?q={searchTerms}", u""),
+            GURL("https://example.com/?q="));
+  EXPECT_EQ(template_url_service().ExpandUrlTemplate("https://example.com/ai",
+                                                     u"query"),
+            GURL("https://example.com/ai"));
+  EXPECT_FALSE(template_url_service()
+                   .ExpandUrlTemplate("invalid_url", u"query")
+                   .is_valid());
 }
 
 TEST_F(TemplateURLServiceUnitTest, ExtractSearchMetadata) {
@@ -537,313 +540,62 @@ TEST_F(TemplateURLServiceUnitTest, HiddenFromLists) {
   }
 }
 
-TEST_F(TemplateURLServiceUnitTest, GetCategorizedTemplateURLs_Empty) {
-  TemplateURLService::CategorizedTemplateUrls data =
-      template_url_service().GetCategorizedTemplateURLs();
+TEST_F(TemplateURLServiceUnitTest, ShowInDsePickerList) {
+  template_url_service().Load();
+  TemplateURLServiceLoadWaiter().WaitForLoadComplete(template_url_service());
 
-  EXPECT_THAT(data.active_site_shortcuts, testing::IsEmpty());
-  EXPECT_THAT(data.inactive_site_shortcuts, testing::IsEmpty());
-  EXPECT_THAT(data.active_feature_shortcuts, testing::IsEmpty());
-  EXPECT_THAT(data.inactive_feature_shortcuts, testing::IsEmpty());
+  // Policy-created engine
+  TemplateURLData policy_data;
+  policy_data.SetShortName(u"policy");
+  policy_data.SetKeyword(u"policy");
+  policy_data.SetURL("https://policy.com/?q={searchTerms}");
+  policy_data.policy_origin =
+      TemplateURLData::PolicyOrigin::kDefaultSearchProvider;
+  TemplateURL* policy_turl =
+      template_url_service().Add(std::make_unique<TemplateURL>(policy_data));
+
+  // Regional prepopulated engine (using a known prepopulate_id)
+  TemplateURLData regional_data;
+  regional_data.SetShortName(u"regional");
+  regional_data.SetKeyword(u"regional");
+  regional_data.SetURL("https://regional.com/?q={searchTerms}");
+  regional_data.prepopulate_id = TemplateURLPrepopulateData::google.id;
+  TemplateURL* regional_turl =
+      template_url_service().Add(std::make_unique<TemplateURL>(regional_data));
+
+  // Non-regional prepopulated engine (using an unknown prepopulate_id)
+  TemplateURLData non_regional_data;
+  non_regional_data.SetShortName(u"non_regional");
+  non_regional_data.SetKeyword(u"non_regional");
+  non_regional_data.SetURL("https://nonregional.com/?q={searchTerms}");
+  non_regional_data.prepopulate_id = 999999;
+  TemplateURL* non_regional_turl = template_url_service().Add(
+      std::make_unique<TemplateURL>(non_regional_data));
+
+  // Custom user engine
+  TemplateURLData custom_data;
+  custom_data.SetShortName(u"custom");
+  custom_data.SetKeyword(u"custom");
+  custom_data.SetURL("https://custom.com/?q={searchTerms}");
+  custom_data.prepopulate_id = 0;
+  TemplateURL* custom_turl =
+      template_url_service().Add(std::make_unique<TemplateURL>(custom_data));
+
+  // Starter pack engine
+  TemplateURLData starter_pack_data;
+  starter_pack_data.SetShortName(u"starter");
+  starter_pack_data.SetKeyword(u"starter");
+  starter_pack_data.SetURL("https://starter.com/?q={searchTerms}");
+  starter_pack_data.starter_pack_id = 1;
+  TemplateURL* starter_pack_turl = template_url_service().Add(
+      std::make_unique<TemplateURL>(starter_pack_data));
+
+  EXPECT_TRUE(template_url_service().ShowInDsePickerList(policy_turl));
+  EXPECT_TRUE(template_url_service().ShowInDsePickerList(regional_turl));
+  EXPECT_FALSE(template_url_service().ShowInDsePickerList(non_regional_turl));
+  EXPECT_FALSE(template_url_service().ShowInDsePickerList(custom_turl));
+  EXPECT_FALSE(template_url_service().ShowInDsePickerList(starter_pack_turl));
 }
-
-TEST_F(TemplateURLServiceUnitTest, GetCategorizedTemplateURLs_HiddenSkipped) {
-  // User-defined engine and a featured policy engine exist with the same
-  // keyword. User-defined engine should be hidden. Policy engine should not be
-  // hidden.
-  TemplateURL* custom_url = AddTemplateURL(u"Custom Engine", u"@conflict");
-  TemplateURL* policy_url =
-      AddTemplateURL(u"Policy Engine", u"@conflict", /*prepopulate_id=*/0,
-                     /*created_by_policy=*/true);
-
-  ASSERT_TRUE(template_url_service().HiddenFromLists(custom_url));
-  ASSERT_FALSE(template_url_service().HiddenFromLists(policy_url));
-
-  TemplateURLService::CategorizedTemplateUrls result =
-      template_url_service().GetCategorizedTemplateURLs();
-
-  // Only the not hidden TemplateURL should be added to the active site
-  // shortcuts.
-  EXPECT_THAT(result.active_site_shortcuts,
-              testing::ElementsAre(HasShortName("Policy Engine")));
-  EXPECT_THAT(result.inactive_site_shortcuts, testing::IsEmpty());
-  EXPECT_THAT(result.active_feature_shortcuts, testing::IsEmpty());
-  EXPECT_THAT(result.inactive_feature_shortcuts, testing::IsEmpty());
-}
-
-TEST_F(TemplateURLServiceUnitTest,
-       GetCategorizedTemplateURLs_DisabledStarterPackIdsSkipped) {
-  AddTemplateURL(u"AI Search", u"ai", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/false,
-                 TemplateURLData::ActiveStatus::kTrue,
-                 template_url_starter_pack_data::StarterPackId::kAiMode);
-
-  template_url_starter_pack_data::StarterPackIdSet disabled_starter_pack_ids{
-      template_url_starter_pack_data::StarterPackId::kAiMode};
-
-  TemplateURLService::CategorizedTemplateUrls data_no_ai =
-      template_url_service().GetCategorizedTemplateURLs(
-          disabled_starter_pack_ids);
-  EXPECT_THAT(data_no_ai.active_feature_shortcuts, testing::IsEmpty());
-
-  TemplateURLService::CategorizedTemplateUrls data_ai =
-      template_url_service().GetCategorizedTemplateURLs();
-  EXPECT_THAT(data_ai.active_feature_shortcuts,
-              testing::ElementsAre(HasShortName("AI Search")));
-}
-
-TEST_F(TemplateURLServiceUnitTest,
-       GetCategorizedTemplateURLs_PrepopulatedPrioritizedAndOrdered) {
-  // Add custom site shortcuts.
-  AddTemplateURL(u"Custom Search", u"custom");
-  AddTemplateURL(u"Custom Beta", u"cbeta");
-
-  // Add the prepopulated engines in reverse order.
-  auto prepop_engines = prepopulate_data_resolver().GetPrepopulatedEngines();
-  ASSERT_EQ(3u, prepop_engines.size());
-
-  for (int i = prepop_engines.size() - 1; i >= 0; --i) {
-    AddTemplateURL(prepop_engines.at(i)->short_name(),
-                   prepop_engines.at(i)->keyword(),
-                   prepop_engines.at(i)->prepopulate_id);
-  }
-
-  TemplateURLService::CategorizedTemplateUrls data =
-      template_url_service().GetCategorizedTemplateURLs();
-
-  // Expected order: First the prepopulated engines in the order of
-  // `GetPrepopulatedEngines()`, then alphabetically sorted custom shortcuts.
-  EXPECT_THAT(data.active_site_shortcuts,
-              testing::ElementsAre(
-                  HasShortName(
-                      base::UTF16ToASCII((prepop_engines.at(0)->short_name()))),
-                  HasShortName(
-                      base::UTF16ToASCII((prepop_engines.at(1)->short_name()))),
-                  HasShortName(
-                      base::UTF16ToASCII((prepop_engines.at(2)->short_name()))),
-                  HasShortName("Custom Beta"), HasShortName("Custom Search")));
-}
-
-TEST_F(TemplateURLServiceUnitTest,
-       GetCategorizedTemplateURLs_CategorizationLogic) {
-  // Active Site Shortcuts
-  AddTemplateURL(u"Custom Active Site", u"cas");
-  AddTemplateURL(u"Prepop Active Site", u"pas",
-                 /*prepopulate_id=*/1);
-
-  // Inactive Site Shortcuts
-  AddTemplateURL(u"Custom Inactive Site", u"cis", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/false,
-                 TemplateURLData::ActiveStatus::kFalse);
-
-  // Active Feature Shortcuts
-  AddTemplateURL(u"Lens Active", u"lensa", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/false,
-                 TemplateURLData::ActiveStatus::kTrue,
-                 template_url_starter_pack_data::StarterPackId::kTabs);
-  AddExtension(u"Ext Active", u"exa", TemplateURLData::ActiveStatus::kTrue);
-
-  // Inactive Feature Shortcuts
-  AddTemplateURL(u"Lens Inactive", u"lensi", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/false,
-                 TemplateURLData::ActiveStatus::kFalse,
-                 template_url_starter_pack_data::StarterPackId::kTabs);
-  AddExtension(u"Ext Inactive", u"exi", TemplateURLData::ActiveStatus::kFalse);
-
-  TemplateURLService::CategorizedTemplateUrls data =
-      template_url_service().GetCategorizedTemplateURLs();
-
-  EXPECT_THAT(
-      data.active_site_shortcuts,
-      testing::UnorderedElementsAre(HasShortName("Custom Active Site"),
-                                    HasShortName("Prepop Active Site")));
-  EXPECT_THAT(
-      data.inactive_site_shortcuts,
-      testing::UnorderedElementsAre(HasShortName("Custom Inactive Site")));
-  EXPECT_THAT(data.active_feature_shortcuts,
-              testing::UnorderedElementsAre(HasShortName("Lens Active"),
-                                            HasShortName("Ext Active")));
-  EXPECT_THAT(data.inactive_feature_shortcuts,
-              testing::UnorderedElementsAre(HasShortName("Lens Inactive"),
-                                            HasShortName("Ext Inactive")));
-}
-
-TEST_F(TemplateURLServiceUnitTest, GetCategorizedTemplateURLs_Sorting) {
-  // Custom Active Site Shortcuts: Sorted by managed (policy) status then
-  // alphabetically.
-  AddTemplateURL(u"B Unmanaged", u"bu", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/false);
-  AddTemplateURL(u"A Unmanaged", u"au", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/false);
-  AddTemplateURL(u"C Managed", u"cu", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/true);
-  AddTemplateURL(u"D Managed", u"dm", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/true);
-
-  // Inactive Site Shortcuts: Sorted by managed (policy) status then
-  // alphabetically.
-  AddTemplateURL(u"Y Unmanaged", u"yu", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/false,
-                 TemplateURLData::ActiveStatus::kFalse);
-  AddTemplateURL(u"X Unmanaged", u"xu", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/false,
-                 TemplateURLData::ActiveStatus::kFalse);
-  AddTemplateURL(u"W Managed", u"wm", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/true,
-                 TemplateURLData::ActiveStatus::kFalse);
-  AddTemplateURL(u"V Managed", u"vm", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/true,
-                 TemplateURLData::ActiveStatus::kFalse);
-
-  TemplateURLService::CategorizedTemplateUrls data =
-      template_url_service().GetCategorizedTemplateURLs();
-
-  // Managed URLs come first, then alphabetical within managed/unmanaged groups.
-  EXPECT_THAT(data.active_site_shortcuts,
-              testing::ElementsAre(
-                  HasShortName("C Managed"), HasShortName("D Managed"),
-                  HasShortName("A Unmanaged"), HasShortName("B Unmanaged")));
-
-  EXPECT_THAT(data.inactive_site_shortcuts,
-              testing::ElementsAre(
-                  HasShortName("V Managed"), HasShortName("W Managed"),
-                  HasShortName("X Unmanaged"), HasShortName("Y Unmanaged")));
-}
-
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-TEST_F(TemplateURLServiceUnitTest,
-       GetPrepopulatedAndRecentlyVisitedTemplateURLs_Empty) {
-  TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls data =
-      template_url_service().GetPrepopulatedAndRecentlyVisitedTemplateURLs();
-
-  EXPECT_THAT(data.prepopulated_urls, testing::IsEmpty());
-  EXPECT_THAT(data.recently_visited_urls, testing::IsEmpty());
-}
-
-TEST_F(TemplateURLServiceUnitTest,
-       GetPrepopulatedAndRecentlyVisitedTemplateURLs_HiddenSkipped) {
-  // Fetch a valid prepopulated engine ID from the test's resolver environment.
-  auto prepop_engines = prepopulate_data_resolver().GetPrepopulatedEngines();
-  ASSERT_FALSE(prepop_engines.empty());
-  int valid_prepopulate_id = prepop_engines.at(0)->prepopulate_id;
-
-  // Add a user-defined engine and the real prepopulated engine with matching
-  // keywords.
-  TemplateURL* custom_url = AddTemplateURL(u"Custom Engine", u"@conflict");
-  TemplateURL* prepop_url = AddTemplateURL(u"Prepopulated Engine", u"@conflict",
-                                           valid_prepopulate_id);
-
-  ASSERT_TRUE(template_url_service().HiddenFromLists(custom_url));
-  ASSERT_FALSE(template_url_service().HiddenFromLists(prepop_url));
-
-  TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls data =
-      template_url_service().GetPrepopulatedAndRecentlyVisitedTemplateURLs();
-
-  EXPECT_THAT(data.prepopulated_urls,
-              testing::ElementsAre(HasShortName("Prepopulated Engine")));
-  EXPECT_THAT(data.recently_visited_urls, testing::IsEmpty());
-}
-
-TEST_F(TemplateURLServiceUnitTest,
-       GetPrepopulatedAndRecentlyVisitedTemplateURLs_ActiveStatusIgnored) {
-  // Add some prepopulated Template URLs.
-  AddTemplateURL(u"Active Prepop Engine", u"ape", /*prepopulate_id=*/1);
-  AddTemplateURL(u"Inactive Prepop Engine", u"ipe", /*prepopulate_id=*/2,
-                 /*created_by_policy=*/false,
-                 TemplateURLData::ActiveStatus::kFalse);
-
-  // Add recently Visited Template URLs.
-  AddTemplateURL(u"Active Recent Site Search", u"arss");
-  AddTemplateURL(u"Inactive Recent Site Search", u"irss", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/false,
-                 TemplateURLData::ActiveStatus::kFalse);
-
-  TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls data =
-      template_url_service().GetPrepopulatedAndRecentlyVisitedTemplateURLs();
-
-  EXPECT_THAT(
-      data.prepopulated_urls,
-      testing::UnorderedElementsAre(HasShortName("Active Prepop Engine"),
-                                    HasShortName("Inactive Prepop Engine")));
-  EXPECT_THAT(data.recently_visited_urls,
-              testing::UnorderedElementsAre(
-                  HasShortName("Active Recent Site Search"),
-                  HasShortName("Inactive Recent Site Search")));
-}
-
-TEST_F(TemplateURLServiceUnitTest,
-       GetPrepopulatedAndRecentlyVisitedTemplateURLs_CategorizationLogic) {
-  // Prepopulated Template URL.
-  AddTemplateURL(u"Prepop Engine", u"pe", /*prepopulate_id=*/1);
-
-  // Recently Visited Template URL (Not default, not starter pack, not
-  // extension).
-  AddTemplateURL(u"Recent Site Search", u"rss");
-
-  // Feature items (Starter Pack / Extensions) should not be included.
-  AddTemplateURL(u"Lens Starter Pack", u"lens", /*prepopulate_id=*/0,
-                 /*created_by_policy=*/false,
-                 TemplateURLData::ActiveStatus::kTrue,
-                 template_url_starter_pack_data::StarterPackId::kTabs);
-  AddExtension(u"Ext Feature", u"ext", TemplateURLData::ActiveStatus::kTrue);
-
-  TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls data =
-      template_url_service().GetPrepopulatedAndRecentlyVisitedTemplateURLs();
-
-  EXPECT_THAT(data.prepopulated_urls,
-              testing::UnorderedElementsAre(HasShortName("Prepop Engine")));
-  EXPECT_THAT(
-      data.recently_visited_urls,
-      testing::UnorderedElementsAre(HasShortName("Recent Site Search")));
-}
-
-TEST_F(TemplateURLServiceUnitTest,
-       GetPrepopulatedAndRecentlyVisitedTemplateURLs_PrepopulatedSorting) {
-  // Add the prepopulated engines in reverse order.
-  auto prepop_engines = prepopulate_data_resolver().GetPrepopulatedEngines();
-  ASSERT_EQ(3u, prepop_engines.size());
-
-  for (int i = prepop_engines.size() - 1; i >= 0; --i) {
-    AddTemplateURL(prepop_engines.at(i)->short_name(),
-                   prepop_engines.at(i)->keyword(),
-                   prepop_engines.at(i)->prepopulate_id);
-  }
-
-  TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls data =
-      template_url_service().GetPrepopulatedAndRecentlyVisitedTemplateURLs();
-
-  // Prepopulated engine list matches
-  // `internal::OrderTemplateUrlsByPrepopulatedAndManagedAndAlphabetically`.
-  EXPECT_THAT(data.prepopulated_urls,
-              testing::ElementsAre(HasShortName(base::UTF16ToASCII(
-                                       (prepop_engines.at(0)->short_name()))),
-                                   HasShortName(base::UTF16ToASCII(
-                                       (prepop_engines.at(1)->short_name()))),
-                                   HasShortName(base::UTF16ToASCII(
-                                       (prepop_engines.at(2)->short_name())))));
-}
-
-TEST_F(
-    TemplateURLServiceUnitTest,
-    GetPrepopulatedAndRecentlyVisitedTemplateURLs_RecentlyVisitedSortingAndFiltering) {
-  // Add some recently visited engines.
-  AddTemplateURL(u"Recent Site Search 1", u"rss1");
-  AddTemplateURL(u"Recent Site Search 2", u"rss2");
-  AddTemplateURL(u"Recent Site Search 3", u"rss3");
-  AddTemplateURL(u"Recent Site Search 4", u"rss4");
-
-  TemplateURLService::PrepopulatedAndRecentlyVisitedTemplateUrls data =
-      template_url_service().GetPrepopulatedAndRecentlyVisitedTemplateURLs();
-
-  // Recently visited list matches
-  // `internal::SortAndFilterRecentlyVisitedURLs()`.
-  EXPECT_THAT(
-      data.recently_visited_urls,
-      testing::UnorderedElementsAre(HasShortName("Recent Site Search 4"),
-                                    HasShortName("Recent Site Search 3"),
-                                    HasShortName("Recent Site Search 2")));
-}
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 TEST_F(TemplateURLServiceUnitTest,
        GetDefaultSearchProviderIgnoringExtensionsFallbackMatch) {
@@ -1407,6 +1159,10 @@ class SearchEngineSplitTemplateURLServiceSplitRegionTest
  public:
   SearchEngineSplitTemplateURLServiceSplitRegionTest()
       : SearchEngineSplitTemplateURLServiceTest("JP") {}
+
+ private:
+  base::test::ScopedFeatureList feature_list_{
+      switches::kApplySearchEngineTypeMigration};
 };
 
 TEST_F(SearchEngineSplitTemplateURLServiceSplitRegionTest,
@@ -1419,4 +1175,314 @@ TEST_F(SearchEngineSplitTemplateURLServiceSplitRegionTest,
       "Search.OseSplitYahooJapan.CountOnProfileLoad", 1);
   histogram_tester_.ExpectTotalCount(
       "Search.OseSplitYahooJapan.EngineStateOnProfileLoad", 1);
+}
+
+// -- SetUserSelectedDefaultSearchProviderByPrepopulateId ---------------------
+
+// Uses a `TemplateURLService` without a keywords database: once loaded, the
+// model only contains the fallback default search engine, so each test adds
+// the engines it needs.
+// Defaults to an EEA country so that choices made from settings are recorded.
+class TemplateURLServiceSetDseByPrepopulateIdTest : public testing::Test {
+ public:
+  explicit TemplateURLServiceSetDseByPrepopulateIdTest(
+      std::string_view country = "BE",
+      const std::vector<base::test::FeatureRef>& enabled_features = {}) {
+    scoped_command_line_.GetProcessCommandLine()->AppendSwitchASCII(
+        switches::kSearchEngineChoiceCountry, country);
+    feature_list_.InitWithFeatures(enabled_features, {});
+    test_environment_ =
+        std::make_unique<search_engines::SearchEnginesTestEnvironment>();
+  }
+
+  TemplateURLService& service() {
+    return *test_environment_->template_url_service();
+  }
+
+  const TemplateURLPrepopulateData::Resolver& resolver() {
+    return test_environment_->prepopulate_data_resolver();
+  }
+
+  sync_preferences::TestingPrefServiceSyncable& pref_service() {
+    return test_environment_->pref_service();
+  }
+
+  void Load() {
+    service().Load();
+    ASSERT_TRUE(service().loaded());
+  }
+
+  // Adds the prepopulated engine with `prepopulate_id` from the regional list.
+  TemplateURL* AddRegionalEngine(int prepopulate_id) {
+    std::unique_ptr<TemplateURLData> data =
+        resolver().GetPrepopulatedEngine(prepopulate_id);
+    CHECK(data);
+    return service().Add(std::make_unique<TemplateURL>(*data));
+  }
+
+  // Returns the ID of a regional engine that is not the current DSE.
+  int GetNonDefaultRegionalEngineId() {
+    const TemplateURL* dse = service().GetDefaultSearchProvider();
+    for (const auto& data : resolver().GetPrepopulatedEngines()) {
+      if (!dse || data->prepopulate_id != dse->prepopulate_id()) {
+        return data->prepopulate_id;
+      }
+    }
+    NOTREACHED();
+  }
+
+  std::vector<const TemplateURL*> GetEnginesWithPrepopulateId(
+      int prepopulate_id) {
+    std::vector<const TemplateURL*> result;
+    for (const TemplateURL* turl : service().GetTemplateURLs()) {
+      if (turl->prepopulate_id() == prepopulate_id) {
+        result.push_back(turl);
+      }
+    }
+    return result;
+  }
+
+  void SetDse(int prepopulate_id) {
+    service().SetUserSelectedDefaultSearchProviderByPrepopulateId(
+        prepopulate_id, search_engines::ChoiceMadeLocation::kSearchSettings);
+  }
+
+ private:
+  base::test::ScopedCommandLine scoped_command_line_;
+  base::test::ScopedFeatureList feature_list_;
+  base::test::TaskEnvironment task_environment_;
+  std::unique_ptr<search_engines::SearchEnginesTestEnvironment>
+      test_environment_;
+};
+
+TEST_F(TemplateURLServiceSetDseByPrepopulateIdTest, AddsAndSetsNewEngine) {
+  Load();
+  const int id = TemplateURLPrepopulateData::naver.id;
+  ASSERT_FALSE(resolver().GetPrepopulatedEngine(id));  // Not regional.
+  ASSERT_THAT(GetEnginesWithPrepopulateId(id), testing::IsEmpty());
+
+  SetDse(id);
+
+  const TemplateURL* dse = service().GetDefaultSearchProvider();
+  ASSERT_TRUE(dse);
+  EXPECT_EQ(dse->prepopulate_id(), id);
+  EXPECT_EQ(dse->keyword(), TemplateURLPrepopulateData::naver.keyword);
+  EXPECT_THAT(GetEnginesWithPrepopulateId(id), testing::ElementsAre(dse));
+  EXPECT_EQ(service().default_search_provider_source(),
+            DefaultSearchManager::FROM_USER);
+  EXPECT_TRUE(pref_service().HasPrefPath(
+      prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp));
+}
+
+TEST_F(TemplateURLServiceSetDseByPrepopulateIdTest, ReusesExistingEngine) {
+  Load();
+  TemplateURL* existing = AddRegionalEngine(GetNonDefaultRegionalEngineId());
+  ASSERT_TRUE(existing);
+  const std::string guid = existing->sync_guid();
+
+  SetDse(existing->prepopulate_id());
+
+  EXPECT_EQ(service().GetDefaultSearchProvider(), existing);
+  EXPECT_EQ(existing->sync_guid(), guid);
+  EXPECT_THAT(GetEnginesWithPrepopulateId(existing->prepopulate_id()),
+              testing::ElementsAre(existing));
+}
+
+TEST_F(TemplateURLServiceSetDseByPrepopulateIdTest, PreservesUserEdits) {
+  Load();
+  TemplateURL* existing = AddRegionalEngine(GetNonDefaultRegionalEngineId());
+  ASSERT_TRUE(existing);
+  service().ResetTemplateURL(existing, u"Edited name", u"edited_keyword",
+                             existing->url());
+  ASSERT_FALSE(existing->safe_for_autoreplace());
+
+  SetDse(existing->prepopulate_id());
+
+  const TemplateURL* dse = service().GetDefaultSearchProvider();
+  EXPECT_EQ(dse, existing);
+  EXPECT_EQ(dse->short_name(), u"Edited name");
+  EXPECT_EQ(dse->keyword(), u"edited_keyword");
+}
+
+TEST_F(TemplateURLServiceSetDseByPrepopulateIdTest, CrashesOnInvalidIds) {
+  Load();
+
+  int unknown_id = 0;
+  for (int id = 1; id <= TemplateURLPrepopulateData::kMaxPrepopulatedEngineID;
+       ++id) {
+    if (!resolver().GetEngineFromFullList(id)) {
+      unknown_id = id;
+      break;
+    }
+  }
+  ASSERT_NE(unknown_id, 0);
+
+  for (int id : {-1, TemplateURLPrepopulateData::kMaxPrepopulatedEngineID + 1,
+                 unknown_id}) {
+    // Include the ID being tested in failure messages from this iteration.
+    SCOPED_TRACE(id);
+    // SetUserSelectedDefaultSearchProviderByPrepopulateId uses
+    // NOTREACHED(base::NotFatalUntil::M165), which is not fatal in official
+    // non-DCHECK builds. Switch this back to EXPECT_CHECK_DEATH once M165 is
+    // reached and the check becomes fatal.
+    EXPECT_DCHECK_DEATH_WITH(SetDse(id), "Check failed");
+  }
+}
+
+TEST_F(TemplateURLServiceSetDseByPrepopulateIdTest, CrashesOnIdZero) {
+  Load();
+  EXPECT_CHECK_DEATH(SetDse(0));
+}
+
+TEST_F(TemplateURLServiceSetDseByPrepopulateIdTest, NoEffectIfManagedByPolicy) {
+  TemplateURLData policy_data;
+  policy_data.SetShortName(u"Managed");
+  policy_data.SetKeyword(u"managed");
+  policy_data.SetURL("https://managed.com/search?q={searchTerms}");
+  pref_service().SetManagedPref(
+      DefaultSearchManager::kDefaultSearchProviderDataPrefName,
+      TemplateURLDataToDictionary(policy_data));
+  Load();
+  ASSERT_TRUE(service().is_default_search_managed());
+  const TemplateURL* initial_dse = service().GetDefaultSearchProvider();
+  const size_t initial_count = service().GetTemplateURLs().size();
+
+  SetDse(TemplateURLPrepopulateData::naver.id);
+
+  EXPECT_EQ(service().GetDefaultSearchProvider(), initial_dse);
+  EXPECT_EQ(service().GetTemplateURLs().size(), initial_count);
+  EXPECT_THAT(GetEnginesWithPrepopulateId(TemplateURLPrepopulateData::naver.id),
+              testing::IsEmpty());
+}
+
+TEST_F(TemplateURLServiceSetDseByPrepopulateIdTest, AppliedOnceLoaded) {
+  ASSERT_FALSE(service().loaded());
+
+  SetDse(TemplateURLPrepopulateData::naver.id);
+
+  Load();
+  EXPECT_EQ(service().GetDefaultSearchProvider()->prepopulate_id(),
+            TemplateURLPrepopulateData::naver.id);
+  EXPECT_THAT(GetEnginesWithPrepopulateId(TemplateURLPrepopulateData::naver.id),
+              testing::SizeIs(1));
+}
+
+// Documents current behavior: keyword conflicts are not resolved in favor of
+// the new default search engine. Replacing or upgrading conflicting engines is
+// a planned follow-up.
+TEST_F(TemplateURLServiceSetDseByPrepopulateIdTest,
+       KeywordConflictWithUserEditedEngine) {
+  Load();
+  TemplateURLData custom_data;
+  custom_data.SetShortName(u"Custom");
+  custom_data.SetKeyword(TemplateURLPrepopulateData::naver.keyword);
+  custom_data.SetURL("https://custom.com/search?q={searchTerms}");
+  custom_data.safe_for_autoreplace = false;
+  TemplateURL* custom =
+      service().Add(std::make_unique<TemplateURL>(custom_data));
+  ASSERT_TRUE(custom);
+
+  SetDse(TemplateURLPrepopulateData::naver.id);
+
+  const TemplateURL* dse = service().GetDefaultSearchProvider();
+  ASSERT_TRUE(dse);
+  EXPECT_EQ(dse->prepopulate_id(), TemplateURLPrepopulateData::naver.id);
+  EXPECT_EQ(service().GetTemplateURLForKeyword(
+                TemplateURLPrepopulateData::naver.keyword),
+            custom);
+}
+
+// Auto-discovered engines that the user never activated or edited are
+// replaced by the new default search engine when their keyword conflicts.
+TEST_F(TemplateURLServiceSetDseByPrepopulateIdTest,
+       KeywordConflictWithReplaceableEngine) {
+  Load();
+  TemplateURLData osdd_data;
+  osdd_data.SetShortName(u"Auto-discovered");
+  osdd_data.SetKeyword(TemplateURLPrepopulateData::naver.keyword);
+  osdd_data.SetURL("https://osdd.com/search?q={searchTerms}");
+  osdd_data.safe_for_autoreplace = true;
+  TemplateURL* osdd = service().Add(std::make_unique<TemplateURL>(osdd_data));
+  ASSERT_TRUE(osdd);
+  const std::string osdd_guid = osdd->sync_guid();
+
+  SetDse(TemplateURLPrepopulateData::naver.id);
+
+  const TemplateURL* dse = service().GetDefaultSearchProvider();
+  ASSERT_TRUE(dse);
+  EXPECT_EQ(dse->prepopulate_id(), TemplateURLPrepopulateData::naver.id);
+  EXPECT_FALSE(service().GetTemplateURLForGUID(osdd_guid));
+  EXPECT_EQ(service().GetTemplateURLForKeyword(
+                TemplateURLPrepopulateData::naver.keyword),
+            dse);
+  EXPECT_FALSE(service().HiddenFromLists(dse));
+}
+
+// In JP with shadow variants, the regional list has `yahoo_jp_next` (ID 116),
+// and `yahoo_jp` (ID 2) is a regional variant, only kept for users who already
+// have it.
+class TemplateURLServiceSetDseByPrepopulateIdShadowVariantsTest
+    : public TemplateURLServiceSetDseByPrepopulateIdTest {
+ public:
+  TemplateURLServiceSetDseByPrepopulateIdShadowVariantsTest()
+      : TemplateURLServiceSetDseByPrepopulateIdTest(
+            "JP",
+            {switches::kPrepopulatedEnginesShadowVariants,
+             switches::kApplySearchEngineTypeMigration}) {}
+};
+
+TEST_F(TemplateURLServiceSetDseByPrepopulateIdShadowVariantsTest,
+       SwitchFromShadowVariant) {
+  Load();
+  const int shadow_id = TemplateURLPrepopulateData::yahoo_jp.id;
+  const int next_id = TemplateURLPrepopulateData::yahoo_jp_next.id;
+  TemplateURL* shadow = service().Add(
+      std::make_unique<TemplateURL>(*TemplateURLDataFromPrepopulatedEngine(
+          TemplateURLPrepopulateData::yahoo_jp)));
+  ASSERT_TRUE(shadow);
+  service().SetUserSelectedDefaultSearchProvider(shadow);
+  ASSERT_EQ(service().GetDefaultSearchProvider(), shadow);
+
+  // Selecting the shadow variant while it's the DSE is a no-op.
+  SetDse(shadow_id);
+  EXPECT_EQ(service().GetDefaultSearchProvider(), shadow);
+
+  SetDse(next_id);
+
+  const TemplateURL* dse = service().GetDefaultSearchProvider();
+  ASSERT_TRUE(dse);
+  EXPECT_EQ(dse->prepopulate_id(), next_id);
+  EXPECT_THAT(GetEnginesWithPrepopulateId(next_id), testing::ElementsAre(dse));
+  EXPECT_THAT(GetEnginesWithPrepopulateId(shadow_id),
+              testing::ElementsAre(shadow));
+}
+
+// Not expected from the picker, which only offers the shadow variant when it's
+// the DSE, but could happen with stale picker data.
+TEST_F(TemplateURLServiceSetDseByPrepopulateIdShadowVariantsTest,
+       ResolvesShadowVariantDefinition) {
+  Load();
+  const int shadow_id = TemplateURLPrepopulateData::yahoo_jp.id;
+  const int next_id = TemplateURLPrepopulateData::yahoo_jp_next.id;
+  ASSERT_EQ(shadow_id, TemplateURLPrepopulateData::yahoo.id);
+  TemplateURL* next = AddRegionalEngine(next_id);
+  ASSERT_TRUE(next);
+  ASSERT_THAT(GetEnginesWithPrepopulateId(shadow_id), testing::IsEmpty());
+
+  SetDse(shadow_id);
+
+  // The JP regional variant is used, not the first `yahoo` entry with the same
+  // ID in the full list.
+  const TemplateURL* dse = service().GetDefaultSearchProvider();
+  ASSERT_TRUE(dse);
+  EXPECT_EQ(dse->prepopulate_id(), shadow_id);
+  EXPECT_EQ(dse->url(), TemplateURLPrepopulateData::yahoo_jp.search_url);
+  EXPECT_NE(dse->url(), TemplateURLPrepopulateData::yahoo.search_url);
+
+  // Both engines share the `yahoo.co.jp` keyword. The previously listed one is
+  // kept, and still resolves the keyword.
+  EXPECT_THAT(GetEnginesWithPrepopulateId(next_id), testing::ElementsAre(next));
+  EXPECT_EQ(service().GetTemplateURLForKeyword(
+                TemplateURLPrepopulateData::yahoo_jp.keyword),
+            next);
 }

@@ -72,7 +72,14 @@ optimization_guide::proto::PageContext ToPageContext(
 }
 
 // Returns whether the page content cache is enabled.
-bool IsPageContentCacheEnabled(feature_engagement::Tracker* tracker) {
+bool IsPageContentCacheEnabled(feature_engagement::Tracker* tracker,
+                               os_crypt_async::OSCryptAsync* os_crypt_async,
+                               const base::FilePath& profile_path) {
+  // Should only be hit in testing.
+  if (!os_crypt_async || profile_path.empty()) {
+    return false;
+  }
+
   bool enabled = base::FeatureList::IsEnabled(features::kPageContentCache);
 
 #if BUILDFLAG(IS_ANDROID)
@@ -154,7 +161,8 @@ PageContentExtractionService::PageContentExtractionService(
     os_crypt_async::OSCryptAsync* os_crypt_async,
     const base::FilePath& profile_path,
     feature_engagement::Tracker* tracker)
-    : is_page_content_cache_enabled_(IsPageContentCacheEnabled(tracker)),
+    : is_page_content_cache_enabled_(
+          IsPageContentCacheEnabled(tracker, os_crypt_async, profile_path)),
       page_content_cache_handler_(
           CreatePageContentCacheHandler(is_page_content_cache_enabled_,
                                         os_crypt_async,
@@ -172,6 +180,13 @@ void PageContentExtractionService::RemoveObserver(Observer* observer) {
   observers_.RemoveObserver(observer);
 }
 
+base::CallbackListSubscription PageContentExtractionService::Subscribe(
+    ConsumerCallback<PageContent> callback) {
+  return subscriber_registry_.Subscribe(std::move(callback));
+}
+
+void PageContentExtractionService::OnDemandChanged() {}
+
 PageContentExtractionEnablementReason
 PageContentExtractionService::GetPageContentExtractionEnablementReason(
     bool is_on_demand) const {
@@ -180,7 +195,7 @@ PageContentExtractionService::GetPageContentExtractionEnablementReason(
     return PageContentExtractionEnablementReason::
         kAutomaticExtractionFeatureEnabled;
   }
-  if (!observers_.empty()) {
+  if (!observers_.empty() || subscriber_registry_.GetSubscriberCount() > 0) {
     return PageContentExtractionEnablementReason::kObserverRegistered;
   }
   if (is_on_demand &&
@@ -201,10 +216,11 @@ void PageContentExtractionService::OnPageContentExtracted(
     content::Page& page,
     PageContent page_content,
     const std::vector<uint8_t>& screenshot_data,
-    std::optional<int> tab_id) {
+    std::optional<int64_t> tab_id) {
   for (auto& observer : observers_) {
     observer.OnPageContentExtracted(page, page_content);
   }
+  subscriber_registry_.Notify(page, page_content);
 
   if (!is_page_content_cache_enabled_) {
     return;
@@ -307,6 +323,14 @@ void PageContentExtractionService::OnTabCloseUndone(int64_t tab_id) {
   }
 }
 
+void PageContentExtractionService::UpdateTabId(int64_t old_tab_id,
+                                               int64_t new_tab_id) {
+  if (is_page_content_cache_enabled_) {
+    page_content_cache_handler_->page_content_cache()->UpdateTabId(old_tab_id,
+                                                                   new_tab_id);
+  }
+}
+
 void PageContentExtractionService::OnVisibilityChanged(
     std::optional<int64_t> tab_id,
     content::WebContents* web_contents,
@@ -344,7 +368,8 @@ void PageContentExtractionService::OnNewNavigation(
   if (!is_same_document) {
     bool feature_enabled = base::FeatureList::IsEnabled(
         page_content_annotations::features::kAnnotatedPageContentExtraction);
-    bool has_observers = !observers_.empty();
+    bool has_observers =
+        !observers_.empty() || subscriber_registry_.GetSubscriberCount() > 0;
 
     EnablementSource source = EnablementSource::kNone;
     if (feature_enabled && has_observers) {
@@ -360,7 +385,13 @@ void PageContentExtractionService::OnNewNavigation(
         source);
     base::UmaHistogramCounts100(
         "OptimizationGuide.PageContentExtraction.ObserverCountPerNavigation",
-        std::distance(observers_.begin(), observers_.end()));
+        std::distance(observers_.begin(), observers_.end()) +
+            subscriber_registry_.GetSubscriberCount());
+  }
+
+  content::Page& current_page = web_contents->GetPrimaryPage();
+  for (auto& observer : observers_) {
+    observer.OnPageContentReset(current_page, is_same_document);
   }
 }
 

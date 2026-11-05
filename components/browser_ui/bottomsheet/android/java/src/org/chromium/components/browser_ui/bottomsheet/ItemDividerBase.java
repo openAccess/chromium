@@ -15,9 +15,11 @@ import android.graphics.drawable.RippleDrawable;
 import android.util.TypedValue;
 import android.view.View;
 
+import androidx.annotation.ColorInt;
 import androidx.annotation.DrawableRes;
 import androidx.appcompat.content.res.AppCompatResources;
 import androidx.recyclerview.widget.RecyclerView;
+import androidx.recyclerview.widget.RecyclerView.Adapter;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -45,6 +47,10 @@ public abstract class ItemDividerBase extends RecyclerView.ItemDecoration {
         return R.drawable.list_item_background_middle;
     }
 
+    protected @ColorInt int getBackgroundTintColor() {
+        return SemanticColorUtils.getColorSurfaceContainerLow(mContext);
+    }
+
     private void loadBackgroundDrawable(@Nullable View view, @DrawableRes int backgroundId) {
         if (view == null) {
             // RecyclerView might return a {@code null} view if it's not displayed to the user.
@@ -57,8 +63,21 @@ public abstract class ItemDividerBase extends RecyclerView.ItemDecoration {
         RippleDrawable rippleDrawable =
                 new RippleDrawable(ColorStateList.valueOf(themeRes.data), background, null);
         view.setBackground(rippleDrawable);
-        view.setBackgroundTintList(
-                ColorStateList.valueOf(SemanticColorUtils.getColorSurfaceContainerLow(mContext)));
+        view.setBackgroundTintList(ColorStateList.valueOf(getBackgroundTintColor()));
+    }
+
+    private @DrawableRes int getBackgroundDrawableId(
+            boolean isFirstInSection, boolean isLastInSection) {
+        if (isFirstInSection && isLastInSection) {
+            return getRoundedAllDrawableId();
+        }
+        if (isFirstInSection) {
+            return getRoundedUpDrawableId();
+        }
+        if (isLastInSection) {
+            return getRoundedDownDrawableId();
+        }
+        return getMiddleDrawableId();
     }
 
     /**
@@ -70,31 +89,24 @@ public abstract class ItemDividerBase extends RecyclerView.ItemDecoration {
      */
     @Override
     public void onDraw(Canvas canvas, RecyclerView parent, RecyclerView.State state) {
-        assumeNonNull(parent.getAdapter());
-        int firstItem = 0;
-        int lastItem = parent.getAdapter().getItemCount() - 1;
-        // Find the first item to decorate by skipping all header items.
-        while (firstItem <= lastItem
-                && shouldSkipItemType(parent.getAdapter().getItemViewType(firstItem))) {
-            ++firstItem;
-        }
-        while (firstItem <= lastItem
-                && shouldSkipItemType(parent.getAdapter().getItemViewType(lastItem))) {
-            --lastItem;
-        }
-        if (firstItem > lastItem) {
-            // No items to decorate.
-            return;
-        }
-        if (firstItem == lastItem) {
-            // There's only 1 item to decorate - round all corners.
-            loadBackgroundDrawable(parent.getChildAt(firstItem), getRoundedAllDrawableId());
-            return;
-        }
-        loadBackgroundDrawable(parent.getChildAt(firstItem), getRoundedUpDrawableId());
-        loadBackgroundDrawable(parent.getChildAt(lastItem), getRoundedDownDrawableId());
-        for (int viewPosition = firstItem + 1; viewPosition < lastItem; viewPosition++) {
-            loadBackgroundDrawable(parent.getChildAt(viewPosition), getMiddleDrawableId());
+        Adapter<?> adapter = assumeNonNull(parent.getAdapter());
+        int itemCount = adapter.getItemCount();
+        for (int childIndex = 0; childIndex < parent.getChildCount(); childIndex++) {
+            View child = parent.getChildAt(childIndex);
+            int adapterPosition = parent.getChildAdapterPosition(child);
+            if (adapterPosition == RecyclerView.NO_POSITION
+                    || adapterPosition >= itemCount
+                    || shouldSkipItemType(adapter.getItemViewType(adapterPosition))) {
+                continue;
+            }
+            boolean isFirstInSection =
+                    adapterPosition == 0
+                            || shouldSkipItemType(adapter.getItemViewType(adapterPosition - 1));
+            boolean isLastInSection =
+                    adapterPosition == itemCount - 1
+                            || shouldSkipItemType(adapter.getItemViewType(adapterPosition + 1));
+            loadBackgroundDrawable(
+                    child, getBackgroundDrawableId(isFirstInSection, isLastInSection));
         }
     }
 

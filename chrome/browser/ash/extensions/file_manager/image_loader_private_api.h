@@ -14,9 +14,10 @@
 
 #include "chrome/browser/ash/arc/fileapi/arc_documents_provider_root.h"
 #include "chrome/browser/ash/extensions/file_manager/logged_extension_function.h"
-#include "chrome/common/extensions/api/image_loader_private.h"
 #include "chrome/services/pdf/public/mojom/pdf_thumbnailer.mojom.h"
+#include "chromeos/ash/experiences/extensions/common/api/image_loader_private.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "mojo/public/cpp/platform/platform_handle.h"
 #include "storage/browser/file_system/file_system_url.h"
 
 class SkBitmap;
@@ -125,7 +126,7 @@ class ImageLoaderPrivateGetArcDocumentsProviderThumbnailFunction
                       const std::vector<base::FilePath>& paths_to_share);
 
   // A callback invoked when ARC thumbnail file has been opened.
-  void GotArcThumbnailFileHandle(mojo::ScopedHandle handle);
+  void GotArcThumbnailFileHandle(mojo::PlatformHandle handle);
 };
 
 }  // namespace extensions

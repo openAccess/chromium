@@ -6,7 +6,6 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_WEBGPU_GPU_CANVAS_CONTEXT_H_
 
 #include "base/containers/heap_array.h"
-#include "third_party/blink/renderer/bindings/core/v8/v8_canvas_tone_mapping_mode.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_gpu_canvas_alpha_mode.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context_factory.h"
@@ -17,6 +16,7 @@
 #include "third_party/blink/renderer/platform/graphics/gpu/webgpu_swap_buffer_provider.h"
 #include "third_party/blink/renderer/platform/graphics/predefined_color_space.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
+#include "ui/gfx/hdr_metadata.h"
 
 namespace blink {
 
@@ -80,17 +80,16 @@ class GPUCanvasContext : public ScriptWrappable,
       const gfx::ColorSpace& dst_color_space,
       VideoFrameCopyCompletedCallback callback) override;
   void PageVisibilityChanged() override {}
-  void SizeChanged() override;
   bool isContextLost() const override { return false; }
   bool IsComposited() const final { return true; }
   bool IsPaintable() const final { return true; }
   void Stop() final;
   cc::Layer* CcLayer() const final;
-  void Reshape(int width, int height) override;
+  void Reshape(gfx::Size old_size, gfx::Size new_size) override;
   void Dispose() override;
 
   // OffscreenCanvas-specific methods
-  scoped_refptr<CanvasResource> GetResourceForPushFrame(
+  scoped_refptr<ExportedCanvasResource> GetResourceForPushFrame(
       bool& should_call_push_frame) final;
   // Returns a StaticBitmapImage backed by a texture containing the current
   // contents of the front buffer. This is done without any pixel copies. The
@@ -134,6 +133,10 @@ class GPUCanvasContext : public ScriptWrappable,
   bool CopyTextureToResourceProvider(
       const wgpu::Texture& texture,
       CanvasNon2DResourceProvider* resource_provider) const;
+  std::optional<gpu::SyncToken> CopyTextureToSharedImage(
+      const wgpu::Texture& texture,
+      scoped_refptr<gpu::ClientSharedImage> dst_client_si,
+      const gpu::SyncToken& acquire_sync_token) const;
 
   void CopyToSwapTexture();
 
@@ -166,7 +169,7 @@ class GPUCanvasContext : public ScriptWrappable,
 
   PredefinedColorSpace color_space_ = PredefinedColorSpace::kSRGB;
   V8GPUCanvasAlphaMode::Enum alpha_mode_;
-  V8CanvasToneMappingMode::Enum tone_mapping_mode_;
+  gfx::HDRMetadata hdr_metadata_;
   scoped_refptr<WebGPUTextureAlphaClearer> alpha_clearer_;
   scoped_refptr<WebGPUSwapBufferProvider> swap_buffers_;
 

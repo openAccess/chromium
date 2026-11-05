@@ -8,21 +8,24 @@ import '//resources/cr_elements/icons.html.js';
 import '/strings.m.js';
 
 import type {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
+import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import type {MenuSourceType} from '//resources/mojo/ui/base/mojom/menu_source_type.mojom-webui.js';
 import {ReloadInputType} from '/shared/browser_controls_api.mojom-webui.js';
 import type {ReloadInteractionMetadata} from '/shared/browser_controls_api.mojom-webui.js';
+import {TimerHelper} from '/shared/timer_helper.js';
+import {BUTTON_LEFT, getContextMenuPosition, getEventDispositionFlags, HelpBubbleAnchorMixin, playIconAnimation, PressHandler, roundedIconsEnabled} from '/shared/toolbar_button.js';
+import {ContextMenuType} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import type {ReloadControlState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 import {ColorChangeUpdater} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 
-import {BrowserProxyImpl, ContextMenuType} from './browser_proxy.js';
-import type {BrowserProxy, ReloadControlState} from './browser_proxy.js';
+import {BrowserProxyImpl} from './browser_proxy.js';
+import type {BrowserProxy} from './browser_proxy.js';
 import {ReloadButtonInputType} from './metrics_recorder.js';
 import {getCss} from './reload_button.css.js';
 import {getHtml} from './reload_button.html.js';
-import {TimerHelper} from './timer_helper.js';
-import {BUTTON_LEFT, getContextMenuPosition, getEventDispositionFlags, HelpBubbleAnchorMixin, playIconAnimation, PressHandler, roundedIconsEnabled} from './toolbar_button.js';
 
 // go/keep-sorted start
 const RELOAD_BUTTON_ACC_NAME_RELOAD = 'reloadButtonAccNameReload';
@@ -164,11 +167,12 @@ export class ReloadButtonElement extends ReloadButtonElementBase {
   private onLongPress_(source: MenuSourceType) {
     if (this.state.canShowMenu) {
       this.browserProxy_.toolbarUIHandler.showContextMenu(
-          ContextMenuType.kReload, getContextMenuPosition(this), source);
+          ContextMenuType.kReload, getContextMenuPosition(this), source,
+          /*showMenuToken=*/ null);
     }
   }
 
-  private onShortPress_(e: MouseEvent) {
+  private onShortPress_(e: PointerEvent) {
     // Ignore clicks if the button is disabled (e.g. during hover protection).
     // This is also necessary to block programmatically dispatched events in
     // tests that bypass the HTML disabled state.
@@ -183,6 +187,8 @@ export class ReloadButtonElement extends ReloadButtonElementBase {
         return;
       }
     }
+
+    TrackedElementManager.getInstance().notifyElementActivated(this);
 
     const isKeyboard = e.type === 'click';
     const recordedInputType = isKeyboard ? ReloadButtonInputType.KEY_PRESS :
@@ -227,12 +233,12 @@ export class ReloadButtonElement extends ReloadButtonElementBase {
    * Reconstructs the relative timestamp offset and determines the input
    * modality.
    */
-  private getReloadMetadata_(e: MouseEvent): ReloadInteractionMetadata|null {
+  private getReloadMetadata_(e: PointerEvent): ReloadInteractionMetadata|null {
     const sourceCapabilities =
         (e as unknown as {
           sourceCapabilities?: {firesTouchEvents?: boolean},
         }).sourceCapabilities;
-    const isTouch = (e instanceof PointerEvent && e.pointerType === 'touch') ||
+    const isTouch = e.pointerType === 'touch' ||
         (!!sourceCapabilities && sourceCapabilities.firesTouchEvents);
     if (isTouch) {
       return null;
@@ -247,7 +253,7 @@ export class ReloadButtonElement extends ReloadButtonElementBase {
     };
   }
 
-  protected onClick_(e: MouseEvent) {
+  protected onClick_(e: PointerEvent) {
     // Only keyboard `click` (Enter/Space) are handled here, which triggers a
     // left-click equivalent. Keyboard 'click' has detail === 0.
     if (e.detail === 0) {

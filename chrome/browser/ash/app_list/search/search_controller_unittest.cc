@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/app_list/search/search_controller.h"
 
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -690,9 +691,6 @@ TEST_F(SearchControllerTest, ZeroStateResultsGetTimedOut) {
 }
 
 TEST_F(SearchControllerTest, ContinueRanksDriveAboveLocal) {
-  if (ash::features::UseMixedFileLauncherContinueSection()) {
-    return;
-  }
   // Use the full ranking stack.
   search_controller_->set_ranker_manager_for_test(
       std::make_unique<RankerManager>(&profile_));
@@ -875,18 +873,17 @@ TEST_F(SearchControllerTest, ProviderIsFilteredWithSearchControl) {
   scoped_feature_list_.InitWithFeatures(
       {ash::features::kFeatureManagementLocalImageSearch}, {});
 
-  const Result result_categories[] = {
-      Result::kAnswerCard, Result::kDriveSearch,    Result::kAppShortcutV2,
-      Result::kFileSearch, Result::kArcAppShortcut, Result::kImageSearch,
-      Result::kGames,      Result::kAssistantText,  Result::kArcAppShortcut,
+  const std::array result_categories = {
+      Result::kAnswerCard,    Result::kDriveSearch,    Result::kAppShortcutV2,
+      Result::kFileSearch,    Result::kImageSearch,    Result::kHelpApp,
+      Result::kAssistantText, Result::kArcAppShortcut,
   };
 
-  const SearchCategory search_categories[] = {
+  const std::array search_categories = {
       SearchCategory::kTest /*always returns results*/,
       SearchCategory::kApps,
       SearchCategory::kAppShortcuts,
       SearchCategory::kFiles,
-      SearchCategory::kGames,
       SearchCategory::kHelp,
       SearchCategory::kImages,
       SearchCategory::kPlayStore,
@@ -894,16 +891,15 @@ TEST_F(SearchControllerTest, ProviderIsFilteredWithSearchControl) {
   };
 
   std::vector<TestSearchProvider*> provider_ptrs;
-  for (int i = 0; i < 9; ++i) {
+  for (int i = 0; i < 8; ++i) {
     // The result type needs to be unique.
     auto provider = std::make_unique<TestSearchProvider>(
-        UNSAFE_TODO(result_categories[i]), base::Milliseconds(20),
-        UNSAFE_TODO(search_categories[i]));
+        result_categories[i], base::Milliseconds(20), search_categories[i]);
     provider_ptrs.push_back(provider.get());
     search_controller_->AddProvider(std::move(provider));
   }
 
-  ASSERT_EQ(provider_ptrs.size(), 9u);
+  ASSERT_EQ(provider_ptrs.size(), 8u);
 
   ScopedDictPrefUpdate pref_update(
       profile_.GetPrefs(), ash::prefs::kLauncherSearchCategoryControlStatus);
@@ -951,6 +947,29 @@ TEST_F(SearchControllerTest, ProviderIsFilteredWithSearchControl) {
 
     search_controller_->ClearSearch();
   }
+}
+
+TEST_F(SearchControllerTest, InitializeProvidersOnLauncherOpen) {
+  auto provider = std::make_unique<TestSearchProvider>(Result::kHelpApp,
+                                                       base::Milliseconds(0));
+  auto* provider_ptr = provider.get();
+  search_controller_->AddProvider(std::move(provider));
+
+  EXPECT_EQ(provider_ptr->initialize_count(), 0);
+
+  // Closing the launcher before it is ever opened should not initialize
+  // providers.
+  search_controller_->AppListViewChanging(/*is_visible=*/false);
+  EXPECT_EQ(provider_ptr->initialize_count(), 0);
+
+  // Opening the launcher for the first time should initialize providers.
+  search_controller_->AppListViewChanging(/*is_visible=*/true);
+  EXPECT_EQ(provider_ptr->initialize_count(), 1);
+
+  // Closing and reopening the launcher should not re-initialize providers.
+  search_controller_->AppListViewChanging(/*is_visible=*/false);
+  search_controller_->AppListViewChanging(/*is_visible=*/true);
+  EXPECT_EQ(provider_ptr->initialize_count(), 1);
 }
 
 }  // namespace app_list::test

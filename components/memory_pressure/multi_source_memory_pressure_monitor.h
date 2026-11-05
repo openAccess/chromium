@@ -5,6 +5,9 @@
 #ifndef COMPONENTS_MEMORY_PRESSURE_MULTI_SOURCE_MEMORY_PRESSURE_MONITOR_H_
 #define COMPONENTS_MEMORY_PRESSURE_MULTI_SOURCE_MEMORY_PRESSURE_MONITOR_H_
 
+#include <memory>
+#include <vector>
+
 #include "base/functional/callback.h"
 #include "base/memory/memory_pressure_level.h"
 #include "base/sequence_checker.h"
@@ -46,14 +49,7 @@ class MultiSourceMemoryPressureMonitor
 
   // Creates a MemoryPressureVoter to be owned/used by a source that wishes to
   // have input on the overall memory pressure level.
-  std::unique_ptr<MemoryPressureVoter> CreateVoter();
-
-  // Set whether the critical memory pressure is due to low disk space.
-  // |new_os_pressure_level| indicates the current OS-reported memory pressure
-  // level, so that time is only attributed to the disk bucket when the OS is
-  // not also critical.
-  void UpdateDiskPressureState(bool new_is_disk_pressure,
-                               base::MemoryPressureLevel new_os_pressure_level);
+  std::unique_ptr<MemoryPressureVoter> CreateVoter(bool is_disk_voter = false);
 
   // Sets the system evaluator on platforms where no default implementation
   // exists, because of layering concerns (ChromeOS & Chromecast).
@@ -73,9 +69,16 @@ class MultiSourceMemoryPressureMonitor
     return system_evaluator_.get();
   }
 
+  const std::vector<std::unique_ptr<SystemMemoryPressureEvaluator>>&
+  auxiliary_evaluators_for_testing() {
+    return auxiliary_evaluators_;
+  }
+
  private:
   // Delegate implementation.
-  void OnMemoryPressureLevelChanged(base::MemoryPressureLevel level) override;
+  void OnMemoryPressureLevelChanged(base::MemoryPressureLevel level,
+                                    bool is_disk_only_critical) override;
+  void OnDiskOnlyCriticalChanged(bool is_disk_only_critical) override;
   void OnNotifyListenersRequested() override;
 
   base::MemoryPressureLevel current_pressure_level_;
@@ -85,6 +88,8 @@ class MultiSourceMemoryPressureMonitor
   MemoryPressureVoteAggregator aggregator_;
 
   std::unique_ptr<SystemMemoryPressureEvaluator> system_evaluator_;
+  std::vector<std::unique_ptr<SystemMemoryPressureEvaluator>>
+      auxiliary_evaluators_;
 
   // The timestamp of the last pressure change event.
   base::TimeTicks last_pressure_change_timestamp_;

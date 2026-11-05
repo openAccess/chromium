@@ -12,7 +12,6 @@
 #include "base/memory/raw_ptr.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/history/core/browser/top_sites.h"
-#include "components/history_embeddings/core/history_embeddings_search.h"
 #include "components/omnibox/browser/fake_autocomplete_scoring_model_service.h"
 #include "components/omnibox/browser/fake_on_device_tail_model_service.h"
 #include "components/omnibox/browser/fake_tab_matcher.h"
@@ -38,6 +37,7 @@ class HistoryClustersService;
 
 class InMemoryURLIndex;
 class PrefService;
+class ZeroSuggestCacheService;
 
 // Fully operational AutocompleteProviderClient for usage in tests.
 // Note: The history index rebuild task is created from main thread, usually
@@ -65,18 +65,22 @@ class FakeAutocompleteProviderClient : public MockAutocompleteProviderClient {
   history::HistoryService* GetHistoryService() override;
   history_clusters::HistoryClustersService* GetHistoryClustersService()
       override;
-  history_embeddings::HistoryEmbeddingsSearch* GetHistoryEmbeddingsSearch()
-      override;
   bookmarks::BookmarkModel* GetBookmarkModel() override;
   InMemoryURLIndex* GetInMemoryURLIndex() override;
   DocumentSuggestionsService* GetDocumentSuggestionsService() const override;
+  ZeroSuggestCacheService* GetZeroSuggestCacheService() override;
+  const ZeroSuggestCacheService* GetZeroSuggestCacheService() const override;
   scoped_refptr<ShortcutsBackend> GetShortcutsBackend() override;
   scoped_refptr<ShortcutsBackend> GetShortcutsBackendIfExists() override;
   tab_groups::TabGroupSyncService* GetTabGroupSyncService() const override;
   const TabMatcher& GetTabMatcher() const override;
   scoped_refptr<history::TopSites> GetTopSites() override;
+  bool IsUrlDataCollectionActive() const override;
   std::string ProfileUserName() const override;
   AimEligibilityService* GetAimEligibilityService() const override;
+  MockAimEligibilityService* mock_aim_eligibility_service() {
+    return mock_aim_eligibility_service_.get();
+  }
 
   OnDeviceTailModelService* GetOnDeviceTailModelService() const override;
   FakeAutocompleteScoringModelService* GetAutocompleteScoringModelService()
@@ -105,11 +109,6 @@ class FakeAutocompleteProviderClient : public MockAutocompleteProviderClient {
     history_clusters_service_ = service;
   }
 
-  void set_history_embeddings_search(
-      std::unique_ptr<history_embeddings::HistoryEmbeddingsSearch> search) {
-    history_embeddings_search_ = std::move(search);
-  }
-
   // There should be no reason to set this unless the tested provider actually
   // uses the AutocompleteProviderClient's InMemoryURLIndex, like the
   // HistoryQuickProvider does.
@@ -125,9 +124,20 @@ class FakeAutocompleteProviderClient : public MockAutocompleteProviderClient {
     shortcuts_backend_ = std::move(backend);
   }
 
+  void set_zero_suggest_cache_service(
+      std::unique_ptr<ZeroSuggestCacheService> service) {
+    zero_suggest_cache_service_ = std::move(service);
+  }
+
+  void set_is_url_data_collection_active(bool is_url_data_collection_active) {
+    is_url_data_collection_active_ = is_url_data_collection_active;
+  }
+
  private:
   search_engines::SearchEnginesTestEnvironment search_engines_test_enviroment_;
   std::unique_ptr<DocumentSuggestionsService> document_suggestions_service_;
+  std::unique_ptr<ZeroSuggestCacheService> zero_suggest_cache_service_;
+  bool is_url_data_collection_active_ = false;
   base::ScopedTempDir history_dir_;
   std::unique_ptr<bookmarks::BookmarkModel> bookmark_model_;
   TestSchemeClassifier scheme_classifier_;
@@ -135,8 +145,6 @@ class FakeAutocompleteProviderClient : public MockAutocompleteProviderClient {
   std::unique_ptr<history::HistoryService> history_service_;
   raw_ptr<history_clusters::HistoryClustersService> history_clusters_service_ =
       nullptr;
-  std::unique_ptr<history_embeddings::HistoryEmbeddingsSearch>
-      history_embeddings_search_;
   scoped_refptr<ShortcutsBackend> shortcuts_backend_;
   FakeTabMatcher fake_tab_matcher_;
   scoped_refptr<history::TopSites> top_sites_;

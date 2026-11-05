@@ -35,15 +35,18 @@ import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.TestAnimations;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.fullscreen.FullscreenManagerTestUtils;
 import org.chromium.chrome.browser.homepage.HomepageTestRule;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
+import org.chromium.chrome.browser.suggestions.SiteSuggestion;
 import org.chromium.chrome.browser.tab.TabStateBrowserControlsVisibilityDelegate;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
@@ -52,6 +55,7 @@ import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.chrome.test.util.browser.suggestions.SuggestionsDependenciesRule;
 import org.chromium.chrome.test.util.browser.suggestions.mostvisited.FakeMostVisitedSites;
 import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.content_public.browser.test.util.BackForwardTransitionAnimationManagerTestUtils;
 import org.chromium.content_public.browser.test.util.UiUtils;
 import org.chromium.content_public.browser.test.util.WebContentsUtils;
 import org.chromium.net.test.EmbeddedTestServer;
@@ -59,11 +63,13 @@ import org.chromium.ui.test.util.NightModeTestUtils;
 import org.chromium.ui.test.util.RenderTestRule;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.TimeoutException;
 
 /** Test that the screenshot was successfully taken when navigating as expected. */
 @RunWith(ParameterizedRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE, "hide-scrollbars"})
+@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 @DoNotBatch(reason = "Affect nav settings")
 @DisableIf.Build(supported_abis_includes = "x86", message = "https://crbug.com/337886037")
 @DisableIf.Build(supported_abis_includes = "x86_64", message = "https://crbug.com/337886037")
@@ -124,13 +130,13 @@ public class ScreenshotCaptureTest {
                 EmbeddedTestServer.createAndStartServerWithPort(
                         ApplicationProvider.getApplicationContext(), 46985);
 
-        var siteSuggestions = NewTabPageTestUtils.createFakeSiteSuggestions(mTestServer);
+        List<SiteSuggestion> siteSuggestions = NewTabPageTestUtils.createFakeSiteSuggestions();
         var mostVisitedSites = new FakeMostVisitedSites();
         mostVisitedSites.setTileSuggestions(siteSuggestions);
         mSuggestionsDeps.getFactory().mostVisitedSites = mostVisitedSites;
         mScreenshotCaptureTestHelper = new ScreenshotCaptureTestHelper();
         mHomepageTestRule.useChromeNtpForTest();
-        GestureNavigationUtils.setMinRequiredPhysicalRamMbForTesting(0);
+        BackForwardTransitionAnimationManagerTestUtils.setMinRequiredPhysicalRamMbForTesting(0);
     }
 
     @After
@@ -332,7 +338,8 @@ public class ScreenshotCaptureTest {
                             try {
                                 mRenderTestRule.compareForResult(
                                         bitmap,
-                                        "navigate_back_to_ntp_from_normal_page_without_top_controls");
+                                        "navigate_back_to_ntp_from_normal_page"
+                                                + "_without_top_controls");
                             } catch (IOException e) {
                                 throw new RuntimeException(e);
                             }

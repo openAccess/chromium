@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/app_list/search/app_search_data_source.h"
 
 #include <algorithm>
+#include <array>
 #include <set>
 #include <utility>
 
@@ -50,9 +51,10 @@ constexpr bool kUseWeightedRatio = false;
 constexpr double kRelevanceThreshold = 0.64;
 
 // Default recommended apps in descending order of priority.
-constexpr const char* const ranked_default_app_ids[] = {
-    ash::kOsSettingsAppId, ash::kHelpAppId, arc::kPlayStoreAppId,
-    ash::kCanvasAppId, ash::kCameraAppId};
+constexpr std::array ranked_default_app_ids = {
+    ash::kOsSettingsAppId, ash::kHelpAppId,   arc::kPlayStoreAppId,
+    ash::kCanvasAppId,     ash::kCameraAppId,
+};
 
 // Flag to enable/disable diacritics stripping
 constexpr bool kStripDiacritics = true;
@@ -65,10 +67,12 @@ constexpr bool kStripDiacritics = true;
 //    The priority rank 0, 1, ... if the app is a default app.
 //    -1 if the app is not a default app.
 int GetDefaultAppRank(const std::string& app_id) {
-  for (size_t i = 0; i < std::size(ranked_default_app_ids); ++i) {
-    if (app_id == UNSAFE_TODO(ranked_default_app_ids[i])) {
-      return i;
+  int rank = 0;
+  for (const char* id : ranked_default_app_ids) {
+    if (app_id == id) {
+      return rank;
     }
+    ++rank;
   }
   return -1;
 }
@@ -221,7 +225,8 @@ class AppSearchDataSource::AppInfo {
   base::Time last_activity_time() const { return last_activity_time_; }
 
   void AddSearchableText(const std::u16string& searchable_text) {
-    DCHECK(tokenized_indexed_searchable_text_.empty());
+    CHECK(tokenized_indexed_searchable_text_.empty(),
+          base::NotFatalUntil::M160);
     searchable_text_.push_back(searchable_text);
   }
 
@@ -311,7 +316,7 @@ SearchProvider::Results AppSearchDataSource::GetRecommendations() {
       // Case 2: if it's a default recommended app, set the relevance in
       // (0.33, 0.34) based on a hard-coded ordering.
       const double relevance = 0.34 - (kEps * (default_rank + 1));
-      DCHECK(0.33 < relevance && relevance < 0.34);
+      CHECK(0.33 < relevance && relevance < 0.34, base::NotFatalUntil::M160);
       result->set_relevance(relevance);
     } else {
       // Case 3: otherwise set the relevance as 0.0;

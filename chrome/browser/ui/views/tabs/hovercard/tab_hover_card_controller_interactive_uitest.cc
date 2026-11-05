@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
+
 #include <memory>
 
 #include "base/byte_size.h"
@@ -23,11 +25,11 @@
 #include "chrome/browser/ui/performance_controls/test_support/memory_metrics_refresh_waiter.h"
 #include "chrome/browser/ui/performance_controls/test_support/memory_saver_interactive_test_mixin.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/collaboration_messaging_tab_data.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/tabs/hovercard/fade_footer_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/fade_label_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_bubble_view.h"
-#include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_test_util.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
 #include "chrome/browser/ui/views/tabs/tab/tab_close_button.h"
@@ -59,6 +61,8 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/models/list_selection_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/test/ui_controls.h"
 #include "ui/base/text/bytes_formatting.h"
 #include "ui/display/display.h"
@@ -123,7 +127,7 @@ class TabHoverCardInteractiveUiTest
     scoped_feature_list_.InitWithFeatures(
         {features::kTabHoverCardImages,
          data_sharing::features::kDataSharingFeature,
-         features::kTabGroupHoverCards, features::kTabStripDeclutter},
+         features::kTabStripDeclutter},
         {});
   }
 
@@ -297,7 +301,8 @@ IN_PROC_BROWSER_TEST_F(TabHoverCardInteractiveUiTest,
 
   // Open a second browser window.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(url::kAboutBlankURL), WindowOpenDisposition::NEW_WINDOW,
+      browser(), GURL(url::kAboutBlankURL),
+      ui::mojom::WindowOpenDisposition::kNewWindow,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
   ASSERT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
 

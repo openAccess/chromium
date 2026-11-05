@@ -6,8 +6,11 @@
 #define CHROME_BROWSER_ACTOR_TOOLS_TYPE_TOOL_REQUEST_H_
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/tools/page_tool_request.h"
 #include "chrome/common/actor.mojom-forward.h"
 
@@ -17,6 +20,15 @@ class ToolRequestVisitorFunctor;
 class TypeToolRequest : public PageToolRequest {
  public:
   static constexpr char kName[] = "Type";
+  // Canonical model-facing name exposed in LLM prompt schemas and indexed by
+  // `ToolRegistry` for lookup and routing via `GetToolDefinition()`.
+  static constexpr std::string_view kModelFacingName = "type";
+  // JSON argument key for the DOM node ID of the target editable element.
+  static constexpr std::string_view kDomNodeIdParam = "dom_node_id";
+  // JSON argument key for the text to type.
+  static constexpr std::string_view kTextParam = "text";
+  // JSON argument key for whether to press Enter after typing.
+  static constexpr std::string_view kFollowByEnterParam = "follow_by_enter";
 
   enum class Mode {
     // Replace all existing text in the editing context.
@@ -29,12 +41,15 @@ class TypeToolRequest : public PageToolRequest {
     kAppend
   };
 
-  TypeToolRequest(tabs::TabHandle tab_handle,
+  TypeToolRequest(ActorSurfaceHandle actor_surface_handle,
                   const PageTarget& target,
                   std::string_view text,
                   bool follow_by_enter,
                   Mode mode);
   ~TypeToolRequest() override;
+
+  // Returns the `ToolId::kType` tool schema definition.
+  static std::optional<ToolDefinition> GetToolDefinition();
 
   void Apply(ToolRequestVisitorFunctor& f) const override;
 

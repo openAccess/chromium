@@ -32,6 +32,7 @@
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/events/message_event.h"
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"
+#include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
@@ -54,7 +55,6 @@
 #include "third_party/blink/renderer/core/loader/mixed_content_checker.h"
 #include "third_party/blink/renderer/core/messaging/blink_transferable_message.h"
 #include "third_party/blink/renderer/core/page/page.h"
-#include "third_party/blink/renderer/core/page/plugin_script_forbidden_scope.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/scroll/scroll_into_view_util.h"
@@ -167,6 +167,7 @@ void RemoteFrame::Trace(Visitor* visitor) const {
   visitor->Trace(receiver_);
   visitor->Trace(main_frame_receiver_);
   Frame::Trace(visitor);
+  ChildFrameCompositor::Trace(visitor);
 }
 
 void RemoteFrame::Navigate(FrameLoadRequest& frame_request,
@@ -276,13 +277,15 @@ void RemoteFrame::Navigate(FrameLoadRequest& frame_request,
   params->referrer = mojom::blink::Referrer::New(
       KURL(NullUrl(), request.ReferrerString()), request.GetReferrerPolicy());
   params->is_form_submission = !!frame_request.Form();
-  params->disposition = ui::mojom::blink::WindowOpenDisposition::CURRENT_TAB;
+  params->disposition = ui::mojom::blink::WindowOpenDisposition::kCurrentTab;
   params->should_replace_current_entry =
       frame_load_type == WebFrameLoadType::kReplaceCurrentItem;
   params->user_gesture = request.HasUserGesture();
   params->triggering_event_info = mojom::blink::TriggeringEventInfo::kUnknown;
   params->blob_url_token = frame_request.GetBlobURLToken();
   params->href_translate = String(frame_request.HrefTranslate().Latin1());
+  params->initiator_state_token = frame_request.GetInitiatorStateToken();
+  params->initiator_document_token = frame_request.GetInitiatorDocumentToken();
   params->initiator_navigation_state_keep_alive_handle =
       std::move(initiator_navigation_state_keep_alive_handle);
   params->initiator_frame_token =
@@ -312,6 +315,18 @@ void RemoteFrame::Navigate(FrameLoadRequest& frame_request,
   params->is_container_initiated = frame_request.IsContainerInitiated();
   params->has_rel_opener = frame_request.GetWindowFeatures().explicit_opener;
 
+  // Navigations initiated from an isolated world (e.g., by an extension
+  // content script) bypass the main world's CSP. This mirrors what
+  // FrameLoader::StartNavigation() does for navigations of local frames, so
+  // that CSP enforcement doesn't depend on whether the navigated frame happens
+  // to live in another process. See the comment on
+  // OpenURLParams::should_check_main_world_csp for more details.
+  params->should_check_main_world_csp =
+      ContentSecurityPolicy::ShouldBypassMainWorldDeprecated(
+          frame_request.JavascriptWorld())
+          ? network::mojom::CSPDisposition::DO_NOT_CHECK
+          : network::mojom::CSPDisposition::CHECK;
+
   GetRemoteFrameHostRemote().OpenURL(std::move(params));
 }
 
@@ -324,8 +339,6 @@ bool RemoteFrame::NavigationShouldReplaceCurrentHistoryEntry(
 }
 
 bool RemoteFrame::DetachImpl(FrameDetachType type) {
-  PluginScriptForbiddenScope forbid_plugin_destructor_scripting;
-
   if (!DetachChildren())
     return false;
 
@@ -615,19 +628,26 @@ void RemoteFrame::SetReplicatedOrigin(
 }
 
 bool RemoteFrame::IsAdFrame() const {
-  return is_ad_frame_;
+  return ad_frame_status_ != mojom::blink::FrameAdStatus::kNotAd;
 }
 
-void RemoteFrame::SetReplicatedIsAdFrame(bool is_ad_frame) {
-  TRACE_EVENT("navigation", "RemoteFrame::SetReplicatedIsAdFrame");
+void RemoteFrame::SetReplicatedAdFrameStatus(
+    mojom::blink::FrameAdStatus ad_frame_status) {
+  TRACE_EVENT("navigation", "RemoteFrame::SetReplicatedAdFrameStatus");
 
-  // Currently, a frame cannot be untagged.
-  DCHECK_LE(is_ad_frame_, is_ad_frame);
+  // A frame's ad status can only be upgraded monotonically. Ignore redundant
+  // updates and reject attempted downgrades. This fails safe in production
+  // and DCHECKs in debug builds.
+  if (ad_frame_status <= ad_frame_status_) {
+    DCHECK_EQ(ad_frame_status, ad_frame_status_)
+        << "A frame's ad status must not be downgraded.";
+    return;
+  }
 
-  is_ad_frame_ = is_ad_frame;
+  ad_frame_status_ = ad_frame_status;
 
   if (auto* owner_element = DynamicTo<HTMLFrameOwnerElement>(Owner())) {
-    if (is_ad_frame) {
+    if (ad_frame_status != mojom::blink::FrameAdStatus::kNotAd) {
       // If an ad script created this frame, the provenance was likely already
       // set via LocalFrame::SetAdEvidence() on the initial empty LocalFrame
       // prior to swapping, making this call a no-op. The provenance data is
@@ -709,7 +729,8 @@ void RemoteFrame::UpdateUserActivationState(
     case mojom::blink::UserActivationUpdateType::kClearActivation:
       ClearUserActivationInFrameTree();
       break;
-    default:
+    case mojom::blink::UserActivationUpdateType::
+        kNotifyActivationPendingBrowserVerification:
       NOTREACHED() << "Unexpected UserActivationUpdateType from browser";
   }
 }
@@ -756,14 +777,11 @@ void RemoteFrame::ScrollRectToVisible(
 void RemoteFrame::IntrinsicSizingInfoOfChildChanged(
     mojom::blink::IntrinsicSizingInfoPtr info) {
   FrameOwner* owner = Owner();
-  // Only communication from HTMLPluginElement-owned subframes is allowed
-  // at present. This includes <embed> and <object> tags.
-  if (!owner || (!owner->IsPlugin() &&
-                 !RuntimeEnabledFeatures::ResponsiveIframesEnabled())) {
+  if (!owner) {
     return;
   }
 
-  if (info->is_cleared && RuntimeEnabledFeatures::ResponsiveIframesEnabled()) {
+  if (info->is_cleared) {
     View()->ClearNaturalDimensions();
     owner->NaturalSizingInfoChanged();
     return;
@@ -908,7 +926,7 @@ void RemoteFrame::SetFrameSinkId(const viz::FrameSinkId& frame_sink_id,
 void RemoteFrame::ChildProcessGone() {
   remote_process_gone_ = true;
   compositing_helper_->ChildFrameGone(
-      ancestor_widget_->GetOriginalScreenInfo().device_scale_factor);
+      ancestor_widget_->GetOriginalDeviceScaleFactor());
 }
 
 bool RemoteFrame::IsIgnoredForHitTest() const {
@@ -1044,10 +1062,9 @@ void RemoteFrame::ResendVisualPropertiesInternal(
   SynchronizeVisualProperties(/*propagate=*/true, allow_paint_holding);
 }
 
-void RemoteFrame::DidUpdateVisualProperties(
-    const cc::RenderFrameMetadata& metadata) {
-  if (!parent_local_surface_id_allocator_->UpdateFromChild(
-          metadata.local_surface_id.value_or(viz::LocalSurfaceId()))) {
+void RemoteFrame::DidUpdateChildLocalSurfaceId(
+    const viz::LocalSurfaceId& local_surface_id) {
+  if (!parent_local_surface_id_allocator_->UpdateFromChild(local_surface_id)) {
     return;
   }
 

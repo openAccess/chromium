@@ -55,16 +55,18 @@ try_.builder(
             "release_try_builder",
         ],
     ),
-    # TODO(crbug.com/549757519): Restore to the CQ when test pool is recovered.
-    # cq_settings = try_.cq_settings(
-    #     location_filters = [
-    #         # This is the only bot that builds //chromecast code for Fuchsia on
-    #         # ARM64, so trigger it when changes are made.
-    #         "chromecast/.+",
-    #         # Always trigger this builder when drilling the fuchsia-sdk.
-    #         "build/fuchsia/sdk_override.txt",
-    #     ],
-    # ),
+    ssd = True,
+    contact_team_email = "chrome-fuchsia-engprod@google.com",
+    cq_settings = try_.cq_settings(
+        location_filters = [
+            # This is the only bot that builds //chromecast code for Fuchsia on
+            # ARM64, so trigger it when changes are made.
+            "chromecast/.+",
+            # Always trigger this builder when drilling the fuchsia-sdk.
+            "build/fuchsia/sdk_override.txt",
+        ],
+    ),
+    execution_timeout = 6 * time.hour,
     experiments = {
         "luci.buildbucket.run_in_turboci": 100,
     },
@@ -74,6 +76,7 @@ try_.builder(
 try_.builder(
     name = "fuchsia-binary-size",
     branch_selector = branches.selector.FUCHSIA_BRANCHES,
+    description_html = "Measures Fuchsia ARM64 binary size impact of CLs.",
     executable = "recipe:binary_size_fuchsia_trybot",
     gn_args = gn_args.config(
         configs = [
@@ -87,6 +90,7 @@ try_.builder(
     ),
     builderless = not settings.is_main,
     cores = 16 if settings.is_main else 8,
+    ssd = None if settings.is_main else True,
     cq_settings = try_.cq_settings(
         on_default_cq = True,
     ),
@@ -120,6 +124,7 @@ try_.builder(
             "ci/fuchsia-x64-cast-receiver-dbg",
         ],
     ),
+    ssd = True,
     contact_team_email = "chrome-fuchsia-engprod@google.com",
     cq_settings = try_.cq_settings(
         location_filters = [
@@ -134,6 +139,7 @@ try_.builder(
 
 try_.builder(
     name = "fuchsia-deterministic-dbg",
+    description_html = "Verifies that Fuchsia x64 debug builds are deterministic.",
     executable = "recipe:swarming/deterministic_build",
     gn_args = gn_args.config(
         configs = [
@@ -153,12 +159,15 @@ try_.builder(
     name = "fuchsia-fyi-arm64-dbg",
     mirrors = ["ci/fuchsia-fyi-arm64-dbg"],
     gn_args = "ci/fuchsia-fyi-arm64-dbg",
+    ssd = True,
+    contact_team_email = "chrome-fuchsia-engprod@google.com",
 )
 
 try_.builder(
     name = "fuchsia-fyi-x64-asan",
     mirrors = ["ci/fuchsia-fyi-x64-asan"],
     gn_args = "ci/fuchsia-fyi-x64-asan",
+    ssd = True,
     contact_team_email = "chrome-fuchsia-engprod@google.com",
     execution_timeout = 10 * time.hour,
 )
@@ -167,6 +176,7 @@ try_.builder(
     name = "fuchsia-fyi-x64-dbg-persistent-emulator",
     mirrors = ["ci/fuchsia-fyi-x64-dbg-persistent-emulator"],
     gn_args = "ci/fuchsia-fyi-x64-dbg-persistent-emulator",
+    ssd = True,
     contact_team_email = "chrome-fuchsia-engprod@google.com",
     execution_timeout = 10 * time.hour,
 )
@@ -220,9 +230,11 @@ try_.orchestrator_builder(
         ],
     ),
     compilator = "fuchsia-x64-cast-receiver-rel-compilator",
+    contact_team_email = "chrome-fuchsia-engprod@google.com",
     coverage_test_types = ["unit", "overall"],
     cq_settings = try_.cq_settings(
         on_default_cq = True,
+        reuse_max_commit_distance = 800 if settings.is_main else None,
     ),
     experiments = {
         # go/nplus1shardsproposal
@@ -231,6 +243,8 @@ try_.orchestrator_builder(
         "chromium.enable_cleandead": 100,
         # go/rts-project-proposal
         "chromium_rts.filter_file_analysis": 100,
+        # crbug.com/40280175
+        "chromium_checkout.expand_submodules": 100,
         # TODO(https://crbug.com/521401232): Increase to 100
         "luci.buildbucket.run_in_turboci": 100,
     },
@@ -238,18 +252,11 @@ try_.orchestrator_builder(
     use_clang_coverage = True,
 )
 
-# TODO(fxbug.dev/370067428): Remove once Netstack2 no longer exists.
-try_.builder(
-    name = "fuchsia-netstack2-x64-cast-receiver-rel",
-    mirrors = ["ci/fuchsia-netstack2-x64-cast-receiver-rel"],
-    gn_args = "ci/fuchsia-netstack2-x64-cast-receiver-rel",
-    contact_team_email = "chrome-fuchsia-engprod@google.com",
-)
-
 try_.builder(
     name = "fuchsia-x64-perf-cast-receiver-rel",
     mirrors = ["ci/fuchsia-x64-perf-cast-receiver-rel"],
     gn_args = "ci/fuchsia-x64-perf-cast-receiver-rel",
+    ssd = True,
     contact_team_email = "chrome-fuchsia-engprod@google.com",
 )
 
@@ -258,6 +265,7 @@ try_.compilator_builder(
     branch_selector = branches.selector.FUCHSIA_BRANCHES,
     cores = "8|16",
     ssd = True,
+    contact_team_email = "chrome-fuchsia-engprod@google.com",
     main_list_view = "try",
 )
 
@@ -265,5 +273,6 @@ try_.builder(
     name = "fuchsia-code-coverage",
     mirrors = ["ci/fuchsia-code-coverage"],
     gn_args = "ci/fuchsia-code-coverage",
+    ssd = True,
     execution_timeout = 10 * time.hour,
 )

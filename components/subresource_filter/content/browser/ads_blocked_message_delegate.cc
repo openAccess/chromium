@@ -18,6 +18,7 @@
 #include "components/subresource_filter/core/browser/subresource_filter_constants.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 namespace subresource_filter {
@@ -130,10 +131,10 @@ void AdsBlockedMessageDelegate::HandleDialogLearnMoreClicked() {
   subresource_filter::ContentSubresourceFilterThrottleManager::LogAction(
       subresource_filter::SubresourceFilterAction::kClickedLearnMore);
   web_contents()->OpenURL(
-      content::OpenURLParams(GURL(subresource_filter::kLearnMoreLink),
-                             content::Referrer(),
-                             WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                             ui::PAGE_TRANSITION_LINK, false),
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(subresource_filter::kLearnMoreLink),
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK),
       /*navigation_handle_callback=*/{});
 }
 

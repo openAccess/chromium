@@ -22,6 +22,8 @@ std::optional<std::string> ToolTypeToToolDisplayString(ToolType tool) {
       return "Scrolling";
     case ToolType::kSelect:
       return "Selecting";
+    case ToolType::kDragAndRelease:
+      return "Dragging";
     case ToolType::kNavigate:
       return "Navigating";
     case ToolType::kBack:
@@ -98,6 +100,8 @@ std::optional<std::string> ActorActionCaseToToolName(Action::ActionCase tool) {
       return "LoadAndExtractContentTool";
     case Action::kAttemptOtpFilling:
       return "AttemptOtpFillingTool";
+    case Action::kTranslatePage:
+      return "TranslatePageTool";
     case Action::ACTION_NOT_SET:
     default:
       return std::nullopt;

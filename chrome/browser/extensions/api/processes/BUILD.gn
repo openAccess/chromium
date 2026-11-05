@@ -12,8 +12,6 @@ source_set("processes") {
     "processes_api.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [
     "//base",
     "//chrome/browser/task_manager",
@@ -21,8 +19,6 @@ source_set("processes") {
   ]
 
   deps = [
-    "//chrome/browser/extensions",
-    "//chrome/browser/profiles:profile",
     "//chrome/common/extensions/api",
     "//content/public/browser",
     "//content/public/common",

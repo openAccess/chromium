@@ -29,6 +29,7 @@ class MockAimEligibilityService : public AimEligibilityService {
   MOCK_METHOD(bool, IsDeepSearchEligible, (), (const, override));
   MOCK_METHOD(bool, IsCreateImagesEligible, (), (const, override));
   MOCK_METHOD(bool, IsFuseboxEligible, (), (const, override));
+  MOCK_METHOD(bool, IsCsbEligible, (), (const, override));
   MOCK_METHOD(bool,
               IsAimUrl,
               (const GURL& url,
@@ -58,6 +59,10 @@ class MockAimEligibilityService : public AimEligibilityService {
   MOCK_METHOD(void, FetchEligibility, (RequestSource), (override));
   MOCK_METHOD(const omnibox::SearchboxConfig*,
               GetSearchboxConfig,
+              (),
+              (const, override));
+  MOCK_METHOD(const omnibox::LhsRailConfig*,
+              GetLhsRailConfig,
               (),
               (const, override));
 

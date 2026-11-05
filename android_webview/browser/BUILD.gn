@@ -8,10 +8,10 @@ import("//printing/buildflags/buildflags.gni")
 
 java_cpp_enum("browser_enums") {
   sources = [
-    "aw_apk_type.h",
     "aw_backforward_cache_not_restored_reason.h",
     "aw_renderer_priority.h",
     "aw_settings.h",
+    "content_restriction/aw_content_restriction_manager_client.h",
     "lifecycle/webview_app_state_observer.h",
     "metrics/aw_metrics_service_client.h",
     "metrics/system_state_util.h",
@@ -21,11 +21,34 @@ java_cpp_enum("browser_enums") {
   ]
 }
 
+# This is deliberately a separate target from ":browser" so that
+# lower-level targets which ":browser" itself depends on (notably
+# "//android_webview/browser/metrics") can query the renderer lifecycle
+# without creating a dependency cycle.
+source_set("render_process") {
+  sources = [
+    "aw_render_process.cc",
+    "aw_render_process.h",
+    "aw_render_process_keep_alive.cc",
+    "aw_render_process_keep_alive.h",
+    "aw_render_process_lifecycle.cc",
+    "aw_render_process_lifecycle.h",
+  ]
+  deps = [
+    "//android_webview:browser_jni_headers",
+    "//android_webview/common",
+    "//android_webview/common:mojom",
+    "//base",
+    "//content/public/browser",
+    "//ipc",
+    "//mojo/public/cpp/bindings",
+  ]
+}
+
 source_set("browser") {
   sources = [
     "android_protocol_handler.cc",
     "android_protocol_handler.h",
-    "aw_apk_type.h",
     "aw_backforward_cache_not_restored_reason.h",
     "aw_browser_context.cc",
     "aw_browser_context.h",
@@ -99,16 +122,10 @@ source_set("browser") {
     "aw_policy_blocklist_service_factory.h",
     "aw_preconnector.cc",
     "aw_preconnector.h",
-    "aw_print_manager.cc",
-    "aw_print_manager.h",
     "aw_proxy_controller.cc",
     "aw_quota_manager_bridge.cc",
     "aw_quota_manager_bridge.h",
-    "aw_render_process.cc",
-    "aw_render_process.h",
     "aw_render_process_gone_delegate.h",
-    "aw_render_process_keep_alive.cc",
-    "aw_render_process_keep_alive.h",
     "aw_renderer_priority.h",
     "aw_settings.cc",
     "aw_settings.h",
@@ -122,6 +139,8 @@ source_set("browser") {
     "aw_web_contents_delegate.h",
     "aw_web_contents_view_delegate.cc",
     "aw_web_contents_view_delegate.h",
+    "aw_web_surface.cc",
+    "aw_web_surface.h",
     "aw_web_ui_controller_factory.cc",
     "aw_web_ui_controller_factory.h",
     "aw_window_coverage_tracker.cc",
@@ -145,6 +164,8 @@ source_set("browser") {
     "file_system_access/aw_file_system_access_permission_context.h",
     "find_helper.cc",
     "find_helper.h",
+    "http_headers/aw_header_interceptor_store.cc",
+    "http_headers/aw_header_interceptor_store.h",
     "http_headers/aw_origin_matched_header.cc",
     "http_headers/aw_origin_matched_header.h",
     "icon_helper.cc",
@@ -238,6 +259,10 @@ source_set("browser") {
     "safe_browsing/aw_safe_browsing_ui_manager.h",
     "safe_browsing/aw_url_checker_delegate_impl.cc",
     "safe_browsing/aw_url_checker_delegate_impl.h",
+    "signin/aw_google_accounts_delegate.cc",
+    "signin/aw_google_accounts_delegate.h",
+    "signin/signin_url_loader_throttle.cc",
+    "signin/signin_url_loader_throttle.h",
     "state_serializer.cc",
     "state_serializer.h",
     "supervised_user/aw_supervised_user_blocking_page.cc",
@@ -257,6 +282,7 @@ source_set("browser") {
   ]
 
   deps = [
+    ":render_process",
     "//android_webview:browser_jni_headers",
     "//android_webview:generate_components_strings",
     "//android_webview/browser/gfx",
@@ -267,6 +293,7 @@ source_set("browser") {
     "//android_webview/common:mojom",
     "//android_webview/proto:aw_variations_seed_proto",
     "//base",
+    "//cc",
     "//components/android_autofill/browser:android",
     "//components/autofill/content/browser",
     "//components/cdm/browser",
@@ -308,6 +335,7 @@ source_set("browser") {
     "//components/page_load_metrics/browser",
     "//components/page_load_metrics/google/browser",
     "//components/payments/content/android",
+    "//components/payments/core",
     "//components/performance_manager",
     "//components/permissions",
     "//components/policy:generated",
@@ -325,8 +353,8 @@ source_set("browser") {
     "//components/safe_browsing/core/browser",
     "//components/safe_browsing/core/browser/db:database_manager",
     "//components/safe_browsing/core/browser/db:safebrowsing_proto",
-    "//components/safe_browsing/core/browser/db:v4_protocol_config",
-    "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
+    "//components/safe_browsing/core/browser/db:sb_protocol_config",
+    "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
     "//components/safe_browsing/core/browser/web_ui:local_state_delegate",
     "//components/safe_browsing/core/common",
     "//components/safe_browsing/core/common:safe_browsing_prefs",
@@ -337,6 +365,7 @@ source_set("browser") {
     "//components/security_state/content",
     "//components/security_state/core",
     "//components/sensitive_content",
+    "//components/signin/core/browser",
     "//components/spellcheck:buildflags",
     "//components/strings:components_strings_grit",
     "//components/tracing:background_tracing_utils",
@@ -362,6 +391,7 @@ source_set("browser") {
     "//mojo/public/cpp/base:protobuf_support",
     "//mojo/public/cpp/bindings",
     "//net/third_party/quiche:blind_sign_auth",
+    "//printing/buildflags",
     "//services/cert_verifier/public/mojom",
     "//services/data_decoder/public/cpp",
     "//services/network/public/cpp",
@@ -377,6 +407,7 @@ source_set("browser") {
     "//third_party/crashpad/crashpad/client",
     "//third_party/zlib/google:compression_utils",
     "//ui/android",
+    "//ui/base/mojom",
     "//ui/display/util",
     "//ui/gl",
     "//ui/resources",
@@ -385,6 +416,10 @@ source_set("browser") {
   ]
 
   if (enable_printing) {
+    sources += [
+      "aw_print_manager.cc",
+      "aw_print_manager.h",
+    ]
     deps += [
       "//components/printing/browser",
       "//components/printing/common",

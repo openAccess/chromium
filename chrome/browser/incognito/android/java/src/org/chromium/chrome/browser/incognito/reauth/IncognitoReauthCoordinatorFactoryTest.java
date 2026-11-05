@@ -20,7 +20,6 @@ import android.content.Context;
 import android.content.Intent;
 
 import androidx.activity.OnBackPressedCallback;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -31,7 +30,6 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.ParameterizedRobolectricTestRunner;
-import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.DeviceInfo;
@@ -60,7 +58,6 @@ import java.util.Collection;
  * <p>TODO(crbug.com/40056462): Remove parameterization to improve readability of the tests.
  */
 @RunWith(ParameterizedRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class IncognitoReauthCoordinatorFactoryTest {
     public @Rule MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -144,7 +141,6 @@ public class IncognitoReauthCoordinatorFactoryTest {
     }
 
     @Test
-    @SmallTest
     public void testSeeOtherTabsRunnable_IsInvokedCorrectly_LayoutNotVisible() {
         Runnable seeOtherTabsRunnable =
                 mIncognitoReauthCoordinatorFactory.getSeeOtherTabsRunnable();
@@ -169,9 +165,9 @@ public class IncognitoReauthCoordinatorFactoryTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.DISABLE_GRID_TAB_SWITCHER)
-    public void testSeeOtherTabsRunnable_IsInvokedCorrectly_LayoutNotVisible_disabledOnDesktop_doesNotShowHub() {
+    public void
+            testSeeOtherTabsRunnable_IsInvokedCorrectly_LayoutNotVisible_disabledOnDesktop_doesNotShowHub() {
         if (!mIsTabbedActivity) return;
 
         DeviceInfo.setIsDesktopForTesting(true);
@@ -188,7 +184,6 @@ public class IncognitoReauthCoordinatorFactoryTest {
     }
 
     @Test
-    @SmallTest
     public void testSeeOtherTabsRunnable_IsInvokedCorrectly_LayoutVisible() {
         Runnable seeOtherTabsRunnable =
                 mIncognitoReauthCoordinatorFactory.getSeeOtherTabsRunnable();
@@ -213,7 +208,6 @@ public class IncognitoReauthCoordinatorFactoryTest {
     }
 
     @Test
-    @SmallTest
     public void testSeeOtherTabsRunnable_IsInvokedCorrectly_LayoutVisible_DelayedHubInit() {
         if (!mIsTabbedActivity) return;
 
@@ -249,7 +243,6 @@ public class IncognitoReauthCoordinatorFactoryTest {
     }
 
     @Test
-    @SmallTest
     public void testCloseAllIncognitoTabsRunnable_IsInvokedCorrectly() {
         Runnable closeAllIncognitoTabsRunnable =
                 mIncognitoReauthCoordinatorFactory.getCloseAllIncognitoTabsRunnable();
@@ -260,7 +253,6 @@ public class IncognitoReauthCoordinatorFactoryTest {
     }
 
     @Test
-    @SmallTest
     public void testBackPressRunnable_IsInvokedCorrectly_LayoutNotVisible() {
         Runnable backPressRunnable = mIncognitoReauthCoordinatorFactory.getBackPressRunnable();
         // Does the same thing as see other tabs runnable.
@@ -284,7 +276,6 @@ public class IncognitoReauthCoordinatorFactoryTest {
     }
 
     @Test
-    @SmallTest
     public void testBackPressRunnable_IsInvokedCorrectly_LayoutVisible() {
         Runnable backPressRunnable = mIncognitoReauthCoordinatorFactory.getBackPressRunnable();
         // Does the same thing as see other tabs runnable.
@@ -309,7 +300,6 @@ public class IncognitoReauthCoordinatorFactoryTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateIncognitoReauthCoordinator_ForFullScreen_ReturnsFullScreenCoordinator() {
         IncognitoReauthCoordinator coordinator =
                 mIncognitoReauthCoordinatorFactory.createIncognitoReauthCoordinator(
@@ -322,7 +312,6 @@ public class IncognitoReauthCoordinatorFactoryTest {
     }
 
     @Test
-    @SmallTest
     public void
             testCreateIncognitoReauthCoordinator_ForTabSwitcher_ReturnsTabSwitcherCoordinator_ExceptForCct() {
         if (mIsTabbedActivity) {
@@ -351,7 +340,6 @@ public class IncognitoReauthCoordinatorFactoryTest {
     }
 
     @Test
-    @SmallTest
     public void testAreDependenciesReadyFor() {
         if (mIsTabbedActivity) {
             // The TabSwitcherCustomViewManager is set.

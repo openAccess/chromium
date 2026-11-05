@@ -334,14 +334,6 @@ void V8PerIsolateData::SetThreadDebugger(
   thread_debugger_ = std::move(thread_debugger);
 }
 
-void V8PerIsolateData::SetPasswordRegexp(ScriptRegexp* password_regexp) {
-  password_regexp_ = password_regexp;
-}
-
-ScriptRegexp* V8PerIsolateData::GetPasswordRegexp() {
-  return password_regexp_;
-}
-
 void V8PerIsolateData::SetTaskAttributionTrackerFactory(
     TaskAttributionTrackerFactoryPtr factory) {
   CHECK(!task_attribution_tracker_factory);
@@ -357,6 +349,28 @@ void V8PerIsolateData::InitializeTaskAttributionTrackerOnWorkerThread() {
     CHECK(task_attribution_tracker_factory);
     task_attribution_tracker_ = task_attribution_tracker_factory(GetIsolate());
   }
+}
+
+void V8PerIsolateData::SetLastExceptionInfo(const ExceptionContext& context,
+                                            ExceptionCode code) {
+  last_exception_info_ = LastExceptionInfo{
+      .context_type = context.GetType(),
+      .interface_name = context.GetClassName(),
+      .property_name = context.GetPropertyName(),
+      .code = code,
+  };
+}
+
+void V8PerIsolateData::SetLastExceptionInfo(v8::ExceptionContext context_type,
+                                            const String& interface_name,
+                                            const String& property_name,
+                                            ExceptionCode code) {
+  last_exception_info_ = LastExceptionInfo{
+      .context_type = context_type,
+      .interface_name = interface_name,
+      .property_name = property_name,
+      .code = code,
+  };
 }
 
 void* CreateHistogram(const char* name, int min, int max, size_t buckets) {

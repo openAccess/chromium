@@ -41,6 +41,13 @@ class FakeToolDelegate : public ToolDelegate {
   ActorTaskFormFillingHandler* GetActorTaskFormFillingHandler() override;
   void InterruptFromTool() override;
   void UninterruptFromTool() override;
+  void IsAcceptableNavigationDestination(
+      const GURL& url,
+      ToolExecutionCallback callback) override;
+
+  void set_navigation_destination_allowed(bool allowed) {
+    navigation_destination_allowed_ = allowed;
+  }
 
   void set_form_filling_handler(
       std::unique_ptr<ActorTaskFormFillingHandler> handler) {
@@ -60,6 +67,7 @@ class FakeToolDelegate : public ToolDelegate {
   raw_ptr<ActorToolFactory> tool_factory_ = nullptr;
   std::map<int32_t, base::WeakPtr<WebStateList>> web_state_lists_;
   bool fail_insert_web_state_ = false;
+  bool navigation_destination_allowed_ = true;
 };
 
 }  // namespace actor

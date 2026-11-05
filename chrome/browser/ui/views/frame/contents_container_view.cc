@@ -77,16 +77,14 @@ ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
   devtools_web_view_ = AddChildView(std::move(devtools_web_view));
 
   devtools_scrim_view_ = AddChildView(std::make_unique<ScrimView>());
-  devtools_scrim_view_->layer()->SetName("DevtoolsScrimView");
+  devtools_scrim_view_->layer()->SetName(
+      "ContentsContainerView:DevtoolsScrimView");
 
   toast_anchor_view_ = AddChildView(std::make_unique<views::View>());
 
   contents_view_ = AddChildView(
       std::make_unique<ContentsWebView>(browser_view->GetProfile()));
   contents_view_->SetID(VIEW_ID_TAB_CONTAINER);
-  contents_view_->set_use_default_deadline_when_animating_bounds(
-      base::FeatureList::IsEnabled(
-          features::kUseDefaultDeadlineWhenAnimatingBounds));
 
   if (base::FeatureList::IsEnabled(ntp_features::kNtpFooter)) {
     new_tab_footer_view_separator_ =
@@ -127,7 +125,8 @@ ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
       AddChildView(std::move(read_anything_immersive_overlay_view));
 
   contents_scrim_view_ = AddChildView(std::make_unique<ScrimView>());
-  contents_scrim_view_->layer()->SetName("ContentsScrimView");
+  contents_scrim_view_->layer()->SetName(
+      "ContentsContainerView:ContentsScrimView");
 
   if (base::FeatureList::IsEnabled(features::kGlicActorUi) &&
       features::kGlicActorUiOverlay.Get()) {
@@ -281,6 +280,7 @@ void ContentsContainerView::SetBorderRoundedCornersFrom(
   contents_scrim_view_->SetRoundedCorners(corner_radii);
 
   if (new_tab_footer_view_) {
+    new_tab_footer_view_->SetBackgroundRadii(content_lower_rounded_corners);
     new_tab_footer_view_->holder()->SetNativeViewCornerRadii(
         content_lower_rounded_corners);
   }
@@ -327,7 +327,8 @@ views::View::Views ContentsContainerView::GetChildrenInZOrder() {
 #if DCHECK_IS_ON()
   auto ordered_children = views::View::GetChildrenInZOrder();
   // |capture_contents_border_view_| should have the highest z-order.
-  DCHECK(ordered_children.back() == capture_contents_border_view_);
+  CHECK(ordered_children.back() == capture_contents_border_view_,
+        base::NotFatalUntil::M162);
   return ordered_children;
 #else
   return views::View::GetChildrenInZOrder();

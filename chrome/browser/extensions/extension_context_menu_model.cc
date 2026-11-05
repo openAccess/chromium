@@ -8,6 +8,7 @@
 
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
@@ -15,6 +16,7 @@
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/types/pass_key.h"
+#include "chrome/browser/extensions/api/side_panel/side_panel_service.h"
 #include "chrome/browser/extensions/context_menu_matcher.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
@@ -32,8 +34,13 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
+#include "chrome/browser/ui/extensions/extension_side_panel_utils.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry_id.h"   // nogncheck
+#include "chrome/browser/ui/side_panel/side_panel_entry_key.h"  // nogncheck
+#include "chrome/browser/ui/side_panel/side_panel_ui.h"         // nogncheck
 #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/common/extensions/api/side_panel.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/branded_strings.h"
@@ -66,20 +73,18 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/models/menu_separator_types.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 
-#if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/extensions/api/side_panel/side_panel_service.h"
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/android/extensions/extension_site_settings_android.h"
+#else
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/extensions/extension_side_panel_utils.h"
 #include "chrome/browser/ui/extensions/extensions_container.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
-#include "chrome/browser/ui/side_panel/side_panel_entry_id.h"   // nogncheck
-#include "chrome/browser/ui/side_panel/side_panel_entry_key.h"  // nogncheck
-#include "chrome/browser/ui/side_panel/side_panel_ui.h"         // nogncheck
-#include "chrome/common/extensions/api/side_panel.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #endif
@@ -126,8 +131,7 @@ bool IsExtensionForcePinned(const Extension& extension, Profile* profile) {
 // Returns true if the given |extension| is allowed to be inspected based on
 // the Developer Tools Availability in the policy.
 bool IsExtensionInspectionAllowed(const Extension& extension,
-                                  Profile* profile,
-                                  content::WebContents* web_contents) {
+                                  Profile* profile) {
   policy::DeveloperToolsPolicyChecker* checker =
       policy::DeveloperToolsPolicyCheckerFactory::GetForBrowserContext(profile);
   if (checker) {
@@ -293,10 +297,21 @@ void LogToggleVisibility(bool visible) {
   }
 }
 
-void OpenUrl(content::WebContents* web_contents, const GURL& url) {
-  content::OpenURLParams params(
-      url, content::Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
-      ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false);
+content::WebContents* GetActiveTabWebContents(BrowserWindowInterface* browser) {
+  tabs::TabInterface* active_tab =
+      TabListInterface::From(browser)->GetActiveTab();
+  return active_tab ? active_tab->GetContents() : nullptr;
+}
+
+void OpenUrl(BrowserWindowInterface* browser, const GURL& url) {
+  content::WebContents* web_contents = GetActiveTabWebContents(browser);
+  if (!web_contents) {
+    return;
+  }
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK);
   web_contents->OpenURL(params, /*navigation_handle_callback=*/{});
 }
 
@@ -446,14 +461,15 @@ bool ExtensionContextMenuModel::IsCommandIdEnabled(int command_id) const {
     case OPTIONS:
       // Options is always enabled since it will only be visible if it has an
       // options page.
-      DCHECK(OptionsPageInfo::HasOptionsPage(extension));
+      CHECK(OptionsPageInfo::HasOptionsPage(extension),
+            base::NotFatalUntil::M161);
       return true;
     case INSPECT_POPUP: {
       content::WebContents* web_contents = GetActiveWebContents();
       return web_contents && extension_action_ &&
              extension_action_->HasPopup(
                  sessions::SessionTabHelper::IdForTab(web_contents).id()) &&
-             IsExtensionInspectionAllowed(*extension, profile_, web_contents);
+             IsExtensionInspectionAllowed(*extension, profile_);
     }
     case UNINSTALL:
       // Uninstall is always enabled since it will only be visible when the
@@ -517,7 +533,7 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
     return;
 
   if (ContextMenuMatcher::IsExtensionsCustomCommandId(command_id)) {
-    DCHECK(extension_items_);
+    CHECK(extension_items_, base::NotFatalUntil::M161);
     extension_items_->ExecuteCommand(command_id, GetActiveWebContents(),
                                      nullptr, content::ContextMenuParams());
     action_taken_ = ContextMenuAction::kCustomCommand;
@@ -528,13 +544,13 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
 
   switch (command_id) {
     case HOME_PAGE: {
-      OpenUrl(GetActiveWebContents(), ManifestURL::GetHomepageURL(extension));
+      OpenUrl(browser_, ManifestURL::GetHomepageURL(extension));
       break;
     }
     case OPTIONS:
-      DCHECK(OptionsPageInfo::HasOptionsPage(extension));
-      ExtensionTabUtil::OpenOptionsPageFromWebContents(extension,
-                                                       GetActiveWebContents());
+      CHECK(OptionsPageInfo::HasOptionsPage(extension),
+            base::NotFatalUntil::M161);
+      ExtensionTabUtil::OpenOptionsPage(extension, browser_);
       break;
     case TOGGLE_VISIBILITY: {
       bool visible = !is_pinned_;
@@ -565,7 +581,6 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
       break;
     }
     case TOGGLE_SIDE_PANEL_VISIBILITY: {
-#if !BUILDFLAG(IS_ANDROID)
       // Do nothing if the web contents have navigated to a different origin.
       auto* web_contents = GetActiveWebContents();
       if (!web_contents ||
@@ -574,7 +589,11 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
       }
 
       SidePanelService* const side_panel_service = GetSidePanelService();
-      CHECK(side_panel_service);
+      // side_panel_service can be nullptr in unit tests and is unsupported in
+      // system/guest profiles.
+      if (!side_panel_service) {
+        return;
+      }
 
       // The state of the tab could have changed since we opened the context
       // menu. This check ensures that the extension has a valid side panel it
@@ -584,7 +603,6 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
                                                                   tab_id)) {
         side_panel_util::ToggleExtensionSidePanel(browser_, extension->id());
       }
-#endif  // !BUILDFLAG(IS_ANDROID)
       break;
     }
     case MANAGE_EXTENSIONS: {
@@ -600,15 +618,16 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
         replacements.SetQueryStr(query);
         url = url.ReplaceComponents(replacements);
       }
-      OpenUrl(GetActiveWebContents(), url);
+      OpenUrl(browser_, url);
 #endif
       break;
     }
     case VIEW_WEB_PERMISSIONS:
 #if BUILDFLAG(ENABLE_EXTENSIONS)
       chrome::ShowSiteSettings(browser_, extension->url());
+#elif BUILDFLAG(IS_ANDROID)
+      ShowExtensionSiteSettings(GetActiveWebContents(), extension->id());
 #else
-      // TODO(crbug.com/441744719): Show site settings page on Desktop Android.
       NOTIMPLEMENTED();
 #endif
       break;
@@ -625,7 +644,7 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
       const GURL review_url =
           util::GetCWSWritingReviewUrl(extension->id(), review_source);
       CHECK(review_url.is_valid());
-      OpenUrl(GetActiveWebContents(), review_url);
+      OpenUrl(browser_, review_url);
       break;
     }
     case POLICY_INSTALLED:
@@ -660,13 +679,13 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
     case PAGE_ACCESS_PERMISSIONS_PAGE:
       LogPageAccessAction(command_id);
       OpenUrl(
-          GetActiveWebContents(),
+          browser_,
           GURL(extension_permissions_constants::kExtensionsSitePermissionsURL));
       break;
     case PAGE_ACCESS_LEARN_MORE:
       LogPageAccessAction(command_id);
       OpenUrl(
-          GetActiveWebContents(),
+          browser_,
           GURL(
               extension_permissions_constants::kRuntimeHostPermissionsHelpURL));
 
@@ -690,6 +709,24 @@ void ExtensionContextMenuModel::MenuClosed(ui::SimpleMenuModel* menu) {
 #endif
     UMA_HISTOGRAM_ENUMERATION("Extensions.ContextMenuAction", action);
 
+    // If the "Rate it" item was shown, records whether it was clicked for this
+    // menu session, split by surface (ExtensionsMenu vs. ContextMenu). The menu
+    // is populated in Init() and never mutated afterwards, so querying `this`
+    // here is equivalent to checking what ShouldShowReviewPrompt() decided.
+    // Note this deliberately queries `this` and not `menu`, which may be a
+    // submenu.
+    if (GetIndexOfCommandId(RATE_EXTENSION).has_value()) {
+      RateExtensionOutcome rate_outcome = RateExtensionOutcome::kNotClicked;
+      if (action == ContextMenuAction::kRateExtension) {
+        rate_outcome = RateExtensionOutcome::kClicked;
+      }
+      base::UmaHistogramEnumeration(
+          source_ == ContextMenuSource::kMenuItem
+              ? "Extensions.ContextMenuRateExtension.ExtensionsMenu"
+              : "Extensions.ContextMenuRateExtension.ContextMenu",
+          rate_outcome);
+    }
+
     // Clear out the action to avoid any possible UAF if we close the parent
     // menu.
     action_taken_ = std::nullopt;
@@ -710,9 +747,10 @@ ExtensionContextMenuModel::~ExtensionContextMenuModel() = default;
 void ExtensionContextMenuModel::InitMenuWithFeature(
     const Extension* extension,
     bool can_show_icon_in_toolbar) {
-  DCHECK(base::FeatureList::IsEnabled(
-      extensions_features::kExtensionsMenuAccessControl));
-  DCHECK(extension);
+  CHECK(base::FeatureList::IsEnabled(
+            extensions_features::kExtensionsMenuAccessControl),
+        base::NotFatalUntil::M161);
+  CHECK(extension, base::NotFatalUntil::M161);
 
   extension_action_ =
       ExtensionActionManager::Get(profile_)->GetExtensionAction(*extension);
@@ -891,9 +929,7 @@ void ExtensionContextMenuModel::InitMenuWithFeature(
     AddItemWithStringId(UNINSTALL, IDS_EXTENSIONS_UNINSTALL);
   }
 
-#if !BUILDFLAG(IS_ANDROID)
   AddSidePanelEntryIfPresent(*extension);
-#endif
 
   // Settings section.
   if (!is_component_) {
@@ -907,8 +943,7 @@ void ExtensionContextMenuModel::InitMenuWithFeature(
   if (delegate_ && !is_component_ && action_info && !action_info->synthesized &&
       profile_->GetPrefs()->GetBoolean(prefs::kExtensionsUIDeveloperMode)) {
     AddSeparator(ui::NORMAL_SEPARATOR);
-    if (IsExtensionInspectionAllowed(*extension, profile_,
-                                     GetActiveWebContents())) {
+    if (IsExtensionInspectionAllowed(*extension, profile_)) {
       AddItemWithStringId(INSPECT_POPUP, IDS_EXTENSION_ACTION_INSPECT_POPUP);
     } else {
       AddItemWithStringIdAndIcon(
@@ -923,7 +958,7 @@ void ExtensionContextMenuModel::InitMenuWithFeature(
 
 void ExtensionContextMenuModel::InitMenu(const Extension* extension,
                                          bool can_show_icon_in_toolbar) {
-  DCHECK(extension);
+  CHECK(extension, base::NotFatalUntil::M161);
 
   std::optional<ActionInfo::Type> action_type;
   extension_action_ =
@@ -982,7 +1017,7 @@ void ExtensionContextMenuModel::InitMenu(const Extension* extension,
       source_ == ContextMenuSource::kToolbarAction) {
     int visibility_string_id =
         GetVisibilityStringId(profile_, extension, is_pinned_);
-    DCHECK_NE(-1, visibility_string_id);
+    CHECK_NE(-1, visibility_string_id, base::NotFatalUntil::M161);
     AddItemWithStringId(TOGGLE_VISIBILITY, visibility_string_id);
     if (IsExtensionForcePinned(*extension, profile_)) {
       size_t toggle_visibility_index =
@@ -995,9 +1030,7 @@ void ExtensionContextMenuModel::InitMenu(const Extension* extension,
     }
   }
 
-#if !BUILDFLAG(IS_ANDROID)
   AddSidePanelEntryIfPresent(*extension);
-#endif
 
   if (!is_component_) {
     AddSeparator(ui::NORMAL_SEPARATOR);
@@ -1013,7 +1046,6 @@ void ExtensionContextMenuModel::InitMenu(const Extension* extension,
   }
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 void ExtensionContextMenuModel::AddSidePanelEntryIfPresent(
     const Extension& extension) {
   if (!extension.permissions_data()->HasAPIPermission(
@@ -1022,7 +1054,11 @@ void ExtensionContextMenuModel::AddSidePanelEntryIfPresent(
   }
 
   SidePanelService* const side_panel_service = GetSidePanelService();
-  CHECK(side_panel_service);
+  // side_panel_service can be nullptr in unit tests and is unsupported in
+  // system/guest profiles.
+  if (!side_panel_service) {
+    return;
+  }
 
   int tab_id = ExtensionTabUtil::GetTabId(GetActiveWebContents());
   if (!side_panel_service->HasSidePanelContextMenuActionForTab(extension,
@@ -1030,9 +1066,14 @@ void ExtensionContextMenuModel::AddSidePanelEntryIfPresent(
     return;
   }
 
+  SidePanelUI* const side_panel_ui = SidePanelUI::From(browser_);
+  // side_panel_ui can be nullptr in unit tests, app popups, custom windows,
+  // and during teardown.
+  if (!side_panel_ui) {
+    return;
+  }
+
   AddSeparator(ui::NORMAL_SEPARATOR);
-  SidePanelUI* const side_panel_ui = browser_->GetFeatures().side_panel_ui();
-  CHECK(side_panel_ui);
   bool is_side_panel_open = side_panel_ui->IsSidePanelEntryShowing(
       SidePanelEntryKey(SidePanelEntryId::kExtension, extension.id()));
   AddItemWithStringId(TOGGLE_SIDE_PANEL_VISIBILITY,
@@ -1040,7 +1081,6 @@ void ExtensionContextMenuModel::AddSidePanelEntryIfPresent(
                           ? IDS_EXTENSIONS_SUBMENU_CLOSE_SIDE_PANEL_ITEM
                           : IDS_EXTENSIONS_SUBMENU_OPEN_SIDE_PANEL_ITEM);
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 const Extension* ExtensionContextMenuModel::GetExtension() const {
   return ExtensionRegistry::Get(profile_)->enabled_extensions().GetByID(
@@ -1064,8 +1104,9 @@ void ExtensionContextMenuModel::AppendExtensionItems() {
 void ExtensionContextMenuModel::CreatePageAccessItems(
     const Extension* extension,
     content::WebContents* web_contents) {
-  DCHECK(!base::FeatureList::IsEnabled(
-      extensions_features::kExtensionsMenuAccessControl));
+  CHECK(!base::FeatureList::IsEnabled(
+            extensions_features::kExtensionsMenuAccessControl),
+        base::NotFatalUntil::M161);
 
   const GURL& url = web_contents->GetLastCommittedURL();
   auto* permissions_manager = PermissionsManager::Get(profile_);
@@ -1108,14 +1149,23 @@ void ExtensionContextMenuModel::CreatePageAccessItems(
                          page_access_submenu_.get());
 }
 
-content::WebContents* ExtensionContextMenuModel::GetActiveWebContents() const {
-  return TabListInterface::From(browser_)->GetActiveTab()->GetContents();
+content::WebContents*
+ExtensionContextMenuModel::PopupDelegate::GetCurrentWebContents() const {
+  return nullptr;
 }
 
-#if !BUILDFLAG(IS_ANDROID)
+content::WebContents* ExtensionContextMenuModel::GetActiveWebContents() const {
+  if (delegate_) {
+    if (content::WebContents* web_contents =
+            delegate_->GetCurrentWebContents()) {
+      return web_contents;
+    }
+  }
+  return GetActiveTabWebContents(browser_);
+}
+
 SidePanelService* ExtensionContextMenuModel::GetSidePanelService() const {
   return SidePanelService::Get(profile_);
 }
-#endif
 
 }  // namespace extensions

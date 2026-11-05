@@ -104,6 +104,11 @@ ExtensionsMenuDelegateDesktop::ExtensionsMenuDelegateDesktop(
 
 ExtensionsMenuDelegateDesktop::~ExtensionsMenuDelegateDesktop() = default;
 
+content::WebContents* ExtensionsMenuDelegateDesktop::GetActiveWebContents()
+    const {
+  return extensions_container_->GetActiveWebContents();
+}
+
 std::unique_ptr<ExtensionActionViewModel>
 ExtensionsMenuDelegateDesktop::CreateActionViewModel(
     const extensions::ExtensionId& extension_id) {
@@ -114,7 +119,7 @@ ExtensionsMenuDelegateDesktop::CreateActionViewModel(
 }
 
 void ExtensionsMenuDelegateDesktop::OnPageNavigation() {
-  DCHECK(current_page_);
+  CHECK(current_page_, base::NotFatalUntil::M162);
 
   // Update main page if it is open.
   auto* main_page = GetMainPage(current_page_.view());
@@ -384,12 +389,16 @@ void ExtensionsMenuDelegateDesktop::OnUserPermissionsSettingsChanged() {
     // Site permissions page can only be opened when site setting is set to
     // "customize by extension". Thus, when site settings changed, we have to
     // return to main page.
-    DCHECK_NE(PermissionsManager::Get(browser_->GetProfile())
-                  ->GetUserSiteSetting(browser_->GetTabStripModel()
-                                           ->GetActiveWebContents()
-                                           ->GetPrimaryMainFrame()
-                                           ->GetLastCommittedOrigin()),
-              PermissionsManager::UserSiteSetting::kCustomizeByExtension);
+    content::WebContents* web_contents = GetActiveWebContents();
+    if (!web_contents) {
+      web_contents = browser_->GetTabStripModel()->GetActiveWebContents();
+    }
+    CHECK_NE(
+        PermissionsManager::Get(browser_->GetProfile())
+            ->GetUserSiteSetting(
+                web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin()),
+        PermissionsManager::UserSiteSetting::kCustomizeByExtension,
+        base::NotFatalUntil::M162);
     OpenMainPage();
     return;
   }
@@ -542,13 +551,13 @@ void ExtensionsMenuDelegateDesktop::UpdateSitePermissionsPage(
 
 ExtensionsMenuMainPageView*
 ExtensionsMenuDelegateDesktop::GetMainPageViewForTesting() {
-  DCHECK(current_page_);
+  CHECK(current_page_, base::NotFatalUntil::M162);
   return GetMainPage(current_page_.view());
 }
 
 ExtensionsMenuSitePermissionsPageView*
 ExtensionsMenuDelegateDesktop::GetSitePermissionsPageForTesting() {
-  DCHECK(current_page_);
+  CHECK(current_page_, base::NotFatalUntil::M162);
   return GetSitePermissionsPage(current_page_.view());
 }
 
@@ -557,7 +566,7 @@ void ExtensionsMenuDelegateDesktop::SwitchToPage(
   if (current_page_) {
     bubble_contents_->RemoveChildViewT(current_page_.view());
   }
-  DCHECK(!current_page_);
+  CHECK(!current_page_, base::NotFatalUntil::M162);
   current_page_.SetView(bubble_contents_->AddChildView(std::move(page)));
 }
 

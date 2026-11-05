@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/base64.h"
@@ -51,6 +52,7 @@ namespace {
 namespace em = ::enterprise_management;
 
 using attestation::MockTpmChallengeKeySubtle;
+using attestation::TpmChallengeKeySubtleFactory;
 using ::base::test::IsJson;
 using ::base::test::ParseJsonDict;
 using ::base::test::RunOnceCallback;
@@ -133,21 +135,17 @@ constexpr base::TimeDelta kSmallDelay = base::Milliseconds(500);
 // A delay time that ensures that DownloadCert happens.
 constexpr base::TimeDelta kInitialDownloadCertDelay = base::Seconds(35);
 
-const std::string& GetPublicKey() {
-  static std::string public_key;
-  if (public_key.empty()) {
-    base::Base64Decode(kPublicKeyBase64, &public_key);
-  }
+std::string GetPublicKey() {
+  std::string public_key;
+  CHECK(base::Base64Decode(kPublicKeyBase64, &public_key));
   return public_key;
 }
 
-const std::vector<uint8_t>& GetPublicKeyBin() {
-  static std::optional<std::vector<uint8_t>> public_key;
-  if (!public_key.has_value()) {
-    public_key = base::Base64Decode(kPublicKeyBase64);
-    CHECK(public_key.has_value());
-  }
-  return public_key.value();
+std::vector<uint8_t> GetPublicKeyBin() {
+  std::optional<std::vector<uint8_t>> public_key =
+      base::Base64Decode(kPublicKeyBase64);
+  CHECK(public_key.has_value());
+  return std::move(public_key).value();
 }
 
 std::vector<uint8_t> GetDataToSign() {
@@ -435,6 +433,24 @@ class StateChangeCallbackObserver {
   MOCK_METHOD(void, StateChangeCallback, ());
 };
 
+// Replaces the next result of TpmChallengeKeySubtleFactory with a new mock
+// while the returned override is alive, and returns a pair of the override and
+// a pointer to the mock. The mock will be injected into the worker and will
+// live until the worker's destruction.
+[[nodiscard]] std::pair<
+    TpmChallengeKeySubtleFactory::ScopedOneshotOverrideForTesting,
+    MockTpmChallengeKeySubtle*>
+PrepareTpmChallengeKey() {
+  auto mock_tpm_challenge_key_subtle_impl =
+      std::make_unique<MockTpmChallengeKeySubtle>();
+  auto* mock_ptr = mock_tpm_challenge_key_subtle_impl.get();
+  // NOTE: ScopedOneshotOverrideForTesting is non-movable. Relying on C++17 RVO.
+  return std::pair<
+      TpmChallengeKeySubtleFactory::ScopedOneshotOverrideForTesting,
+      MockTpmChallengeKeySubtle*>(std::move(mock_tpm_challenge_key_subtle_impl),
+                                  mock_ptr);
+}
+
 class CertProvisioningWorkerStaticTest : public ::testing::Test {
  public:
   CertProvisioningWorkerStaticTest() { Init(); }
@@ -451,11 +467,7 @@ class CertProvisioningWorkerStaticTest : public ::testing::Test {
     RegisterLocalStatePrefs(testing_pref_service_.registry());
   }
 
-  void TearDown() override {
-    EXPECT_FALSE(
-        attestation::TpmChallengeKeySubtleFactory::WillReturnTestingInstance());
-    AttestationClient::Shutdown();
-  }
+  void TearDown() override { AttestationClient::Shutdown(); }
 
  protected:
   void Init() {
@@ -517,24 +529,6 @@ class CertProvisioningWorkerStaticTest : public ::testing::Test {
     task_environment_.RunUntilIdle();
   }
 
-  // Replaces next result of TpmChallengeKeySubtleFactory and return pointer to
-  // the mock. The mock will injected into next created worker and will live
-  // until worker's destruction. Should be called before creation of every
-  // worker.
-  MockTpmChallengeKeySubtle* PrepareTpmChallengeKey() {
-    auto mock_tpm_challenge_key_subtle_impl =
-        std::make_unique<MockTpmChallengeKeySubtle>();
-
-    MockTpmChallengeKeySubtle* tpm_challenge_key_impl =
-        mock_tpm_challenge_key_subtle_impl.get();
-
-    attestation::TpmChallengeKeySubtleFactory::SetForTesting(
-        std::move(mock_tpm_challenge_key_subtle_impl));
-
-    CHECK(tpm_challenge_key_impl);
-    return tpm_challenge_key_impl;
-  }
-
   base::RepeatingClosure GetStateChangeCallback() {
     return base::BindRepeating(
         &StateChangeCallbackObserver ::StateChangeCallback,
@@ -589,7 +583,8 @@ TEST_F(CertProvisioningWorkerStaticTest, Success) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   MockCertProvisioningInvalidator* mock_invalidator = nullptr;
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kUser, GetProfile(), &testing_pref_service_,
@@ -793,7 +788,8 @@ TEST_F(CertProvisioningWorkerStaticTest, NoHashInStartCsr) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   MockCertProvisioningInvalidator* mock_invalidator = nullptr;
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kUser, GetProfile(), &testing_pref_service_,
@@ -887,7 +883,8 @@ TEST_F(CertProvisioningWorkerStaticTest, PublicKeyMismatch) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kUser, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -972,7 +969,8 @@ TEST_F(CertProvisioningWorkerStaticTest, TryLaterManualRetry) {
       process_id, CertScope::kDevice, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kDevice, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -1090,7 +1088,8 @@ TEST_F(CertProvisioningWorkerStaticTest, TryLaterWait) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kUser, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -1222,7 +1221,8 @@ TEST_F(CertProvisioningWorkerStaticTest, ServiceActivationPendingResponse) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kUser, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -1417,7 +1417,8 @@ TEST_F(CertProvisioningWorkerStaticTest, TryLaterWaitForInvalidation) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kUser, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -1555,7 +1556,8 @@ TEST_F(CertProvisioningWorkerStaticTest, InvalidationRespected) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   MockCertProvisioningInvalidator* mock_invalidator = nullptr;
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kUser, GetProfile(), &testing_pref_service_,
@@ -1690,7 +1692,8 @@ TEST_F(CertProvisioningWorkerStaticTest, StatusErrorHandling) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   CertProvisioningWorkerStatic worker(
       process_id, kCertScope, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -1738,7 +1741,8 @@ TEST_F(CertProvisioningWorkerStaticTest, ResponseErrorHandling) {
       process_id, kCertScope, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   auto worker = CertProvisioningWorkerFactory::Get()->Create(
       process_id, kCertScope, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -1784,7 +1788,8 @@ TEST_F(CertProvisioningWorkerStaticTest, InconsistentDataErrorHandling) {
       /*is_va_enabled=*/true, kCertProfileRenewalPeriod,
       ProtocolVersion::kStatic);
   const std::string process_id = GenerateCertProvisioningId();
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   auto worker = CertProvisioningWorkerFactory::Get()->Create(
       process_id, kCertScope, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -1829,7 +1834,8 @@ TEST_F(CertProvisioningWorkerStaticTest, BackoffStrategy) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kUser, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -1896,7 +1902,8 @@ TEST_F(CertProvisioningWorkerStaticTest, ProcessBackendServerErrorResponse) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kUser, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -1952,7 +1959,8 @@ TEST_F(CertProvisioningWorkerStaticTest, ClearBackendServerError) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kUser, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -1995,7 +2003,8 @@ TEST_F(CertProvisioningWorkerStaticTest, RemoveRegisteredKey) {
       process_id, CertScope::kUser, kCertProfileId, kCertProfileVersion,
       GetPublicKeyBin());
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   MockCertProvisioningInvalidator* mock_invalidator = nullptr;
   CertProvisioningWorkerStatic worker(
       process_id, CertScope::kUser, GetProfile(), &testing_pref_service_,
@@ -2119,7 +2128,6 @@ TEST_F(CertProvisioningWorkerStaticTest, SerializationSuccess) {
   std::unique_ptr<MockCertProvisioningInvalidator> mock_invalidator_obj;
   MockCertProvisioningInvalidator* mock_invalidator = nullptr;
 
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
   std::unique_ptr<CertProvisioningWorker> worker =
       CertProvisioningWorkerFactory::Get()->Create(
           process_id, kCertScope, GetProfile(), &testing_pref_service_,
@@ -2134,9 +2142,15 @@ TEST_F(CertProvisioningWorkerStaticTest, SerializationSuccess) {
   EXPECT_CALL(state_change_callback_observer_, StateChangeCallback)
       .Times(AtLeast(1));
 
+  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = nullptr;
+
   // Prepare key, send start csr request.
   {
     testing::InSequence seq;
+
+    auto [scoped_tpm_challenge_key_override, created_tpm_challenge_key] =
+        PrepareTpmChallengeKey();
+    mock_tpm_challenge_key = created_tpm_challenge_key;
 
     EXPECT_PREPARE_KEY_OK(*mock_tpm_challenge_key,
                           StartPrepareKeyStep(::attestation::ENTERPRISE_USER,
@@ -2215,8 +2229,9 @@ TEST_F(CertProvisioningWorkerStaticTest, SerializationSuccess) {
     mock_invalidator_obj = MakeInvalidator(&mock_invalidator);
     EXPECT_CALL(*mock_invalidator, Register(listener_type, _)).Times(1);
 
-    mock_tpm_challenge_key = PrepareTpmChallengeKey();
-    EXPECT_CALL(*mock_tpm_challenge_key,
+    auto [scoped_tpm_challenge_key_override, recreated_mock_tpm_challenge_key] =
+        PrepareTpmChallengeKey();
+    EXPECT_CALL(*recreated_mock_tpm_challenge_key,
                 RestorePreparedKeyState(
                     ::attestation::ENTERPRISE_USER,
                     /*will_register_key=*/true, ::attestation::KEY_TYPE_RSA,
@@ -2263,7 +2278,8 @@ TEST_F(CertProvisioningWorkerStaticTest, SerializationOnFailure) {
   MockCertProvisioningInvalidator* mock_invalidator = nullptr;
 
   const std::string process_id = GenerateCertProvisioningId();
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   auto worker = CertProvisioningWorkerFactory::Get()->Create(
       process_id, kCertScope, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_,
@@ -2332,7 +2348,8 @@ TEST_F(CertProvisioningWorkerStaticTest, InformationalGetters) {
       /*is_va_enabled=*/true, kCertProfileRenewalPeriod,
       ProtocolVersion::kStatic);
   const std::string process_id = GenerateCertProvisioningId();
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   CertProvisioningWorkerStatic worker(
       process_id, kCertScope, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_, MakeInvalidator(),
@@ -2391,7 +2408,8 @@ TEST_F(CertProvisioningWorkerStaticTest, CancelDeviceWorker) {
   EXPECT_CALL(state_change_callback_observer_, StateChangeCallback)
       .Times(AtLeast(1));
   const std::string process_id = GenerateCertProvisioningId();
-  MockTpmChallengeKeySubtle* mock_tpm_challenge_key = PrepareTpmChallengeKey();
+  auto [scoped_tpm_challenge_key_override, mock_tpm_challenge_key] =
+      PrepareTpmChallengeKey();
   auto worker = CertProvisioningWorkerFactory::Get()->Create(
       process_id, kCertScope, GetProfile(), &testing_pref_service_,
       cert_profile, &cert_provisioning_client_,

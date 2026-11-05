@@ -24,6 +24,7 @@
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/multi_user/multi_user_sign_in_policy.h"
 #include "components/user_manager/user_manager.h"
@@ -117,8 +118,10 @@ IN_PROC_BROWSER_TEST_F(UserAddingScreenTest, CancelAdding) {
 
   EXPECT_TRUE(LoginDisplayHost::default_host() == nullptr);
   EXPECT_EQ(user_manager::UserManager::Get()->GetLoggedInUsers().size(), 1u);
-  EXPECT_EQ(user_manager::UserManager::Get()->GetActiveUser()->GetAccountId(),
-            users[0].account_id);
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  ASSERT_TRUE(active_session);
+  EXPECT_EQ(active_session->account_id(), users[0].account_id);
 }
 
 IN_PROC_BROWSER_TEST_F(UserAddingScreenTest, UILogin) {
@@ -363,11 +366,10 @@ IN_PROC_BROWSER_TEST_F(UserAddingScreenTest, LockScreenWhileAddingUser) {
   EXPECT_EQ(session_manager::SessionManager::Get()->session_state(),
             session_manager::SessionState::ACTIVE);
 
-  UserAddingScreen::Get()->Start();
+  test::ShowUserAddingScreen();
   EXPECT_EQ(user_adding_started(), 1);
   EXPECT_EQ(session_manager::SessionManager::Get()->session_state(),
             session_manager::SessionState::LOGIN_SECONDARY);
-  base::RunLoop().RunUntilIdle();
 
   ScreenLockerController::Get().HandleShowLockScreenRequest();
 }

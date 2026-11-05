@@ -5,11 +5,13 @@
 package org.chromium.chrome.browser.data_sharing;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -28,7 +30,6 @@ import static org.chromium.components.tab_group_sync.SyncedGroupTestHelper.SYNC_
 
 import android.app.Activity;
 import android.graphics.Bitmap;
-import android.text.TextUtils;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
 
@@ -37,7 +38,6 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.ArgumentMatcher;
 import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
@@ -76,10 +76,11 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.test.util.MockitoHelper;
 import org.chromium.url.JUnitTestGURLs;
+import org.chromium.url.Origin;
 
 import java.lang.ref.WeakReference;
-import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
@@ -88,7 +89,6 @@ import java.util.function.Supplier;
 @RunWith(BaseRobolectricTestRunner.class)
 public class InstantMessageDelegateImplUnitTest {
     private static final Token TAB_GROUP_ID = new Token(1L, 2L);
-    private static final int TAB_ID = 1;
     private static final String MESSAGE_CONTENT_1 = "Message Content 1";
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -112,8 +112,10 @@ public class InstantMessageDelegateImplUnitTest {
     @Mock private Bitmap mAvatarBitmap;
     @Mock private Tab mTab1;
     @Mock private Tab mTab2;
+    @Mock private Origin mOpaqueOrigin;
 
     @Captor private ArgumentCaptor<PropertyModel> mPropertyModelCaptor;
+    @Captor private ArgumentCaptor<LoadUrlParams> mLoadUrlParamsCaptor;
 
     private final UnownedUserDataHost mUnownedUserDataHost = new UnownedUserDataHost();
 
@@ -122,6 +124,7 @@ public class InstantMessageDelegateImplUnitTest {
 
     @Before
     public void setUp() {
+        Origin.setOpaqueOriginFactoryForTesting(() -> mOpaqueOrigin);
         MockitoHelper.forwardBind(mSuccessCallback);
         mActivityScenarioRule.getScenario().onActivity(this::onActivity);
     }
@@ -138,8 +141,8 @@ public class InstantMessageDelegateImplUnitTest {
         MessagesFactory.attachMessageDispatcher(mWindowAndroid, mManagedMessageDispatcher);
 
         when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(activity));
-        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(true);
-        when(mTabModel.getGroupLastShownTabId(TAB_GROUP_ID)).thenReturn(TAB_ID);
+        when(mTabModel.containsTabGroup(TAB_GROUP_ID)).thenReturn(true);
+        when(mTabModel.getTabsInGroup(TAB_GROUP_ID)).thenReturn(List.of(mTab1, mTab2));
         when(mTabModel.getTabCreator()).thenReturn(mTabCreator);
         when(mIsActiveWindowSupplier.get()).thenReturn(false);
 
@@ -186,7 +189,7 @@ public class InstantMessageDelegateImplUnitTest {
 
     @Test
     public void testDisplayInstantaneousMessage_NotInTabModel() {
-        when(mTabModel.tabGroupExists(any())).thenReturn(false);
+        when(mTabModel.containsTabGroup(any())).thenReturn(false);
         mDelegate.displayInstantaneousMessage(
                 newInstantMessage(CollaborationEvent.TAB_REMOVED), mSuccessCallback);
         verify(mManagedMessageDispatcher, never()).enqueueWindowScopedMessage(any(), anyBoolean());
@@ -209,13 +212,16 @@ public class InstantMessageDelegateImplUnitTest {
         propertyModel.get(ON_FULLY_VISIBLE).onResult(true);
         verify(mSuccessCallback).onResult(true);
 
-        when(mTabModel.getRelatedTabList(anyInt())).thenReturn(Arrays.asList(mTab1, mTab2));
         assertEquals(DISMISS_IMMEDIATELY, propertyModel.get(ON_PRIMARY_ACTION).get().intValue());
-        ArgumentMatcher<LoadUrlParams> matcher =
-                (LoadUrlParams params) ->
-                        TextUtils.equals(params.getUrl(), JUnitTestGURLs.URL_1.getSpec());
         verify(mTabCreator)
-                .createNewTab(argThat(matcher), eq(TabLaunchType.FROM_TAB_GROUP_UI), eq(mTab2));
+                .createNewTab(
+                        mLoadUrlParamsCaptor.capture(),
+                        eq(TabLaunchType.FROM_TAB_GROUP_UI),
+                        eq(mTab2));
+        LoadUrlParams params = mLoadUrlParamsCaptor.getValue();
+        assertEquals(JUnitTestGURLs.URL_1.getSpec(), params.getUrl());
+        assertTrue(params.getIsRendererInitiated());
+        assertEquals(mOpaqueOrigin, params.getInitiatorOrigin());
     }
 
     @Test
@@ -228,13 +234,16 @@ public class InstantMessageDelegateImplUnitTest {
                 .enqueueWindowScopedMessage(mPropertyModelCaptor.capture(), anyBoolean());
         PropertyModel propertyModel = mPropertyModelCaptor.getValue();
 
-        when(mTabModel.getRelatedTabList(anyInt())).thenReturn(Arrays.asList(mTab1, mTab2));
         assertEquals(DISMISS_IMMEDIATELY, propertyModel.get(ON_PRIMARY_ACTION).get().intValue());
-        ArgumentMatcher<LoadUrlParams> matcher =
-                (LoadUrlParams params) ->
-                        TextUtils.equals(params.getUrl(), getOriginalNativeNtpUrl());
         verify(mTabCreator)
-                .createNewTab(argThat(matcher), eq(TabLaunchType.FROM_TAB_GROUP_UI), eq(mTab2));
+                .createNewTab(
+                        mLoadUrlParamsCaptor.capture(),
+                        eq(TabLaunchType.FROM_TAB_GROUP_UI),
+                        eq(mTab2));
+        LoadUrlParams params = mLoadUrlParamsCaptor.getValue();
+        assertEquals(getOriginalNativeNtpUrl(), params.getUrl());
+        assertFalse(params.getIsRendererInitiated());
+        assertNull(params.getInitiatorOrigin());
     }
 
     @Test
@@ -247,7 +256,6 @@ public class InstantMessageDelegateImplUnitTest {
                 .enqueueWindowScopedMessage(mPropertyModelCaptor.capture(), anyBoolean());
         PropertyModel propertyModel = mPropertyModelCaptor.getValue();
 
-        when(mTabModel.getRelatedTabList(anyInt())).thenReturn(Arrays.asList(mTab1, mTab2));
         assertEquals(DISMISS_IMMEDIATELY, propertyModel.get(ON_PRIMARY_ACTION).get().intValue());
 
         // Should not trigger any navigation.
@@ -256,8 +264,9 @@ public class InstantMessageDelegateImplUnitTest {
 
     @Test
     public void testTabNavigated() {
-        mDelegate.displayInstantaneousMessage(
-                newInstantMessage(CollaborationEvent.TAB_UPDATED), mSuccessCallback);
+        InstantMessage message = newInstantMessage(CollaborationEvent.TAB_UPDATED);
+        message.attributions.get(0).tabMetadata.previousUrl = JUnitTestGURLs.URL_2.getSpec();
+        mDelegate.displayInstantaneousMessage(message, mSuccessCallback);
 
         verify(mManagedMessageDispatcher)
                 .enqueueWindowScopedMessage(mPropertyModelCaptor.capture(), anyBoolean());
@@ -275,6 +284,17 @@ public class InstantMessageDelegateImplUnitTest {
         // When it stops being visible, success shouldn't change.
         propertyModel.get(ON_FULLY_VISIBLE).onResult(false);
         verify(mSuccessCallback, times(1)).onResult(anyBoolean());
+
+        assertEquals(DISMISS_IMMEDIATELY, propertyModel.get(ON_PRIMARY_ACTION).get().intValue());
+        verify(mTabCreator)
+                .createNewTab(
+                        mLoadUrlParamsCaptor.capture(),
+                        eq(TabLaunchType.FROM_TAB_GROUP_UI),
+                        eq(mTab2));
+        LoadUrlParams params = mLoadUrlParamsCaptor.getValue();
+        assertEquals(JUnitTestGURLs.URL_2.getSpec(), params.getUrl());
+        assertTrue(params.getIsRendererInitiated());
+        assertEquals(mOpaqueOrigin, params.getInitiatorOrigin());
     }
 
     @Test
@@ -365,7 +385,7 @@ public class InstantMessageDelegateImplUnitTest {
 
     @Test
     public void testCollaborationRemoved_NoLastFocusedWindow() {
-        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(false);
+        when(mTabModel.containsTabGroup(TAB_GROUP_ID)).thenReturn(false);
         mDelegate.displayInstantaneousMessage(
                 newInstantMessage(CollaborationEvent.TAB_GROUP_REMOVED), mSuccessCallback);
 
@@ -374,7 +394,7 @@ public class InstantMessageDelegateImplUnitTest {
 
     @Test
     public void testCollaborationRemoved_LastFocusedWindow() {
-        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(false);
+        when(mTabModel.containsTabGroup(TAB_GROUP_ID)).thenReturn(false);
         when(mIsActiveWindowSupplier.get()).thenReturn(true);
         mDelegate.displayInstantaneousMessage(
                 newInstantMessage(CollaborationEvent.TAB_GROUP_REMOVED), mSuccessCallback);

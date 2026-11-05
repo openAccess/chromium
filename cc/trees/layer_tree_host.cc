@@ -46,6 +46,7 @@
 #include "cc/layers/heads_up_display_layer_impl.h"
 #include "cc/layers/layer.h"
 #include "cc/layers/painted_scrollbar_layer.h"
+#include "cc/metrics/scroll_timing_buffer.h"
 #include "cc/metrics/ukm_dropped_frames_data.h"
 #include "cc/paint/paint_worklet_layer_painter.h"
 #include "cc/resources/ui_resource_manager.h"
@@ -151,6 +152,7 @@ LayerTreeHost::LayerTreeHost(InitParams params, CompositorMode mode)
       pending_commit_state_(std::make_unique<CommitState>()),
       thread_unsafe_commit_state_(params.mutator_host),
       settings_(*params.settings),
+      memory_policy_(settings_.memory_policy),
       id_(s_layer_tree_host_sequence_number.GetNext() + 1),
       task_graph_runner_(params.task_graph_runner),
       mutator_host_(params.mutator_host),
@@ -254,6 +256,15 @@ void LayerTreeHost::SetUIResourceManagerForTesting(
   ui_resource_manager_ = std::move(ui_resource_manager);
 }
 
+void LayerTreeHost::InitializeScrollTimingBufferConsumer(
+    base::ReadOnlySharedMemoryRegion region) {
+  DCHECK(IsMainThread());
+  CHECK(region.IsValid());
+  CHECK(!scroll_timing_buffer_consumer_);
+  scroll_timing_buffer_consumer_ =
+      ScrollTimingBufferConsumer::Create(std::move(region));
+}
+
 void LayerTreeHost::InitializeProxy(std::unique_ptr<Proxy> proxy) {
   TRACE_EVENT0("cc", "LayerTreeHost::InitializeForReal");
   DCHECK(task_runner_provider_);
@@ -277,6 +288,7 @@ LayerTreeHost::~LayerTreeHost() {
   // Clear any references into the LayerTreeHost.
   mutator_host()->SetMutatorHostDelegate(nullptr);
 
+  layers_to_dispose_.clear();
   if (root_layer()) {
     root_layer()->SetLayerTreeHost(nullptr);
 
@@ -565,6 +577,7 @@ void LayerTreeHost::CommitComplete(int source_frame_number,
   if (!in_commit()) {
     mutator_host()->RemoveStaleTimelines();
     mutator_host()->RemoveStaleTriggers();
+    DisposeLayersAfterCommit();
   }
   if (commit_completion_event_ && commit_completion_event_->IsSignaled())
     WaitForCommitCompletion(/* for_protected_sequence */ false);
@@ -573,6 +586,27 @@ void LayerTreeHost::CommitComplete(int source_frame_number,
   if (did_complete_scale_animation_) {
     client_->DidCompletePageScaleAnimation(source_frame_number);
     did_complete_scale_animation_ = false;
+  }
+}
+
+void LayerTreeHost::ScheduleLayerForPostCommitDisposal(
+    scoped_refptr<Layer> layer) {
+  DCHECK(IsMainThread());
+  CHECK(inside_will_commit_);
+  DCHECK(layer);
+  DCHECK_EQ(layer->layer_tree_host(), this);
+  layers_to_dispose_.push_back(std::move(layer));
+}
+
+void LayerTreeHost::DisposeLayersAfterCommit() {
+  DCHECK(IsMainThread());
+  CHECK(!inside_will_commit_);
+  if (layers_to_dispose_.empty()) {
+    return;
+  }
+  LayerList layers = std::move(layers_to_dispose_);
+  for (auto& layer : layers) {
+    layer->RemoveFromParent();
   }
 }
 
@@ -1300,6 +1334,10 @@ void LayerTreeHost::UpdateBrowserControlsState(
 }
 
 void LayerTreeHost::AnimateLayers(base::TimeTicks monotonic_time) {
+  mutator_host()->RemoveStaleTimelines();
+  mutator_host()->RemoveStaleTriggers();
+  DisposeLayersAfterCommit();
+
   std::unique_ptr<MutatorEvents> events = mutator_host()->CreateEvents();
 
   AnimationTickResult tick_result = mutator_host()->TickAnimations(
@@ -1479,9 +1517,6 @@ void LayerTreeHost::SetViewportRectAndScale(
     float device_scale_factor,
     const viz::LocalSurfaceId& local_surface_id_from_parent) {
   TRACE_EVENT("cc", __PRETTY_FUNCTION__);
-  const viz::LocalSurfaceId previous_local_surface_id =
-      pending_commit_state()->local_surface_id_from_parent;
-  SetLocalSurfaceIdFromParent(local_surface_id_from_parent);
 
   const auto size_track =
       perfetto::NamedTrack::FromPointer("LayerTreeHostSize", this);
@@ -1516,19 +1551,24 @@ void LayerTreeHost::SetViewportRectAndScale(
   // If a new viz::LocalSurfaceId has been provided, and the viewport has
   // changed, we need not begin new frames until it has activated.
   if (local_surface_id_from_parent.is_valid() &&
-      previous_local_surface_id != local_surface_id_from_parent &&
+      pending_commit_state()->local_surface_id_from_parent !=
+          local_surface_id_from_parent &&
       device_viewport_rect_changed) {
     SetTargetLocalSurfaceId(local_surface_id_from_parent);
   }
 
   if (device_viewport_rect_changed || painted_device_scale_factor_changed ||
       device_scale_factor_changed) {
-    SetPropertyTreesNeedRebuild();
     // Urgent because we want resize to be reflected immediately. For instance
     // if a side panel is expanding / contracting, we want the content to reflow
-    // as quickly as possible.
+    // as quickly as possible. Request the urgent commit before
+    // SetPropertyTreesNeedRebuild() and SetLocalSurfaceIdFromParent() so their
+    // non-urgent commit/layer-update requests coalesce into this urgent request
+    // rather than dispatching a non-urgent request first.
     SetNeedsCommit(/*urgent=*/true);
+    SetPropertyTreesNeedRebuild();
   }
+  SetLocalSurfaceIdFromParent(local_surface_id_from_parent);
 }
 
 void LayerTreeHost::SetVisualDeviceViewportIntersectionRect(
@@ -1549,6 +1589,16 @@ void LayerTreeHost::SetVisualDeviceViewportSize(
   pending_commit_state()->visual_device_viewport_size =
       visual_device_viewport_size;
   SetNeedsCommit();
+}
+
+void LayerTreeHost::SetMemoryPolicy(const ManagedMemoryPolicy& policy) {
+  DCHECK(IsMainThread());
+  if (memory_policy_ == policy) {
+    return;
+  }
+
+  memory_policy_ = policy;
+  proxy_->SetMemoryPolicy(policy);
 }
 
 void LayerTreeHost::SetMaxSafeAreaInsets(
@@ -1710,7 +1760,12 @@ void LayerTreeHost::SetExternalPageScaleFactor(
     return;
   }
 
-  pending_commit_state()->external_page_scale_factor = page_scale_factor;
+  if (pending_commit_state()->external_page_scale_factor != page_scale_factor) {
+    // External scale affects surface contents scale, but not transform
+    // geometry.
+    property_trees()->effect_tree_mutable().set_needs_update(true);
+    pending_commit_state()->external_page_scale_factor = page_scale_factor;
+  }
   pending_commit_state()->is_external_pinch_gesture_active =
       is_external_pinch_gesture_active;
   SetNeedsCommit();
@@ -1718,11 +1773,11 @@ void LayerTreeHost::SetExternalPageScaleFactor(
 
 void LayerTreeHost::SetLocalSurfaceIdFromParent(
     const viz::LocalSurfaceId& local_surface_id_from_parent) {
-  // If the viz::LocalSurfaceId is invalid we will be hitting the early exit.
-  // However creating a hash for tracing of an invalid id throw an error. So
-  // exit here. This is either from unit testing where no ids are being setup,
-  // or from a disconnect in Renderer and Browser startup, in which Renderers
-  // have a partial state before the Browser sends the full visual properties.
+  // The viz::LocalSurfaceId can be invalid. This is either from unit testing
+  // where no ids are being setup, or from a disconnect in Renderer and Browser
+  // startup, in which Renderers have a partial state before the Browser sends
+  // the full visual properties. A hidden view that is resized before it has a
+  // surface also sends an invalid id.
   //
   // TODO(jonross): Untangle startup so that we don't have this invalid partial
   // state. (https://crbug.com/1185286) (https://crbug.com/419087)
@@ -1732,22 +1787,27 @@ void LayerTreeHost::SetLocalSurfaceIdFromParent(
   const viz::LocalSurfaceId current_local_surface_id_from_parent =
       pending_commit_state()->local_surface_id_from_parent;
 
+  // Creating a trace id hashes the viz::LocalSurfaceId, which is not allowed
+  // for an invalid id, so only trace valid ids.
+  //
   // These traces are split into two due to the usage of TRACE_ID_GLOBAL for the
   // incoming flow (it comes from a different process), and TRACE_ID_LOCAL for
   // the outgoing flow. The outgoing flow uses local to ensure that it doesn't
   // flow into the wrong trace in different process.
-  TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
-              "LocalSurfaceId.Submission.Flow",
-              perfetto::TerminatingFlow::Global(
-                  local_surface_id_from_parent.submission_trace_id()),
-              "step", "SetLocalSurfaceIdFromParent", "local_surface_id",
-              local_surface_id_from_parent.ToString());
-  TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
-              "LocalSurfaceId.Submission.Flow",
-              perfetto::Flow::ProcessScoped(
-                  local_surface_id_from_parent.submission_trace_id()),
-              "step", "SetLocalSurfaceIdFromParent", "local_surface_id",
-              local_surface_id_from_parent.ToString());
+  if (local_surface_id_from_parent.is_valid()) {
+    TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
+                "LocalSurfaceId.Submission.Flow",
+                perfetto::TerminatingFlow::Global(
+                    local_surface_id_from_parent.submission_trace_id()),
+                "step", "SetLocalSurfaceIdFromParent", "local_surface_id",
+                local_surface_id_from_parent.ToString());
+    TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
+                "LocalSurfaceId.Submission.Flow",
+                perfetto::Flow::ProcessScoped(
+                    local_surface_id_from_parent.submission_trace_id()),
+                "step", "SetLocalSurfaceIdFromParent", "local_surface_id",
+                local_surface_id_from_parent.ToString());
+  }
   // Always update the cached state of the viz::LocalSurfaceId to reflect the
   // latest value received from our parent.
   pending_commit_state()->local_surface_id_from_parent =

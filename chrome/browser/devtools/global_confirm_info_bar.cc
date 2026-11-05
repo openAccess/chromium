@@ -9,6 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/infobars/confirm_infobar_creator.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "components/infobars/core/infobar.h"
 #include "ui/gfx/image/image.h"
 
@@ -311,7 +312,7 @@ void GlobalConfirmInfoBar::MaybeAddInfoBar(content::WebContents* web_contents) {
   infobars::ContentInfoBarManager* infobar_manager =
       infobars::ContentInfoBarManager::FromWebContents(web_contents);
   // WebContents from the tab strip must have the infobar manager.
-  DCHECK(infobar_manager);
+  CHECK(infobar_manager, base::NotFatalUntil::M161);
   if (proxies_.contains(infobar_manager)) {
     return;
   }
@@ -320,7 +321,8 @@ void GlobalConfirmInfoBar::MaybeAddInfoBar(content::WebContents* web_contents) {
       weak_factory_.GetWeakPtr());
   GlobalConfirmInfoBar::DelegateProxy* proxy_ptr = proxy.get();
   infobars::InfoBar* added_bar =
-      infobar_manager->AddInfoBar(CreateConfirmInfoBar(std::move(proxy)));
+      infobar_manager->AddInfoBar(CreateConfirmInfoBar(
+          ConfirmInfoBarCreationAllowlist::GetPassKey(), std::move(proxy)));
 
   // If AddInfoBar() fails, either infobars are globally disabled, or something
   // strange has gone wrong and we can't show the infobar on every tab. In

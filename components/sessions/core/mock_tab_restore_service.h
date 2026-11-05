@@ -5,12 +5,13 @@
 #ifndef COMPONENTS_SESSIONS_CORE_MOCK_TAB_RESTORE_SERVICE_H_
 #define COMPONENTS_SESSIONS_CORE_MOCK_TAB_RESTORE_SERVICE_H_
 
+#include <optional>
 #include <vector>
 
 #include "components/sessions/core/tab_restore_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
-enum class WindowOpenDisposition;
 class SessionID;
 
 namespace sessions {
@@ -46,7 +47,7 @@ class MockTabRestoreService : public sessions::TabRestoreService {
               (sessions::LiveTab * live_tab, int index),
               (override));
 
-  MOCK_METHOD(void,
+  MOCK_METHOD(std::optional<SessionID>,
               CreateHistoricalGroup,
               (sessions::LiveTabContext * context,
                const tab_groups::TabGroupId& id),
@@ -69,6 +70,18 @@ class MockTabRestoreService : public sessions::TabRestoreService {
               (override));
 
   MOCK_METHOD(void,
+              PromoteEphemeralTabGroup,
+              (const tab_groups::TabGroupId& group_id,
+               const tab_groups::TabGroupVisualData& visual_data),
+              (override));
+
+  MOCK_METHOD(void,
+              UpdateSavedTabGroupId,
+              (const tab_groups::TabGroupId& group_id,
+               const base::Uuid& saved_group_id),
+              (override));
+
+  MOCK_METHOD(void,
               SplitClosed,
               (const split_tabs::SplitTabId& id),
               (override));
@@ -78,7 +91,7 @@ class MockTabRestoreService : public sessions::TabRestoreService {
               (const split_tabs::SplitTabId& id),
               (override));
 
-  MOCK_METHOD(void,
+  MOCK_METHOD(std::optional<SessionID>,
               BrowserClosing,
               (sessions::LiveTabContext * context),
               (override));
@@ -109,11 +122,11 @@ class MockTabRestoreService : public sessions::TabRestoreService {
               (int num_to_remove),
               (override));
 
-  MOCK_METHOD(std::vector<sessions::LiveTab*>,
+  MOCK_METHOD(std::optional<std::vector<sessions::LiveTab*>>,
               RestoreEntryById,
               (sessions::LiveTabContext * context,
                SessionID id,
-               WindowOpenDisposition disposition),
+               ui::mojom::WindowOpenDisposition disposition),
               (override));
 
   MOCK_METHOD(void, LoadTabsFromLastSession, (), (override));

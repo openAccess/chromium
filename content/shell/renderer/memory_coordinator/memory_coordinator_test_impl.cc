@@ -7,6 +7,8 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "content/common/memory_coordinator/mojom/memory_coordinator.mojom.h"
+#include "content/public/child/child_thread.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 
 namespace content {
@@ -21,6 +23,11 @@ void MemoryCoordinatorTestImpl::Bind(
 MemoryCoordinatorTestImpl::MemoryCoordinatorTestImpl() = default;
 
 MemoryCoordinatorTestImpl::~MemoryCoordinatorTestImpl() = default;
+
+void MemoryCoordinatorTestImpl::BindRegistryHost(
+    mojo::PendingReceiver<mojom::ChildMemoryConsumerRegistryHost> receiver) {
+  ChildThread::Get()->BindHostReceiver(std::move(receiver));
+}
 
 void MemoryCoordinatorTestImpl::RegisterConsumer(
     const std::string& name,
@@ -58,7 +65,7 @@ MemoryCoordinatorTestImpl::TestMemoryConsumer::TestMemoryConsumer(
 MemoryCoordinatorTestImpl::TestMemoryConsumer::~TestMemoryConsumer() = default;
 
 void MemoryCoordinatorTestImpl::TestMemoryConsumer::OnUpdateMemoryLimit() {
-  client_->OnUpdateMemoryLimit(base::MemoryConsumer::memory_limit());
+  client_->OnUpdateMemoryLimit(memory_limit());
 }
 
 void MemoryCoordinatorTestImpl::TestMemoryConsumer::OnReleaseMemory() {

@@ -157,8 +157,9 @@ class SubmenuModel final : public MenuModelBase {
  public:
   SubmenuModel() : MenuModelBase(kSubmenuIdBase) {
     items_.emplace_back(TYPE_COMMAND, "submenu item 0", nullptr, false, true);
+    items_.emplace_back(TYPE_SEPARATOR, "", nullptr, true, false);
     items_.emplace_back(TYPE_COMMAND, "submenu item 1", nullptr);
-    items_[1].alerted = true;
+    items_[2].alerted = true;
   }
 
   SubmenuModel(const SubmenuModel&) = delete;
@@ -249,6 +250,8 @@ void CheckSubmenu(const RootModel& model,
     views::MenuItemView* item = menu->GetMenuItemByID(id);
     if (!item) {
       EXPECT_EQ(ui::MenuModel::TYPE_SEPARATOR, model_item.type);
+      EXPECT_EQ(model_item.visible,
+                subitem_container->children()[i]->GetVisible());
       continue;
     }
     // Check placement.
@@ -334,6 +337,8 @@ TEST_F(MenuModelAdapterTest, BasicTest) {
     MenuItemView* item = menu->GetMenuItemByID(id);
     if (!item) {
       EXPECT_EQ(ui::MenuModel::TYPE_SEPARATOR, model_item.type);
+      EXPECT_EQ(model_item.visible,
+                item_container->children()[i]->GetVisible());
       continue;
     }
 
@@ -391,13 +396,45 @@ TEST_F(MenuModelAdapterTest, BasicTest) {
 
   // Check the submenu.
   const int submenu_index = 3;
-  CheckSubmenu(model, menu, &delegate, kRootIdBase + submenu_index, 2,
+  CheckSubmenu(model, menu, &delegate, kRootIdBase + submenu_index, 3,
                submenu_index, kSubmenuIdBase);
 
   // Check the actionable submenu.
   const int actionable_submenu_index = 5;
   CheckSubmenu(model, menu, &delegate, kRootIdBase + actionable_submenu_index,
                2, actionable_submenu_index, kActionableSubmenuIdBase);
+}
+
+TEST_F(MenuModelAdapterTest, NonexistentCommandIdDoesNotCrash) {
+  RootModel model;
+  views::MenuModelAdapter delegate(&model);
+  views::MenuDelegate* menu_delegate = &delegate;
+
+  constexpr int kNonexistentId = 99999;
+  ui::Accelerator accelerator;
+
+  // When a command ID is not found in the model, methods should return default
+  // values and not crash.
+  EXPECT_FALSE(menu_delegate->GetAccelerator(kNonexistentId, &accelerator));
+  EXPECT_TRUE(menu_delegate->GetLabel(kNonexistentId).empty());
+  EXPECT_FALSE(menu_delegate->IsCommandEnabled(kNonexistentId));
+  EXPECT_FALSE(menu_delegate->IsCommandVisible(kNonexistentId));
+  EXPECT_FALSE(menu_delegate->IsItemChecked(kNonexistentId));
+  // ExecuteCommand should safely no-op.
+  menu_delegate->ExecuteCommand(kNonexistentId);
+  menu_delegate->ExecuteCommand(kNonexistentId, 0);
+  EXPECT_FALSE(model.last_activation().has_value());
+
+  // Simulating teardown when the model is cleared (menu_model_ = nullptr).
+  model.SetMenuModelDelegate(nullptr);
+  EXPECT_FALSE(menu_delegate->GetAccelerator(kNonexistentId, &accelerator));
+  EXPECT_TRUE(menu_delegate->GetLabel(kNonexistentId).empty());
+  EXPECT_FALSE(menu_delegate->IsCommandEnabled(kNonexistentId));
+  EXPECT_FALSE(menu_delegate->IsCommandVisible(kNonexistentId));
+  EXPECT_FALSE(menu_delegate->IsItemChecked(kNonexistentId));
+  menu_delegate->ExecuteCommand(kNonexistentId);
+  menu_delegate->ExecuteCommand(kNonexistentId, 0);
+  EXPECT_FALSE(model.last_activation().has_value());
 }
 
 }  // namespace views

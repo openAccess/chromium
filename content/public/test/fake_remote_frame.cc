@@ -33,7 +33,8 @@ void FakeRemoteFrame::SetReplicatedOrigin(
     const url::Origin& origin,
     bool is_potentially_trustworthy_unique_origin) {}
 
-void FakeRemoteFrame::SetReplicatedIsAdFrame(bool is_ad_frame) {}
+void FakeRemoteFrame::SetReplicatedAdFrameStatus(
+    blink::mojom::FrameAdStatus ad_frame_status) {}
 
 void FakeRemoteFrame::SetReplicatedName(const std::string& name,
                                         const std::string& unique_name) {}
@@ -87,8 +88,8 @@ void FakeRemoteFrame::EnableAutoResize(const gfx::Size& min_size,
 
 void FakeRemoteFrame::DisableAutoResize() {}
 
-void FakeRemoteFrame::DidUpdateVisualProperties(
-    const cc::RenderFrameMetadata& metadata) {}
+void FakeRemoteFrame::DidUpdateChildLocalSurfaceId(
+    const viz::LocalSurfaceId& local_surface_id) {}
 
 void FakeRemoteFrame::SetFrameSinkId(const viz::FrameSinkId& frame_sink_id,
                                      bool allow_paint_holding) {}

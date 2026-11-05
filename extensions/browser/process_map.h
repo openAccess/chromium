@@ -104,9 +104,6 @@ class ProcessMap : public KeyedService {
                 content::ChildProcessId process_id) const;
   bool Contains(content::ChildProcessId process_id) const;
 
-  // TODO(crbug.com/379869738) Remove this override.
-  bool Contains(int process_id) const;
-
   // Returns true if an extension with the given `extension_id` has any
   // associated tracked process.
   bool ExtensionHasProcess(const ExtensionId& extension_id) const;
@@ -134,6 +131,13 @@ class ProcessMap : public KeyedService {
   // on the web.
   bool IsPrivilegedExtensionProcess(const Extension& extension,
                                     content::ChildProcessId process_id);
+
+  // Returns true if the given `process_id` is associated with a webview guest
+  // owned by the extension with the specified `extension_id`. Note that this
+  // only checks ownership of the webview guest process, not whether the guest
+  // is currently hosting an origin for `extension_id`.
+  bool IsWebViewProcessForExtension(const ExtensionId& extension_id,
+                                    content::ChildProcessId process_id) const;
 
   // Returns true if the given `context_type` - associated with the given
   // `extension`, if provided - is valid for the given `process`.

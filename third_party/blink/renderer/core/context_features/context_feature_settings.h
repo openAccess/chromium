@@ -5,7 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CONTEXT_FEATURES_CONTEXT_FEATURE_SETTINGS_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CONTEXT_FEATURES_CONTEXT_FEATURE_SETTINGS_H_
 
-#include "base/memory/protected_memory.h"
+#include "third_party/blink/public/web/web_v8_features.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/platform/supplementable.h"
@@ -31,19 +31,9 @@ class CORE_EXPORT ContextFeatureSettings final
   // already exist for the given context, one is created.
   static ContextFeatureSettings* From(ExecutionContext*, CreationMode);
 
-  // Protected memory values require initialization before they can be used.
-  // This method is used to perform that initialization.
-  static void InitializeMojoJSAllowedProtectedMemory();
-
-  // Can be used to update the protected memory bool to indicate that MojoJS is
-  // allowed to be enabled for any given context of the process. Should be set
-  // in legitimate code pathways that enable MojoJS bindings for a frame.
-  static void AllowMojoJSForProcess();
-
-  // Validates that MojoJS is allowed for the process as indicated by the
-  // protected memory bool. Crashes the browser via a CHECK call if the
-  // protected memory bool is not set to true, and if the feature
-  // "EnableMojoJSProtectedMemory" is enabled.
+  // Checks that this process has permissions to enable MojoJS on a per-context
+  // basis (see `WebV8Features::AllowMojoJSPerContextForProcess()`). Crashes
+  // via a `CHECK()` if the permission check fails.
   static void CrashIfMojoJSNotAllowed();
 
   // ContextEnabled=MojoJS feature
@@ -59,26 +49,25 @@ class CORE_EXPORT ContextFeatureSettings final
     return enable_mojo_js_file_system_access_helper_;
   }
 
-  // ContextEnabled=PrivateAggregationInSharedStorage
-  void EnablePrivateAggregationInSharedStorage(bool enable) {
-    enable_private_aggregation_in_shared_storage_ = enable;
-  }
-  bool isPrivateAggregationInSharedStorageEnabled() const {
-    return enable_private_aggregation_in_shared_storage_;
-  }
-
   enum class UnboundedElementAuth {
     kDenied,
     kAllowedOpenWeb,
+    // A non-privileged frame, allowed by permissions policy, whose main frame
+    // is privileged. Unlike kAllowedOpenWeb, this does not require user
+    // activation.
+    kAllowedByPrivilegedMainFrame,
     kAllowedPrivileged,
   };
 
   static UnboundedElementAuth GetUnboundedElementAuth(
       const ExecutionContext* context);
 
+  using UnboundedElementPrivilege = WebV8Features::UnboundedElementPrivilege;
+
   // ContextEnabled=UnboundedElement
-  void EnableUnboundedElement(bool enable) {
-    enable_unbounded_element_ = enable;
+  void EnableUnboundedElement(UnboundedElementPrivilege privilege) {
+    enable_unbounded_element_ = true;
+    unbounded_element_privilege_ = privilege;
   }
   bool isUnboundedElementEnabled() const;
 
@@ -87,14 +76,9 @@ class CORE_EXPORT ContextFeatureSettings final
  private:
   bool enable_mojo_js_ = false;
   bool enable_mojo_js_file_system_access_helper_ = false;
-  bool enable_private_aggregation_in_shared_storage_ = false;
   bool enable_unbounded_element_ = false;
-
-  // Protected memory bool that indicates if MojoJS bindings are allowed to be
-  // enabled for any given context of the process. Should be set to true by
-  // legitimate code pathways that enable MojoJS bindings for a frame. This is
-  // to reduce the ease of enabling MojoJS bindings with a data-only attack.
-  static DECLARE_PROTECTED_DATA base::ProtectedMemory<bool> mojo_js_allowed_;
+  UnboundedElementPrivilege unbounded_element_privilege_ =
+      UnboundedElementPrivilege::kNone;
 };
 
 }  // namespace blink

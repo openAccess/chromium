@@ -12,6 +12,7 @@
 #include "base/observer_list.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer.h"
+#include "ui/compositor/layer_observer.h"
 
 namespace ui {
 
@@ -35,7 +36,7 @@ void LayerOwner::RemoveObserver(Observer* observer) {
 }
 
 void LayerOwner::SetLayer(std::unique_ptr<Layer> layer) {
-  DCHECK(!OwnsLayer());
+  CHECK(!OwnsLayer(), base::NotFatalUntil::M163);
   layer_owner_ = std::move(layer);
   layer_ = layer_owner_.get();
   layer_->owner_ = this;
@@ -96,6 +97,8 @@ std::unique_ptr<Layer> LayerOwner::RecreateLayer() {
   // state to the new layer.
   layer_->set_delegate(old_delegate);
 
+  old_layer->observer_list_.Notify(&LayerObserver::OnLayerRecreated,
+                                   old_layer.get(), layer_.get());
   observers_.Notify(&Observer::OnLayerRecreated, old_layer.get());
 
   return old_layer;

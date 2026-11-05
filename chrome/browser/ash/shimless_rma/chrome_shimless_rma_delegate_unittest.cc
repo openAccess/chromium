@@ -12,7 +12,6 @@
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/path_service.h"
-#include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
@@ -26,7 +25,6 @@
 #include "chrome/browser/extensions/extension_service_test_base.h"
 #include "chrome/browser/extensions/external_provider_manager.h"
 #include "chrome/browser/extensions/test_extension_system.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/web_applications/isolated_web_apps/commands/install_isolated_web_app_command.h"
 #include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_install_source.h"
 #include "chrome/browser/web_applications/isolated_web_apps/iwa_permissions_policy_cache.h"
@@ -70,7 +68,8 @@ const char kDevIwaId[] =
 class ChromeShimlessRmaDelegateTest : public testing::Test {
  public:
   ChromeShimlessRmaDelegateTest()
-      : chrome_shimless_rma_delegate_(ChromeShimlessRmaDelegate(nullptr)),
+      : chrome_shimless_rma_delegate_(
+            TestingBrowserProcess::GetGlobal()->local_state()),
         task_environment_(content::BrowserTaskEnvironment::REAL_IO_THREAD) {}
   ~ChromeShimlessRmaDelegateTest() override = default;
 
@@ -83,13 +82,11 @@ class ChromeShimlessRmaDelegateTest : public testing::Test {
 
 // Validates a QrCode Bitmap is correctly converted to a string.
 TEST_F(ChromeShimlessRmaDelegateTest, GenerateQrCode) {
-  base::RunLoop run_loop;
   chrome_shimless_rma_delegate_.GenerateQrCode(
       "www.sample-url.com",
       base::BindLambdaForTesting([&](const std::string& qr_code_image) {
         EXPECT_FALSE(qr_code_image.empty());
       }));
-  run_loop.RunUntilIdle();
 }
 
 class FakeServiceWorkerContext : public content::FakeServiceWorkerContext {
@@ -230,6 +227,7 @@ class ChromeShimlessRmaDelegatePrepareDiagnosticsAppProfileTest
     fake_diagnostics_app_profile_helper_delegate_ =
         fake_diagnostics_app_profile_helper_delegate.get();
     chrome_shimless_rma_delegate_ = std::make_unique<ChromeShimlessRmaDelegate>(
+        TestingBrowserProcess::GetGlobal()->local_state(),
         std::move(fake_diagnostics_app_profile_helper_delegate));
   }
 

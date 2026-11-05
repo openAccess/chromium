@@ -38,11 +38,9 @@ source_set("app_shim") {
     "web_app_shim_manager_delegate_mac.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   public_deps = [
     ":app_shim_listener",
-    "//chrome/browser:browser_public_dependencies",
+    "//components/content_settings/core/common",
   ]
 
   deps = [
@@ -52,6 +50,7 @@ source_set("app_shim") {
     "//chrome/browser:browser_process_platform_part",
     "//chrome/browser/apps/app_service",
     "//chrome/browser/badging",
+    "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/lifetime",
     "//chrome/browser/notifications",
     "//chrome/browser/profiles",
@@ -71,6 +70,7 @@ source_set("app_shim") {
     "//chrome/common:constants",
     "//chrome/common:mojo_bindings",
     "//chrome/common:non_code_constants",
+    "//components/content_settings/core/browser",
     "//components/crx_file",
     "//components/metrics:content",
     "//components/remote_cocoa/browser",
@@ -104,6 +104,7 @@ if (is_mac) {
       "//base",
       "//base/test:test_support",
       "//chrome/app_shim",
+      "//chrome/browser/content_settings:content_settings_factory",
       "//chrome/browser/profiles:misc",
       "//chrome/browser/ui/web_applications",
       "//chrome/browser/web_applications",
@@ -112,6 +113,7 @@ if (is_mac) {
       "//chrome/common:constants",
       "//chrome/common:mojo_bindings",
       "//chrome/test:test_support",
+      "//components/content_settings/core/browser",
       "//components/remote_cocoa/browser",
       "//content/test:test_support",
       "//testing/gtest",

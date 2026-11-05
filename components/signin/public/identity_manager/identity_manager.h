@@ -29,7 +29,7 @@
 #include "components/signin/public/identity_manager/access_token_fetcher.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_mutator.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "google_apis/gaia/oauth2_access_token_manager.h"
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -193,14 +193,12 @@ class IdentityManager : public KeyedService,
 #if BUILDFLAG(IS_IOS)
   // Whether a batch of primary account changes is in progress. See
   // `OnEndBatchOfPrimaryAccountChanges()`.
-  bool IsBatchOfPrimaryAccountChangesInProgress();
+  bool IsBatchOfPrimaryAccountChangesInProgress() const;
 
-  // Starts a batch of primary account changes by setting
-  // `batch_of_primary_account_changes_in_progress_` to `true`. As long as the
-  // batch is running, `OnEndBatchOfPrimaryAccountChanges()` are not sent when
-  // `OnPrimaryAccountChanged()` occurs.
-  // The batch needs to be used when the primary account is switched from one
-  // account to another.
+  // Starts a batch of primary account changes (e.g. when switching from one
+  // primary account to another). `OnEndBatchOfPrimaryAccountChanges()` is not
+  // sent on `OnPrimaryAccountChanged()` while the batch is running, and is sent
+  // when the returned `ScopedClosureRunner` is destructed.
   // See `OnEndBatchOfPrimaryAccountChanges()`.
   base::ScopedClosureRunner StartBatchOfPrimaryAccountChanges();
 #endif  // BUILDFLAG(IS_IOS)
@@ -323,8 +321,7 @@ class IdentityManager : public KeyedService,
   // Returns false if the generation cannot be started. In that case, `callback`
   // will not be invoked.
   bool GenerateBindingKeyRegistrationToken(
-      base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-          supported_algorithms,
+      base::span<const crypto::sign::SignatureKind> supported_algorithms,
       std::string_view auth_code,
       base::OnceCallback<void(
           std::optional<signin::BindingKeyRegistrationTokenResult>)> callback);
@@ -743,6 +740,9 @@ class IdentityManager : public KeyedService,
   // PrimaryAccountManager::Observer:
   void OnPrimaryAccountChanged(
       const PrimaryAccountChangeEvent& event_details) override;
+#if BUILDFLAG(IS_IOS)
+  void OnEndBatchOfPrimaryAccountChanges() override;
+#endif  // BUILDFLAG(IS_IOS)
 
   // ProfileOAuth2TokenServiceObserver:
   void OnRefreshTokenAvailable(const CoreAccountId& account_id) override;
@@ -787,16 +787,6 @@ class IdentityManager : public KeyedService,
   void OnAccountUpdated(const AccountInfo& info);
   void OnAccountRemoved(const AccountInfo& info);
 
-#if BUILDFLAG(IS_IOS)
-  // Starts and stops the account switching. Those method can only be called by
-  // `StartBatchOfPrimaryAccountChanges()`. Only one account switching can be
-  // started at the same time.
-  void BatchOfPrimaryAccountChangesDone();
-  // Triggers `OnEndBatchOfPrimaryAccountChanges()` events. A batch of primary
-  // account changes should not be in progress when calling this method.
-  void FireOnEndBatchOfPrimaryAccountChanges();
-#endif  // BUILDFLAG(IS_IOS)
-
   // Backing signin classes.
   std::unique_ptr<AccountTrackerService> account_tracker_service_;
   std::unique_ptr<ProfileOAuth2TokenService> token_service_;
@@ -838,11 +828,6 @@ class IdentityManager : public KeyedService,
   // Java-side IdentityManager object.
   base::android::ScopedJavaGlobalRef<jobject> java_identity_manager_;
 #endif
-#if BUILDFLAG(IS_IOS)
-  // `true` if there is an account switching back in progress.
-  // See `StartBatchOfPrimaryAccountChanges()`.
-  bool batch_of_primary_account_changes_in_progress_ = false;
-#endif  // BUILDFLAG(IS_IOS)
   base::WeakPtrFactory<IdentityManager> weak_pointer_factory_;
 };
 

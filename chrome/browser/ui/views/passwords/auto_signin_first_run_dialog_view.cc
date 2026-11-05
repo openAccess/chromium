@@ -56,7 +56,7 @@ AutoSigninFirstRunDialogView::~AutoSigninFirstRunDialogView() = default;
 
 void AutoSigninFirstRunDialogView::ShowAutoSigninPrompt() {
   InitWindow();
-  DCHECK(!widget_);
+  CHECK(!widget_, base::NotFatalUntil::M162);
   SetOwnershipOfNewWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
   widget_ = base::WrapUnique(
       constrained_window::ShowWebModalDialogViews(this, web_contents_.get()));
@@ -67,6 +67,11 @@ void AutoSigninFirstRunDialogView::ControllerGone() {
   // |controller_| should be kept around.
   GetWidget()->Close();
   controller_ = nullptr;
+}
+
+bool AutoSigninFirstRunDialogView::ShouldAllowKeyEventsDuringInputProtection()
+    const {
+  return false;
 }
 
 std::u16string AutoSigninFirstRunDialogView::GetWindowTitle() const {

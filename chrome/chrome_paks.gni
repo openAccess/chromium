@@ -18,6 +18,22 @@ import("chrome_repack_locales.gni")
 
 assert(!is_fuchsia, "Fuchsia shouldn't use anything in //chrome")
 
+# WebUI code cache paks. They are merged into resources.pak, except on Mac
+# where they form the per-architecture `webui_code_cache_pak_filename`.
+_webui_code_cache_paks = [
+  "$root_gen_dir/chrome/side_panel_bookmarks_code_cache_resources.pak",
+  "$root_gen_dir/chrome/side_panel_customize_chrome_code_cache_resources.pak",
+  "$root_gen_dir/chrome/side_panel_reading_list_code_cache_resources.pak",
+  "$root_gen_dir/chrome/side_panel_shared_code_cache_resources.pak",
+  "$root_gen_dir/chrome/side_panel_tabs_from_other_devices_code_cache_resources.pak",
+  "$root_gen_dir/chrome/webui_toolbar_code_cache_resources.pak",
+  "$root_gen_dir/ui/webui/resources/webui_code_cache_resources.pak",
+]
+_webui_code_cache_pak_deps = [
+  "//chrome/browser/resources:code_cache_resources",
+  "//ui/webui/resources:code_cache_resources",
+]
+
 # Generates a rule to repack a set of resources, substituting a given string
 # in for the percentage (e.g. "100", "200"). It generates the repacked files in
 # the "gen" directory, and then introduces a copy rule to copy it to the root
@@ -160,7 +176,13 @@ template("chrome_extra_paks") {
         "$root_gen_dir/chrome/new_tab_page_third_party_resources.pak",
         "$root_gen_dir/chrome/new_tab_page_untrusted_resources.pak",
         "$root_gen_dir/chrome/new_tab_shared_resources.pak",
+        "$root_gen_dir/chrome/side_panel_customize_chrome_resources.pak",
       ]
+    }
+
+    # side_panel/shared is not NTP-specific; see chrome/browser/resources.
+    if (!is_android || enable_webui_ntp) {
+      sources += [ "$root_gen_dir/chrome/side_panel_shared_resources.pak" ]
     }
 
     deps = [
@@ -200,6 +222,16 @@ template("chrome_extra_paks") {
       ]
     }
 
+    if (enable_webui_tabstrip_ntb) {
+      sources += [ "$root_gen_dir/chrome/tabstrip_ntb_resources.pak" ]
+    }
+
+    # tabstrip_ntb bundles these when optimize_webui=true, so Android only
+    # needs them in unbundled builds.
+    if (!is_android || (enable_webui_tabstrip_ntb && !optimize_webui)) {
+      sources += [ "$root_gen_dir/chrome/tab_strip_api_resources.pak" ]
+    }
+
     if (!is_android) {
       # New paks should be added here by default.
       sources += [
@@ -214,6 +246,7 @@ template("chrome_extra_paks") {
         "$root_gen_dir/chrome/browser/indigo/resources/indigo_browser_resources.pak",
         "$root_gen_dir/chrome/certificate_manager_resources.pak",
         "$root_gen_dir/chrome/contextual_cueing_internals_resources.pak",
+        "$root_gen_dir/chrome/craft_resources.pak",
         "$root_gen_dir/chrome/data_sharing_resources.pak",
         "$root_gen_dir/chrome/dev_ui_resources.pak",
         "$root_gen_dir/chrome/downloads_resources.pak",
@@ -221,9 +254,7 @@ template("chrome_extra_paks") {
         "$root_gen_dir/chrome/drive_picker_host_untrusted_resources.pak",
         "$root_gen_dir/chrome/feedback_resources.pak",
         "$root_gen_dir/chrome/gaia_auth_host_resources.pak",
-        "$root_gen_dir/chrome/geic_resources.pak",
         "$root_gen_dir/chrome/glic_untrusted_resources.pak",
-        "$root_gen_dir/chrome/history_resources.pak",
         "$root_gen_dir/chrome/indigo_resources.pak",
         "$root_gen_dir/chrome/inspect_resources.pak",
         "$root_gen_dir/chrome/iwa_dev_resources.pak",
@@ -241,18 +272,16 @@ template("chrome_extra_paks") {
         "$root_gen_dir/chrome/side_panel_bookmarks_resources.pak",
         "$root_gen_dir/chrome/side_panel_comments_resources.pak",
         "$root_gen_dir/chrome/side_panel_commerce_resources.pak",
-        "$root_gen_dir/chrome/side_panel_customize_chrome_resources.pak",
         "$root_gen_dir/chrome/side_panel_history_clusters_resources.pak",
         "$root_gen_dir/chrome/side_panel_history_resources.pak",
         "$root_gen_dir/chrome/side_panel_read_anything_resources.pak",
         "$root_gen_dir/chrome/side_panel_reading_list_resources.pak",
-        "$root_gen_dir/chrome/side_panel_shared_resources.pak",
         "$root_gen_dir/chrome/side_panel_tabs_from_other_devices_resources.pak",
         "$root_gen_dir/chrome/signin_resources.pak",
         "$root_gen_dir/chrome/support_tool_resources.pak",
         "$root_gen_dir/chrome/tab_group_home_resources.pak",
+        "$root_gen_dir/chrome/tab_group_shared_resources.pak",
         "$root_gen_dir/chrome/tab_search_resources.pak",
-        "$root_gen_dir/chrome/tab_strip_api_resources.pak",
         "$root_gen_dir/chrome/web_app_internals_resources.pak",
         "$root_gen_dir/chrome/webnn_internals_resources.pak",
         "$root_gen_dir/chrome/webui_browser_resources.pak",
@@ -269,7 +298,6 @@ template("chrome_extra_paks") {
         "//chrome/browser/actor/resources:browser_resources",
         "//chrome/browser/indigo/resources:browser_resources",
         "//chrome/browser/resources/contextual_cueing/internals:resources",
-        "//chrome/browser/resources/geic:resources",
         "//components/headless/command_handler",
         "//content/browser/tracing:resources",
       ]
@@ -367,7 +395,6 @@ template("chrome_extra_paks") {
         "$root_gen_dir/chrome/kerberos_resources.pak",
         "$root_gen_dir/chrome/launcher_internals_resources.pak",
         "$root_gen_dir/chrome/lock_screen_reauth_resources.pak",
-        "$root_gen_dir/chrome/manage_mirrorsync_resources.pak",
         "$root_gen_dir/chrome/multidevice_internals_resources.pak",
         "$root_gen_dir/chrome/multidevice_setup_resources.pak",
         "$root_gen_dir/chrome/nearby_internals_resources.pak",
@@ -391,7 +418,6 @@ template("chrome_extra_paks") {
         "$root_gen_dir/chrome/supervision_resources.pak",
         "$root_gen_dir/chrome/sys_internals_resources.pak",
         "$root_gen_dir/chromeos/ash/ash_resources.pak",
-        "$root_gen_dir/chromeos/ash/borealis_motd_resources.pak",
         "$root_gen_dir/chromeos/ash/components/emoji/emoji.pak",
         "$root_gen_dir/chromeos/ash/experiences/extensions/chromeos_extensions_resources.pak",
         "$root_gen_dir/chromeos/chromeos_boca_app_bundle_resources.pak",
@@ -459,7 +485,6 @@ template("chrome_extra_paks") {
         "//chromeos/ash/components/emoji:resources",
         "//chromeos/ash/experiences/arc/input_overlay/resources",
         "//chromeos/ash/experiences/extensions:resources",
-        "//chromeos/ash/experiences/guest_os/borealis/motd/resources",
         "//chromeos/ash/resources",
         "//ui/chromeos/styles:cros_styles_resources",
         "//ui/file_manager:file_manager_gen_resources",
@@ -528,9 +553,15 @@ template("chrome_extra_paks") {
       deps += [
         "//chrome/browser/resources/contextual_tasks/extension:resources",
         "//chrome/browser/resources/extensions:resources",
-        "//chrome/browser/resources/omnibox/aim_eligibility_extension:resources",
+        "//chrome/browser/resources/omnibox_internals/aim_eligibility_extension:resources",
         "//extensions:extensions_resources",
       ]
+      if (enable_webui_ntp) {
+        sources +=
+            [ "$root_gen_dir/chrome/new_tab_page_extension_resources.pak" ]
+        deps +=
+            [ "//chrome/browser/resources/new_tab_page_extension:resources" ]
+      }
     } else if (is_android) {
       sources += [ "$root_gen_dir/chrome/guest_view_shared_resources.pak" ]
       deps += [ "//chrome/browser/resources/guest_view_shared:resources" ]
@@ -553,6 +584,11 @@ template("chrome_extra_paks") {
     if (enable_webui_certificate_viewer) {
       sources += [ "$root_gen_dir/chrome/certificate_viewer_resources.pak" ]
       deps += [ "//chrome/browser/resources/certificate_viewer:resources" ]
+    }
+
+    if (enable_webui_history) {
+      sources += [ "$root_gen_dir/chrome/history_resources.pak" ]
+      deps += [ "//chrome/browser/resources/history:resources" ]
     }
 
     if (enable_compose) {
@@ -599,20 +635,11 @@ template("chrome_extra_paks") {
       ]
     }
 
-    if (enable_webui_generate_code_cache) {
-      sources += [
-        "$root_gen_dir/chrome/side_panel_bookmarks_code_cache_resources.pak",
-        "$root_gen_dir/chrome/side_panel_customize_chrome_code_cache_resources.pak",
-        "$root_gen_dir/chrome/side_panel_reading_list_code_cache_resources.pak",
-        "$root_gen_dir/chrome/side_panel_shared_code_cache_resources.pak",
-        "$root_gen_dir/chrome/side_panel_tabs_from_other_devices_code_cache_resources.pak",
-        "$root_gen_dir/chrome/webui_toolbar_code_cache_resources.pak",
-        "$root_gen_dir/ui/webui/resources/webui_code_cache_resources.pak",
-      ]
-      deps += [
-        "//chrome/browser/resources:code_cache_resources",
-        "//ui/webui/resources:code_cache_resources",
-      ]
+    # On Mac the code cache goes into its own per-architecture pak, see
+    # `webui_code_cache_pak_filename`.
+    if (enable_webui_generate_code_cache && !is_mac) {
+      sources += _webui_code_cache_paks
+      deps += _webui_code_cache_pak_deps
     }
 
     if (is_mac) {
@@ -724,6 +751,24 @@ template("chrome_paks") {
     }
   }
 
+  if (enable_webui_generate_code_cache && is_mac) {
+    repack("${target_name}_webui_code_cache") {
+      forward_variables_from(invoker,
+                             [
+                               "copy_data_to_bundle",
+                               "mark_as_data",
+                               "repack_allowlist",
+                               "visibility",
+                             ])
+      sources = _webui_code_cache_paks
+      deps = _webui_code_cache_pak_deps
+      if (defined(invoker.deps)) {
+        deps += invoker.deps
+      }
+      output = "${invoker.output_dir}/$webui_code_cache_pak_filename"
+    }
+  }
+
   group(target_name) {
     forward_variables_from(invoker, [ "deps" ])
     public_deps = [
@@ -733,6 +778,9 @@ template("chrome_paks") {
     ]
     if (enable_hidpi) {
       public_deps += [ ":${target_name}_200_percent" ]
+    }
+    if (enable_webui_generate_code_cache && is_mac) {
+      public_deps += [ ":${target_name}_webui_code_cache" ]
     }
     if (defined(invoker.public_deps)) {
       public_deps += invoker.public_deps

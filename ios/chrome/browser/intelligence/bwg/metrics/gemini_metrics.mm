@@ -84,6 +84,9 @@ const char kEntryPointImpressionHistogram[] =
 
 const char kEntryPointAvailableHistogram[] = "IOS.Gemini.EntryPoint.Available";
 
+const char kEntryPointDisabledByQuotaHistogram[] =
+    "IOS.Gemini.EntryPoint.DisabledByQuota";
+
 const char kFeedbackHistogram[] = "IOS.Gemini.Feedback";
 
 const char kImageActionButtonHistogram[] = "IOS.Gemini.ImageActionButton";
@@ -149,6 +152,12 @@ const char kPromptLongPressImageIncludedHistogram[] =
 
 const char kPromptContextAttachmentHistogram[] =
     "IOS.Gemini.Prompt.ContextAttachment";
+
+const char kPromptChatContextAttachmentHistogram[] =
+    "IOS.Gemini.Prompt.Chat.ContextAttachment";
+
+const char kPromptLiveContextAttachmentHistogram[] =
+    "IOS.Gemini.Prompt.Live.ContextAttachment";
 
 const char kPromptTabsAttachedCountHistogram[] =
     "IOS.Gemini.Prompt.TabsAttachedCount";
@@ -281,6 +290,11 @@ void RecordFirstRunConsentAction(IOSGeminiFirstRunAction action) {
 
 void RecordLiveFREOutcome(IOSGeminiLiveFREOutcome outcome) {
   base::UmaHistogramEnumeration(kGeminiLiveFREOutcomeHistogram, outcome);
+}
+
+void RecordLiveFREConsentLinkClick() {
+  base::RecordAction(
+      base::UserMetricsAction("MobileGeminiLiveFREConsentLinkClick"));
 }
 
 void RecordLiveButtonTapped() {
@@ -438,6 +452,17 @@ void RecordGeminiEntryPointAvailable(gemini::EntryPoint entry_point) {
   base::RecordAction(
       base::UserMetricsAction("MobileGeminiEntryPointAvailable"));
   base::UmaHistogramEnumeration(kEntryPointAvailableHistogram, entry_point);
+}
+
+void RecordGeminiEntryPointDisabledByQuota(gemini::EntryPoint entry_point) {
+  base::RecordAction(
+      base::UserMetricsAction("MobileGeminiEntryPointDisabledByQuota"));
+  base::UmaHistogramEnumeration(kEntryPointDisabledByQuotaHistogram,
+                                entry_point);
+}
+
+void RecordGeminiQuotaReached() {
+  base::RecordAction(base::UserMetricsAction("MobileGeminiQuotaReached"));
 }
 
 void RecordFirstRunShown() {
@@ -635,14 +660,19 @@ void RecordURLOpened() {
   base::RecordAction(base::UserMetricsAction("MobileGeminiURLOpened"));
 }
 
+void RecordGeminiImmersiveLearningCardWebModalOpened() {
+  base::RecordAction(base::UserMetricsAction(
+      "MobileGeminiImmersiveLearningCardWebModalOpened"));
+}
+
+void RecordGeminiWebModalNavigatedToNewTab() {
+  base::RecordAction(
+      base::UserMetricsAction("MobileGeminiWebModalNavigatedToNewTab"));
+}
+
 void RecordGeminiEntryPointClick(gemini::EntryPoint entry_point,
                                  bool is_fre_flow) {
-  if (entry_point == gemini::EntryPoint::Promo) {
-    base::RecordAction(
-        base::UserMetricsAction("MobileGeminiEntryPointAutomatic"));
-  } else {
-    base::RecordAction(base::UserMetricsAction("MobileGeminiEntryPointTapped"));
-  }
+  base::RecordAction(base::UserMetricsAction("MobileGeminiEntryPointTapped"));
   base::UmaHistogramEnumeration(kEntryPointHistogram, entry_point);
   if (is_fre_flow) {
     base::UmaHistogramEnumeration(kFirstRunEntryPointHistogram, entry_point);
@@ -679,6 +709,7 @@ void RecordGeminiPromptSent(bool is_nano_banana_enabled,
                             int tabs_attached_count,
                             bool was_multi_tab_used) {
   base::RecordAction(base::UserMetricsAction("MobileGeminiPromptSent"));
+  base::RecordAction(base::UserMetricsAction("MobileGeminiChatPromptSent"));
   base::UmaHistogramBoolean(kPromptImageRemixEnabledHistogram,
                             is_nano_banana_enabled);
   base::UmaHistogramCounts100(kPromptImagesAttachedCountHistogram,
@@ -686,6 +717,8 @@ void RecordGeminiPromptSent(bool is_nano_banana_enabled,
   base::UmaHistogramBoolean(kPromptLongPressImageIncludedHistogram,
                             long_press_image_included);
   base::UmaHistogramBoolean(kPromptContextAttachmentHistogram,
+                            has_page_context);
+  base::UmaHistogramBoolean(kPromptChatContextAttachmentHistogram,
                             has_page_context);
   base::UmaHistogramCounts100(kPromptTabsAttachedCountHistogram,
                               tabs_attached_count);
@@ -883,6 +916,15 @@ void RecordGeminiLiveAccumulatedDuration(base::TimeDelta duration) {
                               duration);
 }
 
+void RecordGeminiLivePromptSent(bool has_page_context) {
+  base::RecordAction(base::UserMetricsAction("MobileGeminiPromptSent"));
+  base::RecordAction(base::UserMetricsAction("MobileGeminiLivePromptSent"));
+  base::UmaHistogramBoolean(kPromptContextAttachmentHistogram,
+                            has_page_context);
+  base::UmaHistogramBoolean(kPromptLiveContextAttachmentHistogram,
+                            has_page_context);
+}
+
 void RecordBlockQuerySubmissionWhileLoading(bool block_submission) {
   base::UmaHistogramBoolean(kBlockQuerySubmissionWhileLoadingHistogram,
                             block_submission);
@@ -891,4 +933,9 @@ void RecordBlockQuerySubmissionWhileLoading(bool block_submission) {
 void RecordShowPageLoadingSnackbarOnOpeningInvocation(bool show_snackbar) {
   base::UmaHistogramBoolean(
       kShowPageLoadingSnackbarOnOpeningInvocationHistogram, show_snackbar);
+}
+void RecordGeminiAppSwitcherAccountStatus(
+    GeminiAppSwitcherAccountStatus status) {
+  base::UmaHistogramEnumeration("IOS.Gemini.AISummarization.AccountStatus",
+                                status);
 }

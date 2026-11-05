@@ -13,12 +13,10 @@
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_app_interface.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
-#import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
-#import "ios/chrome/test/earl_grey/chrome_matchers_app_interface.h"
 #import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "net/base/apple/url_conversions.h"
@@ -43,6 +41,12 @@ using base::test::ios::WaitUntilConditionOrTimeout;
        withCapabilities:(NSDictionary<NSString*, NSNumber*>*)capabilities {
   [SigninEarlGreyAppInterface addFakeIdentity:fakeIdentity
                              withCapabilities:capabilities];
+}
+
+- (void)setCapabilities:(NSDictionary<NSString*, NSNumber*>*)capabilities
+            forIdentity:(FakeSystemIdentity*)fakeIdentity {
+  [SigninEarlGreyAppInterface setCapabilities:capabilities
+                                  forIdentity:fakeIdentity];
 }
 
 - (void)addFakeIdentityForSSOAuthAddAccountFlow:
@@ -103,15 +107,6 @@ using base::test::ios::WaitUntilConditionOrTimeout;
 
 - (GaiaId)primaryAccountGaiaID {
   return GaiaId([SigninEarlGreyAppInterface primaryAccountGaiaIDString]);
-}
-
-- (const base::flat_set<GaiaId>)accountsInProfileGaiaIDs {
-  base::flat_set<GaiaId> set;
-  for (NSString* gaiaIDString :
-       [SigninEarlGreyAppInterface accountsInProfileGaiaIDs]) {
-    set.insert(GaiaId(gaiaIDString));
-  }
-  return set;
 }
 
 - (BOOL)isSignedOut {
@@ -337,6 +332,10 @@ using base::test::ios::WaitUntilConditionOrTimeout;
   }
 }
 
+- (void)setPreferredAccountForSignin:(FakeSystemIdentity*)fakeIdentity {
+  [SigninEarlGreyAppInterface setPreferredAccountForSignin:fakeIdentity];
+}
+
 // Confirms "Switch and Delete" when the alert dialog that data will be cleared
 // is shown.
 - (void)closeSwitchAndDeleteAlertIfAny {
@@ -350,11 +349,6 @@ using base::test::ios::WaitUntilConditionOrTimeout;
     [[EarlGrey selectElementWithMatcher:switchAndDeleteAlert]
         performAction:grey_tap()];
   }
-}
-
-- (BOOL)areSeparateProfilesForManagedAccountsEnabled {
-  return
-      [SigninEarlGreyAppInterface areSeparateProfilesForManagedAccountsEnabled];
 }
 
 @end

@@ -7,8 +7,13 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
+#include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
+#include "base/values.h"
+#include "chrome/browser/glic/public/glic_passkeys.h"
 #include "chrome/browser/ui/webui/ai_overlay_dialog/tools/tools.mojom.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -19,27 +24,53 @@
 
 class BrowserWindowInterface;
 
+namespace content {
+class WebContents;
+}  // namespace content
+
 namespace ttc {
 
 class PageContextMonitor;
-class ToolController;
 
+// Implements the platform-agnostic parts of the AiOverlayTools and
+// AiOverlayToolRegistry mojo interfaces.
+//
+// This is an abstract base class holding functionality shared across platforms
+// and must not be instantiated directly. Use Create(), which returns the
+// platform implementation: AiOverlayToolsViews (tools_views.h) on desktop or
+// AiOverlayToolsAndroid (tools_android.h) on Android. Tools whose behavior
+// differs per platform (e.g. tab switching, scrolling, fullscreen) are
+// implemented by those subclasses.
 class AiOverlayTools : public ai_overlay_dialog::mojom::AiOverlayTools,
                        public ai_overlay_dialog::mojom::AiOverlayToolRegistry {
  public:
-  AiOverlayTools(
+  // Returns the implementation for the current platform. Defined in
+  // tools_views.cc or tools_android.cc.
+  static std::unique_ptr<AiOverlayTools> Create(
       mojo::PendingReceiver<ai_overlay_dialog::mojom::AiOverlayTools> receiver,
       BrowserWindowInterface* browser,
       PageContextMonitor* page_context_monitor);
+
+  AiOverlayTools(const AiOverlayTools&) = delete;
+  AiOverlayTools& operator=(const AiOverlayTools&) = delete;
   ~AiOverlayTools() override;
 
   void BindRegistryReceiver(
       mojo::PendingReceiver<ai_overlay_dialog::mojom::AiOverlayToolRegistry>
           registry_receiver);
-  AiOverlayTools(const AiOverlayTools&) = delete;
-  AiOverlayTools& operator=(const AiOverlayTools&) = delete;
+
+  // Serializes all open windows, tab groups, tabs, and saved tab groups into a
+  // structured dictionary snapshot for the workspace sub-agent.
+  base::DictValue BuildWorkspaceSnapshot();
+
+  // Parses the workspace sub-agent's raw JSON (or text) output, executes any
+  // requested tab/group organization actions with safety guardrails, and
+  // returns a dictionary containing "facts", "actions_taken", and "skipped".
+  base::DictValue ExecuteWorkspaceSubAgentOutput(std::string_view raw_output);
 
   // ai_overlay_dialog::mojom::AiOverlayTools:
+  // Only the platform-agnostic tools are implemented here; the rest are
+  // implemented by the platform subclasses.
   void OpenUrl(const std::string& url,
                bool new_tab,
                OpenUrlCallback callback) override;
@@ -47,16 +78,11 @@ class AiOverlayTools : public ai_overlay_dialog::mojom::AiOverlayTools,
   void PerformSearch(const std::string& query,
                      bool new_tab,
                      PerformSearchCallback callback) override;
-  void SwitchTab(const std::string& query, SwitchTabCallback callback) override;
-  void CloseCurrentTab(CloseCurrentTabCallback callback) override;
   void GoBack(GoBackCallback callback) override;
   void GoForward(GoForwardCallback callback) override;
   void ReloadPage(ReloadPageCallback callback) override;
   void FindAndHighlight(const std::string& query,
                         FindAndHighlightCallback callback) override;
-  void Scroll(ai_overlay_dialog::mojom::ScrollGranularity granularity,
-              double magnitude,
-              ScrollCallback callback) override;
   void PlayVideo(PlayVideoCallback callback) override;
   void PauseVideo(PauseVideoCallback callback) override;
   void SeekToTimestamp(const std::string& timecode,
@@ -65,23 +91,52 @@ class AiOverlayTools : public ai_overlay_dialog::mojom::AiOverlayTools,
                      TranslatePageCallback callback) override;
   void AddBookmark(AddBookmarkCallback callback) override;
   void RemoveBookmark(RemoveBookmarkCallback callback) override;
-  void OpenPage(const std::string& query,
-                OpenPageCallback callback) override;
   void SetText(const blink::DOMNodeIdType& dom_node_id,
                const std::string& text,
                SetTextCallback callback) override;
   void ClickElement(const blink::DOMNodeIdType& dom_node_id,
                     ClickElementCallback callback) override;
-  void SetFullscreen(bool fullscreen,
-                     SetFullscreenCallback callback) override;
   void SelectOption(const blink::DOMNodeIdType& dom_node_id,
                     const std::string& value,
                     SelectOptionCallback callback) override;
-  void InvokeGlic(const std::string& prompt,
-                  InvokeGlicCallback callback) override;
+  // Evaluates a tab analysis or management request across open windows,
+  // tab groups, and tabs. On success, invokes `callback` with
+  // `base::ok(value)` where `value` is a dictionary `base::Value` containing
+  // either the workspace snapshot or `{"facts": "...", "actions_taken": [...],
+  // "skipped": [...]}`.
+  void AnalyzeAndManageTabs(const std::string& request,
+                            AnalyzeAndManageTabsCallback callback) override;
+
+  // ai_overlay_dialog::mojom::AiOverlayToolRegistry:
   void GetToolDefinitions(GetToolDefinitionsCallback callback) override;
 
+ protected:
+  AiOverlayTools(
+      mojo::PendingReceiver<ai_overlay_dialog::mojom::AiOverlayTools> receiver,
+      BrowserWindowInterface* browser,
+      PageContextMonitor* page_context_monitor);
+
+  static void RecordToolCallInvoked(std::string_view tool_name);
+  // On the base class because glic_passkeys.h grants the passkey to
+  // `AiOverlayTools`, and friendship is not inherited by subclasses.
+  static glic::InvokeWithAutoSubmitPasskey GetGlicPassKey();
+
+  BrowserWindowInterface* browser() const { return browser_; }
+  PageContextMonitor* page_context_monitor() const {
+    return page_context_monitor_;
+  }
+  base::CancelableTaskTracker& task_tracker() { return task_tracker_; }
+
+  // Returns the active tab's WebContents in `browser()`, or nullptr if there is
+  // none.
+  content::WebContents* GetActiveWebContents() const;
+
  private:
+  struct WorkspaceUndoSnapshot;
+  struct WorkspaceUndoSnapshotDeleter {
+    void operator()(WorkspaceUndoSnapshot* ptr) const;
+  };
+
   class AnnotationTask : public blink::mojom::AnnotationAgentHost {
    public:
     AnnotationTask(
@@ -104,6 +159,9 @@ class AiOverlayTools : public ai_overlay_dialog::mojom::AiOverlayTools,
 
   void OnAnnotationAgentDisconnected();
 
+  void SaveWorkspaceUndoSnapshot();
+  bool RestoreWorkspaceUndoSnapshot();
+
   mojo::Receiver<ai_overlay_dialog::mojom::AiOverlayTools> receiver_;
   mojo::Receiver<ai_overlay_dialog::mojom::AiOverlayToolRegistry>
       registry_receiver_{this};
@@ -116,7 +174,9 @@ class AiOverlayTools : public ai_overlay_dialog::mojom::AiOverlayTools,
   content::WeakDocumentPtr annotation_document_;
   mojo::Remote<blink::mojom::AnnotationAgentContainer> annotation_container_;
   base::CancelableTaskTracker task_tracker_;
-  std::unique_ptr<ToolController> tool_controller_;
+  std::unique_ptr<WorkspaceUndoSnapshot, WorkspaceUndoSnapshotDeleter>
+      workspace_undo_snapshot_;
+
   base::WeakPtrFactory<AiOverlayTools> weak_factory_{this};
 };
 

@@ -54,12 +54,11 @@ generate_grd("build_grd") {
   if ((!is_android && !is_ios) || is_desktop_android) {
     public_deps += [
       "cr_components/app_management:build_grdp",
-      "cr_components/color_change_listener:build_grdp",
+      "cr_components/cr_lottie:build_grdp",
       "cr_components/cr_shortcut_input:build_grdp",
       "cr_components/customize_color_scheme_mode:build_grdp",
       "cr_components/history:build_grdp",
       "cr_components/history_clusters:build_grdp",
-      "cr_components/history_embeddings:build_grdp",
       "cr_components/managed_dialog:build_grdp",
       "cr_components/managed_footnote:build_grdp",
       "cr_components/most_visited:build_grdp",
@@ -74,13 +73,12 @@ generate_grd("build_grd") {
       "$root_gen_dir/third_party/d3/d3_resources.grdp",
       "$root_gen_dir/third_party/lottie/resources.grdp",
       "$root_gen_dir/third_party/polymer/v3_0/polymer_3_0_resources.grdp",
-      "$root_gen_dir/ui/webui/resources/cr_components/color_change_listener/resources.grdp",
       "$root_gen_dir/ui/webui/resources/cr_components/page_image_service/resources.grdp",
       "$target_gen_dir/cr_components/app_management/resources.grdp",
+      "$target_gen_dir/cr_components/cr_lottie/resources.grdp",
       "$target_gen_dir/cr_components/cr_shortcut_input/resources.grdp",
       "$target_gen_dir/cr_components/customize_color_scheme_mode/resources.grdp",
       "$target_gen_dir/cr_components/history_clusters/resources.grdp",
-      "$target_gen_dir/cr_components/history_embeddings/resources.grdp",
       "$target_gen_dir/cr_components/history/resources.grdp",
       "$target_gen_dir/cr_components/managed_dialog/resources.grdp",
       "$target_gen_dir/cr_components/managed_footnote/resources.grdp",
@@ -91,6 +89,8 @@ generate_grd("build_grd") {
   }
 
   if (!is_ios) {
+    public_deps += [ "cr_components/color_change_listener:build_grdp" ]
+
     # TODO(crbug.com/527601593): Revert by moving these components back into the
     # main desktop block at L53 if we disable composebox on Android phones.
     public_deps += [
@@ -101,6 +101,7 @@ generate_grd("build_grd") {
       "cr_components/searchbox/icons:build_grdp",
     ]
     grdp_files += [
+      "$root_gen_dir/ui/webui/resources/cr_components/color_change_listener/resources.grdp",
       "$target_gen_dir/cr_components/composebox/resources.grdp",
       "$target_gen_dir/cr_components/help_bubble/resources.grdp",
       "$target_gen_dir/cr_components/localized_link/resources.grdp",
@@ -108,9 +109,17 @@ generate_grd("build_grd") {
       "$target_gen_dir/cr_components/searchbox/icons/resources.grdp",
     ]
     if (is_chrome_branded) {
-      public_deps +=
-          [ "cr_components/searchbox/icons:chrome_branded_build_grdp" ]
-      grdp_files += [ "$target_gen_dir/cr_components/searchbox/icons/chrome_branded_resources.grdp" ]
+      public_deps += [
+        "cr_components/searchbox/icons:chrome_branded_build_grdp",
+        "cr_components/searchbox/icons:chrome_branded_google_logo_26_grdp",
+      ]
+      grdp_files += [
+        "$target_gen_dir/cr_components/searchbox/icons/chrome_branded_resources.grdp",
+        "$target_gen_dir/cr_components/searchbox/icons/chrome_branded_google_logo_26_resources.grdp",
+      ]
+    } else {
+      public_deps += [ "cr_components/searchbox/icons:google_logo_grdp" ]
+      grdp_files += [ "$target_gen_dir/cr_components/searchbox/icons/google_logo_resources.grdp" ]
     }
   }
 
@@ -144,6 +153,7 @@ grit("resources") {
   enable_input_discovery_for_gn_analyze = false
   source = "$target_gen_dir/webui_resources.grd"
   deps = [ ":build_grd" ]
+  public_deps = [ "//ui/base:webui_resource_path" ]
 
   outputs = [
     "grit/webui_resources.h",
@@ -169,6 +179,7 @@ if (enable_webui_generate_code_cache) {
       "$target_gen_dir/cr_elements/code_cache_resources.grdp",
       "$target_gen_dir/cr_components/color_change_listener/code_cache_resources.grdp",
       "$target_gen_dir/cr_components/commerce/code_cache_resources.grdp",
+      "$target_gen_dir/cr_components/cr_lottie/code_cache_resources.grdp",
       "$target_gen_dir/cr_components/customize_color_scheme_mode/code_cache_resources.grdp",
       "$target_gen_dir/cr_components/help_bubble/code_cache_resources.grdp",
       "$target_gen_dir/cr_components/managed_dialog/code_cache_resources.grdp",
@@ -178,6 +189,7 @@ if (enable_webui_generate_code_cache) {
     public_deps = [
       "cr_components/color_change_listener:build_code_cache_grdp",
       "cr_components/commerce:build_code_cache_grdp",
+      "cr_components/cr_lottie:build_code_cache_grdp",
       "cr_components/customize_color_scheme_mode:build_code_cache_grdp",
       "cr_components/help_bubble:build_code_cache_grdp",
       "cr_components/managed_dialog:build_code_cache_grdp",
@@ -193,6 +205,7 @@ if (enable_webui_generate_code_cache) {
     enable_input_discovery_for_gn_analyze = false
     source = "$target_gen_dir/webui_code_cache_resources.grd"
     deps = [ ":build_code_cache_grd" ]
+    public_deps = [ "//ui/base:webui_resource_path" ]
 
     outputs = [
       "grit/webui_code_cache_resources.h",

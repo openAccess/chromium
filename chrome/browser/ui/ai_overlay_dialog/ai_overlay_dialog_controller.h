@@ -6,19 +6,31 @@
 #define CHROME_BROWSER_UI_AI_OVERLAY_DIALOG_AI_OVERLAY_DIALOG_CONTROLLER_H_
 
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "content/public/browser/web_contents_delegate.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/base/class_property.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
+namespace user_prefs {
+class PrefRegistrySyncable;
+}  // namespace user_prefs
+
 class HostContentSettingsMap;
+class Profile;
 
 namespace ttc {
+
+namespace prefs {
+inline constexpr char kAiOverlayRememberedNotes[] =
+    "ai_overlay.remembered_notes";
+}  // namespace prefs
 
 class AiOverlayDialogController : public content::WebContentsDelegate {
  public:
@@ -30,6 +42,8 @@ class AiOverlayDialogController : public content::WebContentsDelegate {
   };
 
   DECLARE_USER_DATA(AiOverlayDialogController);
+
+  static bool IsEnabledForProfile(Profile* profile);
 
   static AiOverlayDialogController* From(BrowserWindowInterface* browser);
 
@@ -43,8 +57,8 @@ class AiOverlayDialogController : public content::WebContentsDelegate {
   // Shows the transparent overlay above the browser window.
   virtual void ShowOverlay() = 0;
 
-  // Hides the overlay.
-  virtual void HideOverlay() = 0;
+  // Closes the overlay and tears down the active session.
+  virtual void CloseOverlay() = 0;
 
   // Toggles the overlay visibility.
   void ToggleOverlay();
@@ -60,6 +74,8 @@ class AiOverlayDialogController : public content::WebContentsDelegate {
                                   const url::Origin& security_origin,
                                   blink::mojom::MediaStreamType type) override;
 
+  static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
+
   bool input_captions_visible() const { return input_captions_visible_; }
   void SetInputCaptionsVisible(bool visible);
 
@@ -74,10 +90,7 @@ class AiOverlayDialogController : public content::WebContentsDelegate {
   bool use_persona() const { return use_persona_; }
   void SetUsePersona(bool use_persona);
 
-  const absl::flat_hash_map<std::string, std::string>& remembered_notes()
-      const {
-    return remembered_notes_;
-  }
+  std::vector<std::pair<std::string, std::string>> GetRememberedNotes() const;
   void SetRememberedNote(const std::string& key, const std::string& value);
 
   void AddObserver(Observer* observer);
@@ -97,8 +110,6 @@ class AiOverlayDialogController : public content::WebContentsDelegate {
   bool input_captions_visible_ = true;
   bool output_captions_visible_ = true;
   bool use_persona_ = false;
-
-  absl::flat_hash_map<std::string, std::string> remembered_notes_;
 
   base::ObserverList<Observer> observers_;
 };

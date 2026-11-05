@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import {ModelExecutionEnterprisePolicyValue} from '../ai_page/constants.js';
+import {loadTimeData} from '../i18n_setup.js';
 
 // LINT.IfChange(AutofillPolicyDataCategory)
 export enum AutofillPolicyDataCategory {
@@ -28,6 +29,10 @@ export function isTypeGloballyBlocked(
     typesBlockedPref: chrome.settingsPrivate.PrefObject<TypesBlockedEntry[]>|
     undefined,
     category: AutofillPolicyDataCategory): boolean {
+  if (!loadTimeData.valueExists('AutofillSettingsEnterprisePolicyEnabled') ||
+      !loadTimeData.getBoolean('AutofillSettingsEnterprisePolicyEnabled')) {
+    return false;
+  }
   if (!typesBlockedPref || !typesBlockedPref.value ||
       !Array.isArray(typesBlockedPref.value)) {
     return false;
@@ -46,15 +51,11 @@ export function isTypeGloballyBlocked(
  * Otherwise, returns the unmodified user preference.
  */
 export function computeEffectiveAutofillPref(
-    userPref: chrome.settingsPrivate.PrefObject<boolean>|undefined,
+    userPref: chrome.settingsPrivate.PrefObject<boolean>,
     typesBlockedPref: chrome.settingsPrivate.PrefObject<TypesBlockedEntry[]>|
     undefined,
     category: AutofillPolicyDataCategory):
-    chrome.settingsPrivate.PrefObject<boolean>|undefined {
-  if (!userPref) {
-    return undefined;
-  }
-
+    chrome.settingsPrivate.PrefObject<boolean> {
   const isBlocked = isTypeGloballyBlocked(typesBlockedPref, category);
 
   if (isBlocked) {
@@ -84,6 +85,9 @@ export function checkAutofillPoliciesAndModifyPrefIfNecessary(
     typesBlockedPref: chrome.settingsPrivate.PrefObject<TypesBlockedEntry[]>|
     undefined,
     category: AutofillPolicyDataCategory) {
+  // Due to the legacy AutofillAddressEnabled policy, if AutofillAddressEnabled
+  // is disabled by an enterprise admin, Forms AI types (such as travel and
+  // identity docs) are also disabled and enforced.
   if (addressPolicy?.enforcement ===
           chrome.settingsPrivate.Enforcement.ENFORCED &&
       !addressPolicy.value) {
@@ -103,9 +107,7 @@ export function checkAutofillPoliciesAndModifyPrefIfNecessary(
   // category globally, enforce it and disable the toggle in Settings.
   const effectivePref =
       computeEffectiveAutofillPref(pref, typesBlockedPref, category);
-  if (effectivePref) {
-    pref.enforcement = effectivePref.enforcement;
-    pref.controlledBy = effectivePref.controlledBy;
-    pref.value = effectivePref.value;
-  }
+  pref.enforcement = effectivePref.enforcement;
+  pref.controlledBy = effectivePref.controlledBy;
+  pref.value = effectivePref.value;
 }

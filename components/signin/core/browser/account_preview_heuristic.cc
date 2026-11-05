@@ -11,8 +11,11 @@
 
 #include "base/check_op.h"
 #include "base/feature_list.h"
+#include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
+#include "build/build_config.h"
 #include "components/signin/core/browser/account_preview_data_service.h"
+#include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/protocol/sync_enums.pb.h"
@@ -20,6 +23,14 @@
 namespace signin {
 
 namespace {
+
+// Maximum primary account sync data score at or above which account switching
+// is never offered.
+constexpr int kSwitchingPrimaryScoreUpperLimit = 6;
+
+// Upper bound for the low primary account sync data score bracket (0 to 2),
+// where the secondary account score must exceed `primary_score`.
+constexpr int kSwitchingLowPrimaryScoreThreshold = 2;
 
 // Threshold values for quartile classification of sync data counts.
 struct SyncDataTypeThresholds {
@@ -44,33 +55,75 @@ struct SyncDataTypeThresholds {
   }
 };
 
-// Returns the list of all relevant sync data types and their respective
-// thresholds for quartile classification, in priority order for tie-breaking.
-const auto& GetDataTypeThresholds() {
-  static const auto kDataTypeThresholds =
-      std::to_array<std::pair<syncer::DataType, SyncDataTypeThresholds>>({
-          {syncer::PASSWORDS,
-           SyncDataTypeThresholds{
-               .q1 = switches::kPasswordsQ1Threshold.Get(),
+std::pair<syncer::DataType, SyncDataTypeThresholds> GetDataTypeThresholdEntry(
+    syncer::DataType type) {
+  switch (type) {
+    case syncer::PASSWORDS:
+      return {syncer::PASSWORDS,
+              {.q1 = switches::kPasswordsQ1Threshold.Get(),
                .median = switches::kPasswordsMedianThreshold.Get(),
-               .q3 = switches::kPasswordsQ3Threshold.Get()}},
-          {syncer::BOOKMARKS,
-           SyncDataTypeThresholds{
-               .q1 = switches::kBookmarksQ1Threshold.Get(),
+               .q3 = switches::kPasswordsQ3Threshold.Get()}};
+    case syncer::BOOKMARKS:
+      return {syncer::BOOKMARKS,
+              {.q1 = switches::kBookmarksQ1Threshold.Get(),
                .median = switches::kBookmarksMedianThreshold.Get(),
-               .q3 = switches::kBookmarksQ3Threshold.Get()}},
-          {syncer::AUTOFILL,
-           SyncDataTypeThresholds{
-               .q1 = switches::kAutofillQ1Threshold.Get(),
+               .q3 = switches::kBookmarksQ3Threshold.Get()}};
+    case syncer::AUTOFILL:
+      return {syncer::AUTOFILL,
+              {.q1 = switches::kAutofillQ1Threshold.Get(),
                .median = switches::kAutofillMedianThreshold.Get(),
-               .q3 = switches::kAutofillQ3Threshold.Get()}},
-          {syncer::AUTOFILL_WALLET_METADATA,
-           SyncDataTypeThresholds{
-               .q1 = switches::kAutofillWalletMetadataQ1Threshold.Get(),
+               .q3 = switches::kAutofillQ3Threshold.Get()}};
+    case syncer::AUTOFILL_WALLET_METADATA:
+      return {syncer::AUTOFILL_WALLET_METADATA,
+              {.q1 = switches::kAutofillWalletMetadataQ1Threshold.Get(),
                .median = switches::kAutofillWalletMetadataMedianThreshold.Get(),
-               .q3 = switches::kAutofillWalletMetadataQ3Threshold.Get()}},
+               .q3 = switches::kAutofillWalletMetadataQ3Threshold.Get()}};
+    case syncer::READING_LIST:
+      return {syncer::READING_LIST,
+              {.q1 = switches::kReadingListQ1Threshold.Get(),
+               .median = switches::kReadingListMedianThreshold.Get(),
+               .q3 = switches::kReadingListQ3Threshold.Get()}};
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+    case syncer::EXTENSIONS:
+      return {syncer::EXTENSIONS,
+              {.q1 = switches::kExtensionsQ1Threshold.Get(),
+               .median = switches::kExtensionsMedianThreshold.Get(),
+               .q3 = switches::kExtensionsQ3Threshold.Get()}};
+#endif
+    default:
+      NOTREACHED();
+  }
+}
+
+// Returns the list of sync data types and their respective thresholds used for
+// quartile classification when computing sync data score.
+const auto& GetScoreDataTypeThresholds() {
+  static const auto kScoreDataTypeThresholds =
+      std::to_array<std::pair<syncer::DataType, SyncDataTypeThresholds>>({
+          GetDataTypeThresholdEntry(syncer::PASSWORDS),
+          GetDataTypeThresholdEntry(syncer::BOOKMARKS),
+          GetDataTypeThresholdEntry(syncer::AUTOFILL),
+          GetDataTypeThresholdEntry(syncer::AUTOFILL_WALLET_METADATA),
       });
-  return kDataTypeThresholds;
+  return kScoreDataTypeThresholds;
+}
+
+// Returns the list of all relevant sync data types and their respective
+// thresholds for quartile classification when determining preferred data
+// types for string personalization.
+const auto& GetPreferredDataTypeThresholds() {
+  static const auto kPreferredDataTypeThresholds =
+      std::to_array<std::pair<syncer::DataType, SyncDataTypeThresholds>>({
+          GetDataTypeThresholdEntry(syncer::PASSWORDS),
+          GetDataTypeThresholdEntry(syncer::BOOKMARKS),
+          GetDataTypeThresholdEntry(syncer::AUTOFILL),
+          GetDataTypeThresholdEntry(syncer::AUTOFILL_WALLET_METADATA),
+          GetDataTypeThresholdEntry(syncer::READING_LIST),
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+          GetDataTypeThresholdEntry(syncer::EXTENSIONS),
+#endif
+      });
+  return kPreferredDataTypeThresholds;
 }
 
 std::vector<PreferredDataTypeInfo> ExtractPreferredDataTypes(
@@ -83,7 +136,7 @@ std::vector<PreferredDataTypeInfo> ExtractPreferredDataTypes(
 
   // Extract data types with counts and calculate median ratios.
   std::vector<DataTypeCandidate> candidates;
-  for (const auto& [type, thresholds] : GetDataTypeThresholds()) {
+  for (const auto& [type, thresholds] : GetPreferredDataTypeThresholds()) {
     auto it = data.counts.find(type);
     if (it != data.counts.end() && it->second > 0) {
       size_t count = it->second;
@@ -115,7 +168,7 @@ std::vector<PreferredDataTypeInfo> ExtractPreferredDataTypes(
   return result;
 }
 
-sync_pb::SyncEnums_DeviceFormFactor ExtractOtherDeviceFormFactor(
+PreferredDeviceInfo ExtractPreferredOtherDevice(
     const AccountPreviewData& data) {
   const DevicePreview* most_recent_device = nullptr;
   for (const auto& device : data.devices) {
@@ -129,10 +182,14 @@ sync_pb::SyncEnums_DeviceFormFactor ExtractOtherDeviceFormFactor(
     }
   }
 
-  return most_recent_device
-             ? most_recent_device->form_factor
-             : sync_pb::
-                   SyncEnums_DeviceFormFactor_DEVICE_FORM_FACTOR_UNSPECIFIED;
+  if (!most_recent_device) {
+    return {};
+  }
+
+  return PreferredDeviceInfo{
+      .form_factor = most_recent_device->form_factor,
+      .enabled_data_types = most_recent_device->interested_data_types,
+  };
 }
 
 // This function is needed as `SyncDataQuartileToValue()` should only be used
@@ -175,7 +232,7 @@ struct SyncDataScore {
 // In case of ties, the counts of higher quartiles break the tie.
 SyncDataScore CalculateSyncDataScore(const AccountPreviewData& data) {
   SyncDataScore score;
-  for (const auto& [type, thresholds] : GetDataTypeThresholds()) {
+  for (const auto& [type, thresholds] : GetScoreDataTypeThresholds()) {
     auto it = data.counts.find(type);
     if (it != data.counts.end()) {
       SyncDataQuartile quartile = thresholds.GetQuartileForCount(it->second);
@@ -242,83 +299,253 @@ bool IsCandidatePreferredOverCurrentBest(
   return false;
 }
 
-}  // namespace
+struct SigninCandidateSelection {
+  raw_ptr<const AccountPreviewHeuristicContext> candidate = nullptr;
+  AccountPreviewSelectionReason selection_reason =
+      AccountPreviewSelectionReason::kNoSelection;
+  base::flat_map<GaiaId, int> account_scores;
+};
 
-std::optional<AccountPreviewDataService::AccountPreviewPreference>
-ComputeAccountPreviewPreference(const GaiaId& gaia_id,
-                                const AccountPreviewData& data) {
-  if (!base::FeatureList::IsEnabled(
-          switches::kEnableAccountPreviewPreferredAccount)) {
-    return std::nullopt;
-  }
-
-  AccountPreviewDataService::AccountPreviewPreference preference;
-  preference.gaia_id = gaia_id;
-  preference.preferred_data_types = ExtractPreferredDataTypes(data);
-  preference.other_device_form_factor = ExtractOtherDeviceFormFactor(data);
-  return preference;
-}
-
-AccountPreviewSelectionResult ComputePreferredAccountForPromo(
+SigninCandidateSelection SelectPreferredCandidateForSignin(
     base::span<const AccountPreviewHeuristicContext> accounts) {
-  if (!base::FeatureList::IsEnabled(
-          switches::kEnableAccountPreviewPreferredAccount)) {
+  if (accounts.empty() || !accounts[0].preview_data) {
     return {};
   }
-
-  if (accounts.empty()) {
-    return {};
-  }
-
-  AccountPreviewSelectionResult result;
 
   // The first account in the list (`accounts[0]`) is the default account (the
   // account that would be promoted by default in the absence of previews).
   // Priority 1: If the default account is not a regular account, select it.
   const AccountPreviewHeuristicContext& default_account = accounts[0];
   if (!default_account.is_regular_account()) {
-    result.selected_account = default_account.gaia_id;
-    result.selection_reason = AccountPreviewSelectionReason::kNonRegularDefault;
-    result.preference = ComputeAccountPreviewPreference(
-        default_account.gaia_id, *default_account.preview_data);
-    return result;
+    return {
+        .candidate = &default_account,
+        .selection_reason = AccountPreviewSelectionReason::kNonRegularDefault,
+    };
   }
 
   // Priority 2: If an AGA (external app primary) account exists, select it.
   for (const auto& account : accounts) {
-    if (account.is_external_app_primary && account.is_regular_account()) {
-      result.selected_account = account.gaia_id;
-      result.selection_reason =
-          AccountPreviewSelectionReason::kExternalAppPrimary;
-      result.preference = ComputeAccountPreviewPreference(
-          account.gaia_id, *account.preview_data);
-      return result;
+    if (account.preview_data && account.is_external_app_primary &&
+        account.is_regular_account()) {
+      return {
+          .candidate = &account,
+          .selection_reason =
+              AccountPreviewSelectionReason::kExternalAppPrimary,
+      };
     }
   }
 
   // Priority 3: Compare sync data between all regular accounts.
-  const AccountPreviewHeuristicContext* best_candidate = nullptr;
+  base::flat_map<GaiaId, int> account_scores;
+  const AccountPreviewHeuristicContext* best_candidate = &default_account;
   for (const auto& account : accounts) {
-    if (!account.is_regular_account()) {
+    if (!account.preview_data || !account.is_regular_account()) {
       continue;
     }
-    result.account_scores[account.gaia_id] =
+    account_scores[account.gaia_id] =
         CalculateSyncDataScore(*account.preview_data).total_score;
-    if (!best_candidate ||
-        IsCandidatePreferredOverCurrentBest(account, *best_candidate)) {
+    if (IsCandidatePreferredOverCurrentBest(account, *best_candidate)) {
       best_candidate = &account;
     }
   }
+  return {
+      .candidate = best_candidate,
+      .selection_reason = AccountPreviewSelectionReason::kSyncDataScore,
+      .account_scores = std::move(account_scores),
+  };
+}
 
-  // At this point, the default account (`accounts[0]`) is guaranteed to be a
-  // regular account (otherwise Priority 1 would have matched), so
-  // `best_candidate` is guaranteed to be non-null.
-  CHECK(best_candidate);
-  result.selected_account = best_candidate->gaia_id;
-  result.selection_reason = AccountPreviewSelectionReason::kSyncDataScore;
-  result.preference = ComputeAccountPreviewPreference(
-      best_candidate->gaia_id, *best_candidate->preview_data);
-  return result;
+struct SwitchingCandidateSelection {
+  raw_ptr<const AccountPreviewHeuristicContext> candidate = nullptr;
+  AccountSwitchingSelectionOutcome outcome =
+      AccountSwitchingSelectionOutcome::kWouldNotShowNotEnoughAccounts;
+};
+
+SwitchingCandidateSelection SelectPreferredCandidateForSwitching(
+    base::span<const AccountPreviewHeuristicContext> accounts) {
+  if (accounts.empty() || !accounts[0].is_primary) {
+    return {
+        .outcome =
+            AccountSwitchingSelectionOutcome::kWouldNotShowNoPrimaryAccount,
+    };
+  }
+
+  if (accounts.size() < 2) {
+    return {
+        .outcome =
+            AccountSwitchingSelectionOutcome::kWouldNotShowNotEnoughAccounts,
+    };
+  }
+
+  // The first account in the list (`accounts[0]`) is the primary account.
+  const AccountPreviewHeuristicContext& primary_account = accounts[0];
+  if (!primary_account.is_regular_account()) {
+    return {
+        .outcome = AccountSwitchingSelectionOutcome::
+            kWouldNotShowNonRegularPrimaryAccount,
+    };
+  }
+
+  if (primary_account.is_external_app_primary) {
+    return {
+        .outcome = AccountSwitchingSelectionOutcome::
+            kWouldNotShowExternalAppPrimaryAccount,
+    };
+  }
+
+  if (!primary_account.preview_data) {
+    return {
+        .outcome = AccountSwitchingSelectionOutcome::
+            kWouldNotShowPrimaryMissingPreviewData,
+    };
+  }
+
+  if (primary_account.has_other_devices()) {
+    return {
+        .outcome = AccountSwitchingSelectionOutcome::
+            kWouldNotShowPrimaryHasOtherDevices,
+    };
+  }
+
+  bool has_regular_secondary = false;
+  bool has_regular_secondary_with_preview_data = false;
+  const AccountPreviewHeuristicContext* best_secondary = nullptr;
+  SyncDataScore best_secondary_score;
+  for (const auto& account : accounts.subspan(1u)) {
+    if (!account.is_regular_account()) {
+      continue;
+    }
+    has_regular_secondary = true;
+    if (!account.preview_data) {
+      continue;
+    }
+    has_regular_secondary_with_preview_data = true;
+    if (!account.has_other_devices()) {
+      continue;
+    }
+    SyncDataScore score = CalculateSyncDataScore(*account.preview_data);
+    if (!best_secondary || score > best_secondary_score) {
+      best_secondary = &account;
+      best_secondary_score = score;
+    }
+  }
+
+  if (!has_regular_secondary) {
+    return {
+        .outcome = AccountSwitchingSelectionOutcome::
+            kWouldNotShowNoRegularSecondaryAccount,
+    };
+  }
+
+  if (!has_regular_secondary_with_preview_data) {
+    return {
+        .outcome = AccountSwitchingSelectionOutcome::
+            kWouldNotShowSecondaryMissingPreviewData,
+    };
+  }
+
+  if (!best_secondary) {
+    return {
+        .outcome = AccountSwitchingSelectionOutcome::
+            kWouldNotShowNoSecondaryWithOtherDevices,
+    };
+  }
+
+  const int primary_score =
+      CalculateSyncDataScore(*primary_account.preview_data).total_score;
+  const int secondary_score = best_secondary_score.total_score;
+
+  if (primary_score >= kSwitchingPrimaryScoreUpperLimit) {
+    return {
+        .outcome = AccountSwitchingSelectionOutcome::
+            kWouldNotShowPrimaryExceedsUpperLimit,
+    };
+  }
+
+  // For primary score Y in {0, 2}, secondary score X must satisfy X > Y.
+  // For primary score Y in {3, 5}, secondary score X must satisfy X > 2 * Y.
+  if (primary_score <= kSwitchingLowPrimaryScoreThreshold) {
+    if (secondary_score > primary_score) {
+      return {
+          .candidate = best_secondary,
+          .outcome =
+              AccountSwitchingSelectionOutcome::kWouldShowLowPrimaryScore,
+      };
+    }
+  } else {
+    CHECK_LT(primary_score, kSwitchingPrimaryScoreUpperLimit);
+    if (secondary_score > 2 * primary_score) {
+      return {
+          .candidate = best_secondary,
+          .outcome =
+              AccountSwitchingSelectionOutcome::kWouldShowDoubledPrimaryScore,
+      };
+    }
+  }
+
+  return {
+      .outcome = AccountSwitchingSelectionOutcome::
+          kWouldNotShowSecondaryDoesNotMeetThreshold,
+  };
+}
+
+}  // namespace
+
+std::optional<AccountPreviewDataService::AccountPreviewPreference>
+ComputeAccountPreviewPreference(const GaiaId& gaia_id,
+                                const AccountPreviewData& data) {
+  AccountPreviewDataService::AccountPreviewPreference preference;
+  preference.gaia_id = gaia_id;
+  preference.preferred_data_types = ExtractPreferredDataTypes(data);
+  preference.other_device_info = ExtractPreferredOtherDevice(data);
+  return preference;
+}
+
+AccountPreviewSelectionResult ComputePreferredAccountForSignin(
+    base::span<const AccountPreviewHeuristicContext> accounts) {
+  SigninCandidateSelection selection =
+      SelectPreferredCandidateForSignin(accounts);
+  if (!selection.candidate) {
+    return {.selection_reason = selection.selection_reason};
+  }
+
+  if (selection.candidate->is_signed_in_on_other_profile) {
+    return {
+        .selection_reason =
+            AccountPreviewSelectionReason::kNoSelectionSignedInOnOtherProfile,
+    };
+  }
+
+  return {
+      .preference = ComputeAccountPreviewPreference(
+          selection.candidate->gaia_id, *selection.candidate->preview_data),
+      .selected_account = selection.candidate->gaia_id,
+      .selection_reason = selection.selection_reason,
+      .account_scores = std::move(selection.account_scores),
+  };
+}
+
+AccountSwitchingSelectionResult ComputeAccountSwitchingSelection(
+    base::span<const AccountPreviewHeuristicContext> accounts) {
+  SwitchingCandidateSelection selection =
+      SelectPreferredCandidateForSwitching(accounts);
+  if (!selection.candidate) {
+    return {.outcome = selection.outcome};
+  }
+
+  if (selection.candidate->is_signed_in_on_other_profile) {
+    return {
+        .outcome = AccountSwitchingSelectionOutcome::
+            kWouldNotShowSecondarySignedInOnOtherProfile,
+    };
+  }
+
+  return {
+      .preference = ComputeAccountPreviewPreference(
+          selection.candidate->gaia_id, *selection.candidate->preview_data),
+      .selected_account = selection.candidate->gaia_id,
+      .outcome = selection.outcome,
+  };
 }
 
 }  // namespace signin

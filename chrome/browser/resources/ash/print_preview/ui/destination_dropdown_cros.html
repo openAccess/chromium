@@ -134,12 +134,12 @@
     aria-expanded="[[opened_]]" aria-setsize$="[[dropdownLength_]]">
   <div id="destination-display-container">
     <div id="destination-icon-box">
-      <cr-icon icon="[[destinationIcon]]"></cr-icon>
+      <iron-icon icon="[[destinationIcon]]"></iron-icon>
     </div>
     <div id="destination-display" title="[[value.displayName]]">
       [[value.displayName]]
     </div>
-    <cr-icon id="dropdown-icon" icon="cr:arrow-drop-down"></cr-icon>
+    <iron-icon id="dropdown-icon" icon="cr:arrow-drop-down"></iron-icon>
   </div>
   <div id="dropdown-box">
     <iron-dropdown horizontal-align="left" vertical-align="top"
@@ -155,10 +155,10 @@
               aria-description$="[[getPrinterStatusErrorString_(
                   item.printerStatusReason)]]"
               aria-posinset$="[[getPrinterPosinset_(index)]]">
-            <cr-icon icon="[[getPrinterStatusIcon_(
+            <iron-icon icon="[[getPrinterStatusIcon_(
                 item.printerStatusReason, item.isEnterprisePrinter,
                 isDarkModeActive_)]]">
-            </cr-icon>
+            </iron-icon>
             <span class="printer-display-name">[[item.displayName]]</span>
           </button>
         </template>
@@ -184,14 +184,6 @@
           class$="list-item [[getHighlightedClass_('noDestinations',
               highlightedIndex_)]]">
           $i18n{noDestinationsMessage}
-        </button>
-        <button on-click="onSelect_" tabindex="-1" value="seeMore"
-          aria-label="$i18n{seeMoreDestinationsLabel}" on-blur="onBlur_"
-          aria-posinset$="[[seeMorePosinset]]"
-          role="menuitem" aria-setsize$="[[dropdownLength_]]"
-          class$="list-item [[getHighlightedClass_('seeMore',
-              highlightedIndex_)]]">
-          $i18n{seeMore}
         </button>
       </div>
     </iron-dropdown>

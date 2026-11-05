@@ -11,12 +11,12 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <utility>
 #include <vector>
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
-#include "base/containers/adapters.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -590,6 +590,7 @@ class TabRestoreServiceImpl::PersistenceDelegate
   // TabRestoreServiceHelper::Observer:
   void OnClearEntries() override;
   void OnNavigationEntriesDeleted() override;
+  void OnEntriesModified() override;
   void OnRestoreEntryById(SessionID id,
                           Entries::const_iterator entry_iterator) override;
   void OnAddEntry() override;
@@ -614,6 +615,9 @@ class TabRestoreServiceImpl::PersistenceDelegate
 
   // Schedules the commands for a window close.
   void ScheduleCommandsForWindow(const tab_restore::Window& window);
+
+  // Marks every entry for writing and resets the file on the next save.
+  void ScheduleFullRewrite();
 
   // Schedules the commands for a group close.
   void ScheduleCommandsForGroup(const tab_restore::Group& group);
@@ -684,7 +688,7 @@ class TabRestoreServiceImpl::PersistenceDelegate
   // invokes LoadState.
   void OnGotLastSessionCommands(
       std::vector<std::unique_ptr<SessionCommand>> commands,
-      bool read_error);
+      CommandStorageReadStatus status);
 
   // Populates |loaded_entries| with Entries from |commands|.
   void CreateEntriesFromCommands(
@@ -832,6 +836,14 @@ void TabRestoreServiceImpl::PersistenceDelegate::OnClearEntries() {
 }
 
 void TabRestoreServiceImpl::PersistenceDelegate::OnNavigationEntriesDeleted() {
+  ScheduleFullRewrite();
+}
+
+void TabRestoreServiceImpl::PersistenceDelegate::OnEntriesModified() {
+  ScheduleFullRewrite();
+}
+
+void TabRestoreServiceImpl::PersistenceDelegate::ScheduleFullRewrite() {
   // Rewrite all entries.
   entries_to_write_ = tab_restore_service_helper_->entries().size();
 
@@ -1030,7 +1042,7 @@ void TabRestoreServiceImpl::PersistenceDelegate::ScheduleCommandsForTab(
     command_storage_manager_->ScheduleCommand(std::move(command));
   }
 
-  if (tab.group.has_value()) {
+  if (tab.group.has_value() && !tab.is_group_ephemeral) {
     base::Pickle pickle;
     WriteTokenToPickle(&pickle, tab.group.value().token());
     const tab_groups::TabGroupVisualData* visual_data =
@@ -1237,7 +1249,7 @@ int TabRestoreServiceImpl::PersistenceDelegate::
 
 void TabRestoreServiceImpl::PersistenceDelegate::OnGotLastSessionCommands(
     std::vector<std::unique_ptr<SessionCommand>> commands,
-    bool read_error) {
+    CommandStorageReadStatus status) {
   std::vector<std::unique_ptr<tab_restore::Entry>> entries;
   CreateEntriesFromCommands(commands, &entries);
   // Closed tabs always go to the end.
@@ -1637,7 +1649,8 @@ void TabRestoreServiceImpl::PersistenceDelegate::ValidateAndDeleteEmptyEntries(
   std::vector<std::unique_ptr<tab_restore::Entry>> valid_entries;
 
   // Iterate from the back so that we keep the most recently closed entries.
-  for (std::unique_ptr<tab_restore::Entry>& entry : base::Reversed(*entries)) {
+  for (std::unique_ptr<tab_restore::Entry>& entry :
+       std::views::reverse(*entries)) {
     if (TabRestoreServiceHelper::ValidateEntry(*entry)) {
       valid_entries.push_back(std::move(entry));
     }
@@ -1740,6 +1753,8 @@ bool TabRestoreServiceImpl::PersistenceDelegate::ConvertSessionWindowToWindow(
   window->bounds = session_window->bounds;
   window->show_state = session_window->show_state;
   window->workspace = session_window->workspace;
+  window->app_name = session_window->app_name;
+  window->user_title = session_window->user_title;
   return true;
 }
 
@@ -1838,18 +1853,19 @@ std::optional<SessionID> TabRestoreServiceImpl::CreateHistoricalTab(
   return helper_.CreateHistoricalTab(live_tab, index);
 }
 
-void TabRestoreServiceImpl::BrowserClosing(LiveTabContext* context) {
-  helper_.BrowserClosing(context);
+std::optional<SessionID> TabRestoreServiceImpl::BrowserClosing(
+    LiveTabContext* context) {
+  return helper_.BrowserClosing(context);
 }
 
 void TabRestoreServiceImpl::BrowserClosed(LiveTabContext* context) {
   helper_.BrowserClosed(context);
 }
 
-void TabRestoreServiceImpl::CreateHistoricalGroup(
+std::optional<SessionID> TabRestoreServiceImpl::CreateHistoricalGroup(
     LiveTabContext* context,
     const tab_groups::TabGroupId& id) {
-  helper_.CreateHistoricalGroup(context, id);
+  return helper_.CreateHistoricalGroup(context, id);
 }
 
 void TabRestoreServiceImpl::CreateHistoricalSplit(
@@ -1865,6 +1881,18 @@ void TabRestoreServiceImpl::GroupClosed(const tab_groups::TabGroupId& group) {
 void TabRestoreServiceImpl::GroupCloseStopped(
     const tab_groups::TabGroupId& group) {
   helper_.GroupCloseStopped(group);
+}
+
+void TabRestoreServiceImpl::PromoteEphemeralTabGroup(
+    const tab_groups::TabGroupId& group_id,
+    const tab_groups::TabGroupVisualData& visual_data) {
+  helper_.PromoteEphemeralTabGroup(group_id, visual_data);
+}
+
+void TabRestoreServiceImpl::UpdateSavedTabGroupId(
+    const tab_groups::TabGroupId& group_id,
+    const base::Uuid& saved_group_id) {
+  helper_.UpdateSavedTabGroupId(group_id, saved_group_id);
 }
 
 void TabRestoreServiceImpl::SplitClosed(const split_tabs::SplitTabId& id) {
@@ -1903,10 +1931,10 @@ void TabRestoreServiceImpl::RemoveLeastRecentlyUsedEntries(int num_to_remove) {
   helper_.RemoveLeastRecentlyUsedEntries(num_to_remove);
 }
 
-std::vector<LiveTab*> TabRestoreServiceImpl::RestoreEntryById(
+std::optional<std::vector<LiveTab*>> TabRestoreServiceImpl::RestoreEntryById(
     LiveTabContext* context,
     SessionID id,
-    WindowOpenDisposition disposition) {
+    ui::mojom::WindowOpenDisposition disposition) {
   return helper_.RestoreEntryById(context, id, disposition);
 }
 

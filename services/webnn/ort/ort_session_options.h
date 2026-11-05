@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 
+#include "base/component_export.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
@@ -20,6 +21,10 @@
 #include "services/webnn/public/mojom/webnn_service_introspection.mojom-forward.h"
 #include "third_party/windows_app_sdk_headers/src/inc/abi/winml/winml/onnxruntime_c_api.h"
 
+namespace base {
+class CommandLine;
+}
+
 namespace webnn {
 
 struct EpDeviceInfo;
@@ -27,6 +32,10 @@ struct EpDeviceInfo;
 namespace ort {
 
 class Environment;
+
+void COMPONENT_EXPORT(WEBNN_SERVICE) ApplySessionConfigEntriesFromCommandLine(
+    OrtSessionOptions* session_options,
+    const base::CommandLine& command_line);
 
 // `SessionOptions` is a wrapper of `OrtSessionOptions` and used to create
 // sessions on background threads.
@@ -39,9 +48,18 @@ class SessionOptions final : public base::RefCountedThreadSafe<SessionOptions> {
       scoped_refptr<Environment> env);
 
   // Selects the target EP device directly, bypassing the auto EP selection
-  // policy.
-  static scoped_refptr<SessionOptions> Create(const EpDeviceInfo& target_device,
-                                              scoped_refptr<Environment> env);
+  // policy. Used by the GPU process to create dispatch sessions that consume
+  // models already compiled by the Compiler process. Applies additional
+  // hardening.
+  static scoped_refptr<SessionOptions> CreateForDispatch(
+      const EpDeviceInfo& target_device,
+      scoped_refptr<Environment> env);
+
+  // Selects the target EP device directly, bypassing the auto EP selection
+  // policy. Used by the Compiler process for model compilation and EP warmup.
+  static scoped_refptr<SessionOptions> CreateForCompilation(
+      const EpDeviceInfo& target_device,
+      scoped_refptr<Environment> env);
 
   SessionOptions(base::PassKey<SessionOptions>,
                  ScopedOrtSessionOptions session_options,
@@ -73,6 +91,15 @@ class SessionOptions final : public base::RefCountedThreadSafe<SessionOptions> {
   // Nullptr if the target EP device is specified directly.
   const mojom::CreateContextOptionsPtr context_options_;
 };
+
+// Builds a minimal session options for the internal `kTrivialModel`, used to
+// obtain an EP's device allocator or to warm up an EP. It binds `ep_device`
+// directly and keeps only functionally required configs, deliberately omitting
+// the debug switches and consumer-side hardening that the full session options
+// carry, which are irrelevant for this internal constant model.
+ScopedOrtSessionOptions CreateTrivialModelSessionOptions(
+    const OrtEnv* env,
+    const OrtEpDevice* ep_device);
 
 }  // namespace ort
 

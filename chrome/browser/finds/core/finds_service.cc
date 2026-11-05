@@ -14,9 +14,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
-#if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/finds/android/finds_service_android.h"
-#endif
 #include "chrome/browser/finds/core/finds_features.h"
 #include "chrome/browser/finds/core/finds_metrics.h"
 #include "chrome/browser/finds/core/finds_pref_names.h"
@@ -32,6 +30,7 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/history/core/browser/history_service.h"
+#include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/proto/features/finds.pb.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
@@ -440,16 +439,12 @@ void FindsService::MaybeRescheduleNotifications() {
 }
 
 void FindsService::CheckFindsNotificationsEnabledAndMaybeExecute() {
-#if BUILDFLAG(IS_ANDROID)
   if (!IsFindsFeatureAllowedForUser()) {
     return;
   }
   FindsServiceAndroid::CheckAreFindsNotificationsEnabledAndroid(
       base::BindOnce(&FindsService::OnCheckAreFindsNotificationsEnabled,
                      weak_ptr_factory_.GetWeakPtr()));
-#else
-  ExecuteModelAndScheduleNotification(base::DoNothing());
-#endif
 }
 
 void FindsService::OnHistoryQueryComplete(
@@ -571,7 +566,8 @@ void FindsService::OnGetClientOverview(notifications::ClientOverview overview) {
   }
 
   // There should only ever be 1 notification scheduled at a time for finds.
-  DCHECK_EQ(overview.scheduled_notifications.size(), 1u);
+  CHECK_EQ(overview.scheduled_notifications.size(), 1u,
+           base::NotFatalUntil::M162);
   const auto* entry = overview.scheduled_notifications[0].get();
   notifications::NotificationData data = entry->notification_data;
   notifications::ScheduleParams params = GetCurrentScheduleParams();

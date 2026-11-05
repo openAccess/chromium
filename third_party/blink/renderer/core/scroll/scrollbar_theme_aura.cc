@@ -363,39 +363,22 @@ void ScrollbarThemeAura::PaintThumb(const PaintInfo& paint_info,
       scrollbar.GetColorProvider(color_scheme));
 }
 
-WebThemeEngine::ScrollbarThumbExtraParams
-ScrollbarThemeAura::BuildScrollbarThumbExtraParams(
-    const Scrollbar& scrollbar) const {
-  WebThemeEngine::ScrollbarThumbExtraParams scrollbar_thumb;
-
-  if (scrollbar.ScrollbarThumbColor().has_value()) {
-    scrollbar_thumb.thumb_color =
-        scrollbar.ScrollbarThumbColor().value().toSkColor4f().toSkColor();
-  }
-  if (scrollbar.ScrollbarTrackColor().has_value()) {
-    scrollbar_thumb.track_color =
-        scrollbar.ScrollbarTrackColor().value().toSkColor4f().toSkColor();
-  }
-
-  return scrollbar_thumb;
-}
-
 bool ScrollbarThemeAura::ShouldRepaintAllPartsOnInvalidation() const {
   // This theme can separately handle thumb invalidation.
   return false;
 }
 
-ScrollbarPart ScrollbarThemeAura::PartsToInvalidateOnThumbPositionChange(
+int ScrollbarThemeAura::PartsToInvalidateOnThumbPositionChange(
     const Scrollbar& scrollbar,
     float old_position,
     float new_position) const {
-  ScrollbarPart invalid_parts = kNoPart;
+  int invalid_parts = kNoPart;
   static const ScrollbarPart kButtonParts[] = {kBackButtonStartPart,
                                                kForwardButtonEndPart};
   for (ScrollbarPart part : kButtonParts) {
     if (ButtonPartPaintingParams(scrollbar, old_position, part) !=
         ButtonPartPaintingParams(scrollbar, new_position, part))
-      invalid_parts = static_cast<ScrollbarPart>(invalid_parts | part);
+      invalid_parts |= part;
   }
   return invalid_parts;
 }
@@ -494,14 +477,6 @@ gfx::Insets ScrollbarThemeAura::SolidColorThumbInsets(
           scrollbar.Orientation() == kHorizontalScrollbar
               ? WebThemeEngine::kPartScrollbarHorizontalThumb
               : WebThemeEngine::kPartScrollbarVerticalThumb);
-}
-
-SkColor4f ScrollbarThemeAura::ThumbColor(const Scrollbar& scrollbar) const {
-  CHECK(UsesSolidColorThumb());
-  WebThemeEngine::ExtraParams params(BuildScrollbarThumbExtraParams(scrollbar));
-  return WebThemeEngineHelper::GetNativeThemeEngine()->GetScrollbarThumbColor(
-      scrollbar.GetStateForPart(kThumbPart), &params,
-      scrollbar.GetColorProvider(scrollbar.UsedColorScheme()));
 }
 
 bool ScrollbarThemeAura::UsesNinePatchTrackAndButtonsResource() const {

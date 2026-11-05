@@ -26,9 +26,9 @@ LayoutTableCell::LayoutTableCell(Element* element) : LayoutBlockFlow(element) {
 
 LayoutTableCell* LayoutTableCell::CreateAnonymousWithParent(
     const LayoutObject& parent) {
-  const ComputedStyle* new_style =
+  const ComputedStyle& new_style =
       parent.GetDocument().GetStyleResolver().CreateAnonymousStyleWithDisplay(
-          parent.StyleRef(), EDisplay::kTableCell);
+          parent.Style(), EDisplay::kTableCell);
   auto* new_cell = MakeGarbageCollected<LayoutTableCell>(nullptr);
   new_cell->SetDocumentForAnonymous(parent.GetDocument());
   new_cell->SetStyle(new_style);
@@ -129,7 +129,7 @@ LayoutBox* LayoutTableCell::CreateAnonymousBoxWithSameTypeAs(
   return CreateAnonymousWithParent(*parent);
 }
 
-LayoutBlock* LayoutTableCell::StickyContainer() const {
+LayoutBox* LayoutTableCell::StickyContainer() const {
   NOT_DESTROYED();
   return Table();
 }

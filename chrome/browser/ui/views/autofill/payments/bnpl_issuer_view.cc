@@ -88,12 +88,7 @@ void BnplIssuerView::PopulateIssuers() {
     auto image_view = std::make_unique<views::ThemeTrackingImageView>(
         ui::ImageModel::FromResourceId(image_ids.first.value()),
         ui::ImageModel::FromResourceId(image_ids.second.value()),
-        base::BindRepeating(
-            [](views::View* view) {
-              return ui::ColorVariant(view->GetColorProvider()->GetColor(
-                  ui::kColorDialogBackground));
-            },
-            base::Unretained(this)));
+        ui::kColorDialogBackground);
     auto* image_view_ptr = image_view.get();
     auto issuer_button = std::make_unique<HoverButton>(
         views::Button::PressedCallback(base::BindRepeating(

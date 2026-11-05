@@ -21,11 +21,11 @@
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/common/extensions/api/login.h"
 #include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/login/auth/public/cryptohome_key_constants.h"
 #include "chromeos/ash/components/login/auth/public/key.h"
 #include "chromeos/ash/components/login/auth/public/user_context.h"
+#include "chromeos/ash/experiences/extensions/common/api/login.h"
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user.h"
@@ -413,11 +413,12 @@ LoginRequestExternalLogoutFunction::~LoginRequestExternalLogoutFunction() =
 
 ExtensionFunction::ResponseAction LoginRequestExternalLogoutFunction::Run() {
   ProfileManager* profile_manager = g_browser_process->profile_manager();
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::login::OnRequestExternalLogout::Create());
   for (Profile* profile : profile_manager->GetLoadedProfiles()) {
-    EventRouter::Get(profile)->BroadcastEvent(
-        std::make_unique<Event>(events::LOGIN_ON_REQUEST_EXTERNAL_LOGOUT,
-                                api::login::OnRequestExternalLogout::kEventName,
-                                api::login::OnRequestExternalLogout::Create()));
+    EventRouter::Get(profile)->BroadcastEvent(std::make_unique<Event>(
+        events::LOGIN_ON_REQUEST_EXTERNAL_LOGOUT,
+        api::login::OnRequestExternalLogout::kEventName, event_args));
   }
   return RespondNow(NoArguments());
 }
@@ -429,11 +430,12 @@ LoginNotifyExternalLogoutDoneFunction::
 
 ExtensionFunction::ResponseAction LoginNotifyExternalLogoutDoneFunction::Run() {
   ProfileManager* profile_manager = g_browser_process->profile_manager();
+  auto event_args = base::MakeRefCounted<EventArgs>(
+      api::login::OnExternalLogoutDone::Create());
   for (Profile* profile : profile_manager->GetLoadedProfiles()) {
-    EventRouter::Get(profile)->BroadcastEvent(
-        std::make_unique<Event>(events::LOGIN_ON_EXTERNAL_LOGOUT_DONE,
-                                api::login::OnExternalLogoutDone::kEventName,
-                                api::login::OnExternalLogoutDone::Create()));
+    EventRouter::Get(profile)->BroadcastEvent(std::make_unique<Event>(
+        events::LOGIN_ON_EXTERNAL_LOGOUT_DONE,
+        api::login::OnExternalLogoutDone::kEventName, event_args));
   }
   return RespondNow(NoArguments());
 }

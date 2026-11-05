@@ -9,6 +9,7 @@
 #include "base/timer/elapsed_timer.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/web_contents_delegate.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 class BrowserUiController;
@@ -63,8 +64,6 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
                           bool user_gesture,
                           bool last_unlocked_by_target) override;
   void LostPointerLock() override;
-  bool IsWaitingForPointerLockPrompt(
-      content::WebContents* web_contents) override;
   bool AllowKeyboardLockForInnerContents(
       content::WebContents* web_contents) override;
   void RequestKeyboardLock(content::WebContents* web_contents,
@@ -101,6 +100,8 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
       const GURL& blocked_url,
       const GURL& initiator_url,
       const url::Origin& initiator_origin,
+      scoped_refptr<content::InitiatorNavigationState>
+          initiator_navigation_state,
       blink::mojom::NavigationBlockedReason reason) override;
   bool IsBackForwardCacheSupported(content::WebContents& web_contents) override;
 
@@ -120,7 +121,7 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
@@ -173,10 +174,11 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
       const GURL& opener_url,
       const std::string& frame_name,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       const content::StoragePartitionConfig& partition_config,
-      content::SessionStorageNamespace* session_storage_namespace) override;
+      content::SessionStorageNamespaceHandle* session_storage_namespace)
+      override;
   void WebContentsCreated(content::WebContents* source_contents,
                           const content::GlobalRenderFrameHostId& opener_id,
                           const std::string& frame_name,
@@ -199,7 +201,7 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
                           scoped_refptr<content::FileSelectListener> listener,
                           const base::FilePath& path) override;
   bool GetCanResize() override;
-  bool GetIsAlwaysOnTop() override;
+  bool GetIsAlwaysOnTopPopup() override;
   bool CanUseWindowingControls(
       content::RenderFrameHost* requesting_frame) override;
   void MinimizeFromWebAPI() override;
@@ -229,12 +231,6 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
                                  const std::string& protocol,
                                  const GURL& url,
                                  bool user_gesture) override;
-  void FindReply(content::WebContents* web_contents,
-                 int request_id,
-                 int number_of_matches,
-                 const gfx::Rect& selection_rect,
-                 int active_match_ordinal,
-                 bool final_update) override;
   void RequestMediaAccessPermission(
       content::WebContents* web_contents,
       const content::MediaStreamRequest& request,
@@ -247,10 +243,6 @@ class BrowserWebContentsDelegate : public content::WebContentsDelegate {
                                   blink::mojom::MediaStreamType type) override;
   std::string GetTitleForMediaControls(
       content::WebContents* web_contents) override;
-  void GetAIPageContent(
-      content::WebContents* web_contents,
-      bool include_actionable_elements,
-      base::OnceCallback<void(const std::string&)> callback) override;
   void PrintCrossProcessSubframe(
       content::WebContents* web_contents,
       const gfx::Rect& rect,

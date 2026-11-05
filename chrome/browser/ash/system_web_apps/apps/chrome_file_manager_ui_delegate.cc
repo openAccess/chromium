@@ -16,9 +16,11 @@
 #include "chrome/browser/ash/policy/dlp/files_policy_notification_manager.h"
 #include "chrome/browser/ash/policy/dlp/files_policy_notification_manager_factory.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/plural_string_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
+#include "chromeos/ash/components/file_manager/app_id.h"
 #include "components/drive/drive_pref_names.h"
 #include "components/drive/file_errors.h"
 #include "components/prefs/pref_service.h"
@@ -28,9 +30,15 @@
 
 ChromeFileManagerUIDelegate::ChromeFileManagerUIDelegate(content::WebUI* web_ui)
     : web_ui_(web_ui) {
-  DCHECK(web_ui_);
+  CHECK(web_ui_, base::NotFatalUntil::M160);
   Profile* profile = Profile::FromWebUI(web_ui_);
   content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
+  // Load the Image Loader extension on demand for Files app thumbnails.
+  auto* component_loader = extensions::ComponentLoader::Get(profile);
+  if (component_loader &&
+      !component_loader->Exists(file_manager::kImageLoaderExtensionId)) {
+    component_loader->AddImageLoaderExtension();
+  }
 }
 
 ChromeFileManagerUIDelegate::~ChromeFileManagerUIDelegate() = default;
@@ -149,7 +157,7 @@ void ChromeFileManagerUIDelegate::RecordDocsOfflineStats(
   // Emitted after 1 day has elapsed since it was last emitted.
   if (Profile* const profile = Profile::FromWebUI(web_ui_)) {
     PrefService* const prefs = profile->GetPrefs();
-    DCHECK(prefs);
+    CHECK(prefs, base::NotFatalUntil::M160);
 
     const base::TimeDelta time_since_last_update =
         base::Time::Now() -

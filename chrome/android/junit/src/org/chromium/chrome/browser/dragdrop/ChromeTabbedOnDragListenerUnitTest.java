@@ -85,7 +85,7 @@ public class ChromeTabbedOnDragListenerUnitTest {
 
     @Before
     public void setup() {
-        mContext = Robolectric.setupActivity(Activity.class);
+        mContext = Robolectric.buildActivity(Activity.class).setup().get();
         mLayoutStateProviderSupplierImpl = new OneshotSupplierImpl<>();
         mLayoutStateProviderSupplierImpl.set(mLayoutStateProvider);
         MultiInstanceOrchestratorFactory.setInstanceForTesting(mMultiInstanceOrchestrator);
@@ -305,6 +305,77 @@ public class ChromeTabbedOnDragListenerUnitTest {
         assertFalse(
                 "Should not notify that Chrome handled drop when false returned.",
                 DragDropGlobalState.didChromeHandleDrop());
+
+        // Verify histograms.
+        histogramExpectation.assertExpected();
+    }
+
+    @Test
+    public void testOnDrag_ActionDrop_GlobalStateCleared() {
+        doTestOnDragActionDropWithClearedGlobalState(
+                /* isGroupDrag= */ false, /* isMultiTabDrag= */ false);
+    }
+
+    @Test
+    public void testOnDrag_ActionDrop_GlobalStateCleared_TabGroup() {
+        doTestOnDragActionDropWithClearedGlobalState(
+                /* isGroupDrag= */ true, /* isMultiTabDrag= */ false);
+    }
+
+    @Test
+    public void testOnDrag_ActionDrop_GlobalStateCleared_MultiTab() {
+        doTestOnDragActionDropWithClearedGlobalState(
+                /* isGroupDrag= */ false, /* isMultiTabDrag= */ true);
+    }
+
+    private void doTestOnDragActionDropWithClearedGlobalState(
+            boolean isGroupDrag, boolean isMultiTabDrag) {
+        String resultHistogram =
+                String.format(
+                        "Android.DragDrop.%s.FromStrip.Result",
+                        getTabSelectionType(isGroupDrag, isMultiTabDrag));
+        HistogramWatcher histogramExpectation =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(resultHistogram, DragDropResult.ERROR_CONTENT_NOT_FOUND)
+                        .expectNoRecords("Android.DragDrop.Tab.Type")
+                        .expectNoRecords("Android.DragDrop.TabGroup.Type")
+                        .expectNoRecords("Android.DragDrop.MultiTab.Type")
+                        .build();
+        setGlobalStateData(isGroupDrag, isMultiTabDrag);
+
+        // Call drag start while the global state is still live.
+        assertTrue(
+                "Drag started should return true.",
+                mChromeTabbedOnDragListener.onDrag(
+                        mCompositorViewHolder,
+                        mockDragEvent(
+                                DragEvent.ACTION_DRAG_STARTED,
+                                /* result= */ false,
+                                isGroupDrag,
+                                isMultiTabDrag)));
+
+        // The source window tears down mid-drag and clears the process-wide state. This window
+        // then receives a late drop, and must reject it rather than crash.
+        DragDropGlobalState.clearForTesting();
+        when(mLayoutStateProvider.isLayoutVisible(LayoutType.HUB)).thenReturn(false);
+
+        assertFalse(
+                "Action drop should return false when the global state has been cleared.",
+                mChromeTabbedOnDragListener.onDrag(
+                        mCompositorViewHolder,
+                        mockDragEvent(
+                                DragEvent.ACTION_DROP,
+                                /* result= */ false,
+                                isGroupDrag,
+                                isMultiTabDrag)));
+
+        mChromeTabbedOnDragListener.onDrag(
+                mCompositorViewHolder,
+                mockDragEvent(
+                        DragEvent.ACTION_DRAG_ENDED,
+                        /* result= */ false,
+                        isGroupDrag,
+                        isMultiTabDrag));
 
         // Verify histograms.
         histogramExpectation.assertExpected();

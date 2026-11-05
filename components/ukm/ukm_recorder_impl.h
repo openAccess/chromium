@@ -30,7 +30,6 @@
 #include "services/metrics/public/cpp/ukm_source_id.h"
 #include "services/metrics/public/mojom/ukm_interface.mojom-forward.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "ukm_consent_state.h"
 #include "url/gurl.h"
 
@@ -163,6 +162,15 @@ class COMPONENT_EXPORT(UKM_RECORDER) UkmRecorderImpl : public UkmRecorder {
   bool recording_enabled(ukm::UkmConsentType type) const;
 
   bool ShouldDropEntryForTesting(mojom::UkmEntry* entry);
+
+  const std::map<SourceId, std::unique_ptr<UkmSource>>& sources_for_testing()
+      const {
+    return recordings_.sources;
+  }
+
+  const std::vector<mojom::UkmEntryPtr>& entries_for_testing() const {
+    return recordings_.entries;
+  }
 
  protected:
   // Returns whether kRestructureMetricsConsentSettings feature is enabled.

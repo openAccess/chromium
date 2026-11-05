@@ -41,15 +41,14 @@
 #include "content/public/browser/fullscreen_types.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/browser/web_contents_delegate.h"
 #include "extensions/buildflags/buildflags.h"
 #include "printing/buildflags/buildflags.h"
 #include "third_party/blink/public/mojom/page/draggable_region.mojom-forward.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/rect.h"
 #include "url/origin.h"
 
@@ -61,7 +60,6 @@ class BrowserInitState;
 class BrowserWindow;
 struct BrowserWindowCreateParams;
 class BrowserWindowFeatures;
-class FindBarController;
 class Profile;
 class ScopedKeepAlive;
 class ScopedProfileKeepAlive;
@@ -128,7 +126,8 @@ class Browser : public TabStripModelObserver,
   Profile* GetProfile() override;
   const Profile* GetProfile() const override;
   bool IsDeleteScheduled() const override;
-  void OpenGURL(const GURL& gurl, WindowOpenDisposition disposition) override;
+  void OpenGURL(const GURL& gurl,
+                ui::mojom::WindowOpenDisposition disposition) override;
   content::WebContents* OpenURL(
       const content::OpenURLParams& params,
       base::OnceCallback<void(content::NavigationHandle&)>
@@ -173,7 +172,8 @@ class Browser : public TabStripModelObserver,
  private:
   friend BrowserWindowInterface* CreateBrowserWindow(
       BrowserWindowCreateParams create_params);
-  friend std::unique_ptr<Browser> DeprecatedCreateOwnedBrowserWindowForTesting(
+  friend std::unique_ptr<BrowserWindowInterface>
+  DeprecatedCreateOwnedBrowserWindowForTesting(
       BrowserWindowCreateParams create_params);
 
   // Used to describe why a tab is being detached. This is used by
@@ -249,16 +249,8 @@ class Browser : public TabStripModelObserver,
                          DetachType type);
 
   // Shared code between Reload() and ReloadBypassingCache().
-  void ReloadInternal(WindowOpenDisposition disposition, bool bypass_cache);
-
-  // Create `FindBarController` if it does not exist.
-  // TODO(crbug.com/423956131): Convert to `GetFindBarController` which returns
-  // existing `FindBarController`.
-  FindBarController* CreateOrGetFindBarController();
-
-  // Returns true if a `FindBarController` exists for this browser.
-  // TODO(crbug.com/423956131): Remove this function.
-  bool HasFindBarController();
+  void ReloadInternal(ui::mojom::WindowOpenDisposition disposition,
+                      bool bypass_cache);
 
   // Data members /////////////////////////////////////////////////////////////
 

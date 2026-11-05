@@ -5,13 +5,17 @@
 #define CHROME_BROWSER_CONTEXTUAL_TASKS_CONTEXTUAL_TASKS_COMPOSEBOX_HANDLER_H_
 
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
+#include "base/uuid.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_composebox_handler_interface.h"
 #include "chrome/browser/ui/webui/cr_components/composebox/composebox_handler.h"
+#include "components/contextual_tasks/public/contextual_tasks_service.h"
 #include "components/contextual_tasks/public/query_contextualizer.h"
 #include "components/lens/contextual_input.h"
 #include "components/lens/lens_overlay_dismissal_source.h"
@@ -19,8 +23,6 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 #include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
@@ -45,7 +47,8 @@ struct FileData {
 class ContextualTasksComposeboxHandler
     : public ComposeboxHandler,
       public ui::SelectFileDialog::Listener,
-      public contextual_tasks::ContextualTasksComposeboxHandlerInterface {
+      public contextual_tasks::ContextualTasksComposeboxHandlerInterface,
+      public contextual_tasks::ContextualTasksService::Observer {
  public:
   friend class ContextualTasksComposeboxHandlerTest;
   using TakeInputStateModelCallback = base::RepeatingCallback<
@@ -124,6 +127,11 @@ class ContextualTasksComposeboxHandler
 
   std::vector<int32_t> GetSelectedTabIds() const override;
 
+  // contextual_tasks::ContextualTasksService::Observer:
+  void OnWillBeDestroyed() override;
+  void OnTaskDisassociatedFromTab(const base::Uuid& task_id,
+                                  SessionID tab_id) override;
+
   bool HasAutoSuggestedTab();
 
   void ClearFiles(bool should_block_auto_suggested_tabs) override;
@@ -173,6 +181,9 @@ class ContextualTasksComposeboxHandler
 #endif
 
  private:
+  void OnTabDisassociated(SessionID tab_session_id,
+                          std::optional<int32_t> tab_handle_id);
+
   // Returns the context ID for the active tab, if any.
   std::optional<int64_t> GetActiveTabContextId();
 
@@ -213,12 +224,33 @@ class ContextualTasksComposeboxHandler
   // Helper to send the pending query if all uploads are complete.
   void MaybeSendPendingQuery();
 
+  // Returns true if the current contextual session handle has previous turns
+  // or submitted context.
+  bool HasSubmittedContextOrTurns();
+
+  // Deactivates Smart Tab Sharing across thread state, session handle,
+  // input state model, and the WebUI page.
+  void DeactivateSmartTabSharing();
+
+  void ForwardTabContextResult(
+      const base::UnguessableToken& token,
+      AddTabContextCallback callback,
+      base::expected<base::UnguessableToken,
+                     contextual_search::ContextUploadErrorType> result);
+
+  // Updates the composebox with any submitted tabs from the session handle.
+  void CacheSubmittedTabsFromSessionHandle();
+
   TakeInputStateModelCallback take_input_model_callback_;
   raw_ptr<contextual_tasks::ContextualTasksUIInterface> web_ui_interface_;
 
   // The context controller for the current profile. The profile will outlive
   // this class.
   raw_ptr<contextual_tasks::ContextualTasksService> contextual_tasks_service_;
+
+  base::ScopedObservation<contextual_tasks::ContextualTasksService,
+                          contextual_tasks::ContextualTasksService::Observer>
+      contextual_tasks_service_observation_{this};
 
  protected:
   // Delegate handling desktop-specific operations for QueryContextualizer,

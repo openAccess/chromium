@@ -96,6 +96,7 @@ class TestSyncService : public SyncService {
   void SetPassphraseRequired();
   void SetTrustedVaultKeyRequired(bool required);
   void SetTrustedVaultRecoverabilityDegraded(bool degraded);
+  bool passkeys_locked() const;
   void SetIsUsingExplicitPassphrase(bool enabled);
   void SetDownloadStatusFor(const DataTypeSet& types,
                             DataTypeDownloadStatus download_status);
@@ -165,6 +166,7 @@ class TestSyncService : public SyncService {
       base::RepeatingCallback<void(const TypeEntitiesCount&)> callback)
       const override;
   const GURL& GetSyncServiceUrlForDebugging() const override;
+  base::FilePath GetLocalSyncBackendFolderForDebugging() const override;
   std::string GetUnrecoverableErrorMessageForDebugging() const override;
   base::Location GetUnrecoverableErrorLocationForDebugging() const override;
   void AddProtocolEventObserver(ProtocolEventObserver* observer) override;
@@ -176,7 +178,10 @@ class TestSyncService : public SyncService {
       const override;
   void SetCurrentDeviceCacheGuidsForAllGaiaIds(
       base::flat_set<std::string> guids);
+#if BUILDFLAG(IS_ANDROID)
   void SetInvalidationsForSessionsEnabled(bool enabled) override;
+#endif  // BUILDFLAG(IS_ANDROID)
+  void SetPasskeysLocked(bool passkeys_locked) override;
   void SendExplicitPassphraseToPlatformClient() override;
   void GetTypesWithUnsyncedData(
       DataTypeSet requested_types,
@@ -214,6 +219,7 @@ class TestSyncService : public SyncService {
   DataTypeSet failed_data_types_;
 
   bool bookmarks_limit_exceeded_ = false;
+  bool passkeys_locked_ = false;
 
   std::map<DataType, DataTypeDownloadStatus> download_statuses_;
 

@@ -83,6 +83,8 @@ public class TabListEditorActionViewLayout extends LinearLayout {
         super.onFinishInflate();
         mMenuButton = findViewById(R.id.list_menu_button);
         mMenuButton.tryToFitLargestItem(true);
+        mMenuButton.setMaintainPressedStateWhenMenuOpen(false);
+        mMenuButton.setMaintainFocusStateWhenMenuOpen(false);
         mDoneButton = findViewById(R.id.done_button);
     }
 
@@ -233,8 +235,7 @@ public class TabListEditorActionViewLayout extends LinearLayout {
 
     private void makeNumberRollViewFill(int maxWidth) {
         View firstView = getChildAt(0);
-        if (firstView instanceof NumberRollView) {
-            NumberRollView numberRollView = (NumberRollView) firstView;
+        if (firstView instanceof NumberRollView numberRollView) {
             LinearLayout.LayoutParams params =
                     (LinearLayout.LayoutParams) numberRollView.getLayoutParams();
             params.width = maxWidth;

@@ -6,6 +6,7 @@ import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import type {TabSearchSplitItemElement} from 'chrome://tab-search.top-chrome/tab_search.js';
 import {SplitTabLayout, SplitViewData, TabGroupColor} from 'chrome://tab-search.top-chrome/tab_search.js';
 import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {sampleToken} from './tab_search_test_data.js';
 import {initLoadTimeDataWithDefaults} from './tab_search_test_helper.js';
@@ -33,6 +34,7 @@ suite('TabSearchSplitItemTest', () => {
         lastActiveTime: {internalValue: 0n},
         lastActiveElapsedText: '2 mins ago',
         tabUrls: ['https://google.com', 'https://paypal.com'],
+        tabTitles: ['Google', 'PayPal'],
         layout: SplitTabLayout.kSideBySide,
         groupId: null,
       },
@@ -55,6 +57,7 @@ suite('TabSearchSplitItemTest', () => {
         lastActiveTime: {internalValue: 0n},
         lastActiveElapsedText: '2 mins ago',
         tabUrls: ['https://google.com', 'https://paypal.com'],
+        tabTitles: ['Google', 'PayPal'],
         layout: SplitTabLayout.kStacked,
         groupId: null,
       },
@@ -79,6 +82,7 @@ suite('TabSearchSplitItemTest', () => {
         lastActiveTime: {internalValue: 0n},
         lastActiveElapsedText: '2 mins ago',
         tabUrls: ['view-source:https://example.com', 'file:///etc/passwd'],
+        tabTitles: ['Example', 'Passwd'],
         layout: SplitTabLayout.kSideBySide,
         groupId: null,
       },
@@ -104,6 +108,7 @@ suite('TabSearchSplitItemTest', () => {
         lastActiveTime: {internalValue: 0n},
         lastActiveElapsedText: '2 mins ago',
         tabUrls: ['https://google.com', 'https://paypal.com'],
+        tabTitles: ['Google', 'PayPal'],
         layout: SplitTabLayout.kSideBySide,
         groupId: null,
       },
@@ -116,11 +121,11 @@ suite('TabSearchSplitItemTest', () => {
     };
 
     setupTest(data);
-    await tabSearchSplitItem.updateComplete;
+    await microtasksFinished();
 
-    const groupSvgElement =
-        tabSearchSplitItem.shadowRoot.querySelector<HTMLElement>('#groupSvg')!;
-    assertNotEquals(null, groupSvgElement);
+    const groupDotElement =
+        tabSearchSplitItem.shadowRoot.querySelector<HTMLElement>('#groupDot')!;
+    assertNotEquals(null, groupDotElement);
 
     const useColorRefresh = loadTimeData.getBoolean('useTabGroupColorRefresh');
     const expectedColorVar = useColorRefresh ?
@@ -129,6 +134,6 @@ suite('TabSearchSplitItemTest', () => {
 
     assertEquals(
         expectedColorVar,
-        groupSvgElement.style.getPropertyValue('--group-dot-color'));
+        groupDotElement.style.getPropertyValue('--group-dot-color'));
   });
 });

@@ -31,6 +31,10 @@ namespace mojo {
 class AssociatedGroupController;
 class ConnectionGroupRef;
 
+namespace internal {
+class ResponderThunk;
+}  // namespace internal
+
 using ReportBadMessageCallback =
     base::OnceCallback<void(std::string_view error)>;
 
@@ -38,6 +42,13 @@ using ReportBadMessageCallback =
 // Message owns its data and handles, but a consumer of Message is free to
 // mutate the data and handles. The message's data is comprised of a header
 // followed by payload.
+//
+// WARNING: Generated Mojom bindings declare stack-allocated `Message` objects
+// with `STACK_UNINITIALIZED` to avoid pre-filling `sizeof(Message)` bytes at
+// thousands of call sites before the out-of-line `Message` constructor runs.
+// Any field added to `Message` (or `internal::Buffer`) MUST be initialized by
+// a non-trivial default constructor, a default member initializer, or every
+// `Message` constructor.
 class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
  public:
   static const uint32_t kFlagExpectsResponse = 1 << 0;
@@ -117,6 +128,19 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
   // long as the Message is not moved and neither |Reset()| nor
   // |TakeMojoMessage()| is called.
   Message(base::span<const uint8_t> payload, base::span<ScopedHandle> handles);
+
+  // Constructs a serialized `Message` object from an existing
+  // `ScopedMessageHandle` whose message header has already been validated and
+  // whose attached handles have already been extracted (e.g. by bindings in
+  // another language).
+  //
+  // This is like `CreateFromMessageHandle`, but for callers who have already
+  // extracted the handles from the message.
+  //
+  // This should only be used to represent an incoming message. Outgoing
+  // operations like serializing or attaching handles will `CHECK`-fail.
+  Message(ScopedMessageHandle message_handle,
+          std::vector<ScopedHandle> handles);
 
   Message(const Message&) = delete;
   Message& operator=(const Message&) = delete;
@@ -256,6 +280,19 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
   // ownership of its internal storage and any attached handles.
   ScopedMessageHandle TakeMojoMessage();
 
+  // Takes the underlying message handle, invalidating this `Message` object.
+  //
+  // Unlike `TakeMojoMessage()`, which is used for sending outgoing messages,
+  // this function is used to pass ownership of a message to Rust. It can be
+  // used for either direction of message.
+  //
+  // Before calling this method, the message must be serialized and the caller
+  // must empty `handles_` and `associated_endpoint_handles_` (either by taking
+  // ownership of them via `mutable_handles()` and
+  // `mutable_associated_endpoint_handles()` for incoming messages, or by
+  // calling `SerializeHandles()` for outgoing messages).
+  ScopedMessageHandle TakeMessageHandleForRust();
+
   // Notifies the system that this message is "bad," in this case meaning it was
   // rejected by bindings validation code.
   void NotifyBadMessage(std::string_view error);
@@ -330,6 +367,10 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
           internal::Buffer payload_buffer,
           bool serialized);
 
+  // WARNING: Generated code constructs stack `Message` instances with
+  // `STACK_UNINITIALIZED`. Every member below MUST be initialized by a
+  // non-trivial default constructor, a default member initializer, or every
+  // `Message` constructor so no field is ever left uninitialized.
   ScopedMessageHandle handle_;
 
   // A Buffer which may be used to allocate blocks of data within the message
@@ -377,9 +418,6 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) MessageReceiver {
  public:
   virtual ~MessageReceiver() = default;
 
-  // Indicates whether the receiver prefers to receive serialized messages.
-  virtual bool PrefersSerializedMessages();
-
   // The receiver may mutate the given message.  Returns true if the message
   // was accepted and false otherwise, indicating that the message was invalid
   // or malformed.
@@ -399,24 +437,6 @@ class MessageReceiverWithResponder : public MessageReceiver {
       std::unique_ptr<MessageReceiver> responder) = 0;
 };
 
-// A MessageReceiver that is also able to provide status about the state
-// of the underlying MessagePipe to which it will be forwarding messages
-// received via the |Accept()| call.
-class MessageReceiverWithStatus : public MessageReceiver {
- public:
-  ~MessageReceiverWithStatus() override = default;
-
-  // Returns |true| if this MessageReceiver is currently bound to a MessagePipe,
-  // the pipe has not been closed, and the pipe has not encountered an error.
-  virtual bool IsConnected() = 0;
-
-  // Determines if this MessageReceiver is still bound to a message pipe and has
-  // not encountered any errors. This is asynchronous but may be called from any
-  // sequence. |callback| is eventually invoked from an arbitrary sequence with
-  // the result of the query.
-  virtual void IsConnectedAsync(base::OnceCallback<void(bool)> callback) = 0;
-};
-
 // An alternative to MessageReceiverWithResponder for cases in which it
 // is necessary for the implementor of this interface to know about the status
 // of the MessagePipe which will carry the responses.
@@ -424,13 +444,13 @@ class MessageReceiverWithResponderStatus : public MessageReceiver {
  public:
   ~MessageReceiverWithResponderStatus() override = default;
 
-  // A variant on Accept that registers a MessageReceiverWithStatus (known as
+  // A variant on Accept that registers a ResponderThunk (known as
   // the responder) to handle the response message generated from the given
   // message. Any of the responder's methods (Accept or IsValid) may be called
   // during  AcceptWithResponder or some time after its return.
   [[nodiscard]] virtual bool AcceptWithResponder(
       Message* message,
-      std::unique_ptr<MessageReceiverWithStatus> responder) = 0;
+      std::unique_ptr<internal::ResponderThunk> responder) = 0;
 };
 
 class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) PassThroughFilter

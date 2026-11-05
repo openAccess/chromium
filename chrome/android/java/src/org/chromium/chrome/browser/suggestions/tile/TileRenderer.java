@@ -9,12 +9,12 @@ import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.text.Layout;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.View;
 
 import androidx.annotation.DimenRes;
-import androidx.annotation.DrawableRes;
 import androidx.annotation.LayoutRes;
 import androidx.annotation.VisibleForTesting;
 import androidx.core.content.res.ResourcesCompat;
@@ -29,7 +29,6 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.omnibox.suggestions.mostvisited.SuggestTileType;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.suggestions.ImageFetcher;
@@ -200,23 +199,22 @@ public class TileRenderer {
             // to be added back in the correct order.
             parent.removeAllViews();
 
-            Tile prevTile = null;
+            SuggestionsTileView prevTileView = null;
             for (Tile tile : sectionTiles) {
                 SuggestionsTileView tileView = oldTileViews.remove(tile.getData());
                 if (tileView == null) {
                     tileView = buildTileView(tile, parent, setupDelegate);
                 }
-                // Add divider if sources change between CUSTOM_LINKS and any other type.
-                if (prevTile != null
-                        && (prevTile.getData().source == TileSource.CUSTOM_LINKS)
-                                != (tile.getData().source == TileSource.CUSTOM_LINKS)) {
+                // Add divider at the boundary between the customized section and organic tiles.
+                if (prevTileView != null
+                        && (prevTileView.isDraggable() != tileView.isDraggable())) {
                     parent.addDivider(buildDivider(parent));
                 }
                 parent.addTile(tileView);
                 if (focusedUrl != null && focusedUrl.equals(tile.getUrl().getSpec())) {
                     tileView.requestFocus();
                 }
-                prevTile = tile;
+                prevTileView = tileView;
             }
 
             // Restore parent's original focusability.
@@ -268,6 +266,11 @@ public class TileRenderer {
                                 .inflate(mTileLayoutResId, parent, false);
 
         tileView.initialize(tile, mTitleLinesCount);
+        if (tile.isAiMode()) {
+            // Allows the AI Mode title translation to wrap to a second line, like the "Add new"
+            // button.
+            allowTitleToWrapToTwoLines(tileView);
+        }
 
         if (!mNativeInitializationComplete || setupDelegate == null) {
             return tileView;
@@ -276,7 +279,7 @@ public class TileRenderer {
         // Note: It is important that the callbacks below don't keep a reference to the tile or
         // modify them as there is no guarantee that the same tile would be used to update the view.
         updateIcon(tile, setupDelegate);
-        updateContentDescription(tile, tileView);
+        updateContentDescription(tile, tileView, setupDelegate);
 
         TileGroup.TileInteractionDelegate delegate =
                 setupDelegate.createInteractionDelegate(tile, tileView);
@@ -331,11 +334,7 @@ public class TileRenderer {
     }
 
     boolean shouldShowAddNewButton(List<Tile> sectionTiles) {
-        if (!ChromeFeatureList.sMostVisitedTilesCustomization.isEnabled()) {
-            return false;
-        }
-
-        if (sectionTiles.size() == 0) {
+        if (sectionTiles.isEmpty()) {
             // Still show the Add Custom Link Button, even if no suggestions exist. We might make
             // this configurable.
             return true;
@@ -372,15 +371,27 @@ public class TileRenderer {
                     RecordUserAction.record("Suggestions.Button.AddItem");
                     setupDelegate.getCustomTileModificationDelegate().add();
                 });
-        // Allow "Add new" title translation to wrap to second line. We change max lines instead of
-        // lines to avoid (clickable) blank line appearing at bottom if the title fits in one line.
-        tileView.setTitleMaxLines(2);
+        // Allows the "Add new" title translation to wrap to a second line.
+        allowTitleToWrapToTwoLines(tileView);
         // Prevent Custom Tile swap key from  propagating (i.e., suppress scrolls) to make the
         // button's behavior more similar to Custom Tiles.
         tileView.setOnKeyListener(
                 (View view, int keyCode, KeyEvent event) ->
                         TileUtils.isCustomTileSwapKeyCombo(keyCode, event));
         return tileView;
+    }
+
+    /**
+     * Lets a tile title that is forced onto one line wrap to a second line instead of getting cut
+     * off. Raises max lines instead of lines to avoid a (clickable) blank line appearing at the
+     * bottom when the title fits in one line. The default high-quality breaker minimizes the line
+     * count, so a word wider than the tile, e.g. under a large font size, gets split mid-word. The
+     * simple breaker breaks at the space instead, and the end ellipsis trims any word that still
+     * overflows.
+     */
+    private static void allowTitleToWrapToTwoLines(TileView tileView) {
+        tileView.setTitleMaxLines(/* maxLines= */ 2);
+        tileView.setTitleBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE);
     }
 
     /** Returns whether the tile represents a Search query. */
@@ -406,17 +417,24 @@ public class TileRenderer {
      *
      * @param tile Tile data that carries information about the destination URL.
      * @param tileView The view that should receive updated content description.
+     * @param setupDelegate The delegate used to setup callbacks and listeners for the new view.
      */
-    private void updateContentDescription(Tile tile, SuggestionsTileView tileView) {
+    private void updateContentDescription(
+            Tile tile, SuggestionsTileView tileView, TileGroup.TileSetupDelegate setupDelegate) {
         String contentDescription;
         if (isSearchTile(tile)) {
             contentDescription =
                     mContext.getString(
                             R.string.accessibility_omnibox_most_visited_tile_search,
                             tile.getTitle());
+        } else if (tile.isAiMode()) {
+            contentDescription = setupDelegate.getAiModeTileContentDescription();
+            if (contentDescription == null) {
+                contentDescription = tile.getTitle();
+            }
         } else {
             String title = tile.getTitle();
-            if (tile.getData().source == TileSource.CUSTOM_LINKS) {
+            if (tile.isCustomLink()) {
                 title += ": " + mPinnedShortcutString;
             }
             contentDescription =
@@ -437,8 +455,15 @@ public class TileRenderer {
      */
     public void updateIcon(final Tile tile, TileGroup.TileSetupDelegate setupDelegate) {
         if (isSearchTile(tile)) {
-            setTileIconFromResAsync(tile, setupDelegate, R.drawable.ic_suggestion_magnifier);
-
+            Drawable drawable =
+                    ResourcesCompat.getDrawable(
+                            mContext.getResources(),
+                            R.drawable.ic_suggestion_magnifier,
+                            /* theme= */ null);
+            setTileIconFromDrawableAsync(tile, setupDelegate, drawable);
+        } else if (tile.isAiMode()) {
+            setTileIconFromDrawableAsync(
+                    tile, setupDelegate, setupDelegate.getAiModeTileIconDrawable());
         } else if (mImageFetcher != null) {
             mImageFetcher.makeLargeIconRequest(
                     tile.getUrl(),
@@ -459,8 +484,12 @@ public class TileRenderer {
         tile.setType(TileVisualType.ICON_REAL);
     }
 
-    public void setTileIconFromResAsync(
-            Tile tile, TileGroup.TileSetupDelegate setupDelegate, @DrawableRes int res) {
+    /**
+     * Asynchronously sets the tile icon from {@code drawable}, rendering bitmaps untinted as {@link
+     * TileVisualType#ICON_REAL} and other drawables tinted as {@link TileVisualType#ICON_DEFAULT}.
+     */
+    public void setTileIconFromDrawableAsync(
+            Tile tile, TileGroup.TileSetupDelegate setupDelegate, @Nullable Drawable drawable) {
         // We already have an icon, and could trigger the update instantly.
         // Problem is, the TileView is likely not attached yet and the update would not be
         // properly reflected. Yield.
@@ -468,11 +497,16 @@ public class TileRenderer {
         PostTask.postTask(
                 TaskTraits.UI_DEFAULT,
                 () -> {
-                    tile.setIcon(ResourcesCompat.getDrawable(mContext.getResources(), res, null));
+                    tile.setIcon(drawable);
+                    boolean isBitmap = drawable instanceof BitmapDrawable;
                     tile.setIconTint(
-                            ChromeColors.getSecondaryIconTint(
-                                    mContext, /* forceLightIconTint= */ false));
-                    tile.setType(TileVisualType.ICON_DEFAULT);
+                            isBitmap
+                                    ? null
+                                    : ChromeColors.getSecondaryIconTint(
+                                            mContext, /* forceLightIconTint= */ false));
+                    // Uses ICON_REAL for 3P favicon bitmaps so SuggestionsTileView renders them at
+                    // the 24dp favicon size instead of stretching them to the 26dp monogram size.
+                    tile.setType(isBitmap ? TileVisualType.ICON_REAL : TileVisualType.ICON_DEFAULT);
                     if (iconCallback != null) iconCallback.run();
                 });
     }

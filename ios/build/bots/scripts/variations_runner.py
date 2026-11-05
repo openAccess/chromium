@@ -13,9 +13,10 @@ import sys
 import iossim_util
 import test_apps
 import test_runner
+import xcode_util
 from test_result_util import ResultCollection, TestResult, TestStatus
 from xcodebuild_runner import SimulatorParallelTestRunner
-from xcode_log_parser import XcodeLogParser
+from xcode_log_parser import Xcode16LogParser, XcodeLogParser
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _SRC_DIR = os.path.join(
@@ -24,7 +25,7 @@ _SRC_DIR = os.path.join(
 _VARIATIONS_SMOKE_TEST_DIR = os.path.join(_SRC_DIR, 'testing', 'scripts')
 sys.path.insert(0, _VARIATIONS_SMOKE_TEST_DIR)
 
-import variations_seed_access_helper as seed_helper
+import variations_seed_access_helper as seed_helper  # noqa: E402
 
 
 # Constants around the variation keys.
@@ -71,7 +72,6 @@ class VariationsSimulatorParallelTestRunner(SimulatorParallelTestRunner):
     self,
     app_path,
     host_app_path,
-    iossim_path,
     version,
     platform,
     out_dir,
@@ -79,7 +79,7 @@ class VariationsSimulatorParallelTestRunner(SimulatorParallelTestRunner):
     **kwargs,
   ):
     super(VariationsSimulatorParallelTestRunner, self).__init__(
-      app_path, host_app_path, iossim_path, version, platform, out_dir, **kwargs
+      app_path, host_app_path, version, platform, out_dir, **kwargs
     )
     self.variations_seed_path = variations_seed_path
     self.host_app_bundle_id = test_apps.get_bundle_id(self.host_app_path)
@@ -176,6 +176,8 @@ class VariationsSimulatorParallelTestRunner(SimulatorParallelTestRunner):
       if arg in self.test_app.test_args:
         self.test_app.test_args.remove(arg)
 
+    if xcode_util.using_xcode_16_or_higher():
+      return Xcode16LogParser.collect_test_results(launch_out_dir, output)
     return XcodeLogParser.collect_test_results(launch_out_dir, output)
 
   def _launch_variations_smoke_test(self):

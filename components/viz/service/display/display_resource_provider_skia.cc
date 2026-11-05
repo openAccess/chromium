@@ -12,6 +12,7 @@
 #include "base/containers/flat_set.h"
 #include "build/build_config.h"
 #include "components/viz/service/display/resource_fence.h"
+#include "gpu/command_buffer/client/client_shared_image.h"
 #include "gpu/command_buffer/service/scheduler_sequence.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 
@@ -46,12 +47,15 @@ DisplayResourceProviderSkia::DeleteAndReturnUnusedResourcesToChildImpl(
   std::vector<std::unique_ptr<ExternalUseClient::ImageContext>>
       image_contexts_to_return;
   std::vector<ReturnedResourceViz*> external_used_resources;
+  std::vector<scoped_refptr<gpu::ClientSharedImage>>
+      client_shared_images_to_return;
 
   // Reserve enough space to avoid re-allocating, so we can keep item pointers
   // for later using.
   to_return.reserve(unused.size());
   image_contexts_to_return.reserve(unused.size());
   external_used_resources.reserve(unused.size());
+  client_shared_images_to_return.reserve(unused.size());
 
   DCHECK(external_use_client_);
   std::vector<ResourceId>* batch_return = nullptr;
@@ -103,6 +107,8 @@ DisplayResourceProviderSkia::DeleteAndReturnUnusedResourcesToChildImpl(
     if (resource.image_context) {
       image_contexts_to_return.emplace_back(std::move(resource.image_context));
       external_used_resources.push_back(&returned);
+      client_shared_images_to_return.push_back(
+          resource.transferable.shared_image());
     }
 
     child_info.child_to_parent_map.erase(child_id);
@@ -116,6 +122,9 @@ DisplayResourceProviderSkia::DeleteAndReturnUnusedResourcesToChildImpl(
         std::move(image_contexts_to_return));
     for (auto* resource : external_used_resources) {
       resource->sync_token = sync_token;
+    }
+    for (auto& client_shared_image : client_shared_images_to_return) {
+      client_shared_image->EndDisplayCompositorAccess(sync_token);
     }
   }
 
@@ -138,8 +147,7 @@ DisplayResourceProviderSkia::LockSetForExternalUse::~LockSetForExternalUse() {
 ExternalUseClient::ImageContext*
 DisplayResourceProviderSkia::LockSetForExternalUse::LockResource(
     ResourceId id,
-    bool maybe_concurrent_reads,
-    bool raw_draw_is_possible) {
+    bool maybe_concurrent_reads) {
   auto it = resource_provider_->resources_.find(id);
   CHECK(it != resource_provider_->resources_.end());
 
@@ -155,8 +163,7 @@ DisplayResourceProviderSkia::LockSetForExternalUse::LockResource(
           resource_provider_->GetSurfaceId(id).frame_sink_id().client_id();
       resource.image_context =
           resource_provider_->external_use_client_->CreateImageContext(
-              resource.transferable, maybe_concurrent_reads,
-              raw_draw_is_possible, client_id);
+              resource.transferable, maybe_concurrent_reads, client_id);
     }
     resource.locked_for_external_use = true;
 
@@ -200,6 +207,8 @@ void DisplayResourceProviderSkia::LockSetForExternalUse::UnlockResources(
     // which owns it with the |sync_token|. The child is responsible for issuing
     // a WaitSyncToken GL command with the |sync_token| before reusing it.
     resource->UpdateSyncToken(sync_token);
+    resource->transferable.shared_image()->EndDisplayCompositorAccess(
+        sync_token);
     resource->locked_for_external_use = false;
 
     resource_provider_->TryReleaseResource(id, resource);
@@ -227,6 +236,8 @@ DisplayResourceProviderSkia::ScopedExclusiveReadLockSharedImage::
         resource_provider->external_use_client_->ReleaseImageContexts(
             std::move(image_contexts));
     resource.UpdateSyncToken(sync_token);
+    resource.transferable.shared_image()->EndDisplayCompositorAccess(
+        sync_token);
   }
 }
 DisplayResourceProviderSkia::ScopedExclusiveReadLockSharedImage::

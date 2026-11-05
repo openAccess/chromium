@@ -35,7 +35,7 @@ affect products besides Chromium, and we don’t want to put users of those
 products unnecessarily at risk by opening the bug before fixes for the other
 affected products have shipped.
 
-Therefore, we make all security bugs public within approximately 14 weeks of the
+Therefore, we make all security bugs public within approximately 30 days of the
 fix landing in the Chromium repository. The exception to this is in the event of
 the bug reporter or some other responsible party explicitly requesting anonymity
 or protection against disclosing other particularly sensitive data included in
@@ -242,7 +242,7 @@ chrome://safe-browsing before starting the download.
 ### What about dangerous file types not listed in the file type policy?
 
 The [file type
-policy](https://source.chromium.org/chromium/chromium/src/+/main:components/safe_browsing/content/resources/download_file_types.asciipb?q=download_file_types.asciipb%20-f:%2Fgen%2F&ss=chromium)
+policy](https://source.chromium.org/chromium/chromium/src/+/main:components/safe_browsing/content/resources/download_file_types/download_file_types.asciipb?q=download_file_types.asciipb%20-f:%2Fgen%2F&ss=chromium)
 controls some details of which security checks to enable for a given file
 extension. Most importantly, it controls whether we contact Safe Browsing about
 a download, and whether we show a warning for all downloads of that file type.
@@ -256,7 +256,7 @@ a new file type that meets that condition, we’d like to hear about it.
 <a name="TOC-i-found-a-local-file-or-directory-that-may-be-security-sensitive-and-is-not-blocked-by-file-system-access-api-"></a>
 ### I found a local file or directory that may be security-sensitive and is not blocked by File System Access API - is this a security bug?
 
-The File System Access API maintains a [blocklist](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/file_system_access/chrome_file_system_access_permission_context.cc;l=266-346)
+The File System Access API maintains a [blocklist](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/file_system_access/chrome_file_system_access_permission_context.cc;l=368-493;drc=bbf74ad62c20afa8b0e51efbced167d0b91be8a1)
 of directories and files that may be sensitive, such as systems files, and if user
 chooses a file or a directory matching the list on a site using File System
 Access API, the access is blocked.
@@ -266,6 +266,14 @@ to sensitive files, by listing well-known, security-sensitive locations, as a
 defense in-depth strategy. Therefore, evading the blocklist in some manner is
 not deemed as a security bug, especially as it requires user's explicit
 selection on a file or a directory from the file picker.
+
+In particular, the blocklist cannot exhaustively enumerate every third-party
+application, shell, editor, package manager, or build tool configuration file,
+dotfile, or project script that another local program might read or execute
+when run by the user. Once a user explicitly selects a file or directory in the
+file picker, the site is granted access to the user-selected location; finding
+an unblocked application configuration file or project file is not considered a
+security bug.
 
 <a name="TOC-I-can-download-a-file-with-an-unsafe-extension-but-a-different-extension-or-file-type-is-shown-to-the-user-"></a>
 ### I can download a file with an unsafe extension but a different extension or file type is shown to the user - is this a security bug?
@@ -527,6 +535,17 @@ Security](https://web.archive.org/web/20160311224620/https://technet.microsoft.c
 
 Other cases covered by this section include leaving a debugger port open to
 the world, remote shells, and so forth.
+
+<a name="TOC-A-compromised-GPU-process-can-attack-the-browser-via-X11-"></a>
+### A compromised GPU process can attack the browser via X11. Is this a security bug?
+
+No. The X11 protocol does not isolate clients from each other. Any process with
+an X11 connection can already inject input, log keystrokes, capture the screen,
+and change desktop configuration (e.g. XSETTINGS) for every application on the
+display. Attacks that require an X11 connection, such as getting the browser
+process to load a GTK module via XSETTINGS, therefore grant nothing beyond what
+the attacker already has. See the [X11 threat model](x11-threat-model.md) for
+details.
 
 <a name="TOC-If-a-website-can-open-an-android-app-via-an-intent"></a>
 ### If a website can open an Android app via an intent is this a security bug?
@@ -1153,6 +1172,15 @@ are visible via Certificate Revocation Lists (CRLs) published to the
 [CCADB](https://www.ccadb.org/) via CRLSets. There is some inherent delay in
 getting revocation information to Chrome clients, but most revocations should
 reach most users within a few days of appearing on a CA's CRL.
+
+In addition to certificates revoked by their issuing CA, Chrome also blocks
+the use of some certificates identified by Chrome Security as
+being misissued or compromised, and at risk of being used to attack Chrome
+users. This may include certificates proactively identified by Google as likely
+compromised based on issuance timeline, CA, domain name, or other certificate
+properties. While Chrome Security works hard to minimize collateral damage, if
+you believe that your certificate has been erroneously blocked in Chrome, you
+may contact Chrome Security at security@chromium.org and we will investigate.
 
 Chrome clients do not, by default, perform "online" certificate revocation
 status checks using CRLs directly or via OCSP URLs included in certificates.

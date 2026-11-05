@@ -66,11 +66,7 @@ class ShillServiceClientImpl : public ShillServiceClient {
 
   ~ShillServiceClientImpl() override {
     for (auto& helper_pair : helpers_) {
-      ShillClientHelper* helper = helper_pair.second;
-      bus_->RemoveObjectProxy(shill::kFlimflamServiceName,
-                              helper->object_proxy()->object_path(),
-                              base::DoNothing());
-      delete helper;
+      delete helper_pair.second;
     }
   }
 
@@ -325,6 +321,8 @@ class ShillServiceClientImpl : public ShillServiceClient {
                                             std::move(error_callback));
   }
 
+  void SetShuttingDown() override { is_shutting_down_ = true; }
+
   ShillServiceClient::TestInterface* GetTestInterface() override {
     return nullptr;
   }
@@ -335,9 +333,7 @@ class ShillServiceClientImpl : public ShillServiceClient {
 
   // Returns the corresponding ShillClientHelper for the profile.
   ShillClientHelper* GetHelper(const dbus::ObjectPath& service_path) {
-    static const std::string kServicePrefix("/service/");
-    if (service_path.value().compare(0, kServicePrefix.size(),
-                                     kServicePrefix) != 0) {
+    if (!service_path.value().starts_with("/service/")) {
       LOG(ERROR) << "Invalid service path: " << service_path.value();
       return nullptr;
     }
@@ -360,6 +356,9 @@ class ShillServiceClientImpl : public ShillServiceClient {
   }
 
   void NotifyReleased(ShillClientHelper* helper) {
+    if (is_shutting_down_) {
+      return;
+    }
     // New Shill Service DBus objects are created relatively frequently, so
     // remove them when they become inactive (no observers and no active method
     // calls).
@@ -374,10 +373,12 @@ class ShillServiceClientImpl : public ShillServiceClient {
                      << shill::kFlimflamServicePath;
       return;
     }
+    helpers_.erase(object_path.value());
+    // Delete `helper` before removing the `ObjectProxy` to prevent a dangling
+    // `raw_ptr` for `proxy_` in `ShillClientHelper`.
+    delete helper;
     bus_->RemoveObjectProxy(shill::kFlimflamServiceName, object_path,
                             base::DoNothing());
-    helpers_.erase(object_path.value());
-    delete helper;
   }
 
   static base::OnceCallback<void(base::DictValue result)>
@@ -393,6 +394,7 @@ class ShillServiceClientImpl : public ShillServiceClient {
 
   raw_ptr<dbus::Bus> bus_;
   HelperMap helpers_;
+  bool is_shutting_down_ = false;
   base::WeakPtrFactory<ShillServiceClientImpl> weak_ptr_factory_{this};
 };
 

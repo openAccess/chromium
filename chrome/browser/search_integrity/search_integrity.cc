@@ -4,33 +4,42 @@
 
 #include "chrome/browser/search_integrity/search_integrity.h"
 
+#include <algorithm>
 #include <map>
+#include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "base/containers/fixed_flat_map.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/functional/bind.h"
 #include "base/i18n/case_conversion.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/no_destructor.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
-#include "chrome/browser/enterprise/util/managed_browser_utils.h"  // nogncheck
+#include "chrome/browser/enterprise/browser_management/management_service_factory.h"
+#include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_integrity/search_integrity_allowlist.h"
 #include "chrome/browser/search_integrity/search_integrity_constants.h"
 #include "chrome/grit/browser_resources.h"
+#include "components/policy/core/common/management/management_service.h"
 #include "components/prefs/pref_service.h"
+#include "components/search_engines/default_search_manager.h"
 #include "components/search_engines/search_engines_pref_names.h"
+#include "components/search_engines/template_url.h"
+#include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_service.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "net/base/url_util.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "ui/base/resource/resource_bundle.h"
 
 namespace search_integrity {
@@ -93,14 +102,15 @@ bool IsDisallowedCustomSearchEngine(const TemplateURL* template_url) {
 }
 
 // Returns true if the URL host has excessive hex escapes (i.e. >= 3 '%').
-bool IsObfuscatedUrl(const std::string& url_str) {
+bool IsObfuscatedUrl(std::string_view url_str) {
   size_t scheme_pos = url_str.find("://");
-  size_t host_start = (scheme_pos != std::string::npos) ? scheme_pos + 3 : 0;
+  size_t host_start =
+      (scheme_pos != std::string_view::npos) ? scheme_pos + 3 : 0;
   size_t host_end = url_str.find('/', host_start);
-  if (host_end == std::string::npos) {
+  if (host_end == std::string_view::npos) {
     host_end = url_str.length();
   }
-  std::string raw_host = url_str.substr(host_start, host_end - host_start);
+  std::string_view raw_host = url_str.substr(host_start, host_end - host_start);
   int percent_count = 0;
   for (char c : raw_host) {
     if (c == '%') {
@@ -108,6 +118,77 @@ bool IsObfuscatedUrl(const std::string& url_str) {
     }
   }
   return percent_count >= kObfuscatedUrlPercentThreshold;
+}
+
+// Returns true if the search engine is controlled or added by an extension.
+bool IsExtensionEngine(const TemplateURL* turl) {
+  if (!turl) {
+    return false;
+  }
+  return turl->type() == TemplateURL::NORMAL_CONTROLLED_BY_EXTENSION ||
+         turl->type() == TemplateURL::OMNIBOX_API_EXTENSION ||
+         turl->GetExtensionInfo() != nullptr;
+}
+
+// Returns the extension ID if the search engine was added by an extension.
+std::string GetExtensionId(const TemplateURL* turl) {
+  if (turl && turl->GetExtensionInfo()) {
+    return turl->GetExtensionInfo()->extension_id;
+  }
+  return "";
+}
+
+// Returns true if there is an active mandatory or recommended
+// DefaultSearchProvider enterprise policy whose URL matches
+// `default_search_provider`.
+bool HasMatchingDefaultSearchProviderPolicy(
+    TemplateURLService* template_url_service,
+    const TemplateURL* default_search_provider) {
+  if (!template_url_service || !default_search_provider) {
+    return false;
+  }
+
+  const DefaultSearchManager* default_search_manager =
+      template_url_service->GetDefaultSearchManager();
+  if (!default_search_manager) {
+    return false;
+  }
+
+  DefaultSearchManager::Source source;
+  const TemplateURLData* policy_data =
+      default_search_manager->GetDefaultSearchEngine(&source);
+  if (source == DefaultSearchManager::FROM_POLICY ||
+      source == DefaultSearchManager::FROM_POLICY_RECOMMENDED) {
+    return policy_data && policy_data->url() == default_search_provider->url();
+  }
+
+  // If the user explicitly selected the recommended policy engine (or has a
+  // user override while a recommended policy is active), `source` is
+  // `FROM_USER`; check the underlying recommended policy engine.
+  std::unique_ptr<TemplateURLData> recommended_data =
+      default_search_manager->GetRecommendedDefaultSearchEngine();
+  return recommended_data &&
+         recommended_data->url() == default_search_provider->url();
+}
+
+// Returns true if the environment does not have a trusted management authority
+// for enforcing sensitive enterprise policies (such as DefaultSearchProvider).
+bool IsLowTrustEnvironment(Profile* profile) {
+  if (!profile) {
+    return false;
+  }
+  policy::ManagementAuthorityTrustworthiness platform_trustworthiness =
+      policy::ManagementServiceFactory::GetForPlatform()
+          ->GetManagementAuthorityTrustworthinessForPolicyLoading();
+  policy::ManagementAuthorityTrustworthiness browser_trustworthiness =
+      policy::ManagementAuthorityTrustworthiness::NONE;
+  if (policy::ManagementService* browser_management =
+          policy::ManagementServiceFactory::GetForProfile(profile)) {
+    browser_trustworthiness =
+        browser_management->GetManagementAuthorityTrustworthiness();
+  }
+  return std::max(platform_trustworthiness, browser_trustworthiness) <
+         policy::ManagementAuthorityTrustworthiness::TRUSTED;
 }
 
 }  // namespace
@@ -179,6 +260,14 @@ void SearchIntegrity::OnTemplateURLServiceLoaded() {
         report.is_default_custom_with_matching_policy_engine);
     base::UmaHistogramBoolean("Search.Integrity.IsDefaultEnforcedWithoutPolicy",
                               report.is_default_enforced_without_policy);
+    if (report.is_default_set_by_policy) {
+      base::UmaHistogramBoolean(
+          "Search.Integrity.IsDefaultSetByPolicyInLowTrust",
+          report.is_default_set_by_policy_in_low_trust);
+      base::UmaHistogramBoolean(
+          "Search.Integrity.IsDefaultSetByPolicyWithoutMatchingPolicy",
+          report.is_default_set_by_policy_without_matching_policy);
+    }
     base::UmaHistogramEnumeration("Search.Integrity.DuplicateKeyword",
                                   report.duplicate_keyword_status);
     base::UmaHistogramBoolean("Search.Integrity.CustomPopulatedDefault",
@@ -200,6 +289,10 @@ void SearchIntegrity::OnTemplateURLServiceLoaded() {
                             site_report.has_cross_domain_search);
   base::UmaHistogramBoolean("Search.Integrity.ExtensionUrlSearch",
                             site_report.has_extension_url_search);
+
+  DuplicateKeywordDetailedReport duplicate_report =
+      CheckDuplicateKeywordReport();
+  LogDuplicateKeywordMetrics(duplicate_report);
 }
 
 void SearchIntegrity::LogEnterpriseMetrics(
@@ -210,6 +303,14 @@ void SearchIntegrity::LogEnterpriseMetrics(
   base::UmaHistogramBoolean(
       "Search.Integrity.Enterprise.IsDefaultEnforcedWithoutPolicy",
       report.is_default_enforced_without_policy);
+  if (report.is_default_set_by_policy) {
+    base::UmaHistogramBoolean(
+        "Search.Integrity.Enterprise.IsDefaultSetByPolicyInLowTrust",
+        report.is_default_set_by_policy_in_low_trust);
+    base::UmaHistogramBoolean(
+        "Search.Integrity.Enterprise.IsDefaultSetByPolicyWithoutMatchingPolicy",
+        report.is_default_set_by_policy_without_matching_policy);
+  }
   base::UmaHistogramEnumeration("Search.Integrity.Enterprise.DuplicateKeyword",
                                 report.duplicate_keyword_status);
 
@@ -220,6 +321,40 @@ void SearchIntegrity::LogEnterpriseMetrics(
   }
 }
 
+void SearchIntegrity::LogDuplicateKeywordMetrics(
+    const DuplicateKeywordDetailedReport& report) {
+  if (report.distinct_duplicated_keywords_count == 0) {
+    return;
+  }
+
+  const bool is_enterprise = enterprise_util::IsBrowserManaged(profile_);
+  const std::string prefix =
+      is_enterprise ? "Search.Integrity.Enterprise.DuplicateKeyword."
+                    : "Search.Integrity.DuplicateKeyword.";
+
+  base::UmaHistogramCounts100(base::StrCat({prefix, "DuplicatedKeywordsCount"}),
+                              report.distinct_duplicated_keywords_count);
+
+  const std::string entries_histogram_name =
+      base::StrCat({prefix, "EntriesPerDuplicatedKeyword"});
+  for (int count : report.entries_per_duplicated_keyword) {
+    base::UmaHistogramCounts100(entries_histogram_name, count);
+  }
+
+  base::UmaHistogramBoolean(base::StrCat({prefix, "HasExtensionOnlyDuplicate"}),
+                            report.has_extension_only_duplicate);
+
+  base::UmaHistogramBoolean(
+      base::StrCat({prefix, "HasMixedExtensionDuplicate"}),
+      report.has_mixed_extension_duplicate);
+
+  base::UmaHistogramBoolean(base::StrCat({prefix, "HasStarterPackDuplicate"}),
+                            report.has_starter_pack_duplicate);
+
+  base::UmaHistogramBoolean(base::StrCat({prefix, "HasTrivialDuplicates"}),
+                            report.has_trivial_duplicates);
+}
+
 SearchIntegrityReport SearchIntegrity::CheckSearchEnginesReport() {
   SearchIntegrityReport report;
 
@@ -227,9 +362,9 @@ SearchIntegrityReport SearchIntegrity::CheckSearchEnginesReport() {
   auto template_urls = template_url_service_->GetTemplateURLs();
 
   // A map of referral parameter keys to their corresponding enum values.
-  static const base::NoDestructor<
-      std::map<std::string_view, SearchReferralParam>>
-      kReferralParameterMap({
+  static constexpr auto kReferralParameterMap =
+      base::MakeFixedFlatMap<std::string_view, SearchReferralParam>({
+          // keep-sorted start
           {"PC", SearchReferralParam::kPC},
           {"clid", SearchReferralParam::kClid},
           {"client", SearchReferralParam::kClient},
@@ -237,7 +372,8 @@ SearchIntegrityReport SearchIntegrity::CheckSearchEnginesReport() {
           {"gp", SearchReferralParam::kGp},
           {"sourceid", SearchReferralParam::kSourceid},
           {"t", SearchReferralParam::kT},
-          {"tt", SearchReferralParam::kTt},
+          {"tt", SearchReferralParam::kTt}
+          // keep-sorted end
       });
 
   // Iterate through all installed search engines to check if any of them are
@@ -253,8 +389,8 @@ SearchIntegrityReport SearchIntegrity::CheckSearchEnginesReport() {
 
       GURL url(template_url->url());
       for (net::QueryIterator it(url); !it.IsAtEnd(); it.Advance()) {
-        auto iter = kReferralParameterMap->find(it.GetKey());
-        if (iter != kReferralParameterMap->end()) {
+        auto iter = kReferralParameterMap.find(it.GetKey());
+        if (iter != kReferralParameterMap.end()) {
           report.referral_param_found = iter->second;
           break;
         }
@@ -265,7 +401,7 @@ SearchIntegrityReport SearchIntegrity::CheckSearchEnginesReport() {
   const TemplateURL* default_search_provider =
       template_url_service_->GetDefaultSearchProvider();
 
-  std::set<std::u16string> seen_keywords;
+  absl::flat_hash_set<std::u16string> seen_keywords;
   bool default_duplicated = false;
   bool non_default_duplicated = false;
 
@@ -305,6 +441,15 @@ SearchIntegrityReport SearchIntegrity::CheckSearchEnginesReport() {
       !profile_->GetPrefs()->IsManagedPreference(
           prefs::kDefaultSearchProviderEnabled)) {
     report.is_default_enforced_without_policy = true;
+  }
+
+  if (default_search_provider->CreatedByDefaultSearchProviderPolicy()) {
+    report.is_default_set_by_policy = true;
+    report.is_default_set_by_policy_in_low_trust =
+        IsLowTrustEnvironment(profile_);
+    report.is_default_set_by_policy_without_matching_policy =
+        !HasMatchingDefaultSearchProviderPolicy(template_url_service_,
+                                                default_search_provider);
   }
 
   if (IsDisallowedCustomSearchEngine(default_search_provider)) {
@@ -365,8 +510,8 @@ SiteSearchIntegrityReport SearchIntegrity::CheckSiteSearchReport() {
       continue;
     }
 
-    std::string keyword_host(keyword_url.host());
-    std::string search_host(search_url.host());
+    std::string_view keyword_host = keyword_url.host();
+    std::string_view search_host = search_url.host();
 
     if (IsObfuscatedUrl(keyword) || IsObfuscatedUrl(template_url->url())) {
       report.has_obfuscated_search_url = true;
@@ -411,17 +556,17 @@ SiteSearchIntegrityReport SearchIntegrity::CheckSiteSearchReport() {
             .transform(&std::string_view::size);
 
     // Strip the eTLD
-    std::string keyword_base = keyword_domain;
+    std::string_view keyword_base = keyword_domain;
     if (keyword_registry_len > 0 &&
         keyword_domain.length() > keyword_registry_len) {
-      keyword_base = keyword_domain.substr(
-          0, keyword_domain.length() - *keyword_registry_len - 1);
+      keyword_base = keyword_base.substr(
+          0, keyword_base.length() - *keyword_registry_len - 1);
     }
-    std::string search_base = search_domain;
+    std::string_view search_base = search_domain;
     if (search_registry_len > 0 &&
         search_domain.length() > search_registry_len) {
-      search_base = search_domain.substr(
-          0, search_domain.length() - *search_registry_len - 1);
+      search_base = search_base.substr(
+          0, search_base.length() - *search_registry_len - 1);
     }
 
     if (keyword_base == search_base && !keyword_base.empty()) {
@@ -431,6 +576,83 @@ SiteSearchIntegrityReport SearchIntegrity::CheckSiteSearchReport() {
     } else {
       // Keyword and search have different domains even when eTLD is stripped.
       report.has_cross_domain_search = true;
+    }
+  }
+
+  return report;
+}
+
+DuplicateKeywordDetailedReport SearchIntegrity::CheckDuplicateKeywordReport() {
+  DuplicateKeywordDetailedReport report;
+  if (!template_url_service_) {
+    return report;
+  }
+
+  const TemplateURLService::TemplateURLVector template_urls =
+      template_url_service_->GetTemplateURLs();
+
+  // Bucket all TemplateURLs by normalized keyword
+  std::map<std::u16string, std::vector<const TemplateURL*>> keyword_clusters;
+  for (const TemplateURL* turl : template_urls) {
+    if (!turl) {
+      continue;
+    }
+    std::u16string normalized_kw = base::i18n::ToLower(turl->keyword());
+    if (normalized_kw.empty()) {
+      continue;
+    }
+    keyword_clusters[normalized_kw].push_back(turl);
+  }
+
+  // Inspect clusters that have duplicates
+  for (const auto& [keyword, cluster] : keyword_clusters) {
+    if (cluster.size() <= 1) {
+      continue;
+    }
+
+    report.distinct_duplicated_keywords_count++;
+    report.entries_per_duplicated_keyword.push_back(
+        static_cast<int>(cluster.size()));
+
+    // Trivial Duplicates (identical URLs) and Starter Pack check
+    if (!keyword.empty() && keyword[0] == u'@') {
+      report.has_starter_pack_duplicate = true;
+    }
+    absl::flat_hash_set<std::string> unique_urls;
+    for (const TemplateURL* turl : cluster) {
+      unique_urls.insert(turl->url());
+      if (turl->starter_pack_id() !=
+          template_url_starter_pack_data::StarterPackId::kNone) {
+        report.has_starter_pack_duplicate = true;
+      }
+    }
+    if (unique_urls.size() < cluster.size()) {
+      report.has_trivial_duplicates = true;
+    }
+
+    // Extension collisions
+    absl::flat_hash_set<std::string> extension_ids;
+    bool has_non_extension = false;
+    int unknown_ext_idx = 0;
+
+    for (const TemplateURL* turl : cluster) {
+      if (IsExtensionEngine(turl)) {
+        std::string ext_id = GetExtensionId(turl);
+        if (!ext_id.empty()) {
+          extension_ids.insert(ext_id);
+        } else {
+          extension_ids.insert(base::StrCat(
+              {"unknown_ext_", base::NumberToString(++unknown_ext_idx)}));
+        }
+      } else {
+        has_non_extension = true;
+      }
+    }
+
+    if (!extension_ids.empty() && has_non_extension) {
+      report.has_mixed_extension_duplicate = true;
+    } else if (extension_ids.size() >= 2 && !has_non_extension) {
+      report.has_extension_only_duplicate = true;
     }
   }
 

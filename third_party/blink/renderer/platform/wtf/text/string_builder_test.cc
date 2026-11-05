@@ -116,6 +116,72 @@ TEST(StringBuilderTest, Append) {
             StringView(builder_for_u_char32_append));
 }
 
+// position == length_ delegates to Append().
+TEST(StringBuilderTest, InsertAtEnd) {
+  StringBuilder builder;
+  builder.Insert(0, 'a');  // Empty builder: position == length_ == 0.
+  EXPECT_EQ(String("a"), StringView(builder));
+  builder.Insert(1, 'b');
+  EXPECT_EQ(String("ab"), StringView(builder));
+}
+
+// is_8bit_ && c <= 0xFF inserts into an existing buffer8_.
+TEST(StringBuilderTest, InsertInto8BitBuffer) {
+  StringBuilder builder;
+  builder.ReserveCapacity(10);  // Forces an owned buffer instead of a shared
+                                // view.
+  builder.Append("ace");
+  builder.Insert(0, 'X');
+  builder.Insert(2, 'Y');
+  builder.Insert(4, 'Z');
+  EXPECT_TRUE(builder.Is8Bit());
+  EXPECT_EQ(String("XaYcZe"), StringView(builder));
+}
+
+// Inserting into a shared string view (no owned buffer yet) materializes the
+// view into an owned 8-bit buffer before mutating it.
+TEST(StringBuilderTest, InsertMaterializesSharedView8Bit) {
+  String source("ace");
+  StringBuilder builder;
+  builder.Append(source);  // Retains a shared view, no owned buffer yet.
+  builder.Insert(1, 'b');
+  EXPECT_TRUE(builder.Is8Bit());
+  EXPECT_EQ(String("abce"), builder.ToString());
+  EXPECT_NE(source.Impl(), builder.ToString().Impl());
+}
+
+// !is_8bit_ inserts into an existing buffer16_.
+TEST(StringBuilderTest, InsertInto16BitBuffer) {
+  StringBuilder builder;
+  builder.ReserveCapacity(10);  // Forces an owned buffer instead of a shared
+                                // view.
+  builder.Append(String(u"a\u1234c"));
+  ASSERT_FALSE(builder.Is8Bit());
+  builder.Insert(2, 'b');  // Latin-1 char, but builder stays 16-bit.
+  EXPECT_FALSE(builder.Is8Bit());
+  EXPECT_EQ(String(u"a\u1234bc"), builder.ToString());
+}
+
+// Inserting into a shared 16-bit string view materializes it before mutating.
+TEST(StringBuilderTest, InsertMaterializesSharedView16Bit) {
+  String source(u"a\u1234c");
+  StringBuilder builder;
+  builder.Append(source);
+  builder.Insert(1, 'b');
+  EXPECT_EQ(String(u"ab\u1234c"), builder.ToString());
+  EXPECT_NE(source.Impl(), builder.ToString().Impl());
+}
+
+// c > 0xFF widens an 8-bit builder to 16-bit before inserting.
+TEST(StringBuilderTest, InsertWidensTo16Bit) {
+  StringBuilder builder;
+  builder.Append("ace");
+  ASSERT_TRUE(builder.Is8Bit());
+  builder.Insert(1, static_cast<UChar>(0x1234));
+  EXPECT_FALSE(builder.Is8Bit());
+  EXPECT_EQ(String(u"a\u1234ce"), builder.ToString());
+}
+
 TEST(StringBuilderTest, AppendSpan) {
   StringBuilder builder;
 
@@ -251,7 +317,7 @@ TEST(StringBuilderTest, ExtendSharedViewCharByChar) {
   String source("abcdefghij");
   StringBuilder builder;
   builder.Append(StringView(source, 0, 1));  // "a"
-  for (unsigned i = 1; i < source.length(); ++i) {
+  for (wtf_size_t i = 1; i < source.length(); ++i) {
     builder.Append(static_cast<LChar>(source[i]));
   }
   EXPECT_EQ(source, builder.ToString());
@@ -438,7 +504,7 @@ TEST(StringBuilderTest, ReleaseString) {
   EXPECT_EQ(string2.Impl()->RefCountChangeCountForTesting(), 1u);
   String string3 = builder.ToString();
   EXPECT_EQ(string3.Impl()->RefCountChangeCountForTesting(), 2u);
-  unsigned refcount = string2.Impl()->RefCountChangeCountForTesting();
+  wtf_size_t refcount = string2.Impl()->RefCountChangeCountForTesting();
 #endif
 
   // StringImpl of the copied and released string should match
@@ -705,6 +771,45 @@ TEST(StringBuilderTest, DoesAppendCauseOverflow) {
     EXPECT_FALSE(builder.DoesAppendCauseOverflow(kStringMaxUCharLength));
     EXPECT_TRUE(builder.DoesAppendCauseOverflow(kStringMaxUCharLength + 1));
     EXPECT_TRUE(builder.DoesAppendCauseOverflow(kOneGiB));
+  }
+}
+
+TEST(StringBuilderTest, AppendRange) {
+  Vector<StringView> str_vector{"1", "2", "3"};
+  {
+    StringBuilder builder;
+    builder.AppendRange(str_vector, ", ");
+    EXPECT_EQ("1, 2, 3", builder.ReleaseString());
+  }
+  Vector<int> int_vector{1, 2, 3};
+  {
+    StringBuilder builder;
+    builder.AppendRange(int_vector, ";", [](const auto& val, StringBuilder& b) {
+      b.AppendNumber(val * 10);
+    });
+    EXPECT_EQ("10;20;30", builder.ReleaseString());
+  }
+  Vector<int> empty_vector;
+  {
+    StringBuilder builder;
+    builder.AppendRange(empty_vector, ", ",
+                        [](const auto&, StringBuilder& b) { b.Append("foo"); });
+    EXPECT_TRUE(builder.empty());
+  }
+}
+
+TEST(StringBuilderTest, Utf8) {
+  {
+    StringBuilder builder;
+    builder.Append("Hello, world!");
+    EXPECT_EQ("Hello, world!", builder.Utf8());
+  }
+  {
+    StringBuilder builder;
+    builder.Append(String(u"Hello, \u3053\u3093\u306b\u3061\u306f!"));
+    EXPECT_EQ(
+        "Hello, \xe3\x81\x93\xe3\x82\x93\xe3\x81\xab\xe3\x81\xa1\xe3\x81\xaf!",
+        builder.Utf8());
   }
 }
 

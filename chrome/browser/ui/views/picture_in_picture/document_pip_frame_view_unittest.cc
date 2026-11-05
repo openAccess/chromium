@@ -26,16 +26,21 @@
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
+#include "components/omnibox/browser/omnibox_pref_names.h"
 #include "components/permissions/permission_recovery_success_rate_tracker.h"
+#include "components/prefs/pref_service.h"
 #include "components/security_state/core/security_state.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/referrer.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/picture_in_picture_window_options/picture_in_picture_window_options.mojom.h"
 #include "ui/base/hit_test.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/compositor/layer.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/animation/animation_test_api.h"
@@ -48,6 +53,7 @@
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/flex_layout_view.h"
+#include "ui/views/test/mock_activation_controller.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_delegate.h"
@@ -59,6 +65,36 @@
 #include "components/account_id/account_id.h"
 #include "components/user_manager/user_manager.h"
 #include "google_apis/gaia/gaia_id.h"
+#endif
+
+#if BUILDFLAG(IS_LINUX)
+#include "base/functional/bind.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/no_destructor.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/themes/custom_theme_supplier.h"
+#include "chrome/browser/themes/theme_helper.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_aura_linux.h"
+#include "chrome/browser/themes/theme_service_factory.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/picture_in_picture/document_pip_frame_view_linux.h"
+#include "chrome/browser/ui/views/theme_profile_key.h"  // nogncheck
+#include "components/keyed_service/core/keyed_service.h"
+#include "content/public/browser/browser_context.h"
+#include "third_party/skia/include/core/SkRRect.h"
+#include "ui/gfx/geometry/insets_f.h"
+#include "ui/gfx/geometry/rect_f.h"
+#include "ui/gfx/geometry/skia_conversions.h"
+#include "ui/gfx/shadow_value.h"
+#include "ui/linux/fake_linux_ui.h"
+#include "ui/linux/linux_ui.h"
+#include "ui/linux/linux_ui_getter.h"
+#include "ui/linux/window_frame_provider.h"
+#include "ui/native_theme/native_theme.h"
+#include "ui/views/view_utils.h"
+#include "ui/views/window/frame_view_utils_linux.h"
 #endif
 
 namespace {
@@ -270,6 +306,10 @@ class DocumentPipFrameViewTest : public ChromeViewsTestBase {
     return frame_view->IsOverlayViewVisible();
   }
 
+  void UpdateOriginAndSecurity(DocumentPipFrameView* frame_view) {
+    frame_view->UpdateOriginAndSecurity();
+  }
+
   // Injects a real auto-PiP overlay onto the frame view the same way the
   // production ctor would (AddChildView + raw_ptr). The unit-test harness
   // creates the host directly (bypassing
@@ -288,6 +328,21 @@ class DocumentPipFrameViewTest : public ChromeViewsTestBase {
   }
 
  protected:
+#if BUILDFLAG(IS_LINUX)
+  DocumentPipFrameViewLinux* CreateClassicLinuxFrame(
+      bool supports_client_frame_shadow) {
+    ThemeServiceFactory::GetForProfile(&profile_)->UseDefaultTheme();
+    CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+    auto* host = DocumentPipHost::FromWebContents(opener());
+    auto frame_view = std::make_unique<DocumentPipFrameViewLinux>(
+        host, supports_client_frame_shadow);
+    auto* frame = frame_view.get();
+    host->GetWidget()->non_client_view()->SetFrameView(std::move(frame_view));
+    frame->SetBoundsRect(gfx::Rect(620, 454));
+    return frame;
+  }
+#endif
+
   content::RenderViewHostTestEnabler test_render_host_factories_;
   TestingProfile profile_;
   std::unique_ptr<views::Widget> opener_host_widget_;
@@ -409,7 +464,7 @@ TEST_F(DocumentPipFrameViewTest, HitTestTopBar_ReturnsCaption) {
   int spacer_x = (chip_right_pt.x() + container_left_pt.x()) / 2;
   ASSERT_GT(spacer_x, chip_right_pt.x());
   ASSERT_LT(spacer_x, container_left_pt.x());
-  gfx::Point top_bar_point(spacer_x, 17);
+  gfx::Point top_bar_point(spacer_x, GetTopAreaHeight(frame_view) - 17);
 
   EXPECT_EQ(HTCAPTION, frame_view->NonClientHitTest(top_bar_point));
 }
@@ -530,16 +585,64 @@ TEST_F(DocumentPipFrameViewTest, OriginChipPresent) {
   EXPECT_TRUE(GetWindowTitle(frame_view));
 }
 
-// The window title shows the opener URL formatted the omnibox way: scheme and
-// trivial subdomain omitted, path preserved.
-TEST_F(DocumentPipFrameViewTest, WindowTitleShowsFormattedUrl) {
+// The window title shows only the opener host, matching the browser-backed
+// Document PiP frame.
+TEST_F(DocumentPipFrameViewTest, WindowTitleShowsFormattedHost) {
   content::WebContentsTester::For(opener())->NavigateAndCommit(
-      GURL("https://www.example.com/some/path?query=1"));
+      GURL("https://www.example.com/some/path?query=1#fragment"));
 
   auto* frame_view =
       CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
 
-  EXPECT_EQ(std::u16string(u"example.com/some/path?query=1"),
+  EXPECT_EQ(std::u16string(u"example.com"),
+            GetWindowTitle(frame_view)->GetText());
+}
+
+// When a browser-initiated navigation is pending in the opener, the PiP window
+// title must show the opener's last committed URL rather than the pending URL
+// (crbug.com/577272290).
+TEST_F(DocumentPipFrameViewTest,
+       WindowTitleUsesLastCommittedUrlWhenNavigationPending) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("https://www.example.com/page"));
+  opener()->GetController().LoadURL(
+      GURL("https://pending.example.org/"), content::Referrer(),
+      ui::PAGE_TRANSITION_TYPED, /*extra_headers=*/std::string());
+  ASSERT_TRUE(opener()->GetController().GetPendingEntry());
+  ASSERT_EQ(GURL("https://pending.example.org/"), opener()->GetVisibleURL());
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+
+  EXPECT_EQ(std::u16string(u"example.com"),
+            GetWindowTitle(frame_view)->GetText());
+}
+
+// When opened from chrome://newtab (or an extension New Tab Page override whose
+// virtual URL is chrome://newtab), the PiP window title displays the URL rather
+// than hiding it like the omnibox does (crbug.com/577264504).
+TEST_F(DocumentPipFrameViewTest, WindowTitleDisplaysNewTabPageUrl) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("chrome://newtab"));
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+
+  EXPECT_EQ(std::u16string(u"chrome://newtab"),
+            GetWindowTitle(frame_view)->GetText());
+}
+
+// The PiP window title always trims the URL after the hostname, even when the
+// omnibox "Always show full URLs" preference is enabled.
+TEST_F(DocumentPipFrameViewTest, WindowTitleIgnoresPreventUrlElisionsPref) {
+  profile_.GetPrefs()->SetBoolean(omnibox::kPreventUrlElisionsInOmnibox, true);
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("https://www.example.com/some/path?query=1#fragment"));
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+
+  EXPECT_EQ(std::u16string(u"example.com"),
             GetWindowTitle(frame_view)->GetText());
 }
 
@@ -578,6 +681,8 @@ TEST_F(DocumentPipFrameViewTest, HttpsSecureUrlHasEmptyChipText) {
       CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
 
   EXPECT_TRUE(GetOriginChip(frame_view)->GetText().empty());
+  EXPECT_EQ(GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING),
+            GetOriginChip(frame_view)->GetInsets());
 }
 
 // A plain HTTP page reports the WARNING security level, so the chip shows the
@@ -591,6 +696,12 @@ TEST_F(DocumentPipFrameViewTest, HttpWarningUrlChipSaysNotSecure) {
 
   EXPECT_EQ(l10n_util::GetStringUTF16(IDS_NOT_SECURE_VERBOSE_STATE),
             GetOriginChip(frame_view)->GetText());
+  gfx::Insets expected = GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING);
+  expected.set_right(
+      expected.right() +
+      GetLayoutConstant(
+          LayoutConstant::kLocationBarPageInfoIconLabelExtraTrailingPadding));
+  EXPECT_EQ(expected, GetOriginChip(frame_view)->GetInsets());
 }
 
 // A DANGEROUS page that fails the malware check shows the "Dangerous" verbose
@@ -605,6 +716,12 @@ TEST_F(DocumentPipFrameViewTest, DangerousMalwareUrlChipSaysDangerous) {
 
   EXPECT_EQ(l10n_util::GetStringUTF16(IDS_DANGEROUS_VERBOSE_STATE),
             GetOriginChip(frame_view)->GetText());
+  gfx::Insets expected = GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING);
+  expected.set_left(GetLayoutConstant(
+      LayoutConstant::kLocationBarPageInfoIconDangerousLeadingPadding));
+  expected.set_right(GetLayoutConstant(
+      LayoutConstant::kLocationBarPageInfoIconDangerousTrailingPadding));
+  EXPECT_EQ(expected, GetOriginChip(frame_view)->GetInsets());
 }
 
 // A DANGEROUS page on the billing interstitial list carries its own UI, so the
@@ -632,6 +749,130 @@ TEST_F(DocumentPipFrameViewTest, DangerousManagedPolicyUrlHasEmptyChipText) {
       CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
 
   EXPECT_TRUE(GetOriginChip(frame_view)->GetText().empty());
+}
+
+// The origin chip label uses the security-chip color, like the browser-backed
+// frame's LocationIconView, and does not follow the top-bar inactive fade.
+TEST_F(DocumentPipFrameViewTest, OriginChipLabelUsesSecurityChipColor) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("file:///home/user/movie.html"));
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  const SkColor secure_color =
+      chip->GetColorProvider()->GetColor(kColorOmniboxSecurityChipSecure);
+  EXPECT_EQ(secure_color, chip->GetCurrentTextColor());
+
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/false);
+  StepTopBarAnimationsToEnd(frame_view);
+  ASSERT_FALSE(GetRenderActive(frame_view));
+  EXPECT_EQ(secure_color, chip->GetCurrentTextColor());
+}
+
+// A "Dangerous" chip uses the security-chip text color, like LocationIconView.
+TEST_F(DocumentPipFrameViewTest, DangerousChipLabelUsesSecurityChipTextColor) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("https://malware.test/"));
+  SeedFakeSecurityState(security_state::MALICIOUS_CONTENT_STATUS_MALWARE);
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  ASSERT_EQ(l10n_util::GetStringUTF16(IDS_DANGEROUS_VERBOSE_STATE),
+            chip->GetText());
+  EXPECT_EQ(chip->GetColorProvider()->GetColor(kColorOmniboxSecurityChipText),
+            chip->GetCurrentTextColor());
+}
+
+// The origin chip uses LocationIconView's page-info padding, with the extra
+// trailing padding while a label is shown.
+TEST_F(DocumentPipFrameViewTest, OriginChipBorderMatchesLocationIcon) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("file:///home/user/movie.html"));
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  ASSERT_FALSE(chip->GetText().empty());
+
+  gfx::Insets expected = GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING);
+  expected.set_right(
+      expected.right() +
+      GetLayoutConstant(
+          LayoutConstant::kLocationBarPageInfoIconLabelExtraTrailingPadding));
+  EXPECT_EQ(expected, chip->GetInsets());
+}
+
+// Without a label, the origin chip uses the plain page-info padding.
+TEST_F(DocumentPipFrameViewTest, OriginChipBorderWithoutLabel) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("https://www.example.com/"));
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  ASSERT_TRUE(chip->GetText().empty());
+
+  EXPECT_EQ(GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING),
+            chip->GetInsets());
+}
+
+// A "Dangerous" chip uses LocationIconView's dangerous-state padding.
+TEST_F(DocumentPipFrameViewTest, DangerousOriginChipBorderMatchesLocationIcon) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("https://malware.test/"));
+  SeedFakeSecurityState(security_state::MALICIOUS_CONTENT_STATUS_MALWARE);
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  ASSERT_FALSE(chip->GetText().empty());
+
+  gfx::Insets expected = GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING);
+  expected.set_left(GetLayoutConstant(
+      LayoutConstant::kLocationBarPageInfoIconDangerousLeadingPadding));
+  expected.set_right(GetLayoutConstant(
+      LayoutConstant::kLocationBarPageInfoIconDangerousTrailingPadding));
+  EXPECT_EQ(expected, chip->GetInsets());
+}
+
+// When the security level changes to DANGEROUS, the chip text slides in and
+// stays visible after the animation, like LocationIconView.
+TEST_F(DocumentPipFrameViewTest, AnimatedChipLabelStaysVisible) {
+  content::WebContentsTester::For(opener())->NavigateAndCommit(
+      GURL("https://malware.test/"));
+
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  IconLabelBubbleView* chip = GetOriginChip(frame_view);
+  ASSERT_TRUE(chip);
+  ASSERT_TRUE(chip->GetText().empty());
+
+  SeedFakeSecurityState(security_state::MALICIOUS_CONTENT_STATUS_MALWARE);
+  UpdateOriginAndSecurity(frame_view);
+  ASSERT_EQ(l10n_util::GetStringUTF16(IDS_DANGEROUS_VERBOSE_STATE),
+            chip->GetText());
+  ASSERT_TRUE(chip->is_animating_label());
+
+  gfx::AnimationTestApi api(&chip->slide_animation_for_testing());
+  const base::TimeTicks now = base::TimeTicks::Now();
+  api.SetStartTime(now);
+  api.Step(now + base::Seconds(1));
+
+  EXPECT_FALSE(chip->is_animating_label());
+  EXPECT_TRUE(chip->ShouldShowLabel());
+  gfx::Insets expected = GetLayoutInsets(LOCATION_BAR_PAGE_INFO_ICON_PADDING);
+  expected.set_left(GetLayoutConstant(
+      LayoutConstant::kLocationBarPageInfoIconDangerousLeadingPadding));
+  expected.set_right(GetLayoutConstant(
+      LayoutConstant::kLocationBarPageInfoIconDangerousTrailingPadding));
+  EXPECT_EQ(expected, chip->GetInsets());
 }
 
 // The recompute after Widget::Init() grows the outer window by the non-client
@@ -744,13 +985,48 @@ TEST_F(DocumentPipFrameViewTest, MouseInsideKeepsRenderActive) {
                                         /*active=*/false);
   EXPECT_TRUE(GetRenderActive(frame_view));
 
-  // OnMouseEnteredOrExitedWindow reads Widget::IsActive() directly, so the
-  // following expectation only holds if the widget really is inactive at the
-  // OS level (not just that the observer was notified above). The widget is
-  // shown (and thus activated) when it is created; hiding it deactivates it
-  // (NativeWidgetMac::Deactivate() is a no-op, so Hide() is used here).
-  frame_view->GetWidget()->Hide();
-  ASSERT_FALSE(frame_view->GetWidget()->IsActive());
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/false);
+  EXPECT_FALSE(GetRenderActive(frame_view));
+}
+
+class DocumentPipFrameViewActivationTest : public DocumentPipFrameViewTest {
+ private:
+#if defined(USE_MOCK_ACTIVATION_CONTROLLER)
+  // Emulate activation before SetUp creates any widgets; this unit test must
+  // not depend on the desktop compositor granting activation.
+  views::test::MockActivationController mock_activation_controller_;
+#endif
+};
+
+TEST_F(DocumentPipFrameViewActivationTest,
+       MouseExitDeactivatesTopBarWhileWidgetActive) {
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  auto* widget = frame_view->GetWidget();
+  widget->Activate();
+  ASSERT_TRUE(widget->IsActive());
+
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/true);
+  EXPECT_TRUE(GetRenderActive(frame_view));
+
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/false);
+  EXPECT_TRUE(widget->IsActive());
+  EXPECT_FALSE(GetRenderActive(frame_view));
+
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/true);
+  EXPECT_TRUE(GetRenderActive(frame_view));
+}
+
+TEST_F(DocumentPipFrameViewTest, MouseExitKeepsTopBarActiveWithOverlay) {
+  auto* frame_view =
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  auto* overlay = InjectAutoPipOverlay(frame_view);
+  ASSERT_TRUE(IsOverlayViewVisible(frame_view));
+
+  OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/false);
+  EXPECT_TRUE(GetRenderActive(frame_view));
+
+  overlay->SetVisible(false);
   OnMouseEnteredOrExitedWindow(frame_view, /*entered=*/false);
   EXPECT_FALSE(GetRenderActive(frame_view));
 }
@@ -766,11 +1042,11 @@ TEST_F(DocumentPipFrameViewTest, ShowPageInfoOpensBubble) {
   widget->SetBounds(gfx::Rect(0, 0, 400, 300));
   widget->Show();
 
-  ASSERT_FALSE(PageInfoBubbleViewBase::GetPageInfoBubbleForTesting());
+  ASSERT_FALSE(PageInfoBubbleViewBase::IsShowing(opener()));
   EXPECT_TRUE(ShowPageInfo(frame_view));
 
   views::BubbleDialogDelegateView* bubble =
-      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting();
+      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(opener());
   ASSERT_TRUE(bubble);
   EXPECT_EQ(GetOriginChip(frame_view), bubble->GetAnchorView());
 
@@ -1045,15 +1321,183 @@ TEST_F(DocumentPipFrameViewTest, AutoPipOverlayLaidOutBelowTopBar) {
   widget->SetBounds(gfx::Rect(0, 0, 400, 300));
   widget->LayoutRootViewIfNecessary();
 
-  // FrameBorderInsets() is empty, so the content area equals the local bounds
-  // and the top bar occupies the top GetTopAreaHeight() px.
-  const gfx::Rect local_bounds = frame_view->GetLocalBounds();
-  const int top_height = GetTopAreaHeight(frame_view);
-  const gfx::Rect expected(local_bounds.x(), local_bounds.y() + top_height,
-                           local_bounds.width(),
-                           local_bounds.height() - top_height);
-  EXPECT_EQ(expected, overlay->bounds());
+  EXPECT_EQ(frame_view->GetBoundsForClientView(), overlay->bounds());
 }
+
+#if BUILDFLAG(IS_LINUX)
+namespace {
+
+class TestWindowFrameProvider : public ui::WindowFrameProvider {
+ public:
+  explicit TestWindowFrameProvider(int top_corner_radius)
+      : top_corner_radius_(top_corner_radius) {}
+
+  int GetTopCornerRadiusDip() override { return top_corner_radius_; }
+  bool IsTopFrameTranslucent() override { return false; }
+  gfx::Insets GetFrameThicknessDip() override { return gfx::Insets(12); }
+  int GetTopAreaMinHeightDip() override { return 24; }
+  gfx::Insets GetTopAreaPaddingDip() override { return gfx::Insets(); }
+  gfx::Insets GetTopAreaBorderDip() override { return gfx::Insets(); }
+  void PaintWindowFrame(gfx::Canvas* canvas,
+                        const gfx::Rect& rect,
+                        int top_area_height,
+                        bool focused,
+                        const gfx::Insets& input_insets) override {}
+
+ private:
+  const int top_corner_radius_;
+};
+
+class TestLinuxUiGetter : public ui::LinuxUiGetter {
+ public:
+  ui::LinuxUiTheme* GetForWindow(aura::Window* window) override {
+    return &linux_ui_;
+  }
+  ui::LinuxUiTheme* GetForProfile(Profile* profile) override {
+    return &linux_ui_;
+  }
+
+ private:
+  class LinuxUiWithFrameProvider : public ui::FakeLinuxUi {
+   public:
+    ui::NativeTheme* GetNativeTheme() const override {
+      return ui::NativeTheme::GetInstanceForNativeUi();
+    }
+
+    ui::WindowFrameProvider* GetWindowFrameProvider(ui::FrameType type,
+                                                    bool solid_frame,
+                                                    bool tiled,
+                                                    bool maximized) override {
+      return tiled ? &tiled_frame_provider_ : &frame_provider_;
+    }
+
+   private:
+    TestWindowFrameProvider frame_provider_{12};
+    TestWindowFrameProvider tiled_frame_provider_{0};
+  };
+
+  LinuxUiWithFrameProvider linux_ui_;
+};
+
+// Exposes the protected ThemeService API needed to switch the profile to the
+// native Linux theme without a real GTK/QT UI.
+class TestThemeServiceAuraLinux : public ThemeServiceAuraLinux {
+ public:
+  explicit TestThemeServiceAuraLinux(Profile* profile)
+      : ThemeServiceAuraLinux(profile, GetThemeHelper()) {}
+
+  void UseNativeTheme() {
+    SetCustomDefaultTheme(base::MakeRefCounted<CustomThemeSupplier>(
+        CustomThemeSupplier::ThemeType::kNativeX11));
+  }
+
+ private:
+  static const ThemeHelper& GetThemeHelper() {
+    static base::NoDestructor<ThemeHelper> helper;
+    return *helper;
+  }
+};
+
+}  // namespace
+
+TEST_F(DocumentPipFrameViewTest, RefreshesFrameOnThemeChange) {
+  TestLinuxUiGetter linux_ui_getter;
+  auto* theme_service = static_cast<TestThemeServiceAuraLinux*>(
+      ThemeServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+          &profile_, base::BindRepeating([](content::BrowserContext* context)
+                                             -> std::unique_ptr<KeyedService> {
+            auto service = std::make_unique<TestThemeServiceAuraLinux>(
+                Profile::FromBrowserContext(context));
+            service->Init();
+            return service;
+          })));
+  theme_service->UseDefaultTheme();
+  auto* frame = views::AsViewClass<DocumentPipFrameViewLinux>(
+      CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false));
+  base::ScopedClosureRunner close_pip(
+      base::BindOnce(&DocumentPipHost::Close,
+                     DocumentPipHost::FromWebContents(opener())->GetWeakPtr()));
+  ASSERT_TRUE(frame);
+  auto* widget = frame->GetWidget();
+  const gfx::Insets classic_insets = frame->RestoredMirroredFrameBorderInsets();
+  base::HistogramTester histogram_tester;
+
+  theme_service->UseNativeTheme();
+  ASSERT_TRUE(theme_service->UsingSystemTheme());
+  widget->ThemeChanged();
+  ASSERT_EQ(frame, widget->non_client_view()->frame_view());
+  EXPECT_EQ(gfx::Insets(12), frame->RestoredMirroredFrameBorderInsets());
+
+  frame->SetTiled(true);
+  EXPECT_EQ(SkVector::Make(0, 0),
+            frame->GetRestoredClipRegion().radii(SkRRect::kUpperLeft_Corner));
+  frame->SetTiled(false);
+  EXPECT_EQ(SkVector::Make(12, 12),
+            frame->GetRestoredClipRegion().radii(SkRRect::kUpperLeft_Corner));
+
+  theme_service->UseDefaultTheme();
+  widget->ThemeChanged();
+  ASSERT_EQ(frame, widget->non_client_view()->frame_view());
+  EXPECT_EQ(classic_insets, frame->RestoredMirroredFrameBorderInsets());
+  histogram_tester.ExpectTotalCount(
+      "Media.DocumentPictureInPicture.CloseReason", 0);
+}
+
+TEST_F(DocumentPipFrameViewTest, LinuxWidgetUsesProfileTheme) {
+  auto* frame = CreatePipAndGetFrameView(/*disallow_return_to_opener=*/false);
+  auto* widget = frame->GetWidget();
+  EXPECT_EQ(&ThemeService::GetThemeProviderForProfile(&profile_),
+            widget->GetThemeProvider());
+  EXPECT_EQ(profile_.GetOriginalProfile(),
+            GetThemeProfileForWindow(widget->GetNativeWindow()));
+  auto* linux_ui_theme = ui::LinuxUiTheme::GetForProfile(&profile_);
+  EXPECT_EQ(linux_ui_theme ? linux_ui_theme->GetNativeTheme()
+                           : ui::NativeTheme::GetInstanceForNativeUi(),
+            widget->GetNativeTheme());
+  const auto key = widget->GetColorProviderKeyForTesting();
+  EXPECT_EQ(ui::ColorProviderKey::ColorMode::kDark, key.color_mode);
+  EXPECT_EQ(ui::ColorProviderKey::FrameType::kChromium, key.frame_type);
+}
+
+TEST_F(DocumentPipFrameViewTest, LinuxClassicFrameWithoutShadow) {
+  auto* frame = CreateClassicLinuxFrame(/*supports_client_frame_shadow=*/false);
+
+  EXPECT_EQ(gfx::Insets::TLBR(0, 4, 4, 4),
+            frame->RestoredMirroredFrameBorderInsets());
+  EXPECT_TRUE(frame->GetInputInsets().IsEmpty());
+  EXPECT_EQ(gfx::Rect(4, 34, 612, 416), frame->GetBoundsForClientView());
+  EXPECT_EQ(gfx::Rect(620, 454), frame->GetWindowBoundsForClientBounds(
+                                     frame->GetBoundsForClientView()));
+  const SkRRect clip = frame->GetRestoredClipRegion();
+  EXPECT_EQ(SkRect::MakeWH(620, 454), clip.rect());
+  const int radius = ChromeLayoutProvider::Get()->GetCornerRadiusMetric(
+      views::Emphasis::kHigh);
+  EXPECT_EQ(SkVector::Make(radius, radius),
+            clip.radii(SkRRect::kUpperLeft_Corner));
+  EXPECT_EQ(SkVector::Make(0, 0), clip.radii(SkRRect::kLowerLeft_Corner));
+}
+
+TEST_F(DocumentPipFrameViewTest, LinuxClassicFrameWithShadow) {
+  auto* frame = CreateClassicLinuxFrame(/*supports_client_frame_shadow=*/true);
+
+  const auto shadows = gfx::ShadowValue::MakeMdShadowValues(
+      ChromeLayoutProvider::Get()->GetShadowElevationMetric(
+          views::Emphasis::kMaximum));
+  const gfx::Insets border = views::GetRestoredFrameBorderInsetsLinux(
+      /*showing_shadow=*/true, gfx::Insets(4), shadows, gfx::Insets(10));
+  EXPECT_EQ(border, frame->RestoredMirroredFrameBorderInsets());
+  EXPECT_EQ(border, frame->GetInputInsets());
+  const gfx::Rect client = frame->GetBoundsForClientView();
+  EXPECT_EQ(border.left(), client.x());
+  EXPECT_EQ(border.top() + 34, client.y());
+  EXPECT_EQ(gfx::Rect(620, 454), frame->GetWindowBoundsForClientBounds(client));
+
+  gfx::RectF expected_clip(frame->GetLocalBounds());
+  expected_clip.Inset(gfx::InsetsF(border));
+  EXPECT_EQ(expected_clip,
+            gfx::SkRectToRectF(frame->GetRestoredClipRegion().rect()));
+}
+#endif
 
 // IsOverlayViewVisible() reflects the overlay's own visibility.
 TEST_F(DocumentPipFrameViewTest, IsOverlayViewVisible_TracksOverlayVisibility) {

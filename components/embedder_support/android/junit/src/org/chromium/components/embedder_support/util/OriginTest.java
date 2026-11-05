@@ -6,21 +6,16 @@ package org.chromium.components.embedder_support.util;
 
 import android.net.Uri;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 
 /** Tests for {@link Origin}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class OriginTest {
     @Test
-    @SmallTest
     public void testTransformation() {
         Assert.assertEquals(123, Uri.parse("http://example.com:123/").getPort());
 
@@ -60,14 +55,12 @@ public class OriginTest {
     }
 
     @Test
-    @SmallTest
     public void testConstruction() {
         Origin origin = Origin.create("http://www.example.com/path/to/page.html");
         Assert.assertEquals("http://www.example.com", origin.toString());
     }
 
     @Test
-    @SmallTest
     public void testEquality() {
         Origin origin1 = Origin.create("http://www.example.com/page1.html");
         Origin origin2 = Origin.create("http://www.example.com/page2.html");
@@ -80,7 +73,6 @@ public class OriginTest {
     }
 
     @Test
-    @SmallTest
     public void testToUri() {
         Origin origin = Origin.create(Uri.parse("http://www.example.com/page.html"));
         Uri uri = Uri.parse("http://www.example.com");
@@ -88,14 +80,12 @@ public class OriginTest {
     }
 
     @Test
-    @SmallTest
     public void testToString() {
         Origin origin = Origin.create("http://www.example.com/page.html");
         Assert.assertEquals("http://www.example.com", origin.toString());
     }
 
     @Test
-    @SmallTest
     public void testValidity() {
         Assert.assertNotNull(Origin.create("http://www.example.com"));
         Assert.assertNull(Origin.create("null"));

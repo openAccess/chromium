@@ -47,6 +47,7 @@
 #include "content/common/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_process_host_observer.h"
 #include "content/public/browser/visibility.h"
@@ -283,7 +284,8 @@ WebSchedulerTrackedFeatures GetAllowedWebSchedulerTrackedFeatures() {
 // affects other scheduling policies (e.g. aggressive throttling).
 WebSchedulerTrackedFeatures
 GetNonBackForwardCacheAffectingWebSchedulerTrackedFeatures() {
-  return {WebSchedulerTrackedFeature::kWebSerial};
+  return {WebSchedulerTrackedFeature::kWebSerial,
+          WebSchedulerTrackedFeature::kWebUSB};
 }
 
 // The BackForwardCache feature is controlled via an experiment. This function
@@ -349,10 +351,11 @@ void RestoreBrowserControlsState(RenderFrameHostImpl* cached_rfh) {
 
   DCHECK_NE(current_rfh, cached_rfh);
 
-  float prev_top_controls_shown_ratio = current_rfh->GetRenderWidgetHost()
-                                            ->render_frame_metadata_provider()
-                                            ->LastRenderFrameMetadata()
-                                            .top_controls_shown_ratio;
+  float prev_top_controls_shown_ratio =
+      current_rfh->GetRenderWidgetHost()
+          ->render_frame_metadata_provider()
+          ->LastRenderFrameMetadata()
+          .browser_controls_metadata.top_controls_shown_ratio;
   if (prev_top_controls_shown_ratio < 1) {
     // Make sure the state in the restored renderer matches the current one.
     // If we currently aren't showing the controls let the cached renderer
@@ -542,7 +545,6 @@ void MarkNoWithMultipleFeatures(BackForwardCacheCanStoreDocumentResult* result,
   result->NoDueToFeatures(std::move(map));
   DCHECK(features == features_added);
 }
-
 
 // The foregrounded tab's cache limit on moderate memory pressure. The negative
 // value means no limit.
@@ -1129,6 +1131,17 @@ void BackForwardCacheImpl::NotRestoredReasonBuilder::
   if (rfh->IsBackForwardCacheDisabled() && !ShouldIgnoreBlocklists()) {
     result.NoDueToDisableForRenderFrameHostCalled(
         rfh->back_forward_cache_disabled_reasons());
+  }
+
+  // Only store documents whose URL the embedder allows (e.g. not blocked by
+  // enterprise policy). Skip error documents so that a subframe that was
+  // already blocked at load time (and committed an error page) does not prevent
+  // an allowed main frame from entering BFCache; main-frame error documents are
+  // already excluded by `kErrorDocument` in `PopulateReasonsForMainDocument`.
+  if (!rfh->IsErrorDocument() &&
+      !GetContentClient()->browser()->IsUrlAllowedForBackForwardCache(
+          rfh->GetBrowserContext(), rfh->GetLastCommittedURL())) {
+    result.No(BackForwardCacheMetrics::NotRestoredReason::kDomainNotAllowed);
   }
 
   // Do not store documents if they have inner WebContents. Inner frame trees

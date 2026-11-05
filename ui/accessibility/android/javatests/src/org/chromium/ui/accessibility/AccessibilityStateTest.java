@@ -15,8 +15,6 @@ import android.os.Build;
 import android.provider.Settings;
 import android.view.accessibility.AccessibilityEvent;
 
-import androidx.test.filters.SmallTest;
-
 import com.google.common.collect.ImmutableSet;
 
 import org.junit.After;
@@ -93,6 +91,7 @@ public class AccessibilityStateTest {
     public void tearDown() throws Exception {
         mCloseableMocks.close();
         AccessibilityState.setDelegateForTesting(null);
+        RobolectricUtil.runAllBackgroundAndUi();
     }
 
     private AccessibilityServiceInfo createPasswordManagerServiceInfoWithFlags(int flags) {
@@ -107,7 +106,24 @@ public class AccessibilityStateTest {
                 .setFlags(flags);
     }
 
+    private void initializeAccessibilityState() {
+        AccessibilityState.initializeOnStartup(
+                new ApplicationStatusAccessibilityStateVisibilityManager());
+        RobolectricUtil.runAllBackgroundAndUi();
+    }
+
     private void simulateActivityStateChange(
+            Activity activity,
+            @ActivityState int activityState,
+            @ApplicationState int expectedApplicationState) {
+        simulateActivityStateChangeDontWaitForBackgroundTasks(
+                activity, activityState, expectedApplicationState);
+        // The activity moving to the foreground or the background triggers
+        // ApplicationStateDelegateImpl background tasks. Run them.
+        RobolectricUtil.runAllBackgroundAndUi();
+    }
+
+    private void simulateActivityStateChangeDontWaitForBackgroundTasks(
             Activity activity,
             @ActivityState int activityState,
             @ApplicationState int expectedApplicationState) {
@@ -115,8 +131,14 @@ public class AccessibilityStateTest {
         assertThat(ApplicationStatus.getStateForApplication()).isEqualTo(expectedApplicationState);
     }
 
+    private void setOsFontWeightAdjustment(int newFontWeightAdjustment) {
+        Configuration configDelta = new Configuration();
+        configDelta.fontWeightAdjustment = newFontWeightAdjustment;
+        Configuration config = mContext.getResources().getConfiguration();
+        config.updateFrom(configDelta);
+    }
+
     @Test
-    @SmallTest
     public void testSimpleString() {
         String inputString = "placeholder";
         List<String> response =
@@ -129,7 +151,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testBadInput() {
         String inputString = "placeholder:::";
         List<String> response =
@@ -142,7 +163,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testComplexString() {
         String inputString = "com.google.placeholder.test/com.test.google";
         List<String> response =
@@ -155,7 +175,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testMultipleSimpleStrings() {
         String inputString = "placeholder:foo:bar";
         List<String> response =
@@ -170,7 +189,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testMulitpleComplexStrings() {
         String inputString =
                 "com.google.placeholder.test/com.test.google:"
@@ -188,7 +206,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testMulitpleComplexStringsIncludingBadInput() {
         String inputString =
                 "com.google.placeholder.test/com.test.google:"
@@ -206,7 +223,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testEnabledServices() {
         String enabledServices = "placeholder:services";
         AccessibilityServiceInfo service1 = new BuilderForTests().setId("placeholder").build();
@@ -218,7 +234,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testRunningServices() {
         AccessibilityServiceInfo service1 = new AccessibilityServiceInfo();
         AccessibilityServiceInfo service2 = new AccessibilityServiceInfo();
@@ -238,7 +253,6 @@ public class AccessibilityStateTest {
 
     /** Test logic for converting event type masks to a list of relevant event types. */
     @Test
-    @SmallTest
     public void testMaskToEventTypeConversion() {
         // Create some event masks with known outcomes.
         int serviceEventMaskEmpty = 0;
@@ -295,13 +309,11 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testAreOnlyPasswordManagerFlagsRequested_empty() {
         Assert.assertFalse(mDelegate.areOnlyPasswordManagerMasksRequested());
     }
 
     @Test
-    @SmallTest
     public void testAreOnlyPasswordManagerFlagsRequested_true() {
         AccessibilityServiceInfo passwordManagerService =
                 createPasswordManagerServiceInfoWithFlags(
@@ -314,7 +326,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testAreOnlyPasswordManagerFlagsRequested_missingFlags() {
         int flagsMask =
                 AccessibilityServiceInfo.DEFAULT
@@ -335,7 +346,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testAreOnlyPasswordManagerFlagsRequested_extraFlags() {
         int flagsMask =
                 AccessibilityServiceInfo.DEFAULT
@@ -357,7 +367,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testCalculateHeuristicState_Autofill_passwordManager() {
         AccessibilityServiceInfo myService =
                 createPasswordManagerServiceInfoBuilderWithFlags(
@@ -373,7 +382,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testCalculateHeuristicState_notAutofill_notPasswordManager() {
         AccessibilityServiceInfo myService =
                 new BuilderForTests().setEventTypes(~0).setFlags(~0).setCapabilities(~0).build();
@@ -386,7 +394,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testCalculateHeuristicState_notAutofill_passwordManager() {
         AccessibilityServiceInfo myService =
                 new BuilderForTests()
@@ -406,7 +413,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testTogglingMisconfiguredAccessibilityServices() {
         // This service has the same config as Microsoft Authenticator during recent P0.
         AccessibilityServiceInfo errorProneService =
@@ -447,9 +453,11 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testRelevantEventTypesUpdatedWhenServiceRegistered() {
-        AccessibilityState.registerObservers();
+        Activity mockActivity = Robolectric.buildActivity(Activity.class).setup().get();
+        simulateActivityStateChange(
+                mockActivity, ActivityState.STARTED, ApplicationState.HAS_RUNNING_ACTIVITIES);
+        initializeAccessibilityState();
 
         // Check initial state.
         Assert.assertTrue(AccessibilityState.relevantEventTypesForCurrentServices().isEmpty());
@@ -474,7 +482,6 @@ public class AccessibilityStateTest {
      * available.
      */
     @Test
-    @SmallTest
     @Config(shadows = {CountAnimatorDurationScaleShadowSettingsSecure.class})
     public void testPrefersReducedMotionUsesCachedValue() throws Exception {
         CountAnimatorDurationScaleShadowSettingsSecure.sNumAnimatorDurationGets = 0;
@@ -493,16 +500,13 @@ public class AccessibilityStateTest {
 
     /** Test that Chromium ignores accessibility state changes when its in the background. */
     @Test
-    @SmallTest
     public void testApplicationStateChange() {
         Activity mockActivity = Robolectric.buildActivity(Activity.class).setup().get();
 
         // App starts out in foreground.
         simulateActivityStateChange(
                 mockActivity, ActivityState.STARTED, ApplicationState.HAS_RUNNING_ACTIVITIES);
-        AccessibilityState.initializeOnStartup(
-                new ApplicationStatusAccessibilityStateVisibilityManager());
-        AccessibilityState.registerObservers();
+        initializeAccessibilityState();
 
         // Verify initial call from initializeOnStartup().
         Mockito.verify(mAccessibilityStateNatives, Mockito.times(1))
@@ -520,7 +524,7 @@ public class AccessibilityStateTest {
         simulateActivityStateChange(
                 mockActivity, ActivityState.STOPPED, ApplicationState.HAS_STOPPED_ACTIVITIES);
         Settings.Global.putFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 10.0f);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         // Verify no extra calls while in background.
         Mockito.verify(mAccessibilityStateNatives, Mockito.times(2))
@@ -529,12 +533,85 @@ public class AccessibilityStateTest {
         // Move app to foreground, state changes should be picked up by observers.
         simulateActivityStateChange(
                 mockActivity, ActivityState.RESUMED, ApplicationState.HAS_RUNNING_ACTIVITIES);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        Mockito.verify(mAccessibilityStateNatives, Mockito.times(3))
+                .onAnimatorDurationScaleChanged();
+    }
+
+    @Test
+    public void testForegroundedThenImmediatelyBackgrounded() {
+        Activity mockActivity = Robolectric.buildActivity(Activity.class).setup().get();
+
+        // App starts out in foreground.
+        simulateActivityStateChange(
+                mockActivity, ActivityState.STARTED, ApplicationState.HAS_RUNNING_ACTIVITIES);
+        initializeAccessibilityState();
+
+        // Verify initial call from initializeOnStartup().
+        Mockito.verify(mAccessibilityStateNatives, Mockito.times(1))
+                .onAnimatorDurationScaleChanged();
+
+        // Move app to background, then back to foreground. Observers should be registered.
+        simulateActivityStateChangeDontWaitForBackgroundTasks(
+                mockActivity, ActivityState.STOPPED, ApplicationState.HAS_STOPPED_ACTIVITIES);
+        simulateActivityStateChangeDontWaitForBackgroundTasks(
+                mockActivity, ActivityState.RESUMED, ApplicationState.HAS_RUNNING_ACTIVITIES);
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+        Mockito.verify(mAccessibilityStateNatives, Mockito.times(2))
+                .onAnimatorDurationScaleChanged();
+
+        // Check that there are registered observers by modifying ANIMATOR_DURATION_SCALE.
+        ContentResolver contentResolver = mContext.getContentResolver();
+        Settings.Global.putFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 14.0f);
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         Mockito.verify(mAccessibilityStateNatives, Mockito.times(3))
                 .onAnimatorDurationScaleChanged();
 
-        ApplicationStatus.onStateChangeForTesting(mockActivity, ActivityState.STOPPED);
-        ApplicationStatus.destroyForJUnitTests();
+        // Move app to foreground then to the background. Observers should not be registered.
+        simulateActivityStateChangeDontWaitForBackgroundTasks(
+                mockActivity, ActivityState.STOPPED, ApplicationState.HAS_STOPPED_ACTIVITIES);
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+        simulateActivityStateChangeDontWaitForBackgroundTasks(
+                mockActivity, ActivityState.RESUMED, ApplicationState.HAS_RUNNING_ACTIVITIES);
+        simulateActivityStateChangeDontWaitForBackgroundTasks(
+                mockActivity, ActivityState.STOPPED, ApplicationState.HAS_STOPPED_ACTIVITIES);
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+        Mockito.verify(mAccessibilityStateNatives, Mockito.times(4))
+                .onAnimatorDurationScaleChanged();
+
+        // Check that there aren't any registered observers by modifying ANIMATOR_DURATION_SCALE.
+        Settings.Global.putFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 15.0f);
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+        Mockito.verify(mAccessibilityStateNatives, Mockito.times(4))
+                .onAnimatorDurationScaleChanged();
+    }
+
+    @Test
+    public void testQueryStateWhileObserversBeingRegistered() {
+        Activity mockActivity = Robolectric.buildActivity(Activity.class).setup().get();
+        ContentResolver contentResolver = mContext.getContentResolver();
+        Settings.Global.putFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 2.0f);
+
+        // App starts out in foreground.
+        simulateActivityStateChange(
+                mockActivity, ActivityState.STARTED, ApplicationState.HAS_RUNNING_ACTIVITIES);
+        initializeAccessibilityState();
+        Assert.assertEquals(2.0f, AccessibilityState.getAnimatorDurationScale(), 0.1f);
+
+        // Move app to background, then back to foreground.
+        simulateActivityStateChangeDontWaitForBackgroundTasks(
+                mockActivity, ActivityState.STOPPED, ApplicationState.HAS_STOPPED_ACTIVITIES);
+        simulateActivityStateChangeDontWaitForBackgroundTasks(
+                mockActivity, ActivityState.RESUMED, ApplicationState.HAS_RUNNING_ACTIVITIES);
+        Settings.Global.putFloat(contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 14.0f);
+
+        // Querying {@code getAnimatorDurationScale()} should either return the old
+        // animator-duration scale value or return the new value.
+        Assert.assertEquals(2.0f, AccessibilityState.getAnimatorDurationScale(), 0.1f);
+
+        // After all background tasks have completed, querying {@code getAnimatorDurationScale()}
+        // should return an updated value.
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+        Assert.assertEquals(14.0f, AccessibilityState.getAnimatorDurationScale(), 0.1f);
     }
 
     /**
@@ -544,20 +621,14 @@ public class AccessibilityStateTest {
      */
     @Config(sdk = Build.VERSION_CODES.S)
     @Test
-    @SmallTest
     public void testApplicationStateChangeFontWeightAdjustment() {
         Activity mockActivity = Robolectric.buildActivity(Activity.class).setup().get();
-        Configuration config = mContext.getResources().getConfiguration();
 
         // Set the initial state.
-        Configuration configDelta = new Configuration();
-        configDelta.fontWeightAdjustment = 0;
-        config.updateFrom(configDelta);
+        setOsFontWeightAdjustment(0);
         mDelegate.updateAccessibilityServices();
 
-        AccessibilityState.initializeOnStartup(
-                new ApplicationStatusAccessibilityStateVisibilityManager());
-        AccessibilityState.registerObservers();
+        initializeAccessibilityState();
         simulateActivityStateChange(
                 mockActivity, ActivityState.STARTED, ApplicationState.HAS_RUNNING_ACTIVITIES);
 
@@ -567,28 +638,28 @@ public class AccessibilityStateTest {
         // Simulate updating the font weight in Android settings while the app is in the background.
         simulateActivityStateChange(
                 mockActivity, ActivityState.STOPPED, ApplicationState.HAS_STOPPED_ACTIVITIES);
-        configDelta = new Configuration();
-        configDelta.fontWeightAdjustment = 300;
-        config.updateFrom(configDelta);
+        setOsFontWeightAdjustment(300);
 
         // Move app to foreground.
         simulateActivityStateChange(
                 mockActivity, ActivityState.RESUMED, ApplicationState.HAS_RUNNING_ACTIVITIES);
         assertThat(AccessibilityState.getFontWeightAdjustment()).isEqualTo(300);
 
-        ApplicationStatus.onStateChangeForTesting(mockActivity, ActivityState.STOPPED);
-        ApplicationStatus.destroyForJUnitTests();
+        // Simulate modifying the font weight in the settings app while Android OS is in multi
+        // window mode.
+        simulateActivityStateChange(
+                mockActivity, ActivityState.PAUSED, ApplicationState.HAS_PAUSED_ACTIVITIES);
+        setOsFontWeightAdjustment(400);
+        simulateActivityStateChange(
+                mockActivity, ActivityState.RESUMED, ApplicationState.HAS_RUNNING_ACTIVITIES);
+        assertThat(AccessibilityState.getFontWeightAdjustment()).isEqualTo(400);
     }
 
     @Test
-    @SmallTest
     public void testUninitialize() {
         Activity mockActivity = Robolectric.buildActivity(Activity.class).setup().get();
 
-        // Initialize and register observers.
-        AccessibilityState.initializeOnStartup(
-                new ApplicationStatusAccessibilityStateVisibilityManager());
-        AccessibilityState.registerObservers();
+        initializeAccessibilityState();
 
         // Verify initial call from initializeOnStartup().
         Mockito.verify(mAccessibilityStateNatives, Mockito.times(1))
@@ -597,7 +668,7 @@ public class AccessibilityStateTest {
         // Verify observer is notified when activity is resumed.
         ApplicationStatus.onStateChangeForTesting(mockActivity, ActivityState.PAUSED);
         ApplicationStatus.onStateChangeForTesting(mockActivity, ActivityState.RESUMED);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         Mockito.verify(mAccessibilityStateNatives, Mockito.times(2))
                 .onAnimatorDurationScaleChanged();
 
@@ -605,17 +676,12 @@ public class AccessibilityStateTest {
         AccessibilityState.setDelegateForTesting(null);
         ApplicationStatus.onStateChangeForTesting(mockActivity, ActivityState.PAUSED);
         ApplicationStatus.onStateChangeForTesting(mockActivity, ActivityState.RESUMED);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         Mockito.verify(mAccessibilityStateNatives, Mockito.times(2))
                 .onAnimatorDurationScaleChanged();
-
-        ApplicationStatus.onStateChangeForTesting(mockActivity, ActivityState.STOPPED);
-        ApplicationStatus.destroyForJUnitTests();
     }
 
-    @Test
-    @SmallTest
-    public void testIsSamsungTalkBackEnabled_true() {
+    private void startTestWithSamsungTalkbackService() {
         AccessibilityServiceInfo samsungService =
                 new BuilderForTests()
                         .setId(
@@ -623,6 +689,12 @@ public class AccessibilityStateTest {
                                         + "com.samsung.android.marvin.talkback.TalkBackService")
                         .build();
         startTestWithService(samsungService);
+    }
+
+    @Test
+    public void testIsSamsungTalkBackEnabled_true() {
+        initializeAccessibilityState();
+        startTestWithSamsungTalkbackService();
 
         mDelegate.updateAccessibilityServices();
 
@@ -632,7 +704,19 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
+    public void testIsSamsungTalkBackEnabled_true_delegateNotInitialized() {
+        startTestWithSamsungTalkbackService();
+
+        AccessibilityState.setDelegateForTesting(null);
+        mDelegate = (AccessibilityStateDelegateImpl) AccessibilityState.getDelegate();
+        Assert.assertTrue(AccessibilityState.isSamsungTalkBackEnabled());
+
+        AccessibilityState.setDelegateForTesting(null);
+        mDelegate = (AccessibilityStateDelegateImpl) AccessibilityState.getDelegate();
+        Assert.assertTrue(AccessibilityState.isKnownScreenReaderEnabled());
+    }
+
+    @Test
     public void testIsSamsungTalkBackEnabled_shortId_true() {
         AccessibilityServiceInfo samsungService =
                 new BuilderForTests()
@@ -648,7 +732,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testIsSamsungTalkBackEnabled_false() {
         AccessibilityServiceInfo googleTalkBack =
                 new BuilderForTests()
@@ -664,7 +747,6 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
     public void testIsSamsungTalkBackEnabled_noServices() {
         Assert.assertFalse(AccessibilityState.isAnyAccessibilityServiceEnabled());
         Assert.assertFalse(AccessibilityState.isSamsungTalkBackEnabled());
@@ -672,8 +754,7 @@ public class AccessibilityStateTest {
     }
 
     @Test
-    @SmallTest
-    public void testIsSamsungTalkBackEnabled_transitionsNotifyNative() {
+    public void testIsSamsungTalkBackEnabled_transitions() {
         Activity mockActivity = Robolectric.buildActivity(Activity.class).setup().get();
         AccessibilityServiceInfo samsungService =
                 new BuilderForTests()
@@ -682,37 +763,27 @@ public class AccessibilityStateTest {
 
         simulateActivityStateChange(
                 mockActivity, ActivityState.STARTED, ApplicationState.HAS_RUNNING_ACTIVITIES);
-        AccessibilityState.initializeOnStartup(
-                new ApplicationStatusAccessibilityStateVisibilityManager());
-        AccessibilityState.registerObservers();
+        initializeAccessibilityState();
 
         Assert.assertFalse(AccessibilityState.isSamsungTalkBackEnabled());
-        Mockito.verify(mAccessibilityStateNatives).onSamsungTalkBackStateChanged(false);
 
-        // Enabling Samsung TalkBack should transition state and push `true` to native via observer.
+        // Enabling Samsung TalkBack should transition state via observer.
         AccessibilityStateJUnitTestHelper.setEnabledAccessibilityServiceList(
                 mContext, List.of(samsungService));
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         Assert.assertTrue(AccessibilityState.isSamsungTalkBackEnabled());
-        Mockito.verify(mAccessibilityStateNatives).onSamsungTalkBackStateChanged(true);
 
-        // Disabling Samsung TalkBack should transition state and push `false` to native via observer.
+        // Disabling Samsung TalkBack should transition state via observer.
         AccessibilityStateJUnitTestHelper.setEnabledAccessibilityServiceList(
                 mContext, new ArrayList<>());
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         Assert.assertFalse(AccessibilityState.isSamsungTalkBackEnabled());
-        Mockito.verify(mAccessibilityStateNatives, Mockito.times(2))
-                .onSamsungTalkBackStateChanged(false);
-
-        ApplicationStatus.onStateChangeForTesting(mockActivity, ActivityState.STOPPED);
-        ApplicationStatus.destroyForJUnitTests();
     }
 
     @Test
-    @SmallTest
-    public void testIsSamsungTalkBackEnabled_resumedUpdatesNative() {
+    public void testIsSamsungTalkBackEnabled_resumedUpdatesState() {
         Activity mockActivity = Robolectric.buildActivity(Activity.class).setup().get();
         AccessibilityServiceInfo samsungService =
                 new BuilderForTests()
@@ -725,12 +796,9 @@ public class AccessibilityStateTest {
         mDelegate.updateAccessibilityServices();
         simulateActivityStateChange(
                 mockActivity, ActivityState.STARTED, ApplicationState.HAS_RUNNING_ACTIVITIES);
-        AccessibilityState.initializeOnStartup(
-                new ApplicationStatusAccessibilityStateVisibilityManager());
-        AccessibilityState.registerObservers();
+        initializeAccessibilityState();
 
         Assert.assertTrue(AccessibilityState.isSamsungTalkBackEnabled());
-        Mockito.verify(mAccessibilityStateNatives).onSamsungTalkBackStateChanged(true);
 
         // Move app to background.
         simulateActivityStateChange(
@@ -739,24 +807,16 @@ public class AccessibilityStateTest {
         // While in background, disable Samsung TalkBack.
         AccessibilityStateJUnitTestHelper.setEnabledAccessibilityServiceList(
                 mContext, new ArrayList<>());
-        Mockito.clearInvocations(mAccessibilityStateNatives);
 
-        // Resume app. Native should be notified of current (disabled) state on resume.
+        // Resume app. State should be updated to the current (disabled) state on resume.
         simulateActivityStateChange(
                 mockActivity, ActivityState.RESUMED, ApplicationState.HAS_RUNNING_ACTIVITIES);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         Assert.assertFalse(AccessibilityState.isSamsungTalkBackEnabled());
-        Mockito.verify(mAccessibilityStateNatives, Mockito.atLeastOnce())
-                .onSamsungTalkBackStateChanged(false);
-
-        ApplicationStatus.onStateChangeForTesting(mockActivity, ActivityState.STOPPED);
-        ApplicationStatus.destroyForJUnitTests();
     }
 
     @Test
-    @SmallTest
-    public void testIsSamsungTalkBackEnabled_resumedWithPollingUpdatesNative() {
+    public void testIsSamsungTalkBackEnabled_resumedWithPollingUpdatesState() {
         Activity mockActivity = Robolectric.buildActivity(Activity.class).setup().get();
         AccessibilityServiceInfo samsungService =
                 new BuilderForTests()
@@ -769,43 +829,34 @@ public class AccessibilityStateTest {
         mDelegate.updateAccessibilityServices();
         simulateActivityStateChange(
                 mockActivity, ActivityState.STARTED, ApplicationState.HAS_RUNNING_ACTIVITIES);
-        AccessibilityState.initializeOnStartup(
-                new ApplicationStatusAccessibilityStateVisibilityManager());
-        AccessibilityState.registerObservers();
+        initializeAccessibilityState();
 
         Assert.assertTrue(AccessibilityState.isSamsungTalkBackEnabled());
-        Mockito.verify(mAccessibilityStateNatives).onSamsungTalkBackStateChanged(true);
 
         // Move app to background.
         simulateActivityStateChange(
                 mockActivity, ActivityState.STOPPED, ApplicationState.HAS_STOPPED_ACTIVITIES);
 
-        // While in background, disable Samsung TalkBack, but set mismatched settings string so polling occurs.
+        // While in background, disable Samsung TalkBack, but set mismatched settings string so
+        // polling occurs.
         AccessibilityStateJUnitTestHelper.setEnabledAccessibilityServiceList(
                 mContext, new ArrayList<>());
         Settings.Secure.putString(
                 mContext.getContentResolver(),
                 Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
                 "com.samsung.android.accessibility.talkback/.TalkBackService");
-        Mockito.clearInvocations(mAccessibilityStateNatives);
 
-        // Resume app. Polling will be scheduled because running services disagree with enabled services.
+        // Resume app. Polling will be scheduled because running services disagree with enabled
+        // services.
         simulateActivityStateChange(
                 mockActivity, ActivityState.RESUMED, ApplicationState.HAS_RUNNING_ACTIVITIES);
 
         // Resolve the discrepancy so the subsequent poll succeeds.
         Settings.Secure.putString(
-                mContext.getContentResolver(),
-                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
-                "");
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+                mContext.getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, "");
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         Assert.assertFalse(AccessibilityState.isSamsungTalkBackEnabled());
-        Mockito.verify(mAccessibilityStateNatives, Mockito.atLeastOnce())
-                .onSamsungTalkBackStateChanged(false);
-
-        ApplicationStatus.onStateChangeForTesting(mockActivity, ActivityState.STOPPED);
-        ApplicationStatus.destroyForJUnitTests();
     }
 
     private void startTestWithService(AccessibilityServiceInfo newService) {

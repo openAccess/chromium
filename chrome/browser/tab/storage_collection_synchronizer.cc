@@ -8,12 +8,16 @@
 #include <variant>
 #include <vector>
 
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/types/pass_key.h"
 #include "chrome/browser/tab/collection_storage_observer.h"
+#include "chrome/browser/tab/node_hash_cache.h"
 #include "chrome/browser/tab/tab_state_storage_service.h"
 #include "components/tab_groups/tab_group_id.h"
-#include "components/tabs/public/direct_child_walker.h"
 #include "components/tabs/public/tab_collection.h"
 #include "components/tabs/public/tab_collection_types.h"
 #include "components/tabs/public/tab_interface.h"
@@ -21,75 +25,88 @@
 
 namespace tabs {
 
-// Recursively crawls the entire tree and saves all descendants to the service.
-// The traversal order is determined by DirectChildWalker.
-class CollectionSaveCrawler : public DirectChildWalker::Processor {
- public:
-  explicit CollectionSaveCrawler(TabStateStorageService* service)
-      : service_(service) {}
-
-  void ProcessTab(const TabInterface* tab) override { service_->Save(tab); }
-
-  void ProcessCollection(const TabCollection* collection) override {
-    service_->Save(collection);
-    service_->SaveChildren(collection);
-    DirectChildWalker walker(collection, this);
-    walker.Walk();
-  }
-
- private:
-  raw_ptr<TabStateStorageService> service_;
-};
-
 // CollectionSynchronizerObserver implementation.
 void StorageCollectionSynchronizer::CollectionSynchronizerObserver::
     OnRestoreCancelled() {}
+
+void StorageCollectionSynchronizer::CollectionSynchronizerObserver::
+    SetSynchronizer(StorageCollectionSynchronizer* synchronizer) {}
+
+void StorageCollectionSynchronizer::SaveStructureSnapshot(
+    bool clear_unused_nodes,
+    base::OnceClosure callback) {
+  pending_clear_unused_nodes_ |= clear_unused_nodes;
+  if (!callback.is_null()) {
+    pending_callbacks_.push_back(std::move(callback));
+  }
+  if (is_snapshot_scheduled_) {
+    return;
+  }
+  is_snapshot_scheduled_ = true;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          &StorageCollectionSynchronizer::FlushPendingStructureSnapshot,
+          weak_ptr_factory_.GetWeakPtr()));
+}
+
+void StorageCollectionSynchronizer::FlushPendingStructureSnapshot() {
+  if (!is_snapshot_scheduled_) {
+    return;
+  }
+  is_snapshot_scheduled_ = false;
+  bool clear_unused_nodes = pending_clear_unused_nodes_;
+  pending_clear_unused_nodes_ = false;
+  std::vector<base::OnceClosure> callbacks = std::move(pending_callbacks_);
+
+  if (observer_) {
+    observer_->SaveStructureSnapshot(clear_unused_nodes);
+  }
+
+  if (!callbacks.empty()) {
+    service_->WaitForAllPendingOperations(base::BindOnce(
+        [](std::vector<base::OnceClosure> cbs) {
+          for (auto& cb : cbs) {
+            std::move(cb).Run();
+          }
+        },
+        std::move(callbacks)));
+  }
+}
 
 StorageCollectionSynchronizer::StorageCollectionSynchronizer(
     TabStripCollection* collection,
     TabStateStorageService* service)
     : collection_(collection), service_(service) {}
 
-void StorageCollectionSynchronizer::FullSave(base::OnceClosure callback) {
-  auto batch = service_->CreateScopedBatch();
-  if (!callback.is_null()) {
-    batch.AddCallback(std::move(callback));
-  }
-  service_->Save(collection_);
-  CollectionSaveCrawler crawler(service_);
-  DirectChildWalker walker(collection_, &crawler);
-  walker.Walk();
-}
-
 void StorageCollectionSynchronizer::CancelRestore() {
+  is_snapshot_scheduled_ = false;
+  pending_clear_unused_nodes_ = false;
+  std::vector<base::OnceClosure> callbacks = std::move(pending_callbacks_);
+  hash_cache_.Clear();
   if (observer_) {
     observer_->OnRestoreCancelled();
+    observer_->SetSynchronizer(nullptr);
     collection_->RemoveObserver(observer_.get());
     observer_.reset();
   }
-}
-
-void StorageCollectionSynchronizer::SaveTab(TabInterface* tab) {
-  TabHandle tab_handle = tab->GetHandle();
-  observer_->SaveChildNodeOnly(tab_handle);
-}
-
-void StorageCollectionSynchronizer::SaveTabGroupPayload(
-    tab_groups::TabGroupId group_id) {
-  TabCollection* group_collection =
-      collection_->GetTabGroupCollection(group_id);
-  if (group_collection) {
-    observer_->SaveChildNodeOnly(group_collection->GetHandle());
+  for (auto& cb : callbacks) {
+    std::move(cb).Run();
   }
 }
 
 void StorageCollectionSynchronizer::SetCollectionObserver(
     std::unique_ptr<CollectionSynchronizerObserver> new_observer) {
   if (observer_) {
+    if (is_snapshot_scheduled_) {
+      FlushPendingStructureSnapshot();
+    }
+    observer_->SetSynchronizer(nullptr);
     collection_->RemoveObserver(observer_.get());
   }
   observer_ = std::move(new_observer);
   if (observer_) {
+    observer_->SetSynchronizer(this);
     collection_->AddObserver(observer_.get());
   }
 }

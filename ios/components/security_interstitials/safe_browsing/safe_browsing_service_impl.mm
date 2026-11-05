@@ -14,8 +14,8 @@
 #import "components/safe_browsing/core/browser/db/v5_get_hash_protocol_manager.h"
 #import "components/safe_browsing/core/browser/realtime/url_lookup_service_base.h"
 #import "components/safe_browsing/core/browser/safe_browsing_metrics_collector.h"
-#import "components/safe_browsing/core/browser/safe_browsing_url_checker_impl.h"
-#import "components/safe_browsing/core/browser/url_checker_delegate.h"
+#import "components/safe_browsing/core/browser/url_checker/safe_browsing_url_checker_impl.h"
+#import "components/safe_browsing/core/browser/url_checker/url_checker_delegate.h"
 #import "components/safe_browsing/core/browser/utils/url_loader_factory_params.h"
 #import "components/safe_browsing/core/common/features.h"
 #import "components/safe_browsing/core/common/safebrowsing_constants.h"
@@ -213,7 +213,7 @@ SafeBrowsingServiceImpl::CreateUrlChecker(
       url_lookup_service ? url_lookup_service->GetWeakPtr() : nullptr,
       hash_real_time_service ? hash_real_time_service->GetWeakPtr() : nullptr,
       hash_real_time_selection,
-      /*is_async_check=*/false, /*check_allowlist_before_hash_database=*/false,
+      /*is_async_check=*/false,
       /*tab_id=*/SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt,
       v5_get_hash_protocol_manager ? v5_get_hash_protocol_manager->GetWeakPtr()
                                    : nullptr);
@@ -278,7 +278,7 @@ SafeBrowsingServiceImpl::CreateAsyncChecker(
       url_lookup_service ? url_lookup_service->GetWeakPtr() : nullptr,
       hash_real_time_service ? hash_real_time_service->GetWeakPtr() : nullptr,
       hash_real_time_selection,
-      /*is_async_check=*/true, /*check_allowlist_before_hash_database=*/false,
+      /*is_async_check=*/true,
       /*tab_id=*/SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt,
       v5_get_hash_protocol_manager ? v5_get_hash_protocol_manager->GetWeakPtr()
                                    : nullptr);
@@ -314,7 +314,7 @@ SafeBrowsingServiceImpl::CreateSyncChecker(
       /*hash_realtime_service=*/nullptr,
       /*hash_realtime_selection=*/
       safe_browsing::hash_realtime_utils::HashRealTimeSelection::kNone,
-      /*is_async_check=*/false, /*check_allowlist_before_hash_database=*/false,
+      /*is_async_check=*/false,
       /*tab_id=*/SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt,
       v5_get_hash_protocol_manager ? v5_get_hash_protocol_manager->GetWeakPtr()
                                    : nullptr);
@@ -410,7 +410,7 @@ void SafeBrowsingServiceImpl::UpdateSafeBrowsingEnabledState() {
   if (enabled_) {
     safe_browsing_db_manager_->StartOnUIThread(
         shared_url_loader_factory_,
-        safe_browsing::GetV4ProtocolConfig(std::string(kClientName),
+        safe_browsing::GetSBProtocolConfig(std::string(kClientName),
                                            /*disable_auto_update=*/false));
   } else {
     safe_browsing_db_manager_->StopOnUIThread(false);

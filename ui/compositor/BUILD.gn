@@ -120,6 +120,7 @@ component("compositor") {
 
   public_deps = [
     "//cc",
+    "//ui/base/interaction",
     "//ui/gfx:animation_scale",
   ]
   deps = [
@@ -138,7 +139,6 @@ component("compositor") {
     "//ui/gfx/animation",
     "//ui/gfx/animation/keyframe",
     "//ui/gfx/geometry",
-    "//ui/gl",
   ]
 
   if (is_apple) {

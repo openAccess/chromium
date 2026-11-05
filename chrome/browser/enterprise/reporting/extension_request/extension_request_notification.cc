@@ -18,12 +18,18 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/message_center/public/cpp/message_center_constants.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_delegate.h"
 #include "ui/native_theme/native_theme.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/strings/string_split.h"
+#endif
 
 namespace enterprise_reporting {
 namespace {
@@ -96,7 +102,8 @@ std::string ExtensionRequestNotification::CreateNotificationId(
 std::vector<std::string> ExtensionRequestNotification::ParseExtensionIds(
     const std::string& notification_id) {
 #if BUILDFLAG(IS_ANDROID)
-  DCHECK(base::StartsWith(notification_id, kAndroidNotificationIdPrefix));
+  CHECK(base::StartsWith(notification_id, kAndroidNotificationIdPrefix),
+        base::NotFatalUntil::M161);
   if (!base::StartsWith(notification_id, kAndroidNotificationIdPrefix)) {
     return {};
   }
@@ -159,7 +166,7 @@ void ExtensionRequestNotification::Click(
   for (const std::string& extension_id : extension_ids_) {
     NavigateParams params(profile_, GURL(kChromeWebstoreUrl + extension_id),
                           ui::PAGE_TRANSITION_LINK);
-    params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     params.window_action = NavigateParams::WindowAction::kShowWindow;
     Navigate(&params);
   }

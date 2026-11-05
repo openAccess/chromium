@@ -65,12 +65,6 @@ bool ContainerTiming::ContributesToContainerTiming(Element* element) {
   return tracker->GetContainerRootFor(element) != nullptr;
 }
 
-bool ContainerTiming::CanReportToContainerTiming() const {
-  DCHECK(performance_);
-  return performance_->HasObserverFor(PerformanceEntry::kContainer) ||
-         !performance_->IsContainerTimingBufferFull();
-}
-
 ContainerTiming::Record::Record(const DOMPaintTimingInfo& paint_timing_info,
                                 const AtomicString& identifier)
     : first_paint_timing_info_(paint_timing_info), identifier_(identifier) {}
@@ -79,15 +73,28 @@ void ContainerTiming::Record::MaybeUpdateLastNewPaintedArea(
     const DOMPaintTimingInfo& paint_timing_info,
     Element* element,
     const gfx::Rect& enclosing_rect) {
+  // Nominate the element by its own clipped area, the way LCP selects its
+  // candidates, rather than by the area it newly contributed to the container.
+  // Selecting by the contributed area would hand the overlap between two
+  // elements to whichever happened to paint first, both within a frame and
+  // across loads of the same page. Ties keep the earlier element.
+  //
+  // This runs before the containment check below: content painting entirely
+  // inside the region painted so far is still a contentful paint, it just does
+  // not grow the container. Nothing re-nominates on a repaint, because each
+  // element reaches container timing only once per content it paints.
+  const uint64_t own_painted_area = enclosing_rect.size().Area64();
+  if (own_painted_area > largest_painted_area_) {
+    largest_painted_area_ = own_painted_area;
+    largest_painted_area_element_ = element;
+  }
+
   if (painted_region_.Contains(enclosing_rect)) {
     return;
   }
 
   painted_region_.Union(enclosing_rect);
-
   last_new_painted_area_paint_timing_info_ = paint_timing_info;
-  last_new_painted_area_element_ = element;
-
   has_pending_changes_ = true;
 }
 
@@ -100,12 +107,16 @@ void ContainerTiming::Record::MaybeEmitPerformanceEntry(
   performance->AddContainerTiming(
       last_new_painted_area_paint_timing_info_, painted_region_.bounds(),
       GetRegionSize(painted_region_), container_root, identifier_,
-      last_new_painted_area_element_, first_paint_timing_info_);
+      largest_painted_area_element_, first_paint_timing_info_);
   has_pending_changes_ = false;
+  // Start the comparison over, so the next entry reports the largest element
+  // painted since this one.
+  largest_painted_area_ = 0;
+  largest_painted_area_element_ = nullptr;
 }
 
 void ContainerTiming::Record::Trace(Visitor* visitor) const {
-  visitor->Trace(last_new_painted_area_element_);
+  visitor->Trace(largest_painted_area_element_);
 }
 
 ContainerTiming::Record* ContainerTiming::GetOrCreateRecord(
@@ -161,10 +172,14 @@ void ContainerTiming::OnElementPainted(
   Element* container_root =
       paint_attribution_tracker_->GetContainerRootFor(element);
   if (!container_root) {
-    // The element may also have been detached since paint, leaving no reachable
-    // container root. Don't report it.
-    // TODO(crbug.com/535107494): attributing at paint time would let this
-    // become a CHECK.
+    // ElementTiming sends elements that contribute to either element timing or
+    // container timing, so `container_root` will be null if the `element`
+    // doesn't contribute to container timing. The element may have also been
+    // detached since paint, leaving no reachable container root.
+    //
+    // TODO(crbug.com/535107494, crbug.com/559075199): decoupling
+    // ContainerTiming from ElementTiming and attributing at paint time would
+    // let this become a CHECK.
     return;
   }
 
@@ -180,23 +195,48 @@ void ContainerTiming::OnElementPainted(
                                           enclosing_rect);
     // A container root with containertimingignore does not propagate to
     // ancestor roots.
-    if (container_root->HasContainerTimingIgnoreAttribute()) {
+    if (container_root->FastHasAttribute(
+            html_names::kContainertimingignoreAttr)) {
       break;
     }
     container_root =
         paint_attribution_tracker_->GetParentContainerRootFor(container_root);
   }
-  performance_->SetHasContainerTimingChanges();
+}
+
+void ContainerTiming::MaybeQueuePaint(Element& element,
+                                      const gfx::RectF& intersection_rect) {
+  if (paint_attribution_tracker_->GetContainerRootFor(&element)) {
+    pending_paints_.push_back(
+        MakeGarbageCollected<PendingPaint>(intersection_rect, &element));
+  }
+}
+
+OptionalPaintTimingCallback ContainerTiming::TakePaintTimingCallback() {
+  if (pending_paints_.empty()) {
+    return std::nullopt;
+  }
+  auto* paints = MakeGarbageCollected<GCedHeapVector<Member<PendingPaint>>>(
+      std::move(pending_paints_));
+  return blink::BindOnce(&ContainerTiming::FlushTimingsOnFramePresented,
+                         WrapWeakPersistent(this), WrapPersistent(paints));
+}
+
+void ContainerTiming::FlushTimingsOnFramePresented(
+    GCedHeapVector<Member<PendingPaint>>* paints,
+    const base::TimeTicks&,
+    const DOMPaintTimingInfo& paint_timing_info,
+    uint64_t) {
+  for (const PendingPaint* paint : *paints) {
+    OnElementPainted(paint_timing_info, paint->element,
+                     paint->intersection_rect);
+  }
+  EmitPerformanceEntries();
 }
 
 void ContainerTiming::EmitPerformanceEntries() {
-  const bool can_report = CanReportToContainerTiming();
   for (const auto& pair : container_root_records_) {
-    Record* record = pair.value;
-
-    if (can_report) {
-      record->MaybeEmitPerformanceEntry(performance_.Get(), pair.key.Get());
-    }
+    pair.value->MaybeEmitPerformanceEntry(performance_.Get(), pair.key.Get());
   }
 }
 
@@ -204,6 +244,7 @@ void ContainerTiming::Trace(Visitor* visitor) const {
   Supplement<LocalDOMWindow>::Trace(visitor);
   visitor->Trace(performance_);
   visitor->Trace(container_root_records_);
+  visitor->Trace(pending_paints_);
   visitor->Trace(paint_attribution_tracker_);
 }
 

@@ -96,6 +96,7 @@ static_library("view") {
 
 generate_jni("web_contents_delegate_jni") {
   sources = [
+    "java/src/org/chromium/components/embedder_support/delegate/EyeDropperBridge.java",
     "java/src/org/chromium/components/embedder_support/delegate/HtmlColorPickerBridge.java",
     "java/src/org/chromium/components/embedder_support/delegate/WebContentsDelegateAndroid.java",
   ]
@@ -103,6 +104,8 @@ generate_jni("web_contents_delegate_jni") {
 
 static_library("web_contents_delegate") {
   sources = [
+    "delegate/eye_dropper_bridge.cc",
+    "delegate/eye_dropper_bridge.h",
     "delegate/html_color_picker_bridge.cc",
     "delegate/html_color_picker_bridge.h",
     "delegate/web_contents_delegate_android.cc",
@@ -197,7 +200,6 @@ if (current_toolchain == default_toolchain) {
       "//base:flagged_apis_java",
       "//components/url_formatter/android:url_formatter_java",
       "//content/public/android:content_main_dex_java",
-      "//content/public/common:common_java",
       "//net/android:net_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
       "//third_party/androidx:androidx_core_core_java",
@@ -220,7 +222,6 @@ if (current_toolchain == default_toolchain) {
       ":virtual_structure_java",
       "//base:base_java",
       "//build/android:build_java",
-      "//components/android_autofill/browser:features_java",
       "//content/public/android:content_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
       "//ui/accessibility:ax_base_java",
@@ -297,7 +298,7 @@ if (current_toolchain == default_toolchain) {
       "//third_party/androidx:androidx_annotation_annotation_java",
       "//third_party/androidx:androidx_appcompat_appcompat_java",
       "//third_party/androidx:androidx_core_core_java",
-      "//third_party/blink/public/mojom:mojom_platform_java",
+      "//third_party/blink/public/mojom:android_mojo_bindings_java",
       "//third_party/jni_zero:jni_zero_java",
       "//ui/android:ui_no_recycler_view_java",
       "//url:gurl_java",
@@ -305,6 +306,7 @@ if (current_toolchain == default_toolchain) {
     resources_package = "org.chromium.components.embedder_support.delegate"
 
     sources = [
+      "java/src/org/chromium/components/embedder_support/delegate/EyeDropperBridge.java",
       "java/src/org/chromium/components/embedder_support/delegate/HtmlColorPickerAdvanced.java",
       "java/src/org/chromium/components/embedder_support/delegate/HtmlColorPickerAdvancedComponent.java",
       "java/src/org/chromium/components/embedder_support/delegate/HtmlColorPickerBridge.java",
@@ -334,6 +336,7 @@ if (current_toolchain == default_toolchain) {
       "//content/public/common:common_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
       "//third_party/blink/public:blink_headers_java",
+      "//third_party/blink/public/common:common_java",
       "//third_party/jni_zero:jni_zero_java",
       "//ui/android:ui_no_recycler_view_java",
       "//url:gurl_java",
@@ -391,6 +394,7 @@ if (current_toolchain == default_toolchain) {
     sources = [
       "junit/src/org/chromium/components/embedder_support/contextmenu/ContextMenuParamsUnitTest.java",
       "junit/src/org/chromium/components/embedder_support/contextmenu/ContextMenuUtilsUnitTest.java",
+      "junit/src/org/chromium/components/embedder_support/util/ExtensionUrlUtilUnitTest.java",
       "junit/src/org/chromium/components/embedder_support/util/OriginTest.java",
       "junit/src/org/chromium/components/embedder_support/view/ContentViewTest.java",
     ]
@@ -408,6 +412,7 @@ if (current_toolchain == default_toolchain) {
       "//third_party/androidx:androidx_test_monitor_java",
       "//third_party/androidx:androidx_test_runner_java",
       "//third_party/blink/public:blink_headers_java",
+      "//third_party/blink/public/common:common_java",
       "//third_party/junit",
       "//ui/android:ui_java",
       "//ui/android:ui_java_test_support",
@@ -421,7 +426,6 @@ if (current_toolchain == default_toolchain) {
 
     sources = [
       "javatests/src/org/chromium/components/embedder_support/delegate/ColorPickerDialogRenderTest.java",
-      "javatests/src/org/chromium/components/embedder_support/util/ExtensionUrlUtilTest.java",
       "javatests/src/org/chromium/components/embedder_support/util/UrlUtilitiesUnitTest.java",
     ]
     deps = [
@@ -456,7 +460,6 @@ if (current_toolchain == default_toolchain) {
       "//chrome/test/android:chrome_java_test_support_common",
       "//chrome/test/android:chrome_java_transit",
       "//components/android_autofill/browser/test_support:java",
-      "//content/public/test/android:content_java_test_support",
       "//net/android:net_java_test_support",
       "//third_party/androidx:androidx_test_runner_java",
       "//third_party/junit",

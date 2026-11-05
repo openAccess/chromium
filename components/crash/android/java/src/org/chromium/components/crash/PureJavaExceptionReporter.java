@@ -17,7 +17,6 @@ import org.chromium.base.Log;
 import org.chromium.base.PiiElider;
 import org.chromium.base.StrictModeContext;
 import org.chromium.base.version_info.VersionInfo;
-import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.EnsuresNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -146,9 +145,9 @@ public abstract class PureJavaExceptionReporter
                 String.format(
                         "%s v%s (%s)",
                         ApkInfo.getPackageName(),
-                        BuildConfig.VERSION_CODE,
+                        ApkInfo.getPackageVersionCode(),
                         ApkInfo.getPackageVersionName()));
-        mReportContent.put(RESOURCES_VERSION, ApkInfo.getResourcesVersion());
+        mReportContent.put(RESOURCES_VERSION, ApkInfo.getPackageVersionName());
 
         AtomicReferenceArray<String> values = CrashKeys.getInstance().getValues();
         for (int i = 0; i < values.length(); i++) {
@@ -227,7 +226,9 @@ public abstract class PureJavaExceptionReporter
         uploadMinidump(mMinidumpFile);
     }
 
-    /** @return the product name to be used in the crash report. */
+    /**
+     * @return the product name to be used in the crash report.
+     */
     protected abstract String getProductName();
 
     /**
@@ -237,9 +238,13 @@ public abstract class PureJavaExceptionReporter
      */
     protected abstract void uploadMinidump(File minidump);
 
-    /** @return prefix to be added before the minidump file name. */
+    /**
+     * @return prefix to be added before the minidump file name.
+     */
     protected abstract String getMinidumpPrefix();
 
-    /** @return The top level directory where all crash related files are stored. */
+    /**
+     * @return The top level directory where all crash related files are stored.
+     */
     protected abstract File getCrashFilesDirectory();
 }

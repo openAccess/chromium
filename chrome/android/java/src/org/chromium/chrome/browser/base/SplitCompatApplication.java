@@ -8,6 +8,8 @@ import android.app.Application;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.Process;
@@ -24,6 +26,7 @@ import org.chromium.base.EarlyTraceEvent;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.LocaleUtils;
 import org.chromium.base.Log;
+import org.chromium.base.PackageUtils;
 import org.chromium.base.PathUtils;
 import org.chromium.base.ServiceLoaderUtil;
 import org.chromium.base.TraceEvent;
@@ -31,13 +34,11 @@ import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.library_loader.LibraryProcessType;
 import org.chromium.base.memory.MemoryPressureMonitor;
 import org.chromium.base.task.AsyncTask;
-import org.chromium.base.version_info.VersionConstants;
 import org.chromium.build.BuildConfig;
 import org.chromium.build.NativeLibraries;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.ProductConfig;
 import org.chromium.chrome.browser.crash.ApplicationStatusTracker;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.language.AppLocaleUtils;
@@ -49,7 +50,6 @@ import org.chromium.components.crash.PureJavaExceptionHandler.JavaExceptionRepor
 import org.chromium.components.crash.PureJavaExceptionHandler.JavaExceptionReporterFactory;
 import org.chromium.components.module_installer.util.ModuleUtil;
 import org.chromium.components.policy.PolicyCache;
-import org.chromium.ui.base.ResourceBundle;
 
 import java.util.function.Supplier;
 
@@ -155,11 +155,28 @@ public class SplitCompatApplication extends Application {
         // Perform initialization of globals common to all processes.
         ContextUtils.initApplicationContext(this);
 
+        // Do not call ApkInfo here, as child processes do not receive ApkInfo from the parent
+        // process until later.
+        String versionName = "";
+        long versionCode = BuildConfig.ORIGINAL_VERSION_CODE;
+        if (!isIsolatedProcess) {
+            try {
+                PackageInfo pi =
+                        context.getPackageManager().getPackageInfo(context.getPackageName(), 0);
+                if (pi != null) {
+                    versionName = pi.versionName != null ? pi.versionName : "";
+                    versionCode = PackageUtils.packageVersionCode(pi);
+                }
+            } catch (PackageManager.NameNotFoundException e) {
+                // Ignore.
+            }
+        }
+
         Log.i(
                 TAG,
                 "version=%s (%s) minSdkVersion=%s processName=%s isIsolatedProcess=%s splits=%s",
-                VersionConstants.PRODUCT_VERSION,
-                BuildConfig.VERSION_CODE,
+                versionName,
+                versionCode,
                 BuildConfig.MIN_SDK_VERSION,
                 ContextUtils.getProcessName(),
                 isIsolatedProcess,
@@ -201,8 +218,6 @@ public class SplitCompatApplication extends Application {
         }
 
         maybeInitProcessType();
-        LibraryLoader.getInstance().setLinkerImplementation(ProductConfig.USE_CHROMIUM_LINKER);
-        ResourceBundle.setAvailablePakLocales(ProductConfig.LOCALES);
 
         if (isBrowserProcess) {
             // Renderer and GPU processes have command line passed to them via IPC
@@ -214,6 +229,11 @@ public class SplitCompatApplication extends Application {
             // created and is needed only by processes that use the ApplicationStatus api (which
             // for Chrome is just the browser process).
             ApplicationStatus.initialize(this);
+            // Feature list initialization depends on locale, so do this before the feature list
+            // initialization in performBrowserProcessPreloading().
+            if (AppLocaleUtils.shouldUseSystemManagedLocale()) {
+                AppLocaleUtils.maybeMigrateOverrideLanguage();
+            }
             performBrowserProcessPreloading(context);
         }
 
@@ -241,18 +261,12 @@ public class SplitCompatApplication extends Application {
             // Disable MemoryPressureMonitor polling when Chrome goes to the background.
             ApplicationStatus.registerApplicationStateListener(
                     SplitCompatApplication::updateMemoryPressurePolling);
-
-            if (AppLocaleUtils.shouldUseSystemManagedLocale()) {
-                AppLocaleUtils.maybeMigrateOverrideLanguage();
-            }
         }
 
         // Write installed modules to crash keys.
         ModuleUtil.updateCrashKeys();
 
         // WebView installs its own PureJavaExceptionHandler.
-        // Incremental install disables process isolation, so things in this block will
-        // actually be run for incremental apks, but not normal apks.
         if (!isIsolatedProcess && !isWebViewProcess()) {
             JavaExceptionReporterFactory factory =
                     () -> {

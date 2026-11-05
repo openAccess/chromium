@@ -3,8 +3,6 @@
 // found in the LICENSE file.
 
 #import "base/functional/bind.h"
-#import "base/functional/callback_helpers.h"
-#import "base/strings/sys_string_conversions.h"
 #import "ios/chrome/browser/level_up/model/task_info.h"
 #import "ios/chrome/browser/level_up/model/tasks/task_factories.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
@@ -21,20 +19,21 @@ class IncognitoTaskInfo : public TaskInfo {
 
   // TaskInfo implementation.
   TaskType GetTaskType() const override { return TaskType::kIncognito; }
-  std::string GetTitle() const override { return "Go Incognito"; }
+  std::string GetTitle() const override {
+    return l10n_util::GetStringUTF8(IDS_IOS_LEVEL_UP_FEATURE_INCOGNITO);
+  }
   std::string GetTaskDescription() const override {
-    return "Open incognito tabs to browse the web privately";
+    return l10n_util::GetStringUTF8(
+        IDS_IOS_LEVEL_UP_FEATURE_INCOGNITO_DESCRIPTION);
   }
   Symbol GetIconSymbol() const override { return SymbolIncognito; }
   LevelUpTaskCategory GetCategory() const override {
     return LevelUpTaskCategory::kSafety;
   }
-  std::string GetTriggerUserAction() const override {
-    return "MobileTabGridSelectIncognitoPanel";
+  std::vector<std::string> GetTriggerUserActions() const override {
+    return {"MobileIncognitoBrowserShown"};
   }
-  std::string GetCompletionSnackbarMessage() const override {
-    return l10n_util::GetStringUTF8(IDS_IOS_LEVEL_UP_TASK_COMPLETED_INCOGNITO);
-  }
+  std::string GetCompletionSnackbarMessage() const override { return ""; }
   TaskInfo::NavigationAction GetNavigationAction() const override {
     return base::BindRepeating(
         ^(CommandDispatcher* dispatcher, Browser* browser) {

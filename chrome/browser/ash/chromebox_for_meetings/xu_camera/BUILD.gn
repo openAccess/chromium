@@ -24,8 +24,9 @@ static_library("xu_camera") {
   ]
 
   deps = [
-    "//chrome/browser:browser_public_dependencies",
-    "//chrome/browser/media/webrtc",
+    "//chromeos/ash/components/browser_context_helper",
+    "//chromeos/ash/components/media_device_salt:media_device_salt_service_provider",
+    "//components/account_id",
     "//components/media_device_salt",
     "//content/public/browser",
   ]
@@ -48,8 +49,4 @@ source_set("unit_tests") {
     "//mojo/public/cpp/bindings",
     "//testing/gmock",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

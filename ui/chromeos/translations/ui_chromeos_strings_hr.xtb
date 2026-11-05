@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Pogrešna zaporka</translation>
 <translation id="5059127710849015030">transliteracija za nepalski</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691">Proširenje <ph name="EXTENSION_NAME" /> postavilo je pravila za nadjačavanje proxyja</translation>
 <translation id="5081517858322016911">Izbrisat će se datoteke ukupne veličine <ph name="TOTAL_FILE_SIZE" /></translation>
 <translation id="508423945471810158">Premještanje stavki (<ph name="NUMBER_OF_ITEMS" />) u mapu <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Došlo je do pogreške.</translation>
-<translation id="5102922915594634436">Upravljanje sinkroniziranim mapama</translation>
 <translation id="5109254780565519649">Došlo je do pogreške. Neke stavke možda nisu vraćene.</translation>
 <translation id="5110329002213341433">engleski (Kanada)</translation>
 <translation id="5119780910075847424">Sinkronizacija je pauzirana</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">hindski</translation>
 <translation id="7665680517722058469">Pokušajte s nekim drugim pretraživanjem</translation>
 <translation id="7689532716264131859">Stavke premještene u otpad: <ph name="NUMBER_OF_ITEMS" /></translation>
-<translation id="7693909743393669729">Formatiranjem diska izbrisat će se svi podaci koji su na njemu pohranjeni i uklonit će se sve postojeće particije, uključujući particije koje možda nisu vidljive. Tu radnju nije moguće poništiti.</translation>
 <translation id="7695430100978772476">Nije uspjelo formatiranje diska <ph name="DRIVE_NAME" /></translation>
 <translation id="76959938259365003">Pražnjenje otpada nije uspjelo.</translation>
 <translation id="7705251383879779343">Kopirano: <ph name="FILE_NAME" />.</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">američka međunarodna Workman</translation>
 <translation id="7903984238293908205">katakana</translation>
 <translation id="7908378463497120834">Žao nam je, nije bilo moguće postaviti najmanje jednu particiju na vanjskom uređaju za pohranu.</translation>
-<translation id="7908793776359722643">Formatiranjem particije izbrisat će se svi podaci koji su na njoj pohranjeni. Tu radnju nije moguće poništiti.</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">Vaše datoteke na stranici Moj disk automatski će se sinkronizirati s vašim Chromebookom kako biste im mogli pristupati bez internetske veze.</translation>
 <translation id="7925247922861151263">Provjera AAA nije uspjela</translation>

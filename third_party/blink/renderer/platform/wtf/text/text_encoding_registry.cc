@@ -60,8 +60,9 @@ namespace blink {
 const size_t kMaxEncodingNameLength = 63;
 
 struct TextCodecFactory {
-  NewTextCodecFunction function;
-  explicit TextCodecFactory(NewTextCodecFunction f = nullptr) : function(f) {}
+  NewTextCodecFunction function = nullptr;
+  TextCodecFactory() = default;
+  explicit TextCodecFactory(NewTextCodecFunction f) : function(f) {}
 };
 
 using TextEncodingNameMap =
@@ -272,7 +273,7 @@ void DumpTextEncodingNameMap() {
       builder << "\n\t" << it.key << "\t=> " << it.value;
     }
   }
-  LOG(INFO) << builder.ReleaseString().Utf8();
+  LOG(INFO) << builder.Utf8();
 }
 #endif
 

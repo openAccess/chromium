@@ -14,8 +14,9 @@
 #include "base/observer_list.h"
 #include "base/scoped_observation_traits.h"
 #include "base/time/time.h"
+#include "ui/base/interaction/element_identifier.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
@@ -45,6 +46,10 @@ class MouseEvent;
 class TrackedElement;
 }
 
+namespace views {
+class Widget;
+}
+
 // The LocationBar class is a virtual interface, defining access to the
 // window's location bar component.  This class exists so that cross-platform
 // components like the browser command system can talk to the platform
@@ -55,7 +60,8 @@ class LocationBar {
   // Holds the details necessary to open the omnibox match via browser commands.
   struct NavigationParams {
     GURL destination_url;
-    WindowOpenDisposition disposition{WindowOpenDisposition::CURRENT_TAB};
+    ui::mojom::WindowOpenDisposition disposition{
+        ui::mojom::WindowOpenDisposition::kCurrentTab};
     ui::PageTransition transition{ui::PAGE_TRANSITION_TYPED |
                                   ui::PAGE_TRANSITION_FROM_ADDRESS_BAR};
     base::TimeTicks match_selection_timestamp;
@@ -160,6 +166,10 @@ class LocationBar {
   // Gets an anchor for the entire location bar.
   virtual ui::TrackedElement* GetAnchorOrNull() = 0;
 
+  // Returns the ElementContext used to look up tracked elements in this
+  // location bar.
+  virtual ui::ElementContext GetElementContext() const;
+
   // Returns true if the location bar is currently in the middle of a popup
   // state transition.
   virtual bool in_popup_state_transition() const;
@@ -256,6 +266,13 @@ class LocationBarTesting {
 
   // Returns if the content setting image at |index| is displaying a bubble.
   virtual bool IsContentSettingBubbleShowing(size_t index) = 0;
+
+  // Returns the bubble widget for the content setting image at |index|, if
+  // showing.
+  virtual views::Widget* GetContentSettingBubbleWidget(size_t index) = 0;
+
+  // Returns if the content setting image at |index| is currently visible.
+  virtual bool IsContentSettingImageVisible(size_t index) = 0;
 
  protected:
   virtual ~LocationBarTesting() = default;

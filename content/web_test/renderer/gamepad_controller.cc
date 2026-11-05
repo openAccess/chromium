@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -117,23 +118,23 @@ gin::ObjectTemplateBuilder GamepadControllerBindings::GetObjectTemplateBuilder(
     v8::Isolate* isolate) {
   return gin::Wrappable<GamepadControllerBindings>::GetObjectTemplateBuilder(
              isolate)
-      .SetMethod("connect", &GamepadControllerBindings::Connect)
-      .SetMethod("dispatchConnected",
-                 &GamepadControllerBindings::DispatchConnected)
-      .SetMethod("disconnect", &GamepadControllerBindings::Disconnect)
-      .SetMethod("dispatchRawInputChanged",
-                 &GamepadControllerBindings::DispatchRawInputChanged)
-      .SetMethod("setId", &GamepadControllerBindings::SetId)
-      .SetMethod("setButtonCount", &GamepadControllerBindings::SetButtonCount)
-      .SetMethod("setButtonData", &GamepadControllerBindings::SetButtonData)
-      .SetMethod("setAxisCount", &GamepadControllerBindings::SetAxisCount)
-      .SetMethod("setAxisData", &GamepadControllerBindings::SetAxisData)
-      .SetMethod("setDualRumbleVibrationActuator",
-                 &GamepadControllerBindings::SetDualRumbleVibrationActuator)
-      .SetMethod("setTriggerRumbleVibrationActuator",
-                 &GamepadControllerBindings::SetTriggerRumbleVibrationActuator)
-      .SetMethod("setTouchCount", &GamepadControllerBindings::SetTouchCount)
-      .SetMethod("setTouchData", &GamepadControllerBindings::SetTouchData);
+      .SetMethod<&GamepadControllerBindings::Connect>("connect")
+      .SetMethod<&GamepadControllerBindings::DispatchConnected>(
+          "dispatchConnected")
+      .SetMethod<&GamepadControllerBindings::Disconnect>("disconnect")
+      .SetMethod<&GamepadControllerBindings::DispatchRawInputChanged>(
+          "dispatchRawInputChanged")
+      .SetMethod<&GamepadControllerBindings::SetId>("setId")
+      .SetMethod<&GamepadControllerBindings::SetButtonCount>("setButtonCount")
+      .SetMethod<&GamepadControllerBindings::SetButtonData>("setButtonData")
+      .SetMethod<&GamepadControllerBindings::SetAxisCount>("setAxisCount")
+      .SetMethod<&GamepadControllerBindings::SetAxisData>("setAxisData")
+      .SetMethod<&GamepadControllerBindings::SetDualRumbleVibrationActuator>(
+          "setDualRumbleVibrationActuator")
+      .SetMethod<&GamepadControllerBindings::SetTriggerRumbleVibrationActuator>(
+          "setTriggerRumbleVibrationActuator")
+      .SetMethod<&GamepadControllerBindings::SetTouchCount>("setTouchCount")
+      .SetMethod<&GamepadControllerBindings::SetTouchData>("setTouchData");
 }
 
 void GamepadControllerBindings::Connect(int index) {
@@ -304,8 +305,8 @@ GamepadController::GamepadController() {
     // clusterfuzz. If it happened in the wild, the test would be retried.
     LOG(ERROR) << "GamepadController shared memory mapping is not valid";
   } else {
-    gamepads_ =
-        new (shared_memory_mapping_.memory()) device::GamepadHardwareBuffer();
+    gamepads_ = std::construct_at(
+        shared_memory_mapping_.GetMemoryAs<device::GamepadHardwareBuffer>());
   }
 
   Reset();

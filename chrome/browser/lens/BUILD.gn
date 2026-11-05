@@ -24,28 +24,32 @@ if (is_android) {
       "android/lens_prefs.cc",
     ]
 
-    public_deps = [
-      ":lens",
-      "//chrome/browser:browser_public_dependencies",
-    ]
+    public_deps = [ ":lens" ]
 
     deps = [
       ":jni_headers",
       "//chrome/android:jni_headers",
+      "//chrome/browser:browser_process",
       "//components/policy/core/common:common_constants",
       "//components/prefs",
     ]
   }
 
   android_library("java") {
-    sources =
-        [ "java/src/org/chromium/chrome/browser/lens/LensController.java" ]
+    sources = [
+      "java/src/org/chromium/chrome/browser/lens/LensController.java",
+      "java/src/org/chromium/chrome/browser/lens/tips/GoogleLensTipsPromoHandler.java",
+    ]
 
     deps = [
       ":java_resources",
       "//base:base_java",
       "//base:service_loader_java",
+      "//build/android:build_java",
       "//chrome/browser/contextmenu:java",
+      "//chrome/browser/tabmodel:java",
+      "//chrome/browser/tips/android:java_resources",
+      "//chrome/browser/tips/android:public_java",
       "//chrome/browser/ui/android/strings:ui_strings_grd",
       "//components/embedder_support/android:context_menu_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
@@ -69,7 +73,6 @@ if (is_android) {
       ":java_resources",
       ":util_java",
       "//base:base_java",
-      "//chrome/browser/contextmenu:java",
       "//chrome/browser/ui/android/strings:ui_strings_grd",
       "//components/embedder_support/android:context_menu_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
@@ -112,6 +115,7 @@ if (is_android) {
     sources = [
       "java/src/org/chromium/chrome/browser/lens/LensControllerTest.java",
       "java/src/org/chromium/chrome/browser/lens/LensSupportStatusHelperUnitTest.java",
+      "java/src/org/chromium/chrome/browser/lens/tips/GoogleLensTipsPromoHandlerUnitTest.java",
     ]
     deps = [
       ":java",
@@ -123,42 +127,81 @@ if (is_android) {
       "//chrome/browser/gsa:java",
       "//chrome/browser/profiles/android:java",
       "//chrome/browser/search_engines/android:java",
+      "//chrome/browser/tabmodel:java",
+      "//chrome/browser/tips/android:public_java",
       "//components/search_engines/android:java",
       "//third_party/androidx:androidx_annotation_annotation_java",
       "//third_party/junit",
       "//third_party/mockito:mockito_java",
+      "//ui/android:ui_no_recycler_view_java",
     ]
   }
 }
 
-source_set("lens_identity_delegation_helper") {
+if (!is_android) {
+  source_set("lens_suggestion_tool") {
+    sources = [
+      "lens_suggestion_tool.cc",
+      "lens_suggestion_tool.h",
+    ]
+    public_deps = [
+      "//base",
+      "//chrome/browser/selection",
+    ]
+    deps = [
+      "//chrome/app:generated_resources",
+      "//chrome/browser/ui/lens",
+      "//components/lens",
+      "//components/optimization_guide/proto:optimization_guide_proto",
+      "//components/tabs:public",
+      "//content/public/browser",
+      "//skia",
+      "//ui/base",
+      "//ui/gfx/geometry",
+    ]
+  }
+}
+
+source_set("lens_sapisid_generator") {
   sources = [
-    "lens_identity_delegation_helper.cc",
-    "lens_identity_delegation_helper.h",
+    "lens_sapisid_generator.cc",
+    "lens_sapisid_generator.h",
   ]
   deps = [
     "//base",
     "//build:branding_buildflags",
-    "//chrome/browser/lens/sapisid",
-    "//chrome/browser/profiles:profile",
-    "//components/signin/public/identity_manager",
-    "//content/public/browser",
-    "//google_apis/common",
+    "//components/optimization_guide:optimization_guide_buildflags",
+    "//components/optimization_guide/core:optimization_guide_library_holder",
   ]
 }
 
 source_set("unit_tests") {
   testonly = true
-  sources = [ "lens_identity_delegation_helper_unittest.cc" ]
+  sources = [ "lens_sapisid_generator_unittest.cc" ]
   deps = [
-    ":lens_identity_delegation_helper",
+    ":lens_sapisid_generator",
     "//base",
     "//base/test:test_support",
     "//build:branding_buildflags",
-    "//chrome/test:test_support",
-    "//components/signin/public/identity_manager:test_support",
-    "//content/public/browser",
-    "//content/test:test_support",
     "//testing/gtest",
   ]
+
+  if (!is_android) {
+    sources += [ "lens_suggestion_tool_unittest.cc" ]
+    deps += [
+      ":lens_suggestion_tool",
+      "//chrome/browser/lens/core/mojom:mojo_bindings",
+      "//chrome/browser/selection",
+      "//chrome/browser/ui/lens",
+      "//components/lens",
+      "//components/optimization_guide/proto:optimization_guide_proto",
+      "//components/tabs:test_support",
+      "//content/test:test_support",
+      "//mojo/public/cpp/bindings",
+      "//skia",
+      "//testing/gmock",
+      "//ui/base/unowned_user_data",
+      "//ui/gfx/geometry",
+    ]
+  }
 }

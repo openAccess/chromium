@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/check.h"
+#include "base/containers/to_vector.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -14,7 +15,8 @@
 AndroidBrowserWindowEnumerator::AndroidBrowserWindowEnumerator(
     std::vector<BrowserWindowInterface*> browser_windows,
     bool enumerate_new_browser_windows)
-    : browser_windows_(browser_windows),
+    : browser_windows_(
+          base::ToVector<raw_ptr<BrowserWindowInterface>>(browser_windows)),
       enumerate_new_browser_windows_(enumerate_new_browser_windows) {
   browser_collection_observation_.Observe(
       GlobalBrowserCollection::GetInstance());
@@ -34,7 +36,8 @@ void AndroidBrowserWindowEnumerator::OnBrowserCreated(
     return;
   }
 
-  DCHECK(!std::ranges::contains(browser_windows_, browser));
+  CHECK(!std::ranges::contains(browser_windows_, browser),
+        base::NotFatalUntil::M162);
   browser_windows_.push_back(browser);
 }
 

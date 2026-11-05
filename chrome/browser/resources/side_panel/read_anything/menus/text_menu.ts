@@ -12,10 +12,8 @@ import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
 import type {VisualBrowserProxy} from '../app/visual_browser_proxy.js';
 import {VisualBrowserProxyImpl} from '../app/visual_browser_proxy.js';
-import {DEFAULT_SETTINGS, LineFocusMovement, LineFocusStyle, ToolbarEvent} from '../content/read_anything_types.js';
-import type {SettingsPrefs, ShowAtConfigPrefs} from '../content/read_anything_types.js';
-import {ReadAnythingSettingsChange} from '../shared/metrics_browser_proxy.js';
-import {ReadAnythingLogger} from '../shared/read_anything_logger.js';
+import {ToolbarEvent} from '../content/read_anything_types.js';
+import type {ShowAtConfigPrefs} from '../content/read_anything_types.js';
 
 import type {GroupedActionMenuElement} from './grouped_action_menu.js';
 import type {MenuGroup, MenuStateItem, ToolbarMenu} from './menu_util.js';
@@ -41,24 +39,22 @@ export class TextMenuElement extends TextMenuElementBase implements
 
   static override get properties() {
     return {
-      settingsPrefs: {type: Object},
+      font: {type: String},
+      lineSpacing: {type: Number},
+      letterSpacing: {type: Number},
       nonModal: {type: Boolean},
       areFontsLoaded: {type: Boolean},
       pageLanguage: {type: String},
       groups_: {type: Array},
-      lineFocusStyle: {type: Object},
-      lineFocusEnabled: {type: Boolean},
-      lineFocusMovement: {type: Number},
     };
   }
 
-  accessor settingsPrefs: SettingsPrefs = DEFAULT_SETTINGS;
+  accessor font: string = '';
+  accessor lineSpacing: number = 0;
+  accessor letterSpacing: number = 0;
   accessor nonModal: boolean = false;
   accessor areFontsLoaded: boolean = false;
   accessor pageLanguage: string = '';
-  accessor lineFocusStyle: LineFocusStyle|null = null;
-  accessor lineFocusEnabled: boolean = false;
-  accessor lineFocusMovement: LineFocusMovement|null = null;
 
   private visualBrowserProxy_: VisualBrowserProxy =
       VisualBrowserProxyImpl.getInstance();
@@ -106,49 +102,26 @@ export class TextMenuElement extends TextMenuElementBase implements
     },
   ];
 
-  private toggleOptions_: Array<MenuStateItem<boolean>> = [
-    {
-      title: loadTimeData.getString('lineFocusOffTitle'),
-      data: false,
-    },
-    {
-      title: loadTimeData.getString('lineFocusOnTitle'),
-      data: true,
-    },
-  ];
+  protected accessor groups_: Array<MenuGroup<number|string>> =
+      this.computeGroups_();
 
-  private styleOptions_: Array<MenuStateItem<LineFocusStyle>> = [
-    {
-      title: loadTimeData.getString('lineFocusUnderlineTitle'),
-      data: LineFocusStyle.UNDERLINE,
-    },
-    {
-      title: loadTimeData.getString('lineFocusOneLineTitle'),
-      data: LineFocusStyle.SMALL_WINDOW,
-    },
-    {
-      title: loadTimeData.getString('lineFocusThreeLineTitle'),
-      data: LineFocusStyle.MEDIUM_WINDOW,
-    },
-    {
-      title: loadTimeData.getString('lineFocusFiveLineTitle'),
-      data: LineFocusStyle.LARGE_WINDOW,
-    },
-  ];
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
 
-  private movementOptions_: Array<MenuStateItem<LineFocusMovement>> = [
-    {
-      title: loadTimeData.getString('lineFocusStaticTitle'),
-      data: LineFocusMovement.STATIC,
-    },
-    {
-      title: loadTimeData.getString('lineFocusCursorLineTitle'),
-      data: LineFocusMovement.CURSOR,
-    },
-  ];
+    if (changedProperties.has('pageLanguage') ||
+        changedProperties.has('areFontsLoaded')) {
+      this.computeFontOptions_();
+    }
 
-  private get defaultGroups_():
-      Array<MenuGroup<number|string|boolean|LineFocusStyle|LineFocusMovement>> {
+    if (changedProperties.has('font') || changedProperties.has('lineSpacing') ||
+        changedProperties.has('letterSpacing') ||
+        changedProperties.has('pageLanguage') ||
+        changedProperties.has('areFontsLoaded')) {
+      this.groups_ = this.computeGroups_();
+    }
+  }
+
+  private computeGroups_(): Array<MenuGroup<number|string>> {
     return [
       {
         header: {
@@ -157,6 +130,7 @@ export class TextMenuElement extends TextMenuElementBase implements
         },
         items: this.fontOptions_,
         eventName: ToolbarEvent.FONT,
+        selectedValue: this.font,
       },
       {
         header: {
@@ -165,6 +139,7 @@ export class TextMenuElement extends TextMenuElementBase implements
         },
         items: this.lineSpacingOptions_,
         eventName: ToolbarEvent.LINE_SPACING,
+        selectedValue: this.lineSpacing,
       },
       {
         header: {
@@ -173,49 +148,9 @@ export class TextMenuElement extends TextMenuElementBase implements
         },
         items: this.letterSpacingOptions_,
         eventName: ToolbarEvent.LETTER_SPACING,
+        selectedValue: this.letterSpacing,
       },
     ];
-  }
-
-  protected accessor groups_:
-      Array<MenuGroup<number|string|boolean|LineFocusStyle|LineFocusMovement>> =
-          this.defaultGroups_;
-  private logger_: ReadAnythingLogger = ReadAnythingLogger.getInstance();
-
-  override willUpdate(changedProperties: PropertyValues<this>) {
-    super.willUpdate(changedProperties);
-
-    if (this.visualBrowserProxy_.isLineFocusEnabled()) {
-      if (changedProperties.has('lineFocusEnabled')) {
-        this.updateOptionsForToggle_(this.lineFocusEnabled);
-      }
-      if (changedProperties.has('lineFocusStyle') &&
-          this.lineFocusStyle !== null) {
-        this.updateOptionsForStyle_(this.lineFocusStyle);
-      }
-      if (changedProperties.has('lineFocusMovement') &&
-          this.lineFocusMovement !== null) {
-        this.updateOptionsForMovement_(this.lineFocusMovement);
-      }
-    }
-
-    if (changedProperties.has('pageLanguage') ||
-        changedProperties.has('areFontsLoaded')) {
-      this.computeFontOptions_();
-    }
-
-    if (changedProperties.has('settingsPrefs') ||
-        changedProperties.has('pageLanguage') ||
-        changedProperties.has('areFontsLoaded') ||
-        changedProperties.has('lineFocusEnabled') ||
-        changedProperties.has('lineFocusStyle') ||
-        changedProperties.has('lineFocusMovement')) {
-      this.updateOptionsForFont_();
-      this.updateOptionsForLineSpacing_();
-      this.updateOptionsForLetterSpacing_();
-      this.computeGroups_();
-      this.groups_ = [...this.groups_];
-    }
   }
 
   open(anchor: HTMLElement, showAtConfig?: ShowAtConfigPrefs) {
@@ -224,117 +159,6 @@ export class TextMenuElement extends TextMenuElementBase implements
 
   close() {
     this.$.menu.close();
-  }
-
-  protected onFontChange_(event: CustomEvent<{data: string}>) {
-    const newFont = event.detail.data;
-    this.visualBrowserProxy_.onFontChange(newFont);
-    this.logger_.logTextSettingsChange(ReadAnythingSettingsChange.FONT_CHANGE);
-  }
-
-  protected onLineSpacingChange_(event: CustomEvent<{data: number}>) {
-    const newSpacing = event.detail.data;
-    this.visualBrowserProxy_.onLineSpacingChange(newSpacing);
-    this.logger_.logTextSettingsChange(
-        ReadAnythingSettingsChange.LINE_HEIGHT_CHANGE);
-  }
-
-  protected onLetterSpacingChange_(event: CustomEvent<{data: number}>) {
-    const newSpacing = event.detail.data;
-    this.visualBrowserProxy_.onLetterSpacingChange(newSpacing);
-    this.logger_.logTextSettingsChange(
-        ReadAnythingSettingsChange.LETTER_SPACING_CHANGE);
-  }
-
-  protected onLineFocusStyleChange_() {
-    this.logger_.logTextSettingsChange(
-        ReadAnythingSettingsChange.LINE_FOCUS_STYLE_CHANGE);
-  }
-
-  protected onLineFocusToggleChange_() {
-    this.logger_.logTextSettingsChange(
-        ReadAnythingSettingsChange.LINE_FOCUS_TOGGLE);
-  }
-
-  protected onLineFocusMovementChange_() {
-    this.logger_.logTextSettingsChange(
-        ReadAnythingSettingsChange.LINE_FOCUS_MOVEMENT_CHANGE);
-  }
-
-  private updateOptionsForFont_() {
-    const currentFont = this.visualBrowserProxy_.getFontName();
-    this.fontOptions_.forEach(option => {
-      option.selected = option.data === currentFont;
-    });
-  }
-
-  private updateOptionsForLineSpacing_() {
-    const currentSpacing = this.settingsPrefs.lineSpacing;
-    this.lineSpacingOptions_.forEach(option => {
-      option.selected = option.data === currentSpacing;
-    });
-  }
-
-  private updateOptionsForLetterSpacing_() {
-    const currentSpacing = this.settingsPrefs.letterSpacing;
-    this.letterSpacingOptions_.forEach(option => {
-      option.selected = option.data === currentSpacing;
-    });
-  }
-
-  private updateOptionsForToggle_(isEnabled: boolean) {
-    this.toggleOptions_.forEach(option => {
-      option.selected = option.data === isEnabled;
-    });
-  }
-
-  private updateOptionsForStyle_(newStyle: LineFocusStyle) {
-    this.styleOptions_.forEach(option => {
-      option.selected = option.data === newStyle;
-    });
-  }
-
-  private updateOptionsForMovement_(newMovement: LineFocusMovement) {
-    this.movementOptions_.forEach(option => {
-      option.selected = option.data === newMovement;
-    });
-  }
-
-  private computeGroups_() {
-    const groups = this.defaultGroups_;
-
-    if (this.visualBrowserProxy_.isLineFocusEnabled()) {
-      groups.push({
-        header: {
-          title: loadTimeData.getString('lineFocusLabel'),
-          separator: true,
-        },
-        items: this.toggleOptions_,
-        eventName: ToolbarEvent.LINE_FOCUS_TOGGLE,
-      });
-
-      if (this.lineFocusEnabled) {
-        groups.push(
-            {
-              header: {
-                title: loadTimeData.getString('lineFocusStyleHeading'),
-                separator: false,
-              },
-              items: this.styleOptions_,
-              eventName: ToolbarEvent.LINE_FOCUS_STYLE,
-            },
-            {
-              header: {
-                title: loadTimeData.getString('lineFocusMovementHeading'),
-                separator: false,
-              },
-              items: this.movementOptions_,
-              eventName: ToolbarEvent.LINE_FOCUS_MOVEMENT,
-            });
-      }
-    }
-
-    this.groups_ = groups;
   }
 
   private computeFontOptions_() {
@@ -347,9 +171,6 @@ export class TextMenuElement extends TextMenuElementBase implements
           data: font,
           style: `font-family:${font}`,
         }));
-    if (this.groups_[0]) {
-      this.groups_[0].items = this.fontOptions_;
-    }
   }
 }
 

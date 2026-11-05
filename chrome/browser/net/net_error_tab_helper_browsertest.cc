@@ -9,10 +9,10 @@
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/net/net_error_diagnostics_dialog.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/url_loader_interceptor.h"
 #include "net/dns/mock_host_resolver.h"
@@ -63,8 +63,8 @@ class NetErrorTabHelperTest : public InProcessBrowserTest {
     host_resolver()->AddRule("mock.http", "127.0.0.1");
     ASSERT_TRUE(embedded_test_server()->Start());
 
-    tab_helper_ = chrome_browser_net::NetErrorTabHelper::FromWebContents(
-        browser()->tab_strip_model()->GetActiveWebContents());
+    tab_helper_ = chrome_browser_net::NetErrorTabHelper::From(
+        browser()->GetTabStripModel()->GetActiveTab());
   }
 
   WebContents* GetWebContents() {
@@ -209,10 +209,6 @@ class NetErrorTabHelperWithFencedFrameTest : public NetErrorTabHelperTest {
   NetErrorTabHelperWithFencedFrameTest& operator=(
       const NetErrorTabHelperWithFencedFrameTest&) = delete;
 
-  test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_test_helper_;
-  }
-
   // Returns true if the platform has support for a diagnostics tool, and it
   // can be launched from |render_frame_host|.
   std::string WebContentsCanShowDiagnosticsTool(
@@ -221,9 +217,6 @@ class NetErrorTabHelperWithFencedFrameTest : public NetErrorTabHelperTest {
     return CanShowNetworkDiagnosticsDialog(web_contents) ? "FOUND"
                                                          : "NOT FOUND";
   }
-
- private:
-  test::FencedFrameTestHelper fenced_frame_test_helper_;
 };
 
 IN_PROC_BROWSER_TEST_F(NetErrorTabHelperWithFencedFrameTest,
@@ -237,26 +230,6 @@ IN_PROC_BROWSER_TEST_F(NetErrorTabHelperWithFencedFrameTest,
   EXPECT_EQ(WebContentsCanShowDiagnosticsTool(
                 GetWebContents()->GetPrimaryMainFrame()),
             result.ExtractString());
-}
-
-IN_PROC_BROWSER_TEST_F(NetErrorTabHelperWithFencedFrameTest,
-                       CanRunDiagnosticsDialogOnFencedFrame) {
-  GURL fenced_frame_url =
-      net::URLRequestFailedJob::GetMockHttpUrl(net::ERR_NAME_NOT_RESOLVED);
-  RenderFrameHost* inner_fenced_frame_rfh =
-      fenced_frame_test_helper().CreateFencedFrame(
-          GetWebContents()->GetPrimaryMainFrame(), fenced_frame_url,
-          net::ERR_NAME_NOT_RESOLVED);
-  EvalJsResult result =
-      EvalJs(inner_fenced_frame_rfh, kSearchingForDiagnosisScript);
-  ASSERT_TRUE(result.is_ok());
-#if BUILDFLAG(IS_CHROMEOS)
-  // ChromeOS has its own diagnostics extension, which doesn't rely on a
-  // browser-initiated dialog.
-  EXPECT_EQ("FOUND", result.ExtractString());
-#else
-  EXPECT_EQ("NOT FOUND", result.ExtractString());
-#endif
 }
 
 }  // namespace content

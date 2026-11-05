@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "base/containers/to_vector.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/trace_event/memory_usage_estimator.h"
@@ -133,8 +134,11 @@ void ProcessorEntityTracker::RemoveEntityForStorageKey(
     return;
   }
 
-  DCHECK_EQ(entities_[iter->second]->storage_key(), storage_key);
-  entities_.erase(iter->second);
+  auto entity_iter = entities_.find(iter->second);
+  CHECK(entity_iter != entities_.end());
+  DCHECK_EQ(entity_iter->second->storage_key(), storage_key);
+  entity_iter->second->ClearPendingAttachmentUpload();
+  entities_.erase(entity_iter);
   storage_key_to_tag_hash_.erase(iter);
 }
 
@@ -152,6 +156,7 @@ std::vector<std::string> ProcessorEntityTracker::RemoveInactiveCollaborations(
       // updates for inactive collaborations (DataTypeWorker would filter them
       // out).
       CHECK(!entity->storage_key().empty());
+      entity->ClearPendingAttachmentUpload();
       removed_storage_keys.push_back(entity->storage_key());
       return true;
     }
@@ -214,21 +219,15 @@ const ProcessorEntity* ProcessorEntityTracker::GetEntityForStorageKey(
 
 std::vector<const ProcessorEntity*>
 ProcessorEntityTracker::GetAllEntitiesIncludingTombstones() const {
-  std::vector<const ProcessorEntity*> entities;
-  entities.reserve(entities_.size());
-  for (const auto& [client_tag_hash, entity] : entities_) {
-    entities.push_back(entity.get());
-  }
-  return entities;
+  return base::ToVector(entities_,
+                        [](const auto& pair) -> const ProcessorEntity* {
+                          return pair.second.get();
+                        });
 }
 
 std::vector<std::string> ProcessorEntityTracker::GetAllStorageKeys() const {
-  std::vector<std::string> storage_keys;
-  storage_keys.reserve(storage_key_to_tag_hash_.size());
-  for (const auto& [storage_key, client_tag_hash] : storage_key_to_tag_hash_) {
-    storage_keys.push_back(storage_key);
-  }
-  return storage_keys;
+  return base::ToVector(storage_key_to_tag_hash_,
+                        &std::pair<const std::string, ClientTagHash>::first);
 }
 
 std::vector<ProcessorEntity*>
@@ -240,6 +239,17 @@ ProcessorEntityTracker::GetEntitiesWithLocalChanges(size_t max_entries) {
       if (entities.size() >= max_entries) {
         break;
       }
+    }
+  }
+  return entities;
+}
+
+std::vector<ProcessorEntity*>
+ProcessorEntityTracker::GetEntitiesWithPendingAttachmentUploads() {
+  std::vector<ProcessorEntity*> entities;
+  for (const auto& [client_tag_hash, entity] : entities_) {
+    if (entity->HasPendingAttachmentUpload()) {
+      entities.push_back(entity.get());
     }
   }
   return entities;

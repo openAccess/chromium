@@ -114,7 +114,7 @@ class NET_EXPORT_PRIVATE HttpCache::Writers {
 
   // Returns true if |transaction| is part of writers.
   bool HasTransaction(const Transaction* transaction) const {
-    return all_writers_.count(const_cast<Transaction*>(transaction)) > 0;
+    return all_writers_.contains(const_cast<Transaction*>(transaction));
   }
 
   // Returns true if more writers can be added for shared writing. Also fills in
@@ -199,6 +199,8 @@ class NET_EXPORT_PRIVATE HttpCache::Writers {
   using WaitingForReadMap = std::map<Transaction*, WaitingForRead>;
 
   using TransactionMap = std::map<Transaction*, TransactionInfo>;
+
+  PartialData* GetPartial() const;
 
   // Runs the state transition loop. Resets and calls |callback_| on exit,
   // unless the return value is ERR_IO_PENDING.

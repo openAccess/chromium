@@ -18,10 +18,10 @@
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
-#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -53,21 +53,28 @@ class PostRestoreSignInProviderTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
-    profile_ = std::move(builder).Build();
-    pref_service_ = profile_.get()->GetPrefs();
-    auth_service_ = AuthenticationServiceFactory::GetForProfile(profile_.get());
+    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
+    pref_service_ = profile_->GetPrefs();
+    auth_service_ = AuthenticationServiceFactory::GetForProfile(profile_);
 
     SetFakePreRestoreAccountInfo();
     provider_ = [[PostRestoreSignInProvider alloc]
-          initWithSyncService:SyncServiceFactory::GetForProfile(profile_.get())
+          initWithSyncService:SyncServiceFactory::GetForProfile(profile_)
         authenticationService:auth_service_
-              identityManager:IdentityManagerFactory::GetForProfile(
-                                  profile_.get())
+              identityManager:IdentityManagerFactory::GetForProfile(profile_)
                   prefService:pref_service_];
+  }
+
+  void TearDown() override {
+    provider_ = nil;
+    mock_scene_sign_in_handler_ = nil;
+    auth_service_ = nullptr;
+    pref_service_ = nullptr;
+    profile_ = nullptr;
+    PlatformTest::TearDown();
   }
 
   void SetFakePreRestoreAccountInfo() {
@@ -90,16 +97,16 @@ class PostRestoreSignInProviderTest : public PlatformTest {
                             /*history_sync_enabled=*/false);
     // Reinstantiate a provider so that it picks up the changes.
     provider_ = [[PostRestoreSignInProvider alloc]
-          initWithSyncService:SyncServiceFactory::GetForProfile(profile_.get())
+          initWithSyncService:SyncServiceFactory::GetForProfile(profile_)
         authenticationService:auth_service_
-              identityManager:IdentityManagerFactory::GetForProfile(
-                                  profile_.get())
+              identityManager:IdentityManagerFactory::GetForProfile(profile_)
                   prefService:pref_service_];
   }
 
   void SetupMockHandler() {
-    mock_scene_handler_ = OCMProtocolMock(@protocol(SceneCommands));
-    provider_.sceneHandler = mock_scene_handler_;
+    mock_scene_sign_in_handler_ =
+        OCMProtocolMock(@protocol(SceneSignInCommands));
+    provider_.sceneSignInHandler = mock_scene_sign_in_handler_;
   }
 
   // Signs in a fake identity.
@@ -116,11 +123,12 @@ class PostRestoreSignInProviderTest : public PlatformTest {
  protected:
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   web::WebTaskEnvironment task_environment_;
-  std::unique_ptr<TestProfileIOS> profile_;
+  TestProfileManagerIOS profile_manager_;
+  raw_ptr<TestProfileIOS> profile_ = nullptr;
   raw_ptr<PrefService> pref_service_ = nullptr;
   raw_ptr<AuthenticationService> auth_service_ = nullptr;
   base::test::ScopedFeatureList scoped_feature_list_;
-  id mock_scene_handler_;
+  id mock_scene_sign_in_handler_;
   PostRestoreSignInProvider* provider_;
 };
 
@@ -133,10 +141,10 @@ TEST_F(PostRestoreSignInProviderTest, hasIdentifierAlert) {
 // Tests the default action.
 TEST_F(PostRestoreSignInProviderTest, standardPromoAlertDefaultAction) {
   SetupMockHandler();
-  OCMExpect([mock_scene_handler_ showSignin:[OCMArg any]
-                         baseViewController:nil]);
+  OCMExpect([mock_scene_sign_in_handler_ showSignin:[OCMArg any]
+                                 baseViewController:nil]);
   [provider_ standardPromoAlertDefaultAction];
-  EXPECT_OCMOCK_VERIFY(mock_scene_handler_);
+  EXPECT_OCMOCK_VERIFY(mock_scene_sign_in_handler_);
 }
 
 // Test the title text.
@@ -187,7 +195,8 @@ TEST_F(PostRestoreSignInProviderTest, recordsChoiceDismissed) {
 TEST_F(PostRestoreSignInProviderTest, recordsChoiceContinue) {
   base::HistogramTester histogram_tester;
   SetupMockHandler();
-  OCMStub([mock_scene_handler_ showSignin:[OCMArg any] baseViewController:nil]);
+  OCMStub([mock_scene_sign_in_handler_ showSignin:[OCMArg any]
+                               baseViewController:nil]);
   [provider_ standardPromoAlertDefaultAction];
   histogram_tester.ExpectBucketCount(kIOSPostRestoreSigninChoiceHistogram,
                                      IOSPostRestoreSigninChoice::Continue, 1);
@@ -222,7 +231,8 @@ TEST_F(PostRestoreSignInProviderTest, clearsPreRestoreIdentity) {
 TEST_F(PostRestoreSignInProviderTest, AlreadySignedIn) {
   __block bool didCallShowSignIn = false;
   SetupMockHandler();
-  OCMStub([mock_scene_handler_ showSignin:[OCMArg any] baseViewController:nil])
+  OCMStub([mock_scene_sign_in_handler_ showSignin:[OCMArg any]
+                               baseViewController:nil])
       .andDo(^(NSInvocation* inv) {
         didCallShowSignIn = true;
       });
@@ -241,7 +251,8 @@ TEST_F(PostRestoreSignInProviderTest, SigninDisabled) {
       static_cast<int>(BrowserSigninMode::kDisabled));
   __block bool didCallShowSignIn = false;
   SetupMockHandler();
-  OCMStub([mock_scene_handler_ showSignin:[OCMArg any] baseViewController:nil])
+  OCMStub([mock_scene_sign_in_handler_ showSignin:[OCMArg any]
+                               baseViewController:nil])
       .andDo(^(NSInvocation* inv) {
         didCallShowSignIn = true;
       });

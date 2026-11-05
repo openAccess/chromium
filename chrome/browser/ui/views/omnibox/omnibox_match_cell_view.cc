@@ -21,7 +21,6 @@
 #include "components/omnibox/common/omnibox_feature_configs.h"
 #include "content/public/common/color_parser.h"
 #include "skia/ext/image_operations.h"
-#include "third_party/omnibox_proto/rich_answer_template.pb.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_features.h"
@@ -212,10 +211,10 @@ bool OmniboxMatchCellView::ShouldDisplayImage(const AutocompleteMatch& match) {
   // Extension suggestions in unscoped mode can have an `image_url` specified,
   // but they should be displayed as icon view instead of an image view (i.e.
   // following the default icon view size instead the larger image view size).
-  return match.type == AutocompleteMatchType::CALCULATOR ||
+  return match.type == omnibox::AutocompleteMatchType::kCalculator ||
          (!match.image_url.is_empty() &&
           match.provider->type() !=
-              AutocompleteProvider::TYPE_UNSCOPED_EXTENSION) ||
+              AutocompleteProvider::Type::kUnscopedExtension) ||
          (match.HasTakeoverAction(
               OmniboxActionId::CONTEXTUAL_SEARCH_OPEN_LENS) &&
           omnibox_feature_configs::ContextualSearch::Get()
@@ -234,7 +233,7 @@ void OmniboxMatchCellView::OnMatchUpdate(const OmniboxResultView* result_view,
   } else if (match.IsIphSuggestion()) {
     layout_style_ = LayoutStyle::IPH_SUGGESTION;
   } else if (match.type ==
-             AutocompleteMatchType::Type::HISTORY_EMBEDDINGS_ANSWER) {
+             omnibox::AutocompleteMatchType::kHistoryEmbeddingsAnswer) {
     layout_style_ = LayoutStyle::HISTORY_EMBEDDING_ANSWER;
   } else {
     layout_style_ = LayoutStyle::DEFAULT_NON_SEARCH_SUGGESTION;
@@ -278,7 +277,7 @@ void OmniboxMatchCellView::OnMatchUpdate(const OmniboxResultView* result_view,
             color_provider->GetColor(kColorOmniboxAnswerIconGM3Background),
             icon)));
   };
-  if (match.type == AutocompleteMatchType::CALCULATOR) {
+  if (match.type == omnibox::AutocompleteMatchType::kCalculator) {
     apply_vector_icon(features::IsRoundedIconsEnabled()
                           ? omnibox::kEqualIcon
                           : omnibox::kAnswerCalculatorOldIcon);
@@ -303,7 +302,7 @@ void OmniboxMatchCellView::OnMatchUpdate(const OmniboxResultView* result_view,
                                                                       color)));
   }
   SetTailSuggestCommonPrefixWidth(
-      (match.type == AutocompleteMatchType::SEARCH_SUGGEST_TAIL)
+      (match.type == omnibox::AutocompleteMatchType::kSearchSuggestTail)
           ? match.tail_suggest_common_prefix  // Used for indent calculation.
           : std::u16string());
 
@@ -326,9 +325,9 @@ void OmniboxMatchCellView::OnSecondaryTextVisibilityChanged() {
 void OmniboxMatchCellView::SetIcon(const gfx::ImageSkia& image,
                                    const AutocompleteMatch& match) {
   const bool is_pedal_suggestion_row =
-      match.type == AutocompleteMatchType::PEDAL;
+      match.type == omnibox::AutocompleteMatchType::kPedal;
   const bool is_journeys_suggestion_row =
-      match.type == AutocompleteMatchType::HISTORY_CLUSTER;
+      match.type == omnibox::AutocompleteMatchType::kHistoryCluster;
   const bool is_instant_keyword_row =
       AutocompleteMatch::IsFeaturedSearchType(match.type);
   bool should_draw_icon_background = is_pedal_suggestion_row ||
@@ -593,13 +592,7 @@ int OmniboxMatchCellView::GetImageIndent() const {
   // b) Entities, answers, and icons continue to be center-aligned.
   // c) Regardless of the state of those other features and their widths.
   // This applies to both touch-UI and non-touch-UI.
-  int indent = 16 + kUniformRowHeightIconSize / 2 - kImageBoundsWidth / 2;
-
-  indent += omnibox_feature_configs::AdjustOmniboxIndent()
-                .Get()
-                .match_icon_indent_offset;
-
-  return indent;
+  return 16 + kUniformRowHeightIconSize / 2 - kImageBoundsWidth / 2;
 }
 
 int OmniboxMatchCellView::GetTextIndent() const {
@@ -633,10 +626,6 @@ int OmniboxMatchCellView::GetTextIndent() const {
   // For normal matches, the gap between the left edge of this view and the
   // left edge of its favicon or answer image.
   int indent = 52;
-
-  indent += omnibox_feature_configs::AdjustOmniboxIndent()
-                .Get()
-                .match_text_indent_offset;
 
   if (layout_style_ == LayoutStyle::IPH_SUGGESTION) {
     // The IPH row left inset is +`kIphOffset` from other suggestions, so the

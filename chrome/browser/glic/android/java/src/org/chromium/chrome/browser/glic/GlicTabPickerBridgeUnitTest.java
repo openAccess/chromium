@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.glic;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
@@ -23,6 +24,7 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -44,7 +46,6 @@ public class GlicTabPickerBridgeUnitTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private WindowAndroid mWindowAndroidMock;
-    @Mock private Activity mActivityMock;
     @Mock private TabModelSelector mTabModelSelectorMock;
     @Mock private Tab mTab1Mock;
     @Mock private Tab mTab2Mock;
@@ -57,7 +58,8 @@ public class GlicTabPickerBridgeUnitTest {
 
     @Before
     public void setUp() {
-        when(mWindowAndroidMock.getActivity()).thenReturn(new WeakReference<>(mActivityMock));
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
+        when(mWindowAndroidMock.getActivity()).thenReturn(new WeakReference<>(activity));
         when(mTab1Mock.getId()).thenReturn(30);
         when(mTab2Mock.getId()).thenReturn(40);
         when(mTab3Mock.getId()).thenReturn(50);
@@ -105,6 +107,9 @@ public class GlicTabPickerBridgeUnitTest {
                         ChromeItemPickerExtras.EXTRA_PRESELECTED_TAB_IDS);
 
         assertArrayEquals(new Integer[] {30, 40}, capturedPreselected.toArray(new Integer[0]));
+        assertTrue(
+                launchedIntent.getBooleanExtra(
+                        ChromeItemPickerExtras.EXTRA_INCLUDE_PDF_TABS, false));
 
         // Simulate successful tab selection result
         Intent resultIntent = new Intent();

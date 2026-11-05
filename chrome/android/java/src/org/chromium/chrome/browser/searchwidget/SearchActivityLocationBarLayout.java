@@ -49,13 +49,15 @@ public class SearchActivityLocationBarLayout extends LocationBarLayout {
             UrlBarCoordinator urlCoordinator,
             StatusCoordinator statusCoordinator,
             LocationBarDataProvider locationBarDataProvider,
-            WindowAndroid windowAndroid) {
+            WindowAndroid windowAndroid,
+            OmniboxResourceProvider resourceProvider) {
         super.initialize(
                 autocompleteCoordinator,
                 urlCoordinator,
                 statusCoordinator,
                 locationBarDataProvider,
-                windowAndroid);
+                windowAndroid,
+                resourceProvider);
         mPendingSearchPromoDecision = LocaleManager.getInstance().needToCheckForSearchEnginePromo();
         mAutocompleteCoordinator.setShouldPreventOmniboxAutocomplete(mPendingSearchPromoDecision);
 
@@ -69,9 +71,7 @@ public class SearchActivityLocationBarLayout extends LocationBarLayout {
         // Replicate LocationBarBackground bounds from ToolbarPhone.
         int verticalInsets =
                 getResources().getDimensionPixelSize(R.dimen.location_bar_vertical_margin)
-                        - OmniboxResourceProvider.getLocationBarBackgroundOnFocusHeightIncrease(
-                                        getContext())
-                                / 2;
+                        - resourceProvider.getLocationBarBackgroundOnFocusHeightIncrease() / 2;
         backgroundDrawable.setInsets(0, verticalInsets, 0, verticalInsets);
 
         setBackground(backgroundDrawable);
@@ -121,9 +121,7 @@ public class SearchActivityLocationBarLayout extends LocationBarLayout {
 
         // TODO(crbug.com/372036449): Move setting the hint text from the layout to using the URL
         // bar view binder and model properties.
-        if (origin == IntentOrigin.CUSTOM_TAB) {
-            mUrlBar.setHint(R.string.omnibox_on_cct_empty_hint);
-        } else if (origin == IntentOrigin.HUB) {
+        if (origin == IntentOrigin.HUB) {
             boolean isIncognito = mLocationBarDataProvider.isIncognitoBranded();
             @StringRes
             int hintTextRes =
@@ -194,11 +192,6 @@ public class SearchActivityLocationBarLayout extends LocationBarLayout {
 
     void clearOmniboxFocus() {
         mUrlBar.clearFocus();
-    }
-
-    @Override
-    public boolean shouldClearTextOnFocus() {
-        return false;
     }
 
     @Override

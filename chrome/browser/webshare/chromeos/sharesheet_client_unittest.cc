@@ -14,6 +14,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "build/chromeos_buildflags.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
@@ -22,6 +23,9 @@
 #include "chrome/browser/webshare/prepare_directory_task.h"
 #include "chrome/browser/webshare/store_file_task.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
+#include "components/enterprise/isolated_mode/prefs.h"
+#include "components/prefs/pref_service.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/test/web_contents_tester.h"
 #include "third_party/blink/public/mojom/webshare/webshare.mojom.h"
@@ -54,17 +58,6 @@ class SharesheetClientUnitTest : public ChromeRenderViewHostTestHarness {
         otr_profile, std::move(instance)));
   }
 
-  void SetIncognito() {
-    Profile* const otr_profile =
-        profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
-    EXPECT_TRUE(otr_profile->IsOffTheRecord());
-    EXPECT_TRUE(otr_profile->IsIncognitoProfile());
-    scoped_refptr<content::SiteInstance> instance =
-        content::SiteInstance::Create(otr_profile);
-    SetContents(content::WebContentsTester::CreateTestWebContents(
-        otr_profile, std::move(instance)));
-  }
-
   static void AcceptShareRequest(
       content::WebContents* web_contents,
       const std::vector<base::FilePath>& file_paths,
@@ -77,8 +70,50 @@ class SharesheetClientUnitTest : public ChromeRenderViewHostTestHarness {
   }
 };
 
-TEST_F(SharesheetClientUnitTest, TestDenyInIncognitoAfterDelay) {
-  SetIncognito();
+class SharesheetClientIncognitoUnitTest
+    : public SharesheetClientUnitTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  void SetUp() override {
+    SharesheetClientUnitTest::SetUp();
+    SetIncognito();
+  }
+
+  bool IsEnterpriseIsolatedMode() const { return GetParam(); }
+
+  void SetIncognito() {
+    if (IsEnterpriseIsolatedMode()) {
+      profile()->GetPrefs()->SetInteger(
+          enterprise_isolated_mode::kEnterpriseIsolatedModeSettings,
+          static_cast<int>(
+              enterprise_isolated_mode::IsolatedModeSetting::kEnabled));
+    }
+    Profile* const otr_profile =
+        profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+    EXPECT_TRUE(otr_profile->IsOffTheRecord());
+    EXPECT_EQ(otr_profile->IsEnterpriseIsolatedModeProfile(),
+              IsEnterpriseIsolatedMode());
+    EXPECT_EQ(otr_profile->IsIncognitoProfile(), !IsEnterpriseIsolatedMode());
+    scoped_refptr<content::SiteInstance> instance =
+        content::SiteInstance::Create(otr_profile);
+    SetContents(content::WebContentsTester::CreateTestWebContents(
+        otr_profile, std::move(instance)));
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      enterprise_isolated_mode::kEnableEnterpriseIsolatedMode};
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    SharesheetClientIncognitoUnitTest,
+    testing::Bool(),
+    [](const testing::TestParamInfo<bool>& info) {
+      return info.param ? "EnterpriseIsolatedMode" : "Incognito";
+    });
+
+TEST_P(SharesheetClientIncognitoUnitTest, TestDenyInIncognitoAfterDelay) {
   SharesheetClient sharesheet_client(web_contents());
 
   const std::string title = "Subject";
@@ -103,8 +138,7 @@ TEST_F(SharesheetClientUnitTest, TestDenyInIncognitoAfterDelay) {
   EXPECT_EQ(error, blink::mojom::ShareError::CANCELED);
 }
 
-TEST_F(SharesheetClientUnitTest, TestWithoutFilesInIncognito) {
-  SetIncognito();
+TEST_P(SharesheetClientIncognitoUnitTest, TestWithoutFilesInIncognito) {
   SharesheetClient sharesheet_client(web_contents());
 
   const std::string title = "Subject";
@@ -168,6 +202,114 @@ TEST_F(SharesheetClientUnitTest, DeleteAfterShare) {
                                     2);
   EXPECT_FALSE(base::PathExists(first_file));
   EXPECT_FALSE(base::PathExists(second_file));
+}
+
+TEST_F(SharesheetClientUnitTest, TestHiddenWebContentsBlocked) {
+  web_contents()->WasHidden();
+  SharesheetClient sharesheet_client(web_contents());
+
+  const std::string title = "Subject";
+  const std::string text = "Message";
+  const GURL share_url("https://example.com/");
+  std::vector<blink::mojom::SharedFilePtr> files;
+
+  base::RunLoop run_loop;
+  blink::mojom::ShareError error = blink::mojom::ShareError::INTERNAL_ERROR;
+  sharesheet_client.Share(
+      title, text, share_url, std::move(files),
+      base::BindLambdaForTesting(
+          [&run_loop, &error](blink::mojom::ShareError in_error) {
+            error = in_error;
+            run_loop.Quit();
+          }));
+
+  run_loop.Run();
+  EXPECT_EQ(error, blink::mojom::ShareError::PERMISSION_DENIED);
+}
+
+TEST_F(SharesheetClientUnitTest, TestHiddenDuringStoreFilesBlocked) {
+  SharesheetClient sharesheet_client(web_contents());
+  const base::FilePath share_cache_dir =
+      file_manager::util::GetShareCacheFilePath(profile());
+  const base::FilePath first_file =
+      share_cache_dir.AppendASCII(".WebShare/share1/first.txt");
+  const std::string title = "Subject";
+  const std::string text = "Message";
+  const GURL share_url("https://example.com/");
+  std::vector<blink::mojom::SharedFilePtr> files;
+  files.push_back(
+      blink::mojom::SharedFile::New(*base::SafeBaseName::Create(first_file),
+                                    blink::mojom::SerializedBlob::New()));
+
+  base::RunLoop run_loop;
+  blink::mojom::ShareError error = blink::mojom::ShareError::INTERNAL_ERROR;
+  sharesheet_client.Share(
+      title, text, share_url, std::move(files),
+      base::BindLambdaForTesting(
+          [&run_loop, &error](blink::mojom::ShareError in_error) {
+            error = in_error;
+            run_loop.Quit();
+          }));
+
+  // Hide the WebContents while file storage tasks are in flight.
+  web_contents()->WasHidden();
+
+  run_loop.Run();
+  EXPECT_EQ(error, blink::mojom::ShareError::PERMISSION_DENIED);
+}
+
+TEST_F(SharesheetClientUnitTest, TestOccludedWebContentsBlocked) {
+  web_contents()->WasOccluded();
+  SharesheetClient sharesheet_client(web_contents());
+
+  const std::string title = "Subject";
+  const std::string text = "Message";
+  const GURL share_url("https://example.com/");
+  std::vector<blink::mojom::SharedFilePtr> files;
+
+  base::RunLoop run_loop;
+  blink::mojom::ShareError error = blink::mojom::ShareError::INTERNAL_ERROR;
+  sharesheet_client.Share(
+      title, text, share_url, std::move(files),
+      base::BindLambdaForTesting(
+          [&run_loop, &error](blink::mojom::ShareError in_error) {
+            error = in_error;
+            run_loop.Quit();
+          }));
+
+  run_loop.Run();
+  EXPECT_EQ(error, blink::mojom::ShareError::PERMISSION_DENIED);
+}
+
+TEST_F(SharesheetClientUnitTest, TestOccludedDuringStoreFilesBlocked) {
+  SharesheetClient sharesheet_client(web_contents());
+  const base::FilePath share_cache_dir =
+      file_manager::util::GetShareCacheFilePath(profile());
+  const base::FilePath first_file =
+      share_cache_dir.AppendASCII(".WebShare/share1/first.txt");
+  const std::string title = "Subject";
+  const std::string text = "Message";
+  const GURL share_url("https://example.com/");
+  std::vector<blink::mojom::SharedFilePtr> files;
+  files.push_back(
+      blink::mojom::SharedFile::New(*base::SafeBaseName::Create(first_file),
+                                    blink::mojom::SerializedBlob::New()));
+
+  base::RunLoop run_loop;
+  blink::mojom::ShareError error = blink::mojom::ShareError::INTERNAL_ERROR;
+  sharesheet_client.Share(
+      title, text, share_url, std::move(files),
+      base::BindLambdaForTesting(
+          [&run_loop, &error](blink::mojom::ShareError in_error) {
+            error = in_error;
+            run_loop.Quit();
+          }));
+
+  // Occlude the WebContents while file storage tasks are in flight.
+  web_contents()->WasOccluded();
+
+  run_loop.Run();
+  EXPECT_EQ(error, blink::mojom::ShareError::PERMISSION_DENIED);
 }
 
 }  // namespace webshare

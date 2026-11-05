@@ -188,17 +188,18 @@ bool CSSValueList::Equals(const CSSValueList& other) const {
          CompareCSSValueVector(values_, other.values_);
 }
 
-unsigned CSSValueList::CustomHash() const {
-  unsigned hash = value_list_separator_;
+uint32_t CSSValueList::CustomHash() const {
+  uint32_t hash = value_list_separator_;
   for (const CSSValue* value : values_) {
     AddIntToHash(hash, value->Hash());
   }
   return hash;
 }
 
-bool CSSValueList::HasFailedOrCanceledSubresources() const {
+bool CSSValueList::HasFailedOrCanceledSubresources(
+    ResourceFetcher* fetcher) const {
   for (const auto& value : values_) {
-    if (value->HasFailedOrCanceledSubresources()) {
+    if (value->HasFailedOrCanceledSubresources(fetcher)) {
       return true;
     }
   }

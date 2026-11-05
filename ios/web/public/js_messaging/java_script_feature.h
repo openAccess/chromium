@@ -12,6 +12,7 @@
 #include <vector>
 
 #import "base/functional/callback.h"
+#import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/values.h"
 #import "ios/web/public/js_messaging/content_world.h"
@@ -162,11 +163,11 @@ class JavaScriptFeature {
   // specified prior to configuring this feaure. If `origin_filter` is set
   // message will only be processed if coming from this domain. All
   // FeatureScript in `feature_script` must have the same OriginFilter.
-  JavaScriptFeature(ContentWorld supported_world,
-                    std::vector<FeatureScript> feature_scripts,
-                    std::vector<const JavaScriptFeature*> dependent_feature =
-                        std::vector<const JavaScriptFeature*>(),
-                    OriginFilter origin_filter = OriginFilter::kPublic);
+  JavaScriptFeature(
+      ContentWorld supported_world,
+      std::vector<FeatureScript> feature_scripts,
+      std::vector<raw_ptr<const JavaScriptFeature>> dependent_features = {},
+      OriginFilter origin_filter = OriginFilter::kPublic);
   virtual ~JavaScriptFeature();
 
   // Returns a weak ptr to the feature.
@@ -190,7 +191,8 @@ class JavaScriptFeature {
   // Returns a vector of scripts used by this feature.
   virtual std::vector<FeatureScript> GetScripts() const;
   // Returns a vector of features which this one depends upon being available.
-  virtual std::vector<const JavaScriptFeature*> GetDependentFeatures() const;
+  virtual const std::vector<raw_ptr<const JavaScriptFeature>>&
+  GetDependentFeatures() const;
 
   // Returns the script message handler name which this feature will receive
   // messages from JavaScript. Returning null will not register any handler.
@@ -230,6 +232,22 @@ class JavaScriptFeature {
                                    const std::string& name,
                                    const base::DictValue& parameters,
                                    ExecuteJavaScriptCallbackWithError callback);
+
+  // Executes `feature_script` in `web_frame` within the content world that
+  // this feature has been configured. Unlike scripts registered at
+  // construction, which WebKit injects at their injection time before page
+  // scripts run, the script executes asynchronously once the request reaches
+  // the frame, so its injection time is ignored. The script's target frames
+  // and origin filter are honored, and a script with `kInjectOncePerWindow`
+  // reinjection behavior is a no-op if the same `FeatureScript` already ran in
+  // the frame's current window. Returns true if the execution was requested,
+  // false otherwise. `web_frame` must not be null and this feature must be
+  // registered with the BrowserState associated with `web_frame`.
+  // TODO(crbug.com/568527962): Split `FeatureScript` into injected and
+  // executed variants so that this function does not accept injection-only
+  // properties such as the injection time.
+  bool ExecuteFeatureScript(WebFrame* web_frame,
+                            const FeatureScript& feature_script);
 
   // Use of this function is DISCOURAGED. Prefer the `CallJavaScriptFunction`
   // family of functions instead to keep the API clear and well defined.
@@ -286,7 +304,7 @@ class JavaScriptFeature {
 
   ContentWorld supported_world_;
   const std::vector<FeatureScript> scripts_;
-  const std::vector<const JavaScriptFeature*> dependent_features_;
+  const std::vector<raw_ptr<const JavaScriptFeature>> dependent_features_;
   OriginFilter origin_filter_ = OriginFilter::kPublic;
   std::vector<url::Origin> origin_filter_origins_;
   base::WeakPtrFactory<JavaScriptFeature> weak_factory_;

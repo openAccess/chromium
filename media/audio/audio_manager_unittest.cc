@@ -17,7 +17,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_util.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/system/sys_info.h"
 #include "base/task/single_thread_task_runner.h"
@@ -97,10 +96,10 @@ struct TestAudioManagerFactory<std::nullptr_t> {
   }
 };
 
-const char kRealDefaultInputDeviceID[] = "input2";
-const char kRealDefaultOutputDeviceID[] = "output3";
-const char kRealCommunicationsInputDeviceID[] = "input1";
-const char kRealCommunicationsOutputDeviceID[] = "output1";
+constexpr char kRealDefaultInputDeviceID[] = "input2";
+constexpr char kRealDefaultOutputDeviceID[] = "output3";
+constexpr char kRealCommunicationsInputDeviceID[] = "input1";
+constexpr char kRealCommunicationsOutputDeviceID[] = "output1";
 
 void CheckDescriptionLabels(const AudioDeviceDescriptions& descriptions,
                             const std::string& real_default_id,
@@ -116,13 +115,10 @@ void CheckDescriptionLabels(const AudioDeviceDescriptions& descriptions,
 
   for (const auto& description : descriptions) {
     if (AudioDeviceDescription::IsDefaultDevice(description.unique_id)) {
-      EXPECT_TRUE(base::EndsWith(description.device_name, real_default_label,
-                                 base::CompareCase::SENSITIVE));
+      EXPECT_TRUE(description.device_name.ends_with(real_default_label));
     } else if (description.unique_id ==
                AudioDeviceDescription::kCommunicationsDeviceId) {
-      EXPECT_TRUE(base::EndsWith(description.device_name,
-                                 real_communications_label,
-                                 base::CompareCase::SENSITIVE));
+      EXPECT_TRUE(description.device_name.ends_with(real_communications_label));
     } else if (description.unique_id == real_default_id) {
       EXPECT_TRUE(description.is_system_default);
     } else if (description.unique_id == real_communications_id) {
@@ -319,7 +315,7 @@ TEST_F(AudioManagerTest, EnumerateInputDevicesPulseaudio) {
   ABORT_AUDIO_TEST_IF_NOT(InputDevicesAvailable());
 
   CreateAudioManagerForTesting<AudioManagerPulse>();
-  if (audio_manager_.get()) {
+  if (audio_manager_) {
     AudioDeviceDescriptions device_descriptions;
     device_info_accessor_->GetAudioInputDeviceDescriptions(
         &device_descriptions);
@@ -333,7 +329,7 @@ TEST_F(AudioManagerTest, EnumerateOutputDevicesPulseaudio) {
   ABORT_AUDIO_TEST_IF_NOT(OutputDevicesAvailable());
 
   CreateAudioManagerForTesting<AudioManagerPulse>();
-  if (audio_manager_.get()) {
+  if (audio_manager_) {
     AudioDeviceDescriptions device_descriptions;
     device_info_accessor_->GetAudioOutputDeviceDescriptions(
         &device_descriptions);
@@ -572,7 +568,7 @@ class TestAudioSourceCallback : public AudioOutputStream::AudioSourceCallback {
   TestAudioSourceCallback(const TestAudioSourceCallback&) = delete;
   TestAudioSourceCallback& operator=(const TestAudioSourceCallback&) = delete;
 
-  ~TestAudioSourceCallback() override {}
+  ~TestAudioSourceCallback() override = default;
 
   int OnMoreData(base::TimeDelta,
                  base::TimeTicks,
@@ -611,10 +607,8 @@ TEST_F(AudioManagerTest, CheckMinMaxAudioBufferSizeCallbacks) {
 #if BUILDFLAG(IS_MAC)
   // On OSX the preferred output buffer size is higher than the minimum
   // but users may request the minimum size explicitly.
-  ASSERT_GT(
-      default_params.frames_per_buffer(),
-      AudioManagerMac::GetMinAudioBufferSizeMacOS(
-          media::limits::kMinAudioBufferSize, default_params.sample_rate()));
+  ASSERT_GT(default_params.frames_per_buffer(),
+            default_params.hardware_capabilities()->min_frames_per_buffer);
 #else
   static_assert(BUILDFLAG(USE_CRAS));
   // On CRAS the preferred output buffer size varies per board and may be as low

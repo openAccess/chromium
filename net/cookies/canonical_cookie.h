@@ -12,7 +12,9 @@
 #include <string_view>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/gtest_prod_util.h"
+#include "base/time/time.h"
 #include "base/types/pass_key.h"
 #include "crypto/process_bound_string.h"
 #include "net/base/net_export.h"
@@ -25,10 +27,6 @@
 #include "url/third_party/mozilla/url_parse.h"
 
 class GURL;
-
-namespace base {
-class Time;
-}  // namespace base
 
 namespace net {
 
@@ -281,7 +279,10 @@ class NET_EXPORT CanonicalCookie : public CookieBase {
   }
 
   // See CookieBase for other accessors.
+
+  // Note: May be expensive because it must decrypt the cookie.
   std::string Value() const;
+  base::ByteSize ValueSize() const;
   base::Time ExpiryDate() const { return expiry_date_; }
   base::Time LastAccessDate() const { return last_access_date_; }
   base::Time LastUpdateDate() const { return last_update_date_; }
@@ -291,6 +292,19 @@ class NET_EXPORT CanonicalCookie : public CookieBase {
 
   bool IsExpired(base::Time current) const {
     return !expiry_date_.is_null() && current >= expiry_date_;
+  }
+
+  // Returns true iff Value() equals `cc.Value()`. As an optimization, this
+  // tries to avoid decrypting the cookies if possible.
+  bool IsValueEqual(const CanonicalCookie& cc) const {
+    return ValueSize() == cc.ValueSize() && Value() == cc.Value();
+  }
+
+  // Returns true iff Value() equals `value_string`. As an optimization, this
+  // tries to avoid decrypting the cookie if possible.
+  bool IsValueEqual(std::string_view value_string) const {
+    return ValueSize().InBytes() == value_string.size() &&
+           Value() == value_string;
   }
 
   // Are the cookies considered equivalent in the eyes of RFC 2965.
@@ -437,6 +451,7 @@ class NET_EXPORT CanonicalCookie : public CookieBase {
   static std::string BuildCookieAttributesLine(const CanonicalCookie& cookie);
 
  private:
+  friend class CanonicalCookieValueEncryptionTest;
   FRIEND_TEST_ALL_PREFIXES(CanonicalCookieTest,
                            TestGetAndAdjustPortForTrustworthyUrls);
 
@@ -454,6 +469,28 @@ class NET_EXPORT CanonicalCookie : public CookieBase {
                                                 bool url_is_trustworthy);
 
   // Helpers for use in canonicalization checks.
+  static CanonicalizationResult IsCanonical(
+      std::string_view name,
+      std::string_view value,
+      std::string_view domain,
+      std::string_view path,
+      base::Time creation_date,
+      base::Time expiry_date,
+      base::Time last_access_date,
+      bool is_secure,
+      bool is_http_only,
+      const std::optional<CookiePartitionKey>& partition_key,
+      net::CookieSourceScheme source_scheme);
+  static CanonicalizationResult IsCanonicalForFromStorage(
+      std::string_view name,
+      std::string_view value,
+      std::string_view domain,
+      std::string_view path,
+      base::Time creation_date,
+      base::Time last_access_date,
+      bool is_secure,
+      bool is_http_only,
+      const std::optional<CookiePartitionKey>& partition_key);
   static CanonicalizationResult Pass();
   static CanonicalizationResult Fail(CanonicalizationFailure failure);
 

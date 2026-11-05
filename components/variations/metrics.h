@@ -6,11 +6,10 @@
 #define COMPONENTS_VARIATIONS_METRICS_H_
 
 #include "base/component_export.h"
-#include "build/build_config.h"
 
 namespace variations {
 
-// The result of importing a seed during Android or iOS first run.
+// The result of importing a seed during first run.
 // Note: UMA histogram enum - don't re-order or remove entries.
 enum class FirstRunSeedImportResult {
   kSuccess = 0,
@@ -84,13 +83,18 @@ enum class StoreSeedResult {
 // The result of updating the date associated with an existing stored variations
 // seed.
 // Note: UMA histogram enum - don't re-order or remove entries.
+// LINT.IfChange(UpdateSeedDateResult)
 enum class UpdateSeedDateResult {
   kNoOldDate = 0,
   kNewDateIsOlder = 1,
   kSameDay = 2,
   kNewDay = 3,
-  kMaxValue = kNewDay,
+  // The response did not provide a trusted server date. Takes precedence over
+  // kNoOldDate.
+  kNoNewDate = 4,
+  kMaxValue = kNoNewDate,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/variations/enums.xml:UpdateSeedDateResult)
 
 // The result of verifying a variation seed's signature.
 // Note: UMA histogram enum - don't re-order or remove entries.
@@ -103,18 +107,22 @@ enum class VerifySignatureResult {
   kMaxValue = kValidSignature,
 };
 
-// The result of attempting to apply runtime mutable experiment from a new seed.
+// The result of attempting to prepare runtime mutable changes from a new seed.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
-// LINT.IfChange(VariationsApplyRuntimeMutableChangesResult)
-enum class ApplyRuntimeMutableChangesResult {
+// LINT.IfChange(VariationsPrepareRuntimeMutableChangesResult)
+enum class PrepareRuntimeMutableChangesResult {
   // Reserve the default/uninitialized value. This should not be used.
   kUnknown = 0,
   kSuccess = 1,
   kSimulatedGroupIsNull = 2,
   kSimulatedGroupNotFound = 3,
-  kNotStrictKillswitch = 4,
-  kNotStartsActive = 5,
+  // Deprecated: runtime mutability now allows enabling features as well as
+  // killswitches, so this will no longer be recorded.
+  // kNotStrictKillswitch = 4,
+  // Deprecated: both ACTIVATE_ON_STARTUP and ACTIVATE_ON_QUERY are now
+  // supported; replaced by kInvalidActivationType.
+  // kNotStartsActive = 5,
   kNotPermanentConsistency = 6,
   kAlreadyApplied = 7,
   kNonRuntimeMutableFeature = 8,
@@ -123,15 +131,20 @@ enum class ApplyRuntimeMutableChangesResult {
   kControllingTrialHasOtherFeatures = 11,
   kTrialNameCollision = 12,
   kControllingTrialNotFound = 13,
-  kUpdateFeatureStateFailed = 14,
-  kApplyRuntimeFieldTrialOverrideFailed = 15,
-  kValidationFailed = 16,
-  kRuntimeExperimentHasGoogleWebId = 17,
-  kOverriddenTrialHasGoogleWebId = 18,
-  kRuntimeExperimentHasParams = 19,
-  kMaxValue = kRuntimeExperimentHasParams,
+  // Deprecated: preparing the feature state update is now CHECK()ed, so this
+  // can no longer be recorded.
+  // kPrepareFeatureStateUpdateFailed = 14,
+  kRuntimeExperimentHasGoogleWebId = 15,
+  kOverriddenTrialHasGoogleWebId = 16,
+  // Deprecated: runtime mutability now supports experiment params, so this will
+  // no longer be recorded.
+  // kRuntimeExperimentHasParams = 17,
+  kFeatureBothEnabledAndDisabled = 18,
+  kInvalidActivationType = 19,
+  kLowAnonymityStudy = 20,
+  kMaxValue = kLowAnonymityStudy,
 };
-// LINT.ThenChange(//tools/metrics/histograms/metadata/variations/enums.xml:VariationsApplyRuntimeMutableChangesResult)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/variations/enums.xml:VariationsPrepareRuntimeMutableChangesResult)
 
 // Describes instance manipulations applied to data.
 struct InstanceManipulations {
@@ -139,11 +152,9 @@ struct InstanceManipulations {
   const bool delta_compressed;
 };
 
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-// Records the result of importing a seed during Android first run.
+// Records the result of importing a seed during first run.
 COMPONENT_EXPORT(VARIATIONS)
 void RecordFirstRunSeedImportResult(FirstRunSeedImportResult result);
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 // Records the result of attempting to load the latest variations seed on
 // startup.

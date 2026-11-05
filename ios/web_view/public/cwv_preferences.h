@@ -48,8 +48,8 @@ CWV_EXPORT
 @property(nonatomic, assign, getter=isPasswordLeakCheckEnabled)
     BOOL passwordLeakCheckEnabled;
 
-// Controls whether or not WebViewPasswordManagerClient is hardened against
-// WebState destruction.
+// Deprecated: WebViewPasswordManagerClient is now permanently hardened against
+// WebState destruction. Setting this has no effect and it always returns YES.
 @property(nonatomic, assign, getter=isPasswordManagerSafeLifecycleEnabled)
     BOOL passwordManagerSafeLifecycleEnabled;
 
@@ -72,10 +72,21 @@ CWV_EXPORT
 @property(nonatomic, assign, getter=isAutofillVCNUsageEnabled)
     BOOL autofillVCNUsageEnabled;
 
-// Controls whether or not CWVAutofillController is hardened against WebState
-// destruction.
+// Deprecated: CWVAutofillController is now permanently hardened against
+// WebState destruction. Setting this has no effect and it always returns YES.
 @property(nonatomic, assign, getter=isAutofillSafeLifecycleEnabled)
     BOOL autofillSafeLifecycleEnabled;
+
+// True if CWVAutofillController scopes its cached form activity state to the
+// field that last received focus: activity from another field or frame no
+// longer retargets suggestion queries, focus traversal or credit card fetches,
+// and activity that is malformed, from an untrusted or invalid page URL, or
+// not attributable to a frame is dropped without notifying
+// CWVAutofillControllerDelegate. Defaults to NO. Persisted across launches.
+// Changes take effect for newly created CWVWebView instances.
+// TODO(crbug.com/523705767): Remove once the scoped behavior is the default.
+@property(nonatomic, assign, getter=isAutofillScopedFormActivityEnabled)
+    BOOL autofillScopedFormActivityEnabled;
 
 // Whether or not to trigger a non-fatal check during initialization.
 // This is for integration testing purposes of non-fatal checks on clients.

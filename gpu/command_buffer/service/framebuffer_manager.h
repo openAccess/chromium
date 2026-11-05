@@ -103,8 +103,15 @@ class GPU_GLES2_EXPORT Framebuffer : public base::RefCounted<Framebuffer> {
 
   bool HasUnclearedIntRenderbufferAttachments() const;
 
-  void ClearUnclearedIntRenderbufferAttachments(
-    RenderbufferManager* renderbuffer_manager);
+  // Clears uncleared integer renderbuffer attachments and marks the ones that
+  // were successfully cleared as cleared. Returns GL_NO_ERROR if every such
+  // attachment is now cleared, otherwise the GL error that prevented it. A
+  // caller must not mark attachments as cleared when this fails, since a
+  // failed clear leaves the renderbuffer holding uninitialized GPU memory.
+  // The caller must drain the real GL error queue first, so that the errors
+  // observed here can be attributed to the clears issued by this function.
+  [[nodiscard]] GLenum ClearUnclearedIntRenderbufferAttachments(
+      RenderbufferManager* renderbuffer_manager);
 
   void MarkAttachmentAsCleared(
     RenderbufferManager* renderbuffer_manager,
@@ -116,9 +123,6 @@ class GPU_GLES2_EXPORT Framebuffer : public base::RefCounted<Framebuffer> {
   // 'unbind_attachments_on_bound_render_fbo_delete'.  The Framebuffer must be
   // bound when calling this.
   void DoUnbindGLAttachmentsForWorkaround(GLenum target);
-
-  // Re-attaches all current attachments for recreateFbo workaround.
-  void ReattachAttachments(GLenum framebuffer_target);
 
   // Binds |attachment| at |attachment_point| on the framebuffer currently
   // bound at |target|, or detaches whatever is at |attachment_point| if
@@ -257,7 +261,6 @@ class GPU_GLES2_EXPORT Framebuffer : public base::RefCounted<Framebuffer> {
 
  private:
   friend class FramebufferManager;
-  void set_service_id(GLuint id) { service_id_ = id; }
   friend class base::RefCounted<Framebuffer>;
 
   ~Framebuffer();
@@ -378,9 +381,6 @@ class GPU_GLES2_EXPORT FramebufferManager {
 
   // Gets a client id for a given service id.
   bool GetClientId(GLuint service_id, GLuint* client_id) const;
-
-  // Recreates the service ID for a framebuffer (allocates new, deletes old).
-  void RecreateFramebufferServiceId(Framebuffer* framebuffer);
 
   void MarkAttachmentsAsCleared(
     Framebuffer* framebuffer,

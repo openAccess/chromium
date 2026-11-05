@@ -11,8 +11,11 @@
 #include "base/functional/bind.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/thread_pool.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "chrome/services/speech/soda/mock_soda_client.h"
+#include "media/base/media_switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using ::testing::_;
@@ -26,6 +29,8 @@ constexpr char kPrimaryLanguageName[] = "en-US";
 constexpr char kPrimaryLanguageNameLowerCase[] = "en-us";
 constexpr char kPrimaryLanguageNameGeneric[] = "en";
 constexpr char kPrimaryLanguageNameGenericUpperCase[] = "EN";
+constexpr char kSodaTfLiteDelegateStatusHistogram[] =
+    "Accessibility.LiveCaption.SodaTfLiteDelegateStatus";
 
 }  // namespace
 
@@ -45,6 +50,7 @@ class SpeechRecognitionRecognizerImplTest
       const media::SpeechRecognitionResult& result,
       OnSpeechRecognitionRecognitionEventCallback reply) override {
     last_received_result_ = result;
+    ++recognition_event_count_;
     std::move(reply).Run(true);
     if (run_loop_) {
       run_loop_->Quit();
@@ -63,6 +69,8 @@ class SpeechRecognitionRecognizerImplTest
         /*mask_offensive_words=*/true);
     auto soda_client = std::make_unique<NiceMock<::soda::MockSodaClient>>();
     soda_client_ = soda_client.get();
+    ON_CALL(*soda_client_, IsInitialized())
+        .WillByDefault(testing::Return(true));
     recognizer_->SetSodaClientForTesting(std::move(soda_client));
   }
 
@@ -87,6 +95,36 @@ class SpeechRecognitionRecognizerImplTest
   }
 
  protected:
+  // Sends a TFLITE_DELEGATE_INFO response through the SODA callback, with the
+  // XNNPACK delegate feature in the given state.
+  void SendTfLiteDelegateInfo(bool delegate_requested,
+                              int tflite_session_count,
+                              int delegated_session_count) {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatureState(media::kSodaXnnpackDelegate,
+                                      delegate_requested);
+    CreateRecognizer(CreateOptions(), kPrimaryLanguageName);
+
+    SerializedSodaConfig saved_config;
+    EXPECT_CALL(*soda_client_, Reset)
+        .WillOnce(testing::SaveArg<0>(&saved_config));
+    recognizer_->OnLanguagePackInstalled(config_paths());
+    ASSERT_EQ(delegate_requested,
+              recognizer_->GetExtendedSodaConfigMsgForTesting()
+                  ->enable_xnnpack_delegate());
+
+    soda::chrome::SodaResponse response;
+    response.set_soda_type(soda::chrome::SodaResponse::TFLITE_DELEGATE_INFO);
+    auto* info = response.mutable_tflite_delegate_info();
+    info->set_tflite_session_count(tflite_session_count);
+    info->set_delegated_session_count(delegated_session_count);
+    std::string serialized;
+    response.SerializeToString(&serialized);
+
+    saved_config.callback(serialized.c_str(), serialized.size(),
+                          saved_config.callback_handle);
+  }
+
   void WaitForRecognitionEvent() {
     run_loop_ = std::make_unique<base::RunLoop>();
     run_loop_->Run();
@@ -113,6 +151,7 @@ class SpeechRecognitionRecognizerImplTest
       this};
   base::flat_map<std::string, base::FilePath> config_paths_;
   media::SpeechRecognitionResult last_received_result_;
+  int recognition_event_count_ = 0;
   std::unique_ptr<base::RunLoop> run_loop_;
   std::unique_ptr<SpeechRecognitionRecognizerImpl> recognizer_;
   raw_ptr<NiceMock<::soda::MockSodaClient>> soda_client_ = nullptr;
@@ -128,6 +167,29 @@ TEST_F(SpeechRecognitionRecognizerImplTest, OnLanguagePackInstalledTest) {
             config->recognition_mode());
   EXPECT_FALSE(config->enable_formatting());
   EXPECT_TRUE(config->mask_offensive_words());
+}
+
+TEST_F(SpeechRecognitionRecognizerImplTest, XnnpackDelegateFeatureEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(media::kSodaXnnpackDelegate);
+  CreateRecognizer(CreateOptions(), kPrimaryLanguageName);
+  EXPECT_CALL(*soda_client_, Reset(_, _, _));
+  recognizer_->OnLanguagePackInstalled(config_paths());
+
+  EXPECT_TRUE(recognizer_->GetExtendedSodaConfigMsgForTesting()
+                  ->enable_xnnpack_delegate());
+}
+
+TEST_F(SpeechRecognitionRecognizerImplTest, XnnpackDelegateFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(media::kSodaXnnpackDelegate);
+  CreateRecognizer(CreateOptions(), kPrimaryLanguageName);
+  EXPECT_CALL(*soda_client_, Reset(_, _, _));
+  recognizer_->OnLanguagePackInstalled(config_paths());
+
+  // The field must stay unset so the serialized config is unchanged.
+  EXPECT_FALSE(recognizer_->GetExtendedSodaConfigMsgForTesting()
+                   ->has_enable_xnnpack_delegate());
 }
 
 TEST_F(SpeechRecognitionRecognizerImplTest,
@@ -328,6 +390,83 @@ TEST_F(SpeechRecognitionRecognizerImplTest,
   ASSERT_FALSE(timestamps.has_value());
 }
 
+TEST_F(SpeechRecognitionRecognizerImplTest,
+       HandlesResultsWithInvertedAndNegativeAudioTimestamps) {
+  CreateRecognizer(CreateOptions(), kPrimaryLanguageName);
+
+  // Audio from media time [10s, 12s) corresponds to speech time [0s, 2s).
+  SendAudio(recognizer_.get(), base::Seconds(2), base::Seconds(10));
+
+  // 1. Inverted timestamps (`audio_end_time < audio_start_time`).
+  // Without clamping, Mojo deserialization fails with
+  // VALIDATION_ERROR_DESERIALIZATION_FAILED.
+  media::SpeechRecognitionResult inverted_result;
+  inverted_result.transcription = "inverted";
+  inverted_result.is_final = false;
+  inverted_result.timing_information = media::TimingInformation();
+  inverted_result.timing_information->audio_start_time = base::Seconds(2);
+  inverted_result.timing_information->audio_end_time = base::Seconds(1);
+
+  recognizer_->recognition_event_callback().Run(std::move(inverted_result));
+  WaitForRecognitionEvent();
+
+  ASSERT_TRUE(last_received_result_.timing_information.has_value());
+  EXPECT_EQ(last_received_result_.timing_information->audio_start_time,
+            base::Seconds(2));
+  EXPECT_EQ(last_received_result_.timing_information->audio_end_time,
+            base::Seconds(2));
+  EXPECT_FALSE(last_received_result_.timing_information
+                   ->originating_media_timestamps.has_value());
+
+  // 2. Negative start timestamp (`audio_start_time < 0`, `audio_end_time > 0`).
+  // Should clamp `audio_start_time` to 0s and compute media timestamps for
+  // [0s, 2s) -> [10s, 12s).
+  media::SpeechRecognitionResult negative_start_result;
+  negative_start_result.transcription = "negative start";
+  negative_start_result.is_final = true;
+  negative_start_result.timing_information = media::TimingInformation();
+  negative_start_result.timing_information->audio_start_time =
+      base::Seconds(-1);
+  negative_start_result.timing_information->audio_end_time = base::Seconds(2);
+  negative_start_result.timing_information->hypothesis_parts =
+      std::vector<media::HypothesisParts>{
+          media::HypothesisParts({"negative"}, base::Seconds(-1)),
+          media::HypothesisParts({"start"}, base::Seconds(5))};
+
+  recognizer_->recognition_event_callback().Run(
+      std::move(negative_start_result));
+  WaitForRecognitionEvent();
+
+  ASSERT_TRUE(last_received_result_.timing_information.has_value());
+  EXPECT_EQ(last_received_result_.timing_information->audio_start_time,
+            base::Seconds(0));
+  EXPECT_EQ(last_received_result_.timing_information->audio_end_time,
+            base::Seconds(2));
+  ASSERT_TRUE(last_received_result_.timing_information
+                  ->originating_media_timestamps.has_value());
+  ASSERT_EQ(last_received_result_.timing_information
+                ->originating_media_timestamps->size(),
+            1u);
+  EXPECT_EQ((*last_received_result_.timing_information
+                  ->originating_media_timestamps)[0]
+                .start,
+            base::Seconds(10));
+  EXPECT_EQ((*last_received_result_.timing_information
+                  ->originating_media_timestamps)[0]
+                .end,
+            base::Seconds(12));
+  ASSERT_TRUE(
+      last_received_result_.timing_information->hypothesis_parts.has_value());
+  ASSERT_EQ(last_received_result_.timing_information->hypothesis_parts->size(),
+            2u);
+  EXPECT_EQ((*last_received_result_.timing_information->hypothesis_parts)[0]
+                .hypothesis_part_offset,
+            base::Seconds(0));
+  EXPECT_EQ((*last_received_result_.timing_information->hypothesis_parts)[1]
+                .hypothesis_part_offset,
+            base::Seconds(2));
+}
+
 TEST_F(SpeechRecognitionRecognizerImplTest, ResetSodaWithDifferentCaseLang) {
   config_paths_[kPrimaryLanguageName] = base::FilePath::FromASCII("/fake/path");
   CreateRecognizer(CreateOptions(), kPrimaryLanguageNameLowerCase);
@@ -415,6 +554,121 @@ TEST_F(SpeechRecognitionRecognizerImplTest, SodaClientRegistryThreadSafety) {
   recognizer_.reset();
 
   task_environment_.RunUntilIdle();
+}
+
+TEST_F(SpeechRecognitionRecognizerImplTest, EmptyHypothesisDoesNotCrash) {
+  CreateRecognizer(CreateOptions(), kPrimaryLanguageName);
+
+  SerializedSodaConfig saved_config;
+  EXPECT_CALL(*soda_client_, Reset(_, _, _))
+      .WillOnce(testing::SaveArg<0>(&saved_config));
+
+  recognizer_->OnLanguagePackInstalled(config_paths());
+
+  soda::chrome::SodaResponse response;
+  response.set_soda_type(soda::chrome::SodaResponse::RECOGNITION);
+  auto* result = response.mutable_recognition_result();
+  result->set_result_type(soda::chrome::SodaRecognitionResult::FINAL);
+  // Do not add any hypothesis to verify bounds check prevents crash.
+  std::string serialized;
+  response.SerializeToString(&serialized);
+
+  saved_config.callback(serialized.c_str(), serialized.size(),
+                        saved_config.callback_handle);
+
+  EXPECT_EQ(0, recognition_event_count_);
+  EXPECT_TRUE(last_received_result_.transcription.empty());
+}
+
+TEST_F(SpeechRecognitionRecognizerImplTest,
+       RecordsNotDelegatedWhenNotRequested) {
+  base::HistogramTester histogram_tester;
+  SendTfLiteDelegateInfo(/*delegate_requested=*/false,
+                         /*tflite_session_count=*/4,
+                         /*delegated_session_count=*/0);
+  histogram_tester.ExpectUniqueSample(kSodaTfLiteDelegateStatusHistogram,
+                                      /*kNotDelegated*/ 0, 1);
+}
+
+TEST_F(SpeechRecognitionRecognizerImplTest,
+       RecordsSuccessWhenAllSessionsDelegated) {
+  base::HistogramTester histogram_tester;
+  SendTfLiteDelegateInfo(/*delegate_requested=*/true,
+                         /*tflite_session_count=*/4,
+                         /*delegated_session_count=*/4);
+  histogram_tester.ExpectUniqueSample(kSodaTfLiteDelegateStatusHistogram,
+                                      /*kDelegateSuccess*/ 1, 1);
+}
+
+TEST_F(SpeechRecognitionRecognizerImplTest,
+       RecordsFallbackWhenSomeSessionsNotDelegated) {
+  base::HistogramTester histogram_tester;
+  SendTfLiteDelegateInfo(/*delegate_requested=*/true,
+                         /*tflite_session_count=*/4,
+                         /*delegated_session_count=*/3);
+  histogram_tester.ExpectUniqueSample(kSodaTfLiteDelegateStatusHistogram,
+                                      /*kDelegateFallback*/ 2, 1);
+}
+
+TEST_F(SpeechRecognitionRecognizerImplTest, SkipsRecordingWithoutSessions) {
+  base::HistogramTester histogram_tester;
+  SendTfLiteDelegateInfo(/*delegate_requested=*/true,
+                         /*tflite_session_count=*/0,
+                         /*delegated_session_count=*/0);
+  histogram_tester.ExpectTotalCount(kSodaTfLiteDelegateStatusHistogram, 0);
+}
+
+TEST_F(SpeechRecognitionRecognizerImplTest, DestroySodaWhenClientDisconnects) {
+  CreateRecognizer(CreateOptions(), kPrimaryLanguageName);
+
+  // Disconnecting the client remote should release the SODA instance and
+  // prevent subsequent ResetSoda() calls from re-initializing it.
+  base::RunLoop run_loop;
+  EXPECT_CALL(*soda_client_, Destroy()).WillOnce([&]() { run_loop.Quit(); });
+  receiver_.reset();
+  run_loop.Run();
+
+  EXPECT_CALL(*soda_client_, Reset(_, _, _)).Times(0);
+  recognizer_->OnLanguagePackInstalled(config_paths());
+}
+
+TEST_F(SpeechRecognitionRecognizerImplTest,
+       DoNotResetUninitializedSodaOnLanguagePackInstalled) {
+  CreateRecognizer(CreateOptions(), kPrimaryLanguageName);
+  ON_CALL(*soda_client_, IsInitialized()).WillByDefault(testing::Return(false));
+
+  base::flat_map<std::string, base::FilePath> updated_paths;
+  updated_paths[kPrimaryLanguageName] = base::FilePath::FromASCII("/new/path");
+
+  // Updating language pack paths while SODA is uninitialized should not
+  // eagerly initialize SODA.
+  EXPECT_CALL(*soda_client_, Reset(_, _, _)).Times(0);
+  recognizer_->OnLanguagePackInstalled(updated_paths);
+
+  // When audio finally arrives, SODA should be initialized with the updated
+  // config paths.
+  EXPECT_CALL(*soda_client_, Reset(_, _, _)).Times(1);
+  SendAudio(recognizer_.get(), base::Seconds(1), base::Seconds(0));
+  EXPECT_EQ("/new/path", recognizer_->GetExtendedSodaConfigMsgForTesting()
+                             ->language_pack_directory());
+}
+
+TEST_F(SpeechRecognitionRecognizerImplTest, DestroySodaOnContinuousSilence) {
+  auto options = CreateOptions();
+  options->skip_continuously_empty_audio = true;
+  CreateRecognizer(std::move(options), kPrimaryLanguageName);
+
+  // Send silent audio within the 10-second threshold; SODA should not be
+  // destroyed yet.
+  EXPECT_CALL(*soda_client_, Destroy()).Times(0);
+  SendAudio(recognizer_.get(), base::Seconds(1), base::Seconds(0));
+
+  // Advance past the 10-second silence threshold and send another silent
+  // buffer; SODA should be destroyed and no audio forwarded to SODA.
+  task_environment_.FastForwardBy(base::Seconds(11));
+  EXPECT_CALL(*soda_client_, Destroy()).Times(1);
+  EXPECT_CALL(*soda_client_, AddAudio(_, _)).Times(0);
+  SendAudio(recognizer_.get(), base::Seconds(1), base::Seconds(11));
 }
 
 }  // namespace speech

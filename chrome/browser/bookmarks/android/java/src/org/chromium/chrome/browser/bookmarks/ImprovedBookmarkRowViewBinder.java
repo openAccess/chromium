@@ -34,6 +34,11 @@ public class ImprovedBookmarkRowViewBinder {
             assert startImageVisibility != ImageVisibility.MENU;
             row.setStartImageVisible(startImageVisibility == ImageVisibility.DRAWABLE);
             row.setFolderViewVisible(startImageVisibility == ImageVisibility.FOLDER_DRAWABLE);
+        } else if (key == ImprovedBookmarkRowProperties.START_IMAGE_SIZE) {
+            row.setStartImageSize(model.get(ImprovedBookmarkRowProperties.START_IMAGE_SIZE));
+        } else if (key == ImprovedBookmarkRowProperties.START_IMAGE_CORNER_RADIUS) {
+            row.setStartImageCornerRadius(
+                    model.get(ImprovedBookmarkRowProperties.START_IMAGE_CORNER_RADIUS));
         } else if (key == ImprovedBookmarkRowProperties.START_AREA_BACKGROUND_COLOR) {
             row.setStartAreaBackgroundColor(
                     model.get(ImprovedBookmarkRowProperties.START_AREA_BACKGROUND_COLOR));
@@ -110,6 +115,8 @@ public class ImprovedBookmarkRowViewBinder {
         } else if (key == ImprovedBookmarkRowProperties.FOLDER_CHILD_COUNT_TEXT_STYLE) {
             folderView.setChildCountStyle(
                     model.get(ImprovedBookmarkRowProperties.FOLDER_CHILD_COUNT_TEXT_STYLE));
+        } else if (key == ImprovedBookmarkRowProperties.VISUAL_LOCATION) {
+            row.setVisualLocation(model.get(ImprovedBookmarkRowProperties.VISUAL_LOCATION));
         } else if (key == BookmarkManagerProperties.IS_HIGHLIGHTED) {
             View highlightedView = view.findViewById(R.id.container);
             if (model.get(BookmarkManagerProperties.IS_HIGHLIGHTED)) {

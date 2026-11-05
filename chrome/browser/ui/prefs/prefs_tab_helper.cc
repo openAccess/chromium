@@ -8,12 +8,15 @@
 #include <stdint.h>
 
 #include <array>
-#include <set>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -53,6 +56,7 @@
 #include "components/browser_ui/accessibility/android/font_size_prefs_android.h"
 #include "ui/base/device_form_factor.h"
 #else  // !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_user_profile.h"
 #include "chrome/browser/ui/zoom/chrome_zoom_level_prefs.h"
 #endif
 
@@ -78,6 +82,16 @@
 using blink::web_pref::WebPreferences;
 using content::WebContents;
 
+namespace features {
+// Defers resolving per-script comma-separated font family default lists during
+// synchronous profile preference registration
+// (`PrefsTabHelper::RegisterProfilePrefs`). Both Blink
+// (`GenericFontFamilySettings::GenericFontFamilyForScript`) and the
+// `chrome.fontSettings` extension API resolve comma-separated font lists on
+// demand when a script is actually rendered or queried.
+BASE_FEATURE(kDeferScriptFontPrefResolution, base::FEATURE_ENABLED_BY_DEFAULT);
+}  // namespace features
+
 namespace {
 
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
@@ -90,8 +104,9 @@ namespace {
 // On non-desktop Android there are no default values for these properties and
 // there is no way to set them (because extensions are not supported so the
 // Font Settings API cannot be used), so we can avoid registering them.
-void RegisterFontFamilyPrefs(user_prefs::PrefRegistrySyncable* registry,
-                             const std::set<std::string>& fonts_with_defaults) {
+void RegisterFontFamilyPrefs(
+    user_prefs::PrefRegistrySyncable* registry,
+    const base::flat_set<std::string_view>& fonts_with_defaults) {
   // Expand the font concatenated with script name so this stays at RO memory
   // rather than allocated in heap.
   // clang-format off
@@ -182,6 +197,12 @@ constexpr auto kFontDefaults = std::to_array<FontDefault>({
     {prefs::kWebKitSerifFontFamilyDevanagari, IDS_SERIF_FONT_FAMILY_DEVANAGARI},
     {prefs::kWebKitSansSerifFontFamilyDevanagari,
      IDS_SANS_SERIF_FONT_FAMILY_DEVANAGARI},
+    {prefs::kWebKitStandardFontFamilyArabicNastaliq,
+     IDS_STANDARD_FONT_FAMILY_ARABIC_NASTALIQ},
+    {prefs::kWebKitSerifFontFamilyArabicNastaliq,
+     IDS_SERIF_FONT_FAMILY_ARABIC_NASTALIQ},
+    {prefs::kWebKitSansSerifFontFamilyArabicNastaliq,
+     IDS_SANS_SERIF_FONT_FAMILY_ARABIC_NASTALIQ},
 #endif
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
     {prefs::kWebKitCursiveFontFamilySimplifiedHan,
@@ -307,16 +328,28 @@ void RegisterLocalizedFontPref(user_prefs::PrefRegistrySyncable* registry,
   int val = 0;
   bool success =
       base::StringToInt(l10n_util::GetStringUTF8(default_message_id), &val);
-  DCHECK(success);
+  CHECK(success, base::NotFatalUntil::M162);
   registry->RegisterIntegerPref(path, val);
 }
 #endif
+
+// Returns the profile whose prefs `contents` uses. For a WebContents in
+// TopChromeWebUIProfile, which has no user prefs, this is its user profile.
+Profile* GetProfileForPrefs(WebContents* contents) {
+#if BUILDFLAG(IS_ANDROID)
+  return Profile::FromBrowserContext(contents->GetBrowserContext());
+#else
+  Profile* profile = webui::GetUserProfile(contents);
+  CHECK(profile);
+  return profile;
+#endif
+}
 
 }  // namespace
 
 PrefsTabHelper::PrefsTabHelper(WebContents* contents)
     : content::WebContentsUserData<PrefsTabHelper>(*contents),
-      profile_(Profile::FromBrowserContext(contents->GetBrowserContext())) {
+      profile_(GetProfileForPrefs(contents)) {
   PrefService* prefs = profile_->GetPrefs();
   if (prefs) {
 #if !BUILDFLAG(IS_ANDROID)
@@ -416,7 +449,12 @@ void PrefsTabHelper::RegisterProfilePrefs(
                                user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
 
   // Register font prefs that have defaults.
-  std::set<std::string> fonts_with_defaults;
+  std::vector<std::string_view> fonts_with_defaults;
+  fonts_with_defaults.reserve(kFontDefaults.size());
+#if PREFS_FONT_LIST
+  const bool defer_script_font_resolution =
+      base::FeatureList::IsEnabled(features::kDeferScriptFontPrefResolution);
+#endif
   UScriptCode browser_script = GetScriptOfBrowserLocale(locale);
   for (FontDefault pref : kFontDefaults) {
 #if BUILDFLAG(IS_WIN)
@@ -445,7 +483,8 @@ void PrefsTabHelper::RegisterProfilePrefs(
     if (browser_script != pref_script) {
       std::string value = l10n_util::GetStringUTF8(pref.resource_id);
 #if PREFS_FONT_LIST
-      if (value.starts_with(',')) {
+      if (value.starts_with(',') &&
+          (pref_script == USCRIPT_COMMON || !defer_script_font_resolution)) {
         value = gfx::FontList::FirstAvailableOrFirst(value);
       }
 #else   // !PREFS_FONT_LIST
@@ -453,14 +492,15 @@ void PrefsTabHelper::RegisterProfilePrefs(
           << "This platform doesn't support default font lists. "
           << pref.pref_name << "=" << value;
 #endif  // PREFS_FONT_LIST
-      registry->RegisterStringPref(pref.pref_name, value);
-      fonts_with_defaults.insert(pref.pref_name);
+      registry->RegisterStringPref(pref.pref_name, std::move(value));
+      fonts_with_defaults.push_back(pref.pref_name);
     }
   }
 
 // Register font prefs.  This is only configurable on desktop Chrome.
 #if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
-  RegisterFontFamilyPrefs(registry, fonts_with_defaults);
+  RegisterFontFamilyPrefs(registry, base::flat_set<std::string_view>(
+                                        std::move(fonts_with_defaults)));
 
   registry->RegisterIntegerPref(prefs::kWebKitDefaultFontSize, 16);
   registry->RegisterIntegerPref(prefs::kWebKitDefaultFixedFontSize, 13);

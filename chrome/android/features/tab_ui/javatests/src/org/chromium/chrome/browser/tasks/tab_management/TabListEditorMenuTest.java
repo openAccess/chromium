@@ -4,9 +4,7 @@
 
 package org.chromium.chrome.browser.tasks.tab_management;
 
-import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.isEnabled;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
@@ -18,10 +16,11 @@ import static org.junit.Assert.assertNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.app.Activity;
 import android.content.Context;
+import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.widget.LinearLayout;
 
@@ -59,6 +58,7 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.Acti
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.ButtonType;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.IconPosition;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.ShowMode;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
 import org.chromium.components.browser_ui.widget.NumberRollView;
@@ -204,6 +204,7 @@ public class TabListEditorMenuTest {
                                     LinearLayout.LayoutParams.MATCH_PARENT,
                                     LinearLayout.LayoutParams.MATCH_PARENT);
                     layout.setLayoutParams(layoutParams);
+                    layout.setGravity(Gravity.CENTER_VERTICAL);
 
                     LayoutInflater inflater = LayoutInflater.from(activity);
                     mToolbar =
@@ -258,10 +259,7 @@ public class TabListEditorMenuTest {
                             TabListEditorActionProperties.ICON_TINT,
                             activity.getColorStateList(R.color.default_icon_color_tint_list));
             action.configure(
-                    () -> mTabModel,
-                    mSelectionDelegate,
-                    mDelegate,
-                    /* editorSupportsActionOnRelatedTabs= */ false);
+                    () -> mTabModel, mSelectionDelegate, mDelegate, TabListLayoutType.FLAT);
             models.add(action.getPropertyModel());
         }
         mPropertyListModel.addAll(models, 0);
@@ -766,29 +764,27 @@ public class TabListEditorMenuTest {
     }
 
     private void assertActionView(int id, boolean enabled) {
-        onViewWaiting(
+        waitForView(
                 allOf(
                         withId(id),
                         isDescendantOfA(withId(R.id.action_view_layout)),
-                        isDisplayed(),
                         enabled ? isEnabled() : not(isEnabled())),
                 enabled ? ViewElement.newOptions().build() : ViewElement.expectDisabledOption());
     }
 
     private void assertMenuItem(String text, boolean enabled) {
-        onViewWaiting(
+        waitForView(
                 allOf(
                         withText(text),
                         isDescendantOfA(withId(R.id.app_menu_list)),
-                        isDisplayed(),
                         enabled ? isEnabled() : not(isEnabled())),
                 enabled ? ViewElement.newOptions().build() : ViewElement.expectDisabledOption());
     }
 
     private void openMenu(PopupListener listener) throws TimeoutException {
         ThreadUtils.runOnUiThreadBlocking(() -> mMenuButton.addPopupListener(listener));
-        onViewWaiting(allOf(withId(R.id.list_menu_button), isDisplayed(), isEnabled()))
-                .perform(click());
+        waitForView(withId(R.id.list_menu_button));
+        ThreadUtils.runOnUiThreadBlocking(() -> mMenuButton.performClick());
         listener.waitForShown();
     }
 
@@ -799,8 +795,7 @@ public class TabListEditorMenuTest {
     }
 
     private void clickActionView(int id) {
-        onViewWaiting(
-                allOf(withId(id), isDescendantOfA(withId(R.id.action_view_layout)), isDisplayed()));
+        waitForView(withId(id), isDescendantOfA(withId(R.id.action_view_layout)));
         // On Android 12 perform(click()) sometimes fails to trigger the click so force the click on
         // the view object instead.
         ThreadUtils.runOnUiThreadBlocking(
@@ -810,12 +805,7 @@ public class TabListEditorMenuTest {
     }
 
     private void clickMenuItem(String text) {
-        onViewWaiting(
-                        allOf(
-                                withText(text),
-                                isDescendantOfA(withId(R.id.app_menu_list)),
-                                isDisplayed()))
-                .perform(click());
+        waitForView(withText(text), isDescendantOfA(withId(R.id.app_menu_list))).click();
     }
 
     private void setSelectedItems(Set<TabListEditorItemSelectionId> itemIds) {

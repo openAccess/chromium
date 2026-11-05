@@ -86,7 +86,7 @@ class CORE_EXPORT ViewTransitionSupplement
   ~ViewTransitionSupplement() override;
 
   // GC functionality.
-  void Trace(Visitor* visitor) const;
+  void Trace(Visitor* visitor) const override;
 
   // ViewTransition::Delegate implementation.
   void AddPendingRequest(std::unique_ptr<ViewTransitionRequest>) override;
@@ -149,6 +149,11 @@ class CORE_EXPORT ViewTransitionSupplement
   void SendOptInStatusToHost();
 
   bool HasActiveCaptures() const;
+  // Advances captured transitions to their DOM callback phase if no other
+  // captures are in flight. Advancing runs script (the DOM callbacks), so if
+  // script is not allowed (e.g. because we're in the middle of the rendering
+  // lifecycle), this posts a task to do so instead.
+  void MaybeAdvanceCapturedTransitions();
   void AdvanceCapturedTransitions();
 
   // The document we belong to.
@@ -187,6 +192,8 @@ class CORE_EXPORT ViewTransitionSupplement
   // DOM callback is deferred until all in flight captures are complete in order
   // to trigger the DOM callbacks in creation order.
   HeapVector<Member<ViewTransition>> captured_transitions_;
+  // True if a task has been posted to advance captured transitions.
+  bool advance_captured_transitions_scheduled_ = false;
 
   // This allow deferring starting a navigation transition until some conditions
   // are met, such as existing transitions are finished.

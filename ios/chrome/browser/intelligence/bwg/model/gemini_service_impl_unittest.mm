@@ -20,6 +20,7 @@
 #import "components/sync/test/test_sync_service.h"
 #import "google_apis/gaia/core_account_id.h"
 #import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service.h"
@@ -27,14 +28,15 @@
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/identity_test_environment_browser_state_adaptor.h"
+#import "ios/chrome/browser/signin/model/signin_test_util.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -42,51 +44,53 @@
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 
+namespace {
+
+// Unconditionally creates an instance of GeminiServiceImpl.
+std::unique_ptr<KeyedService> BuildGeminiServiceImpl(ProfileIOS& profile) {
+  return std::make_unique<GeminiServiceImpl>(
+      AuthenticationServiceFactory::GetForProfile(profile),
+      IdentityManagerFactory::GetForProfile(profile), profile.GetPrefs(),
+      OptimizationGuideServiceFactory::GetForProfile(profile));
+}
+
+}  // namespace
+
 class GeminiServiceImplTest : public PlatformTest {
  protected:
   void SetUp() override {
     PlatformTest::SetUp();
+    InitializeGeminiServiceForProfile(
+        profile_manager_.AddProfileWithBuilder(CreateProfileBuilder()));
+  }
+
+  TestProfileIOS::Builder CreateProfileBuilder() {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
-                              base::BindRepeating(&CreateTestSyncService));
+                              base::BindOnce(&CreateTestSyncService));
     builder.AddTestingFactory(
         OptimizationGuideServiceFactory::GetInstance(),
         OptimizationGuideServiceFactory::GetDefaultFactory());
-    profile_ = std::move(builder).Build();
-
-    auth_service_ = AuthenticationServiceFactory::GetForProfile(profile_.get());
-    identity_manager_ = IdentityManagerFactory::GetForProfile(profile_.get());
-    optimization_guide_service_ =
-        OptimizationGuideServiceFactory::GetForProfile(profile_.get());
-
-    pref_service_ = std::make_unique<TestingPrefServiceSimple>();
-    pref_service_->registry()->RegisterIntegerPref(
-        prefs::kGeminiEnabledByPolicy, 0);
-    pref_service_->registry()->RegisterIntegerPref(prefs::kGenAiEnabledByPolicy,
-                                                   0);
-    pref_service_->registry()->RegisterIntegerPref(
-        prefs::kIOSBWGPromoImpressionCount, 0);
-    pref_service_->registry()->RegisterBooleanPref(prefs::kIOSBwgConsent,
-                                                   false);
-    pref_service_->registry()->RegisterBooleanPref(
-        prefs::kAIHubEligibilityTriggered, false);
-
-    gemini_service_ = std::make_unique<GeminiServiceImpl>(
-        profile_.get(), auth_service_, identity_manager_, pref_service_.get(),
-        optimization_guide_service_);
+    builder.AddTestingFactory(GeminiServiceFactory::GetInstance(),
+                              base::BindOnce(&BuildGeminiServiceImpl));
+    return builder;
   }
 
-  void TearDown() override {
-    // Shutdown the service to ensure it unregisters itself as an observer
-    // from IdentityManager before IdentityManager is destroyed.
-    if (gemini_service_) {
-      gemini_service_->Shutdown();
-    }
-    PlatformTest::TearDown();
+  // Initializes `profile_` and its associated services for `profile`.
+  void InitializeGeminiServiceForProfile(TestProfileIOS* profile) {
+    profile_ = profile;
+    pref_service_ = profile->GetPrefs();
+    auth_service_ = AuthenticationServiceFactory::GetForProfile(profile_);
+    identity_manager_ = IdentityManagerFactory::GetForProfile(profile_);
+    optimization_guide_service_ =
+        OptimizationGuideServiceFactory::GetForProfile(profile_);
+    // The cast is safe since we've installed a custom TestingFactory with
+    // the GeminiServiceFactory that creates a GeminiServiceImpl instance.
+    gemini_service_ = static_cast<GeminiServiceImpl*>(
+        GeminiServiceFactory::GetForProfile(profile_));
   }
 
   // Signs in an unmanaged account and sets their model execution capability.
@@ -105,7 +109,8 @@ class GeminiServiceImplTest : public PlatformTest {
   // Signs in a managed account and sets their model execution capability.
   void SignInManagedAccountWithCapability(signin::Tribool capability) {
     FakeSystemIdentity* identity = [FakeSystemIdentity fakeManagedIdentity];
-    fake_system_identity_manager()->AddIdentity(identity);
+    InitializeGeminiServiceForProfile(AddManagedProfileWithBuilder(
+        profile_manager_, identity, CreateProfileBuilder()));
     auth_service_->SignIn(identity, signin_metrics::AccessPoint::kStartPage);
     if (capability != signin::Tribool::kUnknown) {
       SetCapabilityForAccount(
@@ -135,19 +140,19 @@ class GeminiServiceImplTest : public PlatformTest {
   }
 
   // Environment objects are declared first, so they are destroyed last.
-  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   web::WebTaskEnvironment task_environment_;
+  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
+  TestProfileManagerIOS profile_manager_;
   base::test::ScopedFeatureList scoped_feature_list_;
 
-  // Profile and services that depend on the environment are declared next.
-  // Note: `pref_service_` must be declared before `gemini_service_` so that
-  // it is destroyed after `gemini_service_`, preventing a dangling pointer.
-  std::unique_ptr<TestProfileIOS> profile_;
-  std::unique_ptr<TestingPrefServiceSimple> pref_service_;
-  std::unique_ptr<GeminiServiceImpl> gemini_service_;
+  // Active profile under test (personal profile by default, or managed profile
+  // after `SignInManagedAccountWithCapability`) and its associated services.
+  raw_ptr<TestProfileIOS> profile_;
+  raw_ptr<PrefService> pref_service_;
   raw_ptr<AuthenticationService> auth_service_;
   raw_ptr<signin::IdentityManager> identity_manager_;
   raw_ptr<OptimizationGuideService> optimization_guide_service_;
+  raw_ptr<GeminiServiceImpl> gemini_service_;
 
   base::HistogramTester histogram_tester_;
 };
@@ -350,7 +355,7 @@ TEST_F(GeminiServiceImplTest, LogUserConsentState_LogsWhenEligible) {
   SetWorkspaceEligibility(/*is_disabled=*/false);
 
   // Explicitly set to no consent.
-  pref_service_.get()->SetBoolean(prefs::kIOSBwgConsent, false);
+  pref_service_->SetBoolean(prefs::kIOSBwgConsent, false);
   // Triggering IsProfileEligibleForGemini should log the state.
   EXPECT_TRUE(gemini_service_->IsProfileEligibleForGemini());
 
@@ -358,13 +363,13 @@ TEST_F(GeminiServiceImplTest, LogUserConsentState_LogsWhenEligible) {
                                        gemini::FirstRunState::kPending, 1);
 
   // Changing state and checking eligibility again should log the new state.
-  pref_service_.get()->SetInteger(prefs::kIOSBWGPromoImpressionCount, 1);
+  pref_service_->SetInteger(prefs::kIOSBWGPromoImpressionCount, 1);
   EXPECT_TRUE(gemini_service_->IsProfileEligibleForGemini());
 
   histogram_tester_.ExpectBucketCount(kGeminiFirstRunStateHistogram,
                                       gemini::FirstRunState::kStarted, 1);
 
-  pref_service_.get()->SetBoolean(prefs::kIOSBwgConsent, true);
+  pref_service_->SetBoolean(prefs::kIOSBwgConsent, true);
   EXPECT_TRUE(gemini_service_->IsProfileEligibleForGemini());
 
   histogram_tester_.ExpectBucketCount(kGeminiFirstRunStateHistogram,

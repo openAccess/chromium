@@ -30,7 +30,6 @@
 #include "media/capture/video/chromeos/stream_buffer_manager.h"
 #include "media/capture/video/chromeos/video_capture_features_chromeos.h"
 #include "mojo/public/cpp/platform/platform_handle.h"
-#include "mojo/public/cpp/system/platform_handle.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 
 namespace media {
@@ -155,8 +154,7 @@ RequestManager::RequestManager(
       base::BindRepeating(&StreamBufferManager::RequestBufferForCaptureRequest,
                           base::Unretained(stream_buffer_manager_.get()));
   request_builder_ = std::make_unique<RequestBuilder>(
-      device_context_, std::move(request_buffer_callback),
-      use_buffer_management_apis_);
+      std::move(request_buffer_callback), use_buffer_management_apis_);
 }
 
 RequestManager::~RequestManager() = default;
@@ -177,12 +175,11 @@ void RequestManager::SetUpStreamsAndBuffers(
 
   // The partial result count metadata is optional; defaults to 1 in case it
   // is not set in the static metadata.
-  const cros::mojom::CameraMetadataEntryPtr* partial_count = GetMetadataEntry(
+  base::span<int32_t> partial_count = GetMetadataEntryAsSpan<int32_t>(
       static_metadata,
       cros::mojom::CameraMetadataTag::ANDROID_REQUEST_PARTIAL_RESULT_COUNT);
-  if (partial_count) {
-    partial_result_count_ =
-        *UNSAFE_TODO(reinterpret_cast<int32_t*>((*partial_count)->data.data()));
+  if (partial_count.size() == 1u) {
+    partial_result_count_ = partial_count[0];
   }
 
   auto pipeline_depth = GetMetadataEntryAsSpan<uint8_t>(
@@ -1028,15 +1025,7 @@ void RequestManager::SubmitCaptureResult(
   // Wait on release fence before delivering the result buffer to client.
   if (stream_buffer->release_fence.is_valid()) {
     const int kSyncWaitTimeoutMs = 1000;
-    mojo::PlatformHandle fence =
-        mojo::UnwrapPlatformHandle(std::move(stream_buffer->release_fence));
-    if (!fence.is_valid()) {
-      device_context_->SetErrorState(
-          media::VideoCaptureError::
-              kCrosHalV3BufferManagerFailedToUnwrapReleaseFenceFd,
-          FROM_HERE, "Failed to unwrap release fence fd");
-      return;
-    }
+    mojo::PlatformHandle fence = std::move(stream_buffer->release_fence);
     if (sync_wait(fence.GetFD().get(), kSyncWaitTimeoutMs)) {
       device_context_->SetErrorState(
           media::VideoCaptureError::
@@ -1199,7 +1188,7 @@ void RequestManager::SubmitCapturedJpegBuffer(uint32_t frame_number,
   // Still capture result from HALv3 already has orientation info in EXIF,
   // so just provide 0 as screen rotation in |blobify_callback_| parameters.
   mojom::BlobPtr blob = blobify_callback_.Run(
-      scoped_mapping->GetMemoryForPlane(0).data(), header.jpeg_size,
+      scoped_mapping->GetMemoryForPlane(0).first(header.jpeg_size),
       stream_buffer_manager_->GetStreamCaptureFormat(stream_type), 0);
   if (blob) {
     if (stream_type == StreamType::kJpegOutput &&

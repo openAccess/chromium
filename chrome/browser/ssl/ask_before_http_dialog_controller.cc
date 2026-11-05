@@ -28,9 +28,9 @@
 #include "ui/base/models/dialog_model_field.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/events/event.h"
 
@@ -92,6 +92,13 @@ void AddAskBeforeHttpDialogText(ui::DialogModel::Builder& dialog_model,
   } else if (warning_reason == HttpWarningReason::kIncognito) {
     auto description_text = ui::DialogModelLabel::CreateWithReplacement(
         IDS_ABH_PROMPT_INCOGNITO_PRIMARY_PARAGRAPH, link);
+    dialog_model.AddParagraph(
+        description_text, /*header=*/u"",
+        AskBeforeHttpDialogController::kDescriptionTextId);
+    return;
+  } else if (warning_reason == HttpWarningReason::kIsolatedMode) {
+    auto description_text = ui::DialogModelLabel::CreateWithReplacement(
+        IDS_ABH_PROMPT_ISOLATED_MODE_PRIMARY_PARAGRAPH, link);
     dialog_model.AddParagraph(
         description_text, /*header=*/u"",
         AskBeforeHttpDialogController::kDescriptionTextId);
@@ -488,11 +495,13 @@ void AskBeforeHttpDialogController::OnHelpCenterLinkClicked(
     return;
   }
 
-  content::OpenURLParams params(
-      GURL(kLearnMoreLink), content::Referrer(),
-      ui::DispositionFromEventFlags(event.flags(),
-                                    WindowOpenDisposition::NEW_FOREGROUND_TAB),
-      ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(kLearnMoreLink),
+          ui::DispositionFromEventFlags(
+              event.flags(),
+              ui::mojom::WindowOpenDisposition::kNewForegroundTab),
+          ui::PAGE_TRANSITION_LINK);
   contents->OpenURL(params, /*navigation_handle_callback=*/{});
 }
 

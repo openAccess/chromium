@@ -4,7 +4,8 @@
 
 #include "components/update_client/op_download.h"
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <string>
 #include <utility>
 #include <vector>
@@ -54,6 +55,8 @@ const char* DownloaderToString(CrxDownloader::DownloadMetrics::Downloader d) {
       return "bits";
     case CrxDownloader::DownloadMetrics::kBackgroundMac:
       return "nsurlsession_background";
+    case CrxDownloader::DownloadMetrics::kDeliveryOptimization:
+      return "delivery_optimization";
     default:
       return "unknown";
   }
@@ -117,6 +120,16 @@ void DownloadComplete(
     return;
   }
 
+  CrxDownloader::DownloadMetrics::Downloader final_downloader =
+      CrxDownloader::DownloadMetrics::kNone;
+  for (const auto& metric : crx_downloader->download_metrics()) {
+    metrics::RecordCrxDownloadAttempt(metric);
+    if (metric.error == 0) {
+      final_downloader = metric.downloader;
+    }
+  }
+  metrics::RecordCrxDownloadFinalDownloader(final_downloader);
+
   if (download_result.error) {
     CHECK(download_result.response.empty());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
@@ -154,14 +167,15 @@ base::OnceClosure DownloadOperation(
           config->GetProdId(),
           CanDoBackgroundDownload(is_foreground,
                                   config->EnabledBackgroundDownloader(), size));
-  crx_downloader->set_progress_callback(base::BindRepeating(
-      [](CrxDownloader::ProgressCallback progress_callback, int64_t file_size,
-         int64_t downloaded_bytes, int64_t /*content_length*/) {
-        progress_callback.Run(downloaded_bytes, file_size);
-      },
-      progress_callback, size));
   cancellation->OnCancel(crx_downloader->StartDownload(
       urls, hash,
+      base::BindRepeating(
+          [](CrxDownloader::ProgressCallback progress_callback,
+             int64_t file_size, int64_t downloaded_bytes,
+             int64_t /*content_length*/) {
+            progress_callback.Run(downloaded_bytes, file_size);
+          },
+          progress_callback, size),
       base::BindOnce(&DownloadComplete, id, crx_downloader, cancellation,
                      event_adder, std::move(callback))));
   return base::BindOnce(&Cancellation::Cancel, cancellation);

@@ -26,6 +26,9 @@ enum class ToolType {
   kScroll,
   // Tool for selecting an option or element.
   kSelect,
+  // Tool for dragging and releasing from a source target to a destination
+  // target.
+  kDragAndRelease,
   // Tool for navigating to a specific URL.
   kNavigate,
   // Tool for navigating back in history.
@@ -49,6 +52,22 @@ enum class ToolType {
   // Tool to activate an existing tab.
   kActivateTab,
 };
+
+// Represents JavaScript calls executed in web frames by Actor tools and
+// features.
+// LINT.IfChange(IOSActorJavaScriptCall)
+enum class ActorJavaScriptCall {
+  kActionTarget,
+  kAttemptFormFilling,
+  kClick,
+  kDragAndRelease,
+  kScroll,
+  kScrollTo,
+  kSelect,
+  kType,
+  kTypeSubmitWithEnterFallback,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/ios/histograms.xml:IOSActorJavaScriptCall,//ios/chrome/browser/intelligence/actor/tools/public/metrics.mm:IOSActorJavaScriptCall)
 
 // iOS-specific error codes for tool execution failures.
 enum class InternalToolErrorCode {

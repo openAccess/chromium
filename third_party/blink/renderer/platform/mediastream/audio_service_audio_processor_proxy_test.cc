@@ -4,15 +4,23 @@
 
 #include "third_party/blink/renderer/platform/mediastream/audio_service_audio_processor_proxy.h"
 
+#include <cstdint>
+#include <utility>
+
 #include "base/functional/bind.h"
+#include "base/location.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/task/thread_pool.h"
 #include "base/test/task_environment.h"
+#include "base/threading/thread_checker.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "media/base/audio_processor_controls.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/webrtc/api/media_stream_interface.h"
+#include "third_party/webrtc/rtc_base/ref_counted_object.h"
 
 using ::testing::_;
 using ::testing::StrictMock;
@@ -239,6 +247,18 @@ TEST_F(AudioServiceAudioProcessorProxyTest,
   proxy->SetVoiceIsolation(true);
   proxy->SetVoiceIsolation(true);
   task_environment_.RunUntilIdle();
+}
+
+TEST_F(AudioServiceAudioProcessorProxyTest, VoiceIsolation) {
+  scoped_refptr<AudioServiceAudioProcessorProxy> proxy =
+      new webrtc::RefCountedObject<AudioServiceAudioProcessorProxy>();
+  EXPECT_FALSE(proxy->VoiceIsolation().has_value());
+
+  proxy->SetVoiceIsolation(true);
+  EXPECT_EQ(proxy->VoiceIsolation(), true);
+
+  proxy->SetVoiceIsolation(false);
+  EXPECT_EQ(proxy->VoiceIsolation(), false);
 }
 
 }  // namespace blink

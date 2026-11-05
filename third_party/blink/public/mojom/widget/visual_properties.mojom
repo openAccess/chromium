@@ -23,8 +23,8 @@ struct VisualProperties {
   // Whether or not the widget can be resized.
   bool resizable = true;
 
-  // Whether or not the window is pinned always-on-top.
-  bool always_on_top = false;
+  // Whether or not the window is an always-on-top popup.
+  bool always_on_top_popup = false;
 
   // The minimum size for Blink if auto-resize is enabled.
   gfx.mojom.Size min_size_for_auto_resize;
@@ -69,6 +69,10 @@ struct VisualProperties {
   // Indicates whether tab-initiated fullscreen was granted.
   // Page scoped value.
   bool is_fullscreen_granted;
+
+  // The number of times fullscreen has been granted to this widget by the
+  // browser.
+  uint64 fullscreen_grant_count = 0;
 
   // The display mode. This will be replicated amongst subframes.
   DisplayMode display_mode = DisplayMode.kUndefined;

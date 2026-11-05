@@ -5,15 +5,71 @@
 // clang-format off
 import 'chrome://settings/settings.js';
 
-import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 import type {SettingsAddressEditDialogElement, SettingsAddressRemoveConfirmationDialogElement, SettingsContactInfoPageElement} from 'chrome://settings/lazy_load.js';
 import {AutofillManagerImpl} from 'chrome://settings/lazy_load.js';
+import {PrefsBrowserProxy, PrefService} from 'chrome://settings/settings.js';
 import {assertFalse, assertGT, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {eventToPromise} from 'chrome://webui-test/test_util.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
+import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {createAddressEntry, TestAutofillManager} from './autofill_fake_data.js';
+import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
 // clang-format on
+
+export function getContactInfoPrefs(
+    prefValues:
+        Record<string, Partial<chrome.settingsPrivate.PrefObject>> = {}):
+    chrome.settingsPrivate.PrefObject[] {
+  return [
+    {
+      key: 'autofill.profile_enabled',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+      ...prefValues['profile_enabled'],
+    },
+    {
+      key: 'autofill.email_verification_enabled',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: true,
+      ...prefValues['email_verification_enabled'],
+    },
+    {
+      key: 'autofill.email_verification_state',
+      type: chrome.settingsPrivate.PrefType.DICTIONARY,
+      value: {},
+      ...prefValues['email_verification_state'],
+    },
+    {
+      key: 'autofill.types_blocked',
+      type: chrome.settingsPrivate.PrefType.LIST,
+      value: [],
+      ...prefValues['types_blocked'],
+    },
+    {
+      key: 'autofill.gmail_otp_filling.enabled',
+      type: chrome.settingsPrivate.PrefType.BOOLEAN,
+      value: false,
+      ...prefValues['gmail_otp_filling.enabled'],
+    },
+  ];
+}
+
+let currentPrefsBrowserProxy: TestPrefsBrowserProxy|null = null;
+
+export async function setupContactInfoPrefs(
+    prefValues: Record<string, Partial<chrome.settingsPrivate.PrefObject>> = {},
+    resetInstance: boolean = true): Promise<TestPrefsBrowserProxy> {
+  const prefs = getContactInfoPrefs(prefValues);
+  if (!resetInstance && currentPrefsBrowserProxy) {
+    currentPrefsBrowserProxy.fakeApi.sendPrefChanges(prefs);
+    return currentPrefsBrowserProxy;
+  }
+  currentPrefsBrowserProxy = new TestPrefsBrowserProxy(prefs);
+  currentPrefsBrowserProxy.fakeApi.sendPrefChanges(prefs);
+  PrefsBrowserProxy.setInstance(currentPrefsBrowserProxy);
+  PrefService.resetInstanceForTesting();
+  await PrefService.getInstance().whenInitialized();
+  return currentPrefsBrowserProxy;
+}
 
 /**
  * Resolves the promise after the element fires the expected event. |causeEvent|
@@ -36,37 +92,24 @@ export function expectEvent(
  */
 export async function createContactInfoPage(
     addresses: chrome.autofillPrivate.AddressEntry[],
-    prefValues: Record<string, unknown>,
-    accountInfo?: chrome.autofillPrivate.AccountInfo|
-    null): Promise<SettingsContactInfoPageElement> {
+    prefValues: Record<string, Partial<chrome.settingsPrivate.PrefObject>> = {},
+    accountInfo?: chrome.autofillPrivate.AccountInfo|null,
+    autofillManager?: TestAutofillManager):
+    Promise<SettingsContactInfoPageElement> {
   // Override the AutofillManagerImpl for testing.
-  const autofillManager = new TestAutofillManager();
-  autofillManager.data.addresses = addresses;
+  const manager = autofillManager || new TestAutofillManager();
+  manager.data.addresses = addresses;
   if (accountInfo !== undefined) {
-    autofillManager.data.accountInfo = accountInfo ?? undefined;
+    manager.data.accountInfo = accountInfo ?? undefined;
   }
-  AutofillManagerImpl.setInstance(autofillManager);
+  AutofillManagerImpl.setInstance(manager);
+
+  await setupContactInfoPrefs(prefValues, /*resetInstance=*/ false);
 
   const page = document.createElement('settings-contact-info-page');
-  page.prefs = {
-    autofill: {
-      profile_enabled: {
-        type: chrome.settingsPrivate.PrefType.BOOLEAN,
-        value: true,
-      },
-      email_verification_state: {
-        type: chrome.settingsPrivate.PrefType.DICTIONARY,
-        value: {},
-      },
-      types_blocked: {
-        type: chrome.settingsPrivate.PrefType.LIST,
-        value: [],
-      },
-      ...prefValues,
-    },
-  };
   document.body.appendChild(page);
-  await autofillManager.whenCalled('getAddressList');
+  await manager.whenCalled('getAddressList');
+  await microtasksFinished();
 
   return page;
 }
@@ -90,19 +133,19 @@ export async function createAddressDialog(
 export async function openAddressDialog(
     page: SettingsContactInfoPageElement):
     Promise<SettingsAddressEditDialogElement> {
-  let dialog =
-      page.shadowRoot!.querySelector('settings-address-edit-dialog');
+  let dialog = page.shadowRoot.querySelector('settings-address-edit-dialog');
   assertFalse(!!dialog, 'stale dialog found');
 
+  const whenOpen = eventToPromise('on-update-address-wrapper', page);
   page.$.addAddress.click();
 
-  flush();
+  await microtasksFinished();
 
-  dialog = page.shadowRoot!.querySelector('settings-address-edit-dialog');
+  dialog = page.shadowRoot.querySelector('settings-address-edit-dialog');
 
   assertTrue(!!dialog, 'the dialog element should be in the page subtree');
 
-  await eventToPromise('on-update-address-wrapper', dialog);
+  await whenOpen;
   return dialog;
 }
 
@@ -113,9 +156,8 @@ export async function openAddressDialog(
 export async function initiateEditing(
     page: SettingsContactInfoPageElement,
     index: number): Promise<SettingsAddressEditDialogElement> {
-  let dialog =
-      page.shadowRoot!.querySelector<SettingsAddressEditDialogElement>(
-          'settings-address-edit-dialog');
+  let dialog = page.shadowRoot.querySelector<SettingsAddressEditDialogElement>(
+      'settings-address-edit-dialog');
   assertFalse(!!dialog, 'stale dialog found');
 
   const addressElements = page.$.addressList.children;
@@ -132,22 +174,23 @@ export async function initiateEditing(
   // Open menu and click the Edit button.
   menu.click();
   // Wait for the menu's items to render.
-  flush();
+  await microtasksFinished();
 
   // Find and click the Edit button.
   const editButton =
-      page.shadowRoot!.querySelector<HTMLElement>('#menuEditAddress');
+      page.shadowRoot.querySelector<HTMLElement>('#menuEditAddress');
   assertTrue(!!editButton, 'Edit button not found');
+  const whenOpen = eventToPromise('on-update-address-wrapper', page);
   editButton.click();
 
-  flush();
+  await microtasksFinished();
 
-  dialog = page.shadowRoot!.querySelector<SettingsAddressEditDialogElement>(
+  dialog = page.shadowRoot.querySelector<SettingsAddressEditDialogElement>(
       'settings-address-edit-dialog');
 
   assertTrue(!!dialog, 'the dialog element should be in the page subtree');
 
-  await eventToPromise('on-update-address-wrapper', dialog);
+  await whenOpen;
   return dialog;
 }
 
@@ -155,11 +198,11 @@ export async function initiateEditing(
  * Opens and returns the remove confirmation dialog element for specified
  * by |index| address in the |page| list.
  */
-export function initiateRemoving(
+export async function initiateRemoving(
     page: SettingsContactInfoPageElement,
-    index: number): SettingsAddressRemoveConfirmationDialogElement {
+    index: number): Promise<SettingsAddressRemoveConfirmationDialogElement> {
   let dialog =
-      page.shadowRoot!
+      page.shadowRoot
           .querySelector<SettingsAddressRemoveConfirmationDialogElement>(
               'settings-address-remove-confirmation-dialog');
   assertFalse(!!dialog, 'stale dialog found');
@@ -177,15 +220,15 @@ export function initiateRemoving(
 
   // Open menu and click the Delete button.
   menu.click();
-  flush();
+  await microtasksFinished();
   const removeButton =
-      page.shadowRoot!.querySelector<HTMLElement>('#menuRemoveAddress');
+      page.shadowRoot.querySelector<HTMLElement>('#menuRemoveAddress');
   assertTrue(!!removeButton, 'Remove button not found');
   removeButton.click();
 
-  flush();
+  await microtasksFinished();
 
-  dialog = page.shadowRoot!
+  dialog = page.shadowRoot
                .querySelector<SettingsAddressRemoveConfirmationDialogElement>(
                    'settings-address-remove-confirmation-dialog');
 
@@ -209,10 +252,12 @@ export async function createRemoveAddressDialog(
   autofillManager.data.addresses = [address];
   AutofillManagerImpl.setInstance(autofillManager);
 
+  await setupContactInfoPrefs();
+
   document.body.innerHTML = window.trustedTypes!.emptyHTML;
   const page = document.createElement('settings-contact-info-page');
   document.body.appendChild(page);
-  await flushTasks();
+  await microtasksFinished();
 
   return initiateRemoving(page, 0);
 }
@@ -233,7 +278,7 @@ export async function deleteAddress(
   manager.data.addresses = address;
   manager.lastCallback.setPersonalDataManagerListener!
       (address, [], [], [], manager.data.accountInfo);
-  await flushTasks();
+  await microtasksFinished();
 }
 
 export function getAddressFieldValue(

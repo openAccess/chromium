@@ -17,20 +17,45 @@ BASE_FEATURE(kViewDownloadedFileFromAppMenuJourney,
              base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kPinExtensionJourney, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kSettingsGlowupJourneys, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kSettingsAppearanceThemesJourney,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kSettingsClearBrowsingDataJourney,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kSettingsNavIAJourney, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kSettingsSearchEngineJourney, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kSettingsSitesDashboardJourney, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kSettingsSuperchargedSearchJourney,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kCustomizeChromeJourney, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kReadAnythingJourney, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kTabSearchJourney, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // HaTS.
 BASE_FEATURE(kHappinessTrackingSurveysForDownloadJourney,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kHappinessTrackingSurveysForPinExtensionJourney,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 const char kHatsSurveyTriggerDownloadJourney[] = "download-journey";
 const char kHatsSurveyTriggerPinExtensionJourney[] = "pin-extension-journey";
 
 BASE_FEATURE(kHappinessTrackingSurveysForClearBrowsingHistory,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 const char kHatsSurveyTriggerClearBrowsingHistory[] =
     "clear-browsing-history-journey";
+
+BASE_FEATURE(kHappinessTrackingSurveysForCustomizeChromeJourney,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+const char kHatsSurveyTriggerCustomizeChromeJourney[] =
+    "customize-chrome-journey";
+
+BASE_FEATURE(kHappinessTrackingSurveysForReadAnythingJourney,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+const char kHatsSurveyTriggerReadAnythingJourney[] = "read-anything-journey";
+
+BASE_FEATURE(kHappinessTrackingSurveysForTabSearchJourney,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+const char kHatsSurveyTriggerTabSearchJourney[] = "tab-search-journey";
 
 }  // namespace metrics

@@ -104,9 +104,7 @@ void AlternativeStateNameMapUpdater::PopulateAlternativeStateNameMap(
   CountryToStateNamesListMapping country_to_state_names_map;
   for (const AutofillProfile* profile : profiles) {
     const AlternativeStateNameMap::CountryCode country(
-        base::UTF16ToUTF8(profile->GetInfo(
-            AutofillType(ADDRESS_HOME_COUNTRY, /*is_country_code=*/true),
-            address_data_manager_->app_locale())));
+        base::UTF16ToUTF8(profile->GetRawInfo(ADDRESS_HOME_COUNTRY)));
 
     const AlternativeStateNameMap::StateName state_name(profile->GetInfo(
         ADDRESS_HOME_STATE, address_data_manager_->app_locale()));
@@ -134,15 +132,13 @@ void AlternativeStateNameMapUpdater::LoadStatesData(
     base::OnceClosure done_callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  const std::vector<std::string>& country_codes =
-      CountryDataMap::GetInstance()->country_codes();
+  const CountryDataMap* country_data_map = CountryDataMap::GetInstance();
 
   // Remove all invalid country names.
   std::erase_if(country_to_state_names_map,
-                [&country_codes](
+                [country_data_map](
                     const CountryToStateNamesListMapping::value_type& entry) {
-                  return !std::ranges::contains(country_codes,
-                                                entry.first.value());
+                  return !country_data_map->HasCountryCode(entry.first.value());
                 });
 
   // If there is no valid country to be processed, return early.
@@ -159,7 +155,7 @@ void AlternativeStateNameMapUpdater::LoadStatesData(
   for (const auto& [country_code, states] : country_to_state_names_map) {
     // This is a security check to ensure that we only attempt to read files
     // that match to known countries.
-    if (!std::ranges::contains(country_codes, country_code.value())) {
+    if (!country_data_map->HasCountryCode(country_code.value())) {
       continue;
     }
 

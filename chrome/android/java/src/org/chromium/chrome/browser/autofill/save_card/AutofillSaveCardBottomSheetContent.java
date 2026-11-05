@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.autofill.save_card;
 
-
-import android.content.Context;
 import android.content.res.Resources;
 import android.view.View;
 import android.widget.ScrollView;
@@ -16,10 +14,17 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
 
 /** Implements the content for the autofill save card bottom sheet. */
 @NullMarked
 /*package*/ class AutofillSaveCardBottomSheetContent implements BottomSheetContent {
+    private static final BottomSheetType BOTTOM_SHEET_TYPE =
+            new BottomSheetType.Builder()
+                    .setUserCritical(UserCriticalFeature.AUTOFILL_SAVE_CARD)
+                    .build();
+
     private final View mContentView;
     private final ScrollView mScrollView;
 
@@ -70,6 +75,16 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
     }
 
     @Override
+    public BottomSheetType getSheetType() {
+        return BOTTOM_SHEET_TYPE;
+    }
+
+    @Override
+    public boolean showHandlebar() {
+        return true;
+    }
+
+    @Override
     public int getPriority() {
         return ContentPriority.HIGH;
     }
@@ -87,12 +102,6 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
     @Override
     public boolean hideOnScroll() {
         return true;
-    }
-
-    @Override
-    public String getSheetContentDescription(Context context) {
-        return context.getString(
-                R.string.autofill_save_card_prompt_bottom_sheet_content_description);
     }
 
     @Override

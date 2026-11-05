@@ -117,6 +117,7 @@ class MediaDialogView : public views::BubbleDialogDelegateView,
 
  private:
   friend class MediaDialogViewBrowserTest;
+  friend class MediaDialogViewTest;
   friend class MediaDialogViewWithRemotePlaybackTest;
 
   MediaDialogView(
@@ -128,6 +129,10 @@ class MediaDialogView : public views::BubbleDialogDelegateView,
       global_media_controls::GlobalMediaControlsEntryPoint entry_point);
 
   ~MediaDialogView() override;
+
+  // Keeps the dialog open when a Picture-in-Picture window takes focus on
+  // platforms that can't show windows inactive. Defined in the .cc file.
+  class PictureInPictureFocusHandler;
 
   static MediaDialogView* instance_;
 
@@ -167,6 +172,8 @@ class MediaDialogView : public views::BubbleDialogDelegateView,
 
   const raw_ptr<MediaNotificationService> service_;
 
+  // Always the original (non-OTR) profile; all prefs are read, written and
+  // observed here.
   const raw_ptr<Profile> profile_;
   std::unique_ptr<PrefChangeRegistrar> pref_change_registrar_;
 
@@ -207,6 +214,8 @@ class MediaDialogView : public views::BubbleDialogDelegateView,
   const global_media_controls::GlobalMediaControlsEntryPoint entry_point_;
 
   media_message_center::MediaColorTheme media_color_theme_;
+
+  std::unique_ptr<PictureInPictureFocusHandler> pip_focus_handler_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_GLOBAL_MEDIA_CONTROLS_MEDIA_DIALOG_VIEW_H_

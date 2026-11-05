@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller.h"
 
+#import "base/ios/ios_util.h"
+#import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
 #import "components/signin/public/base/consent_level.h"
@@ -22,15 +24,20 @@
 #import "ios/chrome/browser/favicon/model/ios_chrome_large_icon_service_factory.h"
 #import "ios/chrome/browser/history/model/history_service_factory.h"
 #import "ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_scene_agent.h"
+#import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/intents/model/intents_constants.h"
 #import "ios/chrome/browser/intents/model/user_activity_browser_agent.h"
 #import "ios/chrome/browser/main/ui_bundled/browser_lifecycle_manager.h"
 #import "ios/chrome/browser/main/ui_bundled/wrangled_browser.h"
+#import "ios/chrome/browser/menu/public/menu_action_type.h"
+#import "ios/chrome/browser/menu/public/menu_histograms.h"
 #import "ios/chrome/browser/saved_tab_groups/model/tab_group_sync_service_factory.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/sessions/model/session_restoration_service_factory.h"
 #import "ios/chrome/browser/sessions/model/test_session_restoration_service.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_scene_agent.h"
+#import "ios/chrome/browser/shared/coordinator/scene/chrome_connection_options.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller_testing.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/incognito_state.h"
@@ -41,20 +48,21 @@
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/identity_test_environment_browser_state_adaptor.h"
 #import "ios/chrome/browser/sync/model/send_tab_to_self_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_params.h"
-#import "ios/chrome/common/ui/reauthentication/reauthentication_module.h"
+#import "ios/chrome/browser/window_activities/model/window_activity_helpers.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/public/provider/chrome/browser/user_feedback/user_feedback_data.h"
 #import "ios/testing/scoped_block_swizzler.h"
+#import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #import "services/network/test/test_url_loader_factory.h"
@@ -136,8 +144,7 @@ class SceneControllerTest : public PlatformTest {
                               ios::BookmarkModelFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         SessionRestorationServiceFactory::GetInstance(),
         TestSessionRestorationService::GetTestingFactory());
@@ -146,18 +153,18 @@ class SceneControllerTest : public PlatformTest {
         tab_groups::TabGroupSyncServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
+    builder.SetSharedURLLoaderFactory(
+        test_loader_factory_.GetSafeWeakWrapper());
     profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
     browser_ = std::make_unique<TestBrowser>(profile_.get(), scene_state_);
     UserActivityBrowserAgent::CreateForBrowser(browser_.get());
 
-    profile_->SetSharedURLLoaderFactory(
-        base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
-            &test_loader_factory_));
-
     mock_scene_handler_ = OCMProtocolMock(@protocol(SceneCommands));
     mock_settings_handler_ = OCMProtocolMock(@protocol(SettingsCommands));
     mock_gemini_handler_ = OCMProtocolMock(@protocol(GeminiCommands));
+    mock_scene_sign_in_handler_ =
+        OCMProtocolMock(@protocol(SceneSignInCommands));
     CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
     [dispatcher startDispatchingToTarget:mock_scene_handler_
                              forProtocol:@protocol(SceneCommands)];
@@ -165,21 +172,27 @@ class SceneControllerTest : public PlatformTest {
                              forProtocol:@protocol(SettingsCommands)];
     [dispatcher startDispatchingToTarget:mock_gemini_handler_
                              forProtocol:@protocol(GeminiCommands)];
+    [dispatcher startDispatchingToTarget:mock_scene_sign_in_handler_
+                             forProtocol:@protocol(SceneSignInCommands)];
 
     LayoutGuideSceneAgent* layout_guide_scene_agent =
         [[LayoutGuideSceneAgent alloc] init];
     [scene_state_ addAgent:layout_guide_scene_agent];
 
-    IncognitoReauthSceneAgent* reauth_agent = [[IncognitoReauthSceneAgent alloc]
-        initWithReauthModule:[[ReauthenticationModule alloc] init]];
+    IncognitoReauthSceneAgent* reauth_agent =
+        [[IncognitoReauthSceneAgent alloc] init];
     [scene_state_ addAgent:reauth_agent];
 
+    BrowserCommandEndpoints command_endpoints = {
+        .sceneEndpoint = mock_scene_handler_,
+        .settingsEndpoint = mock_settings_handler_,
+        .geminiEndpoint = mock_gemini_handler_,
+        .sceneSignInEndpoint = mock_scene_sign_in_handler_,
+    };
     scene_controller_.browserLifecycleManager =
         [[BrowserLifecycleManager alloc] initWithProfile:profile_.get()
                                               sceneState:scene_state_
-                                           sceneEndpoint:mock_scene_handler_
-                                        settingsEndpoint:mock_settings_handler_
-                                          geminiEndpoint:mock_gemini_handler_];
+                                        commandEndpoints:command_endpoints];
     [scene_controller_
             .browserLifecycleManager createMainCoordinatorAndInterface];
 
@@ -249,6 +262,7 @@ class SceneControllerTest : public PlatformTest {
   id mock_scene_handler_;
   id mock_settings_handler_;
   id mock_gemini_handler_;
+  id mock_scene_sign_in_handler_;
   SceneState* scene_state_;
   ProfileState* profile_state_;
   id<ConnectionInformation> connection_information_;
@@ -429,4 +443,60 @@ TEST_F(SceneControllerTest, SceneStatePrefsNotRecreatedAsProfileStageAdvance) {
   EXPECT_EQ(scene_state.prefs, prefs);
 }
 
+// Tests that the AccountStatus metric is recorded when handling
+// START_GEMINI_AI_SUMMARIZATION post-opening action.
+TEST_F(SceneControllerTest, TestAppSwitcherAISummarizationAccountStatusMetric) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kPageActionMenu, kAppSwitcherAISummarization}, {});
+
+  auto web_state = std::make_unique<web::FakeWebState>();
+  web_state->SetCurrentURL(GURL("https://example.com"));
+  browser_->GetWebStateList()->InsertWebState(
+      std::move(web_state),
+      WebStateList::InsertionParams::AtIndex(0).Activate());
+
+  base::HistogramTester histogram_tester;
+
+  ProceduralBlock action = [scene_controller_
+      completionBlockForTriggeringAction:START_GEMINI_AI_SUMMARIZATION];
+  ASSERT_NE(action, nil);
+
+  action();
+
+  histogram_tester.ExpectUniqueSample(
+      "IOS.Gemini.AISummarization.AccountStatus",
+      static_cast<int>(GeminiAppSwitcherAccountStatus::kBothSignedOut), 1);
+}
+
+// Tests that connecting a new scene with an activity that has a menu scenario
+// attached records the `OpenInNewWindow` menu action histogram for that
+// scenario.
+TEST_F(SceneControllerTest, RecordWindowCreationMenuActionHistogram) {
+  if (!base::ios::IsMultipleScenesSupported()) {
+    GTEST_SKIP() << "Multiple scenes not supported on this device.";
+  }
+
+  [profile_state_ sceneStateConnected:[[SceneState alloc] init]];
+  [profile_state_ sceneStateConnected:scene_state_];
+  scene_state_.currentOrigin = WindowActivityContextMenuOrigin;
+
+  NSUserActivity* activity = ActivityToLoadURL(WindowActivityContextMenuOrigin,
+                                               GURL("https://example.com"));
+  AttachMenuScenarioToActivity(activity, kMenuScenarioHistogramHistoryEntry);
+
+  NSSet<NSUserActivity*>* activities = [NSSet setWithObject:activity];
+  scene_state_.connectionOptions =
+      [[ChromeConnectionOptions alloc] initWithUserActivities:activities
+                                                  URLContexts:nil
+                                                 shortcutItem:nil];
+
+  base::HistogramTester histogram_tester;
+  [scene_controller_ sceneState:scene_state_
+      transitionedToActivationLevel:SceneActivationLevelBackground];
+
+  histogram_tester.ExpectUniqueSample(
+      GetActionsHistogramName(kMenuScenarioHistogramHistoryEntry),
+      MenuActionType::OpenInNewWindow, 1);
+}
 }  // namespace

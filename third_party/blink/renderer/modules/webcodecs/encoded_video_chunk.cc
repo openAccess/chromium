@@ -18,12 +18,22 @@ namespace blink {
 EncodedVideoChunk* EncodedVideoChunk::Create(ScriptState* script_state,
                                              const EncodedVideoChunkInit* init,
                                              ExceptionState& exception_state) {
-  auto array_span = AsSpan<const uint8_t>(init->data());
+  std::unique_ptr<media::DecryptConfig> decrypt_config;
+  if (init->hasDecryptConfig()) {
+    decrypt_config = CreateMediaDecryptConfig(*init->decryptConfig());
+    if (!decrypt_config) {
+      exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
+                                        "Unsupported decryptConfig");
+      return nullptr;
+    }
+  }
+
   auto* isolate = script_state->GetIsolate();
+  DOMArrayBufferView* data = CoerceToArrayBufferView(*init->data());
 
   // Try if we can transfer `init.data` into this chunk without copying it.
-  auto buffer_contents = TransferArrayBufferForSpan(
-      init->transfer(), array_span, exception_state, isolate);
+  auto [buffer_contents, array_span] =
+      TransferArrayBuffers(isolate, init->transfer(), data, exception_state);
   if (exception_state.HadException()) {
     return nullptr;
   }
@@ -63,13 +73,7 @@ EncodedVideoChunk* EncodedVideoChunk::Create(ScriptState* script_state,
 
   buffer->set_is_key_frame(init->type() == V8EncodedVideoChunkType::Enum::kKey);
 
-  if (init->hasDecryptConfig()) {
-    auto decrypt_config = CreateMediaDecryptConfig(*init->decryptConfig());
-    if (!decrypt_config) {
-      exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
-                                        "Unsupported decryptConfig");
-      return nullptr;
-    }
+  if (decrypt_config) {
     buffer->set_decrypt_config(std::move(decrypt_config));
   }
 
@@ -99,10 +103,11 @@ uint64_t EncodedVideoChunk::byteLength() const {
   return buffer_->size();
 }
 
-void EncodedVideoChunk::copyTo(const AllowSharedBufferSource* destination,
+void EncodedVideoChunk::copyTo(AllowSharedBufferSource* destination,
                                ExceptionState& exception_state) {
   // Validate destination buffer.
-  auto dest_wrapper = AsSpan<uint8_t>(destination);
+  base::span<uint8_t> dest_wrapper =
+      AsSpan<SharedBufferPolicy::kAllow>(*destination);
   auto buffer_span = base::span(*buffer_);
   if (dest_wrapper.size() < buffer_span.size()) {
     exception_state.ThrowTypeError("destination is not large enough.");

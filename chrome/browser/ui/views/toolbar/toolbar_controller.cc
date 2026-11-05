@@ -4,15 +4,20 @@
 
 #include "chrome/browser/ui/views/toolbar/toolbar_controller.h"
 
+#include <algorithm>
+#include <array>
 #include <optional>
 #include <ranges>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
+#include "base/containers/fixed_flat_map.h"
+#include "base/containers/flat_map.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
-#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
@@ -147,6 +152,7 @@ ToolbarController::ToolbarController(
               views::FlexSpecification flex_spec;
               if (!original_spec) {
                 flex_spec = views::FlexSpecification(
+                    views::LayoutOrientation::kHorizontal,
                     views::MinimumFlexSizeRule::kPreferredSnapToZero,
                     views::MaximumFlexSizeRule::kPreferred);
                 toolbar_element->SetProperty(views::kFlexBehaviorKey,
@@ -207,71 +213,90 @@ ToolbarController::GetDefaultOverflowOrder() {
 }
 
 // Every activate identifier should have an action name in order to emit
-// metrics. Please update action names in actions.xml to match this map.
+// metrics. Please update action names in actions.xml to match these tables.
 std::string ToolbarController::GetActionNameFromElementIdentifier(
     std::variant<ui::ElementIdentifier, actions::ActionId> identifier) {
-  static const base::NoDestructor<base::flat_map<
-      std::variant<ui::ElementIdentifier, actions::ActionId>, std::string_view>>
-      identifier_to_action_name_map(
-          {{kToolbarAvatarButtonElementId, "AvatarButton"},
-           {kToolbarBatterySaverButtonElementId, "BatterySaverButton"},
-           {kExtensionsMenuButtonElementId, "ExtensionsMenuButton"},
-           {kToolbarForwardButtonElementId, "ForwardButton"},
-           {kActionForward, "ForwardButton"},
-           {kToolbarHomeButtonElementId, "HomeButton"},
-           {kActionHome, "HomeButton"},
-           {kToolbarMediaButtonElementId, "MediaButton"},
-           {kToolbarSidePanelButtonElementId, "SidePanelButton"},
-           {kToolbarSplitTabsToolbarButtonElementId, "SplitTabs"},
-           {kPinnedToolbarActionShowSidePanelContextualTasksElementId,
-            "PinnedContextualTasksSidePanelButton"},
-           {kActionSidePanelShowContextualTasks,
-            "PinnedContextualTasksSidePanelButton"},
-           {kActionClearBrowsingData, "PinnedClearBrowsingDataButton"},
-           {kActionCopyUrl, "PinnedCopyLinkButton"},
-           {kActionDevTools, "PinnedDeveloperToolsButton"},
-           {kActionNewIncognitoWindow, "PinnedNewIncognitoWindowButton"},
-           {kActionPrint, "PinnedPrintButton"},
-           {kActionQrCodeGenerator, "PinnedQrCodeGeneratorButton"},
-           {kActionRouteMedia, "PinnedCastButton"},
-           {kActionSendTabToSelf, "PinnedSendTabToSelfButton"},
-           {kActionShowAddresses, "PinnedShowAddressesBubbleOrPageButton"},
-           {kActionShowAddressesBubbleOrPage,
-            "PinnedShowAddressesBubbleOrPageButton"},
-           {kActionShowChromeLabs, "PinnedShowChromeLabsButton"},
-           {kActionShowDownloads, "PinnedShowDownloadsButton"},
-           {kActionShowPasswordManager,
-            "PinnedShowPasswordsBubbleOrPageButton"},
-           {kActionShowPasswordsBubbleOrPage,
-            "PinnedShowPasswordsBubbleOrPageButton"},
-           {kActionShowPaymentMethods, "PinnedShowPaymentsBubbleOrPageButton"},
-           {kActionShowPaymentsBubbleOrPage,
-            "PinnedShowPaymentsBubbleOrPageButton"},
-           {kActionShowTranslate, "PinnedShowTranslateButton"},
-           {kActionSidePanelShowBookmarks, "PinnedShowBookmarkSidePanelButton"},
-           {kActionSidePanelShowReadAnything,
-            "PinnedShowReadAnythingSidePanelButton"},
-           {kActionSidePanelShowHistoryCluster,
-            "PinnedShowHistorySidePanelButton"},
-           {kActionSidePanelShowReadingList,
-            "PinnedShowReadingListSidePanelButton"},
-           {kActionSidePanelShowSearchCompanion,
-            "PinnedShowSearchCompanionSidePanelButton"},
-           {kActionTaskManager, "PinnedTaskManagerButton"},
-           {kActionSidePanelShowLensOverlayResults,
-            "PinnedShowLensOverlayResultsSidePanelButton"},
-           {kActionSendSharedTabGroupFeedback, "SharedTabGroupFeedbackButton"},
-           {kActionTabSearch, "PinnedTabSearchButton"},
-           {kActionSidePanelShowGlic, "PinnedGlicButton"},
-           {kActionSidePanelShowTabsFromOtherDevices,
-            "PinnedTabsFromOtherDevicesButton"},
-           {kGlicButtonElementId, "GlicButtonElementId"}});
+  static constexpr auto kElementIdToActionName =
+      std::to_array<std::pair<ui::ElementIdentifier, std::string_view>>({
+          {kToolbarAvatarButtonElementId, "AvatarButton"},
+          {kToolbarBatterySaverButtonElementId, "BatterySaverButton"},
+          {kExtensionsMenuButtonElementId, "ExtensionsMenuButton"},
+          {kToolbarForwardButtonElementId, "ForwardButton"},
+          {kToolbarHomeButtonElementId, "HomeButton"},
+          {kToolbarMediaButtonElementId, "MediaButton"},
+          {kToolbarSidePanelButtonElementId, "SidePanelButton"},
+          {kToolbarSplitTabsToolbarButtonElementId, "SplitTabs"},
+          {kPinnedToolbarActionShowSidePanelContextualTasksElementId,
+           "PinnedContextualTasksSidePanelButton"},
+          {kGlicButtonElementId, "GlicButtonElementId"},
+      });
 
-  const auto it = identifier_to_action_name_map->find(identifier);
-  return it == identifier_to_action_name_map->end()
+  static constexpr auto kActionIdToActionNameMap =
+      base::MakeFixedFlatMap<actions::ActionId, std::string_view>({
+          {kActionForward, "ForwardButton"},
+          {kActionHome, "HomeButton"},
+          {kActionSidePanelShowContextualTasks,
+           "PinnedContextualTasksSidePanelButton"},
+          {kActionClearBrowsingData, "PinnedClearBrowsingDataButton"},
+          {kActionCopyUrl, "PinnedCopyLinkButton"},
+          {kActionDevTools, "PinnedDeveloperToolsButton"},
+          {kActionNewIncognitoWindow, "PinnedNewIncognitoWindowButton"},
+          {kActionNewIsolatedWindow, "PinnedNewIsolatedWindowButton"},
+          {kActionPrint, "PinnedPrintButton"},
+          {kActionQrCodeGenerator, "PinnedQrCodeGeneratorButton"},
+          {kActionRouteMedia, "PinnedCastButton"},
+          {kActionSendTabToSelf, "PinnedSendTabToSelfButton"},
+          {kActionShowAddressesBubbleOrPage,
+           "PinnedShowAddressesBubbleOrPageButton"},
+          {kActionShowChromeLabs, "PinnedShowChromeLabsButton"},
+          {kActionShowDownloads, "PinnedShowDownloadsButton"},
+          {kActionShowPasswordManager, "PinnedShowPasswordsBubbleOrPageButton"},
+          {kActionShowPasswordsBubbleOrPage,
+           "PinnedShowPasswordsBubbleOrPageButton"},
+          {kActionShowPaymentMethods, "PinnedShowPaymentsBubbleOrPageButton"},
+          {kActionShowPaymentsBubbleOrPage,
+           "PinnedShowPaymentsBubbleOrPageButton"},
+          {kActionShowTranslate, "PinnedShowTranslateButton"},
+          {kActionSidePanelShowBookmarks, "PinnedShowBookmarkSidePanelButton"},
+          {kActionSidePanelShowReadAnything,
+           "PinnedShowReadAnythingSidePanelButton"},
+          {kActionSidePanelShowHistoryCluster,
+           "PinnedShowHistorySidePanelButton"},
+          {kActionSidePanelShowReadingList,
+           "PinnedShowReadingListSidePanelButton"},
+          {kActionSidePanelShowSearchCompanion,
+           "PinnedShowSearchCompanionSidePanelButton"},
+          {kActionTaskManager, "PinnedTaskManagerButton"},
+          {kActionTtcToolbar, "PinnedTtcButton"},
+          {kActionSidePanelShowLensOverlayResults,
+           "PinnedShowLensOverlayResultsSidePanelButton"},
+          {kActionSendSharedTabGroupFeedback, "SharedTabGroupFeedbackButton"},
+          {kActionTabSearch, "PinnedTabSearchButton"},
+          {kActionSidePanelShowGlic, "PinnedGlicButton"},
+          {kActionSidePanelShowTabsFromOtherDevices,
+           "PinnedTabsFromOtherDevicesButton"},
+      });
+
+  const std::string_view suffix = std::visit(
+      absl::Overload{
+          [](ui::ElementIdentifier id) -> std::string_view {
+            const auto it = std::ranges::find(
+                kElementIdToActionName, id,
+                &std::pair<ui::ElementIdentifier, std::string_view>::first);
+            return it == kElementIdToActionName.end() ? std::string_view()
+                                                      : it->second;
+          },
+          [](actions::ActionId id) -> std::string_view {
+            const auto it = kActionIdToActionNameMap.find(id);
+            return it == kActionIdToActionNameMap.end() ? std::string_view()
+                                                        : it->second;
+          }},
+      identifier);
+
+  return suffix.empty()
              ? std::string()
-             : base::StrCat({"ResponsiveToolbar.OverflowMenuItemActivated.",
-                             it->second});
+             : base::StrCat(
+                   {"ResponsiveToolbar.OverflowMenuItemActivated.", suffix});
 }
 
 bool ToolbarController::PopOut(ui::ElementIdentifier identifier,
@@ -303,7 +328,8 @@ bool ToolbarController::PopOut(ui::ElementIdentifier identifier,
       // below the mininmum size.
       element->SetProperty(
           views::kFlexBehaviorKey,
-          views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToMinimum,
+          views::FlexSpecification(views::LayoutOrientation::kHorizontal,
+                                   views::MinimumFlexSizeRule::kScaleToMinimum,
                                    views::MaximumFlexSizeRule::kPreferred)
               .WithOrder((*original).order())
               .WithWeight((*original).weight())
@@ -358,7 +384,7 @@ bool ToolbarController::ShouldShowOverflowButton(gfx::Size available_size) {
           toolbar_container_view_->GetLayoutManager()));
   const auto exclusion =
       manual_layout_util.TemporarilyExcludeFromLayout(overflow_button());
-  views::ProposedLayout proposed_layout =
+  const views::ProposedLayout& proposed_layout =
       static_cast<views::LayoutManagerBase*>(
           toolbar_container_view_->GetLayoutManager())
           ->GetProposedLayout(available_size);
@@ -366,7 +392,7 @@ bool ToolbarController::ShouldShowOverflowButton(gfx::Size available_size) {
   // Check if any buttons should overflow from pinned action delegate given the
   // available size.
   if (pinned_actions_delegate_) {
-    if (views::ChildLayout* child_layout = proposed_layout.GetLayoutFor(
+    if (const views::ChildLayout* child_layout = proposed_layout.GetLayoutFor(
             pinned_actions_delegate_->GetContainerView())) {
       if (pinned_actions_delegate_->ShouldAnyButtonsOverflow(gfx::Size(
               child_layout->bounds.width(), child_layout->bounds.height()))) {

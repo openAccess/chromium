@@ -11,6 +11,7 @@
 #include "third_party/blink/renderer/core/editing/finder/find_results.h"
 #include "third_party/blink/renderer/core/editing/selection_template.h"
 #include "third_party/blink/renderer/core/editing/testing/editing_test_base.h"
+#include "third_party/blink/renderer/core/html/forms/html_select_element.h"
 #include "third_party/blink/renderer/core/html/forms/text_control_element.h"
 
 namespace blink {
@@ -627,7 +628,11 @@ TEST_P(FindBufferParamTest, KanaDecomposed) {
   EXPECT_EQ(1u, CaseInsensitiveMatchCount(buffer, u"は　゛"));
   EXPECT_EQ(0u, CaseInsensitiveMatchCount(buffer, u"バ "));
   EXPECT_EQ(1u, CaseInsensitiveMatchCount(buffer, u"ハ ゛"));
-  EXPECT_EQ(1u, CaseInsensitiveMatchCount(buffer, u"ﾊ ﾞ"));
+  // U+FF9E (ﾞ) has only a secondary collation weight (like combining U+3099),
+  // whereas U+309B (゛) has its own primary weight. With secondary collation
+  // strength, U+FF9E is no longer ignored as a trailing primary-ignorable
+  // mark on the space.
+  EXPECT_EQ(0u, CaseInsensitiveMatchCount(buffer, u"ﾊ ﾞ"));
   EXPECT_EQ(1u, CaseInsensitiveMatchCount(buffer, u"ﾊ ゛"));
 }
 
@@ -833,6 +838,46 @@ TEST_P(FindBufferParamTest, DoNotSearchInSuggestedValues) {
 
     // This time, there should be a match.
     EXPECT_EQ(1U, results.CountForTesting());
+  }
+}
+
+TEST_P(FindBufferParamTest, DoNotSearchInSelectSuggestedOption) {
+  SetBodyContent(R"HTML(
+    <style>
+      #s option { visibility: hidden; }
+    </style>
+    <form id="f">
+      <select id="s" size="2">
+        <option value="val1">secret</option>
+        <option value="val2">other</option>
+      </select>
+    </form>
+  )HTML");
+
+  auto* select = To<HTMLSelectElement>(GetElementById("s"));
+  select->SetSuggestedValue("val1");
+  ASSERT_TRUE(select->IsPreviewed());
+  ASSERT_TRUE(select->GetAutofillPreviewElement());
+  ASSERT_TRUE(select->GetAutofillPreviewElement()->popoverOpen());
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+
+  {
+    FindBuffer buffer(WholeDocumentRange(), GetParam());
+    const auto results = buffer.FindMatches("secret", FindOptions());
+    EXPECT_EQ(0U, results.CountForTesting());
+  }
+
+  // Self-assigning selectedIndex resets autofill state and hides the preview
+  // popover so state and UI cannot desynchronize.
+  select->setSelectedIndex(select->selectedIndex());
+  ASSERT_FALSE(select->IsPreviewed());
+  ASSERT_FALSE(select->GetAutofillPreviewElement()->popoverOpen());
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+
+  {
+    FindBuffer buffer(WholeDocumentRange(), GetParam());
+    const auto results = buffer.FindMatches("secret", FindOptions());
+    EXPECT_EQ(0U, results.CountForTesting());
   }
 }
 

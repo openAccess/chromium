@@ -15,7 +15,9 @@
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/string_compare.h"
+#include "base/i18n/test/scoped_icu_locale.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
@@ -47,6 +49,7 @@
 #include "ui/base/ime/ash/ime_bridge.h"
 #include "ui/base/ime/ash/mock_component_extension_ime_manager_delegate.h"
 #include "ui/base/ime/ash/mock_ime_engine_handler.h"
+#include "ui/base/ime/ash/scoped_input_method_manager_for_testing.h"
 #include "ui/base/ime/init/input_method_initializer.h"
 #include "ui/base/ui_base_features.h"
 
@@ -179,13 +182,17 @@ class InputMethodManagerImplTest : public BrowserWithTestWindowTest {
     auto fake_keyboard = std::make_unique<FakeImeKeyboard>();
     keyboard_ = fake_keyboard.get();
 
-    manager_ = new InputMethodManagerImpl(
+    // Install the manager as the global InputMethodManager before
+    // BrowserWithTestWindowTest::SetUp(), because components in ash need to be
+    // able to call InputMethodManager::Get() during initialization.
+    input_method_manager_.emplace(
         TestingBrowserProcess::GetGlobal()->local_state(),
         TestingBrowserProcess::GetGlobal()
             ->GetFeatures()
             ->application_locale_storage(),
         std::make_unique<FakeInputMethodDelegate>(), std::move(mock_delegate),
         false, std::move(fake_keyboard));
+    manager_ = input_method_manager_->get();
     manager_->GetInputMethodUtil()->UpdateHardwareLayoutCache();
     candidate_window_controller_ = new MockCandidateWindowController;
     manager_->SetCandidateWindowControllerForTesting(
@@ -195,10 +202,6 @@ class InputMethodManagerImplTest : public BrowserWithTestWindowTest {
 
     menu_manager_ = ui::ime::InputMethodMenuManager::GetInstance();
 
-    // Let the global pointer own manager_. Components in ash need to be
-    // able to call InputMethodManager::Get() during initialization. Cleanup
-    // the pointer by calling ShutDown() in TearDown().
-    InputMethodManager::Initialize(manager_);
     BrowserWithTestWindowTest::SetUp();
 
     // Needs ash::Shell keyboard to be created first.
@@ -228,9 +231,9 @@ class InputMethodManagerImplTest : public BrowserWithTestWindowTest {
     candidate_window_controller_ = nullptr;
     keyboard_ = nullptr;
 
-    // Cleanup the global manager and clear the member pointer.
-    InputMethodManager::Shutdown();
+    // Clear the member pointer and clean up the global manager.
     manager_ = nullptr;
+    input_method_manager_.reset();
   }
 
  private:
@@ -389,7 +392,9 @@ class InputMethodManagerImplTest : public BrowserWithTestWindowTest {
   ash::SessionTerminationManager session_termination_manager_;
   std::unique_ptr<ChromeKeyboardControllerClientTestHelper>
       chrome_keyboard_controller_client_test_helper_;
-  raw_ptr<InputMethodManagerImpl, DanglingUntriaged> manager_ = nullptr;
+  std::optional<ScopedInputMethodManagerForTesting<InputMethodManagerImpl>>
+      input_method_manager_;
+  raw_ptr<InputMethodManagerImpl> manager_ = nullptr;
   raw_ptr<MockCandidateWindowController> candidate_window_controller_ = nullptr;
   std::unique_ptr<MockInputMethodEngine> mock_engine_handler_;
   raw_ptr<FakeImeKeyboard> keyboard_ = nullptr;
@@ -428,7 +433,8 @@ TEST_F(InputMethodManagerImplTest, TestObserver) {
   EXPECT_EQ(0, observer.input_method_changed_count_);
   EXPECT_EQ(0, observer.input_method_extension_added_count_);
   EXPECT_EQ(0, observer.input_method_extension_removed_count_);
-  manager_->GetActiveIMEState()->EnableLoginLayouts("en-US", keyboard_layouts);
+  manager_->GetActiveIMEState()->EnableLoginLayouts(
+      base::i18n::GetKnownLanguageTag("en-US"), keyboard_layouts);
   EXPECT_EQ(8U, manager_->GetActiveIMEState()->GetEnabledInputMethods().size());
   EXPECT_EQ(1, observer.input_method_changed_count_);
   // Menu change is triggered only if current input method was actually changed.
@@ -495,13 +501,14 @@ TEST_F(InputMethodManagerImplTest, TestEnableLayouts) {
   // ibus_input_method.txt.
   std::vector<std::string> keyboard_layouts;
 
-  manager_->GetActiveIMEState()->EnableLoginLayouts("en-US", keyboard_layouts);
+  manager_->GetActiveIMEState()->EnableLoginLayouts(
+      base::i18n::GetKnownLanguageTag("en-US"), keyboard_layouts);
   EXPECT_EQ(8U, manager_->GetActiveIMEState()->GetNumEnabledInputMethods());
 
   // For http://crbug.com/40979322#comment12 - (5)
   // The hardware keyboard layout "xkb:us::eng" is always active, hence 2U.
   manager_->GetActiveIMEState()->EnableLoginLayouts(
-      "ja", keyboard_layouts);  // Japanese
+      base::i18n::GetKnownLanguageTag("ja"), keyboard_layouts);  // Japanese
   EXPECT_EQ(2U, manager_->GetActiveIMEState()->GetNumEnabledInputMethods());
 }
 
@@ -510,7 +517,8 @@ TEST_F(InputMethodManagerImplTest, TestEnableLayoutsAndCurrentInputMethod) {
   std::vector<std::string> keyboard_layouts;
   keyboard_layouts.push_back(ImeIdFromEngineId("xkb:se::swe"));
 
-  manager_->GetActiveIMEState()->EnableLoginLayouts("en-US", keyboard_layouts);
+  manager_->GetActiveIMEState()->EnableLoginLayouts(
+      base::i18n::GetKnownLanguageTag("en-US"), keyboard_layouts);
   const std::string im_id =
       manager_->GetActiveIMEState()->GetCurrentInputMethod().id();
   EXPECT_EQ(ImeIdFromEngineId("xkb:se::swe"), im_id);
@@ -521,7 +529,7 @@ TEST_F(InputMethodManagerImplTest, TestEnableLayoutsNonUsHardwareKeyboard) {
   manager_->GetInputMethodUtil()->SetHardwareKeyboardLayoutForTesting(
       "xkb:fr::fra");
   manager_->GetActiveIMEState()->EnableLoginLayouts(
-      "en-US",
+      base::i18n::GetKnownLanguageTag("en-US"),
       manager_->GetInputMethodUtil()->GetHardwareLoginInputMethodIds());
   EXPECT_EQ(9U,
             manager_->GetActiveIMEState()
@@ -530,7 +538,8 @@ TEST_F(InputMethodManagerImplTest, TestEnableLayoutsNonUsHardwareKeyboard) {
   manager_->GetInputMethodUtil()->SetHardwareKeyboardLayoutForTesting(
       "xkb:jp::jpn");
   manager_->GetActiveIMEState()->EnableLoginLayouts(
-      "ja", manager_->GetInputMethodUtil()->GetHardwareLoginInputMethodIds());
+      base::i18n::GetKnownLanguageTag("ja"),
+      manager_->GetInputMethodUtil()->GetHardwareLoginInputMethodIds());
   // "xkb:us::eng" is not needed, hence 1.
   EXPECT_EQ(1U, manager_->GetActiveIMEState()->GetNumEnabledInputMethods());
 
@@ -538,7 +547,8 @@ TEST_F(InputMethodManagerImplTest, TestEnableLayoutsNonUsHardwareKeyboard) {
   manager_->GetInputMethodUtil()->SetHardwareKeyboardLayoutForTesting(
       "xkb:ru::rus");
   manager_->GetActiveIMEState()->EnableLoginLayouts(
-      "ru", manager_->GetInputMethodUtil()->GetHardwareLoginInputMethodIds());
+      base::i18n::GetKnownLanguageTag("ru"),
+      manager_->GetInputMethodUtil()->GetHardwareLoginInputMethodIds());
   // "xkb:us::eng" only.
   EXPECT_EQ(1U, manager_->GetActiveIMEState()->GetNumEnabledInputMethods());
   EXPECT_EQ(ImeIdFromEngineId("xkb:us::eng"),
@@ -550,7 +560,7 @@ TEST_F(InputMethodManagerImplTest, TestEnableMultipleHardwareKeyboardLayout) {
   manager_->GetInputMethodUtil()->SetHardwareKeyboardLayoutForTesting(
       "xkb:fr::fra,xkb:hu::hun");
   manager_->GetActiveIMEState()->EnableLoginLayouts(
-      "en-US",
+      base::i18n::GetKnownLanguageTag("en-US"),
       manager_->GetInputMethodUtil()->GetHardwareLoginInputMethodIds());
   // 8 + French + Hungarian
   EXPECT_EQ(10U, manager_->GetActiveIMEState()->GetNumEnabledInputMethods());
@@ -562,7 +572,8 @@ TEST_F(InputMethodManagerImplTest,
   manager_->GetInputMethodUtil()->SetHardwareKeyboardLayoutForTesting(
       "xkb:us::eng,xkb:ru::rus");
   manager_->GetActiveIMEState()->EnableLoginLayouts(
-      "ru", manager_->GetInputMethodUtil()->GetHardwareLoginInputMethodIds());
+      base::i18n::GetKnownLanguageTag("ru"),
+      manager_->GetInputMethodUtil()->GetHardwareLoginInputMethodIds());
   // xkb:us:eng
   EXPECT_EQ(1U, manager_->GetActiveIMEState()->GetNumEnabledInputMethods());
 }
@@ -570,7 +581,7 @@ TEST_F(InputMethodManagerImplTest,
 TEST_F(InputMethodManagerImplTest, TestEnabledInputMethods) {
   std::vector<std::string> keyboard_layouts;
   manager_->GetActiveIMEState()->EnableLoginLayouts(
-      "ja", keyboard_layouts);  // Japanese
+      base::i18n::GetKnownLanguageTag("ja"), keyboard_layouts);  // Japanese
   EXPECT_EQ(2U, manager_->GetActiveIMEState()->GetNumEnabledInputMethods());
   InputMethodDescriptors methods =
       manager_->GetActiveIMEState()->GetEnabledInputMethods();
@@ -939,7 +950,8 @@ TEST_F(InputMethodManagerImplTest,
   active_state->EnableInputMethod(ImeIdFromEngineId("xkb:hu::hun"));
   active_state->EnableInputMethod(ImeIdFromEngineId("xkb:de::ger"));
 
-  base::i18n::SetICUDefaultLocale("en-US");
+  base::i18n::ScopedDefaultIcuLocale scoped_locale(
+      base::i18n::GetKnownLanguageTag("en-US"));
   InputMethodDescriptors result =
       active_state->GetEnabledInputMethodsSortedByLocalizedDisplayNames();
   ASSERT_FALSE(result.empty());
@@ -965,7 +977,8 @@ TEST_F(InputMethodManagerImplTest, TestNextInputMethod) {
   keyboard_layouts.push_back(ImeIdFromEngineId("xkb:us::eng"));
 
   // For http://crbug.com/40979322#comment12 - (1)
-  manager_->GetActiveIMEState()->EnableLoginLayouts("en-US", keyboard_layouts);
+  manager_->GetActiveIMEState()->EnableLoginLayouts(
+      base::i18n::GetKnownLanguageTag("en-US"), keyboard_layouts);
   EXPECT_EQ(8U, manager_->GetActiveIMEState()->GetNumEnabledInputMethods());
   InputMethodDescriptors sorted_enabled_input_methods =
       manager_->GetActiveIMEState()
@@ -1045,7 +1058,8 @@ TEST_F(InputMethodManagerImplTest, TestLastUsedInputMethod) {
   std::vector<std::string> keyboard_layouts;
   keyboard_layouts.push_back(us_id);
 
-  manager_->GetActiveIMEState()->EnableLoginLayouts("en-US", keyboard_layouts);
+  manager_->GetActiveIMEState()->EnableLoginLayouts(
+      base::i18n::GetKnownLanguageTag("en-US"), keyboard_layouts);
   EXPECT_EQ(8U, manager_->GetActiveIMEState()->GetNumEnabledInputMethods());
   EXPECT_EQ(us_id, manager_->GetActiveIMEState()->GetCurrentInputMethod().id());
   EXPECT_EQ("us", keyboard_->GetCurrentKeyboardLayoutName());

@@ -45,7 +45,7 @@ class SuggestionLayout extends ViewGroup {
     /**
      * SuggestionLayout's LayoutParams.
      *
-     * <p>Additional parameters define the role of an element..
+     * <p>Additional parameters define the role of an element.
      */
     public static class LayoutParams extends ViewGroup.LayoutParams {
 
@@ -105,27 +105,28 @@ class SuggestionLayout extends ViewGroup {
             mIsLargeDecoration = isLargeDecoration;
         }
 
-        /** Create LayoutParams for particular SuggestionViewType. */
+        /** Creates LayoutParams for particular SuggestionViewType. */
         public static LayoutParams forViewType(@SuggestionViewType int type) {
             return new LayoutParams(WRAP_CONTENT, WRAP_CONTENT, type, false);
         }
 
-        /** Create LayoutParams for particular SuggestionViewType. */
+        /** Creates LayoutParams for large decoration icon. */
         public static LayoutParams forLargeDecorationIcon() {
             return new LayoutParams(
                     WRAP_CONTENT, WRAP_CONTENT, SuggestionViewType.DECORATION, true);
         }
 
-        /**
-         * @return The role of the view.
-         */
+        /** Returns the role of the view. */
         private @SuggestionViewType int getViewType() {
             return mSuggestionViewType;
         }
 
-        /**
-         * @return The placement of the view, relative to Suggestion area start.
-         */
+        /** Returns whether the decoration icon is large. */
+        boolean isLargeDecoration() {
+            return mIsLargeDecoration;
+        }
+
+        /** Returns the placement of the view, relative to the suggestion area start. */
         private Rect getPlacement() {
             return mPlacement;
         }
@@ -204,23 +205,37 @@ class SuggestionLayout extends ViewGroup {
     }
 
     public void applySideSpacing(boolean applyOuterMargins, @Px int sideSpacing) {
+        @Px int marginSpacing = applyOuterMargins ? sideSpacing : 0;
+        int padding = applyOuterMargins ? 0 : mSuggestionPopoverShift;
+
         ViewGroup.LayoutParams layoutParams = getLayoutParams();
+        boolean layoutParamsChanged = false;
         if (layoutParams == null) {
-            layoutParams =
+            MarginLayoutParams marginParams =
                     new MarginLayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
+            marginParams.setMargins(marginSpacing, 0, marginSpacing, 0);
+            layoutParams = marginParams;
+            layoutParamsChanged = true;
+        } else if (layoutParams instanceof MarginLayoutParams marginParams) {
+            if (marginParams.leftMargin != marginSpacing
+                    || marginParams.rightMargin != marginSpacing
+                    || marginParams.topMargin != 0
+                    || marginParams.bottomMargin != 0) {
+                marginParams.setMargins(marginSpacing, 0, marginSpacing, 0);
+                layoutParamsChanged = true;
+            }
+        }
+        if (layoutParamsChanged) {
+            setLayoutParams(layoutParams);
         }
 
-        @Px int marginSpacing = applyOuterMargins ? sideSpacing : 0;
-        if (layoutParams instanceof MarginLayoutParams) {
-            ((MarginLayoutParams) layoutParams).setMargins(marginSpacing, 0, marginSpacing, 0);
-        }
-        setLayoutParams(layoutParams);
         // If outer margins are not applied, then the content in the suggestion becomes too close to
         // the border of the Omnibox suggestions container. To avoid this, we need to add padding to
         // the left and right of the suggestion. This allows the suggestion hover highlight to span
         // the whole width and the content inside to be aligned correctly.
-        int padding = applyOuterMargins ? 0 : mSuggestionPopoverShift;
-        setPaddingRelative(padding, getPaddingTop(), padding, getPaddingBottom());
+        if (getPaddingStart() != padding || getPaddingEnd() != padding) {
+            setPaddingRelative(padding, getPaddingTop(), padding, getPaddingBottom());
+        }
     }
 
     @Override
@@ -354,7 +369,7 @@ class SuggestionLayout extends ViewGroup {
      * <p>NOTE: this is invoked directly by the measure cycle. Do not allocate memory, and avoid any
      * calls that trigger measurement invalidation and restart.
      *
-     * @param suggestionWidthPx The width of the suggestion content area
+     * @param suggestionWidthPx The width of the suggestion content area.
      * @return The computed width of the CONTENT views.
      */
     private @Px int measureContentViewsWidthPx(@Px int suggestionWidthPx) {
@@ -428,9 +443,11 @@ class SuggestionLayout extends ViewGroup {
                 Math.max(contentHeightPx, hasFooter ? mCompactContentHeightPx : mContentHeightPx);
         // Some views (e.g. TextView) won't render correctly unless measure specs are explicitly
         // supplied, failing to properly center the content.
-        contentView.measure(
-                MeasureSpec.makeMeasureSpec(contentWidthPx, MeasureSpec.EXACTLY),
-                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
+        if (contentView.getMeasuredHeight() != height) {
+            contentView.measure(
+                    MeasureSpec.makeMeasureSpec(contentWidthPx, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
+        }
         return height;
     }
 
@@ -440,7 +457,7 @@ class SuggestionLayout extends ViewGroup {
      * <p>NOTE: this is invoked directly by the measure cycle. Do not allocate memory, and avoid any
      * calls that trigger measurement invalidation and restart.
      *
-     * @param suggestionWidthPx The width of the suggestion content area
+     * @param suggestionWidthPx The width of the suggestion content area.
      * @return The cumulative height of the FOOTER views.
      */
     private @Px int measureFooterViewsHeightPx(@Px int suggestionWidthPx) {
@@ -512,7 +529,7 @@ class SuggestionLayout extends ViewGroup {
      *
      * <ul>
      *   <li>to the RIGHT, when the layout direction is LTR, and
-     *   <li>to the LEFT, when the layout direction ir RTL.
+     *   <li>to the LEFT, when the layout direction is RTL.
      * </ul>
      *
      * @param suggestionWidthPx The width of the Suggestion area.

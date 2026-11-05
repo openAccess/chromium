@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import '//resources/cr_elements/cr_auto_img/cr_auto_img.js';
 import '//resources/cr_elements/cr_button/cr_button.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_input/cr_input.js';
@@ -35,6 +36,7 @@ export class SaveToMemoryBankElement extends CrLitElement {
       title: {type: String},
       url: {type: String},
       snippet: {type: String},
+      imageUrl: {type: String},
       note: {type: String},
       collection: {type: String},
       collections: {type: Array},
@@ -67,6 +69,7 @@ export class SaveToMemoryBankElement extends CrLitElement {
       this.title = context.tabTitle || '';
       this.url = context.url || '';
       this.snippet = context.selectedText || '';
+      this.imageUrl = context.imageUrl || '';
     }
 
     this.collections = collections || [];
@@ -76,6 +79,7 @@ export class SaveToMemoryBankElement extends CrLitElement {
   override accessor title: string = '';
   accessor url: string = '';
   accessor snippet: string = '';
+  accessor imageUrl: string = '';
   accessor note: string = '';
   accessor collection: string = '';
   accessor collections: string[] = [];
@@ -115,13 +119,13 @@ export class SaveToMemoryBankElement extends CrLitElement {
   }
 
   private computeFilteredTags_(): string[] {
+    const unselected = this.availableTags.filter(
+        t => !this.tags.some(tag => tag.toLowerCase() === t.toLowerCase()));
     const query = this.newTagInput.trim().toLowerCase();
     if (!query) {
-      return [];
+      return unselected.sort((a, b) => a.localeCompare(b));
     }
-    const filtered = this.availableTags.filter(
-        t => !this.tags.some(tag => tag.toLowerCase() === t.toLowerCase()) &&
-            t.toLowerCase().includes(query));
+    const filtered = unselected.filter(t => t.toLowerCase().includes(query));
     return filtered.sort((a, b) => {
       const aStarts = a.toLowerCase().startsWith(query);
       const bStarts = b.toLowerCase().startsWith(query);
@@ -231,20 +235,26 @@ export class SaveToMemoryBankElement extends CrLitElement {
     this.highlightedTagIndex = -1;
   }
 
-  protected onNewTagKeydown(e: KeyboardEvent) {
+  protected async onNewTagKeydown(e: KeyboardEvent) {
     const suggestions = this.filteredTags_;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       if (suggestions.length > 0) {
         this.highlightedTagIndex =
             (this.highlightedTagIndex + 1) % suggestions.length;
+        await this.updateComplete;
+        this.shadowRoot?.querySelector('.suggestion-item.highlighted')
+            ?.scrollIntoView({block: 'nearest'});
       }
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       if (suggestions.length > 0) {
-        this.highlightedTagIndex =
-            (this.highlightedTagIndex - 1 + suggestions.length) %
-            suggestions.length;
+        this.highlightedTagIndex = this.highlightedTagIndex <= 0 ?
+            suggestions.length - 1 :
+            this.highlightedTagIndex - 1;
+        await this.updateComplete;
+        this.shadowRoot?.querySelector('.suggestion-item.highlighted')
+            ?.scrollIntoView({block: 'nearest'});
       }
     } else if (e.key === 'Enter') {
       e.preventDefault();

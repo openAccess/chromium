@@ -6,8 +6,6 @@ package org.chromium.chrome.browser.translate;
 
 import android.app.Activity;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -17,6 +15,7 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.UnownedUserDataHost;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -41,7 +40,6 @@ public final class AutoTranslateSnackbarControllerTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateWithNullWindowAndroid() {
         Mockito.doReturn(null).when(mWebContents).getTopLevelNativeWindow();
         Assert.assertNull(
@@ -49,7 +47,6 @@ public final class AutoTranslateSnackbarControllerTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateWithNullActivityWeakReference() {
         Mockito.doReturn(mWindowAndroid).when(mWebContents).getTopLevelNativeWindow();
         Mockito.doReturn(null).when(mWindowAndroid).getActivity();
@@ -58,9 +55,8 @@ public final class AutoTranslateSnackbarControllerTest {
     }
 
     @Test
-    @SmallTest
     public void testCreateWithNullSnackbarManager() {
-        Activity activity = Mockito.mock(Activity.class);
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
 
         Mockito.doReturn(new WeakReference<>(activity)).when(mWindowAndroid).getActivity();
         Mockito.doReturn(mWindowAndroid).when(mWebContents).getTopLevelNativeWindow();

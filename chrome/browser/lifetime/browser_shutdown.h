@@ -78,6 +78,14 @@ bool HasShutdownStarted();
 // This is true for kEndSession and kSilentExit shutdown types.
 bool ShouldIgnoreUnloadHandlers();
 
+// Returns true if OnShutdownStarting has been called and renderer processes
+// should be fast-killed without waiting for unload handlers, workers, or
+// keep-alive requests. This is only enabled on ChromeOS, where session_manager
+// enforces a 3 s SIGTERM timeout across both ShouldIgnoreUnloadHandlers() and
+// kBrowserExit (reached from ExitIgnoreUnloadHandlers() when all browsers are
+// closeable).
+bool ShouldFastShutdownRenderers();
+
 // Get the current shutdown type.
 ShutdownType GetShutdownType();
 
@@ -99,6 +107,52 @@ RestartMode RecordShutdownInfoPrefs();
 // main thread have been stopped.  This includes deleting g_browser_process.
 void ShutdownPostThreadsStop(RestartMode restart_mode);
 #endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+// Ordered browser shutdown phases on ChromeOS, used for the
+// `cros-shutdown-phase` crash key and `Shutdown.ChromeOS.PhaseDuration.*`
+// histograms.
+enum class ShutdownPhase {
+  kNotStarted = 0,
+  kClosingBrowsers = 1,
+  kAshPreShell = 2,
+  kAshShell = 3,
+  kBrowserProcess = 4,
+  kAshPostProfile = 5,
+  kStoppingThreads = 6,
+  kPostDestroyThreads = 7,
+  kDone = 8,
+};
+
+// Records the duration of the previous shutdown phase (if any), updates the
+// `cros-shutdown-phase` crash key to `phase`, and records the cumulative
+// milliseconds elapsed since the first phase transition in
+// `cros-shutdown-elapsed-ms`.
+void SetShutdownPhase(ShutdownPhase phase);
+
+ShutdownPhase GetShutdownPhaseForTesting();
+
+// Trigger that initiated browser shutdown on ChromeOS, recorded in the
+// `cros-shutdown-trigger` crash key. Unlike `shutdown-type` (which reflects
+// whether browsers were closeable when `ExitIgnoreUnloadHandlers` ran), this
+// distinguishes user logout, restart-to-apply-flags, external SIGTERM, and
+// other shutdown paths (such as last-window close or DevTools Browser.close).
+enum class ShutdownTrigger {
+  kNotSet = 0,
+  kLogout = 1,
+  kSigterm = 2,
+  kRestartFlags = 3,
+  kOther = 4,
+};
+
+// Sets the `cros-shutdown-trigger` crash key on the first call during a
+// shutdown sequence; subsequent calls are ignored so an earlier explicit
+// trigger (`kLogout` or `kRestartFlags`) is not overwritten when
+// `session_manager` follows up with SIGTERM.
+void SetShutdownTrigger(ShutdownTrigger trigger);
+
+ShutdownTrigger GetShutdownTriggerForTesting();
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // There are various situations where the browser process should continue to
 // run after the last browser window has closed - the Mac always continues

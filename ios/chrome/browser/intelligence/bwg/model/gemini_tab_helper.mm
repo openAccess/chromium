@@ -4,11 +4,11 @@
 
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
 
+#import "base/check_is_test.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
 #import "base/memory/weak_ptr.h"
 #import "base/metrics/histogram_functions.h"
-#import "base/metrics/user_metrics.h"
 #import "base/strings/string_number_conversions.h"
 #import "base/strings/string_util.h"
 #import "base/strings/sys_string_conversions.h"
@@ -40,8 +40,10 @@
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_feature_availability.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_prefs.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/default_page_context_wrapper_factory.h"
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_utils.h"
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper_factory.h"
 #import "ios/chrome/browser/intelligence/zero_state_suggestions/zero_state_suggestions_service.h"
 #import "ios/chrome/browser/location_bar/badge/model/badge_type.h"
 #import "ios/chrome/browser/location_bar/badge/model/location_bar_badge_configuration.h"
@@ -52,7 +54,6 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/url/url_util.h"
-#import "ios/chrome/browser/shared/model/utils/first_run_util.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/help_commands.h"
 #import "ios/chrome/browser/shared/public/commands/location_bar_badge_commands.h"
@@ -113,8 +114,21 @@ NSArray<NSString*>* ConvertZeroStateSuggestionsToStrings(
 
 }  // namespace
 
-GeminiTabHelper::GeminiTabHelper(web::WebState* web_state)
-    : web_state_(web_state) {
+// TODO(crbug.com/581395525): Remove this constructor.
+GeminiTabHelper::GeminiTabHelper()
+    : page_context_wrapper_factory_(
+          DefaultPageContextWrapperFactory::GetInstance()) {
+  CHECK_IS_TEST();
+}
+
+GeminiTabHelper::GeminiTabHelper(
+    web::WebState* web_state,
+    PageContextWrapperFactory* page_context_wrapper_factory)
+    : web_state_(web_state),
+      page_context_wrapper_factory_(
+          page_context_wrapper_factory
+              ? *page_context_wrapper_factory
+              : DefaultPageContextWrapperFactory::GetInstance()) {
   ProfileIOS* profile =
       ProfileIOS::FromBrowserState(web_state->GetBrowserState());
   optimization_guide_decider_ =
@@ -132,10 +146,8 @@ GeminiTabHelper::~GeminiTabHelper() {
   for (auto& observer : observers_) {
     observer.OnGeminiTabHelperDestroyed(this);
   }
-  if (web_state_) {
-    web_state_->RemoveObserver(this);
-    web_state_ = nullptr;
-  }
+  web_state_observation_.Reset();
+  web_state_ = nullptr;
   optimization_guide_decider_ = nullptr;
 }
 
@@ -412,6 +424,33 @@ IOSGeminiInvocationPageType GeminiTabHelper::GetCurrentPageType() {
 
 #pragma mark - WebStateObserver
 
+void GeminiTabHelper::WasShown(web::WebState* web_state) {
+  // In NextIA or Live mode, the floaty remains persistently visible across tab
+  // switches, but the page context needs to be updated to match the newly
+  // visible tab.
+  if (IsNextIaOrLiveMode()) {
+    NotifyPageContextUpdated(web_state);
+  } else if (IsPageActionMenuEnabled()) {
+    [gemini_handler_
+        updateFloatyVisibilityIfEligibleAnimated:NO
+                                      fromSource:gemini::FloatyUpdateSource::
+                                                     WebNavigation];
+  }
+}
+
+void GeminiTabHelper::WasHidden(web::WebState* web_state) {
+  // In NextIA or Live mode, the floaty remains persistently visible when a tab
+  // is hidden (e.g., during a tab switch), but we must update the page context
+  // immediately to ensure the hidden tab's content is detached and blocked.
+  if (IsNextIaOrLiveMode()) {
+    NotifyPageContextUpdated(web_state);
+  } else if (IsPageActionMenuEnabled()) {
+    [gemini_handler_
+        hideFloatyIfInvokedAnimated:NO
+                         fromSource:gemini::FloatyUpdateSource::WebNavigation];
+  }
+}
+
 void GeminiTabHelper::DidStartNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
@@ -491,9 +530,6 @@ void GeminiTabHelper::DidFinishNavigation(
   }
 
   const GURL& current_url = navigation_context->GetUrl().GetWithoutRef();
-  if (IsAimURL(current_url)) {
-    base::RecordAction(base::UserMetricsAction("MobileGeminiPromptSent"));
-  }
   if (previous_main_frame_url_ == current_url) {
     return;
   }
@@ -586,17 +622,15 @@ void GeminiTabHelper::PopulatePageContextFields() {
   }
 
   PageContextWrapperConfig config =
-      PageContextWrapperConfigBuilder()
-          .SetDefaultRichExtraction(IsGeminiRichAPCExtractionEnabled())
-          .Build();
+      PageContextWrapperConfigBuilder().SetDefaultRichExtraction(true).Build();
+
+  auto completion_callback =
+      base::BindOnce(&GeminiTabHelper::OnPageContextWrapperResponse,
+                     weak_ptr_factory_.GetWeakPtr());
 
   // Create a new wrapper.
-  page_context_wrapper_ = [[PageContextWrapper alloc]
-        initWithWebState:web_state_
-                  config:config
-      completionCallback:base::BindRepeating(
-                             &GeminiTabHelper::OnPageContextWrapperResponse,
-                             weak_ptr_factory_.GetWeakPtr())];
+  page_context_wrapper_ = page_context_wrapper_factory_->Create(
+      web_state_, config, std::move(completion_callback));
   const bool is_pdf = web::IsContentTypePdf(web_state_->GetContentsMimeType());
   if (is_pdf) {
     page_context_wrapper_.shouldGetFullPagePDF = YES;
@@ -660,25 +694,6 @@ void GeminiTabHelper::OnCanApplyContextualCueingDecision(
 
   if (!web_state_ || !web_state_->IsVisible() ||
       !latest_load_contextual_cueing_metadata_) {
-    return;
-  }
-
-  ProfileIOS* profile =
-      ProfileIOS::FromBrowserState(web_state_->GetBrowserState());
-
-  // TODO(crbug.com/461595639): Remove pref checks to fully migrate logic to
-  // FET.
-  bool floaty_shown = profile->GetPrefs()->GetBoolean(prefs::kIOSBwgConsent);
-  bool should_wait_for_new_user =
-      !ShouldSkipBWGPromoNewUserDelay() && IsFirstRunRecent(base::Days(1));
-
-  // Show promo if eligible.
-  if (IsGeminiNavigationPromoEnabled() && !should_wait_for_new_user &&
-      !floaty_shown && !gemini::DidUserSeeGeminiPromo(profile->GetPrefs()) &&
-      feature_engagement::TrackerFactory::GetForProfile(profile)
-          ->WouldTriggerHelpUI(
-              feature_engagement::kIPHiOSGeminiFullscreenPromoFeature)) {
-    [gemini_handler_ showGeminiPromoIfPageIsEligible];
     return;
   }
 

@@ -63,6 +63,12 @@ impl AssociatedState {
         }))
     }
 
+    /// Returns true if the peer endpoint is still alive (either pending or
+    /// bound).
+    fn peer_is_alive(&self, shared: &SharedAssociatedState) -> bool {
+        Arc::strong_count(shared) > 1 || Arc::strong_count(&self.router) > 1
+    }
+
     /// Register a new interface ID with the router, and store a handle for
     /// that ID in the shared state.
     ///
@@ -71,24 +77,38 @@ impl AssociatedState {
     /// will be the recipient of the newly created handle.
     ///
     /// Returns the interface ID of the newly created handle, to be serialized.
+    ///
+    /// If the other endpoint has already been dropped, the new handle will be
+    /// closed immediately after registration. Note that this will result in a
+    /// disconnect notification being sent to the other side _before_ this
+    /// function returns.
     pub(crate) fn register_with_router(
         shared_state: SharedAssociatedState,
         router_ref: &impl Registrar,
     ) -> InterfaceId {
-        // This removes the endpoint info from the shared state. This is fine:
-        // 1. If it was present, the other side is already finished with the shared
-        //    state
-        // 2. If it was absent, we lost nothing (and the other side will see that
-        //    `router` is present so it won't try to set it later).
-        let mut shared_state = shared_state.lock().unwrap();
+        let mut guard = shared_state.lock().unwrap();
+        let endpoint_info = if guard.peer_is_alive(&shared_state) {
+            // This removes the endpoint info from the shared state. This is
+            // fine:
+            // 1. If it was present, the other side is already finished with the
+            //    shared state
+            // 2. If it was absent, we lost nothing (and the other side will see
+            //    that `router` is present so it won't try to set it later).
+            guard.endpoint_info.take()
+        } else {
+            // If the peer is dead, don't provide its endpoint info when
+            // registering it, because there's no point running its
+            // handlers.
+            None
+        };
         let handle = router_ref
-            .register_new_endpoint(None, shared_state.endpoint_info.take())
+            .register_new_endpoint(None, endpoint_info)
             .expect("Multiplex router should never fail to register if we don't provide an ID");
         let interface_id = handle.interface_id();
-        shared_state.router.set(handle).unwrap_or_else(|_| {
+        guard.router.set(handle).unwrap_or_else(|_| {
             panic!("Exactly one endpoint in each pair should be sent in a message, not both")
         });
-        return interface_id;
+        interface_id
     }
 }
 
@@ -153,17 +173,15 @@ where
         );
     }
 
-    /// Create a new pair of C++-managed associated endpoints where one half is
-    /// managed by Rust and the other half is passed to C++.
+    /// Create a new pair of associated endpoints where one half is managed by
+    /// Rust and the other half can be passed to C++.
     ///
-    /// Unlike `new_pair`, which creates two unassociated Rust endpoints,
+    /// Unlike `new_pair`, which creates two Rust endpoints,
     /// `new_pair_cpp` creates a pair of entangled C++ endpoints.
     ///
-    /// The left one is wrapped in a Rust type and can be treated like any other
-    /// `PendingAssociatedEndpoint`, except that it cannot be serialized.
-    ///
-    /// The right one is meant to be serialized in a Mojo message that's sent
-    /// via a C++-managed pipe.
+    /// The left endpoint is wrapped in a Rust `PendingAssociatedEndpoint`.
+    /// The right endpoint is returned as a C++ pointer so it can be passed
+    /// to C++.
     pub fn new_pair_cpp() -> (Self, UniquePtr<CxxPendingAssociatedEndpoint>) {
         let mut rust_adapter = UniquePtr::null();
         let mut cpp_adapter = UniquePtr::null();
@@ -179,11 +197,28 @@ where
     /// Create a new pending endpoint backed by a C++ pipe endpoint.
     ///
     /// Panics if `cpp_endpoint` is null.
-    /// The endpoint returned from this function cannot be serialized.
     pub fn from_cpp(cpp_endpoint: UniquePtr<CxxPendingAssociatedEndpoint>) -> Self {
         let cpp_handle =
             CppRouterHandle::new(cpp_endpoint).expect("Null CxxPendingAssociatedEndpoint");
         Self::new_singleton(AssociatedRouterHandle::Cpp(cpp_handle))
+    }
+
+    /// Converts an associated endpoint into a version that can be used to
+    /// create an associated endpoint in C++.
+    ///
+    /// This function should only be called on endpoints that were received via
+    /// a Rust pipe, which are intended to be used as an associated interface in
+    /// C++ code. If you want to create a pair in Rust and pass one side to C++,
+    /// use `new_pair_cpp` instead.
+    ///
+    /// The returned `CxxPendingAssociatedEndpoint` can then be passed across
+    /// FFI to C++ and bound using `PassPendingAssociatedRemote` or
+    /// `PassPendingAssociatedReceiver`.
+    pub fn into_cpp(self) -> UniquePtr<CxxPendingAssociatedEndpoint> {
+        let AssociatedEndpointState::Singleton(handle) = self.state else {
+            panic!("Use new_pair_cpp to create a pair with one side in Rust and the other in C++")
+        };
+        handle.into_cpp()
     }
 
     /// Checks if the endpoint has been associated with a specific pipe yet,
@@ -194,7 +229,7 @@ where
     /// messages) will panic.
     pub fn ready_for_messages(&self) -> bool {
         match &self.state {
-            AssociatedEndpointState::Singleton(_) => true,
+            AssociatedEndpointState::Singleton(handle) => handle.ready_for_messages(),
             AssociatedEndpointState::Shared(shared_state) => {
                 shared_state.lock().unwrap().router.get().is_some()
             }
@@ -212,9 +247,9 @@ where
     /// the router is set, and trying to send a message will panic. This can be
     /// checking using `ready_for_messages`.
     pub(crate) fn register_bound(self, endpoint_info: EndpointInfo) -> RouterHandle {
-        // If we share our state with the other endpoint, lock the mutex so we can
-        // access it. Otherwise, we're a singleton, so we can just register ourselves
-        // and return.
+        // If we share our state with the other endpoint, lock the mutex so we
+        // can access it. Otherwise, we're a singleton, so we can just
+        // register ourselves and return.
         let shared_state = match self.state {
             AssociatedEndpointState::Shared(shared_state) => shared_state,
             AssociatedEndpointState::Singleton(mut handle) => {
@@ -299,8 +334,8 @@ where
     Marker: IsRemote + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // There's no good way to print a pending endpoint, so for debugging purposes
-        // we print:
+        // There's no good way to print a pending endpoint, so for debugging
+        // purposes we print:
         // 1. The address of `shared_state`
         // 2. Whether the handle has been set.
         // 3. Whether the endpoint info has been set.

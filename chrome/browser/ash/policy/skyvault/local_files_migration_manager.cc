@@ -25,6 +25,7 @@
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "base/timer/wall_clock_timer.h"
+#include "chrome/browser/ash/cloud_upload/upload_office_to_cloud.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
 #include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
@@ -36,7 +37,6 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/extensions/login_screen/login/cleanup/cleanup_handler.h"
 #include "chrome/browser/chromeos/extensions/login_screen/login/cleanup/files_cleanup_handler.h"
-#include "chrome/browser/chromeos/upload_office_to_cloud/upload_office_to_cloud.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_selections.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -155,7 +155,7 @@ void LocalStorageHistograms(Profile* profile, bool local_user_files_allowed) {
 // space on the cloud.
 bool ShouldFail(const std::map<base::FilePath, MigrationUploadError> errors,
                 int current_retry_count) {
-  DCHECK(!errors.empty());
+  CHECK(!errors.empty(), base::NotFatalUntil::M160);
 
   if (current_retry_count > kMaxRetryCount) {
     return true;
@@ -179,8 +179,8 @@ bool IsMigrationMisconfigured(Profile* profile, MigrationDestination provider) {
       return !drive::DriveIntegrationServiceFactory::FindForProfile(profile)
                   ->is_enabled();
     case MigrationDestination::kOneDrive:
-      return !chromeos::cloud_upload::
-          IsMicrosoftOfficeOneDriveIntegrationAllowed(profile);
+      return !ash::cloud_upload::IsMicrosoftOfficeOneDriveIntegrationAllowed(
+          profile);
     case MigrationDestination::kDelete:
       // Cannot be misconfigured.
       return false;
@@ -311,7 +311,8 @@ void LocalFilesMigrationManager::InitializeFromPrefs() {
     // If migration is not configured, check whether there are already no files
     // to migrate.
     if (!local_user_files_allowed_) {
-      DCHECK(!IsMigrationEnabled(migration_destination_));
+      CHECK(!IsMigrationEnabled(migration_destination_),
+            base::NotFatalUntil::M160);
       base::ThreadPool::PostTaskAndReplyWithResult(
           FROM_HERE, {base::MayBlock()},
           base::BindOnce(&IsMyFilesEmpty, profile),
@@ -374,7 +375,8 @@ void LocalFilesMigrationManager::OnLocalUserFilesPolicyChanged() {
       CHECK(state_ == State::kUninitialized);
       // If migration is not configured, check whether there are already no
       // files to migrate.
-      DCHECK(!IsMigrationEnabled(migration_destination_));
+      CHECK(!IsMigrationEnabled(migration_destination_),
+            base::NotFatalUntil::M160);
       base::ThreadPool::PostTaskAndReplyWithResult(
           FROM_HERE, {base::MayBlock()},
           base::BindOnce(&IsMyFilesEmpty, profile),
@@ -408,7 +410,8 @@ void LocalFilesMigrationManager::OnMigrationStopped(bool log_file_deleted) {
 
   Profile* profile = Profile::FromBrowserContext(context_);
   if (IsMigrationMisconfigured(profile, migration_destination_)) {
-    DCHECK(IsCloudDestination(migration_destination_));
+    CHECK(IsCloudDestination(migration_destination_),
+          base::NotFatalUntil::M160);
     LOG(WARNING) << "Local files migration policy is set to use "
                  << (migration_destination_ ==
                              MigrationDestination::kGoogleDrive
@@ -656,7 +659,7 @@ void LocalFilesMigrationManager::StartMigration(
     CleanupLocalFiles();
     return;
   }
-  DCHECK(IsCloudDestination(migration_destination_));
+  CHECK(IsCloudDestination(migration_destination_), base::NotFatalUntil::M160);
 
   PrefService* pref_service = Profile::FromBrowserContext(context_)->GetPrefs();
   const base::Time start_time =
@@ -682,7 +685,7 @@ void LocalFilesMigrationManager::OnMigrationDone(
         migration_destination_, StateErrorContext::kMigrationDone, state_);
     return;
   }
-  DCHECK(IsCloudDestination(migration_destination_));
+  CHECK(IsCloudDestination(migration_destination_), base::NotFatalUntil::M160);
 
   const base::Time start_time =
       Profile::FromBrowserContext(context_)->GetPrefs()->GetTime(
@@ -724,7 +727,7 @@ void LocalFilesMigrationManager::ProcessErrors(
     base::FilePath error_log_path) {
   CHECK(state_ == State::kFailure);
   CHECK(!errors.empty());
-  DCHECK(IsCloudDestination(migration_destination_));
+  CHECK(IsCloudDestination(migration_destination_), base::NotFatalUntil::M160);
   notification_manager_->ShowMigrationErrorNotification(
       migration_destination_, upload_root_, error_log_path);
 }

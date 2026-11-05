@@ -34,7 +34,7 @@ def _NamesToOffsetGroups(
   name_to_group = {}
   offset_to_group = {}
   for si in symbol_infos:
-    if not si.offset in offset_to_group:
+    if si.offset not in offset_to_group:
       group = _OffsetGroup(si.offset)
       offset_to_group[si.offset] = group
     group = offset_to_group[si.offset]
@@ -157,13 +157,6 @@ def CreateArgumentParser():
   """Creates and returns the argument parser."""
   parser = argparse.ArgumentParser()
   parser.add_argument(
-    '--target-arch',
-    dest='arch',
-    required=True,
-    choices=['arm', 'arm64', 'x86', 'x64'],
-    help='The target architecture for which to build.',
-  )
-  parser.add_argument(
     '-C',
     '--out-dir',
     type=pathlib.Path,
@@ -203,9 +196,7 @@ def main():
     level=level, format='%(levelname).1s %(relativeCreated)6d %(message)s'
   )
 
-  lib_chrome_so = orderfile_shared.GetLibchromeSoPath(
-    options.out_dir, options.arch
-  )
+  lib_chrome_so = orderfile_shared.GetLibchromeSoPath(options.out_dir)
   if ExtractAndVerifySymbolOrder(
     lib_chrome_so, options.orderfile_path, options.threshold
   ):

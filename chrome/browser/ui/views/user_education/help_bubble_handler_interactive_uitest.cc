@@ -9,6 +9,7 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry.h"
+#include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/toolbar/bookmark_sub_menu_model.h"
 #include "chrome/browser/ui/toolbar/reading_list_sub_menu_model.h"
@@ -25,6 +26,7 @@ namespace {
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kBrowserTabId);
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kBrowserTabId2);
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kReadLaterWebContentsElementId);
+DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kBookmarksWebContentsElementId);
 }  // namespace
 
 class HelpBubbleHandlerInteractiveUiTest : public InteractiveBrowserTest {
@@ -45,7 +47,7 @@ class HelpBubbleHandlerInteractiveUiTest : public InteractiveBrowserTest {
         // Remove delays in switching side panels to prevent possible race
         // conditions when selecting items from the side panel dropdown.
         Do([this]() {
-          browser()->GetFeatures().side_panel_ui()->SetNoDelaysForTesting(true);
+          SidePanelUI::From(browser())->SetNoDelaysForTesting(true);
         }),
         PressButton(kToolbarAppMenuButtonElementId),
         SelectMenuItem(AppMenuModel::kBookmarksMenuItem),
@@ -63,7 +65,11 @@ class HelpBubbleHandlerInteractiveUiTest : public InteractiveBrowserTest {
         PressButton(kToolbarAppMenuButtonElementId),
         SelectMenuItem(AppMenuModel::kBookmarksMenuItem),
         SelectMenuItem(BookmarkSubMenuModel::kShowBookmarkSidePanelItem),
-        WaitForShow(kSidePanelElementId));
+        WaitForShow(kSidePanelElementId),
+        WaitForShow(kBookmarkSidePanelWebViewElementId),
+        // Ensure the bookmarks side panel loads properly.
+        InstrumentNonTabWebView(kBookmarksWebContentsElementId,
+                                kBookmarkSidePanelWebViewElementId));
   }
 
   auto CloseSidePanel() {

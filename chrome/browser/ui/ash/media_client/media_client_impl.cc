@@ -30,8 +30,6 @@
 #include "base/system/sys_info.h"
 #include "base/task/current_thread.h"
 #include "base/task/single_thread_task_runner.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/camera_mic/vm_camera_mic_manager.h"
 #include "chrome/browser/ash/extensions/media_player_api.h"
 #include "chrome/browser/ash/extensions/media_player_event_router.h"
@@ -42,11 +40,15 @@
 #include "chrome/browser/ui/tab_contents/tab_contents_iterator.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "components/account_id/account_id.h"
 #include "components/services/app_service/public/cpp/app_capability_access_cache.h"
 #include "components/services/app_service/public/cpp/app_capability_access_cache_wrapper.h"
 #include "components/services/app_service/public/cpp/app_registry_cache.h"
 #include "components/services/app_service/public/cpp/app_registry_cache_wrapper.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/media_session.h"
@@ -57,6 +59,7 @@
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/browser/process_manager.h"
 #include "media/capture/video/chromeos/public/cros_features.h"
+#include "media/capture/video/video_capture_device_enumeration_mode_util.h"
 #include "services/media_session/public/mojom/media_session.mojom.h"
 #include "services/video_capture/public/mojom/video_capture_service.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -247,7 +250,7 @@ MediaClientImpl::MediaClientImpl()
   notification_.builder().SetNotifierId(
       notification_.builder().GetNotifierId());
 
-  DCHECK(!g_media_client);
+  CHECK(!g_media_client, base::NotFatalUntil::M162);
   g_media_client = this;
 }
 
@@ -277,14 +280,14 @@ MediaClientImpl* MediaClientImpl::Get() {
 }
 
 void MediaClientImpl::Init() {
-  DCHECK(!media_controller_);
+  CHECK(!media_controller_, base::NotFatalUntil::M162);
 
   media_controller_ = ash::MediaController::Get();
   media_controller_->SetClient(this);
 }
 
 void MediaClientImpl::InitForTesting(ash::MediaController* controller) {
-  DCHECK(!media_controller_);
+  CHECK(!media_controller_, base::NotFatalUntil::M162);
 
   media_controller_ = controller;
   media_controller_->SetClient(this);
@@ -330,9 +333,10 @@ void MediaClientImpl::RequestCaptureState() {
         ash::BrowserContextHelper::Get()->GetBrowserContextByUser(user));
   }
 
-  const user_manager::User* primary_user = manager->GetPrimaryUser();
-  if (primary_user) {
-    capture_states[primary_user->GetAccountId()] |= vm_media_capture_state_;
+  const session_manager::Session* primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  if (primary_session) {
+    capture_states[primary_session->account_id()] |= vm_media_capture_state_;
   }
 
   media_controller_->NotifyCaptureState(std::move(capture_states));
@@ -350,7 +354,7 @@ void MediaClientImpl::OnRequestUpdate(int render_process_id,
                                       int render_frame_id,
                                       blink::mojom::MediaStreamType stream_type,
                                       const content::MediaRequestState state) {
-  DCHECK(base::CurrentUIThread::IsSet());
+  CHECK(base::CurrentUIThread::IsSet(), base::NotFatalUntil::M162);
   // The PostTask is necessary because the state of MediaStreamCaptureIndicator
   // gets updated after this.
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
@@ -386,9 +390,11 @@ void MediaClientImpl::OnCameraHWPrivacySwitchStateChanged(
     const std::string& device_id,
     cros::mojom::CameraPrivacySwitchState state) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  video_source_provider_remote_->GetSourceInfos(base::BindOnce(
-      &MediaClientImpl::OnGetSourceInfosByCameraHWPrivacySwitchStateChanged,
-      weak_ptr_factory_.GetWeakPtr(), device_id, state));
+  video_source_provider_remote_->GetSourceInfos(
+      media::GetDefaultVideoEnumerationMode(),
+      base::BindOnce(
+          &MediaClientImpl::OnGetSourceInfosByCameraHWPrivacySwitchStateChanged,
+          weak_ptr_factory_.GetWeakPtr(), device_id, state));
 }
 
 void MediaClientImpl::OnCameraSWPrivacySwitchStateChanged(
@@ -397,9 +403,11 @@ void MediaClientImpl::OnCameraSWPrivacySwitchStateChanged(
   camera_sw_privacy_switch_state_ = state;
   if (state == cros::mojom::CameraPrivacySwitchState::OFF) {
     // The software switch is OFF. Display hardware switch notifications if any.
-    video_source_provider_remote_->GetSourceInfos(base::BindOnce(
-        &MediaClientImpl::OnGetSourceInfosByCameraSWPrivacySwitchStateChanged,
-        weak_ptr_factory_.GetWeakPtr()));
+    video_source_provider_remote_->GetSourceInfos(
+        media::GetDefaultVideoEnumerationMode(),
+        base::BindOnce(&MediaClientImpl::
+                           OnGetSourceInfosByCameraSWPrivacySwitchStateChanged,
+                       weak_ptr_factory_.GetWeakPtr()));
   } else if (state == cros::mojom::CameraPrivacySwitchState::ON) {
     // The software switch is ON. Clear all hardware switch notifications.
     for (auto it = devices_having_visible_notification_.begin();
@@ -416,7 +424,7 @@ void MediaClientImpl::OnActiveClientChange(
   if (is_new_active_client) {
     active_camera_client_count_++;
   } else if (active_device_ids.empty()) {
-    DCHECK(active_camera_client_count_ > 0);
+    CHECK(active_camera_client_count_ > 0, base::NotFatalUntil::M162);
     active_camera_client_count_--;
   }
 
@@ -447,7 +455,8 @@ void MediaClientImpl::OnActiveClientChange(
 
 void MediaClientImpl::ProcessSourceInfos(GetSourceCallback callback) {
   hw_switch_toasts_disabled_ = false;
-  video_source_provider_remote_->GetSourceInfos(std::move(callback));
+  video_source_provider_remote_->GetSourceInfos(
+      media::GetDefaultVideoEnumerationMode(), std::move(callback));
 }
 
 void MediaClientImpl::EnableCustomMediaKeyHandler(
@@ -455,7 +464,8 @@ void MediaClientImpl::EnableCustomMediaKeyHandler(
     ui::MediaKeysListener::Delegate* delegate) {
   auto it = media_key_delegates_.find(context);
 
-  DCHECK(!media_key_delegates_.contains(context) || it->second == delegate);
+  CHECK(it == media_key_delegates_.end() || it->second == delegate,
+        base::NotFatalUntil::M162);
 
   media_key_delegates_.emplace(context, delegate);
 
@@ -470,7 +480,7 @@ void MediaClientImpl::DisableCustomMediaKeyHandler(
   }
 
   auto it = media_key_delegates_.find(context);
-  DCHECK_EQ(it->second, delegate);
+  CHECK_EQ(it->second, delegate, base::NotFatalUntil::M162);
 
   media_key_delegates_.erase(it);
 

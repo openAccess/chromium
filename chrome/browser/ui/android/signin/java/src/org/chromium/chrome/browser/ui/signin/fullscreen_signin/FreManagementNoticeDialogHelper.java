@@ -11,6 +11,7 @@ import androidx.annotation.IntDef;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.signin.services.SigninFlowTimestampsLogger;
 import org.chromium.chrome.browser.signin.services.SigninFlowTimestampsLogger.Event;
 import org.chromium.chrome.browser.signin.services.SigninManager;
@@ -90,7 +91,8 @@ final class FreManagementNoticeDialogHelper {
             @SigninAccessPoint int accessPoint,
             @Nullable SignInCallback callback,
             Context context,
-            ModalDialogManager modalDialogManager) {
+            ModalDialogManager modalDialogManager,
+            FullscreenSigninCoordinator.Delegate host) {
         if (signinManager.getUserAcceptedAccountManagement()) {
             SignInCallback wrappedCallback =
                     new WrappedSigninCallback(callback) {
@@ -122,7 +124,8 @@ final class FreManagementNoticeDialogHelper {
                             accessPoint,
                             callback,
                             context,
-                            modalDialogManager);
+                            modalDialogManager,
+                            host);
                 });
     }
 
@@ -134,7 +137,8 @@ final class FreManagementNoticeDialogHelper {
             @SigninAccessPoint int accessPoint,
             @Nullable SignInCallback callback,
             Context context,
-            ModalDialogManager modalDialogManager) {
+            ModalDialogManager modalDialogManager,
+            FullscreenSigninCoordinator.Delegate host) {
         signinFlowLogger.recordTimestamp(Event.MANAGEMENT_STATUS_LOADED);
         if (!isAccountManaged) {
             SignInCallback wrappedCallback =
@@ -173,6 +177,8 @@ final class FreManagementNoticeDialogHelper {
                     }
                 };
 
+        boolean useNewNotice =
+                ChromeFeatureList.isEnabled(ChromeFeatureList.ANDROID_NEW_MANAGEMENT_NOTICE);
         ConfirmManagedSyncDataDialogCoordinator.Listener listener =
                 new ConfirmManagedSyncDataDialogCoordinator.Listener() {
                     @Override
@@ -190,11 +196,15 @@ final class FreManagementNoticeDialogHelper {
                 };
 
         recordFREEvent(FRESigninEvents.ACCEPTING_MANAGEMENT);
-        new ConfirmManagedSyncDataDialogCoordinator(
-                context,
-                modalDialogManager,
-                listener,
-                signinManager.extractDomainName(coreAccountInfo.getEmail()));
+        if (useNewNotice) {
+            host.displayManagementNotice(coreAccountInfo, listener);
+        } else {
+            new ConfirmManagedSyncDataDialogCoordinator(
+                    context,
+                    modalDialogManager,
+                    listener,
+                    signinManager.extractDomainName(coreAccountInfo.getEmail()));
+        }
         signinFlowLogger.onManagementNoticeShown();
     }
 

@@ -4,8 +4,10 @@
 
 #include "chrome/browser/preloading/prerender/prerender_manager.h"
 
+#include <memory>
 #include <string>
 
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/after_startup_task_utils.h"
@@ -13,19 +15,28 @@
 #include "chrome/browser/preloading/chrome_preloading.h"
 #include "chrome/browser/preloading/preloading_features.h"
 #include "chrome/browser/preloading/prerender/prerender_utils.h"
+#include "chrome/browser/preloading/prerender/prewarm_tab_helper.h"
+#include "chrome/browser/preloading/prerender/search_preload_progress_service.h"
+#include "chrome/browser/preloading/prerender/search_preload_progress_service_factory.h"
 #include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/search_engines/template_url_service_factory_test_util.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "components/page_load_metrics/google/browser/search_preload_process_data.h"
+#include "components/page_load_metrics/google/browser/search_prewarm_outcome.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_service.h"
+#include "content/public/browser/prerender_handle.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
+#include "content/public/test/navigation_simulator.h"
 #include "content/public/test/preloading_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/web_contents_tester.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
@@ -391,6 +402,15 @@ TEST_F(PrerenderManagerPrewarmTest, StartPrewarmSearchResult) {
   ASSERT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
   registry_observer.WaitForTrigger(prewarm_url);
 
+  content::PrerenderHostId host_id =
+      prerender_helper().GetPrewarmSearchResultHost(prewarm_url);
+  content::RenderFrameHost* prewarm_rfh =
+      prerender_helper().GetPrerenderedMainFrameHost(host_id);
+  ASSERT_TRUE(prewarm_rfh);
+  EXPECT_NE(page_load_metrics::SearchPreloadProcessData::Get(
+                prewarm_rfh->GetProcess()),
+            nullptr);
+
   // Prewarm page should not be found here as it's matcher was set as not
   // matching to any URL.
   content::PrerenderHostId prerender_host_id =
@@ -398,7 +418,8 @@ TEST_F(PrerenderManagerPrewarmTest, StartPrewarmSearchResult) {
   EXPECT_EQ(prerender_host_id, content::PrerenderHostId());
 }
 
-TEST_F(PrerenderManagerPrewarmTest, PrewarmPageRevalidatedAndNotCreatedAgain) {
+TEST_F(PrerenderManagerPrewarmTest,
+       PrewarmPageCreatedAgainWhenRevalidateEnabled) {
   // Use same origin url as the test search URL so that it can be reused
   // by the search prerender.
   const GURL prewarm_url = GetUrl("/foo");
@@ -429,6 +450,266 @@ TEST_F(PrerenderManagerPrewarmTest, PrewarmPageRevalidatedAndNotCreatedAgain) {
   // Trigger prewarm again and it should create a new prewarm page.
   EXPECT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
   registry_observer.WaitForTrigger(prewarm_url);
+}
+
+class PrerenderManagerPrewarmRevalidateDisabledTest
+    : public PrerenderManagerPrewarmTest {
+ public:
+  PrerenderManagerPrewarmRevalidateDisabledTest() {
+    feature_list_.InitAndEnableFeatureWithParameters(
+        features::kPrewarm,
+        {
+            {"url", "https://search.example.com/prewarm.html"},
+            {"throttle_prefetch", "true"},
+            {"revalidate", "false"},
+            {"throttle_user_navigation", "true"},
+        });
+  }
+  ~PrerenderManagerPrewarmRevalidateDisabledTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(PrerenderManagerPrewarmRevalidateDisabledTest,
+       PrewarmPageNotCreatedAgainWhenRevalidateDisabled) {
+  // Use same origin url as the test search URL so that it can be reused
+  // by the search prerender.
+  const GURL prewarm_url = GetUrl("/foo");
+  ASSERT_TRUE(prewarm_url.is_valid());
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  // Prerender the prewarm page.
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+  EXPECT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
+  registry_observer.WaitForTrigger(prewarm_url);
+
+  // Trigger a new search prerender, reusing the prewarm host.
+  GURL search_suggestion_url = GetSearchSuggestionUrl("pre", "prerender");
+  GURL canonical_search_url = GetCanonicalSearchUrl(search_suggestion_url);
+  prerender_manager()->StartPrerenderSearchResult(canonical_search_url,
+                                                  search_suggestion_url,
+                                                  /*attempt=*/nullptr);
+
+  // Cancel the search prerender.
+  prerender_manager()->StopPrerenderSearchResult(canonical_search_url);
+
+  // When revalidate is disabled, `search_prewarm_task_` is retained and
+  // `MaybeStartPrewarmSearchResult()` returns false.
+  EXPECT_TRUE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+  EXPECT_FALSE(prerender_manager()->MaybeStartPrewarmSearchResult());
+}
+
+TEST_F(PrerenderManagerPrewarmTest, SearchPrewarmTaskLifecycleObserver) {
+  const GURL prewarm_url = GetUrl("/foo");
+  ASSERT_TRUE(prewarm_url.is_valid());
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  auto* service = SearchPreloadProgressServiceFactory::GetForProfile(profile());
+  ASSERT_TRUE(service);
+  EXPECT_FALSE(service->HasOnGoingSearchPrewarm());
+
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+  EXPECT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
+  registry_observer.WaitForTrigger(prewarm_url);
+  EXPECT_TRUE(service->HasOnGoingSearchPrewarm());
+
+  // Simulate prewarm receiving headers via SearchPrewarmTask's observer.
+  content::PrerenderHandle::Observer* observer =
+      prerender_manager()->GetPrewarmObserverForTesting();
+  ASSERT_TRUE(observer);
+  observer->OnLifecycleStateChanged(
+      content::PrerenderLifecycleStatus::kHTTPSuccessResponse);
+  EXPECT_FALSE(service->HasOnGoingSearchPrewarm());
+}
+
+TEST_F(PrerenderManagerPrewarmTest,
+       SearchPrewarmUnthrottlesOnWebContentsDestruction) {
+  const GURL prewarm_url = GetUrl("/foo");
+  ASSERT_TRUE(prewarm_url.is_valid());
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  auto* service = SearchPreloadProgressServiceFactory::GetForProfile(profile());
+  ASSERT_TRUE(service);
+  EXPECT_FALSE(service->HasOnGoingSearchPrewarm());
+
+  {
+    content::test::PrerenderHostRegistryObserver registry_observer(
+        *GetActiveWebContents());
+    EXPECT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
+    registry_observer.WaitForTrigger(prewarm_url);
+  }
+  EXPECT_TRUE(service->HasOnGoingSearchPrewarm());
+
+  DeleteContents();
+  EXPECT_FALSE(service->HasOnGoingSearchPrewarm());
+}
+
+TEST_F(PrerenderManagerPrewarmTest, PrewarmOutcome_Unused) {
+  base::HistogramTester histogram_tester;
+  const GURL prewarm_url = GetUrl("/foo");
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  {
+    content::test::PrerenderHostRegistryObserver registry_observer(
+        *GetActiveWebContents());
+    EXPECT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
+    registry_observer.WaitForTrigger(prewarm_url);
+  }
+
+  // Simulate prewarm receiving headers so it becomes ready.
+  content::PrerenderHandle::Observer* observer =
+      prerender_manager()->GetPrewarmObserverForTesting();
+  ASSERT_TRUE(observer);
+  observer->OnLifecycleStateChanged(
+      content::PrerenderLifecycleStatus::kHTTPSuccessResponse);
+
+  // Navigate to a page not reusing prewarm.
+  web_contents_tester()->NavigateAndCommit(GetUrl("/empty.html"));
+  histogram_tester.ExpectTotalCount(internal::kHistogramSearchPrewarmOutcome,
+                                    0);
+
+  // Destroy the WebContents to simulate tab exit.
+  DeleteContents();
+
+  histogram_tester.ExpectUniqueSample(
+      internal::kHistogramSearchPrewarmOutcome,
+      page_load_metrics::SearchPrewarmOutcome::kUnused, 1);
+}
+
+TEST_F(PrerenderManagerPrewarmTest, PrewarmOutcome_CancelledBeforeReady) {
+  base::HistogramTester histogram_tester;
+  const GURL prewarm_url = GetUrl("/foo");
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+  EXPECT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
+  registry_observer.WaitForTrigger(prewarm_url);
+
+  prerender_manager()->StopPrewarmSearchResultForTesting();
+
+  histogram_tester.ExpectUniqueSample(
+      internal::kHistogramSearchPrewarmOutcome,
+      page_load_metrics::SearchPrewarmOutcome::kCancelledBeforeReady, 1);
+}
+
+TEST_F(PrerenderManagerPrewarmTest, PrewarmOutcome_FailedBeforeReady) {
+  base::HistogramTester histogram_tester;
+  const GURL prewarm_url = GetUrl("/foo");
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+  EXPECT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
+  registry_observer.WaitForTrigger(prewarm_url);
+
+  content::PrerenderHandle::Observer* observer =
+      prerender_manager()->GetPrewarmObserverForTesting();
+  ASSERT_TRUE(observer);
+  observer->OnLifecycleStateChanged(
+      content::PrerenderLifecycleStatus::kHttpBadResponse);
+
+  histogram_tester.ExpectUniqueSample(
+      internal::kHistogramSearchPrewarmOutcome,
+      page_load_metrics::SearchPrewarmOutcome::kFailedBeforeReady, 1);
+}
+
+TEST_F(PrerenderManagerPrewarmTest, PrewarmOutcome_CancelledByNewPrewarm) {
+  base::HistogramTester histogram_tester;
+  const GURL prewarm_url = GetUrl("/foo");
+  ASSERT_TRUE(prewarm_url.is_valid());
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+  EXPECT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
+  registry_observer.WaitForTrigger(prewarm_url);
+
+  // Simulate prewarm receiving headers so it becomes ready.
+  content::PrerenderHandle::Observer* observer =
+      prerender_manager()->GetPrewarmObserverForTesting();
+  ASSERT_TRUE(observer);
+  observer->OnLifecycleStateChanged(
+      content::PrerenderLifecycleStatus::kHTTPSuccessResponse);
+
+  // Trigger search prerender to reuse the prewarm host.
+  GURL search_suggestion_url = GetSearchSuggestionUrl("pre", "prerender");
+  GURL canonical_search_url = GetCanonicalSearchUrl(search_suggestion_url);
+  prerender_manager()->StartPrerenderSearchResult(canonical_search_url,
+                                                  search_suggestion_url,
+                                                  /*attempt=*/nullptr);
+
+  // Stop the search prerender. The prewarm handle is now invalid, but
+  // search_prewarm_task_ is still held.
+  prerender_manager()->StopPrerenderSearchResult(canonical_search_url);
+
+  // Triggering another prewarm with revalidation will cancel the old prewarm
+  // task.
+  EXPECT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
+
+  histogram_tester.ExpectUniqueSample(
+      internal::kHistogramSearchPrewarmOutcome,
+      page_load_metrics::SearchPrewarmOutcome::kCancelledByNewPrewarm, 1);
+}
+
+TEST_F(PrerenderManagerPrewarmTest, PrewarmOutcome_DirectProcessReused) {
+  base::HistogramTester histogram_tester;
+  const GURL prewarm_url = GetUrl("/foo");
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+  EXPECT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
+  registry_observer.WaitForTrigger(prewarm_url);
+
+  // Tag primary process with SearchPreloadProcessData.
+  page_load_metrics::SearchPreloadProcessData::GetOrCreate(
+      main_rfh()->GetProcess());
+
+  // Navigate to Google SRP and commit.
+  GURL srp_url("https://www.google.com/search?q=prerender");
+  web_contents_tester()->NavigateAndCommit(srp_url);
+
+  histogram_tester.ExpectUniqueSample(
+      internal::kHistogramSearchPrewarmOutcome,
+      page_load_metrics::SearchPrewarmOutcome::kProcessReusedByPrimarySearch,
+      1);
+}
+
+TEST_F(PrerenderManagerPrewarmTest,
+       PrewarmOutcome_NonSearchNavigationThenSearchNavigation) {
+  base::HistogramTester histogram_tester;
+  const GURL prewarm_url = GetUrl("/foo");
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+  EXPECT_TRUE(prerender_manager()->MaybeStartPrewarmSearchResult());
+  registry_observer.WaitForTrigger(prewarm_url);
+
+  // Tag primary process with SearchPreloadProcessData.
+  page_load_metrics::SearchPreloadProcessData::GetOrCreate(
+      main_rfh()->GetProcess());
+
+  // Navigate to non-SRP URL and commit.
+  GURL non_srp_url("https://www.google.com/imghp");
+  web_contents_tester()->NavigateAndCommit(non_srp_url);
+
+  // Verify that the outcome is NOT recorded yet.
+  histogram_tester.ExpectTotalCount(internal::kHistogramSearchPrewarmOutcome,
+                                    0);
+
+  // Navigate to Google SRP and commit in the same process.
+  GURL srp_url("https://www.google.com/search?q=prerender");
+  web_contents_tester()->NavigateAndCommit(srp_url);
+
+  histogram_tester.ExpectUniqueSample(
+      internal::kHistogramSearchPrewarmOutcome,
+      page_load_metrics::SearchPrewarmOutcome::kProcessReusedByPrimarySearch,
+      1);
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -507,6 +788,150 @@ TEST_F(PrerenderManagerTest, PrewarmDisableOnStartup) {
   } else {
     AfterStartupTaskUtils::UnsafeResetForTesting();
   }
+}
+
+class PrerenderManagerPageLoadAndTabSwitchAfterPaintTest
+    : public PrerenderManagerTest {
+ public:
+  PrerenderManagerPageLoadAndTabSwitchAfterPaintTest() = default;
+  ~PrerenderManagerPageLoadAndTabSwitchAfterPaintTest() override = default;
+
+  void SetUp() override {
+    PrerenderManagerTest::SetUp();
+    // WebContentsImpl::UpdateWebContentsVisibility() ignores transitions to
+    // HIDDEN/OCCLUDED until it has been set to VISIBLE at least once.
+    web_contents()->UpdateWebContentsVisibility(content::Visibility::VISIBLE);
+    prewarm_tab_helper_ = PrewarmTabHelper::MaybeCreate(GetActiveWebContents());
+    ASSERT_TRUE(prewarm_tab_helper_);
+  }
+
+  void TearDown() override {
+    prewarm_tab_helper_.reset();
+    PrerenderManagerTest::TearDown();
+  }
+
+ private:
+  test::ScopedPrewarmFeatureList scoped_prewarm_feature_list_{
+      test::ScopedPrewarmFeatureList::PrewarmState::
+          kEnabledWithPageLoadAndTabSwitchAfterPaintTrigger};
+  std::unique_ptr<PrewarmTabHelper> prewarm_tab_helper_;
+};
+
+TEST_F(PrerenderManagerPageLoadAndTabSwitchAfterPaintTest,
+       ForegroundTabTriggersOnFirstPaint) {
+  const GURL prewarm_url("https://search.example.com/prewarm.html");
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  // Tab is visible.
+  web_contents()->UpdateWebContentsVisibility(content::Visibility::VISIBLE);
+  prerender_manager()->StopPrewarmSearchResultForTesting();
+  EXPECT_FALSE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+
+  // Start navigation and commit while keeping the tab in the loading state.
+  auto simulator = content::NavigationSimulator::CreateRendererInitiated(
+      GetUrl("/test.html"), web_contents()->GetPrimaryMainFrame());
+  simulator->SetKeepLoading(true);
+  simulator->Commit();
+  EXPECT_TRUE(web_contents()->IsLoading());
+  EXPECT_FALSE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+
+  // DidFirstVisuallyNonEmptyPaint while still loading should not trigger
+  // prewarm yet.
+  web_contents_tester()->TestDidFirstVisuallyNonEmptyPaint();
+  EXPECT_TRUE(web_contents()->CompletedFirstVisuallyNonEmptyPaint());
+  EXPECT_FALSE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+
+  // Finishing loading after first paint triggers prewarm via DidStopLoading().
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+  simulator->StopLoading();
+  EXPECT_FALSE(web_contents()->IsLoading());
+  registry_observer.WaitForTrigger(prewarm_url);
+  EXPECT_TRUE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+}
+
+TEST_F(PrerenderManagerPageLoadAndTabSwitchAfterPaintTest,
+       HiddenTabTriggersOnVisibilityChangedAfterLoadAndFirstPaint) {
+  const GURL prewarm_url("https://search.example.com/prewarm.html");
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  // If the tab is hidden, finishing load and DidFirstVisuallyNonEmptyPaint
+  // should not trigger prewarm.
+  web_contents()->UpdateWebContentsVisibility(content::Visibility::HIDDEN);
+  auto simulator = content::NavigationSimulator::CreateRendererInitiated(
+      GetUrl("/test.html"), web_contents()->GetPrimaryMainFrame());
+  simulator->Commit();
+  EXPECT_FALSE(web_contents()->IsLoading());
+  web_contents_tester()->TestDidFirstVisuallyNonEmptyPaint();
+  EXPECT_TRUE(web_contents()->CompletedFirstVisuallyNonEmptyPaint());
+  EXPECT_FALSE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+
+  // Switching to the tab (making it visible) triggers prewarm via
+  // OnVisibilityChanged(VISIBLE).
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+  web_contents()->UpdateWebContentsVisibility(content::Visibility::VISIBLE);
+  registry_observer.WaitForTrigger(prewarm_url);
+  EXPECT_TRUE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+}
+
+TEST_F(PrerenderManagerPageLoadAndTabSwitchAfterPaintTest,
+       SwitchToUnpaintedNonLoadingTabDefersUntilPaint) {
+  const GURL prewarm_url("https://search.example.com/prewarm.html");
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  // Start with a hidden tab that is not loading and has not painted yet.
+  web_contents()->UpdateWebContentsVisibility(content::Visibility::HIDDEN);
+  EXPECT_FALSE(web_contents()->IsLoading());
+  EXPECT_FALSE(web_contents()->CompletedFirstVisuallyNonEmptyPaint());
+  EXPECT_FALSE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+
+  // Switching to the tab (making it visible) should not trigger prewarm before
+  // it has completed its first visually non-empty paint.
+  web_contents()->UpdateWebContentsVisibility(content::Visibility::VISIBLE);
+  EXPECT_FALSE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+
+  // Once first paint occurs, prewarm is triggered.
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+  web_contents_tester()->TestDidFirstVisuallyNonEmptyPaint();
+  registry_observer.WaitForTrigger(prewarm_url);
+  EXPECT_TRUE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+}
+
+TEST_F(PrerenderManagerPageLoadAndTabSwitchAfterPaintTest,
+       SwitchToLoadingTabWithoutPaintDefersUntilPaint) {
+  const GURL prewarm_url("https://search.example.com/prewarm.html");
+  prerender_manager()->SetPrewarmUrlForTesting(prewarm_url);
+
+  // Start hidden.
+  web_contents()->UpdateWebContentsVisibility(content::Visibility::HIDDEN);
+
+  // Start a navigation so the tab is loading and has not painted yet.
+  auto simulator = content::NavigationSimulator::CreateRendererInitiated(
+      GetUrl("/test.html"), web_contents()->GetPrimaryMainFrame());
+  simulator->Start();
+  EXPECT_TRUE(web_contents()->IsLoading());
+  EXPECT_FALSE(web_contents()->CompletedFirstVisuallyNonEmptyPaint());
+  EXPECT_FALSE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+
+  // Switch to the tab while it is still loading and hasn't painted.
+  web_contents()->UpdateWebContentsVisibility(content::Visibility::VISIBLE);
+  // Prewarm should NOT be triggered yet because it is still loading and has not
+  // completed first paint.
+  EXPECT_FALSE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+
+  // Finishing load before first paint should still not trigger prewarm.
+  simulator->Commit();
+  EXPECT_FALSE(web_contents()->IsLoading());
+  EXPECT_FALSE(prerender_manager()->HasSearchPrewarmTaskForTesting());
+
+  // When first paint occurs, prewarm is triggered.
+  content::test::PrerenderHostRegistryObserver registry_observer(
+      *GetActiveWebContents());
+  web_contents_tester()->TestDidFirstVisuallyNonEmptyPaint();
+  registry_observer.WaitForTrigger(prewarm_url);
+  EXPECT_TRUE(prerender_manager()->HasSearchPrewarmTaskForTesting());
 }
 
 }  // namespace

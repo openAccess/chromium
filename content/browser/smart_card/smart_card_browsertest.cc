@@ -27,6 +27,7 @@
 #include "content/public/test/content_mock_cert_verifier.h"
 #include "content/public/test/test_utils.h"
 #include "content/shell/browser/shell.h"
+#include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "net/dns/mock_host_resolver.h"
@@ -1097,6 +1098,30 @@ IN_PROC_BROWSER_TEST_F(SmartCardTest, GetStatusChange) {
 
        return `${statesOut[0].readerName}, {${eventStateString}}` +
          `, ${statesOut[0].eventCount}, {${atrString}}`;
+     })())"));
+}
+
+IN_PROC_BROWSER_TEST_F(SmartCardTest, GetStatusChangeTimeout) {
+  MockSmartCardContextFactory& mock_context_factory =
+      GetFakeSmartCardDelegate().mock_context_factory;
+
+  EXPECT_CALL(mock_context_factory, GetStatusChange)
+      .WillOnce(RunOnceCallback<2>(
+          device::mojom::SmartCardStatusChangeResult::NewError(
+              SmartCardError::kTimeout)));
+
+  ASSERT_TRUE(NavigateToURL(shell(), GetIsolatedContextUrl()));
+
+  EXPECT_EQ("TimeoutError", EvalJs(shell(), R"((async () => {
+       let context = await navigator.smartCard.establishContext();
+       try {
+         await context.getStatusChange(
+             [{readerName: "Fake Reader", currentState: {empty: true}}],
+             {timeout: 4321});
+         return "success";
+       } catch (e) {
+         return e.name;
+       }
      })())"));
 }
 

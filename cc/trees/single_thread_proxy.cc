@@ -21,7 +21,7 @@
 #include "cc/base/devtools_instrumentation.h"
 #include "cc/base/features.h"
 #include "cc/benchmarks/benchmark_instrumentation.h"
-#include "cc/input/browser_controls_offset_manager.h"
+#include "cc/input/browser_controls_offset_manager_interface.h"
 #include "cc/input/browser_controls_offset_tag_modifications.h"
 #include "cc/metrics/compositor_timing_history.h"
 #include "cc/paint/paint_worklet_layer_painter.h"
@@ -333,6 +333,12 @@ void SingleThreadProxy::SetTargetLocalSurfaceId(
   host_impl_->SetTargetLocalSurfaceId(target_local_surface_id);
 }
 
+void SingleThreadProxy::SetMemoryPolicy(const ManagedMemoryPolicy& policy) {
+  DCHECK(task_runner_provider_->IsMainThread());
+  DebugScopedSetImplThread impl(task_runner_provider_);
+  host_impl_->SetMemoryPolicy(policy);
+}
+
 void SingleThreadProxy::SetUnboundedFrameSink(
     std::unique_ptr<LayerTreeFrameSink> unbounded_frame_sink,
     const viz::LocalSurfaceId& local_surface_id) {
@@ -575,6 +581,14 @@ void SingleThreadProxy::SetNeedsOneBeginImplFrameOnImplThread() {
   if (scheduler_on_impl_thread_)
     scheduler_on_impl_thread_->SetNeedsOneBeginImplFrame();
   needs_impl_frame_ = true;
+}
+
+void SingleThreadProxy::NotifyInputEvent() {
+  DCHECK(!task_runner_provider_->HasImplThread() ||
+         task_runner_provider_->IsImplThread());
+  if (scheduler_on_impl_thread_) {
+    scheduler_on_impl_thread_->NotifyInputEvent();
+  }
 }
 
 void SingleThreadProxy::SetNeedsPrepareTilesOnImplThread() {

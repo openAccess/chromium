@@ -4,19 +4,15 @@
 
 package org.chromium.components.translate;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
 
 /** Test for TranslateOptions. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TranslateOptionsTest {
     private static final boolean NEVER_LANGUAGE = false;
     private static final boolean NEVER_DOMAIN = false;
@@ -27,7 +23,6 @@ public class TranslateOptionsTest {
     private static final String[] CONTENT_LANGUAGES_CODES = {"es", "fr"};
 
     @Test
-    @SmallTest
     @Feature({"Translate"})
     public void testNoChanges() {
         TranslateOptions options =
@@ -52,7 +47,6 @@ public class TranslateOptionsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Translate"})
     public void testBasicLanguageChanges() {
         TranslateOptions options =
@@ -92,7 +86,6 @@ public class TranslateOptionsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Translate"})
     public void testInvalidLanguageChanges() {
         TranslateOptions options =
@@ -117,7 +110,6 @@ public class TranslateOptionsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Translate"})
     public void testBasicOptionsChanges() {
         TranslateOptions options =
@@ -164,7 +156,6 @@ public class TranslateOptionsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Translate"})
     public void testContentLanguagesAreFilledAsExpected() {
         TranslateOptions options =
@@ -195,7 +186,6 @@ public class TranslateOptionsTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"Translate"})
     public void testupdateContentLanguages() {
         TranslateOptions options =

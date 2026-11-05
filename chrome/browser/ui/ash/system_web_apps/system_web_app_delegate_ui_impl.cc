@@ -6,8 +6,6 @@
 
 #include "base/check_deref.h"
 #include "base/files/file_path.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_navigation_handle_user_data.h"
@@ -16,14 +14,17 @@
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/user_manager/user.h"
 #include "components/webapps/browser/launch_queue/launch_queue.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace ash {
@@ -47,7 +48,8 @@ BrowserDelegate* SystemWebAppDelegate::LaunchAndNavigateSystemWebApp(
     const apps::AppLaunchParams& params) const {
   // Always reuse an existing browser for popups. Otherwise let the app decide.
   // TODO(crbug.com/40679012): Allow apps to control whether popups are single.
-  const bool popup = params.disposition == WindowOpenDisposition::NEW_POPUP;
+  const bool popup =
+      params.disposition == ui::mojom::WindowOpenDisposition::kNewPopup;
   BrowserDelegate* browser =
       popup
           ? FindSystemWebAppBrowser(profile, GetType(), BrowserType::kAppPopup)
@@ -101,11 +103,10 @@ BrowserDelegate* SystemWebAppDelegate::LaunchAndNavigateSystemWebApp(
   if (!web_contents || web_contents->GetURL() != url ||
       GetType() == SystemWebAppType::HELP) {
     // TODO(crbug.com/40829466): Migrate to use PWA pinned home tab when ready.
-    web_contents = browser->NavigateWebApp(
-        url,
-        ShouldPinTab(url) ? BrowserDelegate::TabPinning::kYes
-                          : BrowserDelegate::TabPinning::kNo,
-        std::move(launch_params));
+    web_contents =
+        browser->LoadUrl(url, ui::PAGE_TRANSITION_AUTO_BOOKMARK,
+                         {.pin_tab = ShouldPinTab(url),
+                          .launch_params = std::move(launch_params)});
   } else {
     // Launch params need to account for the use-case where it needs to be
     // dispatched immediately, because a new navigation has not started. Update

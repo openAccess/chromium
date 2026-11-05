@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_DOM_DISTILLER_CORE_TASK_TRACKER_H_
 #define COMPONENTS_DOM_DISTILLER_CORE_TASK_TRACKER_H_
 
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -13,7 +14,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
-#include "components/dom_distiller/core/article_distillation_update.h"
 #include "components/dom_distiller/core/article_entry.h"
 #include "components/dom_distiller/core/distiller.h"
 #include "components/dom_distiller/core/distiller_page.h"
@@ -52,9 +52,6 @@ class ViewRequestDelegate : public base::CheckedObserver {
   // when the corresponding ViewerHandle is destroyed (or when the
   // DomDistillerService is destroyed).
   virtual void OnArticleReady(const DistilledArticleProto* article_proto) = 0;
-
-  // Called when an article that is currently under distillation is updated.
-  virtual void OnArticleUpdated(ArticleDistillationUpdate article_update) = 0;
 
   // Called when page distillation fails with a specific safety or parsing
   // reason.
@@ -114,9 +111,6 @@ class TaskTracker {
   TaskTracker& operator=(const TaskTracker&) = delete;
 
  private:
-  void OnArticleDistillationUpdated(
-      const ArticleDistillationUpdate& article_update);
-
   void OnDistillerFinished(
       bool use_cache,
       std::unique_ptr<DistilledArticleProto> distilled_article,
@@ -138,6 +132,8 @@ class TaskTracker {
   void AddDistilledContentToStore(const DistilledArticleProto& content);
 
   void NotifyViewersAndCallbacks();
+  // Dequeues and notifies the next viewer in `pending_viewers_`.
+  void NotifyPendingViewer();
   void NotifyViewer(ViewRequestDelegate* delegate);
 
   bool IsAnySourceRunning() const;
@@ -154,6 +150,12 @@ class TaskTracker {
   // A ViewRequestDelegate will be added to this list when a view request is
   // made and removed when the corresponding ViewerHandle is destroyed.
   base::ObserverList<ViewRequestDelegate> viewers_;
+
+  // Viewers added after `distilled_article_` is populated that are awaiting an
+  // asynchronous `NotifyPendingViewer()` task. Stored here rather than bound
+  // into `PostTask()` so `RemoveViewer()` can drop the pointer before the
+  // caller destroys `ViewRequestDelegate`.
+  std::deque<raw_ptr<ViewRequestDelegate>> pending_viewers_;
 
   std::unique_ptr<Distiller> distiller_;
   bool blob_fetcher_running_;

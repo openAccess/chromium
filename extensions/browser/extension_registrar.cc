@@ -349,8 +349,9 @@ void ExtensionRegistrar::EnableExtension(const ExtensionId& extension_id) {
 
   // If the extension is currently reloading, it will be enabled once the reload
   // is complete.
-  if (reloading_extensions_.count(extension_id) > 0)
+  if (reloading_extensions_.contains(extension_id)) {
     return;
+  }
 
   // First, check that the extension can be enabled.
   if (IsExtensionEnabled(extension_id) ||
@@ -375,6 +376,7 @@ void ExtensionRegistrar::EnableExtension(const ExtensionId& extension_id) {
   registry_->AddEnabled(extension);
   registry_->RemoveDisabled(extension->id());
   ActivateExtension(extension, false);
+  registry_->TriggerOnEnabled(extension);
 }
 
 void ExtensionRegistrar::DisableExtension(
@@ -476,7 +478,8 @@ void ExtensionRegistrar::DisableExtensionWithSource(
     disable_reason::DisableReason disable_reason) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   DCHECK(disable_reason == disable_reason::DISABLE_USER_ACTION ||
-         disable_reason == disable_reason::DISABLE_BLOCKED_BY_POLICY);
+         disable_reason == disable_reason::DISABLE_BLOCKED_BY_POLICY ||
+         disable_reason == disable_reason::DISABLE_BY_ANOTHER_EXTENSION);
   if (disable_reason == disable_reason::DISABLE_BLOCKED_BY_POLICY) {
     DCHECK(Manifest::IsPolicyLocation(source_extension->location()) ||
            Manifest::IsComponentLocation(source_extension->location()));
@@ -486,7 +489,16 @@ void ExtensionRegistrar::DisableExtensionWithSource(
       registry_->GetExtensionById(extension_id, ExtensionRegistry::EVERYTHING);
   CHECK(extension_system_->management_policy()->ExtensionMayModifySettings(
       source_extension, extension, nullptr));
+
   DisableExtension(extension_id, {disable_reason});
+
+  // Always update the disabling extension to the latest one, as it's simpler
+  // and reflects the most recent attempt to disable.
+  if (disable_reason == disable_reason::DISABLE_BY_ANOTHER_EXTENSION &&
+      extension_prefs_->HasDisableReason(extension_id, disable_reason)) {
+    extension_prefs_->SetStringPref(extension_id, kDisableReasonByExtensionId,
+                                    source_extension->id());
+  }
 }
 
 void ExtensionRegistrar::EnabledReloadableExtensions() {
@@ -1003,6 +1015,12 @@ void ExtensionRegistrar::OnUnpackedExtensionReloadFailed(
 
 void ExtensionRegistrar::GrantPermissionsAndEnableExtension(
     const Extension& extension) {
+  // Only proceed when the requested input extension still matches the installed
+  // version; otherwise, reject early.
+  const Extension* installed = registry_->GetInstalledExtension(extension.id());
+  if (!installed || installed->version() != extension.version()) {
+    return;
+  }
   delegate_->GrantActivePermissions(&extension);
   EnableExtension(extension.id());
 }
@@ -1161,7 +1179,7 @@ void ExtensionRegistrar::DoReloadExtension(
     // If an unpacked extension previously failed to reload, it will still be
     // marked as disabled, but we can try to reload it again - the developer
     // may have fixed the issue.
-    if (failed_to_reload_unpacked_extensions_.count(path) == 0) {
+    if (!failed_to_reload_unpacked_extensions_.contains(path)) {
       return;
     }
     failed_to_reload_unpacked_extensions_.erase(path);
@@ -1321,6 +1339,7 @@ bool ExtensionRegistrar::ReplaceReloadedExtension(
   CHECK(registry_->AddEnabled(extension));
 
   ActivateExtension(extension.get(), false);
+  registry_->TriggerOnReloaded(extension.get());
 
   return true;
 }
@@ -1384,7 +1403,7 @@ bool ExtensionRegistrar::CanAddExtension(const Extension* extension) const {
   if (!extensions_enabled() &&
       !Manifest::ShouldAlwaysLoadExtension(extension->location(),
                                            extension->is_theme()) &&
-      disable_flag_exempted_extensions_.count(extension->id()) == 0) {
+      !disable_flag_exempted_extensions_.contains(extension->id())) {
     return false;
   }
   return true;

@@ -35,7 +35,7 @@ class PLATFORM_EXPORT ShapeResultCursor {
 
   // Get the current character index.
   wtf_size_t CharacterIndex() const {
-    return run_->start_index_ + GlyphData().character_index;
+    return run_->GlyphToCharacterIndex(glyph_index_);
   }
 
   const SimpleFontData& FontData() const { return *run_->font_data_; }
@@ -67,19 +67,16 @@ class PLATFORM_EXPORT ShapeResultCursor {
   FRIEND_TEST_ALL_PREFIXES(ShapeResultCursorTest, Rtl);
   FRIEND_TEST_ALL_PREFIXES(ShapeResultCursorTest, StartIndex);
 
-  // Get `HarfBuzzRunGlyphData` for the current or the specified glyph index.
-  const HarfBuzzRunGlyphData& GlyphData(wtf_size_t i) const {
-    return run_->glyph_data_[i];
+  HarfBuzzRunGlyphData GlyphDataForTest() const {
+    return run_->glyph_data_.GlyphAt(glyph_index_);
   }
-  const HarfBuzzRunGlyphData& GlyphData() const {
-    return GlyphData(glyph_index_);
-  }
-  HarfBuzzRunGlyphData& GlyphData(wtf_size_t i) { return run_->glyph_data_[i]; }
-  HarfBuzzRunGlyphData& GlyphData() { return GlyphData(glyph_index_); }
 
+  HarfBuzzRunGlyphData& MutableGlyphData() {
+    return run_->glyph_data_.MutableGlyphAt(glyph_index_);
+  }
   bool IsCluster(wtf_size_t i, wtf_size_t character_index) const {
     return i < run_->glyph_data_.size() &&
-           GlyphData(i).character_index == character_index;
+           run_->GlyphToCharacterIndex(i) == character_index;
   }
 
   ShapeResult* result_;

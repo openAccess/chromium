@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 package org.chromium.chrome.browser.safe_browsing;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
 import android.content.Intent;
 import android.provider.Browser;
@@ -107,7 +109,7 @@ public class SafeBrowsingReferringAppBridge {
     @CalledByNative
     @VisibleForTesting
     public static ReferringAppInfo getReferringAppInfo(
-            WindowAndroid windowAndroid, boolean getWebApkInfo) {
+            @JniType("ui::WindowAndroid*") WindowAndroid windowAndroid, boolean getWebApkInfo) {
         Activity activity = windowAndroid.getActivity().get();
         if (activity == null) {
             return getEmptyReferringInfo();
@@ -123,7 +125,8 @@ public class SafeBrowsingReferringAppBridge {
         String referringWebApkStartUrl = "";
         String referringWebApkManifestId = "";
         if (getWebApkInfo && (activity instanceof BaseCustomTabActivity customTabActivity)) {
-            WebApkExtras webApkExtras = customTabActivity.getIntentDataProvider().getWebApkExtras();
+            WebApkExtras webApkExtras =
+                    assumeNonNull(customTabActivity.getIntentDataProvider()).getWebApkExtras();
             if (webApkExtras != null) {
                 referringWebApkStartUrl = webApkExtras.manifestStartUrl;
                 referringWebApkManifestId = webApkExtras.manifestId;

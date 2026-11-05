@@ -4,6 +4,8 @@
 
 #include "chrome/browser/dictation/features.h"
 
+#include <string>
+
 #include "base/metrics/field_trial_params.h"
 #include "base/time/time.h"
 
@@ -30,6 +32,12 @@ const base::FeatureParam<bool> kSessionEndsOnStreamEnd{
     &kDictation, "session_ends_on_stream_end", true};
 
 const base::FeatureParam<base::TimeDelta> kAutoSessionEndDelay{
-    &kDictation, "auto_session_end_delay", base::Milliseconds(750)};
+    &kDictation, "auto_session_end_delay", base::Milliseconds(300)};
+
+const base::FeatureParam<std::string> kDictationConnectorTag{
+    &kDictation, "connector_tag", ""};
+
+const base::FeatureParam<std::string> kPopulateEditContextHosts{
+    &kDictation, "populate_edit_context_hosts", "docs.google.com"};
 
 }  // namespace dictation

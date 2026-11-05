@@ -21,12 +21,16 @@
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "printing/buildflags/buildflags.h"
+#include "ui/webui/buildflags.h"
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+#include "chrome/grit/new_tab_page_extension_resources.h"
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_extension_constants.h"
 #include "ash/keyboard/ui/grit/keyboard_resources.h"
 #include "chrome/browser/ash/input_method/component_extension_ime_manager_delegate_impl.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "ui/file_manager/grit/file_manager_resources.h"
 #endif
 
@@ -36,9 +40,13 @@ namespace extensions {
 
 bool IsComponentExtensionAllowlisted(const std::string& extension_id) {
   constexpr auto kAllowed = base::MakeFixedFlatSet<std::string_view>({
+      extension_misc::kAimEligibilityExtensionId,
       extension_misc::kContextualTasksExtensionId,
       extension_misc::kGlicExtensionId,
       extension_misc::kInAppPaymentsSupportAppId,
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+      extension_misc::kNewTabPageExtensionId,
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
       extension_misc::kPdfExtensionId,
 #if BUILDFLAG(IS_CHROMEOS)
       extension_misc::kAssessmentAssistantExtensionId,
@@ -55,13 +63,11 @@ bool IsComponentExtensionAllowlisted(const std::string& extension_id) {
       extension_misc::kQuickOfficeComponentExtensionId,
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 #endif  // BUILDFLAG(IS_CHROMEOS)
-      extension_misc::kReadingModeGDocsHelperExtensionId,
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
       extension_misc::kTTSEngineExtensionId,
       extension_misc::kComponentUpdaterTTSEngineExtensionId,
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
 #if !BUILDFLAG(IS_ANDROID)
-      extension_misc::kAimEligibilityExtensionId,
       extension_misc::kIndigoExtensionId,
       extension_misc::kDictationConnectorExtensionId,
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -72,8 +78,7 @@ bool IsComponentExtensionAllowlisted(const std::string& extension_id) {
   }
 
 #if BUILDFLAG(IS_CHROMEOS)
-  if (chromeos::features::IsUploadOfficeToCloudEnabled() &&
-      extension_id == extension_misc::kODFSExtensionId) {
+  if (extension_id == extension_misc::kODFSExtensionId) {
     return true;
   }
 
@@ -98,9 +103,11 @@ bool IsComponentExtensionAllowlisted(int manifest_resource_id) {
     case IDR_AIM_ELIGIBILITY_EXTENSION_MANIFEST_JSON:
     case IDR_CONTEXTUAL_TASKS_EXTENSION_MANIFEST_JSON:
     case IDR_GLIC_EXTENSION_MANIFEST:
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+    case IDR_NEW_TAB_PAGE_EXTENSION_MANIFEST_JSON:
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
     case IDR_NETWORK_SPEECH_SYNTHESIS_MANIFEST:
     case IDR_NETWORK_SPEECH_SYNTHESIS_MANIFEST_MV3:
-    case IDR_READING_MODE_GDOCS_HELPER_MANIFEST:
     case IDR_WEBSTORE_MANIFEST:
 
 #if BUILDFLAG(IS_CHROMEOS)

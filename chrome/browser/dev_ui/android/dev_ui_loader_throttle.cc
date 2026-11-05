@@ -9,6 +9,7 @@
 
 #include "base/functional/bind.h"
 #include "chrome/android/modules/dev_ui/provider/dev_ui_module_provider.h"
+#include "chrome/browser/browser_actuator/internals/browser_actuator_internals_ui.h"
 #include "chrome/browser/dev_ui/android/dev_ui_loader_error_page.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/commerce/core/commerce_constants.h"
@@ -35,7 +36,8 @@ namespace {
 bool IsWebUiHostInDevUiDfm(const std::string& host) {
   // Each WebUI host (including synonyms) in the DevUI DFM must have an entry.
   // Assume linear search is fast enough. Can optimize later if needed.
-  return host == chrome::kChromeUIAccessibilityHost ||
+  return host == browser_actuator::kChromeUIBrowserActuatorInternalsHost ||
+         host == chrome::kChromeUIAccessibilityHost ||
          host == chrome::kChromeUIActorInternalsHost ||
          host == chrome::kChromeUIAutofillInternalsHost ||
          host == chrome::kChromeUIBluetoothInternalsHost ||
@@ -55,7 +57,7 @@ bool IsWebUiHostInDevUiDfm(const std::string& host) {
          host == chrome::kChromeUINTPTilesInternalsHost ||
          host == chrome::kChromeUINetExportHost ||
          host == chrome::kChromeUINetInternalsHost ||
-         host == chrome::kChromeUIOmniboxHost ||
+         host == chrome::kChromeUIOmniboxInternalsHost ||
          host == chrome::kChromeUIPasswordManagerInternalsHost ||
          host == chrome::kChromeUIPolicyHost ||
          host == chrome::kChromeUIPredictorsHost ||
@@ -112,7 +114,7 @@ bool DevUiLoaderThrottle::ShouldInstallDevUiDfm(const GURL& url) {
 // static
 void DevUiLoaderThrottle::MaybeCreateAndAdd(
     content::NavigationThrottleRegistry& registry) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   auto& handle = registry.GetNavigationHandle();
   if (!handle.IsInPrimaryMainFrame()) {
     return;

@@ -164,9 +164,7 @@ class CC_EXPORT TileBasedLayerImpl : public LayerImpl {
   // Invoked after a quad has been appended to allow subclasses to perform any
   // subclass-specific validation or tracking.
   virtual void DidAppendQuad(viz::DrawQuad* quad,
-                             const TilingSetCoverageIterator<Tiling>& iter,
-                             AppendQuadsData* append_quads_data,
-                             bool is_checkerboard) {}
+                             const TilingSetCoverageIterator<Tiling>& iter) {}
 
   virtual bool ValidateTilingSetForContentsResourceId() const { return true; }
 
@@ -192,7 +190,7 @@ class CC_EXPORT TileBasedLayerImpl : public LayerImpl {
   // into this method to allow implementations to operate on the original state
   // (e.g., to locate tiles in layer space). However, it will be properly
   // adjusted before AppendQuads() returns to the caller.
-  bool AppendQuadForTile(TilingSetCoverageIterator<Tiling> iter,
+  bool AppendQuadForTile(const TilingSetCoverageIterator<Tiling>& iter,
                          const AppendQuadsContext& context,
                          viz::CompositorRenderPass* render_pass,
                          AppendQuadsData* append_quads_data,
@@ -568,7 +566,7 @@ void TileBasedLayerImpl<Tiling>::GetContentsResourceId(
 
 template <typename Tiling>
 bool TileBasedLayerImpl<Tiling>::AppendQuadForTile(
-    TilingSetCoverageIterator<Tiling> iter,
+    const TilingSetCoverageIterator<Tiling>& iter,
     const AppendQuadsContext& context,
     viz::CompositorRenderPass* render_pass,
     AppendQuadsData* append_quads_data,
@@ -591,7 +589,7 @@ bool TileBasedLayerImpl<Tiling>::AppendQuadForTile(
                    offset_visible_geometry_rect, needs_blending, *resource_id,
                    iter.texture_rect(), GetNearestNeighbor(),
                    !layer_tree_impl()->settings().enable_edge_anti_aliasing);
-      DidAppendQuad(quad, iter, append_quads_data, /*is_checkerboard=*/false);
+      DidAppendQuad(quad, iter);
       has_draw_quad = true;
     } else if (auto color = tile->GetSolidColor()) {
       float alpha = color->fA * shared_quad_state->opacity;
@@ -601,7 +599,7 @@ bool TileBasedLayerImpl<Tiling>::AppendQuadForTile(
         quad->SetNew(shared_quad_state, offset_geometry_rect,
                      offset_visible_geometry_rect, *color,
                      !layer_tree_impl()->settings().enable_edge_anti_aliasing);
-        DidAppendQuad(quad, iter, append_quads_data, /*is_checkerboard=*/false);
+        DidAppendQuad(quad, iter);
       }
       has_draw_quad = true;
     }
@@ -618,7 +616,7 @@ bool TileBasedLayerImpl<Tiling>::AppendQuadForTile(
         render_pass->CreateAndAppendDrawQuad<viz::SolidColorDrawQuad>();
     quad->SetNew(shared_quad_state, offset_geometry_rect,
                  offset_visible_geometry_rect, color, false);
-    DidAppendQuad(quad, iter, append_quads_data, /*is_checkerboard=*/true);
+    DidAppendQuad(quad, iter);
 
     return /*tile_produced=*/!ShouldReportTileAsMissing(
         iter.geometry_rect(), scaled_viewport_for_tile_priority);

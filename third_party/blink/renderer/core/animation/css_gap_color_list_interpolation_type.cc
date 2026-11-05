@@ -24,31 +24,26 @@ namespace {
 
 InterpolationValue GetInterpolationValueFromGapData(
     const GapData<StyleColor>& data,
-    const CSSProperty& property,
-    const ComputedStyle* style,
-    const ui::ColorProvider* color_provider = nullptr,
-    const StyleResolverState* state = nullptr) {
-  CHECK(style);
+    const ColorThemeInfo& theme_info) {
   if (data.IsRepeaterData()) {
     // At this stage, the GapData list should be fully expanded, so any
     // remaining repeater must be an auto repeater.
     CHECK(data.GetValueRepeater()->IsAutoRepeater());
     return InterpolationValue(InterpolableGapColorAutoRepeater::Create(
-        data.GetValueRepeater(), *style));
+        data.GetValueRepeater(), theme_info));
   }
 
   return InterpolationValue(
-      CSSColorInterpolationType::CreateBaseInterpolableColor(
-          data.GetValue(), style->UsedColorScheme(), color_provider));
+      CSSColorInterpolationType::CreateBaseInterpolableColor(data.GetValue(),
+                                                             theme_info));
 }
 
 InterpolationValue GetInterpolationValueFromCSSValue(
     const CSSValue* value,
-    const CSSProperty& property,
     const StyleResolverState& state,
-    const ComputedStyle* style) {
+    const ColorThemeInfo& theme_info,
+    CSSInterpolationType::ConversionCheckers& conversion_checkers) {
   CHECK(value);
-  CHECK(style);
   if (auto* gap_repeat_value = DynamicTo<cssvalue::CSSRepeatValue>(value)) {
     CHECK(gap_repeat_value->IsAutoRepeatValue());
     typename ValueRepeater<StyleColor>::VectorType gap_values;
@@ -62,7 +57,7 @@ InterpolationValue GetInterpolationValueFromCSSValue(
         MakeGarbageCollected<ValueRepeater<StyleColor>>(
             std::move(gap_values), /*repeat_count=*/std::nullopt);
     return InterpolationValue(
-        InterpolableGapColorAutoRepeater::Create(value_repeater, *style));
+        InterpolableGapColorAutoRepeater::Create(value_repeater, theme_info));
   }
 
   return InterpolationValue(
@@ -132,11 +127,10 @@ CSSGapColorListInterpolationType::MaybeConvertStandardPropertyUnderlyingValue(
   GapDataList<StyleColor> list = GetProperty(style);
   const GapDataList<StyleColor>::GapDataVector& values =
       CSSGapDecorationUtils::GetExpandedGapDataList(list);
-
+  const ColorThemeInfo theme_info{.color_scheme = style.UsedColorScheme()};
   return ListInterpolationFunctions::CreateList(
-      values.size(), [this, &style, &values](wtf_size_t i) {
-        return GetInterpolationValueFromGapData(values[i], CssProperty(),
-                                                &style);
+      values.size(), [&values, &theme_info](wtf_size_t i) {
+        return GetInterpolationValueFromGapData(values[i], theme_info);
       });
 }
 
@@ -144,7 +138,7 @@ void CSSGapColorListInterpolationType::Composite(
     UnderlyingValueOwner& owner,
     double underlying_fraction,
     const InterpolationValue& value,
-    double interpolation_fraction) const {
+    double) const {
   auto& underlying_list =
       To<InterpolableList>(*owner.Value().interpolable_value);
   auto& incoming_list = To<InterpolableList>(*value.interpolable_value);
@@ -252,7 +246,7 @@ InterpolationValue CSSGapColorListInterpolationType::MaybeConvertNeutral(
 
 InterpolationValue CSSGapColorListInterpolationType::MaybeConvertInitial(
     const StyleResolverState& state,
-    ConversionCheckers& conversion_checkers) const {
+    ConversionCheckers&) const {
   GapDataList<StyleColor> initial_list =
       property_id_ == CSSPropertyID::kColumnRuleColor
           ? ComputedStyleInitialValues::InitialColumnRuleColor()
@@ -260,16 +254,13 @@ InterpolationValue CSSGapColorListInterpolationType::MaybeConvertInitial(
   CHECK(initial_list.HasSingleValue());
   const StyleColor initial_color = initial_list.GetSingleValue();
 
-  mojom::blink::ColorScheme color_scheme =
-      state.StyleBuilder().UsedColorScheme();
-  const ui::ColorProvider* color_provider =
-      state.GetDocument().GetColorProviderForPainting(color_scheme);
+  const ColorThemeInfo theme_info = state.GetColorThemeInfo();
 
   return ListInterpolationFunctions::CreateList(
-      1, [&initial_color, &color_scheme, &color_provider](wtf_size_t) {
+      1, [&initial_color, &theme_info](wtf_size_t) {
         return InterpolationValue(
             CSSColorInterpolationType::CreateBaseInterpolableColor(
-                initial_color, color_scheme, color_provider));
+                initial_color, theme_info));
       });
 }
 
@@ -288,7 +279,7 @@ class InheritedGapColorListChecker final
 
  private:
   bool IsValid(const StyleResolverState& state,
-               const InterpolationValue& underlying) const final {
+               const InterpolationValue&) const final {
     GapDataList<StyleColor> inherited_list =
         CSSGapColorListInterpolationType::GetList(*property_,
                                                   *state.ParentStyle());
@@ -320,18 +311,13 @@ InterpolationValue CSSGapColorListInterpolationType::MaybeConvertInherit(
     return nullptr;
   }
 
-  mojom::blink::ColorScheme color_scheme =
-      state.StyleBuilder().UsedColorScheme();
-  const ui::ColorProvider* color_provider =
-      state.GetDocument().GetColorProviderForPainting(color_scheme);
+  const ColorThemeInfo theme_info = state.GetColorThemeInfo();
 
   return ListInterpolationFunctions::CreateList(
       inherited_gap_data_vector.size(),
-      [this, &inherited_gap_data_vector, &state,
-       &color_provider](wtf_size_t index) {
+      [&inherited_gap_data_vector, &theme_info](wtf_size_t index) {
         return GetInterpolationValueFromGapData(
-            inherited_gap_data_vector[index], CssProperty(), state.CloneStyle(),
-            color_provider);
+            inherited_gap_data_vector[index], theme_info);
       });
 }
 
@@ -356,12 +342,13 @@ InterpolationValue CSSGapColorListInterpolationType::MaybeConvertValue(
 
   const CSSValueList* expanded_list =
       CSSGapDecorationUtils::GetExpandedCSSValueListForGapData(*list, state);
-
+  const ColorThemeInfo theme_info = state.GetColorThemeInfo();
   return ListInterpolationFunctions::CreateList(
-      expanded_list->length(), [this, expanded_list, &state](wtf_size_t index) {
+      expanded_list->length(), [expanded_list, &state, &theme_info,
+                                &conversion_checkers](wtf_size_t index) {
         return GetInterpolationValueFromCSSValue(&expanded_list->Item(index),
-                                                 CssProperty(), state,
-                                                 state.CloneStyle());
+                                                 state, theme_info,
+                                                 conversion_checkers);
       });
 }
 
@@ -477,11 +464,7 @@ PairwiseInterpolationValue CSSGapColorListInterpolationType::MaybeMergeSingles(
 
 GapDataList<StyleColor> CSSGapColorListInterpolationType::GetProperty(
     const ComputedStyle& style) const {
-  if (property_id_ == CSSPropertyID::kColumnRuleColor) {
-    return style.ColumnRuleColor();
-  }
-  CHECK(property_id_ == CSSPropertyID::kRowRuleColor);
-  return style.RowRuleColor();
+  return GetList(CssProperty(), style);
 }
 
 }  // namespace blink

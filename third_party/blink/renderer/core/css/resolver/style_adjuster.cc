@@ -40,6 +40,7 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
+#include "third_party/blink/renderer/core/dom/layout_tree_builder_traversal.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/frame/event_handler_registry.h"
@@ -87,6 +88,7 @@
 #include "third_party/blink/renderer/core/layout/list/list_marker.h"
 #include "third_party/blink/renderer/core/mathml/mathml_element.h"
 #include "third_party/blink/renderer/core/mathml/mathml_table_cell_element.h"
+#include "third_party/blink/renderer/core/overscroll/overscroll_area_tracker.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style/computed_style_base_constants.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
@@ -205,17 +207,7 @@ void StyleAdjuster::AdjustStyleForSvgElement(
     builder.SetTextUnderlinePosition(TextUnderlinePosition::kAuto);
   }
 
-  // Only the root <svg> element in an SVG document fragment tree, honors the
-  // CSS position, all other inner <svg> elements has to have position as static
-  // as they don't follow CSS box model. This also includes when a <use> element
-  // refers an <svg> root element, in that case, we need to consider the
-  // styled_element itself to set its position CSS property.
   bool is_svg_root = styled_element->IsOutermostSVGSVGElement();
-  if (!is_svg_root) {
-    // Only the root <svg> element in an SVG document fragment tree honors css
-    // position.
-    builder.SetPosition(ComputedStyleInitialValues::InitialPosition());
-  }
 
   if (builder.Display() == EDisplay::kContents &&
       (is_svg_root ||
@@ -395,17 +387,10 @@ static bool IsAtMediaUAShadowBoundary(const Element* element) {
 static bool StopPropagateTextDecorations(const ComputedStyleBuilder& builder,
                                          const Element* element) {
   return builder.IsAtomicInlineDisplayType() ||
+         IsA<HTMLCanvasElement>(element) ||
          IsAtMediaUAShadowBoundary(element) || builder.IsFloating() ||
          builder.HasOutOfFlowPosition() || IsOutermostSVGElement(element) ||
          builder.Display() == EDisplay::kRubyText;
-}
-
-static bool LayoutParentStyleForcesZIndexToCreateStackingContext(
-    const ComputedStyle& layout_parent_style) {
-  return layout_parent_style.IsDisplayFlex() ||
-         layout_parent_style.IsDisplayWebkitBox() ||
-         layout_parent_style.IsDisplayGrid() ||
-         layout_parent_style.IsDisplayGridLanes();
 }
 
 void StyleAdjuster::AdjustStyleForEditing(ComputedStyleBuilder& builder,
@@ -747,32 +732,28 @@ void StyleAdjuster::AdjustOverflow(ComputedStyleBuilder& builder,
   }
 }
 
-static bool IsCanvasWithLayoutSubtree(const Element* element) {
-  if (!element || !element->IsCanvasOrInCanvasSubtree() ||
-      !RuntimeEnabledFeatures::CanvasDrawElementEnabled(
-          element->GetExecutionContext())) {
+static bool IsCanvasWithContentDrawable(const Element* element) {
+  if (!element || !element->IsCanvasOrInCanvasSubtree()) {
     return false;
   }
 
   if (const auto* canvas = DynamicTo<HTMLCanvasElement>(element)) {
-    return canvas->layoutSubtree();
+    return canvas->IsContentDrawable();
   }
 
   return false;
 }
 
-// Direct children of a <canvas layoutsubtree> element have their style adjusted
-// to be blockified and have static position.
+// Direct children of a <canvas content=drawable> element have their style
+// adjusted to be blockified and have static position.
 // See: https://github.com/WICG/html-in-canvas
-static bool IsLayoutSubtreeCanvasChild(const Element* element) {
-  if (!element || !element->IsInCanvasSubtree() ||
-      !RuntimeEnabledFeatures::CanvasDrawElementEnabled(
-          element->GetExecutionContext())) {
+static bool IsContentDrawableCanvasChild(const Element* element) {
+  if (!element || !element->IsInCanvasSubtree()) {
     return false;
   }
   const auto* parent_canvas = DynamicTo<HTMLCanvasElement>(
-      FlatTreeTraversal::ParentElementSkippingSlots(*element));
-  return parent_canvas && parent_canvas->layoutSubtree();
+      LayoutTreeBuilderTraversal::LayoutParentElement(*element));
+  return parent_canvas && parent_canvas->IsContentDrawable();
 }
 
 void StyleAdjuster::AdjustStyleForDisplay(
@@ -780,7 +761,7 @@ void StyleAdjuster::AdjustStyleForDisplay(
     const ComputedStyle& layout_parent_style,
     const Element* element,
     Document* document) {
-  bool is_immediate_canvas_child = IsLayoutSubtreeCanvasChild(element);
+  bool is_immediate_canvas_child = IsContentDrawableCanvasChild(element);
 
   if ((layout_parent_style.BlockifiesChildren() && !HostIsInputFile(element)) ||
       is_immediate_canvas_child) {
@@ -800,6 +781,7 @@ void StyleAdjuster::AdjustStyleForDisplay(
     }
 
     if (is_immediate_canvas_child) {
+      builder.SetIsContentDrawableCanvasChild();
       builder.SetPosition(EPosition::kStatic);
     }
   }
@@ -1065,10 +1047,12 @@ void StyleAdjuster::AdjustForForcedColorsMode(ComputedStyleBuilder& builder,
       mojom::blink::PreferredColorScheme::kDark) {
     color_scheme = mojom::blink::ColorScheme::kDark;
   }
-  const ui::ColorProvider* color_provider =
-      document.GetColorProviderForPainting(color_scheme);
-  auto can_expose_accent_color =
-      document.IsInWebAppScope() && document.IsInitialProfile();
+  const ColorThemeInfo theme_info{
+      .color_provider = document.GetColorProviderForPainting(color_scheme),
+      .color_scheme = color_scheme,
+      .accent_color = builder.ResolveMirroredAccentColor(color_scheme),
+      .can_expose_system_accent_color =
+          document.IsInWebAppScope() && document.IsInitialProfile()};
 
   // Re-resolve some internal forced color properties whose initial
   // values are system colors. This is necessary to ensure we get
@@ -1076,8 +1060,7 @@ void StyleAdjuster::AdjustForForcedColorsMode(ComputedStyleBuilder& builder,
   // system color when the theme changes.
   if (builder.InternalForcedBackgroundColor().IsSystemColor()) {
     builder.SetInternalForcedBackgroundColor(
-        builder.InternalForcedBackgroundColor().ResolveSystemColor(
-            color_scheme, color_provider, can_expose_accent_color));
+        builder.InternalForcedBackgroundColor().ResolveSystemColor(theme_info));
   }
   // Per the CSS Color Adjustment specification [1]:
   // In forced-colors mode, if 'font-variant-emoji' computes to 'normal' or
@@ -1086,19 +1069,16 @@ void StyleAdjuster::AdjustForForcedColorsMode(ComputedStyleBuilder& builder,
   //
   // [1] https://www.w3.org/TR/css-color-adjust-1/#forced-colors-properties
   FontVariantEmoji variant = builder.GetFontDescription().VariantEmoji();
-  if (RuntimeEnabledFeatures::EmojiMonochromeRenderingEnabled() &&
-      (variant == kNormalVariantEmoji || variant == kUnicodeVariantEmoji)) {
+  if (variant == kNormalVariantEmoji || variant == kUnicodeVariantEmoji) {
     builder.SetFontVariantEmoji(kTextVariantEmoji);
   }
   if (builder.InternalForcedColor().IsSystemColor()) {
     builder.SetInternalForcedColor(
-        builder.InternalForcedColor().ResolveSystemColor(
-            color_scheme, color_provider, can_expose_accent_color));
+        builder.InternalForcedColor().ResolveSystemColor(theme_info));
   }
   if (builder.InternalForcedVisitedColor().IsSystemColor()) {
     builder.SetInternalForcedVisitedColor(
-        builder.InternalForcedVisitedColor().ResolveSystemColor(
-            color_scheme, color_provider, can_expose_accent_color));
+        builder.InternalForcedVisitedColor().ResolveSystemColor(theme_info));
   }
 }
 
@@ -1140,6 +1120,9 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
   ComputedStyleBuilder& builder = state.StyleBuilder();
   const ComputedStyle& parent_style = *state.ParentStyle();
   const ComputedStyle& layout_parent_style = *state.LayoutParentStyle();
+  const auto* svg_element = DynamicTo<SVGElement>(element);
+  const auto* styled_svg_element =
+      svg_element ? To<SVGElement>(state.GetStyledElement()) : nullptr;
 
   auto* html_element = DynamicTo<HTMLElement>(element);
   if (html_element &&
@@ -1171,11 +1154,9 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
     // Root elements that are in the top layer should just be left alone
     // because the fullscreen.css doesn't apply any style to them.
     //
-    // Similarly, overscroll-position elements must be out of flow positioned
-    // with a box.
+    // Similarly, overscroll areas must be out of flow positioned with a box.
     if (is_in_top_layer || builder.StyleType() == kPseudoIdBackdrop ||
-        builder.InternalOverscrollPosition() ==
-            EInternalOverscrollPosition::kAuto) {
+        (element && element->IsValidOverscrollArea())) {
       if (!builder.HasOutOfFlowPosition()) {
         builder.SetPosition(EPosition::kAbsolute);
       }
@@ -1186,7 +1167,16 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
         builder.SetDisplay(EDisplay::kBlock);
       }
     }
+  }
 
+  // Top-layer positioning must precede the SVG override, which in turn must
+  // precede blockification and the other position-dependent adjustments.
+  if (styled_svg_element && !styled_svg_element->IsOutermostSVGSVGElement()) {
+    // Only an outermost <svg> honors CSS positioning.
+    builder.SetPosition(ComputedStyleInitialValues::InitialPosition());
+  }
+
+  if (builder.Display() != EDisplay::kNone) {
     // Absolute/fixed positioned elements, floating elements and the document
     // element need block-like outside display.
     if (is_document_element ||
@@ -1242,6 +1232,7 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
     if (is_document_element && builder.HasBackdropFilter() &&
         element->GetDocument().IsInMainFrame()) {
       builder.SetBackdropFilter(FilterOperations());
+      builder.ClearAnimatedSource(CSSPropertyID::kBackdropFilter);
     }
   }
 
@@ -1250,19 +1241,28 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
   // and this needs to override those changes.
   AdjustStyleForFirstLetter(builder, parent_style);
 
+  // Apply SVG display constraints after generic display conversions, before
+  // stacking-context decisions and decoration propagation consume display.
+  if (svg_element) {
+    AdjustStyleForSvgElement(*svg_element, styled_svg_element, builder,
+                             layout_parent_style);
+  }
+
   builder.SetForcesStackingContext(false);
 
   // https://github.com/WICG/html-in-canvas
-  // The `layoutsubtree` attribute ... causes descendants of the <canvas> with
-  // the `drawable` attribute to imply `isolation: isolate`.
+  // The `content=drawable` attribute ... causes descendants of the <canvas>
+  // with the `drawable` attribute to imply `isolation: isolate`.
   if (element && element->CanvasForDrawing()) {
     builder.SetIsolation(EIsolation::kIsolate);
   }
 
+  if (layout_parent_style.AllowsZIndexOnChildren()) {
+    builder.SetIsInZIndexAllowingDisplay();
+  }
   // z-index is only applicable if positioned, or if a flex/grid/etc item.
   if (builder.GetPosition() != EPosition::kStatic ||
-      LayoutParentStyleForcesZIndexToCreateStackingContext(
-          layout_parent_style)) {
+      layout_parent_style.AllowsZIndexOnChildren()) {
     builder.SetAllowsZIndex(true);
     if (!builder.HasAutoZIndex()) {
       builder.SetForcesStackingContext(true);
@@ -1279,7 +1279,8 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
       (element && IsA<SVGForeignObjectElement>(*element)) || is_in_top_layer ||
       builder.StyleType() == kPseudoIdBackdrop ||
       builder.StyleType() == kPseudoIdViewTransition ||
-      IsCanvasWithLayoutSubtree(element)) {
+      IsCanvasWithContentDrawable(element) ||
+      builder.IsUnboundedElementActive()) {
     builder.SetForcesStackingContext(true);
   }
 
@@ -1328,11 +1329,7 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
 
   AdjustStyleForEditing(builder, element);
 
-  if (auto* svg_element = DynamicTo<SVGElement>(element); svg_element) {
-    auto* styled_element = DynamicTo<SVGElement>(state.GetStyledElement());
-    AdjustStyleForSvgElement(*svg_element, styled_element, builder,
-                             layout_parent_style);
-  } else if (IsA<MathMLElement>(element)) {
+  if (IsA<MathMLElement>(element)) {
     if (builder.Display() == EDisplay::kContents) {
       // https://drafts.csswg.org/css-display/#unbox-mathml
       builder.SetDisplay(EDisplay::kNone);
@@ -1349,11 +1346,20 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
     builder.SetSubtreeIsSticky(true);
   }
 
+  // If this node is an overscroll container, it marks the creation of an
+  // overscroll container subtree for overscroll gestures and inertness.
+  // Descendants will inherit this bit so they can quickly identify whether
+  // they have an ancestor overscroll container.
+  if (builder.EffectiveOverscrollContainerType() !=
+      EOverscrollContainerType::kNone) {
+    builder.SetIsInOverscrollContainer(true);
+  }
+
   // If the inherited value of justify-items includes the 'legacy'
   // keyword (plus 'left', 'right' or 'center'), 'legacy' computes to
   // the the inherited value.  Otherwise, 'auto' computes to 'normal'.
   if (parent_style.JustifyItems().PositionType() == ItemPositionType::kLegacy &&
-      builder.JustifyItems().GetPosition() == ItemPosition::kLegacy) {
+      builder.JustifyItems().GetComputedPosition() == ItemPosition::kLegacy) {
     builder.SetJustifyItems(parent_style.JustifyItems());
   }
 
@@ -1387,11 +1393,16 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
   }
 }
 
+bool StyleAdjuster::MayAdjustStyleForTheme(const ComputedStyle& style) {
+  return style.HasAppearance();
+}
+
 void StyleAdjuster::RunUncacheableStyleAdjustment(
     ComputedStyleBuilder& builder,
     Element& element,
     const Element* element_or_pseudo_element,
-    const Element* styled_element) {
+    const Element* styled_element,
+    const ComputedStyle* parent_style) {
   // Elements are almost never view transition scopes (i.e., we get an
   // early-out), so it's just as cheap to do the logic here as in
   // AdjustComputedStyle().
@@ -1422,9 +1433,36 @@ void StyleAdjuster::RunUncacheableStyleAdjustment(
     }
   }
 
+  // File selector buttons must inherent appearance base from
+  // their parents. This cannot be done via a UA style rule
+  // because both auto and none appearance file inputs must
+  // have auto appearance buttons.
+  if (RuntimeEnabledFeatures::AppearanceBaseEnabled()) {
+    const AtomicString& pseudo_id = element.ShadowPseudoId();
+
+    if (pseudo_id == shadow_element_names::kPseudoFileUploadButton &&
+        builder.Appearance() == AppearanceValue::kAuto) {
+      if (parent_style) {
+        AppearanceValue parent_appearance = parent_style->EffectiveAppearance();
+
+        if (parent_appearance == AppearanceValue::kNone ||
+            parent_appearance == AppearanceValue::kAuto) {
+          builder.SetAppearance(AppearanceValue::kAuto);
+        } else if (parent_appearance == AppearanceValue::kBase) {
+          builder.SetAppearance(AppearanceValue::kBase);
+        }
+      }
+    }
+  }
+
   // The layout theme has its own style adjustment, mostly related to
   // the appearance property (although it can also modify display,
   // seemingly for historical reasons).
+  // A late display override can make repeated adjustment non-idempotent:
+  // decoration propagation above sees a different display on the next pass.
+  // SVG styles with appearance therefore cannot be reused incrementally.
+  // TODO: Make appearance adjustment safe for incremental style reuse by
+  // normalizing display before dependent adjustments.
   if (builder.Appearance() == AppearanceValue::kNone ||
       !element_or_pseudo_element) {
     builder.SetEffectiveAppearance(AppearanceValue::kNone);
@@ -1446,9 +1484,12 @@ void StyleAdjuster::RunUncacheableStyleAdjustment(
   }
   if (builder.InBaseAppearance() && !builder.HasBaseAppearance()) {
     // Don't allow base appearance to be inherited to elements which actually
-    // support the appearance property.
-    if (element.SupportsBaseAppearance(AppearanceValue::kBase) ||
-        element.SupportsBaseAppearance(AppearanceValue::kBaseSelect)) {
+    // support the appearance property, other than for file selector buttons
+    // which must inherit base appearance from the input element.
+    if ((element.SupportsBaseAppearance(AppearanceValue::kBase) ||
+         element.SupportsBaseAppearance(AppearanceValue::kBaseSelect)) &&
+        element.ShadowPseudoId() !=
+            shadow_element_names::kPseudoFileUploadButton) {
       builder.SetInBaseAppearance(false);
     }
   }
@@ -1476,7 +1517,9 @@ bool StyleAdjuster::IsCacheCompatible(
       layout_parent_style_a.IsInBlockifyingDisplay() !=
           layout_parent_style_b.IsInBlockifyingDisplay() ||
       layout_parent_style_a.IsInInlinifyingDisplay() !=
-          layout_parent_style_b.IsInInlinifyingDisplay()) {
+          layout_parent_style_b.IsInInlinifyingDisplay() ||
+      layout_parent_style_a.IsInZIndexAllowingDisplay() !=
+          layout_parent_style_b.IsInZIndexAllowingDisplay()) {
     // The layout parent style's display style affects blockification,
     // stacking context, and many other things.
     return false;
@@ -1528,7 +1571,7 @@ StyleAdjuster::ElementTypeForCache StyleAdjuster::GetElementTypeCacheKey(
   }
 
   // Has special handling in a number of places (including depending on
-  // parents' layoutSubtree() status).
+  // parents' IsContentDrawable() status).
   if (element.IsCanvasOrInCanvasSubtree()) {
     return {ElementType::kIsNotElement};
   }
@@ -1566,10 +1609,15 @@ StyleAdjuster::ElementTypeForCache StyleAdjuster::GetElementTypeCacheKey(
     return {ElementType::kIsNotElement};
   }
 
+  // Overscroll areas are forced to be out of flow positioned.
+  if (element.IsValidOverscrollArea()) {
+    return {ElementType::kIsNotElement};
+  }
+
   switch (element.GetElementType()) {
     case ElementType::kHTMLCanvasElement:
       // <canvas> has special handling for touch-action and stacking contexts
-      // depending on whether it has layoutSubtree() or not, and also
+      // depending on whether it has IsContentDrawable() or not, and also
       // CanExecuteScripts(). It seems rare enough that we don't bother checking
       // the properties on the elements, and just exclude all canvas elements.
       return {ElementType::kIsNotElement};
@@ -1604,6 +1652,7 @@ StyleAdjuster::ElementTypeForCache StyleAdjuster::GetElementTypeCacheKey(
     case ElementType::kHTMLFrameElement:
     case ElementType::kHTMLIFrameElement:
     case ElementType::kHTMLFencedFrameElement:
+    case ElementType::kHTMLPersistentWidgetElement:
       // HTMLFrameOwnerElement descendants have special touch-action behavior.
       // There is also special handling of position and zoom, but this is moot,
       // as we exclude them anyway.
@@ -1801,7 +1850,9 @@ StyleAdjuster::ElementTypeForCache StyleAdjuster::GetElementTypeCacheKey(
     case ElementType::kHTMLMapElement:
     case ElementType::kHTMLMenuBarElement:
     case ElementType::kHTMLMenuElement:
+    case ElementType::kHTMLMenuItemCheckboxElement:
     case ElementType::kHTMLMenuItemElement:
+    case ElementType::kHTMLMenuItemRadioElement:
     case ElementType::kHTMLMenuListElement:
     case ElementType::kHTMLMetaElement:
     case ElementType::kHTMLModElement:
@@ -1845,6 +1896,22 @@ StyleAdjuster::ElementTypeForCache StyleAdjuster::GetElementTypeCacheKey(
       // from new HTML elements, even if the StyleAdjuster does not otherwise
       // care about them.
   }
+}
+
+void StyleAdjuster::AdjustOverscrollInertness(
+    const StyleResolverState& state,
+    std::optional<bool>& html_inert,
+    bool& can_escape_overscroll_inertness) {
+  DCHECK(state.HasOverscrollContainerAncestor());
+  if (!RuntimeEnabledFeatures::OverscrollAreasEnabled(
+          state.GetDocument().GetExecutionContext()) ||
+      state.IsForPseudoElement() || html_inert.has_value()) {
+    return;
+  }
+
+  OverscrollAreaTracker::AdjustInertness(state.GetElement(),
+                                         *state.ParentStyle(), html_inert,
+                                         can_escape_overscroll_inertness);
 }
 
 }  // namespace blink

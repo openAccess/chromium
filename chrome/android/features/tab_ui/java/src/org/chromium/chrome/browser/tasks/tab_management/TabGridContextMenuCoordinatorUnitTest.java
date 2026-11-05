@@ -38,13 +38,10 @@ import org.chromium.base.Token;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.TabBookmarker;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestrator;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -57,11 +54,15 @@ import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabRemover;
+import org.chromium.chrome.browser.tabmodel.TabUngrouper;
 import org.chromium.chrome.browser.tasks.tab_management.TabGridContextMenuCoordinator.ShowTabListEditor;
 import org.chromium.components.browser_ui.util.motion.MotionEventTestUtils;
 import org.chromium.components.browser_ui.widget.list_view.FakeListViewTouchTracker;
 import org.chromium.components.browser_ui.widget.list_view.ListViewTouchTracker;
 import org.chromium.components.collaboration.CollaborationService;
+import org.chromium.components.tab_group_sync.LocalTabGroupId;
+import org.chromium.components.tab_group_sync.SavedTabGroup;
+import org.chromium.components.tab_group_sync.SavedTabGroupTab;
 import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
@@ -75,11 +76,10 @@ import java.util.function.Supplier;
 
 /** Unit tests for {@link TabGridContextMenuCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@DisableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
 public class TabGridContextMenuCoordinatorUnitTest {
     private static @TabId final int TAB_ID = 1;
     private static final String LOCALHOST_URL = "localhost://";
-    private static final String CHROME_URL = "chrome://";
+    private static final String CHROME_URL = "chrome://bookmarks";
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -95,6 +95,7 @@ public class TabGridContextMenuCoordinatorUnitTest {
     @Mock private CollaborationService mCollaborationService;
     @Mock private TabModel mTabModel;
     @Mock private TabRemover mTabRemover;
+    @Mock private TabUngrouper mTabUngrouper;
     @Mock private Tab mTab;
     @Mock private ShareDelegate mShareDelegate;
     @Mock private Profile mProfile;
@@ -114,10 +115,28 @@ public class TabGridContextMenuCoordinatorUnitTest {
     @Before
     public void setUp() {
         mTabGroupId = Token.createRandom();
+        Token otherGroupId = Token.createRandom();
         mTabBookmarkerSupplier = ObservableSuppliers.createNonNull(mTabBookmarker);
 
-        when(mTabModel.getTabGroupCount()).thenReturn(1);
+        when(mTabModel.getTabGroupCount()).thenReturn(2);
+        when(mTabModel.containsTabGroup(mTabGroupId)).thenReturn(true);
+        when(mTabModel.containsTabGroup(otherGroupId)).thenReturn(true);
+        SavedTabGroup savedGroup = new SavedTabGroup();
+        savedGroup.syncId = "sync_group_id";
+        savedGroup.localId = new LocalTabGroupId(mTabGroupId);
+        SavedTabGroupTab savedTab = new SavedTabGroupTab();
+        savedGroup.savedTabs.add(savedTab);
+        SavedTabGroup otherSavedGroup = new SavedTabGroup();
+        otherSavedGroup.syncId = "other_sync_group_id";
+        otherSavedGroup.localId = new LocalTabGroupId(otherGroupId);
+        SavedTabGroupTab otherSavedTab = new SavedTabGroupTab();
+        otherSavedGroup.savedTabs.add(otherSavedTab);
+        when(mTabGroupSyncService.getAllGroupIds())
+                .thenReturn(new String[] {"sync_group_id", "other_sync_group_id"});
+        when(mTabGroupSyncService.getGroup("sync_group_id")).thenReturn(savedGroup);
+        when(mTabGroupSyncService.getGroup("other_sync_group_id")).thenReturn(otherSavedGroup);
         when(mTabModel.getTabRemover()).thenReturn(mTabRemover);
+        when(mTabModel.getTabUngrouper()).thenReturn(mTabUngrouper);
         when(mTabModel.getProfile()).thenReturn(mProfile);
         when(mShareDelegateSupplier.get()).thenReturn(mShareDelegate);
         when(mTab.getTabGroupId()).thenReturn(mTabGroupId);
@@ -289,7 +308,6 @@ public class TabGridContextMenuCoordinatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
     public void testGetMenuItemClickedCallback_sendTabToSelf() {
         UserActionTester userActionTester = new UserActionTester();
         try {
@@ -589,10 +607,25 @@ public class TabGridContextMenuCoordinatorUnitTest {
     }
 
     @Test
+    public void testBuildMenuActionItems_onlyInCurrentGroup() {
+        when(mTabModel.getTabGroupCount()).thenReturn(1);
+        when(mTabGroupSyncService.getAllGroupIds()).thenReturn(new String[] {"sync_group_id"});
+
+        mUrl = new GURL(LOCALHOST_URL);
+        when(mTab.getUrl()).thenReturn(mUrl);
+        mCoordinator.buildMenuActionItems(mMenuItemList, TAB_ID);
+
+        assertEquals(7, mMenuItemList.size());
+        assertEquals(R.string.menu_add_tab_to_new_group, getMenuItemTitleId(0));
+    }
+
+    @Test
     public void testBuildMenuActionItems_noGroups() {
         mUrl = new GURL(LOCALHOST_URL);
         when(mTab.getUrl()).thenReturn(mUrl);
         when(mTabModel.getTabGroupCount()).thenReturn(0);
+        when(mTabModel.containsTabGroup(any())).thenReturn(false);
+        when(mTabGroupSyncService.getAllGroupIds()).thenReturn(new String[0]);
         mCoordinator.buildMenuActionItems(mMenuItemList, TAB_ID);
 
         assertEquals(7, mMenuItemList.size());
@@ -612,6 +645,8 @@ public class TabGridContextMenuCoordinatorUnitTest {
         mUrl = new GURL(LOCALHOST_URL);
         when(mTab.getUrl()).thenReturn(mUrl);
         when(mTabModel.getTabGroupCount()).thenReturn(0);
+        when(mTabModel.containsTabGroup(any())).thenReturn(false);
+        when(mTabGroupSyncService.getAllGroupIds()).thenReturn(new String[0]);
         mCoordinator.buildMenuActionItems(mMenuItemList, TAB_ID);
 
         assertEquals(7, mMenuItemList.size());
@@ -641,7 +676,6 @@ public class TabGridContextMenuCoordinatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
     public void testBuildMenuActionItems_sendTabToSelf() {
         when(mSendTabToSelfAndroidBridgeNatives.getEntryPointDisplayReason(any(), any()))
                 .thenReturn(EntryPointDisplayReason.OFFER_FEATURE);
@@ -664,7 +698,6 @@ public class TabGridContextMenuCoordinatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
     public void testBuildMenuActionItems_sendTabToSelf_incognito() {
         when(mSendTabToSelfAndroidBridgeNatives.getEntryPointDisplayReason(any(), any()))
                 .thenReturn(EntryPointDisplayReason.OFFER_FEATURE);
@@ -685,27 +718,6 @@ public class TabGridContextMenuCoordinatorUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
-    public void testBuildMenuActionItems_sendTabToSelf_featureDisabled() {
-        when(mSendTabToSelfAndroidBridgeNatives.getEntryPointDisplayReason(any(), any()))
-                .thenReturn(EntryPointDisplayReason.OFFER_FEATURE);
-
-        mUrl = new GURL(LOCALHOST_URL);
-        when(mTab.getUrl()).thenReturn(mUrl);
-        mCoordinator.buildMenuActionItems(mMenuItemList, TAB_ID);
-
-        assertEquals(7, mMenuItemList.size());
-        assertEquals(R.string.menu_move_tab_to_group, getMenuItemTitleId(0));
-        assertEquals(R.string.add_to_bookmarks, getMenuItemTitleId(1));
-        assertEquals(R.string.share, getMenuItemTitleId(2));
-        assertEquals(R.string.pin_tab, getMenuItemTitleId(3));
-        assertEquals(R.string.mute_site, getMenuItemTitleId(4));
-        assertEquals(R.string.select_tab, getMenuItemTitleId(5));
-        assertEquals(R.string.close_tab, getMenuItemTitleId(6));
-    }
-
-    @Test
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
     public void testBuildMenuActionItems_sendTabToSelf_reasonNull() {
         mUrl = new GURL(LOCALHOST_URL);
         when(mTab.getUrl()).thenReturn(mUrl);

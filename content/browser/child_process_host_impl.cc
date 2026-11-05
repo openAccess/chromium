@@ -40,6 +40,7 @@
 #include "base/linux_util.h"
 #elif BUILDFLAG(IS_MAC)
 #include "base/apple/foundation_util.h"
+#include "base/strings/strcat.h"
 #include "content/browser/mac_helpers.h"
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 
@@ -54,31 +55,42 @@ std::unique_ptr<ChildProcessHost> ChildProcessHost::Create(
 }
 
 // static
-base::FilePath ChildProcessHost::GetChildPath(int flags) {
-  base::FilePath child_path;
+base::FilePath ChildProcessHost::GetChildPath(int flags,
+                                              ChildProcessId child_process_id) {
+  // The order of operations here is important; the first valid (non-empty) path
+  // found is returned.
+  base::FilePath child_path =
+      base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
+          switches::kBrowserSubprocessPath);
+  if (!child_path.empty()) {
+    return child_path;
+  }
 
-  child_path = base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
-      switches::kBrowserSubprocessPath);
+  if (GetContentClient()->browser()) {
+    child_path = GetContentClient()->browser()->GetChildProcessPath(
+        flags, child_process_id);
+    if (!child_path.empty()) {
+      return child_path;
+    }
+  }
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
   // Use /proc/self/exe rather than our known binary path so updates
   // can't swap out the binary from underneath us.
-  if (child_path.empty() && flags & CHILD_ALLOW_SELF) {
-    child_path = base::FilePath(base::kProcSelfExe);
+  if (flags & CHILD_ALLOW_SELF) {
+    return base::FilePath(base::kProcSelfExe);
   }
 #endif
 
   // On most platforms, the child executable is the same as the current
   // executable.
-  if (child_path.empty()) {
-    base::PathService::Get(CHILD_PROCESS_EXE, &child_path);
+  if (!base::PathService::Get(CHILD_PROCESS_EXE, &child_path)) {
+    return base::FilePath();
   }
 
 #if BUILDFLAG(IS_MAC)
-  std::string child_base_name = child_path.BaseName().value();
-
   if (base::apple::AmIBundled()) {
-    std::string child_suffix;
+    std::string_view child_suffix;
     if (base::FeatureList::IsEnabled(features::kAperitifHelpers)) {
       if (flags == CHILD_NORMAL) {
         child_suffix = " (Aperitif)";
@@ -86,9 +98,6 @@ base::FilePath ChildProcessHost::GetChildPath(int flags) {
         child_suffix = " (Aperitif Renderer)";
       } else if (flags == CHILD_GPU) {
         child_suffix = " (Aperitif GPU)";
-      } else if (flags > CHILD_EMBEDDER_FIRST) {
-        child_suffix =
-            GetContentClient()->browser()->GetChildProcessSuffix(flags);
       } else {
         NOTREACHED();
       }
@@ -97,16 +106,14 @@ base::FilePath ChildProcessHost::GetChildPath(int flags) {
         child_suffix = kMacHelperSuffix_renderer;
       } else if (flags == CHILD_GPU) {
         child_suffix = kMacHelperSuffix_gpu;
-      } else if (flags > CHILD_EMBEDDER_FIRST) {
-        child_suffix =
-            GetContentClient()->browser()->GetChildProcessSuffix(flags);
       } else if (flags != CHILD_NORMAL) {
         NOTREACHED();
       }
     }
 
     if (!child_suffix.empty()) {
-      child_base_name += child_suffix;
+      std::string child_base_name =
+          base::StrCat({child_path.BaseName().value(), child_suffix});
       child_path = child_path.DirName()
                        .DirName()
                        .DirName()
@@ -117,7 +124,6 @@ base::FilePath ChildProcessHost::GetChildPath(int flags) {
                        .Append(child_base_name);
     }
   }
-
 #endif  // BUILDFLAG(IS_MAC)
 
   return child_path;
@@ -162,7 +168,7 @@ base::Process& ChildProcessHostImpl::GetPeerProcess() {
       if (!peer_process_.IsValid()) {
         peer_process_ = process.Duplicate();
       }
-      DCHECK(peer_process_.IsValid());
+      CHECK(peer_process_.IsValid(), base::NotFatalUntil::M160);
     }
   }
 
@@ -179,8 +185,8 @@ ChildProcessHostImpl::GetMojoInvitation() {
 }
 
 void ChildProcessHostImpl::CreateChannel() {
-  DCHECK(!channel_);
-  DCHECK(child_process_);
+  CHECK(!channel_, base::NotFatalUntil::M160);
+  CHECK(child_process_, base::NotFatalUntil::M160);
 
   mojo::ScopedMessagePipeHandle bootstrap =
       mojo_invitation_->AttachMessagePipe(kLegacyIpcBootstrapAttachmentName);
@@ -189,7 +195,7 @@ void ChildProcessHostImpl::CreateChannel() {
       base::SingleThreadTaskRunner::GetCurrentDefault(),
       base::SingleThreadTaskRunner::GetCurrentDefault());
 
-  DCHECK(channel_);
+  CHECK(channel_, base::NotFatalUntil::M160);
 
   // Since we're initializing a legacy IPC Channel, we will use its connection
   // status to monitor child process lifetime instead of using the status of
@@ -199,7 +205,7 @@ void ChildProcessHostImpl::CreateChannel() {
   }
 
   bool initialized = InitChannel();
-  DCHECK(initialized);
+  CHECK(initialized, base::NotFatalUntil::M160);
 }
 
 bool ChildProcessHostImpl::InitChannel() {
@@ -254,11 +260,6 @@ uint64_t ChildProcessHostImpl::ChildProcessIdToTracingProcessId(
   return static_cast<uint64_t>(
              base::PersistentHash(base::byte_span_from_ref(child_process_id))) +
          1;
-}
-
-uint64_t ChildProcessHostImpl::ChildProcessUniqueIdToTracingProcessId(
-    int child_process_id) {
-  return ChildProcessIdToTracingProcessId(ChildProcessId(child_process_id));
 }
 
 void ChildProcessHostImpl::Ping(PingCallback callback) {

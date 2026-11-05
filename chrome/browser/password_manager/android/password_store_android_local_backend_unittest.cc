@@ -10,6 +10,7 @@
 
 #include "base/location.h"
 #include "base/strings/to_string.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/task_environment.h"
@@ -20,6 +21,7 @@
 #include "chrome/browser/password_manager/android/password_store_android_backend_receiver_bridge.h"
 #include "chrome/browser/password_manager/android/password_store_android_local_backend.h"
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_store/android_backend_error.h"
 #include "components/password_manager/core/browser/password_store/password_form_converters.h"
@@ -30,13 +32,14 @@
 namespace password_manager {
 namespace {
 
+using base::test::ErrorIs;
+using base::test::ValueIs;
 using testing::_;
 using testing::ElementsAreArray;
 using testing::IsEmpty;
 using testing::NiceMock;
 using testing::Optional;
 using testing::Return;
-using testing::VariantWith;
 using testing::WithArg;
 using JobId = PasswordStoreAndroidBackendDispatcherBridge::JobId;
 
@@ -48,7 +51,7 @@ PasswordForm CreateEntry(
     const std::string& username,
     const std::string& password,
     const GURL& origin_url,
-    PasswordForm::MatchType match_type = PasswordForm::MatchType::kExact) {
+    affiliations::MatchType match_type = affiliations::MatchType::kExact) {
   PasswordForm form;
   form.username_value = base::ASCIIToUTF16(username);
   form.password_value = PasswordString(base::ASCIIToUTF16(password));
@@ -62,10 +65,10 @@ std::vector<PasswordForm> CreateTestLogins() {
   std::vector<PasswordForm> forms;
   forms.push_back(CreateEntry("Todd Tester", "S3cr3t",
                               GURL(u"https://example.com"),
-                              PasswordForm::MatchType::kExact));
+                              affiliations::MatchType::kExact));
   forms.push_back(CreateEntry("Marcus McSpartanGregor", "S0m3th1ngCr34t1v3",
                               GURL(u"https://m.example.com"),
-                              PasswordForm::MatchType::kPSL));
+                              affiliations::MatchType::kPSL));
   return forms;
 }
 
@@ -73,9 +76,7 @@ std::vector<PasswordForm> CreateTestLogins() {
 
 class PasswordStoreAndroidLocalBackendTest : public testing::Test {
  protected:
-  PasswordStoreAndroidLocalBackendTest() {
-    ResetBackend();
-  }
+  PasswordStoreAndroidLocalBackendTest() { ResetBackend(); }
 
   ~PasswordStoreAndroidLocalBackendTest() override {
     lifecycle_helper_->UnregisterObserver();
@@ -136,7 +137,7 @@ TEST_F(PasswordStoreAndroidLocalBackendTest, CallsBridgeForGetAllLogins) {
       .WillOnce(Return(kJobId));
   backend().GetAllLoginsAsync(mock_reply.Get());
 
-  EXPECT_CALL(mock_reply, Run(VariantWith<LoginsResult>(testing::ResultOf(
+  EXPECT_CALL(mock_reply, Run(ValueIs(testing::ResultOf(
                               [](const std::vector<StoredCredential>& creds) {
                                 return ToPasswordForms(creds);
                               },
@@ -157,7 +158,7 @@ TEST_F(PasswordStoreAndroidLocalBackendTest,
       .WillOnce(Return(kJobId));
   backend().GetAllLoginsWithAffiliationAndBrandingAsync(mock_reply.Get());
 
-  EXPECT_CALL(mock_reply, Run(VariantWith<LoginsResult>(testing::ResultOf(
+  EXPECT_CALL(mock_reply, Run(ValueIs(testing::ResultOf(
                               [](const std::vector<StoredCredential>& creds) {
                                 return ToPasswordForms(creds);
                               },
@@ -178,7 +179,7 @@ TEST_F(PasswordStoreAndroidLocalBackendTest,
       .WillOnce(Return(kJobId));
   backend().GetAutofillableLoginsAsync(mock_reply.Get());
 
-  EXPECT_CALL(mock_reply, Run(VariantWith<LoginsResult>(testing::ResultOf(
+  EXPECT_CALL(mock_reply, Run(ValueIs(testing::ResultOf(
                               [](const std::vector<StoredCredential>& creds) {
                                 return ToPasswordForms(creds);
                               },
@@ -203,34 +204,34 @@ TEST_F(PasswordStoreAndroidLocalBackendTest,
       .WillOnce(Return(kJobId));
   backend().GetGroupedMatchingLoginsAsync(form_digest, mock_reply.Get());
 
-  LoginsResult returned_logins;
+  std::vector<StoredCredential> returned_logins;
   returned_logins.push_back(FromPasswordForm(
       CreateEntry("Todd Tester", "S3cr3t", GURL(u"https://example.com/"),
-                  PasswordForm::MatchType::kAffiliated)));
+                  affiliations::MatchType::kAffiliated)));
   returned_logins.push_back(FromPasswordForm(CreateEntry(
       "Marcus McSpartanGregor", "S0m3th1ngCr34t1v3",
-      GURL(u"https://m.example.com/"), PasswordForm::MatchType::kGrouped)));
+      GURL(u"https://m.example.com/"), affiliations::MatchType::kGrouped)));
   returned_logins.push_back(FromPasswordForm(CreateEntry(
       "Marcus McSpartanGregor", "S0m3th1ngCr34t1v3",
-      GURL(u"https://example.org/"), PasswordForm::MatchType::kGrouped)));
+      GURL(u"https://example.org/"), affiliations::MatchType::kGrouped)));
 
   std::vector<PasswordForm> expected_logins;
   // Exact match is defined as such even if it was marked as affiliated match
   // before.
   expected_logins.push_back(CreateEntry("Todd Tester", "S3cr3t",
                                         GURL(u"https://example.com/"),
-                                        PasswordForm::MatchType::kExact));
+                                        affiliations::MatchType::kExact));
   // Grouped match is also a PSL match.
   expected_logins.push_back(CreateEntry(
       "Marcus McSpartanGregor", "S0m3th1ngCr34t1v3",
       GURL(u"https://m.example.com/"),
-      PasswordForm::MatchType::kGrouped | PasswordForm::MatchType::kPSL));
+      affiliations::MatchType::kGrouped | affiliations::MatchType::kPSL));
   // Grouped only match.
   expected_logins.push_back(CreateEntry(
       "Marcus McSpartanGregor", "S0m3th1ngCr34t1v3",
-      GURL(u"https://example.org/"), PasswordForm::MatchType::kGrouped));
+      GURL(u"https://example.org/"), affiliations::MatchType::kGrouped));
 
-  EXPECT_CALL(mock_reply, Run(VariantWith<LoginsResult>(testing::ResultOf(
+  EXPECT_CALL(mock_reply, Run(ValueIs(testing::ResultOf(
                               [](const std::vector<StoredCredential>& creds) {
                                 return ToPasswordForms(creds);
                               },
@@ -254,8 +255,7 @@ TEST_F(PasswordStoreAndroidLocalBackendTest, CallsBridgeForAddLogin) {
   PasswordStoreChangeList expected_changes;
   expected_changes.emplace_back(PasswordStoreChange::ADD,
                                 FromPasswordForm(std::move(form)));
-  EXPECT_CALL(mock_reply,
-              Run(VariantWith<PasswordChanges>(Optional(expected_changes))));
+  EXPECT_CALL(mock_reply, Run(ValueIs(Optional(expected_changes))));
   consumer().OnLoginsChanged(kAddLoginJobId, expected_changes);
   RunUntilIdle();
 }
@@ -274,8 +274,7 @@ TEST_F(PasswordStoreAndroidLocalBackendTest, CallsBridgeForUpdateLogin) {
   PasswordStoreChangeList expected_changes;
   expected_changes.emplace_back(PasswordStoreChange::UPDATE,
                                 FromPasswordForm(std::move(form)));
-  EXPECT_CALL(mock_reply,
-              Run(VariantWith<PasswordChanges>(Optional(expected_changes))));
+  EXPECT_CALL(mock_reply, Run(ValueIs(Optional(expected_changes))));
   consumer().OnLoginsChanged(kUpdateLoginJobId, expected_changes);
   RunUntilIdle();
 }
@@ -341,7 +340,7 @@ TEST_P(PasswordStoreAndroidLocalBackendRetriesTest,
     task_environment_.FastForwardUntilNoTasksRemain();
   }
 
-  EXPECT_CALL(mock_reply, Run(VariantWith<LoginsResult>(testing::ResultOf(
+  EXPECT_CALL(mock_reply, Run(ValueIs(testing::ResultOf(
                               [](const std::vector<StoredCredential>& creds) {
                                 return ToPasswordForms(creds);
                               },
@@ -376,7 +375,7 @@ TEST_P(PasswordStoreAndroidLocalBackendRetriesTest,
     task_environment_.FastForwardUntilNoTasksRemain();
   }
 
-  EXPECT_CALL(mock_reply, Run(VariantWith<LoginsResult>(testing::ResultOf(
+  EXPECT_CALL(mock_reply, Run(ValueIs(testing::ResultOf(
                               [](const std::vector<StoredCredential>& creds) {
                                 return ToPasswordForms(creds);
                               },
@@ -414,8 +413,7 @@ TEST_P(PasswordStoreAndroidLocalBackendRetriesTest,
   PasswordStoreBackendError expected_error{
       PasswordStoreBackendErrorType::kUncategorized};
   expected_error.android_backend_api_error = static_cast<int>(GetParam());
-  EXPECT_CALL(mock_reply,
-              Run(VariantWith<PasswordStoreBackendError>(expected_error)));
+  EXPECT_CALL(mock_reply, Run(ErrorIs(expected_error)));
   consumer().OnError(kJobId, error);
 
   RunUntilIdle();
@@ -448,8 +446,7 @@ TEST_P(PasswordStoreAndroidLocalBackendRetriesTest,
   PasswordStoreBackendError expected_error{
       PasswordStoreBackendErrorType::kUncategorized};
   expected_error.android_backend_api_error = static_cast<int>(GetParam());
-  EXPECT_CALL(mock_reply,
-              Run(VariantWith<PasswordStoreBackendError>(expected_error)));
+  EXPECT_CALL(mock_reply, Run(ErrorIs(expected_error)));
   consumer().OnError(kJobId, error);
 
   RunUntilIdle();

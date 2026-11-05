@@ -27,9 +27,10 @@
 #include "base/apple/foundation_util.h"
 #include "base/apple/scoped_cftyperef.h"
 #include "base/check_deref.h"
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
-#include "base/containers/extend.h"
 #include "base/containers/span.h"
+#include "base/containers/span_writer.h"
 #include "base/containers/to_vector.h"
 #include "base/logging.h"
 #include "base/memory/raw_span.h"
@@ -51,7 +52,7 @@
 #include "crypto/ecdsa_utils.h"
 #include "crypto/hash.h"
 #include "crypto/keypair.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "crypto/unexportable_key_metrics.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
@@ -316,9 +317,7 @@ class AppleKeyImpl : public BaseInterface, public StatefulKey {
         ConvertX962ToDerSpki(base::apple::CFDataToSpan(x962_bytes.get())));
   }
 
-  SignatureVerifier::SignatureAlgorithm Algorithm() const override {
-    return SignatureVerifier::ECDSA_SHA256;
-  }
+  sign::SignatureKind Algorithm() const override { return sign::ECDSA_SHA256; }
 
   std::vector<uint8_t> GetSubjectPublicKeyInfo() const override {
     return public_key_spki_;
@@ -379,18 +378,18 @@ class UnexportableAttestationKeyApple
   std::optional<AttestationStatement> CertifySlowly(
       const UnexportableSigningKey& signing_key,
       base::span<const uint8_t> challenge) override {
-    std::vector<uint8_t> raw_stmt;
-    // TODO(crbug.com/406190025): Make the hash algorithm generic once we use
-    // the crypto::sign algorithms.
-    raw_stmt.reserve(challenge.size() + hash::kSha256Size);
-    base::Extend(raw_stmt, challenge);
-    base::Extend(raw_stmt, hash::Sha256(signing_key.GetSubjectPublicKeyInfo()));
+    std::vector<uint8_t> spki = signing_key.GetSubjectPublicKeyInfo();
+    std::vector<uint8_t> statement(2 * hash::kSha256Size);
+    base::SpanWriter<uint8_t> statement_writer(statement);
+    statement_writer.Write(hash::Sha256(challenge));
+    statement_writer.Write(hash::Sha256(spki));
+    CHECK_EQ(statement_writer.remaining(), 0u);
 
     ASSIGN_OR_RETURN(std::vector<uint8_t> der_sig,
-                     SignSlowlyImpl(GetSecKeyRef(), raw_stmt,
+                     SignSlowlyImpl(GetSecKeyRef(), statement,
                                     TPMOperation::kKeyCertification));
 
-    ASSIGN_OR_RETURN(keypair::PublicKey public_key,
+    ASSIGN_OR_RETURN(auto public_key,
                      keypair::PublicKey::FromSubjectPublicKeyInfo(
                          GetSubjectPublicKeyInfo()));
 
@@ -399,8 +398,9 @@ class UnexportableAttestationKeyApple
 
     return AttestationStatement{
         .format = AttestationStatement::kSecureEnclave,
-        .statement = std::move(raw_stmt),
+        .statement = std::move(statement),
         .signature = std::move(raw_sig),
+        .subject_key = std::move(spki),
     };
   }
 };
@@ -410,15 +410,13 @@ std::unique_ptr<KeyClass> GenerateKeySlowlyImpl(
     UnexportableKeyProvider::Config::AccessControl access_control,
     NSString* keychain_access_group,
     NSString* application_tag,
-    base::span<const SignatureVerifier::SignatureAlgorithm>
-        acceptable_algorithms,
+    base::span<const sign::SignatureKind> acceptable_algorithms,
     LAContext* lacontext) {
   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
                                                 base::BlockingType::WILL_BLOCK);
 
   // The Secure Enclave only supports elliptic curve keys.
-  if (!std::ranges::contains(acceptable_algorithms,
-                             SignatureVerifier::ECDSA_SHA256)) {
+  if (!std::ranges::contains(acceptable_algorithms, sign::ECDSA_SHA256)) {
     return nullptr;
   }
 
@@ -571,27 +569,23 @@ UnexportableKeyProviderApple::UnexportableKeyProviderApple(Config config)
       }) {}
 UnexportableKeyProviderApple::~UnexportableKeyProviderApple() = default;
 
-std::optional<SignatureVerifier::SignatureAlgorithm>
+std::optional<sign::SignatureKind>
 UnexportableKeyProviderApple::SelectAlgorithm(
-    base::span<const SignatureVerifier::SignatureAlgorithm>
-        acceptable_algorithms) {
-  return std::ranges::contains(acceptable_algorithms,
-                               SignatureVerifier::ECDSA_SHA256)
-             ? std::optional(SignatureVerifier::ECDSA_SHA256)
+    base::span<const sign::SignatureKind> acceptable_algorithms) {
+  return std::ranges::contains(acceptable_algorithms, sign::ECDSA_SHA256)
+             ? std::optional(sign::ECDSA_SHA256)
              : std::nullopt;
 }
 
 std::unique_ptr<UnexportableSigningKey>
 UnexportableKeyProviderApple::GenerateSigningKeySlowly(
-    base::span<const SignatureVerifier::SignatureAlgorithm>
-        acceptable_algorithms) {
+    base::span<const sign::SignatureKind> acceptable_algorithms) {
   return GenerateSigningKeySlowly(acceptable_algorithms, /*lacontext=*/nil);
 }
 
 std::unique_ptr<UnexportableSigningKey>
 UnexportableKeyProviderApple::GenerateSigningKeySlowly(
-    base::span<const SignatureVerifier::SignatureAlgorithm>
-        acceptable_algorithms,
+    base::span<const sign::SignatureKind> acceptable_algorithms,
     LAContext* lacontext) {
   return GenerateKeySlowlyImpl<UnexportableSigningKeyApple>(
       access_control_, objc_storage_->keychain_access_group_,
@@ -615,15 +609,13 @@ UnexportableKeyProviderApple::FromWrappedSigningKeySlowly(
 
 std::unique_ptr<UnexportableAttestationKey>
 UnexportableKeyProviderApple::GenerateAttestationKeySlowly(
-    base::span<const SignatureVerifier::SignatureAlgorithm>
-        acceptable_algorithms) {
+    base::span<const sign::SignatureKind> acceptable_algorithms) {
   return GenerateAttestationKeySlowly(acceptable_algorithms, /*lacontext=*/nil);
 }
 
 std::unique_ptr<UnexportableAttestationKey>
 UnexportableKeyProviderApple::GenerateAttestationKeySlowly(
-    base::span<const SignatureVerifier::SignatureAlgorithm>
-        acceptable_algorithms,
+    base::span<const sign::SignatureKind> acceptable_algorithms,
     LAContext* lacontext) {
   return GenerateKeySlowlyImpl<UnexportableAttestationKeyApple>(
       access_control_, objc_storage_->keychain_access_group_,
@@ -777,19 +769,28 @@ std::unique_ptr<UnexportableKeyProviderApple> GetUnexportableKeyProviderApple(
 #if !BUILDFLAG(IS_IOS)
   // Secure Enclave on iOS is available since the iPhone 5s (A7 chip). This
   // redundant check causes crashes because of the synchronous initialization of
-  // `TKTokenWatcher` on every call.
-  if (![KeychainV2::GetInstance().GetTokenIDs()
-          containsObject:CFToNSPtrCast(kSecAttrTokenIDSecureEnclave)]) {
-    return nullptr;
-  }
-  // Inspecting the binary for the entitlement is not available on iOS, assume
-  // it is available.
-  if (!ExecutableHasKeychainAccessGroupEntitlement(
-          config.keychain_access_group)) {
+  // `TKTokenWatcher` on every call. Inspecting the binary for the entitlement
+  // is not available on iOS either, so assume both are available.
+  if (GetKeyHardwareSupportMac(config.keychain_access_group) !=
+      internal::MacKeyHardwareSupport::kSecureEnclave) {
     return nullptr;
   }
 #endif  // !BUILDFLAG(IS_IOS)
   return std::make_unique<UnexportableKeyProviderApple>(std::move(config));
 }
+
+#if BUILDFLAG(IS_MAC)
+internal::MacKeyHardwareSupport GetKeyHardwareSupportMac(
+    const std::string& keychain_access_group) {
+  if (![KeychainV2::GetInstance().GetTokenIDs()
+          containsObject:CFToNSPtrCast(kSecAttrTokenIDSecureEnclave)]) {
+    return internal::MacKeyHardwareSupport::kNoSecureEnclave;
+  }
+  if (!ExecutableHasKeychainAccessGroupEntitlement(keychain_access_group)) {
+    return internal::MacKeyHardwareSupport::kMissingEntitlement;
+  }
+  return internal::MacKeyHardwareSupport::kSecureEnclave;
+}
+#endif  // BUILDFLAG(IS_MAC)
 
 }  // namespace crypto::apple

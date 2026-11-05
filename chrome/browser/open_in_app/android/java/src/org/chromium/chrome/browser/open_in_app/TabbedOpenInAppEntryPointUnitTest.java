@@ -8,11 +8,10 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -21,6 +20,7 @@ import static org.chromium.build.NullUtil.assertNonNull;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ActivityInfo;
@@ -36,13 +36,12 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
-import org.mockito.Spy;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.Shadows;
-import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.ContextUtils;
@@ -54,8 +53,10 @@ import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.omnibox.OmniboxChipManager;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabClosingSource;
+import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
+import org.chromium.chrome.browser.tabmodel.TabCreator;
+import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
 import org.chromium.components.external_intents.ExternalNavigationHelper;
@@ -67,7 +68,6 @@ import org.chromium.url.JUnitTestGURLs;
 
 /** Unit tests for {@link TabbedOpenInAppEntryPoint}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabbedOpenInAppEntryPointUnitTest {
     private static final String LABEL = "Label";
     private static final String PACKAGE = "com.example.package";
@@ -86,10 +86,12 @@ public class TabbedOpenInAppEntryPointUnitTest {
     @Mock private Drawable mIcon;
     @Mock private ActivityInfo mActivityInfo;
     @Mock private PackageManager mPackageManager;
-    @Spy private Context mContext;
     @Mock private TabModelSelector mTabModelSelector;
+    @Mock private TabModel mTabModel;
+    @Mock private TabCreator mTabCreator;
     @Mock private ExternalNavigationHelper mExternalNavigationHelper;
 
+    private Context mContext;
     private SettableNullableObservableSupplier<Tab> mTabSupplier;
     private TabbedOpenInAppEntryPoint mEntryPoint;
     private UserDataHost mUserDataHost;
@@ -98,17 +100,26 @@ public class TabbedOpenInAppEntryPointUnitTest {
 
     @Before
     public void setUp() throws PackageManager.NameNotFoundException {
-        mContext = spy(Robolectric.buildActivity(Activity.class).setup().get());
+        mContext =
+                new ContextWrapper(Robolectric.buildActivity(Activity.class).get()) {
+                    @Override
+                    public PackageManager getPackageManager() {
+                        return mPackageManager;
+                    }
+                };
         mTabSupplier = ObservableSuppliers.createNullable();
         mUserDataHost = new UserDataHost();
         TabModelSelectorSupplier.setInstanceForTesting(mTabModelSelector);
         when(mTab.getUserDataHost()).thenReturn(mUserDataHost);
         when(mTab.getWebContents()).thenReturn(mWebContents);
         when(mTab.getUrl()).thenReturn(mUrl);
+        when(mTab.isTabInBrowser()).thenReturn(true);
+        when(mTabModelSelector.getModel(false)).thenReturn(mTabModel);
+        when(mTabModel.getTabCreator()).thenReturn(mTabCreator);
+        when(mTabModel.getCount()).thenReturn(1);
         when(mPackageManager.getApplicationInfo(any(), anyInt())).thenReturn(new ApplicationInfo());
         when(mPackageManager.getApplicationLogo(any(ApplicationInfo.class))).thenReturn(mIcon);
         when(mPackageManager.getApplicationLabel(any(ApplicationInfo.class))).thenReturn(LABEL);
-        when(mContext.getPackageManager()).thenReturn(mPackageManager);
 
         mResolveInfo.filter = mIntentFilter;
         mActivityInfo.packageName = PACKAGE;
@@ -173,10 +184,10 @@ public class TabbedOpenInAppEntryPointUnitTest {
 
         verify(mExternalNavigationHelper).launchExternalApp(eq(mIntent), eq(mContext));
         ShadowLooper.idleMainLooper();
-        ArgumentCaptor<TabClosureParams> closureParamsCaptor =
-                ArgumentCaptor.forClass(TabClosureParams.class);
-        verify(mTabModelSelector).tryCloseTab(closureParamsCaptor.capture(), eq(false));
-        assertEquals(TabClosingSource.OPEN_IN_APP, closureParamsCaptor.getValue().tabClosingSource);
+        InOrder inOrder = inOrder(mTabCreator, mTabModelSelector);
+        inOrder.verify(mTabCreator).launchNtp(TabLaunchType.FROM_CHROME_UI);
+        inOrder.verify(mTabModelSelector)
+                .closeTab(TabClosureParams.closeTab(mTab).allowUndo(false).build());
 
         when(mOmniboxChipManager.isChipPlaced()).thenReturn(true);
 
@@ -208,6 +219,74 @@ public class TabbedOpenInAppEntryPointUnitTest {
     }
 
     @Test
+    public void placeClickDismissChip_multipleTabs_doesNotLaunchNtp() {
+        when(mTabModel.getCount()).thenReturn(2);
+        OpenInAppDelegate delegate = OpenInAppDelegate.from(mTab);
+        delegate.setExternalNavigationHelper(mExternalNavigationHelper);
+
+        var captor = ArgumentCaptor.forClass(WebContentsObserver.class);
+        verify(((WebContentsObserver.Observable) mWebContents)).addObserver(captor.capture());
+        captor.getValue().didFinishNavigationInPrimaryMainFrame(mNavigationHandle);
+        ShadowLooper.idleMainLooper();
+
+        var infos = new OpenInAppEntryPoint.ResolveResult.Info(mResolveInfo);
+        mEntryPoint.onResolveInfosFetched(delegate, infos, mIntent, mUrl, /* navigationId= */ 123L);
+
+        ArgumentCaptor<Runnable> actionCaptor = ArgumentCaptor.forClass(Runnable.class);
+        verify(mOmniboxChipManager).placeChip(any(), any(), any(), actionCaptor.capture());
+        actionCaptor.getValue().run();
+
+        verify(mExternalNavigationHelper).launchExternalApp(eq(mIntent), eq(mContext));
+        ShadowLooper.idleMainLooper();
+        verify(mTabCreator, never()).launchNtp(anyInt());
+        verify(mTabModelSelector).closeTab(any());
+    }
+
+    @Test
+    public void placeClickDismissChip_nonBrowserTab_doesNotLaunchNtp() {
+        when(mTab.isTabInBrowser()).thenReturn(false);
+        OpenInAppDelegate delegate = OpenInAppDelegate.from(mTab);
+        delegate.setExternalNavigationHelper(mExternalNavigationHelper);
+
+        var captor = ArgumentCaptor.forClass(WebContentsObserver.class);
+        verify(((WebContentsObserver.Observable) mWebContents)).addObserver(captor.capture());
+        captor.getValue().didFinishNavigationInPrimaryMainFrame(mNavigationHandle);
+        ShadowLooper.idleMainLooper();
+
+        var infos = new OpenInAppEntryPoint.ResolveResult.Info(mResolveInfo);
+        mEntryPoint.onResolveInfosFetched(delegate, infos, mIntent, mUrl, /* navigationId= */ 123L);
+
+        ArgumentCaptor<Runnable> actionCaptor = ArgumentCaptor.forClass(Runnable.class);
+        verify(mOmniboxChipManager).placeChip(any(), any(), any(), actionCaptor.capture());
+        actionCaptor.getValue().run();
+        ShadowLooper.idleMainLooper();
+        verify(mTabCreator, never()).launchNtp(anyInt());
+        verify(mTabModelSelector).closeTab(any());
+    }
+
+    @Test
+    public void placeClickDismissChip_closingTab_doesNotLaunchNtp() {
+        when(mTab.isClosing()).thenReturn(true);
+        OpenInAppDelegate delegate = OpenInAppDelegate.from(mTab);
+        delegate.setExternalNavigationHelper(mExternalNavigationHelper);
+
+        var captor = ArgumentCaptor.forClass(WebContentsObserver.class);
+        verify(((WebContentsObserver.Observable) mWebContents)).addObserver(captor.capture());
+        captor.getValue().didFinishNavigationInPrimaryMainFrame(mNavigationHandle);
+        ShadowLooper.idleMainLooper();
+
+        var infos = new OpenInAppEntryPoint.ResolveResult.Info(mResolveInfo);
+        mEntryPoint.onResolveInfosFetched(delegate, infos, mIntent, mUrl, /* navigationId= */ 123L);
+
+        ArgumentCaptor<Runnable> actionCaptor = ArgumentCaptor.forClass(Runnable.class);
+        verify(mOmniboxChipManager).placeChip(any(), any(), any(), actionCaptor.capture());
+        actionCaptor.getValue().run();
+        ShadowLooper.idleMainLooper();
+        verify(mTabCreator, never()).launchNtp(anyInt());
+        verify(mTabModelSelector, never()).closeTab(any());
+    }
+
+    @Test
     public void placeClickDismissChip_incognito() {
         when(mTab.isOffTheRecord()).thenReturn(true);
         OpenInAppDelegate delegate = OpenInAppDelegate.from(mTab);
@@ -234,15 +313,14 @@ public class TabbedOpenInAppEntryPointUnitTest {
                         eq(mIntent), eq(123L), eq(mContext), confirmationCaptor.capture());
 
         // Tab should not be closed yet.
-        verify(mTabModelSelector, never()).tryCloseTab(any(), anyBoolean());
+        verify(mTabModelSelector, never()).closeTab(any());
 
         // Simulate user confirmation in the dialog.
         confirmationCaptor.getValue().run();
         ShadowLooper.idleMainLooper();
-        ArgumentCaptor<TabClosureParams> closureParamsCaptor =
-                ArgumentCaptor.forClass(TabClosureParams.class);
-        verify(mTabModelSelector).tryCloseTab(closureParamsCaptor.capture(), eq(false));
-        assertEquals(TabClosingSource.OPEN_IN_APP, closureParamsCaptor.getValue().tabClosingSource);
+        verify(mTabCreator, never()).launchNtp(anyInt());
+        verify(mTabModelSelector)
+                .closeTab(TabClosureParams.closeTab(mTab).allowUndo(false).build());
     }
 
     @Test

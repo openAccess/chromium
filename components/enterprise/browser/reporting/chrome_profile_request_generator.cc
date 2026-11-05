@@ -23,6 +23,7 @@
 #include "components/enterprise/browser/reporting/report_util.h"
 #include "components/enterprise/browser/reporting/reporting_delegate_factory.h"
 #include "components/enterprise/device_attestation/device_attestation_service_factory.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/policy/core/common/policy_logger.h"
 
 namespace enterprise_reporting {
@@ -196,6 +197,9 @@ void ChromeProfileRequestGenerator::OnBaseReportsReady(
   // Start signals collection process.
   device_signals::SignalsAggregationRequest signals_request;
   signals_request.signal_names.emplace(device_signals::SignalName::kOsSignals);
+#if BUILDFLAG(IS_ANDROID)
+  signals_request.signal_names.emplace(device_signals::SignalName::kVerifyApps);
+#endif  // BUILDFLAG(IS_ANDROID)
   signals_request.signal_names.emplace(
       device_signals::SignalName::kBrowserContextSignals);
 
@@ -295,7 +299,13 @@ void ChromeProfileRequestGenerator::OnAggregatedSignalsReceived(
     }
 
     os_report->set_name(os_signals.operating_system);
-    os_report->set_os_firewall(TranslateSettingValue(os_signals.os_firewall));
+    // The server requires `os_firewall` in every report, and the report has no
+    // "unspecified" value, so an unset value is reported as UNKNOWN.
+    // TODO(crbug.com/577999409): Stop sending `os_firewall` when it is unset
+    // once the server no longer requires it.
+    os_report->set_os_firewall(
+        TranslateSettingValue(os_signals.os_firewall.value_or(
+            device_signals::SettingValue::UNKNOWN)));
     os_report->set_screen_lock_secured(
         TranslateSettingValue(os_signals.screen_lock_secured));
     if (os_signals.system_dns_servers) {
@@ -331,15 +341,6 @@ void ChromeProfileRequestGenerator::OnAggregatedSignalsReceived(
     }
 
 #if BUILDFLAG(IS_ANDROID)
-    if (os_signals.has_potentially_harmful_apps.has_value()) {
-      os_report->set_has_potentially_harmful_apps(
-          os_signals.has_potentially_harmful_apps.value());
-    }
-    if (os_signals.verified_apps_enabled.has_value()) {
-      os_report->set_verified_apps_enabled(
-          os_signals.verified_apps_enabled.value());
-    }
-
     if (os_signals.security_patch_ms) {
       os_report->set_security_patch_ms(os_signals.security_patch_ms.value());
     }
@@ -391,7 +392,14 @@ void ChromeProfileRequestGenerator::OnAggregatedSignalsReceived(
     profile_signals_report->mutable_security_event_providers()->Add(
         profile_signals.security_event_providers.begin(),
         profile_signals.security_event_providers.end());
-
+    if (enterprise_isolated_mode::IsCaaEnabledInIsolatedMode()) {
+      profile_signals_report->set_is_isolated_mode(
+          profile_signals.is_isolated_mode);
+      profile_report->set_profile_type(
+          profile_signals.is_isolated_mode
+              ? em::ChromeUserProfileInfo::ISOLATED
+              : em::ChromeUserProfileInfo::REGULAR);
+    }
     profile_report->set_allocated_profile_signals_report(
         profile_signals_report.release());
 
@@ -447,6 +455,21 @@ void ChromeProfileRequestGenerator::OnAggregatedSignalsReceived(
       }
     }
   }
+
+#if BUILDFLAG(IS_ANDROID)
+  if (response.verify_apps_signals_response) {
+    const auto& verify_apps_signals =
+        response.verify_apps_signals_response.value();
+    if (verify_apps_signals.has_potentially_harmful_apps.has_value()) {
+      os_report->set_has_potentially_harmful_apps(
+          verify_apps_signals.has_potentially_harmful_apps.value());
+    }
+    if (verify_apps_signals.verified_apps_enabled.has_value()) {
+      os_report->set_verified_apps_enabled(
+          verify_apps_signals.verified_apps_enabled.value());
+    }
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
 
   request->GetChromeProfileReportRequest()
       .set_allocated_browser_device_identifier(device_identifier.release());

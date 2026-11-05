@@ -19,6 +19,7 @@
 #include "ash/system/status_area_widget_test_helper.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/functional/bind.h"
+#include "base/i18n/language_tag.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/strings/string_util.h"
@@ -41,11 +42,10 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/speech/speech_recognition_constants.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "chromeos/ash/experiences/extensions/browser/speech/speech_recognition_constants.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/prefs/pref_service.h"
@@ -128,7 +128,12 @@ static const char* kEnglishDictationCommands[] = {
     "move to the previous sentence"};
 
 constexpr auto kOfflineNotSupportedLocaleSet =
-    base::MakeFixedFlatSet<std::string_view>({"af-ZA", "kn-IN"});
+    base::MakeFixedFlatSet<base::i18n::LanguageTag>(
+        {base::i18n::GetKnownLanguageTag("af-ZA"),
+         base::i18n::GetKnownLanguageTag("kn-IN")});
+
+constexpr base::i18n::LanguageTag kUsEnglishLocale =
+    base::i18n::GetKnownLanguageTag("en-US");
 
 PrefService* GetActiveUserPrefs() {
   return ProfileManager::GetActiveUserProfile()->GetPrefs();
@@ -246,7 +251,7 @@ class DictationTestBase : public AccessibilityFeatureBrowserTest,
     utils_->WaitForCommitText(value);
   }
 
-  const base::flat_map<std::string, Dictation::LocaleData>
+  const base::flat_map<base::i18n::LanguageTag, Dictation::LocaleData>
   GetAllSupportedLocales() {
     return Dictation::GetAllSupportedLocales();
   }
@@ -331,20 +336,20 @@ INSTANTIATE_TEST_SUITE_P(
 IN_PROC_BROWSER_TEST_P(DictationTest, GetAllSupportedLocales) {
   auto locales = GetAllSupportedLocales();
   for (auto& it : locales) {
-    const std::string locale = it.first;
+    const base::i18n::LanguageTag& locale = it.first;
     bool works_offline = it.second.works_offline;
     bool installed = it.second.installed;
     if (speech_recognition_type() == speech::SpeechRecognitionType::kOnDevice &&
-        locale == speech::kUsEnglishLocale) {
+        locale == kUsEnglishLocale) {
       // We are certain that en_US works offline, so that must be true. There
       // are others too (depending on flags) but we can't test them.  We can be
       // certain that we haven't installed them though.
       EXPECT_TRUE(works_offline);
       EXPECT_TRUE(installed);
     } else {
-      EXPECT_FALSE(installed) << " for locale " << locale;
+      EXPECT_FALSE(installed) << " for locale " << locale.tag_string();
       if (kOfflineNotSupportedLocaleSet.contains(locale)) {
-        EXPECT_FALSE(works_offline) << " for locale " << locale;
+        EXPECT_FALSE(works_offline) << " for locale " << locale.tag_string();
       }
     }
   }
@@ -358,19 +363,19 @@ IN_PROC_BROWSER_TEST_P(DictationTest, GetAllSupportedLocales) {
 
   locales = GetAllSupportedLocales();
   for (auto& it : locales) {
-    const std::string locale = it.first;
+    const base::i18n::LanguageTag& locale = it.first;
     bool works_offline = it.second.works_offline;
     bool installed = it.second.installed;
-    if (locale == speech::kUsEnglishLocale) {
+    if (locale == kUsEnglishLocale) {
       // We are certain that en_US works offline, so that must be true. There
       // are others too (depending on flags) but we can't test them.  We can be
       // certain that we haven't installed them though.
       EXPECT_TRUE(works_offline);
       EXPECT_FALSE(installed);
     } else {
-      EXPECT_FALSE(installed) << " for locale " << locale;
+      EXPECT_FALSE(installed) << " for locale " << locale.tag_string();
       if (kOfflineNotSupportedLocaleSet.contains(locale)) {
-        EXPECT_FALSE(works_offline) << " for locale " << locale;
+        EXPECT_FALSE(works_offline) << " for locale " << locale.tag_string();
       }
     }
   }
@@ -739,7 +744,10 @@ class DictationWithAutoclickTest : public DictationTestBase {
     DictationTestBase::SetUpOnMainThread();
   }
 
-  void TearDownOnMainThread() override { autoclick_test_utils_.reset(); }
+  void TearDownOnMainThread() override {
+    autoclick_test_utils_.reset();
+    DictationTestBase::TearDownOnMainThread();
+  }
 
   AutoclickTestUtils* autoclick_test_utils() {
     return autoclick_test_utils_.get();
@@ -846,9 +854,11 @@ class DictationJaTest : public DictationTestBase {
         /*login_layouts_only*/ false, future.GetCallback(), GetProfile());
     auto result = future.Get();
     ASSERT_TRUE(result.success);
-    ASSERT_EQ(
-        g_browser_process->GetFeatures()->application_locale_storage()->Get(),
-        "ja");
+    ASSERT_EQ(g_browser_process->GetFeatures()
+                  ->application_locale_storage()
+                  ->GetTag()
+                  .tag_string(),
+              "ja");
 
     GetActiveUserPrefs()->SetString(prefs::kAccessibilityDictationLocale, "ja");
 
@@ -1542,9 +1552,9 @@ IN_PROC_BROWSER_TEST_P(DictationUITest, StandbyHints) {
 // Ensures that Search + D can be used to toggle Dictation when ChromeVox is
 // active. Also verifies that ChromeVox announces hints when they are shown in
 // the Dictation UI.
-// TODO(crbug.com/453928508): Flaky on Linux ChromiumOS MSan Tests, and Debug
-// bots.
-#if defined(MEMORY_SANITIZER) || !defined(NDEBUG)
+// TODO(crbug.com/453928508): Flaky on Linux ChromiumOS MSan Tests, ASan Tests,
+// and Debug bots.
+#if defined(MEMORY_SANITIZER) || defined(ADDRESS_SANITIZER) || !defined(NDEBUG)
 #define MAYBE_ChromeVoxAnnouncesHints DISABLED_ChromeVoxAnnouncesHints
 #else
 #define MAYBE_ChromeVoxAnnouncesHints ChromeVoxAnnouncesHints

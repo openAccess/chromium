@@ -11,8 +11,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/pwc/pwc_component_policy.h"
-#include "chrome/browser/pwc/pwc_features.mojom-features.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/back_forward_cache/back_forward_cache_disable.h"
@@ -45,11 +43,6 @@ std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
 
 class PrivilegedWebContentsBrowserTest : public InProcessBrowserTest {
  public:
-  PrivilegedWebContentsBrowserTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        mojom::features::kPrivilegedWebContents);
-  }
-
   void SetUpOnMainThread() override {
     host_resolver()->AddRule("*", "127.0.0.1");
     https_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
@@ -67,9 +60,6 @@ class PrivilegedWebContentsBrowserTest : public InProcessBrowserTest {
 
  protected:
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // A privileged WebContents cannot create related windows: window.open() returns

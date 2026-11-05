@@ -46,6 +46,8 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/named_animation_trigger_map.h"
+#include "third_party/blink/renderer/core/dom/scripted_animation_controller.h"
+#include "third_party/blink/renderer/core/dom/tree_scope.h"
 #include "third_party/blink/renderer/core/execution_context/agent.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
@@ -66,10 +68,12 @@ namespace {
 
 void UpdateAnimationTiming(
     Document& document,
-    HeapHashSet<WeakMember<AnimationTimeline>>& timelines,
+    const HeapHashSet<WeakMember<AnimationTimeline>>& timelines,
     TimingUpdateReason reason) {
-  for (auto& timeline : timelines)
+  HeapVector<Member<AnimationTimeline>> timelines_to_service(timelines);
+  for (auto& timeline : timelines_to_service) {
     timeline->ServiceAnimations(reason);
+  }
   document.GetWorkletAnimationController().UpdateAnimationTimings(reason);
 }
 }  // namespace
@@ -188,10 +192,14 @@ void DocumentAnimations::AddTimeline(AnimationTimeline& timeline) {
 
 void DocumentAnimations::UpdateAnimationTimingForAnimationFrame() {
   // https://w3.org/TR/web-animations-1/#timelines
+  ScriptedAnimationController& controller =
+      document_->GetScriptedAnimationController();
 
   // 1. Update the current time of all timelines associated with doc passing now
   //    as the timestamp.
+  wtf_size_t start_index = controller.EventQueueSize();
   UpdateAnimationTiming(*document_, timelines_, kTimingUpdateForAnimationFrame);
+  controller.SortAnimationEvents(start_index);
 
   // 2. Remove replaced animations for doc.
   ReplaceableAnimationsMap replaceable_animations_map;
@@ -203,7 +211,9 @@ void DocumentAnimations::UpdateAnimationTimingForAnimationFrame() {
   // This is to ensure that any microtasks queued up as a result of resolving or
   // rejecting Promise objects as part of updating timelines run their callbacks
   // prior to dispatching animation events and generating the next main frame.
+  start_index = controller.EventQueueSize();
   document_->GetAgent().event_loop()->PerformMicrotaskCheckpoint();
+  controller.SortAnimationEvents(start_index);
 }
 
 bool DocumentAnimations::NeedsAnimationTimingUpdate() {
@@ -271,6 +281,15 @@ size_t DocumentAnimations::GetAnimationsCount() {
 void DocumentAnimations::MarkAnimationsCompositorPending() {
   for (auto& timeline : timelines_)
     timeline->MarkAnimationsCompositorPending();
+}
+
+void DocumentAnimations::CancelCompositorAnimationsAndMarkForRestart() {
+  for (auto& timeline : timelines_) {
+    for (const auto& animation : timeline->GetAnimations()) {
+      animation->RestartAnimationOnCompositor();
+      animation->CancelAnimationOnCompositor();
+    }
+  }
 }
 
 HeapVector<Member<Animation>> DocumentAnimations::getAnimations(
@@ -397,7 +416,29 @@ void DocumentAnimations::Trace(Visitor* visitor) const {
   visitor->Trace(timelines_);
   visitor->Trace(triggers_);
   visitor->Trace(css_animations_needing_trigger_attachment_);
-  visitor->Trace(global_deferred_timelines_);
+  visitor->Trace(global_deferred_timelines_by_scope_);
+}
+
+DeferredTimeline& DocumentAnimations::GetGlobalDeferredTimeline(
+    const TreeScope& tree_scope,
+    const AtomicString& name) {
+  auto result =
+      global_deferred_timelines_by_scope_.insert(&tree_scope, nullptr);
+  if (result.is_new_entry) {
+    result.stored_value->value =
+        MakeGarbageCollected<TreeScopeDeferredTimelineMap>();
+  }
+  return *result.stored_value->value->Map().Find(*document_, name);
+}
+
+DeferredTimeline* DocumentAnimations::FindExistingGlobalDeferredTimeline(
+    const TreeScope& tree_scope,
+    const AtomicString& name) const {
+  auto it = global_deferred_timelines_by_scope_.find(&tree_scope);
+  if (it == global_deferred_timelines_by_scope_.end() || !it->value) {
+    return nullptr;
+  }
+  return it->value->Map().FindExisting(name);
 }
 
 void DocumentAnimations::GetAnimationsTargetingTreeScope(
@@ -465,8 +506,7 @@ void DocumentAnimations::RemoveReplacedAnimations(
         animations_to_remove.push_back(*anim_it);
     }
   }
-  scoped_refptr<scheduler::EventLoop> event_loop =
-      document_->GetAgent().event_loop();
+  scheduler::EventLoop* event_loop = document_->GetAgent().event_loop();
 
   // The list of animations for removal is constructed in reverse composite
   // ordering for efficiency. Flip the ordering to ensure that events are

@@ -5,11 +5,14 @@
 import("//build/config/ui.gni")
 import("//components/offline_pages/buildflags/features.gni")
 
+source_set("types") {
+  public = [ "bookmark_node_types.h" ]
+}
+
 source_set("bookmarks") {
   public = [
     "bookmark_bar_policy_handler.h",
-    "bookmark_expanded_state_tracker.h",
-    "bookmark_expanded_state_tracker_factory.h",
+    "bookmark_bar_utils.h",
     "bookmark_html_writer.h",
     "bookmark_merged_surface_ordering_storage.h",
     "bookmark_merged_surface_service.h",
@@ -25,6 +28,7 @@ source_set("bookmarks") {
   ]
 
   public_deps = [
+    ":types",
     "//base",
     "//chrome/browser/profiles",
     "//components/bookmarks/browser",
@@ -41,8 +45,7 @@ source_set("bookmarks") {
 source_set("impl") {
   sources = [
     "bookmark_bar_policy_handler.cc",
-    "bookmark_expanded_state_tracker.cc",
-    "bookmark_expanded_state_tracker_factory.cc",
+    "bookmark_bar_utils.cc",
     "bookmark_html_writer.cc",
     "bookmark_merged_surface_ordering_storage.cc",
     "bookmark_merged_surface_service.cc",
@@ -55,8 +58,6 @@ source_set("impl") {
     "permanent_folder_ordering_tracker.cc",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     ":bookmarks",
     "//chrome/browser:browser_process",
@@ -64,6 +65,7 @@ source_set("impl") {
     "//chrome/browser/enterprise/browser_management:management_identity",
     "//chrome/browser/favicon",
     "//chrome/browser/history",
+    "//chrome/browser/policy",
     "//chrome/browser/sync",
     "//chrome/browser/undo",
     "//components/bookmarks/common",
@@ -71,14 +73,18 @@ source_set("impl") {
     "//components/commerce/core:feature_list",
     "//components/commerce/core:shopping_service",
     "//components/favicon/core",
+    "//components/favicon_base",
     "//components/history/core/browser",
+    "//components/os_crypt/async/browser",
     "//components/policy:generated",
     "//components/pref_registry",
     "//components/prefs",
+    "//components/search",
     "//components/signin/public/base",
     "//components/sync/base",
     "//components/sync_bookmarks",
     "//components/undo",
+    "//components/user_prefs",
     "//content/public/browser",
     "//ui/gfx",
   ]
@@ -136,10 +142,6 @@ source_set("unit_tests") {
     ]
   }
 
-  if (toolkit_views) {
-    sources += [ "bookmark_expanded_state_tracker_unittest.cc" ]
-  }
-
   deps = [
     ":bookmarks",
     ":test_support",
@@ -147,6 +149,7 @@ source_set("unit_tests") {
     "//base/test:test_support",
     "//chrome/browser",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//components/bookmarks/browser",
     "//components/bookmarks/common",
     "//components/bookmarks/managed",
@@ -156,6 +159,7 @@ source_set("unit_tests") {
     "//components/strings",
     "//components/sync/base",
     "//components/sync_preferences:test_support",
+    "//components/user_data_importer/common",
     "//content/test:test_support",
     "//testing/gmock",
     "//testing/gtest",

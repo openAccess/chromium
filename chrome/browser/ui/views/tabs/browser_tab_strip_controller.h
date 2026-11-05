@@ -100,7 +100,9 @@ class BrowserTabStripController : public TabStripController,
   bool IsGroupCollapsed(const tab_groups::TabGroupId& group) const override;
 
   std::optional<tab_groups::TabGroupId> GetFocusedGroup() const override;
-  void SetFocusedGroup(std::optional<tab_groups::TabGroupId> group) override;
+  void EnterFocusMode(const tab_groups::TabGroupId& group) override;
+  using TabStripController::ExitFocusMode;
+  void ExitFocusMode(std::optional<TabGroupFocusExitReason> reason) override;
 
   void SetVisualDataForGroup(
       const tab_groups::TabGroupId& group,
@@ -136,8 +138,9 @@ class BrowserTabStripController : public TabStripController,
       std::optional<tab_groups::TabGroupId> old_focused_group_id) override;
 
   // Updates the browser theme when focus mode is active for a tab group.
-  // Triggered when tab group focus changes or when the color of the currently
-  // focused tab group changes.
+  // Only updates themes for permanent tab groups; non-group focus mode does not
+  // theme the browser. Triggered when tab group focus changes or when the color
+  // of the currently focused tab group changes.
   void UpdateFocusModeTheme(std::optional<tab_groups::TabGroupId> group_id);
 
   // Updates freezing votes when focus mode or tab membership changes.

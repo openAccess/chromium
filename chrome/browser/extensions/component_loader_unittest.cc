@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/command_line.h"
 #include "base/files/file_path.h"
@@ -21,16 +22,24 @@
 #include "base/scoped_observation.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/scoped_path_override.h"
 #include "base/values.h"
+#include "base/version.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/chrome_extension_registrar_delegate.h"
+#include "chrome/browser/extensions/component_loader_prefs.h"
 #include "chrome/browser/extensions/extension_service_user_test_base.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/component_updater/component_updater_paths.h"
+#include "components/omnibox/common/omnibox_features.h"
+#include "components/prefs/pref_service.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/extension_registrar.h"
@@ -43,13 +52,70 @@
 #include "extensions/common/extension.h"
 #include "extensions/common/extension_resource.h"
 #include "extensions/common/extension_set.h"
+#include "extensions/common/manifest_constants.h"
 #include "extensions/common/manifest_handlers/background_info.h"
+#include "extensions/common/mojom/manifest.mojom-shared.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/display/test/test_screen.h"
+#include "ui/webui/buildflags.h"
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+#include "components/search/ntp_features.h"
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chromeos/ash/components/file_manager/app_id.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
+
+namespace {
+
+base::DictValue CreateAimEligibilityManifest(std::string_view version) {
+  constexpr char kAimEligibilityExtensionKey[] =
+      "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApBqd0NT1c0F+CI4e"
+      "NK09isJoysNY8QZhW7UrqO2XWwOCG5QH8TykzpAHNdM5vDJwSxDg1vO69dZKhjMdyg4e"
+      "MaL4U3qoYAwqobmZilZ/ig/Bzi0XdGKY6rN5xDakWKdR9BkhJlE+xEVqKXd5NoV1gg69s"
+      "4RNRq88GiT+r/GTMxg3lSrIa5u1ROesujmifZbgoyuuLiNE9hr3WVB1OzhWuFkm/mVzoo"
+      "EcNhiqs8UcsAKWgJK65fHMlktmDzW6K+g0WVOHkkgtp7H9w6K5nz3UAM4XyTHSESIZuw9"
+      "D07/BkKr2U+TSPxjSya/goCm7KMjQbuMbaqj5SYQoMFIgOvJr2QIDAQAB";
+  return base::DictValue()
+      .Set("key", kAimEligibilityExtensionKey)
+      .Set("version", version)
+      .Set("manifest_version", 3)
+      .Set("name", "AIM Staged");
+}
+
+base::FilePath GetAimEligibilityRelativeInstallDir(std::string_view version) {
+  return base::FilePath(extension_misc::kAimEligibilityExtensionDirName)
+      .AppendASCII(version);
+}
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+base::DictValue CreateNewTabPageManifest(std::string_view version) {
+  constexpr char kNewTabPageExtensionKey[] =
+      "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAykwjZZvD8VmMLl8zD6+aoJ/"
+      "c3yC3CGNlJwsOVMUrcFYN7PNXcEnbzdYELWakSOUvFONXrg5MLlEYn8JK7R4J6iJTPU8Ch"
+      "ySEU2doBXAB1200QcLo6GL+GW13SyzazqbB4FbSVuez9Gu0LIBHwZcoI/"
+      "a7RG5ffGfm9FSPKRSzb9JRQ5GKywcyGXnM6xEZ0dezHB9aNxt+"
+      "SiVC5iRU3zLY9gxFIrqCYMPywGrHA1OWpFwiF7VrR8EJD73+5W/m/"
+      "oiiSou6yPar9yFXhl/38huIxlypsRggptgKMyMvr0/"
+      "iUO/mmWBxQZIQgtYYb0QRS4QL42u2fvVmmVGolHWESI5c1wIDAQAB";
+  return base::DictValue()
+      .Set("key", kNewTabPageExtensionKey)
+      .Set("version", version)
+      .Set("manifest_version", 3)
+      .Set("name", "NTP Staged");
+}
+
+base::FilePath GetNewTabPageRelativeInstallDir(std::string_view version) {
+  return base::FilePath(extension_misc::kNewTabPageExtensionDirName)
+      .AppendASCII(version);
+}
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
+
 class ExtensionUnloadedObserver : public ExtensionRegistryObserver {
  public:
   explicit ExtensionUnloadedObserver(ExtensionRegistry* registry) {
@@ -75,6 +141,8 @@ class ExtensionUnloadedObserver : public ExtensionRegistryObserver {
   base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
       observation_{this};
 };
+
+}  // namespace
 
 // TODO(crbug.com/408458901): Use an extensions test base class once we have
 // one that works on desktop Android.
@@ -144,6 +212,42 @@ class ComponentLoaderTest : public testing::Test {
 
   TestingProfile* profile() { return profile_; }
 
+  void AddAimEligibilityExtension() {
+    component_loader_->AddAimEligibilityExtension();
+  }
+
+  void AddNewTabPageExtension() { component_loader_->AddNewTabPageExtension(); }
+
+  void VerifyBundledAimEligibilityExtensionLoaded(
+      bool expect_prefs_cleared = true) {
+    component_loader_->AddAimEligibilityExtension();
+    component_loader_->LoadAll();
+
+    ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
+    const Extension* extension = registry->enabled_extensions().GetByID(
+        extension_misc::kAimEligibilityExtensionId);
+    ASSERT_TRUE(extension);
+    EXPECT_EQ(extension->version(), base::Version("1.0"));
+    EXPECT_EQ(extension->name(), "AIM Eligibility Component Extension");
+    PrefService* local_state =
+        TestingBrowserProcess::GetGlobal()->local_state();
+    EXPECT_EQ(component_loader_prefs::GetExtension(
+                  *local_state, extension_misc::kAimEligibilityExtensionId)
+                  .has_value(),
+              !expect_prefs_cleared);
+  }
+
+  // Returns the public key of the registered component extension at `index` in
+  // `component_loader_`, or `nullptr` if `index` is out of bounds or the
+  // manifest does not contain a public key.
+  const std::string* GetRegisteredExtensionKey(size_t index) const {
+    if (index >= component_loader_->component_extensions_.size()) {
+      return nullptr;
+    }
+    return component_loader_->component_extensions_[index].manifest.FindString(
+        manifest_keys::kPublicKey);
+  }
+
  protected:
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
@@ -168,6 +272,8 @@ class ComponentLoaderTest : public testing::Test {
 #endif
 };
 
+// Verifies that `ComponentLoader::ParseManifest()` rejects invalid or
+// non-dictionary JSON and parses valid dictionary manifests.
 TEST_F(ComponentLoaderTest, ParseManifest) {
   std::optional<base::DictValue> manifest;
 
@@ -234,6 +340,8 @@ TEST_F(ComponentLoaderTest, AddWhenReady) {
   EXPECT_TRUE(registry->enabled_extensions().GetByID(extension_id));
 }
 
+// Verifies that `ComponentLoader::Remove()` unregisters and unloads component
+// extensions by path.
 TEST_F(ComponentLoaderTest, Remove) {
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
 
@@ -260,6 +368,8 @@ TEST_F(ComponentLoaderTest, Remove) {
   EXPECT_EQ(0u, registry->enabled_extensions().size());
 }
 
+// Verifies that `ComponentLoader::LoadAll()` loads all registered component
+// extensions into the `ExtensionRegistry`.
 TEST_F(ComponentLoaderTest, LoadAll) {
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
 
@@ -304,6 +414,8 @@ class ComponentLoaderExtensionServiceTest
   }
 };
 
+// Verifies that `ComponentLoader::LoadAll()` emits
+// `Extensions.LoadAllComponentTime.User` for regular user profiles.
 TEST_F(ComponentLoaderExtensionServiceTest, LoadAll_EmitUserHistograms) {
   ASSERT_NO_FATAL_FAILURE(MaybeSetUpTestUser(/*is_guest=*/false));
 
@@ -311,6 +423,8 @@ TEST_F(ComponentLoaderExtensionServiceTest, LoadAll_EmitUserHistograms) {
                             /*user_expected_total_count=*/1);
 }
 
+// Verifies that `ComponentLoader::LoadAll()` emits
+// `Extensions.LoadAllComponentTime.NonUser` for guest profiles.
 TEST_F(ComponentLoaderExtensionServiceTest, LoadAll_NonUserEmitHistograms) {
   ASSERT_NO_FATAL_FAILURE(MaybeSetUpTestUser(/*is_guest=*/true));
 
@@ -318,22 +432,41 @@ TEST_F(ComponentLoaderExtensionServiceTest, LoadAll_NonUserEmitHistograms) {
                             /*user_expected_total_count=*/0);
 }
 
-// Test is flaky. https://crbug.com/40828122
-TEST_F(ComponentLoaderTest, DISABLED_AddOrReplace) {
+// Tests that `ComponentLoader::AddOrReplace()` properly adds new component
+// extensions and replaces existing ones.
+TEST_F(ComponentLoaderTest, AddOrReplace) {
   ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
   ExtensionUnloadedObserver unload_observer(registry);
   EXPECT_EQ(0u, component_loader_->registered_extensions_count());
 
-  // Allow the Feedback extension, which has a background page, to be loaded.
+  // Allow component extensions with background pages to be loaded.
   component_loader_->EnableBackgroundExtensionsForTesting();
 
   component_loader_->AddDefaultComponentExtensions(false);
-  size_t const default_count = component_loader_->registered_extensions_count();
-  base::FilePath known_extension = GetBasePath()
-      .AppendASCII("override_component_extension");
+  const size_t default_count = component_loader_->registered_extensions_count();
+  ASSERT_GT(default_count, 0u);
+  const std::string* existing_key = GetRegisteredExtensionKey(0);
+  ASSERT_TRUE(existing_key);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath known_extension =
+      temp_dir.GetPath().AppendASCII("override_component_extension");
+  ASSERT_TRUE(base::CreateDirectory(known_extension));
+  std::string manifest_contents = base::StringPrintf(
+      R"({
+        "key": "%s",
+        "name": "Override Component Extension for testing",
+        "version": "1.0",
+        "manifest_version": 3
+      })",
+      existing_key->c_str());
+  ASSERT_TRUE(base::WriteFile(known_extension.Append(kManifestFilename),
+                              manifest_contents));
+
   base::FilePath unknown_extension = extension_path_;
-  base::FilePath invalid_extension = GetBasePath()
-      .AppendASCII("this_path_does_not_exist");
+  base::FilePath invalid_extension =
+      GetBasePath().AppendASCII("this_path_does_not_exist");
 
   // Replace a default component extension.
   component_loader_->AddOrReplace(known_extension);
@@ -350,7 +483,7 @@ TEST_F(ComponentLoaderTest, DISABLED_AddOrReplace) {
   EXPECT_EQ(default_count + 1, registry->enabled_extensions().size());
   EXPECT_EQ(0u, unload_observer.unloaded_count());
 
-  // replace loaded component extension.
+  // Replace loaded component extension.
   component_loader_->AddOrReplace(known_extension);
   EXPECT_EQ(default_count + 1, registry->enabled_extensions().size());
   EXPECT_EQ(1u, unload_observer.unloaded_count());
@@ -462,6 +595,355 @@ TEST_F(ComponentLoaderTest, RemovePendingAdd) {
   EXPECT_FALSE(component_loader_->ExistsOrPendingAdd(kExtensionId));
 }
 
+// Verifies that the Image Loader extension is not loaded by default and can
+// be loaded on demand.
+TEST_F(ComponentLoaderTest, AddImageLoaderExtensionOnDemand) {
+  component_loader_->EnableBackgroundExtensionsForTesting();
+  component_loader_->AddDefaultComponentExtensions(false);
+  EXPECT_FALSE(
+      component_loader_->Exists(file_manager::kImageLoaderExtensionId));
+
+  component_loader_->AddImageLoaderExtension();
+  EXPECT_TRUE(component_loader_->Exists(file_manager::kImageLoaderExtensionId));
+}
+
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` loads the
+// staged extension when a newer version is staged in `local_state`.
+TEST_F(ComponentLoaderTest,
+       AddAimEligibilityExtensionLoadsStagedVersionIfNewer) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kAimEligibilityComponentExtension);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::ScopedPathOverride path_override(component_updater::DIR_COMPONENT_USER,
+                                         temp_dir.GetPath());
+  base::FilePath relative_path = GetAimEligibilityRelativeInstallDir("2.0");
+  ASSERT_TRUE(base::CreateDirectory(temp_dir.GetPath().Append(relative_path)));
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kAimEligibilityExtensionId, relative_path,
+      CreateAimEligibilityManifest("2.0"));
+
+  AddAimEligibilityExtension();
+  component_loader_->LoadAll();
+
+  ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
+  const Extension* extension = registry->enabled_extensions().GetByID(
+      extension_misc::kAimEligibilityExtensionId);
+  ASSERT_TRUE(extension);
+  EXPECT_EQ(extension->version(), base::Version("2.0"));
+  EXPECT_EQ(extension->name(), "AIM Staged");
+}
+
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` loads the
+// bundled extension when the staged version is not newer than the bundled
+// version.
+TEST_F(ComponentLoaderTest,
+       AddAimEligibilityExtensionLoadsBundledIfStagedOlderOrEqual) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kAimEligibilityComponentExtension);
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  // Staged version 1.0 is <= bundled 1.0.
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kAimEligibilityExtensionId,
+      GetAimEligibilityRelativeInstallDir("1.0"),
+      CreateAimEligibilityManifest("1.0"));
+
+  VerifyBundledAimEligibilityExtensionLoaded();
+}
+
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` loads the
+// bundled extension when the `use_component_updater` feature parameter is
+// disabled.
+TEST_F(ComponentLoaderTest,
+       AddAimEligibilityExtensionLoadsBundledIfFeatureParamDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeaturesAndParameters(
+      {{omnibox::kAimEligibilityComponentExtension,
+        {{"use_component_updater", "false"}}}},
+      {});
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  // Staged version 2.0 exists in prefs, but use_component_updater is false.
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kAimEligibilityExtensionId,
+      GetAimEligibilityRelativeInstallDir("2.0"),
+      CreateAimEligibilityManifest("2.0"));
+
+  VerifyBundledAimEligibilityExtensionLoaded(/*expect_prefs_cleared=*/false);
+}
+
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged manifest is corrupted.
+TEST_F(ComponentLoaderTest,
+       AddAimEligibilityExtensionLoadsBundledIfStagedManifestCorrupted) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kAimEligibilityComponentExtension);
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  // Staged manifest is missing required keys.
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kAimEligibilityExtensionId,
+      GetAimEligibilityRelativeInstallDir("2.0"), base::DictValue());
+
+  VerifyBundledAimEligibilityExtensionLoaded();
+}
+
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged manifest has an invalid version string.
+TEST_F(ComponentLoaderTest,
+       AddAimEligibilityExtensionLoadsBundledIfStagedVersionMismatch) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kAimEligibilityComponentExtension);
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  // Staged manifest has an invalid version string.
+  base::DictValue manifest = CreateAimEligibilityManifest("2.0");
+  manifest.Set("version", "invalid.version.format.!");
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kAimEligibilityExtensionId,
+      GetAimEligibilityRelativeInstallDir("2.0"), std::move(manifest));
+
+  VerifyBundledAimEligibilityExtensionLoaded();
+}
+
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged manifest key does not match
+// `extension_misc::kAimEligibilityExtensionId`.
+TEST_F(ComponentLoaderTest,
+       AddAimEligibilityExtensionLoadsBundledIfStagedExtensionIdMismatch) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kAimEligibilityComponentExtension);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::ScopedPathOverride path_override(component_updater::DIR_COMPONENT_USER,
+                                         temp_dir.GetPath());
+  base::FilePath relative_path = GetAimEligibilityRelativeInstallDir("2.0");
+  ASSERT_TRUE(base::CreateDirectory(temp_dir.GetPath().Append(relative_path)));
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  // Valid RSA key, but belongs to a different extension ID.
+  constexpr char kDifferentKey[] =
+      "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC8xv6iO+j4kzj1HiBL93+XVJH/"
+      "CRyAQMUHS/Z0l8nCAzaAFkW/JsNwxJqQhrZspnxLqbQxNncXs6g6bsXAwKHiEs+"
+      "LSs+bIv0Gc/2ycZdhXJ8GhEsSMakog5dpQd1681c2gLK/8CrAoewE/0GIKhaFcp7a2iZ"
+      "lGh4Am6fgMKy0iQIDAQAB";
+  base::DictValue mismatched_manifest = base::DictValue()
+                                            .Set("key", kDifferentKey)
+                                            .Set("version", "2.0")
+                                            .Set("manifest_version", 3)
+                                            .Set("name", "Different Extension");
+
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kAimEligibilityExtensionId, relative_path,
+      std::move(mismatched_manifest));
+
+  VerifyBundledAimEligibilityExtensionLoaded();
+}
+
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged manifest contains an invalid public
+// key.
+TEST_F(ComponentLoaderTest,
+       AddAimEligibilityExtensionLoadsBundledIfStagedKeyInvalid) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kAimEligibilityComponentExtension);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::ScopedPathOverride path_override(component_updater::DIR_COMPONENT_USER,
+                                         temp_dir.GetPath());
+  base::FilePath relative_path = GetAimEligibilityRelativeInstallDir("2.0");
+  ASSERT_TRUE(base::CreateDirectory(temp_dir.GetPath().Append(relative_path)));
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  // Manifest with a malformed/invalid public key.
+  base::DictValue invalid_key_manifest = CreateAimEligibilityManifest("2.0");
+  invalid_key_manifest.Set("key", "not-a-valid-pem-key");
+
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kAimEligibilityExtensionId, relative_path,
+      std::move(invalid_key_manifest));
+
+  VerifyBundledAimEligibilityExtensionLoaded();
+}
+
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged path is absolute.
+TEST_F(ComponentLoaderTest,
+       AddAimEligibilityExtensionLoadsBundledIfStagedPathIsAbsolute) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kAimEligibilityComponentExtension);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::ScopedPathOverride path_override(component_updater::DIR_COMPONENT_USER,
+                                         temp_dir.GetPath());
+  base::FilePath absolute_path = temp_dir.GetPath().AppendASCII("2.0");
+  ASSERT_TRUE(base::CreateDirectory(absolute_path));
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kAimEligibilityExtensionId, absolute_path,
+      CreateAimEligibilityManifest("2.0"));
+
+  VerifyBundledAimEligibilityExtensionLoaded();
+}
+
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged path references a parent directory.
+TEST_F(ComponentLoaderTest,
+       AddAimEligibilityExtensionLoadsBundledIfStagedPathReferencesParent) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kAimEligibilityComponentExtension);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::ScopedPathOverride path_override(component_updater::DIR_COMPONENT_USER,
+                                         temp_dir.GetPath());
+  base::FilePath parent_referencing_path =
+      base::FilePath(FILE_PATH_LITERAL("..")).AppendASCII("2.0");
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kAimEligibilityExtensionId,
+      parent_referencing_path, CreateAimEligibilityManifest("2.0"));
+
+  VerifyBundledAimEligibilityExtensionLoaded();
+}
+
+// Verifies that `ComponentLoader::AddAimEligibilityExtension()` falls back to
+// the bundled extension when the staged path is empty.
+TEST_F(ComponentLoaderTest,
+       AddAimEligibilityExtensionLoadsBundledIfStagedPathIsEmpty) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      omnibox::kAimEligibilityComponentExtension);
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kAimEligibilityExtensionId,
+      base::FilePath(), CreateAimEligibilityManifest("2.0"));
+
+  VerifyBundledAimEligibilityExtensionLoaded();
+}
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+// Verifies the NTP component extension is installed when its feature is
+// enabled.
+TEST_F(ComponentLoaderTest, AddNewTabPageExtensionLoadsWhenFeatureEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ntp_features::kNtpComponentExtension);
+
+  AddNewTabPageExtension();
+  component_loader_->LoadAll();
+
+  const Extension* extension =
+      ExtensionRegistry::Get(profile())->enabled_extensions().GetByID(
+          extension_misc::kNewTabPageExtensionId);
+  ASSERT_TRUE(extension);
+  EXPECT_EQ(extension->location(), mojom::ManifestLocation::kComponent);
+}
+
+// Verifies the NTP component extension loads the staged version from disk when
+// a newer version is staged in Local State.
+TEST_F(ComponentLoaderTest, AddNewTabPageExtensionLoadsStagedVersionIfNewer) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ntp_features::kNtpComponentExtension);
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::ScopedPathOverride path_override(component_updater::DIR_COMPONENT_USER,
+                                         temp_dir.GetPath());
+  base::FilePath relative_path = GetNewTabPageRelativeInstallDir("2.0");
+  ASSERT_TRUE(base::CreateDirectory(temp_dir.GetPath().Append(relative_path)));
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kNewTabPageExtensionId, relative_path,
+      CreateNewTabPageManifest("2.0"));
+
+  AddNewTabPageExtension();
+  component_loader_->LoadAll();
+
+  ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
+  const Extension* extension = registry->enabled_extensions().GetByID(
+      extension_misc::kNewTabPageExtensionId);
+  ASSERT_TRUE(extension);
+  EXPECT_EQ(extension->version(), base::Version("2.0"));
+  EXPECT_EQ(extension->name(), "NTP Staged");
+}
+
+// Verifies the NTP component extension falls back to the bundled version when
+// the use_component_updater feature param is disabled.
+TEST_F(ComponentLoaderTest,
+       AddNewTabPageExtensionLoadsBundledIfFeatureParamDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeaturesAndParameters(
+      {{ntp_features::kNtpComponentExtension,
+        {{"use_component_updater", "false"}}}},
+      {});
+
+  PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
+  component_loader_prefs::StageExtension(
+      *local_state, extension_misc::kNewTabPageExtensionId,
+      GetNewTabPageRelativeInstallDir("2.0"), CreateNewTabPageManifest("2.0"));
+
+  AddNewTabPageExtension();
+  component_loader_->LoadAll();
+
+  ExtensionRegistry* registry = ExtensionRegistry::Get(profile());
+  const Extension* extension = registry->enabled_extensions().GetByID(
+      extension_misc::kNewTabPageExtensionId);
+  ASSERT_TRUE(extension);
+  EXPECT_EQ(extension->version(), base::Version("1.0"));
+  EXPECT_EQ(extension->name(), "New Tab Page");
+  EXPECT_TRUE(component_loader_prefs::GetExtension(
+                  *local_state, extension_misc::kNewTabPageExtensionId)
+                  .has_value());
+}
+
+// Verifies the NTP component extension is not installed when its feature is
+// disabled.
+TEST_F(ComponentLoaderTest, AddNewTabPageExtensionSkippedWhenFeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      ntp_features::kNtpComponentExtension);
+
+  AddNewTabPageExtension();
+  component_loader_->LoadAll();
+
+  EXPECT_FALSE(ExtensionRegistry::Get(profile())->GetInstalledExtension(
+      extension_misc::kNewTabPageExtensionId));
+}
+
+// Verifies the extension is on the component extension allowlist, so it loads
+// without `set_ignore_allowlist_for_testing()`.
+TEST_F(ComponentLoaderTest, AddNewTabPageExtensionIsAllowlisted) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      ntp_features::kNtpComponentExtension);
+  component_loader_->set_ignore_allowlist_for_testing(false);
+
+  AddNewTabPageExtension();
+  component_loader_->LoadAll();
+
+  EXPECT_TRUE(ExtensionRegistry::Get(profile())->enabled_extensions().GetByID(
+      extension_misc::kNewTabPageExtensionId));
+}
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
 
 }  // namespace extensions

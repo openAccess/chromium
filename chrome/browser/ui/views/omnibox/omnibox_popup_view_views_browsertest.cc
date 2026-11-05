@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_view_views.h"
 
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "build/build_config.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
@@ -464,7 +465,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest,
   CreatePopupForTestQuery();
   ACMatches matches;
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.destination_url = GURL("https://foobar.com");
   match.contents = u"https://foobar.com";
   match.description = u"FooBarCom";
@@ -553,7 +554,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest,
   CreatePopupForTestQuery();
   ACMatches matches;
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.destination_url = GURL("https://foobar.com");
   match.contents = u"https://foobar.com";
   match.description = u"FooBarCom";
@@ -618,7 +619,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest,
   CreatePopupForTestQuery();
   ACMatches matches;
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = u"https://foobar.com";
   match.description = u"The Foo Of All Bars";
   match.has_tab_match = true;
@@ -648,8 +649,8 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest,
   EXPECT_TRUE(contains(ax_name, "press Tab then Enter"));
   EXPECT_FALSE(contains(ax_name, "2 of 2"));
 
-  edit_model()->SetPopupSelection(
-      OmniboxPopupSelection(1, OmniboxPopupSelection::FOCUSED_BUTTON_ACTION));
+  edit_model()->SetPopupSelection(OmniboxPopupSelection(
+      1, OmniboxPopupSelection::LineState::kFocusedButtonAction));
   EXPECT_TRUE(contains(observer.omnibox_value(), "Tab switch button"));
   EXPECT_EQ(observer.selected_children_changed_count(), 6);
   EXPECT_EQ(observer.selection_changed_count(), 5);
@@ -666,7 +667,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest,
   EXPECT_FALSE(contains(ax_name, "2 of 2"));
 
   edit_model()->SetPopupSelection(
-      OmniboxPopupSelection(1, OmniboxPopupSelection::NORMAL));
+      OmniboxPopupSelection(1, OmniboxPopupSelection::LineState::kNormal));
   EXPECT_TRUE(contains(observer.omnibox_value(), "The Foo Of All Bars"));
   EXPECT_EQ(observer.selected_children_changed_count(), 8);
   EXPECT_EQ(observer.selection_changed_count(), 7);
@@ -700,7 +701,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest,
   // Create a match to populate the autocomplete.
   std::u16string match_url = u"https://foobar.com";
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.contents = match_url;
   match.contents_class.emplace_back(0, ACMatchClassification::URL);
   match.destination_url = GURL(match_url);
@@ -801,7 +802,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest, AccessibleResultName) {
   CreatePopupForTestQuery();
   ACMatches matches;
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.destination_url = GURL("https://foobar.com");
   match.contents = u"https://foobar.com";
   match.description = u"FooBarCom";
@@ -827,14 +828,14 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest, AccessibleResultName) {
 
 IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest, DeleteSuggestion) {
   scoped_refptr<FakeAutocompleteProvider> provider =
-      new FakeAutocompleteProvider(AutocompleteProvider::TYPE_SEARCH);
+      new FakeAutocompleteProvider(AutocompleteProvider::Type::kSearch);
   controller()->autocomplete_controller()->providers_.push_back(provider);
 
   ACMatches matches;
   {
     std::u16string match_url = u"https://example.com/";
     AutocompleteMatch match(nullptr, 500, /*deletable=*/true,
-                            AutocompleteMatchType::HISTORY_TITLE);
+                            omnibox::AutocompleteMatchType::kHistoryTitle);
     match.contents = match_url;
     match.contents_class.emplace_back(0, ACMatchClassification::URL);
     match.destination_url = GURL(match_url);
@@ -847,7 +848,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest, DeleteSuggestion) {
   {
     std::u16string match_url = u"https://google.com/";
     AutocompleteMatch match(nullptr, 500, false,
-                            AutocompleteMatchType::HISTORY_TITLE);
+                            omnibox::AutocompleteMatchType::kHistoryTitle);
     match.contents = match_url;
     match.contents_class.emplace_back(0, ACMatchClassification::URL);
     match.destination_url = GURL(match_url);
@@ -964,7 +965,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest,
   CreatePopupForTestQuery();
   ACMatches matches;
   AutocompleteMatch match(nullptr, 500, false,
-                          AutocompleteMatchType::HISTORY_TITLE);
+                          omnibox::AutocompleteMatchType::kHistoryTitle);
   match.destination_url = GURL("https://foobar.com");
   match.contents = u"https://foobar.com";
   match.description = u"FooBarCom";
@@ -1067,7 +1068,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupViewViewsTest,
 IN_PROC_BROWSER_TEST_F(OmniboxPopupSuggestionGroupHeadersTest,
                        ShowSuggestionGroupHeadersByPageContext) {
   scoped_refptr<FakeAutocompleteProvider> provider =
-      new FakeAutocompleteProvider(AutocompleteProvider::TYPE_SEARCH);
+      new FakeAutocompleteProvider(AutocompleteProvider::Type::kSearch);
   controller()->autocomplete_controller()->providers_.push_back(provider);
 
   const auto group1 = omnibox::GroupId::GROUP_VISITED_DOC_RELATED;
@@ -1078,7 +1079,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupSuggestionGroupHeadersTest,
   {
     std::u16string match_url = u"https://google.com/search?q=foo1";
     AutocompleteMatch match(nullptr, 500, false,
-                            AutocompleteMatchType::SEARCH_SUGGEST);
+                            omnibox::AutocompleteMatchType::kSearchSuggest);
     match.contents = u"foo1";
     match.contents_class.emplace_back(0, ACMatchClassification::URL);
     match.destination_url = GURL(match_url);
@@ -1094,7 +1095,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupSuggestionGroupHeadersTest,
   {
     std::u16string match_url = u"https://google.com/search?q=foo2";
     AutocompleteMatch match(nullptr, 450, false,
-                            AutocompleteMatchType::SEARCH_SUGGEST);
+                            omnibox::AutocompleteMatchType::kSearchSuggest);
     match.contents = u"foo2";
     match.contents_class.emplace_back(0, ACMatchClassification::URL);
     match.destination_url = GURL(match_url);
@@ -1277,47 +1278,35 @@ class OmniboxPopupPermissionBrowserTest : public InProcessBrowserTest {
 
   views::Widget* GetPopupWidget() {
     auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
-    auto* location_bar_view = browser_view->toolbar()->location_bar_view();
+    auto* location_bar = browser_view->toolbar()->location_bar();
     auto* popup_view = static_cast<OmniboxPopupViewWebUI*>(
-        location_bar_view->GetOmniboxPopupView());
+        location_bar->GetOmniboxPopupView());
     if (!popup_view || !popup_view->presenter()) {
       return nullptr;
     }
     popup_view->presenter()->Show();
-    location_bar_view->GetOmniboxController()
-        ->popup_state_manager()
-        ->SetPopupState(OmniboxPopupState::kClassic);
-    return popup_view->presenter()->get_widget_for_testing();
+    location_bar->GetOmniboxController()->popup_state_manager()->SetPopupState(
+        OmniboxPopupState::kClassic);
+    return popup_view->presenter()->GetWidget();
   }
 
-  void SetBrowserBounds(views::Widget* popup_widget, const gfx::Rect& bounds) {
+  void SetBrowserBounds(const gfx::Rect& bounds) {
     views::Widget* browser_widget = views::Widget::GetWidgetForNativeWindow(
         browser()->GetWindow()->GetNativeWindow());
     WidgetBoundsWaiter browser_waiter(browser_widget);
-    WidgetBoundsWaiter popup_waiter(popup_widget);
     browser()->GetWindow()->SetBounds(bounds);
     browser_waiter.Wait();
-    popup_waiter.Wait();
   }
 
   void SimulateFrontendMojoMessage(bool is_showing,
                                    const gfx::Size& prompt_size) {
     auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
-    auto* location_bar_view = browser_view->toolbar()->location_bar_view();
+    auto* location_bar = browser_view->toolbar()->location_bar();
     auto* popup_view = static_cast<OmniboxPopupViewWebUI*>(
-        location_bar_view->GetOmniboxPopupView());
+        location_bar->GetOmniboxPopupView());
     if (popup_view && popup_view->presenter()) {
-      views::Widget* popup_widget =
-          popup_view->presenter()->get_widget_for_testing();
-      std::optional<WidgetBoundsWaiter> waiter;
-      if (popup_widget) {
-        waiter.emplace(popup_widget);
-      }
       popup_view->presenter()->OnEmbeddedPermissionDialogChanged(is_showing,
                                                                  prompt_size);
-      if (waiter) {
-        waiter->Wait();
-      }
     }
   }
 
@@ -1336,27 +1325,33 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupPermissionBrowserTest,
   ASSERT_TRUE(popup_widget);
 
   // Force browser window to be small.
-  SetBrowserBounds(popup_widget, gfx::Rect(0, 0, 400, 600));
+  SetBrowserBounds(gfx::Rect(0, 0, 400, 600));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return popup_widget->GetRestoredBounds().width() < 500; }));
 
   // Open PEPC prompt requesting 500px.
   SimulateFrontendMojoMessage(true, gfx::Size(500, 400));
 
   // PEPC prompt forced omnibox popup to grow to 500px.
-  EXPECT_GE(popup_widget->GetRestoredBounds().width(), 500);
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return popup_widget->GetRestoredBounds().width() >= 500; }));
 
   // User manually drags browser window to be big.
-  SetBrowserBounds(popup_widget, gfx::Rect(0, 0, 1000, 600));
+  SetBrowserBounds(gfx::Rect(0, 0, 1000, 600));
 
   // Popup should adjust to the window size.
-  EXPECT_GE(popup_widget->GetRestoredBounds().width(), 800);
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return popup_widget->GetRestoredBounds().width() >= 800; }));
 
   // User manually drags browser window back to small.
-  SetBrowserBounds(popup_widget, gfx::Rect(0, 0, 300, 600));
+  SetBrowserBounds(gfx::Rect(0, 0, 300, 600));
 
   // Width of popup should adjust.
   const int expected_width =
       500 + RoundedOmniboxResultsFrame::GetShadowInsets().width();
-  EXPECT_EQ(popup_widget->GetRestoredBounds().width(), expected_width);
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return popup_widget->GetRestoredBounds().width() == expected_width;
+  }));
 }
 
 IN_PROC_BROWSER_TEST_F(OmniboxPopupPermissionBrowserTest,
@@ -1366,15 +1361,20 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupPermissionBrowserTest,
       ->GetOmniboxView()
       ->SetUserText(u"test");
   views::Widget* popup_widget = GetPopupWidget();
+  ASSERT_TRUE(popup_widget);
 
   // Small browser width.
-  SetBrowserBounds(popup_widget, gfx::Rect(0, 0, 400, 600));
+  SetBrowserBounds(gfx::Rect(0, 0, 400, 600));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return popup_widget->GetRestoredBounds().width() < 500; }));
 
   auto test_frontend_closure = [&](const std::string& action_name) {
     // Open the PEPC prompt.
     SimulateFrontendMojoMessage(true, gfx::Size(500, 400));
-    EXPECT_GE(popup_widget->GetRestoredBounds().width(), 500)
-        << "Failed to expand for " << action_name;
+    EXPECT_TRUE(base::test::RunUntil([&]() {
+      return popup_widget->GetRestoredBounds().width() >= 500;
+    })) << "Failed to expand for "
+        << action_name;
 
     // Simulate the user triggering the specific UI action that closes the
     // prompt. In the frontend, clicking 'Allow', 'Deny', 'Allow Always', or
@@ -1382,10 +1382,11 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupPermissionBrowserTest,
     // backend.
     SimulateFrontendMojoMessage(false, gfx::Size());
 
-    // Assert the physical OS window actually shrunk back down to standard
-    // size.
-    EXPECT_LT(popup_widget->GetRestoredBounds().width(), 500)
-        << "Physical window failed to shrink after action: " << action_name;
+    // Assert the physical OS window actually shrunk back down to standard size.
+    EXPECT_TRUE(base::test::RunUntil([&]() {
+      return popup_widget->GetRestoredBounds().width() < 500;
+    })) << "Physical window failed to shrink after action: "
+        << action_name;
   };
 
   test_frontend_closure("Allow");

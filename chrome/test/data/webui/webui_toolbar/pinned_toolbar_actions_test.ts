@@ -2,13 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {PinnedToolbarActionsElement} from 'chrome://webui-toolbar.top-chrome/app.js';
-import {PinnedToolbarAction} from 'chrome://webui-toolbar.top-chrome/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import {AnimationTracker, BrowserProxyImpl, PinnedToolbarAction, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {PinnedToolbarActionsElement} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 suite('PinnedToolbarActions', function() {
   let container: PinnedToolbarActionsElement;
@@ -49,7 +48,16 @@ suite('PinnedToolbarActions', function() {
     window.BroadcastChannel = originalBroadcastChannel;
   });
 
+  teardown(() => {
+    AnimationTracker.resetForTesting();
+  });
+
   setup(async () => {
+    // Explicitly enable animations, so that behavior does not depend on the
+    // host's `prefers-reduced-motion` setting. With animations enabled,
+    // removed actions are temporarily retained in `keyedStates` as "exiting"
+    // states, which affects indices, and thus the position of the divider.
+    AnimationTracker.showAnimations = true;
     channels = [];  // Reset active channels
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     moveCalls = [];
@@ -68,6 +76,7 @@ suite('PinnedToolbarActions', function() {
     const mockTrackedElementManager = {
       startTracking: () => {},
       stopTracking: () => {},
+      notifyElementActivated: () => {},
     };
     TrackedElementManager.setInstance(mockTrackedElementManager as any);
 
@@ -85,6 +94,8 @@ suite('PinnedToolbarActions', function() {
         accessibilityText: '',
         elementId: 'action-1',
         icon: {handleId: 1n},
+        progressRing: null,
+        badgeNumber: null,
       },
       {
         action: 2,  // kShowPasswordsBubbleOrPage
@@ -95,6 +106,8 @@ suite('PinnedToolbarActions', function() {
         accessibilityText: '',
         elementId: 'action-2',
         icon: {handleId: 2n},
+        progressRing: null,
+        badgeNumber: null,
       },
       {
         action: PinnedToolbarAction.kDivider,
@@ -105,6 +118,8 @@ suite('PinnedToolbarActions', function() {
         accessibilityText: '',
         elementId: '',
         icon: {handleId: 0n},
+        progressRing: null,
+        badgeNumber: null,
       },
     ];
     await microtasksFinished();
@@ -121,6 +136,8 @@ suite('PinnedToolbarActions', function() {
         accessibilityText: '',
         elementId: 'action-1',
         icon: {handleId: 1n},
+        progressRing: null,
+        badgeNumber: null,
       },
       {
         action: PinnedToolbarAction.kDivider,
@@ -131,6 +148,8 @@ suite('PinnedToolbarActions', function() {
         accessibilityText: '',
         elementId: '',
         icon: {handleId: 0n},
+        progressRing: null,
+        badgeNumber: null,
       },
       {
         action: 3,
@@ -141,6 +160,8 @@ suite('PinnedToolbarActions', function() {
         accessibilityText: '',
         elementId: 'action-3',
         icon: {handleId: 3n},
+        progressRing: null,
+        badgeNumber: null,
       },
     ];
     await microtasksFinished();
@@ -156,6 +177,210 @@ suite('PinnedToolbarActions', function() {
     assertTrue(action3.poppedOut);
   });
 
+  test('Prevents overflow of highlighted actions', async () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('pinned-toolbar-action');
+    assertEquals(2, actionElements.length);
+    const action1 = actionElements[0]!;
+    const action2 = actionElements[1]!;
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+
+    // Highlight action 2, as happens when its side panel is open. It's pinned,
+    // not popped out, but should not be allowed to overflow.
+    container.states = container.states.map(
+        s => s.action === 2 ? {...s, highlighted: true} : s);
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.poppedOut);
+    assertTrue(action2.preventOverflow);
+
+    // Unhighlight it.
+    container.states = container.states.map(
+        s => s.action === 2 ? {...s, highlighted: false} : s);
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+  });
+
+  test('Prevents overflow of tracked highlighted actions', async () => {
+    const actionElements =
+        container.shadowRoot.querySelectorAll('pinned-toolbar-action');
+    assertEquals(2, actionElements.length);
+    const action1 = actionElements[0]!;
+    const action2 = actionElements[1]!;
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+
+    // An action highlighted via the TrackedElementManager (e.g., when anchoring
+    // a bubble) should not be allowed to overflow.
+    action2.trackedHighlighted = true;
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertTrue(action2.preventOverflow);
+
+    action2.trackedHighlighted = false;
+    await microtasksFinished();
+    assertFalse(action1.preventOverflow);
+    assertFalse(action2.preventOverflow);
+  });
+
+  test('Pops out all elements when there is no divider', async () => {
+    // Without a divider, nothing is pinned, so all actions are popped out into
+    // the overflow menu, and none of them may be dragged.
+    container.states = [
+      {
+        action: 1,
+        highlighted: false,
+        enabled: true,
+        activated: false,
+        tooltip: 'Action 1',
+        accessibilityText: '',
+        elementId: 'action-1',
+        icon: {handleId: 1n},
+        progressRing: null,
+        badgeNumber: null,
+      },
+      {
+        action: 2,
+        highlighted: false,
+        enabled: true,
+        activated: false,
+        tooltip: 'Action 2',
+        accessibilityText: '',
+        elementId: 'action-2',
+        icon: {handleId: 2n},
+        progressRing: null,
+        badgeNumber: null,
+      },
+    ];
+    await microtasksFinished();
+
+    const actionElements =
+        container.shadowRoot.querySelectorAll('pinned-toolbar-action');
+    assertEquals(2, actionElements.length);
+    for (const action of actionElements) {
+      assertTrue(action.poppedOut);
+      assertFalse(
+          action.shadowRoot.querySelector('toolbar-chip-button')!.draggable);
+    }
+
+    // Dragging an action over another one must not reorder them, either.
+    const helperChannel = new BroadcastChannel('pinned-action-drag');
+    helperChannel.postMessage({type: 'drag-start', itemId: '1'});
+
+    const dragEnterEvent = new DragEvent('dragenter', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+    Object.defineProperty(dragEnterEvent, 'dataTransfer', {
+      value: {types: ['application/x-webui-pinned-action']},
+    });
+    container.dispatchEvent(dragEnterEvent);
+
+    const dragOverEvent = new DragEvent('dragover', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+    Object.defineProperty(dragOverEvent, 'dataTransfer', {
+      value: {
+        types: ['application/x-webui-pinned-action'],
+        dropEffect: 'none',
+      },
+    });
+    actionElements[1]!.dispatchEvent(dragOverEvent);
+
+    const keyedStates = container.keyedStates;
+    assertEquals(2, keyedStates.length);
+    assertEquals('1', keyedStates[0]!.key);
+    assertEquals('2', keyedStates[1]!.key);
+  });
+
+  test('Dragging over a popped out action does not reorder', async () => {
+    container.states = [
+      {
+        action: 1,
+        highlighted: false,
+        enabled: true,
+        activated: false,
+        tooltip: 'Action 1',
+        accessibilityText: '',
+        elementId: 'action-1',
+        icon: {handleId: 1n},
+        progressRing: null,
+        badgeNumber: null,
+      },
+      {
+        action: PinnedToolbarAction.kDivider,
+        highlighted: false,
+        enabled: true,
+        activated: false,
+        tooltip: '',
+        accessibilityText: '',
+        elementId: '',
+        icon: {handleId: 0n},
+        progressRing: null,
+        badgeNumber: null,
+      },
+      {
+        action: 3,
+        highlighted: false,
+        enabled: true,
+        activated: false,
+        tooltip: 'Action 3',
+        accessibilityText: '',
+        elementId: 'action-3',
+        icon: {handleId: 3n},
+        progressRing: null,
+        badgeNumber: null,
+      },
+    ];
+    await microtasksFinished();
+
+    const actionElements =
+        container.shadowRoot.querySelectorAll('pinned-toolbar-action');
+    assertEquals(2, actionElements.length);
+    const poppedOutAction = actionElements[1]!;  // Action 3
+
+    // Start dragging Action 1, which is pinned, and therefore draggable.
+    const helperChannel = new BroadcastChannel('pinned-action-drag');
+    helperChannel.postMessage({type: 'drag-start', itemId: '1'});
+
+    const dragEnterEvent = new DragEvent('dragenter', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+    Object.defineProperty(dragEnterEvent, 'dataTransfer', {
+      value: {types: ['application/x-webui-pinned-action']},
+    });
+    container.dispatchEvent(dragEnterEvent);
+
+    // Hover over Action 3, which is popped out, and thus can't be a drop
+    // target.
+    const dragOverEvent = new DragEvent('dragover', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    });
+    Object.defineProperty(dragOverEvent, 'dataTransfer', {
+      value: {
+        types: ['application/x-webui-pinned-action'],
+        dropEffect: 'none',
+      },
+    });
+    poppedOutAction.dispatchEvent(dragOverEvent);
+
+    // Action 1 must not be moved past the divider.
+    const keyedStates = container.keyedStates;
+    assertEquals(3, keyedStates.length);
+    assertEquals('1', keyedStates[0]!.key);
+    assertEquals(PinnedToolbarAction.kDivider.toString(), keyedStates[1]!.key);
+    assertEquals('3', keyedStates[2]!.key);
+  });
+
   test('Keyboard reorder retains focus', async () => {
     const actionElements =
         container.shadowRoot.querySelectorAll('pinned-toolbar-action');
@@ -166,10 +391,10 @@ suite('PinnedToolbarActions', function() {
     firstAction.focus();
     assertEquals(
         firstAction.shadowRoot.activeElement,
-        firstAction.shadowRoot.querySelector('cr-icon-button'));
+        firstAction.shadowRoot.querySelector('toolbar-chip-button'));
 
     // Trigger keyboard reorder (Ctrl+ArrowRight)
-    const button = firstAction.shadowRoot.querySelector('cr-icon-button')!;
+    const button = firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
     button.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'ArrowRight',
       ctrlKey: true,
@@ -193,6 +418,8 @@ suite('PinnedToolbarActions', function() {
         accessibilityText: '',
         elementId: 'action-2',
         icon: {handleId: 2n},
+        progressRing: null,
+        badgeNumber: null,
       },
       {
         action: 1,
@@ -203,6 +430,8 @@ suite('PinnedToolbarActions', function() {
         accessibilityText: '',
         elementId: 'action-1',
         icon: {handleId: 1n},
+        progressRing: null,
+        badgeNumber: null,
       },
       {
         action: PinnedToolbarAction.kDivider,
@@ -213,6 +442,8 @@ suite('PinnedToolbarActions', function() {
         accessibilityText: '',
         elementId: '',
         icon: {handleId: 0n},
+        progressRing: null,
+        badgeNumber: null,
       },
     ];
     await microtasksFinished();
@@ -227,7 +458,7 @@ suite('PinnedToolbarActions', function() {
         1, newSecondAction.state.action);  // Verify it is indeed Action 1
     assertEquals(
         newSecondAction.shadowRoot.activeElement,
-        newSecondAction.shadowRoot.querySelector('cr-icon-button'));
+        newSecondAction.shadowRoot.querySelector('toolbar-chip-button'));
   });
 
   test('Cross-window dragover identifies action from broadcast', () => {
@@ -297,11 +528,7 @@ suite('PinnedToolbarActions', function() {
     };
 
     // Trigger dragstart on first action
-    firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: '1'},
-      bubbles: true,
-      composed: true,
-    }));
+    firstAction.fire('toolbar-action-drag-start', {itemId: '1'});
 
     assertEquals('drag-start', receivedMessage?.type);
     assertEquals('1', receivedMessage?.itemId);
@@ -314,11 +541,7 @@ suite('PinnedToolbarActions', function() {
     const firstAction = actionElements[0]!;
 
     // Start drag first
-    firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: '1'},
-      bubbles: true,
-      composed: true,
-    }));
+    firstAction.fire('toolbar-action-drag-start', {itemId: '1'});
 
     let receivedMessage: any = null;
     const listenerChannel = new BroadcastChannel('pinned-action-drag');
@@ -327,10 +550,7 @@ suite('PinnedToolbarActions', function() {
     };
 
     // Trigger dragend
-    container.dispatchEvent(new CustomEvent('toolbar-action-drag-end', {
-      bubbles: true,
-      composed: true,
-    }));
+    container.fire('toolbar-action-drag-end');
 
     assertEquals('drag-end', receivedMessage?.type);
   });
@@ -420,11 +640,7 @@ suite('PinnedToolbarActions', function() {
     const firstAction = actionElements[0]!;
 
     // 1. Start a local drag
-    firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-      detail: {itemId: '1'},
-      bubbles: true,
-      composed: true,
-    }));
+    firstAction.fire('toolbar-action-drag-start', {itemId: '1'});
 
     // Verify it is marked as dragging/placeholder locally
     let keyedStates = container.keyedStates;
@@ -459,11 +675,7 @@ suite('PinnedToolbarActions', function() {
         const firstAction = actionElements[0]!;
 
         // 1. Start a local drag
-        firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-start', {
-          detail: {itemId: '1'},
-          bubbles: true,
-          composed: true,
-        }));
+        firstAction.fire('toolbar-action-drag-start', {itemId: '1'});
 
         // Verify it is marked as dragging/placeholder locally
         let keyedStates = container.keyedStates;
@@ -669,7 +881,7 @@ suite('PinnedToolbarActions', function() {
 
         // 1. Simulate local drag start of Action 1 on its internal button
         const firstActionButton =
-            firstAction.shadowRoot.querySelector('cr-icon-button')!;
+            firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
         const dragStartEvent = new DragEvent('dragstart', {
           bubbles: true,
           cancelable: true,
@@ -727,11 +939,9 @@ suite('PinnedToolbarActions', function() {
 
         // 4. Simulate dragend (browser will report aborted since we didn't call
         // preventDefault)
-        firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-end', {
-          detail: {itemId: '1', dropEffect: 'none'},  // none = aborted
-          bubbles: true,
-          composed: true,
-        }));
+        firstAction.fire(
+            'toolbar-action-drag-end',
+            {itemId: '1', dropEffect: 'none'});  // none = aborted
 
         // Verify layout was reverted to original
         keyedStates = container.keyedStates;
@@ -757,7 +967,7 @@ suite('PinnedToolbarActions', function() {
 
         // 1. Simulate local drag start of Action 1 on its internal button
         const firstActionButton =
-            firstAction.shadowRoot.querySelector('cr-icon-button')!;
+            firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
         const dragStartEvent = new DragEvent('dragstart', {
           bubbles: true,
           cancelable: true,
@@ -798,11 +1008,8 @@ suite('PinnedToolbarActions', function() {
         assertEquals(1, receivedMessages.length);
 
         // 3. Simulate dragend (aborted)
-        firstAction.dispatchEvent(new CustomEvent('toolbar-action-drag-end', {
-          detail: {itemId: '1', dropEffect: 'none'},
-          bubbles: true,
-          composed: true,
-        }));
+        firstAction.fire(
+            'toolbar-action-drag-end', {itemId: '1', dropEffect: 'none'});
         await microtasksFinished();
 
         // Verify layout is updated after drag ends
@@ -826,7 +1033,7 @@ suite('PinnedToolbarActions', function() {
 
     // 1. Simulate local drag start of Action 1
     const firstActionButton =
-        firstAction.shadowRoot.querySelector('cr-icon-button')!;
+        firstAction.shadowRoot.querySelector('toolbar-chip-button')!;
     const dragStartEvent = new DragEvent('dragstart', {
       bubbles: true,
       cancelable: true,

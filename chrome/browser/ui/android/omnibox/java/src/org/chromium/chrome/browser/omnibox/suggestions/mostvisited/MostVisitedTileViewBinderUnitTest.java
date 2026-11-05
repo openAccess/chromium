@@ -4,10 +4,7 @@
 
 package org.chromium.chrome.browser.omnibox.suggestions.mostvisited;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.verify;
+import static org.junit.Assert.assertNotNull;
 
 import android.content.Context;
 import android.view.ContextThemeWrapper;
@@ -39,7 +36,7 @@ public class MostVisitedTileViewBinderUnitTest {
         mContext =
                 new ContextThemeWrapper(
                         ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
-        mView = spy(new TileView(mContext, null));
+        mView = new TileView(mContext, null);
         mModel = new PropertyModel(MostVisitedTileViewProperties.ALL_KEYS);
         mResourceProvider = new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
         PropertyModelChangeProcessor.create(
@@ -50,14 +47,14 @@ public class MostVisitedTileViewBinderUnitTest {
     public void setColorScheme() {
         // Very rudimentary test confirming that tile background is updated when color scheme
         // changes.
+        mView.setBackground(null);
         mResourceProvider.setBrandedColorScheme(BrandedColorScheme.APP_DEFAULT);
         mModel.set(SuggestionCommonProperties.COLOR_SCHEME, BrandedColorScheme.APP_DEFAULT);
-        verify(mView).setBackground(any());
+        assertNotNull(mView.getBackground());
 
-        clearInvocations(mView);
-
+        mView.setBackground(null);
         mResourceProvider.setBrandedColorScheme(BrandedColorScheme.INCOGNITO);
         mModel.set(SuggestionCommonProperties.COLOR_SCHEME, BrandedColorScheme.INCOGNITO);
-        verify(mView).setBackground(any());
+        assertNotNull(mView.getBackground());
     }
 }

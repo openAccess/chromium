@@ -4,18 +4,22 @@
 
 #include "chrome/browser/ui/webui/ash/settings/services/settings_manager/os_settings_manager_factory.h"
 
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs_factory.h"
 #include "chrome/browser/ash/eche_app/eche_app_manager_factory.h"
 #include "chrome/browser/ash/kerberos/kerberos_credentials_manager_factory.h"
 #include "chrome/browser/ash/multidevice_setup/multidevice_setup_client_factory.h"
 #include "chrome/browser/ash/phonehub/phone_hub_manager_factory.h"
+#include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/printing/cups_printers_manager_factory.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/browser_process_platform_part.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/webui/ash/settings/services/settings_manager/os_settings_manager.h"
 #include "chromeos/ash/components/local_search_service/public/cpp/local_search_service_proxy_factory.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace ash::settings {
 
@@ -63,8 +67,13 @@ OsSettingsManagerFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   Profile* profile = Profile::FromBrowserContext(context);
 
+  // NOTE: Allow g_browser_process here as this class is initialized lazily with
+  // base::NoDestructor.
   return std::make_unique<OsSettingsManager>(
-      profile,
+      g_browser_process->local_state(),
+      g_browser_process->GetFeatures()->application_locale_storage(),
+      g_browser_process->platform_part()->browser_policy_connector_ash(),
+      g_browser_process->shared_url_loader_factory(), profile,
       local_search_service::LocalSearchServiceProxyFactory::
           GetForBrowserContext(context),
       multidevice_setup::MultiDeviceSetupClientFactory::GetForProfile(profile),

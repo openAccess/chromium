@@ -9,3 +9,12 @@ const char kTipsMagicStackModuleDisplayedTypeHistogram[] =
 
 const char kTipsMagicStackModuleTappedTypeHistogram[] =
     "IOS.TipsMagicStack.Module.TappedType";
+
+const char kTipsNTPCustomizationPromoActionHistogram[] =
+    "IOS.TipsMagicStack.NTPCustomizationPromo.Action";
+
+const char kSavePasswordsPromoDismissedAction[] =
+    "MobileSavePasswordsPromoDismissed";
+
+const char kAutofillPasswordsPromoDismissedAction[] =
+    "MobileAutofillPasswordsPromoDismissed";

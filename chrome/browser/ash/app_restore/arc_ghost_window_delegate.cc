@@ -12,6 +12,7 @@
 #include "chromeos/ui/base/window_state_type.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
+#include "ui/display/types/display_constants.h"
 
 namespace ash::full_restore {
 
@@ -34,7 +35,7 @@ ArcGhostWindowDelegate::ArcGhostWindowDelegate(
       pending_close_(false),
       window_state_(window_state),
       shell_surface_(shell_surface) {
-  DCHECK(shell_surface);
+  CHECK(shell_surface, base::NotFatalUntil::M160);
 
   observation_.Observe(ArcGhostWindowHandler::Get());
   SetDisplayId(display_id);
@@ -58,6 +59,8 @@ void ArcGhostWindowDelegate::OnStateChanged(
   display::Display display;
   const display::Screen* screen = display::Screen::Get();
   auto display_existed = screen->GetDisplayWithDisplayId(display_id_, &display);
+  // TODO(crbug.com/568455879):CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(display_existed);
 
   switch (new_state) {

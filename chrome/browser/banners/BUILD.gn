@@ -49,7 +49,7 @@ source_set("impl") {
   } else {
     sources += [ "app_banner_manager_desktop.cc" ]
     deps += [
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:intent_picker_tab_helper",
       "//chrome/browser/ui/web_applications",
       "//chrome/browser/web_applications",
       "//chrome/browser/web_applications/mojom:mojom_web_apps_enum",
@@ -66,7 +66,6 @@ source_set("impl") {
       ]
     }
   }
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("test_support") {
@@ -83,7 +82,6 @@ source_set("test_support") {
     public_deps = [ ":banners" ]
     deps += [
       "//base/test:test_support",
-      "//chrome/browser",
       "//chrome/browser/webapps:desktop",
       "//chrome/browser/webapps:desktop_impl",
       "//components/password_manager/content/common",
@@ -107,14 +105,14 @@ source_set("platform_browser_tests") {
     "//url",
   ]
   deps = [
-    "//chrome/browser/ui",
+    "//chrome/test/base:chrome_test_utils",
     "//content/public/browser",
     "//content/test:test_support",
     "//net",
     "//net:test_support",
   ]
   if (!is_android) {
-    public_deps += [ "//chrome/test:test_support_ui" ]
+    public_deps += [ "//chrome/test/base:in_process_browser_test" ]
     deps += [
       "//chrome/browser/web_applications",
       "//chrome/browser/web_applications:web_applications_test_support",
@@ -138,7 +136,9 @@ if (!is_android) {
       "//base/test:test_support",
       "//chrome/app:command_ids",
       "//chrome/browser/profiles:profile",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_actions",
+      "//chrome/browser/ui:browser_command_controller",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/actions:actions_headers",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/browser/ui/web_applications",
@@ -147,7 +147,6 @@ if (!is_android) {
       "//chrome/browser/web_applications/mojom:mojom_web_apps_enum",
       "//chrome/common:chrome_features",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//components/network_session_configurator/common",
       "//components/password_manager/content/common",
       "//components/password_manager/core/common:features",
@@ -180,6 +179,7 @@ if (!is_android) {
       "//chrome/browser/ui/omnibox",
       "//chrome/test:test_support",
       "//chrome/test:test_support_ui_android",
+      "//chrome/test/base:chrome_test_utils",
       "//components/network_session_configurator/common",
       "//components/segmentation_platform/public",
       "//components/segmentation_platform/public:test_support",

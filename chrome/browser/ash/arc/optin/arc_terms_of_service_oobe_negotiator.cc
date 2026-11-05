@@ -9,7 +9,6 @@
 #include "chrome/browser/ash/login/screens/consolidated_consent_screen.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
 
 namespace arc {
 
@@ -17,8 +16,8 @@ namespace {
 
 ash::ConsolidatedConsentScreen* GetConsolidatedConsentScreen() {
   auto* host = ash::LoginDisplayHost::default_host();
-  DCHECK(host);
-  DCHECK(host->GetWizardController());
+  CHECK(host, base::NotFatalUntil::M160);
+  CHECK(host->GetWizardController(), base::NotFatalUntil::M160);
   return host->GetWizardController()
       ->GetScreen<ash::ConsolidatedConsentScreen>();
 }

@@ -2,15 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://resources/cr_elements/cr_hidden_style.css.js';
-import 'chrome://resources/cr_elements/cr_shared_vars.css.js';
+import 'chrome://resources/ash/common/cr_elements/cr_hidden_style.css.js';
+import 'chrome://resources/ash/common/cr_elements/cr_shared_vars.css.js';
 // TODO(gavinwill): Remove iron-dropdown dependency https://crbug.com/1082587.
 import 'chrome://resources/polymer/v3_0/iron-dropdown/iron-dropdown.js';
-import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
+import 'chrome://resources/polymer/v3_0/iron-icon/iron-icon.js';
 import 'chrome://resources/polymer/v3_0/iron-media-query/iron-media-query.js';
 import './print_preview_vars.css.js';
 
-import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
+import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import type {Destination} from '../data/destination_cros.js';
@@ -90,7 +90,10 @@ export class PrintPreviewDestinationDropdownCrosElement extends
 
       drivePosinset: Number,
 
-      seeMorePosinset: Number,
+      opened_: {
+        type: Boolean,
+        value: false,
+      },
     };
   }
 
@@ -114,9 +117,8 @@ export class PrintPreviewDestinationDropdownCrosElement extends
   declare private dropdownLength_: number;
   declare pdfPosinset: number;
   declare drivePosinset: number;
-  declare seeMorePosinset: number;
 
-  private opened_: boolean = false;
+  declare private opened_: boolean;
   private dropdownRefitPending_: boolean = false;
 
   override ready() {
@@ -344,8 +346,7 @@ export class PrintPreviewDestinationDropdownCrosElement extends
       return 0;
     }
 
-    // + 1 for "See more"
-    let length = this.itemList.length + 1;
+    let length = this.itemList.length;
     if (!this.pdfPrinterDisabled) {
       length++;
     }
@@ -383,7 +384,6 @@ export class PrintPreviewDestinationDropdownCrosElement extends
     if (this.driveDestinationKey) {
       this.drivePosinset = currentPosition++;
     }
-    this.seeMorePosinset = currentPosition++;
   }
 }
 

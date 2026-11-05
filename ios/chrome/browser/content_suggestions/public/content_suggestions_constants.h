@@ -46,7 +46,8 @@ enum class ContentSuggestionsModuleType {
   kAppBundlePromo = 22,
   kDefaultBrowser = 23,
   kLevelUp = 24,
-  kMaxValue = kLevelUp,
+  kTipsNTPThemeActionable = 25,
+  kMaxValue = kTipsNTPThemeActionable,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml)
 
@@ -75,6 +76,9 @@ extern NSString* const
 // Represents the shortcuts of the content suggestions.
 extern NSString* const
     kContentSuggestionsShortcutsAccessibilityIdentifierPrefix;
+
+// Represents the standalone AIM Module.
+extern NSString* const kContentSuggestionsAIMModuleAccessibilityIdentifier;
 
 // Represents the Magic Stack ScrollView.
 extern NSString* const kMagicStackScrollViewAccessibilityIdentifier;

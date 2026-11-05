@@ -709,8 +709,12 @@ public class AndroidPaymentAppFinder implements ManifestVerifyCallback {
     }
 
     @Override
-    public void onVerificationError(String errorMessage) {
+    public void onVerificationError(GURL methodName, String errorMessage) {
         Log.e(TAG, errorMessage);
+        // Only report errors for the payment methods that the merchant requested. Other methods
+        // must not be exposed to the merchant, because that would reveal the presence
+        // of the app and its default payment method.
+        if (!mMerchantRequestedUrlPaymentMethods.contains(methodName)) return;
         mFactoryDelegate.onPaymentAppCreationError(errorMessage, AppCreationFailureReason.UNKNOWN);
     }
 
@@ -990,10 +994,6 @@ public class AndroidPaymentAppFinder implements ManifestVerifyCallback {
      * <p>TODO(crbug.com/400531531): Stop special-casing individual payment apps in Chrome.
      */
     private boolean methodHandledByInternalFactory(String method) {
-        if (!PaymentFeatureList.isEnabled(PaymentFeatureList.DEDUPLICATE_NATIVE_PAYMENT_APPS)) {
-            return false;
-        }
-
         if (PaymentFeatureList.isEnabledOrExperimentalFeaturesEnabled(
                 PaymentFeatureList.GOOGLE_PAY_VIA_ANDROID_INTENTS)) {
             return false;

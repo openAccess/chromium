@@ -30,7 +30,7 @@ UsageTracker::UsageTracker(
     const base::flat_map<mojom::QuotaClient*, QuotaClientType>& client_types,
     scoped_refptr<SpecialStoragePolicy> special_storage_policy)
     : quota_manager_impl_(quota_manager_impl) {
-  CHECK(quota_manager_impl_, base::NotFatalUntil::M148);
+  CHECK(quota_manager_impl_);
 
   for (const auto& client_and_type : client_types) {
     mojom::QuotaClient* client = client_and_type.first;
@@ -75,7 +75,7 @@ void UsageTracker::GetBucketUsageWithBreakdown(
     const BucketLocator& bucket,
     UsageWithBreakdownCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(bucket.id, base::NotFatalUntil::M148);
+  CHECK(bucket.id);
   std::vector<UsageWithBreakdownCallback>& bucket_callbacks =
       bucket_usage_callbacks_[bucket];
   bucket_callbacks.emplace_back(std::move(callback));
@@ -137,20 +137,6 @@ std::map<std::string, int64_t> UsageTracker::GetCachedHostsUsage() const {
     }
   }
   return host_usage;
-}
-
-std::map<blink::StorageKey, int64_t> UsageTracker::GetCachedStorageKeysUsage()
-    const {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  std::map<blink::StorageKey, int64_t> storage_key_usage;
-  for (const auto& [client_type, client_tracker] : client_tracker_map_) {
-    const ClientUsageTracker::BucketUsageMap& usage_map =
-        client_tracker->GetCachedBucketsUsage();
-    for (const auto& [bucket, usage] : usage_map) {
-      storage_key_usage[bucket.storage_key] += usage;
-    }
-  }
-  return storage_key_usage;
 }
 
 std::map<BucketLocator, int64_t> UsageTracker::GetCachedBucketsUsage() const {
@@ -260,8 +246,8 @@ void UsageTracker::AccumulateClientGlobalUsage(
     int64_t total_usage,
     int64_t unlimited_usage) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK_GE(unlimited_usage, 0, base::NotFatalUntil::M148);
-  CHECK_GE(total_usage, unlimited_usage, base::NotFatalUntil::M148);
+  CHECK_GE(unlimited_usage, 0);
+  CHECK_GE(total_usage, unlimited_usage);
 
   info->usage += total_usage;
   info->unlimited_usage += unlimited_usage;
@@ -276,8 +262,8 @@ void UsageTracker::AccumulateClientUsageWithBreakdown(
     int64_t total_usage,
     int64_t unlimited_usage) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK_GE(unlimited_usage, 0, base::NotFatalUntil::M148);
-  CHECK_GE(total_usage, unlimited_usage, base::NotFatalUntil::M148);
+  CHECK_GE(unlimited_usage, 0);
+  CHECK_GE(total_usage, unlimited_usage);
 
   info->usage += total_usage;
 
@@ -305,8 +291,8 @@ void UsageTracker::AccumulateClientUsageWithBreakdown(
 void UsageTracker::FinallySendGlobalUsage(
     std::unique_ptr<AccumulateInfo> info) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK_GE(info->unlimited_usage, -1, base::NotFatalUntil::M148);
-  CHECK_GE(info->usage, info->unlimited_usage, base::NotFatalUntil::M148);
+  CHECK_GE(info->unlimited_usage, -1);
+  CHECK_GE(info->usage, info->unlimited_usage);
 
   // Moving callbacks out of the original vector early handles the case where a
   // callback makes a new quota call.
@@ -326,9 +312,8 @@ void UsageTracker::FinallySendStorageKeyUsageWithBreakdown(
 
   std::vector<UsageWithBreakdownCallback> pending_callbacks;
   pending_callbacks.swap(it->second);
-  CHECK(pending_callbacks.size() > 0, base::NotFatalUntil::M148)
-      << "storage_key_usage_callbacks_ should "
-         "only have non-empty callback lists";
+  CHECK(pending_callbacks.size() > 0) << "storage_key_usage_callbacks_ should "
+                                         "only have non-empty callback lists";
   storage_key_usage_callbacks_.erase(it);
 
   for (auto& callback : pending_callbacks)
@@ -345,7 +330,7 @@ void UsageTracker::FinallySendBucketUsageWithBreakdown(
 
   std::vector<UsageWithBreakdownCallback> pending_callbacks;
   pending_callbacks.swap(it->second);
-  CHECK(pending_callbacks.size() > 0, base::NotFatalUntil::M148)
+  CHECK(pending_callbacks.size() > 0)
       << "bucket_usage_callbacks_ should only have non-empty callback lists";
   bucket_usage_callbacks_.erase(it);
 

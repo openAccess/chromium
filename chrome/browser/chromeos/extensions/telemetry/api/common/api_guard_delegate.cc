@@ -21,7 +21,6 @@
 #include "chrome/browser/chromeos/extensions/telemetry/api/common/hardware_info_delegate.h"
 #include "chrome/browser/chromeos/extensions/telemetry/api/common/util.h"
 #include "chrome/browser/extensions/extension_management.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chromeos/extensions/chromeos_system_extension_info.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
@@ -183,7 +182,8 @@ void IsContextUserOwner(content::BrowserContext* context,
 
 class ApiGuardDelegateImpl : public ApiGuardDelegate {
  public:
-  ApiGuardDelegateImpl();
+  explicit ApiGuardDelegateImpl(
+      IsAppUiOpenAndSecureCallback is_app_ui_open_and_secure_callback);
   ApiGuardDelegateImpl(const ApiGuardDelegateImpl&) = delete;
   ApiGuardDelegateImpl& operator=(const ApiGuardDelegateImpl&) = delete;
   ~ApiGuardDelegateImpl() override;
@@ -202,10 +202,14 @@ class ApiGuardDelegateImpl : public ApiGuardDelegate {
                     CanAccessApiCallback callback) override;
 
  private:
+  IsAppUiOpenAndSecureCallback is_app_ui_open_and_secure_callback_;
   std::unique_ptr<AsyncConditionChecker> condition_checker_;
 };
 
-ApiGuardDelegateImpl::ApiGuardDelegateImpl() = default;
+ApiGuardDelegateImpl::ApiGuardDelegateImpl(
+    IsAppUiOpenAndSecureCallback is_app_ui_open_and_secure_callback)
+    : is_app_ui_open_and_secure_callback_(
+          std::move(is_app_ui_open_and_secure_callback)) {}
 
 ApiGuardDelegateImpl::~ApiGuardDelegateImpl() = default;
 
@@ -236,7 +240,7 @@ void ApiGuardDelegateImpl::CanAccessApi(content::BrowserContext* context,
   }
 
   condition_checker_->AppendChecker(
-      base::BindOnce(&IsTelemetryExtensionAppUiOpenAndSecure,
+      base::BindOnce(is_app_ui_open_and_secure_callback_,
                      base::Unretained(context), base::Unretained(extension)),
       "Companion app UI is not open or not secure");
 
@@ -260,7 +264,15 @@ std::unique_ptr<ApiGuardDelegate> ApiGuardDelegate::Factory::Create() {
   if (test_factory_) {
     return test_factory_->CreateInstance();
   }
-  return base::WrapUnique<ApiGuardDelegate>(new ApiGuardDelegateImpl());
+  return base::WrapUnique<ApiGuardDelegate>(new ApiGuardDelegateImpl(
+      base::BindRepeating(&IsTelemetryExtensionAppUiOpenAndSecure)));
+}
+
+// static
+std::unique_ptr<ApiGuardDelegate> ApiGuardDelegate::Factory::CreateForTesting(
+    IsAppUiOpenAndSecureCallback is_app_ui_open_and_secure_callback) {
+  return base::WrapUnique<ApiGuardDelegate>(
+      new ApiGuardDelegateImpl(std::move(is_app_ui_open_and_secure_callback)));
 }
 
 // static

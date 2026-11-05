@@ -5,13 +5,16 @@
 #ifndef CHROME_BROWSER_UI_LENS_LENS_OVERLAY_INTERACTIVE_TEST_BASE_H_
 #define CHROME_BROWSER_UI_LENS_LENS_OVERLAY_INTERACTIVE_TEST_BASE_H_
 
+#include <optional>
 #include <utility>
 
+#include "base/auto_reset.h"
 #include "chrome/browser/autocomplete/chrome_aim_eligibility_service.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service.h"
 #include "chrome/browser/ui/lens/test_lens_search_controller.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/test/user_education/interactive_feature_promo_test.h"
+#include "components/contextual_search/internal/composebox_query_controller.h"
 #include "ui/gfx/geometry/point.h"
 
 class PrefService;
@@ -89,6 +92,13 @@ class LensOverlayInteractiveTestBase : public InteractiveFeaturePromoTest {
   InteractiveTestApi::MultiStep OpenLensOverlayFromImage();
   virtual InteractiveTestApi::MultiStep OpenLensOverlayFromVideo();
 
+  // Simulates a right-click directly in the `web_contents_id` renderer (at the
+  // center of `where` if specified, or the center of the WebContents view
+  // otherwise) without using OS-level mouse button input.
+  InteractiveTestApi::StepBuilder RightClickInWebContents(
+      ui::ElementIdentifier web_contents_id,
+      std::optional<DeepQuery> where = std::nullopt);
+
   InteractiveTestApi::MultiStep WaitForScreenshotRendered(
       ui::ElementIdentifier overlayId);
   InteractiveTestApi::MultiStep FinishScreenshotUpload(int tab_id = 0);
@@ -99,13 +109,23 @@ class LensOverlayInteractiveTestBase : public InteractiveFeaturePromoTest {
       base::OnceCallback<gfx::Point()> target_point,
       int tab_id_int = 0);
 
+  // Waits for an already-opening Lens overlay to be ready, then drags from the
+  // overlay center to `target_point` (in screen coordinates) to select a
+  // region, and completes the screenshot upload for the tab at `tab_id_int`.
+  // The drag is sent directly to the overlay renderer rather than through
+  // OS-level mouse input.
+  InteractiveTestApi::MultiStep SelectRegionInLensOverlay(
+      ui::ElementIdentifier overlay_id,
+      base::OnceCallback<gfx::Point()> target_point,
+      int tab_id_int = 0);
+
   bool TriggerLenOverlayHomeworkPageAction();
 
  protected:
   base::test::ScopedFeatureList feature_list_;
-
- private:
   ui::UserDataFactory::ScopedOverride lens_search_controller_override_;
+  base::AutoReset<bool> ignore_non_official_api_keys_{
+      ComposeboxQueryController::SetIgnoreNonOfficialApiKeysForTesting()};
 };
 
 #endif  // CHROME_BROWSER_UI_LENS_LENS_OVERLAY_INTERACTIVE_TEST_BASE_H_

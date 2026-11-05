@@ -61,8 +61,9 @@ mojom::ActionResultPtr OnToolExecuted(
   script_tool_response->tool->name = name;
   script_tool_response->tool->description = tool->description.Utf8();
   script_tool_response->tool->input_schema = tool->input_schema.Utf8();
+  script_tool_response->tool->output_schema = tool->output_schema.Utf8();
   if (tool->read_only.has_value() || tool->untrusted_content.has_value() ||
-      tool->consequential.has_value()) {
+      tool->consequential.has_value() || tool->debugging.has_value()) {
     script_tool_response->tool->annotations =
         blink::mojom::ScriptToolAnnotations::New();
     if (tool->read_only.has_value()) {
@@ -77,6 +78,10 @@ mojom::ActionResultPtr OnToolExecuted(
       script_tool_response->tool->annotations->consequential =
           tool->consequential.value();
     }
+    if (tool->debugging.has_value()) {
+      script_tool_response->tool->annotations->debugging =
+          tool->debugging.value();
+    }
   }
   if (!response->IsEmpty()) {
     script_tool_response->result = response->Utf8();
@@ -90,7 +95,7 @@ mojom::ActionResultPtr OnToolExecuted(
 
 ScriptTool::ScriptTool(content::RenderFrame& frame,
                        TaskId task_id,
-                       base::UnguessableToken execution_id,
+                       blink::ToolInvocationToken execution_id,
                        Journal& journal,
                        mojom::ToolTargetPtr target,
                        mojom::ObservedToolTargetPtr observed_target,
@@ -106,11 +111,29 @@ ScriptTool::ScriptTool(content::RenderFrame& frame,
 ScriptTool::~ScriptTool() = default;
 
 void ScriptTool::Execute(ToolFinishedCallback callback) {
-  frame_->GetWebFrame()->GetDocument().ExecuteScriptTool(
-      execution_id_.value(), blink::WebString::FromUtf8(action_->name),
-      blink::WebString::FromUtf8(action_->input_arguments),
+  // ExecuteScriptTool() synchronously invokes page JavaScript, which may detach
+  // the owning frame or spin a nested message loop that cancels/destroys
+  // `this`. Copy `execution_id_` onto the stack so the reference passed into
+  // Blink remains valid across re-entrancy.
+  const blink::ToolInvocationToken execution_id = execution_id_.value();
+  auto tool_result_cb =
       base::BindOnce(&OnToolExecuted, action_->name, action_->input_arguments)
-          .Then(std::move(callback)));
+          .Then(std::move(callback));
+  blink::WebDocument document = frame_->GetWebFrame()->GetDocument();
+  // If the browser pinned the action to the tool it observed, execute exactly
+  // that tool, so that a tool the page has since registered under the same
+  // name can't run in its place.
+  if (action_->tool_id) {
+    document.ExecuteScriptTool(
+        execution_id, *action_->tool_id,
+        blink::WebString::FromUtf8(action_->input_arguments),
+        std::move(tool_result_cb));
+    return;
+  }
+  document.ExecuteScriptToolByName(
+      execution_id, blink::WebString::FromUtf8(action_->name),
+      blink::WebString::FromUtf8(action_->input_arguments),
+      std::move(tool_result_cb));
 }
 
 void ScriptTool::Cancel() {
@@ -118,10 +141,12 @@ void ScriptTool::Cancel() {
     return;
   }
   // CancelScriptTool() synchronously dispatches DOM events that might destroy
-  // the owning frame and this tool. Use a weak pointer to detect if `this` is
-  // still valid.
+  // the owning frame and this tool. Copy `execution_id_` onto the stack so the
+  // reference passed into Blink stays valid, and use a weak pointer to detect
+  // if `this` is still valid before resetting `execution_id_`.
+  const blink::ToolInvocationToken execution_id = execution_id_.value();
   base::WeakPtr<ScriptTool> weak_this = weak_ptr_factory_.GetWeakPtr();
-  frame_->GetWebFrame()->GetDocument().CancelScriptTool(execution_id_.value());
+  frame_->GetWebFrame()->GetDocument().CancelScriptTool(execution_id);
   if (weak_this) {
     execution_id_.reset();
   }

@@ -7,8 +7,6 @@ package org.chromium.components.policy;
 import android.os.Handler;
 import android.os.Looper;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -19,7 +17,6 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -28,7 +25,6 @@ import org.chromium.base.test.util.CallbackHelper;
 
 /** Unit tests for {@link EnterpriseInfoImpl}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class EnterpriseInfoImplTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock public EnterpriseInfo.Natives mNatives;
@@ -56,7 +52,6 @@ public class EnterpriseInfoImplTest {
      * and the cached value.
      */
     @Test
-    @SmallTest
     public void testCallbacksGetResultValue() {
         EnterpriseInfoImpl instance = getEnterpriseInfoImpl();
 
@@ -114,7 +109,6 @@ public class EnterpriseInfoImplTest {
      * Test that if getDeviceEnterpriseInfoSync returns correct result with or without cached value.
      */
     @Test
-    @SmallTest
     public void testGetDeviceEnterpriseInfoSync() {
         EnterpriseInfoImpl instance = getEnterpriseInfoImpl();
 
@@ -135,7 +129,6 @@ public class EnterpriseInfoImplTest {
 
     /** Test that if multiple callbacks get queued up that they're all serviced. */
     @Test
-    @SmallTest
     public void testMultipleCallbacksServiced() {
         EnterpriseInfoImpl instance = getEnterpriseInfoImpl();
         CallbackHelper helper = new CallbackHelper();
@@ -166,7 +159,6 @@ public class EnterpriseInfoImplTest {
 
     /** Tests that a reentrant callback doesn't cause a synchronous reentry. */
     @Test
-    @SmallTest
     public void testReentrantCallback() {
         EnterpriseInfoImpl instance = getEnterpriseInfoImpl();
         CallbackHelper helper = new CallbackHelper();
@@ -229,7 +221,6 @@ public class EnterpriseInfoImplTest {
 
     /** Tests that OwnedStates's overridden equals() works as expected. */
     @Test
-    @SmallTest
     public void testOwnedStateEquals() {
         // Two references to the same object are equal. Values don't matter here.
         EnterpriseInfo.OwnedState ref = new EnterpriseInfo.OwnedState(true, true);
@@ -263,7 +254,6 @@ public class EnterpriseInfoImplTest {
     }
 
     @Test
-    @SmallTest
     public void testGetManagedStateForNative() {
         EnterpriseInfo.getManagedStateForNative();
         Mockito.verifyNoMoreInteractions(mNatives);
@@ -274,7 +264,6 @@ public class EnterpriseInfoImplTest {
     }
 
     @Test
-    @SmallTest
     public void testGetManagedStateForNativeNullOwnedState() {
         getEnterpriseInfoImpl().setSkipAsyncCheckForTesting(false);
         EnterpriseInfo.getManagedStateForNative();

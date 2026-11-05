@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 import argparse
+import ntpath
 import os
 import shutil
 import subprocess
@@ -43,7 +44,7 @@ class DownloadFuzzCorporaTest(unittest.TestCase):
       sys.executable,
       'tools/code_coverage/download_fuzz_corpora.py',
       '--download-dir',
-      self.__class__.fake_download_dir,
+      self.fake_download_dir,
     ]
     with self.assertRaises(subprocess.CalledProcessError) as e:
       subprocess.check_call(cmd, cwd=self.__class__.chromium_src_dir)
@@ -66,32 +67,27 @@ class DownloadFuzzCorporaTest(unittest.TestCase):
       zip_path = os.path.join(target_dir, 'latest.zip')
       with zipfile.ZipFile(zip_path, 'w') as zf:
         zf.writestr('test.txt', 'test')
+      return subprocess.CompletedProcess(cmd, returncode=0)
 
     with patch(
       'download_fuzz_corpora._ParseCommandArguments'
     ) as _ParseCommandArgumentsMock:
       with patch('download_fuzz_corpora._gsutil', side_effect=mock_gsutil):
         _ParseCommandArgumentsMock.return_value = argparse.Namespace(
-          download_dir=self.__class__.fake_download_dir,
+          download_dir=self.fake_download_dir,
           build_dir=self.__class__.fake_binary_dir,
           corpora_type='libfuzzer',
           arch='x64',
         )
         download_fuzz_corpora.Main()
         self.assertTrue(
-          os.path.isdir(
-            os.path.join(self.__class__.fake_download_dir, "fake_1_fuzzer")
-          )
+          os.path.isdir(os.path.join(self.fake_download_dir, "fake_1_fuzzer"))
         )
         self.assertTrue(
-          os.path.isdir(
-            os.path.join(self.__class__.fake_download_dir, "fake_2_fuzzer")
-          )
+          os.path.isdir(os.path.join(self.fake_download_dir, "fake_2_fuzzer"))
         )
         self.assertTrue(
-          os.path.isdir(
-            os.path.join(self.__class__.fake_download_dir, "fake_win_fuzzer")
-          )
+          os.path.isdir(os.path.join(self.fake_download_dir, "fake_win_fuzzer"))
         )
         self.assertFalse(
           os.path.isdir(
@@ -100,25 +96,23 @@ class DownloadFuzzCorporaTest(unittest.TestCase):
         )
 
   def test_unzip_corpus(self):
-    target_dir = os.path.join(self.__class__.fake_download_dir, "test_target")
+    target_dir = os.path.join(self.fake_download_dir, "test_target")
     os.makedirs(target_dir, exist_ok=True)
     zip_path = os.path.join(target_dir, "latest.zip")
     with zipfile.ZipFile(zip_path, "w") as zf:
       zf.writestr("test_file.txt", "content")
       zf.writestr("regressions/reg1.txt", "regression content")
 
-    download_fuzz_corpora._unzip_corpus(
-      ("test_target", self.__class__.fake_download_dir)
-    )
+    download_fuzz_corpora._unzip_corpus(("test_target", self.fake_download_dir))
     self.assertTrue(os.path.exists(os.path.join(target_dir, "test_file.txt")))
     self.assertFalse(os.path.exists(zip_path))
     self.assertFalse(os.path.exists(os.path.join(target_dir, "regressions")))
 
   def test_unzip_fuzzilli_corpus(self):
-    target_dir = os.path.join(self.__class__.fake_download_dir, "autozilli-1")
+    target_dir = os.path.join(self.fake_download_dir, "autozilli-1")
     os.makedirs(target_dir, exist_ok=True)
     tgz_path = os.path.join(target_dir, "autozilli-1.tgz")
-    sample_file = os.path.join(self.__class__.fake_download_dir, "sample.js")
+    sample_file = os.path.join(self.fake_download_dir, "sample.js")
     with open(sample_file, "w") as f:
       f.write("print(1);")
     with tarfile.open(tgz_path, "w:gz") as tf:
@@ -126,10 +120,63 @@ class DownloadFuzzCorporaTest(unittest.TestCase):
     os.remove(sample_file)
 
     download_fuzz_corpora._unzip_fuzzilli_corpus(
-      ("autozilli-1.tgz", self.__class__.fake_download_dir)
+      ("autozilli-1.tgz", self.fake_download_dir)
     )
     self.assertTrue(os.path.exists(os.path.join(target_dir, "sample.js")))
     self.assertFalse(os.path.exists(tgz_path))
+
+  def test_unzip_corpus_missing_zip(self):
+    target_dir = os.path.join(self.fake_download_dir, "missing_target")
+    os.makedirs(target_dir, exist_ok=True)
+    # Should not raise even though latest.zip is missing
+    download_fuzz_corpora._unzip_corpus(
+      ("missing_target", self.fake_download_dir)
+    )
+
+  def test_download_fuzz_corpora_missing_corpus(self):
+    def mock_gsutil_fail(cmd, cwd):
+      return subprocess.CompletedProcess(cmd, returncode=1)
+
+    with patch(
+      'download_fuzz_corpora._ParseCommandArguments'
+    ) as _ParseCommandArgumentsMock:
+      with patch('download_fuzz_corpora._gsutil', side_effect=mock_gsutil_fail):
+        _ParseCommandArgumentsMock.return_value = argparse.Namespace(
+          download_dir=self.fake_download_dir,
+          build_dir=self.__class__.fake_binary_dir,
+          corpora_type='libfuzzer',
+          arch='x64',
+        )
+        # Should complete without error even when downloads fail
+        download_fuzz_corpora.Main()
+
+  def test_download_corpus_url_uses_forward_slashes_on_windows(self):
+    with (
+      patch('download_fuzz_corpora.os.path', ntpath),
+      patch('download_fuzz_corpora.os.makedirs'),
+      patch('download_fuzz_corpora._gsutil') as mock_gsutil,
+    ):
+      mock_gsutil.return_value.returncode = 0
+      download_fuzz_corpora._download_corpus(
+        ('fake_1_fuzzer', self.fake_download_dir, 'libfuzzer')
+      )
+      download_fuzz_corpora._download_corpus(
+        ('autozilli-1.tgz', self.fake_download_dir, 'fuzzilli')
+      )
+
+    mock_gsutil.assert_any_call(
+      [
+        'cp',
+        'gs://clusterfuzz-libfuzzer-backup/corpus/libfuzzer/fake_1_fuzzer/'
+        'latest.zip',
+        'fake_1_fuzzer',
+      ],
+      self.fake_download_dir,
+    )
+    mock_gsutil.assert_any_call(
+      ['cp', 'gs://autozilli/autozilli-1.tgz', 'autozilli-1'],
+      self.fake_download_dir,
+    )
 
 
 if __name__ == '__main__':

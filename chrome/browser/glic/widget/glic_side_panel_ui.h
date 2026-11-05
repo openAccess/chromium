@@ -12,13 +12,13 @@
 #include "chrome/browser/glic/common/local_hotkey_manager.h"
 #include "chrome/browser/glic/common/panel_focus_dependent_hotkey_manager.h"
 #include "chrome/browser/glic/common/panel_visibility_dependent_hotkey_manager.h"
-#include "chrome/browser/glic/host/context/glic_screenshot_capturer.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
 #include "chrome/browser/glic/service/glic_ui_embedder.h"
 #include "chrome/browser/glic/widget/glic_view.h"
+#include "chrome/browser/glic/widget/scoped_modal_dialog_manager_delegate.h"
 #include "components/web_modal/web_contents_modal_dialog_host.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
 #include "ui/gfx/geometry/rect.h"
@@ -40,6 +40,7 @@ class GlicInstanceMetrics;
 class GlicSidePanelUi
     : public GlicUiEmbedder,
       public Host::EmbedderDelegate,
+      public Host::Observer,
       public LocalHotkeyManager::Panel,
       public web_modal::WebContentsModalDialogManagerDelegate {
  public:
@@ -65,9 +66,6 @@ class GlicSidePanelUi
   void SwitchConversation(
       glic::mojom::ConversationInfoPtr info,
       mojom::WebClientHandler::SwitchConversationCallback callback) override;
-  void CaptureScreenshot(
-      glic::mojom::WebClientHandler::CaptureScreenshotCallback callback)
-      override;
 
   // GlicUiEmbedder and Host::Delegate:
   bool IsShowing() const override;
@@ -75,6 +73,10 @@ class GlicSidePanelUi
   void ClosePanel() override;
   void OnReload() override;
   void OnMicrophoneStatusChanged(mojom::MicrophoneStatus status) override {}
+
+  // Host::Observer:
+  void ActiveWebContentsChanged(content::WebContents* new_contents) override;
+  void NativeLoadingStateChanged(bool is_showing) override;
 
   void SidePanelStateChanged(GlicSidePanelCoordinator::State state);
 
@@ -95,14 +97,11 @@ class GlicSidePanelUi
  private:
   void OnBrowserWindowActivated(BrowserWindowInterface* bwi);
   void OnBrowserWindowDeactivated(BrowserWindowInterface* bwi);
-  // Focuses on embedder's webcontens.
   void SetFocusDelayed();
-  void SetModalDialogDelegate(
-      web_modal::WebContentsModalDialogManagerDelegate* delegate);
-
   GlicSidePanelCoordinator* GetGlicSidePanelCoordinator() const;
-  base::CallbackListSubscription panel_visibility_subscription_;
   std::unique_ptr<views::View> CreateView(Profile* profile);
+
+  base::CallbackListSubscription panel_visibility_subscription_;
   mojom::PanelState panel_state_;
   raw_ptr<Profile> profile_;
   base::WeakPtr<tabs::TabInterface> tab_;
@@ -116,7 +115,8 @@ class GlicSidePanelUi
   base::CallbackListSubscription activation_subscription_;
   base::CallbackListSubscription deactivation_subscription_;
 
-  std::unique_ptr<GlicScreenshotCapturer> screenshot_capturer_;
+  base::ScopedObservation<Host, Host::Observer> host_observation_{this};
+  ScopedModalDialogManagerDelegate scoped_modal_dialog_delegate_{this};
 
   base::WeakPtrFactory<GlicSidePanelUi> weak_ptr_factory_{this};
 };

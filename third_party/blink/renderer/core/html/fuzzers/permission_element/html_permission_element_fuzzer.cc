@@ -1,3 +1,7 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
 #include <string>
 
 #include "base/test/bind.h"
@@ -81,8 +85,8 @@ class HTMLPermissionElementFuzzer
     Compositor().BeginFrame();
     GetDocument().View()->UpdateAllLifecyclePhasesForTest();
 
-    auto* permission_element = To<HTMLGeolocationElement>(
-        GetDocument().getElementById(AtomicString("target")));
+    auto* permission_element =
+        To<HTMLGeolocationElement>(GetElementById("target"));
 
     // If the element doesn't exist (e.g. if style caused it to not render or be
     // removed?), return.

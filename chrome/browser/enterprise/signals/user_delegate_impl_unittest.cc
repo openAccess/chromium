@@ -9,6 +9,7 @@
 #include "base/files/file_path.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "chrome/browser/enterprise/connectors/device_trust/device_trust_features.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/signin/public/base/consent_level.h"
@@ -25,9 +26,11 @@
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
+#else
 #include "components/enterprise/device_trust/core/fake_device_trust_connector_service.h"
-#endif  // !BUILDFLAG(IS_ANDROID)
+#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace enterprise_signals {
 
@@ -54,6 +57,20 @@ base::ListValue GetUrls() {
 
 class UserDelegateImplTest : public testing::Test {
  protected:
+#if BUILDFLAG(IS_ANDROID)
+  void SetUp() override {
+    // `IsDeviceTrustConnectorAndroidEnabled()` also depends on
+    // `kDeviceTrustConnectorDesktopFormFactors` on desktop form factors. Pin a
+    // non-desktop form factor so that these tests behave the same on all
+    // Android devices.
+    base::android::device_info::set_is_desktop_for_testing(false);
+  }
+
+  void TearDown() override {
+    base::android::device_info::reset_is_desktop_for_testing();
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
+
   void CreateDelegate(
       bool is_managed_user = true,
       std::optional<base::FilePath> profile_path = std::nullopt) {
@@ -128,7 +145,7 @@ TEST_F(UserDelegateImplTest, IsSameUser_NullManager) {
 
   auto account = identity_test_env_.MakePrimaryAccountAvailable(
       kUserEmail, signin::ConsentLevel::kSignin);
-  EXPECT_FALSE(user_delegate_->IsSameUser(account.gaia));
+  EXPECT_FALSE(user_delegate_->IsSameUser(account.GetGaiaId()));
 }
 
 // Tests that IsSameUser returns false when given a different user.
@@ -157,7 +174,7 @@ TEST_F(UserDelegateImplTest, IsSameUser_SameUser) {
       kUserEmail, signin::ConsentLevel::kSignin);
 
   CreateDelegate();
-  EXPECT_TRUE(user_delegate_->IsSameUser(account.gaia));
+  EXPECT_TRUE(user_delegate_->IsSameUser(account.GetGaiaId()));
 }
 
 // Tests that GetPolicyScopesNeedingSignals returns an empty set when
@@ -167,6 +184,116 @@ TEST_F(UserDelegateImplTest, GetPolicyScopesNeedingSignals_Empty) {
   EXPECT_EQ(user_delegate_->GetPolicyScopesNeedingSignals(),
             std::set<policy::PolicyScope>());
 }
+
+#if BUILDFLAG(IS_ANDROID)
+// Tests that GetPrimaryAccountGaiaId returns the Gaia ID of the primary
+// account.
+TEST_F(UserDelegateImplTest, GetPrimaryAccountGaiaId_PrimaryAccount) {
+  auto account = identity_test_env_.MakePrimaryAccountAvailable(
+      kUserEmail, signin::ConsentLevel::kSignin);
+  identity_test_env_.MakeAccountAvailable(
+      kOtherUserEmail, {.set_cookie = true, .gaia_id = kOtherUserGaiaId});
+
+  CreateDelegate();
+  EXPECT_EQ(user_delegate_->GetPrimaryAccountGaiaId(), account.GetGaiaId());
+}
+
+// Tests that GetPrimaryAccountGaiaId returns an empty Gaia ID when there is no
+// primary account.
+TEST_F(UserDelegateImplTest, GetPrimaryAccountGaiaId_NoPrimaryAccount) {
+  identity_test_env_.MakeAccountAvailable(
+      kOtherUserEmail, {.set_cookie = true, .gaia_id = kOtherUserGaiaId});
+
+  CreateDelegate();
+  EXPECT_TRUE(user_delegate_->GetPrimaryAccountGaiaId().empty());
+}
+
+// Tests that GetPrimaryAccountGaiaId returns an empty Gaia ID when the identity
+// manager is a nullptr.
+TEST_F(UserDelegateImplTest, GetPrimaryAccountGaiaId_NullManager) {
+  // Instantiate all of the dependencies and reset the delegate.
+  CreateDelegate();
+  user_delegate_ = std::make_unique<UserDelegateImpl>(
+      testing_profile_.get(), nullptr, signals_dependency_delegate_.get());
+
+  identity_test_env_.MakePrimaryAccountAvailable(kUserEmail,
+                                                 signin::ConsentLevel::kSignin);
+  EXPECT_TRUE(user_delegate_->GetPrimaryAccountGaiaId().empty());
+}
+
+// TODO(crbug.com/463390232): Update these tests once the explicit consent
+// preference is wired for Android managed profiles.
+
+// Tests that consent is not required for a managed user on Android when the
+// DeviceTrustConnectorAndroid feature is enabled.
+TEST_F(UserDelegateImplTest,
+       IsCollectSignalsConsentRequired_FeatureEnabled_ManagedUser) {
+  base::test::ScopedFeatureList feature_list{
+      enterprise_connectors::kDeviceTrustConnectorAndroid};
+  CreateDelegate(/*is_managed_user=*/true);
+  EXPECT_FALSE(user_delegate_->IsCollectSignalsConsentRequired());
+}
+
+// Tests that consent is required for a managed user on desktop form factors
+// when the `kDeviceTrustConnectorDesktopFormFactors` feature is disabled, even
+// when the `kDeviceTrustConnectorAndroid` feature is enabled.
+TEST_F(
+    UserDelegateImplTest,
+    IsCollectSignalsConsentRequired_FeatureEnabled_ManagedUser_DesktopFormFactor) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {enterprise_connectors::kDeviceTrustConnectorAndroid},
+      {enterprise_connectors::kDeviceTrustConnectorDesktopFormFactors});
+  base::android::device_info::set_is_desktop_for_testing(true);
+  CreateDelegate(/*is_managed_user=*/true);
+  EXPECT_TRUE(user_delegate_->IsCollectSignalsConsentRequired());
+}
+
+// Tests that consent is not required for a managed user on desktop form
+// factors when both the `kDeviceTrustConnectorAndroid` and the
+// `kDeviceTrustConnectorDesktopFormFactors` features are enabled.
+TEST_F(
+    UserDelegateImplTest,
+    IsCollectSignalsConsentRequired_FeatureEnabled_ManagedUser_DesktopFormFactorWithDesktopFeature) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {enterprise_connectors::kDeviceTrustConnectorAndroid,
+       enterprise_connectors::kDeviceTrustConnectorDesktopFormFactors},
+      {});
+  base::android::device_info::set_is_desktop_for_testing(true);
+  CreateDelegate(/*is_managed_user=*/true);
+  EXPECT_FALSE(user_delegate_->IsCollectSignalsConsentRequired());
+}
+
+// Tests that consent is required for an unmanaged user on Android even when the
+// DeviceTrustConnectorAndroid feature is enabled.
+TEST_F(UserDelegateImplTest,
+       IsCollectSignalsConsentRequired_FeatureEnabled_UnmanagedUser) {
+  base::test::ScopedFeatureList feature_list{
+      enterprise_connectors::kDeviceTrustConnectorAndroid};
+  CreateDelegate(/*is_managed_user=*/false);
+  EXPECT_TRUE(user_delegate_->IsCollectSignalsConsentRequired());
+}
+
+// Tests that consent is required for a managed user on Android when the
+// DeviceTrustConnectorAndroid feature is disabled.
+TEST_F(UserDelegateImplTest,
+       IsCollectSignalsConsentRequired_FeatureDisabled_ManagedUser) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      enterprise_connectors::kDeviceTrustConnectorAndroid);
+  CreateDelegate(/*is_managed_user=*/true);
+  EXPECT_TRUE(user_delegate_->IsCollectSignalsConsentRequired());
+}
+#else
+// Tests that consent is always required outside of Android.
+TEST_F(UserDelegateImplTest, IsCollectSignalsConsentRequired_NonAndroid) {
+  base::test::ScopedFeatureList feature_list{
+      enterprise_connectors::kDeviceTrustConnectorAndroid};
+  CreateDelegate(/*is_managed_user=*/true);
+  EXPECT_TRUE(user_delegate_->IsCollectSignalsConsentRequired());
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID)
 // Tests what GetPolicyScopesNeedingSignals returns when the policy is enabled

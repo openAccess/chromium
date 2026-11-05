@@ -4,10 +4,7 @@
 
 #include "chrome/browser/finds/core/finds_tab_helper.h"
 
-#if BUILDFLAG(IS_ANDROID)
 #include "base/android/device_info.h"
-#endif
-
 #include "chrome/browser/finds/core/finds_features.h"
 #include "chrome/browser/finds/core/finds_pref_names.h"
 #include "chrome/browser/finds/core/finds_service.h"
@@ -22,6 +19,7 @@
 #include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/page_transition_types.h"
 
 namespace finds {
 
@@ -48,14 +46,12 @@ bool IsValidNavigation(content::NavigationHandle* navigation_handle) {
 
 // static
 bool FindsTabHelper::IsSupportedPlatform() {
-#if BUILDFLAG(IS_ANDROID)
   if (base::android::device_info::is_desktop() ||
       base::android::device_info::is_tv() ||
       base::android::device_info::is_automotive() ||
       base::android::device_info::is_xr()) {
     return false;
   }
-#endif
   return true;
 }
 
@@ -64,8 +60,7 @@ FindsTabHelper::FindsTabHelper(content::WebContents* web_contents,
                                OptimizationGuideKeyedService* opt_guide_service,
                                TemplateURLService* template_url_service,
                                PrefService* pref_service)
-    : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<FindsTabHelper>(*web_contents) {
+    : content::WebContentsObserver(web_contents) {
   // FindsTabHelper should only be created when the FindsService is non-null.
   CHECK(finds_service);
   finds_service_ = finds_service;
@@ -208,8 +203,9 @@ void FindsTabHelper::OnURLOpenedFromOmnibox(OmniboxLog* log) {
   }
   const AutocompleteMatch& match = log->result->match_at(log->selection.line);
   // Identify recent search suggestions styled with the history clock icon.
-  if (match.type == AutocompleteMatchType::SEARCH_HISTORY ||
-      match.type == AutocompleteMatchType::SEARCH_SUGGEST_PERSONALIZED) {
+  if (match.type == omnibox::AutocompleteMatchType::kSearchHistory ||
+      match.type ==
+          omnibox::AutocompleteMatchType::kSearchSuggestPersonalized) {
     // Signal that a recent search suggestion navigation is pending.
     pending_omnibox_recent_search_suggestion_navigation_ = true;
   }
@@ -226,7 +222,5 @@ void FindsTabHelper::OnOptimizationGuideDecision(
     }
   }
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(FindsTabHelper);
 
 }  // namespace finds

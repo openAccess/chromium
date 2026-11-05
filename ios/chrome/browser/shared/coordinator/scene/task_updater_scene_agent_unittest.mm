@@ -19,14 +19,15 @@
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_in_progress.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state_observer.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/scene_ui_blocker_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -42,13 +43,35 @@
 // Fake TaskOrchestrator to record calls.
 @interface FakeTaskOrchestrator : TaskOrchestrator
 @property(nonatomic, assign) TaskExecutionStage stage;
+// The last scene passed to -clearTasksForScene:.
+@property(nonatomic, weak) SceneState* clearedSceneState;
 @end
 
 @implementation FakeTaskOrchestrator
 
 - (void)updateToStage:(TaskExecutionStage)stage
-             forScene:(std::string_view)sceneSessionID {
+             forScene:(SceneState*)sceneState {
   self.stage = stage;
+}
+
+- (void)clearTasksForScene:(SceneState*)sceneState {
+  self.clearedSceneState = sceneState;
+}
+
+@end
+
+// Mimics SceneController, which observes the SceneState before the scene agents
+// and tears down the UI when the scene is disconnected.
+@interface FakeTeardownUISceneObserver : NSObject <SceneStateObserver>
+@end
+
+@implementation FakeTeardownUISceneObserver
+
+- (void)sceneState:(SceneState*)sceneState
+    transitionedToActivationLevel:(SceneActivationLevel)level {
+  if (level == SceneActivationLevelDisconnected) {
+    sceneState.UIEnabled = NO;
+  }
 }
 
 @end
@@ -71,11 +94,10 @@ class TaskUpdaterSceneAgentTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
-    profile_ = std::move(builder).Build();
+    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
     fake_startup_information_ = [[FakeStartupInformation alloc] init];
     app_state_ =
@@ -85,11 +107,16 @@ class TaskUpdaterSceneAgentTest : public PlatformTest {
     [app_state_ setValue:fake_task_orchestrator_ forKey:@"taskOrchestrator"];
 
     profile_state_ = [[ProfileState alloc] initWithAppState:app_state_];
-    profile_state_.profile = profile_.get();
+    profile_state_.profile = profile_;
 
-    scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_.get()];
+    id fake_scene = OCMClassMock([UIWindowScene class]);
+    id fake_session = OCMClassMock([UISceneSession class]);
+    OCMStub([fake_session persistentIdentifier]).andReturn(@"scene-1");
+    OCMStub([fake_scene session]).andReturn(fake_session);
+
+    scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_];
     scene_state_.profileState = profile_state_;
-    scene_state_.sceneSessionID = "scene-1";
+    scene_state_.scene = fake_scene;
 
     agent_ = [[TaskUpdaterSceneAgent alloc] init];
     [scene_state_ addAgent:agent_];
@@ -101,29 +128,38 @@ class TaskUpdaterSceneAgentTest : public PlatformTest {
 
   void TearDown() override {
     [(OCMockObject*)mock_application_ stopMocking];
+    mock_application_ = nil;
     [scene_state_ shutdown];
+    scene_state_ = nil;
+    agent_ = nil;
+    profile_state_ = nil;
+    fake_task_orchestrator_ = nil;
+    app_state_ = nil;
+    fake_startup_information_ = nil;
+    profile_ = nullptr;
     PlatformTest::TearDown();
   }
 
   AuthenticationService* auth_service() {
-    return AuthenticationServiceFactory::GetForProfile(profile_.get());
+    return AuthenticationServiceFactory::GetForProfile(profile_);
   }
 
   signin::IdentityManager* identity_manager() {
-    return IdentityManagerFactory::GetForProfile(profile_.get());
+    return IdentityManagerFactory::GetForProfile(profile_);
   }
 
   web::WebTaskEnvironment task_environment_;
   base::test::ScopedFeatureList scoped_feature_list_;
   IOSChromeScopedTestingLocalState local_state_;
-  std::unique_ptr<TestProfileIOS> profile_;
-  FakeStartupInformation* fake_startup_information_;
-  AppState* app_state_;
-  FakeTaskOrchestrator* fake_task_orchestrator_;
-  ProfileState* profile_state_;
-  FakeSceneState* scene_state_;
-  TaskUpdaterSceneAgent* agent_;
-  id mock_application_;
+  TestProfileManagerIOS profile_manager_;
+  raw_ptr<TestProfileIOS> profile_ = nullptr;
+  FakeStartupInformation* fake_startup_information_ = nil;
+  AppState* app_state_ = nil;
+  FakeTaskOrchestrator* fake_task_orchestrator_ = nil;
+  ProfileState* profile_state_ = nil;
+  FakeSceneState* scene_state_ = nil;
+  TaskUpdaterSceneAgent* agent_ = nil;
+  id mock_application_ = nil;
 };
 
 // Tests that TaskExecutionProfileLoaded is sent when profile is loaded.
@@ -149,33 +185,6 @@ TEST_F(TaskUpdaterSceneAgentTest, TestUIReady) {
 
   EXPECT_EQ(fake_task_orchestrator_.stage,
             TaskExecutionStage::TaskExecutionUIReady);
-}
-
-// Tests that TaskExecutionUIReady is NOT sent if there is a UI blocker.
-TEST_F(TaskUpdaterSceneAgentTest, TestUIBlocker) {
-  SetProfileStateInitStage(profile_state_, ProfileInitStage::kFinal);
-  scene_state_.UIEnabled = YES;
-
-  // Set a UI blocker before becoming active.
-  FakeSceneState* blocker_target =
-      [[FakeSceneState alloc] initWithProfile:profile_.get()];
-  scene_state_.profileState = profile_state_;
-  scene_state_.sceneSessionID = "scene-2";
-  [profile_state_ incrementBlockingUICounterForTarget:blocker_target];
-
-  scene_state_.activationLevel = SceneActivationLevelForegroundActive;
-
-  // Should NOT be ready.
-  EXPECT_NE(fake_task_orchestrator_.stage,
-            TaskExecutionStage::TaskExecutionUIReady);
-
-  // Remove UI blocker.
-  [profile_state_ decrementBlockingUICounterForTarget:blocker_target];
-
-  EXPECT_EQ(fake_task_orchestrator_.stage,
-            TaskExecutionStage::TaskExecutionUIReady);
-
-  [blocker_target shutdown];
 }
 
 // Tests that TaskExecutionUIReady is NOT sent if presenting modal overlay.
@@ -276,4 +285,96 @@ TEST_F(TaskUpdaterSceneAgentTest, TestUIReadyResetToStageNone) {
   // Should be reset to None.
   EXPECT_EQ(fake_task_orchestrator_.stage,
             TaskExecutionStage::TaskExecutionStageNone);
+}
+
+// Test that TaskExecutionProfileLoaded is sent when presentingModalOverlay
+// becomes YES after reaching TaskExecutionUIReady.
+TEST_F(TaskUpdaterSceneAgentTest, TestUIReadyResetOnModalOverlay) {
+  SetProfileStateInitStage(profile_state_, ProfileInitStage::kFinal);
+  scene_state_.UIEnabled = YES;
+  scene_state_.activationLevel = SceneActivationLevelForegroundActive;
+
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionUIReady);
+
+  scene_state_.uiBlockerState.presentingModalOverlay = YES;
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionProfileLoaded);
+
+  scene_state_.uiBlockerState.presentingModalOverlay = NO;
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionUIReady);
+}
+
+// Test that TaskExecutionProfileLoaded is sent when a sign-in flow starts
+// after reaching TaskExecutionUIReady, and restored when sign-in ends.
+TEST_F(TaskUpdaterSceneAgentTest, TestUIReadyResetOnSigninStart) {
+  SetProfileStateInitStage(profile_state_, ProfileInitStage::kFinal);
+  scene_state_.UIEnabled = YES;
+  scene_state_.activationLevel = SceneActivationLevelForegroundActive;
+
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionUIReady);
+
+  {
+    std::unique_ptr<SigninInProgress> signin_in_progress =
+        [scene_state_ createSigninInProgress];
+    EXPECT_EQ(fake_task_orchestrator_.stage,
+              TaskExecutionStage::TaskExecutionProfileLoaded);
+  }
+
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionUIReady);
+}
+
+// Tests that the tasks are cleared when a scene without UI is disconnected.
+TEST_F(TaskUpdaterSceneAgentTest, TestClearTasksOnDisconnectWithoutUI) {
+  SetProfileStateInitStage(profile_state_, ProfileInitStage::kProfileLoaded);
+
+  scene_state_.activationLevel = SceneActivationLevelDisconnected;
+
+  EXPECT_EQ(scene_state_, fake_task_orchestrator_.clearedSceneState);
+}
+
+// Tests that the tasks are cleared when a scene with UI is disconnected. The UI
+// is torn down before the agent is notified of the disconnection, which stops
+// the agent from observing the scene.
+TEST_F(TaskUpdaterSceneAgentTest, TestClearTasksOnDisconnectWithUI) {
+  FakeSceneState* scene_state =
+      [[FakeSceneState alloc] initWithProfile:profile_.get()];
+  scene_state.profileState = profile_state_;
+  scene_state.scene = scene_state_.scene;
+  FakeTeardownUISceneObserver* teardown_observer =
+      [[FakeTeardownUISceneObserver alloc] init];
+  [scene_state addObserver:teardown_observer];
+  [scene_state addAgent:[[TaskUpdaterSceneAgent alloc] init]];
+
+  SetProfileStateInitStage(profile_state_, ProfileInitStage::kFinal);
+  scene_state.UIEnabled = YES;
+  scene_state.activationLevel = SceneActivationLevelForegroundActive;
+  ASSERT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionUIReady);
+
+  scene_state.activationLevel = SceneActivationLevelDisconnected;
+
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionStageNone);
+  EXPECT_EQ(scene_state, fake_task_orchestrator_.clearedSceneState);
+
+  [scene_state removeObserver:teardown_observer];
+  [scene_state shutdown];
+}
+
+// Tests that the tasks are not cleared when the UI is disabled while the scene
+// is still connected.
+TEST_F(TaskUpdaterSceneAgentTest, TestDisableUIWithoutDisconnectKeepsTasks) {
+  SetProfileStateInitStage(profile_state_, ProfileInitStage::kFinal);
+  scene_state_.UIEnabled = YES;
+  scene_state_.activationLevel = SceneActivationLevelForegroundActive;
+
+  scene_state_.UIEnabled = NO;
+
+  EXPECT_EQ(fake_task_orchestrator_.stage,
+            TaskExecutionStage::TaskExecutionStageNone);
+  EXPECT_EQ(nullptr, fake_task_orchestrator_.clearedSceneState);
 }

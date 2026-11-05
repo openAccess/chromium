@@ -23,10 +23,10 @@
           "optimization_guide.model_execution.autofill_prediction_improvements_enterprise_policy_allowed": {
             "value": 0
           },
-          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
             "value": 0
           },
-          "optimization_guide.model_execution.history_search_enterprise_policy_allowed": {
+          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
             "value": 0
           },
           "optimization_guide.model_execution.tab_compare_settings_enterprise_policy": {
@@ -66,10 +66,10 @@
           "optimization_guide.model_execution.autofill_prediction_improvements_enterprise_policy_allowed": {
             "value": 1
           },
-          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
             "value": 1
           },
-          "optimization_guide.model_execution.history_search_enterprise_policy_allowed": {
+          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
             "value": 1
           },
           "optimization_guide.model_execution.tab_compare_settings_enterprise_policy": {
@@ -109,10 +109,10 @@
           "optimization_guide.model_execution.autofill_prediction_improvements_enterprise_policy_allowed": {
             "value": 2
           },
-          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
             "value": 2
           },
-          "optimization_guide.model_execution.history_search_enterprise_policy_allowed": {
+          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
             "value": 2
           },
           "optimization_guide.model_execution.tab_compare_settings_enterprise_policy": {
@@ -150,10 +150,10 @@
           "optimization_guide.model_execution.autofill_prediction_improvements_enterprise_policy_allowed": {
             "default_value": 0
           },
-          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
             "default_value": 0
           },
-          "optimization_guide.model_execution.history_search_enterprise_policy_allowed": {
+          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
             "default_value": 0
           },
           "optimization_guide.model_execution.tab_compare_settings_enterprise_policy": {
@@ -183,14 +183,14 @@
           "CreateThemesSettings": 2,
           "DevToolsGenAiSettings": 2,
           "HelpMeWriteSettings": 2,
-          "HistorySearchSettings": 2,
           "TabCompareSettings": 2,
           "GeminiSettings": 1,
           "AIModeSettings": 1,
           "LensOverlaySettings": 1,
           "AutomatedPasswordChangeSettings": 2,
           "SearchContentSharingSettings": 1,
-          "ThirdPartyAiChatSettings": 1
+          "ThirdPartyAiChatSettings": 1,
+          "AutofillGenAiSettings": 2
         },
         "prefs": {
           "devtools.gen_ai_settings": {
@@ -199,10 +199,10 @@
           "optimization_guide.model_execution.autofill_prediction_improvements_enterprise_policy_allowed": {
             "value": 2
           },
-          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
             "value": 2
           },
-          "optimization_guide.model_execution.history_search_enterprise_policy_allowed": {
+          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
             "value": 2
           },
           "optimization_guide.model_execution.tab_compare_settings_enterprise_policy": {
@@ -270,10 +270,10 @@
           "optimization_guide.model_execution.autofill_prediction_improvements_enterprise_policy_allowed": {
             "value": 0
           },
-          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
             "value": 0
           },
-          "optimization_guide.model_execution.history_search_enterprise_policy_allowed": {
+          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
             "value": 0
           },
           "optimization_guide.model_execution.tab_compare_settings_enterprise_policy": {
@@ -329,10 +329,10 @@
           "optimization_guide.model_execution.autofill_prediction_improvements_enterprise_policy_allowed": {
             "value": 1
           },
-          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
             "value": 1
           },
-          "optimization_guide.model_execution.history_search_enterprise_policy_allowed": {
+          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
             "value": 1
           },
           "optimization_guide.model_execution.tab_compare_settings_enterprise_policy": {
@@ -384,14 +384,14 @@
           "GenAIWallpaperSettings": 2,
           "HelpMeReadSettings": 2,
           "HelpMeWriteSettings": 2,
-          "HistorySearchSettings": 2,
           "TabCompareSettings": 2,
           "GeminiSettings": 1,
           "AIModeSettings": 1,
           "LensOverlaySettings": 1,
           "AutomatedPasswordChangeSettings": 2,
           "SearchContentSharingSettings": 1,
-          "ThirdPartyAiChatSettings": 1
+          "ThirdPartyAiChatSettings": 1,
+          "AutofillGenAiSettings": 2
         },
         "prefs": {
           "ash.gen_ai_photo_editing_settings": {
@@ -415,10 +415,10 @@
           "optimization_guide.model_execution.autofill_prediction_improvements_enterprise_policy_allowed": {
             "value": 2
           },
-          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
             "value": 2
           },
-          "optimization_guide.model_execution.history_search_enterprise_policy_allowed": {
+          "optimization_guide.model_execution.compose_enterprise_policy_allowed": {
             "value": 2
           },
           "optimization_guide.model_execution.tab_compare_settings_enterprise_policy": {
@@ -479,6 +479,9 @@
           },
           "omnibox.third_party_ai_chat_settings": {
             "value": 0
+          },
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
+            "value": 0
           }
         }
       },
@@ -498,6 +501,9 @@
           },
           "omnibox.third_party_ai_chat_settings": {
             "value": 0
+          },
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
+            "value": 1
           }
         }
       },
@@ -517,6 +523,9 @@
           },
           "omnibox.third_party_ai_chat_settings": {
             "value": 1
+          },
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
+            "value": 2
           }
         }
       },
@@ -534,6 +543,9 @@
           },
           "omnibox.third_party_ai_chat_settings": {
             "default_value": 0
+          },
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
+            "default_value": 0
           }
         }
       },
@@ -543,7 +555,8 @@
           "AIModeSettings": 1,
           "SearchContentSharingSettings": 1,
           "FindsSettings": 1,
-          "ThirdPartyAiChatSettings": 1
+          "ThirdPartyAiChatSettings": 1,
+          "AutofillGenAiSettings": 1
         },
         "prefs": {
           "omnibox.ai_mode_settings": {
@@ -556,6 +569,9 @@
             "value": 1
           },
           "omnibox.third_party_ai_chat_settings": {
+            "value": 1
+          },
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
             "value": 1
           }
         }
@@ -566,7 +582,8 @@
           "AIModeSettings": 1,
           "SearchContentSharingSettings": 1,
           "FindsSettings": 1,
-          "ThirdPartyAiChatSettings": 1
+          "ThirdPartyAiChatSettings": 1,
+          "AutofillGenAiSettings": 2
         },
         "prefs": {
           "omnibox.ai_mode_settings": {
@@ -580,6 +597,9 @@
           },
           "omnibox.third_party_ai_chat_settings": {
             "value": 1
+          },
+          "autofill.personal_context.find_and_fill_with_gemini_settings": {
+            "value": 2
           }
         }
       }

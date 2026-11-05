@@ -22,8 +22,8 @@
 #include "chrome/browser/download/download_item_warning_data.h"
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager.h"
-#include "chrome/browser/safe_browsing/advanced_protection_status_manager_factory.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager.h"
+#include "chrome/browser/safe_browsing/advanced_protection/advanced_protection_status_manager_factory.h"
 #include "chrome/browser/safe_browsing/download_protection/check_client_download_request_base.h"
 #include "chrome/browser/safe_browsing/download_protection/download_item_metadata.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
@@ -33,7 +33,7 @@
 #include "components/download/public/common/download_danger_type.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
@@ -111,7 +111,7 @@ CheckClientDownloadRequest::CheckClientDownloadRequest(
       item_(item),
       password_(password.CopyAsOptional()),
       callback_(callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   item_->AddObserver(this);
   DVLOG(2) << "Starting SafeBrowsing download check for: "
            << item_->DebugString(true);
@@ -179,7 +179,7 @@ MayCheckDownloadResult CheckClientDownloadRequest::IsSupportedDownload(
 }
 
 CheckClientDownloadRequest::~CheckClientDownloadRequest() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   item_->RemoveObserver(this);
 }
 
@@ -213,7 +213,7 @@ CheckClientDownloadRequest::GetWeakPtr() {
 
 void CheckClientDownloadRequest::NotifySendRequest(
     const ClientDownloadRequest* request) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   service()->client_download_request_callbacks_.Notify(item_, request);
   UMA_HISTOGRAM_COUNTS_100(
       "SafeBrowsing.ReferrerURLChainSize.DownloadAttribution",
@@ -228,10 +228,11 @@ void CheckClientDownloadRequest::NotifySendRequest(
 void CheckClientDownloadRequest::SetDownloadProtectionData(
     const std::string& token,
     const ClientDownloadResponse::Verdict& verdict,
-    const ClientDownloadResponse::TailoredVerdict& tailored_verdict) {
-  DCHECK(!token.empty());
-  DownloadProtectionService::SetDownloadProtectionData(item_, token, verdict,
-                                                       tailored_verdict);
+    const ClientDownloadResponse::TailoredVerdict& tailored_verdict,
+    bool is_registered_app_store) {
+  CHECK(!token.empty() || is_registered_app_store, base::NotFatalUntil::M162);
+  DownloadProtectionService::SetDownloadProtectionData(
+      item_, token, verdict, tailored_verdict, is_registered_app_store);
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -310,9 +311,6 @@ void CheckClientDownloadRequest::UploadBinary(
     DownloadCheckResult result,
     DownloadCheckResultReason reason,
     enterprise_connectors::AnalysisSettings settings) {
-  if (!IsDeepScanningEnabled()) {
-    return;
-  }
   auto metadata = std::make_unique<DownloadItemMetadata>(item_);
   metadata->SetCallback(callback_);
   auto weak_metadata = metadata->GetWeakPtr();
@@ -329,7 +327,7 @@ void CheckClientDownloadRequest::UploadBinary(
 void CheckClientDownloadRequest::NotifyRequestFinished(
     DownloadCheckResult result,
     DownloadCheckResultReason reason) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
   weakptr_factory_.InvalidateWeakPtrs();
 
   DVLOG(2) << "SafeBrowsing download verdict for: " << item_->DebugString(true)

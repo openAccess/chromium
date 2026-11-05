@@ -85,7 +85,18 @@ AxisEdge AxisEdgeFromItemPosition(GridTrackSizingDirection track_direction,
       return AxisEdge::kStart;
   }
 
-  switch (const auto item_position = alignment.GetPosition()) {
+  // For grid-lanes, 'flow-start'/'flow-end' follow the direction items are
+  // placed in along the axis being aligned. 'track-reverse' always reverses
+  // the grid axis, and 'fill-reverse' always reverses the stacking axis, so
+  // `track_direction` selects which of the two flags applies here. Plain
+  // 'start'/'end' stay writing-mode-relative and are unaffected.
+  const bool is_alignment_axis_reversed =
+      parent_grid_style.IsDisplayGridLanes() &&
+      (parent_grid_style.HasGridTrackAxis(track_direction)
+           ? parent_grid_style.IsReverseGridLanesTrackDirection()
+           : parent_grid_style.IsReverseGridLanesFillDirection());
+
+  switch (const auto item_position = alignment.GetUsedPosition()) {
     case ItemPosition::kSelfStart:
     case ItemPosition::kSelfEnd: {
       // In order to determine the correct "self" axis-edge without a
@@ -111,10 +122,12 @@ AxisEdge AxisEdgeFromItemPosition(GridTrackSizingDirection track_direction,
     case ItemPosition::kAnchorCenter:
     case ItemPosition::kCenter:
       return AxisEdge::kCenter;
-    case ItemPosition::kFlexStart:
+    case ItemPosition::kFlowStart:
+      return is_alignment_axis_reversed ? AxisEdge::kEnd : AxisEdge::kStart;
     case ItemPosition::kStart:
       return AxisEdge::kStart;
-    case ItemPosition::kFlexEnd:
+    case ItemPosition::kFlowEnd:
+      return is_alignment_axis_reversed ? AxisEdge::kStart : AxisEdge::kEnd;
     case ItemPosition::kEnd:
       return AxisEdge::kEnd;
     case ItemPosition::kStretch:
@@ -139,7 +152,12 @@ AxisEdge AxisEdgeFromItemPosition(GridTrackSizingDirection track_direction,
         *auto_behavior = is_replaced ? AutoSizeBehavior::kFitContent
                                      : AutoSizeBehavior::kStretchImplicit;
       }
-      return AxisEdge::kStart;
+      // Reverse the default static-position alignment for OOF items only;
+      // in-flow items retain their normal alignment within the track.
+      return is_out_of_flow && is_alignment_axis_reversed ? AxisEdge::kEnd
+                                                          : AxisEdge::kStart;
+    case ItemPosition::kFlexStart:
+    case ItemPosition::kFlexEnd:
     case ItemPosition::kLegacy:
     case ItemPosition::kAuto:
       NOTREACHED();
@@ -184,28 +202,44 @@ GridItemData::GridItemData(
   //   https://drafts.csswg.org/css-contain-2/#containment-layout
   //   https://drafts.csswg.org/css-contain-2/#containment-paint
   //
-  // TODO(almaher): Check for grid-lanes here, as well, once we add support
-  // for grid-lanes subgridded to another grid* container.
-  if (node.IsGrid() && !node.ShouldApplyLayoutContainment() &&
+  // TODO(yanlingwang): Allow grid-lanes subgrids inside regular grid
+  // containers once that combination is supported.
+  const bool may_be_grid_lanes_subgrid =
+      node.IsGridLanes() && parent_grid_style.IsDisplayGridLanes();
+  if ((node.IsGrid() || may_be_grid_lanes_subgrid) &&
+      !node.ShouldApplyLayoutContainment() &&
       !node.ShouldApplyPaintContainment() &&
       !style.IsContainerForSizeContainerQueries()) {
-    has_subgridded_columns =
-        is_parallel_with_root_grid
-            ? style.GridTemplateColumns().IsSubgriddedAxis()
-            : style.GridTemplateRows().IsSubgriddedAxis();
-    has_subgridded_rows = is_parallel_with_root_grid
-                              ? style.GridTemplateRows().IsSubgriddedAxis()
-                              : style.GridTemplateColumns().IsSubgriddedAxis();
+    bool allows_subgridded_columns = true;
+    bool allows_subgridded_rows = true;
+    auto restrict_to_grid_lanes_axis =
+        [&](const ComputedStyle& grid_lanes_style) {
+          const bool grid_axis_is_columns_in_root =
+              IsParallelWritingMode(
+                  root_grid_writing_direction.GetWritingMode(),
+                  grid_lanes_style.GetWritingMode()) ==
+              (grid_lanes_style.GridLanesTrackSizingDirection() == kForColumns);
+          allows_subgridded_columns &= grid_axis_is_columns_in_root;
+          allows_subgridded_rows &= !grid_axis_is_columns_in_root;
+        };
 
-    // If the parent grid is a grid-lanes container, then we only consider
-    // subgrids in the grid axis.
-    if (parent_grid_style.IsDisplayGridLanes()) {
-      if (parent_grid_style.GridLanesTrackSizingDirection() == kForColumns) {
-        has_subgridded_rows = false;
-      } else {
-        has_subgridded_columns = false;
-      }
+    if (node.IsGridLanes()) {
+      restrict_to_grid_lanes_axis(style);
     }
+    if (parent_grid_style.IsDisplayGridLanes()) {
+      restrict_to_grid_lanes_axis(parent_grid_style);
+    }
+
+    has_subgridded_columns =
+        allows_subgridded_columns &&
+        (is_parallel_with_root_grid
+             ? style.GridTemplateColumns().IsSubgriddedAxis()
+             : style.GridTemplateRows().IsSubgriddedAxis());
+    has_subgridded_rows =
+        allows_subgridded_rows &&
+        (is_parallel_with_root_grid
+             ? style.GridTemplateRows().IsSubgriddedAxis()
+             : style.GridTemplateColumns().IsSubgriddedAxis());
   }
 
   const bool is_out_of_flow = node.IsOutOfFlowPositioned();

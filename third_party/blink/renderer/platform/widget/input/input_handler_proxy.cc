@@ -59,7 +59,8 @@ using ::perfetto::protos::pbzero::ChromeLatencyInfo2;
 using ::perfetto::protos::pbzero::TrackEvent;
 
 cc::ScrollStateData CreateScrollStateDataForGesture(
-    const WebGestureEvent& event) {
+    const WebGestureEvent& event,
+    bool prevent_scroll_update_axis_locking = false) {
   cc::ScrollStateData scroll_state_data;
   if (event.SourceDevice() == WebGestureDevice::kScrollbar) {
     scroll_state_data.is_scrollbar_interaction = true;
@@ -68,8 +69,23 @@ cc::ScrollStateData CreateScrollStateDataForGesture(
     case WebInputEvent::Type::kGestureScrollBegin:
       scroll_state_data.position_x = event.PositionInWidget().x();
       scroll_state_data.position_y = event.PositionInWidget().y();
-      scroll_state_data.delta_x_hint = -event.data.scroll_begin.delta_x_hint;
-      scroll_state_data.delta_y_hint = -event.data.scroll_begin.delta_y_hint;
+
+      // For GestureScrollBegin, we always honor rails_mode on delta hints.
+      // InputHandler determines the scroller to latch to during
+      // GestureScrollBegin. Using unlocked values can make it difficult for the
+      // user to latch onto a parent scroller if we don't ignore tiny deltas in
+      // the axis perpendicular to the user's movement.
+      scroll_state_data.delta_x_hint =
+          event.data.scroll_begin.rails_mode ==
+                  ui::GestureScrollRailsMode::kVertical
+              ? 0
+              : -event.data.scroll_begin.delta_x_hint;
+      scroll_state_data.delta_y_hint =
+          event.data.scroll_begin.rails_mode ==
+                  ui::GestureScrollRailsMode::kHorizontal
+              ? 0
+              : -event.data.scroll_begin.delta_y_hint;
+
       scroll_state_data.is_beginning = true;
       // On Mac, a GestureScrollBegin in the inertial phase indicates a fling
       // start.
@@ -95,9 +111,21 @@ cc::ScrollStateData CreateScrollStateDataForGesture(
       }
 
       break;
-    case WebInputEvent::Type::kGestureScrollUpdate:
-      scroll_state_data.delta_x = -event.data.scroll_update.delta_x;
-      scroll_state_data.delta_y = -event.data.scroll_update.delta_y;
+    case WebInputEvent::Type::kGestureScrollUpdate: {
+      // For GestureScrollUpdate, locking is only applied if the latched
+      // scroll node does not prevent axis locking (e.g. scroll-axis-lock !=
+      // none).
+      scroll_state_data.delta_x = (!prevent_scroll_update_axis_locking &&
+                                   event.data.scroll_update.rails_mode ==
+                                       ui::GestureScrollRailsMode::kVertical)
+                                      ? 0
+                                      : -event.data.scroll_update.delta_x;
+      scroll_state_data.delta_y = (!prevent_scroll_update_axis_locking &&
+                                   event.data.scroll_update.rails_mode ==
+                                       ui::GestureScrollRailsMode::kHorizontal)
+                                      ? 0
+                                      : -event.data.scroll_update.delta_y;
+
       scroll_state_data.delta_x_unconstrained =
           -event.data.scroll_update.delta_x_unconstrained;
       scroll_state_data.delta_y_unconstrained =
@@ -108,6 +136,7 @@ cc::ScrollStateData CreateScrollStateDataForGesture(
       scroll_state_data.delta_granularity =
           event.data.scroll_update.delta_units;
       break;
+    }
     case WebInputEvent::Type::kGestureScrollEnd:
       scroll_state_data.is_ending = true;
       break;
@@ -674,6 +703,12 @@ bool InputHandlerProxy::HasQueuedEventsReadyForDispatch(
 void InputHandlerProxy::DispatchQueuedInputEvents(bool frame_aligned) {
   //  Coalesce all events in the queue before dispatching.
   auto sample_time = base::TimeTicks::Max();
+
+  // Skip coalescing when no events can be dispatched, as coalescing resets
+  // the backlog and updates held event timestamps.
+  if (!HasQueuedEventsReadyForDispatch(frame_aligned, sample_time)) {
+    return;
+  }
 
   compositor_event_queue_->CoalesceEvents(sample_time);
   while (HasQueuedEventsReadyForDispatch(frame_aligned, sample_time)) {
@@ -1274,7 +1309,8 @@ InputHandlerProxy::HandleGestureScrollUpdate(
     return DROP_EVENT;
   }
 
-  const auto scroll_state_data = CreateScrollStateDataForGesture(gesture_event);
+  const auto scroll_state_data = CreateScrollStateDataForGesture(
+      gesture_event, input_handler_->prevent_scroll_axis_locking());
   in_inertial_scrolling_ = scroll_state_data.is_in_inertial_phase;
 
   TRACE_EVENT_INSTANT(
@@ -1408,15 +1444,18 @@ cc::InputHandlerScrollEndResult InputHandlerProxy::InputHandlerScrollEnd(
   return result;
 }
 
-InputHandlerProxy::EventDisposition InputHandlerProxy::HitTestTouchEvent(
+InputHandlerProxy::HitTestTouchEventResult InputHandlerProxy::HitTestTouchEvent(
     const WebTouchEvent& touch_event,
-    bool* is_touching_scrolling_layer,
-    cc::TouchAction* allowed_touch_action) {
+    bool* is_touching_scrolling_layer) {
   TRACE_EVENT1("input", "InputHandlerProxy::HitTestTouchEvent",
                "Needs allowed TouchAction",
-               static_cast<bool>(allowed_touch_action));
+               touch_event.touch_start_or_first_touch_move);
   *is_touching_scrolling_layer = false;
   EventDisposition result = DROP_EVENT;
+  std::optional<cc::TouchAction> allowed_touch_action;
+  if (touch_event.touch_start_or_first_touch_move) {
+    allowed_touch_action = cc::TouchAction::kAuto;
+  }
 
   // Note that the radius is mostly relevant in stylus handwriting scenarios.
   // For actions like swipe, we use the center point of the touch and ignore
@@ -1428,11 +1467,6 @@ InputHandlerProxy::EventDisposition InputHandlerProxy::HitTestTouchEvent(
           ? handwriting_radius_
           : 0;
   for (size_t i = 0; i < touch_event.touches_length; ++i) {
-    if (touch_event.touch_start_or_first_touch_move)
-      DCHECK(allowed_touch_action);
-    else
-      DCHECK(!allowed_touch_action);
-
     if (touch_event.GetType() == WebInputEvent::Type::kTouchStart &&
         touch_event.touches[i].state != WebTouchPoint::State::kStatePressed) {
       continue;
@@ -1451,7 +1485,8 @@ InputHandlerProxy::EventDisposition InputHandlerProxy::HitTestTouchEvent(
     cc::InputHandler::TouchStartOrMoveEventListenerType event_listener_type =
         input_handler_->EventListenerTypeForTouchStartOrMoveAt(
             viewport_touch_rect, &touch_action);
-    if (allowed_touch_action && touch_action != cc::TouchAction::kAuto) {
+    if (touch_event.touch_start_or_first_touch_move &&
+        touch_action != cc::TouchAction::kAuto) {
       TRACE_EVENT_INSTANT("input", "Adding TouchAction", "TouchAction",
                           cc::TouchActionToString(touch_action));
       *allowed_touch_action &= touch_action;
@@ -1469,7 +1504,7 @@ InputHandlerProxy::EventDisposition InputHandlerProxy::HitTestTouchEvent(
       // A non-passive touch start / move will always set the allowed touch
       // action to TouchAction::kNone, and in that case we do not ack the event
       // from the compositor.
-      if (allowed_touch_action &&
+      if (touch_event.touch_start_or_first_touch_move &&
           *allowed_touch_action != cc::TouchAction::kNone) {
         TRACE_EVENT_INSTANT("input", "NonBlocking due to allowed touchaction");
         result = DID_NOT_HANDLE_NON_BLOCKING;
@@ -1529,7 +1564,7 @@ InputHandlerProxy::EventDisposition InputHandlerProxy::HitTestTouchEvent(
     touch_result_ = result;
   }
 
-  return result;
+  return {result, allowed_touch_action};
 }
 
 InputHandlerProxy::EventDisposition InputHandlerProxy::HandleTouchStart(
@@ -1539,9 +1574,11 @@ InputHandlerProxy::EventDisposition InputHandlerProxy::HandleTouchStart(
       static_cast<const WebTouchEvent&>(event_with_callback->event());
 
   bool is_touching_scrolling_layer;
-  cc::TouchAction allowed_touch_action = cc::TouchAction::kAuto;
-  EventDisposition result = HitTestTouchEvent(
-      touch_event, &is_touching_scrolling_layer, &allowed_touch_action);
+  HitTestTouchEventResult hit_test_result =
+      HitTestTouchEvent(touch_event, &is_touching_scrolling_layer);
+  EventDisposition result = hit_test_result.disposition;
+  DCHECK(hit_test_result.allowed_touch_action.has_value());
+  cc::TouchAction allowed_touch_action = *hit_test_result.allowed_touch_action;
   TRACE_EVENT_INSTANT("input", "HitTest", "disposition", result);
 
   if (allowed_touch_action != cc::TouchAction::kNone &&
@@ -1620,8 +1657,7 @@ InputHandlerProxy::EventDisposition InputHandlerProxy::HandleTouchMove(
   if (!touch_result_.has_value() ||
       touch_event.touch_start_or_first_touch_move) {
     bool is_touching_scrolling_layer;
-    cc::TouchAction allowed_touch_action = cc::TouchAction::kAuto;
-    EventDisposition result;
+    HitTestTouchEventResult hit_test_result;
     bool is_main_thread_touch_sequence_with_blocking_start =
         main_thread_touch_sequence_start_disposition_.has_value() &&
         main_thread_touch_sequence_start_disposition_.value() == DID_NOT_HANDLE;
@@ -1630,16 +1666,23 @@ InputHandlerProxy::EventDisposition InputHandlerProxy::HandleTouchMove(
     // touchmoves in the sequence to the main thread.
     if (is_main_thread_touch_sequence_with_blocking_start) {
       touch_result_ = main_thread_touch_sequence_start_disposition_.value();
-      result = touch_result_.value();
+      hit_test_result.disposition = touch_result_.value();
+      if (touch_event.touch_start_or_first_touch_move) {
+        hit_test_result.allowed_touch_action = cc::TouchAction::kAuto;
+      }
     } else {
-      result = HitTestTouchEvent(touch_event, &is_touching_scrolling_layer,
-                                 &allowed_touch_action);
+      hit_test_result =
+          HitTestTouchEvent(touch_event, &is_touching_scrolling_layer);
     }
-    TRACE_EVENT_INSTANT("input", "Allowed TouchAction", "TouchAction",
-                        cc::TouchActionToString(allowed_touch_action),
-                        "disposition", result);
-    client_->SetAllowedTouchAction(allowed_touch_action);
-    return result;
+    if (touch_event.touch_start_or_first_touch_move) {
+      DCHECK(hit_test_result.allowed_touch_action.has_value());
+      TRACE_EVENT_INSTANT(
+          "input", "Allowed TouchAction", "TouchAction",
+          cc::TouchActionToString(*hit_test_result.allowed_touch_action),
+          "disposition", hit_test_result.disposition);
+      client_->SetAllowedTouchAction(*hit_test_result.allowed_touch_action);
+    }
+    return hit_test_result.disposition;
   }
   return touch_result_.value();
 }

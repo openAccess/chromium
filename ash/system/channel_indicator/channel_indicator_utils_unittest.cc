@@ -33,14 +33,14 @@ class ChannelIndicatorUtilsTest : public AshTestBase {
   ~ChannelIndicatorUtilsTest() override = default;
 
   // AshTestBase:
-  void SetUp() override {
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
     // Instantiate a `TestShellDelegate` with the version set to something
     // tests can verify.
     std::unique_ptr<TestShellDelegate> shell_delegate =
         std::make_unique<TestShellDelegate>();
     shell_delegate->set_version_string(kTestOsVersion);
-    set_shell_delegate(std::move(shell_delegate));
-    AshTestBase::SetUp();
+    init_params.delegate = std::move(shell_delegate);
   }
 };
 
@@ -81,19 +81,19 @@ TEST_F(ChannelIndicatorUtilsTest, GetChannelNameStringResourceID) {
 
 TEST_F(ChannelIndicatorUtilsTest, GetColors) {
   // Non-displayable channel should yield fg/bg `ColorId` of `ui::ColorId()`.
-  EXPECT_EQ(
-      channel_indicator_utils::GetFgColorJelly(version_info::Channel::STABLE),
-      ui::ColorId());
-  EXPECT_EQ(
-      channel_indicator_utils::GetBgColorJelly(version_info::Channel::STABLE),
-      ui::ColorId());
+  EXPECT_EQ(channel_indicator_utils::GetForegroundColor(
+                version_info::Channel::STABLE),
+            ui::ColorId());
+  EXPECT_EQ(channel_indicator_utils::GetBackgroundColor(
+                version_info::Channel::STABLE),
+            ui::ColorId());
 
   // Displayable channel should yield valid, fg/bg `ColorId`s.
   EXPECT_EQ(
-      channel_indicator_utils::GetFgColorJelly(version_info::Channel::BETA),
+      channel_indicator_utils::GetForegroundColor(version_info::Channel::BETA),
       cros_tokens::kCrosSysOnProgressContainer);
   EXPECT_EQ(
-      channel_indicator_utils::GetBgColorJelly(version_info::Channel::BETA),
+      channel_indicator_utils::GetBackgroundColor(version_info::Channel::BETA),
       cros_tokens::kCrosSysProgressContainer);
 }
 

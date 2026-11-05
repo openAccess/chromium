@@ -30,7 +30,7 @@
 -AutocompleteTest.SubmitSimpleValue_Disabled_DoesNotSave
 
 # Flaky on Linux: crbug.com/483918492
--AutoPictureInPictureTabHelperBrowserTest.PromptResultRecorded_VideoConferencingAllowOnce
+-All/AutoPictureInPictureDocumentPipBackendBrowserTest.PromptResultRecorded_VideoConferencingAllowOnce/*
 
 # Flaky on most bots: crbug.com/475126748
 -BookmarksTest.List
@@ -41,6 +41,9 @@
 
 # Recently starting failing on Linux: crbug.com/483514148
 -BrowsingDataRemoverBrowserTest.StorageRemovedFromDisk
+
+# Hits DCHECK(GetAXTreeID().token()) on Linux accessibility: crbug.com/526541651
+-ChromeMimeHandlerViewTest.EmbeddedDataUrlLong/MPArch
 
 # Flaky on multiple bots: crbug.com/479257786, crbug.com/487147580
 -ContextualTasksBrowserTest.App
@@ -142,9 +145,6 @@
 -PreviewBrowserTest.ZoomUsageRecordedOnCancel
 -PreviewBrowserTest.ZoomUsageRecordedOnPromoteToNewTab
 
-# Flaky on Linux: crbug.com/487944765
--ProfileManagementDisclaimerServiceBrowserFocusBrowserTest.Test/Managed_EnforcedByPolicy_Cancel
-
 # Flaky on most bots: crbug.com/483092903
 -RecentActivityBubbleDialogViewActionBrowserTest.HandlesActionFocusTab
 -RecentActivityBubbleDialogViewActionBrowserTest.HandlesActionManageSharing
@@ -240,9 +240,6 @@
 # Flaky at least on Linux: crbug.com/502373073
 -PasswordGenerationInteractiveTest.PopupShownManuallyAndPasswordErased
 -PasswordGenerationInteractiveTest.PopupShownAndPasswordSelected
-
-# Times out on Linux accessibility: crbug.com/546479367
--PKIMetadataComponentChromeRootStoreMtcMetadataTest.Revocation*
 
 # Flaky: crbug.com/546808320
 -CrComponentsSearchboxTest.SearchboxIconTest

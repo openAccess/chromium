@@ -833,7 +833,6 @@ EVENT_TYPE(SSL_CERTIFICATES_RECEIVED)
 // The following parameters are attached to the event:
 // {
 //    "embedded_scts": Base64-encoded SignedCertificateTimestampList,
-//    "scts_from_ocsp_response": Base64-encoded SignedCertificateTimestampList,
 //    "scts_from_tls_extension": Base64-encoded SignedCertificateTimestampList,
 // }
 //
@@ -2605,6 +2604,8 @@ EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_SLOTS_SWAPPED)
 //                             attempt, if there was one>,
 //     "canceled_ip_endpoint": <IP endpoint of the other connector's canceled
 //                              attempt, if there was one>,
+//     "canceled_attempts": <List of dictionaries containing "attempt_id" and
+//                           "ip_endpoint" for all canceled attempts, if any>,
 //   }
 EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_CONNECTOR_SETTLED_JOB)
 
@@ -2640,15 +2641,6 @@ EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_SERVICE_ENDPOINT_REQUEST_FINISHED)
 //     "net_error": <Net error code the signal carried>,
 //   }
 EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_HOST_RESOLUTION_SIGNALED)
-
-// This event indicates that an AsyncDnsJob held a failed session creation
-// result, because another attempt may still create a session.
-//
-// The event parameters are:
-//   {
-//     "net_error": <Net error code the held result carries>,
-//   }
-EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_SESSION_CREATION_HELD)
 
 // This event indicates that an AsyncDnsJob fired the session creation signal
 // of its requests. ERR_IO_PENDING means the session was created and its
@@ -5196,6 +5188,8 @@ EVENT_TYPE(CORS_PREFLIGHT_CACHED_RESULT)
 //
 // It contains the following parameters:
 //  {
+//    "transport_info": <the TransportInfo of the resource>,
+//    "address_space_overrides": <active IP address space overrides>,
 //    "client_address_space": <the IP address space of the request client>,
 //    "resource_address_space": <the IP address space of the remote endpoint>,
 //    "result": <the result of the check>,
@@ -5335,15 +5329,6 @@ EVENT_TYPE(OBLIVIOUS_HTTP_RESPONSE_DATA)
 // decryption.
 EVENT_TYPE(OBLIVIOUS_HTTP_RESPONSE_HEADERS)
 
-// This event is logged when First-Party Sets metadata is requested/received.
-// The following parameters are attached to the "end" event:
-//   {
-//     "cache_filter": <string>,
-//     "frame_entry": <string>,
-//     "top_frame_entry": <string>,
-//   }
-EVENT_TYPE(FIRST_PARTY_SETS_METADATA)
-
 // ------------------------------------------------------------------------
 // Device Bound Sessions
 // ------------------------------------------------------------------------
@@ -5454,3 +5439,45 @@ EVENT_TYPE(PROXY_RESOLUTION_DYNAMIC_RULE_APPLIED)
 //      }
 //   }
 EVENT_TYPE(ON_BEFORE_SEND_HEADERS_RESULT)
+
+// ------------------------------------------------------------------------
+// Enterprise Proxy
+// ------------------------------------------------------------------------
+
+// The start/end of a dynamic proxy route configuration refresh across
+// Provisioning Domains, during which network requests waiting on dynamic
+// proxy routes are paused in ConfiguredProxyResolutionService.
+EVENT_TYPE(ENTERPRISE_PROXY_NETWORK_PAUSE)
+
+// This event is logged when an HTTP 407 Proxy Authentication challenge is
+// received by EnterpriseProxyService.
+//   {
+//      "proxy_url": <string>,
+//      "destination_url": <string>,
+//      "auth_scheme": <string>,
+//      "realm": <string>,
+//      "is_proxy": <bool>,
+//   }
+EVENT_TYPE(ENTERPRISE_PROXY_AUTH_CHALLENGE_RECEIVED)
+
+// This event is logged when EnterpriseProxyService resolves an HTTP 407
+// challenge. This happens either synchronously, when the challenge is
+// classified, or later, when the credential fetch that a classification
+// started completes. Shares a source with
+// ENTERPRISE_PROXY_AUTH_CHALLENGE_RECEIVED.
+//   {
+//      "decision": <string>,
+//      "has_credentials": <bool>,
+//      "failure_reason": <optional string>,
+//   }
+EVENT_TYPE(ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED)
+
+// This event is logged when EnterpriseProxyErrorService stores a disguised
+// proxy error for an error page navigation.
+//   {
+//      "navigation_id": <string>,
+//      "destination_url": <string>,
+//      "proxy_url": <string>,
+//      "error_code": <integer>,
+//   }
+EVENT_TYPE(ENTERPRISE_PROXY_DISGUISED_ERROR_SAVED)

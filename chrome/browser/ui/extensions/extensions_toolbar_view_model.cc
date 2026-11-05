@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/extensions/extensions_toolbar_view_model.h"
 
+#include <algorithm>
+
+#include "base/containers/span.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
@@ -98,13 +101,12 @@ bool ExtensionsToolbarViewModel::IsActionDraggable(
   }
 
   // Only pinned extensions should be draggable.
-  auto it = std::ranges::find(GetPinnedActionIds(), action_id);
-  if (it == GetPinnedActionIds().cend()) {
+  if (!std::ranges::contains(GetPinnedActionIds(), action_id)) {
     return false;
   }
 
   // TODO(crbug.com/40808374): Force-pinned extensions are not draggable.
-  return !actions_model_->IsActionForcePinned(*it);
+  return !actions_model_->IsActionForcePinned(action_id);
 }
 
 void ExtensionsToolbarViewModel::MovePinnedAction(
@@ -140,24 +142,19 @@ void ExtensionsToolbarViewModel::MovePinnedActionBy(
   MovePinnedAction(action_id, new_index);
 }
 
-const base::flat_set<ToolbarActionsModel::ActionId>&
+base::span<const ToolbarActionsModel::ActionId>
 ExtensionsToolbarViewModel::GetAllActionIds() const {
   if (!actions_model_) {
-    static const base::NoDestructor<
-        base::flat_set<ToolbarActionsModel::ActionId>>
-        empty_set;
-    return *empty_set;
+    return {};
   }
 
   return actions_model_->action_ids();
 }
 
-const std::vector<ToolbarActionsModel::ActionId>&
+base::span<const ToolbarActionsModel::ActionId>
 ExtensionsToolbarViewModel::GetPinnedActionIds() const {
   if (!actions_model_) {
-    static const base::NoDestructor<std::vector<ToolbarActionsModel::ActionId>>
-        empty_vec;
-    return *empty_vec;
+    return {};
   }
 
   return actions_model_->pinned_action_ids();
@@ -282,8 +279,9 @@ void ExtensionsToolbarViewModel::ExecuteUserAction(
 
 void ExtensionsToolbarViewModel::GrantSiteAccess(
     content::WebContents* web_contents,
-    const std::vector<extensions::ExtensionId>& extension_ids) {
-  if (!actions_model_) {
+    const std::vector<extensions::ExtensionId>& extension_ids,
+    const url::Origin& expected_origin) {
+  if (!actions_model_ || !web_contents) {
     return;
   }
 
@@ -300,8 +298,7 @@ void ExtensionsToolbarViewModel::GrantSiteAccess(
 
   extensions::SitePermissionsHelper(profile).UpdateSiteAccess(
       extensions_to_run, web_contents,
-      extensions::PermissionsManager::UserSiteAccess::kOnSite,
-      web_contents->GetPrimaryMainFrame()->GetLastCommittedOrigin());
+      extensions::PermissionsManager::UserSiteAccess::kOnSite, expected_origin);
 }
 
 // Extensions are included in the request access button only when:
@@ -352,6 +349,8 @@ ExtensionsToolbarViewModel::GetRequestAccessButtonParams(
     return params;
   }
 
+  params.origin = origin;
+
   std::vector<std::u16string> tooltip_parts;
   tooltip_parts.push_back(l10n_util::GetStringFUTF16(
       IDS_EXTENSIONS_REQUEST_ACCESS_BUTTON_TOOLTIP_MULTIPLE_EXTENSIONS,
@@ -384,7 +383,7 @@ bool ExtensionsToolbarViewModel::ShowToolbarActionPopupForAPICall(
   }
 
   ToolbarActionViewModel* action = GetActionModelForId(action_id);
-  DCHECK(action);
+  CHECK(action, base::NotFatalUntil::M162);
   action->TriggerPopupForAPI(std::move(callback));
   return true;
 }

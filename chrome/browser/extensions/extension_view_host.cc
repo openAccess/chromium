@@ -6,13 +6,17 @@
 
 #include "chrome/browser/extensions/extension_view.h"
 #include "chrome/browser/file_select_helper.h"
-#include "chrome/browser/ui/autofill/chrome_autofill_client.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/autofill/autofill_client_provider.h"
+#include "chrome/browser/ui/autofill/autofill_client_provider_factory.h"
+#include "components/input/native_web_keyboard_event.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/process_util.h"
 #include "extensions/buildflags/buildflags.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
@@ -34,13 +38,16 @@ ExtensionViewHost::ExtensionViewHost(
                     host_type),
       delegate_(std::move(delegate)) {
   // Not used for panels, see PanelHost.
-  DCHECK(host_type == mojom::ViewType::kExtensionPopup ||
-         host_type == mojom::ViewType::kExtensionSidePanel);
+  CHECK(host_type == mojom::ViewType::kExtensionPopup ||
+            host_type == mojom::ViewType::kExtensionSidePanel,
+        base::NotFatalUntil::M161);
 
   // Attach WebContents helpers. Extension tabs automatically get them attached
   // in TabHelpers::AttachTabHelpers, but popups don't.
   // TODO(kalman): How much of TabHelpers::AttachTabHelpers should be here?
-  autofill::ChromeAutofillClient::CreateForWebContents(host_contents());
+  autofill::AutofillClientProviderFactory::GetForProfile(
+      Profile::FromBrowserContext(browser_context()))
+      .CreateClientForWebContents(host_contents());
 
   host_contents()->SetIgnoreZoomGestures(true);
 }
@@ -110,13 +117,13 @@ content::WebContents* ExtensionViewHost::OpenURLFromTab(
         navigation_handle_callback) {
   // Allowlist the dispositions we will allow to be opened.
   switch (params.disposition) {
-    case WindowOpenDisposition::SINGLETON_TAB:
-    case WindowOpenDisposition::NEW_FOREGROUND_TAB:
-    case WindowOpenDisposition::NEW_BACKGROUND_TAB:
-    case WindowOpenDisposition::NEW_POPUP:
-    case WindowOpenDisposition::NEW_WINDOW:
-    case WindowOpenDisposition::SAVE_TO_DISK:
-    case WindowOpenDisposition::OFF_THE_RECORD: {
+    case ui::mojom::WindowOpenDisposition::kSingletonTab:
+    case ui::mojom::WindowOpenDisposition::kNewForegroundTab:
+    case ui::mojom::WindowOpenDisposition::kNewBackgroundTab:
+    case ui::mojom::WindowOpenDisposition::kNewPopup:
+    case ui::mojom::WindowOpenDisposition::kNewWindow:
+    case ui::mojom::WindowOpenDisposition::kSaveToDisk:
+    case ui::mojom::WindowOpenDisposition::kOffTheRecord: {
       // Only allow these from hosts that are bound to a browser (e.g. popups).
       // Otherwise they are not driven by a user gesture.
       return delegate_->OpenURL(params, std::move(navigation_handle_callback));
@@ -199,7 +206,7 @@ WindowController* ExtensionViewHost::GetExtensionWindowController() {
 void ExtensionViewHost::OnExtensionHostDocumentElementAvailable(
     content::BrowserContext* host_browser_context,
     ExtensionHost* extension_host) {
-  DCHECK(extension_host->extension());
+  CHECK(extension_host->extension(), base::NotFatalUntil::M161);
   if (host_browser_context != browser_context() ||
       extension_host->extension() != extension() ||
       extension_host->extension_host_type() !=
@@ -207,9 +214,10 @@ void ExtensionViewHost::OnExtensionHostDocumentElementAvailable(
     return;
   }
 
-  DCHECK_EQ(process_util::PersistentBackgroundPageState::kReady,
-            process_util::GetPersistentBackgroundPageState(*extension(),
-                                                           browser_context()));
+  CHECK_EQ(process_util::PersistentBackgroundPageState::kReady,
+           process_util::GetPersistentBackgroundPageState(*extension(),
+                                                          browser_context()),
+           base::NotFatalUntil::M161);
   // We only needed to wait for the background page to load, so stop observing.
   host_registry_observation_.Reset();
   LoadInitialURL();

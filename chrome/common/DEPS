@@ -3,7 +3,7 @@ include_rules = [
   "+chrome/grit",
   "+chrome/install_static",
   "+chrome/services/file_util/public",
-  "+chromeos/ash/experiences/extensions",
+  "+chromeos/ash/experiences/extensions/common",
   "+chromeos/startup/startup.h",
   "+components/actor/public",
   "+components/actor/core",
@@ -91,6 +91,9 @@ specific_include_rules = {
   ],
   "logging_chrome\\.cc": [
     "+ash/constants/ash_switches.h",
+  ],
+  "chrome_switches\\.h": [
+    "+ash/constants/chrome_switches.h",
   ],
   "pdf_util_unittest\\.cc": [
     "+pdf/content_restriction.h",

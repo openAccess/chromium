@@ -9,13 +9,13 @@
 #import "base/observer_list.h"
 #import "base/scoped_observation.h"
 #import "base/timer/timer.h"
-#import "ios/chrome/browser/dom_distiller/model/distiller_service.h"
 #import "ios/chrome/browser/reader_mode/model/constants.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_content_delegate.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_distiller_viewer.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_eligibility_decider.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_metrics_helper.h"
 #import "ios/chrome/browser/translate/model/chrome_ios_translate_client.h"
+#import "ios/chrome/browser/web_distiller/model/distiller_service.h"
 #import "ios/web/public/web_state_observer.h"
 #import "ios/web/public/web_state_user_data.h"
 
@@ -131,13 +131,11 @@ class ReaderModeTabHelper : public web::WebStateObserver,
   friend class web::WebStateUserData<ReaderModeTabHelper>;
 
   // Callback for handling completion of the page distillation.
-  void PageDistillationCompleted(
-      ReaderModeAccessPoint access_point,
-      const GURL& page_url,
-      const std::string& html,
-      const std::vector<DistillerViewerInterface::ImageInfo>& images,
-      const std::string& title,
-      const std::string& csp_nonce);
+  void PageDistillationCompleted(ReaderModeAccessPoint access_point,
+                                 const GURL& page_url,
+                                 const std::string& html,
+                                 const std::string& title,
+                                 const std::string& csp_nonce);
 
   // Creates `reader_mode_web_state_` if necessary, adds a content tab helper
   // and starts distillation.

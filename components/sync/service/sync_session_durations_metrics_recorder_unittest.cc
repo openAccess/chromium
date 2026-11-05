@@ -9,12 +9,10 @@
 #include <vector>
 
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/timer/timer.h"
 #include "components/metrics/profile_metrics_service.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
-#include "components/sync/base/features.h"
 #include "components/sync/test/test_sync_service.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -44,7 +42,7 @@ class SyncSessionDurationsMetricsRecorderTest : public testing::Test {
   void SignIn(signin::ConsentLevel consent_level) {
     AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
         "foo@gmail.com", consent_level);
-    sync_service_.SetSignedIn(consent_level, account_info);
+    sync_service_.SetSignedIn(consent_level, account_info.GetCoreAccountInfo());
     sync_service_.FireStateChanged();
   }
 
@@ -154,12 +152,7 @@ TEST_F(SyncSessionDurationsMetricsRecorderTest, WebSignedIn) {
                       0);
 }
 
-TEST_F(SyncSessionDurationsMetricsRecorderTest,
-       WebSignedIn_StaleCookie_FeatureEnabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      kSyncFixWebSigninSessionDurationForShortLivedSessions);
-
+TEST_F(SyncSessionDurationsMetricsRecorderTest, WebSignedIn_StaleCookie) {
   identity_test_env_.SetCookieAccounts(
       {{"foo@gmail.com", GaiaId("foo_gaia_id")}});
   identity_test_env_.SetFreshnessOfAccountsInGaiaCookie(false);
@@ -169,25 +162,6 @@ TEST_F(SyncSessionDurationsMetricsRecorderTest,
 
   ExpectOneSessionWithDuration(ht, {"WithAccount"}, kSessionTime);
   ExpectNoSession(ht, {"WithoutAccount"});
-  ht.ExpectTimeBucketCount(
-      "Signin.SessionWithCookieSigninStatusUnknown.Duration", kSessionTime, 1);
-}
-
-TEST_F(SyncSessionDurationsMetricsRecorderTest,
-       WebSignedIn_StaleCookie_FeatureDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      kSyncFixWebSigninSessionDurationForShortLivedSessions);
-
-  identity_test_env_.SetCookieAccounts(
-      {{"foo@gmail.com", GaiaId("foo_gaia_id")}});
-  identity_test_env_.SetFreshnessOfAccountsInGaiaCookie(false);
-
-  base::HistogramTester ht;
-  StartAndEndSession(kSessionTime);
-
-  ExpectOneSessionWithDuration(ht, {"WithoutAccount"}, kSessionTime);
-  ExpectNoSession(ht, {"WithAccount"});
   ht.ExpectTimeBucketCount(
       "Signin.SessionWithCookieSigninStatusUnknown.Duration", kSessionTime, 1);
 }

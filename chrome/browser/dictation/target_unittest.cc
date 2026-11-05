@@ -33,12 +33,18 @@ class TestTarget : public Target {
   }
   const std::u16string& last_sent_commit() const { return last_sent_commit_; }
   const std::u16string& last_sent_paste() const { return last_sent_paste_; }
+  int commit_count() const { return commit_count_; }
 
   void ManuallyCompleteCompositionCallbacks() { auto_run_callbacks_ = false; }
 
   void RunPendingCallback() {
     ASSERT_TRUE(pending_callback_);
     std::move(pending_callback_).Run();
+  }
+
+  void set_text_preceding_selection(
+      std::optional<std::u16string> text_preceding_selection) {
+    text_preceding_selection_ = std::move(text_preceding_selection);
   }
 
  private:
@@ -55,12 +61,17 @@ class TestTarget : public Target {
       const std::u16string& text,
       base::OnceClosure on_complete) override {
     last_sent_commit_ = text;
+    ++commit_count_;
 
     SetCompletionCallback(std::move(on_complete));
   }
 
   void PasteIntoNode(const std::u16string& text) override {
     last_sent_paste_ = text;
+  }
+
+  std::optional<std::u16string_view> GetTextPrecedingSelection() override {
+    return text_preceding_selection_;
   }
 
   void SetCompletionCallback(base::OnceClosure on_complete) {
@@ -83,6 +94,8 @@ class TestTarget : public Target {
   std::u16string last_sent_composition_;
   std::u16string last_sent_commit_;
   std::u16string last_sent_paste_;
+  int commit_count_ = 0;
+  std::optional<std::u16string> text_preceding_selection_;
 };
 
 class DictationTargetTest : public ChromeRenderViewHostTestHarness {
@@ -185,6 +198,25 @@ TEST_F(DictationTargetTest, RichlyEditableNewlinePasteFallback) {
   EXPECT_EQ(target.last_sent_composition(), u"hello");
   EXPECT_EQ(target.last_sent_commit(), u"");
   EXPECT_EQ(target.last_sent_paste(), u"hello\nworld again.");
+}
+
+// When the first composition is already multiline, there is no composition to
+// cancel. Ensure we don't commit empty text, which would delete any selected
+// content as a separate undo step before the paste.
+TEST_F(DictationTargetTest,
+       RichlyEditableNewlinePasteFallbackWithoutPriorComposition) {
+  content::GlobalDOMNodeId target_id = MockTargetInMainFrame(1);
+  TestTarget target(TargetDetails{target_id, /*richly_editable=*/true});
+
+  target.SetComposition(u"hello\nworld", true);
+  EXPECT_EQ(target.last_sent_composition(), u"");
+  EXPECT_EQ(target.commit_count(), 0);
+  EXPECT_EQ(target.last_sent_paste(), u"");
+
+  target.CommitComposition(u"hello\nworld.", base::NullCallback());
+  EXPECT_EQ(target.last_sent_composition(), u"");
+  EXPECT_EQ(target.commit_count(), 0);
+  EXPECT_EQ(target.last_sent_paste(), u"hello\nworld.");
 }
 
 TEST_F(DictationTargetTest, RichlyEditableNewlinePasteFallbackWithFocusLoss) {
@@ -315,6 +347,84 @@ TEST_F(DictationTargetTest, FocusChangeDuringInFlightComposition) {
   EXPECT_EQ(target.last_sent_commit(), u" world");
 
   target.RunPendingCallback();
+}
+
+TEST_F(DictationTargetTest, SuccessiveDictationPrependsWhitespace) {
+  content::GlobalDOMNodeId target_id = MockTargetInMainFrame(1);
+  TestTarget target(TargetDetails(target_id, /*richly_editable=*/false));
+  target.set_text_preceding_selection(u"This is a test.");
+
+  target.SetComposition(u"This is another test.", true);
+  EXPECT_EQ(target.last_sent_composition(), u" This is another test");
+  EXPECT_EQ(target.last_sent_commit(), u"");
+
+  target.CommitComposition(u"This is another test.", base::NullCallback());
+  EXPECT_EQ(target.last_sent_composition(), u" This is another test");
+  EXPECT_EQ(target.last_sent_commit(), u" This is another test");
+}
+
+TEST_F(DictationTargetTest, WhitespacePrependedWithPasteFallback) {
+  content::GlobalDOMNodeId target_id = MockTargetInMainFrame(1);
+  TestTarget target(TargetDetails(target_id, /*richly_editable=*/true));
+  target.set_text_preceding_selection(u"Hello.");
+
+  // Multiline composition triggers paste fallback in richly editable targets.
+  target.SetComposition(u"world\nagain", true);
+  target.CommitComposition(u"world\nagain", base::NullCallback());
+  EXPECT_EQ(target.last_sent_paste(), u" world\nagain");
+}
+
+TEST_F(DictationTargetTest, TargetTrimsTrailingPeriodForSingleSentence) {
+  content::GlobalDOMNodeId target_id = MockTargetInMainFrame(1);
+  TestTarget target(TargetDetails(target_id, /*richly_editable=*/false));
+
+  target.SetComposition(u"Jane Doe.", true);
+  EXPECT_EQ(target.last_sent_composition(), u"Jane Doe");
+  EXPECT_EQ(target.last_sent_commit(), u"");
+
+  target.CommitComposition(u"Jane Doe.", base::NullCallback());
+  EXPECT_EQ(target.last_sent_composition(), u"Jane Doe");
+  EXPECT_EQ(target.last_sent_commit(), u"Jane Doe");
+}
+
+TEST_F(DictationTargetTest, TargetPreservesTrailingPeriodForMultipleSentences) {
+  content::GlobalDOMNodeId target_id = MockTargetInMainFrame(1);
+  TestTarget target(TargetDetails(target_id, /*richly_editable=*/false));
+
+  target.SetComposition(u"First sentence. Second sentence.", true);
+  EXPECT_EQ(target.last_sent_composition(),
+            u"First sentence. Second sentence.");
+  EXPECT_EQ(target.last_sent_commit(), u"");
+
+  target.CommitComposition(u"First sentence. Second sentence.",
+                           base::NullCallback());
+  EXPECT_EQ(target.last_sent_composition(),
+            u"First sentence. Second sentence.");
+  EXPECT_EQ(target.last_sent_commit(), u"First sentence. Second sentence.");
+}
+
+TEST_F(DictationTargetTest,
+       TargetPreservesTrailingPeriodWhenSelectionEndsWithPeriod) {
+  content::GlobalDOMNodeId target_id = MockTargetInMainFrame(1);
+  TestTarget target(TargetDetails(target_id, /*richly_editable=*/false));
+  target.SetSelectedText(u"This is a test.");
+
+  target.SetComposition(u"THIS IS A TEST.", true);
+  EXPECT_EQ(target.last_sent_composition(), u"THIS IS A TEST.");
+
+  target.CommitComposition(u"THIS IS A TEST.", base::NullCallback());
+  EXPECT_EQ(target.last_sent_commit(), u"THIS IS A TEST.");
+}
+
+TEST_F(DictationTargetTest,
+       TargetTrimsTrailingPeriodWhenSelectionHasNoTrailingPeriod) {
+  content::GlobalDOMNodeId target_id = MockTargetInMainFrame(1);
+  TestTarget target(TargetDetails(target_id, /*richly_editable=*/false));
+  target.SetSelectedText(u"This is a test");
+
+  target.SetComposition(u"THIS IS A TEST.", true);
+  target.CommitComposition(u"THIS IS A TEST.", base::NullCallback());
+  EXPECT_EQ(target.last_sent_commit(), u"THIS IS A TEST");
 }
 
 }  // namespace

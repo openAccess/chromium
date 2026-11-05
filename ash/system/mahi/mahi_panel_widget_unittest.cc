@@ -53,8 +53,7 @@ class MahiPanelWidgetTest : public AshTestBase {
   // AshTestBase:
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{chromeos::features::kFeatureManagementMahi,
-                              chromeos::features::kMahiPanelResizable},
+        /*enabled_features=*/{chromeos::features::kFeatureManagementMahi},
         /*disabled_features=*/{});
     AshTestBase::SetUp();
 
@@ -262,7 +261,7 @@ TEST_F(MahiPanelWidgetTest, WidgetDoesNotResize) {
 
   // Reduce the screen size such that the panel widget would not entirely fit.
   // It should keep its original size.
-  UpdateDisplay("200x180");
+  UpdateDisplay("320x200");
   EXPECT_EQ(widget->GetSize(), panel_widget_size);
 }
 

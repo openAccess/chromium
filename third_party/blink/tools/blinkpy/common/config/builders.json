@@ -56,9 +56,6 @@
             "high_dpi_headless_shell_wpt_tests": {
                 "flag_specific": "highdpi"
             },
-            "vulkan_swiftshader_blink_web_tests": {
-                "flag_specific": "skia-vulkan-swiftshader"
-            },
             "not_site_per_process_blink_web_tests": {
                 "flag_specific": "disable-site-isolation-trials"
             },
@@ -225,9 +222,6 @@
             "high_dpi_headless_shell_wpt_tests": {
                 "flag_specific": "highdpi"
             },
-            "vulkan_swiftshader_blink_web_tests": {
-                "flag_specific": "skia-vulkan-swiftshader"
-            },
             "not_site_per_process_blink_web_tests": {
                 "flag_specific": "disable-site-isolation-trials"
             },
@@ -243,8 +237,8 @@
     },
     "mac-rel": {
         "main": "tryserver.chromium.mac",
-        "port_name": "mac-mac15",
-        "specifiers": ["Mac15", "Release"],
+        "port_name": "mac-mac26-arm64",
+        "specifiers": ["Mac26-arm64", "Release"],
         "steps": {
             "blink_web_tests": {},
             "blink_wpt_tests": {},

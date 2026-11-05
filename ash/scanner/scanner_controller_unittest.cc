@@ -138,11 +138,11 @@ class MockToastManager : public ToastManager {
               RequestFocusOnActiveToastButton,
               (std::string_view id),
               (override));
-  MOCK_METHOD(bool, IsToastShown, (std::string_view id), (const override));
+  MOCK_METHOD(bool, IsToastShown, (std::string_view id), (const, override));
   MOCK_METHOD(bool,
               IsToastButtonFocused,
               (std::string_view id),
-              (const override));
+              (const, override));
   MOCK_METHOD(std::unique_ptr<ScopedToastPause>,
               CreateScopedPause,
               (),
@@ -173,12 +173,12 @@ class ScannerControllerTest : public AshTestBase {
   ~ScannerControllerTest() override = default;
 
   // AshTestBase:
-  void SetUp() override {
+  void SetUpInitParams(AshTestHelper::InitParams& init_params) override {
+    AshTestBase::SetUpInitParams(init_params);
     auto shell_delegate = std::make_unique<TestShellDelegate>();
     shell_delegate->SetSendSpecializedFeatureFeedbackCallback(
         mock_send_specialized_feature_feedback_.Get());
-    set_shell_delegate(std::move(shell_delegate));
-    AshTestBase::SetUp();
+    init_params.delegate = std::move(shell_delegate);
   }
 
   base::MockCallback<TestShellDelegate::SendSpecializedFeatureFeedbackCallback>&
@@ -865,14 +865,14 @@ TEST_F(ScannerControllerTest, NoActionsFetchedWhenNoActiveSession) {
 }
 
 TEST_F(ScannerControllerTest, ResetsScannerSessionWhenActiveUserChanges) {
-  SimulateUserLogin({"user1@gmail.com"});
+  SimulateUserLogin(AccountId::FromUserEmail("user1@gmail.com"));
   ScannerController* scanner_controller = Shell::Get()->scanner_controller();
   ASSERT_TRUE(scanner_controller);
   EXPECT_TRUE(scanner_controller->StartNewSession());
   EXPECT_TRUE(scanner_controller->HasActiveSessionForTesting());
 
   // Switch to a different user.
-  SimulateUserLogin({"user2@gmail.com"});
+  SimulateUserLogin(AccountId::FromUserEmail("user2@gmail.com"));
 
   EXPECT_FALSE(scanner_controller->HasActiveSessionForTesting());
 }

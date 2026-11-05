@@ -6,7 +6,8 @@
 """Creates several files used by the size trybot to monitor size regressions.
 
 To test locally:
-1. Run diagnose_bloat.py to create some entries in out/binary-size-results
+1. Run diagnose_bloat.py --target=chrome_and_webview_32_minimal_apks to create
+   some entries in out/binary-size-results
 2. Run this script with:
 HASH1=some hash within out/binary-size-results
 HASH2=some hash within out/binary-size-results
@@ -16,7 +17,7 @@ tools/binary_size/trybot_commit_size_checker.py \
     --review-subject "Testing 123" \
     --review-url "https://google.com" \
     --size-config-json-name \
-        out/binary-size-build/config/Trichrome_size_config.json \
+        out/binary-size-build/config/ChromeAndWebView_size_config.json \
     --before-dir out/binary-size-results/$HASH1 \
     --after-dir out/binary-size-results/$HASH2 \
     --results-path output.json \
@@ -26,6 +27,7 @@ tools/binary_size/trybot_commit_size_checker.py \
 
 import argparse
 import collections
+import gc
 import json
 import logging
 import os
@@ -33,12 +35,7 @@ import pathlib
 import re
 import sys
 
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-
 sys.path.append(str(pathlib.Path(__file__).parent / 'libsupersize'))
-sys.path.append(str(_REPO_ROOT / 'testing/variations/presubmit'))
-import find_features
-import functools
 import archive
 import diagnose_bloat
 import diff
@@ -143,66 +140,7 @@ def _SymbolDiffHelper(title_fragment, symbols):
   return lines, len(added) - len(removed)
 
 
-@functools.lru_cache(maxsize=None)
-def _GetFeatureSymbolNamesCached(full_source_path):
-  raw_symbols = find_features.FindFeatureSymbolNamesInFile(
-    str(full_source_path)
-  )
-  # Strip any C++ namespaces so the returned set contains pure feature basenames
-  # (e.g. {'kMyFeature'}).
-  return {sym.split('::')[-1] for sym in raw_symbols}
-
-
-def _IsFeatureSymbol(symbol, out_directory=None):
-  """Checks if the symbol is a C++ Feature defined via BASE_FEATURE
-  in its source file."""
-  underlying_symbol = symbol.after_symbol or symbol.before_symbol
-  assert underlying_symbol, (
-    'Impossible: underlying_symbol has neither after_symbol nor before_symbol'
-  )
-
-  source_path = underlying_symbol.source_path
-  if not source_path:
-    return False
-
-  # Resolve the source path relative to the repo root
-  repo_root = _REPO_ROOT
-  if underlying_symbol.generated_source:
-    if out_directory:
-      full_source_path = repo_root / out_directory / 'gen' / source_path
-    else:
-      # Local test or fallback paths
-      possible_paths = [
-        repo_root / 'out/Release/gen' / source_path,
-        repo_root / 'out/Debug/gen' / source_path,
-        repo_root / 'out/Default/gen' / source_path,
-      ]
-      full_source_path = None
-      for p in possible_paths:
-        if p.exists():
-          full_source_path = p
-          break
-      if not full_source_path:
-        return False
-  else:
-    full_source_path = repo_root / source_path
-
-  if not full_source_path.exists():
-    return False
-
-  feature_symbols = _GetFeatureSymbolNamesCached(full_source_path)
-  symbol_name = underlying_symbol.name
-  # Strip any C++ namespace if present (though extern "C" symbols don't
-  # have them)
-  symbol_basename = symbol_name.split('::')[-1]
-
-  if symbol_basename in feature_symbols:
-    return True
-
-  return False
-
-
-def _CreateMutableConstantsDelta(symbols, out_directory=None):
+def _CreateMutableConstantsDelta(symbols):
   # Exclude Rust symbols. Path filtering (.rs) is preferred, but some Rust
   # symbols (like lazy_static/once_cell internals) lack path info in SuperSize
   # (showing as {no path}), so we also filter by name patterns.
@@ -215,11 +153,12 @@ def _CreateMutableConstantsDelta(symbols, out_directory=None):
     .Inverted()
     .WhereFullNameMatches(r'::.*LAZY$|once_cell|lazy_static')
     .Inverted()
-    .Filter(lambda s: not _IsFeatureSymbol(s, out_directory))
+    .WhereIsFeature()
+    .Inverted()
   )
   lines, net_added = _SymbolDiffHelper('Mutable Constants', symbols)
 
-  return lines, _SizeDelta('Mutable Constants', 'symbols', 10000, net_added)
+  return lines, _SizeDelta('Mutable Constants', 'symbols', 0, net_added)
 
 
 def _CreateMethodCountDelta(symbols, max_increase):
@@ -469,7 +408,7 @@ def _GenerateBinarySizePluginDetails(metrics, sizediff_filename):
       # The Gerrit plugin looks for this name to put it in the summary.
       name = 'Android Binary Size'
     elif log_name == _RESOURCE_SIZES_64_LOG:
-      name = 'Android Binary Size (arm64 high end) (TrichromeLibrary64.apk)'
+      name = 'Android Binary Size (arm64 high end)'
     listing = {
       'name': name,
       'delta': '{} {}'.format(_FormatNumber(delta.actual), delta.units),
@@ -505,7 +444,7 @@ def _FormatNumber(number):
 # return original filename. Basically allows comparing x_32 targets with x
 # targets built under 32bit target_cpu without failing the script due to
 # different file names. Remove once migration is complete.
-def _UseAlterantiveIfMissing(path):
+def _UseAlternativeIfMissing(path):
   if not os.path.isfile(path):
     parent, name = os.path.split(path)
     path = os.path.join(parent, name.replace('32', '', 1))
@@ -553,6 +492,10 @@ def main():
   )
   args = parser.parse_args()
 
+  # Loading and diffing .size files creates millions of long-lived objects,
+  # which makes cyclic GC passes expensive. Saves ~15% of runtime.
+  gc.disable()
+
   logging.basicConfig(
     level=logging.INFO,
     format='%(levelname).1s %(relativeCreated)6d %(message)s',
@@ -573,16 +516,16 @@ def main():
     config = json.load(fh)
 
   if args.local_test:
-    size_filename = 'Trichrome32.minimal.apks.size'
+    size_filename = 'ChromeAndWebView32.minimal.apks.size'
   else:
     size_filename = config['supersize_input_file'] + '.size'
 
   before_mapping_paths = [
-    _UseAlterantiveIfMissing(before_path_resolver(f))
+    _UseAlternativeIfMissing(before_path_resolver(f))
     for f in config['mapping_files']
   ]
   after_mapping_paths = [
-    _UseAlterantiveIfMissing(after_path_resolver(f))
+    _UseAlternativeIfMissing(after_path_resolver(f))
     for f in config['mapping_files']
   ]
 
@@ -593,8 +536,8 @@ def main():
 
   logging.info('Creating Supersize diff')
   supersize_diff_lines, delta_size_info = _CreateSupersizeDiff(
-    _UseAlterantiveIfMissing(before_path_resolver(size_filename)),
-    _UseAlterantiveIfMissing(after_path_resolver(size_filename)),
+    _UseAlternativeIfMissing(before_path_resolver(size_filename)),
+    _UseAlternativeIfMissing(after_path_resolver(size_filename)),
     args.review_subject,
     args.review_url,
   )
@@ -614,9 +557,8 @@ def main():
   # C++ syntax makes this an easy mistake, and having symbols in .data uses more
   # RAM than symbols in .rodata (at least for multi-process apps).
   logging.info('Checking for mutable constants in native symbols')
-  out_directory = delta_size_info.after.build_config.get('out_directory')
   mutable_constants_lines, mutable_constants_delta = (
-    _CreateMutableConstantsDelta(changed_symbols, out_directory)
+    _CreateMutableConstantsDelta(changed_symbols)
   )
   size_deltas.add(mutable_constants_delta)
   metrics.add((mutable_constants_delta, _MUTABLE_CONSTANTS_LOG))
@@ -632,18 +574,18 @@ def main():
   resources_diff_lines = []
   if unused_resources_paths and r_txt_paths:
     unused_resources_before_paths = [
-      _UseAlterantiveIfMissing(before_path_resolver(p))
+      _UseAlternativeIfMissing(before_path_resolver(p))
       for p in unused_resources_paths
     ]
     unused_resources_after_paths = [
-      _UseAlterantiveIfMissing(after_path_resolver(p))
+      _UseAlternativeIfMissing(after_path_resolver(p))
       for p in unused_resources_paths
     ]
     r_txt_before_paths = [
-      _UseAlterantiveIfMissing(before_path_resolver(p)) for p in r_txt_paths
+      _UseAlternativeIfMissing(before_path_resolver(p)) for p in r_txt_paths
     ]
     r_txt_after_paths = [
-      _UseAlterantiveIfMissing(after_path_resolver(p)) for p in r_txt_paths
+      _UseAlternativeIfMissing(after_path_resolver(p)) for p in r_txt_paths
     ]
     resources_diff_lines = _CreateResourceDiffLines(
       unused_resources_before_paths,

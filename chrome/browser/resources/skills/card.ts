@@ -12,7 +12,6 @@ import '//resources/cr_elements/cr_auto_img/cr_auto_img.js';
 import './icons.html.js';
 
 import type {CrActionMenuElement} from '//resources/cr_elements/cr_action_menu/cr_action_menu.js';
-import type {CrButtonElement} from '//resources/cr_elements/cr_button/cr_button.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 
@@ -21,7 +20,8 @@ import {getHtml} from './card.html.js';
 import type {Skill} from './skill.mojom-webui.js';
 import {SkillsDialogType, SkillSource} from './skill.mojom-webui.js';
 import {SkillsManagementAction, SkillsManagementPage} from './skill_metrics.mojom-webui.js';
-import {SkillsPageBrowserProxy} from './skills_page_browser_proxy.js';
+import {browserProxyFactory} from './skills.mojom-webui.js';
+import type {BrowserProxy} from './skills.mojom-webui.js';
 
 const GSTATIC_HOSTS: string[] = ['www.gstatic.com', 'gstatic.com'];
 const ILLUSTRATION_WIDTH: number = 238;
@@ -36,13 +36,6 @@ export interface SkillCardElement {
   $: {
     name: HTMLElement,
     icon: HTMLElement,
-    menu: CrActionMenuElement,
-    deleteButton: CrButtonElement,
-    copyButton: CrButtonElement,
-    moreButton: CrButtonElement,
-    saveButton: CrButtonElement,
-    editButton: CrButtonElement,
-    illustrationImage: HTMLImageElement,
   };
 }
 
@@ -83,6 +76,7 @@ export class SkillCardElement extends CrLitElement {
     creationTime: {internalValue: 0n},
     lastUpdateTime: {internalValue: 0n},
     category: '',
+    enabled: true,
   };
   accessor cardType: CardType = CardType.USER_SKILL_CARD;
   accessor saveDisabled: boolean = false;
@@ -91,7 +85,7 @@ export class SkillCardElement extends CrLitElement {
   protected accessor webuiRoundedIconsEnabled_: boolean =
       loadTimeData.getBoolean('webuiRoundedIconsEnabled');
 
-  private proxy_: SkillsPageBrowserProxy = SkillsPageBrowserProxy.getInstance();
+  private proxy_: BrowserProxy = browserProxyFactory.getInstance();
 
   protected ariaLabelForSkill_(prefix: string): string {
     return loadTimeData.getString(prefix) + ' ' + this.skill.name;
@@ -135,7 +129,8 @@ export class SkillCardElement extends CrLitElement {
   }
 
   protected onMoreButtonClick_(event: MouseEvent) {
-    this.$.menu.showAt(event.target as HTMLElement);
+    this.shadowRoot.querySelector<CrActionMenuElement>('#menu')!.showAt(
+        event.target as HTMLElement);
   }
 
   protected onCopyButtonClick_() {
@@ -143,13 +138,13 @@ export class SkillCardElement extends CrLitElement {
     // successful.
     navigator.clipboard.writeText(this.skill.prompt);
     this.logCardAction_(SkillsManagementAction.kClickedCopyInstructions);
-    this.$.menu.close();
+    this.shadowRoot.querySelector<CrActionMenuElement>('#menu')!.close();
   }
 
   protected onDeleteButtonClick_() {
     this.logCardAction_(SkillsManagementAction.kClickedDeleteSkill);
     this.proxy_.handler.deleteSkill(this.skill.id);
-    this.$.menu.close();
+    this.shadowRoot.querySelector<CrActionMenuElement>('#menu')!.close();
   }
   protected logCardAction_(action: SkillsManagementAction) {
     this.proxy_.handler.recordSkillsManagementAction(

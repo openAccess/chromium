@@ -26,6 +26,7 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabRemover;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.ActionDelegate;
@@ -35,6 +36,7 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.Icon
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.ShowMode;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorActionUnitTestHelper.TabIdGroup;
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorActionUnitTestHelper.TabListHolder;
+import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectionDelegate;
 
@@ -72,8 +74,8 @@ public class TabListEditorCloseActionUnitTest {
         mTabModel.setTabRemoverForTesting(mTabRemover);
     }
 
-    private void configure(boolean actionOnRelatedTabs) {
-        mAction.configure(() -> mTabModel, mSelectionDelegate, mDelegate, actionOnRelatedTabs);
+    private void configure(@TabListLayoutType int layoutType) {
+        mAction.configure(() -> mTabModel, mSelectionDelegate, mDelegate, layoutType);
     }
 
     @Test
@@ -97,7 +99,7 @@ public class TabListEditorCloseActionUnitTest {
 
     @Test
     public void testCloseActionNoTabs() {
-        configure(false);
+        configure(TabListLayoutType.FLAT);
         mAction.onSelectionStateChange(Collections.emptyList());
         assertEquals(false, mAction.getPropertyModel().get(TabListEditorActionProperties.ENABLED));
         assertEquals(0, mAction.getPropertyModel().get(TabListEditorActionProperties.ITEM_COUNT));
@@ -105,7 +107,7 @@ public class TabListEditorCloseActionUnitTest {
 
     @Test
     public void testCloseActionWithOneTab() {
-        configure(false);
+        configure(TabListLayoutType.FLAT);
         List<Integer> tabIds = Arrays.asList(5, 3, 7);
         List<Tab> tabs =
                 tabIds.stream().map(id -> mTabModel.addTab(id)).collect(Collectors.toList());
@@ -121,14 +123,16 @@ public class TabListEditorCloseActionUnitTest {
 
         verify(mTabRemover)
                 .closeTabs(
-                        TabClosureParams.closeTabs(List.of(tabs.get(1))).build(),
+                        TabClosureParams.closeTabs(List.of(tabs.get(1)))
+                                .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
+                                .build(),
                         /* allowDialog= */ true);
         verify(mDelegate).hideByAction();
     }
 
     @Test
     public void testCloseActionWithTabs() throws TimeoutException {
-        configure(false);
+        configure(TabListLayoutType.FLAT);
         List<Integer> tabIds = Arrays.asList(5, 3, 7);
         List<TabListEditorItemSelectionId> itemIds =
                 Arrays.asList(
@@ -151,7 +155,11 @@ public class TabListEditorCloseActionUnitTest {
         assertTrue(mAction.perform());
 
         verify(mTabRemover)
-                .closeTabs(TabClosureParams.closeTabs(tabs).build(), /* allowDialog= */ true);
+                .closeTabs(
+                        TabClosureParams.closeTabs(tabs)
+                                .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
+                                .build(),
+                        /* allowDialog= */ true);
         verify(mDelegate).hideByAction();
 
         helper.waitForOnly();
@@ -160,15 +168,18 @@ public class TabListEditorCloseActionUnitTest {
         assertTrue(mAction.perform());
 
         verify(mTabRemover, times(2))
-                .closeTabs(TabClosureParams.closeTabs(tabs).build(), /* allowDialog= */ true);
+                .closeTabs(
+                        TabClosureParams.closeTabs(tabs)
+                                .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
+                                .build(),
+                        /* allowDialog= */ true);
         verify(mDelegate, times(2)).hideByAction();
         assertEquals(1, helper.getCallCount());
     }
 
     @Test
-    public void testCloseActionWithTabGroups_ActionOnRelatedTabs() {
-        final boolean actionOnRelatedTabs = true;
-        configure(actionOnRelatedTabs);
+    public void testCloseActionWithTabGroups_GroupedLayout() {
+        configure(TabListLayoutType.GROUPED);
         List<TabIdGroup> tabIdGroups = new ArrayList<>();
         tabIdGroups.add(
                 new TabIdGroup(
@@ -230,15 +241,15 @@ public class TabListEditorCloseActionUnitTest {
                 .closeTabs(
                         TabClosureParams.closeTabs(holder.getSelectedAndRelatedTabs())
                                 .hideTabGroups(true)
+                                .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
                                 .build(),
                         /* allowDialog= */ true);
         verify(mDelegate).hideByAction();
     }
 
     @Test
-    public void testCloseActionWithTabGroups_NoActionOnRelatedTabs() {
-        final boolean actionOnRelatedTabs = false;
-        configure(actionOnRelatedTabs);
+    public void testCloseActionWithTabGroups_FlatLayout() {
+        configure(TabListLayoutType.FLAT);
         List<TabIdGroup> tabIdGroups = new ArrayList<>();
         tabIdGroups.add(
                 new TabIdGroup(
@@ -290,7 +301,9 @@ public class TabListEditorCloseActionUnitTest {
 
         verify(mTabRemover)
                 .closeTabs(
-                        TabClosureParams.closeTabs(holder.getSelectedTabs()).build(),
+                        TabClosureParams.closeTabs(holder.getSelectedTabs())
+                                .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
+                                .build(),
                         /* allowDialog= */ true);
         verify(mDelegate).hideByAction();
     }

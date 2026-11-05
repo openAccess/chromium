@@ -71,6 +71,7 @@
 #include "third_party/blink/renderer/core/page/scrolling/fragment_anchor.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 namespace {
@@ -384,6 +385,7 @@ using SelectorStatisticsRuleMap =
     HashMap<CumulativeRulePerfKey, CumulativeRulePerfData>;
 SelectorStatisticsRuleMap& GetSelectorStatisticsRuleMap() {
   DEFINE_STATIC_LOCAL(SelectorStatisticsRuleMap, rule_map, {});
+  CHECK(IsMainThread());
   return rule_map;
 }
 
@@ -492,7 +494,11 @@ void ElementRuleCollector::AddElementStyleProperties(
       {.link_match_type = static_cast<uint8_t>(
            AdjustLinkMatchType(inside_link_, link_match_type)),
        .is_inline_style = is_inline_style,
-       .origin = origin});
+       .origin = origin,
+       .is_svg_presentation_hint =
+           origin == CascadeOrigin::kAuthorPresentationalHint &&
+           context_.GetElement().IsSVGElement() &&
+           RuntimeEnabledFeatures::SvgIncrementalStyleEnabled()});
   if (!is_cacheable) {
     result_.SetIsCacheable(false);
   }
@@ -823,7 +829,7 @@ DISABLE_CFI_PERF bool ElementRuleCollector::CollectMatchingRulesInternal(
       style_recalc_context_.style_scope_frame, matching_ua_rules_,
       matching_rules_from_no_style_sheet_, style_recalc_context_, mode_);
   Element& element = *context.context.element;
-  const AtomicString& pseudo_id = element.ShadowPseudoId();
+  const AtomicString pseudo_id = element.ShadowPseudoId();
   if (!pseudo_id.empty()) {
     DCHECK(element.IsStyledElement());
     for (const auto bundle : match_request.AllRuleSets()) {
@@ -871,7 +877,7 @@ DISABLE_CFI_PERF bool ElementRuleCollector::CollectMatchingRulesInternal(
       }
     }
   }
-  if (element.IsStyledElement() && element.HasClass()) {
+  if (element.HasClass()) {
     for (const AtomicString& class_name : element.ClassNames()) {
       for (const auto bundle : match_request.AllRuleSets()) {
         if (CollectMatchingRulesForList<stop_at_first_match>(
@@ -1286,7 +1292,8 @@ void ElementRuleCollector::SortAndTransferMatchedRules(
              matched_rule.GetValidPropertyFilter(matching_ua_rules_)),
          .is_inline_style = static_cast<uint8_t>(is_vtt_embedded_style),
          .origin = origin,
-         .layer_order = matched_rule.LayerOrder()});
+         .layer_order = matched_rule.LayerOrder(),
+         .precompute_hover = matched_rule.PrecomputeHover()});
   }
 
   if (tracker) {
@@ -1435,14 +1442,39 @@ void ElementRuleCollector::DidMatchRule(
       }
 
       if (dynamic_pseudo == kPseudoIdHighlight) {
-        DCHECK(result.custom_highlight_name);
-        result_.AddCustomHighlightName(
-            AtomicString(result.custom_highlight_name));
+        if (result.custom_highlight_name ==
+            CSSSelector::UniversalSelectorAtom().Impl()) {
+          result_.SetHasCustomHighlightUniversalSelector();
+        } else {
+          DCHECK(result.custom_highlight_name);
+          result_.AddCustomHighlightName(
+              AtomicString(result.custom_highlight_name));
+        }
       }
     } else if (dynamic_pseudo == kPseudoIdFirstLine && container_query_set) {
       result_.SetFirstLineDependsOnSizeContainerQueries();
     }
   } else {
+    bool precompute_hover =
+        (result.flags & kPrecomputedHoverMask) ==
+        static_cast<MatchFlags>(MatchFlag::kPrecomputedHoverMatch);
+#if defined DUMP_PRECOMPUTED_HOVER
+    if (result.HasFlag(MatchFlag::kCancelPrecomputedHoverMatch)) {
+      LOG(ERROR) << "Unsupported pre-computed hover selector: "
+                 << rule_data->Rule()->SelectorsText();
+    }
+#endif
+    if (precompute_hover && !rule_data->Rule()
+                                 ->Properties()
+                                 .ContainsPrecomputableHoverStyleOnly()) {
+      result_.AddFlags(
+          static_cast<MatchFlags>(MatchFlag::kCancelPrecomputedHoverMatch));
+#if defined DUMP_PRECOMPUTED_HOVER
+      LOG(ERROR) << "Unsupported pre-computed hover properties: "
+                 << rule_data->Rule()->Properties().AsText();
+#endif
+      return;
+    }
     if (rule_data->Rule()->Properties().ContainsCursorHand()) {
       context_.GetElement().GetDocument().CountUse(
           WebFeature::kQuirksModeCursorHandApplied);
@@ -1452,7 +1484,7 @@ void ElementRuleCollector::DidMatchRule(
           static_cast<MatchFlags>(MatchFlag::kAffectedByStartingStyle));
     }
     matched_rules_.emplace_back(rule_data, layer_order, proximity,
-                                style_sheet_index);
+                                style_sheet_index, precompute_hover);
   }
 }
 

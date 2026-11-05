@@ -15,7 +15,6 @@
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/system/sys_info.h"
 #include "base/time/time.h"
@@ -257,11 +256,11 @@ void PictureLayerImpl::AppendQuadsForResourcelessSoftwareDraw(
   }
 
   auto* quad = render_pass->CreateAndAppendDrawQuad<viz::PictureDrawQuad>();
-  quad->SetNew(
-      shared_quad_state, geometry_rect, visible_geometry_rect, needs_blending,
-      texture_rect, GetNearestNeighbor(), quad_content_rect, max_contents_scale,
-      std::move(image_animation_map), raster_source_->GetDisplayItemList(),
-      GetRasterInducingScrollOffsets());
+  quad->SetNew(shared_quad_state, geometry_rect, visible_geometry_rect,
+               needs_blending, texture_rect, GetNearestNeighbor(),
+               quad_content_rect, max_contents_scale,
+               std::move(image_animation_map),
+               raster_source_->GetDisplayItemList(), GetRasterInducingValues());
   ValidateQuadResources(quad);
 }
 
@@ -279,20 +278,8 @@ bool PictureLayerImpl::ShouldReportTileAsMissing(
 
 void PictureLayerImpl::DidAppendQuad(
     viz::DrawQuad* quad,
-    const TilingSetCoverageIterator<PictureLayerTiling>& iter,
-    AppendQuadsData* append_quads_data,
-    bool is_checkerboard) {
+    const TilingSetCoverageIterator<PictureLayerTiling>& iter) {
   ValidateQuadResources(quad);
-
-  if (is_checkerboard) {
-    // Report data on any missing images that might be the largest
-    // contentful image.
-    if (*iter) {
-      UMA_HISTOGRAM_BOOLEAN(
-          "Compositing.DecodeLCPCandidateImage.MissedDeadline",
-          iter->HasMissingLCPCandidateImages());
-    }
-  }
 }
 
 void PictureLayerImpl::WillProcessReadyToDrawTile(
@@ -469,8 +456,8 @@ void PictureLayerImpl::AnnotateAnimatedImages(
   for (const auto& data : discardable_image_map_->animated_images_metadata()) {
     auto& driver_state = driver_map[data.first];
     driver_state.first |= ShouldAnimate(data.first);
-    if (canvas_child_id()) {
-      driver_state.second.push_back(canvas_child_id());
+    if (canvas_drawable_id()) {
+      driver_state.second.push_back(canvas_drawable_id());
     }
   }
 }
@@ -576,9 +563,11 @@ void PictureLayerImpl::UpdateRasterSourceInternal(
               *new_display_item_list);
       needs_full_invalidation |=
           layer_tree_impl()->GetTargetColorParams(
-              current_display_item_list->content_color_usage()) !=
+              current_display_item_list->content_color_volume()
+                  .GetContentColorUsage()) !=
           layer_tree_impl()->GetTargetColorParams(
-              new_display_item_list->content_color_usage());
+              new_display_item_list->content_color_volume()
+                  .GetContentColorUsage());
       if (needs_full_invalidation) {
         new_invalidation.Union(gfx::Rect(raster_source->size()));
       }
@@ -822,7 +811,7 @@ void PictureLayerImpl::ResetChangeTracking() {
 }
 
 void PictureLayerImpl::DidBeginTracing() {
-  raster_source_->DidBeginTracing();
+  raster_source_->DidBeginTracing(id());
 }
 
 void PictureLayerImpl::ReleaseResources() {
@@ -945,6 +934,12 @@ ScrollOffsetMap PictureLayerImpl::GetRasterInducingScrollOffsets() const {
   return map;
 }
 
+RasterInducingValues PictureLayerImpl::GetRasterInducingValues() const {
+  RasterInducingValues values;
+  values.scroll_offsets = GetRasterInducingScrollOffsets();
+  return values;
+}
+
 const GlobalStateThatImpactsTilePriority& PictureLayerImpl::global_tile_state()
     const {
   return layer_tree_impl()->global_tile_state();
@@ -971,7 +966,7 @@ bool PictureLayerImpl::ShouldAnimate(PaintImage::Id paint_image_id) const {
   //
   // An exception to the above is animated images inside a <canvas>, which we
   // animate to trigger a "paint" event when the animation advances.
-  if (!HasValidTilePriorities() && !canvas_child_id()) {
+  if (!HasValidTilePriorities() && !canvas_drawable_id()) {
     return false;
   }
 
@@ -981,7 +976,7 @@ bool PictureLayerImpl::ShouldAnimate(PaintImage::Id paint_image_id) const {
     if (it->second.repetition_count == kAnimationPaused) {
       return false;
     }
-    if (canvas_child_id()) {
+    if (canvas_drawable_id()) {
       return true;
     }
   }
@@ -2071,17 +2066,6 @@ PictureLayerImpl::TileUpdateSet PictureLayerImpl::TakeAllTiles() {
   // them.
   should_batch_updated_tiles_ = false;
   return updates;
-}
-
-gfx::ContentColorUsage PictureLayerImpl::GetContentColorUsage() const {
-  if (!raster_source_) {
-    return gfx::ContentColorUsage::kSRGB;
-  }
-  auto display_item_list = raster_source_->GetDisplayItemList();
-  if (!display_item_list)
-    return gfx::ContentColorUsage::kSRGB;
-
-  return display_item_list->content_color_usage();
 }
 
 DamageReasonSet PictureLayerImpl::GetDamageReasons() const {

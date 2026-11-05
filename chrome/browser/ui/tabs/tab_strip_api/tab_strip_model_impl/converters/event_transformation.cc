@@ -6,10 +6,12 @@
 
 #include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/tab_strip_model_impl/converters/tab_converters.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/browser_apis/tab_strip/tab_strip_api_events.mojom.h"
 #include "components/browser_apis/tab_strip/types/node_id.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_collection_observer.h"
 
 namespace tabs_api::events {
@@ -117,6 +119,24 @@ mojom::OnDataChangedEventPtr ToEvent(
     tab_change->data = tabs_api::converters::BuildMojoTab(
         tab, color_provider, adapter.GetTabStates(handle));
     tab_change->mask = tabs_api::converters::BuildTabFieldMask(change_type);
+  }
+
+  return mojom::OnDataChangedEvent::NewTab(std::move(tab_change));
+}
+
+mojom::OnDataChangedEventPtr ToBlockedStateChangedEvent(
+    const tabs_api::TabStripModelAdapter& adapter,
+    tabs::TabInterface* tab) {
+  auto tab_change = mojom::TabChange::New();
+  if (tab) {
+    tabs::TabHandle handle = tab->GetHandle();
+    const ui::ColorProvider& color_provider = adapter.GetColorProvider();
+
+    tab_change->data = tabs_api::converters::BuildMojoTab(
+        tab, color_provider, adapter.GetTabStates(handle));
+    auto mask = tabs_api::mojom::TabFieldMask::New();
+    mask->is_blocked = true;
+    tab_change->mask = std::move(mask);
   }
 
   return mojom::OnDataChangedEvent::NewTab(std::move(tab_change));

@@ -9,7 +9,6 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -17,7 +16,6 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -28,7 +26,6 @@ import org.chromium.ui.base.TestActivity;
 
 /** Unit tests for autofill entity editor. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 @EnableFeatures(ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA)
 public class EntityEditorViewTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -50,7 +47,6 @@ public class EntityEditorViewTest {
     }
 
     @Test
-    @SmallTest
     public void editorTitle() {
         createEditorView();
 
@@ -61,7 +57,6 @@ public class EntityEditorViewTest {
     }
 
     @Test
-    @SmallTest
     public void clickDoneButton() {
         createEditorView();
 
@@ -74,7 +69,6 @@ public class EntityEditorViewTest {
     }
 
     @Test
-    @SmallTest
     public void clickCancelButton() {
         createEditorView();
 

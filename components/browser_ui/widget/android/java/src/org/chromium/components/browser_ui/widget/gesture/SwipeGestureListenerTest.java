@@ -9,8 +9,6 @@ import static org.mockito.ArgumentMatchers.anyInt;
 
 import android.view.MotionEvent;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -21,7 +19,6 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.browser_ui.widget.gesture.SwipeGestureListener.ScrollDirection;
@@ -32,7 +29,6 @@ import java.util.List;
 
 /** The Unittest of {@link SwipeGestureListener}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class SwipeGestureListenerTest {
     private SwipeGestureListener mListener;
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -45,28 +41,24 @@ public class SwipeGestureListenerTest {
     }
 
     @Test
-    @SmallTest
     public void testOnSwipeLeftDirection() {
         testSwipeByGivenDirection(
                 ScrollDirection.LEFT, buildEventStream(100.0f, 100.0f, -5.0f, -3.0f, 10));
     }
 
     @Test
-    @SmallTest
     public void testOnSwipeRightDirection() {
         testSwipeByGivenDirection(
                 ScrollDirection.RIGHT, buildEventStream(100.0f, 100.0f, 5.0f, -3.0f, 10));
     }
 
     @Test
-    @SmallTest
     public void testOnSwipeUpDirection() {
         testSwipeByGivenDirection(
                 ScrollDirection.UP, buildEventStream(100.0f, 100.0f, 3.0f, -5.0f, 10));
     }
 
     @Test
-    @SmallTest
     public void testOnSwipeDownDirection() {
         testSwipeByGivenDirection(
                 ScrollDirection.DOWN, buildEventStream(100.0f, 100.0f, 2.0f, 5.0f, 10));

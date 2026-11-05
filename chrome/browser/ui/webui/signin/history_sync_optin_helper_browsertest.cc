@@ -21,6 +21,7 @@
 #include "chrome/browser/policy/cloud/user_policy_signin_service_factory.h"
 #include "chrome/browser/policy/cloud/user_policy_signin_service_test_util.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
+#include "chrome/browser/profiles/batch_upload/batch_upload_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/account_preview_data_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
@@ -113,11 +114,7 @@ class HistorySyncOptinHelperTestObserver
 class HistorySyncOptinHelperBrowserTest : public SigninBrowserTestBase {
  public:
   HistorySyncOptinHelperBrowserTest()
-      : SigninBrowserTestBase(/*use_main_profile=*/true) {
-    scoped_features_.InitWithFeatures(
-        /*enabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos},
-        /*disabled_features=*/{});
-  }
+      : SigninBrowserTestBase(/*use_main_profile=*/true) {}
 
   AccountInfo MakeAccountInfoAvailableAndSignIn() {
     AccountInfo account_info =
@@ -642,6 +639,7 @@ IN_PROC_BROWSER_TEST_F(HistorySyncOptinHelperBrowserTest,
   signin::AvatarButtonPromoManager avatar_promo_manager(
       identity_manager(),
       AccountPreviewDataServiceFactory::GetForProfile(browser()->GetProfile()),
+      BatchUploadServiceFactory::GetForProfile(browser()->GetProfile()),
       browser()->GetProfile()->GetPrefs());
   avatar_promo_manager.RecordPromoShown(
       signin::ProfileMenuAvatarButtonPromoInfo::Type::kHistorySyncPromo);
@@ -689,8 +687,7 @@ class HistorySyncOptinHelperFreBrowserTest
  public:
   HistorySyncOptinHelperFreBrowserTest() {
     scoped_features_.InitWithFeatures(
-        /*enabled_features=*/{syncer::kReplaceSyncPromosWithSignInPromos,
-                              switches::kFirstRunDesktopRefresh,
+        /*enabled_features=*/{switches::kFirstRunDesktopRefresh,
                               switches::kFirstRunDesktopRevamp},
         /*disabled_features=*/{});
   }

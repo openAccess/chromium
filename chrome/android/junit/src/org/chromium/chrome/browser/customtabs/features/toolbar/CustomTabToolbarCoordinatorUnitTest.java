@@ -6,8 +6,10 @@ package org.chromium.chrome.browser.customtabs.features.toolbar;
 
 import static org.junit.Assert.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -37,6 +39,7 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.blink.mojom.DisplayMode;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
 import org.chromium.chrome.browser.browser_controls.BrowserStateBrowserControlsVisibilityDelegate;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
 import org.chromium.chrome.browser.browserservices.intents.CustomButtonParams;
 import org.chromium.chrome.browser.customtabs.CloseButtonVisibilityManager;
 import org.chromium.chrome.browser.customtabs.CustomButtonParamsImpl;
@@ -85,19 +88,18 @@ public class CustomTabToolbarCoordinatorUnitTest {
     @Mock private Tab mTab;
     @Mock private CustomButtonParams mCustomButtonParams;
     @Mock private PendingIntent mPendingIntent;
-    @Mock private Activity mActivity;
     @Mock private ToolbarManager mToolbarManager;
     @Mock private DesktopWindowStateManager mDesktopWindowStateManager;
     @Mock private CustomTabToolbarButtonsCoordinator mToolbarButtonsCoordinator;
 
     private CustomTabBrowserControlsVisibilityDelegate mVisibilityDelegate;
-    private Activity mActivityForResources;
+    private Activity mActivity;
     private CustomTabActivityTabController mTabController;
     private CustomTabToolbarCoordinator mCoordinator;
 
     @Before
     public void setup() {
-        mActivityForResources = Robolectric.setupActivity(Activity.class);
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mTabController = env.createTabController();
 
         BrowserStateBrowserControlsVisibilityDelegate browserControlsVisibilityDelegate =
@@ -154,8 +156,7 @@ public class CustomTabToolbarCoordinatorUnitTest {
     public void testCreateShareButtonWithCustomActions() {
         int testColor = 0x99aabbcc;
         mCoordinator.onCustomButtonClick(
-                mActivity,
-                CustomButtonParamsImpl.createShareButton(mActivityForResources, testColor));
+                mActivity, CustomButtonParamsImpl.createShareButton(mActivity, testColor));
         verify(mShareDelegate)
                 .share(any(), eq(false), eq(ShareDelegate.ShareOrigin.CUSTOM_TAB_SHARE_BUTTON));
     }
@@ -261,5 +262,50 @@ public class CustomTabToolbarCoordinatorUnitTest {
         observer.onDesktopWindowingModeChanged(false);
         verify(mToolbarManager).releaseHideMenuButtonToken(0);
         verify(mToolbarButtonsCoordinator).setCustomActionButtonsVisible(true);
+    }
+
+    @Test
+    @Config(sdk = BaseRobolectricTestRunner.MAX_SDK)
+    public void testPopupEnterDW_HideCloseButton() {
+        when(env.intentDataProvider.getUiType()).thenReturn(CustomTabsUiType.POPUP);
+        var appHeaderState = new AppHeaderState(WINDOW_RECT, WIDEST_UNOCCLUDED_RECT, false);
+        when(mDesktopWindowStateManager.getAppHeaderState()).thenReturn(appHeaderState);
+        mCoordinator = createCoordinator();
+
+        mCoordinator.onToolbarInitialized(mToolbarManager, mToolbarButtonsCoordinator);
+        verify(mCloseButtonVisibilityManager).setVisibility(true);
+
+        appHeaderState = new AppHeaderState(WINDOW_RECT, WIDEST_UNOCCLUDED_RECT, true);
+        when(mDesktopWindowStateManager.getAppHeaderState()).thenReturn(appHeaderState);
+        var observer = mCoordinator.getAppHeaderObserver();
+        assertNotNull("Observer should be initialized", observer);
+
+        observer.onDesktopWindowingModeChanged(true);
+        verify(mCloseButtonVisibilityManager).setVisibility(false);
+        verify(mToolbarManager, never()).hideMenuButtonPersistently(anyInt());
+        verify(mToolbarButtonsCoordinator, never()).setCustomActionButtonsVisible(anyBoolean());
+    }
+
+    @Test
+    @Config(sdk = BaseRobolectricTestRunner.MAX_SDK)
+    public void testPopupExitDW_ShowCloseButton() {
+        when(env.intentDataProvider.getUiType()).thenReturn(CustomTabsUiType.POPUP);
+        var appHeaderState = new AppHeaderState(WINDOW_RECT, WIDEST_UNOCCLUDED_RECT, true);
+        when(mDesktopWindowStateManager.getAppHeaderState()).thenReturn(appHeaderState);
+        mCoordinator = createCoordinator();
+
+        mCoordinator.onToolbarInitialized(mToolbarManager, mToolbarButtonsCoordinator);
+        var inOrder = inOrder(mCloseButtonVisibilityManager);
+        inOrder.verify(mCloseButtonVisibilityManager).setVisibility(false);
+        inOrder.verify(mCloseButtonVisibilityManager)
+                .onToolbarInitialized(mToolbarManager, mToolbarButtonsCoordinator);
+
+        appHeaderState = new AppHeaderState(WINDOW_RECT, WIDEST_UNOCCLUDED_RECT, false);
+        when(mDesktopWindowStateManager.getAppHeaderState()).thenReturn(appHeaderState);
+        var observer = mCoordinator.getAppHeaderObserver();
+        assertNotNull("Observer should be initialized", observer);
+
+        observer.onDesktopWindowingModeChanged(false);
+        verify(mCloseButtonVisibilityManager).setVisibility(true);
     }
 }

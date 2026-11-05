@@ -14,7 +14,6 @@
 #include "base/auto_reset.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/not_fatal_until.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
@@ -40,6 +39,7 @@
 #include "content/public/browser/web_contents.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/common/manifest/manifest_util.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 #include "third_party/blink/public/mojom/manifest/manifest_manager.mojom.h"
@@ -97,11 +97,11 @@ WebAppDataRetriever::~WebAppDataRetriever() = default;
 void WebAppDataRetriever::GetWebAppInstallInfo(
     content::WebContents* web_contents,
     GetWebAppInstallInfoCallback callback) {
-  DCHECK(!web_contents->IsBeingDestroyed());
+  CHECK(!web_contents->IsBeingDestroyed(), base::NotFatalUntil::M162);
   Observe(web_contents);
 
   // Concurrent calls are not allowed.
-  CHECK(!HasPendingCall(), base::NotFatalUntil::M145);
+  CHECK(!HasPendingCall());
   get_web_app_info_callback_ = std::move(callback);
 
   if (ShouldStopRetrieval()) {
@@ -160,11 +160,11 @@ void WebAppDataRetriever::CheckInstallabilityAndRetrieveManifest(
     content::WebContents* web_contents,
     CheckInstallabilityCallback callback,
     std::optional<webapps::InstallableParams> params) {
-  DCHECK(!web_contents->IsBeingDestroyed());
+  CHECK(!web_contents->IsBeingDestroyed(), base::NotFatalUntil::M162);
   Observe(web_contents);
 
   // Concurrent calls are not allowed.
-  CHECK(!HasPendingCall(), base::NotFatalUntil::M145);
+  CHECK(!HasPendingCall());
   check_installability_callback_ = std::move(callback);
   if (ShouldStopRetrieval()) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
@@ -187,7 +187,7 @@ void WebAppDataRetriever::CheckInstallabilityAndRetrieveManifest(
 
   webapps::InstallableManager* installable_manager =
       webapps::InstallableManager::FromWebContents(web_contents);
-  DCHECK(installable_manager);
+  CHECK(installable_manager, base::NotFatalUntil::M162);
 
   // Do not wait_for_worker. OnDidPerformInstallableCheck is always invoked.
   installable_manager->GetData(
@@ -201,7 +201,7 @@ void WebAppDataRetriever::GetPrimaryPageFirstSpecifiedManifest(
     ManifestCallbackList::CallbackType callback) {
   Observe(&web_contents);
   // Concurrent calls are not allowed.
-  CHECK(!HasPendingCall(), base::NotFatalUntil::M145);
+  CHECK(!HasPendingCall());
   get_specified_manifest_callback_ = std::move(callback);
   content::PageManifestManager* manifest_manager =
       content::PageManifestManager::GetOrCreate(web_contents.GetPrimaryPage());
@@ -219,11 +219,11 @@ void WebAppDataRetriever::GetIcons(content::WebContents* web_contents,
                                    bool download_page_favicons,
                                    bool fail_all_if_any_fail,
                                    GetIconsCallback callback) {
-  DCHECK(!web_contents->IsBeingDestroyed());
+  CHECK(!web_contents->IsBeingDestroyed(), base::NotFatalUntil::M162);
   Observe(web_contents);
 
   // Concurrent calls are not allowed.
-  CHECK(!HasPendingCall(), base::NotFatalUntil::M145);
+  CHECK(!HasPendingCall());
   get_icons_callback_ = std::move(callback);
 
   if (ShouldStopRetrieval()) {
@@ -291,7 +291,7 @@ void WebAppDataRetriever::OnGetWebPageMetadata(
     return;
   }
 
-  DCHECK(fallback_install_info_);
+  CHECK(fallback_install_info_, base::NotFatalUntil::M162);
 
   content::WebContents* contents = web_contents();
   Observe(nullptr);
@@ -348,9 +348,9 @@ void WebAppDataRetriever::OnDidPerformInstallableCheck(
   const bool is_installable = data.errors.empty();
   CHECK(!is_installable || data.installable_check_passed);
 
-  blink::mojom::ManifestPtr opt_manifest;
-  if (!blink::IsEmptyManifest(*data.manifest)) {
-    opt_manifest = data.manifest->Clone();
+  std::optional<blink::Manifest> opt_manifest;
+  if (data.manifest) {
+    opt_manifest = *data.manifest;
   }
 
   CHECK(!check_installability_callback_.is_null());
@@ -360,8 +360,7 @@ void WebAppDataRetriever::OnDidPerformInstallableCheck(
 }
 
 void WebAppDataRetriever::OnGotDeveloperSpecifiedManifest(
-    const base::expected<blink::mojom::ManifestPtr,
-                         blink::mojom::RequestManifestErrorPtr>& result) {
+    const ManifestResult& result) {
   if (!get_specified_manifest_callback_) {
     return;
   }
@@ -413,7 +412,7 @@ void WebAppDataRetriever::OnIconsDownloaded(
   Observe(nullptr);
   icon_downloader_.reset();
 
-  DCHECK(!get_icons_callback_.is_null());
+  CHECK(!get_icons_callback_.is_null(), base::NotFatalUntil::M162);
   std::move(get_icons_callback_)
       .Run(result, std::move(icons_map), std::move(icons_http_results));
 }
@@ -430,8 +429,8 @@ void WebAppDataRetriever::CallCallbackOnError(
     std::move(get_web_app_info_callback_).Run(nullptr);
   } else if (check_installability_callback_) {
     std::move(check_installability_callback_)
-        .Run(/*manifest=*/nullptr,
-             /*installable_check_passed_for_web_app=*/false,
+        .Run(/*opt_manifest=*/std::nullopt,
+             /*valid_manifest_for_web_app=*/false,
              /*error_code=*/
              error_code);
   } else if (get_icons_callback_) {

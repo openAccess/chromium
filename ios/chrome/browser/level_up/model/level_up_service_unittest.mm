@@ -5,11 +5,13 @@
 #import "ios/chrome/browser/level_up/model/level_up_service.h"
 
 #import "base/memory/raw_ptr.h"
+#import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/prefs/pref_service.h"
 #import "components/tab_groups/tab_group_color.h"
 #import "components/tab_groups/tab_group_id.h"
 #import "components/tab_groups/tab_group_visual_data.h"
+#import "ios/chrome/browser/level_up/model/level_up_metrics.h"
 #import "ios/chrome/browser/level_up/model/level_up_service_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager_factory.h"
@@ -36,6 +38,7 @@ class LevelUpServiceTest : public PlatformTest {
 
     TestProfileIOS::Builder builder;
     profile_ = std::move(builder).Build();
+    profile_->GetPrefs()->SetBoolean(prefs::kLevelUpOptIn, true);
     service_ = LevelUpServiceFactory::GetForProfile(profile_.get());
   }
 
@@ -47,9 +50,9 @@ class LevelUpServiceTest : public PlatformTest {
 
 // Tests the initial default state of the service.
 TEST_F(LevelUpServiceTest, TestDefaultState) {
-  EXPECT_FALSE(service_->IsUIEnabled());
+  EXPECT_TRUE(service_->IsUIEnabled());
   EXPECT_EQ(service_->GetCurrentLevel(), 1);
-  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), 3);
+  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), std::make_pair(3, 3));
 
   // Verify all tasks are initially uncompleted.
   const auto& tasks = service_->GetTasks();
@@ -64,40 +67,39 @@ TEST_F(LevelUpServiceTest, TestMilestoneProgression) {
   service_->MarkTaskCompleted(TaskType::kTabGroups);
   EXPECT_TRUE(service_->IsTaskCompleted(TaskType::kTabGroups));
   EXPECT_EQ(service_->GetCurrentLevel(), 1);
-  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), 2);
+  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), std::make_pair(2, 3));
 
   // Complete 2nd task.
   service_->MarkTaskCompleted(TaskType::kAutofill);
   EXPECT_EQ(service_->GetCurrentLevel(), 1);
-  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), 1);
+  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), std::make_pair(1, 3));
 
   // Complete 3rd task -> Should reach Level 2!
-  service_->MarkTaskCompleted(TaskType::kPinTabs);
+  service_->MarkTaskCompleted(TaskType::kGemini);
   EXPECT_EQ(service_->GetCurrentLevel(), 2);
   // Reaching Level 3 requires 8 total tasks. 8 - 3 = 5 remaining.
-  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), 5);
+  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), std::make_pair(5, 5));
 
   // Complete 4 more tasks (total 7).
-  service_->MarkTaskCompleted(TaskType::kGemini);
   service_->MarkTaskCompleted(TaskType::kPaymentMethods);
-  service_->MarkTaskCompleted(TaskType::kQuickDelete);
+  service_->MarkTaskCompleted(TaskType::kClearBrowsingData);
   service_->MarkTaskCompleted(TaskType::kSafeBrowsing);
+  service_->MarkTaskCompleted(TaskType::kIncognito);
   EXPECT_EQ(service_->GetCurrentLevel(), 2);
-  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), 1);
+  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), std::make_pair(1, 5));
 
   // Complete 8th task -> Should reach Level 3!
-  service_->MarkTaskCompleted(TaskType::kIncognito);
-  EXPECT_EQ(service_->GetCurrentLevel(), 3);
-  // Reaching Level 4 requires all 12 tasks. 12 - 8 = 4 remaining.
-  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), 4);
-
-  // Complete remaining 4 tasks (total 12).
   service_->MarkTaskCompleted(TaskType::kPasswordCheckup);
+  EXPECT_EQ(service_->GetCurrentLevel(), 3);
+  // Reaching Level 4 requires all 11 tasks. 11 - 8 = 3 remaining.
+  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), std::make_pair(3, 3));
+
+  // Complete remaining 3 tasks (total 11).
   service_->MarkTaskCompleted(TaskType::kLensWebsiteSearch);
   service_->MarkTaskCompleted(TaskType::kAISearch);
   service_->MarkTaskCompleted(TaskType::kLensCameraSearch);
   EXPECT_EQ(service_->GetCurrentLevel(), 4);
-  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), 0);
+  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), std::make_pair(0, 0));
 }
 
 // Tests that the level is monotonic and never decreases.
@@ -105,7 +107,7 @@ TEST_F(LevelUpServiceTest, TestLevelMonotonicity) {
   // Complete 3 tasks to reach Level 2.
   service_->MarkTaskCompleted(TaskType::kTabGroups);
   service_->MarkTaskCompleted(TaskType::kAutofill);
-  service_->MarkTaskCompleted(TaskType::kPinTabs);
+  service_->MarkTaskCompleted(TaskType::kGemini);
   EXPECT_EQ(service_->GetCurrentLevel(), 2);
 
   // Manually force the highest level preference to Level 3 (simulating a sync
@@ -121,7 +123,7 @@ TEST_F(LevelUpServiceTest, TestLevelMonotonicity) {
   EXPECT_EQ(new_service->GetCurrentLevel(), 3);
 
   // Completing another task (4 total) should still keep us at Level 3.
-  new_service->MarkTaskCompleted(TaskType::kGemini);
+  new_service->MarkTaskCompleted(TaskType::kPaymentMethods);
   EXPECT_EQ(new_service->GetCurrentLevel(), 3);
 }
 
@@ -144,14 +146,16 @@ TEST_F(LevelUpServiceTest, TestTaskCompletionResetsFreshness) {
 TEST_F(LevelUpServiceTest, TestStatValues) {
   // Initially all stats are 0.
   EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kTabsDecluttered));
-  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kTypingSaved));
+  EXPECT_EQ(0,
+            service_->GetStatValue(LevelUpTaskStatType::kPasswordsAutofilled));
   EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kPasswordsVerified));
   EXPECT_EQ(
       0, service_->GetStatValue(LevelUpTaskStatType::kPhotoSearchesPerformed));
 
-  // Increment typing saved stat.
-  service_->IncrementStatValue(LevelUpTaskStatType::kTypingSaved, 15);
-  EXPECT_EQ(15, service_->GetStatValue(LevelUpTaskStatType::kTypingSaved));
+  // Increment passwords autofilled stat.
+  service_->IncrementStatValue(LevelUpTaskStatType::kPasswordsAutofilled, 15);
+  EXPECT_EQ(15,
+            service_->GetStatValue(LevelUpTaskStatType::kPasswordsAutofilled));
 
   // Increment tabs decluttered stat.
   service_->IncrementStatValue(LevelUpTaskStatType::kTabsDecluttered, 4);
@@ -190,14 +194,11 @@ TEST_F(LevelUpServiceTest, TestTabGroupObserverDecluttering) {
 // Tests that LevelUpPasswordCheckObserver updates kPasswordsVerified stat when
 // a password check finishes (transitions from kRunning to kIdle).
 TEST_F(LevelUpServiceTest, TestPasswordCheckObserver) {
-  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kPasswordsVerified));
-
   scoped_refptr<IOSChromePasswordCheckManager> check_manager =
       IOSChromePasswordCheckManagerFactory::GetForProfile(profile_.get());
   ASSERT_TRUE(check_manager);
 
-  auto service_with_manager = std::make_unique<LevelUpService>(
-      profile_->GetPrefs(), nullptr, nullptr, check_manager.get());
+  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kPasswordsVerified));
 
   // Start and stop password check.
   check_manager->StartPasswordCheck(
@@ -205,8 +206,7 @@ TEST_F(LevelUpServiceTest, TestPasswordCheckObserver) {
   check_manager->StopPasswordCheck();
 
   // Verify kPasswordsVerified stat (0 if no saved passwords in test store).
-  EXPECT_EQ(0, service_with_manager->GetStatValue(
-                   LevelUpTaskStatType::kPasswordsVerified));
+  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kPasswordsVerified));
 }
 
 // Tests that ResetAllTasksStatus clears task completion, stats, level, and
@@ -215,14 +215,15 @@ TEST_F(LevelUpServiceTest, TestResetAllTasksStatus) {
   // Complete tasks and increment stats.
   service_->MarkTaskCompleted(TaskType::kTabGroups);
   service_->MarkTaskCompleted(TaskType::kAutofill);
-  service_->MarkTaskCompleted(TaskType::kPinTabs);
+  service_->MarkTaskCompleted(TaskType::kGemini);
   EXPECT_EQ(2, service_->GetCurrentLevel());
   EXPECT_TRUE(service_->IsTaskCompleted(TaskType::kTabGroups));
 
   service_->IncrementStatValue(LevelUpTaskStatType::kTabsDecluttered, 5);
-  service_->IncrementStatValue(LevelUpTaskStatType::kTypingSaved, 20);
+  service_->IncrementStatValue(LevelUpTaskStatType::kPasswordsAutofilled, 20);
   EXPECT_EQ(5, service_->GetStatValue(LevelUpTaskStatType::kTabsDecluttered));
-  EXPECT_EQ(20, service_->GetStatValue(LevelUpTaskStatType::kTypingSaved));
+  EXPECT_EQ(20,
+            service_->GetStatValue(LevelUpTaskStatType::kPasswordsAutofilled));
 
   PrefService* prefs = profile_->GetPrefs();
   prefs->SetInteger(
@@ -235,11 +236,12 @@ TEST_F(LevelUpServiceTest, TestResetAllTasksStatus) {
   EXPECT_EQ(1, service_->GetCurrentLevel());
   EXPECT_FALSE(service_->IsTaskCompleted(TaskType::kTabGroups));
   EXPECT_FALSE(service_->IsTaskCompleted(TaskType::kAutofill));
-  EXPECT_FALSE(service_->IsTaskCompleted(TaskType::kPinTabs));
+  EXPECT_FALSE(service_->IsTaskCompleted(TaskType::kGemini));
 
   // Verify all stats are reset.
   EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kTabsDecluttered));
-  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kTypingSaved));
+  EXPECT_EQ(0,
+            service_->GetStatValue(LevelUpTaskStatType::kPasswordsAutofilled));
   EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kPasswordsVerified));
   EXPECT_EQ(
       0, service_->GetStatValue(LevelUpTaskStatType::kPhotoSearchesPerformed));
@@ -253,13 +255,199 @@ TEST_F(LevelUpServiceTest, TestResetAllTasksStatus) {
 
 // Tests that changing the UI enabled preference updates IsUIEnabled().
 TEST_F(LevelUpServiceTest, TestUIEnabledPrefObservation) {
-  EXPECT_FALSE(service_->IsUIEnabled());
-
-  profile_->GetPrefs()->SetBoolean(prefs::kLevelUpUIEnabled, true);
   EXPECT_TRUE(service_->IsUIEnabled());
 
   profile_->GetPrefs()->SetBoolean(prefs::kLevelUpUIEnabled, false);
   EXPECT_FALSE(service_->IsUIEnabled());
+
+  profile_->GetPrefs()->SetBoolean(prefs::kLevelUpUIEnabled, true);
+  EXPECT_TRUE(service_->IsUIEnabled());
+}
+
+// Tests that tasks and stats are not tracked when the opt-in preference is
+// false.
+TEST_F(LevelUpServiceTest, TestOptedOutDoesNotTrack) {
+  profile_->GetPrefs()->SetBoolean(prefs::kLevelUpOptIn, false);
+  EXPECT_FALSE(service_->IsOptedIn());
+
+  // Attempt to complete a task.
+  service_->MarkTaskCompleted(TaskType::kTabGroups);
+  EXPECT_FALSE(service_->IsTaskCompleted(TaskType::kTabGroups));
+  EXPECT_EQ(service_->GetCurrentLevel(), 1);
+  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), std::make_pair(3, 3));
+
+  // Attempt to increment a stat.
+  service_->IncrementStatValue(LevelUpTaskStatType::kTabsDecluttered, 5);
+  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kTabsDecluttered));
+}
+
+// Tests that GetRecommendedTasks returns 4 tasks matching default category
+// order (2 Productivity, 1 Safety, 1 Search) when no tasks are completed.
+TEST_F(LevelUpServiceTest, TestGetRecommendedTasksDefaultOrder) {
+  std::vector<const TaskInfo*> recommended = service_->GetRecommendedTasks();
+  ASSERT_EQ(4u, recommended.size());
+
+  int productivity_count = 0;
+  int safety_count = 0;
+  int search_count = 0;
+
+  for (const TaskInfo* info : recommended) {
+    switch (info->GetCategory()) {
+      case LevelUpTaskCategory::kProductivity:
+        productivity_count++;
+        break;
+      case LevelUpTaskCategory::kSafety:
+        safety_count++;
+        break;
+      case LevelUpTaskCategory::kSearch:
+        search_count++;
+        break;
+    }
+  }
+
+  EXPECT_EQ(2, productivity_count);
+  EXPECT_EQ(1, safety_count);
+  EXPECT_EQ(1, search_count);
+}
+
+// Tests that completing a task in a category promotes that category to rank 1
+// in recommendations.
+TEST_F(LevelUpServiceTest, TestGetRecommendedTasksCategoryRecency) {
+  // Complete a Safety task.
+  service_->MarkTaskCompleted(TaskType::kClearBrowsingData);
+
+  std::vector<const TaskInfo*> recommended = service_->GetRecommendedTasks();
+  ASSERT_EQ(4u, recommended.size());
+
+  int productivity_count = 0;
+  int safety_count = 0;
+  int search_count = 0;
+
+  for (const TaskInfo* info : recommended) {
+    switch (info->GetCategory()) {
+      case LevelUpTaskCategory::kProductivity:
+        productivity_count++;
+        break;
+      case LevelUpTaskCategory::kSafety:
+        safety_count++;
+        break;
+      case LevelUpTaskCategory::kSearch:
+        search_count++;
+        break;
+    }
+  }
+
+  // Safety is now rank 1 (2 tasks), Productivity rank 2 (1 task), Search rank
+  // 3 (1 task).
+  EXPECT_EQ(2, safety_count);
+  EXPECT_EQ(1, productivity_count);
+  EXPECT_EQ(1, search_count);
+}
+
+// Tests that GetRecommendedTasks backfills with completed tasks when almost all
+// tasks are completed.
+TEST_F(LevelUpServiceTest, TestGetRecommendedTasksBackfillCompleted) {
+  // Complete all 11 tasks.
+  const auto& tasks = service_->GetTasks();
+  for (const auto& [type, info] : tasks) {
+    service_->MarkTaskCompleted(type);
+  }
+
+  std::vector<const TaskInfo*> recommended = service_->GetRecommendedTasks();
+  EXPECT_EQ(4u, recommended.size());
+}
+
+// Tests that all TaskType enum values roundtrip cleanly through
+// TaskTypeToString and StringToTaskType.
+TEST_F(LevelUpServiceTest, TestTaskTypeStringRoundTrip) {
+  for (int i = 0; i <= static_cast<int>(TaskType::kMaxValue); ++i) {
+    TaskType type = static_cast<TaskType>(i);
+    std::string str = TaskTypeToString(type);
+    if (type == TaskType::kUnknown) {
+      EXPECT_EQ("Unknown", str);
+    } else {
+      EXPECT_NE("Unknown", str);
+    }
+    EXPECT_EQ(type, StringToTaskType(str));
+  }
+}
+
+// Tests that GetOrderedStatTypes returns stat types ordered by the completion
+// recency of their associated task (most recent first).
+TEST_F(LevelUpServiceTest, TestGetOrderedStatTypes) {
+  std::vector<LevelUpTaskStatType> default_order = {
+      LevelUpTaskStatType::kTabsDecluttered,
+      LevelUpTaskStatType::kPasswordsAutofilled,
+      LevelUpTaskStatType::kPasswordsVerified,
+      LevelUpTaskStatType::kPhotoSearchesPerformed,
+  };
+  EXPECT_EQ(default_order, service_->GetOrderedStatTypes());
+
+  service_->MarkTaskCompleted(TaskType::kLensCameraSearch);
+  service_->MarkTaskCompleted(TaskType::kPinTabs);
+  service_->MarkTaskCompleted(TaskType::kAutofill);
+
+  std::vector<LevelUpTaskStatType> expected = {
+      LevelUpTaskStatType::kPasswordsAutofilled,
+      LevelUpTaskStatType::kPhotoSearchesPerformed,
+      LevelUpTaskStatType::kTabsDecluttered,
+      LevelUpTaskStatType::kPasswordsVerified,
+  };
+  EXPECT_EQ(expected, service_->GetOrderedStatTypes());
+}
+
+// Tests that every task has at least one non-empty trigger user action and that
+// no two tasks share the same trigger user action.
+TEST_F(LevelUpServiceTest, TestTaskTriggerUserActionsAreUniqueAndNonEmpty) {
+  const auto& tasks = service_->GetTasks();
+  ASSERT_FALSE(tasks.empty());
+
+  std::set<std::string> seen_actions;
+  for (const auto& [type, info] : tasks) {
+    SCOPED_TRACE(TaskTypeToString(type));
+    std::vector<std::string> actions = info->GetTriggerUserActions();
+    EXPECT_FALSE(actions.empty());
+    for (const std::string& action : actions) {
+      EXPECT_FALSE(action.empty());
+      EXPECT_TRUE(seen_actions.insert(action).second)
+          << "Duplicate trigger user action: " << action;
+    }
+  }
+}
+
+// Tests that completing a task records the TaskCompleted histogram once.
+TEST_F(LevelUpServiceTest, RecordsTaskCompletedMetric) {
+  base::HistogramTester histogram_tester;
+
+  service_->MarkTaskCompleted(TaskType::kTabGroups);
+  histogram_tester.ExpectUniqueSample(kLevelUpTaskCompletedHistogram,
+                                      TaskType::kTabGroups, 1);
+
+  // Marking the same task completed again should not emit a duplicate sample.
+  service_->MarkTaskCompleted(TaskType::kTabGroups);
+  histogram_tester.ExpectTotalCount(kLevelUpTaskCompletedHistogram, 1);
+}
+
+// Tests that reaching a new milestone level records the LevelChanged histogram.
+TEST_F(LevelUpServiceTest, RecordsLevelChangedMetric) {
+  base::HistogramTester histogram_tester;
+
+  service_->MarkTaskCompleted(TaskType::kTabGroups);
+  service_->MarkTaskCompleted(TaskType::kAutofill);
+  histogram_tester.ExpectTotalCount(kLevelUpLevelChangedHistogram, 0);
+
+  // Completing the 3rd task reaches Level 2.
+  service_->MarkTaskCompleted(TaskType::kGemini);
+  histogram_tester.ExpectUniqueSample(kLevelUpLevelChangedHistogram, 2, 1);
+
+  // Completing 5 more tasks (total 8) reaches Level 3.
+  service_->MarkTaskCompleted(TaskType::kPaymentMethods);
+  service_->MarkTaskCompleted(TaskType::kClearBrowsingData);
+  service_->MarkTaskCompleted(TaskType::kSafeBrowsing);
+  service_->MarkTaskCompleted(TaskType::kIncognito);
+  service_->MarkTaskCompleted(TaskType::kPasswordCheckup);
+  histogram_tester.ExpectBucketCount(kLevelUpLevelChangedHistogram, 3, 1);
+  histogram_tester.ExpectTotalCount(kLevelUpLevelChangedHistogram, 2);
 }
 
 }  // namespace

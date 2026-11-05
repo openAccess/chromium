@@ -29,7 +29,6 @@
 #include "media/base/supported_video_decoder_config.h"
 #include "media/video/video_encode_accelerator.h"
 #include "ui/display/display_observer.h"
-#include "ui/gl/gpu_preference.h"
 
 namespace base {
 class CommandLine;
@@ -39,13 +38,6 @@ namespace content {
 
 class CONTENT_EXPORT GpuDataManagerImplPrivate {
  public:
-  static constexpr bool kSupportsGpuModeHardwareGL =
-#if BUILDFLAG(IS_MAC) && defined(ARCH_CPU_ARM64)
-      false;
-#else
-      true;
-#endif
-
   explicit GpuDataManagerImplPrivate(GpuDataManagerImpl* owner);
 
   GpuDataManagerImplPrivate(const GpuDataManagerImplPrivate&) = delete;
@@ -74,6 +66,9 @@ class CONTENT_EXPORT GpuDataManagerImplPrivate {
   void DisableHardwareAcceleration();
   bool HardwareAccelerationEnabled() const;
   bool IsGpuRasterizationForUIEnabled() const;
+  bool supports_gpu_mode_hardware_gl() const {
+    return supports_gpu_mode_hardware_gl_;
+  }
 
   void UpdateGpuInfo(
       const gpu::GPUInfo& gpu_info,
@@ -127,8 +122,6 @@ class CONTENT_EXPORT GpuDataManagerImplPrivate {
   void ProcessCrashed();
 
   base::ListValue GetLogMessages() const;
-
-  void HandleGpuSwitch();
 
   void BlockDomainsFrom3DAPIs(const std::set<GURL>& urls,
                               gpu::DomainGuilt guilt);
@@ -274,6 +267,8 @@ class CONTENT_EXPORT GpuDataManagerImplPrivate {
   bool gpu_access_allowed_for_hardware_gpu_ = true;
   std::string gpu_access_blocked_reason_for_hardware_gpu_;
 
+  const bool supports_gpu_mode_hardware_gl_;
+
   gfx::GpuExtraInfo gpu_extra_info_;
 
   const scoped_refptr<GpuDataManagerObserverList> observer_list_;
@@ -286,6 +281,9 @@ class CONTENT_EXPORT GpuDataManagerImplPrivate {
 
   // What the gpu process is being run for.
   gpu::GpuMode gpu_mode_ = gpu::GpuMode::UNKNOWN;
+
+  // Whether any GPU mode has reached the process crash limit.
+  bool gpu_crash_limit_reached_ = false;
 
   // Order of gpu process fallback states, used as a stack.
   std::vector<gpu::GpuMode> fallback_modes_;

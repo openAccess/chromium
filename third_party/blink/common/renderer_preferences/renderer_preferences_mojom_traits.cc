@@ -122,9 +122,8 @@ bool StructTraits<blink::mojom::RendererPreferencesDataView,
   out->autofill_shortcut_key_code =
       static_cast<ui::KeyboardCode>(data.autofill_shortcut_key_code());
   out->autofill_shortcut_modifiers = data.autofill_shortcut_modifiers();
-  if (!data.ReadAutofillTriggerString(&out->autofill_trigger_string)) {
-    return false;
-  }
+  out->autofill_at_memory_double_ctrl_trigger_enabled =
+      data.autofill_at_memory_double_ctrl_trigger_enabled();
 
   if (!data.ReadExplicitlyAllowedNetworkPorts(
           &out->explicitly_allowed_network_ports)) {
@@ -137,6 +136,9 @@ bool StructTraits<blink::mojom::RendererPreferencesDataView,
 
   out->is_global_privacy_control_setting_enabled =
       data.is_global_privacy_control_setting_enabled();
+
+  out->global_privacy_control_devtools_override =
+      data.global_privacy_control_devtools_override();
 
   return true;
 }

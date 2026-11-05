@@ -40,6 +40,7 @@
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/table/table_view.h"
 #include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/views/test/menu_test_utils.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/widget/widget.h"
@@ -103,9 +104,9 @@ class TestTableModel : public ui::TableModel {
   TestTableModel& operator=(const TestTableModel&) = delete;
 
   // ui::TableModel:
-  size_t RowCount() override { return 10; }
+  size_t RowCount() const override { return 10; }
 
-  std::u16string GetText(size_t row, int column_id) override {
+  std::u16string GetText(size_t row, int column_id) const override {
     const std::array<std::array<const char* const, 4>, 5> cells({
         {{"Orange", "Orange", "South america", "$5"}},
         {{"Apple", "Green", "Canada", "$3"}},
@@ -796,8 +797,9 @@ TEST_F(ViewAXPlatformNodeDelegateTest, SetNameAndDescription) {
             ax::mojom::NameFrom::kRelatedElement);
 
   // Setting the labelledby View to itself should trigger a DCHECK.
-  EXPECT_DCHECK_DEATH_WITH(button_accessibility()->SetName(*button_),
-                           "DCHECK failed: view_ != &naming_view");
+  EXPECT_CHECK_DEATH_WITH(button_accessibility()->SetName(*button_),
+                          "Check failed: view_ != &naming_view",
+                          base::NotFatalUntil::M163);
 }
 
 TEST_F(ViewAXPlatformNodeDelegateTest, SetIsSelected) {
@@ -1415,10 +1417,14 @@ TEST_F(ViewAXPlatformNodeDelegateTableTest, TableHasCell) {
   EXPECT_NE(std::nullopt, table_accessibility()->GetCellId(0, 0));
   EXPECT_NE(std::nullopt, table_accessibility()->GetCellId(0, 3));
   EXPECT_NE(std::nullopt, table_accessibility()->GetCellId(9, 3));
-  EXPECT_DCHECK_DEATH(table_accessibility()->GetCellId(-1, 0));
-  EXPECT_DCHECK_DEATH(table_accessibility()->GetCellId(0, -1));
-  EXPECT_DCHECK_DEATH(table_accessibility()->GetCellId(10, 0));
-  EXPECT_DCHECK_DEATH(table_accessibility()->GetCellId(0, 4));
+  EXPECT_CHECK_DEATH(table_accessibility()->GetCellId(-1, 0),
+                     base::NotFatalUntil::M163);
+  EXPECT_CHECK_DEATH(table_accessibility()->GetCellId(0, -1),
+                     base::NotFatalUntil::M163);
+  EXPECT_CHECK_DEATH(table_accessibility()->GetCellId(10, 0),
+                     base::NotFatalUntil::M163);
+  EXPECT_CHECK_DEATH(table_accessibility()->GetCellId(0, 4),
+                     base::NotFatalUntil::M163);
 }
 
 TEST_F(ViewAXPlatformNodeDelegateMenuTest, MenuTest) {
@@ -1657,5 +1663,64 @@ TEST_F(ViewAXPlatformNodeDelegateTest, HiddenChildWidgetRootViewHasNoParent) {
             child_root_view->GetParent());
 }
 #endif  // !BUILDFLAG(IS_MAC)
+
+#if defined(USE_AURA)
+TEST_F(ViewAXPlatformNodeDelegateTest,
+       NativeChildWidgetsPreserveAccessibilityAndFocus) {
+  // Native parenting: widget() -> owned_widget -> transitively_owned_widget.
+  ViewAXPlatformNodeDelegate* root_view_accessibility =
+      view_accessibility(widget()->GetRootView());
+  const size_t initial_child_count = root_view_accessibility->GetChildCount();
+
+  auto owned_widget = std::make_unique<Widget>();
+  Widget::InitParams owned_params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_CONTROL);
+  owned_params.parent = widget()->GetNativeView();
+  owned_widget->Init(std::move(owned_params));
+  owned_widget->SetContentsView(std::make_unique<View>());
+  owned_widget->Show();
+
+  EXPECT_EQ(initial_child_count + 1, root_view_accessibility->GetChildCount());
+
+  ViewAXPlatformNodeDelegate* owned_root_view_accessibility =
+      view_accessibility(owned_widget->GetRootView());
+  const size_t owned_child_count =
+      owned_root_view_accessibility->GetChildCount();
+
+  auto transitively_owned_widget = std::make_unique<Widget>();
+  Widget::InitParams transitively_owned_params = CreateParams(
+      Widget::InitParams::CLIENT_OWNS_WIDGET, Widget::InitParams::TYPE_CONTROL);
+  transitively_owned_params.parent = owned_widget->GetNativeView();
+  transitively_owned_widget->Init(std::move(transitively_owned_params));
+  transitively_owned_widget->SetContentsView(std::make_unique<View>());
+  transitively_owned_widget->Show();
+
+  ASSERT_TRUE(Widget::GetAllOwnedWidgets(widget()->GetNativeView())
+                  .contains(transitively_owned_widget.get()));
+
+  EXPECT_EQ(owned_child_count + 1,
+            owned_root_view_accessibility->GetChildCount());
+  EXPECT_EQ(transitively_owned_widget->GetRootView()->GetNativeViewAccessible(),
+            owned_root_view_accessibility->ChildAtIndex(owned_child_count));
+
+  // Unfocused root-view child lists (ordinary view children omitted):
+  //   widget(): owned_widget, transitively_owned_widget
+  //   owned_widget: transitively_owned_widget
+  // The desktop HWND filter must not prune these native descendants.
+  EXPECT_EQ(initial_child_count + 2, root_view_accessibility->GetChildCount());
+  auto* focused = transitively_owned_widget->GetContentsView();
+  focused->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+  widget()->GetFocusManager()->SetFocusedView(focused);
+  // Focus projects widget()'s children to just transitively_owned_widget.
+  EXPECT_EQ(1u, root_view_accessibility->GetChildCount());
+  EXPECT_EQ(transitively_owned_widget->GetRootView()->GetNativeViewAccessible(),
+            root_view_accessibility->ChildAtIndex(0));
+  widget()->GetFocusManager()->SetFocusedView(nullptr);
+  transitively_owned_widget->Hide();
+  EXPECT_EQ(initial_child_count + 1, root_view_accessibility->GetChildCount());
+  transitively_owned_widget->CloseNow();
+  EXPECT_EQ(initial_child_count + 1, root_view_accessibility->GetChildCount());
+}
+#endif  // defined(USE_AURA)
 
 }  // namespace views::test

@@ -137,6 +137,39 @@ void LogFocusToOpenTime(
   }
 }
 
+void LogFocusToCutOrCopyAllTextTime(
+    base::TimeDelta elapsed,
+    bool is_zero_prefix,
+    ::metrics::OmniboxEventProto::PageClassification page_classification) {
+  LogHistogramMediumTimes("Omnibox.FocusToCutOrCopyAllTextTime", elapsed);
+
+  const std::string page_context =
+      ::metrics::OmniboxEventProto::PageClassification_Name(
+          page_classification);
+  LogHistogramMediumTimes(
+      base::StrCat(
+          {"Omnibox.FocusToCutOrCopyAllTextTime.ByPageContext.", page_context}),
+      elapsed);
+
+  if (is_zero_prefix) {
+    LogHistogramMediumTimes("Omnibox.FocusToCutOrCopyAllTextTime.ZeroSuggest",
+                            elapsed);
+    LogHistogramMediumTimes(
+        base::StrCat(
+            {"Omnibox.FocusToCutOrCopyAllTextTime.ZeroSuggest.ByPageContext.",
+             page_context}),
+        elapsed);
+  } else {
+    LogHistogramMediumTimes("Omnibox.FocusToCutOrCopyAllTextTime.TypedSuggest",
+                            elapsed);
+    LogHistogramMediumTimes(
+        base::StrCat(
+            {"Omnibox.FocusToCutOrCopyAllTextTime.TypedSuggest.ByPageContext.",
+             page_context}),
+        elapsed);
+  }
+}
+
 void RecordActionShownForAllActions(const AutocompleteResult& result,
                                     OmniboxPopupSelection executed_selection) {
   // Record the presence of all actions in the result set.
@@ -147,15 +180,17 @@ void RecordActionShownForAllActions(const AutocompleteResult& result,
       match.takeover_action->RecordActionShown(
           line_index,
           /*executed=*/line_index == executed_selection.line &&
-              executed_selection.state == OmniboxPopupSelection::NORMAL);
+              executed_selection.state ==
+                  OmniboxPopupSelection::LineState::kNormal);
     }
     for (size_t action_index = 0; action_index < match.actions.size();
          ++action_index) {
       match.actions[action_index]->RecordActionShown(
-          line_index, /*executed=*/line_index == executed_selection.line &&
-                          action_index == executed_selection.action_index &&
-                          executed_selection.state ==
-                              OmniboxPopupSelection::FOCUSED_BUTTON_ACTION);
+          line_index,
+          /*executed=*/line_index == executed_selection.line &&
+              action_index == executed_selection.action_index &&
+              executed_selection.state ==
+                  OmniboxPopupSelection::LineState::kFocusedButtonAction);
     }
   }
 }

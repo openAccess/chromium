@@ -65,7 +65,6 @@ class CC_EXPORT PictureLayerImpl
   void ReleaseTileResources() override;
   void RecreateTileResources() override;
   Region GetInvalidationRegionForDebugging() override;
-  gfx::ContentColorUsage GetContentColorUsage() const override;
   DamageReasonSet GetDamageReasons() const override;
   void DidDraw(viz::ClientResourceProvider* resource_provider) override;
 
@@ -82,7 +81,7 @@ class CC_EXPORT PictureLayerImpl
   const PaintWorkletRecordMap& GetPaintWorkletRecords() const override;
   std::vector<const DrawImage*> GetDiscardableImagesInRect(
       const gfx::Rect& rect) const override;
-  ScrollOffsetMap GetRasterInducingScrollOffsets() const override;
+  RasterInducingValues GetRasterInducingValues() const override;
   const GlobalStateThatImpactsTilePriority& global_tile_state() const override;
 
   bool ShouldAnimate(PaintImage::Id paint_image_id) const;
@@ -243,6 +242,7 @@ class CC_EXPORT PictureLayerImpl
   void UpdateViewportRectForTilePriorityInContentSpace();
   PictureLayerImpl* GetRecycledTwinLayer() const;
   bool ShouldDirectlyCompositeImage(float raster_scale) const;
+  ScrollOffsetMap GetRasterInducingScrollOffsets() const;
 
   // Returns the raster scale that should be used for a directly composited
   // image. This takes into account the ideal contents scale to ensure we don't
@@ -417,10 +417,9 @@ class CC_EXPORT PictureLayerImpl
   bool ShouldReportTileAsMissing(
       const gfx::Rect& tile_geometry_rect,
       const gfx::Rect& scaled_viewport_for_tile_priority) const override;
-  void DidAppendQuad(viz::DrawQuad* quad,
-                     const TilingSetCoverageIterator<PictureLayerTiling>& iter,
-                     AppendQuadsData* append_quads_data,
-                     bool is_checkerboard) override;
+  void DidAppendQuad(
+      viz::DrawQuad* quad,
+      const TilingSetCoverageIterator<PictureLayerTiling>& iter) override;
 
   gfx::Rect GetScaledViewportForTilePriority(float scale) const override;
 

@@ -347,7 +347,8 @@ inline LayoutUnit ComputeInlineSizeForFragment(
       return MinMaxSizesResult(*override_min_max_sizes_for_test,
                                /* depends_on_block_constraints */ false);
     }
-    return node.ComputeMinMaxSizes(space.GetWritingMode(), type, space);
+    return node.ComputeMinMaxSizes(space.GetWritingMode(), type, space,
+                                   MinMaxSizesInput::Unconstrained());
   };
 
   return ComputeInlineSizeForFragment(space, node, border_padding,
@@ -439,14 +440,14 @@ std::optional<LayoutUnit> ResolveRowGapLength(const ComputedStyle&,
 LayoutUnit ResolveRowGapForMulticol(const ComputedStyle&,
                                     LayoutUnit available_size);
 
-// Return the used value of `flow-tolerance` if it is a `<length-percentage>`.
+// Return the used value of `fit-tolerance` if it is a `<length-percentage>`.
 // Otherwise, if it's `normal`, whose resolution is algorithm-specific,
 // `std::nullopt` is returned.
-std::optional<LayoutUnit> ResolveFlowToleranceLength(const ComputedStyle&,
-                                                     LayoutUnit available_size);
+std::optional<LayoutUnit> ResolveFitToleranceLength(const ComputedStyle&,
+                                                    LayoutUnit available_size);
 
-LayoutUnit ResolveFlowToleranceForGridLanes(const ComputedStyle&,
-                                            const LogicalSize& available_size);
+LayoutUnit ResolveFitToleranceForGridLanes(const ComputedStyle&,
+                                           const LogicalSize& available_size);
 
 CORE_EXPORT LayoutUnit ColumnInlineProgression(const ComputedStyle&,
                                                LayoutUnit available_size);
@@ -714,14 +715,15 @@ MinMaxSizesResult ComputeMinAndMaxContentContribution(
     const ComputedStyle& parent_style,
     const BlockNode& child,
     const ConstraintSpace& space,
-    const MinMaxSizesFloatInput float_input = MinMaxSizesFloatInput());
+    const MinMaxSizesInput& input);
 
 // Similar to `ComputeMinAndMaxContentContribution` but ignores the writing mode
 // of the parent, and instead computes the contribution relative to the child's
 // own writing mode.
 MinMaxSizesResult ComputeMinAndMaxContentContributionForSelf(
     const BlockNode& child,
-    const ConstraintSpace& space);
+    const ConstraintSpace& space,
+    const MinMaxSizesInput& input);
 
 // Same as above, but allows a custom function to compute min/max sizes.
 MinMaxSizesResult ComputeMinAndMaxContentContributionForSelf(

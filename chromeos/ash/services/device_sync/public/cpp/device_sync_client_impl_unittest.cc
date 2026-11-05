@@ -20,6 +20,7 @@
 #include "base/test/null_task_runner.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
+#include "base/timer/timer.h"
 #include "chromeos/ash/components/multidevice/remote_device_test_util.h"
 #include "chromeos/ash/components/multidevice/software_feature.h"
 #include "chromeos/ash/services/device_sync/attestation_certificates_syncer.h"
@@ -61,7 +62,7 @@ class MockInstanceIDDriver : public instance_id::InstanceIDDriver {
   MOCK_METHOD(bool,
               ExistsInstanceID,
               (const std::string& app_id),
-              (const override));
+              (const, override));
 };
 
 class FakeDeviceSyncImplFactory : public DeviceSyncImpl::Factory {

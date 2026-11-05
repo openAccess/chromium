@@ -36,7 +36,6 @@
 #include "third_party/blink/renderer/platform/text/tab_size.h"
 #include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_uchar.h"
 
@@ -104,7 +103,7 @@ class PLATFORM_EXPORT Font : public GarbageCollected<Font> {
 
   // Controls whether CJK characters are excluded from or included in text
   // intercept computation for ink skip decoration line clipping.
-  enum class InkSkipCJKHandling { kExcludeCJK, kIncludeCJK };
+  enum class InkSkipCjkHandling { kExcludeCjk, kIncludeCjk };
 
   // Compute the text intercepts along the axis of the advance and write them
   // into the specified Vector of TextIntercepts. The number of those is zero or
@@ -113,7 +112,7 @@ class PLATFORM_EXPORT Font : public GarbageCollected<Font> {
   // a line crossing through the text, parallel to the baseline.
   // TODO(drott): crbug.com/655154 Fix this for upright in vertical.
   void GetTextIntercepts(const TextFragmentPaintInfo&,
-                         InkSkipCJKHandling,
+                         InkSkipCjkHandling,
                          const cc::PaintFlags&,
                          const std::tuple<float, float>& bounds,
                          Vector<TextIntercept>&) const;
@@ -163,10 +162,6 @@ class PLATFORM_EXPORT Font : public GarbageCollected<Font> {
   // True if `this` has font-features which encompass the entire range.
   bool HasSimpleFontFeatures() const;
 
-  // Access the NG shape cache associated with this particular font object.
-  // Should *not* be retained across layout calls as it may become invalid.
-  NGShapeCache& GetNGShapeCache() const;
-
   // Whether the font supports shaping word by word instead of shaping the
   // full run in one go. Allows better caching for fonts where space cannot
   // participate in kerning and/or ligatures.
@@ -210,14 +205,16 @@ class PLATFORM_EXPORT Font : public GarbageCollected<Font> {
   bool IsFallbackValid() const;
 
   bool ShouldSkipDrawing() const {
-    if (!font_fallback_list_)
+    if (!font_fallback_list_) {
       return false;
+    }
     return EnsureFontFallbackList()->ShouldSkipDrawing();
   }
 
   bool HasCustomFont() const {
-    if (!font_fallback_list_)
+    if (!font_fallback_list_) {
       return false;
+    }
     return EnsureFontFallbackList()->HasCustomFont();
   }
 

@@ -13,6 +13,8 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/lens/lens_overlay_controller.h"
 #include "chrome/browser/ui/location_bar/location_bar_override_data.h"
+#include "chrome/browser/ui/omnibox/omnibox_controller.h"
+#include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/permission_bubble/permission_prompt.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -36,11 +38,6 @@
 #include "content/public/common/content_switches.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "url/origin.h"
-
-#if BUILDFLAG(IS_MAC)
-#include "chrome/browser/ui/views/permissions/permission_prompt_notifications_mac.h"
-#include "chrome/browser/web_applications/os_integration/mac/web_app_shortcut_mac.h"
-#endif
 
 namespace {
 
@@ -68,7 +65,7 @@ bool IsFullScreenMode(content::WebContents* web_contents) {
   }
 
   LocationBar* location_bar =
-      location_bar::GetLocationBarForWebContents(web_contents);
+      ::location_bar::GetLocationBarForWebContents(web_contents);
 
   return !location_bar || !location_bar->IsDrawn() ||
          location_bar->IsFullscreen();
@@ -80,32 +77,40 @@ bool IsFullScreenMode(content::WebContents* web_contents) {
 //      page where the user needs to press on a microphone icon to get a
 //      permission request.
 //    - The Lens Overlay is open covering the context. We suppress permission
-//      prompts until the Lens Overlay is closed.
+//      prompts until the Lens Overlay is closed, except for secondary UI
+//      surfaces with their own location bar (such as the Contextual Tasks side
+//      panel).
 bool ShouldIgnorePermissionRequest(
     content::WebContents* web_contents,
     permissions::PermissionPrompt::Delegate* delegate) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
 
   if (ShouldShowPermissionPromptEvenIfOmniboxEditedOrEmpty(web_contents)) {
     return false;
   }
 
-  // Suppress permission prompts if the omnibox is being edited or is empty.
+  // Suppress permission prompts if the omnibox is being edited.
   LocationBar* location_bar =
-      location_bar::GetLocationBarForWebContents(web_contents);
-  bool can_display_prompt = !(location_bar && location_bar->IsEditingOrEmpty());
+      ::location_bar::GetLocationBarForWebContents(web_contents);
+  bool can_display_prompt =
+      !(location_bar && location_bar->GetOmniboxController() &&
+        location_bar->GetOmniboxController()
+            ->edit_model()
+            ->user_input_in_progress());
 
   BrowserWindowInterface* browser = GetBrowser(web_contents);
-  if (browser) {
+  if (tabs::TabInterface* active_tab =
+          browser ? browser->GetTabStripModel()->GetActiveTab() : nullptr) {
     LensOverlayController* lens_overlay_controller =
-        browser->GetTabStripModel()
-            ->GetActiveTab()
-            ->GetTabFeatures()
-            ->lens_overlay_controller();
-    // Don't show prompt if Lens Overlay is showing
+        active_tab->GetTabFeatures()->lens_overlay_controller();
+    // Don't show prompt while the Lens Overlay is showing, except for
+    // secondary UI surfaces with their own location bar (such as the
+    // Contextual Tasks side panel) that are not covered by the overlay.
     // TODO(b/331940245): Refactor to be decoupled from LensOverlayController
     if (lens_overlay_controller &&
-        lens_overlay_controller->IsOverlayShowing()) {
+        lens_overlay_controller->IsOverlayShowing() &&
+        !::location_bar::LocationBarOverrideData::FromWebContents(
+            web_contents)) {
       can_display_prompt = false;
     }
   }
@@ -116,10 +121,31 @@ bool ShouldIgnorePermissionRequest(
   return !can_display_prompt;
 }
 
-bool ShouldUseChip(permissions::PermissionPrompt::Delegate* delegate) {
-  // Permission request chip should not be shown if `delegate->Requests()` were
-  // requested without a user gesture.
-  if (!permissions::PermissionUtil::HasUserGesture(delegate)) {
+bool IsAmbientLoginRequest(permissions::PermissionPrompt::Delegate* delegate) {
+  const auto& requests = delegate->Requests();
+  return requests.size() == 1 && requests.front()->request_type() ==
+                                     permissions::RequestType::kAmbientLogin;
+}
+
+bool ShouldUseChip(content::WebContents* web_contents,
+                   permissions::PermissionPrompt::Delegate* delegate) {
+  // Ambient login requests are made without a user gesture, but always display
+  // a permission chip in the omnibox.
+  if (IsAmbientLoginRequest(delegate)) {
+    return true;
+  }
+
+  // Otherwise, the permission request chip should not be shown if
+  // `delegate->Requests()` were requested without a user gesture. Secondary UI
+  // surfaces with their own location bar, such as the Contextual Tasks side
+  // panel, are exempt: their toolbar has no location icon for a chip-less
+  // prompt bubble to point at, so the request chip is always shown to identify
+  // the request and anchor the bubble. Some requests there never have a user
+  // gesture, e.g. voice search's microphone request via the Web Speech API.
+  // Note that this applies to any `WebContents` with `LocationBarOverrideData`,
+  // including web origins transferred from a tab into the side panel.
+  if (!permissions::PermissionUtil::HasUserGesture(delegate) &&
+      !::location_bar::LocationBarOverrideData::FromWebContents(web_contents)) {
     return false;
   }
 
@@ -134,7 +160,7 @@ bool ShouldUseChip(permissions::PermissionPrompt::Delegate* delegate) {
 }
 
 bool IsLocationBarDisplayed(content::WebContents* web_contents) {
-  LocationBar* lb = location_bar::GetLocationBarForWebContents(web_contents);
+  LocationBar* lb = ::location_bar::GetLocationBarForWebContents(web_contents);
   return lb && lb->IsDrawn() && !lb->IsFullscreen();
 }
 
@@ -187,7 +213,9 @@ bool CanCurrentRequestUseModalUI(
     // We are already displaying the scrim for an embedded permission prompt.
     return true;
   }
-  return tabs::TabInterface::GetFromContents(web_contents)->CanShowModalUI();
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents);
+  return tab && tab->CanShowModalUI();
 }
 
 std::unique_ptr<permissions::PermissionPrompt> CreatePwaPrompt(
@@ -211,7 +239,7 @@ std::unique_ptr<permissions::PermissionPrompt> CreatePwaPrompt(
 std::unique_ptr<permissions::PermissionPrompt> CreateNormalPrompt(
     content::WebContents* web_contents,
     permissions::PermissionPrompt::Delegate* delegate) {
-  DCHECK(!delegate->ShouldCurrentRequestUseQuietUI());
+  CHECK(!delegate->ShouldCurrentRequestUseQuietUI(), base::NotFatalUntil::M162);
   if (ShouldCurrentRequestUseExclusiveAccessUI(delegate)) {
     return CanCurrentRequestUseModalUI(web_contents, delegate)
                ? std::make_unique<ExclusiveAccessPermissionPrompt>(web_contents,
@@ -226,7 +254,8 @@ std::unique_ptr<permissions::PermissionPrompt> CreateNormalPrompt(
                ? std::make_unique<EmbeddedPermissionPrompt>(web_contents,
                                                             delegate)
                : nullptr;
-  } else if (ShouldUseChip(delegate) && IsLocationBarDisplayed(web_contents)) {
+  } else if (ShouldUseChip(web_contents, delegate) &&
+             IsLocationBarDisplayed(web_contents)) {
     return std::make_unique<PermissionPromptChip>(web_contents, delegate);
   } else {
     return std::make_unique<PermissionPromptBubble>(web_contents, delegate);
@@ -242,7 +271,8 @@ std::unique_ptr<permissions::PermissionPrompt> CreateQuietPrompt(
     } else {
       // If LocationBar is not displayed (Fullscreen mode), display a default
       // bubble only for non-abusive origins.
-      DCHECK(!delegate->ShouldDropCurrentRequestIfCannotShowQuietly());
+      CHECK(!delegate->ShouldDropCurrentRequestIfCannotShowQuietly(),
+            base::NotFatalUntil::M162);
       return std::make_unique<PermissionPromptBubble>(web_contents, delegate);
     }
   } else {
@@ -293,21 +323,6 @@ std::unique_ptr<permissions::PermissionPrompt> CreatePermissionPrompt(
     return nullptr;
   }
 
-#if BUILDFLAG(IS_MAC)
-  // If this is a notification permission request coming from a PWA (or a PWA
-  // associated tab), and this is the first time we show a permission prompt for
-  // this request, try using a OS-native permission prompt. If showing the
-  // prompt fails, it will trigger the view to be recreated for the request, at
-  // which point we end up in the normal code path below.
-  if (web_app::UseNotificationAttributionForWebAppShims() &&
-      !delegate->WasCurrentRequestAlreadyDisplayed() &&
-      PermissionPromptNotificationsMac::CanHandleRequest(web_contents,
-                                                         delegate)) {
-    return std::make_unique<PermissionPromptNotificationsMac>(web_contents,
-                                                              delegate);
-  }
-#endif
-
   if (web_app::AppBrowserController::IsWebApp(GetBrowser(web_contents))) {
     return CreatePwaPrompt(web_contents, delegate);
   } else if (delegate->ShouldCurrentRequestUseQuietUI()) {
@@ -326,7 +341,7 @@ std::unique_ptr<permissions::PermissionPrompt> CreatePermissionPrompt(
 
   if (has_mic_request) {
     if (LocationBar* location_bar =
-            location_bar::GetLocationBarForWebContents(web_contents)) {
+            ::location_bar::GetLocationBarForWebContents(web_contents)) {
       location_bar->SetPermissionPromptShowing(true);
     }
   }
@@ -335,7 +350,7 @@ std::unique_ptr<permissions::PermissionPrompt> CreatePermissionPrompt(
 
   if (!prompt && has_mic_request) {
     if (LocationBar* location_bar =
-            location_bar::GetLocationBarForWebContents(web_contents)) {
+            ::location_bar::GetLocationBarForWebContents(web_contents)) {
       location_bar->SetPermissionPromptShowing(false);
     }
   }

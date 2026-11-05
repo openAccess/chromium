@@ -46,6 +46,11 @@ class AppMenuButton : public ToolbarButton, public AppMenuControl {
   views::DialogDelegate* GetDialogDelegate() override;
   void CloseMenu() override;
   void ShowMenu() override;
+  void ShowMenuWithFlags(int run_types) override = 0;
+  views::MenuItemView* GetRootMenuItemViewForTesting() override;
+  ActionAppMenu* GetActionAppMenuForTesting() override;
+  void ExecuteCommandForTesting(int command_id, int mouse_event_flags) override;
+  void SetMenuTimerForTesting(base::ElapsedTimer timer) override;
   void AddObserver(AppMenuButtonObserver* observer) override;
   void RemoveObserver(AppMenuButtonObserver* observer) override;
   bool HasFocus() const override;
@@ -61,8 +66,6 @@ class AppMenuButton : public ToolbarButton, public AppMenuControl {
 
   // Called by the app menu when it closes.
   virtual void OnMenuClosed();
-
-  void SetMenuTimerForTesting(base::ElapsedTimer timer);
 
   AppMenu* app_menu() { return menu_.get(); }
   AppMenuModel* app_menu_model() { return menu_model_.get(); }

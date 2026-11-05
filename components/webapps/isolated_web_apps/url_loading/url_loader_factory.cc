@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -32,7 +33,6 @@
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
 #include "components/web_package/web_bundle_utils.h"
 #include "components/webapps/isolated_web_apps/client.h"
-#include "components/webapps/isolated_web_apps/public/header_utils.h"
 #include "components/webapps/isolated_web_apps/reading/response_reader.h"
 #include "components/webapps/isolated_web_apps/reading/response_reader_registry.h"
 #include "components/webapps/isolated_web_apps/reading/response_reader_registry_factory.h"
@@ -41,6 +41,7 @@
 #include "components/webapps/isolated_web_apps/types/source.h"
 #include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "components/webapps/isolated_web_apps/types/url_loading_types.h"
+#include "components/webapps/isolated_web_apps/url_loading/header_utils.h"
 #include "components/webapps/isolated_web_apps/url_loading/url_loader.h"
 #include "components/webapps/isolated_web_apps/url_loading/utils.h"
 #include "content/public/browser/browser_context.h"
@@ -65,6 +66,7 @@
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/mojom/early_hints.mojom.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/network_service.mojom.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
@@ -83,6 +85,16 @@ bool IsSupportedHttpMethod(const std::string& method) {
          method == net::HttpRequestHeaders::kHeadMethod;
 }
 
+bool IsWorkerScriptRequest(const network::ResourceRequest& resource_request) {
+  switch (resource_request.destination) {
+    case network::mojom::RequestDestination::kWorker:
+    case network::mojom::RequestDestination::kSharedWorker:
+    case network::mojom::RequestDestination::kServiceWorker:
+      return true;
+    default:
+      return false;
+  }
+}
 
 class ForwardingURLLoaderClient : public network::mojom::URLLoaderClient {
  public:
@@ -127,9 +139,10 @@ class ForwardingURLLoaderClient : public network::mojom::URLLoaderClient {
 };
 
 // This URL loader client parses the headers propagated from the underlying
-// layer. This is necessary for service worker loading (which relies on
-// `response_head->parsed_headers` for deducing cross-origin isolation
-// correctly) and implies an additional hop via the network service.
+// layer. This is necessary for worker script loading (which relies on
+// `response_head->parsed_headers` for deducing cross-origin isolation and
+// enforcing connection allowlists before throttles run) and implies an
+// additional hop via the network service.
 class HeaderParsingURLLoaderClient : public ForwardingURLLoaderClient {
  public:
   HeaderParsingURLLoaderClient(
@@ -208,9 +221,9 @@ class HeaderInjectionURLLoaderClient : public ForwardingURLLoaderClient {
     scoped_refptr<net::HttpResponseHeaders> headers = response_head->headers;
     const base::ByteSize original_size(headers->raw_headers().size());
 
-    std::string csp_header = csp_override_.has_value()
-                                 ? csp_override_.value()
-                                 : iwa::GetDefaultContentSecurityPolicy();
+    std::string_view csp_header = csp_override_.has_value()
+                                      ? std::string_view(*csp_override_)
+                                      : iwa::GetDefaultContentSecurityPolicy();
 
     // Apps could specify a more restrictive CSP than what we enforce, which
     // we don't want to overwrite. We add our CSP here so that existing CSPs
@@ -336,12 +349,15 @@ class IsolatedWebAppURLLoaderFactoryImpl
     CHECK(resource_request.url.SchemeIs(webapps::kIsolatedAppScheme));
     DCHECK(resource_request.url.IsStandard());
 
-    if (resource_request.headers.GetHeader("Service-Worker") == "script") {
-      // Service worker script loading expects parsed headers in the response,
-      // whereas `HeaderInjectionURLLoaderClient` explicitly sets them to
-      // nullptr. This is fine for navigation requests which re-parse them at a
-      // higher layer, but for SW having `response_head->parsed_headers` be
-      // present is a must to deduce cross-origin isolation correctly.
+    if (IsWorkerScriptRequest(resource_request)) {
+      // Worker script loading and its throttles (such as
+      // `NetworkRestrictionsWorkerThrottle`) expect parsed headers in the
+      // response, whereas `HeaderInjectionURLLoaderClient` explicitly sets them
+      // to nullptr. This is fine for navigation requests which re-parse them at
+      // a higher layer, but for worker scripts having
+      // `response_head->parsed_headers` present before throttles run is
+      // necessary to deduce cross-origin isolation and enforce connection
+      // allowlists correctly.
       mojo::PendingRemote<network::mojom::URLLoaderClient>
           forwarding_loader_client;
 

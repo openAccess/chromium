@@ -269,6 +269,8 @@ struct CrxComponent {
   CrxComponent();
   CrxComponent(const CrxComponent& other);
   CrxComponent& operator=(const CrxComponent& other);
+  CrxComponent(CrxComponent&& other);
+  CrxComponent& operator=(CrxComponent&& other);
   ~CrxComponent();
 
   // Optional SHA256 hash of the CRX's public key. If not supplied, the unpacker
@@ -485,6 +487,15 @@ class UpdateClient : public base::RefCountedThreadSafe<UpdateClient> {
   // case, the updates will run to completion. Calling this function has no
   // effect if updates are not currently executed or queued up.
   virtual void Stop() = 0;
+
+  // Cancels the update of the CRX associated with `id`, whether that update is
+  // queued or in progress. Other CRXs in the same update task are not affected:
+  // a queued task still runs when scheduled, and only `id` transitions to
+  // `ComponentState::kUpdateError` with `ServiceError::CANCELLED` (aborting its
+  // download if in progress, or preventing it if queued). This is a best-effort
+  // request; an update that is past the point where it can be cancelled runs to
+  // completion. Returns true if an active or queued task for `id` was found.
+  virtual bool Cancel(const std::string& id) = 0;
 
   // Perform a best-effort cleanup up of temporary download directories older
   // than the given time.

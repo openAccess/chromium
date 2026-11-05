@@ -5,26 +5,25 @@
 #import "ios/chrome/browser/settings/ui_bundled/bwg/ui/gemini_settings_view_controller.h"
 
 #import "base/apple/foundation_util.h"
+#import "ios/chrome/browser/intelligence/contextual_cueing/features.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/coordinator/gemini_settings_mutator.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/model/gemini_dynamic_settings_item.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/model/gemini_settings_action.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/model/gemini_settings_action_type.h"
+#import "ios/chrome/browser/settings/ui_bundled/bwg/model/gemini_settings_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/model/gemini_settings_context.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/model/gemini_settings_metadata.h"
-#import "ios/chrome/browser/settings/ui_bundled/bwg/ui/gemini_camera_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/ui/gemini_location_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/utils/gemini_settings_metrics.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_text_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_link_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_multi_detail_text_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_switch_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
-#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
-#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/common/string_util.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "net/base/apple/url_conversions.h"
@@ -38,6 +37,7 @@ typedef NS_ENUM(NSInteger, SectionIdentifier) {
   SectionIdentifierLocation = kSectionIdentifierEnumZero,
   SectionIdentifierCamera,
   SectionIdentifierPageContent,
+  SectionIdentifierSuggestions,
   SectionIdentifierPreferences,
   SectionIdentifierMicrophone,
 };
@@ -50,17 +50,15 @@ typedef NS_ENUM(NSInteger, ItemType) {
   ItemTypeExtensions,
   ItemTypeClosedCaptioning,
   ItemTypeMicrophone,
+  ItemTypeSuggestions,
   ItemTypeLocationFooter,
   ItemTypeCameraFooter,
   ItemTypePageContentSharingFooter,
   ItemTypeAppActivityFooter,
   ItemTypeClosedCaptioningFooter,
   ItemTypeMicrophoneFooter,
+  ItemTypeSuggestionsFooter,
 };
-
-// Table identifier.
-NSString* const kGeminiSettingsViewTableIdentifier =
-    @"GeminiSettingsViewTableIdentifier";
 
 // Row identifiers.
 NSString* const kClosedCaptioningCellId = @"ClosedCaptioningCellId";
@@ -68,6 +66,7 @@ NSString* const kLocationCellId = @"LocationCellId";
 NSString* const kCameraCellId = @"CameraCellId";
 NSString* const kMicrophoneCellId = @"MicrophoneCellId";
 NSString* const kPageContentSharingCellId = @"PageContentSharingCellId";
+NSString* const kSuggestionsCellId = @"SuggestionsCellId";
 
 // Action identifier on a tap on links.
 NSString* const kLocationLinkAction = @"LocationLinkAction";
@@ -84,22 +83,24 @@ NSString* const kPageContentSharingAction = @"PageContentSharingAction";
   TableViewSwitchItem* _closedCaptioningItem;
   // Precise location item.
   TableViewMultiDetailTextItem* _preciseLocationItem;
-  // Camera item.
-  TableViewMultiDetailTextItem* _cameraItem;
+  // Switch item for toggling camera permission.
+  TableViewSwitchItem* _cameraItem;
+  // Suggestions item.
+  TableViewMultiDetailTextItem* _suggestionsItem;
   // Switch item for toggling microphone.
   TableViewSwitchItem* _microphoneItem;
   // Switch item for toggling page content sharing.
   TableViewSwitchItem* _pageContentSharingItem;
   // Location view controller shown when precise location row is tapped.
   GeminiLocationViewController* _locationViewController;
-  // Camera view controller shown when camera row is tapped.
-  GeminiCameraViewController* _cameraViewController;
   // Closed captioning preference value.
   BOOL _closedCaptioningEnabled;
   // Precise location preference value.
   BOOL _preciseLocationEnabled;
   // Camera preference value.
   BOOL _cameraEnabled;
+  // Suggestions preference value.
+  BOOL _suggestionsEnabled;
   // Microphone preference value.
   BOOL _microphoneEnabled;
   // Page content sharing preference value.
@@ -117,6 +118,13 @@ NSString* const kPageContentSharingAction = @"PageContentSharingAction";
   RecordGeminiSettingsOpened();
   [self loadModel];
   [self.mutator loadDynamicSettings];
+}
+
+- (void)didMoveToParentViewController:(UIViewController*)parent {
+  [super didMoveToParentViewController:parent];
+  if (!parent) {
+    [self.presentationDelegate geminiSettingsViewControllerWasRemoved:self];
+  }
 }
 
 #pragma mark - CollectionViewController
@@ -140,13 +148,6 @@ NSString* const kPageContentSharingAction = @"PageContentSharingAction";
                                       IDS_IOS_BWG_SETTINGS_LOCATION_TITLE)
                trailingDetailText:[self preciseLocationTrailingDetailText]
           accessibilityIdentifier:kLocationCellId];
-
-  _cameraItem =
-      [self detailItemWithType:ItemTypeCamera
-                             text:l10n_util::GetNSString(
-                                      IDS_IOS_GEMINI_SETTINGS_CAMERA_TITLE)
-               trailingDetailText:[self cameraTrailingDetailText]
-          accessibilityIdentifier:kCameraCellId];
 
   _microphoneItem =
       [self switchItemWithType:ItemTypeMicrophone
@@ -180,11 +181,22 @@ NSString* const kPageContentSharingAction = @"PageContentSharingAction";
                                    IDS_IOS_BWG_SETTINGS_LOCATION_FOOTER_TEXT)
                        linkURL:GURL(kGeminiPreciseLocationURL)];
 
-  TableViewLinkHeaderFooterItem* cameraFooterItem = [self
-      headerFooterItemWithType:ItemTypeCameraFooter
-                          text:l10n_util::GetNSString(
-                                   IDS_IOS_GEMINI_SETTINGS_CAMERA_FOOTER_TEXT)
-                       linkURL:GURL()];
+  TableViewLinkHeaderFooterItem* suggestionsFooterItem;
+  if (contextual_cueing::IsGeminiContextualSuggestionsCuesEnabled()) {
+    _suggestionsItem = [self
+             detailItemWithType:ItemTypeSuggestions
+                           text:l10n_util::GetNSString(
+                                    IDS_IOS_GEMINI_SETTINGS_SUGGESTIONS_TITLE)
+             trailingDetailText:[self suggestionsTrailingDetailText]
+        accessibilityIdentifier:kSuggestionsCellId];
+
+    NSString* suggestionsFooterText =
+        l10n_util::GetNSString(IDS_IOS_GEMINI_SETTINGS_SUGGESTIONS_FOOTER_TEXT);
+    suggestionsFooterItem =
+        [self headerFooterItemWithType:ItemTypeSuggestionsFooter
+                                  text:suggestionsFooterText
+                               linkURL:GURL(kGeminiPageContentSharingURL)];
+  }
 
   TableViewLinkHeaderFooterItem* microphoneFooterItem = [self
       headerFooterItemWithType:ItemTypeMicrophoneFooter
@@ -228,6 +240,21 @@ NSString* const kPageContentSharingAction = @"PageContentSharingAction";
   }
 
   if ([self.mutator isImageRemixAvailable]) {
+    _cameraItem =
+        [self switchItemWithType:ItemTypeCamera
+                               text:l10n_util::GetNSString(
+                                        IDS_IOS_GEMINI_SETTINGS_CAMERA_TITLE)
+                        switchValue:_cameraEnabled
+            accessibilityIdentifier:kCameraCellId];
+    _cameraItem.target = self;
+    _cameraItem.selector = @selector(cameraSwitchTapped:);
+
+    TableViewLinkHeaderFooterItem* cameraFooterItem = [self
+        headerFooterItemWithType:ItemTypeCameraFooter
+                            text:l10n_util::GetNSString(
+                                     IDS_IOS_GEMINI_SETTINGS_CAMERA_FOOTER_TEXT)
+                         linkURL:GURL()];
+
     [model addSectionWithIdentifier:SectionIdentifierCamera];
     if (!firstPermissionsSectionIdentifier) {
       firstPermissionsSectionIdentifier = SectionIdentifierCamera;
@@ -254,6 +281,17 @@ NSString* const kPageContentSharingAction = @"PageContentSharingAction";
       toSectionWithIdentifier:SectionIdentifierPageContent];
   [model setFooter:pageContentSharingFooterItem
       forSectionWithIdentifier:SectionIdentifierPageContent];
+
+  if (contextual_cueing::IsGeminiContextualSuggestionsCuesEnabled()) {
+    [model addSectionWithIdentifier:SectionIdentifierSuggestions];
+    if (!firstPermissionsSectionIdentifier) {
+      firstPermissionsSectionIdentifier = SectionIdentifierSuggestions;
+    }
+    [model addItem:_suggestionsItem
+        toSectionWithIdentifier:SectionIdentifierSuggestions];
+    [model setFooter:suggestionsFooterItem
+        forSectionWithIdentifier:SectionIdentifierSuggestions];
+  }
 
   if (firstPermissionsSectionIdentifier) {
     [model setHeader:[self headerItemWithText:
@@ -385,6 +423,13 @@ NSString* const kPageContentSharingAction = @"PageContentSharingAction";
   [self.mutator setClosedCaptioningPref:switchView.isOn];
 }
 
+// Called from the Camera setting's `UIControlEventValueChanged`.
+// Updates underlying camera permission pref.
+- (void)cameraSwitchTapped:(UISwitch*)switchView {
+  RecordGeminiCameraSettingsToggled(switchView.isOn);
+  [self.mutator setCameraPermissionPref:switchView.isOn];
+}
+
 // Called from the Microphone setting's UIControlEventTouchUpInside.
 // Updates underlying microphone pref.
 - (void)microphoneSwitchTapped:(UISwitch*)switchView {
@@ -401,9 +446,10 @@ NSString* const kPageContentSharingAction = @"PageContentSharingAction";
   return l10n_util::GetNSString(IDS_IOS_SETTING_OFF);
 }
 
-// Returns camera trailing detail text which depends on the related pref value.
-- (NSString*)cameraTrailingDetailText {
-  if (_cameraEnabled) {
+// Returns suggestions trailing detail text which depends on the related pref
+// value.
+- (NSString*)suggestionsTrailingDetailText {
+  if (_suggestionsEnabled) {
     return l10n_util::GetNSString(IDS_IOS_SETTING_ON);
   }
 
@@ -426,13 +472,10 @@ NSString* const kPageContentSharingAction = @"PageContentSharingAction";
                                          animated:YES];
   }
 
-  if ([self.tableViewModel itemTypeForIndexPath:indexPath] == ItemTypeCamera) {
-    _cameraViewController = [[GeminiCameraViewController alloc]
-        initWithStyle:ChromeTableViewStyle()];
-    _cameraViewController.cameraEnabled = _cameraEnabled;
-    _cameraViewController.mutator = self.mutator;
-    [self.navigationController pushViewController:_cameraViewController
-                                         animated:YES];
+  if ([self.tableViewModel itemTypeForIndexPath:indexPath] ==
+      ItemTypeSuggestions) {
+    [self.presentationDelegate
+        geminiSettingsViewControllerDidSelectSuggestions:self];
   }
 
   if ([self.tableViewModel itemTypeForIndexPath:indexPath] ==
@@ -526,13 +569,22 @@ NSString* const kPageContentSharingAction = @"PageContentSharingAction";
 - (void)setCameraPermissionEnabled:(BOOL)enabled {
   _cameraEnabled = enabled;
 
-  if (_cameraViewController) {
-    _cameraViewController.cameraEnabled = enabled;
+  if ([self isViewLoaded] && _cameraItem) {
+    _cameraItem.on = _cameraEnabled;
+    [self reconfigureCellsForItems:@[ _cameraItem ]];
+  }
+}
+
+- (void)setGeminiSuggestionsEnabled:(BOOL)enabled {
+  if (!contextual_cueing::IsGeminiContextualSuggestionsCuesEnabled()) {
+    return;
   }
 
+  _suggestionsEnabled = enabled;
+
   if ([self isViewLoaded]) {
-    _cameraItem.trailingDetailText = [self cameraTrailingDetailText];
-    [self reconfigureCellsForItems:@[ _cameraItem ]];
+    _suggestionsItem.trailingDetailText = [self suggestionsTrailingDetailText];
+    [self reconfigureCellsForItems:@[ _suggestionsItem ]];
   }
 }
 
@@ -583,10 +635,17 @@ NSString* const kPageContentSharingAction = @"PageContentSharingAction";
          toSectionWithIdentifier:settingIdentifier];
 
     if (newItem.metadata.subtitle) {
+      GURL linkURL;
+      StringWithTags parsedSubtitle =
+          ParseStringWithLinks(newItem.metadata.subtitle);
+      if (!parsedSubtitle.ranges.empty() &&
+          newItem.metadata.context == GeminiSettingsContextGeminiAppsActivity) {
+        linkURL = GURL(kGeminiAppActivityURL);
+      }
       TableViewLinkHeaderFooterItem* settingFooterItem =
           [self headerFooterItemWithType:ItemTypeAppActivityFooter
                                     text:newItem.metadata.subtitle
-                                 linkURL:GURL()];
+                                 linkURL:linkURL];
       [self.tableViewModel setFooter:settingFooterItem
             forSectionWithIdentifier:settingIdentifier];
     }

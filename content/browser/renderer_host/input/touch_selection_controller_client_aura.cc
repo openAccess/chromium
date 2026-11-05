@@ -119,6 +119,14 @@ TouchSelectionControllerClientAura::~TouchSelectionControllerClientAura() {
     observer.OnManagerWillDestroy(this);
 }
 
+void TouchSelectionControllerClientAura::Detach() {
+  rwhva_ = nullptr;
+  internal_client_.Detach();
+  env_event_observer_.reset();
+  menu_request_weak_ptr_factory_.InvalidateWeakPtrs();
+  quick_menu_requested_ = false;
+}
+
 void TouchSelectionControllerClientAura::OnWindowMoved() {
   UpdateQuickMenu();
 }
@@ -134,12 +142,18 @@ void TouchSelectionControllerClientAura::OnTouchUp() {
 }
 
 void TouchSelectionControllerClientAura::OnScrollStarted() {
+  if (!rwhva_) {
+    return;
+  }
   scroll_in_progress_ = true;
   rwhva_->selection_controller()->SetTemporarilyHidden(true);
   UpdateQuickMenu();
 }
 
 void TouchSelectionControllerClientAura::OnScrollCompleted() {
+  if (!rwhva_) {
+    return;
+  }
   scroll_in_progress_ = false;
   active_client_->DidScroll();
   rwhva_->selection_controller()->SetTemporarilyHidden(false);
@@ -149,6 +163,9 @@ void TouchSelectionControllerClientAura::OnScrollCompleted() {
 bool TouchSelectionControllerClientAura::HandleContextMenu(
     const ContextMenuParams& params,
     bool can_paste) {
+  if (!rwhva_) {
+    return false;
+  }
   if (params.is_editable && params.selection_text.empty() &&
       (params.source_type == ui::mojom::MenuSourceType::kLongPress ||
        params.source_type == ui::mojom::MenuSourceType::kLongTap ||
@@ -248,7 +265,9 @@ void TouchSelectionControllerClientAura::InvalidateClient(
     ui::TouchSelectionControllerClient* client) {
   CHECK(client != &internal_client_, base::NotFatalUntil::M152);
   if (client == active_client_) {
-    GetTouchSelectionController()->HideAndDisallowShowingAutomatically();
+    if (GetTouchSelectionController()) {
+      GetTouchSelectionController()->HideAndDisallowShowingAutomatically();
+    }
     active_client_ = &internal_client_;
     active_menu_client_ = this;
   }
@@ -256,6 +275,9 @@ void TouchSelectionControllerClientAura::InvalidateClient(
 
 ui::TouchSelectionController*
 TouchSelectionControllerClientAura::GetTouchSelectionController() {
+  if (!rwhva_) {
+    return nullptr;
+  }
   return rwhva_->selection_controller();
 }
 
@@ -277,7 +299,7 @@ bool TouchSelectionControllerClientAura::IsQuickMenuAvailable(
 }
 
 void TouchSelectionControllerClientAura::ShowQuickMenu() {
-  if (!ui::TouchSelectionMenuRunner::GetInstance()) {
+  if (!rwhva_ || !ui::TouchSelectionMenuRunner::GetInstance()) {
     return;
   }
 
@@ -288,7 +310,7 @@ void TouchSelectionControllerClientAura::ShowQuickMenu() {
       base::BindOnce(
           [](base::WeakPtr<TouchSelectionControllerClientAura> weak_this,
              base::flat_set<ui::ClipboardFormatType> formats) {
-            if (!weak_this) {
+            if (!weak_this || !weak_this->rwhva_) {
               return;
             }
             bool can_paste =
@@ -365,7 +387,7 @@ void TouchSelectionControllerClientAura::UpdateQuickMenu() {
 }
 
 void TouchSelectionControllerClientAura::ShowMagnifier() {
-  if (!::features::IsTouchTextEditingRedesignEnabled()) {
+  if (!rwhva_ || !::features::IsTouchTextEditingRedesignEnabled()) {
     return;
   }
 
@@ -423,6 +445,9 @@ void TouchSelectionControllerClientAura::MoveCaret(
 
 void TouchSelectionControllerClientAura::InternalClient::MoveCaret(
     const gfx::PointF& position) {
+  if (!rwhva_) {
+    return;
+  }
   RenderWidgetHostDelegate* host_delegate = rwhva_->host()->delegate();
   if (host_delegate)
     host_delegate->MoveCaret(gfx::ToRoundedPoint(position));
@@ -435,6 +460,9 @@ void TouchSelectionControllerClientAura::MoveRangeSelectionExtent(
 
 void TouchSelectionControllerClientAura::InternalClient::
     MoveRangeSelectionExtent(const gfx::PointF& extent) {
+  if (!rwhva_) {
+    return;
+  }
   RenderWidgetHostDelegate* host_delegate = rwhva_->host()->delegate();
   if (host_delegate)
     host_delegate->MoveRangeSelectionExtent(gfx::ToRoundedPoint(extent));
@@ -449,6 +477,9 @@ void TouchSelectionControllerClientAura::SelectBetweenCoordinates(
 void TouchSelectionControllerClientAura::InternalClient::
     SelectBetweenCoordinates(const gfx::PointF& base,
                              const gfx::PointF& extent) {
+  if (!rwhva_) {
+    return;
+  }
   RenderWidgetHostDelegate* host_delegate = rwhva_->host()->delegate();
   if (host_delegate) {
     host_delegate->SelectRange(gfx::ToRoundedPoint(base),
@@ -458,6 +489,9 @@ void TouchSelectionControllerClientAura::InternalClient::
 
 void TouchSelectionControllerClientAura::OnSelectionEvent(
     ui::SelectionEventType event) {
+  if (!rwhva_) {
+    return;
+  }
   // This function (implicitly) uses active_menu_client_, so we don't go to the
   // active view for this.
   switch (event) {
@@ -517,6 +551,9 @@ void TouchSelectionControllerClientAura::InternalClient::OnDragUpdate(
 
 std::unique_ptr<ui::TouchHandleDrawable>
 TouchSelectionControllerClientAura::CreateDrawable() {
+  if (!rwhva_) {
+    return nullptr;
+  }
   // This function is purely related to the top-level view's window, so it
   // is always handled here and never in
   // TouchSelectionControllerClientChildFrame.
@@ -540,6 +577,9 @@ void TouchSelectionControllerClientAura::InternalClient::DidScroll() {}
 bool TouchSelectionControllerClientAura::IsCommandIdEnabled(
     int command_id,
     bool can_paste) const {
+  if (!rwhva_) {
+    return false;
+  }
   bool editable = rwhva_->GetTextInputType() != ui::TEXT_INPUT_TYPE_NONE;
   bool readable = rwhva_->GetTextInputType() != ui::TEXT_INPUT_TYPE_PASSWORD;
   bool has_selection = !rwhva_->GetSelectedText().empty();
@@ -572,15 +612,20 @@ bool TouchSelectionControllerClientAura::IsCommandIdEnabled(
 
 void TouchSelectionControllerClientAura::ExecuteCommand(int command_id,
                                                         int event_flags) {
+  if (!rwhva_) {
+    return;
+  }
   if (command_id !=
           std::to_underlying(ui::TouchEditable::MenuCommands::kSelectAll) &&
       command_id !=
           std::to_underlying(ui::TouchEditable::MenuCommands::kSelectWord)) {
     rwhva_->selection_controller()->HideAndDisallowShowingAutomatically();
   }
-  RenderWidgetHostDelegate* host_delegate = rwhva_->host()->delegate();
-  if (!host_delegate)
+  RenderWidgetHostDelegate* host_delegate =
+      rwhva_->host() ? rwhva_->host()->delegate() : nullptr;
+  if (!host_delegate) {
     return;
+  }
 
   switch (command_id) {
     case std::to_underlying(ui::TouchEditable::MenuCommands::kCut):
@@ -607,6 +652,9 @@ void TouchSelectionControllerClientAura::ExecuteCommand(int command_id,
 }
 
 void TouchSelectionControllerClientAura::RunContextMenu() {
+  if (!rwhva_ || !rwhva_->host()) {
+    return;
+  }
   gfx::RectF anchor_rect =
       rwhva_->selection_controller()->GetVisibleRectBetweenBounds();
   gfx::PointF anchor_point =
@@ -622,11 +670,17 @@ void TouchSelectionControllerClientAura::RunContextMenu() {
 }
 
 bool TouchSelectionControllerClientAura::ShouldShowQuickMenu(bool can_paste) {
+  if (!rwhva_) {
+    return false;
+  }
   return quick_menu_requested_ && !touch_down_ && !scroll_in_progress_ &&
          !handle_drag_in_progress_ && IsQuickMenuAvailable(can_paste);
 }
 
 std::u16string TouchSelectionControllerClientAura::GetSelectedText() {
+  if (!rwhva_) {
+    return std::u16string();
+  }
   return rwhva_->GetSelectedText();
 }
 

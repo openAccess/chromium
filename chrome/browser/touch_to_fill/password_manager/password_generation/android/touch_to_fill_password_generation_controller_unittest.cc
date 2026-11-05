@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/touch_to_fill/password_manager/password_generation/android/touch_to_fill_password_generation_controller.h"
+
 #include <memory>
 #include <string>
 #include <tuple>
@@ -9,14 +11,13 @@
 #include "base/memory/weak_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
-#include "chrome/browser/keyboard_accessory/test_utils/android/mock_manual_filling_controller.h"
 #include "chrome/browser/password_manager/android/password_generation_element_data.h"
 #include "chrome/browser/touch_to_fill/password_manager/password_generation/android/mock_touch_to_fill_password_generation_bridge.h"
-#include "chrome/browser/touch_to_fill/password_manager/password_generation/android/touch_to_fill_password_generation_controller.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/autofill/core/common/password_generation_util.h"
 #include "components/password_manager/content/browser/content_password_manager_driver.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/stub_password_manager_client.h"
 #include "components/prefs/testing_pref_service.h"
 #include "content/public/test/text_input_test_utils.h"
@@ -29,7 +30,6 @@ using testing::_;
 using testing::Combine;
 using testing::Eq;
 using testing::Values;
-using ShouldShowAction = ManualFillingController::ShouldShowAction;
 using TouchToFillPasswordGenerationControllerMetricsParam =
     std::tuple<PasswordGenerationType, bool, std::string>;
 
@@ -48,11 +48,14 @@ class TouchToFillPasswordGenerationControllerTest
     return password_manager_driver_->AsWeakPtrImpl();
   }
 
+  // Destroys the driver, which invalidates its weak pointers, while the frame
+  // stays alive.
+  void DestroyDriver() { password_manager_driver_.reset(); }
+
   TestingPrefServiceSimple* pref_service() { return &test_pref_service_; }
 
   base::MockCallback<base::OnceCallback<void()>> on_dismissed_callback_;
   const std::string test_user_account_ = "test@email.com";
-  MockManualFillingController mock_manual_filling_controller_;
 
  private:
   std::unique_ptr<password_manager::ContentPasswordManagerDriver>
@@ -68,8 +71,7 @@ TEST_F(TouchToFillPasswordGenerationControllerTest,
   auto controller = std::make_unique<TouchToFillPasswordGenerationController>(
       password_mananger_driver(), web_contents(),
       PasswordGenerationElementData(), std::move(bridge),
-      on_dismissed_callback_.Get(),
-      mock_manual_filling_controller_.AsWeakPtr());
+      on_dismissed_callback_.Get());
   EXPECT_CALL(*bridge_ptr, Show);
   controller->ShowTouchToFill(
       test_user_account_, PasswordGenerationType::kAutomatic, pref_service());
@@ -95,14 +97,37 @@ TEST_F(TouchToFillPasswordGenerationControllerTest,
                    ->always_hide_ime);
 }
 
+// Tests that the driver going away while the bottom sheet is shown is handled:
+// accepting the password doesn't crash and the keyboard is no longer suppressed
+// after the controller is destroyed.
+TEST_F(TouchToFillPasswordGenerationControllerTest, HandlesDriverGoingAway) {
+  auto controller = std::make_unique<TouchToFillPasswordGenerationController>(
+      password_mananger_driver(), web_contents(),
+      PasswordGenerationElementData(),
+      std::make_unique<MockTouchToFillPasswordGenerationBridge>(),
+      on_dismissed_callback_.Get());
+  controller->ShowTouchToFill(
+      test_user_account_, PasswordGenerationType::kAutomatic, pref_service());
+
+  DestroyDriver();
+  controller->OnGeneratedPasswordAccepted(
+      password_manager::PasswordString(u"generated_password"));
+  controller.reset();
+
+  ui::mojom::TextInputStatePtr state = ui::mojom::TextInputState::New();
+  state->type = ui::TEXT_INPUT_TYPE_PASSWORD;
+  SendTextInputStateChangedToWidget(rvh()->GetWidget(), std::move(state));
+  EXPECT_FALSE(content::GetTextInputStateFromWebContents(web_contents())
+                   ->always_hide_ime);
+}
+
 TEST_F(TouchToFillPasswordGenerationControllerTest,
        OnDismissedCallbackIsTriggeredWhenBottomSheetDismissed) {
   auto controller = std::make_unique<TouchToFillPasswordGenerationController>(
       password_mananger_driver(), web_contents(),
       PasswordGenerationElementData(),
       std::make_unique<MockTouchToFillPasswordGenerationBridge>(),
-      on_dismissed_callback_.Get(),
-      mock_manual_filling_controller_.AsWeakPtr());
+      on_dismissed_callback_.Get());
 
   controller->ShowTouchToFill(
       test_user_account_, PasswordGenerationType::kAutomatic, pref_service());
@@ -118,8 +143,7 @@ TEST_F(TouchToFillPasswordGenerationControllerTest,
   auto controller = std::make_unique<TouchToFillPasswordGenerationController>(
       password_mananger_driver(), web_contents(),
       PasswordGenerationElementData(), std::move(bridge),
-      on_dismissed_callback_.Get(),
-      mock_manual_filling_controller_.AsWeakPtr());
+      on_dismissed_callback_.Get());
 
   EXPECT_CALL(*bridge_ptr, Show(_, _, _, _, Eq(test_user_account_)));
   controller->ShowTouchToFill(
@@ -144,8 +168,7 @@ TEST_P(TouchToFillPasswordGenerationControllerMetricsTest,
       password_mananger_driver(), web_contents(),
       PasswordGenerationElementData(),
       std::make_unique<MockTouchToFillPasswordGenerationBridge>(),
-      on_dismissed_callback_.Get(),
-      mock_manual_filling_controller_.AsWeakPtr());
+      on_dismissed_callback_.Get());
 
   controller->ShowTouchToFill(test_user_account_, password_generation_type,
                               pref_service());

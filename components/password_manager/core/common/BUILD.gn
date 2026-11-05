@@ -35,18 +35,20 @@ static_library("common") {
   ]
 
   public_deps = [
+    ":browser_assisted_login_type",
     ":constants",
     ":features",
     "//url",
   ]
+}
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
+source_set("browser_assisted_login_type") {
+  sources = [ "browser_assisted_login_type.h" ]
 }
 
 source_set("constants") {
   sources = [ "password_manager_constants.h" ]
   deps = [ "//base" ]
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 }
 
 source_set("features") {
@@ -55,12 +57,7 @@ source_set("features") {
     "password_manager_features.h",
   ]
 
-  deps = [
-    "//base",
-    "//build:blink_buildflags",
-  ]
-
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
+  deps = [ "//base" ]
 }
 
 source_set("unit_tests") {
@@ -77,6 +74,11 @@ source_set("unit_tests") {
     "//components/autofill/core/common:test_support",
     "//testing/gtest",
   ]
+
+  if (!is_android) {
+    deps +=
+        [ "//components/password_manager/core/common/remote_actor:unit_tests" ]
+  }
 
   if (is_ios) {
     sources += [ "passwords_directory_util_ios_unittest.cc" ]

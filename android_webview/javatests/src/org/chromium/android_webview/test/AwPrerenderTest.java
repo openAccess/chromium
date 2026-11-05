@@ -50,6 +50,7 @@ import org.chromium.content_public.browser.Visibility;
 import org.chromium.content_public.browser.test.util.NavigationControllerUtil;
 import org.chromium.content_public.browser.test.util.NavigationEntrySimple;
 import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnPageStartedHelper;
+import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.content_public.common.ContentSwitches;
 import org.chromium.net.test.ServerCertificate;
 
@@ -746,14 +747,21 @@ public class AwPrerenderTest extends AwParameterizedTest {
         Assert.assertEquals("prefetch;prerender", redirectedHeaders.get("Sec-Purpose"));
     }
 
-    // Tests prerendering navigation that is redirected to cross-site. Cross-site redirection should
-    // cancel prerendering.
+    // Tests cross-site redirection during prerendering navigation with prefetch ahead of prerender
+    // disabled.
+    //
+    // - Prerendering is triggered with an initial URL that redirects to a cross-site URL.
+    // - Prerendering is canceled due to the cross-site redirection.
+    // - The cross-site redirected request is not sent to the server.
     @Test
     @LargeTest
     @Feature({"AndroidWebView"})
-    @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
+    @Features.DisableFeatures({
+        BlinkFeatures.PRERENDER2_MEMORY_CONTROLS,
+        AwFeatures.WEBVIEW_PREFETCH_AHEAD_OF_PRERENDER
+    })
     @CommandLineFlags.Add({ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"})
-    public void testCrossSiteRedirection() throws Throwable {
+    public void testCrossSiteRedirection_PrefetchAheadOfPrerenderDisabled() throws Throwable {
         loadInitialPage();
 
         // Construct an initial prerendering URL that is redirected to `mPrerenderingUrl`.
@@ -785,6 +793,61 @@ public class AwPrerenderTest extends AwParameterizedTest {
         // On the other hand, the redirected request should not be sent to the server for the
         // cross-site restriction.
         Assert.assertEquals(0, mTestServer.getRequestCountForUrl(PRERENDER_URL));
+    }
+
+    // Tests cross-site redirection during prerendering navigation with prefetch ahead of prerender
+    // enabled.
+    //
+    // - Prerendering is triggered with an initial URL that redirects to a cross-site URL.
+    // - Prerendering is canceled due to the cross-site redirection.
+    // - However, prefetch ahead of prerender follows the redirection and sends a request to the
+    //   cross-site URL.
+    @Test
+    @LargeTest
+    @Feature({"AndroidWebView"})
+    @Features.EnableFeatures({
+        ContentFeatures.PREFETCH_PRERENDER_INTEGRATION,
+        AwFeatures.WEBVIEW_PREFETCH_AHEAD_OF_PRERENDER
+    })
+    @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
+    @CommandLineFlags.Add({ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"})
+    public void testCrossSiteRedirection_PrefetchAheadOfPrerenderEnabled() throws Throwable {
+        loadInitialPage();
+
+        // Construct an initial prerendering URL that is redirected to `mPrerenderingUrl`.
+        final String initialPrerenderingPath =
+                "/server-redirect-echoheader?url=" + encodeUrl(getCrossSiteUrl(PRERENDER_URL));
+        final String initialPrerenderingUrl = getUrl(initialPrerenderingPath);
+
+        int currentCallCount = mPrerenderErrorCallbackHelper.getCallCount();
+        var histogramWatcher =
+                createFinalStatusHistogramWatcher(/*kCrossSiteRedirectInInitialNavigation */ 44);
+
+        // Don't use startPrerenderingAndWait(), as the waiting logic requires that both the
+        // initiator page and the prerendered page are in the same origin.
+        startPrerendering(
+                initialPrerenderingUrl,
+                /* prefetchParameters= */ null,
+                /* cancellationSignal= */ null,
+                mActivationCallbackHelper.getCallback(),
+                mPrerenderErrorCallbackHelper.getCallback());
+
+        // Wait until prerendering is canceled, as cross-site prerendering is disallowed.
+        mPrerenderErrorCallbackHelper.waitForCallback(currentCallCount);
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
+
+        // Make sure that prerendering navigation has the Sec-Purpose header.
+        HashMap<String, String> initialHeaders =
+                mTestServer.getRequestHeadersForUrl(initialPrerenderingPath);
+        Assert.assertEquals("prefetch;prerender", initialHeaders.get("Sec-Purpose"));
+
+        // While prerendering is canceled due to the cross-site redirect, the prefetch ahead of
+        // prerender follows the redirect and sends a request to the cross-site URL.
+        AwActivityTestRule.pollInstrumentationThread(
+                () -> mTestServer.getRequestCountForUrl(PRERENDER_URL) == 1);
+        HashMap<String, String> redirectedHeaders =
+                mTestServer.getRequestHeadersForUrl(PRERENDER_URL);
+        Assert.assertEquals("prefetch;prerender", redirectedHeaders.get("Sec-Purpose"));
     }
 
     // Tests additional request headers on WebView prerendering trigger.
@@ -856,6 +919,10 @@ public class AwPrerenderTest extends AwParameterizedTest {
         Assert.assertEquals("prefetch;prerender", scriptHeaders.get("Sec-Purpose"));
     }
 
+    // Tests `saveState` and `restoreState` with prerendering.
+    //
+    // - While prerendering is ongoing, navigation history only contains the initial page load.
+    // - After activation, navigation history contains both pages and preserves extra headers.
     @Test
     @LargeTest
     @Feature({"AndroidWebView"})
@@ -875,8 +942,8 @@ public class AwPrerenderTest extends AwParameterizedTest {
         AwPrefetchParameters prerenderParameters =
                 new AwPrefetchParameters(prerenderExtraHeaders, null, false);
 
-        // --- 2. Start Prerendering ---
-        startPrerendering(
+        // --- 2. Start Prerendering and Wait for Load ---
+        startPrerenderingAndWait(
                 mPrerenderingUrl,
                 prerenderParameters,
                 /* cancellationSignal= */ null,
@@ -1964,21 +2031,26 @@ public class AwPrerenderTest extends AwParameterizedTest {
         Assert.assertEquals(1, mTestServer.getRequestCountForUrl(PRERENDER_URL));
     }
 
-    // Tests the following scenario:
-    // 1) Prefetching sends a request to "?a=12". This response allows to ignore the parameter for
-    //    the No-Vary-Search header.
-    // 2) Prerendering starts for "?a=124". Thanks to the header, this should be able to consume the
-    //    prefetched response, the parameter is different though.
-    // 3) Navigation starts for "?a=91". Thanks to the header, this should be able to activate the
-    //    prerendered page.
+    // Tests prefetch and prerender with No-Vary-Search header with prefetch ahead of prerender
+    // disabled.
     //
-    // In the end, a request should be sent only to "?a=12" one time.
+    // - Prefetching sends a request to "?a=12". This response allows to ignore the parameter for
+    //   the No-Vary-Search header.
+    // - Prerendering starts for "?a=124". Thanks to the header, this should be able to consume the
+    //   prefetched response, the parameter is different though.
+    // - Navigation starts for "?a=91". Thanks to the header, this should be able to activate the
+    //   prerendered page.
+    // - In the end, a request should be sent only to "?a=12" one time.
     @Test
     @LargeTest
     @Feature({"AndroidWebView"})
-    @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
+    @Features.DisableFeatures({
+        BlinkFeatures.PRERENDER2_MEMORY_CONTROLS,
+        AwFeatures.WEBVIEW_PREFETCH_AHEAD_OF_PRERENDER
+    })
     @CommandLineFlags.Add({ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"})
-    public void testPrefetchAndPrerenderWithNoVarySearchHeader() throws Throwable {
+    public void testPrefetchAndPrerenderWithNoVarySearchHeader_PrefetchAheadOfPrerenderDisabled()
+            throws Throwable {
         loadInitialPage();
 
         // Start prefetching and wait until response completion. This response will have
@@ -2023,12 +2095,76 @@ public class AwPrerenderTest extends AwParameterizedTest {
         Assert.assertEquals(0, mTestServer.getRequestCountForUrl(navigationPath));
     }
 
+    // Tests prefetch and prerender with No-Vary-Search header with prefetch ahead of prerender
+    // enabled.
+    //
+    // - Prefetching sends a request to "?a=12". This response allows to ignore the parameter for
+    //   the No-Vary-Search header.
+    // - Prerendering starts for "?a=124". Because no No-Vary-Search hint is given to deduplicate,
+    //   prefetch ahead of prerender sends another request to "?a=124".
+    // - Navigation starts for "?a=91". Thanks to the No-Vary-Search header, this activates the
+    //   prerendered page.
+    // - In the end, requests should be sent to "?a=12" and "?a=124" once each.
+    @Test
+    @LargeTest
+    @Feature({"AndroidWebView"})
+    @Features.EnableFeatures({
+        ContentFeatures.PREFETCH_PRERENDER_INTEGRATION,
+        AwFeatures.WEBVIEW_PREFETCH_AHEAD_OF_PRERENDER
+    })
+    @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
+    @CommandLineFlags.Add({ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"})
+    public void testPrefetchAndPrerenderWithNoVarySearchHeader_PrefetchAheadOfPrerenderEnabled()
+            throws Throwable {
+        loadInitialPage();
+
+        // Start prefetching and wait until response completion. This response will have
+        // `No-Vary-Search: params=("a")` header.
+        String prefetchPath = PRERENDER_URL.concat("?a=12");
+        String prefetchUrl = getUrl(prefetchPath);
+        startPrefetchingAndWait(prefetchUrl, /* prefetchParameters= */ null);
+
+        // Prefetching should send a request to "?a=12".
+        Assert.assertEquals(1, mTestServer.getRequestCountForUrl(prefetchPath));
+
+        var histogramWatcher = createFinalStatusHistogramWatcher(/*kActivated*/ 0);
+
+        // Start prerendering and wait until completion. This has the different query parameter
+        // and no No-Vary-Search hint, so prefetch ahead of prerender sends a request to "?a=124".
+        String prerenderPath = PRERENDER_URL.concat("?a=124");
+        String prerenderUrl = getUrl(prerenderPath);
+        startPrerenderingAndWait(
+                prerenderUrl,
+                /* prefetchParameters= */ null,
+                /* cancellationSignal= */ null,
+                mActivationCallbackHelper.getCallback(),
+                mPrerenderErrorCallbackHelper.getCallback());
+
+        Assert.assertEquals(1, mTestServer.getRequestCountForUrl(prefetchPath));
+        Assert.assertEquals(1, mTestServer.getRequestCountForUrl(prerenderPath));
+
+        // Start navigation to the URL with yet another parameter. This should activate the
+        // prerendered page.
+        String navigationPath = PRERENDER_URL.concat("?a=91");
+        String navigationUrl = getUrl(navigationPath);
+        activatePage(navigationUrl, ActivationBy.LOAD_URL);
+
+        // Wait until the navigation activates the prerendered page.
+        mActivationCallbackHelper.waitForNext();
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
+
+        // Activation shouldn't send a request to "?a=12", "?a=124", or "?a=91".
+        Assert.assertEquals(1, mTestServer.getRequestCountForUrl(prefetchPath));
+        Assert.assertEquals(1, mTestServer.getRequestCountForUrl(prerenderPath));
+        Assert.assertEquals(0, mTestServer.getRequestCountForUrl(navigationPath));
+    }
+
     // Tests that prefetch ahead of prerender is triggered.
     @Test
     @LargeTest
     @Feature({"AndroidWebView"})
     @Features.EnableFeatures({
-        "PrefetchPrerenderIntegration",
+        ContentFeatures.PREFETCH_PRERENDER_INTEGRATION,
         AwFeatures.WEBVIEW_PREFETCH_AHEAD_OF_PRERENDER
     })
     @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
@@ -2075,7 +2211,7 @@ public class AwPrerenderTest extends AwParameterizedTest {
     @Test
     @LargeTest
     @Feature({"AndroidWebView"})
-    @Features.EnableFeatures({"PrefetchPrerenderIntegration"})
+    @Features.EnableFeatures({ContentFeatures.PREFETCH_PRERENDER_INTEGRATION})
     @Features.DisableFeatures({
         BlinkFeatures.PRERENDER2_MEMORY_CONTROLS,
         AwFeatures.WEBVIEW_PREFETCH_AHEAD_OF_PRERENDER
@@ -2115,7 +2251,7 @@ public class AwPrerenderTest extends AwParameterizedTest {
     @LargeTest
     @Feature({"AndroidWebView"})
     @Features.EnableFeatures({
-        "PrefetchPrerenderIntegration",
+        ContentFeatures.PREFETCH_PRERENDER_INTEGRATION,
         AwFeatures.WEBVIEW_PREFETCH_AHEAD_OF_PRERENDER
     })
     @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
@@ -2161,7 +2297,7 @@ public class AwPrerenderTest extends AwParameterizedTest {
     @LargeTest
     @Feature({"AndroidWebView"})
     @Features.EnableFeatures({
-        "PrefetchPrerenderIntegration",
+        ContentFeatures.PREFETCH_PRERENDER_INTEGRATION,
         AwFeatures.WEBVIEW_PREFETCH_AHEAD_OF_PRERENDER
     })
     @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
@@ -2273,15 +2409,24 @@ public class AwPrerenderTest extends AwParameterizedTest {
         Assert.assertEquals(1, mTestServer.getRequestCountForUrl(PRERENDER_URL));
     }
 
-    // Tests the case where prerendering is triggered for the same URL but different No-Vary-Search
-    // hint. The first attempt should be canceled in favor of the second attempt, so the request
-    // should be sent twice.
+    // Tests duplicate prerender for the same URL with different No-Vary-Search hint when prefetch
+    // ahead of prerender is disabled.
+    //
+    // - The first prerendering attempt is started with no No-Vary-Search hint.
+    // - The second prerendering attempt is started with a No-Vary-Search hint.
+    // - The first attempt is canceled in favor of the second attempt, and both attempts send
+    //   requests separately.
     @Test
     @LargeTest
     @Feature({"AndroidWebView"})
-    @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
+    @Features.DisableFeatures({
+        BlinkFeatures.PRERENDER2_MEMORY_CONTROLS,
+        AwFeatures.WEBVIEW_PREFETCH_AHEAD_OF_PRERENDER
+    })
     @CommandLineFlags.Add({ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"})
-    public void testDuplicatePrerender_SameUrlButDifferentNoVarySearchHint() throws Throwable {
+    public void
+            testDuplicatePrerender_SameUrlButDifferentNoVarySearchHint_PrefetchAheadOfPrerenderDisabled()
+                    throws Throwable {
         loadInitialPage();
 
         // Expect kActivated(0) and kTriggerDestroyed(16).
@@ -2325,6 +2470,72 @@ public class AwPrerenderTest extends AwParameterizedTest {
         // Both the attempts have the same URL but different No-Vary-Search hints, so they should
         // send the request separately.
         Assert.assertEquals(2, mTestServer.getRequestCountForUrl(PRERENDER_URL));
+
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
+    }
+
+    // Tests duplicate prerender for the same URL with different No-Vary-Search hint when prefetch
+    // ahead of prerender is enabled.
+    //
+    // - The first prerendering attempt is started with no No-Vary-Search hint.
+    // - The second prerendering attempt is started with a No-Vary-Search hint.
+    // - While the first prerendering attempt is canceled in favor of the second attempt, the
+    //   prefetched response is reused for the same URL, so the request is sent only once.
+    @Test
+    @LargeTest
+    @Feature({"AndroidWebView"})
+    @Features.EnableFeatures({
+        ContentFeatures.PREFETCH_PRERENDER_INTEGRATION,
+        AwFeatures.WEBVIEW_PREFETCH_AHEAD_OF_PRERENDER
+    })
+    @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
+    @CommandLineFlags.Add({ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"})
+    public void
+            testDuplicatePrerender_SameUrlButDifferentNoVarySearchHint_PrefetchAheadOfPrerenderEnabled()
+                    throws Throwable {
+        loadInitialPage();
+
+        // Expect kActivated(0) and kTriggerDestroyed(16).
+        var histogramWatcher = createFinalStatusHistogramWatcher(new int[] {0, 16});
+
+        var activationCallbackHelper1 = new ActivationCallbackHelper();
+        var activationCallbackHelper2 = new ActivationCallbackHelper();
+        var errorCallbackHelper1 = new PrerenderErrorCallbackHelper();
+        var errorCallbackHelper2 = new PrerenderErrorCallbackHelper();
+
+        startPrerenderingAndWait(
+                mPrerenderingUrl,
+                /* prefetchParameters= */ null,
+                /* cancellationSignal= */ null,
+                activationCallbackHelper1.getCallback(),
+                errorCallbackHelper1.getCallback());
+
+        String[] ignoredQueryParameters = {"a"};
+        AwNoVarySearchData noVarySearchData =
+                new AwNoVarySearchData(true, true, ignoredQueryParameters, null);
+        AwPrefetchParameters prefetchParameters =
+                new AwPrefetchParameters(
+                        /* additionalHeaders= */ null,
+                        noVarySearchData,
+                        /* isJavascriptEnabled= */ true);
+
+        startPrerenderingAndWait(
+                mPrerenderingUrl,
+                prefetchParameters,
+                /* cancellationSignal= */ null,
+                activationCallbackHelper2.getCallback(),
+                errorCallbackHelper2.getCallback());
+
+        activatePage(mPrerenderingUrl, ActivationBy.LOAD_URL);
+
+        // Wait until the navigation activates the prerendered page. The second attempt should be
+        // activated.
+        activationCallbackHelper2.waitForNext();
+        Assert.assertEquals(0, activationCallbackHelper1.getCallCount());
+
+        // With prefetch ahead of prerender enabled, the prefetched response is reused for the
+        // second attempt, so only one request is sent to the server.
+        Assert.assertEquals(1, mTestServer.getRequestCountForUrl(PRERENDER_URL));
 
         histogramWatcher.pollInstrumentationThreadUntilSatisfied();
     }
@@ -2696,5 +2907,195 @@ public class AwPrerenderTest extends AwParameterizedTest {
         //   Activated    = [3]       (kActivated = 0)
 
         histogramWatcherAll.assertExpected();
+    }
+
+    // Tests that re-entering startPrerendering from within an error callback does not cause a
+    // use-after-free in PrerenderInfo::OnLifecycleStateChanged (crbug.com/574513367).
+    @Test
+    @LargeTest
+    @Feature({"AndroidWebView"})
+    @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
+    @CommandLineFlags.Add({ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"})
+    public void testReenterStartFromErrorCallback() throws Throwable {
+        loadInitialPage();
+
+        String failingUrl = getUrl("/missing.html");
+        String fallbackUrl = mPrerenderingUrl;
+
+        var failingErrorCallbackHelper = new CallbackHelper();
+        var fallbackActivationCallbackHelper = new ActivationCallbackHelper();
+        var fallbackErrorCallbackHelper = new PrerenderErrorCallbackHelper();
+
+        startPrerendering(
+                failingUrl,
+                /* prefetchParameters= */ null,
+                /* cancellationSignal= */ null,
+                /* activationCallback= */ (Void v) -> {},
+                /* errorCallback= */ (Throwable t) -> {
+                    failingErrorCallbackHelper.notifyCalled();
+                    try {
+                        startPrerendering(
+                                fallbackUrl,
+                                /* prefetchParameters= */ null,
+                                /* cancellationSignal= */ null,
+                                fallbackActivationCallbackHelper.getCallback(),
+                                fallbackErrorCallbackHelper.getCallback());
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+
+        // The error callback should fire for the failing URL and re-enter startPrerendering.
+        failingErrorCallbackHelper.waitForNext();
+
+        // The fallback prerender should proceed normally and be activatable.
+        mPrerenderLifecycleWebMessageListener.waitForOnPostMessage();
+        activatePage(fallbackUrl, ActivationBy.LOAD_URL);
+        fallbackActivationCallbackHelper.waitForNext();
+        Assert.assertEquals(0, fallbackErrorCallbackHelper.getCallCount());
+    }
+
+    // Tests that re-entering startPrerendering from within an error callback when multiple
+    // callbacks
+    // are registered does not cause use-after-free or a crash (crbug.com/574513367).
+    @Test
+    @LargeTest
+    @Feature({"AndroidWebView"})
+    @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
+    @CommandLineFlags.Add({ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"})
+    public void testReenterStartFromErrorCallback_MultipleCallbacks() throws Throwable {
+        loadInitialPage();
+
+        String failingUrl = getUrl("/missing.html");
+        String fallbackUrl = mPrerenderingUrl;
+
+        var failingErrorCallbackHelper1 = new CallbackHelper();
+        var failingErrorCallbackHelper2 = new CallbackHelper();
+        var fallbackActivationCallbackHelper = new ActivationCallbackHelper();
+        var fallbackErrorCallbackHelper = new PrerenderErrorCallbackHelper();
+
+        // Register the first prerender request for failingUrl.
+        startPrerendering(
+                failingUrl,
+                /* prefetchParameters= */ null,
+                /* cancellationSignal= */ null,
+                /* activationCallback= */ (Void v) -> {},
+                /* errorCallback= */ (Throwable t) -> {
+                    failingErrorCallbackHelper1.notifyCalled();
+                    try {
+                        startPrerendering(
+                                fallbackUrl,
+                                /* prefetchParameters= */ null,
+                                /* cancellationSignal= */ null,
+                                fallbackActivationCallbackHelper.getCallback(),
+                                fallbackErrorCallbackHelper.getCallback());
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+
+        // Register a second prerender request for the same failingUrl, adding a second error
+        // callback.
+        startPrerendering(
+                failingUrl,
+                /* prefetchParameters= */ null,
+                /* cancellationSignal= */ null,
+                /* activationCallback= */ (Void v) -> {},
+                /* errorCallback= */ (Throwable t) -> {
+                    failingErrorCallbackHelper2.notifyCalled();
+                });
+
+        // Both error callbacks should be called without crashing or UAF.
+        failingErrorCallbackHelper1.waitForNext();
+        failingErrorCallbackHelper2.waitForNext();
+
+        // The fallback prerender should succeed and be activatable.
+        mPrerenderLifecycleWebMessageListener.waitForOnPostMessage();
+        activatePage(fallbackUrl, ActivationBy.LOAD_URL);
+        fallbackActivationCallbackHelper.waitForNext();
+        Assert.assertEquals(0, fallbackErrorCallbackHelper.getCallCount());
+    }
+
+    // Tests that calling CancellationSignal.cancel() from within an error callback does not cause
+    // a use-after-free in PrerenderInfo::OnLifecycleStateChanged (crbug.com/574513367).
+    @Test
+    @LargeTest
+    @Feature({"AndroidWebView"})
+    @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
+    @CommandLineFlags.Add({ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"})
+    public void testCancelFromErrorCallback() throws Throwable {
+        loadInitialPage();
+
+        String failingUrl = getUrl("/missing.html");
+        var cancellationSignal = new CancellationSignal();
+        var failingErrorCallbackHelper = new CallbackHelper();
+
+        startPrerendering(
+                failingUrl,
+                /* prefetchParameters= */ null,
+                cancellationSignal,
+                /* activationCallback= */ (Void v) -> {},
+                /* errorCallback= */ (Throwable t) -> {
+                    cancellationSignal.cancel();
+                    failingErrorCallbackHelper.notifyCalled();
+                });
+
+        failingErrorCallbackHelper.waitForNext();
+        Assert.assertTrue(cancellationSignal.isCanceled());
+    }
+
+    // Tests that re-entering startPrerendering from within an activation callback does not cause a
+    // use-after-free in PrerenderInfo::OnLifecycleStateChanged (crbug.com/574513367).
+    @Test
+    @LargeTest
+    @Feature({"AndroidWebView"})
+    @Features.DisableFeatures({BlinkFeatures.PRERENDER2_MEMORY_CONTROLS})
+    @CommandLineFlags.Add({ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1"})
+    public void testReenterStartFromActivationCallback() throws Throwable {
+        loadInitialPage();
+
+        String fallbackUrl = getUrl("/missing.html");
+
+        var activationCallbackHelper1 = new CallbackHelper();
+        var activationCallbackHelper2 = new CallbackHelper();
+
+        // Register first activation callback.
+        startPrerendering(
+                mPrerenderingUrl,
+                /* prefetchParameters= */ null,
+                /* cancellationSignal= */ null,
+                /* activationCallback= */ (Void v) -> {
+                    activationCallbackHelper1.notifyCalled();
+                    try {
+                        startPrerendering(
+                                fallbackUrl,
+                                /* prefetchParameters= */ null,
+                                /* cancellationSignal= */ null,
+                                /* activationCallback= */ (Void v2) -> {},
+                                /* errorCallback= */ (Throwable t) -> {});
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                },
+                /* errorCallback= */ (Throwable t) -> {});
+
+        // Register second activation callback on the same prerender.
+        startPrerendering(
+                mPrerenderingUrl,
+                /* prefetchParameters= */ null,
+                /* cancellationSignal= */ null,
+                /* activationCallback= */ (Void v) -> {
+                    activationCallbackHelper2.notifyCalled();
+                },
+                /* errorCallback= */ (Throwable t) -> {});
+
+        // Wait until the prerender is ready, then activate it.
+        mPrerenderLifecycleWebMessageListener.waitForOnPostMessage();
+        activatePage(mPrerenderingUrl, ActivationBy.LOAD_URL);
+
+        // Both activation callbacks should run without crashing or UAF even though the first
+        // callback re-entered startPrerendering and destroyed the dispatching PrerenderInfo.
+        activationCallbackHelper1.waitForNext();
+        activationCallbackHelper2.waitForNext();
     }
 }

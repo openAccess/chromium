@@ -4,9 +4,12 @@
 
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_picker_handler.h"
 
+#import <optional>
 #import <set>
+#import <utility>
 
 #import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_shared_tabs_delegate.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/commands/tab_picker_commands.h"
@@ -53,18 +56,16 @@ constexpr NSUInteger kMaxTabAttachmentCount = 10;
   params.baseViewController = presentingViewController;
   params.maxTabAttachmentCount = kMaxTabAttachmentCount;
   params.logger = self;
-  if (self.selectedTabsProvider) {
-    params.preselectedWebStateIDs = self.selectedTabsProvider();
+  if (self.sharedTabsDelegate) {
+    params.preselectedWebStateIDs =
+        self.sharedTabsDelegate->GetSelectedTabsForTabPicker();
   }
   params.PDFEnabled = IsPageContextPDFEnabled();
 
   __weak __typeof(self) weakSelf = self;
   TabPickerCompletionBlock completionBlock =
-      ^(std::set<web::WebStateID> selectedIDs,
-        std::set<web::WebStateID> cachedIDs) {
-        if (weakSelf.selectionCallback) {
-          weakSelf.selectionCallback(selectedIDs);
-        }
+      ^(std::optional<TabPickerSelection> selection) {
+        [weakSelf userDidPickTabs:std::move(selection)];
       };
 
   [self.tabPickerHandler showTabPickerWithParams:params
@@ -115,6 +116,15 @@ constexpr NSUInteger kMaxTabAttachmentCount = 10;
 }
 
 #pragma mark - Private
+
+// Handles tab picker completion with `selection`. If `selection` has a value,
+// notifies `sharedTabsDelegate` with the selected tab IDs.
+- (void)userDidPickTabs:(std::optional<TabPickerSelection>)selection {
+  if (selection.has_value() && self.sharedTabsDelegate) {
+    self.sharedTabsDelegate->OnTabPickerSelectionChanged(
+        selection->selected_ids);
+  }
+}
 
 // Displays a snackbar with the given `title` on the window presenting the Tab
 // Picker.

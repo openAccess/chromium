@@ -9,8 +9,6 @@ import android.animation.AnimatorSet;
 import android.animation.ObjectAnimator;
 import android.animation.TimeAnimator;
 import android.animation.TimeAnimator.TimeListener;
-import android.animation.ValueAnimator;
-import android.animation.ValueAnimator.AnimatorUpdateListener;
 import android.content.Context;
 import android.graphics.Color;
 import android.util.AttributeSet;
@@ -20,7 +18,6 @@ import android.view.animation.Interpolator;
 import android.widget.ProgressBar;
 
 import androidx.core.view.ViewCompat;
-import androidx.core.view.animation.PathInterpolatorCompat;
 
 import org.chromium.base.MathUtils;
 import org.chromium.base.ThreadUtils;
@@ -81,18 +78,19 @@ public class ToolbarProgressBar extends ClipDrawableProgressBar
 
     // Composited progress bar animation constants
     private static final long LOADING_ANIMATION_DURATION_MS = 3000;
-    private static final long FINISH_ANIMATION_DURATION_MS = 1000;
 
     @Nullable private Integer mCachedFpsCap;
 
     /** Whether or not the progress bar has started processing updates. */
     private boolean mIsStarted;
 
+    /** Whether the progress bar's window is currently visible. */
+    private boolean mIsWindowVisible = true;
+
     /** The target progress the smooth animation should move to (when animating smoothly). */
     private float mTargetProgress;
 
     private long mTimeSinceLastFrameMs;
-    private long mLastUpdateTimeMs;
 
     /** The current progress displayed by the animation. */
     private float mAnimatedProgress;
@@ -116,15 +114,12 @@ public class ToolbarProgressBar extends ClipDrawableProgressBar
             new Runnable() {
                 @Override
                 public void run() {
-                    if (!mIsStarted || !isAttachedToWindow()) {
+                    if (!mIsStarted || !isAttachedToWindow() || !isWindowVisibleForAnimation()) {
                         return;
                     }
                     mAnimationLogic.reset(getProgress());
 
-                    if (!shouldAnimateCompositedLayer()
-                            || !ChromeFeatureList.sAndroidApb144Patch9.isEnabled()) {
-                        mSmoothProgressAnimator.start();
-                    }
+                    mSmoothProgressAnimator.start();
 
                     if (mAnimatingView != null) {
                         int width =
@@ -223,46 +218,9 @@ public class ToolbarProgressBar extends ClipDrawableProgressBar
                 }
             };
 
-    private final ValueAnimator mProgressBarAnimationBc25 = ValueAnimator.ofFloat(0, 1);
-    AnimatorUpdateListener mProgressBarAnimationBc25Listener =
-            new AnimatorUpdateListener() {
-                @Override
-                public void onAnimationUpdate(ValueAnimator animation) {
-                    float progress = (float) animation.getAnimatedValue();
-                    mAnimatedProgress = progress;
-                    if (MathUtils.areFloatsEqual(mAnimatedProgress, 1.f)) {
-                        ToolbarProgressBar.super.setProgress(mAnimatedProgress);
-                        finish(true);
-                    } else {
-                        long currentTime = animation.getCurrentPlayTime();
-                        // currentTime is always 0 on the first frame
-                        if (currentTime != 0) {
-                            mTimeSinceLastFrameMs = currentTime - mLastUpdateTimeMs;
-                            long fps = (long) (1000 * 1.0f / mTimeSinceLastFrameMs);
-                            long fpsCap = getCompositedAnimationFpsCap();
-                            if (fpsCap > 0 && fps > fpsCap) {
-                                return;
-                            }
-                            mTimeSinceLastFrameMs = 0;
-                        }
-                        ToolbarProgressBar.super.setProgress(mAnimatedProgress);
-                        mLastUpdateTimeMs = currentTime;
-                    }
-                }
-            };
-
     {
-        if (ChromeFeatureList.sAndroidApb144Patch9.isEnabled()) {
-            // manually selected to look like bc25 mocks
-            mProgressBarAnimationBc25.setInterpolator(
-                    PathInterpolatorCompat.create(0.57f, 0f, 0.12f, 1.0f));
-            mProgressBarAnimationBc25.setDuration(FINISH_ANIMATION_DURATION_MS);
-        } else {
-            // When path9 flag is enabled, these time listeners are set in onAttachToWindow()
-            mSmoothProgressAnimator.setTimeListener(mSmoothProgressAnimatorListener);
-            mCompositedProgressBarAnimation.setTimeListener(
-                    mCompositedProgressBarAnimationListener);
-        }
+        mSmoothProgressAnimator.setTimeListener(mSmoothProgressAnimatorListener);
+        mCompositedProgressBarAnimation.setTimeListener(mCompositedProgressBarAnimationListener);
     }
 
     /**
@@ -319,18 +277,30 @@ public class ToolbarProgressBar extends ClipDrawableProgressBar
     }
 
     @Override
-    public void onAttachedToWindow() {
-        super.onAttachedToWindow();
-
-        if (ChromeFeatureList.sAndroidApb144Patch9.isEnabled()) {
-            mSmoothProgressAnimator.setTimeListener(mSmoothProgressAnimatorListener);
-
-            if (shouldAnimateCompositedLayer()) {
-                mCompositedProgressBarAnimation.setTimeListener(
-                        mCompositedProgressBarAnimationListener);
-                mProgressBarAnimationBc25.addUpdateListener(mProgressBarAnimationBc25Listener);
-            }
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        mIsWindowVisible = (visibility == VISIBLE);
+        if (!ChromeFeatureList.sAndroidProgressBarCancelOnWindowInvisible.isEnabled()) {
+            return;
         }
+        if (!mIsWindowVisible) {
+            cancelProgressAnimations();
+            if (mIsStarted) {
+                if (MathUtils.areFloatsEqual(mTargetProgress, 1.0f) || mTargetProgress > 1.0f) {
+                    finish(false);
+                } else {
+                    super.setProgress(mTargetProgress);
+                }
+            }
+        } else if (mIsStarted) {
+            removeCallbacks(mStartSmoothIndeterminate);
+            postDelayed(mStartSmoothIndeterminate, ANIMATION_START_THRESHOLD);
+        }
+    }
+
+    private boolean isWindowVisibleForAnimation() {
+        return mIsWindowVisible
+                || !ChromeFeatureList.sAndroidProgressBarCancelOnWindowInvisible.isEnabled();
     }
 
     @Override
@@ -339,24 +309,13 @@ public class ToolbarProgressBar extends ClipDrawableProgressBar
 
         removeCallbacks(mHideProgressBarRunnable);
         removeCallbacks(mHideProgressBarRunnableWithoutFade);
-        removeCallbacks(mStartSmoothIndeterminate);
-
         mSmoothProgressAnimator.setTimeListener(null);
-        mSmoothProgressAnimator.cancel();
-
-        if (mAnimatingView != null) {
-            mAnimatingView.cancelAnimation();
-        }
+        cancelProgressAnimations();
 
         if (shouldAnimateCompositedLayer()) {
             if (ChromeFeatureList.sAndroidApb144Patch6.isEnabled()) {
                 mCompositedProgressBarAnimation.setTimeListener(null);
                 mCompositedProgressBarAnimation.cancel();
-            }
-
-            if (ChromeFeatureList.sAndroidApb144Patch9.isEnabled()) {
-                mProgressBarAnimationBc25.removeAllUpdateListeners();
-                mProgressBarAnimationBc25.cancel();
             }
         }
     }
@@ -380,13 +339,11 @@ public class ToolbarProgressBar extends ClipDrawableProgressBar
 
         mIsStarted = true;
         mProgressStartCount++;
+        mTargetProgress = 0.0f;
 
-        removeCallbacks(mStartSmoothIndeterminate);
-        postDelayed(mStartSmoothIndeterminate, ANIMATION_START_THRESHOLD);
-
-        if (shouldAnimateCompositedLayer() && ChromeFeatureList.sAndroidApb144Patch9.isEnabled()) {
-            mProgressBarAnimationBc25.cancel();
-            mCompositedProgressBarAnimation.cancel();
+        cancelProgressAnimations();
+        if (isWindowVisibleForAnimation()) {
+            postDelayed(mStartSmoothIndeterminate, ANIMATION_START_THRESHOLD);
         }
 
         super.setProgress(0.0f);
@@ -432,40 +389,16 @@ public class ToolbarProgressBar extends ClipDrawableProgressBar
             } else {
                 setProgress(1.0f);
 
-                // If any of the animators are running while this method is called, set the internal
-                // progress and wait for the animation to end.
-                if (fadeOut
-                        && shouldAnimateCompositedLayer()
-                        && !mProgressBarAnimationBc25.isRunning()
-                        && ChromeFeatureList.sAndroidApb144Patch9.isEnabled()) {
-                    mCompositedProgressBarAnimation.cancel();
-                    mLastUpdateTimeMs = 0;
-                    mProgressBarAnimationBc25.setFloatValues(mAnimatedProgress, 1.0f);
-                    mProgressBarAnimationBc25.start();
-                }
                 if (areProgressAnimatorsRunning() && fadeOut) return;
             }
-        }
-
-        if (shouldAnimateCompositedLayer() && ChromeFeatureList.sAndroidApb144Patch9.isEnabled()) {
-            if (ChromeFeatureList.sAndroidApb144Patch6.isEnabled()) {
-                mCompositedProgressBarAnimation.cancel();
-            }
-            mProgressBarAnimationBc25.cancel();
         }
 
         mIsStarted = false;
         mTargetProgress = 0;
 
-        removeCallbacks(mStartSmoothIndeterminate);
-        if (mAnimatingView != null) {
-            mAnimatingView.cancelAnimation();
-        }
-        mSmoothProgressAnimator.cancel();
+        cancelProgressAnimations();
 
-        if (!ChromeFeatureList.sAndroidApb144Patch9.isEnabled()
-                && shouldAnimateCompositedLayer()
-                && ChromeFeatureList.sAndroidApb144Patch6.isEnabled()) {
+        if (shouldAnimateCompositedLayer() && ChromeFeatureList.sAndroidApb144Patch6.isEnabled()) {
             mCompositedProgressBarAnimation.cancel();
         }
 
@@ -494,11 +427,6 @@ public class ToolbarProgressBar extends ClipDrawableProgressBar
 
         if (mIsStarted) return;
         if (!animate) animate().cancel();
-        if (shouldAnimateCompositedLayer()
-                && mAnimatingView != null
-                && ChromeFeatureList.sAndroidApb144Patch9.isEnabled()) {
-            mAnimatingView.setVisibility(INVISIBLE);
-        }
 
         // Make invisible.
         if (animate) {
@@ -506,6 +434,14 @@ public class ToolbarProgressBar extends ClipDrawableProgressBar
         } else {
             setAlpha(0.0f);
         }
+    }
+
+    private void cancelProgressAnimations() {
+        removeCallbacks(mStartSmoothIndeterminate);
+        if (mAnimatingView != null) {
+            mAnimatingView.cancelAnimation();
+        }
+        mSmoothProgressAnimator.cancel();
     }
 
     /**
@@ -516,9 +452,6 @@ public class ToolbarProgressBar extends ClipDrawableProgressBar
         if (shouldAnimateCompositedLayer()) {
             if (ChromeFeatureList.sAndroidApb144Patch6.isEnabled()) {
                 areCompositedAnimationsRunning = mCompositedProgressBarAnimation.isRunning();
-            }
-            if (ChromeFeatureList.sAndroidApb144Patch9.isEnabled()) {
-                areCompositedAnimationsRunning |= mProgressBarAnimationBc25.isRunning();
             }
         }
         return mSmoothProgressAnimator.isRunning() || areCompositedAnimationsRunning;
@@ -590,17 +523,16 @@ public class ToolbarProgressBar extends ClipDrawableProgressBar
             if (mAnimatingView != null && !mAnimatingView.isRunning()) {
                 postDelayed(mStartSmoothIndeterminate, ANIMATION_START_THRESHOLD);
             }
+            if (!mCompositedProgressBarAnimation.isRunning()) {
+                mCompositedProgressBarAnimation.start();
+            }
         } else {
             if (!mSmoothProgressAnimator.isRunning()) {
-                postDelayed(mStartSmoothIndeterminate, ANIMATION_START_THRESHOLD);
+                if (isWindowVisibleForAnimation()) {
+                    postDelayed(mStartSmoothIndeterminate, ANIMATION_START_THRESHOLD);
+                }
                 super.setProgress(mTargetProgress);
             }
-        }
-
-        if (shouldAnimateCompositedLayer()
-                && !mCompositedProgressBarAnimation.isRunning()
-                && ChromeFeatureList.sAndroidApb144Patch6.isEnabled()) {
-            mCompositedProgressBarAnimation.start();
         }
 
         sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SELECTED);

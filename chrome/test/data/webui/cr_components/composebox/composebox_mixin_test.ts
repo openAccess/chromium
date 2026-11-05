@@ -5,22 +5,23 @@
 import 'chrome://contextual-tasks/strings.m.js';
 import './test_composebox_mixin.js';
 
-import {ComposeboxFile, ComposeboxInputModel, ContextType, ContextualSearchInputStateDeletionType, isValidTabId, TabUploadOrigin} from 'chrome://resources/cr_components/composebox/common.js';
+import {ComposeboxFile, ComposeboxInputModel, ContextType, ContextualSearchInputStateDeletionType, isValidTabId} from 'chrome://resources/cr_components/composebox/common.js';
 import type {ComposeboxFuseboxActionRequest} from 'chrome://resources/cr_components/composebox/common.js';
 import {PageHandlerRemote} from 'chrome://resources/cr_components/composebox/composebox.mojom-webui.js';
-import type {ComposeboxInputElement} from 'chrome://resources/cr_components/composebox/composebox_input.js';
+import {AimButtonMode} from 'chrome://resources/cr_components/composebox/composebox_aim_button.js';
 import type {ComposeboxEmbedderMixinInterface} from 'chrome://resources/cr_components/composebox/composebox_mixin.js';
 import {ComposeboxProxyImpl, createAutocompleteMatch} from 'chrome://resources/cr_components/composebox/composebox_proxy.js';
 import type {ContextualEntrypointAndMenuElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
 import type {ContextualEntrypointButtonElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_button.js';
 import type {ComposeboxFileCarouselElement} from 'chrome://resources/cr_components/composebox/file_carousel.js';
-import {createAutocompleteResultForTesting} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import {createAutocompleteResultForTesting, createSuggestTemplateInfo} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {InputSource, QueryActionOverride, SearchboxOverride, SuggestInventory} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
 import type {FuseboxAction} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
-import {DriveDisclaimerStatus, DriveUploadError, InputMethod, PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {DriveDisclaimerStatus, DriveUploadError, PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote, TabAttachmentSource} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {AutocompleteMatch, AutocompleteResult, PageRemote as SearchboxPageRemote, SelectedFileInfo} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import {ContextUploadStatus, InputType, ModelMode, ToolMode} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
+import {SuggestStyle} from 'chrome://resources/mojo/components/omnibox/browser/suggest_template_info.mojom-webui.js';
+import {ContextUploadErrorType, ContextUploadStatus, InputType, ModelMode, ToolMode} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import type {InputState} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import type {UnguessableToken} from 'chrome://resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 import type {Url} from 'chrome://resources/mojo/url/mojom/url.mojom-webui.js';
@@ -33,31 +34,17 @@ import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.
 import {getTrustedHtml} from 'chrome://webui-test/trusted_html.js';
 
 // </if>
-import {installMock, MockInputState} from './composebox_test_utils.js';
+import {installMock, MockInputState, simulateUserTextInput} from './composebox_test_utils.js';
 import type {TestComposeboxMixinElement} from './test_composebox_mixin.js';
 
-function simulateUserTextInput(
-    inputElement: ComposeboxInputElement, value: string): Promise<void> {
-  inputElement.input = value;
-  inputElement.fire('input-input');
-  return microtasksFinished();
-}
-
-function setSelectionOffset(input: HTMLElement, offset: number) {
-  if (input instanceof HTMLTextAreaElement) {
-    input.setSelectionRange(offset, offset);
-    return;
-  }
-  const range = document.createRange();
-  const sel = window.getSelection();
-  if (sel) {
-    const textNode = input.childNodes[0];
-    if (textNode && textNode.nodeType === Node.TEXT_NODE) {
-      range.setStart(textNode, offset);
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
+async function pollUntil(
+    predicate: () => boolean, timeoutMs = 10000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('pollUntil timed out');
     }
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
   }
 }
 
@@ -70,6 +57,7 @@ function createFuseboxActionRequest(
     preselectedModel: null,
     preselectedTool: null,
     searchboxOverride: null,
+    searchboxTutorial: null,
     ...overrides,
   };
   return {suggestion, files: [], fuseboxAction};
@@ -81,6 +69,7 @@ function createInputSourceRequest(inputSource: InputSource) {
 
 suite('ComposeboxMixinTest', () => {
   let element: TestComposeboxMixinElement;
+  let handler: PageHandlerRemote&TestMock<PageHandlerRemote>;
   let searchboxHandler: SearchboxPageHandlerRemote&
       TestMock<SearchboxPageHandlerRemote>;
   let searchboxCallbackRouterRemote: SearchboxPageRemote;
@@ -93,7 +82,7 @@ suite('ComposeboxMixinTest', () => {
     const callbackRouter = new SearchboxPageCallbackRouter();
     searchboxCallbackRouterRemote = callbackRouter.$.bindNewPipeAndPassRemote();
 
-    installMock(
+    handler = installMock(
         PageHandlerRemote,
         mock => ComposeboxProxyImpl.setInstance(new ComposeboxProxyImpl(
             mock, new SearchboxPageHandlerRemote(), callbackRouter)));
@@ -103,6 +92,8 @@ suite('ComposeboxMixinTest', () => {
     // <if expr="not is_android">
     searchboxHandler.setResultMapperFor(
         'getSmartTabSharingActive', () => Promise.resolve({active: false}));
+    searchboxHandler.setResultMapperFor(
+        'resetSmartTabSharing', () => Promise.resolve({active: false}));
     // </if>
     searchboxHandler.setPromiseResolveFor('getInputState', {
       state: new MockInputState(),
@@ -120,20 +111,25 @@ suite('ComposeboxMixinTest', () => {
   // hidden verbatim match (no action), and index 1 is the Fusebox action match.
   async function showFuseboxMatches(
       fuseboxAction: FuseboxAction, originalInput: string = 'typed input',
-      fillIntoEdit: string = 'action suggestion') {
+      fillIntoEdit: string = 'action suggestion',
+      suggestStyle: SuggestStyle = SuggestStyle.kDefault) {
     await microtasksFinished();
     element.input = originalInput;
     element.lastQueriedInput = originalInput;
-    element.result = {
+    element.result = createAutocompleteResultForTesting({
       input: originalInput,
       matches: [
         createAutocompleteMatch({
           allowedToBeDefaultMatch: true,
           fillIntoEdit: originalInput,
         }),
-        createAutocompleteMatch({fillIntoEdit, fuseboxAction}),
+        createAutocompleteMatch({
+          fillIntoEdit,
+          suggestTemplate:
+              createSuggestTemplateInfo({fuseboxAction, style: suggestStyle}),
+        }),
       ],
-    } as AutocompleteResult;
+    });
     await element.updateComplete;
     await microtasksFinished();
   }
@@ -153,6 +149,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const tab2Restored = {
@@ -161,6 +158,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?2',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const tab2Recent = {
@@ -169,6 +167,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?2',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const tab3 = {
@@ -177,6 +176,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?3',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -217,6 +217,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const tab2Restored = {
@@ -225,6 +226,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?2',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const tab2Recent = {
@@ -233,6 +235,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?2',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const tab3 = {
@@ -241,6 +244,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?3',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -288,6 +292,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const tab2 = {
@@ -296,6 +301,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?2',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const tab3 = {
@@ -304,6 +310,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?3',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const tab4 = {
@@ -312,6 +319,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?4',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -359,6 +367,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const tab2Closed = {
@@ -367,6 +376,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?2',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -402,6 +412,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const historicalTab1 = {
@@ -410,6 +421,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'https://example.com/hist1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const historicalTab2 = {
@@ -418,6 +430,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'https://example.com/hist2',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -458,6 +471,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?hist',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         }];
 
@@ -477,6 +491,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         const tab1Navigated = {
@@ -485,6 +500,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1_new',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -520,7 +536,7 @@ suite('ComposeboxMixinTest', () => {
               url: 'about:blank?original',
             });
 
-        element.files = new Map([[tokenTab, mockTabFile]]);
+        element.attachedContext = new Map([[tokenTab, mockTabFile]]);
         element.addedTabsIds = new Map([[selectedTabId, tokenTab]]);
 
         const freshTab = {
@@ -529,6 +545,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?navigated',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
         searchboxHandler.setResultFor(
@@ -536,7 +553,7 @@ suite('ComposeboxMixinTest', () => {
 
         await element.refreshTabSuggestions();
 
-        assertFalse(element.files.has(tokenTab));
+        assertFalse(element.attachedContext.has(tokenTab));
         assertFalse(element.addedTabsIds.has(selectedTabId));
         assertEquals(1, searchboxHandler.getCallCount('deleteContext'));
       });
@@ -552,7 +569,7 @@ suite('ComposeboxMixinTest', () => {
         });
 
     // Add the selected tab to the active files and added tabs maps.
-    element.files = new Map([[tokenTab, mockTabFile]]);
+    element.attachedContext = new Map([[tokenTab, mockTabFile]]);
     element.addedTabsIds = new Map([[selectedTabId, tokenTab]]);
 
     await microtasksFinished();
@@ -562,7 +579,7 @@ suite('ComposeboxMixinTest', () => {
     // Verify: The selected Tab 100 must be completely removed from the
     // current active selection.
     assertFalse(element.addedTabsIds.has(selectedTabId));
-    assertFalse(element.files.has(tokenTab));
+    assertFalse(element.attachedContext.has(tokenTab));
   });
 
   test(
@@ -583,7 +600,7 @@ suite('ComposeboxMixinTest', () => {
               url: 'about:blank?2',
             });
 
-        element.files = new Map([[token1, tab1], [token2, tab2]]);
+        element.attachedContext = new Map([[token1, tab1], [token2, tab2]]);
         element.addedTabsIds = new Map([[1, token1], [2, token2]]);
         element.aimThreadRestoredTabs = [
           {
@@ -592,6 +609,7 @@ suite('ComposeboxMixinTest', () => {
             url: 'about:blank?3',
             showInCurrentTabChip: false,
             showInPreviousTabChip: false,
+            isLoading: false,
             lastActive: {internalValue: 0n},
           },
         ];
@@ -619,6 +637,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -639,89 +658,6 @@ suite('ComposeboxMixinTest', () => {
         // Verify: refreshTabSuggestions is called even when list is empty to
         // clear or update suggestions.
         assertEquals(1, searchboxHandler.getCallCount('getRecentTabs'));
-      });
-
-  test('queryAutocomplete passes cursor position', async () => {
-    element.input = 'hello';
-    await microtasksFinished();
-
-    const inputElement = element.getInputElement();
-    (inputElement.inputElement as HTMLTextAreaElement).value = 'hello';
-    inputElement.inputElement.focus();
-    setSelectionOffset(inputElement.inputElement, 3);
-
-    searchboxHandler.resetResolver('queryAutocomplete');
-    element.queryAutocomplete(/*clearMatches=*/ false);
-
-    const args = await searchboxHandler.whenCalled('queryAutocomplete');
-    assertDeepEquals(args, [
-      0,
-      null,
-      'hello',
-      false,
-      3,
-      SuggestInventory.kDefault,
-      false,
-      '',
-      InputMethod.kKeyboard,
-    ]);
-  });
-
-  test(
-      'queryAutocomplete passes cursor position when input is out of sync',
-      async () => {
-        element.input = 'hello';
-        await microtasksFinished();
-
-        const inputElement = element.getInputElement();
-        (inputElement.inputElement as HTMLTextAreaElement).value = 'hello';
-        inputElement.inputElement.focus();
-
-        // Simulate a programming update of the input as happens when, e.g., the
-        // user closes the composebox. This update won't be immediately
-        // reflected in the DOM.
-        element.input = 'hello world';
-
-        // Clear the `queryAutocomplete` called for ZPS.
-        searchboxHandler.resetResolver('queryAutocomplete');
-        element.queryAutocomplete(/*clearMatches=*/ false);
-
-        const args = await searchboxHandler.whenCalled('queryAutocomplete');
-        assertDeepEquals(args, [
-          0,
-          null,
-          'hello world',
-          false,
-          11,
-          SuggestInventory.kDefault,
-          false,
-          '',
-          InputMethod.kKeyboard,
-        ]);
-      });
-
-  test('queries autocomplete on load by default', async () => {
-    searchboxHandler.resetResolver('queryAutocomplete');
-    const freshComposebox = document.createElement('test-composebox-mixin');
-    document.body.appendChild(freshComposebox);
-    await microtasksFinished();
-
-    assertEquals(1, searchboxHandler.getCallCount('queryAutocomplete'));
-  });
-
-  test(
-      'does not query autocomplete on load when queryZpsOnLoad is false',
-      async () => {
-        searchboxHandler.resetResolver('queryAutocomplete');
-        const freshComposebox = document.createElement('test-composebox-mixin');
-        // queryZpsOnLoad is read in connectedCallback, so it must be set before
-        // the element connects. Contextual Tasks sets it false and drives
-        // autocomplete from its own zero-state logic instead.
-        freshComposebox.queryZpsOnLoad = false;
-        document.body.appendChild(freshComposebox);
-        await microtasksFinished();
-
-        assertEquals(0, searchboxHandler.getCallCount('queryAutocomplete'));
       });
 
   test(
@@ -766,46 +702,7 @@ suite('ComposeboxMixinTest', () => {
         assertTrue(event.defaultPrevented);
       });
 
-  test(
-      'Shift+Enter submits dropdown selection when focus is in dropdown',
-      async () => {
-        const event = new KeyboardEvent('keydown', {
-          key: 'Enter',
-          shiftKey: true,
-          bubbles: true,
-          cancelable: true,
-        });
-
-        element.setActiveElement(element.getDropdownElement());
-
-        element.getWrapperElement().dispatchEvent(event);
-        await microtasksFinished();
-
-        assertTrue(event.defaultPrevented);
-      });
-
-  test('autocomplete matches are cleared on submit', async () => {
-    element.input = 'Some text';
-    await microtasksFinished();
-
-    const event = new KeyboardEvent('keydown', {
-      key: 'Enter',
-      shiftKey: false,
-      bubbles: true,
-      cancelable: true,
-    });
-    element.setActiveElement(element.getInputElement().inputElement);
-    element.getWrapperElement().dispatchEvent(event);
-    await microtasksFinished();
-
-    const clearResult = await searchboxHandler.whenCalled('stopAutocomplete');
-    assertTrue(clearResult);
-    assertFalse(element.showDropdown);
-    assertEquals(null, element.result);
-    assertEquals('', element.lastQueriedInput);
-  });
-
-  test('routes suggestion actions on click only', async () => {
+  test('routes suggestion actions on click and keyboard submit', async () => {
     const makeAction = (overrides: Partial<FuseboxAction> = {}) =>
         createFuseboxActionRequest(overrides).fuseboxAction;
     const originalHandler = element.handleFuseboxAction;
@@ -842,6 +739,29 @@ suite('ComposeboxMixinTest', () => {
           {button: 0, bubbles: true, cancelable: true, composed: true}));
     }
 
+    // Selects the match at `index` via the keyboard. In production, selecting
+    // a match focuses it, which makes the dropdown the active element from the
+    // composebox's perspective (the match itself lives in the dropdown's
+    // shadow root).
+    function selectMatch(index: number) {
+      dropdown.selectIndex(index);
+      dropdown.focusSelected();
+      element.setActiveElement(dropdown);
+    }
+
+    // Simulates pressing Enter while a match is selected. The event is
+    // dispatched on the wrapper so it routes through onKeydown() and
+    // handleEnter_(), which is where suggestion fusebox actions are
+    // intercepted before the query is submitted.
+    function pressEnter() {
+      element.getWrapperElement().dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        shiftKey: false,
+        bubbles: true,
+        cancelable: true,
+      }));
+    }
+
     try {
       // 1. When suggestion fusebox actions are disabled (default), clicking an
       // action match falls back to standard match opening instead of calling
@@ -858,22 +778,26 @@ suite('ComposeboxMixinTest', () => {
       assertTrue(element.submitting);
 
       // 2. When suggestion fusebox actions are enabled, selecting an action
-      // match via keyboard and pressing Enter does not trigger
-      // handleFuseboxAction; it submits the query as normal.
+      // match via keyboard and pressing Enter routes the action to
+      // handleFuseboxAction instead of submitting the query.
       element.submitting = false;
       element.suggestionFuseboxActionsEnabled = true;
       await showFuseboxMatches(makeAction({
         queryActionOverride: QueryActionOverride.kPaste,
       }));
-      dropdown.selectIndex(1);
+      selectMatch(1);
       await microtasksFinished();
-      element.submitQuery(new KeyboardEvent('keydown', {key: 'Enter'}));
+      pressEnter();
       await microtasksFinished();
 
-      assertEquals(0, requests.length);
-      assertDeepEquals(['open', 'stats', 'open'], effects);
+      assertEquals(1, requests.length);
+      assertEquals('action suggestion', requests[0]!.suggestion);
+      // The action is intercepted before the query is submitted, so neither
+      // setSmartComposeStats() nor openAutocompleteMatch() is called.
+      assertDeepEquals(['open'], effects);
       assertEquals(1, matchClickCount);
-      assertTrue(element.submitting);
+      assertFalse(element.submitting);
+      assertEquals(null, element.result);
 
       // 3. Clicking a fusebox action match routes the action to
       // handleFuseboxAction with the action payload, preserves existing files,
@@ -894,19 +818,20 @@ suite('ComposeboxMixinTest', () => {
       await microtasksFinished();
       await element.updateComplete;
 
-      assertEquals(1, requests.length);
-      assertEquals('action suggestion', requests[0]!.suggestion);
-      assertEquals(0, requests[0]!.files.length);
-      assertEquals(action, requests[0]!.fuseboxAction);
-      assertDeepEquals(['open', 'stats', 'open'], effects);
+      assertEquals(2, requests.length);
+      assertEquals('action suggestion', requests[1]!.suggestion);
+      assertEquals(0, requests[1]!.files.length);
+      assertEquals(action, requests[1]!.fuseboxAction);
+      assertDeepEquals(['open'], effects);
       assertTrue(element.files.has(file.uuid));
       assertFalse(element.submitting);
       assertEquals(1, matchClickCount);
       assertEquals(0, closeCount);
       assertEquals(null, element.result);
 
-      // 4. For kHint actions, clicking the match executes handleFuseboxAction,
-      // restores the original typed input, and re-queries autocomplete.
+      // 4. For kHint actions, selecting the match keeps the typed input, and
+      // clicking it executes handleFuseboxAction without re-querying
+      // autocomplete.
       element.files.clear();
       const originalInput = 'original typed input';
       await showFuseboxMatches(
@@ -917,25 +842,23 @@ suite('ComposeboxMixinTest', () => {
           originalInput, 'hint suggestion');
       dropdown.selectIndex(1);
       await microtasksFinished();
-      assertEquals('hint suggestion', element.input);
+      assertEquals(originalInput, element.input);
       const initialQueryCount =
           searchboxHandler.getCallCount('queryAutocomplete');
       clickActionMatch();
       await microtasksFinished();
 
-      assertEquals(2, requests.length);
-      assertDeepEquals(['open', 'stats', 'open'], effects);
+      assertEquals(3, requests.length);
+      assertDeepEquals(['open'], effects);
       assertEquals(originalInput, element.input);
       assertEquals(
-          initialQueryCount + 1,
+          initialQueryCount,
           searchboxHandler.getCallCount('queryAutocomplete'));
       assertFalse(element.submitting);
       assertEquals(-1, element.activeQueryId);
 
-      // Verify that subsequent async autocomplete responses for the reissued
-      // query do not overwrite the restored user input.
-      const actionQueryId =
-          searchboxHandler.getArgs('queryAutocomplete').at(-1)![0] as number;
+      // Verify that late async autocomplete responses do not overwrite the
+      // typed input since activeQueryId is -1.
       searchboxCallbackRouterRemote.autocompleteResultChanged(
           createAutocompleteResultForTesting({
             input: originalInput,
@@ -943,13 +866,27 @@ suite('ComposeboxMixinTest', () => {
               allowedToBeDefaultMatch: true,
               fillIntoEdit: 'async replacement',
             })],
-            queryId: actionQueryId,
+            queryId: 1,
           }));
       await searchboxCallbackRouterRemote.$.flushForTesting();
       await microtasksFinished();
 
       assertEquals(originalInput, element.input);
       assertEquals(null, element.result);
+
+      // Autocomplete is queried once when tool mode update takes effect from
+      // the browser.
+      searchboxCallbackRouterRemote.onInputStateChanged(
+          new MockInputState({activeTool: ToolMode.kDeepSearch}));
+      await searchboxCallbackRouterRemote.$.flushForTesting();
+      await microtasksFinished();
+
+      assertEquals(
+          initialQueryCount + 1,
+          searchboxHandler.getCallCount('queryAutocomplete'));
+      assertEquals(
+          originalInput,
+          searchboxHandler.getArgs('queryAutocomplete').at(-1)![2]);
 
       // 5. Actions with kDefault queryActionOverride are submitted normally
       // rather than intercepted by handleFuseboxAction.
@@ -959,100 +896,255 @@ suite('ComposeboxMixinTest', () => {
       clickActionMatch();
       await microtasksFinished();
 
-      assertEquals(2, requests.length);
-      assertDeepEquals(['open', 'stats', 'open', 'open'], effects);
+      assertEquals(3, requests.length);
+      assertDeepEquals(['open', 'open'], effects);
       assertEquals(2, matchClickCount);
       assertTrue(element.submitting);
+
+      // 6. Pressing Enter on a kDefault action match is not intercepted
+      // either; the query is submitted and the selected match is opened.
+      element.submitting = false;
+      await showFuseboxMatches(makeAction({
+        queryActionOverride: QueryActionOverride.kDefault,
+      }));
+      selectMatch(1);
+      await microtasksFinished();
+      pressEnter();
+      await microtasksFinished();
+
+      assertEquals(3, requests.length);
+      assertDeepEquals(['open', 'open', 'stats', 'open'], effects);
+      assertEquals(2, matchClickCount);
+      assertTrue(element.submitting);
+      element.composeboxSource = 'TestEmbedder';
+      assertEquals(
+          0,
+          metrics.count(
+              'ContextualSearch.RichImageSuggest.Clicked.TestEmbedder'));
+
+      // 7. Selecting a kRichImage action match when richImageSuggestionsEnabled
+      // is true records ContextualSearch.RichImageSuggest.Clicked.{Source} on
+      // both mouse click and keyboard Enter.
+      element.submitting = false;
+      element.richImageSuggestionsEnabled = true;
+      await showFuseboxMatches(
+          makeAction({queryActionOverride: QueryActionOverride.kPaste}),
+          'typed input', 'rich image suggestion', SuggestStyle.kRichImage);
+      clickActionMatch();
+      await microtasksFinished();
+      assertEquals(
+          1,
+          metrics.count(
+              'ContextualSearch.RichImageSuggest.Clicked.TestEmbedder', 1));
+
+      await showFuseboxMatches(
+          makeAction({queryActionOverride: QueryActionOverride.kPaste}),
+          'typed input', 'rich image suggestion', SuggestStyle.kRichImage);
+      selectMatch(1);
+      await microtasksFinished();
+      pressEnter();
+      await microtasksFinished();
+      assertEquals(
+          2,
+          metrics.count(
+              'ContextualSearch.RichImageSuggest.Clicked.TestEmbedder', 1));
     } finally {
       element.handleFuseboxAction = originalHandler;
     }
   });
 
-  test('activeQueryId is not reset to -1 when selection cleared and input is empty', async () => {
-    element.input = '';
-    element.activeQueryId = 0;
-    element.lastQueriedInput = '';
+  test('kHint matches keep the typed input with zero suggest', async () => {
+    element.showZps = true;
+    const typedInput = 'typed input';
+    const hintAction = createFuseboxActionRequest({
+                         queryActionOverride: QueryActionOverride.kHint,
+                       }).fuseboxAction;
+    const dropdown = element.getDropdownElement();
 
-    const matches = [
-      {fillIntoEdit: 'match1', supportsDeletion: false} as AutocompleteMatch,
-    ];
-    element.result = {input: '', matches} as AutocompleteResult;
-    element.selectedMatchIndex = 0;
+    // Embedders that do not handle suggestion fusebox actions treat kHint
+    // matches as regular suggestions, so selecting one previews its text.
+    await showFuseboxMatches(hintAction, typedInput, 'hint suggestion');
+    dropdown.selectIndex(1);
+    await microtasksFinished();
+    assertEquals('hint suggestion', element.input);
+
+    element.suggestionFuseboxActionsEnabled = true;
+    await showFuseboxMatches(hintAction, typedInput, 'hint suggestion');
+    dropdown.selectIndex(1);
+    await microtasksFinished();
+    assertEquals(typedInput, element.input);
+
+    // Accepting the hint re-queries zero suggest for the current tool. The
+    // query and the input must both use the typed text, not the hint.
+    const queryCount = searchboxHandler.getCallCount('queryAutocomplete');
+    const matchEl =
+        dropdown.shadowRoot.querySelectorAll('cr-composebox-match')[1]!;
+    matchEl.dispatchEvent(new MouseEvent(
+        'click', {button: 0, bubbles: true, cancelable: true, composed: true}));
+    await microtasksFinished();
     await element.updateComplete;
 
-    element.selectedMatchIndex = -1;
-    await element.updateComplete;
-
-    assertEquals(0, element.activeQueryId);
+    assertEquals(
+        queryCount + 1, searchboxHandler.getCallCount('queryAutocomplete'));
+    assertEquals(
+        typedInput, searchboxHandler.getArgs('queryAutocomplete').at(-1)![2]);
+    assertEquals(typedInput, element.input);
+    assertEquals(typedInput, element.lastQueriedInput);
+    assertEquals('hint suggestion', element.inputPlaceholder);
   });
 
-  test('activeQueryId is reset to -1 when selection cleared and input is not empty', async () => {
-    element.input = 'Some text';
-    element.activeQueryId = 0;
-    element.lastQueriedInput = '';
+  test(
+      'clicking an action match drops the preview of another selected match',
+      async () => {
+        element.showZps = true;
+        element.suggestionFuseboxActionsEnabled = true;
+        const typedInput = 'typed input';
+        element.input = typedInput;
+        element.lastQueriedInput = typedInput;
+        element.result = {
+          input: typedInput,
+          matches: [
+            createAutocompleteMatch(
+                {allowedToBeDefaultMatch: true, fillIntoEdit: typedInput}),
+            createAutocompleteMatch({fillIntoEdit: 'other suggestion'}),
+            createAutocompleteMatch({
+              fillIntoEdit: 'hint suggestion',
+              suggestTemplate: createSuggestTemplateInfo({
+                fuseboxAction: createFuseboxActionRequest({
+                                 queryActionOverride: QueryActionOverride.kHint,
+                               }).fuseboxAction,
+              }),
+            }),
+          ],
+        } as AutocompleteResult;
+        await microtasksFinished();
 
-    const matches = [
-      {fillIntoEdit: 'match1', supportsDeletion: false} as AutocompleteMatch,
-    ];
-    element.result = {input: '', matches} as AutocompleteResult;
-    element.selectedMatchIndex = 0;
-    await element.updateComplete;
+        // Keyboard-select a regular match so its text is previewed, then click
+        // the kHint match with the mouse, which does not change the selection.
+        const dropdown = element.getDropdownElement();
+        dropdown.selectIndex(1);
+        await microtasksFinished();
+        assertEquals('other suggestion', element.input);
 
-    element.selectedMatchIndex = -1;
-    await element.updateComplete;
+        const queryCount = searchboxHandler.getCallCount('queryAutocomplete');
+        const matchEl =
+            dropdown.shadowRoot.querySelectorAll('cr-composebox-match')[2]!;
+        matchEl.dispatchEvent(new MouseEvent('click', {
+          button: 0,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        }));
+        await microtasksFinished();
+        await element.updateComplete;
 
-    assertEquals(-1, element.activeQueryId);
-  });
+        assertEquals(
+            queryCount + 1, searchboxHandler.getCallCount('queryAutocomplete'));
+        assertEquals(
+            typedInput,
+            searchboxHandler.getArgs('queryAutocomplete').at(-1)![2]);
+        assertEquals(typedInput, element.input);
+        assertEquals('hint suggestion', element.inputPlaceholder);
+      });
 
   test('clearAutocompleteMatches preserves typed draft input', async () => {
     element.input = 'Draft text';
     element.lastQueriedInput = 'Draft text';
     element.activeQueryId = 1;
-
-    const matches = [
-      {fillIntoEdit: 'Draft text suggestion', supportsDeletion: false} as
-          AutocompleteMatch,
-    ];
-    element.result = {input: 'Draft text', matches} as AutocompleteResult;
-    element.selectedMatchIndex = 0;
-    await element.updateComplete;
-
-    element.clearAutocompleteMatches();
-    await element.updateComplete;
-
-    assertEquals('Draft text', element.input);
-    assertEquals(-1, element.selectedMatchIndex);
-    assertEquals(null, element.result);
-    assertEquals(-1, element.activeQueryId);
-  });
-
-  test('smartComposeInlineHint is sliced on sequential typing', async () => {
-    element.smartComposeEnabled = true;
-    element.input = 'hello';
-    element.smartComposeInlineHint = ' world';
     await microtasksFinished();
 
-    const inputElem = element.getInputElement();
-    await simulateUserTextInput(inputElem, 'hello ');
+    const inputComponent = element.getInputElement();
+    const dropdown = element.getDropdownElement();
+    const originalResetHeight = inputComponent.resetHeight;
+    let resetCount = 0;
+    inputComponent.resetHeight = () => {
+      resetCount++;
+      originalResetHeight.call(inputComponent);
+    };
 
-    assertEquals('world', element.smartComposeInlineHint);
-    assertEquals('hello ', element.input);
+    try {
+      // 1. Same-text suggestion preview and draft restoration should preserve
+      // the height lock without calling resetHeight.
+      element.result = {
+        input: 'Draft text',
+        matches: [
+          createAutocompleteMatch(
+              {fillIntoEdit: 'Draft text', supportsDeletion: false}),
+        ],
+      } as AutocompleteResult;
+      await microtasksFinished();
 
-    await simulateUserTextInput(inputElem, 'hello w');
+      dropdown.selectIndex(0);
+      await microtasksFinished();
+      assertEquals(0, element.selectedMatchIndex);
+      assertEquals('Draft text', element.input);
+      assertEquals(0, resetCount);
 
-    assertEquals('orld', element.smartComposeInlineHint);
-  });
+      element.clearAutocompleteMatches();
+      await microtasksFinished();
+      assertEquals('Draft text', element.input);
+      assertEquals(-1, element.selectedMatchIndex);
+      assertEquals(null, element.result);
+      assertEquals(-1, element.activeQueryId);
+      assertEquals(0, resetCount);
 
-  test('smartComposeInlineHint is cleared on non-matching typing', async () => {
-    element.smartComposeEnabled = true;
-    element.input = 'hello';
-    element.smartComposeInlineHint = ' world';
-    await microtasksFinished();
+      // 2. Different-text suggestion preview and draft restoration resets
+      // height.
+      element.result = {
+        input: 'Draft text',
+        matches: [
+          createAutocompleteMatch(
+              {fillIntoEdit: 'Draft text suggestion', supportsDeletion: false}),
+        ],
+      } as AutocompleteResult;
+      await microtasksFinished();
 
-    const inputElem = element.getInputElement();
-    await simulateUserTextInput(inputElem, 'hello!');
+      dropdown.selectIndex(0);
+      await microtasksFinished();
+      assertEquals(0, element.selectedMatchIndex);
+      assertEquals('Draft text suggestion', element.input);
+      assertEquals(1, resetCount);
 
-    assertEquals('', element.smartComposeInlineHint);
+      element.clearAutocompleteMatches();
+      await microtasksFinished();
+      assertEquals('Draft text', element.input);
+      assertEquals(-1, element.selectedMatchIndex);
+      assertEquals(null, element.result);
+      assertEquals(-1, element.activeQueryId);
+      assertEquals(2, resetCount);
+
+      // 3. Zero-state preview (no typed draft query): clearing after preview
+      // clears the input and releases the height lock.
+      element.input = '';
+      element.lastQueriedInput = '';
+      await microtasksFinished();
+      resetCount = 0;
+
+      element.result = {
+        input: '',
+        matches: [
+          createAutocompleteMatch(
+              {fillIntoEdit: 'Preview suggestion', supportsDeletion: false}),
+        ],
+      } as AutocompleteResult;
+      await microtasksFinished();
+
+      dropdown.selectIndex(0);
+      await microtasksFinished();
+      assertEquals(0, element.selectedMatchIndex);
+      assertEquals('Preview suggestion', element.input);
+      assertEquals(1, resetCount);
+
+      element.clearAutocompleteMatches();
+      await microtasksFinished();
+      assertEquals('', element.input);
+      assertEquals(-1, element.selectedMatchIndex);
+      assertEquals(null, element.result);
+      assertEquals(-1, element.activeQueryId);
+      assertEquals(2, resetCount);
+    } finally {
+      inputComponent.resetHeight = originalResetHeight;
+    }
   });
 
   test(
@@ -1069,12 +1161,14 @@ suite('ComposeboxMixinTest', () => {
         const regularFile = ({
                               name: 'image.png',
                               type: 'image/png',
+                              status: ContextUploadStatus.kUploadSuccessful,
                             } as Partial<ComposeboxFile>) as ComposeboxFile;
         const tabFile = ({
                           name: 'Google',
                           url: 'http://google.com',
+                          status: ContextUploadStatus.kUploadSuccessful,
                         } as Partial<ComposeboxFile>) as ComposeboxFile;
-        freshComposebox.files = new Map([
+        freshComposebox.attachedContext = new Map([
           ['uuid-1' as unknown as UnguessableToken, regularFile],
           ['uuid-2' as unknown as UnguessableToken, tabFile],
         ]);
@@ -1099,12 +1193,14 @@ suite('ComposeboxMixinTest', () => {
     const regularFile = ({
                           name: 'image.png',
                           type: 'image/png',
+                          status: ContextUploadStatus.kUploadSuccessful,
                         } as Partial<ComposeboxFile>) as ComposeboxFile;
     const tabFile = ({
                       name: 'Google',
                       url: 'http://google.com',
+                      status: ContextUploadStatus.kUploadSuccessful,
                     } as Partial<ComposeboxFile>) as ComposeboxFile;
-    freshComposebox.files = new Map([
+    freshComposebox.attachedContext = new Map([
       ['uuid-1' as unknown as UnguessableToken, regularFile],
       ['uuid-2' as unknown as UnguessableToken, tabFile],
     ]);
@@ -1172,8 +1268,8 @@ suite('ComposeboxMixinTest', () => {
     }]);
 
     await microtasksFinished();
-    assertTrue(element.files.has(token));
-    const file = element.files.get(token)!;
+    assertTrue(element.attachedContext.has(token));
+    const file = element.attachedContext.get(token)!;
     assertEquals('file.png', file.name);
     assertEquals('image/png', file.type);
     assertFalse(element.showDropdown);
@@ -1213,7 +1309,7 @@ suite('ComposeboxMixinTest', () => {
       // </if>
     };
     await microtasksFinished();
-    assertTrue(element.files.has(token));
+    assertTrue(element.attachedContext.has(token));
     assertEquals('hello', element.input);
   });
 
@@ -1236,10 +1332,18 @@ suite('ComposeboxMixinTest', () => {
       maxInputsByType: {},
       maxTotalInputs: 5,
       isCanvasQuerySubmitted: false,
+      willFulfillInAim: true,
     } as unknown as InputState;
     element.onInputStateChanged(inputState);
     await microtasksFinished();
     assertDeepEquals(element.inputState, inputState);
+    assertTrue(element.willFulfillInAim);
+    assertTrue(element.hasAttribute('will-fulfill-in-aim'));
+
+    element.onInputStateChanged({...inputState, willFulfillInAim: false});
+    await microtasksFinished();
+    assertFalse(element.willFulfillInAim);
+    assertFalse(element.hasAttribute('will-fulfill-in-aim'));
   });
 
   test('NotifySessionStarted called on connectedCallback', () => {
@@ -1248,7 +1352,8 @@ suite('ComposeboxMixinTest', () => {
 
   test('clear button title changes with input text', async () => {
     const cancelIcon =
-        element.getInputElement().shadowRoot.querySelector('#cancelIcon')!;
+        element.getInputElement().shadowRoot.querySelector<HTMLElement>(
+            '#cancelIcon')!;
     assertEquals(
         loadTimeData.getString('composeboxCancelButtonTitle'),
         cancelIcon.getAttribute('title'));
@@ -1280,7 +1385,7 @@ suite('ComposeboxMixinTest', () => {
         await element.updateComplete;
 
         assertEquals('hello world', element.input);
-        assertEquals(1, element.files.size);
+        assertEquals(1, element.attachedContext.size);
         assertEquals(1, searchboxHandler.getCallCount('setActiveToolMode'));
         assertEquals(
             ToolMode.kDeepSearch,
@@ -1292,331 +1397,177 @@ suite('ComposeboxMixinTest', () => {
         assertFalse(searchboxHandler.getArgs('setActiveModelMode')[0][1]);
       });
 
-  test('navigates matches with ArrowDown and ArrowUp', async () => {
-    const input = element.getInputElement().inputElement;
-    const matchesElement = element.getDropdownElement();
-
-    element.result = {input: '', matches: []} as unknown as AutocompleteResult;
-    await microtasksFinished();
-
-    input.dispatchEvent(new KeyboardEvent(
-        'keydown', {key: 'ArrowDown', bubbles: true, composed: true}));
-    await microtasksFinished();
-    assertEquals(-1, matchesElement.selectedMatchIndex);
-
-    const matches = [
-      {fillIntoEdit: 'test1'} as AutocompleteMatch,
-      {fillIntoEdit: 'test2'} as AutocompleteMatch,
-    ];
-    element.result = {input: 'test', matches} as AutocompleteResult;
-    await microtasksFinished();
-
-    input.dispatchEvent(new KeyboardEvent(
-        'keydown', {key: 'ArrowDown', bubbles: true, composed: true}));
-    await microtasksFinished();
-    assertEquals(0, matchesElement.selectedMatchIndex);
-
-    input.dispatchEvent(new KeyboardEvent(
-        'keydown', {key: 'ArrowDown', bubbles: true, composed: true}));
-    await microtasksFinished();
-    assertEquals(1, matchesElement.selectedMatchIndex);
-
-    input.dispatchEvent(new KeyboardEvent(
-        'keydown', {key: 'ArrowUp', bubbles: true, composed: true}));
-    await microtasksFinished();
-    assertEquals(0, matchesElement.selectedMatchIndex);
-
-    input.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'ArrowDown',
-      ctrlKey: true,
-      bubbles: true,
-      composed: true,
-    }));
-    await microtasksFinished();
-    assertEquals(0, matchesElement.selectedMatchIndex);
-
-    element.dropdownNeeded = false;
-    input.dispatchEvent(new KeyboardEvent(
-        'keydown', {key: 'ArrowDown', bubbles: true, composed: true}));
-    await microtasksFinished();
-    assertEquals(0, matchesElement.selectedMatchIndex);
-  });
-
-  test('selects first or last match with PageUp and PageDown', async () => {
-    const input = element.getInputElement().inputElement;
-    const matchesElement = element.getDropdownElement();
-
-    const matches = [
-      {fillIntoEdit: 'test1'} as AutocompleteMatch,
-      {fillIntoEdit: 'test2'} as AutocompleteMatch,
-      {fillIntoEdit: 'test3'} as AutocompleteMatch,
-    ];
-    element.result = {input: 'test', matches} as AutocompleteResult;
-    await microtasksFinished();
-
-    input.dispatchEvent(new KeyboardEvent(
-        'keydown', {key: 'PageDown', bubbles: true, composed: true}));
-    await microtasksFinished();
-    assertEquals(2, matchesElement.selectedMatchIndex);
-
-    input.dispatchEvent(new KeyboardEvent(
-        'keydown', {key: 'PageUp', bubbles: true, composed: true}));
-    await microtasksFinished();
-    assertEquals(0, matchesElement.selectedMatchIndex);
-
-    input.dispatchEvent(new KeyboardEvent('keydown', {
-      key: 'PageDown',
-      altKey: true,
-      bubbles: true,
-      composed: true,
-    }));
-    await microtasksFinished();
-    assertEquals(0, matchesElement.selectedMatchIndex);
-  });
-
   test(
-      'PageDown and PageUp are ignored when no matches are available',
+      'processFiles infers HEIC MIME type when file type is empty',
       async () => {
-        const input = element.getInputElement().inputElement;
-        const matchesElement = element.getDropdownElement();
+        // Some platforms report an empty type for uppercase `.HEIC` files.
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(new File(['test'], 'IMG_1234.HEIC', {type: ''}));
 
-        input.dispatchEvent(new KeyboardEvent(
-            'keydown', {key: 'PageDown', bubbles: true, composed: true}));
+        element.processFiles(dataTransfer.files);
+        await searchboxHandler.whenCalled('addFileContext');
         await element.updateComplete;
-        assertEquals(-1, matchesElement.selectedMatchIndex);
-      });
 
-  test('Tab behavior when focus is in input', async () => {
-    element.smartComposeEnabled = true;
-    const inputElem = element.getInputElement();
-    const input = inputElem.inputElement;
-    const matchesElement = element.getDropdownElement();
-
-    const matches = [{fillIntoEdit: 'match1'} as AutocompleteMatch];
-    element.result = {input: 'tes', matches} as AutocompleteResult;
-    await microtasksFinished();
-
-    matchesElement.selectNext();
-    assertEquals(0, matchesElement.selectedMatchIndex);
-    input.focus();
-
-    input.dispatchEvent(new KeyboardEvent(
-        'keydown',
-        {key: 'Tab', shiftKey: true, bubbles: true, composed: true}));
-    await microtasksFinished();
-    assertEquals(-1, matchesElement.selectedMatchIndex);
-
-    await simulateUserTextInput(inputElem, 'tes');
-    element.smartComposeInlineHint = 't';
-    await element.updateComplete;
-
-    const tabEvent = new KeyboardEvent(
-        'keydown',
-        {key: 'Tab', bubbles: true, cancelable: true, composed: true});
-    input.dispatchEvent(tabEvent);
-    await microtasksFinished();
-
-    assertEquals('test', (input as HTMLTextAreaElement).value);
-    assertTrue(tabEvent.defaultPrevented);
-  });
-
-  test('Tab on last dropdown match unselects active match', async () => {
-    const matchesElement = element.getDropdownElement();
-    const matches = [
-      {fillIntoEdit: 'match1', supportsDeletion: false} as AutocompleteMatch,
-      {fillIntoEdit: 'match2', supportsDeletion: false} as AutocompleteMatch,
-    ];
-    element.result = {input: 'm', matches} as AutocompleteResult;
-    await microtasksFinished();
-
-    matchesElement.selectNext();
-    matchesElement.selectNext();
-    assertEquals(1, matchesElement.selectedMatchIndex);
-
-    await matchesElement.updateComplete;
-    element.setActiveElement(matchesElement);
-
-    const tabEvent = new KeyboardEvent(
-        'keydown',
-        {key: 'Tab', bubbles: true, cancelable: true, composed: true});
-    matchesElement.dispatchEvent(tabEvent);
-    await element.updateComplete;
-
-    assertEquals(-1, matchesElement.selectedMatchIndex);
-    assertFalse(tabEvent.defaultPrevented);
-  });
-
-  test('Tab in dropdown is ignored when key modifiers are active', async () => {
-    const matchesElement = element.getDropdownElement();
-    const matches = [
-      {fillIntoEdit: 'match1', supportsDeletion: false} as AutocompleteMatch,
-      {fillIntoEdit: 'match2', supportsDeletion: false} as AutocompleteMatch,
-    ];
-    element.result = {input: 'm', matches} as AutocompleteResult;
-    await element.updateComplete;
-
-    matchesElement.selectNext();
-    matchesElement.selectNext();
-    await matchesElement.updateComplete;
-    await element.updateComplete;
-    element.setActiveElement(matchesElement);
-    const tabEventCtrl = new KeyboardEvent('keydown', {
-      key: 'Tab',
-      ctrlKey: true,
-      bubbles: true,
-      cancelable: true,
-    });
-    matchesElement.dispatchEvent(tabEventCtrl);
-    await element.updateComplete;
-    assertEquals(1, matchesElement.selectedMatchIndex);
-  });
-
-  test('Tab in dropdown is ignored when no matches are available', async () => {
-    const matchesElement = element.getDropdownElement();
-
-    const tabEventNoMatch = new KeyboardEvent('keydown', {
-      key: 'Tab',
-      bubbles: true,
-      cancelable: true,
-    });
-    matchesElement.dispatchEvent(tabEventNoMatch);
-    await element.updateComplete;
-    assertEquals(-1, matchesElement.selectedMatchIndex);
-  });
-
-  test('Smart Compose hint is hidden during backspacing', async () => {
-    element.smartComposeEnabled = true;
-    const inputElem = element.getInputElement();
-    const input = inputElem.inputElement;
-
-    await simulateUserTextInput(inputElem, 'tes');
-    element.smartComposeInlineHint = 't';
-    await element.updateComplete;
-
-    assertTrue(!!inputElem.shadowRoot.querySelector('#smartCompose'));
-
-    input.dispatchEvent(new KeyboardEvent('keydown', {key: 'Backspace'}));
-    await microtasksFinished();
-
-    assertFalse(!!inputElem.shadowRoot.querySelector('#smartCompose'));
-  });
-
-  test('Smart Compose hint is hidden when cursor is not at end', async () => {
-    element.smartComposeEnabled = true;
-    const inputElem = element.getInputElement();
-
-    await simulateUserTextInput(inputElem, 'test');
-    element.smartComposeInlineHint = 'a';
-    await element.updateComplete;
-
-    assertTrue(!!inputElem.shadowRoot.querySelector('#smartCompose'));
-
-    inputElem.inputElement.focus();
-    setSelectionOffset(inputElem.inputElement, 1);
-    inputElem.requestUpdate();
-    await microtasksFinished();
-
-    assertFalse(!!inputElem.shadowRoot.querySelector('#smartCompose'));
-  });
-
-  test(
-      'Smart Compose hint is hidden when it wraps in the middle of a word',
-      async () => {
-        const inputElement = element.getInputElement();
-        const input = inputElement.inputElement as HTMLTextAreaElement;
-
-        const originalMeasureText =
-            CanvasRenderingContext2D.prototype.measureText;
-        try {
-          CanvasRenderingContext2D.prototype.measureText = function(
-              text: string) {
-            if (text.includes('wrap')) {
-              return {width: 150} as TextMetrics;
-            }
-            return {width: 50} as TextMetrics;
-          };
-          Object.defineProperty(
-              input, 'clientWidth', {configurable: true, get: () => 100});
-
-          element.smartComposeEnabled = true;
-          await simulateUserTextInput(inputElement, 'tes.');
-          element.smartComposeInlineHint = 'wrap';
-          await element.updateComplete;
-
-          assertFalse(!!inputElement.shadowRoot.querySelector('#smartCompose'));
-        } finally {
-          CanvasRenderingContext2D.prototype.measureText = originalMeasureText;
-        }
+        assertEquals(
+            'image/heic',
+            searchboxHandler.getArgs('addFileContext')[0][0].mimeType);
+        assertEquals(1, element.attachedContext.size);
+        const attachment = [...element.attachedContext.values()][0]!;
+        assertEquals('image/heic', attachment.type);
+        assertEquals(InputType.kLensImage, attachment.inputType);
       });
 
   test(
-      'Smart Compose hint is NOT hidden when only full hint wraps but first word fits',
+      'updates state does not toggle off tool mode when already in that mode',
       async () => {
-        const inputElement = element.getInputElement();
-        const input = inputElement.inputElement as HTMLTextAreaElement;
+        const inputState =
+            new MockInputState({activeTool: ToolMode.kImageGen});
+        searchboxHandler.setPromiseResolveFor('getInputState', {
+          state: inputState,
+        });
+        element.onInputStateChanged(inputState);
+        await microtasksFinished();
 
-        const originalMeasureText =
-            CanvasRenderingContext2D.prototype.measureText;
-        try {
-          CanvasRenderingContext2D.prototype.measureText = function(
-              text: string) {
-            if (text.includes('wraps')) {
-              return {width: 150} as TextMetrics;
-            }
-            return {width: 50} as TextMetrics;
-          };
-          Object.defineProperty(
-              input, 'clientWidth', {configurable: true, get: () => 100});
+        element.state = {
+          text: 'make an image',
+          files: [],
+          mode: ToolMode.kImageGen,
+          model: ModelMode.kUnspecified,
+          // <if expr="not is_android">
+          smartTabSharingActive: false,
+          // </if>
+        };
+        await microtasksFinished();
 
-          element.smartComposeEnabled = true;
-          await simulateUserTextInput(inputElement, 'tes.');
-          element.smartComposeInlineHint = 'fits wraps';
-          await element.updateComplete;
-
-          assertTrue(!!inputElement.shadowRoot.querySelector('#smartCompose'));
-        } finally {
-          CanvasRenderingContext2D.prototype.measureText = originalMeasureText;
-        }
+        assertEquals(1, searchboxHandler.getCallCount('setActiveToolMode'));
+        assertEquals(
+            ToolMode.kImageGen,
+            searchboxHandler.getArgs('setActiveToolMode')[0][0]);
       });
 
   test(
-      'Tab key does not accept Smart Compose when hidden by wrapping',
+      'updates state from state property with browser file upload',
       async () => {
-        const inputElement = element.getInputElement();
-        const input = inputElement.inputElement as HTMLTextAreaElement;
+        const token = '00000000000000010000000000000002';
+        const fileInfo: SelectedFileInfo = {
+          fileName: 'test.png',
+          mimeType: 'image/png',
+          imageDataUrl: 'data:image/png;base64,AAAA',
+          thumbnailUrl: null,
+          isDeletable: true,
+          selectionTime: new Date(),
+        };
+        element.state = {
+          text: '',
+          files: [{token, fileInfo}],
+          mode: ToolMode.kUnspecified,
+          model: ModelMode.kUnspecified,
+          // <if expr="not is_android">
+          smartTabSharingActive: false,
+          // </if>
+        };
+        await element.updateComplete;
+        await microtasksFinished();
 
-        const originalMeasureText =
-            CanvasRenderingContext2D.prototype.measureText;
-        try {
-          CanvasRenderingContext2D.prototype.measureText = function(
-              text: string) {
-            if (text.includes('wrap')) {
-              return {width: 150} as TextMetrics;
-            }
-            return {width: 50} as TextMetrics;
-          };
-          Object.defineProperty(
-              input, 'clientWidth', {configurable: true, get: () => 100});
-
-          element.smartComposeEnabled = true;
-          await simulateUserTextInput(inputElement, 'tes.');
-          element.smartComposeInlineHint = 'wrap';
-          await element.updateComplete;
-
-          element.setActiveElement(input);
-          const tabEvent = new KeyboardEvent('keydown', {
-            key: 'Tab',
-            bubbles: true,
-            cancelable: true,
-          });
-          element.getWrapperElement().dispatchEvent(tabEvent);
-          await element.updateComplete;
-
-          assertEquals('tes.', element.input);
-        } finally {
-          CanvasRenderingContext2D.prototype.measureText = originalMeasureText;
-        }
+        assertEquals(1, element.files.size);
+        const attachment = element.files.values().next().value;
+        assertTrue(!!attachment);
+        assertEquals('test.png', attachment.name);
+        assertEquals('image/png', attachment.type);
+        assertEquals(ContextUploadStatus.kUploadSuccessful, attachment.status);
       });
+
+  test('navigating matches preserves or shrinks height lock', async () => {
+    const originalBodyWidth = document.body.style.width;
+    const originalBodyHeight = document.body.style.height;
+    const originalElementWidth = element.style.width;
+    const inputComponent = element.getInputElement();
+    const originalResetHeight = inputComponent.resetHeight;
+
+    try {
+      document.body.style.width = '800px';
+      document.body.style.height = '600px';
+      element.style.width = '100%';
+
+      const input = inputComponent.inputElement as HTMLTextAreaElement;
+      const matchesElement = element.getDropdownElement();
+      const wrapper = inputComponent.shadowRoot.querySelector<HTMLElement>(
+          '#inputWrapper')!;
+
+      // 1. Establish height lock with multiline text.
+      const initialHeight = wrapper.clientHeight;
+      input.value = 'line 1\nline 2\nline 3\nline 4\nline 5';
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+      await microtasksFinished();
+      await pollUntil(
+          () => wrapper.clientHeight > initialHeight &&
+              parseFloat(wrapper.style.minHeight) === wrapper.clientHeight);
+      const initialMinHeight = wrapper.style.minHeight;
+      const tallHeight = wrapper.clientHeight;
+
+      // 2. Shorten/delete text; the height lock is preserved.
+      input.value = 'test';
+      input.dispatchEvent(new Event('input', {bubbles: true}));
+      await microtasksFinished();
+      await new Promise<void>(
+          resolve => requestAnimationFrame(
+              () => requestAnimationFrame(() => resolve())));
+      assertEquals(initialMinHeight, wrapper.style.minHeight);
+      assertEquals(tallHeight, wrapper.clientHeight);
+
+      let resetCount = 0;
+      inputComponent.resetHeight = () => {
+        resetCount++;
+        originalResetHeight.call(inputComponent);
+      };
+
+      const matches = [
+        createAutocompleteMatch({fillIntoEdit: 'test'}),
+        createAutocompleteMatch({fillIntoEdit: 'test2'}),
+        createAutocompleteMatch({fillIntoEdit: 'test3'}),
+      ];
+      element.result = {input: 'test', matches} as AutocompleteResult;
+      await microtasksFinished();
+
+      // 3. ArrowDown to suggestion with same text ('test') -> lock is NOT
+      // reset.
+      input.dispatchEvent(new KeyboardEvent(
+          'keydown', {key: 'ArrowDown', bubbles: true, composed: true}));
+      await microtasksFinished();
+      assertEquals(0, matchesElement.selectedMatchIndex);
+      assertEquals('test', element.input);
+      assertEquals(0, resetCount);
+      assertEquals(initialMinHeight, wrapper.style.minHeight);
+      assertEquals(tallHeight, wrapper.clientHeight);
+
+      // 4. ArrowDown to suggestion with different text ('test2') -> height lock
+      // shrinks and does not bounce back.
+      input.dispatchEvent(new KeyboardEvent(
+          'keydown', {key: 'ArrowDown', bubbles: true, composed: true}));
+      await microtasksFinished();
+      assertEquals(1, matchesElement.selectedMatchIndex);
+      assertEquals('test2', element.input);
+      assertEquals(1, resetCount);
+
+      await pollUntil(
+          () => wrapper.style.minHeight !== '' &&
+              parseFloat(wrapper.style.minHeight) <
+                  parseFloat(initialMinHeight) &&
+              wrapper.clientHeight < tallHeight);
+
+      await new Promise<void>(
+          resolve => requestAnimationFrame(
+              () => requestAnimationFrame(() => resolve())));
+      assertTrue(
+          parseFloat(wrapper.style.minHeight) < parseFloat(initialMinHeight));
+      assertTrue(wrapper.clientHeight < tallHeight);
+    } finally {
+      inputComponent.resetHeight = originalResetHeight;
+      element.style.width = originalElementWidth;
+      document.body.style.width = originalBodyWidth;
+      document.body.style.height = originalBodyHeight;
+    }
+  });
 
   test('sets and deletes visual selection thumbnail', async () => {
     assertFalse(element.showFileCarousel);
@@ -1736,6 +1687,32 @@ suite('ComposeboxMixinTest', () => {
         1,
         metrics.count(metricName, ContextualSearchInputStateDeletionType.TOOL));
   });
+
+  test(
+      'handleToolClick does not toggle off when allowToggleOff is false',
+      async () => {
+        element.composeboxSource = 'TestEmbedder';
+        const inputState =
+            new MockInputState({activeTool: ToolMode.kDeepSearch});
+        element.onInputStateChanged(inputState);
+        await microtasksFinished();
+
+        element.handleToolClick(
+            ToolMode.kDeepSearch, /*allowToggleOff=*/ false);
+        await microtasksFinished();
+
+        assertEquals(1, searchboxHandler.getCallCount('setActiveToolMode'));
+        assertEquals(
+            ToolMode.kDeepSearch,
+            searchboxHandler.getArgs('setActiveToolMode')[0][0]);
+
+        const metricName =
+            'ContextualSearch.UserAction.InputStateDeletion.TestEmbedder';
+        assertEquals(
+            0,
+            metrics.count(
+                metricName, ContextualSearchInputStateDeletionType.TOOL));
+      });
 
   test('setDefaultModel uses activeModel from backend', async () => {
     const inputState = new MockInputState({
@@ -1879,7 +1856,7 @@ suite('ComposeboxMixinTest', () => {
         title: 'Title',
         url: 'http://test.com',
         delayUpload: false,
-        origin: TabUploadOrigin.OTHER,
+        origin: TabAttachmentSource.kOther,
       },
     }));
     assertEquals(1, metrics.count(metricName, ContextType.TAB));
@@ -1922,6 +1899,66 @@ suite('ComposeboxMixinTest', () => {
     assertEquals(null, element.suggestInventory);
   });
 
+  test('close-composebox marks closes that follow a submit', async () => {
+    type CloseEvent =
+        CustomEvent<{composeboxText: string, afterSubmit: boolean}>;
+
+    // A modifier submit closes the composebox right after submitting.
+    await simulateUserTextInput(element.getInputElement(), 'test');
+    let whenCloseComposebox =
+        eventToPromise<CloseEvent>('close-composebox', element);
+    element.submitQuery(
+        new KeyboardEvent('keydown', {key: 'Enter', ctrlKey: true}));
+    assertEquals(1, searchboxHandler.getCallCount('submitQuery'));
+    assertTrue((await whenCloseComposebox).detail.afterSubmit);
+
+    // So does a modifier click on a match.
+    whenCloseComposebox =
+        eventToPromise<CloseEvent>('close-composebox', element);
+    element.onMatchClick(new CustomEvent(
+        'match-click',
+        {detail: {ctrlKey: true, metaKey: false, shiftKey: false}}));
+    assertTrue((await whenCloseComposebox).detail.afterSubmit);
+
+    // Any other close is a dismissal.
+    whenCloseComposebox =
+        eventToPromise<CloseEvent>('close-composebox', element);
+    element.closeComposebox();
+    assertFalse((await whenCloseComposebox).detail.afterSubmit);
+  });
+
+  // <if expr="not is_android">
+  test('STS reset on dismiss', async () => {
+    // Enable STS.
+    element.smartTabSharingVisible = true;
+    element.smartTabSharingActive = true;
+    await element.updateComplete;
+
+    // Dismissing without submit should reset.
+    searchboxHandler.resetResolver('resetSmartTabSharing');
+    searchboxHandler.setResultFor(
+        'resetSmartTabSharing', Promise.resolve({active: false}));
+    element.closeComposebox(/*afterSubmit=*/ false);
+    // Cleared synchronously to prevent flashing.
+    assertFalse(element.smartTabSharingActive);
+
+    await searchboxHandler.whenCalled('resetSmartTabSharing');
+    await microtasksFinished();
+    assertFalse(element.smartTabSharingActive);
+
+    // Set it active again.
+    element.smartTabSharingActive = true;
+    await element.updateComplete;
+
+    // Submitting should NOT reset.
+    searchboxHandler.resetResolver('resetSmartTabSharing');
+    element.closeComposebox(/*afterSubmit=*/ true);
+    await microtasksFinished();
+    assertEquals(0, searchboxHandler.getCallCount('resetSmartTabSharing'));
+    assertTrue(element.smartTabSharingActive);
+  });
+  // </if>
+
   test(
       'esc clears input instead of closing when closeOnEscape is false and has content',
       async () => {
@@ -1952,6 +1989,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         }];
         element.hasCachedSubmittedTabsThisTurn = true;
@@ -2038,7 +2076,7 @@ suite('ComposeboxMixinTest', () => {
             title: 'Test',
             url: 'about:blank',  // Mojo converts obj to str.
             delayUpload: false,
-            origin: TabUploadOrigin.CONTEXT_MENU,
+            origin: TabAttachmentSource.kContextMenu,
           },
         }));
         assertTrue(keepMenuOpenCalled);
@@ -2070,6 +2108,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         }];
 
@@ -2097,6 +2136,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         }];
 
@@ -2113,6 +2153,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         }];
 
@@ -2146,6 +2187,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?1',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         }];
 
@@ -2158,6 +2200,29 @@ suite('ComposeboxMixinTest', () => {
             /* shouldBlockAutoSuggestedTabs= */ false);
         await microtasksFinished();
         assertEquals(0, element.aimThreadRestoredTabs.length);
+      });
+
+  test(
+      'clearInputsForNewThread resets restored tabs even with' +
+          ' contextManagementInComposeboxEnabled',
+      async () => {
+        element.contextManagementInComposeboxEnabled = true;
+        element.aimThreadRestoredTabs = [{
+          tabId: 1,
+          title: 'Restored Tab',
+          url: 'about:blank?1',
+          showInCurrentTabChip: false,
+          showInPreviousTabChip: false,
+          isLoading: false,
+          lastActive: {internalValue: 0n},
+        }];
+        element.hasCachedSubmittedTabsThisTurn = true;
+
+        element.clearInputsForNewThread();
+        await microtasksFinished();
+
+        assertEquals(0, element.aimThreadRestoredTabs.length);
+        assertFalse(element.hasCachedSubmittedTabsThisTurn);
       });
 
   test(
@@ -2181,7 +2246,7 @@ suite('ComposeboxMixinTest', () => {
             dummyToken2, 123, 'Tab Title',
             {url: 'about:blank'} as unknown as Url, {isDeletable: false});
 
-        element.files = new Map([
+        element.attachedContext = new Map([
           [dummyToken1, undeletableFile],
           [dummyToken2, tabFile],
         ]);
@@ -2192,8 +2257,8 @@ suite('ComposeboxMixinTest', () => {
         await microtasksFinished();
 
         // Verify: tab is deleted, but non-deletable file remains.
-        assertFalse(element.files.has(dummyToken2));
-        assertTrue(element.files.has(dummyToken1));
+        assertFalse(element.attachedContext.has(dummyToken2));
+        assertTrue(element.attachedContext.has(dummyToken1));
       });
 
   test(
@@ -2306,6 +2371,32 @@ suite('ComposeboxMixinTest', () => {
     await microtasksFinished();
     await element.updateComplete;
     assertEquals('action hint', element.inputPlaceholder);
+  });
+
+  test('handleFuseboxAction focuses the input for paste actions', async () => {
+    const inputComponent = element.getInputElement();
+    const isInputFocused = () =>
+        inputComponent.shadowRoot.activeElement === inputComponent.inputElement;
+
+    // Hint actions only update the placeholder, so they leave focus alone.
+    inputComponent.inputElement.blur();
+    await element.handleFuseboxAction(createFuseboxActionRequest(
+        {queryActionOverride: QueryActionOverride.kHint}, 'action hint'));
+    await microtasksFinished();
+    await element.updateComplete;
+    assertFalse(isInputFocused());
+
+    // Paste actions prefill the input, so it is focused to let the user edit
+    // the pasted text right away.
+    await element.handleFuseboxAction(createFuseboxActionRequest(
+        {queryActionOverride: QueryActionOverride.kPaste}, 'pasted text'));
+    await microtasksFinished();
+    await element.updateComplete;
+    assertTrue(isInputFocused());
+    assertEquals('pasted text', element.state!.text);
+    const inputElement = inputComponent.inputElement as HTMLTextAreaElement;
+    assertEquals(0, inputElement.selectionStart);
+    assertEquals('pasted text'.length, inputElement.selectionEnd);
   });
 
   test('handleFuseboxAction dispatches input sources', async () => {
@@ -2462,8 +2553,9 @@ suite('ComposeboxMixinTest', () => {
       });
 
   test(
-      'observeSmartTabSharingActive clears addedTabsIds and resets restored' +
-          ' tabs when smartTabSharingVisible is true and active becomes false',
+      'observeSmartTabSharingActive clears files, addedTabsIds and resets' +
+          ' restored tabs when smartTabSharingVisible is true and active' +
+          ' becomes false',
       async () => {
         const dummyToken = {
           high: 1n,
@@ -2475,11 +2567,16 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?10',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
+        const tabFile = ComposeboxFile.createFromTab(
+            dummyToken, 10, 'Restored Tab', 'about:blank?10');
 
+        element.contextManagementInComposeboxEnabled = false;
         element.smartTabSharingVisible = true;
         element.smartTabSharingActive = true;
+        element.files = new Map([[dummyToken, tabFile]]);
         element.addedTabsIds = new Map([[10, dummyToken]]);
         element.aimThreadRestoredTabs = [tab];
 
@@ -2488,8 +2585,46 @@ suite('ComposeboxMixinTest', () => {
         await microtasksFinished();
 
         assertFalse(element.smartTabSharingActive);
+        assertEquals(0, element.files.size);
         assertEquals(0, element.addedTabsIds.size);
         assertEquals(0, element.aimThreadRestoredTabs.length);
+      });
+
+  test(
+      'observeSmartTabSharingActive clears files, addedTabsIds and preserves' +
+          ' restored tabs when smartTabSharingVisible is true and active' +
+          ' becomes true',
+      async () => {
+        const dummyToken = {
+          high: 1n,
+          low: 1n,
+        } as unknown as UnguessableToken;
+        const tab = {
+          tabId: 10,
+          title: 'Restored Tab',
+          url: 'about:blank?10',
+          showInCurrentTabChip: false,
+          showInPreviousTabChip: false,
+          isLoading: false,
+          lastActive: {internalValue: 0n},
+        };
+        const tabFile = ComposeboxFile.createFromTab(
+            dummyToken, 10, 'Restored Tab', 'about:blank?10');
+
+        element.smartTabSharingVisible = true;
+        element.smartTabSharingActive = false;
+        element.files = new Map([[dummyToken, tabFile]]);
+        element.addedTabsIds = new Map([[10, dummyToken]]);
+        element.aimThreadRestoredTabs = [tab];
+
+        searchboxCallbackRouterRemote.updateSmartTabSharingActive(true);
+        await searchboxCallbackRouterRemote.$.flushForTesting();
+        await microtasksFinished();
+
+        assertTrue(element.smartTabSharingActive);
+        assertEquals(0, element.files.size);
+        assertEquals(0, element.addedTabsIds.size);
+        assertEquals(1, element.aimThreadRestoredTabs.length);
       });
 
   test(
@@ -2506,6 +2641,7 @@ suite('ComposeboxMixinTest', () => {
           url: 'about:blank?10',
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
+          isLoading: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -2556,6 +2692,38 @@ suite('ComposeboxMixinTest', () => {
       });
 
   test(
+      'observeSmartTabSharingActive preserves restored tabs when' +
+          ' contextManagementInComposeboxEnabled is true and composeboxSource' +
+          ' is not Omnibox',
+      async () => {
+        const dummyToken: UnguessableToken = 'dummy-token';
+        const tab = {
+          tabId: 10,
+          title: 'Restored Tab',
+          url: 'about:blank?10',
+          showInCurrentTabChip: false,
+          showInPreviousTabChip: false,
+          isLoading: false,
+          lastActive: {internalValue: 0n},
+        };
+
+        element.contextManagementInComposeboxEnabled = true;
+        element.composeboxSource = 'ContextualTasks';
+        element.smartTabSharingVisible = true;
+        element.smartTabSharingActive = true;
+        element.addedTabsIds = new Map([[10, dummyToken]]);
+        element.aimThreadRestoredTabs = [tab];
+
+        searchboxCallbackRouterRemote.updateSmartTabSharingActive(false);
+        await searchboxCallbackRouterRemote.$.flushForTesting();
+        await microtasksFinished();
+
+        assertFalse(element.smartTabSharingActive);
+        assertEquals(0, element.addedTabsIds.size);
+        assertEquals(1, element.aimThreadRestoredTabs.length);
+      });
+
+  test(
       'resetSession resets submitting, input, tool, and models', async () => {
         element.submitting = true;
         element.input = 'previous query';
@@ -2579,13 +2747,106 @@ suite('ComposeboxMixinTest', () => {
             searchboxHandler.getArgs('setActiveModelMode')[0]);
       });
 
+  // <if expr="not is_android">
+  test(
+      'resetSession resets smart tab sharing and adopts the browser value',
+      async () => {
+        element.smartTabSharingVisible = true;
+        element.smartTabSharingActive = true;
+        await microtasksFinished();
+        searchboxHandler.setResultMapperFor(
+            'resetSmartTabSharing', () => Promise.resolve({active: false}));
+
+        element.resetSession();
+        await searchboxHandler.whenCalled('resetSmartTabSharing');
+        await microtasksFinished();
+
+        assertEquals(1, searchboxHandler.getCallCount('resetSmartTabSharing'));
+        assertFalse(element.smartTabSharingActive);
+        // Not a user toggle.
+        assertEquals(
+            0, searchboxHandler.getCallCount('setSmartTabSharingActive'));
+      });
+
+  test(
+      'resetSession adopts the default-on value from the browser', async () => {
+        element.smartTabSharingVisible = true;
+        element.smartTabSharingActive = false;
+        await microtasksFinished();
+        searchboxHandler.setResultMapperFor(
+            'resetSmartTabSharing', () => Promise.resolve({active: true}));
+
+        element.resetSession();
+        await searchboxHandler.whenCalled('resetSmartTabSharing');
+        await microtasksFinished();
+
+        assertTrue(element.smartTabSharingActive);
+      });
+
+  test(
+      'resetSession does not reset smart tab sharing when not visible',
+      async () => {
+        element.smartTabSharingVisible = false;
+        await microtasksFinished();
+
+        element.resetSession();
+        await microtasksFinished();
+
+        assertEquals(0, searchboxHandler.getCallCount('resetSmartTabSharing'));
+      });
+
+  test('resetSession skips resetSmartTabSharing when submitting', async () => {
+    element.smartTabSharingVisible = true;
+    element.smartTabSharingActive = true;
+    element.submitting = true;
+    await microtasksFinished();
+
+    element.resetSession();
+    await microtasksFinished();
+
+    assertEquals(0, searchboxHandler.getCallCount('resetSmartTabSharing'));
+    assertFalse(element.submitting);
+  });
+
+  test(
+      'resetSession does not overwrite smart tab sharing updated before ' +
+          'reset resolves',
+      async () => {
+        element.smartTabSharingVisible = true;
+        element.smartTabSharingActive = true;
+        await microtasksFinished();
+
+        let resolveReset: (value: {active: boolean}) => void;
+        const resetPromise = new Promise<{active: boolean}>(resolve => {
+          resolveReset = resolve;
+        });
+        searchboxHandler.setResultMapperFor(
+            'resetSmartTabSharing', () => resetPromise);
+
+        element.resetSession();
+        await searchboxHandler.whenCalled('resetSmartTabSharing');
+
+        // An intervening update arrives before the reset resolves.
+        searchboxCallbackRouterRemote.updateSmartTabSharingActive(true);
+        await microtasksFinished();
+        assertTrue(element.smartTabSharingActive);
+
+        // Reset resolves with default-off.
+        resolveReset!({active: false});
+        await microtasksFinished();
+
+        // The stale reset reply is ignored.
+        assertTrue(element.smartTabSharingActive);
+      });
+  // </if>
+
   test(
       'hasTabs returns true when tab files are present and tabFaviconChipsToCoinsEnabled is true',
       () => {
         element.tabFaviconChipsToCoinsEnabled = true;
         const tabFile = ComposeboxFile.createFromTab(
             'tab-uuid', 1, 'Example Tab', 'https://example.com');
-        element.files = new Map([[tabFile.uuid, tabFile]]);
+        element.attachedContext = new Map([[tabFile.uuid, tabFile]]);
         assertTrue(element.hasTabs());
       });
 
@@ -2595,14 +2856,14 @@ suite('ComposeboxMixinTest', () => {
         element.tabFaviconChipsToCoinsEnabled = false;
         const tabFile = ComposeboxFile.createFromTab(
             'tab-uuid', 1, 'Example Tab', 'https://example.com');
-        element.files = new Map([[tabFile.uuid, tabFile]]);
+        element.attachedContext = new Map([[tabFile.uuid, tabFile]]);
         assertFalse(element.hasTabs());
       });
 
   test(
       'hasTabs returns true when smartTabSharingActive is true regardless of files',
       () => {
-        element.files = new Map();
+        element.attachedContext = new Map();
         element.smartTabSharingActive = true;
         assertTrue(element.hasTabs());
       });
@@ -2610,7 +2871,7 @@ suite('ComposeboxMixinTest', () => {
   test(
       'hasTabs returns false when no tab files and smartTabSharingActive is false',
       () => {
-        element.files = new Map();
+        element.attachedContext = new Map();
         element.smartTabSharingActive = false;
         assertFalse(element.hasTabs());
       });
@@ -2631,6 +2892,7 @@ suite('ComposeboxMixinTest', () => {
         assertFalse(emptyModel.hasTabs());
         assertFalse(emptyModel.hasNonTabFiles());
         assertFalse(emptyModel.hasFiles());
+        assertFalse(emptyModel.hasMultipleFiles());
         assertEquals(0, emptyModel.getNonTabFileNum());
         assertEquals(0, emptyModel.getSharedTabs().length);
         assertFalse(emptyModel.hasValidQuery());
@@ -2638,34 +2900,37 @@ suite('ComposeboxMixinTest', () => {
         assertFalse(emptyModel.canSubmit());
 
         const tabModel = new ComposeboxInputModel({
-          files: new Map([[tabFile.uuid, tabFile]]),
+          attachedContext: new Map([[tabFile.uuid, tabFile]]),
           tabFaviconChipsToCoinsEnabled: true,
         });
         assertTrue(tabModel.hasTabs());
         assertFalse(tabModel.hasNonTabFiles());
         assertTrue(tabModel.hasFiles());
+        assertFalse(tabModel.hasMultipleFiles());
         assertEquals(0, tabModel.getNonTabFileNum());
         assertEquals(1, tabModel.getSharedTabs().length);
         assertEquals('Tab 1', tabModel.getSharedTabs()[0]!.title);
         assertTrue(tabModel.canSubmit());
 
         const mixedModel = new ComposeboxInputModel({
-          files:
+          attachedContext:
               new Map([[tabFile.uuid, tabFile], [imageFile.uuid, imageFile]]),
           tabFaviconChipsToCoinsEnabled: true,
         });
         assertTrue(mixedModel.hasTabs());
         assertTrue(mixedModel.hasNonTabFiles());
         assertTrue(mixedModel.hasFiles());
+        assertTrue(mixedModel.hasMultipleFiles());
         assertEquals(1, mixedModel.getNonTabFileNum());
 
         const stsModel = new ComposeboxInputModel({
           smartTabSharingActive: true,
         });
         assertTrue(stsModel.hasTabs());
+        assertTrue(stsModel.hasMultipleFiles());
 
         const unimodalModel = new ComposeboxInputModel({
-          files: new Map([[unimodalFile.uuid, unimodalFile]]),
+          attachedContext: new Map([[unimodalFile.uuid, unimodalFile]]),
         });
         assertTrue(unimodalModel.hasUnimodalFile());
         assertTrue(unimodalModel.hasValidQuery());
@@ -2682,20 +2947,91 @@ suite('ComposeboxMixinTest', () => {
         assertTrue(toolModel.hasContent());
       });
 
+  test('ComposeboxInputModel derives isLoading from upload status', () => {
+    const pending = ComposeboxFile.createFromTab(
+        'pending-uuid', 1, 'Tab 1', 'https://a.com',
+        {status: ContextUploadStatus.kUploadStarted});
+    const done = ComposeboxFile.createFromTab(
+        'done-uuid', 2, 'Tab 2', 'https://b.com',
+        {status: ContextUploadStatus.kUploadSuccessful});
+    const model = new ComposeboxInputModel({
+      attachedContext: new Map([[pending.uuid, pending], [done.uuid, done]]),
+      tabFaviconChipsToCoinsEnabled: true,
+    });
+
+    const tabs = model.getSharedTabs();
+    assertTrue(tabs.find(t => t.tabId === 1)!.isLoading);
+    assertFalse(tabs.find(t => t.tabId === 2)!.isLoading);
+  });
+
+  test(
+      'shared tab stays loading until upload completes, in sync with submit',
+      async () => {
+        element.tabFaviconChipsToCoinsEnabled = true;
+        await simulateUserTextInput(element.getInputElement(), 'query');
+
+        const token = 'slow-tab-uuid';
+        const tabFile = ComposeboxFile.createFromTab(
+            token, 7, 'Slow Tab', 'https://slow.example.com',
+            {status: ContextUploadStatus.kUploadStarted});
+        element.attachedContext = new Map([[token, tabFile]]);
+        // The tab strip already reports the page as loaded, which is the
+        // scenario from b/568757957: the skeleton used to clear here even
+        // though the upload (and therefore submit) was still pending.
+        element.tabSuggestions = [{
+          tabId: 7,
+          title: 'Slow Tab',
+          url: 'https://slow.example.com',
+          showInCurrentTabChip: false,
+          showInPreviousTabChip: false,
+          isLoading: false,
+          lastActive: {internalValue: 0n},
+        }];
+        await microtasksFinished();
+
+        assertTrue(element.getSharedTabs()[0]!.isLoading);
+        assertFalse(element.canSubmitFilesAndInput);
+
+        element.updateFileStatus(
+            token, ContextUploadStatus.kUploadSuccessful, null);
+        await microtasksFinished();
+
+        assertFalse(element.getSharedTabs()[0]!.isLoading);
+        assertTrue(element.canSubmitFilesAndInput);
+      });
+
+  test(
+      'getSharedTabs marks a delayed tab loading until its snapshot is ready',
+      () => {
+        const pendingFile = ComposeboxFile.createFromTab(
+            'tab-uuid', 1, 'Tab 1', 'https://example.com',
+            {delayUpload: true, status: ContextUploadStatus.kUploadStarted});
+        element.attachedContext = new Map([[pendingFile.uuid, pendingFile]]);
+        assertTrue(element.getSharedTabs()[0]!.isLoading);
+
+        const readyFile = ComposeboxFile.createFromTab(
+            'tab-uuid', 1, 'Tab 1', 'https://example.com', {delayUpload: true});
+        element.attachedContext = new Map([[readyFile.uuid, readyFile]]);
+        assertFalse(element.getSharedTabs()[0]!.isLoading);
+      });
+
   test(
       'element inputModel reflects element state and delegates getters', () => {
         element.tabFaviconChipsToCoinsEnabled = true;
         element.smartTabSharingActive = false;
         element.input = '';
-        element.files = new Map();
+        element.attachedContext = new Map();
 
         assertFalse(element.hasTabs());
         assertFalse(element.hasNonTabFiles());
         assertFalse(element.hasFiles());
+        assertFalse(element.hasMultipleFiles());
         assertEquals(element.inputModel.hasTabs(), element.hasTabs());
         assertEquals(
             element.inputModel.hasNonTabFiles(), element.hasNonTabFiles());
         assertEquals(element.inputModel.hasFiles(), element.hasFiles());
+        assertEquals(
+            element.inputModel.hasMultipleFiles(), element.hasMultipleFiles());
         assertEquals(
             element.inputModel.canSubmit(), element.computeSubmitEnabled());
 
@@ -2703,18 +3039,313 @@ suite('ComposeboxMixinTest', () => {
             'tab-uuid', 10, 'Tab Title', 'https://example.com/tab');
         const imgFile = ComposeboxFile.createFromFile(
             'img-uuid', {name: 'photo.jpg', type: 'image/jpeg'});
-        element.files =
+        element.attachedContext =
             new Map([[tabFile.uuid, tabFile], [imgFile.uuid, imgFile]]);
 
         assertTrue(element.hasTabs());
         assertTrue(element.hasNonTabFiles());
         assertTrue(element.hasFiles());
+        assertTrue(element.hasMultipleFiles());
         assertTrue(element.computeSubmitEnabled());
         assertEquals(element.inputModel.hasTabs(), element.hasTabs());
         assertEquals(
             element.inputModel.hasNonTabFiles(), element.hasNonTabFiles());
         assertEquals(element.inputModel.hasFiles(), element.hasFiles());
         assertEquals(
+            element.inputModel.hasMultipleFiles(), element.hasMultipleFiles());
+        assertEquals(
             element.inputModel.canSubmit(), element.computeSubmitEnabled());
+      });
+
+  test('updateFileStatus does not return error for unattached token', () => {
+    const unattachedToken = 'unattached-token-123';
+    const result = element.updateFileStatus(
+        unattachedToken, ContextUploadStatus.kUploadExpired, null);
+    assertEquals(null, result.file);
+    assertEquals(null, result.errorMessage);
+
+    const validationResult = element.updateFileStatus(
+        unattachedToken, ContextUploadStatus.kValidationFailed,
+        ContextUploadErrorType.kBrowserProcessingFileTooLargeError);
+    assertEquals(null, validationResult.file);
+    assertEquals(null, validationResult.errorMessage);
+  });
+
+  test(
+      'onContextualInputStatusChanged does not set errorMessage for ' +
+          'unattached token',
+      () => {
+        const unattachedToken = 'unattached-token-123';
+        element.errorMessage = '';
+        element.onContextualInputStatusChanged(
+            unattachedToken, ContextUploadStatus.kUploadExpired, null);
+        assertEquals('', element.errorMessage);
+
+        element.onContextualInputStatusChanged(
+            unattachedToken, ContextUploadStatus.kValidationFailed,
+            ContextUploadErrorType.kBrowserProcessingFileTooLargeError);
+        assertEquals('', element.errorMessage);
+      });
+
+  test(
+      'onContextualInputStatusChanged sets errorMessage for attached token ' +
+          'on upload expired',
+      () => {
+        const attachedFile = ComposeboxFile.createFromFile(
+            'attached-token-123', {name: 'image.png', type: 'image/png'});
+        element.attachedContext = new Map([[attachedFile.uuid, attachedFile]]);
+
+        element.onContextualInputStatusChanged(
+            attachedFile.uuid, ContextUploadStatus.kUploadExpired, null);
+
+        assertTrue(element.errorMessage.length > 0);
+        assertFalse(element.attachedContext.has(attachedFile.uuid));
+      });
+
+  // ===========================================================================
+  // AIM button EXIT/SEND adapters
+  // ===========================================================================
+
+  // Attaches a single non-tab file with `status` and waits for the derived
+  // `fileUploadsComplete` / `canSubmitFilesAndInput` flags to settle.
+  async function attachFileWithStatus(
+      status: ContextUploadStatus, options?: Partial<ComposeboxFile>) {
+    const file = ComposeboxFile.createFromFile(
+        'aim-file-token', {name: 'file.pdf', type: 'application/pdf'}, status,
+        options);
+    element.attachedContext = new Map([[file.uuid, file]]);
+    await microtasksFinished();
+    return file;
+  }
+
+  // Shows a single match for `input` and selects it through the dropdown so
+  // `selectedMatchIndex` / `selectedMatch` are populated like in production.
+  async function showAndSelectMatch(
+      input: string, match: Partial<AutocompleteMatch> = {}) {
+    element.result = createAutocompleteResultForTesting({
+      input,
+      matches: [createAutocompleteMatch({fillIntoEdit: input, ...match})],
+    });
+    await microtasksFinished();
+    element.getDropdownElement().selectIndex(0);
+    await microtasksFinished();
+    assertEquals(0, element.selectedMatchIndex);
+  }
+
+  function createClickEvent(detail: KeyboardEvent|MouseEvent):
+      CustomEvent<KeyboardEvent|MouseEvent> {
+    return new CustomEvent('aim-button-click', {detail});
+  }
+
+  test(
+      'submitEnabled is true for a selected suggestion without text or files',
+      async () => {
+        // Empty state.
+        assertFalse(element.submitEnabled);
+
+        // Only a tool selected.
+        element.onInputStateChanged(
+            new MockInputState({activeTool: ToolMode.kDeepSearch}));
+        await element.updateComplete;
+        assertFalse(element.submitEnabled);
+        element.onInputStateChanged(
+            new MockInputState({activeTool: ToolMode.kUnspecified}));
+        await element.updateComplete;
+
+        // No text and no attachments, but a suggestion is selected.
+        element.richImageSuggestionsEnabled = true;
+        await showAndSelectMatch('', {
+          fillIntoEdit: 'image prompt',
+          suggestTemplate:
+              createSuggestTemplateInfo({style: SuggestStyle.kRichImage}),
+        });
+        assertEquals('', element.input);
+        assertFalse(element.hasFiles());
+        assertTrue(element.submitEnabled);
+      });
+
+  test(
+      'isAimButtonDisabled only gates SEND on submission validation',
+      async () => {
+        // EXIT mode is never disabled, even though nothing can be submitted.
+        assertFalse(element.submitEnabled);
+        assertFalse(element.canSubmitFilesAndInput);
+        assertFalse(element.isAimButtonDisabled());
+
+        // SEND mode with an attachment still uploading.
+        await attachFileWithStatus(
+            ContextUploadStatus.kNotUploaded, {supportsUnimodal: true});
+        assertTrue(element.submitEnabled);
+        assertFalse(element.fileUploadsComplete);
+        assertTrue(element.isAimButtonDisabled());
+
+        // The upload reaches a terminal status and the query is valid.
+        await attachFileWithStatus(
+            ContextUploadStatus.kUploadSuccessful, {supportsUnimodal: true});
+        assertTrue(element.fileUploadsComplete);
+        assertTrue(element.canSubmitFilesAndInput);
+        assertFalse(element.isAimButtonDisabled());
+
+        await attachFileWithStatus(ContextUploadStatus.kUploadSuccessful);
+        assertTrue(element.submitEnabled);
+        assertFalse(element.canSubmitFilesAndInput);
+        assertTrue(element.isAimButtonDisabled());
+      });
+
+  test('onAimButtonClick closes the composebox in EXIT mode', async () => {
+    let closeCount = 0;
+    element.addEventListener('close-composebox', () => ++closeCount);
+
+    // EXIT mode with only a tool active and no error: closes.
+    element.onInputStateChanged(
+        new MockInputState({activeTool: ToolMode.kDeepSearch}));
+    await element.updateComplete;
+    assertFalse(element.submitEnabled);
+    element.onAimButtonClick(createClickEvent(new MouseEvent('click')));
+    assertEquals(1, closeCount);
+    assertEquals(0, searchboxHandler.getCallCount('submitQuery'));
+    assertEquals(0, searchboxHandler.getCallCount('openAutocompleteMatch'));
+    assertEquals(
+        0, handler.getCallCount('notifyComposeboxQuerySubmittedWithContext'));
+  });
+
+  test(
+      'AIM button holds an inert SEND while a submission navigates',
+      async () => {
+        let closeCount = 0;
+        element.addEventListener('close-composebox', () => ++closeCount);
+        element.clearAllInputsWhenSubmittingQuery = true;
+        element.onInputStateChanged(
+            new MockInputState({activeTool: ToolMode.kDeepSearch}));
+        await element.updateComplete;
+        await simulateUserTextInput(element.getInputElement(), 'hello');
+        assertEquals(AimButtonMode.SEND, element.getAimButtonMode());
+
+        element.onAimButtonClick(createClickEvent(new MouseEvent('click')));
+        await microtasksFinished();
+        assertEquals(1, searchboxHandler.getCallCount('submitQuery'));
+        assertEquals(
+            1,
+            handler.getCallCount('notifyComposeboxQuerySubmittedWithContext'));
+        // The input is cleared, but the button neither falls back to EXIT
+        // nor gets disabled.
+        assertEquals('', element.input);
+        assertFalse(element.submitEnabled);
+        assertTrue(element.submitting);
+        assertEquals(AimButtonMode.SEND, element.getAimButtonMode());
+        assertFalse(element.isAimButtonDisabled());
+
+        // A second click neither closes the composebox nor resubmits.
+        element.onAimButtonClick(createClickEvent(new MouseEvent('click')));
+        assertEquals(0, closeCount);
+        assertEquals(1, searchboxHandler.getCallCount('submitQuery'));
+        assertEquals(
+            1,
+            handler.getCallCount('notifyComposeboxQuerySubmittedWithContext'));
+
+        // Re-engaging the input ends the held state and restores EXIT.
+        element.getInputElement().inputElement.dispatchEvent(
+            new KeyboardEvent('keydown', {bubbles: true, composed: true}));
+        await microtasksFinished();
+        assertFalse(element.submitting);
+        assertEquals(AimButtonMode.EXIT, element.getAimButtonMode());
+      });
+
+  test(
+      'onAimButtonClick opens the selected match with activation details',
+      async () => {
+        await simulateUserTextInput(element.getInputElement(), 'hello');
+        await showAndSelectMatch('hello');
+        assertTrue(element.canSubmitFilesAndInput);
+
+        element.onAimButtonClick(createClickEvent(new KeyboardEvent(
+            'keydown', {key: 'Enter', altKey: true, metaKey: true})));
+
+        assertEquals(1, searchboxHandler.getCallCount('openAutocompleteMatch'));
+        const args = searchboxHandler.getArgs('openAutocompleteMatch')[0];
+        assertEquals(0, args[1]);
+        assertEquals(0, args[4]);
+        assertDeepEquals(
+            {altKey: true, ctrlKey: false, metaKey: true, shiftKey: false},
+            args[5]);
+        assertTrue(args[6]);
+        // No files and no tool: the context notification is not sent.
+        assertEquals(
+            0,
+            handler.getCallCount('notifyComposeboxQuerySubmittedWithContext'));
+        assertEquals(0, searchboxHandler.getCallCount('submitQuery'));
+      });
+
+  test(
+      'onAimButtonClick submits with context notification for files',
+      async () => {
+        await simulateUserTextInput(element.getInputElement(), 'hello');
+        await attachFileWithStatus(ContextUploadStatus.kUploadSuccessful);
+        assertTrue(element.canSubmitFilesAndInput);
+
+        element.onAimButtonClick(createClickEvent(new MouseEvent(
+            'click', {button: 1, ctrlKey: true, shiftKey: true})));
+
+        assertEquals(
+            1,
+            handler.getCallCount('notifyComposeboxQuerySubmittedWithContext'));
+        assertEquals(1, searchboxHandler.getCallCount('submitQuery'));
+        assertDeepEquals(
+            ['hello', 1, false, true, false, true, false],
+            searchboxHandler.getArgs('submitQuery')[0]);
+      });
+
+  test('onAimButtonClick notifies context for an active tool', async () => {
+    await simulateUserTextInput(element.getInputElement(), 'hello');
+    element.onInputStateChanged(
+        new MockInputState({activeTool: ToolMode.kDeepSearch}));
+    await element.updateComplete;
+    assertTrue(element.canSubmitFilesAndInput);
+
+    element.onAimButtonClick(createClickEvent(new MouseEvent('click')));
+
+    assertEquals(
+        1, handler.getCallCount('notifyComposeboxQuerySubmittedWithContext'));
+    assertEquals(1, searchboxHandler.getCallCount('submitQuery'));
+  });
+
+  test(
+      'onAimButtonFocusin selects the first match only in SEND mode',
+      async () => {
+        // Matches are showing but only whitespace is typed: EXIT mode, no-op.
+        await simulateUserTextInput(element.getInputElement(), ' ');
+        element.result = {
+          input: '',
+          matches: [createAutocompleteMatch({fillIntoEdit: 'suggestion'})],
+        } as AutocompleteResult;
+        await microtasksFinished();
+        assertFalse(element.submitEnabled);
+        element.onAimButtonFocusin();
+        await microtasksFinished();
+        assertEquals(-1, element.selectedMatchIndex);
+
+        // SEND mode with text and no selection: selects the first match.
+        await simulateUserTextInput(element.getInputElement(), 'hello');
+        assertTrue(element.submitEnabled);
+        element.onAimButtonFocusin();
+        await microtasksFinished();
+        assertEquals(0, element.selectedMatchIndex);
+
+        // A match is already selected: the selection is left alone.
+        element.getDropdownElement().selectIndex(-1);
+        await microtasksFinished();
+        element.result = {
+          input: 'hello',
+          matches: [
+            createAutocompleteMatch({fillIntoEdit: 'hello'}),
+            createAutocompleteMatch({fillIntoEdit: 'hello world'}),
+          ],
+        } as AutocompleteResult;
+        await microtasksFinished();
+        element.getDropdownElement().selectIndex(1);
+        await microtasksFinished();
+        element.onAimButtonFocusin();
+        await microtasksFinished();
+        assertEquals(1, element.selectedMatchIndex);
       });
 });

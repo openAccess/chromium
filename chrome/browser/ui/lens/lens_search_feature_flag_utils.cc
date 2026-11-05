@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/lens/lens_search_feature_flag_utils.h"
 
 #include "base/feature_list.h"
+#include "base/i18n/language_tag.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/global_features.h"
@@ -17,7 +18,6 @@
 
 namespace {
 constexpr char kUnitedStatesCountryCode[] = "us";
-constexpr char kEnglishUSLocale[] = "en-US";
 
 bool IsEnUs() {
   // Safety check since this is a CP'd change.
@@ -39,7 +39,8 @@ bool IsEnUs() {
   return variations_service->GetStoredPermanentCountry() ==
              kUnitedStatesCountryCode &&
          features->application_locale_storage() &&
-         features->application_locale_storage()->Get() == kEnglishUSLocale;
+         features->application_locale_storage()->GetTag() ==
+             base::i18n::GetKnownLanguageTag("en-US");
 }
 
 }  // namespace
@@ -47,14 +48,11 @@ bool IsEnUs() {
 namespace lens {
 
 bool IsLensOverlayContextualSearchboxEnabled(Profile* profile) {
-  // If not AIM eligible or fusebox eligible, return false.
-  // TODO(crbug.com/545228855): Checking fusebox eligibility is a temporary
-  // measure. A new bit should be introduced to the AIM eligibility service for
-  // CSB independent of cobrowse and fusebox.
+  // If not AIM eligible or CSB eligible, return false.
   auto* aim_eligibility_service =
       AimEligibilityServiceFactory::GetForProfile(profile);
   if (!aim_eligibility_service || !aim_eligibility_service->IsAimEligible() ||
-      !aim_eligibility_service->IsFuseboxEligible()) {
+      !aim_eligibility_service->IsCsbEligible()) {
     return false;
   }
 
@@ -79,11 +77,8 @@ bool IsLensOverlayContextualSearchboxEnabled(Profile* profile) {
 bool IsAimM3Enabled(Profile* profile) {
   auto* aim_eligibility_service =
       AimEligibilityServiceFactory::GetForProfile(profile);
-  // TODO(crbug.com/545228855): Checking fusebox eligibility is a temporary
-  // measure. A new bit should be introduced to the AIM eligibility service for
-  // CSB independent of cobrowse and fusebox.
   if (!aim_eligibility_service || !aim_eligibility_service->IsAimEligible() ||
-      !aim_eligibility_service->IsFuseboxEligible()) {
+      !aim_eligibility_service->IsCsbEligible()) {
     return false;
   }
 

@@ -22,6 +22,7 @@
  */
 import type {Protocol} from 'devtools-protocol';
 
+import type {CdpClient} from '../../../cdp/CdpClient.js';
 import {
   type BrowsingContext,
   ChromiumBidi,
@@ -76,8 +77,10 @@ export class NetworkRequest {
   #redirectCount: number;
 
   #bodySize = 0;
-  // Tracked encoded data size while the response is loading.
-  #encodedResponseBodySize = 0;
+  // Total response bytes received, updated while the response is loading.
+  #responseBytesReceived = 0;
+  // Encoded body size from Network.loadingFinished, or null when unavailable.
+  #encodedResponseBodySize: number | null = null;
   // Tracked decoded data size while the response is loading.
   #decodedResponseBodySize = 0;
 
@@ -124,7 +127,10 @@ export class NetworkRequest {
     [ChromiumBidi.Network.EventNames.ResponseStarted]: false,
   };
 
-  waitNextPhase = new Deferred<void>();
+  waitNextPhase: Deferred<void> = new Deferred<void>();
+  // Resolved when the request is finished, used to await pending data
+  // collection.
+  #finished: Deferred<void> = new Deferred<void>();
 
   constructor(
     id: Network.Request,
@@ -140,6 +146,20 @@ export class NetworkRequest {
     this.#cdpTarget = cdpTarget;
     this.#redirectCount = redirectCount;
     this.#logger = logger;
+  }
+
+  // Tracks if the request has finished loading or failed, preventing premature
+  // disposal.
+  get isFinished(): boolean {
+    return this.#finished.isFinished;
+  }
+
+  get finishedPromise(): Promise<void> {
+    return this.#finished;
+  }
+
+  get hasResponse(): boolean {
+    return Boolean(this.#response.info || this.#response.paused);
   }
 
   get id(): string {
@@ -158,32 +178,37 @@ export class NetworkRequest {
   }
 
   get url(): string {
+    // Prefer browser-emitted Fetch events over renderer-emitted Network events
+    // (https://crbug.com/575090111).
     const fragment =
-      this.#request.info?.request.urlFragment ??
-      this.#request.paused?.request.urlFragment ??
-      '';
+      (
+        this.#response.paused ??
+        this.#request.auth ??
+        this.#request.paused ??
+        this.#request.info
+      )?.request.urlFragment ?? '';
     const url =
       this.#response.paused?.request.url ??
       this.#requestOverrides?.url ??
-      this.#response.info?.url ??
       this.#request.auth?.request.url ??
-      this.#request.info?.request.url ??
       this.#request.paused?.request.url ??
+      this.#response.info?.url ??
+      this.#request.info?.request.url ??
       NetworkRequest.unknownParameter;
 
     return `${url}${fragment}`;
   }
 
-  get redirectCount() {
+  get redirectCount(): number {
     return this.#redirectCount;
   }
 
-  get cdpTarget() {
+  get cdpTarget(): CdpTarget {
     return this.#cdpTarget;
   }
 
   /** CdpTarget can be changed when frame is moving out of process. */
-  updateCdpTarget(cdpTarget: CdpTarget) {
+  updateCdpTarget(cdpTarget: CdpTarget): void {
     if (cdpTarget !== this.#cdpTarget) {
       this.#logger?.(LogType.debugInfo)?.(
         `Request ${this.id} was moved from ${this.#cdpTarget.id} to ${cdpTarget.id}`,
@@ -192,7 +217,7 @@ export class NetworkRequest {
     }
   }
 
-  get cdpClient() {
+  get cdpClient(): CdpClient {
     return this.#cdpTarget.cdpClient;
   }
 
@@ -214,12 +239,14 @@ export class NetworkRequest {
   }
 
   get #method(): string | undefined {
+    // Prefer browser-emitted Fetch events over renderer-emitted Network events
+    // (https://crbug.com/575090111).
     return (
+      this.#response.paused?.request.method ??
       this.#requestOverrides?.method ??
-      this.#request.info?.request.method ??
-      this.#request.paused?.request.method ??
       this.#request.auth?.request.method ??
-      this.#response.paused?.request.method
+      this.#request.paused?.request.method ??
+      this.#request.info?.request.method
     );
   }
 
@@ -292,16 +319,18 @@ export class NetworkRequest {
       0;
   }
 
-  get bodySize() {
+  get bodySize(): number {
     return this.#bodySize;
   }
 
   get #context(): string | null {
+    // Prefer browser-emitted Fetch events over renderer-emitted Network events
+    // (https://crbug.com/575090111).
     const result =
       this.#response.paused?.frameId ??
-      this.#request.info?.frameId ??
+      this.#request.auth?.frameId ??
       this.#request.paused?.frameId ??
-      this.#request.auth?.frameId;
+      this.#request.info?.frameId;
 
     if (result !== undefined) {
       return result;
@@ -318,7 +347,7 @@ export class NetworkRequest {
         this.#request?.info?.initiator.requestId,
       );
       if (maybeInitiator !== undefined) {
-        return maybeInitiator.#request.info?.frameId ?? null;
+        return maybeInitiator.#context;
       }
     }
 
@@ -352,14 +381,18 @@ export class NetworkRequest {
         });
       }
     } else {
-      headers = [
-        ...bidiNetworkHeadersFromCdpNetworkHeaders(
-          this.#request.info?.request.headers,
-        ),
-        ...bidiNetworkHeadersFromCdpNetworkHeaders(
-          this.#request.extraInfo?.headers,
-        ),
-      ];
+      // Prefer browser-emitted Fetch request headers over renderer-emitted
+      // Network.requestWillBeSent headers when available
+      // (https://crbug.com/575090111).
+      const requestHeaders =
+        this.#response.paused?.request.headers ??
+        this.#request.auth?.request.headers ??
+        this.#request.paused?.request.headers ??
+        this.#request.info?.request.headers;
+      headers = bidiNetworkHeadersFromCdpNetworkHeaders({
+        ...requestHeaders,
+        ...this.#request.extraInfo?.headers,
+      });
     }
 
     return headers;
@@ -479,12 +512,15 @@ export class NetworkRequest {
     return this.#interceptsInPhase(phase).size > 0;
   }
 
-  handleRedirect(event: Protocol.Network.RequestWillBeSentEvent) {
+  handleRedirect(event: Protocol.Network.RequestWillBeSentEvent): void {
+    this.#finished.resolve();
     // TODO: use event.redirectResponse;
     // Temporary workaround to emit ResponseCompleted event for redirects
     this.#response.hasExtraInfo = false;
     this.#decodedResponseBodySize = 0;
+    // Redirect response bodies are never read, so their encoded size is 0.
     this.#encodedResponseBodySize = 0;
+    this.#responseBytesReceived = event.redirectResponse!.encodedDataLength;
     this.#response.info = event.redirectResponse!;
     this.#emitEventsIfReady({
       wasRedirected: true,
@@ -562,11 +598,22 @@ export class NetworkRequest {
       (loadingFinished || options.wasRedirected)
     ) {
       this.#emitEvent(this.#getResponseReceivedEvent.bind(this));
-      this.#networkStorage.disposeRequest(this.id);
+      if (!this.#response.loadingFailed) {
+        if (this.#response.loadingFinished) {
+          this.#networkStorage.collectIfNeeded(this, Network.DataType.Response);
+        }
+        // Resolve `#finished` after `collectIfNeeded` and `ResponseCompleted`
+        // so `getData` sees updated size-limit state and `disposeRequest` does
+        // not wipe state before `ResponseCompleted` is emitted.
+        this.#finished.resolve();
+        this.#networkStorage.disposeRequest(this.id);
+      }
     }
   }
 
-  onRequestWillBeSentEvent(event: Protocol.Network.RequestWillBeSentEvent) {
+  onRequestWillBeSentEvent(
+    event: Protocol.Network.RequestWillBeSentEvent,
+  ): void {
     this.#request.info = event;
     this.#updateBodySize();
     this.#networkStorage.collectIfNeeded(this, Network.DataType.Request);
@@ -575,7 +622,7 @@ export class NetworkRequest {
 
   onRequestWillBeSentExtraInfoEvent(
     event: Protocol.Network.RequestWillBeSentExtraInfoEvent,
-  ) {
+  ): void {
     this.#request.extraInfo = event;
     this.#updateBodySize();
     this.#emitEventsIfReady();
@@ -583,7 +630,7 @@ export class NetworkRequest {
 
   onResponseReceivedExtraInfoEvent(
     event: Protocol.Network.ResponseReceivedExtraInfoEvent,
-  ) {
+  ): void {
     if (
       event.statusCode >= 300 &&
       event.statusCode <= 399 &&
@@ -599,31 +646,31 @@ export class NetworkRequest {
     this.#emitEventsIfReady();
   }
 
-  onResponseReceivedEvent(event: Protocol.Network.ResponseReceivedEvent) {
+  onResponseReceivedEvent(event: Protocol.Network.ResponseReceivedEvent): void {
     this.#response.hasExtraInfo = event.hasExtraInfo;
     this.#response.info = event.response;
-    this.#encodedResponseBodySize = event.response.encodedDataLength;
-    this.#networkStorage.collectIfNeeded(this, Network.DataType.Response);
+    this.#responseBytesReceived = event.response.encodedDataLength;
     this.#emitEventsIfReady();
   }
 
-  onServedFromCache() {
+  onServedFromCache(): void {
     this.#servedFromCache = true;
     this.#emitEventsIfReady();
   }
 
-  onLoadingFinishedEvent(event: Protocol.Network.LoadingFinishedEvent) {
+  onLoadingFinishedEvent(event: Protocol.Network.LoadingFinishedEvent): void {
     this.#response.loadingFinished = event;
-    this.#encodedResponseBodySize = event.encodedDataLength;
+    this.#responseBytesReceived = event.encodedDataLength;
+    this.#encodedResponseBodySize = event.encodedBodyLength ?? null;
     this.#emitEventsIfReady();
   }
 
-  onDataReceivedEvent(event: Protocol.Network.DataReceivedEvent) {
+  onDataReceivedEvent(event: Protocol.Network.DataReceivedEvent): void {
     this.#decodedResponseBodySize += event.dataLength;
-    this.#encodedResponseBodySize += event.encodedDataLength;
+    this.#responseBytesReceived += event.encodedDataLength;
   }
 
-  onLoadingFailedEvent(event: Protocol.Network.LoadingFailedEvent) {
+  onLoadingFailedEvent(event: Protocol.Network.LoadingFailedEvent): void {
     this.#response.loadingFailed = event;
     this.#emitEventsIfReady();
 
@@ -636,11 +683,12 @@ export class NetworkRequest {
         },
       };
     });
-    this.disposeData();
+    this.#finished.resolve();
+    this.#networkStorage.disposeRequest(this.id);
   }
 
   /** @see https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-failRequest */
-  async failRequest(errorReason: Protocol.Network.ErrorReason) {
+  async failRequest(errorReason: Protocol.Network.ErrorReason): Promise<void> {
     assert(this.#fetchId, 'Network Interception not set-up.');
 
     await this.cdpClient.sendCommand('Fetch.failRequest', {
@@ -650,7 +698,7 @@ export class NetworkRequest {
     this.#interceptPhase = undefined;
   }
 
-  onRequestPaused(event: Protocol.Fetch.RequestPausedEvent) {
+  onRequestPaused(event: Protocol.Fetch.RequestPausedEvent): void {
     this.#fetchId = event.requestId;
 
     // CDP https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#event-requestPaused
@@ -666,7 +714,9 @@ export class NetworkRequest {
       ) {
         this.#interceptPhase = Network.InterceptPhase.ResponseStarted;
       } else {
-        void this.#continueResponse();
+        void this.#continueResponse().catch((error: unknown) => {
+          this.#logger?.(LogType.debugError)?.(error);
+        });
       }
     } else {
       this.#request.paused = event;
@@ -681,14 +731,16 @@ export class NetworkRequest {
       ) {
         this.#interceptPhase = Network.InterceptPhase.BeforeRequestSent;
       } else {
-        void this.#continueRequest();
+        void this.#continueRequest().catch((error: unknown) => {
+          this.#logger?.(LogType.debugError)?.(error);
+        });
       }
     }
 
     this.#emitEventsIfReady();
   }
 
-  onAuthRequired(event: Protocol.Fetch.AuthRequiredEvent) {
+  onAuthRequired(event: Protocol.Fetch.AuthRequiredEvent): void {
     this.#fetchId = event.requestId;
     this.#request.auth = event;
 
@@ -704,6 +756,8 @@ export class NetworkRequest {
     } else {
       void this.#continueWithAuth({
         response: 'Default',
+      }).catch((error: unknown) => {
+        this.#logger?.(LogType.debugError)?.(error);
       });
     }
 
@@ -721,7 +775,7 @@ export class NetworkRequest {
   /** @see https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-continueRequest */
   async continueRequest(
     overrides: Omit<Network.ContinueRequestParameters, 'request'> = {},
-  ) {
+  ): Promise<void> {
     const overrideHeaders = this.#getOverrideHeader(
       overrides.headers,
       overrides.cookies,
@@ -764,7 +818,7 @@ export class NetworkRequest {
   /** @see https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-continueResponse */
   async continueResponse(
     overrides: Omit<Network.ContinueResponseParameters, 'request'> = {},
-  ) {
+  ): Promise<void> {
     if (this.interceptPhase === Network.InterceptPhase.AuthRequired) {
       if (overrides.credentials) {
         await Promise.all([
@@ -827,7 +881,7 @@ export class NetworkRequest {
   /** @see https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-continueWithAuth */
   async continueWithAuth(
     authChallenge: Omit<Network.ContinueWithAuthParameters, 'request'>,
-  ) {
+  ): Promise<void> {
     let username: string | undefined;
     let password: string | undefined;
 
@@ -853,7 +907,7 @@ export class NetworkRequest {
   /** @see https://chromedevtools.github.io/devtools-protocol/tot/Fetch/#method-provideResponse */
   async provideResponse(
     overrides: Omit<Network.ProvideResponseParameters, 'request'>,
-  ) {
+  ): Promise<void> {
     assert(this.#fetchId, 'Network Interception not set-up.');
 
     // We need to pass through if the request is already in
@@ -864,12 +918,6 @@ export class NetworkRequest {
       return await this.#continueWithAuth({
         response: 'ProvideCredentials',
       });
-    }
-
-    // If we don't modify the response
-    // just continue the request
-    if (!overrides.body && !overrides.headers) {
-      return await this.#continueRequest();
     }
 
     const overrideHeaders = this.#getOverrideHeader(
@@ -891,11 +939,13 @@ export class NetworkRequest {
     this.#interceptPhase = undefined;
   }
 
-  dispose() {
+  dispose(): void {
+    // Unblock any pending `getData` calls when the target detaches.
+    this.#finished.resolve();
     this.waitNextPhase.reject(new Error('waitNextPhase disposed'));
   }
 
-  disposeData() {
+  disposeData(): void {
     this.#request = {};
     this.#response = {};
     this.#requestOverrides = undefined;
@@ -935,18 +985,69 @@ export class NetworkRequest {
 
     this.#emittedEvents[event.method] = true;
     if (this.#context) {
-      this.#eventManager.registerEvent(
-        Object.assign(event, {
-          type: 'event' as const,
-        }),
+      this.#eventManager.registerPromiseEvent(
+        this.#resolveEvent(event),
         this.#context,
+        event.method,
       );
     } else {
-      this.#eventManager.registerGlobalEvent(
-        Object.assign(event, {
-          type: 'event' as const,
-        }),
+      this.#eventManager.registerGlobalPromiseEvent(
+        this.#resolveEvent(event),
+        event.method,
+        this.#cdpTarget.userContext,
       );
+    }
+  }
+
+  /**
+   * Resolves a deferred event after asynchronously gathering any missing event
+   * data, while preserving the event's position in the outgoing queue.
+   */
+  async #resolveEvent(event: NetworkEvent) {
+    if (!this.#request.extraInfo && this.#request.paused) {
+      // Workaround for CDP omitting `Network.requestWillBeSentExtraInfo` (which
+      // provides `associatedCookies`) while a request is paused in `Fetch`.
+      event.params.request.cookies = await this.#fetchPausedRequestCookies(
+        this.#request.paused,
+      );
+    }
+    return {
+      kind: 'success' as const,
+      value: Object.assign(event, {
+        type: 'event' as const,
+      }),
+    };
+  }
+
+  /** Queries CDP for cookies matching the paused request's `Cookie` header. */
+  async #fetchPausedRequestCookies(
+    event: Protocol.Fetch.RequestPausedEvent,
+  ): Promise<Network.Cookie[]> {
+    const cookieHeader = Object.entries(event.request.headers).find(
+      ([name]) => name.toLowerCase() === 'cookie',
+    )?.[1];
+    if (!cookieHeader) {
+      return [];
+    }
+
+    const cookiePairs = new Set(
+      cookieHeader.split(';').map((pair) => pair.trim()),
+    );
+    try {
+      const result = await this.cdpClient.sendCommand('Network.getCookies', {
+        urls: [event.request.url],
+      });
+      return (result?.cookies ?? [])
+        .filter((cookie) =>
+          cookiePairs.has(
+            cookie.name === ''
+              ? cookie.value
+              : `${cookie.name}=${cookie.value}`,
+          ),
+        )
+        .map((cookie) => cdpToBiDiCookie(cookie));
+    } catch {
+      return [];
     }
   }
 
@@ -976,6 +1077,7 @@ export class NetworkRequest {
       request: this.#getRequestData(),
       // Timestamp should be in milliseconds, while CDP provides it in seconds.
       timestamp: Math.round(getTiming(this.#request.info?.wallTime) * 1000),
+      userContext: this.#cdpTarget.userContext,
       // Contains isBlocked and intercepts
       ...interceptProps,
     };
@@ -1012,8 +1114,7 @@ export class NetworkRequest {
         this.#servedFromCache,
       headers: this.#responseOverrides?.headers ?? headers,
       mimeType: this.#response.info?.mimeType || '',
-      // TODO: this should be the size for the entire HTTP response.
-      bytesReceived: this.encodedResponseBodySize,
+      bytesReceived: this.responseBytesReceived,
       headersSize: computeHeadersSize(headers),
       bodySize: this.encodedResponseBodySize,
       content: {
@@ -1028,11 +1129,15 @@ export class NetworkRequest {
     } as Network.ResponseData;
   }
 
-  get encodedResponseBodySize() {
+  get encodedResponseBodySize(): number | null {
     return this.#encodedResponseBodySize;
   }
 
-  get decodedResponseBodySize() {
+  get responseBytesReceived(): number {
+    return this.#responseBytesReceived;
+  }
+
+  get decodedResponseBodySize(): number {
     return this.#decodedResponseBodySize;
   }
 

@@ -49,11 +49,12 @@
 #include "components/viz/test/test_context_provider.h"
 #include "components/viz/test/test_shared_image_interface_provider.h"
 #include "components/viz/test/viz_test_suite.h"
+#include "gpu/config/gpu_finch_features.h"
 #include "services/viz/privileged/mojom/compositing/frame_sink_manager.mojom.h"
 #include "services/viz/public/mojom/compositing/compositor_frame_sink.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/khronos/GLES2/gl2.h"
+#include "third_party/angle/include/GLES2/gl2.h"
 #include "ui/gfx/geometry/rrect_f.h"
 
 using testing::_;
@@ -126,6 +127,7 @@ class MockFrameSinkManagerClient : public mojom::FrameSinkManagerClient {
 
   // mojom::FrameSinkManagerClient:
   MOCK_METHOD1(OnFirstSurfaceActivation, void(const SurfaceInfo&));
+  MOCK_METHOD1(OnFirstNonEmptyFrame, void(const FrameSinkId&));
   MOCK_METHOD3(OnFrameTokenChanged,
                void(const FrameSinkId&, uint32_t, base::TimeTicks));
   void OnAggregatedHitTestRegionListUpdated(
@@ -251,8 +253,11 @@ class CompositorFrameSinkSupportTestBase : public testing::Test {
     ASSERT_EQ(expected_returned_ids.size(), actual_resources.size());
     for (size_t i = 0; i < expected_returned_ids.size(); ++i) {
       const auto& resource = actual_resources[i];
-      EXPECT_TRUE(resource.shared_image_export_result.IsEqualForTesting(
-          expected_sync_token));
+      if (!base::FeatureList::IsEnabled(
+              features::kUseAutomaticSyncTokenManagement)) {
+        EXPECT_TRUE(resource.shared_image_export_result.IsEqualForTesting(
+            expected_sync_token));
+      }
       EXPECT_EQ(expected_returned_ids[i], resource.id);
       EXPECT_EQ(expected_returned_counts[i], resource.count);
     }
@@ -1871,6 +1876,113 @@ TEST_P(CompositorFrameSinkSupportTest, RedirectionToInvalidFlags) {
   manager_->InvalidateFrameSinkId(frame_sink_id, {});
 }
 
+// Accept non-child regions whose frame sink id matches that of the submitted
+// surface.
+TEST_P(CompositorFrameSinkSupportTest, NonChildRegionWithSubmitterFrameSinkId) {
+  const FrameSinkId submitter_frame_sink_ids[] = {
+      kArbitraryFrameSinkId,
+      FrameSinkId(0, kArbitraryFrameSinkId.sink_id()),
+  };
+  TestLookupDelegate lookup_delegate;
+  lookup_delegate.SetSurface(kArbitraryFrameSinkId, local_surface_id_);
+
+  for (const auto& frame_sink_id : submitter_frame_sink_ids) {
+    SCOPED_TRACE(frame_sink_id.ToString());
+    HitTestRegionList hit_test_region_list;
+    hit_test_region_list.flags = HitTestRegionFlags::kHitTestMine;
+    hit_test_region_list.bounds = kDefaultOutputRect;
+
+    HitTestRegion region;
+    region.frame_sink_id = frame_sink_id;
+    region.rect = gfx::RRectF(gfx::RectF(kDefaultOutputRect));
+    hit_test_region_list.regions.push_back(std::move(region));
+
+    ASSERT_EQ(SubmitResult::ACCEPTED,
+              support_->MaybeSubmitCompositorFrame(
+                  local_surface_id_, MakeDefaultCompositorFrame(),
+                  std::move(hit_test_region_list), 0));
+    const auto* active_list =
+        manager_->hit_test_manager()->GetActiveHitTestRegionList(
+            &lookup_delegate, kArbitraryFrameSinkId);
+    ASSERT_TRUE(active_list);
+    ASSERT_EQ(1u, active_list->regions.size());
+    EXPECT_EQ(kArbitraryFrameSinkId, active_list->regions[0].frame_sink_id);
+    EXPECT_EQ(0u, active_list->regions[0].flags);
+  }
+}
+
+// Reject non-child regions whose frame sink id does not match that of the
+// submitted surface.
+TEST_P(CompositorFrameSinkSupportTest, NonChildRegionWithForeignFrameSinkId) {
+  const FrameSinkId foreign_frame_sink_ids[] = {
+      kAnotherArbitraryFrameSinkId,
+      FrameSinkId(kArbitraryFrameSinkId.client_id(), 2),
+      FrameSinkId(0, 2),
+  };
+  manager_->RegisterFrameSinkHierarchy(kArbitraryFrameSinkId,
+                                       kAnotherArbitraryFrameSinkId);
+  TestLookupDelegate lookup_delegate;
+  lookup_delegate.SetSurface(kArbitraryFrameSinkId, local_surface_id_);
+
+  for (const auto& frame_sink_id : foreign_frame_sink_ids) {
+    SCOPED_TRACE(frame_sink_id.ToString());
+    HitTestRegionList hit_test_region_list;
+    hit_test_region_list.flags = HitTestRegionFlags::kHitTestMine;
+    hit_test_region_list.bounds = kDefaultOutputRect;
+
+    HitTestRegion region;
+    region.frame_sink_id = frame_sink_id;
+    region.rect = gfx::RRectF(gfx::RectF(kDefaultOutputRect));
+    hit_test_region_list.regions.push_back(std::move(region));
+
+    EXPECT_EQ(SubmitResult::HIT_TEST_DATA_INVALID,
+              support_->MaybeSubmitCompositorFrame(
+                  local_surface_id_, MakeDefaultCompositorFrame(),
+                  std::move(hit_test_region_list), 0));
+    EXPECT_EQ(
+        0u, manager_->hit_test_manager()->submit_hit_test_region_list_index());
+    EXPECT_FALSE(manager_->hit_test_manager()->GetActiveHitTestRegionList(
+        &lookup_delegate, kArbitraryFrameSinkId));
+  }
+  manager_->UnregisterFrameSinkHierarchy(kArbitraryFrameSinkId,
+                                         kAnotherArbitraryFrameSinkId);
+}
+
+// A child region's parentage cannot be verified until aggregation so it is
+// accepted regardless of the frame sink id.
+TEST_P(CompositorFrameSinkSupportTest, ChildRegionAccepted) {
+  manager_->RegisterFrameSinkHierarchy(kArbitraryFrameSinkId,
+                                       kAnotherArbitraryFrameSinkId);
+  TestLookupDelegate lookup_delegate;
+  lookup_delegate.SetSurface(kArbitraryFrameSinkId, local_surface_id_);
+
+  HitTestRegionList hit_test_region_list;
+  hit_test_region_list.flags = HitTestRegionFlags::kHitTestMine;
+  hit_test_region_list.bounds = kDefaultOutputRect;
+
+  HitTestRegion region;
+  region.frame_sink_id = kAnotherArbitraryFrameSinkId;
+  region.flags = HitTestRegionFlags::kHitTestChildSurface;
+  region.rect = gfx::RRectF(gfx::RectF(kDefaultOutputRect));
+  hit_test_region_list.regions.push_back(std::move(region));
+
+  ASSERT_EQ(SubmitResult::ACCEPTED,
+            support_->MaybeSubmitCompositorFrame(
+                local_surface_id_, MakeDefaultCompositorFrame(),
+                std::move(hit_test_region_list), 0));
+  const auto* active_list =
+      manager_->hit_test_manager()->GetActiveHitTestRegionList(
+          &lookup_delegate, kArbitraryFrameSinkId);
+  ASSERT_TRUE(active_list);
+  ASSERT_EQ(1u, active_list->regions.size());
+  EXPECT_EQ(kAnotherArbitraryFrameSinkId,
+            active_list->regions[0].frame_sink_id);
+  EXPECT_EQ(HitTestRegionFlags::kHitTestChildSurface,
+            active_list->regions[0].flags);
+  manager_->UnregisterFrameSinkHierarchy(kArbitraryFrameSinkId,
+                                         kAnotherArbitraryFrameSinkId);
+}
+
 // Verifies that an unresponsive client has OnBeginFrame() messages throttled
 // and then stopped until it becomes responsive again.
 TEST_P(CompositorFrameSinkSupportTest, ThrottleUnresponsiveClient) {
@@ -2395,6 +2507,109 @@ TEST_P(CompositorFrameSinkSupportTest,
   // With the feature enabled, the orphaned reserved resource ID was
   // unreferenced cleanly and no IDs are leaked. Without the feature/fix, this
   // assertion fails because the ID is leaked (size == 1).
+  EXPECT_EQ(manager_->reserved_resource_id_tracker()
+                ->id_ref_counts_size_for_testing(),
+            0u);
+}
+
+TEST_P(CompositorFrameSinkSupportTest,
+       ViewTransitionMultipleFramesDrawnAfterReleaseDoesNotCrash) {
+  blink::ViewTransitionToken token;
+  gfx::Rect rect(kDefaultSize);
+  gfx::Transform transform;
+
+  auto root_render_pass = CompositorRenderPass::Create();
+  CompositorRenderPassId root_id{1};
+  root_render_pass->SetNew(root_id, rect, rect, transform);
+  SharedQuadState* shared_quad_state =
+      root_render_pass->CreateAndAppendSharedQuadState();
+  ViewTransitionElementResourceId resource_id(token, 1, false);
+
+  auto* vt_quad =
+      root_render_pass->CreateAndAppendDrawQuad<SharedElementDrawQuad>();
+  vt_quad->SetNew(shared_quad_state, rect, rect, resource_id);
+
+  auto orphan_render_pass = CompositorRenderPass::Create();
+  CompositorRenderPassId orphan_id{2};
+  orphan_render_pass->SetNew(orphan_id, rect, rect, transform);
+  shared_quad_state = orphan_render_pass->CreateAndAppendSharedQuadState();
+  auto* solid_quad =
+      orphan_render_pass->CreateAndAppendDrawQuad<SolidColorDrawQuad>();
+  solid_quad->SetNew(shared_quad_state, rect, rect, SkColors::kBlue, false);
+
+  CompositorRenderPassList render_passes;
+  render_passes.push_back(std::move(orphan_render_pass));
+  render_passes.push_back(std::move(root_render_pass));
+  CompositorFrame frame = MakeCompositorFrame(std::move(render_passes));
+  frame.metadata.has_shared_element_resources = true;
+
+  CompositorFrameTransitionDirective::SharedElement shared_element;
+  shared_element.render_pass_id = orphan_id;
+  shared_element.view_transition_element_resource_id = resource_id;
+
+  frame.metadata.transition_directives.push_back(
+      CompositorFrameTransitionDirective::CreateSave(
+          token, /*maybe_cross_frame_sink=*/false, /*sequence_id=*/1,
+          {shared_element}, {}, false));
+
+  auto result = support_->MaybeSubmitCompositorFrame(
+      local_surface_id_, std::move(frame), std::nullopt, 0);
+  EXPECT_EQ(SubmitResult::ACCEPTED, result);
+
+  Surface* surface = support_->GetLastCreatedSurfaceForTesting();
+  ASSERT_TRUE(surface);
+  ResourceId reserved_id = surface->GetActiveFrame().resource_list.back().id;
+  EXPECT_GE(reserved_id, kVizReservedRangeStartId);
+
+  // Frame 1 is drawn by the display compositor while the transition is active.
+  RefCurrentFrameResources();
+
+  // Submit Frame 2 also referencing the shared element.
+  {
+    auto root_pass2 = CompositorRenderPass::Create();
+    root_pass2->SetNew(root_id, rect, rect, transform);
+    auto* sqs2 = root_pass2->CreateAndAppendSharedQuadState();
+    auto* vt_quad2 =
+        root_pass2->CreateAndAppendDrawQuad<SharedElementDrawQuad>();
+    vt_quad2->SetNew(sqs2, rect, rect, resource_id);
+
+    CompositorRenderPassList render_passes2;
+    render_passes2.push_back(std::move(root_pass2));
+    CompositorFrame frame2 = MakeCompositorFrame(std::move(render_passes2));
+    frame2.metadata.has_shared_element_resources = true;
+
+    auto result2 = support_->MaybeSubmitCompositorFrame(
+        local_surface_id_, std::move(frame2), std::nullopt, 0);
+    EXPECT_EQ(SubmitResult::ACCEPTED, result2);
+  }
+
+  // Release the transition before Frame 2 is drawn by the display compositor.
+  auto release_directive = CompositorFrameTransitionDirective::CreateRelease(
+      token, /*maybe_cross_frame_sink=*/false, /*sequence_id=*/2,
+      /*delay_layer_tree_view_deletion=*/false);
+  ProcessCompositorFrameTransitionDirective(support_.get(), release_directive,
+                                            surface);
+  EXPECT_FALSE(SupportHasSurfaceAnimationManager(support_.get()));
+
+  // Frame 2 is drawn by the display compositor after SAM was destroyed.
+  // CompositorFrameSinkSupport::RefResources must still ref the orphaned
+  // reserved resource in ReservedResourceIdTracker so it matches the display
+  // compositor's imported count of 2.
+  RefCurrentFrameResources();
+
+  // Submit Frame 3 (normal frame) to displace Frame 2.
+  auto result3 = support_->MaybeSubmitCompositorFrame(
+      local_surface_id_, MakeDefaultCompositorFrame(), std::nullopt, 0);
+  EXPECT_EQ(SubmitResult::ACCEPTED, result3);
+
+  // Now the display compositor finishes with the reserved resource and returns
+  // it with count = 2 (imported_count).
+  ResourceId ids[] = {reserved_id};
+  int counts[] = {2};
+  UnrefResources(ids, counts);
+
+  // The orphaned reserved resource ID was unreferenced cleanly with matching
+  // ref counts and no IDs are leaked.
   EXPECT_EQ(manager_->reserved_resource_id_tracker()
                 ->id_ref_counts_size_for_testing(),
             0u);

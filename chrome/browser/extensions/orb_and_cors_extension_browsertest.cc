@@ -10,6 +10,7 @@
 #include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
@@ -17,10 +18,10 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/test_future.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
-#include "chrome/browser/extensions/api/permissions/permissions_api.h"
 #include "chrome/browser/extensions/api/tabs/tabs_api.h"
 #include "chrome/browser/extensions/chrome_content_browser_client_extensions_part.h"
 #include "chrome/browser/extensions/extension_action_runner.h"
@@ -48,13 +49,16 @@
 #include "content/public/browser/service_worker_context.h"
 #include "content/public/browser/service_worker_context_observer.h"
 #include "content/public/browser/shared_cors_origin_access_list.h"
+#include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/child_process_id_util.h"
 #include "content/public/common/content_client.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/resource_load_observer.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/url_loader_interceptor.h"
+#include "extensions/browser/api/permissions/permissions_api.h"
 #include "extensions/browser/api_test_utils.h"
 #include "extensions/browser/browsertest_util.h"
 #include "extensions/browser/disable_reason.h"
@@ -73,6 +77,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/expectation_handler.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "services/network/public/cpp/cors/origin_access_list.h"
 #include "services/network/public/cpp/features.h"
@@ -81,6 +86,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -2136,7 +2143,8 @@ IN_PROC_BROWSER_TEST_F(OrbAndCorsExtensionBrowserTest,
     NavigateParams nav_params(
         browser(), web_ui_url,
         ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED));
-    nav_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    nav_params.disposition =
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     content::WebContentsAddedObserver new_web_contents_observer;
     Navigate(&nav_params);
 
@@ -2321,8 +2329,9 @@ using OriginHeaderExtensionBrowserTest = OrbAndCorsExtensionBrowserTest;
 IN_PROC_BROWSER_TEST_F(OriginHeaderExtensionBrowserTest,
                        OriginHeaderInCrossOriginGetRequest) {
   const char kResourcePath[] = "/simulated-resource";
-  net::test_server::ControllableHttpResponse http_request(
-      embedded_test_server(), kResourcePath);
+  net::test_server::ExpectationHandler handler(embedded_test_server());
+  base::test::TestFuture<net::test_server::HttpRequest> request_future;
+  handler.OnRequest(kResourcePath).RespondWith().SetValue(request_future);
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(InstallExtension());
 
@@ -2351,9 +2360,9 @@ IN_PROC_BROWSER_TEST_F(OriginHeaderExtensionBrowserTest,
       content::JsReplace(kScriptTemplate, cross_site_resource));
 
   // Extract the Origin header.
-  http_request.WaitForRequest();
+  const net::test_server::HttpRequest& captured_request = request_future.Get();
   std::string actual_origin_header = "<none>";
-  const auto& headers_map = http_request.http_request()->headers;
+  const auto& headers_map = captured_request.headers;
   auto it = headers_map.find("Origin");
   if (it != headers_map.end()) {
     actual_origin_header = it->second;
@@ -3054,7 +3063,7 @@ IN_PROC_BROWSER_TEST_F(OrbAndCorsExtensionBrowserTest,
   ActiveTabPermissionGranter* granter =
       ActiveTabPermissionGranter::FromWebContents(active_web_contents());
   ASSERT_TRUE(granter);
-  granter->GrantIfRequested(extension());
+  granter->GrantIfRequested(extension(), base::DoNothing());
   waiter.WaitForActiveTabPermissionGranted(extension()->id());
 
   // 3. Navigate a separate, new tab to an extension origin.
@@ -3064,7 +3073,8 @@ IN_PROC_BROWSER_TEST_F(OrbAndCorsExtensionBrowserTest,
     NavigateParams nav_params(
         browser(), extension_resource,
         ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED));
-    nav_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    nav_params.disposition =
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     content::WebContentsAddedObserver new_web_contents_observer;
     Navigate(&nav_params);
     extension_web_contents = new_web_contents_observer.GetWebContents();
@@ -3106,6 +3116,75 @@ IN_PROC_BROWSER_TEST_F(OrbAndCorsExtensionBrowserTest,
 
   // 6b. Verify that ORB blocked the last response.
   VerifyFetchWasBlockedByOrb(other_url);
+}
+
+// Tests that process-isolated sandboxed frames do not receive extension factory
+// privileges (defense-in-depth against a compromised renderer).
+IN_PROC_BROWSER_TEST_F(OrbAndCorsExtensionBrowserTest,
+                       FromProcessIsolatedSandboxedPage_FactoryParams) {
+  static constexpr char kManifest[] =
+      R"({
+           "name": "Sandboxed Page Factory Params Test",
+           "version": "1.0",
+           "manifest_version": 3,
+           "sandbox": {
+             "pages": [ "sandboxed.html" ]
+           }
+         })";
+  dir_.WriteManifest(kManifest);
+  dir_.WriteFile(FILE_PATH_LITERAL("sandboxed.html"), "<html>Sandboxed</html>");
+  dir_.WriteFile(FILE_PATH_LITERAL("page.html"),
+                 "<html><iframe src=\"sandboxed.html\"></iframe></html>");
+  const Extension* extension = LoadExtension(dir_.UnpackedPath());
+  ASSERT_TRUE(extension);
+
+  ASSERT_TRUE(NavigateToURL(active_web_contents(),
+                            extension->GetResourceURL("page.html")));
+  content::RenderFrameHost* main_frame =
+      active_web_contents()->GetPrimaryMainFrame();
+  content::RenderFrameHost* sandboxed_frame =
+      content::ChildFrameAt(main_frame, 0);
+  ASSERT_TRUE(sandboxed_frame);
+
+  // Test factory parameters for the main extension frame.
+  network::mojom::URLLoaderFactoryParamsPtr main_frame_params =
+      network::mojom::URLLoaderFactoryParams::New();
+  main_frame_params->process_id =
+      content::ToOriginatingProcessId(main_frame->GetProcess()->GetID());
+  main_frame_params->is_trusted = false;
+  main_frame_params->unsafe_non_webby_initiator = false;
+
+  extensions::URLLoaderFactoryManager::OverrideURLLoaderFactoryParams(
+      active_web_contents()->GetBrowserContext(),
+      main_frame->GetLastCommittedOrigin(),
+      /*is_for_isolated_world=*/false,
+      /*is_for_service_worker=*/false, main_frame_params.get());
+
+  EXPECT_TRUE(main_frame_params->unsafe_non_webby_initiator);
+
+  // Test factory parameters for the manifest-sandboxed subframe.
+  network::mojom::URLLoaderFactoryParamsPtr sandboxed_params =
+      network::mojom::URLLoaderFactoryParams::New();
+  sandboxed_params->process_id =
+      content::ToOriginatingProcessId(sandboxed_frame->GetProcess()->GetID());
+  sandboxed_params->is_trusted = false;
+  sandboxed_params->unsafe_non_webby_initiator = false;
+
+  extensions::URLLoaderFactoryManager::OverrideURLLoaderFactoryParams(
+      active_web_contents()->GetBrowserContext(),
+      sandboxed_frame->GetLastCommittedOrigin(),
+      /*is_for_isolated_world=*/false,
+      /*is_for_service_worker=*/false, sandboxed_params.get());
+
+  // Under Site Isolation, verify the frame lacks extension factory privileges.
+  // Without isolation, the frame shares the process and inherits privileges.
+  if (content::SiteIsolationPolicy::AreIsolatedSandboxedIframesEnabled()) {
+    EXPECT_NE(main_frame->GetProcess(), sandboxed_frame->GetProcess());
+    EXPECT_FALSE(sandboxed_params->unsafe_non_webby_initiator);
+  } else {
+    EXPECT_EQ(main_frame->GetProcess(), sandboxed_frame->GetProcess());
+    EXPECT_TRUE(sandboxed_params->unsafe_non_webby_initiator);
+  }
 }
 
 }  // namespace extensions

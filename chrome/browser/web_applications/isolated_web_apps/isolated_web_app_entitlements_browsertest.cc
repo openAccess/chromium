@@ -8,14 +8,15 @@
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
 #include "chrome/browser/web_applications/isolated_web_apps/test/iwa_runtime_data_provider_mixin.h"
-#include "components/webapps/isolated_web_apps/public/iwa_entitlements.h"
-#include "components/webapps/isolated_web_apps/public/iwa_runtime_data_provider.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_entitlements.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/test_support/fake_iwa_runtime_data_provider.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "third_party/blink/public/public_buildflags.h"
 
 namespace web_app {
 
@@ -30,7 +31,7 @@ constexpr std::string_view kEntitledFeatures[] = {
     "direct-sockets", "direct-sockets-multicast",
     "sub-apps",       "usb-unrestricted",
     "web-printing",   "controlled-frame",
-#if defined(ENABLE_SMART_CARD)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     "smart-card",
 #endif
 };
@@ -42,7 +43,7 @@ constexpr PermissionsPolicyFeature kEntitledPermissions[] = {
     PermissionsPolicyFeature::kUsbUnrestricted,
     PermissionsPolicyFeature::kWebPrinting,
     PermissionsPolicyFeature::kControlledFrame,
-#if defined(ENABLE_SMART_CARD)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     PermissionsPolicyFeature::kSmartCard,
 #endif
 };
@@ -54,7 +55,7 @@ constexpr IwaEntitlement kEntitlements[] = {
     IwaEntitlementProto::UNRESTRICTED_WEBUSB,
     IwaEntitlementProto::WEB_PRINTING,
     IwaEntitlementProto::CONTROLLED_FRAME,
-#if defined(ENABLE_SMART_CARD)
+#if BUILDFLAG(ENABLE_SMART_CARD)
     IwaEntitlementProto::SMART_CARD,
 #endif
 };
@@ -69,7 +70,7 @@ class IsolatedWebAppEntitlementsBrowserTest
         {
             blink::features::kSubApps,
             blink::features::kWebPrinting,
-#if defined(ENABLE_SMART_CARD)
+#if BUILDFLAG(ENABLE_SMART_CARD)
             blink::features::kSmartCard,
 #endif
         },

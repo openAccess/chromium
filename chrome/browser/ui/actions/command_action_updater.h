@@ -15,7 +15,7 @@
 #include "chrome/browser/command_updater.h"
 #include "ui/actions/action_id.h"
 #include "ui/actions/actions.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 class CommandObserver;
 
@@ -26,7 +26,7 @@ class ActionItem;
 namespace chrome {
 
 // Manages action mappings and command state tracking for experimental Action
-// API. Only used when features::kUseActionsForBrowserCommands is enabled.
+// API. Only used when features::ShouldUseActionsForBrowserCommands() is true.
 class CommandActionUpdater : public CommandUpdater {
  public:
   explicit CommandActionUpdater(actions::ActionItem* root_action_item);
@@ -42,19 +42,19 @@ class CommandActionUpdater : public CommandUpdater {
   void DisableAllCommands() override;
   std::vector<int> GetAllIds() const override;
 
-  std::optional<actions::ActionId> GetActionId(int id) const;
+  static std::optional<actions::ActionId> GetActionId(int id);
 
  private:
   bool ExecuteCommandWithDispositionAndContext(
       int id,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       std::optional<actions::ActionInvocationContext> context,
       base::TimeTicks time_stamp) override;
 
   actions::ActionItem* FindAction(actions::ActionId action_id) const;
   void ExecuteAction(
       actions::ActionId action_id,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       std::optional<actions::ActionInvocationContext> context = std::nullopt);
   void OnActionChanged(int id, CommandObserver* observer);
 

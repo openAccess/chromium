@@ -15,7 +15,13 @@
 namespace {
 
 void SetLastUsageTimeToNow() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
+  // Proactive defense to ensure calls do not crash in early browser
+  // startup, late browser shutdown after `BrowserProcessImpl` teardown, or in
+  // unit tests without `TestingBrowserProcess` / `ScopedTestingLocalState`.
+  if (!g_browser_process || !g_browser_process->local_state()) {
+    return;
+  }
   g_browser_process->local_state()->SetTime(
       prefs::kScreenAILastUsedTimePrefName, base::Time::Now());
 }
@@ -25,12 +31,7 @@ void SetLastUsageTimeToNow() {
 namespace screen_ai {
 
 // static
-std::unique_ptr<ScreenAIInstallState> ScreenAIInstallState::Create() {
-  return std::make_unique<ScreenAIDownloaderChromeOS>();
-}
-
-// static
-ScreenAIInstallState* ScreenAIInstallState::CreateForTesting() {
+ScreenAIInstallState* ScreenAIInstallState::Create() {
   static base::NoDestructor<ScreenAIDownloaderChromeOS> install_state;
   return install_state.get();
 }
@@ -39,7 +40,7 @@ ScreenAIDownloaderChromeOS::ScreenAIDownloaderChromeOS() = default;
 ScreenAIDownloaderChromeOS::~ScreenAIDownloaderChromeOS() = default;
 
 void ScreenAIDownloaderChromeOS::DownloadComponentInternal() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
   screen_ai::dlc_installer::Install();
 }
 

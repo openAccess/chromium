@@ -8,7 +8,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
@@ -23,7 +22,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.ActivityState;
 import org.chromium.base.UnownedUserDataHost;
@@ -37,7 +36,6 @@ import java.lang.ref.WeakReference;
 
 /** Unit tests for {@link TabBottomSheetUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabBottomSheetUtilsUnitTest {
     private static final float EPSILON = 0.001f;
 
@@ -90,6 +88,56 @@ public class TabBottomSheetUtilsUnitTest {
     @EnableFeatures(ChromeFeatureList.TAB_BOTTOM_SHEET_RESIZE_WEBVIEW)
     public void testCanResizeWebView_BottomSheetDisabled() {
         assertFalse(TabBottomSheetUtils.canResizeWebView());
+    }
+
+    @Test
+    public void testGetResizingPlaceholderType_Default() {
+        assertEquals(
+                TabBottomSheetUtils.PLACEHOLDER_LEGACY,
+                TabBottomSheetUtils.getResizingPlaceholderType());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.TAB_BOTTOM_SHEET,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_RESIZE_WEBVIEW
+    })
+    public void testGetResizingPlaceholderType_ResizeEnabledWithoutParam_ReturnsLegacy() {
+        assertEquals(
+                TabBottomSheetUtils.PLACEHOLDER_LEGACY,
+                TabBottomSheetUtils.getResizingPlaceholderType());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.TAB_BOTTOM_SHEET,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_RESIZE_WEBVIEW + ":resizing_placeholder/skeleton"
+    })
+    public void testGetResizingPlaceholderType_Skeleton() {
+        assertEquals(
+                TabBottomSheetUtils.PLACEHOLDER_SKELETON,
+                TabBottomSheetUtils.getResizingPlaceholderType());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.TAB_BOTTOM_SHEET,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_RESIZE_WEBVIEW + ":resizing_placeholder/legacy"
+    })
+    public void testGetResizingPlaceholderType_Legacy() {
+        assertEquals(
+                TabBottomSheetUtils.PLACEHOLDER_LEGACY,
+                TabBottomSheetUtils.getResizingPlaceholderType());
+    }
+
+    @Test
+    @EnableFeatures(
+            ChromeFeatureList.TAB_BOTTOM_SHEET_RESIZE_WEBVIEW + ":resizing_placeholder/skeleton")
+    @DisableFeatures(ChromeFeatureList.TAB_BOTTOM_SHEET)
+    public void testGetResizingPlaceholderType_Disabled_ReturnsLegacy() {
+        assertEquals(
+                TabBottomSheetUtils.PLACEHOLDER_LEGACY,
+                TabBottomSheetUtils.getResizingPlaceholderType());
     }
 
     @Test
@@ -194,20 +242,17 @@ public class TabBottomSheetUtilsUnitTest {
         when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(null));
         assertTrue(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
 
-        Activity activity = mock(Activity.class);
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
         when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(activity));
-
-        when(activity.isFinishing()).thenReturn(true);
-        when(activity.isDestroyed()).thenReturn(false);
-        assertTrue(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
-
-        when(activity.isFinishing()).thenReturn(false);
-        when(activity.isDestroyed()).thenReturn(true);
-        assertTrue(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
-
-        when(activity.isFinishing()).thenReturn(false);
-        when(activity.isDestroyed()).thenReturn(false);
         assertFalse(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
+
+        activity.finish();
+        assertTrue(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
+
+        Activity destroyedActivity =
+                Robolectric.buildActivity(Activity.class).create().destroy().get();
+        when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(destroyedActivity));
+        assertTrue(TabBottomSheetUtils.isActivityFinishingOrDestroyed(mWindowAndroid));
     }
 
     @Test

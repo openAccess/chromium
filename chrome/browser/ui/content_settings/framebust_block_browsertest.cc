@@ -17,17 +17,16 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/blocked_content/framebust_block_tab_helper.h"
 #include "chrome/browser/ui/browser_content_setting_bubble_model_delegate.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model.h"
 #include "chrome/browser/ui/content_settings/content_setting_image_model.h"
 #include "chrome/browser/ui/content_settings/fake_owner.h"
+#include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/content_setting_bubble_contents.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
-#include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -41,7 +40,6 @@
 #include "content/public/common/url_constants.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
@@ -50,6 +48,8 @@
 #include "ui/events/base_event_utils.h"
 #include "ui/events/event.h"
 #include "ui/events/test/test_event.h"
+#include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/view_utils.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -180,25 +180,42 @@ IN_PROC_BROWSER_TEST_F(FramebustBlockBrowserTest, ModelAllowsRedirection) {
   auto* helper = GetFramebustTabHelper();
   for (const GURL& url : blocked_urls) {
     helper->AddBlockedUrl(url, url::Origin::Create(url),
+                          GetWebContents()
+                              ->GetPrimaryMainFrame()
+                              ->GetCurrentInitiatorNavigationState(),
                           base::BindOnce(&FramebustBlockBrowserTest::OnClick,
                                          base::Unretained(this)));
   }
   EXPECT_TRUE(helper->HasBlockedUrls());
 
-  LocationBarView* location_bar_view =
-      BrowserView::GetBrowserViewForBrowser(browser())->GetLocationBarView();
-  ContentSettingImageView& image_view =
-      **std::ranges::find(location_bar_view->GetContentSettingViewsForTest(),
-                          ContentSettingImageModel::ImageType::kFramebust,
-                          &ContentSettingImageView::GetType);
+  LocationBarTesting* location_bar_testing =
+      BrowserWindow::FromBrowser(browser())
+          ->GetLocationBar()
+          ->GetLocationBarForTesting();
+  ASSERT_TRUE(location_bar_testing);
 
-  EXPECT_TRUE(image_view.GetVisible());
-  EXPECT_FALSE(image_view.IsBubbleShowing());
+  const size_t framebust_index =
+      ContentSettingImageModel::GetContentSettingImageModelIndexForTesting(
+          ContentSettingImageModel::ImageType::kFramebust);
 
-  image_view.ShowBubble(ui::test::TestEvent());
+  EXPECT_TRUE(
+      location_bar_testing->IsContentSettingImageVisible(framebust_index));
+  EXPECT_FALSE(
+      location_bar_testing->IsContentSettingBubbleShowing(framebust_index));
+
+  EXPECT_TRUE(
+      location_bar_testing->TestContentSettingImagePressed(framebust_index));
+  EXPECT_TRUE(
+      location_bar_testing->IsContentSettingBubbleShowing(framebust_index));
 
   EXPECT_FALSE(clicked_index_.has_value());
   EXPECT_FALSE(clicked_url_.has_value());
+
+  auto* bubble_view = views::AsViewClass<ContentSettingBubbleContents>(
+      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
+          ContentSettingBubbleContents::kMainElementId,
+          BrowserElements::From(browser())->GetContext()));
+  ASSERT_TRUE(bubble_view);
 
   // Simulate clicking on the second blocked URL.
   content::TestNavigationObserver observer(GetWebContents());
@@ -206,9 +223,7 @@ IN_PROC_BROWSER_TEST_F(FramebustBlockBrowserTest, ModelAllowsRedirection) {
                              gfx::Point(), ui::EventTimeForNow(),
                              ui::EF_LEFT_MOUSE_BUTTON,
                              ui::EF_LEFT_MOUSE_BUTTON);
-  static_cast<ContentSettingBubbleContents*>(
-      image_view.GetBubbleViewForTesting())
-      ->LinkClicked(/*row=*/1, click_event);
+  bubble_view->LinkClicked(/*row=*/1, click_event);
   observer.Wait();
 
   EXPECT_TRUE(clicked_index_.has_value());
@@ -271,6 +286,7 @@ IN_PROC_BROWSER_TEST_F(FramebustBlockBrowserTest, AllowRadioButtonSelected) {
   // Signal that a blocked redirection happened.
   auto* helper = GetFramebustTabHelper();
   helper->AddBlockedUrl(url, url::Origin::Create(url),
+                        /*initiator_navigation_state=*/nullptr,
                         base::BindOnce(&FramebustBlockBrowserTest::OnClick,
                                        base::Unretained(this)));
   EXPECT_TRUE(helper->HasBlockedUrls());
@@ -303,6 +319,7 @@ IN_PROC_BROWSER_TEST_F(FramebustBlockBrowserTest, DisallowRadioButtonSelected) {
   // Signal that a blocked redirection happened.
   auto* helper = GetFramebustTabHelper();
   helper->AddBlockedUrl(url, url::Origin::Create(url),
+                        /*initiator_navigation_state=*/nullptr,
                         base::BindOnce(&FramebustBlockBrowserTest::OnClick,
                                        base::Unretained(this)));
   EXPECT_TRUE(helper->HasBlockedUrls());
@@ -346,6 +363,7 @@ IN_PROC_BROWSER_TEST_F(FramebustBlockBrowserTest, MAYBE_ManageButtonClicked) {
   // Signal that a blocked redirection happened.
   auto* helper = GetFramebustTabHelper();
   helper->AddBlockedUrl(url, url::Origin::Create(url),
+                        /*initiator_navigation_state=*/nullptr,
                         base::BindOnce(&FramebustBlockBrowserTest::OnClick,
                                        base::Unretained(this)));
   EXPECT_TRUE(helper->HasBlockedUrls());
@@ -503,33 +521,4 @@ IN_PROC_BROWSER_TEST_F(FramebustBlockPrerenderTest,
   // Activate a prerendered page.
   prerender_helper_.NavigatePrimaryPage(prerender_url);
   EXPECT_FALSE(GetFramebustTabHelper()->HasBlockedUrls());
-}
-
-class FramebustBlockFencedFrameTest : public FramebustBlockBrowserTest {
- public:
-  FramebustBlockFencedFrameTest() = default;
-  ~FramebustBlockFencedFrameTest() override = default;
-
-  content::RenderFrameHost* primary_main_frame_host() {
-    return GetWebContents()->GetPrimaryMainFrame();
-  }
-
- protected:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(FramebustBlockFencedFrameTest,
-                       FramebustBlocked_FencedFrameNavigation) {
-  EXPECT_TRUE(ExecuteAndCheckBlockedRedirection());
-
-  // Create a fenced frame in the primary main page and ensure that the
-  // framebust UI persists on fenced frame navigation.
-  const GURL fenced_frame_url =
-      embedded_test_server()->GetURL("/fenced_frames/title1.html");
-  content::RenderFrameHost* fenced_frame_rfh =
-      fenced_frame_helper_.CreateFencedFrame(primary_main_frame_host(),
-                                             fenced_frame_url);
-  ASSERT_NE(nullptr, fenced_frame_rfh);
-
-  EXPECT_TRUE(GetFramebustTabHelper()->HasBlockedUrls());
 }

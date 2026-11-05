@@ -7,6 +7,7 @@
 #include "third_party/blink/renderer/core/style/scoped_css_name.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/wtf/hash_functions.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
@@ -16,6 +17,7 @@ AnchorSpecifierValue* AnchorSpecifierValue::Default() {
       Persistent<AnchorSpecifierValue>, instance,
       {MakeGarbageCollected<AnchorSpecifierValue>(
           base::PassKey<AnchorSpecifierValue>(), Type::kDefault)});
+  CHECK(IsMainThread());
   return instance;
 }
 
@@ -32,8 +34,8 @@ bool AnchorSpecifierValue::operator==(const AnchorSpecifierValue& other) const {
   return type_ == other.type_ && base::ValuesEquivalent(name_, other.name_);
 }
 
-unsigned AnchorSpecifierValue::GetHash() const {
-  unsigned hash = 0;
+uint32_t AnchorSpecifierValue::GetHash() const {
+  uint32_t hash = 0;
   AddIntToHash(hash, HashInt(type_));
   AddIntToHash(hash, name_ ? name_->GetHash() : 0);
   return hash;

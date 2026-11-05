@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -20,22 +21,28 @@
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/file_manager/volume_manager_factory.h"
 #include "chrome/browser/ash/fileapi/file_system_backend.h"
-#include "chrome/common/chrome_features.h"
+#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/disks/fake_disk_mount_manager.h"
+#include "components/account_id/account_id.h"
 #include "components/prefs/pref_service.h"
+#include "components/user_manager/scoped_user_manager.h"
 #include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/test_event_router.h"
 #include "extensions/common/extension.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "storage/browser/file_system/external_mount_points.h"
 #include "storage/browser/quota/quota_manager_proxy.h"
 #include "storage/browser/test/test_file_system_context.h"
+#include "storage/common/file_system/file_system_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "ui/display/test/test_screen.h"
+#include "ui/message_center/message_center.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -90,6 +97,7 @@ using ::base::test::RunClosure;
 using ::testing::_;
 using ::testing::AllOf;
 using ::testing::Field;
+using ::testing::Property;
 
 // Observes the `BroadcastEvent` operation that is emitted by the event router.
 // The mock methods are used to assert expectations on the return results.
@@ -125,10 +133,16 @@ class FileManagerEventRouterTest : public testing::Test {
       delete;
 
   void SetUp() override {
+    message_center::MessageCenter::Initialize();
     ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
 
+    const AccountId account_id =
+        AccountId::FromUserEmailGaiaId("test@example.com", GaiaId("12345"));
+    fake_user_manager_->AddUser(account_id);
+    fake_user_manager_->LoginUser(account_id);
     profile_ =
         std::make_unique<TestingProfile>(base::FilePath(temp_dir_.GetPath()));
+    ash::AnnotatedAccountId::Set(profile_.get(), account_id);
     file_system_context_ = storage::CreateFileSystemContextForTesting(
         nullptr, temp_dir_.GetPath());
 
@@ -155,6 +169,11 @@ class FileManagerEventRouterTest : public testing::Test {
             file_manager::util::GetDownloadsMountPointName(profile_.get())));
   }
 
+  void TearDown() override {
+    profile_.reset();
+    message_center::MessageCenter::Shutdown();
+  }
+
   const io_task::EntryStatus CreateSuccessfulEntryStatusForFileName(
       const std::string& file_name) {
     const base::FilePath file_path = temp_dir_.GetPath().Append(file_name);
@@ -168,6 +187,8 @@ class FileManagerEventRouterTest : public testing::Test {
   }
 
   content::BrowserTaskEnvironment task_environment_;
+  user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
+      fake_user_manager_{std::make_unique<ash::FakeChromeUserManager>()};
   display::test::TestScreen test_screen_{/*create_display=*/true,
                                          /*register_screen=*/true};
   base::ScopedTempDir temp_dir_;
@@ -315,15 +336,17 @@ TEST_F(FileManagerEventRouterTest, OnIOTaskStatusForTrash) {
   status.outputs = std::move(output_entries);
 
   base::RunLoop run_loop;
-  EXPECT_CALL(
-      observer,
-      OnBroadcastEvent(Field(
-          &extensions::Event::event_args,
-          AllOf(ExpectEventArgString(0u, "fileFullPath", "/bar.txt"),
-                ExpectEventArgString(0u, "fileSystemName", "Downloads"),
-                ExpectEventArgString(
-                    0u, "fileSystemRoot",
-                    "filesystem:chrome-extension://abc/external/Downloads/")))))
+  const std::string mount_name =
+      file_manager::util::GetDownloadsMountPointName(profile_.get());
+  EXPECT_CALL(observer,
+              OnBroadcastEvent(Property(
+                  &extensions::Event::args,
+                  AllOf(ExpectEventArgString(0u, "fileFullPath", "/bar.txt"),
+                        ExpectEventArgString(0u, "fileSystemName", mount_name),
+                        ExpectEventArgString(
+                            0u, "fileSystemRoot",
+                            storage::GetExternalFileSystemRootURIString(
+                                GURL("chrome-extension://abc"), mount_name))))))
       .WillOnce(RunClosure(run_loop.QuitClosure()));
 
   event_router->OnIOTaskStatus(status);
@@ -357,9 +380,9 @@ TEST_F(FileManagerEventRouterTest, OnIOTaskStatusForCopyPause) {
   // Expect the event to have dlp as policy pause params.
   base::RunLoop run_loop;
   EXPECT_CALL(observer,
-              OnBroadcastEvent(Field(&extensions::Event::event_args,
-                                     AllOf(ExpectEventArgPauseParams(
-                                         "dlp", 2, "foo.txt", false)))))
+              OnBroadcastEvent(Property(&extensions::Event::args,
+                                        AllOf(ExpectEventArgPauseParams(
+                                            "dlp", 2, "foo.txt", false)))))
       .WillOnce(RunClosure(run_loop.QuitClosure()));
 
   event_router->OnIOTaskStatus(status);
@@ -393,8 +416,8 @@ TEST_F(FileManagerEventRouterTest, OnIOTaskStatusForPolicyError) {
   // Expect the event to have dlp as policy error.
   base::RunLoop run_loop;
   EXPECT_CALL(observer,
-              OnBroadcastEvent(Field(
-                  &extensions::Event::event_args,
+              OnBroadcastEvent(Property(
+                  &extensions::Event::args,
                   AllOf(ExpectEventArgPolicyError("dlp", 1, "foo.txt", true)))))
       .WillOnce(RunClosure(run_loop.QuitClosure()));
 
@@ -405,7 +428,7 @@ TEST_F(FileManagerEventRouterTest, OnIOTaskStatusForPolicyError) {
 class FileManagerEventRouterLocalFilesTest : public FileManagerEventRouterTest {
  public:
   FileManagerEventRouterLocalFilesTest() {
-    scoped_feature_list_.InitAndEnableFeature(features::kSkyVault);
+    scoped_feature_list_.InitAndEnableFeature(ash::features::kSkyVault);
   }
   ~FileManagerEventRouterLocalFilesTest() override = default;
 
@@ -431,8 +454,8 @@ TEST_F(FileManagerEventRouterLocalFilesTest, OnLocalUserFilesPolicyChanged) {
   base::ListValue event_args =
       extensions::api::file_manager_private::OnPreferencesChanged::Create();
   base::RunLoop run_loop;
-  EXPECT_CALL(observer, OnBroadcastEvent(Field(&extensions::Event::event_args,
-                                               AllOf(ExpectNoArgs()))))
+  EXPECT_CALL(observer, OnBroadcastEvent(Property(&extensions::Event::args,
+                                                  AllOf(ExpectNoArgs()))))
       .WillOnce(RunClosure(run_loop.QuitClosure()));
   SetLocalUserFilesPolicy(/*allowed=*/false);
   run_loop.Run();

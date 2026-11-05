@@ -4,6 +4,16 @@
 
 // Defines APIs that are specific to Starboard 14. GetStarboardApiWrapper() is
 // the public API; everything else is an implementation detail.
+// Note: We explicitly define the preprocessor macro SB_API_VERSION=14 before
+// including Starboard headers because Starboard's vendor C headers (e.g.,
+// <starboard/player.h>, <starboard/drm.h>) use `#if SB_API_VERSION >= 15`
+// preprocessor checks to select struct layouts and function signatures (such as
+// SbPlayerSeek2 vs SbPlayerSeek). A C++ constexpr cannot control preprocessor
+// branching inside external vendor headers.
+#if !defined(SB_API_VERSION) || SB_API_VERSION != 14
+#error "starboard_api_wrapper_14.cc must be compiled with SB_API_VERSION=14"
+#endif
+
 #include <starboard/drm.h>
 #include <starboard/media.h>
 #include <starboard/player.h>
@@ -28,14 +38,17 @@ constexpr size_t kCustomPrimaryMatrixSize =
     std::size(StarboardColorMetadata{}.custom_primary_matrix);
 
 // A concrete implementation of StarboardApiWrapper for Starboard version 14.
-class StarboardApiWrapper14 : public StarboardApiWrapperBase {
+class StarboardApiWrapper14 : public sb14::StarboardApiWrapperBase {
  public:
   StarboardApiWrapper14() = default;
   ~StarboardApiWrapper14() override = default;
 
   // StarboardApiWrapper impl:
   void SeekTo(void* player, int64_t time, int seek_ticket) override {
-    SbPlayerSeek2(static_cast<SbPlayer>(player), time, seek_ticket);
+    if (auto seek_fn = sb14::ResolveStarboardSymbol<decltype(&SbPlayerSeek2)>(
+            "SbPlayerSeek2")) {
+      seek_fn(static_cast<SbPlayer>(player), time, seek_ticket);
+    }
   }
 
   void GetPlayerInfo(void* player, StarboardPlayerInfo* player_info) override {
@@ -45,7 +58,11 @@ class StarboardApiWrapper14 : public StarboardApiWrapperBase {
       return;
     }
     CHECK(player_info);
-    SbPlayerGetInfo2(static_cast<SbPlayer>(player), &sb_player_info);
+    if (auto info_fn =
+            sb14::ResolveStarboardSymbol<decltype(&SbPlayerGetInfo2)>(
+                "SbPlayerGetInfo2")) {
+      info_fn(static_cast<SbPlayer>(player), &sb_player_info);
+    }
 
     player_info->current_media_timestamp_micros =
         sb_player_info.current_media_timestamp;
@@ -154,19 +171,22 @@ class StarboardApiWrapper14 : public StarboardApiWrapperBase {
     return out_audio_info;
   }
 
-  void CallWriteSamples(
-      SbPlayer player,
-      SbMediaType sample_type,
-      base::span<const SbPlayerSampleInfo> sample_infos) override {
-    SbPlayerWriteSample2(player, sample_type, sample_infos.data(),
-                         sample_infos.size());
+  void CallWriteSamples(SbPlayer player,
+                        SbMediaType sample_type,
+                        const SbPlayerSampleInfo* sample_infos,
+                        int sample_infos_count) override {
+    if (auto write_fn =
+            sb14::ResolveStarboardSymbol<decltype(&SbPlayerWriteSample2)>(
+                "SbPlayerWriteSample2")) {
+      write_fn(player, sample_type, sample_infos, sample_infos_count);
+    }
   }
 };
 
 }  // namespace
 
-// Note: declared in starboard_api_wrapper.h.
-std::unique_ptr<StarboardApiWrapper> GetStarboardApiWrapper() {
+std::unique_ptr<StarboardApiWrapper> CreateStarboardApiWrapper14() {
+  LOG(INFO) << "Created StarboardApiWrapper for SB_API_VERSION 14";
   return std::make_unique<StarboardApiWrapper14>();
 }
 

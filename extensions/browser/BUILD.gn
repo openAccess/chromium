@@ -73,8 +73,6 @@ source_set("core_keyed_service_factories") {
     "core_browser_context_keyed_service_factories.h",
   ]
 
-  configs += [ "//build/config/compiler:wexit_time_destructors" ]
-
   deps = [
     "//components/guest_view/buildflags",
     "//extensions/browser:browser_sources",
@@ -109,9 +107,12 @@ source_set("browser_sources") {
     "api/api_resource.h",
     "api/api_resource_manager.h",
     "api/constants.h",
+    "api/declarative/constants.h",
     "api/declarative/declarative_api.cc",
     "api/declarative/declarative_api.h",
     "api/declarative/declarative_rule.h",
+    "api/declarative/declarative_utils.cc",
+    "api/declarative/declarative_utils.h",
     "api/declarative/deduping_factory.h",
     "api/declarative/rules_cache_delegate.cc",
     "api/declarative/rules_cache_delegate.h",
@@ -234,6 +235,8 @@ source_set("browser_sources") {
     "bookmark_app_util.cc",
     "bookmark_app_util.h",
     "browser_context_keyed_api_factory.h",
+    "browser_context_lifetime_observer.h",
+    "browser_context_lifetime_tracker.h",
     "browser_frame_context_data.cc",
     "browser_frame_context_data.h",
     "browser_process_context_data.cc",
@@ -637,8 +640,8 @@ source_set("browser_sources") {
     "//components/safe_browsing:buildflags",
     "//components/safe_browsing/core/browser:safe_browsing_metrics_collector",
     "//components/safe_browsing/core/browser/db:database_manager",
+    "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
     "//components/safe_browsing/core/browser/db:util",
-    "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
     "//components/safe_browsing/core/common",
     "//components/safe_browsing/core/common/proto:crx_info_proto",
     "//components/services/unzip/content",
@@ -680,6 +683,7 @@ source_set("browser_sources") {
     "//services/device/public/mojom",
     "//services/metrics/public/cpp:metrics_cpp",
     "//services/metrics/public/cpp:ukm_builders",
+    "//services/network/public/cpp",
     "//services/network/public/mojom",
     "//services/preferences/public/cpp",
     "//services/service_manager/public/cpp",
@@ -691,6 +695,7 @@ source_set("browser_sources") {
     "//third_party/re2",
     "//third_party/zlib/google:zip",
     "//tools/json_schema_compiler:generated_api_util",
+    "//ui/base/mojom",
     "//ui/color",
     "//ui/display",
     "//ui/menus",
@@ -711,7 +716,7 @@ source_set("browser_sources") {
 
   public_deps = [
     "//base",
-    "//components/safe_browsing/core/browser/db:v4_protocol_config",
+    "//components/safe_browsing/core/browser/db:sb_protocol_config",
     "//components/url_matcher",
     "//components/url_pattern_index",
     "//components/user_prefs",
@@ -877,10 +882,7 @@ source_set("browser_sources") {
     deps += [ "//components/resources:components_resources_grit" ]
   }
 
-  configs += [
-    "//build/config:precompiled_headers",
-    "//build/config/compiler:wexit_time_destructors",
-  ]
+  configs += [ "//build/config:precompiled_headers" ]
 }
 
 source_set("keepalive") {
@@ -913,6 +915,7 @@ source_set("crx_installer") {
     deps += [ "//components/user_manager" ]
   }
 }
+
 source_set("webstore_installer") {
   sources = [
     "webstore_data_fetcher.cc",
@@ -998,9 +1001,9 @@ source_set("test_support") {
     "//base/test:test_support",
     "//components/pref_registry",
     "//components/safe_browsing/core/browser/db:database_manager",
+    "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
+    "//components/safe_browsing/core/browser/db:sb_test_util",
     "//components/safe_browsing/core/browser/db:util",
-    "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
-    "//components/safe_browsing/core/browser/db:v4_test_util",
     "//components/safe_browsing/core/common/proto:crx_info_proto_gen",
     "//components/sync/model",
     "//components/sync_preferences",
@@ -1040,14 +1043,10 @@ source_set("test_support") {
       "fake_safe_browsing_database_manager.h",
     ]
     deps += [
+      "//components/safe_browsing/core/browser/db:sb_test_util",
       "//components/safe_browsing/core/browser/db:test_database_manager",
-      "//components/safe_browsing/core/browser/db:v4_test_util",
     ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 # The set of sources that are needed for both browser and unit tests.
@@ -1062,6 +1061,8 @@ source_set("unit_tests") {
     "api/api_resource_manager_unittest.cc",
     "api/content_settings/content_settings_store_unittest.cc",
     "api/content_settings/content_settings_unittest.cc",
+    "api/cookies/cookies_helpers_unittest.cc",
+    "api/cookies/cookies_unittest.cc",
     "api/declarative/declarative_rule_unittest.cc",
     "api/declarative/deduping_factory_unittest.cc",
     "api/declarative/rules_registry_unittest.cc",
@@ -1078,6 +1079,7 @@ source_set("unit_tests") {
     "api/file_handlers/directory_util_unittest.cc",
     "api/file_handlers/mime_util_unittest.cc",
     "api/idle/idle_api_unittest.cc",
+    "api/permissions/permissions_api_helpers_unittest.cc",
     "api/power/power_api_unittest.cc",
     "api/proxy/proxy_api_helpers_unittest.cc",
     "api/runtime/restart_after_delay_api_unittest.cc",
@@ -1130,6 +1132,7 @@ source_set("unit_tests") {
     "file_reader_unittest.cc",
     "image_loader_unittest.cc",
     "image_sanitizer_unittest.cc",
+    "install_prompt_permissions_unittest.cc",
     "install_tracker_unittest.cc",
     "json_file_sanitizer_unittest.cc",
     "lazy_background_task_queue_unittest.cc",
@@ -1276,7 +1279,6 @@ source_set("unit_tests") {
       "//ash/constants",
       "//chrome/common:constants",
       "//chromeos:test_support",
-      "//chromeos/ash/components/browser_context_helper",
       "//chromeos/ash/components/dbus:test_support",
       "//chromeos/ash/components/dbus/audio",
       "//chromeos/ash/components/dbus/debug_daemon",
@@ -1315,10 +1317,6 @@ source_set("unit_tests") {
     "//tools/metrics/histograms/metadata/extensions/enums.xml",
     "//extensions/browser/api/declarative_net_request/flat/extension_ruleset.fbs",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 if (enable_desktop_android_extensions) {

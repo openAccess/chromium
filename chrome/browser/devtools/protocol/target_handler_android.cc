@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/navigation_controller.h"
@@ -44,6 +45,10 @@ TargetHandlerAndroid::~TargetHandlerAndroid() = default;
 protocol::Response TargetHandlerAndroid::SetRemoteLocations(
     std::unique_ptr<protocol::Array<protocol::Target::RemoteLocation>>
         locations) {
+  if (!is_trusted_) {
+    return protocol::Response::ServerError(
+        "Cannot set remote locations from untrusted client");
+  }
   remote_locations_.clear();
   if (!locations) {
     return protocol::Response::Success();
@@ -141,7 +146,7 @@ protocol::Response TargetHandlerAndroid::CreateTarget(
       if (browser_handler_) {
         // Pending Android windows are intentionally absent from the global
         // browser-window iterator. Track the BWI returned to this DevTools
-        // session so Browser commands can address it while the Activity starts.
+        // session so Browser commands can read it while the Activity starts.
         browser_handler_->TrackBrowserWindow(browser_window);
       }
 

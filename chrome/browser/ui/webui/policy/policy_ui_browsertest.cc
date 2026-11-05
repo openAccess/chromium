@@ -42,10 +42,16 @@
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
+#include "components/enterprise/browser/enterprise_switches.h"
+#include "components/enterprise/browser/reporting/common_pref_names.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/browser/webui/policy_status_provider.h"
+#include "components/policy/core/common/cloud/cloud_policy_core.h"
+#include "components/policy/core/common/cloud/cloud_policy_manager.h"
 #include "components/policy/core/common/cloud/cloud_policy_refresh_scheduler.h"
+#include "components/policy/core/common/cloud/cloud_policy_store.h"
 #include "components/policy/core/common/cloud/enterprise_metrics.h"
+#include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
 #include "components/policy/core/common/external_data_fetcher.h"
 #include "components/policy/core/common/features.h"
 #include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
@@ -57,13 +63,17 @@
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/core/common/schema.h"
 #include "components/policy/policy_constants.h"
+#include "components/policy/proto/device_management_backend.pb.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
@@ -78,15 +88,26 @@
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/device_api/managed_configuration_api.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/isolated_web_apps/test/isolated_web_app_builder.h"
+#include "chrome/browser/web_applications/test/os_integration_test_override_impl.h"
+#include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
+#include "chrome/common/chrome_features.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/account_id/account_id.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/install_verifier.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/features/simple_feature.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/http_request.h"
+#include "net/test/embedded_test_server/http_response.h"
+#include "url/origin.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
@@ -212,6 +233,10 @@ class PolicyUITestBase : public PlatformBrowserTest {
  protected:
   // PlatformBrowserTest implementation.
   void SetUpInProcessBrowserTestFixture() override {
+#if !BUILDFLAG(IS_CHROMEOS)
+    base::CommandLine::ForCurrentProcess()->AppendSwitch(
+        switches::kEnableChromeBrowserCloudManagement);
+#endif
     provider_.SetDefaultReturns(/*is_initialization_complete_return=*/true,
                                 /*is_first_policy_load_complete_return=*/true);
     policy::BrowserPolicyConnector::SetPolicyProviderForTesting(&provider_);
@@ -351,6 +376,19 @@ class PolicyUITest : public base::test::WithFeatureOverride,
   PolicyUITest()
       : base::test::WithFeatureOverride(
             policy::features::kPolicyPageMojoMigration) {}
+
+  // Returns true if the test should be skipped because it relies on
+  // `VerifyPolicies()`, which expects the Google Update policy rows on Windows
+  // and macOS.
+  // TODO(crbug.com/40897784): Remove once `UpdaterStatusAndValueProvider`
+  // implements `GetValuesMojo()`/`GetNamesMojo()`.
+  bool ShouldSkipVerifyPoliciesUnderMojo() const {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+    return IsParamFeatureEnabled();
+#else
+    return false;
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+  }
 };
 
 INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(PolicyUITest);
@@ -522,7 +560,6 @@ IN_PROC_BROWSER_TEST_F(PolicyUIStatusTest, ShowsCorrectTimesSinceRefresh) {
   // Refresh the page without reloading policies.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
                                            GURL(chrome::kChromeUIPolicyURL)));
-  base::RunLoop().RunUntilIdle();  // Ensure status request has been processed.
 
   base::flat_map<std::string, std::string> status;
   ASSERT_TRUE(ReadStatusFor("User policies", &status));
@@ -597,6 +634,10 @@ IN_PROC_BROWSER_TEST_P(PolicyUITest, LogsPageRedirectsOnChromeOS) {
 }
 
 IN_PROC_BROWSER_TEST_P(PolicyUITest, SendPolicyNames) {
+  if (ShouldSkipVerifyPoliciesUnderMojo()) {
+    GTEST_SKIP() << "Google Update policies are not supported over mojo yet.";
+  }
+
   // Verifies that the names of known policies are sent to the UI and processed
   // there correctly by checking that the policy table contains all policies in
   // the correct order.
@@ -627,6 +668,10 @@ IN_PROC_BROWSER_TEST_P(PolicyUITest, SendPolicyNames) {
 }
 
 IN_PROC_BROWSER_TEST_P(PolicyUITest, SendPolicyValues) {
+  if (ShouldSkipVerifyPoliciesUnderMojo()) {
+    GTEST_SKIP() << "Google Update policies are not supported over mojo yet.";
+  }
+
   // Verifies that policy values are sent to the UI and processed there
   // correctly by setting the values of four known and one unknown policy and
   // checking that the policy table contains the policy names, values and
@@ -763,6 +808,44 @@ IN_PROC_BROWSER_TEST_P(PolicyUITest, ReportButtonWithProfileReporting) {
   VerifyReportButton(/*visible=*/false);
 }
 
+IN_PROC_BROWSER_TEST_P(PolicyUITest, ReportButtonWithSaasUsageReporting) {
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GURL(chrome::kChromeUIPolicyURL)));
+
+  // Hide by default.
+  VerifyReportButton(/*visible=*/false);
+
+  base::ListValue domains;
+  domains.Append("example.com");
+  policy::PolicyMap policy_map;
+
+#if !BUILDFLAG(IS_CHROMEOS)
+  // Turn on with browser SaaS usage policy.
+  policy_map.Set(policy::key::kSaasUsageReportingDomainUrlsForBrowsers,
+                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
+                 policy::POLICY_SOURCE_CLOUD, base::Value(domains.Clone()),
+                 nullptr);
+  provider_.UpdateChromePolicy(policy_map);
+  VerifyReportButton(/*visible=*/true);
+
+  // Hide while policy list is empty.
+  policy_map.Set(policy::key::kSaasUsageReportingDomainUrlsForBrowsers,
+                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
+                 policy::POLICY_SOURCE_CLOUD, base::Value(base::ListValue()),
+                 nullptr);
+  provider_.UpdateChromePolicy(policy_map);
+  VerifyReportButton(/*visible=*/false);
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
+  // Turn on with profile SaaS usage policy.
+  policy_map.Set(policy::key::kSaasUsageReportingDomainUrlsForProfiles,
+                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
+                 policy::POLICY_SOURCE_CLOUD, base::Value(domains.Clone()),
+                 nullptr);
+  provider_.UpdateChromePolicy(policy_map);
+  VerifyReportButton(/*visible=*/true);
+}
+
 #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 IN_PROC_BROWSER_TEST_P(PolicyUITest, ReportButtonOTRProfile) {
   BrowserWindowInterface* otr_browser = OpenURLOffTheRecord(
@@ -792,11 +875,123 @@ IN_PROC_BROWSER_TEST_P(PolicyUITest, ReportButtonOTRProfile) {
       content::EvalJs(otr_contents, kJavaScript).ExtractString();
   EXPECT_EQ("none", visibility);
 
-  // Verify that calling uploadReport does not crash and completes safely.
-  EXPECT_TRUE(content::ExecJs(otr_contents,
-                              "chrome.send('uploadReport', ['test_id']);"));
+  // Verify that uploading a report does not crash and completes, i.e. the
+  // upload button is re-enabled, even though no report scheduler is available.
+  // The (hidden) button is clicked directly so that the request goes through
+  // the same transport as a user-initiated upload.
+  static constexpr char kUploadReport[] = R"JS(
+    new Promise((resolve, reject) => {
+      const button = document.querySelector('policy-app')
+          .shadowRoot.querySelector('#upload-report');
+      if (!button) {
+        reject(new Error('Upload report button not found'));
+        return;
+      }
+      let sawDisabled = false;
+      const observer = new MutationObserver(() => {
+        if (button.disabled) {
+          sawDisabled = true;
+        } else if (sawDisabled) {
+          observer.disconnect();
+          resolve();
+        }
+      });
+      observer.observe(button, {attributes: true, attributeFilter: ['disabled']});
+      button.click();
+    });
+  )JS";
+  EXPECT_TRUE(content::ExecJs(otr_contents, kUploadReport));
 }
 #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+
+IN_PROC_BROWSER_TEST_P(PolicyUITest, ReloadPolicies) {
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GURL(chrome::kChromeUIPolicyURL)));
+
+  // Clicking "Reload policies" must trigger a user-requested policy refresh.
+  // Serve the same policies again so that the refresh completes and the
+  // updated policies are sent back to the page.
+  EXPECT_CALL(provider_,
+              RefreshPolicies(policy::PolicyFetchReason::kUserRequest))
+      .Times(testing::AtLeast(1))
+      .WillRepeatedly(testing::Invoke(
+          &provider_,
+          &policy::MockConfigurationPolicyProvider::RefreshWithSamePolicies));
+
+  // `reloadPolicies()` resolves once the reload button has been re-enabled,
+  // which only happens after the page has received the refreshed policies.
+  EXPECT_TRUE(content::ExecJs(web_contents(), "reloadPolicies()"));
+}
+
+IN_PROC_BROWSER_TEST_P(PolicyUITest, StatusUpdated) {
+  static constexpr char kInitialUsername[] = "user@example.com";
+  static constexpr char kInitialClientId[] = "fake_client_id";
+  static constexpr char kUpdatedUsername[] = "updated_user@example.com";
+  static constexpr char kUpdatedClientId[] = "updated_client_id";
+
+  auto* policy_manager = GetProfile()->GetCloudPolicyManager();
+  ASSERT_TRUE(policy_manager);
+  if (!policy_manager->core()->client()) {
+    policy_manager->core()->Connect(
+        std::make_unique<policy::MockCloudPolicyClient>());
+  }
+  auto policy_data = std::make_unique<enterprise_management::PolicyData>();
+  policy_data->set_state(enterprise_management::PolicyData::ACTIVE);
+  policy_data->set_username(kInitialUsername);
+  policy_data->set_device_id(kInitialClientId);
+  policy_manager->core()->store()->set_policy_data_for_testing(
+      std::move(policy_data));
+
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GURL(chrome::kChromeUIPolicyURL)));
+
+  const std::string kListenForStatusUpdateJs = R"(
+    (async () => {
+      const {BrowserProxy} = await import('./browser_proxy.js');
+      window.statusUpdatedData = null;
+      BrowserProxy.listenForStatusUpdated((status) => {
+        window.statusUpdatedData = status;
+      });
+      return true;
+    })();
+  )";
+  ASSERT_EQ(true, content::EvalJs(web_contents(), kListenForStatusUpdateJs));
+
+  // Update policy data and trigger SendStatus() via preference change.
+  auto updated_policy_data =
+      std::make_unique<enterprise_management::PolicyData>();
+  updated_policy_data->set_state(enterprise_management::PolicyData::ACTIVE);
+  updated_policy_data->set_username(kUpdatedUsername);
+  updated_policy_data->set_device_id(kUpdatedClientId);
+  policy_manager->core()->store()->set_policy_data_for_testing(
+      std::move(updated_policy_data));
+
+  // Triggers SendStatus on the C++ side.
+  g_browser_process->local_state()->SetTime(
+      enterprise_reporting::kLastUploadSucceededTimestamp, base::Time::Now());
+
+  const std::string kWaitForStatusUpdateJs = base::StringPrintf(
+      R"(
+    new Promise(resolve => {
+      const check = () => {
+        const user = window.statusUpdatedData && window.statusUpdatedData.user;
+        if (user &&
+            user.username === '%s' &&
+            user.clientId === '%s' &&
+            user.domain === 'example.com' &&
+            user.policyDescriptionKey === 'statusUser' &&
+            user.error === false) {
+          resolve(true);
+        } else {
+          setTimeout(check, 50);
+        }
+      };
+      check();
+    });
+  )",
+      kUpdatedUsername, kUpdatedClientId);
+  EXPECT_EQ(true, content::EvalJs(web_contents(), kWaitForStatusUpdateJs));
+}
 
 // TODO(crbug.com/442259475): Crashes on Android WebUI.
 #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
@@ -939,6 +1134,15 @@ class ExtensionPolicyUITest
 #endif
 IN_PROC_BROWSER_TEST_P(ExtensionPolicyUITest,
                        MAYBE_ExtensionLoadAndSendPolicy) {
+  // TODO(b/40897784): Re-enable once mojo migration is supports extension
+  // policies.
+  if (base::FeatureList::IsEnabled(
+          policy::features::kPolicyPageMojoMigration)) {
+    GTEST_SKIP()
+        << "Extension policy tests are not yet supported with the mojo "
+           "migration enabled.";
+  }
+
   base::ScopedAllowBlockingForTesting allow_blocking;
   base::ScopedTempDir temp_dir_;
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
@@ -1142,6 +1346,389 @@ INSTANTIATE_TEST_SUITE_P(All,
                              testing::Values(false),
 #endif
                              testing::Bool()));
+
+namespace {
+
+constexpr char kTestIwaAppName[] = "Test Isolated Web App";
+constexpr char kIwaConfigurationUrl[] = "/conf.json";
+constexpr char kIwaConfigurationHash[] = "test_hash_123";
+constexpr char kIwaConfigurationData[] = R"(
+{
+  "setting1": "value1",
+  "setting2": 42
+}
+)";
+
+std::unique_ptr<net::test_server::HttpResponse> HandleIwaConfigRequest(
+    const net::test_server::HttpRequest& request) {
+  if (request.relative_url == kIwaConfigurationUrl) {
+    auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+    response->set_code(net::HTTP_OK);
+    response->set_content(kIwaConfigurationData);
+    response->set_content_type("application/json");
+    return response;
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+class WebAppManagedConfigurationPolicyUITest : public PolicyUITestBase {
+ public:
+  WebAppManagedConfigurationPolicyUITest() {
+    scoped_feature_list_.InitWithFeatures(
+        {
+#if !BUILDFLAG(IS_CHROMEOS)
+            features::kIsolatedWebApps,
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+            features::kIsolatedWebAppDevMode},
+        {});
+  }
+
+  void SetUpOnMainThread() override {
+    PolicyUITestBase::SetUpOnMainThread();
+    embedded_test_server()->RegisterRequestHandler(
+        base::BindRepeating(&HandleIwaConfigRequest));
+    ASSERT_TRUE(embedded_test_server()->Start());
+  }
+
+  Profile* profile() { return chrome_test_utils::GetProfile(this); }
+
+  web_app::IsolatedWebAppUrlInfo InstallTestIwa() {
+    return web_app::IsolatedWebAppBuilder(
+               web_app::ManifestBuilder().SetName(kTestIwaAppName))
+        .BuildBundle()
+        ->InstallChecked(profile());
+  }
+
+  void SetWebAppManagedConfiguration(const url::Origin& origin) {
+    base::ListValue configs = base::ListValue().Append(
+        base::DictValue()
+            .Set(ManagedConfigurationAPI::kOriginKey, origin.GetURL().spec())
+            .Set(ManagedConfigurationAPI::kManagedConfigurationUrlKey,
+                 embedded_test_server()->GetURL(kIwaConfigurationUrl).spec())
+            .Set(ManagedConfigurationAPI::kManagedConfigurationHashKey,
+                 kIwaConfigurationHash));
+
+    policy::PolicyMap policies;
+    policies.Set(policy::key::kManagedConfigurationPerOrigin,
+                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
+                 policy::POLICY_SOURCE_CLOUD, base::Value(std::move(configs)),
+                 nullptr);
+    UpdateProviderPolicyForNamespace(
+        policy::PolicyNamespace(policy::POLICY_DOMAIN_CHROME, std::string()),
+        policies);
+  }
+
+  void ClearWebAppManagedConfiguration() {
+    policy::PolicyMap policies;
+    UpdateProviderPolicyForNamespace(
+        policy::PolicyNamespace(policy::POLICY_DOMAIN_CHROME, std::string()),
+        policies);
+  }
+
+  bool WaitForWebAppTable(std::string_view serialized_origin) {
+    const std::string kWaitForTableJs = base::StringPrintf(
+        "new Promise(resolve => {"
+        "  const check = () => {"
+        "    var entries = getAllPolicyTables();"
+        "    for (var i = 0; i < entries.length; ++i) {"
+        "      if (entries[i].dataModel && entries[i].dataModel.id === '%s') {"
+        "        var rows = getAllPolicyRows(entries[i]);"
+        "        if (rows.length === 2) {"
+        "          resolve(true);"
+        "          return;"
+        "        }"
+        "      }"
+        "    }"
+        "    setTimeout(check, 50);"
+        "  };"
+        "  check();"
+        "});",
+        std::string(serialized_origin).c_str());
+    return content::EvalJs(web_contents(), kWaitForTableJs).ExtractBool();
+  }
+
+  bool WaitForWebAppTableGone(std::string_view serialized_origin) {
+    const std::string kWaitForTableGoneJs = base::StringPrintf(
+        "new Promise(resolve => {"
+        "  const check = () => {"
+        "    var entries = getAllPolicyTables();"
+        "    var found = false;"
+        "    for (var i = 0; i < entries.length; ++i) {"
+        "      if (entries[i].dataModel && entries[i].dataModel.id === '%s') {"
+        "        found = true;"
+        "        break;"
+        "      }"
+        "    }"
+        "    if (!found) {"
+        "      resolve(true);"
+        "      return;"
+        "    }"
+        "    setTimeout(check, 50);"
+        "  };"
+        "  check();"
+        "});",
+        std::string(serialized_origin).c_str());
+    return content::EvalJs(web_contents(), kWaitForTableGoneJs).ExtractBool();
+  }
+
+  bool WaitForWebAppTableWithHeading(std::string_view serialized_origin,
+                                     std::string_view expected_heading) {
+    const std::string kWaitForTableJs = base::StringPrintf(
+        "new Promise(resolve => {"
+        "  const check = () => {"
+        "    var entries = getAllPolicyTables();"
+        "    for (var i = 0; i < entries.length; ++i) {"
+        "      if (entries[i].dataModel && entries[i].dataModel.id === '%s') {"
+        "        var headerEl = "
+        "entries[i].shadowRoot.querySelector('h2.header');"
+        "        var rows = getAllPolicyRows(entries[i]);"
+        "        if (headerEl && headerEl.textContent.trim() === '%s' && "
+        "rows.length === 2) {"
+        "          resolve(true);"
+        "          return;"
+        "        }"
+        "      }"
+        "    }"
+        "    setTimeout(check, 50);"
+        "  };"
+        "  check();"
+        "});",
+        std::string(serialized_origin).c_str(),
+        std::string(expected_heading).c_str());
+    return content::EvalJs(web_contents(), kWaitForTableJs).ExtractBool();
+  }
+
+  std::optional<base::DictValue> GetWebAppTableData(
+      std::string_view serialized_origin) {
+    const std::string js = base::StringPrintf(
+        "(() => {"
+        "  var entries = getAllPolicyTables();"
+        "  for (var i = 0; i < entries.length; ++i) {"
+        "    if (entries[i].dataModel && entries[i].dataModel.id === '%s') {"
+        "      var rows = getAllPolicyRows(entries[i]);"
+        "      var entriesMap = {};"
+        "      for (var j = 0; j < rows.length; ++j) {"
+        "        var divs = getAllPolicyRowDivs(rows[j]);"
+        "        if (divs.length >= 2) {"
+        "          entriesMap[divs[0].textContent.trim()] = "
+        "divs[1].textContent.trim();"
+        "        }"
+        "      }"
+        "      var headerEl = entries[i].shadowRoot.querySelector('h2.header');"
+        "      var idEl = entries[i].shadowRoot.querySelector('p.id');"
+        "      return JSON.stringify({"
+        "        name: entries[i].dataModel.name,"
+        "        headerText: headerEl ? headerEl.textContent.trim() : '',"
+        "        id: entries[i].dataModel.id,"
+        "        isExtension: entries[i].dataModel.isExtension,"
+        "        isWebApp: entries[i].dataModel.isWebApp,"
+        "        idHidden: idEl ? idEl.hidden : true,"
+        "        idText: idEl ? idEl.textContent.trim() : '',"
+        "        entries: entriesMap"
+        "      });"
+        "    }"
+        "  }"
+        "  return '';"
+        "})();",
+        std::string(serialized_origin).c_str());
+    std::string result_json =
+        content::EvalJs(web_contents(), js).ExtractString();
+    if (result_json.empty()) {
+      return std::nullopt;
+    }
+    std::optional<base::Value> result_value = base::JSONReader::Read(
+        result_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+    if (!result_value || !result_value->is_dict()) {
+      return std::nullopt;
+    }
+    return std::move(result_value->GetDict());
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+  web_app::OsIntegrationTestOverrideBlockingRegistration faked_os_integration_;
+};
+
+IN_PROC_BROWSER_TEST_F(WebAppManagedConfigurationPolicyUITest,
+                       IwaManagedConfigurationTableSurfacedOnPage) {
+  web_app::IsolatedWebAppUrlInfo url_info = InstallTestIwa();
+  const std::string serialized_origin = url_info.origin().Serialize();
+  SetWebAppManagedConfiguration(url_info.origin());
+
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GURL(chrome::kChromeUIPolicyURL)));
+
+  EXPECT_TRUE(WaitForWebAppTable(serialized_origin));
+
+  std::optional<base::DictValue> dict = GetWebAppTableData(serialized_origin);
+  ASSERT_TRUE(dict.has_value());
+  EXPECT_THAT(dict->FindString("name"),
+              testing::Pointee(testing::Eq(kTestIwaAppName)));
+  EXPECT_THAT(dict->FindString("headerText"),
+              testing::Pointee(testing::Eq(kTestIwaAppName)));
+  EXPECT_THAT(dict->FindString("id"),
+              testing::Pointee(testing::Eq(serialized_origin)));
+  EXPECT_EQ(dict->FindBool("isExtension"), false);
+  EXPECT_EQ(dict->FindBool("isWebApp"), true);
+  EXPECT_EQ(dict->FindBool("idHidden"), false);
+  EXPECT_THAT(dict->FindString("idText"),
+              testing::Pointee(testing::Eq(serialized_origin)));
+
+  const base::DictValue* entries = dict->FindDict("entries");
+  ASSERT_TRUE(entries);
+  EXPECT_THAT(entries->FindString("setting1"),
+              testing::Pointee(testing::Eq("\"value1\"")));
+  EXPECT_THAT(entries->FindString("setting2"),
+              testing::Pointee(testing::Eq("42")));
+}
+
+IN_PROC_BROWSER_TEST_F(WebAppManagedConfigurationPolicyUITest,
+                       PwaManagedConfigurationTableSurfacedOnPage) {
+  constexpr char kDocsAppName[] = "Docs Progressive Web App";
+  constexpr char kSheetsAppName[] = "Sheets Progressive Web App";
+  const GURL docs_url("https://docs.example.com/document/app.html");
+  const GURL sheets_url("https://docs.example.com/spreadsheets/app.html");
+  const url::Origin shared_origin = url::Origin::Create(docs_url);
+  const std::string serialized_origin = shared_origin.Serialize();
+
+  SetWebAppManagedConfiguration(shared_origin);
+
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GURL(chrome::kChromeUIPolicyURL)));
+
+  // 1. Before any PWA installation on `shared_origin`, the origin is shown as
+  // the section heading and the secondary origin ID line is hidden.
+  EXPECT_TRUE(
+      WaitForWebAppTableWithHeading(serialized_origin, serialized_origin));
+  std::optional<base::DictValue> before_install =
+      GetWebAppTableData(serialized_origin);
+  ASSERT_TRUE(before_install.has_value());
+  EXPECT_THAT(before_install->FindString("name"),
+              testing::Pointee(testing::Eq("")));
+  EXPECT_THAT(before_install->FindString("headerText"),
+              testing::Pointee(testing::Eq(serialized_origin)));
+  EXPECT_EQ(before_install->FindBool("idHidden"), true);
+
+  // 2. Install the first subpath PWA (Docs). The single section heading updates
+  // to `kDocsAppName` and the origin moves to the secondary ID row.
+  web_app::test::InstallDummyWebApp(profile(), kDocsAppName, docs_url);
+
+  EXPECT_TRUE(WaitForWebAppTableWithHeading(serialized_origin, kDocsAppName));
+  std::optional<base::DictValue> after_first_install =
+      GetWebAppTableData(serialized_origin);
+  ASSERT_TRUE(after_first_install.has_value());
+  EXPECT_THAT(after_first_install->FindString("name"),
+              testing::Pointee(testing::Eq(kDocsAppName)));
+  EXPECT_THAT(after_first_install->FindString("headerText"),
+              testing::Pointee(testing::Eq(kDocsAppName)));
+  EXPECT_EQ(after_first_install->FindBool("idHidden"), false);
+  EXPECT_THAT(after_first_install->FindString("idText"),
+              testing::Pointee(testing::Eq(serialized_origin)));
+
+  // 3. Install a second subpath PWA (Sheets) on the same origin. Both apps now
+  // have their own section on chrome://policy with `serialized_origin` as their
+  // secondary ID row.
+  web_app::test::InstallDummyWebApp(profile(), kSheetsAppName, sheets_url);
+
+  EXPECT_TRUE(WaitForWebAppTableWithHeading(serialized_origin, kDocsAppName));
+  EXPECT_TRUE(WaitForWebAppTableWithHeading(serialized_origin, kSheetsAppName));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    WebAppManagedConfigurationPolicyUITest,
+    IwaManagedConfigurationTableRemovedWhenConfigurationCleared) {
+  web_app::IsolatedWebAppUrlInfo url_info = InstallTestIwa();
+  const std::string serialized_origin = url_info.origin().Serialize();
+  SetWebAppManagedConfiguration(url_info.origin());
+
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GURL(chrome::kChromeUIPolicyURL)));
+
+  EXPECT_TRUE(WaitForWebAppTable(serialized_origin));
+
+  ClearWebAppManagedConfiguration();
+
+  EXPECT_TRUE(WaitForWebAppTableGone(serialized_origin));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    WebAppManagedConfigurationPolicyUITest,
+    IwaManagedConfigurationTableSurfacedWhenInstalledAfterConfigurationSet) {
+  std::unique_ptr<web_app::ScopedBundledIsolatedWebApp> bundle =
+      web_app::IsolatedWebAppBuilder(
+          web_app::ManifestBuilder().SetName(kTestIwaAppName))
+          .BuildBundle();
+  web_app::IsolatedWebAppUrlInfo url_info =
+      web_app::IsolatedWebAppUrlInfo::CreateFromSignedWebBundleId(
+          bundle->web_bundle_id());
+  const std::string serialized_origin = url_info.origin().Serialize();
+
+  SetWebAppManagedConfiguration(url_info.origin());
+
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GURL(chrome::kChromeUIPolicyURL)));
+
+  // Before installation, the section is visible with the origin rendered as the
+  // heading, while dataModel.name is empty and the secondary ID row is hidden.
+  EXPECT_TRUE(
+      WaitForWebAppTableWithHeading(serialized_origin, serialized_origin));
+  std::optional<base::DictValue> before_install =
+      GetWebAppTableData(serialized_origin);
+  ASSERT_TRUE(before_install.has_value());
+  EXPECT_THAT(before_install->FindString("name"),
+              testing::Pointee(testing::Eq("")));
+  EXPECT_THAT(before_install->FindString("headerText"),
+              testing::Pointee(testing::Eq(serialized_origin)));
+  EXPECT_EQ(before_install->FindBool("idHidden"), true);
+
+  bundle->InstallChecked(profile());
+
+  // After installation, the heading updates to the app name and the origin
+  // appears in the secondary ID row.
+  EXPECT_TRUE(
+      WaitForWebAppTableWithHeading(serialized_origin, kTestIwaAppName));
+  std::optional<base::DictValue> after_install =
+      GetWebAppTableData(serialized_origin);
+  ASSERT_TRUE(after_install.has_value());
+  EXPECT_THAT(after_install->FindString("name"),
+              testing::Pointee(testing::Eq(kTestIwaAppName)));
+  EXPECT_THAT(after_install->FindString("headerText"),
+              testing::Pointee(testing::Eq(kTestIwaAppName)));
+  EXPECT_EQ(after_install->FindBool("idHidden"), false);
+  EXPECT_THAT(after_install->FindString("idText"),
+              testing::Pointee(testing::Eq(serialized_origin)));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    WebAppManagedConfigurationPolicyUITest,
+    IwaManagedConfigurationTableHeadingUpdatedWhenAppUninstalled) {
+  web_app::IsolatedWebAppUrlInfo url_info = InstallTestIwa();
+  const std::string serialized_origin = url_info.origin().Serialize();
+  SetWebAppManagedConfiguration(url_info.origin());
+
+  ASSERT_TRUE(
+      content::NavigateToURL(web_contents(), GURL(chrome::kChromeUIPolicyURL)));
+
+  EXPECT_TRUE(
+      WaitForWebAppTableWithHeading(serialized_origin, kTestIwaAppName));
+
+  web_app::test::UninstallWebApp(profile(), url_info.app_id());
+
+  // After uninstallation, the table remains visible with the origin rendered as
+  // the heading and the secondary ID row hidden.
+  EXPECT_TRUE(
+      WaitForWebAppTableWithHeading(serialized_origin, serialized_origin));
+  std::optional<base::DictValue> after_uninstall =
+      GetWebAppTableData(serialized_origin);
+  ASSERT_TRUE(after_uninstall.has_value());
+  EXPECT_THAT(after_uninstall->FindString("name"),
+              testing::Pointee(testing::Eq("")));
+  EXPECT_THAT(after_uninstall->FindString("headerText"),
+              testing::Pointee(testing::Eq(serialized_origin)));
+  EXPECT_EQ(after_uninstall->FindBool("idHidden"), true);
+}
 
 #if !BUILDFLAG(IS_CHROMEOS)
 constexpr char kCheckBannerJs[] =

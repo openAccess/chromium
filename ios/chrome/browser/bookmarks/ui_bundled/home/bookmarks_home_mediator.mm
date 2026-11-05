@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/bookmarks/ui_bundled/home/bookmarks_home_mediator.h"
 
+#import <utility>
+
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
 #import "base/check_op.h"
@@ -225,6 +227,7 @@ bool IsABookmarkNodeSectionForIdentifier(
   _prefObserverBridge.reset();
   _bookmarkModel.reset();
   _bookmarkModelBridge.reset();
+  _selectedNodesForEditMode.clear();
 }
 
 - (void)dealloc {
@@ -433,17 +436,12 @@ bool IsABookmarkNodeSectionForIdentifier(
     }
 
     signinPromoItem.delegate = signinPromoViewMediator;
-    [signinPromoViewMediator signinPromoViewIsVisible];
+    [signinPromoViewMediator signinPromoDidBecomeVisible];
 
     [self.consumer.tableViewModel addItem:signinPromoItem
                   toSectionWithIdentifier:BookmarksHomeSectionIdentifierPromo];
   } else {
-    if (signinPromoViewMediator.isUsable) {
-      // When the sign-in view is closed, the promo state changes, but
-      // -[SigninPromoViewMediator signinPromoViewIsHidden] should not be
-      // called.
-      [signinPromoViewMediator signinPromoViewIsHidden];
-    }
+    [signinPromoViewMediator signinPromoViewIsHidden];
 
     CHECK(
         [self.consumer.tableViewModel
@@ -505,9 +503,9 @@ bool IsABookmarkNodeSectionForIdentifier(
          _bookmarkModel->IsLocalOnlyNode(*bookmarkNode);
 }
 
-- (void)signinDidCompleteWithResult:(SigninCoordinatorResult)result {
+- (void)signinDidCompleteWithResult:(SigninCoordinatorResultOrIdentity)result {
   [self.bookmarkPromoController.signinPromoViewMediator
-      signinDidCompleteWithResult:result];
+      signinDidCompleteWithResult:std::move(result)];
   [self.bookmarkPromoController updateShouldShowSigninPromo];
 }
 
@@ -523,6 +521,7 @@ bool IsABookmarkNodeSectionForIdentifier(
     [self.consumer displayRoot];
   }
   self.displayedNode = nullptr;
+  _selectedNodesForEditMode.clear();
 }
 
 // BookmarkModelBridgeObserver Callbacks

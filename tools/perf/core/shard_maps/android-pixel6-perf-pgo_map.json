@@ -6,10 +6,6 @@
             },
             "speedometer2": {
                 "abridged": false
-            },
-            "speedometer3": {
-                "abridged": false,
-                "pageset_repeat": 16
             }
         },
         "executables": {
@@ -22,25 +18,12 @@
         }
     },
     "1": {
-        "crossbench": {
-            "loadline_phone.crossbench": {
-                "crossbench_name": "loadline-phone-fast",
-                "arguments": [
-                    "--cool-down-threshold=moderate",
-                    "--disable-field-trials"
-                ]
-            }
-        },
         "benchmarks": {
             "jetstream2": {
                 "abridged": false
             },
             "speedometer2": {
                 "abridged": false
-            },
-            "speedometer3": {
-                "abridged": false,
-                "pageset_repeat": 16
             }
         }
     },
@@ -55,10 +38,6 @@
             },
             "speedometer2": {
                 "abridged": false
-            },
-            "speedometer3": {
-                "abridged": false,
-                "pageset_repeat": 16
             }
         }
     },
@@ -74,10 +53,6 @@
             },
             "speedometer2": {
                 "abridged": false
-            },
-            "speedometer3": {
-                "abridged": false,
-                "pageset_repeat": 16
             }
         }
     },
@@ -93,10 +68,6 @@
             },
             "speedometer2": {
                 "abridged": false
-            },
-            "speedometer3": {
-                "abridged": false,
-                "pageset_repeat": 16
             }
         }
     },
@@ -106,10 +77,6 @@
                 "begin": 239,
                 "end": 321,
                 "abridged": false
-            },
-            "speedometer3": {
-                "abridged": false,
-                "pageset_repeat": 16
             }
         }
     },
@@ -121,19 +88,11 @@
             },
             "speedometer2": {
                 "abridged": false
-            },
-            "speedometer3": {
-                "abridged": false,
-                "pageset_repeat": 16
             }
         }
     },
     "7": {
         "benchmarks": {
-            "speedometer3": {
-                "abridged": false,
-                "pageset_repeat": 16
-            },
             "system_health.common_mobile": {
                 "abridged": false
             }

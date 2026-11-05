@@ -6,8 +6,12 @@
 #define IOS_CHROME_BROWSER_LEVEL_UP_MODEL_TASK_TYPES_H_
 
 #import <string>
+#import <string_view>
 
 // Enum for all available tasks in the Level Up feature.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(LevelUpTaskType)
 enum class TaskType {
   kUnknown = 0,
   kTabGroups = 1,
@@ -15,14 +19,16 @@ enum class TaskType {
   kPinTabs = 3,
   kGemini = 4,
   kPaymentMethods = 5,
-  kQuickDelete = 6,
+  kClearBrowsingData = 6,
   kSafeBrowsing = 7,
   kIncognito = 8,
   kPasswordCheckup = 9,
   kLensWebsiteSearch = 10,
   kAISearch = 11,
   kLensCameraSearch = 12,
+  kMaxValue = kLensCameraSearch,
 };
+// LINT.ThenChange(/tools/metrics/histograms/metadata/ios/enums.xml:LevelUpTaskType)
 
 // Categories grouping the level-up tasks.
 enum class LevelUpTaskCategory {
@@ -37,12 +43,15 @@ enum class LevelUpTaskCategory {
 // Returns a string representation of the TaskType.
 std::string TaskTypeToString(TaskType type);
 
+// Returns the TaskType represented by `str`, or TaskType::kUnknown if invalid.
+TaskType StringToTaskType(std::string_view str);
+
 // Types representing the stats associated with completed tasks.
 enum class LevelUpTaskStatType {
   // Number of tabs decluttered from grid.
   kTabsDecluttered,
-  // Typing time saved by forms autofill.
-  kTypingSaved,
+  // Passwords autofilled using form suggestions or manual fill.
+  kPasswordsAutofilled,
   // Passwords verified by checkup.
   kPasswordsVerified,
   // Photos/camera searches performed using Lens.

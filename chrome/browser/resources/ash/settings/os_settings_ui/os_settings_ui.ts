@@ -11,7 +11,6 @@
  *    <settings-ui prefs="{{prefs}}"></settings-ui>
  */
 import 'chrome://resources/polymer/v3_0/iron-media-query/iron-media-query.js';
-import '/shared/settings/prefs/prefs.js';
 import 'chrome://resources/ash/common/cr_elements/cr_drawer/cr_drawer.js';
 import 'chrome://resources/ash/common/cr_elements/cr_icon_button/cr_icon_button.js';
 import 'chrome://resources/ash/common/cr_elements/cr_page_host_style.css.js';
@@ -19,14 +18,15 @@ import 'chrome://resources/ash/common/cr_elements/icons.html.js';
 import 'chrome://resources/ash/common/cr_elements/cr_shared_vars.css.js';
 import '../os_settings_menu/os_settings_menu.js';
 import '../os_settings_main/os_settings_main.js';
+import '../prefs/prefs.js';
 import '../settings_shared.css.js';
 import '../settings_vars.css.js';
 import './toolbar.js';
 
-import type {SettingsPrefsElement} from '/shared/settings/prefs/prefs.js';
 import {CrContainerShadowMixin} from 'chrome://resources/ash/common/cr_elements/cr_container_shadow_mixin.js';
 import type {CrDrawerElement} from 'chrome://resources/ash/common/cr_elements/cr_drawer/cr_drawer.js';
 import {FindShortcutMixin} from 'chrome://resources/ash/common/cr_elements/find_shortcut_mixin.js';
+import {ColorChangeUpdater} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {listenOnce} from 'chrome://resources/js/util.js';
@@ -42,11 +42,10 @@ import {recordClick, recordNavigation, recordPageBlur, recordPageFocus, recordSe
 import {convertPrefToSettingMetric} from '../metrics_utils.js';
 import type {OsPageAvailability} from '../os_page_availability.js';
 import {createPageAvailability} from '../os_page_availability.js';
-import type {Route} from '../router.js';
+import type {Route} from '../os_settings_routes.js';
+import type {SettingsPrefsElement} from '../prefs/prefs.js';
 import {Router} from '../router.js';
 
-import type {OsSettingsHatsBrowserProxy} from './os_settings_hats_browser_proxy.js';
-import {OsSettingsHatsBrowserProxyImpl} from './os_settings_hats_browser_proxy.js';
 import {getTemplate} from './os_settings_ui.html.js';
 import type {SettingsToolbarElement} from './toolbar.js';
 
@@ -170,8 +169,6 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
   declare private narrowThreshold_: number;
   private activeRoute_: Route|null;
   private scrollEndDebouncer_: Debouncer|null;
-  private osSettingsHatsBrowserProxy_: OsSettingsHatsBrowserProxy;
-  private boundTriggerSettingsHats_: () => void;
 
   constructor() {
     super();
@@ -186,10 +183,8 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
 
     Router.getInstance().initializeRouteFromUrl();
 
-    this.osSettingsHatsBrowserProxy_ =
-        OsSettingsHatsBrowserProxyImpl.getInstance();
-
-    this.boundTriggerSettingsHats_ = this.triggerSettingsHats_.bind(this);
+    // Listen for changes to Jelly dynamic colors.
+    ColorChangeUpdater.forDocument().start();
   }
 
   override ready(): void {
@@ -234,13 +229,6 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
     this.addEventListener('user-action-setting-pref-change', this.syncPrefChange_.bind(this));
 
     this.addEventListener('user-action-setting-change', this.recordChangedSetting_.bind(this));
-
-    this.addEventListener(
-        'search-changed',
-        () => {
-          this.osSettingsHatsBrowserProxy_.settingsUsedSearch();
-        },
-        /*AddEventListenerOptions=*/ {once: true});
 
     this.listenForDrawerOpening_();
 
@@ -300,8 +288,6 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
     window.addEventListener('focus', recordPageFocus);
     window.addEventListener('blur', recordPageBlur);
 
-    window.addEventListener('blur', this.boundTriggerSettingsHats_);
-
     // Clicks need to be captured because unlike focus/blur to the settings
     // window, a click's propagation can be stopped by child elements.
     window.addEventListener('click', recordClick, /*capture=*/ true);
@@ -312,7 +298,6 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
 
     window.removeEventListener('focus', recordPageFocus);
     window.removeEventListener('blur', recordPageBlur);
-    window.removeEventListener('blur', this.boundTriggerSettingsHats_);
     window.removeEventListener('click', recordClick);
     Router.getInstance().resetRouteForTesting();
   }
@@ -497,10 +482,6 @@ export class OsSettingsUiElement extends OsSettingsUiElementBase {
     const METRIC_NAME = 'ChromeOS.Settings.TimeUntilInteractive';
     const timeMs = Math.round(window.performance.now());
     chrome.metricsPrivate.recordTime(METRIC_NAME, timeMs);
-  }
-
-  private triggerSettingsHats_(): void {
-    this.osSettingsHatsBrowserProxy_.sendSettingsHats();
   }
 }
 

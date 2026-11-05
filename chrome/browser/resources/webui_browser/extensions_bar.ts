@@ -2,9 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import './extension.js';
 
-import {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
+import type {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import {assert} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
@@ -14,8 +15,9 @@ import {PageCallbackRouter, PageHandlerFactory, PageHandlerRemote} from '/shared
 import type {ExtensionActionInfo} from '/shared/extensions_bar_data_model.mojom-webui.js';
 import type {IconUpdate} from '/shared/icon_handle.mojom-webui.js';
 import {IconTable} from '/shared/icon_table.js';
+import {HighlightTracker} from '/shared/toolbar_button.js';
 
-import {ExtensionElement} from './extension.js';
+import type {ExtensionElement} from './extension.js';
 import {getCss} from './extensions_bar.css.js';
 
 export class ExtensionsBarElement extends CrLitElement {
@@ -47,20 +49,28 @@ export class ExtensionsBarElement extends CrLitElement {
   private iconTable_: IconTable = IconTable.getInstance();
   private extensionsMenuButton: CrIconButtonElement;
   private trackedElementManager: TrackedElementManager;
+  // Tracks whether a bubble is anchored to the extensions menu button.
+  private menuButtonHighlightTracker_: HighlightTracker =
+      new HighlightTracker();
 
   constructor() {
     super();
     this.trackedElementManager = TrackedElementManager.getInstance();
-    this.extensionsMenuButton = new CrIconButtonElement();
+    this.extensionsMenuButton = document.createElement('cr-icon-button');
     this.extensionsMenuButton.id = 'extensionsMenuButton';
     this.extensionsMenuButton.ironIcon = 'webui-browser:chrome-extension';
     this.extensionsMenuButton.title =
         loadTimeData.getString('tooltipExtensionsButton');
     this.extensionsMenuButton.addEventListener(
+        'pointerdown', this.menuButtonHighlightTracker_.onPointerdown);
+    this.extensionsMenuButton.addEventListener(
         'click', this.extensionMenuButtonClicked.bind(this));
     this.trackedElementManager.startTracking(
-        this.extensionsMenuButton, 'kExtensionsMenuButtonElementId',
-        {secondaryId: 'ext:'});
+        this.extensionsMenuButton, 'kExtensionsMenuButtonElementId', {
+          secondaryId: 'ext:',
+          onHighlightChanged:
+              this.menuButtonHighlightTracker_.onHighlightChanged,
+        });
 
     const factory = PageHandlerFactory.getRemote();
     factory.createPageHandler(
@@ -84,7 +94,9 @@ export class ExtensionsBarElement extends CrLitElement {
     this.iconTable_.applyUpdates(icons);
     for (const update of updates) {
       if (!this.buttons.has(update.id)) {
-        const extensionButton = new ExtensionElement(update.id, this);
+        const extensionButton =
+            document.createElement('webui-browser-extension');
+        extensionButton.init(update.id, this);
         this.buttons.set(update.id, extensionButton);
         this.shadowRoot.insertBefore(
             extensionButton, this.extensionsMenuButton);
@@ -129,7 +141,10 @@ export class ExtensionsBarElement extends CrLitElement {
     this.handler.showContextMenu(source, id);
   }
 
-  private extensionMenuButtonClicked() {
+  private extensionMenuButtonClicked(e: PointerEvent) {
+    if (this.menuButtonHighlightTracker_.shouldSkipClick(e)) {
+      return;
+    }
     this.handler.toggleExtensionsMenuFromWebUI();
   }
 

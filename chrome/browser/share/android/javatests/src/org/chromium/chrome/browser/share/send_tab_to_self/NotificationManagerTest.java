@@ -11,13 +11,11 @@ import static org.mockito.Mockito.verify;
 import android.app.Notification;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ActivityInfo;
-import android.content.pm.ResolveInfo;
 import android.net.Uri;
-
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -78,7 +76,6 @@ public class NotificationManagerTest {
         BaseNotificationManagerProxyFactory.setInstanceForTesting(null);
     }
 
-
     private static Intent createTapIntent(
             String guid, String url, byte @Nullable [] pageContextBytes) {
         Intent intent = new Intent(NotificationManager.NOTIFICATION_ACTION_TAP);
@@ -102,8 +99,29 @@ public class NotificationManagerTest {
         return createTapIntent(GUID, URL, null);
     }
 
+    /** Installs com.example.app with an activity that handles https://www.example.com/app links. */
+    private static void addSpecializedHandler(@Nullable String appLabel) {
+        ShadowPackageManager shadowPackageManager =
+                Shadows.shadowOf(RuntimeEnvironment.getApplication().getPackageManager());
+
+        ActivityInfo activityInfo = new ActivityInfo();
+        activityInfo.packageName = "com.example.app";
+        activityInfo.name = "com.example.app.MainActivity";
+        activityInfo.nonLocalizedLabel = appLabel;
+        shadowPackageManager.addOrUpdateActivity(activityInfo);
+
+        IntentFilter filter = new IntentFilter(Intent.ACTION_VIEW);
+        filter.addDataScheme("https");
+        filter.addDataAuthority("www.example.com", null);
+        filter.addDataPath("/app", android.os.PatternMatcher.PATTERN_PREFIX);
+        filter.addCategory(Intent.CATEGORY_BROWSABLE);
+        // NotificationManager resolves the activity with MATCH_DEFAULT_ONLY.
+        filter.addCategory(Intent.CATEGORY_DEFAULT);
+        shadowPackageManager.addIntentFilterForActivity(
+                new ComponentName(activityInfo.packageName, activityInfo.name), filter);
+    }
+
     @Test
-    @SmallTest
     public void testNotificationTap() {
         Intent intent = createTapIntent();
 
@@ -132,7 +150,6 @@ public class NotificationManagerTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_OPEN_NATIVE_APP)
     public void testNotificationTapWithSpecializedHandler() {
         String guid = "test_guid";
@@ -144,24 +161,7 @@ public class NotificationManagerTest {
                 new NotificationSharedPrefManager.ActiveNotification(1, guid));
 
         // Register a specialized handler.
-        ShadowPackageManager shadowPackageManager =
-                Shadows.shadowOf(RuntimeEnvironment.getApplication().getPackageManager());
-
-        IntentFilter filter = new IntentFilter(Intent.ACTION_VIEW);
-        filter.addDataScheme("https");
-        filter.addDataAuthority("www.example.com", null);
-        filter.addDataPath("/app", android.os.PatternMatcher.PATTERN_PREFIX);
-        filter.addCategory(Intent.CATEGORY_BROWSABLE);
-
-        ResolveInfo resolveInfo = new ResolveInfo();
-        resolveInfo.activityInfo = new ActivityInfo();
-        resolveInfo.activityInfo.packageName = "com.example.app";
-        resolveInfo.activityInfo.name = "com.example.app.MainActivity";
-        resolveInfo.filter = filter;
-
-        Intent queryIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-        queryIntent.addCategory(Intent.CATEGORY_BROWSABLE);
-        shadowPackageManager.addResolveInfoForIntent(queryIntent, resolveInfo);
+        addSpecializedHandler(/* appLabel= */ null);
 
         NotificationManager.handleIntent(intent);
 
@@ -184,7 +184,6 @@ public class NotificationManagerTest {
     }
 
     @Test
-    @SmallTest
     public void testNotificationTapWithSpecializedHandlerButFeatureDisabled() {
         String guid = "test_guid";
         String url = "https://www.example.com/app/path";
@@ -195,24 +194,7 @@ public class NotificationManagerTest {
                 new NotificationSharedPrefManager.ActiveNotification(1, guid));
 
         // Register a specialized handler.
-        ShadowPackageManager shadowPackageManager =
-                Shadows.shadowOf(RuntimeEnvironment.getApplication().getPackageManager());
-
-        IntentFilter filter = new IntentFilter(Intent.ACTION_VIEW);
-        filter.addDataScheme("https");
-        filter.addDataAuthority("www.example.com", null);
-        filter.addDataPath("/app", android.os.PatternMatcher.PATTERN_PREFIX);
-        filter.addCategory(Intent.CATEGORY_BROWSABLE);
-
-        ResolveInfo resolveInfo = new ResolveInfo();
-        resolveInfo.activityInfo = new ActivityInfo();
-        resolveInfo.activityInfo.packageName = "com.example.app";
-        resolveInfo.activityInfo.name = "com.example.app.MainActivity";
-        resolveInfo.filter = filter;
-
-        Intent queryIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-        queryIntent.addCategory(Intent.CATEGORY_BROWSABLE);
-        shadowPackageManager.addResolveInfoForIntent(queryIntent, resolveInfo);
+        addSpecializedHandler(/* appLabel= */ null);
 
         NotificationManager.handleIntent(intent);
 
@@ -235,31 +217,13 @@ public class NotificationManagerTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_OPEN_NATIVE_APP)
     public void testOpenInNativeAppIfPossibleWithSpecializedHandler() {
         String url = "https://www.example.com/app/path";
         Uri uri = Uri.parse(url);
 
         // Register a specialized handler.
-        ShadowPackageManager shadowPackageManager =
-                Shadows.shadowOf(RuntimeEnvironment.getApplication().getPackageManager());
-
-        IntentFilter filter = new IntentFilter(Intent.ACTION_VIEW);
-        filter.addDataScheme("https");
-        filter.addDataAuthority("www.example.com", null);
-        filter.addDataPath("/app", android.os.PatternMatcher.PATTERN_PREFIX);
-        filter.addCategory(Intent.CATEGORY_BROWSABLE);
-
-        ResolveInfo resolveInfo = new ResolveInfo();
-        resolveInfo.activityInfo = new ActivityInfo();
-        resolveInfo.activityInfo.packageName = "com.example.app";
-        resolveInfo.activityInfo.name = "com.example.app.MainActivity";
-        resolveInfo.filter = filter;
-
-        Intent queryIntent = new Intent(Intent.ACTION_VIEW, uri);
-        queryIntent.addCategory(Intent.CATEGORY_BROWSABLE);
-        shadowPackageManager.addResolveInfoForIntent(queryIntent, resolveInfo);
+        addSpecializedHandler(/* appLabel= */ null);
 
         Assert.assertNotNull(NotificationManager.getMatchingNativeAppResolveInfo(uri));
         Assert.assertTrue(NotificationManager.canOpenInNativeApp(uri));
@@ -279,7 +243,6 @@ public class NotificationManagerTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_OPEN_NATIVE_APP)
     public void testOpenInNativeAppIfPossibleNoSpecializedHandler() {
         String url = "https://www.example.com/app/path";
@@ -299,12 +262,10 @@ public class NotificationManagerTest {
 
     /**
      * Verifies that tapping a notification with page context attaches the serialized page context
-     * extra to the launcher intent when form field propagation is enabled.
+     * extra to the launcher intent.
      */
     @Test
-    @SmallTest
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_FORM_FIELDS)
-    public void testNotificationTap_WithPageContext_FeatureEnabled() {
+    public void testNotificationTap_WithPageContext() {
         byte[] pageContextBytes = new byte[] {1, 2, 3, 4};
         Intent intent = createTapIntent(pageContextBytes);
 
@@ -323,36 +284,10 @@ public class NotificationManagerTest {
     }
 
     /**
-     * Verifies that tapping a notification with page context does not attach the page context extra
-     * when form field propagation is disabled.
-     */
-    @Test
-    @SmallTest
-    @DisableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_FORM_FIELDS)
-    public void testNotificationTap_WithPageContext_FeatureDisabled() {
-        byte[] pageContextBytes = new byte[] {1, 2, 3, 4};
-        Intent intent = createTapIntent(pageContextBytes);
-
-        NotificationSharedPrefManager.addActiveNotification(
-                new NotificationSharedPrefManager.ActiveNotification(1, GUID));
-
-        NotificationManager.handleIntent(intent);
-
-        // Verify that the started intent does not contain the page context extra.
-        Intent startedIntent =
-                Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedActivity();
-        Assert.assertNotNull(startedIntent);
-        Assert.assertNull(
-                startedIntent.getByteArrayExtra(IntentHandler.EXTRA_SEND_TAB_TO_SELF_PAGE_CONTEXT));
-    }
-
-    /**
      * Verifies that tapping a notification without page context does not attach the page context
      * extra.
      */
     @Test
-    @SmallTest
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_FORM_FIELDS)
     public void testNotificationTap_WithoutPageContext() {
         Intent intent = createTapIntent();
 
@@ -377,12 +312,10 @@ public class NotificationManagerTest {
     }
 
     /**
-     * Verifies that NotificationManager.showNotification creates a notification whose content
-     * intent carries the serialized page context extra when form field propagation is enabled.
+     * Verifies that `NotificationManager.showNotification` creates a notification whose content
+     * intent carries the serialized page context extra.
      */
     @Test
-    @SmallTest
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_FORM_FIELDS)
     public void testShowNotificationWithPageContext() {
         byte[] pageContextBytes = new byte[] {1, 2, 3};
         boolean shown =
@@ -403,8 +336,7 @@ public class NotificationManagerTest {
 
         Intent tapIntent = getRealIntent(captor.getValue().getNotification().contentIntent);
         Assert.assertNotNull(tapIntent);
-        Assert.assertEquals(
-                NotificationManager.NOTIFICATION_ACTION_TAP, tapIntent.getAction());
+        Assert.assertEquals(NotificationManager.NOTIFICATION_ACTION_TAP, tapIntent.getAction());
         Assert.assertEquals(
                 GUID, tapIntent.getStringExtra(NotificationManager.NOTIFICATION_GUID_EXTRA));
         Assert.assertArrayEquals(
@@ -417,7 +349,6 @@ public class NotificationManagerTest {
      * context extra when no page context is provided.
      */
     @Test
-    @SmallTest
     public void testShowNotificationWithoutPageContext() {
         boolean shown =
                 NotificationManager.showNotification(
@@ -446,7 +377,6 @@ public class NotificationManagerTest {
      * NotificationStatus metric.
      */
     @Test
-    @SmallTest
     public void testNotificationStatusMetricsOnShowDismissAndTimeout() {
         NotificationManager.showNotification(
                 GUID, URL, "title", "device", 100000000L, BroadcastReceiver.class, null, null);
@@ -464,7 +394,6 @@ public class NotificationManagerTest {
     }
 
     @Test
-    @SmallTest
     public void testShowNotification_OpensInTab_ContextTextContainsHost() {
         boolean shown =
                 NotificationManager.showNotification(
@@ -489,29 +418,10 @@ public class NotificationManagerTest {
     }
 
     @Test
-    @SmallTest
     @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_OPEN_NATIVE_APP)
     public void testShowNotification_OpensInNativeApp_ContextTextContainsAppName() {
         String url = "https://www.example.com/app/path";
-        ShadowPackageManager shadowPackageManager =
-                Shadows.shadowOf(RuntimeEnvironment.getApplication().getPackageManager());
-
-        IntentFilter filter = new IntentFilter(Intent.ACTION_VIEW);
-        filter.addDataScheme("https");
-        filter.addDataAuthority("www.example.com", null);
-        filter.addDataPath("/app", android.os.PatternMatcher.PATTERN_PREFIX);
-        filter.addCategory(Intent.CATEGORY_BROWSABLE);
-
-        ResolveInfo resolveInfo = new ResolveInfo();
-        resolveInfo.activityInfo = new ActivityInfo();
-        resolveInfo.activityInfo.packageName = "com.example.app";
-        resolveInfo.activityInfo.name = "com.example.app.MainActivity";
-        resolveInfo.nonLocalizedLabel = "Example App";
-        resolveInfo.filter = filter;
-
-        Intent queryIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-        queryIntent.addCategory(Intent.CATEGORY_BROWSABLE);
-        shadowPackageManager.addResolveInfoForIntent(queryIntent, resolveInfo);
+        addSpecializedHandler("Example App");
 
         boolean shown =
                 NotificationManager.showNotification(

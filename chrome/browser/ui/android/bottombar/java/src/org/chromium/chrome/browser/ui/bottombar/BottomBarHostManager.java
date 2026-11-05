@@ -71,13 +71,13 @@ public class BottomBarHostManager {
             viewGroup.removeView(view);
         }
 
-        attachCallback.onResult(view);
         mBottomBar.setParent(host);
+        attachCallback.onResult(view);
     }
 
-    /** Returns whether the BottomBar promo dialog is shown. */
-    public boolean maybeShowPromoDialog(Profile profile) {
-        return mBottomBar != null && mBottomBar.maybeShowPromoDialog(profile);
+    /** Returns whether the bottom bar claimed the startup promo slot for its education. */
+    public boolean maybeClaimPromoSlotForEducation(Profile profile) {
+        return mBottomBar != null && mBottomBar.maybeClaimPromoSlotForEducation(profile);
     }
 
     /** Notifies the bottom bar that the startup promo flow has finished. */

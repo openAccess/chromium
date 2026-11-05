@@ -690,10 +690,12 @@ TEST(PermissionsTest, IsPrivilegeIncrease) {
 
       {"storage", false},       // none -> storage
       {"notifications", true},  // none -> notifications
+      {"mimehandler1", true},   // none -> mime_types_handler
+      {"mimehandler2", false},  // all hosts -> all hosts + mime_types_handler
 #if BUILDFLAG(ENABLE_PLATFORM_APPS)
       // All of the below are platform app permissions.
-      {"platformapp1", false},      // host permissions for platform apps
-      {"platformapp2", true},       // API permissions for platform apps
+      {"platformapp1", false},  // host permissions for platform apps
+      {"platformapp2", true},   // API permissions for platform apps
 #if BUILDFLAG(IS_CHROMEOS)
       // TODO(crbug.com/445350577): Remove the IS_CHROMEOS check when
       // IS_CHROMEOS and ENABLE_PLATFORM_APPS are equivalent.
@@ -705,9 +707,9 @@ TEST(PermissionsTest, IsPrivilegeIncrease) {
       {"media_galleries6", false},  // read|all -> read|all
       {"media_galleries7", true},   // read|delete|all -> read|copyTo|delete|all
 #endif
-      {"sockets1", true},           // none -> tcp:*:*
-      {"sockets2", false},          // tcp:*:* -> tcp:*:*
-      {"sockets3", true},           // tcp:a.com:80 -> tcp:*:*
+      {"sockets1", true},   // none -> tcp:*:*
+      {"sockets2", false},  // tcp:*:* -> tcp:*:*
+      {"sockets3", true},   // tcp:a.com:80 -> tcp:*:*
 #endif
   });
 
@@ -780,7 +782,9 @@ TEST(PermissionsTest, PermissionMessages) {
   skip.insert(APIPermissionID::kGcm);
   skip.insert(APIPermissionID::kIdle);
   skip.insert(APIPermissionID::kImeWindowEnabled);
+#if BUILDFLAG(IS_CHROMEOS)
   skip.insert(APIPermissionID::kLoginState);
+#endif
   skip.insert(APIPermissionID::kOffscreen);
   skip.insert(APIPermissionID::kOverrideEscFullscreen);
 #if BUILDFLAG(ENABLE_PLATFORM_APPS)
@@ -824,11 +828,11 @@ TEST(PermissionsTest, PermissionMessages) {
   skip.insert(APIPermissionID::kWebRequestAuthProvider);
   skip.insert(APIPermissionID::kDeclarativeNetRequestWithHostAccess);
 
+#if BUILDFLAG(IS_CHROMEOS)
   // This permission requires explicit user action (context menu handler)
   // so we won't prompt for it for now.
   skip.insert(APIPermissionID::kFileBrowserHandler);
 
-#if BUILDFLAG(IS_CHROMEOS)
   // These permissions require explicit user action (configuration dialog)
   // so we don't prompt for them at install time.
   skip.insert(APIPermissionID::kMediaGalleries);
@@ -852,12 +856,16 @@ TEST(PermissionsTest, PermissionMessages) {
   skip.insert(APIPermissionID::kIdentity);
 
   // These are private.
+#if BUILDFLAG(IS_CHROMEOS)
   skip.insert(APIPermissionID::kAccessibilityPrivate);
+#endif
   skip.insert(APIPermissionID::kAccessibilityServicePrivate);
 #if BUILDFLAG(ENABLE_PLATFORM_APPS)
   skip.insert(APIPermissionID::kArcAppsPrivate);
 #endif
+#if BUILDFLAG(IS_CHROMEOS)
   skip.insert(APIPermissionID::kAutoTestPrivate);
+#endif
   skip.insert(APIPermissionID::kBrailleDisplayPrivate);
   skip.insert(APIPermissionID::kCecPrivate);
   skip.insert(APIPermissionID::kChromeosInfoPrivate);
@@ -865,17 +873,23 @@ TEST(PermissionsTest, PermissionMessages) {
   skip.insert(APIPermissionID::kContextualTasksPrivate);
   skip.insert(APIPermissionID::kCrashReportPrivate);
   skip.insert(APIPermissionID::kDeveloperPrivate);
+#if BUILDFLAG(IS_CHROMEOS)
   skip.insert(APIPermissionID::kEchoPrivate);
+#endif
   skip.insert(APIPermissionID::kEnterprisePlatformKeysPrivate);
   skip.insert(APIPermissionID::kFeedbackPrivate);
+#if BUILDFLAG(IS_CHROMEOS)
   skip.insert(APIPermissionID::kFileManagerPrivate);
+#endif
 #if BUILDFLAG(ENABLE_PLATFORM_APPS)
   skip.insert(APIPermissionID::kFirstRunPrivate);
 #endif
   skip.insert(APIPermissionID::kGlicPrivate);
   skip.insert(APIPermissionID::kGlicPrivateInvoke);
+#if BUILDFLAG(IS_CHROMEOS)
   skip.insert(APIPermissionID::kImageLoaderPrivate);
   skip.insert(APIPermissionID::kInputMethodPrivate);
+#endif
   skip.insert(APIPermissionID::kLanguageSettingsPrivate);
   skip.insert(APIPermissionID::kLockWindowFullscreenPrivate);
   skip.insert(APIPermissionID::kMediaPlayerPrivate);
@@ -886,7 +900,9 @@ TEST(PermissionsTest, PermissionMessages) {
   skip.insert(APIPermissionID::kImageWriterPrivate);
   skip.insert(APIPermissionID::kResourcesPrivate);
   skip.insert(APIPermissionID::kSafeBrowsingPrivate);
+#if BUILDFLAG(IS_CHROMEOS)
   skip.insert(APIPermissionID::kSmartCardProviderPrivate);
+#endif
   skip.insert(APIPermissionID::kSystemPrivate);
   skip.insert(APIPermissionID::kTabCaptureForTab);
   skip.insert(APIPermissionID::kTerminalPrivate);
@@ -894,9 +910,11 @@ TEST(PermissionsTest, PermissionMessages) {
   skip.insert(APIPermissionID::kWebrtcDesktopCapturePrivate);
   skip.insert(APIPermissionID::kWebrtcLoggingPrivate);
   skip.insert(APIPermissionID::kWebrtcLoggingPrivateAudioDebug);
+#if BUILDFLAG(IS_CHROMEOS)
   skip.insert(APIPermissionID::kWmDesksPrivate);
   skip.insert(APIPermissionID::kSystemLog);
   skip.insert(APIPermissionID::kOdfsConfigPrivate);
+#endif
   skip.insert(APIPermissionID::kIndigoPrivate);
   skip.insert(APIPermissionID::kDictationPrivate);
 
@@ -910,7 +928,9 @@ TEST(PermissionsTest, PermissionMessages) {
 #endif
   skip.insert(APIPermissionID::kHid);
   skip.insert(APIPermissionID::kFileSystem);
+#if BUILDFLAG(IS_CHROMEOS)
   skip.insert(APIPermissionID::kFileSystemProvider);
+#endif
   skip.insert(APIPermissionID::kFileSystemRequestFileSystem);
   skip.insert(APIPermissionID::kFileSystemRetainEntries);
   skip.insert(APIPermissionID::kFileSystemWrite);
@@ -1372,6 +1392,10 @@ testing::AssertionResult ShowsAllHostsWarning(const std::string& pattern) {
 
 TEST(PermissionsTest, GetWarningMessages_TLDWildcardTreatedAsAllHosts) {
   EXPECT_TRUE(ShowsAllHostsWarning("http://*.com/*"));    // most popular.
+  EXPECT_TRUE(ShowsAllHostsWarning("http://*.com./*"));   // trailing dot.
+  EXPECT_TRUE(ShowsAllHostsWarning("http://*.com../*"));  // multiple dots.
+  // trailing unicode (。) which maps to standard ASCII dot (.).
+  EXPECT_TRUE(ShowsAllHostsWarning("http://*.com\xe3\x80\x82/*"));
   EXPECT_TRUE(ShowsAllHostsWarning("http://*.org/*"));    // sanity check.
   EXPECT_TRUE(ShowsAllHostsWarning("http://*.co.uk/*"));  // eTLD.
   EXPECT_TRUE(ShowsAllHostsWarning("http://*.de/*"));  // foreign country tld.
@@ -1934,6 +1958,7 @@ TEST(PermissionsTest, SettingMembers) {
     EXPECT_TRUE(set.ShouldWarnAllHosts());
   }
 
+#if BUILDFLAG(IS_CHROMEOS)
   {
     // Setting API permissions adds implicit permissions.
     PermissionSet set;
@@ -1942,6 +1967,7 @@ TEST(PermissionsTest, SettingMembers) {
     set.SetAPIPermissions(std::move(new_apis));
     EXPECT_TRUE(set.HasAPIPermission(APIPermissionID::kFileBrowserHandler));
   }
+#endif
 }
 
 }  // namespace extensions

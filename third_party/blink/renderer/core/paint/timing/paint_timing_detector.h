@@ -27,7 +27,6 @@ class ImageResourceContent;
 class LayoutBoxModelObject;
 class LayoutObject;
 class MediaTiming;
-class Node;
 class PaintTiming;
 class PropertyTreeStateOrAlias;
 class StyleFetchedImage;
@@ -52,43 +51,51 @@ class CORE_EXPORT PaintTimingDetector
  public:
   static PaintTimingDetector& From(Document&);
 
-  explicit PaintTimingDetector(PaintTiming*);
-
-  // Returns true if the image might ultimately be a candidate for largest
-  // paint, otherwise false. When this method is called we do not know the
-  // largest status for certain, because we need to wait for presentation.
-  // Hence the "maybe" return value.
-  static bool NotifyBackgroundImagePaint(
-      Node&,
+  // Callback from the paint layer when a background image has been painted.
+  // Updates paint timing state for the element if needed.
+  static void NotifyBackgroundImagePaint(
+      const LayoutObject& image_layout_object,
       const Image&,
       const StyleImage&,
       const PropertyTreeStateOrAlias& current_paint_chunk_properties,
       const gfx::Rect& image_border);
-  // Returns true if the image is a candidate for largest paint, otherwise
-  // false. See the comment for NotifyBackgroundImagePaint(...).
-  static bool NotifyImagePaint(
-      const LayoutObject&,
+
+  // Callback from the paint layer when a foreground image (<img>, svg image, or
+  // poster image) has been painted. Updates paint timing state for the element
+  // if needed.
+  static void NotifyImagePaint(
+      const LayoutObject& image_layout_object,
       const gfx::Size& intrinsic_size,
       const MediaTiming& media_timing,
       const PropertyTreeStateOrAlias& current_paint_chunk_properties,
       const gfx::Rect& image_border);
+
+  // Callback from the video layer when a the first video frame has been been
+  // presented. Updates paint timing state for the element if needed.
   static void NotifyFirstVideoFrame(
       const LayoutObject&,
       const gfx::Size& intrinsic_size,
       const MediaTiming& media_timing,
       const PropertyTreeStateOrAlias& current_paint_chunk_properties,
       const gfx::Rect& image_border);
+
+  // Callback from the paint layer when text has been painted. Updates the
+  // aggregated text painted area for the current element being painted (see
+  // `ScopedPaintTimingDetectorBlockPaintHook`).
   inline static void NotifyTextPaint(const gfx::Rect& text_visual_rect);
 
   // Called when the "src" attribute changes on a <video> element and the change
   // is attributable to an interaction.
   static void NotifyInteractionTriggeredVideoSrcChange(const LayoutObject&);
 
+  explicit PaintTimingDetector(PaintTiming*);
+
   void Trace(Visitor* visitor) const;
 
   void NotifyImageFinished(const LayoutObject&, const MediaTiming*);
   void NotifyBackgroundImageFinished(const StyleFetchedImage*);
   void NotifyImageRemoved(const LayoutObject&, const ImageResourceContent*);
+  void NotifyWillPaint();
   void NotifyPaintFinished();
 
   void DidChangePerformanceTiming();
@@ -111,15 +118,15 @@ class CORE_EXPORT PaintTimingDetector
   }
   PaintTiming& GetPaintTiming() { return *paint_timing_; }
 
-  // Reports the largest image and text candidates painted under non-nested 0
-  // opacity layer.
-  void ReportIgnoredContent();
-
   PaintTimingVisualizer* Visualizer() { return visualizer_.get(); }
 
  private:
   FRIEND_TEST_ALL_PREFIXES(ImagePaintTimingDetectorTest,
                            LargestImagePaint_Detached_Frame);
+
+  // Reports the largest image and text candidates painted under non-nested 0
+  // opacity layer.
+  void ReportIgnoredContent();
 
   // Returns the `LocalDOMWindow` associated with the relevant document, or
   // nullptr if the associated frame is detached.

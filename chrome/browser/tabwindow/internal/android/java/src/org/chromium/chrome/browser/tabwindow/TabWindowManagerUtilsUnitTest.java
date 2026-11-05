@@ -16,7 +16,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -26,7 +25,6 @@ import org.chromium.components.tab_groups.TabGroupColorId;
 
 /** Unit tests for {@link TabWindowManagerUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class TabWindowManagerUtilsUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Mock private TabWindowManager mTabWindowManager;
@@ -40,7 +38,7 @@ public class TabWindowManagerUtilsUnitTest {
         when(mTabWindowManager.findWindowIdForTabGroup(tabGroupId)).thenReturn(1);
         when(mTabWindowManager.getTabModelSelectorById(1)).thenReturn(mTabModelSelector);
         when(mTabModelSelector.getModel(false)).thenReturn(mTabModel);
-        when(mTabModel.tabGroupExists(tabGroupId)).thenReturn(true);
+        when(mTabModel.containsTabGroup(tabGroupId)).thenReturn(true);
         when(mTabModel.getTabGroupTitle(tabGroupId)).thenReturn("Test Title");
 
         String title =

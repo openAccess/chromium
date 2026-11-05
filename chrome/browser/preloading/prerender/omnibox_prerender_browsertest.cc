@@ -37,6 +37,7 @@
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/content_mock_cert_verifier.h"
 #include "content/public/test/navigation_handle_observer.h"
 #include "content/public/test/preloading_test_util.h"
 #include "content/public/test/prerender_test_util.h"
@@ -165,7 +166,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPrerenderBrowserTest, DisableNetworkPrediction) {
         web_contents->GetPrimaryMainFrame()->GetPageUkmSourceId();
     auto ukm_entries = test_ukm_recorder()->GetEntries(
         Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
+        content::test::GetPreloadingAttemptUkmMetrics());
     EXPECT_EQ(ukm_entries.size(), 1u);
 
     UkmEntry expected_entry = ukm_entry_builder().BuildEntry(
@@ -205,7 +206,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPrerenderBrowserTest, DisableNetworkPrediction) {
     ukm::SourceId ukm_source_id = activation_observer.next_page_ukm_source_id();
     auto ukm_entries = test_ukm_recorder()->GetEntries(
         Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
+        content::test::GetPreloadingAttemptUkmMetrics());
 
     // There should be 2 entries after we attempt Prerender again.
     EXPECT_EQ(ukm_entries.size(), 2u);
@@ -232,8 +233,25 @@ class PrerenderOmniboxSearchSuggestionBrowserTest
     PlatformBrowserTest::SetUp();
   }
 
+  void SetUpInProcessBrowserTestFixture() override {
+    OmniboxPrerenderBrowserTest::SetUpInProcessBrowserTestFixture();
+    mock_cert_verifier_.SetUpInProcessBrowserTestFixture();
+  }
+
+  void TearDownInProcessBrowserTestFixture() override {
+    OmniboxPrerenderBrowserTest::TearDownInProcessBrowserTestFixture();
+    mock_cert_verifier_.TearDownInProcessBrowserTestFixture();
+  }
+
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    OmniboxPrerenderBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch("ignore-certificate-errors");
+    mock_cert_verifier_.SetUpCommandLine(command_line);
+  }
+
   void SetUpOnMainThread() override {
     OmniboxPrerenderBrowserTest::SetUpOnMainThread();
+    mock_cert_verifier_.mock_cert_verifier()->set_default_result(net::OK);
     host_resolver()->AddRule("*", "127.0.0.1");
 
     search_engine_server_.SetSSLConfig(
@@ -242,6 +260,11 @@ class PrerenderOmniboxSearchSuggestionBrowserTest
         base::PathService::CheckedGet(chrome::DIR_TEST_DATA));
     ASSERT_TRUE(search_engine_server_.Start());
     SetUrlTemplate();
+  }
+
+  void TearDownOnMainThread() override {
+    ASSERT_TRUE(search_engine_server_.ShutdownAndWaitUntilComplete());
+    OmniboxPrerenderBrowserTest::TearDownOnMainThread();
   }
 
   void SetNewUrlTemplate(const std::string& prerender_page_target) {
@@ -339,6 +362,7 @@ class PrerenderOmniboxSearchSuggestionBrowserTest
   constexpr static char kSearchDomain[] = "a.test";
   constexpr static char16_t kSearchDomain16[] = u"a.test";
   raw_ptr<PrerenderManager, AcrossTasksDanglingUntriaged> prerender_manager_;
+  content::ContentMockCertVerifier mock_cert_verifier_;
   net::test_server::EmbeddedTestServer search_engine_server_{
       net::test_server::EmbeddedTestServer::TYPE_HTTPS};
   std::string prerender_page_target_ = "/title1.html";

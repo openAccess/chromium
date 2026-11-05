@@ -17,11 +17,9 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/trace_event/trace_event.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/tab_contents/form_interaction_tab_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/constants/devicetype.h"
@@ -29,8 +27,11 @@
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
 #include "components/site_engagement/content/site_engagement_service.h"
 #include "components/tabs/public/tab_interface.h"
+#include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
 #include "ui/aura/client/aura_constants.h"
 
 namespace ash {
@@ -100,14 +101,14 @@ int GetRoundedOrInvalidEngagementScore(content::WebContents* contents) {
 
   auto* service = site_engagement::SiteEngagementService::Get(
       contents->GetBrowserContext());
-  DCHECK(service);
+  CHECK(service, base::NotFatalUntil::M160);
 
   // Scores range from 0 to 100. Round down to a multiple of 10 to conform to
   // privacy guidelines.
   double raw_score = service->GetScore(contents->GetVisibleURL());
   int rounded_score = static_cast<int>(raw_score / 10) * 10;
-  DCHECK_LE(0, rounded_score);
-  DCHECK_GE(100, rounded_score);
+  CHECK_LE(0, rounded_score, base::NotFatalUntil::M160);
+  CHECK_GE(100, rounded_score, base::NotFatalUntil::M160);
   return rounded_score;
 }
 
@@ -134,12 +135,12 @@ UserActivityManager::UserActivityManager(
       session_manager_(session_manager),
       receiver_(this, std::move(receiver)),
       power_manager_client_(power_manager_client) {
-  DCHECK(ukm_logger_);
+  CHECK(ukm_logger_, base::NotFatalUntil::M160);
 
-  DCHECK(detector);
+  CHECK(detector, base::NotFatalUntil::M160);
   user_activity_observation_.Observe(detector);
 
-  DCHECK(power_manager_client);
+  CHECK(power_manager_client, base::NotFatalUntil::M160);
   power_manager_client_observation_.Observe(power_manager_client);
   power_manager_client->RequestStatusUpdate();
   power_manager_client->GetSwitchStates(
@@ -149,7 +150,7 @@ UserActivityManager::UserActivityManager(
       base::BindOnce(&UserActivityManager::OnReceiveInactivityDelays,
                      weak_ptr_factory_.GetWeakPtr()));
 
-  DCHECK(session_manager);
+  CHECK(session_manager, base::NotFatalUntil::M160);
   session_manager_observation_.Observe(session_manager);
 
   if (chromeos::GetDeviceType() == chromeos::DeviceType::kChromebook) {
@@ -276,10 +277,8 @@ void UserActivityManager::UpdateAndGetSmartDimDecision(
   // otherwise. If there are multiple users, the primary one may have
   // more-restrictive policy-controlled settings.
   bool smart_dim_enabled = true;
-  const Profile* const profile = ProfileManager::GetPrimaryUserProfile();
-  if (profile) {
-    smart_dim_enabled =
-        profile->GetPrefs()->GetBoolean(ash::prefs::kPowerSmartDimEnabled);
+  if (const PrefService* const prefs = GetPrimaryUserPrefs()) {
+    smart_dim_enabled = prefs->GetBoolean(ash::prefs::kPowerSmartDimEnabled);
   }
 
   if (smart_dim_enabled &&
@@ -343,13 +342,24 @@ void UserActivityManager::HandleSmartDimDecision(
 
 void UserActivityManager::OnSessionStateChanged() {
   TRACE_EVENT0("ui", "UserActivityManager::OnSessionStateChanged");
-  DCHECK(session_manager_);
+  CHECK(session_manager_, base::NotFatalUntil::M160);
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   const bool was_locked = screen_is_locked_;
   screen_is_locked_ = session_manager_->IsScreenLocked();
   if (!was_locked && screen_is_locked_) {
     screen_lock_occurred_ = true;
   }
+}
+
+const PrefService* UserActivityManager::GetPrimaryUserPrefs() const {
+  const session_manager::Session* const primary_session =
+      session_manager_->GetPrimarySession();
+  if (!primary_session) {
+    return nullptr;
+  }
+  const user_manager::User* const user =
+      user_manager::UserManager::Get()->FindUser(primary_session->account_id());
+  return user ? user->GetProfilePrefs() : nullptr;
 }
 
 void UserActivityManager::OnReceiveSwitchStates(

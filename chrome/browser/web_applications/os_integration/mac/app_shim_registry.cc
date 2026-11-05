@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <utility>
 
 #include "base/base64.h"
@@ -14,6 +15,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
+#include "base/strings/strcat.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "components/os_crypt/async/browser/os_crypt_async.h"
@@ -51,6 +53,25 @@ const char kFileHandlerMimeTypes[] = "mime_types";
 const char kProtocolHandlers[] = "protocols";
 const char kCdHashHmac[] = "cdhash_hmac";
 const char kNotificationPermissionStatus[] = "notification_permission";
+
+// LINT.IfChange(NotificationPermissionStatusVariant)
+std::string_view PermissionStatusToHistogramVariant(
+    AppShimRegistry::NotificationPermissionStatus status) {
+  using PermissionStatus = AppShimRegistry::NotificationPermissionStatus;
+  switch (status) {
+    case PermissionStatus::kNotDetermined:
+      return "NotDetermined";
+    case PermissionStatus::kPromptPending:
+      return "PromptPending";
+    case PermissionStatus::kImplicitlyDenied:
+      return "ImplicitlyDenied";
+    case PermissionStatus::kGranted:
+      return "Granted";
+    case PermissionStatus::kExplicitlyDenied:
+      return "ExplicitlyDenied";
+  }
+}
+// LINT.ThenChange(//tools/metrics/histograms/metadata/notifications/histograms.xml:NotificationPermissionStatusVariant)
 
 base::ListValue SetToValueList(const std::set<std::string>& values) {
   base::ListValue result;
@@ -450,34 +471,48 @@ bool AppShimRegistry::DoVerifyCdHashForApp(
 
 void AppShimRegistry::SaveNotificationPermissionStatusForApp(
     const std::string& app_id,
-    mac_notifications::mojom::PermissionStatus status) {
+    NotificationPermissionStatus status) {
+  if (GetInstalledProfilesForApp(app_id).empty()) {
+    return;
+  }
+
+  const NotificationPermissionStatus old_status =
+      GetNotificationPermissionStatusForApp(app_id);
+
   SetAppInfo(app_id, /*installed_profiles=*/nullptr,
              /*last_active_profiles=*/nullptr, /*handlers=*/nullptr,
              /*cd_hash_hmac_base64=*/nullptr, &status);
+
+  if (old_status != status) {
+    base::UmaHistogramEnumeration(
+        base::StrCat({"Notifications.Permissions.AppShim.StatusTransition.",
+                      PermissionStatusToHistogramVariant(old_status)}),
+        status);
+  }
 }
 
-mac_notifications::mojom::PermissionStatus
+AppShimRegistry::NotificationPermissionStatus
 AppShimRegistry::GetNotificationPermissionStatusForApp(
     const std::string& app_id) {
-  using PermissionStatus = mac_notifications::mojom::PermissionStatus;
   const base::DictValue& cache = GetPrefService()->GetDict(kAppShims);
   const base::DictValue* app_info = cache.FindDict(app_id);
   if (!app_info) {
-    return PermissionStatus::kNotDetermined;
+    return NotificationPermissionStatus::kNotDetermined;
   }
   std::optional<int> status_as_int =
       app_info->FindInt(kNotificationPermissionStatus);
   if (!status_as_int.has_value()) {
-    return PermissionStatus::kNotDetermined;
+    return NotificationPermissionStatus::kNotDetermined;
   }
   switch (*status_as_int) {
-    case static_cast<int>(PermissionStatus::kNotDetermined):
-    case static_cast<int>(PermissionStatus::kPromptPending):
-    case static_cast<int>(PermissionStatus::kDenied):
-    case static_cast<int>(PermissionStatus::kGranted):
-      return static_cast<PermissionStatus>(*status_as_int);
+    case static_cast<int>(NotificationPermissionStatus::kNotDetermined):
+    case static_cast<int>(NotificationPermissionStatus::kPromptPending):
+    case static_cast<int>(NotificationPermissionStatus::kImplicitlyDenied):
+    case static_cast<int>(NotificationPermissionStatus::kGranted):
+    case static_cast<int>(NotificationPermissionStatus::kExplicitlyDenied):
+      return static_cast<NotificationPermissionStatus>(*status_as_int);
   }
-  return PermissionStatus::kNotDetermined;
+  return NotificationPermissionStatus::kNotDetermined;
 }
 
 base::CallbackListSubscription AppShimRegistry::RegisterAppChangedCallback(
@@ -522,8 +557,7 @@ void AppShimRegistry::SetAppInfo(
     const std::set<base::FilePath>* last_active_profiles,
     const std::map<base::FilePath, HandlerInfo>* handlers,
     const std::string* cd_hash_hmac_base64,
-    const mac_notifications::mojom::PermissionStatus*
-        notification_permission_status) {
+    const NotificationPermissionStatus* notification_permission_status) {
   ScopedDictPrefUpdate update(GetPrefService(), kAppShims);
 
   // If there are no installed profiles, clear the app's key.

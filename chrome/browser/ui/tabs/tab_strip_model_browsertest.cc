@@ -23,11 +23,13 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_deletion_dialog_controller.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_test_utils.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
 #include "chrome/browser/web_applications/test/os_integration_test_override_impl.h"
@@ -48,7 +50,6 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_LINUX)
@@ -144,6 +145,34 @@ IN_PROC_BROWSER_TEST_F(TabStripModelPreventCloseTest,
     tab_strip_model->CloseAllTabs();
     EXPECT_EQ(0, tab_strip_model->count());
   }
+}
+
+IN_PROC_BROWSER_TEST_F(
+    TabStripModelPreventCloseTest,
+    ForceSkipWarningUserOnCloseAllowsClosingPreventCloseTab) {
+  InstallPWA(GURL(kCalculatorAppUrl), ash::kCalculatorAppId);
+  SetPoliciesAndWaitUntilInstalled(ash::kCalculatorAppId,
+                                   kPreventCloseEnabledForCalculator,
+                                   kCalculatorForceInstalled);
+  BrowserWindowInterface* const browser =
+      LaunchPWA(ash::kCalculatorAppId, /*launch_in_window=*/true);
+  ASSERT_TRUE(browser);
+
+  ObserveBrowser(browser);
+
+  TabStripModel* const tab_strip_model = browser->GetTabStripModel();
+  ASSERT_EQ(1, tab_strip_model->count());
+  EXPECT_EQ(!kShouldPreventClose,
+            tab_strip_model->IsTabClosable(tab_strip_model->GetActiveTab()));
+
+  UnloadController::From(browser)->set_force_skip_warning_user_on_close(true);
+  EXPECT_TRUE(tab_strip_model->IsTabClosable(tab_strip_model->GetActiveTab()));
+
+  EXPECT_CALL(*this, OnTabCloseCancelled(_)).Times(0);
+
+  tab_strip_model->CloseAllTabs();
+  EXPECT_EQ(0, tab_strip_model->count());
+  ClearWebAppSettings();
 }
 
 // TODO(b/321593065): enable this flaky test.
@@ -482,10 +511,6 @@ IN_PROC_BROWSER_TEST_F(TabStripModelBrowserTest, CommandDuplicateSelected) {
 
 // TODO(crbug.com/501991031): Fails on "chrome/ci/linux-chromeos-chrome".
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING) && BUILDFLAG(IS_CHROMEOS)
-#define MAYBE_TestCloseTabDuringMoveOperation \
-  DISABLED_TestCloseTabDuringMoveOperation
-// TODO(crbug.com/542347163): Re-enable test.
-#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_TestCloseTabDuringMoveOperation \
   DISABLED_TestCloseTabDuringMoveOperation
 #else

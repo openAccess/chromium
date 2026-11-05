@@ -18,6 +18,7 @@
 #include "base/auto_reset.h"
 #include "base/check_op.h"
 #include "base/containers/extend.h"
+#include "base/containers/span.h"
 #include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -43,10 +44,10 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/passwords/ui_utils.h"
-#include "chrome/browser/ui/views/autofill/popup/popup_at_memory_ai_disclosure_view.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_base_view.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_bnpl_footnote_view.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_centered_text_view.h"
+#include "chrome/browser/ui/views/autofill/popup/popup_footer_with_link_view.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_interactive_row_view.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_loading_view.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_notice_view.h"
@@ -78,7 +79,6 @@
 #include "components/image_fetcher/core/image_fetcher_service.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/password_manager/core/browser/password_sync_util.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
@@ -283,23 +283,26 @@ class PopupRowContainerBuilder {
       }
       visible_height_ += height_factor * MaxHeightOfRow(new_view);
     } else if constexpr (kIsRelevantEntry) {
-      has_fully_hidden_entry = true;
+      has_fully_hidden_entry_ = true;
     }
 
-    rows_.push_back(new_view);
+    rows_.emplace_back(raw_ptr<T>(new_view));
     return new_view;
   }
 
   // Returns the desired maximum height of the built container for clipping the
   // height on a surrounding scroll area, or `std::nullopt` if no height limit
   // is necessary.
-  std::optional<int> GetScrollClippingHeight() const {
-    if (!has_fully_hidden_entry ||
+  std::optional<int> GetScrollClippingHeight(
+      FillingProduct filling_product) const {
+    if (!has_fully_hidden_entry_ ||
+        !HasFillingProductHeightLimit(filling_product) ||
         !base::FeatureList::IsEnabled(
             features::kAutofillEnableEntryLimitInPopup)) {
-      // Do not apply a height limit when the scrollbar would be very small
-      // (less than one full entry). This also serves as a safeguard to avoid
-      // returning a minimally too small height limit.
+      // Do not apply a height limit for certain filling products or when the
+      // scrollbar would be very small (less than one full entry). This also
+      // serves as a safeguard to avoid returning a minimally too small height
+      // limit.
       return std::nullopt;
     }
     return visible_height_;
@@ -334,6 +337,30 @@ class PopupRowContainerBuilder {
     return height;
   }
 
+  // Returns whether `filling_product` should have a popup height limit.
+  static bool HasFillingProductHeightLimit(FillingProduct filling_product) {
+    switch (filling_product) {
+      case FillingProduct::kNone:
+      case FillingProduct::kAddress:
+      case FillingProduct::kCreditCard:
+      case FillingProduct::kMerchantPromoCode:
+      case FillingProduct::kIban:
+      case FillingProduct::kPassword:
+      case FillingProduct::kCompose:
+      case FillingProduct::kAutofillAi:
+      case FillingProduct::kLoyaltyCard:
+      case FillingProduct::kIdentityCredential:
+      case FillingProduct::kOneTimePassword:
+      case FillingProduct::kPasskey:
+      case FillingProduct::kAtMemory:
+        return true;
+      case FillingProduct::kAutocomplete:
+      case FillingProduct::kDataList:
+        return false;
+    }
+    NOTREACHED();
+  }
+
   // Container owned by this builder that is currently being constructed.
   std::unique_ptr<views::BoxLayoutView> container_;
   // Collection of all added rows.
@@ -347,7 +374,7 @@ class PopupRowContainerBuilder {
   int visible_height_ = 0;
   // Indicator if there is at least one relevant entry that is entirely out of
   // view after restricting the height to `visible_height_`.
-  bool has_fully_hidden_entry = false;
+  bool has_fully_hidden_entry_ = false;
   // Minimum width the popup can have.
   const int popup_min_width_;
 };
@@ -473,6 +500,7 @@ bool PopupViewViews::Show(
   MaybeAnnounceCurrentTabAndFootnote();
   MaybeAnnouncePasswordRecoveryPopup();
   MaybeAnnounceLoadingState();
+  MaybeAnnounceA11yOverride();
   if (!MaybeA11yFocusInformationalSuggestion()) {
     return false;
   }
@@ -759,16 +787,10 @@ bool PopupViewViews::HandleKeyPressEventForAtMemory(
       }
       return false;
     case ui::VKEY_DOWN:
-      if (GetSelectedCell()) {
+      if (!rows_.empty()) {
         SelectNextRow(PopupCellSelectionSource::kKeyboard);
-        return true;
       }
-      if (HasSelectablePopupInteractiveRowViewAt(0)) {
-        SetSelectedCell(CellIndex(0, PopupRowView::CellType::kContent),
-                        PopupCellSelectionSource::kKeyboard);
-        return true;
-      }
-      return false;
+      return GetSelectedCell().has_value();
     case ui::VKEY_LEFT:
     case ui::VKEY_RIGHT:
       return HandlePopupHorizontalNavigation(event);
@@ -807,7 +829,7 @@ bool PopupViewViews::HandlePopupHorizontalNavigation(
 }
 
 void PopupViewViews::SelectPreviousRow() {
-  DCHECK(!rows_.empty());
+  CHECK(!rows_.empty(), base::NotFatalUntil::M162);
   std::optional<CellIndex> old_index = GetSelectedCell();
   // Temporarily use an int to avoid underflows.
   int new_row = old_index ? static_cast<int>(old_index->first) - 1 : -1;
@@ -834,7 +856,7 @@ void PopupViewViews::SelectPreviousRow() {
 }
 
 void PopupViewViews::SelectNextRow(PopupCellSelectionSource source) {
-  DCHECK(!rows_.empty());
+  CHECK(!rows_.empty(), base::NotFatalUntil::M162);
   std::optional<CellIndex> old_index = GetSelectedCell();
 
   size_t new_row = old_index ? old_index->first + 1u : 0u;
@@ -935,9 +957,7 @@ bool PopupViewViews::RemoveSelectedCell() {
     return false;
   }
 
-  if (!controller_->RemoveSuggestion(index->first,
-                                     AutofillMetrics::SingleEntryRemovalMethod::
-                                         kKeyboardShiftDeletePressed)) {
+  if (!controller_->RemoveSuggestion(index->first)) {
     return false;
   }
 
@@ -962,6 +982,7 @@ void PopupViewViews::OnSuggestionsChanged(bool prefer_prev_arrow_side) {
 
   MaybeAnnouncePasswordRecoveryPopup();
   MaybeAnnounceLoadingState();
+  MaybeAnnounceA11yOverride();
   if (!MaybeA11yFocusInformationalSuggestion()) {
     return;
   }
@@ -1209,6 +1230,18 @@ void PopupViewViews::MaybeAnnounceLoadingState() {
   }
 }
 
+void PopupViewViews::MaybeAnnounceA11yOverride() {
+  if (!controller_) {
+    return;
+  }
+  for (const Suggestion& suggestion : controller_->GetSuggestions()) {
+    if (suggestion.a11y_announcement) {
+      a11y_announcer_.Run(*suggestion.a11y_announcement, /*polite=*/true);
+      break;
+    }
+  }
+}
+
 void PopupViewViews::MaybeAnnounceCurrentTabAndFootnote() {
   std::u16string announcement;
 
@@ -1256,14 +1289,16 @@ void PopupViewViews::UpdateAccessibleStates() const {
 bool PopupViewViews::HasSelectablePopupInteractiveRowViewAt(
     size_t index) const {
   return index < rows_.size() &&
-         (std::holds_alternative<PopupRowView*>(rows_[index]) ||
-          std::holds_alternative<PopupInteractiveRowView*>(rows_[index])) &&
+         (std::holds_alternative<raw_ptr<PopupRowView>>(rows_[index]) ||
+          std::holds_alternative<raw_ptr<PopupInteractiveRowView>>(
+              rows_[index])) &&
          GetPopupInteractiveRowViewAt(index).IsSelectable();
 }
 
 PopupBnplFootnoteView* PopupViewViews::GetBnplFootnoteView() const {
   for (const RowPointer& row : rows_) {
-    if (const auto* footnote = std::get_if<PopupBnplFootnoteView*>(&row)) {
+    if (const auto* footnote =
+            std::get_if<raw_ptr<PopupBnplFootnoteView>>(&row)) {
       return *footnote;
     }
   }
@@ -1281,10 +1316,13 @@ void PopupViewViews::InitViews() {
     const bool is_at_memory =
         controller_ &&
         controller_->GetMainFillingProduct() == FillingProduct::kAtMemory;
+    base::span<const std::u16string> placeholders =
+        search_bar_config_->placeholders;
+    CHECK(!placeholders.empty());
     search_bar_ = AddChildView(std::make_unique<PopupSearchBarView>(
-        search_bar_config_->placeholder, search_bar_config_->initial_value,
+        placeholders.front(), search_bar_config_->initial_value,
+        /*rotating_placeholders=*/base::ToVector(placeholders.subspan(1u)),
         *this,
-        /*show_indicator=*/is_at_memory,
         /*show_search_icon_sparkle=*/is_at_memory,
         /*debounce_delay=*/
         is_at_memory ? base::TimeDelta()
@@ -1382,11 +1420,6 @@ void PopupViewViews::CreateSuggestionViews() {
               suggestions[current_line_number].main_text.value));
           break;
         }
-        case SuggestionType::kPersonalContextNotice: {
-          body_builder.AddRow(CreatePersonalContextNoticeView(
-              *this, a11y_announcer_, controller(), current_line_number));
-          break;
-        }
         case SuggestionType::kAutofillAiPrivateInferenceNotice: {
           body_builder.AddRow(CreateAutofillAiPrivateInferenceNoticeView(
               *this, a11y_announcer_, controller(), current_line_number));
@@ -1418,7 +1451,8 @@ void PopupViewViews::CreateSuggestionViews() {
     current_visible_body_entries = body_builder.visible_entries();
     current_body_visible_height = body_builder.visible_height();
     std::optional<int> scroll_clipping_height =
-        body_builder.GetScrollClippingHeight();
+        body_builder.GetScrollClippingHeight(
+            controller_->GetMainFillingProduct());
     auto [body_container, rows] = std::move(body_builder).Build();
     rows_ = std::move(rows);
     std::unique_ptr<views::ScrollView> scroll_view =
@@ -1468,7 +1502,8 @@ void PopupViewViews::CreateSuggestionViews() {
       /*initial_visible_height=*/current_body_visible_height);
 
   for (; current_line_number < suggestions.size(); ++current_line_number) {
-    DCHECK(IsFooterItem(suggestions, current_line_number));
+    CHECK(IsFooterItem(suggestions, current_line_number),
+          base::NotFatalUntil::M162);
     // The footer can contain either footer views or separator lines.
     if (suggestions[current_line_number].type == SuggestionType::kSeparator) {
       footer_builder.AddRow(
@@ -1480,8 +1515,16 @@ void PopupViewViews::CreateSuggestionViews() {
           base::BindRepeating(&DefaultA11yAnnouncer)));
     } else if (suggestions[current_line_number].type ==
                SuggestionType::kAtMemoryAiDisclosure) {
-      footer_builder.AddRow(std::make_unique<PopupAtMemoryAiDisclosureView>(
+      footer_builder.AddRow(CreateAtMemoryAiDisclosureView(
           controller(), /*a11y_selection_delegate=*/*this));
+    } else if (suggestions[current_line_number].type ==
+               SuggestionType::kAtMemoryShortcutSettingsPromo) {
+      footer_builder.AddRow(CreateAtMemoryShortcutSettingsPromoView(
+          controller(), /*a11y_selection_delegate=*/*this));
+    } else if (suggestions[current_line_number].type ==
+               SuggestionType::kPersonalContextNotice) {
+      footer_builder.AddRow(CreatePersonalContextNoticeView(
+          *this, a11y_announcer_, controller(), current_line_number));
     } else {
       footer_builder.AddRow(CreatePopupRowView(
           controller(), /*a11y_selection_delegate=*/*this,
@@ -1489,7 +1532,8 @@ void PopupViewViews::CreateSuggestionViews() {
     }
   }
   std::optional<int> scroll_clipping_height =
-      footer_builder.GetScrollClippingHeight();
+      footer_builder.GetScrollClippingHeight(
+          controller_->GetMainFillingProduct());
   auto [footer_container, rows] = std::move(footer_builder).Build();
   base::Extend(rows_, std::move(rows));
 
@@ -1840,7 +1884,7 @@ PopupRowView* PopupViewViews::MaybeGetPopupRowViewAt(size_t index) {
   if (index >= rows_.size()) {
     return nullptr;
   }
-  if (auto* row = std::get_if<PopupRowView*>(&rows_[index])) {
+  if (auto* row = std::get_if<raw_ptr<PopupRowView>>(&rows_[index])) {
     return *row;
   }
   return nullptr;
@@ -1911,7 +1955,7 @@ bool PopupViewViews::MaybeA11yFocusInformationalSuggestion() {
     return true;
   }
 
-  if (auto* warning_view = std::get_if<PopupWarningView*>(&rows_[0]);
+  if (auto* warning_view = std::get_if<raw_ptr<PopupWarningView>>(&rows_[0]);
       warning_view && *warning_view) {
     PopupWarningView* view_ptr = *warning_view;
     return TrackAndRun(
@@ -1945,8 +1989,9 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(
     kAutofillCreditCardSuggestionEntryElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PopupViewViews,
                                       kAutofillAiValuablesElementId);
-DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PopupViewViews,
-                                      kAutofillAiOptInIphElementId);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(
+    PopupViewViews,
+    kAutofillAmbientAutofillSpiiDisclaimerElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(PopupViewViews,
                                       kAutofillWalletDirectOffersIphElementId);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(

@@ -24,13 +24,15 @@
 #include "components/web_modal/web_contents_modal_dialog_host.h"
 #include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/widget/widget_observer.h"
 
 class ExclusiveAccessBubbleViews;
+class LocationBarModelImpl;
+class MixedContentSettingsTabHelper;
 class PresentationReceiverWindowDelegate;
 class PresentationReceiverWindowFrame;
-class LocationBarModelImpl;
 
 namespace views {
 class WebView;
@@ -88,9 +90,10 @@ class PresentationReceiverWindowView final
       final;
 
   // CommandUpdaterDelegate overrides.
-  void HandleCommandWithDisposition(int id,
-                                    WindowOpenDisposition disposition,
-                                    base::TimeTicks time_stamp) final;
+  void HandleCommandWithDisposition(
+      int id,
+      ui::mojom::WindowOpenDisposition disposition,
+      base::TimeTicks time_stamp) final;
 
   // ChromeLocationBarModelDelegate overrides.
   content::WebContents* GetActiveWebContents() const final;
@@ -170,6 +173,8 @@ class PresentationReceiverWindowView final
   ExclusiveAccessManager exclusive_access_manager_;
   ui::Accelerator fullscreen_accelerator_;
   std::unique_ptr<ExclusiveAccessBubbleViews> exclusive_access_bubble_;
+  std::unique_ptr<MixedContentSettingsTabHelper>
+      mixed_content_settings_tab_helper_;
 
 #if BUILDFLAG(IS_CHROMEOS)
   std::unique_ptr<FullscreenWindowObserver> window_observer_;

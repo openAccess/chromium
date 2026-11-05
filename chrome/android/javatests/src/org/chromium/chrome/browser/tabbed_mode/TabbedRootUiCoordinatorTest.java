@@ -21,7 +21,13 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForNoView;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
+
+import android.app.Activity;
+
 import androidx.annotation.Nullable;
+import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
 
 import org.junit.After;
@@ -34,14 +40,16 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ActivityState;
+import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
 import org.chromium.base.FakeTimeTestRule;
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.transit.ViewFinder;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -59,7 +67,7 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManagerSupplier;
 import org.chromium.chrome.browser.glic.GlicEnabling;
-import org.chromium.chrome.browser.glic.GlicNavigationUtils;
+import org.chromium.chrome.browser.glic.settings.GlicNavigationUtils;
 import org.chromium.chrome.browser.metrics.UmaSessionStats;
 import org.chromium.chrome.browser.metrics.UmaSessionStatsJni;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
@@ -80,6 +88,7 @@ import org.chromium.chrome.test.transit.testhtmls.NavigatePageStations;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.bookmarks.BookmarkBarVisibilityState;
 import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.components.externalauth.ExternalAuthUtils;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
@@ -93,7 +102,6 @@ import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.ui.base.DeviceFormFactor;
-import org.chromium.ui.test.util.ViewUtils;
 
 /** Tests for {@link TabbedRootUiCoordinator}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
@@ -200,11 +208,58 @@ public class TabbedRootUiCoordinatorTest {
         mPage = mActivityTestRule.startOnBlankPage();
         mTabbedRootUiCoordinator =
                 (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
-        ViewFinder.waitForNoView(withText(R.string.signin_fre_title_signin_forced_by_policy));
+        waitForNoView(withText(R.string.signin_fre_title_signin_forced_by_policy));
 
         // The fullscreen prompt should be displayed upon signout.
         mSigninTestRule.signOut();
-        ViewUtils.waitForVisibleView(withText(R.string.signin_fre_title_signin_forced_by_policy));
+        waitForView(withText(R.string.signin_fre_title_signin_forced_by_policy));
+    }
+
+    /**
+     * Regression test for crbug.com/561505435: the forced sign-in prompt must be displayed on
+     * sign-out even when the startup promo path is skipped.
+     */
+    @Test
+    @MediumTest
+    @EnableFeatures(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
+    @Add({@Policies.Item(key = "BrowserSignin", string = "2")})
+    @CommandLineFlags.Add({ChromeSwitches.DISABLE_STARTUP_PROMOS})
+    public void testForcedSigninWhenStartupPromosDisabled() {
+        mSigninTestRule.addAccountThenSigninAndEnableHistorySync(TestAccounts.ACCOUNT1);
+
+        // The user is already signed in at first, so the fullscreen signin prompt is not displayed.
+        mPage = mActivityTestRule.startOnBlankPage();
+        mTabbedRootUiCoordinator =
+                (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
+        waitForNoView(withText(R.string.signin_fre_title_signin_forced_by_policy));
+
+        // The fullscreen prompt should be displayed upon signout, without waiting for the activity
+        // to be resumed again.
+        mSigninTestRule.signOut();
+        waitForView(withText(R.string.signin_fre_title_signin_forced_by_policy));
+    }
+
+    @Test
+    @LargeTest
+    @EnableFeatures(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
+    @Add({@Policies.Item(key = "BrowserSignin", string = "2")})
+    public void testForcedSigninWhenSigninNotAllowed() {
+        mSigninTestRule.addAccountThenSigninAndEnableHistorySync(TestAccounts.ACCOUNT1);
+
+        // The user is already signed in at first, so the fullscreen signin prompt is not displayed.
+        mPage = mActivityTestRule.startOnBlankPage();
+        waitForNoView(withText(R.string.signin_fre_title_signin_forced_by_policy));
+
+        // Mock ExternalAuthUtils to simulate Google Play Services missing, making signin not
+        // allowed.
+        ExternalAuthUtils externalAuthUtils = mock(ExternalAuthUtils.class);
+        doReturn(true).when(externalAuthUtils).isGooglePlayServicesMissing(any());
+        ExternalAuthUtils.setInstanceForTesting(externalAuthUtils);
+
+        // The fullscreen prompt should not be displayed upon signout because signin is not allowed.
+        mSigninTestRule.signOut();
+        assertEquals(
+                ActivityState.RESUMED, ApplicationStatus.getStateForActivity(mPage.getActivity()));
     }
 
     private void testTopControlsHeightWithBookmarkBar(boolean expectBookmarkBar) {
@@ -572,7 +627,97 @@ public class TabbedRootUiCoordinatorTest {
 
     @Test
     @MediumTest
+    @Restriction({DeviceFormFactor.ONLY_TABLET})
+    @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    public void testCanActivateTabLayoutToggleMenu_SwitchingInProgress() {
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.VERTICAL_TABS_ENABLED, false);
+
+        mPage = mActivityTestRule.startOnBlankPage();
+        mTabbedRootUiCoordinator =
+                (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    assertTrue(
+                            mTabbedRootUiCoordinator
+                                    .canActivateTabLayoutToggleMenu()
+                                    .getAsBoolean());
+
+                    // 1. Toggle ON: HT -> VT. Immediately after starting, switching is in progress.
+                    mTabbedRootUiCoordinator.toggleTabStrip();
+                    assertFalse(
+                            mTabbedRootUiCoordinator
+                                    .canActivateTabLayoutToggleMenu()
+                                    .getAsBoolean());
+                });
+
+        // Wait for the transition to Vertical Tabs to complete.
+        CriteriaHelper.pollUiThread(
+                () -> mTabbedRootUiCoordinator.canActivateTabLayoutToggleMenu().getAsBoolean());
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    // 2. Toggle OFF: VT -> HT. Immediately after starting, switching is in
+                    // progress.
+                    mTabbedRootUiCoordinator.toggleTabStrip();
+                    assertFalse(
+                            mTabbedRootUiCoordinator
+                                    .canActivateTabLayoutToggleMenu()
+                                    .getAsBoolean());
+                });
+
+        // Wait for the transition back to Horizontal Tabs to complete.
+        CriteriaHelper.pollUiThread(
+                () -> mTabbedRootUiCoordinator.canActivateTabLayoutToggleMenu().getAsBoolean());
+    }
+
+    @Test
+    @MediumTest
+    @Restriction({DeviceFormFactor.ONLY_TABLET})
+    @EnableFeatures(ChromeFeatureList.ANDROID_VERTICAL_TABS)
+    public void testCanActivateTabLayoutToggleMenu_NonForegroundActivity() {
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(ChromePreferenceKeys.VERTICAL_TABS_ENABLED, false);
+
+        mPage = mActivityTestRule.startOnBlankPage();
+        mTabbedRootUiCoordinator =
+                (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
+
+        Activity otherActivity = ThreadUtils.runOnUiThreadBlocking(Activity::new);
+        try {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        // Simulate another Activity in multi-window mode becoming the focused
+                        // foreground Activity.
+                        ApplicationStatus.onStateChangeForTesting(
+                                otherActivity, ActivityState.CREATED);
+                        ApplicationStatus.onStateChangeForTesting(
+                                otherActivity, ActivityState.RESUMED);
+
+                        // A non-foreground Activity should not set switching in progress when the
+                        // preference changes.
+                        mTabbedRootUiCoordinator.toggleTabStrip();
+                        assertTrue(
+                                mTabbedRootUiCoordinator
+                                        .canActivateTabLayoutToggleMenu()
+                                        .getAsBoolean());
+                    });
+        } finally {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        ApplicationStatus.onStateChangeForTesting(
+                                otherActivity, ActivityState.DESTROYED);
+                        ApplicationStatus.onStateChangeForTesting(
+                                mPage.getActivity(), ActivityState.RESUMED);
+                    });
+        }
+    }
+
+    @Test
+    @MediumTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(https://crbug.com/568497446): Re-enable.
     @EnableFeatures({ChromeFeatureList.BOOKMARKS_BAR_NTP})
     public void testBookmarkBarMenuAction_StateChanges() {
         mPage = mActivityTestRule.startOnBlankPage();
@@ -706,6 +851,7 @@ public class TabbedRootUiCoordinatorTest {
     @Test
     @MediumTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(https://crbug.com/568497446): Re-enable.
     @EnableFeatures({ChromeFeatureList.BOOKMARKS_BAR_NTP})
     public void testBookmarkBarMenuAction_IncompatibleActivity() {
         mPage = mActivityTestRule.startOnBlankPage();
@@ -790,6 +936,7 @@ public class TabbedRootUiCoordinatorTest {
     @MediumTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(https://crbug.com/568497446): Re-enable.
     public void testBookmarkBarToggleKeyboardShortcut_V2() {
         mPage = mActivityTestRule.startOnBlankPage();
         mTabbedRootUiCoordinator =
@@ -859,6 +1006,7 @@ public class TabbedRootUiCoordinatorTest {
     @MediumTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
+    @DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(https://crbug.com/568497446): Re-enable.
     public void testBookmarkBarVisibility_OnlyShowOnNtp() {
         mPage = mActivityTestRule.startOnBlankPage();
         mTabbedRootUiCoordinator =
@@ -891,7 +1039,6 @@ public class TabbedRootUiCoordinatorTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
     public void testSendTabToSelfOmniboxIphOnStartup() {
         doAnswer(
                         invocation -> {
@@ -911,7 +1058,7 @@ public class TabbedRootUiCoordinatorTest {
                 .getEntryPointDisplayReason(any(), any());
 
         try {
-            mPage = mActivityTestRule.startOnTestServerUrl("/chrome/test/data/android/about.html");
+            mPage = mActivityTestRule.startOnBlankPage();
 
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
@@ -925,7 +1072,6 @@ public class TabbedRootUiCoordinatorTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
     public void testSendTabToSelfOmniboxIphOnStartup_notEligible() {
         doAnswer(
                         invocation -> {
@@ -944,7 +1090,7 @@ public class TabbedRootUiCoordinatorTest {
                 .when(bridgeMock)
                 .getEntryPointDisplayReason(any(), any());
         try {
-            mPage = mActivityTestRule.startOnTestServerUrl("/chrome/test/data/android/about.html");
+            mPage = mActivityTestRule.startOnBlankPage();
 
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {

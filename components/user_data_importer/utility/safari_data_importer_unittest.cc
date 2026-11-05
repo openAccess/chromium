@@ -18,6 +18,7 @@
 #include "base/test/scoped_mock_clock_override.h"
 #include "base/test/task_environment.h"
 #include "base/time/default_clock.h"
+#include "build/blink_buildflags.h"
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/common/autofill_prefs.h"
@@ -30,7 +31,6 @@
 #include "components/history/core/common/pref_names.h"
 #include "components/history/core/test/history_service_test_util.h"
 #include "components/password_manager/core/browser/features/password_manager_features_util.h"
-#include "components/password_manager/core/browser/import/csv_password_sequence.h"
 #include "components/password_manager/core/browser/import/import_results.h"
 #include "components/password_manager/core/browser/import/password_importer.h"
 #include "components/password_manager/core/browser/password_store/test_password_store.h"
@@ -51,14 +51,17 @@
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#if BUILDFLAG(IS_IOS)
-#include "ios/web/public/test/web_task_environment.h"
-#else
+#if !BUILDFLAG(IS_IOS)
 #include "components/user_data_importer/content/content_bookmark_parser.h"
 #include "components/user_data_importer/content/fake_bookmark_html_parser.h"
 #include "components/user_data_importer/mojom/bookmark_html_parser.mojom.h"
+#endif  // !BUILDFLAG(IS_IOS)
+
+#if BUILDFLAG(USE_BLINK)
 #include "content/public/test/browser_task_environment.h"  // nogncheck
-#endif  // BUILDFLAG(IS_IOS)
+#else
+#include "ios/web/public/test/web_task_environment.h"
+#endif  // BUILDFLAG(USE_BLINK)
 
 using bookmarks::test::IsFolder;
 using bookmarks::test::IsUrlBookmark;
@@ -133,13 +136,13 @@ class SafariDataImporterTest : public testing::Test {
   TestingPrefServiceSimple pref_service_;
 
  protected:
-#if BUILDFLAG(IS_IOS)
-  web::WebTaskEnvironment task_environment_{
-      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-#else
+#if BUILDFLAG(USE_BLINK)
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-#endif  // BUILDFLAG(IS_IOS)
+#else
+  web::WebTaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+#endif  // BUILDFLAG(USE_BLINK)
 
   void SetUp() override {
     CHECK(history_dir_.CreateUniqueTempDir());

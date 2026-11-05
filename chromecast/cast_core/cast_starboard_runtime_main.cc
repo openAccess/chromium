@@ -9,6 +9,8 @@
 // Also contains logic for parsing chromium args passed as JSON (used by some
 // partner platforms).
 
+#include "chromecast/cast_core/cast_starboard_runtime_main.h"
+
 #include <optional>
 #include <string>
 #include <utility>
@@ -23,12 +25,12 @@
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "chromecast/app/cast_main_delegate.h"
+#include "chromecast/base/chromecast_switches.h"
 #include "chromecast/cast_core/child_log_process.h"
 #include "content/public/app/content_main.h"
 
 namespace {
 
-constexpr char kHomeEnvOverride[] = "home-env-override";
 constexpr char kRuntimeHomeSubdirUsedFile[] = ".dirty";
 constexpr char kParametersKey[] = "parameters";
 constexpr char kArgvKey[] = "argv";
@@ -62,8 +64,8 @@ class JSONArgsParser {
 
     // JSON must be the following format. All keys and values are strings.
     // {"parameters":{"argv":["arg1", ...]}}
-    std::optional<base::DictValue> root =
-        base::JSONReader::ReadDict(argv[1], base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+    std::optional<base::DictValue> root = base::JSONReader::ReadDict(
+        argv[1], base::JSON_PARSE_CHROMIUM_EXTENSIONS);
 
     if (!root) {
       return false;
@@ -101,9 +103,7 @@ class JSONArgsParser {
   std::vector<const char*> argv_;
 };
 
-}  // namespace
-
-int main(int argc, const char** argv) {
+int main_internal(int argc, const char** argv) {
   // SAFETY: required from caller.
   JSONArgsParser args(
       UNSAFE_BUFFERS(base::span<const char*>(argv, static_cast<size_t>(argc))));
@@ -114,11 +114,13 @@ int main(int argc, const char** argv) {
   content::ContentMainParams params(&delegate);
 
   base::CommandLine temp_cmd(args.argc(), args.argv());
-  std::string home_override = temp_cmd.GetSwitchValueASCII(kHomeEnvOverride);
+  std::string home_override =
+      temp_cmd.GetSwitchValueASCII(switches::kHomeEnvOverride);
   if (!home_override.empty()) {
-    const char * maybe_home = getenv("HOME");
-    LOG(INFO) << "HOME variable was previously \"" << (maybe_home ? maybe_home : "[UNSET]")
-              << "\"; overriding to \"" << home_override << "\".";
+    const char* maybe_home = getenv("HOME");
+    LOG(INFO) << "HOME variable was previously \""
+              << (maybe_home ? maybe_home : "[UNSET]") << "\"; overriding to \""
+              << home_override << "\".";
     setenv("HOME", home_override.c_str(), 1);
 
     base::FilePath home_directory(home_override);
@@ -138,4 +140,11 @@ int main(int argc, const char** argv) {
   params.argv = args.argv();
 
   return content::ContentMain(std::move(params));
+}
+
+}  // namespace
+
+extern "C" CHROMECAST_EXPORT int CoreRuntimeStarboardMain(int argc,
+                                                          const char** argv) {
+  return main_internal(argc, argv);
 }

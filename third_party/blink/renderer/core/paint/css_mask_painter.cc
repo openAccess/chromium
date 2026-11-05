@@ -19,7 +19,7 @@ namespace {
 
 bool HasSingleInvalidSVGMaskLayer(const LayoutObject& object,
                                   const FillLayer& first_layer) {
-  if (first_layer.Next()) {
+  if (first_layer.NextForUsedValue()) {
     return false;
   }
   const StyleImage* image = first_layer.GetImage();
@@ -47,7 +47,7 @@ std::optional<gfx::RectF> CSSMaskPainter::MaskBoundingBox(
   if (!object.IsBoxModelObject() && !object.IsSVGChild())
     return std::nullopt;
 
-  const ComputedStyle& style = object.StyleRef();
+  const ComputedStyle& style = object.Style();
   if (!style.HasMask())
     return std::nullopt;
 

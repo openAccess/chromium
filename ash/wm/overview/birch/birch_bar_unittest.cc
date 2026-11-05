@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <array>
 #include <utility>
 
 #include "ash/birch/birch_item.h"
@@ -45,6 +46,8 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_mock_clock_override.h"
+#include "components/account_id/account_id.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "ui/base/models/image_model.h"
 #include "ui/compositor/test/layer_animation_stopped_waiter.h"
 #include "ui/display/manager/display_manager.h"
@@ -128,6 +131,14 @@ class BirchBarTestBase : public AshTestBase {
   void SetUp() override {
     AshTestBase::SetUp();
 
+    // Coral's GenAI age check queries the process-wide IdentityManagerProvider,
+    // which is only installed in production. Install a test double whose
+    // account reports the GenAI capability, so entering overview (which fetches
+    // coral data) resolves coral as available rather than crashing.
+    coral_gen_ai_availability_ = std::make_unique<ScopedCoralGenAIAvailability>(
+        AccountId::FromUserEmailGaiaId("coral-test@gmail.com",
+                                       GaiaId("coral-test-gaia-id")));
+
     image_downloader_ = std::make_unique<ash::TestImageDownloader>();
 
     // Set prefs of all suggestion types and show suggestions enabled.
@@ -164,10 +175,15 @@ class BirchBarTestBase : public AshTestBase {
     weather_provider_ = nullptr;
     birch_client_.reset();
     image_downloader_.reset();
+    // Do not reset `coral_gen_ai_availability_` here: it installs the
+    // UserManager that AshTestHelper's SessionManager observes, and that
+    // SessionManager is destroyed by AshTestBase::TearDown(), so the helper
+    // must outlive it. It tears down with the fixture instead.
     AshTestBase::TearDown();
   }
 
   std::unique_ptr<TestImageDownloader> image_downloader_;
+  std::unique_ptr<ScopedCoralGenAIAvailability> coral_gen_ai_availability_;
 
  protected:
   // Adds a number of `num` file birch items to data source.
@@ -384,7 +400,7 @@ TEST_F(BirchBarTest, ShowBirchBar) {
 
 TEST_F(BirchBarTest, DoNotShowBirchBarForSecondaryUser) {
   // Sign in a secondary user.
-  SimulateUserLogin({"user2@test.com"});
+  SimulateUserLogin(AccountId::FromUserEmail("user2@test.com"));
   ASSERT_FALSE(Shell::Get()->session_controller()->IsUserPrimary());
 
   EnterOverview();
@@ -1706,9 +1722,9 @@ struct LayoutTestParams {
   gfx::Size display_size;
   ShelfAlignment shelf_alignment;
   //  Expected birch bar bounds with 1 to 4 chips in landscape mode.
-  std::vector<gfx::Rect> expected_landscape_bounds;
+  std::array<gfx::Rect, 4> expected_landscape_bounds;
   // Expected birch bar bounds with 1 to 4 chips in portrait mode.
-  std::vector<gfx::Rect> expected_portrait_bounds;
+  std::array<gfx::Rect, 4> expected_portrait_bounds;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1749,7 +1765,7 @@ class BirchBarLayoutTest
       scoped_internal_display_id_;
 };
 
-const LayoutTestParams kLayoutTestParams[] = {
+constexpr LayoutTestParams kLayoutTestParams[] = {
     // The narrow display whose shorter side can only hold up to 2 chips.
     {/*display_size=*/gfx::Size(1080, 640),
      ShelfAlignment::kBottom,

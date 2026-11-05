@@ -10,6 +10,7 @@
 
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
+#include "components/captive_portal/core/captive_portal_types.h"
 #include "content/public/browser/web_ui.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/views/widget/widget.h"
@@ -22,6 +23,10 @@
 // they do not get lost behind other windows. On screens that use an overlay
 // like the login and lock screens, the dialog must be modal to be displayed on
 // top of the overlay.
+
+namespace content {
+class BrowserContext;
+}
 
 namespace ash {
 
@@ -66,6 +71,11 @@ class SystemWebDialogDelegate : public ui::WebDialogDelegate {
 
   // Adjust the init params for the widget. By default makes no change.
   virtual void AdjustWidgetInitParams(views::Widget::InitParams* params) {}
+
+  // The captive portal window type for the dialog's WebContents. By default
+  // kNone.
+  virtual captive_portal::CaptivePortalWindowType GetCaptivePortalWindowType()
+      const;
 
   // Brings the dialog window to the front.
   void StackAtTop();

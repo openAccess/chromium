@@ -123,6 +123,8 @@ enum InvocationSource {
   // User clicked an anchored contextual cue chip.
   [MinVersion=14] kAnchoredContextualCue = 22,
   // From the context menu.
+  // Deprecated. Split into kWebContentsContextMenuLink,
+  // kWebContentsContextMenuPage and kWebContentsContextMenuTextSelection.
   [MinVersion=15] kWebContentsContextMenu = 23,
   // User clicked on text selection nudge.
   [MinVersion=16] kTextSelectionNudge = 24,
@@ -164,9 +166,26 @@ enum InvocationSource {
   [MinVersion=27] kTabContextMenu = 41,
   // From Web Continuity.
   [MinVersion=28] kWebContinuity = 42,
+  // From the history page chat linkout.
+  [MinVersion=29] kHistoryPageChatLinkout = 43,
+  // From the Context Hub topics UI.
+  [MinVersion=30] kContextHubTopics = 44,
+  // From the Context Hub AutoTodos UI.
+  [MinVersion=31] kContextHubAutoTodos = 45,
+  // User clicked "Ask Gemini" on a link in the context menu. Android only;
+  // desktop has no link-specific item.
+  [MinVersion=32] kWebContentsContextMenuLink = 46,
+  // User clicked "Ask Gemini" in the context menu with no text selected. On
+  // desktop, this includes clicks on a link.
+  [MinVersion=32] kWebContentsContextMenuPage = 47,
+  // User clicked "Ask Gemini" on selected text, from the context menu on
+  // desktop or the text selection menu on Android.
+  [MinVersion=32] kWebContentsContextMenuTextSelection = 48,
+  // Invoked by the actor GeminiPanelTool.
+  [MinVersion=33] kActorTool = 49,
 };
 
-// LINT.ThenChange(
+// LINT.ThenChange(//chrome/browser/glic/public/android/java/src/org/chromium/chrome/browser/glic/GlicKeyedService.java:GlicInvocationSource,
 //  //tools/metrics/histograms/metadata/glic/enums.xml:GlicInvocationSource,
 // //tools/metrics/histograms/metadata/glic/histograms.xml:GlicInvocationSource,
 //  //chrome/browser/glic/service/metrics/metrics_types.h:ResponseSegmentation

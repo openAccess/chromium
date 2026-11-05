@@ -5,28 +5,36 @@
 #import "chrome/browser/ui/cocoa/profiles/profile_menu_controller.h"
 
 #include "base/strings/sys_string_conversions.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/browser/ui/cocoa/test/cocoa_test_helper.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
-#include "chrome/test/base/test_browser_window.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/signin/public/base/signin_switches.h"
+#include "content/public/test/browser_task_environment.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest_mac.h"
 #include "ui/base/l10n/l10n_util_mac.h"
 
-class ProfileMenuControllerTest : public BrowserWithTestWindowTest {
+class ProfileMenuControllerTest : public CocoaTest {
  public:
+  ProfileMenuControllerTest()
+      : profile_manager_(TestingBrowserProcess::GetGlobal()) {}
+
   void SetUp() override {
     CocoaTest::BootstrapCocoa();
-    BrowserWithTestWindowTest::SetUp();
+    CocoaTest::SetUp();
+    ASSERT_TRUE(profile_manager_.SetUp());
+    profile_ = profile_manager_.CreateTestingProfile(
+        TestingProfile::kDefaultProfileUserName);
 
     RebuildController();
   }
@@ -35,9 +43,13 @@ class ProfileMenuControllerTest : public BrowserWithTestWindowTest {
     [controller_ deinitialize];
     controller_ = nil;
     item_ = nil;
-
-    BrowserWithTestWindowTest::TearDown();
+    profile_ = nullptr;
+    profile_manager_.DeleteAllTestingProfiles();
+    CocoaTest::TearDown();
   }
+
+  TestingProfileManager* profile_manager() { return &profile_manager_; }
+  TestingProfile* profile() { return profile_; }
 
   void TestBottomItems() {
     NSMenu* menu = controller().menu;
@@ -88,6 +100,9 @@ class ProfileMenuControllerTest : public BrowserWithTestWindowTest {
   }
 
  private:
+  content::BrowserTaskEnvironment task_environment_;
+  TestingProfileManager profile_manager_;
+  raw_ptr<TestingProfile> profile_ = nullptr;
   NSMenuItem* __strong item_;
   ProfileMenuController* __strong controller_;
 };
@@ -206,8 +221,12 @@ TEST_F(ProfileMenuControllerTest, SetActiveAndRemove) {
   const std::u16string kDefaultProfileName = u"DefaultProfile";
   profile_manager()
       ->profile_attributes_storage()
-      ->GetProfileAttributesWithPath(browser()->GetProfile()->GetPath())
+      ->GetProfileAttributesWithPath(profile()->GetPath())
       ->SetLocalProfileName(kDefaultProfileName, false);
+
+  testing::NiceMock<MockBrowserWindowInterface> default_browser;
+  ON_CALL(default_browser, GetProfile())
+      .WillByDefault(testing::Return(profile()));
 
   NSMenu* menu = controller().menu;
   TestingProfileManager* manager = profile_manager();
@@ -216,36 +235,30 @@ TEST_F(ProfileMenuControllerTest, SetActiveAndRemove) {
   ASSERT_EQ(7, menu.numberOfItems);
 
   // Create a browser and "show" it.
-  BrowserWindowCreateParams profile2_params(profile2, true);
-  std::unique_ptr<BrowserWindowInterface> p2_browser(
-      CreateBrowserWithTestWindowForParams(std::move(profile2_params)));
+  auto p2_browser =
+      std::make_unique<testing::NiceMock<MockBrowserWindowInterface>>();
+  ON_CALL(*p2_browser, GetProfile()).WillByDefault(testing::Return(profile2));
   [controller() activeBrowserChangedTo:p2_browser.get()];
   VerifyProfileNamedIsActive(@"Profile 2", __LINE__);
 
   // Close the browser and make sure the new active browser's profile is active.
   p2_browser.reset();
-  [controller() activeBrowserChangedTo:browser()];
+  [controller() activeBrowserChangedTo:&default_browser];
   VerifyProfileNamedIsActive(base::SysUTF16ToNSString(kDefaultProfileName),
                              __LINE__);
 
   // Open a new browser and make sure it takes effect.
-  BrowserWindowCreateParams profile3_params(profile3, true);
-  std::unique_ptr<BrowserWindowInterface> p3_browser(
-      CreateBrowserWithTestWindowForParams(std::move(profile3_params)));
+  auto p3_browser =
+      std::make_unique<testing::NiceMock<MockBrowserWindowInterface>>();
+  ON_CALL(*p3_browser, GetProfile()).WillByDefault(testing::Return(profile3));
   [controller() activeBrowserChangedTo:p3_browser.get()];
   VerifyProfileNamedIsActive(@"Profile 3", __LINE__);
 
   // Close the browser and make sure the new active browser's profile is active.
   p3_browser.reset();
-  [controller() activeBrowserChangedTo:browser()];
+  [controller() activeBrowserChangedTo:&default_browser];
   VerifyProfileNamedIsActive(base::SysUTF16ToNSString(kDefaultProfileName),
                              __LINE__);
-
-  // Close the browser.
-  std::unique_ptr<Browser> browser = release_browser();
-  browser->tab_strip_model()->CloseAllTabs();
-  browser.reset();
-  EXPECT_TRUE(GlobalBrowserCollection::GetInstance()->IsEmpty());
 
   [controller() activeBrowserChangedTo:nil];
   VerifyProfileNamedIsActive(base::SysUTF16ToNSString(kDefaultProfileName),
@@ -302,4 +315,43 @@ TEST_F(ProfileMenuControllerTest, AddProfileDisabled) {
 
   item = [menu itemAtIndex:count - 1];
   EXPECT_EQ(@selector(editProfile:), item.action);
+}
+
+TEST_F(ProfileMenuControllerTest, ProfilesOrderChanged) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      switches::kProfilesReordering};
+
+  profile_manager()
+      ->profile_attributes_storage()
+      ->GetProfileAttributesWithPath(profile()->GetPath())
+      ->SetLocalProfileName(u"Profile 1", false);
+
+  TestingProfileManager* manager = profile_manager();
+  manager->CreateTestingProfile("Profile 2");
+  manager->CreateTestingProfile("Profile 3");
+
+  NSMenu* menu = controller().menu;
+  ASSERT_EQ(7, menu.numberOfItems);
+  EXPECT_NSEQ(@"Profile 1", [menu itemAtIndex:0].title);
+  EXPECT_NSEQ(@"Profile 2", [menu itemAtIndex:1].title);
+  EXPECT_NSEQ(@"Profile 3", [menu itemAtIndex:2].title);
+
+  profile_manager()->profile_attributes_storage()->UpdateProfilesOrderPref(
+      0, 2, ProfileOrderUpdateType::kDragAndDrop);
+
+  // Top navigation "Profiles" menu directly reflects the updated order.
+  ASSERT_EQ(7, menu.numberOfItems);
+  EXPECT_NSEQ(@"Profile 2", [menu itemAtIndex:0].title);
+  EXPECT_NSEQ(@"Profile 3", [menu itemAtIndex:1].title);
+  EXPECT_NSEQ(@"Profile 1", [menu itemAtIndex:2].title);
+
+  // Dock context menu also reflects the updated order.
+  NSMenu* dock_menu = [[NSMenu alloc] initWithTitle:@""];
+  EXPECT_TRUE([controller() insertItemsIntoMenu:dock_menu
+                                       atOffset:0
+                                       fromDock:YES]);
+  ASSERT_EQ(4, dock_menu.numberOfItems);
+  EXPECT_NSEQ(@"Profile 2", [dock_menu itemAtIndex:1].title);
+  EXPECT_NSEQ(@"Profile 3", [dock_menu itemAtIndex:2].title);
+  EXPECT_NSEQ(@"Profile 1", [dock_menu itemAtIndex:3].title);
 }

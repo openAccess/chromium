@@ -6,6 +6,7 @@
 #define CHROME_COMMON_READALOUD_READ_ALOUD_CONSTANTS_H_
 
 #include <cstddef>
+#include <string_view>
 
 #include "base/time/time.h"
 #include "media/base/channel_layout.h"
@@ -28,16 +29,29 @@ inline constexpr base::TimeDelta kNetworkTimeout = base::Seconds(5);
 inline constexpr base::TimeDelta kBufferStallTimeout = base::Seconds(15);
 inline constexpr base::TimeDelta kBrowserBufferingWatchdog = base::Seconds(30);
 inline constexpr base::TimeDelta kVolumeRampDuration = base::Milliseconds(10);
+// 200s timeout for AI Overview generation. In pre-production (Teamfood),
+// downstream MES GenerateText requests run on a sheddable, shared-capacity
+// pool for Beyond (Gemini) requests, which can experience extended queuing and
+// processing delays before returning.
+// TODO(b/565040027): Tighten timeout once dedicated production capacity is
+// provisioned.
+inline constexpr base::TimeDelta kOverviewGenerationTimeout =
+    base::Seconds(200);
 inline constexpr int kMaxRetryAttempts = 3;
 
 // Limits for text payload validation to prevent utility process memory exhaustion (OOM/DoS).
 inline constexpr size_t kMaxTextSegments = 1000;
 inline constexpr size_t kMaxTextLengthPerSegment = 65536;  // 64 KB max characters per segment
 inline constexpr size_t kMaxVoiceIdLength = 256;
+inline constexpr size_t kMaxTextChunks = 10000;
+inline constexpr size_t kMaxOverviewMetadataLength = 1024;
 
 // Allowed range for speech speed rate scaling.
 inline constexpr float kMinPlaybackRate = 0.25f;
 inline constexpr float kMaxPlaybackRate = 4.0f;
+
+// AI Overview generation supports English webpages only for now.
+inline constexpr std::string_view kAiOverviewLanguageCode = "en";
 
 }  // namespace readaloud
 

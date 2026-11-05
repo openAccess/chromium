@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "build/build_config.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
@@ -18,6 +19,7 @@
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/button_controller_delegate.h"
 #include "ui/views/controls/button/menu_button.h"
+#include "ui/views/controls/menu/menu_controller.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/mouse_constants.h"
 #include "ui/views/style/platform_style.h"
@@ -243,7 +245,7 @@ bool MenuButtonController::Activate(const ui::Event* event) {
     static_cast<internal::RootView*>(button()->GetWidget()->GetRootView())
         ->SetMouseAndGestureHandler(nullptr);
 
-    DCHECK(increment_pressed_lock_called_ == nullptr);
+    CHECK(increment_pressed_lock_called_ == nullptr, base::NotFatalUntil::M163);
     // Observe if IncrementPressedLocked() was called so we can trigger the
     // correct ink drop animations.
     bool increment_pressed_lock_called = false;
@@ -260,6 +262,20 @@ bool MenuButtonController::Activate(const ui::Event* event) {
 
     // Allow for the button callback to delete this.
     auto ref = weak_factory_.GetWeakPtr();
+
+#if BUILDFLAG(IS_MAC)
+    // If a menu is currently playing its dismiss animation when a MenuButton is
+    // activated again, finish canceling it before invoking `callback_` (as
+    // callers like BrowserAppMenuButton check `IsMenuShowing()` before calling
+    // `MenuRunner::RunMenuAt()`).
+    if (MenuController* active_controller = MenuController::GetActiveInstance();
+        active_controller && active_controller->IsDismissAnimationRunning()) {
+      active_controller->Cancel(MenuController::ExitType::kAll);
+      if (!ref) {
+        return false;
+      }
+    }
+#endif
 
     // TODO(pbos): Make sure we always propagate an event. This requires changes
     // to ShowAppMenu which now provides none.
@@ -350,7 +366,7 @@ void MenuButtonController::IncrementPressedLocked(
 
 void MenuButtonController::DecrementPressedLocked() {
   --pressed_lock_count_;
-  DCHECK_GE(pressed_lock_count_, 0);
+  CHECK_GE(pressed_lock_count_, 0, base::NotFatalUntil::M163);
 
   // If this was the last lock, manually reset state to the desired state.
   if (pressed_lock_count_ == 0) {

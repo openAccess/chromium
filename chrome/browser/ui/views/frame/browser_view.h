@@ -20,25 +20,28 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
+#include "chrome/browser/ui/bookmarks/bookmark_bar.h"
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/download_close_type.h"
+#include "chrome/browser/ui/global_error/global_error_observer.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
-#include "chrome/browser/ui/tabs/organizer/organizer_panel_state_controller.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/translate/partial_translate_bubble_model.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
-#include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
 #include "chrome/browser/ui/views/frame/shadow_overlay_view.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_background_blur_backdrop.h"
-#include "chrome/browser/ui/views/intent_picker_bubble_view.h"
 #include "chrome/browser/ui/views/tabs/tab.h"
 #include "chrome/browser/ui/webui/tab_search/tab_search.mojom.h"
 #include "chrome/common/buildflags.h"
+#include "components/apps/link_capturing/intent_picker_info.h"
 #include "components/enterprise/buildflags/buildflags.h"
 #include "components/infobars/core/infobar_container.h"
 #include "components/user_education/common/feature_promo/feature_promo_handle.h"
@@ -53,6 +56,7 @@
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/identifier/typed_identifier.h"
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/gfx/native_ui_types.h"
@@ -76,13 +80,16 @@ class BookmarkBarView;
 class BrowserWindowInterface;
 class BrowserViewLayout;
 class ContentsContainerView;
+class ContentsWebView;
+class CustomFloatingCorner;
 struct DropData;
 class ExclusiveAccessBubbleViews;
 class ExclusiveAccessBubbleViewsContext;
+class GlobalErrorService;
 class InfoBarContainerView;
 class LocationBarView;
 class MultiContentsView;
-class OrganizerPanelView;
+class OrganizerTrayView;
 class ScrimView;
 class SidePanel;
 class SidePanelAnimationContentView;
@@ -116,10 +123,9 @@ enum class Channel;
 
 namespace views {
 class LabelButton;
+class NativeViewHost;
 class WebView;
 }  // namespace views
-
-class CustomFloatingCorner;
 
 ///////////////////////////////////////////////////////////////////////////////
 // BrowserView
@@ -136,6 +142,7 @@ class BrowserView : public BrowserWindow,
                     public views::ClientView,
                     public infobars::InfoBarContainer::Delegate,
                     public ImmersiveModeController::Observer,
+                    public GlobalErrorObserver,
                     public views::FocusChangeListener,
                     public BookmarkBarController::Delegate {
   METADATA_HEADER(BrowserView, views::ClientView)
@@ -277,10 +284,6 @@ class BrowserView : public BrowserWindow,
     return vertical_tab_strip_region_view_.get();
   }
 
-  OrganizerPanelView* organizer_panel_container_for_testing() const {
-    return organizer_panel_container_;
-  }
-
   // Accessor for the TabStrip.
   TabStrip* horizontal_tab_strip_for_testing();
 
@@ -305,9 +308,7 @@ class BrowserView : public BrowserWindow,
   // Will return the single active contents view. If side by side is enabled,
   // it may make more sense to use GetAllVisibleContentsWebViews() depending on
   // the use case.
-  ContentsWebView* contents_web_view() {
-    return static_cast<ContentsWebView*>(GetContentsView());
-  }
+  ContentsWebView* contents_web_view_for_testing();
 
   ScrimView* window_scrim_view() { return window_scrim_view_; }
 
@@ -316,6 +317,7 @@ class BrowserView : public BrowserWindow,
   }
 
   views::LabelButton* GetGlicButton();
+  bool IsGlicButtonVisible();
 
   // Accessor for the BrowserView's TabSearchBubbleHost instance.
   TabSearchBubbleHost* GetTabSearchBubbleHost();
@@ -353,6 +355,10 @@ class BrowserView : public BrowserWindow,
   // incognito.
   bool GetIncognito() const;
 
+  // Returns true if the profile associated with this Browser window is in
+  // enterprise isolated mode.
+  bool GetEnterpriseIsolatedMode() const;
+
   // Returns true if the profile associated with this Browser window is
   // a guest session.
   bool GetGuestSession() const;
@@ -385,8 +391,12 @@ class BrowserView : public BrowserWindow,
   // for an installed web app.
   bool GetIsWebAppType() const;
 
+  // Returns true if the Browser object associated with this BrowserView is a
+  // floating window (e.g. Document Picture-in-Picture or always-on-top popup).
+  bool GetIsFloatingType() const;
+
   // Returns true if the Browser object associated with this BrowserView is for
-  // a Picture in Picture window.
+  // a Document Picture-in-Picture window.
   bool GetIsPictureInPictureType() const;
 
   // Returns the document picture in picture options from |browser_|'s
@@ -428,7 +438,7 @@ class BrowserView : public BrowserWindow,
   // Callback for listening for link-opening-from-gesture events (i.e. only
   // those resulting from direct user action).
   using OnLinkOpeningFromGestureCallback =
-      base::RepeatingCallback<void(WindowOpenDisposition)>;
+      base::RepeatingCallback<void(ui::mojom::WindowOpenDisposition)>;
   using OnLinkOpeningFromGestureCallbackList =
       base::RepeatingCallbackList<OnLinkOpeningFromGestureCallback::RunType>;
 
@@ -473,6 +483,18 @@ class BrowserView : public BrowserWindow,
 
   bool window_management_permission_granted_for_testing() const {
     return window_management_permission_granted_;
+  }
+
+  bool is_layout_deferred_for_testing() const {
+    return layout_deferred_while_invisible_;
+  }
+
+  bool is_startup_layout_deferring_for_testing() const {
+    return startup_layout_state_ == StartupLayoutState::kDeferring;
+  }
+
+  bool is_startup_layout_disabled_for_testing() const {
+    return startup_layout_state_ == StartupLayoutState::kDisabled;
   }
 
   void UpdateWebAppStatusIconsVisiblity();
@@ -535,6 +557,8 @@ class BrowserView : public BrowserWindow,
   bool IsFullscreen() const override;
   autofill::AutofillBubbleHandler* GetAutofillBubbleHandler() override;
   LocationBar* GetLocationBar() const override;
+  ui::AcceleratorProvider* GetAcceleratorProvider() override;
+  PinnedToolbarActions* GetPinnedToolbarActions() override;
   void SetFocusToLocationBar(bool is_user_initiated) override;
   void UpdateReloadStopState(bool is_loading, bool force) override;
   void UpdateToolbar(content::WebContents* contents) override;
@@ -544,7 +568,8 @@ class BrowserView : public BrowserWindow,
   void FocusToolbar() override;
   void ToolbarSizeChanged(bool is_animating) override;
   void TabDraggingStatusChanged(bool is_dragging) override;
-  void LinkOpeningFromGesture(WindowOpenDisposition disposition) override;
+  void LinkOpeningFromGesture(
+      ui::mojom::WindowOpenDisposition disposition) override;
   void FocusAppMenu() override;
   bool IsTabStripEditable() const override;
   void DisableTabStripEditingForTesting() override;
@@ -556,7 +581,7 @@ class BrowserView : public BrowserWindow,
   BrowserView* AsBrowserView() override;
   void ShowUpdateChromeDialog() override;
   void ShowIntentPickerBubble(
-      std::vector<IntentPickerBubbleView::AppInfo> app_info,
+      std::vector<apps::IntentPickerAppInfo> app_info,
       bool show_stay_in_chrome,
       bool show_remember_selection,
       apps::IntentPickerBubbleType bubble_type,
@@ -577,7 +602,7 @@ class BrowserView : public BrowserWindow,
   DownloadBubbleUIController* GetDownloadBubbleUIController() override;
   void ConfirmBrowserCloseWithPendingDownloads(
       int download_count,
-      UnloadController::DownloadCloseType dialog_type,
+      DownloadCloseType dialog_type,
       base::OnceCallback<void(bool)> callback) override;
   void ShowAppMenu() override;
   content::KeyboardEventProcessingResult PreHandleKeyboardEvent(
@@ -593,8 +618,6 @@ class BrowserView : public BrowserWindow,
   web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHostFor(
       content::WebContents* web_contents) override;
   void ShowAvatarBubbleFromAvatarButton(bool is_source_accelerator) override;
-  void MaybeShowProfileSwitchIPH() override;
-  void MaybeShowSupervisedUserProfileSignInIPH() override;
   void ShowHatsDialog(
       const std::string& site_id,
       const std::optional<std::string>& hats_histogram_name,
@@ -628,6 +651,7 @@ class BrowserView : public BrowserWindow,
       const TabStripSelectionChange& selection) override;
   void OnTabChangedAt(tabs::TabInterface* tab,
                       TabChangeType change_type) override;
+  void OnTabBlockedStateChanged(tabs::TabInterface* tab) override;
   void OnSplitTabChanged(const SplitTabChange& change) override;
   void TabStripEmpty() override;
   void WillCloseAllTabs(TabStripModel* tab_strip_model) override;
@@ -661,7 +685,7 @@ class BrowserView : public BrowserWindow,
       ui::mojom::WindowShowState* show_state) const override;
   views::View* GetContentsView() override;
   views::ClientView* CreateClientView(views::Widget* widget) override;
-  views::View* CreateOverlayView() override;
+  std::unique_ptr<views::View> CreateOverlayView() override;
 #if BUILDFLAG(IS_MAC)
   views::View* CreateMacOverlayView();
 #endif
@@ -721,6 +745,9 @@ class BrowserView : public BrowserWindow,
 
   // ui::AcceleratorTarget:
   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
+
+  // GlobalErrorObserver:
+  void OnGlobalErrorsChanged() override;
 
   // ImmersiveModeController::Observer:
   void OnImmersiveFullscreenEntered() override;
@@ -796,7 +823,10 @@ class BrowserView : public BrowserWindow,
   TabDragTarget* GetTabDragTarget(const gfx::Point& point_in_screen);
 
 #if BUILDFLAG(IS_CHROMEOS)
-  // This is used only for SWA/PWA scenario.
+  // This is used only for SWA/PWA scenario. Not used when
+  // features::kUseUnifiedLockedStateController is enabled.
+  // TODO(crbug.com/438540029): Remove this when the migration to
+  // LockedStateController is completed.
   void OnLockedForOnTaskUpdated(bool locked_for_on_task);
 
   bool IsLockedFullscreen() const;
@@ -815,6 +845,7 @@ class BrowserView : public BrowserWindow,
   friend class TopControlsSlideControllerTest;
   FRIEND_TEST_ALL_PREFIXES(BrowserViewTest, BrowserView);
   FRIEND_TEST_ALL_PREFIXES(BrowserViewTest, AccessibleWindowTitle);
+  FRIEND_TEST_ALL_PREFIXES(BrowserViewTest, FullscreenControlHostLeakOnMac);
   FRIEND_TEST_ALL_PREFIXES(PermissionChipUnitTest, AccessibleName);
 
   // Modes that require reparenting of views. For example, tab strip and web app
@@ -870,8 +901,6 @@ class BrowserView : public BrowserWindow,
   void OnVerticalTabStripModeChanged(
       tabs::VerticalTabStripStateController* controller);
 
-  void OnOrganizerPanelStateChanged(OrganizerPanelStateController* controller);
-
   // Callback for the loading animation(s) associated with this view.
   void LoadingAnimationTimerCallback();
   void LoadingAnimationCallback(base::TimeTicks timestamp);
@@ -880,10 +909,6 @@ class BrowserView : public BrowserWindow,
   // Creates the JumpList.
   void CreateJumpList();
 #endif
-
-  // Helper method, returns if we should show the IPHs anchored on the avatar
-  // toolbar.
-  bool ShouldShowAvatarToolbarIPH();
 
   // Returns the frame view.
   BrowserFrameView* GetFrameView();
@@ -1015,10 +1040,6 @@ class BrowserView : public BrowserWindow,
   // side panel. Should be called when the IPH backend is initialized or
   // whenever the touch mode changes.
   void MaybeShowReadingListInSidePanelIPH();
-
-  // Attempts showing the IPH promo listing benefits for signed-in users
-  // after the sync-to-signin migration.
-  void MaybeShowSignInBenefitsIPH();
 
   void UpdateWindowControlsOverlayEnabled();
   void RefreshWindowControlsOverlayAfterFullscreenTransition();
@@ -1216,7 +1237,7 @@ class BrowserView : public BrowserWindow,
   raw_ptr<CustomFloatingCorner> vertical_tab_strip_bottom_corner_ = nullptr;
 
   // The view responsible for housing the contents of the organizer panel.
-  raw_ptr<OrganizerPanelView> organizer_panel_container_ = nullptr;
+  raw_ptr<OrganizerTrayView> organizer_tray_ = nullptr;
 
   // Side panel that extends to the height of the page content or toolbar,
   // aligned to the left or the right side of the browser window depending on
@@ -1254,20 +1275,29 @@ class BrowserView : public BrowserWindow,
 
   // State machine for deferring layouts during browser startup.
   enum class StartupLayoutState {
-    // Before the very first layout pass has completed. Layout is allowed so the
-    // window gets initial bounds.
+    // Initial state for normal windows, before the very first layout pass has
+    // completed. Layout is allowed so the window gets initial bounds.
     kInitial,
     // The first layout pass has completed, but the window is still invisible.
-    // Subsequent layout requests will be deferred to avoid redundant passes.
+    // Subsequent layout requests will be deferred to avoid redundant passes
+    // (unless the window size changes or web contents bounds are still
+    // pending).
     kDeferring,
-    // The window has been shown at least once. Layout deferral is disabled for
-    // the rest of the browser session to avoid active-use jank.
+    // Layout deferral is disabled for the rest of the browser session. This is
+    // set at initialization for non-normal window types (which do not use the
+    // WebUI toolbar), or once a window has been shown at least once to avoid
+    // active-use jank.
     kDisabled,
   };
   StartupLayoutState startup_layout_state_ = StartupLayoutState::kInitial;
 
   // Set to true if a layout request was skipped while the window was invisible.
   bool layout_deferred_while_invisible_ = false;
+
+  // The size of this view during the last completed layout pass. Used by
+  // kDeferLayoutDuringBrowserStartup to ensure that window resize operations
+  // while invisible still execute layout to update child view bounds.
+  gfx::Size last_laid_out_size_;
 
   // True if (as of the last time it was checked) the frame type is native.
   bool using_native_frame_ = true;
@@ -1287,9 +1317,8 @@ class BrowserView : public BrowserWindow,
   base::OnceClosure loading_animation_state_change_closure_;
 
   // Start timestamp for all throbbers. Set when the loading animation
-  // starts. For paint-driven animations (i.e. when `kCompositorLoadingThrobber`
-  // is disabled), this is used for all consecutive tabs (while any are loading)
-  // to keep throbbers in sync.
+  // starts and used for all consecutive tabs (while any are loading) to keep
+  // throbbers in sync.
   base::TimeTicks loading_animation_start_;
 
   views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
@@ -1327,6 +1356,9 @@ class BrowserView : public BrowserWindow,
   base::ScopedObservation<views::Widget, views::WidgetObserver>
       widget_observation_{this};
 
+  base::ScopedObservation<GlobalErrorService, GlobalErrorObserver>
+      global_error_observation_{this};
+
   bool interactive_resize_in_progress_ = false;
 
   // The last bounds we notified about in TryNotifyWindowBoundsChanged().
@@ -1356,8 +1388,8 @@ class BrowserView : public BrowserWindow,
   class PipExclusionObserverImpl;
   std::unique_ptr<PipExclusionObserverImpl> pip_exclusion_observer_;
 #endif
-  std::optional<content::PermissionController::SubscriptionId>
-      window_management_subscription_id_;
+  std::unique_ptr<content::PermissionController::PermissionSubscription>
+      window_management_subscription_;
 
   std::optional<bool> resizable_from_web_api_;
 
@@ -1369,8 +1401,6 @@ class BrowserView : public BrowserWindow,
 
   std::unique_ptr<tabs::VerticalTabStripStateController::ScopedEnableStateLock>
       vertical_tabs_enable_state_lock_;
-
-  base::CallbackListSubscription organizer_panel_subscription_;
 
 #if BUILDFLAG(IS_CHROMEOS)
   base::CallbackListSubscription on_locked_task_subscription_;

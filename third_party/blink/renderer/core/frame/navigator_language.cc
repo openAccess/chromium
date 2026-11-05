@@ -4,10 +4,6 @@
 
 #include "third_party/blink/renderer/core/frame/navigator_language.h"
 
-#include "base/command_line.h"
-#include "services/network/public/cpp/features.h"
-#include "third_party/blink/public/common/switches.h"
-#include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/platform/language.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
@@ -64,10 +60,6 @@ void NavigatorLanguage::SetLanguagesDirty() {
   languages_.clear();
 }
 
-void NavigatorLanguage::SetLanguagesForTesting(const String& languages) {
-  languages_ = ParseAndSanitize(languages);
-}
-
 void NavigatorLanguage::EnsureUpdatedLanguage() {
   String accept_languages_override;
   probe::ApplyAcceptLanguageOverride(execution_context_,
@@ -85,18 +77,6 @@ void NavigatorLanguage::EnsureUpdatedLanguage() {
 
   if (languages_dirty_) {
     languages_ = ParseAndSanitize(GetAcceptLanguages());
-    // Reduce the Accept-Language if the ReduceAcceptLanguage deprecation
-    // trial is not enabled and feature flag ReduceAcceptLanguage is enabled.
-    if (RuntimeEnabledFeatures::DisableReduceAcceptLanguageEnabled(
-            execution_context_)) {
-      UseCounter::Count(execution_context_,
-                        WebFeature::kDisableReduceAcceptLanguage);
-    } else if (base::FeatureList::IsEnabled(
-                   network::features::kReduceAcceptLanguage) &&
-               !base::CommandLine::ForCurrentProcess()->HasSwitch(
-                   blink::switches::kDisableReduceAcceptLanguage)) {
-      languages_ = Vector<String>({languages_.front()});
-    }
     languages_dirty_ = false;
   }
 }

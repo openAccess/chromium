@@ -33,11 +33,8 @@ import './cellular_roaming_toggle_button.js';
 import './internet_shared.css.js';
 import './network_proxy_section.js';
 import './passpoint_remove_dialog.js';
-import './settings_traffic_counters.js';
 import './tether_connection_dialog.js';
 
-import type {PrefsMixinInterface} from '/shared/settings/prefs/prefs_mixin.js';
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import {MojoConnectivityProvider} from 'chrome://resources/ash/common/connectivity/mojo_connectivity_provider.js';
 import type {PasspointSubscription} from 'chrome://resources/ash/common/connectivity/passpoint.mojom-webui.js';
 import type {CrToggleElement} from 'chrome://resources/ash/common/cr_elements/cr_toggle/cr_toggle.js';
@@ -52,7 +49,6 @@ import {MojoInterfaceProviderImpl} from 'chrome://resources/ash/common/network/m
 import type {NetworkListenerBehaviorInterface} from 'chrome://resources/ash/common/network/network_listener_behavior.js';
 import {NetworkListenerBehavior} from 'chrome://resources/ash/common/network/network_listener_behavior.js';
 import {OncMojo} from 'chrome://resources/ash/common/network/onc_mojo.js';
-import {TrafficCountersAdapter} from 'chrome://resources/ash/common/traffic_counters/traffic_counters_adapter.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import type {ApnProperties, ConfigProperties, GlobalPolicy, IPConfigProperties, ManagedProperties, NetworkStateProperties, ProxySettings} from 'chrome://resources/mojo/chromeos/services/network_config/public/mojom/cros_network_config.mojom-webui.js';
 import {ActivationStateType, HiddenSsidMode, MatchType, SecurityType, VpnType} from 'chrome://resources/mojo/chromeos/services/network_config/public/mojom/cros_network_config.mojom-webui.js';
@@ -70,7 +66,9 @@ import {Setting} from '../mojom-webui/setting.mojom-webui.js';
 import type {OsSyncBrowserProxy, OsSyncPrefs} from '../os_people_page/os_sync_browser_proxy.js';
 import {OsSyncBrowserProxyImpl} from '../os_people_page/os_sync_browser_proxy.js';
 import type {OsSettingsSubpageElement} from '../os_settings_page/os_settings_subpage.js';
-import type {Route} from '../router.js';
+import type {Route} from '../os_settings_routes.js';
+import type {PrefsMixinInterface} from '../prefs/prefs_mixin.js';
+import {PrefsMixin} from '../prefs/prefs_mixin.js';
 import {Router, routes} from '../router.js';
 
 import {getTemplate} from './internet_detail_subpage.html.js';
@@ -271,30 +269,6 @@ export class SettingsInternetDetailPageElement extends
         },
       },
 
-      isTrafficCountersEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.valueExists('trafficCountersEnabled') &&
-              loadTimeData.getBoolean('trafficCountersEnabled');
-        },
-      },
-
-      isTrafficCountersForWifiTestingEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.valueExists('trafficCountersForWifiTesting') &&
-              loadTimeData.getBoolean('trafficCountersForWifiTesting');
-        },
-      },
-
-      /**
-       * Tracks whether traffic counter info should be shown.
-       */
-      trafficCountersAvailable_: {
-        type: Boolean,
-        value: false,
-      },
-
       /**
        * When true, all inputs that allow state to be changed (e.g., toggles,
        * inputs) are disabled.
@@ -303,24 +277,6 @@ export class SettingsInternetDetailPageElement extends
         type: Boolean,
         value: false,
         computed: 'computeDisabled_(deviceState_.*)',
-      },
-
-      isApnRevampEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.valueExists('isApnRevampEnabled') &&
-              loadTimeData.getBoolean('isApnRevampEnabled');
-        },
-      },
-
-      isApnRevampAndAllowApnModificationPolicyEnabled_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.valueExists(
-                     'isApnRevampAndAllowApnModificationPolicyEnabled') &&
-              loadTimeData.getBoolean(
-                  'isApnRevampAndAllowApnModificationPolicyEnabled');
-        },
       },
 
       passpointSubscription_: {
@@ -334,7 +290,10 @@ export class SettingsInternetDetailPageElement extends
 
       proxyExpanded_: Boolean,
 
-      dataUsageExpanded_: Boolean,
+      propertiesReceived_: {
+        type: Boolean,
+        value: false,
+      },
     };
   }
 
@@ -391,17 +350,12 @@ export class SettingsInternetDetailPageElement extends
   declare private autoConnectPref_: chrome.settingsPrivate.PrefObject<boolean>;
   private browserProxy_: InternetPageBrowserProxy =
       InternetPageBrowserProxyImpl.getInstance();
-  declare private dataUsageExpanded_: boolean;
   declare private deviceState_: OncMojo.DeviceStateProperties|null;
   private didSetFocus_: boolean = false;
   declare private disabled_: boolean;
   declare private hiddenPref_: chrome.settingsPrivate.PrefObject<boolean>;
   declare private ipAddress_: string;
-  declare private isApnRevampEnabled_: boolean;
-  declare private isApnRevampAndAllowApnModificationPolicyEnabled_: boolean;
   declare private isSecondaryUser_: boolean;
-  declare private isTrafficCountersEnabled_: boolean;
-  declare private isTrafficCountersForWifiTestingEnabled_: boolean;
   declare private isWifiSyncEnabled_: boolean;
   declare private managedProperties_: ManagedProperties|undefined;
   declare private meteredOverride_: boolean;
@@ -426,7 +380,7 @@ export class SettingsInternetDetailPageElement extends
    * Set to true to once the initial properties have been received. This
    * prevents setProperties from being called when setting default properties.
    */
-  private propertiesReceived_: boolean = false;
+  declare private propertiesReceived_: boolean;
   declare private proxyExpanded_: boolean;
   /**
    * Set in currentRouteChanged() if the showConfigure URL query
@@ -436,8 +390,6 @@ export class SettingsInternetDetailPageElement extends
   private shouldShowConfigureWhenNetworkLoaded_: boolean = false;
   declare private showConfigurableSections_: boolean;
   declare private showTechnologyBadge_: boolean;
-  private trafficCountersAdapter_ = new TrafficCountersAdapter();
-  declare private trafficCountersAvailable_: boolean;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -445,7 +397,6 @@ export class SettingsInternetDetailPageElement extends
     this.addWebUiListener(
         'os-sync-prefs-changed', this.handleOsSyncPrefsChanged_.bind(this));
     this.osSyncBrowserProxy_.sendOsSyncPrefsChanged();
-    this.computeTrafficCountersAvailable_();
   }
 
   private afterRenderShowDeepLink_(
@@ -1252,23 +1203,14 @@ export class SettingsInternetDetailPageElement extends
   }
 
   private shouldShowApnRow_(): boolean {
-    return this.isApnRevampEnabled_ &&
-        this.isCellular_(this.managedProperties_);
+    return this.isCellular_(this.managedProperties_);
   }
 
   private isApnManaged_(globalPolicy: GlobalPolicy|undefined): boolean {
-    if (!this.isApnRevampAndAllowApnModificationPolicyEnabled_) {
-      return false;
-    }
     if (!globalPolicy) {
       return false;
     }
     return !globalPolicy.allowApnModification;
-  }
-
-  private shouldShowApnList_(): boolean {
-    return !this.isApnRevampEnabled_ &&
-        this.isCellular_(this.managedProperties_);
   }
 
   private shouldShowSuppressTextMessagesToggle_(): boolean {
@@ -2169,33 +2111,6 @@ export class SettingsInternetDetailPageElement extends
         'cellular.min');
 
     return fields;
-  }
-
-  private async computeTrafficCountersAvailable_(): Promise<void> {
-    const networks = await this.trafficCountersAdapter_
-                         .requestTrafficCountersForActiveNetworks();
-    this.trafficCountersAvailable_ = networks.some(n => n.guid === this.guid);
-  }
-
-  private showDataUsage_(
-      managedProperties: ManagedProperties|undefined,
-      trafficCountersAvailable: boolean): boolean {
-    if (!this.isTrafficCountersEnabled_) {
-      return false;
-    }
-    if (!managedProperties || this.guid === '') {
-      return false;
-    }
-    if (!this.isCellular_(managedProperties) &&
-        !(this.isWiFi_(managedProperties) &&
-          this.isTrafficCountersForWifiTestingEnabled_)) {
-      return false;
-    }
-    if (!this.isConnectedState_(managedProperties)) {
-      return false;
-    }
-
-    return trafficCountersAvailable;
   }
 
   private hasAdvancedSection_(): boolean {

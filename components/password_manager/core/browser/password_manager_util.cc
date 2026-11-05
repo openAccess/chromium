@@ -21,11 +21,13 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/logging/log_manager.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/common/password_generation_util.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
 #include "components/password_manager/core/browser/browser_save_password_progress_logger.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/password_bubble_experiment.h"
@@ -41,6 +43,7 @@
 #include "components/password_manager/core/browser/password_store/password_store_util.h"
 #include "components/password_manager/core/browser/password_store/stored_credential.h"
 #include "components/password_manager/core/browser/password_sync_util.h"
+#include "components/password_manager/core/common/password_manager_constants.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_metrics.h"
@@ -51,6 +54,7 @@
 using autofill::password_generation::PasswordGenerationType;
 using password_manager::PasswordForm;
 using password_manager::StoredCredential;
+using password_manager::constants::kSpecialSymbols;
 
 namespace password_manager_util {
 namespace {
@@ -254,22 +258,22 @@ std::string_view GetSignonRealmWithProtocolExcluded(const PasswordForm& form) {
 
 GetLoginMatchType GetMatchType(const password_manager::PasswordForm& form) {
   CHECK(form.match_type.has_value());
-  if (form.match_type.value() == PasswordForm::MatchType::kExact) {
+  if (form.match_type.value() == affiliations::MatchType::kExact) {
     return GetLoginMatchType::kExact;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kAffiliated)) {
+                       affiliations::MatchType::kAffiliated)) {
     return GetLoginMatchType::kAffiliated;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kPSL)) {
+                       affiliations::MatchType::kPSL)) {
     return GetLoginMatchType::kPSL;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kGrouped)) {
+                       affiliations::MatchType::kGrouped)) {
     return GetLoginMatchType::kGrouped;
   }
 
@@ -278,22 +282,22 @@ GetLoginMatchType GetMatchType(const password_manager::PasswordForm& form) {
 
 GetLoginMatchType GetMatchType(const password_manager::StoredCredential& form) {
   CHECK(form.match_type.has_value());
-  if (form.match_type.value() == PasswordForm::MatchType::kExact) {
+  if (form.match_type.value() == affiliations::MatchType::kExact) {
     return GetLoginMatchType::kExact;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kAffiliated)) {
+                       affiliations::MatchType::kAffiliated)) {
     return GetLoginMatchType::kAffiliated;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kPSL)) {
+                       affiliations::MatchType::kPSL)) {
     return GetLoginMatchType::kPSL;
   }
 
   if (static_cast<int>(form.match_type.value() &
-                       PasswordForm::MatchType::kGrouped)) {
+                       affiliations::MatchType::kGrouped)) {
     return GetLoginMatchType::kGrouped;
   }
 
@@ -450,7 +454,7 @@ const StoredCredential* GetMatchForUpdating(
     const bool password_change_should_update_match =
         submitted_form.type == PasswordForm::Type::kChangeSubmission &&
         // Password change should update all matches that are PSL or stronger.
-        username_match->match_type < PasswordForm::MatchType::kGrouped;
+        username_match->match_type < affiliations::MatchType::kGrouped;
     if (!IsCredentialWeakMatch(*username_match) ||
         password_change_should_update_match) {
       return username_match;
@@ -515,13 +519,27 @@ bool ShouldShowBiometricAuthenticationBeforeFillingPromo(
   if (!client) {
     return false;
   }
-  std::unique_ptr<device_reauth::DeviceAuthenticator> device_authenticator =
-      client->GetDeviceAuthenticator();
-  if (!device_authenticator) {
+  if (!base::FeatureList::IsEnabled(
+          password_manager::features::kDeviceReauthRefactor)) {
+    std::unique_ptr<device_reauth::DeviceAuthenticator> device_authenticator =
+        client->GetDeviceAuthenticator();
+    if (!device_authenticator) {
+      return false;
+    }
+    if (!device_authenticator->CanAuthenticateWithBiometrics()) {
+      return false;
+    }
+    return !client->GetPrefs()->GetBoolean(
+        password_manager::prefs::kBiometricAuthenticationBeforeFilling);
+  }
+
+  std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker> checker =
+      client->GetDeviceAuthAvailabilityChecker();
+  if (!checker) {
     return false;
   }
 
-  if (!device_authenticator->CanAuthenticateWithBiometrics()) {
+  if (!checker->CanAuthenticateWithBiometrics()) {
     return false;
   }
   return !client->GetPrefs()->GetBoolean(

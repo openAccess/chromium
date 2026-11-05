@@ -25,6 +25,7 @@ static_library("device_info") {
   deps = [
     "//chromeos/ash/components/channel",
     "//chromeos/ash/components/system",
+    "//components/policy/proto",
     "//components/version_info",
   ]
 }
@@ -42,6 +43,7 @@ source_set("unit_tests") {
     "//chrome/browser/ash/settings",
     "//chrome/browser/ash/settings:test_support",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/dbus/chromebox_for_meetings",
     "//chromeos/ash/components/dbus/session_manager",
     "//chromeos/ash/components/install_attributes:test_support",

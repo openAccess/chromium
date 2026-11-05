@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/webui_browser/find_bar_owner_webui_browser.h"
 
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
@@ -84,15 +83,12 @@ std::u16string FindBarOwnerWebUIBrowser::GetFindBarAccessibleWindowTitle() {
 
 void FindBarOwnerWebUIBrowser::OnFindBarVisibilityChanged(
     gfx::Rect visible_bounds) {
-  window_->browser()
-      ->GetFeatures()
-      .GetFindBarController()
-      ->OnFindBarVisibilityChanged();
+  FindBarController::From(window_->browser())->OnFindBarVisibilityChanged();
 }
 
 void FindBarOwnerWebUIBrowser::CloseOverlappingBubbles() {
-  if (TranslateBubbleController* controller =
-      TranslateBubbleController::From(window_->browser())) {
+  if (TranslateController* controller =
+          TranslateController::From(window_->browser())) {
     controller->CloseBubble();
   }
 }

@@ -25,16 +25,19 @@ class IOSChromePasskeyClient : public webauthn::IOSPasskeyClient {
   // IOSPasskeyClient overrides.
   void SetIOSPasskeyClientCommandsHandler(
       id<IOSPasskeyClientCommands> handler) override;
-  void FetchKeys(
+  void FetchTrustedVaultKeys(
       webauthn::ReauthenticatePurpose purpose,
       webauthn::PasskeyUserVerificationStatus user_verification_status,
-      webauthn::FetchKeysCallback callback) override;
+      webauthn::FetchTrustedVaultKeysCallback callback) override;
+  void FetchDeviceAuthorizationKeys(
+      webauthn::FetchDeviceAuthKeysCallback callback) override;
   void ShowSuggestionBottomSheet(RequestInfo request_info) override;
   void ShowCreationBottomSheet(RequestInfo request_info) override;
   void ShowInterstitial(InterstitialCallback callback) override;
   void AllowPasskeyCreationInfobar(bool allowed) override;
   void CancelPasskeyRequest(RequestInfo request_info) override;
   bool IsGpmPasskeySavingEnabled() const override;
+  bool IsAutomaticPasskeyUpgradeEnabled() const override;
   bool IsBiometricsEnabled() const override;
   void OnPasskeyCreated() override;
 

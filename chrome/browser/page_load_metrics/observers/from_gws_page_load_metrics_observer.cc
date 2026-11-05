@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/page_load_metrics/observers/from_gws_page_load_metrics_observer.h"
+
 #include <string>
 
 #include "base/metrics/histogram_functions.h"
@@ -16,6 +17,7 @@
 #include "content/public/browser/navigation_handle.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
+#include "ui/base/page_transition_types.h"
 
 using page_load_metrics::PageAbortReason;
 
@@ -161,7 +163,8 @@ void LogCommittedAbortsBeforePaint(PageAbortReason abort_reason,
       break;
     default:
       // These should only be logged for provisional aborts.
-      DCHECK_NE(abort_reason, PageAbortReason::ABORT_OTHER);
+      CHECK_NE(abort_reason, PageAbortReason::ABORT_OTHER,
+               base::NotFatalUntil::M161);
       break;
   }
 }
@@ -200,7 +203,8 @@ void LogAbortsAfterPaintBeforeInteraction(
       break;
     default:
       // These should only be logged for provisional aborts.
-      DCHECK_NE(abort_info.reason, PageAbortReason::ABORT_OTHER);
+      CHECK_NE(abort_info.reason, PageAbortReason::ABORT_OTHER,
+               base::NotFatalUntil::M161);
       break;
   }
 }
@@ -291,7 +295,8 @@ bool WasAbortedInForeground(
 
   const base::TimeDelta time_to_first_background =
       delegate.GetTimeToFirstBackground().value();
-  DCHECK_GT(abort_info.time_to_abort, time_to_first_background);
+  CHECK_GT(abort_info.time_to_abort, time_to_first_background,
+           base::NotFatalUntil::M161);
   base::TimeDelta background_abort_delta =
       abort_info.time_to_abort - time_to_first_background;
   // Consider this a foregrounded abort if it occurred within 100ms of a
@@ -308,7 +313,8 @@ bool WasAbortedBeforeInteraction(
   // These conditions should be guaranteed by the call to
   // WasAbortedInForeground, which is called before WasAbortedBeforeInteraction
   // gets invoked.
-  DCHECK(abort_info.reason != PageAbortReason::ABORT_NONE);
+  CHECK(abort_info.reason != PageAbortReason::ABORT_NONE,
+        base::NotFatalUntil::M161);
 
   if (!time_to_interaction)
     return true;
@@ -536,7 +542,7 @@ bool FromGWSPageLoadMetricsLogger::ShouldLogFailedProvisionalLoadMetrics() {
 }
 
 bool FromGWSPageLoadMetricsLogger::ShouldLogPostCommitMetrics(const GURL& url) {
-  DCHECK(!url.is_empty());
+  CHECK(!url.is_empty(), base::NotFatalUntil::M161);
 
   // If this page has a URL on a known google search hostname, then it may be a
   // page associated with search (either a search results page, or a search
@@ -631,8 +637,9 @@ void FromGWSPageLoadMetricsLogger::OnFirstContentfulPaintInPage(
 
     // If we have a foreground paint, we should have a foreground parse start,
     // since paints can't happen until after parsing starts.
-    DCHECK(page_load_metrics::WasStartedInForegroundOptionalEventInForeground(
-        timing.parse_timing->parse_start, delegate));
+    CHECK(page_load_metrics::WasStartedInForegroundOptionalEventInForeground(
+              timing.parse_timing->parse_start, delegate),
+          base::NotFatalUntil::M161);
     PAGE_LOAD_HISTOGRAM(
         internal::kHistogramFromGWSParseStartToFirstContentfulPaint,
         timing.paint_timing->first_contentful_paint.value() -
@@ -667,7 +674,7 @@ void FromGWSPageLoadMetricsLogger::OnUserInput(
     const page_load_metrics::mojom::PageLoadTiming& timing,
     const page_load_metrics::PageLoadMetricsObserverDelegate& delegate) {
   if (first_paint_triggered_ && !first_user_interaction_after_paint_) {
-    DCHECK(!navigation_start_.is_null());
+    CHECK(!navigation_start_.is_null(), base::NotFatalUntil::M161);
     first_user_interaction_after_paint_ =
         base::TimeTicks::Now() - navigation_start_;
   }

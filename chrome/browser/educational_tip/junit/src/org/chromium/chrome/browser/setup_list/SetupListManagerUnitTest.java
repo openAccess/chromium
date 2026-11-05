@@ -14,8 +14,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -54,9 +52,7 @@ import java.util.concurrent.TimeUnit;
 
 /** Test relating to {@link SetupListManager} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        manifest = Config.NONE,
-        shadows = {ShadowAppCompatResources.class})
+@Config(shadows = {ShadowAppCompatResources.class})
 @Features.EnableFeatures(ChromeFeatureList.ANDROID_SETUP_LIST)
 public class SetupListManagerUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -92,7 +88,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testEligibility_AccountDependentPromos() {
         SetupListManager.setInstanceForTesting(new SetupListManager());
         SetupListManager manager = SetupListManager.getInstance();
@@ -114,7 +109,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testPriming_HistorySyncCompletedInSystem() {
         // Mock user as signed in but with history sync NOT yet completed in system.
         when(mIdentityManager.hasPrimaryAccount()).thenReturn(true);
@@ -143,7 +137,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     @Features.DisableFeatures(ChromeFeatureList.ANDROID_SETUP_LIST)
     public void testSetupList_ReturnFalseWhenFeatureDisabled() {
         // Re-create instance after feature flag is disabled.
@@ -153,7 +146,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetupList_ReturnFalseDuringFirstRun() {
         FirstRunStatus.setFirstRunTriggeredForTesting(true);
         // Re-create instance after FirstRunStatus is set.
@@ -163,7 +155,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIsSetupListActive_FalseWhenTimestampNotSet() {
         // Ensure the timestamp is not set initially.
         mSharedPreferencesManager.removeKey(ChromePreferenceKeys.FIRST_CTA_START_TIMESTAMP);
@@ -176,7 +167,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIsSetupListActive_ReturnsTrueWithinActiveWindow() {
         // Set the timestamp to be within the active window.
         mSharedPreferencesManager.writeLong(
@@ -189,7 +179,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testTwoCellLayout_InActiveWithinThreeDays() {
         mSharedPreferencesManager.writeLong(
                 ChromePreferenceKeys.FIRST_CTA_START_TIMESTAMP, TimeUtils.currentTimeMillis());
@@ -202,7 +191,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testTwoCellLayout_ActiveAfterThreeDays() {
         mSharedPreferencesManager.writeLong(
                 ChromePreferenceKeys.FIRST_CTA_START_TIMESTAMP, TimeUtils.currentTimeMillis());
@@ -215,7 +203,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIsSetupListActive_ReturnsFalseOutsideActiveWindow() {
         // Set the timestamp to be outside the active window.
         mSharedPreferencesManager.writeLong(
@@ -229,7 +216,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testModuleCompletion_Silent() {
         SetupListManager.setInstanceForTesting(new SetupListManager());
         SetupListManager manager = SetupListManager.getInstance();
@@ -255,7 +241,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testModuleCompletion_WithAnimation() {
         SetupListManager.setInstanceForTesting(new SetupListManager());
         SetupListManager manager = SetupListManager.getInstance();
@@ -285,7 +270,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetManualRank_WithOffset() {
         SetupListManager.setInstanceForTesting(new SetupListManager());
         SetupListManager manager = SetupListManager.getInstance();
@@ -307,7 +291,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testCelebratoryPromo_ShownWhenAllBaseModulesCompleted() {
         // Mark all base modules as completed BEFORE creating the manager.
         for (int moduleType : SetupListManager.BASE_SETUP_LIST_ORDER) {
@@ -328,7 +311,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSetupListInactive_AfterCelebratoryPromoCompleted() {
         // 1. Mark all base modules as completed BEFORE creating the manager -> Celebration state.
         for (int moduleType : SetupListManager.BASE_SETUP_LIST_ORDER) {
@@ -356,7 +338,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testReconcileState_HandlesAllTransitions() {
         // Start: Fresh installation (after first run).
         SetupListManager.setInstanceForTesting(new SetupListManager());
@@ -396,7 +377,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testObserver_NotifiedOnPrimaryAccountChanged() {
         SetupListManager.setInstanceForTesting(new SetupListManager());
         SetupListManager manager = SetupListManager.getInstance();
@@ -417,7 +397,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSyncStateChanged_CompletesHistorySync() {
         // 1. Setup: User is signed in but history sync is disabled.
         when(mIdentityManager.hasPrimaryAccount()).thenReturn(true);
@@ -446,7 +425,6 @@ public class SetupListManagerUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testSyncStateChanged_CompletesEnhancedSafeBrowsing() {
         // 1. Setup: ESB is currently off.
         when(mSafeBrowsingBridgeJni.getSafeBrowsingState(any()))

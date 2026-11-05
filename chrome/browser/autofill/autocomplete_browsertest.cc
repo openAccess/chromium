@@ -47,6 +47,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/switches.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/events/keycodes/keyboard_code_conversion.h"
 
 namespace autofill {
@@ -135,8 +137,8 @@ class AutocompleteTest : public InProcessBrowserTest {
   // Uses the browser to open the file named `filename` based on the given
   // `disposition`.
   void NavigateToFile(const char* filename,
-                      const WindowOpenDisposition& disposition =
-                          WindowOpenDisposition::NEW_FOREGROUND_TAB) {
+                      const ui::mojom::WindowOpenDisposition& disposition =
+                          ui::mojom::WindowOpenDisposition::kNewForegroundTab) {
     GURL url =
         embedded_test_server()->GetURL(base::StrCat({"/autofill/", filename}));
     NavigateParams params(active_browser_, url, ui::PAGE_TRANSITION_LINK);
@@ -226,6 +228,34 @@ class AutocompleteTest : public InProcessBrowserTest {
     return suggestions;
   }
 
+  std::vector<Suggestion> GetAutocompleteSuggestionsWithLabel(
+      const std::string& input_name,
+      const std::string& label,
+      const std::string& prefix) {
+    base::RunLoop run_loop;
+    base::MockCallback<SingleFieldFillRouter::OnSuggestionsReturnedCallback>
+        mock_callback;
+    std::vector<Suggestion> suggestions;
+    EXPECT_CALL(mock_callback, Run)
+        .WillOnce(DoAll(SaveArg<1>(&suggestions),
+                        RunClosure(run_loop.QuitClosure())));
+    FormFieldData field = test::CreateTestFormField(
+        label, input_name, prefix, FormControlType::kInputText);
+    FormData form;
+    form.set_url(GURL("https://www.foo.com"));
+    form.set_fields({field});
+    autocomplete_history_manager()->OnGetSingleFieldSuggestions(
+        form, /*form_structure=*/nullptr, field,
+        /*trigger_autofill_field=*/nullptr, autofill_manager()->client(),
+        mock_callback.Get());
+
+    // Make sure the DB task gets executed.
+    WaitForPendingDBTasks(*GetWebDataService());
+    std::move(run_loop).Run();
+
+    return suggestions;
+  }
+
   scoped_refptr<AutofillWebDataService> GetWebDataService() {
     return WebDataServiceFactory::GetAutofillWebDataForProfile(
         current_profile(), ServiceAccessType::EXPLICIT_ACCESS);
@@ -264,7 +294,8 @@ IN_PROC_BROWSER_TEST_F(AutocompleteTest,
 
   std::string prefix = "Some";
   std::string test_value = "SomeName!";
-  NavigateToFile(kSimpleFormFileName, WindowOpenDisposition::OFF_THE_RECORD);
+  NavigateToFile(kSimpleFormFileName,
+                 ui::mojom::WindowOpenDisposition::kOffTheRecord);
   ASSERT_TRUE(autofill_manager()->forms_seen_waiter().Wait(1));
   FillInputAndSubmit(test_value);
   EXPECT_THAT(GetAutocompleteSuggestions(kDefaultAutocompleteInputId, ""),
@@ -309,7 +340,7 @@ IN_PROC_BROWSER_TEST_F(AutocompleteTest,
 // TODO(crbug.com/434794640): flaky.
 IN_PROC_BROWSER_TEST_F(AutocompleteTest,
                        DISABLED_RetentionPolicy_RemovesExpiredEntry) {
-  TestAutofillClock test_clock(AutofillClock::Now());
+  TestAutofillClockDeprecated test_clock(AutofillClock::Now());
 
   // Add an entry.
   std::string prefix = "Some";
@@ -335,7 +366,7 @@ IN_PROC_BROWSER_TEST_F(AutocompleteTest,
 // TODO(crbug.com/434794640): flaky.
 IN_PROC_BROWSER_TEST_F(AutocompleteTest,
                        DISABLED_RetentionPolicy_DoesNot_RemoveValidEntry) {
-  TestAutofillClock test_clock(AutofillClock::Now());
+  TestAutofillClockDeprecated test_clock(AutofillClock::Now());
 
   // Add an entry.
   std::string prefix = "Some";
@@ -354,6 +385,42 @@ IN_PROC_BROWSER_TEST_F(AutocompleteTest,
 
   // Verify that the entry is still there.
   EXPECT_THAT(GetAutocompleteSuggestions(kDefaultAutocompleteInputId, prefix),
+              SuggestionVectorMainTextsAre(Suggestion::Text(
+                  UTF8ToUTF16(test_value), Suggestion::Text::IsPrimary(true))));
+}
+
+class AutocompleteLabelSensitiveTest : public AutocompleteTest {
+ public:
+  AutocompleteLabelSensitiveTest() {
+    feature_list_.InitAndEnableFeature(
+        features::kAutofillLabelSensitiveAutocomplete);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Tests that autocomplete suggestions are offered based on matching label
+// even when input name/id differs, when `kAutofillLabelSensitiveAutocomplete`
+// is enabled.
+IN_PROC_BROWSER_TEST_F(AutocompleteLabelSensitiveTest,
+                       SuggestsByMatchingLabel) {
+  std::string prefix = "Some";
+  std::string test_value = "SomeName!";
+  NavigateToFile(kSimpleFormFileName);
+  ASSERT_TRUE(autofill_manager()->forms_seen_waiter().Wait(1));
+
+  // Save an autocomplete entry with label "First Name:" directly.
+  FormFieldData saved_field = test::CreateTestFormField(
+      /*label=*/"First Name:", /*name=*/"first_name_input",
+      /*value=*/test_value, FormControlType::kInputText);
+  GetWebDataService()->AddFormFields({saved_field});
+  WaitForPendingDBTasks(*GetWebDataService());
+
+  // Query a completely different input "other_input_id", but with the matching
+  // label "First Name:".
+  EXPECT_THAT(GetAutocompleteSuggestionsWithLabel("other_input_id",
+                                                  "First Name:", prefix),
               SuggestionVectorMainTextsAre(Suggestion::Text(
                   UTF8ToUTF16(test_value), Suggestion::Text::IsPrimary(true))));
 }

@@ -10,13 +10,16 @@
 #include <utility>
 #include <vector>
 
+#include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "components/android_autofill/browser/android_autofill_bridge_factory.h"
 #include "components/android_autofill/browser/form_field_data_android.h"
 #include "components/android_autofill/browser/mock_form_data_android_bridge.h"
 #include "components/android_autofill/browser/mock_form_field_data_android_bridge.h"
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/form_structure.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_test_util.h"
 #include "components/autofill/core/common/form_data.h"
 #include "components/autofill/core/common/form_data_test_api.h"
@@ -30,6 +33,7 @@ namespace {
 
 using ::autofill::test::FormDataEq;
 using ::testing::_;
+using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::InSequence;
 using ::testing::MockFunction;
@@ -107,14 +111,14 @@ class FormDataAndroidTest : public ::testing::Test {
   }
 
  protected:
-  const std::vector<MockFormFieldDataAndroidBridge*>& field_bridges() {
+  const std::vector<raw_ptr<MockFormFieldDataAndroidBridge>>& field_bridges() {
     return field_bridges_;
   }
   MockFormDataAndroidBridge& form_bridge() { return *form_bridge_; }
 
  private:
   test::AutofillUnitTestEnvironment autofill_test_environment_;
-  std::vector<MockFormFieldDataAndroidBridge*> field_bridges_;
+  std::vector<raw_ptr<MockFormFieldDataAndroidBridge>> field_bridges_;
   raw_ptr<MockFormDataAndroidBridge> form_bridge_;
 };
 
@@ -327,6 +331,27 @@ TEST_F(FormDataAndroidTest, UpdateFieldVisibilities) {
   form_android.UpdateFieldVisibilities(form);
 
   EXPECT_THAT(form_android.form(), FormDataEq(form));
+}
+
+// Tests that `UpdateFieldVisibilities` works when the updated form has a
+// different number or order of fields.
+TEST_F(FormDataAndroidTest, UpdateFieldVisibilities_ChangedForm) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAutofillAndroidUseGlobalIdForFormComparison};
+  FormData form = CreateTestForm();
+  form.set_fields({CreateTestField(), CreateTestField()});
+  test_api(form).field(1).set_is_focusable(false);
+  FormDataAndroid form_android(form, kSampleSessionId);
+
+  FormData updated_form = form;
+  test_api(updated_form).field(1).set_is_focusable(true);
+  updated_form.set_fields(
+      {CreateTestField(), updated_form.fields()[1], CreateTestField()});
+
+  EXPECT_CALL(*field_bridges()[0], UpdateFocusable).Times(0);
+  EXPECT_CALL(*field_bridges()[1], UpdateFocusable(true));
+  EXPECT_THAT(form_android.UpdateFieldVisibilities(updated_form),
+              ElementsAre(1));
 }
 
 // Tests that `GetJavaPeer` passes the correct `FormData`, `SessionId` and

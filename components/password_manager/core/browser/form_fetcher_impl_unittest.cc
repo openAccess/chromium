@@ -16,14 +16,18 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/task_environment.h"
+#include "base/types/expected.h"
 #include "build/build_config.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/password_manager/core/browser/affiliation/affiliated_match_helper.h"
 #include "components/password_manager/core/browser/affiliation/mock_affiliated_match_helper.h"
+#include "components/password_manager/core/browser/http_password_store_migrator.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_manager_test_utils.h"
 #include "components/password_manager/core/browser/password_store/interactions_stats.h"
 #include "components/password_manager/core/browser/password_store/mock_password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/mock_smart_bubble_stats_store.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/password_store_util.h"
 #include "components/password_manager/core/browser/password_string.h"
@@ -172,7 +176,7 @@ PasswordForm CreateHTMLForm(const std::string& origin_url,
   form.username_value = ASCIIToUTF16(username_value);
   form.password_value = PasswordString(ASCIIToUTF16(password_value));
   form.date_last_used = date_last_used;
-  form.match_type = PasswordForm::MatchType::kExact;
+  form.match_type = affiliations::MatchType::kExact;
   return form;
 }
 
@@ -185,7 +189,7 @@ PasswordForm CreateLeakedCredential(
   compromised.password_issues.insert(
       {InsecureType::kLeaked, insecurity_metadata});
   compromised.in_store = store;
-  compromised.match_type = PasswordForm::MatchType::kExact;
+  compromised.match_type = affiliations::MatchType::kExact;
   return compromised;
 }
 
@@ -195,7 +199,7 @@ PasswordForm CreateNonFederated(const std::string& username_value = "user",
   PasswordForm form =
       CreateHTMLForm(kTestHttpsURL, username_value, "password", date_last_used);
   form.action = GURL(kTestHttpsActionURL);
-  form.match_type = PasswordForm::MatchType::kExact;
+  form.match_type = affiliations::MatchType::kExact;
   return form;
 }
 
@@ -203,7 +207,7 @@ PasswordForm CreateNonFederated(const std::string& username_value = "user",
 PasswordForm CreateHTTPNonFederated() {
   PasswordForm form = CreateHTMLForm(kTestHttpURL, "user", "password");
   form.action = GURL(kTestHttpActionURL);
-  form.match_type = PasswordForm::MatchType::kExact;
+  form.match_type = affiliations::MatchType::kExact;
   return form;
 }
 
@@ -214,7 +218,7 @@ PasswordForm CreateFederated(const std::string& username_value = "user",
   form.signon_realm = kTestFederatedRealm;
   form.password_value.clear();
   form.federation_origin = url::SchemeHostPort(GURL(kTestFederationURL));
-  form.match_type = PasswordForm::MatchType::kExact;
+  form.match_type = affiliations::MatchType::kExact;
   return form;
 }
 
@@ -226,7 +230,7 @@ PasswordForm CreateAndroidFederated(
       CreateHTMLForm("android://hash@com.example.android/", username_value,
                      /*password_value=*/"", date_last_used);
   form.federation_origin = url::SchemeHostPort(GURL(kTestFederationURL));
-  form.match_type = PasswordForm::MatchType::kAffiliated;
+  form.match_type = affiliations::MatchType::kAffiliated;
   return form;
 }
 
@@ -239,19 +243,19 @@ PasswordForm CreateBlocked() {
 
 PasswordForm CreateBlockedPsl() {
   PasswordForm form = CreateBlocked();
-  form.match_type = PasswordForm::MatchType::kPSL;
+  form.match_type = affiliations::MatchType::kPSL;
   return form;
 }
 
 PasswordForm CreateGrouped() {
   PasswordForm form = CreateHTMLForm(kTestGroupedURL, "user", "password");
-  form.match_type = PasswordForm::MatchType::kGrouped;
+  form.match_type = affiliations::MatchType::kGrouped;
   return form;
 }
 
 PasswordForm CreateGroupedApp() {
   PasswordForm form = CreateHTMLForm(kTestAndroidFacetURI, "user", "password");
-  form.match_type = PasswordForm::MatchType::kGrouped;
+  form.match_type = affiliations::MatchType::kGrouped;
   return form;
 }
 
@@ -320,8 +324,11 @@ class FormFetcherImplTestBase : public testing::Test {
     }
   }
 
-  void DeliverPasswordStoreResults(LoginsResultOrError profile_store_results,
-                                   LoginsResultOrError account_store_results) {
+  void DeliverPasswordStoreResults(
+      base::expected<std::vector<StoredCredential>, PasswordStoreBackendError>
+          profile_store_results,
+      base::expected<std::vector<StoredCredential>, PasswordStoreBackendError>
+          account_store_results) {
     store_consumer()->OnGetPasswordStoreResultsOrErrorFrom(
         profile_mock_store_.get(), std::move(profile_store_results));
     if (account_mock_store_) {
@@ -868,14 +875,112 @@ TEST_P(FormFetcherImplTest, DoNotTryToMigrateHTTPPasswordsIfBackendError) {
   EXPECT_CALL(consumer_, OnFetchCompleted);
 
   DeliverPasswordStoreResults(
-      /*profile_store_results=*/PasswordStoreBackendError(
-          PasswordStoreBackendErrorType::kAuthErrorResolvable),
-      /*account_store_results=*/PasswordStoreBackendError(
-          PasswordStoreBackendErrorType::kAuthErrorResolvable));
+      /*profile_store_results=*/base::unexpected(PasswordStoreBackendError(
+          PasswordStoreBackendErrorType::kAuthErrorResolvable)),
+      /*account_store_results=*/base::unexpected(PasswordStoreBackendError(
+          PasswordStoreBackendErrorType::kAuthErrorResolvable)));
 
   EXPECT_THAT(form_fetcher_->GetNonFederatedMatches(), IsEmpty());
   EXPECT_THAT(form_fetcher_->GetFederatedMatches(), IsEmpty());
   EXPECT_FALSE(form_fetcher_->IsBlocklisted());
+}
+
+// Checks that HTTP-to-HTTPS migration runs when the HTTPS site only has a
+// blocklisted entry, and preserves the HTTPS blocklist state alongside the
+// migrated credential.
+TEST_P(FormFetcherImplTest,
+       MigratesHttpPasswordsAndKeepsBlocklistWhenHttpsOnlyBlocklisted) {
+  form_digest_ = PasswordFormDigest(PasswordForm::Scheme::kHtml, kTestHttpsURL,
+                                    GURL(kTestHttpsURL));
+  form_fetcher_ = std::make_unique<FormFetcherImpl>(
+      form_digest_, &client_, /*should_migrate_http_passwords=*/true);
+
+  const PasswordForm http_form = CreateHTTPNonFederated();
+  const PasswordForm https_form =
+      HttpPasswordStoreMigrator::MigrateHttpFormToHttps(http_form);
+  const PasswordForm blocked_form = CreateBlocked();
+  const PasswordFormDigest http_form_digest(PasswordForm::Scheme::kHtml,
+                                            kTestHttpURL, GURL(kTestHttpURL));
+
+  Fetch();
+  form_fetcher_->AddConsumer(&consumer_);
+  base::WeakPtr<PasswordStoreConsumer> profile_store_migrator;
+  base::WeakPtr<PasswordStoreConsumer> account_store_migrator;
+  EXPECT_CALL(*profile_mock_store_, GetLogins(http_form_digest, _))
+      .WillOnce(SaveArg<1>(&profile_store_migrator));
+  if (account_mock_store_) {
+    EXPECT_CALL(*account_mock_store_, GetLogins(http_form_digest, _))
+        .WillOnce(SaveArg<1>(&account_store_migrator));
+  }
+  DeliverPasswordStoreResults(
+      /*profile_store_results=*/FromPasswordForms({blocked_form}),
+      /*account_store_results=*/FromPasswordForms({blocked_form}));
+  EXPECT_EQ(FormFetcher::State::WAITING, form_fetcher_->GetState());
+  ASSERT_TRUE(profile_store_migrator);
+  if (account_mock_store_) {
+    ASSERT_TRUE(account_store_migrator);
+  }
+
+  EXPECT_CALL(consumer_, OnFetchCompleted);
+  profile_store_migrator->OnGetPasswordStoreResultsOrErrorFrom(
+      profile_mock_store_.get(), FromPasswordForms({http_form}));
+  if (account_mock_store_) {
+    account_store_migrator->OnGetPasswordStoreResultsOrErrorFrom(
+        account_mock_store_.get(), {});
+  }
+
+  EXPECT_THAT(form_fetcher_->GetNonFederatedMatches(),
+              UnorderedElementsAre(https_form));
+  EXPECT_TRUE(form_fetcher_->IsBlocklisted());
+}
+
+// Checks that HTTP-to-HTTPS migration does not start when the HTTPS site
+// already has a password credential alongside a blocklisted entry.
+TEST_P(FormFetcherImplTest,
+       DoesNotMigrateHttpPasswordsWhenHttpsHasUsableAndBlocklistedCredentials) {
+  form_digest_ = PasswordFormDigest(PasswordForm::Scheme::kHtml, kTestHttpsURL,
+                                    GURL(kTestHttpsURL));
+  form_fetcher_ = std::make_unique<FormFetcherImpl>(
+      form_digest_, &client_, /*should_migrate_http_passwords=*/true);
+
+  const std::vector<PasswordForm> https_forms = {CreateBlocked(),
+                                                 CreateNonFederated()};
+
+  Fetch();
+  form_fetcher_->AddConsumer(&consumer_);
+  EXPECT_CALL(*profile_mock_store_, GetLogins).Times(0);
+  if (account_mock_store_) {
+    EXPECT_CALL(*account_mock_store_, GetLogins).Times(0);
+  }
+  EXPECT_CALL(consumer_, OnFetchCompleted);
+  DeliverPasswordStoreResults(
+      /*profile_store_results=*/FromPasswordForms(https_forms),
+      /*account_store_results=*/FromPasswordForms(https_forms));
+}
+
+// Checks that HTTP-to-HTTPS migration does not start when the HTTPS site
+// already has a federated credential alongside a blocklisted entry.
+TEST_P(
+    FormFetcherImplTest,
+    DoesNotMigrateHttpPasswordsWhenHttpsHasFederatedAndBlocklistedCredentials) {
+  form_digest_ = PasswordFormDigest(PasswordForm::Scheme::kHtml, kTestHttpsURL,
+                                    GURL(kTestHttpsURL));
+  form_fetcher_ = std::make_unique<FormFetcherImpl>(
+      form_digest_, &client_, /*should_migrate_http_passwords=*/true);
+
+  const std::vector<PasswordForm> https_forms = {CreateBlocked(),
+                                                 CreateFederated()};
+
+  Fetch();
+  form_fetcher_->AddConsumer(&consumer_);
+  EXPECT_CALL(*profile_mock_store_, GetLogins).Times(0);
+  if (account_mock_store_) {
+    EXPECT_CALL(*account_mock_store_, GetLogins).Times(0);
+  }
+  EXPECT_CALL(consumer_, OnFetchCompleted);
+  DeliverPasswordStoreResults(
+      /*profile_store_results=*/FromPasswordForms(https_forms),
+      /*account_store_results=*/FromPasswordForms(https_forms));
 }
 
 // Test that ensures HTTP passwords are only migrated on HTTPS sites when no
@@ -1372,7 +1477,7 @@ TEST_F(MultiStoreFormFetcherTest, MovingToAccountStoreIsBlocked) {
 
   // PSL form that's blocked for |kUser| for "psl_username".
   PasswordForm psl_form = CreateHTMLForm("psl.url.com", "psl_username", "pass");
-  psl_form.match_type = PasswordForm::MatchType::kPSL;
+  psl_form.match_type = affiliations::MatchType::kPSL;
   psl_form.in_store = PasswordForm::Store::kProfileStore;
   psl_form.moving_blocked_for_list.push_back(kUser);
 
@@ -1433,8 +1538,8 @@ TEST_P(FormFetcherImplTest, ProfileBackendErrorResetsOnNewFetch) {
 
   Fetch();
 
-  PasswordStoreBackendError error_results = PasswordStoreBackendError(
-      PasswordStoreBackendErrorType::kAuthErrorResolvable);
+  auto error_results = base::unexpected(PasswordStoreBackendError(
+      PasswordStoreBackendErrorType::kAuthErrorResolvable));
   DeliverPasswordStoreResults(
       /*profile_store_results=*/std::move(error_results),
       /*account_store_results=*/{});
@@ -1462,8 +1567,8 @@ TEST_F(MultiStoreFormFetcherTest, AccountBackendErrorResetsOnNewFetch) {
 
   Fetch();
 
-  PasswordStoreBackendError error_results = PasswordStoreBackendError(
-      PasswordStoreBackendErrorType::kAuthErrorResolvable);
+  auto error_results = base::unexpected(PasswordStoreBackendError(
+      PasswordStoreBackendErrorType::kAuthErrorResolvable));
   DeliverPasswordStoreResults(
       /*profile_store_results=*/{},
       /*account_store_results=*/std::move(error_results));

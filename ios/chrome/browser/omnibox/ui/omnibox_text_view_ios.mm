@@ -25,10 +25,8 @@
 #import "ios/chrome/browser/omnibox/public/omnibox_util.h"
 #import "ios/chrome/browser/omnibox/ui/omnibox_text_input.h"
 #import "ios/chrome/browser/omnibox/ui/omnibox_text_input_delegate.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "ios/chrome/browser/shared/ui/util/animation_util.h"
-#import "ios/chrome/browser/shared/ui/util/reversed_animation.h"
 #import "ios/chrome/browser/shared/ui/util/rtl_geometry.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_constants.h"
@@ -39,7 +37,6 @@
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/grit/ios_theme_resources.h"
 #import "skia/ext/skia_utils_ios.h"
-#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "ui/gfx/color_palette.h"
 #import "ui/gfx/image/image.h"
@@ -138,11 +135,6 @@ const CGFloat kVerticalOffset = 1;
     self.writingToolsBehavior = UIWritingToolsBehaviorNone;
     [self updateOmniboxTypingAttributes];
 
-    // Disable drag on iPhone because there's nowhere to drag to
-    if (ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET) {
-      self.textDragInteraction.enabled = NO;
-    }
-
     // Remove drop when presented by the Composebox so that the composebox can
     // handle all drop actions.
     if (_presentationContext == OmniboxPresentationContext::kComposebox) {
@@ -187,7 +179,7 @@ const CGFloat kVerticalOffset = 1;
 
 - (void)setPlaceholderLabel:(UILabel*)placeholderLabel {
   placeholderLabel.font = self.font;
-  placeholderLabel.textColor = [UIColor colorNamed:kTextSecondaryColor];
+  placeholderLabel.textColor = self.placeholderColor;
   placeholderLabel.isAccessibilityElement = NO;
   _placeholderLabel = placeholderLabel;
 
@@ -205,6 +197,11 @@ const CGFloat kVerticalOffset = 1;
     [placeholderLabel.trailingAnchor
         constraintEqualToAnchor:self.trailingAnchor],
   ]];
+}
+
+- (void)setPlaceholderColor:(UIColor*)placeholderColor {
+  _placeholderColor = placeholderColor;
+  self.placeholderLabel.textColor = placeholderColor;
 }
 
 - (void)setAllowsReturnKeyWithEmptyText:(BOOL)allowsReturnKeyWithEmptyText {
@@ -1206,9 +1203,7 @@ const CGFloat kVerticalOffset = 1;
 }
 
 - (void)updateTextContainerInset {
-  BOOL isComposeboxIpad =
-      IsComposeboxIpadEnabled() &&
-      ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_PHONE;
+  BOOL isComposeboxIpad = IsRegularXRegularSizeClass(self.traitCollection);
   CGFloat minVerticalInset =
       isComposeboxIpad ? kOmniboxTextViewMinVerticalInsetIPadComposebox
                        : kOmniboxTextViewMinVerticalInset;
@@ -1282,6 +1277,10 @@ const CGFloat kVerticalOffset = 1;
 }
 
 - (void)forceDisableReturnKey:(BOOL)forceDisable {
+  if (_forceDisableReturnKey == forceDisable) {
+    return;
+  }
+
   _forceDisableReturnKey = forceDisable;
   [self reloadInputViews];
 }

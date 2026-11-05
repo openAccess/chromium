@@ -8,13 +8,13 @@
 #import "base/memory/raw_ptr.h"
 #import "components/signin/ios/browser/manage_accounts_delegate.h"
 #import "components/signin/ios/browser/signin_enabled_datasource.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/shared/model/browser/browser_user_data.h"
 #import "ios/chrome/browser/tabs/model/tabs_dependency_installer.h"
 
 class Browser;
 @class ManageAccountsDelegateBridge;
 @protocol SceneCommands;
+@protocol SceneSignInCommands;
 @class SceneState;
 @protocol SettingsCommands;
 @class SigninCoordinator;
@@ -24,6 +24,8 @@ class Browser;
 // A browser agent that tracks the addition and removal of webstates, registers
 // them with the AccountConsistencyService, and handles events triggered from
 // them.
+// This class respects the `kRestrictAccountsToPatterns` policy and only deals
+// with accounts on the device matching `kRestrictAccountsToPatterns`.
 class AccountConsistencyBrowserAgent
     : public BrowserUserData<AccountConsistencyBrowserAgent>,
       public TabsDependencyInstaller,
@@ -41,6 +43,7 @@ class AccountConsistencyBrowserAgent
   // ManageAccountsDelegate
   void OnRestoreGaiaCookies() override;
   void OnManageAccounts(const GURL& url, web::WebState* web_state) override;
+  // `prefilled_email` does not need to correspond to an account on the device.
   void OnAddAccount(const GURL& url,
                     const std::string& prefilled_email,
                     web::WebState* web_state) override;
@@ -69,18 +72,21 @@ class AccountConsistencyBrowserAgent
       UIViewController* base_view_controller,
       signin::SigninEnabledDataSource* signin_enabled_data_source);
 
-  // Returns whether it is possible to show the browser's account menu.
-  bool CanShowAccountMenu() const;
+  // Returns whether it is possible to show the browser's account menu. Assumes
+  // sign-in is enabled.
+  bool HasPrimaryAccount() const;
 
   // Opens the account menu, offering to switch to a different account (even one
-  // that's in a different profile).
+  // that's in a different profile). Assumes sign-in is enabled and there is a
+  // primary account.
   void ShowAccountMenu(const GURL& url);
 
-  // Whether `web_state` is the active one.
-  bool IsActiveWebstate(web::WebState* web_state);
+  // Whether `web_state` is the active one in the active browser.
+  bool IsActiveWebState(web::WebState* web_state);
 
   UIViewController* base_view_controller_;
   id<SceneCommands> application_handler_;
+  id<SceneSignInCommands> scene_sign_in_handler_;
   id<SettingsCommands> settings_handler_;
   SigninCoordinator* add_account_coordinator_;
 

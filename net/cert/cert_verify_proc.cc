@@ -69,6 +69,10 @@
 #include "net/cert/cert_verify_proc_ios.h"
 #endif
 
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+#include "net/cert/key_pinning_state_chrome.h"
+#endif
+
 namespace net {
 
 namespace {
@@ -419,7 +423,11 @@ scoped_refptr<CertVerifyProc> CertVerifyProc::CreateBuiltinWithChromeRootStore(
   return CreateCertVerifyProcBuiltin(
       std::move(cert_net_fetcher), std::move(crl_set), std::move(ct_verifier),
       std::move(ct_policy_enforcer),
+#if BUILDFLAG(IS_CHROMEOS)
+      CreateChromeOnlySystemTrustStore(std::move(chrome_root)),
+#else
       CreateSslSystemTrustStoreChromeRoot(std::move(chrome_root)),
+#endif
       instance_params, std::move(time_tracker));
 }
 #endif
@@ -835,6 +843,11 @@ bool CertVerifyProc::HasTooLongValidity(const X509Certificate& cert) {
 
 CertVerifyProc::ImplParams::ImplParams() {
   crl_set = net::CRLSet::BuiltinCRLSet();
+#if BUILDFLAG(CHROME_KEY_PINNING_SUPPORTED)
+  key_pinning_state = KeyPinningStateChrome::CreateForCompiledIn();
+#else
+  key_pinning_state = base::MakeRefCounted<KeyPinningStateDummy>();
+#endif
 #if BUILDFLAG(CHROME_ROOT_STORE_OPTIONAL)
   // Defaults to using Chrome Root Store, though we have to keep this option in
   // here to allow WebView to turn this option off.

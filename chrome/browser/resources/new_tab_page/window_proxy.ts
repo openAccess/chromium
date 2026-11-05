@@ -2,7 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {getTrustedScriptURL} from 'chrome://resources/js/static_types.js';
+
 let instance: WindowProxy|null = null;
+let lazyLoadPromise: Promise<void>|null = null;
 
 /** Abstracts some builtin JS functions to mock them in tests. */
 export class WindowProxy {
@@ -53,10 +56,33 @@ export class WindowProxy {
     });
   }
 
-  /** Posts |message| on the content window of |iframe| at |targetOrigin|. */
+  /**
+   * Adds a <script> tag that holds the lazy loaded code, if not already
+   * added, and returns a promise that resolves when it has loaded.
+   */
+  ensureLazyLoaded(): Promise<void> {
+    if (!lazyLoadPromise) {
+      const script = document.createElement('script');
+      script.type = 'module';
+      script.src = getTrustedScriptURL`./lazy_load.js`;
+      document.body.appendChild(script);
+      lazyLoadPromise = new Promise<void>(resolve => {
+        script.onload = () => resolve();
+      });
+    }
+    return lazyLoadPromise;
+  }
+
+  /**
+   * Posts |message| on |target| at |targetOrigin| (or on its content window if
+   * |target| is an iframe).
+   */
   postMessage(
-      iframe: HTMLIFrameElement, message: unknown, targetOrigin: string) {
-    iframe.contentWindow!.postMessage(message, targetOrigin);
+      target: HTMLIFrameElement|Window, message: unknown,
+      targetOrigin: string) {
+    const targetWindow =
+        target instanceof HTMLIFrameElement ? target.contentWindow! : target;
+    targetWindow.postMessage(message, targetOrigin);
   }
 
   /** Returns `window.location.href` wrapped in a URL object. */

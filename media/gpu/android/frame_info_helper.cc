@@ -91,7 +91,8 @@ class FrameInfoHelperImpl : public FrameInfoHelper,
                 &result);
         if (result == gpu::ContextResult::kSuccess) {
           DCHECK(shared_context_);
-          if (shared_context_->GrContextIsVulkan()) {
+          if (shared_context_->GrContextIsVulkan() ||
+              shared_context_->IsGraphiteVulkan()) {
             vulkan_context_provider_ = shared_context_->vk_context_provider();
           } else if (shared_context_->IsGraphiteDawnVulkan()) {
             dawn_context_provider_ = shared_context_->dawn_context_provider();
@@ -206,7 +207,7 @@ class FrameInfoHelperImpl : public FrameInfoHelper,
     // Note that |shared_context_| is to just keep ref on it until
     // context provider raw_ptrs are being used.
     scoped_refptr<gpu::SharedContextState> shared_context_;
-    raw_ptr<viz::VulkanContextProvider> vulkan_context_provider_ = nullptr;
+    raw_ptr<gpu::VulkanContextProvider> vulkan_context_provider_ = nullptr;
     raw_ptr<gpu::DawnContextProvider> dawn_context_provider_ = nullptr;
     scoped_refptr<FrameInfoHelperHolder> frame_info_helper_holder_;
   };

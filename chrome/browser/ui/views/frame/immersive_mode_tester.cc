@@ -9,6 +9,7 @@
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "content/public/browser/navigation_controller.h"
 
 ImmersiveModeTester::ImmersiveModeTester(BrowserWindowInterface* browser)
     : browser_(browser) {
@@ -92,7 +93,7 @@ void ImmersiveModeTester::OnImmersiveRevealEnded() {
 }
 
 void ImmersiveModeTester::OnImmersiveModeControllerDestroyed() {
-  DCHECK(scoped_observation_.IsObserving());
+  CHECK(scoped_observation_.IsObserving(), base::NotFatalUntil::M162);
   scoped_observation_.Reset();
 }
 

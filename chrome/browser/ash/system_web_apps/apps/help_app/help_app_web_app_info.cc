@@ -11,7 +11,6 @@
 #include "base/metrics/histogram_macros.h"
 #include "chrome/browser/ash/system_web_apps/apps/system_web_app_install_utils.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
-#include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
@@ -62,8 +61,7 @@ BrowserDelegate* HelpAppSystemAppDelegate::LaunchAndNavigateSystemWebApp(
     const GURL& url,
     const apps::AppLaunchParams& params) const {
   UMA_HISTOGRAM_ENUMERATION("Discover.Overall.AppLaunched",
-                            static_cast<int>(params.launch_source),
-                            static_cast<int>(apps::LaunchSource::kMaxValue));
+                            params.launch_source);
   return SystemWebAppDelegate::LaunchAndNavigateSystemWebApp(profile, provider,
                                                              url, params);
 }

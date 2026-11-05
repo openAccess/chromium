@@ -5,28 +5,48 @@
 #include "third_party/blink/renderer/platform/peerconnection/rtc_video_encoder_factory.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <iterator>
 #include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
+#include "base/check_op.h"
+#include "base/feature_list.h"
+#include "base/location.h"
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/string_util.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "media/base/media_switches.h"
 #include "media/base/supported_types.h"
+#include "media/base/svc_scalability_mode.h"
+#include "media/base/video_codecs.h"
 #include "media/media_buildflags.h"
 #include "media/mojo/clients/mojo_video_encoder_metrics_provider.h"
 #include "media/video/gpu_video_accelerator_factories.h"
+#include "media/video/video_encode_accelerator.h"
 #include "media/webrtc/webrtc_features.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/allow_discouraged_type.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_video_encoder.h"
 #include "third_party/blink/renderer/platform/peerconnection/webrtc_util.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "third_party/webrtc/api/environment/environment.h"
 #include "third_party/webrtc/api/video/resolution.h"
 #include "third_party/webrtc/api/video_codecs/h264_profile_level_id.h"
+#include "third_party/webrtc/api/video_codecs/scalability_mode.h"
 #include "third_party/webrtc/api/video_codecs/sdp_video_format.h"
 #include "third_party/webrtc/api/video_codecs/video_encoder.h"
+#include "third_party/webrtc/api/video_codecs/video_encoder_factory.h"
 #include "third_party/webrtc/api/video_codecs/vp9_profile.h"
 #include "third_party/webrtc/media/base/codec.h"
+#include "third_party/webrtc/media/base/media_constants.h"
 #include "third_party/webrtc/modules/video_coding/svc/scalability_mode_util.h"
+#include "ui/gfx/geometry/size.h"
 
 #if BUILDFLAG(RTC_USE_H265)
 #include "third_party/webrtc/api/video_codecs/h265_profile_tier_level.h"
@@ -200,7 +220,7 @@ std::optional<webrtc::SdpVideoFormat> VEAToWebRTCFormat(
   }
 
   return std::nullopt;
-}  // namespace
+}
 
 struct SupportedFormats {
   bool unknown = true;
@@ -291,6 +311,30 @@ void AddH264ConstrainedBaselineProfileToSupportedFormats(
   }
 }
 
+#if BUILDFLAG(IS_APPLE) && BUILDFLAG(RTC_USE_H265)
+bool NoRealtimeH265EncodingOnMac(
+    const media::VideoEncodeAccelerator::SupportedProfile& profile) {
+  // See https://crbug.com/555794214.
+  // Old Mac devices do not support realtime encoding due to very high latency.
+  // Coincidentally these also do not support SVC encoding.
+  // Therefore we use SVC support as a proxy for bad encoders.
+
+  // Should support at least L1T1 and L1T2 to have realtime support.
+  return profile.scalability_modes.size() <= 1;
+}
+
+std::string ProfileToString(
+    const media::VideoEncodeAccelerator::SupportedProfile& profile) {
+  blink::Vector<std::string> scalability_modes;
+  for (const media::SVCScalabilityMode& mode : profile.scalability_modes) {
+    scalability_modes.push_back(media::GetScalabilityModeName(mode));
+  }
+  return media::GetProfileName(profile.profile) + " (" +
+         (profile.is_software_codec ? "software" : "hardware") + ", " +
+         base::JoinString(scalability_modes, "/") + ")";
+}
+#endif
+
 SupportedFormats GetSupportedFormatsInternal(
     media::GpuVideoAcceleratorFactories* gpu_factories,
     const std::vector<media::VideoCodecProfile>& disabled_profiles) {
@@ -300,6 +344,11 @@ SupportedFormats GetSupportedFormatsInternal(
   auto profiles = gpu_factories->GetVideoEncodeAcceleratorSupportedProfiles();
   if (!profiles)
     return supported_formats;
+
+#if BUILDFLAG(IS_APPLE) && BUILDFLAG(RTC_USE_H265)
+  bool supports_h265 = false;
+  blink::Vector<std::string> skipped_h265_profiles;
+#endif  // BUILDFLAG(IS_APPLE) && BUILDFLAG(RTC_USE_H265)
 
   // |profiles| are either the info at GpuInfo instance or the info got by
   // querying GPU process.
@@ -350,6 +399,20 @@ SupportedFormats GetSupportedFormatsInternal(
       // Supported H.265 formats must be added to the end of supported codecs.
 #if BUILDFLAG(RTC_USE_H265)
       if (format->name == webrtc::kH265CodecName) {
+#if BUILDFLAG(IS_APPLE)
+        // See https://crbug.com/555794214
+        // Some older MacOS devices don't support realtime H265 encoding
+        // resulting in unaccaptable encode latency.
+        if (NoRealtimeH265EncodingOnMac(profile)) {
+          std::string profile_str = ProfileToString(profile);
+          if (!skipped_h265_profiles.Contains(profile_str)) {
+            skipped_h265_profiles.push_back(std::move(profile_str));
+          }
+          continue;
+        }
+        supports_h265 = true;
+#endif
+
         // Avoid having duplicated formats reported via GetSupportedFormats().
         // Also ensure only the highest level format is reported for the same
         // H.265 profile.
@@ -365,6 +428,25 @@ SupportedFormats GetSupportedFormatsInternal(
       supported_formats.max_resolutions.push_back(profile.max_resolution);
     }
   }
+
+#if BUILDFLAG(IS_APPLE) && BUILDFLAG(RTC_USE_H265)
+  if (!skipped_h265_profiles.empty()) {
+    static bool logged_once = false;
+    if (!std::exchange(logged_once, true)) {
+      if (supports_h265) {
+        LOG(WARNING) << "H265 is supported, but the following profiles were "
+                     << "skipped due to being known to have high encode "
+                     << "latency: "
+                     << base::JoinString(skipped_h265_profiles, ", ");
+      } else {
+        LOG(WARNING)
+            << "All H265 profiles were skipped due to being known to have high "
+            << "encode latency: "
+            << base::JoinString(skipped_h265_profiles, ", ");
+      }
+    }
+  }
+#endif  // BUILDFLAG(IS_APPLE) && BUILDFLAG(RTC_USE_H265)
 
   AddH264ConstrainedBaselineProfileToSupportedFormats(&supported_formats);
 

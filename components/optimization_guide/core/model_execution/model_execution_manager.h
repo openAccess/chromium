@@ -11,12 +11,12 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
-#include "url/gurl.h"
+#include "services/network/public/cpp/network_context_getter.h"
 
 class OptimizationGuideLogger;
 
@@ -30,14 +30,8 @@ class IdentityManager;
 
 namespace optimization_guide {
 
-// Overrides the Optimization Guide model execution URL.
-inline constexpr char kOptimizationGuideServiceModelExecutionURLSwitch[] =
-    "optimization-guide-service-model-execution-url";
-
-// Return the URL endpoint used for the model execution service.
-GURL GetModelExecutionServiceURL();
-
 class ModelExecutionFetcher;
+class ModelQualityLogsUploaderService;
 
 class ModelExecutionManager final {
  public:
@@ -51,6 +45,7 @@ class ModelExecutionManager final {
 
   ModelExecutionManager(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+      network::NetworkContextGetter network_context_getter,
       signin::IdentityManager* identity_manager,
       std::unique_ptr<Delegate> delegate,
       OptimizationGuideLogger* optimization_guide_logger,
@@ -79,6 +74,10 @@ class ModelExecutionManager final {
   void AddExecutionResultForTesting(
       ModelBasedCapabilityKey feature,
       OptimizationGuideModelExecutionResult result);
+
+  // Prewarms authentication state (e.g. prefetching the OAuth access token) for
+  // an upcoming `ExecuteModel()` call for `feature`.
+  void PrewarmModelExecution(ModelBasedCapabilityKey feature);
 
   void Shutdown();
 
@@ -113,11 +112,12 @@ class ModelExecutionManager final {
   // Owned by OptimizationGuideKeyedService and outlives `this`.
   raw_ptr<OptimizationGuideLogger> optimization_guide_logger_;
 
-  // The endpoint for the model execution service.
-  const GURL model_execution_service_url_;
-
   // Provides alternative fetcher implementations.
   std::unique_ptr<Delegate> delegate_;
+
+  // Preconnects a socket to the Model Execution Service with matching privacy
+  // mode (`kOmit`) and same-site `NetworkAnonymizationKey`.
+  void MaybePreconnectSockets(ModelBasedCapabilityKey feature);
 
   // The next available `FetcherId`. Assigned in increasing order.
   FetcherId next_model_execution_fetcher_id = 0;
@@ -132,6 +132,9 @@ class ModelExecutionManager final {
 
   // The URL Loader Factory that will be used by the fetchers.
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+
+  // Callback to obtain the NetworkContext for socket prewarming.
+  network::NetworkContextGetter network_context_getter_;
 
   // Unowned IdentityManager for fetching access tokens. Could be null for
   // incognito profiles.

@@ -26,7 +26,9 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/types/optional_ref.h"
 #include "build/build_config.h"
+#include "content/public/browser/navigation_controller.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/device_info.h"
@@ -53,7 +55,6 @@
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/mock_web_contents_observer.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_utils.h"
@@ -63,7 +64,6 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/manifest/manifest_util.h"
 #if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
@@ -113,7 +113,7 @@ class AppBannerManagerObserverAdapter : public AppBannerManager::Observer {
  private:
   void OnInstallableWebAppStatusUpdated(
       InstallableWebAppCheckResult result,
-      const std::optional<WebAppBannerData>& data) override {
+      base::optional_ref<const WebAppBannerData> data) override {
     if (result != filter_) {
       LOG(WARNING) << "Filtered result: " << base::ToString(result);
       return;
@@ -272,8 +272,9 @@ class AppBannerManagerBrowserTest
     run_loop.Run();
 
     EXPECT_EQ(expected_will_show, observer->banner_shown());
-    if (expected_state)
+    if (expected_state) {
       EXPECT_EQ(expected_state, observer->state_for_testing());
+    }
   }
 
  private:
@@ -591,7 +592,8 @@ IN_PROC_BROWSER_TEST_P(AppBannerManagerBrowserTest, WebAppBannerNotCreated) {
 
   GURL test_url = GetBannerURL();
 
-  // Navigate and expect the manager to end up waiting for prompt to be called.
+  // Navigate and expect the manager to end up waiting for prompt to be
+  // called.
   TriggerBannerFlowWithNavigation(observer.get(), test_url,
                                   false /* expected_will_show */,
                                   State::PENDING_PROMPT);
@@ -781,10 +783,10 @@ IN_PROC_BROWSER_TEST_P(AppBannerManagerBrowserTest,
           .SetID("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
           .SetLocation(extensions::mojom::ManifestLocation::kInternal)
           .Build();
-  // Install the extension via ExtensionRegistrar so the full load path runs and
-  // notifies RendererStartupHelper. Adding it straight to the ExtensionRegistry
-  // enabled set leaves RendererStartupHelper's bookkeeping out of sync and
-  // trips a DCHECK when a new renderer process initializes
+  // Install the extension via ExtensionRegistrar so the full load path runs
+  // and notifies RendererStartupHelper. Adding it straight to the
+  // ExtensionRegistry enabled set leaves RendererStartupHelper's bookkeeping
+  // out of sync and trips a DCHECK when a new renderer process initializes
   // (crbug.com/515192463).
   extensions::ExtensionRegistrar::Get(browser()->GetProfile())
       ->AddExtension(extension);
@@ -820,8 +822,8 @@ IN_PROC_BROWSER_TEST_P(AppBannerManagerBrowserTest,
                                   false /* expected_will_show */,
                                   State::PENDING_PROMPT);
 
-  // Navigate to about:blank and expect it to be terminated because the previous
-  // URL is still pending.
+  // Navigate to about:blank and expect it to be terminated because the
+  // previous URL is still pending.
   TriggerBannerFlowWithNavigation(observer.get(), GURL("about:blank"),
                                   false /* expected_will_show */,
                                   State::INACTIVE);
@@ -833,7 +835,8 @@ IN_PROC_BROWSER_TEST_P(AppBannerManagerBrowserTest,
   EXPECT_EQ(observer->app_banner_manager()->GetCurrentBannerConfig(),
             std::nullopt);
 
-  // Expect RENDERER_CANCELLED to be called when an existing call is terminated.
+  // Expect RENDERER_CANCELLED to be called when an existing call is
+  // terminated.
   histograms.ExpectUniqueSample(kInstallableStatusCodeHistogram,
                                 InstallableStatusCode::RENDERER_CANCELLED, 1);
 }
@@ -1022,75 +1025,6 @@ IN_PROC_BROWSER_TEST_F(AppBannerManagerPrerenderBrowserTest,
   EXPECT_TRUE(host_observer.was_activated());
   EXPECT_EQ(observer->state_for_testing(),
             AppBannerManager::State::FETCHING_MANIFEST);
-}
-
-class AppBannerManagerFencedFrameBrowserTest
-    : public AppBannerManagerMPArchBrowserTest {
- public:
-  AppBannerManagerFencedFrameBrowserTest() = default;
-  ~AppBannerManagerFencedFrameBrowserTest() override = default;
-  AppBannerManagerFencedFrameBrowserTest(
-      const AppBannerManagerFencedFrameBrowserTest&) = delete;
-
-  AppBannerManagerFencedFrameBrowserTest& operator=(
-      const AppBannerManagerFencedFrameBrowserTest&) = delete;
-
-  void SetUp() override {
-#if BUILDFLAG(IS_ANDROID)
-    if (base::android::device_info::is_automotive()) {
-      GTEST_SKIP() << "Skipping test on Android Automotive";
-    }
-#endif
-    AppBannerManagerMPArchBrowserTest::SetUp();
-  }
-
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(AppBannerManagerFencedFrameBrowserTest,
-                       FencedFrameShouldNotUpdateState) {
-  // Navigate to an initial page.
-  const GURL initial_url = embedded_test_server()->GetURL("/empty.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
-
-  // Initialize a MockWebContentsObserver to ensure that DidUpdateManifestURL is
-  // not invoked for fenced frame.
-  testing::NiceMock<content::MockWebContentsObserver> web_contents_observer(
-      web_contents());
-
-  // Reset the AppBannerManager so that it is not running its pipeline.
-  AppBannerManager::FromWebContents(web_contents())
-      ->ResetCurrentPageDataForTesting();
-
-  auto observer = CreateAppBannerManagerObserver();
-
-  EXPECT_EQ(observer->state_for_testing(), AppBannerManager::State::INACTIVE);
-
-  // Create a fenced frame.
-  GURL fenced_frame_url = embedded_test_server()->GetURL(
-      "/banners/fenced_frames/manifest_test_page.html?manifest=/banners/"
-      "manifest.json");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          web_contents()->GetPrimaryMainFrame(), fenced_frame_url);
-  EXPECT_NE(nullptr, fenced_frame_host);
-  EXPECT_EQ(observer->state_for_testing(), AppBannerManager::State::INACTIVE);
-
-  // Cross check that  DidUpdateWebManifestURL is not called for fenced frame
-  // RenderFrameHost.
-  EXPECT_CALL(web_contents_observer,
-              DidUpdateWebManifestURL(fenced_frame_host, testing::_))
-      .Times(0);
-
-  // Navigate the fenced frame.
-  fenced_frame_test_helper().NavigateFrameInFencedFrameTree(fenced_frame_host,
-                                                            fenced_frame_url);
-  EXPECT_EQ(observer->state_for_testing(), AppBannerManager::State::INACTIVE);
 }
 
 // TODO(crbug.com/370270547): Many tests are failing.
@@ -1335,8 +1269,8 @@ IN_PROC_BROWSER_TEST_P(AppBannerManagerBrowserTest,
   const GURL kInnerAppUrl =
       embedded_test_server()->GetURL("/web_apps/nesting/nested/index.html");
 
-  // Even if the outer crafted app opens in a browser tab, it should still block
-  // any nested installations.
+  // Even if the outer crafted app opens in a browser tab, it should still
+  // block any nested installations.
   auto web_app_info =
       web_app::WebAppInstallInfo::CreateWithStartUrlForTesting(kOuterAppUrl);
   web_app_info->title = u"test web app";
@@ -1502,6 +1436,56 @@ IN_PROC_BROWSER_TEST_P(AppBannerManagerBrowserTest,
 
   ASSERT_TRUE(future.Wait());
   EXPECT_EQ(ManifestId(kNewAppUrl), future.Get());
+}
+
+IN_PROC_BROWSER_TEST_P(AppBannerManagerBrowserTest,
+                       DidFinishLoadUsesLastCommittedURL) {
+  auto observer = CreateAppBannerManagerObserver();
+  GURL page_url = GetBannerURL();
+  GURL different_url("https://other.example.com/sample_page");
+
+  AppBannerManager* manager = AppBannerManager::FromWebContents(web_contents());
+  ASSERT_NE(manager, nullptr);
+
+  // 1. Disable banner triggering during the initial navigation so the pipeline
+  // stays INACTIVE.
+  manager->SetTriggeringDisabledForTesting(true);
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), page_url));
+  EXPECT_EQ(manager->state_for_testing(), State::INACTIVE);
+
+  // 2. Re-enable triggering and simulate the compromised renderer's
+  // DidFinishLoad dispatching a spoofed URL.
+  manager->SetTriggeringDisabledForTesting(false);
+  TriggerBannerFlow(
+      observer.get(), base::BindLambdaForTesting([&]() {
+        static_cast<content::WebContentsObserver*>(manager)->DidFinishLoad(
+            web_contents()->GetPrimaryMainFrame(), different_url);
+      }),
+      /*expected_will_show=*/false, State::PENDING_PROMPT);
+
+  // 3. Verify the pipeline completed, validated_url is page_url, and the
+  // COULD_SHOW event was recorded under page_url, NOT different_url.
+  EXPECT_EQ(manager->validated_url(), page_url);
+
+  std::optional<InstallBannerConfig> config = manager->GetCurrentBannerConfig();
+  ASSERT_TRUE(config.has_value());
+  EXPECT_EQ(config->validated_url, page_url);
+
+  // 4. Verify that the COULD_SHOW banner event was recorded under `page_url`,
+  // but not for `different_url`.
+  std::optional<base::Time> page_event =
+      AppBannerSettingsHelper::GetSingleBannerEvent(
+          web_contents(), page_url, config->GetWebOrNativeAppIdentifier(),
+          AppBannerSettingsHelper::APP_BANNER_EVENT_COULD_SHOW);
+  ASSERT_TRUE(page_event.has_value());
+  EXPECT_FALSE(page_event->is_null());
+
+  std::optional<base::Time> different_event =
+      AppBannerSettingsHelper::GetSingleBannerEvent(
+          web_contents(), different_url, config->GetWebOrNativeAppIdentifier(),
+          AppBannerSettingsHelper::APP_BANNER_EVENT_COULD_SHOW);
+  ASSERT_TRUE(different_event.has_value());
+  EXPECT_TRUE(different_event->is_null());
 }
 
 #endif  // !BUILDFLAG(IS_ANDROID)

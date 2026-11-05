@@ -71,6 +71,24 @@ PageInfoBubbleSpecification::Builder::ShowPermissionPage(
   return *this;
 }
 
+PageInfoBubbleSpecification::Builder&
+PageInfoBubbleSpecification::Builder::SetOnExtensionsClickedCallback(
+    base::RepeatingClosure callback) {
+  // The extensions menu item visibility is tied to this callback. If called,
+  // a valid callback is required so clicking the item executes an action.
+  CHECK(!callback.is_null())
+      << "The extensions menu item must have a callback to call when clicked";
+  page_info_bubble_specification_->SetOnExtensionsClickedCallback(
+      std::move(callback));
+  return *this;
+}
+
+PageInfoBubbleSpecification::Builder&
+PageInfoBubbleSpecification::Builder::SetSurface(PageInfo::Surface surface) {
+  page_info_bubble_specification_->SetSurface(surface);
+  return *this;
+}
+
 void PageInfoBubbleSpecification::Builder::ValidateSpecification() {
   CHECK(page_info_bubble_specification_->web_contents());
 }
@@ -121,6 +139,24 @@ void PageInfoBubbleSpecification::ShowPermissionPage(ContentSettingsType type) {
   permission_page_type_ = type;
 }
 
+void PageInfoBubbleSpecification::SetOnExtensionsClickedCallback(
+    base::RepeatingClosure callback) {
+  // The extensions menu item visibility is tied to this callback. If called,
+  // a valid callback is required so clicking the item executes an action.
+  CHECK(!callback.is_null())
+      << "The extensions menu item must have a callback to call when clicked";
+  open_extensions_menu_callback_ = std::move(callback);
+}
+
+bool PageInfoBubbleSpecification::should_show_extensions_menu() const {
+  return !open_extensions_menu_callback_.is_null();
+}
+
+const base::RepeatingClosure&
+PageInfoBubbleSpecification::get_open_extensions_menu_callback() const {
+  return open_extensions_menu_callback_;
+}
+
 views::BubbleAnchor PageInfoBubbleSpecification::anchor() {
   return anchor_;
 }
@@ -165,4 +201,12 @@ bool PageInfoBubbleSpecification::show_extended_site_info() {
 std::optional<ContentSettingsType>
 PageInfoBubbleSpecification::permission_page_type() {
   return permission_page_type_;
+}
+
+void PageInfoBubbleSpecification::SetSurface(PageInfo::Surface surface) {
+  surface_ = surface;
+}
+
+PageInfo::Surface PageInfoBubbleSpecification::surface() const {
+  return surface_;
 }

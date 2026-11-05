@@ -5,34 +5,45 @@
 #ifndef COMPONENTS_ORIGIN_GATING_CORE_ORIGIN_GATING_CONFIGURATION_H_
 #define COMPONENTS_ORIGIN_GATING_CORE_ORIGIN_GATING_CONFIGURATION_H_
 
-#include <initializer_list>
-#include <string>
-#include <string_view>
 #include <variant>
 #include <vector>
 
 #include "base/functional/callback.h"
-#include "components/origin_gating/core/types.h"
-#include "url/gurl.h"
+#include "base/memory/raw_ptr.h"
+#include "components/origin_gating/core/concepts.h"
+#include "components/origin_gating/core/decision.h"
+#include "components/origin_gating/core/decision_attribution.h"
+#include "components/origin_gating/core/decision_source.h"
+#include "components/origin_gating/core/gateable_event.h"
+#include "components/origin_gating/core/gating_decision.h"
+#include "components/origin_gating/core/origin_gating_cache.h"
 
 namespace origin_gating {
 
-// Represents a custom, name-tagged check provided by the embedder.
+// Represents a custom, ID-tagged check provided by the embedder.
 class CustomPredicate {
  public:
   using AsyncPredicate = base::RepeatingCallback<void(
       GatingDecisionContext* context,
-      const GURL& source,
-      const GURL& destination,
+      const GateableEvent& event,
       base::OnceCallback<void(Decision)> callback)>;
 
   using SyncPredicate =
       base::RepeatingCallback<Decision(GatingDecisionContext* context,
-                                       const GURL& source,
-                                       const GURL& destination)>;
+                                       const GateableEvent& event)>;
 
-  CustomPredicate(AsyncPredicate predicate, std::string_view name);
-  CustomPredicate(SyncPredicate predicate, std::string_view name);
+  // Constructs a CustomPredicate tagged with the given enum as its source.
+  template <IsIntCompatibleEnum E>
+  CustomPredicate(AsyncPredicate predicate, E id)
+      : CustomPredicate(std::move(predicate),
+                        DecisionAttribution::CustomPredicateAttribution(id)) {}
+
+  // Constructs a CustomPredicate tagged with the given enum as its source.
+  template <IsIntCompatibleEnum E>
+  CustomPredicate(SyncPredicate predicate, E id)
+      : CustomPredicate(std::move(predicate),
+                        DecisionAttribution::CustomPredicateAttribution(id)) {}
+
   ~CustomPredicate();
 
   CustomPredicate(const CustomPredicate&);
@@ -42,11 +53,20 @@ class CustomPredicate {
     return predicate_;
   }
 
-  const std::string& name() const { return name_; }
+  const DecisionAttribution::CustomPredicateAttribution& attribution() const {
+    return attribution_;
+  }
 
  private:
+  CustomPredicate(
+      AsyncPredicate predicate,
+      const DecisionAttribution::CustomPredicateAttribution& attribution);
+  CustomPredicate(
+      SyncPredicate predicate,
+      const DecisionAttribution::CustomPredicateAttribution& attribution);
+
   std::variant<AsyncPredicate, SyncPredicate> predicate_;
-  std::string name_;
+  DecisionAttribution::CustomPredicateAttribution attribution_;
 };
 
 // Pairs a predicate with the set of gateable events it applies to. When
@@ -66,8 +86,8 @@ class PredicateConfiguration {
 
   const Predicate& predicate() const { return predicate_; }
 
-  // Returns whether this predicate should be evaluated for `event`.
-  bool AppliesTo(GateableEvent event) const;
+  // Returns whether this predicate should be evaluated for `event_type`.
+  bool AppliesTo(GateableEvent::Type event_type) const;
 
  private:
   Predicate predicate_;
@@ -76,15 +96,25 @@ class PredicateConfiguration {
 
 class OriginGatingConfiguration {
  public:
+  using CacheScope = OriginGatingCache::CacheScope;
+
   // `predicates` specifies the ordered sequence of decision predicates to
   // execute. Each entry is a PredicateConfiguration that restricts the
-  // predicate to specific events.
+  // predicate to specific events. All CustomPredicate entries must have been
+  // created using the same enum domain.
   //
   // The following internal/fallback states are strictly forbidden:
   // - `DecisionSource::kNoVerdict`
-  OriginGatingConfiguration(
-      std::initializer_list<PredicateConfiguration> predicates,
-      bool use_site_keyed_cache);
+  //
+  // The following predicates require a navigation source URL and must not be
+  // configured to apply to `GateableEvent::kPageAction`:
+  // - `DecisionSource::kAllowSameOrigin`
+  //
+  // Note: `cache_scope` is ignored if `predicates` does not include a cache
+  // predicate (`kCacheWithUserConfirmation` or
+  // `kCacheWithoutUserConfirmation`).
+  OriginGatingConfiguration(std::vector<PredicateConfiguration> predicates,
+                            CacheScope cache_scope);
   ~OriginGatingConfiguration();
 
   OriginGatingConfiguration(const OriginGatingConfiguration&);
@@ -93,11 +123,12 @@ class OriginGatingConfiguration {
   const std::vector<PredicateConfiguration>& predicates() const {
     return predicates_;
   }
-  bool use_site_keyed_cache() const { return use_site_keyed_cache_; }
+
+  std::optional<CacheScope> cache_scope() const { return cache_scope_; }
 
  private:
   std::vector<PredicateConfiguration> predicates_;
-  bool use_site_keyed_cache_ = false;
+  std::optional<CacheScope> cache_scope_;
 };
 
 }  // namespace origin_gating

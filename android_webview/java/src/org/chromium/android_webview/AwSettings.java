@@ -229,6 +229,13 @@ public class AwSettings {
     private boolean mShouldFocusFirstNode = true;
     private boolean mGeolocationEnabled = true;
     private boolean mFullscreenSupported;
+    // WebSurface does not yet support fullscreen so when it is bound, we will explicitly prevent
+    // fullscreen from being entered.
+    // Our logic assumes that if a developer has implemented the fullscreen methods in our
+    // client, we should enable fullscreen mode.
+    // We are implementing these methods in AndroidX to mark them as deprecated so we need
+    // to force disable fullscreen here.
+    private boolean mForceFullscreenUnsupported;
     private boolean mSupportZoom = true;
     private boolean mBuiltInZoomControls;
     private boolean mDisplayZoomControls = true;
@@ -569,6 +576,7 @@ public class AwSettings {
 
     /**
      * Enable/disable third party cookies for an AwContents
+     *
      * @param accept true if we should accept third party cookies
      */
     public void setAcceptThirdPartyCookies(boolean accept) {
@@ -601,6 +609,7 @@ public class AwSettings {
 
     /**
      * Return whether third party cookies are enabled for an AwContents
+     *
      * @return true if accept third party cookies
      */
     public boolean getAcceptThirdPartyCookies() {
@@ -617,6 +626,7 @@ public class AwSettings {
 
     /**
      * Return whether Safe Browsing has been enabled for the current WebView
+     *
      * @return true if SafeBrowsing is enabled
      */
     public boolean getSafeBrowsingEnabled() {
@@ -631,9 +641,14 @@ public class AwSettings {
     /** See {@link android.webkit.WebSettings#setAllowFileAccess}. */
     public void setAllowFileAccess(boolean allow) {
         if (TRACE) Log.i(TAG, "setAllowFileAccess=" + allow);
+        RecordHistogram.recordBooleanHistogram("Android.WebView.SetAllowFileAccess", allow);
         synchronized (mAwSettingsLock) {
+            boolean changed = mAllowFileUrlAccess != allow;
             mAllowFileUrlAccess = allow;
             mEventHandler.updateAllowFileAccessLocked();
+            if (changed) {
+                mEventHandler.updateWebkitPreferencesLocked();
+            }
         }
     }
 
@@ -674,6 +689,7 @@ public class AwSettings {
     /** See {@link android.webkit.WebSettings#setAllowContentAccess}. */
     public void setAllowContentAccess(boolean allow) {
         if (TRACE) Log.i(TAG, "setAllowContentAccess=" + allow);
+        RecordHistogram.recordBooleanHistogram("Android.WebView.SetAllowContentAccess", allow);
         synchronized (mAwSettingsLock) {
             if (mAllowContentUrlAccess != allow) {
                 flushBackForwardCacheOnUiThreadLocked();
@@ -777,10 +793,19 @@ public class AwSettings {
         }
     }
 
+    void setForceFullscreenUnsupported(boolean forceUnsupported) {
+        synchronized (mAwSettingsLock) {
+            if (mForceFullscreenUnsupported != forceUnsupported) {
+                mForceFullscreenUnsupported = forceUnsupported;
+                mEventHandler.updateWebkitPreferencesLocked();
+            }
+        }
+    }
+
     @CalledByNative
     private boolean getFullscreenSupportedLocked() {
         assert Thread.holdsLock(mAwSettingsLock);
-        return mFullscreenSupported;
+        return mFullscreenSupported && !mForceFullscreenUnsupported;
     }
 
     /** See {@link android.webkit.WebSettings#setNeedInitialFocus}. */
@@ -876,8 +901,8 @@ public class AwSettings {
     }
 
     /**
-     * See {@link androidx.webkit.WebSettingsCompat#setUserAgentMetadata}.
-     * Map<String, Object> represents the priorities name its value for AwUserAgentMetadata.
+     * See {@link androidx.webkit.WebSettingsCompat#setUserAgentMetadata}. Map<String, Object>
+     * represents the priorities name its value for AwUserAgentMetadata.
      */
     public void setUserAgentMetadataFromMap(Map<String, Object> uaMetadataMap) {
         if (TRACE) Log.i(TAG, "setUserAgentMetadata=" + uaMetadataMap);
@@ -1234,6 +1259,8 @@ public class AwSettings {
     /** See {@link android.webkit.WebSettings#setAllowUniversalAccessFromFileURLs}. */
     public void setAllowUniversalAccessFromFileUrls(boolean flag) {
         if (TRACE) Log.i(TAG, "setAllowUniversalAccessFromFileURLs=" + flag);
+        RecordHistogram.recordBooleanHistogram(
+                "Android.WebView.SetAllowUniversalAccessFromFileURLs", flag);
         synchronized (mAwSettingsLock) {
             if (mAllowUniversalAccessFromFileUrls != flag) {
                 mAllowUniversalAccessFromFileUrls = flag;
@@ -1245,6 +1272,8 @@ public class AwSettings {
     /** See {@link android.webkit.WebSettings#setAllowFileAccessFromFileURLs}. */
     public void setAllowFileAccessFromFileUrls(boolean flag) {
         if (TRACE) Log.i(TAG, "setAllowFileAccessFromFileURLs=" + flag);
+        RecordHistogram.recordBooleanHistogram(
+                "Android.WebView.SetAllowFileAccessFromFileURLs", flag);
         synchronized (mAwSettingsLock) {
             if (mAllowFileAccessFromFileUrls != flag) {
                 mAllowFileAccessFromFileUrls = flag;
@@ -1811,9 +1840,6 @@ public class AwSettings {
     }
 
     public void setMixedContentMode(int mode) {
-        // Using explicit max count for the histogram since enum is defined in Android code. The
-        // values can be trusted to remain stable since they are defined in the Android API.
-        RecordHistogram.recordEnumeratedHistogram("Android.WebView.MixedContent.Mode", mode, 3);
         synchronized (mAwSettingsLock) {
             if (mMixedContentMode != mode) {
                 mMixedContentMode = mode;
@@ -2054,7 +2080,6 @@ public class AwSettings {
         return false;
     }
 
-
     public boolean getOffscreenPreRaster() {
         synchronized (mAwSettingsLock) {
             return getOffscreenPreRasterLocked();
@@ -2068,15 +2093,17 @@ public class AwSettings {
     }
 
     /**
-     * Sets whether this WebView should raster tiles when it is
-     * offscreen but attached to window. Turning this on can avoid
-     * rendering artifacts when animating an offscreen WebView on-screen.
-     * In particular, insertVisualStateCallback requires this mode to function.
-     * Offscreen WebViews in this mode uses more memory. Please follow
-     * these guidelines to limit memory usage:
-     * - Webview size should be not be larger than the device screen size.
-     * - Limit simple mode to a small number of webviews. Use it for
-     *   visible webviews and webviews about to be animated to visible.
+     * Sets whether this WebView should raster tiles when it is offscreen but attached to window.
+     *
+     * <p>Turning this on can avoid rendering artifacts when animating an offscreen WebView
+     * on-screen. In particular, insertVisualStateCallback requires this mode to function. Offscreen
+     * WebViews in this mode uses more memory. Please follow these guidelines to limit memory usage:
+     *
+     * <ul>
+     *   <li>Webview size should be not be larger than the device screen size.
+     *   <li>Limit simple mode to a small number of webviews. Use it for visible webviews and
+     *       webviews about to be animated to visible.
+     * </ul>
      */
     public void setOffscreenPreRaster(boolean enabled) {
         synchronized (mAwSettingsLock) {

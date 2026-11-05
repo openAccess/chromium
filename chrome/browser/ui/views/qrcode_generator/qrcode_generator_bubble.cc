@@ -15,9 +15,7 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
-#include "chrome/browser/ui/qrcode_generator/qrcode_generator_bubble_controller.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/sharing_hub/sharing_hub_bubble_util.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/qr_code_generator/bitmap_generator.h"
 #include "components/url_formatter/url_formatter.h"
@@ -39,7 +37,6 @@
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/border.h"
-#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/bubble/tooltip_icon.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/md_text_button.h"
@@ -77,14 +74,12 @@ QRCodeGeneratorBubble::QRCodeGeneratorBubble(
     views::BubbleAnchor anchor,
     base::WeakPtr<content::WebContents> web_contents,
     base::OnceClosure on_closing,
-    base::OnceClosure on_back_button_pressed,
     const GURL& url)
     : LocationBarBubbleDelegateView(anchor, nullptr),
       url_(url),
       on_closing_(std::move(on_closing)),
-      on_back_button_pressed_(std::move(on_back_button_pressed)),
       web_contents_(web_contents) {
-  DCHECK(on_closing_);
+  CHECK(on_closing_, base::NotFatalUntil::M162);
 
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   SetTitle(IDS_BROWSER_SHARING_QR_CODE_DIALOG_TITLE);
@@ -123,19 +118,6 @@ void QRCodeGeneratorBubble::Hide() {
   if (qrcode_action_item_.get()) {
     qrcode_action_item_.get()->SetIsShowingBubble(false);
   }
-}
-
-void QRCodeGeneratorBubble::OnThemeChanged() {
-  LocationBarBubbleDelegateView::OnThemeChanged();
-
-  const int border_radius = views::LayoutProvider::Get()->GetCornerRadiusMetric(
-      views::Emphasis::kHigh);
-  const auto* color_provider = GetColorProvider();
-  qr_code_image_->SetBorder(views::CreateRoundedRectBorder(
-      /*thickness=*/2, border_radius,
-      color_provider->GetColor(kColorQrCodeBorder)));
-  qr_code_image_->SetBackground(views::CreateRoundedRectBackground(
-      color_provider->GetColor(kColorQrCodeBackground), border_radius, 2));
 }
 
 void QRCodeGeneratorBubble::UpdateQRContent() {
@@ -254,6 +236,10 @@ void QRCodeGeneratorBubble::Init() {
                              views::LayoutAlignment::kCenter);
 
   qr_code_image_ = AddChildView(std::move(qr_code_image));
+  qr_code_image_->SetBorder(views::CreateRoundedRectBorder(
+      /*thickness=*/2, border_radius, kColorQrCodeBorder));
+  qr_code_image_->SetBackground(views::CreateRoundedRectBackground(
+      kColorQrCodeBackground, border_radius, /*for_border_thickness=*/2));
 
   // Center error message.
   auto center_error_label = std::make_unique<views::Label>(
@@ -358,23 +344,10 @@ void QRCodeGeneratorBubble::Init() {
   // End controls row
 }
 
-void QRCodeGeneratorBubble::AddedToWidget() {
-  if (!on_back_button_pressed_) {
-    return;
-  }
-
-  // Adding a title view will replace the default title.
-  GetBubbleFrameView()->SetTitleView(
-      std::make_unique<sharing_hub::TitleWithBackButtonView>(
-          base::BindRepeating(&QRCodeGeneratorBubble::BackButtonPressed,
-                              base::Unretained(this)),
-          GetWindowTitle()));
-}
-
 void QRCodeGeneratorBubble::ContentsChanged(
     views::Textfield* sender,
     const std::u16string& new_contents) {
-  DCHECK_EQ(sender, textfield_url_);
+  CHECK_EQ(sender, textfield_url_, base::NotFatalUntil::M162);
   if (sender == textfield_url_) {
     url_ = GURL(base::UTF16ToUTF8(new_contents));
     UpdateQRContent();
@@ -471,13 +444,6 @@ void QRCodeGeneratorBubble::DownloadButtonPressed() {
   params->set_suggested_name(GetQRCodeFilenameForURL(url_));
   download_manager->DownloadUrl(std::move(params));
   base::RecordAction(base::UserMetricsAction("SharingQRCode.DownloadQRCode"));
-}
-
-void QRCodeGeneratorBubble::BackButtonPressed() {
-  Hide();
-
-  DCHECK(on_back_button_pressed_);
-  std::move(on_back_button_pressed_).Run();
 }
 
 BEGIN_METADATA(QRCodeGeneratorBubble)

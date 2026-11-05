@@ -7,16 +7,13 @@ package org.chromium.chrome.browser.bookmarks;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import static org.chromium.chrome.browser.flags.ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES;
-
 import android.app.Activity;
-import android.content.ComponentName;
 import android.view.ViewGroup;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
@@ -39,7 +36,6 @@ import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRule;
 import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactoryJni;
@@ -47,6 +43,7 @@ import org.chromium.chrome.browser.device_reauth.ReauthenticatorBridge;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.page_image_service.ImageServiceBridge;
 import org.chromium.chrome.browser.page_image_service.ImageServiceBridgeJni;
+import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManager;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
@@ -57,7 +54,10 @@ import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelperJni;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.native_page.NativePageHost;
+import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
+import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.sync.SyncService;
@@ -74,11 +74,10 @@ import java.util.Collection;
  * MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS launch.
  */
 @RunWith(ParameterizedRobolectricTestRunner.class)
-@EnableFeatures({
-    ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES,
-    SigninFeatures.ENABLE_SEAMLESS_SIGNIN
+@DisableFeatures({
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
+    ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG
 })
-@DisableFeatures(ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT)
 public class BookmarkPageUnitTest {
 
     @Rule(order = Rule.DEFAULT_ORDER - 1)
@@ -102,7 +101,12 @@ public class BookmarkPageUnitTest {
     @Mock private ActivityResultTracker mActivityResultTracker;
     @Mock private Profile mProfile;
     @Mock private NativePageHost mNativePageHost;
-    @Mock private ComponentName mComponentName;
+    @Mock private BookmarkOpener mBookmarkOpener;
+    @Mock private BookmarkManagerOpener mBookmarkManagerOpener;
+    @Mock private PriceDropNotificationManager mPriceDropNotificationManager;
+    @Mock private SigninAndHistorySyncActivityLauncher mSigninAndHistorySyncActivityLauncher;
+    @Mock private BottomSheetSigninAndHistorySyncCoordinator mSigninCoordinator;
+    @Mock private DeviceLockActivityLauncher mDeviceLockActivityLauncher;
 
     // Other dependencies.
     @Mock private BookmarkModel mModel;
@@ -159,6 +163,13 @@ public class BookmarkPageUnitTest {
                         invocation ->
                                 EdgeToEdgeControllerFactory.createForViewAndObserveSupplier(
                                         invocation.getArgument(0), mEdgeToEdgeSupplier));
+        // The promo coordinator is now assigned unconditionally, so the factory must not
+        // return null.
+        when(mSigninAndHistorySyncActivityLauncher
+                        .createBottomSheetSigninCoordinatorAndObserveAddAccountResult(
+                                any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                                anyInt()))
+                .thenReturn(mSigninCoordinator);
         mBookmarkPage =
                 new BookmarkPage(
                         mWindowAndroid,
@@ -168,28 +179,24 @@ public class BookmarkPageUnitTest {
                         mActivityResultTracker,
                         mProfile,
                         mNativePageHost,
-                        mComponentName,
+                        mBookmarkOpener,
+                        mBookmarkManagerOpener,
+                        mPriceDropNotificationManager,
+                        mSigninAndHistorySyncActivityLauncher,
+                        mDeviceLockActivityLauncher,
                         mBackPressManager);
     }
 
     @Test
-    public void testBackPressManagerWiredWhenFeatureEnabled() {
+    public void testBackPressManagerWired() {
         assertNotNull(
-                "BackPressManager should be set on coordinator when feature is enabled.",
-                mBookmarkPage.getManagerForTesting().getBackPressManagerForTesting());
-    }
-
-    @Test
-    @DisableFeatures(ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES)
-    public void testBackPressManagerNotWiredWhenFeatureDisabled() {
-        assertNull(
-                "BackPressManager should NOT be set on coordinator when feature is disabled.",
+                "BackPressManager should be set on coordinator.",
                 mBookmarkPage.getManagerForTesting().getBackPressManagerForTesting());
     }
 
     @Test
     public void testEdgeToEdge() {
-        assertTrue("Bookmark page should support E2E.", mBookmarkPage.supportsEdgeToEdge());
+        assertTrue("Bookmark page should support E2E.", mBookmarkPage.supportsEdgeToEdgeOnBottom());
 
         // This should call SimpleEdgeToEdgePadAdjuster#mControllerChangedCallback.
         mEdgeToEdgeSupplier.set(mEdgeToEdgeController);

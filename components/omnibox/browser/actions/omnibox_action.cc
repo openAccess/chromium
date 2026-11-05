@@ -11,6 +11,7 @@
 #include "components/omnibox/browser/omnibox_client.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/ui_base_features.h"
 
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
@@ -67,7 +68,7 @@ OmniboxAction::ExecutionContext::ExecutionContext(
     Client& client,
     OpenUrlCallback callback,
     base::TimeTicks match_selection_timestamp,
-    WindowOpenDisposition disposition)
+    ui::mojom::WindowOpenDisposition disposition)
     : client_(client),
       open_url_callback_(std::move(callback)),
       match_selection_timestamp_(match_selection_timestamp),
@@ -150,7 +151,7 @@ void OmniboxAction::OpenURL(OmniboxAction::ExecutionContext& context,
   // destination URLs don't need a fallback so it's fine to pass false here.
   std::move(context.open_url_callback_)
       .Run(url, nullptr, context.disposition_, ui::PAGE_TRANSITION_GENERATED,
-           /*match_type=*/AutocompleteMatchType::URL_WHAT_YOU_TYPED,
+           /*match_type=*/omnibox::AutocompleteMatchType::kUrlWhatYouTyped,
            context.match_selection_timestamp_,
            /*destination_url_entered_without_scheme=*/false,
            /*destination_url_entered_with_http_scheme=*/false, u"",

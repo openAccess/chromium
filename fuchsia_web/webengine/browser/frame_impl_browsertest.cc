@@ -41,7 +41,6 @@ using testing::AllOf;
 using testing::AtLeast;
 using testing::Contains;
 using testing::Field;
-using testing::InvokeWithoutArgs;
 using testing::Key;
 using testing::Mock;
 using testing::Not;
@@ -293,8 +292,9 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, FrameDeletedBeforeContext) {
   FrameImpl* frame_impl = context_impl()->GetFrameImplForTest(&frame.ptr());
   MockWebContentsObserver deletion_observer(frame_impl->web_contents());
   base::RunLoop run_loop;
-  EXPECT_CALL(deletion_observer, RenderViewDeleted(_))
-      .WillOnce(InvokeWithoutArgs([&run_loop] { run_loop.Quit(); }));
+  EXPECT_CALL(deletion_observer, RenderViewDeleted(_)).WillOnce([&run_loop] {
+    run_loop.Quit();
+  });
 
   EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                        fuchsia::web::LoadUrlParams(),
@@ -604,7 +604,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, ReloadFrame) {
     base::RunLoop run_loop;
     EXPECT_CALL(web_contents_observer,
                 DidStartNavigation(NavigationHandleUrlEquals(url)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     frame.GetNavigationController()->Reload(fuchsia::web::ReloadType::NO_CACHE);
     run_loop.Run();
   }
@@ -616,7 +616,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, ReloadFrame) {
     base::RunLoop run_loop;
     EXPECT_CALL(web_contents_observer,
                 DidStartNavigation(NavigationHandleUrlEquals(url)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     frame.GetNavigationController()->Reload(
         fuchsia::web::ReloadType::PARTIAL_CACHE);
     run_loop.Run();
@@ -683,7 +683,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, NoNavigationObserverAttached) {
   {
     base::RunLoop run_loop;
     EXPECT_CALL(observer, DidStartNavigation(NavigationHandleUrlEquals(title1)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                          fuchsia::web::LoadUrlParams(),
                                          title1.spec()));
@@ -693,7 +693,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, NoNavigationObserverAttached) {
   {
     base::RunLoop run_loop;
     EXPECT_CALL(observer, DidStartNavigation(NavigationHandleUrlEquals(title2)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                          fuchsia::web::LoadUrlParams(),
                                          title2.spec()));
@@ -731,7 +731,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, NavigationObserverDisconnected) {
   base::RunLoop run_loop;
   EXPECT_CALL(web_contents_observer,
               DidStartNavigation(NavigationHandleUrlEquals(title2)))
-      .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
   EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                        fuchsia::web::LoadUrlParams(),
                                        title2.spec()));
@@ -775,7 +775,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, DelayedNavigationEventAck) {
     base::RunLoop run_loop;
     EXPECT_CALL(web_contents_observer,
                 DidStartNavigation(NavigationHandleUrlEquals(title2)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                          fuchsia::web::LoadUrlParams(),
                                          title2.spec()));
@@ -789,7 +789,7 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, DelayedNavigationEventAck) {
     base::RunLoop run_loop;
     EXPECT_CALL(web_contents_observer,
                 DidStartNavigation(NavigationHandleUrlEquals(title1)))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+        .WillOnce([&run_loop]() { run_loop.Quit(); });
     EXPECT_TRUE(LoadUrlAndExpectResponse(frame.GetNavigationController(),
                                          fuchsia::web::LoadUrlParams(),
                                          title1.spec()));
@@ -830,8 +830,9 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, Stop) {
     WebContentsObserverForStop observer;
     observer.Observe(
         context_impl()->GetFrameImplForTest(&frame.ptr())->web_contents_.get());
-    EXPECT_CALL(observer, DidStartNavigation(_))
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+    EXPECT_CALL(observer, DidStartNavigation(_)).WillOnce([&run_loop]() {
+      run_loop.Quit();
+    });
     frame.GetNavigationController()->LoadUrl(
         hung_url.spec(), fuchsia::web::LoadUrlParams(),
         [](fuchsia::web::NavigationController_LoadUrl_Result) {});
@@ -847,8 +848,9 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, Stop) {
     WebContentsObserverForStop observer;
     observer.Observe(
         context_impl()->GetFrameImplForTest(&frame.ptr())->web_contents_.get());
-    EXPECT_CALL(observer, NavigationStopped())
-        .WillOnce(InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+    EXPECT_CALL(observer, NavigationStopped()).WillOnce([&run_loop]() {
+      run_loop.Quit();
+    });
     frame.GetNavigationController()->Stop();
     run_loop.Run();
   }
@@ -1410,10 +1412,18 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, Close_EventsWithDefaultTimeout) {
   frame.RunUntilMessagePortClosed();
 
   // Verify that the expected events were delivered!
-  ASSERT_EQ(frame.events().size(), 3u) << frame.EventsString();
+  // Delivery of pagehide and unload events via MessagePort races with Frame
+  // destruction, so only beforeunload is guaranteed to be received before the
+  // MessagePort closes.
+  ASSERT_GE(frame.events().size(), 1u) << frame.EventsString();
+  EXPECT_LE(frame.events().size(), 3u) << frame.EventsString();
   EXPECT_EQ(frame.events()[0], kBeforeUnloadEventName);
-  EXPECT_EQ(frame.events()[1], kPageHideEventName);
-  EXPECT_EQ(frame.events()[2], kUnloadEventName);
+  if (frame.events().size() >= 2u) {
+    EXPECT_EQ(frame.events()[1], kPageHideEventName);
+  }
+  if (frame.events().size() >= 3u) {
+    EXPECT_EQ(frame.events()[2], kUnloadEventName);
+  }
 
   EXPECT_EQ(frame.epitaph().Get(), ZX_OK);
 }
@@ -1438,10 +1448,18 @@ IN_PROC_BROWSER_TEST_F(FrameImplTest, Close_EventsWithNonZeroTimeout) {
   frame.RunUntilMessagePortClosed();
 
   // Verify that the expected events were delivered!
-  ASSERT_EQ(frame.events().size(), 3u) << frame.EventsString();
+  // Delivery of pagehide and unload events via MessagePort races with Frame
+  // destruction, so only beforeunload is guaranteed to be received before the
+  // MessagePort closes.
+  ASSERT_GE(frame.events().size(), 1u) << frame.EventsString();
+  EXPECT_LE(frame.events().size(), 3u) << frame.EventsString();
   EXPECT_EQ(frame.events()[0], kBeforeUnloadEventName);
-  EXPECT_EQ(frame.events()[1], kPageHideEventName);
-  EXPECT_EQ(frame.events()[2], kUnloadEventName);
+  if (frame.events().size() >= 2u) {
+    EXPECT_EQ(frame.events()[1], kPageHideEventName);
+  }
+  if (frame.events().size() >= 3u) {
+    EXPECT_EQ(frame.events()[2], kUnloadEventName);
+  }
 
   EXPECT_EQ(frame.epitaph().Get(), ZX_OK);
 }

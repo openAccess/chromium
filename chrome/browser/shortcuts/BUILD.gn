@@ -9,7 +9,6 @@ assert(!is_android)
 source_set("shortcuts") {
   public = [ "shortcut_icon_generator.h" ]
   sources = [ "shortcut_icon_generator.cc" ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
   deps = [
     "//chrome/app/resources:platform_locale_settings",
     "//components/url_formatter",
@@ -115,7 +114,6 @@ source_set("test_support") {
       "shortcut_creation_test_support_linux.cc",
     ]
     deps += [
-      "//chrome/browser",
       "//chrome/browser:chrome_browser_main",
       "//chrome/browser:shell_integration_linux",
     ]
@@ -125,10 +123,7 @@ source_set("test_support") {
   }
   if (is_win) {
     sources += [ "shortcut_creation_test_support_win.cc" ]
-    deps += [
-      "//chrome/browser",
-      "//chrome/browser:chrome_browser_main",
-    ]
+    deps += [ "//chrome/browser:chrome_browser_main" ]
   }
 }
 
@@ -152,7 +147,7 @@ if (!is_chromeos) {
       "//chrome/browser",
       "//chrome/browser:browser_process",
       "//chrome/browser/profiles",
-      "//chrome/browser/ui",
+      "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/startup",
       "//chrome/common:non_code_constants",

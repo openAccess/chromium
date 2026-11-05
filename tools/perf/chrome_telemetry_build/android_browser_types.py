@@ -19,13 +19,12 @@ TELEMETRY_ANDROID_BROWSER_TARGET_SUFFIXES = [
   '_android_chrome',
   '_android_webview',
   '_android_webview_bundle',
-  '_android_trichrome_chrome_bundle',
-  '_android_trichrome_chrome_64_32_bundle',
+  '_android_chrome_bundle',
 ]
 
 if os.path.exists(_CLANK_LIST_FILEPATH):
   sys.path.append(_CLANK_DIR)
-  import telemetry_browser_types  # pylint: disable=import-error,wrong-import-position
+  import telemetry_browser_types
 
   sys.path.remove(_CLANK_DIR)
   TELEMETRY_ANDROID_BROWSER_TARGET_SUFFIXES += (
@@ -41,6 +40,5 @@ else:
     '_android_clank_webview',
     '_android_clank_webview_64_32_bundle',
     '_android_clank_webview_bundle',
-    '_android_trichrome_chrome_google_64_32_bundle',
-    '_android_trichrome_chrome_google_bundle',
+    '_android_chrome_google_bundle',
   ]

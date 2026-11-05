@@ -6,12 +6,12 @@ package org.chromium.chrome.browser.tasks.tab_management.vertical_tabs;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
@@ -29,9 +29,11 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
+import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils.ExpandOnHoverToggleEntryPoint;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils.LayoutSwitchEntryPoint;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils.LayoutToggleSourceAndDirection;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils.WindowWidthBoundary;
+import org.chromium.ui.base.DeviceInput;
 
 /** Unit tests for {@link VerticalTabUtils}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -54,7 +56,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testVerticalTabRailCollapsedPreference() {
         assertFalse(VerticalTabUtils.isRailCollapsedFromSharedPref());
 
@@ -66,7 +67,40 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
+    public void testUserResizedWidthPreference() {
+        assertEquals(0, VerticalTabUtils.getUserResizedWidthDpFromSharedPref());
+
+        VerticalTabUtils.setUserResizedWidthDpInSharedPref(300);
+        assertEquals(300, VerticalTabUtils.getUserResizedWidthDpFromSharedPref());
+    }
+
+    @Test
+    public void testUserResizedWidthPreference_ClearedByNonPositiveWidth() {
+        VerticalTabUtils.setUserResizedWidthDpInSharedPref(300);
+        assertEquals(300, VerticalTabUtils.getUserResizedWidthDpFromSharedPref());
+
+        VerticalTabUtils.setUserResizedWidthDpInSharedPref(0);
+        assertEquals(0, VerticalTabUtils.getUserResizedWidthDpFromSharedPref());
+
+        VerticalTabUtils.setUserResizedWidthDpInSharedPref(300);
+        VerticalTabUtils.setUserResizedWidthDpInSharedPref(-1);
+        assertEquals(0, VerticalTabUtils.getUserResizedWidthDpFromSharedPref());
+    }
+
+    @Test
+    public void testIsManualResizeEnabled() {
+        FeatureOverrides.newBuilder()
+                .param(ChromeFeatureList.ANDROID_VERTICAL_TABS, "manual_resize", false)
+                .apply();
+        assertFalse(VerticalTabUtils.isManualResizeEnabled());
+
+        FeatureOverrides.newBuilder()
+                .param(ChromeFeatureList.ANDROID_VERTICAL_TABS, "manual_resize", true)
+                .apply();
+        assertTrue(VerticalTabUtils.isManualResizeEnabled());
+    }
+
+    @Test
     @Config(qualifiers = "sw600dp")
     public void testIsVerticalTabsEligible_FeatureDisabled() {
         FeatureOverrides.disable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
@@ -74,7 +108,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw400dp")
     public void testIsVerticalTabsEligible_NotTablet() {
         FeatureOverrides.enable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
@@ -82,7 +115,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw600dp")
     public void testIsVerticalTabsEligible_Eligible() {
         FeatureOverrides.enable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
@@ -90,7 +122,13 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
+    @Config(qualifiers = "sw600dp")
+    public void testIsVerticalTabsEligible_NullContext() {
+        FeatureOverrides.enable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
+        assertFalse(VerticalTabUtils.isVerticalTabsEligible(null));
+    }
+
+    @Test
     @Config(qualifiers = "sw600dp")
     public void testIsVerticalTabsEnabled_FalseWhenNotEligible() {
         FeatureOverrides.disable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
@@ -99,7 +137,14 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
+    @Config(qualifiers = "sw600dp")
+    public void testIsVerticalTabsEnabled_NullContext() {
+        FeatureOverrides.enable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
+        VerticalTabUtils.setVerticalTabsEnabled(true);
+        assertFalse(VerticalTabUtils.isVerticalTabsEnabled(null));
+    }
+
+    @Test
     @Config(qualifiers = "sw600dp")
     public void testIsVerticalTabsEnabled_FalseWhenPreferenceDisabled() {
         FeatureOverrides.enable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
@@ -108,7 +153,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw600dp")
     public void testIsVerticalTabsEnabled_Enabled() {
         FeatureOverrides.enable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
@@ -117,33 +161,94 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
-    public void testIsExpandOnHoverEnabled() {
-        assertFalse(VerticalTabUtils.isExpandOnHoverEnabled());
-
+    public void testIsExpandOnHoverEnabled_RespectsUserSetting() {
+        setDeviceForExpandOnHover(/* isDesktop= */ true, /* hasPrecisionPointer= */ true);
         FeatureOverrides.overrideParam(
                 ChromeFeatureList.ANDROID_VERTICAL_TABS, "expand_on_hover", true);
+
+        VerticalTabUtils.setExpandOnHoverEnabledInSharedPref(
+                false, ExpandOnHoverToggleEntryPoint.SETTINGS);
+        assertFalse(VerticalTabUtils.isExpandOnHoverEnabled());
+        assertTrue(VerticalTabUtils.isExpandOnHoverFeatureEnabled());
+
+        VerticalTabUtils.setExpandOnHoverEnabledInSharedPref(
+                true, ExpandOnHoverToggleEntryPoint.SETTINGS);
         assertTrue(VerticalTabUtils.isExpandOnHoverEnabled());
     }
 
     @Test
-    @SmallTest
-    public void testIsIncognitoButtonEnabled_DefaultDisabled() {
-        assertFalse(VerticalTabUtils.isIncognitoButtonEnabled());
-    }
-
-    @Test
-    @SmallTest
-    public void testIsIncognitoButtonEnabled_EnabledViaOverride() {
+    public void testIsExpandOnHoverEnabled_FalseWhenFeatureDisabled() {
+        setDeviceForExpandOnHover(/* isDesktop= */ true, /* hasPrecisionPointer= */ true);
         FeatureOverrides.overrideParam(
-                ChromeFeatureList.ANDROID_VERTICAL_TABS,
-                VerticalTabUtils.INCOGNITO_BUTTON_PARAM,
-                /* testValue= */ true);
-        assertTrue(VerticalTabUtils.isIncognitoButtonEnabled());
+                ChromeFeatureList.ANDROID_VERTICAL_TABS, "expand_on_hover", false);
+        VerticalTabUtils.setExpandOnHoverEnabledInSharedPref(
+                true, ExpandOnHoverToggleEntryPoint.SETTINGS);
+        assertFalse(VerticalTabUtils.isExpandOnHoverEnabled());
     }
 
     @Test
-    @SmallTest
+    public void testIsExpandOnHoverEnabled_FalseWithoutPrecisionPointer() {
+        setDeviceForExpandOnHover(/* isDesktop= */ true, /* hasPrecisionPointer= */ false);
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.ANDROID_VERTICAL_TABS, "expand_on_hover", true);
+        VerticalTabUtils.setExpandOnHoverEnabledInSharedPref(
+                true, ExpandOnHoverToggleEntryPoint.SETTINGS);
+        assertFalse(VerticalTabUtils.isExpandOnHoverFeatureEnabled());
+        assertFalse(VerticalTabUtils.isExpandOnHoverEnabled());
+    }
+
+    @Test
+    public void testIsExpandOnHoverEnabled_FalseOnTablet() {
+        // Some tablets report built-in input devices as mice, so a precision pointer isn't enough.
+        setDeviceForExpandOnHover(/* isDesktop= */ false, /* hasPrecisionPointer= */ true);
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.ANDROID_VERTICAL_TABS, "expand_on_hover", true);
+        VerticalTabUtils.setExpandOnHoverEnabledInSharedPref(
+                true, ExpandOnHoverToggleEntryPoint.SETTINGS);
+        assertFalse(VerticalTabUtils.isExpandOnHoverFeatureEnabled());
+        assertFalse(VerticalTabUtils.isExpandOnHoverEnabled());
+    }
+
+    private static void setDeviceForExpandOnHover(boolean isDesktop, boolean hasPrecisionPointer) {
+        DeviceInfo.setIsDesktopForTesting(isDesktop);
+        DeviceInput.setSupportsPrecisionPointerForTesting(hasPrecisionPointer);
+    }
+
+    @Test
+    public void testSetExpandOnHoverEnabled_RecordsHistogram() {
+        assertExpandOnHoverToggleHistogram(
+                ExpandOnHoverToggleEntryPoint.SETTINGS, /* enabled= */ true);
+        assertExpandOnHoverToggleHistogram(
+                ExpandOnHoverToggleEntryPoint.TAB_STRIP_CONTEXT_MENU, /* enabled= */ true);
+        assertExpandOnHoverToggleHistogram(
+                ExpandOnHoverToggleEntryPoint.COLLAPSE_BUTTON_CONTEXT_MENU, /* enabled= */ true);
+        assertExpandOnHoverToggleHistogram(
+                ExpandOnHoverToggleEntryPoint.SETTINGS, /* enabled= */ false);
+        assertExpandOnHoverToggleHistogram(
+                ExpandOnHoverToggleEntryPoint.TAB_STRIP_CONTEXT_MENU, /* enabled= */ false);
+        assertExpandOnHoverToggleHistogram(
+                ExpandOnHoverToggleEntryPoint.COLLAPSE_BUTTON_CONTEXT_MENU, /* enabled= */ false);
+    }
+
+    private void assertExpandOnHoverToggleHistogram(
+            @ExpandOnHoverToggleEntryPoint int entryPoint, boolean enabled) {
+        var histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                enabled
+                                        ? "Android.VerticalTabs.ExpandOnHoverToggle.Enable"
+                                        : "Android.VerticalTabs.ExpandOnHoverToggle.Disable",
+                                entryPoint)
+                        .expectNoRecords(
+                                enabled
+                                        ? "Android.VerticalTabs.ExpandOnHoverToggle.Disable"
+                                        : "Android.VerticalTabs.ExpandOnHoverToggle.Enable")
+                        .build();
+        VerticalTabUtils.setExpandOnHoverEnabledInSharedPref(enabled, entryPoint);
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
     public void testRecordLayoutToggle_Enable_AppMenu() {
         assertLayoutToggleHistogram(
                 LayoutSwitchEntryPoint.APP_MENU,
@@ -152,7 +257,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRecordLayoutToggle_Enable_TabContextMenu() {
         assertLayoutToggleHistogram(
                 LayoutSwitchEntryPoint.TAB_CONTEXT_MENU,
@@ -161,7 +265,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRecordLayoutToggle_Enable_TabStripContextMenu() {
         assertLayoutToggleHistogram(
                 LayoutSwitchEntryPoint.TAB_STRIP_CONTEXT_MENU,
@@ -170,7 +273,14 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
+    public void testRecordLayoutToggle_Enable_Settings() {
+        assertLayoutToggleHistogram(
+                LayoutSwitchEntryPoint.SETTINGS,
+                /* isEnabling= */ true,
+                LayoutToggleSourceAndDirection.ENABLE_SETTINGS);
+    }
+
+    @Test
     public void testRecordLayoutToggle_Disable_AppMenu() {
         assertLayoutToggleHistogram(
                 LayoutSwitchEntryPoint.APP_MENU,
@@ -179,7 +289,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRecordLayoutToggle_Disable_TabContextMenu() {
         assertLayoutToggleHistogram(
                 LayoutSwitchEntryPoint.TAB_CONTEXT_MENU,
@@ -188,7 +297,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testRecordLayoutToggle_Disable_TabStripContextMenu() {
         assertLayoutToggleHistogram(
                 LayoutSwitchEntryPoint.TAB_STRIP_CONTEXT_MENU,
@@ -197,7 +305,14 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
+    public void testRecordLayoutToggle_Disable_Settings() {
+        assertLayoutToggleHistogram(
+                LayoutSwitchEntryPoint.SETTINGS,
+                /* isEnabling= */ false,
+                LayoutToggleSourceAndDirection.DISABLE_SETTINGS);
+    }
+
+    @Test
     public void testRecordLayoutToggle_NullResources_DoesNotCrash() {
         var histogramWatcher =
                 HistogramWatcher.newBuilder()
@@ -211,6 +326,15 @@ public class VerticalTabUtilsUnitTest {
                 mMockContext, LayoutSwitchEntryPoint.APP_MENU, /* isEnabling= */ true);
 
         histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void testRecordLayoutToggle_NullContext() {
+        assertThrows(
+                AssertionError.class,
+                () ->
+                        VerticalTabUtils.recordLayoutToggle(
+                                null, LayoutSwitchEntryPoint.APP_MENU, /* isEnabling= */ true));
     }
 
     private void assertLayoutToggleHistogram(
@@ -238,7 +362,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw600dp")
     public void testIsVerticalTabsEnabled_DefaultFalseWhenEligible() {
         FeatureOverrides.enable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
@@ -252,7 +375,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw600dp")
     public void testIsVerticalTabsEnabled_DefaultTrueWhenEligible() {
         FeatureOverrides.enable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
@@ -266,7 +388,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw600dp")
     public void testIsVerticalTabsEnabled_RespectsPrefOverDefault() {
         FeatureOverrides.enable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
@@ -289,7 +410,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw600dp")
     public void testIsTablet_TrueOnTabletNonDesktop() {
         DeviceInfo.setIsDesktopForTesting(false);
@@ -297,7 +417,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw600dp")
     public void testIsTablet_FalseOnDesktop() {
         DeviceInfo.setIsDesktopForTesting(true);
@@ -305,7 +424,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     @Config(qualifiers = "sw400dp")
     public void testIsTablet_FalseOnPhone() {
         DeviceInfo.setIsDesktopForTesting(false);
@@ -313,7 +431,19 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
+    public void testIsTablet_NullContext() {
+        assertThrows(AssertionError.class, () -> VerticalTabUtils.isTablet(null));
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp")
+    public void testShouldShowNewBadgeForVerticalTabs_NullContext() {
+        FeatureOverrides.enable(ChromeFeatureList.ANDROID_VERTICAL_TABS);
+        DeviceInfo.setIsDesktopForTesting(false);
+        assertFalse(VerticalTabUtils.shouldShowNewBadgeForVerticalTabs(null, null));
+    }
+
+    @Test
     public void testGetWindowWidthBoundary() {
         // < 488dp (412 + 76): NOT_SHOWABLE
         assertEquals(
@@ -342,7 +472,6 @@ public class VerticalTabUtilsUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetWindowWidthBoundary_CustomAvailableWidth() {
         // Available width < 76dp -> NOT_SHOWABLE regardless of window width
         assertEquals(

@@ -17,7 +17,6 @@
 #include "chrome/browser/ash/drive/drive_integration_service_browser_test_base.h"
 #include "chrome/browser/ash/drive/file_system_util.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/files/mojom/google_drive_handler.mojom.h"
 #include "chrome/browser/ui/webui/ash/settings/test_support/os_settings_browser_test_mixin.h"
@@ -42,7 +41,6 @@ using testing::InSequence;
 using testing::Pointee;
 using testing::Return;
 using testing::TestParamInfo;
-using testing::ValuesIn;
 using testing::WithParamInterface;
 
 namespace ash::settings {
@@ -297,19 +295,16 @@ IN_PROC_BROWSER_TEST_P(GoogleDriveHandlerTest,
       FormatBytesToString(0));
 }
 
-const TestParam kTestParams[] = {
-    {
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    GoogleDriveHandlerTest,
+    testing::Values(TestParam{
         .test_suffix = "BulkPinning",
         .enabled_features =
             {ash::features::kFeatureManagementDriveFsBulkPinning},
         .disabled_features = {},
-    },
-};
-
-INSTANTIATE_TEST_SUITE_P(,
-                         GoogleDriveHandlerTest,
-                         ValuesIn(kTestParams),
-                         &ParamToTestSuffix);
+    }),
+    &ParamToTestSuffix);
 
 }  // namespace
 }  // namespace ash::settings

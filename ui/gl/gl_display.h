@@ -13,7 +13,7 @@
 
 #include "build/build_config.h"
 #include "ui/gl/gl_export.h"
-#include "ui/gl/gpu_switching_observer.h"
+#include "ui/gl/gpu_preference.h"
 
 #if BUILDFLAG(IS_APPLE)
 #if __OBJC__
@@ -164,16 +164,6 @@ class GL_EXPORT GLDisplayEGL : public GLDisplay {
   friend class GLDisplayManager<GLDisplayEGL>;
   friend class EGLApiTest;
 
-  class EGLGpuSwitchingObserver final : public ui::GpuSwitchingObserver {
-   public:
-    explicit EGLGpuSwitchingObserver(EGLDisplay display);
-    ~EGLGpuSwitchingObserver() override = default;
-    void OnGpuSwitched() override;
-
-   private:
-    EGLDisplay display_ = EGL_NO_DISPLAY;
-  };
-
   GLDisplayEGL(uint64_t system_device_id, DisplayKey display_key);
 
   bool InitializeDisplay(bool supports_angle,
@@ -189,8 +179,6 @@ class GL_EXPORT GLDisplayEGL : public GLDisplay {
   bool egl_surfaceless_context_supported_ = false;
   bool egl_context_priority_supported_ = false;
   bool egl_android_native_fence_sync_supported_ = false;
-
-  std::unique_ptr<EGLGpuSwitchingObserver> gpu_switching_observer_;
 
 #if BUILDFLAG(IS_APPLE)
   struct ObjCStorage;

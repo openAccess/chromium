@@ -9,11 +9,15 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 
+import android.content.Context;
 import android.view.ContextMenu;
+import android.view.ContextThemeWrapper;
 import android.view.MenuItem;
+import android.view.View;
 
-import androidx.test.ext.junit.rules.ActivityScenarioRule;
+import androidx.annotation.Nullable;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -21,9 +25,10 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -32,29 +37,31 @@ import org.chromium.ui.modelutil.PropertyModel;
 @RunWith(BaseRobolectricTestRunner.class)
 public class UrlBarContextMenuHelperUnitTest {
     @Rule
-    public final ActivityScenarioRule<TestActivity> mActivityScenarioRule =
-            new ActivityScenarioRule<>(TestActivity.class);
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
-
-    @Mock private UrlBar mUrlBar;
     @Mock private ContextMenu mContextMenu;
     @Mock private MenuItem mCopyMenuItem;
+    @Mock private MenuItem mUndoMenuItem;
+    @Mock private MenuItem mSelectAllMenuItem;
     @Mock private UrlBarContextMenuHelper.Delegate mDelegate;
 
+    private View mAnchorView;
     private UrlBarContextMenuHelper mHelper;
-    private TestActivity mActivity;
 
     @Before
     public void setUp() {
-        mActivityScenarioRule.getScenario().onActivity(activity -> mActivity = activity);
-        doReturn(mActivity).when(mUrlBar).getContext();
-        doReturn(mActivity.getResources()).when(mUrlBar).getResources();
-        doReturn(100).when(mUrlBar).getWidth();
-        doReturn(mUrlBar).when(mUrlBar).getRootView();
-        doReturn(50).when(mUrlBar).getHeight();
+        Context context =
+                new ContextThemeWrapper(
+                        ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
+        mAnchorView = new View(context);
+        mAnchorView.layout(0, 0, 100, 50);
 
-        mHelper = new UrlBarContextMenuHelper(mUrlBar, mDelegate);
+        mHelper = new UrlBarContextMenuHelper(mAnchorView, mDelegate);
+    }
+
+    @After
+    public void tearDown() {
+        mHelper.destroy();
     }
 
     @Test
@@ -95,8 +102,7 @@ public class UrlBarContextMenuHelperUnitTest {
 
     @Test
     public void testShowListMenu_filtersOutNonAllowedItems() {
-        setupMockContextMenu();
-        doReturn(android.R.id.button1).when(mCopyMenuItem).getItemId();
+        setupMockContextMenu(android.R.id.button1, null);
 
         mHelper.showListMenu(mContextMenu);
         assertEquals(0, mHelper.getModelListForTesting().size());
@@ -104,29 +110,15 @@ public class UrlBarContextMenuHelperUnitTest {
 
     @Test
     public void testShowListMenu_ordersItemsAndAddsDividers() {
-        MenuItem undoItem = org.mockito.Mockito.mock(MenuItem.class);
-        doReturn(android.R.id.undo).when(undoItem).getItemId();
-        doReturn("Undo").when(undoItem).getTitle();
-        doReturn(true).when(undoItem).isVisible();
-        doReturn(true).when(undoItem).isEnabled();
-
-        MenuItem copyItem = org.mockito.Mockito.mock(MenuItem.class);
-        doReturn(android.R.id.copy).when(copyItem).getItemId();
-        doReturn("Copy").when(copyItem).getTitle();
-        doReturn(true).when(copyItem).isVisible();
-        doReturn(true).when(copyItem).isEnabled();
-
-        MenuItem selectAllItem = org.mockito.Mockito.mock(MenuItem.class);
-        doReturn(android.R.id.selectAll).when(selectAllItem).getItemId();
-        doReturn("Select all").when(selectAllItem).getTitle();
-        doReturn(true).when(selectAllItem).isVisible();
-        doReturn(true).when(selectAllItem).isEnabled();
+        configureMenuItem(mUndoMenuItem, android.R.id.undo, "Undo");
+        configureMenuItem(mCopyMenuItem, android.R.id.copy, "Copy");
+        configureMenuItem(mSelectAllMenuItem, android.R.id.selectAll, "Select all");
 
         doReturn(3).when(mContextMenu).size();
         doReturn(true).when(mContextMenu).hasVisibleItems();
-        doReturn(selectAllItem).when(mContextMenu).getItem(0);
-        doReturn(undoItem).when(mContextMenu).getItem(1);
-        doReturn(copyItem).when(mContextMenu).getItem(2);
+        doReturn(mSelectAllMenuItem).when(mContextMenu).getItem(0);
+        doReturn(mUndoMenuItem).when(mContextMenu).getItem(1);
+        doReturn(mCopyMenuItem).when(mContextMenu).getItem(2);
 
         mHelper.showListMenu(mContextMenu);
 
@@ -151,12 +143,23 @@ public class UrlBarContextMenuHelperUnitTest {
                         .get(ListMenuItemProperties.MENU_ITEM_ID));
     }
 
+    private void configureMenuItem(MenuItem item, int itemId, @Nullable String title) {
+        doReturn(itemId).when(item).getItemId();
+        if (title != null) {
+            doReturn(title).when(item).getTitle();
+            doReturn(true).when(item).isEnabled();
+        }
+        doReturn(true).when(item).isVisible();
+    }
+
     private void setupMockContextMenu() {
+        setupMockContextMenu(android.R.id.copy, "Copy");
+    }
+
+    private void setupMockContextMenu(int itemId, @Nullable String title) {
         doReturn(1).when(mContextMenu).size();
         doReturn(true).when(mContextMenu).hasVisibleItems();
-        doReturn(android.R.id.copy).when(mCopyMenuItem).getItemId();
-        doReturn("Copy").when(mCopyMenuItem).getTitle();
-        doReturn(true).when(mCopyMenuItem).isVisible();
+        configureMenuItem(mCopyMenuItem, itemId, title);
         doReturn(mCopyMenuItem).when(mContextMenu).getItem(0);
     }
 
@@ -171,9 +174,7 @@ public class UrlBarContextMenuHelperUnitTest {
     }
 
     private void verifyAlwaysShowAiMode(boolean isChecked) {
-        setupMockContextMenu();
-        doReturn(R.id.url_bar_always_show_ai_mode).when(mCopyMenuItem).getItemId();
-        doReturn("Always show AI mode").when(mCopyMenuItem).getTitle();
+        setupMockContextMenu(R.id.url_bar_always_show_ai_mode, "Always show AI mode");
         doReturn(true).when(mCopyMenuItem).isCheckable();
         doReturn(isChecked).when(mCopyMenuItem).isChecked();
 

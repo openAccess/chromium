@@ -7,6 +7,9 @@
 #import <objc/runtime.h>
 
 #import <memory>
+#import <optional>
+#import <set>
+#import <string_view>
 
 #import "GREYConstants.h"
 #import "base/apple/bundle_locations.h"
@@ -29,6 +32,7 @@
 #import "ios/chrome/test/scoped_eg_synchronization_disabler.h"
 #import "ios/testing/earl_grey/app_launch_manager.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "ios/third_party/edo/src/Service/Sources/EDOClientService.h"
 #import "ios/web/common/features.h"
 #import "net/test/embedded_test_server/default_handlers.h"
@@ -42,13 +46,11 @@ bool gExecutedSetUpForTestCase = false;
 
 BOOL gIsMockAuthenticationDisabled = NO;
 
-// YES the test is for startup.
-bool gStartupTest = false;
-
 NSString* const kFlakyEarlGreyTestTargetSuffix =
     @"_flaky_eg2tests_module-Runner";
 NSString* const kMultitaskingEarlGreyTestTargetName =
     @"ios_chrome_multitasking_eg2tests_module-Runner";
+NSString* const kRunEGSmokeTestsOnlyFlag = @"--run-eg-smoke-tests-only";
 
 // Returns a base::HeapArray<...> of methods in `klass`.
 base::HeapArray<Method, base::FreeDeleter> GetMethodList(Class klass) {
@@ -174,8 +176,18 @@ void ResetAuthentication() {
 // Sets up mock authentication.
 + (void)enableMockAuthentication;
 
-// Returns a NSArray of test names in this class that contain the given prefix
-+ (NSArray*)testNamesWithPrefix:(NSString*)prefix;
+// Returns a NSArray of test names in this class (including inherited methods
+// from superclasses up to `ChromeTestCase`) that start with the given `prefix`.
++ (NSArray*)testNamesWithPrefix:(std::string_view)prefix;
+
+// Returns a NSArray of test names in this class (including inherited methods
+// from superclasses up to `ChromeTestCase`) tagged with the given `tag` (if
+// specified) and starting with `prefix`.
++ (NSArray*)testNamesWithTag:(std::optional<std::string_view>)tag
+                      prefix:(std::string_view)prefix;
+
+// Creates an `NSInvocation` for the given `selector` on this class.
++ (NSInvocation*)invocationForSelector:(SEL)selector;
 
 // Returns a NSArray of test names in this class for multitasking test suite.
 + (NSArray*)multitaskingTestNames;
@@ -191,13 +203,24 @@ void ResetAuthentication() {
   NSString* targetName = [NSBundle mainBundle].infoDictionary[@"CFBundleName"];
   if ([targetName hasSuffix:kFlakyEarlGreyTestTargetSuffix]) {
     // Only run FLAKY_ tests for flaky test suites.
-    return [self testNamesWithPrefix:@"FLAKY"];
+    return [self testNamesWithPrefix:"FLAKY"];
   } else if ([targetName isEqualToString:kMultitaskingEarlGreyTestTargetName]) {
     // Only run white listed tests for the multitasking test suite.
     return [self multitaskingTestNames];
+  } else if ([NSProcessInfo.processInfo.arguments
+                 containsObject:kRunEGSmokeTestsOnlyFlag]) {
+    // If running in smoke test mode, only run tests tagged with "smoke".
+    // When disabled tests enumeration runs on shard 0, only report tests
+    // prefixed with "DISABLED_" to avoid enumerating disabled tests from
+    // the full test suite.
+    if ([[NSProcessInfo.processInfo.environment
+            objectForKey:@"RUN_DISABLED_EARL_GREY_TESTS"] boolValue]) {
+      return [self testNamesWithTag:testing::kSmokeTag prefix:"DISABLED"];
+    }
+    return [self testNamesWithTag:testing::kSmokeTag prefix:"test"];
   } else if ([[NSProcessInfo.processInfo.environment
                  objectForKey:@"RUN_DISABLED_EARL_GREY_TESTS"] boolValue]) {
-    return [self testNamesWithPrefix:@"DISABLED"];
+    return [self testNamesWithPrefix:"DISABLED"];
   } else {
     return [super testInvocations];
   }
@@ -214,7 +237,6 @@ void ResetAuthentication() {
   [[self class] disableMockAuthentication];
   [super tearDown];
   gExecutedSetUpForTestCase = false;
-  gStartupTest = false;
 }
 
 - (net::EmbeddedTestServer*)testServer {
@@ -242,9 +264,7 @@ void ResetAuthentication() {
   if (![ChromeTestCase forceRestartAndWipe]) {
     [ChromeEarlGrey killWebKitNetworkProcess];
     [ChromeEarlGrey signOutAndClearIdentities];
-    if (![ChromeTestCase isStartupTest]) {
-      [ChromeEarlGrey openNewTab];
-    }
+    [ChromeEarlGrey openNewTab];
   }
   _executedTestMethodSetUp = YES;
 
@@ -259,6 +279,8 @@ void ResetAuthentication() {
 // Tear down called once per test, to close all tabs and menus, and clear the
 // tracked tests accounts. It also makes sure mock authentication is running.
 - (void)tearDown {
+  [[AppLaunchManager sharedManager] removeObserver:self];
+
   if (![ChromeTestCase forceRestartAndWipe]) {
     [self tearDownHelper];
   }
@@ -270,8 +292,6 @@ void ResetAuthentication() {
     [ChromeEarlGrey closeAllExtraWindows];
     [EarlGrey setRootMatcherForSubsequentInteractions:nil];
   }
-
-  [[AppLaunchManager sharedManager] removeObserver:self];
 
   if (_tearDownHandler) {
     _tearDownHandler();
@@ -290,11 +310,9 @@ void ResetAuthentication() {
 
     // Clean up any UI that may remain open so the next test starts in a clean
     // state.
-    if (![ChromeTestCase isStartupTest]) {
-      // If a native context menu is presented on the screen, try to dismiss it.
-      [ChromeEarlGreyUI dismissContextMenuIfPresent];
-      [[self class] removeAnyOpenMenusAndInfoBars];
-    }
+    // If a native context menu is presented on the screen, try to dismiss it.
+    [ChromeEarlGreyUI dismissContextMenuIfPresent];
+    [[self class] removeAnyOpenMenusAndInfoBars];
     if (![self loadMinimalAppUI]) {
       [[self class] closeAllTabs];
     }
@@ -304,16 +322,33 @@ void ResetAuthentication() {
     policy_test_utils::ClearPolicies();
   }
 
-  UIInterfaceOrientation currentOrientation =
-      [ChromeEarlGrey interfaceOrientation];
-  if (currentOrientation != _originalOrientation) {
-    // Synchronization off due to an infinite spinner if the keyboard is
-    // visible.
-    ScopedSynchronizationDisabler disabler;
-
-    // Rotate the device back to the original orientation, since some tests
-    // attempt to run in other orientations.
-    [EarlGrey rotateInterfaceToOrientation:_originalOrientation error:nil];
+  // Do not attempt to rotate if the original orientation is unknown (for tests
+  // that halt the startup sequence before a scene exists, the orientation may
+  // not be available at -setUp).
+  if (_originalOrientation != UIInterfaceOrientationUnknown) {
+    if ([ChromeEarlGrey isDuoSimulator]) {
+      // Synchronization off due to an infinite spinner if the keyboard is
+      // visible.
+      ScopedSynchronizationDisabler disabler;
+      // Restore the Duo simulator to Portrait before closing the hinge so the
+      // cover display doesn't have to rotate during the fold transition.
+      [ChromeEarlGrey setSimulatedDuoOrientation:UIDeviceOrientationPortrait];
+      if (@available(iOS 27.1, *)) {
+        [ChromeEarlGrey setSimulatedDuoHingeStatus:UIHingeStatusClosed];
+      }
+    } else {
+      UIInterfaceOrientation currentOrientation =
+          [ChromeEarlGrey interfaceOrientation];
+      if (currentOrientation != UIInterfaceOrientationUnknown &&
+          currentOrientation != _originalOrientation) {
+        // Synchronization off due to an infinite spinner if the keyboard is
+        // visible.
+        ScopedSynchronizationDisabler disabler;
+        // Rotate the device back to the original orientation, since some tests
+        // attempt to run in other orientations.
+        [EarlGrey rotateInterfaceToOrientation:_originalOrientation error:nil];
+      }
+    }
   }
   _executedTestMethodSetUp = NO;
   _testServer = nil;
@@ -370,11 +405,7 @@ void ResetAuthentication() {
 }
 
 + (void)testForStartup {
-  gStartupTest = YES;
-}
-
-+ (BOOL)isStartupTest {
-  return gStartupTest;
+  // No-op.
 }
 
 - (void)backgroundAndForegroundApp {
@@ -425,21 +456,43 @@ void ResetAuthentication() {
   [ChromeEarlGrey setUpFakeSyncServer];
 }
 
-+ (NSArray*)testNamesWithPrefix:(NSString*)prefix {
++ (NSArray*)testNamesWithPrefix:(std::string_view)prefix {
+  return [self testNamesWithTag:std::nullopt prefix:prefix];
+}
+
++ (NSArray*)testNamesWithTag:(std::optional<std::string_view>)tag
+                      prefix:(std::string_view)prefix {
   NSMutableArray* testNames = [NSMutableArray array];
-  for (const Method& method : GetMethodList(self)) {
-    SEL selector = method_getName(method);
-    if (base::StartsWith(sel_getName(selector),
-                         base::SysNSStringToUTF8(prefix))) {
-      NSMethodSignature* methodSignature =
-          [self instanceMethodSignatureForSelector:selector];
-      NSInvocation* invocation =
-          [NSInvocation invocationWithMethodSignature:methodSignature];
-      invocation.selector = selector;
-      [testNames addObject:invocation];
+  const char* className = class_getName(self);
+  std::set<SEL> seenSelectors;
+  for (Class cls = self; cls && cls != [ChromeTestCase class];
+       cls = class_getSuperclass(cls)) {
+    for (const Method& method : GetMethodList(cls)) {
+      SEL selector = method_getName(method);
+      if (!seenSelectors.insert(selector).second) {
+        continue;
+      }
+      const char* selectorName = sel_getName(selector);
+      if (!base::StartsWith(selectorName, prefix)) {
+        continue;
+      }
+      if (tag.has_value() && !testing::TestTagRegistry::GetInstance().HasTag(
+                                 className, selectorName, *tag)) {
+        continue;
+      }
+      [testNames addObject:[self invocationForSelector:selector]];
     }
   }
   return testNames;
+}
+
++ (NSInvocation*)invocationForSelector:(SEL)selector {
+  NSMethodSignature* methodSignature =
+      [self instanceMethodSignatureForSelector:selector];
+  NSInvocation* invocation =
+      [NSInvocation invocationWithMethodSignature:methodSignature];
+  invocation.selector = selector;
+  return invocation;
 }
 
 + (NSArray*)multitaskingTestNames {
@@ -448,12 +501,7 @@ void ResetAuthentication() {
     SEL selector = method_getName(method);
     if ([multitaskingTests()
             containsObject:base::SysUTF8ToNSString(sel_getName(selector))]) {
-      NSMethodSignature* methodSignature =
-          [self instanceMethodSignatureForSelector:selector];
-      NSInvocation* invocation =
-          [NSInvocation invocationWithMethodSignature:methodSignature];
-      invocation.selector = selector;
-      [multitaskingTestNames addObject:invocation];
+      [multitaskingTestNames addObject:[self invocationForSelector:selector]];
     }
   }
   return multitaskingTestNames;
@@ -470,16 +518,34 @@ void ResetAuthentication() {
 
   // Sometimes on start up there can be infobars (e.g. restore session), so
   // ensure the UI is in a clean state.
-  if (![ChromeTestCase isStartupTest] &&
-      ![ChromeTestCase forceRestartAndWipe]) {
+  if (![ChromeTestCase forceRestartAndWipe]) {
     [[self class] removeAnyOpenMenusAndInfoBars];
     [self closeAllTabs];
   }
   [ChromeEarlGrey setPopupPrefValue:CONTENT_SETTING_DEFAULT];
 
-  // Enforce the assumption that the tests are runing in portrait.
-  [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationPortrait
-                                   error:nil];
+  // Enforce the assumption that the tests are running in portrait. Do not
+  // attempt to rotate if the orientation is unknown (for tests that halt the
+  // startup sequence before a scene exists).
+  UIInterfaceOrientation currentOrientation =
+      [ChromeEarlGrey interfaceOrientation];
+  if (currentOrientation != UIInterfaceOrientationUnknown) {
+    if ([ChromeEarlGrey isDuoSimulator]) {
+      // Reset the Duo simulator to Closed/Portrait via its virtual HID service.
+      [ChromeEarlGrey setSimulatedDuoOrientation:UIDeviceOrientationPortrait];
+      if (@available(iOS 27.1, *)) {
+        [ChromeEarlGrey setSimulatedDuoHingeStatus:UIHingeStatusClosed];
+      }
+      [ChromeEarlGrey setSimulatedDuoOrientation:UIDeviceOrientationPortrait];
+    } else if (currentOrientation != UIInterfaceOrientationPortrait) {
+      // Only rotate if needed. On a physical device with the orientation lock
+      // on, an XCUITest rotation releases the lock, and the OS then re-applies
+      // the physical orientation (e.g. a device resting in landscape), undoing
+      // the rotation and failing EarlGrey's orientation check.
+      [EarlGrey rotateInterfaceToOrientation:UIInterfaceOrientationPortrait
+                                       error:nil];
+    }
+  }
 
   // Clear multiwindow root and any extra windows. Once in `setUpForTestCase`
   // (in case of crashes) and on every `tearDown`.
@@ -544,12 +610,76 @@ void ResetAuthentication() {
       if (![ChromeTestCase forceRestartAndWipe]) {
         // Reset any remaining sign-in state from previous tests.
         [ChromeEarlGrey signOutAndClearIdentities];
-        if (![ChromeTestCase isStartupTest]) {
-          [ChromeEarlGrey openNewTab];
-        }
+        [ChromeEarlGrey openNewTab];
       }
     }
   }
+}
+
+@end
+
+#pragma mark - EarlGreyImpl Swizzling for iPhone Duo
+
+@interface EarlGreyImpl (DuoSimulator)
+@end
+
+@implementation EarlGreyImpl (DuoSimulator)
+
++ (void)load {
+  static dispatch_once_t once_token;
+  dispatch_once(&once_token, ^{
+    Class cls = [EarlGreyImpl class];
+    SEL original_selector = @selector(rotateInterfaceToOrientation:error:);
+    SEL swizzled_selector = @selector(cr_rotateInterfaceToOrientation:error:);
+
+    Method original_method = class_getInstanceMethod(cls, original_selector);
+    Method swizzled_method = class_getInstanceMethod(cls, swizzled_selector);
+
+    BOOL did_add_method = class_addMethod(
+        cls, original_selector, method_getImplementation(swizzled_method),
+        method_getTypeEncoding(swizzled_method));
+
+    if (did_add_method) {
+      class_replaceMethod(cls, swizzled_selector,
+                          method_getImplementation(original_method),
+                          method_getTypeEncoding(original_method));
+    } else {
+      method_exchangeImplementations(original_method, swizzled_method);
+    }
+  });
+}
+
+- (BOOL)cr_rotateInterfaceToOrientation:
+            (UIInterfaceOrientation)interfaceOrientation
+                                  error:(NSError**)error {
+  if (![ChromeEarlGrey isDuoSimulator]) {
+    return [self cr_rotateInterfaceToOrientation:interfaceOrientation
+                                           error:error];
+  }
+
+  // On Duo, standard XCUIDevice.setOrientation does not trigger simulator
+  // rotation. Map requested interface orientation to device orientation.
+  UIDeviceOrientation deviceOrientation = [GREYConstants
+      deviceOrientationForInterfaceOrientation:interfaceOrientation];
+
+  // If the Duo is unfolded (inner display), holding it in portrait yields a
+  // landscape interface aspect ratio, and vice versa. Invert device orientation
+  // accordingly so the interface orientation matches what was requested.
+  if (![ChromeEarlGrey isCompactWidth]) {
+    if (UIInterfaceOrientationIsPortrait(interfaceOrientation)) {
+      deviceOrientation = UIDeviceOrientationLandscapeRight;
+    } else if (UIInterfaceOrientationIsLandscape(interfaceOrientation)) {
+      deviceOrientation = UIDeviceOrientationPortrait;
+    }
+  }
+
+  [ChromeEarlGrey setSimulatedDuoOrientation:deviceOrientation];
+  [[XCUIDevice sharedDevice] setOrientation:deviceOrientation];
+
+  [[NSNotificationCenter defaultCenter]
+      postNotificationName:UIDeviceOrientationDidChangeNotification
+                    object:nil];
+  return YES;
 }
 
 @end

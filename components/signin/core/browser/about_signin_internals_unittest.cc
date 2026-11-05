@@ -5,8 +5,13 @@
 #include "components/signin/core/browser/about_signin_internals.h"
 
 #include <memory>
+#include <optional>
+#include <set>
+#include <string>
 
 #include "base/test/task_environment.h"
+#include "base/test/values_test_util.h"
+#include "build/build_config.h"
 #include "components/signin/core/browser/account_reconcilor.h"
 #include "components/signin/core/browser/signin_error_controller.h"
 #include "components/signin/internal/identity_manager/account_capabilities_constants.h"
@@ -17,9 +22,13 @@
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/version_info/channel.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
+
+using ::base::test::DictionaryHasValues;
+using ::testing::ElementsAre;
 
 constexpr char kTestEmail[] = "test@example.com";
 
@@ -78,7 +87,7 @@ TEST_F(AboutSigninInternalsTest,
            version_info::Channel::STABLE,
        }) {
     EXPECT_FALSE(about_signin_internals_->CanOverrideAccountCapability(
-        account_info.account_id, kCanOverrideAccountInfoCapabilityName,
+        account_info.GetAccountId(), kCanOverrideAccountInfoCapabilityName,
         channel));
   }
 }
@@ -94,7 +103,7 @@ TEST_F(AboutSigninInternalsTest,
            version_info::Channel::DEV,
        }) {
     EXPECT_TRUE(about_signin_internals_->CanOverrideAccountCapability(
-        account_info.account_id, kCanFetchFamilyMemberInfoCapabilityName,
+        account_info.GetAccountId(), kCanFetchFamilyMemberInfoCapabilityName,
         channel));
   }
 }
@@ -110,7 +119,7 @@ TEST_F(AboutSigninInternalsTest,
        }) {
     // False by default (capability not enabled on account).
     EXPECT_FALSE(about_signin_internals_->CanOverrideAccountCapability(
-        account_info.account_id, kCanFetchFamilyMemberInfoCapabilityName,
+        account_info.GetAccountId(), kCanFetchFamilyMemberInfoCapabilityName,
         channel));
 
     // When capability is enabled, returns true.
@@ -119,7 +128,7 @@ TEST_F(AboutSigninInternalsTest,
     identity_test_env_.UpdateAccountInfoForAccount(account_info);
 
     EXPECT_TRUE(about_signin_internals_->CanOverrideAccountCapability(
-        account_info.account_id, kCanFetchFamilyMemberInfoCapabilityName,
+        account_info.GetAccountId(), kCanFetchFamilyMemberInfoCapabilityName,
         channel));
 
     // When capability is disabled, returns false.
@@ -127,9 +136,143 @@ TEST_F(AboutSigninInternalsTest,
     identity_test_env_.UpdateAccountInfoForAccount(account_info);
 
     EXPECT_FALSE(about_signin_internals_->CanOverrideAccountCapability(
-        account_info.account_id, kCanFetchFamilyMemberInfoCapabilityName,
+        account_info.GetAccountId(), kCanFetchFamilyMemberInfoCapabilityName,
         channel));
   }
+}
+
+TEST_F(AboutSigninInternalsTest,
+       GetSigninStatus_NullSigninErrorControllerAndAccountReconcilor) {
+  identity_test_env_.MakePrimaryAccountAvailable(
+      kTestEmail, signin::ConsentLevel::kSignin);
+
+  AboutSigninInternals internals(identity_test_env_.identity_manager(),
+                                 /*signin_error_controller=*/nullptr,
+                                 signin::AccountConsistencyMethod::kDisabled,
+                                 &signin_client_,
+                                 /*account_reconcilor=*/nullptr);
+
+  base::DictValue status = internals.GetSigninStatus();
+  const base::ListValue* signin_info = status.FindList("signin_info");
+  ASSERT_TRUE(signin_info);
+  ASSERT_FALSE(signin_info->empty());
+  const base::DictValue* basic_section = (*signin_info)[0].GetIfDict();
+  ASSERT_TRUE(basic_section);
+  const base::ListValue* basic_data = basic_section->FindList("data");
+  ASSERT_TRUE(basic_data);
+
+  for (const base::Value& entry : *basic_data) {
+    const std::string* label = entry.GetDict().FindString("label");
+    ASSERT_TRUE(label);
+    EXPECT_NE(*label, "Auth Error");
+    EXPECT_NE(*label, "Auth Error Account Id");
+    EXPECT_NE(*label, "Auth Error Username");
+    EXPECT_NE(*label, "Account Reconcilor blocked");
+    EXPECT_NE(*label, "Account Reconcilor State");
+  }
+
+  internals.Shutdown();
+}
+
+TEST_F(AboutSigninInternalsTest, ResetSigninPrefs) {
+  constexpr const char* kSigninPrefs[] = {
+      "google.services.signin.AUTHENTICATION_RESULT_RECEIVED.value",
+      "google.services.signin.AUTHENTICATION_RESULT_RECEIVED.time",
+      "google.services.signin.REFRESH_TOKEN_RECEIVED.value",
+      "google.services.signin.REFRESH_TOKEN_RECEIVED.time",
+      "google.services.signin.LAST_REFRESH_TOKEN_ACCOUNT_ID.value",
+      "google.services.signin.LAST_REFRESH_TOKEN_ACCOUNT_ID.time",
+      "google.services.signin.LAST_SIGNIN_ACCESS_POINT.value",
+      "google.services.signin.LAST_SIGNIN_ACCESS_POINT.time",
+      "google.services.signin.LAST_SIGNOUT_SOURCE.value",
+      "google.services.signin.LAST_SIGNOUT_SOURCE.time",
+  };
+
+  for (const char* pref : kSigninPrefs) {
+    pref_service_.SetString(pref, "non_empty");
+  }
+
+  AboutSigninInternals::ResetSigninPrefs(&pref_service_);
+
+  for (const char* pref : kSigninPrefs) {
+    EXPECT_TRUE(pref_service_.HasPrefPath(pref));
+    EXPECT_EQ(pref_service_.GetString(pref), "");
+  }
+}
+
+TEST_F(AboutSigninInternalsTest, AccountReconcilorEvents) {
+  static_cast<AccountReconcilor::Observer*>(about_signin_internals())
+      ->OnReconcileFinished(AccountReconcilor::Trigger::kTokenChange,
+                            AccountReconcilor::Operation::kMultilogin,
+                            GoogleServiceAuthError::AuthErrorNone());
+  static_cast<AccountReconcilor::Observer*>(about_signin_internals())
+      ->OnReconcileFinished(
+          AccountReconcilor::Trigger::kCookieChange,
+          AccountReconcilor::Operation::kLogout,
+          GoogleServiceAuthError::FromServiceError("Logout failed"));
+
+  base::DictValue status = about_signin_internals()->GetSigninStatus();
+  const base::ListValue* events = status.FindList("accountReconcilorEvents");
+  ASSERT_TRUE(events);
+  EXPECT_THAT(
+      *events,
+      ElementsAre(
+          DictionaryHasValues(base::DictValue()
+                                  .Set("trigger", "TokenChange")
+                                  .Set("operation", "Multilogin")
+                                  .Set("result", "OK")),
+          DictionaryHasValues(base::DictValue()
+                                  .Set("trigger", "CookieChange")
+                                  .Set("operation", "Logout")
+                                  .Set("result",
+                                       "Failure: Service responded with error: "
+                                       "'Logout failed'"))));
+}
+
+TEST_F(AboutSigninInternalsTest, GetSigninStatus_IsPii) {
+  AccountInfo account_info = identity_test_env_.MakePrimaryAccountAvailable(
+      kTestEmail, signin::ConsentLevel::kSignin);
+  identity_test_env_.UpdatePersistentErrorOfRefreshTokenForAccount(
+      account_info.GetAccountId(),
+      GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+          GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+              CREDENTIALS_REJECTED_BY_SERVER));
+
+  base::DictValue status = about_signin_internals()->GetSigninStatus();
+  const base::ListValue* signin_info = status.FindList("signin_info");
+  ASSERT_TRUE(signin_info);
+
+  std::set<std::string> pii_labels;
+  std::set<std::string> non_pii_labels;
+  for (const base::Value& section : *signin_info) {
+    const base::ListValue* data = section.GetDict().FindList("data");
+    ASSERT_TRUE(data);
+    for (const base::Value& entry : *data) {
+      const base::DictValue& entry_dict = entry.GetDict();
+      const std::string* label = entry_dict.FindString("label");
+      ASSERT_TRUE(label);
+      std::optional<bool> is_pii = entry_dict.FindBool("isPii");
+      ASSERT_TRUE(is_pii.has_value());
+      if (*is_pii) {
+        pii_labels.insert(*label);
+      } else {
+        non_pii_labels.insert(*label);
+      }
+    }
+  }
+
+  std::set<std::string> expected_pii_labels = {
+      "Account Id",
+      "Gaia Id",
+      "Username",
+      "Auth Error Account Id",
+      "Auth Error Username",
+#if !BUILDFLAG(IS_CHROMEOS)
+      "RefreshToken Account Id",
+#endif
+  };
+  EXPECT_EQ(pii_labels, expected_pii_labels);
+  EXPECT_FALSE(non_pii_labels.empty());
 }
 
 }  // namespace

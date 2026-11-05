@@ -9,7 +9,6 @@
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/public/cpp/app_list/app_list_config.h"
 #include "ash/public/cpp/app_list/vector_icons/vector_icons.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "base/metrics/user_metrics.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
@@ -25,8 +24,11 @@
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
+#include "ui/color/color_provider.h"
+#include "ui/color/color_provider_manager.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/native_theme/native_theme.h"
 #include "url/gurl.h"
 
 namespace app_list {
@@ -43,7 +45,7 @@ HelpAppZeroStateResult::HelpAppZeroStateResult(Profile* profile,
                                                const std::u16string& details,
                                                const gfx::ImageSkia& icon)
     : profile_(profile) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
   set_id(id);
   SetCategory(Category::kHelp);
   SetTitle(title);
@@ -86,7 +88,7 @@ HelpAppZeroStateProvider::HelpAppZeroStateProvider(
     Profile* profile,
     ash::AppListNotifier* notifier)
     : SearchProvider(SearchCategory::kHelp), profile_(profile) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M160);
 
   app_registry_cache_observer_.Observe(
       &apps::AppServiceProxyFactory::GetForProfile(profile)
@@ -105,7 +107,10 @@ void HelpAppZeroStateProvider::StartZeroState() {
 
   if (ash::ReleaseNotesStorage(profile_).ShouldShowSuggestionChip()) {
     // Release notes are shown in the Continue section.
-    auto* color_provider = ash::ColorProvider::Get();
+    const auto* color_provider =
+        ui::ColorProviderManager::Get().GetColorProviderFor(
+            ui::NativeTheme::GetInstanceForNativeUi()->GetColorProviderKey(
+                nullptr));
     // NOTE: Color provider may not be set in unit tests.
     SkColor icon_color =
         color_provider

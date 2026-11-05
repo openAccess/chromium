@@ -28,6 +28,7 @@ class LogRouter;
 
 namespace content {
 class BrowserContext;
+class WebUIDataSource;
 }  // namespace content
 
 class Profile;
@@ -39,9 +40,13 @@ inline constexpr char kCacheResetDone[] =
     "cache reset.";
 inline constexpr char kCacheResetAlreadyInProgress[] =
     "Reset already in progress";
+inline constexpr char kClearAutofillAiEntitySuppressionsDone[] =
+    "Done. All AutofillAI Personal Context entity suppressions have been "
+    "cleared.";
 
-void CreateAndAddInternalsHTMLSource(Profile* profile,
-                                     const std::string& source_name);
+content::WebUIDataSource& CreateAndAddInternalsHTMLSource(
+    Profile* profile,
+    const std::string& source_name);
 
 // Class that wipes responses from the Autofill server from the HTTP cache.
 class AutofillCacheResetter : public content::BrowsingDataRemover::Observer {
@@ -121,6 +126,10 @@ class InternalsUIHandler
   void OnReauthCompleted(bool auth_succeeded);
   void OnLoaded(const base::ListValue& args);
   void OnResetCache(const base::ListValue& args);
+  // Clears all suppressed AutofillAI Personal Context entity suggestions via
+  // `PersonalContextEntityMetadataManager`.
+  void OnClearAutofillAiEntitySuppressions(const base::ListValue& args);
+  void OnClearGmailOtpOptInPrefs(const base::ListValue& args);
   void OnDumpAddresses(const base::ListValue& args);
   void OnSetPasswordChangeOverrideUrl(const base::ListValue& args);
   void CheckAtMemoryPermissions(const base::ListValue& args);

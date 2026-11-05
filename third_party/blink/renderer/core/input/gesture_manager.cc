@@ -28,6 +28,7 @@
 #include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/paint/paint_layer_scrollable_area.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom-blink.h"
 #include "ui/gfx/geometry/point_conversions.h"
 
@@ -105,14 +106,20 @@ HitTestRequest::HitTestRequestType GestureManager::GetHitTypeForGestureType(
       if (!frame_->GetDocument()->GetActiveElement())
         hit_type |= HitTestRequest::kReadOnly;
       return hit_type | HitTestRequest::kRelease;
+    case WebInputEvent::Type::kGestureLongTap:
+      // A LongTap is dispatched when the finger lifts after a long-press.
+      if (RuntimeEnabledFeatures::LongPressReleasesActiveStateEnabled()) {
+        return hit_type | HitTestRequest::kRelease;
+      }
+      return hit_type | HitTestRequest::kActive | HitTestRequest::kReadOnly;
     case WebInputEvent::Type::kGestureTap:
       return hit_type | HitTestRequest::kRelease;
     case WebInputEvent::Type::kGestureTapDown:
     case WebInputEvent::Type::kGestureShortPress:
     case WebInputEvent::Type::kGestureLongPress:
-    case WebInputEvent::Type::kGestureLongTap:
     case WebInputEvent::Type::kGestureTwoFingerTap:
-      // FIXME: Shouldn't LongTap and TwoFingerTap clear the Active state?
+      // TODO(crbug.com/358393574): Shouldn't TwoFingerTap clear the Active
+      // state?
       return hit_type | HitTestRequest::kActive | HitTestRequest::kReadOnly;
     default:
       NOTREACHED();
@@ -133,7 +140,11 @@ WebInputEventResult GestureManager::HandleGestureEventInFrame(
 
   // TODO(https://crbug.com/427503494): Investigate if this code block is
   // exposing internal gesture events as DOM events.
-  if (Node* event_target = hit_test_result.InnerNode()) {
+  Node* event_target = hit_test_result.InnerPossiblyPseudoElement();
+  if (!event_target) {
+    event_target = hit_test_result.InnerNode();
+  }
+  if (event_target) {
     GestureEvent* gesture_dom_event = GestureEvent::Create(
         event_target->GetDocument().domWindow(), gesture_event);
     if (gesture_dom_event) {
@@ -486,10 +497,24 @@ WebInputEventResult GestureManager::HandleGestureLongPress(
   // scenario that it's unlikely to matter much in practice.
 
   long_press_position_in_root_frame_ = gesture_event.PositionInRootFrame();
-  HitTestLocation location(frame_->View()->ConvertFromRootFrame(
-      gfx::ToFlooredPoint(long_press_position_in_root_frame_)));
-  HitTestResult hit_test_result =
-      frame_->GetEventHandler().HitTestResultAtLocation(location);
+  HitTestResult hit_test_result;
+  if (RuntimeEnabledFeatures::LongPressHitTestInFrameEnabled()) {
+    LocalFrame& main_frame = frame_->LocalFrameRoot();
+    if (!frame_->View() || !main_frame.View() ||
+        !main_frame.View()->UpdateAllLifecyclePhasesExceptPaint(
+            DocumentUpdateReason::kHitTest)) {
+      return WebInputEventResult::kNotHandled;
+    }
+    HitTestLocation location(frame_->View()->ConvertFromRootFrame(
+        gfx::ToFlooredPoint(long_press_position_in_root_frame_)));
+    hit_test_result = event_handling_util::HitTestResultInFrame(
+        frame_, location, GetHitTypeForGestureType(gesture_event.GetType()));
+  } else {
+    HitTestLocation location(frame_->View()->ConvertFromRootFrame(
+        gfx::ToFlooredPoint(long_press_position_in_root_frame_)));
+    hit_test_result =
+        frame_->GetEventHandler().HitTestResultAtLocation(location);
+  }
 
   gesture_context_menu_deferred_ = false;
 
@@ -644,7 +669,13 @@ WebInputEventResult GestureManager::SendContextMenuEventForGesture(
       gesture_event.TimeStamp());
 
   if (!suppress_mouse_events_from_gestures_ && frame_->View()) {
-    HitTestRequest request(HitTestRequest::kActive);
+    // This hit test is only used for focus handling and must not modify the
+    // hover/active state (crbug.com/358393574).
+    HitTestRequest::HitTestRequestType hit_type = HitTestRequest::kActive;
+    if (RuntimeEnabledFeatures::LongPressReleasesActiveStateEnabled()) {
+      hit_type |= HitTestRequest::kReadOnly;
+    }
+    HitTestRequest request(hit_type);
     PhysicalOffset document_point(frame_->View()->ConvertFromRootFrame(
         gfx::ToFlooredPoint(targeted_event.Event().PositionInRootFrame())));
     MouseEventWithHitTestResults mev =

@@ -98,9 +98,6 @@ const PrefMappingEntry kMappings[] = {
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
     {"webRTCUDPPortRange", prefs::kWebRTCUDPPortRange,
      APIPermissionID::kPrivacy, APIPermissionID::kPrivacy},
-    {"relatedWebsiteSetsEnabled",
-     prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, APIPermissionID::kPrivacy,
-     APIPermissionID::kPrivacy},
     {"proxyOverrideRulesPrivate", proxy_config::prefs::kProxyOverrideRules,
      APIPermissionID::kProxyOverrideRulesPrivate,
      APIPermissionID::kProxyOverrideRulesPrivate},
@@ -234,8 +231,9 @@ PrefMapping::PrefMapping() {
     event_mapping_[pref.browser_pref] =
         PrefMapData(event_name, pref.read_permission, pref.write_permission);
   }
-  DCHECK_EQ(std::size(kMappings), mapping_.size());
-  DCHECK_EQ(std::size(kMappings), event_mapping_.size());
+  CHECK_EQ(std::size(kMappings), mapping_.size(), base::NotFatalUntil::M161);
+  CHECK_EQ(std::size(kMappings), event_mapping_.size(),
+           base::NotFatalUntil::M161);
 }
 
 PrefMapping::~PrefMapping() = default;

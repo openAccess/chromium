@@ -37,6 +37,8 @@ class MEDIA_EXPORT AudioManagerBase : public AudioManager {
 
   ~AudioManagerBase() override;
 
+  void CloseIdleStreams() override;
+
   AudioOutputStream* MakeAudioOutputStream(
       const AudioParameters& params,
       const std::string& device_id,
@@ -187,10 +189,12 @@ class MEDIA_EXPORT AudioManagerBase : public AudioManager {
   FRIEND_TEST_ALL_PREFIXES(AudioManagerTest, AudioDebugRecording);
 
   struct DispatcherParams;
-  typedef std::vector<std::unique_ptr<DispatcherParams>> AudioOutputDispatchers;
+  using AudioOutputDispatchers = std::vector<std::unique_ptr<DispatcherParams>>;
 
   // AudioManager:
   void InitializeDebugRecording() final;
+
+  void CloseAllIdleStreamsOnAudioThread();
 
   bool GetAudioDeviceDescriptions(
       AudioDeviceDescriptions* descriptions,

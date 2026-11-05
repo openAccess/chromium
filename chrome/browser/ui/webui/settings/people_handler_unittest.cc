@@ -23,21 +23,22 @@
 #include "chrome/browser/defaults.h"
 #include "chrome/browser/first_run/first_run.h"
 #include "chrome/browser/signin/account_consistency_mode_manager.h"
+#include "chrome/browser/signin/account_preview_data_service_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
 #include "chrome/browser/signin/chrome_signin_client_test_util.h"
 #include "chrome/browser/signin/dice_web_signin_interceptor.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
+#include "chrome/browser/signin/mock_signin_ui_delegate.h"
 #include "chrome/browser/signin/signin_error_controller_factory.h"
-#include "chrome/browser/signin/signin_ui_delegate.h"
 #include "chrome/browser/signin/signin_ui_util.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/chrome_pages.h"
+#include "chrome/browser/ui/signin/account_preview_utils.h"
 #include "chrome/browser/ui/signin/signin_view_controller.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service.h"
-#include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
+#include "chrome/browser/ui/webui/settings/settings_localized_strings_provider.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
@@ -45,6 +46,7 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/core/browser/test_account_preview_data_service.h"
 #include "components/signin/public/base/account_consistency_method.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/base/signin_pref_names.h"
@@ -70,6 +72,7 @@
 #include "content/public/test/test_web_contents_factory.h"
 #include "content/public/test/test_web_ui.h"
 #include "content/public/test/web_contents_tester.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -83,6 +86,7 @@
 namespace {
 
 using signin::ConsentLevel;
+using signin_ui_util::MockSigninUiDelegate;
 using signin_util::SignedInState;
 using ::testing::_;
 using ::testing::ByMove;
@@ -103,41 +107,6 @@ constexpr char kChromeSigninUserChoiceInfoChangeEventName[] =
 
 // Event fired when calling `PeopleHandler::UpdateSyncStatus()`.
 constexpr char kSyncStatusChangeEventName[] = "sync-status-changed";
-
-class MockSigninUiDelegate : public signin_ui_util::SigninUiDelegate {
- public:
-  MOCK_METHOD(void,
-              ShowTurnSyncOnUI,
-              (Profile*,
-               signin_metrics::AccessPoint,
-               signin_metrics::PromoAction,
-               const CoreAccountId&,
-               TurnSyncOnHelper::SigninAbortedMode,
-               bool,
-               bool),
-              (override));
-
-  MOCK_METHOD(void,
-              ShowSigninUI,
-              (Profile*,
-               bool,
-               signin_metrics::AccessPoint,
-               signin_metrics::PromoAction,
-               const std::string&),
-              (override));
-  MOCK_METHOD(void,
-              ShowReauthUI,
-              (Profile*,
-               const std::string&,
-               bool,
-               signin_metrics::AccessPoint,
-               signin_metrics::PromoAction),
-              (override));
-  MOCK_METHOD(void,
-              ShowCrossDeviceSigninQrBubble,
-              (BrowserWindowInterface*, base::OnceClosure),
-              (override));
-};
 #endif
 
 // Returns a UserSelectableTypeSet with all types set.
@@ -566,7 +535,7 @@ TEST_F(PeopleHandlerTest, DisplayBasicLogin) {
   handler_->DisallowJavascript();
 
   EXPECT_CALL(mock_signin_ui_delegate,
-              ShowSigninUI(profile(), /*enable_sync=*/true,
+              ShowSigninUI(profile(), /*enable_history_sync=*/true,
                            signin_metrics::AccessPoint::kSettings,
                            signin_metrics::PromoAction::
                                PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT,
@@ -575,17 +544,9 @@ TEST_F(PeopleHandlerTest, DisplayBasicLogin) {
   args.Append(0);
   handler_->HandleStartSignin(args);
 
-  // The sign-in flow setup hands off control to the gaia login tab.
-  EXPECT_EQ(
-      nullptr,
-      LoginUIServiceFactory::GetForProfile(profile())->current_login_ui());
-
   ASSERT_FALSE(handler_->is_configuring_sync());
 
   handler_->CloseSyncSetup();
-  EXPECT_EQ(
-      nullptr,
-      LoginUIServiceFactory::GetForProfile(profile())->current_login_ui());
 }
 
 #endif  // !BUILDFLAG(IS_CHROMEOS)
@@ -608,16 +569,9 @@ TEST_F(PeopleHandlerTest, DisplayConfigureWithEngineDisabledAndCancel) {
   // spinner is showing.
   handler_->HandleShowSyncSetupUI(base::ListValue());
 
-  EXPECT_EQ(
-      handler_.get(),
-      LoginUIServiceFactory::GetForProfile(profile())->current_login_ui());
-
   EXPECT_EQ(0U, web_ui_.call_data().size());
 
   handler_->CloseSyncSetup();
-  EXPECT_EQ(
-      nullptr,
-      LoginUIServiceFactory::GetForProfile(profile())->current_login_ui());
 }
 
 // Verifies that the handler only sends the sync pref updates once the engine is
@@ -683,9 +637,6 @@ TEST_F(PeopleHandlerTest,
             syncer::SyncService::TransportState::ACTIVE);
 
   handler_->CloseSyncSetup();
-  EXPECT_EQ(
-      nullptr,
-      LoginUIServiceFactory::GetForProfile(profile())->current_login_ui());
 
   EXPECT_FALSE(sync_service_->IsSetupInProgress());
 }
@@ -991,10 +942,6 @@ TEST_F(PeopleHandlerTest, ShowSetupSyncForAllTypesIndividually) {
     // This should display the sync setup dialog (not login).
     handler_->HandleShowSyncSetupUI(base::ListValue());
 
-    // Close the config overlay.
-    LoginUIServiceFactory::GetForProfile(profile())->LoginUIClosed(
-        handler_.get());
-
     base::DictValue dictionary = ExpectSyncPrefsChanged();
     CheckConfigDataTypeArguments(dictionary, CHOOSE_WHAT_TO_SYNC, types);
 
@@ -1248,6 +1195,127 @@ TEST(PeopleHandlerDiceTest, StoredAccountsList) {
   EXPECT_EQ("a@gmail.com", *accounts[0].GetDict().FindString("email"));
   EXPECT_EQ("b@gmail.com", *accounts[1].GetDict().FindString("email"));
 }
+
+TEST(PeopleHandlerDiceTest, AccountPromoSubtitleWithAccountPreviewFollowup) {
+  base::test::ScopedFeatureList features;
+  features.InitWithFeatures(
+      /*enabled_features=*/{switches::kEnableAccountPreviewPreferredAccount,
+                            switches::
+                                kEnableAccountPreviewPreferredAccountFollowup},
+      /*disabled_features=*/{});
+
+  content::BrowserTaskEnvironment task_environment;
+
+  network::TestURLLoaderFactory url_loader_factory =
+      network::TestURLLoaderFactory();
+
+  TestingProfile::Builder builder;
+  builder.AddTestingFactories(
+      IdentityTestEnvironmentProfileAdaptor::
+          GetIdentityTestEnvironmentFactoriesWithAppendedFactories(
+              {TestingProfile::TestingFactory{
+                   ChromeSigninClientFactory::GetInstance(),
+                   base::BindRepeating(&BuildChromeSigninClientWithURLLoader,
+                                       &url_loader_factory)},
+               TestingProfile::TestingFactory{
+                   AccountPreviewDataServiceFactory::GetInstance(),
+                   base::BindRepeating([](content::BrowserContext* context)
+                                           -> std::unique_ptr<KeyedService> {
+                     return std::make_unique<
+                         signin::TestAccountPreviewDataService>();
+                   })}}));
+
+  std::unique_ptr<TestingProfile> profile = builder.Build();
+  ASSERT_EQ(true, AccountConsistencyModeManager::IsDiceEnabledForProfile(
+                      profile.get()));
+
+  auto identity_test_env_adaptor =
+      std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile.get());
+  auto* identity_test_env = identity_test_env_adaptor->identity_test_env();
+  identity_test_env->SetTestURLLoaderFactory(&url_loader_factory);
+
+  auto account_1 = identity_test_env->MakeAccountAvailable(
+      "a@gmail.com", {.set_cookie = true});
+  auto account_2 = identity_test_env->MakeAccountAvailable(
+      "b@gmail.com", {.set_cookie = true});
+
+  auto* data_service = static_cast<signin::TestAccountPreviewDataService*>(
+      AccountPreviewDataServiceFactory::GetForProfile(profile.get()));
+  ASSERT_TRUE(data_service);
+
+  signin::AccountPreviewDataService::AccountPreviewPreference pref;
+  pref.gaia_id = account_2.GetGaiaId();
+  pref.preferred_data_types = {
+      {.data_type = syncer::BOOKMARKS,
+       .quartile = signin::SyncDataQuartile::kMedianToQ3}};
+  data_service->SetPreferredAccountForSignin(pref);
+
+  std::optional<std::string> expected_subtitle =
+      signin::GetAccountPreviewSettingsPromoSubtitle(pref);
+  ASSERT_TRUE(expected_subtitle.has_value());
+  EXPECT_EQ(*expected_subtitle,
+            GetPeopleSignInPromptSecondaryWithAccountForTesting(profile.get()));
+}
+
+TEST(PeopleHandlerDiceTest,
+     AccountPromoSubtitleWithAccountPreviewFollowupDisabled) {
+  base::test::ScopedFeatureList features;
+  features.InitWithFeatures(
+      /*enabled_features=*/{switches::kEnableAccountPreviewPreferredAccount},
+      /*disabled_features=*/{
+          switches::kEnableAccountPreviewPreferredAccountFollowup});
+
+  content::BrowserTaskEnvironment task_environment;
+
+  network::TestURLLoaderFactory url_loader_factory =
+      network::TestURLLoaderFactory();
+
+  TestingProfile::Builder builder;
+  builder.AddTestingFactories(
+      IdentityTestEnvironmentProfileAdaptor::
+          GetIdentityTestEnvironmentFactoriesWithAppendedFactories(
+              {TestingProfile::TestingFactory{
+                   ChromeSigninClientFactory::GetInstance(),
+                   base::BindRepeating(&BuildChromeSigninClientWithURLLoader,
+                                       &url_loader_factory)},
+               TestingProfile::TestingFactory{
+                   AccountPreviewDataServiceFactory::GetInstance(),
+                   base::BindRepeating([](content::BrowserContext* context)
+                                           -> std::unique_ptr<KeyedService> {
+                     return std::make_unique<
+                         signin::TestAccountPreviewDataService>();
+                   })}}));
+
+  std::unique_ptr<TestingProfile> profile = builder.Build();
+  ASSERT_EQ(true, AccountConsistencyModeManager::IsDiceEnabledForProfile(
+                      profile.get()));
+
+  auto identity_test_env_adaptor =
+      std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile.get());
+  auto* identity_test_env = identity_test_env_adaptor->identity_test_env();
+  identity_test_env->SetTestURLLoaderFactory(&url_loader_factory);
+
+  auto account_1 = identity_test_env->MakeAccountAvailable(
+      "a@gmail.com", {.set_cookie = true});
+  auto account_2 = identity_test_env->MakeAccountAvailable(
+      "b@gmail.com", {.set_cookie = true});
+
+  auto* data_service = static_cast<signin::TestAccountPreviewDataService*>(
+      AccountPreviewDataServiceFactory::GetForProfile(profile.get()));
+  ASSERT_TRUE(data_service);
+
+  signin::AccountPreviewDataService::AccountPreviewPreference pref;
+  pref.gaia_id = account_2.GetGaiaId();
+  pref.preferred_data_types = {
+      {.data_type = syncer::BOOKMARKS,
+       .quartile = signin::SyncDataQuartile::kMedianToQ3}};
+  data_service->SetPreferredAccountForSignin(pref);
+
+  // But GetPeopleSignInPromptSecondaryWithAccountForTesting() should return the
+  // default string because the followup flag is disabled.
+  EXPECT_NE(*signin::GetAccountPreviewSettingsPromoSubtitle(pref),
+            GetPeopleSignInPromptSecondaryWithAccountForTesting(profile.get()));
+}
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -1324,6 +1392,22 @@ TEST_F(PeopleHandlerTest, ChromeSigninUserChoice) {
   histogram_tester.ExpectBucketCount(
       "Signin.Settings.ChromeSigninSettingModification",
       /*`ChromeSigninSettingModification::kToSignin`*/ 2, 1);
+}
+
+// The settings page may send an email whose account has since been removed.
+// The request must be ignored rather than stored under an empty `GaiaId`.
+TEST_F(PeopleHandlerTest, ChromeSigninUserChoiceIgnoredForUnknownAccount) {
+  base::HistogramTester histogram_tester;
+  CreatePeopleHandler();
+
+  SimulateHandleSetChromeSigninUserChoiceInfo(
+      "unknown@gmail.com", ChromeSigninUserChoice::kDoNotSignin);
+
+  EXPECT_EQ(SigninPrefs(*profile()->GetPrefs())
+                .GetChromeSigninInterceptionUserChoice(GaiaId()),
+            ChromeSigninUserChoice::kNoChoice);
+  histogram_tester.ExpectTotalCount(
+      "Signin.Settings.ChromeSigninSettingModification", 0);
 }
 
 TEST_F(PeopleHandlerTest,
@@ -1592,7 +1676,7 @@ TEST_F(PeopleHandlerTest, HandleStartSigninManaged) {
   // This should not crash.
   EXPECT_CALL(
       mock_signin_ui_delegate,
-      ShowReauthUI(profile(), kManagedEmail, /*enable_sync=*/false,
+      ShowReauthUI(profile(), kManagedEmail, /*enable_history_sync=*/false,
                    signin_metrics::AccessPoint::kSettings,
                    signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO));
   base::ListValue args;
@@ -1838,10 +1922,6 @@ class PeopleHandlerWithReplaceSyncWithSigninUI : public PeopleHandlerTest {
     SigninUserWithoutSyncFeature();
     CreatePeopleHandler();
   }
-
- private:
-  base::test::ScopedFeatureList features_{
-      syncer::kReplaceSyncPromosWithSignInPromos};
 };
 
 // Walks through each user selectable type, and tries to activate account
@@ -1877,9 +1957,6 @@ TEST_F(PeopleHandlerWithReplaceSyncWithSigninUI, HandleShowAccountSettingsUI) {
   handler_->HandleShowAccountSettingsUI(base::ListValue());
 
   EXPECT_FALSE(handler_->sync_blocker_);
-  EXPECT_EQ(
-      handler_.get(),
-      LoginUIServiceFactory::GetForProfile(profile())->current_login_ui());
   ExpectSyncPrefsChanged();
 }
 

@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/ash/network/tether_notification_presenter.h"
 
 #include <algorithm>
+#include <memory>
 #include <string>
 
 #include "ash/constants/notifier_catalogs.h"
@@ -15,10 +16,8 @@
 #include "ash/webui/settings/public/constants/routes.mojom.h"
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
-#include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/multidevice/logging/logging.h"
 #include "chromeos/ash/components/network/network_connect.h"
@@ -79,16 +78,9 @@ class SettingsUiDelegateImpl
   SettingsUiDelegateImpl() = default;
   ~SettingsUiDelegateImpl() override = default;
 
-  void ShowSettingsSubPageForProfile(Profile* profile,
-                                     const std::string& sub_page) override {
-    auto* user =
-        ash::BrowserContextHelper::Get()->GetUserByBrowserContext(profile);
-    if (!user) {
-      // TODO(crbug.com/447287122): Revisit here to see if there's a case that
-      // `profile` is non user profile.
-      return;
-    }
-    ash::SettingsAppManager::Get()->Open(*user, {.sub_page = sub_page});
+  void ShowSettingsSubPage(const user_manager::User& user,
+                           const std::string& sub_page) override {
+    ash::SettingsAppManager::Get()->Open(user, {.sub_page = sub_page});
   }
 };
 
@@ -129,11 +121,11 @@ constexpr const char* const
         TetherNotificationPresenter::kSetupRequiredNotificationId};
 
 TetherNotificationPresenter::TetherNotificationPresenter(
-    Profile* profile,
+    const user_manager::User* user,
     NetworkConnect* network_connect)
-    : profile_(profile),
+    : user_(CHECK_DEREF(user)),
       network_connect_(network_connect),
-      settings_ui_delegate_(base::WrapUnique(new SettingsUiDelegateImpl())) {}
+      settings_ui_delegate_(std::make_unique<SettingsUiDelegateImpl>()) {}
 
 TetherNotificationPresenter::~TetherNotificationPresenter() = default;
 
@@ -241,7 +233,7 @@ void TetherNotificationPresenter::NotifyConnectionToHostFailed() {
           IDS_TETHER_NOTIFICATION_CONNECTION_FAILED_TITLE),
       l10n_util::GetStringUTF16(
           IDS_TETHER_NOTIFICATION_CONNECTION_FAILED_MESSAGE),
-      std::u16string() /* display_source */, GURL() /* origin_url */,
+      std::u16string() /* display_source */,
       message_center::NotifierId(
           message_center::NotifierType::SYSTEM_COMPONENT, kNotifierTether,
           NotificationCatalogName::kTetherConnectionError),
@@ -261,9 +253,10 @@ void TetherNotificationPresenter::OnNotificationClicked(
     const std::string& notification_id,
     std::optional<int> button_index) {
   if (button_index) {
-    DCHECK_EQ(kPotentialHotspotNotificationId, notification_id);
-    DCHECK_EQ(0, *button_index);
-    DCHECK(hotspot_nearby_device_id_);
+    CHECK_EQ(kPotentialHotspotNotificationId, notification_id,
+             base::NotFatalUntil::M162);
+    CHECK_EQ(0, *button_index, base::NotFatalUntil::M162);
+    CHECK(hotspot_nearby_device_id_, base::NotFatalUntil::M162);
     UMA_HISTOGRAM_ENUMERATION(
         "InstantTethering.NotificationInteractionType",
         TetherNotificationPresenter::NOTIFICATION_BUTTON_TAPPED_HOST_NEARBY,
@@ -355,12 +348,11 @@ void TetherNotificationPresenter::ShowNotification(
   }
 
   showing_notification_id_ = notification->id();
-  const user_manager::User& user = CHECK_DEREF(
-      BrowserContextHelper::Get()->GetUserByBrowserContext(profile_));
   notification = std::make_unique<message_center::Notification>(
-      CreateUserScopedNotificationId(notification->id(), user.username_hash()),
+      CreateUserScopedNotificationId(notification->id(),
+                                     user_->username_hash()),
       *notification);
-  notification->set_profile_id(user.GetAccountId().GetUserEmail());
+  notification->set_profile_id(user_->GetAccountId().GetUserEmail());
   message_center::MessageCenter::Get()->AddNotification(
       std::move(notification));
 }
@@ -372,8 +364,7 @@ void TetherNotificationPresenter::OpenSettingsAndRemoveNotification(
                   << " was clicked. "
                   << "Opening settings subpage: " << settings_subpage;
 
-  settings_ui_delegate_->ShowSettingsSubPageForProfile(profile_,
-                                                       settings_subpage);
+  settings_ui_delegate_->ShowSettingsSubPage(*user_, settings_subpage);
   RemoveNotificationIfVisible(notification_id);
 }
 
@@ -391,15 +382,13 @@ void TetherNotificationPresenter::RemoveNotificationIfVisible(
     return;
   }
 
-  const user_manager::User& user = CHECK_DEREF(
-      BrowserContextHelper::Get()->GetUserByBrowserContext(profile_));
   message_center->RemoveNotification(
-      CreateUserScopedNotificationId(notification_id, user.username_hash()),
+      CreateUserScopedNotificationId(notification_id, user_->username_hash()),
       /*by_user=*/false);
 }
 
 bool TetherNotificationPresenter::AreNotificationsEnabled() {
-  return profile_->GetPrefs()->GetBoolean(prefs::kNotificationsEnabled);
+  return user_->GetProfilePrefs()->GetBoolean(prefs::kNotificationsEnabled);
 }
 
 }  // namespace ash::tether

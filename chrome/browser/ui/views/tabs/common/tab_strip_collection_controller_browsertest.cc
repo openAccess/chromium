@@ -4,6 +4,10 @@
 
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
 
+#include <numeric>
+#include <vector>
+
+#include "base/test/metrics/user_action_tester.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/features.h"
@@ -19,6 +23,7 @@
 #include "chrome/browser/ui/views/tabs/common/tab_group_header_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
+#include "chrome/browser/ui/views/tabs/groups/tab_group_editor_bubble_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/fade_label_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_bubble_view.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
@@ -39,6 +44,7 @@
 #include "ui/display/screen.h"
 #include "ui/gfx/animation/animation_test_api.h"
 #include "ui/menus/simple_menu_model.h"
+#include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/view_utils.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -156,6 +162,55 @@ IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerBrowserTest,
   // Verify freezing votes are released.
   EXPECT_FALSE(tab_view0->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
   EXPECT_FALSE(tab_view1->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
+}
+
+IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerBrowserTest,
+                       ExtendSelectionToExpandsCollapsedGroup) {
+  base::UserActionTester user_action_tester;
+  AppendTab();
+  AppendTab();
+  AppendTab();
+
+  TabStripModel* model = browser()->GetTabStripModel();
+  // [Tab 0 (ungrouped), Group {Tab 1, Tab 2}, Tab 3 (ungrouped)]
+  const tab_groups::TabGroupId group_id = model->AddToNewGroup({1, 2});
+  const TabGroup* group = model->group_model()->GetTabGroup(group_id);
+  ASSERT_NE(group, nullptr);
+
+  model->ActivateTabAt(0);
+  vertical_tab_strip_controller()->ToggleTabGroupCollapsedState(
+      group, ToggleTabGroupCollapsedStateOrigin::kMouse);
+  ASSERT_TRUE(vertical_tab_strip_controller()->IsGroupCollapsed(group_id));
+
+  vertical_tab_strip_controller()->ExtendSelectionTo(model->GetTabAtIndex(3));
+  EXPECT_FALSE(vertical_tab_strip_controller()->IsGroupCollapsed(group_id));
+  EXPECT_EQ(0, user_action_tester.GetActionCount(
+                   "TabGroups_TabGroupHeader_Expanded"));
+}
+
+IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerBrowserTest,
+                       AddSelectionFromAnchorToExpandsCollapsedGroup) {
+  base::UserActionTester user_action_tester;
+  AppendTab();
+  AppendTab();
+  AppendTab();
+
+  TabStripModel* model = browser()->GetTabStripModel();
+  // [Tab 0 (ungrouped), Group {Tab 1, Tab 2}, Tab 3 (ungrouped)]
+  const tab_groups::TabGroupId group_id = model->AddToNewGroup({1, 2});
+  const TabGroup* group = model->group_model()->GetTabGroup(group_id);
+  ASSERT_NE(group, nullptr);
+
+  model->ActivateTabAt(0);
+  vertical_tab_strip_controller()->ToggleTabGroupCollapsedState(
+      group, ToggleTabGroupCollapsedStateOrigin::kMouse);
+  ASSERT_TRUE(vertical_tab_strip_controller()->IsGroupCollapsed(group_id));
+
+  vertical_tab_strip_controller()->AddSelectionFromAnchorTo(
+      model->GetTabAtIndex(3));
+  EXPECT_FALSE(vertical_tab_strip_controller()->IsGroupCollapsed(group_id));
+  EXPECT_EQ(0, user_action_tester.GetActionCount(
+                   "TabGroups_TabGroupHeader_Expanded"));
 }
 
 IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerBrowserTest, ShiftTabNext) {
@@ -282,7 +337,6 @@ class TabGroupHoverCardTest
       override {
     auto enabled = VerticalTabsBrowserTestMixin<
         InProcessBrowserTest>::GetEnabledFeatures();
-    enabled.push_back({features::kTabGroupHoverCards, {}});
     enabled.push_back({tabs::kTabStripUnification, {}});
     return enabled;
   }
@@ -375,7 +429,10 @@ IN_PROC_BROWSER_TEST_P(TabGroupHoverCardTest,
   for (size_t i = 0; i < n_tabs; ++i) {
     AppendTab();
   }
-  chrome::GroupAllUngroupedTabs(browser());
+  TabStripModel* model = browser()->GetTabStripModel();
+  std::vector<int> indices(model->count());
+  std::iota(indices.begin(), indices.end(), 0);
+  model->AddToNewGroup(indices);
 
   // Get the TabGroupHeaderView.
   TabCollectionNode* group_node =
@@ -394,12 +451,60 @@ IN_PROC_BROWSER_TEST_P(TabGroupHoverCardTest,
   ASSERT_TRUE(bubble);
 
   // There should be 2 excess tabs. Note that the group has `n_tabs + 1` tabs
-  // because of the initial tab made in the browser, and the call to
-  // `GroupAllUngroupedTabs`.
+  // because of the initial tab made in the browser.
   std::u16string expected_footer = l10n_util::GetStringFUTF16(
       IDS_TAB_GROUPS_HOVER_CARD_FOOTER, base::NumberToString16(2));
   EXPECT_EQ(bubble->GetGroupFooterViewForTesting()->GetText(), expected_footer);
   EXPECT_TRUE(bubble->GetGroupFooterViewForTesting()->GetVisible());
+}
+
+IN_PROC_BROWSER_TEST_P(TabGroupHoverCardTest,
+                       HoverCardNotShownWhenEditorBubbleOpen) {
+  AppendTab();
+  TabStripModel* model = browser()->GetTabStripModel();
+  tab_groups::TabGroupId group_id = model->AddToNewGroup({1});
+  RunScheduledLayouts();
+
+  TabCollectionNode* group_node =
+      unpinned_collection_node()->GetChildNodeOfType(
+          TabCollectionNode::Type::GROUP);
+  ASSERT_TRUE(group_node);
+  TabGroupView* group_view =
+      views::AsViewClass<TabGroupView>(group_node->view());
+  TabGroupHeaderView* header_view = group_view->group_header();
+  TabView* tab_view =
+      views::AsViewClass<TabView>(group_node->children()[0]->view());
+  ASSERT_TRUE(tab_view);
+
+  // Trigger the hover card before opening the editor bubble.
+  hover_card_controller()->UpdateHoverCard(
+      header_view, TabSlotController::HoverCardUpdateType::kHover);
+  EXPECT_TRUE(hover_card_controller()->IsHoverCardVisible());
+
+  // Opening the editor bubble should hide the hover card and prevent new hover
+  // cards from showing for both group headers and tabs.
+  model->OpenTabGroupEditor(group_id);
+  EXPECT_FALSE(hover_card_controller()->IsHoverCardVisible());
+
+  hover_card_controller()->UpdateHoverCard(
+      header_view, TabSlotController::HoverCardUpdateType::kHover);
+  EXPECT_FALSE(hover_card_controller()->IsHoverCardVisible());
+
+  hover_card_controller()->UpdateHoverCard(
+      tab_view, TabSlotController::HoverCardUpdateType::kHover);
+  EXPECT_FALSE(hover_card_controller()->IsHoverCardVisible());
+
+  // Closing the editor bubble should allow hover cards to be shown again.
+  auto bubble_views =
+      views::ElementTrackerViews::GetInstance()
+          ->GetAllMatchingViewsInAnyContext(
+              TabGroupEditorBubbleView::kTabGroupEditorBubbleViewId);
+  ASSERT_FALSE(bubble_views.empty());
+  bubble_views[0]->GetWidget()->Close();
+
+  hover_card_controller()->UpdateHoverCard(
+      header_view, TabSlotController::HoverCardUpdateType::kHover);
+  EXPECT_TRUE(hover_card_controller()->IsHoverCardVisible());
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -553,9 +658,69 @@ IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerBrowserTest,
   EXPECT_EQ(tab_model->GetTabAtIndex(2), tab0);
   EXPECT_EQ(tab_model->GetTabAtIndex(3), tab3);
 
-  // Verify that tab 0 is not in any group.
+  // Verify that tab 0 is not in any group and the group remains collapsed.
   EXPECT_FALSE(tab0->GetGroup().has_value());
+  EXPECT_TRUE(vertical_tab_strip_controller()->IsGroupCollapsed(group_id));
 }
+
+// On macOS, accessibility announcements are dispatched directly through native
+// Cocoa VoiceOver APIs (NSAccessibilityAnnouncementRequestedNotification)
+// rather than Views' AnnounceTextView.
+#if !BUILDFLAG(IS_MAC)
+IN_PROC_BROWSER_TEST_P(TabStripCollectionControllerBrowserTest,
+                       ShiftTabRelativeAnnouncesDirection) {
+  AppendTab();
+  TabStripModel* model = browser()->GetTabStripModel();
+  ASSERT_EQ(2, model->count());
+
+  tabs::TabInterface* tab0 = model->GetTabAtIndex(0);
+  tabs::TabInterface* tab1 = model->GetTabAtIndex(1);
+
+  auto* base_region = views::AsViewClass<BaseTabStripRegionView>(
+      BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view());
+  ASSERT_TRUE(base_region);
+  TabStripCollectionController* controller =
+      base_region->GetTabStripCollectionController();
+  ASSERT_TRUE(controller);
+
+  auto* root_view = static_cast<views::internal::RootView*>(
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->GetWidget()
+          ->GetRootView());
+
+  controller->ShiftTabNext(tab0);
+  EXPECT_EQ(model->GetTabAtIndex(0), tab1);
+  EXPECT_EQ(model->GetTabAtIndex(1), tab0);
+  {
+    ui::AXNodeData node_data;
+    root_view->GetAnnounceViewForTesting()
+        ->GetViewAccessibility()
+        .GetAccessibleNodeData(&node_data);
+    EXPECT_EQ(
+        l10n_util::GetStringUTF16(orientation() ==
+                                          TabStripOrientation::kHorizontal
+                                      ? IDS_TAB_AX_ANNOUNCE_MOVED_RIGHT
+                                      : IDS_TAB_AX_ANNOUNCE_MOVED_DOWN),
+        node_data.GetString16Attribute(ax::mojom::StringAttribute::kName));
+  }
+
+  controller->ShiftTabPrevious(tab0);
+  EXPECT_EQ(model->GetTabAtIndex(0), tab0);
+  EXPECT_EQ(model->GetTabAtIndex(1), tab1);
+  {
+    ui::AXNodeData node_data;
+    root_view->GetAnnounceViewForTesting()
+        ->GetViewAccessibility()
+        .GetAccessibleNodeData(&node_data);
+    EXPECT_EQ(
+        l10n_util::GetStringUTF16(orientation() ==
+                                          TabStripOrientation::kHorizontal
+                                      ? IDS_TAB_AX_ANNOUNCE_MOVED_LEFT
+                                      : IDS_TAB_AX_ANNOUNCE_MOVED_UP),
+        node_data.GetString16Attribute(ax::mojom::StringAttribute::kName));
+  }
+}
+#endif  // !BUILDFLAG(IS_MAC)
 
 class TabStripControllerFocusingVisibilityBrowserTest
     : public VerticalTabsBrowserTestMixin<InProcessBrowserTest>,
@@ -619,7 +784,7 @@ IN_PROC_BROWSER_TEST_P(TabStripControllerFocusingVisibilityBrowserTest,
   EXPECT_TRUE(unpinned_tab_view->GetVisible());
 
   // Focus the group.
-  model->SetFocusedGroup(group_id);
+  model->EnterFocusMode(group_id);
   RunScheduledLayouts();
 
   // Verify pinned tab remains visible and unfocused tab is hidden.
@@ -628,7 +793,7 @@ IN_PROC_BROWSER_TEST_P(TabStripControllerFocusingVisibilityBrowserTest,
   EXPECT_FALSE(unpinned_tab_view->GetVisible());
 
   // Unfocus the group.
-  model->SetFocusedGroup(std::nullopt);
+  model->ExitFocusMode();
   RunScheduledLayouts();
 
   // Verify all are restored.
@@ -660,7 +825,7 @@ IN_PROC_BROWSER_TEST_P(TabStripControllerFocusingVisibilityBrowserTest,
   ASSERT_TRUE(model->IsTabSelected(0));
 
   // Focus the group.
-  model->SetFocusedGroup(group_id);
+  model->EnterFocusMode(group_id);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -739,7 +904,7 @@ IN_PROC_BROWSER_TEST_P(TabStripControllerFocusFreezingBrowserTest,
       GetTabViewAt(3)->HasFreezingVote(FreezingVoteReason::kFocusedGroup));
 
   // Focus on group1. Unpinned tabs outside group1 should be frozen.
-  model->SetFocusedGroup(group1);
+  model->EnterFocusMode(group1);
   EXPECT_FALSE(
       GetTabViewAt(0)->HasFreezingVote(FreezingVoteReason::kFocusedGroup));
   EXPECT_FALSE(
@@ -750,7 +915,7 @@ IN_PROC_BROWSER_TEST_P(TabStripControllerFocusFreezingBrowserTest,
       GetTabViewAt(3)->HasFreezingVote(FreezingVoteReason::kFocusedGroup));
 
   // Unfocus group1. All tabs should be unfrozen.
-  model->SetFocusedGroup(std::nullopt);
+  model->ExitFocusMode();
   EXPECT_FALSE(
       GetTabViewAt(0)->HasFreezingVote(FreezingVoteReason::kFocusedGroup));
   EXPECT_FALSE(
@@ -773,7 +938,7 @@ IN_PROC_BROWSER_TEST_P(TabStripControllerFocusFreezingBrowserTest,
   const tab_groups::TabGroupId group1 = model->AddToNewGroup({1, 2});
 
   // Focus on group1.
-  model->SetFocusedGroup(group1);
+  model->EnterFocusMode(group1);
   // Pinned tab (0) and focused group tabs (1, 2) should NOT be frozen.
   EXPECT_FALSE(
       GetTabViewAt(0)->HasFreezingVote(FreezingVoteReason::kFocusedGroup));
@@ -810,7 +975,7 @@ IN_PROC_BROWSER_TEST_P(TabStripControllerFocusFreezingBrowserTest,
   const tab_groups::TabGroupId group2 = model->AddToNewGroup({2, 3});
 
   // Focus group1.
-  model->SetFocusedGroup(group1);
+  model->EnterFocusMode(group1);
   EXPECT_FALSE(
       GetTabViewAt(0)->HasFreezingVote(FreezingVoteReason::kFocusedGroup));
   EXPECT_FALSE(
@@ -821,7 +986,7 @@ IN_PROC_BROWSER_TEST_P(TabStripControllerFocusFreezingBrowserTest,
       GetTabViewAt(3)->HasFreezingVote(FreezingVoteReason::kFocusedGroup));
 
   // Switch focus to group2.
-  model->SetFocusedGroup(group2);
+  model->EnterFocusMode(group2);
   EXPECT_TRUE(
       GetTabViewAt(0)->HasFreezingVote(FreezingVoteReason::kFocusedGroup));
   EXPECT_TRUE(
@@ -861,7 +1026,7 @@ IN_PROC_BROWSER_TEST_P(TabStripControllerFocusFreezingBrowserTest,
       GetTabViewAt(3)->HasFreezingVote(FreezingVoteReason::kFocusedGroup));
 
   // Focus group1 while group2 is collapsed.
-  model->SetFocusedGroup(group1);
+  model->EnterFocusMode(group1);
   EXPECT_FALSE(GetTabViewAt(0)->HasFreezingVote());
   EXPECT_FALSE(GetTabViewAt(1)->HasFreezingVote());
   // Tabs in group2 now have BOTH collapsed and unfocused freezing votes.
@@ -878,7 +1043,7 @@ IN_PROC_BROWSER_TEST_P(TabStripControllerFocusFreezingBrowserTest,
 
   // Unfocus group1. Unfocused votes should be released, but collapsed votes
   // remain.
-  model->SetFocusedGroup(std::nullopt);
+  model->ExitFocusMode();
   EXPECT_TRUE(
       GetTabViewAt(2)->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
   EXPECT_FALSE(

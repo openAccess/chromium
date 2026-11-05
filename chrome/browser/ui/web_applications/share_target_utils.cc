@@ -24,6 +24,7 @@
 #include "storage/browser/file_system/file_system_url.h"
 #include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
@@ -70,6 +71,13 @@ NavigateParams NavigateParamsForShareTarget(
     const std::vector<base::FilePath>& launch_files) {
   NavigateParams nav_params(browser, share_target.action,
                             ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
+  // The share target action is always within the app's scope, so the app is
+  // the initiator of this navigation. Attributing the navigation to it makes
+  // the network stack evaluate SameSite as it would for a form submission by
+  // the app; an unattributed navigation would instead be treated like a
+  // user-typed URL and attach SameSite=Strict/Lax cookies even after a
+  // server-side redirect to a cross-site URL.
+  nav_params.initiator_origin = url::Origin::Create(share_target.action);
 
 #if BUILDFLAG(IS_CHROMEOS)
   std::vector<std::string> names;
@@ -80,7 +88,8 @@ NavigateParams NavigateParamsForShareTarget(
 
   if (intent.mime_type.has_value() && !intent.files.empty()) {
     if (!launch_files.empty()) {
-      DCHECK_EQ(launch_files.size(), intent.files.size());
+      CHECK_EQ(launch_files.size(), intent.files.size(),
+               base::NotFatalUntil::M162);
     }
 
     // Files for Web Share intents are created by the browser in
@@ -147,7 +156,7 @@ NavigateParams NavigateParamsForShareTarget(
   std::vector<SharedField> shared_fields =
       ExtractSharedFields(share_target, intent);
   for (const auto& shared_field : shared_fields) {
-    DCHECK(!shared_field.value.empty());
+    CHECK(!shared_field.value.empty(), base::NotFatalUntil::M162);
     names.push_back(shared_field.name);
     values.push_back(shared_field.value);
     is_value_file_uris.push_back(false);

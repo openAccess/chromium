@@ -54,7 +54,14 @@ void ChromeCrashReporterClient::InitializeCrashReportingForProcess() {
 
     std::wstring user_data_dir;
     if (process_type.empty()) {
-      install_static::GetUserDataDirectory(&user_data_dir, nullptr);
+      install_static::GetUserDataDirectory(
+          &user_data_dir, /*invalid_user_data_directory=*/nullptr,
+          /*policy_set=*/nullptr);
+
+      // Initialize the shared memory that contains the `SystemProfile` only in
+      // the browser process. This must happen before Crashpad initialization
+      // since Crashpad inherits a handle to the shared memory.
+      metrics::SystemProfileUserStream::Get().Initialize();
     }
 
     // TODO(wfh): Add a DCHECK for success. See https://crbug.com/40226723.
@@ -94,9 +101,10 @@ void ChromeCrashReporterClient::GetProductInfo(ProductInfo* product_info) {
   CHECK(::GetModuleFileName(nullptr, exe_file, std::size(exe_file)));
   GetProductNameAndVersion(exe_file, &product_name, &version, &special_build,
                            &channel_name);
-  product_info->product_name = base::WideToUTF8(product_name);
-  product_info->version = base::WideToUTF8(version);
-  product_info->channel = base::WideToUTF8(channel_name);
+
+  *product_info =
+      ProductInfo(base::WideToUTF8(product_name), base::WideToUTF8(version),
+                  base::WideToUTF8(channel_name));
 }
 
 bool ChromeCrashReporterClient::GetShouldDumpLargerDumps() {
@@ -136,7 +144,9 @@ bool ChromeCrashReporterClient::GetCrashMetricsLocation(
   if (!GetCollectStatsConsent()) {
     return false;
   }
-  install_static::GetUserDataDirectory(metrics_dir, nullptr);
+  install_static::GetUserDataDirectory(metrics_dir,
+                                       /*invalid_user_data_directory=*/nullptr,
+                                       /*policy_set=*/nullptr);
   return !metrics_dir->empty();
 }
 
@@ -190,19 +200,11 @@ std::vector<base::ReadOnlySharedMemoryRegion>
 ChromeCrashReporterClient::GetUserStreamSharedMemoryRegions() {
   std::vector<base::ReadOnlySharedMemoryRegion> streams;
 
-  // Early-initialize the singleton before Crashpad spawns.
-  // This guarantees the memory region exists for Crashpad to inherit.
-  metrics::SystemProfileUserStream& stream =
-      metrics::SystemProfileUserStream::Get();
-  stream.Initialize();
-
   base::ReadOnlySharedMemoryRegion region =
-      stream.DuplicateSharedMemoryRegion();
-  // An OOM or initial allocation failure inside Initialize() would have
-  // already triggered a CHECK and crashed the browser. However,
-  // DuplicateSharedMemoryRegion() can still fail if the OS exhausts its
-  // handles. In that case, gracefully degrade by dropping the telemetry stream
-  // rather than causing an unnecessary crash.
+      metrics::SystemProfileUserStream::Get().DuplicateSharedMemoryRegion();
+  // `DuplicateSharedMemoryRegion()` can fail if the OS exhausts its handles.
+  // In that case, gracefully degrade by dropping the user stream rather than
+  // causing an unnecessary crash.
   if (region.IsValid()) {
     streams.push_back(std::move(region));
   }

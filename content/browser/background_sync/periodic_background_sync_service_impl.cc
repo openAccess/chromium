@@ -10,24 +10,24 @@
 #include "content/browser/background_sync/background_sync_context_impl.h"
 #include "content/browser/service_worker/service_worker_context_wrapper.h"
 #include "content/public/browser/browser_thread.h"
-#include "url/origin.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 
 namespace content {
 
 PeriodicBackgroundSyncServiceImpl::PeriodicBackgroundSyncServiceImpl(
     BackgroundSyncContextImpl* background_sync_context,
-    const url::Origin& origin,
+    const blink::StorageKey& storage_key,
     RenderProcessHost* render_process_host,
     mojo::PendingReceiver<blink::mojom::PeriodicBackgroundSyncService> receiver)
     : background_sync_context_(background_sync_context),
-      origin_(origin),
+      storage_key_(storage_key),
       receiver_(this, std::move(receiver)) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(background_sync_context_);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  CHECK(background_sync_context_, base::NotFatalUntil::M159);
 
   registration_helper_ = std::make_unique<BackgroundSyncRegistrationHelper>(
       background_sync_context_, render_process_host);
-  DCHECK(registration_helper_);
+  CHECK(registration_helper_, base::NotFatalUntil::M159);
 
   receiver_.set_disconnect_handler(base::BindOnce(
       &PeriodicBackgroundSyncServiceImpl::OnMojoDisconnect,
@@ -35,7 +35,7 @@ PeriodicBackgroundSyncServiceImpl::PeriodicBackgroundSyncServiceImpl(
 }
 
 PeriodicBackgroundSyncServiceImpl::~PeriodicBackgroundSyncServiceImpl() {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 }
 
 void PeriodicBackgroundSyncServiceImpl::OnMojoDisconnect() {
@@ -47,8 +47,8 @@ void PeriodicBackgroundSyncServiceImpl::Register(
     blink::mojom::SyncRegistrationOptionsPtr options,
     int64_t sw_registration_id,
     RegisterCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  DCHECK(options);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+  CHECK(options, base::NotFatalUntil::M159);
 
   if (options->min_interval < 0) {
     registration_helper_->NotifyInvalidOptionsProvided(std::move(callback));
@@ -56,7 +56,7 @@ void PeriodicBackgroundSyncServiceImpl::Register(
   }
 
   if (!registration_helper_->ValidateSWRegistrationID(sw_registration_id,
-                                                      origin_)) {
+                                                      storage_key_)) {
     std::move(callback).Run(blink::mojom::BackgroundSyncError::STORAGE,
                             /* options= */ nullptr);
     return;
@@ -70,17 +70,17 @@ void PeriodicBackgroundSyncServiceImpl::Unregister(
     int64_t sw_registration_id,
     const std::string& tag,
     UnregisterCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   if (!registration_helper_->ValidateSWRegistrationID(sw_registration_id,
-                                                      origin_)) {
+                                                      storage_key_)) {
     std::move(callback).Run(blink::mojom::BackgroundSyncError::STORAGE);
     return;
   }
 
   BackgroundSyncManager* background_sync_manager =
       background_sync_context_->background_sync_manager();
-  DCHECK(background_sync_manager);
+  CHECK(background_sync_manager, base::NotFatalUntil::M159);
   background_sync_manager->UnregisterPeriodicSync(
       sw_registration_id, tag,
       base::BindOnce(&PeriodicBackgroundSyncServiceImpl::OnUnregisterResult,
@@ -90,10 +90,10 @@ void PeriodicBackgroundSyncServiceImpl::Unregister(
 void PeriodicBackgroundSyncServiceImpl::GetRegistrations(
     int64_t sw_registration_id,
     GetRegistrationsCallback callback) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   if (!registration_helper_->ValidateSWRegistrationID(sw_registration_id,
-                                                      origin_)) {
+                                                      storage_key_)) {
     std::move(callback).Run(blink::mojom::BackgroundSyncError::STORAGE,
                             /* registrations= */ {});
     return;
@@ -101,7 +101,7 @@ void PeriodicBackgroundSyncServiceImpl::GetRegistrations(
 
   BackgroundSyncManager* background_sync_manager =
       background_sync_context_->background_sync_manager();
-  DCHECK(background_sync_manager);
+  CHECK(background_sync_manager, base::NotFatalUntil::M159);
 
   // BackgroundSyncContextImpl owns both PeriodicBackgroundSyncServiceImpl and
   // BackgroundSyncManager. The manager will be destroyed after the service,
@@ -116,7 +116,7 @@ void PeriodicBackgroundSyncServiceImpl::GetRegistrations(
 void PeriodicBackgroundSyncServiceImpl::OnUnregisterResult(
     UnregisterCallback callback,
     BackgroundSyncStatus status) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
 
   std::move(callback).Run(
       static_cast<blink::mojom::BackgroundSyncError>(status));

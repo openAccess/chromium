@@ -18,7 +18,6 @@ source_set("app_icon") {
     ":util",
     "//base",
     "//chrome/app/theme:chrome_unscaled_resources",
-    "//chrome/browser/apps:icon_standardizer",
     "//chrome/browser/favicon",
     "//chrome/browser/icon_transcoder",
     "//chrome/browser/profiles",
@@ -33,6 +32,7 @@ source_set("app_icon") {
     "//components/services/app_service",
     "//components/webapps/common",
     "//content/public/browser",
+    "//services/data_decoder/public/cpp",
   ]
 
   if (enable_extensions) {
@@ -43,7 +43,7 @@ source_set("app_icon") {
     ]
   }
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
+  public_deps = []
 
   if (is_chromeos) {
     sources += [
@@ -110,13 +110,14 @@ source_set("unit_tests") {
     "//base/test:test_support",
     "//cc:test_support",
     "//chrome/app/theme:chrome_unscaled_resources_grit",
-    "//chrome/browser/apps:icon_standardizer",
     "//chrome/browser/apps/app_service",
     "//chrome/browser/resources:component_extension_resources_grit",
     "//chrome/browser/web_applications",
     "//chrome/browser/web_applications:web_applications_test_support",
     "//chrome/common:non_code_constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//chrome/test/base:testing_browser_process",
     "//components/app_constants",
     "//components/services/app_service",
     "//content/test:test_support",
@@ -169,7 +170,6 @@ source_set("test_support") {
 
   deps = [
     ":app_icon",
-    "//chrome/browser/apps:icon_standardizer",
     "//chrome/browser/apps/app_service/publishers",
     "//chrome/test:test_support",
     "//components/services/app_service",

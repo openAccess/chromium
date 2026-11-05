@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "base/containers/queue.h"
+#include "base/containers/span.h"
 #include "base/containers/stack.h"
 #include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
@@ -76,8 +77,10 @@ class AX_EXPORT AXNode final {
     using pointer = NodeType*;
     using reference = NodeType&;
 
+    ChildIteratorBase() = default;
     ChildIteratorBase(const NodeType* parent, NodeType* child);
-    ChildIteratorBase(const ChildIteratorBase& it);
+    ChildIteratorBase(const ChildIteratorBase& it) = default;
+    ChildIteratorBase& operator=(const ChildIteratorBase& it) = default;
     ~ChildIteratorBase() = default;
     friend bool operator==(const ChildIteratorBase& lhs,
                            const ChildIteratorBase& rhs) {
@@ -90,8 +93,8 @@ class AX_EXPORT AXNode final {
     NodeType* operator->() const;
 
    protected:
-    raw_ptr<const NodeType> parent_;
-    raw_ptr<NodeType> child_;
+    raw_ptr<const NodeType> parent_ = nullptr;
+    raw_ptr<NodeType> child_ = nullptr;
     raw_ptr<NodeType> first_child_{nullptr};
     raw_ptr<NodeType> last_child_{nullptr};
   };
@@ -157,11 +160,8 @@ class AX_EXPORT AXNode final {
   AXNode* GetLastUnignoredChildCrossingTreeBoundary() const;
 
   AXNode* GetDeepestFirstDescendant() const;
-  AXNode* GetDeepestFirstDescendantCrossingTreeBoundary() const;
   AXNode* GetDeepestFirstUnignoredDescendant() const;
-  AXNode* GetDeepestFirstUnignoredDescendantCrossingTreeBoundary() const;
   AXNode* GetDeepestLastDescendant() const;
-  AXNode* GetDeepestLastDescendantCrossingTreeBoundary() const;
   AXNode* GetDeepestLastUnignoredDescendant() const;
   AXNode* GetDeepestLastUnignoredDescendantCrossingTreeBoundary() const;
 
@@ -253,6 +253,11 @@ class AX_EXPORT AXNode final {
   // kStaticText, kInlineTextBox and kListMarker (for Legacy Layout). Does not
   // include any text field roles.
   bool IsText() const;
+
+  // Returns the text node that holds this node's text-level attributes, or
+  // nullptr for non-text nodes. Inline text boxes use their text parent.
+  // Ignored nodes are not skipped.
+  const AXNode* GetTextAnchor() const;
 
   // Returns true if the node has any line break related roles or is the child
   // of a node with line break related roles.
@@ -406,13 +411,13 @@ class AX_EXPORT AXNode final {
   }
   bool HasIntListAttribute(ax::mojom::IntListAttribute attribute) const;
   bool CanComputeIntListAttribute(ax::mojom::IntListAttribute attribute) const;
-  const std::vector<int32_t>& GetIntListAttribute(
+  base::span<const int32_t> GetIntListAttribute(
       ax::mojom::IntListAttribute attribute) const;
 
   bool HasStringListAttribute(ax::mojom::StringListAttribute attribute) const {
     return data().HasStringListAttribute(attribute);
   }
-  const std::vector<std::string>& GetStringListAttribute(
+  base::span<const std::string> GetStringListAttribute(
       ax::mojom::StringListAttribute attribute) const {
     return data().GetStringListAttribute(attribute);
   }
@@ -455,6 +460,10 @@ class AX_EXPORT AXNode final {
   bool IsOrderedSet() const;
   std::optional<int> GetPosInSet() const;
   std::optional<int> GetSetSize() const;
+
+  // Returns true if this node is a <menubar> or <menulist> that was given the
+  // list role because its contents violate the menu content model.
+  bool IsContentViolatedMenu() const;
 
   // Helpers for GetPosInSet and GetSetSize.
   // Returns true if the role of ordered set matches the role of item.
@@ -568,8 +577,8 @@ class AX_EXPORT AXNode final {
   // The below methods return std::nullopt if the AXNode they are called on is
   // not inside a table.
   bool IsTable() const;
-  std::optional<int> GetTableColCount() const;
-  std::optional<int> GetTableRowCount() const;
+  std::optional<int> GetTableDomColCount() const;
+  std::optional<int> GetTableDomRowCount() const;
   std::optional<int> GetTableAriaColCount() const;
   std::optional<int> GetTableAriaRowCount() const;
   std::optional<int> GetTableCellCount() const;
@@ -613,11 +622,11 @@ class AX_EXPORT AXNode final {
   // Table cell-like nodes.
   bool IsTableCellOrHeader() const;
   std::optional<int> GetTableCellIndex() const;
-  std::optional<int> GetTableCellColIndex() const;
+  std::optional<int> GetTableCellDomColIndex() const;
   // The row index of a cell. If a row is passed in, use the first cell.
-  std::optional<int> GetTableCellRowIndex() const;
-  std::optional<int> GetTableCellColSpan() const;
-  std::optional<int> GetTableCellRowSpan() const;
+  std::optional<int> GetTableCellDomRowIndex() const;
+  std::optional<int> GetTableCellDomColSpan() const;
+  std::optional<int> GetTableCellDomRowSpan() const;
   std::optional<int> GetTableCellAriaColIndex() const;
   // The ARIA row index of a cell. If a row is passed in, use the first cell.
   std::optional<int> GetTableCellAriaRowIndex() const;
@@ -865,19 +874,6 @@ AXNode::ChildIteratorBase<NodeType,
                           NextSibling,
                           PreviousSibling,
                           FirstChild,
-                          LastChild>::ChildIteratorBase(const ChildIteratorBase&
-                                                            it)
-    : parent_(it.parent_), child_(it.child_) {}
-
-template <typename NodeType,
-          NodeType* (NodeType::*NextSibling)() const,
-          NodeType* (NodeType::*PreviousSibling)() const,
-          NodeType* (NodeType::*FirstChild)() const,
-          NodeType* (NodeType::*LastChild)() const>
-AXNode::ChildIteratorBase<NodeType,
-                          NextSibling,
-                          PreviousSibling,
-                          FirstChild,
                           LastChild>&
 AXNode::ChildIteratorBase<NodeType,
                           NextSibling,
@@ -946,7 +942,7 @@ NodeType* AXNode::ChildIteratorBase<NodeType,
                                     PreviousSibling,
                                     FirstChild,
                                     LastChild>::get() const {
-  DCHECK(child_);
+  CHECK(child_, base::NotFatalUntil::M163);
   return child_;
 }
 
@@ -960,7 +956,7 @@ NodeType& AXNode::ChildIteratorBase<NodeType,
                                     PreviousSibling,
                                     FirstChild,
                                     LastChild>::operator*() const {
-  DCHECK(child_);
+  CHECK(child_, base::NotFatalUntil::M163);
   return *child_;
 }
 
@@ -974,7 +970,7 @@ NodeType* AXNode::ChildIteratorBase<NodeType,
                                     PreviousSibling,
                                     FirstChild,
                                     LastChild>::operator->() const {
-  DCHECK(child_);
+  CHECK(child_, base::NotFatalUntil::M163);
   return child_;
 }
 

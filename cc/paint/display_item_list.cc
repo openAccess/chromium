@@ -4,15 +4,20 @@
 
 #include "cc/paint/display_item_list.h"
 
+#include <cinttypes>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <string>
 
+#include "base/memory/safety_checks.h"
+#include "base/strings/stringprintf.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/traced_value.h"
 #include "cc/base/math_util.h"
 #include "cc/debug/picture_debug_util.h"
 #include "cc/paint/paint_op_buffer_iterator.h"
+#include "cc/paint/raster_inducing_values.h"
 #include "cc/paint/solid_color_analyzer.h"
 #include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 #include "third_party/skia/include/core/SkCanvas.h"
@@ -85,9 +90,9 @@ DisplayItemList::~DisplayItemList() = default;
 void DisplayItemList::Raster(
     SkCanvas* canvas,
     ImageProvider* image_provider,
-    const ScrollOffsetMap* raster_inducing_scroll_offsets) const {
+    const RasterInducingValues* raster_inducing_values) const {
   PlaybackParams params(image_provider);
-  params.raster_inducing_scroll_offsets = raster_inducing_scroll_offsets;
+  params.raster_inducing_values = raster_inducing_values;
   Raster(canvas, params);
 }
 
@@ -101,6 +106,7 @@ void DisplayItemList::Raster(SkCanvas* canvas,
                     TotalOpCount());
   std::vector<size_t> offsets = OffsetsOfOpsToRaster(canvas);
   if (offsets.empty()) {
+    TRACE_EVENT_END1("cc", "DisplayItemList::Raster", "rastered_op_count", 0);
     return;
   }
   paint_op_buffer_.Playback(canvas, params, /*local_ctm=*/true, &offsets);
@@ -210,6 +216,12 @@ void DisplayItemList::Finalize() {
   current_range_start_ = kFinalized;
 #endif
 
+  // Safe to exclude from safety checks: `Finalize()` only frees internal POD
+  // rect/offset recording scratch vectors, `RTree::Build()` `Branch`
+  // temporaries, and excess `PaintOpBuffer` backing memory, with no script
+  // execution or escaping untrusted pointers. Avoids high-frequency quarantine
+  // zapping and page-fault churn on transient paint recording buffers.
+  base::ScopedSafetyChecksExclusion excluded;
   rtree_.Build(
       visual_rects_.size(),
       [this](size_t index) { return visual_rects_[index]; },
@@ -227,17 +239,20 @@ PaintRecord DisplayItemList::FinalizeAndReleaseAsRecordForTesting() {
   return paint_op_buffer_.ReleaseAsRecord();
 }
 
-void DisplayItemList::EmitTraceSnapshot() const {
+void DisplayItemList::EmitTraceSnapshot(int layer_id) const {
   bool include_items;
   TRACE_EVENT_CATEGORY_GROUP_ENABLED(
       TRACE_DISABLED_BY_DEFAULT("cc.debug.display_items"), &include_items);
+  // Emit both the pointer-based "id" (used by Catapult's ObjectCollection to
+  // resolve the id_ref emitted by RasterSource::AsValueInto) and "layer_id".
   TRACE_EVENT_INSTANT(
       TRACE_DISABLED_BY_DEFAULT("cc.debug.display_items") ","
       TRACE_DISABLED_BY_DEFAULT("cc.debug.picture") ","
       TRACE_DISABLED_BY_DEFAULT("devtools.timeline.picture"),
       "cc::DisplayItemList:snapshot",
-      perfetto::Flow::FromPointer(this, "DisplayItemList"),
-      "snapshot", CreateTracedValue(include_items));
+      perfetto::Flow::FromPointer(this, "DisplayItemList"), "id",
+      base::StringPrintf("0x%" PRIxPTR, reinterpret_cast<uintptr_t>(this)),
+      "layer_id", layer_id, "snapshot", CreateTracedValue(include_items));
 }
 
 std::string DisplayItemList::ToString() const {
@@ -258,9 +273,9 @@ void DisplayItemList::AddToValue(base::trace_event::TracedValue* state,
   state->BeginDictionary("params");
 
   // DisplayItemList doesn't know the current scroll offsets, so use zero.
-  ScrollOffsetMap zero_scroll_offsets;
+  RasterInducingValues zero_values;
   for (auto [element_id, _] : raster_inducing_scrolls()) {
-    zero_scroll_offsets[element_id] = gfx::PointF();
+    zero_values.scroll_offsets[element_id] = gfx::PointF();
   }
 
   // For tracing code, just use the entire positive quadrant if the |rtree_|
@@ -270,7 +285,7 @@ void DisplayItemList::AddToValue(base::trace_event::TracedValue* state,
     state->BeginArray("items");
 
     PlaybackParams params(nullptr, SkM44());
-    params.raster_inducing_scroll_offsets = &zero_scroll_offsets;
+    params.raster_inducing_values = &zero_values;
     std::map<size_t, gfx::Rect> visual_rects = rtree_.GetAllBoundsForTracing();
     for (const PaintOp& op : paint_op_buffer_) {
       state->BeginDictionary();
@@ -281,11 +296,18 @@ void DisplayItemList::AddToValue(base::trace_event::TracedValue* state,
           visual_rects[paint_op_buffer_.GetOpOffsetForTracing(op)], state);
 
       SkPictureRecorder recorder;
-      SkCanvas* canvas = recorder.beginRecording(gfx::RectToSkRect(bounds));
+      SkCanvas* canvas =
+          recorder.beginRecording(bounds.width(), bounds.height());
+      if (!bounds.origin().IsOrigin()) {
+        canvas->translate(-bounds.x(), -bounds.y());
+      }
       op.Raster(canvas, params);
       sk_sp<SkPicture> picture = recorder.finishRecordingAsPicture();
 
-      if (picture->approximateOpCount()) {
+      // `translate` adds 1 op to the recording when `bounds.origin()` is
+      // non-zero.
+      const int initial_op_count = bounds.origin().IsOrigin() ? 0 : 1;
+      if (picture->approximateOpCount() > initial_op_count) {
         std::string b64_picture;
         PictureDebugUtil::SerializeAsBase64(picture.get(), &b64_picture);
         state->SetString("skp64", b64_picture);
@@ -302,10 +324,10 @@ void DisplayItemList::AddToValue(base::trace_event::TracedValue* state,
 
   {
     SkPictureRecorder recorder;
-    SkCanvas* canvas = recorder.beginRecording(gfx::RectToSkRect(bounds));
+    SkCanvas* canvas = recorder.beginRecording(bounds.width(), bounds.height());
     canvas->translate(-bounds.x(), -bounds.y());
     canvas->clipRect(gfx::RectToSkRect(bounds));
-    Raster(canvas, /*image_provider=*/nullptr, &zero_scroll_offsets);
+    Raster(canvas, /*image_provider=*/nullptr, &zero_values);
     sk_sp<SkPicture> picture = recorder.finishRecordingAsPicture();
 
     std::string b64_picture;

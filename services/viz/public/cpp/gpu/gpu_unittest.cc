@@ -67,9 +67,9 @@ class TestGpuImpl : public mojom::Gpu {
       gpu_channel_handle_ = std::move(message_pipe.handle1);
     }
 
-    std::move(callback).Run(client_id, std::move(handle), gpu::GPUInfo(),
-                            gpu::GpuFeatureInfo(),
-                            gpu::SharedImageCapabilities());
+    std::move(callback).Run(
+        client_id, mojom::GpuClientType::kRenderer, std::move(handle),
+        gpu::GPUInfo(), gpu::GpuFeatureInfo(), gpu::SharedImageCapabilities());
   }
 
   void BindGpuChannel(mojo::ScopedMessagePipeHandle handle) {
@@ -77,12 +77,6 @@ class TestGpuImpl : public mojom::Gpu {
         &mock_gpu_channel_,
         mojo::PendingReceiver<gpu::mojom::GpuChannel>(std::move(handle)));
   }
-
-#if BUILDFLAG(IS_CHROMEOS)
-  void CreateJpegDecodeAccelerator(
-      mojo::PendingReceiver<chromeos_camera::mojom::MjpegDecodeAccelerator>
-          jda_receiver) override {}
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
   void CreateVideoEncodeAcceleratorProvider(
       mojo::PendingReceiver<media::mojom::VideoEncodeAcceleratorProvider>
@@ -157,10 +151,7 @@ class GpuTest : public testing::Test {
   // testing::Test:
   void SetUp() override {
     gpu_impl_ = std::make_unique<TestGpuImpl>();
-    gpu_ = base::WrapUnique(new Gpu(GetRemote(), io_thread_.task_runner(),
-                                    /*client_id=*/0,
-                                    mojo::ScopedMessagePipeHandle(),
-                                    base::NullCallback()));
+    gpu_ = base::WrapUnique(new Gpu(GetRemote(), io_thread_.task_runner()));
   }
 
   void TearDown() override {
@@ -438,8 +429,10 @@ class InitialGpuChannelTest : public GpuTest {
         });
     mojo::MessagePipe message_pipe;
 
-    gpu_ = Gpu::Create(GetRemote(), io_thread().task_runner(), /*client_id=*/1,
-                       std::move(message_pipe.handle0), base::NullCallback());
+    gpu_ = Gpu::CreateWithMessagePipe(
+        GetRemote(), io_thread().task_runner(), /*client_id=*/1,
+        mojom::GpuClientType::kRenderer, std::move(message_pipe.handle0),
+        base::DoNothingWithBoundArgs());
 
     io_thread().task_runner()->PostTask(
         FROM_HERE, base::BindOnce(&TestGpuImpl::BindGpuChannel,

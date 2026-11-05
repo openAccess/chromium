@@ -5,12 +5,16 @@
 #ifndef CHROME_BROWSER_GLIC_COMMON_LOCAL_HOTKEY_MANAGER_H_
 #define CHROME_BROWSER_GLIC_COMMON_LOCAL_HOTKEY_MANAGER_H_
 
+#include <memory>
+#include <optional>
+#include <vector>
+
 #include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/glic/glic_enums.h"
-#include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic.mojom-forward.h"
 #include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "chrome/browser/glic/public/glic_close_options.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -58,6 +62,8 @@ class LocalHotkeyManager : public ui::AcceleratorTarget {
 #endif
     // Toggle the Glic panel.
     kPanelToggle,
+    // Print the web client.
+    kPrint,
   };
 
   class Panel {
@@ -70,6 +76,7 @@ class LocalHotkeyManager : public ui::AcceleratorTarget {
     virtual bool ActivateBrowser() = 0;
     virtual void Zoom(mojom::ZoomAction action, ZoomSource source) = 0;
     virtual void ShowTitleBarContextMenuAt(gfx::Point event_loc) {}
+    virtual bool Print();
     virtual BrowserWindowInterface* GetBrowserWindowInterface();
 #if !BUILDFLAG(IS_ANDROID)
     virtual bool HasSelectionOverlay() = 0;
@@ -98,6 +105,8 @@ class LocalHotkeyManager : public ui::AcceleratorTarget {
 #endif
       case Command::kPanelToggle:
         return "kPanelToggle";
+      case Command::kPrint:
+        return "kPrint";
     }
   }
 
@@ -164,9 +173,9 @@ class LocalHotkeyManager : public ui::AcceleratorTarget {
   // command is not defined as configurable.
   static ui::Accelerator GetConfigurableAccelerator(Command command);
 
-  // Returns the Command enum value corresponding to the given accelerator.
-  // CHECKs if the accelerator is not supported by this manager.
-  Command GetCommand(ui::Accelerator accelerator);
+  // Returns the Command enum value corresponding to the given accelerator,
+  // or std::nullopt if the accelerator is not supported by this manager.
+  std::optional<Command> GetCommand(const ui::Accelerator& accelerator) const;
 
   void InitializeAccelerators();
 

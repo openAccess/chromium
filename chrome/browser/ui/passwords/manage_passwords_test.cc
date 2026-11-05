@@ -14,9 +14,6 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/actor/actor_keyed_service_factory.h"
 #include "chrome/browser/actor/actor_keyed_service_fake.h"
-#include "chrome/browser/actor/ui/test_support/mock_actor_ui_state_manager.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
-#include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/password_manager/factories/account_password_store_factory.h"
 #include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
 #include "chrome/browser/password_manager/password_manager_test_base.h"
@@ -30,6 +27,7 @@
 #include "chrome/browser/ui/passwords/passwords_model_delegate.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "components/affiliations/core/browser/match_type.h"
 #include "components/affiliations/core/browser/mock_affiliation_service.h"
 #include "components/autofill/core/common/form_data_test_api.h"
 #include "components/password_manager/core/browser/form_saver.h"
@@ -51,7 +49,9 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/sync/test/test_sync_service.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/test_utils.h"
+#include "ui/base/page_transition_types.h"
 
 using base::ASCIIToUTF16;
 using password_manager::PasswordFormManager;
@@ -84,7 +84,7 @@ void ManagePasswordsTest::SetUpOnMainThread() {
   password_form_.url = test_url;
   password_form_.username_value = kTestUsername;
   password_form_.password_value = PasswordString(u"test_password");
-  password_form_.match_type = password_manager::PasswordForm::MatchType::kExact;
+  password_form_.match_type = affiliations::MatchType::kExact;
   ASSERT_TRUE(AddTabAtIndex(0, test_url, ui::PAGE_TRANSITION_TYPED));
 }
 
@@ -124,22 +124,14 @@ void ManagePasswordsTest::SetUpInProcessBrowserTestFixture() {
                 actor::ActorKeyedServiceFactory::GetInstance()
                     ->SetTestingFactory(
                         context,
-                        base::BindRepeating([](content::BrowserContext* context)
-                                                -> std::unique_ptr<
-                                                    KeyedService> {
-                          Profile* profile =
-                              Profile::FromBrowserContext(context);
-                          auto actor_keyed_service =
-                              std::make_unique<actor::ActorKeyedServiceFake>(
-                                  profile);
-                          std::unique_ptr<actor::ui::MockActorUiStateManager>
-                              ausm = std::make_unique<
-                                  actor::ui::MockActorUiStateManager>();
-                          actor_keyed_service->SetActorUiStateManagerForTesting(
-                              std::move(ausm));
-
-                          return std::move(actor_keyed_service);
-                        }));
+                        base::BindRepeating(
+                            [](content::BrowserContext* context)
+                                -> std::unique_ptr<KeyedService> {
+                              Profile* profile =
+                                  Profile::FromBrowserContext(context);
+                              return std::make_unique<
+                                  actor::ActorKeyedServiceFake>(profile);
+                            }));
               }));
 }
 
@@ -162,7 +154,7 @@ void ManagePasswordsTest::SetupManagingPasswords(
   federated_form.federation_origin =
       url::SchemeHostPort(GURL("https://somelongeroriginurl.com/"));
   federated_form.username_value = u"test_federation_username";
-  federated_form.match_type = password_manager::PasswordForm::MatchType::kExact;
+  federated_form.match_type = affiliations::MatchType::kExact;
   // Overrides url to a defined value to avoid flakiness in pixel tests.
   password_form_.url = !password_form_url.is_empty()
                            ? GURL(password_form_url.spec() + "empty.html")
@@ -274,7 +266,7 @@ void ManagePasswordsTest::ConfigurePasswordSync(
                                : signin::ConsentLevel::kSignin;
       AccountInfo info = signin::MakePrimaryAccountAvailable(
           identity_manager, "test@email.com", consent_level);
-      sync_service->SetSignedIn(consent_level, info);
+      sync_service->SetSignedIn(consent_level, info.GetCoreAccountInfo());
       break;
     }
   }

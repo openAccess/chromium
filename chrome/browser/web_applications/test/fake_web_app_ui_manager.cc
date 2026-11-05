@@ -182,8 +182,7 @@ void FakeWebAppUiManager::DisplayRunOnOsLoginNotification(
     const base::flat_map<webapps::AppId,
                          WebAppUiManager::RoolNotificationBehavior>& apps,
     base::WeakPtr<Profile> profile) {
-  // Still show the notification so it can be tested using the
-  // NotificationDisplayServiceTester
+  // Still show the notification so that tests can find it in MessageCenter.
   web_app::DisplayRunOnOsLoginNotification(apps, std::move(profile));
 }
 
@@ -216,7 +215,7 @@ void FakeWebAppUiManager::TriggerInstallDialogForManifestInstall(
     content::WebContents* initiating_web_contents,
     base::WeakPtr<content::Page> initiating_page,
     std::unique_ptr<webapps::MlInstallOperationTracker> tracker,
-    blink::mojom::ManifestPtr manifest,
+    blink::Manifest manifest,
     const GURL& manifest_url,
     const GURL& requesting_page_url,
     InstallCallback callback) {

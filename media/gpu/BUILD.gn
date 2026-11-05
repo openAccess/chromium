@@ -82,10 +82,7 @@ component("gpu") {
     "gpu_video_encode_accelerator_factory.h",
   ]
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   public_deps = [
     ":buildflags",
@@ -204,21 +201,14 @@ component("gpu") {
       "windows/av1_video_rate_control_wrapper.h",
       "windows/d3d11_copying_texture_wrapper.cc",
       "windows/d3d11_copying_texture_wrapper.h",
-      "windows/d3d11_decoder_configurator.cc",
-      "windows/d3d11_decoder_configurator.h",
-      "windows/d3d11_picture_buffer.cc",
-      "windows/d3d11_picture_buffer.h",
-      "windows/d3d11_status.h",
       "windows/d3d11_texture_selector.cc",
       "windows/d3d11_texture_selector.h",
-      "windows/d3d11_texture_wrapper.cc",
-      "windows/d3d11_texture_wrapper.h",
+      "windows/d3d11_video_decoder_backend.cc",
+      "windows/d3d11_video_decoder_backend.h",
       "windows/d3d11_video_decoder_wrapper.cc",
       "windows/d3d11_video_decoder_wrapper.h",
       "windows/d3d11_video_device_format_support.cc",
       "windows/d3d11_video_device_format_support.h",
-      "windows/d3d11_video_frame_mailbox_release_helper.cc",
-      "windows/d3d11_video_frame_mailbox_release_helper.h",
       "windows/d3d11_video_processor_proxy.cc",
       "windows/d3d11_video_processor_proxy.h",
       "windows/d3d11_vp9_picture.cc",
@@ -250,13 +240,23 @@ component("gpu") {
       "windows/d3d_av1_accelerator.cc",
       "windows/d3d_av1_accelerator.h",
       "windows/d3d_com_defs.h",
+      "windows/d3d_decoder_configurator.cc",
+      "windows/d3d_decoder_configurator.h",
       "windows/d3d_h264_accelerator.cc",
       "windows/d3d_h264_accelerator.h",
+      "windows/d3d_picture_buffer.cc",
+      "windows/d3d_picture_buffer.h",
+      "windows/d3d_status.h",
+      "windows/d3d_texture_wrapper.cc",
+      "windows/d3d_texture_wrapper.h",
       "windows/d3d_video_decoder.cc",
       "windows/d3d_video_decoder.h",
+      "windows/d3d_video_decoder_backend.h",
       "windows/d3d_video_decoder_client.h",
       "windows/d3d_video_decoder_wrapper.cc",
       "windows/d3d_video_decoder_wrapper.h",
+      "windows/d3d_video_frame_mailbox_release_helper.cc",
+      "windows/d3d_video_frame_mailbox_release_helper.h",
       "windows/d3d_vp9_accelerator.cc",
       "windows/d3d_vp9_accelerator.h",
       "windows/format_utils.cc",
@@ -276,6 +276,8 @@ component("gpu") {
       "windows/mf_video_encoder_util.h",
       "windows/mf_video_processor_accelerator.cc",
       "windows/mf_video_processor_accelerator.h",
+      "windows/packed_yuv_utils.cc",
+      "windows/packed_yuv_utils.h",
       "windows/scoped_d3d_buffers.cc",
       "windows/scoped_d3d_buffers.h",
       "windows/supported_profile_helpers.cc",
@@ -375,17 +377,7 @@ source_set("common") {
     ]
   }
 
-  if (enable_platform_dolby_vision) {
-    sources += [
-      "dolby_vision_metadata.cc",
-      "dolby_vision_metadata.h",
-    ]
-  }
-
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   visibility = [
     ":gpu",
@@ -468,10 +460,7 @@ source_set("command_buffer_helper") {
     "command_buffer_helper.h",
   ]
 
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//build/config/compiler:wglobal_constructors",
-  ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
 
   public_deps = [
     "//base",
@@ -480,7 +469,6 @@ source_set("command_buffer_helper") {
     "//gpu/command_buffer/service",
     "//gpu/command_buffer/service:gles2",
     "//gpu/ipc/service",
-    "//ui/gl",
   ]
 }
 
@@ -510,10 +498,7 @@ if (use_linux_video_acceleration) {
       "video_frame_mapper_factory.h",
     ]
 
-    configs += [
-      "//build/config/compiler:wexit_time_destructors",
-      "//build/config/compiler:wglobal_constructors",
-    ]
+    configs += [ "//build/config/compiler:wglobal_constructors" ]
 
     public_deps = [
       ":buildflags",
@@ -655,9 +640,6 @@ source_set("unit_tests") {
       "h265_decoder_unittest.cc",
     ]
   }
-  if (enable_platform_dolby_vision) {
-    sources += [ "dolby_vision_metadata_unittest.cc" ]
-  }
   if (is_linux || is_chromeos) {
     sources += [ "buffer_validation_unittest.cc" ]
 
@@ -688,8 +670,6 @@ source_set("unit_tests") {
   if (is_win) {
     sources += [
       "windows/d3d11_copying_texture_wrapper_unittest.cc",
-      "windows/d3d11_decoder_configurator_unittest.cc",
-      "windows/d3d11_picture_buffer_unittest.cc",
       "windows/d3d11_texture_selector_unittest.cc",
       "windows/d3d11_texture_wrapper_unittest.cc",
       "windows/d3d11_video_device_format_support_unittest.cc",
@@ -701,10 +681,13 @@ source_set("unit_tests") {
       "windows/d3d12_video_encode_delegate_unittest.h",
       "windows/d3d12_video_encode_h264_delegate_unittest.cc",
       "windows/d3d12_video_processor_wrapper_unittest.cc",
+      "windows/d3d_picture_buffer_unittest.cc",
+      "windows/d3d_video_decoder_configurator_unittest.cc",
       "windows/d3d_video_decoder_unittest.cc",
       "windows/media_foundation_video_encode_accelerator_win_unittest.cc",
       "windows/mf_audio_encoder_unittest.cc",
       "windows/mf_video_processor_accelerator_unittest.cc",
+      "windows/packed_yuv_utils_unittest.cc",
       "windows/scoped_d3d_buffers_unittest.cc",
       "windows/supported_profile_helpers_unittest.cc",
     ]

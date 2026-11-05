@@ -41,6 +41,8 @@ DeviceAuthFinalResult MapUIResultToFinal(DeviceAuthUIResult result) {
     case DeviceAuthUIResult::kFailed:
     case DeviceAuthUIResult::kLockout:
       return DeviceAuthFinalResult::kFailed;
+    case DeviceAuthUIResult::kFailedNoActivity:
+      return DeviceAuthFinalResult::kFailedNoActivity;
   }
 }
 
@@ -52,11 +54,6 @@ void LogAuthResult(device_reauth::DeviceAuthSource source,
   } else if (device_reauth::DeviceAuthSource::kIncognito == source) {
     base::UmaHistogramEnumeration("Android.IncognitoReauth.AuthResult", result);
   }
-}
-
-void LogAuthSource(device_reauth::DeviceAuthSource source) {
-  base::UmaHistogramEnumeration("Android.DeviceAuthenticator.AuthSource",
-                                source);
 }
 
 }  // namespace
@@ -94,8 +91,6 @@ void DeviceAuthenticatorAndroid::AuthenticateWithMessage(
   }
 
   callback_ = std::move(callback);
-
-  LogAuthSource(source_);
 
   if (!NeedsToAuthenticate()) {
     LogAuthResult(source_, DeviceAuthFinalResult::kAuthStillValid);

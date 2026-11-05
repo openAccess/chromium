@@ -10,7 +10,6 @@ import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import type {CalendarEvent} from '../../calendar_data.mojom-webui.js';
-import type {GoogleCalendarPageHandlerRemote} from '../../google_calendar.mojom-webui.js';
 import {I18nMixinLit} from '../../i18n_setup.js';
 import {ModuleDescriptor} from '../module_descriptor.js';
 import type {MenuItem, ModuleHeaderElement} from '../module_header.js';
@@ -44,33 +43,16 @@ export class GoogleCalendarModuleElement extends
 
   static override get properties() {
     return {
-      events_: {type: Array},
+      events: {type: Array},
       showInfoDialog_: {type: Boolean},
     };
   }
 
-  protected accessor events_: CalendarEvent[] = [];
+  accessor events: CalendarEvent[] = [];
   protected accessor showInfoDialog_: boolean = false;
-
-  private handler_: GoogleCalendarPageHandlerRemote;
-
-  constructor(events: CalendarEvent[]) {
-    super();
-    this.handler_ = GoogleCalendarProxyImpl.getInstance().handler;
-    this.events_ = events;
-  }
 
   protected getMenuItems_(): MenuItem[] {
     return [
-      {
-        action: 'dismiss',
-        icon: loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
-            'modules:visibility-off' :
-            'modules:visibility_off-old',
-        text: this.i18nRecursive(
-            '', 'modulesDismissForHoursButtonText',
-            'calendarModuleDismissHours'),
-      },
       {
         action: 'disable',
         icon: loadTimeData.getBoolean('webuiRoundedIconsEnabled') ?
@@ -99,14 +81,6 @@ export class GoogleCalendarModuleElement extends
     this.dispatchEvent(disableEvent);
   }
 
-  protected onDismissButtonClick_() {
-    this.handler_.dismissModule();
-    this.fire('dismiss-module-instance', {
-      message: this.i18n('modulesGoogleCalendarDismissToastMessage'),
-      restoreCallback: () => this.handler_.restoreModule(),
-    });
-  }
-
   protected onInfoButtonClick_() {
     this.showInfoDialog_ = true;
   }
@@ -129,7 +103,12 @@ async function createGoogleCalendarElement():
     Promise<GoogleCalendarModuleElement|null> {
   const {events} =
       await GoogleCalendarProxyImpl.getInstance().handler.getEvents();
-  return events.length > 0 ? new GoogleCalendarModuleElement(events) : null;
+  if (events.length === 0) {
+    return null;
+  }
+  const element = document.createElement('ntp-google-calendar-module');
+  element.events = events;
+  return element;
 }
 
 export const googleCalendarDescriptor: ModuleDescriptor = new ModuleDescriptor(

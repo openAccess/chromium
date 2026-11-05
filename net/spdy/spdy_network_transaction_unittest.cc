@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -25,6 +26,7 @@
 #include "base/test/test_file_util.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "build/buildflag.h"
 #include "net/base/auth.h"
 #include "net/base/chunked_upload_data_stream.h"
 #include "net/base/completion_once_callback.h"
@@ -61,6 +63,7 @@
 #include "net/log/net_log_with_source.h"
 #include "net/log/test_net_log.h"
 #include "net/log/test_net_log_util.h"
+#include "net/net_buildflags.h"
 #include "net/proxy_resolution/configured_proxy_resolution_service.h"
 #include "net/socket/next_proto.h"
 #include "net/socket/socket_tag.h"
@@ -3138,7 +3141,7 @@ TEST_P(SpdyNetworkTransactionTest, SocketTagChangeSessionTagWithDnsAliases) {
                                      std::move(session_deps));
 
   GURL url = request_.url;
-  std::set<std::string> dns_aliases({"alias1", "alias2", "alias3"});
+  base::flat_set<std::string> dns_aliases({"alias1", "alias2", "alias3"});
   helper.session_deps()->host_resolver->rules()->AddIPLiteralRuleWithDnsAliases(
       url.GetHost(), "127.0.0.1", dns_aliases);
 
@@ -3267,9 +3270,9 @@ TEST_P(SpdyNetworkTransactionTest,
   NormalSpdyTransactionHelper helper(request_, DEFAULT_PRIORITY, log_,
                                      std::move(session_deps));
   GURL url1 = request_.url;
-  std::set<std::string> dns_aliases1({"alias1", "alias2", "alias3"});
+  base::flat_set<std::string> dns_aliases1({"alias1", "alias2", "alias3"});
   GURL url2("https://example.test/");
-  std::set<std::string> dns_aliases2({"example.net", "example.com"});
+  base::flat_set<std::string> dns_aliases2({"example.net", "example.com"});
 
   helper.session_deps()->host_resolver->rules()->AddIPLiteralRuleWithDnsAliases(
       url1.GetHost(), "127.0.0.1", dns_aliases1);
@@ -4937,6 +4940,7 @@ TEST_P(SpdyNetworkTransactionTest,
   }
 }
 
+#if BUILDFLAG(ENABLE_BRACKETED_PROXY_URIS)
 // Same as HTTP11RequiredProxyRetry above except for nested proxies where
 // HTTP_1_1_REQUIRED is received from the first proxy in the chain.
 TEST_P(SpdyNetworkTransactionTest, HTTP11RequiredNestedProxyFirstProxyRetry) {
@@ -4947,8 +4951,7 @@ TEST_P(SpdyNetworkTransactionTest, HTTP11RequiredNestedProxyFirstProxyRetry) {
                                   HostPortPair("proxy1.test", 70)};
   const ProxyServer kProxyServer2{ProxyServer::SCHEME_HTTPS,
                                   HostPortPair("proxy2.test", 71)};
-  const ProxyChain kNestedProxyChain =
-      ProxyChain::ForIpProtection({{kProxyServer1, kProxyServer2}});
+  const ProxyChain kNestedProxyChain({kProxyServer1, kProxyServer2});
 
   ProxyList proxy_list;
   proxy_list.AddProxyChain(kNestedProxyChain);
@@ -5060,8 +5063,6 @@ TEST_P(SpdyNetworkTransactionTest, HTTP11RequiredNestedProxyFirstProxyRetry) {
 
 // Same as above except for nested proxies where HTTP_1_1_REQUIRED is received
 // from the second proxy in the chain.
-// TODO(crbug.com/365771838): Add tests for non-ip protection nested proxy
-// chains if support is enabled for all builds.
 TEST_P(SpdyNetworkTransactionTest, HTTP11RequiredNestedProxySecondProxyRetry) {
   request_.method = "GET";
 
@@ -5069,8 +5070,7 @@ TEST_P(SpdyNetworkTransactionTest, HTTP11RequiredNestedProxySecondProxyRetry) {
                                   HostPortPair("proxy1.test", 70)};
   const ProxyServer kProxyServer2{ProxyServer::SCHEME_HTTPS,
                                   HostPortPair("proxy2.test", 71)};
-  const ProxyChain kNestedProxyChain =
-      ProxyChain::ForIpProtection({{kProxyServer1, kProxyServer2}});
+  const ProxyChain kNestedProxyChain({kProxyServer1, kProxyServer2});
 
   ProxyList proxy_list;
   proxy_list.AddProxyChain(kNestedProxyChain);
@@ -5226,6 +5226,7 @@ TEST_P(SpdyNetworkTransactionTest, HTTP11RequiredNestedProxySecondProxyRetry) {
   ASSERT_THAT(ReadTransaction(helper.trans(), &response_data), IsOk());
   EXPECT_EQ("hello", response_data);
 }
+#endif  // BUILDFLAG(ENABLE_BRACKETED_PROXY_URIS)
 
 // Test to make sure we can correctly connect through a proxy.
 TEST_P(SpdyNetworkTransactionTest, ProxyConnect) {
@@ -6879,6 +6880,45 @@ TEST_P(SpdyNetworkTransactionTest, 100Continue) {
   EXPECT_THAT(out.rv, IsOk());
   EXPECT_EQ("HTTP/1.1 200", out.status_line);
   EXPECT_EQ("hello!", out.response_data);
+}
+
+// When the connection is closed after a 103 Early Hints response, but before
+// the final response, the request should fail rather than succeed with a made
+// up response. Other 1xx responses are dropped by SpdyStream, so aren't passed
+// to the HttpNetworkTransaction, and don't need testing here.
+TEST_P(SpdyNetworkTransactionTest, EarlyHintsThenConnectionClosed) {
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
+  MockWrite writes[] = {CreateMockWrite(req, 0)};
+
+  quiche::HttpHeaderBlock informational_headers;
+  informational_headers[spdy::kHttp2StatusHeader] = "103";
+  informational_headers["link"] = "</style.css>; rel=preload; as=style";
+  spdy::SpdySerializedFrame informational_response(
+      spdy_util_.ConstructSpdyReply(1, std::move(informational_headers)));
+  MockRead reads[] = {
+      CreateMockRead(informational_response, 1), MockRead(ASYNC, 0, 2)  // EOF
+  };
+
+  SequencedSocketData data(reads, writes);
+  NormalSpdyTransactionHelper helper(request_, DEFAULT_PRIORITY, log_, nullptr);
+  helper.RunPreTestSetup();
+  helper.AddData(&data);
+
+  int early_hints_received = 0;
+  helper.trans()->SetEarlyResponseHeadersCallback(base::BindLambdaForTesting(
+      [&](scoped_refptr<const HttpResponseHeaders> headers) {
+        EXPECT_EQ(HTTP_EARLY_HINTS, headers->response_code());
+        ++early_hints_received;
+      }));
+
+  helper.StartDefaultTest();
+  EXPECT_THAT(helper.output().rv, IsError(ERR_IO_PENDING));
+  helper.FinishDefaultTestWithoutVerification();
+  EXPECT_THAT(helper.output().rv, IsError(ERR_CONNECTION_CLOSED));
+  EXPECT_FALSE(helper.trans()->GetResponseInfo()->headers);
+  EXPECT_EQ(1, early_hints_received);
+  helper.VerifyDataConsumed();
 }
 
 // "A server can send a complete response prior to the client sending an entire

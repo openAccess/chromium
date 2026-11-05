@@ -21,8 +21,11 @@
 #include "content/browser/preloading/prefetch/prefetch_serving_handle.h"
 #include "content/browser/preloading/preload_serving_metrics_holder.h"
 #include "content/browser/preloading/prerender/prerender_features.h"
+#include "content/browser/preloading/prerender/prerender_host.h"
 #include "content/browser/preloading/prerender/prerender_host_registry.h"
 #include "content/browser/renderer_host/frame_tree.h"
+#include "content/browser/renderer_host/navigation_request.h"
+#include "content/browser/renderer_host/render_frame_host_delegate.h"
 
 namespace content {
 
@@ -496,9 +499,7 @@ void PrefetchMatchResolver::StartWaitFor(const PrefetchKey& prefetch_key,
   // https://chromium-review.googlesource.com/c/chromium/src/+/5668924 and
   // write tests.
   base::TimeDelta timeout = PrefetchBlockUntilHeadTimeout(
-      prefetch_container.request().prefetch_type(),
-      prefetch_container.request().should_disable_block_until_head_timeout(),
-      is_nav_prerender_);
+      prefetch_container.request(), is_nav_prerender_);
   if (timeout.is_positive()) {
     candidate_data->timeout_timer = std::make_unique<base::OneShotTimer>();
     candidate_data->timeout_timer->Start(
@@ -713,6 +714,9 @@ void PrefetchMatchResolver::OnDeterminedHead(
 }
 
 void PrefetchMatchResolver::OnPrefetchCompletedOrFailed(
+    const PrefetchContainer& prefetch_container) {}
+
+void PrefetchMatchResolver::OnPrefetchStale(
     const PrefetchContainer& prefetch_container) {}
 
 void PrefetchMatchResolver::OnTimeout(PrefetchKey prefetch_key) {

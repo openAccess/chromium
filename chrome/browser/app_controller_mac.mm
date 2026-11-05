@@ -130,8 +130,10 @@
 #include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "content/public/browser/download_manager.h"
+#include "content/public/browser/navigation_controller.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/buildflags/buildflags.h"
@@ -142,6 +144,7 @@
 #import "ui/base/cocoa/nsmenuitem_additions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/l10n/l10n_util_mac.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/color/color_provider.h"
 #include "ui/color/color_provider_manager.h"
 #include "ui/color/color_provider_source.h"
@@ -477,7 +480,7 @@ void OpenStartupTabsInBrowser(StartupTabs tabs) {
                 }
                 profile_tab_map[shortcut->profile_path_name().path()]
                     .emplace_back(shortcut->target_url(),
-                                  /*is_untrusted_launch=*/false);
+                                  /*is_untrusted_launch=*/true);
               }
               return profile_tab_map;
             },
@@ -1945,7 +1948,9 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
   _menuState->UpdateCommandEnabled(IDC_HELP_PAGE_VIA_MENU, true);
   _menuState->UpdateCommandEnabled(IDC_IMPORT_SETTINGS, true);
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  _menuState->UpdateCommandEnabled(IDC_FEEDBACK, true);
+  _menuState->UpdateCommandEnabled(
+      IDC_FEEDBACK,
+      !base::FeatureList::IsEnabled(features::kFeedbackDisabledDialog));
 #endif
   _menuState->UpdateCommandEnabled(IDC_TASK_MANAGER_MAIN_MENU, true);
   _menuState->UpdateCommandEnabled(IDC_EXIT, true);
@@ -2165,11 +2170,8 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
     return dockMenu;
   }
 
-  bool isolated_mode_enabled =
-      enterprise_isolated_mode::IsolatedModeReplacesIncognito(profile);
-
-  if (IncognitoModePrefs::GetAvailability(profile->GetPrefs()) !=
-      policy::IncognitoModeAvailability::kDisabled) {
+  if (IncognitoModePrefs::GetIncognitoModeType(profile) ==
+      IncognitoModePrefs::IncognitoModeType::kStandard) {
     titleStr = l10n_util::GetNSStringWithFixup(IDS_NEW_INCOGNITO_WINDOW_MAC);
     item = [[NSMenuItem alloc] initWithTitle:titleStr
                                       action:@selector(commandFromDock:)
@@ -2180,7 +2182,8 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
     [dockMenu addItem:item];
   }
 
-  if (isolated_mode_enabled) {
+  if (IncognitoModePrefs::GetIncognitoModeType(profile) ==
+      IncognitoModePrefs::IncognitoModeType::kEnterprise) {
     titleStr = l10n_util::GetNSStringWithFixup(IDS_NEW_ISOLATED_WINDOW_MAC);
     item = [[NSMenuItem alloc] initWithTitle:titleStr
                                       action:@selector(commandFromDock:)
@@ -2611,12 +2614,18 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
 
 - (void)setLastProfileForTesting:(Profile*)profile {
   _lastProfile = profile;
+  if (!profile) {
+    _lastActiveBrowser.reset();
+    return;
+  }
   ProfileBrowserCollection* collection =
       ProfileBrowserCollection::GetForProfile(profile);
   if (!collection) {
+    _lastActiveBrowser.reset();
     return;
   }
-  _lastActiveBrowser = collection->GetLastActiveBrowser()->GetWeakPtr();
+  BrowserWindowInterface* browser = collection->GetLastActiveBrowser();
+  _lastActiveBrowser = browser ? browser->GetWeakPtr() : nullptr;
 }
 
 @end  // @implementation AppController
@@ -2818,7 +2827,7 @@ void TabRestorer::DoRestoreTab(Profile* profile, SessionID session_id) {
       browser ? BrowserLiveTabContext::From(browser) : nullptr;
   if (session_id.is_valid()) {
     service->RestoreEntryById(context, session_id,
-                              WindowOpenDisposition::UNKNOWN);
+                              ui::mojom::WindowOpenDisposition::kUnknown);
   } else {
     service->RestoreMostRecentEntry(context);
   }

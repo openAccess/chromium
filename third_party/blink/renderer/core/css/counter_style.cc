@@ -42,6 +42,7 @@
 #include "third_party/blink/renderer/core/css/style_rule_counter_style.h"
 #include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/core/keywords.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/text_break_iterator.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
@@ -593,7 +594,8 @@ CounterStyle& CounterStyle::GetDecimal() {
       Persistent<CounterStyle>, decimal,
       (CounterStyleMap::GetUACounterStyleMap()->FindCounterStyleAcrossScopes(
           keywords::kDecimal)));
-  DCHECK(decimal);
+  CHECK(IsMainThread());
+  CHECK(decimal);
   return *decimal;
 }
 
@@ -609,7 +611,6 @@ CounterStyleSystem CounterStyle::ToCounterStyleSystemEnum(
     system_keyword = id->GetValueID();
   } else {
     // Either fixed or extends.
-    DCHECK(value->IsValuePair());
     const CSSValuePair* pair = To<CSSValuePair>(value);
     DCHECK(pair->First().IsIdentifierValue());
     system_keyword = To<CSSIdentifierValue>(pair->First()).GetValueID();
@@ -772,7 +773,8 @@ CounterStyle::CounterStyle(
     if (system_ == CounterStyleSystem::kUnresolvedExtends) {
       const auto& second = To<CSSValuePair>(system)->Second();
       extends_name_ = To<CSSCustomIdentValue>(second).Value();
-    } else if (system_ == CounterStyleSystem::kFixed && system->IsValuePair()) {
+    } else if (system_ == CounterStyleSystem::kFixed &&
+               system->IsBaseValuePair()) {
       const auto& second = To<CSSValuePair>(system)->Second();
       first_symbol_value_ =
           To<CSSPrimitiveValue>(second).ComputeInteger(*media_values);

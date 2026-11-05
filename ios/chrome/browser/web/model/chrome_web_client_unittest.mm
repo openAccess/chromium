@@ -9,7 +9,11 @@
 #import <algorithm>
 #import <memory>
 
+#import "base/check_deref.h"
 #import "base/feature_list.h"
+#import "base/functional/bind.h"
+#import "base/ios/ns_error_util.h"
+#import "base/memory/raw_ptr.h"
 #import "base/numerics/safe_conversions.h"
 #import "base/run_loop.h"
 #import "base/strings/string_split.h"
@@ -18,22 +22,43 @@
 #import "base/test/scoped_feature_list.h"
 #import "components/captive_portal/core/captive_portal_detector.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
+#import "components/enterprise/net/core/enterprise_proxy_error_data.h"
+#import "components/enterprise/net/core/enterprise_proxy_error_service.h"
+#import "components/enterprise/net/core/features.h"
+#import "components/enterprise/net/core/mock_enterprise_proxy_service.h"
+#import "components/keyed_service/core/keyed_service.h"
 #import "components/lookalikes/core/lookalike_url_util.h"
 #import "components/reading_list/core/reading_list_entry.h"
 #import "components/reading_list/core/reading_list_model.h"
 #import "components/safe_browsing/core/common/features.h"
 #import "components/safe_browsing/ios/browser/safe_browsing_url_allow_list.h"
+#import "components/search_engines/template_url.h"
+#import "components/search_engines/template_url_data.h"
+#import "components/search_engines/template_url_service.h"
 #import "components/security_interstitials/core/unsafe_resource.h"
 #import "components/strings/grit/components_strings.h"
+#import "components/universal_optout/features.h"
+#import "components/universal_optout/prefs.h"
+#import "ios/chrome/browser/cobrowse/model/aim_cobrowse_java_script_feature.h"
+#import "ios/chrome/browser/cobrowse/model/cobrowse_util.h"
 #import "ios/chrome/browser/content_settings/model/host_content_settings_map_factory.h"
+#import "ios/chrome/browser/enterprise/proxy/model/enterprise_proxy_error.h"
+#import "ios/chrome/browser/enterprise/proxy/model/enterprise_proxy_error_service_factory_ios.h"
+#import "ios/chrome/browser/enterprise/proxy/model/enterprise_proxy_service_factory_ios.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_model_factory.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_test_utils.h"
 #import "ios/chrome/browser/safe_browsing/model/client_side_detection/client_side_detection_java_script_feature.h"
 #import "ios/chrome/browser/safe_browsing/model/safe_browsing_blocking_page.h"
+#import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "ios/chrome/browser/ssl/model/captive_portal_tab_helper.h"
 #import "ios/chrome/browser/web/model/error_page_util.h"
+#import "ios/chrome/browser/web_extension/model/extension_service.h"
+#import "ios/chrome/browser/web_extension/model/extension_service_factory.h"
+#import "ios/chrome/browser/web_extension/model/extension_service_impl.h"
 #import "ios/components/security_interstitials/https_only_mode/https_only_mode_container.h"
 #import "ios/components/security_interstitials/https_only_mode/https_only_mode_error.h"
 #import "ios/components/security_interstitials/ios_blocking_page_tab_helper.h"
@@ -44,6 +69,7 @@
 #import "ios/net/protocol_handler_util.h"
 #import "ios/web/common/features.h"
 #import "ios/web/common/web_view_creation_util.h"
+#import "ios/web/public/extension/extension_controller.h"
 #import "ios/web/public/test/error_test_util.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -52,12 +78,14 @@
 #import "ios/web/public/test/web_task_environment.h"
 #import "net/base/net_errors.h"
 #import "net/http/http_status_code.h"
+#import "net/log/net_log_with_source.h"
 #import "net/ssl/ssl_info.h"
 #import "net/test/cert_test_util.h"
 #import "net/test/test_data_directory.h"
 #import "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #import "services/network/public/mojom/fetch_api.mojom.h"
 #import "services/network/test/test_url_loader_factory.h"
+#import "testing/gmock/include/gmock/gmock.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
@@ -69,6 +97,20 @@ using base::test::ios::WaitUntilConditionOrTimeout;
 
 namespace {
 const char kTestUrl[] = "http://chromium.test";
+const char kGoogleTemplateURL[] =
+    "https://www.google.com/search?q={searchTerms}";
+const char kGoogleSearchURL[] = "https://www.google.com/search?q=test";
+const char kGoogleRootURL[] = "https://www.google.com/";
+const char kGoogleMapsSubdomainURL[] = "https://maps.google.com/maps?q=paris";
+const char kGoogleMapsPathURL[] = "https://www.google.com/maps/place/Paris";
+const char kGoogleDriveURL[] = "https://drive.google.com/file/d/123";
+const char kGoogleDocsURL[] = "https://docs.google.com/document/d/123";
+const char kExampleSearchEngineTemplateURL[] =
+    "https://www.exampleSE.com/search?q={searchTerms}";
+const char kExampleSearchEngineSearchURL[] =
+    "https://www.exampleSE.com/search?q=test";
+const char kExampleSearcheEngineRootURL[] = "https://www.exampleSE.com/";
+const char kNonDSEURL[] = "https://www.example.com/";
 
 // Error used to test PrepareErrorPage method.
 NSError* CreateTestError() {
@@ -80,11 +122,31 @@ NSError* CreateTestError() {
                    [NSURL URLWithString:base::SysUTF8ToNSString(kTestUrl)]
              }]);
 }
+
+// Navigation failed with the enterprise proxy error.
+constexpr int64_t kEnterpriseProxyNavigationId = 1;
+constexpr char kEnterpriseProxyUrl[] = "https://proxy.example.com/";
+// Any code works, as `PrepareErrorPage()` only looks at the domain of the
+// enterprise proxy error.
+constexpr NSInteger kEnterpriseProxyErrorCode = 1;
+
+std::unique_ptr<KeyedService> BuildMockEnterpriseProxyService(ProfileIOS*) {
+  return std::make_unique<
+      testing::NiceMock<enterprise_net::MockEnterpriseProxyService>>();
+}
 }  // namespace
 
 class ChromeWebClientTest : public PlatformTest {
  public:
-  ChromeWebClientTest() { profile_ = TestProfileIOS::Builder().Build(); }
+  ChromeWebClientTest() {
+    TestProfileIOS::Builder builder;
+    builder.AddTestingFactory(
+        ios::TemplateURLServiceFactory::GetInstance(),
+        ios::TemplateURLServiceFactory::GetDefaultFactory());
+    builder.SetSharedURLLoaderFactory(
+        test_url_loader_factory_.GetSafeWeakWrapper());
+    profile_ = std::move(builder).Build();
+  }
 
   ChromeWebClientTest(const ChromeWebClientTest&) = delete;
   ChromeWebClientTest& operator=(const ChromeWebClientTest&) = delete;
@@ -96,6 +158,7 @@ class ChromeWebClientTest : public PlatformTest {
  protected:
   web::WebTaskEnvironment environment_{
       web::WebTaskEnvironment::MainThreadType::IO};
+  network::TestURLLoaderFactory test_url_loader_factory_;
   std::unique_ptr<TestProfileIOS> profile_;
 };
 
@@ -270,15 +333,11 @@ TEST_F(ChromeWebClientTest, PrepareErrorPageWithSSLInfo) {
   security_interstitials::IOSBlockingPageTabHelper::CreateForWebState(
       &web_state);
 
-  // Use a test URLLoaderFactory so that the captive portal detector doesn't
-  // make an actual network request.
-  network::TestURLLoaderFactory test_loader_factory;
-  test_loader_factory.AddResponse(
+  // Configure the test SharedURLLoaderFactory so that the captive portal
+  // detector doesn't make an actual network request.
+  test_url_loader_factory_.AddResponse(
       captive_portal::CaptivePortalDetector::GetDefaultUrl(), "",
       net::HTTP_NO_CONTENT);
-  profile_->SetSharedURLLoaderFactory(
-      base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
-          &test_loader_factory));
 
   CaptivePortalTabHelper::CreateForWebState(&web_state);
   web_state.SetBrowserState(profile());
@@ -367,7 +426,6 @@ TEST_P(ChromeWebClientTest_V4V5, PrepareErrorPageForSafeBrowsingError) {
 // trigger the offline page bypass, but with a Safe Browsing error (which is a
 // security error), so the Safe Browsing interstitial should NOT be bypassed and
 // must be displayed instead.
-
 
 // Tests PrepareErrorPage for a safe browsing enterprise block error, which
 // results in a committed enterprise interstitial.
@@ -590,6 +648,99 @@ TEST_F(ChromeWebClientTest, PrepareErrorPageForHttpsOnlyModeError) {
       << base::SysNSStringToUTF8(page);
 }
 
+// Fixture with the enterprise proxy services that the enterprise proxy error
+// page needs.
+class ChromeWebClientEnterpriseProxyTest : public PlatformTest {
+ protected:
+  ChromeWebClientEnterpriseProxyTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {enterprise_net::kEnableDynamicRouteFetching,
+         enterprise_net::kEnterpriseProxyErrorHandling},
+        {});
+
+    TestProfileIOS::Builder builder;
+    builder.AddTestingFactory(EnterpriseProxyServiceFactoryIOS::GetInstance(),
+                              base::BindOnce(&BuildMockEnterpriseProxyService));
+    builder.AddTestingFactory(
+        EnterpriseProxyErrorServiceFactoryIOS::GetInstance(),
+        EnterpriseProxyErrorServiceFactoryIOS::GetDefaultFactory());
+    profile_ = std::move(builder).Build();
+    error_service_ =
+        EnterpriseProxyErrorServiceFactoryIOS::GetForProfile(profile_.get());
+
+    web_state_.SetBrowserState(profile_.get());
+    web_state_.SetNavigationManager(
+        std::make_unique<web::FakeNavigationManager>());
+    security_interstitials::IOSBlockingPageTabHelper::CreateForWebState(
+        &web_state_);
+  }
+
+  // Runs `PrepareErrorPage()` for `kEnterpriseProxyNavigationId`, failed with
+  // the enterprise proxy error, and returns the error page HTML. The web layer
+  // appends that error as the final underlying error of a net error.
+  NSString* PrepareEnterpriseProxyErrorPage() {
+    __block NSString* page = nil;
+    ChromeWebClient web_client;
+    web_client.PrepareErrorPage(
+        &web_state_, GURL(kTestUrl),
+        base::ios::ErrorWithAppendedUnderlyingError(
+            CreateTestError(),
+            [NSError errorWithDomain:kEnterpriseProxyErrorDomain
+                                code:kEnterpriseProxyErrorCode
+                            userInfo:nil]),
+        /*is_post=*/false,
+        /*is_off_the_record=*/false,
+        /*info=*/std::nullopt, kEnterpriseProxyNavigationId,
+        base::BindOnce(^(NSString* error_html) {
+          page = error_html;
+        }));
+    return page;
+  }
+
+  // Declared first so that the feature state is set before any other member
+  // inspects it.
+  base::test::ScopedFeatureList scoped_feature_list_;
+  web::WebTaskEnvironment task_environment_;
+  std::unique_ptr<TestProfileIOS> profile_;
+  raw_ptr<enterprise_net::EnterpriseProxyErrorService> error_service_ = nullptr;
+  web::FakeWebState web_state_;
+};
+
+// Tests that `PrepareErrorPage` shows the Secure Gateway interstitial for an
+// enterprise proxy error, and takes the disguised error recorded for the
+// navigation.
+TEST_F(ChromeWebClientEnterpriseProxyTest,
+       PrepareErrorPageForEnterpriseProxyError) {
+  error_service_->RecordDisguisedError(
+      kEnterpriseProxyNavigationId,
+      enterprise_net::EnterpriseProxyErrorData(
+          GURL(kTestUrl), GURL(kEnterpriseProxyUrl), net::HTTP_BAD_GATEWAY,
+          enterprise_net::EnterpriseProxyErrorData::ErrorCategory::kOther),
+      net::NetLogWithSource());
+
+  NSString* page = PrepareEnterpriseProxyErrorPage();
+
+  NSString* heading =
+      l10n_util::GetNSString(IDS_ENTERPRISE_PROXY_OTHER_ERROR_HEADING);
+  EXPECT_TRUE([page containsString:heading]) << base::SysNSStringToUTF8(page);
+  EXPECT_FALSE(error_service_->TakeDisguisedError(kEnterpriseProxyNavigationId)
+                   .has_value());
+}
+
+// Tests that `PrepareErrorPage` shows the generic error page for a failed
+// tunnel connection for an enterprise proxy error when no disguised error is
+// recorded for the navigation.
+TEST_F(ChromeWebClientEnterpriseProxyTest,
+       PrepareErrorPageForEnterpriseProxyErrorWithoutRecordedError) {
+  NSString* page = PrepareEnterpriseProxyErrorPage();
+
+  ASSERT_TRUE(page);
+  NSString* error_string = base::SysUTF8ToNSString(
+      net::ErrorToShortString(net::ERR_TUNNEL_CONNECTION_FAILED));
+  EXPECT_TRUE([page containsString:error_string])
+      << base::SysNSStringToUTF8(page);
+}
+
 // Tests the default user agent for different views.
 TEST_F(ChromeWebClientTest, DefaultUserAgent) {
   ChromeWebClient web_client;
@@ -628,8 +779,6 @@ TEST_F(ChromeWebClientTest, IsPointingToSameDocumentOnline) {
       web_client.IsPointingToSameDocument(different_url1, different_url2));
 }
 
-
-
 // Tests if URLs with one empty is working as expected.
 TEST_F(ChromeWebClientTest, IsPointingToSameDocumentEmpty) {
   ChromeWebClient web_client;
@@ -658,4 +807,241 @@ TEST_F(ChromeWebClientTest, GetJavaScriptFeatures_ClientSideDetection) {
     EXPECT_FALSE(std::ranges::contains(
         features, ClientSideDetectionJavaScriptFeature::GetInstance()));
   }
+}
+
+// Tests that GetJavaScriptFeatures includes AimCobrowseJavaScriptFeature when
+// kAimCobrowse is enabled, even if the user is not eligible for AIM Cobrowse.
+// JavaScript features are configured only once per profile, while eligibility
+// can change later in the session.
+TEST_F(ChromeWebClientTest,
+       GetJavaScriptFeatures_AimCobrowseIncludedWhenNotEligible) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kAimCobrowse);
+  [[NSUserDefaults standardUserDefaults] setBool:YES
+                                          forKey:@"ForceDisableAIMEligibility"];
+  EXPECT_TRUE(experimental_flags::ShouldForceDisableComposeboxAIM());
+  EXPECT_FALSE(IsAimCobrowseEligible(profile()));
+
+  ChromeWebClient web_client;
+  auto features = web_client.GetJavaScriptFeatures(profile());
+  EXPECT_TRUE(std::ranges::contains(
+      features, AimCobrowseJavaScriptFeature::GetInstance()));
+
+  [[NSUserDefaults standardUserDefaults]
+      removeObjectForKey:@"ForceDisableAIMEligibility"];
+}
+
+// Tests that GetJavaScriptFeatures excludes AimCobrowseJavaScriptFeature when
+// kAimCobrowse is disabled.
+TEST_F(ChromeWebClientTest,
+       GetJavaScriptFeatures_AimCobrowseExcludedWhenDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(kAimCobrowse);
+
+  ChromeWebClient web_client;
+  auto features = web_client.GetJavaScriptFeatures(profile());
+  EXPECT_FALSE(std::ranges::contains(
+      features, AimCobrowseJavaScriptFeature::GetInstance()));
+}
+
+// Tests that GetJavaScriptFeatures excludes AimCobrowseJavaScriptFeature for
+// the off-the-record profile, even when kAimCobrowse is enabled.
+TEST_F(ChromeWebClientTest,
+       GetJavaScriptFeatures_AimCobrowseExcludedWhenOffTheRecord) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kAimCobrowse);
+
+  ChromeWebClient web_client;
+  auto features =
+      web_client.GetJavaScriptFeatures(profile()->GetOffTheRecordProfile());
+  EXPECT_FALSE(std::ranges::contains(
+      features, AimCobrowseJavaScriptFeature::GetInstance()));
+}
+
+// Tests that GetUniversalOptOutState reflects the kUniversalOptOutEnabled
+// and kUniversalOptOutEligible prefs.
+TEST_F(ChromeWebClientTest, GetUniversalOptOutState) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {universal_optout::features::kUniversalOptOut,
+       universal_optout::features::kUniversalOptOutExtension,
+       universal_optout::features::kUniversalOptOutSettings},
+      /*disabled_features=*/{});
+
+  ChromeWebClient web_client;
+  profile()->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEligible, false);
+  profile()->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEnabled, false);
+  EXPECT_EQ(web::UniversalOptOutState::kNotEligible,
+            web_client.GetUniversalOptOutState(profile()));
+
+  profile()->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEligible, true);
+  EXPECT_EQ(web::UniversalOptOutState::kEligible,
+            web_client.GetUniversalOptOutState(profile()));
+
+  profile()->GetPrefs()->SetBoolean(
+      universal_optout::prefs::kUniversalOptOutEnabled, true);
+  EXPECT_EQ(web::UniversalOptOutState::kEnabled,
+            web_client.GetUniversalOptOutState(profile()));
+
+  // Test experimental flag override: Forced Off overrides both eligible and
+  // enabled states to kNotEligible.
+  {
+    profile()->GetPrefs()->SetBoolean(
+        universal_optout::prefs::kUniversalOptOutEligible, true);
+    profile()->GetPrefs()->SetBoolean(
+        universal_optout::prefs::kUniversalOptOutEnabled, false);
+    [[NSUserDefaults standardUserDefaults]
+        setInteger:static_cast<NSInteger>(
+                       experimental_flags::UniversalOptOutEligibilityOverride::
+                           kForcedOff)
+            forKey:@"UniversalOptOutEligibilityOverride"];
+    EXPECT_EQ(web::UniversalOptOutState::kNotEligible,
+              web_client.GetUniversalOptOutState(profile()));
+
+    profile()->GetPrefs()->SetBoolean(
+        universal_optout::prefs::kUniversalOptOutEnabled, true);
+    EXPECT_EQ(web::UniversalOptOutState::kNotEligible,
+              web_client.GetUniversalOptOutState(profile()));
+  }
+
+  // Test experimental flag override: Forced On makes an ineligible profile
+  // eligible (or enabled if preference is set).
+  {
+    profile()->GetPrefs()->SetBoolean(
+        universal_optout::prefs::kUniversalOptOutEligible, false);
+    profile()->GetPrefs()->SetBoolean(
+        universal_optout::prefs::kUniversalOptOutEnabled, false);
+    [[NSUserDefaults standardUserDefaults]
+        setInteger:static_cast<NSInteger>(
+                       experimental_flags::UniversalOptOutEligibilityOverride::
+                           kForcedOn)
+            forKey:@"UniversalOptOutEligibilityOverride"];
+    EXPECT_EQ(web::UniversalOptOutState::kEligible,
+              web_client.GetUniversalOptOutState(profile()));
+
+    profile()->GetPrefs()->SetBoolean(
+        universal_optout::prefs::kUniversalOptOutEnabled, true);
+    EXPECT_EQ(web::UniversalOptOutState::kEnabled,
+              web_client.GetUniversalOptOutState(profile()));
+  }
+
+  [[NSUserDefaults standardUserDefaults]
+      removeObjectForKey:@"UniversalOptOutEligibilityOverride"];
+}
+
+// Tests that GetExtensionController returns nullptr when no ExtensionService is
+// registered, and returns the controller from ExtensionService when available.
+TEST_F(ChromeWebClientTest, GetExtensionController) API_AVAILABLE(ios(18.4)) {
+  ChromeWebClient web_client;
+  EXPECT_EQ(nullptr, web_client.GetExtensionController(nullptr));
+  EXPECT_EQ(nullptr, web_client.GetExtensionController(profile()));
+
+  TestProfileIOS::Builder builder;
+  builder.AddTestingFactory(
+      ExtensionServiceFactory::GetInstance(),
+      base::BindRepeating(
+          [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
+            auto service = std::make_unique<ExtensionServiceImpl>(
+                CHECK_DEREF(profile->GetPrefs()),
+                web::ExtensionController::Create());
+            service->Initialize(web::UniversalOptOutState::kEnabled);
+            return service;
+          }));
+  auto profile_with_service = std::move(builder).Build();
+  ExtensionService* service =
+      ExtensionServiceFactory::GetForProfile(profile_with_service.get());
+  ASSERT_TRUE(service);
+  EXPECT_EQ(service->GetExtensionController(),
+            web_client.GetExtensionController(profile_with_service.get()));
+}
+
+// Test that `ShouldBlockUniversalLinksForURL` returns true for URLs matching
+// the Default Search Engine's domain or host and false otherwise.
+TEST_F(ChromeWebClientTest, ShouldBlockUniversalLinksForURL) {
+  ChromeWebClient web_client;
+
+  EXPECT_FALSE(web_client.ShouldBlockUniversalLinksForURL(
+      nullptr, GURL(kGoogleSearchURL)));
+  EXPECT_FALSE(web_client.ShouldBlockUniversalLinksForURL(profile(), GURL()));
+
+  TemplateURLService* template_url_service =
+      ios::TemplateURLServiceFactory::GetForProfile(profile());
+  ASSERT_TRUE(template_url_service);
+  template_url_service->Load();
+
+  TemplateURLData google_data;
+  google_data.SetShortName(u"Google");
+  google_data.SetKeyword(u"google.com");
+  google_data.SetURL(kGoogleTemplateURL);
+  TemplateURL* google_url =
+      template_url_service->Add(std::make_unique<TemplateURL>(google_data));
+  ASSERT_TRUE(google_url);
+  template_url_service->SetUserSelectedDefaultSearchProvider(google_url);
+
+  EXPECT_TRUE(web_client.ShouldBlockUniversalLinksForURL(
+      profile(), GURL(kGoogleSearchURL)));
+  EXPECT_TRUE(web_client.ShouldBlockUniversalLinksForURL(profile(),
+                                                         GURL(kGoogleRootURL)));
+  EXPECT_FALSE(web_client.ShouldBlockUniversalLinksForURL(
+      profile(), GURL(kGoogleMapsSubdomainURL)));
+  EXPECT_FALSE(web_client.ShouldBlockUniversalLinksForURL(
+      profile(), GURL(kGoogleMapsPathURL)));
+  EXPECT_FALSE(web_client.ShouldBlockUniversalLinksForURL(
+      profile(), GURL(kGoogleDriveURL)));
+  EXPECT_FALSE(web_client.ShouldBlockUniversalLinksForURL(
+      profile(), GURL(kGoogleDocsURL)));
+  EXPECT_FALSE(web_client.ShouldBlockUniversalLinksForURL(
+      profile(), GURL(kExampleSearchEngineSearchURL)));
+  EXPECT_FALSE(
+      web_client.ShouldBlockUniversalLinksForURL(profile(), GURL(kNonDSEURL)));
+
+  TemplateURLData example_search_engine_data;
+  example_search_engine_data.SetShortName(u"ExampleSearchEngine");
+  example_search_engine_data.SetKeyword(u"exampleSE.com");
+  example_search_engine_data.SetURL(kExampleSearchEngineTemplateURL);
+  TemplateURL* example_search_engine_url = template_url_service->Add(
+      std::make_unique<TemplateURL>(example_search_engine_data));
+  ASSERT_TRUE(example_search_engine_url);
+  template_url_service->SetUserSelectedDefaultSearchProvider(
+      example_search_engine_url);
+
+  EXPECT_TRUE(web_client.ShouldBlockUniversalLinksForURL(
+      profile(), GURL(kExampleSearchEngineSearchURL)));
+  EXPECT_TRUE(web_client.ShouldBlockUniversalLinksForURL(
+      profile(), GURL(kExampleSearcheEngineRootURL)));
+  EXPECT_FALSE(web_client.ShouldBlockUniversalLinksForURL(
+      profile(), GURL(kGoogleSearchURL)));
+}
+
+// Tests that GetExtensionController returns the controller from
+// ExtensionService when kUniversalOptOutExtensionSilent is enabled.
+TEST_F(ChromeWebClientTest, GetExtensionControllerSilentFlag)
+API_AVAILABLE(ios(18.4)) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      universal_optout::features::kUniversalOptOutExtensionSilent);
+
+  ChromeWebClient web_client;
+  TestProfileIOS::Builder builder;
+  builder.AddTestingFactory(
+      ExtensionServiceFactory::GetInstance(),
+      base::BindRepeating(
+          [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
+            auto service = std::make_unique<ExtensionServiceImpl>(
+                CHECK_DEREF(profile->GetPrefs()),
+                web::ExtensionController::Create());
+            service->Initialize(web::UniversalOptOutState::kNotEligible);
+            return service;
+          }));
+  auto profile_with_service = std::move(builder).Build();
+  ExtensionService* service =
+      ExtensionServiceFactory::GetForProfile(profile_with_service.get());
+  ASSERT_TRUE(service);
+  EXPECT_NE(nullptr, service->GetExtensionController());
+  EXPECT_EQ(service->GetExtensionController(),
+            web_client.GetExtensionController(profile_with_service.get()));
 }

@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.omnibox.suggestions.answer;
 
 import static org.junit.Assert.assertEquals;
-import static org.mockito.Mockito.spy;
 
 import android.content.Context;
 import android.view.View;
@@ -34,11 +33,13 @@ public class AnswerSuggestionViewBinderUnitTest {
     @Before
     public void setUp() {
         mContext = ContextUtils.getApplicationContext();
-        mBaseView = spy(new BaseSuggestionView<>(new LinearLayout(mContext)));
-        mModel = new PropertyModel(AnswerSuggestionViewProperties.ALL_KEYS);
+        mBaseView = new BaseSuggestionView<>(new LinearLayout(mContext));
         OmniboxResourceProvider resourceProvider =
                 new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
-        mModel.set(SuggestionCommonProperties.RESOURCE_PROVIDER, resourceProvider);
+        mModel =
+                new PropertyModel.Builder(AnswerSuggestionViewProperties.ALL_KEYS)
+                        .with(SuggestionCommonProperties.RESOURCE_PROVIDER, resourceProvider)
+                        .build();
         PropertyModelChangeProcessor.create(mModel, mBaseView, new AnswerSuggestionViewBinder());
     }
 

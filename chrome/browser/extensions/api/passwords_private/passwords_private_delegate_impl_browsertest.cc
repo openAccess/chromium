@@ -29,6 +29,7 @@
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/test_future.h"
+#include "base/timer/elapsed_timer.h"
 #include "base/values.h"
 #include "chrome/browser/affiliations/affiliation_service_factory.h"
 #include "chrome/browser/extensions/api/passwords_private/passwords_private_delegate.h"
@@ -52,6 +53,8 @@
 #include "chrome/browser/ui/passwords/settings/mock_password_import_controller.h"
 #include "chrome/browser/ui/passwords/settings/password_import_controller_interface.h"
 #include "chrome/browser/ui/safety_hub/password_status_check_service_factory.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
 #include "chrome/browser/web_applications/web_app_command_manager.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -65,7 +68,6 @@
 #include "chrome/browser/webauthn/passkey_model_factory.h"
 #include "chrome/common/extensions/api/passwords_private.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/test_browser_window.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
@@ -97,8 +99,11 @@
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/base_window.h"
 #include "ui/base/clipboard/test/clipboard_test_util.h"
 #include "ui/base/clipboard/test/test_clipboard.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 using device_reauth::ReauthResult;
 using password_manager::PasswordForm;
@@ -222,23 +227,37 @@ class PasswordsPrivateDelegateImplTest : public InProcessBrowserTest {
   scoped_refptr<PasswordsPrivateDelegateImpl> CreateDelegate() {
     Profile* profile = GetProfile();
     return base::MakeRefCounted<PasswordsPrivateDelegateImpl>(
-        profile->GetPrefs(), IdentityManagerFactory::GetForProfile(profile),
-        profile->GetDefaultStoragePartition()
-            ->GetURLLoaderFactoryForBrowserProcess(),
-        PasswordSenderServiceFactory::GetForProfile(profile),
-        SyncServiceFactory::GetForProfile(profile),
-        TrustSafetySentimentServiceFactory::GetForProfile(profile),
-        AffiliationServiceFactory::GetForProfile(profile),
-        ProfilePasswordStoreFactory::GetForProfile(
-            profile, ServiceAccessType::EXPLICIT_ACCESS),
-        AccountPasswordStoreFactory::GetForProfile(
-            profile, ServiceAccessType::EXPLICIT_ACCESS),
-        PasskeyModelFactory::GetInstance()->GetForProfile(profile),
-        BulkLeakCheckServiceFactory::GetForProfile(profile),
-        PasswordsPrivateEventRouterFactory::GetForProfile(profile),
-        &web_app::WebAppProvider::GetForWebApps(profile)->install_manager(),
-        EnclaveManagerFactory::GetForProfile(profile), base::NullCallback(),
-        base::DoNothing());
+        PasswordsPrivateDelegateImpl::Dependencies{
+            .prefs = profile->GetPrefs(),
+            .identity_manager = IdentityManagerFactory::GetForProfile(profile),
+            .url_loader_factory = profile->GetDefaultStoragePartition()
+                                      ->GetURLLoaderFactoryForBrowserProcess(),
+            .password_sender_service =
+                PasswordSenderServiceFactory::GetForProfile(profile),
+            .sync_service = SyncServiceFactory::GetForProfile(profile),
+            .trust_safety_sentiment_service =
+                TrustSafetySentimentServiceFactory::GetForProfile(profile),
+            .affiliation_service =
+                AffiliationServiceFactory::GetForProfile(profile),
+            .profile_password_store =
+                ProfilePasswordStoreFactory::GetForProfile(
+                    profile, ServiceAccessType::EXPLICIT_ACCESS),
+            .account_password_store =
+                AccountPasswordStoreFactory::GetForProfile(
+                    profile, ServiceAccessType::EXPLICIT_ACCESS),
+            .passkey_model =
+                PasskeyModelFactory::GetInstance()->GetForProfile(profile),
+            .bulk_leak_check_service =
+                BulkLeakCheckServiceFactory::GetForProfile(profile),
+            .event_router =
+                PasswordsPrivateEventRouterFactory::GetForProfile(profile),
+            .web_app_install_manager =
+                &web_app::WebAppProvider::GetForWebApps(profile)
+                     ->install_manager(),
+            .enclave_manager = EnclaveManagerFactory::GetForProfile(profile),
+            .device_authenticator_factory = base::NullCallback(),
+            .maybe_show_profile_switch_iph_cb = base::DoNothing(),
+        });
   }
 
   // Queries and returns the list of saved credentials, blocking until finished.
@@ -423,7 +442,7 @@ IN_PROC_BROWSER_TEST_F(PasswordsPrivateDelegateImplTest,
       events.find(api::passwords_private::
                       OnPasswordManagerActionableErrorChanged::kEventName);
   ASSERT_TRUE(it != events.end());
-  base::Value args = base::Value(it->second->event_args.Clone());
+  base::Value args = base::Value(it->second->args().Clone());
 
   ASSERT_TRUE(args.is_list());
   ASSERT_EQ(1u, args.GetList().size());
@@ -548,7 +567,7 @@ IN_PROC_BROWSER_TEST_F(PasswordsPrivateDelegateImplTest,
                             embedded_test_server()->GetURL("/empty.html"),
                             ui::PAGE_TRANSITION_TYPED);
   nav_params.tabstrip_index = 0;
-  nav_params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  nav_params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   Navigate(&nav_params);
 
   webapps::WebappsClientDesktop::CreateSingleton();
@@ -604,6 +623,7 @@ class PasswordsPrivateDelegateImplMockTaskEnvironmentTest
 
 IN_PROC_BROWSER_TEST_F(PasswordsPrivateDelegateImplMockTaskEnvironmentTest,
                        AuthenticationTimeMetric) {
+  base::ScopedMockElapsedTimersForTest mock_elapsed_timers;
   content::WebContents* web_contents_ptr =
       browser()->GetTabStripModel()->GetActiveWebContents();
   auto delegate = CreateDelegate();
@@ -625,7 +645,8 @@ IN_PROC_BROWSER_TEST_F(PasswordsPrivateDelegateImplMockTaskEnvironmentTest,
   delegate->RequestCredentialsDetails({0}, callback.Get(), web_contents_ptr);
 
   histogram_tester().ExpectUniqueTimeSample(
-      "PasswordManager.Settings.AuthenticationTime2", base::Seconds(0), 1);
+      "PasswordManager.Settings.AuthenticationTime2",
+      base::ScopedMockElapsedTimersForTest::kMockElapsedTime, 1);
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordsPrivateDelegateImplMockTaskEnvironmentTest,

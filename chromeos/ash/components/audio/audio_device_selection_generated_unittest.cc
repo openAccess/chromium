@@ -6,10 +6,9 @@
 // chromeos/ash/components/audio/device_selection_test_gen/gen.py.
 // DO NOT EDIT.
 
-#include "chromeos/ash/components/audio/audio_device_selection_test_base.h"
-
 #include "ash/constants/ash_features.h"
 #include "base/test/scoped_feature_list.h"
+#include "chromeos/ash/components/audio/audio_device_selection_test_base.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace ash {
@@ -1543,7 +1542,6 @@ TEST_F(AudioDeviceSelectionGeneratedTest, SimpleOutput) {
   // List: usb2 < usb3 < usb1
   EXPECT_EQ(ActiveOutputNodeId(), usb1.id);
 }
-
 
 }  // namespace
 }  // namespace ash

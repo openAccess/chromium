@@ -22,11 +22,11 @@
 #include "chrome/browser/ash/file_manager/office_file_tasks.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/views/select_file_dialog_extension/select_file_dialog_extension.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
 #include "chromeos/ash/experiences/arc/intent_helper/arc_intent_helper_bridge.h"
 #include "chromeos/ash/experiences/arc/mojom/intent_helper.mojom.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "content/public/browser/browser_thread.h"
 #include "net/base/mime_util.h"
 #include "storage/browser/file_system/file_system_context.h"
@@ -39,10 +39,10 @@ namespace extensions {
 
 namespace {
 
-// Computes the routing ID for SelectFileDialogExtension from the |function|.
-SelectFileDialogExtension::RoutingID GetFileDialogRoutingID(
-    ExtensionFunction* function) {
-  return SelectFileDialogExtensionUserData::GetRoutingIdForWebContents(
+// Returns the SelectFileDialogExtension that opened the Files app dialog
+// `function` was called from, or nullptr if it is gone.
+SelectFileDialogExtension* GetFileDialog(ExtensionFunction* function) {
+  return SelectFileDialogExtensionUserData::GetDialogForWebContents(
       function->GetSenderWebContents());
 }
 
@@ -50,8 +50,9 @@ SelectFileDialogExtension::RoutingID GetFileDialogRoutingID(
 
 ExtensionFunction::ResponseAction
 FileManagerPrivateCancelDialogFunction::Run() {
-  SelectFileDialogExtension::OnFileSelectionCanceled(
-      GetFileDialogRoutingID(this));
+  if (SelectFileDialogExtension* dialog = GetFileDialog(this)) {
+    dialog->OnFileSelectionCanceled();
+  }
   return RespondNow(NoArguments());
 }
 
@@ -110,13 +111,14 @@ void FileManagerPrivateSelectFileFunction::GetSelectedFileInfoResponse(
     bool for_open,
     int index,
     const std::vector<ui::SelectedFileInfo>& files) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   if (files.size() != 1) {
     Respond(Error("No file selected"));
     return;
   }
-  SelectFileDialogExtension::OnFileSelected(GetFileDialogRoutingID(this),
-                                            files[0], index);
+  if (SelectFileDialogExtension* dialog = GetFileDialog(this)) {
+    dialog->OnFileSelected(files[0], index);
+  }
   if (auto* notifier =
           file_manager::file_tasks::FileTasksNotifierFactory::GetForProfile(
               Profile::FromBrowserContext(browser_context()))) {
@@ -184,7 +186,7 @@ ExtensionFunction::ResponseAction FileManagerPrivateSelectFilesFunction::Run() {
 }
 
 void FileManagerPrivateSelectFilesFunction::OnReSyncFile() {
-  DCHECK(resync_files_remaining_ > 0);
+  CHECK(resync_files_remaining_ > 0, base::NotFatalUntil::M160);
   if (--resync_files_remaining_ > 0) {
     return;
   }
@@ -202,14 +204,15 @@ void FileManagerPrivateSelectFilesFunction::OnReSyncFile() {
 void FileManagerPrivateSelectFilesFunction::GetSelectedFileInfoResponse(
     bool for_open,
     const std::vector<ui::SelectedFileInfo>& files) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   if (files.empty()) {
     Respond(Error("No files selected"));
     return;
   }
 
-  SelectFileDialogExtension::OnMultiFilesSelected(GetFileDialogRoutingID(this),
-                                                  files);
+  if (SelectFileDialogExtension* dialog = GetFileDialog(this)) {
+    dialog->OnMultiFilesSelected(files);
+  }
   if (auto* notifier =
           file_manager::file_tasks::FileTasksNotifierFactory::GetForProfile(
               Profile::FromBrowserContext(browser_context()))) {
@@ -268,7 +271,7 @@ FileManagerPrivateGetAndroidPickerAppsFunction::Run() {
 
 void FileManagerPrivateGetAndroidPickerAppsFunction::OnActivitiesLoaded(
     std::vector<arc::mojom::IntentHandlerInfoPtr> handlers) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   Profile* profile = Profile::FromBrowserContext(browser_context());
   auto* intent_helper =
@@ -287,7 +290,7 @@ void FileManagerPrivateGetAndroidPickerAppsFunction::OnActivitiesLoaded(
 void FileManagerPrivateGetAndroidPickerAppsFunction::OnIconsLoaded(
     std::vector<arc::mojom::IntentHandlerInfoPtr> handlers,
     std::unique_ptr<arc::ArcIntentHelperBridge::ActivityToIconsMap> icons) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   using api::file_manager_private::FileTask;
   std::vector<api::file_manager_private::AndroidApp> results;
@@ -324,8 +327,9 @@ FileManagerPrivateSelectAndroidPickerAppFunction::Run() {
   ui::SelectedFileInfo file;
   file.file_path = arc::ConvertAndroidActivityToFilePath(
       params->android_app.package_name, params->android_app.activity_name);
-  SelectFileDialogExtension::OnFileSelected(GetFileDialogRoutingID(this), file,
-                                            0);
+  if (SelectFileDialogExtension* dialog = GetFileDialog(this)) {
+    dialog->OnFileSelected(file, 0);
+  }
   return RespondNow(NoArguments());
 }
 

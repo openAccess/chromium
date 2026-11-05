@@ -88,6 +88,7 @@ component("services") {
     "//media/gpu/ipc/common",
     "//media/mojo:buildflags",
     "//media/mojo/mojom",
+    "//media/mojo/mojom:video_encode",
     "//mojo/public/cpp/bindings",
     "//mojo/public/cpp/system",
     "//services/service_manager/public/cpp",
@@ -198,7 +199,7 @@ component("services") {
     deps += [ "//ui/gfx/mojom:dxgi_info" ]
   }
 
-  if (allow_hosting_oop_video_decoder) {
+  if (enable_oop_video_decoder) {
     sources += [
       "oop_video_decoder_factory_process_service.cc",
       "oop_video_decoder_factory_process_service.h",
@@ -241,10 +242,7 @@ source_set("test_support") {
     "gpu_mojo_media_client_test_util.cc",
     "gpu_mojo_media_client_test_util.h",
   ]
-  configs += [
-    "//build/config/compiler:wexit_time_destructors",
-    "//media:media_config",
-  ]
+  configs += [ "//media:media_config" ]
   public_deps = [
     "//base",
     "//gpu/config",
@@ -325,7 +323,7 @@ source_set("unit_tests") {
     ]
   }
 
-  if (allow_hosting_oop_video_decoder) {
+  if (enable_oop_video_decoder) {
     sources += [ "oop_video_decoder_service_unittest.cc" ]
     deps += [ "//gpu:test_support" ]
   }
@@ -338,10 +336,6 @@ source_set("unit_tests") {
 
     deps += [ "//third_party/fuchsia-sdk/sdk/pkg/fit-promise" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 mojolpm_fuzzer_test("webrtc_video_perf_mojolpm_fuzzer") {
@@ -384,7 +378,10 @@ mojolpm_fuzzer_test("mojo_video_encode_accelerator_service_mojolpm_fuzzer") {
 
   seed_corpus_sources = [ "mojo_video_encode_accelerator_service_mojolpm_fuzzer_seed_corpus/simple.textproto" ]
 
-  proto_deps = [ "//media/mojo/mojom:mojom_mojolpm" ]
+  proto_deps = [
+    "//media/mojo/mojom:mojom_mojolpm",
+    "//media/mojo/mojom:video_encode_mojolpm",
+  ]
 
   deps = [
     ":services",
@@ -395,6 +392,8 @@ mojolpm_fuzzer_test("mojo_video_encode_accelerator_service_mojolpm_fuzzer") {
     "//media:test_support",
     "//media/mojo/mojom",
     "//media/mojo/mojom:mojom_mojolpm",
+    "//media/mojo/mojom:video_encode",
+    "//media/mojo/mojom:video_encode_mojolpm",
     "//mojo/public/cpp/bindings",
     "//mojo/public/cpp/test_support:test_utils",
     "//testing/gtest",

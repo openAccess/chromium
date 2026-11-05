@@ -14,6 +14,7 @@
 
 #include "base/check.h"
 #include "base/check_deref.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "base/numerics/checked_math.h"
@@ -293,7 +294,7 @@ std::optional<size_t> AXPlatformNodeBase::GetIndexInParent() {
   size_t child_count = parent->GetChildCount();
   if (child_count == 0) {
     // |child_count| could be 0 if the parent is IsLeaf.
-    DCHECK(parent->IsLeaf());
+    CHECK(parent->IsLeaf(), base::NotFatalUntil::M163);
     return std::nullopt;
   }
 
@@ -323,7 +324,8 @@ std::optional<size_t> AXPlatformNodeBase::GetIndexInParent() {
   DCHECK(delegate->IsIgnored())
       << "Unable to find the unignored child in the list of its parent's "
          "children.\n* Child: "
-      << *this << "\n* Parent's subtree: " << parent->SubtreeToString();
+      << *this << "\n* Parent's subtree: "
+      << parent->SubtreeToString(/*stop_at_document=*/true);
   return std::nullopt;
 }
 
@@ -731,7 +733,7 @@ bool AXPlatformNodeBase::HasIntListAttribute(
   return GetDelegate()->HasIntListAttribute(attribute);
 }
 
-const std::vector<int32_t>& AXPlatformNodeBase::GetIntListAttribute(
+base::span<const int32_t> AXPlatformNodeBase::GetIntListAttribute(
     ax::mojom::IntListAttribute attribute) const {
   return GetDelegate()->GetIntListAttribute(attribute);
 }
@@ -747,7 +749,7 @@ bool AXPlatformNodeBase::HasStringListAttribute(
   return GetDelegate()->HasStringListAttribute(attribute);
 }
 
-const std::vector<std::string>& AXPlatformNodeBase::GetStringListAttribute(
+base::span<const std::string> AXPlatformNodeBase::GetStringListAttribute(
     ax::mojom::StringListAttribute attribute) const {
   return GetDelegate()->GetStringListAttribute(attribute);
 }
@@ -928,11 +930,11 @@ std::optional<int> AXPlatformNodeBase::GetTableCellIndex() const {
 }
 
 std::optional<int> AXPlatformNodeBase::GetTableColumn() const {
-  return GetDelegate()->GetTableCellColIndex();
+  return GetDelegate()->GetTableCellDomColIndex();
 }
 
 std::optional<int> AXPlatformNodeBase::GetTableColumnCount() const {
-  return GetDelegate()->GetTableColCount();
+  return GetDelegate()->GetTableDomColCount();
 }
 
 std::optional<int> AXPlatformNodeBase::GetTableAriaColumnCount() const {
@@ -940,7 +942,7 @@ std::optional<int> AXPlatformNodeBase::GetTableAriaColumnCount() const {
 }
 
 std::optional<int> AXPlatformNodeBase::GetTableColumnSpan() const {
-  return GetDelegate()->GetTableCellColSpan();
+  return GetDelegate()->GetTableCellDomColSpan();
 }
 
 std::optional<int> AXPlatformNodeBase::GetTableRow() const {
@@ -949,13 +951,13 @@ std::optional<int> AXPlatformNodeBase::GetTableRow() const {
     return delegate->GetTableRowRowIndex();
   }
   if (delegate->IsTableCellOrHeader()) {
-    return delegate->GetTableCellRowIndex();
+    return delegate->GetTableCellDomRowIndex();
   }
   return std::nullopt;
 }
 
 std::optional<int> AXPlatformNodeBase::GetTableRowCount() const {
-  return GetDelegate()->GetTableRowCount();
+  return GetDelegate()->GetTableDomRowCount();
 }
 
 std::optional<int> AXPlatformNodeBase::GetTableAriaRowCount() const {
@@ -963,7 +965,7 @@ std::optional<int> AXPlatformNodeBase::GetTableAriaRowCount() const {
 }
 
 std::optional<int> AXPlatformNodeBase::GetTableRowSpan() const {
-  return GetDelegate()->GetTableCellRowSpan();
+  return GetDelegate()->GetTableCellDomRowSpan();
 }
 
 std::optional<float> AXPlatformNodeBase::GetFontSizeInPoints() const {
@@ -994,7 +996,7 @@ bool AXPlatformNodeBase::HasSelectionFocusInSubtree() {
 
 bool AXPlatformNodeBase::HasSelectionFocusInSubtree(
     const AXSelection* selection) {
-  DCHECK(selection);
+  CHECK(selection, base::NotFatalUntil::M163);
   auto* focus_object = static_cast<AXPlatformNodeBase*>(
       GetDelegate()->GetFromNodeID(selection->focus_object_id));
   return focus_object && focus_object->IsDescendantOf(this);
@@ -1194,44 +1196,44 @@ void AXPlatformNodeBase::ComputeAttributes(PlatformAttributeList* attributes) {
   switch (static_cast<ax::mojom::NameFrom>(name_from)) {
     case ax::mojom::NameFrom::kAttribute:
       from = "attribute";
-      DCHECK(!GetName().empty());
+      CHECK(!GetName().empty(), base::NotFatalUntil::M163);
       break;
     case ax::mojom::NameFrom::kCaption:
       from = "caption";
-      DCHECK(!GetName().empty());
+      CHECK(!GetName().empty(), base::NotFatalUntil::M163);
       break;
     case ax::mojom::NameFrom::kContents:
       is_explicit_name = false;
       from = "contents";
-      DCHECK(!GetName().empty());
+      CHECK(!GetName().empty(), base::NotFatalUntil::M163);
       break;
     case ax::mojom::NameFrom::kCssAltText:
       from = "CSS alt text";
-      DCHECK(!GetName().empty());
+      CHECK(!GetName().empty(), base::NotFatalUntil::M163);
       break;
     case ax::mojom::NameFrom::kPlaceholder:
       from = "placeholder";
-      DCHECK(!GetName().empty());
+      CHECK(!GetName().empty(), base::NotFatalUntil::M163);
       break;
     case ax::mojom::NameFrom::kProhibited:
     case ax::mojom::NameFrom::kProhibitedAndRedundant:
       is_explicit_name = false;
       from = "prohibited";
-      DCHECK(GetName().empty());
+      CHECK(GetName().empty(), base::NotFatalUntil::M163);
       break;
     case ax::mojom::NameFrom::kRelatedElement:
       from = "related-element";
-      DCHECK(!GetName().empty());
+      CHECK(!GetName().empty(), base::NotFatalUntil::M163);
       break;
     case ax::mojom::NameFrom::kPopoverTarget:
     case ax::mojom::NameFrom::kInterestFor:
     case ax::mojom::NameFrom::kTitle:
       from = "tooltip";
-      DCHECK(!GetName().empty());
+      CHECK(!GetName().empty(), base::NotFatalUntil::M163);
       break;
     case ax::mojom::NameFrom::kValue:
       from = "value";
-      DCHECK(!GetName().empty());
+      CHECK(!GetName().empty(), base::NotFatalUntil::M163);
       break;
     case ax::mojom::NameFrom::kAttributeExplicitlyEmpty:
       break;
@@ -1345,8 +1347,8 @@ void AXPlatformNodeBase::ComputeAttributes(PlatformAttributeList* attributes) {
   // Expose aria-colcount and aria-rowcount in a table, grid or treegrid if they
   // are different from its physical dimensions.
   if (IsTableLike(GetRole()) &&
-      (delegate->GetTableAriaRowCount() != delegate->GetTableRowCount() ||
-       delegate->GetTableAriaColCount() != delegate->GetTableColCount())) {
+      (delegate->GetTableAriaRowCount() != delegate->GetTableDomRowCount() ||
+       delegate->GetTableAriaColCount() != delegate->GetTableDomColCount())) {
     AddAttributeToList(ax::mojom::IntAttribute::kAriaColumnCount, "colcount",
                        attributes);
     AddAttributeToList(ax::mojom::IntAttribute::kAriaRowCount, "rowcount",
@@ -1360,9 +1362,9 @@ void AXPlatformNodeBase::ComputeAttributes(PlatformAttributeList* attributes) {
     // are 0 based, so we subtract aria-col/rowindex by 1 to compare with
     // table's physical coordinates.
     std::optional<int> aria_rowindex = delegate->GetTableCellAriaRowIndex();
-    std::optional<int> physical_rowindex = delegate->GetTableCellRowIndex();
+    std::optional<int> physical_rowindex = delegate->GetTableCellDomRowIndex();
     std::optional<int> aria_colindex = delegate->GetTableCellAriaColIndex();
-    std::optional<int> physical_colindex = delegate->GetTableCellColIndex();
+    std::optional<int> physical_colindex = delegate->GetTableCellDomColIndex();
 
     if (aria_rowindex && physical_rowindex &&
         aria_rowindex.value() - 1 != physical_rowindex.value()) {
@@ -1556,7 +1558,7 @@ void AXPlatformNodeBase::AddAttributeToList(
     const ax::mojom::StringAttribute attribute,
     const char* name,
     PlatformAttributeList* attributes) {
-  DCHECK(attributes);
+  CHECK(attributes, base::NotFatalUntil::M163);
   std::string value;
   if (GetStringAttribute(attribute, &value)) {
     AddAttributeToList(name, value, attributes);
@@ -1567,7 +1569,7 @@ void AXPlatformNodeBase::AddAttributeToList(
     const ax::mojom::BoolAttribute attribute,
     const char* name,
     PlatformAttributeList* attributes) {
-  DCHECK(attributes);
+  CHECK(attributes, base::NotFatalUntil::M163);
   bool value;
   if (GetBoolAttribute(attribute, &value)) {
     AddAttributeToList(name, base::ToString(value), attributes);
@@ -1578,7 +1580,7 @@ void AXPlatformNodeBase::AddAttributeToList(
     const ax::mojom::IntAttribute attribute,
     const char* name,
     PlatformAttributeList* attributes) {
-  DCHECK(attributes);
+  CHECK(attributes, base::NotFatalUntil::M163);
 
   auto maybe_value = ComputeAttribute(GetDelegate(), attribute);
   if (maybe_value.has_value()) {
@@ -1715,7 +1717,7 @@ bool AXPlatformNodeBase::ScrollToNode(ScrollType scroll_type) {
 // static
 void AXPlatformNodeBase::SanitizeStringAttribute(const std::string& input,
                                                  std::string* output) {
-  DCHECK(output);
+  CHECK(output, base::NotFatalUntil::M163);
   // According to the IA2 spec and AT-SPI2, these characters need to be escaped
   // with a backslash: backslash, colon, comma, equals and semicolon.  Note
   // that backslash must be replaced first.
@@ -1783,8 +1785,9 @@ int32_t AXPlatformNodeBase::GetHypertextOffsetFromChild(
 }
 
 int AXPlatformNodeBase::HypertextOffsetFromChildIndex(int child_index) const {
-  DCHECK_GE(child_index, 0);
-  DCHECK_LE(child_index, static_cast<int>(GetChildCount()));
+  CHECK_GE(child_index, 0, base::NotFatalUntil::M163);
+  CHECK_LE(child_index, static_cast<int>(GetChildCount()),
+           base::NotFatalUntil::M163);
 
   // Use both a child index and an iterator to avoid an O(n^2) complexity which
   // would be the case if we were to call GetChildAtIndex on each child.
@@ -1826,7 +1829,7 @@ int32_t AXPlatformNodeBase::GetHypertextOffsetFromDescendant(
 int AXPlatformNodeBase::GetHypertextOffsetFromEndpoint(
     AXPlatformNodeBase* endpoint_object,
     int endpoint_offset) {
-  DCHECK_GE(endpoint_offset, 0);
+  CHECK_GE(endpoint_offset, 0, base::NotFatalUntil::M163);
 
   // There are three cases:
   // 1. The selection endpoint is this object itself: endpoint_offset should be
@@ -1852,8 +1855,9 @@ int AXPlatformNodeBase::GetHypertextOffsetFromEndpoint(
 
   // Case 2. Is the endpoint an ancestor of this object.
   if (IsDescendantOf(endpoint_object)) {
-    DCHECK_LE(endpoint_offset,
-              static_cast<int>(endpoint_object->GetChildCount()));
+    CHECK_LE(endpoint_offset,
+             static_cast<int>(endpoint_object->GetChildCount()),
+             base::NotFatalUntil::M163);
 
     AXPlatformNodeBase* closest_ancestor = this;
     while (closest_ancestor) {
@@ -1887,7 +1891,7 @@ int AXPlatformNodeBase::GetHypertextOffsetFromEndpoint(
   if (!common_parent)
     return -1;
 
-  DCHECK(!(common_parent->IsText()));
+  CHECK(!(common_parent->IsText()), base::NotFatalUntil::M163);
 
   // Case 2. Is the selection endpoint inside a descendant of this object?
   //
@@ -1950,9 +1954,10 @@ int AXPlatformNodeBase::GetHypertextOffsetFromEndpoint(
 
 AXPlatformNodeBase::AXPosition AXPlatformNodeBase::HypertextOffsetToEndpoint(
     int hypertext_offset) const {
-  DCHECK_GE(hypertext_offset, 0);
+  CHECK_GE(hypertext_offset, 0, base::NotFatalUntil::M163);
   // The offset can be equal to the length when it is past the end.
-  DCHECK_LE(hypertext_offset, static_cast<int>(GetHypertext().size()));
+  CHECK_LE(hypertext_offset, static_cast<int>(GetHypertext().size()),
+           base::NotFatalUntil::M163);
 
   if (IsLeaf()) {
     if (IsText()) {
@@ -1983,7 +1988,7 @@ AXPlatformNodeBase::AXPosition AXPlatformNodeBase::HypertextOffsetToEndpoint(
 
 AXPlatformNodeBase::TextSelectionResult AXPlatformNodeBase::GetTextSelection(
     TextSelection* selection) {
-  DCHECK(selection);
+  CHECK(selection, base::NotFatalUntil::M163);
 
   AXSelection unignored_selection = GetDelegate()->GetUnignoredSelection();
 
@@ -2076,30 +2081,30 @@ AXPlatformNodeBase::TextSelectionResult AXPlatformNodeBase::SetTextSelection(
   if (start_position->IsNullPosition() || end_position->IsNullPosition()) {
     return TextSelectionResult::kInvalidSelection;
   }
-
-  AXActionData action_data;
-  action_data.action = ax::mojom::Action::kSetSelection;
-  action_data.target_tree_id = start_position->tree_id();
-  int start_offset = start_position->IsTextPosition()
-                         ? start_position->text_offset()
-                         : start_position->child_index();
-  int end_offset = end_position->IsTextPosition() ? end_position->text_offset()
-                                                  : end_position->child_index();
   if (selection.start_is_active) {
-    action_data.focus_node_id = start_position->anchor_id();
-    action_data.focus_offset = start_offset;
-    action_data.anchor_node_id = end_position->anchor_id();
-    action_data.anchor_offset = end_offset;
-  } else {
-    action_data.anchor_node_id = start_position->anchor_id();
-    action_data.anchor_offset = start_offset;
-    action_data.focus_node_id = end_position->anchor_id();
-    action_data.focus_offset = end_offset;
+    std::swap(start_position, end_position);
   }
-
-  return GetDelegate()->AccessibilityPerformAction(action_data)
+  return GetDelegate()->AccessibilityPerformAction(
+             CreateTextSelectionAction(start_position, end_position))
              ? TextSelectionResult::kSuccess
              : TextSelectionResult::kFailure;
+}
+
+AXActionData AXPlatformNodeBase::CreateTextSelectionAction(
+    const AXPosition& anchor,
+    const AXPosition& focus) {
+  CHECK(!anchor->IsNullPosition(), base::NotFatalUntil::M163);
+  CHECK(!focus->IsNullPosition(), base::NotFatalUntil::M163);
+  AXActionData action_data;
+  action_data.action = ax::mojom::Action::kSetSelection;
+  action_data.target_tree_id = anchor->tree_id();
+  action_data.anchor_node_id = anchor->anchor_id();
+  action_data.anchor_offset =
+      anchor->IsTextPosition() ? anchor->text_offset() : anchor->child_index();
+  action_data.focus_node_id = focus->anchor_id();
+  action_data.focus_offset =
+      focus->IsTextPosition() ? focus->text_offset() : focus->child_index();
+  return action_data;
 }
 
 AXPlatformNodeBase::TextSelectionResult
@@ -2128,7 +2133,7 @@ AXPlatformNodeBase::ClearTextSelection() {
 }
 
 int AXPlatformNodeBase::GetSelectionAnchor(const AXSelection* selection) {
-  DCHECK(selection);
+  CHECK(selection, base::NotFatalUntil::M163);
   AXNodeID anchor_id = selection->anchor_object_id;
   AXPlatformNodeBase* anchor_object =
       static_cast<AXPlatformNodeBase*>(GetDelegate()->GetFromNodeID(anchor_id));
@@ -2140,7 +2145,7 @@ int AXPlatformNodeBase::GetSelectionAnchor(const AXSelection* selection) {
 }
 
 int AXPlatformNodeBase::GetSelectionFocus(const AXSelection* selection) {
-  DCHECK(selection);
+  CHECK(selection, base::NotFatalUntil::M163);
   AXNodeID focus_id = selection->focus_object_id;
   AXPlatformNodeBase* focus_object =
       static_cast<AXPlatformNodeBase*>(GetDelegate()->GetFromNodeID(focus_id));
@@ -2158,7 +2163,7 @@ void AXPlatformNodeBase::GetSelectionOffsets(int* selection_start,
 void AXPlatformNodeBase::GetSelectionOffsets(const AXSelection* selection,
                                              int* selection_start,
                                              int* selection_end) {
-  DCHECK(selection_start && selection_end);
+  CHECK(selection_start && selection_end, base::NotFatalUntil::M163);
 
   if (IsAtomicTextField() &&
       GetIntAttribute(ax::mojom::IntAttribute::kTextSelStart,
@@ -2173,7 +2178,7 @@ void AXPlatformNodeBase::GetSelectionOffsets(const AXSelection* selection,
     unignored_selection = GetDelegate()->GetUnignoredSelection();
     selection = &unignored_selection;
   }
-  DCHECK(selection);
+  CHECK(selection, base::NotFatalUntil::M163);
   GetSelectionOffsetsFromTree(selection, selection_start, selection_end);
 }
 
@@ -2201,7 +2206,7 @@ void AXPlatformNodeBase::GetSelectionOffsetsFromTree(
     int* selection_start,
     int* selection_end,
     bool caret_only) {
-  DCHECK(selection_start && selection_end);
+  CHECK(selection_start && selection_end, base::NotFatalUntil::M163);
 
   *selection_start = GetSelectionAnchor(selection);
   *selection_end = GetSelectionFocus(selection);
@@ -2251,8 +2256,9 @@ void AXPlatformNodeBase::GetSelectionOffsetsFromTree(
     return;
 
   int child_index = index_iter->second;
-  DCHECK_GE(child_index, 0);
-  DCHECK_LT(static_cast<size_t>(child_index), GetChildCount());
+  CHECK_GE(child_index, 0, base::NotFatalUntil::M163);
+  CHECK_LT(static_cast<size_t>(child_index), GetChildCount(),
+           base::NotFatalUntil::M163);
   AXPlatformNodeBase* hyperlink = static_cast<AXPlatformNodeBase*>(
       AXPlatformNode::FromNativeViewAccessible(ChildAtIndex(child_index)));
   if (!hyperlink)
@@ -2391,7 +2397,7 @@ int AXPlatformNodeBase::FindTextBoundary(
     int offset,
     ax::mojom::MoveDirection direction,
     ax::mojom::TextAffinity affinity) const {
-  DCHECK_NE(boundary, ax::mojom::TextBoundary::kNone);
+  CHECK_NE(boundary, ax::mojom::TextBoundary::kNone, base::NotFatalUntil::M163);
 
   // TODO(crbug.com/40887363): AXPosition support for sentences is broken. Rely
   // upon known working utility method below.
@@ -2427,7 +2433,7 @@ int AXPlatformNodeBase::FindTextBoundary(
       << "\n  start anchor:      " << position->GetAnchor()
       << "\n  boundary position: " << *boundary_position
       << "\n  boundary anchor:   " << boundary_position->GetAnchor();
-  DCHECK_GE(boundary_position->text_offset(), 0);
+  CHECK_GE(boundary_position->text_offset(), 0, base::NotFatalUntil::M163);
   return boundary_position->text_offset();
 }
 
@@ -2646,7 +2652,7 @@ int AXPlatformNodeBase::GetSelectionCount() const {
 
 AXPlatformNodeBase* AXPlatformNodeBase::GetSelectedItem(
     int selected_index) const {
-  DCHECK_GE(selected_index, 0);
+  CHECK_GE(selected_index, 0, base::NotFatalUntil::M163);
   int max_items = GetMaxSelectableItems();
   if (max_items == 0)
     return nullptr;
@@ -2660,8 +2666,9 @@ AXPlatformNodeBase* AXPlatformNodeBase::GetSelectedItem(
   if (returned_count <= selected_index)
     return nullptr;
 
-  DCHECK(!selected_children.empty());
-  DCHECK_LT(selected_index, static_cast<int>(selected_children.size()));
+  CHECK(!selected_children.empty(), base::NotFatalUntil::M163);
+  CHECK_LT(selected_index, static_cast<int>(selected_children.size()),
+           base::NotFatalUntil::M163);
   return selected_children[selected_index];
 }
 
@@ -2687,11 +2694,11 @@ int AXPlatformNodeBase::GetSelectedItems(
 
 void AXPlatformNodeBase::SanitizeTextAttributeValue(const std::string& input,
                                                     std::string* output) const {
-  DCHECK(output);
+  CHECK(output, base::NotFatalUntil::M163);
 }
 
 bool AXPlatformNodeBase::IsDescribedByTooltip() const {
-  const std::vector<int32_t>& description_ids =
+  base::span<const int32_t> description_ids =
       GetIntListAttribute(ax::mojom::IntListAttribute::kDescribedbyIds);
 
   std::string description_from;
@@ -2709,10 +2716,11 @@ bool AXPlatformNodeBase::IsDescribedByTooltip() const {
 }
 
 std::string AXPlatformNodeBase::ComputeDetailsRoles() const {
-  const std::vector<int32_t>& details_ids =
+  base::span<const int32_t> details_ids =
       GetIntListAttribute(ax::mojom::IntListAttribute::kDetailsIds);
-  if (details_ids.empty())
+  if (details_ids.empty()) {
     return std::string();
+  }
 
   std::set<std::string> details_roles_set;
 

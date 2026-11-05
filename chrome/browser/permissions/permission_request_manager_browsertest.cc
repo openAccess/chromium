@@ -42,6 +42,7 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/content_settings/core/common/features.h"
 #include "components/custom_handlers/register_protocol_handler_permission_request.h"
+#include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/permissions/content_setting_permission_context_base.h"
 #include "components/permissions/permission_request.h"
 #include "components/permissions/permission_uma_util.h"
@@ -54,6 +55,7 @@
 #include "components/permissions/test/mock_permission_request.h"
 #include "components/permissions/test/mock_permission_ui_selector.h"
 #include "components/permissions/test/permission_request_observer.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/permission_controller.h"
 #include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/permission_result.h"
@@ -64,7 +66,6 @@
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
@@ -75,6 +76,8 @@
 #include "services/device/public/cpp/test/scoped_geolocation_overrider.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -361,7 +364,7 @@ IN_PROC_BROWSER_TEST_F(PermissionRequestManagerBrowserTest,
 
   EXPECT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/title2.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Discard background tab 0, replacing its WebContents with a new hidden one.
@@ -490,9 +493,16 @@ IN_PROC_BROWSER_TEST_F(PermissionRequestManagerBrowserTest,
 
 class PermissionRequestManagerOmniboxEverywhereBrowserTest
     : public PermissionRequestManagerBrowserTest {
+ public:
+  PermissionRequestManagerOmniboxEverywhereBrowserTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{omnibox::kOmniboxEverywhere},
+        /*disabled_features=*/{
+            omnibox_feature_configs::kEmbeddedPermissionEnabled});
+  }
+
  private:
-  base::test::ScopedFeatureList enable_omnibox_everywhere{
-      omnibox::kOmniboxEverywhere};
+  base::test::ScopedFeatureList feature_list_;
 };
 
 // Request via omnibox everywhere. PEPC should be used.
@@ -657,7 +667,7 @@ IN_PROC_BROWSER_TEST_F(PermissionRequestManagerBrowserTest, MultipleTabs) {
 
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/empty.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // SetUp() only creates a mock prompt factory for the first tab.
@@ -739,7 +749,7 @@ IN_PROC_BROWSER_TEST_F(PermissionRequestManagerBrowserTest,
 
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/empty.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // SetUp() only creates a mock prompt factory for the first tab.
@@ -835,7 +845,7 @@ IN_PROC_BROWSER_TEST_F(PermissionRequestManagerBrowserTest,
   // one.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/empty.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Navigate background tab, prompt should be removed.
@@ -1280,7 +1290,7 @@ IN_PROC_BROWSER_TEST_F(PermissionRequestManagerQuietUiBrowserTest,
   // and existing tab marked as HIDDEN.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/empty.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   std::optional<permissions::PermissionPromptDisposition> disposition =
@@ -1521,7 +1531,7 @@ IN_PROC_BROWSER_TEST_F(PermissionRequestManagerOneTimePermissionBrowserTest,
   // Open a new tab with same domain.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/title1.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Create a new mock permission prompt factory for the second tab.
@@ -1540,7 +1550,7 @@ IN_PROC_BROWSER_TEST_F(PermissionRequestManagerOneTimePermissionBrowserTest,
   // Open a new empty tab before closing the first two tabs.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(url::kAboutBlankURL),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   // Need to close the mock permission managers before closing the tabs.
@@ -1685,116 +1695,6 @@ IN_PROC_BROWSER_TEST_F(PermissionRequestManagerWithPrerenderingTest,
   EXPECT_TRUE(request_2_state.cancelled);
 }
 
-class PermissionRequestManagerWithFencedFrameTest
-    : public PermissionRequestManagerBrowserTest {
- public:
-  PermissionRequestManagerWithFencedFrameTest() = default;
-  ~PermissionRequestManagerWithFencedFrameTest() override = default;
-
-  PermissionRequestManagerWithFencedFrameTest(
-      const PermissionRequestManagerWithFencedFrameTest&) = delete;
-  PermissionRequestManagerWithFencedFrameTest& operator=(
-      const PermissionRequestManagerWithFencedFrameTest&) = delete;
-
- protected:
-  content::test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_helper_;
-  }
-
- private:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(PermissionRequestManagerWithFencedFrameTest,
-                       GetCurrentPosition) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(
-      browser(), embedded_test_server()->GetURL("/title1.html")));
-  content::WebContents* web_contents =
-      browser()->GetTabStripModel()->GetActiveWebContents();
-
-  // Load a fenced frame.
-  GURL fenced_frame_url =
-      embedded_test_server()->GetURL("/fenced_frames/title1.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          web_contents->GetPrimaryMainFrame(), fenced_frame_url);
-  ASSERT_TRUE(fenced_frame_host);
-
-  const char kQueryPermission[] = R"(
-      (async () => {
-        const status = await navigator.permissions.query({name: 'geolocation'});
-        return status.state;
-      })();
-    )";
-
-  // The result of query 'geolocation' permission in the fenced frame should
-  // be 'denied'.
-  EXPECT_EQ("denied", content::EvalJs(fenced_frame_host, kQueryPermission));
-
-  const char kQueryCurrentPosition[] = R"(
-      (async () => {
-        return await new Promise(resolve => {
-          navigator.geolocation.getCurrentPosition(
-              () => resolve('granted'), () => resolve('denied'));
-        });
-      })();
-    )";
-
-  bubble_factory()->set_response_type(
-      permissions::PermissionRequestManager::AutoResponseType::ACCEPT_ONCE);
-
-  // The getCurrentPosition() call in the fenced frame should be denied.
-  EXPECT_EQ("denied",
-            content::EvalJs(fenced_frame_host, kQueryCurrentPosition));
-  // The permission prompt should not be shown.
-  EXPECT_EQ(0, bubble_factory()->TotalRequestCount());
-}
-
-// Tests that the permission request for a fenced frame is blocked
-// when the permission is requested thru PermissionControllerDelegate.
-IN_PROC_BROWSER_TEST_F(PermissionRequestManagerWithFencedFrameTest,
-                       RequestPermissionThruDelegate) {
-  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
-  https_server.AddDefaultHandlers(GetChromeTestDataDir());
-  https_server.SetSSLConfig(net::EmbeddedTestServer::CERT_OK);
-  ASSERT_TRUE(https_server.Start());
-  auto* web_contents = browser()->GetTabStripModel()->GetActiveWebContents();
-
-  GURL initial_url = https_server.GetURL("/title1.html");
-  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), initial_url));
-
-  // Load a fenced frame.
-  GURL fenced_frame_url = https_server.GetURL("/fenced_frames/title1.html");
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_test_helper().CreateFencedFrame(
-          web_contents->GetPrimaryMainFrame(), fenced_frame_url);
-  ASSERT_TRUE(fenced_frame_host);
-
-  // The permission request is denied because it's from the fenced frame.
-  const char kExpectedConsolePattern[] =
-      "*blocked because it was requested inside a fenced frame*";
-  content::WebContentsConsoleObserver console_observer(web_contents);
-  console_observer.SetFilter(base::BindRepeating(
-      [](content::RenderFrameHost* render_frame_host,
-         const content::WebContentsConsoleObserver::Message& message) {
-        return message.source_frame == render_frame_host;
-      },
-      fenced_frame_host->GetOutermostMainFrame()));
-  console_observer.SetPattern(kExpectedConsolePattern);
-
-  EXPECT_EQ(
-      RequestPermissionFromDocumentSync(
-          fenced_frame_host, content::PermissionDescriptorUtil::
-                                 CreatePermissionDescriptorForPermissionType(
-                                     blink::PermissionType::SENSORS)),
-      content::PermissionResult(blink::mojom::PermissionStatus::DENIED,
-                                content::PermissionStatusSource::FENCED_FRAME));
-
-  ASSERT_TRUE(console_observer.Wait());
-  ASSERT_EQ(1u, console_observer.messages().size());
-}
 
 IN_PROC_BROWSER_TEST_F(
     PermissionRequestManagerWithBackForwardCacheUnblockBrowserTest,

@@ -17,6 +17,7 @@ import android.view.ViewTreeObserver;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
@@ -590,7 +591,9 @@ public class ContextualSearchManager
             String selection, boolean isExactResolve, ContextualSearchContext searchContext) {
         ContextualSearchManagerJni.get()
                 .startSearchTermResolutionRequest(
-                        mNativeContextualSearchManagerPtr, mContext, getBaseWebContents());
+                        mNativeContextualSearchManagerPtr,
+                        mContext != null ? mContext.getNativePointer() : null,
+                        getBaseWebContents());
         ContextualSearchUma.logResolveRequested(mSelectionController.isTapSelection());
     }
 
@@ -696,7 +699,7 @@ public class ContextualSearchManager
             assert mContext != null;
             // Sometimes Blink returns empty surroundings and 0 offsets so reset in that case.
             // See crbug.com/40374299.
-            if (surroundingText.length() == 0) {
+            if (surroundingText.isEmpty()) {
                 mInternalStateController.reset(StateChangeReason.UNKNOWN);
             } else {
                 mContext.setSurroundingText(encoding, surroundingText, startOffset, endOffset);
@@ -1705,7 +1708,9 @@ public class ContextualSearchManager
                             InternalState.GATHERING_SURROUNDINGS);
                     ContextualSearchManagerJni.get()
                             .gatherSurroundingText(
-                                    mNativeContextualSearchManagerPtr, mContext, webContents);
+                                    mNativeContextualSearchManagerPtr,
+                                    mContext != null ? mContext.getNativePointer() : null,
+                                    webContents);
                 } else {
                     mInternalStateController.reset(StateChangeReason.UNKNOWN);
                 }
@@ -1902,7 +1907,7 @@ public class ContextualSearchManager
      */
     private @Nullable List<String> buildRelatedSearches(String defaultSearch) {
         List<String> queries = assumeNonNull(mRelatedSearches).getQueries();
-        if (queries.size() == 0) {
+        if (queries.isEmpty()) {
             return queries;
         }
 
@@ -2023,12 +2028,14 @@ public class ContextualSearchManager
 
         void startSearchTermResolutionRequest(
                 long nativeContextualSearchManager,
-                @Nullable ContextualSearchContext contextualSearchContext,
+                @Nullable JniPtr<ContextualSearchContext.NativeContextualSearchContext>
+                        contextualSearchContext,
                 @Nullable WebContents baseWebContents);
 
         void gatherSurroundingText(
                 long nativeContextualSearchManager,
-                ContextualSearchContext contextualSearchContext,
+                @Nullable JniPtr<ContextualSearchContext.NativeContextualSearchContext>
+                        contextualSearchContext,
                 WebContents baseWebContents);
 
         void removeLastHistoryEntry(

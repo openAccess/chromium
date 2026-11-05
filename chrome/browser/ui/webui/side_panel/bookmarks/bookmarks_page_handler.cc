@@ -7,9 +7,13 @@
 #include <algorithm>
 #include <iterator>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include "base/check_is_test.h"
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
@@ -63,7 +67,6 @@
 #include "mojo/public/cpp/bindings/message.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/view.h"
@@ -101,7 +104,7 @@ class BookmarksPageHandler::BookmarkContextMenu
       return;
     }
     if (source == side_panel::mojom::ActionSource::kPriceTracking) {
-      DCHECK(shopping_list_controller_);
+      CHECK(shopping_list_controller_, base::NotFatalUntil::M162);
       AddItem(IDC_BOOKMARK_BAR_OPEN_ALL);
       AddItem(IDC_BOOKMARK_BAR_OPEN_ALL_NEW_WINDOW);
       AddItem(IDC_BOOKMARK_BAR_OPEN_ALL_INCOGNITO);
@@ -653,21 +656,36 @@ void BookmarksPageHandler::OpenBookmark(
     return;
   }
 
-  WindowOpenDisposition open_location = ui::DispositionFromClick(
+  ui::mojom::WindowOpenDisposition open_location = ui::DispositionFromClick(
       click_modifiers->middle_button, click_modifiers->alt_key,
       click_modifiers->ctrl_key, click_modifiers->meta_key,
       click_modifiers->shift_key);
-  bookmarks::OpenAllIfAllowed(browser_window_interface_, {bookmark_node},
-                              open_location);
-  if (source == side_panel::mojom::ActionSource::kPriceTracking) {
-    return;
+  base::OnceClosure on_bookmarks_opened;
+  if (source != side_panel::mojom::ActionSource::kPriceTracking) {
+    // Opening a bookmark may synchronously close the side panel and destroy
+    // `this`, or show an asynchronous confirmation dialog that outlives `this`.
+    // Capture the metric parameters prior to opening so the callback does not
+    // reference `this` when bookmarks are actually opened.
+    const BookmarkLaunchLocation launch_location =
+        parent_folder_depth > 0 ? BookmarkLaunchLocation::kSidePanelSubfolder
+                                : BookmarkLaunchLocation::kSidePanelFolder;
+    const profile_metrics::BrowserProfileType profile_type =
+        profile_metrics::GetBrowserProfileType(
+            browser_window_interface_->GetProfile());
+    on_bookmarks_opened = base::BindOnce(
+        [](BookmarkLaunchLocation launch_location,
+           profile_metrics::BrowserProfileType profile_type) {
+          base::RecordAction(
+              base::UserMetricsAction("SidePanel.Bookmarks.Navigation"));
+          RecordBookmarkLaunch(launch_location, profile_type);
+        },
+        launch_location, profile_type);
   }
-  base::RecordAction(base::UserMetricsAction("SidePanel.Bookmarks.Navigation"));
-  RecordBookmarkLaunch(parent_folder_depth > 0
-                           ? BookmarkLaunchLocation::kSidePanelSubfolder
-                           : BookmarkLaunchLocation::kSidePanelFolder,
-                       profile_metrics::GetBrowserProfileType(
-                           browser_window_interface_->GetProfile()));
+  bookmarks::OpenAllIfAllowed(
+      browser_window_interface_, {bookmark_node}, open_location,
+      bookmarks::OpenAllBookmarksContext::kNone,
+      /*navigation_initiator=*/std::nullopt,
+      /*launch_action=*/std::nullopt, std::move(on_bookmarks_opened));
 }
 
 void BookmarksPageHandler::Undo() {
@@ -690,23 +708,6 @@ void BookmarksPageHandler::RenameBookmark(int64_t node_id,
   // through the extensions API.
   model->SetTitle(node_to_rename, base::UTF8ToUTF16(new_title),
                   bookmarks::metrics::BookmarkEditSource::kExtension);
-}
-
-void BookmarksPageHandler::MoveBookmark(int64_t node_id,
-                                        const std::string& folder_id) {
-  std::optional<BookmarkParentFolder> parent =
-      GetBookmarkParentFolderFromSidePanel(*bookmark_merged_surface_,
-                                           folder_id);
-  if (!parent) {
-    return;
-  }
-
-  const bookmarks::BookmarkNode* node_to_move = bookmarks::GetBookmarkNodeByID(
-      bookmark_merged_surface_->bookmark_model(), node_id);
-  bookmark_merged_surface_->Move(
-      node_to_move, *parent,
-      bookmark_merged_surface_->GetChildrenCount(*parent),
-      browser_window_interface_);
 }
 
 void BookmarksPageHandler::RemoveBookmarks(const std::vector<int64_t>& node_ids,

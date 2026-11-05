@@ -32,7 +32,11 @@ suite('LineFocusController', () => {
     const container = document.createElement('p');
     container.innerText =
         'I\'ve heard it said\nThat people come into our lives\nfor a reason.';
-    container.style.whiteSpace = 'pre-line';
+    container.style.whiteSpace = 'pre';
+    container.style.width = 'max-content';
+    container.style.margin = '0';
+    container.style.fontSize = '20px';
+    container.style.lineHeight = '40px';
     document.body.appendChild(container);
     return container;
   }
@@ -44,7 +48,11 @@ suite('LineFocusController', () => {
         'who help us most to grow\nif we let them and we help them in return\n' +
         'Now I don\'t know if I believe that\'s true\n' +
         'But I know I\'m who I am today because I met you';
-    container.style.whiteSpace = 'pre-line';
+    container.style.whiteSpace = 'pre';
+    container.style.width = 'max-content';
+    container.style.margin = '0';
+    container.style.fontSize = '20px';
+    container.style.lineHeight = '40px';
     document.body.appendChild(container);
     return container;
   }
@@ -120,12 +128,6 @@ suite('LineFocusController', () => {
     assertFalse(lineFocusController.isEnabled());
   });
 
-  test('isEnabled is false with flag disabled', () => {
-    visualBrowserProxy.lineFocusEnabled = false;
-    lineFocusController.toggle(true, defaultContainer, defaultHeight);
-    assertFalse(lineFocusController.isEnabled());
-  });
-
   test('onStyleChange updates style only', () => {
     lineFocusController.toggle(false, defaultContainer, defaultHeight);
     const isStatic = lineFocusController.getCurrentLineFocusMovement() ===
@@ -170,18 +172,6 @@ suite('LineFocusController', () => {
     assertEquals(
         visualBrowserProxy.lineFocusLargeCursorWindow,
         (await visualBrowserProxy.whenCalled('onLineFocusChanged'))[1]);
-  });
-
-  test('style and movement changes do nothing with flag disabled', () => {
-    visualBrowserProxy.lineFocusEnabled = false;
-
-    lineFocusController.onStyleChange(
-        LineFocusStyle.SMALL_WINDOW, defaultContainer, defaultHeight);
-    assertEquals(0, visualBrowserProxy.getCallCount('onLineFocusChanged'));
-
-    lineFocusController.onMovementChange(
-        LineFocusMovement.CURSOR, defaultContainer, defaultHeight);
-    assertEquals(0, visualBrowserProxy.getCallCount('onLineFocusChanged'));
   });
 
   test('onMovementChange propagates line focus mode', async () => {
@@ -302,6 +292,7 @@ suite('LineFocusController', () => {
         visualBrowserProxy.lineFocusCursorLine, /*isOn=*/ true,
         defaultContainer, defaultHeight);
     assertTrue(lineFocusController.isEnabled());
+    assertEquals(1, metrics.getCallCount('startLineFocusSession'));
 
     lineFocusController.restoreFromPrefs(
         visualBrowserProxy.lineFocusCursorLine, /*isOn=*/ false,
@@ -381,24 +372,11 @@ suite('LineFocusController', () => {
     assertFalse(await metrics.whenCalled('recordLineFocusToggled'));
   });
 
-  test('onMouseMove does nothing if flag disabled', () => {
-    lineFocusController.onMovementChange(
-        LineFocusMovement.CURSOR, defaultContainer, defaultHeight);
-    lineFocusController.onStyleChange(
-        LineFocusStyle.UNDERLINE, defaultContainer, defaultHeight);
-    visualBrowserProxy.lineFocusEnabled = false;
-    lineFocusContentPositionChanged = false;
-
-    lineFocusController.onMouseMove(101);
-
-    assertFalse(lineFocusContentPositionChanged);
-  });
-
   test('onMouseMove does nothing when speech active', () => {
     readAloudModel.setInitialized(false);
     const container = createLongContainer();
     readAloudModel.setCurrentTextSegments(
-        [{node: ReadAloudNode.create(container)!, start: 0, length: 1}]);
+        [{node: ReadAloudNode.create(container), start: 0, length: 1}]);
     readAloudModel.setCurrentTextContent('a');
     lineFocusController.onMovementChange(
         LineFocusMovement.CURSOR, container, defaultHeight);
@@ -412,23 +390,11 @@ suite('LineFocusController', () => {
     assertFalse(lineFocusContentPositionChanged);
   });
 
-  test('onMouseMoveInToolbar does nothing if flag disabled', () => {
-    visualBrowserProxy.lineFocusEnabled = false;
-    lineFocusController.onMovementChange(
-        LineFocusMovement.CURSOR, defaultContainer, defaultHeight);
-    lineFocusController.onStyleChange(
-        LineFocusStyle.UNDERLINE, defaultContainer, defaultHeight);
-
-    lineFocusController.onMouseMoveInToolbar(101);
-
-    assertEquals(0, model.getTop());
-  });
-
   test('onMouseMoveInToolbar does nothing when speech active', () => {
     readAloudModel.setInitialized(false);
     const container = createLongContainer();
     readAloudModel.setCurrentTextSegments(
-        [{node: ReadAloudNode.create(container)!, start: 0, length: 1}]);
+        [{node: ReadAloudNode.create(container), start: 0, length: 1}]);
     readAloudModel.setCurrentTextContent('a');
     lineFocusController.onMovementChange(
         LineFocusMovement.CURSOR, container, defaultHeight);
@@ -459,7 +425,7 @@ suite('LineFocusController', () => {
     readAloudModel.setInitialized(false);
     const container = createLongContainer();
     readAloudModel.setCurrentTextSegments(
-        [{node: ReadAloudNode.create(container)!, start: 0, length: 1}]);
+        [{node: ReadAloudNode.create(container), start: 0, length: 1}]);
     readAloudModel.setCurrentTextContent('a');
     lineFocusController.toggle(true, container, defaultHeight);
     lineFocusController.onStyleChange(
@@ -517,7 +483,36 @@ suite('LineFocusController', () => {
       assertTrue(lineFocusModesChanged);
       assertNotEquals(
           LineFocusType.NONE, lineFocusController.getCurrentLineFocusType());
+      assertEquals(1, metrics.getCallCount('startLineFocusSession'));
     });
+
+    test('changing style or movement while active preserves session', () => {
+      lineFocusController.toggle(true, defaultContainer, defaultHeight);
+      assertEquals(1, metrics.getCallCount('startLineFocusSession'));
+
+      lineFocusController.onStyleChange(
+          LineFocusStyle.LARGE_WINDOW, defaultContainer, defaultHeight);
+      assertEquals(1, metrics.getCallCount('startLineFocusSession'));
+
+      lineFocusController.onMovementChange(
+          LineFocusMovement.CURSOR, defaultContainer, defaultHeight);
+      assertEquals(1, metrics.getCallCount('startLineFocusSession'));
+    });
+
+    test(
+        'changing style or movement while inactive does not start session',
+        () => {
+          assertFalse(lineFocusController.isEnabled());
+          assertEquals(0, metrics.getCallCount('startLineFocusSession'));
+
+          lineFocusController.onStyleChange(
+              LineFocusStyle.LARGE_WINDOW, defaultContainer, defaultHeight);
+          assertEquals(0, metrics.getCallCount('startLineFocusSession'));
+
+          lineFocusController.onMovementChange(
+              LineFocusMovement.CURSOR, defaultContainer, defaultHeight);
+          assertEquals(0, metrics.getCallCount('startLineFocusSession'));
+        });
 
     test('second (true) enables previously used line focus', () => {
       const previousMode = LineFocusStyle.LARGE_WINDOW;
@@ -535,6 +530,24 @@ suite('LineFocusController', () => {
           previousMode.type, lineFocusController.getCurrentLineFocusType());
     });
 
+    test('toggling off then on again starts and logs multiple sessions', () => {
+      lineFocusController.toggle(true, defaultContainer, defaultHeight);
+      assertEquals(1, metrics.getCallCount('startLineFocusSession'));
+      assertEquals(0, metrics.getCallCount('recordLineFocusSession'));
+
+      lineFocusController.toggle(false, defaultContainer, defaultHeight);
+      assertEquals(1, metrics.getCallCount('startLineFocusSession'));
+      assertEquals(1, metrics.getCallCount('recordLineFocusSession'));
+
+      lineFocusController.toggle(true, defaultContainer, defaultHeight);
+      assertEquals(2, metrics.getCallCount('startLineFocusSession'));
+      assertEquals(1, metrics.getCallCount('recordLineFocusSession'));
+
+      lineFocusController.toggle(false, defaultContainer, defaultHeight);
+      assertEquals(2, metrics.getCallCount('startLineFocusSession'));
+      assertEquals(2, metrics.getCallCount('recordLineFocusSession'));
+    });
+
     test('(false) disables line focus', () => {
       lineFocusController.toggle(true, defaultContainer, defaultHeight);
       lineFocusModesChanged = false;
@@ -546,6 +559,18 @@ suite('LineFocusController', () => {
       assertEquals(
           LineFocusType.NONE, lineFocusController.getCurrentLineFocusType());
       assertEquals(1, metrics.getCallCount('recordLineFocusSession'));
+    });
+
+    test('(false) does nothing if already disabled', () => {
+      assertFalse(lineFocusController.isEnabled());
+      lineFocusModesChanged = false;
+
+      lineFocusController.toggle(false, defaultContainer, defaultHeight);
+
+      assertFalse(lineFocusController.isEnabled());
+      assertFalse(lineFocusModesChanged);
+      assertEquals(0, metrics.getCallCount('recordLineFocusSession'));
+      assertEquals(0, metrics.getCallCount('startLineFocusSession'));
     });
 
     test('(false) preserves custom style', () => {
@@ -570,15 +595,6 @@ suite('LineFocusController', () => {
 
       lineFocusController.toggle(true, defaultContainer, defaultHeight);
 
-      assertFalse(lineFocusModesChanged);
-    });
-
-    test('does nothing if flag is disabled', () => {
-      visualBrowserProxy.lineFocusEnabled = false;
-
-      lineFocusController.toggle(true, defaultContainer, defaultHeight);
-
-      assertFalse(lineFocusController.isEnabled());
       assertFalse(lineFocusModesChanged);
     });
   });

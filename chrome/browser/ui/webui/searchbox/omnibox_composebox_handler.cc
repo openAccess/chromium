@@ -19,6 +19,8 @@
 #include "components/prefs/pref_service.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "third_party/omnibox_proto/chrome_aim_entry_point.pb.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
@@ -55,9 +57,9 @@ class OmniboxPopupComposeboxClient : public ContextualOmniboxClient {
   void OnAutocompleteAccept(
       const GURL& destination_url,
       TemplateURLRef::PostContent* post_content,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       ui::PageTransition transition,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       base::TimeTicks match_selection_timestamp,
       bool destination_url_entered_without_scheme,
       bool destination_url_entered_with_http_scheme,
@@ -71,8 +73,8 @@ class OmniboxPopupComposeboxClient : public ContextualOmniboxClient {
     net::GetValueForKeyInQuery(destination_url, "q", &query_text);
     composebox_handler_->SubmitQuery(
         query_text, disposition,
-        PageClassificationToAimEntryPoint(
-            GetPageClassification(/*is_prefetch=*/false)),
+        GetAimEntryPoint(GetPageClassification(/*is_prefetch=*/false),
+                         composebox_handler_->GetContextualSessionHandle()),
         additional_params, /*is_voice_search=*/false);
   }
 
@@ -84,7 +86,7 @@ class OmniboxPopupComposeboxClient : public ContextualOmniboxClient {
 
 void OmniboxComposeboxHandler::ProcessContextAndOpenUrl(
     GURL url,
-    const WindowOpenDisposition disposition) {
+    const ui::mojom::WindowOpenDisposition disposition) {
   // The voice permission dialog dirties the OS focus history, especially in
   // native Windows OS. Explicitly close the Omnibox popup and claim
   // focus for the WebContents to ensure the Omnibox does not reopen in new
@@ -123,16 +125,6 @@ OmniboxComposeboxHandler::OmniboxComposeboxHandler(
                                                          this),
           std::move(get_session_callback),
           std::move(clear_session_callback)) {
-  auto* aim_eligibility_service =
-      AimEligibilityServiceFactory::GetForProfile(profile);
-  if (aim_eligibility_service) {
-    aim_eligibility_subscription_ =
-        aim_eligibility_service->RegisterEligibilityChangedCallback(
-            base::BindRepeating(
-                &OmniboxComposeboxHandler::OnAimEligibilityChanged,
-                weak_ptr_factory_.GetWeakPtr()));
-  }
-
   // Set the callback for getting suggest inputs from the session.
   // The session is owned by WebUI controller and accessed via callback.
   // It is safe to use Unretained because omnibox client is owned by `this`.
@@ -148,23 +140,28 @@ OmniboxComposeboxHandler::OmniboxComposeboxHandler(
           base::Unretained(this)));
   OnContentSharingPolicyChanged();
 
-  auto* main_omnibox_controller =
+  ObservePopupState(
       OmniboxPopupWebContentsHelper::GetOrCreateForWebContents(web_contents_)
-          ->get_omnibox_controller();
-  if (main_omnibox_controller) {
-    popup_state_subscription_ =
-        main_omnibox_controller->popup_state_manager()
-            ->AddPopupStateChangedCallback(base::BindRepeating(
-                &OmniboxComposeboxHandler::OnPopupStateChanged,
-                base::Unretained(this)));
-    // Perform initial check.
-    OnPopupStateChanged(
-        OmniboxPopupState::kNone,
-        main_omnibox_controller->popup_state_manager()->popup_state());
-  }
+          ->get_omnibox_controller());
 }
 
 OmniboxComposeboxHandler::~OmniboxComposeboxHandler() = default;
+
+void OmniboxComposeboxHandler::DetachFromOmniboxController() {
+  popup_state_subscription_ = {};
+  // This handler runs its own autocomplete, with the old window's page as
+  // input. Stop it so late results don't reach the page in the new window.
+  StopAutocomplete(/*clear_result=*/true);
+  autocomplete_result_snapshots_.clear();
+  DetachFromBrowserWindow();
+}
+
+void OmniboxComposeboxHandler::AttachToOmniboxController(
+    OmniboxController* main_omnibox_controller) {
+  CHECK(main_omnibox_controller);
+  ObservePopupState(main_omnibox_controller);
+  AttachToBrowserWindow();
+}
 
 void OmniboxComposeboxHandler::HandleFileUpload(bool is_image) {}
 
@@ -177,19 +174,26 @@ void OmniboxComposeboxHandler::OpenLensSearch() {
   }
 }
 
-void OmniboxComposeboxHandler::OnAimEligibilityChanged() {
-  auto* aim_eligibility_service =
-      AimEligibilityServiceFactory::GetForProfile(profile_);
-  if (!aim_eligibility_service) {
-    return;
-  }
-  InitializeInputStateModel();
-}
-
 void OmniboxComposeboxHandler::OnContentSharingPolicyChanged() {
   page()->UpdateContentSharingPolicy(
       contextual_search::ContextualSearchService::IsContextSharingEnabled(
           profile_->GetPrefs()));
+}
+
+void OmniboxComposeboxHandler::ObservePopupState(
+    OmniboxController* main_omnibox_controller) {
+  if (!main_omnibox_controller) {
+    return;
+  }
+  popup_state_subscription_ =
+      main_omnibox_controller->popup_state_manager()
+          ->AddPopupStateChangedCallback(base::BindRepeating(
+              &OmniboxComposeboxHandler::OnPopupStateChanged,
+              base::Unretained(this)));
+  // Perform initial check.
+  OnPopupStateChanged(
+      OmniboxPopupState::kNone,
+      main_omnibox_controller->popup_state_manager()->popup_state());
 }
 
 // TODO(crbug.com/469098088): If this OnPopupStateChanged approach proves

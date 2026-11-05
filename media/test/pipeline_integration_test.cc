@@ -705,6 +705,14 @@ base::TimeDelta TimestampMs(int milliseconds) {
   return base::Milliseconds(milliseconds);
 }
 
+// Tests using `kNoClockless` play in real time. To keep them fast, they only
+// play briefly before seeking or changing tracks, and they resume close to the
+// end of the file before playing to the end.
+constexpr base::TimeDelta kShortPlaybackTime = base::Milliseconds(100);
+constexpr base::TimeDelta kTimeBeforeEnd = base::Milliseconds(200);
+// Hashed tests resume a bit earlier, so the hash covers more data.
+constexpr base::TimeDelta kHashedTimeBeforeEnd = base::Milliseconds(500);
+
 TEST_F(PipelineIntegrationTest, WaveLayoutChange) {
   ASSERT_EQ(PIPELINE_OK, Start("layout_change.wav"));
   Play();
@@ -738,8 +746,7 @@ TEST_F(PipelineIntegrationTest, PlaybackWithAudioTrackDisabledThenEnabled) {
   ASSERT_TRUE(Seek(base::TimeDelta()));
 
   Play();
-  const base::TimeDelta k500ms = TimestampMs(500);
-  ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(k500ms));
+  ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(kShortPlaybackTime));
   Pause();
 
   // Verify that no audio has been played, since we disabled audio tracks.
@@ -748,13 +755,13 @@ TEST_F(PipelineIntegrationTest, PlaybackWithAudioTrackDisabledThenEnabled) {
   // Re-enable audio.
   OnEnabledAudioTracksChanged(MediaTrack::Id("2"));
 
-  // Restart playback from 500ms position.
-  ASSERT_TRUE(Seek(k500ms));
+  // Restart playback close to the end.
+  ASSERT_TRUE(Seek(pipeline_->GetMediaDuration() - kHashedTimeBeforeEnd));
   Play();
   ASSERT_TRUE(WaitUntilOnEnded());
 
   // Verify that audio has been playing after being enabled.
-  EXPECT_AUDIO_HASH("-1.53,0.21,1.23,1.56,-0.34,-0.94,");
+  EXPECT_AUDIO_HASH("0.30,1.21,3.31,1.08,0.85,-0.81,");
 }
 
 TEST_F(PipelineIntegrationTest, PlaybackWithVideoTrackDisabledThenEnabled) {
@@ -771,8 +778,7 @@ TEST_F(PipelineIntegrationTest, PlaybackWithVideoTrackDisabledThenEnabled) {
   ResetVideoHash();
 
   Play();
-  const base::TimeDelta k500ms = TimestampMs(500);
-  ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(k500ms));
+  ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(kShortPlaybackTime));
   Pause();
 
   // Verify that no video has been rendered, since we disabled video tracks.
@@ -789,13 +795,13 @@ TEST_F(PipelineIntegrationTest, PlaybackWithVideoTrackDisabledThenEnabled) {
   // if some prerolled frames got hashed after enabling video.
   ASSERT_TRUE(Seek(base::TimeDelta()));
 
-  // Restart playback from 500ms position.
-  ASSERT_TRUE(Seek(k500ms));
+  // Restart playback close to the end.
+  ASSERT_TRUE(Seek(pipeline_->GetMediaDuration() - kHashedTimeBeforeEnd));
   Play();
   ASSERT_TRUE(WaitUntilOnEnded());
 
   // Verify that video has been rendered after being enabled.
-  EXPECT_EQ("38b8b5de49e2ada131674f90e4688dfc9309e6d194267e6f11992d25f11ea472",
+  EXPECT_EQ("8aedcd4b9d48da2a40d9b00017af75602295aef9cfdb406eafb39d5696fe41b0",
             GetVideoHash());
 }
 
@@ -847,9 +853,9 @@ TEST_F(PipelineIntegrationTest, TrackStatusChangesWhileSuspended) {
   ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(TimestampMs(400)));
   ASSERT_TRUE(Suspend());
 
-  // Re-enable video track.
+  // Re-enable video track, and resume close to the end.
   OnSelectedVideoTrackChanged(MediaTrack::Id("1"));
-  ASSERT_TRUE(Resume(TimestampMs(400)));
+  ASSERT_TRUE(Resume(pipeline_->GetMediaDuration() - kTimeBeforeEnd));
   ASSERT_TRUE(WaitUntilOnEnded());
 }
 
@@ -1853,12 +1859,34 @@ TEST_F(PipelineIntegrationTest, BasicPlayback_SilentSection_MP3) {
   EXPECT_AUDIO_HASH(kSilentSectionMp3Hash);
 }
 
+TEST_F(PipelineIntegrationTest, BasicPlayback_SynthBad_MP3) {
+  ASSERT_EQ(PIPELINE_OK, Start("synth-bad.mp3"));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+}
+
 TEST_F(PipelineIntegrationTest, BasicPlaybackHashed_FlacInMp4) {
   ASSERT_EQ(PIPELINE_OK, Start("sfx-flac.mp4", kHashed));
   Play();
   ASSERT_TRUE(WaitUntilOnEnded());
   EXPECT_EQ(kNullVideoHash, GetVideoHash());
   EXPECT_AUDIO_HASH(kSfxLosslessHash);
+}
+
+// Makes sure an MP4 audio track can be played to the end a second time. FFmpeg
+// keeps some end-of-stream state from the first time it reads the last sample,
+// see mov_finalize_packet().
+TEST_F(PipelineIntegrationTest, PlayToEndTwice_FlacInMp4) {
+  ASSERT_EQ(PIPELINE_OK, Start("sfx-flac.mp4"));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+
+  // Pause first, so the second playback happens below rather than inside
+  // Seek(), which runs until idle.
+  Pause();
+  ASSERT_TRUE(Seek(base::TimeDelta()));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
 }
 
 #if BUILDFLAG(ENABLE_AV1_DECODER)
@@ -2674,8 +2702,8 @@ TEST_F(PipelineIntegrationTest, SeekWhilePaused) {
   ASSERT_EQ(PIPELINE_OK, Start("bear-320x240.webm", kNoClockless));
 
   base::TimeDelta duration(pipeline_->GetMediaDuration());
-  base::TimeDelta start_seek_time(duration / 4);
-  base::TimeDelta seek_time(duration * 3 / 4);
+  base::TimeDelta start_seek_time(kShortPlaybackTime);
+  base::TimeDelta seek_time(duration - kTimeBeforeEnd);
 
   Play();
   ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(start_seek_time));
@@ -2698,8 +2726,8 @@ TEST_F(PipelineIntegrationTest, SeekWhilePlaying) {
   ASSERT_EQ(PIPELINE_OK, Start("bear-320x240.webm", kNoClockless));
 
   base::TimeDelta duration(pipeline_->GetMediaDuration());
-  base::TimeDelta start_seek_time(duration / 4);
-  base::TimeDelta seek_time(duration * 3 / 4);
+  base::TimeDelta start_seek_time(kShortPlaybackTime);
+  base::TimeDelta seek_time(duration - kTimeBeforeEnd);
 
   Play();
   ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(start_seek_time));
@@ -3009,10 +3037,9 @@ TEST_F(OpusPipelineIntegrationTest, BasicPlayback_Opus441kHz) {
 // Tests that we signal ended even when audio runs longer than video track.
 TEST_F(PipelineIntegrationTest, BasicPlaybackAudioLongerThanVideo) {
   ASSERT_EQ(PIPELINE_OK, Start("bear_audio_longer_than_video_vp8.ogv"));
-  // Video track is 1001ms. Audio track payload is 2000ms, but has a container
-  // duration of 2002ms due to the -2.67ms Vorbis priming offset. Duration
-  // should be the higher of the two.
-  EXPECT_EQ(2002, pipeline_->GetMediaDuration().InMilliseconds());
+  // Audio track is 2000ms. Video track is 1001ms. Duration should be higher
+  // of the two.
+  EXPECT_EQ(2000, pipeline_->GetMediaDuration().InMilliseconds());
   Play();
   ASSERT_TRUE(WaitUntilOnEnded());
 }
@@ -3020,10 +3047,9 @@ TEST_F(PipelineIntegrationTest, BasicPlaybackAudioLongerThanVideo) {
 // Tests that we signal ended even when audio runs shorter than video track.
 TEST_F(PipelineIntegrationTest, BasicPlaybackAudioShorterThanVideo) {
   ASSERT_EQ(PIPELINE_OK, Start("bear_audio_shorter_than_video_vp8.ogv"));
-  // Audio track is 500ms. Video track is 1001ms. Container duration is 1003ms
-  // because it spans from the audio stream's -2.67ms Vorbis priming offset
-  // to the video track's 1001ms end timestamp.
-  EXPECT_EQ(1003, pipeline_->GetMediaDuration().InMilliseconds());
+  // Audio track is 500ms. Video track is 1001ms. Duration should be higher of
+  // the two.
+  EXPECT_EQ(1001, pipeline_->GetMediaDuration().InMilliseconds());
   Play();
   ASSERT_TRUE(WaitUntilOnEnded());
 }
@@ -3127,6 +3153,12 @@ TEST_F(SymphoniaPipelineIntegrationTest, BasicPlayback_SilentSection_MP3) {
   Play();
   ASSERT_TRUE(WaitUntilOnEnded());
   EXPECT_AUDIO_HASH(kSilentSectionMp3Hash);
+}
+
+TEST_F(SymphoniaPipelineIntegrationTest, BasicPlayback_SynthBad_MP3) {
+  ASSERT_EQ(PIPELINE_OK, Start("synth-bad.mp3"));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
 }
 
 TEST_F(SymphoniaPipelineIntegrationTest, BasicPlayback_Flac) {

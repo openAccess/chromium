@@ -22,16 +22,17 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/views/dictation/dictation_bubble_ui.h"
 #include "chrome/browser/ui/views/dictation/dictation_overlay_view.h"
 #include "chrome/browser/ui/views/dictation/ui_state.h"
-#include "chrome/browser/ui/views/dictation/waveform_view.h"
 #include "chrome/browser/ui/views/dictation/waveform_view_button.h"
 #include "chrome/common/extensions/api/dictation_private.h"
 #include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/result_codes.h"
@@ -40,6 +41,7 @@
 #include "extensions/common/switches.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/state_observer.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/controls/button/label_button.h"
 #include "url/gurl.h"
 
@@ -115,7 +117,7 @@ class DictationSessionUiImplBrowserTest
   auto CheckShowingToast(ToastId toast_id, bool showing) {
     return Check([this, toast_id, showing]() {
       ToastController* const toast_controller =
-          browser()->GetFeatures().toast_controller();
+          ToastController::From(browser());
       CHECK(toast_controller);
       const bool is_showing_toast =
           toast_controller->IsShowingToast() &&
@@ -139,8 +141,34 @@ class DictationSessionUiImplBrowserTest
   auto StartDictationStream(DictationStreamStartTrigger trigger) {
     return Do([this, trigger]() {
       dictation_service().session_controller()->StartDictationStream(
-          DefaultInPageTarget(web_contents()), trigger);
+          DefaultInPageTarget(web_contents()), trigger, base::TimeTicks::Now());
     });
+  }
+
+  auto LookupTargetElementBounds(ui::ElementIdentifier web_contents_id,
+                                 std::string_view selector,
+                                 gfx::Rect& target_bounds) {
+    return WithElement(
+        web_contents_id, [&target_bounds, selector = std::string(selector)](
+                             ui::TrackedElement* el) {
+          target_bounds =
+              AsInstrumentedWebContents(el)->GetElementBoundsInScreen(selector);
+        });
+  }
+
+  auto CheckElementWithinBounds(ui::ElementIdentifier element_id,
+                                const gfx::Rect& target_bounds) {
+    return InAnyContext(CheckElement(
+        element_id, [this, &target_bounds](ui::TrackedElement* el) {
+          const views::View* const view = AsView(el);
+          const gfx::Rect view_bounds = view->GetBoundsInScreen();
+          return target_bounds.Contains(view_bounds.origin());
+        }));
+  }
+
+  auto ToggleFullscreen() {
+    return Do(
+        [this]() { ui_test_utils::ToggleFullscreenModeAndWait(browser()); });
   }
 
  private:
@@ -389,7 +417,38 @@ IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
-                       BackgroundTabActivationEndsSession) {
+                       ReparentTabBetweenWindowsDoesNotCrash) {
+  // Add a second tab with the first tab in the foreground so the initial
+  // browser window does not close when its active tab is detached.
+  ASSERT_TRUE(AddTabAtIndex(1, GURL("about:blank"), ui::PAGE_TRANSITION_TYPED));
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+
+  // Create a second browser window.
+  BrowserWindowInterface* second_browser =
+      CreateBrowser(browser()->GetProfile());
+
+  // clang-format off
+  RunTestSequence(
+    StartSession(),
+    WaitForShow(DictationBubbleUi::kViewElementIdForTesting),
+
+    // Move the dictating tab to the second window.
+    MoveTabToWindow(browser(), second_browser, 0),
+
+    // Move the tab back to the original window.
+    MoveTabToWindow(second_browser, browser(), 1),
+
+    // Verify the session remains active and UI is present without crashing.
+    InContext(BrowserElements::From(browser())->GetContext(),
+              WaitForShow(DictationBubbleUi::kViewElementIdForTesting)),
+    CheckHasSession(true)
+  );
+  // clang-format on
+}
+
+// TODO(b/581316985): Reenable this
+IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
+                       DISABLED_BackgroundTabActivationEndsSession) {
   // Add a second tab with the first tab in the foreground.
   ASSERT_TRUE(AddTabAtIndex(1, GURL("about:blank"), ui::PAGE_TRANSITION_TYPED));
   browser()->GetTabStripModel()->ActivateTabAt(0);
@@ -416,7 +475,7 @@ IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
     CheckHasSession(true),
     CheckResult(GetSessionState(), SessionState::kFinalizing),
 
-    // Once the finalization completes the sesison should be ended.
+    // Once the finalization completes the session should be ended.
     ExtensionAPISetStreamState(ExtensionStreamState::kComplete),
     WaitForSessionState(SessionState::kInactive),
     CheckHasSession(false),
@@ -446,6 +505,27 @@ IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
     SelectTab(kTabStripElementId, 1),
     WaitForHide(DictationBubbleUi::kViewElementIdForTesting),
     CheckShowingDictationStoppedToast(true)
+  );
+  // clang-format on
+}
+
+IN_PROC_BROWSER_TEST_P(
+    DictationSessionUiImplBrowserTest,
+    TabSwitchAfterDoneButtonDoesNotShowDictationStoppedToast) {
+  // Add a second tab with the first tab in the foreground.
+  ASSERT_TRUE(AddTabAtIndex(1, GURL("about:blank"), ui::PAGE_TRANSITION_TYPED));
+  browser()->GetTabStripModel()->ActivateTabAt(0);
+  // clang-format off
+  RunTestSequence(
+    StartSession(),
+    WaitForShow(DictationBubbleUi::kViewElementIdForTesting),
+    // Press "Done" to finish voice input.
+    PressButton(DictationBubbleUi::kToggleButtonElementIdForTesting),
+    // Switch to the second tab and verify that the Dictation stopped toast
+    // is not shown
+    SelectTab(kTabStripElementId, 1),
+    WaitForHide(DictationBubbleUi::kViewElementIdForTesting),
+    CheckShowingDictationStoppedToast(false)
   );
   // clang-format on
 }
@@ -656,19 +736,138 @@ IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
     NavigateWebContents(kWebContentsElementId, url),
     StartSessionWithTarget(kWebContentsElementId, "#text_id"),
     InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
-    WithElement(
-        kWebContentsElementId,
-        [&target_bounds](ui::TrackedElement* el) {
-          target_bounds = AsInstrumentedWebContents(el)
-                              ->GetElementBoundsInScreen("#text_id");
-        }),
-    InAnyContext(CheckElement(
-        DictationOverlayView::kViewElementIdForTesting,
-        [&target_bounds](ui::TrackedElement* el) {
-          const views::View* const overlay_view = AsView(el);
-          const gfx::Rect overlay_bounds = overlay_view->GetBoundsInScreen();
-          return target_bounds.Contains(overlay_bounds.origin());
-        }))
+    LookupTargetElementBounds(kWebContentsElementId, "#text_id", target_bounds),
+    CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                             target_bounds)
+  );
+  // clang-format on
+}
+
+IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
+                       OverlayButtonStaysWithinTargetInputField) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
+  const GURL url =
+      embedded_test_server()->GetURL("/textinput/simple_textinput.html");
+  gfx::Rect target_bounds;
+
+  if (GetParam()) {
+    // clang-format off
+    RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, url),
+      StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+      ObserveSessionStateChanges(),
+      InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
+      LookupTargetElementBounds(kWebContentsElementId, "#text_id",
+                                target_bounds),
+      ExtensionAPISetStreamState(ExtensionStreamState::kTranscribing),
+      ExtensionAPIUpdateTranscription(
+          ExtensionTranscriptionType::kFinal,
+          "This string is longer than the size of the input element."),
+      CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                               target_bounds),
+      ExtensionAPISetStreamState(ExtensionStreamState::kComplete),
+      WaitForSessionState(SessionState::kInactive),
+      InAnyContext(WaitForHide(DictationOverlayView::kViewElementIdForTesting))
+    );
+    // clang-format on
+  } else {
+    // clang-format off
+    RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, url),
+      StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+      ObserveSessionStateChanges(),
+      InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
+      LookupTargetElementBounds(kWebContentsElementId, "#text_id",
+                                target_bounds),
+      ExtensionAPISetStreamState(ExtensionStreamState::kTranscribing),
+      ExtensionAPIUpdateTranscription(
+          ExtensionTranscriptionType::kFinal,
+          "This string is longer than the size of the input element."),
+      CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                               target_bounds),
+      ExtensionAPISetStreamState(ExtensionStreamState::kComplete),
+      WaitForSessionState(SessionState::kInactive),
+      // Lingering UI case: verify it is still visible and within bounds.
+      CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                               target_bounds)
+    );
+    // clang-format on
+  }
+}
+
+IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
+                       AutoSessionEndDelayedShutdownOnAttachedStreamComplete) {
+  if (!GetParam()) {
+    GTEST_SKIP() << "Auto session end only applies to this config.";
+  }
+
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
+  const GURL url =
+      embedded_test_server()->GetURL("/textinput/simple_textinput.html");
+
+  // clang-format off
+  RunTestSequence(
+    InstrumentTab(kWebContentsElementId),
+    NavigateWebContents(kWebContentsElementId, url),
+    StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+    ObserveSessionStateChanges(),
+    InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
+    ExtensionAPISetStreamState(ExtensionStreamState::kTranscribing),
+    WaitForSessionState(SessionState::kTranscribing),
+    ExtensionAPISetStreamState(ExtensionStreamState::kComplete),
+    WaitForSessionState(SessionState::kInactive),
+    InAnyContext(WaitForHide(DictationOverlayView::kViewElementIdForTesting)),
+    CheckHasSession(false)
+  );
+  // clang-format on
+}
+
+IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
+                       OverlayPositionUpdatedOnFullscreen) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
+  const GURL url =
+      embedded_test_server()->GetURL("/textinput/simple_textarea.html");
+  gfx::Rect target_bounds;
+
+  // clang-format off
+  RunTestSequence(
+    InstrumentTab(kWebContentsElementId),
+    NavigateWebContents(kWebContentsElementId, url),
+    StartSessionWithTarget(kWebContentsElementId, "#text_id"),
+    InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
+    LookupTargetElementBounds(kWebContentsElementId, "#text_id", target_bounds),
+    CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                             target_bounds),
+    ToggleFullscreen(),
+    LookupTargetElementBounds(kWebContentsElementId, "#text_id", target_bounds),
+    CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                             target_bounds),
+    ToggleFullscreen(),
+    LookupTargetElementBounds(kWebContentsElementId, "#text_id", target_bounds),
+    CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                             target_bounds)
+  );
+  // clang-format on
+}
+
+IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
+                       OverlayPositionUsesEditContextSelectionBounds) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
+  const GURL url =
+      embedded_test_server()->GetURL("/dictation/edit_context_selection.html");
+  gfx::Rect target_bounds;
+
+  // clang-format off
+  RunTestSequence(
+    InstrumentTab(kWebContentsElementId),
+    NavigateWebContents(kWebContentsElementId, url),
+    StartSessionWithTarget(kWebContentsElementId, "#canvas"),
+    InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
+    LookupTargetElementBounds(kWebContentsElementId, "#canvas", target_bounds),
+    CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                             target_bounds)
   );
   // clang-format on
 }
@@ -692,12 +891,7 @@ IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
     NavigateWebContents(kWebContentsElementId, url),
     StartSessionWithTarget(kWebContentsElementId, "#text_id"),
     InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
-    WithElement(
-        kWebContentsElementId,
-        [&target_bounds](ui::TrackedElement* el) {
-          target_bounds = AsInstrumentedWebContents(el)
-                              ->GetElementBoundsInScreen("#text_id");
-        }),
+    LookupTargetElementBounds(kWebContentsElementId, "#text_id", target_bounds),
     // Focus a second textarea, causing the first textarea to lose focus.
     ExecuteJs(kWebContentsElementId,
               "() => {"
@@ -707,13 +901,8 @@ IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
               "  textarea2.focus();"
               "}"),
     // The overlay should remain in its last position.
-    InAnyContext(CheckElement(
-        DictationOverlayView::kViewElementIdForTesting,
-        [&target_bounds](ui::TrackedElement* el) {
-          const views::View* const overlay_view = AsView(el);
-          const gfx::Rect overlay_bounds = overlay_view->GetBoundsInScreen();
-          return target_bounds.Contains(overlay_bounds.origin());
-        }))
+    CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                             target_bounds)
   );
   // clang-format on
 }

@@ -25,7 +25,7 @@ suite('AccountPage', function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
 
     loadTimeData.overrideValues({
-      isEeaChoiceCountry: false,
+      mayShowLinkedGoogleServicesSetting: false,
       // <if expr="is_chromeos">
       replaceSyncPromosWithSignInPromos: true,
       osSettingsAccountsPageUrl: 'chrome://os-settings/osPeople',
@@ -183,7 +183,7 @@ suite('AccountPage', function() {
 
   test('EEAChoiceCountry', async function() {
     loadTimeData.overrideValues({
-      isEeaChoiceCountry: true,
+      mayShowLinkedGoogleServicesSetting: true,
     });
     resetRouterForTesting();
     accountSettingsPage = createSettingsAccountPageElement();
@@ -250,5 +250,30 @@ suite('AccountPage', function() {
       statusAction: StatusAction.NO_ACTION,
     });
     assertTrue(dashboardLink.hidden);
+  });
+
+  test('ManageGoogleAccountHiddenOnError', async function() {
+    const manageGoogleAccount =
+        accountSettingsPage.shadowRoot.querySelector<HTMLElement>(
+            '#manage-google-account')!;
+
+    // Normal user without error.
+    assertFalse(manageGoogleAccount.hidden);
+
+    // Sync error.
+    await simulateSyncStatus({
+      signedInState: SignedInState.SIGNED_IN,
+      hasError: true,
+      statusAction: StatusAction.NO_ACTION,
+    });
+    assertTrue(manageGoogleAccount.hidden);
+
+    // Error cleared.
+    await simulateSyncStatus({
+      signedInState: SignedInState.SIGNED_IN,
+      hasError: false,
+      statusAction: StatusAction.NO_ACTION,
+    });
+    assertFalse(manageGoogleAccount.hidden);
   });
 });

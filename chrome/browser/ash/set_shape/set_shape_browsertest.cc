@@ -16,7 +16,6 @@
 #include "base/test/gmock_expected_support.h"
 #include "base/values.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/ui/web_applications/test/web_app_browsertest_util.h"
@@ -82,14 +81,22 @@ void SetWindowManagementPermission(Profile* profile,
                                      setting);
 }
 
+// Returns the top-level widget of the given `frame`.
+views::Widget* GetWidget(content::RenderFrameHost* frame) {
+  return views::Widget::GetTopLevelWidgetForNativeView(
+      content::WebContents::FromRenderFrameHost(frame)->GetNativeView());
+}
+
+// Resizes the top-level widget of `frame` to the given `size`.
+void ResizeWindowTo(content::RenderFrameHost* frame, const gfx::Size& size) {
+  views::Widget& widget = CHECK_DEREF(GetWidget(frame));
+  widget.SetBounds(gfx::Rect(widget.GetWindowBoundsInScreen().origin(), size));
+}
+
 // Returns the shape rectangles of the given `frame`, or `nullptr` if `frame`
 // has no custom shape.
 const std::vector<gfx::Rect>* GetShape(content::RenderFrameHost* frame) {
-  return views::Widget::GetTopLevelWidgetForNativeView(
-             content::WebContents::FromRenderFrameHost(frame)->GetNativeView())
-      ->GetNativeWindow()
-      ->layer()
-      ->alpha_shape();
+  return GetWidget(frame)->GetNativeWindow()->layer()->alpha_shape();
 }
 
 // Helper to match custom shapes in a `RenderFrameHost` given the expected
@@ -169,6 +176,14 @@ IN_PROC_BROWSER_TEST_F(SetShapeTest, ValidatesInput) {
       "[new DOMRect(0, 0, 9, 10)]",
       "[new DOMRect(0, 0, 10, 9)]",
       "[new DOMRect(0, 0, 9, 9), new DOMRect(10, 10, 5, 5)]",
+      // Rectangles outside window bounds.
+      "[new DOMRect(-100000, -100000, 10, 10)]",
+      "[new DOMRect(window.innerWidth, 0, 10, 10)]",
+      "[new DOMRect(0, window.innerHeight, 10, 10)]",
+      // Rectangles that intersect with the window bounds but are too small.
+      "[new DOMRect(-5, -5, 10, 10)]",
+      "[new DOMRect(window.innerWidth - 5, 0, 10, 10)]",
+      "[new DOMRect(0, window.innerHeight - 5, 10, 10)]",
   });
   for (const auto& input : invalid_inputs) {
     std::string script = base::StrCat({
@@ -257,6 +272,18 @@ IN_PROC_BROWSER_TEST_F(SetShapeTest, AllowsMixOfSmallAndLargeRects) {
                      }));
 }
 
+IN_PROC_BROWSER_TEST_F(SetShapeTest, AllowsPartiallyOutOfBoundsRectangles) {
+  content::RenderFrameHost* frame = OpenApp(app_url_info_->app_id());
+
+  auto result = content::EvalJs(frame, R"(
+      window.setShape([
+        new DOMRect(-10, 0, 100, 100)
+      ])
+    )");
+  EXPECT_EQ(base::Value(), result);
+  EXPECT_THAT(frame, ShapeRectanglesAre({gfx::Rect(-10, 0, 100, 100)}));
+}
+
 IN_PROC_BROWSER_TEST_F(SetShapeTest, EmptyListClearsShape) {
   content::RenderFrameHost* frame = OpenApp(app_url_info_->app_id());
 
@@ -273,6 +300,37 @@ IN_PROC_BROWSER_TEST_F(SetShapeTest, EmptyListClearsShape) {
     )");
   EXPECT_EQ(base::Value(), clear_result);
   EXPECT_THAT(frame, ShapeRectanglesAre({}));
+}
+
+IN_PROC_BROWSER_TEST_F(SetShapeTest, ResetsShapeWhenWindowShrinksPastShape) {
+  content::RenderFrameHost* frame = OpenApp(app_url_info_->app_id());
+
+  auto set_result = content::EvalJs(frame, R"(
+      window.setShape([
+        new DOMRect(200, 200, 50, 50)
+      ])
+    )");
+  EXPECT_EQ(base::Value(), set_result);
+  EXPECT_THAT(frame, ShapeRectanglesAre({gfx::Rect(200, 200, 50, 50)}));
+
+  ResizeWindowTo(frame, gfx::Size(150, 150));
+  EXPECT_THAT(frame, ShapeRectanglesAre({}));
+}
+
+IN_PROC_BROWSER_TEST_F(SetShapeTest,
+                       KeepsShapeWhenWindowResizeStillContainsShape) {
+  content::RenderFrameHost* frame = OpenApp(app_url_info_->app_id());
+
+  auto set_result = content::EvalJs(frame, R"(
+      window.setShape([
+        new DOMRect(10, 10, 50, 50)
+      ])
+    )");
+  EXPECT_EQ(base::Value(), set_result);
+  EXPECT_THAT(frame, ShapeRectanglesAre({gfx::Rect(10, 10, 50, 50)}));
+
+  ResizeWindowTo(frame, gfx::Size(200, 200));
+  EXPECT_THAT(frame, ShapeRectanglesAre({gfx::Rect(10, 10, 50, 50)}));
 }
 
 }  // namespace ash

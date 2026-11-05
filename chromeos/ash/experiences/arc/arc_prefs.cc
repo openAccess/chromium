@@ -29,7 +29,6 @@ void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
   RegisterDailyMetricsPrefs(registry);
   registry->RegisterStringPref(kArcSerialNumberSalt, std::string());
   registry->RegisterDictionaryPref(kArcSnapshotInfo);
-  registry->RegisterTimePref(kArcVmmSwapOutTime, base::Time());
   registry->RegisterDictionaryPref(kStabilityMetrics);
 
   registry->RegisterIntegerPref(kAnrPendingCount, 0);
@@ -64,6 +63,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   // Sorted in lexicographical order.
   registry->RegisterBooleanPref(kAlwaysOnVpnLockdown, false);
   registry->RegisterStringPref(kAlwaysOnVpnPackage, std::string());
+  registry->RegisterListPref(kArcAutoLaunchApps);
   registry->RegisterBooleanPref(kArcDataRemoveRequested, false);
   registry->RegisterBooleanPref(kArcEnabled, false);
   registry->RegisterBooleanPref(kArcHasAccessToRemovableMedia, false);

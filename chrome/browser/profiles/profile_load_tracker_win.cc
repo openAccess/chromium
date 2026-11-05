@@ -45,6 +45,8 @@ std::string_view GetHistogramSuffix(
       return "OtherOffTheRecordProfile";
     case profile_metrics::BrowserProfileType::kEnterpriseIsolated:
       return "EnterpriseIsolated";
+    case profile_metrics::BrowserProfileType::kTopChromeWebUIProfile:
+      return "TopChromeWebUIProfile";
   }
   // LINT.ThenChange(//tools/metrics/histograms/metadata/profile/histograms.xml:BrowserProfileType)
 }
@@ -92,8 +94,8 @@ ProfileLoadTracker::ProfileLoadTracker(Profile& profile)
   // crash that prevented its deletion. This is fine, however, and execution
   // will continue.
   ProfileLockStatus acquired_reason =
-      !lock_file_.created() ? ProfileLockStatus::kAcquiredSystemCrash
-                            : ProfileLockStatus::kAcquired;
+      lock_file_.created() ? ProfileLockStatus::kAcquired
+                           : ProfileLockStatus::kAcquiredSystemCrash;
   base::UmaHistogramEnumeration(
       base::StrCat({"Profile.Windows.ProfileLockStatus.", histogram_suffix_}),
       acquired_reason);
@@ -174,9 +176,11 @@ ProfileLoadTracker::~ProfileLoadTracker() {
 
     // Delete the dirty file to confirm the profile was unloaded without any
     // crash. Must happen under the profile lock to avoid race condition.
+    const DWORD error =
+        base::DeleteFile(dirty_path) ? ERROR_SUCCESS : ::GetLastError();
     base::UmaHistogramSparse(
         base::StrCat({"Profile.Windows.DeleteDirtyResult.", histogram_suffix_}),
-        base::DeleteFile(dirty_path) ? ERROR_SUCCESS : ::GetLastError());
+        error);
 
     // Release the lock on the profile. Closing the handle will automatically
     // delete Profile.lock due to FLAG_DELETE_ON_CLOSE. This file must be
@@ -193,10 +197,12 @@ void ProfileLoadTracker::AckCrashForTracking() {
     base::ScopedAllowBlocking allow_blocking;
     base::FilePath waiting_for_crash_ack_path =
         profile_dir_.Append(kWaitingForCrashAckFileName);
+    const DWORD error = base::DeleteFile(waiting_for_crash_ack_path)
+                            ? ERROR_SUCCESS
+                            : ::GetLastError();
     base::UmaHistogramSparse(
         base::StrCat(
             {"Profile.Windows.DeleteCrashAckResult.", histogram_suffix_}),
-        base::DeleteFile(waiting_for_crash_ack_path) ? ERROR_SUCCESS
-                                                     : ::GetLastError());
+        error);
   }
 }

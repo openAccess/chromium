@@ -46,13 +46,16 @@ enum class Promo {
   StaySafeDefaultBrowser = 15,    // "Stay Safe" default browser promo.
   PostDefaultAbandonment = 16,    // Post-default browser abandonment alert.
   FullscreenSignin = 17,          // Fullscreen sign-in promo.
-  WelcomeBack = 18,               // Welcome Back promo.
+  // WelcomeBack = 18,               // Obsolete. Welcome Back promo.
   // BWGPromo = 19,                   // Obsolete. BWG promo.
   SafariImportRemindMeLater =
       20,                       // Reminder for the Safari import entry point.
   DefaultBrowserOffCycle = 21,  // Off-cycle fullscreen default browser promo.
   HomeBackgroundCustomization = 22,  // Home (NTP) background customization.
-  kMaxValue = HomeBackgroundCustomization,
+  LevelUp = 23,                      // Level Up fullscreen opt-in promo.
+  EphemeralTheme = 24,               // Home (NTP) ephemeral theme promo.
+  AccountSwitching = 25,  // Smart account switching fullscreen promo.
+  kMaxValue = AccountSwitching,
 };
 // LINT.ThenChange(
 //   /ios/chrome/browser/promos_manager/model/constants.cc,

@@ -15,12 +15,15 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/test/gtest_util.h"
 #include "base/test/mock_log.h"
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/unguessable_token.h"
+#include "content/browser/browser_context_impl.h"
 #include "content/browser/browsing_instance.h"
+#include "content/browser/embedder_isolation_info.h"
 #include "content/browser/isolated_origin_util.h"
 #include "content/browser/origin_agent_cluster_isolation_state.h"
 #include "content/browser/process_lock.h"
@@ -29,6 +32,7 @@
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/site_info.h"
+#include "content/browser/site_shard.h"
 #include "content/browser/url_info.h"
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/browser/web_exposed_isolation_info.h"
@@ -39,7 +43,6 @@
 #include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/web_exposed_isolation_level.h"
 #include "content/public/browser/web_ui_controller.h"
-#include "content/public/common/bindings_policy.h"
 #include "content/public/common/content_client.h"
 #include "content/public/common/content_constants.h"
 #include "content/public/common/content_features.h"
@@ -55,6 +58,7 @@
 #include "content/public/test/test_utils.h"
 #include "content/test/storage_partition_test_helpers.h"
 #include "content/test/test_render_view_host.h"
+#include "net/base/schemeful_site.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/origin.h"
 #include "url/url_util.h"
@@ -92,7 +96,7 @@ SiteInfo CreateSimpleSiteInfo(
                   /*is_jit_disabled=*/false,
                   /*are_v8_optimizations_disabled=*/false,
                   /*is_fenced=*/false, browser_context_id,
-                  EmbedderIsolationInfo::CreateNone());
+                  EmbedderIsolationInfo::CreateNone(), SiteShard::kDefault);
 }
 
 }  // namespace
@@ -369,7 +373,7 @@ TEST_F(SiteInstanceTest, SiteInfoAsContainerKey) {
                /*is_jit_disabled=*/false,
                /*are_v8_optimizations_disabled=*/false,
                /*is_fenced=*/false, kBrowserContextId,
-               EmbedderIsolationInfo::CreateNone());
+               EmbedderIsolationInfo::CreateNone(), SiteShard::kDefault);
   EXPECT_TRUE(
       site_info_1.IsSamePrincipalWith(site_info_1_with_isolation_request));
   EXPECT_EQ(site_info_1, site_info_1_with_isolation_request);
@@ -389,7 +393,7 @@ TEST_F(SiteInstanceTest, SiteInfoAsContainerKey) {
                /*is_jit_disabled=*/true,
                /*are_v8_optimizations_disabled=*/false,
                /*is_fenced=*/false, kBrowserContextId,
-               EmbedderIsolationInfo::CreateNone());
+               EmbedderIsolationInfo::CreateNone(), SiteShard::kDefault);
   EXPECT_FALSE(site_info_1.IsSamePrincipalWith(site_info_1_with_jit_disabled));
 
   // Check that SiteInfos with differing values of
@@ -407,7 +411,7 @@ TEST_F(SiteInstanceTest, SiteInfoAsContainerKey) {
                /*is_jit_disabled=*/false,
                /*are_v8_optimizations_disabled=*/true,
                /*is_fenced=*/false, kBrowserContextId,
-               EmbedderIsolationInfo::CreateNone());
+               EmbedderIsolationInfo::CreateNone(), SiteShard::kDefault);
   EXPECT_FALSE(
       site_info_1.IsSamePrincipalWith(site_info_1_with_optimizations_disabled));
 
@@ -426,7 +430,7 @@ TEST_F(SiteInstanceTest, SiteInfoAsContainerKey) {
                /*is_jit_disabled=*/false,
                /*are_v8_optimizations_disabled=*/false,
                /*is_fenced=*/false, kBrowserContextId,
-               EmbedderIsolationInfo::CreateForPdf());
+               EmbedderIsolationInfo::CreateForPdf(), SiteShard::kDefault);
   EXPECT_FALSE(site_info_1.IsSamePrincipalWith(site_info_1_with_pdf));
 
   auto site_info_1_with_is_fenced =
@@ -442,8 +446,26 @@ TEST_F(SiteInstanceTest, SiteInfoAsContainerKey) {
                /*is_jit_disabled=*/false,
                /*are_v8_optimizations_disabled=*/false,
                /*is_fenced=*/true, kBrowserContextId,
-               EmbedderIsolationInfo::CreateNone());
+               EmbedderIsolationInfo::CreateNone(), SiteShard::kDefault);
   EXPECT_FALSE(site_info_1.IsSamePrincipalWith(site_info_1_with_is_fenced));
+
+  auto site_info_1_with_shard =
+      SiteInfo(AgentClusterKey::CreateSiteKeyed(
+                   GURL("https://foo.com"),
+                   AgentClusterKey::OACStatus::kSiteKeyedByDefault),
+               GURL("https://www.foo.com") /* site_url */,
+               /*is_sandboxed=*/false, UrlInfo::kInvalidUniqueSandboxId,
+               CreateStoragePartitionConfigForTesting(),
+               WebExposedIsolationInfo::CreateNonIsolated(),
+               WebExposedIsolationLevel::kNotIsolated, /*is_guest=*/false,
+               /*does_site_request_dedicated_process_for_coop=*/false,
+               /*is_jit_disabled=*/false,
+               /*are_v8_optimizations_disabled=*/false,
+               /*is_fenced=*/false, kBrowserContextId,
+               EmbedderIsolationInfo::CreateNone(), SiteShard::kEmbedderSites);
+  EXPECT_FALSE(site_info_1.IsSamePrincipalWith(site_info_1_with_shard));
+  EXPECT_FALSE(site_info_1.IsExactMatch(site_info_1_with_shard));
+  EXPECT_NE(0, site_info_1.ProcessLockCompareTo(site_info_1_with_shard));
 
   {
     std::map<SiteInfo, int> test_map;
@@ -687,12 +709,13 @@ TEST_F(SiteInstanceTest, DefaultSiteInstanceProperties) {
       &browser_context, GURL("http://foo.com"));
   EXPECT_TRUE(site_instance->IsDefaultSiteInstance());
   EXPECT_TRUE(site_instance->HasSite());
-  EXPECT_EQ(site_instance->GetSiteInfo(),
-            SiteInfo::CreateForDefaultSiteInstance(
-                site_instance->GetIsolationContext(),
-                StoragePartitionConfig::CreateDefault(&browser_context),
-                WebExposedIsolationInfo::CreateNonIsolated(),
-                /*cross_origin_isolation_key=*/std::nullopt));
+  EXPECT_EQ(
+      site_instance->GetSiteInfo(),
+      SiteInfo::CreateForDefaultSiteInstance(
+          site_instance->GetIsolationContext(),
+          StoragePartitionConfig::CreateDefault(&browser_context),
+          WebExposedIsolationInfo::CreateNonIsolated(),
+          /*cross_origin_isolation_key=*/std::nullopt, SiteShard::kDefault));
   EXPECT_FALSE(site_instance->RequiresDedicatedProcess());
 }
 
@@ -1027,7 +1050,7 @@ TEST_F(SiteInstanceTest, ProcessLockDoesNotUseEffectiveURL) {
       /*does_site_request_dedicated_process_for_coop=*/false,
       /*is_jit_disabled=*/false, /*are_v8_optimizations_disabled=*/false,
       /*is_fenced=*/false, browser_context->UniqueToken(),
-      EmbedderIsolationInfo::CreateNone());
+      EmbedderIsolationInfo::CreateNone(), SiteShard::kDefault);
 
   // New SiteInstance in a new BrowsingInstance with a predetermined URL.
   {
@@ -1342,8 +1365,7 @@ TEST_F(SiteInstanceTest, IsSuitableForUrlInfo) {
 
   // Simulate granting WebUI bindings for the process.
   ChildProcessSecurityPolicyImpl::GetInstance()->GrantWebUIBindings(
-      webui_host->GetDeprecatedID(),
-      BindingsPolicySet({BindingsPolicyValue::kWebUi}));
+      webui_host->GetID());
 
   EXPECT_TRUE(webui_instance->HasProcess());
   EXPECT_TRUE(webui_instance->IsSuitableForUrlInfo(
@@ -1835,7 +1857,7 @@ TEST_F(SiteInstanceTest, OriginalURL) {
       /*does_site_request_dedicated_process_for_coop=*/false,
       /*is_jit_disabled=*/false, /*are_v8_optimizations_disabled=*/false,
       /*is_fenced=*/false, browser_context->UniqueToken(),
-      EmbedderIsolationInfo::CreateNone());
+      EmbedderIsolationInfo::CreateNone(), SiteShard::kDefault);
 
   // New SiteInstance in a new BrowsingInstance with a predetermined URL.  In
   // this and subsequent cases, the site URL should consist of the effective
@@ -1969,7 +1991,7 @@ ProcessLock ProcessLockFromString(const std::string& url) {
       /*does_site_request_dedicated_process_for_coop=*/false,
       /*is_jit_disabled=*/false, /*are_v8_optimizations_disabled=*/false,
       /*is_fenced=*/false, kBrowserContextId,
-      EmbedderIsolationInfo::CreateNone()));
+      EmbedderIsolationInfo::CreateNone(), SiteShard::kDefault));
 }
 
 }  // namespace
@@ -2423,6 +2445,175 @@ TEST_F(SiteInstanceTest, SiteInfoDetermineProcessLock_OriginAgentCluster) {
   EXPECT_EQ(foo_url, site_info_for_a_foo.agent_cluster_key().GetSite());
 }
 
+// Host with a site-specific JITless policy exception, used by the tests below.
+constexpr char kJitBlockedHost[] = "jit-blocked.test";
+
+// Test ContentBrowserClient that records the URL the embedder is asked about,
+// so tests can pin the *policy scope URL* that SiteInfo::Create() passes to
+// IsJitDisabledForSite(), rather than just the derived boolean. It also
+// disables strict site isolation so that SiteInfo::Create() has to consult
+// RequiresDedicatedProcessInternal() instead of relying on
+// UseDedicatedProcessesForAllSites().
+class JitPolicyScopeContentBrowserClient
+    : public SiteInstanceTestBrowserClient {
+ public:
+  bool ShouldEnableStrictSiteIsolation() override { return false; }
+
+  bool IsJitDisabledForSite(BrowserContext* context, const GURL& url) override {
+    last_jit_url_ = url;
+    return url.host() == kJitBlockedHost;
+  }
+
+  GURL last_jit_url_;
+};
+
+// The three ways a response can (not) carry an Origin-Agent-Cluster header.
+enum class OacHeaderState {
+  kAbsent,  // No Origin-Agent-Cluster header.
+  kOptIn,   // Origin-Agent-Cluster: ?1
+  kOptOut,  // Origin-Agent-Cluster: ?0
+};
+
+UrlInfo CreateUrlInfoWithOacHeader(const GURL& url,
+                                   OacHeaderState oac_header_state) {
+  UrlInfoInit url_info_init(url);
+  switch (oac_header_state) {
+    case OacHeaderState::kAbsent:
+      break;
+    case OacHeaderState::kOptIn:
+      url_info_init.WithOACHeaderRequest(
+          OriginAgentClusterIsolationState::CreateForOriginAgentCluster(
+              /*had_oac_request=*/true,
+              /*requires_origin_keyed_process=*/true));
+      break;
+    case OacHeaderState::kOptOut:
+      url_info_init.WithOACHeaderRequest(
+          OriginAgentClusterIsolationState::CreateNonIsolatedByHeader());
+      break;
+  }
+  return UrlInfo(url_info_init);
+}
+
+// Sets up an environment with partial site isolation (so sites without a
+// dedicated process land in the default SiteInstanceGroup) where documents may
+// still opt in to an origin-keyed process via the Origin-Agent-Cluster header.
+class JitPolicyScopeTest : public SiteInstanceTest {
+ public:
+  void SetUp() override {
+    SiteInstanceTest::SetUp();
+
+    // Remove --site-per-process (if it was appended on the command line) so
+    // that UseDedicatedProcessesForAllSites() consults the embedder, which
+    // JitPolicyScopeContentBrowserClient answers with false. Note we must not
+    // pass --disable-site-isolation here, since that would also turn off
+    // IsProcessIsolationForOriginAgentClusterEnabled().
+    scoped_command_line_.GetProcessCommandLine()->RemoveSwitch(
+        switches::kSitePerProcess);
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{features::kDefaultSiteInstanceGroups},
+        /*disabled_features=*/{features::kOriginKeyedProcessesByDefault,
+                               features::kStrictOriginIsolation});
+    regular_client_ = SetBrowserClientForTesting(&jit_policy_client_);
+
+    ASSERT_FALSE(SiteIsolationPolicy::UseDedicatedProcessesForAllSites());
+    ASSERT_TRUE(ShouldUseDefaultSiteInstanceGroup());
+    ASSERT_TRUE(
+        SiteIsolationPolicy::IsProcessIsolationForOriginAgentClusterEnabled());
+  }
+
+  void TearDown() override {
+    SetBrowserClientForTesting(regular_client_);
+    SiteInstanceTest::TearDown();
+  }
+
+ protected:
+  GURL jit_blocked_url() const {
+    return GURL(base::StrCat({"https://", kJitBlockedHost, "/"}));
+  }
+
+  IsolationContext CreateIsolationContext() {
+    return IsolationContext(
+        BrowsingInstanceId::FromUnsafeValue(42), context(),
+        /*is_guest=*/false, /*is_fenced=*/false,
+        OriginAgentClusterIsolationState::CreateForDefaultIsolation(context()));
+  }
+
+  JitPolicyScopeContentBrowserClient jit_policy_client_;
+
+ private:
+  base::test::ScopedCommandLine scoped_command_line_;
+  base::test::ScopedFeatureList feature_list_;
+  raw_ptr<ContentBrowserClient> regular_client_ = nullptr;
+};
+
+// Regression test for crbug.com/511806651: a document that opts in to an
+// origin-keyed agent cluster must still have the embedder's per-site JIT policy
+// applied. SiteInfo::Create() used to pass an inverted
+// `requires_origin_keyed_process` to RequiresDedicatedProcessInternal(), so an
+// OAC opt-in caused the policy scope URL to fall back to GURL() (the embedder's
+// *default* policy), letting the site escape a JITless policy on partial
+// site-isolation platforms such as Android. Conversely, a document *without* an
+// OAC opt-in shares the default SiteInstanceGroup, so it must evaluate the
+// embedder's default policy rather than leaking a site-specific exception into
+// a shared process.
+TEST_F(JitPolicyScopeTest, PolicyScopeUrlFollowsOriginAgentClusterHeader) {
+  const struct {
+    OacHeaderState oac_header_state;
+    bool expect_origin_keyed;
+  } kTestCases[] = {
+      {OacHeaderState::kOptIn, /*expect_origin_keyed=*/true},
+      {OacHeaderState::kOptOut, /*expect_origin_keyed=*/false},
+      {OacHeaderState::kAbsent, /*expect_origin_keyed=*/false},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(testing::Message()
+                 << "OacHeaderState: "
+                 << static_cast<int>(test_case.oac_header_state));
+
+    jit_policy_client_.last_jit_url_ = GURL("https://unset.test/");
+    SiteInfo site_info =
+        SiteInfo::Create(CreateIsolationContext(),
+                         CreateUrlInfoWithOacHeader(
+                             jit_blocked_url(), test_case.oac_header_state));
+
+    EXPECT_EQ(test_case.expect_origin_keyed,
+              site_info.agent_cluster_key().IsOriginKeyed());
+    // Only a document with a dedicated process may be evaluated against its own
+    // URL; documents in the default SiteInstanceGroup use the default policy.
+    EXPECT_EQ(test_case.expect_origin_keyed ? jit_blocked_url() : GURL(),
+              jit_policy_client_.last_jit_url_);
+    EXPECT_EQ(test_case.expect_origin_keyed, site_info.is_jit_disabled());
+  }
+}
+
+// End-to-end counterpart of the test above: once the embedder isolates origins
+// that have a JITless exception (see
+// ChromeContentBrowserClient::WillComputeSiteForNavigation()), the JITless
+// policy applies no matter what the Origin-Agent-Cluster header says, including
+// an explicit opt-out.
+TEST_F(JitPolicyScopeTest, JitlessExceptionAppliesRegardlessOfOacHeader) {
+  // Mirror what the embedder does for a site with a JITless exception.
+  ChildProcessSecurityPolicyImpl::GetInstance()->AddFutureIsolatedOrigins(
+      {url::Origin::Create(jit_blocked_url())},
+      IsolatedOriginSource::USER_TRIGGERED, context());
+
+  for (OacHeaderState oac_header_state :
+       {OacHeaderState::kOptIn, OacHeaderState::kOptOut,
+        OacHeaderState::kAbsent}) {
+    SCOPED_TRACE(testing::Message()
+                 << "OacHeaderState: " << static_cast<int>(oac_header_state));
+
+    jit_policy_client_.last_jit_url_ = GURL("https://unset.test/");
+    SiteInfo site_info = SiteInfo::Create(
+        CreateIsolationContext(),
+        CreateUrlInfoWithOacHeader(jit_blocked_url(), oac_header_state));
+
+    EXPECT_EQ(jit_blocked_url(), jit_policy_client_.last_jit_url_);
+    EXPECT_TRUE(site_info.is_jit_disabled());
+  }
+}
+
 TEST_F(SiteInstanceTest, ShouldAssignSiteForAboutBlank) {
   const GURL about_blank(url::kAboutBlankURL);
   url::Origin example_origin =
@@ -2775,6 +2966,628 @@ TEST_F(SiteInstanceTest, PrivilegedFeatureIdDifferentiatesPrincipals) {
       SiteInfo::Create(IsolationContext(context()), UrlInfo(UrlInfoInit(url)));
   EXPECT_FALSE(feature_42.IsSamePrincipalWith(ordinary));
   EXPECT_NE(feature_42, ordinary);
+}
+
+// Tests for shards (see BrowserContext::SetSitesForEmbedderShard()). These are
+// currently only supported when site isolation is disabled and default
+// SiteInstances (rather than default SiteInstanceGroups) are used, which is the
+// case for Android WebView.
+//
+// The fixture puts the isolated.com and isolated2.com sites (for both HTTP and
+// HTTPS) in the embedder shard of context(). All other sites are in the default
+// shard.
+class SiteInstanceShardTest : public SiteInstanceTest {
+ public:
+  SiteInstanceShardTest() {
+    feature_list_.InitAndDisableFeature(features::kDefaultSiteInstanceGroups);
+  }
+
+  void SetUp() override {
+    SiteInstanceTest::SetUp();
+    scoped_command_line_.GetProcessCommandLine()->AppendSwitch(
+        switches::kDisableSiteIsolation);
+    scoped_command_line_.GetProcessCommandLine()->RemoveSwitch(
+        switches::kSitePerProcess);
+    context()->SetSitesForEmbedderShard({
+        net::SchemefulSite(GURL("http://isolated.com")),
+        net::SchemefulSite(GURL("https://isolated.com")),
+        net::SchemefulSite(GURL("http://isolated2.com")),
+        net::SchemefulSite(GURL("https://isolated2.com")),
+    });
+
+    ASSERT_FALSE(ShouldUseDefaultSiteInstanceGroup());
+    ASSERT_FALSE(SiteIsolationPolicy::UseDedicatedProcessesForAllSites());
+  }
+
+  // Returns the shard that a navigation to `url_info` would end
+  // up in.
+  SiteShard GetShard(const UrlInfo& url_info) {
+    return GetShard(context(), url_info);
+  }
+
+  SiteShard GetShard(const GURL& url) {
+    return GetShard(UrlInfo(UrlInfoInit(url)));
+  }
+
+  // Like GetShard() above, but for `browser_context`.
+  static SiteShard GetShard(BrowserContext* browser_context,
+                            const UrlInfo& url_info) {
+    return SiteInfo::Create(IsolationContext(browser_context), url_info)
+        .shard();
+  }
+
+  static SiteShard GetShard(BrowserContext* browser_context, const GURL& url) {
+    return GetShard(browser_context, UrlInfo(UrlInfoInit(url)));
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+  base::test::ScopedCommandLine scoped_command_line_;
+};
+
+// Tests how the shard is computed for various kinds of URLs.
+TEST_F(SiteInstanceShardTest, ComputeShard) {
+  const url::Origin isolated_origin =
+      url::Origin::Create(GURL("https://isolated.com"));
+  const url::Origin unisolated_origin =
+      url::Origin::Create(GURL("https://unisolated.com"));
+
+  // Shards are assigned per site, so subdomains and other ports
+  // are in the same shard as their site.
+  EXPECT_EQ(SiteShard::kDefault, GetShard(GURL("https://unisolated.com/")));
+  EXPECT_EQ(SiteShard::kEmbedderSites, GetShard(GURL("https://isolated.com/")));
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(GURL("http://foo.isolated.com:8080/bar")));
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(GURL("https://a.b.isolated2.com/")));
+  EXPECT_EQ(SiteShard::kDefault, GetShard(GURL("https://notisolated.com/")));
+
+  // Blob URLs use the shard of the origin that created them.
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(GURL("blob:https://isolated.com/1234")));
+
+  // data: URLs use the shard of their precursor (i.e. the initiator of
+  // the navigation), so that they can stay in their initiator's process.
+  const GURL data_url("data:text/html,foo");
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(UrlInfo(UrlInfoInit(data_url).WithOrigin(
+                isolated_origin.DeriveNewOpaqueOrigin()))));
+  EXPECT_EQ(SiteShard::kDefault,
+            GetShard(UrlInfo(UrlInfoInit(data_url).WithOrigin(
+                unisolated_origin.DeriveNewOpaqueOrigin()))));
+  // A data: URL without a precursor (e.g. a browser-initiated navigation) is
+  // in the default shard.
+  EXPECT_EQ(SiteShard::kDefault,
+            GetShard(UrlInfo(UrlInfoInit(data_url).WithOrigin(url::Origin()))));
+  EXPECT_EQ(SiteShard::kDefault, GetShard(data_url));
+
+  // LoadDataWithBaseURL navigations use the shard of the base URL.
+  EXPECT_EQ(
+      SiteShard::kEmbedderSites,
+      GetShard(UrlInfo(UrlInfoInit(data_url).WithOrigin(isolated_origin))));
+
+  // about:blank uses the shard of the origin it inherits.
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(UrlInfo(
+                UrlInfoInit(GURL(url::kAboutBlankURL))
+                    .WithOrigin(isolated_origin.DeriveNewOpaqueOrigin()))));
+  EXPECT_EQ(
+      SiteShard::kEmbedderSites,
+      GetShard(UrlInfo(
+          UrlInfoInit(GURL(url::kAboutBlankURL)).WithOrigin(isolated_origin))));
+
+  // Opaque origins without a precursor are in the default shard.
+  EXPECT_EQ(SiteShard::kDefault,
+            SiteInfo::GetShardForUrlInfo(
+                context(), UrlInfo(UrlInfoInit(GURL("data:text/html,foo")))));
+}
+
+// Tests that opaque origins with a precursor (e.g. for documents sandboxed
+// with a sandbox attribute or a CSP header) use the shard of their precursor.
+TEST_F(SiteInstanceShardTest, OpaqueOriginsWithPrecursor) {
+  const GURL isolated_url("https://isolated.com/");
+  const GURL unisolated_url("https://unisolated.com/");
+  const url::Origin isolated_origin = url::Origin::Create(isolated_url);
+  const url::Origin unisolated_origin = url::Origin::Create(unisolated_url);
+
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(UrlInfo(
+                UrlInfoInit(isolated_url)
+                    .WithOrigin(isolated_origin.DeriveNewOpaqueOrigin()))));
+  EXPECT_EQ(SiteShard::kDefault,
+            GetShard(UrlInfo(
+                UrlInfoInit(unisolated_url)
+                    .WithOrigin(unisolated_origin.DeriveNewOpaqueOrigin()))));
+  EXPECT_EQ(
+      SiteShard::kEmbedderSites,
+      SiteInfo::GetShardForUrlInfo(
+          context(),
+          UrlInfo(UrlInfoInit(GURL("data:text/html,foo"))
+                      .WithOrigin(isolated_origin.DeriveNewOpaqueOrigin()))));
+  EXPECT_EQ(
+      SiteShard::kDefault,
+      SiteInfo::GetShardForUrlInfo(
+          context(),
+          UrlInfo(UrlInfoInit(GURL("data:text/html,foo"))
+                      .WithOrigin(unisolated_origin.DeriveNewOpaqueOrigin()))));
+
+  // A sandboxed UrlInfo always requires a dedicated process (see
+  // SiteInfo::RequiresDedicatedProcess()), and SiteInfos that require a
+  // dedicated process are always in the default shard, so that locked
+  // processes never carry a shard. In practice, NavigationRequest only marks a
+  // UrlInfo as sandboxed when isolated sandboxed iframes are enabled (which
+  // requires partial site isolation) and when the URL would require a dedicated
+  // process even without the sandbox. So with site isolation disabled (as in
+  // Android WebView, where shards are used), sandboxed frames get an
+  // unsandboxed UrlInfo with an opaque origin, and are in the shard of the
+  // origin's precursor as tested above.
+  UrlInfo sandboxed_url_info(
+      UrlInfoInit(isolated_url)
+          .WithOrigin(isolated_origin.DeriveNewOpaqueOrigin())
+          .WithSandbox(true));
+  SiteInfo sandboxed_site_info =
+      SiteInfo::Create(IsolationContext(context()), sandboxed_url_info);
+  EXPECT_TRUE(sandboxed_site_info.RequiresDedicatedProcess(
+      IsolationContext(context())));
+  EXPECT_EQ(SiteShard::kDefault, sandboxed_site_info.shard());
+}
+
+// Tests that PDF content, which always requires a dedicated process, is not
+// put in a shard, since shards only divide up content in processes that aren't
+// locked to a site. There is no browser test for this, since content_shell and
+// Android WebView don't have a PDF viewer.
+TEST_F(SiteInstanceShardTest, PdfNotSharded) {
+  const GURL pdf_url("https://isolated.com/doc.pdf");
+  const IsolationContext isolation_context(context());
+
+  SiteInfo pdf_site_info = SiteInfo::Create(
+      isolation_context, UrlInfo(UrlInfoInit(pdf_url).WithEmbedderIsolationInfo(
+                             EmbedderIsolationInfo::CreateForPdf())));
+  EXPECT_TRUE(pdf_site_info.RequiresDedicatedProcess(isolation_context));
+  EXPECT_EQ(SiteShard::kDefault, pdf_site_info.shard());
+
+  // Without the PDF isolation info, the same URL is in the embedder shard.
+  SiteInfo site_info =
+      SiteInfo::Create(isolation_context, UrlInfo(UrlInfoInit(pdf_url)));
+  EXPECT_FALSE(site_info.RequiresDedicatedProcess(isolation_context));
+  EXPECT_EQ(SiteShard::kEmbedderSites, site_info.shard());
+}
+
+// Tests that a BrowserContext without any shards puts everything in the default
+// shard.
+TEST_F(SiteInstanceShardTest, NoShardsConfigured) {
+  TestBrowserContext other_context;
+  BrowserContextImpl* other_context_impl =
+      BrowserContextImpl::From(&other_context);
+  EXPECT_FALSE(other_context_impl->HasShards());
+  EXPECT_EQ(SiteShard::kDefault,
+            other_context_impl->GetShardForSite(
+                net::SchemefulSite(GURL("https://isolated.com"))));
+  EXPECT_EQ(
+      SiteShard::kDefault,
+      SiteInfo::GetShardForUrlInfo(
+          &other_context, UrlInfo(UrlInfoInit(GURL("https://isolated.com")))));
+  EXPECT_EQ(SiteShard::kDefault,
+            GetShard(&other_context, GURL("https://isolated.com/")));
+  EXPECT_EQ(SiteShard::kDefault,
+            GetShard(&other_context, GURL("https://unisolated.com/")));
+
+  // Shards are per BrowserContext, so context() is unaffected.
+  EXPECT_TRUE(BrowserContextImpl::From(context())->HasShards());
+  EXPECT_EQ(SiteShard::kEmbedderSites, GetShard(GURL("https://isolated.com/")));
+}
+
+// Tests that the sites passed to BrowserContext::SetSitesForEmbedderShard()
+// each cover exactly that site.
+TEST_F(SiteInstanceShardTest, SetSitesForEmbedderShard) {
+  TestBrowserContext other_context;
+  BrowserContextImpl* other_context_impl =
+      BrowserContextImpl::From(&other_context);
+  other_context.SetSitesForEmbedderShard({
+      net::SchemefulSite(GURL("https://example.com")),
+      // Constructing a SchemefulSite from a subdomain or a URL with a port or
+      // path gives its site.
+      net::SchemefulSite(GURL("https://sub.other.com:8443/path")),
+      // github.io is a public suffix, so this only covers github.io itself.
+      net::SchemefulSite(GURL("https://github.io")),
+  });
+  EXPECT_TRUE(other_context_impl->HasShards());
+
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            other_context_impl->GetShardForSite(
+                net::SchemefulSite(GURL("https://example.com"))));
+  EXPECT_EQ(SiteShard::kDefault,
+            other_context_impl->GetShardForSite(
+                net::SchemefulSite(GURL("http://example.com"))));
+
+  // Shards are assigned per site, so a site covers all of its subdomains and
+  // ports, but not other schemes.
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(&other_context, GURL("https://example.com/")));
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(&other_context, GURL("https://sub.example.com/")));
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(&other_context, GURL("https://a.b.example.com:8443/")));
+  EXPECT_EQ(SiteShard::kDefault,
+            GetShard(&other_context, GURL("http://example.com/")));
+  EXPECT_EQ(SiteShard::kDefault,
+            GetShard(&other_context, GURL("https://notexample.com/")));
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(&other_context, GURL("https://other.com/")));
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(&other_context, GURL("https://another.other.com/")));
+
+  // Sites under a public suffix are each their own site.
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            GetShard(&other_context, GURL("https://github.io/")));
+  EXPECT_EQ(SiteShard::kDefault,
+            GetShard(&other_context, GURL("https://foo.github.io/")));
+
+  // Opaque origins use the shard of their precursor.
+  const GURL data_url("data:text/html,foo");
+  const url::Origin example_origin =
+      url::Origin::Create(GURL("https://sub.example.com"));
+  EXPECT_EQ(
+      SiteShard::kEmbedderSites,
+      GetShard(&other_context, UrlInfo(UrlInfoInit(data_url).WithOrigin(
+                                   example_origin.DeriveNewOpaqueOrigin()))));
+  EXPECT_EQ(SiteShard::kDefault, GetShard(&other_context, data_url));
+
+  // Content in the shard gets its own default SiteInstance.
+  scoped_refptr<SiteInstanceImpl> instance = SiteInstanceImpl::CreateForTesting(
+      &other_context, GURL("https://sub.example.com"));
+  EXPECT_TRUE(instance->IsDefaultSiteInstance());
+  EXPECT_EQ(SiteShard::kEmbedderSites, instance->GetSiteInfo().shard());
+  scoped_refptr<SiteInstanceImpl> default_instance =
+      instance->GetRelatedSiteInstanceImpl(
+          UrlInfo(UrlInfoInit(GURL("https://unisolated.com"))));
+  EXPECT_TRUE(default_instance->IsDefaultSiteInstance());
+  EXPECT_NE(instance, default_instance);
+  EXPECT_EQ(SiteShard::kDefault, default_instance->GetSiteInfo().shard());
+}
+
+// Tests that the embedder shard can only be set once, and that invalid sites
+// are rejected.
+TEST_F(SiteInstanceShardTest, SetSitesForEmbedderShardInvalid) {
+  {
+    TestBrowserContext other_context;
+    EXPECT_TRUE(other_context.CanSetSitesForEmbedderShard());
+    other_context.SetSitesForEmbedderShard(
+        {net::SchemefulSite(GURL("https://example.com"))});
+    EXPECT_FALSE(other_context.CanSetSitesForEmbedderShard());
+    EXPECT_CHECK_DEATH_WITH(
+        other_context.SetSitesForEmbedderShard(
+            {net::SchemefulSite(GURL("https://other.com"))}),
+        "Not in a valid state to call SetSitesForEmbedderShard().");
+    // The failed call had no effect.
+    EXPECT_EQ(SiteShard::kEmbedderSites,
+              GetShard(&other_context, GURL("https://example.com/")));
+    EXPECT_EQ(SiteShard::kDefault,
+              GetShard(&other_context, GURL("https://other.com/")));
+  }
+
+  TestBrowserContext other_context;
+  EXPECT_TRUE(other_context.CanSetSitesForEmbedderShard());
+  EXPECT_CHECK_DEATH_WITH(other_context.SetSitesForEmbedderShard({}),
+                          "SetSitesForEmbedderShard\\(\\) requires sites.");
+  EXPECT_CHECK_DEATH_WITH(
+      other_context.SetSitesForEmbedderShard({net::SchemefulSite()}),
+      "Opaque sites can't be put in a shard.");
+  EXPECT_CHECK_DEATH_WITH(other_context.SetSitesForEmbedderShard(
+                              {net::SchemefulSite(GURL("data:text/html,foo"))}),
+                          "Opaque sites can't be put in a shard.");
+  EXPECT_CHECK_DEATH_WITH(other_context.SetSitesForEmbedderShard(
+                              {net::SchemefulSite(GURL("https://example.com")),
+                               net::SchemefulSite(GURL("file:///foo"))}),
+                          "Only HTTP\\(S\\) sites can be put in a shard");
+  EXPECT_CHECK_DEATH_WITH(other_context.SetSitesForEmbedderShard(
+                              {net::SchemefulSite(GURL("wss://example.com"))}),
+                          "Only HTTP\\(S\\) sites can be put in a shard");
+  EXPECT_CHECK_DEATH_WITH(other_context.SetSitesForEmbedderShard(
+                              {net::SchemefulSite(GURL("chrome://settings"))}),
+                          "Only HTTP\\(S\\) sites can be put in a shard");
+  // The failed calls had no effect.
+  EXPECT_FALSE(BrowserContextImpl::From(&other_context)->HasShards());
+  EXPECT_TRUE(other_context.CanSetSitesForEmbedderShard());
+}
+
+// Tests that shards can't be set in single-process mode.
+TEST_F(SiteInstanceShardTest,
+       SetSitesForEmbedderShardNotSupportedInSingleProcessMode) {
+  TestBrowserContext other_context;
+  RenderProcessHost::SetRunRendererInProcess(true);
+  EXPECT_FALSE(other_context.CanSetSitesForEmbedderShard());
+  EXPECT_CHECK_DEATH_WITH(
+      other_context.SetSitesForEmbedderShard(
+          {net::SchemefulSite(GURL("https://example.com"))}),
+      "Not in a valid state to call SetSitesForEmbedderShard().");
+  RenderProcessHost::SetRunRendererInProcess(false);
+}
+
+// Tests that shards can't be set when default SiteInstanceGroups are used.
+TEST_F(SiteInstanceShardTest,
+       SetSitesForEmbedderShardNotSupportedWithDefaultSiteInstanceGroups) {
+  base::test::ScopedFeatureList feature_list(
+      features::kDefaultSiteInstanceGroups);
+  if (!ShouldUseDefaultSiteInstanceGroup()) {
+    GTEST_SKIP() << "Default SiteInstanceGroups are not allowed.";
+  }
+  TestBrowserContext other_context;
+  EXPECT_FALSE(other_context.CanSetSitesForEmbedderShard());
+  EXPECT_CHECK_DEATH_WITH(
+      other_context.SetSitesForEmbedderShard(
+          {net::SchemefulSite(GURL("https://example.com"))}),
+      "Not in a valid state to call SetSitesForEmbedderShard().");
+}
+
+// Tests that shards can't be set when the Rust implementation of
+// ChildProcessSecurityPolicy's ProcessState is used, since it doesn't support
+// shards yet.
+TEST_F(SiteInstanceShardTest, SetSitesForEmbedderShardNotSupportedWithRust) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kChildProcessSecurityPolicyRust,
+       features::kChildProcessSecurityPolicyRustProcessState},
+      {});
+  TestBrowserContext other_context;
+  EXPECT_FALSE(other_context.CanSetSitesForEmbedderShard());
+  EXPECT_CHECK_DEATH_WITH(
+      other_context.SetSitesForEmbedderShard(
+          {net::SchemefulSite(GURL("https://example.com"))}),
+      "Not in a valid state to call SetSitesForEmbedderShard().");
+}
+
+// Tests that shards must be set before any RenderProcessHost in the
+// BrowserContext is used, but that unused processes (e.g. spare renderers) are
+// allowed.
+TEST_F(SiteInstanceShardTest, SetSitesForEmbedderShardAfterUse) {
+  {
+    TestBrowserContext other_context;
+    MockRenderProcessHost unused_host(&other_context);
+    ASSERT_TRUE(unused_host.IsUnused());
+    // A used process in a different BrowserContext doesn't matter.
+    MockRenderProcessHost used_host_in_other_context(context());
+    used_host_in_other_context.SetIsUsed();
+    EXPECT_TRUE(other_context.CanSetSitesForEmbedderShard());
+    other_context.SetSitesForEmbedderShard(
+        {net::SchemefulSite(GURL("https://example.com"))});
+    EXPECT_FALSE(other_context.CanSetSitesForEmbedderShard());
+  }
+
+  TestBrowserContext other_context;
+  MockRenderProcessHost used_host(&other_context);
+  EXPECT_TRUE(other_context.CanSetSitesForEmbedderShard());
+  used_host.SetIsUsed();
+  EXPECT_FALSE(other_context.CanSetSitesForEmbedderShard());
+  EXPECT_CHECK_DEATH_WITH(
+      other_context.SetSitesForEmbedderShard(
+          {net::SchemefulSite(GURL("https://example.com"))}),
+      "Not in a valid state to call SetSitesForEmbedderShard().");
+}
+
+// Tests that shards only divide up content that does not require a dedicated
+// process. A site in a shard that requires a dedicated process (e.g., because
+// of --site-per-process or because it is an isolated origin) stays in the
+// default shard, so that the stronger isolation mode takes precedence and
+// processes that are locked to a site never carry a shard.
+TEST_F(SiteInstanceShardTest, NoShardWhenDedicatedProcessIsRequired) {
+  const GURL kIsolatedUrl("https://isolated.com/");
+  const GURL kIsolated2Url("https://isolated2.com/");
+  IsolationContext isolation_context(context());
+  auto create_site_info = [&](const GURL& url) {
+    return SiteInfo::Create(isolation_context, UrlInfo(UrlInfoInit(url)));
+  };
+
+  // Without full site isolation, these sites don't require a dedicated process,
+  // so they are in the embedder shard.
+  {
+    SiteInfo site_info = create_site_info(kIsolatedUrl);
+    EXPECT_FALSE(site_info.RequiresDedicatedProcess(isolation_context));
+    EXPECT_EQ(SiteShard::kEmbedderSites, site_info.shard());
+    EXPECT_EQ(SiteShard::kEmbedderSites,
+              create_site_info(kIsolated2Url).shard());
+  }
+
+  // With --site-per-process, every site requires a dedicated process, so
+  // isolated.com stays in the default shard, and so does the ProcessLock of a
+  // process locked to it.
+  {
+    base::test::ScopedCommandLine scoped_command_line;
+    scoped_command_line.GetProcessCommandLine()->RemoveSwitch(
+        switches::kDisableSiteIsolation);
+    scoped_command_line.GetProcessCommandLine()->AppendSwitch(
+        switches::kSitePerProcess);
+    ASSERT_TRUE(SiteIsolationPolicy::UseDedicatedProcessesForAllSites());
+
+    SiteInfo site_info = create_site_info(kIsolatedUrl);
+    EXPECT_TRUE(site_info.RequiresDedicatedProcess(isolation_context));
+    EXPECT_EQ(SiteShard::kDefault, site_info.shard());
+    ProcessLock lock = ProcessLock::FromSiteInfo(site_info);
+    EXPECT_TRUE(lock.IsLockedToSite());
+    EXPECT_EQ(SiteShard::kDefault, lock.shard());
+  }
+  ASSERT_FALSE(SiteIsolationPolicy::UseDedicatedProcessesForAllSites());
+
+  // Similarly, an isolated origin requires a dedicated process even without
+  // full site isolation, so it stays in the default shard, while other sites
+  // are unaffected.
+  ChildProcessSecurityPolicyImpl::GetInstance()->AddFutureIsolatedOrigins(
+      {url::Origin::Create(kIsolated2Url)}, IsolatedOriginSource::TEST);
+  {
+    SiteInfo site_info = create_site_info(kIsolated2Url);
+    EXPECT_TRUE(site_info.RequiresDedicatedProcess(isolation_context));
+    EXPECT_EQ(SiteShard::kDefault, site_info.shard());
+    EXPECT_EQ(SiteShard::kEmbedderSites,
+              create_site_info(kIsolatedUrl).shard());
+  }
+}
+
+// Tests that there is one default SiteInstance per shard, and
+// that their SiteInfos and ProcessLocks are distinct.
+TEST_F(SiteInstanceShardTest, DefaultSiteInstancePerShard) {
+  const struct {
+    GURL url;
+    SiteShard expected_shard;
+  } kTestCases[] = {
+      {GURL("http://unisolated.com"), SiteShard::kDefault},
+      {GURL("http://isolated.com"), SiteShard::kEmbedderSites},
+      {GURL("http://sub.isolated.com"), SiteShard::kEmbedderSites},
+      {GURL("http://isolated2.com"), SiteShard::kEmbedderSites},
+  };
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.url);
+    scoped_refptr<SiteInstanceImpl> instance =
+        SiteInstanceImpl::CreateForTesting(context(), test_case.url);
+    EXPECT_TRUE(instance->IsDefaultSiteInstance());
+    EXPECT_EQ(test_case.expected_shard, instance->GetSiteInfo().shard());
+    EXPECT_EQ(SiteInstanceImpl::GetDefaultSiteURL(),
+              instance->GetSiteInfo().site_url());
+    SiteInfo expected_site_info = SiteInfo::CreateForDefaultSiteInstance(
+        instance->GetIsolationContext(),
+        StoragePartitionConfig::CreateDefault(context()),
+        WebExposedIsolationInfo::CreateNonIsolated(),
+        /*cross_origin_isolation_key=*/std::nullopt, test_case.expected_shard);
+    EXPECT_EQ(expected_site_info, instance->GetSiteInfo());
+    EXPECT_EQ(test_case.expected_shard,
+              ProcessLock::FromSiteInfo(instance->GetSiteInfo()).shard());
+  }
+}
+
+// Tests that within a BrowsingInstance, URLs in the same shard
+// share a default SiteInstance, while URLs in different shards get
+// different default SiteInstances.
+TEST_F(SiteInstanceShardTest, DefaultSiteInstanceSharing) {
+  scoped_refptr<SiteInstanceImpl> default_instance =
+      SiteInstanceImpl::CreateForTesting(context(), GURL("http://a.com"));
+  ASSERT_TRUE(default_instance->IsDefaultSiteInstance());
+  EXPECT_EQ(SiteShard::kDefault, default_instance->GetSiteInfo().shard());
+
+  auto get_related = [&](const char* url) {
+    return default_instance->GetRelatedSiteInstanceImpl(
+        UrlInfo(UrlInfoInit(GURL(url))));
+  };
+
+  // URLs in the default shard share the default SiteInstance.
+  EXPECT_EQ(default_instance, get_related("http://b.com"));
+  EXPECT_EQ(default_instance, get_related("http://example.com"));
+
+  // URLs in the embedder shard share a different default SiteInstance in the
+  // same BrowsingInstance.
+  scoped_refptr<SiteInstanceImpl> isolated_instance =
+      get_related("http://a.isolated.com");
+  EXPECT_TRUE(isolated_instance->IsDefaultSiteInstance());
+  EXPECT_NE(default_instance, isolated_instance);
+  EXPECT_NE(default_instance->GetSiteInfo(), isolated_instance->GetSiteInfo());
+  EXPECT_NE(ProcessLock::FromSiteInfo(default_instance->GetSiteInfo()),
+            ProcessLock::FromSiteInfo(isolated_instance->GetSiteInfo()));
+  EXPECT_EQ(default_instance->GetBrowsingInstanceId(),
+            isolated_instance->GetBrowsingInstanceId());
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            isolated_instance->GetSiteInfo().shard());
+  EXPECT_EQ(isolated_instance, get_related("http://b.isolated.com"));
+
+  // Other sites in the embedder shard share the same default SiteInstance.
+  EXPECT_EQ(isolated_instance, get_related("http://isolated2.com"));
+
+  // IsSameSiteWithURL() and DoesSiteInfoForURLMatch() respect shards.
+  const struct {
+    raw_ptr<SiteInstanceImpl> instance;
+    const char* url;
+    bool expected_match;
+  } kTestCases[] = {
+      {default_instance.get(), "http://a.com", true},
+      {default_instance.get(), "http://example.com", true},
+      {default_instance.get(), "http://isolated.com", false},
+      {default_instance.get(), "http://sub.isolated.com", false},
+      {default_instance.get(), "http://isolated2.com", false},
+      {isolated_instance.get(), "http://a.isolated.com", true},
+      {isolated_instance.get(), "http://isolated.com", true},
+      {isolated_instance.get(), "http://isolated2.com", true},
+      {isolated_instance.get(), "http://a.com", false},
+  };
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.url);
+    SCOPED_TRACE(test_case.instance->GetSiteInfo().GetDebugString());
+    GURL url(test_case.url);
+    EXPECT_EQ(test_case.expected_match,
+              test_case.instance->IsSameSiteWithURL(url));
+    EXPECT_EQ(
+        test_case.expected_match,
+        test_case.instance->DoesSiteInfoForURLMatch(UrlInfo(UrlInfoInit(url))));
+  }
+}
+
+// Tests that releasing the default SiteInstance for one shard
+// does not affect the default SiteInstances of other shards in the same
+// BrowsingInstance.
+TEST_F(SiteInstanceShardTest, DefaultSiteInstanceDestruction) {
+  scoped_refptr<SiteInstanceImpl> default_instance =
+      SiteInstanceImpl::CreateForTesting(context(), GURL("http://a.com"));
+  ASSERT_TRUE(default_instance->IsDefaultSiteInstance());
+  scoped_refptr<SiteInstanceImpl> isolated_instance =
+      default_instance->GetRelatedSiteInstanceImpl(
+          UrlInfo(UrlInfoInit(GURL("http://isolated.com"))));
+  ASSERT_TRUE(isolated_instance->IsDefaultSiteInstance());
+  ASSERT_NE(default_instance, isolated_instance);
+
+  SiteInstanceDestructionObserver observer(isolated_instance.get());
+  isolated_instance.reset();
+  EXPECT_TRUE(observer.site_instance_deleted());
+  // `default_instance` keeps the BrowsingInstance alive.
+  EXPECT_FALSE(observer.browsing_instance_deleted());
+
+  // The default shard still uses the same default SiteInstance.
+  EXPECT_EQ(default_instance, default_instance->GetRelatedSiteInstanceImpl(
+                                  UrlInfo(UrlInfoInit(GURL("http://b.com")))));
+
+  // A new default SiteInstance is created for the embedder shard when needed.
+  scoped_refptr<SiteInstanceImpl> new_isolated_instance =
+      default_instance->GetRelatedSiteInstanceImpl(
+          UrlInfo(UrlInfoInit(GURL("http://isolated.com"))));
+  EXPECT_TRUE(new_isolated_instance->IsDefaultSiteInstance());
+  EXPECT_NE(default_instance, new_isolated_instance);
+  EXPECT_EQ(SiteShard::kEmbedderSites,
+            new_isolated_instance->GetSiteInfo().shard());
+
+  // Releasing all references deletes the BrowsingInstance.
+  SiteInstanceDestructionObserver default_observer(default_instance.get());
+  new_isolated_instance.reset();
+  default_instance.reset();
+  EXPECT_TRUE(default_observer.site_instance_deleted());
+  EXPECT_TRUE(default_observer.browsing_instance_deleted());
+}
+
+// Tests that a data: URL SiteInstance which shares a SiteInstanceGroup (and
+// so a process) with its initiator has the initiator's shard in
+// its SiteInfo, computed from the precursor of the data: URL's opaque origin.
+TEST_F(SiteInstanceShardTest, DataUrlUsesInitiatorShard) {
+  const url::Origin isolated_origin =
+      url::Origin::Create(GURL("http://isolated.com"));
+  scoped_refptr<SiteInstanceImpl> isolated_instance =
+      SiteInstanceImpl::CreateForTesting(context(), isolated_origin.GetURL());
+  RenderProcessHost* process =
+      isolated_instance->GetOrCreateProcessForTesting();
+  EXPECT_EQ(SiteShard::kEmbedderSites, process->GetProcessLock().shard());
+
+  scoped_refptr<SiteInstanceImpl> data_instance =
+      isolated_instance->GetMaybeGroupRelatedSiteInstanceImpl(
+          UrlInfo(UrlInfoInit(GURL("data:text/html,foo"))
+                      .WithOrigin(isolated_origin.DeriveNewOpaqueOrigin())));
+  EXPECT_NE(isolated_instance, data_instance);
+  EXPECT_FALSE(data_instance->IsDefaultSiteInstance());
+  EXPECT_TRUE(
+      data_instance->GetSiteInfo().site_url().SchemeIs(url::kDataScheme));
+  EXPECT_EQ(isolated_instance->group(), data_instance->group());
+  EXPECT_EQ(process, data_instance->GetOrCreateProcessForTesting());
+
+  // The data: SiteInstance's SiteInfo has its initiator's shard, so it
+  // doesn't change the shard of the process (which would crash).
+  EXPECT_EQ(SiteShard::kEmbedderSites, data_instance->GetSiteInfo().shard());
+  EXPECT_EQ(SiteShard::kEmbedderSites, process->GetProcessLock().shard());
+
+  data_instance.reset();
+  isolated_instance.reset();
+  DrainMessageLoop();
 }
 
 }  // namespace content

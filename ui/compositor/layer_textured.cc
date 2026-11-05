@@ -19,6 +19,8 @@
 
 namespace ui {
 
+DEFINE_SAFE_CAST_TARGET(LayerTextured)
+
 LayerTextured::LayerTextured() : Layer(LAYER_TEXTURED) {
   content_layer_ = cc::PictureLayer::Create(this);
   cc_layer_ = content_layer_.get();
@@ -38,7 +40,7 @@ void LayerTextured::AddDeferredPaintRequest() {
 }
 
 void LayerTextured::RemoveDeferredPaintRequest() {
-  DCHECK_GT(deferred_paint_requests_, 0u);
+  CHECK_GT(deferred_paint_requests_, 0u, base::NotFatalUntil::M163);
 
   --deferred_paint_requests_;
   TRACE_COUNTER("ui",

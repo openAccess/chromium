@@ -18,8 +18,8 @@
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "services/network/public/mojom/network_service.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -103,16 +103,15 @@ void VrpFlagsFactoryImpl::StartRendererForVrpFlags(
     return;
   }
 
-  WindowOpenDisposition open_disposition =
-      WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  ui::mojom::WindowOpenDisposition open_disposition =
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   if (disposition == vrp_flags::mojom::VictimDisposition::kSpawnBackgroundTab) {
-    open_disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+    open_disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   }
 
   GURL target_url(base::StringPrintf("http://victim.test:%u/poc.html", port));
-  OpenURLParams params(target_url, Referrer(), open_disposition,
-                       ui::PAGE_TRANSITION_LINK,
-                       /*is_renderer_initiated=*/false);
+  OpenURLParams params = OpenURLParams::CreateBrowserInitiated(
+      target_url, open_disposition, ui::PAGE_TRANSITION_LINK);
   web_contents->OpenURL(params, /*navigation_handle_callback=*/{});
 }
 

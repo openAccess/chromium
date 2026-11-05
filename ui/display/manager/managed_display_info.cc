@@ -4,17 +4,21 @@
 
 #include "ui/display/manager/managed_display_info.h"
 
-#include <stdio.h>
 #include <inttypes.h>
+#include <stdio.h>
 
+#include <algorithm>
+#include <array>
 #include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "base/check_op.h"
 #include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
@@ -40,6 +44,10 @@ namespace display {
 namespace {
 
 const float kDpi96 = 96.0;
+
+// Small epsilon added before flooring to compensate for float division error
+// (e.g. 960 / 2.4f = 399.99997...).
+constexpr float kFloatDivisionEpsilon = 0.0005f;
 
 // The recommended default external display DPI, only used when an external
 // display is connected for the first time. e.g. when a 4K native mode is used
@@ -196,15 +204,16 @@ ManagedDisplayInfo ManagedDisplayInfo::CreateFromSpecWithID(
     std::vector<std::string_view> radii_part = base::SplitStringPiece(
         parts[1], "|", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
 
-    DCHECK(radii_part.size() == 1 || radii_part.size() == 4);
+    CHECK(radii_part.size() == 1 || radii_part.size() == 4,
+          base::NotFatalUntil::M163);
 
-    float radii[4];
+    std::array<float, 4> radii = {};
     int radius_in_int = 0;
     for (size_t idx = 0; idx < radii_part.size(); ++idx) {
       std::string_view radius = radii_part[idx];
       bool conversion_success = base::StringToInt(radius, &radius_in_int);
-      DCHECK(conversion_success);
-      UNSAFE_TODO(radii[idx]) = static_cast<float>(radius_in_int);
+      CHECK(conversion_success, base::NotFatalUntil::M163);
+      radii[idx] = static_cast<float>(radius_in_int);
     }
 
     panel_corners_radii =
@@ -425,7 +434,7 @@ void ManagedDisplayInfo::AddZoomFactorForSize(const std::string& size,
 }
 
 void ManagedDisplayInfo::Copy(const ManagedDisplayInfo& native_info) {
-  DCHECK(id_ == native_info.id_);
+  CHECK(id_ == native_info.id_, base::NotFatalUntil::M163);
   port_display_id_ = native_info.port_display_id_;
   edid_display_id_ = native_info.edid_display_id_;
   connector_index_ = native_info.connector_index_;
@@ -440,7 +449,7 @@ void ManagedDisplayInfo::Copy(const ManagedDisplayInfo& native_info) {
   connection_type_ = native_info.connection_type_;
   physical_size_ = native_info.physical_size_;
   device_scale_factor_ = native_info.device_scale_factor_;
-  DCHECK(!native_info.bounds_in_native_.IsEmpty());
+  CHECK(!native_info.bounds_in_native_.IsEmpty(), base::NotFatalUntil::M163);
   bounds_in_native_ = native_info.bounds_in_native_;
   device_dpi_ = native_info.device_dpi_;
   panel_orientation_ = native_info.panel_orientation_,
@@ -465,21 +474,25 @@ void ManagedDisplayInfo::Copy(const ManagedDisplayInfo& native_info) {
   // Rotation, color_profile and overscan are given by preference,
   // or unit tests. Don't copy if this native_info came from
   // DisplayChangeObserver.
-  if (native_info.from_native_platform())
+  if (native_info.from_native_platform()) {
+    ClampOverscanInsets();
     return;
+  }
   // Update the overscan_insets_in_dip_ either if the inset should be
   // cleared, or has non empty insets.
   if (native_info.clear_overscan_insets())
     overscan_insets_in_dip_ = gfx::Insets();
   else if (!native_info.overscan_insets_in_dip_.IsEmpty())
     overscan_insets_in_dip_ = native_info.overscan_insets_in_dip_;
+  ClampOverscanInsets();
 
   rotations_ = native_info.rotations_;
   zoom_factor_ = native_info.zoom_factor_;
 }
 
 void ManagedDisplayInfo::SetBounds(const gfx::Rect& new_bounds_in_native) {
-  DCHECK_NE(new_bounds_in_native.width(), new_bounds_in_native.height());
+  CHECK_NE(new_bounds_in_native.width(), new_bounds_in_native.height(),
+           base::NotFatalUntil::M163);
 
   bounds_in_native_ = new_bounds_in_native;
   size_in_pixel_ = new_bounds_in_native.size();
@@ -516,7 +529,7 @@ void ManagedDisplayInfo::UpdateZoomFactorToMatchTargetDPI() {
       std::max(bounds_in_native_.width(), bounds_in_native_.height());
   const std::vector<float> avaialble_zoom_factors =
       GetDisplayZoomFactorsByDisplayWidth(display_larger_side);
-  DCHECK_GE(avaialble_zoom_factors.size(), 1u);
+  CHECK_GE(avaialble_zoom_factors.size(), 1u, base::NotFatalUntil::M163);
 
   const float min_zoom_factor = avaialble_zoom_factors.front();
   const float max_zoom_factor = avaialble_zoom_factors.back();
@@ -528,8 +541,9 @@ void ManagedDisplayInfo::UpdateZoomFactorToMatchTargetDPI() {
     zoom_factor_ = max_zoom_factor;
   } else {
     // Round to the neareast available zoom factor.
-    DCHECK(std::is_sorted(avaialble_zoom_factors.begin(),
-                          avaialble_zoom_factors.end()));
+    CHECK(std::is_sorted(avaialble_zoom_factors.begin(),
+                         avaialble_zoom_factors.end()),
+          base::NotFatalUntil::M163);
     for (size_t i = 0; i < avaialble_zoom_factors.size() - 1; i++) {
       const float left_bound = avaialble_zoom_factors[i];
       const float right_bound = avaialble_zoom_factors[i + 1];
@@ -559,13 +573,12 @@ gfx::Size ManagedDisplayInfo::GetSizeInPixelWithPanelOrientation() const {
 }
 
 void ManagedDisplayInfo::UpdateDisplaySize() {
+  ClampOverscanInsets();
   size_in_pixel_ = GetSizeInPixelWithPanelOrientation();
 
   if (!overscan_insets_in_dip_.IsEmpty()) {
     gfx::Insets insets_in_pixel = GetOverscanInsetsInPixel();
     size_in_pixel_.Enlarge(-insets_in_pixel.width(), -insets_in_pixel.height());
-  } else {
-    overscan_insets_in_dip_ = gfx::Insets();
   }
 
   if (GetActiveRotation() == Display::ROTATE_90 ||
@@ -576,11 +589,43 @@ void ManagedDisplayInfo::UpdateDisplaySize() {
 
 void ManagedDisplayInfo::SetOverscanInsets(const gfx::Insets& insets_in_dip) {
   overscan_insets_in_dip_ = insets_in_dip;
+  ClampOverscanInsets();
+}
+
+void ManagedDisplayInfo::ClampOverscanInsets() {
+  overscan_insets_in_dip_.SetToMax(gfx::Insets());
+  const gfx::Size size_in_pixel = GetSizeInPixelWithPanelOrientation();
+  if (size_in_pixel.IsEmpty()) {
+    return;
+  }
+  CHECK_GT(device_scale_factor_, 0.0f);
+  const int max_horizontal =
+      base::ClampFloor((size_in_pixel.width() / 4) / device_scale_factor_ +
+                       kFloatDivisionEpsilon);
+  const int max_vertical =
+      base::ClampFloor((size_in_pixel.height() / 4) / device_scale_factor_ +
+                       kFloatDivisionEpsilon);
+  overscan_insets_in_dip_ = gfx::Insets::TLBR(
+      std::min(overscan_insets_in_dip_.top(), max_vertical),
+      std::min(overscan_insets_in_dip_.left(), max_horizontal),
+      std::min(overscan_insets_in_dip_.bottom(), max_vertical),
+      std::min(overscan_insets_in_dip_.right(), max_horizontal));
 }
 
 gfx::Insets ManagedDisplayInfo::GetOverscanInsetsInPixel() const {
-  return gfx::ToFlooredInsets(gfx::ConvertInsetsToPixels(
-      overscan_insets_in_dip_, device_scale_factor_));
+  const gfx::Insets insets_in_pixel =
+      gfx::ToFlooredInsets(gfx::ConvertInsetsToPixels(overscan_insets_in_dip_,
+                                                      device_scale_factor_));
+  const gfx::Size size_in_pixel = GetSizeInPixelWithPanelOrientation();
+  if (size_in_pixel.IsEmpty()) {
+    return insets_in_pixel;
+  }
+  const int max_horizontal = size_in_pixel.width() / 4;
+  const int max_vertical = size_in_pixel.height() / 4;
+  return gfx::Insets::TLBR(std::min(insets_in_pixel.top(), max_vertical),
+                           std::min(insets_in_pixel.left(), max_horizontal),
+                           std::min(insets_in_pixel.bottom(), max_vertical),
+                           std::min(insets_in_pixel.right(), max_horizontal));
 }
 
 void ManagedDisplayInfo::SetSnapshotColorSpace(

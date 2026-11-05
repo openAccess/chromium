@@ -25,7 +25,6 @@
 #include <utility>
 #include <vector>
 
-#include "absl/base/attributes.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/hash/hash.h"
 #include "absl/random/random.h"
@@ -342,7 +341,7 @@ namespace {
 // measurements.
 static constexpr size_t kEntropySize = 16 << 10;
 static char entropy[kEntropySize + 1024];
-ABSL_ATTRIBUTE_UNUSED static const bool kInitialized = [] {
+[[maybe_unused]] static const bool kInitialized = [] {
   absl::BitGen gen;
   static_assert(sizeof(entropy) % sizeof(uint64_t) == 0);
   for (int i = 0; i != sizeof(entropy); i += sizeof(uint64_t)) {

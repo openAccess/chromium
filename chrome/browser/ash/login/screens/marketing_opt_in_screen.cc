@@ -32,8 +32,6 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/webui/ash/login/gesture_navigation_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/marketing_opt_in_screen_handler.h"
-#include "chrome/common/chrome_features.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/sync_preferences/pref_service_syncable.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -95,7 +93,7 @@ MarketingOptInScreen::MarketingOptInScreen(
       local_state_(CHECK_DEREF(local_state)),
       view_(std::move(view)),
       exit_callback_(exit_callback) {
-  DCHECK(view_);
+  CHECK(view_, base::NotFatalUntil::M161);
 }
 
 MarketingOptInScreen::~MarketingOptInScreen() = default;
@@ -117,20 +115,16 @@ bool MarketingOptInScreen::MaybeSkip(WizardContext& context) {
 }
 
 void MarketingOptInScreen::ShowImpl() {
-  DCHECK(initialized_);
+  CHECK(initialized_, base::NotFatalUntil::M161);
 
   // Show a verbose legal footer for Canada. (https://crbug.com/40147627)
   const bool legal_footer_visible =
       email_opt_in_visible_ && countries_with_legal_footer.count(country_);
 
-  const bool cloud_gaming_enabled =
-      chromeos::features::IsCloudGamingDeviceEnabled();
-
   if (view_) {
     view_->Show(/*opt_in_visible=*/email_opt_in_visible_,
                 /*opt_in_default_state=*/IsDefaultOptInCountry(),
-                /*legal_footer_visible=*/legal_footer_visible,
-                /*cloud_gaming_enabled=*/cloud_gaming_enabled);
+                /*legal_footer_visible=*/legal_footer_visible);
   }
 
   // Mark the screen as shown for this user.
@@ -186,7 +180,7 @@ void MarketingOptInScreen::OnUserAction(const base::ListValue& args) {
 void MarketingOptInScreen::OnGetStarted(bool chromebook_email_opt_in) {
   if (is_hidden())
     return;
-  DCHECK(initialized_);
+  CHECK(initialized_, base::NotFatalUntil::M161);
 
   // UMA Metrics & API call only when the toggle is visible
   if (email_opt_in_visible_) {
@@ -196,7 +190,7 @@ void MarketingOptInScreen::OnGetStarted(bool chromebook_email_opt_in) {
 
     // Store the user's preference regarding marketing emails
     Profile* profile = ProfileManager::GetActiveUserProfile();
-    DCHECK(profile);
+    CHECK(profile, base::NotFatalUntil::M161);
     profile->GetPrefs()->SetBoolean(prefs::kOobeMarketingOptInChoice,
                                     chromebook_email_opt_in);
     if (chromebook_email_opt_in) {

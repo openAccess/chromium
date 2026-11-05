@@ -9,14 +9,10 @@
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 
-namespace cc {
-class HeadsUpDisplayLayer;
-}
-
 namespace blink {
 class Document;
 class LocalDOMWindow;
-class LocalFrameView;
+class MediaTiming;
 }  // namespace blink
 
 namespace blink::paint_timing {
@@ -25,7 +21,7 @@ namespace blink::paint_timing {
 // otherwise.
 inline bool CORE_EXPORT IsImageType(const LayoutObject& object) {
   return object.IsImage() || object.IsSVGImage() || object.IsVideo() ||
-         object.StyleRef().HasBackgroundImage();
+         object.Style().HasBackgroundImage();
 }
 
 // Returns true if `node` is considered text, and false otherwise.
@@ -33,17 +29,21 @@ inline bool CORE_EXPORT IsTextType(const Node& node) {
   return node.IsTextNode();
 }
 
-CORE_EXPORT cc::HeadsUpDisplayLayer* GetHUDLayerIfContentfulPaintRectsEnabled(
-    LocalFrameView* frame_view);
-
-CORE_EXPORT cc::HeadsUpDisplayLayer* GetHUDLayerIfLayoutShiftRectsEnabled(
-    LocalFrameView* frame_view);
+// Returns whether or not the `media_timing` should be ignored. Currently only
+// `MediaTiming` objects representing the default poster image are ignored.
+CORE_EXPORT bool ShouldIgnoreImageContentForPaintTiming(
+    const LayoutObject& object,
+    const MediaTiming* media_timing);
 
 // Notifies the document loader that performance timing has changed in some way
 // if the window, document, and loader are non-null. Causes the current
 // performance timing values to be sent to UKM.
 CORE_EXPORT void NotifyLoaderPerformanceTimingChanged(LocalDOMWindow*);
 CORE_EXPORT void NotifyLoaderPerformanceTimingChanged(Document*);
+
+// Returns true if `document`'s document element exists, has a `LayoutObject`,
+// and has `opacity: 0`.
+CORE_EXPORT bool IsDocumentElementInvisible(const Document& document);
 
 }  // namespace blink::paint_timing
 

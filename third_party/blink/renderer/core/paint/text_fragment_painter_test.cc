@@ -62,7 +62,7 @@ TEST_P(TextFragmentPainterTest, LineBreak) {
 TEST_P(TextFragmentPainterTest, LineBreaksInLongDocument) {
   SetBodyInnerHTML(
       "<div id='div' style='font-size: 100px; width: 300px'><div>");
-  auto* div = GetDocument().getElementById(AtomicString("div"));
+  auto* div = GetElementById("div");
   for (int i = 0; i < 1000; i++) {
     div->appendChild(GetDocument().createTextNode("XX"));
     div->appendChild(
@@ -270,7 +270,7 @@ TEST_P(BlockCaretTextColorPainterTest, NoOverrideColorWhenSecondValueIsAuto) {
 
   // Still returns 0 from the offset help function. The painter is aware that
   // the color value is auto.
-  EXPECT_TRUE(target->GetLayoutObject()->StyleRef().IsCaretTextColorAuto());
+  EXPECT_TRUE(target->GetLayoutObject()->Style().IsCaretTextColorAuto());
   EXPECT_EQ(CaretFragmentOffset(), 0u);
 }
 

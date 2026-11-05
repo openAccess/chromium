@@ -20,11 +20,15 @@
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/message_loop/message_pump_for_io.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/process/current_process.h"
 #include "base/process/process_handle.h"
+#include "base/rand_util.h"
 #include "base/synchronization/lock.h"
 #include "base/task/current_thread.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/task_runner.h"
+#include "base/time/time.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/win_util.h"
 
@@ -33,27 +37,47 @@ namespace core {
 
 namespace {
 
+constexpr int kMaxOpenChannelSample = 101;
+
+struct OpenChannelMetrics {
+  size_t open_channels = 0;
+  int recorded_peak = 0;
+};
+
+constinit thread_local OpenChannelMetrics g_open_channel_metrics;
+
 class ChannelWinMessageQueue {
  public:
   ChannelWinMessageQueue() = default;
   ~ChannelWinMessageQueue() = default;
 
-  void Append(Channel::MessagePtr message) {
-    queue_.emplace_back(std::move(message));
+  void Append(Channel::MessagePtr message, base::TimeTicks creation_time) {
+    queue_.emplace_back(std::move(message), creation_time);
   }
 
-  Channel::Message* GetFirst() const { return queue_.front().get(); }
+  Channel::Message* GetFirst() const { return queue_.front().message.get(); }
 
   Channel::MessagePtr TakeFirst() {
-    Channel::MessagePtr message = std::move(queue_.front());
+    QueuedMessage entry = std::move(queue_.front());
     queue_.pop_front();
-    return message;
+    if (!entry.creation_time.is_null()) {
+      base::TimeDelta latency = base::TimeTicks::Now() - entry.creation_time;
+      UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES("Mojo.Channel.WriteLatencyUs",
+                                              latency, base::Microseconds(1),
+                                              base::Seconds(1), 100);
+    }
+    return std::move(entry.message);
   }
 
   bool IsEmpty() const { return queue_.empty(); }
 
  private:
-  base::circular_deque<Channel::MessagePtr> queue_;
+  struct QueuedMessage {
+    Channel::MessagePtr message;
+    base::TimeTicks creation_time;
+  };
+
+  base::circular_deque<QueuedMessage> queue_;
 };
 
 class ChannelWin : public Channel,
@@ -91,6 +115,12 @@ class ChannelWin : public Channel,
   void Write(MessagePtr message) override {
     RecordSentMessageMetricsSubsampled(message->data_num_bytes());
 
+    base::TimeTicks creation_time;
+    if (base::ShouldRecordSubsampledMetric(
+            Channel::kMetricSubsamplingProbability)) {
+      creation_time = base::TimeTicks::Now();
+    }
+
     if (remote_process().IsValid()) {
       // If we know the remote process handle, we transfer all outgoing handles
       // to the process now rewriting them in the message.
@@ -114,7 +144,7 @@ class ChannelWin : public Channel,
       }
 
       bool write_now = !delay_writes_ && outgoing_messages_.IsEmpty();
-      outgoing_messages_.Append(std::move(message));
+      outgoing_messages_.Append(std::move(message), creation_time);
       if (write_now && !WriteNoLock(outgoing_messages_.GetFirst())) {
         reject_writes_ = write_error = true;
       }
@@ -189,18 +219,34 @@ class ChannelWin : public Channel,
       return;
     }
 
-    // Now that we have registered our IOHandler, we can start writing.
-    {
-      base::AutoLock lock(write_lock_);
-      if (delay_writes_) {
-        delay_writes_ = false;
-        WriteNextNoLock();
+    counted_for_metrics_ = IsRendererProcessForMetrics();
+    if (counted_for_metrics_) {
+      ++g_open_channel_metrics.open_channels;
+      if (g_open_channel_metrics.recorded_peak < kMaxOpenChannelSample &&
+          g_open_channel_metrics.open_channels >
+              static_cast<size_t>(g_open_channel_metrics.recorded_peak)) {
+        ++g_open_channel_metrics.recorded_peak;
+        UMA_HISTOGRAM_EXACT_LINEAR(
+            "Stability.Mojo.Channel.Win.PeakOpenChannels.Renderer",
+            g_open_channel_metrics.recorded_peak, kMaxOpenChannelSample);
       }
     }
 
     // Keep this alive in case we synchronously run shutdown, via OnError(),
     // as a result of a ReadFile() failure on the channel.
     scoped_refptr<ChannelWin> keep_alive(this);
+
+    // Now that we have registered our IOHandler, we can start writing.
+    {
+      base::AutoLock lock(write_lock_);
+      if (delay_writes_) {
+        delay_writes_ = false;
+        if (!WriteNextNoLock()) {
+          reject_writes_ = true;
+        }
+      }
+    }
+
     ReadMore(0);
   }
 
@@ -216,11 +262,21 @@ class ChannelWin : public Channel,
     // TODO(crbug.com/40455076): This function is expected to be called
     // once, and |handle_| should be valid at this point.
     CHECK(handle_.is_valid());
-    CancelIo(handle_.get());
+    // Write() may issue an overlapped WriteFile() from any thread, so pending
+    // writes are not necessarily owned by the IO thread. CancelIo() only
+    // cancels I/O issued by the calling thread; use CancelIoEx() with a null
+    // OVERLAPPED to cancel all pending I/O on the handle regardless of which
+    // thread issued it.
+    CancelIoEx(handle_.get(), nullptr);
     if (leak_handle_) {
       std::ignore = handle_.release();
     } else {
       handle_.Close();
+    }
+
+    if (counted_for_metrics_) {
+      DCHECK_GT(g_open_channel_metrics.open_channels, 0u);
+      --g_open_channel_metrics.open_channels;
     }
 
     // Allow |this| to be destroyed as soon as no IO is pending.
@@ -392,6 +448,8 @@ class ChannelWin : public Channel,
 
   const scoped_refptr<base::SingleThreadTaskRunner> io_task_runner_;
 
+  bool counted_for_metrics_ = false;
+
   base::MessagePumpForIO::IOContext read_context_;
   bool is_read_pending_ = false;
 
@@ -407,6 +465,15 @@ class ChannelWin : public Channel,
 };
 
 }  // namespace
+
+// static
+bool Channel::IsRendererProcessForMetrics() {
+  const auto process_type =
+      base::CurrentProcess::GetInstance().GetShortType({});
+  return process_type == base::ShortProcessType::kRenderer ||
+         process_type == base::ShortProcessType::kRendererExtension ||
+         process_type == base::ShortProcessType::kRendererTopWebUI;
+}
 
 // static
 scoped_refptr<Channel> Channel::Create(

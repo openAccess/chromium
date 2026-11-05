@@ -24,7 +24,6 @@
 #include "components/performance_manager/embedder/performance_manager_lifetime.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/devtools_agent_host.h"
-#include "content/public/browser/first_party_sets_handler.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/result_codes.h"
@@ -174,10 +173,11 @@ int ShellBrowserMainParts::PreCreateThreads() {
   return 0;
 }
 
-void ShellBrowserMainParts::PostCreateThreads() {
+int ShellBrowserMainParts::PostCreateThreads() {
   performance_manager_lifetime_ =
       std::make_unique<performance_manager::PerformanceManagerLifetime>(
           performance_manager::GraphFeatures::WithMinimal(), base::DoNothing());
+  return RESULT_CODE_NORMAL_EXIT;
 }
 
 int ShellBrowserMainParts::PreMainMessageLoopRun() {

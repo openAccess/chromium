@@ -7,6 +7,7 @@
 #import <memory>
 
 #import "base/strings/sys_string_conversions.h"
+#import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
 #import "components/lens/lens_overlay_permission_utils.h"
@@ -31,13 +32,15 @@
 #import "ios/chrome/browser/intelligence/page_action_menu/ui/page_action_menu_content_entry_point.h"
 #import "ios/chrome/browser/intelligence/page_action_menu/ui/page_action_menu_feature.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
+#import "ios/chrome/browser/permissions/model/permissions_metrics.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/browser_prefs.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -46,6 +49,7 @@
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
 #import "ios/chrome/browser/web/model/blocked_popup_tab_helper.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
+#import "ios/web/public/permissions/permissions.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/navigation_test_util.h"
 #import "ios/web/public/test/web_task_environment.h"
@@ -53,11 +57,31 @@
 
 // Fake consumer that absorbs delegate events during testing.
 @interface FakePageActionMenuConsumer : NSObject <PageActionMenuConsumer>
+@property(nonatomic, assign) BOOL permissionStateChangedCalled;
 @end
 @implementation FakePageActionMenuConsumer
 - (void)pageLoadStatusChanged {
 }
+- (void)permissionStateChanged {
+  self.permissionStateChangedCalled = YES;
+}
 @end
+
+namespace {
+
+// Returns the camera permission feature among `features`, or nil if the camera
+// row is not shown.
+PageActionMenuFeature* CameraFeature(
+    NSArray<PageActionMenuFeature*>* features) {
+  for (PageActionMenuFeature* feature in features) {
+    if (feature.featureType == PageActionMenuCameraPermission) {
+      return feature;
+    }
+  }
+  return nil;
+}
+
+}  // namespace
 
 // Test fixture for PageActionMenuMediator.
 class PageActionMenuMediatorTest : public PlatformTest {
@@ -81,8 +105,7 @@ class PageActionMenuMediatorTest : public PlatformTest {
                                 BuildIdentityManagerForTests));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
     builder.AddTestingFactory(
@@ -95,24 +118,23 @@ class PageActionMenuMediatorTest : public PlatformTest {
               return std::make_unique<FakeGeminiService>();
             }));
 
-    browser_state_ = std::move(builder).Build();
+    browser_state_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
 
     // Fetch required services from the profile.
-    auth_service_ =
-        AuthenticationServiceFactory::GetForProfile(browser_state_.get());
+    auth_service_ = AuthenticationServiceFactory::GetForProfile(browser_state_);
     pref_service_ = browser_state_->GetPrefs();
     ASSERT_TRUE(pref_service_);
     fake_gemini_service_ = static_cast<FakeGeminiService*>(
-        GeminiServiceFactory::GetForProfile(browser_state_.get()));
+        GeminiServiceFactory::GetForProfile(browser_state_));
     web_state_ = std::make_unique<web::FakeWebState>();
-    web_state_->SetBrowserState(browser_state_.get());
+    web_state_->SetBrowserState(browser_state_);
     web_state_->WasShown();
 
     // Set up search engines environment and content settings map.
     TemplateURLService* template_url_service =
         search_engines_test_environment_.template_url_service();
     settings_map_ =
-        ios::HostContentSettingsMapFactory::GetForProfile(browser_state_.get());
+        ios::HostContentSettingsMapFactory::GetForProfile(browser_state_).get();
     ASSERT_TRUE(settings_map_);
 
     // Attach required tab helpers to the fake web state.
@@ -143,7 +165,7 @@ class PageActionMenuMediatorTest : public PlatformTest {
     settings_map_ = nullptr;
     pref_service_ = nullptr;
     auth_service_ = nullptr;
-    browser_state_.reset();
+    browser_state_ = nullptr;
     PlatformTest::TearDown();
   }
 
@@ -155,7 +177,7 @@ class PageActionMenuMediatorTest : public PlatformTest {
     system_identity_manager->AddIdentity(identity);
 
     signin::IdentityManager* identity_manager =
-        IdentityManagerFactory::GetForProfile(browser_state_.get());
+        IdentityManagerFactory::GetForProfile(browser_state_);
     signin::AccountAvailabilityOptionsBuilder options_builder;
     options_builder.AsPrimary(signin::ConsentLevel::kSignin);
     options_builder.WithGaiaId(identity.gaiaId);
@@ -169,8 +191,9 @@ class PageActionMenuMediatorTest : public PlatformTest {
   web::WebTaskEnvironment task_environment_;
   search_engines::SearchEnginesTestEnvironment search_engines_test_environment_;
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
+  TestProfileManagerIOS profile_manager_;
+  raw_ptr<TestProfileIOS> browser_state_ = nullptr;
   base::test::ScopedFeatureList scoped_feature_list_;
-  std::unique_ptr<TestProfileIOS> browser_state_;
   raw_ptr<AuthenticationService> auth_service_;
   raw_ptr<PrefService> pref_service_ = nullptr;
   raw_ptr<HostContentSettingsMap> settings_map_ = nullptr;
@@ -349,4 +372,157 @@ TEST_F(PageActionMenuMediatorTest, UpdatePermission) {
   [mediator_ updatePermission:NO forFeature:PageActionMenuMicrophonePermission];
   EXPECT_EQ(web_state_->GetStateForPermission(web::PermissionMicrophone),
             web::PermissionStateBlocked);
+}
+
+// Tests that updatePermissionSetting updates both the session permission state
+// and the persisted content setting of the site, and records metrics only when
+// the setting changes.
+TEST_F(PageActionMenuMediatorTest, UpdatePermissionSetting) {
+  scoped_feature_list_.InitWithFeatures(
+      {kPageActionMenu, kDomainLevelSitePermissions}, {});
+  base::HistogramTester histogram_tester;
+
+  const GURL url("https://example.com");
+  web_state_->SetCurrentURL(url);
+
+  // 1. Always allow persists an ALLOW content setting.
+  [mediator_
+      updatePermissionSetting:PageActionMenuPermissionSetting::kAlwaysAllow
+                   forFeature:PageActionMenuCameraPermission];
+  EXPECT_EQ(web_state_->GetStateForPermission(web::PermissionCamera),
+            web::PermissionStateAllowed);
+  EXPECT_EQ(settings_map_->GetContentSetting(
+                url, url, ContentSettingsType::MEDIASTREAM_CAMERA),
+            CONTENT_SETTING_ALLOW);
+  histogram_tester.ExpectBucketCount(
+      kPermissionPageActionMenuSettingChangedCameraHistogram,
+      IOSPermissionSetting::kAlwaysAllow, 1);
+
+  // 2. Never allow persists a BLOCK content setting and revokes the session.
+  [mediator_
+      updatePermissionSetting:PageActionMenuPermissionSetting::kNeverAllow
+                   forFeature:PageActionMenuCameraPermission];
+  EXPECT_EQ(web_state_->GetStateForPermission(web::PermissionCamera),
+            web::PermissionStateNotAccessible);
+  EXPECT_EQ(settings_map_->GetContentSetting(
+                url, url, ContentSettingsType::MEDIASTREAM_CAMERA),
+            CONTENT_SETTING_BLOCK);
+  histogram_tester.ExpectBucketCount(
+      kPermissionPageActionMenuSettingChangedCameraHistogram,
+      IOSPermissionSetting::kNeverAllow, 1);
+
+  // 3. Allow once clears the persisted decision but grants for the session.
+  [mediator_ updatePermissionSetting:PageActionMenuPermissionSetting::kAllowOnce
+                          forFeature:PageActionMenuCameraPermission];
+  EXPECT_EQ(web_state_->GetStateForPermission(web::PermissionCamera),
+            web::PermissionStateAllowed);
+  EXPECT_EQ(settings_map_->GetContentSetting(
+                url, url, ContentSettingsType::MEDIASTREAM_CAMERA),
+            CONTENT_SETTING_ASK);
+  histogram_tester.ExpectBucketCount(
+      kPermissionPageActionMenuSettingChangedCameraHistogram,
+      IOSPermissionSetting::kAllowOnce, 1);
+  histogram_tester.ExpectTotalCount(
+      kPermissionPageActionMenuSettingChangedCameraHistogram, 3);
+
+  // Selecting the same setting again should not record metrics.
+  [mediator_ updatePermissionSetting:PageActionMenuPermissionSetting::kAllowOnce
+                          forFeature:PageActionMenuCameraPermission];
+  histogram_tester.ExpectTotalCount(
+      kPermissionPageActionMenuSettingChangedCameraHistogram, 3);
+
+  // 4. The microphone permission is updated independently.
+  [mediator_
+      updatePermissionSetting:PageActionMenuPermissionSetting::kAlwaysAllow
+                   forFeature:PageActionMenuMicrophonePermission];
+  EXPECT_EQ(settings_map_->GetContentSetting(
+                url, url, ContentSettingsType::MEDIASTREAM_MIC),
+            CONTENT_SETTING_ALLOW);
+  EXPECT_EQ(settings_map_->GetContentSetting(
+                url, url, ContentSettingsType::MEDIASTREAM_CAMERA),
+            CONTENT_SETTING_ASK);
+  histogram_tester.ExpectUniqueSample(
+      kPermissionPageActionMenuSettingChangedMicrophoneHistogram,
+      IOSPermissionSetting::kAlwaysAllow, 1);
+}
+
+// Tests that permission rows are shown as dropdowns reflecting the persisted
+// content setting while the permission is accessible, and hidden when the
+// permission is not accessible.
+TEST_F(PageActionMenuMediatorTest, PermissionFeatureDropdown) {
+  scoped_feature_list_.InitWithFeatures(
+      {kPageActionMenu, kDomainLevelSitePermissions}, {});
+
+  const GURL url("https://example.com");
+  web_state_->SetCurrentURL(url);
+  web_state_->SetStateForPermission(web::PermissionStateAllowed,
+                                    web::PermissionCamera);
+
+  // 1. Without a persisted decision, the access lasts for this visit only.
+  PageActionMenuFeature* feature = CameraFeature([mediator_ activeFeatures]);
+  ASSERT_TRUE(feature);
+  EXPECT_EQ(feature.actionType, PageActionMenuDropdownAction);
+  EXPECT_EQ(feature.permissionSetting,
+            PageActionMenuPermissionSetting::kAllowOnce);
+
+  // 2. A persisted ALLOW is surfaced as "always allow".
+  settings_map_->SetContentSettingDefaultScope(
+      url, url, ContentSettingsType::MEDIASTREAM_CAMERA, CONTENT_SETTING_ALLOW);
+  feature = CameraFeature([mediator_ activeFeatures]);
+  ASSERT_TRUE(feature);
+  EXPECT_EQ(feature.permissionSetting,
+            PageActionMenuPermissionSetting::kAlwaysAllow);
+
+  // 3. If the session blocks a permission while persisted setting is ALLOW,
+  // session state takes precedence and consumer is notified.
+  fake_consumer_.permissionStateChangedCalled = NO;
+  web_state_->SetStateForPermission(web::PermissionStateBlocked,
+                                    web::PermissionCamera);
+  EXPECT_TRUE(fake_consumer_.permissionStateChangedCalled);
+  feature = CameraFeature([mediator_ activeFeatures]);
+  ASSERT_TRUE(feature);
+  EXPECT_EQ(feature.permissionSetting,
+            PageActionMenuPermissionSetting::kNeverAllow);
+
+  // 4. A persisted BLOCK is surfaced as "never allow" even when session state
+  // is not blocked.
+  web_state_->SetStateForPermission(web::PermissionStateAllowed,
+                                    web::PermissionCamera);
+  settings_map_->SetContentSettingDefaultScope(
+      url, url, ContentSettingsType::MEDIASTREAM_CAMERA, CONTENT_SETTING_BLOCK);
+  feature = CameraFeature([mediator_ activeFeatures]);
+  ASSERT_TRUE(feature);
+  EXPECT_EQ(feature.permissionSetting,
+            PageActionMenuPermissionSetting::kNeverAllow);
+
+  // 5. Blocking a permission revokes WebState access (`NotAccessible`), so the
+  // row is no longer available on subsequent queries when not in use.
+  [mediator_
+      updatePermissionSetting:PageActionMenuPermissionSetting::kNeverAllow
+                   forFeature:PageActionMenuCameraPermission];
+  EXPECT_EQ(web_state_->GetStateForPermission(web::PermissionCamera),
+            web::PermissionStateNotAccessible);
+  EXPECT_FALSE([mediator_ isFeatureAvailable:PageActionMenuCameraPermission]);
+  EXPECT_FALSE(CameraFeature([mediator_ activeFeatures]));
+}
+
+// Tests that permission rows keep using a toggle, and are hidden when the
+// permission is not allowed, while domain level site permissions are disabled.
+TEST_F(PageActionMenuMediatorTest, PermissionFeatureToggle) {
+  scoped_feature_list_.InitWithFeatures({kPageActionMenu},
+                                        {kDomainLevelSitePermissions});
+
+  web_state_->SetCurrentURL(GURL("https://example.com"));
+  web_state_->SetStateForPermission(web::PermissionStateAllowed,
+                                    web::PermissionCamera);
+
+  PageActionMenuFeature* feature = CameraFeature([mediator_ activeFeatures]);
+  ASSERT_TRUE(feature);
+  EXPECT_EQ(feature.actionType, PageActionMenuToggleAction);
+  EXPECT_TRUE(feature.toggleState);
+
+  web_state_->SetStateForPermission(web::PermissionStateBlocked,
+                                    web::PermissionCamera);
+  EXPECT_FALSE([mediator_ isFeatureAvailable:PageActionMenuCameraPermission]);
+  EXPECT_FALSE(CameraFeature([mediator_ activeFeatures]));
 }

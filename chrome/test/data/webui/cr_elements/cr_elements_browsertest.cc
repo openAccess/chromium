@@ -2,12 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/command_line.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
 #include "content/public/test/browser_test.h"
-#include "content/public/test/browser_test_base.h"
-#include "ui/compositor/compositor_switches.h"
 
 typedef WebUIMochaBrowserTest CrElementsTest;
 
@@ -102,10 +99,6 @@ IN_PROC_BROWSER_TEST_F(CrElementsTest, CrIconset) {
   RunTest("cr_elements/cr_iconset_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrElementsTest, FindShortcutMixin) {
-  RunTest("cr_elements/find_shortcut_mixin_test.js", "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(CrElementsTest, FindShortcutMixinLit) {
   RunTest("cr_elements/find_shortcut_mixin_lit_test.js", "mocha.run()");
 }
@@ -131,24 +124,12 @@ IN_PROC_BROWSER_TEST_F(CrElementsTest, CrLazyList) {
   RunTest("cr_elements/cr_lazy_list_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrElementsTest, CrLazyRender) {
-  RunTest("cr_elements/cr_lazy_render_test.js", "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(CrElementsTest, CrLinkRow) {
   RunTest("cr_elements/cr_link_row_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrElementsTest, ListPropertyUpdateMixin) {
-  RunTest("cr_elements/list_property_update_mixin_test.js", "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(CrElementsTest, CrRadioButton) {
   RunTest("cr_elements/cr_radio_button_test.js", "mocha.run()");
-}
-
-IN_PROC_BROWSER_TEST_F(CrElementsTest, CrRippleMixinPolymer) {
-  RunTest("cr_elements/cr_ripple_mixin_polymer_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(CrElementsTest, CrCardRadioButton) {
@@ -195,10 +176,6 @@ IN_PROC_BROWSER_TEST_F(CrElementsTest, CrToolbar) {
   RunTest("cr_elements/cr_toolbar_test.js", "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrElementsTest, WebUiListenerMixin) {
-  RunTest("cr_elements/web_ui_listener_mixin_test.js", "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(CrElementsTest, WebUiListenerMixinLit) {
   RunTest("cr_elements/web_ui_listener_mixin_lit_test.js", "mocha.run()");
 }
@@ -213,23 +190,6 @@ IN_PROC_BROWSER_TEST_F(CrElementsTest, CrFeedbackButtons) {
 
 IN_PROC_BROWSER_TEST_F(CrElementsTest, DomIf) {
   RunTest("cr_elements/dom_if_test.js", "mocha.run()");
-}
-
-class CrElementsWithPixelOutputTest : public WebUIMochaBrowserTest {
- public:
-  CrElementsWithPixelOutputTest() {
-    set_test_loader_host(chrome::kChromeUISettingsHost);
-  }
-
- protected:
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    command_line->AppendSwitch(switches::kEnablePixelOutputInTests);
-    WebUIMochaBrowserTest::SetUpCommandLine(command_line);
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(CrElementsWithPixelOutputTest, CrLottie) {
-  RunTest("cr_elements/cr_lottie_test.js", "mocha.run()");
 }
 
 #endif  // !BUILDFLAG(IS_ANDROID)

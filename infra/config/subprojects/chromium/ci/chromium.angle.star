@@ -5,7 +5,7 @@
 
 load("@chromium-luci//builder_config.star", "builder_config")
 load("@chromium-luci//builder_health_indicators.star", "health_spec")
-load("@chromium-luci//builders.star", "cpu", "os")
+load("@chromium-luci//builders.star", "cpu")
 load("@chromium-luci//ci.star", "ci")
 load("@chromium-luci//consoles.star", "consoles")
 load("@chromium-luci//gn_args.star", "gn_args")
@@ -71,6 +71,7 @@ consoles.console_view(
 
 shared_gpu.ci.linux_builder(
     name = "android-angle-chromium-arm64-builder",
+    description_html = "Compiles Chromium/ANGLE release builds for Android ARM64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -95,7 +96,8 @@ shared_gpu.ci.linux_builder(
         configs = [
             "gpu_tests",
             "android_builder_without_codecs",
-            "release_try_builder",
+            "release_builder",
+            "dcheck_always_on",
             "minimal_symbols",
             "remoteexec",
             "arm64",
@@ -139,7 +141,7 @@ ci.thin_tester(
     ),
     targets = targets.bundle(
         targets = [
-            "gpu_webgl_conformance_gles_passthrough_telemetry_tests",
+            "webgl_conformance_gles_passthrough_tests",
         ],
         mixins = [
             "chromium_pixel_2_q",
@@ -159,6 +161,7 @@ ci.thin_tester(
 
 shared_gpu.ci.linux_builder(
     name = "fuchsia-angle-builder",
+    description_html = "Compiles ANGLE release builds for Fuchsia x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -204,6 +207,7 @@ shared_gpu.ci.linux_builder(
 
 shared_gpu.ci.linux_builder(
     name = "linux-angle-chromium-builder",
+    description_html = "Compiles Chromium/ANGLE release builds for Linux x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -285,6 +289,7 @@ ci.thin_tester(
 
 ci.thin_tester(
     name = "linux-angle-chromium-intel",
+    description_html = "Runs standard Chromium/ANGLE tests on Linux on Intel GPUs.",
     parent = "linux-angle-chromium-builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -327,6 +332,7 @@ ci.thin_tester(
 
 ci.thin_tester(
     name = "linux-angle-chromium-nvidia",
+    description_html = "Runs standard Chromium/ANGLE tests on Linux on NVIDIA GPUs.",
     parent = "linux-angle-chromium-builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -369,6 +375,7 @@ ci.thin_tester(
 
 shared_gpu.ci.mac_builder(
     name = "mac-angle-chromium-builder",
+    description_html = "Compiles Chromium/ANGLE release builds for Mac x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -410,6 +417,7 @@ shared_gpu.ci.mac_builder(
 
 ci.thin_tester(
     name = "mac-angle-chromium-amd",
+    description_html = "Runs standard Chromium/ANGLE tests on Mac on AMD GPUs.",
     parent = "mac-angle-chromium-builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -454,6 +462,7 @@ ci.thin_tester(
 
 ci.thin_tester(
     name = "mac-angle-chromium-intel",
+    description_html = "Runs standard Chromium/ANGLE tests on Mac on Intel GPUs.",
     parent = "mac-angle-chromium-builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -516,7 +525,8 @@ ci.thin_tester(
 )
 
 shared_gpu.ci.mac_builder(
-    name = "ios-angle-builder",
+    name = "ios-angle-arm64-builder",
+    description_html = "Compiles ANGLE test binaries for iOS/ARM64 using ToT ANGLE and a known good Chromium revision.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "ios",
@@ -538,30 +548,27 @@ shared_gpu.ci.mac_builder(
     gn_args = gn_args.config(
         configs = [
             "angle_deqp_tests",
-            "release_builder",
-            "remoteexec",
-            "minimal_symbols",
-            "dcheck_always_on",
+            "arm64",
             "ios_simulator",
-            "x64",
+            "minimal_symbols",
+            "release_with_dchecks",
+            "remoteexec",
+            "static",
             "xctest",
         ],
     ),
-    targets = targets.bundle(),
-    cores = None,
-    os = os.MAC_15,
-    cpu = cpu.X86_64,
     console_view_entry = consoles.console_view_entry(
         category = "iOS|Builder|ANGLE",
-        short_name = "x64",
+        short_name = "a64",
     ),
     contact_team_email = "angle-team@google.com",
     xcode = xcode.xcode_default,
 )
 
 ci.thin_tester(
-    name = "ios-angle-intel",
-    parent = "ios-angle-builder",
+    name = "ios-angle-m2",
+    description_html = "Tests ANGLE on iOS simulators running on M2 hardware.",
+    parent = "ios-angle-arm64-builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
         gclient_config = builder_config.gclient_config(
@@ -587,12 +594,12 @@ ci.thin_tester(
             "gpu_angle_ios_gtests",
         ],
         mixins = [
-            "mac_mini_intel_gpu_stable",
             "has_native_resultdb_integration",
             "isolate_profile_data",
+            "mac_arm64_apple_m2_retina_gpu_stable",
             "mac_toolchain",
             "out_dir_arg",
-            "xcode_16_main",
+            "xcode_27_main",
             "xctest",
         ],
     ),
@@ -600,8 +607,8 @@ ci.thin_tester(
         os_type = targets.os_type.MAC,
     ),
     console_view_entry = consoles.console_view_entry(
-        category = "iOS|Intel|ANGLE",
-        short_name = "x64",
+        category = "iOS|Apple|ANGLE",
+        short_name = "m2",
     ),
     contact_team_email = "angle-team@google.com",
 )
@@ -647,6 +654,7 @@ shared_gpu.ci.windows_builder(
 
 shared_gpu.ci.windows_builder(
     name = "win-angle-chromium-x64-builder",
+    description_html = "Compiles Chromium/ANGLE release builds for Windows x64.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -729,6 +737,7 @@ ci.thin_tester(
 
 ci.thin_tester(
     name = "win10-angle-chromium-x64-intel",
+    description_html = "Runs standard Chromium/ANGLE tests on Windows 10 x64 on Intel GPUs.",
     parent = "win-angle-chromium-x64-builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -771,6 +780,7 @@ ci.thin_tester(
 
 ci.thin_tester(
     name = "win10-angle-chromium-x64-nvidia",
+    description_html = "Runs standard Chromium/ANGLE tests on Windows 10 x64 on NVIDIA GPUs.",
     parent = "win-angle-chromium-x64-builder",
     builder_spec = builder_config.builder_spec(
         execution_mode = builder_config.execution_mode.TEST,
@@ -799,14 +809,6 @@ ci.thin_tester(
         mixins = [
             "win10_nvidia_gtx_1660_stable",
         ],
-        per_test_modifications = {
-            # TODO(crbug.com/380431384): Re-enable when fixed
-            "webgl_conformance_vulkan_passthrough_tests": targets.remove(
-                reason = [
-                    "crbug.com/380431384 flaky crashes in random tests",
-                ],
-            ),
-        },
     ),
     targets_settings = targets.settings(
         browser_config = targets.browser_config.RELEASE_X64,
@@ -821,6 +823,7 @@ ci.thin_tester(
 
 shared_gpu.ci.windows_builder(
     name = "win-angle-chromium-x86-builder",
+    description_html = "Compiles Chromium/ANGLE release builds for Windows x86.",
     builder_spec = builder_config.builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",

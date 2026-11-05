@@ -1,6 +1,6 @@
 <!DOCTYPE HTML>
 <head>
-  <title>texElementImage2D paints video frames in worker thread</title>
+  <title>texElementSubImage2D paints video frames in worker thread</title>
   <link rel="help" href="https://github.com/WICG/html-in-canvas">
   <link rel="stylesheet" href="/wpt_internal/resources/canvas-draw-element/styles.css" />
   <script src="/resources/testdriver.js"></script>
@@ -10,8 +10,8 @@
 </head>
 <body>
 
-  <canvas id="canvas" width="100" height="100" layoutsubtree>
-    <div id="child" class="draw-element-wrapper">
+  <canvas id="canvas" width="100" height="100" content=drawable>
+    <div drawable id="child" class="draw-element-wrapper">
       <video width="100" height="100" src="/wpt_internal/resources/canvas-draw-element/rgb100.webm" loop></video>
     </div>
   </canvas>

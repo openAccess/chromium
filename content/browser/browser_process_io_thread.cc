@@ -9,6 +9,7 @@
 #include "base/debug/alias.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/threading/hang_watcher.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/trace_event/memory_dump_manager.h"
@@ -45,15 +46,15 @@ BrowserProcessIOThread::~BrowserProcessIOThread() {
 }
 
 void BrowserProcessIOThread::RegisterAsBrowserThread() {
-  DCHECK(IsRunning());
+  CHECK(IsRunning(), base::NotFatalUntil::M159);
 
-  DCHECK(!browser_thread_);
+  CHECK(!browser_thread_, base::NotFatalUntil::M159);
   browser_thread_.reset(
       new BrowserThreadImpl(BrowserThread::IO, task_runner()));
 }
 
 void BrowserProcessIOThread::AllowBlockingForTesting() {
-  DCHECK(!IsRunning());
+  CHECK(!IsRunning(), base::NotFatalUntil::M159);
   is_blocking_allowed_for_testing_ = true;
 }
 
@@ -130,10 +131,13 @@ void BrowserProcessIOThread::ProcessHostCleanUp() {
         continue;
       base::ScopedAllowBaseSyncPrimitives scoped_allow_base_sync_primitives;
       const base::TimeTicks start_time = base::TimeTicks::Now();
-      process.WaitForExitWithTimeout(
+      const bool exited = process.WaitForExitWithTimeout(
           base::Seconds(kMaxSecondsToWaitForNetworkProcess), nullptr);
       // Record time spent for the method call.
       base::TimeDelta network_wait_time = base::TimeTicks::Now() - start_time;
+      base::UmaHistogramTimes("Shutdown.NetworkService.WaitTime",
+                              network_wait_time);
+      base::UmaHistogramBoolean("Shutdown.NetworkService.TimedOut", !exited);
       DVLOG(1) << "Waited " << network_wait_time.InMilliseconds()
                << " ms for network service";
     }

@@ -12,7 +12,6 @@
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_throttle.h"
 #include "content/public/browser/weak_document_ptr.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "net/http/structured_headers.h"
 #include "services/data_decoder/public/cpp/data_decoder.h"
 #include "third_party/blink/public/mojom/webid/federated_request.mojom.h"
@@ -54,7 +53,7 @@ class CONTENT_EXPORT NavigationInterceptor
       ::password_manager::CredentialMediationRequirement requirement,
       NavigationHandle* navigation_handle,
       const GURL& intercepted_url,
-      Request::RequestTokenCallback callback)>;
+      RequestHandler::RequestTokenCallback callback)>;
 
   explicit NavigationInterceptor(NavigationThrottleRegistry& registry);
   NavigationInterceptor(NavigationThrottleRegistry& registry,

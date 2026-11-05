@@ -7,7 +7,6 @@
 #include <memory>
 #include <string>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/login/resources/grit/ash_login_strings.h"
@@ -16,19 +15,13 @@
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/ash/account_manager/account_manager_util.h"
 #include "chrome/browser/ash/login/reauth_stats.h"
-#include "chrome/browser/ash/login/signin/legacy_token_handle_fetcher.h"
 #include "chrome/browser/ash/login/signin/token_handle_store_factory.h"
-#include "chrome/browser/ash/login/signin/token_handle_util.h"
-#include "chrome/browser/notifications/notification_common.h"
-#include "chrome/browser/notifications/notification_display_service.h"
-#include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/supervised_user/supervised_user_service_factory.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
@@ -60,8 +53,8 @@
 namespace ash {
 namespace {
 
-constexpr char kProfileSigninNotificationId[] = "chrome://settings/signin/";
-constexpr char kSecondaryAccountNotificationIdSuffix[] = "/secondary-account";
+constexpr char kSettingsSigninUrl[] = "chrome://settings/signin/";
+constexpr char kSecondaryAccountNotificationIdInfix[] = "secondary-account";
 
 bool g_ignore_sync_errors_for_test_ = false;
 
@@ -108,8 +101,7 @@ CreateDeviceAccountErrorNotification(
       l10n_util::GetStringUTF16(IDS_SYNC_RELOGIN_BUTTON)));
 
   message_center::NotifierId notifier_id(
-      message_center::NotifierType::SYSTEM_COMPONENT,
-      kProfileSigninNotificationId,
+      message_center::NotifierType::SYSTEM_COMPONENT, kSettingsSigninUrl,
       NotificationCatalogName::kDeviceAccountSigninError);
 
   // Set `profile_id` for multi-user notification blocker.
@@ -122,8 +114,8 @@ CreateDeviceAccountErrorNotification(
           l10n_util::GetStringUTF16(IDS_SIGNIN_ERROR_BUBBLE_VIEW_TITLE),
           error_message,
           l10n_util::GetStringUTF16(IDS_SIGNIN_ERROR_DISPLAY_SOURCE),
-          GURL(device_account_notification_id), notifier_id, data,
-          new message_center::HandleNotificationClickDelegate(
+          notifier_id, data,
+          base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
               base::BindRepeating(&HandleDeviceAccountReauthNotificationClick)),
           ::features::IsRoundedIconsEnabled()
               ? vector_icons::kInfoFilledIcon
@@ -179,36 +171,32 @@ std::u16string GetMessageBodyForDeviceAccountErrors(
   }
 }
 
-std::unique_ptr<LegacyTokenHandleFetcher> CreateTokenHandleFetcher(
-    Profile* profile,
-    TokenHandleStore* token_handle_store) {
-  const AccountId account_id =
-      multi_user_util::GetAccountIdFromProfile(profile);
-  return std::make_unique<LegacyTokenHandleFetcher>(profile, token_handle_store,
-                                                    account_id);
-}
-
 }  // namespace
 
-SigninErrorNotifier::SigninErrorNotifier(PrefService* local_state,
-                                         SigninErrorController* controller,
-                                         Profile* profile)
+SigninErrorNotifier::SigninErrorNotifier(
+    PrefService* local_state,
+    SigninErrorController* controller,
+    Profile* profile,
+    signin::IdentityManager* identity_manager,
+    supervised_user::SupervisedUserService* supervised_user_service)
     : local_state_(CHECK_DEREF(local_state)),
       error_controller_(controller),
       profile_(profile),
-      identity_manager_(IdentityManagerFactory::GetForProfile(profile_)),
+      supervised_user_service_(CHECK_DEREF(supervised_user_service)),
+      identity_manager_(identity_manager),
       account_manager_(AccountManagerFactory::Get()->GetAccountManager(
           profile_->GetPath().value())),
       token_handle_store_(
-          TokenHandleStoreFactory::Get()->GetTokenHandleStore()),
-      token_handle_fetcher_(
-          CreateTokenHandleFetcher(profile_, token_handle_store_)) {
-  DCHECK(account_manager_);
-  // Create a unique notification ID for this profile.
+          TokenHandleStoreFactory::Get()->GetTokenHandleStore()) {
+  CHECK(account_manager_, base::NotFatalUntil::M161);
+  // Create unique user-scoped notification IDs for this profile.
+  const user_manager::User& user = CHECK_DEREF(
+      BrowserContextHelper::Get()->GetUserByBrowserContext(profile));
   device_account_notification_id_ =
-      kProfileSigninNotificationId + profile->GetProfileUserName();
-  secondary_account_notification_id_ =
-      device_account_notification_id_ + kSecondaryAccountNotificationIdSuffix;
+      CreateUserScopedNotificationId(kSettingsSigninUrl, user.username_hash());
+  secondary_account_notification_id_ = CreateUserScopedNotificationId(
+      base::StrCat({kSettingsSigninUrl, kSecondaryAccountNotificationIdInfix}),
+      user.username_hash());
 
   error_controller_->AddObserver(this);
   const AccountId account_id =
@@ -226,16 +214,12 @@ SigninErrorNotifier::SigninErrorNotifier(PrefService* local_state,
 void SigninErrorNotifier::OnTokenHandleCheck(const AccountId& account_id,
                                              const std::string& token,
                                              bool reauth_required) {
-  if (ash::features::IsUseTokenHandleStoreEnabled()) {
-    account_manager::AccountManager* account_manager =
-        AccountManagerFactory::Get()->GetAccountManager(
-            profile_->GetPath().value());
+  account_manager::AccountManager* account_manager =
+      AccountManagerFactory::Get()->GetAccountManager(
+          profile_->GetPath().value());
 
-    token_handle_store_->DiagnoseTokenHandleMapping(
-        profile_->GetPrefs(), account_manager, account_id, token);
-  } else {
-    token_handle_fetcher_->DiagnoseTokenHandleMapping(account_id, token);
-  }
+  token_handle_store_->DiagnoseTokenHandleMapping(
+      profile_->GetPrefs(), account_manager, account_id, token);
   if (!reauth_required) {
     return;
   }
@@ -273,9 +257,6 @@ void SigninErrorNotifier::Shutdown() {
     error_controller_->RemoveObserver(this);
   }
   error_controller_ = nullptr;
-  if (token_handle_fetcher_) {
-    token_handle_fetcher_.reset();
-  }
   token_handle_store_ = nullptr;
 }
 
@@ -284,15 +265,10 @@ void SigninErrorNotifier::OnErrorChanged() {
     return;
 
   if (!error_controller_->HasError()) {
-    const user_manager::User& user = CHECK_DEREF(
-        BrowserContextHelper::Get()->GetUserByBrowserContext(profile_));
     message_center::MessageCenter::Get()->RemoveNotification(
-        CreateUserScopedNotificationId(device_account_notification_id_,
-                                       user.username_hash()),
-        /*by_user=*/false);
-    NotificationDisplayServiceFactory::GetForProfile(profile_)->Close(
-        NotificationHandler::Type::TRANSIENT,
-        secondary_account_notification_id_);
+        device_account_notification_id_, /*by_user=*/false);
+    message_center::MessageCenter::Get()->RemoveNotification(
+        secondary_account_notification_id_, /*by_user=*/false);
     return;
   }
 
@@ -329,29 +305,19 @@ void SigninErrorNotifier::HandleDeviceAccountError(
     const std::u16string& error_message) {
   // If this error has occurred because a user's account has just been converted
   // to a Family Link Supervised account, then suppress the notification.
-  supervised_user::SupervisedUserService* service =
-      supervised_user::SupervisedUserServiceFactory::GetForProfile(profile_);
-  if (service->signout_required_after_supervision_enabled())
+  if (supervised_user_service_->signout_required_after_supervision_enabled()) {
     return;
+  }
 
   // We need to save the flag in the local state because
-  // TokenHandleUtil::IsReauthRequired might fail on the login screen due to
+  // TokenHandleStore::IsReauthRequired might fail on the login screen due to
   // lack of network connectivity.
   SaveForceOnlineSignin(profile_);
-  std::unique_ptr<message_center::Notification> notification =
+  message_center::MessageCenter::Get()->AddNotification(
       CreateDeviceAccountErrorNotification(
           /*email=*/multi_user_util::GetAccountIdFromProfile(profile_)
               .GetUserEmail(),
-          device_account_notification_id_, error_message);
-
-  const user_manager::User& user = CHECK_DEREF(
-      BrowserContextHelper::Get()->GetUserByBrowserContext(profile_));
-
-  notification = std::make_unique<message_center::Notification>(
-      CreateUserScopedNotificationId(notification->id(), user.username_hash()),
-      *notification);
-  message_center::MessageCenter::Get()->AddNotification(
-      std::move(notification));
+          device_account_notification_id_, error_message));
 }
 
 void SigninErrorNotifier::HandleSecondaryAccountError(
@@ -365,8 +331,7 @@ void SigninErrorNotifier::OnCheckDummyGaiaTokenForAllAccounts(
     const std::vector<std::pair<account_manager::Account, bool>>&
         account_dummy_token_list) {
   message_center::NotifierId notifier_id(
-      message_center::NotifierType::SYSTEM_COMPONENT,
-      kProfileSigninNotificationId,
+      message_center::NotifierType::SYSTEM_COMPONENT, kSettingsSigninUrl,
       NotificationCatalogName::kSecondaryAccountSigninError);
   // Set `profile_id` for multi-user notification blocker. Note the primary user
   // account id is used to identify the profile for the blocker so it is used
@@ -391,25 +356,26 @@ void SigninErrorNotifier::OnCheckDummyGaiaTokenForAllAccounts(
           : l10n_util::GetStringUTF16(
                 IDS_SIGNIN_ERROR_SECONDARY_ACCOUNT_MIGRATION_BUBBLE_VIEW_MESSAGE);
 
-  message_center::Notification notification = CreateSystemNotification(
-      message_center::NOTIFICATION_TYPE_SIMPLE,
-      secondary_account_notification_id_, message_title, message_body,
-      l10n_util::GetStringUTF16(
-          IDS_SIGNIN_ERROR_SECONDARY_ACCOUNT_DISPLAY_SOURCE),
-      GURL(secondary_account_notification_id_), notifier_id,
-      message_center::RichNotificationData(),
-      new message_center::HandleNotificationClickDelegate(base::BindRepeating(
-          &SigninErrorNotifier::HandleSecondaryAccountReauthNotificationClick,
-          weak_factory_.GetWeakPtr())),
-      ::features::IsRoundedIconsEnabled() ? vector_icons::kSettingsFilledIcon
-                                          : vector_icons::kSettingsOldIcon,
-      message_center::SystemNotificationWarningLevel::NORMAL);
-  notification.SetSystemPriority();
+  std::unique_ptr<message_center::Notification> notification =
+      CreateSystemNotificationPtr(
+          message_center::NOTIFICATION_TYPE_SIMPLE,
+          secondary_account_notification_id_, message_title, message_body,
+          l10n_util::GetStringUTF16(
+              IDS_SIGNIN_ERROR_SECONDARY_ACCOUNT_DISPLAY_SOURCE),
+          notifier_id, message_center::RichNotificationData(),
+          base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
+              base::BindRepeating(
+                  &SigninErrorNotifier::
+                      HandleSecondaryAccountReauthNotificationClick,
+                  weak_factory_.GetWeakPtr())),
+          ::features::IsRoundedIconsEnabled()
+              ? vector_icons::kSettingsFilledIcon
+              : vector_icons::kSettingsOldIcon,
+          message_center::SystemNotificationWarningLevel::NORMAL);
+  notification->SetSystemPriority();
 
-  // Update or add the notification.
-  NotificationDisplayServiceFactory::GetForProfile(profile_)->Display(
-      NotificationHandler::Type::TRANSIENT, notification,
-      /*metadata=*/nullptr);
+  message_center::MessageCenter::Get()->AddNotification(
+      std::move(notification));
 }
 
 void SigninErrorNotifier::HandleSecondaryAccountReauthNotificationClick(

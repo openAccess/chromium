@@ -28,6 +28,7 @@
 
 #include <memory>
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/task/sequenced_task_runner.h"
@@ -55,6 +56,10 @@
 #include "third_party/blink/renderer/platform/wtf/deque.h"
 #include "third_party/blink/renderer/platform/wtf/sequence_bound.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_position.h"
+
+namespace perfetto {
+class EventContext;
+}  // namespace perfetto
 
 namespace blink {
 
@@ -95,12 +100,6 @@ class ParserRootInsertionPoint
   Member<Node> ref_node;
 };
 
-// TODO(https://crbug.com/1049898): These are only exposed to make it possible
-// to delete an expired histogram. The test should be rewritten to test at a
-// different level, so it won't have to make assertions about internal state.
-void CORE_EXPORT ResetDiscardedTokenCountForTesting();
-size_t CORE_EXPORT GetDiscardedTokenCountForTesting();
-
 class CORE_EXPORT HTMLDocumentParser : public ScriptableDocumentParser,
                                        private HTMLParserScriptRunnerHost {
  public:
@@ -119,6 +118,8 @@ class CORE_EXPORT HTMLDocumentParser : public ScriptableDocumentParser,
   ~HTMLDocumentParser() override;
   void Trace(Visitor*) const override;
 
+  void DidProcessCSPMetaTagForPreload();
+
   static void ParseDocumentFragment(
       const String&,
       DocumentFragment*,
@@ -126,6 +127,17 @@ class CORE_EXPORT HTMLDocumentParser : public ScriptableDocumentParser,
       CustomElementRegistry*,
       ParserContentPolicy = kAllowScriptingContent,
       StreamingSanitizer* sanitizer = nullptr);
+
+  // Appends HTML content and document/context metadata debug annotations to
+  // `ctx` when `disabled-by-default-blink.debug.html_content` tracing is
+  // enabled. If `context_element` is non-null (fragment parsing), also records
+  // the target container element's debug name, id, and node id; omit
+  // `context_element` (defaults to `nullptr`) for document-level parsing.
+  static void AddHtmlContentTraceAnnotations(
+      perfetto::EventContext& ctx,
+      Document*,
+      const String& html,
+      Element* context_element = nullptr);
 
   // Exposed for testing.
   HTMLParserScriptRunnerHost* AsHTMLParserScriptRunnerHostForTesting() {
@@ -163,7 +175,16 @@ class CORE_EXPORT HTMLDocumentParser : public ScriptableDocumentParser,
   // execution.
   void ExecuteScriptsWaitingForPrerenderActivation() override;
 
-  void SetPatchScope(ContainerNode* scope);
+  // https://html.spec.whatwg.org/C/#abort-a-fragment-parser
+  // Stops and detaches a fragment parser that is fed by an HTMLStream. If the
+  // parser is currently running (e.g. the abort comes from a streamed inline
+  // script or a custom element reaction while the parser resumes after a
+  // parser-blocking script), the abort is deferred until the current run
+  // returns, so that the rest of the current chunk is still parsed and the
+  // stack of open elements is not popped in the middle of inserting a node.
+  void AbortFragmentParser();
+
+  void SetCloseCallback(base::OnceClosure callback);
 
  protected:
   void insert(const String&) final;
@@ -284,14 +305,6 @@ class CORE_EXPORT HTMLDocumentParser : public ScriptableDocumentParser,
   // called when data is available.
   bool ShouldPumpTokenizerNowForFinishAppend() const;
 
-  // Returns true if we should check the clock after parsing a token.
-  // We check the clock after parsing a token that's likely slow, or
-  // for 1 out of 10 fast tokens.
-  bool ShouldCheckTimeBudget(NextTokenStatus next_token_status,
-                             html_names::HTMLTag tag,
-                             int newly_consumed_characters,
-                             int tokens_parsed) const;
-
   bool ShouldSkipPreloadScan();
 
   // Check if preloads are allowed considering the presence of a preloader,
@@ -338,15 +351,28 @@ class CORE_EXPORT HTMLDocumentParser : public ScriptableDocumentParser,
   // Set to true if PumpTokenizer() was called at least once.
   bool did_pump_tokenizer_ = false;
 
-  // Counts how many CSP meta tags have been seen (but not necessarily processed
-  // yet). This is used to compare the number of seen tags with the number of
-  // processed CSP tags in order to decide if resources can be preloaded.
+  // Counts CSP meta tags seen by the preload scanner but not necessarily
+  // processed by the main parser yet.
   int seen_csp_meta_tags_ = 0;
+
+  // Counts CSP meta tags processed by the main parser. This is compared against
+  // `seen_csp_meta_tags_` before releasing preloads delayed by CSP meta tags.
+  int processed_csp_meta_tags_ = 0;
 
   // TODO(crbug.com/416543903): If true, it pauses the parser until the
   // performance.mark() as a resuming signal is called.
   bool is_waiting_for_user_timing_ = false;
   base::TimeTicks time_waiting_for_user_timing_;
+
+  // https://html.spec.whatwg.org/C/#fragment-parser-abort-requested
+  // Set by AbortFragmentParser() while the parser is running; acted upon when
+  // the outermost PumpTokenizerIfPossible() returns.
+  bool fragment_parser_abort_requested_ = false;
+
+  // Invoked when the parser is done.
+  // This is used by stream*HTML methods, to resolve
+  // the stream's close promise.
+  base::OnceClosure close_callback_;
 };
 
 }  // namespace blink

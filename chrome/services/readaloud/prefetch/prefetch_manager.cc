@@ -5,11 +5,13 @@
 #include "chrome/services/readaloud/prefetch/prefetch_manager.h"
 
 #include <algorithm>
-#include <iterator>
 #include <utility>
 
-#include "chrome/common/readaloud/read_aloud.mojom.h"
+#include "base/check.h"
+#include "base/logging.h"
 #include "chrome/common/readaloud/read_aloud_constants.h"
+#include "chrome/services/readaloud/chunking/text_chunker.h"
+#include "chrome/services/readaloud/timeline/playback_timeline.h"
 
 namespace readaloud {
 
@@ -23,8 +25,11 @@ CachedCompressedSegment::CachedCompressedSegment() = default;
 
 CachedCompressedSegment::CachedCompressedSegment(
     scoped_refptr<media::DecoderBuffer> opus_buffer,
-    std::vector<DecodedAudioSegment::WordTiming> timings)
-    : opus_buffer(std::move(opus_buffer)), timings(std::move(timings)) {}
+    std::vector<WordTiming> timings,
+    SynthesisResultStatus status)
+    : status(status),
+      opus_buffer(std::move(opus_buffer)),
+      timings(std::move(timings)) {}
 
 CachedCompressedSegment::CachedCompressedSegment(
     const CachedCompressedSegment&) = default;
@@ -37,42 +42,26 @@ CachedCompressedSegment& CachedCompressedSegment::operator=(
 
 CachedCompressedSegment::~CachedCompressedSegment() = default;
 
-PrefetchManager::PrefetchManager() = default;
+PrefetchManager::PrefetchManager(const PlaybackTimeline* timeline)
+    : timeline_(timeline) {
+  DCHECK(timeline_);
+}
 
 PrefetchManager::~PrefetchManager() = default;
 
-void PrefetchManager::SetTextContent(
-    const std::vector<read_aloud::mojom::TextSegmentPtr>& segments,
-    std::optional<base::i18n::LanguageTag> locale_tag) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  ResetSession();
-
-  for (const read_aloud::mojom::TextSegmentPtr& segment : segments) {
-    if (!segment || segment->text.empty()) {
-      continue;
-    }
-    // TODO(b/543025514): In ChunkingMode::kSpeed, handle isolated
-    // all-punctuation sentences (e.g., ellipses "...") in TextChunker so they
-    // are not sent as standalone network synthesis requests. In
-    // ChunkingMode::kQuality, retain them within paragraph groupings for
-    // natural prosody and pauses.
-    std::vector<TextChunk> sentence_chunks =
-        ChunkText(segment->text, GetChunkingMode(), locale_tag);
-    timeline_.insert(timeline_.end(),
-                     std::make_move_iterator(sentence_chunks.begin()),
-                     std::make_move_iterator(sentence_chunks.end()));
-  }
-}
-
 void PrefetchManager::ResetSession() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  timeline_.clear();
   session_cache_.clear();
   mode_scheduler_.Reset();
+  CancelInflightRequests();
+  weak_factory_.InvalidateWeakPtrs();
+}
+
+void PrefetchManager::CancelInflightRequests() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ++session_sequence_id_;
   inflight_requests_.clear();
   pending_requests_.clear();
-  weak_factory_.InvalidateWeakPtrs();
 }
 
 void PrefetchManager::SetRequestSynthesisCallback(
@@ -84,10 +73,10 @@ void PrefetchManager::SetRequestSynthesisCallback(
 
 void PrefetchManager::SchedulePrefetch(uint32_t chunk_index) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (chunk_index >= timeline_.size()) {
+  if (chunk_index >= GetTimelineChunkCount()) {
     return;
   }
-  if (HasCachedSegment(chunk_index) ||
+  if (session_cache_.contains(chunk_index) ||
       inflight_requests_.contains(chunk_index) ||
       std::ranges::find(pending_requests_, chunk_index) !=
           pending_requests_.end()) {
@@ -101,7 +90,7 @@ void PrefetchManager::OnSynthesisResponse(
     uint64_t sequence_id,
     uint32_t chunk_index,
     scoped_refptr<media::DecoderBuffer> opus_buffer,
-    std::vector<DecodedAudioSegment::WordTiming> timings) {
+    std::vector<WordTiming> timings) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (sequence_id != session_sequence_id_) {
     return;
@@ -110,19 +99,29 @@ void PrefetchManager::OnSynthesisResponse(
     return;
   }
   inflight_requests_.erase(chunk_index);
-  InsertCachedSegment(chunk_index, std::move(opus_buffer), std::move(timings));
+
+  if (!opus_buffer || opus_buffer->empty()) {
+    LOG(WARNING) << "ReadAloud: Synthesis error or empty audio buffer received "
+                    "for chunk "
+                 << chunk_index;
+    InsertCachedSegment(chunk_index, nullptr, {},
+                        SynthesisResultStatus::kSynthesisError);
+  } else {
+    InsertCachedSegment(chunk_index, std::move(opus_buffer), std::move(timings),
+                        SynthesisResultStatus::kSuccess);
+  }
   MaybeIssueSynthesisRequest();
 }
 
-ChunkingMode PrefetchManager::UpdatePrefetchMode(
+PrefetchMode PrefetchManager::UpdatePrefetchMode(
     base::TimeDelta current_buffered_duration) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   return mode_scheduler_.UpdateMode(current_buffered_duration);
 }
 
-ChunkingMode PrefetchManager::GetChunkingMode() const {
+PrefetchMode PrefetchManager::GetPrefetchMode() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return mode_scheduler_.GetChunkingMode();
+  return mode_scheduler_.GetPrefetchMode();
 }
 
 base::TimeDelta PrefetchManager::GetTargetPrefetchDuration() const {
@@ -132,7 +131,11 @@ base::TimeDelta PrefetchManager::GetTargetPrefetchDuration() const {
 
 bool PrefetchManager::HasCachedSegment(uint32_t chunk_index) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return session_cache_.contains(chunk_index);
+  std::map<uint32_t, CachedCompressedSegment>::const_iterator it =
+      session_cache_.find(chunk_index);
+  return it != session_cache_.end() &&
+         it->second.status == SynthesisResultStatus::kSuccess &&
+         it->second.opus_buffer && !it->second.opus_buffer->empty();
 }
 
 const CachedCompressedSegment* PrefetchManager::GetCachedSegment(
@@ -149,17 +152,15 @@ const CachedCompressedSegment* PrefetchManager::GetCachedSegment(
 void PrefetchManager::InsertCachedSegment(
     uint32_t chunk_index,
     scoped_refptr<media::DecoderBuffer> opus_buffer,
-    std::vector<DecodedAudioSegment::WordTiming> timings) {
+    std::vector<WordTiming> timings,
+    SynthesisResultStatus status) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (!opus_buffer || opus_buffer->empty()) {
-    return;
-  }
-  if (!timeline_.empty() && chunk_index >= timeline_.size()) {
+  if (GetTimelineChunkCount() > 0 && chunk_index >= GetTimelineChunkCount()) {
     return;
   }
   session_cache_.insert_or_assign(
-      chunk_index,
-      CachedCompressedSegment(std::move(opus_buffer), std::move(timings)));
+      chunk_index, CachedCompressedSegment(std::move(opus_buffer),
+                                           std::move(timings), status));
 }
 
 void PrefetchManager::ClearCache() {
@@ -170,12 +171,7 @@ void PrefetchManager::ClearCache() {
 
 size_t PrefetchManager::GetTimelineChunkCount() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return timeline_.size();
-}
-
-const std::vector<TextChunk>& PrefetchManager::GetTimelineChunks() const {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  return timeline_;
+  return timeline_->GetChunkCount();
 }
 
 uint64_t PrefetchManager::GetCurrentSequenceId() const {
@@ -193,20 +189,25 @@ void PrefetchManager::MaybeIssueSynthesisRequest() {
   if (!request_synthesis_callback_) {
     return;
   }
+  const std::vector<TextChunk>& chunks = timeline_->chunks();
   while (!pending_requests_.empty() &&
          inflight_requests_.size() < kMaxConcurrentRequests) {
     uint32_t next_index = pending_requests_.front();
     pending_requests_.pop_front();
 
-    if (HasCachedSegment(next_index) ||
+    if (next_index >= chunks.size() || session_cache_.contains(next_index) ||
         inflight_requests_.contains(next_index)) {
-      // Skip chunk indices that are already cached or currently in flight.
+      // Skip chunk indices that are out of bounds, already cached, or
+      // currently in flight.
       continue;
     }
     inflight_requests_.insert(next_index);
-    // Dispatch the synthesis request to the controller via the registered
-    // callback.
-    request_synthesis_callback_.Run(next_index, timeline_[next_index].text);
+    // TODO(b/527525636): Use `GetPrefetchMode()` (`PrefetchMode::kQuality` vs
+    // `PrefetchMode::kSpeed`) to group adjacent canonical chunks with the same
+    // speaker into a single multi-chunk synthesis request for improved prosody
+    // once the audio buffer reaches the quality watermark.
+    request_synthesis_callback_.Run(next_index, chunks[next_index].text,
+                                    chunks[next_index].speaker);
   }
 }
 
@@ -215,20 +216,20 @@ std::vector<uint32_t> PrefetchManager::GetRequiredPrefetchChunks(
     base::TimeDelta current_buffered_duration) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   std::vector<uint32_t> required_chunks;
+  const size_t total_chunks = GetTimelineChunkCount();
 
-  if (current_chunk_index >= timeline_.size() ||
+  if (current_chunk_index >= total_chunks ||
       current_buffered_duration.is_negative() ||
       current_buffered_duration >= kAudioBufferPrefetchWatermark) {
     return required_chunks;
   }
 
   size_t start_idx = current_chunk_index;
-  size_t end_idx =
-      std::min(timeline_.size(), start_idx + kMaxPrefetchLookahead);
+  size_t end_idx = std::min(total_chunks, start_idx + kMaxPrefetchLookahead);
 
   for (size_t i = start_idx; i < end_idx; ++i) {
     uint32_t chunk_idx = static_cast<uint32_t>(i);
-    if (!HasCachedSegment(chunk_idx)) {
+    if (!session_cache_.contains(chunk_idx)) {
       required_chunks.push_back(chunk_idx);
     }
   }

@@ -7,9 +7,7 @@
 #import <map>
 
 #import "base/apple/foundation_util.h"
-#import "base/feature_list.h"
 #import "base/metrics/user_metrics.h"
-#import "ios/chrome/browser/badges/model/features.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_button.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_button_factory.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_consumer.h"
@@ -35,13 +33,13 @@
 #import "ios/chrome/browser/overlays/model/public/overlay_presenter.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_presenter_observer_bridge.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_request_queue.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper_observer_bridge.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer_bridge.h"
 #import "ios/chrome/browser/shared/public/commands/browser_coordinator_commands.h"
 #import "ios/chrome/browser/shared/public/commands/location_bar_badge_commands.h"
+#import "ios/chrome/browser/shared/public/commands/page_info_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/list_model/list_model.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
@@ -80,6 +78,7 @@ bool IsInfobarTypeSupportedInReaderMode(InfobarType infobarType,
     case InfobarType::kInfobarTypeCollaborationGroup:
     case InfobarType::kInfobarTypeCollaborationOutOfDate:
     case InfobarType::kInfobarTypeSaveCvc:
+    case InfobarType::kInfobarTypeContextualCue:
       return IsProactiveSuggestionsFrameworkEnabled();
     case InfobarType::kInfobarTypeAutofillAiSaveEntity:
       // This infobar is not supported in reader mode since forms are not shown
@@ -88,7 +87,6 @@ bool IsInfobarTypeSupportedInReaderMode(InfobarType infobarType,
   }
 }
 
-// TODO(crbug.com/458142962): Migrate to LocationBarBadgeType.
 // Helper method to convert a `BadgeType` to a `LocationBarBadgeType. Serves as
 // a strict switch case to ensure that there's parity between both types.
 LocationBarBadgeType LocationBarBadgeTypeFromBadgeType(BadgeType badgeType) {
@@ -445,31 +443,6 @@ LocationBarBadgeType LocationBarBadgeTypeFromBadgeType(BadgeType badgeType) {
   return badgeTypes;
 }
 
-- (void)passwordsBadgeButtonTapped:(id)sender {
-  CHECK(!base::FeatureList::IsEnabled(kAutofillBadgeRemoval));
-  BadgeButton* badgeButton = base::apple::ObjCCastStrict<BadgeButton>(sender);
-  DCHECK(badgeButton.badgeType == kBadgeTypePasswordSave ||
-         badgeButton.badgeType == kBadgeTypePasswordUpdate);
-
-  [self handleTappedBadgeButton:badgeButton];
-}
-
-- (void)saveAddressProfileBadgeButtonTapped:(id)sender {
-  CHECK(!base::FeatureList::IsEnabled(kAutofillBadgeRemoval));
-  BadgeButton* badgeButton = base::apple::ObjCCastStrict<BadgeButton>(sender);
-  DCHECK_EQ(badgeButton.badgeType, kBadgeTypeSaveAddressProfile);
-
-  [self handleTappedBadgeButton:badgeButton];
-}
-
-- (void)saveCardBadgeButtonTapped:(id)sender {
-  CHECK(!base::FeatureList::IsEnabled(kAutofillBadgeRemoval));
-  BadgeButton* badgeButton = base::apple::ObjCCastStrict<BadgeButton>(sender);
-  DCHECK_EQ(badgeButton.badgeType, kBadgeTypeSaveCard);
-
-  [self handleTappedBadgeButton:badgeButton];
-}
-
 - (void)translateBadgeButtonTapped:(id)sender {
   BadgeButton* badgeButton = base::apple::ObjCCastStrict<BadgeButton>(sender);
   DCHECK_EQ(badgeButton.badgeType, kBadgeTypeTranslate);
@@ -493,7 +466,7 @@ LocationBarBadgeType LocationBarBadgeTypeFromBadgeType(BadgeType badgeType) {
 }
 
 - (void)showModalForBadgeType:(BadgeType)badgeType {
-  [self addModalRequestForInfobarType:InfobarTypeForBadgeType(badgeType)];
+  [self handleActionForInfobarType:InfobarTypeForBadgeType(badgeType)];
 }
 
 #pragma mark - InfobarBadgeTabHelperDelegate
@@ -681,11 +654,21 @@ LocationBarBadgeType LocationBarBadgeTypeFromBadgeType(BadgeType badgeType) {
   }
 }
 
-// Shows the modal UI when `button` is tapped.
+// Shows the UI when `button` is tapped.
 - (void)handleTappedBadgeButton:(BadgeButton*)button {
   InfobarType infobarType = InfobarTypeForBadgeType(button.badgeType);
-  [self addModalRequestForInfobarType:infobarType];
+  [self handleActionForInfobarType:infobarType];
   [self recordMetricsForBadgeButton:button infobarType:infobarType];
+}
+
+// Presents the UI associated with the Infobar of `infobarType`.
+- (void)handleActionForInfobarType:(InfobarType)infobarType {
+  if (infobarType == InfobarType::kInfobarTypePermissions &&
+      IsDomainLevelSitePermissionsEnabled()) {
+    [self.pageInfoHandler showPageInfo];
+    return;
+  }
+  [self addModalRequestForInfobarType:infobarType];
 }
 
 // Adds a modal request for the Infobar of `infobarType`.

@@ -6,7 +6,6 @@
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_UI_AUTOFILL_SUGGESTION_DELEGATE_H_
 
 #include <string>
-#include <variant>
 
 #include "base/check.h"
 #include "base/containers/span.h"
@@ -16,25 +15,44 @@
 #include "components/autofill/core/browser/ui/tabbed_pane_enums.h"
 #include "components/autofill/core/common/unique_ids.h"
 
-namespace password_manager {
-class PasswordManagerDriver;
-}
-
 namespace autofill {
-
-class AutofillDriver;
 
 // An interface for interaction with AutofillSuggestionController. It is notified
 // of suggestion-related events by the controller.
 class AutofillSuggestionDelegate {
  public:
-  // Contains some additional information associated with a suggestion.
+  // Contains additional information associated with a popup container being
+  // shown.
+  struct SuggestionUiMetadata {
+    // Path of anchor suggestion indices from the root popup down to this popup.
+    // - Root popup: `{}` (empty, 0 parent anchors).
+    // - Sub-popup Level 1 (anchored on index `n` of root popup): `{n}`.
+    // - Sub-popup Level 2 (anchored on index `p` of sub-popup 1): `{n, p}`.
+    std::vector<size_t> multi_index;
+
+    // Returns whether this popup is a sub-popup (i.e. has at least one parent
+    // anchor).
+    bool is_subpopup() const { return !multi_index.empty(); }
+
+    // Returns the 0-based popup depth level (0 for root popup, 1 for level-1
+    // sub-popup, etc.).
+    size_t sub_popup_level() const { return multi_index.size(); }
+
+    friend bool operator==(const SuggestionUiMetadata& lhs,
+                           const SuggestionUiMetadata& rhs) = default;
+  };
+
+  // Contains additional information associated with a specific suggestion
+  // (e.g. when selected or accepted).
   struct SuggestionMetadata {
+    // The suggestion's own 0-based row index in its popup.
     int row() const {
       CHECK(!multi_index.empty());
       return multi_index.back();
     }
 
+    // The 0-based popup depth level where this suggestion lives (0 for root
+    // popup, 1 for level-1 sub-popup, etc.).
     size_t sub_popup_level() const {
       CHECK(!multi_index.empty());
       return multi_index.size() - 1;
@@ -54,6 +72,11 @@ class AutofillSuggestionDelegate {
     // the search input is not empty).
     bool from_search_result = false;
 
+    // Indicates if the application window was fully or partially obscured when
+    // the suggestion was accepted. This flag is populated only on Android at
+    // the moment.
+    bool was_obscured = false;
+
     friend bool operator==(const SuggestionMetadata& lhs,
                            const SuggestionMetadata& rhs) = default;
   };
@@ -72,18 +95,11 @@ class AutofillSuggestionDelegate {
   // Returns true if a search is currently in progress.
   virtual bool IsSearching() const = 0;
 
-  // Will be removed together with kAutofillSimplifyFocusCheck.
-  virtual std::variant<AutofillDriver*,
-                       password_manager::PasswordManagerDriver*>
-  GetDriver_DoNotUse() = 0;
-
   // Called when Autofill `suggestions` are shown.
-  // `parent_suggestion_metadata` contains metadata about the parent suggestion
-  // serving as the anchor for the sub-popup (or its equivalent on mobile).
-  // It is `std::nullopt` if `suggestions` are showing at the root level.
+  // `metadata` contains metadata about the popup container context (e.g.
+  // parent anchor indices if shown in a sub-popup).
   virtual void OnSuggestionsShown(base::span<const Suggestion> suggestions,
-                                  base::optional_ref<const SuggestionMetadata>
-                                      parent_suggestion_metadata) = 0;
+                                  const SuggestionUiMetadata& metadata) = 0;
 
   // Called when Autofill suggestions are hidden. This may also get called if
   // the suggestions were never shown at all, e.g. because of insufficient
@@ -92,11 +108,15 @@ class AutofillSuggestionDelegate {
 
   // Called when the autofill `suggestion` has been temporarily selected (e.g.,
   // hovered).
-  virtual void DidSelectSuggestion(const Suggestion& suggestion) = 0;
+  virtual void DidSelectSuggestion(const Suggestion& suggestion,
+                                   const FormGlobalId& form_id,
+                                   const FieldGlobalId& field_id) = 0;
 
   // Informs the delegate that a `suggestion` has been chosen.
   virtual void DidAcceptSuggestion(const Suggestion& suggestion,
-                                   const SuggestionMetadata& metadata) = 0;
+                                   const SuggestionMetadata& metadata,
+                                   const FormGlobalId& form_id,
+                                   const FieldGlobalId& field_id) = 0;
 
   // Informs the delegate to delete the described suggestion. Returns true if
   // something was deleted, or false if deletion is not allowed.

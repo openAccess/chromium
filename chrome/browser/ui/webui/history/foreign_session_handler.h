@@ -14,18 +14,18 @@
 #include "base/gtest_prod_util.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "chrome/browser/sessions/session_service.h"
 #include "components/sync_sessions/open_tabs_ui_delegate.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/webui/resources/cr_components/history/foreign_sessions.mojom.h"
 
 namespace sessions {
 struct SessionTab;
-}
+struct SessionWindow;
+}  // namespace sessions
 
 namespace content {
 class WebContents;
@@ -35,8 +35,8 @@ namespace user_prefs {
 class PrefRegistrySyncable;
 }
 
+class Profile;
 class TabsFromOtherDevicesSidePanelUI;
-
 namespace browser_sync {
 
 // Keep in sync with //chrome/browser/resources/history/constants.js.
@@ -55,15 +55,16 @@ enum class SyncedTabsHistogram {
   HAS_FOREIGN_DATA = 9,
   HIDE_FOR_NOW = 10,
   OPENED_LINK_VIA_CONTEXT_MENU = 11,
-  LIMIT = 12  // Should always be the last one.
+  OPEN_WINDOW = 12,
+  LIMIT = 13  // Should always be the last one.
 };
 
 class ForeignSessionHandler : public history::mojom::ForeignSessionPageHandler {
  public:
-  using RestoreForeignSessionTabCallback =
-      base::RepeatingCallback<void(content::WebContents* source_web_contents,
-                                   const ::sessions::SessionTab& tab,
-                                   WindowOpenDisposition disposition)>;
+  using RestoreForeignSessionTabCallback = base::RepeatingCallback<void(
+      content::WebContents* source_web_contents,
+      const ::sessions::SessionTab& tab,
+      ui::mojom::WindowOpenDisposition disposition)>;
 
   using RestoreForeignSessionWindowsCallback = base::RepeatingCallback<void(
       Profile* profile,
@@ -77,7 +78,7 @@ class ForeignSessionHandler : public history::mojom::ForeignSessionPageHandler {
       content::WebContents* web_contents,
       RestoreForeignSessionTabCallback restore_tab_callback,
       RestoreForeignSessionWindowsCallback restore_windows_callback,
-      TabsFromOtherDevicesSidePanelUI* side_panel_ui);
+      TabsFromOtherDevicesSidePanelUI* side_panel_ui = nullptr);
 
   ForeignSessionHandler(const ForeignSessionHandler&) = delete;
   ForeignSessionHandler& operator=(const ForeignSessionHandler&) = delete;
@@ -87,6 +88,8 @@ class ForeignSessionHandler : public history::mojom::ForeignSessionPageHandler {
   // history::mojom::ForeignSessionPageHandler implementation.
   void GetForeignSessions(GetForeignSessionsCallback callback) override;
   void OpenForeignSessionAllTabs(const std::string& session_tag) override;
+  void OpenForeignSessionWindow(const std::string& session_tag,
+                                int32_t window_id) override;
   void OpenForeignSessionTab(const std::string& session_tag,
                              int32_t tab_id,
                              ui::mojom::ClickModifiersPtr modifiers) override;

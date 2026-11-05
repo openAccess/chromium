@@ -8,7 +8,6 @@
 #include <string>
 
 #include "ash/accessibility/accessibility_controller.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
@@ -127,7 +126,7 @@ SavedDeskItemView::SavedDeskItemView(std::unique_ptr<DeskTemplate> saved_desk)
   auto launch_template_callback = base::BindRepeating(
       &SavedDeskItemView::OnGridItemPressed, weak_ptr_factory_.GetWeakPtr());
 
-  const std::u16string saved_desk_name = saved_desk_->template_name();
+  const std::u16string& saved_desk_name = saved_desk_->template_name();
   DCHECK(!saved_desk_name.empty());
   const bool is_admin_managed =
       saved_desk_->source() == DeskTemplateSource::kPolicy;
@@ -235,17 +234,18 @@ SavedDeskItemView::SavedDeskItemView(std::unique_ptr<DeskTemplate> saved_desk)
   layer()->SetFillsBoundsOpaquely(false);
 
   // Create a shadow for the view.
-  shadow_ = SystemShadow::CreateShadowOnNinePatchLayerForView(
-      this, SystemShadow::Type::kElevation12);
+  shadow_ = SystemDecoration::CreateForView(
+      this, SystemDecoration::ShadowType::kElevation12);
   shadow_->SetRoundedCorners(gfx::RoundedCornersF(kSaveDeskCornerRadius));
 
   if (chromeos::features::IsSystemBlurEnabled()) {
     background_view->SetPaintToLayer();
+    background_view->layer()->SetName("SavedDeskItemView:Background");
     background_view->layer()->SetFillsBoundsOpaquely(false);
     background_view->layer()->SetBackgroundBlur(
-        ColorProvider::kBackgroundBlurSigma);
+        StyleUtil::kBackgroundBlurSigma);
     background_view->layer()->SetBackdropFilterQuality(
-        ColorProvider::kBackgroundBlurQuality);
+        StyleUtil::kBackgroundBlurQuality);
     background_view->layer()->SetRoundedCornerRadius(
         gfx::RoundedCornersF(kSaveDeskCornerRadius));
 
@@ -253,6 +253,7 @@ SavedDeskItemView::SavedDeskItemView(std::unique_ptr<DeskTemplate> saved_desk)
     // Otherwise, it will be painted to its ancestors layer and
     // `background_view` will be drawn on top of it as a result.
     box_layout_view->SetPaintToLayer();
+    box_layout_view->layer()->SetName("SavedDeskItemView:BoxLayoutView");
     box_layout_view->layer()->SetFillsBoundsOpaquely(false);
   }
 
@@ -304,6 +305,7 @@ SavedDeskItemView::SavedDeskItemView(std::unique_ptr<DeskTemplate> saved_desk)
   SetEventTargeter(std::make_unique<views::ViewTargeter>(this));
 
   hover_container_->SetPaintToLayer();
+  hover_container_->layer()->SetName("SavedDeskItemView:HoverContainer");
   icon_container_view_->SetPaintToLayer();
 
   hover_container_->layer()->SetFillsBoundsOpaquely(false);

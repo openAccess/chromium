@@ -12,10 +12,8 @@
 #include "ash/accessibility/accessibility_controller.h"
 #include "ash/app_list/app_list_model_provider.h"
 #include "ash/app_list/app_list_util.h"
-#include "ash/app_list/apps_collections_controller.h"
 #include "ash/app_list/model/app_list_folder_item.h"
 #include "ash/app_list/views/app_list_a11y_announcer.h"
-#include "ash/app_list/views/app_list_bubble_apps_collections_page.h"
 #include "ash/app_list/views/app_list_bubble_apps_page.h"
 #include "ash/app_list/views/app_list_bubble_search_page.h"
 #include "ash/app_list/views/app_list_folder_view.h"
@@ -39,6 +37,7 @@
 #include "ash/shell.h"
 #include "ash/style/ash_color_id.h"
 #include "ash/style/icon_button.h"
+#include "ash/style/style_util.h"
 #include "base/check.h"
 #include "base/check_op.h"
 #include "base/functional/bind.h"
@@ -74,7 +73,7 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/view_class_properties.h"
-#include "ui/views/view_shadow.h"
+#include "ui/views/view_decoration.h"
 
 using views::BoxLayout;
 
@@ -163,8 +162,8 @@ AppListBubbleView::AppListBubbleView(AppListViewDelegate* view_delegate)
   layer()->SetIsFastRoundedCorner(true);
   if (chromeos::features::IsSystemBlurEnabled()) {
     layer()->SetFillsBoundsOpaquely(false);
-    layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
-    layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+    layer()->SetBackgroundBlur(StyleUtil::kBackgroundBlurSigma);
+    layer()->SetBackdropFilterQuality(StyleUtil::kBackgroundBlurQuality);
   }
 
   const ui::ColorId background_color_id =
@@ -200,10 +199,6 @@ AppListBubbleView::~AppListBubbleView() {
   // (associated with the folder), so destroy it before the root apps grid view.
   delete folder_view_;
   folder_view_ = nullptr;
-
-  // Reset the dialog_controller for the AppsCollections page to prevent it from
-  // dangling at destruction after the views are removed.
-  apps_collections_page_->SetDialogController(nullptr);
 }
 
 void AppListBubbleView::UpdateSuggestions() {
@@ -253,14 +248,6 @@ void AppListBubbleView::InitContentsView() {
           view_delegate_, GetAppListConfig(), a11y_announcer_.get(),
           /*folder_controller=*/this,
           /*search_box=*/search_box_view_));
-
-  apps_collections_page_ = pages_container->AddChildView(
-      std::make_unique<AppListBubbleAppsCollectionsPage>(
-          view_delegate_, GetAppListConfig(), a11y_announcer_.get(),
-          search_page_dialog_controller_.get(),
-          base::BindOnce(&AppListBubbleView::ShowPage,
-                         weak_factory_.GetWeakPtr(),
-                         AppListBubblePage::kApps)));
 
   // Skip the "hide continue section" button on arrow up/down in app list.
   button_focus_skipper_->AddButton(
@@ -452,7 +439,6 @@ void AppListBubbleView::StartHideAnimation(
 void AppListBubbleView::AbortAllAnimations() {
   apps_page_->AbortAllAnimations();
   search_page_->AbortAllAnimations();
-  apps_collections_page_->AbortAllAnimations();
   layer()->GetAnimator()->AbortAllAnimations();
 }
 
@@ -483,7 +469,6 @@ void AppListBubbleView::ShowPage(AppListBubblePage page) {
 
   const bool supports_anchored_dialogs =
       page == AppListBubblePage::kApps ||
-      page == AppListBubblePage::kAppsCollections ||
       page == AppListBubblePage::kSearch;
 
   search_page_dialog_controller_->Reset(/*enabled=*/supports_anchored_dialogs);
@@ -497,42 +482,19 @@ void AppListBubbleView::ShowPage(AppListBubblePage page) {
         // Trigger hiding first so animations don't overlap.
         search_page_->AnimateHidePage();
         apps_page_->AnimateShowPage();
-      } else if (previous_page == AppListBubblePage::kAppsCollections) {
-        apps_collections_page_->AnimateHidePage();
-        apps_page_->AnimateShowPage();
       } else {
         apps_page_->SetVisible(true);
-        apps_collections_page_->SetVisible(false);
         search_page_->SetVisible(false);
       }
       a11y_announcer_->AnnounceAppListShown();
-      MaybeFocusAndActivateSearchBox();
-      break;
-    case AppListBubblePage::kAppsCollections:
-      if (previous_page == AppListBubblePage::kApps) {
-        apps_page_->AnimateHidePage();
-        apps_collections_page_->AnimateShowPage();
-      } else if (previous_page == AppListBubblePage::kSearch) {
-        // Trigger hiding first so animations don't overlap.
-        search_page_->AnimateHidePage();
-        apps_collections_page_->AnimateShowPage();
-      } else {
-        search_page_->SetVisible(false);
-        apps_page_->SetVisible(false);
-        apps_collections_page_->SetVisible(true);
-      }
       MaybeFocusAndActivateSearchBox();
       break;
     case AppListBubblePage::kSearch:
       if (previous_page == AppListBubblePage::kApps) {
         apps_page_->AnimateHidePage();
         search_page_->AnimateShowPage();
-      } else if (previous_page == AppListBubblePage::kAppsCollections) {
-        apps_collections_page_->AnimateHidePage();
-        search_page_->AnimateShowPage();
       } else {
         apps_page_->SetVisible(false);
-        apps_collections_page_->SetVisible(false);
         search_page_->SetVisible(true);
       }
       MaybeFocusAndActivateSearchBox();
@@ -629,8 +591,6 @@ void AppListBubbleView::QueryChanged(const std::u16string& trimmed_query,
     search_page_->search_view()->UpdateForNewSearch(!trimmed_query.empty());
     if (!trimmed_query.empty()) {
       ShowPage(AppListBubblePage::kSearch);
-    } else if (AppsCollectionsController::Get()->ShouldShowAppsCollection()) {
-      ShowPage(AppListBubblePage::kAppsCollections);
     } else {
       ShowPage(AppListBubblePage::kApps);
     }
@@ -735,9 +695,7 @@ void AppListBubbleView::OnShowAnimationEnded(const gfx::Rect& layer_bounds) {
   // is needed to reset state before starting the hide animation.
   layer()->SetBounds(layer_bounds);
 
-  if (current_page_ == AppListBubblePage::kAppsCollections) {
-    apps_collections_page_->RecordAboveTheFoldMetrics();
-  } else if (current_page_ == AppListBubblePage::kApps) {
+  if (current_page_ == AppListBubblePage::kApps) {
     apps_page_->RecordAboveTheFoldMetrics();
   }
 }

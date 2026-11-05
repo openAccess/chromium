@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_highlights_from_point_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_static_range_init.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/node_range.h"
 #include "third_party/blink/renderer/core/dom/range.h"
 #include "third_party/blink/renderer/core/dom/static_range.h"
 #include "third_party/blink/renderer/core/dom/text.h"
@@ -78,8 +79,7 @@ class HighlightRegistryTest : public PageTestBase {
   // failures point at the specific element shape that regressed.
   void ExpectNonTrackable(const char* inner_html, const char* host_id) {
     GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(inner_html);
-    auto* host =
-        To<Element>(GetDocument().getElementById(AtomicString(host_id)));
+    auto* host = To<Element>(GetElementById(host_id));
     ASSERT_TRUE(host);
     auto* wrapper = host->parentElement();
     ASSERT_TRUE(wrapper);
@@ -361,8 +361,8 @@ TEST_F(HighlightRegistryTest, TracksReplacedElementAndUnregisterDrops) {
   // deleted ::highlight() rule.
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<div id='w'><img id='img' style='width:50px;height:50px;'></div>");
-  auto* wrapper = GetDocument().getElementById(AtomicString("w"));
-  auto* img = To<Element>(GetDocument().getElementById(AtomicString("img")));
+  auto* wrapper = GetElementById("w");
+  auto* img = To<Element>(GetElementById("img"));
   ASSERT_TRUE(wrapper && img);
 
   auto* highlight = CreateChildIndexStaticRangeHighlight(wrapper, 0, 1);
@@ -391,10 +391,10 @@ TEST_F(HighlightRegistryTest, TracksReplacedElementInRangeSpanningText) {
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<p id='p'>before<img id='img' style='width:10px;height:10px;'>after"
       "</p>");
-  auto* p = GetDocument().getElementById(AtomicString("p"));
+  auto* p = GetElementById("p");
   auto* before = To<Text>(p->firstChild());
   auto* after = To<Text>(p->lastChild());
-  auto* img = To<Element>(GetDocument().getElementById(AtomicString("img")));
+  auto* img = To<Element>(GetElementById("img"));
   ASSERT_TRUE(img);
 
   auto* range = MakeGarbageCollected<Range>(GetDocument(), before, 0, after,
@@ -421,11 +421,11 @@ TEST_F(HighlightRegistryTest, CollectorDoesNotChangeTextMarkers) {
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<p id='p'>before<img id='img' style='width:10px;height:10px;'>after"
       "</p>");
-  auto* p = GetDocument().getElementById(AtomicString("p"));
+  auto* p = GetElementById("p");
   ASSERT_TRUE(p);
   auto* before = To<Text>(p->firstChild());
   auto* after = To<Text>(p->lastChild());
-  auto* img = To<Element>(GetDocument().getElementById(AtomicString("img")));
+  auto* img = To<Element>(GetElementById("img"));
   ASSERT_TRUE(before && after && img);
   UpdateAllLifecyclePhasesForTest();
 
@@ -523,8 +523,8 @@ TEST_F(HighlightRegistryTest, TracksReplacedWithPlumbingChild) {
       "style='width:50px;height:50px;'>"
       "<param name='movie' value='ignored'>"
       "</object></div>");
-  auto* wrapper = GetDocument().getElementById(AtomicString("w"));
-  auto* object = To<Element>(GetDocument().getElementById(AtomicString("o")));
+  auto* wrapper = GetElementById("w");
+  auto* object = To<Element>(GetElementById("o"));
   ASSERT_TRUE(wrapper && object);
   UpdateAllLifecyclePhasesForTest();
 
@@ -545,19 +545,19 @@ TEST_F(HighlightRegistryTest, TracksReplacedWithPlumbingChild) {
 }
 
 TEST_F(HighlightRegistryTest, SkipsVideoWithUAShadowChildren) {
-  // A <video> is a replaced element (LayoutVideo, a LayoutImage subclass),
-  // but its user-agent shadow tree (the media-controls container) produces
-  // child layout objects, so its layout object is not a selection leaf and
-  // must not be tracked -- the same painted-children rule that excludes a
-  // <canvas> with fallback content. This documents that the gate is not
+  // A <video> is a replaced element, but its user-agent shadow tree (the
+  // media-controls container) produces child layout objects, so its layout
+  // object is not a selection leaf and must not be tracked -- the same
+  // painted-children rule that excludes a <canvas> with fallback content.
+  // This documents that the gate is not
   // "<img>-only": it turns on IsLayoutReplaced() + CanBeSelectionLeaf() for
   // any element, and <img> in the positive tests is representative of that
   // contract rather than a special case.
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<div id='w'><video id='v' style='width:100px;height:50px;'></video>"
       "</div>");
-  auto* wrapper = GetDocument().getElementById(AtomicString("w"));
-  auto* video = To<Element>(GetDocument().getElementById(AtomicString("v")));
+  auto* wrapper = GetElementById("w");
+  auto* video = To<Element>(GetElementById("v"));
   ASSERT_TRUE(wrapper && video);
   UpdateAllLifecyclePhasesForTest();
 
@@ -586,8 +586,8 @@ TEST_F(HighlightRegistryTest, MultipleHighlightsAppearInActiveSet) {
   // paints both tints.
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<div id='w'><img id='i' style='width:50px;height:50px;'></div>");
-  auto* wrapper = GetDocument().getElementById(AtomicString("w"));
-  auto* img = To<Element>(GetDocument().getElementById(AtomicString("i")));
+  auto* wrapper = GetElementById("w");
+  auto* img = To<Element>(GetElementById("i"));
   ASSERT_TRUE(wrapper && img);
 
   AtomicString name_a("a");
@@ -620,9 +620,9 @@ TEST_F(HighlightRegistryTest,
       "::highlight(high) { background-color: currentColor; }");
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<div id='w'><img id='i' style='width:50px;height:50px;'></div>");
-  auto* wrapper = GetDocument().getElementById(AtomicString("w"));
+  auto* wrapper = GetElementById("w");
   ASSERT_TRUE(wrapper);
-  auto* img = To<Element>(GetDocument().getElementById(AtomicString("i")));
+  auto* img = To<Element>(GetElementById("i"));
   ASSERT_TRUE(img);
 
   UpdateAllLifecyclePhasesForTest();
@@ -714,9 +714,9 @@ TEST_F(HighlightRegistryTest, RangeMutationUpdatesActiveSet) {
       "<img id='img1' style='width:50px;height:50px;'>"
       "<img id='img2' style='width:50px;height:50px;'>"
       "</div>");
-  auto* wrapper = GetDocument().getElementById(AtomicString("w"));
-  auto* img1 = To<Element>(GetDocument().getElementById(AtomicString("img1")));
-  auto* img2 = To<Element>(GetDocument().getElementById(AtomicString("img2")));
+  auto* wrapper = GetElementById("w");
+  auto* img1 = To<Element>(GetElementById("img1"));
+  auto* img2 = To<Element>(GetElementById("img2"));
   ASSERT_TRUE(wrapper && img1 && img2);
 
   // Cover only img1 initially: (wrapper, 0, wrapper, 1).
@@ -747,8 +747,8 @@ TEST_F(HighlightRegistryTest, DetachDoesNotCrash) {
   // Detaching a tracked replaced element must not crash the validator.
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<div id='w'><img id='img' style='width:50px;height:50px;'></div>");
-  auto* wrapper = GetDocument().getElementById(AtomicString("w"));
-  auto* img = To<Element>(GetDocument().getElementById(AtomicString("img")));
+  auto* wrapper = GetElementById("w");
+  auto* img = To<Element>(GetElementById("img"));
   ASSERT_TRUE(wrapper && img);
 
   AtomicString name("h");
@@ -776,8 +776,8 @@ TEST_F(HighlightRegistryTest, ReplaceWithNewElement) {
   // out and the new one joined.
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<div id='w'><img id='img1' style='width:50px;height:50px;'></div>");
-  auto* wrapper = GetDocument().getElementById(AtomicString("w"));
-  auto* img1 = To<Element>(GetDocument().getElementById(AtomicString("img1")));
+  auto* wrapper = GetElementById("w");
+  auto* img1 = To<Element>(GetElementById("img1"));
   ASSERT_TRUE(wrapper && img1);
 
   AtomicString name("h");
@@ -807,8 +807,8 @@ TEST_F(HighlightRegistryTest, DisplayNoneDropsActiveSet) {
   // from the active set.
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<div id='w'><img id='img' style='width:50px;height:50px;'></div>");
-  auto* wrapper = GetDocument().getElementById(AtomicString("w"));
-  auto* img = To<Element>(GetDocument().getElementById(AtomicString("img")));
+  auto* wrapper = GetElementById("w");
+  auto* img = To<Element>(GetElementById("img"));
   ASSERT_TRUE(wrapper && img);
 
   AtomicString name("h");
@@ -839,8 +839,8 @@ TEST_F(HighlightRegistryTest,
   // set.
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<div id='w'><img id='img' style='width:50px;height:50px;'></div>");
-  auto* wrapper = GetDocument().getElementById(AtomicString("w"));
-  auto* img = To<Element>(GetDocument().getElementById(AtomicString("img")));
+  auto* wrapper = GetElementById("w");
+  auto* img = To<Element>(GetElementById("img"));
   ASSERT_TRUE(wrapper && img);
 
   AtomicString name("h");
@@ -882,12 +882,12 @@ TEST_F(HighlightRegistryTest, TracksSlottedImage) {
   // abstract-range endpoint model have diverged.
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<div id='host'><img id='img' style='width:50px;height:50px;'></div>");
-  Element* host = GetDocument().getElementById(AtomicString("host"));
+  Element* host = GetElementById("host");
   ASSERT_TRUE(host);
   ShadowRoot& shadow_root =
       host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
   shadow_root.SetInnerHTMLWithoutTrustedTypes("<slot></slot>");
-  auto* img = To<Element>(GetDocument().getElementById(AtomicString("img")));
+  auto* img = To<Element>(GetElementById("img"));
   ASSERT_TRUE(img);
 
   AtomicString name("h");
@@ -904,7 +904,7 @@ TEST_F(HighlightRegistryTest, TracksSlottedImage) {
 TEST_F(HighlightRegistryFrameTest, AdoptedStaticRangePaintsInCurrentDocument) {
   SetBodyInnerHTML("<iframe></iframe><span id='span'>adopted highlight</span>");
   SetChildFrameHTML("");
-  auto* span = GetDocument().getElementById(AtomicString("span"));
+  auto* span = GetElementById("span");
   auto* text = To<Text>(span->firstChild());
   auto* static_range =
       MakeGarbageCollected<StaticRange>(text, 0u, text, text->length());
@@ -931,11 +931,11 @@ TEST_F(HighlightRegistryFrameTest, MutateRegistryOfDetachedWindowDoesNotCrash) {
 
   // Detach the child frame without ever creating its HighlightRegistry, so the
   // registry below is created for a window that no longer has a frame.
-  GetDocument().getElementById(AtomicString("f"))->remove();
+  GetElementById("f")->remove();
   UpdateAllLifecyclePhasesForTest();
   ASSERT_FALSE(child_window->GetFrame());
 
-  auto* span = GetDocument().getElementById(AtomicString("span"));
+  auto* span = GetElementById("span");
   auto* text = To<Text>(span->firstChild());
   HeapVector<Member<AbstractRange>> ranges;
   ranges.push_back(
@@ -1054,7 +1054,7 @@ TEST_F(HighlightsFromPointTest, HighlightsFromPointShadowRoot) {
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <div id="host"></div>
   )HTML");
-  Element* host = GetDocument().getElementById(AtomicString("host"));
+  Element* host = GetElementById("host");
   ShadowRoot& shadow_root =
       host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
   shadow_root.SetInnerHTMLWithoutTrustedTypes("<div>aaaa</div>");
@@ -1101,6 +1101,111 @@ TEST_F(HighlightsFromPointTest, HighlightsFromPointShadowRoot) {
   EXPECT_EQ(highlight_hit_results_at_point.size(), 0u);
   highlight_hit_results_at_point = registry->highlightsFromPoint(x, y, nullptr);
   EXPECT_EQ(highlight_hit_results_at_point.size(), 0u);
+}
+
+namespace {
+
+// A range that, once armed, adds ranges to a Highlight the first time its end
+// offset is read. highlightsFromPoint() reads the end offset while resolving a
+// range's geometry, so this grows the range set at a point where the registry
+// is in the middle of iterating it, as would happen if script ran there.
+class HighlightGrowingRange final : public NodeRange {
+ public:
+  HighlightGrowingRange(Text* text, unsigned start_offset, unsigned end_offset)
+      : text_(text), start_offset_(start_offset), end_offset_(end_offset) {}
+
+  void GrowHighlightOnNextEndOffset(Highlight* highlight, unsigned count) {
+    highlight_to_grow_ = highlight;
+    count_to_add_ = count;
+  }
+  bool did_grow() const { return did_grow_; }
+
+  Node* startContainer() const override { return text_.Get(); }
+  unsigned startOffset() const override { return start_offset_; }
+  Node* endContainer() const override { return text_.Get(); }
+  unsigned endOffset() const override {
+    MaybeGrowHighlight();
+    return end_offset_;
+  }
+  bool collapsed() const override { return start_offset_ == end_offset_; }
+  bool IsStaticRange() const override { return false; }
+  Document& OwnerDocument() const override { return text_->GetDocument(); }
+
+  void Trace(Visitor* visitor) const override {
+    visitor->Trace(text_);
+    visitor->Trace(highlight_to_grow_);
+    ScriptWrappable::Trace(visitor);
+  }
+
+ private:
+  void MaybeGrowHighlight() const {
+    if (!highlight_to_grow_ || did_grow_) {
+      return;
+    }
+    did_grow_ = true;
+    for (unsigned i = 0; i < count_to_add_; ++i) {
+      highlight_to_grow_->addForBinding(
+          nullptr,
+          MakeGarbageCollected<Range>(text_->GetDocument(), text_.Get(), 0,
+                                      text_.Get(), 0),
+          ASSERT_NO_EXCEPTION);
+    }
+  }
+
+  Member<Text> text_;
+  unsigned start_offset_;
+  unsigned end_offset_;
+  Member<Highlight> highlight_to_grow_;
+  unsigned count_to_add_ = 0;
+  mutable bool did_grow_ = false;
+};
+
+}  // namespace
+
+// Regression test for crbug.com/576984708. Growing a Highlight's range set
+// reallocates its backing store, so highlightsFromPoint() must not hold on to
+// a reference to one of its entries while it resolves that range's geometry.
+TEST_F(HighlightsFromPointTest, RangeSetGrowsWhileResolvingRangeGeometry) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes("1234");
+  auto* text = To<Text>(GetDocument().body()->firstChild());
+
+  auto* growing_range = MakeGarbageCollected<HighlightGrowingRange>(text, 0, 4);
+  auto* trailing_range =
+      MakeGarbageCollected<Range>(GetDocument(), text, 1, text, 3);
+  HeapVector<Member<AbstractRange>> range_vector;
+  range_vector.push_back(growing_range);
+  range_vector.push_back(trailing_range);
+  auto* highlight = Highlight::Create(range_vector);
+  HighlightRegistry* registry =
+      HighlightRegistry::From(*GetDocument().domWindow());
+  registry->SetForTesting(AtomicString("TestHighlight"), highlight);
+  UpdateAllLifecyclePhasesForTest();
+
+  // The center of |trailing_range|, which is inside both ranges.
+  gfx::Rect rect =
+      ComputeTextRect(EphemeralRange(Position(text, 1), Position(text, 3)));
+  const float x = rect.CenterPoint().x() / GetDocument().DevicePixelRatio();
+  const float y = rect.CenterPoint().y() / GetDocument().DevicePixelRatio();
+
+  const Member<AbstractRange>* const first_entry =
+      &*highlight->GetRanges().begin();
+  constexpr unsigned kRangesToAdd = 64;
+  growing_range->GrowHighlightOnNextEndOffset(highlight, kRangesToAdd);
+
+  HeapVector<Member<HighlightHitResult>> hit_results =
+      registry->highlightsFromPoint(x, y, nullptr);
+
+  ASSERT_TRUE(growing_range->did_grow());
+  EXPECT_EQ(highlight->size(), 2u + kRangesToAdd);
+  // The test is only meaningful if growing the set moved its backing store,
+  // which is what leaves references to its previous entries dangling.
+  EXPECT_NE(first_entry, &*highlight->GetRanges().begin());
+
+  ASSERT_EQ(hit_results.size(), 1u);
+  EXPECT_EQ(hit_results[0]->highlight(), highlight);
+  ASSERT_EQ(hit_results[0]->ranges().size(), 2u);
+  EXPECT_EQ(hit_results[0]->ranges()[0].Get(), growing_range);
+  EXPECT_EQ(hit_results[0]->ranges()[1].Get(), trailing_range);
 }
 
 TEST_F(HighlightRegistryTest, LiveIterationBasic) {

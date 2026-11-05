@@ -20,7 +20,7 @@
 #include "ui/views/metadata/view_factory.h"
 
 class CommandUpdater;
-class InitialWebUIWindowMetricsManager;
+class InitialWebUIMetricsDispatcher;
 class Profile;
 class WaapUIMetricsRecorder;
 
@@ -38,9 +38,12 @@ class ReloadButton : public ToolbarButton, public ReloadControl {
   METADATA_HEADER(ReloadButton, ToolbarButton)
 
  public:
+  // `profile` is null when the button is hosted outside a browser window, for
+  // example in the ChromeOS login screen captive portal dialog. No WaaP UI
+  // metrics are recorded in that case.
   ReloadButton(Profile* profile,
                CommandUpdater* command_updater,
-               InitialWebUIWindowMetricsManager* window_metrics_manager);
+               InitialWebUIMetricsDispatcher* metrics_dispatcher);
   ReloadButton(const ReloadButton&) = delete;
   ReloadButton& operator=(const ReloadButton&) = delete;
   ~ReloadButton() override;
@@ -63,9 +66,6 @@ class ReloadButton : public ToolbarButton, public ReloadControl {
   void PaintButtonContents(gfx::Canvas* canvas) override;
 
   // ui::SimpleMenuModel::Delegate:
-  bool IsCommandIdChecked(int command_id) const override;
-  bool IsCommandIdEnabled(int command_id) const override;
-  bool IsCommandIdVisible(int command_id) const override;
   bool GetAcceleratorForCommandId(int command_id,
                                   ui::Accelerator* accelerator) const override;
 
@@ -89,6 +89,7 @@ class ReloadButton : public ToolbarButton, public ReloadControl {
  private:
   friend class ReloadButtonMetricsTest;
   friend class ReloadButtonTestBase;
+  friend class ReloadButtonWindowMetricsTest;
   FRIEND_TEST_ALL_PREFIXES(ReloadButtonTest, TooltipText);
   FRIEND_TEST_ALL_PREFIXES(ReloadButtonTest, TooltipTextAccessibility);
 
@@ -110,8 +111,7 @@ class ReloadButton : public ToolbarButton, public ReloadControl {
   // Timer to delay switching between reload and stop states.
   base::OneShotTimer mode_switch_timer_;
 
-  // This can't be null. But it may not record anything if the feature is
-  // disabled or if profile is missing.
+  // Null when the button has no profile, i.e. it is not in a browser window.
   const std::unique_ptr<WaapUIMetricsRecorder> metrics_recorder_;
 
   // This may be NULL when testing.
@@ -147,9 +147,9 @@ class ReloadButton : public ToolbarButton, public ReloadControl {
   // test code can tell whether we did so (as there may be no |browser_|).
   int testing_reload_count_ = 0;
 
-  // The initial WebUI metrics manager for the window this button is in.
+  // The initial WebUI metrics dispatcher for the window this button is in.
   // Not owned and might be null.
-  const raw_ptr<InitialWebUIWindowMetricsManager> window_metrics_manager_;
+  const raw_ptr<InitialWebUIMetricsDispatcher> metrics_dispatcher_;
 
   // Must be the last member.
   base::WeakPtrFactory<ReloadButton> weak_ptr_factory_{this};

@@ -35,7 +35,7 @@ import {getHtml} from './detail_view.html.js';
 import type {ItemDelegate} from './item.js';
 import {DummyItemDelegate} from './item.js';
 import {ItemMixin} from './item_mixin.js';
-import {canShowOpenReviewPageLink, computeInspectableViewLabel, convertSafetyCheckReason, createDummyExtensionInfo, EnableControl, getEnableControl, getEnableToggleAriaLabel, getItemSource, getItemSourceString, isEnabled, sortViews, userCanChangeEnablement} from './item_util.js';
+import {computeInspectableViewLabel, convertSafetyCheckReason, createDummyExtensionInfo, EnableControl, getEnableControl, getEnableToggleAriaLabel, getItemSource, getItemSourceString, isEnabled, sortViews, userCanChangeEnablement} from './item_util.js';
 import {SAFETY_HUB_EXTENSION_KEPT_HISTOGRAM_NAME, SAFETY_HUB_EXTENSION_REMOVED_HISTOGRAM_NAME, SAFETY_HUB_WARNING_REASON_MAX_SIZE, UPLOAD_EXTENSION_TO_ACCOUNT_DETAILS_VIEW_PAGE_HISTOGRAM_NAME} from './metrics_util.js';
 import type {Mv2DeprecationDelegate} from './mv2_deprecation_delegate.js';
 import {navigation, Page} from './navigation_helper.js';
@@ -47,7 +47,6 @@ class DummyDetailViewDelegate extends DummyItemDelegate {
 
 export interface ExtensionsDetailViewElement {
   $: {
-    actionMenu: CrActionMenuElement,
     closeButton: HTMLElement,
     description: HTMLElement,
     enableToggle: CrToggleElement,
@@ -55,7 +54,6 @@ export interface ExtensionsDetailViewElement {
     extensionsOptions: CrLinkRowElement,
     parentDisabledPermissionsToolTip: CrTooltipIconElement,
     rateLink: CrLinkRowElement,
-    safetyCheckWarningContainer: HTMLElement,
     source: HTMLElement,
   };
 }
@@ -112,6 +110,7 @@ export class ExtensionsDetailViewElement extends
       /** Whether the extensions safety check warning is shown. */
       showSafetyCheck_: {type: Boolean},
       webuiRoundedIconsEnabled_: {type: Boolean},
+      isolatedModeEnabled_: {type: Boolean},
     };
   }
 
@@ -129,6 +128,8 @@ export class ExtensionsDetailViewElement extends
   protected accessor sortedViews_: chrome.developerPrivate.ExtensionView[] = [];
   protected accessor webuiRoundedIconsEnabled_: boolean =
       loadTimeData.getBoolean('webuiRoundedIconsEnabled');
+  protected accessor isolatedModeEnabled_: boolean =
+      loadTimeData.getBoolean('isolatedModeEnabled');
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -274,6 +275,18 @@ export class ExtensionsDetailViewElement extends
 
   protected shouldShowIncognitoOption_(): boolean {
     return this.data.incognitoAccess.isEnabled && this.incognitoAvailable;
+  }
+
+  protected getItemAllowIncognitoString_(): string {
+    return this.i18n(
+        this.isolatedModeEnabled_ ? 'itemAllowIsolatedMode' :
+                                    'itemAllowIncognito');
+  }
+
+  protected getIncognitoInfoWarningString_(): string {
+    return this.i18n(
+        this.isolatedModeEnabled_ ? 'isolatedModeInfoWarning' :
+                                    'incognitoInfoWarning');
   }
 
   protected showUserScriptSectionToggle_(): boolean {
@@ -423,7 +436,7 @@ export class ExtensionsDetailViewElement extends
   }
 
   protected showOpenReviewPageLink_(): boolean {
-    return canShowOpenReviewPageLink(this.data);
+    return this.data.canShowReviewPrompt;
   }
 
   protected onOpenReviewPageClick_() {
@@ -575,7 +588,7 @@ export class ExtensionsDetailViewElement extends
 
   /** Opens the action menu for the extension. */
   protected onActionMenuButtonClick_(event: MouseEvent): void {
-    this.$.actionMenu.showAt(
+    this.shadowRoot.querySelector<CrActionMenuElement>('#actionMenu')!.showAt(
         event.target as HTMLElement,
         {anchorAlignmentY: AnchorAlignment.AFTER_END});
   }
@@ -588,7 +601,7 @@ export class ExtensionsDetailViewElement extends
     chrome.metricsPrivate.recordUserAction(
         'Extensions.Mv2Deprecation.Unsupported.FindAlternativeForExtension.DetailPage');
 
-    this.$.actionMenu.close();
+    this.shadowRoot.querySelector<CrActionMenuElement>('#actionMenu')!.close();
 
     const recommendationsUrl: string|undefined = this.data.recommendationsUrl;
     assert(!!recommendationsUrl);

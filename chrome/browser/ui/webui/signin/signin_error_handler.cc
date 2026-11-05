@@ -15,7 +15,7 @@
 
 SigninErrorHandler::SigninErrorHandler(BrowserWindowInterface* browser)
     : browser_(browser) {
-  DCHECK(browser_);
+  CHECK(browser_, base::NotFatalUntil::M162);
   browser_collection_observation_.Observe(
       GlobalBrowserCollection::GetInstance());
 }
@@ -92,5 +92,5 @@ void SigninErrorHandler::CloseDialog() {
 }
 
 void SigninErrorHandler::CloseBrowserModalSigninDialog() {
-  browser_->GetFeatures().signin_view_controller()->CloseModalSignin();
+  SigninViewController::From(browser_)->CloseModalSignin();
 }

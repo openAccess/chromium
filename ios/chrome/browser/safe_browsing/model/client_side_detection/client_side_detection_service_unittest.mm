@@ -4,18 +4,21 @@
 
 #import "ios/chrome/browser/safe_browsing/model/client_side_detection/client_side_detection_service.h"
 
+#import <utility>
 #import <vector>
 
+#import "base/callback_list.h"
 #import "base/files/file_path.h"
 #import "base/functional/bind.h"
 #import "base/observer_list.h"
 #import "base/path_service.h"
-#import "base/run_loop.h"
-#import "base/scoped_observation.h"
 #import "base/strings/strcat.h"
+#import "base/task/thread_pool/thread_pool_instance.h"
 #import "base/test/bind.h"
+#import "base/test/mock_callback.h"
 #import "base/test/scoped_feature_list.h"
 #import "base/test/test_future.h"
+#import "base/threading/thread_restrictions.h"
 #import "components/optimization_guide/core/delivery/model_info.h"
 #import "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
 #import "components/prefs/pref_service.h"
@@ -122,30 +125,19 @@ class ClientSidePhishingModelObserverTracker
       model_observers_;
 };
 
-class ScorerWaiter : public ClientSideDetectionService::Observer {
+class ScorerWaiter {
  public:
   explicit ScorerWaiter(ClientSideDetectionService* service) {
-    scoped_observation_.Observe(service);
+    subscription_ = service->RegisterCallbackForScorerUpdates(
+        future_.GetRepeatingCallback());
   }
-  ~ScorerWaiter() override = default;
+  ~ScorerWaiter() = default;
 
   void Wait() { ASSERT_TRUE(future_.Wait()); }
 
-  // ClientSideDetectionService::Observer:
-  void OnScorerChanged() override { future_.GetCallback().Run(); }
-
  private:
   base::test::TestFuture<void> future_;
-  base::ScopedObservation<ClientSideDetectionService,
-                          ClientSideDetectionService::Observer>
-      scoped_observation_{this};
-};
-
-// Mock observer to verify when the ClientSideDetectionService notifies its
-// observers about changes to the active Scorer instance.
-class MockObserver : public ClientSideDetectionService::Observer {
- public:
-  MOCK_METHOD(void, OnScorerChanged, (), (override));
+  base::CallbackListSubscription subscription_;
 };
 
 class ClientSideDetectionServiceTest : public PlatformTest {
@@ -226,6 +218,10 @@ class ClientSideDetectionServiceTest : public PlatformTest {
     service->OnScorerCreated(generation_id, std::move(scorer));
   }
 
+  void TriggerModelUpdatedForTesting(ClientSideDetectionService* service) {
+    service->OnModelUpdatedInternal();
+  }
+
   int GetCurrentModelGeneration(ClientSideDetectionService* service) {
     return service->current_model_generation_;
   }
@@ -236,10 +232,23 @@ class ClientSideDetectionServiceTest : public PlatformTest {
   }
 
   void FlushCurrentSequence() {
-    base::RunLoop run_loop;
+    base::test::TestFuture<void> future;
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, run_loop.QuitClosure());
-    run_loop.Run();
+        FROM_HERE, future.GetCallback());
+    ASSERT_TRUE(future.Wait());
+  }
+
+  // Flushes `ThreadPool` tasks and their UI-thread replies.
+  void FlushThreadPoolAndCurrentSequence() {
+    // Two passes are needed: the first waits for the initial background task
+    // and its UI-thread reply (which posts a background cleanup task), and the
+    // second waits for that background cleanup task to complete.
+    for (int i = 0; i < 2; ++i) {
+      base::test::TestFuture<void> future;
+      base::ThreadPoolInstance::Get()->FlushAsyncForTesting(
+          future.GetSequenceBoundCallback());
+      ASSERT_TRUE(future.Wait());
+    }
   }
 
   web::WebTaskEnvironment task_environment_;
@@ -480,21 +489,19 @@ TEST_F(ClientSideDetectionServiceTest, StaleTasksAreDiscarded) {
 
   int current_gen = GetCurrentModelGeneration(csd_service_.get());
 
-  MockObserver observer;
-  base::ScopedObservation<ClientSideDetectionService,
-                          ClientSideDetectionService::Observer>
-      scoped_observation(&observer);
-  scoped_observation.Observe(csd_service_.get());
+  base::MockRepeatingClosure scorer_changed;
+  base::CallbackListSubscription subscription =
+      csd_service_->RegisterCallbackForScorerUpdates(scorer_changed.Get());
 
   // 2. Call with stale ID. Should be discarded.
-  EXPECT_CALL(observer, OnScorerChanged()).Times(0);
+  EXPECT_CALL(scorer_changed, Run()).Times(0);
   OnScorerCreatedWithIdForTesting(csd_service_.get(), current_gen - 1, nullptr);
 
   // Scorer should NOT have changed (still non-null).
   EXPECT_THAT(csd_service_->GetScorer(), testing::NotNull());
 
   // 3. Call with current ID. Should be accepted.
-  EXPECT_CALL(observer, OnScorerChanged()).Times(1);
+  EXPECT_CALL(scorer_changed, Run()).Times(1);
   OnScorerCreatedWithIdForTesting(csd_service_.get(), current_gen, nullptr);
 
   // Scorer should have changed (now null because we passed nullptr).
@@ -615,12 +622,12 @@ TEST_F(ClientSideDetectionServiceTest, NoImageEmbeddingMatch) {
 
   // Setup TargetEmbeddings.
   constexpr float threshold = 0.95f;
-  tflite::task::vision::FeatureVector target_fv;
+  std::vector<float> target_embedding;
   for (int i = 0; i < 64; ++i) {
-    target_fv.add_value_float(i / 100.0);
+    target_embedding.push_back(i / 100.0);
   }
   std::vector<TargetEmbedding> test_targets;
-  test_targets.push_back(TargetEmbedding(target_fv, threshold));
+  test_targets.emplace_back(std::move(target_embedding), threshold);
   csd_service_->SetTargetImageEmbeddingsForTesting(std::move(test_targets));
 
   // ClientPhishingRequest's image embedding doesn't meet threshold.
@@ -651,12 +658,9 @@ TEST_F(ClientSideDetectionServiceTest, ImageEmbeddingMatch) {
 
   // Setup TargetEmbeddings.
   constexpr float threshold = 0.95f;
-  tflite::task::vision::FeatureVector target_fv;
-  for (int i = 0; i < 64; ++i) {
-    target_fv.add_value_float(0.1);
-  }
+  std::vector<float> target_embedding(64, 0.1f);
   std::vector<TargetEmbedding> test_targets;
-  test_targets.push_back(TargetEmbedding(target_fv, threshold));
+  test_targets.emplace_back(std::move(target_embedding), threshold);
   csd_service_->SetTargetImageEmbeddingsForTesting(std::move(test_targets));
 
   // Add an image_feature_embedding that will match.
@@ -683,12 +687,12 @@ TEST_F(ClientSideDetectionServiceTest, ImageEmbeddingSkipped_AlreadyPhishing) {
 
   // Setup TargetEmbeddings.
   constexpr float threshold = 0.95f;
-  tflite::task::vision::FeatureVector target_fv;
+  std::vector<float> target_embedding;
   for (int i = 0; i < 64; ++i) {
-    target_fv.add_value_float(i / 100.0);
+    target_embedding.push_back(i / 100.0);
   }
   std::vector<TargetEmbedding> test_targets;
-  test_targets.push_back(TargetEmbedding(target_fv, threshold));
+  test_targets.emplace_back(std::move(target_embedding), threshold);
   csd_service_->SetTargetImageEmbeddingsForTesting(std::move(test_targets));
 
   ClientPhishingRequest request;
@@ -766,24 +770,76 @@ TEST_F(ClientSideDetectionServiceTest,
   // Scorer should be cleared by the pref change.
   ASSERT_THAT(csd_service_->GetScorer(), testing::IsNull());
 
-  // Set up a mock observer to listen for scorer changes.
-  MockObserver observer;
-  base::ScopedObservation<ClientSideDetectionService,
-                          ClientSideDetectionService::Observer>
-      scoped_observation(&observer);
-  scoped_observation.Observe(csd_service_.get());
+  // Set up a mock callback to listen for scorer changes.
+  base::MockRepeatingClosure scorer_changed;
+  base::CallbackListSubscription subscription =
+      csd_service_->RegisterCallbackForScorerUpdates(scorer_changed.Get());
 
-  // Expect OnScorerChanged to NOT be called.
-  EXPECT_CALL(observer, OnScorerChanged()).Times(0);
+  // Expect the callback to NOT be called.
+  EXPECT_CALL(scorer_changed, Run()).Times(0);
 
   // 3. Trigger a null model update.
   // If still subscribed, this would trigger OnModelUpdated which notifies
-  // observers. If unsubscribed, observers should NOT be notified.
+  // subscribers. If unsubscribed, subscribers should NOT be notified.
   model_observer_tracker_->NotifyModelFileUpdateNull();
 
   // Flush to process any async callbacks if they were triggered (they shouldn't
   // be).
   FlushCurrentSequence();
+}
+
+// Tests that when `ClientSideDetectionService` is destroyed while blocking is
+// disallowed on the UI thread, the active `Scorer` (holding file handles) is
+// destroyed on a background thread without triggering assertion failures.
+TEST_F(ClientSideDetectionServiceTest,
+       ScorerDestroyedOnBackgroundThreadOnShutdown) {
+  profile_->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled, true);
+  UpdateModel(model_observer_tracker_.get());
+  ASSERT_THAT(csd_service_->GetScorer(), testing::NotNull());
+
+  // Disallow blocking on the UI thread during shutdown.
+  base::ScopedDisallowBlocking disallow_blocking;
+  csd_service_.reset();
+}
+
+// Test that when `ClientSideDetectionService` is destroyed before the UI-thread
+// reply for background model loading in `ClientSidePhishingModel` runs, loaded
+// model files are safely closed on the background task runner without
+// triggering `base::ScopedDisallowBlocking` assertion failures on the UI
+// thread.
+TEST_F(ClientSideDetectionServiceTest,
+       ModelFilesClosedOnBackgroundThreadWhenServiceDestroyedDuringModelLoad) {
+  profile_->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled, true);
+  model_observer_tracker_->NotifyModelFileUpdate(GetModelFilePath(),
+                                                 {GetAdditionalFilesPath()});
+
+  // Destroy the service before the UI-thread model load reply can run.
+  csd_service_.reset();
+
+  // Draining remaining tasks must not trigger blocking calls on the UI thread.
+  base::ScopedDisallowBlocking disallow_blocking;
+  FlushThreadPoolAndCurrentSequence();
+}
+
+// Test that when `ClientSideDetectionService` is destroyed before the UI-thread
+// reply for background `Scorer` creation runs, the `Scorer` is destroyed on a
+// background thread without triggering `base::ScopedDisallowBlocking` assertion
+// failures on the UI thread.
+TEST_F(
+    ClientSideDetectionServiceTest,
+    ScorerDestroyedOnBackgroundThreadWhenServiceDestroyedDuringScorerCreation) {
+  profile_->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled, true);
+  UpdateModel(model_observer_tracker_.get());
+  ASSERT_THAT(csd_service_->GetScorer(), testing::NotNull());
+
+  // Directly trigger `OnModelUpdated` so `CreateScorerOnBackgroundThread` is
+  // posted to the thread pool, then destroy the service before the UI-thread
+  // reply can run.
+  TriggerModelUpdatedForTesting(csd_service_.get());
+  csd_service_.reset();
+
+  base::ScopedDisallowBlocking disallow_blocking;
+  FlushThreadPoolAndCurrentSequence();
 }
 
 }  // namespace safe_browsing

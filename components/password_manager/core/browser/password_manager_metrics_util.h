@@ -22,6 +22,7 @@
 #include "components/password_manager/core/browser/features/password_manager_features_util.h"
 #include "components/password_manager/core/browser/password_store/actionable_error.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
+#include "components/password_manager/core/common/browser_assisted_login_type.h"
 #include "components/password_manager/core/common/credential_manager_types.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
 
@@ -97,13 +98,17 @@ enum UIDismissalReason {
   CLICKED_GOT_IT = 14,
   CLICKED_ABOUT_PASSWORD_CHANGE = 15,
   CLICKED_NOT_NOW = 16,
+  // The user clicked the button that starts resolving the error blocking
+  // saving (e.g. "Continue" for a trusted vault error).
+  CLICKED_RESOLVE_ERROR = 17,
   NUM_UI_RESPONSES,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/password/enums.xml:PasswordManagerUIDismissalReason)
 
 // Enum representing the different leak detection dialogs shown to the user.
-// Corresponds to LeakDetectionDialogType suffix in histogram_suffixes_list.xml
-// and PasswordLeakDetectionDialogType in enums.xml.
+// Corresponds to the DialogType token in
+// tools/metrics/histograms/metadata/password/histograms.xml and
+// PasswordLeakDetectionDialogType in enums.xml.
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 // In case of adding a new type, NEXT VALUE: 4.
@@ -418,10 +423,13 @@ enum class SaveWithTrustedVaultErrorOutcome {
   kDeviceLockCanceled = 3,
   kNewStoreError = 4,
   kNeverForThisSite = 5,
-  // TODO(crbug.com/543028154): Add a value for key retrieval failed once the
-  // failure signal is available.
-  // TODO(crbug.com/543028154): Add a value for tab destruction.
-  kMaxValue = kNeverForThisSite,
+  kKeyRetrievalFailedOrCanceled = 6,
+  kTabDestroyed = 7,
+  // The pending save after starting trusted vault error resolution was
+  // abandoned before the error was resolved (e.g. primary-page navigation, new
+  // password submission, or account/sync state change).
+  kErrorResolutionAbandoned = 8,
+  kMaxValue = kErrorResolutionAbandoned,
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/password/enums.xml:SaveWithTrustedVaultErrorOutcome)
 
@@ -645,35 +653,6 @@ enum class PasswordDropdownDuplicateCredentialsType {
   kMaxValue = kDuplicatePasswordsAndPasskeys,
 };
 
-// This enum describes the type of logins assisted by the browser. e.g. via
-// passwords, passkeys or federation.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-//
-// LINT.IfChange(BrowserAssistedLoginType)
-// GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.password_manager
-enum class BrowserAssistedLoginType {
-  kFedCmPassive = 0,
-  kFedCmActive = 1,
-  kNonFedCmOAuth = 2,
-  kUnknown = 3,
-  kPasswordFullyAssisted = 4,
-  kPasswordPartiallyAssisted = 5,
-  kPasswordManuallyEntered = 6,
-  kPasswordNeitherManuallyEnteredNorGPMAssisted = 7,
-  kPasskeyStoredInGPM = 8,
-  kPasskeyStoredInWindowsHello = 9,
-  kPasskeyStoredInICloudKeychain = 10,
-  kPasskeyStoredInChromeProfile = 11,
-  kPasskeyHybrid = 12,
-  kPasskeySecurityKey = 13,
-  kPasskeyHybridOrSecurityKey = 14,
-  kPasskeyUnknown = 15,
-
-  kMaxValue = kPasskeyUnknown,
-};
-// LINT.ThenChange(//tools/metrics/histograms/metadata/password/enums.xml:BrowserAssistedLoginType)
-
 std::string_view GetPasswordAccountStorageUsageLevelHistogramSuffix(
     password_manager::features_util::PasswordAccountStorageUsageLevel
         usage_level);
@@ -734,7 +713,7 @@ void LogSaveUIDismissalReason(
     std::optional<ActionableError> saving_blocked_error);
 
 // Log the outcome of saving a password when saving is blocked by a trusted
-// vault error (logged on Android only).
+// vault error (logged on Android and Desktop).
 void LogSaveWithTrustedVaultErrorOutcome(
     SaveWithTrustedVaultErrorOutcome outcome);
 

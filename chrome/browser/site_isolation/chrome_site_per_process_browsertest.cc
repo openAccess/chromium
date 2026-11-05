@@ -36,6 +36,7 @@
 #include "components/javascript_dialogs/app_modal_dialog_view.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
@@ -57,6 +58,8 @@
 #include "pdf/buildflags.h"
 #include "third_party/blink/public/common/input/web_gesture_event.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/display/display_switches.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/gfx/geometry/point.h"
@@ -452,9 +455,136 @@ IN_PROC_BROWSER_TEST_F(ChromeSitePerProcessOopifPDFTest,
   EXPECT_TRUE(pdf_frame->GetProcess()->IsPdf());
 
   // When accessed from the PDF document, both localStorage and sessionStorage
-  // should be null. These accesses shouldn't lead to a renderer kill.
-  EXPECT_EQ(base::Value(), content::EvalJs(pdf_frame, "window.localStorage"));
-  EXPECT_EQ(base::Value(), content::EvalJs(pdf_frame, "window.sessionStorage"));
+  // should fail gracefully. These accesses shouldn't lead to a renderer kill.
+  if (base::FeatureList::IsEnabled(features::kPdfOpaqueOrigin)) {
+    // With an opaque origin, storage access throws a SecurityError, which is
+    // the standard behavior for opaque origins (and no longer requires the
+    // PDF-specific `IsDomStorageDisabled()` hack in the renderer).
+    auto try_storage = [](const char* property) {
+      return base::StringPrintf(
+          "(() => { try { window.%s; return 'no error'; }"
+          " catch (e) { return e.name; } })();",
+          property);
+    };
+    EXPECT_EQ("SecurityError",
+              content::EvalJs(pdf_frame, try_storage("localStorage")));
+    EXPECT_EQ("SecurityError",
+              content::EvalJs(pdf_frame, try_storage("sessionStorage")));
+  } else {
+    // Otherwise, both interfaces are null, via `IsDomStorageDisabled()`.
+    EXPECT_EQ(base::Value(), content::EvalJs(pdf_frame, "window.localStorage"));
+    EXPECT_EQ(base::Value(),
+              content::EvalJs(pdf_frame, "window.sessionStorage"));
+  }
+  EXPECT_TRUE(pdf_frame->IsRenderFrameLive());
+}
+
+// Check that navigating to a PDF and then trying to create a dedicated worker
+// in the context of the PDF document fails gracefully and doesn't lead to a
+// renderer kill. PDF documents don't need dedicated workers, but the creation
+// could still be attempted via DevTools. See https://crbug.com/553118313.
+IN_PROC_BROWSER_TEST_F(ChromeSitePerProcessOopifPDFTest,
+                       DedicatedWorkersInPDFDocument) {
+  GURL pdf_url = embedded_test_server()->GetURL("/pdf/test.pdf");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), pdf_url));
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  EXPECT_EQ(pdf_url, web_contents->GetLastCommittedURL());
+  ASSERT_TRUE(GetTestMimeHandlerStreamManager()->WaitUntilPdfLoaded(
+      web_contents->GetPrimaryMainFrame()));
+
+  // The PDF document should be in the grandchild frame, embedded in the PDF
+  // viewer extension frame.
+  content::RenderFrameHost* pdf_extension_frame =
+      content::ChildFrameAt(web_contents->GetPrimaryMainFrame(), 0);
+  ASSERT_TRUE(pdf_extension_frame);
+  content::RenderFrameHost* pdf_frame =
+      content::ChildFrameAt(pdf_extension_frame, 0);
+  ASSERT_TRUE(pdf_frame);
+  EXPECT_TRUE(pdf_frame->GetProcess()->IsPdf());
+
+  // Attempting to create a dedicated worker from the PDF frame should throw
+  // a SecurityError DOMException and not lead to a renderer kill.
+  EXPECT_EQ("SecurityError",
+            content::EvalJs(pdf_frame,
+                            "(() => {"
+                            "  try {"
+                            "    new Worker('data:text/javascript,');"
+                            "    return 'Success';"
+                            "  } catch (e) {"
+                            "    return e.name;"
+                            "  }"
+                            "})()"));
+  EXPECT_TRUE(pdf_frame->IsRenderFrameLive());
+}
+
+// Check that navigating to a PDF and then trying to create a blob URL in the
+// context of the PDF document fails gracefully and doesn't lead to a renderer
+// kill. PDF documents don't create blob URLs directly, but the access could
+// still happen via DevTools. See https://crbug.com/540051167 and
+// https://crbug.com/550946804.
+IN_PROC_BROWSER_TEST_F(ChromeSitePerProcessOopifPDFTest,
+                       CreateBlobUrlInPDFDocument) {
+  GURL pdf_url = embedded_test_server()->GetURL("/pdf/test.pdf");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), pdf_url));
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  EXPECT_EQ(pdf_url, web_contents->GetLastCommittedURL());
+  ASSERT_TRUE(GetTestMimeHandlerStreamManager()->WaitUntilPdfLoaded(
+      web_contents->GetPrimaryMainFrame()));
+
+  // The PDF document should be in the grandchild frame, embedded in the PDF
+  // viewer extension frame.
+  content::RenderFrameHost* pdf_extension_frame =
+      content::ChildFrameAt(web_contents->GetPrimaryMainFrame(), 0);
+  ASSERT_TRUE(pdf_extension_frame);
+  content::RenderFrameHost* pdf_frame =
+      content::ChildFrameAt(pdf_extension_frame, 0);
+  ASSERT_TRUE(pdf_frame);
+  EXPECT_TRUE(pdf_frame->GetProcess()->IsPdf());
+
+  // Attempting to create a blob URL in the PDF document should return an empty
+  // string (rather than throwing a SecurityError, matching the File API spec
+  // and DOM storage behavior) and should not kill the renderer.
+  EXPECT_EQ(
+      "", content::EvalJs(pdf_frame, "URL.createObjectURL(new Blob(['foo']))"));
+  EXPECT_TRUE(pdf_frame->IsRenderFrameLive());
+}
+
+// Check that navigating to a PDF and then trying to create an AudioWorklet in
+// the context of the PDF document fails gracefully and doesn't lead to a
+// renderer kill. Creating an AudioWorklet causes the renderer to obtain a
+// BlobURLStore remote for the worklet, but in PDF processes
+// LocalFrame::GetBlobUrlStorePendingRemote returns an invalid remote to avoid
+// requesting the interface from the browser. See https://crbug.com/540051167.
+IN_PROC_BROWSER_TEST_F(ChromeSitePerProcessOopifPDFTest,
+                       CreateAudioWorkletInPDFDocument) {
+  GURL pdf_url = embedded_test_server()->GetURL("/pdf/test.pdf");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), pdf_url));
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  EXPECT_EQ(pdf_url, web_contents->GetLastCommittedURL());
+  ASSERT_TRUE(GetTestMimeHandlerStreamManager()->WaitUntilPdfLoaded(
+      web_contents->GetPrimaryMainFrame()));
+
+  // The PDF document should be in the grandchild frame, embedded in the PDF
+  // viewer extension frame.
+  content::RenderFrameHost* pdf_extension_frame =
+      content::ChildFrameAt(web_contents->GetPrimaryMainFrame(), 0);
+  ASSERT_TRUE(pdf_extension_frame);
+  content::RenderFrameHost* pdf_frame =
+      content::ChildFrameAt(pdf_extension_frame, 0);
+  ASSERT_TRUE(pdf_frame);
+  EXPECT_TRUE(pdf_frame->GetProcess()->IsPdf());
+
+  // Creating an AudioWorklet causes the renderer to get a BlobURLStore for the
+  // worklet. In PDF processes, LocalFrame::GetBlobUrlStorePendingRemote avoids
+  // requesting this interface from the browser, so the renderer should not be
+  // killed.
+  EXPECT_TRUE(
+      ExecJs(pdf_frame,
+             "const context = new OfflineAudioContext(1, 1, 44100);"
+             "context.audioWorklet.addModule('data:text/javascript,');"));
   EXPECT_TRUE(pdf_frame->IsRenderFrameLive());
 }
 #endif  // BUILDFLAG(ENABLE_PDF)
@@ -655,10 +785,11 @@ IN_PROC_BROWSER_TEST_F(ChromeSitePerProcessTest,
   GURL dest_url(embedded_test_server()->GetURL("b.com", "/title1.html"));
   GURL redirect_url(embedded_test_server()->GetURL(
       "c.com", "/server-redirect?" + dest_url.spec()));
-  browser()->OpenURL(content::OpenURLParams(redirect_url, content::Referrer(),
-                                            WindowOpenDisposition::CURRENT_TAB,
-                                            ui::PAGE_TRANSITION_TYPED, false),
-                     /*navigation_handle_callback=*/{});
+  browser()->OpenURL(
+      content::OpenURLParams::CreateBrowserInitiated(
+          redirect_url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_TYPED),
+      /*navigation_handle_callback=*/{});
   javascript_dialogs::AppModalDialogController* alert =
       ui_test_utils::WaitForAppModalDialog();
   EXPECT_TRUE(alert->is_before_unload_dialog());
@@ -1271,7 +1402,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSitePerProcessTest,
   // Add a second tab and load a page with an iframe.
   GURL main_url(embedded_test_server()->GetURL("a.com", "/iframe.html"));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), main_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), main_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   content::WebContents* second_web_contents =
       tab_strip_model->GetActiveWebContents();
@@ -1325,7 +1456,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSitePerProcessTest,
   // Add a second tab and load a page with a same-site iframe.
   GURL main_url(embedded_test_server()->GetURL("a.com", "/iframe.html"));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), main_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), main_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   content::WebContents* second_web_contents =
       tab_strip_model->GetActiveWebContents();
@@ -1502,7 +1633,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSitePerProcessTest,
   // device scale factor, but the secondary has unit device scale factor.
   // Note: this test could really work with any two scale factors, so long as
   // they're different.
-  std::string display_spec("0+0-500x500*2,0+501-500x500");
+  std::string display_spec("0+0-800x600*2,0+601-800x600");
   ash::ShellTestApi shell_test_api;
   display::test::DisplayManagerTestApi(shell_test_api.display_manager())
       .UpdateDisplay(display_spec);

@@ -10,11 +10,14 @@
 #include "base/containers/id_map.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/weak_ptr.h"
+#include "base/types/expected.h"
+#include "base/types/optional_ref.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/page_manifest_manager.h"
 #include "content/public/browser/page_user_data.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
 #include "third_party/blink/public/mojom/manifest/manifest_manager.mojom.h"
 #include "third_party/blink/public/mojom/manifest/manifest_observer.mojom.h"
@@ -39,11 +42,13 @@ class CONTENT_EXPORT ManifestManagerHost
   using GetManifestCallback =
       base::OnceCallback<void(blink::mojom::ManifestRequestResult,
                               const GURL&,
-                              blink::mojom::ManifestPtr)>;
+                              std::optional<blink::Manifest>)>;
 
-  // Calls the given callback with the manifest associated with the main frame.
-  // If the main frame has no manifest or if getting it failed the callback will
-  // have an empty manifest.
+  // Requests the ManifestManager in the frame to get the manifest. If the
+  // document specifies no manifest or fetching/parsing fails, the callback
+  // receives a default manifest derived from the document URL. If the document
+  // cannot have a manifest (e.g. opaque origin) or an unexpected/validation
+  // error occurs, the callback receives `std::nullopt`.
   void GetManifest(GetManifestCallback callback);
 
   base::CallbackListSubscription GetSpecifiedManifest(
@@ -51,8 +56,12 @@ class CONTENT_EXPORT ManifestManagerHost
   base::CallbackListSubscription GetAllSpecifiedManifests(
       AllManifestsCallbackList::CallbackType callback) override;
 
-  void RequestManifestDebugInfo(
-      blink::mojom::ManifestManager::RequestManifestDebugInfoCallback callback);
+  using RequestManifestDebugInfoCallback =
+      base::OnceCallback<void(const GURL&,
+                              base::optional_ref<const blink::Manifest>,
+                              blink::mojom::ManifestDebugInfoPtr)>;
+
+  void RequestManifestDebugInfo(RequestManifestDebugInfoCallback callback);
 
   void BindObserver(
       mojo::PendingAssociatedReceiver<blink::mojom::ManifestUrlChangeObserver>
@@ -67,6 +76,16 @@ class CONTENT_EXPORT ManifestManagerHost
       blink::mojom::ManifestRequestResult result,
       blink::mojom::ManifestPtr manifest);
 
+  void ParseManifestFromString(const GURL& document_url,
+                               const GURL& manifest_url,
+                               const std::string& manifest_contents,
+                               ParseManifestCallback callback) override;
+
+  std::optional<blink::Manifest> ValidateParsedManifestFromStringForTesting(
+      const GURL& document_url,
+      const GURL& manifest_url,
+      blink::mojom::ManifestPtr manifest);
+
  private:
   explicit ManifestManagerHost(Page& page);
 
@@ -76,10 +95,26 @@ class CONTENT_EXPORT ManifestManagerHost
 
   blink::mojom::ManifestManager& GetManifestManager();
 
-  // If it is a bad message, returns an unpopulated Manifest instance.
-  blink::mojom::ManifestPtr ValidateAndMaybeOverrideManifest(
-      blink::mojom::ManifestRequestResult result,
+  // Returns the manifest to deliver, or an error result.
+  base::expected<blink::Manifest, blink::mojom::ManifestRequestResult>
+  ValidateAndMaybeOverrideManifest(blink::mojom::ManifestRequestResult result,
+                                   std::optional<blink::Manifest> manifest);
+
+  std::optional<blink::Manifest> ValidateParsedManifestFromString(
+      const GURL& document_url,
+      const GURL& manifest_url,
       blink::mojom::ManifestPtr manifest);
+
+  void OnParseManifestFromStringResponse(const GURL& document_url,
+                                         const GURL& manifest_url,
+                                         ParseManifestCallback callback,
+                                         blink::mojom::ManifestPtr manifest);
+
+  void OnRequestManifestDebugInfoResponse(
+      RequestManifestDebugInfoCallback callback,
+      const GURL& url,
+      blink::mojom::ManifestPtr parsed_manifest,
+      blink::mojom::ManifestDebugInfoPtr debug_info);
 
   std::vector<GetManifestCallback> ExtractPendingCallbacks();
   void OnConnectionError();
@@ -100,8 +135,6 @@ class CONTENT_EXPORT ManifestManagerHost
 
   void NotifyOnceSubscriptionsIfSuccessCached();
 
-  void NotifySubscriptionsIfSuccessCached();
-
   bool HasManifestSubscriptions() const;
 
   PAGE_USER_DATA_KEY_DECL();
@@ -109,8 +142,7 @@ class CONTENT_EXPORT ManifestManagerHost
   mojo::Remote<blink::mojom::ManifestManager> manifest_manager_;
   CallbackMap callbacks_;
 
-  std::optional<blink::mojom::ManifestPtr> last_manifest_success_result_ =
-      std::nullopt;
+  std::optional<blink::Manifest> last_manifest_success_result_ = std::nullopt;
 
   // Keep track of the manifest url that is currently being fetched, to prevent
   // duplicate manifest fetches being triggered if one is already in progress.

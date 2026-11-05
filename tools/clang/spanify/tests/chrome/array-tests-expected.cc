@@ -104,11 +104,11 @@ void sizeof_array_expr() {
   std::ignore = buf[UnsafeIndex()];
 
   // Expected rewrite:
-  // std::ignore = base::SpanificationSizeofForStdArray(buf);
-  std::ignore = base::SpanificationSizeofForStdArray(buf);
+  // std::ignore = sizeof buf;
+  std::ignore = sizeof buf;
   // Expected rewrite:
-  // std::ignore = base::SpanificationSizeofForStdArray(buf);
-  std::ignore = base::SpanificationSizeofForStdArray(buf);
+  // std::ignore = sizeof(buf);
+  std::ignore = sizeof(buf);
   // Expected rewrite:
   // std::ignore = sizeof buf[0];
   std::ignore = sizeof buf[0];
@@ -169,50 +169,50 @@ void test_for_loop_with_c_array() {
   // Expected rewrite:
   // for (base::span<int> it = base::SpanificationArrayBegin(arr);
   //      it != base::SpanificationArrayEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<int> it = base::SpanificationArrayBegin(arr);
-       it != base::SpanificationArrayEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayEnd(arr); it = it.subspan(1u)) {
   }
   // Expected rewrite:
   // for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
   //      it != base::SpanificationArrayCEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
-       it != base::SpanificationArrayCEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayCEnd(arr); it = it.subspan(1u)) {
   }
   // Expected rewrite:
   // for (base::span<int> it = base::SpanificationArrayBegin(arr);
   //      it != base::SpanificationArrayEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<int> it = base::SpanificationArrayBegin(arr);
-       it != base::SpanificationArrayEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayEnd(arr); it = it.subspan(1u)) {
   }
   // Expected rewrite:
   // for (base::span<int> it = base::SpanificationArrayBegin(arr);
   //      it != base::SpanificationArrayEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<int> it = base::SpanificationArrayBegin(arr);
-       it != base::SpanificationArrayEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayEnd(arr); it = it.subspan(1u)) {
   }
   // Expected rewrite:
   // for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
   //      it != base::SpanificationArrayCEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
-       it != base::SpanificationArrayCEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayCEnd(arr); it = it.subspan(1u)) {
   }
   // Expected rewrite:
   // for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
   //      it != base::SpanificationArrayCEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
-       it != base::SpanificationArrayCEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayCEnd(arr); it = it.subspan(1u)) {
   }
   // Note that reverse_iterator (rbegin, rend, crbegin, crend) won't be
   // supported because reverse_iterator never be of a pointer type (`it++`
@@ -232,50 +232,50 @@ void test_for_loop_with_std_array() {
   // Expected rewrite:
   // for (base::span<int> it = base::SpanificationArrayBegin(arr);
   //      it != base::SpanificationArrayEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<int> it = base::SpanificationArrayBegin(arr);
-       it != base::SpanificationArrayEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayEnd(arr); it = it.subspan(1u)) {
   }
   // Expected rewrite:
   // for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
   //      it != base::SpanificationArrayCEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
-       it != base::SpanificationArrayCEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayCEnd(arr); it = it.subspan(1u)) {
   }
   // Expected rewrite:
   // for (base::span<int> it = base::SpanificationArrayBegin(arr);
   //      it != base::SpanificationArrayEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<int> it = base::SpanificationArrayBegin(arr);
-       it != base::SpanificationArrayEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayEnd(arr); it = it.subspan(1u)) {
   }
   // Expected rewrite:
   // for (base::span<int> it = base::SpanificationArrayBegin(arr);
   //      it != base::SpanificationArrayEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<int> it = base::SpanificationArrayBegin(arr);
-       it != base::SpanificationArrayEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayEnd(arr); it = it.subspan(1u)) {
   }
   // Expected rewrite:
   // for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
   //      it != base::SpanificationArrayCEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
-       it != base::SpanificationArrayCEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayCEnd(arr); it = it.subspan(1u)) {
   }
   // Expected rewrite:
   // for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
   //      it != base::SpanificationArrayCEnd(arr);
-  //      base::PreIncrementSpan(it)) {
+  //      it = it.subspan(1u)) {
   // }
   for (base::span<const int> it = base::SpanificationArrayCBegin(arr);
-       it != base::SpanificationArrayCEnd(arr); base::PreIncrementSpan(it)) {
+       it != base::SpanificationArrayCEnd(arr); it = it.subspan(1u)) {
   }
   // Note that reverse_iterator (rbegin, rend, crbegin, crend) won't be
   // supported because reverse_iterator never be of a pointer type (`it++`

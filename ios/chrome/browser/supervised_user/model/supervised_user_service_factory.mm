@@ -4,8 +4,9 @@
 
 #import "ios/chrome/browser/supervised_user/model/supervised_user_service_factory.h"
 
+#import <utility>
+
 #import "base/check_deref.h"
-#import "base/no_destructor.h"
 #import "components/prefs/pref_service.h"
 #import "components/supervised_user/core/browser/device_parental_controls.h"
 #import "components/supervised_user/core/browser/supervised_user_service.h"
@@ -20,35 +21,23 @@
 
 namespace supervised_user {
 
-// static
-SupervisedUserService* SupervisedUserServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<SupervisedUserService>(
-      profile, /*create=*/true);
-}
-
-// static
-SupervisedUserServiceFactory* SupervisedUserServiceFactory::GetInstance() {
-  static base::NoDestructor<SupervisedUserServiceFactory> instance;
-  return instance.get();
-}
-
-SupervisedUserServiceFactory::SupervisedUserServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("SupervisedUserService") {
+SupervisedUserServiceFactory::SupervisedUserServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key),
+                                         "SupervisedUserService") {
   DependsOn(IdentityManagerFactory::GetInstance());
 }
 
 std::unique_ptr<KeyedService>
 SupervisedUserServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   std::unique_ptr<SupervisedUserServicePlatformDelegate> platform_delegate =
-      std::make_unique<SupervisedUserServicePlatformDelegate>(profile);
+      std::make_unique<SupervisedUserServicePlatformDelegate>(&profile);
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
-      profile->GetSharedURLLoaderFactory();
+      profile.GetSharedURLLoaderFactory();
   return std::make_unique<SupervisedUserService>(
-      identity_manager, url_loader_factory, CHECK_DEREF(profile->GetPrefs()),
+      identity_manager, url_loader_factory, CHECK_DEREF(profile.GetPrefs()),
       std::move(platform_delegate),
       GetApplicationContext()->GetDeviceParentalControls());
 }

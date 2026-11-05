@@ -32,7 +32,7 @@ MockXRDeviceHookBase::MockXRDeviceHookBase() {
   // TODO(https://crbug.com/381913614): Instead of this pattern, consider
   // spinning up/holding onto and setting the test hook on the XrRuntimeManager,
   // which could pass on to providers.
-#if BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
   content::GetXRDeviceServiceForTesting()->BindHookForTesting(
       receiver_.BindNewPipeAndPassRemote(thread_->task_runner()).PassPipe());
 #elif BUILDFLAG(IS_ANDROID)
@@ -204,6 +204,20 @@ void MockXRDeviceHookBase::SimulateSessionLost() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_);
   device_test::mojom::EventData event;
   event.type = device_test::mojom::EventType::kSessionLost;
+  PopulateEvent(event);
+}
+
+void MockXRDeviceHookBase::SimulateSessionStopped() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_);
+  device_test::mojom::EventData event;
+  event.type = device_test::mojom::EventType::kSessionStopped;
+  PopulateEvent(event);
+}
+
+void MockXRDeviceHookBase::SimulateSessionReady() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(main_sequence_);
+  device_test::mojom::EventData event;
+  event.type = device_test::mojom::EventType::kSessionReady;
   PopulateEvent(event);
 }
 

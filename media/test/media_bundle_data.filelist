@@ -29,6 +29,8 @@ data/ac4-ims.ac4
 data/ac4-only-ajoc-frag.mp4
 data/ac4-only-channel-based-coding-frag.mp4
 data/ac4-only-ims-frag.mp4
+data/agtm-metadata-cdsc-track.mp4
+data/agtm-metadata-rndr-track.mp4
 data/agtm-metadata-track-frag.m4s
 data/agtm-metadata-track-frag.mp4
 data/audio-start-time-only.webm
@@ -229,7 +231,10 @@ data/bear-vp9-opus.webm
 data/bear-vp9.ivf
 data/bear-vp9.ivf.context
 data/bear-vp9.webm
+data/bear-vp9a-420-10bit.webm
+data/bear-vp9a-422-10bit.webm
 data/bear-vp9a-422.webm
+data/bear-vp9a-444-10bit.webm
 data/bear-vp9a-444.webm
 data/bear-vp9a-odd-dimensions.webm
 data/bear-vp9a.webm
@@ -469,6 +474,7 @@ data/red-a500hz.webm
 data/red-green.h264
 data/red_green_gradient_lossy.webp
 data/reference-frame-scaling-test.ivf
+data/repro-minimal.mp3
 data/sfx-flac.mp4
 data/sfx-flac_frag.mp4
 data/sfx-opus-441.webm
@@ -486,14 +492,17 @@ data/sfx_s24le.wav
 data/sfx_s32le.wav
 data/sfx_u8.wav
 data/silent-section.mp3
+data/sine-s32-stereo.flac
 data/solid_green_2015x2015.webp
 data/speech_16b_stereo_48kHz.raw
 data/speex_audio_vorbis_video.ogv
 data/spherical.mp4
 data/spherical_frag.mp4
+data/staircase-pq-av1-st-2094-50-rndr.mp4
 data/stereo_48000.wav
 data/sync2-trimmed.mp4
 data/sync2.ogv
+data/synth-bad.mp3
 data/ten_byte_file
 data/test-25fps.av1.ivf
 data/test-25fps.av1.ivf.json
@@ -516,6 +525,7 @@ data/tiny-clip.mp4
 data/tos-h264-opus.mp4
 data/track-disabled.mp4
 data/trailing-garbage.mp3
+data/trun_overflow.mp4
 data/tulip2.webm
 data/vorbis-extradata
 data/vorbis-packet-0

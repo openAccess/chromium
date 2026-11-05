@@ -27,10 +27,17 @@ std::optional<SkColor> JavaColorToOptionalSkColor(int64_t java_color) {
   if (java_color == kInvalidJavaColor) {
     return std::nullopt;
   }
-  DCHECK(base::IsValueInRangeForNumericType<int32_t>(java_color));
+  CHECK(base::IsValueInRangeForNumericType<int32_t>(java_color),
+        base::NotFatalUntil::M163);
   return static_cast<SkColor>(java_color);
 }
 }  // namespace
+
+// static
+bool ColorProviderBridge::HasInstance() {
+  JNIEnv* env = base::android::AttachCurrentThread();
+  return Java_ColorProviderBridgeFactory_hasInstance(env);
+}
 
 // static
 std::vector<std::optional<SkColor>> ColorProviderBridge::GetThemeColors(

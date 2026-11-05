@@ -29,6 +29,7 @@ namespace autofill::payments {
 inline constexpr int kUnmaskPaymentMethodBillableServiceNumber = 70154;
 inline constexpr int kUploadPaymentMethodBillableServiceNumber = 70073;
 inline constexpr int kMigrateCardsBillableServiceNumber = 70264;
+inline constexpr int kWalletPassBillableServiceNumber = 70758;
 
 // Shared class for the various Payments request types.
 class PaymentsRequest {

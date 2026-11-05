@@ -4,7 +4,8 @@
 
 #import "ios/chrome/browser/autofill/model/ios_autofill_entity_data_manager_factory.h"
 
-#import "base/no_destructor.h"
+#import <utility>
+
 #import "components/autofill/core/browser/country_type.h"
 #import "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #import "components/autofill/core/common/autofill_features.h"
@@ -20,22 +21,9 @@
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/webdata_services/model/web_data_service_factory.h"
 
-// static
-autofill::EntityDataManager* IOSAutofillEntityDataManagerFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<autofill::EntityDataManager>(
-      profile, /*create=*/true);
-}
-
-// static
-IOSAutofillEntityDataManagerFactory*
-IOSAutofillEntityDataManagerFactory::GetInstance() {
-  static base::NoDestructor<IOSAutofillEntityDataManagerFactory> instance;
-  return instance.get();
-}
-
-IOSAutofillEntityDataManagerFactory::IOSAutofillEntityDataManagerFactory()
-    : ProfileKeyedServiceFactoryIOS("EntityDataManager") {
+IOSAutofillEntityDataManagerFactory::IOSAutofillEntityDataManagerFactory(
+    PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key), "EntityDataManager") {
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(SyncServiceFactory::GetInstance());
   DependsOn(ios::WebDataServiceFactory::GetInstance());
@@ -44,12 +32,9 @@ IOSAutofillEntityDataManagerFactory::IOSAutofillEntityDataManagerFactory()
   DependsOn(IOSAutofillAiPersonalContextAccessManagerFactory::GetInstance());
 }
 
-IOSAutofillEntityDataManagerFactory::~IOSAutofillEntityDataManagerFactory() =
-    default;
-
 std::unique_ptr<KeyedService>
 IOSAutofillEntityDataManagerFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   scoped_refptr<autofill::AutofillWebDataService> local_storage =
       ios::WebDataServiceFactory::GetAutofillWebDataForProfile(
           profile, ServiceAccessType::EXPLICIT_ACCESS);
@@ -58,10 +43,9 @@ IOSAutofillEntityDataManagerFactory::BuildServiceInstanceFor(
     return nullptr;
   }
   return std::make_unique<autofill::EntityDataManager>(
-      profile->GetPrefs(), IdentityManagerFactory::GetForProfile(profile),
+      profile.GetPrefs(), IdentityManagerFactory::GetForProfile(profile),
       SyncServiceFactory::GetForProfile(profile), std::move(local_storage),
-      ios::HistoryServiceFactory::GetForProfile(
-          profile, ServiceAccessType::EXPLICIT_ACCESS),
+      ios::HistoryServiceFactory::GetForProfile(profile),
       IOSAutofillAiPersonalContextAccessManagerFactory::GetForProfile(profile),
       autofill::StrikeDatabaseFactory::GetForProfile(profile),
       autofill::GeoIpCountryCode(autofill::GetCountryCodeFromVariations()));

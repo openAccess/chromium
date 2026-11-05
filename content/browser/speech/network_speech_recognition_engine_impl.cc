@@ -190,7 +190,7 @@ void NetworkSpeechRecognitionEngineImpl::OnDownstreamDataReceived(
   while (chunked_byte_buffer_.HasChunks()) {
     FSMEventArgs event_args(EVENT_DOWNSTREAM_RESPONSE);
     event_args.response = chunked_byte_buffer_.PopChunk();
-    DCHECK(event_args.response.get());
+    CHECK(event_args.response.get(), base::NotFatalUntil::M159);
     DumpResponse(
         std::string(event_args.response->begin(), event_args.response->end()));
     DispatchEvent(event_args);
@@ -224,12 +224,12 @@ int NetworkSpeechRecognitionEngineImpl::GetDesiredAudioChunkDurationMs() const {
 void NetworkSpeechRecognitionEngineImpl::DispatchEvent(
     const FSMEventArgs& event_args) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_LE(event_args.event, EVENT_MAX_VALUE);
-  DCHECK_LE(state_, STATE_MAX_VALUE);
+  CHECK_LE(event_args.event, EVENT_MAX_VALUE, base::NotFatalUntil::M159);
+  CHECK_LE(state_, STATE_MAX_VALUE, base::NotFatalUntil::M159);
 
   // Event dispatching must be sequential, otherwise it will break all the rules
   // and the assumptions of the finite state automata model.
-  DCHECK(!is_dispatching_event_);
+  CHECK(!is_dispatching_event_, base::NotFatalUntil::M159);
   is_dispatching_event_ = true;
 
   state_ = ExecuteTransitionAndGetNextState(event_args);
@@ -306,12 +306,12 @@ NetworkSpeechRecognitionEngineImpl::ExecuteTransitionAndGetNextState(
 
 NetworkSpeechRecognitionEngineImpl::FSMState
 NetworkSpeechRecognitionEngineImpl::ConnectBothStreams(const FSMEventArgs&) {
-  DCHECK(!upstream_loader_.get());
-  DCHECK(!downstream_loader_.get());
+  CHECK(!upstream_loader_.get(), base::NotFatalUntil::M159);
+  CHECK(!downstream_loader_.get(), base::NotFatalUntil::M159);
 
   encoder_ = std::make_unique<AudioEncoder>(config_.audio_sample_rate,
                                             config_.audio_num_bits_per_sample);
-  DCHECK(encoder_.get());
+  CHECK(encoder_.get(), base::NotFatalUntil::M159);
   const std::string request_key = GenerateRequestKey();
 
   // Only use the framed post data format when a preamble needs to be logged.
@@ -394,22 +394,42 @@ NetworkSpeechRecognitionEngineImpl::ConnectBothStreams(const FSMEventArgs&) {
 
   // Setup upstream fetcher.
   // TODO(hans): Support for user-selected grammars.
-  std::vector<std::string> upstream_args;
-  upstream_args.push_back(
-      "key=" + base::EscapeQueryParamValue(google_apis::GetAPIKey(), true));
-  upstream_args.push_back("pair=" + request_key);
-  upstream_args.push_back("output=pb");
-  upstream_args.push_back("lang=" +
-                          base::EscapeQueryParamValue(config_.language, true));
-  upstream_args.push_back(config_.filter_profanities ? "pFilter=2"
-                                                     : "pFilter=0");
+  // Start from the embedder's parameters so that the ones below override them.
+  base::flat_map<std::string, std::string> upstream_params =
+      config_.routing_params;
+  upstream_params["key"] = google_apis::GetAPIKey();
+  upstream_params["pair"] = request_key;
+  upstream_params["output"] = "pb";
+  upstream_params["lang"] = config_.language;
+  upstream_params["pFilter"] = config_.filter_profanities ? "2" : "0";
   if (config_.max_hypotheses > 0U) {
-    uint32_t max_alternatives =
-        std::min(kMaxMaxAlternatives, config_.max_hypotheses);
-    upstream_args.push_back("maxAlternatives=" +
-                            base::NumberToString(max_alternatives));
+    upstream_params["maxAlternatives"] = base::NumberToString(
+        std::min(kMaxMaxAlternatives, config_.max_hypotheses));
   }
-  upstream_args.push_back("app=chromium");
+  upstream_params["app"] = "chromium";
+  if (!config_.continuous) {
+    upstream_params["endpoint"] = "1";
+  }
+  if (!config_.auth_token.empty() && !config_.auth_scope.empty()) {
+    upstream_params["authScope"] = config_.auth_scope;
+    upstream_params["authToken"] = config_.auth_token;
+  }
+  if (use_framed_post_data_) {
+    std::string audio_format;
+    if (preamble_encoder_) {
+      audio_format = preamble_encoder_->GetMimeType() + ",";
+    }
+    audio_format += encoder_->GetMimeType();
+    upstream_params["audioFormat"] = audio_format;
+  }
+
+  std::vector<std::string> upstream_args;
+  for (const auto& [name, value] : upstream_params) {
+    upstream_args.push_back(base::EscapeQueryParamValue(name, true) + "=" +
+                            base::EscapeQueryParamValue(value, true));
+  }
+  // "grammar" can repeat and the flags below have no value, so they are not in
+  // `upstream_params`.
   for (const media::mojom::SpeechRecognitionGrammar& grammar :
        config_.grammars) {
     std::string grammar_value(base::NumberToString(grammar.weight) + ":" +
@@ -419,26 +439,9 @@ NetworkSpeechRecognitionEngineImpl::ConnectBothStreams(const FSMEventArgs&) {
   }
   if (config_.continuous) {
     upstream_args.push_back("continuous");
-  } else {
-    upstream_args.push_back("endpoint=1");
   }
   if (config_.interim_results) {
     upstream_args.push_back("interim");
-  }
-  if (!config_.auth_token.empty() && !config_.auth_scope.empty()) {
-    upstream_args.push_back(
-        "authScope=" + base::EscapeQueryParamValue(config_.auth_scope, true));
-    upstream_args.push_back(
-        "authToken=" + base::EscapeQueryParamValue(config_.auth_token, true));
-  }
-  if (use_framed_post_data_) {
-    std::string audio_format;
-    if (preamble_encoder_) {
-      audio_format = preamble_encoder_->GetMimeType() + ",";
-    }
-    audio_format += encoder_->GetMimeType();
-    upstream_args.push_back("audioFormat=" +
-                            base::EscapeQueryParamValue(audio_format, true));
   }
 
   GURL upstream_url(std::string(web_service_base_url) +
@@ -526,15 +529,16 @@ NetworkSpeechRecognitionEngineImpl::ConnectBothStreams(const FSMEventArgs&) {
 NetworkSpeechRecognitionEngineImpl::FSMState
 NetworkSpeechRecognitionEngineImpl::TransmitAudioUpstream(
     const FSMEventArgs& event_args) {
-  DCHECK(upstream_loader_.get());
-  DCHECK(event_args.audio_data.get());
+  CHECK(upstream_loader_.get(), base::NotFatalUntil::M159);
+  CHECK(event_args.audio_data.get(), base::NotFatalUntil::M159);
   const AudioChunk& audio = *(event_args.audio_data.get());
 
   base::TimeDelta duration = media::AudioTimestampHelper::FramesToTime(
       audio.NumSamples(), config_.audio_sample_rate);
   upstream_audio_duration_ += duration;
 
-  DCHECK_EQ(audio.bytes_per_sample(), config_.audio_num_bits_per_sample / 8);
+  CHECK_EQ(audio.bytes_per_sample(), config_.audio_num_bits_per_sample / 8,
+           base::NotFatalUntil::M159);
   encoder_->Encode(audio);
   scoped_refptr<AudioChunk> encoded_data(encoder_->GetEncodedDataAndClear());
   UploadAudioChunk(encoded_data->AsStringView(), FRAME_RECOGNITION_AUDIO,
@@ -545,7 +549,7 @@ NetworkSpeechRecognitionEngineImpl::TransmitAudioUpstream(
 NetworkSpeechRecognitionEngineImpl::FSMState
 NetworkSpeechRecognitionEngineImpl::ProcessDownstreamResponse(
     const FSMEventArgs& event_args) {
-  DCHECK(event_args.response.get());
+  CHECK(event_args.response.get(), base::NotFatalUntil::M159);
 
   proto::SpeechRecognitionEvent ws_event;
   if (!ws_event.ParseFromString(std::string(event_args.response->begin(),
@@ -604,6 +608,8 @@ NetworkSpeechRecognitionEngineImpl::ProcessDownstreamResponse(
       } else if (ws_result.has_stability()) {
         hypothesis->confidence = ws_result.stability();
       }
+      // TODO(crbug.com/560180444): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
       DCHECK(ws_alternative.has_transcript());
       // TODO(hans): Perhaps the transcript should be required in the proto?
       if (ws_alternative.has_transcript()) {
@@ -635,8 +641,8 @@ NetworkSpeechRecognitionEngineImpl::RaiseNoMatchErrorIfGotNoResults(
 NetworkSpeechRecognitionEngineImpl::FSMState
 NetworkSpeechRecognitionEngineImpl::CloseUpstreamAndWaitForResults(
     const FSMEventArgs&) {
-  DCHECK(upstream_loader_.get());
-  DCHECK(encoder_.get());
+  CHECK(upstream_loader_.get(), base::NotFatalUntil::M159);
+  CHECK(encoder_.get(), base::NotFatalUntil::M159);
 
   DVLOG(1) << "Closing upstream.";
 
@@ -650,7 +656,7 @@ NetworkSpeechRecognitionEngineImpl::CloseUpstreamAndWaitForResults(
   encoder_->Flush();
   scoped_refptr<AudioChunk> encoded_dummy_data =
       encoder_->GetEncodedDataAndClear();
-  DCHECK(!encoded_dummy_data->IsEmpty());
+  CHECK(!encoded_dummy_data->IsEmpty(), base::NotFatalUntil::M159);
   encoder_.reset();
 
   UploadAudioChunk(encoded_dummy_data->AsStringView(), FRAME_RECOGNITION_AUDIO,
@@ -661,8 +667,8 @@ NetworkSpeechRecognitionEngineImpl::CloseUpstreamAndWaitForResults(
 
 NetworkSpeechRecognitionEngineImpl::FSMState
 NetworkSpeechRecognitionEngineImpl::CloseDownstream(const FSMEventArgs&) {
-  DCHECK(!upstream_loader_.get());
-  DCHECK(downstream_loader_.get());
+  CHECK(!upstream_loader_.get(), base::NotFatalUntil::M159);
+  CHECK(downstream_loader_.get(), base::NotFatalUntil::M159);
 
   DVLOG(1) << "Closing downstream.";
   downstream_loader_.reset();

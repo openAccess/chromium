@@ -29,7 +29,6 @@
 #include "ash/ambient/model/ambient_topic_queue_animation_delegate.h"
 #include "ash/ambient/model/ambient_topic_queue_slideshow_delegate.h"
 #include "ash/ambient/resources/ambient_animation_static_resources.h"
-#include "ash/ambient/ui/ambient_animation_frame_rate_controller.h"
 #include "ash/ambient/ui/ambient_animation_progress_tracker.h"
 #include "ash/ambient/ui/ambient_container_view.h"
 #include "ash/ambient/ui/ambient_view_delegate.h"
@@ -731,7 +730,7 @@ bool AmbientController::ShouldShowAmbientUi() const {
 }
 
 bool AmbientController::IsShowing() const {
-  const std::vector<RootWindowController*> root_window_controllers =
+  const auto root_window_controllers =
       RootWindowController::root_window_controllers();
 
   const bool has_at_least_one_widget = std::any_of(
@@ -789,7 +788,7 @@ void AmbientController::ReleaseWakeLock() {
 }
 
 void AmbientController::CloseAllWidgets(bool immediately) {
-  for (auto* root_window_controller :
+  for (ash::RootWindowController* root_window_controller :
        RootWindowController::root_window_controllers()) {
     root_window_controller->CloseAmbientWidget(immediately);
   }
@@ -1177,7 +1176,7 @@ void AmbientController::CreateAndShowWidgets() {
   }
   // Hide cursor.
   Shell::Get()->cursor_manager()->HideCursor();
-  for (auto* root_window_controller :
+  for (ash::RootWindowController* root_window_controller :
        RootWindowController::root_window_controllers()) {
     root_window_controller->CreateAmbientWidget();
   }

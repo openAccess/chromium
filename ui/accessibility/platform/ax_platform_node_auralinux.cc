@@ -265,7 +265,7 @@ const char* GetUniqueAccessibilityGTypeName(
 }
 
 void SetWeakGPtrToAtkObject(AtkObject** weak_pointer, AtkObject* new_value) {
-  DCHECK(weak_pointer);
+  CHECK(weak_pointer, base::NotFatalUntil::M163);
   if (*weak_pointer == new_value)
     return;
 
@@ -342,7 +342,7 @@ AtkAttributeSet* PrependAtkAttributeToAtkAttributeSet(
 void PrependTextAttributeToSet(const std::string& attribute,
                                const std::string& value,
                                AtkAttributeSet** attributes) {
-  DCHECK(attributes);
+  CHECK(attributes, base::NotFatalUntil::M163);
 
   AtkAttribute* new_attribute =
       static_cast<AtkAttribute*>(g_malloc(sizeof(AtkAttribute)));
@@ -362,8 +362,10 @@ std::string ToAtkTextAttributeColor(const std::string& color) {
   // The platform-independent color string is in the form "rgb(r, g, b)",
   // but ATK expects a string like "r, g, b". We convert the string here
   // by stripping away the unnecessary characters.
-  DCHECK(base::StartsWith(color, "rgb(", base::CompareCase::INSENSITIVE_ASCII));
-  DCHECK(base::EndsWith(color, ")", base::CompareCase::INSENSITIVE_ASCII));
+  CHECK(base::StartsWith(color, "rgb(", base::CompareCase::INSENSITIVE_ASCII),
+        base::NotFatalUntil::M163);
+  CHECK(base::EndsWith(color, ")", base::CompareCase::INSENSITIVE_ASCII),
+        base::NotFatalUntil::M163);
   return color.substr(4, color.length() - 5);
 }
 
@@ -567,7 +569,7 @@ gboolean DoAction(AtkAction* atk_action, gint index) {
 
   const std::vector<ax::mojom::Action> actions =
       obj->GetDelegate()->GetSupportedActions();
-  const std::vector<int32_t>& aria_actions =
+  base::span<const int32_t> aria_actions =
       obj->GetIntListAttribute(ax::mojom::IntListAttribute::kActionsIds);
 
   // Actions can be from Blink for the given markup, or from the aria-actions
@@ -627,7 +629,7 @@ const gchar* GetLocalizedName(AtkAction* atk_action, gint index) {
 
   const std::vector<ax::mojom::Action> actions =
       obj->GetDelegate()->GetSupportedActions();
-  const std::vector<int32_t>& aria_actions =
+  base::span<const int32_t> aria_actions =
       obj->GetIntListAttribute(ax::mojom::IntListAttribute::kActionsIds);
 
   g_return_val_if_fail(
@@ -659,7 +661,7 @@ const gchar* GetName(AtkAction* atk_action, gint index) {
 
   const std::vector<ax::mojom::Action> actions =
       obj->GetDelegate()->GetSupportedActions();
-  const std::vector<int32_t>& aria_actions =
+  base::span<const int32_t> aria_actions =
       obj->GetIntListAttribute(ax::mojom::IntListAttribute::kActionsIds);
 
   g_return_val_if_fail(
@@ -1050,8 +1052,8 @@ gchar* GetText(AtkText* atk_text, gint start_offset, gint end_offset) {
         std::clamp(static_cast<int>(text.size()), start_offset, end_offset);
   }
 
-  DCHECK_GE(start_offset, 0);
-  DCHECK_GE(end_offset, start_offset);
+  CHECK_GE(start_offset, 0, base::NotFatalUntil::M163);
+  CHECK_GE(end_offset, start_offset, base::NotFatalUntil::M163);
 
   return g_strdup(
       base::UTF16ToUTF8(text.substr(start_offset, end_offset - start_offset))
@@ -1179,7 +1181,8 @@ char* GetTextWithBoundaryType(AtkText* atk_text,
   *end_offset_ptr = obj->UTF16ToUnicodeOffsetInText(end_offset);
 
   std::u16string text = obj->GetHypertext();
-  DCHECK_LE(end_offset, static_cast<int>(text.size()));
+  CHECK_LE(end_offset, static_cast<int>(text.size()),
+           base::NotFatalUntil::M163);
 
   std::u16string substr = text.substr(start_offset, end_offset - start_offset);
   return g_strdup(base::UTF16ToUTF8(substr).c_str());
@@ -1774,7 +1777,7 @@ gint GetIndexAt(AtkTable* table, gint row, gint column) {
 
   if (auto* obj = AXPlatformNodeAuraLinux::FromAtkObject(ATK_OBJECT(table))) {
     if (const AXPlatformNodeBase* cell = obj->GetTableCell(row, column)) {
-      DCHECK(cell->GetTableCellIndex().has_value());
+      CHECK(cell->GetTableCellIndex().has_value(), base::NotFatalUntil::M163);
       return cell->GetTableCellIndex().value();
     }
   }
@@ -1787,7 +1790,7 @@ gint GetColumnAtIndex(AtkTable* table, gint index) {
 
   if (auto* obj = AXPlatformNodeAuraLinux::FromAtkObject(ATK_OBJECT(table))) {
     if (const AXPlatformNodeBase* cell = obj->GetTableCell(index)) {
-      DCHECK(cell->GetTableColumn().has_value());
+      CHECK(cell->GetTableColumn().has_value(), base::NotFatalUntil::M163);
       return cell->GetTableColumn().value();
     }
   }
@@ -1800,7 +1803,7 @@ gint GetRowAtIndex(AtkTable* table, gint index) {
 
   if (auto* obj = AXPlatformNodeAuraLinux::FromAtkObject(ATK_OBJECT(table))) {
     if (const AXPlatformNodeBase* cell = obj->GetTableCell(index)) {
-      DCHECK(cell->GetTableRow().has_value());
+      CHECK(cell->GetTableRow().has_value(), base::NotFatalUntil::M163);
       return cell->GetTableRow().value();
     }
   }
@@ -1835,7 +1838,7 @@ gint GetColumnExtentAt(AtkTable* table, gint row, gint column) {
 
   if (auto* obj = AXPlatformNodeAuraLinux::FromAtkObject(ATK_OBJECT(table))) {
     if (const AXPlatformNodeBase* cell = obj->GetTableCell(row, column)) {
-      DCHECK(cell->GetTableColumnSpan().has_value());
+      CHECK(cell->GetTableColumnSpan().has_value(), base::NotFatalUntil::M163);
       return cell->GetTableColumnSpan().value();
     }
   }
@@ -1848,7 +1851,7 @@ gint GetRowExtentAt(AtkTable* table, gint row, gint column) {
 
   if (auto* obj = AXPlatformNodeAuraLinux::FromAtkObject(ATK_OBJECT(table))) {
     if (const AXPlatformNodeBase* cell = obj->GetTableCell(row, column)) {
-      DCHECK(cell->GetTableRowSpan().has_value());
+      CHECK(cell->GetTableRowSpan().has_value(), base::NotFatalUntil::M163);
       return cell->GetTableRowSpan().value();
     }
   }
@@ -3264,8 +3267,9 @@ static AtkIntListRelation kIntListRelations[] = {
 void AXPlatformNodeAuraLinux::AddRelationToSet(AtkRelationSet* relation_set,
                                                AtkRelationType relation,
                                                AXPlatformNode* target) {
-  DCHECK(target);
-  DCHECK(GetDelegate()->IsValidRelationTarget(target));
+  CHECK(target, base::NotFatalUntil::M163);
+  CHECK(GetDelegate()->IsValidRelationTarget(target),
+        base::NotFatalUntil::M163);
 
   // If we were compiled with a newer version of ATK than the runtime version,
   // it's possible that we might try to add a relation that doesn't exist in
@@ -3472,8 +3476,9 @@ void AXPlatformNodeAuraLinux::OnExpandedStateChanged(bool is_expanded) {
   // might imply a change in ATK interfaces implemented.
   EnsureAtkObjectIsValid();
 
-  DCHECK(HasState(ax::mojom::State::kCollapsed) ||
-         HasState(ax::mojom::State::kExpanded));
+  CHECK(HasState(ax::mojom::State::kCollapsed) ||
+            HasState(ax::mojom::State::kExpanded),
+        base::NotFatalUntil::M163);
 
   AtkObject* obj = GetOrCreateAtkObject();
   if (!obj)
@@ -3777,10 +3782,10 @@ void AXPlatformNodeAuraLinux::GetFullSelection(int32_t* anchor_node_id,
                                                int* anchor_offset,
                                                int32_t* focus_node_id,
                                                int* focus_offset) {
-  DCHECK(anchor_node_id);
-  DCHECK(anchor_offset);
-  DCHECK(focus_node_id);
-  DCHECK(focus_offset);
+  CHECK(anchor_node_id, base::NotFatalUntil::M163);
+  CHECK(anchor_offset, base::NotFatalUntil::M163);
+  CHECK(focus_node_id, base::NotFatalUntil::M163);
+  CHECK(focus_offset, base::NotFatalUntil::M163);
 
   if (IsAtomicTextField() &&
       GetIntAttribute(ax::mojom::IntAttribute::kTextSelStart, anchor_offset) &&
@@ -3836,7 +3841,7 @@ void AXPlatformNodeAuraLinux::EmitSelectionChangedSignal(bool had_selection) {
   AtkObject* atk_object = GetOrCreateAtkObject();
   if (!atk_object)
     return;
-  DCHECK(ATK_IS_TEXT(atk_object));
+  CHECK(ATK_IS_TEXT(atk_object), base::NotFatalUntil::M163);
 
   // ATK does not consider a collapsed selection a selection, so
   // when the collapsed selection changes (caret movement), we should
@@ -3857,7 +3862,7 @@ void AXPlatformNodeAuraLinux::EmitCaretChangedSignal() {
   if (!atk_object)
     return;
 
-  DCHECK(ATK_IS_TEXT(atk_object));
+  CHECK(ATK_IS_TEXT(atk_object), base::NotFatalUntil::M163);
   g_signal_emit_by_name(atk_object, "text-caret-moved",
                         UTF16ToUnicodeOffsetInText(selection.second));
 }
@@ -3873,7 +3878,7 @@ void AXPlatformNodeAuraLinux::OnTextAttributesChanged() {
   if (!atk_object)
     return;
 
-  DCHECK(ATK_IS_TEXT(atk_object));
+  CHECK(ATK_IS_TEXT(atk_object), base::NotFatalUntil::M163);
   g_signal_emit_by_name(atk_object, "text-attributes-changed");
 }
 
@@ -3941,7 +3946,7 @@ void AXPlatformNodeAuraLinux::OnSortDirectionChanged() {
     return;
 
   AtkObject* atk_table = table->GetNativeViewAccessible();
-  DCHECK(ATK_IS_TABLE(atk_table));
+  CHECK(ATK_IS_TABLE(atk_table), base::NotFatalUntil::M163);
 
   if (GetRole() == ax::mojom::Role::kColumnHeader)
     g_signal_emit_by_name(atk_table, "row-reordered");
@@ -4674,39 +4679,59 @@ GArray* AXPlatformNodeAuraLinux::GetDocumentTextSelections() {
   }
 
   auto promote_endpoint_to_hypertext_parent =
-      [](raw_ptr<AXPlatformNodeBase>& endpoint_object, int& endpoint_offset) {
+      [](raw_ptr<AXPlatformNodeBase>& endpoint_object, int& endpoint_offset,
+         ax::mojom::MoveDirection direction) {
         auto* endpoint_node =
             static_cast<AXPlatformNodeAuraLinux*>(endpoint_object.get());
-        if (!endpoint_node->IsText()) {
-          return;
+        // Skip static-text leaves and objects without ATK Text. An image's
+        // parent might also lack ATK Text, e.g. an SVG, so keep looking up
+        // the ancestors.
+        auto* parent = endpoint_node;
+        while (parent && (parent->IsText() ||
+                          !ATK_IS_TEXT(parent->GetNativeViewAccessible()))) {
+          parent = FromAtkObject(parent->GetParent());
         }
-
-        auto* parent = FromAtkObject(endpoint_node->GetParent());
-        if (!parent || !ATK_IS_TEXT(parent->GetNativeViewAccessible())) {
+        if (!parent || parent == endpoint_node) {
           return;
         }
 
         // AT-SPI clients consume text from hypertext objects rather than their
         // static-text leaves, so expose an endpoint relative to its hypertext
-        // parent.
-        int parent_offset = parent->GetHypertextOffsetFromEndpoint(
-            endpoint_node, endpoint_offset);
-        if (parent_offset >= 0) {
-          endpoint_object = parent;
-          endpoint_offset = parent_offset;
+        // parent. The parent can be a leaf, e.g. <button>Save</button>, which
+        // exposes "Save" itself instead of exposing its static-text child.
+        const AXNode* parent_anchor =
+            parent->GetDelegate()->CreateTextPositionAt(0)->GetAnchor();
+        AXPosition position =
+            endpoint_node->GetDelegate()
+                ->CreateTextPositionAt(endpoint_offset)
+                ->CreateAncestorPosition(parent_anchor, direction);
+        if (position->IsNullPosition()) {
+          return;
         }
+        endpoint_object = parent;
+        endpoint_offset = position->text_offset();
       };
+  // If an exact position isn't available, move the endpoints into the range.
   promote_endpoint_to_hypertext_parent(selection.start_object,
-                                       selection.start_offset);
+                                       selection.start_offset,
+                                       ax::mojom::MoveDirection::kForward);
   promote_endpoint_to_hypertext_parent(selection.end_object,
-                                       selection.end_offset);
+                                       selection.end_offset,
+                                       ax::mojom::MoveDirection::kBackward);
 
   // Deliberately report a collapsed range as no selection from AT-SPI
   // Document.GetTextSelections(). AT-SPI does not consider a caret to be a
   // text selection, regardless of whether the range was collapsed through
   // SetTextSelections() or by user interaction.
-  if (selection.start_object == selection.end_object &&
-      selection.start_offset == selection.end_offset) {
+  // Also omit ranges whose endpoints crossed during promotion.
+  AXPosition start_position = selection.start_object->GetDelegate()
+                                  ->CreateTextPositionAt(selection.start_offset)
+                                  ->AsLeafTextPosition();
+  AXPosition end_position = selection.end_object->GetDelegate()
+                                ->CreateTextPositionAt(selection.end_offset)
+                                ->AsLeafTextPosition();
+  std::optional<int> position_order = start_position->CompareTo(*end_position);
+  if (!position_order || *position_order >= 0) {
     return selections;
   }
 
@@ -4771,22 +4796,22 @@ bool AXPlatformNodeAuraLinux::SetDocumentTextSelections(GArray* selections) {
     return false;
   }
 
-  TextSelection selection = {
-      .start_object = start_node,
-      .start_offset = static_cast<int>(
-          start_node->UnicodeToUTF16OffsetInText(atk_selection.start_offset)),
-      .end_object = end_node,
-      .end_offset = static_cast<int>(
-          end_node->UnicodeToUTF16OffsetInText(atk_selection.end_offset)),
-      .start_is_active = static_cast<bool>(atk_selection.start_is_active),
+  auto to_dom_position = [](AXPlatformNodeAuraLinux* node, int offset) {
+    int utf16_offset = node->UnicodeToUTF16OffsetInText(offset);
+    // Prefer the end of the previous child when the offset falls on a boundary.
+    AXPosition position =
+        node->GetDelegate()
+            ->CreateTextPositionAt(utf16_offset,
+                                   ax::mojom::TextAffinity::kUpstream)
+            ->AsDomSelectionPosition();
+    // Skip ignored nodes that share this text offset.
+    return position->AsUnignoredSelectionPosition(
+        AXPositionAdjustmentBehavior::kMoveForward);
   };
 
   AXPosition start_position =
-      start_node->HypertextOffsetToEndpoint(selection.start_offset)
-          ->AsDomSelectionPosition();
-  AXPosition end_position =
-      end_node->HypertextOffsetToEndpoint(selection.end_offset)
-          ->AsDomSelectionPosition();
+      to_dom_position(start_node, atk_selection.start_offset);
+  AXPosition end_position = to_dom_position(end_node, atk_selection.end_offset);
   if (start_position->IsNullPosition() || end_position->IsNullPosition()) {
     return false;
   }
@@ -4799,7 +4824,40 @@ bool AXPlatformNodeAuraLinux::SetDocumentTextSelections(GArray* selections) {
     return false;
   }
 
-  return SetTextSelection(selection) == TextSelectionResult::kSuccess;
+  if (atk_selection.start_is_active) {
+    std::swap(start_position, end_position);
+  }
+  AXActionData action_data =
+      CreateTextSelectionAction(start_position, end_position);
+  auto adjust_image_endpoint = [this](const AXPosition& position,
+                                      AXNodeID& node_id, int& offset) {
+    auto* endpoint_node = GetDelegate()->GetFromTreeIDAndNodeID(
+        position->tree_id(), position->anchor_id());
+    if (!endpoint_node) {
+      return false;
+    }
+    if (ATK_IS_TEXT(endpoint_node->GetNativeViewAccessible())) {
+      return true;
+    }
+    const AXNode* node = position->GetAnchor();
+    const AXNode* parent = node->GetUnignoredParent();
+    if (!parent) {
+      return false;
+    }
+    // The action handler expects an index among unignored children. Preserve
+    // the side of the image: offset 0 is before it, and offset 1 is after it.
+    node_id = parent->id();
+    offset = static_cast<int>(node->GetUnignoredIndexInParent()) +
+             (position->AtEndOfAnchor() ? 1 : 0);
+    return true;
+  };
+  if (!adjust_image_endpoint(start_position, action_data.anchor_node_id,
+                             action_data.anchor_offset) ||
+      !adjust_image_endpoint(end_position, action_data.focus_node_id,
+                             action_data.focus_offset)) {
+    return false;
+  }
+  return GetDelegate()->AccessibilityPerformAction(action_data);
 }
 
 //
@@ -4840,7 +4898,7 @@ void AXPlatformNodeAuraLinux::AddAttributeToList(const char* name,
 
 void AXPlatformNodeAuraLinux::SetDocumentParent(
     AtkObject* new_document_parent) {
-  DCHECK(GetAtkRole() == ATK_ROLE_FRAME);
+  CHECK(GetAtkRole() == ATK_ROLE_FRAME, base::NotFatalUntil::M163);
   SetWeakGPtrToAtkObject(&document_parent_, new_document_parent);
 }
 
@@ -5151,8 +5209,8 @@ int AXPlatformNodeAuraLinux::FindStartOfStyle(
     int start_offset,
     ax::mojom::MoveDirection direction) {
   int text_length = GetHypertext().length();
-  DCHECK_GE(start_offset, 0);
-  DCHECK_LE(start_offset, text_length);
+  CHECK_GE(start_offset, 0, base::NotFatalUntil::M163);
+  CHECK_LE(start_offset, text_length, base::NotFatalUntil::M163);
 
   switch (direction) {
     case ax::mojom::MoveDirection::kNone:
@@ -5225,7 +5283,7 @@ void AXPlatformNodeAuraLinux::ActivateFindInPageResult(int start_offset,
   if (!atk_object)
     return;
 
-  DCHECK(ATK_IS_TEXT(atk_object));
+  CHECK(ATK_IS_TEXT(atk_object), base::NotFatalUntil::M163);
 
   if (!EmitsAtkTextEvents()) {
     ActivateFindInPageInParent(start_offset, end_offset);
@@ -5283,7 +5341,7 @@ void AXPlatformNodeAuraLinux::ActivateFindInPageInParent(int start_offset,
   if (!extents_in_parent.has_value())
     return;
 
-  DCHECK(IsText());
+  CHECK(IsText(), base::NotFatalUntil::M163);
   parent->ActivateFindInPageResult(extents_in_parent->first + start_offset,
                                    extents_in_parent->first + end_offset);
 }

@@ -10,6 +10,7 @@
 #include <string>
 
 #include "ash/constants/ash_features.h"
+#include "ash/public/cpp/notification_utils.h"
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/check_is_test.h"
@@ -20,7 +21,6 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/types/optional_util.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/extensions/file_manager/system_notification_manager.h"
 #include "chrome/browser/ash/file_manager/io_task.h"
 #include "chrome/browser/ash/file_manager/io_task_controller.h"
@@ -32,14 +32,16 @@
 #include "chrome/browser/chromeos/policy/dlp/dlp_confidential_file.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_file_destination.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_files_utils.h"
-#include "chrome/browser/notifications/notification_display_service.h"
-#include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "components/enterprise/data_controls/core/browser/dlp_histogram_helper.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/user_manager/user.h"
 #include "content/public/browser/browser_context.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_delegate.h"
 
@@ -173,18 +175,9 @@ std::u16string GetTimeoutNotificationMessage(dlp::FileAction action) {
   }
 }
 
-// Dismisses the notification with `notification_id`.
-void Dismiss(content::BrowserContext* context,
-             const std::string& notification_id) {
-  auto* profile = Profile::FromBrowserContext(context);
-  DCHECK(profile);
-  NotificationDisplayServiceFactory::GetForProfile(profile)->Close(
-      NotificationHandler::Type::TRANSIENT, notification_id);
-}
-
 file_manager::io_task::IOTaskController* GetIOTaskController(
     content::BrowserContext* context) {
-  DCHECK(context);
+  CHECK(context, base::NotFatalUntil::M160);
   file_manager::VolumeManager* const volume_manager =
       file_manager::VolumeManager::Get(Profile::FromBrowserContext(context));
   if (!volume_manager) {
@@ -215,6 +208,16 @@ bool HasCustomDialogSettings(
   return false;
 }
 
+// Removes the notification with `notification_id`, scoped to `user`, from
+// MessageCenter.
+void RemoveScopedNotification(const user_manager::User& user,
+                              const std::string& notification_id) {
+  message_center::MessageCenter::Get()->RemoveNotification(
+      ash::CreateUserScopedNotificationId(notification_id,
+                                          user.username_hash()),
+      /*by_user=*/false);
+}
+
 // Notification click handler implementation for files policy notifications.
 // The handler ensures that we only handle the button click once. This is
 // required because some of the parameters are move-only types and wouldn't be
@@ -227,8 +230,12 @@ class PolicyNotificationClickHandler
       : callback_(std::move(callback)) {}
 
   void Close(bool by_user) override {
-    // Treat any close reason as the user clicking the Cancel button.
-    Click(NotificationButton::CANCEL, /*reply=*/std::nullopt);
+    // Treat the user closing the notification as clicking the Cancel button.
+    // Ignore closes by code, such as FilesPolicyNotificationManager's own
+    // dismissal when the warning times out.
+    if (by_user) {
+      Click(NotificationButton::CANCEL, /*reply=*/std::nullopt);
+    }
   }
 
   // message_center::NotificationDelegate overrides:
@@ -256,9 +263,9 @@ class PolicyNotificationClickHandler
 FilesPolicyNotificationManager::FilesPolicyNotificationManager(
     content::BrowserContext* context)
     : context_(context),
+      user_(CHECK_DEREF(
+          ash::BrowserContextHelper::Get()->GetUserByBrowserContext(context))),
       task_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {
-  DCHECK(context);
-
   auto* io_task_controller = GetIOTaskController(context_);
   if (!io_task_controller) {
     LOG(ERROR) << "FilesPolicyNotificationManager failed to find "
@@ -380,7 +387,7 @@ void FilesPolicyNotificationManager::ShowDialog(
     file_manager::io_task::IOTaskId task_id,
     FilesDialogType type) {
   auto* profile = Profile::FromBrowserContext(context_);
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M160);
 
   // Get the last active Files app window.
   ash::BrowserDelegate* browser = FindSystemWebAppBrowser(
@@ -411,19 +418,18 @@ void FilesPolicyNotificationManager::ShowDlpWarningTimeoutNotification(
   // The notification should stay visible until dismissed.
   message_center::RichNotificationData optional_fields;
   optional_fields.never_timeout = true;
-  auto notification = file_manager::CreateSystemNotification(
+  auto notification = CreateSystemNotification(
       notification_id.value(), GetTimeoutNotificationTitle(action),
       GetTimeoutNotificationMessage(action),
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
-          base::BindRepeating(&Dismiss, context_, notification_id.value())),
+          base::BindRepeating(&FilesPolicyNotificationManager::Dismiss,
+                              weak_factory_.GetWeakPtr(),
+                              notification_id.value())),
       optional_fields);
   notification->set_buttons(
       {message_center::ButtonInfo(GetCancelButton(NotificationType::kError))});
-  auto* profile = Profile::FromBrowserContext(context_);
-  DCHECK(profile);
-  NotificationDisplayServiceFactory::GetForProfile(profile)->Display(
-      NotificationHandler::Type::TRANSIENT, *notification,
-      /*metadata=*/nullptr);
+  message_center::MessageCenter::Get()->AddNotification(
+      std::move(notification));
 }
 
 bool FilesPolicyNotificationManager::HasIOTask(
@@ -489,7 +495,7 @@ void FilesPolicyNotificationManager::HandleDlpWarningNotificationClick(
     return;
   }
 
-  Dismiss(context_, notification_id);
+  Dismiss(notification_id);
 
   CHECK(HasWarning(notification_id));
   auto* warning_info = non_io_tasks_.at(notification_id).GetWarningInfo();
@@ -542,7 +548,7 @@ void FilesPolicyNotificationManager::HandleDlpErrorNotificationClick(
     return;
   }
 
-  Dismiss(context_, notification_id);
+  Dismiss(notification_id);
 
   auto dialog_info = FilesPolicyDialog::Info::Error(
       FilesPolicyDialog::BlockReason::kDlp, files);
@@ -553,7 +559,7 @@ void FilesPolicyNotificationManager::HandleDlpErrorNotificationClick(
       // Nothing more to do.
       break;
     case NotificationButton::OK:
-      DCHECK(files.size() >= 1);
+      CHECK(files.size() >= 1, base::NotFatalUntil::M160);
 
       if (files.size() == 1 && !always_show_review) {
         // Learn more.
@@ -705,6 +711,23 @@ FilesPolicyNotificationManager::DialogInfo::DialogInfo(
 
 FilesPolicyNotificationManager::DialogInfo::~DialogInfo() = default;
 
+std::unique_ptr<message_center::Notification>
+FilesPolicyNotificationManager::CreateSystemNotification(
+    const std::string& notification_id,
+    const std::u16string& title,
+    const std::u16string& message,
+    scoped_refptr<message_center::NotificationDelegate> delegate,
+    message_center::RichNotificationData optional_fields) const {
+  return file_manager::CreateSystemNotification(
+      message_center::NOTIFICATION_TYPE_SIMPLE, *user_, notification_id, title,
+      message, std::move(delegate), std::move(optional_fields));
+}
+
+void FilesPolicyNotificationManager::Dismiss(
+    const std::string& notification_id) {
+  RemoveScopedNotification(*user_, notification_id);
+}
+
 void FilesPolicyNotificationManager::ShowFilesPolicyNotification(
     const std::string& notification_id,
     file_manager::io_task::IOTaskId task_id) {
@@ -748,7 +771,7 @@ void FilesPolicyNotificationManager::ShowFilesPolicyNotification(
     reason = task_info.block_info_map().begin()->first;
     always_show_review = HasCustomDialogSettings(task_info.block_info_map());
   }
-  auto notification = file_manager::CreateSystemNotification(
+  auto notification = CreateSystemNotification(
       notification_id, GetNotificationTitle(type, action, file_count),
       GetNotificationMessage(type, file_count, file_name, reason),
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
@@ -758,11 +781,8 @@ void FilesPolicyNotificationManager::ShowFilesPolicyNotification(
       {message_center::ButtonInfo(GetCancelButton(type)),
        message_center::ButtonInfo(
            GetOkButton(type, action, file_count, always_show_review))});
-  auto* profile = Profile::FromBrowserContext(context_);
-  DCHECK(profile);
-  NotificationDisplayServiceFactory::GetForProfile(profile)->Display(
-      NotificationHandler::Type::TRANSIENT, *notification,
-      /*metadata=*/nullptr);
+  message_center::MessageCenter::Get()->AddNotification(
+      std::move(notification));
 }
 
 void FilesPolicyNotificationManager::HandleFilesPolicyWarningNotificationClick(
@@ -780,7 +800,7 @@ void FilesPolicyNotificationManager::HandleFilesPolicyWarningNotificationClick(
     LOG(WARNING) << "Warning notification clicked but no warning info found";
     return;
   }
-  Dismiss(context_, notification_id);
+  Dismiss(notification_id);
 
   switch (button_index.value()) {
     case NotificationButton::CANCEL:
@@ -820,7 +840,7 @@ void FilesPolicyNotificationManager::HandleFilesPolicyErrorNotificationClick(
     return;
   }
 
-  Dismiss(context_, notification_id);
+  Dismiss(notification_id);
 
   switch (button_index.value()) {
     case NotificationButton::CANCEL:
@@ -1078,7 +1098,7 @@ void FilesPolicyNotificationManager::OnDlpLearnMoreButtonClicked(
 
   dlp::OpenLearnMore();
 
-  Dismiss(context_, notification_id);
+  Dismiss(notification_id);
 }
 
 void FilesPolicyNotificationManager::Resume(
@@ -1124,7 +1144,7 @@ void FilesPolicyNotificationManager::ShowDlpBlockNotification(
     // The notification should stay visible until actioned upon.
     message_center::RichNotificationData optional_fields;
     optional_fields.never_timeout = true;
-    notification = file_manager::CreateSystemNotification(
+    notification = CreateSystemNotification(
         notification_id,
         GetNotificationTitle(NotificationType::kError, action,
                              blocked_files.size()),
@@ -1173,7 +1193,7 @@ void FilesPolicyNotificationManager::ShowDlpBlockNotification(
         // TODO(b/269609831): Show correct notification here.
         return;
     }
-    notification = file_manager::CreateSystemNotification(
+    notification = CreateSystemNotification(
         notification_id, title, message,
         base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
             base::BindRepeating(
@@ -1183,11 +1203,8 @@ void FilesPolicyNotificationManager::ShowDlpBlockNotification(
         l10n_util::GetStringUTF16(IDS_LEARN_MORE))});
   }
 
-  auto* profile = Profile::FromBrowserContext(context_);
-  DCHECK(profile);
-  NotificationDisplayServiceFactory::GetForProfile(profile)->Display(
-      NotificationHandler::Type::TRANSIENT, *notification,
-      /*metadata=*/nullptr);
+  message_center::MessageCenter::Get()->AddNotification(
+      std::move(notification));
 }
 
 void FilesPolicyNotificationManager::ShowDlpWarningNotification(
@@ -1217,7 +1234,7 @@ void FilesPolicyNotificationManager::ShowDlpWarningNotification(
     // The notification should stay visible until actioned upon.
     message_center::RichNotificationData optional_fields;
     optional_fields.never_timeout = true;
-    auto notification = file_manager::CreateSystemNotification(
+    auto notification = CreateSystemNotification(
         notification_id,
         GetNotificationTitle(NotificationType::kWarning, action,
                              /*file_count=*/std::nullopt),
@@ -1229,11 +1246,8 @@ void FilesPolicyNotificationManager::ShowDlpWarningNotification(
             weak_factory_.GetWeakPtr(), notification_id)));
     notification->set_buttons(std::move(buttons));
 
-    auto* profile = Profile::FromBrowserContext(context_);
-    DCHECK(profile);
-    NotificationDisplayServiceFactory::GetForProfile(profile)->Display(
-        NotificationHandler::Type::TRANSIENT, *notification,
-        /*metadata=*/nullptr);
+    message_center::MessageCenter::Get()->AddNotification(
+        std::move(notification));
 
     // Start warning timer.
     non_io_tasks_warning_timers_[notification_id] =
@@ -1307,7 +1321,8 @@ void FilesPolicyNotificationManager::OnIOTaskAppLaunchTimedOut(
   if (pending_dialogs_.empty()) {
     return;
   }
-  DCHECK(pending_dialogs_.front()->task_id == task_id);
+  CHECK(pending_dialogs_.front()->task_id == task_id,
+        base::NotFatalUntil::M160);
   // Stop waiting for the Files App and fallback to system modal.
   data_controls::DlpBooleanHistogram(
       data_controls::dlp::kFilesAppOpenTimedOutUMA, /*value=*/true);
@@ -1321,7 +1336,8 @@ void FilesPolicyNotificationManager::OnNonIOTaskAppLaunchTimedOut(
   if (pending_dialogs_.empty()) {
     return;
   }
-  DCHECK(pending_dialogs_.front()->notification_id == notification_id);
+  CHECK(pending_dialogs_.front()->notification_id == notification_id,
+        base::NotFatalUntil::M160);
   // Stop waiting for the Files App and fallback to system modal.
   data_controls::DlpBooleanHistogram(
       data_controls::dlp::kFilesAppOpenTimedOutUMA, /*value=*/true);
@@ -1372,7 +1388,7 @@ void FilesPolicyNotificationManager::OnNonIOTaskWarningTimedOut(
   // Remove the timer.
   non_io_tasks_warning_timers_.erase(notification_id);
   // Dismiss the notification if it's still shown.
-  Dismiss(context_, notification_id);
+  Dismiss(notification_id);
   if (!HasWarning(notification_id)) {
     return;
   }

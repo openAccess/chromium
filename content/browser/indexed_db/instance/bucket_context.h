@@ -14,6 +14,7 @@
 #include <tuple>
 
 #include "base/auto_reset.h"
+#include "base/byte_size.h"
 #include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
@@ -26,7 +27,6 @@
 #include "base/trace_event/memory_dump_provider.h"
 #include "components/services/storage/indexed_db/locks/partitioned_lock_manager.h"
 #include "components/services/storage/privileged/cpp/bucket_client_info.h"
-#include "components/services/storage/privileged/mojom/indexed_db_client_state_checker.mojom.h"
 #include "components/services/storage/privileged/mojom/indexed_db_control_test.mojom.h"
 #include "components/services/storage/privileged/mojom/indexed_db_internals_types.mojom.h"
 #include "components/services/storage/public/cpp/buckets/bucket_info.h"
@@ -34,6 +34,7 @@
 #include "components/services/storage/public/cpp/quota_error_or.h"
 #include "components/services/storage/public/mojom/blob_storage_context.mojom.h"
 #include "components/services/storage/public/mojom/file_system_access_context.mojom.h"
+#include "content/browser/indexed_db/indexed_db_client_state_checker.h"
 #include "content/browser/indexed_db/indexed_db_data_loss_info.h"
 #include "content/browser/indexed_db/indexed_db_database_error.h"
 #include "content/browser/indexed_db/indexed_db_external_object.h"
@@ -60,6 +61,9 @@ enum class SqliteRolloutStage {
   // Use LevelDB exclusively; delete SQLite stores if found.
   // All on-disk stores emit metrics to the "OnDisk" variant.
   kUseLevelDbOnly,
+  // Use LevelDB for new stores and keep existing SQLite stores on SQLite.
+  // All on-disk stores emit metrics to the "OnDisk" variant.
+  kUseLevelDbForNewStores,
   // Functionally, the same as `kUseLevelDbOnly`.
   // On-disk stores created during this stage emit metrics to the "Experimental"
   // variant and previously existing stores emit to the "OnDisk" variant.
@@ -71,6 +75,12 @@ enum class SqliteRolloutStage {
   // Use SQLite exclusively; delete LevelDB stores if found.
   // All on-disk stores emit metrics to the "OnDisk" variant.
   kUseSqliteOnly,
+  // Like kUseSqliteForNewStores, but additionally, will migrate existing
+  // LevelDB-backed stores to SQLite under certain conditions. This migration
+  // happens when the store is being closed (to avoid delays when the store is
+  // first opened/read), and is avoided when the browser is shutting down (to
+  // avoid shutdown slowness/hangs).
+  kMigrateDataToSqliteGentle,
 };
 
 // BucketContext manages the per-bucket IndexedDB state, and other important
@@ -121,7 +131,7 @@ class CONTENT_EXPORT BucketContext
     Delegate(const Delegate&) = delete;
     Delegate& operator=(const Delegate&) = delete;
 
-    base::OnceClosure on_destroyed;
+    base::ScopedClosureRunner on_destroyed;
 
     // Called when the bucket context is ready to be destroyed. After this is
     // called, the bucket context will no longer accept new IDBFactory
@@ -133,8 +143,6 @@ class CONTENT_EXPORT BucketContext
     // `on_ready_for_destruction`.
     base::RepeatingCallback<void(
         const storage::BucketClientInfo& /*client_info*/,
-        mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
-        /*client_state_checker_remote*/,
         mojo::PendingReceiver<blink::mojom::IDBFactory> /*pending_receiver*/)>
         on_receiver_bounced;
 
@@ -150,6 +158,9 @@ class CONTENT_EXPORT BucketContext
     // the amount of disk space used has completed. The parameter is true for
     // transactions that caused the backing store to flush.
     base::RepeatingCallback<void(bool /*did_sync*/)> on_files_written;
+
+    // Called to check whether a client is active and disallow inactivity.
+    DisallowInactiveClientCallback client_state_checker;
   };
 
   BucketContext(storage::BucketInfo bucket_info,
@@ -228,7 +239,7 @@ class CONTENT_EXPORT BucketContext
   // response. If it is null, the check is considered a dry-run, which warms up
   // the space cache but doesn't decrement from it.
   void CheckCanUseDiskSpace(
-      int64_t space_requested,
+      base::ByteSizeDelta space_requested,
       base::OnceCallback<void(bool)> disk_space_check_callback);
 
   // Create external objects from |objects| and store the results in
@@ -270,8 +281,6 @@ class CONTENT_EXPORT BucketContext
 
   void AddReceiver(
       const storage::BucketClientInfo& client_info,
-      mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
-          client_state_checker_remote,
       mojo::PendingReceiver<blink::mojom::IDBFactory> pending_receiver);
 
   // blink::mojom::IDBFactory implementation:
@@ -307,6 +316,7 @@ class CONTENT_EXPORT BucketContext
   void FlushBackingStoreForTesting();
   void BindMockFailureSingletonForTesting(
       mojo::PendingReceiver<storage::mojom::MockFailureInjector> receiver);
+  void PerformAndVerifySqliteMigrationForTesting();
 
   // Called when a fatal error has occurred that should result in tearing down
   // the backing store. `BucketContext` *may* be synchronously destroyed after
@@ -331,6 +341,11 @@ class CONTENT_EXPORT BucketContext
   friend class TransactionTestBase;
 
   FRIEND_TEST_ALL_PREFIXES(IndexedDBTest, CompactionKillSwitchWorks);
+  FRIEND_TEST_ALL_PREFIXES(IndexedDBTest, FactoryForceClose);
+  FRIEND_TEST_ALL_PREFIXES(IndexedDBTest,
+                           ForceCloseOpenDatabasesOnDatabaseError);
+  FRIEND_TEST_ALL_PREFIXES(IndexedDBTestWithBucketType,
+                           ForceCloseOpenDatabasesOnDelete);
   FRIEND_TEST_ALL_PREFIXES(IndexedDBTest, PreCloseTasksStart);
   FRIEND_TEST_ALL_PREFIXES(IndexedDBTest, TooLongOrigin);
   FRIEND_TEST_ALL_PREFIXES(IndexedDBTest, BasicFactoryCreationAndTearDown);
@@ -339,6 +354,7 @@ class CONTENT_EXPORT BucketContext
   FRIEND_TEST_ALL_PREFIXES(BucketContextTest, MetadataRecordingStateHistory);
   FRIEND_TEST_ALL_PREFIXES(BucketContextTest,
                            OverrideShouldUseSqliteForTesting);
+  FRIEND_TEST_ALL_PREFIXES(TransactionTestMode, TaskFails);
 
   // Overrides the rollout stage for this instance only. Must be called before
   // backing store initialization.
@@ -347,10 +363,7 @@ class CONTENT_EXPORT BucketContext
   // The data structure that stores everything bound to the receiver. This will
   // be stored together with the receiver in the `mojo::ReceiverSet`.
   struct ReceiverContext {
-    ReceiverContext(
-        const storage::BucketClientInfo& client_info,
-        mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
-            client_state_checker_remote);
+    explicit ReceiverContext(const storage::BucketClientInfo& client_info);
 
     ~ReceiverContext();
 
@@ -360,9 +373,22 @@ class CONTENT_EXPORT BucketContext
     ReceiverContext& operator=(ReceiverContext&&) = delete;
 
     const storage::BucketClientInfo client_info;
-    mojo::Remote<storage::mojom::IndexedDBClientStateChecker>
-        client_state_checker_remote;
   };
+
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(BackingStoreResetReason)
+  enum class BackingStoreResetReason {
+    kContextShutdown = 0,
+    kBucketDeletion = 1,
+    kInternalsPage = 2,
+    kNoConnections = 3,
+    kCorruption = 4,
+    kDatabaseError = 5,
+    kMaxValue = kDatabaseError,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/storage/enums.xml:IndexedDbBackingStoreResetReason)
 
   void DoForceClose(bool doom, const std::string& message);
 
@@ -409,8 +435,11 @@ class CONTENT_EXPORT BucketContext
       bool create_if_missing);
 
   // Destroys `backing_store_` and all associated state. If there are no
-  // receivers remaining, it will also destroy `this`.
-  void ResetBackingStore();
+  // receivers remaining, it will also destroy `this`. When `migrate` is true,
+  // the backing store *may* be migrated to SQLite, assuming other conditions
+  // are met.
+  void ResetBackingStore(bool migrate = false);
+  void LogBackingStoreResetReason(BackingStoreResetReason reason);
 
   // Called when a receiver from `receiver_set_` has been disconnected. If there
   // are no receivers left and the backing store is already destroyed, this will
@@ -436,7 +465,9 @@ class CONTENT_EXPORT BucketContext
 
   // Set at construction. Can be overridden by
   // `SetSqliteRolloutStageForTesting()`.
-  SqliteRolloutStage sqlite_rollout_stage_;
+  const SqliteRolloutStage sqlite_rollout_stage_;
+
+  bool verify_migration_for_testing_ = false;
 
   bool running_tasks_ = false;
 

@@ -22,6 +22,7 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 namespace content {
 class WebContents;
@@ -55,7 +56,7 @@ class ActorLoginSiwgController : public ActorLoginSiwgControllerInterface,
       ActorLoginPermissionService& permission_service,
       LoginStatusResultOrErrorReply on_finished_callback,
       base::WeakPtr<ActionSequenceDelegate> action_sequence_delegate,
-      base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger,
+      scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger,
       base::TimeTicks attempt_login_tool_start_time,
       PostButtonClickLoginResultCallback
           post_button_click_login_result_callback);
@@ -67,7 +68,7 @@ class ActorLoginSiwgController : public ActorLoginSiwgControllerInterface,
       ActorLoginPermissionService& permission_service,
       LoginStatusResultOrErrorReply on_finished_callback,
       base::WeakPtr<ActionSequenceDelegate> action_sequence_delegate,
-      base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger,
+      scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger,
       base::TimeTicks attempt_login_tool_start_time,
       PostButtonClickLoginResultCallback
           post_button_click_login_result_callback);
@@ -100,7 +101,7 @@ class ActorLoginSiwgController : public ActorLoginSiwgControllerInterface,
                            content::RenderFrameHost* source_render_frame_host,
                            const GURL& url,
                            const content::Referrer& referrer,
-                           WindowOpenDisposition disposition,
+                           ui::mojom::WindowOpenDisposition disposition,
                            ui::PageTransition transition,
                            bool started_from_context_menu,
                            bool renderer_initiated) override;
@@ -145,7 +146,12 @@ class ActorLoginSiwgController : public ActorLoginSiwgControllerInterface,
   optimization_guide::proto::ActorLoginQuality_AttemptLoginDetails
       federated_attempt_login_details_;
 
-  base::WeakPtr<ActorLoginQualityLoggerInterface> mqls_logger_;
+  // Collects the model quality log of the login flow. Shared with the other
+  // participants of the flow, the log is uploaded once the last of them is
+  // gone. This controller is usually that last one, as it reports the outcome
+  // of the login only after the Sign-in-with-Google button was clicked, which
+  // happens after the tool which started the flow is gone.
+  scoped_refptr<ActorLoginQualityLoggerInterface> mqls_logger_;
   base::TimeTicks attempt_login_tool_start_time_;
 
   // Callback to notify when the federated login flow ends after a button click.

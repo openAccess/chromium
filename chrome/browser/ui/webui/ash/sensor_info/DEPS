@@ -9,14 +9,25 @@ include_rules = [
   # directory to #include its own files.
   "+chrome/browser/ui/webui/ash/sensor_info",
 
+  # Other ash directories in //chrome.
+  "+chrome/browser/ash/file_manager",
+
   # Existing dependencies within //chrome. There is an active effort to
   # refactor //chrome/browser/ui/ash to break these dependencies; see b/332804822.
   # Whenever possible, avoid adding new //chrome dependencies to this list.
-  "+chrome/browser/ash/file_manager",
   "+chrome/browser/download",
   "+chrome/browser/profiles/profile.h",
-  "+chrome/browser/search/background",
-  "+chrome/browser/search_engines",
   "+chrome/grit",
   "+chrome/test/base",
 ]
+
+specific_include_rules = {
+  # Only tests need these //chrome dependencies.
+  ".*_(unittest|browsertest|apitest|uitest)\\.cc": [
+    "+chrome/browser/search/background",
+  ],
+  # Only used to install a TestingFactory for the test.
+  "sensor_page_handler_unittest\\.cc": [
+    "+chrome/browser/search_engines",
+  ],
+}

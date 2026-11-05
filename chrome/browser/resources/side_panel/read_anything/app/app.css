@@ -20,7 +20,11 @@
   --immersive-menu-font-weight: 400;
 }
 
-#lineFocus {
+/* Scope #lineFocus to the direct child of #appFlexParent so it cannot match
+   any element in distilled page content that happens to have id="lineFocus".
+   Wrapping the parent check in :where() gives it zero specificity so rules
+   like #lineFocus.line-mode below can still override its properties. */
+:where(:host > #appFlexParent) > #lineFocus {
   position: absolute;
   top: var(--line-focus-y);
   left: var(--line-focus-left);
@@ -104,6 +108,17 @@
   padding-left: var(--sp-card-block-padding);
   padding-right: var(--sp-card-block-padding);
   padding-bottom: var(--sp-card-block-padding);
+}
+
+/* While waiting for translation, keep the content laid out at full size so it
+   can be translated, but take it out of flow (so the loading screen occupies
+   its place) and hide it. Uses visibility rather than display:none so the
+   content still has layout. */
+#appFlexParent #containerParent.awaiting-translation {
+  inset: 0;
+  pointer-events: none;
+  position: fixed;
+  visibility: hidden;
 }
 
 /* Provides vertical and horizontal scrolling */
@@ -343,19 +358,6 @@
   font-family: inherit;
 }
 
-#docs-load-more-button {
-  background: var(--color-sys-tonal-container);
-  margin: 0 auto;
-  border-width: 0;
-  width: 10em;
-  max-width: 100%;
-  height: 3em;
-  font-size: var(--font-size);
-  color: var(--cr-primary-text-color);
-  display: flex;
-  justify-content: center;
-}
-
 figure:has(img.distilled-full-width-img) {
   margin-inline: 0;
 }
@@ -369,6 +371,10 @@ img.distilled-inline-img {
 img.distilled-full-width-img {
   display: block;
   width: 100%;
+  /* Fill the panel, but never past the image's own intrinsic width, which for
+   * a replaced element is its max-content size. Without this, an image
+   * narrower than the panel is upscaled and looks blurry. */
+  max-width: max-content;
   height: auto;
 }
 
@@ -379,7 +385,7 @@ img.possibly-transparent-img {
   clip-path: inset(0);
 }
 
-.settings-overlay {
+:host > #appFlexParent > .settings-overlay {
   width: 100vw;
   height: 100vh;
   position: fixed;
@@ -388,4 +394,53 @@ img.possibly-transparent-img {
   background-color: transparent;
   z-index: 9998;
   display: none;
+}
+
+@media print {
+  #toolbar-container,
+  #lineFocus,
+  #empty-state-container,
+  language-toast,
+  .settings-overlay {
+    display: none;
+  }
+
+  :host {
+    height: auto;
+    overflow: visible;
+    print-color-adjust: exact;
+    background-color: var(--background-color);
+    color: var(--foreground-color);
+  }
+
+  /* Expand the scrollers so that all content prints, not just one page. */
+  #appFlexParent,
+  #containerParent,
+  #containerScroller {
+    display: block !important;
+    height: auto !important;
+    max-height: none;
+    overflow: visible !important;
+  }
+
+  .sp-scroller.fade {
+    mask-image: none;
+  }
+
+  #appFlexParent #container {
+    height: auto;
+    overflow: visible;
+    max-width: 100%;
+    /* Override the line focus padding set by the #appFlexParent #container
+     * rule above. It only exists so the first and last lines can scroll to
+     * the middle of the screen, and would print as blank space. */
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  .current-read-highlight,
+  .previous-read-highlight {
+    background: transparent !important;
+    color: inherit !important;
+  }
 }

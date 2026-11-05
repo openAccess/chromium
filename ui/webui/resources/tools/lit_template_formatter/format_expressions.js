@@ -40,21 +40,21 @@ const ExpressionConfig = {
     columnLimitAdjustment: -3,
   },
   [ExpressionType.TERNARY]: {
-    unwrap: (code) => code.substring(2),
+    unwrap: (code) => code.substring(2).replace(/html\s*`$/, 'html`'),
     wrap: (code) => code + '` : \'\'',
     restore: (formatted) => formatted.replace(/\s*`\s*:\s*['"]['"]\s*$/, ''),
     prependToFinal: '${',
-    columnLimitAdjustment: 3,
+    columnLimitAdjustment: -2,
   },
   [ExpressionType.ARROW]: {
-    unwrap: (code) => code.substring(2),
+    unwrap: (code) => code.substring(2).replace(/html\s*`$/, 'html`'),
     wrap: (code) => code + '`)',
     restore: (formatted) => formatted.replace(/\s*`\s*\)\s*$/, ''),
     prependToFinal: '${',
-    columnLimitAdjustment: 0,
+    columnLimitAdjustment: -2,
   },
   [ExpressionType.TERNARY_FALSE]: {
-    unwrap: (code) => code,
+    unwrap: (code) => code.replace(/html\s*`$/, 'html`'),
     wrap: (code) => 'true ? null' + code + '`',
     restore: (formatted) => {
       let res = formatted.replace(/^\s*true\s*\?\s*null/, '');
@@ -68,12 +68,11 @@ const ExpressionConfig = {
 
 /**
  * Computes the column limit for clang-format for an expression.
- * For attributes (e.g. attr="${expr}"), the initial limit accounts for the
- * attribute indentation (WRAPPED_LINE_INDENT_SIZE) but not the attribute name
- * itself, since subsequent lines of multiline expressions are aligned with the
- * attribute indent rather than the attribute name. If the first line of the
- * formatted expression exceeds the space available with the attribute name, it
- * will be wrapped to a new line after "${".
+ * For attributes (e.g. attr="${expr}"), the limit accounts for the attribute
+ * indentation (WRAPPED_LINE_INDENT_SIZE) and the closing '}">' (-3 via
+ * columnLimitAdjustment), while the attribute name and '="${' on the opening
+ * line are accounted for by prepending a synthetic assignment prefix of the
+ * same length (`x...x = `) to the snippet passed to clang-format.
  */
 function computeColumnLimit(value, type) {
   const indent = value.indent || 0;
@@ -91,10 +90,10 @@ function computeColumnLimit(value, type) {
  * @param {string} filePath Path to the file being formatted.
  */
 export async function formatTsExpressions(
-    placeholderMap, clangFormatPath, _filePath) {
+    placeholderMap, clangFormatPath, filePath) {
   for (const [key, value] of placeholderMap.entries()) {
     if (key.startsWith('/') || key.startsWith(PROP_PREFIX) ||
-        key.startsWith(FORMAT_OFF_PREFIX) || value.nested ||
+        key.startsWith(FORMAT_OFF_PREFIX) || value.nested || value.formatOff ||
         (key.startsWith(FALSE_TEMPLATE_PREFIX) && !value.isTemplate)) {
       // Skip closing tags, property name placeholders,
       // format-off placeholders, nested templates, and false template
@@ -110,59 +109,52 @@ export async function formatTsExpressions(
     } else if (code.startsWith('${') && code.endsWith('}')) {
       type = ExpressionType.EXPRESSION;
     } else if (code.startsWith('${')) {
-      if (/\?\s*html`$/.test(code)) {
+      if (/\?\s*html\s*`$/.test(code)) {
         type = ExpressionType.TERNARY;
       } else {
-        assert.ok(/=>\s*html`$/.test(code));
+        assert.ok(
+            /=>\s*html\s*`$/.test(code),
+            `Error formatting ${filePath}: Unsupported nested html\`...\` ` +
+                `expression:\n  ${code.trim()}\n` +
+                'Nested html`...` templates are only supported in ternary ' +
+                'branches (`cond ? html`...` : html`...``) and concise ' +
+                'arrow functions (`(...) => html`...``).');
         type = ExpressionType.ARROW;
       }
     }
 
     const config = ExpressionConfig[type];
     let codeToFormat = config.wrap(config.unwrap(code));
-    codeToFormat = codeToFormat.trim();
+    codeToFormat =
+        codeToFormat.trim().split('\n').map(l => l.trim()).join('\n');
 
     const limit = computeColumnLimit(value, type);
+    const attrPrefix =
+        value.attrName ? 'x'.repeat(value.attrName.length + 1) + ' = ' : '';
+    const inputToFormat = attrPrefix + codeToFormat;
 
     // If the snippet is a simple identifier, property access, or negation that
     // already fits within the column limit, clang-format will never modify it.
     // Skip spawning a process to improve formatting speed.
     const isSimpleToken = /^!*[a-zA-Z0-9_$.]+$/.test(codeToFormat) &&
-        codeToFormat.length <= limit;
+        inputToFormat.length <= limit;
     let formattedCode = codeToFormat;
     if (!isSimpleToken) {
       // Run clang-format on the snippet using inline JSON style override
       const style = `{BasedOnStyle: Chromium, ColumnLimit: ${limit}}`;
       formattedCode = await runClangFormat(
           clangFormatPath, ['-assume-filename=f.ts', `-style=${style}`],
-          codeToFormat);
+          inputToFormat);
 
       // Remove trailing newline added by clang-format if any
       formattedCode = formattedCode.replace(/\n$/, '');
+      if (attrPrefix) {
+        formattedCode = formattedCode.replace(/^x+ *= ?/, '');
+      }
     }
 
-    let baseIndent =
+    const baseIndent =
         (value.indent || 0) + (value.attrName ? WRAPPED_LINE_INDENT_SIZE : 0);
-    // For attributes (e.g. attr="${expr}"), the opening line has the attribute
-    // name, '="' (2 chars), and the closing '"' (1 char). Subtract the
-    // additional characters beyond what columnLimitAdjustment (-3 for '${' and
-    // '}') already accounts for to check if the first line fits with the
-    // attribute name. If not, put the expression on a new line after "${".
-    const firstLineLimit =
-        value.attrName ? limit - (value.attrName.length + 3) : limit;
-    if (value.attrName &&
-        formattedCode.split('\n')[0].length > firstLineLimit) {
-      baseIndent += WRAPPED_LINE_INDENT_SIZE;
-      const newLimit = 80 - baseIndent + config.columnLimitAdjustment;
-      if (newLimit !== limit) {
-        const newStyle = `{BasedOnStyle: Chromium, ColumnLimit: ${newLimit}}`;
-        formattedCode = await runClangFormat(
-            clangFormatPath, ['-assume-filename=f.ts', `-style=${newStyle}`],
-            codeToFormat);
-        formattedCode = formattedCode.replace(/\n$/, '');
-      }
-      formattedCode = '\n' + formattedCode;
-    }
 
     // Apply indentation to later lines of multiline expressions.
     if (formattedCode.includes('\n')) {

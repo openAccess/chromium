@@ -4,7 +4,8 @@
 
 #include "chrome/browser/component_updater/file_type_policies_component_installer.h"
 
-#include <cstdint>
+#include <stdint.h>
+
 #include <memory>
 #include <string>
 #include <utility>
@@ -20,21 +21,21 @@
 #include "base/task/thread_pool.h"
 #include "base/version.h"
 #include "components/component_updater/component_updater_paths.h"
-#include "components/safe_browsing/content/common/file_type_policies.h"
+#include "components/safe_browsing/content/common/file_type_policies/file_type_policies.h"
 
 namespace {
 
-const base::FilePath::CharType kFileTypePoliciesBinaryPbFileName[] =
+constexpr base::FilePath::CharType kFileTypePoliciesBinaryPbFileName[] =
     FILE_PATH_LITERAL("download_file_types.pb");
 
 // The SHA256 of the SubjectPublicKeyInfo used to sign the extension.
 // The extension id is: khaoiebndkojlmppeemjhbpbandiljpe
-const uint8_t kFileTypePoliciesPublicKeySHA256[32] = {
+constexpr uint8_t kFileTypePoliciesPublicKeySHA256[32] = {
     0xa7, 0x0e, 0x84, 0x1d, 0x3a, 0xe9, 0xbc, 0xff, 0x44, 0xc9, 0x71,
     0xf1, 0x0d, 0x38, 0xb9, 0xf4, 0x65, 0x92, 0x31, 0x01, 0x47, 0x3f,
     0x1b, 0x7c, 0x11, 0xb0, 0x85, 0x0f, 0xa3, 0xfd, 0xe1, 0xe5};
 
-const char kFileTypePoliciesManifestName[] = "File Type Policies";
+constexpr char kFileTypePoliciesManifestName[] = "File Type Policies";
 
 void LoadFileTypesFromDisk(const base::FilePath& pb_path) {
   if (pb_path.empty()) {

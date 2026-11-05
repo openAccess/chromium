@@ -22,6 +22,7 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/memory_coordinator_browsertest_util.h"
 
 namespace glic {
 
@@ -33,9 +34,7 @@ class DISABLED_GlicProfileManagerUiTest : public test::InteractiveGlicTest {
  public:
   DISABLED_GlicProfileManagerUiTest() {
     std::vector<base::test::FeatureRefAndParams> enabled = {
-        {features::kGlicWarming,
-         {{features::kGlicWarmingDelayMs.name, "0"},
-          {features::kGlicWarmingJitterMs.name, "0"}}}};
+        {features::kGlicWarming, {{features::kGlicWarmingDelayMs.name, "0"}}}};
     feature_list_.InitWithFeaturesAndParameters(enabled, {});
   }
 
@@ -142,9 +141,9 @@ class DISABLED_GlicProfileManagerUiTest : public test::InteractiveGlicTest {
   }
 
   auto SendMemoryPressureSignal() {
-    return Do([]() {
-      base::MemoryPressureListener::SimulatePressureNotification(
-          base::MEMORY_PRESSURE_LEVEL_CRITICAL);
+    return Do([this]() {
+      memory_limit_override_.SetLimit(base::kCriticalMemoryPressureThreshold);
+      memory_limit_override_.NotifyReleaseMemory();
     });
   }
 
@@ -156,6 +155,8 @@ class DISABLED_GlicProfileManagerUiTest : public test::InteractiveGlicTest {
   base::FilePath second_profile_path_;
   raw_ptr<content::WebContents> web_client_contents_ = nullptr;
   base::test::ScopedFeatureList feature_list_;
+  content::test::ScopedMemoryLimitOverride memory_limit_override_{
+      GlicInstanceCoordinatorImpl::kMemoryConsumerName};
 };
 
 IN_PROC_BROWSER_TEST_F(DISABLED_GlicProfileManagerUiTest, ConsistentPreload) {

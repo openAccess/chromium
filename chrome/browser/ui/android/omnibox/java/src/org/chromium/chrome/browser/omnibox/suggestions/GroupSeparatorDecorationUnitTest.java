@@ -8,22 +8,19 @@ import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
-import android.app.Activity;
+import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Rect;
+import android.view.ContextThemeWrapper;
 import android.view.View;
 
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.test.filters.SmallTest;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -32,27 +29,65 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
-import org.robolectric.Robolectric;
-import org.robolectric.android.controller.ActivityController;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties.GroupSeparatorType;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 /** Tests for {@link GroupSeparatorDecoration}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class GroupSeparatorDecorationUnitTest {
-    @Rule
-    public final MockitoRule mockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
+    private static class TestRecyclerView extends RecyclerView {
+        private final List<View> mChildren = new ArrayList<>();
+        private final Map<View, ViewHolder> mViewHolders = new HashMap<>();
 
-    @Mock private RecyclerView mRecyclerView;
-    @Mock private View mChildViewWithLineSeparator;
-    @Mock private View mChildViewWithGapSeparator;
-    @Mock private View mChildViewWithNoSeparator;
+        TestRecyclerView(Context context) {
+            super(context);
+        }
+
+        void registerViewHolder(View view, ViewHolder holder) {
+            mViewHolders.put(view, holder);
+        }
+
+        @Override
+        public void addView(View child) {
+            mChildren.add(child);
+        }
+
+        @Override
+        public int getChildCount() {
+            return mChildren.size();
+        }
+
+        @Override
+        public View getChildAt(int index) {
+            return mChildren.get(index);
+        }
+
+        @Override
+        public ViewHolder getChildViewHolder(View child) {
+            return mViewHolders.get(child);
+        }
+    }
+
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
+
     @Mock private RecyclerView.State mState;
     @Mock private Canvas mCanvas;
+
+    private TestRecyclerView mRecyclerView;
+    private View mChildViewWithLineSeparator;
+    private View mChildViewWithGapSeparator;
+    private View mChildViewWithNoSeparator;
 
     private SimpleRecyclerViewAdapter.ViewHolder mLineSeparatorViewHolder;
     private SimpleRecyclerViewAdapter.ViewHolder mGapSeparatorViewHolder;
@@ -62,8 +97,7 @@ public class GroupSeparatorDecorationUnitTest {
     private PropertyModel mGapSeparatorModel;
     private PropertyModel mNoSeparatorModel;
 
-    private ActivityController<Activity> mActivityController;
-    private Activity mActivity;
+    private Context mContext;
     private GroupSeparatorDecoration mDecoration;
     private int mExpectedHeight;
 
@@ -88,12 +122,17 @@ public class GroupSeparatorDecorationUnitTest {
                                 GroupSeparatorType.NONE)
                         .build();
 
-        mActivityController = Robolectric.buildActivity(Activity.class);
-        mActivity = mActivityController.setup().get();
-        mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
-        mDecoration = new GroupSeparatorDecoration(mActivity);
+        mContext =
+                new ContextThemeWrapper(
+                        ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
+        mDecoration = new GroupSeparatorDecoration(mContext);
+        mRecyclerView = new TestRecyclerView(mContext);
 
-        Resources res = mActivity.getResources();
+        mChildViewWithLineSeparator = new View(mContext);
+        mChildViewWithGapSeparator = new View(mContext);
+        mChildViewWithNoSeparator = new View(mContext);
+
+        Resources res = mContext.getResources();
         mExpectedHeight =
                 res.getDimensionPixelSize(R.dimen.divider_height)
                         + res.getDimensionPixelSize(
@@ -109,27 +148,12 @@ public class GroupSeparatorDecorationUnitTest {
         mGapSeparatorViewHolder.model = mGapSeparatorModel;
         mNoSeparatorViewHolder.model = mNoSeparatorModel;
 
-        lenient()
-                .doReturn(mLineSeparatorViewHolder)
-                .when(mRecyclerView)
-                .getChildViewHolder(mChildViewWithLineSeparator);
-        lenient()
-                .doReturn(mGapSeparatorViewHolder)
-                .when(mRecyclerView)
-                .getChildViewHolder(mChildViewWithGapSeparator);
-        lenient()
-                .doReturn(mNoSeparatorViewHolder)
-                .when(mRecyclerView)
-                .getChildViewHolder(mChildViewWithNoSeparator);
-    }
-
-    @After
-    public void tearDown() {
-        mActivityController.close();
+        mRecyclerView.registerViewHolder(mChildViewWithLineSeparator, mLineSeparatorViewHolder);
+        mRecyclerView.registerViewHolder(mChildViewWithGapSeparator, mGapSeparatorViewHolder);
+        mRecyclerView.registerViewHolder(mChildViewWithNoSeparator, mNoSeparatorViewHolder);
     }
 
     @Test
-    @SmallTest
     public void testGetItemOffsets_withLineSeparator() {
         Rect outRect = new Rect();
         mDecoration.getItemOffsets(outRect, mChildViewWithLineSeparator, mRecyclerView, mState);
@@ -140,7 +164,6 @@ public class GroupSeparatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetItemOffsets_withGapSeparator() {
         Rect outRect = new Rect();
         mDecoration.getItemOffsets(outRect, mChildViewWithGapSeparator, mRecyclerView, mState);
@@ -151,7 +174,6 @@ public class GroupSeparatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetItemOffsets_noSeparator() {
         Rect outRect = new Rect();
         mDecoration.getItemOffsets(outRect, mChildViewWithNoSeparator, mRecyclerView, mState);
@@ -162,27 +184,23 @@ public class GroupSeparatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDraw_withLineSeparator() {
-        doReturn(1).when(mRecyclerView).getChildCount();
-        doReturn(mChildViewWithLineSeparator).when(mRecyclerView).getChildAt(0);
         RecyclerView.LayoutParams lp =
                 new RecyclerView.LayoutParams(
                         RecyclerView.LayoutParams.WRAP_CONTENT,
                         RecyclerView.LayoutParams.WRAP_CONTENT);
         lp.topMargin = 10;
-        doReturn(lp).when(mChildViewWithLineSeparator).getLayoutParams();
-        doReturn(100).when(mChildViewWithLineSeparator).getTop();
+        mChildViewWithLineSeparator.setLayoutParams(lp);
+        mRecyclerView.addView(mChildViewWithLineSeparator);
+        mChildViewWithLineSeparator.setTop(100);
 
-        doReturn(10).when(mRecyclerView).getPaddingLeft();
-        doReturn(200).when(mRecyclerView).getWidth();
-        doReturn(20).when(mRecyclerView).getPaddingRight();
+        mRecyclerView.setPadding(10, 0, 20, 0);
+        mRecyclerView.setRight(200);
 
         mDecoration.onDraw(mCanvas, mRecyclerView, mState);
 
         int expectedPadding =
-                mActivity
-                        .getResources()
+                mContext.getResources()
                         .getDimensionPixelSize(
                                 R.dimen.omnibox_suggestion_list_divider_line_horizontal_padding);
         int expectedLeft = 10 + expectedPadding;
@@ -199,19 +217,17 @@ public class GroupSeparatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDraw_withGapSeparator() {
-        doReturn(1).when(mRecyclerView).getChildCount();
-        doReturn(mChildViewWithGapSeparator).when(mRecyclerView).getChildAt(0);
         RecyclerView.LayoutParams lp =
                 new RecyclerView.LayoutParams(
                         RecyclerView.LayoutParams.WRAP_CONTENT,
                         RecyclerView.LayoutParams.WRAP_CONTENT);
         lp.topMargin = 10;
+        mChildViewWithGapSeparator.setLayoutParams(lp);
+        mRecyclerView.addView(mChildViewWithGapSeparator);
 
-        doReturn(10).when(mRecyclerView).getPaddingLeft();
-        doReturn(200).when(mRecyclerView).getWidth();
-        doReturn(20).when(mRecyclerView).getPaddingRight();
+        mRecyclerView.setPadding(10, 0, 20, 0);
+        mRecyclerView.setRight(200);
 
         mDecoration.onDraw(mCanvas, mRecyclerView, mState);
 
@@ -221,19 +237,17 @@ public class GroupSeparatorDecorationUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnDraw_noSeparator() {
-        doReturn(1).when(mRecyclerView).getChildCount();
-        doReturn(mChildViewWithNoSeparator).when(mRecyclerView).getChildAt(0);
         RecyclerView.LayoutParams lp =
                 new RecyclerView.LayoutParams(
                         RecyclerView.LayoutParams.WRAP_CONTENT,
                         RecyclerView.LayoutParams.WRAP_CONTENT);
         lp.topMargin = 10;
+        mChildViewWithNoSeparator.setLayoutParams(lp);
+        mRecyclerView.addView(mChildViewWithNoSeparator);
 
-        doReturn(10).when(mRecyclerView).getPaddingLeft();
-        doReturn(200).when(mRecyclerView).getWidth();
-        doReturn(20).when(mRecyclerView).getPaddingRight();
+        mRecyclerView.setPadding(10, 0, 20, 0);
+        mRecyclerView.setRight(200);
 
         mDecoration.onDraw(mCanvas, mRecyclerView, mState);
 

@@ -5,14 +5,13 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_INTEGRATORS_AT_MEMORY_MEMORY_SEARCH_RESULT_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_INTEGRATORS_AT_MEMORY_MEMORY_SEARCH_RESULT_H_
 
+#include <cstdint>
 #include <iosfwd>
-#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
 #include <vector>
 
-#include "base/functional/callback.h"
 #include "components/autofill/core/browser/integrators/at_memory/memory_data_type.h"
 #include "components/personal_context/proto/features/at_memory.equal.h"
 #include "components/personal_context/proto/features/at_memory.pb.h"
@@ -119,14 +118,6 @@ struct MemorySearchResult {
   // The index of the entry in the remote response. If the entry is not a remote
   // result, it will be unset (nullopt).
   std::optional<int32_t> remote_response_index;
-
-  // Indicates if the entry comes from a locally stored Autofill data (such as
-  // a local address profile, a local credit card, or a local Autofill AI
-  // entity), as opposed to server-side data (like a Wallet card or a remote
-  // query response). Useful to discern local vs remote entities during
-  // deduplication.
-  // TODO(crbug.com/532649036): Use the real type instead.
-  bool is_local = false;
 };
 
 std::ostream& operator<<(std::ostream& os, const MemorySearchResult& result);

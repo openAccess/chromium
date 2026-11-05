@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -245,6 +246,10 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   const viz::FrameSinkId& GetFrameSinkId() override;
   std::optional<GlobalRenderFrameHostId> GetPopupCreatorFrameId()
       const override;
+  void set_popup_creator_frame_id_for_testing(
+      std::optional<GlobalRenderFrameHostId> id) {
+    popup_creator_frame_id_ = id;
+  }
   void UpdateTextDirection(base::i18n::TextDirection direction) override;
   void NotifyTextDirection() override;
   void SetExternallySourcedComposition(
@@ -258,6 +263,8 @@ class CONTENT_EXPORT RenderWidgetHostImpl
       base::OnceClosure on_complete) override;
   void PasteIntoNode(const std::u16string& text,
                      const GlobalDOMNodeId& target_dom_node_id) override;
+  std::optional<std::u16string_view> GetTextPrecedingSelection(
+      const GlobalDOMNodeId& target_dom_node_id) override;
   void Focus() override;
   void Blur() override;
   void FlushForTesting() override;
@@ -551,6 +558,12 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   // it is possible in some edge cases that a view was requested to be focused
   // but it failed, thus HasFocus() returns false.
   bool is_focused() const { return is_focused_; }
+
+  // Sets and returns whether DevTools emulates focus for the renderer page.
+  void SetFocusEmulationEnabled(bool enabled) {
+    focus_emulation_enabled_ = enabled;
+  }
+  bool IsFocusEmulationEnabled() const { return focus_emulation_enabled_; }
 
   // Support for focus tracking on multi-FrameTree cases. This will notify all
   // descendants (including nested FrameTrees) to distribute a "page focus"
@@ -949,6 +962,12 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   // Marks all views in the frame tree as evicted.
   std::vector<viz::SurfaceId> CollectSurfaceIdsForEviction();
 
+  // Validates a renderer's attempt to notify user activation in a frame. It
+  // removes one expected user activation notification if available and returns
+  // true; otherwise, it returns false. See
+  // `AddExpectedUserActivationNotification()`.
+  bool RemoveExpectedUserActivationNotificationIfAvailable();
+
   const mojo::AssociatedRemote<blink::mojom::FrameWidget>&
   GetAssociatedFrameWidget();
 
@@ -1130,6 +1149,22 @@ class CONTENT_EXPORT RenderWidgetHostImpl
  private:
   FRIEND_TEST_ALL_PREFIXES(FullscreenDetectionTest,
                            EncompassingDivNotFullscreen);
+  FRIEND_TEST_ALL_PREFIXES(NavigationControllerTest,
+                           VisuallyNonEmptyCompositorFrameRevertsPendingURL);
+  FRIEND_TEST_ALL_PREFIXES(
+      NavigationControllerTest,
+      VisuallyNonEmptyCompositorFrameAfterFailRevertsPendingURL);
+  FRIEND_TEST_ALL_PREFIXES(NavigationControllerTest,
+                           VisuallyNonEmptyCompositorFrameWithoutPendingEntry);
+  FRIEND_TEST_ALL_PREFIXES(NavigationControllerTest,
+                           VisuallyNonEmptyCompositorFrameAfterReportedAccess);
+  FRIEND_TEST_ALL_PREFIXES(
+      NavigationControllerTest,
+      VisuallyNonEmptyCompositorFrameAfterBrowserInitiatedAbort);
+  FRIEND_TEST_ALL_PREFIXES(NavigationControllerTest,
+                           VisuallyNonEmptyCompositorFrameWithFeatureDisabled);
+  FRIEND_TEST_ALL_PREFIXES(NavigationControllerTest,
+                           VisuallyNonEmptyCompositorFrameAfterCommitIsNoOp);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest,
                            DoNotAcceptPopupBoundsUntilScreenRectsAcked);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest,
@@ -1151,6 +1186,8 @@ class CONTENT_EXPORT RenderWidgetHostImpl
                            ScrollBubblingWithTouchMoveInjection);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest, EventDispatchPostDetach);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest, InputEventRWHLatencyComponent);
+  FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostTest,
+                           ExpectedUserActivationNotification);
   FRIEND_TEST_ALL_PREFIXES(DevToolsAgentHostImplTest,
                            NoUnresponsiveDialogInInspectedContents);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewMacTest,
@@ -1257,6 +1294,10 @@ class CONTENT_EXPORT RenderWidgetHostImpl
 
   void OnSnapshotReceived(int snapshot_id, gfx::Image image);
 
+  // Completes all pending snapshots with an empty image. Used when the view
+  // they would be taken from goes away with the renderer.
+  void FailPendingSnapshots();
+
   // This is called after the renderer attempts to focus content eligible for
   // handwriting via mojom::blink::FrameWidget::OnStartStylusWriting. If content
   // eligible for stylus handwriting has focus, then `focus_result` will be set,
@@ -1308,6 +1349,41 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   // has a view and is the owner for the FrameSinkId assigned to it.
   void MaybeDispatchBufferedFrameSinkRequest();
 
+  // Asks Viz to report the first CompositorFrame with visually non-empty
+  // content for this widget's FrameSinkId, if this widget is for a main frame
+  // initial empty document. Must be called before CreateCompositorFrameSink()
+  // is sent for the same FrameSinkId. See https://crbug.com/40055319.
+  void MaybeRequestNonEmptyCompositorFrameNotification();
+
+  // Withdraws any request made by
+  // MaybeRequestNonEmptyCompositorFrameNotification(), once the notification
+  // can no longer tell us anything about the initial empty document (e.g.,
+  // after a cross-document navigation commits). Requires a non-null `view_`.
+  void CancelNonEmptyCompositorFrameNotification();
+
+  // Returns true if this widget is for a main frame initial empty document
+  // whose first visually non-empty CompositorFrame tells us it is no longer
+  // safe to show a renderer-initiated pending URL.
+  bool ShouldRequestNonEmptyCompositorFrameNotification() const;
+
+  // Called when Viz reports that this widget activated a CompositorFrame with
+  // visually non-empty content, having been armed by
+  // MaybeRequestNonEmptyCompositorFrameNotification(). Also called directly by
+  // tests.
+  void OnFirstVisuallyNonEmptyCompositorFrame();
+
+  void UpdateFullscreenGrantCount();
+
+  // Adds one to `expected_user_activation_notifications_` when forwarding
+  // selected input events, and also sets a timer that allows a renderer to
+  // "claim" the expected activation notification within a limited time
+  // (`kUserActivationVerificationTimeout`).
+  void AddExpectedUserActivationNotification(const blink::WebInputEvent& event);
+
+  // Clears `expected_user_activation_notifications_`. This is called after
+  // navigations or timeouts.
+  void ClearExpectedUserActivationNotifications();
+
   raw_ptr<FrameTree> frame_tree_;
 
   // RenderWidgetHost are either:
@@ -1342,7 +1418,7 @@ class CONTENT_EXPORT RenderWidgetHostImpl
 
   // Our delegate, which wants to know mainly about keyboard events.
   // It will remain non-null until DetachDelegate() is called.
-  raw_ptr<RenderWidgetHostDelegate, FlakyDanglingUntriaged> delegate_;
+  raw_ptr<RenderWidgetHostDelegate> delegate_;
 
   // The delegate of the owner of this object.
   // This member is non-null if and only if this RenderWidgetHost is associated
@@ -1422,6 +1498,13 @@ class CONTENT_EXPORT RenderWidgetHostImpl
 
   // Visual properties that were most recently sent to the renderer.
   std::unique_ptr<blink::VisualProperties> old_visual_properties_;
+
+  // Tracks the last observed value of `delegate_->IsFullscreen()` and
+  // increments `fullscreen_grant_count_` each time fullscreen is entered so
+  // that fullscreen transitions coalesced while waiting for a visual properties
+  // ack are still detected.
+  bool was_fullscreen_ = false;
+  uint64_t fullscreen_grant_count_ = 0;
 
   // True if the render widget host should track the render widget's size as
   // opposed to visa versa.
@@ -1567,6 +1650,8 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   // causing HasFocus to return false when is_focused_ is true.
   bool is_focused_ = false;
 
+  bool focus_emulation_enabled_ = false;
+
   // Indicates whether what the last focus active state that was sent to the
   // renderer.
   bool is_active_ = false;
@@ -1668,6 +1753,20 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   std::optional<InitialFrameSinkPipes> initial_frame_sink_pipes_;
 
   std::optional<GlobalRenderFrameHostId> popup_creator_frame_id_;
+
+  // The time limit for browser verification of user activation notification
+  // signal from the renderer, counting from the latest dispatch of a relevant
+  // input event to the renderer.
+  static constexpr base::TimeDelta kUserActivationVerificationTimeout =
+      base::Seconds(30);
+
+  // Counter for expected user activation notification calls.
+  //
+  // TODO(https://crbug.com/577959346): Prevent unlimited accumulation of this.
+  int expected_user_activation_notifications_ = 0;
+
+  // Timer to reset `expected_user_activation_notifications_` after a delay.
+  base::OneShotTimer expected_user_activation_notification_timer_;
 
   base::WeakPtrFactory<RenderWidgetHostImpl> weak_factory_{this};
 };

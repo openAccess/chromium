@@ -152,24 +152,6 @@ class ValuableSuggestionGeneratorTest : public testing::Test {
   std::unique_ptr<FormStructure> form_structure_;
 };
 
-TEST_F(ValuableSuggestionGeneratorTest, NoMatchingDomain) {
-  set_last_committed_primary_main_frame_url(
-      GURL("https://not-existing-domain.example/test"));
-  EXPECT_THAT(GetSuggestionsForLoyaltyCards(
-                  form().ToFormData(), &form(), field(), &field(),
-                  PasswordFormClassification(), client()),
-              testing::IsEmpty());
-}
-
-TEST_F(ValuableSuggestionGeneratorTest, NoMatchingDomainAndFieldAutofilled) {
-  set_last_committed_primary_main_frame_url(
-      GURL("https://not-existing-domain.example/test"));
-  field().AddFieldModifier(FieldModifier::kAutofill);
-  EXPECT_THAT(GetSuggestionsForLoyaltyCards(
-                  form().ToFormData(), &form(), field(), &field(),
-                  PasswordFormClassification(), client()),
-              testing::IsEmpty());
-}
 
 TEST_F(ValuableSuggestionGeneratorTest, WithMatchingDomain) {
   set_last_committed_primary_main_frame_url(
@@ -343,7 +325,9 @@ TEST_F(ValuableSuggestionGeneratorTest,
   std::vector<Suggestion> loyalty_card_suggestions =
       CreateLoyaltyCardSuggestionsForMerge(
           valuables_data_manager(),
-          GURL("https://common-matching-domain.example/test"));
+          GURL("https://common-matching-domain.example/test"),
+          url::Origin::Create(
+              GURL("https://common-matching-domain.example/test")));
   MergeLoyaltyCardsAndAddressSuggestions(email_suggestions,
                                          std::move(loyalty_card_suggestions));
 
@@ -412,7 +396,8 @@ TEST_F(ValuableSuggestionGeneratorTest,
 
   std::vector<Suggestion> loyalty_card_suggestions =
       CreateLoyaltyCardSuggestionsForMerge(
-          valuables_data_manager(), GURL("https://common-domain.example/test"));
+          valuables_data_manager(), GURL("https://common-domain.example/test"),
+          url::Origin::Create(GURL("https://common-domain.example/test")));
   MergeLoyaltyCardsAndAddressSuggestions(email_suggestions,
                                          std::move(loyalty_card_suggestions));
 
@@ -470,7 +455,9 @@ TEST_F(ValuableSuggestionGeneratorTest,
   std::vector<Suggestion> loyalty_card_suggestions =
       CreateLoyaltyCardSuggestionsForMerge(
           valuables_data_manager(),
-          GURL("https://common-matching-domain.example/test"));
+          GURL("https://common-matching-domain.example/test"),
+          url::Origin::Create(
+              GURL("https://common-matching-domain.example/test")));
   MergeLoyaltyCardsAndAddressSuggestions(email_suggestions,
                                          std::move(loyalty_card_suggestions));
 
@@ -527,6 +514,27 @@ TEST_F(ValuableSuggestionGeneratorTest,
           EqualsSuggestion(SuggestionType::kSeparator),
           EqualsManageLoyaltyCardsSuggestion()));
 #endif  // BUILDFLAG(IS_ANDROID)
+}
+
+TEST_F(ValuableSuggestionGeneratorTest,
+       ExtendEmailSuggestionsWithLoyaltyCardSuggestions_OriginMismatch) {
+  const std::vector<LoyaltyCard> loyalty_cards = {LoyaltyCard(
+      /*loyalty_card_id=*/ValuableId("loyalty_card_id_1"),
+      /*merchant_name=*/"CVS Pharmacy",
+      /*program_name=*/"CVS Extra",
+      /*program_logo=*/GURL("https://empty.url.com"),
+      /*loyalty_card_number=*/"987654321987654321",
+      {GURL("https://domain1.example"),
+       GURL("https://common-matching-domain.example")},
+      /*use_date=*/{}, /*use_count=*/0)};
+  test_api(valuables_data_manager()).SetLoyaltyCards(loyalty_cards);
+
+  std::vector<Suggestion> loyalty_card_suggestions =
+      CreateLoyaltyCardSuggestionsForMerge(
+          valuables_data_manager(),
+          GURL("https://common-matching-domain.example/test"),
+          url::Origin::Create(GURL("https://cross-origin.example")));
+  EXPECT_TRUE(loyalty_card_suggestions.empty());
 }
 
 // TODO(crbug.com/431155933): Remove this test when cleaning up the feature.

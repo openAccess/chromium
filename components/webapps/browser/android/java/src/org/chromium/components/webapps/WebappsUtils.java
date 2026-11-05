@@ -11,16 +11,19 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
+import android.content.pm.webapp.WebAppManager;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Icon;
 import android.os.Build;
 
 import androidx.annotation.RequiresApi;
+import androidx.annotation.VisibleForTesting;
 import androidx.annotation.WorkerThread;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniType;
+import org.jni_zero.NativeMethods;
 
-import org.chromium.base.AconfigFlaggedApiDelegate;
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
@@ -32,7 +35,9 @@ import org.chromium.base.TriStateUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.components.webapk.lib.client.WebApkValidator;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.widget.Toast;
+import org.chromium.url.GURL;
 
 import java.util.List;
 
@@ -54,6 +59,7 @@ public class WebappsUtils {
     private static final Object sLock = new Object();
 
     private static @TriState int sIsTwaInstallerPackage;
+    private static @Nullable Boolean sIsWebAppServiceEnabledForTesting;
 
     /**
      * Creates an intent that will add a shortcut to the home screen.
@@ -272,13 +278,27 @@ public class WebappsUtils {
     }
 
     @CalledByNative
-    private static boolean isWebAppServiceEnabled() {
-        var aconfigFlaggedApiDelegate = AconfigFlaggedApiDelegate.getInstance();
-        if (aconfigFlaggedApiDelegate == null) {
-            Log.e(TAG, "Failed to get AconfigFlaggedApiDelegate in isWebAppServiceEnabled()");
-            return false;
+    @VisibleForTesting
+    static boolean isWebAppServiceEnabled() {
+        if (sIsWebAppServiceEnabledForTesting != null) {
+            return sIsWebAppServiceEnabledForTesting;
         }
-        return aconfigFlaggedApiDelegate.isWebAppServiceEnabled();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN) {
+            Context context = ContextUtils.getApplicationContext();
+            WebAppManager webAppManager = context.getSystemService(WebAppManager.class);
+            return webAppManager != null;
+        }
+        return false;
+    }
+
+    /**
+     * Override whether the Android WebApp system service is considered enabled for testing.
+     *
+     * @param enabled Whether the service is enabled, or null to reset.
+     */
+    public static void setIsWebAppServiceEnabledForTesting(@Nullable Boolean enabled) {
+        sIsWebAppServiceEnabledForTesting = enabled;
+        ResettersForTesting.register(() -> sIsWebAppServiceEnabledForTesting = null);
     }
 
     public static void isTwaInstallerPackage(String title, Callback<Boolean> callback) {
@@ -286,14 +306,7 @@ public class WebappsUtils {
             callback.onResult(sIsTwaInstallerPackage == TriState.TRUE);
             return;
         }
-        var aconfigFlaggedApiDelegate = AconfigFlaggedApiDelegate.getInstance();
-        if (aconfigFlaggedApiDelegate == null) {
-            Log.e(TAG, "Failed to get AconfigFlaggedApiDelegate in isWebAppServiceEnabled()");
-            callback.onResult(false);
-            return;
-        }
-
-        aconfigFlaggedApiDelegate.isInstalled(title).then(callback);
+        TwaInstaller.isInstalled(title).then(callback);
     }
 
     /**
@@ -304,5 +317,20 @@ public class WebappsUtils {
     public static void setIsTwaInstallerPackageForTesting(boolean installed) {
         sIsTwaInstallerPackage = TriStateUtils.from(installed);
         ResettersForTesting.register(() -> sIsTwaInstallerPackage = TriState.NOT_SET);
+    }
+
+    /**
+     * Clears navigation history that occurred before the user most recently entered the app's
+     * scope.
+     */
+    public static void prunePreScopeNavigationHistory(WebContents webContents, GURL scope) {
+        WebappsUtilsJni.get().prunePreScopeNavigationHistory(webContents, scope);
+    }
+
+    @NativeMethods
+    public interface Natives {
+        void prunePreScopeNavigationHistory(
+                @JniType("content::WebContents*") WebContents webContents,
+                @JniType("GURL") GURL scope);
     }
 }

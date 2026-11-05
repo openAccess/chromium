@@ -5,7 +5,9 @@
 #include "third_party/blink/renderer/platform/peerconnection/webrtc_util.h"
 
 #include <cstring>
+#include <map>
 #include <optional>
+#include <string>
 
 #include "base/feature_list.h"
 #include "base/time/time.h"
@@ -14,10 +16,12 @@
 #include "media/media_buildflags.h"
 #include "media/webrtc/webrtc_features.h"
 #include "third_party/blink/public/common/buildflags.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/network/parsed_content_type.h"
+#include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_view.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/webrtc/api/units/time_delta.h"
+#include "third_party/webrtc/api/units/timestamp.h"
 #include "third_party/webrtc/api/video_codecs/sdp_video_format.h"
 
 namespace blink {
@@ -141,6 +145,18 @@ bool PLATFORM_EXPORT UseH264AcceleratedEncoderForWebRTC() {
   // fallback logic can be explicitly disabled.
   return true;
 #endif
+}
+
+base::TimeDelta RtpTimestampToTimeDelta::Convert(uint32_t rtp_timestamp) {
+  constexpr int64_t kVideoRtpClockRateHz = 90000;
+  const int64_t unwrapped_rtp_timestamp = unwrapper_.Unwrap(rtp_timestamp);
+  if (!first_unwrapped_rtp_timestamp_.has_value()) {
+    first_unwrapped_rtp_timestamp_ = unwrapped_rtp_timestamp;
+    return base::TimeDelta();
+  }
+  const int64_t delta_ticks =
+      unwrapped_rtp_timestamp - *first_unwrapped_rtp_timestamp_;
+  return base::Seconds(delta_ticks) / kVideoRtpClockRateHz;
 }
 
 }  // namespace blink

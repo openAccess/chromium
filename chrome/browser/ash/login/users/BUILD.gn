@@ -6,6 +6,8 @@ assert(is_chromeos)
 
 static_library("users") {
   sources = [
+    "account_id_annotator.cc",
+    "account_id_annotator.h",
     "affiliation.cc",
     "affiliation.h",
     "chrome_user_manager_util.cc",
@@ -22,7 +24,6 @@ static_library("users") {
 
   public_deps = [
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/ash/policy/core",
     "//chrome/browser/profiles:profile",
     "//chromeos/ash/components/login/auth",
@@ -38,7 +39,6 @@ static_library("users") {
     "//ash/constants",
     "//ash/public/cpp",
     "//chrome/browser:browser_process",
-    "//chrome/browser:browser_process_platform_part",
     "//chrome/browser/ash/app_mode",
     "//chrome/browser/ash/login",
     "//chrome/browser/ash/login/session",
@@ -109,7 +109,6 @@ static_library("test_support") {
     "//chrome/browser:browser_process_platform_part",
     "//chrome/browser/ash/login/users/default_user_image",
     "//chrome/browser/ash/profiles",
-    "//chrome/browser/ui",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/login/login_state",
     "//chromeos/ash/components/settings",
@@ -139,7 +138,6 @@ source_set("browser_tests") {
     "//chrome/browser/ash/policy/external_data:test_support",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
     "//chrome/browser/ui/ash/login",
     "//chrome/browser/ui/webui/ash/login",
     "//chrome/common:constants",
@@ -171,6 +169,7 @@ source_set("unit_tests") {
   testonly = true
 
   sources = [
+    "account_id_annotator_unittest.cc",
     "multi_user_sign_in_policy_controller_unittest.cc",
     "profile_user_manager_controller_unittest.cc",
     "user_manager_unittest.cc",
@@ -191,6 +190,7 @@ source_set("unit_tests") {
     "//chrome/browser/profiles:profile",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/cryptohome",
     "//chromeos/ash/components/dbus/concierge",
@@ -219,8 +219,4 @@ source_set("unit_tests") {
     "avatar:unit_tests",
     "default_user_image:unit_tests",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

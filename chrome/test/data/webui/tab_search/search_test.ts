@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import type {ItemData, Range, SearchOptions} from 'chrome://tab-search.top-chrome/tab_search.js';
 import {getHostname, getTitle, search, TabData, TabItemType} from 'chrome://tab-search.top-chrome/tab_search.js';
 import {assertDeepEquals, assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
@@ -13,7 +12,7 @@ import {createTab} from './tab_search_test_data.js';
  * Assert search results return in specific order.
  */
 async function assertSearchOrders(
-    input: string, items: TabData[], options: SearchOptions,
+    input: string, items: TabData[], options: SearchOptions<TabData>,
     expectedIndices: number[]) {
   const results = await search(input, items, options);
   assertEquals(results.length, expectedIndices.length);
@@ -42,12 +41,6 @@ function assertResults(expectedRecords: ItemData[], actualRecords: ItemData[]) {
 }
 
 suite('FuzzySearchTest', () => {
-  setup(() => {
-    loadTimeData.overrideValues({
-      cjkWordBoundaryEnabled: true,
-    });
-  });
-
   test('Test the exact match ranking order.', async () => {
     const options = {
       keys: [

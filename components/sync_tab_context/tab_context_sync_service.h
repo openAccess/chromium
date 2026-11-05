@@ -12,6 +12,7 @@
 #include "base/memory/weak_ptr.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/sync_tab_context/container_id.h"
+#include "components/sync_tab_context/upload_outcome.h"
 
 namespace syncer {
 class DataTypeControllerDelegate;
@@ -33,14 +34,26 @@ class TabContextSyncService : public KeyedService {
   TabContextSyncService& operator=(const TabContextSyncService&) = delete;
 
   // Creates a new container that can later be used to upload entries into.
-  // Returns nullopt in case of failure.
+  // Returns `std::nullopt` in case of failure (e.g. if Trusted Vault encryption
+  // is not active).
   virtual std::optional<ContainerId> CreateContainer() = 0;
+
+  // Similar to `CreateContainer()`, but allows creating a container even when
+  // Trusted Vault passphrase is not active, in which case an ephemeral
+  // container is created whose encryption key is wrapped using a short-lived
+  // server-minted ephemeral key instead of being uploaded to Sync in raw form.
+  virtual std::optional<ContainerId>
+  CreateContainerPossiblyUnencryptedEphemeral() = 0;
 
   // Inserts or updates an entry into a container identified via
   // `container_id`. `entry_id` acts as uniqueness key within the container.
-  virtual bool UploadPageContext(const ContainerId& container_id,
-                                 const std::string& entry_id,
-                                 std::string page_context) = 0;
+  // Invokes `callback` with `UploadOutcome::kSucceeded` once the item is
+  // committed to the server, or `UploadOutcome::kFailed` on failure.
+  virtual void UploadPageContext(
+      const ContainerId& container_id,
+      const std::string& entry_id,
+      std::string page_context,
+      base::OnceCallback<void(UploadOutcome)> callback) = 0;
 
   // Asynchronously returns an access token that can be used to access the
   // contents of a container. The precise means the token may be consumed is

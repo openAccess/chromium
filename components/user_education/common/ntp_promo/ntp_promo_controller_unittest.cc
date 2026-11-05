@@ -17,6 +17,7 @@
 #include "components/user_education/common/ntp_promo/ntp_promo_specification.h"
 #include "components/user_education/common/user_education_data.h"
 #include "components/user_education/common/user_education_features.h"
+#include "components/user_education/test/mock_user_education_context.h"
 #include "components/user_education/test/test_user_education_storage_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -41,12 +42,16 @@ constexpr auto kCompleted = NtpPromoSpecification::Eligibility::kCompleted;
 class NtpPromoControllerTest : public testing::Test {
  public:
   NtpPromoControllerTest() {
+    ON_CALL(*mock_context_, IsValid()).WillByDefault(Return(true));
     auto session = storage_service_.ReadSessionData();
     session.session_number = kInitialSessionNumber;
     storage_service_.SaveSessionData(session);
   }
 
  protected:
+  test::MockUserEducationContext& mock_context() { return *mock_context_; }
+  UserEducationContextPtr context_ptr() { return mock_context_; }
+
   // Register a promo with the supplied callbacks.
   void RegisterPromo(
       NtpPromoIdentifier id,
@@ -81,13 +86,14 @@ class NtpPromoControllerTest : public testing::Test {
   // Helper function that ensures a promo is showing, and continues to show
   // after being displayed.
   bool ShowsPromo(std::string_view expected_promo_id) {
-    const auto showable = controller().GenerateShowablePromo(nullptr);
+    const auto showable = controller().GenerateShowablePromo(context_ptr());
     bool shows = showable.has_value() && showable->id == expected_promo_id;
     EXPECT_TRUE(shows);
     if (shows) {
       // Ensure that this promo continues to show, after appearing on an NTP.
       controller().OnPromoShown(showable->id);
-      const auto showable_again = controller().GenerateShowablePromo(nullptr);
+      const auto showable_again =
+          controller().GenerateShowablePromo(context_ptr());
       EXPECT_TRUE(showable_again.has_value() &&
                   showable_again->id == expected_promo_id);
     }
@@ -95,7 +101,7 @@ class NtpPromoControllerTest : public testing::Test {
   }
 
   bool ShowsAnyPromo() {
-    return controller().GenerateShowablePromo(nullptr).has_value();
+    return controller().GenerateShowablePromo(context_ptr()).has_value();
   }
 
   void CreateController(
@@ -119,6 +125,9 @@ class NtpPromoControllerTest : public testing::Test {
 
  private:
   NtpPromoRegistry registry_;
+  scoped_refptr<testing::NiceMock<test::MockUserEducationContext>>
+      mock_context_ = base::MakeRefCounted<
+          testing::NiceMock<test::MockUserEducationContext>>();
   std::unique_ptr<NtpPromoController> controller_;
 };
 
@@ -166,7 +175,7 @@ TEST_F(NtpPromoControllerTest, ClickedCompletedPromoHidden) {
 
   // Generate promos again. Completion data shouldn't change.
   task_environment_.AdvanceClock(base::Days(1));
-  controller().GenerateShowablePromo(nullptr);
+  controller().GenerateShowablePromo(context_ptr());
   prefs = storage_service_.ReadNtpPromoData(kPromoId);
   EXPECT_EQ(prefs.value().completed, completion_time);
   histogram_tester.ExpectTotalCount(
@@ -205,15 +214,35 @@ TEST_F(NtpPromoControllerTest, PromoClicked) {
       action_callback;
   RegisterPromo(kPromoId, NtpPromoSpecification::EligibilityCallback(),
                 base::DoNothing(), action_callback.Get());
-  EXPECT_CALL(action_callback, Run(_));
+  EXPECT_CALL(action_callback, Run(context_ptr()));
   base::HistogramTester histogram_tester;
 
-  controller().OnPromoClicked(kPromoId, nullptr);
+  controller().OnPromoClicked(kPromoId, context_ptr());
 
   const auto prefs = storage_service_.ReadNtpPromoData(kPromoId);
   EXPECT_EQ(prefs.value().last_clicked, base::Time::Now());
   histogram_tester.ExpectUniqueSample(
       "UserEducation.NtpPromos.Promos.TestPromo.Clicked", true, 1);
+}
+
+TEST_F(NtpPromoControllerTest, PromoClickedWithInvalidContext) {
+  CreateController();
+  base::MockRepeatingCallback<void(
+      const user_education::UserEducationContextPtr& context)>
+      action_callback;
+  RegisterPromo(kPromoId, NtpPromoSpecification::EligibilityCallback(),
+                base::DoNothing(), action_callback.Get());
+  EXPECT_CALL(action_callback, Run(_)).Times(0);
+  base::HistogramTester histogram_tester;
+
+  controller().OnPromoClicked(kPromoId, nullptr);
+
+  EXPECT_CALL(mock_context(), IsValid()).WillOnce(Return(false));
+  controller().OnPromoClicked(kPromoId, context_ptr());
+
+  EXPECT_EQ(std::nullopt, storage_service_.ReadNtpPromoData(kPromoId));
+  histogram_tester.ExpectTotalCount(
+      "UserEducation.NtpPromos.Promos.TestPromo.Clicked", 0);
 }
 
 TEST_F(NtpPromoControllerTest, ClickedPromoHiddenTemporarily) {
@@ -222,7 +251,7 @@ TEST_F(NtpPromoControllerTest, ClickedPromoHiddenTemporarily) {
   RegisterPromo(kPromoId, kEligible);
   EXPECT_TRUE(ShowsPromo(kPromoId));
 
-  controller().OnPromoClicked(kPromoId, nullptr);
+  controller().OnPromoClicked(kPromoId, context_ptr());
   EXPECT_FALSE(ShowsAnyPromo());
 
   task_environment_.AdvanceClock(params.cool_off_duration);
@@ -355,9 +384,26 @@ TEST_F(NtpPromoControllerTest, ShownCallbackInvoked) {
 // Verifies the HasShowablePromo() wrapper function.
 TEST_F(NtpPromoControllerTest, HasShowablePromo) {
   CreateController();
-  EXPECT_FALSE(controller().HasShowablePromo(nullptr));
+  EXPECT_FALSE(controller().HasShowablePromo(context_ptr()));
   RegisterPromo(kPromoId, kEligible);
-  EXPECT_TRUE(controller().HasShowablePromo(nullptr));
+  EXPECT_TRUE(controller().HasShowablePromo(context_ptr()));
+}
+
+TEST_F(NtpPromoControllerTest, InvalidContextBlocksPromo) {
+  CreateController();
+  base::MockRepeatingCallback<NtpPromoSpecification::Eligibility(
+      const user_education::UserEducationContextPtr& context)>
+      eligibility_callback;
+  RegisterPromo(kPromoId, eligibility_callback.Get(), base::DoNothing(),
+                base::DoNothing());
+  EXPECT_CALL(eligibility_callback, Run(_)).Times(0);
+
+  EXPECT_FALSE(controller().HasShowablePromo(nullptr));
+  EXPECT_FALSE(controller().GenerateShowablePromo(nullptr).has_value());
+
+  EXPECT_CALL(mock_context(), IsValid()).WillRepeatedly(Return(false));
+  EXPECT_FALSE(controller().HasShowablePromo(context_ptr()));
+  EXPECT_FALSE(controller().GenerateShowablePromo(context_ptr()).has_value());
 }
 
 TEST_F(NtpPromoControllerTest, SetAllPromosDisabled) {
@@ -378,8 +424,8 @@ TEST_F(NtpPromoControllerTest, DisableBlocksPromos) {
   CreateController();
   RegisterPromo(kPromoId, kEligible);
   controller().SetAllPromosDisabled(true);
-  EXPECT_FALSE(controller().HasShowablePromo(nullptr));
-  const auto showable = controller().GenerateShowablePromo(nullptr);
+  EXPECT_FALSE(controller().HasShowablePromo(context_ptr()));
+  const auto showable = controller().GenerateShowablePromo(context_ptr());
   EXPECT_FALSE(showable.has_value());
 }
 
@@ -388,7 +434,7 @@ TEST_F(NtpPromoControllerTest, UndisableRestoresPromos) {
   RegisterPromo(kPromoId, kEligible);
   controller().SetAllPromosDisabled(true);
   controller().SetAllPromosDisabled(false);
-  EXPECT_TRUE(controller().HasShowablePromo(nullptr));
+  EXPECT_TRUE(controller().HasShowablePromo(context_ptr()));
   EXPECT_TRUE(ShowsPromo(kPromoId));
 }
 
@@ -416,13 +462,25 @@ TEST_F(NtpPromoControllerTest, SuppessedMultiplePromos) {
   EXPECT_TRUE(ShowsPromo(kPromo3Id));
 }
 
+TEST_F(NtpPromoControllerTest, SuppressedAllPromos) {
+  RegisterPromo(kPromoId, kEligible);
+  RegisterPromo(kPromo2Id, kEligible);
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      user_education::features::kEnableNtpBrowserPromos,
+      {{"suppress-list", base::StrCat({kPromoId, ",", kPromo2Id})}});
+  CreateController();
+  EXPECT_FALSE(controller().HasShowablePromo(context_ptr()));
+  EXPECT_FALSE(ShowsAnyPromo());
+}
+
 TEST_F(NtpPromoControllerTest, ClickedPromoPreventsOtherPromosInSameSession) {
   CreateController();
   RegisterPromo(kPromoId, kEligible);
   RegisterPromo(kPromo2Id, kEligible);
 
   EXPECT_TRUE(ShowsPromo(kPromoId));
-  controller().OnPromoClicked(kPromoId, nullptr);
+  controller().OnPromoClicked(kPromoId, context_ptr());
 
   // No other promo should show in this session.
   EXPECT_FALSE(ShowsAnyPromo());
@@ -450,7 +508,39 @@ TEST_F(NtpPromoControllerTest, DismissedPromoPreventsOtherPromosInSameSession) {
   EXPECT_TRUE(ShowsPromo(kPromo2Id));
 }
 
-TEST_F(NtpPromoControllerTest, MaxShowTermsExhaustionCycle) {
+TEST_F(NtpPromoControllerTest, ImpressionCapsSinglePromo) {
+  RegisterPromo(kPromoId, kEligible);
+
+  auto params = GetNtpPromoControllerParams();
+  params.max_sessions_per_term = 3;
+  params.max_terms = 3;
+  params.cool_off_duration = base::Days(180);
+  CreateController(params);
+
+  for (int term = 0; term < params.max_terms; ++term) {
+    for (int session = 0; session < params.max_sessions_per_term; ++session) {
+      AdvanceSession();
+      EXPECT_TRUE(ShowsPromo(kPromoId));
+    }
+
+    // After finishing its term, the promo should not show in the next session
+    // because it is in its cool-off period.
+    AdvanceSession();
+    EXPECT_FALSE(ShowsAnyPromo());
+
+    // Advance time to satisfy the cool-off period so the next term can begin.
+    task_environment_.AdvanceClock(params.cool_off_duration);
+  }
+
+  // At this point, the promo has used up its term limit.
+  // Verify that advancing sessions and clearing the cool-off duration no longer
+  // allows it to show.
+  AdvanceSession();
+  task_environment_.AdvanceClock(params.cool_off_duration);
+  EXPECT_FALSE(ShowsAnyPromo());
+}
+
+TEST_F(NtpPromoControllerTest, ImpressionCapsMultiPromo) {
   // This test walks through two promos burning through their session and term
   // limits, to ensure that they both eventually become non-showable. Two promos
   // are used to verify the expected ordering between them.
@@ -487,6 +577,66 @@ TEST_F(NtpPromoControllerTest, MaxShowTermsExhaustionCycle) {
   task_environment_.AdvanceClock(params.cool_off_duration);
   EXPECT_FALSE(ShowsAnyPromo());
   EXPECT_FALSE(ShowsAnyPromo());
+}
+
+TEST_F(NtpPromoControllerTest, NoSessionLimitDoesNotBlockPromo) {
+  RegisterPromo(kPromoId, kEligible);
+
+  auto params = GetNtpPromoControllerParams();
+  params.max_sessions_per_term = 0;
+  CreateController(params);
+
+  for (int i = 0; i < 5; ++i) {
+    AdvanceSession();
+    EXPECT_TRUE(ShowsPromo(kPromoId));
+  }
+}
+
+TEST_F(NtpPromoControllerTest, NoTermLimitDoesNotBlockPromo) {
+  RegisterPromo(kPromoId, kEligible);
+
+  auto params = GetNtpPromoControllerParams();
+  params.max_sessions_per_term = 1;
+  params.max_terms = 0;
+  params.cool_off_duration = base::Days(30);
+  CreateController(params);
+
+  // Show promo across multiple terms, verifying it is not blocked by term
+  // limit.
+  for (int term = 0; term < 5; ++term) {
+    AdvanceSession();
+    EXPECT_TRUE(ShowsPromo(kPromoId));
+
+    AdvanceSession();
+    EXPECT_FALSE(ShowsAnyPromo());
+
+    task_environment_.AdvanceClock(params.cool_off_duration);
+  }
+}
+
+TEST_F(NtpPromoControllerTest, FeatureParamsLoadedIntoControllerParams) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      user_education::features::kEnableNtpBrowserPromos,
+      {{"session-rotation", "12"},
+       {"max-terms", "13"},
+       {"clicked-duration", "45d"},
+       {"suppress-list", "promo_1,promo_2"}});
+
+  const NtpPromoControllerParams params = GetNtpPromoControllerParams();
+  EXPECT_EQ(params.max_sessions_per_term, 12);
+  EXPECT_EQ(params.max_terms, 13);
+  EXPECT_EQ(params.cool_off_duration, base::Days(45));
+  EXPECT_THAT(params.suppress_list, testing::ElementsAre("promo_1", "promo_2"));
+}
+
+TEST_F(NtpPromoControllerTest, EmptyPromoIdHandled) {
+  CreateController();
+
+  // Invoking callbacks with an empty promo ID should be a no-op and not crash.
+  controller().OnPromoShown("");
+  controller().OnPromoClicked("", nullptr);
+  controller().OnPromoDismissed("");
 }
 
 }  // namespace user_education

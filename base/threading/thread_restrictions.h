@@ -226,6 +226,9 @@ bool IsCoreSchedulingAvailable();
 int NumberOfPhysicalCores();
 }  // namespace system
 }  // namespace chromeos
+namespace component_updater {
+class ScopedAllowWaitForProductComponentInstallExit;
+}  // namespace component_updater
 namespace content {
 class BrowserGpuChannelHostFactory;
 class BrowserMainLoop;
@@ -500,6 +503,7 @@ class PlatformSharedMemoryRegion;
 namespace win {
 class OSInfo;
 class ObjectWatcher;
+class ScopedAllowBlockingForUser32AndGdi32;
 class ScopedAllowBlockingForUserAccountControl;
 }  // namespace win
 
@@ -617,6 +621,7 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend class base::android::PmfUtils;
   friend class base::debug::StackTrace;
   friend class base::subtle::PlatformSharedMemoryRegion;
+  friend class base::win::ScopedAllowBlockingForUser32AndGdi32;
   friend class base::win::ScopedAllowBlockingForUserAccountControl;
   friend class blink::DiskDataAllocator;
   friend class chromecast::CrashUtil;
@@ -764,7 +769,6 @@ class BASE_EXPORT ScopedAllowBaseSyncPrimitives {
   friend class ::ChromeNSSCryptoModuleDelegate;
   friend class ::PartnerBookmarksReader;
   friend class ::tracing::FuchsiaPerfettoProducerConnector;
-  friend class android_webview::JsSandboxIsolate;
   friend class base::SimpleThread;
   friend class base::internal::GetAppOutputScopedAllowBaseSyncPrimitives;
   friend class blink::SourceStream;
@@ -772,6 +776,7 @@ class BASE_EXPORT ScopedAllowBaseSyncPrimitives {
   friend class blink::WorkerThread;
   friend class blink::scheduler::NonMainThreadImpl;
   friend class cc::CategorizedWorkerPoolJob;
+  friend class component_updater::ScopedAllowWaitForProductComponentInstallExit;
   friend class content::BrowserMainLoop;
   friend class content::BrowserProcessIOThread;
   friend class content::DWriteFontCollectionProxy;
@@ -853,8 +858,10 @@ class BASE_EXPORT
   friend class ::ChromeContentRendererClient;
   friend class ::KeyStorageLinux;
   friend class ::NativeDesktopMediaList;
+  friend class ::ash::system::StatisticsProviderImpl;
   friend class android::JavaHandlerThread;
   friend class android_webview::CookieManager;
+  friend class android_webview::JsSandboxIsolate;
   friend class android_webview::VizCompositorThreadRunnerWebView;
   friend class audio::OutputDevice;
   friend class base::FileDescriptorWatcher;
@@ -895,7 +902,6 @@ class BASE_EXPORT
   friend class vr::VrShell;
 
   // Usage that should be fixed:
-  friend class ::ash::system::StatisticsProviderImpl;  // http://b/261818124
   friend class ::chromeos::BlockingMethodCaller;  // http://crbug.com/125360
   friend class base::Thread;                      // http://crbug.com/918039
   friend class cc::CompletionEvent;               // http://crbug.com/902653

@@ -11,6 +11,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/gfx/image/image.h"
 #include "url/gurl.h"
 
@@ -137,10 +138,11 @@ bool OmniboxClient::HasAutoSuggestedTab() const {
   return false;
 }
 
-void OmniboxClient::ProcessExtensionMatch(const std::u16string& text,
-                                          const TemplateURL* template_url,
-                                          const AutocompleteMatch& match,
-                                          WindowOpenDisposition disposition) {}
+void OmniboxClient::ProcessExtensionMatch(
+    const std::u16string& text,
+    const TemplateURL* template_url,
+    const AutocompleteMatch& match,
+    ui::mojom::WindowOpenDisposition disposition) {}
 
 void OmniboxClient::OnUserPastedInOmniboxResultingInValidURL() {}
 
@@ -168,10 +170,6 @@ gfx::Image OmniboxClient::GetFaviconForIconUrl(
   return gfx::Image();
 }
 
-bool OmniboxClient::IsHistoryEmbeddingsEnabled() const {
-  return false;
-}
-
 bool OmniboxClient::IsAimPopupEnabled() const {
   return false;
 }
@@ -181,7 +179,7 @@ omnibox::InputState OmniboxClient::GetInputState() const {
 }
 
 void OmniboxClient::ExecuteAction(OmniboxAction* action,
-                                  WindowOpenDisposition disposition,
+                                  ui::mojom::WindowOpenDisposition disposition,
                                   base::TimeTicks match_selection_timestamp,
                                   OmniboxAction::Client& action_client) {
   if (!action) {

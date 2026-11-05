@@ -108,7 +108,7 @@ class FakeNavigationClient : public mojom::NavigationClient {
           fetch_later_loader_factory,
       const blink::DocumentToken& document_token,
       const base::UnguessableToken& devtools_navigation_token,
-      const base::UnguessableToken& initiator_state_token,
+      const blink::InitiatorStateToken& initiator_state_token,
       const base::Uuid& base_auction_nonce,
       blink::mojom::PolicyContainerPtr policy_container,
       mojo::PendingRemote<blink::mojom::CodeCacheHost> code_cache_host,
@@ -131,7 +131,7 @@ class FakeNavigationClient : public mojom::NavigationClient {
       std::unique_ptr<blink::PendingURLLoaderFactoryBundle> subresource_loaders,
       const blink::DocumentToken& document_token,
       const base::UnguessableToken& devtools_navigation_token,
-      const base::UnguessableToken& initiator_state_token,
+      const blink::InitiatorStateToken& initiator_state_token,
       blink::mojom::PolicyContainerPtr policy_container,
       mojom::AlternativeErrorPageOverrideInfoPtr alternative_error_page_info,
       CommitFailedNavigationCallback callback) override {
@@ -258,7 +258,8 @@ CommittedServiceWorkerClient::~CommittedServiceWorkerClient() = default;
 
 CommittedServiceWorkerClient::CommittedServiceWorkerClient(
     ScopedServiceWorkerClient service_worker_client,
-    const GlobalRenderFrameHostId& render_frame_host_id)
+    const GlobalRenderFrameHostId& render_frame_host_id,
+    const PolicyContainerPolicies& policy_container_policies)
     : service_worker_client_(std::move(service_worker_client.AsWeakPtr())) {
   // Establish dummy connections to allow sending messages without errors.
   mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>
@@ -273,7 +274,7 @@ CommittedServiceWorkerClient::CommittedServiceWorkerClient(
   auto [container_info, controller_info] =
       std::move(service_worker_client)
           .CommitResponseAndRelease(
-              render_frame_host_id, PolicyContainerPolicies(),
+              render_frame_host_id, policy_container_policies,
               std::move(coep_reporter), std::move(dip_reporter),
               ukm::kInvalidSourceId);
 
@@ -311,7 +312,7 @@ CommittedServiceWorkerClient::CommittedServiceWorkerClient(
       /*fetch_later_loader_factory=*/mojo::NullAssociatedRemote(),
       /*document_token=*/blink::DocumentToken(),
       /*devtools_navigation_token=*/base::UnguessableToken::Create(),
-      /*initiator_state_token=*/base::UnguessableToken::Create(),
+      /*initiator_state_token=*/blink::InitiatorStateToken(),
       /*base_auction_nonce=*/base::Uuid::GenerateRandomV4(),
       CreateStubPolicyContainer(), /*code_cache_host=*/mojo::NullRemote(),
       /*code_cache_host_for_background=*/mojo::NullRemote(),
@@ -331,13 +332,14 @@ CommittedServiceWorkerClient::CommittedServiceWorkerClient(
 }
 
 CommittedServiceWorkerClient::CommittedServiceWorkerClient(
-    ScopedServiceWorkerClient service_worker_client)
+    ScopedServiceWorkerClient service_worker_client,
+    const PolicyContainerPolicies& policy_container_policies)
     : service_worker_client_(std::move(service_worker_client.AsWeakPtr())) {
   // For worker cases the mojo call is not emulated (just not implemented).
   auto [received_info, controller_info] =
       std::move(service_worker_client)
           .CommitResponseAndRelease(
-              /*render_frame_host_id=*/std::nullopt, PolicyContainerPolicies(),
+              /*rfh_id=*/std::nullopt, policy_container_policies,
               /*coep_reporter=*/{}, /*dip_reporter=*/{}, ukm::kInvalidSourceId);
 
   service_worker_client_->SetContainerReady();

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {assert} from '//resources/js/assert.js';
 import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import type {CpuUsage} from '../../model/cpu_usage_helper.js';
@@ -39,6 +40,7 @@ export class HealthdInternalsInfoElement extends PolymerElement implements
       infoZramOrig: {type: String},
       infoZramCompr: {type: String},
       infoZramComprRatio: {type: String},
+      infoZramSpaceRedu: {type: String},
     };
   }
 
@@ -57,6 +59,7 @@ export class HealthdInternalsInfoElement extends PolymerElement implements
     this.infoZramOrig = '0';
     this.infoZramCompr = '0';
     this.infoZramComprRatio = 'N/A';
+    this.infoZramSpaceRedu = '0.00%';
   }
 
 
@@ -76,7 +79,7 @@ export class HealthdInternalsInfoElement extends PolymerElement implements
   private zramData?: SystemZramInfo = undefined;
 
   // Helper for updating UI regularly. Init in `connectedCallback`.
-  private updateHelper: UiUpdateHelper;
+  private updateHelper: UiUpdateHelper|null = null;
 
   // Displayed info.
   declare private infoNumOfCpu: string;
@@ -92,7 +95,7 @@ export class HealthdInternalsInfoElement extends PolymerElement implements
   declare private infoZramOrig: string;
   declare private infoZramCompr: string;
   declare private infoZramComprRatio: string;
-  private infoZramSpaceRedu: string = '0.00%';
+  declare private infoZramSpaceRedu: string;
 
   updateTelemetryData(data: HealthdApiTelemetryResult) {
     const isInitilized: boolean = this.healthdData !== undefined;
@@ -122,10 +125,12 @@ export class HealthdInternalsInfoElement extends PolymerElement implements
   }
 
   updateVisibility(isVisible: boolean) {
+    assert(this.updateHelper);
     this.updateHelper.updateVisibility(isVisible);
   }
 
   updateUiUpdateInterval(intervalSeconds: number) {
+    assert(this.updateHelper);
     this.updateHelper.updateUiUpdateInterval(intervalSeconds);
   }
 

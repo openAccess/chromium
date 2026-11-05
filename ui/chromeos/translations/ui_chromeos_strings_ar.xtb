@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">كلمة مرور غير صحيحة</translation>
 <translation id="5059127710849015030">تحويل صوتي إلى اللغة النيبالية</translation>
 <translation id="5068919226082848014">بيتزا</translation>
+<translation id="5075336522277785691">وضعَ "<ph name="EXTENSION_NAME" />" قواعد لتجاوز الخادم الوكيل</translation>
 <translation id="5081517858322016911">سيتم حذف <ph name="TOTAL_FILE_SIZE" /> من حجم الملفات.</translation>
 <translation id="508423945471810158">جارٍ نقل <ph name="NUMBER_OF_ITEMS" /> عنصر إلى <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">حدث خطأ.</translation>
-<translation id="5102922915594634436">إدارة المجلدات التي تمت مزامنتها</translation>
 <translation id="5109254780565519649">حدث خطأ. وقد لا تتم استعادة بعض الملفات.</translation>
 <translation id="5110329002213341433">الإنجليزية (كندا)</translation>
 <translation id="5119780910075847424">المزامنة متوقّفة مؤقتًا</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">الهندية</translation>
 <translation id="7665680517722058469">يُرجى تجربة عبارة بحث أخرى.</translation>
 <translation id="7689532716264131859">تم نقل <ph name="NUMBER_OF_ITEMS" /> عنصر إلى "المهملات".</translation>
-<translation id="7693909743393669729">ستؤدي تهيئة محرك أقراص إلى محو جميع البيانات المخزَّنة عليه وإزالة جميع الأقسام الحالية، بما فيها الأقسام التي قد تكون غير مرئية. ولا يمكن التراجع عن هذا الإجراء.</translation>
 <translation id="7695430100978772476">تعذّر ضبط <ph name="DRIVE_NAME" /></translation>
 <translation id="76959938259365003">تعذّر إفراغ المهملات.</translation>
 <translation id="7705251383879779343">تم نسخ <ph name="FILE_NAME" />.</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">‏لوحة مفاتيح Workman (الأمريكية الدولية)</translation>
 <translation id="7903984238293908205">كاتاكانا</translation>
 <translation id="7908378463497120834">عذرًا، تعذر تركيب جزء واحد على الأقل من جهاز مساحة التخزين الخارجية.</translation>
-<translation id="7908793776359722643">ستؤدي تهيئة قسم إلى محو جميع البيانات المخزَّنة فيه. ولا يمكن التراجع عن هذا الإجراء.</translation>
 <translation id="7911118814695487383">‏نظام التشغيل Linux</translation>
 <translation id="7920501309908018401">‏ستتم مزامنة ملفاتك في مجلد "ملفاتي" مع Chromebook تلقائيًا لتتمكّن من الوصول إليها بدون اتصال بالإنترنت.</translation>
 <translation id="7925247922861151263">‏تعذّر فحص AAA</translation>

@@ -20,8 +20,9 @@ import org.jni_zero.NativeMethods;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.MatchClassificationStyle;
+import org.chromium.components.omnibox.AutocompleteProto.AutocompleteMatchProto;
+import org.chromium.components.omnibox.AutocompleteProto.MatchClassificationProto;
 import org.chromium.components.omnibox.GroupsProto.GroupId;
-import org.chromium.components.omnibox.RichAnswerTemplateProto.RichAnswerTemplate;
 import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo;
 import org.chromium.components.omnibox.TypesProto.SuggestSubtype;
 import org.chromium.components.omnibox.action.OmniboxAction;
@@ -80,7 +81,6 @@ public class AutocompleteMatch {
     private final List<MatchClassification> mDisplayTextClassifications;
     private String mDescription;
     private final List<MatchClassification> mDescriptionClassifications;
-    private @Nullable RichAnswerTemplate mAnswerTemplate;
     private final String mFillIntoEdit;
     private GURL mUrl;
     private final GURL mImageUrl;
@@ -106,6 +106,7 @@ public class AutocompleteMatch {
     private final boolean mIsRefineable;
     private @Nullable SuggestTemplateInfo mSuggestTemplate;
     private final @DocumentType int mDocumentType;
+    private final boolean mIsExtensionMatch;
 
     public AutocompleteMatch(
             int nativeType,
@@ -118,7 +119,6 @@ public class AutocompleteMatch {
             List<MatchClassification> displayTextClassifications,
             String description,
             List<MatchClassification> descriptionClassifications,
-            byte @Nullable [] serializedAnswerTemplate,
             String fillIntoEdit,
             GURL url,
             GURL imageUrl,
@@ -140,7 +140,8 @@ public class AutocompleteMatch {
             @Nullable String tabGroupUuid,
             @Nullable String associatedKeyword,
             byte @Nullable [] serializedSuggestTemplate,
-            @DocumentType int documentType) {
+            @DocumentType int documentType,
+            boolean isExtensionMatch) {
         if (subtypes == null) {
             subtypes = Collections.emptySet();
         }
@@ -154,14 +155,7 @@ public class AutocompleteMatch {
         mDisplayTextClassifications = displayTextClassifications;
         mDescription = description;
         mDescriptionClassifications = descriptionClassifications;
-        if (serializedAnswerTemplate != null) {
-            try {
-                mAnswerTemplate = RichAnswerTemplate.parseFrom(serializedAnswerTemplate);
-            } catch (InvalidProtocolBufferException e) {
-                // When parsing error occurs, leave template as null.
-            }
-        }
-        mFillIntoEdit = TextUtils.isEmpty(fillIntoEdit) ? displayText : fillIntoEdit;
+        mFillIntoEdit = fillIntoEdit;
         assert url != null;
         mUrl = url;
         assert imageUrl != null;
@@ -201,6 +195,7 @@ public class AutocompleteMatch {
         }
 
         mDocumentType = documentType;
+        mIsExtensionMatch = isExtensionMatch;
         updatePostContentType(postContentType);
     }
 
@@ -227,7 +222,6 @@ public class AutocompleteMatch {
             @JniType("std::u16string") String description,
             @JniType("std::vector<int32_t>") int[] descriptionClassificationOffsets,
             @JniType("std::vector<int32_t>") int[] descriptionClassificationStyles,
-            byte[] serializedAnswerTemplate,
             @JniType("std::u16string") String fillIntoEdit,
             @JniType("GURL") GURL url,
             @JniType("GURL") GURL imageUrl,
@@ -249,7 +243,8 @@ public class AutocompleteMatch {
             @JniType("std::optional<std::string>") @Nullable String localTabGroupId,
             @JniType("std::u16string") String associatedKeyword,
             byte[] serializedSuggestTemplate,
-            @JniType("AutocompleteMatch::DocumentType") @DocumentType int documentType) {
+            @JniType("AutocompleteMatch::DocumentType") @DocumentType int documentType,
+            boolean isExtensionMatch) {
         assert contentClassificationOffsets.length == contentClassificationStyles.length;
         List<MatchClassification> contentClassifications = new ArrayList<>();
         for (int i = 0; i < contentClassificationOffsets.length; i++) {
@@ -275,7 +270,6 @@ public class AutocompleteMatch {
                         contentClassifications,
                         description,
                         new ArrayList<>(),
-                        serializedAnswerTemplate,
                         fillIntoEdit,
                         url,
                         imageUrl,
@@ -297,7 +291,8 @@ public class AutocompleteMatch {
                         localTabGroupId,
                         TextUtils.isEmpty(associatedKeyword) ? null : associatedKeyword,
                         serializedSuggestTemplate,
-                        documentType);
+                        documentType,
+                        isExtensionMatch);
         match.updateNativeObjectRef(nativeObject);
         match.setDescription(
                 description, descriptionClassificationOffsets, descriptionClassificationStyles);
@@ -314,6 +309,11 @@ public class AutocompleteMatch {
     /** Returns a reference to Native AutocompleteMatch object. */
     public long getNativeObjectRef() {
         return mNativeMatch;
+    }
+
+    /** Returns whether this match represents an extension omnibox match. */
+    public boolean isExtensionMatch() {
+        return mIsExtensionMatch;
     }
 
     /**
@@ -359,17 +359,6 @@ public class AutocompleteMatch {
     }
 
     @CalledByNative
-    private void setAnswerTemplate(byte[] serializedAnswerTemplate) {
-        if (serializedAnswerTemplate != null) {
-            try {
-                mAnswerTemplate = RichAnswerTemplate.parseFrom(serializedAnswerTemplate);
-            } catch (InvalidProtocolBufferException e) {
-                mAnswerTemplate = null;
-            }
-        }
-    }
-
-    @CalledByNative
     private void setDescription(
             @JniType("std::u16string") String description,
             @JniType("std::vector<int32_t>") int[] descriptionClassificationOffsets,
@@ -407,10 +396,6 @@ public class AutocompleteMatch {
 
     public List<MatchClassification> getDescriptionClassifications() {
         return mDescriptionClassifications;
-    }
-
-    public @Nullable RichAnswerTemplate getAnswerTemplate() {
-        return mAnswerTemplate;
     }
 
     public String getFillIntoEdit() {
@@ -515,6 +500,23 @@ public class AutocompleteMatch {
         return mIconType;
     }
 
+    public @Nullable SuggestTemplateInfo getSuggestTemplate() {
+        return mSuggestTemplate;
+    }
+
+    public boolean shouldWrapSecondaryText() {
+        return mSuggestTemplate != null
+                && mSuggestTemplate.hasWrapSecondaryText()
+                && mSuggestTemplate.getWrapSecondaryText();
+    }
+
+    public boolean shouldWrapPrimaryText() {
+        if (mSuggestTemplate != null && mSuggestTemplate.hasWrapPrimaryText()) {
+            return mSuggestTemplate.getWrapPrimaryText();
+        }
+        return isSearchSuggestion();
+    }
+
     /**
      * @return The image data for the image clipbaord suggestion. This data has already been
      *     validated in C++ and is safe to use in the browser process.
@@ -551,10 +553,6 @@ public class AutocompleteMatch {
         }
 
         AutocompleteMatch suggestion = (AutocompleteMatch) obj;
-        boolean answerTemplateIsEqual =
-                (mAnswerTemplate != null && suggestion.mAnswerTemplate != null)
-                        ? mAnswerTemplate.equals(suggestion.mAnswerTemplate)
-                        : mAnswerTemplate == null && suggestion.mAnswerTemplate == null;
         boolean suggestTemplateIsEqual =
                 (mSuggestTemplate != null && suggestion.mSuggestTemplate != null)
                         ? mSuggestTemplate.equals(suggestion.mSuggestTemplate)
@@ -575,11 +573,11 @@ public class AutocompleteMatch {
                 && mGroupId == suggestion.mGroupId
                 && mSwapContentsAndDescription == suggestion.mSwapContentsAndDescription
                 && mAndroidTabId == suggestion.mAndroidTabId
-                && answerTemplateIsEqual
                 && suggestTemplateIsEqual
                 && ObjectsCompat.equals(mTabGroupUuid, suggestion.mTabGroupUuid)
                 && ObjectsCompat.equals(mAssociatedKeyword, suggestion.mAssociatedKeyword)
-                && ObjectsCompat.equals(mTakeoverAction, suggestion.mTakeoverAction);
+                && ObjectsCompat.equals(mTakeoverAction, suggestion.mTakeoverAction)
+                && mIsExtensionMatch == suggestion.mIsExtensionMatch;
     }
 
     /**
@@ -641,8 +639,8 @@ public class AutocompleteMatch {
     }
 
     /** Serialize suggestion to a protocol buffer message. */
-    public AutocompleteProto.AutocompleteMatchProto serialize() {
-        var builder = AutocompleteProto.AutocompleteMatchProto.newBuilder();
+    public AutocompleteMatchProto serialize() {
+        var builder = AutocompleteMatchProto.newBuilder();
         builder.setType(mType)
                 .setDisplayText(mDisplayText)
                 .setFillIntoEdit(mFillIntoEdit)
@@ -675,13 +673,13 @@ public class AutocompleteMatch {
         }
         for (var displayTextClassification : mDisplayTextClassifications) {
             builder.addDisplayTextClassification(
-                    AutocompleteProto.MatchClassificationProto.newBuilder()
+                    MatchClassificationProto.newBuilder()
                             .setOffset(displayTextClassification.offset)
                             .setStyle(displayTextClassification.style));
         }
         for (var descriptionClassification : mDescriptionClassifications) {
             builder.addDescriptionClassification(
-                    AutocompleteProto.MatchClassificationProto.newBuilder()
+                    MatchClassificationProto.newBuilder()
                             .setOffset(descriptionClassification.offset)
                             .setStyle(descriptionClassification.style));
         }
@@ -689,7 +687,7 @@ public class AutocompleteMatch {
     }
 
     /** Deserialize suggestion from a protocol buffer message. */
-    public static AutocompleteMatch deserialize(AutocompleteProto.AutocompleteMatchProto input) {
+    public static AutocompleteMatch deserialize(AutocompleteMatchProto input) {
         List<MatchClassification> displayTextClassifications = new ArrayList<>();
         List<MatchClassification> descriptionClassifications = new ArrayList<>();
 
@@ -718,7 +716,6 @@ public class AutocompleteMatch {
                 displayTextClassifications,
                 input.getDescription(),
                 descriptionClassifications,
-                /* serializedAnswerTemplate= */ null,
                 input.getFillIntoEdit(),
                 new GURL(input.getUrl()),
                 new GURL(input.getImageUrl()),
@@ -740,7 +737,8 @@ public class AutocompleteMatch {
                 /* tabGroupUuid= */ null,
                 /* associatedKeyword= */ null,
                 /* serializedSuggestTemplate= */ null,
-                DocumentType.NONE);
+                DocumentType.NONE,
+                /* isExtensionMatch= */ false);
     }
 
     @Override
@@ -766,8 +764,8 @@ public class AutocompleteMatch {
                         "mAndroidTabId=" + mAndroidTabId,
                         "mDisplayTextClassifications=" + mDisplayTextClassifications,
                         "mDescriptionClassifications=" + mDescriptionClassifications,
-                        "mAnswerTemplate=" + mAnswerTemplate,
-                        "mSuggestTemplate=" + mSuggestTemplate);
+                        "mSuggestTemplate=" + mSuggestTemplate,
+                        "mIsExtensionMatch=" + mIsExtensionMatch);
         return pieces.toString();
     }
 

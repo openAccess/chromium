@@ -9,6 +9,7 @@
 
 #include "base/component_export.h"
 #include "base/time/time.h"
+#include "base/timer/elapsed_timer.h"
 #include "components/startup_metric_utils/common/startup_metric_utils.h"
 
 // Utility functions to support metric collection for browser-process-specific
@@ -93,18 +94,6 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
   // Call this with the time when the first browser window became visible.
   void RecordBrowserWindowDisplay(base::TimeTicks ticks);
 
-  // Call this with the time when the browser window paints its children for the
-  // first time.
-  void RecordBrowserWindowFirstPaintTicks(base::TimeTicks ticks);
-
-  // Call this with the time when the Privacy Sandbox Attestations component
-  // becomes ready for the first time.
-  void RecordPrivacySandboxAttestationsFirstReady(base::TimeTicks ticks);
-
-  // Call this with the time when a Privacy Sandbox API attestation is checked
-  // for the first time.
-  void RecordPrivacySandboxAttestationFirstCheck(base::TimeTicks ticks);
-
   // Call this with the time when the first web contents had a non-empty paint,
   // only if the first web contents was unimpeded in its attempt to do so. Must
   // be called after RecordApplicationStartTime(), because it computes time
@@ -125,6 +114,14 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
   // contentful paint. Only recorded if the first contentful paint was already
   // recorded for this session. Records at most once per session.
   void RecordFirstWebContentsLargestContentfulPaint(base::TimeTicks lcp_ticks);
+
+  // Call this with the time when the PDF plugin in the first web contents
+  // painted document content for the first time. This is the PDF analogue of
+  // the first contentful paint: a full-page PDF never reports FCP or LCP
+  // because its content is painted by the plugin rather than by Blink layout.
+  // Records at most once per session.
+  void RecordFirstWebContentsPdfFirstContentPaint(
+      base::TimeTicks pdf_paint_ticks);
 
   // Call this with the time when the first web contents began navigating its
   // main frame / successfully committed its navigation for the main frame.
@@ -220,18 +217,13 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
   volatile bool main_window_startup_interrupted_ = false;
 
   base::TimeTicks message_loop_start_ticks_;
+  std::optional<base::ElapsedNoSleepTimer> message_loop_start_no_sleep_timer_;
 
   base::TimeTicks browser_window_display_ticks_;
-
-  base::TimeTicks browser_window_first_paint_ticks_;
 
   // May be null, in which case, fall back to
   // `CommonStartupMetricRecorder.application_start_ticks_`.
   base::TimeTicks web_contents_start_ticks_;
-
-  bool is_privacy_sandbox_attestations_component_ready_recorded_ = false;
-
-  bool is_privacy_sandbox_attestations_first_check_recorded_ = false;
 
   bool is_first_run_ = false;
 
@@ -239,6 +231,7 @@ class COMPONENT_EXPORT(STARTUP_METRIC_UTILS)
 
   bool did_record_startup_fcp_ = false;
   bool did_record_startup_lcp_ = false;
+  bool did_record_startup_pdf_first_content_paint_ = false;
 };
 
 COMPONENT_EXPORT(STARTUP_METRIC_UTILS)

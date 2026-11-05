@@ -10,24 +10,27 @@
 #include "chrome/browser/ui/autofill/payments/payments_view_factory.h"
 #include "components/autofill/core/browser/ui/payments/card_unmask_otp_input_dialog_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/android/view_android.h"
 #include "ui/android/window_android.h"
 
-// Must come after all headers that specialize FromJniType() / ToJniType().
+// Must come after headers that provide symbols used by @JniType.
 #include "chrome/browser/ui/android/autofill/internal/jni_headers/OtpVerificationDialogBridge_jni.h"
-
-using base::android::ConvertJavaStringToUTF16;
-using base::android::ConvertUTF16ToJavaString;
 
 namespace autofill {
 
 OtpVerificationDialogViewAndroid::OtpVerificationDialogViewAndroid(
     base::WeakPtr<CardUnmaskOtpInputDialogController> controller)
     : controller_(controller) {
-  DCHECK(controller);
+  CHECK(controller, base::NotFatalUntil::M162);
 }
 
-OtpVerificationDialogViewAndroid::~OtpVerificationDialogViewAndroid() = default;
+OtpVerificationDialogViewAndroid::~OtpVerificationDialogViewAndroid() {
+  if (java_object_) {
+    Java_OtpVerificationDialogBridge_clearNativePtr(
+        base::android::AttachCurrentThread(), java_object_);
+  }
+}
 
 void OtpVerificationDialogViewAndroid::ShowPendingState() {
   // For Android, the Java code takes care of showing the pending state after
@@ -37,17 +40,17 @@ void OtpVerificationDialogViewAndroid::ShowPendingState() {
 
 void OtpVerificationDialogViewAndroid::ShowInvalidState(
     const std::u16string& invalid_label_text) {
-  DCHECK(java_object_);
+  CHECK(java_object_, base::NotFatalUntil::M162);
   JNIEnv* env = base::android::AttachCurrentThread();
-  Java_OtpVerificationDialogBridge_showOtpErrorMessage(
-      env, java_object_, ConvertUTF16ToJavaString(env, invalid_label_text));
+  Java_OtpVerificationDialogBridge_showOtpErrorMessage(env, java_object_,
+                                                       invalid_label_text);
 }
 
 void OtpVerificationDialogViewAndroid::Dismiss(
     bool show_confirmation_before_closing,
     bool user_closed_dialog) {
   if (controller_ && show_confirmation_before_closing) {
-    DCHECK(!user_closed_dialog);
+    CHECK(!user_closed_dialog, base::NotFatalUntil::M162);
 
     std::u16string confirmation_message = controller_->GetConfirmationMessage();
     controller_->OnDialogClosed(/*user_closed_dialog=*/false,
@@ -76,7 +79,7 @@ OtpVerificationDialogViewAndroid::GetWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
 }
 
-void OtpVerificationDialogViewAndroid::OnDialogDismissed(JNIEnv* env) {
+void OtpVerificationDialogViewAndroid::OnDialogDismissed() {
   // Inform |controller_| of the dialog's destruction.
   if (controller_) {
     controller_->OnDialogClosed(/*user_closed_dialog=*/true,
@@ -86,14 +89,13 @@ void OtpVerificationDialogViewAndroid::OnDialogDismissed(JNIEnv* env) {
   delete this;
 }
 
-void OtpVerificationDialogViewAndroid::OnConfirm(JNIEnv* env,
-                                                 const JavaRef<jstring>& otp) {
+void OtpVerificationDialogViewAndroid::OnConfirm(const std::u16string& otp) {
   if (controller_) {
-    controller_->OnOkButtonClicked(ConvertJavaStringToUTF16(env, otp));
+    controller_->OnOkButtonClicked(otp);
   }
 }
 
-void OtpVerificationDialogViewAndroid::OnNewOtpRequested(JNIEnv* env) {
+void OtpVerificationDialogViewAndroid::OnNewOtpRequested() {
   if (controller_) {
     controller_->OnNewCodeLinkClicked();
   }
@@ -103,7 +105,7 @@ bool OtpVerificationDialogViewAndroid::ShowDialog(
     ui::WindowAndroid* window_android) {
   JNIEnv* env = base::android::AttachCurrentThread();
   java_object_.Reset(Java_OtpVerificationDialogBridge_create(
-      env, reinterpret_cast<intptr_t>(this), window_android->GetJavaObject()));
+      env, jni_zero::MakeRaw(this), window_android));
   if (java_object_.is_null() || !controller_) {
     return false;
   }
@@ -117,7 +119,7 @@ void OtpVerificationDialogViewAndroid::ShowConfirmationAndDismissDialog(
   JNIEnv* env = base::android::AttachCurrentThread();
   if (java_object_) {
     Java_OtpVerificationDialogBridge_showConfirmationAndDismissDialog(
-        env, java_object_, ConvertUTF16ToJavaString(env, confirmation_message));
+        env, java_object_, confirmation_message);
   }
 }
 

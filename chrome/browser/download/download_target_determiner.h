@@ -19,7 +19,7 @@
 #include "components/download/public/common/download_item.h"
 #include "components/download/public/common/download_path_reservation_tracker.h"
 #include "components/download/public/common/download_target_info.h"
-#include "components/safe_browsing/content/common/proto/download_file_types.pb.h"
+#include "components/safe_browsing/content/common/file_type_policies/proto/download_file_types.pb.h"
 #include "components/safe_browsing/core/common/features.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -28,6 +28,10 @@
 
 class Profile;
 class DownloadPrefs;
+
+namespace supervised_user {
+struct WebFilteringResult;
+}  // namespace supervised_user
 
 // Determines the target of the download.
 //
@@ -131,6 +135,7 @@ class DownloadTargetDeterminer : public download::DownloadItem::Observer {
   // Result indicating how the workflow should proceed. The loop ends when a
   // handler returns COMPLETE.
   enum State {
+    STATE_CHECK_SUPERVISED_USER_URL_FILTER,
     STATE_GENERATE_TARGET_PATH,
     STATE_SET_INSECURE_DOWNLOAD_STATUS,
     STATE_NOTIFY_EXTENSIONS,
@@ -190,6 +195,17 @@ class DownloadTargetDeterminer : public download::DownloadItem::Observer {
   void DoLoop();
 
   // === Main workflow ===
+
+  // Checks whether any URL in the download's redirect chain is blocked by the
+  // supervised user URL filter.
+  // Next state:
+  // - STATE_CHECK_SUPERVISED_USER_URL_FILTER : If more URLs remain in the
+  //   redirect chain.
+  // - STATE_GENERATE_TARGET_PATH : Once all URLs in the chain have been
+  //   checked.
+  Result DoCheckSupervisedUserUrlFilter();
+  void CheckSupervisedUserDownloadUrlDone(
+      supervised_user::WebFilteringResult result);
 
   // Generates an initial target path. This target is based only on the state of
   // the download item.
@@ -362,16 +378,27 @@ class DownloadTargetDeterminer : public download::DownloadItem::Observer {
   // Returns the timestamp of the last download bypass.
   std::optional<base::Time> GetLastDownloadBypassTimestamp() const;
 
+  // Returns true if dangerous file warnings should be suppressed because Safe
+  // Browsing is disabled and not restricted by policy.
+  bool ShouldSuppressDangerousFileWarning() const;
+
   // Generates the download file name based on information from URL, response
   // headers and sniffed mime type.
   base::FilePath GenerateFileName() const;
+
+  // Returns the display name of the file. For regular file paths, this is
+  // `virtual_path_.BaseName()`. For Android content URIs, returns the
+  // selected or resolved display name, falling back to `GenerateFileName()`.
+  base::FilePath GetFileDisplayName() const;
 
   // download::DownloadItem::Observer
   void OnDownloadDestroyed(download::DownloadItem* download) override;
 
   // state
   State next_state_;
-  DownloadConfirmationReason confirmation_reason_;
+  size_t supervised_user_url_chain_index_ = 0;
+  DownloadConfirmationReason confirmation_reason_ =
+      DownloadConfirmationReason::NONE;
   bool should_notify_extensions_;
   bool create_target_directory_;
   download::DownloadPathReservationTracker::FilenameConflictAction
@@ -394,6 +421,9 @@ class DownloadTargetDeterminer : public download::DownloadItem::Observer {
   // enabled, we suppress warning based only on the file type since Play
   // Protect will give higher quality warnings.
   bool is_app_verification_enabled_;
+
+  // The display name selected by the user for Content URIs.
+  base::FilePath display_name_;
 #endif
 #if BUILDFLAG(IS_MAC)
   // A list of tags specified by the user to be set on the file upon the

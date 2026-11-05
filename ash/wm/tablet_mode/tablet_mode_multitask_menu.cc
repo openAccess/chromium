@@ -12,7 +12,7 @@
 #include "ash/screen_util.h"
 #include "ash/shell.h"
 #include "ash/style/ash_color_id.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/system_decoration.h"
 #include "ash/wm/splitview/split_view_controller.h"
 #include "ash/wm/tablet_mode/tablet_mode_multitask_cue_controller.h"
 #include "ash/wm/tablet_mode/tablet_mode_multitask_menu_controller.h"
@@ -28,7 +28,6 @@
 #include "ui/display/screen.h"
 #include "ui/views/animation/animation_builder.h"
 #include "ui/views/background.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/widget/widget_delegate.h"
 
@@ -68,8 +67,6 @@ class TabletModeMultitaskMenuView : public views::View {
 
     SetBackground(views::CreateRoundedRectBackground(ui::kColorSysSurface3,
                                                      kCornerRadius));
-    SetBorder(std::make_unique<views::HighlightBorder>(
-        kCornerRadius, views::HighlightBorder::Type::kHighlightBorderOnShadow));
 
     SetUseDefaultFillLayout(true);
 
@@ -124,11 +121,11 @@ class TabletModeMultitaskMenuView : public views::View {
     layout->set_cross_axis_alignment(
         views::BoxLayout::CrossAxisAlignment::kCenter);
 
-    shadow_ = SystemShadow::CreateShadowOnNinePatchLayer(
-        SystemShadow::Type::kElevation12,
-        SystemShadow::LayerRecreatedCallback());
-    shadow_->SetRoundedCorners(gfx::RoundedCornersF(kCornerRadius));
-    layer()->Add(shadow_->GetLayer());
+    decoration_ = SystemDecoration::Create(
+        SystemDecoration::ShadowType::kElevation12,
+        SystemDecoration::HighlightBorderMode::kHighlightBorder);
+    decoration_->SetRoundedCorners(gfx::RoundedCornersF(kCornerRadius));
+    layer()->Add(decoration_->GetLayer());
   }
 
   TabletModeMultitaskMenuView(const TabletModeMultitaskMenuView&) = delete;
@@ -138,12 +135,12 @@ class TabletModeMultitaskMenuView : public views::View {
 
   chromeos::MultitaskMenuView* menu_view_base() { return menu_view_base_; }
 
-  SystemShadow* shadow() { return shadow_.get(); }
+  SystemDecoration* decoration() { return decoration_.get(); }
 
  private:
   raw_ptr<chromeos::MultitaskMenuView> menu_view_base_ = nullptr;
 
-  std::unique_ptr<SystemShadow> shadow_;
+  std::unique_ptr<SystemDecoration> decoration_;
 };
 
 BEGIN_METADATA(TabletModeMultitaskMenuView)
@@ -217,8 +214,8 @@ TabletModeMultitaskMenu::TabletModeMultitaskMenu(
   const gfx::Transform initial_transform = gfx::Transform::MakeTranslation(
       0, -menu_size.height() - kVerticalPosition);
   menu_view_->layer()->SetTransform(initial_transform);
-  menu_view_->shadow()->SetContentBounds(gfx::Rect(menu_size));
-  menu_view_->shadow()->ObserveColorProviderSource(widget_.get());
+  menu_view_->decoration()->SetContentBounds(gfx::Rect(menu_size));
+  menu_view_->decoration()->ObserveColorProviderSource(widget_.get());
 
   // Showing the widget can change native focus (which would result in an
   // immediate closing of the menu). Only start observing after shown.

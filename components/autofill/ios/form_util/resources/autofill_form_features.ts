@@ -11,7 +11,6 @@ import {CrWebApi, gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.j
  *     C++ at script injection time.
  */
 
-declare const gCrWebPlaceholderAutofillAcrossIframesThrottling: boolean;
 declare const gCrWebPlaceholderAutofillDisallowMoreHyphenLikeLabels: boolean;
 declare const gCrWebPlaceholderAutofillSupportDateInput: boolean;
 declare const gCrWebPlaceholderAutofillAllowDefaultPreventedSubmission: boolean;
@@ -21,16 +20,7 @@ declare const gCrWebPlaceholderAutofillReportFormSubmissionErrors: boolean;
 declare const gCrWebPlaceholderAutofillCountFormSubmissionInRenderer: boolean;
 declare const gCrWebPlaceholderAutofillTrackPasswordFieldsIos: boolean;
 declare const gCrWebPlaceholderAutofillSupportContentEditable: boolean;
-
-// LINT.IfChange(autofill_across_iframes_ios_throttling)
-/**
- * True if the throttling of child frames for autofill across iframes is
- * enabled.
- */
-function isAutofillAcrossIframesThrottlingEnabled(): boolean {
-  return gCrWebPlaceholderAutofillAcrossIframesThrottling;
-}
-// LINT.ThenChange(//components/autofill/core/common/autofill_features.cc:autofill_across_iframes_ios_throttling)
+declare const gCrWebPlaceholderAutofillIgnoreTabIndexForFocusability: boolean;
 
 // LINT.IfChange(autofill_disallow_more_hyphen_like_labels)
 /**
@@ -117,12 +107,19 @@ function isAutofillSupportContentEditableEnabled(): boolean {
 }
 // LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_support_content_editable_ios)
 
+// LINT.IfChange(autofill_ignore_tab_index_for_focusability_ios)
+/**
+ * Returns true if a negative `tabindex` no longer makes a field unfocusable for
+ * Autofill purposes, which aligns iOS with Blink's Element::IsFocusable().
+ */
+function isAutofillIgnoreTabIndexForFocusabilityEnabled(): boolean {
+  return gCrWebPlaceholderAutofillIgnoreTabIndexForFocusability;
+}
+// LINT.ThenChange(//components/autofill/ios/common/features.mm:autofill_ignore_tab_index_for_focusability_ios)
+
 // Expose globally via `gCrWeb` under the 'autofill_form_features' API name.
 const autofillFormFeatures = new CrWebApi('autofill_form_features');
 
-autofillFormFeatures.addFunction(
-    'isAutofillAcrossIframesThrottlingEnabled',
-    isAutofillAcrossIframesThrottlingEnabled);
 autofillFormFeatures.addFunction(
     'isAutofillDisallowMoreHyphenLikeLabelsEnabled',
     isAutofillDisallowMoreHyphenLikeLabelsEnabled);
@@ -148,5 +145,8 @@ autofillFormFeatures.addFunction(
 autofillFormFeatures.addFunction(
     'isAutofillSupportContentEditableEnabled',
     isAutofillSupportContentEditableEnabled);
+autofillFormFeatures.addFunction(
+    'isAutofillIgnoreTabIndexForFocusabilityEnabled',
+    isAutofillIgnoreTabIndexForFocusabilityEnabled);
 
 gCrWeb.registerApi(autofillFormFeatures);

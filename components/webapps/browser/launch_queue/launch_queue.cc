@@ -18,6 +18,7 @@
 #include "components/webapps/browser/launch_queue/launch_queue_delegate.h"
 #include "content/public/browser/file_system_access_entry_factory.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
@@ -52,16 +53,21 @@ class EntriesBuilder {
     entries_.reserve(expected_number_of_entries);
   }
 
-  void AddFileEntry(const content::PathInfo& path_info,
-                    content::FileSystemAccessEntryFactory::UserAction action) {
+  void AddFileEntry(
+      const content::PathInfo& path_info,
+      content::FileSystemAccessEntryFactory::AccessTrigger trigger) {
     entries_.push_back(
-        entry_factory_->CreateFileEntryFromPath(context_, path_info, action));
+        entry_factory_->CreateFileEntryFromPath(context_, path_info, trigger));
   }
 
   void AddDirectoryEntry(const content::PathInfo& path_info) {
+    // TODO(crbug.com/545006893): Directory launch entries currently use kOpen.
+    // Investigate whether write triggers or checks are needed when write
+    // permission may be requested. This CL is a pure refactoring so we avoid
+    // making behavioral changes here.
     entries_.push_back(entry_factory_->CreateDirectoryEntryFromPath(
         context_, path_info,
-        content::FileSystemAccessEntryFactory::UserAction::kOpen));
+        content::FileSystemAccessEntryFactory::AccessTrigger::kOpen));
   }
 
   std::vector<blink::mojom::FileSystemAccessEntryPtr> Build() {
@@ -111,11 +117,40 @@ void LaunchQueue::FlushForTesting() const {
 
 void LaunchQueue::SendLaunchParams(LaunchParams launch_params,
                                    const GURL& current_url) {
-  // TODO(dmurph): Figure out why this is failing.
-  // https://crbug.com/2546057
-  DCHECK(delegate_->IsInScope(launch_params, current_url))
-      << current_url.spec();
+  // Verify at dispatch time that the currently committed document is still in
+  // scope of the target app (https://crbug.com/574231826). This is a runtime
+  // conditional rather than a DCHECK because a tab's committed URL can diverge
+  // from a pending launch or uncommitted navigation, and an out-of-scope
+  // document must not have file handles minted for its origin or receive
+  // `EnqueueLaunchParams`.
+  if (!delegate_->IsInScope(launch_params, current_url)) {
+    return;
+  }
   CHECK(launch_params.target_url().is_valid());
+
+  // Launch params are routed to a document by URL scope (see
+  // `LaunchQueueDelegate::IsInScope()`), but URL scope does not describe the
+  // effective origin of the document that receives them. An in-scope document
+  // can commit an opaque origin, e.g. when the app serves it with
+  // `Content-Security-Policy: sandbox` without `allow-same-origin`, or when a
+  // navigation fails and commits an error page. Such a document is
+  // cross-origin to the app and must not receive the app's launch params:
+  //  - File and directory entries are origin-bound capabilities minted for the
+  //    app's origin, and the user's one-time file-handling approval was granted
+  //    to the app, not to an opaque document.
+  //  - The target URL may carry tokens or query parameters, and when the
+  //    document was not navigated to it, delivering it leaks it across the
+  //    origin boundary.
+  //
+  // Callers that reuse an existing document in place already reject opaque
+  // documents (see `WebAppTabHelper::CanBeUsedForFocusExisting()`), but this
+  // is also reached after a launch navigation commits, and whether that commit
+  // is opaque depends on the response. So this is a runtime conditional, not a
+  // CHECK: it is reachable by web content.
+  if (web_contents_->GetPrimaryMainFrame()->GetLastCommittedOrigin().opaque()) {
+    return;
+  }
+
   mojo::AssociatedRemote<blink::mojom::WebLaunchService> launch_service;
   web_contents_->GetPrimaryMainFrame()
       ->GetRemoteAssociatedInterfaces()
@@ -132,13 +167,15 @@ void LaunchQueue::SendLaunchParams(LaunchParams launch_params,
           delegate_->GetPathInfo(launch_params.dir()));
     }
 
+    CHECK_EQ(launch_params.paths().size(), launch_params.can_write().size());
     for (size_t i = 0; i < launch_params.paths().size(); ++i) {
       bool can_write = launch_params.can_write()[i];
-      content::FileSystemAccessEntryFactory::UserAction action =
-          can_write ? content::FileSystemAccessEntryFactory::UserAction::kSave
-                    : content::FileSystemAccessEntryFactory::UserAction::kOpen;
+      content::FileSystemAccessEntryFactory::AccessTrigger trigger =
+          can_write
+              ? content::FileSystemAccessEntryFactory::AccessTrigger::kSave
+              : content::FileSystemAccessEntryFactory::AccessTrigger::kOpen;
       entries_builder.AddFileEntry(
-          delegate_->GetPathInfo(launch_params.paths()[i]), action);
+          delegate_->GetPathInfo(launch_params.paths()[i]), trigger);
     }
 
     files = entries_builder.Build();

@@ -27,14 +27,35 @@ sync_pb::AutofillValuableSpecifics TestLoyaltyCardSpecifics(
     std::string_view number) {
   sync_pb::AutofillValuableSpecifics specifics =
       sync_pb::AutofillValuableSpecifics();
-  specifics.set_id(std::string(id));
+  specifics.set_id(id);
 
   sync_pb::LoyaltyCard* loyalty_card = specifics.mutable_loyalty_card();
   loyalty_card->set_merchant_name("merchant_name");
   loyalty_card->set_program_name("program_name");
-  loyalty_card->set_program_logo(std::string(program_logo));
+  loyalty_card->set_program_logo(program_logo);
   loyalty_card->set_loyalty_card_number(number);
   *loyalty_card->add_merchant_domains() = "https://domain.example";
+  return specifics;
+}
+
+sync_pb::AutofillValuableSpecifics TestOfferSpecifics(
+    std::string_view id,
+    const TestOfferOptions& options) {
+  sync_pb::AutofillValuableSpecifics specifics;
+  specifics.set_id(id);
+
+  sync_pb::Offer* offer = specifics.mutable_offer();
+  offer->set_issuer_name("Safeway");
+  offer->set_provider_name("coupon.com");
+  offer->set_offer_short_title(options.offer_short_title);
+  offer->set_expiration_time_unix_epoch_micros(
+      options.expiration_time_unix_epoch_micros);
+  offer->set_issue_time_unix_epoch_micros(options.issue_time_unix_epoch_micros);
+  offer->set_offer_code(options.offer_code);
+  offer->set_offer_title_image_url(options.offer_title_image_url);
+  *offer->add_issuer_domains() = "https://safeway.com";
+  offer->set_description(options.description);
+  specifics.set_pass_view_url(options.pass_view_url);
   return specifics;
 }
 
@@ -48,7 +69,7 @@ sync_pb::AutofillValuableMetadataSpecifics TestValuableMetadataSpecifics(
     sync_pb::AutofillValuableMetadataSpecifics::PassType pass_type) {
   sync_pb::AutofillValuableMetadataSpecifics specifics =
       sync_pb::AutofillValuableMetadataSpecifics();
-  specifics.set_valuable_id(std::string(id));
+  specifics.set_valuable_id(id);
   specifics.set_use_count(1);
   specifics.set_last_used_date_unix_epoch_micros(
       base::Time::Now().ToDeltaSinceWindowsEpoch().InMicroseconds());

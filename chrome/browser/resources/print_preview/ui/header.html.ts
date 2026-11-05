@@ -13,7 +13,7 @@ export function getHtml(this: HeaderElement) {
   <h1 class="title">$i18n{title}</h1>
   <cr-icon ?hidden="${!this.managed}"
       icon="${this.webuiRoundedIconsEnabled_ ? 'print-preview:domain' :
-                                       'print-preview:business-old'}"
+                                               'print-preview:business-old'}"
       alt="" title="$i18n{managedSettings}">
   </cr-icon>
 </div>

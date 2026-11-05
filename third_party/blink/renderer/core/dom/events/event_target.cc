@@ -35,10 +35,12 @@
 #include <optional>
 
 #include "base/format_macros.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/time/time.h"
 #include "third_party/blink/renderer/bindings/core/v8/js_based_event_listener.h"
 #include "third_party/blink/renderer/bindings/core/v8/js_event_listener.h"
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_add_event_listener_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_observable_event_listener_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_addeventlisteneroptions_boolean.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_boolean_eventlisteneroptions.h"
@@ -77,6 +79,7 @@
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
+#include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/threading.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
@@ -138,11 +141,11 @@ void ReportBlockedEvent(EventTarget& target,
   if (!listener)
     return;
 
-  String message_text =
-      StrCat({"Handling of '", event.type(), "' input event was delayed for ",
-              String::Number(delayed.InMilliseconds()),
-              " ms due to main thread being busy. Consider marking event "
-              "handler as 'passive' to make the page more responsive."});
+  String message_text = Format(
+      "Handling of '{}' input event was delayed for {} ms due to main thread "
+      "being busy. Consider marking event handler as 'passive' to make the "
+      "page more responsive.",
+      event.type(), delayed.InMilliseconds());
   PerformanceMonitor::ReportGenericViolation(
       target.GetExecutionContext(), PerformanceMonitor::kBlockedEvent,
       message_text, delayed, listener->GetSourceLocation(target));
@@ -191,7 +194,8 @@ void CountFiringEventListeners(const Event& event,
   }
 
   struct CountedEvent {
-    const AtomicString& event_type;
+    // RAW_PTR_EXCLUSION: #global-scope
+    RAW_PTR_EXCLUSION const AtomicString& event_type;
     const WebFeature feature;
   };
   static const CountedEvent counted_events[] = {
@@ -262,15 +266,14 @@ ObservableEventListener::ObservableEventListener(
   // in that case.
   CHECK(subscriber_->active());
 
-  AddEventListenerOptionsResolved* options_resolved =
-      MakeGarbageCollected<AddEventListenerOptionsResolved>();
+  AddEventListenerOptionsResolved options_resolved;
   if (options->hasCapture()) {
-    options_resolved->setCapture(options->capture());
+    options_resolved.SetCapture(options->capture());
   }
   if (options->hasPassive()) {
-    options_resolved->setPassive(options->passive());
+    options_resolved.SetPassive(options->passive());
   }
-  options_resolved->setSignal(subscriber->signal());
+  options_resolved.SetSignal(subscriber->signal());
 
   event_target->addEventListener(event_type, this, options_resolved);
 }
@@ -281,6 +284,21 @@ void ObservableEventListener::Invoke(ExecutionContext* execution_context,
   // `EventTarget::FireEventListeners()` early-returns if its `ExecutionContext`
   // is detached.
   DCHECK(script_state_->ContextIsValid());
+
+  // Some events are bound to the `DOMWrapperWorld` they were created in (see
+  // `Event::CanBeDispatchedInWorld()`), and must not be surfaced to script in
+  // any other world. Ordinary event listeners enforce this in
+  // `JSBasedEventListener::Invoke()`; since `this` is a `NativeEventListener`,
+  // it does not go through that path and must perform the same check itself.
+  //
+  // This must happen before `ScriptValue::From()` below: creating the wrapper
+  // in the subscriber's world is itself the leak, not merely invoking the
+  // subscriber. Note that this filters in both directions, since
+  // `script_state_` is the *subscriber's* script state.
+  if (!event->CanBeDispatchedInWorld(script_state_->World())) {
+    return;
+  }
+
   ScriptState::Scope scope(script_state_);
   ScriptValue script_value = ScriptValue::From(script_state_, event);
 
@@ -453,58 +471,60 @@ bool EventTarget::IsTopLevelNode() {
 void EventTarget::SetDefaultAddEventListenerOptions(
     const AtomicString& event_type,
     EventListener* event_listener,
-    AddEventListenerOptionsResolved* options) {
-  options->SetPassiveSpecified(options->hasPassive());
+    AddEventListenerOptionsResolved& options) {
+  options.SetPassiveSpecified(options.HasPassive());
 
   if (!IsScrollBlockingEvent(event_type)) {
-    if (!options->hasPassive())
-      options->setPassive(false);
+    if (!options.HasPassive()) {
+      options.SetPassive(false);
+    }
     return;
   }
 
   LocalDOMWindow* executing_window = ExecutingWindow();
   if (executing_window) {
-    if (options->hasPassive()) {
+    if (options.HasPassive()) {
       UseCounter::Count(executing_window->document(),
-                        options->passive()
+                        options.Passive()
                             ? WebFeature::kAddEventListenerPassiveTrue
                             : WebFeature::kAddEventListenerPassiveFalse);
     }
   }
 
   if (IsTouchScrollBlockingEvent(event_type)) {
-    if (!options->hasPassive() && IsTopLevelNode()) {
-      options->setPassive(true);
-      options->SetPassiveForcedForDocumentTarget(true);
+    if (!options.HasPassive() && IsTopLevelNode()) {
+      options.SetPassive(true);
+      options.SetPassiveForcedForDocumentTarget(true);
       return;
     }
   }
 
   if (IsWheelScrollBlockingEvent(event_type) && IsTopLevelNode()) {
-    if (options->hasPassive()) {
+    if (options.HasPassive()) {
       if (executing_window) {
         UseCounter::Count(
             executing_window->document(),
-            options->passive()
+            options.Passive()
                 ? WebFeature::kAddDocumentLevelPassiveTrueWheelEventListener
                 : WebFeature::kAddDocumentLevelPassiveFalseWheelEventListener);
       }
-    } else {  // !options->hasPassive()
+    } else {  // !options.HasPassive()
       if (executing_window) {
         UseCounter::Count(
             executing_window->document(),
             WebFeature::kAddDocumentLevelPassiveDefaultWheelEventListener);
       }
-      options->setPassive(true);
-      options->SetPassiveForcedForDocumentTarget(true);
+      options.SetPassive(true);
+      options.SetPassiveForcedForDocumentTarget(true);
       return;
     }
   }
 
-  if (!options->hasPassive())
-    options->setPassive(false);
+  if (!options.HasPassive()) {
+    options.SetPassive(false);
+  }
 
-  if (!options->passive() && !options->PassiveSpecified()) {
+  if (!options.Passive() && !options.PassiveSpecified()) {
     String message_text = StrCat(
         {"Added non-passive event listener to a scroll-blocking '", event_type,
          "' event. Consider marking event handler as 'passive' to make the "
@@ -544,18 +564,17 @@ bool EventTarget::addEventListener(
                               bool_or_options->GetAsBoolean());
     case V8UnionAddEventListenerOptionsOrBoolean::ContentType::
         kAddEventListenerOptions: {
-      auto* options_resolved =
-          MakeGarbageCollected<AddEventListenerOptionsResolved>();
+      AddEventListenerOptionsResolved options_resolved;
       AddEventListenerOptions* options =
           bool_or_options->GetAsAddEventListenerOptions();
       if (options->hasPassive())
-        options_resolved->setPassive(options->passive());
+        options_resolved.SetPassive(options->passive());
       if (options->hasOnce())
-        options_resolved->setOnce(options->once());
+        options_resolved.SetOnce(options->once());
       if (options->hasCapture())
-        options_resolved->setCapture(options->capture());
+        options_resolved.SetCapture(options->capture());
       if (options->hasSignal())
-        options_resolved->setSignal(options->signal());
+        options_resolved.SetSignal(options->signal());
       return addEventListener(event_type, event_listener, options_resolved);
     }
   }
@@ -566,15 +585,15 @@ bool EventTarget::addEventListener(
 bool EventTarget::addEventListener(const AtomicString& event_type,
                                    EventListener* listener,
                                    bool use_capture) {
-  auto* options = MakeGarbageCollected<AddEventListenerOptionsResolved>();
-  options->setCapture(use_capture);
+  AddEventListenerOptionsResolved options;
+  options.SetCapture(use_capture);
   SetDefaultAddEventListenerOptions(event_type, listener, options);
   return AddEventListenerInternal(event_type, listener, options);
 }
 
 bool EventTarget::addEventListener(const AtomicString& event_type,
                                    EventListener* listener,
-                                   AddEventListenerOptionsResolved* options) {
+                                   AddEventListenerOptionsResolved& options) {
   SetDefaultAddEventListenerOptions(event_type, listener, options);
   return AddEventListenerInternal(event_type, listener, options);
 }
@@ -582,12 +601,13 @@ bool EventTarget::addEventListener(const AtomicString& event_type,
 bool EventTarget::AddEventListenerInternal(
     const AtomicString& event_type,
     EventListener* listener,
-    const AddEventListenerOptionsResolved* options) {
+    const AddEventListenerOptionsResolved& options) {
   if (!listener)
     return false;
 
-  if (options->hasSignal() && options->signal()->aborted())
+  if (options.HasSignal() && options.Signal()->aborted()) {
     return false;
+  }
 
   // It doesn't make sense to add an event listener without an ExecutionContext
   // and some code below here assumes we have one.
@@ -626,7 +646,7 @@ bool EventTarget::AddEventListenerInternal(
       event_type == event_type_names::kTouchstart) {
     if (const LocalDOMWindow* executing_window = ExecutingWindow()) {
       if (const Document* document = executing_window->document()) {
-        document->CountUse(options->passive()
+        document->CountUse(options.Passive()
                                ? WebFeature::kPassiveTouchEventListener
                                : WebFeature::kNonPassiveTouchEventListener);
       }
@@ -648,14 +668,11 @@ bool EventTarget::AddEventListenerInternal(
       event_type, listener, options, &registered_listener);
   if (added) {
     CHECK(registered_listener);
-    if (options->hasSignal()) {
-      // Instead of passing the entire |options| here, which could create a
-      // circular reference due to |options| holding a Member<AbortSignal>, just
-      // pass the |options->capture()| boolean, which is the only thing
-      // removeEventListener actually uses to find and remove the event
-      // listener.
+    if (options.HasSignal()) {
+      // Capture only the boolean that removeEventListener uses instead of the
+      // temporary options object.
       AbortSignal::AlgorithmHandle* handle =
-          options->signal()->AddAlgorithm(BindOnce(
+          options.Signal()->AddAlgorithm(BindOnce(
               [](EventTarget* event_target, const AtomicString& event_type,
                  const EventListener* listener, bool capture) {
                 if (event_target) {
@@ -664,7 +681,7 @@ bool EventTarget::AddEventListenerInternal(
                 }
               },
               WrapWeakPersistent(this), event_type,
-              WrapWeakPersistent(listener), options->capture()));
+              WrapWeakPersistent(listener), options.Capture()));
       AbortSignalRegistry::From(*execution_context)
           ->RegisterAbortAlgorithm(listener, handle);
       if (const LocalDOMWindow* executing_window = ExecutingWindow()) {

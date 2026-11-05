@@ -35,13 +35,12 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/branding_buildflags.h"
 #include "chrome/browser/ash/events/event_rewriter_delegate_impl.h"
-#include "chrome/browser/ash/input_method/input_method_configuration.h"
 #include "chrome/browser/ash/notifications/deprecation_notification_controller.h"
 #include "chrome/browser/ash/preferences/preferences.h"
 #include "chrome/test/base/chrome_ash_test_base.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "components/prefs/pref_member.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "device/udev_linux/fake_udev_loader.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -52,6 +51,7 @@
 #include "ui/base/ime/ash/input_method_manager.h"
 #include "ui/base/ime/ash/mock_input_method_manager.h"
 #include "ui/base/ime/ash/mock_input_method_manager_impl.h"
+#include "ui/base/ime/ash/scoped_input_method_manager_for_testing.h"
 #include "ui/base/shortcut_mapping_pref_delegate.h"
 #include "ui/events/ash/caps_lock_event_rewriter.h"
 #include "ui/events/ash/discard_key_event_rewriter.h"
@@ -103,7 +103,6 @@ constexpr char kKbdTopRowLayoutWilcoTag[] = "3";
 constexpr char kKbdTopRowLayoutDrallionTag[] = "4";
 
 constexpr int kTouchpadId1 = 10;
-constexpr int kTouchpadId2 = 11;
 
 constexpr int kMouseDeviceId = 456;
 
@@ -114,9 +113,7 @@ constexpr char kKbdDefaultCustomTopRowLayout[] =
     "01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f";
 
 // Tag used to mark events as being for quick insert.
-constexpr std::pair<std::string, std::vector<uint8_t>> kPropertyQuickInsert = {
-    "quick_insert_event",
-    {}};
+constexpr char kPropertyQuickInsert[] = "quick_insert_event";
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
 constexpr char kCros1pInputMethodIdPrefix[] =
@@ -635,8 +632,9 @@ class EventRewriterTestBase : public ChromeAshTestBase {
   ~EventRewriterTestBase() override = default;
 
   void SetUp() override {
-    user_session_manager_ = std::make_unique<ash::test::TestUserSessionManager>(
-        TestingBrowserProcess::GetGlobal()->local_state());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
+            TestingBrowserProcess::GetGlobal()->local_state());
 
     keyboard_layout_engine_ = std::make_unique<ui::StubKeyboardLayoutEngine>();
     // Inject custom table to make this closer to en-US behavior.
@@ -673,9 +671,8 @@ class EventRewriterTestBase : public ChromeAshTestBase {
     });
     keyboard_capability_ =
         ui::KeyboardCapability::CreateStubKeyboardCapability();
-    input_method_manager_mock_ = new input_method::MockInputMethodManagerImpl;
-    input_method::InitializeForTesting(
-        input_method_manager_mock_);  // pass ownership
+    input_method_manager_.emplace();
+    input_method_manager_mock_ = input_method_manager_->get();
     auto deprecation_controller =
         std::make_unique<DeprecationNotificationController>(&message_center_);
     deprecation_controller_ = deprecation_controller.get();
@@ -744,8 +741,8 @@ class EventRewriterTestBase : public ChromeAshTestBase {
     input_device_settings_controller_mock_.reset();
     input_device_settings_controller_resetter_.reset();
     ChromeAshTestBase::TearDown();
-    // Shutdown() deletes the IME mock object.
-    input_method::Shutdown();
+    input_method_manager_mock_ = nullptr;
+    input_method_manager_.reset();
     keyboard_capability_.reset();
     keyboard_layout_engine_.reset();
   }
@@ -868,11 +865,6 @@ class EventRewriterTestBase : public ChromeAshTestBase {
     return result;
   }
 
-  // Parameterized version of test depending on feature flag values. The feature
-  // kUseSearchClickForRightClick determines if this should test for alt-click
-  // or search-click.
-  void DontRewriteIfNotRewritten(int right_click_flags);
-
   ui::MouseEvent RewriteMouseButtonEvent(const ui::MouseEvent& event) {
     TestEventRewriterContinuation continuation;
     event_rewriter_ash_->RewriteMouseButtonEventForTesting(
@@ -950,9 +942,13 @@ class EventRewriterTestBase : public ChromeAshTestBase {
   }
 
   base::test::ScopedFeatureList scoped_feature_list_;
-  std::unique_ptr<ash::test::TestUserSessionManager> user_session_manager_;
-  raw_ptr<input_method::MockInputMethodManagerImpl, DanglingUntriaged>
-      input_method_manager_mock_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
+  std::optional<input_method::ScopedInputMethodManagerForTesting<
+      input_method::MockInputMethodManagerImpl>>
+      input_method_manager_;
+  raw_ptr<input_method::MockInputMethodManagerImpl> input_method_manager_mock_ =
+      nullptr;
   testing::FakeUdevLoader fake_udev_;
   ui::DeviceDataManagerTestApi device_data_manager_test_api_;
   std::unique_ptr<InputDeviceSettingsController::ScopedResetterForTest>
@@ -1716,9 +1712,9 @@ TEST_F(EventRewriterTest, TestRewriteToQuickInsert) {
     SCOPED_TRACE(keyboard.name);
     SetUpKeyboard(keyboard);
 
-    EXPECT_EQ(KeyQuickInsert::Typed(ui::EF_NONE, {kPropertyQuickInsert}),
+    EXPECT_EQ(KeyQuickInsert::Typed(ui::EF_NONE, {{kPropertyQuickInsert, {}}}),
               RunRewriter(KeyLControl::Typed()));
-    EXPECT_EQ(KeyQuickInsert::Typed(ui::EF_NONE, {kPropertyQuickInsert}),
+    EXPECT_EQ(KeyQuickInsert::Typed(ui::EF_NONE, {{kPropertyQuickInsert, {}}}),
               RunRewriter(KeyLMeta::Typed()));
   }
 }
@@ -1831,7 +1827,7 @@ TEST_F(EventRewriterTest, TestRewriteFromQuickInsert) {
   SetUpKeyboard(kInternalChromeSplitModifierLayoutKeyboard);
 
   // Test that identity is working as expected.
-  EXPECT_EQ(KeyQuickInsert::Typed(ui::EF_NONE, {kPropertyQuickInsert}),
+  EXPECT_EQ(KeyQuickInsert::Typed(ui::EF_NONE, {{kPropertyQuickInsert, {}}}),
             RunRewriter(KeyLaunchAssistant::Typed()));
 
   // Remap QuickInsert to Control
@@ -1864,192 +1860,10 @@ TEST_F(EventRewriterTest, TestRewriteFromQuickInsert) {
   EXPECT_EQ(KeyUnknown::Typed(), RunRewriter(KeyQuickInsert::Typed()));
 }
 
-TEST_F(EventRewriterTest, TestRewriteExtendedKeysAltVariants) {
-  Preferences::RegisterProfilePrefs(
-      CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()),
-      prefs()->registry());
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kAltClickAndSixPackCustomization);
-  // All the previously supported Alt based rewrites no longer have any
-  // effect. The Search workarounds no longer take effect and the Search+Key
-  // portion is rewritten as expected.
-  for (const auto keyboard : kNonAppleKeyboardVariants) {
-    SCOPED_TRACE(keyboard.name);
-    SetUpKeyboard(keyboard);
-
-    // Alt+Backspace -> No Rewrite
-    EXPECT_EQ(KeyBackspace::Typed(ui::EF_ALT_DOWN),
-              RunRewriter(KeyBackspace::Typed(), ui::EF_ALT_DOWN));
-    EXPECT_EQ(1u, message_center_.NotificationCount());
-    ClearNotifications();
-
-    // Control+Alt+Backspace -> No Rewrite
-    EXPECT_EQ(KeyBackspace::Typed(ui::EF_ALT_DOWN | ui::EF_CONTROL_DOWN),
-              RunRewriter(KeyBackspace::Typed(),
-                          ui::EF_ALT_DOWN | ui::EF_CONTROL_DOWN));
-    EXPECT_EQ(1u, message_center_.NotificationCount());
-    ClearNotifications();
-
-    // Search+Alt+Backspace -> Alt+Delete
-    EXPECT_EQ(KeyDelete::Typed(ui::EF_ALT_DOWN),
-              RunRewriter(KeyBackspace::Typed(),
-                          ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN));
-
-    // Search+Control+Alt+Backspace -> Control+Alt+Delete
-    EXPECT_EQ(KeyDelete::Typed(ui::EF_ALT_DOWN | ui::EF_CONTROL_DOWN),
-              RunRewriter(KeyBackspace::Typed(), ui::EF_COMMAND_DOWN |
-                                                     ui::EF_CONTROL_DOWN |
-                                                     ui::EF_ALT_DOWN));
-
-    // Alt+Up -> No Rewrite
-    EXPECT_EQ(KeyArrowUp::Typed(ui::EF_ALT_DOWN),
-              RunRewriter(KeyArrowUp::Typed(), ui::EF_ALT_DOWN));
-    EXPECT_EQ(1u, message_center_.NotificationCount());
-    ClearNotifications();
-
-    // Alt+Down -> No Rewrite
-    EXPECT_EQ(KeyArrowDown::Typed(ui::EF_ALT_DOWN),
-              RunRewriter(KeyArrowDown::Typed(), ui::EF_ALT_DOWN));
-    EXPECT_EQ(1u, message_center_.NotificationCount());
-    ClearNotifications();
-
-    // Ctrl+Alt+Up -> No Rewrite
-    EXPECT_EQ(KeyArrowUp::Typed(ui::EF_ALT_DOWN | ui::EF_CONTROL_DOWN),
-              RunRewriter(KeyArrowUp::Typed(),
-                          ui::EF_ALT_DOWN | ui::EF_CONTROL_DOWN));
-    EXPECT_EQ(1u, message_center_.NotificationCount());
-    ClearNotifications();
-
-    // Ctrl+Alt+Down -> No Rewrite
-    EXPECT_EQ(KeyArrowDown::Typed(ui::EF_ALT_DOWN | ui::EF_CONTROL_DOWN),
-              RunRewriter(KeyArrowDown::Typed(),
-                          ui::EF_ALT_DOWN | ui::EF_CONTROL_DOWN));
-    EXPECT_EQ(1u, message_center_.NotificationCount());
-    ClearNotifications();
-
-    // NOTE: The following were workarounds to avoid rewriting the
-    // Alt variants by additionally pressing Search.
-
-    // Search+Ctrl+Alt+Up -> Ctrl+Alt+PageUp(aka Prior)
-    EXPECT_EQ(KeyPageUp::Typed(ui::EF_CONTROL_DOWN | ui::EF_ALT_DOWN),
-              RunRewriter(KeyArrowUp::Typed(), ui::EF_COMMAND_DOWN |
-                                                   ui::EF_CONTROL_DOWN |
-                                                   ui::EF_ALT_DOWN));
-    // Search+Ctrl+Alt+Down -> Ctrl+Alt+PageDown(aka Next)
-    EXPECT_EQ(KeyPageDown::Typed(ui::EF_CONTROL_DOWN | ui::EF_ALT_DOWN),
-              RunRewriter(KeyArrowDown::Typed(), ui::EF_COMMAND_DOWN |
-                                                     ui::EF_CONTROL_DOWN |
-                                                     ui::EF_ALT_DOWN));
-  }
-}
-
-TEST_F(EventRewriterTest, TestRewriteExtendedKeyInsertDeprecatedNotification) {
-  Preferences::RegisterProfilePrefs(
-      CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()),
-      prefs()->registry());
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {}, {features::kAltClickAndSixPackCustomization});
-
-  for (const auto keyboard : kNonAppleKeyboardVariants) {
-    SCOPED_TRACE(keyboard.name);
-    SetUpKeyboard(keyboard);
-
-    // Period -> Period
-    EXPECT_EQ(KeyPeriod::Typed(), RunRewriter(KeyPeriod::Typed()));
-
-    // Search+Period -> No rewrite (and shows notification)
-    EXPECT_EQ(KeyPeriod::Typed(ui::EF_COMMAND_DOWN),
-              RunRewriter(KeyPeriod::Typed(), ui::EF_COMMAND_DOWN));
-    EXPECT_EQ(1u, message_center_.NotificationCount());
-    ClearNotifications();
-
-    // Control+Search+Period -> No rewrite (and shows notification)
-    EXPECT_EQ(KeyPeriod::Typed(ui::EF_COMMAND_DOWN | ui::EF_CONTROL_DOWN),
-              RunRewriter(KeyPeriod::Typed(),
-                          ui::EF_COMMAND_DOWN | ui::EF_CONTROL_DOWN));
-    EXPECT_EQ(1u, message_center_.NotificationCount());
-    ClearNotifications();
-  }
-}
-
-TEST_F(EventRewriterTest, TestRewriteExtendedKeyInsert) {
-  Preferences::RegisterProfilePrefs(
-      CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()),
-      prefs()->registry());
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {}, {features::kAltClickAndSixPackCustomization});
-
-  for (const auto keyboard : kNonAppleKeyboardVariants) {
-    SCOPED_TRACE(keyboard.name);
-    SetUpKeyboard(keyboard);
-
-    // Search+Shift+Backspace -> Insert
-    EXPECT_EQ(KeyInsert::Typed(),
-              RunRewriter(KeyBackspace::Typed(),
-                          ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN));
-
-    // Control+Search+Shift+Backspace -> Control+Insert
-    EXPECT_EQ(KeyInsert::Typed(ui::EF_CONTROL_DOWN),
-              RunRewriter(KeyBackspace::Typed(), ui::EF_COMMAND_DOWN |
-                                                     ui::EF_CONTROL_DOWN |
-                                                     ui::EF_SHIFT_DOWN));
-  }
-}
-
-TEST_F(EventRewriterTest, TestRewriteExtendedKeysSearchVariants) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kAltClickAndSixPackCustomization);
-  Preferences::RegisterProfilePrefs(
-      CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()),
-      prefs()->registry());
-
-  for (const auto keyboard : kNonAppleKeyboardVariants) {
-    SCOPED_TRACE(keyboard.name);
-    SetUpKeyboard(keyboard);
-
-    // Search+Backspace -> Delete
-    EXPECT_EQ(KeyDelete::Typed(),
-              RunRewriter(KeyBackspace::Typed(), ui::EF_COMMAND_DOWN));
-
-    // Search+Up -> Prior
-    EXPECT_EQ(KeyPageUp::Typed(),
-              RunRewriter(KeyArrowUp::Typed(), ui::EF_COMMAND_DOWN));
-
-    // Search+Down -> Next
-    EXPECT_EQ(KeyPageDown::Typed(),
-              RunRewriter(KeyArrowDown::Typed(), ui::EF_COMMAND_DOWN));
-
-    // Search+Left -> Home
-    EXPECT_EQ(KeyHome::Typed(),
-              RunRewriter(KeyArrowLeft::Typed(), ui::EF_COMMAND_DOWN));
-
-    // Control+Search+Left -> Control+Home
-    EXPECT_EQ(KeyHome::Typed(ui::EF_CONTROL_DOWN),
-              RunRewriter(KeyArrowLeft::Typed(),
-                          ui::EF_COMMAND_DOWN | ui::EF_CONTROL_DOWN));
-
-    // Search+Right -> End
-    EXPECT_EQ(KeyEnd::Typed(),
-              RunRewriter(KeyArrowRight::Typed(), ui::EF_COMMAND_DOWN));
-
-    // Control+Search+Right -> Control+End
-    EXPECT_EQ(KeyEnd::Typed(ui::EF_CONTROL_DOWN),
-              RunRewriter(KeyArrowRight::Typed(),
-                          ui::EF_COMMAND_DOWN | ui::EF_CONTROL_DOWN));
-  }
-}
-
 TEST_F(EventRewriterTest, TestNumberRowIsNotRewritten) {
   Preferences::RegisterProfilePrefs(
       CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()),
       prefs()->registry());
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kAltClickAndSixPackCustomization);
   for (const auto& keyboard : kNonAppleNonCustomLayoutKeyboardVariants) {
     SCOPED_TRACE(keyboard.name);
     SetUpKeyboard(keyboard);
@@ -3291,30 +3105,6 @@ TEST_F(EventRewriterTest, TestRewriteFunctionKeysInvalidLayout) {
   EXPECT_EQ(KeyMediaPlayPause::Typed(), RunRewriter(KeyF7::Typed()));
 }
 
-// Tests that event rewrites still work even if modifiers are remapped.
-TEST_F(EventRewriterTest, TestRewriteExtendedKeysWithControlRemapped) {
-  // Remap Control to Search.
-  Preferences::RegisterProfilePrefs(
-      CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()),
-      prefs()->registry());
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kAltClickAndSixPackCustomization);
-  RemapModifierKey(ui::mojom::ModifierKey::kControl,
-                   ui::mojom::ModifierKey::kMeta);
-
-  for (const auto& keyboard : kChromeKeyboardVariants) {
-    SCOPED_TRACE(keyboard.name);
-    SetUpKeyboard(keyboard);
-
-    EXPECT_EQ(KeyEnd::Typed(),
-              RunRewriter(KeyArrowRight::Typed(), ui::EF_CONTROL_DOWN));
-    EXPECT_EQ(KeyEnd::Typed(ui::EF_SHIFT_DOWN),
-              RunRewriter(KeyArrowRight::Typed(),
-                          ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN));
-  }
-}
-
 TEST_F(EventRewriterTest, TestRewriteKeyEventSentByXSendEvent) {
   // Remap Control to Alt.
   Preferences::RegisterProfilePrefs(
@@ -3387,282 +3177,6 @@ TEST_F(EventRewriterTest, TopRowKeysAreFunctionKeys) {
   send_function_keys_pref.SetValue(false);
   keyboard_settings->top_row_are_fkeys = false;
   EXPECT_EQ(KeyBrowserBack::Typed(), RunRewriter(KeyF1::Typed()));
-}
-
-// Parameterized version of test with the same name that accepts the
-// event flags that correspond to a right-click. This will be either
-// Alt+Click or Search+Click. After a transition period this will
-// default to Search+Click and the Alt+Click logic will be removed.
-void EventRewriterTestBase::DontRewriteIfNotRewritten(int right_click_flags) {
-  Preferences::RegisterProfilePrefs(
-      CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()),
-      prefs()->registry());
-  ui::DeviceDataManager* device_data_manager =
-      ui::DeviceDataManager::GetInstance();
-  std::vector<ui::TouchpadDevice> touchpad_devices(2);
-  touchpad_devices[0].id = kTouchpadId1;
-  touchpad_devices[1].id = kTouchpadId2;
-  static_cast<ui::DeviceHotplugEventObserver*>(device_data_manager)
-      ->OnTouchpadDevicesUpdated(touchpad_devices);
-  std::vector<ui::InputDevice> mouse_devices(1);
-  constexpr int kMouseId = 12;
-  touchpad_devices[0].id = kMouseId;
-  static_cast<ui::DeviceHotplugEventObserver*>(device_data_manager)
-      ->OnMouseDevicesUpdated(mouse_devices);
-
-  // Test (Alt|Search) + Left click.
-  {
-    ui::MouseEvent press(ui::EventType::kMousePressed, gfx::Point(),
-                         gfx::Point(), ui::EventTimeForNow(), right_click_flags,
-                         ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_press(&press);
-    test_press.set_source_device_id(kTouchpadId1);
-    // Sanity check.
-    EXPECT_EQ(ui::EventType::kMousePressed, press.type());
-    EXPECT_EQ(right_click_flags, press.flags());
-    const ui::MouseEvent result = RewriteMouseButtonEvent(press);
-    EXPECT_TRUE(ui::EF_RIGHT_MOUSE_BUTTON & result.flags());
-    EXPECT_NE(right_click_flags, right_click_flags & result.flags());
-    EXPECT_EQ(ui::EF_RIGHT_MOUSE_BUTTON, result.changed_button_flags());
-  }
-  {
-    ui::MouseEvent release(ui::EventType::kMouseReleased, gfx::Point(),
-                           gfx::Point(), ui::EventTimeForNow(),
-                           right_click_flags, ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_release(&release);
-    test_release.set_source_device_id(kTouchpadId1);
-    const ui::MouseEvent result = RewriteMouseButtonEvent(release);
-    EXPECT_TRUE(ui::EF_RIGHT_MOUSE_BUTTON & result.flags());
-    EXPECT_NE(right_click_flags, right_click_flags & result.flags());
-    EXPECT_EQ(ui::EF_RIGHT_MOUSE_BUTTON, result.changed_button_flags());
-  }
-
-  // No (ALT|SEARCH) in first click.
-  {
-    ui::MouseEvent press(ui::EventType::kMousePressed, gfx::Point(),
-                         gfx::Point(), ui::EventTimeForNow(),
-                         ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_press(&press);
-    test_press.set_source_device_id(kTouchpadId1);
-    const ui::MouseEvent result = RewriteMouseButtonEvent(press);
-    EXPECT_TRUE(ui::EF_LEFT_MOUSE_BUTTON & result.flags());
-    EXPECT_EQ(ui::EF_LEFT_MOUSE_BUTTON, result.changed_button_flags());
-  }
-  {
-    ui::MouseEvent release(ui::EventType::kMouseReleased, gfx::Point(),
-                           gfx::Point(), ui::EventTimeForNow(),
-                           right_click_flags, ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_release(&release);
-    test_release.set_source_device_id(kTouchpadId1);
-    const ui::MouseEvent result = RewriteMouseButtonEvent(release);
-    EXPECT_EQ(right_click_flags, right_click_flags & result.flags());
-    EXPECT_EQ(ui::EF_LEFT_MOUSE_BUTTON, result.changed_button_flags());
-  }
-
-  // ALT on different device.
-  {
-    ui::MouseEvent press(ui::EventType::kMousePressed, gfx::Point(),
-                         gfx::Point(), ui::EventTimeForNow(), right_click_flags,
-                         ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_press(&press);
-    test_press.set_source_device_id(kTouchpadId2);
-    const ui::MouseEvent result = RewriteMouseButtonEvent(press);
-    EXPECT_TRUE(ui::EF_RIGHT_MOUSE_BUTTON & result.flags());
-    EXPECT_NE(right_click_flags, right_click_flags & result.flags());
-    EXPECT_EQ(ui::EF_RIGHT_MOUSE_BUTTON, result.changed_button_flags());
-  }
-  {
-    ui::MouseEvent release(ui::EventType::kMouseReleased, gfx::Point(),
-                           gfx::Point(), ui::EventTimeForNow(),
-                           right_click_flags, ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_release(&release);
-    test_release.set_source_device_id(kTouchpadId1);
-    const ui::MouseEvent result = RewriteMouseButtonEvent(release);
-    EXPECT_EQ(right_click_flags, right_click_flags & result.flags());
-    EXPECT_EQ(ui::EF_LEFT_MOUSE_BUTTON, result.changed_button_flags());
-  }
-  {
-    ui::MouseEvent release(ui::EventType::kMouseReleased, gfx::Point(),
-                           gfx::Point(), ui::EventTimeForNow(),
-                           right_click_flags, ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_release(&release);
-    test_release.set_source_device_id(kTouchpadId2);
-    const ui::MouseEvent result = RewriteMouseButtonEvent(release);
-    EXPECT_TRUE(ui::EF_RIGHT_MOUSE_BUTTON & result.flags());
-    EXPECT_NE(right_click_flags, right_click_flags & result.flags());
-    EXPECT_EQ(ui::EF_RIGHT_MOUSE_BUTTON, result.changed_button_flags());
-  }
-
-  // No rewrite for non-touchpad devices.
-  {
-    ui::MouseEvent press(ui::EventType::kMousePressed, gfx::Point(),
-                         gfx::Point(), ui::EventTimeForNow(), right_click_flags,
-                         ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_press(&press);
-    test_press.set_source_device_id(kMouseId);
-    EXPECT_EQ(ui::EventType::kMousePressed, press.type());
-    EXPECT_EQ(right_click_flags, press.flags());
-    const ui::MouseEvent result = RewriteMouseButtonEvent(press);
-    EXPECT_EQ(right_click_flags, right_click_flags & result.flags());
-    EXPECT_EQ(ui::EF_LEFT_MOUSE_BUTTON, result.changed_button_flags());
-  }
-  {
-    ui::MouseEvent release(ui::EventType::kMouseReleased, gfx::Point(),
-                           gfx::Point(), ui::EventTimeForNow(),
-                           right_click_flags, ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_release(&release);
-    test_release.set_source_device_id(kMouseId);
-    const ui::MouseEvent result = RewriteMouseButtonEvent(release);
-    EXPECT_EQ(right_click_flags, right_click_flags & result.flags());
-    EXPECT_EQ(ui::EF_LEFT_MOUSE_BUTTON, result.changed_button_flags());
-  }
-
-  // Still rewrite to right button, even if the modifier key is already
-  // released when the mouse release event happens
-  // This is for regressions such as:
-  // https://crbug.com/40249767
-  // https://crbug.com/40893842
-  {
-    ui::MouseEvent press(ui::EventType::kMousePressed, gfx::Point(),
-                         gfx::Point(), ui::EventTimeForNow(), right_click_flags,
-                         ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_press(&press);
-    test_press.set_source_device_id(kTouchpadId1);
-    // Sanity check.
-    EXPECT_EQ(ui::EventType::kMousePressed, press.type());
-    EXPECT_EQ(right_click_flags, press.flags());
-    const ui::MouseEvent result = RewriteMouseButtonEvent(press);
-    EXPECT_TRUE(ui::EF_RIGHT_MOUSE_BUTTON & result.flags());
-    EXPECT_NE(right_click_flags, right_click_flags & result.flags());
-    EXPECT_EQ(ui::EF_RIGHT_MOUSE_BUTTON, result.changed_button_flags());
-  }
-  {
-    ui::MouseEvent release(ui::EventType::kMouseReleased, gfx::Point(),
-                           gfx::Point(), ui::EventTimeForNow(),
-                           ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_release(&release);
-    test_release.set_source_device_id(kTouchpadId1);
-    const ui::MouseEvent result = RewriteMouseButtonEvent(release);
-    EXPECT_TRUE(ui::EF_RIGHT_MOUSE_BUTTON & result.flags());
-    EXPECT_NE(right_click_flags, right_click_flags & result.flags());
-    EXPECT_EQ(ui::EF_RIGHT_MOUSE_BUTTON, result.changed_button_flags());
-  }
-}
-
-TEST_F(EventRewriterTest, DontRewriteIfNotRewritten_AltClickIsRightClick) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndDisableFeature(
-      features::kAltClickAndSixPackCustomization);
-  DontRewriteIfNotRewritten(ui::EF_LEFT_MOUSE_BUTTON | ui::EF_ALT_DOWN);
-  EXPECT_EQ(message_center_.NotificationCount(), 0u);
-}
-
-TEST_F(EventRewriterTest, DontRewriteIfNotRewritten_AltClickIsRightClick_New) {
-  // Enabling the kImprovedKeyboardShortcuts feature does not change alt+click
-  // behavior or create a notification.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {}, {features::kAltClickAndSixPackCustomization});
-  DontRewriteIfNotRewritten(ui::EF_LEFT_MOUSE_BUTTON | ui::EF_ALT_DOWN);
-  EXPECT_EQ(message_center_.NotificationCount(), 0u);
-}
-
-TEST_F(EventRewriterTest, DontRewriteIfNotRewritten_AltClickDeprecated) {
-  // Pressing search+click with alt+click deprecated works, but does not
-  // generate a notification.
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {::features::kDeprecateAltClick},
-      {features::kAltClickAndSixPackCustomization});
-  DontRewriteIfNotRewritten(ui::EF_LEFT_MOUSE_BUTTON | ui::EF_COMMAND_DOWN);
-  EXPECT_EQ(message_center_.NotificationCount(), 0u);
-}
-
-TEST_F(EventRewriterTest, DeprecatedAltClickGeneratesNotification) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {::features::kDeprecateAltClick},
-      {features::kAltClickAndSixPackCustomization});
-  ui::DeviceDataManager* device_data_manager =
-      ui::DeviceDataManager::GetInstance();
-  std::vector<ui::TouchpadDevice> touchpad_devices(1);
-  constexpr int kTouchpadId1 = 10;
-  touchpad_devices[0].id = kTouchpadId1;
-  static_cast<ui::DeviceHotplugEventObserver*>(device_data_manager)
-      ->OnTouchpadDevicesUpdated(touchpad_devices);
-  std::vector<ui::InputDevice> mouse_devices(1);
-  constexpr int kMouseId = 12;
-  touchpad_devices[0].id = kMouseId;
-  static_cast<ui::DeviceHotplugEventObserver*>(device_data_manager)
-      ->OnMouseDevicesUpdated(mouse_devices);
-
-  const int deprecated_flags = ui::EF_LEFT_MOUSE_BUTTON | ui::EF_ALT_DOWN;
-
-  // Alt + Left click => No rewrite.
-  {
-    ui::MouseEvent press(ui::EventType::kMousePressed, gfx::Point(),
-                         gfx::Point(), ui::EventTimeForNow(), deprecated_flags,
-                         ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_press(&press);
-    test_press.set_source_device_id(kTouchpadId1);
-    // Sanity check.
-    EXPECT_EQ(ui::EventType::kMousePressed, press.type());
-    EXPECT_EQ(deprecated_flags, press.flags());
-    const ui::MouseEvent result = RewriteMouseButtonEvent(press);
-
-    // No rewrite occurred.
-    EXPECT_EQ(deprecated_flags, deprecated_flags & result.flags());
-    EXPECT_EQ(ui::EF_LEFT_MOUSE_BUTTON, result.changed_button_flags());
-
-    // Expect a deprecation notification.
-    EXPECT_EQ(message_center_.NotificationCount(), 1u);
-    ClearNotifications();
-  }
-  {
-    ui::MouseEvent release(ui::EventType::kMouseReleased, gfx::Point(),
-                           gfx::Point(), ui::EventTimeForNow(),
-                           deprecated_flags, ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_release(&release);
-    test_release.set_source_device_id(kTouchpadId1);
-    const ui::MouseEvent result = RewriteMouseButtonEvent(release);
-
-    // No rewrite occurred.
-    EXPECT_EQ(deprecated_flags, deprecated_flags & result.flags());
-    EXPECT_EQ(ui::EF_LEFT_MOUSE_BUTTON, result.changed_button_flags());
-
-    // Don't expect a new notification on release.
-    EXPECT_EQ(message_center_.NotificationCount(), 0u);
-  }
-
-  // No rewrite or notification for non-touchpad devices.
-  {
-    ui::MouseEvent press(ui::EventType::kMousePressed, gfx::Point(),
-                         gfx::Point(), ui::EventTimeForNow(), deprecated_flags,
-                         ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_press(&press);
-    test_press.set_source_device_id(kMouseId);
-    EXPECT_EQ(ui::EventType::kMousePressed, press.type());
-    EXPECT_EQ(deprecated_flags, press.flags());
-    const ui::MouseEvent result = RewriteMouseButtonEvent(press);
-    EXPECT_EQ(deprecated_flags, deprecated_flags & result.flags());
-    EXPECT_EQ(ui::EF_LEFT_MOUSE_BUTTON, result.changed_button_flags());
-
-    // No notification expected for this case.
-    EXPECT_EQ(message_center_.NotificationCount(), 0u);
-  }
-  {
-    ui::MouseEvent release(ui::EventType::kMouseReleased, gfx::Point(),
-                           gfx::Point(), ui::EventTimeForNow(),
-                           deprecated_flags, ui::EF_LEFT_MOUSE_BUTTON);
-    ui::EventTestApi test_release(&release);
-    test_release.set_source_device_id(kMouseId);
-    const ui::MouseEvent result = RewriteMouseButtonEvent(release);
-    EXPECT_EQ(deprecated_flags, deprecated_flags & result.flags());
-    EXPECT_EQ(ui::EF_LEFT_MOUSE_BUTTON, result.changed_button_flags());
-
-    // No notification expected for this case.
-    EXPECT_EQ(message_center_.NotificationCount(), 0u);
-  }
 }
 
 TEST_F(EventRewriterTest, StickyKeyEventDispatchImpl) {
@@ -3843,45 +3357,6 @@ TEST_F(EventRewriterTest, MouseEventMaintainNativeEvent) {
     EXPECT_FALSE(events[0]->flags() & ui::EF_CONTROL_DOWN);
     EXPECT_TRUE(events[0]->flags() & ui::EF_ALT_DOWN);
     EXPECT_TRUE(events[0]->HasNativeEvent());
-  }
-}
-
-// Tests edge cases of key event rewriting (see https://crbug.com/40605692).
-TEST_F(EventRewriterTest, KeyEventRewritingEdgeCases) {
-  Preferences::RegisterProfilePrefs(
-      CHECK_DEREF(TestingBrowserProcess::GetGlobal()->local_state()),
-      prefs()->registry());
-
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      features::kAltClickAndSixPackCustomization);
-
-  // Edge case 1: Press the Launcher button first. Then press the Up Arrow
-  // button.
-  {
-    auto events = SendKeyEvents(
-        {KeyLMeta::Pressed(), KeyArrowUp::Pressed(ui::EF_COMMAND_DOWN)});
-    EXPECT_EQ(2u, events.size());
-  }
-
-  // When releasing the Launcher button, the rewritten event should be released
-  // as well.
-  EXPECT_EQ(std::vector({KeyLMeta::Released()}),
-            SendKeyEvent(KeyLMeta::Released()));
-  EXPECT_EQ(std::vector({KeyPageUp::Released(), KeyArrowUp::Pressed()}),
-            SendKeyEvent(KeyArrowUp::Pressed()));
-
-  // Edge case 2: Press the Up Arrow button first. Then press the Launch button.
-  {
-    auto events = SendKeyEvents({KeyArrowUp::Pressed(), KeyLMeta::Pressed()});
-    EXPECT_EQ(2u, events.size());
-  }
-
-  // When releasing the Up Arrow button, the rewritten event should be blocked.
-  {
-    auto events = SendKeyEvent(KeyArrowUp::Released(ui::EF_COMMAND_DOWN));
-    ASSERT_EQ(1u, events.size());
-    EXPECT_EQ(KeyArrowUp::Released(ui::EF_COMMAND_DOWN), events[0]);
   }
 }
 
@@ -4433,15 +3908,15 @@ TEST_F(EventRewriterTest, CapsLockRemappingFnBased) {
 
   for (const auto flag :
        {ui::EF_NONE, ui::EF_CONTROL_DOWN, ui::EF_SHIFT_DOWN, ui::EF_ALT_DOWN}) {
-    EXPECT_EQ(
-        KeyCapsLock::Typed(flag | ui::EF_CAPS_LOCK_ON),
-        RunRewriter(KeyQuickInsert::Typed(ui::EF_NONE, {kPropertyQuickInsert}),
-                    ui::EF_FUNCTION_DOWN | flag));
+    EXPECT_EQ(KeyCapsLock::Typed(flag | ui::EF_CAPS_LOCK_ON),
+              RunRewriter(KeyQuickInsert::Typed(ui::EF_NONE,
+                                                {{kPropertyQuickInsert, {}}}),
+                          ui::EF_FUNCTION_DOWN | flag));
     EXPECT_TRUE(fake_ime_keyboard_.IsCapsLockEnabled());
 
     EXPECT_EQ(KeyCapsLock::Typed(flag),
               RunRewriter(KeyQuickInsert::Typed(ui::EF_CAPS_LOCK_ON,
-                                                {kPropertyQuickInsert}),
+                                                {{kPropertyQuickInsert, {}}}),
                           ui::EF_FUNCTION_DOWN | flag));
     EXPECT_FALSE(fake_ime_keyboard_.IsCapsLockEnabled());
   }
@@ -4451,14 +3926,14 @@ TEST_F(EventRewriterTest, CapsLockRemappingFnBasedJpnLayout) {
   SetUpKeyboard(kInternalChromeSplitModifierLayoutKeyboard);
 
   EXPECT_EQ(KeyCapsLock::Typed(ui::EF_CAPS_LOCK_ON),
-            RunRewriter(
-                KeyJpnAlphanumeric::Typed(ui::EF_NONE, {kPropertyQuickInsert}),
-                ui::EF_FUNCTION_DOWN));
+            RunRewriter(KeyJpnAlphanumeric::Typed(ui::EF_NONE,
+                                                  {{kPropertyQuickInsert, {}}}),
+                        ui::EF_FUNCTION_DOWN));
   EXPECT_TRUE(fake_ime_keyboard_.IsCapsLockEnabled());
 
   EXPECT_EQ(KeyCapsLock::Typed(),
             RunRewriter(KeyJpnAlphanumeric::Typed(ui::EF_CAPS_LOCK_ON,
-                                                  {kPropertyQuickInsert}),
+                                                  {{kPropertyQuickInsert, {}}}),
                         ui::EF_FUNCTION_DOWN));
   EXPECT_FALSE(fake_ime_keyboard_.IsCapsLockEnabled());
 }
@@ -4485,14 +3960,14 @@ TEST_F(EventRewriterTest, CapsLockRemappingFnBasedReleaseOrdering) {
   EXPECT_EQ(
       std::vector<TestKeyEvent>({KeyCapsLock::Pressed(ui::EF_CAPS_LOCK_ON)}),
       RunRewriter(std::vector<TestKeyEvent>{KeyQuickInsert::Pressed(
-          ui::EF_FUNCTION_DOWN, {kPropertyQuickInsert})}));
+          ui::EF_FUNCTION_DOWN, {{kPropertyQuickInsert, {}}})}));
   EXPECT_EQ(std::vector<TestKeyEvent>(),
             RunRewriter(std::vector<TestKeyEvent>{
                 KeyFunction::Released(ui::EF_CAPS_LOCK_ON)}));
   EXPECT_EQ(
       std::vector<TestKeyEvent>({KeyCapsLock::Released(ui::EF_CAPS_LOCK_ON)}),
       RunRewriter(std::vector<TestKeyEvent>{KeyQuickInsert::Released(
-          ui::EF_CAPS_LOCK_ON, {kPropertyQuickInsert})}));
+          ui::EF_CAPS_LOCK_ON, {{kPropertyQuickInsert, {}}})}));
 }
 
 class ModifierPressedMetricsTest
@@ -4810,15 +4285,7 @@ TEST_P(ModifierPressedMetricsTest, KeyReleasedTest) {
       modifier_key_usage_mapping_, 0);
 }
 
-class EventRewriterSixPackKeysTest : public EventRewriterTestBase {
- public:
-  void SetUp() override {
-    scoped_feature_list_.InitWithFeatures(
-        {features::kAltClickAndSixPackCustomization}, {});
-
-    EventRewriterTestBase::SetUp();
-  }
-};
+using EventRewriterSixPackKeysTest = EventRewriterTestBase;
 
 TEST_F(EventRewriterSixPackKeysTest, TestRewriteSixPackKeysSearchVariants) {
   Preferences::RegisterProfilePrefs(
@@ -5168,9 +4635,6 @@ class EventRewriterRemapToRightClickTest
       public message_center::MessageCenterObserver {
  public:
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatures(
-        {features::kAltClickAndSixPackCustomization}, {});
-
     EventRewriterTestBase::SetUp();
 
     Preferences::RegisterProfilePrefs(

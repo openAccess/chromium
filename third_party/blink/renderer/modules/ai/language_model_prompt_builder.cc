@@ -46,6 +46,7 @@
 #include "third_party/blink/renderer/modules/webaudio/audio_buffer.h"
 #include "third_party/blink/renderer/platform/audio/audio_bus.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
+#include "third_party/blink/renderer/platform/heap/self_keep_alive.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/wtf/text/format.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
@@ -130,13 +131,13 @@ HeapVector<Member<LanguageModelMessage>> NormalizePrompt(
 }
 
 // Converts a LanguageModelToolSuccess to DictValue for mojo transport.
-// Format: {"callID":"...","name":"...","result":[...]}
+// Format: {"callId":"...","name":"...","result":[...]}
 // Returns std::nullopt on error.
 std::optional<base::DictValue> ConvertToolSuccessToDictValue(
     ScriptState* script_state,
     const LanguageModelToolSuccess* tool_success) {
   base::DictValue dict;
-  dict.Set("callID", tool_success->callID().Utf8());
+  dict.Set("callId", tool_success->callId().Utf8());
   dict.Set("name", tool_success->name().Utf8());
 
   // Convert the result array to base::Value.
@@ -181,11 +182,11 @@ std::optional<base::DictValue> ConvertToolSuccessToDictValue(
 }
 
 // Converts a LanguageModelToolError to DictValue for mojo transport.
-// Format: {"callID":"...","name":"...","errorMessage":"..."}
+// Format: {"callId":"...","name":"...","errorMessage":"..."}
 base::DictValue ConvertToolErrorToDictValue(
     const LanguageModelToolError* tool_error) {
   base::DictValue dict;
-  dict.Set("callID", tool_error->callID().Utf8());
+  dict.Set("callId", tool_error->callId().Utf8());
   dict.Set("name", tool_error->name().Utf8());
   dict.Set("errorMessage", tool_error->errorMessage().Utf8());
 
@@ -193,13 +194,13 @@ base::DictValue ConvertToolErrorToDictValue(
 }
 
 // Converts a LanguageModelToolCall to DictValue for mojo transport.
-// Format: {"callID":"...","name":"...","arguments":{...}}
+// Format: {"callId":"...","name":"...","arguments":{...}}
 // Returns std::nullopt on error.
 std::optional<base::DictValue> ConvertToolCallToDictValue(
     ScriptState* script_state,
     const LanguageModelToolCall* tool_call) {
   base::DictValue dict;
-  dict.Set("callID", tool_call->callID().Utf8());
+  dict.Set("callId", tool_call->callId().Utf8());
   dict.Set("name", tool_call->name().Utf8());
 
   ScriptState::Scope scope(script_state);
@@ -462,13 +463,6 @@ void LanguageModelPromptBuilder::Build(const V8LanguageModelPrompt* input) {
       }
     }
     if (message->prefix()) {
-      if (!RuntimeEnabledFeatures::AIPromptAPIMultimodalInputEnabled(
-              ExecutionContext::From(script_state_))) {
-        Reject(DOMException::Create(
-            "Assistant response prefix is not supported.",
-            DOMException::GetErrorName(DOMExceptionCode::kNotSupportedError)));
-        return;
-      }
       if (message->role() != V8LanguageModelMessageRole::Enum::kAssistant) {
         Reject(DOMException::Create(
             "Assistant response prefix must use the assistant role.",
@@ -765,10 +759,10 @@ void LanguageModelPromptBuilder::ToMojo(AudioBuffer* audio_buffer,
         execution_context->AddConsoleMessage(
             mojom::blink::ConsoleMessageSource::kJavaScript,
             mojom::blink::ConsoleMessageLevel::kWarning,
-            String::Format("Audio input will be resampled from %dHz to %dHz. "
-                           "This may adversely affect AI model comprehension.",
-                           static_cast<int>(audio_buffer->sampleRate()),
-                           static_cast<int>(audio_data->sample_rate)));
+            Format("Audio input will be resampled from {}Hz to {}Hz. This may "
+                   "adversely affect AI model comprehension.",
+                   static_cast<int>(audio_buffer->sampleRate()),
+                   audio_data->sample_rate));
       }
     }
   }
@@ -932,10 +926,10 @@ void LanguageModelPromptBuilder::OnBitmapLoaded(PendingEntry* entry,
       execution_context->AddConsoleMessage(
           mojom::blink::ConsoleMessageSource::kJavaScript,
           mojom::blink::ConsoleMessageLevel::kWarning,
-          String::Format("Image input (%ux%u) will be downscaled to 768x768. "
-                         "Dense spatial details like small text may be lost. "
-                         "This may adversely affect AI model comprehension.",
-                         original_width, original_height));
+          Format("Image input ({}x{}) will be downscaled to 768x768. Dense "
+                 "spatial details like small text may be lost. This may "
+                 "adversely affect AI model comprehension.",
+                 original_width, original_height));
     }
 
     // 2. Aspect ratio skew warning

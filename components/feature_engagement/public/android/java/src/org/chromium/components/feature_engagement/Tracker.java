@@ -10,6 +10,8 @@ import org.chromium.base.Callback;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
+import java.util.function.BooleanSupplier;
+
 /**
  * Tracker is the Java representation of a native Tracker object. It is owned by the native
  * BrowserContext.
@@ -29,6 +31,21 @@ public interface Tracker {
         void release();
     }
 
+    /**
+     * Sets a supplier that provides whether the PromotionsEnabled enterprise policy currently
+     * blocks promotions. Defaults to never blocking.
+     */
+    default void setEnterprisePolicyBlocksPromotionsSupplier(BooleanSupplier supplier) {}
+
+    /**
+     * Sets a supplier that provides whether legacy {@link #shouldTriggerHelpUi(String)} callers
+     * should aggressively trigger cooldown groups.
+     *
+     * @param supplier A supplier returning true when legacy callers should emit cooldown trigger
+     *     events.
+     */
+    default void setAggressivelyCooldownIphsSupplier(BooleanSupplier supplier) {}
+
     /** Must be called whenever an event happens. */
     void notifyEvent(String event);
 
@@ -40,9 +57,27 @@ public interface Tracker {
      *
      * @param feature The name of the feature requesting in-product help.
      * @return Whether feature enlightenment should be displayed.
+     * @deprecated Use {@link #shouldTriggerHelpUi(String, FeatureProperties)} instead.
      */
     @CheckResult
+    @Deprecated
     boolean shouldTriggerHelpUi(String feature);
+
+    /**
+     * This function must be called whenever the triggering condition for a specific feature
+     * happens. Returns true iff the display of the in-product help must happen. If {@code true} is
+     * returned, the caller *must* call {@link #dismissed(String)} when display of feature
+     * enlightenment ends.
+     *
+     * @param feature The name of the feature requesting in-product help.
+     * @param featureProperties The {@link FeatureProperties} for cooldown group evaluation.
+     * @return Whether feature enlightenment should be displayed.
+     */
+    @CheckResult
+    @SuppressWarnings("deprecation")
+    default boolean shouldTriggerHelpUi(String feature, FeatureProperties featureProperties) {
+        return shouldTriggerHelpUi(feature);
+    }
 
     /**
      * For callers interested in showing a snooze button. For other callers, use the
@@ -51,9 +86,27 @@ public interface Tracker {
      * @param feature The name of the feature requesting in-product help.
      * @return Whether feature enlightenment should be displayed and whether snooze button should be
      *     shown.
+     * @deprecated Use {@link #shouldTriggerHelpUiWithSnooze(String, FeatureProperties)} instead.
      */
     @CheckResult
+    @Deprecated
     TriggerDetails shouldTriggerHelpUiWithSnooze(String feature);
+
+    /**
+     * For callers interested in showing a snooze button. For other callers, use the {@link
+     * #shouldTriggerHelpUi(String, FeatureProperties)} method.
+     *
+     * @param feature The name of the feature requesting in-product help.
+     * @param featureProperties The {@link FeatureProperties} for cooldown group evaluation.
+     * @return Whether feature enlightenment should be displayed and whether snooze button should be
+     *     shown.
+     */
+    @CheckResult
+    @SuppressWarnings("deprecation")
+    default TriggerDetails shouldTriggerHelpUiWithSnooze(
+            String feature, FeatureProperties featureProperties) {
+        return shouldTriggerHelpUiWithSnooze(feature);
+    }
 
     /**
      * Invoking this is basically the same as being allowed to invoke {@link
@@ -67,6 +120,10 @@ public interface Tracker {
      * <p>NOTE: It is not guaranteed that invoking {@link #shouldTriggerHelpUi(String)} after this
      * would yield the same result. The state might change in-between the calls because time has
      * passed, other events might have been triggered, and other state might have changed.
+     *
+     * <p>NOTE: For a tracking_only experiment, this will return the same result as for a
+     * non-tracking experiment so that the comparison of groups can be properly handled when {@link
+     * #shouldTriggerHelpUi(String)} is invoked.
      *
      * @return Whether feature enlightenment would be displayed if {@link
      *     #shouldTriggerHelpUi(String)} had been invoked instead.
@@ -88,21 +145,9 @@ public interface Tracker {
     boolean hasEverTriggered(String feature, boolean fromWindow);
 
     /**
-     * This function can be called to query if a particular |feature| meets its particular
-     * precondition for triggering within the bounds of the current feature configuration.
-     * Calling this method requires the {@link Tracker} to already have been initialized.
-     * See {@link #isInitialized()) and {@link #addOnInitializedCallback(Callback<Boolean>)} for how
-     * to ensure the call to this is delayed.
-     * This function can typically be used to ensure that expensive operations for tracking other
-     * state related to in-product help do not happen if in-product help has already been displayed
-     * for the given |feature|.
-     */
-    @TriggerState
-    int getTriggerState(String feature);
-
-    /**
      * Must be called after display of feature enlightenment finishes for a particular feature.
-     * @param  feature  the name of the feature dismissing in-product help.
+     *
+     * @param feature the name of the feature dismissing in-product help.
      */
     void dismissed(String feature);
 

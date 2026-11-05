@@ -6,6 +6,7 @@
 
 #include <array>
 
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -68,6 +69,7 @@
 #include "third_party/blink/renderer/core/testing/file_backed_blob_factory_test_helper.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/blob/blob_data.h"
+#include "third_party/blink/renderer/platform/blob/testing/fake_blob_registry.h"
 #include "third_party/blink/renderer/platform/file_metadata.h"
 #include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -237,6 +239,107 @@ TEST(V8ScriptValueSerializerTest, DeserializationErrorSetsHasError) {
                                          serialized_script_value, options);
   deserializer.Deserialize();
   EXPECT_TRUE(deserializer.HasError());
+}
+
+TEST(V8ScriptValueSerializerTest, DeserializationHistogram) {
+  test::TaskEnvironment task_environment;
+  base::HistogramTester histogram_tester;
+  V8TestingScope scope;
+
+  {
+    scoped_refptr<SerializedScriptValue> input =
+        SerializedScriptValue::NullValue();
+    SerializedScriptValue::DeserializeOptions options;
+    options.histogram_variant = "Foo";
+
+    V8ScriptValueDeserializer deserializer(scope.GetScriptState(), input,
+                                           options);
+    EXPECT_TRUE(deserializer.Deserialize()->IsNull());
+  }
+
+  histogram_tester.ExpectBucketCount("Blink.ScriptValueDeserialization.Foo",
+                                     /* kAttempted */ 0, 1);
+  histogram_tester.ExpectBucketCount("Blink.ScriptValueDeserialization.Foo",
+                                     /* kSucceeded */ 1, 1);
+  histogram_tester.ExpectTotalCount("Blink.ScriptValueDeserialization.Foo", 2);
+
+  {
+    scoped_refptr<SerializedScriptValue> input =
+        SerializedScriptValue::Create("invalid data");
+    SerializedScriptValue::DeserializeOptions options;
+    options.histogram_variant = "Foo";
+
+    V8ScriptValueDeserializer deserializer(scope.GetScriptState(), input,
+                                           options);
+    EXPECT_TRUE(deserializer.Deserialize()->IsNull());
+  }
+
+  histogram_tester.ExpectBucketCount("Blink.ScriptValueDeserialization.Foo",
+                                     /* kAttempted */ 0, 2);
+  histogram_tester.ExpectBucketCount("Blink.ScriptValueDeserialization.Foo",
+                                     /* kFailed */ 2, 1);
+  histogram_tester.ExpectTotalCount("Blink.ScriptValueDeserialization.Foo", 4);
+}
+
+TEST(V8ScriptValueSerializerTest,
+     BlobAndFileDeserializationSuccessRecordedOnce) {
+  test::TaskEnvironment task_environment;
+  ScopedFakeBlobRegistry blob_registry;
+  base::HistogramTester histogram_tester;
+  V8TestingScope scope;
+  v8::Isolate* isolate = scope.GetIsolate();
+  v8::Local<v8::Context> context = scope.GetContext();
+  v8::Local<v8::Array> input = v8::Array::New(isolate, 4);
+  Blob* blob1 = Blob::Create(base::span<const uint8_t>(), "text/plain");
+  Blob* blob2 = Blob::Create(base::span<const uint8_t>(), "text/plain");
+  File* file1 = MakeGarbageCollected<File>("file1.txt", base::Time::UnixEpoch(),
+                                           BlobDataHandle::Create());
+  File* file2 = MakeGarbageCollected<File>("file2.txt", base::Time::UnixEpoch(),
+                                           BlobDataHandle::Create());
+  ASSERT_TRUE(input
+                  ->Set(context, 0,
+                        ToV8Traits<Blob>::ToV8(scope.GetScriptState(), blob1))
+                  .FromMaybe(false));
+  ASSERT_TRUE(input
+                  ->Set(context, 1,
+                        ToV8Traits<Blob>::ToV8(scope.GetScriptState(), blob2))
+                  .FromMaybe(false));
+  ASSERT_TRUE(input
+                  ->Set(context, 2,
+                        ToV8Traits<File>::ToV8(scope.GetScriptState(), file1))
+                  .FromMaybe(false));
+  ASSERT_TRUE(input
+                  ->Set(context, 3,
+                        ToV8Traits<File>::ToV8(scope.GetScriptState(), file2))
+                  .FromMaybe(false));
+  scoped_refptr<SerializedScriptValue> serialized_value =
+      V8ScriptValueSerializer(scope.GetScriptState())
+          .Serialize(input, scope.GetExceptionState());
+  ASSERT_TRUE(serialized_value);
+
+  SerializedScriptValue::DeserializeOptions options;
+  options.histogram_variant = "HistoryState";
+  v8::Local<v8::Value> result =
+      V8ScriptValueDeserializer(scope.GetScriptState(), serialized_value,
+                                options)
+          .Deserialize();
+
+  ASSERT_TRUE(result->IsArray());
+  EXPECT_EQ(4u, result.As<v8::Array>()->Length());
+  histogram_tester.ExpectBucketCount(
+      "Blink.ScriptValueDeserialization.HistoryState",
+      /* kAttempted */ 0, 1);
+  histogram_tester.ExpectBucketCount(
+      "Blink.ScriptValueDeserialization.HistoryState",
+      /* kSucceeded */ 1, 1);
+  histogram_tester.ExpectBucketCount(
+      "Blink.ScriptValueDeserialization.HistoryState",
+      /* kBlobDeserializationSucceeded */ 5, 1);
+  histogram_tester.ExpectBucketCount(
+      "Blink.ScriptValueDeserialization.HistoryState",
+      /* kFileDeserializationSucceeded */ 6, 1);
+  histogram_tester.ExpectTotalCount(
+      "Blink.ScriptValueDeserialization.HistoryState", 4);
 }
 
 TEST(V8ScriptValueSerializerTest, DetachHappensAfterSerialization) {
@@ -847,7 +950,7 @@ TEST(V8ScriptValueSerializerTest, RoundTripDetachedImageData) {
       ASSERT_NO_EXCEPTION);
   SkPixmap pm = image_data->GetSkPixmap();
   pm.writable_addr32(0, 0)[0] = 200u;
-  image_data->data()->GetAsUint8ClampedArray()->BufferBase()->Detach();
+  image_data->data()->GetAsUint8ClampedArray()->buffer()->DetachForTesting();
 
   v8::Local<v8::Value> wrapper =
       ToV8Traits<ImageData>::ToV8(scope.GetScriptState(), image_data);
@@ -1630,13 +1733,13 @@ TEST(V8ScriptValueSerializerTest, TransferOffscreenCanvas) {
 
 TEST(V8ScriptValueSerializerTest, RoundTripBlob) {
   test::TaskEnvironment task_environment;
+  ScopedFakeBlobRegistry blob_registry;
   V8TestingScope scope;
   const char kHelloWorld[] = "Hello world!";
   Blob* blob = Blob::Create(
       base::as_bytes(base::span_with_nul_from_cstring(kHelloWorld)),
       "text/plain");
-  String uuid = blob->Uuid();
-  EXPECT_FALSE(uuid.empty());
+  EXPECT_TRUE(blob->MaybeUuid().empty());
   v8::Local<v8::Value> wrapper =
       ToV8Traits<Blob>::ToV8(scope.GetScriptState(), blob);
   v8::Local<v8::Value> result =
@@ -1645,12 +1748,15 @@ TEST(V8ScriptValueSerializerTest, RoundTripBlob) {
   ASSERT_NE(new_blob, nullptr);
   EXPECT_EQ("text/plain", new_blob->type());
   EXPECT_EQ(sizeof(kHelloWorld), new_blob->size());
-  EXPECT_EQ(uuid, new_blob->Uuid());
+  EXPECT_TRUE(new_blob->MaybeUuid().empty());
+  EXPECT_EQ(blob->GetBlobDataHandle()->GetUuidMayBlock(),
+            new_blob->GetBlobDataHandle()->GetUuidMayBlock());
 }
 
 // Blob deserialization requires blob data handles.
 TEST(V8ScriptValueSerializerTest, DecodeBlobWithoutHandles) {
   test::TaskEnvironment task_environment;
+  base::HistogramTester histogram_tester;
   V8TestingScope scope;
   scoped_refptr<SerializedScriptValue> input = SerializedValue(
       {0xff, 0x09, 0x3f, 0x00, 0x62, 0x24, 0x64, 0x38, 0x37, 0x35, 0x64,
@@ -1658,20 +1764,34 @@ TEST(V8ScriptValueSerializerTest, DecodeBlobWithoutHandles) {
        0x31, 0x62, 0x2d, 0x39, 0x38, 0x66, 0x65, 0x2d, 0x30, 0x63, 0x66,
        0x36, 0x63, 0x63, 0x35, 0x65, 0x61, 0x66, 0x34, 0x34, 0x0a, 0x74,
        0x65, 0x78, 0x74, 0x2f, 0x70, 0x6c, 0x61, 0x69, 0x6e, 0x0c});
+  SerializedScriptValue::DeserializeOptions options;
+  options.histogram_variant = "HistoryState";
   v8::Local<v8::Value> result =
-      V8ScriptValueDeserializer(scope.GetScriptState(), input).Deserialize();
+      V8ScriptValueDeserializer(scope.GetScriptState(), input, options)
+          .Deserialize();
   EXPECT_TRUE(result->IsNull());
+  histogram_tester.ExpectBucketCount(
+      "Blink.ScriptValueDeserialization.HistoryState",
+      /* kAttempted */ 0, 1);
+  histogram_tester.ExpectBucketCount(
+      "Blink.ScriptValueDeserialization.HistoryState",
+      /* kFailed */ 2, 1);
+  histogram_tester.ExpectBucketCount(
+      "Blink.ScriptValueDeserialization.HistoryState",
+      /* kBlobLookupFailed */ 3, 1);
+  histogram_tester.ExpectTotalCount(
+      "Blink.ScriptValueDeserialization.HistoryState", 3);
 }
 
 TEST(V8ScriptValueSerializerTest, RoundTripBlobIndex) {
   test::TaskEnvironment task_environment;
+  ScopedFakeBlobRegistry blob_registry;
   V8TestingScope scope;
   const char kHelloWorld[] = "Hello world!";
   Blob* blob = Blob::Create(
       base::as_bytes(base::span_with_nul_from_cstring(kHelloWorld)),
       "text/plain");
-  String uuid = blob->Uuid();
-  EXPECT_FALSE(uuid.empty());
+  EXPECT_TRUE(blob->MaybeUuid().empty());
   v8::Local<v8::Value> wrapper =
       ToV8Traits<Blob>::ToV8(scope.GetScriptState(), blob);
   WebBlobInfoArray blob_info_array;
@@ -1683,14 +1803,16 @@ TEST(V8ScriptValueSerializerTest, RoundTripBlobIndex) {
   ASSERT_NE(new_blob, nullptr);
   EXPECT_EQ("text/plain", new_blob->type());
   EXPECT_EQ(sizeof(kHelloWorld), new_blob->size());
-  EXPECT_EQ(uuid, new_blob->Uuid());
+  EXPECT_EQ(blob->GetBlobDataHandle()->GetUuidMayBlock(),
+            new_blob->GetBlobDataHandle()->GetUuidMayBlock());
+  EXPECT_FALSE(blob->MaybeUuid().empty());
 
   // The blob info array should also contain the blob details since it was
   // serialized by index into this array.
   ASSERT_EQ(1u, blob_info_array.size());
   const WebBlobInfo& info = blob_info_array[0];
   EXPECT_FALSE(info.IsFile());
-  EXPECT_EQ(uuid, String(info.Uuid()));
+  EXPECT_EQ(blob->MaybeUuid(), info.GetBlobHandle()->MaybeUuid());
   EXPECT_EQ("text/plain", info.GetType());
   EXPECT_EQ(sizeof(kHelloWorld), static_cast<size_t>(info.size()));
 }
@@ -1710,7 +1832,7 @@ TEST(V8ScriptValueSerializerTest, DecodeBlobIndex) {
   v8::Local<v8::Value> result = deserializer.Deserialize();
   Blob* new_blob = V8Blob::ToWrappable(scope.GetIsolate(), result);
   ASSERT_NE(new_blob, nullptr);
-  EXPECT_EQ("d875dfc2-4505-461b-98fe-0cf6cc5eaf44", new_blob->Uuid());
+  EXPECT_EQ("d875dfc2-4505-461b-98fe-0cf6cc5eaf44", new_blob->MaybeUuid());
   EXPECT_EQ("text/plain", new_blob->type());
   EXPECT_EQ(12u, new_blob->size());
 }
@@ -1757,6 +1879,7 @@ TEST(V8ScriptValueSerializerTest, RoundTripFileNative) {
 
 TEST(V8ScriptValueSerializerTest, RoundTripFileBackedByBlob) {
   test::TaskEnvironment task_environment;
+  ScopedFakeBlobRegistry blob_registry;
   V8TestingScope scope;
   const base::Time kModificationTime = base::Time::UnixEpoch();
   scoped_refptr<BlobDataHandle> blob_data_handle = BlobDataHandle::Create();
@@ -1782,6 +1905,7 @@ TEST(V8ScriptValueSerializerTest, RoundTripFileNativeSnapshot) {
   FileBackedBlobFactoryTestHelper helper(context);
   File* file = File::CreateForFileSystemFile(context, "name", metadata,
                                              File::kIsUserVisible);
+  helper.FlushForTesting();
   v8::Local<v8::Value> wrapper =
       ToV8Traits<File>::ToV8(scope.GetScriptState(), file);
   v8::Local<v8::Value> result =
@@ -1795,6 +1919,7 @@ TEST(V8ScriptValueSerializerTest, RoundTripFileNativeSnapshot) {
 
 TEST(V8ScriptValueSerializerTest, RoundTripFileNonNativeSnapshot) {
   test::TaskEnvironment task_environment;
+  ScopedFakeBlobRegistry blob_registry;
   // Preserving behavior, filesystem URL is not preserved across cloning.
   KURL url("filesystem:http://example.com/isolated/hash/non-native-file");
   V8TestingScope scope;
@@ -1832,9 +1957,10 @@ class TimeIntervalChecker {
   const int64_t start_time_;
 };
 
-// Blob deserialization requires blob data handles.
+// File deserialization requires blob data handles.
 TEST(V8ScriptValueSerializerTest, DecodeFileWithoutHandles) {
   test::TaskEnvironment task_environment;
+  base::HistogramTester histogram_tester;
   V8TestingScope scope;
   scoped_refptr<SerializedScriptValue> input = SerializedValue(
       {0xff, 0x08, 0x3f, 0x00, 0x66, 0x04, 'p',  'a',  't',  'h',  0x04, 'n',
@@ -1844,9 +1970,23 @@ TEST(V8ScriptValueSerializerTest, DecodeFileWithoutHandles) {
        'c',  '0',  '2',  'f',  '0',  'f',  'a',  '3',  0x0a, 't',  'e',  'x',
        't',  '/',  'p',  'l',  'a',  'i',  'n',  0x01, 0x80, 0x04, 0x00, 0x00,
        0x00, 0x00, 0x00, 0x00, 0xd0, 0xbf, 0x01, 0x00});
+  SerializedScriptValue::DeserializeOptions options;
+  options.histogram_variant = "HistoryState";
   v8::Local<v8::Value> result =
-      V8ScriptValueDeserializer(scope.GetScriptState(), input).Deserialize();
+      V8ScriptValueDeserializer(scope.GetScriptState(), input, options)
+          .Deserialize();
   EXPECT_TRUE(result->IsNull());
+  histogram_tester.ExpectBucketCount(
+      "Blink.ScriptValueDeserialization.HistoryState",
+      /* kAttempted */ 0, 1);
+  histogram_tester.ExpectBucketCount(
+      "Blink.ScriptValueDeserialization.HistoryState",
+      /* kFailed */ 2, 1);
+  histogram_tester.ExpectBucketCount(
+      "Blink.ScriptValueDeserialization.HistoryState",
+      /* kFileLookupFailed */ 4, 1);
+  histogram_tester.ExpectTotalCount(
+      "Blink.ScriptValueDeserialization.HistoryState", 3);
 }
 
 TEST(V8ScriptValueSerializerTest, RoundTripFileIndex) {
@@ -1879,7 +2019,8 @@ TEST(V8ScriptValueSerializerTest, RoundTripFileIndex) {
   const WebBlobInfo& info = blob_info_array[0];
   EXPECT_TRUE(info.IsFile());
   EXPECT_EQ("path", info.FileName());
-  EXPECT_EQ(file->Uuid(), String(info.Uuid()));
+  EXPECT_EQ(file->GetBlobDataHandle()->GetUuidMayBlock(),
+            info.GetBlobHandle()->GetUuidMayBlock());
 }
 
 TEST(V8ScriptValueSerializerTest, DecodeFileIndex) {
@@ -1897,7 +2038,7 @@ TEST(V8ScriptValueSerializerTest, DecodeFileIndex) {
   v8::Local<v8::Value> result = deserializer.Deserialize();
   File* new_file = V8File::ToWrappable(scope.GetIsolate(), result);
   ASSERT_NE(new_file, nullptr);
-  EXPECT_EQ("d875dfc2-4505-461b-98fe-0cf6cc5eaf44", new_file->Uuid());
+  EXPECT_EQ("d875dfc2-4505-461b-98fe-0cf6cc5eaf44", new_file->MaybeUuid());
   EXPECT_EQ("text/plain", new_file->type());
   EXPECT_TRUE(new_file->GetPath().empty());
   EXPECT_EQ("path", new_file->name());
@@ -2071,7 +2212,7 @@ TEST(V8ScriptValueSerializerTest, DecodeFileListIndex) {
   File* new_file = new_file_list->item(0);
   EXPECT_TRUE(new_file->GetPath().empty());
   EXPECT_EQ("name", new_file->name());
-  EXPECT_EQ("d875dfc2-4505-461b-98fe-0cf6cc5eaf44", new_file->Uuid());
+  EXPECT_EQ("d875dfc2-4505-461b-98fe-0cf6cc5eaf44", new_file->MaybeUuid());
   EXPECT_EQ("text/plain", new_file->type());
 }
 
@@ -2229,56 +2370,6 @@ TEST(V8ScriptValueSerializerTest, CanDeserializeIn_OldValues) {
   scoped_refptr<SerializedScriptValue> input =
       SerializedValue({0xff, 0x09, 'T', 0x00});
   EXPECT_TRUE(input->CanDeserializeIn(scope.GetExecutionContext()));
-}
-
-TEST(V8ScriptValueSerializerTest, RoundTripFencedFrameConfig) {
-  test::TaskEnvironment task_environment;
-  ScopedFencedFramesForTest fenced_frames(true);
-  V8TestingScope scope;
-  FencedFrameConfig* config = FencedFrameConfig::Create(
-      KURL("https://example.com"),
-      KURL("urn:uuid:37665e6f-f3fd-4393-8429-719d02843a54"), gfx::Size(64, 48),
-      gfx::Size(32, 16), FencedFrameConfig::AttributeVisibility::kOpaque, true);
-  v8::Local<v8::Value> wrapper =
-      ToV8Traits<FencedFrameConfig>::ToV8(scope.GetScriptState(), config);
-  v8::Local<v8::Value> result =
-      RoundTrip(wrapper, scope, scope.GetExceptionState());
-  FencedFrameConfig* new_config =
-      V8FencedFrameConfig::ToWrappable(scope.GetIsolate(), result);
-  ASSERT_NE(new_config, nullptr);
-  EXPECT_NE(config, new_config);
-  EXPECT_EQ(config->url_, new_config->url_);
-  EXPECT_EQ(config->urn_uuid_, new_config->urn_uuid_);
-  EXPECT_EQ(config->container_size_, new_config->container_size_);
-  EXPECT_EQ(config->content_size_, new_config->content_size_);
-  EXPECT_EQ(config->url_attribute_visibility_,
-            new_config->url_attribute_visibility_);
-  EXPECT_EQ(config->deprecated_should_freeze_initial_size_,
-            new_config->deprecated_should_freeze_initial_size_);
-}
-
-TEST(V8ScriptValueSerializerTest, RoundTripFencedFrameConfigNullValues) {
-  test::TaskEnvironment task_environment;
-  ScopedFencedFramesForTest fenced_frames(true);
-  V8TestingScope scope;
-  FencedFrameConfig* config = FencedFrameConfig::Create(g_empty_string);
-  ASSERT_FALSE(config->urn_uuid_.has_value());
-  ASSERT_FALSE(config->container_size_.has_value());
-  ASSERT_FALSE(config->content_size_.has_value());
-  v8::Local<v8::Value> wrapper =
-      ToV8Traits<FencedFrameConfig>::ToV8(scope.GetScriptState(), config);
-  v8::Local<v8::Value> result =
-      RoundTrip(wrapper, scope, scope.GetExceptionState());
-  FencedFrameConfig* new_config =
-      V8FencedFrameConfig::ToWrappable(scope.GetIsolate(), result);
-  ASSERT_NE(new_config, nullptr);
-  EXPECT_NE(config, new_config);
-  EXPECT_EQ(config->urn_uuid_, new_config->urn_uuid_);
-  EXPECT_FALSE(new_config->urn_uuid_.has_value());
-  EXPECT_EQ(config->container_size_, new_config->container_size_);
-  EXPECT_FALSE(new_config->container_size_.has_value());
-  EXPECT_EQ(config->content_size_, new_config->content_size_);
-  EXPECT_FALSE(new_config->content_size_.has_value());
 }
 
 namespace {

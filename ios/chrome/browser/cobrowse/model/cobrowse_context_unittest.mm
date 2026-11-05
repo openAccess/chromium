@@ -6,10 +6,14 @@
 
 #import <Foundation/Foundation.h>
 
+#import <memory>
+
 #import "base/strings/sys_string_conversions.h"
+#import "components/contextual_search/mock_contextual_search_session_handle.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "net/base/url_util.h"
 #import "testing/gtest/include/gtest/gtest.h"
+#import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "url/gurl.h"
 
@@ -71,6 +75,83 @@ TEST_F(CobrowseContextTest, InitWithOverrideURL) {
   EXPECT_EQ(value, "chrome-mobile");
   EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "gsas", &value));
   EXPECT_EQ(value, "4");
+}
+
+// Tests that the context is correctly initialized using a search query string.
+TEST_F(CobrowseContextTest, CobrowseContextWithSearchQuery) {
+  CobrowseContext* context =
+      [CobrowseContext cobrowseContextWithSearchQuery:@"test query"];
+
+  EXPECT_EQ(context.url.host(), "www.google.com");
+  EXPECT_EQ(context.url.path(), "/search");
+  EXPECT_NSEQ(context.searchQuery, @"test query");
+
+  std::string value;
+  EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "udm", &value));
+  EXPECT_EQ(value, "50");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "sourceid", &value));
+  EXPECT_EQ(value, "chrome-mobile");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "gsas", &value));
+  EXPECT_EQ(value, "4");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(context.url, "q", &value));
+  EXPECT_EQ(value, "test query");
+}
+
+// Test that `serverID` (`mtid`) and `turnID` (`mstk`) are extracted from the
+// URL and compared in `isEqual:`.
+TEST_F(CobrowseContextTest, ExtractsServerIDAndTurnID) {
+  GURL url(
+      "https://www.google.com/search?udm=50&q=hello&mtid=thread_1&mstk=turn_2");
+  CobrowseContext* context = [[CobrowseContext alloc] initWithURL:url];
+
+  EXPECT_NSEQ(context.searchQuery, @"hello");
+  EXPECT_NSEQ(context.serverID, @"thread_1");
+  EXPECT_NSEQ(context.turnID, @"turn_2");
+  EXPECT_TRUE(context.hasServerSessionTokens);
+
+  CobrowseContext* same_context = [[CobrowseContext alloc] initWithURL:url];
+  EXPECT_TRUE([context isEqual:same_context]);
+
+  GURL different_turn_url(
+      "https://www.google.com/search?udm=50&q=hello&mtid=thread_1&mstk=turn_3");
+  CobrowseContext* different_turn_context =
+      [[CobrowseContext alloc] initWithURL:different_turn_url];
+  EXPECT_NSNE(context, different_turn_context);
+}
+
+// Tests transferring ownership of the contextual search session handle and
+// attached tab items.
+TEST_F(CobrowseContextTest, TransfersContextualSearchSessionAndAttachedTabs) {
+  GURL url(kDefaultURL);
+  CobrowseContext* context = [[CobrowseContext alloc] initWithURL:url];
+  CobrowseContext* other_context = [[CobrowseContext alloc] initWithURL:url];
+
+  EXPECT_FALSE(context.hasContextualSearchSession);
+  EXPECT_NSEQ(context, other_context);
+
+  auto session =
+      std::make_unique<contextual_search::MockContextualSearchSessionHandle>();
+  auto* raw_session = session.get();
+  [context setContextualSearchSession:std::move(session)];
+
+  EXPECT_TRUE(context.hasContextualSearchSession);
+  EXPECT_NSNE(context, other_context);
+
+  std::unique_ptr<contextual_search::ContextualSearchSessionHandle>
+      taken_session = [context takeContextualSearchSession];
+  EXPECT_EQ(taken_session.get(), raw_session);
+  EXPECT_FALSE(context.hasContextualSearchSession);
+  EXPECT_NSEQ(context, other_context);
+
+  NSArray* items = @[ [[NSObject alloc] init] ];
+  context.attachedTabItems = items;
+  EXPECT_EQ(context.attachedTabItems.count, 1u);
+  EXPECT_NSNE(context, other_context);
+
+  NSArray* taken_items = [context takeAttachedTabItems];
+  EXPECT_EQ(taken_items.count, 1u);
+  EXPECT_EQ(context.attachedTabItems, nil);
+  EXPECT_NSEQ(context, other_context);
 }
 
 }  // namespace

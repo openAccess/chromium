@@ -90,12 +90,16 @@ import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider.StaticTabFavico
 import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider.TabFavicon;
 import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider.TabFaviconFetcher;
 import org.chromium.chrome.browser.tab_ui.TabThumbnailView;
+import org.chromium.chrome.browser.tab_ui.ThumbnailFetcher;
 import org.chromium.chrome.browser.tab_ui.ThumbnailProvider;
 import org.chromium.chrome.browser.tab_ui.ThumbnailProvider.MultiThumbnailMetadata;
 import org.chromium.chrome.browser.tasks.tab_management.TabActionButtonData.TabActionButtonType;
 import org.chromium.chrome.browser.tasks.tab_management.TabListModel.AnimationStatus;
 import org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardProperties;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
+import org.chromium.chrome.browser.tasks.tab_management.labels.TabCardLabelData;
+import org.chromium.chrome.browser.tasks.tab_management.labels.TabCardLabelType;
+import org.chromium.chrome.browser.tasks.tab_management.labels.TabCardLabelView;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.components.browser_ui.util.TextResolver;
@@ -163,18 +167,6 @@ public class TabListViewHolderTest {
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
-    private ViewGroup mTabGridView;
-    private PropertyModel mGridModel;
-    private PropertyModelChangeProcessor mGridMcp;
-
-    private ViewGroup mTabStripView;
-    private PropertyModel mStripModel;
-    private PropertyModelChangeProcessor mStripMcp;
-
-    private ViewGroup mSelectableTabGridView;
-    private PropertyModel mSelectableModel;
-    private PropertyModelChangeProcessor mSelectableMcp;
-
     @Mock private Profile mProfile;
 
     @Mock private LevelDBPersistedDataStorage.Natives mLevelDbPersistedTabDataStorage;
@@ -202,8 +194,7 @@ public class TabListViewHolderTest {
                             callback.onResult(new BitmapDrawable(bitmap));
                         }
                     },
-                    MultiThumbnailMetadata.createMetadataWithoutUrls(
-                            Tab.INVALID_TAB_ID, false, false, null));
+                    MultiThumbnailMetadata.createMetadataForSingleTab(Tab.INVALID_TAB_ID));
     private final AtomicInteger mThumbnailFetchedCount = new AtomicInteger();
 
     private final TabActionListener mMockCloseListener =
@@ -235,6 +226,18 @@ public class TabListViewHolderTest {
             };
     private final AtomicBoolean mSelectClicked = new AtomicBoolean();
     private final AtomicInteger mSelectTabId = new AtomicInteger();
+
+    private ViewGroup mTabGridView;
+    private PropertyModel mGridModel;
+    private PropertyModelChangeProcessor mGridMcp;
+
+    private ViewGroup mTabStripView;
+    private PropertyModel mStripModel;
+    private PropertyModelChangeProcessor mStripMcp;
+
+    private ViewGroup mSelectableTabGridView;
+    private PropertyModel mSelectableModel;
+    private PropertyModelChangeProcessor mSelectableMcp;
 
     private boolean mShouldReturnBitmap;
 

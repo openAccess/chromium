@@ -6,6 +6,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -26,10 +27,10 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new_util.h"
 #include "chrome/common/chrome_version.h"
+#include "components/language/core/browser/language_prefs.h"
 #include "components/user_education/webui/whats_new_registry.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "content/public/browser/reduce_accept_language_controller_delegate.h"
 #include "net/base/url_util.h"
 #include "net/http/http_util.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -43,6 +44,11 @@ const char kChromeWhatsNewStagingURL[] =
     "https://chrome-staging.corp.google.com/chrome/whats-new/";
 
 const int64_t kMaxDownloadBytes = 1024 * 1024;
+
+// Query parameter telling the What's New page that Chrome shows its own native
+// "Sign in to Chrome on your phone" QR code bubble, so the page should hide its
+// inline QR code.
+constexpr char kUseNativeMobileQrParam[] = "use-native-mobile-qr";
 
 GURL AddVersionParameter(const WhatsNewRegistry& whats_new_registry,
                          const GURL& base_url) {
@@ -61,7 +67,8 @@ GURL GetServerURL(const WhatsNewRegistry& whats_new_registry, bool is_staging) {
 }
 
 GURL GetServerURLForRender(const WhatsNewRegistry& whats_new_registry,
-                           bool is_staging) {
+                           bool is_staging,
+                           bool use_native_mobile_qr) {
   GURL url = GetServerURL(whats_new_registry, is_staging);
   const auto active_features = whats_new_registry.GetActiveFeatureNames();
   if (!active_features.empty()) {
@@ -79,6 +86,10 @@ GURL GetServerURLForRender(const WhatsNewRegistry& whats_new_registry,
   if (!customizations.empty()) {
     url = net::AppendQueryParameter(url, "customization",
                                     base::JoinString(customizations, ","));
+  }
+
+  if (use_native_mobile_qr) {
+    url = net::AppendQueryParameter(url, kUseNativeMobileQrParam, "true");
   }
 
   return net::AppendQueryParameter(url, "internal", "true");
@@ -152,9 +163,9 @@ class WhatsNewFetcher {
     // Inform the server of the top browser language via the
     // Accept-Language header.
     if (auto* profile = browser->GetProfile()) {
-      if (auto* delegate =
-              profile->GetReduceAcceptLanguageControllerDelegate()) {
-        auto languages = delegate->GetUserAcceptLanguages();
+      if (auto* prefs = profile->GetPrefs()) {
+        std::vector<std::string> languages;
+        language::LanguagePrefs(prefs).GetAcceptLanguagesList(&languages);
         if (!languages.empty()) {
           request->headers.SetHeader(request->headers.kAcceptLanguage,
                                      languages.front());
@@ -207,7 +218,7 @@ class WhatsNewFetcher {
   }
 
   void OnResponseLoaded(std::optional<std::string> body) {
-    DCHECK(browser_);
+    CHECK(browser_, base::NotFatalUntil::M162);
 
     int error_or_response_code = simple_loader_->NetError();
     const auto& headers = simple_loader_->ResponseInfo()

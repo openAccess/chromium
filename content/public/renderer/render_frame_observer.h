@@ -28,6 +28,7 @@
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom.h"
 #include "third_party/blink/public/mojom/loader/resource_load_info.mojom-shared.h"
+#include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-shared.h"
 #include "third_party/blink/public/web/web_meaningful_layout.h"
 #include "third_party/blink/public/web/web_navigation_type.h"
 #include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
@@ -140,18 +141,11 @@ class CONTENT_EXPORT RenderFrameObserver {
   virtual void WillReleaseScriptContext(v8::Local<v8::Context> context,
                                         int32_t world_id) {}
   virtual void DidClearWindowObject() {}
-  virtual void DidChangeScrollOffset() {}
+  virtual void DidChangeScrollOffset(blink::mojom::ScrollType) {}
   virtual void WillSubmitForm(const blink::WebFormElement& form) {}
   virtual void DidMatchCSS(
       const std::vector<blink::WebString>& newly_matching_selectors,
       const std::vector<blink::WebString>& stopped_matching_selectors) {}
-
-  // Called when the RenderFrame creates a FencedFrame and provides the
-  // RemoteFrameToken to identify the `blink::RemoteFrame` to the inner
-  // RenderFrame. This is called immediately after the FencedFrame is created
-  // in the browser and the `blink::RemoteFrame` initialized in this renderer.
-  virtual void DidCreateFencedFrame(
-      const blink::RemoteFrameToken& placeholder_token) {}
 
   // Called when same-document navigation finishes.
   // This is the only callback for same-document navigations,
@@ -229,7 +223,8 @@ class CONTENT_EXPORT RenderFrameObserver {
 
   // Notifications when a cpu timing update becomes available, when a frame
   // has performed at least 100ms of tasks.
-  virtual void DidChangeCpuTiming(base::TimeDelta time) {}
+  virtual void DidChangeCpuTiming(base::TimeDelta time,
+                                  base::TimeDelta ad_time) {}
 
   // Notification when the renderer uses a particular code path during a page
   // load. This is used for metrics collection.

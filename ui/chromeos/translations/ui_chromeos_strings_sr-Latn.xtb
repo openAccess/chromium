@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Neispravna lozinka</translation>
 <translation id="5059127710849015030">nepalski, transliteracija</translation>
 <translation id="5068919226082848014">Pica</translation>
+<translation id="5075336522277785691">Dodatak <ph name="EXTENSION_NAME" /> je podesio pravila za zamenu proksija</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> datoteka će se izbrisati</translation>
 <translation id="508423945471810158">Stavke (<ph name="NUMBER_OF_ITEMS" />) se premeštaju u folder <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Došlo je do greške.</translation>
-<translation id="5102922915594634436">Upravljajte sinhronizovanim folderima</translation>
 <translation id="5109254780565519649">Došlo je do greške. Neke stavke možda nisu vraćene.</translation>
 <translation id="5110329002213341433">engleski (Kanada)</translation>
 <translation id="5119780910075847424">Sinhronizacija je pauzirana</translation>
@@ -869,7 +869,6 @@
 <translation id="7663224033570512922">hindi</translation>
 <translation id="7665680517722058469">Probajte sa nekim drugim terminom za pretragu</translation>
 <translation id="7689532716264131859">Stavke (<ph name="NUMBER_OF_ITEMS" />) su premeštene u otpad</translation>
-<translation id="7693909743393669729">Ako formatirate disk, izbrisaćete sve podatke koji se na njemu čuvaju i ukloniti sve postojeće particije, uključujući i one koje možda nisu vidljive. Ova radnja ne može da se opozove.</translation>
 <translation id="7695430100978772476">Formatiranje memorijskog uređaja <ph name="DRIVE_NAME" /> nije uspelo</translation>
 <translation id="76959938259365003">Pražnjenje otpada nije uspelo.</translation>
 <translation id="7705251383879779343">Kopiranih stavki: <ph name="FILE_NAME" />.</translation>
@@ -913,7 +912,6 @@
 <translation id="7901567919203965902">međunarodna američka Workman</translation>
 <translation id="7903984238293908205">katakana</translation>
 <translation id="7908378463497120834">Žao nam je, najmanje jednu particiju spoljnog memorijskog uređaja nije bilo moguće uključiti.</translation>
-<translation id="7908793776359722643">Ako formatirate particiju, brišete sve podatke na njoj. Ova radnja ne može da se opozove.</translation>
 <translation id="7911118814695487383">Linux</translation>
 <translation id="7920501309908018401">Fajlovi na Mom disku će se automatski sinhronizovati sa Chromebook-om, pa možete da im pristupate bez internet veze.</translation>
 <translation id="7925247922861151263">Provera potvrde identiteta, ovlašćenja i pristupa nije uspela</translation>

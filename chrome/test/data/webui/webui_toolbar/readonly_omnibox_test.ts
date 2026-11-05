@@ -2,47 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/app.js';
+import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
-import {assertEquals, assertGE, assertLE, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertGE, assertLE, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestSearchboxBrowserProxy} from 'chrome://webui-test/cr_components/searchbox/test_searchbox_browser_proxy.js';
-import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, INVALID_FOCUS_REQUEST_HANDLE, OmniboxTextColor, SearchboxBrowserProxy} from 'chrome://webui-toolbar.top-chrome/app.js';
-import type {OmniboxAction, ReadonlyOmniboxElement} from 'chrome://webui-toolbar.top-chrome/app.js';
+import {BrowserProxyImpl, OmniboxTextColor, SearchboxBrowserProxy} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {ReadonlyOmniboxElement} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
-class MockToolbarUiHandler extends TestBrowserProxy {
-  constructor() {
-    super(['onOmniboxAction', 'adjustOmniboxTextForCopy']);
-  }
-
-  onOmniboxAction(action: OmniboxAction) {
-    this.methodCalled('onOmniboxAction', action);
-  }
-
-  adjustOmniboxTextForCopy(text: string, _selectionStart: number) {
-    this.methodCalled('adjustOmniboxTextForCopy', text);
-    return Promise.resolve({
-      adjustedText: text,
-      adjustedUrl: null,
-      pageTitle: null,
-    });
-  }
-}
-
-class MockBrowserProxy extends TestBrowserProxy {
-  toolbarUIHandler: MockToolbarUiHandler = new MockToolbarUiHandler();
-
-  addFocusRequestListener() {
-    return INVALID_FOCUS_REQUEST_HANDLE;
-  }
-
-  removeFocusRequestListener() {}
-}
+import {TestToolbarBrowserProxy} from './test_toolbar_browser_proxy.js';
+import type {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
 
 suite('ReadonlyOmnibox', function() {
   let omnibox: ReadonlyOmniboxElement;
-  let uiHandler: MockToolbarUiHandler;
+  let uiHandler: TestToolbarUiHandler;
 
   const initialState = {
     browserVersion: 0,
@@ -56,6 +29,7 @@ suite('ReadonlyOmnibox', function() {
     selection: null,
     textIsUrl: false,
     userInputInProgress: false,
+    hasTemporaryText: false,
   };
 
   function getTextPieces(): NodeListOf<HTMLElement> {
@@ -167,9 +141,9 @@ suite('ReadonlyOmnibox', function() {
   }
 
   setup(() => {
-    const browserProxy = new MockBrowserProxy();
+    const browserProxy = new TestToolbarBrowserProxy();
     uiHandler = browserProxy.toolbarUIHandler;
-    BrowserProxyImpl.setInstance(browserProxy as any);
+    BrowserProxyImpl.setInstance(browserProxy);
     SearchboxBrowserProxy.setInstance(new TestSearchboxBrowserProxy());
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -474,6 +448,14 @@ suite('ReadonlyOmnibox', function() {
     assertEquals('visible', style.get('visibility')?.toString());
 
     getTextInput().dispatchEvent(new CompositionEvent('compositionend'));
+    await microtasksFinished();
+
+    // Ending composition immediately transitions inline autocompletion from the
+    // standalone span to selected text in the input.
+    assertEquals('example.com/articles/1/', getTextInput().value);
+    assertEquals('les/1/', getStringSelection());
+    style = omnibox.$.inlineAutocomplete.computedStyleMap();
+    assertEquals('hidden', style.get('visibility')?.toString());
 
     // Now try with IME uninvolved.
     omnibox.browserOmniboxState = {
@@ -1151,6 +1133,43 @@ suite('ReadonlyOmnibox', function() {
     assertEquals(13, input.selectionEnd);
   });
 
+  test('Do not unelide temporary text', async () => {
+    omnibox.browserOmniboxState = {
+      ...initialState,
+      textPieces: [
+        {
+          text: 'suggestion',
+          strikethrough: false,
+          color: OmniboxTextColor.kOmniboxText,
+        },
+      ],
+      inlineAutocompletion: '',
+      formattedFullUrl: '',
+      selection: {start: 10, end: 10},
+      textIsUrl: false,
+      hasTemporaryText: true,
+    };
+    await microtasksFinished();
+
+    // Simulate user pressing left button. The fake left key press won't
+    // actually update the selection, but the key up will make us check it w/o
+    // needing focus.
+    const input = getTextInput();
+    fakeKeyDown('ArrowLeft');
+    input.setSelectionRange(9, 9);
+    input.dispatchEvent(new KeyboardEvent('keyup', {key: 'ArrowLeft'}));
+    await microtasksFinished();
+
+    // This should send a selection input update, which is not an unelision.
+    assertEquals(1, uiHandler.getCallCount('onOmniboxAction'));
+    const args = uiHandler.getArgs('onOmniboxAction');
+    assertTrue(!!args[0].textInput);
+    assertEquals('suggestion', args[0].textInput.text);
+    assertEquals(9, args[0].textInput.selection.start);
+    assertEquals(9, args[0].textInput.selection.end);
+    assertFalse(args[0].textInput.unelision);
+  });
+
   test('Single touch tap selects all and triggers zero-suggest', async () => {
     uiHandler.reset();
     omnibox.browserOmniboxState = {
@@ -1335,4 +1354,360 @@ suite('ReadonlyOmnibox', function() {
     assertEquals('', args[0].textInput.text);
     assertEquals(omnibox.$.textInput, omnibox.shadowRoot.activeElement);
   });
+
+  test(
+      'Arrow and Page keys with modifiers do not forward or preventDefault',
+      async () => {
+        uiHandler.reset();
+        const input = getTextInput();
+        const arrowModifiersList = [
+          {ctrlKey: true},
+          {altKey: true},
+          {shiftKey: true},
+          {metaKey: true},
+          {metaKey: true, altKey: true},
+        ];
+
+        for (const key of ['ArrowUp', 'ArrowDown']) {
+          for (const modifiers of arrowModifiersList) {
+            const ev = new KeyboardEvent('keydown', {
+              key,
+              cancelable: true,
+              ...modifiers,
+            });
+            input.dispatchEvent(ev);
+            await microtasksFinished();
+            assertFalse(ev.defaultPrevented);
+            assertEquals(0, uiHandler.getCallCount('onOmniboxAction'));
+          }
+        }
+
+        const pageModifiersList = [
+          {ctrlKey: true},
+          {altKey: true},
+          {shiftKey: true},
+        ];
+
+        for (const key of ['PageUp', 'PageDown']) {
+          for (const modifiers of pageModifiersList) {
+            const ev = new KeyboardEvent('keydown', {
+              key,
+              cancelable: true,
+              ...modifiers,
+            });
+            input.dispatchEvent(ev);
+            await microtasksFinished();
+            assertFalse(ev.defaultPrevented);
+            assertEquals(0, uiHandler.getCallCount('onOmniboxAction'));
+          }
+        }
+
+        // Plain keys without modifiers should preventDefault and forward.
+        for (const key of ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown']) {
+          uiHandler.reset();
+          const ev = new KeyboardEvent('keydown', {
+            key,
+            cancelable: true,
+          });
+          input.dispatchEvent(ev);
+          await microtasksFinished();
+          assertTrue(ev.defaultPrevented);
+          assertEquals(1, uiHandler.getCallCount('onOmniboxAction'));
+          const lastArgs = uiHandler.getArgs('onOmniboxAction').at(-1);
+          assertTrue(!!lastArgs.key);
+          assertEquals(key, lastArgs.key.key);
+        }
+      });
+
+  // https://crbug.com/565552101: Keys used by the IME during composition (e.g.
+  // Enter to commit raw Pinyin text) must not be forwarded to the browser.
+  test('Keys during IME composition are not forwarded', async () => {
+    const input = getTextInput();
+    for (const key
+             of ['Enter', 'Escape', 'ArrowUp', 'ArrowDown', ' ', 'Backspace',
+                 'Tab', 'PageUp', 'PageDown']) {
+      uiHandler.reset();
+      input.dispatchEvent(new KeyboardEvent('keydown', {
+        key,
+        cancelable: true,
+        isComposing: true,
+      }));
+      await microtasksFinished();
+      assertEquals(0, uiHandler.getCallCount('onOmniboxAction'), key);
+    }
+
+    // Enter outside of composition is forwarded.
+    uiHandler.reset();
+    input.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      cancelable: true,
+    }));
+    await microtasksFinished();
+    assertEquals(1, uiHandler.getCallCount('onOmniboxAction'));
+    const lastArgs = uiHandler.getArgs('onOmniboxAction').at(-1);
+    assertTrue(!!lastArgs.key);
+    assertEquals('Enter', lastArgs.key.key);
+  });
+
+  test('Dragging plain text allows copy and move', async () => {
+    const input = getTextInput();
+    input.focus();
+    input.value = 'hello world';
+    input.setSelectionRange(0, input.value.length);
+    omnibox.adjustedCopyResult = {
+      adjustedText: 'hello world',
+      adjustedUrl: null,
+      pageTitle: null,
+    };
+    await microtasksFinished();
+
+    // Blink ignores writes to `effectAllowed` on a DataTransfer created with
+    // `new DataTransfer()`, since it is not tied to a drag; it always reads
+    // back 'none'. Use a fake instead, so that the test can check the
+    // `effectAllowed` set by the dragstart handler.
+    const data = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: 'uninitialized',
+      setData: (type: string, value: string) => data.set(type, value),
+      getData: (type: string) => data.get(type) ?? '',
+      setDragImage: () => {},
+    };
+    const dragStartEvent =
+        new DragEvent('dragstart', {bubbles: true, cancelable: true});
+    Object.defineProperty(
+        dragStartEvent, 'dataTransfer', {value: dataTransfer});
+    omnibox.dispatchEvent(dragStartEvent);
+
+    // Matches the native omnibox, which allows both copy and move for a plain
+    // text drag and writes no URL.
+    assertEquals('copyMove', dataTransfer.effectAllowed);
+    assertEquals('hello world', dataTransfer.getData('text/plain'));
+    assertEquals('', dataTransfer.getData('text/uri-list'));
+  });
+
+  test('Dragging a URL writes the displayed text and the URL', async () => {
+    const input = getTextInput();
+    input.focus();
+    input.value = 'example.com';
+    input.setSelectionRange(0, input.value.length);
+    // Let the selection change trigger its own copy result refresh first, so
+    // it does not overwrite the result set below.
+    await uiHandler.whenCalled('adjustOmniboxTextForCopy');
+    await microtasksFinished();
+    omnibox.adjustedCopyResult = {
+      adjustedText: 'https://example.com/',
+      adjustedUrl: 'https://example.com/',
+      pageTitle: 'Example Domain',
+    };
+    await microtasksFinished();
+
+    // Blink ignores writes to `effectAllowed` on a DataTransfer created with
+    // `new DataTransfer()`, since it is not tied to a drag; it always reads
+    // back 'none'. Use a fake instead, so that the test can check the
+    // `effectAllowed` set by the dragstart handler.
+    const data = new Map<string, string>();
+    const dataTransfer = {
+      effectAllowed: 'uninitialized',
+      setData: (type: string, value: string) => data.set(type, value),
+      getData: (type: string) => data.get(type) ?? '',
+      setDragImage: () => {},
+    };
+    const dragStartEvent =
+        new DragEvent('dragstart', {bubbles: true, cancelable: true});
+    Object.defineProperty(
+        dragStartEvent, 'dataTransfer', {value: dataTransfer});
+    omnibox.dispatchEvent(dragStartEvent);
+
+    // Matches the native omnibox: the plain text is the selected text as
+    // displayed, while the URL is the adjusted, canonical URL.
+    assertEquals('copyMove', dataTransfer.effectAllowed);
+    assertEquals('example.com', dataTransfer.getData('text/plain'));
+    assertEquals('https://example.com/', dataTransfer.getData('text/uri-list'));
+  });
+
+  test('Dropping into the omnibox works after dragging out', async () => {
+    const input = getTextInput();
+    input.focus();
+    input.value = 'hello world';
+    input.setSelectionRange(0, input.value.length);
+    omnibox.adjustedCopyResult = {
+      adjustedText: 'hello world',
+      adjustedUrl: null,
+      pageTitle: null,
+    };
+    await microtasksFinished();
+
+    omnibox.dispatchEvent(new DragEvent('dragstart', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: new DataTransfer(),
+    }));
+    omnibox.dispatchEvent(new DragEvent('dragend', {bubbles: true}));
+    await microtasksFinished();
+
+    // Once the drag out ended, the omnibox no longer treats drags as its own,
+    // so it forwards text dropped into it from outside to the browser.
+    uiHandler.reset();
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/plain', 'dropped text');
+    omnibox.dispatchEvent(
+        new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer}));
+    await microtasksFinished();
+
+    assertEquals(1, uiHandler.getCallCount('onOmniboxAction'));
+    const args = uiHandler.getArgs('onOmniboxAction');
+    assertTrue(!!args[0].dropText);
+    assertEquals('dropped text', args[0].dropText.text);
+  });
+
+  // A dropped link is forwarded as a URL drop, without the URL: the browser
+  // uses the URL it captured from the drag, rather than the one the WebUI sees,
+  // e.g. about:blank#blocked in place of a javascript: link.
+  test('Dropping a link forwards a URL drop', async () => {
+    uiHandler.reset();
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/uri-list', 'about:blank#blocked');
+    dataTransfer.setData('text/plain', 'javascript:alert(1)');
+    omnibox.dispatchEvent(
+        new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer}));
+    await microtasksFinished();
+
+    assertEquals(1, uiHandler.getCallCount('onOmniboxAction'));
+    const args = uiHandler.getArgs('onOmniboxAction');
+    assertTrue(!!args[0].dropUrl);
+  });
+
+  // Like OmniboxViewViews::PerformDrop(), a drop carrying several kinds of data
+  // is forwarded as a single action, preferring a URL, then files, then plain
+  // text.
+  test('Dropping a URL, a file and text forwards the URL', async () => {
+    uiHandler.reset();
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/uri-list', 'https://example.com/');
+    dataTransfer.setData('text/plain', 'dropped text');
+    dataTransfer.items.add(new File([''], 'test.html'));
+    omnibox.dispatchEvent(
+        new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer}));
+    await microtasksFinished();
+
+    assertEquals(1, uiHandler.getCallCount('onOmniboxAction'));
+    const args = uiHandler.getArgs('onOmniboxAction');
+    assertTrue(!!args[0].dropUrl);
+  });
+
+  test('Dropping a file and text forwards the file', async () => {
+    uiHandler.reset();
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/plain', 'dropped text');
+    dataTransfer.items.add(new File([''], 'test.html'));
+    omnibox.dispatchEvent(
+        new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer}));
+    await microtasksFinished();
+
+    assertEquals(1, uiHandler.getCallCount('onOmniboxAction'));
+    const args = uiHandler.getArgs('onOmniboxAction');
+    assertTrue(!!args[0].dropFile);
+  });
+
+  // Like the native omnibox, which ignores a drop's empty URLs, a drop with an
+  // empty `text/uri-list` falls back to its plain text.
+  test('Dropping an empty URL and text forwards the text', async () => {
+    uiHandler.reset();
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/uri-list', '');
+    dataTransfer.setData('text/plain', 'dropped text');
+    omnibox.dispatchEvent(
+        new DragEvent('drop', {bubbles: true, cancelable: true, dataTransfer}));
+    await microtasksFinished();
+
+    assertEquals(1, uiHandler.getCallCount('onOmniboxAction'));
+    const args = uiHandler.getArgs('onOmniboxAction');
+    assertTrue(!!args[0].dropText);
+    assertEquals('dropped text', args[0].dropText.text);
+  });
+
+  // Like the native omnibox, dragging text out asks the browser to close the
+  // suggestions popup, so that it does not cover the drop target.
+  test('Dragging text notifies the browser', async () => {
+    const input = getTextInput();
+    input.focus();
+    input.value = 'hello world';
+    input.setSelectionRange(0, input.value.length);
+    omnibox.adjustedCopyResult = {
+      adjustedText: 'hello world',
+      adjustedUrl: null,
+      pageTitle: null,
+    };
+    await microtasksFinished();
+
+    uiHandler.reset();
+    omnibox.dispatchEvent(new DragEvent('dragstart', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: new DataTransfer(),
+    }));
+    await microtasksFinished();
+
+    assertEquals(1, uiHandler.getCallCount('onOmniboxAction'));
+    const args = uiHandler.getArgs('onOmniboxAction');
+    assertTrue(!!args[0].dragStart);
+  });
+
+  // The adjusted copy result is fetched asynchronously, so a drag can start
+  // before it is set. The selected text is still dragged, so the browser is
+  // still notified.
+  test(
+      'Dragging text before the adjusted copy result is set notifies the ' +
+          'browser',
+      async () => {
+        const input = getTextInput();
+        input.focus();
+        input.value = 'hello world';
+        input.setSelectionRange(0, input.value.length);
+        // Let the selection change trigger its own copy result refresh first,
+        // so that it does not overwrite the result cleared below.
+        await uiHandler.whenCalled('adjustOmniboxTextForCopy');
+        await microtasksFinished();
+        omnibox.adjustedCopyResult = null;
+        await microtasksFinished();
+
+        uiHandler.reset();
+        omnibox.dispatchEvent(new DragEvent('dragstart', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: new DataTransfer(),
+        }));
+        await microtasksFinished();
+
+        assertEquals(1, uiHandler.getCallCount('onOmniboxAction'));
+        const args = uiHandler.getArgs('onOmniboxAction');
+        assertTrue(!!args[0].dragStart);
+      });
+
+  // A drag without selected text carries no text, so it does not notify the
+  // browser.
+  test(
+      'Dragging without selected text does not notify the browser',
+      async () => {
+        const input = getTextInput();
+        input.focus();
+        input.value = 'hello world';
+        input.setSelectionRange(0, 0);
+        omnibox.adjustedCopyResult = {
+          adjustedText: '',
+          adjustedUrl: null,
+          pageTitle: null,
+        };
+        await microtasksFinished();
+
+        uiHandler.reset();
+        omnibox.dispatchEvent(new DragEvent('dragstart', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: new DataTransfer(),
+        }));
+        await microtasksFinished();
+
+        assertEquals(0, uiHandler.getCallCount('onOmniboxAction'));
+      });
 });

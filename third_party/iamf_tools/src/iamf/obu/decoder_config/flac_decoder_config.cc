@@ -27,6 +27,7 @@
 #include "iamf/common/utils/macros.h"
 #include "iamf/common/utils/validation_utils.h"
 #include "iamf/common/write_bit_buffer.h"
+#include "iamf/obu/types.h"
 
 namespace iamf_tools {
 
@@ -144,12 +145,6 @@ absl::Status ValidateEncodingRestrictions(
   return absl::OkStatus();
 }
 
-absl::Status ValidateAudioRollDistance(int16_t audio_roll_distance) {
-  return ValidateEqual(audio_roll_distance,
-                       FlacDecoderConfig::GetRequiredAudioRollDistance(),
-                       "audio_roll_distance");
-}
-
 absl::Status WriteStreamInfo(const FlacMetaBlockStreamInfo& stream_info,
                              WriteBitBuffer& wb) {
   RETURN_IF_NOT_OK(wb.WriteUnsignedLiteral(stream_info.minimum_block_size, 16));
@@ -202,10 +197,7 @@ absl::Status ReadStreamInfo(FlacMetaBlockStreamInfo& stream_info,
 }  // namespace
 
 absl::Status FlacDecoderConfig::ValidateAndWrite(uint32_t num_samples_per_frame,
-                                                 int16_t audio_roll_distance,
                                                  WriteBitBuffer& wb) const {
-  MAYBE_RETURN_IF_NOT_OK(ValidateAudioRollDistance(audio_roll_distance));
-
   RETURN_IF_NOT_OK(ValidateEncodingRestrictions(num_samples_per_frame, *this));
 
   for (size_t i = 0; i < metadata_blocks_.size(); ++i) {
@@ -243,10 +235,7 @@ absl::Status FlacDecoderConfig::ValidateAndWrite(uint32_t num_samples_per_frame,
 }
 
 absl::Status FlacDecoderConfig::ReadAndValidate(uint32_t num_samples_per_frame,
-                                                int16_t audio_roll_distance,
                                                 ReadBitBuffer& rb) {
-  RETURN_IF_NOT_OK(ValidateAudioRollDistance(audio_roll_distance));
-
   // We are not given a length field to indicate the number of metadata blocks
   // to read. Instead, we must look at the `last_metadata_block_flag` to
   // determine when to stop reading.  Cap at 128 blocks as a safety measure
@@ -275,6 +264,15 @@ absl::Status FlacDecoderConfig::ReadAndValidate(uint32_t num_samples_per_frame,
             std::get<FlacMetaBlockStreamInfo>(metadata_block.payload), rb));
         break;
       default: {
+        // Bound the allocation to the maximum OBU size before reserving, as
+        // the 24-bit length is otherwise attacker-controlled up to 16 MB with
+        // no relation to the bytes actually available. Mirrors the guards in
+        // the sibling decoder-config readers.
+        if (metadata_data_block_length > kEntireObuSizeMaxTwoMegabytes) {
+          return absl::InvalidArgumentError(absl::StrCat(
+              "metadata_data_block_length= ", metadata_data_block_length,
+              " exceeds maximum."));
+        }
         std::vector<uint8_t> payload(metadata_data_block_length);
         RETURN_IF_NOT_OK(rb.ReadUint8Span(MakeSpan(payload)));
         metadata_block.payload = std::move(payload);

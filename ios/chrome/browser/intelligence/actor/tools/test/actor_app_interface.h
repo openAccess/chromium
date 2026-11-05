@@ -7,6 +7,10 @@
 
 #import <Foundation/Foundation.h>
 
+namespace actor {
+enum class ActorControlState;
+}  // namespace actor
+
 // Error domain for ActorAppInterface.
 extern NSString* const kActorAppInterfaceErrorDomain;
 
@@ -23,13 +27,13 @@ typedef NS_ENUM(NSInteger, ActorAppInterfaceErrorCode) {
 // App interface to interact with the ActorService from integration tests.
 @interface ActorAppInterface : NSObject
 
-// Executes an Action defined by the serialized proto.
-// The completion block is called when the action finishes or fails.
+// Executes an Action defined by the serialized `actionProto`.
+// The `completion` block is called when the action finishes or fails.
 + (void)executeActionWithProto:(NSData*)actionProto
                     completion:(void (^)(NSError* error))completion;
 
-// Executes a list of Actions defined by the serialized Actions proto.
-// The completion block is called when all actions finish or any action fails.
+// Executes a list of Actions defined by the serialized `actionsProto`.
+// The `completion` block is called when all actions finish or any action fails.
 + (void)executeActionsWithProto:(NSData*)actionsProto
                      completion:(void (^)(NSError* error))completion;
 
@@ -37,11 +41,12 @@ typedef NS_ENUM(NSInteger, ActorAppInterfaceErrorCode) {
 // and returns the serialized optimization_guide::proto::PageContext.
 + (NSData*)fetchLatestAPC;
 
-// Waits for page stability in the current main frame.
+// Waits for page stability in the current main frame and invokes `completion`.
 + (void)waitForPageStabilityWithCompletion:(void (^)(NSError* error))completion;
 
-// Sets the actuating state on the ActorTabHelper of the WebState at `index`.
-+ (void)setActuating:(BOOL)actuating forWebStateAtIndex:(int)index;
+// Sets `controlState` on the ActorTabHelper of the WebState at `index`.
++ (void)setControlState:(actor::ActorControlState)controlState
+     forWebStateAtIndex:(int)index;
 
 // Simulates in-flight Autofill server predictions for the active `WebState`'s
 // `AutofillManager` to hold `FormPredictionsTracker` in a waiting state.
@@ -50,6 +55,10 @@ typedef NS_ENUM(NSInteger, ActorAppInterfaceErrorCode) {
 // Resolves in-flight Autofill server predictions for the active `WebState`'s
 // `AutofillManager` to unblock `FormPredictionsTracker`.
 + (void)resolveInFlightAutofillPredictions;
+
+// Enqueues a stop of all active tasks in the `ActorService`. The tasks stop on
+// a later turn of the main run loop.
++ (void)stopAllTasks;
 
 // Returns the current window ID.
 + (int32_t)currentWindowID;

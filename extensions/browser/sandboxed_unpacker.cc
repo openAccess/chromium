@@ -23,6 +23,7 @@
 #include "base/i18n/rtl.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
+#include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
@@ -719,6 +720,17 @@ void SandboxedUnpacker::IndexAndPersistJSONRulesetsIfNeeded() {
   DCHECK(unpacker_io_task_runner_->RunsTasksInCurrentSequence());
   DCHECK(extension_);
 
+  // Remove any `_metadata/generated_indexed_rulesets` directory shipped with
+  // the extension so that only browser-generated ruleset files exist there.
+  if (!base::DeletePathRecursively(extension_root_.Append(
+          file_util::GetIndexedRulesetDirectoryRelativePath()))) {
+    ReportFailure(
+        SandboxedUnpackerFailureReason::ERROR_INDEXING_DNR_RULESET,
+        l10n_util::GetStringFUTF16(IDS_EXTENSION_PACKAGE_INSTALL_ERROR,
+                                   u"ERROR_INDEXING_DNR_RULESET"));
+    return;
+  }
+
   // Defer ruleset indexing for disabled rulesets to speed up extension
   // installation.
   auto ruleset_filter = declarative_net_request::FileBackedRulesetSource::
@@ -1029,7 +1041,12 @@ std::optional<base::DictValue> SandboxedUnpacker::RewriteManifestFile(
   }
 
   base::FilePath manifest_path = extension_root_.Append(kManifestFilename);
-  if (!base::WriteFile(manifest_path, *manifest_json)) {
+  // Unlink the existing manifest before writing the sanitized version so that a
+  // new inode is created, preventing any process that still holds an open file
+  // descriptor to the original unpacked file from modifying the rewritten
+  // manifest in place.
+  if (!base::DeleteFile(manifest_path) ||
+      !base::WriteFile(manifest_path, *manifest_json)) {
     // Error saving manifest.json.
     ReportFailure(
         SandboxedUnpackerFailureReason::ERROR_SAVING_MANIFEST_JSON,

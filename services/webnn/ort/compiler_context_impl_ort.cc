@@ -22,6 +22,7 @@
 #include "services/webnn/ort/platform_functions_ort.h"
 #include "services/webnn/ort/scoped_ort_types.h"
 #include "services/webnn/public/cpp/ep_device_info.h"
+#include "services/webnn/public/cpp/execution_providers_info.h"
 #include "services/webnn/webnn_constant_operand.h"
 
 namespace webnn::ort {
@@ -31,6 +32,11 @@ namespace {
 base::unexpected<mojom::ErrorPtr> BuildGraphError() {
   return base::unexpected(mojom::Error::New(mojom::Error::Code::kUnknownError,
                                             "Failed to build graph."));
+}
+
+EpWorkarounds GetEpWorkaroundsForEp(std::string_view ep_name) {
+  const auto iter = kKnownEPs.find(ep_name);
+  return iter != kKnownEPs.end() ? iter->second.workarounds : EpWorkarounds();
 }
 
 }  // namespace
@@ -44,16 +50,19 @@ struct CompilerContextImplOrt::CompilationResult {
 };
 
 CompilerContextImplOrt::CompilerContextImplOrt(
+    WebNNCompilerServiceImpl& service,
     const EpDeviceInfo& target_device,
     mojom::CreateContextOptionsPtr options,
     ContextProperties properties,
     mojo::PendingRemote<mojom::WebNNModelLoader> model_loader)
-    : properties_(std::move(properties)),
+    : service_(service),
+      properties_(std::move(properties)),
+      ep_workarounds_(GetEpWorkaroundsForEp(target_device.ep_name)),
       options_(std::move(options)),
       model_loader_(std::move(model_loader)),
       // The environment is guaranteed to be initialized in PreSandboxInit().
       env_(Environment::GetInstance().value()) {
-  session_options_ = SessionOptions::Create(target_device, env_);
+  session_options_ = SessionOptions::CreateForCompilation(target_device, env_);
 
   model_loader_.set_disconnect_handler(
       base::BindOnce(&CompilerContextImplOrt::OnModelLoaderDisconnected,
@@ -61,6 +70,12 @@ CompilerContextImplOrt::CompilerContextImplOrt(
 }
 
 CompilerContextImplOrt::~CompilerContextImplOrt() = default;
+
+void CompilerContextImplOrt::SetId(
+    mojo::ReceiverId id,
+    base::PassKey<WebNNCompilerServiceImpl> /*pass_key*/) {
+  id_ = id;
+}
 
 const ContextProperties& CompilerContextImplOrt::properties() const {
   return properties_;
@@ -96,7 +111,7 @@ void CompilerContextImplOrt::BuildGraph(
       env_->graph_compilation_task_runner().get(), FROM_HERE,
       base::BindOnce(&CompilerContextImplOrt::CompileOnBackgroundThread,
                      std::move(graph_info), session_options_, env_, properties_,
-                     std::move(constant_operands)),
+                     ep_workarounds_, std::move(constant_operands)),
       base::BindOnce(&CompilerContextImplOrt::DidCompile,
                      base::Unretained(this), std::move(wrapped_callback)));
 }
@@ -109,13 +124,14 @@ CompilerContextImplOrt::CompileOnBackgroundThread(
     scoped_refptr<SessionOptions> session_options,
     scoped_refptr<Environment> env,
     ContextProperties context_properties,
+    EpWorkarounds ep_workarounds,
     base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
         constant_operands) {
   // Step 1: Build the ORT model from GraphInfo.
   std::unique_ptr<ModelEditor::ModelInfo> model_info =
-      GraphBuilderOrt::CreateAndBuild(*graph_info,
-                                      std::move(context_properties),
-                                      std::move(constant_operands));
+      GraphBuilderOrt::CreateAndBuild(
+          *graph_info, std::move(context_properties), std::move(ep_workarounds),
+          std::move(constant_operands));
 
   // Step 2: Compile the model using ORT Compile API.
   const OrtApi* ort_api = PlatformFunctions::GetInstance()->ort_api();
@@ -250,6 +266,13 @@ void CompilerContextImplOrt::OnModelLoaderDisconnected() {
   // Cancel any ongoing compilation tasks since the GPU process is no longer
   // available to load the compiled graphs.
   cancelable_task_tracker_.TryCancelAll();
+
+  // Destroy the context now instead of waiting for the WebNNCompilerContext
+  // receiver to disconnect: that end is held by the renderer, which may keep it
+  // open indefinitely while requesting replacement contexts (each replacing the
+  // GPU process's ModelLoader pipe), accumulating dead contexts in this
+  // process.
+  service_->RemoveCompilerContext(id_, base::PassKey<CompilerContextImplOrt>());
 }
 
 }  // namespace webnn::ort

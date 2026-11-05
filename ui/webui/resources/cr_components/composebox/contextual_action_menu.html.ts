@@ -13,12 +13,37 @@ export function getHtml(this: ContextualActionMenuElement) {
   <cr-action-menu id="menu" role-description="${this.i18n('menu')}"
       @close="${this.onMenuClose_}"
       ?auto-reposition="${!this.disableAutoReposition}">
-    <div class="menu-outer-wrapper">
-      <div class="main-menu-card">
+    <div class="menu-outer-wrapper" role="presentation">
+      <div class="main-menu-card" role="presentation">
         ${(this.tabSuggestions?.length > 0 || this.smartTabSharingActive) &&
           this.isInputTypeAllowed_(InputType.kBrowserTab) ? html`
           ${this.contextManagementInComposeboxEnabled ? html`
-            <div class="share-tabs-container">
+            ${this.shouldShowSingleTabItem_() ? html`
+              <button id="singleTabItem" class="dropdown-item"
+                  role="${this.enableMultiTabSelection_ ?
+                      'menuitemcheckbox' : 'menuitem'}"
+                  aria-checked="${this.enableMultiTabSelection_ &&
+                      this.isTabSelected_(this.singleTab_!)}"
+                  title="${this.singleTab_!.title}"
+                  data-index="${this.singleTabIndex_}"
+                  aria-label="
+                    ${this.getInputTypeLabel_(InputType.kBrowserTab)}
+                    : ${this.singleTab_!.title}"
+                  ?disabled="${this.isTabDisabled_(this.singleTab_!)}"
+                  @click="${this.onTabClick_}">
+                <cr-composebox-tab-favicon .url="${this.singleTab_!.url}"
+                    .tabId="${this.singleTab_!.tabId}"
+                    .isSubmitted="${this.isTabSelected_(this.singleTab_!)}">
+                </cr-composebox-tab-favicon>
+                <span class="tab-title">${this.singleTab_!.title}</span>
+                ${(this.enableMultiTabSelection_ &&
+                    this.isTabSelected_(this.singleTab_!)) ? html`
+                  <cr-icon class="share-tabs-check" icon="cr:check">
+                    </cr-icon>
+                ` : ''}
+              </button>
+            ` : ''}
+            <div class="share-tabs-container" role="presentation">
               ${this.smartTabSharingVisible &&
                   this.smartTabSharingActive ? html`
                 <button class="dropdown-item"
@@ -38,6 +63,7 @@ export function getHtml(this: ContextualActionMenuElement) {
                     aria-haspopup="menu"
                     aria-expanded="${this.shareTabsFlyoutOpen}"
                     ?disabled="${this.isShareTabsTriggerDisabled_()}"
+                    title="${this.getShareTabsTooltip_()}"
                     @pointerenter="${this.onShareTabsRowPointerenter_}"
                     @pointerleave="${this.onShareTabsRowPointerleave_}"
                     @keydown="${this.onShareTabsRowKeydown_}">
@@ -54,13 +80,14 @@ export function getHtml(this: ContextualActionMenuElement) {
                 </button>
               `}
             </div>
-            <hr/>
+            <hr aria-hidden="true"/>
           ` : html`
             ${(this.showContextMenuHeaders_ &&
-                this.tabSuggestions.length > 0) ? html`<h4 id="tabHeader">
+                this.tabSuggestions.length > 0) ? html`
+              <h4 id="tabHeader" aria-hidden="true">
                 ${this.getInputTypeLabel_(InputType.kBrowserTab)}</h4>` : ''}
             ${this.tabSuggestions.map((tab, index) => html`
-              <div class="suggestion-container">
+              <div class="suggestion-container" role="presentation">
                 <button class="dropdown-item"
                     role="${this.enableMultiTabSelection_ ? 'menuitemcheckbox'
                       : 'menuitem'}"
@@ -74,8 +101,8 @@ export function getHtml(this: ContextualActionMenuElement) {
                     @pointerenter="${this.onTabPointerenter_}"
                     @click="${this.onTabClick_}">
                   <cr-composebox-tab-favicon .url="${tab.url}"
-                      .tabId="${tab.tabId}"
-                      .isSubmitted="${this.isTabSelected_(tab)}">
+                       .tabId="${tab.tabId}"
+                       .isSubmitted="${this.isTabSelected_(tab)}">
                   </cr-composebox-tab-favicon>
                   <span class="tab-title">${tab.title}</span>
                   ${this.enableMultiTabSelection_ ? html`
@@ -96,7 +123,7 @@ export function getHtml(this: ContextualActionMenuElement) {
                 ` : ''}
               </div>
             `)}
-          <hr/>
+          <hr aria-hidden="true"/>
           `}
         ` : ''}
       ${this.isInputTypeAllowed_(InputType.kLensImage) ? html`
@@ -126,20 +153,21 @@ export function getHtml(this: ContextualActionMenuElement) {
       ${(this.inputState?.allowedTools.length ?? 0) > 0 &&
           this.isInputTypeAllowed_(
               InputType.kLensImage, InputType.kLensFile, InputType.kDrive) ?
-          html`<hr/>` : ''}
+          html`<hr aria-hidden="true"/>` : ''}
 
       ${(this.inputState?.allowedTools.length ?? 0) > 0 ? html`
           ${this.showContextMenuHeaders_ && this.getToolHeader_() ? html`
-          <h4 id="toolHeader">${this.getToolHeader_()}</h4>` : ''}` : ''}
+            <h4 id="toolHeader" aria-hidden="true">
+              ${this.getToolHeader_()}</h4>` : ''}` : ''}
 
-      ${this.inputState?.allowedTools.map(mode => {
-        return html`
+      ${this.inputState?.allowedTools.map(mode => html`
         <button class="dropdown-item" data-mode="${mode}"
             role="menuitemradio"
             aria-checked="${this.isToolActive_(mode)}"
             aria-label="${this.showContextMenuHeaders_ &&
                 this.getToolHeader_() ?
                 `${this.getToolHeader_()}: ` : ''}${this.getToolLabel_(mode)}"
+            title="${this.getToolTooltip_(mode)}"
             @click="${this.onToolClick_}"
             ?disabled="${this.isToolDisabled_(mode)}">
           ${this.getIconForToolMode_(mode) ? html`
@@ -150,22 +178,21 @@ export function getHtml(this: ContextualActionMenuElement) {
             <cr-icon class="multi-tab-icon"
                 icon="cr:check"></cr-icon>
           ` : ''}
-        </button>`;
-      })}
+        </button>`)}
 
       <!-- Show separator if models AND something above is visible -->
       ${(this.inputState?.allowedModels.length ?? 0) > 0 &&
         ((this.inputState?.allowedTools.length ?? 0) > 0 ||
          this.isInputTypeAllowed_(
              InputType.kLensImage, InputType.kLensFile,
-             InputType.kDrive)) ? html`<hr/>` : ''}
+             InputType.kDrive)) ? html`<hr aria-hidden="true"/>` : ''}
 
       ${(this.inputState?.allowedModels.length ?? 0) > 0 ? html`
           ${this.showContextMenuHeaders_ && this.getModelHeader_() ? html`
-          <h4 id="modelHeader">${this.getModelHeader_()}</h4>` : ''}` : ''}
+            <h4 id="modelHeader" aria-hidden="true">
+              ${this.getModelHeader_()}</h4>` : ''}` : ''}
 
-      ${this.inputState?.allowedModels.map(mode => {
-        return html`
+      ${this.inputState?.allowedModels.map(mode => html`
         <button class="dropdown-item"
             role="menuitemradio"
             aria-checked="${this.isModelActive_(mode)}"
@@ -173,6 +200,7 @@ export function getHtml(this: ContextualActionMenuElement) {
                 this.getModelHeader_() ?
                 `${this.getModelHeader_()}: ` : ''}${this.getModelLabel_(mode)}"
             data-model="${mode}"
+            title="${this.getModelTooltip_(mode)}"
             @click="${this.onModelClick_}"
             ?disabled="${this.isModelDisabled_(mode)}">
           ${this.getIconForModelMode_(mode) ? html`
@@ -182,8 +210,7 @@ export function getHtml(this: ContextualActionMenuElement) {
           ${this.isModelActive_(mode) ? html`
             <cr-icon class="multi-tab-icon"
                 icon="cr:check" id="model-check"></cr-icon>` : ''}
-        </button>`;
-      })}
+        </button>`)}
       </div>
 
       ${this.contextManagementInComposeboxEnabled &&
@@ -192,11 +219,16 @@ export function getHtml(this: ContextualActionMenuElement) {
         (this.tabSuggestions && this.tabSuggestions.length > 0) ? html`
         <div class="share-tabs-flyout" role="menu"
             ?hidden="${!this.shareTabsFlyoutOpen}"
+            aria-hidden="${!this.shareTabsFlyoutOpen}"
             data-position="${this.shareTabsFlyoutPosition_}"
             @pointerenter="${this.onShareTabsFlyoutPointerenter_}"
             @pointerleave="${this.onShareTabsFlyoutPointerleave_}"
             @keydown="${this.onShareTabsFlyoutKeydown_}">
           ${this.smartTabSharingVisible ? html`
+            ${this.showContextMenuHeaders_ ? html`
+              <h4 id="automaticallyAddTabsHeader" aria-hidden="true">
+                ${this.i18n('stsMegaplusAutomaticallyAddTabsHeader')}</h4>
+            ` : ''}
             <button class="dropdown-item"
                 id="smartTabSharingItemFlyout"
                 role="menuitemcheckbox"
@@ -208,11 +240,15 @@ export function getHtml(this: ContextualActionMenuElement) {
               <span class="tab-title">
                 ${this.i18n('stsMegaplusShareRelevantOpenTabs')}</span>
             </button>
-            <hr/>
+            <hr aria-hidden="true"/>
+            ${this.showContextMenuHeaders_ ? html`
+              <h4 id="manuallyAddTabsHeader" aria-hidden="true">
+                ${this.i18n('stsMegaplusManuallyAddTabsHeader')}</h4>
+            ` : ''}
           ` : ''}
 
           ${this.tabSuggestions.map((tab, index) => html`
-            <div class="suggestion-container">
+            <div class="suggestion-container" role="presentation">
               <button class="dropdown-item"
                   role="${this.enableMultiTabSelection_ ?
                       'menuitemcheckbox' : 'menuitem'}"
@@ -229,17 +265,7 @@ export function getHtml(this: ContextualActionMenuElement) {
                   .tabId="${tab.tabId}"
                   .isSubmitted="${this.isTabSelected_(tab)}">
               </cr-composebox-tab-favicon>
-              <span class="tab-title-group">
-                <span class="tab-title">${tab.title}</span>
-                ${this.isRecentTab_(tab.tabId) ? html`
-                  <span class="recent-tabs-suffix"
-                      ?disabled="${this.isTabDisabled_(tab)}">
-                      · ${
-                      this.isSidePanel ?
-                      this.i18n('currentTabSuffix') :
-                      this.i18n('recentTabsSuffix')}</span>
-                ` : ''}
-              </span>
+              <span class="tab-title">${tab.title}</span>
               ${(this.enableMultiTabSelection_ &&
                   this.isTabSelected_(tab)) ? html`
                 <cr-icon class="share-tabs-check" icon="cr:check">

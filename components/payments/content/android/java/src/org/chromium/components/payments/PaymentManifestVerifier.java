@@ -67,13 +67,14 @@ public class PaymentManifestVerifier
         /**
          * Called when a part of verification has failed.
          *
+         * @param methodName The payment method name whose verification has failed.
          * @param errorMessage Developer facing error message.
          */
-        void onVerificationError(String errorMessage);
+        void onVerificationError(GURL methodName, String errorMessage);
 
         /**
-         * Called when the manifest has been fully verified. No more valid apps or origins will
-         * be found after this call.
+         * Called when the manifest has been fully verified. No more valid apps or origins will be
+         * found after this call.
          */
         void onFinishedVerification();
 
@@ -148,8 +149,17 @@ public class PaymentManifestVerifier
     /** Whether the manifest cache is stale (unusable). */
     private boolean mIsManifestCacheStaleOrUnusable;
 
-    /** Whether at least one payment method manifest or web app manifest failed to download or parse. */
+    /**
+     * Whether at least one payment method manifest or web app manifest failed to download or parse.
+     */
     private boolean mAtLeastOneManifestFailedToDownloadOrParse;
+
+    /**
+     * Whether the web app manifest downloads have started. After this is set, any download failure
+     * is a web app manifest download failure, whose error message contains the web app manifest URL
+     * from the cross-origin payment method manifest and must not be exposed to the merchant.
+     */
+    private boolean mIsDownloadingWebAppManifests;
 
     /**
      * Builds the manifest verifier.
@@ -332,7 +342,8 @@ public class PaymentManifestVerifier
 
         mPendingWebAppManifestsCount = mDefaultApplications.size();
         for (String matchingAppPackageName : mDefaultApplications.keySet()) {
-            if (!mCache.getPaymentWebAppManifest(matchingAppPackageName, this)) {
+            if (!mCache.getPaymentWebAppManifest(
+                    mMethodName.getSpec(), matchingAppPackageName, this)) {
                 mIsManifestCacheStaleOrUnusable = true;
                 mPendingWebAppManifestsCount = 0;
                 mDownloader.downloadPaymentMethodManifest(mMerchantOrigin, mMethodName, this);
@@ -414,6 +425,7 @@ public class PaymentManifestVerifier
         }
 
         mPendingWebAppManifestsCount = manifest.webAppManifestUris.length;
+        mIsDownloadingWebAppManifests = true;
         for (int i = 0; i < manifest.webAppManifestUris.length; i++) {
             if (mAtLeastOneManifestFailedToDownloadOrParse) return;
             assert manifest.webAppManifestUris[i] != null;
@@ -465,8 +477,9 @@ public class PaymentManifestVerifier
                 mMethodName.getSpec(),
                 mAppIdentifiersToCache.toArray(new String[mAppIdentifiersToCache.size()]));
 
-        // Cache supported apps' parsed manifests.
-        mCache.addPaymentWebAppManifest(flattenListOfArrays(mWebAppManifestsToCache));
+        // Cache supported apps' parsed manifests across all default_applications for this method.
+        mCache.addPaymentWebAppManifest(
+                mMethodName.getSpec(), flattenListOfArrays(mWebAppManifestsToCache));
 
         mCallback.onFinishedUsingResources();
     }
@@ -584,7 +597,14 @@ public class PaymentManifestVerifier
         if (mAtLeastOneManifestFailedToDownloadOrParse) return;
         mAtLeastOneManifestFailedToDownloadOrParse = true;
 
-        mCallback.onVerificationError(errorMessage);
+        // Forward only payment method manifest download failures, with `mMethodName`, so that the
+        // caller can drop errors for payment methods that the merchant did not request. Never
+        // forward web app manifest download failures, because their URLs come from
+        // `default_applications` in the payment method manifest and must not be exposed to the
+        // merchant. The detailed message is still logged above and in DevTools by the downloader.
+        if (!mIsDownloadingWebAppManifests) {
+            mCallback.onVerificationError(mMethodName, errorMessage);
+        }
 
         if (mIsManifestCacheStaleOrUnusable) mCallback.onFinishedVerification();
         mCallback.onFinishedUsingResources();

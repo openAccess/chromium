@@ -65,7 +65,7 @@ OpenSLESOutputStream::OpenSLESOutputStream(AudioManagerAndroid* manager,
 
 OpenSLESOutputStream::~OpenSLESOutputStream() {
   DVLOG(2) << "OpenSLESOutputStream::~OpenSLESOutputStream()";
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!engine_object_.Get());
   DCHECK(!player_object_.Get());
   DCHECK(!output_mixer_.Get());
@@ -75,7 +75,7 @@ OpenSLESOutputStream::~OpenSLESOutputStream() {
 
 bool OpenSLESOutputStream::Open() {
   DVLOG(2) << "OpenSLESOutputStream::Open()";
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (engine_object_.Get())
     return false;
 
@@ -90,7 +90,7 @@ bool OpenSLESOutputStream::Open() {
 
 void OpenSLESOutputStream::Start(AudioSourceCallback* callback) {
   DVLOG(2) << "OpenSLESOutputStream::Start()";
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(callback);
   DCHECK(player_);
   DCHECK(simple_buffer_queue_);
@@ -104,7 +104,7 @@ void OpenSLESOutputStream::Start(AudioSourceCallback* callback) {
   CacheHardwareLatencyIfNeeded();
 
   // Fill audio data with silence to avoid start-up glitches. Don't use
-  // FillBufferQueueNoLock() since it can trigger recursive entry if an error
+  // FillBufferQueueLocked() since it can trigger recursive entry if an error
   // occurs while writing into the stream. See http://crbug.com/624877.
   std::ranges::fill(audio_data_[active_buffer_index_], 0);
   LOG_ON_FAILURE_AND_RETURN(
@@ -125,7 +125,8 @@ void OpenSLESOutputStream::Start(AudioSourceCallback* callback) {
   // we're continuing on from this previous position.
   uint32_t position_in_ms = 0;
   LOG_ON_FAILURE_AND_RETURN((*player_)->GetPosition(player_, &position_in_ms));
-  delay_calculator_.SetBaseTimestamp(base::Milliseconds(position_in_ms));
+  delay_calculator_.SetBaseTimestamp(
+      AdjustPositionForHardwareLatency(base::Milliseconds(position_in_ms)));
   delay_calculator_.AddFrames(audio_bus_->frames());
 
   started_ = true;
@@ -133,7 +134,7 @@ void OpenSLESOutputStream::Start(AudioSourceCallback* callback) {
 
 void OpenSLESOutputStream::Stop() {
   DVLOG(2) << "OpenSLESOutputStream::Stop()";
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!started_)
     return;
 
@@ -163,7 +164,7 @@ void OpenSLESOutputStream::Stop() {
 
 void OpenSLESOutputStream::Close() {
   DVLOG(2) << "OpenSLESOutputStream::Close()";
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Stop the stream if it is still playing.
   Stop();
@@ -192,12 +193,7 @@ void OpenSLESOutputStream::Flush() {}
 
 void OpenSLESOutputStream::SetVolume(double volume) {
   DVLOG(2) << "OpenSLESOutputStream::SetVolume(" << volume << ")";
-  DCHECK(thread_checker_.CalledOnValidThread());
-
-  double volume_override = 0;
-  if (audio_manager_->HasOutputVolumeOverride(&volume_override)) {
-    volume = volume_override;
-  }
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   float volume_float = static_cast<float>(volume);
   if (volume_float < 0.0f || volume_float > 1.0f) {
@@ -207,18 +203,18 @@ void OpenSLESOutputStream::SetVolume(double volume) {
 }
 
 void OpenSLESOutputStream::GetVolume(double* volume) {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   *volume = static_cast<double>(volume_);
 }
 
 void OpenSLESOutputStream::SetMute(bool muted) {
   DVLOG(2) << "OpenSLESOutputStream::SetMute(" << muted << ")";
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   muted_ = muted;
 }
 
 bool OpenSLESOutputStream::CreatePlayer() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!engine_object_.Get());
   DCHECK(!player_object_.Get());
   DCHECK(!output_mixer_.Get());
@@ -353,10 +349,10 @@ void OpenSLESOutputStream::FillBufferQueue() {
 
   // Fill up one buffer in the queue by asking the registered source for
   // data using the OnMoreData() callback.
-  FillBufferQueueNoLock();
+  FillBufferQueueLocked();
 }
 
-void OpenSLESOutputStream::FillBufferQueueNoLock() {
+void OpenSLESOutputStream::FillBufferQueueLocked() {
   // Ensure that the calling thread has acquired the lock since it is not
   // done in this method.
   lock_.AssertAcquired();
@@ -365,18 +361,10 @@ void OpenSLESOutputStream::FillBufferQueueNoLock() {
   uint32_t position_in_ms = 0;
   SLresult err = (*player_)->GetPosition(player_, &position_in_ms);
 
-  // Given the position of the playback head, compute the approximate number of
-  // frames that have been queued to the buffer but not yet played out.
-  // Note that the value returned by GetFramesToTarget() is negative because
-  // more frames have been added to |delay_calculator_| than have been played
-  // out and thus the target timestamp is earlier than the current timestamp of
-  // |delay_calculator_|.
-  const int delay_frames =
-      err == SL_RESULT_SUCCESS
-          ? -delay_calculator_.GetFramesToTarget(
-                AdjustPositionForHardwareLatency(position_in_ms))
-          : 0;
-  DCHECK_GE(delay_frames, 0);
+  int delay_frames = 0;
+  if (err == SL_RESULT_SUCCESS) {
+    delay_frames = CalculateDelayFrames(base::Milliseconds(position_in_ms));
+  }
 
   // Note: *DO NOT* use format_.samplesPerSecond in any calculations, it is not
   // actually the sample rate! See constructor comments. :|
@@ -421,7 +409,7 @@ void OpenSLESOutputStream::FillBufferQueueNoLock() {
 }
 
 void OpenSLESOutputStream::SetupAudioBuffer() {
-  DCHECK(thread_checker_.CalledOnValidThread());
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(audio_data_[0].empty());
   std::ranges::generate(
       audio_data_, [buffer_size_bytes = buffer_size_bytes_]() {
@@ -439,20 +427,44 @@ void OpenSLESOutputStream::HandleError(SLresult error) {
 void OpenSLESOutputStream::CacheHardwareLatencyIfNeeded() {
   // If the feature is turned off, then leave it at its default (zero) value.
   // In general, GetOutputLatency is not reliable.
-  if (!base::FeatureList::IsEnabled(kUseAudioLatencyFromHAL))
+  if (!base::FeatureList::IsEnabled(kUseAudioLatencyFromHAL) ||
+      !audio_manager_) {
     return;
+  }
 
   hardware_latency_ = audio_manager_->GetOutputLatency();
 }
 
 base::TimeDelta OpenSLESOutputStream::AdjustPositionForHardwareLatency(
-    uint32_t position_in_ms) {
-  base::TimeDelta position = base::Milliseconds(position_in_ms);
-
+    base::TimeDelta position) const {
   if (position <= hardware_latency_)
     return base::Milliseconds(0);
 
   return position - hardware_latency_;
+}
+
+int OpenSLESOutputStream::CalculateDelayFrames(base::TimeDelta position) const {
+  // Given the position of the playback head, compute the approximate number of
+  // frames that have been queued to the buffer but not yet played out.
+  // Note that the value returned by GetFramesToTarget() is negative because
+  // more frames have been added to |delay_calculator_| than have been played
+  // out and thus the target timestamp is earlier than the current timestamp of
+  // |delay_calculator_|.
+  base::TimeDelta target_position = AdjustPositionForHardwareLatency(position);
+  // AudioTimestampHelper requires target >= base_timestamp. On some Android
+  // devices, GetPosition() may jitter or report non-monotonic values, or
+  // latency adjustment may clamp to zero below the base timestamp.
+  if (delay_calculator_.base_timestamp().has_value() &&
+      target_position < *delay_calculator_.base_timestamp()) {
+    target_position = *delay_calculator_.base_timestamp();
+  }
+  const int delay_frames =
+      -delay_calculator_.GetFramesToTarget(target_position);
+
+  // Clamp delay_frames to valid bounds [0, max_frames_in_queue] to guard
+  // against clock skew or underflow.
+  const int max_delay_frames = kMaxNumOfBuffersInQueue * audio_bus_->frames();
+  return std::clamp(delay_frames, 0, max_delay_frames);
 }
 
 }  // namespace media

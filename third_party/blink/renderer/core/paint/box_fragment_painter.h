@@ -6,6 +6,7 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_BOX_FRAGMENT_PAINTER_H_
 
 #include "base/check_op.h"
+#include "base/containers/enum_set.h"
 #include "base/dcheck_is_on.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/layout/background_bleed_avoidance.h"
@@ -16,6 +17,7 @@
 #include "third_party/blink/renderer/core/paint/inline_paint_context.h"
 #include "third_party/blink/renderer/platform/graphics/paint/display_item.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
 
@@ -54,6 +56,23 @@ class CORE_EXPORT BoxFragmentPainter : public BoxPainterBase {
       const DisplayItemClient& display_item_client,
       PaintPhase phase);
 
+  // The kinds of ad an ad highlight can be labeled with. Each type in the set
+  // adds a word to the small label painted on top of the highlight; see
+  // AdLabelText().
+  enum class AdLabelType {
+    kPopup,
+    kSticky,
+    kVideo,
+    kMaxValue = kVideo,
+  };
+  using AdLabelTypes =
+      base::EnumSet<AdLabelType, AdLabelType::kPopup, AdLabelType::kMaxValue>;
+
+  // Returns the label text for `labels`, e.g. "popup" or "popup, video".
+  // Words follow `AdLabelType` order, separated by ", ". Returns the empty
+  // string if `labels` is empty.
+  static String AdLabelText(AdLabelTypes labels);
+
   // Paint a fragment. This normally just creates a BoxFragmentPainter and calls
   // Paint(), but certain object types require custom painters (such as replaced
   // content).
@@ -89,6 +108,8 @@ class CORE_EXPORT BoxFragmentPainter : public BoxPainterBase {
 
   gfx::Rect VisualRect(const PhysicalOffset& paint_offset);
 
+  gfx::Vector2d PixelSnappedScrollOffset() const;
+
  protected:
   BoxPainterBase::FillLayerInfo GetFillLayerInfo(
       const Color&,
@@ -107,8 +128,8 @@ class CORE_EXPORT BoxFragmentPainter : public BoxPainterBase {
   PhysicalRect AdjustRectForScrolledContent(GraphicsContext&,
                                             const PhysicalBoxStrut& borders,
                                             const PhysicalRect&) const override;
-  Node* ImageGeneratingNode() const override {
-    return box_fragment_.GeneratingNode();
+  const LayoutObject* PaintTimingLayoutObject() const override {
+    return box_fragment_.GetLayoutObject();
   }
 
  private:
@@ -333,6 +354,10 @@ class CORE_EXPORT BoxFragmentPainter : public BoxPainterBase {
 
   static bool ShouldHitTestCulledInlineAncestors(const HitTestContext& hit_test,
                                                  const FragmentItem& item);
+
+  // Returns the total offset of all overscroll area parents. This is used to
+  // shift content which is not within an overscroll area.
+  gfx::Vector2d PixelSnappedOverscrollOffset() const;
 
   const PhysicalBoxFragment& box_fragment_;
   const DisplayItemClient& display_item_client_;

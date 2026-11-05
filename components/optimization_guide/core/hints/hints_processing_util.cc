@@ -255,6 +255,10 @@ std::string_view GetStringNameForOptimizationType(
       return "AutofillAtMemoryBlocked";
     case proto::OptimizationType::FILTER_EXECUTION_STRATEGY:
       return "FilterExecutionStrategy";
+    case proto::OptimizationType::PAYMENT_QR_CODE_MERCHANT_URL_REGEX_ALLOWLIST:
+      return "PaymentQrCodeMerchantUrlRegexAllowlist";
+    case proto::OptimizationType::QUICK_ANSWERS:
+      return "QuickAnswers";
   }
 
   // The returned string is used to record histograms for the optimization type.

@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.media;
 import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.annotation.SuppressLint;
+import android.app.Activity;
 import android.app.ActivityOptions;
 import android.app.PendingIntent;
 import android.app.PictureInPictureParams;
@@ -28,6 +29,7 @@ import android.util.Rational;
 import android.util.Size;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
@@ -521,7 +523,8 @@ public class PictureInPictureActivity extends VideoOverlayActivity {
             if (!IntentUtils.isTrustedIntentFromSelf(intent)) return;
 
             // Make sure that this intent is for our instance.
-            UnguessableToken nativeToken = intent.getParcelableExtra(NATIVE_TOKEN_KEY);
+            UnguessableToken nativeToken =
+                    IntentUtils.safeGetParcelableExtra(intent, NATIVE_TOKEN_KEY);
             if (nativeToken == null
                     || !nativeToken.equals(getNativeToken())
                     || !isNativeHandleInitialized()) {
@@ -798,6 +801,15 @@ public class PictureInPictureActivity extends VideoOverlayActivity {
     public void setPlaybackState(@PlaybackState int playbackState) {
         mMediaActionsButtonsManager.updatePlaybackState(playbackState);
         updatePictureInPictureParams();
+
+        // The video's own wake lock is applied to the opener tab's view, which no longer keeps the
+        // screen on after a tab switch or while Chrome is hidden. Keep the screen on from the PiP
+        // window while the video plays.
+        if (playbackState == PlaybackState.PLAYING) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
     }
 
     @Override
@@ -891,6 +903,21 @@ public class PictureInPictureActivity extends VideoOverlayActivity {
 
     /* package */ @Nullable View getViewForTesting() {
         return getCompositorView() == null ? null : getCompositorView().getView();
+    }
+
+    public boolean isPipTransitionCompleteForTesting(Activity initiatorActivity) {
+        View pipView = getViewForTesting();
+        int initiatorWidth = initiatorActivity.getWindow().getDecorView().getWidth();
+        // Wait until PictureInPictureActivity has fully transitioned into its
+        // pinned PiP task and received its smaller PiP window bounds. Closing
+        // it while WindowManager's OPEN or PIP transition is still in flight
+        // can cause the transition to misfire on the initiator activity's task.
+        return isNativeHandleInitialized()
+                && isInPictureInPictureMode()
+                && getTaskId() != initiatorActivity.getTaskId()
+                && pipView != null
+                && pipView.getWidth() > 0
+                && pipView.getWidth() < initiatorWidth;
     }
 
     public void expireQuickDismissalTimerForTesting() {

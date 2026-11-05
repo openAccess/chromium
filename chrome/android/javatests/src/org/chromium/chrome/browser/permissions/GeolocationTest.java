@@ -41,8 +41,7 @@ import org.chromium.ui.base.DeviceFormFactor;
 public class GeolocationTest {
     public AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.autoResetCtaActivityRule();
-    public PermissionTestRule mPermissionRule =
-            new PermissionTestRule(mActivityTestRule.getActivityTestRule());
+    public PermissionTestRule mPermissionRule = new PermissionTestRule(mActivityTestRule);
 
     @Rule
     public RuleChain mRuleChain = RuleChain.outerRule(mActivityTestRule).around(mPermissionRule);
@@ -53,15 +52,15 @@ public class GeolocationTest {
 
     @Before
     public void setUp() throws Exception {
-        mPermissionRule.setUpActivity();
+        mActivityTestRule.startOnBlankPage();
         LocationSettingsTestUtil.setSystemLocationSettingEnabled(true);
         LocationProviderOverrider.setLocationProviderImpl(new MockLocationProvider());
     }
 
     private void runTest(String javascript, int nUpdates, boolean withGesture) throws Exception {
-        Tab tab = mPermissionRule.getActivityTab();
+        Tab tab = mActivityTestRule.getActivityTab();
         PermissionUpdateWaiter updateWaiter =
-                new PermissionUpdateWaiter("Count:", mPermissionRule.getActivity());
+                new PermissionUpdateWaiter("Count:", mActivityTestRule.getActivity());
         ThreadUtils.runOnUiThreadBlocking(() -> tab.addObserver(updateWaiter));
         mPermissionRule.runAllowTest(updateWaiter, TEST_FILE, javascript, nUpdates, withGesture);
         ThreadUtils.runOnUiThreadBlocking(() -> tab.removeObserver(updateWaiter));

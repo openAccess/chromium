@@ -14,6 +14,7 @@
 #include "android_webview/browser/gfx/browser_view_renderer.h"
 #include "android_webview/browser/gfx/gpu_service_webview.h"
 #include "android_webview/browser/gfx/viz_compositor_thread_runner_webview.h"
+#include "android_webview/browser/metrics/system_state_util.h"
 #include "android_webview/common/aw_descriptors.h"
 #include "android_webview/common/aw_features.h"
 #include "android_webview/common/aw_paths.h"
@@ -38,6 +39,7 @@
 #include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
 #include "base/i18n/tag_converters.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/posix/global_descriptors.h"
 #include "base/sampling_heap_profiler/sampling_heap_profiler.h"
 #include "base/scoped_add_feature_flags.h"
@@ -47,11 +49,14 @@
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/default_clock.h"
+#include "base/timer/elapsed_timer.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "cc/base/switches.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/crash/core/common/crash_key.h"
 #include "components/embedder_support/switches.h"
+#include "components/heap_profiling/in_process/heap_profiler_controller.h"
 #include "components/memory_system/initializer.h"
 #include "components/memory_system/parameters.h"
 #include "components/metrics/call_stacks/call_stack_profile_builder.h"
@@ -114,9 +119,6 @@ AwMainDelegate::~AwMainDelegate() = default;
 std::optional<int> AwMainDelegate::BasicStartupComplete() {
   TRACE_EVENT0("startup", "AwMainDelegate::BasicStartupComplete");
   base::CommandLine* cl = base::CommandLine::ForCurrentProcess();
-
-  // WebView uses the Android system's scrollbars and overscroll glow.
-  cl->AppendSwitch(switches::kDisableOverscrollEdgeEffect);
 
   // Pull-to-refresh should never be a default WebView action.
   cl->AppendSwitch(switches::kDisablePullToRefreshEffect);
@@ -226,7 +228,6 @@ std::optional<int> AwMainDelegate::BasicStartupComplete() {
     if (cl->HasSwitch(switches::kWebViewFencedFrames)) {
       features.EnableIfNotSet(blink::features::kFencedFrames);
       features.EnableIfNotSet(blink::features::kFencedFramesAPIChanges);
-      features.EnableIfNotSet(blink::features::kFencedFramesDefaultMode);
       features.EnableIfNotSet(::features::kFencedFramesEnforceFocus);
       features.EnableIfNotSet(::features::kPrivacySandboxAdsAPIsOverride);
     }
@@ -279,6 +280,21 @@ void AwMainDelegate::PreSandboxStartup() {
 
   if (process_type == switches::kRendererProcess) {
     InitResourceBundleRendererSide();
+  }
+
+  if (is_browser_process) {
+    // Must run before EnableCrashReporter is called.
+    switch (GetPrimaryCpuAbiBitness()) {
+      case PrimaryCpuAbiBitness::kUnknown:
+        SetPrimaryCpuAbiBitness("Unknown");
+        break;
+      case PrimaryCpuAbiBitness::k32bit:
+        SetPrimaryCpuAbiBitness("32 bit");
+        break;
+      case PrimaryCpuAbiBitness::k64bit:
+        SetPrimaryCpuAbiBitness("64 bit");
+        break;
+    }
   }
 
   EnableCrashReporter(process_type);
@@ -412,6 +428,9 @@ content::ContentRendererClient* AwMainDelegate::CreateContentRendererClient() {
 }
 
 void AwMainDelegate::InitializeMemorySystem(const bool is_browser_process) {
+  TRACE_EVENT0("startup", "AwMainDelegate::InitializeMemorySystem");
+  base::ElapsedTimer timer;
+
   const version_info::Channel channel = version_info::android::GetChannel();
   const bool is_canary_dev = (channel == version_info::Channel::CANARY ||
                               channel == version_info::Channel::DEV);
@@ -437,9 +456,6 @@ void AwMainDelegate::InitializeMemorySystem(const bool is_browser_process) {
     sampling_profiler::ProfilerProcessType profiler_process_type;
     if (is_browser_process) {
       profiler_process_type = sampling_profiler::ProfilerProcessType::kBrowser;
-      metrics::CallStackProfileBuilder::SetBrowserProcessReceiverCallback(
-          base::BindRepeating(
-              &metrics::CallStackProfileMetricsProvider::ReceiveProfile));
     } else if (process_type == switches::kRendererProcess) {
       // TODO(crbug.com/40150046): If webview ever supports extensions, exclude
       // extension renderers.
@@ -453,9 +469,27 @@ void AwMainDelegate::InitializeMemorySystem(const bool is_browser_process) {
     } else {
       profiler_process_type = sampling_profiler::ProfilerProcessType::kUnknown;
     }
-    initializer.SetProfilingClientParameters(channel, profiler_process_type);
+    // Only set up heap profiling if this process is selected for
+    // profiling, to avoid its startup cost in the vast majority of sessions
+    // that are not.
+    if (heap_profiling::HeapProfilerController::DecideIfCollectionIsEnabled(
+            channel, profiler_process_type)) {
+      if (is_browser_process) {
+        metrics::CallStackProfileBuilder::SetBrowserProcessReceiverCallback(
+            base::BindRepeating(
+                &metrics::CallStackProfileMetricsProvider::ReceiveProfile));
+      }
+      initializer.SetProfilingClientParameters(channel, profiler_process_type);
+    }
   }
   initializer.Initialize(memory_system_);
+
+  if (is_browser_process) {
+    base::UmaHistogramTimes(
+        "Android.WebView.Startup.CreationTime.InitializeMemorySystemTime."
+        "Browser",
+        timer.Elapsed());
+  }
 }
 
 bool AwMainDelegate::ShouldInitializePerfetto(InvokedIn invoked_in) {

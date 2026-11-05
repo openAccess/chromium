@@ -7,6 +7,7 @@ import unittest
 
 import setup_modules  # pylint: disable=unused-import
 
+
 import chromium_src.tools.metrics.common.etree_util as etree_util
 import chromium_src.tools.metrics.histograms.histogram_configuration_model as histogram_configuration_model
 
@@ -37,24 +38,6 @@ XML_RIGHT_ORDER = """
 
 </histograms>
 
-<histogram_suffixes_list>
-
-<histogram_suffixes name="suffix1" separator="." ordering="prefix">
-  <suffix base="true" name="suffix_name" label="label"/>
-  <affected-histogram name="histogram1"/>
-  <affected-histogram name="histogram2"/>
-  <affected-histogram name="histogram3"/>
-</histogram_suffixes>
-
-<histogram_suffixes name="suffix2" separator="_" ordering="prefix,2">
-  <suffix name="suffix_name" label="label"/>
-  <affected-histogram name="histogram1"/>
-  <affected-histogram name="histogram2"/>
-  <affected-histogram name="histogram3"/>
-</histogram_suffixes>
-
-</histogram_suffixes_list>
-
 </histogram-configuration>
 """.strip()
 
@@ -75,18 +58,6 @@ PRETTY_XML = """
 </histogram>
 
 </histograms>
-
-<histogram_suffixes_list>
-
-<histogram_suffixes name="suffix1" separator="." ordering="prefix">
-<!-- Comment in histogram_suffixes -->
-
-  <suffix base="true" name="suffix_name" label="label"/>
-  <suffix name="suffix_name" label="label"/>
-  <affected-histogram name="histogram1"/>
-</histogram_suffixes>
-
-</histogram_suffixes_list>
 
 </histogram-configuration>
 """.strip()
@@ -109,22 +80,10 @@ XML_WRONG_ATTRIBUTE_ORDER = """
 
 </histograms>
 
-<histogram_suffixes_list>
-
-<histogram_suffixes name="suffix1" separator="." ordering="prefix">
-<!-- Comment in histogram_suffixes -->
-
-  <suffix name="suffix_name" base="true" label="label"/>
-  <suffix label="label" name="suffix_name"/>
-  <affected-histogram name="histogram1"/>
-</histogram_suffixes>
-
-</histogram_suffixes_list>
-
 </histogram-configuration>
 """.strip()
 
-XML_MISSING_SEPARATOR = """
+XML_MISSING_KEY = """
 <histogram-configuration>
 
 <!-- Histogram definitions -->
@@ -137,21 +96,10 @@ XML_MISSING_SEPARATOR = """
   <owner>owner1@chromium.org</owner>
   <owner>owner2@chromium.org</owner>
   <summary>Summary text</summary>
+  <token variants="TestToken"/>
 </histogram>
 
 </histograms>
-
-<histogram_suffixes_list>
-
-<histogram_suffixes name="suffix1" ordering="prefix">
-<!-- Comment in histogram_suffixes -->
-
-  <suffix base="true" name="suffix_name" label="label"/>
-  <suffix name="suffix_name" label="label"/>
-  <affected-histogram name="histogram1"/>
-</histogram_suffixes>
-
-</histogram_suffixes_list>
 
 </histogram-configuration>
 """.strip()
@@ -173,18 +121,6 @@ XML_WRONG_INDENT = """
   </histogram>
 
   </histograms>
-
-  <histogram_suffixes_list>
-
-  <histogram_suffixes name="suffix1" separator="." ordering="prefix">
-  <!-- Comment in histogram_suffixes -->
-
-      <suffix base="true" name="suffix_name" label="label"/>
-      <suffix name="suffix_name" label="label"/>
-      <affected-histogram name="histogram1"/>
-  </histogram_suffixes>
-
-  </histogram_suffixes_list>
 
 </histogram-configuration>
 """.strip()
@@ -213,18 +149,6 @@ XML_WRONG_SINGLELINE = """
 
 </histograms>
 
-<histogram_suffixes_list>
-
-<histogram_suffixes name="suffix1" separator="." ordering="prefix">
-<!-- Comment in histogram_suffixes -->
-
-  <suffix base="true" name="suffix_name" label="label"/>
-  <suffix name="suffix_name" label="label"/>
-  <affected-histogram name="histogram1"/>
-</histogram_suffixes>
-
-</histogram_suffixes_list>
-
 </histogram-configuration>
 """.strip()
 
@@ -243,16 +167,6 @@ XML_WRONG_LINEBREAK = """
 
 </histogram>
 </histograms>
-
-<histogram_suffixes_list>
-<histogram_suffixes name="suffix1" separator="." ordering="prefix">
-<!-- Comment in histogram_suffixes -->
-  <suffix base="true" name="suffix_name" label="label"/>
-  <suffix name="suffix_name" label="label"/>
-  <affected-histogram name="histogram1"/>
-</histogram_suffixes>
-</histogram_suffixes_list>
-
 
 </histogram-configuration>
 """.strip()
@@ -274,18 +188,6 @@ XML_WRONG_CHILDREN_ORDER = """
 </histogram>
 
 </histograms>
-
-<histogram_suffixes_list>
-
-<histogram_suffixes name="suffix1" separator="." ordering="prefix">
-<!-- Comment in histogram_suffixes -->
-
-  <suffix base="true" name="suffix_name" label="label"/>
-  <suffix name="suffix_name" label="label"/>
-  <affected-histogram name="histogram1"/>
-</histogram_suffixes>
-
-</histogram_suffixes_list>
 
 </histogram-configuration>
 """.strip()
@@ -316,24 +218,6 @@ XML_WRONG_ORDER = """
 </histogram>
 
 </histograms>
-
-<histogram_suffixes_list>
-
-<histogram_suffixes name="suffix2" separator="_" ordering="prefix,2">
-  <suffix name="suffix_name" label="label"/>
-  <affected-histogram name="histogram1"/>
-  <affected-histogram name="histogram2"/>
-  <affected-histogram name="histogram3"/>
-</histogram_suffixes>
-
-<histogram_suffixes name="suffix1" separator="." ordering="prefix">
-  <suffix base="true" name="suffix_name" label="label"/>
-  <affected-histogram name="histogram1"/>
-  <affected-histogram name="histogram2"/>
-  <affected-histogram name="histogram3"/>
-</histogram_suffixes>
-
-</histogram_suffixes_list>
 
 </histogram-configuration>
 """.strip()
@@ -502,16 +386,13 @@ class HistogramXmlTest(unittest.TestCase):
   def testMissingRequiredAttribute(self):
     with self.assertRaises(Exception) as context:
       histogram_configuration_model.PrettifyTree(
-        etree_util.ParseXMLString(XML_MISSING_SEPARATOR)
+        etree_util.ParseXMLString(XML_MISSING_KEY)
       )
-    self.assertIn('separator', str(context.exception))
+    self.assertIn('key', str(context.exception))
     self.assertIn('Missing attribute', str(context.exception))
 
   @parameterized.expand(
     [
-      # The "base" attribute of <suffix> only allows
-      # "true", "True", "false" or "False"
-      ('BadSuffixBaseBoolean', XML_RIGHT_ORDER, 'true', 'yes'),
       # The "expires-after" attribute of <histogram> only allows:
       # Date given in the format YYYY-{M, MM}-{D, DD},
       # Milestone given in the format e.g. M81
@@ -525,15 +406,6 @@ class HistogramXmlTest(unittest.TestCase):
       # and punctuations "." and "_". It does not allow space.
       ('BadEnumNameIllegalPunctuation', XML_RIGHT_ORDER, 'enum1', 'enum:1'),
       ('BadEnumNameWithSpace', XML_RIGHT_ORDER, 'enum1', 'enum 1'),
-      # The "ordering" attribute of <histogram_suffixes> only allow
-      # "suffix", "prefix" or "prefix," followed by a non-negative integer
-      (
-        'BadOrderingIllegalPunctuation',
-        XML_RIGHT_ORDER,
-        'prefix,2',
-        'prefix-2',
-      ),
-      ('BadOrderingNonNumber', XML_RIGHT_ORDER, 'prefix,2', 'prefix,two'),
     ]
   )
   def testRegex(self, _, pretty_input_xml, original_string, bad_string):

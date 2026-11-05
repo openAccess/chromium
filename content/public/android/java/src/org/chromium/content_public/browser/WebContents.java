@@ -14,7 +14,6 @@ import org.chromium.base.UserData;
 import org.chromium.blink_public.input.SelectionGranularity;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.content_public.browser.back_forward_transition.AnimationStage;
 import org.chromium.ui.BrowserControlsOffsetTagDefinitions;
 import org.chromium.ui.OverscrollRefreshHandler;
 import org.chromium.ui.base.EventForwarder;
@@ -575,14 +574,6 @@ public interface WebContents extends Parcelable {
      */
     void setDisplayCutoutSafeArea(Rect insets);
 
-    /**
-     * Instructs the web contents to "show interest" in the Element corresponding to the provided
-     * nodeID.
-     *
-     * @param nodeID The DOMNodeID of the element that should receive interest.
-     */
-    void showInterestInElement(int nodeID);
-
     /** Notify that web preferences needs update for various properties. */
     void notifyRendererPreferenceUpdate();
 
@@ -603,25 +594,26 @@ public interface WebContents extends Parcelable {
     /**
      * This function checks all frames in this WebContents (not just the main frame) and returns
      * true if at least one frame has either a beforeunload or an unload/pagehide/visibilitychange
-     * handler.
+     * handler. Such a page needs the slow close path: {@link #dispatchBeforeUnload(boolean)}
+     * followed by the page being closed through Content, which runs the unload-time handlers, with
+     * the renderer kept out of fast shutdown until they have run.
      */
     boolean needToFireBeforeUnloadOrUnloadEvents();
 
     /**
-     * For cases where the content for a navigation entry is being drawn by the embedder (instead of
-     * the web page), this notifies when the embedder has rendered the UI at its final state. This
-     * is only called if the WebContents is showing an invoke animation for back forward
-     * transitions, see {@link
-     * org.chromium.components.embedder_support.delegate.WebContentsDelegateAndroid#didBackForwardTransitionAnimationChange},
-     * when the navigation entry showing embedder provided UI commits.
+     * Like {@link #needToFireBeforeUnloadOrUnloadEvents()}, but only considers beforeunload
+     * handlers: returns true if at least one live frame of the primary page has one, that is, if
+     * closing the page could show a beforeunload dialog. It does not say whether the page needs the
+     * slow close path, so it only suits a caller that runs {@link #dispatchBeforeUnload(boolean)}
+     * to let the page ask the user to stay and then closes the page itself.
      */
-    void onContentForNavigationEntryShown();
+    boolean needToFireBeforeUnload();
 
     /**
-     * @return {@link AnimationStage} the current stage of back forward transition.
+     * Returns the transition animation manager, creating it if needed. Returns null if transitions
+     * are unsupported for this WebContents.
      */
-    @AnimationStage
-    int getCurrentBackForwardTransitionStage();
+    @Nullable BackForwardTransitionAnimationManager getBackForwardTransitionAnimationManager();
 
     /**
      * Let long press on links select the link text instead of triggering context menu. Disabled by

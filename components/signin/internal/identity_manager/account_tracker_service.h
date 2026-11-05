@@ -105,7 +105,7 @@ class AccountTrackerService {
   // Picks the correct account_id for the specified account depending on the
   // migration state.
   CoreAccountId PickAccountIdForAccount(const GaiaId& gaia,
-                                        const std::string& email) const;
+                                        std::string_view email) const;
 
   // Seeds the account whose account_id is given by PickAccountIdForAccount()
   // with its corresponding gaia id and email address.  Returns the same
@@ -194,7 +194,10 @@ class AccountTrackerService {
                                                 const std::string&,
                                                 const gfx::Image&);
 
-  void MaybeNotifyAccountUpdated(const AccountInfo& account_info);
+  // `account_info` is passed by value because `on_account_updated_callback_`
+  // may synchronously call `StopTrackingAccount()` and erase the entry from
+  // `accounts_`.
+  void MaybeNotifyAccountUpdated(AccountInfo account_info);
   void MaybeNotifyAccountRemoved(const AccountInfo& account_info);
 
   // Start tracking `account_id` (`account_id` must not be empty).
@@ -205,6 +208,7 @@ class AccountTrackerService {
   // Load the current state of the account info from the preferences file.
   void LoadFromPrefs();
   void SaveToPrefs(const AccountInfo& account);
+  void SaveToPrefsAndMaybeNotifyAccountUpdated(const AccountInfo& account);
 
   base::DictValue* FindOrCreateDictForAccount(ScopedListPrefUpdate& update,
                                               const CoreAccountId& account_id);

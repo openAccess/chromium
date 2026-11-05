@@ -17,24 +17,26 @@
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/scoped_observation.h"
+#import "base/time/time.h"
 #import "components/send_tab_to_self/entry_point_display_reason.h"
 #import "components/send_tab_to_self/metrics_util.h"
 #import "components/send_tab_to_self/page_context.h"
 #import "components/send_tab_to_self/receiving_ui_handler.h"
 #import "components/send_tab_to_self/send_tab_to_self_model.h"
 #import "components/send_tab_to_self/send_tab_to_self_model_observer.h"
-#import "components/send_tab_to_self/target_device_info.h"
 #import "ios/chrome/browser/shared/model/browser/browser_observer.h"
 #import "ios/chrome/browser/shared/model/browser/browser_user_data.h"
-#import "ios/chrome/browser/tabs/model/tabs_dependency_installer.h"
+#import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_observer.h"
 #import "ios/web/public/web_state_observer.h"
 
 class GURL;
+@protocol NSObject;
 @protocol SnackbarCommands;
 class UrlLoadingNotifierBrowserAgent;
 struct SendTabToSelfTextFragment;
 struct UrlLoadParams;
+class WebStateList;
 
 namespace web {
 class WebState;
@@ -50,7 +52,7 @@ class SendTabToSelfBrowserAgent
     : public BrowserUserData<SendTabToSelfBrowserAgent>,
       public send_tab_to_self::SendTabToSelfModelObserver,
       public send_tab_to_self::ReceivingUiHandler,
-      public TabsDependencyInstaller,
+      public WebStateListObserver,
       public web::WebStateObserver,
       public UrlLoadingObserver,
       public BrowserObserver {
@@ -79,6 +81,18 @@ class SendTabToSelfBrowserAgent
                               const std::string& target_device_name,
                               send_tab_to_self::SendTabToSelfResult result);
 
+  // Test-only wrapper to simulate completion of text fragment generation.
+  void HandleTextFragmentGeneratedForTesting(
+      const GURL& url,
+      const std::string& title,
+      const std::string& target_guid,
+      const std::string& target_device_name,
+      send_tab_to_self::ShareEntryPoint entry_point,
+      send_tab_to_self::PageContext page_context,
+      SendResultCallback send_result_callback,
+      std::optional<base::TimeTicks> start_time,
+      std::optional<SendTabToSelfTextFragment> text_fragment);
+
   // SendTabToSelfModelObserver::
   void OnEntriesAddedRemotely(
       base::span<const send_tab_to_self::SendTabToSelfEntry* const> new_entries)
@@ -92,12 +106,14 @@ class SendTabToSelfBrowserAgent
       override;
   void DismissEntries(base::span<const std::string> guids) override;
 
-  // TabsDependencyInstaller::
-  void OnWebStateInserted(web::WebState* web_state) override;
-  void OnWebStateRemoved(web::WebState* web_state) override;
-  void OnWebStateDeleted(web::WebState* web_state) override;
-  void OnActiveWebStateChanged(web::WebState* old_active,
-                               web::WebState* new_active) override;
+  // WebStateListObserver::
+  void WebStateListWillChange(WebStateList* web_state_list,
+                              const WebStateListChangeDetach& detach_change,
+                              const WebStateListStatus& status) override;
+  void WebStateListDidChange(WebStateList* web_state_list,
+                             const WebStateListChange& change,
+                             const WebStateListStatus& status) override;
+  void WebStateListDestroyed(WebStateList* web_state_list) override;
 
   // WebStateObserver::
   void WasShown(web::WebState* web_state) override;
@@ -109,14 +125,13 @@ class SendTabToSelfBrowserAgent
 
  private:
   friend class BrowserUserData<SendTabToSelfBrowserAgent>;
-  friend class SendTabToSelfBrowserAgentExecutionTest;
 
   explicit SendTabToSelfBrowserAgent(Browser* browser);
 
   // Callback invoked when text fragment generation completes for a shared URL.
   // Enriches `page_context` with scroll position fragment data if present,
-  // inserts the Send Tab to Self entry into the model, and dispatches snackbar
-  // notifications.
+  // records scroll position metrics, inserts the Send Tab to Self entry into
+  // the model, and dispatches snackbar notifications.
   void HandleTextFragmentGenerated(
       const GURL& url,
       const std::string& title,
@@ -125,6 +140,7 @@ class SendTabToSelfBrowserAgent
       send_tab_to_self::ShareEntryPoint entry_point,
       send_tab_to_self::PageContext page_context,
       SendResultCallback send_result_callback,
+      std::optional<base::TimeTicks> start_time,
       std::optional<SendTabToSelfTextFragment> text_fragment);
 
   // Callback invoked when an entry is sent to the target device.
@@ -148,21 +164,29 @@ class SendTabToSelfBrowserAgent
                       const send_tab_to_self::SendTabToSelfEntry* entry,
                       size_t opened_tab_count);
 
-  // Stop observing the WebState and WebStateList and reset associated
-  // variables.
-  void CleanUpObserversAndVariables();
+  // Registers NSNotificationCenter observers to track app background and
+  // foreground transitions for `foreground_session_start_`.
+  void RegisterAppLifecycleObservers();
 
   // Owned by the SendTabToSelfSyncService which should outlive this class
   raw_ptr<send_tab_to_self::SendTabToSelfModel> model_ = nullptr;
 
-  // The GUID of the pending SendTabToSelf entry to display an InfoBar for,
-  // if any.
-  std::optional<std::string> pending_entry_guid_;
+  // NSNotificationCenter observer tokens for app background and foreground
+  // transitions.
+  __strong id<NSObject> application_backgrounding_observer_ = nil;
+  __strong id<NSObject> application_foregrounding_observer_ = nil;
 
-  // The WebState that is being observed for activation, if any.
-  raw_ptr<web::WebState> pending_web_state_ = nullptr;
+  // Timestamp of when the app most recently entered the foreground, or null
+  // while the app is in the background. Used to distinguish entries shared
+  // while Chrome was backgrounded from entries shared during the current
+  // foreground session when recording AutoOpenedImmediately and AutoOpenOutcome
+  // metrics.
+  base::Time foreground_session_start_;
 
   base::ScopedObservation<Browser, BrowserObserver> browser_observation_{this};
+
+  base::ScopedObservation<WebStateList, WebStateListObserver>
+      web_state_list_observation_{this};
 
   base::ScopedObservation<UrlLoadingNotifierBrowserAgent, UrlLoadingObserver>
       url_loading_observation_{this};

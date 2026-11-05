@@ -88,11 +88,24 @@ source_set("utils") {
 
 source_set("unit_tests") {
   testonly = true
-  if (is_chromeos) {
-    sources = [ "soda_installer_impl_chromeos_unittest.cc" ]
+  sources = [
+    "constants_unittest.cc",
+    "soda_util_unittest.cc",
+  ]
 
-    deps = [
-      ":constants",
+  deps = [
+    ":constants",
+    ":utils",
+    "//base",
+    "//base/test:test_support",
+    "//components/component_updater:component_updater_paths",
+    "//testing/gtest",
+  ]
+
+  if (is_chromeos) {
+    sources += [ "soda_installer_impl_chromeos_unittest.cc" ]
+
+    deps += [
       ":soda",
       "//ash/constants",
       "//chromeos/ash/components/dbus/dlcservice",
@@ -100,7 +113,6 @@ source_set("unit_tests") {
       "//components/prefs:test_support",
       "//content/test:test_support",
       "//testing/gmock",
-      "//testing/gtest",
     ]
   }
 }

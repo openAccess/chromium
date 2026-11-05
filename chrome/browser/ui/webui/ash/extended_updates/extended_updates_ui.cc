@@ -7,6 +7,7 @@
 #include "ash/constants/url_constants.h"
 #include "ash/constants/webui_url_constants.h"
 #include "ash/webui/common/trusted_types_util.h"
+#include "base/check_deref.h"
 #include "base/containers/span.h"
 #include "chrome/browser/ash/extended_updates/extended_updates_controller.h"
 #include "chrome/browser/profiles/profile.h"
@@ -33,7 +34,8 @@
 
 namespace ash::extended_updates {
 
-ExtendedUpdatesUI::ExtendedUpdatesUI(content::WebUI* web_ui)
+ExtendedUpdatesUI::ExtendedUpdatesUI(const PrefService& local_state,
+                                     content::WebUI* web_ui)
     : ui::MojoWebDialogUI(web_ui) {
   Profile* profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
@@ -73,7 +75,7 @@ ExtendedUpdatesUI::ExtendedUpdatesUI(content::WebUI* web_ui)
                               IDR_EXTENDED_UPDATES_EXTENDED_UPDATES_HTML);
 
   // For OOBE Adaptive Dialog.
-  OobeUI::AddOobeComponents(source);
+  OobeUI::AddOobeComponents(local_state, source);
 
   ash::EnableTrustedTypesCSP(source);
 }
@@ -92,16 +94,17 @@ void ExtendedUpdatesUI::BindInterface(
 void ExtendedUpdatesUI::CreatePageHandler(
     mojo::PendingRemote<ash::extended_updates::mojom::Page> page,
     mojo::PendingReceiver<ash::extended_updates::mojom::PageHandler> receiver) {
-  DCHECK(page);
+  CHECK(page, base::NotFatalUntil::M162);
   page_handler_ = std::make_unique<ExtendedUpdatesPageHandler>(
       std::move(page), std::move(receiver), web_ui(),
       base::BindOnce(&ExtendedUpdatesUI::CloseDialog, base::Unretained(this),
                      base::ListValue()));
 }
 
-ExtendedUpdatesUIConfig::ExtendedUpdatesUIConfig()
-    : DefaultWebUIConfig(content::kChromeUIScheme,
-                         ash::kChromeUIExtendedUpdatesDialogHost) {}
+ExtendedUpdatesUIConfig::ExtendedUpdatesUIConfig(PrefService* local_state)
+    : WebUIConfig(content::kChromeUIScheme,
+                  ash::kChromeUIExtendedUpdatesDialogHost),
+      local_state_(CHECK_DEREF(local_state)) {}
 
 ExtendedUpdatesUIConfig::~ExtendedUpdatesUIConfig() = default;
 
@@ -109,6 +112,12 @@ bool ExtendedUpdatesUIConfig::IsWebUIEnabled(
     content::BrowserContext* browser_context) {
   return ash::ExtendedUpdatesController::Get()->IsOptInEligible(
       browser_context);
+}
+
+std::unique_ptr<content::WebUIController>
+ExtendedUpdatesUIConfig::CreateWebUIController(content::WebUI* web_ui,
+                                               const GURL& url) {
+  return std::make_unique<ExtendedUpdatesUI>(local_state_.get(), web_ui);
 }
 
 }  // namespace ash::extended_updates

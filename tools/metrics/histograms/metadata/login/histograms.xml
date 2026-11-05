@@ -41,7 +41,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Login.BrowserShutdownTime" units="ms"
-    expires_after="2026-11-15">
+    expires_after="2027-03-14">
   <owner>hidehiko@chromium.org</owner>
   <owner>junis@google.com</owner>
   <owner>cros-oac@google.com</owner>
@@ -100,7 +100,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Login.DevicePolicyState" enum="DevicePoliciesState"
-    expires_after="2026-11-15">
+    expires_after="2027-03-14">
   <owner>igorcov@chromium.org</owner>
   <owner>chromeos-commercial-remote-management@chromium.org</owner>
   <summary>
@@ -149,20 +149,6 @@ chromium-metrics-reviews@google.com.
 
     Warning: this histogram was expired from 2024-02-25 to 2025-03-14; data may
     be missing.
-  </summary>
-</histogram>
-
-<histogram name="Login.IsTokenHandleInSyncWithRefreshToken" enum="Boolean"
-    expires_after="2027-03-31">
-  <owner>sinhak@chromium.org</owner>
-  <owner>cros-lurs@google.com</owner>
-  <summary>
-    Boolean histogram that indicates if token handle is in sync with the user's
-    current refresh token - i.e. if token handle checks are performed for token
-    handles that actually belong to the user's current refresh token. If this is
-    not the case, it can result in users getting unnecessary logout
-    notifications. This histogram is logged once at the start of a user's
-    session.
   </summary>
 </histogram>
 
@@ -295,7 +281,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Login.SessionExitType" enum="LoginSessionExitType"
-    expires_after="2027-01-31">
+    expires_after="2027-04-04">
   <owner>iby@chromium.org</owner>
   <summary>
     Tracks whether a ChromeOS user was logged out because Chrome repeatedly
@@ -304,7 +290,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Login.StateKeyGenerationStatus"
-    enum="LoginStateKeyGenerationStatus" expires_after="2026-09-06">
+    enum="LoginStateKeyGenerationStatus" expires_after="2027-09-06">
   <owner>sergiyb@chromium.org</owner>
   <owner>chromeos-commercial-remote-management@chromium.org</owner>
   <summary>

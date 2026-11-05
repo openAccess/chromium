@@ -16,6 +16,9 @@
 #include "partition_alloc/partition_alloc_base/component_export.h"
 #include "partition_alloc/partition_alloc_base/immediate_crash.h"
 #include "partition_alloc/partition_alloc_check.h"
+#include "partition_alloc/partition_alloc_config.h"
+#include "partition_alloc/partition_lock.h"
+#include "partition_alloc/partition_stats.h"
 
 #if PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_FUCHSIA)
 #include <pthread.h>
@@ -31,29 +34,127 @@
 namespace partition_alloc::internal {
 
 class ThreadCache;
+struct PartitionTls;
 
+class PA_COMPONENT_EXPORT(PARTITION_ALLOC) PartitionTlsRegistry {
+ public:
+  static constexpr PartitionTlsRegistry& Instance();
+
+  inline constexpr PartitionTlsRegistry();
+
+  void Register(PartitionTls* tls);
+  void Unregister(PartitionTls* tls);
+
+  static internal::Lock& GetLock() { return Instance().lock_; }
+
+  PartitionTls* list_head() const PA_EXCLUSIVE_LOCKS_REQUIRED(GetLock()) {
+    return list_head_;
+  }
+
+  bool IsRegisteredForTesting(PartitionTls* tls);
+  void ResetForTesting();
+
+ private:
+  static PartitionTlsRegistry g_instance_;
+  internal::Lock lock_;
+  PartitionTls* list_head_ PA_GUARDED_BY(GetLock()) = nullptr;
+};
+
+constexpr PartitionTlsRegistry::PartitionTlsRegistry() = default;
+
+constexpr PartitionTlsRegistry& PartitionTlsRegistry::Instance() {
+  return g_instance_;
+}
+
+#if PA_BUILDFLAG(ENABLE_AUTO_PARTITIONING)
 constexpr inline size_t kMaxThreadCacheIndex = 4;
+#else
+constexpr inline size_t kMaxThreadCacheIndex = 1;
+#endif
 
 constexpr inline uintptr_t kTombstone = 1;
 constexpr inline uintptr_t kTombstoneMask = ~kTombstone;
 
+// Byte size reserved per `ThreadCache` slot inside `PartitionTls`.
+//
+// `PartitionTls` embeds raw storage for `ThreadCache` by value to avoid an
+// extra pointer indirection on allocation fast paths, while keeping this header
+// standalone (`ThreadCache` is incomplete here because
+// `thread_cache_internal.h` includes `partition_tls.h`).
+// `kThreadCacheStorageSize` must therefore match `sizeof(ThreadCache)` for the
+// active build configuration:
+// - Base size (1392 B on 64-bit, 792 B on 32-bit): `ThreadCache` fields,
+//   `buckets_` (72 * 16 B on 64-bit, 80 * 8 B on 32-bit), and embedded
+//   `SchedulerLoopQuarantineBranch` (168 B on 64-bit, 104 B on 32-bit; 32-bit
+//   x86 POSIX uses 4-byte `uint64_t` struct alignment and is 4-8 B smaller).
+// - `ENABLE_PARTITION_LOCK_PRIORITY_INHERITANCE` (+8 B on 64-bit): PI futex
+//   fields in `SpinningMutex` inside `SchedulerLoopQuarantineBranch::lock_`.
+// - `DCHECKS_ARE_ON` (+8 B on 32-bit): `ThreadCache::is_in_thread_cache_`
+//   (fits in existing padding after `thread_id_` on 64-bit).
+// - `EXPENSIVE_DCHECKS_ARE_ON` / `ENABLE_PARTITION_LOCK_REENTRANCY_CHECK`
+//   (+8 B on 64-bit): `Lock::owning_thread_ref_` inside
+//   `SchedulerLoopQuarantineBranch::lock_` (fits in existing padding on
+//   32-bit).
+//
+// Two-way `static_assert`s in `ThreadCache::Create()` (`thread_cache.cc`)
+// enforce both `sizeof(ThreadCache) <= kThreadCacheStorageSize` and
+// `kThreadCacheStorageSize - sizeof(ThreadCache) <= 8`, so any change to
+// `sizeof(ThreadCache)` triggers a compile-time failure pointing here.
 #if PA_BUILDFLAG(HAS_64_BIT_POINTERS)
-constexpr inline size_t kThreadCacheStorageSize = 4096;
+constexpr inline size_t kThreadCacheStorageSize =
+    1392 + (PA_BUILDFLAG(ENABLE_PARTITION_LOCK_PRIORITY_INHERITANCE) ? 8 : 0) +
+    ((PA_BUILDFLAG(EXPENSIVE_DCHECKS_ARE_ON) ||
+      PA_BUILDFLAG(ENABLE_PARTITION_LOCK_REENTRANCY_CHECK))
+         ? 8
+         : 0);
 #else
-constexpr inline size_t kThreadCacheStorageSize = 2048;
+constexpr inline size_t kThreadCacheStorageSize =
+    792 + (PA_BUILDFLAG(DCHECKS_ARE_ON) ? 8 : 0);
 #endif
 
+// Per-thread state allocated as a single block in the internal partition:
+//
+//   +---------------------------------------------------------------+
+//   | next_, prev_, is_registered (+ padding to 8-byte alignment)   |
+//   +---------------------------------------------------------------+
+//   | thread_cache_storage[0 .. kMaxThreadCacheIndex - 1]           |
+//   |   Each slot is `kThreadCacheStorageSize` zero-initialized     |
+//   |   bytes where `ThreadCache::Create()` constructs a            |
+//   |   `ThreadCache` in-place via placement new (and `IsValid()`   |
+//   |   checks whether `root_` is non-null).                        |
+//   +---------------------------------------------------------------+
+//   | thread_cache_stats                                            |
+//   +---------------------------------------------------------------+
+//   | disallow_allocations (optional)                               |
+//   +---------------------------------------------------------------+
 struct PartitionTls {
+  // Pointers for PartitionTlsRegistry's intrusive doubly-linked list.
+  PartitionTls* next_ PA_GUARDED_BY(PartitionTlsRegistry::GetLock()) = nullptr;
+  PartitionTls* prev_ PA_GUARDED_BY(PartitionTlsRegistry::GetLock()) = nullptr;
+  bool is_registered PA_GUARDED_BY(PartitionTlsRegistry::GetLock()) = false;
+
   alignas(uint64_t) std::array<std::array<uint8_t, kThreadCacheStorageSize>,
                                kMaxThreadCacheIndex> thread_cache_storage = {};
+  ThreadCacheStats thread_cache_stats = {};
+#if PA_CONFIG(HAS_ALLOCATION_GUARD)
   bool disallow_allocations = false;
+#endif
 
   PA_ALWAYS_INLINE ThreadCache* GetThreadCache(size_t index) {
     return reinterpret_cast<ThreadCache*>(&thread_cache_storage[index]);
   }
 
+  PA_ALWAYS_INLINE const ThreadCache* GetThreadCache(size_t index) const {
+    return reinterpret_cast<const ThreadCache*>(&thread_cache_storage[index]);
+  }
+
+  PA_ALWAYS_INLINE ThreadCacheStats* GetThreadCacheStats() {
+    return &thread_cache_stats;
+  }
+
   PA_ALWAYS_INLINE void ClearThreadCache(size_t index) {
     thread_cache_storage[index].fill(0);
+    thread_cache_stats = {};
   }
 };
 

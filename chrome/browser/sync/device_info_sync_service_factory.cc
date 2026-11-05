@@ -16,6 +16,7 @@
 #include "base/time/default_clock.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/personal_context/personal_context_eligibility_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/sync/data_type_store_service_factory.h"
@@ -45,7 +46,7 @@ DeviceInfoSyncServiceFactory* DeviceInfoSyncServiceFactory::GetInstance() {
 // static
 void DeviceInfoSyncServiceFactory::GetAllDeviceInfoTrackers(
     std::vector<const syncer::DeviceInfoTracker*>* trackers) {
-  DCHECK(trackers);
+  CHECK(trackers, base::NotFatalUntil::M163);
   ProfileManager* profile_manager = g_browser_process->profile_manager();
   std::vector<Profile*> profile_list = profile_manager->GetLoadedProfiles();
   for (Profile* profile : profile_list) {
@@ -72,6 +73,7 @@ DeviceInfoSyncServiceFactory::DeviceInfoSyncServiceFactory()
               .WithAshInternals(ProfileSelection::kNone)
               .Build()) {
   DependsOn(DataTypeStoreServiceFactory::GetInstance());
+  DependsOn(PersonalContextEligibilityServiceFactory::GetInstance());
   DependsOn(SyncInvalidationsServiceFactory::GetInstance());
 }
 
@@ -83,7 +85,7 @@ DeviceInfoSyncServiceFactory::BuildServiceInstanceForBrowserContext(
   Profile* profile = Profile::FromBrowserContext(context);
 
   auto device_info_sync_client =
-      std::make_unique<browser_sync::DeviceInfoSyncClientImpl>(profile);
+      std::make_unique<DeviceInfoSyncClientImpl>(profile);
   auto local_device_info_provider =
       std::make_unique<syncer::LocalDeviceInfoProviderImpl>(
           chrome::GetChannel(),

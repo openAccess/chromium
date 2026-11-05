@@ -15,6 +15,7 @@
 #import "components/autofill/core/browser/suggestions/suggestion.h"
 #import "components/autofill/core/browser/suggestions/suggestion_type.h"
 #import "components/autofill/core/common/mojom/autofill_types.mojom-shared.h"
+#import "components/autofill/core/common/unique_ids.h"
 #import "components/autofill/ios/form_util/form_activity_params.h"
 #import "components/password_manager/core/browser/password_ui_utils.h"
 
@@ -41,10 +42,23 @@ struct FormSuggestionMetadata {
   // auto-submission.
   bool accepts_auto_submit = false;
 
+  // The form and field that triggered these suggestions.
+  // Note that the `form_id` identifies the *browser* form, i.e., the form after
+  // flattening the renderer form.
+  autofill::FormGlobalId form_id;
+  autofill::FieldGlobalId field_id;
+
   // The delegate that provided this suggestion. Used for stateless suggestion
   // routing in `AutofillAgent`. Must be preserved when copying or modifying
   // suggestions.
   base::WeakPtr<autofill::AutofillSuggestionDelegate> suggestion_delegate;
+
+  // The index of this suggestion within the original suggestions vector
+  // passed from `AutofillSuggestionDelegate::OnSuggestionsGenerated` /
+  // `BrowserAutofillManager`. Used to forward the correct BAM vector index to
+  // `AutofillSuggestionDelegate::DidAcceptSuggestion` even when suggestions
+  // are reordered or filtered in the iOS keyboard accessory or bottom sheet UI.
+  std::optional<size_t> popup_suggestion_index;
 };
 
 // Enum class used to determine the feature for in-product help for the
@@ -57,7 +71,9 @@ enum class SuggestionFeatureForIPH {
   // Denoting IPH for the home and work address suggestion.
   kHomeAndWorkAddressSuggestion = 2,
   // Denoting IPH for the name and email suggestion.
-  kAccountNameEmailSuggestion = 3
+  kAccountNameEmailSuggestion = 3,
+  // Denoting IPH for the Ambient Autofill SPII disclaimer suggestion.
+  kAutofillAmbientAutofillSpiiDisclaimer = 4
 };
 
 // Enum class used to determine the icon for the suggestion.
@@ -72,6 +88,8 @@ enum class SuggestionIconType {
   kBackupPassword = 3,
   // Undo autofill icon
   kUndoAutofill = 4,
+  // Contact information icon.
+  kContact = 5,
 };
 
 // Represents a user-selectable suggestion for a single field within a form

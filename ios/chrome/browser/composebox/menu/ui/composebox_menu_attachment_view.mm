@@ -4,10 +4,14 @@
 
 #import "ios/chrome/browser/composebox/menu/ui/composebox_menu_attachment_view.h"
 
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 
 namespace {
+
+// The minimum scale factor of the title label.
+constexpr CGFloat kTitleLabelMinimumScaleFactor = 0.8f;
 
 // The corner radius for the image view.
 const CGFloat kImageContainerCornerRadius = 20.0f;
@@ -17,12 +21,15 @@ const CGFloat kTitleMargin = 4.0f;
 
 // The size of the icon.
 const CGFloat kIconSize = 24.0f;
+const CGFloat kIconLargeSize = 32.0f;
 
 // The height of the image background view.
 const CGFloat kImageBackgroundHeight = 60.0f;
+const CGFloat kImageBackgroundLargeHeight = 80.0f;
 
 // The base font size for the title label.
 const CGFloat kTitleBaseFontSize = 13.0f;
+const CGFloat kTitleBaseFontLargeSize = 14.0f;
 
 // The maximum point size for the title label.
 const CGFloat kTitleMaxPointSize = 24.0f;
@@ -93,9 +100,14 @@ const CGFloat kTitleMaxPointSize = 24.0f;
   _titleLabel.textAlignment = NSTextAlignmentCenter;
   _titleLabel.textColor = [UIColor colorNamed:kTextPrimaryColor];
   _titleLabel.numberOfLines = 2;
+  _titleLabel.adjustsFontSizeToFitWidth = YES;
   _titleLabel.adjustsFontForContentSizeCategory = YES;
-  _titleLabel.lineBreakMode = NSLineBreakByWordWrapping;
-  UIFont* baseFont = [UIFont systemFontOfSize:kTitleBaseFontSize
+  _titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+  _titleLabel.minimumScaleFactor = kTitleLabelMinimumScaleFactor;
+  CGFloat titleBaseFontSize = IsComposeboxPlusButtonLargeCarousel()
+                                  ? kTitleBaseFontLargeSize
+                                  : kTitleBaseFontSize;
+  UIFont* baseFont = [UIFont systemFontOfSize:titleBaseFontSize
                                        weight:UIFontWeightRegular];
   _titleLabel.font =
       [[UIFontMetrics metricsForTextStyle:UIFontTextStyleFootnote]
@@ -111,13 +123,19 @@ const CGFloat kTitleMaxPointSize = 24.0f;
                             LayoutSides::kTop | LayoutSides::kHorizontal);
   AddSameConstraintsToSides(_titleLabel, self,
                             LayoutSides::kBottom | LayoutSides::kHorizontal);
-  AddSizeConstraints(_imageView, CGSizeMake(kIconSize, kIconSize));
+  BOOL useLargeIcon = IsComposeboxPlusButtonLargeCarousel() ||
+                      IsPlusButtonMenuMoreOptionsSubmenu();
+  CGFloat iconSize = useLargeIcon ? kIconLargeSize : kIconSize;
+  AddSizeConstraints(_imageView, CGSizeMake(iconSize, iconSize));
+  CGFloat imageBackgroundHeight = IsComposeboxPlusButtonLargeCarousel()
+                                      ? kImageBackgroundLargeHeight
+                                      : kImageBackgroundHeight;
   [NSLayoutConstraint activateConstraints:@[
     [_imageBackgroundView.bottomAnchor
         constraintEqualToAnchor:_titleLabel.topAnchor
                        constant:-kTitleMargin],
     [_imageBackgroundView.heightAnchor
-        constraintEqualToConstant:kImageBackgroundHeight],
+        constraintEqualToConstant:imageBackgroundHeight],
   ]];
 }
 

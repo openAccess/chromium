@@ -27,7 +27,6 @@
 #include "components/optimization_guide/core/delivery/model_util.h"
 #include "components/optimization_guide/core/delivery/prediction_model_download_observer.h"
 #include "components/optimization_guide/core/delivery/prediction_model_store.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_permissions_util.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
@@ -213,8 +212,8 @@ bool PredictionModelDownloadManager::ShouldFetchModels() const {
     return false;
   }
   return (ShouldSkipGoogleApiKeyConfigurationCheck() ||
-          google_apis::HasAPIKeyConfigured()) &&
-         local_state_->GetBoolean(prefs::kComponentUpdatesEnabled);
+          google_apis::IsGoogleChromeAPIKeyUsed()) &&
+         local_state_->GetBoolean(::prefs::kComponentUpdatesEnabled);
 }
 
 void PredictionModelDownloadManager::AddObserver(

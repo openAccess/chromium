@@ -14,8 +14,6 @@
 #include "components/password_manager/core/browser/password_manager_constants.h"
 #include "ui/base/l10n/l10n_util.h"
 
-constexpr char kShortcutPromoId[] = "password_shortcut_promo";
-
 PasswordManagerShortcutPromo::PasswordManagerShortcutPromo(Profile* profile)
     : profile_(profile) {
   is_shortcut_installed_ =
@@ -25,7 +23,7 @@ PasswordManagerShortcutPromo::PasswordManagerShortcutPromo(Profile* profile)
 }
 
 std::string PasswordManagerShortcutPromo::GetCardID() const {
-  return kShortcutPromoId;
+  return password_manager::kShortcutPromoId;
 }
 
 password_manager::NotificationCardType
@@ -41,7 +39,7 @@ bool PasswordManagerShortcutPromo::ShouldShowCard(
 
   auto* service = UserEducationServiceFactory::GetForBrowserContext(profile_);
   if (service) {
-    auto* tutorial_service = &service->tutorial_service();
+    auto* tutorial_service = service->tutorial_service();
     if (tutorial_service && tutorial_service->IsRunningTutorial()) {
       return false;
     }

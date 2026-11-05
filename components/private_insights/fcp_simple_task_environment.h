@@ -23,8 +23,7 @@ class FcpSimpleTaskEnvironment
   FcpSimpleTaskEnvironment(
       std::string base_dir,
       std::string cache_dir,
-      std::unique_ptr<FcpHttpRequestManager> http_request_manager,
-      bool use_attestation_transparency_verifier);
+      scoped_refptr<FcpHttpRequestManager> http_request_manager);
 
   FcpSimpleTaskEnvironment(const FcpSimpleTaskEnvironment&) = delete;
   FcpSimpleTaskEnvironment& operator=(const FcpSimpleTaskEnvironment&) = delete;
@@ -51,11 +50,11 @@ class FcpSimpleTaskEnvironment
   friend class base::RefCountedThreadSafe<FcpSimpleTaskEnvironment>;
   ~FcpSimpleTaskEnvironment() override;
 
-  std::string base_dir_;
-  std::string cache_dir_;
-  std::unique_ptr<FcpHttpRequestManager> http_request_manager_;
-  bool use_attestation_transparency_verifier_;
+  const std::string base_dir_;
+  const std::string cache_dir_;
+  const scoped_refptr<FcpHttpRequestManager> http_request_manager_;
 
+  // TODO(b/564403022): Guard or remove once multi-population upload lands.
   fcp::client::ExampleQueryResult result_;
 };
 

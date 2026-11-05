@@ -30,6 +30,7 @@
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile_test_api.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/geo/autofill_country.h"
+#include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/webdata/addresses/address_autofill_table.h"
 #include "components/autofill/core/browser/webdata/autocomplete/autocomplete_entry.h"
@@ -240,6 +241,30 @@ TEST_F(WebDataServiceAutofillTest, FormFillRemoveOne) {
       .WillOnce(SignalEvent(&done_event_));
   wds_->RemoveFormValueForElementNameAndLabel(u"name1", u"label1", u"value1");
   done_event_.TimedWait(kWebDataServiceTimeout);
+}
+
+TEST_F(WebDataServiceAutofillTest, GetAutocompleteTableStats) {
+  std::vector<FormFieldData> form_fields;
+  AppendFormField(u"name1", u"value1", form_fields);
+  AppendFormField(u"name2", u"value2", form_fields);
+  wds_->AddFormFields(form_fields);
+  WaitForEmptyDBSequence();
+
+  // Add field2 again to increment its count to 2.
+  std::vector<FormFieldData> form_fields_reused;
+  AppendFormField(u"name2", u"value2", form_fields_reused);
+  wds_->AddFormFields(form_fields_reused);
+  WaitForEmptyDBSequence();
+
+  WebDataServiceRequestFuture consumer;
+  wds_->GetAutocompleteTableStats(consumer.GetCallback());
+  AutocompleteTableStats expected_stats{
+      .total_entries = 2,
+      .entries_with_label = 0,
+      .entries_reused = 1,
+  };
+  EXPECT_THAT(consumer.Get<1>(),
+              ValueOfWDResult<AutocompleteTableStats>(expected_stats));
 }
 
 TEST_F(WebDataServiceAutofillTest, FormFillRemoveMany) {
@@ -629,6 +654,129 @@ TEST_F(WebDataServiceAutofillLabelSensitiveTest,
   wds_->GetCountOfValuesContainedBetween(now, now + epsilon,
                                          consumer3.GetCallback());
   EXPECT_THAT(consumer3.Get<1>(), ValueOfWDResult<int64_t>(1));
+}
+
+TEST_F(WebDataServiceAutofillLabelSensitiveTest, GetAutocompleteTableStats) {
+  std::vector<FormFieldData> form_fields;
+  AppendFormFieldWithLabel(u"name1", u"label1", u"value1", form_fields);
+  AppendFormFieldWithLabel(u"name2", u"", u"value2", form_fields);
+  wds_->AddFormFields(form_fields);
+  WaitForEmptyDBSequence();
+
+  // Add field1 again to increment its count to 2.
+  std::vector<FormFieldData> form_fields_reused;
+  AppendFormFieldWithLabel(u"name1", u"label1", u"value1", form_fields_reused);
+  wds_->AddFormFields(form_fields_reused);
+  WaitForEmptyDBSequence();
+
+  WebDataServiceRequestFuture consumer;
+  wds_->GetAutocompleteTableStats(consumer.GetCallback());
+  AutocompleteTableStats expected_stats{
+      .total_entries = 2,
+      .entries_with_label = 1,
+      .entries_reused = 1,
+  };
+  EXPECT_THAT(consumer.Get<1>(),
+              ValueOfWDResult<AutocompleteTableStats>(expected_stats));
+}
+
+TEST_F(WebDataServiceAutofillLabelSensitiveTest, MigrateDataFromLegacyTable) {
+  // First insert with feature disabled to ensure entry is only in the legacy
+  // table.
+  {
+    base::test::ScopedFeatureList disabled_feature_list;
+    disabled_feature_list.InitAndDisableFeature(
+        features::kAutofillLabelSensitiveAutocomplete);
+
+    std::vector<FormFieldData> form_fields;
+    AppendFormFieldWithLabel(u"legacy_name", u"", u"legacy_val", form_fields);
+    wds_->AddFormFields(form_fields);
+    WaitForEmptyDBSequence();
+  }
+
+  // Verify that the field was saved to the old table only.
+  WebDataServiceRequestFuture legacy_consumer;
+  wds_->GetFormValuesForElementName(u"legacy_name", u"legacy", /*limit=*/10,
+                                    legacy_consumer.GetCallback());
+  EXPECT_THAT(
+      legacy_consumer.Get<1>(),
+      ValueOfWDResult<std::vector<AutocompleteEntry>>(UnorderedElementsAre(
+          Property(&AutocompleteEntry::key,
+                   AutocompleteKey("legacy_name", "legacy_val")))));
+
+  // Verify that the new label-sensitive table is empty before migration.
+  WebDataServiceRequestFuture pre_migration_consumer;
+  wds_->GetFormValuesForElementNameAndLabel(
+      u"legacy_name", u"", u"legacy", /*limit=*/10,
+      pre_migration_consumer.GetCallback());
+  EXPECT_THAT(
+      pre_migration_consumer.Get<1>(),
+      ValueOfWDResult<std::vector<AutocompleteSearchResultLabelSensitive>>(
+          IsEmpty()));
+
+  // Trigger migration.
+  WebDataServiceRequestFuture consumer;
+  wds_->MigrateDataFromLegacyTable(consumer.GetCallback());
+  WaitForEmptyDBSequence();
+
+  EXPECT_THAT(consumer.Get<1>(), ValueOfWDResult<bool>(true));
+
+  // Verify migrated entries are accessible in label-sensitive table.
+  WebDataServiceRequestFuture query_consumer;
+  wds_->GetFormValuesForElementNameAndLabel(u"legacy_name", u"", u"legacy",
+                                            /*limit=*/10,
+                                            query_consumer.GetCallback());
+  EXPECT_THAT(
+      query_consumer.Get<1>(),
+      ValueOfWDResult<std::vector<AutocompleteSearchResultLabelSensitive>>(
+          UnorderedElementsAre(AllOf(
+              Property(&AutocompleteSearchResultLabelSensitive::value,
+                       u"legacy_val"),
+              Property(&AutocompleteSearchResultLabelSensitive::matching_type,
+                       MatchingType::kName)))));
+}
+
+TEST_F(WebDataServiceAutofillLabelSensitiveTest,
+       RemoveFormElementsAddedBetween) {
+  base::Time start_time = base::Time::Now();
+
+  std::vector<FormFieldData> form_fields1;
+  AppendFormFieldWithLabel(u"name1", u"label1", u"value1", form_fields1);
+  wds_->AddFormFields(form_fields1);
+  WaitForEmptyDBSequence();
+
+  task_environment_.FastForwardBy(base::Days(2));
+  base::Time mid_time = base::Time::Now();
+
+  std::vector<FormFieldData> form_fields2;
+  AppendFormFieldWithLabel(u"name2", u"label2", u"value2", form_fields2);
+  wds_->AddFormFields(form_fields2);
+  WaitForEmptyDBSequence();
+
+  // Remove elements added in the first window [start_time - 1 min, mid_time - 1
+  // min).
+  wds_->RemoveFormElementsAddedBetween(start_time - base::Minutes(1),
+                                       mid_time - base::Minutes(1));
+  WaitForEmptyDBSequence();
+
+  // name1 should be deleted.
+  WebDataServiceRequestFuture consumer1;
+  wds_->GetFormValuesForElementNameAndLabel(
+      u"name1", u"label1", u"v", /*limit=*/10, consumer1.GetCallback());
+  EXPECT_THAT(
+      consumer1.Get<1>(),
+      ValueOfWDResult<std::vector<AutocompleteSearchResultLabelSensitive>>(
+          IsEmpty()));
+
+  // name2 should remain.
+  WebDataServiceRequestFuture consumer2;
+  wds_->GetFormValuesForElementNameAndLabel(
+      u"name2", u"label2", u"v", /*limit=*/10, consumer2.GetCallback());
+  EXPECT_THAT(
+      consumer2.Get<1>(),
+      ValueOfWDResult<std::vector<AutocompleteSearchResultLabelSensitive>>(
+          UnorderedElementsAre(Property(
+              &AutocompleteSearchResultLabelSensitive::value, u"value2"))));
 }
 
 }  // namespace

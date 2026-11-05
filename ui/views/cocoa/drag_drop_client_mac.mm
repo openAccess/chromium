@@ -10,6 +10,7 @@
 #import "components/remote_cocoa/app_shim/bridged_content_view.h"
 #import "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
 #include "components/remote_cocoa/app_shim/window_move_loop.h"
+#include "ui/base/cocoa/drag_permission.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #import "ui/base/dragdrop/os_exchange_data_provider_mac.h"
@@ -23,7 +24,7 @@ DragDropClientMac::DragDropClientMac(
     remote_cocoa::NativeWidgetNSWindowBridge* bridge,
     View* root_view)
     : drop_helper_(root_view), bridge_(bridge) {
-  DCHECK(bridge);
+  CHECK(bridge, base::NotFatalUntil::M163);
 }
 
 DragDropClientMac::~DragDropClientMac() = default;
@@ -35,6 +36,10 @@ void DragDropClientMac::StartDragAndDrop(
   // A window move loop already owns the held mouse button; starting a dragging
   // session here would interfere with it.
   if (remote_cocoa::CocoaWindowMoveLoop::IsActive()) {
+    return;
+  }
+
+  if (!ui::IsDragSessionInitiationAllowed()) {
     return;
   }
 
@@ -67,7 +72,7 @@ void DragDropClientMac::StartDragAndDrop(
 
   NSImage* image = gfx::NSImageFromImageSkia(provider_mac.GetDragImage());
 
-  DCHECK(!NSEqualSizes(image.size, NSZeroSize));
+  CHECK(!NSEqualSizes(image.size, NSZeroSize), base::NotFatalUntil::M163);
   NSArray<NSDraggingItem*>* drag_items = provider_mac.GetDraggingItems();
   if (!drag_items) {
     // The source of this data is ultimately the OS, and while this shouldn't be
@@ -97,9 +102,17 @@ void DragDropClientMac::StartDragAndDrop(
     }
   }
 
-  [bridge_->ns_view() beginDraggingSessionWithItems:drag_items
-                                              event:event
-                                             source:bridge_->ns_view()];
+  NSDraggingSession* session =
+      [bridge_->ns_view() beginDraggingSessionWithItems:drag_items
+                                                  event:event
+                                                 source:bridge_->ns_view()];
+  if (!session) {
+    // The return value from -beginDraggingSessionWithItems:event:source: is
+    // marked as nonnull, but in the edge case where there already is an ongoing
+    // dragging session, nil is returned. (The issue with the SDK is filed as
+    // FB24907244.) In that case, bail.
+    return;
+  }
 
   // Since Drag and drop is asynchronous on the Mac, spin a nested run loop for
   // consistency with other platforms.
@@ -107,12 +120,12 @@ void DragDropClientMac::StartDragAndDrop(
   quit_closure_ = run_loop.QuitClosure();
   run_loop.Run();
 
-  // As of MacOS 26, dragging with a trackpad results in a leftover mouse-up
+  // As of macOS 26, dragging with a trackpad results in a leftover mouse-up
   // event remaining in the queue when the drag session is terminated. This
   // ensures any leftover message is pumped to avoid handling the "release"
   // action as a click.
   [NSApp nextEventMatchingMask:NSEventMaskLeftMouseUp
-                     untilDate:[NSDate distantPast]
+                     untilDate:NSDate.distantPast
                         inMode:NSEventTrackingRunLoopMode
                        dequeue:YES];
 }

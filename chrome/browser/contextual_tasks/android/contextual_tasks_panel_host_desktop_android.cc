@@ -12,8 +12,10 @@
 #include "chrome/browser/context_sharing/tab_bottom_sheet/android/co_browse_views_bridge.h"
 #include "chrome/browser/context_sharing/tab_bottom_sheet/android/tab_bottom_sheet_client_type.h"
 #include "chrome/browser/contextual_tasks/android/contextual_tasks_toast.h"
+#include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/side_panel/android/side_panel_native_view_android.h"
@@ -22,7 +24,6 @@
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/side_panel/side_panel_ui_provider.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/tabs/public/tab_interface.h"
@@ -32,6 +33,7 @@
 #include "ui/android/window_android.h"
 #include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 using base::android::AttachCurrentThread;
 
@@ -159,7 +161,8 @@ bool ContextualTasksPanelHostDesktopAndroid::MaybeCreateBridge() {
           context_sharing::TabBottomSheetClientType::kContextualTasks,
           context_sharing::CoBrowseContainerType::kSidePanel,
           /*bottom_sheet_content_provider=*/nullptr,
-          /*enable_pinch_to_zoom=*/true);
+          /*enable_pinch_to_zoom=*/true, kColorSidePanelContentBackground,
+          ui::kColorSysSurface1);
   return co_browse_views_bridge_ != nullptr;
 }
 
@@ -242,7 +245,7 @@ void ContextualTasksPanelHostDesktopAndroid::MaybeRegisterEntry() {
 }
 
 SidePanelUI* ContextualTasksPanelHostDesktopAndroid::GetSidePanelUI() const {
-  return SidePanelUIProvider::From(browser_window_);
+  return SidePanelUI::From(browser_window_);
 }
 
 SidePanelNativeView ContextualTasksPanelHostDesktopAndroid::CreateView(
@@ -278,8 +281,10 @@ content::WebContents* ContextualTasksPanelHostDesktopAndroid::OpenURLFromTab(
     base::OnceCallback<void(content::NavigationHandle&)>
         navigation_handle_callback) {
   if (browser_window_) {
-    if (params.disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB ||
-        params.disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB) {
+    if (params.disposition ==
+            ui::mojom::WindowOpenDisposition::kNewForegroundTab ||
+        params.disposition ==
+            ui::mojom::WindowOpenDisposition::kNewBackgroundTab) {
       TabListInterface* tab_list = TabListInterface::From(browser_window_);
       if (tab_list) {
         tabs::TabInterface* active_tab = tab_list->GetActiveTab();
@@ -315,6 +320,16 @@ bool ContextualTasksPanelHostDesktopAndroid::HandleKeyboardEvent(
                                                                          event);
   }
   return false;
+}
+
+void ContextualTasksPanelHostDesktopAndroid::RequestMediaAccessPermission(
+    content::WebContents* web_contents,
+    const content::MediaStreamRequest& request,
+    content::MediaResponseCallback callback) {
+  // Handle the media access requests for voice search by routing them through
+  // `MediaCaptureDevicesDispatcher`.
+  MediaCaptureDevicesDispatcher::GetInstance()->ProcessMediaAccessRequest(
+      web_contents, request, std::move(callback), /*extension=*/nullptr);
 }
 
 }  // namespace contextual_tasks

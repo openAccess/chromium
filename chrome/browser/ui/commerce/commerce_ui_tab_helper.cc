@@ -25,8 +25,6 @@
 #include "chrome/browser/ui/side_panel/side_panel_entry_key.h"
 #include "chrome/browser/ui/side_panel/side_panel_registry.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/commerce/discounts_bubble_dialog_view.h"
@@ -50,6 +48,7 @@
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/image_fetcher/core/image_fetcher.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/navigation_details.h"
@@ -76,8 +75,8 @@ namespace commerce {
 DEFINE_USER_DATA(CommerceUiTabHelper);
 
 // static
-CommerceUiTabHelper* CommerceUiTabHelper::From(tabs::TabModel* tab) {
-  return Get(tab->GetUnownedUserDataHost());
+CommerceUiTabHelper* CommerceUiTabHelper::From(tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
 }
 
 CommerceUiTabHelper::CommerceUiTabHelper(
@@ -354,7 +353,7 @@ void CommerceUiTabHelper::SetPriceTrackingState(
         shopping_service_.get(), bookmark_model_.get(), node, enable,
         std::move(wrapped_callback), enable && is_new_bookmark);
   } else {
-    DCHECK(!enable);
+    CHECK(!enable, base::NotFatalUntil::M162);
     std::optional<commerce::ProductInfo> info =
         shopping_service_->GetAvailableProductInfoForUrl(
             web_contents()->GetLastCommittedURL());
@@ -369,10 +368,10 @@ void CommerceUiTabHelper::SetPriceTrackingState(
 
 void CommerceUiTabHelper::OnPriceInsightsIconClicked() {
   auto* side_panel_ui = GetSidePanelUI();
-  DCHECK(side_panel_ui);
+  CHECK(side_panel_ui, base::NotFatalUntil::M162);
   SidePanelEntry* const entry = side_panel_registry_->GetEntryForKey(
       SidePanelEntryKey(SidePanelEntry::Id::kShoppingInsights));
-  DCHECK(entry);
+  CHECK(entry, base::NotFatalUntil::M162);
 
   if (side_panel_ui->IsSidePanelEntryShowing(
           SidePanelEntryKey(SidePanelEntryId::kShoppingInsights))) {
@@ -443,7 +442,7 @@ std::unique_ptr<views::View> CommerceUiTabHelper::CreateShoppingInsightsWebView(
 
 SidePanelUI* CommerceUiTabHelper::GetSidePanelUI() {
   if (BrowserWindowInterface* bwi = tab().GetBrowserWindowInterface()) {
-    return bwi->GetFeatures().side_panel_ui();
+    return SidePanelUI::From(bwi);
   }
 
   return nullptr;

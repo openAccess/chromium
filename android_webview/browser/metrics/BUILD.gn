@@ -8,6 +8,8 @@ source_set("metrics") {
     "android_metrics_log_uploader.h",
     "android_metrics_provider.cc",
     "android_metrics_provider.h",
+    "aw_entropy_state_provider.cc",
+    "aw_entropy_state_provider.h",
     "aw_histograms_allowlist.cc",
     "aw_histograms_allowlist.h",
     "aw_metrics_filtering_status_metrics_provider.cc",
@@ -32,6 +34,7 @@ source_set("metrics") {
   deps = [
     "//android_webview:browser_jni_headers",
     "//android_webview/browser:browser_enums",
+    "//android_webview/browser:render_process",
     "//android_webview/browser/lifecycle",
     "//android_webview/common",
     "//base",

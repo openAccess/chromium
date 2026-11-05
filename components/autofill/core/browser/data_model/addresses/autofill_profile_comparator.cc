@@ -21,6 +21,7 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/types/expected.h"
 #include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/addresses/address.h"
@@ -36,6 +37,7 @@
 #include "components/autofill/core/browser/field_type_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/geo/autofill_country.h"
+#include "components/autofill/core/browser/geo/phone_number_i18n.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_l10n_util.h"
 #include "third_party/libphonenumber/phonenumber_api.h"
@@ -133,147 +135,111 @@ bool AutofillProfileComparator::Compare(
   return false;
 }
 
-AutofillProfile::ProfileMergeResult
-AutofillProfileComparator::MergeEmailAddresses(
+std::optional<EmailInfo> AutofillProfileComparator::MergeEmailAddresses(
     const AutofillProfile& new_profile,
-    const AutofillProfile& old_profile,
-    EmailInfo& email_info) const {
+    const AutofillProfile& old_profile) const {
   const std::u16string& e1 = new_profile.GetInfo(EMAIL_ADDRESS, app_locale_);
   const std::u16string& e2 = old_profile.GetInfo(EMAIL_ADDRESS, app_locale_);
 
   if (!e1.empty() && !e2.empty() &&
       !l10n::CaseInsensitiveCompare().StringsEqual(e1, e2)) {
-    return AutofillProfile::ProfileMergeResult::kMergeFailed;
+    return std::nullopt;
   }
 
-  const std::u16string* best = nullptr;
+  std::u16string_view best;
 
   if (e1.empty()) {
-    best = &e2;
+    best = e2;
   } else if (e2.empty()) {
-    best = &e1;
+    best = e1;
   } else {
     best = old_profile.usage_history().use_date() >
                    new_profile.usage_history().use_date()
-               ? &e2
-               : &e1;
+               ? e2
+               : e1;
   }
 
-  // TODO(crbug.com/453945181): Return a newly created `EmailInfo` instead of
-  // modifying `email_info`.
-  email_info.SetInfo(EMAIL_ADDRESS, *best, app_locale_);
-  return *best == e2
-             ? AutofillProfile::ProfileMergeResult::
-                   kMergeSucceededWithoutModification
-             : AutofillProfile::ProfileMergeResult::
-                   kMergeSucceededWithModification;
+  EmailInfo merged_value;
+  merged_value.SetInfo(EMAIL_ADDRESS, best, app_locale_);
+  return merged_value;
 }
 
-AutofillProfile::ProfileMergeResult
-AutofillProfileComparator::MergeCompanyNames(const AutofillProfile& new_profile,
-                                             const AutofillProfile& old_profile,
-                                             CompanyInfo& company_info) const {
+std::optional<CompanyInfo> AutofillProfileComparator::MergeCompanyNames(
+    const AutofillProfile& new_profile,
+    const AutofillProfile& old_profile) const {
+  auto create_company = [&](std::u16string_view company_name) {
+    CompanyInfo merged_company;
+    merged_company.SetInfo(COMPANY_NAME, company_name, app_locale_);
+    return merged_company;
+  };
+
   const std::u16string& new_company_name =
       new_profile.GetInfo(COMPANY_NAME, app_locale_);
   const std::u16string& old_company_name =
       old_profile.GetInfo(COMPANY_NAME, app_locale_);
-  std::u16string_view best;
 
   if (normalization::HasOnlySkippableCharacters(new_company_name)) {
-    company_info.SetInfo(COMPANY_NAME, old_company_name, app_locale_);
-    return AutofillProfile::ProfileMergeResult::
-        kMergeSucceededWithoutModification;
+    return create_company(old_company_name);
   }
   if (normalization::HasOnlySkippableCharacters(old_company_name)) {
-    company_info.SetInfo(COMPANY_NAME, new_company_name, app_locale_);
-    return AutofillProfile::ProfileMergeResult::kMergeSucceededWithModification;
+    return create_company(new_company_name);
   }
 
   switch (
       CompareTokens(normalization::NormalizeForComparison(new_company_name),
                     normalization::NormalizeForComparison(old_company_name))) {
     case DIFFERENT_TOKENS:
-      return AutofillProfile::ProfileMergeResult::kMergeFailed;
+      return std::nullopt;
     case S1_CONTAINS_S2:
-      best = new_company_name;
-      break;
+      return create_company(new_company_name);
     case S2_CONTAINS_S1:
-      best = old_company_name;
-      break;
+      return create_company(old_company_name);
     case SAME_TOKENS:
-      best = old_profile.usage_history().use_date() >
-                     new_profile.usage_history().use_date()
-                 ? old_company_name
-                 : new_company_name;
-      break;
+      return create_company(old_profile.usage_history().use_date() >
+                                    new_profile.usage_history().use_date()
+                                ? old_company_name
+                                : new_company_name);
   }
-  company_info.SetInfo(COMPANY_NAME, best, app_locale_);
-  return best == old_company_name ? AutofillProfile::ProfileMergeResult::
-                                        kMergeSucceededWithoutModification
-                                  : AutofillProfile::ProfileMergeResult::
-                                        kMergeSucceededWithModification;
+  NOTREACHED();
 }
 
-AutofillProfile::ProfileMergeResult
-AutofillProfileComparator::MergePhoneNumbers(const AutofillProfile& new_profile,
-                                             const AutofillProfile& old_profile,
-                                             PhoneNumber& phone_number) const {
-  // We work with the raw phone numbers to avoid losing any helpful information
-  // as we parse.
-  using enum AutofillProfile::ProfileMergeResult;
-  const FieldType kWholePhoneNumber = PHONE_HOME_WHOLE_NUMBER;
-  const std::u16string& new_phone_number =
-      new_profile.GetRawInfo(kWholePhoneNumber);
-  const std::u16string& old_phone_number =
-      old_profile.GetRawInfo(kWholePhoneNumber);
+std::optional<PhoneNumber> AutofillProfileComparator::MergePhoneNumbers(
+    const AutofillProfile& new_profile,
+    const AutofillProfile& old_profile) const {
+  auto create_phone_number = [&old_profile](std::u16string_view phone_number) {
+    PhoneNumber merged_phone_number(&old_profile);
+    merged_phone_number.SetRawInfo(PHONE_HOME_WHOLE_NUMBER, phone_number);
+    return merged_phone_number;
+  };
 
+  // Work with the raw phone numbers to avoid losing any helpful information
+  // during parsing.
+  const std::u16string& new_phone_number =
+      new_profile.GetRawInfo(PHONE_HOME_WHOLE_NUMBER);
+  const std::u16string& old_phone_number =
+      old_profile.GetRawInfo(PHONE_HOME_WHOLE_NUMBER);
   if (new_phone_number == old_phone_number) {
-    phone_number.SetRawInfo(kWholePhoneNumber, new_phone_number);
-    return kMergeSucceededWithoutModification;
+    return create_phone_number(new_phone_number);
   }
 
   if (normalization::HasOnlySkippableCharacters(new_phone_number) &&
       normalization::HasOnlySkippableCharacters(old_phone_number)) {
-    phone_number.SetRawInfo(kWholePhoneNumber, std::u16string());
-    return kMergeSucceededWithoutModification;
+    return create_phone_number(/*phone_number=*/u"");
   }
 
   if (normalization::HasOnlySkippableCharacters(new_phone_number)) {
-    phone_number.SetRawInfo(kWholePhoneNumber, old_phone_number);
-    return kMergeSucceededWithoutModification;
+    return create_phone_number(old_phone_number);
   }
 
   if (normalization::HasOnlySkippableCharacters(old_phone_number)) {
-    phone_number.SetRawInfo(kWholePhoneNumber, new_phone_number);
-    return kMergeSucceededWithModification;
-  }
-
-  // TODO(crbug.com/550246835): Modify ::autofill::i18n::PhoneNumbersMatch to
-  // support SHORT_NSN_MATCH and just call that instead of accessing the
-  // underlying utility library directly?
-
-  // Parse and compare the phone numbers.
-  // The phone number util library needs the numbers in utf8.
-  PhoneNumberUtil* phone_util = PhoneNumberUtil::GetInstance();
-  switch (phone_util->IsNumberMatchWithTwoStrings(
-      base::UTF16ToUTF8(new_phone_number),
-      base::UTF16ToUTF8(old_phone_number))) {
-    case PhoneNumberUtil::INVALID_NUMBER:
-    case PhoneNumberUtil::NO_MATCH:
-      return kMergeFailed;
-    case PhoneNumberUtil::SHORT_NSN_MATCH:
-    case PhoneNumberUtil::NSN_MATCH:
-    case PhoneNumberUtil::EXACT_MATCH:
-      // A merge is possible.
-      break;
+    return create_phone_number(new_phone_number);
   }
 
   // Figure out a country code hint.
-  // TODO(crbug.com/40221178) `GetNonEmptyOf()` prefers `new_profile` in case
-  // both are non empty.
-  std::string region = base::UTF16ToUTF8(GetNonEmptyOf(
-      new_profile, old_profile,
-      AutofillType(ADDRESS_HOME_COUNTRY, /*is_country_code=*/true)));
+  // TODO(crbug.com/40221178) `GetNonEmptyCountryCode()` prefers `new_profile`
+  // in case both are non empty.
+  std::string region =
+      base::UTF16ToUTF8(GetNonEmptyCountryCode(new_profile, old_profile));
   // TODO(crbug.com/503704299): Remove this validation once profiles with
   // invalid country codes are cleaned up.
   if (region.empty() || !data_util::IsValidCountryCode(region)) {
@@ -281,18 +247,23 @@ AutofillProfileComparator::MergePhoneNumbers(const AutofillProfile& new_profile,
   }
 
   // Parse the phone numbers.
+  PhoneNumberUtil* phone_util = PhoneNumberUtil::GetInstance();
   ::i18n::phonenumbers::PhoneNumber n1;
   if (phone_util->ParseAndKeepRawInput(base::UTF16ToUTF8(new_phone_number),
                                        region, &n1) !=
       PhoneNumberUtil::NO_PARSING_ERROR) {
-    return kMergeFailed;
+    return std::nullopt;
   }
 
   ::i18n::phonenumbers::PhoneNumber n2;
   if (phone_util->ParseAndKeepRawInput(base::UTF16ToUTF8(old_phone_number),
                                        region, &n2) !=
       PhoneNumberUtil::NO_PARSING_ERROR) {
-    return kMergeFailed;
+    return std::nullopt;
+  }
+
+  if (!i18n::PhoneNumbersMatch(n1, n2, /*support_short_nsn_match=*/true)) {
+    return std::nullopt;
   }
 
   // `country_code()` defaults to the provided `region`. But if one of the
@@ -310,8 +281,10 @@ AutofillProfileComparator::MergePhoneNumbers(const AutofillProfile& new_profile,
   // - Both are not in international format, so their country codes both default
   //   to `region`.
   // - One of them is in international format, so we prefer that country code.
-  CHECK(HasInternationalCountryCode(n1) != HasInternationalCountryCode(n2) ||
-        n1.country_code() == n2.country_code());
+  if (HasInternationalCountryCode(n1) == HasInternationalCountryCode(n2) &&
+      n1.country_code() != n2.country_code()) {
+    return std::nullopt;
+  }
   merged_number.set_country_code(
       HasInternationalCountryCode(n1) ? n1.country_code() : n2.country_code());
   merged_number.set_national_number(
@@ -352,56 +325,45 @@ AutofillProfileComparator::MergePhoneNumbers(const AutofillProfile& new_profile,
     new_number = new_number.substr(offset);
   }
 
-  std::u16string merged_number_u16 = base::UTF8ToUTF16(new_number);
-  phone_number.SetRawInfo(kWholePhoneNumber, merged_number_u16);
-  return merged_number_u16 == old_phone_number
-             ? kMergeSucceededWithoutModification
-             : kMergeSucceededWithModification;
+  return create_phone_number(base::UTF8ToUTF16(new_number));
 }
 
-AutofillProfile::ProfileMergeResult AutofillProfileComparator::MergeAddresses(
+std::optional<Address> AutofillProfileComparator::MergeAddresses(
     const AutofillProfile& new_profile,
-    const AutofillProfile& old_profile,
-    Address& address) const {
-  using enum AutofillProfile::ProfileMergeResult;
-  // If one of the profiles is `kAccountNameEmail` profile, sets `address` to
-  // address tree of the other profile.
+    const AutofillProfile& old_profile) const {
+  // If one of the profiles is `kAccountNameEmail` profile, uses the address
+  // tree of the other profile.
   if (new_profile.record_type() ==
       AutofillProfile::RecordType::kAccountNameEmail) {
-    address = old_profile.GetAddress();
-    return kMergeSucceededWithoutModification;
+    return old_profile.GetAddress();
   }
   if (old_profile.record_type() ==
       AutofillProfile::RecordType::kAccountNameEmail) {
-    address = new_profile.GetAddress();
-    return address == old_profile.GetAddress()
-               ? kMergeSucceededWithoutModification
-               : kMergeSucceededWithModification;
+    return new_profile.GetAddress();
   }
 
   // TODO(crbug.com/552327712): Explore if the check logic can be embedded into
   // the merge method.
   if (!old_profile.GetAddress().IsStructuredAddressMergeable(
           new_profile.GetAddress())) {
-    return kMergeFailed;
+    return std::nullopt;
   }
 
-  address = old_profile.GetAddress();
+  Address address = old_profile.GetAddress();
   if (!address.MergeStructuredAddress(
           new_profile.GetAddress(),
           old_profile.usage_history().use_date() <
               new_profile.usage_history().use_date())) {
-    return kMergeFailed;
+    return std::nullopt;
   }
-  return address == old_profile.GetAddress()
-             ? kMergeSucceededWithoutModification
-             : kMergeSucceededWithModification;
+  return address;
 }
 
 std::optional<FieldTypeSet>
 AutofillProfileComparator::NonMergeableSettingVisibleTypes(
     const AutofillProfile& a,
     const AutofillProfile& b) const {
+  using enum NameInfo::MergeFailureReason;
   if (a.GetAddressCountryCode() != b.GetAddressCountryCode()) {
     return std::nullopt;
   }
@@ -414,30 +376,52 @@ AutofillProfileComparator::NonMergeableSettingVisibleTypes(
       non_mergeable_types.insert(type);
     }
   };
-  // For most setting-visible types, a HaveMergeable* function exists. If these
+  // For most setting-visible types, a `Merge*()` function exists. If these
   // types ever become non-settings visible, the check in `maybe_add_type` will
   // fail in the unittest.
-  maybe_add_type(NAME_FULL, NameInfo::AreNamesMergeable(
-                                a.GetNameInfo(), a.GetAddressCountryCode(),
-                                b.GetNameInfo(), b.GetAddressCountryCode()));
+  const base::expected<NameInfo, NameInfo::MergeFailureReason> merged_name =
+      NameInfo::MergeNames(
+          a.GetNameInfo(), a.GetAddressCountryCode(), b.GetNameInfo(),
+          b.GetAddressCountryCode(),
+          b.usage_history().use_date() < a.usage_history().use_date());
+
+  auto is_name_component_mergeable = [&](FieldType component_type) {
+    CHECK(component_type == NAME_FULL ||
+          component_type == ALTERNATIVE_FULL_NAME);
+    if (merged_name.has_value()) {
+      return true;
+    }
+    // `NameInfo::MergeNames()` merges both `NAME_FULL` and
+    // `ALTERNATIVE_FULL_NAME` at once, so an error in `merged_name` only means
+    // that *at least one* of the two components could not be merged.
+    // A single-component failure (`kNameFullFailed` or
+    // `kAlternativeNameFailed`) implies that only that specific component
+    // failed to merge, while the other component *is* still mergeable.
+    switch (merged_name.error()) {
+      case kNameFullFailed:
+        // `NAME_FULL` failed to merge, but `ALTERNATIVE_FULL_NAME` is
+        // mergeable.
+        return component_type != NAME_FULL;
+      case kAlternativeNameFailed:
+        // `ALTERNATIVE_FULL_NAME` failed to merge, but `NAME_FULL` is
+        // mergeable.
+        return component_type != ALTERNATIVE_FULL_NAME;
+      case kBothFailed:
+        // Both failed to merge.
+        return false;
+    }
+    NOTREACHED();
+  };
+
+  maybe_add_type(NAME_FULL, is_name_component_mergeable(NAME_FULL));
   if (setting_visible_types.contains(ALTERNATIVE_FULL_NAME)) {
     maybe_add_type(ALTERNATIVE_FULL_NAME,
-                   NameInfo::AreAlternativeNamesMergeable(
-                       a.GetNameInfo(), a.GetAddressCountryCode(),
-                       b.GetNameInfo(), b.GetAddressCountryCode()));
+                   is_name_component_mergeable(ALTERNATIVE_FULL_NAME));
   }
-  CompanyInfo company;
-  maybe_add_type(COMPANY_NAME,
-                 MergeCompanyNames(a, b, company) !=
-                     AutofillProfile::ProfileMergeResult::kMergeFailed);
-  PhoneNumber phone(&a);
-  maybe_add_type(PHONE_HOME_WHOLE_NUMBER,
-                 MergePhoneNumbers(a, b, phone) !=
-                     AutofillProfile::ProfileMergeResult::kMergeFailed);
-  EmailInfo email;
-  maybe_add_type(EMAIL_ADDRESS, MergeEmailAddresses(a, b, email) !=
-                                    AutofillProfile::ProfileMergeResult::
-                                        kMergeFailed);
+  maybe_add_type(COMPANY_NAME, MergeCompanyNames(a, b).has_value());
+  maybe_add_type(PHONE_HOME_WHOLE_NUMBER, MergePhoneNumbers(a, b).has_value());
+
+  maybe_add_type(EMAIL_ADDRESS, MergeEmailAddresses(a, b).has_value());
   // Now, only address-related types remain in `setting_visible_types`. Using
   // `MergeAddresses()` is not fine-grained enough, since multiple
   // address types are setting-visible (e.g. city, zip, etc). Verify differences
@@ -460,12 +444,12 @@ bool AutofillProfileComparator::ProfilesHaveDifferentSettingsVisibleValues(
     const AutofillProfile& p1,
     const AutofillProfile& p2,
     const std::string& app_locale) {
-  if (p1.GetUserVisibleTypes() != p2.GetUserVisibleTypes()) {
-    return false;
-  }
+  FieldTypeSet visible_types = p1.GetUserVisibleTypes();
+  visible_types.insert_all(p2.GetUserVisibleTypes());
   // Return true if at least one value corresponding to the settings visible
-  // types is different between the two profiles.
-  return std::ranges::any_of(p1.GetUserVisibleTypes(), [&](FieldType type) {
+  // types is different between the two profiles. Since `ADDRESS_HOME_COUNTRY`
+  // is included in `visible_types`, differing countries are also handled here.
+  return std::ranges::any_of(visible_types, [&](FieldType type) {
     if (IsAlternativeNameType(type)) {
       // Consider two alternative names that differ only in the character set
       // equal.
@@ -513,15 +497,14 @@ AutofillProfileComparator::CompareTokens(std::u16string_view s1,
   return DIFFERENT_TOKENS;
 }
 
-std::u16string AutofillProfileComparator::GetNonEmptyOf(
+std::u16string AutofillProfileComparator::GetNonEmptyCountryCode(
     const AutofillProfile& p1,
-    const AutofillProfile& p2,
-    AutofillType t) const {
-  const std::u16string& s1 = p1.GetInfo(t, app_locale_);
+    const AutofillProfile& p2) const {
+  const std::u16string& s1 = p1.GetRawInfo(ADDRESS_HOME_COUNTRY);
   if (!s1.empty()) {
     return s1;
   }
-  return p2.GetInfo(t, app_locale_);
+  return p2.GetRawInfo(ADDRESS_HOME_COUNTRY);
 }
 
 }  // namespace autofill

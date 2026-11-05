@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -39,13 +40,24 @@
 #include "components/url_formatter/spoof_checks/top_domains/top_domain_util.h"
 #include "content/public/browser/navigation_handle.h"
 #include "third_party/blink/public/mojom/loader/referrer.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 using lookalikes::DomainInfo;
 using lookalikes::GetETLDPlusOne;
 using lookalikes::LookalikeActionType;
 using lookalikes::LookalikeUrlMatchType;
 
+BASE_FEATURE(kOptimizeLookalikeUrlNavigationThrottle,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 namespace {
+
+// When enabled, navigations where neither the first nor the last URL of the
+// redirect chain is HTTP(S) (e.g. the New Tab Page) don't wait for the engaged
+// sites list to be loaded, since they can't trigger lookalike warnings.
+BASE_FEATURE(kLookalikeSkipEngagedSitesWaitForNonHttp,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 typedef content::NavigationThrottle::ThrottleCheckResult ThrottleCheckResult;
 
@@ -83,7 +95,7 @@ bool IsLookalikeUrl(Profile* profile,
                     LookalikeUrlMatchType* match_type,
                     GURL* suggested_url,
                     base::TimeDelta* get_domain_info_duration) {
-  DCHECK(get_domain_info_duration->is_zero());
+  CHECK(get_domain_info_duration->is_zero(), base::NotFatalUntil::M161);
   LookalikeUrlService::LookalikeUrlCheckResult result =
       LookalikeUrlServiceFactory::GetForProfile(profile)->CheckUrlForLookalikes(
           url, engaged_sites,
@@ -238,24 +250,51 @@ ThrottleCheckResult LookalikeUrlNavigationThrottle::WillProcessResponse() {
     // for why this is OK. Assume interstitial reloads are always browser
     // initiated.
     handle->GetWebContents()->OpenURL(
-        content::OpenURLParams(interstitial_params.url,
-                               interstitial_params.referrer,
-                               WindowOpenDisposition::CURRENT_TAB,
-                               ui::PageTransition::PAGE_TRANSITION_RELOAD,
-                               false /* is_renderer_initiated */),
+        content::OpenURLParams::CreateBrowserInitiated(
+            interstitial_params.url,
+            ui::mojom::WindowOpenDisposition::kCurrentTab,
+            ui::PageTransition::PAGE_TRANSITION_RELOAD,
+            interstitial_params.referrer),
         /*navigation_handle_callback=*/{});
     return content::NavigationThrottle::CANCEL_AND_IGNORE;
   }
 
+  // Lookalike checks only apply to HTTP(S) URLs (see
+  // LookalikeUrlService::CheckUrlForLookalikes()), and PerformChecks() only
+  // checks the first and last URLs of the redirect chain. If neither is
+  // HTTP(S), the navigation can't trigger a warning, so proceed without waiting
+  // for the engaged sites list to be loaded. This avoids deferring e.g. the
+  // New Tab Page navigation at browser startup.
+  if (base::FeatureList::IsEnabled(kLookalikeSkipEngagedSitesWaitForNonHttp) &&
+      !handle->GetRedirectChain()[0].SchemeIsHTTPOrHTTPS() &&
+      !handle->GetURL().SchemeIsHTTPOrHTTPS()) {
+    return content::NavigationThrottle::PROCEED;
+  }
+
   LookalikeUrlService* service =
       LookalikeUrlServiceFactory::GetForProfile(profile_);
-  if (!use_test_profile_ && service->EngagedSitesNeedUpdating()) {
+  if (!use_test_profile_ && service->EngagedSitesNeedUpdating() &&
+      (!base::FeatureList::IsEnabled(kOptimizeLookalikeUrlNavigationThrottle) ||
+       NeedsEngagedSitesForNavigation(service))) {
     service->ForceUpdateEngagedSites(
         base::BindOnce(&LookalikeUrlNavigationThrottle::PerformChecksDeferred,
                        weak_factory_.GetWeakPtr(), base::TimeTicks::Now()));
     return content::NavigationThrottle::DEFER;
   }
   return PerformChecks(service->GetLatestEngagedSites());
+}
+
+bool LookalikeUrlNavigationThrottle::NeedsEngagedSitesForNavigation(
+    const LookalikeUrlService* service) const {
+  const GURL& first_url = navigation_handle()->GetRedirectChain()[0];
+  const GURL& last_url = navigation_handle()->GetURL();
+  if (first_url.GetHost() != last_url.GetHost() &&
+      !lookalike_cache_.contains(first_url.GetHost()) &&
+      service->NeedsEngagedSitesForCheck(first_url)) {
+    return true;
+  }
+  return !lookalike_cache_.contains(last_url.GetHost()) &&
+         service->NeedsEngagedSitesForCheck(last_url);
 }
 
 const char* LookalikeUrlNavigationThrottle::GetNameForLogging() {
@@ -342,8 +381,9 @@ LookalikeUrlNavigationThrottle::CheckAndMaybeShowInterstitial(
     return content::NavigationThrottle::CANCEL;
   }
 
-  lookalikes::RecordUMAFromMatchType(match_type,
-                                     profile_->IsIncognitoProfile());
+  lookalikes::RecordUMAFromMatchType(
+      match_type, profile_->IsIncognitoProfile(),
+      profile_->IsEnterpriseIsolatedModeProfile());
 
   // Punycode interstitial doesn't have a target site, so safe_domain isn't
   // valid.
@@ -382,8 +422,9 @@ ThrottleCheckResult LookalikeUrlNavigationThrottle::PerformChecks(
       navigation_handle()
           ->GetRedirectChain()[navigation_handle()->GetRedirectChain().size() -
                                1];
-  DCHECK(last_url_in_redirect_chain == navigation_handle()->GetURL() ||
-         !navigation_handle()->GetBaseURLForDataURL().is_empty());
+  CHECK(last_url_in_redirect_chain == navigation_handle()->GetURL() ||
+            !navigation_handle()->GetBaseURLForDataURL().is_empty(),
+        base::NotFatalUntil::M161);
 
   // Check for two lookalikes -- at the beginning and end of the redirect chain.
   const GURL& first_url = navigation_handle()->GetRedirectChain()[0];
@@ -511,11 +552,13 @@ ThrottleCheckResult LookalikeUrlNavigationThrottle::PerformChecks(
   // or last_url depending on the value of `first_is_lookalike`.
 
   // Always record UMA for any heuristic match.
-  DCHECK_NE(LookalikeUrlMatchType::kNone, match_type);
-  DCHECK(action_type == LookalikeActionType::kRecordMetrics ||
-         action_type == LookalikeActionType::kShowSafetyTip);
-  lookalikes::RecordUMAFromMatchType(match_type,
-                                     profile_->IsIncognitoProfile());
+  CHECK_NE(LookalikeUrlMatchType::kNone, match_type, base::NotFatalUntil::M161);
+  CHECK(action_type == LookalikeActionType::kRecordMetrics ||
+            action_type == LookalikeActionType::kShowSafetyTip,
+        base::NotFatalUntil::M161);
+  lookalikes::RecordUMAFromMatchType(
+      match_type, profile_->IsIncognitoProfile(),
+      profile_->IsEnterpriseIsolatedModeProfile());
   RecordPerformCheckLatenciesForAllowedNavigation(
       perform_checks_start, is_lookalike_url_duration,
       total_get_domain_info_duration);

@@ -34,6 +34,7 @@ import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
@@ -46,7 +47,6 @@ import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManager;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.sync.SyncTestRule;
-import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.BookmarkTestUtil;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
@@ -83,7 +83,6 @@ public class BookmarkSaveFlowTest {
 
     @Mock private ShoppingService mShoppingService;
     @Mock private PriceTrackingUtils.Natives mMockPriceTrackingUtilsJni;
-    @Mock private UserEducationHelper mUserEducationHelper;
     @Mock private IdentityManager mIdentityManager;
     @Mock private PriceDropNotificationManager mPriceDropNotificationManager;
 
@@ -113,7 +112,6 @@ public class BookmarkSaveFlowTest {
                                     mActivity,
                                     mBottomSheetController,
                                     mShoppingService,
-                                    mUserEducationHelper,
                                     ProfileManager.getLastUsedRegularProfile(),
                                     mIdentityManager,
                                     new BookmarkManagerOpenerImpl(),
@@ -216,6 +214,10 @@ public class BookmarkSaveFlowTest {
     @Test
     @MediumTest
     @Feature({"RenderTest"})
+    @DisableIf.Build(
+            sdk_is_greater_than = 35,
+            sdk_is_less_than = 37,
+            message = "https://crbug.com/576703594")
     public void testBookmarkSaveFlow_WithShoppingListItem() throws IOException {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {

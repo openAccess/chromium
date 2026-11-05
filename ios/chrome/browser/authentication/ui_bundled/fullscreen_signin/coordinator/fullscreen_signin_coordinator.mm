@@ -6,22 +6,20 @@
 
 #import <UIKit/UIKit.h>
 
+#import <utility>
+
 #import "base/notreached.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "ios/chrome/browser/authentication/fullscreen_signin_screen/coordinator/fullscreen_signin_screen_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/fullscreen_signin/coordinator/fullscreen_signin_coordinator_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator+protected.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_in_progress.h"
 #import "ios/chrome/browser/first_run/public/first_run_screen_delegate.h"
-#import "ios/chrome/browser/first_run/public/first_run_util.h"
 #import "ios/chrome/browser/screen/ui_bundled/screen_provider.h"
 #import "ios/chrome/browser/screen/ui_bundled/screen_type.h"
-#import "ios/chrome/browser/shared/coordinator/chrome_coordinator/animated_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -125,14 +123,8 @@
 // presenting the screens.
 - (void)finishPresentingScreens {
   __weak __typeof(self) weakSelf = self;
-  AuthenticationService* authService =
-      AuthenticationServiceFactory::GetForProfile(self.profile);
-  id<SystemIdentity> identity = authService->GetPrimaryIdentity();
   void (^completion)(void) = ^{
-    SigninCoordinatorResult result =
-        identity ? SigninCoordinatorResultSuccess
-                 : SigninCoordinatorResultCanceledByUser;
-    [weakSelf finishWithResult:result identity:identity];
+    [weakSelf finishWithPrimaryIdentity];
   };
   [self.navigationController dismissViewControllerAnimated:YES
                                                 completion:completion];
@@ -184,13 +176,21 @@
   return nil;
 }
 
-- (void)finishWithResult:(SigninCoordinatorResult)result
-                identity:(id<SystemIdentity>)identity {
+- (void)finishWithPrimaryIdentity {
+  id<SystemIdentity> identity =
+      AuthenticationServiceFactory::GetForProfile(self.profile)
+          ->GetPrimaryIdentity();
+  SigninCoordinatorResultOrIdentity result =
+      identity ? SigninCoordinatorResultOrIdentity(identity)
+               : base::unexpected(SigninCoordinatorResultCanceledByUser);
+  [self finishWithResult:std::move(result)];
+}
+
+- (void)finishWithResult:(SigninCoordinatorResultOrIdentity)result {
   [self stopChildCoordinator];
   self.navigationController = nil;
   self.screenProvider = nil;
-  [self.delegate fullscreenSigninCoordinatorWantsToBeStopped:self
-                                                      result:result];
+  [self.delegate fullscreenSigninCoordinatorDone:self result:std::move(result)];
 }
 
 #pragma mark - FirstRunScreenDelegate

@@ -34,6 +34,7 @@
 #include "mojo/public/cpp/bindings/connection_group.h"
 #include "mojo/public/cpp/bindings/connection_group_ref.h"
 #include "mojo/public/cpp/bindings/interface_endpoint_controller.h"
+#include "mojo/public/cpp/bindings/lib/responder_thunk.h"
 #include "mojo/public/cpp/bindings/lib/task_runner_helper.h"
 #include "mojo/public/cpp/bindings/lib/validation_util.h"
 #include "mojo/public/cpp/bindings/sync_call_restrictions.h"
@@ -242,103 +243,6 @@ class ThreadSafeInterfaceEndpointClientProxy : public ThreadSafeProxy {
   const scoped_refptr<InProgressSyncCalls> sync_calls_{
       base::MakeRefCounted<InProgressSyncCalls>()};
   const base::Location location_;
-};
-
-void DetermineIfEndpointIsConnected(
-    const base::WeakPtr<InterfaceEndpointClient>& client,
-    base::OnceCallback<void(bool)> callback) {
-  std::move(callback).Run(client && !client->encountered_error());
-}
-
-// When receiving an incoming message which expects a repsonse,
-// InterfaceEndpointClient creates a ResponderThunk object and passes it to the
-// incoming message receiver. When the receiver finishes processing the message,
-// it can provide a response using this object.
-class ResponderThunk : public MessageReceiverWithStatus {
- public:
-  explicit ResponderThunk(
-      const base::WeakPtr<InterfaceEndpointClient>& endpoint_client,
-      scoped_refptr<base::SequencedTaskRunner> runner)
-      : endpoint_client_(endpoint_client),
-        accept_was_invoked_(false),
-        task_runner_(std::move(runner)) {}
-
-  ResponderThunk(const ResponderThunk&) = delete;
-  ResponderThunk& operator=(const ResponderThunk&) = delete;
-
-  ~ResponderThunk() override {
-    if (!accept_was_invoked_) {
-      // The Service handled a message that was expecting a response
-      // but did not send a response.
-      // We raise an error to signal the calling application that an error
-      // condition occurred. Without this the calling application would have no
-      // way of knowing it should stop waiting for a response.
-      if (task_runner_->RunsTasksInCurrentSequence()) {
-        // Please note that even if this code is run from a different task
-        // runner on the same thread as |task_runner_|, it is okay to directly
-        // call InterfaceEndpointClient::RaiseError(), because it will raise
-        // error from the correct task runner asynchronously.
-        if (endpoint_client_) {
-          endpoint_client_->RaiseError();
-        }
-      } else {
-        // Instantiate a ScopedFizzleBlockShutdownTasks to allow this PostTask
-        // to fizzle if it happens after shutdown and the endpoint is bound to a
-        // BLOCK_SHUTDOWN sequence. ref. crbug.com/1442134
-        base::ThreadPoolInstance::ScopedFizzleBlockShutdownTasks fizzler;
-        task_runner_->PostTask(
-            FROM_HERE, base::BindOnce(&InterfaceEndpointClient::RaiseError,
-                                      endpoint_client_));
-      }
-    }
-  }
-
-  // Allows this thunk to be attached to a ConnectionGroup as a means of keeping
-  // the group from idling while the response is pending.
-  void set_connection_group(ConnectionGroupRef connection_group) {
-    connection_group_ = std::move(connection_group);
-  }
-
-  // MessageReceiver implementation:
-  bool PrefersSerializedMessages() override {
-    return endpoint_client_ && endpoint_client_->PrefersSerializedMessages();
-  }
-
-  bool Accept(Message* message) override {
-    DCHECK(task_runner_->RunsTasksInCurrentSequence());
-    accept_was_invoked_ = true;
-    DCHECK(message->has_flag(Message::kFlagIsResponse));
-
-    bool result = false;
-
-    if (endpoint_client_) {
-      result = endpoint_client_->Accept(message);
-    }
-
-    return result;
-  }
-
-  // MessageReceiverWithStatus implementation:
-  bool IsConnected() override {
-    DCHECK(task_runner_->RunsTasksInCurrentSequence());
-    return endpoint_client_ && !endpoint_client_->encountered_error();
-  }
-
-  void IsConnectedAsync(base::OnceCallback<void(bool)> callback) override {
-    if (task_runner_->RunsTasksInCurrentSequence()) {
-      DetermineIfEndpointIsConnected(endpoint_client_, std::move(callback));
-    } else {
-      task_runner_->PostTask(
-          FROM_HERE, base::BindOnce(&DetermineIfEndpointIsConnected,
-                                    endpoint_client_, std::move(callback)));
-    }
-  }
-
- private:
-  base::WeakPtr<InterfaceEndpointClient> endpoint_client_;
-  bool accept_was_invoked_;
-  scoped_refptr<base::SequencedTaskRunner> task_runner_;
-  ConnectionGroupRef connection_group_;
 };
 
 }  // namespace
@@ -570,11 +474,6 @@ void InterfaceEndpointClient::CloseWithReason(uint32_t custom_reason,
 
   auto handle = PassHandle();
   handle.ResetWithReason(custom_reason, description);
-}
-
-bool InterfaceEndpointClient::PrefersSerializedMessages() {
-  auto* controller = handle_.group_controller();
-  return controller && controller->PrefersSerializedMessages();
 }
 
 void InterfaceEndpointClient::SendControlMessage(Message* message) {
@@ -965,12 +864,19 @@ bool InterfaceEndpointClient::HandleValidatedMessage(Message* message) {
         const auto method_info = method_info_callback_(*message);
         if (method_info) {
           info->set_ipc_hash((*method_info)());
-          const auto method_address = reinterpret_cast<uintptr_t>(method_info);
-          const std::optional<size_t> location_iid =
-              base::trace_event::InternedUnsymbolizedSourceLocation::Get(
-                  &ctx, method_address);
-          if (location_iid) {
-            info->set_mojo_interface_method_iid(*location_iid);
+          // Interning unsymbolized source locations incurs ModuleCache lookup
+          // overhead which can skew toplevel traces during process startup
+          // (crbug.com/561471278). Only emit when "mojom" is explicitly
+          // enabled.
+          if (TRACE_EVENT_CATEGORY_ENABLED("mojom")) {
+            const auto method_address =
+                reinterpret_cast<uintptr_t>(method_info);
+            const std::optional<size_t> location_iid =
+                base::trace_event::InternedUnsymbolizedSourceLocation::Get(
+                    &ctx, method_address);
+            if (location_iid) {
+              info->set_mojo_interface_method_iid(*location_iid);
+            }
           }
         }
 
@@ -1021,7 +927,7 @@ bool InterfaceEndpointClient::HandleValidatedMessage(Message* message) {
   bool has_response = false;
   if (message->has_flag(Message::kFlagExpectsResponse)) {
     has_response = true;
-    auto responder = std::make_unique<ResponderThunk>(
+    auto responder = std::make_unique<internal::ResponderThunk>(
         weak_ptr_factory_.GetWeakPtr(), task_runner_);
     if (mojo::internal::ControlMessageHandler::IsControlMessage(message)) {
       return control_message_handler_.AcceptWithResponder(message,

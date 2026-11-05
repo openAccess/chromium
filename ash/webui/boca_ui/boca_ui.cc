@@ -5,8 +5,12 @@
 #include "ash/webui/boca_ui/boca_ui.h"
 
 #include <memory>
+#include <string>
+#include <utility>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
+#include "ash/constants/chrome_pref_names.h"
 #include "ash/webui/boca_ui/boca_app_page_handler.h"
 #include "ash/webui/boca_ui/boca_util.h"
 #include "ash/webui/boca_ui/provider/tab_info_collector.h"
@@ -15,12 +19,17 @@
 #include "ash/webui/grit/ash_boca_ui_resources.h"
 #include "ash/webui/grit/ash_boca_ui_resources_map.h"
 #include "base/check_deref.h"
-#include "chrome/browser/ash/boca/boca_manager_factory.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/boca/boca_app_client.h"
+#include "chromeos/ash/components/boca/boca_role_util.h"
 #include "chromeos/ash/components/boca/gemini/gemini_status_fetcher.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/channel/channel_info.h"
 #include "chromeos/grit/chromeos_boca_app_bundle_resources.h"
 #include "chromeos/grit/chromeos_boca_app_bundle_resources_map.h"
+#include "components/application_locale_storage/application_locale_storage.h"
+#include "components/prefs/pref_service.h"
+#include "components/user_manager/user.h"
+#include "components/version_info/channel.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_controller.h"
@@ -32,8 +41,7 @@ namespace ash::boca {
 
 namespace {
 content::WebUIDataSource* CreateAndAddHostDataSource(
-    content::BrowserContext* browser_context,
-    BocaUIDelegate* delegate) {
+    content::BrowserContext* browser_context) {
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
       browser_context, kChromeBocaAppUntrustedURL);
 
@@ -45,20 +53,96 @@ content::WebUIDataSource* CreateAndAddHostDataSource(
   return source;
 }
 
+void PopulateLoadTimeData(
+    content::BrowserContext* browser_context,
+    const ApplicationLocaleStorage& application_locale_storage,
+    const PrefService& pref_service,
+    content::WebUIDataSource* source) {
+  const user_manager::User* const user =
+      BrowserContextHelper::Get()->GetUserByBrowserContext(browser_context);
+  const version_info::Channel channel = GetChannel();
+  source->AddBoolean("isDevChannel",
+                     channel == version_info::Channel::DEV ||
+                         channel == version_info::Channel::UNKNOWN);
+  source->AddBoolean("isProducer", boca_util::IsProducer(user));
+  source->AddBoolean("isConsumer", boca_util::IsConsumer(user));
+  // Do not honor sub-feature flag for student as there is no way to config
+  // it for consumer.
+  source->AddBoolean(
+      "spotlightEnabled",
+      boca_util::IsConsumer(user) ||
+          pref_service.GetBoolean(
+              prefs::kClassManagementToolsViewScreenEligibilitySetting));
+  source->AddString("appLocale", application_locale_storage.Get());
+  source->AddBoolean(
+      "classroomEnabled",
+      pref_service.GetBoolean(
+          prefs::kClassManagementToolsClassroomEligibilitySetting));
+  source->AddBoolean(
+      "captionEnabled",
+      boca_util::IsConsumer(user) ||
+          pref_service.GetBoolean(
+              prefs::kClassManagementToolsCaptionEligibilitySetting));
+  if (features::IsBocaSpotlightEnabled()) {
+    source->AddString("spotlightUrlTemplate",
+                      features::kBocaSpotlightUrlTemplate.Get());
+  }
+  source->AddBoolean("sessionControlsUpdate",
+                     features::IsBocaLockPauseUpdateEnabled());
+  source->AddBoolean("navSettingsDialog",
+                     features::IsBocaNavSettingsDialogEnabled());
+  source->AddBoolean("captionToggle", features::IsBocaCaptionToggleEnabled());
+  source->AddBoolean("materialTypeIndicator",
+                     features::IsBocaMaterialTypeUiIndicatorEnabled());
+
+  source->AddBoolean("spotlightNativeClientUpdate",
+                     features::IsBocaSpotlightRobotRequesterEnabled());
+  source->AddBoolean(
+      "userFeedbackAllowed",
+      pref_service.GetBoolean(chrome_prefs::kUserFeedbackAllowed));
+  if (features::IsBocaConfigureMaxStudentsEnabled()) {
+    source->AddInteger("maxNumStudentsAllowed",
+                       features::kBocaMaxNumStudentsAllowed.Get());
+  }
+  source->AddBoolean("screenSharingTeacher",
+                     features::IsBocaScreenSharingTeacherEnabled());
+  source->AddBoolean("screenSharingStudent",
+                     features::IsBocaScreenSharingStudentEnabled());
+
+  source->AddBoolean("geminiIntegration",
+                     features::IsBocaGeminiIntegrationEnabled());
+  source->AddString("geminiUrl", features::kBocaGeminiUrl.Get());
+  source->AddString("geminiGuidedLearningUrl",
+                    features::kBocaGeminiGuidedLearningUrl.Get());
+}
+
 }  // namespace
 
-BocaUI::BocaUI(content::WebUI* web_ui,
-               std::unique_ptr<BocaUIDelegate> delegate,
-               BocaSessionManager* boca_session_manager,
-               bool is_producer)
+BocaUI::BocaUI(
+    content::WebUI* web_ui,
+    const ApplicationLocaleStorage& application_locale_storage,
+    BocaSessionManager* boca_session_manager,
+    bool is_producer,
+    HostContentSettingsMap* host_content_settings_map,
+    OnTaskSystemWebAppManager* on_task_system_web_app_manager,
+    std::string gaia_id,
+    signin::IdentityManager* identity_manager,
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
+    PrefService* pref_service)
     : UntrustedWebUIController(web_ui),
       boca_session_manager_(CHECK_DEREF(boca_session_manager)),
       is_producer_(is_producer),
+      host_content_settings_map_(CHECK_DEREF(host_content_settings_map)),
+      on_task_system_web_app_manager_(on_task_system_web_app_manager),
+      gaia_id_(std::move(gaia_id)),
+      identity_manager_(CHECK_DEREF(identity_manager)),
+      url_loader_factory_(std::move(url_loader_factory)),
+      pref_service_(CHECK_DEREF(pref_service)),
       spotlight_service_(boca_session_manager) {
   content::BrowserContext* browser_context =
       web_ui->GetWebContents()->GetBrowserContext();
   content::WebUIDataSource* host_source =
-      CreateAndAddHostDataSource(browser_context, delegate.get());
+      CreateAndAddHostDataSource(browser_context);
 
   // Allow styles to include inline styling needed for Polymer elements and
   // the material 3 dynamic palette.
@@ -98,7 +182,8 @@ BocaUI::BocaUI(content::WebUI* web_ui,
                             ContentSettingsType::JAVASCRIPT,
                             ContentSettingsType::SOUND,
                         });
-  delegate->PopulateLoadTimeData(host_source);
+  PopulateLoadTimeData(browser_context, application_locale_storage,
+                       pref_service_.get(), host_source);
   host_source->UseStringsJs();
 
 #if !DCHECK_IS_ON()
@@ -124,19 +209,8 @@ void BocaUI::Create(
   content::BrowserContext* context =
       web_ui()->GetWebContents()->GetBrowserContext();
   CHECK(context);
-  // TODO: This is illegal dependency violating the restriction that any
-  // //chrome code must not be depended by the code outside of //chrome.
-  // We must fix this use.
-  auto* const profile = Profile::FromWebUI(web_ui());
-  auto content_settings_handler =
-      std::make_unique<ContentSettingsHandler>(profile);
-  auto* const boca_manager =
-      ash::BocaManagerFactory::GetInstance()->GetForProfile(profile);
-  auto* const on_task_session_manager = boca_manager->GetOnTaskSessionManager();
-  auto* const system_web_app_manager =
-      on_task_session_manager
-          ? on_task_session_manager->GetOnTaskSystemWebAppManager()
-          : nullptr;
+  auto content_settings_handler = std::make_unique<ContentSettingsHandler>(
+      &host_content_settings_map_.get());
   boca_session_manager_->OnAppWindowOpened();
   page_handler_impl_ = std::make_unique<BocaAppHandler>(
       std::move(page_handler), std::move(page), web_ui(),
@@ -144,11 +218,15 @@ void BocaUI::Create(
       std::make_unique<ClassroomPageHandlerImpl>(
           CHECK_DEREF(boca_session_manager_->session_client_impl())),
       std::move(content_settings_handler),
-      TabInfoCollector::Create(web_ui(), is_producer_), system_web_app_manager,
+      TabInfoCollector::Create(web_ui(), is_producer_),
+      on_task_system_web_app_manager_,
       boca_session_manager_->session_client_impl(),
-      boca_manager->GetGeminiStatusFetcher(), is_producer_);
+      std::make_unique<GeminiStatusFetcher>(gaia_id_, &identity_manager_.get(),
+                                            url_loader_factory_,
+                                            &pref_service_.get()),
+      is_producer_);
   page_handler_impl_->SetSpotlightService(&spotlight_service_);
-  if (ash::features::IsAnnotatorModeEnabled() && is_producer_) {
+  if (is_producer_) {
     ash::boca::util::EnableOrDisableMarkerMode(/*enable=*/true);
   }
 }

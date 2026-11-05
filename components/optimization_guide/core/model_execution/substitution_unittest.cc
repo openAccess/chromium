@@ -11,11 +11,11 @@
 #include "base/logging.h"
 #include "base/test/test.pb.h"
 #include "base/values.h"
+#include "components/optimization_guide/core/model_execution/configs/substitution_builder.h"
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_execution_proto_descriptors.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
 #include "components/optimization_guide/core/model_execution/test/request_builder.h"
-#include "components/optimization_guide/core/model_execution/test/substitution_builder.h"
 #include "components/optimization_guide/proto/descriptors.pb.h"
 #include "components/optimization_guide/proto/features/compose.pb.h"
 #include "components/optimization_guide/proto/features/example_for_testing.pb.h"
@@ -731,6 +731,34 @@ TEST_F(SubstitutionTest, OnDeviceInputToStringToolCall) {
   EXPECT_EQ(
       OnDeviceInputToString(*input),
       R"(<tool-call id=call-1 name=get_weather arguments={"city":"Paris"}>)");
+}
+
+TEST_F(SubstitutionTest, MergeClearsPendingFields) {
+  using RequestProto = ::optimization_guide::proto::ExampleForTestingRequest;
+
+  Substitutions substitutions = BlockCheck(
+      Always(StringArg(ProtoField({RequestProto::kStringValueFieldNumber}))));
+
+  MultimodalMessage request{proto::ExampleForTestingRequest()};
+  request.edit().MarkPending(RequestProto::kStringValueFieldNumber);
+
+  // Before merge, it blocks because the field is marked pending.
+  std::optional<SubstitutionResult> pending_result =
+      CreateSubstitutions(request.read(), substitutions);
+  ASSERT_TRUE(pending_result.has_value());
+  EXPECT_EQ(pending_result->ToString(), "waiting for...");
+
+  // Merge execution proto with the string field populated.
+  proto::ExampleForTestingRequest execution_proto;
+  execution_proto.set_string_value("execution_value");
+  MultimodalMessage merged = request.Merge(execution_proto);
+
+  // After merge, pending is cleared and the field is evaluated.
+  std::optional<SubstitutionResult> merged_result =
+      CreateSubstitutions(merged.read(), substitutions);
+  ASSERT_TRUE(merged_result.has_value());
+  EXPECT_EQ(merged_result->ToString(),
+            "waiting for...execution_value...complete");
 }
 
 }  // namespace

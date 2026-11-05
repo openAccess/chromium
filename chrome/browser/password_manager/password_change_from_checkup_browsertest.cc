@@ -8,6 +8,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
@@ -16,6 +17,7 @@
 #include "chrome/browser/actor/actor_keyed_service_factory.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_test_util.h"
+#include "chrome/browser/affiliations/affiliation_service_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
@@ -33,6 +35,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/actor/action_result.h"
 #include "components/actor/core/actor_features.h"
+#include "components/affiliations/core/browser/mock_affiliation_service.h"
 #include "components/autofill/core/common/autofill_debug_features.h"
 #include "components/autofill/core/common/autofill_test_util.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
@@ -69,6 +72,16 @@ std::unique_ptr<KeyedService> CreateMockOptimizationGuideService(
       testing::NiceMock<MockOptimizationGuideKeyedService>>();
 }
 
+std::unique_ptr<KeyedService> CreateTestAffiliationService(
+    content::BrowserContext* context) {
+  auto affiliation_service = std::make_unique<
+      testing::NiceMock<affiliations::MockAffiliationService>>();
+  ON_CALL(*affiliation_service, GetAffiliationsAndBranding)
+      .WillByDefault(base::test::RunOnceCallbackRepeatedly<1>(
+          affiliations::AffiliatedFacets(), true));
+  return affiliation_service;
+}
+
 }  // namespace
 
 class PasswordChangeFromCheckupDelegateBrowserTest
@@ -83,6 +96,8 @@ class PasswordChangeFromCheckupDelegateBrowserTest
 
   void SetUpBrowserContextKeyedServices(
       content::BrowserContext* context) override {
+    AffiliationServiceFactory::GetInstance()->SetTestingFactory(
+        context, base::BindRepeating(&CreateTestAffiliationService));
     OptimizationGuideKeyedServiceFactory::GetInstance()->SetTestingFactory(
         context, base::BindRepeating(&CreateMockOptimizationGuideService));
   }
@@ -153,9 +168,22 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeFromCheckupDelegateBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeFromCheckupDelegateBrowserTest,
-                       FormWaiterFindsFormFillsAndSubmitsThroughGlic) {
+                       PasswordChangeSucceedsThroughGlic) {
   content::WebContents* original_web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
+
+  base::MockRepeatingCallback<void(
+      PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState)>
+      state_change_callback;
+  EXPECT_CALL(state_change_callback, Run(testing::_))
+      .WillRepeatedly(testing::Return());
+  EXPECT_CALL(state_change_callback,
+              Run(PasswordChangeFromCheckupDelegate::
+                      PasswordAutomaticChangeState::kAttemptingSignIn));
+  EXPECT_CALL(
+      state_change_callback,
+      Run(PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState::
+              kPasswordChangedSuccessfully));
 
   auto delegate = std::make_unique<PasswordChangeFromCheckupDelegate>();
   GURL url = embedded_test_server()->GetURL(
@@ -165,49 +193,19 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeFromCheckupDelegateBrowserTest,
   observer.StartWatchingNewWebContents();
 
   delegate->StartPasswordChangeFlow(CreateStoredCredential(url),
-                                    original_web_contents->GetWeakPtr());
+                                    original_web_contents->GetWeakPtr(),
+                                    state_change_callback.Get());
 
   observer.Wait();
-
-  content::WebContents* new_web_contents =
-      browser()->tab_strip_model()->GetWebContentsAt(1);
-  ASSERT_TRUE(content::NavigateToURL(new_web_contents, url));
 
   auto* actuator = static_cast<GlicPasswordChangeActuator*>(
       delegate->get_actuator_for_testing());
   ASSERT_TRUE(actuator);
-  auto find_form_update = glic::mojom::ExperimentalTriggeringUpdate::New();
-  find_form_update->data = "CHANGE_PASSWORD_FORM_FOUND";
-  actuator->OnUpdate(std::move(find_form_update),
-                     glic::mojom::SubscriberObservationType::kUpdate);
 
-  // Wait for the form fields to be filled.
-  EXPECT_TRUE(base::test::RunUntil([&]() {
-    return content::EvalJs(
-               new_web_contents,
-               "document.getElementById('new_password_1').value !== ''")
-        .ExtractBool();
-  }));
-
-  std::string new_password_value =
-      content::EvalJs(new_web_contents,
-                      "document.getElementById('new_password_1').value")
-          .ExtractString();
-  EXPECT_EQ(base::UTF8ToUTF16(new_password_value),
-            delegate->generated_password());
-
-  // After the form is filled, the delegate transitions to Glic verification.
-  // We simulate Glic completing the verification task.
   auto update = glic::mojom::ExperimentalTriggeringUpdate::New();
   update->data = "PASSWORD_CHANGE_FINISHED_SUCCESSFULLY";
   actuator->OnUpdate(std::move(update),
                      glic::mojom::SubscriberObservationType::kUpdate);
-
-  // Wait for the new password to be saved.
-  WaitForPasswordStore();
-  CheckThatCredentialsStored(
-      /*username=*/"testuser",
-      /*password=*/base::UTF16ToUTF8(delegate->generated_password()));
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeFromCheckupDelegateBrowserTest,
@@ -237,63 +235,6 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeFromCheckupDelegateBrowserTest,
   ASSERT_TRUE(actuator);
   auto update = glic::mojom::ExperimentalTriggeringUpdate::New();
   update->type = glic::mojom::ExperimentalTriggeringUpdateType::kYieldToUser;
-  actuator->OnUpdate(std::move(update),
-                     glic::mojom::SubscriberObservationType::kUpdate);
-}
-
-IN_PROC_BROWSER_TEST_F(PasswordChangeFromCheckupDelegateBrowserTest,
-                       VerificationFlowStopsOnUserIntervention) {
-  content::WebContents* original_web_contents =
-      browser()->tab_strip_model()->GetActiveWebContents();
-
-  base::MockRepeatingCallback<void(
-      PasswordChangeFromCheckupDelegate::PasswordAutomaticChangeState)>
-      state_change_callback;
-  EXPECT_CALL(state_change_callback, Run(testing::_))
-      .WillRepeatedly(testing::Return());
-
-  auto delegate = std::make_unique<PasswordChangeFromCheckupDelegate>();
-  GURL url = embedded_test_server()->GetURL(
-      "example.com", "/password/update_form_empty_fields.html");
-
-  content::TestNavigationObserver observer(url);
-  observer.StartWatchingNewWebContents();
-
-  delegate->StartPasswordChangeFlow(CreateStoredCredential(url),
-                                    original_web_contents->GetWeakPtr(),
-                                    state_change_callback.Get());
-
-  observer.Wait();
-
-  content::WebContents* new_web_contents =
-      browser()->tab_strip_model()->GetWebContentsAt(1);
-  ASSERT_TRUE(content::NavigateToURL(new_web_contents, url));
-
-  auto* actuator = static_cast<GlicPasswordChangeActuator*>(
-      delegate->get_actuator_for_testing());
-  ASSERT_TRUE(actuator);
-  auto find_form_update = glic::mojom::ExperimentalTriggeringUpdate::New();
-  find_form_update->data = "CHANGE_PASSWORD_FORM_FOUND";
-  actuator->OnUpdate(std::move(find_form_update),
-                     glic::mojom::SubscriberObservationType::kUpdate);
-
-  // Wait for the form fields to be filled, which indicates the delegate has
-  // transitioned to the verification step.
-  EXPECT_TRUE(base::test::RunUntil([&]() {
-    return content::EvalJs(
-               new_web_contents,
-               "document.getElementById('new_password_1').value !== ''")
-        .ExtractBool();
-  }));
-
-  // Simulate Glic reporting user intervention during the verification step and
-  // verify that the flow transitions to the error state.
-  auto update = glic::mojom::ExperimentalTriggeringUpdate::New();
-  update->type = glic::mojom::ExperimentalTriggeringUpdateType::kYieldToUser;
-
-  EXPECT_CALL(state_change_callback,
-              Run(PasswordChangeFromCheckupDelegate::
-                      PasswordAutomaticChangeState::kError));
   actuator->OnUpdate(std::move(update),
                      glic::mojom::SubscriberObservationType::kUpdate);
 }

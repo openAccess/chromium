@@ -4,6 +4,7 @@
 
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
 
+#include "base/memory/scoped_refptr.h"
 #include "base/notimplemented.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/safe_browsing/chrome_safe_browsing_blocking_page_factory.h"
@@ -14,9 +15,9 @@
 #include "components/safe_browsing/content/browser/ui_manager.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
 #include "components/safe_browsing/core/browser/db/test_database_manager.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_config.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
 #include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
@@ -39,12 +40,6 @@ TestSafeBrowsingService::TestSafeBrowsingService()
 }
 
 TestSafeBrowsingService::~TestSafeBrowsingService() = default;
-
-V4ProtocolConfig TestSafeBrowsingService::GetV4ProtocolConfig() const {
-  if (v4_protocol_config_)
-    return *v4_protocol_config_;
-  return SafeBrowsingService::GetV4ProtocolConfig();
-}
 
 void TestSafeBrowsingService::UseSBLocalDatabaseManager() {
   use_sb_local_db_manager_ = true;
@@ -125,10 +120,6 @@ TestSafeBrowsingService::database_manager() const {
   return SafeBrowsingService::database_manager();
 }
 
-void TestSafeBrowsingService::SetV4ProtocolConfig(
-    V4ProtocolConfig* v4_protocol_config) {
-  v4_protocol_config_.reset(v4_protocol_config);
-}
 // ServicesDelegate::ServicesCreator:
 bool TestSafeBrowsingService::CanCreateDatabaseManager() {
   return !use_sb_local_db_manager_;
@@ -142,10 +133,11 @@ bool TestSafeBrowsingService::CanCreateIncidentReportingService() {
   return true;
 }
 
-SafeBrowsingDatabaseManager* TestSafeBrowsingService::CreateDatabaseManager() {
+scoped_refptr<SafeBrowsingDatabaseManager>
+TestSafeBrowsingService::CreateDatabaseManager() {
   DCHECK(!use_sb_local_db_manager_);
 #if BUILDFLAG(FULL_SAFE_BROWSING)
-  return new TestSafeBrowsingDatabaseManager(
+  return base::MakeRefCounted<TestSafeBrowsingDatabaseManager>(
       content::GetUIThreadTaskRunner({}));
 #else
   NOTIMPLEMENTED();
@@ -212,8 +204,8 @@ void TestSafeBrowsingServiceFactory::SetTestUIManager(
 }
 
 void TestSafeBrowsingServiceFactory::SetTestDatabaseManager(
-    TestSafeBrowsingDatabaseManager* database_manager) {
-  test_database_manager_ = database_manager;
+    scoped_refptr<TestSafeBrowsingDatabaseManager> database_manager) {
+  test_database_manager_ = std::move(database_manager);
 }
 void TestSafeBrowsingServiceFactory::UseSBLocalDatabaseManager() {
   use_sb_local_db_manager_ = true;

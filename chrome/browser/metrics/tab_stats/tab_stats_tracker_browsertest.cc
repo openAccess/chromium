@@ -20,7 +20,6 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/web_contents_tester.h"
 #include "media/base/media_switches.h"
@@ -41,6 +40,7 @@
 #else
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/rect.h"
@@ -412,6 +412,126 @@ IN_PROC_BROWSER_TEST_F(TabStatsTrackerBrowserTest,
   tab_stats_tracker_->reporting_delegate_for_testing()
       ->ReportTabDuplicateMetrics(false);
   EnsureTabDuplicateHistogramsMatchExpectations(expected_histograms);
+}
+
+IN_PROC_BROWSER_TEST_F(TabStatsTrackerBrowserTest,
+                       HeartbeatWindowAndTabCount2Metrics) {
+  ASSERT_TRUE(tab_stats_tracker_ != nullptr);
+  using UmaStatsReportingDelegate = TabStatsTracker::UmaStatsReportingDelegate;
+
+  // Initial state: 1 window, 1 tab.
+  {
+    base::HistogramTester histogram_tester;
+    tab_stats_tracker_->OnHeartbeatEvent();
+
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kWindowCountHistogramName, 1, 1);
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kWindowCount2HistogramName, 1, 1);
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kTabCountHistogramName, 1, 1);
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kTabCount2HistogramName, 1, 1);
+  }
+
+  // Add a second tab in the first window: 1 window, 2 tabs.
+  ASSERT_TRUE(AddTabToTabStrip(tab_strip()));
+  size_t expected_tabs_in_first_window = 2;
+  {
+    base::HistogramTester histogram_tester;
+    tab_stats_tracker_->OnHeartbeatEvent();
+
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kWindowCount2HistogramName, 1, 1);
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kTabCount2HistogramName,
+        expected_tabs_in_first_window, 1);
+  }
+
+#if BUILDFLAG(IS_ANDROID)
+  // Open a real Incognito tab in the live ChromeTabbedActivity window. That
+  // instantiates the window's Incognito TabModel alongside its regular
+  // TabModel, inflating legacy `Tabs.WindowCount` to 2 while
+  // `Tabs.WindowCount2` deduplicates both models to 1 physical window via real
+  // `BrowserWindowInterface` / `WindowAndroid` wiring.
+  Profile* otr_profile =
+      tab_strip().GetProfile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+  content::WebContents::CreateParams otr_params(otr_profile);
+  otr_params.initially_hidden = true;
+  std::unique_ptr<content::WebContents> otr_contents =
+      content::WebContents::Create(otr_params);
+  content::WebContents* raw_otr_contents = otr_contents.get();
+  ASSERT_NE(
+      tab_strip().tab_model()->CreateTab(
+          /*parent=*/nullptr, std::move(otr_contents), TabModel::kInvalidIndex,
+          TabModel::TabLaunchType::FROM_CHROME_UI,
+          /*should_pin=*/false),
+      nullptr);
+  NavigateNewTabToUrl(raw_otr_contents, GURL("about:blank"));
+  ++expected_tabs_in_first_window;
+
+  {
+    base::HistogramTester histogram_tester;
+    tab_stats_tracker_->OnHeartbeatEvent();
+
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kWindowCountHistogramName, 2, 1);
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kWindowCount2HistogramName, 1, 1);
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kTabCount2HistogramName,
+        expected_tabs_in_first_window, 1);
+  }
+
+  // Close all tabs in the active regular `TabModel` while the Incognito
+  // `TabModel` still has 1 tab. Because the active regular `TabModel` now has 0
+  // `WebContents`, deduplicating it with the Incognito `TabModel` (instead of
+  // counting it as an unassociated active window) requires the primary
+  // `SessionID` -> `BrowserWindowInterface` lookup.
+  tab_strip().CloseTabAtForTesting(1);
+  tab_strip().CloseTabAtForTesting(0);
+  expected_tabs_in_first_window = 1;
+  {
+    base::HistogramTester histogram_tester;
+    tab_stats_tracker_->OnHeartbeatEvent();
+
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kWindowCountHistogramName, 2, 1);
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kWindowCount2HistogramName, 1, 1);
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kTabCount2HistogramName,
+        expected_tabs_in_first_window, 1);
+  }
+#endif
+
+  // Open a second window (starts with 1 tab): 2 active windows.
+  std::unique_ptr<TabStripInterface> second_window =
+      CreateTabStripInProfile(tab_strip().GetProfile());
+  ASSERT_TRUE(second_window);
+  {
+    base::HistogramTester histogram_tester;
+    tab_stats_tracker_->OnHeartbeatEvent();
+
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kWindowCount2HistogramName, 2, 1);
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kTabCount2HistogramName,
+        expected_tabs_in_first_window + 1, 1);
+  }
+
+  // Close the second window: back to 1 active window.
+  CloseTabStrip(std::move(second_window));
+  {
+    base::HistogramTester histogram_tester;
+    tab_stats_tracker_->OnHeartbeatEvent();
+
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kWindowCount2HistogramName, 1, 1);
+    histogram_tester.ExpectUniqueSample(
+        UmaStatsReportingDelegate::kTabCount2HistogramName,
+        expected_tabs_in_first_window, 1);
+  }
 }
 
 // TODO(crbug.com/449230856): Consistently failing on Android.
@@ -856,9 +976,6 @@ class TabStatsTrackerSubFrameBrowserTest : public TabStatsTrackerBrowserTest {
     ASSERT_TRUE(embedded_test_server()->Start());
     TabStatsTrackerBrowserTest::SetUpOnMainThread();
   }
-
- protected:
-  content::test::FencedFrameTestHelper fenced_frame_helper_;
 };
 
 // TODO(crbug.com/532509057): Fix the flakiness on Android and re-enable the
@@ -898,15 +1015,6 @@ IN_PROC_BROWSER_TEST_F(TabStatsTrackerSubFrameBrowserTest,
                          "document.body.appendChild(iframe);",
                          embedded_test_server()->GetURL("/title1.html"))));
   WaitForLoadStop(GetWebContents());
-  ::testing::Mock::VerifyAndClear(&mock_observer);
-
-  // Create a fenced frame and navigate inside the fenced frame.
-  EXPECT_CALL(mock_observer, OnPrimaryMainFrameNavigationCommitted(_)).Times(0);
-  content::RenderFrameHost* fenced_frame_host =
-      fenced_frame_helper_.CreateFencedFrame(
-          GetWebContents()->GetPrimaryMainFrame(),
-          embedded_test_server()->GetURL("/fenced_frames/title1.html"));
-  ASSERT_NE(nullptr, fenced_frame_host);
   ::testing::Mock::VerifyAndClear(&mock_observer);
 
   tab_stats_tracker_->RemoveObserver(&mock_observer);

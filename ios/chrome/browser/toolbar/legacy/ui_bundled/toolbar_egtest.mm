@@ -9,7 +9,6 @@
 #import "ios/chrome/browser/omnibox/eg_tests/omnibox_matchers.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_constants.h"
 #import "ios/chrome/browser/popup_menu/public/popup_menu_constants.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/start_surface/ui_bundled/start_surface_features.h"
 #import "ios/chrome/browser/toolbar/legacy/ui_bundled/public/toolbar_constants.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -18,6 +17,7 @@
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
+#import "ios/testing/test_tag_registry.h"
 #import "net/test/embedded_test_server/default_handlers.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
 #import "ui/base/l10n/l10n_util_mac.h"
@@ -92,6 +92,7 @@ void WaitForEmpyOmnibox() {
 }
 
 // Verifies opening a new tab from the tools menu.
+TAG_SMOKE_TEST(LegacyToolbarTestCase, testNewTabFromMenu);
 - (void)testNewTabFromMenu {
   [ChromeEarlGrey waitForMainTabCount:1];
 
@@ -304,6 +305,7 @@ void WaitForEmpyOmnibox() {
 }
 
 // Verifies that the clear text button clears any text in the omnibox.
+TAG_SMOKE_TEST(LegacyToolbarTestCase, testOmniboxClearTextButton);
 - (void)testOmniboxClearTextButton {
   const GURL URL = self.testServer->GetURL("/echo");
 
@@ -408,38 +410,6 @@ void WaitForEmpyOmnibox() {
   GREYAssert(base::test::ios::WaitUntilConditionOrTimeout(
                  base::test::ios::kWaitForUIElementTimeout, condition),
              @"NTP view not visible");
-}
-
-// Tests typing in the omnibox using the keyboard accessory view.
-- (void)testToolbarOmniboxKeyboardAccessoryView {
-  if ([ChromeEarlGrey isComposeboxIOSEnabled]) {
-    EARL_GREY_TEST_SKIPPED(@"Test is not relevant when composebox is enabled "
-                           @"as the accessory view is disabled.");
-  }
-  // Select the omnibox to get the keyboard up.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::FakeOmnibox()]
-      performAction:grey_tap()];
-  [ChromeEarlGrey
-      waitForSufficientlyVisibleElementWithMatcher:chrome_test_util::Omnibox()];
-
-  // Tap the "/" keyboard accessory button.
-  id<GREYMatcher> slashButtonMatcher = grey_allOf(
-      grey_accessibilityLabel(@"/"), grey_kindOfClass([UIButton class]), nil);
-
-  [[EarlGrey selectElementWithMatcher:slashButtonMatcher]
-      performAction:grey_tap()];
-
-  // Tap the ".com" keyboard accessory button.
-  id<GREYMatcher> dotComButtonMatcher =
-      grey_allOf(grey_accessibilityLabel(@".com"),
-                 grey_kindOfClass([UIButton class]), nil);
-
-  [[EarlGrey selectElementWithMatcher:dotComButtonMatcher]
-      performAction:grey_tap()];
-
-  // Verify that the omnibox contains "/.com"
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::OmniboxText("/.com")]
-      assertWithMatcher:grey_notNil()];
 }
 
 @end

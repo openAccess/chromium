@@ -38,6 +38,7 @@ import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.AnchorSide;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.HeightType;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs.SideUiSize;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.UiUpdateRequest;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.LocalizationUtils;
@@ -61,9 +62,9 @@ public class FindToolbarTabletUnitTest {
     @Mock private TabModelSelector mTabModelSelector;
     @Mock private Tab mTab;
     @Mock private WebContents mWebContents;
-    @Mock private View mAnchorView;
     @Mock private WindowAndroid mWindowAndroid;
 
+    private View mAnchorView;
     private FindToolbarTablet mFindToolbarTablet;
     private int mBaseMarginEndPx;
     private int mYInsetPx;
@@ -74,6 +75,7 @@ public class FindToolbarTabletUnitTest {
 
         Activity activity = Robolectric.buildActivity(Activity.class).get();
         activity.setTheme(R.style.Theme_BrowserUI_DayNight);
+        mAnchorView = new View(activity);
 
         mFindToolbarTablet =
                 (FindToolbarTablet)
@@ -105,36 +107,39 @@ public class FindToolbarTabletUnitTest {
     // Horizontal Margin (Margin End) Tests
 
     @Test
-    public void testOnSideUiSpecsChanged_rightAnchorWebContentsHeightType_ltr() {
+    public void testOnSideUiSpecsChangeStarted_rightAnchorWebContentsHeightType_ltr() {
         SideUiSpecs specs = createSideUiSpecs(SIDE_UI_WIDTH_PX, HeightType.WEB_CONTENTS);
 
-        mFindToolbarTablet.onSideUiSpecsChanged(specs);
+        mFindToolbarTablet.onSideUiSpecsChangeStarted(
+                specs, UiUpdateRequest.getRequestForTesting(/* suppressAnimations= */ true));
 
         MarginLayoutParams lp = (MarginLayoutParams) mFindToolbarTablet.getLayoutParams();
         assertEquals(mBaseMarginEndPx + SIDE_UI_WIDTH_PX, lp.getMarginEnd());
     }
 
     @Test
-    public void testOnSideUiSpecsChanged_leftAnchorWebContentsHeightType_rtl() {
+    public void testOnSideUiSpecsChangeStarted_leftAnchorWebContentsHeightType_rtl() {
         LocalizationUtils.setRtlForTesting(true);
         Map<@AnchorSide Integer, SideUiSize> map = new ArrayMap<>();
         map.put(AnchorSide.LEFT, new SideUiSize(SIDE_UI_WIDTH_PX, HeightType.WEB_CONTENTS));
         SideUiSpecs specs = new SideUiSpecs(map);
 
-        mFindToolbarTablet.onSideUiSpecsChanged(specs);
+        mFindToolbarTablet.onSideUiSpecsChangeStarted(
+                specs, UiUpdateRequest.getRequestForTesting(/* suppressAnimations= */ true));
 
         MarginLayoutParams lp = (MarginLayoutParams) mFindToolbarTablet.getLayoutParams();
         assertEquals(mBaseMarginEndPx + SIDE_UI_WIDTH_PX, lp.getMarginEnd());
     }
 
     @Test
-    public void testOnSideUiSpecsChanged_bothSidesWebContentsHeightType_ltr() {
+    public void testOnSideUiSpecsChangeStarted_bothSidesWebContentsHeightType_ltr() {
         Map<@AnchorSide Integer, SideUiSize> map = new ArrayMap<>();
         map.put(AnchorSide.LEFT, new SideUiSize(200, HeightType.WEB_CONTENTS));
         map.put(AnchorSide.RIGHT, new SideUiSize(SIDE_UI_WIDTH_PX, HeightType.WEB_CONTENTS));
         SideUiSpecs specs = new SideUiSpecs(map);
 
-        mFindToolbarTablet.onSideUiSpecsChanged(specs);
+        mFindToolbarTablet.onSideUiSpecsChangeStarted(
+                specs, UiUpdateRequest.getRequestForTesting(/* suppressAnimations= */ true));
 
         MarginLayoutParams lp = (MarginLayoutParams) mFindToolbarTablet.getLayoutParams();
         // In LTR, only the right-anchored side UI contributes to marginEnd.
@@ -142,11 +147,12 @@ public class FindToolbarTabletUnitTest {
     }
 
     @Test
-    public void testOnSideUiSpecsChanged_rightAnchorWebContentsHeightType_rtl() {
+    public void testOnSideUiSpecsChangeStarted_rightAnchorWebContentsHeightType_rtl() {
         LocalizationUtils.setRtlForTesting(true);
         SideUiSpecs specs = createSideUiSpecs(SIDE_UI_WIDTH_PX, HeightType.WEB_CONTENTS);
 
-        mFindToolbarTablet.onSideUiSpecsChanged(specs);
+        mFindToolbarTablet.onSideUiSpecsChangeStarted(
+                specs, UiUpdateRequest.getRequestForTesting(/* suppressAnimations= */ true));
 
         MarginLayoutParams lp = (MarginLayoutParams) mFindToolbarTablet.getLayoutParams();
         // In RTL, the end edge is on the left, so a right-anchored panel does not add marginEnd.
@@ -154,10 +160,11 @@ public class FindToolbarTabletUnitTest {
     }
 
     @Test
-    public void testOnSideUiSpecsChanged_toolbarHeightType() {
+    public void testOnSideUiSpecsChangeStarted_toolbarHeightType() {
         SideUiSpecs specs = createSideUiSpecs(SIDE_UI_WIDTH_PX, HeightType.TOOLBAR);
 
-        mFindToolbarTablet.onSideUiSpecsChanged(specs);
+        mFindToolbarTablet.onSideUiSpecsChangeStarted(
+                specs, UiUpdateRequest.getRequestForTesting(/* suppressAnimations= */ true));
 
         // Toolbar height type should NOT add margin to FindToolbarTablet because
         // ToolbarControlContainer already offsets itself.
@@ -166,10 +173,11 @@ public class FindToolbarTabletUnitTest {
     }
 
     @Test
-    public void testOnSideUiSpecsChanged_closed() {
+    public void testOnSideUiSpecsChangeStarted_closed() {
         SideUiSpecs specs = createSideUiSpecs(0, HeightType.NOT_APPLICABLE);
 
-        mFindToolbarTablet.onSideUiSpecsChanged(specs);
+        mFindToolbarTablet.onSideUiSpecsChangeStarted(
+                specs, UiUpdateRequest.getRequestForTesting(/* suppressAnimations= */ true));
 
         MarginLayoutParams lp = (MarginLayoutParams) mFindToolbarTablet.getLayoutParams();
         assertEquals(mBaseMarginEndPx, lp.getMarginEnd());
@@ -179,7 +187,7 @@ public class FindToolbarTabletUnitTest {
 
     @Test
     public void testTopMargin_withHorizontalTabStrip() {
-        when(mAnchorView.getBottom()).thenReturn(HTS_TOOLBAR_BOTTOM_PX);
+        mAnchorView.layout(0, 0, 0, HTS_TOOLBAR_BOTTOM_PX);
         mFindToolbarTablet.setAnchorView(mAnchorView);
         mFindToolbarTablet.setVisibility(View.GONE);
         mFindToolbarTablet.handleActivate();
@@ -190,7 +198,7 @@ public class FindToolbarTabletUnitTest {
 
     @Test
     public void testTopMargin_withVerticalTabs() {
-        when(mAnchorView.getBottom()).thenReturn(VT_TOOLBAR_BOTTOM_PX);
+        mAnchorView.layout(0, 0, 0, VT_TOOLBAR_BOTTOM_PX);
         mFindToolbarTablet.setAnchorView(mAnchorView);
         mFindToolbarTablet.setVisibility(View.GONE);
         mFindToolbarTablet.handleActivate();
@@ -202,14 +210,15 @@ public class FindToolbarTabletUnitTest {
     @Test
     public void testTopMarginAndSideUi_withVerticalTabs() {
         // Vertical Tabs suppresses HTS (height = 56px) and opens on LEFT anchor side in LTR.
-        when(mAnchorView.getBottom()).thenReturn(VT_TOOLBAR_BOTTOM_PX);
+        mAnchorView.layout(0, 0, 0, VT_TOOLBAR_BOTTOM_PX);
         mFindToolbarTablet.setAnchorView(mAnchorView);
 
         Map<@AnchorSide Integer, SideUiSize> map = new ArrayMap<>();
         map.put(AnchorSide.LEFT, new SideUiSize(SIDE_UI_WIDTH_PX, HeightType.WEB_CONTENTS));
         SideUiSpecs vtSpecs = new SideUiSpecs(map);
 
-        mFindToolbarTablet.onSideUiSpecsChanged(vtSpecs);
+        mFindToolbarTablet.onSideUiSpecsChangeStarted(
+                vtSpecs, UiUpdateRequest.getRequestForTesting(/* suppressAnimations= */ true));
         mFindToolbarTablet.setVisibility(View.GONE);
         mFindToolbarTablet.handleActivate();
 
@@ -236,7 +245,10 @@ public class FindToolbarTabletUnitTest {
         mFindToolbarTablet.setVisibility(View.VISIBLE);
         SideUiSpecs specs = createSideUiSpecs(SIDE_UI_WIDTH_PX, HeightType.WEB_CONTENTS);
 
-        Transition transition = mFindToolbarTablet.onPreSideUiSpecsChange(specs);
+        Transition transition =
+                mFindToolbarTablet.onPreSideUiSpecsChange(
+                        specs,
+                        UiUpdateRequest.getRequestForTesting(/* suppressAnimations= */ true));
 
         assertNotNull(transition);
         assertEquals(ChangeBounds.class, transition.getClass());
@@ -247,7 +259,10 @@ public class FindToolbarTabletUnitTest {
         mFindToolbarTablet.setVisibility(View.GONE);
         SideUiSpecs specs = createSideUiSpecs(SIDE_UI_WIDTH_PX, HeightType.WEB_CONTENTS);
 
-        Transition transition = mFindToolbarTablet.onPreSideUiSpecsChange(specs);
+        Transition transition =
+                mFindToolbarTablet.onPreSideUiSpecsChange(
+                        specs,
+                        UiUpdateRequest.getRequestForTesting(/* suppressAnimations= */ true));
 
         assertNull(transition);
     }

@@ -60,6 +60,7 @@ void DeviceAuthorizationKeysFetcher::FetchDeviceAuthorizationKeys(
           data:
             "OAuth2 access token"
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "chromesyncpasswords-pa.googleapis.com"
           internal {
             contacts {
               email: "rgod@google.com"
@@ -102,6 +103,10 @@ void DeviceAuthorizationKeysFetcher::FetchDeviceAuthorizationKeys(
   endpoint_fetcher_->Fetch(
       base::BindOnce(&DeviceAuthorizationKeysFetcher::OnFetchCompleted,
                      base::Unretained(this), std::move(callback)));
+}
+
+void DeviceAuthorizationKeysFetcher::Cancel() {
+  endpoint_fetcher_.reset();
 }
 
 void DeviceAuthorizationKeysFetcher::OnFetchCompleted(

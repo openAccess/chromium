@@ -4,11 +4,13 @@
 
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_deletion_dialog_controller.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_menu_model.h"
@@ -22,6 +24,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/test/browser_test.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -530,22 +533,45 @@ IN_PROC_BROWSER_TEST_F(
         EXPECT_TRUE(group.has_value());
 
         // Focus on the group, which should override the tab strip color.
-        browser()->GetTabStripModel()->SetFocusedGroup(group.value());
+        browser()->GetTabStripModel()->EnterFocusMode(group.value());
         EXPECT_TRUE(CheckBrowserHasColorOverride());
 
         // Unset focused group, which should remove the override.
-        browser()->GetTabStripModel()->SetFocusedGroup(std::nullopt);
+        browser()->GetTabStripModel()->ExitFocusMode();
         EXPECT_FALSE(CheckBrowserHasColorOverride());
 
         // Focus on the group again, which should override the tab strip color.
-        browser()->GetTabStripModel()->SetFocusedGroup(group.value());
+        browser()->GetTabStripModel()->EnterFocusMode(group.value());
         EXPECT_TRUE(CheckBrowserHasColorOverride());
       }));
 }
 
 IN_PROC_BROWSER_TEST_F(
     TabStripCollectionControllerTabGroupFocusingInteractiveUiTest,
+    EphemeralGroupDoesNotUpdateTheme) {
+  RunTestSequence(
+      // Verify Vertical Tabs is showing.
+      WaitForShow(kNewTabButtonElementId),
+      // Create a second tab.
+      EnsurePresent(kNewTabButtonElementId),
+      PressButton(kNewTabButtonElementId,
+                  ui::test::InteractionTestUtil::InputType::kDontCare),
+      Do([this]() {
+        EXPECT_FALSE(CheckBrowserHasColorOverride());
+        // Focus on an ephemeral group, which should not override the color.
+        browser()->GetTabStripModel()->EnterFocusMode({0, 1});
+        EXPECT_FALSE(CheckBrowserHasColorOverride());
+
+        // Unset focused group, which should remain without color override.
+        browser()->GetTabStripModel()->ExitFocusMode();
+        EXPECT_FALSE(CheckBrowserHasColorOverride());
+      }));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    TabStripCollectionControllerTabGroupFocusingInteractiveUiTest,
     UnfocusButtonShowsWhenGroupFocused) {
+  base::HistogramTester histogram_tester;
   RunTestSequence(
       // Verify Vertical Tabs is showing.
       WaitForShow(kNewTabButtonElementId),
@@ -560,13 +586,18 @@ IN_PROC_BROWSER_TEST_F(
         EXPECT_TRUE(group.has_value());
 
         // Focus on the group, which should show the unfocus button.
-        browser()->GetTabStripModel()->SetFocusedGroup(group.value());
+        browser()->GetTabStripModel()->EnterFocusMode(group.value());
       }),
-      WaitForShow(kUnfocusTabGroupButtonElementId), Do([this]() {
-        // Unset focused group, which should hide the button.
-        browser()->GetTabStripModel()->SetFocusedGroup(std::nullopt);
-      }),
-      WaitForHide(kUnfocusTabGroupButtonElementId));
+      WaitForShow(kUnfocusTabGroupButtonElementId),
+      PressButton(kUnfocusTabGroupButtonElementId),
+      WaitForHide(kUnfocusTabGroupButtonElementId),
+      Do([this, &histogram_tester]() {
+        EXPECT_EQ(browser()->GetTabStripModel()->GetFocusedGroup(),
+                  std::nullopt);
+        histogram_tester.ExpectUniqueSample(
+            "TabGroups.Focus.ExitReason",
+            TabGroupFocusExitReason::kHeaderUnfocusButton, 1);
+      }));
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -607,7 +638,7 @@ IN_PROC_BROWSER_TEST_F(
                     EXPECT_EQ(model->active_index(), 0);
 
                     // 2. Enter Focus Mode on group 1.
-                    model->SetFocusedGroup(group1);
+                    model->EnterFocusMode(group1);
                     EXPECT_EQ(model->GetFocusedGroup(), group1);
 
                     // FocusNextTabGroup should cycle focus.
@@ -629,6 +660,26 @@ IN_PROC_BROWSER_TEST_F(
 
                     chrome::FocusPreviousTabGroup(browser());
                     EXPECT_EQ(model->GetFocusedGroup(), group1);
+                  }));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    TabStripCollectionControllerTabGroupFocusingInteractiveUiTest,
+    FocusNextAndPreviousTabGroup_EphemeralGroup) {
+  RunTestSequence(WaitForShow(kNewTabButtonElementId),
+                  PressButton(kNewTabButtonElementId), Do([&]() {
+                    TabStripModel* model = browser()->GetTabStripModel();
+                    ASSERT_EQ(model->count(), 2);
+                    model->AddToNewGroup({0});
+                    tab_groups::TabGroupId ephemeral_group =
+                        model->EnterFocusMode({1});
+                    EXPECT_EQ(model->GetFocusedGroup(), ephemeral_group);
+
+                    chrome::FocusNextTabGroup(browser());
+                    EXPECT_EQ(model->GetFocusedGroup(), ephemeral_group);
+
+                    chrome::FocusPreviousTabGroup(browser());
+                    EXPECT_EQ(model->GetFocusedGroup(), ephemeral_group);
                   }));
 }
 

@@ -11,13 +11,13 @@
 
 #include "base/containers/span.h"
 #include "base/memory/scoped_refptr.h"
-#include "media/gpu/windows/d3d11_status.h"
+#include "media/gpu/windows/d3d_status.h"
 #include "media/gpu/windows/scoped_d3d_buffers.h"
 
 namespace media {
 
 class MediaLog;
-class D3D11PictureBuffer;
+class D3DPictureBuffer;
 
 class D3DVideoDecoderWrapper {
  public:
@@ -40,11 +40,11 @@ class D3DVideoDecoderWrapper {
 
   // Set the initialized picture buffers that the D3DVideoDecoder class is
   // using.
-  virtual D3D11Status SetPictureBuffers(
-      base::span<scoped_refptr<D3D11PictureBuffer>> picture_buffers) = 0;
+  virtual D3DStatus SetPictureBuffers(
+      base::span<scoped_refptr<D3DPictureBuffer>> picture_buffers) = 0;
 
   // Start a frame and wait for the hardware to be ready for decoding.
-  virtual bool WaitForFrameBegins(D3D11PictureBuffer* output_picture) = 0;
+  virtual bool WaitForFrameBegins(D3DPictureBuffer* output_picture) = 0;
 
   // Returns whether a buffer of the |type| has already been done in this frame.
   // If so, re-copying same data could be avoided.

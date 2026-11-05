@@ -16,6 +16,7 @@ const char kActiveStylesheetsUpdate[] = "ActiveStylesheetsUpdate";
 const char kAffectedByHas[] = "Affected by :has()";
 const char kAnimation[] = "Animation";
 const char kAttribute[] = "Attribute";
+const char kBodyColorChange[] = "BodyColorChange";
 const char kConditionalBackdrop[] = "Conditional ::backdrop";
 const char kControl[] = "Control";
 const char kControlValue[] = "ControlValue";
@@ -82,7 +83,7 @@ DEFINE_GLOBAL(, AtomicString, g_patching);
 DEFINE_GLOBAL(, AtomicString, g_unresolved);
 
 void Init() {
-  DCHECK(IsMainThread());
+  CHECK(IsMainThread());
 
   new (base::NotNullTag::kNotNull, (void*)&g_active) AtomicString(":active");
   new (base::NotNullTag::kNotNull, (void*)&g_active_view_transition)

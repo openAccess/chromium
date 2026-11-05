@@ -6,6 +6,7 @@
 
 #include <optional>
 
+#include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/token.h"
@@ -14,10 +15,12 @@
 #include "build/build_config.h"
 #include "media/capture/mojom/video_capture_types.mojom-blink.h"
 #include "media/capture/video_capture_types.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/web/modules/mediastream/media_stream_video_source.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/modules/mediastream/crop_target.h"
+#include "third_party/blink/renderer/modules/mediastream/media_stream_video_track.h"
 #include "third_party/blink/renderer/modules/mediastream/restriction_target.h"
 #include "third_party/blink/renderer/modules/mediastream/sub_capture_target.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
@@ -215,8 +218,8 @@ BrowserCaptureMediaStreamTrack::ApplySubCaptureTarget(
 
   MediaStreamVideoSource* const native_source =
       MediaStreamVideoSource::GetVideoSource(source);
-  MediaStreamTrackPlatform* const native_track =
-      MediaStreamTrackPlatform::GetTrack(WebMediaStreamTrack(component));
+  MediaStreamVideoTrack* const native_track =
+      MediaStreamVideoTrack::From(component);
   if (!native_source || !native_track) {
     resolver->Reject<DOMException>(
         MakeGarbageCollected<DOMException>(DOMExceptionCode::kUnknownError,
@@ -229,12 +232,16 @@ BrowserCaptureMediaStreamTrack::ApplySubCaptureTarget(
   // move the ownership of the Promises from this->pending_promises_ into
   // native_source.
   const std::optional<media::CaptureVersion> optional_capture_version =
-      native_source->GetNextCaptureVersion();
+      native_source->GetNextCaptureVersion(type);
   if (!optional_capture_version.has_value()) {
+    const char* error_message =
+        (type == media::mojom::SubCaptureTargetType::kCropTarget &&
+         base::FeatureList::IsEnabled(features::kRegionCaptureOfClonedTracks))
+            ? "Cannot apply crop target while a restriction target is active."
+            : "Can't change target while clones exist.";
     resolver->Reject<DOMException>(
-        MakeGarbageCollected<DOMException>(
-            DOMExceptionCode::kOperationError,
-            "Can't change target while clones exist."),
+        MakeGarbageCollected<DOMException>(DOMExceptionCode::kOperationError,
+                                           error_message),
         ApplySubCaptureTargetResult::kInvalidTarget);
     return promise;
   }
@@ -252,7 +259,7 @@ BrowserCaptureMediaStreamTrack::ApplySubCaptureTarget(
                WrapWeakPersistent(this), capture_version));
 
   native_source->ApplySubCaptureTarget(
-      type, token.value(), capture_version.sub_capture,
+      native_track, type, token.value(), capture_version.sub_capture,
       BindOnce(&BrowserCaptureMediaStreamTrack::OnResultFromBrowserProcess,
                WrapWeakPersistent(this), capture_version));
 

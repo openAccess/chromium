@@ -861,8 +861,7 @@ TEST_F(LayoutBoxTest, DelayedInvalidationLayoutViewScrolled) {
 
   // The background-image will be painted by the LayoutView. Get a reference to
   // it from there.
-  auto* background_image =
-      layout_view->StyleRef().BackgroundLayers().GetImage();
+  auto* background_image = layout_view->Style().BackgroundLayers().GetImage();
   ASSERT_TRUE(background_image);
   auto* image_resource_content = background_image->CachedImage();
   ASSERT_TRUE(image_resource_content);
@@ -1423,15 +1422,15 @@ TEST_F(LayoutBoxTest, GeometriesWithScrollbarsNonScrollable) {
     </div>
   )HTML");
 
-#define EXPECT_ZERO_SCROLL(box)                                            \
-  do {                                                                     \
-    EXPECT_EQ(PhysicalOffset(), box->ScrolledContentOffset());             \
-    const auto* scrollable_area = box->GetScrollableArea();                \
-    EXPECT_EQ(gfx::Vector2d(), scrollable_area->ScrollOffsetInt());        \
-    EXPECT_EQ(gfx::Point(), scrollable_area->ScrollOrigin());              \
-    EXPECT_EQ(gfx::PointF(), scrollable_area->ScrollPosition());           \
-    EXPECT_EQ(gfx::Vector2d(), scrollable_area->MaximumScrollOffsetInt()); \
-    EXPECT_EQ(gfx::Vector2d(), scrollable_area->MinimumScrollOffsetInt()); \
+#define EXPECT_ZERO_SCROLL(box)                                              \
+  do {                                                                       \
+    EXPECT_EQ(PhysicalOffset(), box->ScrolledContentOffset());               \
+    const auto* scrollable_area = box->GetScrollableArea();                  \
+    EXPECT_EQ(gfx::Vector2d(), scrollable_area->PixelSnappedScrollOffset()); \
+    EXPECT_EQ(gfx::Point(), scrollable_area->ScrollOrigin());                \
+    EXPECT_EQ(gfx::PointF(), scrollable_area->ScrollPosition());             \
+    EXPECT_EQ(gfx::Vector2d(), scrollable_area->MaximumScrollOffsetInt());   \
+    EXPECT_EQ(gfx::Vector2d(), scrollable_area->MinimumScrollOffsetInt());   \
   } while (false)
 
   const auto* normal = GetLayoutBoxByElementId("normal");
@@ -1525,7 +1524,7 @@ TEST_F(LayoutBoxTest, GeometriesWithScrollbarsScrollable) {
   const auto* scrollable_area = normal->GetScrollableArea();
   EXPECT_EQ(PhysicalOffset(), normal->ScrolledContentOffset());
   EXPECT_EQ(gfx::Vector2d(), normal->OriginAdjustmentForScrollbars());
-  EXPECT_EQ(gfx::Vector2d(), scrollable_area->ScrollOffsetInt());
+  EXPECT_EQ(gfx::Vector2d(), scrollable_area->PixelSnappedScrollOffset());
   EXPECT_EQ(PhysicalRect(50, 20, 2060, 1040), normal->ScrollableOverflowRect());
   EXPECT_EQ(gfx::Vector2d(1615, 716),
             scrollable_area->MaximumScrollOffsetInt());
@@ -1541,7 +1540,7 @@ TEST_F(LayoutBoxTest, GeometriesWithScrollbarsScrollable) {
   scrollable_area = vlr->GetScrollableArea();
   EXPECT_EQ(PhysicalOffset(), vlr->ScrolledContentOffset());
   EXPECT_EQ(gfx::Vector2d(), vlr->OriginAdjustmentForScrollbars());
-  EXPECT_EQ(gfx::Vector2d(), scrollable_area->ScrollOffsetInt());
+  EXPECT_EQ(gfx::Vector2d(), scrollable_area->PixelSnappedScrollOffset());
   EXPECT_EQ(PhysicalRect(50, 20, 2060, 1040), vlr->ScrollableOverflowRect());
   EXPECT_EQ(gfx::Vector2d(1615, 716),
             scrollable_area->MaximumScrollOffsetInt());
@@ -1557,7 +1556,7 @@ TEST_F(LayoutBoxTest, GeometriesWithScrollbarsScrollable) {
   scrollable_area = vrl->GetScrollableArea();
   EXPECT_EQ(PhysicalOffset(), vrl->ScrolledContentOffset());
   EXPECT_EQ(gfx::Vector2d(), vrl->OriginAdjustmentForScrollbars());
-  EXPECT_EQ(gfx::Vector2d(), scrollable_area->ScrollOffsetInt());
+  EXPECT_EQ(gfx::Vector2d(), scrollable_area->PixelSnappedScrollOffset());
   // Same as "vlr" except for flipping.
   EXPECT_EQ(PhysicalRect(-1565, 20, 2060, 1040), vrl->ScrollableOverflowRect());
   EXPECT_EQ(gfx::Vector2d(0, 716), scrollable_area->MaximumScrollOffsetInt());
@@ -1573,7 +1572,7 @@ TEST_F(LayoutBoxTest, GeometriesWithScrollbarsScrollable) {
   scrollable_area = rtl->GetScrollableArea();
   EXPECT_EQ(PhysicalOffset(), rtl->ScrolledContentOffset());
   EXPECT_EQ(gfx::Vector2d(15, 0), rtl->OriginAdjustmentForScrollbars());
-  EXPECT_EQ(gfx::Vector2d(), scrollable_area->ScrollOffsetInt());
+  EXPECT_EQ(gfx::Vector2d(), scrollable_area->PixelSnappedScrollOffset());
   EXPECT_EQ(PhysicalRect(-1550, 20, 2060, 1040), rtl->ScrollableOverflowRect());
   EXPECT_EQ(gfx::Vector2d(0, 716), scrollable_area->MaximumScrollOffsetInt());
   EXPECT_EQ(gfx::Vector2d(-1615, 0), scrollable_area->MinimumScrollOffsetInt());
@@ -1588,7 +1587,7 @@ TEST_F(LayoutBoxTest, GeometriesWithScrollbarsScrollable) {
   scrollable_area = rtl_vlr->GetScrollableArea();
   EXPECT_EQ(PhysicalOffset(), rtl_vlr->ScrolledContentOffset());
   EXPECT_EQ(gfx::Vector2d(), rtl_vlr->OriginAdjustmentForScrollbars());
-  EXPECT_EQ(gfx::Vector2d(), scrollable_area->ScrollOffsetInt());
+  EXPECT_EQ(gfx::Vector2d(), scrollable_area->PixelSnappedScrollOffset());
   EXPECT_EQ(PhysicalRect(50, -696, 2060, 1040),
             rtl_vlr->ScrollableOverflowRect());
   EXPECT_EQ(gfx::Vector2d(1615, 0), scrollable_area->MaximumScrollOffsetInt());
@@ -1604,7 +1603,7 @@ TEST_F(LayoutBoxTest, GeometriesWithScrollbarsScrollable) {
   scrollable_area = rtl_vrl->GetScrollableArea();
   EXPECT_EQ(PhysicalOffset(), rtl_vrl->ScrolledContentOffset());
   EXPECT_EQ(gfx::Vector2d(), rtl_vrl->OriginAdjustmentForScrollbars());
-  EXPECT_EQ(gfx::Vector2d(), scrollable_area->ScrollOffsetInt());
+  EXPECT_EQ(gfx::Vector2d(), scrollable_area->PixelSnappedScrollOffset());
   // Same as "vlr" except for flipping.
   EXPECT_EQ(PhysicalRect(-1565, -696, 2060, 1040),
             rtl_vrl->ScrollableOverflowRect());

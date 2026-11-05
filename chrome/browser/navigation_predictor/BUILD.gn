@@ -14,8 +14,6 @@ source_set("navigation_predictor") {
     "navigation_predictor_keyed_service_factory.h",
     "navigation_predictor_metrics_document_data.h",
     "navigation_predictor_preconnect_client.h",
-    "preloading_model_keyed_service.h",
-    "preloading_model_keyed_service_factory.h",
     "search_engine_preconnector.h",
     "search_engine_preconnector_keyed_service_factory.h",
   ]
@@ -45,20 +43,12 @@ source_set("impl") {
     "navigation_predictor_keyed_service_factory.cc",
     "navigation_predictor_metrics_document_data.cc",
     "navigation_predictor_preconnect_client.cc",
-    "preloading_model_executor.cc",
-    "preloading_model_executor.h",
-    "preloading_model_handler.cc",
-    "preloading_model_handler.h",
-    "preloading_model_keyed_service.cc",
-    "preloading_model_keyed_service_factory.cc",
     "search_engine_preconnector.cc",
     "search_engine_preconnector_keyed_service_factory.cc",
   ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
   deps = [
     ":navigation_predictor",
     "//chrome/browser/battery",
-    "//chrome/browser/optimization_guide",
     "//chrome/browser/predictors",
     "//chrome/browser/preloading",
     "//chrome/browser/preloading:prefs",
@@ -83,15 +73,12 @@ if (!is_android) {
       "anchor_element_preloader_browsertest.cc",
       "navigation_predictor_browsertest.cc",
       "navigation_predictor_preconnect_client_browsertest.cc",
-      "preloading_model_keyed_service_browsertest.cc",
       "search_engine_preconnector_browsertest.cc",
     ]
-    data = [ "test/preloading_heuristics.tflite" ]
     deps = [
       ":impl",
       ":navigation_predictor",
       "//chrome/browser/battery",
-      "//chrome/browser/optimization_guide:test_support",
       "//chrome/browser/predictors",
       "//chrome/browser/preloading",
       "//chrome/browser/preloading:prefs",
@@ -101,7 +88,7 @@ if (!is_android) {
       "//chrome/browser/ui/browser_window",
       "//chrome/common",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/base:browser_test_waiters",
       "//components/no_state_prefetch/browser",
       "//components/ukm:test_support",
       "//content/test:test_support",
@@ -115,15 +102,12 @@ if (!is_android) {
 
 source_set("unit_tests") {
   testonly = true
-  sources = [
-    "navigation_predictor_unittest.cc",
-    "preloading_model_executor_unittest.cc",
-  ]
-  data = [ "test/preloading_heuristics.tflite" ]
+  sources = [ "navigation_predictor_unittest.cc" ]
   deps = [
     ":impl",
     ":navigation_predictor",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/ukm:test_support",
     "//content/test:test_support",
     "//mojo/public/cpp/test_support:test_utils",

@@ -36,8 +36,9 @@
 
 namespace blink {
 
-ReverbAccumulationBuffer::ReverbAccumulationBuffer(uint32_t length)
-    : buffer_(length), read_index_(0) {}
+bool ReverbAccumulationBuffer::TryAllocate(uint32_t length) {
+  return buffer_.TryAllocate(length);
+}
 
 void ReverbAccumulationBuffer::ReadAndClear(base::span<float> destination) {
   const size_t buffer_length = buffer_.size();
@@ -98,15 +99,13 @@ uint32_t ReverbAccumulationBuffer::Accumulate(base::span<const float> source,
 
   vector_math::Vadd(source.first(number_of_frames1),
                     destination.subspan(write_index, number_of_frames1),
-                    destination.subspan(write_index, number_of_frames1),
-                    base::checked_cast<uint32_t>(number_of_frames1));
+                    destination.subspan(write_index, number_of_frames1));
 
   // Handle wrap-around if necessary
   if (number_of_frames2 > 0) {
     vector_math::Vadd(source.subspan(number_of_frames1, number_of_frames2),
                       destination.first(number_of_frames2),
-                      destination.first(number_of_frames2),
-                      base::checked_cast<uint32_t>(number_of_frames2));
+                      destination.first(number_of_frames2));
   }
 
   return base::checked_cast<uint32_t>(write_index);

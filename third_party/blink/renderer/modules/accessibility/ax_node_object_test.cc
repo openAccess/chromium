@@ -4,12 +4,17 @@
 
 #include "third_party/blink/renderer/modules/accessibility/ax_node_object.h"
 
+#include "base/test/scoped_feature_list.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object-inl.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object_cache_impl.h"
 #include "third_party/blink/renderer/modules/accessibility/testing/accessibility_test.h"
+#include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/graphics/color.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/ax_node_data.h"
 
@@ -300,6 +305,74 @@ TEST_F(AccessibilityTest, FocusgroupOwnerImpliedRoleGenericContainer) {
   // A generic container with focusgroup behavior should be promoted to the
   // minimum ARIA role for its behavior (toolbar).
   EXPECT_EQ(ax::mojom::Role::kToolbar, fg->RoleValue());
+}
+
+TEST_F(AccessibilityTest, FocusgroupOwnerImpliedRolePopover) {
+  SetBodyInnerHTML(R"HTML(
+      <div id="fg" focusgroup="menu" popover="manual">
+        <button id="child">Item</button>
+      </div>)HTML");
+  auto* popover = To<HTMLElement>(GetElementById("fg"));
+  popover->showPopover(ASSERT_NO_EXCEPTION);
+  GetAXObjectCache().UpdateAXForAllDocuments();
+
+  const AXObject* fg = GetAXObjectByElementId("fg");
+  ASSERT_NE(nullptr, fg);
+  EXPECT_EQ(ax::mojom::Role::kMenu, fg->RoleValue());
+
+  const AXObject* child = GetAXObjectByElementId("child");
+  ASSERT_NE(nullptr, child);
+  EXPECT_EQ(ax::mojom::Role::kMenuItem,
+            child->ComputeFinalRoleForSerialization());
+}
+
+TEST_F(AccessibilityTest, FocusgroupDisabledPopoverUsesGroupFallback) {
+  ScopedFocusgroupForTest focusgroup_disabled(/*enabled=*/false);
+  SetBodyInnerHTML(R"HTML(
+      <div id="fg" focusgroup="menu" popover="manual">
+        <button>Item</button>
+      </div>)HTML");
+  auto* popover = To<HTMLElement>(GetElementById("fg"));
+  popover->showPopover(ASSERT_NO_EXCEPTION);
+  GetAXObjectCache().UpdateAXForAllDocuments();
+
+  const AXObject* fg = GetAXObjectByElementId("fg");
+  ASSERT_NE(nullptr, fg);
+  EXPECT_EQ(ax::mojom::Role::kGroup, fg->RoleValue());
+}
+
+TEST_F(AccessibilityTest, FocusgroupListboxPopoverIsNotClickable) {
+  SetBodyInnerHTML(R"HTML(
+      <div id="fg" focusgroup="listbox" popover="manual">
+        <button>Item</button>
+      </div>)HTML");
+  auto* popover = To<HTMLElement>(GetElementById("fg"));
+  popover->showPopover(ASSERT_NO_EXCEPTION);
+  GetAXObjectCache().UpdateAXForAllDocuments();
+
+  const AXObject* fg = GetAXObjectByElementId("fg");
+  ASSERT_NE(nullptr, fg);
+  EXPECT_EQ(ax::mojom::Role::kListBox, fg->RoleValue());
+  EXPECT_FALSE(fg->IsClickable());
+}
+
+TEST_F(AccessibilityTest, FocusgroupPopoverPreservesNativeGroupRole) {
+  SetBodyInnerHTML(R"HTML(
+      <fieldset id="fg" focusgroup="menu" popover="manual">
+        <button id="child">Item</button>
+      </fieldset>)HTML");
+  auto* popover = To<HTMLElement>(GetElementById("fg"));
+  popover->showPopover(ASSERT_NO_EXCEPTION);
+  GetAXObjectCache().UpdateAXForAllDocuments();
+
+  const AXObject* fg = GetAXObjectByElementId("fg");
+  ASSERT_NE(nullptr, fg);
+  EXPECT_EQ(ax::mojom::Role::kGroup, fg->RoleValue());
+
+  const AXObject* child = GetAXObjectByElementId("child");
+  ASSERT_NE(nullptr, child);
+  EXPECT_EQ(ax::mojom::Role::kButton,
+            child->ComputeFinalRoleForSerialization());
 }
 
 TEST_F(AccessibilityTest, FocusgroupOwnerDoesNotOverrideExplicitRole) {
@@ -695,6 +768,119 @@ TEST_F(AccessibilityTest, ScrollButtonAndMarkerGroupParent) {
   EXPECT_EQ(marker_group_parent, wrapper->GetNode());
 }
 
+TEST_F(AccessibilityTest, ScrollMarkerGroupModeChangeUpdatesRoles) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+    #carousel {
+      scroll-marker-group: before tabs;
+      overflow: scroll;
+    }
+    #item::scroll-marker {
+      content: '';
+    }
+    </style>
+    <div id=carousel><div id=item>One</div></div>)HTML");
+
+  auto expect_roles = [&](ax::mojom::Role group_role,
+                          ax::mojom::Role marker_role,
+                          ax::mojom::Role item_role) {
+    UpdateAllLifecyclePhasesForTest();
+    const AXObject* group =
+        GetAXObjectByElementId("carousel", kPseudoIdScrollMarkerGroupBefore);
+    const AXObject* marker =
+        GetAXObjectByElementId("item", kPseudoIdScrollMarker);
+    const AXObject* item = GetAXObjectByElementId("item");
+    ASSERT_NE(nullptr, group);
+    ASSERT_NE(nullptr, marker);
+    ASSERT_NE(nullptr, item);
+    EXPECT_EQ(group_role, group->RoleValue());
+    EXPECT_EQ(marker_role, marker->RoleValue());
+    EXPECT_EQ(item_role, item->RoleValue());
+  };
+
+  Element* carousel = GetElementById("carousel");
+  expect_roles(ax::mojom::Role::kTabList, ax::mojom::Role::kTab,
+               ax::mojom::Role::kTabPanel);
+
+  carousel->SetInlineStyleProperty(CSSPropertyID::kScrollMarkerGroup,
+                                   "before links");
+  expect_roles(ax::mojom::Role::kNavigation, ax::mojom::Role::kLink,
+               ax::mojom::Role::kGenericContainer);
+
+  carousel->SetInlineStyleProperty(CSSPropertyID::kScrollMarkerGroup,
+                                   "before tabs");
+  expect_roles(ax::mojom::Role::kTabList, ax::mojom::Role::kTab,
+               ax::mojom::Role::kTabPanel);
+}
+
+TEST_F(AccessibilityTest, ScrollMarkerGroupScrollContainerChangeUpdatesRoles) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+    #outer {
+      scroll-marker-group: before tabs;
+    }
+    #inner {
+      scroll-marker-group: before links;
+    }
+    #item::scroll-marker {
+      content: '';
+    }
+    </style>
+    <div id=outer><div id=inner><div id=item>One</div></div></div>)HTML");
+
+  auto expect_no_markers = [&]() {
+    EXPECT_EQ(nullptr, GetAXObjectByElementId(
+                           "outer", kPseudoIdScrollMarkerGroupBefore));
+    EXPECT_EQ(nullptr, GetAXObjectByElementId("item", kPseudoIdScrollMarker));
+    const AXObject* item = GetAXObjectByElementId("item");
+    ASSERT_NE(nullptr, item);
+    EXPECT_EQ(ax::mojom::Role::kGenericContainer, item->RoleValue());
+  };
+  auto expect_marker_in = [&](const char* group_id, ax::mojom::Role group_role,
+                              ax::mojom::Role marker_role,
+                              ax::mojom::Role item_role) {
+    const AXObject* group =
+        GetAXObjectByElementId(group_id, kPseudoIdScrollMarkerGroupBefore);
+    const AXObject* marker =
+        GetAXObjectByElementId("item", kPseudoIdScrollMarker);
+    const AXObject* item = GetAXObjectByElementId("item");
+    ASSERT_NE(nullptr, group);
+    ASSERT_NE(nullptr, marker);
+    ASSERT_NE(nullptr, item);
+    EXPECT_EQ(group, marker->ParentObject());
+    EXPECT_EQ(group_role, group->RoleValue());
+    EXPECT_EQ(marker_role, marker->RoleValue());
+    EXPECT_EQ(item_role, item->RoleValue());
+  };
+
+  Element* outer = GetElementById("outer");
+  Element* inner = GetElementById("inner");
+  expect_no_markers();
+
+  // Make #outer a scroll container.
+  outer->SetInlineStyleProperty(CSSPropertyID::kOverflow, CSSValueID::kAuto);
+  UpdateAllLifecyclePhasesForTest();
+  expect_marker_in("outer", ax::mojom::Role::kTabList, ax::mojom::Role::kTab,
+                   ax::mojom::Role::kTabPanel);
+
+  // Make #inner a scroll container. #item's marker moves to #inner's group.
+  inner->SetInlineStyleProperty(CSSPropertyID::kOverflow, CSSValueID::kAuto);
+  UpdateAllLifecyclePhasesForTest();
+  expect_marker_in("inner", ax::mojom::Role::kNavigation,
+                   ax::mojom::Role::kLink, ax::mojom::Role::kGenericContainer);
+
+  // Make #inner no longer a scroll container. #item's marker moves back.
+  inner->SetInlineStyleProperty(CSSPropertyID::kOverflow, CSSValueID::kVisible);
+  UpdateAllLifecyclePhasesForTest();
+  expect_marker_in("outer", ax::mojom::Role::kTabList, ax::mojom::Role::kTab,
+                   ax::mojom::Role::kTabPanel);
+
+  // Make #outer no longer a scroll container.
+  outer->SetInlineStyleProperty(CSSPropertyID::kOverflow, CSSValueID::kVisible);
+  UpdateAllLifecyclePhasesForTest();
+  expect_no_markers();
+}
+
 TEST_F(AccessibilityTest,
        TreeItemWithAriaCheckedShouldNotHaveImplicitAriaSelected) {
   SetBodyInnerHTML(R"HTML(
@@ -838,9 +1024,41 @@ TEST_F(AccessibilityTest, RadioButtonsInGroupInTableRows) {
   // kRadioGroupIds.
   EXPECT_EQ(0, node_data.GetIntAttribute(ax::mojom::IntAttribute::kSetSize));
 
-  std::vector<int32_t> radio_group_ids = node_data.GetIntListAttribute(
+  base::span<const int32_t> radio_group_ids = node_data.GetIntListAttribute(
       ax::mojom::IntListAttribute::kRadioGroupIds);
   EXPECT_EQ(6u, radio_group_ids.size());
+}
+
+// ARIA (role=radio/radiogroup) radio buttons need not be direct siblings of
+// one another: RadioButtonsInGroup() walks up to the nearest enclosing
+// radiogroup ancestor, then collects role=radio descendants without crossing
+// into a nested radiogroup's own boundary.
+TEST_F(AccessibilityTest, AriaRadioButtonsInGroupNotCrossingNestedRadiogroups) {
+  SetBodyInnerHTML(R"HTML(
+      <div id="outer" role="radiogroup">
+        <div role="radio" id="r1"></div>
+        <div id="wrapper">
+          <div role="radio" id="r2"></div>
+        </div>
+        <div role="radiogroup" id="inner">
+          <div role="radio" id="r3"></div>
+        </div>
+      </div>
+  )HTML");
+
+  const AXObject* r1 = GetAXObjectByElementId("r1");
+  ASSERT_NE(nullptr, r1);
+  ASSERT_EQ(ax::mojom::Role::kRadioButton, r1->RoleValue());
+  ScopedFreezeAXCache freeze(GetAXObjectCache());
+  AXObject::AXObjectVector outer_group =
+      To<AXNodeObject>(r1)->RadioButtonsInGroup();
+  EXPECT_EQ(2u, outer_group.size());
+
+  const AXObject* r3 = GetAXObjectByElementId("r3");
+  ASSERT_NE(nullptr, r3);
+  AXObject::AXObjectVector inner_group =
+      To<AXNodeObject>(r3)->RadioButtonsInGroup();
+  EXPECT_EQ(1u, inner_group.size());
 }
 
 // Regression test for crbug.com/501371770. Verifies that an aria-owned element
@@ -869,7 +1087,7 @@ TEST_F(AccessibilityTest, NoDetachDuringAddChildrenViaAriaOwns) {
 
   // Remove the owner, which will trigger un-owning the target and
   // RestoreParentOrPrune logic.
-  Element* owner = GetDocument().getElementById(AtomicString("owner"));
+  Element* owner = GetElementById("owner");
   ASSERT_NE(nullptr, owner);
   owner->remove();
   GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
@@ -879,6 +1097,178 @@ TEST_F(AccessibilityTest, NoDetachDuringAddChildrenViaAriaOwns) {
   target = GetAXObjectByElementId("target");
   ASSERT_NE(nullptr, target);
   EXPECT_FALSE(target->IsDetached());
+}
+
+// Regression test for crbug.com/495481395. Verifies that content inside an SVG
+// foreignObject (including text and image alt text) contributes to an ancestor
+// button's accessible name calculation when computed recursively.
+TEST_F(AccessibilityTest, ButtonWithSVGForeignObject) {
+  SetBodyInnerHTML(R"HTML(
+    <button id="btn-text">
+      <svg>
+        <foreignObject>
+          <div>
+            <span>Promo Headline</span>
+            <p>Offer details</p>
+          </div>
+        </foreignObject>
+      </svg>
+    </button>
+    <button id="btn-img">
+      <svg>
+        <foreignObject>
+          <div>
+            <img alt="Brand Logo" src="logo.png">
+            <span>Special Deal</span>
+          </div>
+        </foreignObject>
+      </svg>
+    </button>
+    <svg id="standalone-svg">
+      <foreignObject>
+        <div><span>Inner text</span></div>
+      </foreignObject>
+    </svg>
+    <button id="btn-svg-title">
+      <svg>
+        <title>SVG Title Override</title>
+        <foreignObject>
+          <div><span>Inner text</span></div>
+        </foreignObject>
+      </svg>
+    </button>
+  )HTML");
+
+  const AXObject* btn_text = GetAXObjectByElementId("btn-text");
+  ASSERT_NE(nullptr, btn_text);
+  EXPECT_EQ("Promo Headline Offer details", btn_text->ComputedName());
+
+  const AXObject* btn_img = GetAXObjectByElementId("btn-img");
+  ASSERT_NE(nullptr, btn_img);
+  EXPECT_EQ("Brand Logo Special Deal", btn_img->ComputedName());
+
+  // Standalone SVG without title or aria-label should not compute name from
+  // contents.
+  const AXObject* standalone_svg = GetAXObjectByElementId("standalone-svg");
+  ASSERT_NE(nullptr, standalone_svg);
+  EXPECT_EQ("", standalone_svg->ComputedName());
+
+  // Explicit title on SVG takes precedence.
+  const AXObject* btn_svg_title = GetAXObjectByElementId("btn-svg-title");
+  ASSERT_NE(nullptr, btn_svg_title);
+  EXPECT_EQ("SVG Title Override", btn_svg_title->ComputedName());
+}
+
+TEST_F(AccessibilityTest, UnlabeledCanvasIgnoredState) {
+  // 1. When kAccessibilityCanvas is disabled, an unlabeled canvas without an id
+  // attribute is ignored as uninteresting.
+  {
+    GetDocument().GetSettings()->SetScriptEnabled(true);
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(::features::kAccessibilityCanvas);
+
+    SetBodyInnerHTML(R"HTML(
+      <canvas width="300" height="150"></canvas>
+      <canvas width="1" height="1"></canvas>
+    )HTML");
+
+    auto* canvases = GetDocument().QuerySelectorAll(AtomicString("canvas"));
+    ASSERT_EQ(2u, canvases->length());
+
+    const AXObject* ax_canvas = GetAXObject(*canvases->item(0));
+    ASSERT_NE(nullptr, ax_canvas);
+    EXPECT_TRUE(ax_canvas->IsIgnored());
+
+    const AXObject* ax_canvas_1x1 = GetAXObject(*canvases->item(1));
+    ASSERT_NE(nullptr, ax_canvas_1x1);
+    EXPECT_TRUE(ax_canvas_1x1->IsIgnored());
+  }
+
+  // 2. When kAccessibilityCanvas is enabled, visible rendered canvases meeting
+  // the minimum size threshold (>= 10x10 CSS pixels) are included in the
+  // accessibility tree even without an id attribute, while sub-10px, hidden,
+  // or presentational canvases remain ignored.
+  {
+    GetDocument().GetSettings()->SetScriptEnabled(true);
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(::features::kAccessibilityCanvas);
+
+    SetBodyInnerHTML(R"HTML(
+      <canvas width="300" height="150"></canvas>
+      <canvas width="10" height="10"></canvas>
+      <canvas width="9" height="9"></canvas>
+      <canvas width="10" height="9"></canvas>
+      <canvas width="9" height="10"></canvas>
+      <canvas width="500" height="500" style="width: 5px; height: 5px;"></canvas>
+      <canvas width="5" height="5"></canvas>
+      <canvas width="1" height="1"></canvas>
+      <canvas style="display:none;" width="300" height="150"></canvas>
+      <canvas style="visibility:hidden;" width="300" height="150"></canvas>
+      <canvas aria-hidden="true" width="300" height="150"></canvas>
+      <canvas role="presentation" width="300" height="150"></canvas>
+    )HTML");
+
+    auto* canvases = GetDocument().QuerySelectorAll(AtomicString("canvas"));
+    ASSERT_EQ(12u, canvases->length());
+
+    // An unlabeled canvas >= 10x10 is NOT ignored when the feature is enabled.
+    const AXObject* ax_canvas_valid = GetAXObject(*canvases->item(0));
+    ASSERT_NE(nullptr, ax_canvas_valid);
+    EXPECT_FALSE(ax_canvas_valid->IsIgnored());
+
+    // A 10x10 canvas meets the minimum threshold and is NOT ignored.
+    const AXObject* ax_canvas_10x10 = GetAXObject(*canvases->item(1));
+    ASSERT_NE(nullptr, ax_canvas_10x10);
+    EXPECT_FALSE(ax_canvas_10x10->IsIgnored());
+
+    // Canvases smaller than 10 CSS pixels in either dimension are ignored.
+    const AXObject* ax_canvas_9x9 = GetAXObject(*canvases->item(2));
+    ASSERT_NE(nullptr, ax_canvas_9x9);
+    EXPECT_TRUE(ax_canvas_9x9->IsIgnored());
+
+    const AXObject* ax_canvas_10x9 = GetAXObject(*canvases->item(3));
+    ASSERT_NE(nullptr, ax_canvas_10x9);
+    EXPECT_TRUE(ax_canvas_10x9->IsIgnored());
+
+    const AXObject* ax_canvas_9x10 = GetAXObject(*canvases->item(4));
+    ASSERT_NE(nullptr, ax_canvas_9x10);
+    EXPECT_TRUE(ax_canvas_9x10->IsIgnored());
+
+    // A canvas with large buffer dimensions but styled layout size < 10x10 is
+    // ignored.
+    const AXObject* ax_canvas_styled_5x5 = GetAXObject(*canvases->item(5));
+    ASSERT_NE(nullptr, ax_canvas_styled_5x5);
+    EXPECT_TRUE(ax_canvas_styled_5x5->IsIgnored());
+
+    const AXObject* ax_canvas_5x5 = GetAXObject(*canvases->item(6));
+    ASSERT_NE(nullptr, ax_canvas_5x5);
+    EXPECT_TRUE(ax_canvas_5x5->IsIgnored());
+
+    // A 1x1 canvas is ignored as presentational.
+    const AXObject* ax_canvas_1x1 = GetAXObject(*canvases->item(7));
+    ASSERT_NE(nullptr, ax_canvas_1x1);
+    EXPECT_TRUE(ax_canvas_1x1->IsIgnored());
+
+    // A display:none canvas is ignored.
+    const AXObject* ax_canvas_none = GetAXObject(*canvases->item(8));
+    ASSERT_NE(nullptr, ax_canvas_none);
+    EXPECT_TRUE(ax_canvas_none->IsIgnored());
+
+    // A visibility:hidden canvas is ignored.
+    const AXObject* ax_canvas_hidden = GetAXObject(*canvases->item(9));
+    ASSERT_NE(nullptr, ax_canvas_hidden);
+    EXPECT_TRUE(ax_canvas_hidden->IsIgnored());
+
+    // An aria-hidden="true" canvas is ignored.
+    const AXObject* ax_canvas_aria_hidden = GetAXObject(*canvases->item(10));
+    ASSERT_NE(nullptr, ax_canvas_aria_hidden);
+    EXPECT_TRUE(ax_canvas_aria_hidden->IsIgnored());
+
+    // A role="presentation" canvas is ignored.
+    const AXObject* ax_canvas_presentation = GetAXObject(*canvases->item(11));
+    ASSERT_NE(nullptr, ax_canvas_presentation);
+    EXPECT_TRUE(ax_canvas_presentation->IsIgnored());
+  }
 }
 
 }  // namespace blink

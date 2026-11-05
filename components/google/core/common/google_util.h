@@ -15,6 +15,10 @@
 
 class GURL;
 
+namespace base::i18n {
+class LanguageTag;
+}  // namespace base::i18n
+
 // This namespace provides various helpers around handling Google-related URLs.
 namespace google_util {
 
@@ -58,6 +62,10 @@ bool HasGoogleSearchQueryParam(std::string_view str);
 // leading "hl".
 std::string GetGoogleLocale(const std::string& application_locale);
 
+// Same as above, but takes and returns a `base::i18n::LanguageTag`.
+base::i18n::LanguageTag GetGoogleLocale(
+    const base::i18n::LanguageTag& application_locale);
+
 // Adds the Google locale string to the URL (e.g., hl=en-US).  This does not
 // check to see if the param already exists.
 GURL AppendGoogleLocaleParam(const GURL& url,
@@ -74,6 +82,11 @@ GURL GetGoogleSearchURL(const GURL& google_homepage_url);
 // This performs some fixup and sanity-checking to ensure that the resulting URL
 // is valid and has no query or ref.
 const GURL& CommandLineGoogleBaseURL();
+
+// Returns the Google base suggestion URL specified on the command line, if it
+// exists. This performs some fixup and sanity-checking to ensure that the
+// resulting URL is valid and has no query or ref.
+const GURL& CommandLineGoogleBaseSuggestionURL();
 
 // Returns true if a Google base URL was specified on the command line and |url|
 // begins with that base URL.  This uses a simple string equality check.
@@ -116,9 +129,9 @@ bool IsGoogleDomainUrl(const GURL& url,
 // function should only be used in cases when the input is just a hostname, such
 // as a search engine keyword.
 //
-// If the Google base URL has been overridden on the command line, this function
-// will also return true for any URL whose hostname exactly matches the hostname
-// of the URL specified on the command line.  In this case,
+// If the Google base URL or suggestion URL has been overridden on the command
+// line, this function will also return true for any URL whose hostname exactly
+// matches the hostname of the URL specified on the command line.  In this case,
 // |subdomain_permission| is ignored.
 bool IsGoogleHostname(std::string_view host,
                       SubdomainPermission subdomain_permission);

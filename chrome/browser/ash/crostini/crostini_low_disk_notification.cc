@@ -14,7 +14,6 @@
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "chrome/browser/ash/crostini/crostini_util.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
@@ -124,7 +123,7 @@ CrostiniLowDiskNotification::CreateNotification(Severity severity) {
 
   auto on_click = base::BindRepeating([](std::optional<int> button_index) {
     if (button_index) {
-      DCHECK_EQ(0, *button_index);
+      CHECK_EQ(0, *button_index, base::NotFatalUntil::M160);
       auto* session =
           session_manager::SessionManager::Get()->GetActiveSession();
       CHECK(session);
@@ -138,7 +137,7 @@ CrostiniLowDiskNotification::CreateNotification(Severity severity) {
   std::unique_ptr<message_center::Notification> notification =
       ash::CreateSystemNotificationPtr(
           message_center::NOTIFICATION_TYPE_SIMPLE, kLowDiskId, title, message,
-          std::u16string(), GURL(), notifier_id, optional_fields,
+          std::u16string(), notifier_id, optional_fields,
           new message_center::HandleNotificationClickDelegate(on_click),
           ash::kNotificationStorageFullIcon, warning_level);
 

@@ -5,6 +5,7 @@
 /**
  * @fileoverview The ChromeVox panel and menus.
  */
+import type {BridgeCallbackId} from '/common/bridge_callback_manager.js';
 import {BridgeHelper} from '/common/bridge_helper.js';
 import {BrowserUtil} from '/common/browser_util.js';
 import {constants} from '/common/constants.js';
@@ -14,9 +15,9 @@ import {BackgroundBridge} from '../common/background_bridge.js';
 import {BridgeConstants} from '../common/bridge_constants.js';
 import {Command} from '../common/command.js';
 import {Msgs} from '../common/msgs.js';
-import type {PanelCommand} from '../common/panel_command.js';
+import type {PanelCommand, PanelCommandSpeechData} from '../common/panel_command.js';
 import {PanelCommandType} from '../common/panel_command.js';
-import type {MenuDataForTest, PanelNodeMenuItemData} from '../common/panel_menu_data.js';
+import type {CandidateMenuItemData, MenuDataForTest, PanelNodeMenuItemData} from '../common/panel_menu_data.js';
 import {SettingsManager} from '../common/settings_manager.js';
 
 import {ISearchUI} from './i_search_ui.js';
@@ -106,6 +107,13 @@ export class Panel implements PanelInterface {
         BridgeConstants.Panel.TARGET,
         BridgeConstants.Panel.Action.ON_CURRENT_RANGE_CHANGED,
         () => this.onCurrentRangeChanged_());
+    // Handler for presenting conversion candidates, currently used by
+    // Japanese IME kana-to-kanji conversion, via a single lightweight menu.
+    BridgeHelper.registerHandler(
+        BridgeConstants.Panel.TARGET,
+        BridgeConstants.Panel.Action.SHOW_CANDIDATE_MENU,
+        (items: CandidateMenuItemData[], resultCallbackId: BridgeCallbackId) =>
+            this.menuManager_.onShowCandidateMenu(items, resultCallbackId));
     this.updateFromPrefs_();
 
     // These handlers are all for tests.
@@ -141,6 +149,10 @@ export class Panel implements PanelInterface {
         BridgeConstants.PanelTest.TARGET,
         BridgeConstants.PanelTest.Action.GET_ACTIVE_SEARCH_MENU_DATA,
         () => this.getActiveSearchMenuDataForTest_());
+    BridgeHelper.registerHandler(
+        BridgeConstants.PanelTest.TARGET,
+        BridgeConstants.PanelTest.Action.GET_SPEECH_HTML_FOR_TEST,
+        () => this.getSpeechHtmlForTest_());
     BridgeHelper.registerHandler(
         BridgeConstants.PanelTest.TARGET,
         BridgeConstants.PanelTest.Action.GET_TUTORIAL_ACTIVE_LESSON_INDEX,
@@ -314,6 +326,10 @@ export class Panel implements PanelInterface {
     return {};
   }
 
+  private getSpeechHtmlForTest_(): string {
+    return this.speechElement_ ? this.speechElement_.innerHTML : '';
+  }
+
   private getTutorialActiveLessonIndexForTest_(): number {
     if (this.tutorial_) {
       return (this.tutorial_ as {activeLessonIndex: number}).activeLessonIndex;
@@ -457,23 +473,37 @@ export class Panel implements PanelInterface {
           .replace(/\//g, '&#x2F;');
     }
 
+    function formatSpeechForHtml(
+        str: string, formatAsAnnotation: boolean): string {
+      const escaped = escapeForHtml(str);
+      return formatAsAnnotation ? escaped :
+                                  `<span class="usertext">${escaped}</span>`;
+    }
+
     switch (command.type) {
       case PanelCommandType.CLEAR_SPEECH:
         this.speechElement_!.innerHTML = '';
         break;
+      case PanelCommandType.SET_SPEECH: {
+        // SET_SPEECH always sends a PanelCommandSpeechData object payload.
+        const data = command.data as PanelCommandSpeechData;
+        this.speechElement_!.innerHTML =
+            formatSpeechForHtml(data.text, data.formatAsAnnotation);
+        break;
+      }
       case PanelCommandType.ADD_NORMAL_SPEECH:
         if (this.speechElement_!.innerHTML !== '') {
           this.speechElement_!.innerHTML += '&nbsp;&nbsp;';
         }
-        this.speechElement_!.innerHTML +=
-            '<span class="usertext">' +
-            escapeForHtml(command.data as string) + '</span>';
+        this.speechElement_!.innerHTML += formatSpeechForHtml(
+            command.data as string, /*formatAsAnnotation=*/ false);
         break;
       case PanelCommandType.ADD_ANNOTATION_SPEECH:
         if (this.speechElement_!.innerHTML !== '') {
           this.speechElement_!.innerHTML += '&nbsp;&nbsp;';
         }
-        this.speechElement_!.innerHTML += escapeForHtml(command.data as string);
+        this.speechElement_!.innerHTML += formatSpeechForHtml(
+            command.data as string, /*formatAsAnnotation=*/ true);
         break;
       case PanelCommandType.UPDATE_BRAILLE:
         this.onUpdateBraille_(
@@ -714,6 +744,11 @@ export class Panel implements PanelInterface {
     if (pendingCallback) {
       await pendingCallback();
     }
+    // If a candidate menu was open and closing wasn't due to selecting a
+    // candidate (pendingCallback above already resolved and cleared that
+    // case), let the background know the user dismissed it without
+    // choosing one, so the pending conversion doesn't hang forever.
+    await this.menuManager_.cancelPendingCandidateMenu();
     BackgroundBridge.PanelBackground.clearSavedNode();
   }
 

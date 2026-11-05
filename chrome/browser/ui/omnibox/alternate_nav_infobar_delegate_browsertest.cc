@@ -2,11 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/ui/omnibox/alternate_nav_infobar_delegate.h"
-
 #include "base/test/scoped_feature_list.h"
+#include "chrome/browser/infobars/infobar_features.h"
+#include "chrome/browser/ui/omnibox/chrome_omnibox_navigation_observer.h"
 #include "chrome/browser/ui/test/test_infobar.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/infobars/core/infobar_delegate.h"
 #include "components/omnibox/browser/autocomplete_match.h"
@@ -33,16 +32,21 @@ class AlternateNavInfoBarDelegateTest : public TestInfoBar {
                            ALTERNATE_NAV_INFOBAR_DELEGATE);
     AutocompleteMatch match;
     match.destination_url = GURL("http://intranetsite/");
-    AlternateNavInfoBarDelegate::CreateForOmniboxNavigation(
+    ChromeOmniboxNavigationObserver::ShowAlternativeNavInfoBar(
         GetWebContents(), std::u16string(), match, GURL("http://example.com/"));
   }
 };
 
 class AlternateNavInfoBarDelegateInlineLinksTest
+    : public AlternateNavInfoBarDelegateTest {};
+
+class AlternateNavInfoBarDelegateCentralizedInlineLinksTest
     : public AlternateNavInfoBarDelegateTest {
  protected:
-  AlternateNavInfoBarDelegateInlineLinksTest() {
-    feature_list_.InitAndEnableFeature(features::kInfoBarInlineLinks);
+  AlternateNavInfoBarDelegateCentralizedInlineLinksTest() {
+    feature_list_.InitAndEnableFeatureWithParameters(
+        infobars::kCentralizedInfoBarFramework,
+        {{"MigratedAlternateNav", "true"}});
   }
 
  private:
@@ -51,11 +55,12 @@ class AlternateNavInfoBarDelegateInlineLinksTest
 
 }  // namespace
 
-IN_PROC_BROWSER_TEST_F(AlternateNavInfoBarDelegateTest, InvokeUi_default) {
+IN_PROC_BROWSER_TEST_F(AlternateNavInfoBarDelegateInlineLinksTest,
+                       InvokeUi_InlineLinks) {
   ShowAndVerifyUi();
 }
 
-IN_PROC_BROWSER_TEST_F(AlternateNavInfoBarDelegateInlineLinksTest,
-                       InvokeUi_InlineLinks) {
+IN_PROC_BROWSER_TEST_F(AlternateNavInfoBarDelegateCentralizedInlineLinksTest,
+                       InvokeUi_CentralizedInlineLinks) {
   ShowAndVerifyUi();
 }

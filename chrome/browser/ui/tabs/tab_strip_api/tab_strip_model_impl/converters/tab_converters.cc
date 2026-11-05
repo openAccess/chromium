@@ -11,7 +11,9 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_favicon_theming.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/favicon/content/content_favicon_driver.h"
 #include "components/favicon/core/favicon_driver.h"
 #include "components/split_tabs/split_tab_visual_data.h"
@@ -83,9 +85,6 @@ tabs_api::mojom::TabFieldMaskPtr BuildTabFieldMask(TabChangeType type) {
       break;
     case TabChangeType::kAttentionOnly:
       // AttentionOnly affects "needs_attention" which is not yet exposed.
-      break;
-    case TabChangeType::kBlockedOnly:
-      mask->is_blocked = true;
       break;
     case TabChangeType::kResourceUsageOnly:
       break;
@@ -160,6 +159,7 @@ tabs_api::mojom::DataPtr BuildMojoTabCollectionData(
       const TabGroup* tab_group = group_collection->GetTabGroup();
       CHECK(tab_group);
       mojo_tab_group->data = *tab_group->visual_data();
+      mojo_tab_group->is_ephemeral = tab_group->is_ephemeral();
       return tabs_api::mojom::Data::NewTabGroup(std::move(mojo_tab_group));
     }
     case tabs::TabCollection::Type::SPLIT: {

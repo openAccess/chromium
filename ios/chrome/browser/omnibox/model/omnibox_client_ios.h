@@ -191,10 +191,11 @@ class OmniboxClientIOS {
   // was created by `CreateOmniboxNavigationObserver()` for `match`; in some
   // embedding contexts, processing an extension keyword involves invoking
   // action on this observer.
-  virtual void ProcessExtensionMatch(const std::u16string& text,
-                                     const TemplateURL* template_url,
-                                     const AutocompleteMatch& match,
-                                     WindowOpenDisposition disposition);
+  virtual void ProcessExtensionMatch(
+      const std::u16string& text,
+      const TemplateURL* template_url,
+      const AutocompleteMatch& match,
+      ui::mojom::WindowOpenDisposition disposition);
 
   // Called to notify clients that the omnibox input state has changed.
   virtual void OnInputStateChanged() {}
@@ -228,6 +229,12 @@ class OmniboxClientIOS {
                                bool should_preload,
                                const BitmapFetchedCallback& on_bitmap_fetched) {
   }
+
+  // Starts prerendering `url` with `transition` immediately (no delay).
+  virtual void StartPrerender(const GURL& url, ui::PageTransition transition) {}
+
+  // Cancels any ongoing prerender.
+  virtual void CancelPrerender() {}
 
   // These two methods fetch favicons if the embedder supports it. Not all
   // embedders do. These methods return the favicon synchronously if possible.
@@ -294,9 +301,9 @@ class OmniboxClientIOS {
   virtual void OnAutocompleteAccept(
       const GURL& destination_url,
       TemplateURLRef::PostContent* post_content,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       ui::PageTransition transition,
-      AutocompleteMatchType::Type match_type,
+      omnibox::AutocompleteMatchType match_type,
       base::TimeTicks match_selection_timestamp,
       bool destination_url_entered_without_scheme,
       bool destination_url_entered_with_http_scheme,
@@ -320,17 +327,14 @@ class OmniboxClientIOS {
 
   // Navigates to `gurl` with the specified `disposition`. Used for handling
   // activations of the AI Mode page action icon.
-  virtual void OpenUrl(
-      GURL gurl,
-      WindowOpenDisposition disposition = WindowOpenDisposition::CURRENT_TAB) {}
+  virtual void OpenUrl(GURL gurl,
+                       ui::mojom::WindowOpenDisposition disposition =
+                           ui::mojom::WindowOpenDisposition::kCurrentTab) {}
 
   // Even though IPH suggestions aren't selectable like normal matches, they can
   // have a 'learn more' or next-steps link. `OpenIphLink()` allows opening
   // these in a new tab.
   virtual void OpenIphLink(GURL gurl) {}
-
-  // Returns true if history embeddings is enabled and user has opted in.
-  virtual bool IsHistoryEmbeddingsEnabled() const;
 
   // Optionally warm-up for the default search engine so that we can navigate to
   // the search result page effectively.

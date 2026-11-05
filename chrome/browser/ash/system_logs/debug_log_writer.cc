@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/system_logs/debug_log_writer.h"
 
 #include <stdint.h>
+
 #include <utility>
 
 #include "base/command_line.h"
@@ -18,6 +19,7 @@
 #include "base/task/lazy_thread_pool_task_runner.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/common/logging_chrome.h"
 #include "chromeos/ash/components/dbus/debug_daemon/debug_daemon_client.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -49,7 +51,7 @@ base::LazyThreadPoolSequencedTaskRunner g_sequenced_task_runner =
 void WriteDebugLogToFileCompleted(const base::FilePath& file_path,
                                   StoreLogsCallback callback,
                                   bool succeeded) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   if (!succeeded) {
     bool posted = g_sequenced_task_runner.Get()->PostTask(
         FROM_HERE,
@@ -57,7 +59,7 @@ void WriteDebugLogToFileCompleted(const base::FilePath& file_path,
             file_path,
             base::OnceCallback<void(bool)>(base::DoNothing())
                 .Then(base::BindOnce(std::move(callback), std::nullopt))));
-    DCHECK(posted);
+    CHECK(posted, base::NotFatalUntil::M160);
     return;
   }
   if (!callback.is_null())
@@ -70,7 +72,7 @@ void WriteDebugLogToFile(std::unique_ptr<base::File> file,
                          const base::FilePath& file_path,
                          bool should_compress,
                          StoreLogsCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   if (!file->IsValid()) {
     LOG(ERROR) << "Can't create debug log file: " << file_path.AsUTF8Unsafe()
                << ", error: " << file->error_details();
@@ -226,8 +228,8 @@ void StoreLogs(const base::FilePath& out_dir,
                bool include_chrome_logs,
                base::OnceCallback<void(std::optional<base::FilePath> logs_path)>
                    callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!callback.is_null());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(!callback.is_null(), base::NotFatalUntil::M160);
 
   if (include_chrome_logs) {
     base::FilePath file_path =

@@ -8,12 +8,17 @@
 #include <optional>
 #include <vector>
 
+#include "base/test/bind.h"
+#include "base/test/gmock_move_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
+#include "chrome/browser/signin/mock_signin_ui_delegate.h"
+#include "chrome/browser/signin/signin_ui_util.h"
 #include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
+#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -27,11 +32,21 @@
 #include "components/sync_device_info/fake_device_info_tracker.h"
 #include "components/sync_device_info/test_device_info_builder.h"
 #include "content/public/test/browser_task_environment.h"
+#include "net/base/url_util.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
+
+using signin_ui_util::MockSigninUiDelegate;
 
 class CrossDeviceSigninPromoManagerTest : public testing::Test {
  public:
-  CrossDeviceSigninPromoManagerTest() = default;
+  CrossDeviceSigninPromoManagerTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {switches::kCrossDeviceSigninFromDesktop,
+         switches::kCrossDeviceSigninFromDesktopFollowup},
+        {});
+  }
   ~CrossDeviceSigninPromoManagerTest() override = default;
 
   void SetUp() override {
@@ -89,12 +104,20 @@ class CrossDeviceSigninPromoManagerTest : public testing::Test {
                                    /*is_type_on=*/enable_sync);
   }
 
+  void SetTabsSyncingPreference(bool enable_sync) {
+    sync_service()->GetUserSettings()->SetSelectedType(
+        syncer::UserSelectableType::kTabs, /*is_type_on=*/enable_sync);
+  }
+
   void AddDevice(
       const std::string& guid,
       bool is_local,
-      syncer::DeviceInfo::OsType os_type = syncer::DeviceInfo::OsType::kLinux) {
+      syncer::DeviceInfo::OsType os_type = syncer::DeviceInfo::OsType::kLinux,
+      const std::string& chrome_version = "chrome_version") {
     syncer::TestDeviceInfoBuilder builder(os_type);
-    builder.WithGuid(guid).WithLastUpdatedTimestamp(base::Time::Now());
+    builder.WithGuid(guid)
+        .WithChromeVersion(chrome_version)
+        .WithLastUpdatedTimestamp(base::Time::Now());
     auto device = builder.Build();
     device_info_tracker()->Add(std::move(device));
     if (is_local) {
@@ -108,11 +131,10 @@ class CrossDeviceSigninPromoManagerTest : public testing::Test {
   std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<IdentityTestEnvironmentProfileAdaptor>
       identity_test_env_adaptor_;
-  base::test::ScopedFeatureList scoped_feature_list_{
-      switches::kCrossDeviceSigninFromDesktop};
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_FeatureFlagDisabled) {
+TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromoFeatureFlagDisabled) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndDisableFeature(switches::kCrossDeviceSigninFromDesktop);
 
@@ -122,24 +144,24 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_FeatureFlagDisabled) {
   AddDevice("local_device_guid", /*is_local=*/true);
   SetHistoryAndTabsSyncingPreference(true);
 
-  EXPECT_FALSE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
 }
 
-TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_SignedOut) {
+TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromoSignedOut) {
   base::HistogramTester histogram_tester;
   // Setup: User is signed out.
   ASSERT_FALSE(identity_test_env()->identity_manager()->HasPrimaryAccount(
       signin::ConsentLevel::kSignin));
 
-  EXPECT_FALSE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectUniqueSample(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
       CrossDeviceSigninPromoShouldShowResult::kNotSignedIn, 1);
 }
 
-TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_AuthError) {
+TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromoAuthError) {
   base::HistogramTester histogram_tester;
   // Setup: User is signed in but has a persistent error.
   AccountInfo account_info = identity_test_env()->MakePrimaryAccountAvailable(
@@ -149,14 +171,14 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_AuthError) {
       GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
           GoogleServiceAuthError::InvalidGaiaCredentialsReason::UNKNOWN));
 
-  EXPECT_FALSE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectUniqueSample(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
       CrossDeviceSigninPromoShouldShowResult::kNotSignedIn, 1);
 }
 
-TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_HasMobileDevice) {
+TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromoHasMobileDevice) {
   base::HistogramTester histogram_tester;
   // Setup: Signed in, local device added, remote device added.
   identity_test_env()->MakePrimaryAccountAvailable(
@@ -166,7 +188,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_HasMobileDevice) {
             syncer::DeviceInfo::OsType::kAndroid);
   SetHistoryAndTabsSyncingPreference(true);
 
-  EXPECT_FALSE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectUniqueSample(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
@@ -174,7 +196,26 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_HasMobileDevice) {
 }
 
 TEST_F(CrossDeviceSigninPromoManagerTest,
-       ShouldShowPromo_HasOtherDesktopDevices) {
+       ShouldShowPromoHasMobileDeviceNotSignedInToChrome) {
+  base::HistogramTester histogram_tester;
+  // Setup: Signed in, local device added, remote mobile device added that is
+  // not signed in to Chrome (only signed in to the device).
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "user@gmail.com", signin::ConsentLevel::kSignin);
+  AddDevice("local_device_guid", /*is_local=*/true);
+  AddDevice("remote_device_guid", /*is_local=*/false,
+            syncer::DeviceInfo::OsType::kAndroid, /*chrome_version=*/"");
+  SetHistoryAndTabsSyncingPreference(true);
+
+  EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
+  histogram_tester.ExpectUniqueSample(
+      "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
+      CrossDeviceSigninPromoShouldShowResult::kCanShow, 1);
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       ShouldShowPromoHasOtherDesktopDevices) {
   base::HistogramTester histogram_tester;
   // Setup: Signed in, local device added, remote desktop device added.
   identity_test_env()->MakePrimaryAccountAvailable(
@@ -184,14 +225,14 @@ TEST_F(CrossDeviceSigninPromoManagerTest,
             syncer::DeviceInfo::OsType::kWindows);
   SetHistoryAndTabsSyncingPreference(true);
 
-  EXPECT_TRUE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectUniqueSample(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
       CrossDeviceSigninPromoShouldShowResult::kCanShow, 1);
 }
 
-TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_HistorySyncDisabled) {
+TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromoHistorySyncDisabled) {
   base::HistogramTester histogram_tester;
   // Setup: Signed in, only local device, history sync disabled.
   identity_test_env()->MakePrimaryAccountAvailable(
@@ -199,14 +240,14 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_HistorySyncDisabled) {
   AddDevice("local_device_guid", /*is_local=*/true);
   SetHistoryAndTabsSyncingPreference(false);
 
-  EXPECT_FALSE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectUniqueSample(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
       CrossDeviceSigninPromoShouldShowResult::kDataTypeNotEnabled, 1);
 }
 
-TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_HistorySyncEnabled) {
+TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromoHistorySyncEnabled) {
   base::HistogramTester histogram_tester;
   // Setup: Signed in, only local device, history sync enabled.
   identity_test_env()->MakePrimaryAccountAvailable(
@@ -214,7 +255,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_HistorySyncEnabled) {
   AddDevice("local_device_guid", /*is_local=*/true);
   SetHistoryAndTabsSyncingPreference(true);
 
-  EXPECT_TRUE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectUniqueSample(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
@@ -222,7 +263,39 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_HistorySyncEnabled) {
 }
 
 TEST_F(CrossDeviceSigninPromoManagerTest,
-       ShouldShowPromo_ProfileMenuEntryIgnoreHistorySync) {
+       ShouldShowPromoForeignTabsSyncDisabled) {
+  base::HistogramTester histogram_tester;
+  // Setup: Signed in, only local device, tabs sync disabled.
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "user@gmail.com", signin::ConsentLevel::kSignin);
+  AddDevice("local_device_guid", /*is_local=*/true);
+  SetTabsSyncingPreference(false);
+
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kForeignTabs, profile()));
+  histogram_tester.ExpectUniqueSample(
+      "Signin.CrossDeviceSigninPromo.ShouldShowResult.ForeignTabs",
+      CrossDeviceSigninPromoShouldShowResult::kDataTypeNotEnabled, 1);
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       ShouldShowPromoForeignTabsSyncEnabled) {
+  base::HistogramTester histogram_tester;
+  // Setup: Signed in, only local device, tabs sync enabled.
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "user@gmail.com", signin::ConsentLevel::kSignin);
+  AddDevice("local_device_guid", /*is_local=*/true);
+  SetTabsSyncingPreference(true);
+
+  EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kForeignTabs, profile()));
+  histogram_tester.ExpectUniqueSample(
+      "Signin.CrossDeviceSigninPromo.ShouldShowResult.ForeignTabs",
+      CrossDeviceSigninPromoShouldShowResult::kCanShow, 1);
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       ShouldShowPromoProfileMenuEntryIgnoreHistorySync) {
   base::HistogramTester histogram_tester;
   // Setup: Signed in, only local device, history sync disabled.
   identity_test_env()->MakePrimaryAccountAvailable(
@@ -232,14 +305,14 @@ TEST_F(CrossDeviceSigninPromoManagerTest,
 
   // Profile menu promo should still return true even if history sync is
   // disabled.
-  EXPECT_TRUE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kProfileMenu, profile()));
   histogram_tester.ExpectUniqueSample(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.ProfileMenu",
       CrossDeviceSigninPromoShouldShowResult::kCanShow, 1);
 }
 
-TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_ShownLimitReached) {
+TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromoShownLimitReached) {
   base::HistogramTester histogram_tester;
   // Setup: Signed in, local device, history sync enabled.
   identity_test_env()->MakePrimaryAccountAvailable(
@@ -249,7 +322,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_ShownLimitReached) {
 
   // Show the promo 4 times.
   for (int i = 0; i < 4; ++i) {
-    EXPECT_TRUE(ShouldShowCrossDeviceSigninPromo(
+    EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
         CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
     OnCrossDeviceSigninPromoShown(
         CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile());
@@ -258,7 +331,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_ShownLimitReached) {
   }
 
   // 5th time: still allowed.
-  EXPECT_TRUE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   OnCrossDeviceSigninPromoShown(CrossDeviceSigninPromoEntryPoint::kHistoryPage,
                                 profile());
@@ -266,14 +339,14 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_ShownLimitReached) {
       "Signin.CrossDeviceSigninPromo.ShownCount.HistoryPage", 5, 1);
 
   // 6th time: limit reached.
-  EXPECT_FALSE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectBucketCount(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
       CrossDeviceSigninPromoShouldShowResult::kShownLimitReached, 1);
 }
 
-TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_DismissedCooldown) {
+TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromoDismissedCooldown) {
   base::HistogramTester histogram_tester;
   // Setup: Signed in, local device, history sync enabled.
   identity_test_env()->MakePrimaryAccountAvailable(
@@ -282,7 +355,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_DismissedCooldown) {
   SetHistoryAndTabsSyncingPreference(true);
 
   // Show once.
-  EXPECT_TRUE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   OnCrossDeviceSigninPromoShown(CrossDeviceSigninPromoEntryPoint::kHistoryPage,
                                 profile());
@@ -296,7 +369,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_DismissedCooldown) {
       "Signin.CrossDeviceSigninPromo.DismissedAtShownCount.HistoryPage", 1, 1);
 
   // Cooldown active: should not show.
-  EXPECT_FALSE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectBucketCount(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
@@ -304,7 +377,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_DismissedCooldown) {
 
   // Fast forward by 6 days: still active.
   FastForwardBy(base::Days(6));
-  EXPECT_FALSE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectBucketCount(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
@@ -312,7 +385,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_DismissedCooldown) {
 
   // Fast forward to 7 days: cooldown expired, allowed to show.
   FastForwardBy(base::Days(1));
-  EXPECT_TRUE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectBucketCount(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
@@ -320,7 +393,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest, ShouldShowPromo_DismissedCooldown) {
 }
 
 TEST_F(CrossDeviceSigninPromoManagerTest,
-       ShouldShowPromo_ShownAfterDismissalLimit) {
+       ShouldShowPromoShownAfterDismissalLimit) {
   base::HistogramTester histogram_tester;
   // Setup: Signed in, local device, history sync enabled.
   identity_test_env()->MakePrimaryAccountAvailable(
@@ -336,7 +409,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest,
 
   // Wait 7 days.
   FastForwardBy(base::Days(7));
-  EXPECT_TRUE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectBucketCount(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
@@ -347,7 +420,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest,
                                 profile());
 
   // Now it was shown once after dismissal, so it should be blocked permanently.
-  EXPECT_FALSE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectBucketCount(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
@@ -357,7 +430,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest,
 
   // Even after another 7 days.
   FastForwardBy(base::Days(7));
-  EXPECT_FALSE(ShouldShowCrossDeviceSigninPromo(
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
   histogram_tester.ExpectBucketCount(
       "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage",
@@ -377,7 +450,7 @@ TEST_F(CrossDeviceSigninPromoManagerTest,
 
   // Show 10 times.
   for (int i = 0; i < 10; ++i) {
-    EXPECT_TRUE(ShouldShowCrossDeviceSigninPromo(
+    EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
         CrossDeviceSigninPromoEntryPoint::kProfileMenu, profile()));
   }
   histogram_tester.ExpectUniqueSample(
@@ -386,20 +459,540 @@ TEST_F(CrossDeviceSigninPromoManagerTest,
 }
 
 TEST_F(CrossDeviceSigninPromoManagerTest,
-       OpenSigninToPhoneQrCodeBubbleRecordsOpenedMetric) {
+       WhatsNewPromoIgnoresCapsAndDataTypes) {
+  base::HistogramTester histogram_tester;
+  // Signed in with only this device. Exhaust the History page promo budget
+  // first and then disable History sync to verify What's New is unaffected by
+  // either.
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "user@gmail.com", signin::ConsentLevel::kSignin);
+  AddDevice("local_device_guid", /*is_local=*/true);
+  SetHistoryAndTabsSyncingPreference(true);
+
+  for (int i = 0; i < 5; ++i) {
+    OnCrossDeviceSigninPromoShown(
+        CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile());
+  }
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
+
+  SetHistoryAndTabsSyncingPreference(false);
+
+  for (int i = 0; i < 10; ++i) {
+    EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
+        CrossDeviceSigninPromoEntryPoint::kWhatsNewPage, profile()));
+  }
+  histogram_tester.ExpectUniqueSample(
+      "Signin.CrossDeviceSigninPromo.ShouldShowResult.WhatsNewPage",
+      CrossDeviceSigninPromoShouldShowResult::kCanShow, 10);
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest, WhatsNewPromoRequiresSignIn) {
+  base::HistogramTester histogram_tester;
+  AddDevice("local_device_guid", /*is_local=*/true);
+
+  EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kWhatsNewPage, profile()));
+  histogram_tester.ExpectUniqueSample(
+      "Signin.CrossDeviceSigninPromo.ShouldShowResult.WhatsNewPage",
+      CrossDeviceSigninPromoShouldShowResult::kNotSignedIn, 1);
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest, WhatsNewPromoIgnoresMobileDevice) {
+  base::HistogramTester histogram_tester;
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "user@gmail.com", signin::ConsentLevel::kSignin);
+  AddDevice("local_device_guid", /*is_local=*/true);
+  AddDevice("phone_guid", /*is_local=*/false,
+            syncer::DeviceInfo::OsType::kAndroid);
+
+  // The What's New page always shows a QR code, so signed-in users get the
+  // account-bound one even if they already have a phone.
+  EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kWhatsNewPage, profile()));
+  histogram_tester.ExpectUniqueSample(
+      "Signin.CrossDeviceSigninPromo.ShouldShowResult.WhatsNewPage",
+      CrossDeviceSigninPromoShouldShowResult::kCanShow, 1);
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest, WhatsNewPromoRespectsFeatureFlag) {
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "user@gmail.com", signin::ConsentLevel::kSignin);
+  AddDevice("local_device_guid", /*is_local=*/true);
+
+  // Shown with the default feature state of this fixture.
+  EXPECT_TRUE(ShouldStartShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kWhatsNewPage, profile()));
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(switches::kCrossDeviceSigninFromDesktop);
+    EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
+        CrossDeviceSigninPromoEntryPoint::kWhatsNewPage, profile()));
+  }
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(
+        switches::kCrossDeviceSigninFromDesktopFollowup);
+    EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
+        CrossDeviceSigninPromoEntryPoint::kWhatsNewPage, profile()));
+  }
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeatureWithParameters(
+        switches::kCrossDeviceSigninFromDesktopFollowup,
+        {{"whats_new", "false"}});
+    EXPECT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
+        CrossDeviceSigninPromoEntryPoint::kWhatsNewPage, profile()));
+  }
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       OpenSigninToPhoneQrCodeBubble_NoAccountOrWindowDropsBubble) {
   base::HistogramTester histogram_tester;
 
+  MockSigninUiDelegate mock_delegate;
+  base::AutoReset<signin_ui_util::SigninUiDelegate*> delegate_reset =
+      signin_ui_util::SetSigninUiDelegateForTesting(&mock_delegate);
+  EXPECT_CALL(mock_delegate, ShowCrossDeviceSigninQrBubble).Times(0);
+
+  // Null window drops bubble.
   OpenSigninToPhoneQrCodeBubble(nullptr,
+                                CrossDeviceSigninPromoEntryPoint::kHistoryPage,
+                                base::DoNothing());
+  histogram_tester.ExpectTotalCount(
+      "Signin.CrossDeviceSigninPromo.OpenedQrCodeBubble", 0);
+
+  // Signed out drops bubble even if window is present.
+  MockBrowserWindowInterface browser_window;
+  EXPECT_CALL(browser_window, GetProfile())
+      .WillRepeatedly(testing::Return(profile()));
+  OpenSigninToPhoneQrCodeBubble(&browser_window,
+                                CrossDeviceSigninPromoEntryPoint::kProfileMenu,
+                                base::DoNothing());
+  histogram_tester.ExpectTotalCount(
+      "Signin.CrossDeviceSigninPromo.OpenedQrCodeBubble", 0);
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       OpenSigninToPhoneQrCodeBubbleRecordsOpenedMetricAndGeneratesCorrectUrl) {
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      switches::kCrossDeviceSigninFromDesktop);
+
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "user+test@gmail.com", signin::ConsentLevel::kSignin);
+
+  MockBrowserWindowInterface browser_window;
+  EXPECT_CALL(browser_window, GetProfile())
+      .WillRepeatedly(testing::Return(profile()));
+
+  MockSigninUiDelegate mock_delegate;
+  base::AutoReset<signin_ui_util::SigninUiDelegate*> delegate_reset =
+      signin_ui_util::SetSigninUiDelegateForTesting(&mock_delegate);
+
+  // Test ProfileMenu entry point.
+  GURL captured_url;
+  EXPECT_CALL(mock_delegate,
+              ShowCrossDeviceSigninQrBubble(
+                  &browser_window, testing::_, testing::_,
+                  CrossDeviceSigninPromoEntryPoint::kProfileMenu))
+      .WillOnce(testing::SaveArg<1>(&captured_url));
+
+  OpenSigninToPhoneQrCodeBubble(&browser_window,
+                                CrossDeviceSigninPromoEntryPoint::kProfileMenu,
+                                base::DoNothing());
+  histogram_tester.ExpectBucketCount(
+      "Signin.CrossDeviceSigninPromo.OpenedQrCodeBubble",
+      CrossDeviceSigninPromoEntryPoint::kProfileMenu, 1);
+
+  std::string campaign_val;
+  EXPECT_TRUE(
+      net::GetValueForKeyInQuery(captured_url, "ios-campaign", &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceProfileMenu");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "android-campaign",
+                                         &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceProfileMenu");
+  std::string email_val;
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "email", &email_val));
+  EXPECT_EQ(email_val, "user+test@gmail.com");
+  std::string entry_point_id_val;
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "entry_point_id",
+                                         &entry_point_id_val));
+  EXPECT_EQ(entry_point_id_val, "1");
+
+  // Test HistoryPage entry point.
+  EXPECT_CALL(mock_delegate,
+              ShowCrossDeviceSigninQrBubble(
+                  &browser_window, testing::_, testing::_,
+                  CrossDeviceSigninPromoEntryPoint::kHistoryPage))
+      .WillOnce(testing::SaveArg<1>(&captured_url));
+
+  OpenSigninToPhoneQrCodeBubble(&browser_window,
                                 CrossDeviceSigninPromoEntryPoint::kHistoryPage,
                                 base::DoNothing());
   histogram_tester.ExpectBucketCount(
       "Signin.CrossDeviceSigninPromo.OpenedQrCodeBubble",
       CrossDeviceSigninPromoEntryPoint::kHistoryPage, 1);
 
-  OpenSigninToPhoneQrCodeBubble(nullptr,
-                                CrossDeviceSigninPromoEntryPoint::kProfileMenu,
+  EXPECT_TRUE(
+      net::GetValueForKeyInQuery(captured_url, "ios-campaign", &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceHistoryPage");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "android-campaign",
+                                         &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceHistoryPage");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "email", &email_val));
+  EXPECT_EQ(email_val, "user+test@gmail.com");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "entry_point_id",
+                                         &entry_point_id_val));
+  EXPECT_EQ(entry_point_id_val, "1");
+
+  // Test WhatsNewPage entry point.
+  EXPECT_CALL(mock_delegate,
+              ShowCrossDeviceSigninQrBubble(
+                  &browser_window, testing::_, testing::_,
+                  CrossDeviceSigninPromoEntryPoint::kWhatsNewPage))
+      .WillOnce(testing::SaveArg<1>(&captured_url));
+
+  OpenSigninToPhoneQrCodeBubble(&browser_window,
+                                CrossDeviceSigninPromoEntryPoint::kWhatsNewPage,
                                 base::DoNothing());
   histogram_tester.ExpectBucketCount(
       "Signin.CrossDeviceSigninPromo.OpenedQrCodeBubble",
-      CrossDeviceSigninPromoEntryPoint::kProfileMenu, 1);
+      CrossDeviceSigninPromoEntryPoint::kWhatsNewPage, 1);
+
+  EXPECT_TRUE(
+      net::GetValueForKeyInQuery(captured_url, "ios-campaign", &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceWhatsNew");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "android-campaign",
+                                         &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceWhatsNew");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "email", &email_val));
+  EXPECT_EQ(email_val, "user+test@gmail.com");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "entry_point_id",
+                                         &entry_point_id_val));
+  EXPECT_EQ(entry_point_id_val, "1");
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       OpenSigninToPhoneQrCodeBubble_ReplacesExistingCampaignParams) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      switches::kCrossDeviceSigninFromDesktop,
+      {{"url",
+        "https://www.google.com/"
+        "chrome/go-mobile?ios-campaign=old&android-campaign=old"}});
+
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "test@gmail.com", signin::ConsentLevel::kSignin);
+
+  MockBrowserWindowInterface browser_window;
+  EXPECT_CALL(browser_window, GetProfile())
+      .WillRepeatedly(testing::Return(profile()));
+
+  MockSigninUiDelegate mock_delegate;
+  base::AutoReset<signin_ui_util::SigninUiDelegate*> delegate_reset =
+      signin_ui_util::SetSigninUiDelegateForTesting(&mock_delegate);
+
+  GURL captured_url;
+  EXPECT_CALL(mock_delegate,
+              ShowCrossDeviceSigninQrBubble(
+                  &browser_window, testing::_, testing::_,
+                  CrossDeviceSigninPromoEntryPoint::kProfileMenu))
+      .WillOnce(testing::SaveArg<1>(&captured_url));
+
+  OpenSigninToPhoneQrCodeBubble(&browser_window,
+                                CrossDeviceSigninPromoEntryPoint::kProfileMenu,
+                                base::DoNothing());
+
+  std::string campaign_val;
+  EXPECT_TRUE(
+      net::GetValueForKeyInQuery(captured_url, "ios-campaign", &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceProfileMenu");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "android-campaign",
+                                         &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceProfileMenu");
+}
+
+// Verifies that OpenSigninToPhoneQrCodeBubble generates the expected URL with
+// the SendTabToSelf campaign and forwards the SendTabToSelf entry point.
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       OpenSigninToPhoneQrCodeBubble_SendTabToSelf) {
+  base::HistogramTester histogram_tester;
+
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "user+test@gmail.com", signin::ConsentLevel::kSignin);
+
+  MockBrowserWindowInterface browser_window;
+  EXPECT_CALL(browser_window, GetProfile())
+      .WillRepeatedly(testing::Return(profile()));
+
+  MockSigninUiDelegate mock_delegate;
+  base::AutoReset<signin_ui_util::SigninUiDelegate*> delegate_reset =
+      signin_ui_util::SetSigninUiDelegateForTesting(&mock_delegate);
+
+  GURL captured_url;
+  EXPECT_CALL(mock_delegate,
+              ShowCrossDeviceSigninQrBubble(
+                  &browser_window, testing::_, testing::_,
+                  CrossDeviceSigninPromoEntryPoint::kSendTabToSelf))
+      .WillOnce(testing::SaveArg<1>(&captured_url));
+
+  OpenSigninToPhoneQrCodeBubble(
+      &browser_window, CrossDeviceSigninPromoEntryPoint::kSendTabToSelf,
+      base::DoNothing());
+  histogram_tester.ExpectBucketCount(
+      "Signin.CrossDeviceSigninPromo.OpenedQrCodeBubble",
+      CrossDeviceSigninPromoEntryPoint::kSendTabToSelf, 1);
+
+  std::string campaign_val;
+  EXPECT_TRUE(
+      net::GetValueForKeyInQuery(captured_url, "ios-campaign", &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceSendTabToSelf");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "android-campaign",
+                                         &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceSendTabToSelf");
+
+  std::string email_val;
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "email", &email_val));
+  EXPECT_EQ(email_val, "user+test@gmail.com");
+}
+
+// Verifies that OpenSigninToPhoneQrCodeBubble generates the expected URL with
+// the ForeignTabs campaign and forwards the ForeignTabs entry point.
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       OpenSigninToPhoneQrCodeBubble_ForeignTabs) {
+  base::HistogramTester histogram_tester;
+
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "user+test@gmail.com", signin::ConsentLevel::kSignin);
+
+  MockBrowserWindowInterface browser_window;
+  EXPECT_CALL(browser_window, GetProfile())
+      .WillRepeatedly(testing::Return(profile()));
+
+  MockSigninUiDelegate mock_delegate;
+  base::AutoReset<signin_ui_util::SigninUiDelegate*> delegate_reset =
+      signin_ui_util::SetSigninUiDelegateForTesting(&mock_delegate);
+
+  GURL captured_url;
+  EXPECT_CALL(mock_delegate,
+              ShowCrossDeviceSigninQrBubble(
+                  &browser_window, testing::_, testing::_,
+                  CrossDeviceSigninPromoEntryPoint::kForeignTabs))
+      .WillOnce(testing::SaveArg<1>(&captured_url));
+
+  OpenSigninToPhoneQrCodeBubble(&browser_window,
+                                CrossDeviceSigninPromoEntryPoint::kForeignTabs,
+                                base::DoNothing());
+  histogram_tester.ExpectBucketCount(
+      "Signin.CrossDeviceSigninPromo.OpenedQrCodeBubble",
+      CrossDeviceSigninPromoEntryPoint::kForeignTabs, 1);
+
+  std::string campaign_val;
+  EXPECT_TRUE(
+      net::GetValueForKeyInQuery(captured_url, "ios-campaign", &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceForeignTabs");
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "android-campaign",
+                                         &campaign_val));
+  EXPECT_EQ(campaign_val, "XDeviceForeignTabs");
+
+  std::string email_val;
+  EXPECT_TRUE(net::GetValueForKeyInQuery(captured_url, "email", &email_val));
+  EXPECT_EQ(email_val, "user+test@gmail.com");
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       OpenSigninToPhoneQrCodeBubbleFromPromoIsNoOpWhileBubbleIsOpen) {
+  base::HistogramTester histogram_tester;
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "test@gmail.com", signin::ConsentLevel::kSignin);
+
+  MockBrowserWindowInterface browser_window;
+  EXPECT_CALL(browser_window, GetProfile())
+      .WillRepeatedly(testing::Return(profile()));
+
+  MockSigninUiDelegate mock_delegate;
+  base::AutoReset<signin_ui_util::SigninUiDelegate*> delegate_reset =
+      signin_ui_util::SetSigninUiDelegateForTesting(&mock_delegate);
+
+  std::vector<bool> observed_states;
+  base::CallbackListSubscription subscription =
+      RegisterCrossDeviceSigninPromoBubbleStateCallback(
+          profile(), base::BindLambdaForTesting([&](bool is_open) {
+            observed_states.push_back(is_open);
+          }));
+
+  base::OnceClosure closing_callback;
+  EXPECT_CALL(mock_delegate,
+              ShowCrossDeviceSigninQrBubble(
+                  &browser_window, testing::_, testing::_,
+                  CrossDeviceSigninPromoEntryPoint::kHistoryPage))
+      .WillOnce(MoveArg<2>(&closing_callback));
+
+  OpenSigninToPhoneQrCodeBubble(&browser_window,
+                                CrossDeviceSigninPromoEntryPoint::kHistoryPage,
+                                base::DoNothing());
+  ASSERT_TRUE(closing_callback);
+
+  bool second_closing_callback_run = false;
+  OpenSigninToPhoneQrCodeBubble(
+      &browser_window, CrossDeviceSigninPromoEntryPoint::kHistoryPage,
+      base::BindLambdaForTesting([&] { second_closing_callback_run = true; }));
+
+  EXPECT_FALSE(second_closing_callback_run);
+  EXPECT_TRUE(IsCrossDeviceSigninPromoBubbleOpen(profile()));
+  EXPECT_THAT(observed_states, testing::ElementsAre(true));
+  histogram_tester.ExpectUniqueSample(
+      "Signin.CrossDeviceSigninPromo.OpenedQrCodeBubble",
+      CrossDeviceSigninPromoEntryPoint::kHistoryPage, 1);
+
+  std::move(closing_callback).Run();
+  EXPECT_FALSE(IsCrossDeviceSigninPromoBubbleOpen(profile()));
+  EXPECT_THAT(observed_states, testing::ElementsAre(true, false));
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       ProfileMenuReopensBubbleWhenAlreadyOpen) {
+  base::HistogramTester histogram_tester;
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "test@gmail.com", signin::ConsentLevel::kSignin);
+
+  MockBrowserWindowInterface browser_window;
+  EXPECT_CALL(browser_window, GetProfile())
+      .WillRepeatedly(testing::Return(profile()));
+
+  MockSigninUiDelegate mock_delegate;
+  base::AutoReset<signin_ui_util::SigninUiDelegate*> delegate_reset =
+      signin_ui_util::SetSigninUiDelegateForTesting(&mock_delegate);
+
+  std::vector<bool> observed_states;
+  base::CallbackListSubscription subscription =
+      RegisterCrossDeviceSigninPromoBubbleStateCallback(
+          profile(), base::BindLambdaForTesting([&](bool is_open) {
+            observed_states.push_back(is_open);
+          }));
+
+  base::OnceClosure first_bubble_on_closed;
+  EXPECT_CALL(mock_delegate,
+              ShowCrossDeviceSigninQrBubble(
+                  &browser_window, testing::_, testing::_,
+                  CrossDeviceSigninPromoEntryPoint::kHistoryPage))
+      .WillOnce(MoveArg<2>(&first_bubble_on_closed));
+
+  bool first_closing_callback_run = false;
+  OpenSigninToPhoneQrCodeBubble(
+      &browser_window, CrossDeviceSigninPromoEntryPoint::kHistoryPage,
+      base::BindLambdaForTesting([&] { first_closing_callback_run = true; }));
+  ASSERT_TRUE(first_bubble_on_closed);
+
+  base::OnceClosure second_bubble_on_closed;
+  EXPECT_CALL(mock_delegate,
+              ShowCrossDeviceSigninQrBubble(
+                  &browser_window, testing::_, testing::_,
+                  CrossDeviceSigninPromoEntryPoint::kProfileMenu))
+      .WillOnce(MoveArg<2>(&second_bubble_on_closed));
+
+  bool second_closing_callback_run = false;
+  OpenSigninToPhoneQrCodeBubble(
+      &browser_window, CrossDeviceSigninPromoEntryPoint::kProfileMenu,
+      base::BindLambdaForTesting([&] { second_closing_callback_run = true; }));
+  ASSERT_TRUE(second_bubble_on_closed);
+  EXPECT_TRUE(IsCrossDeviceSigninPromoBubbleOpen(profile()));
+  EXPECT_THAT(observed_states, testing::ElementsAre(true));
+
+  // The replaced bubble is destroyed asynchronously; its destruction must not
+  // mark the new bubble as closed.
+  std::move(first_bubble_on_closed).Run();
+  EXPECT_TRUE(first_closing_callback_run);
+  EXPECT_FALSE(second_closing_callback_run);
+  EXPECT_TRUE(IsCrossDeviceSigninPromoBubbleOpen(profile()));
+  EXPECT_THAT(observed_states, testing::ElementsAre(true));
+  histogram_tester.ExpectTotalCount(
+      "Signin.CrossDeviceSigninPromo.OpenedQrCodeBubble", 2);
+
+  std::move(second_bubble_on_closed).Run();
+  EXPECT_TRUE(second_closing_callback_run);
+  EXPECT_FALSE(IsCrossDeviceSigninPromoBubbleOpen(profile()));
+  EXPECT_THAT(observed_states, testing::ElementsAre(true, false));
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest, BubbleOpenStateIsPerProfile) {
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "test@gmail.com", signin::ConsentLevel::kSignin);
+  std::unique_ptr<TestingProfile> other_profile =
+      TestingProfile::Builder().Build();
+
+  MockBrowserWindowInterface browser_window;
+  EXPECT_CALL(browser_window, GetProfile())
+      .WillRepeatedly(testing::Return(profile()));
+
+  MockSigninUiDelegate mock_delegate;
+  base::AutoReset<signin_ui_util::SigninUiDelegate*> delegate_reset =
+      signin_ui_util::SetSigninUiDelegateForTesting(&mock_delegate);
+
+  base::OnceClosure closing_callback;
+  EXPECT_CALL(mock_delegate,
+              ShowCrossDeviceSigninQrBubble(
+                  &browser_window, testing::_, testing::_,
+                  CrossDeviceSigninPromoEntryPoint::kHistoryPage))
+      .WillOnce(MoveArg<2>(&closing_callback));
+
+  OpenSigninToPhoneQrCodeBubble(&browser_window,
+                                CrossDeviceSigninPromoEntryPoint::kHistoryPage,
+                                base::DoNothing());
+
+  EXPECT_TRUE(IsCrossDeviceSigninPromoBubbleOpen(profile()));
+  EXPECT_FALSE(IsCrossDeviceSigninPromoBubbleOpen(other_profile.get()));
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       ShouldKeepShowingPromo_IgnoresCapsAndRecordsNoMetrics) {
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "user@gmail.com", signin::ConsentLevel::kSignin);
+  AddDevice("local_device_guid", /*is_local=*/true);
+  SetHistoryAndTabsSyncingPreference(true);
+
+  for (int i = 0; i < 5; ++i) {
+    OnCrossDeviceSigninPromoShown(
+        CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile());
+  }
+  OnCrossDeviceSigninPromoDismissed(
+      CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile());
+  ASSERT_FALSE(ShouldStartShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
+
+  base::HistogramTester histogram_tester;
+  EXPECT_TRUE(ShouldKeepShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
+  histogram_tester.ExpectTotalCount(
+      "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage", 0);
+}
+
+TEST_F(CrossDeviceSigninPromoManagerTest,
+       ShouldKeepShowingPromo_FalseWhenNoLongerEligible) {
+  identity_test_env()->MakePrimaryAccountAvailable(
+      "user@gmail.com", signin::ConsentLevel::kSignin);
+  AddDevice("local_device_guid", /*is_local=*/true);
+  SetHistoryAndTabsSyncingPreference(true);
+  ASSERT_TRUE(ShouldKeepShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
+
+  base::HistogramTester histogram_tester;
+  SetHistoryAndTabsSyncingPreference(false);
+  EXPECT_FALSE(ShouldKeepShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
+
+  SetHistoryAndTabsSyncingPreference(true);
+  AddDevice("remote_device_guid", /*is_local=*/false,
+            syncer::DeviceInfo::OsType::kAndroid);
+  EXPECT_FALSE(ShouldKeepShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
+
+  identity_test_env()->ClearPrimaryAccount();
+  EXPECT_FALSE(ShouldKeepShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kHistoryPage, profile()));
+  histogram_tester.ExpectTotalCount(
+      "Signin.CrossDeviceSigninPromo.ShouldShowResult.HistoryPage", 0);
 }

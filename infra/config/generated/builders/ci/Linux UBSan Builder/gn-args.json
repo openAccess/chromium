@@ -1,6 +1,8 @@
 {
   "gn_args": {
+    "concurrent_links": 4,
     "dcheck_always_on": false,
+    "enable_fuzztest_fuzz": false,
     "fail_on_san_warnings": true,
     "is_component_build": false,
     "is_debug": false,
@@ -8,7 +10,6 @@
     "is_ubsan_no_recover": true,
     "target_cpu": "x64",
     "target_os": "linux",
-    "use_reclient": false,
     "use_remoteexec": true,
     "use_siso": true
   }

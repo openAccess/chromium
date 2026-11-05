@@ -322,6 +322,11 @@ void HTMLOptionElement::ParseAttribute(
       PseudoStateChanged(CSSSelector::kPseudoDisabled);
       PseudoStateChanged(CSSSelector::kPseudoEnabled);
       InvalidateIfHasEffectiveAppearance();
+      if (RuntimeEnabledFeatures::SelectedcontentSpec2Enabled()) {
+        if (HTMLSelectElement* select = OwnerSelectElement()) {
+          select->ResetSelectedness();
+        }
+      }
     }
   } else if (name == html_names::kSelectedAttr) {
     if (params.old_value.IsNull() != params.new_value.IsNull() && !is_dirty_)
@@ -618,12 +623,13 @@ Node::InsertionNotificationRequest HTMLOptionElement::InsertedInto(
   // TODO(crbug.com/453705243): Call OptionInserted on the ancestor datalist if
   // it changed.
 
-  if (RuntimeEnabledFeatures::SelectedcontentSpecEnabled() && Selected() &&
-      nearest_ancestor_select_) {
+  if (Selected() && nearest_ancestor_select_) {
     if (!GetDocument().StatePreservingAtomicMoveInProgress()) {
       return InsertionNotificationRequest::
           kInsertionShouldCallDidNotifySubtreeInsertions;
-    } else if (nearest_ancestor_select_
+    } else if ((!RuntimeEnabledFeatures::SelectedcontentSpec2Enabled() ||
+                nearest_ancestor_select_ != old_ancestor_select) &&
+               nearest_ancestor_select_
                    ->HasDescendantSelectedcontentElements()) {
       GetDocument().GetAgent().event_loop()->EnqueueMicrotask(
           BindOnce(&HTMLSelectElement::UpdateAllSelectedcontents,
@@ -634,8 +640,7 @@ Node::InsertionNotificationRequest HTMLOptionElement::InsertedInto(
 }
 
 void HTMLOptionElement::DidNotifySubtreeInsertionsToDocument() {
-  if (RuntimeEnabledFeatures::SelectedcontentSpecEnabled() && Selected() &&
-      nearest_ancestor_select_) {
+  if (Selected() && nearest_ancestor_select_) {
     if (nearest_ancestor_select_->IsMultiple()) {
       nearest_ancestor_select_->UpdateAllSelectedcontentsMultiple();
     } else {
@@ -927,13 +932,6 @@ void HTMLOptionElement::FinishParsingChildren() {
       }
     }
   }
-}
-
-// static
-bool HTMLOptionElement::IsLabelContainerElement(const Element& element) {
-  return IsA<HTMLOptionElement>(element.OwnerShadowHost()) &&
-         element.ShadowPseudoId() ==
-             shadow_element_names::kOptionLabelContainer;
 }
 
 bool HTMLOptionElement::SupportsActiveOptionPseudo() {

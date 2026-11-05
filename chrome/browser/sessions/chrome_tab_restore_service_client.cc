@@ -4,12 +4,14 @@
 
 #include "chrome/browser/sessions/chrome_tab_restore_service_client.h"
 
+#include "base/functional/bind.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_common_utils.h"
 #include "chrome/browser/wacz_replay/replay_partition.h"
 #include "chrome/common/url_constants.h"
 #include "components/sessions/content/content_live_tab.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "extensions/buildflags/buildflags.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
@@ -48,7 +50,7 @@ sessions::LiveTabContext* ChromeTabRestoreServiceClient::CreateLiveTabContext(
 #if BUILDFLAG(IS_ANDROID)
   // Android does not support creating a LiveTabContext here. Return the
   // existing context instead.
-  DCHECK(existing_context);
+  CHECK(existing_context, base::NotFatalUntil::M163);
   return existing_context;
 #else
   return BrowserLiveTabContext::Create(profile_, type, app_name, bounds,
@@ -72,7 +74,7 @@ ChromeTabRestoreServiceClient::FindLiveTabContextForTab(
 sessions::LiveTabContext*
 ChromeTabRestoreServiceClient::FindLiveTabContextWithID(SessionID desired_id) {
 #if BUILDFLAG(IS_ANDROID)
-  return AndroidLiveTabContext::FindContextWithID(desired_id);
+  return AndroidLiveTabContext::FindContextWithID(desired_id, profile_);
 #else
   return BrowserLiveTabContext::FindContextWithID(desired_id);
 #endif
@@ -144,10 +146,20 @@ bool ChromeTabRestoreServiceClient::HasLastSession() {
 
 void ChromeTabRestoreServiceClient::GetLastSession(
     sessions::GetLastSessionCallback callback) {
-  DCHECK(HasLastSession());
+  CHECK(HasLastSession(), base::NotFatalUntil::M163);
 #if BUILDFLAG(ENABLE_SESSION_SERVICE)
-  SessionServiceFactory::GetForProfile(profile_)->GetLastSession(
-      std::move(callback));
+  // sessions::TabRestoreServiceClient is cross-platform and has no interest in
+  // the restore's read status or replay result, so drop them here rather than
+  // widening the shared interface.
+  SessionServiceFactory::GetForProfile(profile_)->GetLastSession(base::BindOnce(
+      [](sessions::GetLastSessionCallback callback,
+         std::vector<std::unique_ptr<sessions::SessionWindow>> windows,
+         SessionID active_window_id, sessions::CommandStorageReadStatus status,
+         sessions::SessionReplayResult replay_result) {
+        std::move(callback).Run(std::move(windows), active_window_id,
+                                sessions::IsCommandStorageReadError(status));
+      },
+      std::move(callback)));
 #endif
 }
 

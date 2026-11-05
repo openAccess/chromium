@@ -5,6 +5,15 @@
 import("//build/config/features.gni")
 import("//build/config/ui.gni")
 
+if (is_android) {
+  import("//build/config/android/rules.gni")
+
+  # Exposes device_signals::SettingValue to Java.
+  java_cpp_enum("java_enums") {
+    sources = [ "common_types.h" ]
+  }
+}
+
 static_library("common") {
   public = [
     "cached_signal.h",
@@ -65,10 +74,6 @@ static_library("common") {
   if (use_gio) {
     configs += [ "//build/linux:gio_config" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("features") {

@@ -44,7 +44,12 @@ static_library("extensions") {
     "signin_screen_policy_provider.h",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
+  public_deps = [
+    "//chrome/browser/apps/almanac_api_client/proto",
+    "//chrome/browser/apps/app_preload_service/proto",
+    "//chrome/browser/extensions/api/input_ime",
+    "//chromeos/ash/experiences/extensions/common/api",
+  ]
 
   deps = [
     "//ash",
@@ -65,12 +70,12 @@ static_library("extensions") {
     "//chrome/browser/ash/policy/core",
     "//chrome/browser/ash/profiles",
     "//chrome/browser/extensions:external_loader",
-    "//chrome/browser/extensions/api/input_ime",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/profiles:profile_manager",
     "//chrome/browser/resources/chromeos:app_icon_resources",
     "//chrome/browser/ui/ash/keyboard",
     "//chrome/browser/ui/ash/multi_user",
+    "//chrome/browser/ui/browser_window",
     "//chrome/browser/web_applications",
     "//chrome/common",
     "//chromeos/ash/components/browser_context_helper",
@@ -162,6 +167,7 @@ source_set("unit_tests") {
     "//chrome/browser/extensions:test_support",
     "//chrome/common",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/install_attributes:test_support",
     "//chromeos/ash/components/login/login_state:test_support",
     "//chromeos/ash/experiences/arc:arc_test_support",
@@ -201,7 +207,7 @@ source_set("browser_tests") {
     "//chrome/browser/extensions",
     "//chrome/browser/policy:extension_force_install_mixin",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/ash/keyboard",
     "//chrome/common",
     "//chrome/test:test_support",

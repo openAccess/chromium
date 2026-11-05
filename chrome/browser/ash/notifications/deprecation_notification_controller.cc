@@ -34,7 +34,7 @@ const char kNotificationIdPrefix[] = "alt_event_rewrite_deprecation.";
 DeprecationNotificationController::DeprecationNotificationController(
     message_center::MessageCenter* message_center)
     : message_center_(message_center) {
-  DCHECK(message_center_);
+  CHECK(message_center_, base::NotFatalUntil::M160);
 }
 
 DeprecationNotificationController::~DeprecationNotificationController() =
@@ -105,7 +105,7 @@ void DeprecationNotificationController::ShowNotification(
   auto notification = CreateSystemNotificationPtr(
       message_center::NOTIFICATION_TYPE_SIMPLE, id,
       l10n_util::GetStringUTF16(IDS_DEPRECATED_SHORTCUT_TITLE), message_body,
-      std::u16string(), GURL(),
+      std::u16string(),
       message_center::NotifierId(
           message_center::NotifierType::SYSTEM_COMPONENT, kNotifierId,
           NotificationCatalogName::kEventRewriterDeprecation),
@@ -118,7 +118,7 @@ void DeprecationNotificationController::ShowNotification(
 bool DeprecationNotificationController::
     ShouldShowSixPackKeyDeprecationNotification(ui::KeyboardCode key_code) {
   const auto* accelerator_controller = Shell::Get()->accelerator_controller();
-  DCHECK(accelerator_controller);
+  CHECK(accelerator_controller, base::NotFatalUntil::M160);
 
   // Six pack key notification should not show if accelerators are being blocked
   // as the user does not expect these keys to be interpreted as a six pack key.
@@ -128,7 +128,8 @@ bool DeprecationNotificationController::
 
 void DeprecationNotificationController::
     RecordSixPackKeyDeprecationNotificationShown(ui::KeyboardCode key_code) {
-  DCHECK(!shown_key_notifications_.contains(key_code));
+  CHECK(!shown_key_notifications_.contains(key_code),
+        base::NotFatalUntil::M160);
   shown_key_notifications_.insert(key_code);
 }
 

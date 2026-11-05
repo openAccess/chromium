@@ -187,6 +187,7 @@ namespace http://www.w3.org/1999/xhtml
     property moveBefore
     property namespaceURI
     property nextElementSibling
+    property nextFocusable
     property nextSibling
     property nodeName
     property nodeType
@@ -246,6 +247,7 @@ namespace http://www.w3.org/1999/xhtml
     property onfullscreenerror
     property ongotpointercapture
     property oninput
+    property oninstallresult
     property oninvalid
     property onkeydown
     property onkeypress
@@ -332,6 +334,7 @@ namespace http://www.w3.org/1999/xhtml
     property prependHTML
     property prependHTMLUnsafe
     property previousElementSibling
+    property previousFocusable
     property previousSibling
     property pseudo
     property querySelector
@@ -428,6 +431,7 @@ html element a
     property text
     property type
     property username
+    property windowFeatures
 html element abbr
 html element acronym
 html element address
@@ -456,6 +460,7 @@ html element area
     property target
     property type
     property username
+    property windowFeatures
 html element article
 html element aside
 html element audio
@@ -588,10 +593,12 @@ html element canvas
     property captureStream
     property clearElementGeometry
     property configureHighDynamicRange
+    property content
     property getContext
+    property getElementImageDefaultSize
     property getElementTransform
     property height
-    property layoutSubtree
+    property onelementgeometryupdate
     property onpaint
     property requestPaint
     property toBlob
@@ -662,15 +669,8 @@ html element embed
     property src
     property type
     property width
-html element fencedframe
-    property allow
-    property config
-    property height
-    property sandbox
-    property width
 html element fieldset
     property checkValidity
-    property checkable
     property disabled
     property elements
     property form
@@ -707,6 +707,7 @@ html element form
     property reset
     property submit
     property target
+    property windowFeatures
 html element frame
     property contentDocument
     property contentWindow
@@ -781,7 +782,6 @@ html element html
     property version
 html element i
 html element iframe
-    property adAuctionHeaders
     property align
     property allow
     property allowFullscreen
@@ -905,16 +905,11 @@ html element ins
     property cite
     property dateTime
 html element install
-    property initialPermissionStatus
     property invalidReason
     property isValid
     property manifest
     property manifestId
-    property oninstallresult
-    property onpromptaction
-    property onpromptdismiss
     property onvalidationstatuschange
-    property permissionStatus
 html element kbd
 html element label
     property control
@@ -975,9 +970,17 @@ html element menu
     property compact
 html element menubar
 html element menuitem
-    property checked
     property command
     property commandForElement
+    property disabled
+    property interestForElement
+html element menuitemcheckbox
+    property checked
+    property defaultChecked
+    property disabled
+    property interestForElement
+html element menuitemradio
+    property checked
     property defaultChecked
     property disabled
     property interestForElement
@@ -1572,6 +1575,7 @@ namespace http://www.w3.org/2000/svg
     property moveBefore
     property namespaceURI
     property nextElementSibling
+    property nextFocusable
     property nextSibling
     property nodeName
     property nodeType
@@ -1626,6 +1630,7 @@ namespace http://www.w3.org/2000/svg
     property onfullscreenerror
     property ongotpointercapture
     property oninput
+    property oninstallresult
     property oninvalid
     property onkeydown
     property onkeypress
@@ -1709,6 +1714,7 @@ namespace http://www.w3.org/2000/svg
     property prependHTML
     property prependHTMLUnsafe
     property previousElementSibling
+    property previousFocusable
     property previousSibling
     property pseudo
     property querySelector
@@ -1775,19 +1781,29 @@ svg element a
     property getBBox
     property getCTM
     property getScreenCTM
+    property hash
+    property host
+    property hostname
     property href
     property hreflang
     property interestForElement
     property nearestViewportElement
+    property origin
+    property password
+    property pathname
     property ping
+    property port
+    property protocol
     property referrerPolicy
     property rel
     property relList
     property requiredExtensions
+    property search
     property systemLanguage
     property target
     property transform
     property type
+    property username
 svg element animate
     property beginElement
     property beginElementAt
@@ -2284,6 +2300,7 @@ svg element path
     property getBBox
     property getCTM
     property getPathData
+    property getPathSegmentAtLength
     property getPointAtLength
     property getScreenCTM
     property getTotalLength

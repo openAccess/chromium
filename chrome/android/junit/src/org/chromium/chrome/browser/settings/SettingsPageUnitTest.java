@@ -5,13 +5,19 @@
 package org.chromium.chrome.browser.settings;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
+import android.graphics.drawable.ColorDrawable;
+import android.view.View;
 import android.view.ViewGroup;
 
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
@@ -20,27 +26,33 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerFactory;
 import org.chromium.chrome.browser.ui.native_page.NativePageHost;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandlerRegistry;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.ui.base.TestActivity;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
+
+import java.util.function.Function;
 
 /**
  * Unit tests for {@link SettingsPage}. More extensive testing is performed with {@link NativePage}
  * and {@link NativePageFactory}.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-// Needed for {@link BasicNativePage.setBackPressHandler()}. See {@link SettingsActivityUnitTest}.
-@EnableFeatures(ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES)
 public class SettingsPageUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -53,7 +65,15 @@ public class SettingsPageUnitTest {
     @Mock private SettingsPage.FragmentDelegate mFragmentDelegate;
     @Mock private BackPressHandler mBackPressHandler;
     @Mock private BackPressHandlerRegistry mBackPressHandlerRegistry;
+    @Mock private EdgeToEdgeController mEdgeToEdgeController;
 
+    @Captor private ArgumentCaptor<EdgeToEdgePadAdjuster> mPadAdjusterCaptor;
+
+    @Captor
+    private ArgumentCaptor<Function<View, EdgeToEdgePadAdjuster>> mPadAdjusterGeneratorCaptor;
+
+    private final SettableMonotonicObservableSupplier<EdgeToEdgeController> mEdgeToEdgeSupplier =
+            ObservableSuppliers.createMonotonic();
     private Activity mActivity;
     private SettingsPage mSettingsPage;
 
@@ -61,6 +81,11 @@ public class SettingsPageUnitTest {
     public void setup() {
         mActivityScenarios.getScenario().onActivity(activity -> mActivity = activity);
         when(mNativePageHost.getContext()).thenReturn(mActivity);
+        when(mNativePageHost.createEdgeToEdgePadAdjuster(any()))
+                .thenAnswer(
+                        invocation ->
+                                EdgeToEdgeControllerFactory.createForViewAndObserveSupplier(
+                                        invocation.getArgument(0), mEdgeToEdgeSupplier));
 
         mSettingsPage =
                 new SettingsPage(
@@ -77,12 +102,56 @@ public class SettingsPageUnitTest {
     public void testGetters() {
         assertEquals("Settings", mSettingsPage.getTitle());
         assertEquals("settings", mSettingsPage.getHost());
+        assertTrue(mSettingsPage.supportsEdgeToEdgeOnBottom());
+        assertEquals(
+                SemanticColorUtils.getSettingsBackgroundColor(mActivity),
+                mSettingsPage.getBackgroundColor());
+        assertEquals(
+                mSettingsPage.getBackgroundColor(),
+                ((ColorDrawable) mSettingsPage.getView().getBackground()).getColor());
+    }
+
+    @Test
+    public void testEdgeToEdge() {
+        assertTrue("SettingsPage should support E2E.", mSettingsPage.supportsEdgeToEdgeOnBottom());
+
+        verify(mFragmentDelegate)
+                .initSettings(
+                        any(ViewGroup.class),
+                        eq(UrlConstants.SETTINGS_URL),
+                        mPadAdjusterGeneratorCaptor.capture());
+        Function<View, EdgeToEdgePadAdjuster> generator = mPadAdjusterGeneratorCaptor.getValue();
+        assertNotNull(generator);
+
+        View view = new View(mActivity);
+        EdgeToEdgePadAdjuster padAdjuster = generator.apply(view);
+        verify(mNativePageHost).createEdgeToEdgePadAdjuster(view);
+
+        mEdgeToEdgeSupplier.set(mEdgeToEdgeController);
+        verify(mEdgeToEdgeController).registerAdjuster(mPadAdjusterCaptor.capture());
+        assertEquals(padAdjuster, mPadAdjusterCaptor.getValue());
+
+        int initialPaddingBottom = view.getPaddingBottom();
+
+        padAdjuster.overrideBottomInset(100);
+        assertEquals(
+                "Bottom padding should be updated.",
+                initialPaddingBottom + 100,
+                view.getPaddingBottom());
+
+        padAdjuster.overrideBottomInset(0);
+        assertEquals(
+                "Bottom padding should be reset.", initialPaddingBottom, view.getPaddingBottom());
+
+        padAdjuster.destroy();
+        verify(mEdgeToEdgeController).unregisterAdjuster(padAdjuster);
     }
 
     @Test
     public void testInitSettings() {
         // initSettings() should be called once, in the constructor.
-        verify(mFragmentDelegate).initSettings(any(ViewGroup.class), eq(UrlConstants.SETTINGS_URL));
+        verify(mFragmentDelegate)
+                .initSettings(any(ViewGroup.class), eq(UrlConstants.SETTINGS_URL), any());
     }
 
     @Test
@@ -90,6 +159,29 @@ public class SettingsPageUnitTest {
         // destroySettings() should be called once, in destroy().
         mSettingsPage.destroy();
         verify(mFragmentDelegate).destroySettings();
+    }
+
+    @Test
+    public void testReload_ReappliesCurrentUrl() {
+        String url = UrlConstants.SETTINGS_URL + "/appearance";
+        mSettingsPage.updateForUrl(url);
+        clearInvocations(mFragmentDelegate);
+
+        mSettingsPage.reload();
+
+        verify(mFragmentDelegate).updateForUrl(url);
+    }
+
+    @Test
+    public void testUpdateForUrl_SkipsOnlyTheRedundantCallAfterConstruction() {
+        // The constructor passed the URL to initSettings(), and NativePageFactory repeats it right
+        // after construction. Neither should reach the delegate (crbug.com/578622279), but later
+        // navigations to the same URL should.
+        mSettingsPage.updateForUrl(UrlConstants.SETTINGS_URL);
+        verify(mFragmentDelegate, never()).updateForUrl(any());
+
+        mSettingsPage.updateForUrl(UrlConstants.SETTINGS_URL);
+        verify(mFragmentDelegate).updateForUrl(UrlConstants.SETTINGS_URL);
     }
 
     @Test

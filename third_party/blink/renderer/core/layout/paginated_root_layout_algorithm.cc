@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/pagination_state.h"
 #include "third_party/blink/renderer/core/layout/constraint_space_builder.h"
+#include "third_party/blink/renderer/core/layout/fragmentation_utils.h"
 #include "third_party/blink/renderer/core/layout/geometry/writing_mode_converter.h"
 #include "third_party/blink/renderer/core/layout/out_of_flow_layout_part.h"
 #include "third_party/blink/renderer/core/layout/page_border_box_layout_algorithm.h"
@@ -28,6 +29,26 @@ PaginatedRootLayoutAlgorithm::PaginatedRootLayoutAlgorithm(
     : LayoutAlgorithm(params) {}
 
 const LayoutResult* PaginatedRootLayoutAlgorithm::Layout() {
+  const LayoutResult* result = LayoutInternal();
+  if ((relayout_mode_ & kRelayoutForFragmentedOof) ||
+      GetConstraintSpace().HasBlockFragmentation()) {
+    return result;
+  }
+
+  // We're at the outermost fragmentation context root. If there are OOFs
+  // inside, we need to relayout in order to place them correctly.
+  do {
+    if (!BuildFragmentedOofContainerTree(*result, &container_builder_)) {
+      return result;
+    }
+
+    // Need to lay out again, because there may be OOFs that were incorrectly
+    // positioned and/or sized.
+    result = RelayoutWithPrecollectedOofs<PaginatedRootLayoutAlgorithm>();
+  } while (true);
+}
+
+const LayoutResult* PaginatedRootLayoutAlgorithm::LayoutInternal() {
   DCHECK(!GetBreakToken());
   WritingModeConverter converter(GetConstraintSpace().GetWritingDirection(),
                                  container_builder_.Size());
@@ -156,7 +177,21 @@ const LayoutResult* PaginatedRootLayoutAlgorithm::Layout() {
 
   // The page containers are ready to be soldered onto the fragment builder.
   for (const LogicalFragmentLink& container : page_containers) {
-    container_builder_.AddChild(*container.fragment, container.offset);
+    const auto& page_container = To<PhysicalBoxFragment>(*container.fragment);
+    container_builder_.AddChild(page_container, container.offset);
+
+    // Propagate all OOFs from each fragmentainer (page area). They are not
+    // propagated through the page border box and page container, since they are
+    // not part of the document contents, so it has to be done manually here.
+    const PhysicalBoxFragment& page_area =
+        GetPageArea(GetPageBorderBox(page_container));
+    WritingModeConverter fragment_converter(
+        GetConstraintSpace().GetWritingDirection(), page_area.Size());
+    for (const PhysicalOofPositionedNode& descendant :
+         page_area.OutOfFlowPositionedDescendants()) {
+      container_builder_.AddOutOfFlowDescendant(
+          PhysicalOofPositionedNodeToLogical(descendant, fragment_converter));
+    }
   }
 
   return container_builder_.ToBoxFragment();
@@ -179,9 +214,9 @@ const PhysicalBoxFragment& PaginatedRootLayoutAlgorithm::CreateEmptyPage(
   // and lay out page margin boxes once this is known. Just pass 0 for now, and
   // keep track of whether someone needs to know the total.
   PageContainerResult result = LayoutPageContainer(
-      node, parent_space, page_index, /*total_page_count=*/0,
-      previous_fragmentainer.PropagatedPageName(), dummy_counters_context,
-      page_area_params);
+      node, parent_space, /*builder=*/nullptr, page_index,
+      /*total_page_count=*/0, previous_fragmentainer.PropagatedPageName(),
+      dummy_counters_context, page_area_params);
   *needs_total_page_count = result.needs_total_page_count;
   return *result.fragment;
 }
@@ -190,6 +225,7 @@ PaginatedRootLayoutAlgorithm::PageContainerResult
 PaginatedRootLayoutAlgorithm::LayoutPageContainer(
     const BlockNode& root_node,
     const ConstraintSpace& parent_space,
+    const BoxFragmentBuilder* builder,
     wtf_size_t page_index,
     wtf_size_t total_page_count,
     const AtomicString& page_name,
@@ -197,12 +233,12 @@ PaginatedRootLayoutAlgorithm::LayoutPageContainer(
     const PageAreaLayoutParams& page_area_params,
     const PhysicalBoxFragment* existing_page_container) {
   Document& document = root_node.GetDocument();
-  const ComputedStyle* page_container_style =
+  const ComputedStyle& page_container_style =
       document.GetStyleResolver().StyleForPage(page_index, page_name);
 
   LayoutBlockFlow* page_container =
       document.View()->GetPaginationState()->CreateAnonymousPageLayoutObject(
-          document, *page_container_style);
+          document, page_container_style);
   BlockNode page_container_node(page_container);
 
   // Calculate the page border box size based on @page properties, such as
@@ -227,7 +263,7 @@ PaginatedRootLayoutAlgorithm::LayoutPageContainer(
   FragmentGeometry geometry;
   BoxStrut margins;
   LogicalSize page_containing_block_size =
-      DesiredPageContainingBlockSize(document, *page_container_style);
+      DesiredPageContainingBlockSize(document, page_container_style);
 
   ResolvePageContainerGeometry(page_container_node, page_containing_block_size,
                                &geometry, &margins);
@@ -248,12 +284,13 @@ PaginatedRootLayoutAlgorithm::LayoutPageContainer(
     // tests that currently expect this behavior. But see
     // https://github.com/w3c/csswg-drafts/issues/8335
     ignore_author_page_style = true;
-    page_container_style = document.GetStyleResolver().StyleForPage(
-        page_index, page_name, 1.0, ignore_author_page_style);
-    page_container->SetStyle(page_container_style,
+    const ComputedStyle& fallback_style =
+        document.GetStyleResolver().StyleForPage(page_index, page_name, 1.0,
+                                                 ignore_author_page_style);
+    page_container->SetStyle(fallback_style,
                              LayoutObject::ApplyStyleChanges::kNo);
     page_containing_block_size =
-        DesiredPageContainingBlockSize(document, *page_container_style);
+        DesiredPageContainingBlockSize(document, fallback_style);
     ResolvePageContainerGeometry(
         page_container_node, page_containing_block_size, &geometry, &margins);
   }
@@ -268,7 +305,7 @@ PaginatedRootLayoutAlgorithm::LayoutPageContainer(
       document, page_container_node.Style(), margin_box_size);
 
   ConstraintSpaceBuilder space_builder(
-      parent_space, page_container_style->GetWritingDirection(),
+      parent_space, page_container_style.GetWritingDirection(),
       /*is_new_fc=*/true);
   SetUpSpaceBuilderForPageBox(page_container_size, &space_builder);
   space_builder.SetShouldPropagateChildBreakValues();
@@ -279,6 +316,11 @@ PaginatedRootLayoutAlgorithm::LayoutPageContainer(
 
   LayoutAlgorithmParams params(page_container_node, margin_box_geometry,
                                child_space);
+  if (RuntimeEnabledFeatures::FragmentedOofInCbEnabled()) {
+    DCHECK(builder);
+    params.fragmentation.fragmented_oof_container =
+        builder->GetFragmentedOofContainer();
+  }
   PageContainerLayoutAlgorithm child_algorithm(
       params, page_index, total_page_count, page_name, root_node,
       counters_context, page_area_params, ignore_author_page_style,

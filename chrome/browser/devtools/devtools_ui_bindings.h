@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_DEVTOOLS_DEVTOOLS_UI_BINDINGS_H_
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <variant>
@@ -14,6 +15,7 @@
 #include "base/containers/unique_ptr_adapters.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/values.h"
 #include "chrome/browser/devtools/aida_client.h"
 #include "chrome/browser/devtools/devtools_dispatch_http_request_params.h"
@@ -27,6 +29,8 @@
 #include "chrome/browser/devtools/devtools_targets_ui.h"
 #include "chrome/browser/devtools/visual_logging.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "components/search_engines/template_url_service.h"
+#include "components/search_engines/template_url_service_observer.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_frontend_host.h"
 #include "extensions/buildflags/buildflags.h"
@@ -37,7 +41,6 @@
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-#include "base/scoped_observation.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_registry_observer.h"
 #include "extensions/common/extension_id.h"
@@ -60,6 +63,10 @@ namespace permissions {
 enum class PermissionAction;
 }
 
+namespace ui {
+class DialogModel;
+}
+
 class DevToolsHttpServiceHandler;
 class DevToolsHttpServiceRegistry;
 class DevToolsUIBindingsDispatchHttpRequestTest;
@@ -71,6 +78,7 @@ class Profile;
 class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
                            public DevToolsAndroidBridge::DeviceCountListener,
                            public content::DevToolsAgentHostClient,
+                           public TemplateURLServiceObserver,
 #if !BUILDFLAG(IS_ANDROID)
                            public ThemeServiceObserver,
 #endif
@@ -81,6 +89,7 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
   friend class DevToolsUIBindingsDispatchHttpRequestTest;
   friend class DevToolsUIBindingsDispatchHttpRequestStreamingTest;
   friend class DevToolsUIBindingsLoadNetworkResourceTest;
+  friend class DevToolsUIBindingsNavigationTest;
 
  public:
   class Delegate {
@@ -93,7 +102,11 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
     virtual void SetInspectedPageBounds(const gfx::Rect& rect) = 0;
     virtual void InspectElementCompleted() = 0;
     virtual void SetIsDocked(bool is_docked) = 0;
-    virtual void OpenInNewTab(const std::string& url) = 0;
+    // `initiator_id` is the DevTools target id (or frame id) of the frame or
+    // worker that `url` came from, if the frontend knows it.
+    virtual void OpenInNewTab(
+        const std::string& url,
+        const std::optional<std::string>& initiator_id) = 0;
     virtual void OpenSearchResultsInNewTab(const std::string& query) = 0;
     virtual void SetWhitelistedShortcuts(const std::string& message) = 0;
     virtual void SetEyeDropperActive(bool active) = 0;
@@ -136,6 +149,9 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
   content::WebContents* web_contents() { return web_contents_; }
   Profile* profile() { return profile_; }
   content::DevToolsAgentHost* agent_host() { return agent_host_.get(); }
+  bool IsTrustedLocalFrontend() const {
+    return frontend_host_ != nullptr && is_local_frontend_;
+  }
 
   // Takes ownership over the |delegate|.
   void SetDelegate(Delegate* delegate);
@@ -168,6 +184,23 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
                                        const std::string& script) {
     RegisterExtensionsAPI(origin, script);
   }
+  bool has_frontend_host_for_testing() const {
+    return frontend_host_ != nullptr;
+  }
+  void ReadyToCommitNavigationForTesting(
+      content::NavigationHandle* navigation_handle) {
+    ReadyToCommitNavigation(navigation_handle);
+  }
+
+  void ShowDevToolsInfoBarForTesting(
+      const std::u16string& message,
+      DevToolsInfoBarDelegate::Callback callback) {
+    ShowDevToolsInfoBar(message, std::move(callback));
+  }
+  static std::unique_ptr<ui::DialogModel>
+  CreateDirectoryPermissionDialogForTesting(
+      const std::string& directory_path,
+      DevToolsInfoBarDelegate::Callback callback);
 
   static base::DictValue GetSyncInformationForProfile(Profile* profile);
 
@@ -192,6 +225,7 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
   bool MayWriteLocalFiles() override;
 
   // DevToolsEmbedderMessageDispatcher::Delegate implementation.
+  bool IsLocalFrontend() const override;
   void ActivateWindow() override;
   void CloseWindow() override;
   void LoadCompleted() override;
@@ -203,7 +237,8 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
                            const std::string& headers,
                            int stream_id) override;
   void SetIsDocked(DispatchCallback callback, bool is_docked) override;
-  void OpenInNewTab(const std::string& url) override;
+  void OpenInNewTab(const std::string& url,
+                    const std::optional<std::string>& initiator_id) override;
   void OpenSearchResultsInNewTab(const std::string& query) override;
   void ShowItemInFolder(const std::string& file_system_path) override;
   void SaveToFile(const std::string& url,
@@ -439,6 +474,11 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
 
   // Extensions support.
   void AddDevToolsExtensionsToClient();
+  void UpdateOriginsForbiddenForExtensions();
+
+  // TemplateURLServiceObserver:
+  void OnTemplateURLServiceChanged() override;
+  void OnTemplateURLServiceShuttingDown() override;
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // extensions::ExtensionRegistryObserver:
@@ -451,6 +491,10 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
   static bool GetFeatureStateForDevTools(const base::Feature& feature,
                                          std::string enabled_by_flags,
                                          std::string disabled_by_flags);
+  static bool HasUntrustedOpenerChain(content::WebContents* web_contents);
+  static std::unique_ptr<ui::DialogModel> CreateDirectoryPermissionDialog(
+      const std::string& directory_path,
+      DevToolsInfoBarDelegate::Callback callback);
 
   static DevToolsUIBindingsList& GetDevToolsUIBindings();
 
@@ -487,6 +531,8 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
   using ExtensionsAPIs = std::map<std::string, std::string>;
   ExtensionsAPIs extensions_api_;
   std::string initial_target_id_;
+  base::ScopedObservation<TemplateURLService, TemplateURLServiceObserver>
+      template_url_service_observation_{this};
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   base::ScopedObservation<extensions::ExtensionRegistry,
                           extensions::ExtensionRegistryObserver>
@@ -504,6 +550,7 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
 
   base::UnguessableToken session_id_for_logging_;
   bool is_local_frontend_ = false;
+  bool has_previous_frontend_host_ = false;
   base::WeakPtrFactory<DevToolsUIBindings> weak_factory_{this};
 };
 

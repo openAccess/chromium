@@ -87,13 +87,9 @@ class SyncAuthTestBase : public SyncTest {
       disabled_features.push_back(syncer::kSyncUsePropagatedAccessToken);
     }
     if (setup_sync_mode == SetupSyncMode::kSyncTransportOnly) {
-      enabled_features.insert(
-          enabled_features.end(),
-          {syncer::kReplaceSyncPromosWithSignInPromos,
-           switches::kSyncEnableBookmarksInTransportMode,
-           switches::kEnablePreferencesAccountStorage,
-           syncer::kSeparateLocalAndAccountSearchEngines,
-           syncer::kReadingListEnableSyncTransportModeUponSignIn});
+      enabled_features.insert(enabled_features.end(),
+                              {switches::kSyncEnableBookmarksInTransportMode,
+                               switches::kEnablePreferencesAccountStorage});
     }
     scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
   }
@@ -122,7 +118,7 @@ class SyncAuthTestBase : public SyncTest {
     AddReadingListEntry();
 
     // Run until the entry is committed or an auth error is encountered.
-    TestForAuthError(GetSyncService(0)).Wait();
+    EXPECT_TRUE(TestForAuthError(GetSyncService(0)).Wait());
     return TestForAuthError::HasAuthError(GetSyncService(0));
   }
 
@@ -480,7 +476,7 @@ IN_PROC_BROWSER_TEST_P(SyncAuthTest, SyncPausedState) {
   }
   // SyncService will clear its auth error state only once it gets a valid
   // access token again, so wait for that to happen.
-  NoAuthErrorChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(NoAuthErrorChecker(GetSyncService(0)).Wait());
   ASSERT_FALSE(GetSyncService(0)->GetAuthError().IsPersistentError());
 
   // Once the auth error is gone, wait for Sync to start up again.
@@ -557,7 +553,7 @@ IN_PROC_BROWSER_TEST_P(SyncAuthTest, ShouldTrackDeletionsInSyncPausedState) {
   }
   // SyncService will clear its auth error state only once it gets a valid
   // access token again, so wait for that to happen.
-  NoAuthErrorChecker(GetSyncService(0)).Wait();
+  ASSERT_TRUE(NoAuthErrorChecker(GetSyncService(0)).Wait());
   ASSERT_FALSE(GetSyncService(0)->GetAuthError().IsPersistentError());
   // Once the auth error is gone, wait for Sync to start up again.
   ASSERT_TRUE(GetClient(0)->AwaitSyncTransportActive());

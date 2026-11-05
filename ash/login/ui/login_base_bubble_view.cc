@@ -10,7 +10,8 @@
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/screen_util.h"
 #include "ash/shell.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/style_util.h"
+#include "ash/style/system_decoration.h"
 #include "base/memory/raw_ptr.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -26,7 +27,6 @@
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/background.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/wm/core/coordinate_conversion.h"
 
@@ -158,22 +158,20 @@ LoginBaseBubbleView::LoginBaseBubbleView(base::WeakPtr<views::View> anchor_view,
           : cros_tokens::kCrosSysSystemBaseElevatedOpaque);
 
   SetBackground(views::CreateSolidBackground(background_color_id));
-  SetBorder(std::make_unique<views::HighlightBorder>(
-      kBubbleBorderRadius,
-      views::HighlightBorder::Type::kHighlightBorderOnShadow));
 
-  // Set shadow
-  shadow_ = SystemShadow::CreateShadowOnNinePatchLayerForView(
-      this, SystemShadow::Type::kElevation12);
-  shadow_->SetRoundedCorners(gfx::RoundedCornersF(kBubbleBorderRadius));
+  // Set shadow, highlight border, rounded corners.
+  decoration_ = SystemDecoration::CreateForView(
+      this, SystemDecoration::ShadowType::kElevation12,
+      SystemDecoration::HighlightBorderMode::kHighlightBorder);
+  decoration_->SetRoundedCorners(gfx::RoundedCornersF(kBubbleBorderRadius));
 
   SetPaintToLayer();
   layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kBubbleBorderRadius));
   layer()->SetIsFastRoundedCorner(true);
   if (chromeos::features::IsSystemBlurEnabled()) {
     layer()->SetFillsBoundsOpaquely(false);
-    layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
-    layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+    layer()->SetBackgroundBlur(StyleUtil::kBackgroundBlurSigma);
+    layer()->SetBackdropFilterQuality(StyleUtil::kBackgroundBlurQuality);
   }
 
   SetVisible(false);

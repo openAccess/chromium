@@ -11,6 +11,7 @@
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/drive_picker_host_resources.h"
 #include "chrome/grit/drive_picker_host_resources_map.h"
+#include "components/contextual_search/consent_kit/consent_kit_result_parser.h"
 #include "components/contextual_search/consent_kit/consent_kit_url_builder.h"
 #include "components/contextual_search/consent_kit/proto/iframe_interface.pb.h"
 #include "components/contextual_search/input_state_model.h"
@@ -22,6 +23,7 @@
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_access_token_fetcher.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
@@ -175,12 +177,20 @@ void DrivePickerHostUI::SetBridge(
   untrusted_bridge_remote_.Bind(std::move(untrusted_bridge));
   untrusted_bridge_remote_.set_disconnect_handler(base::BindOnce(
       [](base::WeakPtr<DrivePickerHostUI> self) {
-        if (self && self->pending_request_ &&
+        if (!self) {
+          return;
+        }
+        if (self->pending_request_ &&
             self->pending_request_->has_result_handler()) {
           mojo::Remote<drive_picker_host::mojom::DrivePickerResultHandler>(
               self->pending_request_->TakeResultHandler())
               ->OnError(drive_picker_host::mojom::DrivePickerError::
                             kMojoDisconnected);
+        }
+        if (self->consent_result_handler_) {
+          self->consent_result_handler_->OnError(
+              drive_picker_host::mojom::DrivePickerError::kMojoDisconnected);
+          self->consent_result_handler_.reset();
         }
       },
       weak_ptr_factory_.GetWeakPtr()));
@@ -330,22 +340,34 @@ void DrivePickerHostUI::OnShowErrorDialog() {
   }
 }
 
+void DrivePickerHostUI::OnHideErrorDialog() {
+  if (delegate_) {
+    delegate_->OnTransitionToConsent();
+  }
+}
+
 void DrivePickerHostUI::HandlePrivacyFlowResult(
     const identity_consent::PrivacyFlowResult& result) {
   VLOG(1)
       << "[DrivePickerHostUI] HandlePrivacyFlowResult entry. flow_completed: "
       << result.has_flow_completed()
-      << ", flow_not_completed: " << result.has_flow_not_completed();
-  if (result.has_flow_id() &&
-      result.flow_id().value() !=
-          omnibox::kComposeboxDriveConsentFlowId.Get()) {
+      << ", flow_not_completed: " << result.has_flow_not_completed()
+      << ", decisions: " << result.decision_size();
+  if (!consent_result_handler_.is_bound()) {
+    DLOG(WARNING)
+        << "PrivacyFlowResult received with no outstanding consent flow";
+    return;
+  }
+
+  if (!drive::IsExpectedConsentFlow(
+          result, omnibox::kComposeboxDriveConsentFlowId.Get())) {
     DLOG(WARNING) << "Unexpected or missing flow_id";
     OnConsentKitError("Unexpected or missing flow_id");
     return;
   }
 
-  if (result.has_flow_completed()) {
-    VLOG(1) << "[DrivePickerHostUI] Handling flow_completed. "
+  if (drive::HasGrantedDriveConsent(result)) {
+    VLOG(1) << "[DrivePickerHostUI] Handling decision consent. "
                "Transitioning to Picker.";
     Profile* profile = Profile::FromWebUI(web_ui());
     profile->GetPrefs()->SetInteger(
@@ -360,7 +382,7 @@ void DrivePickerHostUI::HandlePrivacyFlowResult(
     if (consent_result_handler_) {
       FetchTokenAndShowPicker(consent_result_handler_.Unbind());
     }
-  } else if (result.has_flow_not_completed()) {
+  } else {
     if (consent_result_handler_) {
       consent_result_handler_->OnCancel();
       consent_result_handler_.reset();
@@ -387,6 +409,8 @@ void DrivePickerHostUI::ShowConsentKitDialog(
            .Serialize()});
   builder.SetFlowId(omnibox::kComposeboxDriveConsentFlowId.Get());
   builder.SetProductId(omnibox::kComposeboxDriveConsentProductId.Get());
+  builder.SetProductSurface(
+      omnibox::kComposeboxDriveConsentProductSurface.Get());
   builder.SetEntrypointId(omnibox::kComposeboxDriveConsentEntrypointId.Get());
   bool is_dark = color_utils::IsDark(
       web_ui()->GetWebContents()->GetColorProvider().GetColor(

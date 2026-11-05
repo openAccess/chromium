@@ -38,7 +38,7 @@ gpu::CommandBufferStub* GetCommandBufferStub(
     base::WeakPtr<MediaGpuChannelManager> media_gpu_channel_manager,
     base::UnguessableToken channel_token,
     int32_t route_id) {
-  DCHECK(gpu_task_runner->BelongsToCurrentThread());
+  CHECK(gpu_task_runner->BelongsToCurrentThread(), base::NotFatalUntil::M163);
   if (!media_gpu_channel_manager)
     return nullptr;
 
@@ -109,11 +109,12 @@ GpuMojoMediaClientTraits::GpuMojoMediaClientTraits(
 
 std::unique_ptr<GpuMojoMediaClient> GpuMojoMediaClient::Create(
     GpuMojoMediaClientTraits& traits) {
-  DCHECK(!traits.gpu_task_runner ||
-         traits.gpu_task_runner->BelongsToCurrentThread());
+  CHECK(!traits.gpu_task_runner ||
+            traits.gpu_task_runner->BelongsToCurrentThread(),
+        base::NotFatalUntil::M163);
 
   auto client = CreateGpuMediaService(traits);
-  DCHECK(client);
+  CHECK(client, base::NotFatalUntil::M163);
   return client;
 }
 
@@ -200,13 +201,13 @@ GpuMojoMediaClient::GetSupportedVideoDecoderConfigs() {
   return supported_config_cache_.value_or(SupportedVideoDecoderConfigs{});
 }
 
-#if BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#if BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 void GpuMojoMediaClient::NotifyDecoderSupportKnown(
     mojo::PendingRemote<mojom::VideoDecoder> oop_video_decoder,
     base::OnceCallback<void(mojo::PendingRemote<mojom::VideoDecoder>)> cb) {
   NotifyPlatformDecoderSupport(std::move(oop_video_decoder), std::move(cb));
 }
-#endif  // BUILDFLAG(ALLOW_OOP_VIDEO_DECODER)
+#endif  // BUILDFLAG(ENABLE_OOP_VIDEO_DECODER)
 
 std::unique_ptr<VideoDecoder> GpuMojoMediaClient::CreateVideoDecoder(
     scoped_refptr<base::SequencedTaskRunner> task_runner,

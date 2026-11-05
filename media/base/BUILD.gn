@@ -2,7 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/android/config.gni")
 import("//build/config/arm.gni")
 import("//build/config/linux/pkg_config.gni")
 import("//build/config/ozone.gni")
@@ -181,8 +180,8 @@ source_set("base") {
     "demuxer_memory_limit.h",
     "demuxer_stream.cc",
     "demuxer_stream.h",
-    "djb2.cc",
-    "djb2.h",
+    "device_enumeration_outcome.h",
+    "eme_constants.cc",
     "eme_constants.h",
     "encoder_status.cc",
     "encoder_status.h",
@@ -215,6 +214,7 @@ source_set("base") {
     "key_systems_impl.h",
     "key_systems_support_registration.cc",
     "key_systems_support_registration.h",
+    "limit_checks.h",
     "limiting_audio_queue.cc",
     "limiting_audio_queue.h",
     "limits.h",
@@ -266,6 +266,8 @@ source_set("base") {
     "media_util.h",
     "memory_dump_provider_proxy.cc",
     "memory_dump_provider_proxy.h",
+    "metadata_track.cc",
+    "metadata_track.h",
     "mime_util.cc",
     "mime_util.h",
     "mime_util_internal.cc",
@@ -400,7 +402,6 @@ source_set("base") {
     "wall_clock_time_source.h",
     "watch_time_keys.cc",
     "watch_time_keys.h",
-    "webvtt_util.h",
   ]
 
   defines = []
@@ -551,7 +552,7 @@ static_library("test_support") {
     "//media/base/android:test_support",
     "//media/filters:test_support",
     "//media/formats:test_support",
-    "//media/renderers:test_support",
+    "//media/gfx:test_support",
     "//media/video:test_support",
   ]
   testonly = true
@@ -646,7 +647,6 @@ source_set("unit_tests") {
     "decoder_buffer_queue_unittest.cc",
     "decoder_buffer_unittest.cc",
     "decrypt_config_unittest.cc",
-    "djb2_unittest.cc",
     "encryption_pattern_unittest.cc",
     "fake_audio_worker_unittest.cc",
     "fake_demuxer_stream_unittest.cc",
@@ -661,6 +661,7 @@ source_set("unit_tests") {
     "limiting_audio_queue_unittest.cc",
     "media_log_unittest.cc",
     "media_serializers_unittest.cc",
+    "metadata_track_unittest.cc",
     "mime_util_unittest.cc",
     "multi_channel_resampler_unittest.cc",
     "null_video_sink_unittest.cc",
@@ -669,6 +670,7 @@ source_set("unit_tests") {
     "ranges_unittest.cc",
     "reentrancy_checker_unittest.cc",
     "renderer_factory_selector_unittest.cc",
+    "sample_format_unittest.cc",
     "seekable_buffer_unittest.cc",
     "sequence_unittest.cc",
     "serial_runner_unittest.cc",

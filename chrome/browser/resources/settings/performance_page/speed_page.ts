@@ -6,7 +6,6 @@ import '../controls/collapse_radio_button.js';
 import '../controls/settings_dropdown_menu.js';
 import '../controls/settings_radio_group.js';
 import '../controls/settings_toggle_button.js';
-import '/shared/settings/prefs/prefs.js';
 import 'chrome://resources/cr_elements/cr_collapse/cr_collapse.js';
 import '../settings_page/settings_section.js';
 
@@ -62,6 +61,7 @@ export class SpeedPageElement extends SpeedPageElementBase {
       cpuPerformanceModelLabel_: {type: String},
       cpuPerformanceEnabled_: {type: Boolean},
       cpuPerformanceTierOptions_: {type: Array},
+      settingsRefresh2026Enabled_: {type: Boolean},
       preloadingStatePref_: {type: Object},
     };
   }
@@ -70,6 +70,8 @@ export class SpeedPageElement extends SpeedPageElementBase {
   protected accessor cpuPerformanceModelLabel_: string = '';
   protected accessor cpuPerformanceEnabled_: boolean =
       loadTimeData.getBoolean('cpuPerformanceEnabled');
+  protected accessor settingsRefresh2026Enabled_: boolean =
+      loadTimeData.getString('settingsRefresh2026') !== '';
   protected accessor cpuPerformanceTierOptions_: DropdownMenuOptionList = [
     {
       value: -1,

@@ -15,7 +15,7 @@
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/global_media_controls/cast_device_list_host.h"
@@ -740,11 +740,6 @@ bool MediaNotificationService::HasCastNotificationsForWebContents(
 
 bool MediaNotificationService::HasTabMirroringSessionForWebContents(
     content::WebContents* web_contents) const {
-  if (!base::FeatureList::IsEnabled(
-          media_router::kFallbackToAudioTabMirroring)) {
-    return false;
-  }
-
   // Return true if there exists a tab mirroring session associated with
   // `web_contents`.
   const int item_tab_id =

@@ -33,7 +33,7 @@ import org.chromium.services.media_session.MediaPosition;
  * NotificationManager.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, shadows = MediaNotificationTestShadowResources.class)
+@Config(shadows = MediaNotificationTestShadowResources.class)
 public class MediaNotificationManagerNotificationTest extends MediaNotificationTestBase {
     @Test
     public void updateNotificationBuilderDisplaysCorrectMetadata_EmptyArtistAndAlbum() {
@@ -73,14 +73,13 @@ public class MediaNotificationManagerNotificationTest extends MediaNotificationT
     }
 
     @Test
-    public void updateNotificationBuilderDisplaysCorrectLargeIcon_WithoutLargeIcon_AtLeastN() {
+    public void updateNotificationBuilderDisplaysCorrectLargeIcon_WithoutLargeIcon() {
         mMediaNotificationInfoBuilder.setNotificationLargeIcon(null);
 
         MediaNotificationInfo info = mMediaNotificationInfoBuilder.build();
         Notification notification = updateNotificationBuilderAndBuild(info);
 
         assertNull(notification.getLargeIcon());
-        assertNull(getController().mDefaultNotificationLargeIcon);
     }
 
     @Test

@@ -5,11 +5,10 @@
 #include <Carbon/Carbon.h>
 #import <Cocoa/Cocoa.h>
 
-#include "base/run_loop.h"
+#include "base/test/run_until.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #import "chrome/browser/global_keyboard_shortcuts_mac.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
@@ -68,13 +67,8 @@ IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, SwitchTabsMac) {
   SendEvent(SynthesizeKeyEvent(ns_window, true, ui::VKEY_2,
                                NSEventModifierFlagCommand));
 
-  // Wait for the tab to activate to be selected.
-  while (true) {
-    if (tab_strip->IsTabSelected(1))
-      break;
-    base::RunLoop().RunUntilIdle();
-  }
-  EXPECT_TRUE(tab_strip->IsTabSelected(1));
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return tab_strip->IsTabSelected(1); }));
 
   // Cmd+{ goes to the previous tab.
   SendEvent(SynthesizeKeyEvent(
@@ -106,12 +100,9 @@ IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, HistoryNavigation) {
   // WebContents chooses not to handle the event.
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_LEFT,
                                NSEventModifierFlagCommand));
-  while (true) {
-    if (tab_strip->GetActiveWebContents()->GetLastCommittedURL() != test_url)
-      break;
-    base::RunLoop().RunUntilIdle();
-  }
-  ASSERT_NE(tab_strip->GetActiveWebContents()->GetLastCommittedURL(), test_url);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return tab_strip->GetActiveWebContents()->GetLastCommittedURL() != test_url;
+  }));
 }
 
 // Test that common hotkeys for editing the omnibox work.
@@ -129,6 +120,9 @@ IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, CopyPasteOmnibox) {
   // Cmd+L focuses the omnibox and selects all the text.
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_L,
                                NSEventModifierFlagCommand));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return location_bar->IsFocusWithin() && omnibox_view->IsSelectAll();
+  }));
 
   // The first typed letter overrides the existing contents.
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_A,
@@ -136,32 +130,46 @@ IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, CopyPasteOmnibox) {
   // The second typed letter just appends.
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_B,
                                /*flags=*/0));
-  ASSERT_EQ(omnibox_view->GetText(), u"ab");
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return omnibox_view->GetText() == u"ab"; }));
 
   // Cmd+A selects the contents.
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_A,
                                NSEventModifierFlagCommand));
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return omnibox_view->IsSelectAll(); }));
+
+  [NSPasteboard.generalPasteboard clearContents];
 
   // Cmd+C copies the contents.
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_C,
                                NSEventModifierFlagCommand));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return [[NSPasteboard.generalPasteboard
+        stringForType:NSPasteboardTypeString] isEqualToString:@"ab"];
+  }));
 
   // The first typed letter overrides the existing contents.
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_C,
                                /*flags=*/0));
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_D,
                                /*flags=*/0));
-  ASSERT_EQ(omnibox_view->GetText(), u"cd");
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return omnibox_view->GetText() == u"cd"; }));
 
   // Cmd + left arrow moves to the beginning. It should not perform history
   // navigation because the firstResponder is not a WebContents..
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_LEFT,
                                NSEventModifierFlagCommand));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return omnibox_view->GetSelectionBounds() == gfx::Range(0, 0);
+  }));
 
   // Cmd+V pastes the contents.
   SendEvent(SynthesizeKeyEvent(ns_window, /*keydown=*/true, ui::VKEY_V,
                                NSEventModifierFlagCommand));
-  EXPECT_EQ(omnibox_view->GetText(), u"abcd");
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return omnibox_view->GetText() == u"abcd"; }));
 }
 
 // Tests that the shortcut to reopen a previous tab works.
@@ -212,7 +220,8 @@ IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, MenuCommandPriority) {
   // Use the cmd-2 hotkey to switch to the second tab.
   SendEvent(SynthesizeKeyEvent(ns_window, true, ui::VKEY_2,
                                NSEventModifierFlagCommand));
-  EXPECT_TRUE(tab_strip->IsTabSelected(1));
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return tab_strip->IsTabSelected(1); }));
 
   // Change the "Select Next Tab" menu item's key equivalent to be cmd-2, to
   // simulate what would happen if there was a user key equivalent for it. Note
@@ -232,8 +241,10 @@ IN_PROC_BROWSER_TEST_F(GlobalKeyboardShortcutsTest, MenuCommandPriority) {
   // Send cmd-2 again, and ensure the tab switches.
   SendEvent(SynthesizeKeyEvent(ns_window, true, ui::VKEY_2,
                                NSEventModifierFlagCommand));
-  EXPECT_TRUE(tab_strip->IsTabSelected(2));
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return tab_strip->IsTabSelected(2); }));
   SendEvent(SynthesizeKeyEvent(ns_window, true, ui::VKEY_2,
                                NSEventModifierFlagCommand));
-  EXPECT_TRUE(tab_strip->IsTabSelected(3));
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return tab_strip->IsTabSelected(3); }));
 }

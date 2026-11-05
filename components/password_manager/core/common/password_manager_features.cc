@@ -5,7 +5,6 @@
 #include "components/password_manager/core/common/password_manager_features.h"
 
 #include "base/feature_list.h"
-#include "build/blink_buildflags.h"
 #include "build/build_config.h"
 
 namespace {

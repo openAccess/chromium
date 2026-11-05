@@ -8,6 +8,8 @@ import static org.chromium.chrome.browser.ui.side_panel.SidePanelUtils.log;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.browser_controls.TopControlsStacker;
+import org.chromium.chrome.browser.tabmodel.IncognitoStateProvider;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator;
 import org.chromium.ui.base.ActivityWindowAndroid;
@@ -24,13 +26,19 @@ public final class SidePanelContainerCoordinatorFactory {
     public static SidePanelContainerCoordinator create(
             ActivityWindowAndroid windowAndroid,
             SideUiCoordinator sideUiCoordinator,
-            TabModelSelector tabModelSelector) {
+            TabModelSelector tabModelSelector,
+            TopControlsStacker topControlsStacker,
+            IncognitoStateProvider incognitoStateProvider) {
         log(TAG, "create");
         if (!AndroidSidePanelEnabledFn.isEnabled()) {
             return null;
         }
 
         return new SidePanelContainerCoordinatorImpl(
-                windowAndroid, sideUiCoordinator, tabModelSelector);
+                windowAndroid,
+                sideUiCoordinator,
+                tabModelSelector,
+                topControlsStacker,
+                incognitoStateProvider);
     }
 }

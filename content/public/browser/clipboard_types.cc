@@ -12,6 +12,7 @@
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/user_browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_client.h"
 #include "ui/base/clipboard/clipboard.h"
@@ -33,10 +34,13 @@ bool ClipboardPasteData::empty() const {
 }
 
 size_t ClipboardPasteData::size() const {
-  size_t size = text.size() + html.size() + svg.size() + rtf.size() +
-                png.size() + bitmap.computeByteSize();
-  for (const auto& entry : custom_data) {
-    size += entry.second.size();
+  constexpr size_t kUtf16UnitSize = sizeof(std::u16string::value_type);
+  size_t size = (text.size() + html.size() + svg.size()) * kUtf16UnitSize +
+                rtf.size() + png.size() + bitmap.computeByteSize();
+  for (const auto& [type, value] : custom_data) {
+    // Custom data types are controlled by the page and serialized to the
+    // clipboard alongside their values, so they count towards the size.
+    size += (type.size() + value.size()) * kUtf16UnitSize;
   }
   return size;
 }
@@ -79,24 +83,55 @@ void ClipboardPasteData::Merge(ClipboardPasteData other) {
 
 ClipboardPasteData::~ClipboardPasteData() = default;
 
-ClipboardEndpoint::ClipboardEndpoint(
-    base::optional_ref<const ui::DataTransferEndpoint> data_transfer_endpoint)
-    : data_transfer_endpoint_(data_transfer_endpoint.CopyAsOptional()) {}
+// static
+ClipboardEndpoint ClipboardEndpoint::ForOutsideChrome(
+    base::optional_ref<const ui::DataTransferEndpoint> data_transfer_endpoint) {
+  return ClipboardEndpoint(data_transfer_endpoint, base::NullCallback(),
+                           /*rfh=*/nullptr, /*is_service_worker=*/false);
+}
 
-ClipboardEndpoint::ClipboardEndpoint(
+// static
+ClipboardEndpoint ClipboardEndpoint::ForUnloadedTab(
     base::optional_ref<const ui::DataTransferEndpoint> data_transfer_endpoint,
-    base::RepeatingCallback<BrowserContext*()> browser_context_fetcher)
-    : data_transfer_endpoint_(data_transfer_endpoint.CopyAsOptional()),
-      browser_context_fetcher_(std::move(browser_context_fetcher)) {}
+    base::RepeatingCallback<BrowserContext*()> browser_context_fetcher) {
+  return ClipboardEndpoint(data_transfer_endpoint,
+                           std::move(browser_context_fetcher),
+                           /*rfh=*/nullptr, /*is_service_worker=*/false);
+}
+
+// static
+ClipboardEndpoint ClipboardEndpoint::ForFrame(
+    base::optional_ref<const ui::DataTransferEndpoint> data_transfer_endpoint,
+    base::RepeatingCallback<BrowserContext*()> browser_context_fetcher,
+    RenderFrameHost& rfh) {
+  return ClipboardEndpoint(data_transfer_endpoint,
+                           std::move(browser_context_fetcher), &rfh,
+                           /*is_service_worker=*/false);
+}
+
+// static
+ClipboardEndpoint ClipboardEndpoint::ForServiceWorker(
+    base::optional_ref<const ui::DataTransferEndpoint> data_transfer_endpoint,
+    base::RepeatingCallback<BrowserContext*()> browser_context_fetcher) {
+  return ClipboardEndpoint(data_transfer_endpoint,
+                           std::move(browser_context_fetcher),
+                           /*rfh=*/nullptr, /*is_service_worker=*/true);
+}
 
 ClipboardEndpoint::ClipboardEndpoint(
     base::optional_ref<const ui::DataTransferEndpoint> data_transfer_endpoint,
     base::RepeatingCallback<BrowserContext*()> browser_context_fetcher,
-    RenderFrameHost& rfh)
+    RenderFrameHost* rfh,
+    bool is_service_worker)
     : data_transfer_endpoint_(data_transfer_endpoint.CopyAsOptional()),
-      browser_context_fetcher_(std::move(browser_context_fetcher)),
-      web_contents_(WebContents::FromRenderFrameHost(&rfh)->GetWeakPtr()),
-      render_frame_host_id_(rfh.GetGlobalId()) {}
+      is_service_worker_(is_service_worker),
+      browser_context_fetcher_(std::move(browser_context_fetcher)) {
+  if (rfh) {
+    CHECK(!is_service_worker_);
+    web_contents_ = WebContents::FromRenderFrameHost(rfh)->GetWeakPtr();
+    render_frame_host_id_ = rfh->GetGlobalId();
+  }
+}
 
 ClipboardEndpoint::ClipboardEndpoint(const ClipboardEndpoint&) = default;
 ClipboardEndpoint& ClipboardEndpoint::operator=(const ClipboardEndpoint&) =
@@ -149,7 +184,8 @@ void OnReadSourceRFHToken(ui::ClipboardBuffer clipboard_buffer,
             }
 
             if (!rfh) {
-              std::move(callback).Run(ClipboardEndpoint(clipboard_source_dte));
+              std::move(callback).Run(
+                  ClipboardEndpoint::ForOutsideChrome(clipboard_source_dte));
               return;
             }
 
@@ -160,13 +196,13 @@ void OnReadSourceRFHToken(ui::ClipboardBuffer clipboard_buffer,
                     *clipboard_source_dte->GetURL(),
                     ui::DataTransferEndpointOptions{
                         .off_the_record =
-                            rfh->GetBrowserContext()->IsOffTheRecord()});
+                            GetUserBrowserContext(*rfh)->IsOffTheRecord()});
               } else {
                 source_dte = std::move(clipboard_source_dte);
               }
             }
 
-            std::move(callback).Run(ClipboardEndpoint(
+            std::move(callback).Run(ClipboardEndpoint::ForFrame(
                 std::move(source_dte),
                 base::BindRepeating(
                     [](GlobalRenderFrameHostToken rfh_token)
@@ -175,7 +211,7 @@ void OnReadSourceRFHToken(ui::ClipboardBuffer clipboard_buffer,
                       if (!rfh) {
                         return nullptr;
                       }
-                      return rfh->GetBrowserContext();
+                      return GetUserBrowserContext(*rfh);
                     },
                     rfh->GetGlobalFrameToken()),
                 *rfh));
@@ -205,10 +241,6 @@ std::optional<ui::DataTransferEndpoint> CreateDataEndpoint(
     RenderFrameHost& rfh) {
   auto* render_frame_host_main_frame = rfh.GetMainFrame();
   auto source_url = render_frame_host_main_frame->GetLastCommittedURL();
-  if (!source_url.is_valid()) {
-    return std::nullopt;
-  }
-
   if (auto maybe_url = GetContentClient()
                            ->browser()
                            ->MaybeOverrideSourceURLForClipboardAccess(
@@ -216,16 +248,20 @@ std::optional<ui::DataTransferEndpoint> CreateDataEndpoint(
     source_url = *maybe_url;
   }
 
+  if (!source_url.is_valid()) {
+    return std::nullopt;
+  }
+
   return ui::DataTransferEndpoint(
       source_url,
       ui::DataTransferEndpointOptions{
           .notify_if_restricted = rfh.HasTransientUserActivation(),
-          .off_the_record = rfh.GetBrowserContext()->IsOffTheRecord(),
+          .off_the_record = GetUserBrowserContext(rfh)->IsOffTheRecord(),
       });
 }
 
 ClipboardEndpoint CreateClipboardEndpoint(RenderFrameHost& rfh) {
-  return ClipboardEndpoint(
+  return ClipboardEndpoint::ForFrame(
       CreateDataEndpoint(rfh),
       base::BindRepeating(
           [](GlobalRenderFrameHostId rfh_id) -> BrowserContext* {
@@ -233,7 +269,7 @@ ClipboardEndpoint CreateClipboardEndpoint(RenderFrameHost& rfh) {
             if (!rfh) {
               return nullptr;
             }
-            return rfh->GetBrowserContext();
+            return GetUserBrowserContext(*rfh);
           },
           rfh.GetGlobalId()),
       rfh);

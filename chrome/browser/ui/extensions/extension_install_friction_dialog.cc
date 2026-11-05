@@ -17,6 +17,8 @@
 #include "extensions/common/constants.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 
@@ -78,15 +80,21 @@ class ExtensionInstallFrictionDialogDelegate : public ui::DialogModelDelegate {
   void OnLearnMoreLinkClicked() {
     learn_more_clicked_ = true;
 
-    if (original_web_contents_) {
-      GURL url(chrome::kCwsEnhancedSafeBrowsingLearnMoreURL);
-      content::OpenURLParams params(
-          url, content::Referrer(), WindowOpenDisposition::NEW_FOREGROUND_TAB,
-          ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/false);
-      original_web_contents_->OpenURL(params, {});
-    }
+    // Closing the dialog can destroy `this`, so take what is needed onto the
+    // stack and close before navigating.
+    base::WeakPtr<content::WebContents> web_contents = original_web_contents_;
 
     dialog_model()->host()->Close();
+    // `this` might be deleted when `Close()` is called.
+
+    if (web_contents) {
+      GURL url(chrome::kCwsEnhancedSafeBrowsingLearnMoreURL);
+      content::OpenURLParams params =
+          content::OpenURLParams::CreateBrowserInitiated(
+              url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+              ui::PAGE_TRANSITION_LINK);
+      web_contents->OpenURL(params, {});
+    }
   }
 
  private:

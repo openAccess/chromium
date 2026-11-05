@@ -118,6 +118,18 @@ base::debug::CrashKeyString* GetRequestInitiatorOriginLockCrashKey() {
   return crash_key;
 }
 
+base::debug::CrashKeyString* GetIsolatedWorldOriginLockCrashKey() {
+  static auto* crash_key = base::debug::AllocateCrashKeyString(
+      "isolated_world_origin_lock", base::debug::CrashKeySize::Size256);
+  return crash_key;
+}
+
+base::debug::CrashKeyString* GetIsolatedWorldOriginCrashKey() {
+  static auto* crash_key = base::debug::AllocateCrashKeyString(
+      "isolated_world_origin", base::debug::CrashKeySize::Size256);
+  return crash_key;
+}
+
 bool IsTrustedNavigationRequestFromSecureContext(
     const ResourceRequest& request) {
   if (!request.trusted_params) {
@@ -224,6 +236,9 @@ CorsURLLoaderFactory::CorsURLLoaderFactory(
       process_id_(params->process_id),
       request_initiator_origin_lock_(params->request_initiator_origin_lock),
       ignore_isolated_world_origin_(params->ignore_isolated_world_origin),
+      isolated_world_origin_lock_(params->ignore_isolated_world_origin
+                                      ? std::nullopt
+                                      : params->isolated_world_origin_lock),
       trust_token_issuance_policy_(params->trust_token_issuance_policy),
       trust_token_redemption_policy_(params->trust_token_redemption_policy),
       isolation_info_(params->isolation_info),
@@ -249,6 +264,8 @@ CorsURLLoaderFactory::CorsURLLoaderFactory(
       is_main_frame_origin_recently_accessed_(
           params->is_main_frame_origin_recently_accessed),
       is_outermost_main_frame_(params->is_outermost_main_frame),
+      renderer_accessible_http_cache_write_enabled_(
+          params->renderer_accessible_http_cache_write_enabled),
       origin_access_list_(origin_access_list),
       owner_(owner),
       network_restrictions_id_(params->network_restrictions_id) {
@@ -259,6 +276,12 @@ CorsURLLoaderFactory::CorsURLLoaderFactory(
   DCHECK(process_id_);
   DCHECK_EQ(net::IsolationInfo::RequestType::kOther,
             params->isolation_info.request_type());
+  if (params->ignore_isolated_world_origin &&
+      params->isolated_world_origin_lock.has_value()) {
+    mojo::ReportBadMessage(
+        "CorsURLLoaderFactory: isolated_world_origin_lock set when "
+        "ignore_isolated_world_origin is true");
+  }
   if (context_->url_request_context()->bound_network() !=
       net::handles::kInvalidNetworkHandle) {
     // CorsURLLoaderFactories bound to a network allow CORS preflight load
@@ -479,7 +502,8 @@ void CorsURLLoaderFactory::CreateLoaderAndStart(
         std::move(resource_request), ignore_isolated_world_origin_,
         factory_override_ &&
             factory_override_->ShouldSkipCorsEnabledSchemeCheck(),
-        std::move(client), traffic_annotation, inner_url_loader_factory,
+        renderer_accessible_http_cache_write_enabled_, std::move(client),
+        traffic_annotation, inner_url_loader_factory,
         factory_override_ ? nullptr : network_loader_factory_.get(),
         origin_access_list_, *isolation_info_ptr, std::move(devtools_observer),
         client_security_state_.get(), &url_loader_network_service_observer_,
@@ -644,8 +668,7 @@ bool CorsURLLoaderFactory::IsValidRequest(
     // The request value is renderer-controlled, while the factory value is
     // browser-derived. Initial empty documents in opener-retaining popups can
     // legitimately use a factory inherited from their creating subframe.
-    // Canonicalize to the factory's less-privileged value so Network Service
-    // downstream cookie policy does not allow top-level storage-access.
+    // Canonicalize to the factory's less-privileged value.
     request.is_outermost_main_frame = is_outermost_main_frame_;
     UMA_HISTOGRAM_BOOLEAN(
         "NetworkService.CorsURLLoaderFactory.IsOutermostMainFrameClamped",
@@ -710,9 +733,7 @@ bool CorsURLLoaderFactory::IsValidRequest(
   // for details):
   // * kEmbed: used by PDF pages to embed subresources.
   // * kObject: used by wpt tests.
-  if (base::FeatureList::IsEnabled(
-          features::kRestrictFrameDestinationsToNavigate) &&
-      (request.destination == mojom::RequestDestination::kDocument ||
+  if ((request.destination == mojom::RequestDestination::kDocument ||
        request.destination == mojom::RequestDestination::kFrame ||
        request.destination == mojom::RequestDestination::kIframe ||
        request.destination == mojom::RequestDestination::kFencedframe) &&
@@ -890,6 +911,32 @@ bool CorsURLLoaderFactory::IsValidRequest(
       return false;
   }
 
+  if (ignore_isolated_world_origin_) {
+    // Normal web frame factories ignore isolated world origins. Clear any
+    // spoofed isolated_world_origin from the renderer so that downstream checks
+    // (e.g. ShouldAllowUnsafeHeaders) and CorsURLLoader do not see it.
+    request.isolated_world_origin = std::nullopt;
+  } else if (!process_id_.is_browser() && request.isolated_world_origin &&
+             base::FeatureList::IsEnabled(
+                 features::kEnforceIsolatedWorldOriginLock)) {
+    if (!isolated_world_origin_lock_ ||
+        !isolated_world_origin_lock_->IsSameOriginWith(
+            *request.isolated_world_origin)) {
+      url::debug::ScopedOriginCrashKey initiator_origin_lock_crash_key(
+          GetRequestInitiatorOriginLockCrashKey(),
+          base::OptionalToPtr(request_initiator_origin_lock_));
+      url::debug::ScopedOriginCrashKey isolated_origin_lock_crash_key(
+          GetIsolatedWorldOriginLockCrashKey(),
+          base::OptionalToPtr(isolated_world_origin_lock_));
+      url::debug::ScopedOriginCrashKey isolated_origin_crash_key(
+          GetIsolatedWorldOriginCrashKey(),
+          base::OptionalToPtr(request.isolated_world_origin));
+      mojo::ReportBadMessage(
+          "CorsURLLoaderFactory: isolated_world_origin lock mismatch");
+      return false;
+    }
+  }
+
   if (!IsValidCorsExemptHeaders(*context_->cors_exempt_header_list(),
                                 request.cors_exempt_headers)) {
     return false;
@@ -939,6 +986,14 @@ bool CorsURLLoaderFactory::IsValidRequest(
       !IsCorsPreflighLoadOptionAllowed()) {
     mojo::ReportBadMessage(
         "CorsURLLoaderFactory: kURLLoadOptionAsCorsPreflight is set");
+    return false;
+  }
+
+  if ((options & mojom::kURLLoadOptionReadAndDiscardBody) &&
+      (options & mojom::kURLLoadOptionSniffMimeType)) {
+    mojo::ReportBadMessage(
+        "CorsURLLoaderFactory: kURLLoadOptionReadAndDiscardBody and "
+        "kURLLoadOptionSniffMimeType cannot be used together");
     return false;
   }
 

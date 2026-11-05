@@ -7,13 +7,11 @@ package org.chromium.chrome.browser.quick_delete;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-
-import androidx.test.filters.SmallTest;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -22,7 +20,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.browsing_data.TimePeriod;
@@ -36,7 +33,6 @@ import java.util.List;
 
 /** Robolectric tests for {@link QuickDeleteMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class QuickDeleteMediatorTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -68,7 +64,6 @@ public class QuickDeleteMediatorTest {
     }
 
     @Test
-    @SmallTest
     public void testQuickDeleteMediatorInit_InvokesChanges() {
         setSignedInStatus(true);
 
@@ -91,11 +86,10 @@ public class QuickDeleteMediatorTest {
         assertTrue(mPropertyModel.get(QuickDeleteProperties.IS_DOMAIN_VISITED_DATA_PENDING));
         assertFalse(mPropertyModel.get(QuickDeleteProperties.IS_SYNCING_HISTORY));
         verify(mQuickDeleteBridgeNatives)
-                .restartCounterForTimePeriod(anyLong(), eq(TimePeriod.LAST_15_MINUTES));
+                .restartCounterForTimePeriod(any(), eq(TimePeriod.LAST_15_MINUTES));
     }
 
     @Test
-    @SmallTest
     public void testQuickDeleteMediatorInit_InvokesChanges_NonNullArchivedTabs() {
         setSignedInStatus(true);
 
@@ -127,6 +121,6 @@ public class QuickDeleteMediatorTest {
         assertTrue(mPropertyModel.get(QuickDeleteProperties.IS_DOMAIN_VISITED_DATA_PENDING));
         assertFalse(mPropertyModel.get(QuickDeleteProperties.IS_SYNCING_HISTORY));
         verify(mQuickDeleteBridgeNatives)
-                .restartCounterForTimePeriod(anyLong(), eq(TimePeriod.LAST_15_MINUTES));
+                .restartCounterForTimePeriod(any(), eq(TimePeriod.LAST_15_MINUTES));
     }
 }

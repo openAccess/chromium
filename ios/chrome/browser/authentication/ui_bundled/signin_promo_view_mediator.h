@@ -8,21 +8,21 @@
 #import <Foundation/Foundation.h>
 
 #import "components/sync/base/data_type.h"
-#import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/change_profile_continuation_provider.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 
 class AuthenticationService;
 class ChromeAccountManagerService;
 class PrefService;
 @protocol AccountSettingsPresenter;
-typedef NS_ENUM(NSUInteger, SigninCoordinatorResult);
 @class SigninPromoViewConfigurator;
 @class ShowSigninCommand;
 @protocol SigninPromoViewConsumer;
 @protocol SystemIdentity;
 
 namespace signin {
+class AccountPreviewDataService;
 class IdentityManager;
 enum class Tribool;
 }  // namespace signin
@@ -40,17 +40,21 @@ class PrefRegistrySyncable;
 }  // namespace user_prefs
 
 // Enums for the sign-in promo view state. Those states are sequential, with no
-// way to go backwards. All states can be skipped except `kNotYetDisplayed` and
-// `kDisconnected`.
+// way to go backwards. All states can be skipped except
+// `kNotOrPartiallyDisplayed` and `kDisconnected`.
 enum class SigninPromoViewState {
-  // Initial state, before the first time the view is displayed. If the state
-  // is still `kNotYetDisplayed` when -[SigninPromoViewMediator disconnect] is
-  // called, it means the view was never displayed, thus no metrics are
-  // recorded.
-  kNotYetDisplayed,
-  // None of the buttons has been used yet. The view has been displayed, but may
-  // have been removed again if the promo is not useful anymore.
-  kHadNoInteraction,
+  // Initial state, before the first time the view is mostly displayed enough to
+  // log the promo as printed. If the state is still `kNotOrPartiallyDisplayed`
+  // when
+  // `-[SigninPromoViewMediator disconnect]` is consider it worth logging this
+  // metric. Note that it can still be partially displayed and the buttons may
+  // be interacted with.
+  kNotOrPartiallyDisplayed,
+  // None of the buttons has been used yet. The view has been displayed enough
+  // to be considered logging the promo as printed. Note that the view may
+  // have been removed again if the promo is not useful anymore (e.g. the user
+  // signed-in or sign-in got disabled).
+  kDisplayedWithNoInteraction,
   // Sign-in buttons have been used at least once.
   kUserInteracted,
   // The user tapped on the button to remove the sign-in promo from the view
@@ -106,7 +110,7 @@ enum class SigninPromoAction {
 // the default one).
 @property(nonatomic, strong, readonly) id<SystemIdentity> displayedIdentity;
 
-// Sign-in promo view state. kNeverVisible by default.
+// Sign-in promo view state. kNotOrPartiallyDisplayed by default.
 @property(nonatomic, assign, readonly)
     SigninPromoViewState signinPromoViewState;
 
@@ -115,14 +119,6 @@ enum class SigninPromoAction {
 // kUnknown if the sign-in flow is quite probably displayed but may have
 // disappeared silently. See crbug.com/395959814.
 @property(nonatomic, assign, readonly) signin::Tribool signinInProgress;
-
-// YES if the promo spinner should be displayed. Either the sign-in or the
-// initial sync is in progress.
-@property(nonatomic, assign, readonly) BOOL showSpinner;
-
-// Returns YES if the sign-in promo view is in a state where its buttons may be
-// used.
-@property(nonatomic, assign, readonly, getter=isUsable) BOOL usable;
 
 // The action performed when accepting the promo. kInstantSignin by default.
 @property(nonatomic, assign) SigninPromoAction signinPromoAction;
@@ -159,6 +155,8 @@ enum class SigninPromoAction {
                     (ChromeAccountManagerService*)accountManagerService
                           authService:(AuthenticationService*)authService
                           prefService:(PrefService*)prefService
+            accountPreviewDataService:
+                (signin::AccountPreviewDataService*)accountPreviewDataService
                           syncService:(syncer::SyncService*)syncService
                           accessPoint:(signin_metrics::AccessPoint)accessPoint
                              delegate:
@@ -169,15 +167,10 @@ enum class SigninPromoAction {
                                           changeProfileContinuationProvider
     NS_DESIGNATED_INITIALIZER;
 
-- (SigninPromoViewConfigurator*)createConfigurator;
-
-// Increments the "shown" counter used for histograms. Called when the signin
-// promo view is visible. If the sign-in promo is already visible, this method
-// does nothing.
-- (void)signinPromoViewIsVisible;
-
-// Called when the sign-in promo view is hidden. If the sign-in promo view has
-// never been shown, or it is already hidden, this method does nothing.
+// Called when the sign-in promo view is hidden for the purpose of logging promo
+// impression. If the sign-in promo view has never been shown, or it is already
+// hidden, this method does nothing. This may be called while a small part of
+// the view still appears, and so it’s possible for the buttons to be tapped.
 - (void)signinPromoViewIsHidden;
 
 // Disconnects the mediator, this method needs to be called when the sign-in
@@ -186,7 +179,7 @@ enum class SigninPromoAction {
 - (void)disconnect;
 
 // Callback for the Signin.
-- (void)signinDidCompleteWithResult:(SigninCoordinatorResult)result;
+- (void)signinDidCompleteWithResult:(SigninCoordinatorResultOrIdentity)result;
 
 @end
 

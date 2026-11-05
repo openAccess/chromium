@@ -10,7 +10,9 @@
 #include <string>
 
 #include "base/component_export.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "components/input/event_with_latency_info.h"
 #include "components/input/render_input_router.h"
@@ -55,6 +57,9 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
  public:
   virtual base::WeakPtr<RenderWidgetHostViewInput> GetInputWeakPtr() = 0;
 
+  virtual void PinForInputDispatch() {}
+  virtual void UnpinForInputDispatch() {}
+
   virtual float GetDeviceScaleFactor() const = 0;
   // Returns true if the mouse pointer is currently locked.
   virtual bool IsPointerLocked() = 0;
@@ -87,6 +92,10 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
   // not embeddable, this method always returns a RenderWidgetHostViewBase
   // instance.
   virtual RenderWidgetHostViewInput* GetRootView() = 0;
+
+  // Returns the view whose page scale should be changed by pinch zoom
+  // originating in this view. Defaults to the root view.
+  virtual RenderWidgetHostViewInput* GetPinchZoomTarget();
 
   // Obtains the root window FrameSinkId.
   virtual viz::FrameSinkId GetRootFrameSinkId();
@@ -200,6 +209,11 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
   virtual void GestureEventAck(const blink::WebGestureEvent& event,
                                blink::mojom::InputEventResultSource ack_source,
                                blink::mojom::InputEventResultState ack_result);
+  // Processes an ACK for a synthetic wheel generated from a touchpad zoom
+  // event without re-entering child-frame ACK forwarding.
+  void ProcessTouchpadZoomEventAck(
+      const blink::WebGestureEvent& event,
+      blink::mojom::InputEventResultState ack_result);
   virtual void WheelEventAck(const blink::WebMouseWheelEvent& event,
                              blink::mojom::InputEventResultState ack_result);
 
@@ -300,6 +314,38 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
   base::ObserverList<RenderWidgetHostViewInputObserver>::Unchecked observers_;
   std::optional<blink::WebGestureEvent> pending_touchpad_pinch_begin_;
 };
+
+// A helper class that "pins" a RenderWidgetHostViewInput to prevent its
+// synchronous destruction during input event dispatch.
+//
+// Input event dispatch can result the synchronous destruction of the
+// RenderWidgetHostImpl and its RenderWidgetHostViewBase. Such as the close of a
+// tab or a popup. This can occur while there are other input events still
+// enqueued to be processed.
+//
+// By instantiating this class on the target view before forwarding an event,
+// the view's actual deletion is deferred until this object goes out of scope
+// (when the event dispatch call stack winds down). See
+// RenderWidgetHostViewBase::DestroyOrDefer
+//
+// This prevents Use-After-Free (UAF) crashes in the event routing and handling
+// code that continues to run on the stack after the target has been requested
+// to be destroyed.
+//
+// Under the hood, this increments the target view's pin count on construction
+// and decrements it on destruction. If the view entered a pending destruction
+// state while pinned, the final destruction
+// (RenderWidgetHostViewBase::DestroyImpl) is triggered when the pin count
+// returns to zero.
+class COMPONENT_EXPORT(INPUT) ScopedInputDispatchPin {
+ public:
+  explicit ScopedInputDispatchPin(RenderWidgetHostViewInput* view);
+  ~ScopedInputDispatchPin();
+
+ private:
+  raw_ptr<RenderWidgetHostViewInput> view_ = nullptr;
+};
+
 }  // namespace input
 
 #endif  // COMPONENTS_INPUT_RENDER_WIDGET_HOST_VIEW_INPUT_H_

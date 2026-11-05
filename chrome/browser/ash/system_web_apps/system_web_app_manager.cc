@@ -23,6 +23,7 @@
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/containers/flat_map.h"
+#include "base/containers/flat_set.h"
 #include "base/dcheck_is_on.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
@@ -80,7 +81,6 @@
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_system_web_app_delegate_map_utils.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
-#include "chrome/common/chrome_features.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_background_task_info.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
 #include "components/application_locale_storage/application_locale_storage.h"
@@ -174,9 +174,10 @@ web_app::ExternalInstallOptions CreateInstallOptionsForSystemApp(
     const SystemWebAppDelegate& delegate,
     bool force_update,
     bool is_disabled) {
-  DCHECK(delegate.GetInstallUrl().GetScheme() == content::kChromeUIScheme ||
-         delegate.GetInstallUrl().GetScheme() ==
-             content::kChromeUIUntrustedScheme);
+  CHECK(delegate.GetInstallUrl().GetScheme() == content::kChromeUIScheme ||
+            delegate.GetInstallUrl().GetScheme() ==
+                content::kChromeUIUntrustedScheme,
+        base::NotFatalUntil::M160);
 
   web_app::ExternalInstallOptions install_options(
       delegate.GetInstallUrl(), web_app::mojom::UserDisplayMode::kStandalone,
@@ -224,7 +225,7 @@ SystemWebAppManager::SystemWebAppManager(
                         web_app::GetProfileCategoryForLogging(profile)})),
       pref_service_(profile_->GetPrefs()),
       icon_checker_(SystemWebAppIconChecker::Create(profile_)) {
-  DCHECK(provider_);
+  CHECK(provider_, base::NotFatalUntil::M160);
   // Always create delegates because many System Web App WebUIs are disabled
   // when the delegate is not present and we need them in tests. Tests can
   // override the list of delegates with SetSystemAppsForTesting().
@@ -289,7 +290,7 @@ SystemWebAppManager* SystemWebAppManager::GetForTest(Profile* profile) {
   }
 
   SystemWebAppManager* swa_manager = Get(profile);
-  DCHECK(swa_manager);
+  CHECK(swa_manager, base::NotFatalUntil::M160);
 
   if (provider->on_registry_ready().is_signaled()) {
     return swa_manager;
@@ -329,7 +330,17 @@ void SystemWebAppManager::ScheduleStart() {
 
 void SystemWebAppManager::Start() {
   TRACE_EVENT0("ui", "SystemWebAppManager::Start");
-  DCHECK(provider_->is_registry_ready());
+  // TODO(crbug.com/crbug.com/506131577): `WebAppProvider::on_registry_ready()`
+  // may fire in the case database reads fail, `WebAppProvider` is not
+  // initialized and `WebAppProvider::is_registry_ready()` reports false. Either
+  // `on_registry_ready()` should be renamed to indicate it is independent of
+  // init success or better error handling is implemented.
+  if (!provider_->is_registry_ready()) {
+    if (!on_apps_synchronized_->is_signaled()) {
+      on_apps_synchronized_->Signal();
+    }
+    return;
+  }
 
   // `Start` can be called multiple times in tests.
   ui_manager_observation_.Reset();
@@ -347,8 +358,9 @@ void SystemWebAppManager::Start() {
       // Only allow force enabled origin trials on chrome:// and
       // chrome-untrusted:// URLs.
       const auto& scheme = origin_to_trial_names.first.scheme();
-      DCHECK(scheme == content::kChromeUIScheme ||
-             scheme == content::kChromeUIUntrustedScheme);
+      CHECK(scheme == content::kChromeUIScheme ||
+                scheme == content::kChromeUIUntrustedScheme,
+            base::NotFatalUntil::M160);
       // TODO(crbug.com/40115403): Find some ways to validate supplied
       // origin trial names. Ideally, construct them from some static const
       // char*.
@@ -445,6 +457,14 @@ void SystemWebAppManager::InstallSystemAppsForTesting() {
   run_loop.Run();
 }
 
+void SystemWebAppManager::InstallSystemAppsForTesting(
+    base::flat_set<SystemWebAppType> types) {
+  base::EraseIf(system_app_delegates_, [&types](const auto& entry) {
+    return !types.contains(entry.first);
+  });
+  InstallSystemAppsForTesting();
+}
+
 std::optional<webapps::AppId> SystemWebAppManager::GetAppIdForSystemApp(
     SystemWebAppType type) const {
   if (!provider_->is_registry_ready()) {
@@ -481,7 +501,9 @@ std::vector<webapps::AppId> SystemWebAppManager::GetAppIds() const {
 }
 
 bool SystemWebAppManager::IsSystemWebApp(const webapps::AppId& app_id) const {
-  DCHECK(provider_->is_registry_ready());
+  if (!provider_->is_registry_ready()) {
+    return false;
+  }
   return web_app::IsSystemWebApp(provider_->registrar_unsafe(),
                                  system_app_delegates_, app_id);
 }
@@ -489,7 +511,7 @@ bool SystemWebAppManager::IsSystemWebApp(const webapps::AppId& app_id) const {
 const std::vector<std::string>* SystemWebAppManager::GetEnabledOriginTrials(
     const SystemWebAppDelegate* system_app,
     const GURL& url) const {
-  DCHECK(system_app);
+  CHECK(system_app, base::NotFatalUntil::M160);
   const auto& origin_to_origin_trials = system_app->GetEnabledOriginTrials();
   auto iter_trials = origin_to_origin_trials.find(url::Origin::Create(url));
 
@@ -518,9 +540,9 @@ void SystemWebAppManager::OnReadyToCommitNavigation(
   // This function should only be called when an navigation happens inside a
   // System App. So the |app_id| should always have a valid associated System
   // App type.
-  DCHECK(type.has_value());
+  CHECK(type.has_value(), base::NotFatalUntil::M160);
   auto* system_app = GetSystemApp(type.value());
-  DCHECK(system_app);
+  CHECK(system_app, base::NotFatalUntil::M160);
 
   const std::vector<std::string>* trials =
       GetEnabledOriginTrials(system_app, navigation_handle->GetURL());
@@ -629,7 +651,7 @@ void SystemWebAppManager::RecordSystemWebAppInstallDuration(
     const base::TimeDelta& install_duration) const {
   // Install duration should be non-negative. A low resolution clock could
   // result in a |install_duration| of 0.
-  DCHECK_GE(install_duration.InMilliseconds(), 0);
+  CHECK_GE(install_duration.InMilliseconds(), 0, base::NotFatalUntil::M160);
 
   if (!shutting_down_) {
     base::UmaHistogramMediumTimes(kFreshInstallDurationHistogramName,
@@ -723,7 +745,7 @@ void SystemWebAppManager::OnAppsSynchronized(
   // May be called more than once in tests.
   if (!on_apps_synchronized_->is_signaled()) {
     on_apps_synchronized_->Signal();
-    DCHECK(provider_->is_registry_ready());
+    CHECK(provider_->is_registry_ready(), base::NotFatalUntil::M160);
     provider_->policy_manager().OnDisableListPolicyChanged();
     // TODO(http://crbug.com/40167016): Don't create SWA background tasks that
     // are associated with a disabled SWA.

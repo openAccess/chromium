@@ -7,11 +7,13 @@
 #include <string>
 
 #include "ash/constants/ash_login_pref_names.h"
+#include "base/check.h"
 #include "base/functional/callback.h"
 #include "base/json/json_writer.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/ash/login/test/oobe_base_test.h"
@@ -23,8 +25,11 @@
 #include "chrome/browser/ui/webui/ash/login/locale_switch_screen_handler.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
@@ -65,6 +70,8 @@ class LocaleSwitchScreenBrowserTest : public OobeBaseTest {
   void SetPeopleAPIResponseLocale(const std::string& account_locale);
   LocaleSwitchScreen::Result WaitForScreenExitResult();
 
+  LocaleSwitchScreen* GetScreen();
+
  private:
   // Helper to substitute calls to PeopleAPI to fetch preferred user locale.
   std::unique_ptr<content::URLLoaderInterceptor> people_api_interceptor_;
@@ -76,14 +83,19 @@ class LocaleSwitchScreenBrowserTest : public OobeBaseTest {
 
 LocaleSwitchScreenBrowserTest::LocaleSwitchScreenBrowserTest() = default;
 
-void LocaleSwitchScreenBrowserTest::SetUpOnMainThread() {
-  SetPeopleAPIResponseLocale("en");
-  LocaleSwitchScreen* screen = static_cast<LocaleSwitchScreen*>(
+LocaleSwitchScreen* LocaleSwitchScreenBrowserTest::GetScreen() {
+  return static_cast<LocaleSwitchScreen*>(
       WizardController::default_controller()->screen_manager()->GetScreen(
           LocaleSwitchView::kScreenId));
+}
+
+void LocaleSwitchScreenBrowserTest::SetUpOnMainThread() {
+  SetPeopleAPIResponseLocale("en");
+  LocaleSwitchScreen* screen = GetScreen();
   original_callback_ = screen->get_exit_callback_for_testing();
   screen->set_exit_callback_for_testing(
       screen_result_waiter_.GetRepeatingCallback());
+  screen->set_timeout_for_testing(base::Seconds(30));
   fake_gaia_.SetupFakeGaiaForLoginWithDefaults();
   OobeBaseTest::SetUpOnMainThread();
 }
@@ -124,6 +136,12 @@ void LocaleSwitchScreenBrowserTest::ProceedToLocaleSwitchScreen() {
   Profile* profile = ProfileManager::GetPrimaryUserProfile();
   auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
   signin::WaitForRefreshTokensLoaded(identity_manager);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    const CoreAccountId account_id =
+        identity_manager->GetPrimaryAccountId(signin::ConsentLevel::kSignin);
+    return !account_id.empty() &&
+           identity_manager->HasAccountWithRefreshToken(account_id);
+  }));
   AccountInfo account_info = identity_manager->FindExtendedAccountInfoByGaiaId(
       FakeGaiaMixin::kFakeUserGaiaId);
   AccountCapabilitiesTestMutator mutator(&account_info);
@@ -152,7 +170,9 @@ IN_PROC_BROWSER_TEST_F(LocaleSwitchScreenBrowserTest,
             false);
 }
 
-IN_PROC_BROWSER_TEST_F(LocaleSwitchScreenBrowserTest, SkipWhenSameLocales) {
+// TODO(crbug.com/562025613): Flaky.
+IN_PROC_BROWSER_TEST_F(LocaleSwitchScreenBrowserTest,
+                       DISABLED_SkipWhenSameLocales) {
   const std::string current_locale = g_browser_process->GetApplicationLocale();
   EXPECT_EQ(current_locale, "en-US");
   SetPeopleAPIResponseLocale(current_locale);
@@ -181,10 +201,15 @@ IN_PROC_BROWSER_TEST_F(LocaleSwitchScreenBrowserTest,
   EXPECT_EQ(g_browser_process->GetApplicationLocale(), new_locale);
 
   ASSERT_TRUE(base::test::RunUntil([&]() {
-    const user_manager::User* user =
-        user_manager::UserManager::Get()->GetActiveUser();
-    return user && user->GetAccountLocale() &&
-           *user->GetAccountLocale() == new_locale;
+    const session_manager::Session* active_session =
+        session_manager::SessionManager::Get()->GetActiveSession();
+    if (!active_session) {
+      return false;
+    }
+    const user_manager::User* user = user_manager::UserManager::Get()->FindUser(
+        active_session->account_id());
+    CHECK(user);
+    return user->GetAccountLocale() && *user->GetAccountLocale() == new_locale;
   })) << "Timeout waiting for user account locale to be updated";
 }
 

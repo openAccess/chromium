@@ -12,6 +12,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <sstream>
 #include <string_view>
 #include <utility>
@@ -19,7 +20,6 @@
 #include "base/auto_reset.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
-#include "base/containers/adapters.h"
 #include "base/containers/flat_set.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
@@ -30,6 +30,7 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/scoped_observation.h"
@@ -87,6 +88,7 @@
 #include "ui/views/buildflags.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/controls/scroll_view.h"
+#include "ui/views/deprecated_layout_immediately_pass_key.h"
 #include "ui/views/drag_controller.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/interaction/element_tracker_views.h"
@@ -94,6 +96,7 @@
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/property_effects.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/view_guard.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/view_tracker.h"
 #include "ui/views/view_utils.h"
@@ -115,6 +118,41 @@ enum class PropertyChangeReason;
 namespace views {
 
 namespace {
+
+// Returns true if `view` or any of its descendants owns a layer.
+bool SubtreeHasLayer(const View* view) {
+  if (view->layer()) {
+    return true;
+  }
+  return std::ranges::any_of(view->children(), &SubtreeHasLayer);
+}
+
+// Recursively collects direct child layers of `parent_layer` in Z-order.
+// Recurses through layerless views to find layer-owning descendants. Once a
+// view with a layer is reached, its layers are collected and recursion stops
+// because any deeper layers are parented to that view's layer.
+void CollectChildLayers(View* view,
+                        ui::Layer* parent_layer,
+                        std::vector<ui::Layer*>& layers) {
+  if (view->layer() && view->layer() != parent_layer) {
+    // TODO(crbug.com/565603740): Revert back to DCHECK_EQ and remove
+    // DUMP_WILL_BE_CHECK_EQ / early returns once confirmed no parent mismatch
+    // occurs.
+    DUMP_WILL_BE_CHECK_EQ(parent_layer, view->layer()->parent());
+    if (view->layer()->parent() == parent_layer) {
+      for (ui::Layer* l : view->GetLayersInOrder()) {
+        DUMP_WILL_BE_CHECK_EQ(parent_layer, l->parent());
+        if (l->parent() == parent_layer) {
+          layers.push_back(l);
+        }
+      }
+    }
+    return;
+  }
+  for (View* child : view->GetChildrenInZOrder()) {
+    CollectChildLayers(child, parent_layer, layers);
+  }
+}
 
 #if BUILDFLAG(IS_WIN)
 constexpr bool kContextMenuOnMousePress = false;
@@ -252,8 +290,8 @@ View::~View() {
   }
 
   // This view should have been removed from the focus list by now.
-  DCHECK_EQ(next_focusable_view_, nullptr);
-  DCHECK_EQ(previous_focusable_view_, nullptr);
+  CHECK_EQ(next_focusable_view_, nullptr, base::NotFatalUntil::M163);
+  CHECK_EQ(previous_focusable_view_, nullptr, base::NotFatalUntil::M163);
 
   // Need to remove layout manager before deleting children because if we do not
   // it is possible for layout-related calls (e.g. CalculatePreferredSize()) to
@@ -318,9 +356,13 @@ Widget* View::GetWidget() {
 }
 
 void View::ReorderChildView(View* view, size_t index) {
-  DCHECK_EQ(view->parent_, this);
+  CHECK_EQ(view->parent_, this, base::NotFatalUntil::M163);
   const auto i = std::ranges::find(children_, view);
-  DCHECK(i != children_.end());
+  CHECK(i != children_.end(), base::NotFatalUntil::M163);
+
+  // Should never destroy a view or its child when reordering child views.
+  ViewGuard this_guard(*this, base::NotFatalUntil::M165);
+  ViewGuard child_guard(*view, base::NotFatalUntil::M165);
 
   // If |view| is already at the desired position, there's nothing to do.
   const auto pos =
@@ -722,7 +764,7 @@ View::AddEnabledInViewsSubtreeChangedCallback(
 View::Views View::GetChildrenInZOrder() {
   if (HasLayoutManager()) {
     const auto result = GetLayoutManager()->GetChildViewsInPaintOrder(this);
-    DCHECK_EQ(children_.size(), result.size());
+    CHECK_EQ(children_.size(), result.size(), base::NotFatalUntil::M163);
     return result;
   }
   return children_;
@@ -761,7 +803,7 @@ void View::SetTransform(const gfx::Transform& transform) {
   } else {
     paint_to_layer_for_transform_ = true;
     CreateOrDestroyLayer();
-    DCHECK_NE(layer(), nullptr);
+    CHECK_NE(layer(), nullptr, base::NotFatalUntil::M163);
     layer()->SetTransform(transform);
     layer()->ScheduleDraw();
   }
@@ -774,7 +816,7 @@ void View::SetTransform(const gfx::Transform& transform) {
 void View::SetPaintToLayer(ui::LayerType layer_type) {
   // Avoid re-creating the layer if unnecessary.
   if (paint_to_layer_explicitly_set_) {
-    DCHECK_NE(layer(), nullptr);
+    CHECK_NE(layer(), nullptr, base::NotFatalUntil::M163);
     if (layer()->type() == layer_type) {
       return;
     }
@@ -840,8 +882,8 @@ std::vector<ui::Layer*> View::GetLayersInOrder(ViewLayer view_layer) {
   // view.
   if (!layer()) {
     // If there is no View layer, there should be no layers above or below.
-    DCHECK(layers_above_.empty());
-    DCHECK(layers_below_.empty());
+    CHECK(layers_above_.empty(), base::NotFatalUntil::M163);
+    CHECK(layers_below_.empty(), base::NotFatalUntil::M163);
     return {};
   }
 
@@ -865,13 +907,18 @@ void View::LayerDestroyed(ui::Layer* layer) {
   RemoveLayerFromRegions(layer);
 }
 
-std::unique_ptr<ui::Layer> View::RecreateLayer() {
-  std::unique_ptr<ui::Layer> old_layer = LayerOwner::RecreateLayer();
-  Widget* widget = GetWidget();
-  if (widget) {
-    widget->LayerTreeChanged();
-  }
-  return old_layer;
+void View::OnLayerRecreated(ui::Layer* old_layer, ui::Layer* new_layer) {
+  auto swap_layer =
+      [&](std::vector<raw_ptr<ui::Layer, VectorExperimental>>& layers) {
+        auto it = std::ranges::find(layers, old_layer);
+        if (it != layers.end()) {
+          old_layer->RemoveObserver(this);
+          new_layer->AddObserver(this);
+          *it = new_layer;
+        }
+      };
+  swap_layer(layers_below_);
+  swap_layer(layers_above_);
 }
 
 bool View::GetClipLayerToVisibleBounds() const {
@@ -947,6 +994,10 @@ int View::GetMirroredXWithWidthInView(int x, int w) const {
 // Layout ----------------------------------------------------------------------
 
 void View::DeprecatedLayoutImmediately() {
+  LayoutImmediately();
+}
+
+void View::DeprecatedLayoutImmediately(DeprecatedLayoutImmediatelyPassKey) {
   LayoutImmediately();
 }
 
@@ -1114,7 +1165,7 @@ base::CallbackListSubscription View::AddIDChangedCallback(
 
 void View::SetGroup(int gid) {
   // Don't change the group id once it's set.
-  DCHECK(group_ == -1 || group_ == gid);
+  CHECK(group_ == -1 || group_ == gid, base::NotFatalUntil::M163);
   if (group_ != gid) {
     group_ = gid;
     OnPropertyChanged(&group_, PropertyEffects::kNone);
@@ -1123,7 +1174,8 @@ void View::SetGroup(int gid) {
 
 void View::SetOwnedGroup(int group_id) {
   // Don't change the owned group once it's set.
-  DCHECK(owned_group_ == -1 || owned_group_ == group_id);
+  CHECK(owned_group_ == -1 || owned_group_ == group_id,
+        base::NotFatalUntil::M163);
   if (owned_group_ != group_id) {
     owned_group_ = group_id;
     OnPropertyChanged(&owned_group_, PropertyEffects::kNone);
@@ -1174,8 +1226,8 @@ std::string View::GetObjectName() const {
 void View::ConvertPointToTarget(const View* source,
                                 const View* target,
                                 gfx::Point* point) {
-  DCHECK(source);
-  DCHECK(target);
+  CHECK(source, base::NotFatalUntil::M163);
+  CHECK(target, base::NotFatalUntil::M163);
   if (source == target) {
     return;
   }
@@ -1219,8 +1271,8 @@ gfx::Point View::ConvertPointToTarget(const View* source,
 void View::ConvertRectToTarget(const View* source,
                                const View* target,
                                gfx::RectF* rect) {
-  DCHECK(source);
-  DCHECK(target);
+  CHECK(source, base::NotFatalUntil::M163);
+  CHECK(target, base::NotFatalUntil::M163);
   if (source == target) {
     return;
   }
@@ -1258,24 +1310,24 @@ gfx::Rect View::ConvertRectToTarget(const View* source,
 
 // static
 void View::ConvertPointToWidget(const View* src, gfx::Point* p) {
-  DCHECK(src);
-  DCHECK(p);
+  CHECK(src, base::NotFatalUntil::M163);
+  CHECK(p, base::NotFatalUntil::M163);
 
   src->ConvertPointForAncestor(nullptr, p);
 }
 
 // static
 void View::ConvertPointFromWidget(const View* dest, gfx::Point* p) {
-  DCHECK(dest);
-  DCHECK(p);
+  CHECK(dest, base::NotFatalUntil::M163);
+  CHECK(p, base::NotFatalUntil::M163);
 
   dest->ConvertPointFromAncestor(nullptr, p);
 }
 
 // static
 void View::ConvertPointToScreen(const View* src, gfx::Point* p) {
-  DCHECK(src);
-  DCHECK(p);
+  CHECK(src, base::NotFatalUntil::M163);
+  CHECK(p, base::NotFatalUntil::M163);
 
   // If the view is not connected to a tree, there's nothing we can do.
   const Widget* widget = src->GetWidget();
@@ -1294,8 +1346,8 @@ gfx::Point View::ConvertPointToScreen(const View* src, const gfx::Point& p) {
 
 // static
 void View::ConvertPointFromScreen(const View* dst, gfx::Point* p) {
-  DCHECK(dst);
-  DCHECK(p);
+  CHECK(dst, base::NotFatalUntil::M163);
+  CHECK(p, base::NotFatalUntil::M163);
 
   const views::Widget* widget = dst->GetWidget();
   if (!widget) {
@@ -1314,8 +1366,8 @@ gfx::Point View::ConvertPointFromScreen(const View* src, const gfx::Point& p) {
 
 // static
 void View::ConvertRectToScreen(const View* src, gfx::Rect* rect) {
-  DCHECK(src);
-  DCHECK(rect);
+  CHECK(src, base::NotFatalUntil::M163);
+  CHECK(rect, base::NotFatalUntil::M163);
 
   gfx::Point new_origin = rect->origin();
   views::View::ConvertPointToScreen(src, &new_origin);
@@ -1407,18 +1459,20 @@ void View::Paint(const PaintInfo& parent_paint_info) {
       context.Visited(this);
       View* view = this;
       while (view->parent() && !view->layer()) {
-        DCHECK(view->GetTransform().IsIdentity());
+        CHECK(view->GetTransform().IsIdentity(), base::NotFatalUntil::M163);
         offset += view->GetMirroredPosition().OffsetFromOrigin();
         view = view->parent();
       }
       // The offset in the PaintContext should be the offset up to the paint
       // root, which we compute and verify here.
-      DCHECK_EQ(context.PaintOffset().x(), offset.x());
-      DCHECK_EQ(context.PaintOffset().y(), offset.y());
+      CHECK_EQ(context.PaintOffset().x(), offset.x(),
+               base::NotFatalUntil::M163);
+      CHECK_EQ(context.PaintOffset().y(), offset.y(),
+               base::NotFatalUntil::M163);
       // The above loop will stop when |view| is the paint root, which should be
       // the root of the current paint walk, as verified by storing the root in
       // the PaintContext.
-      DCHECK_EQ(context.RootVisited(), view);
+      CHECK_EQ(context.RootVisited(), view, base::NotFatalUntil::M163);
     }
 #endif
 
@@ -1561,7 +1615,7 @@ const ui::NativeTheme* View::GetNativeTheme() const {
   // we catch fallthrough to the global NativeTheme instance on all Chromium
   // builds (crbug.com/1056756).
   if (!has_crashed_reported) {
-    DCHECK(false);
+    CHECK(false, base::NotFatalUntil::M163);
     base::debug::DumpWithoutCrashing();
     has_crashed_reported = true;
   }
@@ -1639,8 +1693,8 @@ View* View::GetTooltipHandlerForPoint(const gfx::Point& point) {
   // Walk the child Views recursively looking for the View that most
   // tightly encloses the specified point.
   View::Views children = GetChildrenInZOrder();
-  DCHECK_EQ(children_.size(), children.size());
-  for (views::View* child : base::Reversed(children)) {
+  CHECK_EQ(children_.size(), children.size(), base::NotFatalUntil::M163);
+  for (views::View* child : std::views::reverse(children)) {
     if (!child->GetVisible()) {
       continue;
     }
@@ -1833,7 +1887,7 @@ std::unique_ptr<ViewTargeter> View::SetEventTargeter(
 }
 
 ViewTargeter* View::GetEffectiveViewTargeter() const {
-  DCHECK(GetWidget());
+  CHECK(GetWidget(), base::NotFatalUntil::M163);
   ViewTargeter* view_targeter = targeter();
   if (!view_targeter) {
     view_targeter = GetWidget()->GetRootView()->targeter();
@@ -1868,7 +1922,7 @@ void View::ConvertEventToTarget(const ui::EventTarget* target,
 }
 
 gfx::PointF View::GetScreenLocationF(const ui::LocatedEvent& event) const {
-  DCHECK_EQ(this, event.target());
+  CHECK_EQ(this, event.target(), base::NotFatalUntil::M163);
   gfx::Point screen_location(event.location());
   ConvertPointToScreen(this, &screen_location);
   return gfx::PointF(screen_location);
@@ -1983,8 +2037,8 @@ void View::RemoveFromFocusList() {
 }
 
 void View::InsertBeforeInFocusList(View* view) {
-  DCHECK(view);
-  DCHECK_EQ(parent_, view->parent_);
+  CHECK(view, base::NotFatalUntil::M163);
+  CHECK_EQ(parent_, view->parent_, base::NotFatalUntil::M163);
 
   if (view == next_focusable_view_) {
     return;
@@ -2003,8 +2057,8 @@ void View::InsertBeforeInFocusList(View* view) {
 }
 
 void View::InsertAfterInFocusList(View* view) {
-  DCHECK(view);
-  DCHECK_EQ(parent_, view->parent_);
+  CHECK(view, base::NotFatalUntil::M163);
+  CHECK_EQ(parent_, view->parent_, base::NotFatalUntil::M163);
 
   if (view == previous_focusable_view_) {
     return;
@@ -2252,7 +2306,7 @@ void View::SetAccessibleName(std::u16string name,
 }
 
 void View::SetAccessibleName(View* naming_view) {
-  DCHECK(naming_view);
+  CHECK(naming_view, base::NotFatalUntil::M163);
   GetViewAccessibility().SetName(*naming_view);
 }
 
@@ -2284,7 +2338,7 @@ void View::SetAccessibleDescription(
 }
 
 void View::SetAccessibleDescription(View* describing_view) {
-  DCHECK(describing_view);
+  CHECK(describing_view, base::NotFatalUntil::M163);
   GetViewAccessibility().SetDescription(*describing_view);
 }
 
@@ -2547,8 +2601,8 @@ void View::DestroyLayerImpl(LayerChangeNotifyBehavior notify_parents) {
   // It would leave this view in an inconsistent state if its layer were
   // destroyed while layers beneath were still present. So, assume this doesn't
   // happen.
-  DCHECK(layers_below_.empty());
-  DCHECK(layers_above_.empty());
+  CHECK(layers_below_.empty(), base::NotFatalUntil::M163);
+  CHECK(layers_above_.empty(), base::NotFatalUntil::M163);
 
   if (!layer()) {
     return;
@@ -2580,11 +2634,6 @@ void View::DestroyLayerImpl(LayerChangeNotifyBehavior notify_parents) {
   // Notify the parent chain about the layer change.
   if (notify_parents == LayerChangeNotifyBehavior::NOTIFY) {
     NotifyParentsOfLayerChange();
-  }
-
-  Widget* widget = GetWidget();
-  if (widget) {
-    widget->LayerTreeChanged();
   }
 }
 
@@ -2696,7 +2745,7 @@ void View::ReorderLayers() {
 void View::AddLayerToRegionImpl(
     ui::Layer* new_layer,
     std::vector<raw_ptr<ui::Layer, VectorExperimental>>& layer_vector) {
-  DCHECK(new_layer);
+  CHECK(new_layer, base::NotFatalUntil::M163);
   DCHECK(!std::ranges::contains(layer_vector, new_layer))
       << "Layer already added.";
 
@@ -2722,9 +2771,7 @@ void View::AddLayerToRegionImpl(
 
   CreateOrDestroyLayer();
 
-  if (!layer()->AsSolidColor()) {
-    layer()->SetFillsBoundsOpaquely(false);
-  }
+  layer()->SetFillsBoundsOpaquely(false);
 }
 
 void View::SetLayerParent(ui::Layer* parent_layer) {
@@ -2745,6 +2792,28 @@ void View::SetLayerParent(ui::Layer* parent_layer) {
   }
 }
 
+void View::ReorderChildLayers(ui::Layer* parent_layer) {
+  std::vector<ui::Layer*> expected_layers;
+  CollectChildLayers(this, parent_layer, expected_layers);
+
+  // CollectChildLayers() only collects layers whose parent is `parent_layer`,
+  // so there cannot be more expected layers than actual children.
+  const auto& current_children = parent_layer->children();
+  DUMP_WILL_BE_CHECK_LE(expected_layers.size(), current_children.size());
+
+  // StackChildrenAtBottom() moves `expected_layers`, in order, to the front of
+  // `parent_layer`'s children. If they already form that prefix, the call
+  // would be a no-op, so skip it.
+  // TODO(crbug.com/565603740): Remove the size check once the above is a
+  // CHECK.
+  if (expected_layers.size() <= current_children.size() &&
+      std::equal(expected_layers.begin(), expected_layers.end(),
+                 current_children.begin())) {
+    return;
+  }
+
+  parent_layer->StackChildrenAtBottom(expected_layers);
+}
 bool View::GetNeedsNotificationWhenVisibleBoundsChangeImpl() const {
   return clip_layer_to_visible_bounds_ ||
          notify_observers_on_visible_bounds_change_ ||
@@ -2791,28 +2860,6 @@ void View::UpdateLayerClipForVisibleBounds(bool remove_layer_clip) {
 
   for (ui::Layer* layer : GetLayersInOrder(ViewLayer::kExclude)) {
     apply_clip_bounds(layer, clip_bounds);
-  }
-}
-
-void View::ReorderChildLayers(ui::Layer* parent_layer) {
-  if (layer() && layer() != parent_layer) {
-    DCHECK_EQ(parent_layer, layer()->parent());
-    for (ui::Layer* layer_above : layers_above_) {
-      parent_layer->StackAtBottom(layer_above);
-    }
-    parent_layer->StackAtBottom(layer());
-    for (ui::Layer* layer_below : layers_below_) {
-      parent_layer->StackAtBottom(layer_below);
-    }
-  } else {
-    // Iterate backwards through the children so that a child with a layer
-    // which is further to the back is stacked above one which is further to
-    // the front.
-    View::Views children = GetChildrenInZOrder();
-    DCHECK_EQ(children_.size(), children.size());
-    for (views::View* child : base::Reversed(children)) {
-      child->ReorderChildLayers(parent_layer);
-    }
   }
 }
 
@@ -2933,7 +2980,7 @@ int View::GetDragOperations(const gfx::Point& press_pt) {
 }
 
 void View::WriteDragData(const gfx::Point& press_pt, OSExchangeData* data) {
-  DCHECK(drag_controller_);
+  CHECK(drag_controller_, base::NotFatalUntil::M163);
   drag_controller_->WriteDragDataForView(this, press_pt, data);
 }
 
@@ -3175,7 +3222,7 @@ void View::SetUpTransformRecorderForPainting(
 void View::RecursivePaintHelper(void (View::*func)(const PaintInfo&),
                                 const PaintInfo& info) {
   View::Views children = GetChildrenInZOrder();
-  DCHECK_EQ(children_.size(), children.size());
+  CHECK_EQ(children_.size(), children.size(), base::NotFatalUntil::M163);
   for (views::View* child : children) {
     if (!child->layer()) {
       (child->*func)(info);
@@ -3240,7 +3287,7 @@ void View::PaintDebugRects(const PaintInfo& parent_paint_info) {
 
 void View::AddChildViewAtImpl(View* view, size_t index) {
   CHECK_NE(view, this) << "You cannot add a view as its own child";
-  DCHECK_LE(index, children_.size());
+  CHECK_LE(index, children_.size(), base::NotFatalUntil::M163);
 
   // TODO(crbug.com/41447071): Should just DCHECK(!view->parent_);.
   View* parent = view->parent_;
@@ -3248,6 +3295,10 @@ void View::AddChildViewAtImpl(View* view, size_t index) {
     ReorderChildView(view, index);
     return;
   }
+
+  // Should never destroy a view or its child when adding to the hierarchy.
+  ViewGuard this_guard(*this, base::NotFatalUntil::M165);
+  ViewGuard child_guard(*view, base::NotFatalUntil::M165);
 
   // Remove |view| from its parent, if any.
   Widget* old_widget = view->GetWidget();
@@ -3277,12 +3328,18 @@ void View::AddChildViewAtImpl(View* view, size_t index) {
   // Ensure the layer tree matches the view tree before calling to any client
   // code. This way if client code further modifies the view tree we are in a
   // sane state.
-  const bool did_reparent_any_layers = view->UpdateParentLayers();
-  if (did_reparent_any_layers && widget) {
-    widget->LayerTreeChanged();
-  }
+  view->UpdateParentLayers();
 
-  ReorderLayers();
+  // Layers and hosted native views are stacked according to the order of the
+  // views that own them, so adding a subtree that owns no layer cannot change
+  // that order: a view hosting a native view owns a layer too. Skip the reorder
+  // in that case, since it walks the whole subtree of the nearest layer-backed
+  // ancestor and, through Widget::ReorderNativeViews(), the whole widget,
+  // which is quadratic when many children are added in a row, e.g. when a
+  // large session is restored into the tab strip.
+  if (SubtreeHasLayer(view)) {
+    ReorderLayers();
+  }
 
   // Make sure the visibility of the child layers are correct.
   // If any of the parent View is hidden, then the layers of the subtree
@@ -3354,7 +3411,7 @@ void View::DoRemoveChildView(View* view,
                              bool update_tool_tip,
                              bool delete_removed_view,
                              View* new_parent) {
-  DCHECK(view);
+  CHECK(view, base::NotFatalUntil::M163);
 
   const auto i = FindChild(view);
   if (i == children_.cend()) {
@@ -3362,6 +3419,12 @@ void View::DoRemoveChildView(View* view,
   }
 
   std::unique_ptr<View> view_to_be_deleted;
+
+  // Should never destroy a view or its child when removing from the
+  // hierarchy, at least until `view_to_be_deleted` is released.
+  ViewGuard this_guard(*this, base::NotFatalUntil::M165);
+  ViewGuard child_guard(*view, base::NotFatalUntil::M165);
+
   view->RemoveFromFocusList();
 
   UnregisterChildrenForVisibleBoundsNotification(view);
@@ -3390,9 +3453,6 @@ void View::DoRemoveChildView(View* view,
   // Make sure the layers belonging to the subtree rooted at |view| get
   // removed. Only do this after all the removal notifications have gone out.
   view->OrphanLayers();
-  if (widget) {
-    widget->LayerTreeChanged();
-  }
 
   if (view->parent_) {
     view->parent_->GetViewAccessibility().FireLiveRegionChangedIfNeeded(
@@ -3531,7 +3591,8 @@ void View::SnapLayerToPixelBoundary(const LayerOffsetData& offset_data) {
   // We rely on our layers above and below being parented correctly at this
   // point.
   for (ui::Layer* layer_above_below : GetLayersInOrder(ViewLayer::kExclude)) {
-    DCHECK_EQ(layer()->parent(), layer_above_below->parent());
+    CHECK_EQ(layer()->parent(), layer_above_below->parent(),
+             base::NotFatalUntil::M163);
   }
 #endif  // DCHECK_IS_ON()
 
@@ -3586,7 +3647,7 @@ void View::UnregisterForVisibleBoundsNotification() {
 }
 
 void View::AddDescendantToNotify(View* view) {
-  DCHECK(view);
+  CHECK(view, base::NotFatalUntil::M163);
   if (!descendants_to_notify_) {
     descendants_to_notify_ = std::make_unique<Views>();
   }
@@ -3594,8 +3655,8 @@ void View::AddDescendantToNotify(View* view) {
 }
 
 void View::RemoveDescendantToNotify(View* view) {
-  DCHECK(view);
-  DCHECK(descendants_to_notify_);
+  CHECK(view, base::NotFatalUntil::M163);
+  CHECK(descendants_to_notify_, base::NotFatalUntil::M163);
   auto i = std::ranges::find(*descendants_to_notify_, view);
   CHECK(i != descendants_to_notify_->end());
   descendants_to_notify_->erase(i);
@@ -3641,7 +3702,7 @@ void View::UpdateEnabledInViewsSubtreeState() {
   GetViewAccessibility().SetIsEnabled(enabled_in_views_subtree_);
   AdvanceFocusIfNecessary();
   internal::ScopedChildrenLock lock(this);
-  for (views::View* child : base::Reversed(children_)) {
+  for (views::View* child : std::views::reverse(children_)) {
     child->UpdateEnabledInViewsSubtreeState();
   }
   OnPropertyChanged(&enabled_in_views_subtree_, PropertyEffects::kPaint);
@@ -3745,11 +3806,6 @@ void View::CreateLayer(ui::LayerType layer_type) {
     parent()->ReorderLayers();
   }
 
-  Widget* widget = GetWidget();
-  if (widget) {
-    widget->LayerTreeChanged();
-  }
-
   // Before having its own Layer, this View may have painted in to a Layer owned
   // by an ancestor View. Scheduling a paint on the parent View will erase this
   // View's painting effects on the ancestor View's Layer.
@@ -3757,27 +3813,22 @@ void View::CreateLayer(ui::LayerType layer_type) {
   SchedulePaintOnParent();
 }
 
-bool View::UpdateParentLayers() {
+void View::UpdateParentLayers() {
   TRACE_EVENT1("views", "View::UpdateParentLayers", "class", GetClassName());
 
   // Attach all top-level un-parented layers.
   if (layer()) {
     if (!layer()->parent()) {
       UpdateParentLayer();
-      return true;
     }
     // The layers of any child views are already in place, so we can stop
     // iterating here.
-    return false;
+    return;
   }
-  bool result = false;
   internal::ScopedChildrenLock lock(this);
   for (views::View* child : children_) {
-    if (child->UpdateParentLayers()) {
-      result = true;
-    }
+    child->UpdateParentLayers();
   }
-  return result;
 }
 
 void View::OrphanLayers() {
@@ -3806,7 +3857,7 @@ void View::OrphanLayers() {
 }
 
 void View::ReparentLayer(ui::Layer* parent_layer) {
-  DCHECK_NE(layer(), parent_layer);
+  CHECK_NE(layer(), parent_layer, base::NotFatalUntil::M163);
   if (parent_layer) {
     SetLayerParent(parent_layer);
   }
@@ -3822,7 +3873,7 @@ void View::ReparentLayer(ui::Layer* parent_layer) {
 }
 
 void View::CreateMaskLayer() {
-  DCHECK(layer());
+  CHECK(layer(), base::NotFatalUntil::M163);
   mask_layer_ = std::make_unique<views::ViewMaskLayer>(clip_path_, this);
   layer()->SetMaskLayer(mask_layer_->layer()->AsTextured());
 }
@@ -3847,18 +3898,9 @@ void View::LayoutImmediately() {
   ++layouts_since_last_paint_;
   base::AutoReset performing_layout(&performing_layout_, true);
 
-  ++current_layout_call_depth_;
-  ++max_layout_call_depth_;
-
   Layout(PassKey());
   UMA_HISTOGRAM_COUNTS_100("Views.InvalidatesDuringLayout",
                            invalidates_during_layout_);
-  --current_layout_call_depth_;
-  if (current_layout_call_depth_ == 0) {
-    UMA_HISTOGRAM_EXACT_LINEAR("Views.LayoutCallDepth", max_layout_call_depth_,
-                               6);
-    max_layout_call_depth_ = 0;
-  }
 }
 
 // Input -----------------------------------------------------------------------
@@ -3980,7 +4022,18 @@ void View::UnregisterAccelerators(bool leave_data_intact) {
 
   if (GetWidget()) {
     if (auto* focus_manager = GetFocusManager()) {
-      focus_manager->UnregisterAccelerators(this);
+      // Only [0, registered_accelerator_count_) are registered with the
+      // FocusManager. Unregister just those rather than scanning every
+      // accelerator registered in the FocusManager. Accelerators registered
+      // for this view by other means would stay registered, so make sure
+      // there are none.
+#if DCHECK_IS_ON()
+      CHECK_EQ(focus_manager->GetAcceleratorCountForTarget(this),
+               registered_accelerator_count_, base::NotFatalUntil::M163);
+#endif
+      for (size_t i = 0; i < registered_accelerator_count_; ++i) {
+        focus_manager->UnregisterAccelerator((*accelerators_)[i], this);
+      }
     }
     if (!leave_data_intact) {
       accelerators_->clear();
@@ -3994,9 +4047,9 @@ void View::UnregisterAccelerators(bool leave_data_intact) {
 
 void View::SetFocusSiblings(View* view, Views::const_iterator pos) {
   // |view| was just inserted at |pos|, so all of these conditions must hold.
-  DCHECK(!children_.empty());
-  DCHECK(pos != children_.cend());
-  DCHECK_EQ(view, *pos);
+  CHECK(!children_.empty(), base::NotFatalUntil::M163);
+  CHECK(pos != children_.cend(), base::NotFatalUntil::M163);
+  CHECK_EQ(view, *pos, base::NotFatalUntil::M163);
 
   if (children_.size() > 1) {
     if (std::next(pos) == children_.cend()) {
@@ -4005,7 +4058,7 @@ void View::SetFocusSiblings(View* view, Views::const_iterator pos) {
       // child.
       View* const old_last = *std::ranges::find_if_not(
           children_.cbegin(), pos, &View::next_focusable_view_);
-      DCHECK_NE(old_last, view);
+      CHECK_NE(old_last, view, base::NotFatalUntil::M163);
       view->InsertAfterInFocusList(old_last);
     } else {
       // |view| was inserted somewhere other than the end.  Hook in before the
@@ -4036,7 +4089,7 @@ void View::AdvanceFocusIfNecessary() {
 void View::PropagateThemeChanged() {
   {
     internal::ScopedChildrenLock lock(this);
-    for (views::View* child : base::Reversed(children_)) {
+    for (views::View* child : std::views::reverse(children_)) {
       child->PropagateThemeChanged();
     }
   }
@@ -4063,7 +4116,7 @@ void View::PropagateDeviceScaleFactorChanged(float old_device_scale_factor,
                                              float new_device_scale_factor) {
   {
     internal::ScopedChildrenLock lock(this);
-    for (views::View* child : base::Reversed(children_)) {
+    for (views::View* child : std::views::reverse(children_)) {
       child->PropagateDeviceScaleFactorChanged(old_device_scale_factor,
                                                new_device_scale_factor);
     }
@@ -4118,7 +4171,7 @@ bool View::DoDrag(const ui::LocatedEvent& event,
 
   Widget* widget = GetWidget();
   // We should only start a drag from an event, implying we have a widget.
-  DCHECK(widget);
+  CHECK(widget, base::NotFatalUntil::M163);
 
   // Don't attempt to start a drag while in the process of dragging. This is
   // especially important on X where we can get multiple mouse move events when

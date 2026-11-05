@@ -4,11 +4,12 @@
 
 #include "third_party/blink/renderer/core/layout/inline/line_break_candidate.h"
 
+#include <ranges>
+
 #include "third_party/blink/renderer/core/layout/inline/inline_item.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_item_result.h"
 #include "third_party/blink/renderer/core/layout/inline/line_breaker.h"
 #include "third_party/blink/renderer/core/layout/inline/line_info.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -16,7 +17,7 @@ namespace {
 
 const InlineItemResult* LastNonOutOfFlowPositionedItemResult(
     const LineInfo& line_info) {
-  for (const auto& item_result : base::Reversed(line_info.Results())) {
+  for (const auto& item_result : std::views::reverse(line_info.Results())) {
     if (item_result.item->Type() != InlineItem::kOutOfFlowPositioned) {
       return &item_result;
     }
@@ -95,9 +96,7 @@ void LineBreakCandidateContext::AppendTrailingSpaces(
 bool LineBreakCandidateContext::AppendLine(const LineInfo& line_info,
                                            LineBreaker& line_breaker) {
   const InlineItemResult* last_item_result =
-      RuntimeEnabledFeatures::SkipOofItemForBreakCandidateEnabled()
-          ? LastNonOutOfFlowPositionedItemResult(line_info)
-          : &line_info.Results().back();
+      LastNonOutOfFlowPositionedItemResult(line_info);
   if (last_item_result && !last_item_result->can_break_after) {
     // TODO(kojii): `last_item_result.can_break_after` should be true, but there
     // are cases where it is not set. The line breaker never uses it because
@@ -125,10 +124,7 @@ bool LineBreakCandidateContext::AppendLine(const LineInfo& line_info,
         SetLast(&item, item_result.EndOffset());
         break;
       case InlineItem::kOutOfFlowPositioned:
-        if (RuntimeEnabledFeatures::SkipOofItemForBreakCandidateEnabled()) {
-          break;
-        }
-        [[fallthrough]];
+        break;
       default: {
         State new_state;
         if (item_result.can_break_after) {
@@ -185,9 +181,7 @@ void LineBreakCandidateContext::EnsureLastSentinel(
     const LineInfo& last_line_info) {
 #if EXPENSIVE_DCHECKS_ARE_ON()
   const InlineItemResult* last_item_result =
-      RuntimeEnabledFeatures::SkipOofItemForBreakCandidateEnabled()
-          ? LastNonOutOfFlowPositionedItemResult(last_line_info)
-          : &last_line_info.Results().back();
+      LastNonOutOfFlowPositionedItemResult(last_line_info);
   if (last_item_result) {
     DCHECK(last_item_result->can_break_after);
     DCHECK(candidates_.back().offset == last_item_result->End() ||

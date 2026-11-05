@@ -75,6 +75,11 @@ bool MigrateBtmSchemaToLatestVersion(sql::Database& db,
           return false;
         }
         break;
+      case 12:
+        if (!migrator.MigrateSchemaVersionFrom11To12()) {
+          return false;
+        }
+        break;
     }
   }
   return true;
@@ -262,7 +267,9 @@ bool BtmDatabaseMigrator::MigrateSchemaVersionFrom5To6() {
       "PRIMARY KEY (`key`)"
     ")";
   // clang-format on
-  CHECK(db_->IsSQLValid(kCreateConfigTableSql), base::NotFatalUntil::M158);
+  // TODO(crbug.com/570393056): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(db_->IsSQLValid(kCreateConfigTableSql));
 
   if (!db_->Execute(kCreateConfigTableSql)) {
     return false;
@@ -328,8 +335,9 @@ bool BtmDatabaseMigrator::MigrateSchemaVersionFrom8To9() {
   static constexpr char kRenameFirstUserInteractionTimeSql[] =
       "ALTER TABLE bounces RENAME COLUMN first_user_interaction_time TO "
       "first_user_activation_time";
-  CHECK(db_->IsSQLValid(kRenameFirstUserInteractionTimeSql),
-        base::NotFatalUntil::M158);
+  // TODO(crbug.com/567900949): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(db_->IsSQLValid(kRenameFirstUserInteractionTimeSql));
   if (!db_->Execute(kRenameFirstUserInteractionTimeSql)) {
     return false;
   }
@@ -410,6 +418,21 @@ bool BtmDatabaseMigrator::MigrateSchemaVersionFrom10To11() {
   return meta_table_->SetVersionNumber(11) &&
          meta_table_->SetCompatibleVersionNumber(
              std::min(11, BtmDatabase::kMinCompatibleSchemaVersion));
+}
+
+bool BtmDatabaseMigrator::MigrateSchemaVersionFrom11To12() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(db_->HasActiveTransactions(), base::NotFatalUntil::M158);
+
+  static constexpr char kDropPopupsTableSql[] = "DROP TABLE IF EXISTS popups";
+  CHECK(db_->IsSQLValid(kDropPopupsTableSql), base::NotFatalUntil::M158);
+  if (!db_->Execute(kDropPopupsTableSql)) {
+    return false;
+  }
+
+  return meta_table_->SetVersionNumber(12) &&
+         meta_table_->SetCompatibleVersionNumber(
+             std::min(12, BtmDatabase::kMinCompatibleSchemaVersion));
 }
 
 }  // namespace content

@@ -12,6 +12,7 @@
 #include "ash/constants/ash_switches.h"
 #include "ash/constants/chrome_webui_url_constants.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
@@ -22,16 +23,16 @@
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/consent_auditor/consent_auditor_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/webui/ash/login/sync_consent_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/settings/pref_names.h"
-#include "chrome/browser/unified_consent/unified_consent_service_factory.h"
+#include "chromeos/ash/components/consent_auditor/consent_auditor_provider.h"
 #include "chromeos/ash/components/osauth/public/auth_session_storage.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
+#include "chromeos/ash/components/signin/identity_manager_provider.h"
+#include "components/account_id/account_id.h"
 #include "components/consent_auditor/consent_auditor.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/consent_level.h"
@@ -40,7 +41,6 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_mutator.h"
 #include "components/signin/public/identity_manager/tribool.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/pref_names.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
@@ -82,8 +82,14 @@ void RecordUmaReviewFollowingSetup(bool value) {
 // Returns true if the user is in minor mode (e.g. under age of 18). The value
 // is read from account capabilities. We assume user is in minor mode if
 // capability value is unknown.
-bool IsMinorMode(Profile* profile, const user_manager::User* user) {
-  auto* identity_manager = IdentityManagerFactory::GetForProfile(profile);
+bool IsMinorMode(const user_manager::User* user) {
+  auto* identity_manager =
+      ash::IdentityManagerProvider::Get().Find(user->GetAccountId());
+  if (!identity_manager) {
+    // No identity_manager means we can't check the capability; assume minor
+    // mode, consistent with the "unknown capability" case below.
+    return true;
+  }
   GaiaId gaia_id = user->GetAccountId().GetGaiaId();
   const AccountInfo account_info =
       identity_manager->FindExtendedAccountInfoByGaiaId(gaia_id);
@@ -93,6 +99,15 @@ bool IsMinorMode(Profile* profile, const user_manager::User* user) {
   base::UmaHistogramBoolean("OOBE.SyncConsentScreen.IsCapabilityKnown",
                             capability != signin::Tribool::kUnknown);
   return capability != signin::Tribool::kTrue;
+}
+
+// Returns the IdentityManager for `user`. Init() resolved the primary user to
+// `profile_` through the same user-to-profile mapping this lookup uses, so by
+// the time the callers below run the IdentityManager is always present.
+signin::IdentityManager& GetIdentityManagerForUser(
+    const user_manager::User& user) {
+  return CHECK_DEREF(
+      ash::IdentityManagerProvider::Get().Find(user.GetAccountId()));
 }
 
 base::TimeDelta GetWaitTimeout() {
@@ -124,6 +139,11 @@ void SyncConsentScreen::MaybeLaunchSyncConsentSettings(Profile* profile) {
   // already destroyed. This needs to be fixed.
   if (profile->GetPrefs()->GetBoolean(
           ash::prefs::kShowSyncSettingsOnSessionStart)) {
+    const user_manager::User* user =
+        ash::ProfileHelper::Get()->GetUserByProfile(profile);
+    if (!user) {
+      return;
+    }
     // SyncSetupSubPage here is shown in the browser instead of the OS
     // Settings. We delay showing chrome sync settings by
     // kSyncConsentSettingsShowDelay to make the settings tab shows on top of
@@ -131,19 +151,19 @@ void SyncConsentScreen::MaybeLaunchSyncConsentSettings(Profile* profile) {
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
         FROM_HERE,
         base::BindOnce(
-            [](Profile* profile) {
+            [](Profile* profile, const AccountId& account_id) {
               profile->GetPrefs()->ClearPref(
                   ash::prefs::kShowSyncSettingsOnSessionStart);
+              signin::IdentityManager* identity_manager =
+                  ash::IdentityManagerProvider::Get().Find(account_id);
               chrome::ShowSettingsSubPageForProfile(
                   profile,
-                  (!IdentityManagerFactory::GetForProfile(profile)
-                        ->HasPrimaryAccount(signin::ConsentLevel::kSync) &&
-                   base::FeatureList::IsEnabled(
-                       syncer::kReplaceSyncPromosWithSignInPromos))
+                  (identity_manager && !identity_manager->HasPrimaryAccount(
+                                           signin::ConsentLevel::kSync))
                       ? ash::chrome_urls::kAccountSubPage
                       : ash::chrome_urls::kSyncSetupSubPage);
             },
-            base::Unretained(profile)),
+            base::Unretained(profile), user->GetAccountId()),
         kSyncConsentSettingsShowDelay);
   }
 }
@@ -161,7 +181,7 @@ SyncConsentScreen::SyncConsentScreen(base::WeakPtr<SyncConsentScreenView> view,
     : BaseScreen(SyncConsentScreenView::kScreenId, OobeScreenPriority::DEFAULT),
       view_(std::move(view)),
       exit_callback_(exit_callback) {
-  DCHECK(view_);
+  CHECK(view_, base::NotFatalUntil::M161);
 }
 
 SyncConsentScreen::~SyncConsentScreen() = default;
@@ -176,16 +196,14 @@ void SyncConsentScreen::Init(const WizardContext& context) {
 }
 
 void SyncConsentScreen::Finish(Result result) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M161);
   profile_->GetPrefs()->SetBoolean(prefs::kRecordArcAppSyncMetrics, true);
   // Always set completed, even if the dialog was skipped (e.g. by policy).
   profile_->GetPrefs()->SetBoolean(prefs::kSyncOobeCompleted, true);
   // Record whether the dialog was shown, skipped, etc.
   base::UmaHistogramEnumeration("OOBE.SyncConsentScreen.Behavior", behavior_);
-  if (!base::FeatureList::IsEnabled(
-          syncer::kReplaceSyncPromosWithSignInPromos) ||
-      IdentityManagerFactory::GetForProfile(profile_)->HasPrimaryAccount(
-          signin::ConsentLevel::kSync)) {
+  if (GetIdentityManagerForUser(CHECK_DEREF(user_.get()))
+          .HasPrimaryAccount(signin::ConsentLevel::kSync)) {
     // Record the final state of the sync service.
     syncer::SyncService* service = GetSyncService(profile_);
     bool sync_enabled = service && service->IsSyncFeatureEnabled() &&
@@ -256,7 +274,7 @@ void SyncConsentScreen::HideImpl() {
 }
 
 void SyncConsentScreen::OnStateChanged(syncer::SyncService* sync) {
-  DCHECK(context());
+  CHECK(context(), base::NotFatalUntil::M161);
   UpdateScreen(*context());
 }
 
@@ -288,7 +306,7 @@ void SyncConsentScreen::MaybeEnableSyncForSkip() {
 
 void SyncConsentScreen::OnTimeout() {
   is_timed_out_ = true;
-  DCHECK(context());
+  CHECK(context(), base::NotFatalUntil::M161);
   UpdateScreen(*context());
 }
 
@@ -375,12 +393,16 @@ void SyncConsentScreen::RecordConsent(
     ConsentGiven consent_given,
     const std::vector<int>& consent_description,
     int consent_confirmation) {
+  // Only reached for the signed-in user whose profile Init() resolved, so the
+  // account always maps back to a ConsentAuditor.
   consent_auditor::ConsentAuditor* consent_auditor =
-      ConsentAuditorFactory::GetForProfile(profile_);
+      ash::ConsentAuditorProvider::Get().Find(
+          CHECK_DEREF(user_.get()).GetAccountId());
+  CHECK(consent_auditor);
   // The user might not consent to browser sync, so use the "unconsented" ID.
   const GaiaId gaia_id =
-      IdentityManagerFactory::GetForProfile(profile_)
-          ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
+      GetIdentityManagerForUser(CHECK_DEREF(user_.get()))
+          .GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
           .gaia;
   // TODO(alemate): Support unified_consent_enabled
   sync_pb::UserConsentTypes::SyncConsent sync_consent;
@@ -420,7 +442,7 @@ bool SyncConsentScreen::IsProfileSyncEngineInitialized() const {
 }
 
 void SyncConsentScreen::PrepareScreenBasedOnCapability() {
-  bool is_minor_mode = IsMinorMode(profile_, user_);
+  bool is_minor_mode = IsMinorMode(user_);
   base::UmaHistogramBoolean("OOBE.SyncConsentScreen.IsMinorUser",
                             is_minor_mode);
   // Turn on "sync everything" toggle for non-minor users; turn off all data

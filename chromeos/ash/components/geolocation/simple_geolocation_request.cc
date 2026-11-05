@@ -12,7 +12,6 @@
 #include <string>
 #include <utility>
 
-#include "ash/constants/ash_features.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -157,14 +156,10 @@ GURL GeolocationRequestURL(const GURL& url) {
     return url;
   }
 
-  std::string api_key;
-  if (features::IsCrosSeparateGeoApiKeyEnabled()) {
-    api_key = google_apis::GetCrosSystemGeoAPIKey();
-  } else {
-    api_key = google_apis::GetAPIKey();
-  }
-  if (api_key.empty())
+  const std::string api_key = google_apis::GetCrosSystemGeoAPIKey();
+  if (api_key.empty()) {
     return url;
+  }
 
   std::string query(url.GetQuery());
   if (!query.empty())
@@ -182,8 +177,7 @@ void PrintGeolocationError(const GURL& server_url,
   position->error_message = base::StringPrintf(
       "SystemLocationProvider at '%s' : %s.",
       server_url.DeprecatedGetOriginAsURL().spec().c_str(), message.c_str());
-  VLOG(1) << "SystemLocationProvider::GetGeolocationFromResponse() : "
-          << position->error_message;
+  VLOG(1) << "SimpleGeolocationRequest: " << position->error_message;
 }
 
 // Parses the server response body. Returns true if parsing was successful.
@@ -200,9 +194,6 @@ bool ParseServerResponse(const GURL& server_url,
     RecordUmaEvent(SIMPLE_GEOLOCATION_REQUEST_EVENT_RESPONSE_EMPTY);
     return false;
   }
-  VLOG(1) << "SimpleGeolocationRequest::ParseServerResponse() : "
-             "Parsing response '"
-          << response_body << "'";
 
   // Parse the response, ignoring comments.
   auto response_result = base::JSONReader::ReadAndReturnValueWithError(
@@ -292,9 +283,6 @@ bool GetGeolocationFromResponse(bool http_success,
                                 const std::string& response_body,
                                 const GURL& server_url,
                                 Geoposition* position) {
-  VLOG(1) << "GetGeolocationFromResponse(http_success=" << http_success
-          << ", status_code=" << status_code << "): response_body:\n"
-          << response_body;
 
   // HttpPost can fail for a number of reasons. Most likely this is because
   // we're offline, or there was no response.
@@ -381,7 +369,7 @@ SimpleGeolocationRequest::~SimpleGeolocationRequest() {
 
   // If callback is not empty, request is cancelled.
   if (callback_) {
-    RecordUmaResponseTime(base::Time::Now() - request_started_at_, false);
+    RecordUmaResponseTime(base::TimeTicks::Now() - request_started_at_, false);
     RecordUmaResult(SIMPLE_GEOLOCATION_REQUEST_RESULT_CANCELLED, retries_);
   }
 
@@ -444,8 +432,6 @@ void SimpleGeolocationRequest::StartRequest() {
   ++retries_;
 
   const std::string request_body = FormatRequestBody();
-  VLOG(1) << "SimpleGeolocationRequest::StartRequest(): request body:\n"
-          << request_body;
 
   auto request = std::make_unique<network::ResourceRequest>();
   request->url = request_url_;
@@ -474,7 +460,7 @@ void SimpleGeolocationRequest::MakeRequest(
   request_url_ = GeolocationRequestURL(service_url_);
   timeout_timer_.Start(FROM_HERE, timeout_, this,
                        &SimpleGeolocationRequest::OnTimeout);
-  request_started_at_ = base::Time::Now();
+  request_started_at_ = base::TimeTicks::Now();
   StartRequest();
 }
 
@@ -522,10 +508,6 @@ void SimpleGeolocationRequest::OnSimpleURLLoaderComplete(
   const bool success = parse_success && position_.Valid();
   simple_url_loader_.reset();
 
-  DVLOG(1)
-      << "SimpleGeolocationRequest::OnSimpleURLLoaderComplete(): position={"
-      << position_.ToString() << "}";
-
   // Retry on error, except when it's being rate-limited (handled by the
   // caller).
   if (!success && response_code != net::HTTP_TOO_MANY_REQUESTS) {
@@ -533,7 +515,7 @@ void SimpleGeolocationRequest::OnSimpleURLLoaderComplete(
     return;
   }
 
-  const base::TimeDelta elapsed = base::Time::Now() - request_started_at_;
+  const base::TimeDelta elapsed = base::TimeTicks::Now() - request_started_at_;
   RecordUmaResponseTime(elapsed, success);
 
   RecordUmaResult(SIMPLE_GEOLOCATION_REQUEST_RESULT_SUCCESS, retries_);
@@ -567,7 +549,7 @@ void SimpleGeolocationRequest::OnTimeout() {
            : SIMPLE_GEOLOCATION_REQUEST_RESULT_FAILURE);
   RecordUmaResult(result, retries_);
   position_.status = Geoposition::STATUS_TIMEOUT;
-  const base::TimeDelta elapsed = base::Time::Now() - request_started_at_;
+  const base::TimeDelta elapsed = base::TimeTicks::Now() - request_started_at_;
   ReplyAndDestroySelf(elapsed, true /* server_error */);
   // "this" is already destroyed here.
 }

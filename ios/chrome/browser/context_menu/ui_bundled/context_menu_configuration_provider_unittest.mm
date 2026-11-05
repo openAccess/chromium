@@ -11,7 +11,7 @@
 #import "base/test/scoped_feature_list.h"
 #import "components/enterprise/connectors/core/common.h"
 #import "components/enterprise/connectors/core/connectors_prefs.h"
-#import "components/optimization_guide/core/optimization_guide_enums.h"
+#import "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/prefs/testing_pref_service.h"
 #import "components/signin/public/base/consent_level.h"
@@ -25,8 +25,8 @@
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/menu/public/menu_histograms.h"
 #import "ios/chrome/browser/menu/ui_bundled/browser_action_factory.h"
-#import "ios/chrome/browser/menu/ui_bundled/menu_histograms.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service.h"
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
 #import "ios/chrome/browser/photos/model/photos_service_factory.h"
@@ -36,6 +36,7 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_opener.h"
 #import "ios/chrome/browser/shared/public/commands/activity_service_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/country_code_picker_commands.h"
 #import "ios/chrome/browser/shared/public/commands/enhanced_calendar_commands.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/mini_map_commands.h"
@@ -47,9 +48,10 @@
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/identity_test_environment_browser_state_adaptor.h"
+#import "ios/chrome/browser/web/model/image_fetch/image_fetch_java_script_feature.h"
+#import "ios/chrome/browser/web/model/image_fetch/image_fetch_tab_helper.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
-#import "ios/components/enterprise/analysis/features.h"
 #import "ios/web/public/test/fakes/fake_web_frame.h"
 #import "ios/web/public/test/fakes/fake_web_frames_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
@@ -63,6 +65,8 @@
 
 namespace ios::provider {
 void SetMockProtectedUrl(bool is_protected);
+void SetMockFeatureModeDisabledByQuota(bool disabled);
+void SetMockRefillDateForFeatureMode(NSDate* date);
 }
 
 namespace {
@@ -95,6 +99,9 @@ constexpr char kDownloadConnectorsAnalysisPref[] = R"([
     "block_large_files": true
   }
 ])";
+
+// Arbitrary timestamp used for mocking refill date.
+constexpr NSTimeInterval kArbitraryTimestamp = 1777998600;
 
 // Returns context menu params with `src_url` set to `image_url`.
 web::ContextMenuParams GetContextMenuParamsWithImageUrl(const char* image_url) {
@@ -154,43 +161,50 @@ class ContextMenuConfigurationProviderTest : public PlatformTest {
            initWithBrowser:browser_.get()
         baseViewController:base_view_controller_];
 
-    mock_scene_handler = OCMStrictProtocolMock(@protocol(SceneCommands));
+    mock_scene_handler_ = OCMStrictProtocolMock(@protocol(SceneCommands));
     [browser_->GetCommandDispatcher()
-        startDispatchingToTarget:mock_scene_handler
+        startDispatchingToTarget:mock_scene_handler_
                      forProtocol:@protocol(SceneCommands)];
-    mock_mini_map_commands_handler =
+    mock_mini_map_commands_handler_ =
         OCMStrictProtocolMock(@protocol(MiniMapCommands));
     [browser_->GetCommandDispatcher()
-        startDispatchingToTarget:mock_mini_map_commands_handler
+        startDispatchingToTarget:mock_mini_map_commands_handler_
                      forProtocol:@protocol(MiniMapCommands)];
-    mock_unit_conversion_handler =
+    mock_unit_conversion_handler_ =
         OCMStrictProtocolMock(@protocol(UnitConversionCommands));
     [browser_->GetCommandDispatcher()
-        startDispatchingToTarget:mock_unit_conversion_handler
+        startDispatchingToTarget:mock_unit_conversion_handler_
                      forProtocol:@protocol(UnitConversionCommands)];
-    mock_save_to_photos_commands_handler =
+    mock_save_to_photos_commands_handler_ =
         OCMStrictProtocolMock(@protocol(SaveToPhotosCommands));
     [browser_->GetCommandDispatcher()
-        startDispatchingToTarget:mock_save_to_photos_commands_handler
+        startDispatchingToTarget:mock_save_to_photos_commands_handler_
                      forProtocol:@protocol(SaveToPhotosCommands)];
-    mock_activity_service_commands_handler =
+    mock_activity_service_commands_handler_ =
         OCMStrictProtocolMock(@protocol(ActivityServiceCommands));
     [browser_->GetCommandDispatcher()
-        startDispatchingToTarget:mock_activity_service_commands_handler
+        startDispatchingToTarget:mock_activity_service_commands_handler_
                      forProtocol:@protocol(ActivityServiceCommands)];
-    mock_enhanced_calendar_handler =
+    mock_enhanced_calendar_handler_ =
         OCMStrictProtocolMock(@protocol(EnhancedCalendarCommands));
     [browser_->GetCommandDispatcher()
-        startDispatchingToTarget:mock_enhanced_calendar_handler
+        startDispatchingToTarget:mock_enhanced_calendar_handler_
                      forProtocol:@protocol(EnhancedCalendarCommands)];
-    mock_gemini_handler = OCMStrictProtocolMock(@protocol(GeminiCommands));
+    mock_gemini_handler_ = OCMStrictProtocolMock(@protocol(GeminiCommands));
     [browser_->GetCommandDispatcher()
-        startDispatchingToTarget:mock_gemini_handler
+        startDispatchingToTarget:mock_gemini_handler_
                      forProtocol:@protocol(GeminiCommands)];
+    mock_country_code_handler_ =
+        OCMStrictProtocolMock(@protocol(CountryCodePickerCommands));
+    [browser_->GetCommandDispatcher()
+        startDispatchingToTarget:mock_country_code_handler_
+                     forProtocol:@protocol(CountryCodePickerCommands)];
   }
 
   void TearDown() final {
     ios::provider::SetMockProtectedUrl(false);
+    ios::provider::SetMockFeatureModeDisabledByQuota(false);
+    ios::provider::SetMockRefillDateForFeatureMode(nil);
     [configuration_provider_ stop];
     PlatformTest::TearDown();
   }
@@ -251,13 +265,14 @@ class ContextMenuConfigurationProviderTest : public PlatformTest {
   UIViewController* base_view_controller_;
   ContextMenuConfigurationProvider* configuration_provider_;
 
-  id mock_mini_map_commands_handler;
-  id mock_unit_conversion_handler;
-  id mock_save_to_photos_commands_handler;
-  id mock_activity_service_commands_handler;
-  id mock_scene_handler;
-  id mock_enhanced_calendar_handler;
-  id mock_gemini_handler;
+  id mock_mini_map_commands_handler_;
+  id mock_unit_conversion_handler_;
+  id mock_save_to_photos_commands_handler_;
+  id mock_activity_service_commands_handler_;
+  id mock_scene_handler_;
+  id mock_enhanced_calendar_handler_;
+  id mock_gemini_handler_;
+  id mock_country_code_handler_;
 };
 
 // TODO(crbug.com/484919846): Remove this test once the "Save to Photos for
@@ -481,9 +496,6 @@ TEST_F(ContextMenuConfigurationProviderTest,
 // subtitle if download protection connector is enabled.
 TEST_F(ContextMenuConfigurationProviderTest,
        SaveImageBlockedWhenEnableFileDOwnloadConnector) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      enterprise_connectors::kEnableFileDownloadConnectorIOS);
 
   PrefService* pref_service = profile_->GetPrefs();
   SetDownloadConnectorsPref(pref_service, kDownloadConnectorsAnalysisPref);
@@ -520,9 +532,6 @@ TEST_F(ContextMenuConfigurationProviderTest,
 // has a download blocked subtitle if download protection connector is enabled.
 TEST_F(ContextMenuConfigurationProviderTest,
        AllOptionsToSaveImageBlockedWhenEnableFileDownloadConnector) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(
-      enterprise_connectors::kEnableFileDownloadConnectorIOS);
 
   PrefService* pref_service = profile_->GetPrefs();
   SetDownloadConnectorsPref(pref_service, kDownloadConnectorsAnalysisPref);
@@ -652,4 +661,103 @@ TEST_F(ContextMenuConfigurationProviderTest, GeminiImageRemix_ProtectedURL) {
         return [menuElement.title isEqualToString:expected_title];
       }];
   EXPECT_EQ(indexOfProtectedGeminiAction, (NSUInteger)NSNotFound);
+}
+
+// Tests that the "Edit Image with Gemini" action is disabled with a limit reset
+// subtitle when quota is exhausted.
+TEST_F(ContextMenuConfigurationProviderTest,
+       GeminiImageRemixActionDisabledWhenQuotaExhausted) {
+  // Enable feature flags.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures({kPageActionMenu, kGeminiAureus}, {});
+
+  SignIn();
+
+  // Configure WebState to allow page context extraction.
+  web::FakeWebState* web_state = GetActiveWebState();
+  web_state->WasShown();
+  web_state->SetContentIsHTML(true);
+  web_state->SetContentsMimeType("text/html");
+
+  // Configure WebFramesManager and bind GeminiTabHelper to the WebState to
+  // satisfy Gemini availability checks for the active WebState.
+  auto frames_manager = std::make_unique<web::FakeWebFramesManager>();
+  auto main_frame = web::FakeWebFrame::CreateMainWebFrame();
+  frames_manager->AddWebFrame(std::move(main_frame));
+  web_state->SetWebFramesManager(std::move(frames_manager));
+
+  GeminiTabHelper::CreateForWebState(web_state);
+
+  // Configure the mock Gemini service to mark the profile as eligible.
+  FakeGeminiService* fake_gemini_service = static_cast<FakeGeminiService*>(
+      GeminiServiceFactory::GetForProfile(profile_.get()));
+  fake_gemini_service->SetIsEligible(true);
+
+  NSString* expected_title =
+      l10n_util::GetNSString(IDS_IOS_GEMINI_IMAGE_CONTEXT_MENU_ENTRY_POINT);
+  web_state->SetCurrentURL(GURL("https://example.com"));
+
+  ios::provider::SetMockProtectedUrl(false);
+  ios::provider::SetMockFeatureModeDisabledByQuota(true);
+
+  NSDate* mock_date =
+      [NSDate dateWithTimeIntervalSince1970:kArbitraryTimestamp];
+  ios::provider::SetMockRefillDateForFeatureMode(mock_date);
+
+  web::ContextMenuParams params = GetContextMenuParamsWithImageUrl(kImageUrl);
+  UIMenu* menu = GetContextMenuForParams(params);
+
+  NSUInteger indexOfGeminiAction =
+      [menu.children indexOfObjectPassingTest:^BOOL(UIMenuElement* menuElement,
+                                                    NSUInteger, BOOL*) {
+        return [menuElement.title isEqualToString:expected_title];
+      }];
+  ASSERT_NE(indexOfGeminiAction, (NSUInteger)NSNotFound);
+  UIAction* action = static_cast<UIAction*>(menu.children[indexOfGeminiAction]);
+  // Verify that the action is disabled and displays the limit reset subtitle.
+  EXPECT_TRUE(action.attributes & UIMenuElementAttributesDisabled);
+  EXPECT_NE(action.subtitle, nil);
+  NSString* expected_prefix = l10n_util::GetNSStringF(
+      IDS_IOS_GEMINI_IMAGE_REMIX_LIMIT_RESET_SUBTITLE, std::u16string());
+  EXPECT_TRUE([action.subtitle hasPrefix:expected_prefix]);
+}
+
+// Tests that an image preview provider is created when given valid image params
+// with a custom referrer policy, and returning a non-nil view controller.
+TEST_F(ContextMenuConfigurationProviderTest, ImagePreviewProvider_ValidUrl) {
+  web::FakeWebState* web_state = GetActiveWebState();
+  auto frames_manager = std::make_unique<web::FakeWebFramesManager>();
+  auto main_frame = web::FakeWebFrame::CreateMainWebFrame();
+  frames_manager->AddWebFrame(std::move(main_frame));
+  web_state->SetWebFramesManager(
+      ImageFetchJavaScriptFeature::GetInstance()->GetSupportedContentWorld(),
+      std::move(frames_manager));
+  ImageFetchTabHelper::CreateForWebState(web_state);
+
+  web::ContextMenuParams params = GetContextMenuParamsWithImageUrl(kImageUrl);
+  params.referrer_policy = web::ReferrerPolicyNever;
+
+  UIContextMenuContentPreviewProvider preview_provider =
+      [configuration_provider_
+          contextMenuContentPreviewProviderForWebState:web_state
+                                                params:params];
+  ASSERT_TRUE(preview_provider != nil);
+
+  UIViewController* preview_vc = preview_provider();
+  EXPECT_NSNE(nil, preview_vc);
+}
+
+// Tests that no preview provider is created for a context menu on a URL.
+TEST_F(ContextMenuConfigurationProviderTest, ImagePreviewProvider_LinkUrl) {
+  web::FakeWebState* web_state = GetActiveWebState();
+  ImageFetchTabHelper::CreateForWebState(web_state);
+
+  web::ContextMenuParams params =
+      GetContextMenuParamsWithLinkURL(kLinkUrl, CGPointZero);
+
+  UIContextMenuContentPreviewProvider preview_provider =
+      [configuration_provider_
+          contextMenuContentPreviewProviderForWebState:web_state
+                                                params:params];
+  EXPECT_EQ(nil, preview_provider);
 }

@@ -5,12 +5,16 @@
 #import "ios/chrome/browser/settings/autofill/autofill_ai/coordinator/autofill_ai_entity_edit_mediator.h"
 
 #import <algorithm>
+#import <utility>
+#import <variant>
 
 #import "base/apple/foundation_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/application_locale_storage/application_locale_storage.h"
 #import "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #import "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#import "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
+#import "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_import_util.h"
 #import "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_wallet_util.h"
 #import "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
 #import "components/autofill/core/browser/network/autofill_ai/wallet_pass_access_manager.h"
@@ -19,6 +23,7 @@
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/wallet/core/common/wallet_features.h"
 #import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_ui_util.h"
+#import "ios/chrome/browser/autofill/model/message/autofill_legal_message_line.h"
 #import "ios/chrome/browser/autofill/ui_bundled/address_editor/autofill_profile_edit_mediator.h"
 #import "ios/chrome/browser/autofill/ui_bundled/address_editor/cells/country_item.h"
 #import "ios/chrome/browser/settings/autofill/autofill_ai/ui/autofill_ai_entity_country_item.h"
@@ -103,12 +108,26 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
   // The reauthentication module.
   __weak id<ReauthenticationProtocol> _reauthModule;
 
+  // The mode in which this entity is presented.
+  AutofillAIEntityEditMode _mode;
+
   // Whether the view controller is currently in edit mode.
   BOOL _isEditing;
+
+  // The legal message lines of the Google Wallet disclosure notice, or `nil`
+  // when no notice is shown. Resolved once at initialization, since it only
+  // depends on immutable inputs.
+  NSArray<AutofillLegalMessageLine*>* _legalMessages;
+
+  // Ties a save to the Google Wallet disclosure notice the user was shown, so
+  // it only holds a value when that notice is shown. Resolved once at
+  // initialization, since it only depends on immutable inputs.
+  std::optional<std::string> _legalMessageToken;
 }
 
 - (instancetype)
     initWithEntityInstance:(EntityInstance)entityInstance
+                      mode:(AutofillAIEntityEditMode)mode
          entityDataManager:(EntityDataManager*)entityDataManager
          walletPassManager:(autofill::WalletPassAccessManager*)walletPassManager
             consentAuditor:(consent_auditor::ConsentAuditor*)consentAuditor
@@ -120,11 +139,15 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
     CHECK(reauthModule);
 
     _entityInstance = std::move(entityInstance);
+    _mode = mode;
     _entityDataManager = entityDataManager;
     _walletPassManager = walletPassManager;
     _consentAuditor = consentAuditor;
     _identityManager = identityManager;
-    _locale = GetApplicationContext()->GetApplicationLocaleStorage()->Get();
+    _locale = GetApplicationContext()
+                  ->GetApplicationLocaleStorage()
+                  ->GetTag()
+                  .tag_string();
     _dateFormatter = CreateDateFormatterForLocale(_locale);
     _itemFactory =
         [[AutofillAIEntityEditItemFactory alloc] initWithLocale:_locale
@@ -132,9 +155,15 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
                                            userHasAuthenticated:NO];
     _reauthModule = reauthModule;
     _userEmail = [userEmail copy];
+
+    // The disclosure decision depends only on inputs that never change after
+    // initialization, so it is resolved once here, after all fields are set.
+    [self resolveWalletDisclosure];
   }
   return self;
 }
+
+#pragma mark - Properties
 
 // Sets the consumer of the mediator.
 - (void)setConsumer:(id<AutofillAIEntityEditConsumer>)consumer {
@@ -143,6 +172,8 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
   }
 
   _consumer = consumer;
+
+  [consumer setMode:_mode];
 
   [self updateTitle];
 
@@ -158,7 +189,18 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
   }
   [consumer setEditingAllowed:editingAllowed];
   [consumer setIsServerWalletItem:isServerWalletItem];
+  // TODO(crbug.com/573949431): Compute the footer text and URLs in the mediator
+  // and push them via a single consumer method instead of pushing
+  // `isPrivateWalletPass`, `userEmail`, and `legalMessages` separately and
+  // duplicating footer construction across view controllers.
+  [consumer setIsPrivateWalletPass:[self isPrivateWalletPass]];
   [consumer setUserEmail:_userEmail];
+
+  // `_legalMessages` is only set when the Google Wallet disclosure notice is
+  // shown.
+  if (_legalMessages) {
+    [consumer setLegalMessages:_legalMessages];
+  }
 
   [self updateEditItemsWithAllAttributes:NO];
 }
@@ -240,17 +282,22 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
 
   _entityInstance = builder.Build();
 
-  BOOL isWalletPrivatePass =
-      autofill::GetWalletPassType(_entityInstance->type(),
-                                  _entityInstance->record_type()) ==
-      autofill::EntityInstance::WalletPassType::kPrivate;
-
-  if (!isWalletPrivatePass || !_walletPassManager) {
+  if (![self isPrivateWalletPass] || !_walletPassManager) {
     // Personal Context entities do not support saving.
     CHECK_NE(_entityInstance->record_type(),
              autofill::EntityInstance::RecordType::kPersonalContext);
-    LogEntitySaveOrUpdate(self.consumer.mode, *_entityInstance);
-    _entityDataManager->AddOrUpdateEntityInstance(*_entityInstance);
+    LogEntitySaveOrUpdate(_mode, *_entityInstance);
+
+    // The legal message token ties the save to the disclosure notice the user
+    // was shown, so it only holds a value when that notice was actually
+    // displayed.
+    if (_legalMessageToken.has_value()) {
+      autofill::LogWalletNoticeFunnelEvent(
+          autofill::AutofillAiWalletNoticeFunnelEvents::kEntitySaved,
+          /*in_settings=*/true);
+    }
+    _entityDataManager->AddOrUpdateEntityInstance(
+        *_entityInstance, std::exchange(_legalMessageToken, std::nullopt));
     [self.consumer didFinishSavingWithLocalFallback:NO];
     return;
   }
@@ -260,7 +307,7 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
     // Save to local.
     EntityInstance local_entity = _entityInstance->CopyWithNewRecordType(
         EntityInstance::RecordType::kLocal);
-    LogEntitySaveOrUpdate(self.consumer.mode, local_entity);
+    LogEntitySaveOrUpdate(_mode, local_entity);
     _entityDataManager->AddOrUpdateEntityInstance(local_entity);
     [self.consumer didFinishSavingWithLocalFallback:YES];
     return;
@@ -274,25 +321,26 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
   if (base::FeatureList::IsEnabled(
           wallet::features::kWalletApiPrivatePassesConsent)) {
     sessionId = autofill::RecordWalletPrivatePassConsent(
-        /*consent_string_id=*/autofill::GetSaveToWalletSubtitleStringId(),
+        /*consent_string_id=*/autofill::GetSaveToWalletSubtitleStringId(
+            [self isPrivateWalletPass]),
         /*clicked_button_string_id=*/
         autofill::GetSaveEntityAcceptButtonStringId(), *_consentAuditor,
         *_identityManager);
   }
-    __weak __typeof(self) weakSelf = self;
-    auto callback = base::BindOnce(
-        [](__typeof(self) weakSelf,
-           autofill::EntityInstance fallbackOriginalEntity,
-           std::optional<autofill::EntityInstance> savedEntity) {
-          [weakSelf
-              onSavePrivatePassToWalletFinished:std::move(savedEntity)
-                                 originalEntity:std::move(
-                                                    fallbackOriginalEntity)];
-        },
-        weakSelf, std::move(originalEntity));
+  __weak __typeof(self) weakSelf = self;
+  auto callback = base::BindOnce(
+      [](__typeof(self) weakSelf,
+         autofill::EntityInstance fallbackOriginalEntity,
+         std::optional<autofill::EntityInstance> savedEntity) {
+        [weakSelf
+            onSavePrivatePassToWalletFinished:std::move(savedEntity)
+                               originalEntity:std::move(
+                                                  fallbackOriginalEntity)];
+      },
+      weakSelf, std::move(originalEntity));
 
-    _walletPassManager->SaveWalletEntityInstance(*_entityInstance, sessionId,
-                                                 std::move(callback));
+  _walletPassManager->SaveWalletEntityInstance(*_entityInstance, sessionId,
+                                               std::move(callback));
 }
 
 - (void)didChangeDate:(NSDate*)date
@@ -354,6 +402,70 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
 
 #pragma mark - Private
 
+// Resolves how the Google Wallet disclosure notice is handled for an entity
+// that requires it. Mirrors
+// `AutofillAiManager::OnGetDetailsForUpsertPassResponse`.
+- (void)resolveWalletDisclosure {
+  if (!autofill::IsEligibleForWalletPassDisclosure(
+          /*is_save_prompt=*/_mode == AutofillAIEntityEditMode::kCreate,
+          *_entityInstance)) {
+    return;
+  }
+
+  // The preloaded details hold a single-use `legal_message_token`, so they are
+  // only taken when the notice may be shown. Reading them synchronously keeps
+  // the add flow from waiting on the network.
+  std::optional<
+      autofill::WalletPassAccessManager::GetDetailsForUpsertPassResponse>
+      response;
+  if (_walletPassManager) {
+    response = _walletPassManager->ExtractPreloadedDetailsForUpsertPass(
+        _entityInstance->type());
+  }
+
+  // Without the details, the required notice cannot be shown, so the entity
+  // must never reach Wallet.
+  if (!response) {
+    [self downgradeEntityToLocalStorage];
+    return;
+  }
+
+  // Only `kEligible` users see the notice; other users save to Wallet without
+  // it.
+  if (response->user_eligibility !=
+      autofill::WalletPassAccessManager::UserEligibility::kEligible) {
+    return;
+  }
+
+  // An eligible user's response that cannot back the notice is treated like a
+  // missing response.
+  if (response->legal_message_lines.empty() ||
+      response->legal_message_token.empty()) {
+    [self downgradeEntityToLocalStorage];
+    return;
+  }
+
+  // Only the parts of the response that back the notice are kept.
+  _legalMessages =
+      [AutofillLegalMessageLine convertFrom:response->legal_message_lines];
+  _legalMessageToken = std::move(response->legal_message_token);
+}
+
+// Stores the entity locally instead of in Wallet. The prompt then presents it
+// as a local entity from the start, so no "saved locally" fallback alert is
+// needed on save.
+- (void)downgradeEntityToLocalStorage {
+  _entityInstance = _entityInstance->CopyWithNewRecordType(
+      autofill::EntityInstance::RecordType::kLocal);
+}
+
+- (BOOL)isPrivateWalletPass {
+  return _entityInstance.has_value() &&
+         autofill::GetWalletPassType(_entityInstance->type(),
+                                     _entityInstance->record_type()) ==
+             autofill::EntityInstance::WalletPassType::kPrivate;
+}
+
 - (void)onReauthenticationFinished:(BOOL)success {
   if (success) {
     _isEditing = YES;
@@ -371,7 +483,7 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
   autofill::EntityTypeName typeName = _entityInstance->type().name();
   NSString* title = nil;
 
-  if (_consumer.mode == AutofillAIEntityEditMode::kCreate) {
+  if (_mode == AutofillAIEntityEditMode::kCreate) {
     title = autofill::GetDialogTitleForAddEntity(typeName);
   } else if (_isEditing) {
     title = autofill::GetDialogTitleForEditEntity(typeName);
@@ -423,7 +535,21 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
 
 - (GURL)walletManagementURL {
   CHECK(_entityInstance.has_value());
-  return GURL(autofill::GetWalletManagementURL(*_entityInstance));
+  CHECK(std::holds_alternative<EntityInstance::WalletRecordTypePayload>(
+      _entityInstance->record_type_data()));
+  return std::get<autofill::EntityInstance::WalletRecordTypePayload>(
+             _entityInstance->record_type_data())
+      .GetManagementUrlWithFallback(_entityInstance->type(),
+                                    _entityInstance->guid());
+}
+
+- (void)disconnect {
+  if (_legalMessageToken.has_value()) {
+    autofill::LogWalletNoticeFunnelEvent(
+        autofill::AutofillAiWalletNoticeFunnelEvents::kEntityNotSaved,
+        /*in_settings=*/true);
+    _legalMessageToken.reset();
+  }
 }
 
 #pragma mark - Private
@@ -435,14 +561,14 @@ void LogEntitySaveOrUpdate(AutofillAIEntityEditMode mode,
   [self.consumer setLoadingState:NO];
 
   if (savedEntity.has_value()) {
-    LogEntitySaveOrUpdate(self.consumer.mode, *savedEntity);
+    LogEntitySaveOrUpdate(_mode, *savedEntity);
     _entityDataManager->AddOrUpdateEntityInstance(std::move(*savedEntity));
     [self.consumer didFinishSavingWithLocalFallback:NO];
   } else {
     // Wallet save failed, fallback to Local.
     autofill::EntityInstance localEntity = originalEntity.CopyWithNewRecordType(
         autofill::EntityInstance::RecordType::kLocal);
-    LogEntitySaveOrUpdate(self.consumer.mode, localEntity);
+    LogEntitySaveOrUpdate(_mode, localEntity);
     _entityDataManager->AddOrUpdateEntityInstance(std::move(localEntity));
 
     [self.consumer didFinishSavingWithLocalFallback:YES];

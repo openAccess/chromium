@@ -6,40 +6,42 @@ package org.chromium.chrome.browser.tasks.tab_management.vertical_tabs;
 
 import android.content.Context;
 import android.content.res.Resources;
+import android.graphics.Outline;
 import android.util.AttributeSet;
-import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewOutlineProvider;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import androidx.annotation.Px;
+import androidx.annotation.VisibleForTesting;
 import androidx.appcompat.widget.TooltipCompat;
 import androidx.constraintlayout.widget.ConstraintLayout;
 
-import org.chromium.base.Callback;
+import org.chromium.base.MathUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.tasks.tab_management.TabListRecyclerView;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabListProperties.RailCollapseState;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.chrome.tab_ui.R;
+import org.chromium.ui.base.ViewUtils;
 
 /**
  * Root layout for the vertical tab rail container. Encapsulates child view layout styling based on
- * collapse state and intercepts mouse motion events to detect hover state transitions.
+ * collapse state and forwards raw pointer events to a {@link RailEventListener}.
  */
-// TODO(crbug.com/527641177): Migrate remaining view-only logic (e.g. empty space touch and context
-// click handlers) from VerticalTabListCoordinator to VerticalTabRailLayout.
 @NullMarked
 public class VerticalTabRailLayout extends ConstraintLayout {
     /** Functional interface for delegating key events captured by the vertical tab rail. */
     @FunctionalInterface
-    public interface KeyEventListener {
+    interface KeyEventListener {
         /**
          * Handles a key event dispatched to the vertical tab rail.
          *
@@ -49,17 +51,34 @@ public class VerticalTabRailLayout extends ConstraintLayout {
         boolean onKeyEvent(KeyEvent event);
     }
 
-    private @Nullable Callback<@RailCollapseState Integer> mExpandOrCollapseOnHoverListener;
+    /**
+     * Receives the raw pointer events dispatched to the rail, before its children handle them. A
+     * parent view only sees the events its children consume from its dispatch methods, so the rail
+     * forwards them as they are and the listener interprets them.
+     */
+    interface RailEventListener {
+        /** Called for every generic motion event (e.g. a mouse hover) dispatched to the rail. */
+        void onGenericMotionEventDispatched(MotionEvent event);
+
+        /** Called for every touch event dispatched to the rail. */
+        void onTouchEventDispatched(MotionEvent event);
+    }
+
+    private @Nullable RailEventListener mRailEventListener;
+    private @Nullable Runnable mOnTouchDownListener;
     private @Nullable KeyEventListener mKeyEventListener;
     private VerticalTabListRecyclerView mRecyclerView;
-    private TabListRecyclerView mPinnedTabsRecyclerView;
+    private VerticalPinnedTabListRecyclerView mPinnedTabsRecyclerView;
     private View mSpacerView;
+    private View mPinnedTabsSeparatorView;
     private LinearLayout mHeaderContainer;
     private LinearLayout mFooterContainer;
     private ImageButton mCollapseButton;
-    private ImageButton mSearchButton;
+    private View mSearchButton;
+    private ImageView mSearchIcon;
+    private TextView mSearchLabel;
     private View mHeaderSpacer;
-    private View mNewTabButton;
+    private ImageButton mNewTabButton;
     private ImageButton mIncognitoButton;
     private @Px int mIncognitoChipSizePx;
     private @Px int mFooterButtonGapPx;
@@ -67,9 +86,16 @@ public class VerticalTabRailLayout extends ConstraintLayout {
     private @Px int mHeaderButtonHeightPx;
     private @Px int mFooterButtonCollapsedWidthPx;
     private @Px int mFooterButtonCollapsedHeightPx;
+    private @Px int mHoverOverlayCornerRadiusPx;
+    private @Px int mCollapsedRailWidthPx;
     private @RailCollapseState int mCollapseState = RailCollapseState.EXPANDED;
     // Cache for the last applied collapse state to prevent redundant header layout updates.
     private @RailCollapseState int mLastAppliedCollapseState = RailCollapseState.UNKNOWN;
+    // Tracks the eventTime of the rail's own ACTION_DOWN when a split multi-touch sequence starts
+    // with an earlier window-level downTime (e.g. while another finger is held on web contents or
+    // the resize handle). This is needed so that we can update the event's downTime to its
+    // eventTime. 0 when no split-downTime touch sequence is active.
+    private long mSplitTouchDownTime;
 
     public VerticalTabRailLayout(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
@@ -83,6 +109,9 @@ public class VerticalTabRailLayout extends ConstraintLayout {
 
         mPinnedTabsRecyclerView = findViewById(R.id.pinned_tabs_recycler_view);
         assert mPinnedTabsRecyclerView != null;
+
+        mPinnedTabsSeparatorView = findViewById(R.id.pinned_tabs_separator);
+        assert mPinnedTabsSeparatorView != null;
 
         mSpacerView = findViewById(R.id.desktop_window_spacer);
         assert mSpacerView != null;
@@ -99,8 +128,13 @@ public class VerticalTabRailLayout extends ConstraintLayout {
         mSearchButton = findViewById(R.id.tab_search_button);
         assert mSearchButton != null;
         TooltipCompat.setTooltipText(
-                mSearchButton,
-                getContext().getString(R.string.accessibility_search_loupe_tooltip_text));
+                mSearchButton, getContext().getString(R.string.vertical_tabs_tab_search));
+
+        mSearchIcon = findViewById(R.id.tab_search_icon);
+        assert mSearchIcon != null;
+
+        mSearchLabel = findViewById(R.id.tab_search_label);
+        assert mSearchLabel != null;
 
         mHeaderSpacer = findViewById(R.id.header_spacer);
         assert mHeaderSpacer != null;
@@ -146,54 +180,147 @@ public class VerticalTabRailLayout extends ConstraintLayout {
                         isTablet
                                 ? R.dimen.vertical_tabs_footer_button_collapsed_height_tablet
                                 : R.dimen.vertical_tabs_header_button_size);
+        mHoverOverlayCornerRadiusPx =
+                res.getDimensionPixelSize(R.dimen.vertical_tabs_hover_overlay_corner_radius);
+        mCollapsedRailWidthPx =
+                ViewUtils.dpToPx(
+                        getContext(), VerticalTabUtils.SIDE_UI_CONTAINER_COLLAPSED_WIDTH_DP);
+        // Rounds the right corners of the hover overlay; the left corners are shifted out of
+        // bounds. The radius follows the rail width, see getHoverOverlayCornerRadius(). Only
+        // clipped to while hover expanded, see updateHeaderLayout().
+        setOutlineProvider(
+                new ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(View view, Outline outline) {
+                        @Px int radius = getHoverOverlayCornerRadius(view.getWidth());
+                        outline.setRoundRect(-radius, 0, view.getWidth(), view.getHeight(), radius);
+                    }
+                });
         updateHeaderLayout();
     }
 
     /** Returns the main tab list recycler view. */
-    public VerticalTabListRecyclerView getRecyclerView() {
+    VerticalTabListRecyclerView getRecyclerView() {
         return mRecyclerView;
     }
 
     /** Returns the pinned tabs recycler view. */
-    public TabListRecyclerView getPinnedTabsRecyclerView() {
+    VerticalPinnedTabListRecyclerView getPinnedTabsRecyclerView() {
         return mPinnedTabsRecyclerView;
     }
 
+    @VisibleForTesting
+    View getPinnedTabsSeparatorView() {
+        return mPinnedTabsSeparatorView;
+    }
+
     /** Returns the header container view. */
-    public LinearLayout getHeaderContainer() {
+    LinearLayout getHeaderContainer() {
         return mHeaderContainer;
     }
 
     /** Returns the footer container view. */
-    public LinearLayout getFooterContainer() {
+    LinearLayout getFooterContainer() {
         return mFooterContainer;
     }
 
     /** Returns the incognito tab switcher button view in the footer. */
-    public ImageButton getIncognitoButton() {
+    ImageButton getIncognitoButton() {
         return mIncognitoButton;
     }
 
+    /** Returns the new tab button in the footer. */
+    ImageButton getNewTabButton() {
+        return mNewTabButton;
+    }
+
+    /** Returns the collapse button in the header. */
+    ImageButton getCollapseButton() {
+        return mCollapseButton;
+    }
+
+    /** Returns the clickable tab search button container in the header. */
+    View getSearchButton() {
+        return mSearchButton;
+    }
+
+    /** Returns the icon of the tab search button. */
+    ImageView getSearchIcon() {
+        return mSearchIcon;
+    }
+
+    /** Returns the label of the tab search button, shown while expanded for hovering. */
+    TextView getSearchLabel() {
+        return mSearchLabel;
+    }
+
+    /** Sets the visibility of the separator between pinned tabs and regular tabs. */
+    void setPinnedTabsSeparatorVisible(boolean visible) {
+        if (mPinnedTabsSeparatorView != null) {
+            mPinnedTabsSeparatorView.setVisibility(visible ? View.VISIBLE : View.GONE);
+        }
+
+        if (mRecyclerView != null) {
+            ViewGroup.MarginLayoutParams lp =
+                    (ViewGroup.MarginLayoutParams) mRecyclerView.getLayoutParams();
+
+            // Keep everything in the constraint layout exactly as is if the separator is not
+            // visible.
+            int targetMargin =
+                    visible
+                            ? getContext()
+                                    .getResources()
+                                    .getDimensionPixelSize(
+                                            R.dimen.vertical_tabs_pinned_separator_margin_vertical)
+                            : 0;
+            if (lp.topMargin != targetMargin) {
+                lp.topMargin = targetMargin;
+                mRecyclerView.setLayoutParams(lp);
+            }
+        }
+    }
+
     /** Sets the visibility of the desktop window top spacer. */
-    public void setDesktopWindowSpacerVisible(boolean visible) {
+    public void setDesktopWindowSpacerVisibleForTesting(boolean visible) {
         mSpacerView.setVisibility(visible ? View.VISIBLE : View.GONE);
     }
 
-    /** Sets the hover listener to be notified when hover state transitions occur. */
-    public void setExpandOrCollapseOnHoverListener(
-            @Nullable Callback<@RailCollapseState Integer> listener) {
-        mExpandOrCollapseOnHoverListener = listener;
+    /**
+     * Sets the height and visibility of the desktop window top spacer. The spacer is shown when
+     * {@code heightPx > 0} and hidden when {@code heightPx <= 0}.
+     */
+    public void setDesktopWindowSpacerHeight(@Px int heightPx) {
+        if (heightPx > 0) {
+            ViewGroup.LayoutParams lp = mSpacerView.getLayoutParams();
+            if (lp.height != heightPx) {
+                lp.height = heightPx;
+                mSpacerView.setLayoutParams(lp);
+            }
+            mSpacerView.setVisibility(View.VISIBLE);
+        } else {
+            mSpacerView.setVisibility(View.GONE);
+        }
+    }
+
+    /** Sets the listener that receives the raw pointer events dispatched to the rail. */
+    void setRailEventListener(@Nullable RailEventListener listener) {
+        mRailEventListener = listener;
+    }
+
+    /** Sets the listener invoked whenever an {@link MotionEvent#ACTION_DOWN} reaches the rail. */
+    void setOnTouchDownListener(@Nullable Runnable listener) {
+        mOnTouchDownListener = listener;
     }
 
     /** Updates internal child view styling based on the current rail collapse state. */
-    public void setCollapseState(@RailCollapseState int collapseState) {
+    void setCollapseState(@RailCollapseState int collapseState) {
         if (mCollapseState == collapseState) return;
         mCollapseState = collapseState;
         updateHeaderLayout();
     }
 
     /** Returns whether the rail is currently in the collapsed state. */
-    public boolean isCollapsed() {
+    boolean isCollapsed() {
         return mCollapseState == RailCollapseState.COLLAPSED;
     }
 
@@ -226,46 +353,92 @@ public class VerticalTabRailLayout extends ConstraintLayout {
     }
 
     @Override
-    public void onWindowFocusChanged(boolean hasWindowFocus) {
-        super.onWindowFocusChanged(hasWindowFocus);
-        if (!hasWindowFocus && mExpandOrCollapseOnHoverListener != null) {
-            // If the current state is EXPANDED, this will be ignored safely in
-            // VerticalTabRailCollapseController.
-            mExpandOrCollapseOnHoverListener.onResult(RailCollapseState.COLLAPSED);
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        int actionMasked = event.getActionMasked();
+        if (actionMasked == MotionEvent.ACTION_DOWN) {
+            if (mOnTouchDownListener != null) {
+                mOnTouchDownListener.run();
+            }
+            // For a normal 1-finger touch/mouse click, downTime == eventTime. If downTime came
+            // from another finger down, we use the current event's eventTime as the downTime.
+            long eventTime = event.getEventTime();
+            mSplitTouchDownTime = event.getDownTime() != eventTime ? eventTime : 0L;
         }
+
+        // Android's MotionEvent is mostly immutable, and does not provide a #setDownTime(...). We
+        // change the downTime on a MotionEvent by creating a copy of the event using
+        // MotionEvent.obtain(...). Remaining events in the gesture (ACTION_MOVE, ACTION_UP,
+        // ACTION_CANCEL) also arrive with the other finger's downTime, so we keep replacing
+        // downTime until the gesture ends.
+        MotionEvent eventToDispatch =
+                mSplitTouchDownTime != 0L ? obtainWithDownTime(event, mSplitTouchDownTime) : event;
+        if (actionMasked == MotionEvent.ACTION_UP || actionMasked == MotionEvent.ACTION_CANCEL) {
+            mSplitTouchDownTime = 0L;
+        }
+
+        if (mRailEventListener != null) {
+            mRailEventListener.onTouchEventDispatched(eventToDispatch);
+        }
+        boolean handled = super.dispatchTouchEvent(eventToDispatch);
+        if (eventToDispatch != event) {
+            eventToDispatch.recycle();
+        }
+        return handled;
     }
 
-    @Override
-    public boolean onDragEvent(DragEvent event) {
-        int action = event.getAction();
-        if ((action == DragEvent.ACTION_DRAG_EXITED || action == DragEvent.ACTION_DRAG_ENDED)
-                && mExpandOrCollapseOnHoverListener != null) {
-            // If the current state is EXPANDED, this will be ignored safely in
-            // VerticalTabRailCollapseController.
-            mExpandOrCollapseOnHoverListener.onResult(RailCollapseState.COLLAPSED);
+    private static MotionEvent obtainWithDownTime(MotionEvent event, long downTime) {
+        int pointerCount = event.getPointerCount();
+        MotionEvent.PointerProperties[] properties =
+                new MotionEvent.PointerProperties[pointerCount];
+        MotionEvent.PointerCoords[] coords = new MotionEvent.PointerCoords[pointerCount];
+        for (int i = 0; i < pointerCount; i++) {
+            properties[i] = new MotionEvent.PointerProperties();
+            event.getPointerProperties(i, properties[i]);
+            coords[i] = new MotionEvent.PointerCoords();
+            event.getPointerCoords(i, coords[i]);
         }
-        return super.onDragEvent(event);
+        // We keep every parameter identical except for the first param, in which we update the
+        // downTime.
+        return MotionEvent.obtain(
+                /* downTime= */ downTime,
+                /* eventTime= */ event.getEventTime(),
+                /* action= */ event.getAction(),
+                /* pointerCount= */ pointerCount,
+                /* pointerProperties= */ properties,
+                /* pointerCoords= */ coords,
+                /* metaState= */ event.getMetaState(),
+                /* buttonState= */ event.getButtonState(),
+                /* xPrecision= */ event.getXPrecision(),
+                /* yPrecision= */ event.getYPrecision(),
+                /* deviceId= */ event.getDeviceId(),
+                /* edgeFlags= */ event.getEdgeFlags(),
+                /* source= */ event.getSource(),
+                /* flags= */ event.getFlags());
     }
 
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent event) {
-        expandOrCollapseOnHover(event);
+        if (mRailEventListener != null) mRailEventListener.onGenericMotionEventDispatched(event);
         if (super.dispatchGenericMotionEvent(event)) return true;
+        int action = event.getActionMasked();
         // Prevent mouse button presses/releases from falling back to the window's
         // focused view (ContentView), which would send out-of-bounds mouse events to Blink and
         // blur the active webpage document.
-        if (event != null && event.isFromSource(InputDevice.SOURCE_MOUSE)) {
-            int action = event.getActionMasked();
-            if (action == MotionEvent.ACTION_BUTTON_PRESS
-                    || action == MotionEvent.ACTION_BUTTON_RELEASE) {
-                return true;
-            }
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)
+                && (action == MotionEvent.ACTION_BUTTON_PRESS
+                        || action == MotionEvent.ACTION_BUTTON_RELEASE)) {
+            return true;
         }
-        return false;
+        // The rail sits above the web contents. Unconsumed scroll events fall through as
+        // out-of-bounds mouse events, which can unintentionally scroll the page.
+        // RecyclerView#onGenericMotionEvent scrolls but always returns false, so consume these
+        // events here regardless of whether a child scrolled.
+        return event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)
+                && action == MotionEvent.ACTION_SCROLL;
     }
 
     /** Sets the {@link KeyEventListener} to intercept key events dispatched to the rail. */
-    public void setKeyEventListener(@Nullable KeyEventListener listener) {
+    void setKeyEventListener(@Nullable KeyEventListener listener) {
         mKeyEventListener = listener;
     }
 
@@ -277,31 +450,6 @@ public class VerticalTabRailLayout extends ConstraintLayout {
         return super.dispatchKeyEvent(event);
     }
 
-    private void expandOrCollapseOnHover(@Nullable MotionEvent event) {
-        if (mExpandOrCollapseOnHoverListener == null) return;
-        if (!VerticalTabUtils.isExpandOnHoverEnabled()) return;
-        if (event == null || !event.isFromSource(InputDevice.SOURCE_MOUSE)) return;
-        if (!mCollapseButton.isEnabled()) return;
-
-        int action = event.getActionMasked();
-
-        int[] location = new int[2];
-        getLocationOnScreen(location);
-        int left = location[0];
-        int top = location[1];
-        float rawX = event.getRawX();
-        float rawY = event.getRawY();
-
-        boolean isInside =
-                rawX >= left && rawX < left + getWidth() && rawY >= top && rawY < top + getHeight();
-
-        if (isInside && action == MotionEvent.ACTION_HOVER_ENTER) {
-            mExpandOrCollapseOnHoverListener.onResult(RailCollapseState.EXPANDED_FOR_HOVERING);
-        } else if (!isInside && action == MotionEvent.ACTION_HOVER_EXIT) {
-            mExpandOrCollapseOnHoverListener.onResult(RailCollapseState.COLLAPSED);
-        }
-    }
-
     /** Updates header child view styling and layout parameters based on the rail collapse state. */
     private void updateHeaderLayout() {
         if (mLastAppliedCollapseState == mCollapseState) {
@@ -309,16 +457,25 @@ public class VerticalTabRailLayout extends ConstraintLayout {
         }
         mLastAppliedCollapseState = mCollapseState;
 
-        boolean isCollapsed = mCollapseState == RailCollapseState.COLLAPSED;
-        boolean showSingleRowHeader = !isCollapsed;
+        // The collapsed and hover-expanded rails keep the header buttons in their collapsed
+        // positions.
+        boolean showSingleRowHeader =
+                !VerticalTabRailCollapseController.shouldUseCollapsedPositioning(mCollapseState);
 
+        Context context = getContext();
         Resources res = getResources();
-        boolean isTablet = VerticalTabUtils.isTablet(getContext());
+        boolean isTablet = VerticalTabUtils.isTablet(context);
 
-        // The whole header button container
+        // The whole header button container. The buttons are start-aligned with an explicit offset
+        // rather than centered, so they keep the same position when the rail is expanded for
+        // hovering.
         mHeaderContainer.setOrientation(
                 showSingleRowHeader ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
-        mHeaderContainer.setGravity(isCollapsed ? Gravity.CENTER_HORIZONTAL : Gravity.NO_GRAVITY);
+        mHeaderContainer.setGravity(showSingleRowHeader ? Gravity.NO_GRAVITY : Gravity.START);
+        int headerButtonMarginStart =
+                showSingleRowHeader
+                        ? 0
+                        : getCollapsedRailCenteringMarginStart(context, mHeaderButtonWidthPx);
 
         // Collapse button
         boolean isManuallyExpanded = mCollapseState == RailCollapseState.EXPANDED;
@@ -326,6 +483,7 @@ public class VerticalTabRailLayout extends ConstraintLayout {
                 (ViewGroup.MarginLayoutParams) mCollapseButton.getLayoutParams();
         collapseParams.width = mHeaderButtonWidthPx;
         collapseParams.height = mHeaderButtonHeightPx;
+        collapseParams.setMarginStart(headerButtonMarginStart);
         collapseParams.bottomMargin =
                 showSingleRowHeader
                         ? 0
@@ -339,28 +497,122 @@ public class VerticalTabRailLayout extends ConstraintLayout {
                         : (isManuallyExpanded
                                 ? R.drawable.vertical_tabs_menu_collapse
                                 : R.drawable.vertical_tabs_menu_expand));
-        mSearchButton.setImageResource(
-                isTablet ? R.drawable.ic_manage_search_24dp : R.drawable.ic_manage_search_16dp);
+        mSearchIcon.setImageResource(
+                isTablet ? R.drawable.ic_manage_search_24dp : R.drawable.ic_manage_search_20dp);
         int resId =
                 isManuallyExpanded
                         ? R.string.accessibility_collapse_vertical_tabs
                         : R.string.accessibility_expand_vertical_tabs;
-        String tooltipText = getContext().getString(resId);
+        String tooltipText = context.getString(resId);
         mCollapseButton.setContentDescription(tooltipText);
         TooltipCompat.setTooltipText(mCollapseButton, tooltipText);
 
         // Horizontal header spacer
         mHeaderSpacer.setVisibility(showSingleRowHeader ? View.VISIBLE : View.GONE);
 
-        // Search button
+        // Search button. While the rail is expanded for hovering, the button spans the rail width
+        // like the tab rows and shows its label. The icon keeps the button width, so it stays in
+        // the same position in every state.
+        boolean isExpandedForHovering = mCollapseState == RailCollapseState.EXPANDED_FOR_HOVERING;
         LinearLayout.LayoutParams searchParams =
                 (LinearLayout.LayoutParams) mSearchButton.getLayoutParams();
-        searchParams.width = mHeaderButtonWidthPx;
+        searchParams.width =
+                isExpandedForHovering ? ViewGroup.LayoutParams.MATCH_PARENT : mHeaderButtonWidthPx;
         searchParams.height = mHeaderButtonHeightPx;
+        searchParams.setMarginStart(headerButtonMarginStart);
+        LinearLayout.LayoutParams searchIconParams =
+                (LinearLayout.LayoutParams) mSearchIcon.getLayoutParams();
+        searchIconParams.width = mHeaderButtonWidthPx;
+        mSearchLabel.setVisibility(isExpandedForHovering ? View.VISIBLE : View.GONE);
+        // Align the label with the tab titles. It can be negative when the icon is wider than the
+        // space before the tab titles.
+        int searchIconEnd = searchParams.getMarginStart() + searchIconParams.width;
+        LinearLayout.LayoutParams searchLabelParams =
+                (LinearLayout.LayoutParams) mSearchLabel.getLayoutParams();
+        searchLabelParams.setMarginStart(getHoverTabTitleStart(context) - searchIconEnd);
 
         mCollapseButton.setLayoutParams(collapseParams);
         mSearchButton.setLayoutParams(searchParams);
+        mSearchIcon.setLayoutParams(searchIconParams);
+        mSearchLabel.setLayoutParams(searchLabelParams);
+        // Clip on hover expand, and keep it while collapsing back so the corners shrink with the
+        // width. Off after a manual expand, which moves the web contents edge with the rail.
+        setClipToOutline(
+                isExpandedForHovering
+                        || (mCollapseState == RailCollapseState.COLLAPSED && getClipToOutline()));
+        updatePinnedTabsSeparatorLayout();
         updateFooterLayout();
+    }
+
+    /**
+     * Updates the separator between pinned and regular tabs. While the rail uses collapsed
+     * positioning, it is start-aligned at its collapsed centered offset, so its start keeps the
+     * same position when the rail is expanded for hovering. While expanded for hovering, it extends
+     * from that start to the end of the tab rows. Otherwise, it keeps its fixed width, centered in
+     * the rail.
+     */
+    private void updatePinnedTabsSeparatorLayout() {
+        ConstraintLayout.LayoutParams params =
+                (ConstraintLayout.LayoutParams) mPinnedTabsSeparatorView.getLayoutParams();
+        @Px
+        int separatorWidthPx =
+                getResources().getDimensionPixelSize(R.dimen.vertical_tabs_pinned_separator_width);
+        boolean useCollapsedPositioning =
+                VerticalTabRailCollapseController.shouldUseCollapsedPositioning(mCollapseState);
+        params.width =
+                mCollapseState == RailCollapseState.EXPANDED_FOR_HOVERING
+                        ? ConstraintLayout.LayoutParams.MATCH_CONSTRAINT
+                        : separatorWidthPx;
+        params.setMarginStart(
+                useCollapsedPositioning
+                        ? getCollapsedRailCenteringMarginStart(getContext(), separatorWidthPx)
+                        : 0);
+        params.horizontalBias = useCollapsedPositioning ? 0f : 0.5f;
+        mPinnedTabsSeparatorView.setLayoutParams(params);
+    }
+
+    /**
+     * Returns the hover overlay corner radius for the given rail width: the width past the
+     * collapsed rail width, capped at the full radius. 0 while the rail abuts the web contents.
+     */
+    @Px
+    int getHoverOverlayCornerRadius(@Px int railWidthPx) {
+        return MathUtils.clamp(railWidthPx - mCollapsedRailWidthPx, 0, mHoverOverlayCornerRadiusPx);
+    }
+
+    /**
+     * Returns the start margin in pixels that places a rail child of the given width at the same
+     * horizontal position it has when centered in the collapsed rail.
+     */
+    static @Px int getCollapsedRailCenteringMarginStart(Context context, @Px int childWidthPx) {
+        int collapsedRailWidthPx =
+                ViewUtils.dpToPx(context, VerticalTabUtils.SIDE_UI_CONTAINER_COLLAPSED_WIDTH_DP);
+        int railPaddingStartPx =
+                context.getResources()
+                        .getDimensionPixelSize(R.dimen.vertical_tabs_rail_horizontal_margin);
+        return (collapsedRailWidthPx - childWidthPx) / 2 - railPaddingStartPx;
+    }
+
+    /**
+     * Returns the horizontal position in pixels of the tab rows while the rail is expanded for
+     * hovering, relative to the rail's start padding. The tab rows keep their collapsed start.
+     */
+    static @Px int getHoverTabRowStart(Context context) {
+        return getCollapsedRailCenteringMarginStart(
+                context, TabVerticalViewBinder.getCollapsedTabItemWidth(context));
+    }
+
+    /**
+     * Returns the horizontal position in pixels of the tab titles while the rail is expanded for
+     * hovering, relative to the rail's start padding. Mirrors the favicon and title margins in
+     * {@code vertical_tab_item.xml}.
+     */
+    static @Px int getHoverTabTitleStart(Context context) {
+        Resources res = context.getResources();
+        return getHoverTabRowStart(context)
+                + res.getDimensionPixelSize(R.dimen.vertical_tab_item_padding_horizontal)
+                + res.getDimensionPixelSize(R.dimen.vertical_tab_item_icon_size)
+                + res.getDimensionPixelSize(R.dimen.vertical_tab_item_favicon_margin_end);
     }
 
     /**
@@ -387,6 +639,12 @@ public class VerticalTabRailLayout extends ConstraintLayout {
         newTabParams.height = isCollapsed ? mFooterButtonCollapsedHeightPx : newTabHeight;
         newTabParams.weight = (!isCollapsed && isIncognitoVisible) ? 1.0f : 0.0f;
         newTabParams.bottomMargin = (isCollapsed && isIncognitoVisible) ? mFooterButtonGapPx : 0;
+        // While expanded for hovering, the new tab button keeps its collapsed start position and
+        // extends from there, like the tab rows, so both have the same width.
+        newTabParams.setMarginStart(
+                mCollapseState == RailCollapseState.EXPANDED_FOR_HOVERING
+                        ? getHoverTabRowStart(getContext())
+                        : 0);
         newTabParams.setMarginEnd(0);
         mNewTabButton.setLayoutParams(newTabParams);
 

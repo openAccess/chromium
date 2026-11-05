@@ -36,6 +36,8 @@ class TrackedElementHandler;
 class TrackedElementWebUI;
 }  // namespace ui
 
+class CustomWebUIHelpBubble;
+
 namespace user_education {
 
 class HelpBubbleWebUI;
@@ -100,13 +102,21 @@ class HelpBubbleHandlerBase : public help_bubble::mojom::HelpBubbleHandler {
   virtual void ReportBadMessage(std::string_view error);
 
  private:
+  friend class ::CustomWebUIHelpBubble;
   friend class FloatingWebUIHelpBubbleFactory;
   friend class HelpBubbleFactoryWebUI;
   friend class HelpBubbleWebUI;
   FRIEND_TEST_ALL_PREFIXES(HelpBubbleHandlerTest, ExternalHelpBubbleUpdated);
+  FRIEND_TEST_ALL_PREFIXES(
+      HelpBubbleHandlerTest,
+      FloatingHelpBubbleDoesNotPreventHideWhenVisibilityChanges);
 
   struct ElementData;
 
+  // Creates an embedded WebUI help bubble (`HelpBubbleWebUI`) rendered inside
+  // the WebUI DOM (typically in main tab contents). Locks `element` visibility
+  // across `WebContents` visibility changes so that switching tabs does not
+  // mark the anchor hidden and close the embedded bubble.
   std::unique_ptr<HelpBubbleWebUI> CreateHelpBubble(
       ui::TrackedElementWebUI* element,
       HelpBubbleParams params);
@@ -116,6 +126,13 @@ class HelpBubbleHandlerBase : public help_bubble::mojom::HelpBubbleHandler {
                                              const std::string& secondary_id);
   gfx::Rect GetHelpBubbleBoundsInScreen(ui::ElementIdentifier anchor_id,
                                         const std::string& secondary_id) const;
+
+  // Notifies the WebUI client when an external/floating Views help bubble
+  // (`HelpBubbleViews`, used for non-tab WebUI such as the toolbar or side
+  // panels) is shown or closed on `anchor_id`. Unlike `CreateHelpBubble`, this
+  // does NOT lock `anchor_id` visibility: if the hosting `WebContents` is
+  // hidden (e.g. when the containing toolbar is hidden), the anchor element
+  // must report hidden so the floating Views widget closes.
   void OnFloatingHelpBubbleCreated(ui::TrackedElementWebUI* anchor_id,
                                    HelpBubble* help_bubble);
   void OnFloatingHelpBubbleClosed(ui::ElementIdentifier anchor_id,

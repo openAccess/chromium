@@ -10,7 +10,7 @@ import 'chrome://resources/cr_elements/icons.html.js';
 import './shared_style.css.js';
 import './checkup_list_item.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
+import {PrefServiceObserverMixin} from '/shared/settings/prefs2/pref_service_observer_mixin.js';
 import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
 import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
@@ -19,8 +19,9 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 
 import {getTemplate} from './checkup_details_section.html.js';
 import type {CheckupListItemElement} from './checkup_list_item.js';
+import {PasswordAutomaticChangeState} from './password_manager.mojom-webui.js';
 import type {CredentialsChangedListener} from './password_manager_proxy.js';
-import {PasswordAutomaticChangeState, PasswordCheckInteraction, PasswordManagerImpl} from './password_manager_proxy.js';
+import {PasswordCheckInteraction, PasswordManagerImpl} from './password_manager_proxy.js';
 import type {Route} from './router.js';
 import {CheckupSubpage, Page, RouteObserverMixin, Router} from './router.js';
 
@@ -51,7 +52,7 @@ export interface CheckupDetailsSectionElement {
 }
 
 const CheckupDetailsSectionElementBase =
-    PrefsMixin(I18nMixin(RouteObserverMixin(PolymerElement)));
+    PrefServiceObserverMixin(I18nMixin(RouteObserverMixin(PolymerElement)));
 
 export class CheckupDetailsSectionElement extends
     CheckupDetailsSectionElementBase {
@@ -112,8 +113,7 @@ export class CheckupDetailsSectionElement extends
 
       isMutingDisabled_: {
         type: Boolean,
-        computed: 'computeIsMutingDisabled_(' +
-            'prefs.profile.password_dismiss_compromised_alert.value)',
+        value: false,
       },
 
       passwordChangeStates_: {
@@ -145,6 +145,11 @@ export class CheckupDetailsSectionElement extends
 
   override connectedCallback() {
     super.connectedCallback();
+
+    this.addPrefObserver<boolean>(
+        'profile.password_dismiss_compromised_alert', pref => {
+          this.isMutingDisabled_ = !pref.value;
+        });
 
     const updateGroups = () => {
       PasswordManagerImpl.getInstance().getCredentialGroups().then(
@@ -213,51 +218,81 @@ export class CheckupDetailsSectionElement extends
     Router.getInstance().navigateTo(Page.CHECKUP);
   }
 
+  private compareCredentialsByGroup_ =
+      (lhs: chrome.passwordsPrivate.PasswordUiEntry,
+       rhs: chrome.passwordsPrivate.PasswordUiEntry): number => {
+        const lhsName = this.getCurrentGroup_(lhs.id)?.name || '';
+        const rhsName = this.getCurrentGroup_(rhs.id)?.name || '';
+        if (lhsName === rhsName) {
+          return 0;
+        }
+        return lhsName > rhsName ? 1 : -1;
+      };
+
+  private matchesInsecurityType_(
+      credential: chrome.passwordsPrivate.PasswordUiEntry,
+      types: chrome.passwordsPrivate.CompromiseType[]): boolean {
+    assert(credential.compromisedInfo);
+    return credential.compromisedInfo.compromiseTypes.some(
+        t => types.includes(t));
+  }
+
+  private getCredentialsForCurrentType_():
+      chrome.passwordsPrivate.PasswordUiEntry[] {
+    const types = this.getInsecurityType_();
+
+    return (this.allInsecureCredentials_ || [])
+        .filter(cred => this.matchesInsecurityType_(cred, types));
+  }
+
   private async updateShownCredentials_() {
     if (!this.insecurityType_ || !this.allInsecureCredentials_) {
       return;
     }
-    const insecureCredentialsForThisType = this.allInsecureCredentials_.filter(
-        cred => cred.compromisedInfo!.compromiseTypes.some(type => {
-          return this.getInsecurityType_().includes(type);
-        }));
-    const insuecureCredentialsSorter =
-        (lhs: chrome.passwordsPrivate.PasswordUiEntry,
-         rhs: chrome.passwordsPrivate.PasswordUiEntry) => {
-          if ((this.getCurrentGroup_(lhs.id)?.name || '') >
-              (this.getCurrentGroup_(rhs.id)?.name || '')) {
-            return 1;
-          }
-          return -1;
-        };
 
+    const currentTypeCredentials = this.getCredentialsForCurrentType_();
+    // 1. Compromised subpage (Leaked / Phished)
     if (this.isCompromisedType()) {
       // Compromised credentials can be muted. Show muted credentials
       // separately.
-      this.mutedCompromisedCredentials_ = insecureCredentialsForThisType.filter(
-          cred => cred.compromisedInfo!.isMuted);
-      this.shownInsecureCredentials_ = insecureCredentialsForThisType.filter(
-          cred => !cred.compromisedInfo!.isMuted);
-    } else {
-      insecureCredentialsForThisType.sort(insuecureCredentialsSorter);
-      this.shownInsecureCredentials_ = insecureCredentialsForThisType;
+      this.mutedCompromisedCredentials_ =
+          currentTypeCredentials.filter(cred => cred.compromisedInfo!.isMuted);
+      this.shownInsecureCredentials_ =
+          currentTypeCredentials.filter(cred => !cred.compromisedInfo!.isMuted);
+      return;
     }
 
+    // 2. Reused subpage
     if (this.isReusedType()) {
+      const requestedType = this.insecurityType_;
+      this.shownInsecureCredentials_ = currentTypeCredentials;
       const allReusedCredentials = await PasswordManagerImpl.getInstance()
                                        .getCredentialsWithReusedPassword();
-      this.credentialsWithReusedPassword_ =
+      if (this.insecurityType_ !== requestedType) {
+        return;
+      }
+      const credentialsWithReusedPassword =
           await Promise.all(allReusedCredentials.map(
               async(credentials): Promise<ReusedPasswordInfo> => {
                 const reuseInfo = new ReusedPasswordInfo(
-                    credentials.entries.sort(insuecureCredentialsSorter));
+                    credentials.entries.sort(this.compareCredentialsByGroup_));
                 await reuseInfo.init();
                 return reuseInfo;
               }));
-      this.credentialsWithReusedPassword_.sort(
+      if (this.insecurityType_ !== requestedType) {
+        return;
+      }
+      this.credentialsWithReusedPassword_ = credentialsWithReusedPassword.sort(
           (lhs, rhs) =>
-              (lhs.credentials.length > rhs.credentials.length ? -1 : 1));
+              (lhs.credentials.length === rhs.credentials.length ?
+                   0 :
+                   (lhs.credentials.length > rhs.credentials.length ? -1 : 1)));
+      return;
     }
+
+    // 3. Weak subpage
+    this.shownInsecureCredentials_ =
+        currentTypeCredentials.sort(this.compareCredentialsByGroup_);
   }
 
   private async onCredentialsChanged_() {
@@ -338,10 +373,6 @@ export class CheckupDetailsSectionElement extends
     return this.activeListItem_?.getShowHideButtonLabel() || '';
   }
 
-  private computeIsMutingDisabled_(): boolean {
-    return !this.getPref('profile.password_dismiss_compromised_alert').value;
-  }
-
   private getMuteUnmuteLabel_(): string {
     return this.activeListItem_?.item.compromisedInfo?.isMuted === true ?
         this.i18n('unmuteCompromisedPassword') :
@@ -366,7 +397,7 @@ export class CheckupDetailsSectionElement extends
 
   private getCurrentGroup_(id: number): chrome.passwordsPrivate.CredentialGroup
       |undefined {
-    return this.groups_.find(
+    return this.groups_?.find(
         group => group.entries.some(entry => entry.id === id));
   }
 

@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
 #include "chrome/browser/ui/fullscreen_util_mac.h"
 #include "chrome/browser/ui/views/frame/browser_frame_view_mac.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
@@ -117,6 +118,14 @@ void ImmersiveModeControllerMac::SetEnabled(bool enabled) {
       browser_view_->tab_overlay_view()->AddChildViewRaw(
           static_cast<views::View*>(browser_view_->tab_strip_view()));
 
+      // Reparenting preserves the tab strip's bounds, which were computed by
+      // BrowserViewLayout relative to the browser view and may include an
+      // offset for the traffic lights. In the tab overlay, space for the
+      // traffic lights is reserved by the border below, so the tab strip must
+      // sit at the origin. Do not rely on a fullscreen layout pass having
+      // happened before this point, since layout may be deferred (e.g. when a
+      // new window enters fullscreen before it becomes visible).
+      browser_view_->tab_strip_view()->SetPosition(gfx::Point());
       browser_view_->tab_strip_view()->SetBorder(
           views::CreateEmptyBorder(GetTabStripRegionViewInsets()));
 
@@ -364,8 +373,8 @@ void ImmersiveModeControllerMac::OnViewBoundsChanged(
     gfx::Size new_size(bounds.width(), tab_widget_height_);
     browser_view_->tab_overlay_widget()->SetSize(new_size);
     browser_view_->tab_overlay_view()->SetSize(new_size);
-    browser_view_->tab_strip_view()->SetSize(
-        gfx::Size(new_size.width(), browser_view_->tab_strip_view()->height()));
+    browser_view_->tab_strip_view()->SetBoundsRect(gfx::Rect(gfx::Size(
+        new_size.width(), browser_view_->tab_strip_view()->height())));
     overlay_height_ += tab_widget_height_;
   }
   browser_view_->overlay_widget()->SetSize(bounds.size());
@@ -428,9 +437,9 @@ bool ImmersiveModeControllerMac::ShouldMoveChild(views::Widget* child) {
   }
 
   // The find bar should be reparented if it exists.
-  if (browser_view_->browser()->GetFeatures().HasFindBarController()) {
-    FindBarController* find_bar_controller =
-        browser_view_->browser()->GetFeatures().GetFindBarController();
+  if (FindBarController* find_bar_controller =
+          FindBarController::From(browser_view_->browser());
+      find_bar_controller && find_bar_controller->HasFindBar()) {
     if (child == find_bar_controller->find_bar()->GetHostWidget()) {
       return true;
     }

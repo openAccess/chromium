@@ -24,6 +24,7 @@ import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
+import org.chromium.chrome.browser.sync.SyncSettingsUtils;
 import org.chromium.chrome.browser.ui.signin.GoogleActivityController;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
@@ -91,7 +92,8 @@ public class PersonalizeGoogleServicesSettings extends ChromeBaseSettingsFragmen
             if (SettingsIndexData.getInstance() != null) {
                 SettingsIndexData.getInstance().setNeedsIndexing();
             }
-            SettingsNavigationFactory.createSettingsNavigation().finishCurrentSettings(this);
+            SettingsNavigationFactory.createSettingsNavigation(requireActivity())
+                    .finishCurrentSettings(this);
             return;
         }
 
@@ -115,8 +117,9 @@ public class PersonalizeGoogleServicesSettings extends ChromeBaseSettingsFragmen
         RecordUserAction.record("Signin_AccountSettings_LinkedGoogleServicesClicked");
     }
 
-    private static boolean isEeaChoiceCountry(Profile profile) {
-        return RegionalCapabilitiesServiceFactory.getForProfile(profile).isInEeaCountry();
+    private static boolean mayShowLinkedGoogleServicesSetting(Profile profile) {
+        return RegionalCapabilitiesServiceFactory.getForProfile(profile)
+                .mayShowLinkedGoogleServicesSetting();
     }
 
     @Override
@@ -129,7 +132,8 @@ public class PersonalizeGoogleServicesSettings extends ChromeBaseSettingsFragmen
                     PersonalizeGoogleServicesSettings.class.getName(), 0) {
                 @Override
                 public int getXmlRes(Profile profile) {
-                    if (!SignInPreference.isSignedIn(profile) || !isEeaChoiceCountry(profile)) {
+                    if (!SignInPreference.isSignedIn(profile)
+                            || !mayShowLinkedGoogleServicesSetting(profile)) {
                         return 0;
                     }
                     return R.xml.personalize_google_services_preferences;

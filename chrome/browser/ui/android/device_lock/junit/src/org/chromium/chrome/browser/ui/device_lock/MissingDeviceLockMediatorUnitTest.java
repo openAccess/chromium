@@ -7,10 +7,7 @@ package org.chromium.chrome.browser.ui.device_lock;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.doReturn;
+import static org.robolectric.Shadows.shadowOf;
 
 import static org.chromium.chrome.browser.ui.device_lock.MissingDeviceLockProperties.ON_CHECKBOX_TOGGLED;
 import static org.chromium.chrome.browser.ui.device_lock.MissingDeviceLockProperties.ON_CONTINUE_CLICKED;
@@ -19,21 +16,17 @@ import static org.chromium.chrome.browser.ui.device_lock.MissingDeviceLockProper
 
 import android.app.Activity;
 import android.app.admin.DevicePolicyManager;
+import android.content.ComponentName;
 import android.content.Intent;
-import android.content.pm.ActivityInfo;
-import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
+import android.content.IntentFilter;
 import android.provider.Settings;
 
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.Mockito;
-import org.mockito.junit.MockitoJUnit;
-import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
+import org.robolectric.shadows.ShadowPackageManager;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -42,47 +35,32 @@ import org.chromium.chrome.test.util.browser.signin.AccountManagerTestRule;
 /** Unit tests for the {@link MissingDeviceLockMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class MissingDeviceLockMediatorUnitTest {
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
-
     @Rule
     public final AccountManagerTestRule mAccountManagerTestRule = new AccountManagerTestRule();
 
-    @Mock public Activity mActivity;
-    @Mock private PackageManager mPackageManager;
+    private Activity mActivity;
 
     @Before
     public void setUp() {
-        mActivity = Mockito.mock(Activity.class);
-        mPackageManager = Mockito.mock(PackageManager.class);
-        doReturn(mPackageManager).when(mActivity).getPackageManager();
+        mActivity = Robolectric.buildActivity(Activity.class).get();
     }
 
     @Test
     public void
             testMissingDeviceLockMediator_deviceLockCreationIntentSupported_deviceSupportsPINIntentIsTrue() {
-        ResolveInfo resolveInfo = new ResolveInfo();
-        resolveInfo.isDefault = true;
-
-        ApplicationInfo applicationInfo = new ApplicationInfo();
-        applicationInfo.packageName = "example.package";
-        resolveInfo.activityInfo = new ActivityInfo();
-        resolveInfo.activityInfo.applicationInfo = applicationInfo;
-        resolveInfo.activityInfo.name = "ExamplePackage";
-        doReturn(resolveInfo).when(mPackageManager).resolveActivity(any(), anyInt());
+        ComponentName component = new ComponentName("example.package", "ExamplePackage");
+        ShadowPackageManager shadowPackageManager = shadowOf(mActivity.getPackageManager());
+        shadowPackageManager.addActivityIfNotPresent(component);
+        IntentFilter filter = new IntentFilter(DevicePolicyManager.ACTION_SET_NEW_PASSWORD);
+        // Intent#resolveActivity() only matches activities in CATEGORY_DEFAULT.
+        filter.addCategory(Intent.CATEGORY_DEFAULT);
+        shadowPackageManager.addIntentFilterForActivity(component, filter);
 
         MissingDeviceLockMediator missingDeviceLockMediator =
                 new MissingDeviceLockMediator((wipeAllData) -> {}, mActivity);
-        doAnswer(
-                        (invocation) -> {
-                            Intent intent = invocation.getArgument(0);
-                            assertEquals(
-                                    DevicePolicyManager.ACTION_SET_NEW_PASSWORD,
-                                    intent.getAction());
-                            return null;
-                        })
-                .when(mActivity)
-                .startActivity(any());
         missingDeviceLockMediator.getModel().get(ON_CREATE_DEVICE_LOCK_CLICKED).onClick(null);
+        Intent intent = shadowOf(mActivity).getNextStartedActivity();
+        assertEquals(DevicePolicyManager.ACTION_SET_NEW_PASSWORD, intent.getAction());
     }
 
     @Test
@@ -90,15 +68,9 @@ public class MissingDeviceLockMediatorUnitTest {
             testMissingDeviceLockMediator_pinCreationIntentNotSupported_createDeviceLockThroughSettings() {
         MissingDeviceLockMediator missingDeviceLockMediator =
                 new MissingDeviceLockMediator((wipeAllData) -> {}, mActivity);
-        doAnswer(
-                        (invocation) -> {
-                            Intent intent = invocation.getArgument(0);
-                            assertEquals(Settings.ACTION_SECURITY_SETTINGS, intent.getAction());
-                            return null;
-                        })
-                .when(mActivity)
-                .startActivity(any());
         missingDeviceLockMediator.getModel().get(ON_CREATE_DEVICE_LOCK_CLICKED).onClick(null);
+        Intent intent = shadowOf(mActivity).getNextStartedActivity();
+        assertEquals(Settings.ACTION_SECURITY_SETTINGS, intent.getAction());
     }
 
     @Test

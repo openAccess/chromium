@@ -4,19 +4,21 @@
 
 #import "ios/chrome/browser/signin/model/ios_chrome_signin_client.h"
 
-#import "base/strings/utf_string_conversions.h"
-#import "components/metrics/metrics_service.h"
 #import "components/signin/ios/browser/wait_for_network_callback_helper_ios.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_metrics.h"
 #import "components/signin/public/identity_manager/primary_account_change_event.h"
+#import "google_apis/gaia/gaia_id.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
+#import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
+#import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
 #import "ios/chrome/browser/signin/model/gaia_auth_fetcher_ios.h"
-#import "ios/chrome/browser/webdata_services/model/web_data_service_factory.h"
 #import "ios/chrome/common/channel_info.h"
 #import "services/network/public/cpp/shared_url_loader_factory.h"
 
@@ -160,4 +162,34 @@ void IOSChromeSigninClient::OnPrimaryAccountChanged(
 signin::OAuthConsumer IOSChromeSigninClient::GetOAuthConsumerFromId(
     signin::OAuthConsumerId oauth_consumer_id) const {
   return oauth_consumer_registry_->GetOAuthConsumerFromId(oauth_consumer_id);
+}
+
+bool IOSChromeSigninClient::IsAccountSignedInOnOtherProfile(
+    const GaiaId& gaia_id) const {
+  if (gaia_id.empty()) {
+    return false;
+  }
+  ProfileManagerIOS* profile_manager =
+      GetApplicationContext()->GetProfileManager();
+  if (!profile_manager) {
+    return false;
+  }
+  ProfileAttributesStorageIOS* storage =
+      profile_manager->GetProfileAttributesStorage();
+  if (!storage) {
+    return false;
+  }
+  bool is_signed_in = false;
+  storage->IterateOverProfileAttributes(base::BindRepeating(
+      [](std::string_view current_profile_name, const GaiaId& gaia_id,
+         bool& is_signed_in, const ProfileAttributesIOS& attrs) {
+        if (attrs.GetProfileName() != current_profile_name &&
+            attrs.GetGaiaId() == gaia_id) {
+          is_signed_in = true;
+          return ProfileAttributesStorageIOS::IterationResult::kTerminate;
+        }
+        return ProfileAttributesStorageIOS::IterationResult::kContinue;
+      },
+      profile_->GetProfileName(), gaia_id, std::ref(is_signed_in)));
+  return is_signed_in;
 }

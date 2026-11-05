@@ -91,7 +91,6 @@ void ConvertWsToHttp(url::SchemeHostPort& input) {
 }
 
 void HistogramProxyUsed(const ProxyInfo& proxy_info, bool success) {
-  const ProxyServer::Scheme max_scheme = ProxyServer::Scheme::SCHEME_QUIC;
   ProxyServer::Scheme proxy_scheme = ProxyServer::Scheme::SCHEME_INVALID;
   if (!proxy_info.is_empty() && !proxy_info.is_direct()) {
     if (proxy_info.proxy_chain().is_multi_proxy()) {
@@ -106,11 +105,9 @@ void HistogramProxyUsed(const ProxyInfo& proxy_info, bool success) {
                        : proxy_info.proxy_chain().First().scheme();
   }
   if (success) {
-    UMA_HISTOGRAM_ENUMERATION("Net.HttpJob.ProxyTypeSuccess", proxy_scheme,
-                              max_scheme);
+    UMA_HISTOGRAM_ENUMERATION("Net.HttpJob.ProxyTypeSuccess", proxy_scheme);
   } else {
-    UMA_HISTOGRAM_ENUMERATION("Net.HttpJob.ProxyTypeFailed", proxy_scheme,
-                              max_scheme);
+    UMA_HISTOGRAM_ENUMERATION("Net.HttpJob.ProxyTypeFailed", proxy_scheme);
   }
 }
 
@@ -688,6 +685,7 @@ void HttpStreamFactory::JobController::MaybeResumeMainJob(
   }
 
   main_job_is_blocked_ = false;
+  main_job_wait_time_ = delay;
 
   if (!main_job_->is_waiting()) {
     // There are two cases where the main job is not in WAIT state:
@@ -698,19 +696,21 @@ void HttpStreamFactory::JobController::MaybeResumeMainJob(
     return;
   }
 
-  main_job_wait_time_ = delay;
-
   ResumeMainJobLater(main_job_wait_time_);
 }
 
 void HttpStreamFactory::JobController::OnConnectionInitialized(Job* job,
                                                                int rv) {
   if (rv != OK) {
-    // Resume the main job as there's an error raised in connection
-    // initiation.
+    // `rv` is either `ERR_IO_PENDING` (the QUIC crypto handshake is in flight,
+    // so unblock the main job and start its delayed-TCP wait timer) or an
+    // actual connection initiation error (resume immediately if FastFail is
+    // enabled, or if DNS has no QUIC endpoint for `job`).
     base::TimeDelta delay = main_job_wait_time_;
     if ((job == alternative_job_.get() || job == dns_alpn_h3_job_.get()) &&
-        features::kAsyncDnsQuicJobFastFail.Get()) {
+        rv != ERR_IO_PENDING &&
+        (features::kAsyncDnsQuicJobFastFail.Get() ||
+         rv == ERR_DNS_NO_MATCHING_SUPPORTED_ALPN)) {
       delay = base::TimeDelta();
     }
     return MaybeResumeMainJob(job, delay);

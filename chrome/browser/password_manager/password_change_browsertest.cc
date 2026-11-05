@@ -53,10 +53,11 @@
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_test_util.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
+#include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
 #include "components/optimization_guide/core/model_execution/test/mock_remote_model_executor.h"
 #include "components/optimization_guide/core/model_quality/test_model_quality_logs_uploader_service.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "components/password_manager/core/browser/features/password_features.h"
@@ -80,6 +81,7 @@
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/test/button_test_api.h"
+#include "ui/views/widget/any_widget_observer.h"
 #include "url/origin.h"
 
 namespace {
@@ -155,10 +157,8 @@ class PasswordChangeBrowserTest : public base::test::WithFeatureOverride,
                 kPasswordChangeWithPrivateInferenceLoginCheck) {
     // kShowDomNodeIDs is required in order to extract the dom_node_id for
     // the submission step.
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{autofill::features::debug::kShowDomNodeIDs,
-                              password_manager::features::kUseDetachedWidget},
-        /*disabled_features=*/{});
+    scoped_feature_list_.InitAndEnableFeature(
+        autofill::features::debug::kShowDomNodeIDs);
   }
 
   bool IsPrivateInferenceLoginCheckEnabled() const {
@@ -168,7 +168,8 @@ class PasswordChangeBrowserTest : public base::test::WithFeatureOverride,
   PasswordChangeDelegate* OfferUiAndStartFlow(
       const password_manager::PasswordForm& form,
       LoginCheckResult::Status outcome = LoginCheckResult::Status::kLoggedIn) {
-    password_change_service()->OfferPasswordChangeUi(form, WebContents());
+    password_change_service()->OfferPasswordChangeUi(
+        CreateLeakedPasswordDetails(form), WebContents());
     if (IsPrivateInferenceLoginCheckEnabled()) {
       MockLoginOutcome(outcome);
       PasswordChangeDelegate* delegate =
@@ -186,6 +187,13 @@ class PasswordChangeBrowserTest : public base::test::WithFeatureOverride,
       }
       return delegate;
     }
+  }
+
+  password_manager::LeakedPasswordDetails CreateLeakedPasswordDetails(
+      password_manager::PasswordForm form) {
+    return password_manager::LeakedPasswordDetails(
+        password_manager::CredentialLeakFlags::kHasChangePasswordUrl,
+        std::move(form), /*in_account_store=*/false);
   }
 
   password_manager::PasswordForm CreatePasswordForm(
@@ -353,6 +361,39 @@ class PasswordChangeBrowserTest : public base::test::WithFeatureOverride,
         mock_optimization_guide_keyed_service());
   }
 
+  // Responds to the login check with a model execution failure. This is the
+  // only way to obtain `LoginCheckResult::LoginCheckError::kServerError`, since
+  // `MockLoginOutcome()` always returns a valid model response.
+  void MockLoginCheckServerError() {
+    base::RunLoop run_loop;
+    MockOptimizationGuideKeyedService* optimization_service =
+        mock_optimization_guide_keyed_service();
+    EXPECT_CALL(*optimization_service,
+                ExecuteModel(optimization_guide::ModelBasedCapabilityKey::
+                                 kPasswordChangeSubmission,
+                             _, _, _))
+        .WillOnce(DoAll(
+            testing::Invoke(&run_loop, &base::RunLoop::Quit),
+            WithArg<3>([&](auto callback) {
+              auto result =
+                  optimization_guide::OptimizationGuideModelExecutionResult(
+                      base::unexpected(
+                          optimization_guide::
+                              OptimizationGuideModelExecutionError::
+                                  FromModelExecutionError(
+                                      optimization_guide::
+                                          OptimizationGuideModelExecutionError::
+                                              ModelExecutionError::
+                                                  kGenericFailure)),
+                      /*execution_info=*/nullptr);
+              std::move(callback).Run(std::move(result),
+                                      /*log_entry=*/nullptr);
+            })));
+    run_loop.Run();
+    testing::Mock::VerifyAndClearExpectations(
+        mock_optimization_guide_keyed_service());
+  }
+
   void MockSuccessfulSubmitButtonClick(PasswordChangeDelegate* delegate) {
     SetWebContents(static_cast<PasswordChangeDelegateImpl*>(delegate)
                        ->actuator()
@@ -481,8 +522,10 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
   PasswordsNavigationObserver observer(web_contents);
   EXPECT_TRUE(observer.Wait());
 
-  std::string generated_password = base::UTF16ToUTF8(
-      static_cast<PasswordChangeDelegateImpl*>(delegate)->generated_password());
+  std::string generated_password =
+      base::UTF16ToUTF8(static_cast<PasswordChangeDelegateImpl*>(delegate)
+                            ->generated_password()
+                            .secure_value());
 
   // Verify all the fields are filled correctly.
   WaitForElementValue("new_password_2", generated_password);
@@ -508,7 +551,8 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest, GeneratedPasswordIsPreSaved) {
   CheckThatCredentialsStored(
       /*username=*/"test", "pa$$word",
       base::UTF16ToUTF8(static_cast<PasswordChangeDelegateImpl*>(delegate)
-                            ->generated_password()));
+                            ->generated_password()
+                            .secure_value()));
 }
 
 // Verify that after password change is stopped, password change delegate is not
@@ -516,8 +560,9 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest, GeneratedPasswordIsPreSaved) {
 IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest, StopPasswordChange) {
   SetPrivacyNoticeAcceptedPref();
   password_change_service()->OfferPasswordChangeUi(
-      CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
-                         u"pa$$word", "/password/done.html"),
+      CreateLeakedPasswordDetails(
+          CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
+                             u"pa$$word", "/password/done.html")),
       WebContents());
   ASSERT_TRUE(
       password_change_service()->GetPasswordChangeDelegate(WebContents()));
@@ -543,7 +588,8 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest, NewPasswordIsSaved) {
   CheckThatCredentialsStored(
       /*username=*/"test",
       base::UTF16ToUTF8(static_cast<PasswordChangeDelegateImpl*>(delegate)
-                            ->generated_password()),
+                            ->generated_password()
+                            .secure_value()),
       "pa$$word", password_manager::PasswordForm::Type::kChangeSubmission);
 
   base::WeakPtr<PasswordChangeDelegate> delegate_weak_ptr =
@@ -599,7 +645,8 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest, OldPasswordIsUpdated) {
   CheckThatCredentialsStored(
       base::UTF16ToUTF8(form.username_value),
       base::UTF16ToUTF8(static_cast<PasswordChangeDelegateImpl*>(delegate)
-                            ->generated_password()),
+                            ->generated_password()
+                            .secure_value()),
       base::UTF16ToUTF8(form.password_value.value()),
       password_manager::PasswordForm::Type::kChangeSubmission);
 }
@@ -632,9 +679,9 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest, OpenTabWithPasswordChange) {
 IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
                        LeakCheckDialogWithPrivacyNoticeDisplayed) {
   password_change_service()->OfferPasswordChangeUi(
-      CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
-                         u"pa$$word",
-                         "/password/update_form_empty_fields.html"),
+      CreateLeakedPasswordDetails(CreatePasswordForm(
+          WebContents()->GetLastCommittedURL(), u"test", u"pa$$word",
+          "/password/update_form_empty_fields.html")),
       WebContents());
   if (IsPrivateInferenceLoginCheckEnabled()) {
     MockLoginOutcome(LoginCheckResult::Status::kLoggedIn);
@@ -671,9 +718,9 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
                        LeakCheckDialogWithoutPrivacyNoticeDisplayed) {
   SetPrivacyNoticeAcceptedPref();
   password_change_service()->OfferPasswordChangeUi(
-      CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
-                         u"pa$$word",
-                         "/password/update_form_empty_fields.html"),
+      CreateLeakedPasswordDetails(CreatePasswordForm(
+          WebContents()->GetLastCommittedURL(), u"test", u"pa$$word",
+          "/password/update_form_empty_fields.html")),
       WebContents());
   if (IsPrivateInferenceLoginCheckEnabled()) {
     MockLoginOutcome(LoginCheckResult::Status::kLoggedIn);
@@ -888,9 +935,9 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
   AddOtpToThePage();
 
   password_change_service()->OfferPasswordChangeUi(
-      CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
-                         u"pa$$word",
-                         "/password/update_form_empty_fields.html"),
+      CreateLeakedPasswordDetails(CreatePasswordForm(
+          WebContents()->GetLastCommittedURL(), u"test", u"pa$$word",
+          "/password/update_form_empty_fields.html")),
       WebContents());
 
   // Verify the delegate is created.
@@ -1088,9 +1135,9 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest, OpenTabWhenLoggedOut) {
                     "PasswordChangeWithPrivateInferenceLoginCheck is enabled.";
   }
   password_change_service()->OfferPasswordChangeUi(
-      CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
-                         u"pa$$word",
-                         "/password/update_form_empty_fields.html"),
+      CreateLeakedPasswordDetails(CreatePasswordForm(
+          WebContents()->GetLastCommittedURL(), u"test", u"pa$$word",
+          "/password/update_form_empty_fields.html")),
       WebContents());
   auto* delegate =
       password_change_service()->GetPasswordChangeDelegate(WebContents());
@@ -1123,8 +1170,9 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest, OpenTabWhenLoggedOut) {
 IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
                        UserIsLoggedInOnSecondAttempt) {
   password_change_service()->OfferPasswordChangeUi(
-      CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
-                         u"pa$$word", "/password/done.html"),
+      CreateLeakedPasswordDetails(
+          CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
+                             u"pa$$word", "/password/done.html")),
       WebContents());
   auto* delegate =
       password_change_service()->GetPasswordChangeDelegate(WebContents());
@@ -1181,8 +1229,9 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
 IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
                        LoginCheckRespondedWithError) {
   password_change_service()->OfferPasswordChangeUi(
-      CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
-                         u"pa$$word", "/password/done.html"),
+      CreateLeakedPasswordDetails(
+          CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
+                             u"pa$$word", "/password/done.html")),
       WebContents());
   auto* delegate =
       password_change_service()->GetPasswordChangeDelegate(WebContents());
@@ -1224,6 +1273,33 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
   }
 }
 
+// Verifies that when the login check fails with a server error the standard
+// credential leak dialog is shown and password change is not re-offered.
+IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
+                       LoginCheckRespondedWithServerError) {
+  if (!IsPrivateInferenceLoginCheckEnabled()) {
+    GTEST_SKIP() << "Login check is performed before flow starts only when "
+                    "PasswordChangeWithPrivateInferenceLoginCheck is enabled.";
+  }
+  password_change_service()->OfferPasswordChangeUi(
+      CreateLeakedPasswordDetails(
+          CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
+                             u"pa$$word", "/password/done.html")),
+      WebContents());
+  ASSERT_TRUE(
+      password_change_service()->GetPasswordChangeDelegate(WebContents()));
+
+  views::NamedWidgetShownWaiter waiter(views::test::AnyWidgetTestPasskey{},
+                                       "CredentialLeakDialogView");
+  MockLoginCheckServerError();
+
+  // The credential leak dialog is displayed.
+  EXPECT_TRUE(waiter.WaitIfNeededAndGet());
+  // Password change is stopped and not re-offered.
+  EXPECT_FALSE(
+      password_change_service()->GetPasswordChangeDelegate(WebContents()));
+}
+
 IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
                        FlowInterruptedBeforeLoginCheck) {
   if (IsPrivateInferenceLoginCheckEnabled()) {
@@ -1232,8 +1308,9 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
   }
   SetPrivacyNoticeAcceptedPref();
   password_change_service()->OfferPasswordChangeUi(
-      CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
-                         u"pa$$word", "/password/done.html"),
+      CreateLeakedPasswordDetails(
+          CreatePasswordForm(WebContents()->GetLastCommittedURL(), u"test",
+                             u"pa$$word", "/password/done.html")),
       WebContents());
   PasswordChangeDelegate* delegate =
       password_change_service()->GetPasswordChangeDelegate(WebContents());
@@ -1301,7 +1378,8 @@ IN_PROC_BROWSER_TEST_P(PasswordChangeBrowserTest,
   CheckThatCredentialsStored(
       /*username=*/"test",
       base::UTF16ToUTF8(static_cast<PasswordChangeDelegateImpl*>(delegate)
-                            ->generated_password()),
+                            ->generated_password()
+                            .secure_value()),
       "pa$$word", password_manager::PasswordForm::Type::kChangeSubmission);
 
   // Stop the flow.

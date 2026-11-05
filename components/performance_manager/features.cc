@@ -15,7 +15,25 @@
 namespace performance_manager::features {
 
 #if !BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kPerformanceControlsPerformanceSurvey,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPerformanceControlsBatteryPerformanceSurvey,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPerformanceControlsMemorySaverOptOutSurvey,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPerformanceControlsBatterySaverOptOutSurvey,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kPerformanceControlsPPMSurvey, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kPerformanceControlsBatterySurveyLookback,
+                   &kPerformanceControlsBatteryPerformanceSurvey,
+                   "battery_lookback",
+                   base::Days(8));
 
 BASE_FEATURE_PARAM(base::TimeDelta,
                    kPerformanceControlsPPMSurveyMinDelay,
@@ -137,6 +155,9 @@ BASE_FEATURE_PARAM(int,
                    "string_version",
                    1);
 
+BASE_FEATURE(kMemorySaverMemoryCoordinatorPolicy,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 #if BUILDFLAG(IS_CHROMEOS)
 BASE_FEATURE(kUnthrottledTabProcessReporting, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -171,7 +192,12 @@ const base::FeatureParam<bool> kRenderedOutOfViewIsNotVisible{
 const base::FeatureParam<bool> kRendererHighInitialPriority{
     &kPMProcessPriorityPolicy, "renderer_high_initial_priority", false};
 
+BASE_FEATURE(kSubframeNotVisibleIfParentNotVisible,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kPMLoadingPageVoter, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPMLoadingPageVoterV2, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUrgentPageDiscarding, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -247,6 +273,9 @@ BASE_FEATURE_PARAM(int,
                    "percent_threshold",
                    15);
 
+BASE_FEATURE(kDisablePeriodicUnfreezeOnCriticalMemoryPressure,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kDiscardOnCommitLimit, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE_PARAM(int,
@@ -257,8 +286,6 @@ BASE_FEATURE_PARAM(int,
 
 BASE_FEATURE(kResourceAttributionIncludeOrigins,
              base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kSeamlessRenderFrameSwap, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUnimportantFramesPriority, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -315,6 +342,8 @@ BASE_FEATURE(kUseLoadingStateToDetectBackgroundTitleOrFaviconUpdate,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicActuationPriorityVoter, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kPMWithheldFromViewVoter, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kPMSidePanelLoadingVoter, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIgnoreMediaQueryFaviconUpdates, base::FEATURE_ENABLED_BY_DEFAULT);
 

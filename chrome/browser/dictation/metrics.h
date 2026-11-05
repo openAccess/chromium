@@ -7,6 +7,8 @@
 
 #include <string_view>
 
+#include "base/time/time.h"
+
 namespace dictation {
 
 inline constexpr std::string_view kFirstRunExitStatusHistogramName =
@@ -21,6 +23,10 @@ inline constexpr std::string_view kStreamStartTriggerHistogramName =
     "VoiceTyping.StreamStartTrigger";
 inline constexpr std::string_view kStreamExitReasonHistogramName =
     "VoiceTyping.StreamExitReason";
+inline constexpr std::string_view kStreamStartLatencyHistogramName =
+    "VoiceTyping.StreamStartLatency";
+inline constexpr std::string_view kStreamAbandonedBeforeListeningHistogramName =
+    "VoiceTyping.StreamAbandonedBeforeListening";
 
 // Exit status of the Dictation First Run Experience (FRE) dialog.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -50,9 +56,10 @@ enum class DictationSessionEntryPoint {
 // numeric values should never be reused.
 // LINT.IfChange(DictationUrlCategory)
 enum class DictationUrlCategory {
-  kWeb = 0,   // Standard Web page loaded in a browser tab.
-  kGlic = 1,  // Gemini in Chrome UI surface.
-  kMaxValue = kGlic,
+  kWeb = 0,    // Standard Web page loaded in a browser tab.
+  kGlic = 1,   // Gemini in Chrome UI surface.
+  kWebUI = 2,  // Chrome WebUI surface.
+  kMaxValue = kWebUI,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/voice_typing/enums.xml:DictationUrlCategory)
 
@@ -127,6 +134,14 @@ void RecordDictationStreamStartTrigger(DictationStreamStartTrigger trigger);
 
 // Records how a Voice Typing stream concluded.
 void RecordDictationStreamExitStatus(DictationStreamExitStatus status);
+
+// Records the time from the user triggering a Dictation stream until the
+// stream starts transcribing.
+void RecordDictationStreamStartLatency(base::TimeDelta latency);
+
+// Records the time from the user triggering a Dictation stream until the
+// stream ended without ever starting to transcribe.
+void RecordDictationStreamAbandonedBeforeListening(base::TimeDelta elapsed);
 
 }  // namespace dictation
 

@@ -20,6 +20,9 @@
 #import "components/subscription_eligibility/subscription_eligibility_service.h"
 #import "components/sync/protocol/theme_types.pb.h"
 #import "components/sync/test/test_sync_service.h"
+#import "ios/chrome/browser/aim/model/ai_mode_button_service_ios.h"
+#import "ios/chrome/browser/aim/model/ai_mode_button_service_ios_factory.h"
+#import "ios/chrome/browser/aim/model/ios_chrome_aim_eligibility_service_factory.h"
 #import "ios/chrome/browser/browser_view/model/browser_view_visibility_notifier_browser_agent.h"
 #import "ios/chrome/browser/browser_view/public/browser_view_visibility_state.h"
 #import "ios/chrome/browser/content_suggestions/coordinator/content_suggestions_mediator.h"
@@ -30,13 +33,12 @@
 #import "ios/chrome/browser/discover_feed/model/discover_feed_visibility_observer.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/fullscreen/model/fullscreen_browser_agent.h"
+#import "ios/chrome/browser/home_customization/model/home_background_customization_service.h"
 #import "ios/chrome/browser/home_customization/model/home_background_customization_service_factory.h"
 #import "ios/chrome/browser/home_customization/model/home_background_image_service_factory.h"
 #import "ios/chrome/browser/home_customization/model/user_uploaded_image_manager_factory.h"
 #import "ios/chrome/browser/image_fetcher/model/image_fetcher_service_factory.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_tab_helper.h"
-#import "ios/chrome/browser/ntp/model/ntp_background_image_cache_service.h"
-#import "ios/chrome/browser/ntp/model/ntp_background_image_cache_service_factory.h"
 #import "ios/chrome/browser/ntp/search_engine_logo/ui/search_engine_logo_state.h"
 #import "ios/chrome/browser/ntp/shared/metrics/feed_metrics_constants.h"
 #import "ios/chrome/browser/ntp/shared/metrics/feed_metrics_recorder.h"
@@ -55,7 +57,6 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/subscription_eligibility/model/subscription_eligibility_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
@@ -114,8 +115,7 @@ class NewTabPageMediatorTest : public PlatformTest {
         ios::TemplateURLServiceFactory::GetDefaultFactory());
     test_profile_builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     test_profile_builder.AddTestingFactory(
         SyncServiceFactory::GetInstance(),
         base::BindRepeating(&CreateTestSyncService));
@@ -126,15 +126,8 @@ class NewTabPageMediatorTest : public PlatformTest {
               return std::make_unique<HomeBackgroundCustomizationService>(
                   profile->GetPrefs(),
                   UserUploadedImageManagerFactory::GetForProfile(profile),
-                  HomeBackgroundImageServiceFactory::GetForProfile(profile));
-            }));
-    test_profile_builder.AddTestingFactory(
-        NTPBackgroundImageCacheServiceFactory::GetInstance(),
-        base::BindRepeating(
-            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
-              return std::make_unique<NTPBackgroundImageCacheService>(
-                  HomeBackgroundCustomizationServiceFactory::GetForProfile(
-                      profile));
+                  HomeBackgroundImageServiceFactory::GetForProfile(profile),
+                  /*url_loader_factory=*/nullptr, profile->GetStatePath());
             }));
     test_profile_builder.AddTestingFactory(
         ImageFetcherServiceFactory::GetInstance(),
@@ -142,7 +135,13 @@ class NewTabPageMediatorTest : public PlatformTest {
             [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
               return std::make_unique<MockImageFetcherService>();
             }));
+    test_profile_builder.AddTestingFactory(
+        IOSChromeAimEligibilityServiceFactory::GetInstance(),
+        base::BindRepeating(
+            &NewTabPageMediatorTest::CreateMockAimEligibilityService,
+            base::Unretained(this)));
     profile_ = std::move(test_profile_builder).Build();
+    IOSChromeAimEligibilityServiceFactory::GetForProfile(profile_.get());
     browser_ = std::make_unique<TestBrowser>(profile_.get());
 
     initial_web_state_ = CreateWebStateWithURL(GURL("chrome://newtab"), 0.0);
@@ -172,11 +171,17 @@ class NewTabPageMediatorTest : public PlatformTest {
         DiscoverFeedServiceFactory::GetForProfile(profile_.get()));
     prefs_ = profile_->GetPrefs();
     histogram_tester_ = std::make_unique<base::HistogramTester>();
-    aim_eligibility_service_ =
+  }
+
+  std::unique_ptr<KeyedService> CreateMockAimEligibilityService(
+      ProfileIOS* profile) {
+    auto service =
         std::make_unique<testing::StrictMock<MockAimEligibilityService>>(
-            *profile_->GetPrefs(),
-            ios::TemplateURLServiceFactory::GetForProfile(profile_.get()),
-            nullptr, identity_manager_);
+            *profile->GetPrefs(),
+            ios::TemplateURLServiceFactory::GetForProfile(profile), nullptr,
+            IdentityManagerFactory::GetForProfile(profile));
+    aim_eligibility_service_ = service.get();
+    return service;
   }
 
   /// Creates mediator with optional `aim_eligibility_service` and
@@ -189,16 +194,19 @@ class NewTabPageMediatorTest : public PlatformTest {
     HomeBackgroundCustomizationService* background_customization_service =
         HomeBackgroundCustomizationServiceFactory::GetForProfile(
             profile_.get());
-    NTPBackgroundImageCacheService* background_image_cache_service =
-        NTPBackgroundImageCacheServiceFactory::GetForProfile(profile_.get());
     image_fetcher::ImageFetcherService* image_fetcher_service =
         ImageFetcherServiceFactory::GetForProfile(profile_.get());
     UserUploadedImageManager* user_uploaded_image_manager =
         UserUploadedImageManagerFactory::GetForProfile(profile_.get());
+    TemplateURLService* template_url_service =
+        ios::TemplateURLServiceFactory::GetForProfile(profile_.get());
+    AIModeButtonServiceIOS* ai_mode_button_service =
+        with_aim_eligibility_service
+            ? AIModeButtonServiceIOSFactory::GetForProfile(profile_.get())
+            : nullptr;
 
     mediator_ = [[NewTabPageMediator alloc]
-                initWithTemplateURLService:ios::TemplateURLServiceFactory::
-                                               GetForProfile(profile_.get())
+                initWithTemplateURLService:template_url_service
                                  URLLoader:url_loader_
                                authService:auth_service_
                            identityManager:identity_manager_
@@ -214,7 +222,6 @@ class NewTabPageMediatorTest : public PlatformTest {
                    ios::RegionalCapabilitiesServiceFactory::GetForProfile(
                        profile_.get())
             backgroundCustomizationService:background_customization_service
-               backgroundImageCacheService:background_image_cache_service
                        imageFetcherService:image_fetcher_service
                   userUploadedImageManager:user_uploaded_image_manager
              browserViewVisibilityNotifier:browser_view_visibility_notifier_
@@ -224,6 +231,7 @@ class NewTabPageMediatorTest : public PlatformTest {
                      aimEligibilityService:with_aim_eligibility_service
                                                ? aim_eligibility_service_.get()
                                                : nullptr
+                    aiModeButtonServiceIOS:ai_mode_button_service
                     fullscreenBrowserAgent:fullscreen_browser_agent];
     header_consumer_ = OCMProtocolMock(@protocol(NewTabPageHeaderConsumer));
     mediator_.headerConsumer = header_consumer_;
@@ -240,7 +248,10 @@ class NewTabPageMediatorTest : public PlatformTest {
   }
 
   // Explicitly disconnect the mediator.
-  ~NewTabPageMediatorTest() override { [mediator_ shutdown]; }
+  ~NewTabPageMediatorTest() override {
+    [mediator_ shutdown];
+    aim_eligibility_service_ = nullptr;
+  }
 
   // Creates a FakeWebState and simulates that it is loaded with a given `url`.
   std::unique_ptr<web::WebState> CreateWebStateWithURL(
@@ -257,10 +268,10 @@ class NewTabPageMediatorTest : public PlatformTest {
   }
 
   id SetupNTPConsumerMock() {
-    id ntp_consumer = OCMProtocolMock(@protocol(NewTabPageConsumer));
+    id ntp_consumer = OCMProtocolMock(@protocol(NewTabPageScrollConsumer));
     [[[ntp_consumer expect] andReturnValue:[NSNumber numberWithDouble:0.0]]
         heightAboveFeed];
-    mediator_.consumer = ntp_consumer;
+    mediator_.scrollConsumer = ntp_consumer;
     return ntp_consumer;
   }
 
@@ -294,7 +305,8 @@ class NewTabPageMediatorTest : public PlatformTest {
   raw_ptr<TestDiscoverFeedService> test_discover_feed_service_;
   std::unique_ptr<base::HistogramTester> histogram_tester_;
   base::test::ScopedFeatureList scoped_feature_list_;
-  std::unique_ptr<MockAimEligibilityService> aim_eligibility_service_;
+  raw_ptr<testing::StrictMock<MockAimEligibilityService>>
+      aim_eligibility_service_ = nullptr;
 };
 
 // Tests that the consumer has the right value set up.
@@ -438,6 +450,8 @@ TEST_F(NewTabPageMediatorTest, TestAIMNotEligible) {
 
   EXPECT_OCMOCK_VERIFY(header_consumer_);
   EXPECT_OCMOCK_VERIFY(ntp_consumer);
+  histogram_tester_->ExpectUniqueSample("Omnibox.AimEntrypoint.Shown", false,
+                                        1);
 }
 
 // Tests that the AIM is enabled if the user is eligible.
@@ -457,11 +471,15 @@ TEST_F(NewTabPageMediatorTest, TestAIMEligible) {
   id ntp_consumer = OCMProtocolMock(@protocol(NewTabPageConsumer));
   mediator_.consumer = ntp_consumer;
   OCMExpect([ntp_consumer setAIMAllowed:YES]);
+  OCMExpect([ntp_consumer setAIMTitle:[OCMArg isNotNil]
+                                 icon:[OCMArg isNotNil]
+                   accessibilityLabel:[OCMArg isNotNil]]);
   OCMExpect([header_consumer_ setAIMAllowed:YES]);
   [mediator_ setUp];
 
   EXPECT_OCMOCK_VERIFY(header_consumer_);
   EXPECT_OCMOCK_VERIFY(ntp_consumer);
+  histogram_tester_->ExpectUniqueSample("Omnibox.AimEntrypoint.Shown", true, 1);
 }
 
 // Tests that NTP modules are not updated if AIM eligibility changes before
@@ -503,6 +521,7 @@ TEST_F(NewTabPageMediatorTest, TestAIMBecomeEligibleBeforeSetUp) {
   callback.Run();
   // Consumer are updated but modules are not.
   EXPECT_OCMOCK_VERIFY(ntp_content_delegate);
+  histogram_tester_->ExpectTotalCount("Omnibox.AimEntrypoint.Shown", 0);
 
   // Consumer are updated during setup.
   OCMExpect([ntp_consumer setAIMAllowed:YES]);
@@ -511,6 +530,7 @@ TEST_F(NewTabPageMediatorTest, TestAIMBecomeEligibleBeforeSetUp) {
 
   EXPECT_OCMOCK_VERIFY(header_consumer_);
   EXPECT_OCMOCK_VERIFY(ntp_consumer);
+  histogram_tester_->ExpectUniqueSample("Omnibox.AimEntrypoint.Shown", true, 1);
 }
 
 // Tests that NTP modules are updated if AIM eligibility changes after setup.
@@ -544,6 +564,8 @@ TEST_F(NewTabPageMediatorTest, TestAIMBecomeEligibleAfterSetUp) {
       OCMProtocolMock(@protocol(NewTabPageContentDelegate));
   mediator_.NTPContentDelegate = ntp_content_delegate;
   [mediator_ setUp];
+  histogram_tester_->ExpectUniqueSample("Omnibox.AimEntrypoint.Shown", false,
+                                        1);
 
   // Becomes eligible after setup, modules should be updated.
   is_eligible = true;
@@ -555,6 +577,9 @@ TEST_F(NewTabPageMediatorTest, TestAIMBecomeEligibleAfterSetUp) {
   EXPECT_OCMOCK_VERIFY(header_consumer_);
   EXPECT_OCMOCK_VERIFY(ntp_consumer);
   EXPECT_OCMOCK_VERIFY(ntp_content_delegate);
+  histogram_tester_->ExpectBucketCount("Omnibox.AimEntrypoint.Shown", false, 1);
+  histogram_tester_->ExpectBucketCount("Omnibox.AimEntrypoint.Shown", true, 1);
+  histogram_tester_->ExpectTotalCount("Omnibox.AimEntrypoint.Shown", 2);
 }
 
 // Tests that fetchCustomBackground ignores duplicate requests for the same URL.
@@ -612,7 +637,7 @@ TEST_F(NewTabPageMediatorTest, TestFetchCustomBackground_NewURL) {
   [mediator_ fetchCustomBackground:background2];
 }
 
-// Tests that the consumer receives feed bottom inset updates from
+// Tests that the scroll consumer receives feed bottom inset updates from
 // FullscreenBrowserAgent when ChromeNextIa and FullscreenRefactoring are
 // enabled.
 TEST_F(NewTabPageMediatorTest, TestFeedBottomInsetWithChromeNextIa) {
@@ -625,11 +650,31 @@ TEST_F(NewTabPageMediatorTest, TestFeedBottomInsetWithChromeNextIa) {
   CreateMediator(/*with_aim_eligibility_service=*/false,
                  fullscreen_browser_agent);
 
-  id ntp_consumer = OCMProtocolMock(@protocol(NewTabPageConsumer));
-  OCMExpect([ntp_consumer
+  id scroll_consumer = OCMProtocolMock(@protocol(NewTabPageScrollConsumer));
+  OCMExpect([scroll_consumer
       setFeedBottomInset:fullscreen_browser_agent->max_insets().bottom]);
 
-  mediator_.consumer = ntp_consumer;
+  mediator_.scrollConsumer = scroll_consumer;
 
-  EXPECT_OCMOCK_VERIFY(ntp_consumer);
+  EXPECT_OCMOCK_VERIFY(scroll_consumer);
+}
+
+// Tests that the scroll consumer receives restoreScrollPosition updates when
+// restoreNTPScrollPositionForWebState is called.
+TEST_F(NewTabPageMediatorTest, TestRestoreNTPScrollPosition) {
+  CreateMediator(/*with_aim_eligibility_service=*/false);
+  std::unique_ptr<web::FakeWebState> web_state =
+      std::make_unique<web::FakeWebState>();
+  NewTabPageTabHelper::CreateForWebState(web_state.get());
+  constexpr CGFloat kTestScrollPosition = 123.0;
+  NewTabPageTabHelper::FromWebState(web_state.get())
+      ->SetNTPScrollPosition(kTestScrollPosition);
+
+  id scroll_consumer = OCMProtocolMock(@protocol(NewTabPageScrollConsumer));
+  OCMExpect([scroll_consumer restoreScrollPosition:kTestScrollPosition]);
+
+  mediator_.scrollConsumer = scroll_consumer;
+  [mediator_ restoreNTPScrollPositionForWebState:web_state.get()];
+
+  EXPECT_OCMOCK_VERIFY(scroll_consumer);
 }

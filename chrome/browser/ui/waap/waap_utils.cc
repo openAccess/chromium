@@ -8,22 +8,32 @@
 #include "build/build_config.h"
 #include "chrome/browser/page_load_metrics/page_load_metrics_initialize.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/task_manager/web_contents_tags.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
+#include "chrome/browser/ui/prefs/prefs_tab_helper.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_profile.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_user_profile.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chrome/grit/generated_resources.h"
+#include "components/performance_manager/embedder/performance_manager_registry.h"
+#include "components/performance_manager/public/graph/page_node.h"
 #include "components/ukm/content/source_url_recorder.h"
 #include "content/public/browser/frame_eviction_opt_out_client.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/url_constants.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/color/color_provider_manager.h"
 #include "ui/color/color_provider_source.h"
 #include "ui/color/color_provider_utils.h"
 #include "ui/native_theme/native_theme.h"
+#include "ui/views/controls/webview/web_contents_set_background_color.h"
 #include "url/gurl.h"
 
 namespace {
@@ -76,14 +86,42 @@ bool IsForInitialWebUI(const GURL& url) {
   return false;
 }
 
+bool IsForInitialWebUI(const content::SecurityPrincipal& principal) {
+  if (base::FeatureList::IsEnabled(features::kInitialWebUI) &&
+      base::FeatureList::IsEnabled(features::kWebUIReloadButton)) {
+    return principal.SchemeIs(content::kChromeUIScheme) &&
+           principal.GetHost() == chrome::kChromeUIWebUIToolbarHost;
+  }
+  return false;
+}
+
 void PrewarmHelper::ConfigureWebUIContents(content::WebContents* web_contents,
                                            Profile* profile) {
+  if (Profile::FromBrowserContext(web_contents->GetBrowserContext())
+          ->IsTopChromeWebUIProfile()) {
+    // Set first: SetColorProviderSource() below computes WebPreferences for the
+    // first time, which need the user profile.
+    webui::SetUserProfile(web_contents, profile);
+  }
+
+  if (auto* registry =
+          performance_manager::PerformanceManagerRegistry::GetInstance()) {
+    registry->SetPageType(web_contents,
+                          performance_manager::PageType::kNonTabWebUI);
+  }
+
   // `PageLoadMetrics` needs to be initialized before loading the URL.
   InitializePageLoadMetricsForWebContents(web_contents);
   // Needed for UKM PageLoad metrics.
   ukm::InitializeSourceUrlRecorderForWebContents(web_contents);
 
+  PrefsTabHelper::CreateForWebContents(web_contents);
+  task_manager::WebContentsTags::CreateForToolContents(
+      web_contents, IDS_TASK_MANAGER_WEBUI_TOOLBAR);
+
   web_contents->SetPageBaseBackgroundColor(SK_ColorTRANSPARENT);
+  views::WebContentsSetBackgroundColor::CreateForWebContentsWithColor(
+      web_contents, SK_ColorTRANSPARENT);
   web_contents->SetIgnoreZoomGestures(true);
   if (base::FeatureList::IsEnabled(
           features::kWebUIToolbarFrameEvictionOptOut)) {
@@ -106,12 +144,14 @@ void PrewarmHelper::ConfigureWebUIContents(content::WebContents* web_contents,
 std::unique_ptr<content::WebContents> PrewarmHelper::PrewarmWebUIContents(
     Profile* profile,
     bool pre_navigate) {
+  Profile& contents_profile =
+      webui::GetProfileForTopChromeWebUIContents(profile);
   scoped_refptr<content::SiteInstance> site_instance =
       content::SiteInstance::CreateForURL(
-          profile, GURL(chrome::kChromeUIWebUIToolbarURL));
+          &contents_profile, GURL(chrome::kChromeUIWebUIToolbarURL));
   std::unique_ptr<content::WebContents> web_contents =
       content::WebContents::Create(
-          content::WebContents::CreateParams(profile, site_instance));
+          content::WebContents::CreateParams(&contents_profile, site_instance));
 
   ConfigureWebUIContents(web_contents.get(), profile);
 

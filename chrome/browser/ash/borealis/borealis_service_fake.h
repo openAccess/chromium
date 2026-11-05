@@ -26,32 +26,33 @@ class BorealisServiceFake : public BorealisService {
 
   BorealisAppLauncher& AppLauncher() override;
   BorealisAppUninstaller& AppUninstaller() override;
+  BorealisDiskCleanupManager& DiskCleanupManager() override;
   BorealisFeatures& Features() override;
   BorealisInstaller& Installer() override;
   BorealisLaunchOptions& LaunchOptions() override;
   BorealisShutdownMonitor& ShutdownMonitor() override;
   BorealisWindowManager& WindowManager() override;
-  BorealisSurveyHandler& SurveyHandler() override;
 
   void SetAppLauncherForTesting(BorealisAppLauncher* app_launcher);
   void SetAppUninstallerForTesting(BorealisAppUninstaller* app_uninstaller);
+  void SetDiskCleanupManagerForTesting(
+      BorealisDiskCleanupManager* disk_cleanup_manager);
   void SetFeaturesForTesting(BorealisFeatures* features);
   void SetInstallerForTesting(BorealisInstaller* installer);
   void SetLaunchOptionsForTesting(BorealisLaunchOptions* launch_options);
   void SetShutdownMonitorForTesting(BorealisShutdownMonitor* shutdown_monitor);
   void SetWindowManagerForTesting(BorealisWindowManager* window_manager);
-  void SetSurveyHandlerForTesting(BorealisSurveyHandler* survey_handler);
 
  private:
   raw_ptr<BorealisAppLauncher> app_launcher_ = nullptr;
   raw_ptr<BorealisAppUninstaller> app_uninstaller_ = nullptr;
+  raw_ptr<BorealisDiskCleanupManager> disk_cleanup_manager_ = nullptr;
   raw_ptr<BorealisFeatures, DanglingUntriaged> features_ = nullptr;
   raw_ptr<BorealisInstaller> installer_ = nullptr;
   raw_ptr<BorealisLaunchOptions> launch_options_ = nullptr;
   raw_ptr<BorealisShutdownMonitor, DanglingUntriaged> shutdown_monitor_ =
       nullptr;
   raw_ptr<BorealisWindowManager, DanglingUntriaged> window_manager_ = nullptr;
-  raw_ptr<BorealisSurveyHandler> survey_handler_ = nullptr;
 };
 
 }  // namespace borealis

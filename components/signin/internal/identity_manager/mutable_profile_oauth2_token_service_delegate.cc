@@ -473,11 +473,9 @@ std::string MutableProfileOAuth2TokenServiceDelegate::GetRefreshToken(
   return std::string();
 }
 
-
 bool MutableProfileOAuth2TokenServiceDelegate::
     GenerateBindingKeyRegistrationToken(
-        base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
-            supported_algorithms,
+        base::span<const crypto::sign::SignatureKind> supported_algorithms,
         std::string_view auth_code,
         base::OnceCallback<
             void(std::optional<signin::BindingKeyRegistrationTokenResult>)>
@@ -598,11 +596,9 @@ MutableProfileOAuth2TokenServiceDelegate::GetURLLoaderFactory() const {
 }
 
 void MutableProfileOAuth2TokenServiceDelegate::InvalidateTokenForMultilogin(
-    const CoreAccountId& failed_account) {
-  UpdateAuthError(failed_account,
-                  GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
-                      GoogleServiceAuthError::InvalidGaiaCredentialsReason::
-                          CREDENTIALS_REJECTED_BY_SERVER));
+    const CoreAccountId& failed_account,
+    const GoogleServiceAuthError& error) {
+  UpdateAuthError(failed_account, error);
 }
 
 void MutableProfileOAuth2TokenServiceDelegate::LoadCredentialsInternal(

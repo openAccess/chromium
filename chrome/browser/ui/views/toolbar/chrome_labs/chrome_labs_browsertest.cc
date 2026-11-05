@@ -6,6 +6,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "build/branding_buildflags.h"
@@ -14,7 +15,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_model.h"
@@ -30,6 +31,7 @@
 #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions_container.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/unexpire_flags.h"
+#include "chrome/common/chrome_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_education/views/new_badge_label.h"
 #include "components/version_info/channel.h"
@@ -45,6 +47,7 @@
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/combobox/combobox.h"
+#include "ui/views/controls/scroll_view.h"
 #include "ui/views/layout/animating_layout_manager_test_util.h"
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/test/combobox_test_api.h"
@@ -61,6 +64,10 @@
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
 #include "chrome/test/base/scoped_channel_override.h"
+
+#if !BUILDFLAG(IS_CHROMEOS) || !BUILDFLAG(GOOGLE_CHROME_BRANDING)
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#endif  // !BUILDFLAG(IS_CHROMEOS) || !BUILDFLAG(GOOGLE_CHROME_BRANDING)
 #endif
 
 #if !BUILDFLAG(IS_CHROMEOS) || !BUILDFLAG(GOOGLE_CHROME_BRANDING)
@@ -86,6 +93,10 @@ class ChromeLabsTestHelper {
         scoped_feature_entries_({{kFirstTestFeatureId, "", "",
                                   flags_ui::FlagsState::GetCurrentPlatform(),
                                   FEATURE_VALUE_TYPE(kTestFeature1)}}) {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{features::kWebUIPinnedToolbarActions,
+                               features::kWebUIToolbar});
     scoped_chrome_labs_model_data_.SetModelDataForTesting(
         std::move(feature_info));
     ForceChromeLabsActivationForTesting();
@@ -118,6 +129,7 @@ class ChromeLabsTestHelper {
   }
 
  private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   chrome::ScopedChannelOverride channel_override_;
 #endif
@@ -311,6 +323,10 @@ class ChromeLabsCoordinatorBrowserTest : public InProcessBrowserTest {
              {kExpiredFlagTestFeatureId, "", "",
               flags_ui::FlagsState::GetCurrentPlatform(),
               FEATURE_VALUE_TYPE(kExpiredFlagTestFeature)}}) {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{features::kWebUIPinnedToolbarActions,
+                               features::kWebUIToolbar});
     flags::testing::SetFlagExpiration(kExpiredFlagTestFeatureId, 0);
     scoped_chrome_labs_model_data_.SetModelDataForTesting(TestLabInfo());
     ForceChromeLabsActivationForTesting();
@@ -358,6 +374,7 @@ class ChromeLabsCoordinatorBrowserTest : public InProcessBrowserTest {
   raw_ptr<ChromeLabsCoordinator> chrome_labs_coordinator_ = nullptr;
 
  private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   chrome::ScopedChannelOverride channel_override_;
 #endif
@@ -445,6 +462,10 @@ class ChromeLabsViewControllerBrowserTest : public InProcessBrowserTest {
              {kExpiredFlagTestFeatureId, "", "",
               flags_ui::FlagsState::GetCurrentPlatform(),
               FEATURE_VALUE_TYPE(kExpiredFlagTestFeature)}}) {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{features::kWebUIPinnedToolbarActions,
+                               features::kWebUIToolbar});
     // Set expiration milestone such that the flag is expired.
     flags::testing::SetFlagExpiration(kExpiredFlagTestFeatureId, 0);
     scoped_chrome_labs_model_data_.SetModelDataForTesting(TestLabInfo());
@@ -475,9 +496,8 @@ class ChromeLabsViewControllerBrowserTest : public InProcessBrowserTest {
                   ->toolbar_button_provider()
                   ->GetPinnedToolbarActions()));
     }
-    browser()
-        ->GetFeatures()
-        .pinned_toolbar_actions()
+    BrowserWindow::FromBrowser(browser())
+        ->GetPinnedToolbarActions()
         ->ShowActionEphemerallyInToolbar(kActionShowChromeLabs, true);
 
     std::unique_ptr<ChromeLabsBubbleView> bubble_view =
@@ -502,9 +522,8 @@ class ChromeLabsViewControllerBrowserTest : public InProcessBrowserTest {
   ChromeLabsBubbleView* chrome_labs_bubble() { return bubble_view_; }
 
   views::Button* GetChromeLabsButton() {
-    return browser()
-        ->GetFeatures()
-        .pinned_toolbar_actions()
+    return BrowserWindow::FromBrowser(browser())
+        ->GetPinnedToolbarActions()
         ->GetChromeLabsButton();
   }
 
@@ -580,6 +599,7 @@ class ChromeLabsViewControllerBrowserTest : public InProcessBrowserTest {
   raw_ptr<views::Widget> bubble_widget_;
 
  private:
+  base::test::ScopedFeatureList scoped_feature_list_;
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   chrome::ScopedChannelOverride channel_override_;
 #endif

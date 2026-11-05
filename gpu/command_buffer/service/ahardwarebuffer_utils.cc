@@ -8,11 +8,11 @@
 
 #include "base/android/scoped_hardware_buffer_handle.h"
 #include "base/check.h"
-#include "components/viz/common/gpu/vulkan_context_provider.h"
 #include "gpu/command_buffer/service/gl_utils.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_format_service_utils.h"
 #include "gpu/command_buffer/service/texture_manager.h"
+#include "gpu/command_buffer/service/vulkan_context_provider.h"
 #include "gpu/vulkan/vulkan_image.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/size.h"
@@ -28,7 +28,8 @@ std::unique_ptr<VulkanImage> CreateVkImageFromAhbHandle(
     const viz::SharedImageFormat& format,
     uint32_t queue_family_index) {
   DCHECK(context_state);
-  DCHECK(context_state->GrContextIsVulkan());
+  DCHECK(context_state->GrContextIsVulkan() ||
+         context_state->IsGraphiteVulkan());
 
   auto* device_queue = context_state->vk_context_provider()->GetDeviceQueue();
   gfx::GpuMemoryBufferHandle gmb_handle(std::move(ahb_handle));

@@ -4,7 +4,8 @@
 
 #import "ios/chrome/browser/enterprise/client_certificates/certificate_provisioning_service_factory_ios.h"
 
-#import "base/no_destructor.h"
+#import <utility>
+
 #import "components/enterprise/client_certificates/core/dm_server_client.h"
 #import "components/enterprise/client_certificates/core/key_upload_client.h"
 #import "components/enterprise/client_certificates/core/profile_cloud_management_delegate.h"
@@ -16,7 +17,6 @@
 #import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/model/profile/profile_keyed_service_factory_ios.h"
 #import "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 
 namespace client_certificates {
@@ -31,40 +31,23 @@ policy::DeviceManagementService* GetDeviceManagementService() {
 
 }  // namespace
 
-// static
-CertificateProvisioningServiceFactoryIOS*
-CertificateProvisioningServiceFactoryIOS::GetInstance() {
-  static base::NoDestructor<CertificateProvisioningServiceFactoryIOS> instance;
-  return instance.get();
-}
-
-// static
-CertificateProvisioningServiceIOS*
-CertificateProvisioningServiceFactoryIOS::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()
-      ->GetServiceForProfileAs<CertificateProvisioningServiceIOS>(
-          profile, /*create=*/true);
-}
-
 CertificateProvisioningServiceFactoryIOS::
-    CertificateProvisioningServiceFactoryIOS()
-    : ProfileKeyedServiceFactoryIOS("IOSCertificateProvisioningService",
-                                    ProfileSelection::kNoInstanceInIncognito,
-                                    ServiceCreation::kCreateWithProfile,
-                                    TestingCreation::kNoServiceForTests) {
+    CertificateProvisioningServiceFactoryIOS(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "IOSCertificateProvisioningService",
+          ProfileSelection::kNoInstanceInIncognito,
+          ServiceCreation::kCreateWithProfile,
+          TestingCreation::kNoServiceForTests) {
   DependsOn(CertificateStoreFactory::GetInstance());
   DependsOn(enterprise::ProfileIdServiceFactoryIOS::GetInstance());
 }
 
-CertificateProvisioningServiceFactoryIOS::
-    ~CertificateProvisioningServiceFactoryIOS() = default;
-
 std::unique_ptr<KeyedService>
 CertificateProvisioningServiceFactoryIOS::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
-
+    ProfileIOS& profile) const {
   auto* certificate_store = CertificateStoreFactory::GetForProfile(profile);
-  auto url_loader_factory = profile->GetSharedURLLoaderFactory();
+  auto url_loader_factory = profile.GetSharedURLLoaderFactory();
   auto* device_management_service = GetDeviceManagementService();
   auto* profile_id_service =
       enterprise::ProfileIdServiceFactoryIOS::GetForProfile(profile);
@@ -74,13 +57,13 @@ CertificateProvisioningServiceFactoryIOS::BuildServiceInstanceFor(
   }
 
   auto core_service = CertificateProvisioningService::Create(
-      profile->GetPrefs(), certificate_store,
-      std::make_unique<ProfileContextDelegateIOS>(),
+      profile.GetPrefs(), certificate_store,
+      std::make_unique<ProfileContextDelegateIOS>(profile_id_service),
       KeyUploadClient::Create(
           std::make_unique<
               enterprise_attestation::ProfileCloudManagementDelegate>(
               std::make_unique<enterprise_core::DependencyFactoryImplIOS>(
-                  profile),
+                  &profile),
               profile_id_service,
               enterprise_attestation::DMServerClient::Create(
                   device_management_service, std::move(url_loader_factory)))));

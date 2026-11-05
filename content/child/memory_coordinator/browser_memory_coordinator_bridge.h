@@ -13,9 +13,9 @@
 #include "base/memory_coordinator/traits.h"
 #include "base/sequence_checker.h"
 #include "content/common/buildflags.h"
-#include "content/common/memory_coordinator/memory_coordinator_policy.h"
 #include "content/common/memory_coordinator/memory_coordinator_policy_manager.h"
 #include "content/common/memory_coordinator/mojom/memory_coordinator.mojom.h"
+#include "content/public/common/memory_coordinator/memory_coordinator_policy.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
@@ -53,8 +53,10 @@ class BrowserMemoryCoordinatorBridge
 
   // mojom::ChildMemoryCoordinator:
   void UpdateConsumers(std::vector<MemoryConsumerUpdate> updates) override;
-  void SetOverrideLimit(uint32_t consumer_id, int32_t percentage) override;
-  void ClearOverrideLimit(uint32_t consumer_id, int32_t policy_limit) override;
+  void SetOverrideLimit(uint32_t consumer_id,
+                        base::MemoryLimit memory_limit) override;
+  void ClearOverrideLimit(uint32_t consumer_id,
+                          base::MemoryLimit policy_limit) override;
 #if BUILDFLAG(ENABLE_MEMORY_COORDINATOR_INTERNALS)
   void EnableDiagnosticsReporting(
       mojo::PendingRemote<mojom::MemoryCoordinatorDiagnosticsHost> host)

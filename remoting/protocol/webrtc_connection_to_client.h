@@ -56,6 +56,9 @@ class WebrtcConnectionToClient : public ConnectionToClient,
   void Disconnect(ErrorCode error,
                   std::string_view error_details,
                   const SourceLocation& error_location) override;
+
+  std::unique_ptr<MessagePipe> CreateOutgoingDataChannel(
+      const std::string& name) override;
   std::unique_ptr<VideoStream> StartVideoStream(
       webrtc::ScreenId screen_id,
       std::unique_ptr<DesktopCapturer> desktop_capturer) override;
@@ -70,6 +73,7 @@ class WebrtcConnectionToClient : public ConnectionToClient,
   void ApplyNetworkSettings(const NetworkSettings& settings) override;
   PeerConnectionControls* peer_connection_controls() override;
   WebrtcEventLogData* rtc_event_log() override;
+  base::WeakPtr<ConnectionToClient> GetWeakPtr() override;
 
   // WebrtcTransport::EventHandler interface
   void OnWebrtcTransportConnecting() override;

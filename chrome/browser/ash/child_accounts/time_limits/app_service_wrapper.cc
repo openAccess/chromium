@@ -14,7 +14,6 @@
 #include "base/unguessable_token.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/apps/app_service/launch_utils.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ash/child_accounts/time_limits/app_time_limit_utils.h"
 #include "chrome/browser/ash/child_accounts/time_limits/app_types.h"
@@ -161,7 +160,7 @@ std::vector<AppId> AppServiceWrapper::GetHiddenArcApps() const {
 
 std::string AppServiceWrapper::GetAppName(const AppId& app_id) const {
   const std::string app_service_id = AppServiceIdFromAppId(app_id, profile_);
-  DCHECK(!app_service_id.empty());
+  CHECK(!app_service_id.empty(), base::NotFatalUntil::M160);
 
   std::string app_name;
   GetAppCache().ForOneApp(
@@ -176,7 +175,7 @@ void AppServiceWrapper::GetAppIcon(
     base::OnceCallback<void(std::optional<gfx::ImageSkia>)> on_icon_ready)
     const {
   const std::string app_service_id = AppServiceIdFromAppId(app_id, profile_);
-  DCHECK(!app_service_id.empty());
+  CHECK(!app_service_id.empty(), base::NotFatalUntil::M160);
 
   GetAppProxy()->LoadIconWithIconEffects(
       app_service_id, apps::IconEffects::kNone, apps::IconType::kStandard,
@@ -211,17 +210,17 @@ AppId AppServiceWrapper::AppIdFromAppServiceId(
                           [&app_id](const apps::AppUpdate& update) {
                             app_id = AppIdFromAppUpdate(update);
                           });
-  DCHECK(app_id);
+  CHECK(app_id, base::NotFatalUntil::M160);
   return *app_id;
 }
 
 void AppServiceWrapper::AddObserver(EventListener* listener) {
-  DCHECK(listener);
+  CHECK(listener, base::NotFatalUntil::M160);
   listeners_.AddObserver(listener);
 }
 
 void AppServiceWrapper::RemoveObserver(EventListener* listener) {
-  DCHECK(listener);
+  CHECK(listener, base::NotFatalUntil::M160);
   listeners_.RemoveObserver(listener);
 }
 

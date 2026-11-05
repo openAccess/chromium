@@ -29,7 +29,7 @@
 #include "components/compose/core/browser/compose_features.h"
 #include "components/compose/core/browser/compose_metrics.h"
 #include "components/compose/core/browser/config.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/prefs/pref_service.h"
 #include "components/variations/service/variations_service.h"
 #include "components/variations/service/variations_service_utils.h"
@@ -91,7 +91,7 @@ ComposeEnabling::ComposeEnabling(
     : profile_(profile),
       opt_guide_(opt_guide),
       identity_manager_(identity_manager) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M161);
 }
 
 ComposeEnabling::~ComposeEnabling() {
@@ -107,7 +107,7 @@ ComposeEnabling::ScopedEnableComposeForTesting() {
   return std::make_unique<base::ScopedClosureRunner>(base::BindOnce(
       [](int& enabled_for_testing) {
         enabled_for_testing--;
-        DCHECK(enabled_for_testing >= 0);
+        CHECK(enabled_for_testing >= 0, base::NotFatalUntil::M161);
       },
       std::ref(enabled_for_testing_)));
 }
@@ -119,7 +119,7 @@ ComposeEnabling::ScopedSkipUserCheckForTesting() {
   return std::make_unique<base::ScopedClosureRunner>(base::BindOnce(
       [](int& skip_user_check_for_testing) {
         skip_user_check_for_testing--;
-        DCHECK(skip_user_check_for_testing >= 0);
+        CHECK(skip_user_check_for_testing >= 0, base::NotFatalUntil::M161);
       },
       std::ref(skip_user_check_for_testing_)));
 }

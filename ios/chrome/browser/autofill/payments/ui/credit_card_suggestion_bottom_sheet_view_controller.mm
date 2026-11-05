@@ -8,16 +8,15 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/strings/string_number_conversions.h"
-#import "base/strings/sys_string_conversions.h"
 #import "build/branding_buildflags.h"
 #import "components/autofill/core/browser/data_model/payments/credit_card.h"
 #import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/autofill/ios/common/features.h"
 #import "components/grit/components_scaled_resources.h"
-#import "components/url_formatter/elide_url.h"
 #import "ios/chrome/browser/autofill/model/credit_card/credit_card_data.h"
 #import "ios/chrome/browser/autofill/payments/ui/credit_card_suggestion_bottom_sheet_delegate.h"
 #import "ios/chrome/browser/autofill/payments/ui/credit_card_suggestion_bottom_sheet_handler.h"
+#import "ios/chrome/browser/shared/ui/bottom_sheet/bottom_sheet_util.h"
 #import "ios/chrome/browser/shared/ui/bottom_sheet/table_view_bottom_sheet_view_controller+subclassing.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_icon_item.h"
@@ -102,11 +101,9 @@ CGFloat const kTitleLogoHeight = 32;
   self.customSpacingBeforeImage = kSpacingBeforeImage;
   self.customSpacingAfterImage = kSpacingAfterImage;
   self.subtitleTextStyle = UIFontTextStyleFootnote;
-  std::u16string formattedURL =
-      url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
-          _URL);
-  self.subtitleString = l10n_util::GetNSStringF(
-      IDS_IOS_PAYMENT_BOTTOM_SHEET_SUBTITLE, formattedURL);
+  self.subtitleString =
+      l10n_util::GetNSStringF(IDS_IOS_PAYMENT_BOTTOM_SHEET_SUBTITLE,
+                              FormatUrlForBottomSheetDisplay(_URL));
   self.customSpacing = kSpacing;
 
   // Set the properties read by the super when constructing the
@@ -330,11 +327,9 @@ CGFloat const kTitleLogoHeight = 32;
   return [_creditCardData[row] icon];
 }
 
-// Returns an accessible card name at a given row in the table view.
+// Returns an accessible card name at a given `row` in the table view.
 - (NSString*)accessibleCardNameAtRow:(NSInteger)row {
-  return l10n_util::GetNSStringF(
-      IDS_IOS_AUTOFILL_ACCNAME_SUGGESTION,
-      base::SysNSStringToUTF16([_creditCardData[row] accessibleCardName]), u"");
+  return _creditCardData[row].accessibleCardName;
 }
 
 // Returns the accessibility value for the card at a given row in the table

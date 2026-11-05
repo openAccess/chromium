@@ -21,6 +21,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "base/observer_list.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/system/sys_info.h"
 #include "base/task/bind_post_task.h"
@@ -46,6 +47,7 @@
 #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/skia_utils.h"
 #include "gpu/command_buffer/service/sync_point_manager.h"
+#include "gpu/config/gpu_crash_keys.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "gpu/config/gpu_info_collector.h"
 #include "gpu/config/gpu_preferences.h"
@@ -80,12 +82,13 @@
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_switches.h"
 #include "ui/gl/gl_utils.h"
-#include "ui/gl/gpu_switching_manager.h"
 #include "ui/gl/init/create_gr_gl_interface.h"
 #include "ui/gl/init/gl_factory.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/scudo_features.h"
+#include "base/android/scudo_purge_coordinator.h"
 #include "components/viz/service/gl/throw_uncaught_exception.h"
 #include "media/base/android/media_codec_util.h"
 #endif
@@ -117,8 +120,8 @@
 #endif
 
 #if BUILDFLAG(ENABLE_VULKAN)
-#include "components/viz/common/gpu/vulkan_context_provider.h"
-#include "components/viz/common/gpu/vulkan_in_process_context_provider.h"
+#include "gpu/command_buffer/service/vulkan_context_provider.h"
+#include "gpu/command_buffer/service/vulkan_in_process_context_provider.h"
 #endif
 
 #if BUILDFLAG(IS_OZONE)
@@ -249,7 +252,7 @@ GpuServiceImpl::GpuServiceImpl(
 
     // If GL is using a real GPU, the gpu_info will be passed in and vulkan will
     // use the same GPU.
-    vulkan_context_provider_ = VulkanInProcessContextProvider::Create(
+    vulkan_context_provider_ = gpu::VulkanInProcessContextProvider::Create(
         vulkan_implementation_, gpu_preferences_.vulkan_heap_memory_limit,
         gpu_preferences_.vulkan_sync_cpu_memory_limit, is_thread_safe,
         (is_native_vulkan && is_native_gl) ? &gpu_info_ : nullptr);
@@ -295,7 +298,19 @@ GpuServiceImpl::GpuServiceImpl(
   }
 #endif  // BUILDFLAG(SKIA_USE_DAWN)
 
+  bind_webnn_browser_host_ = std::move(init_params.bind_webnn_browser_host);
+
   weak_ptr_ = weak_ptr_factory_.GetWeakPtr();
+
+#if BUILDFLAG(IS_ANDROID)
+  if (!in_host_process()) {
+    scudo_purge_coordinator_ =
+        base::android::ScudoPurgeCoordinator::CreateIfEnabled();
+    if (scudo_purge_coordinator_) {
+      scudo_purge_coordinator_->Start();
+    }
+  }
+#endif
 }
 
 GpuServiceImpl::GpuServiceImpl()
@@ -338,6 +353,10 @@ GpuServiceImpl::~GpuServiceImpl() {
 
   if (watchdog_thread_)
     watchdog_thread_->OnGpuProcessTearDown();
+
+#if BUILDFLAG(IS_ANDROID)
+  scudo_purge_coordinator_.reset();
+#endif
 
   compositor_gpu_thread_.reset();
   media_gpu_channel_manager_.reset();
@@ -688,11 +707,16 @@ void GpuServiceImpl::CreateWebNNContextProviderIfNeeded() {
     return;
   }
 
+  // Bind the WebNNBrowserHost pipe now, on first WebNN use.
+  mojo::PendingRemote<webnn::mojom::WebNNBrowserHost> webnn_browser_host;
+  std::move(bind_webnn_browser_host_)
+      .Run(webnn_browser_host.InitWithNewPipeAndPassReceiver());
+
   webnn_context_provider_ = webnn::WebNNContextProviderImpl::Create(
       gpu_feature_info_, gpu_info_, shared_image_manager(),
       gpu_channel_manager_->peak_memory_monitor(),
       base::BindOnce(&GpuServiceImpl::LoseAllContexts, weak_ptr_),
-      main_runner(), GetGpuScheduler(), gpu_host_);
+      main_runner(), GetGpuScheduler(), std::move(webnn_browser_host));
 }
 
 void GpuServiceImpl::BindWebNNServiceIntrospection(
@@ -806,8 +830,7 @@ std::string GpuServiceImpl::GetShaderPrefixKey() {
   base::AutoLock lock(shader_prefix_key_lock_);
   if (shader_prefix_key_.empty()) {
     const gpu::GPUInfo::GPUDevice& active_gpu = gpu_info_.active_gpu();
-    std::string product =
-        std::string(version_info::GetProductNameAndVersionForUserAgent());
+    std::string product = version_info::GetProductNameAndVersionForUserAgent();
 
     shader_prefix_key_ =
         product + "-" + gpu_info_.gl_vendor + "-" + gpu_info_.gl_renderer +
@@ -893,8 +916,7 @@ bool GpuServiceImpl::IsExiting() const {
 void GpuServiceImpl::EstablishGpuChannel(
     int32_t client_id,
     uint64_t client_tracing_id,
-    bool is_gpu_host,
-    bool enable_extra_handles_validation,
+    mojom::GpuClientType client_type,
     mojo::ScopedMessagePipeHandle channel_handle,
     EstablishGpuChannelCallback callback) {
   if (io_runner_->BelongsToCurrentThread()) {
@@ -916,16 +938,14 @@ void GpuServiceImpl::EstablishGpuChannel(
     main_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(&GpuServiceImpl::EstablishGpuChannel, weak_ptr_,
-                       client_id, client_tracing_id, is_gpu_host,
-                       enable_extra_handles_validation,
+                       client_id, client_tracing_id, client_type,
                        std::move(channel_handle), std::move(wrap_callback)));
     return;
   }
 
   auto channel_token = base::UnguessableToken::Create();
   gpu::GpuChannel* gpu_channel = gpu_channel_manager_->EstablishChannel(
-      channel_token, client_id, client_tracing_id, is_gpu_host,
-      enable_extra_handles_validation, gpu_extra_info_, gpu_info_,
+      channel_token, client_id, client_tracing_id, client_type, gpu_info_,
       gpu_feature_info_);
 
   if (!gpu_channel) {
@@ -980,6 +1000,13 @@ void GpuServiceImpl::SetChannelPersistentCachePendingBackend(
   scoped_refptr<gpu::GpuPersistentCache> cache =
       persistent_caches_.GetCache(handle);
   CHECK(cache);
+
+  // Record the size of the persistent caches, to help diagnose crashes and
+  // hangs while they are being loaded.
+  persistent_cache_db_size_ += pending_backend.ComputeTotalFileSize();
+  gpu::crash_keys::persistent_cache_db_kb.Set(
+      base::NumberToString(persistent_cache_db_size_.InKiB()));
+
   cache->InitializeCache(std::move(pending_backend),
                          use_shader_cache_shm_count_);
 }
@@ -1043,23 +1070,6 @@ void GpuServiceImpl::WakeUpGpuOnMainThread() {
   }
 }
 
-void GpuServiceImpl::GpuSwitched() {
-  if (!main_runner_->BelongsToCurrentThread()) {
-    main_runner_->PostTask(
-        FROM_HERE, base::BindOnce(&GpuServiceImpl::GpuSwitched, weak_ptr_));
-    return;
-  }
-  DVLOG(1) << "GPU: GPU has switched";
-
-  if (watchdog_thread_)
-    watchdog_thread_->ReportProgress();
-
-  if (!in_host_process()) {
-    ui::GpuSwitchingManager::GetInstance()->NotifyGpuSwitched();
-  }
-  GpuServiceImpl::UpdateGPUInfoGL();
-}
-
 void GpuServiceImpl::DisplayAdded() {
   if (!main_runner_->BelongsToCurrentThread()) {
     main_runner_->PostTask(
@@ -1068,8 +1078,9 @@ void GpuServiceImpl::DisplayAdded() {
   }
   DVLOG(1) << "GPU: A monitor is plugged in";
 
-  if (!in_host_process())
-    ui::GpuSwitchingManager::GetInstance()->NotifyDisplayAdded();
+#if BUILDFLAG(IS_WIN)
+  gl::DirectCompositionOverlayCapsMonitor::GetInstance()->OnDisplayAdded();
+#endif
 }
 
 void GpuServiceImpl::DisplayRemoved() {
@@ -1080,8 +1091,9 @@ void GpuServiceImpl::DisplayRemoved() {
   }
   DVLOG(1) << "GPU: A monitor is unplugged ";
 
-  if (!in_host_process())
-    ui::GpuSwitchingManager::GetInstance()->NotifyDisplayRemoved();
+#if BUILDFLAG(IS_WIN)
+  gl::DirectCompositionOverlayCapsMonitor::GetInstance()->OnDisplayRemoved();
+#endif
 }
 
 void GpuServiceImpl::DisplayMetricsChanged() {
@@ -1093,8 +1105,10 @@ void GpuServiceImpl::DisplayMetricsChanged() {
   }
   DVLOG(1) << "GPU: Display Metrics changed";
 
-  if (!in_host_process())
-    ui::GpuSwitchingManager::GetInstance()->NotifyDisplayMetricsChanged();
+#if BUILDFLAG(IS_WIN)
+  gl::DirectCompositionOverlayCapsMonitor::GetInstance()
+      ->OnDisplayMetricsChanged();
+#endif
 }
 
 void GpuServiceImpl::DestroyAllChannels() {
@@ -1164,6 +1178,11 @@ void GpuServiceImpl::OnBackgroundedOnMainThread() {
   }
 
   base::allocator::PartitionAllocSupport::Get()->OnBackgrounded();
+#if BUILDFLAG(IS_ANDROID)
+  if (scudo_purge_coordinator_) {
+    scudo_purge_coordinator_->OnBackgrounded();
+  }
+#endif
 }
 
 void GpuServiceImpl::OnForegrounded() {
@@ -1188,6 +1207,11 @@ void GpuServiceImpl::OnForegroundedOnMainThread() {
   }
   gpu_channel_manager_->OnApplicationForegounded();
   base::allocator::PartitionAllocSupport::Get()->OnForegrounded();
+#if BUILDFLAG(IS_ANDROID)
+  if (scudo_purge_coordinator_) {
+    scudo_purge_coordinator_->OnForegrounded();
+  }
+#endif
 }
 
 #if BUILDFLAG(IS_APPLE)
@@ -1295,8 +1319,7 @@ bool GpuServiceImpl::IsGMBNV12Supported() {
   auto format = MultiPlaneFormat::kNV12;
   auto buffer_usage = gfx::BufferUsage::GPU_READ_CPU_READ_WRITE;
 
-  if (!gpu::SharedImageFactory::IsNativeBufferSupported(format, buffer_usage,
-                                                        gpu_extra_info_)) {
+  if (!gpu::SharedImageFactory::IsNativeBufferSupported(format, buffer_usage)) {
     return false;
   }
 
@@ -1375,9 +1398,8 @@ gpu::SharedImageManager* GpuServiceImpl::CreateSharedImageManager(
   const bool display_context_on_another_thread =
       features::IsDrDcEnabled(gpu_feature_info_);
 
-  // |display_context_on_another_thread|, features::IsUsingRawDraw(),
-  // kAlwaysUseRealBufferTestingOnOzone, and kSharedBitmapToSharedImage
-  // requires |thread_safe_manager| to be true.
+  // |display_context_on_another_thread|, kAlwaysUseRealBufferTestingOnOzone,
+  // and kSharedBitmapToSharedImage requires |thread_safe_manager| to be true.
   bool thread_safe_manager = true;
   owned_shared_image_manager_ = std::make_unique<gpu::SharedImageManager>(
       thread_safe_manager, display_context_on_another_thread,
@@ -1415,6 +1437,17 @@ void GpuServiceImpl::GetDawnInfoOnMain(bool collect_metrics,
                                        GetDawnInfoCallback callback) {
   DCHECK(main_runner_->BelongsToCurrentThread());
 
+  // Return the cached results if Dawn info has already been collected for this
+  // mode. Metrics collection does not populate the info list, and the metrics
+  // only need to be reported once per GPU process.
+  if (collect_metrics ? dawn_metrics_collected_ : dawn_info_list_.has_value()) {
+    io_runner_->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback),
+                                  collect_metrics ? std::vector<std::string>()
+                                                  : *dawn_info_list_));
+    return;
+  }
+
   std::vector<std::string> dawn_info_list;
   // Pause the watchdog around Dawn info collection since it is known to be
   // slow loading GPU drivers.
@@ -1434,8 +1467,14 @@ void GpuServiceImpl::GetDawnInfoOnMain(bool collect_metrics,
     watchdog_thread_->ResumeWatchdog();
   }
 
-  io_runner_->PostTask(FROM_HERE,
-                       base::BindOnce(std::move(callback), dawn_info_list));
+  if (collect_metrics) {
+    dawn_metrics_collected_ = true;
+  } else {
+    dawn_info_list_ = dawn_info_list;
+  }
+
+  io_runner_->PostTask(FROM_HERE, base::BindOnce(std::move(callback),
+                                                 std::move(dawn_info_list)));
 }
 
 #if BUILDFLAG(IS_ANDROID)

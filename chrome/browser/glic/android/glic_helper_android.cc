@@ -4,7 +4,9 @@
 
 #include "chrome/browser/glic/android/glic_helper_android.h"
 
+#include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
+#include "base/functional/callback.h"
 #include "ui/android/window_android.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -12,10 +14,51 @@
 
 namespace glic {
 
-void ShowMicDisabledSnackbar(ui::WindowAndroid* window_android) {
+namespace {
+
+constexpr char kRecordAudioPermission[] = "android.permission.RECORD_AUDIO";
+
+}  // namespace
+
+bool CanActuateInBackground() {
+  return Java_GlicHelper_canActuateInBackground(
+      jni_zero::AttachCurrentThread());
+}
+
+void MicPermissionUi::ShowMicPermissionDialog(
+    ui::WindowAndroid* window_android,
+    base::OnceCallback<void(bool)> callback) {
   if (window_android && window_android->GetJavaObject()) {
-    Java_GlicHelper_showMicDisabledSnackbar(
-        base::android::AttachCurrentThread(), window_android->GetJavaObject());
+    Java_GlicHelper_showMicPermissionDialog(jni_zero::AttachCurrentThread(),
+                                            window_android->GetJavaObject(),
+                                            std::move(callback));
+  } else {
+    std::move(callback).Run(false);
+  }
+}
+
+bool MicPermissionUi::HasMicOsPermission(ui::WindowAndroid* window_android) {
+  return window_android &&
+         window_android->HasPermission(kRecordAudioPermission);
+}
+
+void MicPermissionUi::RequestMicOsPermission(
+    ui::WindowAndroid* window_android,
+    base::OnceCallback<void(bool)> callback) {
+  if (window_android && window_android->GetJavaObject()) {
+    Java_GlicHelper_requestMicOsPermission(jni_zero::AttachCurrentThread(),
+                                           window_android->GetJavaObject(),
+                                           std::move(callback));
+  } else {
+    std::move(callback).Run(false);
+  }
+}
+
+void MicPermissionUi::ShowMicDisabledSnackbar(
+    ui::WindowAndroid* window_android) {
+  if (window_android && window_android->GetJavaObject()) {
+    Java_GlicHelper_showMicDisabledSnackbar(jni_zero::AttachCurrentThread(),
+                                            window_android->GetJavaObject());
   }
 }
 

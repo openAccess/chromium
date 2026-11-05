@@ -33,19 +33,30 @@ class BLINK_EXPORT WebV8Features {
 
   static void EnableMojoJSFileSystemAccessHelper(v8::Local<v8::Context>, bool);
 
-  static void EnableUnboundedElement(v8::Local<v8::Context>, bool);
+  // Whether a context that has the Unbounded Element API enabled, or its main
+  // frame, belongs to a privileged embedder origin (such as WebUI or an
+  // authorized component extension). This determines whether showing an
+  // unbounded element requires user activation; see
+  // ContextFeatureSettings::GetUnboundedElementAuth().
+  enum class UnboundedElementPrivilege {
+    // Neither the context nor its embedder is privileged.
+    kNone,
+    // The context is an unprivileged iframe (e.g. `chrome-untrusted://`) whose
+    // privileged embedder grants it access (subject to permissions policy).
+    kIframePrivilegedByEmbedder,
+    // The context itself is privileged.
+    kPrivileged,
+  };
 
-  // Protected memory values require initialization before they can be used.
-  // This method is used to perform that initialization of the static protected
-  // memory bool is used to track if MojoJS has been properly enabled for a
-  // render frame in the current process.
-  static void InitializeMojoJSAllowedProtectedMemory();
+  // Enables the Unbounded Element API on the given `context`.
+  static void EnableUnboundedElement(v8::Local<v8::Context>,
+                                     UnboundedElementPrivilege);
 
   // A static protected memory bool is used to track if MojoJS has been properly
   // enabled for a render frame in the current process. This method is used to
   // update that bool, indicating that MojoJS is allowed to be enabled for any
   // render frame in the process.
-  static void AllowMojoJSForProcess();
+  static void AllowMojoJSPerContextForProcess();
 
   // Method use to validate the value of isMojoJSEnabled() for the context in
   // tests.

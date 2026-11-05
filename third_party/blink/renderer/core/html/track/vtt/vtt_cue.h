@@ -68,6 +68,7 @@ struct VTTDisplayParameters {
   CSSValueID text_align;
   CSSValueID writing_mode;
   double snap_to_lines_position;
+  LineAlignSetting line_align = LineAlignSetting::kStart;
 };
 
 class VTTCueBackgroundBox final : public HTMLDivElement {
@@ -152,9 +153,6 @@ class CORE_EXPORT VTTCue final : public TextTrackCue {
   void setText(const String&);
 
   void ParseSettings(const VTTRegionMap*, const String&);
-
-  // Applies CSS override style from user settings.
-  void ApplyUserOverrideCSSProperties();
 
   DocumentFragment* getCueAsHTML();
 

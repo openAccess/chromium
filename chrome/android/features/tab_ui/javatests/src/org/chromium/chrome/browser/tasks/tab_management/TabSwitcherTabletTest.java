@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.tasks.tab_management;
 
 import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.Visibility.GONE;
 import static androidx.test.espresso.matcher.ViewMatchers.Visibility.VISIBLE;
@@ -22,9 +21,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
-import android.os.Build;
 import android.view.ViewGroup;
 import android.view.ViewStub;
 
@@ -45,7 +42,6 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.RequiresRestart;
@@ -56,7 +52,6 @@ import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.compositor.layouts.Layout;
 import org.chromium.chrome.browser.compositor.layouts.LayoutManagerChrome;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelperManager;
-import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutTab;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
@@ -72,9 +67,10 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ChromeTriggers;
+import org.chromium.chrome.test.transit.hub.TabSwitcherStation;
 import org.chromium.chrome.test.transit.ntp.IncognitoNewTabPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
-import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.TabStripUtils;
 import org.chromium.components.browser_ui.styles.ChromeColors;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
@@ -89,9 +85,7 @@ import java.util.concurrent.TimeoutException;
 @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
 @DisableFeatures({
-    ChromeFeatureList.ANDROID_SURFACE_COLOR_UPDATE,
-    ChromeFeatureList.GRID_TAB_SWITCHER_SURFACE_COLOR_UPDATE,
-    ChromeFeatureList.ANDROID_THEME_MODULE
+    ChromeFeatureList.ANDROID_THEME_MODULE,
 })
 @Batch(Batch.PER_CLASS)
 public class TabSwitcherTabletTest {
@@ -127,7 +121,7 @@ public class TabSwitcherTabletTest {
                                     null,
                                     0);
                         });
-                LayoutTestUtils.waitForLayout(layoutManager, LayoutType.BROWSING);
+                LayoutTestUtils.waitForBrowsingLayout(cta);
             } else {
                 if (selector.getCurrentModel().isIncognito()) {
                     clickIncognitoToggleButton();
@@ -135,7 +129,7 @@ public class TabSwitcherTabletTest {
                 exitSwitcherWithTabClick(0);
             }
         } else {
-            LayoutTestUtils.waitForLayout(layoutManager, LayoutType.BROWSING);
+            LayoutTestUtils.waitForBrowsingLayout(cta);
         }
     }
 
@@ -219,10 +213,7 @@ public class TabSwitcherTabletTest {
         checkTabSwitcherViewHolderVisibility(false);
 
         // Close all tabs.
-        ChromeTabUtils.closeAllTabs(
-                InstrumentationRegistry.getInstrumentation(), cta.getTabModelSelectorSupplier());
-
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
+        ChromeTriggers.closeAllTabsProgrammatically(mPage);
 
         // Assert the grid tab switcher is shown automatically, since there is no next tab.
         checkTabSwitcherViewHolderVisibility(true);
@@ -305,68 +296,16 @@ public class TabSwitcherTabletTest {
     public void testEmptyStateView() {
         ChromeTabbedActivity cta = mActivityTestRule.getActivity();
         prepareTabs(1, 0);
-        TabUiTestHelper.enterTabSwitcher(cta);
+        TabSwitcherStation tabSwitcher = TabUiTestHelper.enterTabSwitcher(cta);
 
         // Close the last tab.
-        closeTab(false, cta.getCurrentTabModel().getTabAt(0).getId());
+        tabSwitcher.closeTabAtIndex(0, TabSwitcherStation.class);
 
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
+        LayoutTestUtils.waitForHubLayout(cta);
 
         // Check whether empty view show up.
         @IdRes int tabSwitcherAncestorId = TabUiTestHelper.getTabSwitcherAncestorId(cta);
         onView(
-                        allOf(
-                                withId(R.id.empty_state_container),
-                                isDescendantOfA(withId(tabSwitcherAncestorId))))
-                .check(matches(isDisplayed()));
-    }
-
-    @Test
-    @MediumTest
-    @DisableIf.Build(sdk_equals = Build.VERSION_CODES.S_V2, message = "crbug.com/41484831")
-    // TODO(crbug.com/435241931): Remove this test once desktop-like incognito window feature is
-    // launched.
-    @DisableFeatures(ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW)
-    public void testEmptyStateView_ToggleIncognito() {
-        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
-        prepareTabs(1, 1);
-        TabUiTestHelper.enterTabSwitcher(mActivityTestRule.getActivity());
-
-        // Close the last normal tab.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    TabModel model = cta.getTabModelSelector().getModel(false);
-                    model.getTabRemover()
-                            .closeTabs(
-                                    TabClosureParams.closeTab(model.getTabAt(0))
-                                            .allowUndo(false)
-                                            .build(),
-                                    /* allowDialog= */ false);
-                });
-
-        // Check empty view should never show up in incognito tab switcher.
-        @IdRes int tabSwitcherAncestorId = TabUiTestHelper.getTabSwitcherAncestorId(cta);
-        onView(
-                        allOf(
-                                withId(R.id.empty_state_container),
-                                isDescendantOfA(withId(tabSwitcherAncestorId))))
-                .check(doesNotExist());
-
-        // Close the last incognito tab.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    TabModel model = cta.getTabModelSelector().getModel(true);
-                    model.getTabRemover()
-                            .closeTabs(
-                                    TabClosureParams.closeTab(model.getTabAt(0))
-                                            .allowUndo(false)
-                                            .build(),
-                                    /* allowDialog= */ false);
-                });
-
-        // Incognito tab switcher should exit to go to normal tab switcher and we should see empty
-        // view.
-        onViewWaiting(
                         allOf(
                                 withId(R.id.empty_state_container),
                                 isDescendantOfA(withId(tabSwitcherAncestorId))))
@@ -428,23 +367,7 @@ public class TabSwitcherTabletTest {
 
     private void exitSwitcherWithTabClick(int index) {
         TabUiTestHelper.clickNthCardFromTabSwitcher(mActivityTestRule.getActivity(), index);
-        LayoutTestUtils.waitForLayout(
-                mActivityTestRule.getActivity().getLayoutManager(), LayoutType.BROWSING);
-    }
-
-    private void closeTab(final boolean incognito, final int id) {
-        ChromeTabUtils.closeTabWithAction(
-                InstrumentationRegistry.getInstrumentation(),
-                mActivityTestRule.getActivity(),
-                () -> {
-                    StripLayoutTab tab =
-                            TabStripUtils.findStripLayoutTab(
-                                    mActivityTestRule.getActivity(), incognito, id);
-                    TabStripUtils.clickCompositorButton(
-                            tab.getCloseButton(),
-                            InstrumentationRegistry.getInstrumentation(),
-                            mActivityTestRule.getActivity());
-                });
+        LayoutTestUtils.waitForBrowsingLayout(mActivityTestRule.getActivity());
     }
 
     private void ensureHubLayout() {

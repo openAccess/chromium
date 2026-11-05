@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/files/file_path.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -28,7 +29,7 @@
 #include "components/download/public/common/download_target_info.h"
 #include "components/enterprise/buildflags/buildflags.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/content/common/proto/download_file_types.pb.h"
+#include "components/safe_browsing/content/common/file_type_policies/proto/download_file_types.pb.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/download_manager_delegate.h"
 #include "extensions/buildflags/buildflags.h"
@@ -100,7 +101,7 @@ class ChromeDownloadManagerDelegate
   void SetDownloadManager(content::DownloadManager* dm);
 
 #if BUILDFLAG(IS_ANDROID)
-  void ShowDownloadDialog(gfx::NativeWindow native_window,
+  void ShowDownloadDialog(content::WebContents* web_contents,
                           int64_t total_bytes,
                           DownloadLocationDialogType dialog_type,
                           const base::FilePath& suggested_path,
@@ -187,6 +188,11 @@ class ChromeDownloadManagerDelegate
   // which ends up being handled by OpenDownload(), will open a download in the
   // browser if doing so is preferred.
   void OpenDownloadUsingPlatformHandler(download::DownloadItem* download);
+
+#if BUILDFLAG(IS_WIN)
+  // Shows the Windows "Open with" dialog for `download`.
+  void OpenDownloadWithDialog(download::DownloadItem* download);
+#endif
 
   DownloadPrefs* download_prefs() { return download_prefs_.get(); }
 
@@ -314,6 +320,13 @@ class ChromeDownloadManagerDelegate
       const base::FilePath& suggested_path,
       DownloadTargetDeterminerDelegate::ConfirmationCallback callback);
 
+  // Displays the file picker for `download`, queueing or deferring to user
+  // takeover if another picker or execution engine takeover is active.
+  void ShowFilePickerWithUserTakeover(
+      download::DownloadItem* download,
+      const base::FilePath& suggested_path,
+      DownloadTargetDeterminerDelegate::ConfirmationCallback callback);
+
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   // Called when CrxInstaller in running_crx_installs_ finishes installation.
   void OnInstallerDone(const base::UnguessableToken& token,
@@ -327,6 +340,14 @@ class ChromeDownloadManagerDelegate
       base::OnceClosure internal_complete_callback);
   void ShouldCompleteDownloadInternal(uint32_t download_id,
                                       base::OnceClosure user_complete_callback);
+
+#if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION) && BUILDFLAG(IS_ANDROID)
+  // Returns whether a confirmation dialog should be shown before completing a
+  // non-dangerous APK download on Android.
+  bool ShouldShowNonDangerousApkSafeBrowsingWarning(
+      download::DownloadItem* item,
+      const SafeBrowsingState& state) const;
+#endif
 
 #if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
   // Called when obfuscated download files are deobfuscated.

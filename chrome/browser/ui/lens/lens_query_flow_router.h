@@ -24,6 +24,19 @@ using CreateSearchUrlRequestInfo = contextual_search::
 using SearchUrlType =
     contextual_search::ContextualSearchContextController::SearchUrlType;
 
+// Returns true if the given invocation source originates from the Omnibox.
+bool IsOmniboxInvocationSource(
+    std::optional<lens::LensOverlayInvocationSource> invocation_source);
+
+// Returns true if the active tab should be forced to contextualize for the
+// given invocation source when no overlay token is present.
+// `session_handle` is the contextual search session the query will be issued
+// on, and may be null.
+bool ShouldFetchActiveTabForInvocationSource(
+    std::optional<lens::LensOverlayInvocationSource> invocation_source,
+    const contextual_search::ContextualSearchSessionHandle* session_handle =
+        nullptr);
+
 // A router for queries that Lens should perform.
 class LensQueryFlowRouter
     : public contextual_search::ContextualSearchContextController::
@@ -138,6 +151,9 @@ class LensQueryFlowRouter
       const std::optional<contextual_search::ContextUploadErrorType>&
           error_type);
 
+  // Testing method to trigger the controller destroyed callback.
+  void OnControllerDestroyedForTesting() { OnControllerDestroyed(); }
+
   // Handles the interaction response from the server.
   void HandleInteractionResponse(
       std::optional<lens::ImageCrop> image_crop,
@@ -189,6 +205,7 @@ class LensQueryFlowRouter
       contextual_search::ContextUploadStatus context_upload_status,
       const std::optional<contextual_search::ContextUploadErrorType>&
           error_type) override;
+  void OnControllerDestroyed() override;
 
   // Callbacks for DesktopQueryContextualizerDelegate:
   contextual_search::ContextualSearchSessionHandle* GetOrCreateSessionHandle();
@@ -269,7 +286,12 @@ class LensQueryFlowRouter
       lens::MimeType primary_content_type,
       std::optional<uint32_t> pdf_current_page);
 
-  // Creates the search url request info from an interaction.
+  // Creates the search url request info from an interaction. If
+  // `viewport_region` is provided (e.g. in `kSelectedRegionOnly` mode),
+  // `region` represents the crop within the context image, while
+  // `viewport_region` represents the region in the full viewport coordinate
+  // frame used to remap interaction response objects/text back to the overlay
+  // viewport.
   std::unique_ptr<CreateSearchUrlRequestInfo>
   CreateSearchUrlRequestInfoFromInteraction(
       lens::mojom::CenterRotatedBoxPtr region,
@@ -278,7 +300,8 @@ class LensQueryFlowRouter
       lens::LensOverlaySelectionType lens_selection_type,
       std::map<std::string, std::string> additional_search_query_params,
       base::Time query_start_time,
-      lens::LensOverlayInvocationSource invocation_source);
+      lens::LensOverlayInvocationSource invocation_source,
+      lens::mojom::CenterRotatedBoxPtr viewport_region = nullptr);
 
   // Called when QueryContextualizer completes contextualization.
   void OnContextualizedComplete(

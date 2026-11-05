@@ -13,7 +13,6 @@
 #include <utility>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
@@ -25,7 +24,6 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/values.h"
 #include "chrome/browser/ash/printing/enterprise/enterprise_printers_provider.h"
@@ -269,6 +267,7 @@ class FakePrinterDetector : public PrinterDetector {
 class FakePpdProvider : public PpdProvider {
  public:
   FakePpdProvider() = default;
+  ~FakePpdProvider() override = default;
 
   void ResolvePpdReference(const PrinterSearchData& search_data,
                            ResolvePpdReferenceCallback cb) override {
@@ -317,7 +316,6 @@ class FakePpdProvider : public PpdProvider {
                      ReverseLookupCallback cb) override {}
 
  private:
-  ~FakePpdProvider() override = default;
   std::string usb_manufacturer_;
   std::string license_name_;
   std::string ppd_content_ = "ppd content";
@@ -413,21 +411,23 @@ class FakePrintServersManager : public PrintServersManager {
 class CupsPrintersManagerTest : public testing::Test,
                                 public CupsPrintersManager::Observer {
  public:
-  CupsPrintersManagerTest() : ppd_provider_(new FakePpdProvider) {
+  CupsPrintersManagerTest() {
     // Zeroconf and usb detector ownerships are taken by the manager, so we
     // have to keep raw pointers to them.
-    auto zeroconf_detector = std::make_unique<FakePrinterDetector>();
-    zeroconf_detector_ = zeroconf_detector.get();
     auto usb_detector = std::make_unique<FakePrinterDetector>();
     usb_detector_ = usb_detector.get();
+    auto zeroconf_detector = std::make_unique<FakePrinterDetector>();
+    zeroconf_detector_ = zeroconf_detector.get();
+    auto ppd_provider = std::make_unique<FakePpdProvider>();
+    ppd_provider_ = ppd_provider.get();
     auto usb_notif_controller =
         std::make_unique<FakeUsbPrinterNotificationController>();
     usb_notif_controller_ = usb_notif_controller.get();
+    auto print_servers_manager = std::make_unique<FakePrintServersManager>();
+    print_servers_manager_ = print_servers_manager.get();
     auto enterprise_printers_provider =
         std::make_unique<FakeEnterprisePrintersProvider>();
     enterprise_printers_provider_ = enterprise_printers_provider.get();
-    auto print_servers_manager = std::make_unique<FakePrintServersManager>();
-    print_servers_manager_ = print_servers_manager.get();
 
     // To make sure it is not called.
     dlc_service_client_.set_install_error(dlcservice::kErrorInternal);
@@ -440,8 +440,9 @@ class CupsPrintersManagerTest : public testing::Test,
             ->GetFeatures()
             ->application_locale_storage(),
         &synced_printers_manager_, std::move(usb_detector),
-        std::move(zeroconf_detector), ppd_provider_, &dlc_service_client_,
-        std::move(usb_notif_controller), std::move(print_servers_manager),
+        std::move(zeroconf_detector), std::move(ppd_provider),
+        &dlc_service_client_, std::move(usb_notif_controller),
+        std::move(print_servers_manager),
         std::move(enterprise_printers_provider), &event_tracker_,
         &pref_service_);
     manager_->AddObserver(this);
@@ -453,6 +454,14 @@ class CupsPrintersManagerTest : public testing::Test,
     // Fast forwarding so that delayed tasks like |SendScannerCountToUMA| will
     // run and not leak memory in unused callbacks.
     task_environment_.FastForwardUntilNoTasksRemain();
+    usb_detector_ = nullptr;
+    zeroconf_detector_ = nullptr;
+    ppd_provider_ = nullptr;
+    usb_notif_controller_ = nullptr;
+    print_servers_manager_ = nullptr;
+    enterprise_printers_provider_ = nullptr;
+    manager_->RemoveObserver(this);
+    manager_.reset();
   }
 
   void SetUp() override {
@@ -527,18 +536,14 @@ class CupsPrintersManagerTest : public testing::Test,
 
   // Backend fakes driving the CupsPrintersManager.
   FakeSyncedPrintersManager synced_printers_manager_;
-  raw_ptr<FakeEnterprisePrintersProvider, DanglingUntriaged>
-      enterprise_printers_provider_;                              // Not owned.
-  raw_ptr<FakePrinterDetector, DanglingUntriaged> usb_detector_;  // Not owned.
-  raw_ptr<FakePrinterDetector, DanglingUntriaged>
-      zeroconf_detector_;  // Not owned.
-  raw_ptr<FakeUsbPrinterNotificationController,
-          DanglingUntriaged>
-      usb_notif_controller_;  // Not owned.
-  raw_ptr<FakePrintServersManager, DanglingUntriaged>
-      print_servers_manager_;  // Not owned.
-  scoped_refptr<FakePpdProvider> ppd_provider_;
+  raw_ptr<FakePrinterDetector> usb_detector_ = nullptr;
+  raw_ptr<FakePrinterDetector> zeroconf_detector_ = nullptr;
+  raw_ptr<FakePpdProvider> ppd_provider_ = nullptr;
   FakeDlcserviceClient dlc_service_client_;
+  raw_ptr<FakeUsbPrinterNotificationController> usb_notif_controller_ = nullptr;
+  raw_ptr<FakePrintServersManager> print_servers_manager_ = nullptr;
+  raw_ptr<FakeEnterprisePrintersProvider> enterprise_printers_provider_ =
+      nullptr;
 
   // This is unused, it's just here for memory ownership.
   PrinterEventTracker event_tracker_;
@@ -553,8 +558,6 @@ class CupsPrintersManagerTest : public testing::Test,
 
   // Manages active networks.
   network_config::CrosNetworkConfigTestHelper cros_network_config_helper_;
-
-  base::test::ScopedFeatureList feature_list_;
 };
 
 // Pseudo-constructor for inline creation of a DetectedPrinter that should (in
@@ -1379,8 +1382,6 @@ Printer CreateEnterpriseIppUsbPrinter(const std::string& id,
 }
 
 TEST_F(CupsPrintersManagerTest, EnterprisePrinter_DetectUsbPrinter) {
-  feature_list_.InitAndEnableFeature(features::kManagedUsbPrinters);
-
   // Enterprise printer.
   Printer enterprise_printer =
       CreateEnterpriseUsbPrinter("EnterpriseUsb", 0x1234, 0x5678);
@@ -1409,8 +1410,6 @@ TEST_F(CupsPrintersManagerTest, EnterprisePrinter_DetectUsbPrinter) {
 }
 
 TEST_F(CupsPrintersManagerTest, DetectUsbPrinter_EnterprisePrinter) {
-  feature_list_.InitAndEnableFeature(features::kManagedUsbPrinters);
-
   // Detected USB printer.
   DetectedPrinter detected_printer = CreateDetectedUsbPrinter(
       "DetectedUsb", "usb://1234/5678?serial=ABC", 0x1234, 0x5678);
@@ -1441,8 +1440,6 @@ TEST_F(CupsPrintersManagerTest, DetectUsbPrinter_EnterprisePrinter) {
 }
 
 TEST_F(CupsPrintersManagerTest, EnterprisePrinter_DetectDifferentUsbPrinter) {
-  feature_list_.InitAndEnableFeature(features::kManagedUsbPrinters);
-
   // Enterprise printer with a DIFFERENT VID/PID identifier.
   Printer enterprise_printer =
       CreateEnterpriseUsbPrinter("EnterpriseUsb", 0xAAAA, 0xBBBB);
@@ -1469,8 +1466,6 @@ TEST_F(CupsPrintersManagerTest, EnterprisePrinter_DetectDifferentUsbPrinter) {
 }
 
 TEST_F(CupsPrintersManagerTest, EnterprisePrinter_DetectUsbPrinter_Ipp) {
-  feature_list_.InitAndEnableFeature(features::kManagedUsbPrinters);
-
   // Enterprise printer with ippusb.
   Printer enterprise_printer =
       CreateEnterpriseIppUsbPrinter("EnterpriseIppUsb", 0x1234, 0x5678);
@@ -1500,8 +1495,6 @@ TEST_F(CupsPrintersManagerTest, EnterprisePrinter_DetectUsbPrinter_Ipp) {
 }
 
 TEST_F(CupsPrintersManagerTest, DetectUsbPrinter_EnterprisePrinter_Race) {
-  feature_list_.InitAndEnableFeature(features::kManagedUsbPrinters);
-
   // Detected USB printer
   DetectedPrinter detected_printer = CreateDetectedUsbPrinter(
       "RacePrinter", "usb://8888/9999?serial=XYZ", 0x8888, 0x9999);
@@ -1528,35 +1521,6 @@ TEST_F(CupsPrintersManagerTest, DetectUsbPrinter_EnterprisePrinter_Race) {
             updated_enterprise->uri().GetNormalized());
 }
 
-TEST_F(CupsPrintersManagerTest,
-       EnterprisePrinter_DetectUsbPrinter_FeatureDisabled) {
-  feature_list_.InitAndDisableFeature(features::kManagedUsbPrinters);
-
-  // Enterprise printer.
-  Printer enterprise_printer =
-      CreateEnterpriseUsbPrinter("EnterpriseUsb", 0x1234, 0x5678);
-  enterprise_printers_provider_->AddEnterprisePrinters({enterprise_printer});
-  task_environment_.RunUntilIdle();
-
-  ExpectPrintersInClassAre(PrinterClass::kEnterprise, {"EnterpriseUsb"});
-
-  // Detected USB printer matching the enterprise VID/PID
-  DetectedPrinter detected_printer = CreateDetectedUsbPrinter(
-      "DetectedUsb", "usb://1234/5678?serial=ABC", 0x1234, 0x5678);
-  usb_detector_->AddDetections({detected_printer});
-  task_environment_.RunUntilIdle();
-
-  // With the flag off, the detected printer should appear in Automatic.
-  ExpectPrintersInClassAre(PrinterClass::kAutomatic, {"DetectedUsb"});
-  ExpectPrintersInClassAre(PrinterClass::kDiscovered, {});
-  ExpectPrintersInClassAre(PrinterClass::kEnterprise, {"EnterpriseUsb"});
-
-  // Enterprise printer's URI should NOT be updated.
-  std::optional<Printer> enterprise = manager_->GetPrinter("EnterpriseUsb");
-  ASSERT_TRUE(enterprise.has_value());
-  EXPECT_EQ("usb://1234/5678?serial", enterprise->uri().GetNormalized());
-}
-
 TEST_F(CupsPrintersManagerTest, Status_DetectedUsbPrinter) {
   // Add a detected USB printer.
   DetectedPrinter detected_usb = CreateDetectedUsbPrinter(
@@ -1578,8 +1542,6 @@ TEST_F(CupsPrintersManagerTest, Status_DetectedUsbPrinter) {
 }
 
 TEST_F(CupsPrintersManagerTest, Status_EnterpriseUsbPrinter) {
-  feature_list_.InitAndEnableFeature(features::kManagedUsbPrinters);
-
   // Enterprise printer.
   Printer enterprise_printer =
       CreateEnterpriseUsbPrinter("EnterpriseUsb", 0xAAAA, 0xBBBB);
@@ -1609,29 +1571,7 @@ TEST_F(CupsPrintersManagerTest, Status_EnterpriseUsbPrinter) {
       "EnterpriseUsb", CupsPrinterStatusReason::Reason::kPrinterUnreachable);
 }
 
-TEST_F(CupsPrintersManagerTest, Status_EnterpriseUsbPrinter_FeatureDisabled) {
-  feature_list_.InitAndDisableFeature(features::kManagedUsbPrinters);
-
-  // Enterprise printer.
-  Printer enterprise_printer =
-      CreateEnterpriseUsbPrinter("EnterpriseUsb", 0xCCCC, 0xDDDD);
-  enterprise_printers_provider_->AddEnterprisePrinters({enterprise_printer});
-  task_environment_.RunUntilIdle();
-
-  // Detected USB printer matching the enterprise VID/PID.
-  DetectedPrinter detected_usb = CreateDetectedUsbPrinter(
-      "MatchedUsb", "usb://CCCC/DDDD?serial=123", 0xCCCC, 0xDDDD);
-  usb_detector_->AddDetections({detected_usb});
-  task_environment_.RunUntilIdle();
-
-  // The enterprise printer is unreachable since the feature is disabled.
-  ExpectPrinterStatusReason(
-      "EnterpriseUsb", CupsPrinterStatusReason::Reason::kPrinterUnreachable);
-}
-
 TEST_F(CupsPrintersManagerTest, Status_MixUsbPrinters) {
-  feature_list_.InitAndEnableFeature(features::kManagedUsbPrinters);
-
   // Regular Detected USB that is also saved.
   DetectedPrinter detected_usb = CreateDetectedUsbPrinter(
       "DetectedUsb", "usb://1111/2222?serial=A", 0x1111, 0x2222);
@@ -1708,8 +1648,6 @@ TEST_F(CupsPrintersManagerTest, Metrics_RecordInstallRegularUsb) {
 }
 
 TEST_F(CupsPrintersManagerTest, Metrics_RecordInstallEnterpriseUsb) {
-  feature_list_.InitAndEnableFeature(features::kManagedUsbPrinters);
-
   // Enterprise printer.
   Printer enterprise_printer =
       CreateEnterpriseUsbPrinter("EntUsb", 0x3333, 0x4444);
@@ -1768,8 +1706,6 @@ TEST_F(CupsPrintersManagerTest, Metrics_RecordAbandonRegularUsb) {
 
 // Test metrics when an enterprise USB printer setup is abandoned.
 TEST_F(CupsPrintersManagerTest, Metrics_RecordAbandonEnterpriseUsb) {
-  feature_list_.InitAndEnableFeature(features::kManagedUsbPrinters);
-
   // Enterprise printer.
   Printer enterprise_printer =
       CreateEnterpriseUsbPrinter("EntUsb", 0x7777, 0x8888);
@@ -1794,52 +1730,6 @@ TEST_F(CupsPrintersManagerTest, Metrics_RecordAbandonEnterpriseUsb) {
   EXPECT_EQ(event.usb_model_id(), 0x8888);
   EXPECT_EQ(event.usb_printer_manufacturer(), "ACME");
   EXPECT_EQ(event.usb_printer_model(), "Anvil");
-}
-
-TEST_F(CupsPrintersManagerTest,
-       Metrics_NoRecordInstallEnterpriseUsb_FeatureDisabled) {
-  feature_list_.InitAndDisableFeature(features::kManagedUsbPrinters);
-
-  Printer enterprise_printer =
-      CreateEnterpriseUsbPrinter("EntUsb", 0x9999, 0xAAAA);
-  enterprise_printer.set_make_and_model("Enterprise Make");
-  enterprise_printers_provider_->AddEnterprisePrinters({enterprise_printer});
-  task_environment_.RunUntilIdle();
-
-  auto detected_printer = CreateDetectedUsbPrinterWithPpdData(
-      "MatchUsb", "usb://9999/AAAA?serial=E", 0x9999, 0xAAAA);
-  usb_detector_->AddDetections({detected_printer});
-  task_environment_.RunUntilIdle();
-
-  base::RunLoop run_loop;
-  manager_->SetUpPrinter(enterprise_printer,
-                         /*is_automatic_installation=*/true,
-                         CallQuitOnRunLoop(&run_loop));
-  run_loop.Run();
-  task_environment_.RunUntilIdle();
-
-  EXPECT_EQ(GetLoggedEvents().size(), 0u);
-}
-
-TEST_F(CupsPrintersManagerTest,
-       Metrics_NoRecordAbandonEnterpriseUsb_FeatureDisabled) {
-  feature_list_.InitAndDisableFeature(features::kManagedUsbPrinters);
-
-  Printer enterprise_printer =
-      CreateEnterpriseUsbPrinter("EntUsb", 0xBBBB, 0xCCCC);
-  enterprise_printer.set_make_and_model("Enterprise Make Abandon");
-  enterprise_printers_provider_->AddEnterprisePrinters({enterprise_printer});
-  task_environment_.RunUntilIdle();
-
-  auto detected_printer = CreateDetectedUsbPrinterWithPpdData(
-      "MatchUsb", "usb://BBBB/CCCC?serial=F", 0xBBBB, 0xCCCC);
-  usb_detector_->AddDetections({detected_printer});
-  task_environment_.RunUntilIdle();
-
-  manager_->RecordSetupAbandoned(enterprise_printer);
-  task_environment_.RunUntilIdle();
-
-  EXPECT_EQ(GetLoggedEvents().size(), 0u);
 }
 
 }  // namespace

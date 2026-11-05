@@ -6,6 +6,8 @@ package org.chromium.chrome.browser.ntp_customization.theme_sync.data;
 
 import android.content.Context;
 
+import androidx.annotation.ColorInt;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 
@@ -82,14 +84,22 @@ public class NtpBackgroundDataManager {
             NtpBackgroundDataBase dataToSave = backgroundData;
             if (index != -1) {
                 NtpBackgroundDataBase existingData = currentGroup.remove(index);
-                // If existing entry has enriched metadata (e.g., BackgroundImageInfo fetched
-                // later), preserve the enriched existing entry instead of overwriting with
-                // incomplete native data.
                 if (existingData instanceof NtpBackgroundDataImageBase existingImage
-                        && existingImage.getBackgroundImageInfo() != null
-                        && backgroundData instanceof NtpBackgroundDataImageBase newData
-                        && newData.getBackgroundImageInfo() == null) {
-                    dataToSave = existingData;
+                        && backgroundData instanceof NtpBackgroundDataImageBase newData) {
+                    @Nullable
+                    @ColorInt
+                    Integer resolvedColor =
+                            newData.getPrimaryColor() != null
+                                    ? newData.getPrimaryColor()
+                                    : existingImage.getPrimaryColor();
+                    // If existing entry has enriched metadata (e.g., BackgroundImageInfo fetched
+                    // later), preserve the enriched existing entry instead of overwriting with
+                    // incomplete native data.
+                    if (existingImage.getBackgroundImageInfo() != null
+                            && newData.getBackgroundImageInfo() == null) {
+                        dataToSave = existingData;
+                    }
+                    ((NtpBackgroundDataImageBase) dataToSave).setPrimaryColor(resolvedColor);
                 }
             } else {
                 if (currentGroup.size() >= MAXIMUM_REMOTE_HISTORY) {
@@ -383,11 +393,62 @@ public class NtpBackgroundDataManager {
         return ChromePreferenceKeys.NTP_CUSTOMIZATION_SYNC_HISTORY_DATA.createKey(platformType);
     }
 
-    /** Resets the shared preferences used by this manager for testing purposes. */
-    public void resetSharedPreferenceForTesting() {
+    /** Removes all background data from non-Android platforms from shared preferences. */
+    public void removeAllNonAndroidPlatformData() {
+        PostTask.postTask(
+                TaskTraits.USER_VISIBLE_MAY_BLOCK, this::removeAllNonAndroidPlatformDataImpl);
+    }
+
+    /**
+     * Removes all background data from non-Android platforms and deletes related image files if
+     * they aren't used by local history.
+     */
+    private void removeAllNonAndroidPlatformDataImpl() {
         SharedPreferencesManager sharedPreferencesManager = ChromeSharedPreferences.getInstance();
-        for (int i = PlatformType.ANDROID; i < PlatformType.MAX_COUNT; i++) {
+        List<NtpBackgroundDataImageBase> imageDataToCleanUp = new ArrayList<>();
+
+        for (int i = PlatformType.ANDROID + 1; i < PlatformType.MAX_COUNT; i++) {
+            NtpBackgroundDataGroup group = getBackgroundDataGroupFromSharedPreference(i);
+            for (NtpBackgroundDataBase data : group) {
+                if (data instanceof NtpBackgroundDataImageBase imageBaseData) {
+                    imageDataToCleanUp.add(imageBaseData);
+                }
+            }
             sharedPreferencesManager.removeKey(getSharedPreferenceKey(i));
         }
+
+        // When removing a remote sync data, we will delete its image file as long as it isn't used
+        // by the local selected group, i.e., Platform Android.
+        NtpBackgroundDataGroup groupToCheck =
+                getBackgroundDataGroupFromSharedPreference(PlatformType.ANDROID);
+        for (NtpBackgroundDataImageBase imageBaseData : imageDataToCleanUp) {
+            maybeDeleteImageFileIfNotInUseInGroup(imageBaseData, groupToCheck);
+        }
+    }
+
+    /**
+     * Deletes the image file if it isn't used in the provided group.
+     *
+     * @param imageBaseData The background image data.
+     * @param groupToCheck The group of background data to check.
+     */
+    private void maybeDeleteImageFileIfNotInUseInGroup(
+            NtpBackgroundDataImageBase imageBaseData, NtpBackgroundDataGroup groupToCheck) {
+        String fileIdHash = imageBaseData.getFileIdHash();
+        if (fileIdHash == null) return;
+
+        if (isImageStillInUse(groupToCheck, fileIdHash)) {
+            return;
+        }
+
+        NtpCustomizationUtils.maybeDeleteFile(
+                NtpCustomizationUtils.getBackgroundImageFileFromPath(
+                        imageBaseData.getLastUploadImageFilePath()));
+    }
+
+    /** Resets the shared preferences used by this manager. */
+    public static void resetSharedPreference() {
+        ChromeSharedPreferences.getInstance()
+                .removeKeysWithPrefix(ChromePreferenceKeys.NTP_CUSTOMIZATION_SYNC_HISTORY_DATA);
     }
 }

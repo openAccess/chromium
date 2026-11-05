@@ -29,6 +29,8 @@ ArcAuthContext::ArcAuthContext(signin::IdentityManager* identity_manager,
                                const CoreAccountId& account_id)
     : identity_manager_(CHECK_DEREF(identity_manager)),
       account_id_(account_id) {
+  // TODO(crbug.com/576417065): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(identity_manager_->HasAccountWithRefreshToken(account_id));
 }
 
@@ -62,7 +64,8 @@ std::unique_ptr<signin::AccessTokenFetcher>
 ArcAuthContext::CreateAccessTokenFetcher(
     const signin::OAuthConsumerId consumer_id,
     signin::AccessTokenFetcher::TokenCallback callback) {
-  DCHECK(identity_manager_->HasAccountWithRefreshToken(account_id_));
+  CHECK(identity_manager_->HasAccountWithRefreshToken(account_id_),
+        base::NotFatalUntil::M160);
   return identity_manager_->CreateAccessTokenFetcherForAccount(
       account_id_, consumer_id, std::move(callback),
       signin::AccessTokenFetcher::Mode::kImmediate);

@@ -23,6 +23,7 @@ class SingleModuleClient;
 enum class ModuleGraphLevel;
 enum class ModuleScriptCustomFetchType;
 enum class ModuleType;
+struct IntegrityMetadataSet;
 
 // A ModuleMap implements "module map" spec.
 // https://html.spec.whatwg.org/C/#module-map
@@ -59,6 +60,22 @@ class CORE_EXPORT ModuleMap final : public GarbageCollected<ModuleMap>,
  private:
   using Key = std::pair<KURL, ModuleType>;
   using MapImpl = HeapHashMap<Key, Member<Entry>>;
+
+  // Returns the entry for `key`, creating and inserting one if necessary, and
+  // sets `*is_new_entry` accordingly. The HeapHashMap::AddResult is confined to
+  // this method so it cannot outlive the insertion: the caller goes on to
+  // fetch, which may synchronously evict the entry from `map_` (failures aren't
+  // cached), and a live AddResult would then dangle and trip its
+  // modification-count check.
+  Entry* GetOrCreateEntry(const Key& key,
+                          const IntegrityMetadataSet& integrity_metadata,
+                          bool* is_new_entry);
+
+  // Removes the entry under `key`. Used by an Entry to evict itself on a failed
+  // fetch, so failures are not cached. `entry_to_remove` must be the entry
+  // currently mapped to `key`.
+  // https://html.spec.whatwg.org/C/#fetch-a-single-module-script
+  void RemoveEntry(const Key& key, Entry* entry_to_remove);
 
   // A module map is a map of absolute URLs to map entry.
   MapImpl map_;

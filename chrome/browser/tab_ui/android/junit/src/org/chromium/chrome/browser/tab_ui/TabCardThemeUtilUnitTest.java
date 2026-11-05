@@ -221,49 +221,6 @@ public class TabCardThemeUtilUnitTest {
     }
 
     @Test
-    public void testGetTabGroupNumberTextColor_isSelected() {
-        @ColorInt int expectedColor = MaterialColors.getColor(mContext, R.attr.colorOnPrimary, "");
-        @ColorInt
-        int actualColor =
-                TabCardThemeUtil.getTabGroupNumberTextColor(
-                        mContext, /* isIncognito= */ false, /* isSelected= */ true, null);
-        assertEquals(
-                "Selected number text color for non-incognito is incorrect.",
-                expectedColor,
-                actualColor);
-
-        @ColorInt
-        int expectedIncognitoColor =
-                mContext.getColor(R.color.incognito_tab_tile_number_selected_color);
-        @ColorInt
-        int actualIncognitoColor =
-                TabCardThemeUtil.getTabGroupNumberTextColor(
-                        mContext, /* isIncognito= */ true, /* isSelected= */ true, null);
-        assertEquals(
-                "Selected number text color for incognito is incorrect.",
-                expectedIncognitoColor,
-                actualIncognitoColor);
-    }
-
-    @Test
-    public void testGetTabGroupNumberTextColor_isNotSelected() {
-        // This test verifies that the method correctly delegates to SurfaceColorUpdateUtils.
-        @TabGroupColorId int testColorId = TabGroupColorId.CYAN;
-        @ColorInt
-        int expectedColor =
-                TabGroupColorPickerUtils.getTabGroupCardTextColor(
-                        mContext, testColorId, /* isIncognito= */ false);
-        @ColorInt
-        int actualColor =
-                TabCardThemeUtil.getTabGroupNumberTextColor(
-                        mContext, /* isIncognito= */ false, /* isSelected= */ false, testColorId);
-        assertEquals(
-                "Unselected number text color should delegate to SurfaceColorUpdateUtils.",
-                expectedColor,
-                actualColor);
-    }
-
-    @Test
     public void testGetActionButtonTintList_isSelected() {
         ColorStateList expectedColor =
                 ColorStateList.valueOf(
@@ -320,5 +277,13 @@ public class TabCardThemeUtilUnitTest {
                 "Toggle action button tint should delegate to the main action button tint method.",
                 expected,
                 actual);
+    }
+
+    @Test
+    public void testGetTabThumbnailAspectRatio_portrait() {
+        assertEquals(
+                TabCardThemeUtil.PORTRAIT_THUMBNAIL_ASPECT_RATIO,
+                TabCardThemeUtil.getTabThumbnailAspectRatio(mContext, null),
+                0.001f);
     }
 }

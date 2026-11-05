@@ -37,9 +37,11 @@
 #include "third_party/blink/renderer/platform/audio/reverb_accumulation_buffer.h"
 #include "third_party/blink/renderer/platform/audio/vector_math.h"
 
+#include "base/memory/ptr_util.h"
+
 namespace blink {
 
-ReverbConvolverStage::ReverbConvolverStage(
+std::unique_ptr<ReverbConvolverStage> ReverbConvolverStage::TryCreate(
     base::span<const float> impulse_response,
     size_t reverb_total_latency,
     size_t stage_offset,
@@ -49,11 +51,35 @@ ReverbConvolverStage::ReverbConvolverStage(
     unsigned render_slice_size,
     ReverbAccumulationBuffer* accumulation_buffer,
     float scale,
+    bool direct_mode) {
+  auto stage = base::WrapUnique(
+      new ReverbConvolverStage(accumulation_buffer, direct_mode));
+  if (!stage->Initialize(impulse_response, reverb_total_latency, stage_offset,
+                         stage_length, fft_size, render_phase,
+                         render_slice_size, scale)) {
+    return nullptr;
+  }
+  return stage;
+}
+
+ReverbConvolverStage::ReverbConvolverStage(
+    ReverbAccumulationBuffer* accumulation_buffer,
     bool direct_mode)
     : accumulation_buffer_(accumulation_buffer),
       accumulation_read_index_(0),
       direct_mode_(direct_mode) {
   DCHECK(accumulation_buffer);
+}
+
+bool ReverbConvolverStage::Initialize(
+    base::span<const float> impulse_response,
+    size_t reverb_total_latency,
+    size_t stage_offset,
+    unsigned stage_length,
+    unsigned fft_size,
+    size_t render_phase,
+    unsigned render_slice_size,
+    float scale) {
 
   if (!direct_mode_) {
     DCHECK_LE(stage_length + stage_offset, impulse_response.size());
@@ -74,19 +100,19 @@ ReverbConvolverStage::ReverbConvolverStage(
     DCHECK_LE(stage_length, fft_size / 2);
     DCHECK_LE(stage_length, impulse_response.size());
 
-    auto direct_kernel = std::make_unique<AudioFloatArray>(fft_size / 2);
-    direct_kernel->as_span()
-        .first(stage_length)
-        .copy_from(impulse_response.first(stage_length));
+    AudioFloatArray direct_kernel(fft_size / 2);
+    base::span<float> kernel_span = direct_kernel.as_span().first(stage_length);
+    kernel_span.copy_from(impulse_response.first(stage_length));
     // Account for the normalization (if any) of the convolver node.
     if (scale != 1) {
-      vector_math::Vsmul(direct_kernel->as_span(), scale,
-                         direct_kernel->as_span(), stage_length);
+      vector_math::Vsmul(kernel_span, scale, kernel_span);
     }
     direct_convolver_ = std::make_unique<DirectConvolver>(
         render_slice_size, std::move(direct_kernel));
   }
-  temporary_buffer_.Allocate(render_slice_size);
+  if (!temporary_buffer_.TryAllocate(render_slice_size)) {
+    return false;
+  }
 
   // The convolution stage at offset stageOffset needs to have a corresponding
   // delay to cancel out the offset.
@@ -120,11 +146,10 @@ ReverbConvolverStage::ReverbConvolverStage(
   pre_read_write_index_ = 0;
   frames_processed_ = 0;  // total frames processed so far
 
-  size_t delay_buffer_size =
-      pre_delay_length_ < fft_size ? fft_size : pre_delay_length_;
-  delay_buffer_size = delay_buffer_size < render_slice_size ? render_slice_size
-                                                            : delay_buffer_size;
-  pre_delay_buffer_.Allocate(delay_buffer_size);
+  if (!pre_delay_buffer_.TryAllocate(pre_delay_length_)) {
+    return false;
+  }
+  return true;
 }
 
 void ReverbConvolverStage::Process(base::span<const float> source) {
@@ -133,8 +158,8 @@ void ReverbConvolverStage::Process(base::span<const float> source) {
   // Deal with pre-delay stream : note special handling of zero delay.
   base::span<const float> pre_delayed_source;
   base::span<float> pre_delayed_destination;
-  base::span<float> temporary_buffer;
-  bool is_temporary_buffer_safe = false;
+  base::span<float> temporary_buffer = temporary_buffer_.as_span();
+  bool is_temporary_buffer_safe = frames_to_process <= temporary_buffer.size();
   if (pre_delay_length_ > 0) {
     // Handles both the read case (call to process() ) and the write case
     // (memcpy() )
@@ -145,19 +170,13 @@ void ReverbConvolverStage::Process(base::span<const float> source) {
       return;
     }
 
-    is_temporary_buffer_safe = frames_to_process <= temporary_buffer_.size();
-
     pre_delayed_destination =
         pre_delay_buffer_.as_span().subspan(pre_read_write_index_);
     pre_delayed_source = pre_delayed_destination;
-    temporary_buffer = temporary_buffer_.as_span();
   } else {
     // Zero delay
     pre_delayed_destination = base::span<float>();
     pre_delayed_source = source;
-    temporary_buffer = pre_delay_buffer_.as_span();
-
-    is_temporary_buffer_safe = frames_to_process <= pre_delay_buffer_.size();
   }
 
   DCHECK(is_temporary_buffer_safe);

@@ -10,7 +10,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/keyboard_accessory/android/accessory_controller.h"
 #include "chrome/browser/keyboard_accessory/android/accessory_sheet_data.h"
-#include "chrome/browser/keyboard_accessory/test_utils/android/mock_manual_filling_controller.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/autofill/content/browser/test_autofill_client_injector.h"
@@ -29,6 +28,7 @@
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager_test_api.h"
+#include "components/autofill/core/browser/foundations/mock_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
@@ -38,7 +38,6 @@
 #include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/test_utils/valuables_data_test_util.h"
-#include "components/autofill/core/common/aliases.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_test_util.h"
@@ -77,6 +76,7 @@ class TestAccessManager : public CreditCardAccessManager {
   using CreditCardAccessManager::CreditCardAccessManager;
   void FetchCreditCard(
       const CreditCard* card,
+      bool require_user_confirmation,
       OnCreditCardFetchedCallback on_credit_card_fetched) override {
     std::move(on_credit_card_fetched).Run(CHECK_DEREF(card));
   }
@@ -109,8 +109,8 @@ class PaymentMethodAccessoryControllerTestBase
         .set_credit_card_access_manager(
             std::make_unique<TestAccessManager>(&autofill_manager()));
     PaymentMethodAccessoryControllerImpl::CreateForWebContentsForTesting(
-        web_contents(), mock_mf_controller_.AsWeakPtr(), &paydm(),
-        &valuables_data_manager(), &autofill_manager(), &autofill_driver());
+        web_contents(), &paydm(), &valuables_data_manager(),
+        &autofill_manager(), &autofill_driver());
     controller()->RegisterFillingSourceObserver(filling_source_observer_.Get());
     paydm().SetPrefService(profile()->GetPrefs());
     paydm().SetSyncServiceForTest(&sync_service_);
@@ -162,7 +162,6 @@ class PaymentMethodAccessoryControllerTestBase
   syncer::TestSyncService sync_service_;
   TestPaymentsDataManager paydm_;
   TestValuablesDataManager valuables_data_manager_;
-  testing::NiceMock<MockManualFillingController> mock_mf_controller_;
   GURL url_;
   TestAutofillClientInjector<TestContentAutofillClient>
       autofill_client_injector_;
@@ -267,6 +266,79 @@ TEST_F(PaymentMethodAccessoryControllerTest_Insecure,
                        /*is_obfuscated=*/false,
                        /*selectable=*/false)
           .Build());
+}
+
+TEST_F(PaymentMethodAccessoryControllerTest_Insecure,
+       PreventsFillingIbansInInsecureContexts) {
+  Iban iban;
+  iban.set_value(std::u16string(test::kIbanValue16));
+  std::string guid = paydm().AddAsLocalIban(iban);
+  EXPECT_CALL(filling_source_observer_,
+              Run(controller(), IsFillingSourceAvailable(true)));
+  ASSERT_TRUE(controller());
+  controller()->RefreshSuggestions();
+
+  std::optional<AccessorySheetData> sheet_data = controller()->GetSheetData();
+  ASSERT_TRUE(sheet_data);
+  ASSERT_EQ(sheet_data->iban_info_list().size(), 1u);
+  EXPECT_FALSE(sheet_data->iban_info_list()[0].value().selectable());
+  EXPECT_EQ(
+      sheet_data->warning(),
+      l10n_util::GetStringUTF16(IDS_AUTOFILL_WARNING_INSECURE_CONNECTION));
+
+  // A selection from a stale sheet must not fill the IBAN either.
+  AccessorySheetField field =
+      AccessorySheetField::Builder()
+          .SetSuggestionType(AccessorySuggestionType::kIban)
+          .SetDisplayText(iban.GetIdentifierStringForAutofillDisplay())
+          .SetTextToFill(iban.value())
+          .SetId(guid)
+          .SetSelectable(true)
+          .Build();
+  content::RenderFrameHost* rfh = web_contents()->GetFocusedFrame();
+  ASSERT_TRUE(rfh);
+  FieldGlobalId field_id{.frame_token = LocalFrameToken(*rfh->GetFrameToken()),
+                         .renderer_id = FieldRendererId(123)};
+
+  EXPECT_CALL(iban_access_manager(), FetchValue).Times(0);
+  EXPECT_CALL(autofill_driver(), ApplyFieldAction).Times(0);
+  controller()->OnFillingTriggered(field_id, field);
+}
+
+TEST_F(PaymentMethodAccessoryControllerTest_Insecure,
+       FillsIbansWhenKillSwitchDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      autofill::features::kAutofillRequireSecureContextForIbanManualFilling);
+
+  Iban iban;
+  iban.set_value(std::u16string(test::kIbanValue16));
+  std::string guid = paydm().AddAsLocalIban(iban);
+  EXPECT_CALL(filling_source_observer_,
+              Run(controller(), IsFillingSourceAvailable(true)));
+  ASSERT_TRUE(controller());
+  controller()->RefreshSuggestions();
+
+  std::optional<AccessorySheetData> sheet_data = controller()->GetSheetData();
+  ASSERT_TRUE(sheet_data);
+  ASSERT_EQ(sheet_data->iban_info_list().size(), 1u);
+  EXPECT_TRUE(sheet_data->iban_info_list()[0].value().selectable());
+
+  AccessorySheetField field =
+      AccessorySheetField::Builder()
+          .SetSuggestionType(AccessorySuggestionType::kIban)
+          .SetDisplayText(iban.GetIdentifierStringForAutofillDisplay())
+          .SetTextToFill(iban.value())
+          .SetId(guid)
+          .SetSelectable(true)
+          .Build();
+  content::RenderFrameHost* rfh = web_contents()->GetFocusedFrame();
+  ASSERT_TRUE(rfh);
+  FieldGlobalId field_id{.frame_token = LocalFrameToken(*rfh->GetFrameToken()),
+                         .renderer_id = FieldRendererId(123)};
+
+  EXPECT_CALL(iban_access_manager(), FetchValue).Times(1);
+  controller()->OnFillingTriggered(field_id, field);
 }
 
 class PaymentMethodAccessoryControllerCardUnmaskTest
@@ -540,6 +612,8 @@ TEST_F(PaymentMethodAccessoryControllerTest,
 // Tests that promo codes are shown.
 TEST_F(PaymentMethodAccessoryControllerTest,
        RefreshSuggestionsWithPromoCodeOffers) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kAutofillEnableWalletDirectOffers);
   CreditCard card = test::GetCreditCard();
   paydm().AddCreditCard(card);
   // Getting a promo code whose |merchant_origins| contains AutofillClient's
@@ -664,7 +738,6 @@ TEST_F(PaymentMethodAccessoryControllerTest, FetchLocalIban) {
       .WillOnce([&iban](const Suggestion::Payload& payload,
                         IbanAccessManager::OnIbanFetchedCallback callback) {
         std::move(callback).Run(iban.value());
-        return IsAsync(false);
       });
 
   EXPECT_CALL(autofill_driver(),
@@ -807,10 +880,6 @@ class PaymentMethodAccessoryControllerTestForBnpl
  public:
   PaymentMethodAccessoryControllerTestForBnpl()
       : PaymentMethodAccessoryControllerTestBase(GURL("https://example.com")) {}
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_{
-      features::kAutofillTouchToFillShowManualFillForVcnFix};
 };
 
 TEST_F(PaymentMethodAccessoryControllerTestForBnpl,
@@ -835,6 +904,7 @@ TEST_F(PaymentMethodAccessoryControllerTestForBnpl,
       mojom::ActionPersistence::kFill, form.global_id(),
       form.fields().front().global_id(), FillingPayload(&bnpl_card),
       AutofillTriggerSource::kKeyboardAccessoryOrBottomSheet,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   std::u16string cvc = u"123";
@@ -872,6 +942,57 @@ TEST_F(PaymentMethodAccessoryControllerTestForBnpl,
           .AppendSimpleField(AccessorySuggestionType::kCreditCardNameFull,
                              bnpl_card.GetRawInfo(CREDIT_CARD_NAME_FULL))
           .AppendSimpleField(AccessorySuggestionType::kCreditCardCvc, cvc)
+          .Build());
+}
+
+class PlatformAutofillTestClient : public TestContentAutofillClient {
+ public:
+  using TestContentAutofillClient::TestContentAutofillClient;
+
+  bool HasPersonalDataManager() const override { return false; }
+
+  TestPersonalDataManager& GetPersonalDataManager() override { NOTREACHED(); }
+
+  bool UsesPlatformAutofill() const override { return true; }
+
+  std::unique_ptr<AutofillManager> CreateManager(
+      base::PassKey<ContentAutofillDriver> pass_key,
+      ContentAutofillDriver& driver) override {
+    return std::make_unique<testing::NiceMock<MockAutofillManager>>(&driver);
+  }
+};
+
+class PaymentMethodAccessoryControllerPlatformAutofillTest
+    : public ChromeRenderViewHostTestHarness {
+ protected:
+  TestAutofillClientInjector<PlatformAutofillTestClient>
+      autofill_client_injector_;
+};
+
+TEST_F(PaymentMethodAccessoryControllerPlatformAutofillTest,
+       DoesNotCrashWhenUsingPlatformAutofill) {
+  NavigateAndCommit(GURL("https://example.com"));
+  FocusWebContentsOnMainFrame();
+
+  PaymentMethodAccessoryController* controller =
+      PaymentMethodAccessoryController::GetOrCreate(web_contents());
+  ASSERT_TRUE(controller);
+
+  base::MockCallback<AccessoryController::FillingSourceObserver> observer;
+  controller->RegisterFillingSourceObserver(observer.Get());
+  EXPECT_CALL(observer, Run(controller, IsFillingSourceAvailable(false)));
+  controller->RefreshSuggestions();
+
+  EXPECT_EQ(
+      controller->GetSheetData(),
+      AccessorySheetData::Builder(
+          AccessoryTabType::CREDIT_CARDS,
+          l10n_util::GetStringUTF16(
+              IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_EMPTY_MESSAGE))
+          .AppendFooterCommand(
+              l10n_util::GetStringUTF16(
+                  IDS_MANUAL_FILLING_CREDIT_CARD_SHEET_ALL_ADDRESSES_LINK),
+              AccessoryAction::MANAGE_CREDIT_CARDS)
           .Build());
 }
 

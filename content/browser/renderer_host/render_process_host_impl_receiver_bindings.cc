@@ -12,13 +12,15 @@
 #include "components/discardable_memory/service/discardable_shared_memory_manager.h"
 #include "components/metrics/single_sample_metrics.h"
 #include "components/viz/host/gpu_client.h"
+#include "content/browser/bad_message.h"
 #include "content/browser/blob_storage/blob_registry_wrapper.h"
+#include "content/browser/blob_storage/chrome_blob_storage_context.h"
 #include "content/browser/compositor/surface_utils.h"
 #include "content/browser/field_trial_recorder.h"
 #include "content/browser/file_system/file_system_manager_impl.h"
 #include "content/browser/gpu/gpu_data_manager_impl.h"
 #include "content/browser/media/media_internals.h"
-#include "content/browser/memory_coordinator/browser_memory_coordinator.h"
+#include "content/browser/memory_coordinator/browser_memory_coordinator_impl.h"
 #include "content/browser/mime_registry_impl.h"
 #include "content/browser/push_messaging/push_messaging_manager.h"
 #include "content/browser/renderer_host/embedded_frame_sink_provider_impl.h"
@@ -26,6 +28,7 @@
 #include "content/browser/renderer_host/render_message_filter.h"
 #include "content/browser/renderer_host/render_widget_helper.h"
 #include "content/common/features.h"
+#include "content/common/memory_coordinator/mojom/memory_coordinator.mojom.h"
 #include "content/common/render_message_filter.mojom.h"
 #include "content/public/browser/device_service.h"
 #include "content/public/common/content_client.h"
@@ -141,8 +144,11 @@ void RenderProcessHostImpl::RegisterMojoInterfaces() {
           [](ChildProcessId rph_id,
              mojo::PendingReceiver<mojom::ChildMemoryConsumerRegistryHost>
                  receiver) {
-            BrowserMemoryCoordinator::Get().Bind(PROCESS_TYPE_RENDERER, rph_id,
-                                                 std::move(receiver));
+            if (!BrowserMemoryCoordinatorImpl::Get().Bind(
+                    PROCESS_TYPE_RENDERER, rph_id, std::move(receiver))) {
+              bad_message::ReceivedBadMessage(
+                  rph_id, bad_message::RPH_DUPLICATE_MEMORY_COORDINATOR_HOST);
+            }
           },
           GetID()));
 
@@ -280,9 +286,9 @@ void RenderProcessHostImpl::RegisterMojoInterfaces() {
   associated_registry->AddInterface<mojom::RendererHost>(base::BindRepeating(
       &RenderProcessHostImpl::CreateRendererHost, base::Unretained(this)));
 
-  registry->AddInterface(base::BindRepeating(
-      &BlobRegistryWrapper::Bind, storage_partition_impl_->GetBlobRegistry(),
-      GetDeprecatedID()));
+  registry->AddInterface(
+      base::BindRepeating(&BlobRegistryWrapper::Bind,
+                          storage_partition_impl_->GetBlobRegistry(), GetID()));
 
 #if BUILDFLAG(ENABLE_PLUGINS)
   // Initialization can happen more than once (in the case of a child process

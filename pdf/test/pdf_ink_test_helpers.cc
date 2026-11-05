@@ -14,6 +14,7 @@
 #include "base/numerics/ranges.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "pdf/mojom/pdf.mojom.h"
 #include "pdf/pdf_ink_conversions.h"
@@ -44,6 +45,8 @@ std::string GetAnnotationModeMessageString(InkAnnotationMode mode) {
       return "draw";
     case InkAnnotationMode::kText:
       return "text";
+    case InkAnnotationMode::kSignature:
+      return "signature";
   }
   NOTREACHED();
 }
@@ -101,6 +104,24 @@ base::DictValue CreateSetAnnotationUndoRedoMessageForTesting(
   NOTREACHED();
 }
 
+base::DictValue CreateDeleteTextAnnotationMessage(int frontend_id,
+                                                  int page_index) {
+  return CreateDeleteTextAnnotationMessageWithSource(frontend_id, page_index,
+                                                     "user");
+}
+
+base::DictValue CreateDeleteTextAnnotationMessageWithSource(
+    int frontend_id,
+    int page_index,
+    std::string_view source) {
+  return base::DictValue()
+      .Set("type", "deleteTextAnnotation")
+      .Set("data", base::DictValue()
+                       .Set("id", frontend_id)
+                       .Set("pageIndex", page_index)
+                       .Set("source", source));
+}
+
 base::DictValue CreateEditTextAnnotationMessage(int frontend_id) {
   return base::DictValue()
       .Set("type", "editTextAnnotation")
@@ -124,7 +145,8 @@ base::DictValue SampleTextAttributesDict() {
   text_attributes.Set("styles", base::DictValue()
                                     .Set("bold", true)
                                     .Set("italic", true)
-                                    .Set("strikethrough", true));
+                                    .Set("strikethrough", true)
+                                    .Set("underline", true));
   return text_attributes;
 }
 
@@ -153,6 +175,7 @@ InkTextBoxAttributes SampleInkTextBoxAttributesWithText(std::string text) {
       .is_bold = false,
       .is_italic = true,
       .is_strikethrough = false,
+      .is_underline = false,
       .text = std::move(text),
   };
 }
@@ -177,6 +200,7 @@ SampleInkTextBoxAttributesMatcherWith(const std::string& text,
       .is_bold = true,
       .is_italic = true,
       .is_strikethrough = true,
+      .is_underline = true,
       .text = text,
   });
 }
@@ -207,6 +231,16 @@ testing::Matcher<const InkTextInfo&> SampleInkTextInfoMatcher(
                        /*glyph_positions=*/std::vector<float>(2),
                        /*location=*/gfx::RectF(10.0f, 20.0f, 30.0f, 40.0f),
                        /*is_horizontal=*/true);
+}
+
+testing::Matcher<const InkTextLine&> SampleInkTextLineMatcher(
+    FontId typeface_id) {
+  return testing::AllOf(
+      testing::Field(&InkTextLine::location,
+                     gfx::RectF(10.0f, 20.0f, 30.0f, 40.0f)),
+      testing::Field(
+          &InkTextLine::text_info,
+          testing::ElementsAre(SampleInkTextInfoMatcher(typeface_id))));
 }
 
 base::DictValue SampleSerializedTypeface(FontId font_id,
@@ -260,7 +294,9 @@ void PrintTo(const InkTextInfo& info, std::ostream* os) {
       << ",\n  location=" << info.location.ToString()
       << ",\n  glyphs=" << testing::PrintToString(info.glyphs)
       << ",\n  glyph_positions=" << testing::PrintToString(info.glyph_positions)
-      << "\n}";
+      << ",\n  text=\"" << base::UTF16ToUTF8(info.text) << "\""
+      << ",\n  join_prev_actualtext="
+      << base::ToString(info.join_prev_actualtext) << "\n}";
 }
 
 void PrintTo(const InkTextBoxAttributes& info, std::ostream* os) {
@@ -305,6 +341,7 @@ void PrintTo(const InkTextBoxAttributes& info, std::ostream* os) {
       << ",\n  is_bold=" << base::ToString(info.is_bold)
       << ",\n  is_italic=" << base::ToString(info.is_italic)
       << ",\n  is_strikethrough=" << base::ToString(info.is_strikethrough)
+      << ",\n  is_underline=" << base::ToString(info.is_underline)
       << ",\n  text=" << info.text << "\n}";
 }
 
@@ -313,9 +350,17 @@ bool InkTextInfoEquals(const InkTextInfo& lhs, const InkTextInfo& rhs) {
       lhs.glyph_positions, rhs.glyph_positions, [](float lhs, float rhs) {
         return base::IsApproximatelyEqual(lhs, rhs, 0.01f);
       });
-  return glyph_positions_eq && lhs.font_id == rhs.font_id &&
-         lhs.glyphs == rhs.glyphs && lhs.location == rhs.location &&
-         lhs.is_horizontal == rhs.is_horizontal && lhs.text == rhs.text;
+  const bool location_eq =
+      base::IsApproximatelyEqual(lhs.location.x(), rhs.location.x(), 0.01f) &&
+      base::IsApproximatelyEqual(lhs.location.y(), rhs.location.y(), 0.01f) &&
+      base::IsApproximatelyEqual(lhs.location.width(), rhs.location.width(),
+                                 0.01f) &&
+      base::IsApproximatelyEqual(lhs.location.height(), rhs.location.height(),
+                                 0.01f);
+  return glyph_positions_eq && location_eq && lhs.font_id == rhs.font_id &&
+         lhs.glyphs == rhs.glyphs && lhs.is_horizontal == rhs.is_horizontal &&
+         lhs.text == rhs.text &&
+         lhs.join_prev_actualtext == rhs.join_prev_actualtext;
 }
 
 }  // namespace chrome_pdf

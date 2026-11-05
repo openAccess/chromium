@@ -92,8 +92,13 @@ INSTANTIATE_TEST_SUITE_P(
         InvocationSourceParamTestCase{
             lens::LensOverlayInvocationSource::kAppMenu, "menu"},
         InvocationSourceParamTestCase{
+            lens::LensOverlayInvocationSource::kAppMenuAskGoogle, "menuag"},
+        InvocationSourceParamTestCase{
             lens::LensOverlayInvocationSource::kContentAreaContextMenuPage,
             "ctxp"},
+        InvocationSourceParamTestCase{lens::LensOverlayInvocationSource::
+                                          kContentAreaContextMenuPageAskGoogle,
+                                      "ctxpag"},
         InvocationSourceParamTestCase{
             lens::LensOverlayInvocationSource::kContentAreaContextMenuImage,
             "ctxi"},
@@ -123,6 +128,10 @@ INSTANTIATE_TEST_SUITE_P(
             lens::LensOverlayInvocationSource::kOmniboxEverywhereComposebox,
             "oecb"},
         InvocationSourceParamTestCase{
-            lens::LensOverlayInvocationSource::kOmniboxPopupButton, "obpb"}));
+            lens::LensOverlayInvocationSource::kOmniboxPopupButton, "obpb"},
+        InvocationSourceParamTestCase{
+            lens::LensOverlayInvocationSource::kContextualCue, "ccue"},
+        InvocationSourceParamTestCase{
+            lens::LensOverlayInvocationSource::kSelectionSuggestion, "ssug"}));
 
 }  // namespace lens

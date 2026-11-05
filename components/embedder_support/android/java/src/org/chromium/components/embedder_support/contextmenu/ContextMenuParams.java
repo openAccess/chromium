@@ -51,9 +51,8 @@ public class ContextMenuParams {
     private final boolean mOpenedFromHighlight;
 
     private final boolean mOpenedFromInterestFor;
-    private final int mInterestForNodeID;
 
-    private final @Nullable AdditionalNavigationParams mAdditionalNavigationParams;
+    private @Nullable AdditionalNavigationParams mAdditionalNavigationParams;
     private final MenuModelBridge mMenuModelBridge;
 
     @CalledByNative
@@ -146,6 +145,16 @@ public class ContextMenuParams {
     }
 
     /**
+     * @return Whether the video element has a frame available for presentation whose pixels can be
+     *     read back into CPU memory, i.e. at least one frame has been decoded and it is not
+     *     protected. This is what copying or saving the current video frame requires, and mirrors
+     *     blink::WebMediaPlayer::HasReadableVideoFrame().
+     */
+    public boolean hasReadableVideoFrame() {
+        return (mMediaFlags & ContextMenuDataMediaFlags.MEDIA_HAS_READABLE_VIDEO_FRAME) != 0;
+    }
+
+    /**
      * @return The x-coordinate of the touch that triggered the context menu in dp relative to the
      *     render view; 0 corresponds to the left edge.
      */
@@ -200,25 +209,22 @@ public class ContextMenuParams {
     }
 
     /**
-     * @return Only valid if `getOpenedFromInterestFor()` is true. This returns the DOMNodeID
-     *     for the element that should be "shown interest" in case the "show interest" menu
-     *     item is chosen by the user.
+     * Takes ownership of the additional navigation params associated with this Context Menu.
+     *
+     * @return The additional navigation params associated with this Context Menu, or null if none
+     *     or already taken.
      */
-    public int getInterestForNodeID() {
-        return mInterestForNodeID;
-    }
-
-    /**
-     * @return The additional navigation params associated with this Context Menu.
-     */
-    public @Nullable AdditionalNavigationParams getAdditionalNavigationParams() {
-        return mAdditionalNavigationParams;
+    public @Nullable AdditionalNavigationParams takeAdditionalNavigationParams() {
+        var ret = mAdditionalNavigationParams;
+        mAdditionalNavigationParams = null;
+        return ret;
     }
 
     /** Releases resources associated with this Context Menu. */
     public void destroy() {
         if (mAdditionalNavigationParams != null) {
             mAdditionalNavigationParams.destroy();
+            mAdditionalNavigationParams = null;
         }
     }
 
@@ -246,7 +252,6 @@ public class ContextMenuParams {
             int sourceType,
             boolean openedFromHighlight,
             boolean openedFromInterestFor,
-            int interestForNodeID,
             @Nullable AdditionalNavigationParams additionalNavigationParams) {
         mNativePtr = nativePtr;
         mMenuModelBridge = menuModelBridge;
@@ -275,7 +280,6 @@ public class ContextMenuParams {
         mSourceType = sourceType;
         mOpenedFromHighlight = openedFromHighlight;
         mOpenedFromInterestFor = openedFromInterestFor;
-        mInterestForNodeID = interestForNodeID;
         mAdditionalNavigationParams = additionalNavigationParams;
     }
 
@@ -299,7 +303,6 @@ public class ContextMenuParams {
             int sourceType,
             boolean openedFromHighlight,
             boolean openedFromInterestFor,
-            int interestForNodeID,
             @Nullable AdditionalNavigationParams additionalNavigationParams) {
         // TODO(crbug.com/40549331): Convert Referrer to use GURL.
         Referrer referrer =
@@ -324,7 +327,6 @@ public class ContextMenuParams {
                 sourceType,
                 openedFromHighlight,
                 openedFromInterestFor,
-                interestForNodeID,
                 additionalNavigationParams);
     }
 }

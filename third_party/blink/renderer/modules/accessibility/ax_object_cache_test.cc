@@ -4,39 +4,68 @@
 
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 
+#include <algorithm>
+#include <optional>
+#include <utility>
 #include <vector>
 
 #include "base/auto_reset.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "build/build_config.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/strings/grit/blink_strings.h"
+#include "third_party/blink/public/web/web_ax_object.h"
+#include "third_party/blink/public/web/web_input_element.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_tester.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_keyboard_event_init.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_view_transition_callback.h"
+#include "third_party/blink/renderer/core/css/style_change_reason.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/document_lifecycle.h"
+#include "third_party/blink/renderer/core/dom/document_parser.h"
+#include "third_party/blink/renderer/core/dom/dom_node_ids.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
+#include "third_party/blink/renderer/core/dom/text.h"
+#include "third_party/blink/renderer/core/events/keyboard_event.h"
+#include "third_party/blink/renderer/core/execution_context/execution_context.h"
+#include "third_party/blink/renderer/core/execution_context/security_context.h"
 #include "third_party/blink/renderer/core/frame/frame_test_helpers.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/forms/html_select_element.h"
 #include "third_party/blink/renderer/core/html/html_slot_element.h"
 #include "third_party/blink/renderer/core/html/shadow/shadow_element_names.h"
+#include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/core/page/focus_controller.h"
+#include "third_party/blink/renderer/core/permissions_policy/permissions_policy_parser.h"
 #include "third_party/blink/renderer/core/testing/mock_function_scope.h"
+#include "third_party/blink/renderer/core/testing/sim/sim_request.h"
+#include "third_party/blink/renderer/core/testing/sim/sim_test.h"
 #include "third_party/blink/renderer/core/view_transition/dom_view_transition.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_supplement.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_test_utils.h"
 #include "third_party/blink/renderer/core/view_transition/view_transition_utils.h"
+#include "third_party/blink/renderer/modules/accessibility/aria_notification.h"
+#include "third_party/blink/renderer/modules/accessibility/ax_node_object.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object_cache_impl.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_relation_cache.h"
 #include "third_party/blink/renderer/modules/accessibility/testing/accessibility_test.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
+#include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
+#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "ui/accessibility/ax_action_data.h"
+#include "ui/accessibility/ax_tree_id.h"
 #include "ui/gfx/geometry/rect.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -44,6 +73,174 @@
 #endif
 
 namespace blink {
+
+namespace {
+
+class PasswordRevealLocalePlatformSupport : public TestingPlatformSupport {
+ public:
+  WebString QueryLocalizedString(int resource_id) override {
+    switch (resource_id) {
+      case IDS_FORM_PASSWORD_SHOWN:
+        return WebString("Password shown");
+      case IDS_FORM_PASSWORD_HIDDEN:
+        return WebString("Password hidden");
+      default:
+        return TestingPlatformSupport::QueryLocalizedString(resource_id);
+    }
+  }
+};
+
+}  // namespace
+
+TEST_F(AccessibilityTest, PasswordRevealAnnouncesVisibility) {
+  ScopedTestingPlatformSupport<PasswordRevealLocalePlatformSupport>
+      platform_support;
+  ScopedAriaNotifyForTest scoped_aria_notify(true);
+  ScopedPasswordRevealForTest scoped_password_reveal(true);
+  GetFocusController().SetActive(true);
+  GetFocusController().SetFocused(true);
+  SetBodyInnerHTML("<input id=password type=password style='width: 300px'>");
+
+  auto* input = To<HTMLInputElement>(GetElementById("password"));
+  input->Focus();
+  GetDocument().execCommand("insertText", false, "a", ASSERT_NO_EXCEPTION);
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* button = input->UserAgentShadowRoot()->getElementById(
+      shadow_element_names::kIdPasswordRevealButton);
+  ASSERT_TRUE(button);
+  AXObject* ax_input = GetAXObjectByElementId("password");
+  ASSERT_TRUE(ax_input);
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+
+  auto expect_notification = [&](const String& expected) {
+    AriaNotifications notifications = cache.RetrieveAriaNotifications(ax_input);
+    ASSERT_EQ(1u, notifications.Size());
+    EXPECT_EQ(expected, notifications.begin()->Announcement());
+  };
+  auto press_alt_f8 = [&]() {
+    KeyboardEventInit* init = KeyboardEventInit::Create();
+    init->setKey("F8");
+    init->setAltKey(true);
+    auto* event =
+        MakeGarbageCollected<KeyboardEvent>(event_type_names::kKeydown, init);
+    input->DispatchEvent(*event);
+  };
+
+  press_alt_f8();
+  EXPECT_TRUE(input->ShouldRevealPassword());
+  expect_notification("Password shown");
+  press_alt_f8();
+  EXPECT_FALSE(input->ShouldRevealPassword());
+  expect_notification("Password hidden");
+
+  button->DispatchSimulatedClick(nullptr);
+  EXPECT_TRUE(input->ShouldRevealPassword());
+  expect_notification("Password shown");
+  button->DispatchSimulatedClick(nullptr);
+  EXPECT_FALSE(input->ShouldRevealPassword());
+  expect_notification("Password hidden");
+
+  input->SetShouldRevealPassword(false,
+                                 PasswordVisibilityAnnouncement::kAnnounce);
+  EXPECT_EQ(0u, cache.RetrieveAriaNotifications(ax_input).Size());
+
+  input->SetShouldRevealPassword(true,
+                                 PasswordVisibilityAnnouncement::kAnnounce);
+  expect_notification("Password shown");
+  input->SetShouldRevealPassword(true,
+                                 PasswordVisibilityAnnouncement::kAnnounce);
+  EXPECT_EQ(0u, cache.RetrieveAriaNotifications(ax_input).Size());
+
+  input->SetShouldRevealPassword(false,
+                                 PasswordVisibilityAnnouncement::kAnnounce);
+  expect_notification("Password hidden");
+  input->SetShouldRevealPassword(false,
+                                 PasswordVisibilityAnnouncement::kAnnounce);
+  EXPECT_EQ(0u, cache.RetrieveAriaNotifications(ax_input).Size());
+
+  input->SetShouldRevealPassword(true,
+                                 PasswordVisibilityAnnouncement::kAnnounce);
+  expect_notification("Password shown");
+  ASSERT_EQ(input, GetDocument().FocusedElement());
+  input->blur();
+  EXPECT_FALSE(input->ShouldRevealPassword());
+  EXPECT_EQ(0u, cache.RetrieveAriaNotifications(ax_input).Size());
+
+  input->SetShouldRevealPassword(true,
+                                 PasswordVisibilityAnnouncement::kAnnounce);
+  ASSERT_TRUE(input->ShouldRevealPassword());
+  expect_notification("Password shown");
+  input->setValueForBinding("updated password", ASSERT_NO_EXCEPTION);
+  EXPECT_EQ("updated password", input->Value());
+  EXPECT_FALSE(input->ShouldRevealPassword());
+  EXPECT_EQ(0u, cache.RetrieveAriaNotifications(ax_input).Size());
+}
+
+TEST_F(AccessibilityTest, PasswordRevealDoesNotAnnounceProgrammaticChanges) {
+  ScopedTestingPlatformSupport<PasswordRevealLocalePlatformSupport>
+      platform_support;
+  ScopedAriaNotifyForTest scoped_aria_notify(true);
+  ScopedPasswordRevealForTest scoped_password_reveal(true);
+  SetBodyInnerHTML(
+      "<input id=password type=password>"
+      "<input id=confirmation type=password>");
+
+  auto* password = To<HTMLInputElement>(GetElementById("password"));
+  auto* confirmation = To<HTMLInputElement>(GetElementById("confirmation"));
+  AXObject* ax_password = GetAXObjectByElementId("password");
+  AXObject* ax_confirmation = GetAXObjectByElementId("confirmation");
+  ASSERT_TRUE(ax_password);
+  ASSERT_TRUE(ax_confirmation);
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+
+  for (bool reveal : {true, false}) {
+    WebInputElement(password).SetShouldRevealPassword(reveal);
+    WebInputElement(confirmation).SetShouldRevealPassword(reveal);
+    EXPECT_EQ(reveal, password->ShouldRevealPassword());
+    EXPECT_EQ(reveal, confirmation->ShouldRevealPassword());
+    EXPECT_EQ(0u, cache.RetrieveAriaNotifications(ax_password).Size());
+    EXPECT_EQ(0u, cache.RetrieveAriaNotifications(ax_confirmation).Size());
+  }
+}
+
+TEST_F(AccessibilityTest, PasswordRevealRespectsPermissionsPolicy) {
+  ScopedTestingPlatformSupport<PasswordRevealLocalePlatformSupport>
+      platform_support;
+  ScopedAriaNotifyForTest scoped_aria_notify(true);
+  ScopedPasswordRevealForTest scoped_password_reveal(true);
+  GetFocusController().SetActive(true);
+  GetFocusController().SetFocused(true);
+  SetBodyInnerHTML("<input id=password type=password style='width: 300px'>");
+
+  ExecutionContext* context = GetDocument().GetExecutionContext();
+  network::ParsedPermissionsPolicy policy;
+  DisallowFeature(network::mojom::PermissionsPolicyFeature::kAriaNotify,
+                  policy);
+  context->GetSecurityContext().SetPermissionsPolicy(
+      network::PermissionsPolicy::CreateFromParsedPolicy(
+          policy, context->GetSecurityOrigin()->ToUrlOrigin()));
+  ASSERT_FALSE(context->IsFeatureEnabled(
+      network::mojom::PermissionsPolicyFeature::kAriaNotify));
+
+  auto* input = To<HTMLInputElement>(GetElementById("password"));
+  input->Focus();
+  GetDocument().execCommand("insertText", false, "a", ASSERT_NO_EXCEPTION);
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* button = input->UserAgentShadowRoot()->getElementById(
+      shadow_element_names::kIdPasswordRevealButton);
+  ASSERT_TRUE(button);
+  AXObject* ax_input = GetAXObjectByElementId("password");
+  ASSERT_TRUE(ax_input);
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+
+  for (bool reveal : {true, false}) {
+    button->DispatchSimulatedClick(nullptr);
+    EXPECT_EQ(reveal, input->ShouldRevealPassword());
+    EXPECT_EQ(0u, cache.RetrieveAriaNotifications(ax_input).Size());
+  }
+}
 
 // TODO(nektar): Break test up into multiple tests.
 TEST_F(AccessibilityTest, IsARIAWidget) {
@@ -155,6 +352,57 @@ TEST_F(AccessibilityTest, HistogramTest) {
     histogram_tester.ExpectTotalCount(
         "Accessibility.Performance.AXObjectCacheImpl.Incremental.String", 1);
   }
+}
+
+TEST_F(AccessibilityTest, SnapshotWithDanglingAriaOwnsInOwnedSubtree) {
+  SetBodyInnerHTML(R"HTML(
+    <button aria-owns="target">Owner</button>
+    <div id="target">
+      <button aria-owns="does-not-exist">Dangling owner</button>
+    </div>
+  )HTML");
+
+  Member<AXObjectCache> snapshot_cache = AXObjectCache::CreateSnapshotter(
+      GetDocument(), ui::AXMode(ui::AXMode::kPDFPrinting));
+  ui::AXTreeUpdate response;
+  std::set<ui::AXSerializationErrorFlag> out_error;
+  snapshot_cache->SerializeEntireTreeAndDispose(
+      /*max_nodes=*/1000, base::TimeDelta::FiniteMax(), &response, &out_error);
+
+  EXPECT_FALSE(response.nodes.empty());
+  EXPECT_TRUE(out_error.empty());
+}
+
+TEST_F(AccessibilityTest, SnapshotWithValidAriaOwnsInOwnedSubtree) {
+  SetBodyInnerHTML(R"HTML(
+    <button aria-owns="target">Owner</button>
+    <div id="target">
+      <button id="inner-owner" aria-owns="inner-target">Inner owner</button>
+    </div>
+    <div id="inner-target">Inner target</div>
+  )HTML");
+
+  AXID inner_owner_id = GetElementById("inner-owner")->GetDomNodeId();
+  AXID inner_target_id = GetElementById("inner-target")->GetDomNodeId();
+  Member<AXObjectCache> snapshot_cache = AXObjectCache::CreateSnapshotter(
+      GetDocument(), ui::AXMode(ui::AXMode::kPDFPrinting));
+  ui::AXTreeUpdate response;
+  std::set<ui::AXSerializationErrorFlag> out_error;
+  snapshot_cache->SerializeEntireTreeAndDispose(
+      /*max_nodes=*/1000, base::TimeDelta::FiniteMax(), &response, &out_error);
+
+  EXPECT_FALSE(response.nodes.empty());
+  EXPECT_TRUE(out_error.empty());
+  bool inner_target_is_owned = false;
+  for (const ui::AXNodeData& node : response.nodes) {
+    if (node.id == inner_owner_id) {
+      inner_target_is_owned =
+          std::ranges::find(node.child_ids, inner_target_id) !=
+          node.child_ids.end();
+      break;
+    }
+  }
+  EXPECT_TRUE(inner_target_is_owned);
 }
 
 TEST_F(AccessibilityTest, RemoveReferencesToAXID) {
@@ -296,6 +544,169 @@ TEST_F(AccessibilityTest,
   EXPECT_EQ(recreated_owner, recreated_target->ParentObject());
 }
 
+TEST_F(AccessibilityTest, ImageMapsNotDirtyOnInitialLoad) {
+  SetBodyInnerHTML(R"HTML(
+      <map id="m" name="m"><area href="#"></map>
+      <img usemap="#m" alt="mapped">
+      <img alt="plain">
+  )HTML");
+  // Initial tree construction attaches <area> children via
+  // AXNodeObject::AddImageMapChildren(), so the initial scan does not mark
+  // image maps dirty.
+  EXPECT_FALSE(GetAXObjectCache().RelationCache()->has_dirty_image_maps_);
+}
+
+TEST_F(AccessibilityTest, ImageMapsNotDirtyWhenPlainImageInsertedOrRemoved) {
+  SetBodyInnerHTML(R"HTML(<img id="img" alt="plain">)HTML");
+  AXRelationCache* relation_cache = GetAXObjectCache().RelationCache();
+
+  Element* added = GetDocument().CreateRawElement(html_names::kImgTag);
+  GetDocument().body()->AppendChild(added);
+  EXPECT_FALSE(relation_cache->has_dirty_image_maps_);
+
+  // Remove both an <img> without an AXObject and one that already has one.
+  added->remove();
+  GetElementById("img")->remove();
+  EXPECT_FALSE(relation_cache->has_dirty_image_maps_);
+}
+
+TEST_F(AccessibilityTest, ImageMapsNotDirtyOnOtherAttributeChanges) {
+  SetBodyInnerHTML(R"HTML(
+      <map id="m" name="m"><area id="area" href="#"></map>
+      <img id="img" usemap="#m" alt="mapped">
+      <div id="div"></div>
+  )HTML");
+  AXRelationCache* relation_cache = GetAXObjectCache().RelationCache();
+
+  // Attributes other than usemap on <img> do not affect which map it uses.
+  Element* img = GetElementById("img");
+  img->setAttribute(html_names::kSrcAttr, AtomicString("about:blank"));
+  img->setAttribute(html_names::kAltAttr, AtomicString("new-alt"));
+  img->setAttribute(html_names::kIdAttr, AtomicString("new-id"));
+  img->setAttribute(html_names::kNameAttr, AtomicString("new-name"));
+  EXPECT_FALSE(relation_cache->has_dirty_image_maps_);
+
+  // Attributes other than id and name on <map> do not affect which image uses
+  // it.
+  GetElementById("m")->setAttribute(html_names::kPopoverAttr, keywords::kAuto);
+  EXPECT_FALSE(relation_cache->has_dirty_image_maps_);
+
+  // id, name, and usemap on elements other than <map> and <img> are ignored.
+  for (const char* id : {"div", "area"}) {
+    Element* el = GetElementById(id);
+    el->setAttribute(html_names::kIdAttr, AtomicString("other-id"));
+    el->setAttribute(html_names::kNameAttr, AtomicString("other-name"));
+    el->setAttribute(html_names::kUsemapAttr, AtomicString("#m"));
+    EXPECT_FALSE(relation_cache->has_dirty_image_maps_);
+  }
+}
+
+// Only <img usemap> and <map> mutations mark image maps dirty, and the next
+// AX update clears the dirty bit.
+TEST_F(AccessibilityTest, ImageMapsDirtyOnMapOrUsemapChanges) {
+  SetBodyInnerHTML(R"HTML(
+      <map id="map" name="m"><area href="#"></map>
+      <img id="img" alt="img">
+  )HTML");
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  AXRelationCache* relation_cache = cache.RelationCache();
+  auto expect_dirty_then_clean = [&]() {
+    EXPECT_TRUE(relation_cache->has_dirty_image_maps_);
+    cache.UpdateAXForAllDocuments();
+    EXPECT_FALSE(relation_cache->has_dirty_image_maps_);
+  };
+
+  Element* img = GetElementById("img");
+  img->setAttribute(html_names::kUsemapAttr, AtomicString("#m"));
+  expect_dirty_then_clean();
+  img->remove();
+  expect_dirty_then_clean();
+  GetDocument().body()->AppendChild(img);
+  expect_dirty_then_clean();
+
+  Element* map = GetElementById("map");
+  map->setAttribute(html_names::kNameAttr, AtomicString("m2"));
+  expect_dirty_then_clean();
+  map->setAttribute(html_names::kIdAttr, AtomicString("m2"));
+  expect_dirty_then_clean();
+  map->remove();
+  expect_dirty_then_clean();
+  GetDocument().body()->AppendChild(map);
+  expect_dirty_then_clean();
+}
+
+TEST_F(AccessibilityTest, CacheRelationsSkipsElementsWithoutIdOrRelations) {
+  SetBodyInnerHTML(R"HTML(
+      <button id="button" aria-labelledby="target"></button>
+      <div id="owner" aria-owns="target"></div>
+  )HTML");
+
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  AXRelationCache* relation_cache = cache.RelationCache();
+  ASSERT_NE(nullptr, relation_cache);
+  const wtf_size_t initial_registered_ids =
+      relation_cache->registered_id_attributes_.size();
+
+  // Connecting elements without attributes or with only non-ID, non-ARIA
+  // attributes does not register IDs or allocate a `DOMNodeId` (when
+  // `AX_FAIL_FAST_BUILD()` is false; when `AX_FAIL_FAST_BUILD()` is true,
+  // `processed_elements_` tracks all connected elements via `DOMNodeId`).
+  Element* plain_div = GetDocument().CreateRawElement(html_names::kDivTag);
+  Element* classed_div = GetDocument().CreateRawElement(html_names::kDivTag);
+  classed_div->setAttribute(html_names::kClassAttr, AtomicString("item"));
+
+  EXPECT_FALSE(relation_cache->IsARIALabelOrDescription(*plain_div));
+  EXPECT_FALSE(relation_cache->IsARIALabelOrDescription(*classed_div));
+  EXPECT_EQ(kInvalidDOMNodeId, DOMNodeIds::ExistingIdForNode(plain_div));
+  EXPECT_EQ(kInvalidDOMNodeId, DOMNodeIds::ExistingIdForNode(classed_div));
+
+  GetDocument().body()->AppendChild(plain_div);
+  GetDocument().body()->AppendChild(classed_div);
+#if !AX_FAIL_FAST_BUILD()
+  EXPECT_EQ(kInvalidDOMNodeId, DOMNodeIds::ExistingIdForNode(plain_div));
+  EXPECT_EQ(kInvalidDOMNodeId, DOMNodeIds::ExistingIdForNode(classed_div));
+#endif
+  EXPECT_EQ(initial_registered_ids,
+            relation_cache->registered_id_attributes_.size());
+
+  // Connecting an element with `id="target"` allocates a `DOMNodeId`,
+  // registers its ID, and resolves `aria-labelledby` and `aria-owns`.
+  Element* target = GetDocument().CreateRawElement(html_names::kDivTag);
+  target->setAttribute(html_names::kIdAttr, AtomicString("target"));
+  target->setTextContent("Target label");
+  GetDocument().body()->AppendChild(target);
+
+  const DOMNodeId target_node_id = DOMNodeIds::ExistingIdForNode(target);
+  EXPECT_NE(kInvalidDOMNodeId, target_node_id);
+  EXPECT_TRUE(
+      relation_cache->registered_id_attributes_.Contains(target_node_id));
+  EXPECT_EQ(initial_registered_ids + 1,
+            relation_cache->registered_id_attributes_.size());
+
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  AXObject* ax_button = GetAXObjectByElementId("button");
+  AXObject* ax_owner = GetAXObjectByElementId("owner");
+  AXObject* ax_target = cache.Get(target);
+  ASSERT_NE(nullptr, ax_button);
+  ASSERT_NE(nullptr, ax_owner);
+  ASSERT_NE(nullptr, ax_target);
+  EXPECT_EQ("Target label", ax_button->ComputedName());
+  EXPECT_TRUE(cache.IsAriaOwned(ax_target));
+  EXPECT_EQ(ax_owner, ax_target->ParentObject());
+
+  // Removing the `id` attribute unregisters it from `AXRelationCache` and
+  // updates the related objects.
+  target->removeAttribute(html_names::kIdAttr);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(
+      relation_cache->registered_id_attributes_.Contains(target_node_id));
+  EXPECT_EQ(initial_registered_ids,
+            relation_cache->registered_id_attributes_.size());
+  EXPECT_EQ("", ax_button->ComputedName());
+}
+
 class MockAXObject : public AXObject {
  public:
   explicit MockAXObject(AXObjectCacheImpl& ax_object_cache)
@@ -352,6 +763,126 @@ TEST_F(AccessibilityTest, UpdateAXForAllDocumentsAfterPausedUpdates) {
   ax_object_cache->UpdateAXForAllDocuments();
   ScopedFreezeAXCache freeze(*ax_object_cache);
   CHECK(!root->NeedsToUpdateCachedValues());
+}
+
+namespace {
+
+class SerializationTestWebFrameClient
+    : public frame_test_helpers::TestWebFrameClient {
+ public:
+  bool IsAccessibilityEnabled() const override;
+
+  bool SendAccessibilitySerialization(
+      std::vector<ui::AXTreeUpdate> updates,
+      std::vector<ui::AXEvent> events,
+      ui::AXLocationAndScrollUpdates location_and_scroll_updates,
+      bool had_load_complete_messages) override;
+
+  std::vector<ui::AXTreeUpdate> updates_;
+};
+
+bool SerializationTestWebFrameClient::IsAccessibilityEnabled() const {
+  return true;
+}
+
+bool SerializationTestWebFrameClient::SendAccessibilitySerialization(
+    std::vector<ui::AXTreeUpdate> updates,
+    std::vector<ui::AXEvent> events,
+    ui::AXLocationAndScrollUpdates location_and_scroll_updates,
+    bool had_load_complete_messages) {
+  updates_ = std::move(updates);
+  return true;
+}
+
+class AXObjectCacheSerializationTest : public SimTest {
+ protected:
+  // Mock time prevents the batching delay from expiring, so an ordinary
+  // commit will always wait.
+  AXObjectCacheSerializationTest()
+      : SimTest(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+
+  std::unique_ptr<frame_test_helpers::TestWebFrameClient>
+  CreateWebFrameClientForMainFrame() override;
+};
+
+std::unique_ptr<frame_test_helpers::TestWebFrameClient>
+AXObjectCacheSerializationTest::CreateWebFrameClientForMainFrame() {
+  return std::make_unique<SerializationTestWebFrameClient>();
+}
+
+}  // namespace
+
+// Serializing with dirty layout used to fail the CHECK in MayHaveHTMLLabel()
+// (https://crbug.com/551990098). Serialization must wait for clean layout and
+// retry in the next frame.
+TEST_F(AXObjectCacheSerializationTest, SerializeRequiresCleanLayout) {
+  // A natively labeled input: its name is computed from the label during
+  // serialization, which is where the crash happened.
+  SimRequest request("https://example.com/", "text/html");
+  LoadURL("https://example.com/");
+  request.Complete(R"HTML(
+    <label for="input">Name</label><input id="input">
+  )HTML");
+  Compositor().BeginFrame();
+
+  // Serialize for real: the frame client accepts accessibility updates and
+  // records what it receives.
+  Document& document = GetDocument();
+  document.GetFrame()->SetEmbeddingToken(
+      ui::AXTreeID::CreateNewAXTreeID().token().value());
+  auto& frame_client =
+      static_cast<SerializationTestWebFrameClient&>(WebFrameClient());
+  AXContext ax_context(document, ui::kAXModeDefaultForTests);
+  auto& cache = *To<AXObjectCacheImpl>(document.ExistingAXObjectCache());
+
+  // Pretend a serialization was just acknowledged, so that an ordinary commit
+  // would wait for the batching delay.
+  cache.OnSerializationReceived();
+
+  // Queue the whole tree for serialization and register a ready callback.
+  cache.MarkDocumentDirty();
+  Element* input = document.getElementById(AtomicString("input"));
+  bool ax_ready = false;
+  cache.ScheduleAXUpdateWithCallback(BindOnce(
+      [](bool* ax_ready) { *ax_ready = true; }, Unretained(&ax_ready)));
+
+  // Commit the tree with clean layout, as the frame's accessibility steps do.
+  document.View()->UpdateAllLifecyclePhasesExceptPaint(
+      DocumentUpdateReason::kTest);
+  ASSERT_TRUE(cache.CommitAXUpdates(document, /*force=*/true));
+  ASSERT_TRUE(cache.HasObjectsPendingSerialization());
+  const AXID input_id = cache.Get(input)->AXObjectID();
+
+  // Dirty the layout before serializing, as in the crash. Serialization must
+  // be deferred, with the objects and the callback still pending.
+  input->SetNeedsStyleRecalc(kLocalStyleChange,
+                             StyleChangeReasonForTracing::Create("test"));
+  ASSERT_LT(document.Lifecycle().GetState(), DocumentLifecycle::kLayoutClean);
+  cache.SerializeAXUpdatesIfNeeded(document);
+  EXPECT_TRUE(frame_client.updates_.empty());
+  EXPECT_FALSE(ax_ready);
+  EXPECT_TRUE(cache.HasObjectsPendingSerialization());
+
+  // The next frame cleans layout, then commits and serializes at once, without
+  // waiting for the batching delay.
+  ASSERT_TRUE(Compositor().NeedsBeginFrame());
+  Compositor().BeginFrame();
+  EXPECT_TRUE(ax_ready);
+  EXPECT_FALSE(cache.HasObjectsPendingSerialization());
+
+  // The input's name was computed from its label, with clean layout.
+  bool found_input = false;
+  for (const auto& update : frame_client.updates_) {
+    for (const auto& node : update.nodes) {
+      if (node.id == input_id) {
+        found_input = true;
+        EXPECT_EQ("Name",
+                  node.GetStringAttribute(ax::mojom::StringAttribute::kName));
+        EXPECT_EQ(ax::mojom::NameFrom::kRelatedElement, node.GetNameFrom());
+      }
+    }
+  }
+  EXPECT_TRUE(found_input);
 }
 
 // A node-less AXObject, like AXValidationMessage, with hooks for controlling
@@ -559,6 +1090,28 @@ TEST_F(AccessibilityTest,
   EXPECT_FALSE(paragraph->HasDirtyDescendants());
 }
 
+TEST_F(AccessibilityTest, FormRoleUpdatesWhenAriaLabelIsAdded) {
+  SetBodyInnerHTML("<div id=\"form\" role=\"form\">Contents</div>");
+
+  // Ensure the initial, unnamed role is cached before adding the label.
+  AXObject* form = GetAXObjectByElementId("form");
+  ASSERT_NE(nullptr, form);
+  EXPECT_EQ(ax::mojom::Role::kGenericContainer, form->RoleValue());
+
+  Element* form_element = GetElementById("form");
+  ASSERT_NE(nullptr, form_element);
+  form_element->setAttribute(html_names::kAriaLabelAttr,
+                             AtomicString("Search form"));
+
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  GetAXObjectCache().UpdateAXForAllDocuments();
+
+  // A role change recreates the AXObject.
+  form = GetAXObjectByElementId("form");
+  ASSERT_NE(nullptr, form);
+  EXPECT_EQ(ax::mojom::Role::kForm, form->RoleValue());
+}
+
 TEST_F(AccessibilityTest, AccessibilityFocus) {
   String test_content =
       "<body>"
@@ -587,6 +1140,44 @@ TEST_F(AccessibilityTest, AccessibilityFocus) {
   ASSERT_NE(nullptr, ax_ul);
   ax_ul->PerformAction(action);
   EXPECT_EQ(ul, cache.GetAccessibilityFocus());
+}
+
+TEST_F(AccessibilityTest, LocationSerializationDelayForAccessibilityFocus) {
+  SetBodyInnerHTML(R"HTML(
+      <button id="button">Click</button>
+  )HTML");
+
+  Element* button = GetElementById("button");
+  ASSERT_NE(nullptr, button);
+
+  auto& cache = GetAXObjectCache();
+  cache.SetAXMode(ui::kAXModeBasic);
+
+  auto* ax_button = cache.FirstObjectWithRole(ax::mojom::Role::kButton);
+  ASSERT_NE(nullptr, ax_button);
+
+  // Without any changes, delay defaults to non-focused delay (500ms).
+  EXPECT_EQ(500, cache.GetLocationSerializationDelay());
+
+  // Invalidate bounds on button when it does not have focus.
+  cache.InvalidateBoundingBox(ax_button->AXObjectID());
+  EXPECT_EQ(500, cache.GetLocationSerializationDelay());
+
+  // Set accessibility focus on the button.
+  ui::AXActionData action;
+  action.action = ax::mojom::Action::kSetAccessibilityFocus;
+  ax_button->PerformAction(action);
+  EXPECT_EQ(button, cache.GetAccessibilityFocus());
+
+  // With accessibility focus set, location updates are scheduled with
+  // the focused delay (75ms) instead of the non-focused delay (500ms).
+  EXPECT_EQ(75, cache.GetLocationSerializationDelay());
+
+  // Clear accessibility focus and verify it reverts to 500ms.
+  action.action = ax::mojom::Action::kClearAccessibilityFocus;
+  ax_button->PerformAction(action);
+  EXPECT_EQ(nullptr, cache.GetAccessibilityFocus());
+  EXPECT_EQ(500, cache.GetLocationSerializationDelay());
 }
 
 TEST_F(AccessibilityTest, SetMenuListOptionsBoundsBasePickerClearsState) {
@@ -949,6 +1540,72 @@ TEST_F(AccessibilityTest, RestoreAriaOwnsAfterAriaHiddenRemoved) {
   EXPECT_EQ(2u, list->ChildrenIncludingIgnored().size());
   EXPECT_EQ(list, item1->ParentObject());
   EXPECT_EQ(list, item2->ParentObject());
+}
+
+// Regression test for crbug.com/503872382.
+TEST_F(AccessibilityTest, ReleaseAriaOwnedChildWhenOwnerBecomesEditable) {
+  SetBodyInnerHTML(R"HTML(
+      <ul id="list" aria-owns="item"></ul>
+      <li id="item">Item</li>
+  )HTML");
+
+  AXObject* item = GetAXObjectByElementId("item");
+  ASSERT_NE(nullptr, item);
+  EXPECT_EQ(GetAXObjectByElementId("list"), item->ParentObject());
+
+  // The element with aria-owns stops being a valid owner.
+  Element* list_element = GetElementById("list");
+  list_element->setAttribute(html_names::kContenteditableAttr, g_empty_atom);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  AXObject* list = GetAXObjectByElementId("list");
+  item = GetAXObjectByElementId("item");
+  ASSERT_NE(nullptr, list);
+  ASSERT_NE(nullptr, item);
+  EXPECT_EQ(0u, list->ChildrenIncludingIgnored().size());
+  EXPECT_EQ(GetAXBodyObject(), item->ParentObject());
+
+  // The element with aria-owns becomes a valid owner again.
+  list_element->removeAttribute(html_names::kContenteditableAttr);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  list = GetAXObjectByElementId("list");
+  item = GetAXObjectByElementId("item");
+  ASSERT_NE(nullptr, list);
+  ASSERT_NE(nullptr, item);
+  EXPECT_EQ(list, item->ParentObject());
+  EXPECT_TRUE(list->ChildrenIncludingIgnored().Contains(item));
+}
+
+// Regression test for crbug.com/503872382.
+TEST_F(AccessibilityTest, LazyRemovalOfInvalidAriaOwnsRestoresParent) {
+  SetBodyInnerHTML(R"HTML(
+      <ul id="list" aria-owns="item"></ul>
+      <li id="item">Item</li>
+  )HTML");
+
+  // Hold a cache reference, as each GetAXObjectCache() runs a lifecycle update.
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  AXObject* item = GetAXObjectByElementId("item");
+  ASSERT_NE(nullptr, item);
+  EXPECT_EQ(GetAXObjectByElementId("list"), item->ParentObject());
+
+  // The element with aria-owns stops being a valid owner.
+  GetElementById("list")->setAttribute(html_names::kContenteditableAttr,
+                                       g_empty_atom);
+
+  // Lazy revalidation (which requires clean layout) detaches the child from
+  // its invalid owner; its natural parent will be restored by the next update.
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  ASSERT_TRUE(cache.IsAriaOwned(item));
+  EXPECT_EQ(nullptr, cache.ValidatedAriaOwner(item));
+  EXPECT_EQ(nullptr, item->ParentObjectIfPresent());
+
+  cache.UpdateAXForAllDocuments();
+
+  item = GetAXObjectByElementId("item");
+  ASSERT_NE(nullptr, item);
+  EXPECT_EQ(GetAXBodyObject(), item->ParentObject());
 }
 
 #if AX_FAIL_FAST_BUILD()
@@ -1342,6 +1999,72 @@ TEST_F(AccessibilityTest,
   EXPECT_EQ(cache->GetActiveAriaModalDialog(), dialog);
 }
 
+TEST_F(AccessibilityTest, AriaModalMoveBeforeAncestorDoesNotCrash) {
+  GetDocument().GetSettings()->SetAriaModalPrunesAXTree(true);
+
+  SetBodyInnerHTML(R"HTML(
+    <div class="row" id="row">
+      <p>Parent of the dialog (this is what gets moved)</p>
+      <div role="dialog" aria-modal="true" aria-labelledby="dlg-title" id="dlg">
+        <h2 id="dlg-title">Dialog</h2>
+        <button id="btn_a">A: moveBefore</button>
+        <button id="btn_c">C: moveBefore, focus kept</button>
+      </div>
+    </div>
+    <div id="log"></div>
+  )HTML");
+
+  // Insert hidden pantry right after <body>, matching
+  // aria-modal-move-before-crash.html.
+  Element* pantry = GetDocument().CreateRawElement(html_names::kDivTag);
+  pantry->setAttribute(html_names::kHiddenAttr, g_empty_atom);
+  GetDocument().documentElement()->appendChild(pantry);
+
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  cache.UpdateAXForAllDocuments();
+
+  Element* row = GetElementById("row");
+  Element* dlg = GetElementById("dlg");
+  Element* btn_a = GetElementById("btn_a");
+  Element* btn_c = GetElementById("btn_c");
+  Element* log = GetElementById("log");
+  ASSERT_NE(row, nullptr);
+  ASSERT_NE(dlg, nullptr);
+  ASSERT_NE(btn_a, nullptr);
+  ASSERT_NE(btn_c, nullptr);
+  ASSERT_NE(log, nullptr);
+
+  // Case A: Focus button inside dialog, disable it so focus falls back to
+  // <body> (keeping #dlg as the active aria-modal dialog), then moveBefore()
+  // #row into the hidden pantry after <body>.
+  btn_a->Focus();
+  cache.HandleFocusedUIElementChanged(nullptr, btn_a);
+  btn_a->setAttribute(html_names::kDisabledAttr, g_empty_atom);
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  cache.HandleFocusedUIElementChanged(btn_a, GetDocument().body());
+  cache.UpdateAXForAllDocuments();
+  EXPECT_EQ(cache.GetActiveAriaModalDialog(), dlg);
+
+  pantry->moveBefore(row, nullptr, ASSERT_NO_EXCEPTION);
+  cache.UpdateAXForAllDocuments();
+
+  // Move row back into body and re-enable button, matching
+  // aria-modal-move-before-crash.html.
+  GetDocument().body()->insertBefore(row, log, ASSERT_NO_EXCEPTION);
+  btn_a->removeAttribute(html_names::kDisabledAttr);
+  GetDocument().UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  cache.UpdateAXForAllDocuments();
+
+  // Case C: Focus kept inside the dialog during moveBefore().
+  btn_c->Focus();
+  cache.HandleFocusedUIElementChanged(GetDocument().body(), btn_c);
+  cache.UpdateAXForAllDocuments();
+  EXPECT_EQ(cache.GetActiveAriaModalDialog(), dlg);
+
+  pantry->moveBefore(row, nullptr, ASSERT_NO_EXCEPTION);
+  cache.UpdateAXForAllDocuments();
+}
+
 TEST_F(AccessibilityTest, AriaOwnsWithUnmappedOrDetachedChildDoesNotCrash) {
   // Test case based on ClusterFuzz issue 521081377 reproducer.
   SetBodyInnerHTML(R"HTML(
@@ -1352,6 +2075,725 @@ TEST_F(AccessibilityTest, AriaOwnsWithUnmappedOrDetachedChildDoesNotCrash) {
   // Simply accessing AXObjectCache to process clean layout/aria-owns should not
   // crash.
   GetAXObjectCache().UpdateAXForAllDocuments();
+}
+
+TEST_F(AccessibilityTest, ZoomCausesLocationChangesWithoutTreeUpdates) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #target {
+        font-size: 16px;
+        width: 100px;
+        height: 50px;
+      }
+    </style>
+    <div id="target" role="region" aria-label="Target">Hello World</div>
+  )HTML");
+
+  auto& cache = GetAXObjectCache();
+  cache.SetAXMode(ui::kAXModeComplete);
+
+  AXObject* target = GetAXObjectByElementId("target");
+  ASSERT_NE(target, nullptr);
+  AXID target_id = target->AXObjectID();
+
+  // Initial commit and serialization to establish the clean baseline tree.
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/true));
+  std::vector<ui::AXTreeUpdate> initial_updates;
+  std::vector<ui::AXEvent> initial_events;
+  bool had_end_of_test_event = false;
+  bool had_load_complete_messages = false;
+  {
+    ScopedFreezeAXCache freeze(cache);
+    cache.GetUpdatesAndEventsForSerialization(initial_updates, initial_events,
+                                              had_end_of_test_event,
+                                              had_load_complete_messages);
+  }
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+  ASSERT_FALSE(initial_updates.empty());
+  ASSERT_FALSE(cache.IsDirty());
+  ASSERT_FALSE(cache.HasObjectsPendingSerialization());
+  EXPECT_FALSE(cache.HasPendingLocationChanges());
+
+  // Trigger page zoom by changing `layout_zoom_factor_`.
+  GetDocument().GetFrame()->SetLayoutZoomFactor(2.0f);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  // Check whether zoom marked the cache dirty or added location changes.
+  EXPECT_TRUE(cache.HasPendingLocationChanges());
+  EXPECT_TRUE(cache.HasPendingLocationChange(target_id));
+  EXPECT_FALSE(cache.IsDirty());
+
+  // Take location changes and verify target is present with updated bounds.
+  ui::AXLocationAndScrollUpdates loc_updates =
+      cache.TakeLocationChangsForSerialization();
+  EXPECT_FALSE(loc_updates.location_changes.empty());
+  bool found_target_in_loc_changes = false;
+  for (const auto& change : loc_updates.location_changes) {
+    if (change.id == target_id) {
+      found_target_in_loc_changes = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found_target_in_loc_changes);
+
+  // After taking location changes, pending location changes are cleared.
+  EXPECT_FALSE(cache.HasPendingLocationChanges());
+}
+
+// AXObjectCacheImpl's ARIA role=radio/radiogroup group membership cache is
+// only populated while the tree is serialized, and is cleared in Thaw().
+// When the list of radios is later updated, the cache should be cleared and
+// then recalculated.
+TEST_F(AccessibilityTest, AriaRadioGroupCacheClearedOnThaw) {
+  SetBodyInnerHTML(R"HTML(
+      <div id="group" role="radiogroup">
+        <div role="radio" id="r1"></div>
+        <div role="radio" id="r2"></div>
+      </div>
+  )HTML");
+
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  AXObject* r1 = GetAXObjectByElementId("r1");
+  ASSERT_NE(nullptr, r1);
+  ASSERT_EQ(ax::mojom::Role::kRadioButton, r1->RoleValue());
+  {
+    ScopedFreezeAXCache freeze(cache);
+    EXPECT_EQ(2u, To<AXNodeObject>(r1)->RadioButtonsInGroup().size());
+  }
+
+  Element* group = GetElementById("group");
+  ASSERT_NE(nullptr, group);
+  Element* r3 = GetDocument().CreateRawElement(html_names::kDivTag);
+  r3->setAttribute(html_names::kRoleAttr, AtomicString("radio"));
+  r3->setAttribute(html_names::kIdAttr, AtomicString("r3"));
+  group->AppendChild(r3);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  r1 = GetAXObjectByElementId("r1");
+  ASSERT_NE(nullptr, r1);
+  {
+    ScopedFreezeAXCache freeze(cache);
+    EXPECT_EQ(3u, To<AXNodeObject>(r1)->RadioButtonsInGroup().size());
+  }
+}
+
+// Commits and serializes all pending updates. Returns the number of
+// radioGroupIds serialized for `radio_id`, or nullopt if that object was not
+// part of the serialized updates. If `serialize_root` is true, the root is
+// queued for serialization, which guarantees a serializer exists afterwards so
+// that later calls only serialize objects that were marked dirty.
+static std::optional<size_t> SerializeAndGetRadioGroupSize(
+    AXObjectCacheImpl& cache,
+    Document& document,
+    AXID radio_id,
+    bool serialize_root = false) {
+  cache.CommitAXUpdates(document, /*force=*/true);
+  if (serialize_root) {
+    cache.AddDirtyObjectToSerializationQueue(cache.Root());
+  }
+  std::vector<ui::AXTreeUpdate> updates;
+  if (cache.HasObjectsPendingSerialization()) {
+    std::vector<ui::AXEvent> events;
+    bool had_end_of_test_event = false;
+    bool had_load_complete_messages = false;
+    ScopedFreezeAXCache freeze(cache);
+    cache.GetUpdatesAndEventsForSerialization(
+        updates, events, had_end_of_test_event, had_load_complete_messages);
+  }
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  std::optional<size_t> radio_group_size;
+  for (const ui::AXTreeUpdate& update : updates) {
+    for (const ui::AXNodeData& node : update.nodes) {
+      if (node.id == radio_id) {
+        radio_group_size = node.GetIntListAttribute(
+                                   ax::mojom::IntListAttribute::kRadioGroupIds)
+                               .size();
+      }
+    }
+  }
+  return radio_group_size;
+}
+
+// When an ARIA radiogroup's membership changes, every radio in the group must
+// be re-serialized, since each one's radioGroupIds lists all of its peers.
+// Each test below serializes a baseline, changes the membership without
+// touching r1, and checks that r1 is re-serialized with its new group size.
+// The baseline result is not checked, since r1 may already have been
+// serialized before the test gets a chance to.
+TEST_F(AccessibilityTest, AriaRadioPeersSerializedOnInsertion) {
+  SetBodyInnerHTML(R"HTML(
+      <div id="group" role="radiogroup">
+        <div role="radio" id="r1"></div>
+        <div role="radio" id="r2"></div>
+      </div>
+  )HTML");
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  cache.SetAXMode(ui::kAXModeComplete);
+  AXID r1_id = GetAXObjectByElementId("r1")->AXObjectID();
+  SerializeAndGetRadioGroupSize(cache, GetDocument(), r1_id,
+                                /*serialize_root=*/true);
+
+  Element* r3 = GetDocument().CreateRawElement(html_names::kDivTag);
+  r3->setAttribute(html_names::kRoleAttr, AtomicString("radio"));
+  GetElementById("group")->AppendChild(r3);
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_EQ(3u, SerializeAndGetRadioGroupSize(cache, GetDocument(), r1_id));
+}
+
+TEST_F(AccessibilityTest, AriaRadioPeersSerializedOnRemoval) {
+  SetBodyInnerHTML(R"HTML(
+      <div id="group" role="radiogroup">
+        <div role="radio" id="r1"></div>
+        <div id="wrapper">
+          <div role="radio" id="r2"></div>
+        </div>
+        <div role="radio" id="r3"></div>
+      </div>
+  )HTML");
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  cache.SetAXMode(ui::kAXModeComplete);
+  AXID r1_id = GetAXObjectByElementId("r1")->AXObjectID();
+  SerializeAndGetRadioGroupSize(cache, GetDocument(), r1_id,
+                                /*serialize_root=*/true);
+
+  GetElementById("r3")->remove();
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(2u, SerializeAndGetRadioGroupSize(cache, GetDocument(), r1_id));
+
+  // Removing an ancestor of a radio, rather than the radio itself.
+  GetElementById("wrapper")->remove();
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(1u, SerializeAndGetRadioGroupSize(cache, GetDocument(), r1_id));
+}
+
+TEST_F(AccessibilityTest, AriaRadioPeersSerializedWhenRadioBecomesIgnored) {
+  SetBodyInnerHTML(R"HTML(
+      <div id="group" role="radiogroup">
+        <div role="radio" id="r1"></div>
+        <div role="radio" id="r2"></div>
+      </div>
+  )HTML");
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  cache.SetAXMode(ui::kAXModeComplete);
+  AXID r1_id = GetAXObjectByElementId("r1")->AXObjectID();
+  SerializeAndGetRadioGroupSize(cache, GetDocument(), r1_id,
+                                /*serialize_root=*/true);
+
+  GetElementById("r2")->setAttribute(html_names::kAriaHiddenAttr,
+                                     AtomicString("true"));
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_EQ(1u, SerializeAndGetRadioGroupSize(cache, GetDocument(), r1_id));
+}
+
+TEST_F(AccessibilityTest, AriaRadioPeersSerializedOnAriaOwns) {
+  SetBodyInnerHTML(R"HTML(
+      <div id="group" role="radiogroup">
+        <div role="radio" id="r1"></div>
+      </div>
+      <div role="radio" id="r2"></div>
+  )HTML");
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  cache.SetAXMode(ui::kAXModeComplete);
+  AXID r1_id = GetAXObjectByElementId("r1")->AXObjectID();
+  SerializeAndGetRadioGroupSize(cache, GetDocument(), r1_id,
+                                /*serialize_root=*/true);
+
+  GetElementById("group")->setAttribute(html_names::kAriaOwnsAttr,
+                                        AtomicString("r2"));
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_EQ(2u, SerializeAndGetRadioGroupSize(cache, GetDocument(), r1_id));
+}
+
+TEST_F(AccessibilityTest,
+       AriaRadioPeersSerializedOnNestedRadiogroupRoleChange) {
+  SetBodyInnerHTML(R"HTML(
+      <div id="outer" role="radiogroup">
+        <div role="radio" id="r1"></div>
+        <div id="wrapper">
+          <div role="radio" id="r2"></div>
+        </div>
+      </div>
+  )HTML");
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  cache.SetAXMode(ui::kAXModeComplete);
+  AXID r1_id = GetAXObjectByElementId("r1")->AXObjectID();
+  SerializeAndGetRadioGroupSize(cache, GetDocument(), r1_id,
+                                /*serialize_root=*/true);
+
+  // r2 moves into its own nested group, leaving r1 alone in the outer group.
+  GetElementById("wrapper")->setAttribute(html_names::kRoleAttr,
+                                          AtomicString("radiogroup"));
+  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_EQ(1u, SerializeAndGetRadioGroupSize(cache, GetDocument(), r1_id));
+}
+
+TEST_F(AccessibilityTest,
+       SelectionSerializedBeforeNextActionWhileDocumentLoading) {
+  SetBodyInnerHTML(R"HTML(<p id="p">Hello</p>)HTML");
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  cache.SetAXMode(ui::kAXModeComplete);
+
+  AXObject* paragraph = GetAXObjectByElementId("p");
+  ASSERT_NE(nullptr, paragraph);
+  AXObject* text = paragraph->FirstChildIncludingIgnored();
+  ASSERT_NE(nullptr, text);
+  ASSERT_EQ(ax::mojom::blink::Role::kStaticText, text->RoleValue());
+
+  // Establish a clean baseline tree.
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/true));
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  // Simulate a document whose subresources or subframes are still loading.
+  GetDocument().SetReadyState(Document::kLoading);
+  ASSERT_FALSE(GetDocument().IsLoadCompleted());
+
+  // Non-action updates (even with serialize_immediately_ set) should not
+  // schedule a visual update while loading.
+  cache.serialize_immediately_ = true;
+  cache.serialize_immediately_for_action_ = false;
+  GetChromeClient().UnsetAnimationScheduled();
+  cache.ScheduleAXUpdate();
+  EXPECT_FALSE(GetChromeClient().AnimationScheduled());
+  cache.serialize_immediately_ = false;
+
+  // Simulate PerformAction(kSetSelection) when a pre-action dirty object
+  // causes UpdateAXForAllDocuments() to send an in-flight serialization
+  // before the selection action runs.
+  cache.MarkAXObjectDirty(paragraph);
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/true));
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+  cache.OnSerializationStartSend();
+  ASSERT_TRUE(cache.IsSerializationInFlight());
+
+  cache.ScheduleImmediateSerialization();
+  EXPECT_FALSE(cache.serialize_immediately_);
+  EXPECT_TRUE(cache.serialize_immediately_after_current_serialization_);
+
+  WebAXObject web_text(text);
+  EXPECT_TRUE(web_text.SetSelection(web_text, 0, web_text, 1));
+  EXPECT_TRUE(cache.serialize_immediately_for_action_);
+
+  // When the visual frame for painting the selection runs while the
+  // pre-action serialization is still in flight, CommitAXUpdates defers.
+  EXPECT_FALSE(cache.CommitAXUpdates(GetDocument(), /*force=*/false));
+
+  // When the in-flight serialization ACK arrives while the document is still
+  // loading, OnSerializationReceived() must schedule a visual update so the
+  // new selection is serialized without waiting for the next action.
+  GetChromeClient().UnsetAnimationScheduled();
+  cache.OnSerializationReceived();
+  EXPECT_FALSE(cache.IsSerializationInFlight());
+  EXPECT_TRUE(cache.serialize_immediately_);
+  EXPECT_TRUE(cache.serialize_immediately_for_action_);
+  EXPECT_TRUE(GetChromeClient().AnimationScheduled());
+
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/false));
+  EXPECT_FALSE(cache.serialize_immediately_for_action_);
+  std::vector<ui::AXTreeUpdate> updates;
+  std::vector<ui::AXEvent> events;
+  bool had_end_of_test_event = false;
+  bool had_load_complete_messages = false;
+  {
+    ScopedFreezeAXCache freeze(cache);
+    cache.GetUpdatesAndEventsForSerialization(
+        updates, events, had_end_of_test_event, had_load_complete_messages);
+  }
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  ASSERT_FALSE(updates.empty());
+  EXPECT_TRUE(updates.back().has_tree_data);
+  EXPECT_EQ(text->AXObjectID(), updates.back().tree_data.sel_anchor_object_id);
+  EXPECT_EQ(0, updates.back().tree_data.sel_anchor_offset);
+  EXPECT_EQ(text->AXObjectID(), updates.back().tree_data.sel_focus_object_id);
+  EXPECT_EQ(1, updates.back().tree_data.sel_focus_offset);
+}
+
+TEST_F(
+    AccessibilityTest,
+    CommitAXUpdatesPreservesSerializeImmediatelyAcrossParserPauseAndInFlight) {
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  cache.SetAXMode(ui::kAXModeComplete);
+
+  DocumentParser* parser = GetDocument().ImplicitOpen(kForceSynchronousParsing);
+  ASSERT_NE(nullptr, parser);
+  parser->Append("<p id=\"p\">Hallo</p>");
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_TRUE(cache.IsParsingMainDocument());
+
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/true));
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  // While the main document is parsing and tree update pauses remain,
+  // non-forced commits are deferred without clearing serialize_immediately_.
+  cache.allowed_tree_update_pauses_remaining_ = 1;
+  cache.ScheduleImmediateSerialization();
+  ASSERT_TRUE(cache.serialize_immediately_);
+  EXPECT_FALSE(cache.CommitAXUpdates(GetDocument(), /*force=*/false));
+  EXPECT_TRUE(cache.serialize_immediately_);
+
+  cache.allowed_tree_update_pauses_remaining_ = 0;
+  EXPECT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/false));
+  EXPECT_FALSE(cache.serialize_immediately_);
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+  parser->Finish();
+
+  // If CommitAXUpdates consumes serialize_immediately_ while a serialization
+  // is already in flight, it must preserve the immediate follow-up flag for
+  // OnSerializationReceived().
+  cache.serialize_immediately_ = true;
+  cache.serialize_immediately_for_action_ = true;
+  cache.serialize_immediately_after_current_serialization_ = false;
+  cache.OnSerializationStartSend();
+  EXPECT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/false));
+  EXPECT_FALSE(cache.serialize_immediately_);
+  EXPECT_TRUE(cache.serialize_immediately_for_action_);
+  EXPECT_TRUE(cache.serialize_immediately_after_current_serialization_);
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  GetDocument().SetReadyState(Document::kLoading);
+  GetChromeClient().UnsetAnimationScheduled();
+  cache.OnSerializationReceived();
+  EXPECT_TRUE(cache.serialize_immediately_);
+  EXPECT_TRUE(cache.serialize_immediately_for_action_);
+  EXPECT_TRUE(GetChromeClient().AnimationScheduled());
+}
+
+TEST_F(AccessibilityTest, WebAXObjectClearSelectionAnnotatesAction) {
+  SetBodyInnerHTML(R"HTML(<p id="p">Hello</p>)HTML");
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  cache.SetAXMode(ui::kAXModeComplete);
+
+  AXObject* paragraph = GetAXObjectByElementId("p");
+  ASSERT_NE(nullptr, paragraph);
+  AXObject* text = paragraph->FirstChildIncludingIgnored();
+  ASSERT_NE(nullptr, text);
+
+  WebAXObject web_text(text);
+  ASSERT_TRUE(web_text.SetSelection(web_text, 0, web_text, 2));
+
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/true));
+  {
+    std::vector<ui::AXTreeUpdate> initial_updates;
+    std::vector<ui::AXEvent> initial_events;
+    bool had_end_of_test_event = false;
+    bool had_load_complete_messages = false;
+    ScopedFreezeAXCache freeze(cache);
+    cache.GetUpdatesAndEventsForSerialization(initial_updates, initial_events,
+                                              had_end_of_test_event,
+                                              had_load_complete_messages);
+  }
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  WebAXObject web_root(cache.Root());
+  EXPECT_TRUE(web_root.SetSelection(web_root, ax::mojom::kNoSelectionOffset,
+                                    web_root, ax::mojom::kNoSelectionOffset));
+
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/true));
+  std::vector<ui::AXTreeUpdate> updates;
+  std::vector<ui::AXEvent> events;
+  bool had_end_of_test_event = false;
+  bool had_load_complete_messages = false;
+  {
+    ScopedFreezeAXCache freeze(cache);
+    cache.GetUpdatesAndEventsForSerialization(
+        updates, events, had_end_of_test_event, had_load_complete_messages);
+  }
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  bool found_selection_event = false;
+  for (const ui::AXEvent& event : events) {
+    if (event.event_type ==
+        ax::mojom::blink::Event::kDocumentSelectionChanged) {
+      found_selection_event = true;
+      EXPECT_EQ(ax::mojom::blink::EventFrom::kAction, event.event_from);
+      EXPECT_EQ(ax::mojom::blink::Action::kSetSelection,
+                event.event_from_action);
+    }
+  }
+  EXPECT_TRUE(found_selection_event);
+}
+
+TEST_F(AccessibilityTest, PopoverInvokerUpdatedWhenTargetConnectedOrModified) {
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  cache.SetAXMode(ui::kAXModeComplete);
+
+  DocumentParser* parser = GetDocument().ImplicitOpen(kForceSynchronousParsing);
+  ASSERT_NE(nullptr, parser);
+  parser->Append(
+      R"HTML(<button id="btn" popovertarget="pop">Toggle</button>)HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  AXObject* button = GetAXObjectByElementId("btn");
+  ASSERT_NE(nullptr, button);
+  EXPECT_EQ(kExpandedUndefined, button->IsExpanded());
+
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/true));
+  {
+    std::vector<ui::AXTreeUpdate> initial_updates;
+    std::vector<ui::AXEvent> initial_events;
+    bool had_end_of_test_event = false;
+    bool had_load_complete_messages = false;
+    ScopedFreezeAXCache freeze(cache);
+    cache.GetUpdatesAndEventsForSerialization(initial_updates, initial_events,
+                                              had_end_of_test_event,
+                                              had_load_complete_messages);
+  }
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  // Now parse the closed (display:none) target popover after the invoker was
+  // already serialized.
+  parser->Append(
+      R"HTML(<div id="pop" popover="invalid_value">Popover</div>)HTML");
+  parser->Finish();
+  UpdateAllLifecyclePhasesForTest();
+
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/true));
+  EXPECT_EQ(kExpandedCollapsed, button->IsExpanded());
+
+  std::vector<ui::AXTreeUpdate> updates;
+  std::vector<ui::AXEvent> events;
+  bool had_end_of_test_event = false;
+  bool had_load_complete_messages = false;
+  {
+    ScopedFreezeAXCache freeze(cache);
+    cache.GetUpdatesAndEventsForSerialization(
+        updates, events, had_end_of_test_event, had_load_complete_messages);
+  }
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  bool found_collapsed_button = false;
+  for (const ui::AXTreeUpdate& update : updates) {
+    for (const ui::AXNodeData& node : update.nodes) {
+      if (node.id == button->AXObjectID()) {
+        found_collapsed_button =
+            node.HasState(ax::mojom::blink::State::kCollapsed);
+      }
+    }
+  }
+  EXPECT_TRUE(found_collapsed_button);
+
+  // Removing the popover attribute on the connected target should also dirty
+  // the invoker and clear its expanded/collapsed state.
+  Element* pop = GetElementById("pop");
+  ASSERT_NE(nullptr, pop);
+  pop->removeAttribute(html_names::kPopoverAttr);
+  UpdateAllLifecyclePhasesForTest();
+
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/true));
+  EXPECT_EQ(kExpandedUndefined, button->IsExpanded());
+
+  updates.clear();
+  events.clear();
+  {
+    ScopedFreezeAXCache freeze(cache);
+    cache.GetUpdatesAndEventsForSerialization(
+        updates, events, had_end_of_test_event, had_load_complete_messages);
+  }
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  bool found_uncollapsed_button = false;
+  for (const ui::AXTreeUpdate& update : updates) {
+    for (const ui::AXNodeData& node : update.nodes) {
+      if (node.id == button->AXObjectID()) {
+        found_uncollapsed_button =
+            !node.HasState(ax::mojom::blink::State::kCollapsed) &&
+            !node.HasState(ax::mojom::blink::State::kExpanded);
+      }
+    }
+  }
+  EXPECT_TRUE(found_uncollapsed_button);
+
+  // Re-adding the popover attribute should mark the invoker dirty and restore
+  // its collapsed state.
+  pop->setAttribute(html_names::kPopoverAttr, keywords::kAuto);
+  UpdateAllLifecyclePhasesForTest();
+
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/true));
+  EXPECT_EQ(kExpandedCollapsed, button->IsExpanded());
+
+  updates.clear();
+  events.clear();
+  {
+    ScopedFreezeAXCache freeze(cache);
+    cache.GetUpdatesAndEventsForSerialization(
+        updates, events, had_end_of_test_event, had_load_complete_messages);
+  }
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  found_collapsed_button = false;
+  for (const ui::AXTreeUpdate& update : updates) {
+    for (const ui::AXNodeData& node : update.nodes) {
+      if (node.id == button->AXObjectID()) {
+        found_collapsed_button =
+            node.HasState(ax::mojom::blink::State::kCollapsed);
+      }
+    }
+  }
+  EXPECT_TRUE(found_collapsed_button);
+
+  // Removing the closed popover element from the DOM should also mark the
+  // invoker dirty and clear its expanded/collapsed state.
+  pop->remove();
+  UpdateAllLifecyclePhasesForTest();
+
+  ASSERT_TRUE(cache.CommitAXUpdates(GetDocument(), /*force=*/true));
+  EXPECT_EQ(kExpandedUndefined, button->IsExpanded());
+
+  updates.clear();
+  events.clear();
+  {
+    ScopedFreezeAXCache freeze(cache);
+    cache.GetUpdatesAndEventsForSerialization(
+        updates, events, had_end_of_test_event, had_load_complete_messages);
+  }
+  cache.ClearObjectsPendingSerializationForTesting();
+  cache.ResetLifecycleForTesting();
+
+  found_uncollapsed_button = false;
+  for (const ui::AXTreeUpdate& update : updates) {
+    for (const ui::AXNodeData& node : update.nodes) {
+      if (node.id == button->AXObjectID()) {
+        found_uncollapsed_button =
+            !node.HasState(ax::mojom::blink::State::kCollapsed) &&
+            !node.HasState(ax::mojom::blink::State::kExpanded);
+      }
+    }
+  }
+  EXPECT_TRUE(found_uncollapsed_button);
+}
+
+TEST_F(AccessibilityTest, RemoveSubtreeWithNestedAriaOwnsParentRestoration) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="c0" aria-owns="target1 target2"></div>
+    <div id="subtree_root" aria-owns="c0 c2"></div>
+    <div id="c2">
+      <div id="target1">Item 1</div>
+      <div id="target2">Item 2</div>
+    </div>
+    <div id="outer_owner" aria-live="polite"></div>
+  )HTML");
+
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+  UpdateAllLifecyclePhasesForTest();
+  cache.UpdateAXForAllDocuments();
+
+  AXObject* subtree_root = GetAXObjectByElementId("subtree_root");
+  AXObject* c0 = GetAXObjectByElementId("c0");
+  AXObject* c2 = GetAXObjectByElementId("c2");
+  AXObject* target1 = GetAXObjectByElementId("target1");
+  AXObject* target2 = GetAXObjectByElementId("target2");
+  ASSERT_NE(nullptr, subtree_root);
+  ASSERT_NE(nullptr, c0);
+  ASSERT_NE(nullptr, c2);
+  ASSERT_NE(nullptr, target1);
+  ASSERT_NE(nullptr, target2);
+  ASSERT_EQ(2u, subtree_root->CachedChildrenIncludingIgnored().size());
+  ASSERT_EQ(c0, target1->ParentObjectIfPresent());
+  ASSERT_EQ(c0, target2->ParentObjectIfPresent());
+
+  c0->ClearChildren();
+  target1->SetParent(c0);
+  target2->SetParent(c0);
+  GetElementById("outer_owner")
+      ->setAttribute(html_names::kAriaOwnsAttr,
+                     AtomicString("target1 subtree_root"));
+
+  UpdateAllLifecyclePhasesForTest();
+  cache.UpdateAXForAllDocuments();
+
+  EXPECT_NE(nullptr, GetAXObjectByElementId("subtree_root"));
+  EXPECT_NE(nullptr, GetAXObjectByElementId("c2"));
+  EXPECT_NE(nullptr, GetAXObjectByElementId("target1"));
+  EXPECT_NE(nullptr, GetAXObjectByElementId("target2"));
+}
+
+TEST_F(AccessibilityTest, SnapshotWithNestedAriaOwnsRestoringParent) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="outer" role="group" aria-disabled="true"
+         aria-owns="owner1 leaf parent_of_leaf"></div>
+    <div id="owner1" role="group" aria-live="polite" aria-owns="target"></div>
+    <div id="target" role="group" aria-owns="child1 child2"></div>
+    <div id="child1" role="group" aria-owns="leaf"></div>
+    <div id="child2" role="group">2</div>
+    <div id="parent_of_leaf" role="group">
+      <div id="leaf" role="group">Leaf</div>
+    </div>
+  )HTML");
+
+  Member<AXObjectCache> snapshot_cache = AXObjectCache::CreateSnapshotter(
+      GetDocument(), ui::AXMode(ui::AXMode::kPDFPrinting));
+  ui::AXTreeUpdate response;
+  std::set<ui::AXSerializationErrorFlag> out_error;
+  snapshot_cache->SerializeEntireTreeAndDispose(
+      /*max_nodes=*/1000, base::TimeDelta::FiniteMax(), &response, &out_error);
+
+  EXPECT_FALSE(response.nodes.empty());
+  EXPECT_TRUE(out_error.empty());
+}
+
+TEST_F(AccessibilityTest,
+       UntrackedNodeRemovalAndTextChangeDoNotAllocateDOMNodeId) {
+  SetBodyInnerHTML(R"HTML(<div id="tracked">Tracked</div>)HTML");
+  AXObjectCacheImpl& cache = GetAXObjectCache();
+
+  Element* tracked = GetElementById("tracked");
+  ASSERT_NE(nullptr, tracked);
+  ASSERT_NE(nullptr, cache.Get(tracked));
+  EXPECT_NE(kInvalidDOMNodeId, DOMNodeIds::ExistingIdForNode(tracked));
+
+  // Appending a text node, mutating its text, and removing it before an
+  // AXObject is created for it should not allocate a `DOMNodeId`.
+  Text* untracked_text = GetDocument().createTextNode("Hello");
+  GetDocument().body()->AppendChild(untracked_text);
+  GetDocument().View()->UpdateLifecycleToLayoutClean(
+      DocumentUpdateReason::kTest);
+  ASSERT_NE(nullptr, untracked_text->GetLayoutObject());
+  ASSERT_EQ(nullptr, cache.Get(untracked_text));
+  EXPECT_EQ(kInvalidDOMNodeId, DOMNodeIds::ExistingIdForNode(untracked_text));
+
+  cache.TextChanged(untracked_text->GetLayoutObject());
+  EXPECT_EQ(kInvalidDOMNodeId, DOMNodeIds::ExistingIdForNode(untracked_text));
+
+  untracked_text->remove();
+  EXPECT_EQ(kInvalidDOMNodeId, DOMNodeIds::ExistingIdForNode(untracked_text));
+
+  // Updating text-related attributes or removing an untracked element should
+  // also avoid allocating a `DOMNodeId`.
+  Element* untracked_element =
+      GetDocument().CreateRawElement(html_names::kDivTag);
+  EXPECT_EQ(kInvalidDOMNodeId,
+            DOMNodeIds::ExistingIdForNode(untracked_element));
+
+  cache.HandleAttributeChanged(html_names::kAriaLabelAttr, untracked_element);
+  EXPECT_EQ(kInvalidDOMNodeId,
+            DOMNodeIds::ExistingIdForNode(untracked_element));
+
+  cache.Remove(untracked_element);
+  EXPECT_EQ(kInvalidDOMNodeId,
+            DOMNodeIds::ExistingIdForNode(untracked_element));
+
+  // Removing the tracked element must still clean up its cached `AXObject`.
+  tracked->remove();
+  EXPECT_EQ(nullptr, cache.Get(tracked));
 }
 
 }  // namespace blink

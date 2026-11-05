@@ -74,6 +74,16 @@ chromium-metrics-reviews@google.com.
   <int value="15" label="p3+r3+"/>
 </enum>
 
+<!-- LINT.IfChange(ClientIdBackupFixMethod) -->
+
+<enum name="ClientIdBackupFixMethod">
+  <int value="0" label="FromLocalState"/>
+  <int value="1" label="ClearBackup"/>
+  <int value="2" label="BackupNewlyCreated"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/metrics/metrics_state_manager.h:ClientIdBackupFixMethod) -->
+
 <enum name="ClientIdBackupValidation">
   <int value="0" label="ValidatedLowerCase"/>
   <int value="1" label="ValidatedWithUpperCaseLetters"/>
@@ -305,9 +315,10 @@ chromium-metrics-reviews@google.com.
   <int value="9" label="Independent"/>
   <int value="10" label="Out Of Band"/>
   <int value="11" label="Flush"/>
+  <int value="12" label="Runtime Mutability"/>
 </enum>
 
-<!-- LINT.ThenChange(/components/metrics/metrics_logs_event_manager.h:CreateReason) -->
+<!-- LINT.ThenChange(//components/metrics/metrics_logs_event_manager.h:CreateReason) -->
 
 <enum name="MetricsReportingChange">
   <int value="0" label="Error">

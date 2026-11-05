@@ -5,30 +5,39 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_PRIVATE_RULE_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_CSS_CSS_PRIVATE_RULE_H_
 
-#include "third_party/blink/renderer/core/css/css_rule.h"
-#include "third_party/blink/renderer/platform/heap/member.h"
+#include "third_party/blink/renderer/core/css/css_style_rule.h"
+#include "third_party/blink/renderer/core/css/property_registry.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
 
-class StyleRulePrivate;
-
-class CSSPrivateRule final : public CSSRule {
+class CSSPrivateRule final : public CSSStyleRule {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  CSSPrivateRule(StyleRulePrivate*, CSSStyleSheet* parent);
+  CSSPrivateRule(StyleRule*, CSSStyleSheet* parent);
 
   String cssText() const override;
   void Reattach(StyleRuleBase*) override;
 
   void Trace(Visitor*) const override;
 
+  AtomicString HygienicToAuthoredCustomPropertyName(const AtomicString&) const;
+  AtomicString AuthoredToHygienicCustomPropertyName(const AtomicString&) const;
+  AtomicString EnsureCustomPropertyNameForHygienic(const AtomicString&);
+  PropertyRegistry& GetPropertyRegistry() { return *property_registry_; }
+  PrivateNameMap& GetAuthoredToHygienicNameMap() {
+    return authored_to_hygienic_names_;
+  }
+
  private:
+  void UpdatePrivateNames();
+
   CSSRule::Type GetType() const override { return kPrivateRule; }
 
-  Member<StyleRulePrivate> private_rule_;
+  Member<PropertyRegistry> property_registry_;
+  PrivateNameMap authored_to_hygienic_names_;
 };
 
 template <>

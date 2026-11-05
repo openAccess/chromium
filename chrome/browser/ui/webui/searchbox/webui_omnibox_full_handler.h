@@ -34,7 +34,15 @@ class WebuiOmniboxFullHandler : public ContextualSearchboxHandler {
   ~WebuiOmniboxFullHandler() override;
 
   // searchbox::mojom::PageHandler:
+  void ActivateKeyword(
+      uint8_t line,
+      const GURL& url,
+      base::TimeTicks match_selection_timestamp,
+      searchbox::mojom::KeywordActivationMethod activation_method) override;
   void OnThumbnailRemoved() override {}
+
+  // SearchboxHandler:
+  bool SupportsKeywordMode() const override;
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_SEARCHBOX_WEBUI_OMNIBOX_FULL_HANDLER_H_

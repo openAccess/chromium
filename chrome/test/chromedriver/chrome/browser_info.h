@@ -20,6 +20,14 @@ static const int kToTBuildNo = 9999;
 // Similarly, if the Blink Revision isn't given then assume it is tip of tree.
 static const int kToTBlinkRevision = 999999;
 
+// The native file path syntax used by the browser. kUnknown preserves the
+// legacy behavior for browsers that predate the File-Path-Style metadata.
+enum class FilePathStyle {
+  kUnknown,
+  kPosix,
+  kWindows,
+};
+
 struct BrowserInfo {
   BrowserInfo();
   BrowserInfo(const BrowserInfo&);
@@ -31,6 +39,7 @@ struct BrowserInfo {
   std::string android_package;
   std::string browser_name;
   std::string browser_version;
+  std::string user_agent;
   std::string web_socket_url;
   DevToolsEndpoint debugger_endpoint;
   int major_version = 0;
@@ -39,6 +48,7 @@ struct BrowserInfo {
   int process_id = 0;
   bool is_android = false;
   bool is_headless_shell = false;
+  FilePathStyle file_path_style = FilePathStyle::kUnknown;
 
   Status FillFromBrowserVersionResponse(const base::DictValue& response);
 

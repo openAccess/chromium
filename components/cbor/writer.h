@@ -11,6 +11,7 @@
 #include <optional>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "components/cbor/cbor_export.h"
 #include "components/cbor/values.h"
@@ -53,6 +54,8 @@
 
 namespace cbor {
 
+CBOR_EXPORT BASE_DECLARE_FEATURE(kUseRustCborWriter);
+
 class CBOR_EXPORT Writer {
  public:
   // Default that should be sufficiently large for most use cases.
@@ -70,6 +73,11 @@ class CBOR_EXPORT Writer {
     // Writers with this setting will produce invalid CBOR, so it may only be
     // enabled in tests.
     bool allow_invalid_utf8_for_testing = false;
+
+    // Selects the CBOR writer to use. When unset, follows `kUseRustCborWriter`
+    // and reports metrics to UMA. Setting this to true requires
+    // BUILDFLAG(USE_CBOR_RUST).
+    std::optional<bool> use_rust;
   };
 
   Writer(const Writer&) = delete;
@@ -77,15 +85,14 @@ class CBOR_EXPORT Writer {
 
   ~Writer();
 
-  // Returns the CBOR byte string representation of |node|, unless its nesting
-  // depth is greater than |max_nesting_level|, in which case an empty optional
-  // value is returned.
+  // Returns the CBOR byte string representation of |node|, or `std::nullopt`
+  // if its nesting depth exceeds |max_nesting_level|.
   static std::optional<std::vector<uint8_t>> Write(
-      const Value& node,
+      ValueView node,
       size_t max_nesting_level = kDefaultMaxNestingDepth);
 
   // A version of |Write| above that takes a Config.
-  static std::optional<std::vector<uint8_t>> Write(const Value& node,
+  static std::optional<std::vector<uint8_t>> Write(ValueView node,
                                                    const Config& config);
 
  private:
@@ -93,7 +100,7 @@ class CBOR_EXPORT Writer {
 
   // Called recursively to build the CBOR bytestring. When completed,
   // |encoded_cbor_| will contain the CBOR.
-  bool EncodeCBOR(const Value& node,
+  bool EncodeCBOR(ValueView node,
                   int max_nesting_level,
                   bool allow_invalid_utf8);
 

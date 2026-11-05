@@ -24,10 +24,12 @@
 #include "components/saved_tab_groups/public/saved_tab_group_tab.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/saved_tab_groups/public/utils.h"
+#include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace tab_groups {
@@ -130,7 +132,7 @@ void LocalTabGroupListener::AddTabFromLocal(
   // Non-empty URLs will be saved into the tab group, and will be converted
   // to an unsupported URL later when sending to sync.
   if (tab.url().is_empty()) {
-    tab.SetURL(GURL(chrome::kChromeUINewTabURL));
+    tab.SetURL(chrome::ChromeUINewTabURLAsGURL());
   }
 
   service_->AddTab(local_id_, local_tab_id, tab.title(), tab.url(),
@@ -362,16 +364,15 @@ void LocalTabGroupListener::OpenWebContentsFromSync(
     BrowserWindowInterface* browser,
     int index_in_tabstrip) {
   GURL url_to_open = tab.url();
-  // Open the NTP if the URL is not valid for local tabs.
   if (!IsURLValidForLocalTab(url_to_open)) {
-    url_to_open = GURL(chrome::kChromeUINewTabURL);
+    url_to_open = chrome::ChromeUINewTabURLAsGURL();
   }
 
   content::NavigationHandle* navigation_handle =
       SavedTabGroupUtils::OpenTabInBrowser(
           url_to_open, browser, browser->GetProfile(),
-          WindowOpenDisposition::NEW_BACKGROUND_TAB, index_in_tabstrip,
-          local_id_);
+          ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
+          index_in_tabstrip, local_id_);
   content::WebContents* opened_contents =
       navigation_handle ? navigation_handle->GetWebContents() : nullptr;
 

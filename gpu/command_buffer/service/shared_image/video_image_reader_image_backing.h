@@ -28,11 +28,7 @@ class GPU_GLES2_EXPORT VideoImageReaderImageBacking
  public:
   VideoImageReaderImageBacking(
       const Mailbox& mailbox,
-      const gfx::Size& size,
-      const gfx::ColorSpace color_space,
-      GrSurfaceOrigin surface_origin,
-      SkAlphaType alpha_type,
-      std::string debug_label,
+      const SharedImageInfo& si_info,
       scoped_refptr<StreamTextureSharedImageInterface> stream_texture_sii,
       scoped_refptr<SharedContextState> shared_context_state,
       scoped_refptr<RefCountedLock> drdc_lock);
@@ -58,7 +54,7 @@ class GPU_GLES2_EXPORT VideoImageReaderImageBacking
       MemoryTypeTracker* tracker,
       scoped_refptr<SharedContextState> context_state) override;
 
-#if BUILDFLAG(SKIA_USE_DAWN)
+#if BUILDFLAG(SKIA_USE_DAWN) || BUILDFLAG(SKIA_USE_GRAPHITE_VULKAN)
   std::unique_ptr<SkiaGraphiteImageRepresentation> ProduceSkiaGraphite(
       SharedImageManager* manager,
       MemoryTypeTracker* tracker,
@@ -109,6 +105,7 @@ class GPU_GLES2_EXPORT VideoImageReaderImageBacking
   class GLTextureVideoImageRepresentation;
   class GLTexturePassthroughVideoImageRepresentation;
   class SkiaGraphiteDawnImageRepresentation;
+  class SkiaGraphiteVkVideoImageRepresentation;
   class SkiaVkVideoImageRepresentation;
   class OverlayVideoImageRepresentation;
   class LegacyOverlayVideoImageRepresentation;

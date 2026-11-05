@@ -25,6 +25,7 @@
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/wtf/wtf.h"
 
 namespace blink {
 
@@ -103,7 +104,8 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
                                  bool restricted_value,
                                  CSSParserTokenType stop_type,
                                  VariableDataFeatures& features,
-                                 const CSSParserContext& context);
+                                 const CSSParserContext& context,
+                                 wtf_size_t* value_end_offset = nullptr);
 
 // Consumes the following sequence of tokens:
 // <declaration-value> <separator-token> <declaration-value>?
@@ -527,11 +529,16 @@ bool CSSVariableParser::ConsumeMixinArguments(
 // [1] https://drafts.csswg.org/css-syntax-3/#typedef-declaration-value
 // [2] https://drafts.csswg.org/css-variables/#using-variables
 // [3] https://github.com/w3c/csswg-drafts/issues/9317
+// If `value_end_offset` is non-null, it receives the offset just past the
+// last consumed token that is not whitespace (or is left untouched if there
+// is no such token). This lets the caller cut off trailing whitespace and
+// comments without having to rescan the text.
 static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
                                  bool restricted_value,
                                  CSSParserTokenType stop_type,
                                  VariableDataFeatures& features,
-                                 const CSSParserContext& context) {
+                                 const CSSParserContext& context,
+                                 wtf_size_t* value_end_offset) {
   size_t block_stack_size = 0;
 
   // https://drafts.csswg.org/css-syntax/#component-value
@@ -567,10 +574,13 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           }
           features |= static_cast<VariableDataFeatures>(
               VariableDataFeature::kHasReferences);
+          if (value_end_offset) {
+            *value_end_offset = stream.Offset();
+          }
           continue;
         case CSSValueID::kInherit:
           if (!RuntimeEnabledFeatures::CSSInheritFunctionEnabled()) {
-            return false;
+            break;
           }
           [[fallthrough]];
         case CSSValueID::kVar:
@@ -579,6 +589,9 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           }
           features |= static_cast<VariableDataFeatures>(
               VariableDataFeature::kHasReferences);
+          if (value_end_offset) {
+            *value_end_offset = stream.Offset();
+          }
           continue;
         case CSSValueID::kEnv:
           if (!ConsumeEnvVariableReference(stream, features, context)) {
@@ -586,6 +599,9 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           }
           features |= static_cast<VariableDataFeatures>(
               VariableDataFeature::kHasReferences);
+          if (value_end_offset) {
+            *value_end_offset = stream.Offset();
+          }
           continue;
         case CSSValueID::kAttr:
           if (RuntimeEnabledFeatures::CSSArgumentGrammarEnabled()) {
@@ -597,6 +613,9 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           }
           features |= static_cast<VariableDataFeatures>(
               VariableDataFeature::kHasReferences);
+          if (value_end_offset) {
+            *value_end_offset = stream.Offset();
+          }
           continue;
         case CSSValueID::kInternalAutoBase:
           if (context.GetMode() != kUASheetMode) {
@@ -607,6 +626,9 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           }
           features |= static_cast<VariableDataFeatures>(
               VariableDataFeature::kHasReferences);
+          if (value_end_offset) {
+            *value_end_offset = stream.Offset();
+          }
           continue;
         case CSSValueID::kIf:
           if (!ConsumeIf(stream, features, context)) {
@@ -617,6 +639,9 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           }
           features |= static_cast<VariableDataFeatures>(
               VariableDataFeature::kHasReferences);
+          if (value_end_offset) {
+            *value_end_offset = stream.Offset();
+          }
           continue;
         default:
           break;
@@ -678,7 +703,11 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
       }
     }
 
+    const bool is_whitespace = token.GetType() == kWhitespaceToken;
     stream.ConsumeRaw();
+    if (value_end_offset && !is_whitespace) {
+      *value_end_offset = stream.Offset();
+    }
   }
 
   return !error;
@@ -693,6 +722,10 @@ CSSVariableData* CSSVariableParser::ConsumeUnparsedDeclaration(
     bool comma_ends_declaration,
     bool& important,
     const CSSParserContext& context) {
+  // ConsumeUnparsedValue() may parse arbitrary CSS properties or selectors via
+  // if(supports(...)), which relies on main-thread-only state.
+  CHECK(IsMainThread());
+
   // Consume leading whitespace and comments, as required by the spec.
   stream.ConsumeWhitespace();
   stream.EnsureLookAhead();
@@ -702,8 +735,12 @@ CSSVariableData* CSSVariableParser::ConsumeUnparsedDeclaration(
       static_cast<VariableDataFeatures>(VariableDataFeature::kNone);
   CSSParserTokenType stop_type =
       comma_ends_declaration ? kCommaToken : kEOFToken;
+  // Ends just past the last non-whitespace token of the value, so that
+  // trailing whitespace and comments are excluded without needing to
+  // rescan the text afterwards.
+  wtf_size_t value_end_offset = value_start_offset;
   if (!ConsumeUnparsedValue(stream, restricted_value, stop_type, features,
-                            context)) {
+                            context, &value_end_offset)) {
     return nullptr;
   }
 
@@ -713,9 +750,6 @@ CSSVariableData* CSSVariableParser::ConsumeUnparsedDeclaration(
     return nullptr;
   }
 
-  stream.EnsureLookAhead();
-  wtf_size_t value_end_offset = stream.LookAheadOffset();
-
   important = css_parsing_utils::MaybeConsumeImportant(
       stream, allow_important_annotation);
   if (!stream.AtEnd() &&
@@ -723,14 +757,40 @@ CSSVariableData* CSSVariableParser::ConsumeUnparsedDeclaration(
     return nullptr;
   }
 
+  DCHECK_GE(value_end_offset, value_start_offset);
+  // The end offset excludes trailing whitespace tokens and comments, but the
+  // last real token may itself span whitespace: an unterminated string, url()
+  // or block that runs into EOF ("url(foo  ", "var(--y  "), or an identifier
+  // ending in an escaped whitespace character ("a\ "). Strip the former (as
+  // the text-based stripping we replaced did) but keep escaped whitespace,
+  // which is part of the token.
+  {
+    const StringView value_text = stream.StringRangeAt(
+        value_start_offset, value_end_offset - value_start_offset);
+    wtf_size_t length = value_text.length();
+    // SAFETY: indices are checked against `length` before every access.
+    UNSAFE_BUFFERS({
+      while (length > 0 && IsHTMLSpace(value_text[length - 1])) {
+        // Escaped whitespace, i.e. preceded by an odd number of backslashes?
+        wtf_size_t num_backslashes = 0;
+        while (num_backslashes + 1 < length &&
+               value_text[length - 2 - num_backslashes] == '\\') {
+          ++num_backslashes;
+        }
+        if (num_backslashes % 2 == 1) {
+          break;
+        }
+        --length;
+      }
+    });
+    value_end_offset = value_start_offset + length;
+  }
   StringView original_text = stream.StringRangeAt(
       value_start_offset, value_end_offset - value_start_offset);
 
   if (original_text.length() > CSSVariableData::kMaxVariableBytes) {
     return nullptr;
   }
-  original_text =
-      CSSVariableParser::StripTrailingWhitespaceAndComments(original_text);
 
   // We consumed the leading whitespace before taking `value_start_offset`, and
   // just stripped the trailing one. (The test needs to be after the trailing
@@ -779,7 +839,10 @@ StringView CSSVariableParser::StripTrailingWhitespaceAndComments(
   // (i.e. not CSSOM, where we just get a string), we know we can't
   // have unfinished comments, so consider piping that knowledge all
   // the way through here.
-  if (text.Is8Bit() && !std::ranges::contains(text.Span8(), '/')) {
+  const bool may_contain_comments =
+      text.Is8Bit() ? std::ranges::contains(text.Span8(), '/')
+                    : std::ranges::contains(text.Span16(), '/');
+  if (!may_contain_comments) {
     // No comments, so we can strip whitespace only.
     // SAFETY: empty strings short-circuited in &&-expression means that
     // the last character is valid.

@@ -5,16 +5,20 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_GEOMETRY_MATH_FUNCTIONS_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_GEOMETRY_MATH_FUNCTIONS_H_
 
+#include <algorithm>
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <type_traits>
 #include <utility>
 
 #include "base/notreached.h"
+#include "base/numerics/angle_conversions.h"
+#include "third_party/blink/renderer/platform/geometry/progress_clamping.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
-#include "third_party/blink/renderer/platform/wtf/math_extras.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "ui/gfx/geometry/sin_cos_degrees.h"
 
 namespace blink {
@@ -56,6 +60,10 @@ template <class OperatorType, typename ValueType>
 std::optional<ValueType> PreCheckSteppedValueFunctionArguments(OperatorType op,
                                                                ValueType a,
                                                                ValueType b) {
+  // If A or B is NaN, the result is NaN.
+  if (std::isnan(a) || std::isnan(b)) {
+    return std::numeric_limits<ValueType>::quiet_NaN();
+  }
   // In round(A, B), if B is 0, the result is NaN.
   // In mod(A, B) or rem(A, B), if B is 0, the result is NaN.
   // If A and B are both infinite, the result is NaN.
@@ -100,11 +108,38 @@ T TanDegrees(T degrees) {
     }
   }
   // Slow path for non-table cases.
-  T x = Deg2rad(degrees);
+  T x = base::DegToRad(degrees);
   return std::tan(x);
 }
 
 }  // namespace
+
+template <typename ValueType>
+  requires std::floating_point<ValueType>
+ValueType EvaluateProgressFunction(ValueType progress,
+                                   ValueType start,
+                                   ValueType end,
+                                   ProgressClamping clamping) {
+  if (start == end &&
+      RuntimeEnabledFeatures::CSSProgressNotationNoClampEnabled()) {
+    if (std::isnan(progress)) {
+      return progress;
+    }
+    // If no-clamp is specified, return 0, -infinity, or infinity, depending on
+    // whether progress is equal to, less than, or greater than start and end.
+    // Otherwise, return 0. See: https://drafts.csswg.org/css-values-5/#progress
+    if (clamping == ProgressClamping::kNoClamp && progress != start) {
+      return progress < start ? -std::numeric_limits<ValueType>::infinity()
+                              : std::numeric_limits<ValueType>::infinity();
+    }
+    return 0;
+  }
+  ValueType result = (progress - start) / (end - start);
+  if (clamping == ProgressClamping::kNoClamp || std::isnan(result)) {
+    return result;
+  }
+  return std::clamp(result, ValueType{0}, ValueType{1});
+}
 
 template <class OperatorType, typename ValueType>
   requires std::is_enum_v<OperatorType> && std::floating_point<ValueType>
@@ -123,23 +158,23 @@ ValueType EvaluateTrigonometricFunction(
       return TanDegrees(a);
     }
     case OperatorType::kAsin: {
-      ValueType value = Rad2deg(std::asin(a));
+      ValueType value = base::RadToDeg(std::asin(a));
       DCHECK(value >= -90 && value <= 90 || std::isnan(value));
       return value;
     }
     case OperatorType::kAcos: {
-      ValueType value = Rad2deg(std::acos(a));
+      ValueType value = base::RadToDeg(std::acos(a));
       DCHECK(value >= 0 && value <= 180 || std::isnan(value));
       return value;
     }
     case OperatorType::kAtan: {
-      ValueType value = Rad2deg(std::atan(a));
+      ValueType value = base::RadToDeg(std::atan(a));
       DCHECK(value >= -90 && value <= 90 || std::isnan(value));
       return value;
     }
     case OperatorType::kAtan2: {
       DCHECK(b.has_value());
-      ValueType value = Rad2deg(std::atan2(a, b.value()));
+      ValueType value = base::RadToDeg(std::atan2(a, b.value()));
       DCHECK(value >= -180 && value <= 180 || std::isnan(value));
       return value;
     }
@@ -280,6 +315,54 @@ template <typename ValueType>
   requires std::floating_point<ValueType>
 ValueType EvaluateSignFunction(ValueType v) {
   return (v == 0 || std::isnan(v)) ? v : ((v > 0) ? 1 : -1);
+}
+
+// https://drafts.csswg.org/css-values-4/#exponent-infinities
+template <typename ValueType>
+  requires std::floating_point<ValueType>
+ValueType EvaluateLogFunction(ValueType a, std::optional<ValueType> b) {
+  // If B is 1 or negative the result is NaN. std::log2(...) will handle the
+  // latter.
+  if (b == 1) {
+    return std::numeric_limits<ValueType>::quiet_NaN();
+  }
+  // If A is 1, the result is 0+.
+  if (a == 1) {
+    return 0;
+  }
+  if (b) {
+    return std::log2(a) / std::log2(*b);
+  }
+  return std::log(a);
+}
+
+template <typename ValueType>
+  requires std::floating_point<ValueType>
+ValueType EvaluatePowFunction(ValueType a, ValueType b) {
+  // std::pow(...) would produce non-NaN in a few cases (a==1/b==0), while CSS
+  // says it should produce NaN.
+  if (std::isnan(a) || std::isnan(b)) {
+    return std::numeric_limits<ValueType>::quiet_NaN();
+  }
+  // If a == +/-1 and b == +/-Infinity then return NaN.
+  if (std::abs(a) == 1 && std::isinf(b)) {
+    return std::numeric_limits<ValueType>::quiet_NaN();
+  }
+  return std::pow(a, b);
+}
+
+// An iteration of evaluation for the hypot() function. `a` is the result of
+// the previous iteration or zero (for the first iteration). `b` is the current
+// operand value.
+template <typename ValueType>
+  requires std::floating_point<ValueType>
+ValueType EvaluateHypotIteration(ValueType a, ValueType b) {
+  // std::hypot(...) would produce Infinity for hypot(Infinity, NaN) (or vice
+  // versa), while CSS says that it should produce NaN.
+  if (std::isnan(a) || std::isnan(b)) {
+    return std::numeric_limits<ValueType>::quiet_NaN();
+  }
+  return std::hypot(a, b);
 }
 
 // https://drafts.csswg.org/css-values-5/#random-evaluation

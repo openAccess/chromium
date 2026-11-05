@@ -16,7 +16,6 @@
 #include "base/metrics/field_trial.h"
 #include "base/time/time.h"
 #include "base/version_info/channel.h"
-#include "build/build_config.h"
 #include "components/variations/entropy_provider.h"
 #include "components/variations/metrics.h"
 #include "components/variations/proto/variations_seed.pb.h"
@@ -33,7 +32,7 @@ struct ClientFilterableState;
 class VariationsSeed;
 
 // A seed that has passed validation.
-struct ValidatedSeed {
+struct COMPONENT_EXPORT(VARIATIONS) ValidatedSeed {
   ValidatedSeed();
   ~ValidatedSeed();
 
@@ -67,8 +66,8 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
 
   // |local_state| provides access to Local State prefs. Must not be null.
   // |initial_seed|, if not null, is stored in this seed store. It is used (A)
-  // by Android Chrome and iOS to supply a first-run seed and (B) by Android
-  // WebView to supply a seed on every run.
+  // on first run by Android, Desktop, and iOS Chrome to supply a first-run seed
+  // and (B) by Android WebView to supply a seed on every run.
   // |signature_verification_enabled_on_load| and
   // |signature_verification_enabled_on_receive| can be used to disable
   // signature checks on the seed when loading the seed from disk or receiving
@@ -120,9 +119,10 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
                                           std::string* base64_seed_signature);
 
   // Stores the given seed |data| (serialized protobuf) to local state, along
-  // with a base64-encoded digital signature for seed and the date when it was
-  // fetched. If |is_gzip_compressed| is true, treats |data| as being gzip
-  // compressed and decompresses it before any other processing.
+  // with a base64-encoded digital signature for seed and the
+  // variations-server-provided seed date. If |is_gzip_compressed| is true,
+  // treats |data| as being gzip compressed and decompresses it before any other
+  // processing.
   // If |is_delta_compressed| is true, treats |data| as being delta
   // compressed and attempts to decode it first using the store's seed data.
   // The actual seed data will be base64 encoded for storage. If the string
@@ -139,7 +139,7 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
       std::string base64_seed_signature,
       std::string country_code,
       std::string geo_level1,
-      base::Time date_fetched,
+      base::Time seed_date,
       bool is_delta_compressed,
       bool is_gzip_compressed,
       bool require_synchronous);
@@ -167,6 +167,8 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
   // with a base64-encoded digital signature for seed and any additional client
   // metadata relevant to the safe seed. Calls `done_callback` with true on
   // success or false on failure; no prefs are updated in case of failure.
+  // Note: `client_state.reference_date` supplies the safe seed date. Safe seed
+  // dates remain isolated and unaffected by untrusted HTTP date omissions.
   // Virtual for testing.
   virtual void StoreSafeSeed(base::OnceCallback<void(bool)> done_callback,
                              const std::string& seed_data,
@@ -222,11 +224,18 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
   base::Time GetTimeForStudyDateChecks(bool is_safe_seed);
 
   // Updates |kVariationsSeedDate| and logs when previous date was from a
-  // different day.
-  void UpdateSeedDateAndLogDayChange(base::Time server_date_fetched);
+  // different day. Returns the result of the seed date update.
+  UpdateSeedDateResult UpdateSeedDateAndLogDayChange(base::Time seed_date);
 
-  // Creates a histogram for the result of the update of the seed date.
-  void LogSeedDayChange(base::Time server_date_fetched);
+  // Updates the latest country code and administrative area code (geo_level1)
+  // if `country_code` is non-empty. Returns true if either stored value
+  // changed.
+  bool UpdateSessionCountryAndGeoLevel1(std::string_view country_code,
+                                        std::string_view geo_level1);
+
+  // Computes the result of a seed date update without mutating stored state or
+  // logging metrics.
+  UpdateSeedDateResult GetSeedDateUpdateResult(base::Time seed_date) const;
 
   // Returns the serial number of the most recently received seed, or an empty
   // string if there is no seed (or if it could not be read).
@@ -295,6 +304,9 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
   // from disk.
   void AllowToPurgeSeedsDataFromMemory();
 
+  // Commits any pending writes to disk immediately.
+  void CommitPendingWrite();
+
   // Calls `done_callback` with the stored seed info for debugging. Reads either
   // the latest or the safe seed, according to the specified `seed_type`.
   void GetStoredSeedInfoForDebugging(
@@ -308,14 +320,18 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
  private:
   FRIEND_TEST_ALL_PREFIXES(VariationsSeedStoreTest, VerifySeedSignature);
   FRIEND_TEST_ALL_PREFIXES(VariationsSeedStoreTest, ApplyDeltaPatch);
+  FRIEND_TEST_ALL_PREFIXES(VariationsSeedStoreTest,
+                           DumpWithoutCrashingOnlyOnValidLargeSeed);
 
   // Move-only struct containing params related to the received variations seed.
-  struct SeedData {
+  struct COMPONENT_EXPORT(VARIATIONS) SeedData {
     std::string data;
     std::string base64_seed_signature;
     std::string country_code;
     std::string geo_level1;
-    base::Time date_fetched;
+    // The variations-server-provided timestamp of when the response was sent.
+    // From the HTTP "Date" header.
+    base::Time seed_date;
     bool is_gzip_compressed = false;
     bool is_delta_compressed = false;
     // Only set if `is_delta_compressed` is true.
@@ -330,7 +346,7 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
   };
 
   // The result of processing a SeedData struct.
-  struct SeedProcessingResult {
+  struct COMPONENT_EXPORT(VARIATIONS) SeedProcessingResult {
     SeedData seed_data;
     StoreSeedResult result;
     // The below are only set if `result` is StoreSeedResult::kSuccess.
@@ -345,6 +361,9 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
     SeedProcessingResult& operator=(SeedProcessingResult&& other);
   };
 
+  // Creates a histogram for the result of the update of the seed date.
+  void LogSeedDayChange(base::Time seed_date);
+
   // Callback for reading both seeds. They contain the result of loading the
   // safe and latest seeds.
   using ReadBothSeedsCallback = base::OnceCallback<void(
@@ -358,14 +377,12 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
   // type.
   void ClearPrefs(SeedType seed_type);
 
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-  // Imports the variations seed from the Java/iOS side. Logs UMA on failure.
-  // Android and iOS Chrome uses this on first run; WebView uses this on every
-  // startup. In Chrome's case, it's important to set the first run seed as soon
-  // as possible, because some clients query the seed store prefs directly
-  // rather than accessing them via the seed store API: https://crbug.com/829527
+  // Imports the initial variations seed. Logs UMA on failure. Android, Desktop,
+  // and iOS Chrome use this on first run; WebView uses this on every startup.
+  // In Chrome's case, it's important to set the first run seed as soon as
+  // possible, because some clients query the seed store prefs directly rather
+  // than accessing them via the seed store API: https://crbug.com/829527
   void ImportInitialSeed(std::unique_ptr<SeedResponse> initial_seed);
-#endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
   // Reads the variations seed data from SeedReaderWriter into |seed_data|, and
   // returns the result of the load. If a pointer for the signature is provided,
@@ -419,7 +436,7 @@ class COMPONENT_EXPORT(VARIATIONS) VariationsSeedStore {
       ValidatedSeed seed,
       std::string country_code,
       std::string geo_level1,
-      base::Time date_fetched,
+      base::Time seed_date,
       bool require_synchronous,
       SeedReaderWriter::ReadSeedDataResult read_result);
 

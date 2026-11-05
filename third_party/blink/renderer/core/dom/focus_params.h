@@ -41,19 +41,21 @@ struct FocusParams {
               mojom::blink::FocusType focus_type,
               InputDeviceCapabilities* capabilities,
               const FocusOptions* focus_options = FocusOptions::Create(),
-              FocusTrigger focus_trigger = FocusTrigger::kScript)
+              FocusTrigger focus_trigger = FocusTrigger::kScript,
+              LocalFrame* initiator_frame = nullptr)
       : selection_behavior(selection),
         type(focus_type),
         source_capabilities(capabilities),
         options(focus_options),
-        focus_trigger(focus_trigger) {}
+        focus_trigger(focus_trigger),
+        initiator_frame(initiator_frame) {}
 
   SelectionBehaviorOnFocus selection_behavior =
       SelectionBehaviorOnFocus::kRestore;
   mojom::blink::FocusType type = mojom::blink::FocusType::kNone;
   InputDeviceCapabilities* source_capabilities = nullptr;
   const FocusOptions* options = nullptr;
-  bool omit_blur_events = false;
+  BlurEventBehavior blur_event_behavior = BlurEventBehavior::kFire;
   FocusTrigger focus_trigger = FocusTrigger::kScript;
   // The frame whose script initiated the focus call. Used by the
   // `focus-without-user-activation` policy to check against the correct setter

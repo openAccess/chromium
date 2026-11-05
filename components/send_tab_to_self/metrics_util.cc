@@ -139,8 +139,15 @@ void RecordNotificationStatus(NotificationStatus status) {
                                 status);
 }
 
+void RecordAutoOpenedImmediately(bool opened_immediately, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    base::UmaHistogramBoolean("Sharing.SendTabToSelf.AutoOpenedImmediately",
+                              opened_immediately);
+  }
+}
+
 void RecordAutoOpenOutcome(AutoOpenOutcome outcome) {
-  base::UmaHistogramEnumeration("Sharing.SendTabToSelf.AutoOpenOutcome2",
+  base::UmaHistogramEnumeration("Sharing.SendTabToSelf.AutoOpenOutcome3",
                                 outcome);
 }
 
@@ -179,7 +186,7 @@ void RecordHasScrollPositionOnOpened(bool has_scroll_position) {
 }
 
 void RecordPageContextSize(size_t size) {
-  base::UmaHistogramCounts10000("Sharing.SendTabToSelf.PageContextSize", size);
+  base::UmaHistogramCounts10000("Sharing.SendTabToSelf.PageContextSize2", size);
 }
 
 void RecordScrollVolume(float volume, bool with_restoration) {
@@ -191,7 +198,7 @@ void RecordScrollVolume(float volume, bool with_restoration) {
 }
 
 void RecordTimeSentToReceived(base::TimeDelta delay) {
-  base::UmaHistogramCustomTimes("Sharing.SendTabToSelf.TimeSentToReceived",
+  base::UmaHistogramCustomTimes("Sharing.SendTabToSelf.TimeSentToReceived2",
                                 delay, base::Milliseconds(100), base::Days(10),
                                 100);
 }

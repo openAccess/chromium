@@ -5,8 +5,9 @@
 #include "base/time/default_clock.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/commerce/commerce_ui_tab_helper.h"
 #include "chrome/browser/ui/commerce/mock_commerce_ui_tab_helper.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
@@ -49,10 +50,9 @@ class DiscountsIconViewBrowserTest : public UiBrowserTest {
 
     // Setup discount response in tab helper
     MockCommerceUiTabHelper* mock_tab_helper =
-        static_cast<MockCommerceUiTabHelper*>(browser()
-                                                  ->GetActiveTabInterface()
-                                                  ->GetTabFeatures()
-                                                  ->commerce_ui_tab_helper());
+        static_cast<MockCommerceUiTabHelper*>(
+            commerce::CommerceUiTabHelper::From(
+                browser()->GetActiveTabInterface()));
     ON_CALL(*mock_tab_helper, ShouldShowDiscountsIconView)
         .WillByDefault(testing::Return(true));
     ON_CALL(*mock_tab_helper, GetDiscounts)
@@ -74,10 +74,7 @@ class DiscountsIconViewBrowserTest : public UiBrowserTest {
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kTestURL)));
 
     // Manually trigger the discounts page action.
-    browser()
-        ->GetActiveTabInterface()
-        ->GetTabFeatures()
-        ->commerce_ui_tab_helper()
+    commerce::CommerceUiTabHelper::From(browser()->GetActiveTabInterface())
         ->UpdateDiscountsIconView();
   }
 
@@ -91,11 +88,11 @@ class DiscountsIconViewBrowserTest : public UiBrowserTest {
     std::string test_name =
         testing::UnitTest::GetInstance()->current_test_info()->name();
     if (test_name == "InvokeUi_show_discounts_icon_with_label") {
-      EXPECT_TRUE(accessor.IsChipVisible());
+      EXPECT_TRUE(accessor.ShouldShowSuggestionChip());
       EXPECT_EQ(accessor.GetText(),
                 l10n_util::GetStringUTF16(IDS_DISCOUNT_ICON_EXPANDED_TEXT));
     } else if (test_name == "InvokeUi_show_discounts_icon_only") {
-      EXPECT_FALSE(accessor.IsChipVisible());
+      EXPECT_FALSE(accessor.ShouldShowSuggestionChip());
     }
     return true;
   }

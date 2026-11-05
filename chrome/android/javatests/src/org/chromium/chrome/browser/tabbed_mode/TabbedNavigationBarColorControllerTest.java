@@ -83,6 +83,7 @@ import java.util.concurrent.TimeoutException;
 @Batch(Batch.PER_CLASS)
 @Features.DisableFeatures({
     ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE,
+    ChromeFeatureList.EDGE_TO_EDGE_MONITOR_CONFIGURATIONS,
     ChromeFeatureList.ANDROID_BOTTOM_BAR
 })
 @SuppressLint("NewApi")
@@ -374,12 +375,14 @@ public class TabbedNavigationBarColorControllerTest {
     @EnableAnimations
     @Restriction({DeviceFormFactor.PHONE, DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     @MinAndroidSdkLevel(Build.VERSION_CODES.R)
+    @DisabledTest(message = "https://crbug.com/576880040")
     public void testNavBarColorAnimationsEdgeToEdgeBottomChin() throws InterruptedException {
         initialize();
 
         Assume.assumeTrue(
                 "E2E not applicable.",
-                EdgeToEdgeUtils.isEdgeToEdgeBottomChinEnabled(mActivityTestRule.getActivity()));
+                EdgeToEdgeUtils.isEdgeToEdgeBottomChinSupportedByDevice(
+                        mActivityTestRule.getActivity()));
         testNavBarColorAnimations();
     }
 
@@ -389,6 +392,7 @@ public class TabbedNavigationBarColorControllerTest {
     @EnableAnimations
     @Restriction({DeviceFormFactor.PHONE, DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     @MinAndroidSdkLevel(Build.VERSION_CODES.R)
+    @DisabledTest(message = "https://crbug.com/576880040")
     public void testNavBarColorAnimationsEdgeToEdgeEverywhere() throws InterruptedException {
         initialize();
         testNavBarColorAnimations();

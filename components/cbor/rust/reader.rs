@@ -3,8 +3,6 @@
 // found in the LICENSE file.
 
 use alloc::vec::Vec;
-use core::cmp::Ordering;
-use core::str;
 
 use crate::constants::*;
 use crate::values::{Map, MapEntry, MapKey, Value};
@@ -20,13 +18,14 @@ pub enum Error {
     TooMuchNesting = 5,
     InvalidUtf8 = 6,
     ExtraneousData = 7,
-    OutOfOrderKey = 8,
+    // 8 was OutOfOrderKey.
     NonMinimalCborEncoding = 9,
     UnsupportedSimpleValue = 10,
     UnsupportedFloatingPointValue = 11,
     OutOfRangeIntegerValue = 12,
-    DuplicateKey = 13,
+    // 13 was DuplicateKey.
     UnknownError = 14,
+    OutOfOrderOrDuplicateKey = 15,
 }
 // LINT.ThenChange(//components/cbor/reader.h:DecoderError,
 // //components/cbor/reader.cc:DecoderErrorAsserts)
@@ -49,9 +48,6 @@ impl Error {
                 "String encodings other than UTF-8 are not allowed."
             }
             Self::ExtraneousData => "Trailing data bytes are not allowed.",
-            Self::OutOfOrderKey => {
-                "Map keys must be strictly monotonically increasing based on byte length and then by byte-wise lexical order."
-            }
             Self::NonMinimalCborEncoding => {
                 "Unsigned integers must be encoded with minimum number of bytes."
             }
@@ -64,8 +60,10 @@ impl Error {
             Self::OutOfRangeIntegerValue => {
                 "Integer values must be between INT64_MIN and INT64_MAX."
             }
-            Self::DuplicateKey => "Duplicate map keys are not allowed.",
             Self::UnknownError => "An unknown error occured.",
+            Self::OutOfOrderOrDuplicateKey => {
+                "Map keys must be strictly monotonically increasing based on major type, byte length and then by byte-wise lexical order."
+            }
         }
     }
 }
@@ -89,14 +87,6 @@ impl Default for Config {
     }
 }
 
-fn get_u8(bytes: &mut &[u8]) -> Result<u8, Error> {
-    bytes.split_off_first().copied().ok_or(Error::IncompleteCborData)
-}
-
-fn get<'a>(bytes: &mut &'a [u8], num_bytes: usize) -> Result<&'a [u8], Error> {
-    bytes.split_off(..num_bytes).ok_or(Error::IncompleteCborData)
-}
-
 #[repr(C)]
 #[derive(Debug, PartialEq, Clone)]
 pub struct ParseResult<'a> {
@@ -112,45 +102,10 @@ pub fn parse_with_config<'a>(
     config: Config,
 ) -> Result<ParseResult<'a>, Error> {
     let orig_len = input.len();
-    let value = parse_value(&mut input, 0, &config)?;
+    let decoder = Decoder { config };
+    let value = decoder.parse_value(&mut input, 0)?;
     let bytes_consumed = orig_len - input.len();
     Ok(ParseResult { value, bytes_consumed })
-}
-
-fn parse_value<'a>(
-    input: &mut &'a [u8],
-    depth: usize,
-    config: &Config,
-) -> Result<Value<'a>, Error> {
-    if depth > config.max_nesting_level {
-        return Err(Error::TooMuchNesting);
-    }
-    let (major_type, info, arg) = parse_header(input)?;
-    match major_type {
-        MAJOR_TYPE_UNSIGNED_INT => to_int(arg, false).map(Value::Int),
-        MAJOR_TYPE_NEGATIVE_INT => to_int(arg, true).map(Value::Int),
-        MAJOR_TYPE_BYTE_STRING => to_bytestring(input, arg).map(Value::Bytestring),
-        MAJOR_TYPE_TEXT_STRING => to_string(input, arg, config),
-        MAJOR_TYPE_ARRAY => to_array(input, arg, depth + 1, config).map(Value::Array),
-        MAJOR_TYPE_MAP => to_map(input, arg, depth + 1, config).map(Value::Map),
-        MAJOR_TYPE_SIMPLE_VALUE => to_simple_value(info),
-        _ => Err(Error::UnsupportedMajorType),
-    }
-}
-
-fn parse_header(input: &mut &[u8]) -> Result<(u8, u8, u64), Error> {
-    let b = get_u8(input)?;
-    let major_type = b >> 5;
-    let info = b & 0x1f;
-    let arg = match (major_type, info) {
-        (_, 0..=23) => Ok(info as u64),
-        (_, ADDL_INFO_1_BYTE) => get_argument::<1, u8>(input),
-        (_, ADDL_INFO_2_BYTES) => get_argument::<2, u16>(input),
-        (_, ADDL_INFO_4_BYTES) => get_argument::<4, u32>(input),
-        (_, ADDL_INFO_8_BYTES) => get_argument::<8, u64>(input),
-        _ => Err(Error::UnknownAdditionalInfo),
-    }?;
-    Ok((major_type, info, arg))
 }
 
 // N should really be an associated const, or even replaced with `const {
@@ -184,124 +139,215 @@ impl FromBytes<8> for u64 {
     }
 }
 
-fn u64_from_be_bytes<const N: usize, T: FromBytes<N>>(input: &mut &[u8]) -> Result<u64, Error> {
-    const {
-        assert!(N == core::mem::size_of::<T>());
-    }
-
-    let Some((bytes, rest)) = input.split_first_chunk::<N>() else {
-        return Err(Error::IncompleteCborData);
-    };
-    *input = rest;
-    Ok(T::from_be_bytes(*bytes).into())
+trait SliceExt<'a> {
+    fn read_array<const N: usize>(&mut self) -> Option<&'a [u8; N]>;
+    fn read_bytes(&mut self, len: usize) -> Option<&'a [u8]>;
+    fn read_u8(&mut self) -> Option<u8>;
 }
 
-fn get_argument<const N: usize, T: FromBytes<N>>(input: &mut &[u8]) -> Result<u64, Error> {
-    let v = u64_from_be_bytes::<N, T>(input)?;
-    let (_, expected_num_bytes) = crate::writer::low_bits_and_length(v);
-    if N != expected_num_bytes {
-        Err(Error::NonMinimalCborEncoding)
-    } else {
-        Ok(v)
+impl<'a> SliceExt<'a> for &'a [u8] {
+    fn read_array<const N: usize>(&mut self) -> Option<&'a [u8; N]> {
+        let (head, tail) = self.split_first_chunk::<N>()?;
+        *self = tail;
+        Some(head)
+    }
+
+    fn read_bytes(&mut self, len: usize) -> Option<&'a [u8]> {
+        self.split_off(..len)
+    }
+
+    fn read_u8(&mut self) -> Option<u8> {
+        self.split_off_first().copied()
     }
 }
 
-fn to_int(arg: u64, is_negative: bool) -> Result<i64, Error> {
-    if is_negative {
-        if arg > i64::MAX as u64 {
-            Err(Error::OutOfRangeIntegerValue)
+enum Header {
+    Int(i64),
+    ByteString(u64),
+    TextString(u64),
+    Array(u64),
+    Map(u64),
+    SimpleValue(u8),
+}
+
+struct Decoder {
+    config: Config,
+}
+
+impl Decoder {
+    fn parse_value<'a>(&self, data: &mut &'a [u8], depth: usize) -> Result<Value<'a>, Error> {
+        if depth > self.config.max_nesting_level {
+            return Err(Error::TooMuchNesting);
+        }
+
+        match Self::read_header(data)? {
+            Header::Int(val) => Ok(Value::Int(val)),
+            Header::ByteString(len) => {
+                Self::read_complete_bytestring(data, len).map(Value::Bytestring)
+            }
+            Header::TextString(len) => {
+                let bytes = Self::read_complete_bytestring(data, len)?;
+                match core::str::from_utf8(bytes) {
+                    Ok(s) => Ok(Value::String(s)),
+                    Err(_) if self.config.allow_invalid_utf8 => Ok(Value::InvalidUtf8(bytes)),
+                    Err(_) => Err(Error::InvalidUtf8),
+                }
+            }
+            Header::Array(num_elements) => self.parse_array(data, num_elements, depth),
+            Header::Map(num_elements) => self.parse_map(data, num_elements, depth),
+            Header::SimpleValue(info) => match info {
+                SIMPLE_VALUE_FALSE => Ok(Value::Boolean(false)),
+                SIMPLE_VALUE_TRUE => Ok(Value::Boolean(true)),
+                SIMPLE_VALUE_NULL => Ok(Value::Null),
+                SIMPLE_VALUE_UNDEFINED => Ok(Value::Undefined),
+                SIMPLE_VALUE_FLOAT_16..=SIMPLE_VALUE_FLOAT_64 => {
+                    Err(Error::UnsupportedFloatingPointValue)
+                }
+                _ => Err(Error::UnsupportedSimpleValue),
+            },
+        }
+    }
+
+    fn parse_array<'a>(
+        &self,
+        data: &mut &'a [u8],
+        num_elements: u64,
+        depth: usize,
+    ) -> Result<Value<'a>, Error> {
+        let mut ret = Vec::new();
+        for _ in 0..num_elements {
+            ret.push(self.parse_value(data, depth + 1)?);
+        }
+        Ok(Value::Array(ret))
+    }
+
+    fn parse_map<'a>(
+        &self,
+        data: &mut &'a [u8],
+        num_elements: u64,
+        depth: usize,
+    ) -> Result<Value<'a>, Error> {
+        let mut ret: Vec<MapEntry> = Vec::new();
+
+        for _ in 0..num_elements {
+            let key = self.parse_map_key(data, depth + 1)?;
+
+            if let Some(previous) = ret.last()
+                && previous.key >= key
+            {
+                return Err(Error::OutOfOrderOrDuplicateKey);
+            }
+
+            let value = self.parse_value(data, depth + 1)?;
+
+            ret.push(MapEntry { key, value });
+        }
+        Ok(Value::Map(Map::from_sorted_vec_unchecked(ret)))
+    }
+
+    fn parse_map_key<'a>(&self, data: &mut &'a [u8], depth: usize) -> Result<MapKey<'a>, Error> {
+        if depth > self.config.max_nesting_level {
+            return Err(Error::TooMuchNesting);
+        }
+
+        match Self::read_header(data)? {
+            Header::Int(val) => Ok(MapKey::Int(val)),
+            Header::ByteString(len) => {
+                Self::read_complete_bytestring(data, len).map(MapKey::Bytestring)
+            }
+            Header::TextString(len) => {
+                let bytes = Self::read_complete_bytestring(data, len)?;
+                core::str::from_utf8(bytes).map(MapKey::String).map_err(|_| Error::InvalidUtf8)
+            }
+            Header::Array(_) | Header::Map(_) | Header::SimpleValue(_) => {
+                Err(Error::IncorrectMapKeyType)
+            }
+        }
+    }
+
+    fn read_complete_bytestring<'a>(data: &mut &'a [u8], len: u64) -> Result<&'a [u8], Error> {
+        let len = usize::try_from(len).map_err(|_| Error::IncompleteCborData)?;
+        data.read_bytes(len).ok_or(Error::IncompleteCborData)
+    }
+
+    fn read_arg<const N: usize, T: FromBytes<N>>(data: &mut &[u8]) -> Result<u64, Error> {
+        let arr = data.read_array::<N>().ok_or(Error::IncompleteCborData)?;
+        let v = T::from_be_bytes(*arr).into();
+        let (_, expected_num_bytes) = crate::writer::low_bits_and_length(v);
+        if N != expected_num_bytes {
+            Err(Error::NonMinimalCborEncoding)
         } else {
-            Ok(!arg as i64)
-        }
-    } else if arg > i64::MAX as u64 {
-        Err(Error::OutOfRangeIntegerValue)
-    } else {
-        Ok(arg as i64)
-    }
-}
-
-fn to_bytestring<'a>(input: &mut &'a [u8], len64: u64) -> Result<&'a [u8], Error> {
-    let Ok(len) = usize::try_from(len64) else {
-        return Err(Error::IncompleteCborData);
-    };
-    get(input, len)
-}
-
-fn to_string<'a>(input: &mut &'a [u8], len64: u64, config: &Config) -> Result<Value<'a>, Error> {
-    let bytes = to_bytestring(input, len64)?;
-    match str::from_utf8(bytes) {
-        Ok(string) => Ok(Value::String(string)),
-        Err(_) => {
-            if config.allow_invalid_utf8 {
-                Ok(Value::InvalidUtf8(bytes))
-            } else {
-                Err(Error::InvalidUtf8)
-            }
+            Ok(v)
         }
     }
-}
 
-fn to_array<'a>(
-    input: &mut &'a [u8],
-    num_elements: u64,
-    depth: usize,
-    config: &Config,
-) -> Result<Vec<Value<'a>>, Error> {
-    let mut ret = Vec::new();
-    for _ in 0..num_elements {
-        ret.push(parse_value(input, depth, config)?);
-    }
-    Ok(ret)
-}
-
-fn to_map<'a>(
-    input: &mut &'a [u8],
-    num_elements: u64,
-    depth: usize,
-    config: &Config,
-) -> Result<Map<'a>, Error> {
-    let mut ret: Vec<MapEntry> = Vec::new();
-
-    for _ in 0..num_elements {
-        // TODO(crbug.com/259749095): Validate key type + order (and possibly return
-        // early) before attempting to parse the value.
-        let key_value = parse_value(input, depth, config)?;
-        let value = parse_value(input, depth, config)?;
-
-        let key = match MapKey::try_from(key_value) {
-            Ok(key) => key,
-            Err(Value::InvalidUtf8(_)) => return Err(Error::InvalidUtf8),
-            Err(_) => return Err(Error::IncorrectMapKeyType),
+    fn read_header(data: &mut &[u8]) -> Result<Header, Error> {
+        let b = data.read_u8().ok_or(Error::IncompleteCborData)?;
+        let major_type = b >> 5;
+        let info = b & 0x1f;
+        let arg = match info {
+            0..=ADDL_INFO_DIRECT_MAX => info as u64,
+            ADDL_INFO_1_BYTE => Self::read_arg::<1, u8>(data)?,
+            ADDL_INFO_2_BYTES => Self::read_arg::<2, u16>(data)?,
+            ADDL_INFO_4_BYTES => Self::read_arg::<4, u32>(data)?,
+            ADDL_INFO_8_BYTES => Self::read_arg::<8, u64>(data)?,
+            _ => return Err(Error::UnknownAdditionalInfo),
         };
-
-        if let Some(previous) = ret.last() {
-            match previous.key.cmp(&key) {
-                Ordering::Less => {}
-                Ordering::Greater
-                    if ret.binary_search_by_key(&&key, |entry| &entry.key).is_err() =>
-                {
-                    return Err(Error::OutOfOrderKey);
-                }
-                // Covers `Ordering::Equal` and `Ordering::Greater` when the key is already
-                // in the map (e.g. an out-of-order duplicate).
-                _ => {
-                    return Err(Error::DuplicateKey);
-                }
+        match major_type {
+            MAJOR_TYPE_UNSIGNED_INT => {
+                i64::try_from(arg).map(Header::Int).map_err(|_| Error::OutOfRangeIntegerValue)
             }
+            MAJOR_TYPE_NEGATIVE_INT => i64::try_from(arg)
+                .map(|val| Header::Int(!val))
+                .map_err(|_| Error::OutOfRangeIntegerValue),
+            MAJOR_TYPE_BYTE_STRING => Ok(Header::ByteString(arg)),
+            MAJOR_TYPE_TEXT_STRING => Ok(Header::TextString(arg)),
+            MAJOR_TYPE_ARRAY => Ok(Header::Array(arg)),
+            MAJOR_TYPE_MAP => Ok(Header::Map(arg)),
+            MAJOR_TYPE_SIMPLE_VALUE => Ok(Header::SimpleValue(info)),
+            _ => Err(Error::UnsupportedMajorType),
         }
-
-        ret.push(MapEntry { key, value });
     }
-    Ok(Map::from_sorted_vec_unchecked(ret))
 }
 
-fn to_simple_value(info: u8) -> Result<Value<'static>, Error> {
-    match info {
-        SIMPLE_VALUE_FALSE => Ok(Value::Boolean(false)),
-        SIMPLE_VALUE_TRUE => Ok(Value::Boolean(true)),
-        SIMPLE_VALUE_NULL => Ok(Value::Null),
-        SIMPLE_VALUE_UNDEFINED => Ok(Value::Undefined),
-        SIMPLE_VALUE_FLOAT_16..=SIMPLE_VALUE_FLOAT_64 => Err(Error::UnsupportedFloatingPointValue),
-        _ => Err(Error::UnsupportedSimpleValue),
+/// Reads a CBOR array header (major type 4) and returns the number of elements
+/// in the array. Leaves `data` unconsumed on error.
+pub fn read_array_header(data: &mut &[u8]) -> Result<u64, Error> {
+    let mut remaining = *data;
+    match Decoder::read_header(&mut remaining)? {
+        Header::Array(len) => {
+            *data = remaining;
+            Ok(len)
+        }
+        _ => Err(Error::UnsupportedMajorType),
     }
+}
+
+/// Reads a CBOR byte string header (major type 2) and returns the byte length.
+/// Leaves `data` unconsumed on error.
+pub fn read_bytestring_header(data: &mut &[u8]) -> Result<u64, Error> {
+    let mut remaining = *data;
+    match Decoder::read_header(&mut remaining)? {
+        Header::ByteString(len) => {
+            *data = remaining;
+            Ok(len)
+        }
+        _ => Err(Error::UnsupportedMajorType),
+    }
+}
+
+/// Reads `len` payload bytes of a CBOR byte string after its header has been
+/// consumed. Leaves `data` unconsumed on error.
+pub fn read_complete_bytestring<'a>(data: &mut &'a [u8], len: u64) -> Result<&'a [u8], Error> {
+    Decoder::read_complete_bytestring(data, len)
+}
+
+/// Reads a complete CBOR byte string (major type 2), including its header and
+/// payload bytes. Leaves `data` unconsumed on error.
+pub fn read_bytestring<'a>(data: &mut &'a [u8]) -> Result<&'a [u8], Error> {
+    let mut remaining = *data;
+    let len = read_bytestring_header(&mut remaining)?;
+    let bytes = read_complete_bytestring(&mut remaining, len)?;
+    *data = remaining;
+    Ok(bytes)
 }

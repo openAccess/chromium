@@ -740,6 +740,74 @@ TEST_F(H265ParserTest, SpsOverwritesInvalidatesPps) {
   EXPECT_EQ(parser_.GetPPS(pps_id), nullptr);
 }
 
+TEST(H265ProfileTierLevelTest, GetMaxLumaPsMatchesTableA8) {
+  H265ProfileTierLevel ptl;
+  ptl.general_level_idc = 156;  // 5.2
+  EXPECT_EQ(ptl.GetMaxLumaPs(), 8912896);
+  ptl.general_level_idc = 186;  // 6.2
+  EXPECT_EQ(ptl.GetMaxLumaPs(), 35651584);
+  ptl.general_level_idc = 189;  // 6.3
+  EXPECT_EQ(ptl.GetMaxLumaPs(), 80216064);
+  ptl.general_level_idc = 210;  // 7
+  EXPECT_EQ(ptl.GetMaxLumaPs(), 142606336);
+  ptl.general_level_idc = 216;  // 7.2
+  EXPECT_EQ(ptl.GetMaxLumaPs(), 142606336);
+}
+
+TEST_F(H265ParserTest, AcceptsFrameDimensionsAboveLevel62Cap) {
+  H265SPS sps = {};
+  sps.profile_tier_level.general_profile_idc = 1;
+  sps.profile_tier_level.general_level_idc = 216;  // 7.2
+  // 16888 is the level 6.2 per-dimension cap; 7.2 allows up to 33776.
+  sps.pic_width_in_luma_samples = 20000;
+  sps.pic_height_in_luma_samples = 64;
+  sps.log2_max_pic_order_cnt_lsb_minus4 = 4;
+  sps.log2_diff_max_min_luma_coding_block_size = 3;
+  sps.log2_diff_max_min_luma_transform_block_size = 3;
+  sps.sps_max_dec_pic_buffering_minus1[0] = 0;
+
+  H26xAnnexBBitstreamBuilder builder;
+  BuildPackedH265SPS(builder, sps);
+  builder.Flush();
+
+  parser_.SetStream(builder.data());
+  H265NALU nalu;
+  ASSERT_EQ(parser_.AdvanceToNextNALU(&nalu), H265Parser::kOk);
+  int sps_id;
+  ASSERT_EQ(parser_.ParseSPS(&sps_id), H265Parser::kOk);
+  const H265SPS* parsed = parser_.GetSPS(sps_id);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->pic_width_in_luma_samples, 20000);
+}
+
+TEST_F(H265ParserTest, Level63AllowsLargerDpbFor8k) {
+  H265SPS sps = {};
+  sps.profile_tier_level.general_profile_idc = 1;
+  sps.profile_tier_level.general_level_idc = 189;  // 6.3
+  sps.pic_width_in_luma_samples = 7680;
+  sps.pic_height_in_luma_samples = 4320;
+  sps.log2_max_pic_order_cnt_lsb_minus4 = 4;
+  sps.log2_diff_max_min_luma_coding_block_size = 3;
+  sps.log2_diff_max_min_luma_transform_block_size = 3;
+  // Equation A-2 with MaxLumaPs of 6.3 yields max_dpb_size = 12, so
+  // sps_max_dec_pic_buffering_minus1 may be 11. With the 6.2 MaxLumaPs this
+  // same picture would only allow 5 and ParseSPS would reject the SPS.
+  sps.sps_max_dec_pic_buffering_minus1[0] = 11;
+
+  H26xAnnexBBitstreamBuilder builder;
+  BuildPackedH265SPS(builder, sps);
+  builder.Flush();
+
+  parser_.SetStream(builder.data());
+  H265NALU nalu;
+  ASSERT_EQ(parser_.AdvanceToNextNALU(&nalu), H265Parser::kOk);
+  int sps_id;
+  ASSERT_EQ(parser_.ParseSPS(&sps_id), H265Parser::kOk);
+  const H265SPS* parsed = parser_.GetSPS(sps_id);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->max_dpb_size, 12u);
+}
+
 class H265CrossSliceTest : public H265ParserTest {
  protected:
   void BuildSpsAndPps(H26xAnnexBBitstreamBuilder& builder) {
@@ -842,6 +910,70 @@ class H265CrossSliceTest : public H265ParserTest {
     ASSERT_EQ(parser_.ParseSliceHeader(nalu, first_shdr, nullptr),
               H265Parser::kOk);
   }
+
+  // Builds an SPS with two short-term reference picture sets:
+  // RPS 0: ΔPOC = -1 (explicit)
+  // RPS 1: ΔPOC = -201 (explicit)
+  void BuildSpsWithTwoShortTermRefPicSets(H26xAnnexBBitstreamBuilder& builder) {
+    builder.BeginNALU(H265NALU::SPS_NUT);
+    builder.AppendBits(4, 0);  // sps_video_parameter_set_id
+    builder.AppendBits(3, 0);  // sps_max_sub_layers_minus1
+    builder.AppendBits(1, 1);  // sps_temporal_id_nesting_flag
+
+    H265ProfileTierLevel ptl = {};
+    ptl.general_profile_idc = 1;
+    ptl.general_level_idc = 120;
+    BuildPackedH265ProfileTierLevel(builder, ptl, true, 0);
+
+    builder.AppendUE(0);       // sps_seq_parameter_set_id
+    builder.AppendUE(1);       // chroma_format_idc = 1 (4:2:0)
+    builder.AppendUE(32);      // pic_width_in_luma_samples
+    builder.AppendUE(16);      // pic_height_in_luma_samples
+    builder.AppendBits(1, 0);  // conformance_window_flag
+    builder.AppendUE(0);       // bit_depth_luma_minus8
+    builder.AppendUE(0);       // bit_depth_chroma_minus8
+    builder.AppendUE(4);       // log2_max_pic_order_cnt_lsb_minus4
+    builder.AppendBits(1, 0);  // sps_sub_layer_ordering_info_present_flag
+    builder.AppendUE(1);       // sps_max_dec_pic_buffering_minus1
+    builder.AppendUE(0);       // sps_max_num_reorder_pics
+    builder.AppendUE(0);       // sps_max_latency_increase_plus1
+    builder.AppendUE(0);       // log2_min_luma_coding_block_size_minus3
+    builder.AppendUE(1);       // log2_diff_max_min_luma_coding_block_size
+    builder.AppendUE(0);       // log2_min_transform_block_size_minus2
+    builder.AppendUE(0);       // log2_diff_max_min_transform_block_size
+    builder.AppendUE(0);       // max_transform_hierarchy_depth_inter
+    builder.AppendUE(0);       // max_transform_hierarchy_depth_intra
+    builder.AppendBits(1, 0);  // scaling_list_enabled_flag
+    builder.AppendBits(1, 0);  // amp_enabled_flag
+    builder.AppendBits(1, 0);  // sample_adaptive_offset_enabled_flag
+    builder.AppendBits(1, 0);  // pcm_enabled_flag
+
+    // num_short_term_ref_pic_sets = 2
+    builder.AppendUE(2);
+
+    // RPS 0: num_negative_pics = 1, num_positive_pics = 0, delta_poc_s0_minus1
+    // = 0 (ΔPOC = -1), used = 1
+    builder.AppendUE(1);
+    builder.AppendUE(0);
+    builder.AppendUE(0);
+    builder.AppendBool(true);
+
+    // RPS 1: inter_ref_pic_set_prediction_flag = 0
+    builder.AppendBool(false);
+    // num_negative_pics = 1, num_positive_pics = 0, delta_poc_s0_minus1 = 200
+    // (ΔPOC = -201), used = 1
+    builder.AppendUE(1);
+    builder.AppendUE(0);
+    builder.AppendUE(200);
+    builder.AppendBool(true);
+
+    builder.AppendBits(1, 0);  // long_term_ref_pics_present_flag
+    builder.AppendBits(1, 0);  // sps_temporal_mvp_enabled_flag
+    builder.AppendBits(1, 0);  // strong_intra_smoothing_enabled_flag
+    builder.AppendBits(1, 0);  // vui_parameters_present_flag
+    builder.AppendBits(1, 0);  // sps_extension_present_flag
+    builder.FinishNALU();
+  }
 };
 
 TEST_F(H265CrossSliceTest, RejectsMismatchedNalUnitType) {
@@ -922,6 +1054,72 @@ TEST_F(H265CrossSliceTest, AcceptsMatchingShortTermRefPicSet) {
   H265SliceHeader second_shdr;
   EXPECT_EQ(parser_.ParseSliceHeader(nalu, &second_shdr, &first_shdr),
             H265Parser::kOk);
+}
+
+TEST_F(H265CrossSliceTest, RejectsMismatchedShortTermRefPicSetBitLength) {
+  H26xAnnexBBitstreamBuilder builder;
+  BuildSpsWithTwoShortTermRefPicSets(builder);
+
+  H265PPS pps = {};
+  pps.pps_pic_parameter_set_id = 0;
+  pps.pps_seq_parameter_set_id = 0;
+  BuildPackedH265PPS(builder, pps);
+
+  // Slice 1: references SPS RPS 0 via inter-prediction with delta_rps = -210.
+  // Derived RPS: ΔPOC = -1 + (-210) = -211. Encoded length: 23 bits.
+  builder.BeginNALU(H265NALU::TRAIL_R);
+  builder.AppendBool(true);  // first_slice_segment_in_pic_flag
+  builder.AppendUE(0);       // slice_pic_parameter_set_id
+  builder.AppendUE(H265SliceHeader::kSliceTypeI);
+  builder.AppendBits(8, 0);   // slice_pic_order_cnt_lsb
+  builder.AppendBool(false);  // short_term_ref_pic_set_sps_flag
+  // Inline st_ref_pic_set (st_rps_idx = 2):
+  builder.AppendBool(true);   // inter_ref_pic_set_prediction_flag
+  builder.AppendUE(1);        // delta_idx_minus1 = 1 -> ref_rps_idx = 0
+  builder.AppendBool(true);   // delta_rps_sign = 1 (negative)
+  builder.AppendUE(209);      // abs_delta_rps_minus1 = 209 -> delta_rps = -210
+  builder.AppendBool(true);   // used_by_curr_pic_flag[0]
+  builder.AppendBool(false);  // used_by_curr_pic_flag[1]
+  builder.AppendBool(false);  // use_delta_flag[1]
+  builder.AppendSE(0);        // slice_qp_delta
+  builder.FinishNALU();
+
+  // Slice 2: references SPS RPS 1 via inter-prediction with delta_rps = -10.
+  // Derived RPS: ΔPOC = -201 + (-10) = -211. Encoded length: 13 bits.
+  builder.BeginNALU(H265NALU::TRAIL_R);
+  builder.AppendBool(false);  // first_slice_segment_in_pic_flag
+  builder.AppendUE(0);        // slice_pic_parameter_set_id
+  builder.AppendBits(1, 1);   // slice_segment_address
+  builder.AppendUE(H265SliceHeader::kSliceTypeI);
+  builder.AppendBits(8, 0);   // slice_pic_order_cnt_lsb
+  builder.AppendBool(false);  // short_term_ref_pic_set_sps_flag
+  // Inline st_ref_pic_set (st_rps_idx = 2):
+  builder.AppendBool(true);   // inter_ref_pic_set_prediction_flag
+  builder.AppendUE(0);        // delta_idx_minus1 = 0 -> ref_rps_idx = 1
+  builder.AppendBool(true);   // delta_rps_sign = 1 (negative)
+  builder.AppendUE(9);        // abs_delta_rps_minus1 = 9 -> delta_rps = -10
+  builder.AppendBool(true);   // used_by_curr_pic_flag[0]
+  builder.AppendBool(false);  // used_by_curr_pic_flag[1]
+  builder.AppendBool(false);  // use_delta_flag[1]
+  builder.AppendSE(0);        // slice_qp_delta
+  builder.FinishNALU();
+
+  builder.Flush();
+  parser_.SetStream(builder.data());
+
+  H265SliceHeader first_shdr;
+  ParseUpToSecondSlice(&first_shdr);
+  EXPECT_EQ(first_shdr.st_rps_bits, 23);
+
+  H265NALU nalu;
+  ASSERT_EQ(parser_.AdvanceToNextNALU(&nalu), H265Parser::kOk);
+  ASSERT_EQ(nalu.nal_unit_type, H265NALU::TRAIL_R);
+  H265SliceHeader second_shdr;
+  // Slices 1 and 2 derive identical H265StRefPicSet values, but differ in
+  // encoded RPS bit length (23 vs 13 bits). The parser must reject this
+  // to avoid desyncing stateless hardware decoders.
+  EXPECT_EQ(parser_.ParseSliceHeader(nalu, &second_shdr, &first_shdr),
+            H265Parser::kInvalidStream);
 }
 
 TEST_F(H265CrossSliceTest, RejectsNonFirstSliceSegmentWithoutPriorSliceHeader) {

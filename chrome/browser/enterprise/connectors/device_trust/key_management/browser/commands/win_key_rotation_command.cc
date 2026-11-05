@@ -8,6 +8,7 @@
 #include <winerror.h>
 #include <wrl/client.h>
 
+#include <array>
 #include <optional>
 #include <string>
 #include <utility>
@@ -45,7 +46,7 @@ constexpr int kMaxCommandArgs = 9;
 HRESULT RunGoogleUpdateElevatedCommand(const wchar_t* command,
                                        const std::vector<std::string>& args,
                                        std::optional<DWORD>* return_code) {
-  DCHECK(return_code);
+  CHECK(return_code, base::NotFatalUntil::M161);
   if (args.size() > kMaxCommandArgs)
     return E_INVALIDARG;
 
@@ -56,9 +57,9 @@ HRESULT RunGoogleUpdateElevatedCommand(const wchar_t* command,
 
   Microsoft::WRL::ComPtr<IAppCommandWeb> app_command =
       get_command_result.value();
-  _variant_t vargs[kMaxCommandArgs];
+  std::array<_variant_t, kMaxCommandArgs> vargs;
   for (size_t i = 0; i < args.size(); ++i) {
-    UNSAFE_TODO(vargs[i]) = args[i].c_str();
+    vargs[i] = args[i].c_str();
   }
 
   HRESULT hr =
@@ -117,15 +118,15 @@ WinKeyRotationCommand::WinKeyRotationCommand(
     scoped_refptr<base::SingleThreadTaskRunner> com_thread_runner)
     : com_thread_runner_(com_thread_runner),
       run_elevated_command_(run_elevated_command) {
-  DCHECK(run_elevated_command_);
-  DCHECK(com_thread_runner_);
+  CHECK(run_elevated_command_, base::NotFatalUntil::M161);
+  CHECK(com_thread_runner_, base::NotFatalUntil::M161);
 }
 
 WinKeyRotationCommand::~WinKeyRotationCommand() = default;
 
 void WinKeyRotationCommand::Trigger(const KeyRotationCommand::Params& params,
                                     Callback callback) {
-  DCHECK(!callback.is_null());
+  CHECK(!callback.is_null(), base::NotFatalUntil::M161);
 
   com_thread_runner_->PostTaskAndReplyWithResult(
       FROM_HERE,

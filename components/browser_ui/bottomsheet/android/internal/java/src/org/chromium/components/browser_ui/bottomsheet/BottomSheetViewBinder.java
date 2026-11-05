@@ -5,6 +5,7 @@
 package org.chromium.components.browser_ui.bottomsheet;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
@@ -25,8 +26,6 @@ public class BottomSheetViewBinder {
             view.setGlowSpec(model.get(BottomSheetProperties.GLOW_SPEC));
         } else if (BottomSheetProperties.BACKGROUND_COLOR == propertyKey) {
             view.setSheetBackgroundColor(model.get(BottomSheetProperties.BACKGROUND_COLOR));
-        } else if (BottomSheetProperties.CONTAINER_Z == propertyKey) {
-            view.setContainerZ(model.get(BottomSheetProperties.CONTAINER_Z));
         } else if (BottomSheetProperties.CLOSE_BUTTON_VISIBILITY == propertyKey) {
             view.setCloseButtonVisible(model.get(BottomSheetProperties.CLOSE_BUTTON_VISIBILITY));
         } else if (BottomSheetProperties.CLOSE_BUTTON_CLICK_LISTENER == propertyKey) {
@@ -34,9 +33,6 @@ public class BottomSheetViewBinder {
                     model.get(BottomSheetProperties.CLOSE_BUTTON_CLICK_LISTENER));
         } else if (BottomSheetProperties.CONTAINER_TOUCH_ENABLED == propertyKey) {
             view.setContainerTouchEnabled(model.get(BottomSheetProperties.CONTAINER_TOUCH_ENABLED));
-        } else if (BottomSheetProperties.FALLBACK_SHADOW_VISIBILITY == propertyKey) {
-            view.setFallbackShadowVisible(
-                    model.get(BottomSheetProperties.FALLBACK_SHADOW_VISIBILITY));
         } else if (BottomSheetProperties.CONTENT_VIEW == propertyKey) {
             view.setContentView(model.get(BottomSheetProperties.CONTENT_VIEW));
         } else if (BottomSheetProperties.TOOLBAR_VIEW == propertyKey) {
@@ -47,6 +43,40 @@ public class BottomSheetViewBinder {
             view.setContainerHeight(model.get(BottomSheetProperties.CONTAINER_HEIGHT));
         } else if (BottomSheetProperties.SHEET_WIDTH_PX == propertyKey) {
             view.setSheetWidth(model.get(BottomSheetProperties.SHEET_WIDTH_PX));
+        } else if (BottomSheetProperties.ACCESSIBILITY_PANE_TITLE == propertyKey) {
+            view.setSheetAccessibilityPaneTitle(
+                    model.get(BottomSheetProperties.ACCESSIBILITY_PANE_TITLE));
+        } else if (BottomSheetProperties.SHEET_TRANSLATION_Y == propertyKey) {
+            view.setSheetTranslationY(model.get(BottomSheetProperties.SHEET_TRANSLATION_Y));
+        } else if (BottomSheetProperties.SHEET_TRANSLATION_X == propertyKey) {
+            view.setSheetTranslationX(model.get(BottomSheetProperties.SHEET_TRANSLATION_X));
+        } else if (BottomSheetProperties.HANDLEBAR_VISIBLE == propertyKey) {
+            view.setHandlebarVisible(model.get(BottomSheetProperties.HANDLEBAR_VISIBLE));
+        } else if (BottomSheetProperties.CONTENT_TOP_MARGIN == propertyKey) {
+            view.setContentTopMargin(model.get(BottomSheetProperties.CONTENT_TOP_MARGIN));
+        } else if (BottomSheetProperties.VISIBLE_BACKGROUND_HEIGHT == propertyKey) {
+            view.setVisibleBackgroundHeight(
+                    model.get(BottomSheetProperties.VISIBLE_BACKGROUND_HEIGHT));
+        } else if (BottomSheetProperties.SHEET_FOCUSABLE == propertyKey) {
+            view.setSheetFocusable(model.get(BottomSheetProperties.SHEET_FOCUSABLE));
+        } else if (BottomSheetProperties.CONTENT_BOTTOM_PADDING == propertyKey) {
+            view.setContentContainerPaddingBottom(
+                    model.get(BottomSheetProperties.CONTENT_BOTTOM_PADDING));
+        } else if (BottomSheetProperties.BACKGROUND_HEIGHT == propertyKey) {
+            view.updateBackgroundHeight(model.get(BottomSheetProperties.BACKGROUND_HEIGHT));
+        } else if (BottomSheetProperties.TOUCH_HANDLER == propertyKey) {
+            view.setTouchHandler(model.get(BottomSheetProperties.TOUCH_HANDLER));
+        } else if (BottomSheetProperties.HANDLEBAR_CLICK_LISTENER == propertyKey) {
+            view.setHandlebarClickListener(
+                    model.get(BottomSheetProperties.HANDLEBAR_CLICK_LISTENER));
+        } else if (BottomSheetProperties.TOOLBAR_SIZE_CHANGED_CALLBACK == propertyKey) {
+            view.setToolbarSizeChangedCallback(
+                    model.get(BottomSheetProperties.TOOLBAR_SIZE_CHANGED_CALLBACK));
+        } else if (BottomSheetProperties.CURRENT_SHEET_STATE == propertyKey) {
+            view.sendPaneChangeAccessibilityEvent(
+                    model.get(BottomSheetProperties.CURRENT_SHEET_STATE) != SheetState.HIDDEN);
+        } else {
+            assert false : "Unhandled property key: " + propertyKey;
         }
     }
 

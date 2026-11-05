@@ -13,6 +13,7 @@
 #include "chrome/browser/ash/app_restore/arc_ghost_window_handler.h"
 #include "chromeos/ui/base/window_state_type.h"
 #include "ui/display/screen.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/gfx/geometry/point.h"
 
 namespace arc {
@@ -123,7 +124,7 @@ bool WindowPredictor::LaunchArcAppWithGhostWindow(
   arc::mojom::WindowInfoPtr predict_window_info =
       PredictAppWindowInfo(app_info, window_info.Clone());
 
-  DCHECK(predict_window_info);
+  CHECK(predict_window_info, base::NotFatalUntil::M160);
 
   arc_task_handler->GetWindowPredictorArcAppRestoreHandler(launch_counter)
       ->LaunchGhostWindowWithApp(

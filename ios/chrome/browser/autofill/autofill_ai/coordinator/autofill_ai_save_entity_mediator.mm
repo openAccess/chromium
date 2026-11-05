@@ -5,9 +5,11 @@
 #import "ios/chrome/browser/autofill/autofill_ai/coordinator/autofill_ai_save_entity_mediator.h"
 
 #import "base/timer/timer.h"
+#import "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_ui_util.h"
 #import "ios/chrome/browser/autofill/autofill_ai/ui/autofill_ai_save_entity_consumer.h"
 #import "ios/chrome/browser/autofill/model/ios_autofill_entity_data_manager_observer_bridge.h"
+#import "ios/chrome/browser/autofill/model/message/autofill_legal_message_line.h"
 #import "ios/chrome/browser/autofill/ui_bundled/bottom_sheet/bottom_sheet_constants.h"
 #import "ios/chrome/browser/shared/public/commands/autofill_commands.h"
 
@@ -124,15 +126,34 @@ static constexpr base::TimeDelta kConfirmationDismissDelayIfVoiceOverRunning =
     return;
   }
 
+  // TODO(crbug.com/573949431): Compute the footer text and URLs in the mediator
+  // and push them via a single consumer method instead of pushing
+  // `isPrivateWalletPass`, `userEmail`, and `legalMessages` separately and
+  // duplicating footer construction across view controllers.
+  [_consumer setIsPrivateWalletPass:[self isPrivateWalletPass]];
+  [_consumer
+      setShowsExplicitDeclineButton:_params->show_explicit_decline_button];
+
   [_consumer setNewEntity:_params->new_entity
                 oldEntity:_params->old_entity
                 userEmail:_params->user_email
         saveIsSynchronous:_params->save_is_synchronous];
+
+  if (!_params->public_passes_notice.empty()) {
+    [_consumer setLegalMessages:[AutofillLegalMessageLine
+                                    convertFrom:_params->public_passes_notice]];
+  }
 }
 
 - (BOOL)isSaveToWallet {
   return _params->new_entity.record_type() ==
          autofill::EntityInstance::RecordType::kServerWallet;
+}
+
+- (BOOL)isPrivateWalletPass {
+  return autofill::GetWalletPassType(_params->new_entity.type(),
+                                     _params->new_entity.record_type()) ==
+         autofill::EntityInstance::WalletPassType::kPrivate;
 }
 
 // Saves entity locally or to Google wallet.
@@ -142,7 +163,8 @@ static constexpr base::TimeDelta kConfirmationDismissDelayIfVoiceOverRunning =
     std::move(_params->callback)
         .Run(autofill::AutofillClient::AutofillAiBubbleResult::kAccepted,
              std::nullopt,
-             {autofill::GetSaveToWalletSubtitleStringId(),
+             {autofill::GetSaveToWalletSubtitleStringId(
+                  [self isPrivateWalletPass]),
               autofill::GetSaveEntityAcceptButtonStringId()});
   } else {
     std::move(_params->callback)

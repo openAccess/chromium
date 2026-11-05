@@ -6,16 +6,21 @@
 
 #include <Cocoa/Cocoa.h>
 #include <Foundation/Foundation.h>
+#import <objc/runtime.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <unistd.h>
 
+#include <limits>
+#include <memory>
+#include <optional>
 #include <string>
-#include <tuple>
 
 #include "base/apple/scoped_cftyperef.h"
 #include "base/apple/scoped_nsautorelease_pool.h"
 #include "base/command_line.h"
 #include "base/containers/queue.h"
+#include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
@@ -23,10 +28,13 @@
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "components/viz/common/surfaces/child_local_surface_id_allocator.h"
 #import "content/app_shim_remote_cocoa/render_widget_host_view_cocoa.h"
@@ -77,13 +85,29 @@
 #include "ui/events/blink/web_input_event_traits.h"
 #include "ui/events/test/cocoa_test_event_utils.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/mac/coordinate_conversion.h"
 #include "ui/gfx/range/range.h"
 #include "ui/latency/latency_info.h"
 
 using testing::_;
 using testing::Bool;
-using testing::Combine;
+
+@interface InvalidReplacementRangeRenderWidgetHostViewCocoa
+    : RenderWidgetHostViewCocoa
+@end
+
+@implementation InvalidReplacementRangeRenderWidgetHostViewCocoa
+
+- (void)interpretKeyEvents:(NSArray<NSEvent*>*)eventArray {
+  const NSUInteger invalid_location =
+      static_cast<NSUInteger>(std::numeric_limits<uint32_t>::max()) + 1;
+  [self setMarkedText:@"x"
+         selectedRange:NSMakeRange(0, 1)
+      replacementRange:NSMakeRange(invalid_location, 0)];
+}
+
+@end
 
 // Helper class with methods used to mock -[NSEvent phase], used by
 // |MockScrollWheelEventWithPhase()|.
@@ -582,6 +606,9 @@ class RenderWidgetHostViewMacTest : public RenderViewHostImplTestHarness {
 
   void ActivateViewWithTextInputManager(RenderWidgetHostViewBase* view,
                                         ui::TextInputType type) {
+    if (view && view->host()) {
+      delegate_.set_focused_widget(view->host());
+    }
     ui::mojom::TextInputState state;
     state.type = type;
     view->TextInputStateChanged(state);
@@ -613,22 +640,16 @@ class RenderWidgetHostViewMacTest : public RenderViewHostImplTestHarness {
 
 class RenderWidgetHostViewMacCachedFirstRectTest
     : public RenderWidgetHostViewMacTest,
-      public ::testing::WithParamInterface<std::tuple<bool, bool, bool>> {
+      public ::testing::WithParamInterface<bool> {
  protected:
   using GetCachedFirstRectResult =
       RenderWidgetHostViewMac::GetCachedFirstRectResult;
 
   RenderWidgetHostViewMacCachedFirstRectTest() {
-    std::tie(more_selection_fallbacks_, allow_range_outside_selection_,
-             allow_invalid_selection_) = GetParam();
-    scoped_feature_list_.InitWithFeatureStates({
-        {features::kCachedFirstRectMoreSelectionFallbacks,
-         more_selection_fallbacks_},
-        {features::kCachedFirstRectAllowRangeOutsideSelection,
-         allow_range_outside_selection_},
-        {features::kCachedFirstRectAllowInvalidSelection,
-         allow_invalid_selection_},
-    });
+    allow_range_outside_selection_ = GetParam();
+    scoped_feature_list_.InitWithFeatureState(
+        features::kCachedFirstRectAllowRangeOutsideSelection,
+        allow_range_outside_selection_);
   }
 
   // Expect that the result of GetCachedFirstRectForCharacterRange() is
@@ -670,28 +691,20 @@ class RenderWidgetHostViewMacCachedFirstRectTest
   }
 
   GetCachedFirstRectResult InvalidSelectionResult() const {
-    // No range can be bounded by an invalid selection range, so invalid
-    // selections only return kFound if BOTH features are enabled.
-    if (allow_invalid_selection_ && allow_range_outside_selection_) {
+    if (allow_range_outside_selection_) {
       return GetCachedFirstRectResult::kFound;
     }
     return GetCachedFirstRectResult::kInvalidSelection;
   }
 
-  bool more_selection_fallbacks() const { return more_selection_fallbacks_; }
-
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
-  bool more_selection_fallbacks_;
   bool allow_range_outside_selection_;
-  bool allow_invalid_selection_;
 };
 
 INSTANTIATE_TEST_SUITE_P(OptimizeCachedFirstRect,
                          RenderWidgetHostViewMacCachedFirstRectTest,
-                         Combine(/*more_selection_fallbacks=*/Bool(),
-                                 /*allow_range_outside_selection=*/Bool(),
-                                 /*allow_invalid_selection=*/Bool()));
+                         Bool());
 
 TEST_F(RenderWidgetHostViewMacTest, Basic) {
 }
@@ -699,6 +712,48 @@ TEST_F(RenderWidgetHostViewMacTest, Basic) {
 TEST_F(RenderWidgetHostViewMacTest, AcceptsFirstResponder) {
   // The RWHVCocoa should normally accept first responder status.
   EXPECT_TRUE(rwhv_cocoa_.acceptsFirstResponder);
+}
+
+TEST_F(RenderWidgetHostViewMacTest,
+       AcceptsFirstMouseForClickPostedToInactiveApp) {
+  ASSERT_FALSE(NSApp.active);
+  base::apple::ScopedCFTypeRef<CGEventRef> cg_event(CGEventCreateMouseEvent(
+      /*source=*/nullptr, kCGEventLeftMouseDown, CGPointZero,
+      kCGMouseButtonLeft));
+
+  CGEventSetIntegerValueField(cg_event.get(), kCGEventSourceUnixProcessID, 0);
+  EXPECT_FALSE([rwhv_cocoa_
+      acceptsFirstMouse:[NSEvent eventWithCGEvent:cg_event.get()]]);
+
+  CGEventSetIntegerValueField(cg_event.get(), kCGEventSourceUnixProcessID,
+                              getpid());
+  EXPECT_FALSE([rwhv_cocoa_
+      acceptsFirstMouse:[NSEvent eventWithCGEvent:cg_event.get()]]);
+
+  CGEventSetIntegerValueField(cg_event.get(), kCGEventSourceUnixProcessID, 1);
+  EXPECT_TRUE([rwhv_cocoa_
+      acceptsFirstMouse:[NSEvent eventWithCGEvent:cg_event.get()]]);
+}
+
+// A mouse exited event arriving at a hidden view (synthesized by
+// -[BaseView viewDidHide] when the view hides under the cursor) must still be
+// delivered to the renderer so that stale :hover state is cleared. See
+// https://crbug.com/548314090.
+TEST_F(RenderWidgetHostViewMacTest, HiddenViewDeliversMouseExit) {
+  rwhv_cocoa_.hidden = YES;
+  host_->GetAndResetDispatchedMessages();
+
+  [rwhv_cocoa_ mouseEvent:cocoa_test_event_utils::ExitEvent(NSMakePoint(10, 10),
+                                                            window_)];
+
+  MockWidgetInputHandler::MessageVector events;
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    MockWidgetInputHandler::MessageVector new_events =
+        host_->GetAndResetDispatchedMessages();
+    std::move(new_events.begin(), new_events.end(), std::back_inserter(events));
+    return !events.empty();
+  }));
+  EXPECT_EQ("MouseLeave", GetMessageNames(events));
 }
 
 // This test verifies that RenderWidgetHostViewCocoa's implementation of
@@ -903,12 +958,9 @@ TEST_P(RenderWidgetHostViewMacCachedFirstRectTest,
   rwhv_mac_->ImeCompositionRangeChanged(gfx::Range(2, 12),
                                         std::vector<gfx::Rect>());
 
-  // If more_selection_fallbacks() is enabled, empty composition range will fall
-  // back to the selection, which doesn't exist.
-  ExpectCachedFirstRect(gfx::Range(2, 11),
-                        more_selection_fallbacks()
-                            ? InvalidSelectionResult()
-                            : GetCachedFirstRectResult::kNoCompositionBounds,
+  // Empty composition range will fall back to the selection, which doesn't
+  // exist.
+  ExpectCachedFirstRect(gfx::Range(2, 11), InvalidSelectionResult(),
                         gfx::Rect(), gfx::Range::InvalidRange());
 
   // If there's a selection, maybe fall back to it.
@@ -924,15 +976,9 @@ TEST_P(RenderWidgetHostViewMacCachedFirstRectTest,
                                     focus_rect, base::i18n::LEFT_TO_RIGHT,
                                     gfx::Rect(), false);
 
-  ExpectCachedFirstRect(gfx::Range(2, 4),
-                        more_selection_fallbacks()
-                            ? GetCachedFirstRectResult::kFound
-                            : GetCachedFirstRectResult::kNoCompositionBounds,
+  ExpectCachedFirstRect(gfx::Range(2, 4), GetCachedFirstRectResult::kFound,
                         caret_rect, caret_range);
-  ExpectCachedFirstRect(gfx::Range(2, 11),
-                        more_selection_fallbacks()
-                            ? RangeOutsideSelectionResult()
-                            : GetCachedFirstRectResult::kNoCompositionBounds,
+  ExpectCachedFirstRect(gfx::Range(2, 11), RangeOutsideSelectionResult(),
                         caret_rect, caret_range);
 }
 
@@ -954,22 +1000,15 @@ TEST_P(RenderWidgetHostViewMacCachedFirstRectTest,
                                &composition_bounds);
   rwhv_mac_->ImeCompositionRangeChanged(kCompositionRange, composition_bounds);
 
-  // If more_selection_fallbacks() is enabled, invalid composition range will
-  // fall back to the selection, which doesn't exist.
-  const GetCachedFirstRectResult invalid_composition_range_result =
-      more_selection_fallbacks()
-          ? InvalidSelectionResult()
-          : GetCachedFirstRectResult::kInvalidCompositionRange;
-
-  // Out of range requests.
-  ExpectCachedFirstRect(gfx::Range(0, 0), invalid_composition_range_result,
-                        gfx::Rect(), gfx::Range::InvalidRange());
-  ExpectCachedFirstRect(gfx::Range(1, 1), invalid_composition_range_result,
-                        gfx::Rect(), gfx::Range::InvalidRange());
-  ExpectCachedFirstRect(gfx::Range(1, 2), invalid_composition_range_result,
-                        gfx::Rect(), gfx::Range::InvalidRange());
-  ExpectCachedFirstRect(gfx::Range(2, 2), invalid_composition_range_result,
-                        gfx::Rect(), gfx::Range::InvalidRange());
+  // Out of range requests will fall back to the selection, which doesn't exist.
+  ExpectCachedFirstRect(gfx::Range(0, 0), InvalidSelectionResult(), gfx::Rect(),
+                        gfx::Range::InvalidRange());
+  ExpectCachedFirstRect(gfx::Range(1, 1), InvalidSelectionResult(), gfx::Rect(),
+                        gfx::Range::InvalidRange());
+  ExpectCachedFirstRect(gfx::Range(1, 2), InvalidSelectionResult(), gfx::Rect(),
+                        gfx::Range::InvalidRange());
+  ExpectCachedFirstRect(gfx::Range(2, 2), InvalidSelectionResult(), gfx::Rect(),
+                        gfx::Range::InvalidRange());
 
   // If there's a selection, maybe fall back to it.
   const std::u16string kDummyString = u"hogehoge";
@@ -984,24 +1023,15 @@ TEST_P(RenderWidgetHostViewMacCachedFirstRectTest,
                                     focus_rect, base::i18n::LEFT_TO_RIGHT,
                                     gfx::Rect(), false);
 
-  // Out of composition range but inside selection.
-  const GetCachedFirstRectResult outside_composition_result =
-      more_selection_fallbacks()
-          ? GetCachedFirstRectResult::kFound
-          : GetCachedFirstRectResult::kInvalidCompositionRange;
   // Out of composition range and outside selection.
-  const GetCachedFirstRectResult outside_composition_and_selection_result =
-      more_selection_fallbacks()
-          ? RangeOutsideSelectionResult()
-          : GetCachedFirstRectResult::kInvalidCompositionRange;
-  ExpectCachedFirstRect(gfx::Range(0, 0),
-                        outside_composition_and_selection_result, caret_rect,
-                        caret_range);
-  ExpectCachedFirstRect(gfx::Range(1, 1), outside_composition_result,
+  ExpectCachedFirstRect(gfx::Range(0, 0), RangeOutsideSelectionResult(),
                         caret_rect, caret_range);
-  ExpectCachedFirstRect(gfx::Range(1, 2), outside_composition_result,
+  // Out of composition range but inside selection.
+  ExpectCachedFirstRect(gfx::Range(1, 1), GetCachedFirstRectResult::kFound,
                         caret_rect, caret_range);
-  ExpectCachedFirstRect(gfx::Range(2, 2), outside_composition_result,
+  ExpectCachedFirstRect(gfx::Range(1, 2), GetCachedFirstRectResult::kFound,
+                        caret_rect, caret_range);
+  ExpectCachedFirstRect(gfx::Range(2, 2), GetCachedFirstRectResult::kFound,
                         caret_rect, caret_range);
 
   // Inside composition range. Selection is ignored.
@@ -1137,7 +1167,7 @@ TEST_F(RenderWidgetHostViewMacTest, CompositionEventAfterDestroy) {
   EXPECT_EQ(40, rect.size.height);
   EXPECT_EQ(range, gfx::Range(actual_range));
 
-  rwhv_mac_->Destroy();
+  rwhv_mac_->DestroyOrDefer();
   actual_range = NSMakeRange(0, 0);
   rect = [rwhv_cocoa_ firstRectForCharacterRange:range.ToNSRange()
                                      actualRange:&actual_range];
@@ -1160,7 +1190,7 @@ class ViewDestroyingInputEventObserver
                     InputEventSource source) override {
     if (view_ && blink::WebInputEvent::IsGestureEventType(event.GetType())) {
       gesture_event_seen_ = true;
-      view_.ExtractAsDangling()->Destroy();
+      view_.ExtractAsDangling()->DestroyOrDefer();
     }
   }
 
@@ -1203,6 +1233,110 @@ TEST_F(RenderWidgetHostViewMacTest,
 
   EXPECT_TRUE(observer.gesture_event_seen());
   host_->RemoveInputEventObserver(&observer);
+}
+
+// An InputEventObserver that synchronously destroys the
+// RenderWidgetHostViewMac when a gesture event is dispatched. This simulates
+// an embedder hook that closes the WebContents in response to a gesture.
+class ViewDestroyingGestureObserver
+    : public RenderWidgetHost::InputEventObserver {
+ public:
+  explicit ViewDestroyingGestureObserver(RenderWidgetHostViewMac* view)
+      : view_(view) {}
+
+  void Arm() { armed_ = true; }
+  bool fired() const { return fired_; }
+
+  void OnInputEvent(const RenderWidgetHost& host,
+                    const blink::WebInputEvent& event,
+                    InputEventSource source) override {
+    if (!armed_ || !view_ ||
+        !blink::WebInputEvent::IsGestureEventType(event.GetType())) {
+      return;
+    }
+    fired_ = true;
+    RenderWidgetHostViewMac* v = view_;
+    view_ = nullptr;
+    // RenderWidgetHostViewMac::DestroyOrDefer() ends in `delete this`.
+    v->DestroyOrDefer();
+  }
+
+ private:
+  raw_ptr<RenderWidgetHostViewMac> view_ = nullptr;
+  bool armed_ = false;
+  bool fired_ = false;
+};
+
+// Regression test: ProcessAckedTouchEvent must not dereference |this| after
+// gesture_provider_.OnTouchEventAck() performs synchronous gesture dispatch
+// that may destroy the view. This is the macOS sibling of the WeakPtr guard
+// already present in RenderWidgetHostViewAura::ProcessAckedTouchEvent.
+//
+// Without the guard, ASAN reports heap-use-after-free when control unwinds
+// back through the freed RenderWidgetHostViewMac (and its by-value
+// |gesture_provider_| member) and reaches the unguarded |host()| load.
+TEST_F(RenderWidgetHostViewMacTest,
+       ProcessAckedTouchEventSurvivesSynchronousDestroy) {
+  ViewDestroyingGestureObserver observer(rwhv_mac_);
+  host_->AddInputEventObserver(&observer);
+
+  // Step 1: Inject a TouchStart so |gesture_provider_| has a pending packet.
+  blink::SyntheticWebTouchEvent touch;
+  touch.PressPoint(10, 10);
+  rwhv_mac_->InjectTouchEvent(touch, ui::LatencyInfo());
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !host_->input_handler()->dispatched_messages().empty();
+  }));
+
+  // Ack the TouchStart as not-consumed. This dispatches kGestureTapDown
+  // synchronously via OnGestureEvent (observer not yet armed) and clears
+  // |start_touch_consumed_| so a subsequent scroll-begin is permitted.
+  {
+    auto events = host_->GetAndResetDispatchedMessages();
+    for (auto& msg : events) {
+      if (auto* ev = msg->ToEvent()) {
+        ev->CallCallback(blink::mojom::InputEventResultState::kNotConsumed);
+      }
+    }
+  }
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !host_->input_handler()->dispatched_messages().empty();
+  }));
+  // Drain any gesture events queued to the renderer by the TouchStart ack.
+  std::ignore = host_->GetAndResetDispatchedMessages();
+
+  // Step 2: Inject the first TouchMove past the slop region so the gesture
+  // provider synthesises a kGestureScrollBegin packet.
+  touch.MovePoint(0, 80, 80);
+  rwhv_mac_->InjectTouchEvent(touch, ui::LatencyInfo());
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !host_->input_handler()->dispatched_messages().empty();
+  }));
+
+  // Arm the observer so the next synchronous gesture dispatch destroys the
+  // view from inside ProcessAckedTouchEvent.
+  observer.Arm();
+
+  // Ack the first TouchMove as kConsumed. This enters
+  // RenderWidgetHostViewMac::ProcessAckedTouchEvent with
+  //   touch_start_or_first_touch_move == true && event_consumed == true,
+  // and gesture_provider_.OnTouchEventAck() synchronously dispatches the
+  // ScrollBegin gesture, reaching the observer above, which deletes the view.
+  // On return, the unguarded |host()| dereference reads freed memory.
+  {
+    auto events = host_->GetAndResetDispatchedMessages();
+    for (auto& msg : events) {
+      if (auto* ev = msg->ToEvent()) {
+        ev->CallCallback(blink::mojom::InputEventResultState::kConsumed);
+      }
+    }
+  }
+
+  EXPECT_TRUE(observer.fired());
+  host_->RemoveInputEventObserver(&observer);
+  // |rwhv_mac_| was deleted inside the observer; null it so TearDown does not
+  // touch it.
+  rwhv_mac_ = nullptr;
 }
 
 // Verify that |SetActive()| calls |RenderWidgetHostImpl::LostFocus()| and
@@ -1918,6 +2052,9 @@ class InputMethodMacTest : public RenderWidgetHostViewMacTest {
   void SetTextInputType(RenderWidgetHostViewBase* view,
                         ui::TextInputType type,
                         ui::TextInputFlags flags = ui::TEXT_INPUT_FLAG_NONE) {
+    if (view && view->host()) {
+      delegate_.set_focused_widget(view->host());
+    }
     ui::mojom::TextInputState state;
     state.type = type;
     state.flags = flags;
@@ -1999,6 +2136,21 @@ TEST_F(InputMethodMacTest, SetMarkedText) {
   base::RunLoop().RunUntilIdle();
   events = host_->GetAndResetDispatchedMessages();
   EXPECT_EQ("SetComposition", GetMessageNames(events));
+}
+
+TEST_F(InputMethodMacTest, SetMarkedTextWithInvalidRangeDuringKeyDown) {
+  SetTextInputType(tab_view(), ui::TEXT_INPUT_TYPE_TEXT);
+
+  RenderWidgetHostViewCocoa* view = tab_GetInProcessNSView();
+  Class original_class = object_setClass(
+      view, [InvalidReplacementRangeRenderWidgetHostViewCocoa class]);
+  [view keyEvent:cocoa_test_event_utils::KeyEventWithKeyCode(
+                     0, 'x', NSEventTypeKeyDown, 0)];
+  object_setClass(view, original_class);
+
+  MockWidgetInputHandler::MessageVector events =
+      host_->GetAndResetDispatchedMessages();
+  EXPECT_EQ("RawKeyDown SetComposition", GetMessageNames(events));
 }
 
 // This test makes sure that selectedRange and markedRange are updated correctly
@@ -2183,6 +2335,48 @@ TEST_F(InputMethodMacTest, SecurePasswordInput) {
   EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
 }
 
+TEST_F(InputMethodMacTest, SecurePasswordInputDisabledInBackForwardCache) {
+  ASSERT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+
+  EXPECT_CALL(*host_, Focus()).Times(::testing::AnyNumber());
+  EXPECT_CALL(*host_, Blur()).Times(::testing::AnyNumber());
+
+  [window_ makeFirstResponder:tab_view()->GetInProcessNSView()];
+  SetTextInputType(tab_view(), ui::TEXT_INPUT_TYPE_PASSWORD);
+  tab_view()->SetActive(true);
+  ASSERT_TRUE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+
+  tab_view()->DidEnterBackForwardCache();
+  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+}
+
+// Secure Event Input must be released when the window resigns key while a
+// password field is focused, and enabled again when the window becomes key.
+// https://crbug.com/577708579
+TEST_F(InputMethodMacTest, SecurePasswordInputDisabledWhenWindowResignsKey) {
+  ASSERT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+
+  EXPECT_CALL(*host_, Focus()).Times(::testing::AnyNumber());
+  EXPECT_CALL(*host_, Blur()).Times(::testing::AnyNumber());
+
+  [window_ makeFirstResponder:tab_view()->GetInProcessNSView()];
+  SetTextInputType(tab_view(), ui::TEXT_INPUT_TYPE_PASSWORD);
+  tab_view()->SetActive(true);
+  ASSERT_TRUE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+
+  // RenderWidgetHostViewCocoa calls OnWindowIsKeyChanged() when the window
+  // resigns or becomes key. Unlike calling SetActive() directly, this updates
+  // the window key status before the view is deactivated.
+  tab_view()->OnWindowIsKeyChanged(false);
+  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+
+  tab_view()->OnWindowIsKeyChanged(true);
+  EXPECT_TRUE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+
+  tab_view()->OnWindowIsKeyChanged(false);
+  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
+}
+
 TEST_F(InputMethodMacTest, SecureHasBeenAPasswordInput) {
   ASSERT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
   ASSERT_EQ(text_input_manager(), tab_view()->GetTextInputManager());
@@ -2201,36 +2395,6 @@ TEST_F(InputMethodMacTest, SecureHasBeenAPasswordInput) {
 
   SetTextInputType(child_view_, ui::TEXT_INPUT_TYPE_TEXT,
                    ui::TEXT_INPUT_FLAG_HAS_BEEN_PASSWORD);
-  ASSERT_EQ(child_widget_.get(), text_input_manager()->GetActiveWidget());
-  ASSERT_EQ(text_input_manager(), tab_view()->GetTextInputManager());
-  ASSERT_EQ(ui::TEXT_INPUT_TYPE_TEXT, tab_view()->GetTextInputType());
-
-  // Single matched calls immediately update IsPasswordInputEnabled().
-  tab_view()->SetActive(true);
-  EXPECT_TRUE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-
-  tab_view()->SetActive(false);
-  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-}
-
-TEST_F(InputMethodMacTest, SecureHasBeenACustomPasswordInput) {
-  ASSERT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-  ASSERT_EQ(text_input_manager(), tab_view()->GetTextInputManager());
-
-  // RenderWidgetHostViewMacTest.LostFocusAndGotFocusOnSetActive checks the
-  // GotFocus()/LostFocus() rules, just silence the warnings here.
-  EXPECT_CALL(*host_, Focus()).Times(::testing::AnyNumber());
-  EXPECT_CALL(*host_, Blur()).Times(::testing::AnyNumber());
-
-  [window_ makeFirstResponder:tab_view()->GetInProcessNSView()];
-
-  // Shouldn't enable secure input if it's not a "has been a custom password"
-  // textfield.
-  tab_view()->SetActive(true);
-  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-
-  SetTextInputType(child_view_, ui::TEXT_INPUT_TYPE_TEXT,
-                   ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD);
   ASSERT_EQ(child_widget_.get(), text_input_manager()->GetActiveWidget());
   ASSERT_EQ(text_input_manager(), tab_view()->GetTextInputManager());
   ASSERT_EQ(ui::TEXT_INPUT_TYPE_TEXT, tab_view()->GetTextInputType());
@@ -2301,7 +2465,7 @@ TEST_F(InputMethodMacTest, MonitorCompositionRangeForActiveWidget) {
   state.type = ui::TEXT_INPUT_TYPE_TEXT;
 
   // Make the tab's widget active.
-  tab_view()->TextInputStateChanged(state);
+  SetTextInputType(tab_view(), ui::TEXT_INPUT_TYPE_TEXT);
 
   base::RunLoop().RunUntilIdle();
   MockWidgetInputHandler::MessageVector events =
@@ -2316,7 +2480,7 @@ TEST_F(InputMethodMacTest, MonitorCompositionRangeForActiveWidget) {
   EXPECT_TRUE(message->monitor_request());
 
   // Now make the child view active.
-  child_view_->TextInputStateChanged(state);
+  SetTextInputType(child_view_, ui::TEXT_INPUT_TYPE_TEXT);
 
   // The tab should receive another IPC for composition updates.
   base::RunLoop().RunUntilIdle();
@@ -2340,7 +2504,7 @@ TEST_F(InputMethodMacTest, MonitorCompositionRangeForActiveWidget) {
   EXPECT_TRUE(message->monitor_request());
 
   // Make the tab view active again.
-  tab_view()->TextInputStateChanged(state);
+  SetTextInputType(tab_view(), ui::TEXT_INPUT_TYPE_TEXT);
 
   base::RunLoop().RunUntilIdle();
   events = child_widget_->GetAndResetDispatchedMessages();
@@ -2614,11 +2778,8 @@ class FakeTextInputClientMacDelegate
 
 TEST_F(RenderWidgetHostViewMacTest, SyncGetFirstRectForRange_Clamped) {
   base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{},
-      /*disabled_features=*/{
-          features::kCachedFirstRectAllowRangeOutsideSelection,
-          features::kCachedFirstRectAllowInvalidSelection});
+  feature_list.InitAndDisableFeature(
+      features::kCachedFirstRectAllowRangeOutsideSelection);
 
   // Focus the root frame tree node so GetFocusedRenderFrameHostImpl succeeds.
   contents()->GetPrimaryFrameTree().SetFocusedFrame(
@@ -2654,6 +2815,131 @@ TEST_F(RenderWidgetHostViewMacTest, SyncGetFirstRectForRange_Clamped) {
   // Y should be clamped to 0.
   gfx::Rect expected_rect(0, 0, 10 / dsf, 20 / dsf);
   EXPECT_EQ(rect, expected_rect);
+
+  // Restore default delegate.
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(nullptr);
+}
+
+// Answers GetFirstRectForRange() requests with a fixed rect. Replies from a
+// separate task, as the renderer does, because TextInputClientMac holds its
+// lock while sending an async request.
+class AsyncFakeTextInputClientMacDelegate
+    : public TextInputClientMac::AsyncRequestDelegate {
+ public:
+  explicit AsyncFakeTextInputClientMacDelegate(const gfx::Rect& response_rect)
+      : response_rect_(response_rect) {}
+
+  void GetCharacterIndexAtPoint(
+      RenderFrameHost* rfh,
+      const TextInputClientMac::RequestToken& request_token,
+      const gfx::Point& point) override {
+    FAIL() << "Unexpected call to GetCharacterIndexAtPoint";
+  }
+
+  void GetFirstRectForRange(
+      RenderFrameHost* rfh,
+      const TextInputClientMac::RequestToken& request_token,
+      const gfx::Range& range) override {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&TextInputClientMac::SetFirstRectAndSignal,
+                       base::Unretained(TextInputClientMac::GetInstance()),
+                       request_token, response_rect_));
+  }
+
+ private:
+  const gfx::Rect response_rect_;
+};
+
+// Verifies that GetFirstRectForRange() returns the renderer's bounds for the
+// requested range, converted to DIPs, when the cache only has the caret's
+// bounds for it.
+TEST_F(RenderWidgetHostViewMacTest, GetFirstRectForRangeAsksRenderer) {
+  base::test::ScopedFeatureList feature_list(
+      features::kCachedFirstRectAllowRangeOutsideSelection);
+
+  // Focus the root frame tree node so GetFocusedRenderFrameHostImpl succeeds.
+  contents()->GetPrimaryFrameTree().SetFocusedFrame(
+      contents()->GetPrimaryFrameTree().root(), nullptr);
+  rwhv_mac_->SetBounds(gfx::Rect(0, 0, 800, 600));
+
+  // With the caret after "omw", the cached bounds for "omw" are the caret's.
+  const gfx::Rect caret_rect(40, 10, 1, 20);
+  rwhv_mac_->SelectionChanged(u"omw", 0, gfx::Range(3, 3));
+  rwhv_mac_->SelectionBoundsChanged(caret_rect, base::i18n::LEFT_TO_RIGHT,
+                                    caret_rect, base::i18n::LEFT_TO_RIGHT,
+                                    gfx::Rect(), false);
+  gfx::Rect cached_rect;
+  ASSERT_EQ(rwhv_mac_->GetCachedFirstRectForCharacterRange(
+                gfx::Range(0, 3), &cached_rect, nullptr),
+            RenderWidgetHostViewMac::GetCachedFirstRectResult::kFound);
+  ASSERT_EQ(cached_rect, caret_rect);
+
+  // The renderer reports the bounds of "omw" in physical pixels.
+  const gfx::Rect text_rect(10, 10, 30, 20);
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(
+      std::make_unique<AsyncFakeTextInputClientMacDelegate>(
+          gfx::ScaleToEnclosingRect(text_rect,
+                                    rwhv_mac_->GetDeviceScaleFactor())));
+
+  base::test::TestFuture<const std::optional<gfx::Rect>&> future;
+  rwhv_mac_->GetFirstRectForRange(gfx::Range(0, 3), future.GetCallback());
+  EXPECT_EQ(future.Get(), text_rect);
+
+  // Restore default delegate.
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(nullptr);
+}
+
+// Verifies that GetFirstRectForRange() returns the cached bounds for the
+// requested range when the renderer has none.
+TEST_F(RenderWidgetHostViewMacTest, GetFirstRectForRangeFallsBackToCachedRect) {
+  base::test::ScopedFeatureList feature_list(
+      features::kCachedFirstRectAllowRangeOutsideSelection);
+
+  // Focus the root frame tree node so GetFocusedRenderFrameHostImpl succeeds.
+  contents()->GetPrimaryFrameTree().SetFocusedFrame(
+      contents()->GetPrimaryFrameTree().root(), nullptr);
+  rwhv_mac_->SetBounds(gfx::Rect(0, 0, 800, 600));
+
+  const gfx::Rect caret_rect(40, 10, 1, 20);
+  rwhv_mac_->SelectionChanged(u"omw", 0, gfx::Range(3, 3));
+  rwhv_mac_->SelectionBoundsChanged(caret_rect, base::i18n::LEFT_TO_RIGHT,
+                                    caret_rect, base::i18n::LEFT_TO_RIGHT,
+                                    gfx::Rect(), false);
+
+  // The renderer has no bounds for "omw", e.g. because it's in an EditContext
+  // whose page didn't provide any.
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(
+      std::make_unique<AsyncFakeTextInputClientMacDelegate>(gfx::Rect()));
+
+  base::test::TestFuture<const std::optional<gfx::Rect>&> future;
+  rwhv_mac_->GetFirstRectForRange(gfx::Range(0, 3), future.GetCallback());
+  EXPECT_EQ(future.Get(), caret_rect);
+
+  // Restore default delegate.
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(nullptr);
+}
+
+// Verifies that GetFirstRectForRange() clamps the renderer's bounds to the
+// visible viewport.
+TEST_F(RenderWidgetHostViewMacTest, GetFirstRectForRangeClamped) {
+  // Focus the root frame tree node so GetFocusedRenderFrameHostImpl succeeds.
+  contents()->GetPrimaryFrameTree().SetFocusedFrame(
+      contents()->GetPrimaryFrameTree().root(), nullptr);
+  rwhv_mac_->SetBounds(gfx::Rect(0, 0, 800, 600));
+
+  // Forged rect outside of the viewport, in physical pixels.
+  TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(
+      std::make_unique<AsyncFakeTextInputClientMacDelegate>(
+          gfx::Rect(-100, -200, 10, 20)));
+
+  base::test::TestFuture<const std::optional<gfx::Rect>&> future;
+  rwhv_mac_->GetFirstRectForRange(gfx::Range(1, 2), future.GetCallback());
+
+  // X and Y are clamped to the viewport's origin.
+  const float dsf = rwhv_mac_->GetDeviceScaleFactor();
+  const gfx::Rect expected_rect(0, 0, 10 / dsf, 20 / dsf);
+  EXPECT_EQ(future.Get(), expected_rect);
 
   // Restore default delegate.
   TextInputClientMac::GetInstance()->SetAsyncRequestDelegateForTesting(nullptr);

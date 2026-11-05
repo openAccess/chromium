@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.tabbed_mode;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.content.res.Resources;
 
@@ -15,6 +17,7 @@ import org.chromium.chrome.browser.app.appmenu.AppMenuItemTheme;
 import org.chromium.chrome.browser.app.appmenu.AppMenuItemUtils;
 import org.chromium.chrome.browser.devtools.DevToolsWindowAndroid;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.readaloud.ReadAloudController;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
@@ -22,10 +25,7 @@ import org.chromium.chrome.browser.task_manager.TaskManager;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuItemProperties;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.components.embedder_support.util.UrlUtilities;
-import org.chromium.content_public.browser.ContentFeatureList;
-import org.chromium.content_public.browser.ContentFeatureMap;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
@@ -161,7 +161,7 @@ public class MoreToolsItemBuilder {
     }
 
     /** Builds the "Toggle tab layout" menu item. */
-    public ListItem buildTabLayoutToggleItem(boolean showIcon) {
+    public ListItem buildTabLayoutToggleItem(@Nullable Profile profile, boolean showIcon) {
         boolean isVerticalActive = VerticalTabUtils.isVerticalTabsEnabled(mContext);
         int stringRes =
                 isVerticalActive
@@ -186,10 +186,11 @@ public class MoreToolsItemBuilder {
                         mIsMenuIconAtStart);
 
         boolean showNewBadge =
-                !isVerticalActive && VerticalTabUtils.shouldShowNewBadgeForVerticalTabs(mContext);
+                !isVerticalActive
+                        && VerticalTabUtils.shouldShowNewBadgeForVerticalTabs(
+                                mContext, assumeNonNull(profile));
 
         if (showNewBadge) {
-            VerticalTabUtils.incrementNewBadgeViewCount();
             CharSequence title = VerticalTabUtils.getTitleWithNewBadge(mContext, stringRes);
             model.set(AppMenuItemProperties.TITLE, title);
         }
@@ -247,10 +248,7 @@ public class MoreToolsItemBuilder {
      * @param currentTab The current tab.
      */
     public boolean shouldShowDevToolsItem(@Nullable Tab currentTab) {
-        if (!ContentFeatureMap.isEnabled(ContentFeatureList.ANDROID_DEV_TOOLS_FRONTEND)
-                || !DeviceFormFactor.isNonMultiDisplayContextOnTablet(mContext)
-                || currentTab == null
-                || currentTab.isNativePage()) {
+        if (currentTab == null || currentTab.isNativePage()) {
             return false;
         }
 
@@ -259,7 +257,8 @@ public class MoreToolsItemBuilder {
             return false;
         }
 
-        return DevToolsWindowAndroid.isDevToolsAllowedFor(currentTab.getProfile(), webContents);
+        return DevToolsWindowAndroid.isDevToolsAllowedFor(
+                mContext, currentTab.getProfile(), webContents);
     }
 
     /** Builds the "Dev tools" menu item. */

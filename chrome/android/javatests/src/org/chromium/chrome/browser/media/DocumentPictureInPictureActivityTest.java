@@ -4,10 +4,6 @@
 
 package org.chromium.chrome.browser.media;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.os.Build;
@@ -18,17 +14,13 @@ import androidx.test.filters.MediumTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.test.runner.lifecycle.Stage;
 
-import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
-import org.chromium.base.AconfigFlaggedApiDelegate;
-import org.chromium.base.Promise;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
@@ -37,7 +29,6 @@ import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.content.WebContentsFactory;
-import org.chromium.chrome.browser.customtabs.PopupCreatorFactory;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -59,8 +50,6 @@ public class DocumentPictureInPictureActivityTest {
     @Rule
     public FreshCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.freshChromeTabbedActivityRule();
-
-    @Mock private AconfigFlaggedApiDelegate mAconfigMock;
 
     private Tab mTab;
     private WebContents mParentWebContents;
@@ -89,10 +78,6 @@ public class DocumentPictureInPictureActivityTest {
                     DocumentPictureInPictureActivity.onActivityStartForTesting(
                             mParentWebContents, mWebContents);
                 });
-
-        Promise<Void> promise = ThreadUtils.runOnUiThreadBlocking(() -> Promise.fulfilled(null));
-        when(mAconfigMock.requestPinnedWindowingLayer(any(), any())).thenReturn(promise);
-        AconfigFlaggedApiDelegate.setInstanceForTesting(mAconfigMock);
     }
 
     @Test
@@ -101,7 +86,7 @@ public class DocumentPictureInPictureActivityTest {
         DocumentPictureInPictureActivity activity = launchActivity();
 
         CriteriaHelper.pollUiThread(() -> !activity.isFinishing());
-        verify(mAconfigMock).requestPinnedWindowingLayer(any(), any());
+        CriteriaHelper.pollUiThread(activity::isWindowPinned);
     }
 
     @Test
@@ -241,26 +226,6 @@ public class DocumentPictureInPictureActivityTest {
 
     @Test
     @MediumTest
-    public void testPopupCreatorFactoryInitialized() throws Exception {
-        // Clear the instance to simulate a fresh process where ChromeActivity hasn't run.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    PopupCreatorFactory.setInstanceForTesting(null);
-                });
-
-        // Launch the activity. It should initialize the factory.
-        DocumentPictureInPictureActivity activity = launchActivity();
-        CriteriaHelper.pollUiThread(() -> !activity.isFinishing());
-
-        // Verify it is initialized.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    Assert.assertNotNull(PopupCreatorFactory.getInstance());
-                });
-    }
-
-    @Test
-    @MediumTest
     public void testExitOnOriginMismatch() throws Exception {
         // Launch the activity with a mismatched initial opener URL.
         // The activity should detect the origin mismatch on startup and immediately finish itself.
@@ -271,7 +236,7 @@ public class DocumentPictureInPictureActivityTest {
 
     @Test
     @MediumTest
-    public void testOpaqueOriginDoesNotExit() throws Exception {
+    public void testOpaqueOriginFinishesActivity() throws Exception {
         // Navigate the parent tab to a data URL (which results in an opaque origin).
         final String dataUrl = "data:text/html,<html><body>Hello</body></html>";
         ChromeTabUtils.waitForTabPageLoaded(
@@ -288,16 +253,10 @@ public class DocumentPictureInPictureActivityTest {
                             mParentWebContents, mWebContents);
                 });
 
-        // Launch the PiP activity. Its verifyOpenerOrigin() will check the origin of
-        // mParentWebContents
-        // (which is now opaque, serializing to "null") against the intent's initial opener origin
-        // (which we also pass as "null").
+        // Launch the PiP activity with an opaque initial opener origin.
+        // verifyOpenerOrigin() must reject opaque origins and immediately finish itself.
         DocumentPictureInPictureActivity activity = launchActivity("null");
 
-        // Wait for startup to complete and verify it does NOT finish.
-        CriteriaHelper.pollUiThread(() -> !activity.isFinishing());
-
-        // Clean up.
-        ThreadUtils.runOnUiThreadBlocking(activity::finish);
+        CriteriaHelper.pollUiThread(() -> activity.isFinishing() || activity.isDestroyed());
     }
 }

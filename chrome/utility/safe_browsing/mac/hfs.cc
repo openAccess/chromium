@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-
 #include "chrome/utility/safe_browsing/mac/hfs.h"
 
 #include <libkern/OSByteOrder.h>
@@ -25,12 +24,19 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/utility/safe_browsing/mac/convert_big_endian.h"
 #include "chrome/utility/safe_browsing/mac/read_stream.h"
+#include "chrome/utility/safe_browsing/mac/rust/read_stream_bridge.h"
+#include "components/safe_browsing/core/common/features.h"
 
 namespace safe_browsing {
 namespace dmg {
 
 // UTF-16 character for file path seprator.
 static const char16_t kFilePathSeparator = u'/';
+
+// Maximum buffer size to allocate for a single extent. Safe Browsing limits DMG
+// analysis to 50 MB (see download_file_types.asciipb), so an individual extent
+// buffer should never need to exceed 64 MB.
+constexpr size_t kMaxExtentBufferSize = 64 * 1024 * 1024;
 
 // We cannot pass pointers to members of packed structs directly to
 // ConvertBigEndian, since the alignment of the member may be lower than the
@@ -278,13 +284,28 @@ class HFSBTreeIterator {
 };
 
 HFSIterator::HFSIterator(ReadStream* stream)
-    : stream_(stream),
-      volume_header_() {
+    : stream_(stream), volume_header_() {
+  if (stream && base::FeatureList::IsEnabled(kSafeBrowsingRustDmgParser)) {
+    // `new_hfs_iterator` requires a valid, non-null `ReadStream` pointer that
+    // outlives the iterator and any child `ReadStream`s. `stream` is checked to
+    // be non-null above, and the `HFSIterator` constructor contract requires
+    // the caller to ensure `stream` outlives this `HFSIterator` and any streams
+    // returned by `GetReadStream()`.
+    rust_iterator_ = rust_ffi::new_hfs_iterator(stream);
+  }
 }
 
 HFSIterator::~HFSIterator() = default;
 
 bool HFSIterator::Open() {
+  if (!stream_) {
+    return false;
+  }
+
+  if (rust_iterator_.has_value()) {
+    return (*rust_iterator_)->open();
+  }
+
   if (stream_->Seek(1024, SEEK_SET) != 1024)
     return false;
 
@@ -314,6 +335,10 @@ bool HFSIterator::Open() {
 }
 
 bool HFSIterator::Next() {
+  if (rust_iterator_.has_value()) {
+    return (*rust_iterator_)->next_item();
+  }
+
   if (!catalog_->HasNext())
     return false;
 
@@ -336,16 +361,25 @@ bool HFSIterator::Next() {
 }
 
 bool HFSIterator::IsDirectory() {
+  if (rust_iterator_.has_value()) {
+    return (*rust_iterator_)->is_directory();
+  }
   return catalog_->current_record()->record_type == kHFSPlusFolderRecord &&
          catalog_->current_record()->folder;
 }
 
 bool HFSIterator::IsFile() {
+  if (rust_iterator_.has_value()) {
+    return (*rust_iterator_)->is_file();
+  }
   return catalog_->current_record()->record_type == kHFSPlusFileRecord &&
          catalog_->current_record()->file;
 }
 
 bool HFSIterator::IsSymbolicLink() {
+  if (rust_iterator_.has_value()) {
+    return (*rust_iterator_)->is_symbolic_link();
+  }
   if (IsDirectory()) {
     return S_ISLNK(catalog_->current_record()->folder->bsdInfo.fileMode);
   }
@@ -356,6 +390,9 @@ bool HFSIterator::IsSymbolicLink() {
 }
 
 bool HFSIterator::IsHardLink() {
+  if (rust_iterator_.has_value()) {
+    return (*rust_iterator_)->is_hard_link();
+  }
   if (IsDirectory()) {
     return false;
   }
@@ -365,6 +402,9 @@ bool HFSIterator::IsHardLink() {
 }
 
 bool HFSIterator::IsDecmpfsCompressed() {
+  if (rust_iterator_.has_value()) {
+    return (*rust_iterator_)->is_decmpfs_compressed();
+  }
   if (IsDirectory()) {
     return false;
   }
@@ -373,10 +413,17 @@ bool HFSIterator::IsDecmpfsCompressed() {
 }
 
 std::u16string HFSIterator::GetPath() {
+  if (rust_iterator_.has_value()) {
+    ::rust::Slice<const uint16_t> slice = (*rust_iterator_)->path_utf16();
+    return std::u16string(slice.begin(), slice.end());
+  }
   return catalog_->current_record()->path;
 }
 
 std::unique_ptr<ReadStream> HFSIterator::GetReadStream() {
+  if (rust_iterator_.has_value()) {
+    return rust_ffi::WrapRustReadStream((*rust_iterator_)->read_stream());
+  }
   if (IsDirectory() || IsHardLink()) {
     return nullptr;
   }
@@ -442,7 +489,7 @@ bool HFSForkReadStream::Read(base::span<uint8_t> buf, size_t* bytes_read) {
         DLOG(ERROR) << "Failed to seek to block " << extent.startBlock;
         return false;
       }
-      if (extent_size.ValueOrDie() > current_extent_data_.max_size()) {
+      if (extent_size.ValueOrDie() > kMaxExtentBufferSize) {
         DLOG(ERROR) << "Extent size too large";
         return false;
       }

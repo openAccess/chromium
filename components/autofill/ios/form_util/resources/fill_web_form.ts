@@ -116,9 +116,7 @@ export function webFormElementToFormData(
 
   // To avoid performance bottlenecks, do not keep child frames if their
   // quantity exceeds the allowed threshold.
-  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES &&
-      autofillFormFeaturesApi.getFunction(
-          'isAutofillAcrossIframesThrottlingEnabled')()) {
+  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES) {
     iframeElements = [];
   }
 
@@ -202,8 +200,15 @@ export function webFormControlElementToFormField(
       inferenceUtil.isSelectElement(element)) {
     field.is_autofilled = (element as any).isAutofilled;
     field.should_autocomplete = fillUtil.shouldAutocomplete(element);
+    // A negative `tabindex` only removes an element from the sequential focus
+    // order; the element stays programmatically focusable. Blink's
+    // Element::IsFocusable() therefore ignores it, and some payment providers
+    // rely on that to receive autofilled values in off-screen mirror fields.
     field.is_focusable = !element.disabled && !(element as any).readOnly &&
-        element.tabIndex >= 0 && fillUtil.isVisibleNode(element);
+        (element.tabIndex >= 0 ||
+         autofillFormFeaturesApi.getFunction(
+             'isAutofillIgnoreTabIndexForFocusabilityEnabled')()) &&
+        fillUtil.isVisibleNode(element);
   }
 
   if (isTextField(element) || inferenceUtil.isTextAreaElement(element)) {
@@ -439,9 +444,7 @@ export function unownedFormElementsAndFieldSetsToFormData(
 
   // To avoid performance bottlenecks, do not keep child frames if their
   // quantity exceeds the allowed threshold.
-  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES &&
-      autofillFormFeaturesApi.getFunction(
-          'isAutofillAcrossIframesThrottlingEnabled')()) {
+  if (iframeElements.length > fillConstants.MAX_EXTRACTABLE_FRAMES) {
     iframeElements = [];
   }
 

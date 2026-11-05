@@ -5,6 +5,7 @@
 #include "components/autofill/core/browser/integrators/autofill_ai/metrics/personal_context_metrics.h"
 
 #include <algorithm>
+#include <optional>
 
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
@@ -90,6 +91,124 @@ void LogPersonalContextNonEligibilityReason(
     personal_context::PersonalContextNonEligibilityReason reason) {
   base::UmaHistogramEnumeration(
       "Autofill.Ai.PersonalContext.NonEligibilityReason", reason);
+}
+
+void LogPersonalContextPrefetchEntityValidationResult(
+    EntityType type,
+    PersonalContextPrefetchEntityValidationResult result) {
+  base::UmaHistogramEnumeration(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityValidationResult", result);
+  base::UmaHistogramEnumeration(
+      base::StrCat(
+          {"Autofill.Ai.PersonalContext.Prefetch.EntityValidationResult.",
+           EntityTypeToMetricsString(type)}),
+      result);
+}
+
+void LogPersonalContextPrefetchEntitySourceCount(EntityType type,
+                                                 size_t count) {
+  base::UmaHistogramCounts100(
+      "Autofill.Ai.PersonalContext.Prefetch.EntitySourceCount", count);
+  base::UmaHistogramCounts100(
+      base::StrCat({"Autofill.Ai.PersonalContext.Prefetch.EntitySourceCount.",
+                    EntityTypeToMetricsString(type)}),
+      count);
+}
+
+void LogPersonalContextDeduplicationAgainstRecordType(
+    EntityType type,
+    std::optional<EntityInstance::RecordType> record_type) {
+  PersonalContextDeduplicationAgainstRecordType sample =
+      PersonalContextDeduplicationAgainstRecordType::kNotDeduplicated;
+  if (record_type) {
+    switch (*record_type) {
+      case EntityInstance::RecordType::kLocal:
+        sample = PersonalContextDeduplicationAgainstRecordType::kLocal;
+        break;
+      case EntityInstance::RecordType::kServerWallet:
+        sample = PersonalContextDeduplicationAgainstRecordType::kServerWallet;
+        break;
+      case EntityInstance::RecordType::kPersonalContext:
+        // Personal Context entities are not deduplicated against each other.
+        NOTREACHED();
+    }
+  }
+  base::UmaHistogramEnumeration(
+      "Autofill.Ai.PersonalContext.Deduplication.AgainstRecordType", sample);
+  base::UmaHistogramEnumeration(
+      base::StrCat(
+          {"Autofill.Ai.PersonalContext.Deduplication.AgainstRecordType.",
+           EntityTypeToMetricsString(type)}),
+      sample);
+}
+
+void LogPersonalContextPrefetchEntityFunnelOutcome(
+    std::optional<EntityType> type,
+    PersonalContextPrefetchEntityFunnelOutcome outcome) {
+  base::UmaHistogramEnumeration(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel", outcome);
+  if (type) {
+    base::UmaHistogramEnumeration(
+        base::StrCat({"Autofill.Ai.PersonalContext.Prefetch.EntityFunnel.",
+                      EntityTypeToMetricsString(*type)}),
+        outcome);
+  }
+}
+
+void LogEntitySuppressionEntitiesFilteredPerPrefetch(size_t count) {
+  base::UmaHistogramCounts100(
+      "Autofill.Ai.Suppression.EntitiesFilteredPerPrefetch", count);
+}
+
+void LogEntitySuppressedWithSavedEntityPresent(
+    EntityType type,
+    const EntityDataManager* entity_data_manager) {
+  const bool has_saved_entity =
+      entity_data_manager &&
+      std::ranges::any_of(
+          entity_data_manager->GetEntityInstances(),
+          [&](const EntityInstance& entity) {
+            return entity.type() == type &&
+                   (entity.record_type() ==
+                        EntityInstance::RecordType::kLocal ||
+                    entity.record_type() ==
+                        EntityInstance::RecordType::kServerWallet);
+          });
+  base::UmaHistogramBoolean(
+      "Autofill.Ai.Suppression.SavedEntityOfSameTypePresent", has_saved_entity);
+  base::UmaHistogramBoolean(
+      base::StrCat({"Autofill.Ai.Suppression.SavedEntityOfSameTypePresent.",
+                    EntityTypeToMetricsString(type)}),
+      has_saved_entity);
+}
+
+void LogEntitySuppressionLoadDroppedRecordCount(size_t count) {
+  base::UmaHistogramCounts1000(
+      "Autofill.Ai.Suppression.Load.DroppedRecordCount", count);
+}
+
+void LogEntitySuppressionLoadDropReason(
+    EntitySuppressionLoadDropReason reason) {
+  base::UmaHistogramEnumeration("Autofill.Ai.Suppression.Load.DropReason",
+                                reason);
+}
+
+void LogEntitySuppressionConfirmationDialogResult(bool accepted) {
+  base::UmaHistogramEnumeration(
+      "Autofill.Ai.Suppression.ConfirmationDialogResult",
+      accepted ? EntitySuppressionConfirmationDialogResult::kAccepted
+               : EntitySuppressionConfirmationDialogResult::kCancelled);
+}
+
+void LogPersonalContextFillingCorrectnessMergeConstraints(
+    std::optional<EntityType> type,
+    bool metric_value) {
+  base::UmaHistogramBoolean(
+      base::StrCat(
+          {"Autofill.Ai.KeyMetrics.FillingCorrectness.MergeConstraints",
+           type ? base::StrCat({".", EntityTypeToMetricsString(*type)}) : "",
+           ".PersonalContext"}),
+      metric_value);
 }
 
 }  // namespace autofill

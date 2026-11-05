@@ -17,7 +17,9 @@
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/test/base/platform_browser_test.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -89,7 +91,9 @@ IN_PROC_BROWSER_TEST_F(
   // 4. Create CoBrowseViewsBridge on tab1.
   CoBrowseViewsBridge views_bridge(*tab1, TabBottomSheetClientType::kUnknown,
                                    CoBrowseContainerType::kBottomSheet,
-                                   provider);
+                                   provider, /*enable_pinch_to_zoom=*/false,
+                                   kColorSidePanelContentBackground,
+                                   ui::kColorSysSurface1);
 
   // 5. Set web contents to nullptr (inactive state, placeholder is shown).
   views_bridge.SetWebContents(nullptr, /*request_focus=*/false);
@@ -106,7 +110,57 @@ IN_PROC_BROWSER_TEST_F(
   base::android::ScopedJavaLocalRef<jobject> j_views_after =
       views_bridge.GetCoBrowseViews();
   ASSERT_FALSE(j_views_after.is_null());
-  EXPECT_FALSE(env->IsSameObject(j_views_before.obj(), j_views_after.obj()));
+  EXPECT_FALSE(j_views_before.IsSameObject(env, j_views_after));
+}
+
+IN_PROC_BROWSER_TEST_F(CoBrowseViewsBridgeBrowserTest,
+                       OnTabInsertedDoesNotCreateViewsBeforeSetWebContents) {
+  TabListInterface* tab_list1 = GetTabListInterface();
+  ASSERT_TRUE(tab_list1);
+  tabs::TabInterface* tab1 = tab_list1->GetActiveTab();
+  ASSERT_TRUE(tab1);
+
+  // Wait for the native window to be attached to the tab's `WebContents`.
+  ASSERT_TRUE(base::test::RunUntil([tab1]() {
+    return tab1->GetContents()->GetTopLevelNativeWindow() != nullptr;
+  }));
+
+  // 1. Create 2 tabs in the first window.
+  std::unique_ptr<content::WebContents> wc2 = content::WebContents::Create(
+      content::WebContents::CreateParams(GetProfile()));
+  tabs::TabInterface* tab2 = tab_list1->InsertWebContentsAt(
+      /*index=*/1, std::move(wc2), /*should_pin=*/false, std::nullopt);
+  ASSERT_TRUE(tab2);
+
+  // 2. Create a second window asynchronously.
+  base::test::TestFuture<BrowserWindowInterface*> future;
+  CreateBrowserWindow(
+      BrowserWindowCreateParams(*GetProfile(), /*from_user_gesture=*/false),
+      future.GetCallback());
+  BrowserWindowInterface* window2 = future.Get();
+  ASSERT_TRUE(window2);
+  TabListInterface* tab_list2 = TabListInterface::From(window2);
+  ASSERT_TRUE(tab_list2);
+
+  // 3. Create the provider.
+  JNIEnv* env = base::android::AttachCurrentThread();
+  base::android::ScopedJavaLocalRef<jobject> provider =
+      Java_TestCoBrowseComponentProvider_Constructor(env);
+
+  // 4. Create `CoBrowseViewsBridge` on `tab1` without calling
+  // `SetWebContents()` or `CreateCoBrowseViews()`.
+  CoBrowseViewsBridge views_bridge(*tab1, TabBottomSheetClientType::kUnknown,
+                                   CoBrowseContainerType::kBottomSheet,
+                                   provider, /*enable_pinch_to_zoom=*/false,
+                                   kColorSidePanelContentBackground,
+                                   ui::kColorSysSurface1);
+  EXPECT_TRUE(views_bridge.GetCoBrowseViews().is_null());
+
+  // 5. Move `tab1` to the second window.
+  tab_list1->MoveTabToWindow(tab1->GetHandle(), window2->GetSessionID(), 0);
+
+  // 6. Verify Java views are still null after moving to the new window.
+  EXPECT_TRUE(views_bridge.GetCoBrowseViews().is_null());
 }
 
 }  // namespace context_sharing

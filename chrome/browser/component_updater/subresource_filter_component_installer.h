@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_COMPONENT_UPDATER_SUBRESOURCE_FILTER_COMPONENT_INSTALLER_H_
 #define CHROME_BROWSER_COMPONENT_UPDATER_SUBRESOURCE_FILTER_COMPONENT_INSTALLER_H_
 
+#include <stdint.h>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,8 +27,8 @@ class ComponentUpdateService;
 class SubresourceFilterComponentInstallerPolicy
     : public ComponentInstallerPolicy {
  public:
-  static const char kManifestRulesetFormatKey[];
-  static const int kCurrentRulesetFormat;
+  static constexpr char kManifestRulesetFormatKey[] = "ruleset_format";
+  static constexpr int kCurrentRulesetFormat = 1;
 
   SubresourceFilterComponentInstallerPolicy();
 

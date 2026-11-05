@@ -64,10 +64,21 @@ BASE_FEATURE(kPrerenderCancelOnCrossDocumentRestart,
 
 constexpr base::MemoryConsumerTraits kPrerenderHostRegistryTraits(
     base::MemoryConsumerTraits::EstimatedMemoryUsage::kLarge,
-    base::MemoryConsumerTraits::ReleaseMemoryCost::kRequiresTraversal,
+    // The released memory is mostly the prerendered page's renderer, freed by
+    // the OS when the process exits.
+    // TODO(crbug.com/441951621): When the renderer is shared (e.g.
+    // prerender-until-script reuses the initiator's process), cancelling
+    // doesn't end the process. The renderer tears down the Document instead,
+    // reading memory that may be swapped out, which kNone doesn't account for.
+    // Find a way to always release this memory by ending the process.
+    base::MemoryConsumerTraits::ReleaseMemoryDataAccess::kNone,
     base::MemoryConsumerTraits::InformationRetention::kLossy,
     base::MemoryConsumerTraits::ExecutionType::kAsynchronous,
-    base::MemoryConsumerTraits::IsStateful::kNo);
+    base::MemoryConsumerTraits::IsStateful::kYes);
+
+// The SuppressMemoryListeners experiment showed that reacting to memory
+// pressure is not beneficial on Android.
+constexpr bool kRegisterMemoryConsumer = !BUILDFLAG(IS_ANDROID);
 
 bool IsBackground(Visibility visibility) {
   // PrerenderHostRegistry treats HIDDEN and OCCLUDED as background.
@@ -321,6 +332,7 @@ PreloadingEligibility ToEligibility(PrerenderFinalStatus status) {
       NOTREACHED();
     case PrerenderFinalStatus::kPrerenderHostReused:
     case PrerenderFinalStatus::kFormSubmitWhenPrerendering:
+    case PrerenderFinalStatus::kPrefetchFailedCrossOriginSubframe:
       NOTREACHED();
   }
 
@@ -498,7 +510,8 @@ const base::FeatureParam<bool> kPrerenderScaleEmbedder{
 
 PrerenderHostRegistry::PrerenderHostRegistry(WebContents& web_contents) {
   if (base::FeatureList::IsEnabled(
-          blink::features::kPrerender2MemoryControls)) {
+          blink::features::kPrerender2MemoryControls) &&
+      kRegisterMemoryConsumer) {
     memory_consumer_registration_.emplace(
         "PrerenderHostRegistry", kPrerenderHostRegistryTraits, this,
         base::MemoryConsumerRegistration::CheckUnregister::kDisabled);
@@ -657,8 +670,7 @@ PrerenderHostId PrerenderHostRegistry::CreateAndStartHost(
     }
 
     // Don't prerender under critical memory pressure.
-    if (GetCurrentMemoryLimit() <=
-        base::MemoryLimit::CriticalPressureThreshold()) {
+    if (memory_limit() <= base::MemoryLimit::CriticalPressureThreshold()) {
       builder.RejectAsNotEligible(
           attributes, PrerenderFinalStatus::kMemoryPressureOnTrigger);
       return PrerenderHostId();
@@ -946,9 +958,17 @@ PrerenderHostId PrerenderHostRegistry::StartPrerendering(
       }
       PrerenderHost* prerender_host = found->second.get();
 
-      // The initiator WebContents should be alive as it cancels all the
-      // prerendering requests during destruction.
-      CHECK(prerender_host->initiator_web_contents());
+      // For new-tab prerenders, the initiator_web_contents may be null if the
+      // initiator tab was closed while activation was deferred. This can happen
+      // because window.open detaches the prerender from the initiator's
+      // PrerenderHostRegistry, preventing tab close from cancelling the host.
+      if (!prerender_host->initiator_web_contents()) {
+        pending_prerenders_.pop_front();
+        CancelHostInternal(prerender_host->prerender_host_id(),
+                           PrerenderCancellationReason(
+                               PrerenderFinalStatus::kTriggerDestroyed));
+        continue;
+      }
 
       WebContentsImpl* initiator_web_contents = static_cast<WebContentsImpl*>(
           prerender_host->initiator_web_contents().get());
@@ -1179,33 +1199,32 @@ PrerenderHostId PrerenderHostRegistry::FindPotentialHostToActivate(
     return PrerenderHostId();
   }
 
-  // Collect hosts that can match the navigation request.
-  std::vector<PrerenderHost*> matchable_hosts;
-  // First, collect hosts that can exactly match or match with the
-  // No-Vary-Search header.
-  for (const auto& [host_id, host] : prerender_host_by_id_) {
-    if (host->IsUrlMatch(navigation_request.GetURL())) {
-      matchable_hosts.push_back(host.get());
+  // Find an available host for the navigation request.
+  PrerenderHost* host = nullptr;
+  // First, find a host that can exactly match or match with the No-Vary-Search
+  // header.
+  for (const auto& [host_id, it_prerender_host] : prerender_host_by_id_) {
+    if (it_prerender_host->IsUrlMatch(navigation_request.GetURL())) {
+      host = it_prerender_host.get();
+      break;
     }
   }
-  // Then, collect hosts that can match with the No-Vary-Search hint.
-  for (const auto& [host_id, host] : prerender_host_by_id_) {
-    if (host->IsNoVarySearchHintUrlMatch(navigation_request.GetURL())) {
-      matchable_hosts.push_back(host.get());
+  // If the host is not found, then find a host that can match with the
+  // No-Vary-Search hint.
+  if (!host) {
+    for (const auto& [host_id, it_prerender_host] : prerender_host_by_id_) {
+      if (it_prerender_host->IsNoVarySearchHintUrlMatch(
+              navigation_request.GetURL())) {
+        host = it_prerender_host.get();
+        break;
+      }
     }
   }
-  RecordPotentialPrerenderProcessReuse(!matchable_hosts.empty(),
+  RecordPotentialPrerenderProcessReuse(host != nullptr,
                                        navigation_request.GetURL());
-  if (matchable_hosts.empty()) {
+  if (!host) {
     return PrerenderHostId();
   }
-  // Use the first match. This prioritizes the exact match or No-Vary-Search
-  // header match than No-Vary-Search hint match.
-  PrerenderHost* host = *matchable_hosts.begin();
-
-  base::UmaHistogramCounts100(
-      "Prerender.Experimental.MatchableHostCountOnActivation",
-      matchable_hosts.size());
   // Cannot activate if prerendering navigation has not started yet.
   if (!host->GetInitialNavigationId().has_value()) {
     CancelHost(host->prerender_host_id(),
@@ -1625,19 +1644,17 @@ PrerenderHostId PrerenderHostRegistry::GetPrerenderHostIdForNavigation(
 
 void PrerenderHostRegistry::DidStartNavigation(
     NavigationHandle* navigation_handle) {
-  // DidStartNavigation is used for monitoring the main frame navigation in a
-  // prerendered page so do nothing for other navigations.
   auto* navigation_request = NavigationRequest::From(navigation_handle);
-  if (!navigation_request->IsInPrerenderedMainFrame() ||
-      navigation_request->IsSameDocument()) {
+  if (navigation_request->IsSameDocument()) {
     return;
   }
 
-  // This navigation is running on the main frame in the prerendered page, so
-  // its FrameTree::Delegate should be PrerenderHost.
-  auto& prerender_host = PrerenderHost::GetFromFrameTreeNode(
+  auto* prerender_host = PrerenderHost::GetFromFrameTreeNodeIfPrerendering(
       *navigation_request->frame_tree_node());
-  prerender_host.DidStartNavigation(navigation_handle);
+  if (!prerender_host) {
+    return;
+  }
+  prerender_host->DidStartNavigation(navigation_handle);
 }
 
 void PrerenderHostRegistry::ReadyToCommitNavigation(
@@ -1793,9 +1810,16 @@ bool PrerenderHostRegistry::CanNavigationActivateHost(
   //   `host.initiator_web_contents()` is visible at this point. Thus,
   //   activation is allowed when either of them is visible.
   //
-  // TODO(crbug.com/40249964): Remove the restriction after further
-  // investigation and discussion.
-  CHECK(host.initiator_web_contents());
+  // For new-tab prerenders, the initiator_web_contents may be null if the
+  // initiator tab was closed while activation was deferred. This can happen
+  // because window.open detaches the prerender from the initiator's
+  // PrerenderHostRegistry, preventing tab close from cancelling the host.
+  if (!host.initiator_web_contents()) {
+    CancelHost(host.prerender_host_id(),
+               PrerenderFinalStatus::kTriggerDestroyed);
+    return false;
+  }
+
   if (web_contents()->GetVisibility() == Visibility::HIDDEN &&
       host.initiator_web_contents()->GetVisibility() == Visibility::HIDDEN) {
     CancelHost(host.prerender_host_id(),
@@ -2084,6 +2108,10 @@ int PrerenderHostRegistry::GetScaledLimit(
     PrerenderLimitGroup limit_group) const {
   const int max_limit = GetMaxLimit(limit_group);
 
+  if (!base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
+    return max_limit;
+  }
+
   // Check feature parameters to determine if memory limit scaling is enabled
   // for the specified limit group.
   bool should_scale = false;
@@ -2098,15 +2126,7 @@ int PrerenderHostRegistry::GetScaledLimit(
       should_scale = kPrerenderScaleEmbedder.Get();
       break;
   }
-  return should_scale ? GetCurrentMemoryLimit().Scale(max_limit) : max_limit;
-}
-
-base::MemoryLimit PrerenderHostRegistry::GetCurrentMemoryLimit() const {
-  if (!base::FeatureList::IsEnabled(base::kStatefulMemoryPressure)) {
-    return base::MemoryLimit::Default();
-  }
-
-  return memory_limit();
+  return should_scale ? memory_limit().Scale(max_limit) : max_limit;
 }
 
 void PrerenderHostRegistry::SetTaskRunnerForTesting(

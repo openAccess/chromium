@@ -5,6 +5,7 @@
 #include "chrome/browser/enterprise/data_protection/data_protection_navigation_controller.h"
 
 #include "base/functional/bind.h"
+#include "base/no_destructor.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/enterprise/connectors/referrer_cache_utils.h"
 #include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"
@@ -13,23 +14,29 @@
 #include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
 #include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/download/public/common/mock_download_item.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "components/enterprise/connectors/core/common.h"
 #include "components/enterprise/connectors/core/connectors_prefs.h"
 #include "components/enterprise/connectors/core/reporting_constants.h"
 #include "components/enterprise/connectors/core/reporting_test_utils.h"
+#include "components/enterprise/data_controls/core/browser/test_utils.h"
 #include "components/policy/core/common/cloud/dm_token.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/content/browser/safe_browsing_navigation_observer.h"
 #include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
+#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 using ::testing::Return;
 using ::testing::ReturnRef;
@@ -39,7 +46,7 @@ namespace enterprise_data_protection {
 namespace {
 
 const char* GetAnalysisPolicy() {
-  static std::string policy = base::StringPrintf(
+  static base::NoDestructor<std::string> policy(base::StringPrintf(
       R"({
         "service_provider": "google",
         "enable": [
@@ -50,9 +57,18 @@ const char* GetAnalysisPolicy() {
         ],
         "block_until_verdict": 1
       })",
-      enterprise_connectors::kDlpTag, enterprise_connectors::kMalwareTag);
-  return policy.c_str();
+      enterprise_connectors::kDlpTag, enterprise_connectors::kMalwareTag));
+  return policy->c_str();
 }
+
+// The network request connector uses an audit-only policy schema.
+constexpr char kNetworkRequestPolicy[] = R"({
+  "audit": {
+    "tab_domain": ["*"],
+    "request_domain": ["*"]
+  },
+  "tags": ["dlp"]
+})";
 
 }  // namespace
 
@@ -130,10 +146,61 @@ IN_PROC_BROWSER_TEST_F(DataProtectionNavigationControllerTest, PolicyUnset) {
 
   // The chain can still be retrieved using the SB cache.
   chain = enterprise_connectors::GetReferrerChain(main_url(), *contents());
-  ASSERT_EQ(chain.size(), 2u);
+  ASSERT_EQ(chain.size(), 2);
   ASSERT_EQ(chain[0].url(), main_url());
   ASSERT_EQ(chain[1].url(), secondary_url());
 }
+
+IN_PROC_BROWSER_TEST_F(DataProtectionNavigationControllerTest,
+                       FromWebContents) {
+  EXPECT_EQ(DataProtectionNavigationController::FromWebContents(nullptr),
+            nullptr);
+  EXPECT_NE(DataProtectionNavigationController::FromWebContents(contents()),
+            nullptr);
+}
+
+IN_PROC_BROWSER_TEST_F(DataProtectionNavigationControllerTest,
+                       SafeBrowsingDisabled_PolicyUnset_NoObserver) {
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled,
+                                                  false);
+  ASSERT_FALSE(enterprise_connectors::IsReferrerChainNeededForEnterprise(
+      browser()->GetProfile()));
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
+      browser(), main_url(),
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
+
+  EXPECT_FALSE(safe_browsing::SafeBrowsingNavigationObserver::FromWebContents(
+      contents()));
+}
+
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+IN_PROC_BROWSER_TEST_F(DataProtectionNavigationControllerTest,
+                       IsScreenShareBlocked) {
+  EXPECT_FALSE(IsScreenShareBlocked(nullptr));
+  EXPECT_FALSE(IsScreenShareBlocked(contents()));
+
+  data_controls::SetDataControls(browser()->GetProfile()->GetPrefs(), {R"({
+      "name": "block_screenshot",
+      "rule_id": "1234",
+      "sources": {
+        "urls": ["*"]
+      },
+      "restrictions": [
+        {"class": "SCREENSHOT", "level": "BLOCK"}
+      ]
+    })"});
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_url()));
+  EXPECT_TRUE(IsScreenShareBlocked(contents()));
+
+  data_controls::SetDataControls(browser()->GetProfile()->GetPrefs(), {});
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/title1.html")));
+  EXPECT_FALSE(IsScreenShareBlocked(contents()));
+}
+#endif  // BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
 
 IN_PROC_BROWSER_TEST_F(DataProtectionNavigationControllerTest, DownloadItem) {
   auto chain = enterprise_connectors::GetReferrerChain(
@@ -168,7 +235,7 @@ IN_PROC_BROWSER_TEST_F(DataProtectionNavigationControllerTest, DownloadItem) {
   // own URL.
   auto download_chain =
       safe_browsing::GetOrIdentifyReferrerChainForEnterprise(download);
-  ASSERT_EQ(download_chain.size(), 1u);
+  ASSERT_EQ(download_chain.size(), 1);
   ASSERT_EQ(download_chain[0].url(), download_url);
   ASSERT_TRUE(enterprise_connectors::HasCachedChainForTesting(download));
 
@@ -178,13 +245,13 @@ IN_PROC_BROWSER_TEST_F(DataProtectionNavigationControllerTest, DownloadItem) {
 
   download_chain =
       safe_browsing::GetOrIdentifyReferrerChainForEnterprise(download);
-  ASSERT_EQ(download_chain.size(), 1u);
+  ASSERT_EQ(download_chain.size(), 1);
   ASSERT_EQ(download_chain[0].url(), download_url);
   ASSERT_TRUE(enterprise_connectors::HasCachedChainForTesting(download));
 
   contents_chain =
       enterprise_connectors::GetReferrerChain(main_url(), *contents());
-  ASSERT_EQ(contents_chain.size(), 2u);
+  ASSERT_EQ(contents_chain.size(), 2);
   ASSERT_EQ(contents_chain[0].url(), main_url());
   ASSERT_EQ(contents_chain[1].url(), secondary_url());
 }
@@ -214,6 +281,9 @@ class DataProtectionNavigationControllerPolicyTest
     enterprise_connectors::test::ClearAnalysisConnector(
         browser()->GetProfile()->GetPrefs(),
         enterprise_connectors::AnalysisConnector::PRINT);
+    enterprise_connectors::test::ClearAnalysisConnector(
+        browser()->GetProfile()->GetPrefs(),
+        enterprise_connectors::AnalysisConnector::NETWORK_REQUEST);
     enterprise_connectors::test::SetOnSecurityEventReporting(
         browser()->GetProfile()->GetPrefs(), false);
     browser()->GetProfile()->GetPrefs()->ClearPref(
@@ -240,9 +310,43 @@ IN_PROC_BROWSER_TEST_P(DataProtectionNavigationControllerPolicyTest,
 
   chain = enterprise_connectors::GetReferrerChain(
       main_url(), *browser()->GetTabStripModel()->GetActiveWebContents());
-  ASSERT_EQ(chain.size(), 2u);
+  ASSERT_EQ(chain.size(), 2);
   ASSERT_EQ(chain[0].url(), main_url());
   ASSERT_EQ(chain[1].url(), secondary_url());
+}
+
+IN_PROC_BROWSER_TEST_P(DataProtectionNavigationControllerPolicyTest,
+                       IsReferrerChainNeededForEnterprise) {
+  EXPECT_FALSE(enterprise_connectors::IsReferrerChainNeededForEnterprise(
+      browser()->GetProfile()));
+
+  EnablePolicy();
+
+  EXPECT_TRUE(enterprise_connectors::IsReferrerChainNeededForEnterprise(
+      browser()->GetProfile()));
+}
+
+IN_PROC_BROWSER_TEST_P(DataProtectionNavigationControllerPolicyTest,
+                       SafeBrowsingDisabled_NewTabRecordsReferrerChain) {
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnabled,
+                                                  false);
+  EnablePolicy();
+  ASSERT_FALSE(safe_browsing::IsSafeBrowsingEnabled(
+      *browser()->GetProfile()->GetPrefs()));
+
+  // The observer is attached at tab creation, so open a new tab after the
+  // policy is set. Use a page that actually exists: error pages are not
+  // recorded by the observer.
+  const GURL url = embedded_test_server()->GetURL("/title1.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
+  EXPECT_TRUE(safe_browsing::SafeBrowsingNavigationObserver::FromWebContents(
+      contents()));
+
+  auto chain = enterprise_connectors::GetReferrerChain(url, *contents());
+  ASSERT_FALSE(chain.empty());
+  EXPECT_EQ(chain[0].url(), url);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -275,6 +379,11 @@ INSTANTIATE_TEST_SUITE_P(
           enterprise_connectors::test::SetAnalysisConnector(
               prefs, enterprise_connectors::AnalysisConnector::PRINT,
               GetAnalysisPolicy());
+        }),
+        base::BindRepeating([](PrefService* prefs) {
+          enterprise_connectors::test::SetAnalysisConnector(
+              prefs, enterprise_connectors::AnalysisConnector::NETWORK_REQUEST,
+              kNetworkRequestPolicy);
         }),
         base::BindRepeating([](PrefService* prefs) {
           enterprise_connectors::test::SetOnSecurityEventReporting(prefs, true);

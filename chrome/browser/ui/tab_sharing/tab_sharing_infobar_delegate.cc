@@ -105,7 +105,8 @@ class TabSharingInfoBarDelegate::ShareTabInsteadButton
   ~ShareTabInsteadButton() override = default;
 
   void Click(infobars::InfoBar* infobar) override {
-    DCHECK(ui_);  // Not verified in ctor to keep tests simple.
+    CHECK(ui_, base::NotFatalUntil::M162);  // Not verified in ctor to keep
+                                            // tests simple.
     ui_->StartSharing(infobar);
   }
 
@@ -124,6 +125,8 @@ class TabSharingInfoBarDelegate::ShareTabInsteadButton
   }
 
   std::u16string GetTooltip() const override {
+    // TODO(crbug.com/428700040): Generalize tooltip string for tab sharing
+    // protection when disabled by enterprise policy.
     return button_state_ == TabSharingInfoBarDelegate::ButtonState::DISABLED
                ? l10n_util::GetStringUTF16(
                      IDS_POLICY_DLP_SCREEN_SHARE_BLOCKED_TITLE)
@@ -295,6 +298,10 @@ int TabSharingInfoBarDelegate::GetButtons() const {
   return (stop_button_ ? kStop : 0) |
          (share_this_tab_instead_button_ ? kShareThisTabInstead : 0) |
          (csc_indicator_button_ ? kCapturedSurfaceControlIndicator : 0);
+}
+
+bool TabSharingInfoBarDelegate::IsSharedTabBlocked() const {
+  return ui_ && ui_->IsSharedTabBlocked();
 }
 
 void TabSharingInfoBarDelegate::Stop() {

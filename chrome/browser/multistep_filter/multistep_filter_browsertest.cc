@@ -30,6 +30,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/page_action/action_ids.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/toasts/toast_view.h"
@@ -45,8 +46,7 @@
 #include "components/multistep_filter/core/multistep_filter_service.h"
 #include "components/multistep_filter/core/storage/filter_store.h"
 #include "components/multistep_filter/core/switches.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/optimization_guide/proto/common_types.pb.h"
 #include "components/optimization_guide/proto/hints.pb.h"
@@ -408,8 +408,7 @@ IN_PROC_BROWSER_TEST_F(MultistepFilterBrowserTest,
   ASSERT_TRUE(ui_controller);
   EXPECT_FALSE(test_api(*ui_controller).suggestion_state().has_value());
 
-  ToastController* toast_controller =
-      browser()->GetFeatures().toast_controller();
+  ToastController* toast_controller = ToastController::From(browser());
   EXPECT_FALSE(toast_controller->IsShowingToast());
 }
 #endif

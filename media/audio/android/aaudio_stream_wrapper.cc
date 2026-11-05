@@ -660,7 +660,7 @@ bool AAudioStreamWrapper::Stop() {
   // success of this wait.
   aaudio_stream_state_t current_state = AAUDIO_STREAM_STATE_STOPPING;
   aaudio_stream_state_t next_state = AAUDIO_STREAM_STATE_UNINITIALIZED;
-  static const int64_t kTimeoutNanoseconds = 1e8;
+  constexpr int64_t kTimeoutNanoseconds = 1e8;
   result = AAudioStream_waitForStateChange(aaudio_stream_, current_state,
                                            &next_state, kTimeoutNanoseconds);
 
@@ -688,6 +688,9 @@ std::optional<android::AudioDeviceId> AAudioStreamWrapper::GetActualDeviceId() {
 base::TimeDelta AAudioStreamWrapper::GetOutputDelay(
     base::TimeTicks delay_timestamp) {
   CHECK_EQ(stream_type_, AAudioStreamWrapper::StreamType::kOutput);
+  if (!aaudio_stream_) {
+    return base::TimeDelta();
+  }
 
   // Get the time that a known audio frame was presented for playing.
   int64_t existing_frame_index;

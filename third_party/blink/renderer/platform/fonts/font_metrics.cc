@@ -88,9 +88,12 @@ void FontMetrics::AscentDescentWithHacks(
         // SAFETY: FastMalloc allocated vdmx_size bytes for vdmx_table.
         auto vdmx_span = UNSAFE_BUFFERS(base::span(vdmx_table, vdmx_size));
         if (face->getTableData(kVdmxTag, 0, vdmx_size, vdmx_table) ==
-                vdmx_size &&
-            ParseVDMX(&vdmx_ascent, &vdmx_descent, vdmx_span, pixel_size)) {
-          is_vdmx_valid = true;
+            vdmx_size) {
+          if (auto max_min = ParseVdmx(vdmx_span, pixel_size)) {
+            vdmx_ascent = max_min->first;
+            vdmx_descent = max_min->second;
+            is_vdmx_valid = true;
+          }
         }
         Partitions::FastFree(vdmx_table);
       }
@@ -152,33 +155,33 @@ float FontMetrics::FloatAscentInternal(
     FontBaseline baseline_type,
     ApplyBaselineTable apply_baseline_table) const {
   switch (baseline_type) {
-    case kAlphabeticBaseline:
+    case FontBaseline::kAlphabetic:
       NOTREACHED();
-    case kCentralBaseline:
+    case FontBaseline::kCentral:
       return FloatHeight() / 2;
 
       // The following computations are based on 'dominant-baseline' support in
       // the legacy SVG <text>.
 
-    case kTextUnderBaseline:
+    case FontBaseline::kTextUnder:
       return FloatHeight();
-    case kIdeographicUnderBaseline:
+    case FontBaseline::kIdeographicUnder:
       if (ideographic_baseline_position_.has_value() && apply_baseline_table) {
         return float_ascent_ - ideographic_baseline_position_.value();
       }
       return FloatHeight();
-    case kXMiddleBaseline:
+    case FontBaseline::kXMiddle:
       return float_ascent_ - XHeight() / 2;
-    case kMathBaseline:
+    case FontBaseline::kMath:
       // TODO(layout-dev): Should refer to 'math' in OpenType or 'bsln' value 4
       // in TrueType AAT.
       return float_ascent_ * 0.5f;
-    case kHangingBaseline:
+    case FontBaseline::kHanging:
       if (hanging_baseline_position_.has_value() && apply_baseline_table) {
         return float_ascent_ - hanging_baseline_position_.value();
       }
       return float_ascent_ * 0.2f;
-    case kTextOverBaseline:
+    case FontBaseline::kTextOver:
       return 0;
   }
   NOTREACHED();
@@ -188,36 +191,36 @@ int FontMetrics::IntAscentInternal(
     FontBaseline baseline_type,
     ApplyBaselineTable apply_baseline_table) const {
   switch (baseline_type) {
-    case kAlphabeticBaseline:
+    case FontBaseline::kAlphabetic:
       NOTREACHED();
-    case kCentralBaseline:
+    case FontBaseline::kCentral:
       return Height() - Height() / 2;
 
       // The following computations are based on 'dominant-baseline' support in
       // the legacy SVG <text>.
 
-    case kTextUnderBaseline:
+    case FontBaseline::kTextUnder:
       return Height();
-    case kIdeographicUnderBaseline:
+    case FontBaseline::kIdeographicUnder:
       if (ideographic_baseline_position_.has_value() && apply_baseline_table) {
         return static_cast<int>(
             int_ascent_ -
             static_cast<int>(lroundf(ideographic_baseline_position_.value())));
       }
       return Height();
-    case kXMiddleBaseline:
+    case FontBaseline::kXMiddle:
       return int_ascent_ - static_cast<int>(XHeight() / 2);
-    case kMathBaseline:
+    case FontBaseline::kMath:
       if (hanging_baseline_position_.has_value() && apply_baseline_table) {
         return int_ascent_ -
                static_cast<int>(lroundf(hanging_baseline_position_.value()));
       }
       return int_ascent_ / 2;
-    case kHangingBaseline:
+    case FontBaseline::kHanging:
       // TODO(layout-dev): Should refer to 'hang' in OpenType or 'bsln' value 3
       // in TrueType AAT.
       return int_ascent_ * 2 / 10;
-    case kTextOverBaseline:
+    case FontBaseline::kTextOver:
       return 0;
   }
   NOTREACHED();

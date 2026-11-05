@@ -23,17 +23,16 @@ import org.mockito.Mock;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Callback;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.components.embedder_support.simple_factory_key.SimpleFactoryKeyHandle;
+import org.chromium.net.NetError;
 import org.chromium.ui.test.util.MockitoHelper;
 import org.chromium.url.JUnitTestGURLs;
 
 /** Test for ImageFetcherBridge.java. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ImageFetcherBridgeTest {
     private static final int WIDTH_PX = 10;
     private static final int HEIGHT_PX = 20;
@@ -56,12 +55,22 @@ public class ImageFetcherBridgeTest {
     }
 
     @Test
+    public void testCreateRequestMetadataPropagatesNetError() {
+        RequestMetadata metadata =
+                ImageFetcherBridge.createRequestMetadata(
+                        "", -1, NetError.ERR_INVALID_URL, "");
+
+        Assert.assertEquals(-1, metadata.httpResponseCode);
+        Assert.assertEquals(NetError.ERR_INVALID_URL, metadata.netError);
+    }
+
+    @Test
     public void testFetchImage() {
         ArgumentCaptor<Callback<ImageFetchResult>> callbackCaptor = MockitoHelper.callbackCaptor();
         final ArgumentCaptor<Bitmap> resultCaptor = ArgumentCaptor.forClass(Bitmap.class);
         final Bitmap bitmap = Bitmap.createBitmap(WIDTH_PX, HEIGHT_PX, Bitmap.Config.ARGB_8888);
         final RequestMetadata requestMetadata =
-                new RequestMetadata("image/jpeg", 200, "test_content_location_header");
+                new RequestMetadata("image/jpeg", 200, NetError.OK, "test_content_location_header");
         final ImageFetchResult imageFetchResult = new ImageFetchResult(bitmap, requestMetadata);
         doAnswer(
                         (InvocationOnMock invocation) -> {
@@ -91,7 +100,7 @@ public class ImageFetcherBridgeTest {
         final ArgumentCaptor<Bitmap> resultCaptor = ArgumentCaptor.forClass(Bitmap.class);
         final Bitmap bitmap = Bitmap.createBitmap(WIDTH_PX, HEIGHT_PX, Bitmap.Config.ARGB_8888);
         final RequestMetadata requestMetadata =
-                new RequestMetadata("image/jpeg", 200, "test_content_location_header");
+                new RequestMetadata("image/jpeg", 200, NetError.OK, "test_content_location_header");
         final ImageFetchResult imageFetchResult = new ImageFetchResult(bitmap, requestMetadata);
         doAnswer(
                         (InvocationOnMock invocation) -> {
@@ -132,7 +141,8 @@ public class ImageFetcherBridgeTest {
         final ImageFetchResult imageFetchResult =
                 new ImageFetchResult(
                         bitmap,
-                        new RequestMetadata("image/jpeg", 200, "test_content_location_header"));
+                        new RequestMetadata(
+                                "image/jpeg", 200, NetError.OK, "test_content_location_header"));
         doAnswer(
                         (InvocationOnMock invocation) -> {
                             callbackCaptor.getValue().onResult(imageFetchResult);
@@ -170,7 +180,7 @@ public class ImageFetcherBridgeTest {
                 ArgumentCaptor.forClass(ImageFetchResult.class);
         final Bitmap bitmap = Bitmap.createBitmap(WIDTH_PX, HEIGHT_PX, Bitmap.Config.ARGB_8888);
         final RequestMetadata requestMetadata =
-                new RequestMetadata("image/jpeg", 200, "test_content_location_header");
+                new RequestMetadata("image/jpeg", 200, NetError.OK, "test_content_location_header");
         final ImageFetchResult imageFetchResult = new ImageFetchResult(bitmap, requestMetadata);
         doAnswer(
                         (InvocationOnMock invocation) -> {
@@ -206,7 +216,7 @@ public class ImageFetcherBridgeTest {
                 ArgumentCaptor.forClass(ImageFetchResult.class);
         final Bitmap bitmap = Bitmap.createBitmap(WIDTH_PX, HEIGHT_PX, Bitmap.Config.ARGB_8888);
         final RequestMetadata requestMetadata =
-                new RequestMetadata("image/jpeg", 200, "test_content_location_header");
+                new RequestMetadata("image/jpeg", 200, NetError.OK, "test_content_location_header");
         final ImageFetchResult imageFetchResult = new ImageFetchResult(bitmap, requestMetadata);
         doAnswer(
                         (InvocationOnMock invocation) -> {
@@ -248,7 +258,7 @@ public class ImageFetcherBridgeTest {
         ArgumentCaptor<Callback<ImageFetchResult>> callbackCaptor = MockitoHelper.callbackCaptor();
         final Bitmap bitmap = Bitmap.createBitmap(10, 10, Bitmap.Config.ARGB_8888);
         final RequestMetadata requestMetadata =
-                new RequestMetadata("image/jpeg", 200, "test_content_location_header");
+                new RequestMetadata("image/jpeg", 200, NetError.OK, "test_content_location_header");
         final ImageFetchResult imageFetchResult = new ImageFetchResult(bitmap, requestMetadata);
         doAnswer(
                         (InvocationOnMock invocation) -> {
@@ -291,7 +301,7 @@ public class ImageFetcherBridgeTest {
                 MockitoHelper.callbackCaptor();
         final byte[] imageData = new byte[] {1, 2, 3};
         final RequestMetadata requestMetadata =
-                new RequestMetadata("image/gif", 200, "test_content_location_header");
+                new RequestMetadata("image/gif", 200, NetError.OK, "test_content_location_header");
         final ImageDataFetchResult imageDataFetchResult =
                 new ImageDataFetchResult(imageData, requestMetadata);
         doAnswer(
@@ -306,9 +316,10 @@ public class ImageFetcherBridgeTest {
                         anyString(),
                         anyString(),
                         eq(0),
+                        /* isTrustedSource= */ eq(true),
                         callbackCaptor.capture());
 
-        mBridge.fetchGif(-1, ImageFetcher.Params.create("", ""), mGifCallback);
+        mBridge.fetchGif(-1, ImageFetcher.Params.createFromTrustedSource("", ""), mGifCallback);
         ArgumentCaptor<ImageDataFetchResult> gifCaptor =
                 ArgumentCaptor.forClass(ImageDataFetchResult.class);
         verify(mGifCallback).onResult(gifCaptor.capture());
@@ -325,7 +336,8 @@ public class ImageFetcherBridgeTest {
         final ImageDataFetchResult imageDataFetchResult =
                 new ImageDataFetchResult(
                         new byte[] {},
-                        new RequestMetadata("image/jpeg", -1, "test_content_location_header"));
+                        new RequestMetadata(
+                                "image/jpeg", -1, NetError.OK, "test_content_location_header"));
         doAnswer(
                         (InvocationOnMock invocation) -> {
                             callbackCaptor.getValue().onResult(imageDataFetchResult);
@@ -338,6 +350,7 @@ public class ImageFetcherBridgeTest {
                         anyString(),
                         anyString(),
                         eq(0),
+                        /* isTrustedSource= */ eq(false),
                         callbackCaptor.capture());
 
         mBridge.fetchGif(-1, ImageFetcher.Params.create("", ""), mGifCallback);

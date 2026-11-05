@@ -26,6 +26,7 @@
 #include "content/public/test/browser_task_environment.h"
 #include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/page_transition_types.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/browser/extension_registry.h"
@@ -43,7 +44,7 @@ struct TestShortcutData shortcut_test_db[] = {
      "chrome-extension://cedabbhfglmiikkmdgcpjdkocfcmbkee/?q=echo",
      AutocompleteMatch::DocumentType::NONE, "Run Echo command: echo", "0,0",
      "Echo echo", "0,4", ui::PAGE_TRANSITION_TYPED,
-     AutocompleteMatchType::EXTENSION_APP_DEPRECATED, "", 1, 1},
+     omnibox::AutocompleteMatchType::kExtensionAppDeprecated, "", 1, 1},
 };
 
 }  // namespace

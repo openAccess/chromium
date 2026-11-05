@@ -8,10 +8,10 @@
 
 #include "base/base64.h"
 #include "base/check.h"
+#include "base/files/file_path.h"
 #include "base/hash/hash.h"
 #include "base/hash/sha1.h"
 #include "base/memory/ptr_util.h"
-#include "base/not_fatal_until.h"
 #include "base/trace_event/memory_usage_estimator.h"
 #include "components/sync/base/deletion_origin.h"
 #include "components/sync/base/time.h"
@@ -23,6 +23,7 @@
 #include "components/sync/protocol/proto_memory_estimations.h"
 #include "components/sync/protocol/unique_position.pb.h"
 #include "components/version_info/version_info.h"
+#include "url/gurl.h"
 
 namespace syncer {
 
@@ -34,10 +35,23 @@ std::string HashSpecifics(const sync_pb::EntitySpecifics& specifics) {
       base::SHA1HashString(specifics.SerializeAsString()));
 }
 
+bool IsValidPendingUpload(
+    const sync_pb::EntityMetadata::AttachmentMetadata::PendingUpload&
+        pending_upload) {
+  return !pending_upload.file_path().empty();
+}
+
 }  // namespace
 
 // static
 bool ProcessorEntityMetadata::IsValid(const sync_pb::EntityMetadata& metadata) {
+  // Reject corrupted metadata where `pending_upload` is present without a local
+  // staging `file_path`, so `ProcessorEntityMetadata` can guarantee a non-empty
+  // path whenever `HasPendingAttachmentUpload()` is true.
+  if (metadata.attachment_metadata().has_pending_upload() &&
+      !IsValidPendingUpload(metadata.attachment_metadata().pending_upload())) {
+    return false;
+  }
   return !metadata.client_tag_hash().empty() && metadata.has_creation_time() &&
          metadata.sequence_number() >= metadata.acked_sequence_number();
 }
@@ -110,13 +124,13 @@ ClientTagHash ProcessorEntityMetadata::GetClientTagHash() const {
 }
 
 void ProcessorEntityMetadata::IncrementSequenceNumber() {
-  CHECK(metadata_.has_sequence_number(), base::NotFatalUntil::M141);
+  CHECK(metadata_.has_sequence_number());
   if (!IsUnsynced()) {
     // Update the base specifics hash if this entity wasn't already out of sync.
     metadata_.set_base_specifics_hash(metadata_.specifics_hash());
   }
   metadata_.set_sequence_number(metadata_.sequence_number() + 1);
-  CHECK(IsUnsynced(), base::NotFatalUntil::M141);
+  CHECK(IsUnsynced());
 }
 
 bool ProcessorEntityMetadata::MatchesData(const EntityData& data) const {
@@ -223,7 +237,9 @@ void ProcessorEntityMetadata::RecordForcedRemoteUpdate(
     const UpdateResponseData& update,
     sync_pb::EntitySpecifics trimmed_specifics,
     std::optional<sync_pb::UniquePosition> unique_position) {
+  CHECK(!HasPendingAttachmentUpload());
   metadata_.set_acked_sequence_number(metadata_.sequence_number());
+  metadata_.clear_attachment_metadata();
   RecordAcceptedRemoteUpdate(update, std::move(trimmed_specifics),
                              std::move(unique_position));
 }
@@ -233,8 +249,20 @@ void ProcessorEntityMetadata::RecordCommitResponse(
   metadata_.set_server_id(data.id);
   metadata_.set_acked_sequence_number(data.sequence_number);
   metadata_.set_server_version(data.response_version);
+  if (metadata_.has_attachment_metadata() &&
+      data.attachment_modification_time.has_value()) {
+    metadata_.mutable_attachment_metadata()
+        ->mutable_attachment()
+        ->set_modification_time_unix_epoch_millis(
+            TimeToProtoTime(*data.attachment_modification_time));
+  }
   if (!IsUnsynced()) {
     metadata_.clear_base_specifics_hash();
+    if (metadata_.has_attachment_metadata()) {
+      metadata_.mutable_attachment_metadata()
+          ->mutable_attachment()
+          ->clear_temporary_blob_id();
+    }
   } else {
     metadata_.set_base_specifics_hash(data.specifics_hash);
   }
@@ -300,6 +328,8 @@ void ProcessorEntityMetadata::RecordLocalDeletion(
   metadata_.clear_bookmark_favicon_hash();
   metadata_.clear_possibly_trimmed_base_specifics();
   metadata_.clear_unique_position();
+  CHECK(!HasPendingAttachmentUpload());
+  metadata_.clear_attachment_metadata();
 
   if (origin.is_specified()) {
     *metadata_.mutable_deletion_origin() =
@@ -308,6 +338,56 @@ void ProcessorEntityMetadata::RecordLocalDeletion(
 
   metadata_.set_deleted_by_version(
       std::string(version_info::GetVersionNumber()));
+}
+
+bool ProcessorEntityMetadata::HasPendingAttachmentUpload() const {
+  return metadata_.attachment_metadata().has_pending_upload();
+}
+
+void ProcessorEntityMetadata::RecordAttachmentUploadQueued(
+    const base::FilePath& file_path) {
+  CHECK(!IsDeleted());
+  CHECK(IsUnsynced());
+  CHECK(!file_path.empty());
+  sync_pb::EntityMetadata::AttachmentMetadata* attachment_metadata =
+      metadata_.mutable_attachment_metadata();
+  attachment_metadata->clear_attachment();
+  sync_pb::EntityMetadata::AttachmentMetadata::PendingUpload* pending_upload =
+      attachment_metadata->mutable_pending_upload();
+  pending_upload->clear_upload_url();
+  pending_upload->set_file_path(file_path.AsUTF8Unsafe());
+}
+
+void ProcessorEntityMetadata::RecordAttachmentUploadResumeUrlReceived(
+    const GURL& upload_url) {
+  CHECK(!IsDeleted());
+  CHECK(HasPendingAttachmentUpload());
+  CHECK(upload_url.is_valid());
+  metadata_.mutable_attachment_metadata()
+      ->mutable_pending_upload()
+      ->set_upload_url(upload_url.spec());
+}
+
+void ProcessorEntityMetadata::RecordAttachmentUploadCompleted(
+    const std::string& temporary_blob_id) {
+  CHECK(!IsDeleted());
+  CHECK(HasPendingAttachmentUpload());
+  CHECK(!temporary_blob_id.empty());
+  sync_pb::EntityMetadata::AttachmentMetadata* attachment_metadata =
+      metadata_.mutable_attachment_metadata();
+  attachment_metadata->clear_pending_upload();
+  attachment_metadata->mutable_attachment()->set_temporary_blob_id(
+      temporary_blob_id);
+}
+
+void ProcessorEntityMetadata::RecordPendingAttachmentUploadCleared() {
+  if (!HasPendingAttachmentUpload()) {
+    return;
+  }
+  metadata_.mutable_attachment_metadata()->clear_pending_upload();
+  if (!metadata_.attachment_metadata().has_attachment()) {
+    metadata_.clear_attachment_metadata();
+  }
 }
 
 }  // namespace syncer

@@ -49,10 +49,12 @@ class HTMLFormElement;
 class KeyboardEvent;
 class PointerEvent;
 class TextControlElement;
+class UIEvent;
 class V8UnionStringLegacyNullToEmptyStringOrTrustedScript;
 class V8UnionBooleanOrTogglePopoverOptions;
 class ShowPopoverOptions;
 class UnboundedEventData;
+enum class PopoverInvokedVia;
 
 enum TranslateAttributeMode {
   kTranslateAttributeYes,
@@ -233,8 +235,9 @@ class CORE_EXPORT HTMLElement : public Element {
   LabelsNodeList* labels();
   bool HasActiveLabel() const;
 
-  // https://html.spec.whatwg.org/C/#interactive-content
   virtual bool IsInteractiveContent() const;
+  bool HasActivationBehavior() const override;
+  void RunActivationBehavior(Event&, EventDispatchHandlingState*) override;
   void DefaultEventHandler(Event&) override;
 
   // Returns the axes on which this element has native arrow key behavior.
@@ -277,7 +280,6 @@ class CORE_EXPORT HTMLElement : public Element {
   virtual FormAssociated* ToFormAssociatedOrNull() { return nullptr; }
   bool IsFormAssociatedCustomElement() const;
 
-  void UpdateDescendantDirectionality(TextDirection direction);
   void UpdateDirectionalityAfterInputTypeChange(const AtomicString& old_value,
                                                 const AtomicString& new_value);
   void AdjustDirectionAutoAfterRecalcAssignedNodes();
@@ -330,7 +332,6 @@ class CORE_EXPORT HTMLElement : public Element {
       HidePopoverFocusBehavior focus_behavior,
       HidePopoverTransitionBehavior event_firing,
       ExceptionState* exception_state);
-  void PopoverHideFinishIfNeeded(bool immediate);
   static HTMLElement* FindTopmostPopoverAncestor(
       Element& new_popover_or_top_layer_element,
       HeapVector<Member<HTMLElement>>* stack_to_check,
@@ -352,7 +353,7 @@ class CORE_EXPORT HTMLElement : public Element {
                                         const Node& node);
   static void HandlePopoverLightDismissForClick(const Node& pointer_down_target,
                                                 const Node& pointer_up_target);
-  void InvokePopover(Element& invoker);
+  void InvokePopover(Element& invoker, PopoverInvokedVia invoked_via);
   void SetPopoverFocusOnShow();
   // This hides all visible popovers up to, but not including,
   // |endpoint|. If |endpoint| is nullptr, all popovers are hidden. Hiding
@@ -391,7 +392,8 @@ class CORE_EXPORT HTMLElement : public Element {
                              CommandEventType command) override;
   bool IsValidBuiltinPopoverCommand(CommandEventType command);
   bool HandleCommandInternal(HTMLElement& invoker,
-                             CommandEventType command) override;
+                             CommandEventType command,
+                             UIEvent* activate_event) override;
   // This is true if this element *can* be a command invoker: it is an element
   // type that supports command invokers (e.g. buttons and menuitems), and the
   // element isn't in a state that disqualifies it (e.g. a disabled state). This
@@ -400,7 +402,7 @@ class CORE_EXPORT HTMLElement : public Element {
   virtual bool CanBeCommandInvoker() const;
   static CommandEventType GetCommandEventType(const AtomicString& type,
                                               ExecutionContext*);
-  virtual bool HandleCommandForActivation();
+  virtual bool HandleCommandForActivation(UIEvent* activate_event);
   Element* commandForElement() const;
   AtomicString command() const;
   void setCommand(const AtomicString& type);
@@ -437,6 +439,10 @@ class CORE_EXPORT HTMLElement : public Element {
                             const String& value,
                             AllowPercentage = kAllowPercentageValues,
                             AllowZero = kAllowZeroValues);
+  // https://html.spec.whatwg.org/multipage/rendering.html#maps-to-the-pixel-length-property
+  void AddHTMLPixelLengthToStyle(HeapVector<CSSPropertyValue, 8>&,
+                                 CSSPropertyID,
+                                 const String& value);
   void AddHTMLColorToStyle(HeapVector<CSSPropertyValue, 8>&,
                            CSSPropertyID,
                            const String& color);
@@ -503,7 +509,7 @@ class CORE_EXPORT HTMLElement : public Element {
   void HandleKeydownEvent(KeyboardEvent&);
   void HandleKeypressEvent(KeyboardEvent&);
 
-  void SetPopoverInvoker(Element* invoker);
+  void SetPopoverInvoker(Element* invoker, PopoverInvokedVia invoked_via);
 
   // Attempts to hide a popover stack.  Hiding (some) popovers may be prevented
   // by the inspector. In that case, PopoverHideResult::kForceOpenedByInspector

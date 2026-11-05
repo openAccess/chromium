@@ -21,6 +21,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "build/config/linux/dbus/buildflags.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/gcm/gcm_profile_service_factory.h"
 #include "chrome/browser/global_features.h"
@@ -48,6 +49,7 @@
 #include "content/public/browser/permission_result.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/push_messaging/push_messaging_status.mojom.h"
 
@@ -71,6 +73,10 @@
 #include "url/gurl.h"
 #include "url/origin.h"
 #endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
+#include "components/dbus/thread_linux/dbus_thread_linux.h"
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
 
 namespace {
 
@@ -152,6 +158,9 @@ class PushMessagingServiceTest : public ::testing::Test {
   void TearDown() override {
     profile_.reset();
     TestingBrowserProcess::GetGlobal()->TearDownGlobalFeaturesForTesting();
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
+    dbus_thread_linux::Shutdown();
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
   }
 
   void SetPermission(const GURL& origin, ContentSetting value) {
@@ -584,6 +593,15 @@ class ExtensionsPushMessagingServiceTest
   void TearDown() override {
     ExtensionServiceTestWithInstall::TearDown();
     TestingBrowserProcess::GetGlobal()->TearDownGlobalFeaturesForTesting();
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
+    // The shared D-Bus thread is a plain `base::Thread` that the task
+    // environment does not track, so a reply to a D-Bus call made during the
+    // test could still be posted to the main thread after the final
+    // `RunUntilIdle()` in `~BrowserTaskEnvironment()`, failing its
+    // `MainThreadIsIdle()` check. Shut the thread down now that its users are
+    // gone; this matches `content::RenderViewHostTestHarness::TearDown()`.
+    dbus_thread_linux::Shutdown();
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
   }
 
  private:

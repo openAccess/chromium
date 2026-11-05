@@ -20,6 +20,7 @@
 #include "components/push_notification/fake_push_notification_client.h"
 #include "components/push_notification/push_notification_constants.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -417,12 +418,12 @@ TEST_F(PushNotificationServiceDesktopImplTest, OnMessageReceived) {
       push_notification_service_->GetPushNotificationClientManager();
   auto fake_push_notification_client =
       std::make_unique<FakePushNotificationClient>(
-          push_notification::ClientId::kNearbyPresence);
+          push_notification::ClientId::kTest);
   client_manager->AddPushNotificationClient(
       fake_push_notification_client.get());
   gcm::IncomingMessage message;
   message.data.insert_or_assign(kNotificationTypeIdKey,
-                                push_notification::kNearbyPresenceClientId);
+                                push_notification::kTestClientId);
   message.data.insert_or_assign(kNotificationPayloadKey, kTestMessage);
 
   push_notification_service_->OnMessage(kPushNotificationAppId,

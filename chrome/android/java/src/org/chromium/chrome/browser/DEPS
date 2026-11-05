@@ -9,7 +9,6 @@ include_rules = [
   "+chrome/browser/contextmenu/java/src/org/chromium/chrome/browser/contextmenu/ContextMenuPopulatorFactory.java",
   "+chrome/browser/ui/android/theme",
   "+chrome/browser/ui/android/toolbar",
-  "+third_party/blink/public/mojom:mojom_platform_java",
   "+components/browser_ui/device_lock/android",
   "+components/sensitive_content/android/java/src/org/chromium/components/sensitive_content/SensitiveContentClient.java",
   "+components/trusted_vault/android/java/src/org/chromium/components/trusted_vault",
@@ -40,13 +39,7 @@ specific_include_rules = {
   "ProcessInitializationHandler\\.java": [
     "+chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java",
   ],
-  "OfflineIndicatorController\\.java": [
-    "+chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java",
-  ],
   "UpdateStatusProvider\\.java": [
-    "+chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java",
-  ],
-  "FakeAppUpdateManagerWrapper\\.java": [
     "+chrome/android/java/src/org/chromium/chrome/browser/app/ChromeActivity.java",
   ],
   "AutocompleteMediator\\.java": [
@@ -88,9 +81,6 @@ specific_include_rules = {
 
   # Exceptions to the Chrome*Activity dependency restriction. These will all eventually be removed
   # new code should rely on acceptable dependency aquisition patterns.
-  "VideoPlayerActivity\\.java": [
-    "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
-  ],
   "ContextualSearchQuickActionControl\\.java": [
     "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java",
     "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity2.java",
@@ -116,13 +106,13 @@ specific_include_rules = {
   "OfflinePageDownloadBridge\\.java": [
     "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
   ],
-  "TabModelImpl\\.java": [
-    "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
-  ],
   "TabReparentingDelegate\\.java": [
     "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
   ],
   "TabbedCrashRecoveryDelegate\\.java": [
+    "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
+  ],
+  "TabbedStartupCoordinator\\.java": [
     "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
   ],
   "TabbedStartupWindowPolicyDelegate\\.java": [
@@ -132,6 +122,9 @@ specific_include_rules = {
     "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
   ],
   "DragAndDropLauncherActivity\\.java": [
+    "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
+  ],
+  "ActorBackgroundActuationManager\\.java": [
     "+chrome/android/java/src/org/chromium/chrome/browser/ChromeTabbedActivity.java"
   ],
 }

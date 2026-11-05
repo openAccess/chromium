@@ -225,6 +225,15 @@
       initial: false,
     },
 
+    // Allows a page to be exempted from the Clipboard API document-focus
+    // requirement. This is intended for when the top-level document is a
+    // trusted surface (WebUI, DevTools, chrome-untrusted, or an Isolated
+    // Web App). See ContentBrowserClient::IsClipboardPasteAllowed().
+    {
+      name: "clipboardFocusExempt",
+      initial: false,
+    },
+
     // FIXME: This should really be disabled by default as it makes platforms that
     // don't support the feature download files they can't use by.
     // Leaving enabled for now to not change existing behavior.
@@ -286,13 +295,31 @@
     },
 
     {
+      // Changing the web app scope can change whether the OS accent color is
+      // exposed via the `AccentColor`/`AccentColorText` system keywords (see
+      // `Document::IsInWebAppScope()`), so a full style recalc is required to
+      // re-resolve those keywords when a document is reparented into a PWA.
       name: "webAppScope",
+      type: "String",
+      invalidate: ["Style"],
+    },
+
+    // An authoritative fallback manifest URL provided by the embedder to use
+    // when the document does not specify a <link rel="manifest"> tag.
+    // Primarily intended for Isolated Web Apps (IWAs) and other packaged web
+    // applications whose manifests are managed out-of-band.
+    {
+      name: "webAppCustomManifestUrl",
       type: "String",
     },
 
     {
+      // Like `webAppScope`, this gates exposure of the OS accent color via the
+      // `AccentColor`/`AccentColorText` keywords (see `Document::IsInitialProfile()`
+      // and `LayoutTheme::GetAccentColorOrDefault()`), so re-resolve style on change.
       name: "isInitialProfile",
       initial: false,
+      invalidate: ["Style"],
     },
 
     {
@@ -1134,6 +1161,7 @@
     {
       name: "inForcedColors",
       initial: false,
+      invalidate: ["ForcedColors"],
       type: "bool",
     },
 
@@ -1305,6 +1333,18 @@
       name: "dynamicSafeAreaInsetsEnabled",
       initial: false,
       type: "bool"
+    },
+    // True if the user dismissed the XSLT deprecation warning banner with the
+    // "Never show this warning" checkbox checked. This comes from a profile
+    // preference owned by the embedder, so it applies to every site.
+    // TODO(crbug.com/560233256): This setting is temporary, and is only
+    // required before XSLT is disabled by default in M158. It can be removed
+    // in M158, or whenever XSLT is disabled by default (other than for origin
+    // trials and enterprise policy).
+    {
+      name: "XSLTDeprecationBannerSuppressed",
+      initial: false,
+      type: "bool",
     },
   ],
 }

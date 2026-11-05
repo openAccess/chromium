@@ -18,6 +18,7 @@ import './sections/page_metadata.js';
 import './sections/additional_context.js';
 import './sections/interaction.js';
 import './sections/skills.js';
+import './sections/tools.js';
 import './sections/stress.js';
 
 import type {OpenSettingsOptions} from '/glic/glic_api/glic_api.js';
@@ -62,7 +63,7 @@ $.syncCookiesBn.addEventListener('click', async () => {
   $.syncCookieStatus!.innerText = 'Requesting';
   try {
     await getBrowser()!.refreshSignInCookies!();
-    $.syncCookieStatus!.innerText = `Done!`;
+    $.syncCookieStatus!.innerText = 'Done!';
   } catch (e) {
     $.syncCookieStatus!.innerText = `Caught error: ${e}`;
   }
@@ -232,23 +233,6 @@ $.maybeRefreshUserStatusBn.addEventListener('click', async () => {
 
 window.addEventListener('load', () => {
   initCaptureRegion();
-  $.desktopScreenshot.addEventListener('click', async () => {
-    logMessage('Requesting desktop screenshot...');
-    try {
-      const screenshot = await getBrowser()!.captureScreenshot!();
-      if (screenshot) {
-        const blob = new Blob([screenshot.data], {type: 'image/jpeg'});
-        $.desktopScreenshotImg.src = URL.createObjectURL(blob);
-        $.desktopScreenshotErrorReason!.innerText =
-            'Desktop screenshot captured.';
-      } else {
-        $.desktopScreenshotErrorReason!.innerText =
-            'Failed to capture desktop screenshot.';
-      }
-    } catch (error) {
-      $.desktopScreenshotErrorReason!.innerText = `Caught error: ${error}`;
-    }
-  });
   $.panelScreenshot.addEventListener('click', async () => {
     const stream = await navigator.mediaDevices.getDisplayMedia({
       video: {
@@ -335,3 +319,5 @@ async function releaseScreenWakeLock(): Promise<void> {
     $.screenWakeLockStatus.setAttribute('lockStatus', 'released');
   }
 }
+
+performance.mark('gemini.interactive');

@@ -3,18 +3,7 @@
 // found in the LICENSE file.
 
 // Base size in number of elements that the LRU cache can hold before starting to evict elements.
-let kLRUCacheBaseCapacity = 6
-
-// Additional capacity of elements that the LRU cache can hold before starting to evict elements
-// when PinnedTabs feature is enabled.
-//
-// To calculate the cache size number we'll start with the assumption that currently snapshot
-// preloading feature "works fine". In the reality it might not be the case for large screen devices
-// such as iPad. Another assumption here is that pinned tabs feature requires on average 4 more
-// snapshots to be used. Based on that kLRUCacheMaxCapacityForPinnedTabsEnabled is
-// kLRUCacheMaxCapacity which "works fine" + on average 4 more snapshots needed for pinned tabs
-// feature.
-let kLRUCacheAdditionalCapacityForPinnedTabsEnabled = 4
+let kLRUCacheBaseCapacity = 10
 
 // A class providing an in-memory and on-disk storage of tab snapshots.
 // A snapshot is a full-screen image of the contents of the page at the current scroll offset and
@@ -34,6 +23,11 @@ let kLRUCacheAdditionalCapacityForPinnedTabsEnabled = 4
 
   // List of observers to be notified of changes to the snapshot storage.
   private var observers: [Weak<SnapshotStorageObserver>]
+
+  // Generation of the latest write for each snapshot. This prevents an asynchronous write from
+  // replacing a newer image in the cache or restoring an image that has been removed.
+  private var nextImageGeneration: UInt64 = 0
+  private var imageGenerations: [Int32: UInt64] = [:]
 
   // Designated initializer. `storageDirectoryUrl` is the file path where all images managed by this
   // SnapshotStorage are stored. `storageDirectoryUrl` is not guaranteed to exist. The contents of
@@ -56,16 +50,9 @@ let kLRUCacheAdditionalCapacityForPinnedTabsEnabled = 4
 
   // Convenience initialize that uses a default `lruCache`.
   convenience init(storageDirectoryUrl: URL) {
-    var cacheSize = kLRUCacheBaseCapacity
-    if UIDevice.current.userInterfaceIdiom != .pad {
-      // Add more capacity to LRUCache when the pinned tabs feature is enabled.
-      // The pinned tabs feature is fully enabled on iPhone and disabled on iPad. The condition to
-      // determine the cache size should sync with IsPinnedTabsEnabled() in
-      // ios/chrome/browser/tabs/model/features.h.
-      cacheSize += kLRUCacheAdditionalCapacityForPinnedTabsEnabled
-    }
     self.init(
-      lruCache: SnapshotLRUCache(size: cacheSize), storageDirectoryUrl: storageDirectoryUrl)
+      lruCache: SnapshotLRUCache(size: kLRUCacheBaseCapacity),
+      storageDirectoryUrl: storageDirectoryUrl)
   }
 
   // Unregisters observers from Notification Center.
@@ -95,20 +82,32 @@ let kLRUCacheAdditionalCapacityForPinnedTabsEnabled = 4
     }
   }
 
-  // Downsample before caching so the LRU cache holds smaller images,
-  // reducing the overall memory footprint of snapshot storage.
+  // Caches the image immediately, writes and downsamples it asynchronously, then replaces the
+  // cached image if this is still the latest write for the snapshot.
   public func setImage(_ image: UIImage?, withSnapshotID snapshotID: SnapshotIDWrapper) {
     guard let image = image, snapshotID.valid() else {
       return
     }
 
-    let optimizedImage = IsSnapshotDownsampleImageEnabled()
-      ? Self.downsampledForStorage(image) : image
-    lruCache.setObject(value: optimizedImage, forKey: snapshotID)
+    nextImageGeneration &+= 1
+    let generation = nextImageGeneration
+    imageGenerations[snapshotID.identifier] = generation
+
+    // Keep setImage synchronous for callers. The cache is replaced with the smaller image after
+    // the file manager has downsampled it on its background queue.
+    lruCache.setObject(value: image, forKey: snapshotID)
     HistogramUtils.recordHistogram(
       "IOS.Snapshots.SnapshotImageMemoryFootprint",
       withMemoryKB: UiKitUtils.memoryFootprint(for: image))
-    fileManager.write(image: optimizedImage, snapshotID: snapshotID)
+    fileManager.write(image: image, snapshotID: snapshotID) { [weak self] optimizedImage in
+      guard let self = self,
+        self.imageGenerations[snapshotID.identifier] == generation
+      else {
+        return
+      }
+      self.imageGenerations.removeValue(forKey: snapshotID.identifier)
+      self.lruCache.setObject(value: optimizedImage, forKey: snapshotID)
+    }
 
     for observer in observers {
       observer.value?.didUpdateSnapshotStorage?(snapshotID: snapshotID)
@@ -117,6 +116,7 @@ let kLRUCacheAdditionalCapacityForPinnedTabsEnabled = 4
 
   // Removes the image from both the LRU cache and the disk.
   public func removeImage(snapshotID: SnapshotIDWrapper) {
+    imageGenerations.removeValue(forKey: snapshotID.identifier)
     lruCache.removeObject(forKey: snapshotID)
     fileManager.removeImage(snapshotID: snapshotID)
 
@@ -129,6 +129,7 @@ let kLRUCacheAdditionalCapacityForPinnedTabsEnabled = 4
 
   // Removes all images from both the LRU cache and the disk.
   public func removeAllImages() {
+    imageGenerations.removeAll()
     lruCache.removeAllObjects()
     fileManager.removeAllImages()
   }
@@ -239,16 +240,4 @@ let kLRUCacheAdditionalCapacityForPinnedTabsEnabled = 4
     lruCache.removeAllObjects()
   }
 
-  // Halves the pixel density of the image for disk storage while keeping
-  // the same point dimensions, so UIKit layout stays correct when the
-  // image is read back from disk.
-  private static func downsampledForStorage(_ image: UIImage) -> UIImage {
-    let targetSize = image.size
-    let format = UIGraphicsImageRendererFormat()
-    format.scale = image.scale / 2.0
-    let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
-    return renderer.image { _ in
-      image.draw(in: CGRect(origin: .zero, size: targetSize))
-    }
-  }
 }

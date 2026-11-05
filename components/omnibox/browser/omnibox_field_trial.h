@@ -20,7 +20,6 @@
 #include "components/omnibox/browser/autocomplete_provider.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
-#include "third_party/omnibox_proto/entity_info.pb.h"
 
 namespace base {
 class TimeDelta;
@@ -114,7 +113,7 @@ namespace OmniboxFieldTrial {
 // A mapping that contains multipliers indicating that matches of the
 // specified type should have their relevance score multiplied by the
 // given number.  Omitted types are assumed to have multipliers of 1.0.
-typedef std::map<AutocompleteMatchType::Type, float> DemotionMultipliers;
+typedef std::map<omnibox::AutocompleteMatchType, float> DemotionMultipliers;
 
 // A vector that maps from the number of matching pages to the document
 // specificity score used in HistoryQuick provider / ScoredHistoryMatch
@@ -354,9 +353,6 @@ extern int kDefaultMinimumTimeBetweenSuggestQueriesMs;
 // Parameter names used by omnibox experiments that hide the path (and
 // optionally subdomains) in the steady state.
 extern const char kOmniboxUIUnelideURLOnHoverThresholdMsParam[];
-
-// Parameter names used by MIA experiments.
-extern const char kSuppressPsuggestBackfillWithMIAParam[];
 
 // `FeatureParam`s
 
@@ -697,12 +693,6 @@ inline constexpr base::FeatureParam<bool> kMobileParityEnableFeedForGoogleOnly{
 
 #if BUILDFLAG(IS_ANDROID)
 // Fusebox -->
-inline constexpr base::FeatureParam<bool> kOmniboxShowModelPicker{
-    &omnibox::kOmniboxMultimodalInput, "show_model_picker", false};
-
-inline constexpr base::FeatureParam<bool> kOmniboxModelPickerOptimizations{
-    &omnibox::kOmniboxMultimodalInput, "model_picker_optimizations", true};
-
 inline constexpr base::FeatureParam<bool>
     kOmniboxMultimodalPrioritizeSuggestionsForFirstDocument{
         &omnibox::kOmniboxMultimodalInput,

@@ -13,9 +13,9 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
-#include "chrome/common/extensions/api/file_manager_private.h"
 #include "chromeos/ash/components/drivefs/drivefs_host.h"
 #include "chromeos/ash/components/drivefs/mojom/drivefs.mojom.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_manager_private.h"
 #include "extensions/common/extension.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -100,13 +100,13 @@ class TestDriveFsEventRouter : public DriveFsEventRouter {
 
   void BroadcastEvent(extensions::events::HistogramValue histogram_value,
                       const std::string& event_name,
-                      base::ListValue event_args,
+                      scoped_refptr<const extensions::EventArgs> event_args,
                       bool dispatch_to_system_notification = true) override {
     if (dispatch_to_system_notification) {
-      BroadcastEventImpl(event_name, base::Value(std::move(event_args)));
+      BroadcastEventImpl(event_name, base::Value(event_args->data.Clone()));
     } else {
-      BroadcastEventForIndividualFilesImpl(event_name,
-                                           std::move(event_args[0].GetList()));
+      BroadcastEventForIndividualFilesImpl(
+          event_name, event_args->data[0].GetList().Clone());
     }
   }
 

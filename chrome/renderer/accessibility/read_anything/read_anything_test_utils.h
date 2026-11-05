@@ -12,20 +12,11 @@
 #include "base/files/file_path.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/path_service.h"
-#include "read_aloud_traversal_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_node_position.h"
 
 namespace test {
-
-struct TextRange {
-  ui::AXNodeID id;
-  int start;
-  int end;
-};
-
-testing::Matcher<ReadAloudTextSegment> TextSegmentMatcher(TextRange range);
 
 void SetUpdateTreeID(ui::AXTreeUpdate* update, ui::AXTreeID tree_id);
 std::unique_ptr<ui::AXTreeUpdate> CreateInitialUpdate();
@@ -41,7 +32,11 @@ ui::AXNodeData TextNodeWithTextFromId(ui::AXNodeID id);
 ui::AXNodeData ExplicitlyEmptyTextNode(ui::AXNodeID id);
 ui::AXNodeData ImageNode(ui::AXNodeID id, const std::string& src);
 ui::AXNodeData LinkNode(ui::AXNodeID id, const std::string& url);
-ui::AXNodeData GenericContainerNode(ui::AXNodeID id);
+ui::AXNodeData ContainerNode(ui::AXNodeID id,
+                             ax::mojom::Role role,
+                             std::vector<ui::AXNodeID> child_ids = {});
+ui::AXNodeData GenericContainerNode(ui::AXNodeID id,
+                                    std::vector<ui::AXNodeID> child_ids = {});
 ui::AXNodeData SuperscriptNode(ui::AXNodeID id,
                                const std::u16string& text_content);
 base::File GetValidModelFile();

@@ -40,6 +40,8 @@ bool g_needs_set_up_for_test_case = true;
     @".*google\\.com.*",
     @".*googleapis\\.com.*",
     @".*app-analytics-services\\.com.*",
+    @".*googleusercontent\\.com.*",
+    @".*app-ads-services\\.com.*",
   ];
   [[GREYConfiguration sharedConfiguration]
           setValue:blockedURLs
@@ -80,6 +82,9 @@ bool g_needs_set_up_for_test_case = true;
   }
 
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
+  // Handles alerts raised by the app after launch, or when no relaunch
+  // happened. Alerts inherited from a previous test are handled by
+  // `AppLaunchManager` as part of the relaunch.
   [SystemAlertHandler handleSystemAlertIfVisible];
 
   NSString* logFormat = @"*********************************\nStarting test: %@";

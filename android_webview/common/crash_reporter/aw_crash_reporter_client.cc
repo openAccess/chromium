@@ -6,12 +6,16 @@
 
 #include <stdint.h>
 
+#include <map>
+#include <string>
+
 #include "android_webview/common/aw_descriptors.h"
 #include "android_webview/common/aw_paths.h"
 #include "android_webview/common/aw_switches.h"
 #include "android_webview/common/crash_reporter/crash_keys.h"
 #include "base/android/java_exception_reporter.h"
 #include "base/android/jni_android.h"
+#include "base/android/jni_string.h"
 #include "base/base_paths_android.h"
 #include "base/base_switches.h"
 #include "base/command_line.h"
@@ -21,11 +25,12 @@
 #include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/scoped_native_library.h"
+#include "build/build_config.h"
 #include "components/crash/core/app/crash_reporter_client.h"
 #include "components/crash/core/app/crashpad.h"
+#include "components/crash/core/common/crash_key.h"
 #include "components/version_info/android/channel_getter.h"
 #include "components/version_info/version_info.h"
-#include "components/version_info/version_info_values.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "android_webview/crash_client_jni/AwCrashReporterClient_jni.h"
@@ -56,10 +61,9 @@ class AwCrashReporterClient : public crash_reporter::CrashReporterClient {
   }
 
   void GetProductInfo(ProductInfo* product_info) override {
-    product_info->product_name = "AndroidWebView";
-    product_info->version = PRODUCT_VERSION;
-    product_info->channel =
-        version_info::GetChannelString(version_info::android::GetChannel());
+    *product_info = ProductInfo(
+        "AndroidWebView", version_info::GetVersionNumber(),
+        version_info::GetChannelString(version_info::android::GetChannel()));
   }
 
   bool GetCrashDumpLocation(base::FilePath* crash_dir) override {
@@ -104,6 +108,26 @@ class AwCrashReporterClient : public crash_reporter::CrashReporterClient {
 
   bool ShouldWriteMinidumpToLog() override { return true; }
 
+  std::map<std::string, std::string> GetExtraProcessAnnotations() override {
+    // This method is only called in the browser process but annotations are
+    // used to set crash keys for the browser process and for child processes
+    // (such as the renderer). Therefore, ARCH_CPU_64_BITS can be used to
+    // correctly identify whether the browser is 64 bit.
+    std::map<std::string, std::string> annotations;
+    annotations[crash_keys::kBrowserProcessBitness] =
+#if defined(ARCH_CPU_64_BITS)
+        "64 bit";
+#else
+        "32 bit";
+#endif
+    annotations[crash_keys::kPrimaryCpuAbiBitness] = primary_cpu_abi_bitness_;
+    return annotations;
+  }
+
+  void set_primary_cpu_abi_bitness(std::string bitness) {
+    primary_cpu_abi_bitness_ = std::move(bitness);
+  }
+
   bool JavaExceptionFilter(
       const base::android::JavaRef<jthrowable>& java_exception) {
     return Java_AwCrashReporterClient_stackTraceContainsWebViewCode(
@@ -114,11 +138,18 @@ class AwCrashReporterClient : public crash_reporter::CrashReporterClient {
     static base::NoDestructor<AwCrashReporterClient> crash_reporter_client;
     return crash_reporter_client.get();
   }
+
+ private:
+  std::string primary_cpu_abi_bitness_ = "Unknown";
 };
 
 bool g_enabled;
 
 }  // namespace
+
+void SetPrimaryCpuAbiBitness(std::string bitness) {
+  AwCrashReporterClient::Get()->set_primary_cpu_abi_bitness(std::move(bitness));
+}
 
 void EnableCrashReporter(const std::string& process_type) {
   if (g_enabled) {
@@ -143,6 +174,22 @@ void EnableCrashReporter(const std::string& process_type) {
 
 bool CrashReporterEnabled() {
   return g_enabled;
+}
+
+static void JNI_AwCrashReporterClient_SetProcessNameCrashKey(
+    JNIEnv* env,
+    const std::string& process_name) {
+  static ::crash_reporter::CrashKeyString<64> crash_key(
+      crash_keys::kAppProcessName);
+  crash_key.Set(process_name);
+}
+
+static void JNI_AwCrashReporterClient_SetSkippedDataDirLockCrashKey(
+    JNIEnv* env,
+    bool skipped) {
+  static ::crash_reporter::CrashKeyString<2> crash_key(
+      crash_keys::kSkippedDataDirLock);
+  crash_key.Set(skipped ? "1" : "0");
 }
 
 }  // namespace android_webview

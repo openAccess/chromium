@@ -11,13 +11,13 @@
 #include "base/test/bind.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/back_forward_cache.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -38,6 +38,7 @@
 #include "services/network/public/cpp/resource_request.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 
 using testing::HasSubstr;
@@ -231,7 +232,7 @@ IN_PROC_BROWSER_TEST_F(ViewSourceTest,
   // active.
   {
     ui_test_utils::UrlLoadObserver load_complete(url_viewsource);
-    chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+    chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
     load_complete.Wait();
   }
 
@@ -696,7 +697,7 @@ IN_PROC_BROWSER_TEST_P(ViewSourceWithSplitCacheEnabledTest,
     content::WebContents* new_contents =
         browser()->tab_strip_model()->GetActiveWebContents();
     content::TestNavigationObserver navigation_observer(new_contents);
-    chrome::GoBack(browser(), WindowOpenDisposition::CURRENT_TAB);
+    chrome::GoBack(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
     navigation_observer.Wait();
   }
 

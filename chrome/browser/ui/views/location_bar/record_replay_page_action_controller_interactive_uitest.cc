@@ -14,6 +14,7 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/record_replay/replay_recording_bubble_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -61,7 +62,7 @@ IN_PROC_BROWSER_TEST_F(RecordReplayPageActionControllerInteractiveTest,
   manager.SetRecordingsForTesting(std::move(recordings));
 
   RecordReplayPageActionController* controller =
-      tab->GetTabFeatures()->record_replay_page_action_controller();
+      RecordReplayPageActionController::From(tab);
   ASSERT_TRUE(controller);
 
   // We need to wait for the recording metadata to be retrieved (UpdateState
@@ -109,7 +110,7 @@ IN_PROC_BROWSER_TEST_F(RecordReplayPageActionControllerInteractiveTest,
   manager.SetRecordingsForTesting({recording1, recording2});
 
   RecordReplayPageActionController* controller =
-      tab->GetTabFeatures()->record_replay_page_action_controller();
+      RecordReplayPageActionController::From(tab);
   ASSERT_TRUE(controller);
 
   base::RunLoop run_loop;

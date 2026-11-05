@@ -13,6 +13,7 @@ import android.view.View;
 import android.view.ViewGroup.MarginLayoutParams;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ImageView;
+import android.widget.RadioButton;
 import android.widget.TextView;
 
 import androidx.annotation.ColorRes;
@@ -35,11 +36,13 @@ import org.chromium.ui.modelutil.PropertyModel;
  */
 @NullMarked
 public class ListMenuItemViewBinder {
+    /** Binds the given property of the model to the view. */
     public static void binder(PropertyModel model, View view, PropertyKey propertyKey) {
         TextView textView =
                 (view instanceof TextView text) ? text : view.findViewById(R.id.menu_item_text);
         @Nullable ImageView startIcon = view.findViewById(R.id.menu_item_icon);
         @Nullable ImageView endIcon = view.findViewById(R.id.menu_item_end_icon);
+        @Nullable TextView shortcutView = view.findViewById(R.id.menu_item_shortcut);
         boolean keepIconSpacing =
                 model.containsKey(ListMenuItemProperties.KEEP_START_ICON_SPACING_WHEN_HIDDEN)
                         && model.get(ListMenuItemProperties.KEEP_START_ICON_SPACING_WHEN_HIDDEN);
@@ -84,6 +87,13 @@ public class ListMenuItemViewBinder {
             } else {
                 subtitleView.setEllipsize(null);
                 subtitleView.setMaxLines(Integer.MAX_VALUE);
+            }
+        } else if (propertyKey == ListMenuItemProperties.SHORTCUT_TEXT) {
+            if (shortcutView != null) {
+                CharSequence shortcutText = model.get(ListMenuItemProperties.SHORTCUT_TEXT);
+                shortcutView.setText(shortcutText);
+                shortcutView.setVisibility(
+                        TextUtils.isEmpty(shortcutText) ? View.GONE : View.VISIBLE);
             }
         } else if (propertyKey == ListMenuItemProperties.CONTENT_DESCRIPTION) {
             textView.setContentDescription(model.get(ListMenuItemProperties.CONTENT_DESCRIPTION));
@@ -164,6 +174,8 @@ public class ListMenuItemViewBinder {
             view.setOnHoverListener(model.get(ListMenuItemProperties.HOVER_LISTENER));
         } else if (propertyKey == ListMenuItemProperties.IS_HIGHLIGHTED) {
             view.setHovered(model.get(ListMenuItemProperties.IS_HIGHLIGHTED));
+        } else if (propertyKey == ListMenuItemProperties.IS_IPH_HIGHLIGHTED) {
+            // No-op.
         } else if (propertyKey == ListMenuItemProperties.INTENT) {
             // Not tracked intentionally because it's mainly for setting a custom intent
             // for an item. The intent will be expected to be retrieved and used
@@ -178,10 +190,11 @@ public class ListMenuItemViewBinder {
         } else if (propertyKey == ListMenuItemProperties.ENABLED) {
             // Set enabled state on view, textView, and icons (because with some layout files,
             // textView and icons inherit state from view, and sometimes they don't)
-            view.setEnabled(model.get(ListMenuItemProperties.ENABLED));
-            textView.setEnabled(model.get(ListMenuItemProperties.ENABLED));
-            if (startIcon != null) startIcon.setEnabled(model.get(ListMenuItemProperties.ENABLED));
-            if (endIcon != null) endIcon.setEnabled(model.get(ListMenuItemProperties.ENABLED));
+            boolean enabled = model.get(ListMenuItemProperties.ENABLED);
+            view.setEnabled(enabled);
+            textView.setEnabled(enabled);
+            if (startIcon != null) startIcon.setEnabled(enabled);
+            if (endIcon != null) endIcon.setEnabled(enabled);
         } else if (propertyKey == ListMenuItemProperties.ICON_TINT_COLOR_STATE_LIST_ID) {
             @ColorRes
             int tintColorId = model.get(ListMenuItemProperties.ICON_TINT_COLOR_STATE_LIST_ID);
@@ -210,6 +223,37 @@ public class ListMenuItemViewBinder {
             } else {
                 textView.setTextAppearance(textAppearanceId);
             }
+        } else if (propertyKey == ListMenuItemProperties.SUBTITLE_TEXT_APPEARANCE_ID) {
+            int subtitleTextAppearanceId =
+                    model.get(ListMenuItemProperties.SUBTITLE_TEXT_APPEARANCE_ID);
+            @Nullable TextView subtitleView = view.findViewById(R.id.menu_item_subtitle);
+            if (subtitleView != null) {
+                if (subtitleTextAppearanceId == Resources.ID_NULL) {
+                    subtitleView.setTextAppearance(R.style.TextAppearance_ListMenuItem_Subtitle);
+                } else {
+                    subtitleView.setTextAppearance(subtitleTextAppearanceId);
+                }
+            }
+        } else if (propertyKey == ListMenuItemProperties.SHORTCUT_TEXT_APPEARANCE_ID) {
+            int shortcutTextAppearanceId =
+                    model.get(ListMenuItemProperties.SHORTCUT_TEXT_APPEARANCE_ID);
+            if (shortcutView != null) {
+                if (shortcutTextAppearanceId == Resources.ID_NULL) {
+                    shortcutView.setTextAppearance(R.style.TextAppearance_ListMenuItem_Shortcut);
+                } else {
+                    shortcutView.setTextAppearance(shortcutTextAppearanceId);
+                }
+            }
+        } else if (propertyKey == ListMenuItemProperties.VERTICAL_PADDING) {
+            // When unset in the model, model.get() defaults to 0. On recycled views, this
+            // resets any custom padding from a previous item back to 0. This works because
+            // ListMenuItemStyle has no vertical padding by default (content is centered via
+            // minHeight). However, if an XML layout or theme ever defines non-zero top/bottom
+            // padding in the future, this would become problematic as recycled views would be
+            // reset to 0 instead of their layout default.
+            int verticalPadding = model.get(ListMenuItemProperties.VERTICAL_PADDING);
+            view.setPaddingRelative(
+                    view.getPaddingStart(), verticalPadding, view.getPaddingEnd(), verticalPadding);
         } else if (propertyKey == ListMenuItemProperties.IS_TEXT_ELLIPSIZED_AT_END) {
             if (model.get(ListMenuItemProperties.IS_TEXT_ELLIPSIZED_AT_END)) {
                 textView.setMaxLines(1);
@@ -230,7 +274,8 @@ public class ListMenuItemViewBinder {
             // Not tracked intentionally because it's used by clients to keep track of items. The
             // order field is used to recreate a SelectionMenuItem when an item is clicked.
         } else if (propertyKey == ListMenuItemProperties.CHECKABLE
-                || propertyKey == ListMenuItemProperties.CHECKED) {
+                || propertyKey == ListMenuItemProperties.CHECKED
+                || propertyKey == ListMenuItemProperties.POSITION) {
             view.setAccessibilityDelegate(
                     new View.AccessibilityDelegate() {
                         @Override
@@ -241,6 +286,23 @@ public class ListMenuItemViewBinder {
                             info.setChecked(
                                     model.containsKey(ListMenuItemProperties.CHECKED)
                                             && model.get(ListMenuItemProperties.CHECKED));
+                            // Note: `info.setCheckable` and `info.setChecked` are applied
+                            // to both checkable items and radio buttons.
+                            // We use the presence of the POSITION property to determine if a
+                            // checkable item should identify specifically as a RadioButton.
+                            // A checkable item acts as a RadioButton if and only
+                            // if it provides a POSITION.
+                            if (model.containsKey(ListMenuItemProperties.POSITION)) {
+                                info.setClassName(RadioButton.class.getName());
+                                int position = model.get(ListMenuItemProperties.POSITION);
+                                info.setCollectionItemInfo(
+                                        AccessibilityNodeInfo.CollectionItemInfo.obtain(
+                                                /* rowIndex= */ position,
+                                                /* rowSpan= */ 1,
+                                                /* columnIndex= */ 0,
+                                                /* columnSpan= */ 1,
+                                                /* heading= */ false));
+                            }
                         }
                     });
         } else {

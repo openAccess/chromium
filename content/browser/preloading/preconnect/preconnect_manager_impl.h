@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/containers/id_map.h"
+#include "base/feature.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"

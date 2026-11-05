@@ -60,7 +60,6 @@ class AppListModelUpdater {
                                   bool add_from_local) {}
   virtual void RemoveItem(const std::string& id, bool is_uninstall) {}
   virtual void SetStatus(ash::AppListModelStatus status) {}
-  virtual void RequestDefaultPositionForModifiedOrder() {}
   virtual bool ModelHasBeenReorderedInThisSession();
 
   // For SearchModel:
@@ -133,7 +132,6 @@ class AppListModelUpdater {
   virtual size_t BadgedItemCount() = 0;
   // For SearchModel:
   virtual bool SearchEngineIsGoogle() = 0;
-  virtual void RecalculateWouldTriggerLauncherSearchIph() = 0;
 
   // Notifies when the app list gets hidden.
   virtual void OnAppListHidden() = 0;

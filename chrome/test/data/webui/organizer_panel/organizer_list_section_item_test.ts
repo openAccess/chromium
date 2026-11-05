@@ -4,10 +4,25 @@
 
 import 'chrome://organizer-panel.top-chrome/organizer_panel.js';
 
-import type {OrganizerListSectionItemElement} from 'chrome://organizer-panel.top-chrome/organizer_panel.js';
+import type {OrganizerListSectionItemElement, StackedFaviconsElement} from 'chrome://organizer-panel.top-chrome/organizer_panel.js';
+import type {CrIconElement} from 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
+import {getFaviconForPageURL} from 'chrome://resources/js/icon.js';
+import {getDeepActiveElement} from 'chrome://resources/js/util.js';
 import {html} from 'chrome://resources/lit/v3_0/lit.rollup.js';
-import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {microtasksFinished} from 'chrome://webui-test/test_util.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
+
+const TEST_TITLE_PARTS = ['Google Search'];
+const TEST_DESCRIPTION_PARTS = [{text: 'google.com'}, {text: '5 mins ago'}];
+const EXPECTED_ARIA_DESCRIPTION = 'google.com, 5 mins ago';
+const TEST_URL_1 = 'https://google.com';
+const TEST_URL_2 = 'https://youtube.com';
+
+const TEST_FAVICON_1 = getFaviconForPageURL(TEST_URL_1, false);
+const TEST_FAVICON_2 = getFaviconForPageURL(TEST_URL_2, false);
+
+const TEST_CUSTOM_ICON_ID = 'customGroupIcon';
+const TEST_CUSTOM_ICON_TEXT = 'Group';
 
 suite('OrganizerListSectionItemTest', () => {
   let listItem: OrganizerListSectionItemElement;
@@ -21,44 +36,539 @@ suite('OrganizerListSectionItemTest', () => {
 
   test('renders title and description', async () => {
     listItem.item = {
-      title: 'Google Search',
-      description: 'google.com',
+      title: TEST_TITLE_PARTS,
+      description: TEST_DESCRIPTION_PARTS,
     };
     await microtasksFinished();
 
     const crUrlListItem = listItem.$.crUrlListItem;
     assertTrue(!!crUrlListItem);
-    assertEquals('Google Search', crUrlListItem.title);
-    assertEquals('google.com', crUrlListItem.description);
+    assertEquals(TEST_TITLE_PARTS[0], crUrlListItem.itemAriaLabel);
+    assertEquals(EXPECTED_ARIA_DESCRIPTION, crUrlListItem.itemAriaDescription);
+
+    const titleElement = listItem.$.title;
+    assertTrue(!!titleElement);
+    assertDeepEquals(TEST_TITLE_PARTS, titleElement.titleParts);
+
+    const descriptionElement = listItem.$.description;
+    assertTrue(!!descriptionElement);
+    assertFalse(descriptionElement.hidden);
+    assertDeepEquals(
+        TEST_DESCRIPTION_PARTS, descriptionElement.descriptionParts);
+  });
+
+  test('combines multiple title and description parts for aria', async () => {
+    listItem.item = {
+      title: ['Google Search', 'YouTube'],
+      description: [
+        {text: 'google.com'},
+        {text: 'youtube.com'},
+        {text: '5 mins ago'},
+      ],
+    };
+    await microtasksFinished();
+
+    const crUrlListItem = listItem.$.crUrlListItem;
+    assertTrue(!!crUrlListItem);
+    assertEquals('Google Search, YouTube', crUrlListItem.itemAriaLabel);
+    assertEquals(
+        'google.com, youtube.com, 5 mins ago',
+        crUrlListItem.itemAriaDescription);
+  });
+
+  test('hides description element when description is absent', async () => {
+    listItem.item = {
+      title: TEST_TITLE_PARTS,
+    };
+    await microtasksFinished();
+
+    const descriptionElement = listItem.$.description;
+    assertTrue(!!descriptionElement);
+    assertTrue(descriptionElement.hidden);
   });
 
   test('renders prefix icon with URL', async () => {
     listItem.item = {
-      title: 'Google Search',
+      title: TEST_TITLE_PARTS,
       prefixIcon: {
-        urls: ['https://google.com'],
+        url: TEST_URL_1,
       },
     };
     await microtasksFinished();
 
     const crUrlListItem = listItem.$.crUrlListItem;
     assertTrue(!!crUrlListItem);
-    assertEquals('https://google.com', crUrlListItem.url);
+    assertEquals(TEST_URL_1, crUrlListItem.url);
   });
 
   test('renders prefix icon with custom element', async () => {
     listItem.item = {
-      title: 'Tab Group',
+      title: ['Tab Group'],
       prefixIcon: {
-        element: html`<span id="customGroupIcon">Group</span>`,
+        element: html`<span id="${TEST_CUSTOM_ICON_ID}">${
+            TEST_CUSTOM_ICON_TEXT}</span>`,
       },
     };
     await microtasksFinished();
 
     const crUrlListItem = listItem.$.crUrlListItem;
     assertTrue(!!crUrlListItem);
-    const customIcon = crUrlListItem.querySelector('#customGroupIcon');
+    const customIcon = crUrlListItem.querySelector(`#${TEST_CUSTOM_ICON_ID}`);
     assertTrue(!!customIcon);
-    assertEquals('Group', customIcon.textContent);
+    assertEquals(TEST_CUSTOM_ICON_TEXT, customIcon.textContent);
+  });
+
+  test('renders trailing icon only', async () => {
+    listItem.item = {
+      title: ['Starred Tab'],
+      trailingIcon: 'cr:star',
+    };
+    await microtasksFinished();
+
+    const crUrlListItem = listItem.$.crUrlListItem;
+    assertTrue(!!crUrlListItem);
+    assertTrue(crUrlListItem.hasAttribute('always-show-suffix'));
+
+    const trailingIcon =
+        listItem.shadowRoot.querySelector<CrIconElement>('#trailingIcon')!;
+    assertTrue(!!trailingIcon);
+    assertEquals('cr:star', trailingIcon.icon);
+    assertFalse(trailingIcon.classList.contains('has-action-button'));
+    const actionButton = crUrlListItem.querySelector('#actionButton');
+    assertEquals(null, actionButton);
+
+    assertTrue(isVisible(trailingIcon));
+
+    // Trailing icon should remain visible when hovered.
+    listItem.classList.add('hovered');
+    assertTrue(isVisible(trailingIcon));
+  });
+
+  test('renders hovered action button only', async () => {
+    listItem.item = {
+      title: ['Tab'],
+      hoveredActionButton: {
+        icon: 'cr:close',
+        ariaLabel: 'Close tab',
+      },
+    };
+    await microtasksFinished();
+
+    const crUrlListItem = listItem.$.crUrlListItem;
+    assertTrue(!!crUrlListItem);
+    assertTrue(crUrlListItem.hasAttribute('always-show-suffix'));
+
+    const trailingIcon = crUrlListItem.querySelector('#trailingIcon');
+    assertEquals(null, trailingIcon);
+
+    const actionButton =
+        listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
+    assertTrue(!!actionButton);
+    assertEquals('cr:close', actionButton.getAttribute('iron-icon'));
+    assertEquals('Close tab', actionButton.getAttribute('aria-label'));
+    assertFalse(actionButton.hasAttribute('title'));
+
+    // Action button should be hidden when not hovered.
+    listItem.classList.remove('hovered');
+    listItem.$.crUrlListItem.classList.remove('hovered');
+    assertFalse(isVisible(actionButton));
+
+    // Action button should be displayed when hovered.
+    listItem.classList.add('hovered');
+    assertTrue(isVisible(actionButton));
+  });
+
+  test('renders hovered action button with tooltip', async () => {
+    listItem.item = {
+      title: ['Tab Group'],
+      hoveredActionButton: {
+        icon: 'cr:more-vert',
+        ariaLabel: 'More options',
+        tooltip: 'Options',
+      },
+    };
+    await microtasksFinished();
+
+    const actionButton =
+        listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
+    assertTrue(!!actionButton);
+    assertEquals('Options', actionButton.getAttribute('title'));
+  });
+
+  test('switches from trailing icon to action button on hover', async () => {
+    listItem.item = {
+      title: ['Pinned Tab Group'],
+      trailingIcon: 'cr:star',
+      hoveredActionButton: {
+        icon: 'cr:star-border',
+        ariaLabel: 'Unpin group',
+      },
+    };
+    await microtasksFinished();
+
+    const crUrlListItem = listItem.$.crUrlListItem;
+    assertTrue(!!crUrlListItem);
+
+    const trailingIcon =
+        listItem.shadowRoot.querySelector<CrIconElement>('#trailingIcon')!;
+    assertTrue(!!trailingIcon);
+    assertTrue(trailingIcon.classList.contains('has-action-button'));
+
+    const actionButton =
+        listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
+    assertTrue(!!actionButton);
+
+    // Initially, trailing icon is visible and action button is hidden.
+    listItem.classList.remove('hovered');
+    listItem.$.crUrlListItem.classList.remove('hovered');
+    assertTrue(isVisible(trailingIcon));
+    assertFalse(isVisible(actionButton));
+
+    // When hovered, action button becomes visible and trailing icon is hidden.
+    listItem.classList.add('hovered');
+    assertFalse(isVisible(trailingIcon));
+    assertTrue(isVisible(actionButton));
+
+    // When unhovered, trailing icon becomes visible again and action button is
+    // hidden.
+    listItem.classList.remove('hovered');
+    assertTrue(isVisible(trailingIcon));
+    assertFalse(isVisible(actionButton));
+  });
+
+  test(
+      'clicking action button dispatches event and stops propagation',
+      async () => {
+        const item = {
+          title: ['Closeable Tab'],
+          hoveredActionButton: {
+            icon: 'cr:close',
+            ariaLabel: 'Close tab',
+          },
+        };
+        listItem.item = item;
+        await microtasksFinished();
+
+        const actionButton =
+            listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
+        assertTrue(!!actionButton);
+
+        let itemClicked = false;
+        listItem.addEventListener('click', () => {
+          itemClicked = true;
+        });
+
+        const actionClickPromise =
+            eventToPromise('action-button-click', listItem);
+        actionButton.click();
+        const actionEvent = await actionClickPromise as CustomEvent<{
+                              item: typeof item,
+                              buttonElement: HTMLElement,
+                            }>;
+
+        assertEquals(item, actionEvent.detail.item);
+        assertEquals(actionButton, actionEvent.detail.buttonElement);
+        assertFalse(itemClicked);
+      });
+
+  test('right clicking item dispatches context-menu-click event', async () => {
+    const item = {
+      title: ['Tab Group'],
+    };
+    listItem.item = item;
+    listItem.hasContextMenu = true;
+    await microtasksFinished();
+
+    const contextMenuClickPromise =
+        eventToPromise('context-menu-click', listItem);
+    const event = new MouseEvent('contextmenu', {
+      bubbles: true,
+      cancelable: true,
+      clientX: 15,
+      clientY: 25,
+    });
+    listItem.$.crUrlListItem.dispatchEvent(event);
+    const contextMenuEvent = await contextMenuClickPromise as CustomEvent<{
+                               item: typeof item,
+                               x: number,
+                               y: number,
+                             }>;
+
+    assertTrue(event.defaultPrevented);
+    assertEquals(item, contextMenuEvent.detail.item);
+    assertEquals(15, contextMenuEvent.detail.x);
+    assertEquals(25, contextMenuEvent.detail.y);
+  });
+
+  test(
+      'right clicking item does not dispatch context-menu-click event ' +
+          'when hasContextMenu is false',
+      async () => {
+        const item = {
+          title: ['Open Tab'],
+        };
+        listItem.item = item;
+        listItem.hasContextMenu = false;
+        await microtasksFinished();
+
+        let eventFired = false;
+        listItem.addEventListener('context-menu-click', () => {
+          eventFired = true;
+        });
+        const event = new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 15,
+          clientY: 25,
+        });
+        listItem.$.crUrlListItem.dispatchEvent(event);
+
+        assertFalse(event.defaultPrevented);
+        assertFalse(eventFired);
+      });
+
+  test(
+      'resetActionButtonStateIfNeeded hides action button when not hovered',
+      async () => {
+        listItem.item = {
+          title: ['Group'],
+          hoveredActionButton: {
+            icon: 'cr:more-vert',
+            ariaLabel: 'More options',
+          },
+        };
+        await microtasksFinished();
+
+        const actionButton =
+            listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
+        listItem.classList.add('hovered');
+        listItem.$.crUrlListItem.classList.add('hovered');
+        actionButton.focus();
+        assertTrue(isVisible(actionButton));
+
+        listItem.classList.remove('hovered');
+        listItem.$.crUrlListItem.classList.remove('hovered');
+        listItem.resetActionButtonStateIfNeeded();
+        assertFalse(isVisible(actionButton));
+      });
+
+  test(
+      'renders prefix icon with multiple URLs as stacked favicons',
+      async () => {
+        listItem.item = {
+          title: ['Split view'],
+          prefixIcon: {
+            stackedFavicons: {
+              urls: [TEST_URL_1, TEST_URL_2],
+              stackVertically: false,
+            },
+          },
+        };
+        await microtasksFinished();
+
+        const crUrlListItem = listItem.$.crUrlListItem;
+        assertTrue(!!crUrlListItem);
+        assertEquals(undefined, crUrlListItem.url);
+
+        const stackedFavicons =
+            listItem.shadowRoot.querySelector<StackedFaviconsElement>(
+                'stacked-favicons');
+        assertTrue(!!stackedFavicons);
+        assertEquals('customIcon', stackedFavicons.getAttribute('slot'));
+        assertEquals(TEST_URL_1, stackedFavicons.url);
+        assertEquals(TEST_URL_2, stackedFavicons.secondaryUrl);
+        assertEquals(
+            TEST_FAVICON_1,
+            stackedFavicons.$.firstFavicon.style.backgroundImage);
+        assertEquals(
+            TEST_FAVICON_2,
+            stackedFavicons.$.secondFavicon.style.backgroundImage);
+        assertFalse(stackedFavicons.stackVertically);
+      });
+
+  test('forwards stacking orientation to stacked favicons', async () => {
+    listItem.item = {
+      title: ['Split view vertical'],
+      prefixIcon: {
+        stackedFavicons: {
+          urls: [TEST_URL_1, TEST_URL_2],
+          stackVertically: true,
+        },
+      },
+    };
+    await microtasksFinished();
+
+    const stackedFavicons =
+        listItem.shadowRoot.querySelector<StackedFaviconsElement>(
+            'stacked-favicons');
+    assertTrue(!!stackedFavicons);
+    assertTrue(stackedFavicons.stackVertically);
+    assertTrue(stackedFavicons.hasAttribute('stack-vertically'));
+  });
+
+  test(
+      'does not render stacked favicons when single URL is provided',
+      async () => {
+        listItem.item = {
+          title: ['Single URL'],
+          prefixIcon: {
+            url: TEST_URL_1,
+          },
+        };
+        await microtasksFinished();
+
+        const stackedFavicons =
+            listItem.shadowRoot.querySelector('stacked-favicons');
+        assertEquals(null, stackedFavicons);
+        assertEquals(TEST_URL_1, listItem.$.crUrlListItem.url);
+      });
+
+  test(
+      'forwards highlight ranges to title and description elements',
+      async () => {
+        listItem.item = {
+          title: ['Google Search', 'YouTube'],
+          description: [{text: 'google.com'}, {text: '5 mins ago'}],
+          highlightRanges: {
+            title: [
+              [{start: 0, length: 6}],
+              [{start: 0, length: 3}],
+            ],
+            description: [
+              [{start: 0, length: 6}],
+              [],
+            ],
+          },
+        };
+        await microtasksFinished();
+
+        const titleElement = listItem.$.title;
+        assertTrue(!!titleElement);
+        assertDeepEquals(
+            [[{start: 0, length: 6}], [{start: 0, length: 3}]],
+            titleElement.highlightRanges);
+
+        const descriptionElement = listItem.$.description;
+        assertTrue(!!descriptionElement);
+        assertDeepEquals(
+            [[{start: 0, length: 6}], []], descriptionElement.highlightRanges);
+      });
+
+  test(
+      'provides empty highlight ranges when highlight ranges are absent',
+      async () => {
+        listItem.item = {
+          title: ['Google Search'],
+          description: [{text: 'google.com'}],
+        };
+        await microtasksFinished();
+
+        assertDeepEquals([[]], listItem.$.title.highlightRanges);
+        assertDeepEquals([[]], listItem.$.description.highlightRanges);
+      });
+
+  test(
+      'sets tabIndex to -1 on focusable element and supports focus()',
+      async () => {
+        listItem.item = {
+          title: ['Google Search'],
+        };
+        await microtasksFinished();
+
+        assertEquals(
+            -1, listItem.$.crUrlListItem.getFocusableElement().tabIndex);
+
+        listItem.focus();
+        assertEquals(
+            listItem.$.crUrlListItem.getFocusableElement(),
+            getDeepActiveElement());
+      });
+
+  test('tab navigation on item with action button', async () => {
+    listItem.item = {
+      title: ['Tab with close action'],
+      hoveredActionButton: {
+        icon: 'cr:close',
+        ariaLabel: 'Close tab',
+      },
+    };
+    await microtasksFinished();
+
+    listItem.focus();
+    assertEquals(
+        listItem.$.crUrlListItem.getFocusableElement(), getDeepActiveElement());
+
+    const actionButton =
+        listItem.shadowRoot.querySelector<HTMLElement>('#actionButton')!;
+    assertTrue(!!actionButton);
+
+    // Tab focuses action button
+    listItem.$.crUrlListItem.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    assertEquals(actionButton, getDeepActiveElement());
+
+    // Shift+Tab on action button returns focus to item
+    actionButton.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    assertEquals(
+        listItem.$.crUrlListItem.getFocusableElement(), getDeepActiveElement());
+
+    // Tab on action button fires focus-next-section
+    const whenFocusNextSection = eventToPromise('focus-next-section', listItem);
+    actionButton.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    await whenFocusNextSection;
+  });
+
+  test('tab navigation on item without action button', async () => {
+    listItem.item = {
+      title: ['Tab without action button'],
+    };
+    await microtasksFinished();
+
+    listItem.focus();
+
+    // Tab fires focus-next-section immediately
+    const whenFocusNextSection = eventToPromise('focus-next-section', listItem);
+    listItem.$.crUrlListItem.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    await whenFocusNextSection;
+  });
+
+  test('shift+tab on item fires focus-current-section', async () => {
+    listItem.item = {
+      title: ['Tab'],
+    };
+    await microtasksFinished();
+
+    listItem.focus();
+
+    const whenFocusCurrentSection =
+        eventToPromise('focus-current-section', listItem);
+    listItem.$.crUrlListItem.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+    }));
+    await whenFocusCurrentSection;
   });
 });

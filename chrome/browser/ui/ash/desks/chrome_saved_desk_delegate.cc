@@ -19,17 +19,15 @@
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
-#include "chrome/browser/apps/icon_standardizer.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/desks/admin_template_service_factory.h"
 #include "chrome/browser/ui/ash/desks/chrome_desks_util.h"
 #include "chrome/browser/ui/ash/desks/desks_client.h"
 #include "chrome/grit/theme_resources.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "components/app_constants/constants.h"
 #include "components/app_restore/app_launch_info.h"
 #include "components/app_restore/app_restore_data.h"
@@ -39,13 +37,13 @@
 #include "components/app_restore/restore_data.h"
 #include "components/app_restore/window_properties.h"
 #include "components/desks_storage/core/admin_template_service.h"
-#include "components/favicon/core/favicon_service.h"
 #include "components/services/app_service/public/cpp/app_registry_cache.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "components/services/app_service/public/cpp/intent.h"
 #include "components/services/app_service/public/cpp/types_util.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/tabs/public/tab_interface.h"
-#include "components/user_manager/user_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_registry.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -54,6 +52,7 @@
 #include "ui/base/themed_vector_icon.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
+#include "ui/gfx/image/icon_standardizer.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/wm/core/window_properties.h"
 #include "url/gurl.h"
@@ -65,7 +64,7 @@ bool IsAppAvailable(apps::AppServiceProxy& app_service_proxy,
                     const std::string& app_id) {
   bool installed = false;
   Profile* app_profile = ProfileManager::GetActiveUserProfile();
-  DCHECK(app_profile);
+  CHECK(app_profile, base::NotFatalUntil::M162);
 
   app_service_proxy.AppRegistryCache().ForOneApp(
       app_id, [&](const apps::AppUpdate& app) {
@@ -154,7 +153,7 @@ void ShowUnavailableAppToast(
           unavailable_apps[0], unavailable_apps[1]);
       break;
     default:
-      DCHECK_GT(unavailable_apps.size(), 2u);
+      CHECK_GT(unavailable_apps.size(), 2u, base::NotFatalUntil::M162);
       toast_string = l10n_util::GetStringFUTF16(
           IDS_ASH_DESKS_TEMPLATES_UNAVAILABLE_APP_TOAST_MORE,
           unavailable_apps[0], unavailable_apps[1],
@@ -169,23 +168,6 @@ void ShowUnavailableAppToast(
   ash::ToastManager::Get()->Show(std::move(toast_data));
 }
 
-// Creates a standard icon image via `result`, and then calls `callback` with
-// the standardized image.
-void ImageResultToImageSkia(
-    base::OnceCallback<void(const gfx::ImageSkia&)> callback,
-    const favicon_base::FaviconRawBitmapResult& result) {
-  TRACE_EVENT0("ui", "chrome_saved_desk_delegate::ImageResultToImageSkia");
-  if (!result.is_valid()) {
-    std::move(callback).Run(gfx::ImageSkia());
-    return;
-  }
-
-  auto image =
-      gfx::Image::CreateFrom1xPNGBytes(result.bitmap_data).AsImageSkia();
-  image.EnsureRepsForSupportedScales();
-  std::move(callback).Run(apps::CreateStandardIconImage(image));
-}
-
 // Creates a callback for when a app icon image is retrieved which creates a
 // standard icon image and then calls `callback` with the standardized image.
 base::OnceCallback<void(apps::IconValuePtr icon_value)>
@@ -198,7 +180,7 @@ AppIconResultToImageSkia(
         auto image = icon_value->uncompressed;
         image.EnsureRepsForSupportedScales();
         std::move(image_skia_callback)
-            .Run(apps::CreateStandardIconImage(image));
+            .Run(gfx::CreateStandardAppIconImage(image));
       },
       std::move(callback));
 }
@@ -213,13 +195,15 @@ void ChromeSavedDeskDelegate::GetAppLaunchDataForSavedDesk(
     aura::Window* window,
     GetAppLaunchDataCallback callback) const {
   TRACE_EVENT0("ui", "ChromeSavedDeskDelegate::GetAppLaunchDataForSavedDesk");
-  DCHECK(callback);
+  CHECK(callback, base::NotFatalUntil::M162);
 
-  const user_manager::User* active_user =
-      user_manager::UserManager::Get()->GetActiveUser();
-  DCHECK(active_user);
-  Profile* user_profile =
-      ash::ProfileHelper::Get()->GetProfileByUser(active_user);
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(active_session);
+  Profile* user_profile = Profile::FromBrowserContext(
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          active_session->account_id()));
   if (!user_profile) {
     std::move(callback).Run({});
     return;
@@ -351,10 +335,10 @@ ChromeSavedDeskDelegate::MaybeRetrieveIconForSpecialIdentifier(
       "ui", "ChromeSavedDeskDelegate::MaybeRetrieveIconForSpecialIdentifier");
   if (identifier == ash::chrome_urls::kChromeUINewTabURL) {
     ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
-    return apps::CreateStandardIconImage(
+    return gfx::CreateStandardAppIconImage(
         rb.GetImageNamed(IDR_PRODUCT_LOGO_32).AsImageSkia());
   } else if (identifier == ash::DeskTemplate::kIncognitoWindowIdentifier) {
-    DCHECK(color_provider);
+    CHECK(color_provider, base::NotFatalUntil::M162);
     gfx::ImageSkia icon =
         ui::ThemedVectorIcon(
             ui::ImageModel::FromVectorIcon(ash::kIncognitoProfileIcon,
@@ -362,27 +346,10 @@ ChromeSavedDeskDelegate::MaybeRetrieveIconForSpecialIdentifier(
                 .GetVectorIcon())
             .GetImageSkia(color_provider);
     icon.EnsureRepsForSupportedScales();
-    return apps::CreateStandardIconImage(icon);
+    return gfx::CreateStandardAppIconImage(icon);
   }
 
   return std::nullopt;
-}
-
-void ChromeSavedDeskDelegate::GetFaviconForUrl(
-    const std::string& page_url,
-    base::OnceCallback<void(const gfx::ImageSkia&)> callback,
-    base::CancelableTaskTracker* tracker) const {
-  TRACE_EVENT0("ui", "ChromeSavedDeskDelegate::GetFaviconForUrl");
-
-  favicon::FaviconService* favicon_service =
-      FaviconServiceFactory::GetForProfile(
-          ProfileManager::GetActiveUserProfile(),
-          ServiceAccessType::EXPLICIT_ACCESS);
-
-  favicon_service->GetRawFaviconForPageURL(
-      GURL(page_url), {favicon_base::IconType::kFavicon}, 0,
-      /*fallback_to_host=*/false,
-      base::BindOnce(&ImageResultToImageSkia, std::move(callback)), tracker);
 }
 
 void ChromeSavedDeskDelegate::GetIconForAppId(
@@ -405,7 +372,7 @@ void ChromeSavedDeskDelegate::GetIconForAppId(
 
 bool ChromeSavedDeskDelegate::IsAppAvailable(const std::string& app_id) const {
   Profile* app_profile = ProfileManager::GetActiveUserProfile();
-  DCHECK(app_profile);
+  CHECK(app_profile, base::NotFatalUntil::M162);
 
   auto* app_service_proxy =
       apps::AppServiceProxyFactory::GetForProfile(app_profile);

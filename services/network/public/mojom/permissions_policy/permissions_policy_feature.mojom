@@ -163,13 +163,8 @@ enum PermissionsPolicyFeature {
   // Client Hint for Sec-CH-UA-WoW64.
   kClientHintUAWoW64 = 95,
 
-  // "browsing-topics" permissions policy that controls the use of Topics API.
-  // https://github.com/jkarlin/topics
-  kBrowsingTopics = 97,
-
-  // "interest-cohort" permissions policy that controls the use of Topics API.
-  // https://github.com/jkarlin/topics
-  kBrowsingTopicsBackwardCompatible = 98,
+  // kBrowsingTopics = 97, Removed in M159.
+  // kBrowsingTopicsBackwardCompatible = 98, Removed in M159.
 
   // Client Hint for Save-Data.
   kClientHintSaveData = 99,
@@ -184,10 +179,7 @@ enum PermissionsPolicyFeature {
   // Controls use of FedCM API.
   kIdentityCredentialsGet = 102,
 
-  // TODO(crbug.com/462465887): Remove when no longer needed.
-  // [Deprecated] "shared-storage" permissions policy that controls the use of
-  // Shared Storage API.
-  kDeprecated_SharedStorage = 103,
+  // kSharedStorage = 103, Removed in M157.
 
   // Controls use of unload handlers.
   kUnload = 104,
@@ -202,10 +194,7 @@ enum PermissionsPolicyFeature {
   // Web Smart Card API
   kSmartCard = 107,
 
-  // TODO(crbug.com/462465887): Remove when no longer needed.
-  // [Deprecated] "shared-storage-select-url" permissions policy that controls
-  // the use of sharedStorage.selectURL().
-  kDeprecated_SharedStorageSelectUrl = 108,
+  // kSharedStorageSelectUrl = 108, Removed in M157.
 
   // [Deprecated]
   // kPrivateAggregation = 109,
@@ -352,6 +341,18 @@ enum PermissionsPolicyFeature {
   // Controls access to the Web Haptics API (navigator.playHaptics).
   // See https://github.com/WICG/web-haptics/blob/main/readme.md.
   kHaptics = 148,
+
+  // Controls the WebAuthn remoteClientDataJSON extension.
+  // https://w3c.github.io/webauthn/#sctn-remote-client-data-json-extension
+  kPublicKeyCredentialsRemoteClientDataJson = 149,
+
+  // Controls whether an unbounded element inside an iframe is allowed to
+  // escape the iframe's bounds.
+  kUnboundedElement = 150,
+
+  // Allows sites to delegate Semantic Embedder API access to iframes.
+  // See https://github.com/explainers-by-googlers/semantic-embedder-api
+  kSemanticEmbedder = 151,
 
   // Don't change assigned numbers of any item, and don't reuse removed slots.
   // Add new features at the end of the enum.

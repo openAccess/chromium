@@ -12,10 +12,11 @@ PRESUBMIT_VERSION = '2.0.0'
 
 def CheckPythonUnittests(input_api, output_api):
     """Runs unittests for the current directory."""
+    if not input_api.HasAffectedFiles(extensions='.py'):
+        return []
     repo_root = input_api.change.RepositoryRoot()
     if repo_root not in input_api.sys.path:
         input_api.sys.path.insert(0, repo_root)
-    # pylint: disable=import-outside-toplevel
     from agents import presubmit_support
 
     return input_api.RunTests(

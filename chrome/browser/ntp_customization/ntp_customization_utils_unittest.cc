@@ -2,17 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ntp_customization/ntp_customization_utils.h"
+
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 
 namespace ntp_customization {
 
-SkBitmap DownsampleImageIfNeeded(const SkBitmap& bitmap, int max_dimension);
+namespace {
 
 constexpr int kMaxDimension = 2556;
 
-static SkBitmap CreateTestBitmap(int width, int height) {
+SkBitmap CreateTestBitmap(int width, int height) {
   SkBitmap bitmap;
   bitmap.allocN32Pixels(width, height);
   bitmap.eraseColor(SK_ColorBLUE);
@@ -55,5 +57,7 @@ TEST(NtpCustomizationUtilsTest, DownsampleImageIfNeeded_PanoramicImage) {
   EXPECT_EQ(result.width(), 4000);
   EXPECT_EQ(result.height(), 500);
 }
+
+}  // namespace
 
 }  // namespace ntp_customization

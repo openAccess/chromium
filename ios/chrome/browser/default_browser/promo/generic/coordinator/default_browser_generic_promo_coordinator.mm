@@ -24,7 +24,7 @@
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/picture_in_picture_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/common/ui/confirmation_alert/confirmation_alert_action_handler.h"
+#import "ios/chrome/common/ui/button_stack/button_stack_action_delegate.h"
 
 using base::RecordAction;
 using base::UserMetricsAction;
@@ -38,7 +38,7 @@ NSString* kDefaultBrowserPromoDefaultAppsDestinationVideo =
 }  // namespace
 
 @interface DefaultBrowserGenericPromoCoordinator () <
-    ConfirmationAlertActionHandler,
+    ButtonStackActionDelegate,
     UIAdaptivePresentationControllerDelegate>
 @end
 
@@ -84,16 +84,17 @@ NSString* kDefaultBrowserPromoDefaultAppsDestinationVideo =
   [super stop];
 }
 
-#pragma mark - ConfirmationAlertActionHandler
+#pragma mark - ButtonStackActionDelegate
 
-- (void)confirmationAlertPrimaryAction {
-    RecordDefaultBrowserPromoLastAction(
-        IOSDefaultBrowserPromoAction::kActionButton);
-    base::UmaHistogramEnumeration(
-        "IOS.DefaultBrowserVideoPromo.Fullscreen",
-        IOSDefaultBrowserVideoPromoAction::kPrimaryActionTapped);
-    RecordAction(UserMetricsAction(
-        "IOS.DefaultBrowserVideoPromo.Fullscreen.OpenSettingsTapped"));
+- (void)didTapPrimaryActionButton {
+  RecordDefaultBrowserPromoLastAction(
+      IOSDefaultBrowserPromoAction::kActionButton,
+      IOSDefaultBrowserPromoSurface::kFullscreenGeneric);
+  base::UmaHistogramEnumeration(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen",
+      IOSDefaultBrowserVideoPromoAction::kPrimaryActionTapped);
+  RecordAction(UserMetricsAction(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.OpenSettingsTapped"));
 
   if (IsDefaultBrowserPictureInPictureEnabled()) {
     [_handler hidePromo];
@@ -110,24 +111,24 @@ NSString* kDefaultBrowserPromoDefaultAppsDestinationVideo =
   [_handler hidePromo];
 }
 
-- (void)confirmationAlertSecondaryAction {
-    RecordDefaultBrowserPromoLastAction(IOSDefaultBrowserPromoAction::kCancel);
-    base::UmaHistogramEnumeration(
-        "IOS.DefaultBrowserVideoPromo.Fullscreen",
-        IOSDefaultBrowserVideoPromoAction::kSecondaryActionTapped);
-    RecordAction(
-        UserMetricsAction("IOS.DefaultBrowserVideoPromo.Fullscreen.Dismiss"));
-    [_handler hidePromo];
+- (void)didTapSecondaryActionButton {
+  RecordDefaultBrowserPromoLastAction(IOSDefaultBrowserPromoAction::kCancel);
+  base::UmaHistogramEnumeration(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen",
+      IOSDefaultBrowserVideoPromoAction::kSecondaryActionTapped);
+  RecordAction(
+      UserMetricsAction("IOS.DefaultBrowserVideoPromo.Fullscreen.Dismiss"));
+  [_handler hidePromo];
 }
 
-- (void)confirmationAlertTertiaryAction {
-    RecordDefaultBrowserPromoLastAction(
-        IOSDefaultBrowserPromoAction::kRemindMeLater);
-    base::UmaHistogramEnumeration(
-        "IOS.DefaultBrowserVideoPromo.Fullscreen",
-        IOSDefaultBrowserVideoPromoAction::kTertiaryActionTapped);
-    RecordAction(UserMetricsAction(
-        "IOS.DefaultBrowserVideoPromo.Fullscreen.RemindMeLater"));
+- (void)didTapTertiaryActionButton {
+  RecordDefaultBrowserPromoLastAction(
+      IOSDefaultBrowserPromoAction::kRemindMeLater);
+  base::UmaHistogramEnumeration(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen",
+      IOSDefaultBrowserVideoPromoAction::kTertiaryActionTapped);
+  RecordAction(UserMetricsAction(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.RemindMeLater"));
   if (_tracker) {
     _tracker->NotifyEvent(
         feature_engagement::events::kDefaultBrowserPromoRemindMeLater);
@@ -137,6 +138,10 @@ NSString* kDefaultBrowserPromoDefaultAppsDestinationVideo =
   promosManager->RegisterPromoForSingleDisplay(
       promos_manager::Promo::DefaultBrowserRemindMeLater);
 
+  [_handler hidePromo];
+}
+
+- (void)didDismissButtonStackViewController {
   [_handler hidePromo];
 }
 
@@ -177,7 +182,7 @@ NSString* kDefaultBrowserPromoDefaultAppsDestinationVideo =
                                     : _promoWasFromOffCycleTrigger
                        hasSteps:NO
                       titleText:nil];
-  _viewController.actionHandler = self;
+  _viewController.actionDelegate = self;
 
   CHECK(_viewController);
   RecordAction(

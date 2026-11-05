@@ -6,6 +6,7 @@
 
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/metrics_hashes.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/contextual_cueing/cue_target.h"
@@ -48,9 +49,8 @@ int BucketTabCount(int raw_count) {
 }
 
 void PopulateSystemProfile(
-    private_insights::events::ContextualCueLogEvent::SystemProfile* profile) {
-  profile->set_chrome_version(version_info::GetVersionNumber());
-  profile->set_milestone(version_info::GetMajorVersionNumber());
+    private_insights::events::CoarseSystemProfile* profile) {
+  private_insights::PopulateCommonSystemProfile(profile);
   profile->set_chrome_channel(
       std::string(version_info::GetChannelString(chrome::GetChannel())));
   if (g_browser_process) {
@@ -59,11 +59,6 @@ void PopulateSystemProfile(
       profile->set_country(variations_service->GetStoredPermanentCountry());
     }
   }
-}
-
-std::optional<std::pair<std::string, std::string>> ExtractFromProtoTab(
-    const optimization_guide::proto::Tab& tab) {
-  return std::make_pair(tab.url(), tab.title());
 }
 
 std::optional<std::pair<std::string, std::string>> ExtractFromTabHandle(
@@ -87,40 +82,33 @@ private_insights::events::ContextualCueLogEvent CreateContextualCueLogEvent(
     tabs::TabInterface* active_tab,
     const std::vector<tabs::TabHandle>& tabs_to_show,
     const std::vector<optimization_guide::proto::Tab>& background_tabs,
-    const std::string& cuj) {
+    const std::string& cuj,
+    base::TimeDelta shown_duration) {
   private_insights::events::ContextualCueLogEvent event;
   event.set_cue_id(cue_id);
   event.set_event_type(event_type);
   event.set_event_timestamp_ms(
       base::Time::Now().InMillisecondsSinceUnixEpoch());
+  event.set_shown_duration_ms(shown_duration.InMilliseconds());
 
   PopulateSystemProfile(event.mutable_system_profile());
 
   if (active_tab) {
-    event.mutable_cue_context()->mutable_active_page()->set_url(
-        active_tab->GetURL().spec());
-    event.mutable_cue_context()->mutable_active_page()->set_title(
-        base::UTF16ToUTF8(active_tab->GetTitle()));
+    private_insights::PopulateActivePage(
+        active_tab->GetURL(), base::UTF16ToUTF8(active_tab->GetTitle()),
+        event.mutable_cue_context()->mutable_active_page());
   }
 
   event.mutable_cue_context()->set_recent_pages(
-      private_insights::SerializeCollectionToPageInfoJson(background_tabs,
-                                                          ExtractFromProtoTab));
+      private_insights::SerializeCollectionToPageInfoJson(
+          background_tabs, private_insights::ExtractFromProtoTab));
 
   event.mutable_cue_context()->set_tabs_shown(
       private_insights::SerializeCollectionToPageInfoJson(
           tabs_to_show, ExtractFromTabHandle));
 
-  event.mutable_cue_details()->set_cuj_type(cuj);
-  event.mutable_cue_details()->set_suggestion_text(
-      cue.anchored_message_cue().anchored_message_text());
-  event.mutable_cue_details()->set_promoted_feature(GetName(cue_type));
-  event.mutable_cue_details()->set_button_text(
-      cue.anchored_message_cue().action_text());
-  if (cue.has_gemini_in_chrome_surface()) {
-    event.mutable_cue_details()->set_prompt(
-        cue.gemini_in_chrome_surface().prompt());
-  }
+  private_insights::PopulateCueDetails(cue, cuj, GetName(cue_type),
+                                       event.mutable_cue_details());
 
   return event;
 }
@@ -198,14 +186,27 @@ void RecordContextualCueingDecision(
   }
 }
 
-void RecordCueFormFactorShown(CueFormFactor form_factor) {
+void RecordCueFormFactorShown(std::string_view cuj, CueFormFactor form_factor) {
   base::UmaHistogramEnumeration("ContextualCueing.V2.CueFormFactor.Shown",
                                 form_factor);
+  if (!cuj.empty()) {
+    base::UmaHistogramSparse(
+        base::StrCat(
+            {"ContextualCueing.V2.CueFormFactor.Shown.", GetName(form_factor)}),
+        base::HashMetricName(cuj));
+  }
 }
 
-void RecordCueFormFactorHidden(CueFormFactor form_factor) {
+void RecordCueFormFactorHidden(std::string_view cuj,
+                               CueFormFactor form_factor) {
   base::UmaHistogramEnumeration("ContextualCueing.V2.CueFormFactor.Hidden",
                                 form_factor);
+  if (!cuj.empty()) {
+    base::UmaHistogramSparse(
+        base::StrCat({"ContextualCueing.V2.CueFormFactor.Hidden.",
+                      GetName(form_factor)}),
+        base::HashMetricName(cuj));
+  }
 }
 
 void RecordChipClickedCollapsedDuration(base::TimeDelta collapsed_duration) {
@@ -247,7 +248,8 @@ void RecordCueingInteractionToPrivateInsights(
     const std::vector<tabs::TabHandle>& tabs_to_show,
     const std::vector<optimization_guide::proto::Tab>& background_tabs,
     ContextualCueingInteraction interaction_type,
-    const std::string& cuj) {
+    const std::string& cuj,
+    base::TimeDelta shown_duration) {
   if (!kEnablePrivateInsightsLogging.Get()) {
     return;
   }
@@ -276,7 +278,7 @@ void RecordCueingInteractionToPrivateInsights(
 
   auto event = internal::CreateContextualCueLogEvent(
       event_type, cue_id, cue_type, cue, active_tab, tabs_to_show,
-      background_tabs, cuj);
+      background_tabs, cuj, shown_duration);
 
   private_insights_service->LogContextualCueEvent(std::move(event));
 }

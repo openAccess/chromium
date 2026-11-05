@@ -30,6 +30,7 @@ import org.chromium.base.Callback;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.SysUtils;
+import org.chromium.base.Token;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -193,7 +194,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
         mIsBottomBarEnabledOnGts =
                 BottomBarConfigUtils.isBottomBarEnabled(context)
                         && BottomBarConfigUtils.shouldShowOnGts();
-        mBottomBarHeight = BottomBarUtils.getBottomBarHeight(context);
+        mBottomBarHeight =
+                BottomBarUtils.getBottomBarHeight(context, /* isBottomOmniboxPresent= */ false);
 
         mMenuOrKeyboardActionHandler =
                 (int id, boolean _) -> {
@@ -226,11 +228,8 @@ public abstract class TabSwitcherPaneBase extends PaneBase
 
     @Override
     public boolean createNewTab() {
-        if (mNewTabButtonClickListener != null) {
-            mNewTabButtonClickListener.onClick(null);
-            return true;
-        }
-        return false;
+        onNewTabButtonClicked(null);
+        return true;
     }
 
     @Override
@@ -599,11 +598,13 @@ public abstract class TabSwitcherPaneBase extends PaneBase
     }
 
     @Override
-    public boolean requestOpenTabGroupDialog(int tabId) {
+    public boolean requestOpenTabGroupDialog(Token tabGroupId) {
+        if (!mIsVisibleSupplier.get()) return false;
+
         @Nullable TabSwitcherPaneCoordinator coordinator =
                 mTabSwitcherPaneCoordinatorSupplier.get();
         if (coordinator != null) {
-            coordinator.requestOpenTabGroupDialog(tabId);
+            coordinator.requestOpenTabGroupDialog(tabGroupId);
             return true;
         } else {
             return false;
@@ -661,6 +662,15 @@ public abstract class TabSwitcherPaneBase extends PaneBase
     /** Returns the PaneHubController if one exists or null otherwise. */
     protected @Nullable PaneHubController getPaneHubController() {
         return mPaneHubController;
+    }
+
+    /** Handles clicks on the new tab button. */
+    protected void onNewTabButtonClicked(@Nullable View view) {
+        @Nullable TabSwitcherPaneCoordinator coordinator = getTabSwitcherPaneCoordinator();
+        if (coordinator != null) {
+            coordinator.prepareHiding();
+        }
+        mNewTabButtonClickListener.onClick(view);
     }
 
     /** Returns the current {@link TabSwitcherPaneCoordinator} or null if one doesn't exist. */
@@ -789,6 +799,16 @@ public abstract class TabSwitcherPaneBase extends PaneBase
     }
 
     void destroyCoordinatorForTesting() {
+        mDestroyCoordinatorRunnable.run();
+    }
+
+    void finishAllCleanupsForTesting() {
+        removeDelayedCallbacks();
+        if (mIsVisibleSupplier.get()) {
+            return;
+        }
+        mSoftCleanupRunnable.run();
+        mHardCleanupRunnable.run();
         mDestroyCoordinatorRunnable.run();
     }
 

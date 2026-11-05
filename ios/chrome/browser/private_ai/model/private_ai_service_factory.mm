@@ -4,8 +4,10 @@
 
 #import "ios/chrome/browser/private_ai/model/private_ai_service_factory.h"
 
+#import <utility>
+
 #import "base/feature_list.h"
-#import "base/no_destructor.h"
+#import "base/functional/callback_helpers.h"
 #import "components/private_ai/features.h"
 #import "components/private_ai/ios/private_ai_network_driver_ios.h"
 #import "components/private_ai/ios/private_ai_oak_session_driver_ios.h"
@@ -15,28 +17,13 @@
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/common/channel_info.h"
 
-// static
-private_ai::PrivateAiService* PrivateAiServiceFactory::GetForProfile(
-    ProfileIOS* profile) {
-  return GetInstance()->GetServiceForProfileAs<private_ai::PrivateAiService>(
-      profile, /*create=*/true);
-}
-
-// static
-PrivateAiServiceFactory* PrivateAiServiceFactory::GetInstance() {
-  static base::NoDestructor<PrivateAiServiceFactory> instance;
-  return instance.get();
-}
-
-PrivateAiServiceFactory::PrivateAiServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("PrivateAiService") {
+PrivateAiServiceFactory::PrivateAiServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(std::move(key), "PrivateAiService") {
   DependsOn(IdentityManagerFactory::GetInstance());
 }
 
-PrivateAiServiceFactory::~PrivateAiServiceFactory() = default;
-
 std::unique_ptr<KeyedService> PrivateAiServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   if (!private_ai::PrivateAiService::CanPrivateAiBeEnabled(::GetChannel())) {
     return nullptr;
   }
@@ -55,9 +42,10 @@ std::unique_ptr<KeyedService> PrivateAiServiceFactory::BuildServiceInstanceFor(
 
   return std::make_unique<private_ai::PrivateAiService>(
       IdentityManagerFactory::GetForProfile(profile), &bsa_factory,
-      profile->GetSharedURLLoaderFactory(), std::move(network_driver),
+      profile.GetSharedURLLoaderFactory(), std::move(network_driver),
       std::move(oak_session_driver),
-      /*network_context=*/nullptr, private_ai::kPrivateAiUrl.Get(),
+      /*network_context_getter=*/base::NullCallback(),
+      private_ai::kPrivateAiUrl.Get(),
       private_ai::PrivateAiService::GetApiKey(::GetChannel()),
       private_ai::kPrivateAiProxyServerUrl.Get(),
       base::FeatureList::IsEnabled(private_ai::kPrivateAiUseTokenAttestation),

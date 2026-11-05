@@ -17,6 +17,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/version.h"
 #include "chrome/browser/ui/views/web_apps/isolated_web_apps/isolated_web_app_installer_model.h"
 #include "chrome/browser/ui/views/web_apps/isolated_web_apps/isolated_web_app_installer_view.h"
@@ -46,7 +47,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
-#include "components/webapps/isolated_web_apps/public/iwa_runtime_data_provider.h"
+#include "components/webapps/isolated_web_apps/key_distribution/iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/scheme.h"
 #include "components/webapps/isolated_web_apps/test_support/fake_iwa_runtime_data_provider.h"
 #include "components/webapps/isolated_web_apps/test_support/signing_keys.h"
@@ -54,10 +55,10 @@
 #include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/manifest/manifest.h"
+#include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/styled_label.h"
@@ -111,24 +112,21 @@ SignedWebBundleMetadata CreateMetadata(const std::u16string& app_name,
       /*enterprise_name=*/"Google LLC");
 }
 
-blink::mojom::ManifestPtr CreateDefaultManifest(const GURL& iwa_url,
-                                                const IwaVersion version) {
-  auto manifest = blink::mojom::Manifest::New();
-  manifest->id = iwa_url;
-  manifest->scope = iwa_url.Resolve("/");
-  manifest->start_url = iwa_url.Resolve("/testing-start-url.html");
-  manifest->display = DisplayMode::kStandalone;
-  manifest->short_name = u"test app name";
-  manifest->version = base::UTF8ToUTF16(version.GetString());
-
+blink::Manifest CreateDefaultManifest(const GURL& iwa_url,
+                                      const IwaVersion version) {
   blink::Manifest::ImageResource icon;
   icon.src = iwa_url.Resolve(kIconPath);
   icon.purpose = {blink::mojom::ManifestImageResource_Purpose::ANY};
   icon.type = u"image/png";
   icon.sizes = {gfx::Size(256, 256)};
-  manifest->icons.push_back(icon);
 
-  return manifest;
+  return blink::Manifest::Builder(iwa_url.Resolve("/testing-start-url.html"),
+                                  iwa_url, iwa_url.Resolve("/"))
+      .SetDisplay(blink::mojom::DisplayMode::kStandalone)
+      .SetShortName(u"test app name")
+      .SetVersion(base::UTF8ToUTF16(version.GetString()))
+      .SetIcons({icon})
+      .BuildChecked();
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -234,7 +232,7 @@ class IsolatedWebAppInstallerViewControllerTest : public ::testing::Test {
     page_state.error_code = webapps::InstallableStatusCode::NO_ERROR_DETECTED;
     page_state.manifest_url = iwa_url.Resolve("manifest.webmanifest");
     page_state.valid_manifest_for_web_app = true;
-    page_state.manifest_before_default_processing =
+    page_state.opt_manifest =
         CreateDefaultManifest(iwa_url, *IwaVersion::Create(version));
   }
 
@@ -263,7 +261,6 @@ class IsolatedWebAppInstallerViewControllerTest : public ::testing::Test {
   web_app::OsIntegrationTestOverrideBlockingRegistration faked_os_integration_;
   base::test::ScopedFeatureList scoped_feature_list_;
   base::ScopedTempDir scoped_temp_dir_;
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
   std::unique_ptr<TestingProfile> profile_;
   FakeIwaRuntimeDataProvider data_provider_;
   std::optional<base::AutoReset<IwaRuntimeDataProvider*>> resetter_;
@@ -755,15 +752,15 @@ TEST_F(IsolatedWebAppInstallerViewControllerTest, DisabledViewAccessibility) {
   controller.SetViewForTesting(view.get());
   view->ShowDisabledScreen();
 
-  ASSERT_GE(view->children().size(), 5);
+  ASSERT_GE(view->children().size(), 5u);
   // DisabledView instance (the class is internal so parent class checked)
   auto disabled_view = view->children()[0];
   ASSERT_TRUE(views::IsViewClass<views::BoxLayoutView>(disabled_view));
 
   // The view hierarchy is: disabled view-> header box -> [icon, title,
   // subtitle]
-  ASSERT_EQ(disabled_view->children().size(), 1);
-  ASSERT_EQ(disabled_view->children()[0]->children().size(), 3);
+  ASSERT_EQ(disabled_view->children().size(), 1u);
+  ASSERT_EQ(disabled_view->children()[0]->children().size(), 3u);
   views::StyledLabel* subtitle_label = views::AsViewClass<views::StyledLabel>(
       disabled_view->children()[0]->children()[2]);
   ASSERT_NE(subtitle_label, nullptr);

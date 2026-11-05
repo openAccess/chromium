@@ -5,6 +5,7 @@
 #include "components/safe_browsing/content/browser/client_side_detection_host.h"
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
@@ -49,6 +50,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
@@ -135,9 +137,9 @@ class FakeClientSideDetectionService : public ClientSideDetectionService {
 
   // This is a fake CSD service which will have no thresholds due to no TfLite
   // models.
-  const std::vector<TfLiteModelMetadata::Threshold>&
+  base::span<const TfLiteModelMetadata::Threshold>
   GetVisualTfLiteModelThresholds() const override {
-    return thresholds_;
+    return {};
   }
 
   void SetRequestCallback(const base::RepeatingClosure& closure) {
@@ -155,7 +157,6 @@ class FakeClientSideDetectionService : public ClientSideDetectionService {
   std::string access_token_;
   std::string client_side_model_;
   base::File visual_tflite_model_;
-  std::vector<TfLiteModelMetadata::Threshold> thresholds_;
   base::RepeatingClosure request_callback_;
   base::WeakPtrFactory<ClientSideDetectionService> weak_factory_{this};
 };

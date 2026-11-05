@@ -15,6 +15,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/numerics/angle_conversions.h"
 #include "build/build_config.h"
 #include "third_party/blink/public/public_buildflags.h"
 #include "third_party/blink/renderer/core/css/css_color.h"
@@ -263,7 +264,10 @@ static inline bool IsColorPropertyID(CSSPropertyID property_id) {
       CSSPropertyID::kInternalVisitedBorderRightColor,
       CSSPropertyID::kInternalVisitedBorderTopColor,
       CSSPropertyID::kInternalVisitedFill,
+      CSSPropertyID::kInternalVisitedFloodColor,
+      CSSPropertyID::kInternalVisitedLightingColor,
       CSSPropertyID::kInternalVisitedOutlineColor,
+      CSSPropertyID::kInternalVisitedStopColor,
       CSSPropertyID::kInternalVisitedStroke,
       CSSPropertyID::kInternalVisitedBorderBlockEndColor,
       CSSPropertyID::kInternalVisitedBorderBlockStartColor,
@@ -375,22 +379,6 @@ static unsigned FindLengthOfValidDouble(base::span<const LChar> chars) {
   }
 
   return valid_length;
-}
-
-// If also_accept_whitespace is true: Checks whether `chars[pos]` is the given
-// character, _or_ an HTML space.
-// Otherwise: Checks whether `chars[pos]` is the given character.
-// Returns false if `pos` is out of bounds of the `chars`.
-static bool ContainsCharAtPos(base::span<const LChar> chars,
-                              int pos,
-                              char ch,
-                              bool also_accept_whitespace) {
-  DCHECK_GE(pos, 0);
-  if (pos >= base::checked_cast<int>(chars.size())) {
-    return false;
-  }
-  return chars[pos] == ch ||
-         (also_accept_whitespace && IsHTMLSpace(chars[pos]));
 }
 
 // Like ParsePositiveDouble(), but also accepts initial whitespace and negative
@@ -795,8 +783,7 @@ ALWAYS_INLINE static bool ParseAlphaValue(base::span<const LChar>& chars,
   if (chars[0] != '0' && chars[0] != '1' && chars[0] != '.') {
     int double_length = FindLengthOfValidDouble(chars);
     if (double_length > 0 &&
-        ContainsCharAtPos(chars, double_length, terminator,
-                          /*also_accept_whitespace=*/false)) {
+        static_cast<wtf_size_t>(double_length) + 1 == length) {
       value = negative ? 0 : 255;
       chars = {};
       return true;
@@ -822,8 +809,7 @@ ALWAYS_INLINE static bool ParseAlphaValue(base::span<const LChar>& chars,
 
   double alpha = 0;
   int dbl_length = ParsePositiveDouble(chars, alpha);
-  if (dbl_length == 0 || !ContainsCharAtPos(chars, dbl_length, terminator,
-                                            /*also_accept_whitespace=*/false)) {
+  if (dbl_length == 0 || static_cast<wtf_size_t>(dbl_length) + 1 != length) {
     return false;
   }
   value = negative ? 0 : static_cast<int>(lround(std::min(alpha, 1.0) * 255.0));
@@ -1010,7 +996,7 @@ static bool FastParseColorInternal(Color& color,
         // Unitless numbers are to be treated as degrees.
         break;
       case CSSPrimitiveValue::UnitType::kRadians:
-        hue = Rad2deg(hue);
+        hue = base::RadToDeg(hue);
         break;
       case CSSPrimitiveValue::UnitType::kGradians:
         hue = Grad2deg(hue);
@@ -1348,7 +1334,11 @@ bool CSSParserFastPaths::IsValidKeywordPropertyAndValue(
              value_id == CSSValueID::kGridRows ||
              value_id == CSSValueID::kGridColumns ||
              value_id == CSSValueID::kGridOrder ||
-             value_id == CSSValueID::kSourceOrder;
+             value_id == CSSValueID::kSourceOrder ||
+             (RuntimeEnabledFeatures::CSSGridLanesLayoutEnabled() &&
+              (value_id == CSSValueID::kGridLanesFlow ||
+               value_id == CSSValueID::kGridLanesTrack ||
+               value_id == CSSValueID::kGridLanesOrder));
     case CSSPropertyID::kResize:
       return value_id == CSSValueID::kNone || value_id == CSSValueID::kBoth ||
              value_id == CSSValueID::kHorizontal ||
@@ -1702,16 +1692,17 @@ bool CSSParserFastPaths::IsValidKeywordPropertyAndValue(
       return value_id == CSSValueID::kAuto || value_id == CSSValueID::kThin ||
              value_id == CSSValueID::kNone;
     case CSSPropertyID::kScrollSnapStop:
-      return value_id == CSSValueID::kNormal || value_id == CSSValueID::kAlways;
+      return value_id == CSSValueID::kNormal ||
+             value_id == CSSValueID::kAlways ||
+             (value_id == CSSValueID::kBefore &&
+              RuntimeEnabledFeatures::CSSScrollSnapStopBeforeEnabled());
     case CSSPropertyID::kOverscrollBehaviorInline:
     case CSSPropertyID::kOverscrollBehaviorBlock:
     case CSSPropertyID::kOverscrollBehaviorX:
     case CSSPropertyID::kOverscrollBehaviorY:
       return value_id == CSSValueID::kAuto ||
              value_id == CSSValueID::kContain ||
-             value_id == CSSValueID::kNone ||
-             (value_id == CSSValueID::kChain &&
-              RuntimeEnabledFeatures::CSSOverscrollBehaviorChainEnabled());
+             value_id == CSSValueID::kNone || value_id == CSSValueID::kChain;
     case CSSPropertyID::kOriginTrialTestProperty:
       return value_id == CSSValueID::kNormal || value_id == CSSValueID::kNone;
     case CSSPropertyID::kTextBoxTrim:
@@ -1732,7 +1723,6 @@ bool CSSParserFastPaths::IsValidKeywordPropertyAndValue(
       return value_id == CSSValueID::kNone || value_id == CSSValueID::kAuto ||
              value_id == CSSValueID::kPush || value_id == CSSValueID::kOverlay;
     case CSSPropertyID::kInternalOverscrollContainer:
-    case CSSPropertyID::kInternalOverscrollPosition:
       return value_id == CSSValueID::kNone || value_id == CSSValueID::kAuto;
     case CSSPropertyID::kInternalUnbounded:
       return value_id == CSSValueID::kNone || value_id == CSSValueID::kActive;
@@ -1889,7 +1879,6 @@ CSSBitset CSSParserFastPaths::handled_by_keyword_fast_paths_properties_{{
     CSSPropertyID::kInteractivity,
     CSSPropertyID::kOverscrollContainerType,
     CSSPropertyID::kInternalOverscrollContainer,
-    CSSPropertyID::kInternalOverscrollPosition,
     CSSPropertyID::kInternalUnbounded,
 }};
 

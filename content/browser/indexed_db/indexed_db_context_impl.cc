@@ -144,26 +144,42 @@ class TaskRunnerMap {
 
   // Returns the task runner for the bucket represented by `key`. If there is no
   // task runner, creates one, unless `fallback_task_runner` is provided, in
-  // which case that one is used.
-  scoped_refptr<base::SequencedTaskRunner> GetTaskRunner(
+  // which case that one is used. This also returns a `ScopedClosureRunner`
+  // wrapping a closure that needs to run when the bucket no longer needs the
+  // task runner --- this scoped runner can be held/destroyed on any sequence.
+  std::tuple<scoped_refptr<base::SequencedTaskRunner>,
+             base::ScopedClosureRunner>
+  GetOrCreateTaskRunner(
       Key key,
       scoped_refptr<base::SequencedTaskRunner> fallback_task_runner) {
+    base::ScopedClosureRunner decrement_refcount(base::BindOnce(
+        &TaskRunnerMap::DropTaskRunnerRef, base::Unretained(this), key));
+
     base::AutoLock lock(sequences_for_buckets_lock_);
     auto iter = sequences_for_buckets_.find(key);
     if (iter != sequences_for_buckets_.end()) {
       Value& value = iter->second;
       ++value.ref_count;
-      return value.task_runner;
+      return {value.task_runner, std::move(decrement_refcount)};
     }
     if (!fallback_task_runner) {
       fallback_task_runner =
           base::ThreadPool::CreateSequencedTaskRunner(GetTaskTraits());
     }
     sequences_for_buckets_[key] = {fallback_task_runner, 1U};
-    return fallback_task_runner;
+    return {fallback_task_runner, std::move(decrement_refcount)};
   }
 
-  void MaybeCleanupTaskRunner(Key key) {
+  // Does not increment the ref count for the returned task runner.
+  scoped_refptr<base::SequencedTaskRunner> LookUpTaskRunner(Key key) {
+    base::AutoLock lock(sequences_for_buckets_lock_);
+    auto iter = sequences_for_buckets_.find(key);
+    CHECK(iter != sequences_for_buckets_.end());
+    return iter->second.task_runner;
+  }
+
+ private:
+  void DropTaskRunnerRef(Key key) {
     base::AutoLock lock(sequences_for_buckets_lock_);
     auto iter = sequences_for_buckets_.find(key);
     CHECK(iter != sequences_for_buckets_.end());
@@ -172,7 +188,6 @@ class TaskRunnerMap {
     }
   }
 
- private:
   base::Lock sequences_for_buckets_lock_;
   // Maps from a bucket to the sequence used for that bucket, if the bucket has
   // a BucketContext. Otherwise, there shouldn't be an entry present in the map
@@ -303,12 +318,14 @@ IndexedDBContextImpl::IndexedDBContextImpl(
         blob_storage_context,
     mojo::PendingRemote<storage::mojom::FileSystemAccessContext>
         file_system_access_context,
-    scoped_refptr<base::SequencedTaskRunner> custom_task_runner)
+    scoped_refptr<base::SequencedTaskRunner> custom_task_runner,
+    DisallowInactiveClientCallback client_state_checker)
     : idb_task_runner_(custom_task_runner),
       base_data_path_(base_data_path),
       quota_manager_proxy_(std::move(quota_manager_proxy)),
       quota_client_receiver_(&quota_client_wrapper_),
-      force_single_thread_(!!custom_task_runner) {
+      force_single_thread_(!!custom_task_runner),
+      client_state_checker_(std::move(client_state_checker)) {
   TRACE_EVENT0("IndexedDB", "init");
 
   if (!idb_task_runner_) {
@@ -379,21 +396,18 @@ void IndexedDBContextImpl::BindControl(
 void IndexedDBContextImpl::BindIndexedDB(
     const BucketLocator& bucket_locator,
     const storage::BucketClientInfo& client_info,
-    mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
-        client_state_checker_remote,
     mojo::PendingReceiver<blink::mojom::IDBFactory> receiver) {
   // Fast path when the `BucketContext` already exists.
   auto iter = bucket_contexts_.find(bucket_locator);
   if (iter != bucket_contexts_.end()) {
     iter->second.AsyncCall(&BucketContext::AddReceiver)
-        .WithArgs(client_info, std::move(client_state_checker_remote),
-                  std::move(receiver));
+        .WithArgs(client_info, std::move(receiver));
     return;
   }
 
-  auto on_got_bucket = base::BindOnce(
-      &IndexedDBContextImpl::BindIndexedDBImpl, weak_factory_.GetWeakPtr(),
-      client_info, std::move(client_state_checker_remote), std::move(receiver));
+  auto on_got_bucket = base::BindOnce(&IndexedDBContextImpl::BindIndexedDBImpl,
+                                      weak_factory_.GetWeakPtr(), client_info,
+                                      std::move(receiver));
 
   // Need to create the `BucketContext`: first get the full `BucketInfo`.
   if (bucket_locator.is_default) {
@@ -411,8 +425,6 @@ void IndexedDBContextImpl::BindIndexedDB(
 
 void IndexedDBContextImpl::BindIndexedDBImpl(
     const storage::BucketClientInfo& client_info,
-    mojo::PendingRemote<storage::mojom::IndexedDBClientStateChecker>
-        client_state_checker_remote,
     mojo::PendingReceiver<blink::mojom::IDBFactory> pending_receiver,
     storage::QuotaErrorOr<storage::BucketInfo> bucket_info) {
   std::optional<storage::BucketInfo> bucket;
@@ -424,8 +436,7 @@ void IndexedDBContextImpl::BindIndexedDBImpl(
     auto iter = bucket_contexts_.find(bucket->ToBucketLocator());
     CHECK(iter != bucket_contexts_.end());
     iter->second.AsyncCall(&BucketContext::AddReceiver)
-        .WithArgs(client_info, std::move(client_state_checker_remote),
-                  std::move(pending_receiver));
+        .WithArgs(client_info, std::move(pending_receiver));
   } else {
     mojo::MakeSelfOwnedReceiver(std::make_unique<MissingBucketErrorEndpoint>(),
                                 std::move(pending_receiver));
@@ -452,6 +463,8 @@ void IndexedDBContextImpl::DidForceCloseForDeleteBucketData(
     DestroyBucketContext(bucket_locator);
   }
 
+  NotifyObserversBucketSizeChanged(bucket_locator);
+
   if (in_memory()) {
     bucket_set_.erase(bucket_locator);
     bucket_size_map_.erase(bucket_locator);
@@ -459,7 +472,6 @@ void IndexedDBContextImpl::DidForceCloseForDeleteBucketData(
     return;
   }
 
-  NotifyOfBucketModification(bucket_locator);
   bool success =
       !std::ranges::any_of(GetStoragePaths(bucket_locator), &base::PathExists);
   if (success) {
@@ -732,6 +744,20 @@ void IndexedDBContextImpl::FlushBucketSequenceForTesting(
       std::move(callback), idb_task_runner()));
 }
 
+void IndexedDBContextImpl::PerformAndVerifySqliteMigrationForTesting(
+    const storage::BucketLocator& bucket_locator,
+    PerformAndVerifySqliteMigrationForTestingCallback callback) {
+  base::SequenceBound<BucketContext>* bucket_context =
+      GetBucketContextForTesting(bucket_locator);
+  if (!bucket_context) {
+    std::move(callback).Run();
+    return;
+  }
+  bucket_context
+      ->AsyncCall(&BucketContext::PerformAndVerifySqliteMigrationForTesting)
+      .Then(std::move(callback));
+}
+
 void IndexedDBContextImpl::GetUsageForTesting(
     GetUsageForTestingCallback callback) {
   auto barrier = base::BarrierCallback<int64_t>(
@@ -840,7 +866,19 @@ const base::FilePath IndexedDBContextImpl::GetFirstPartyDataPathForTesting()
 
 void IndexedDBContextImpl::OnFilesWritten(const BucketLocator& bucket_locator,
                                           bool flushed) {
-  NotifyOfBucketModification(bucket_locator);
+  NotifyObserversBucketSizeChanged(bucket_locator);
+
+  // This method is called very frequently, for example after every transaction
+  // commits. Recalculating disk usage is expensive and often unnecessary (e.g.
+  // when many transactions commit in a row). Therefore, use a null delta to
+  // notify the quota system to invalidate its cache but defer updates to
+  // `bucket_size_map_`.
+  bucket_size_map_.erase(bucket_locator);
+  quota_manager_proxy_->NotifyBucketModified(
+      storage::QuotaClientType::kIndexedDatabase, bucket_locator,
+      /*delta=*/std::nullopt, base::Time::Now(),
+      base::SequencedTaskRunner::GetCurrentDefault(), base::DoNothing());
+
   if (!flushed) {
     // A negative value indicates "not cached, and LevelDB file write is
     // potentially in progress". See `bucket_size_map_` docs.
@@ -862,14 +900,11 @@ IndexedDBContextImpl::~IndexedDBContextImpl() {
   CHECK(idb_task_runner()->RunsTasksInCurrentSequence(),
         base::NotFatalUntil::M158);
 
-  // Invalidate the weak pointers that bind `on_ready_for_destruction` (among
-  // other callbacks) so that `ForceClose()` below doesn't mutate
-  // `bucket_contexts_` while it's being iterated.
+  // Cancel `BackingStore::Delegate` callbacks.
   weak_factory_.InvalidateWeakPtrs();
 
-  base::RepeatingClosure barrier;
   if (shutdown_timer_) {
-    barrier = base::BarrierClosure(
+    base::RepeatingClosure barrier = base::BarrierClosure(
         bucket_contexts_.size(), base::BindOnce(
                                      [](base::ElapsedTimer shutdown_timer) {
                                        base::UmaHistogramTimes(
@@ -877,15 +912,14 @@ IndexedDBContextImpl::~IndexedDBContextImpl() {
                                            shutdown_timer.Elapsed());
                                      },
                                      *shutdown_timer_));
-  }
 
-  for (auto& [_, context] : bucket_contexts_) {
-    if (barrier) {
-      context.AsyncCall(&BucketContext::ForceClose)
-          .WithArgs(/*doom=*/false)
-          .Then(barrier);
-    } else {
-      context.AsyncCall(&BucketContext::ForceClose).WithArgs(/*doom=*/false);
+    for (auto& [locator, context] : bucket_contexts_) {
+      base::FilePath bucket_key = GetStoragePaths(locator).front();
+      scoped_refptr<base::SequencedTaskRunner> bucket_task_runner =
+          GetTaskRunnerMap().LookUpTaskRunner(bucket_key);
+      context.Reset();
+      bucket_task_runner->PostTaskAndReply(FROM_HERE, base::DoNothing(),
+                                           barrier);
     }
   }
   bucket_contexts_.clear();
@@ -951,18 +985,8 @@ void IndexedDBContextImpl::Shutdown(
                                     std::move(context))));
 }
 
-void IndexedDBContextImpl::NotifyOfBucketModification(
+void IndexedDBContextImpl::NotifyObserversBucketSizeChanged(
     const BucketLocator& bucket_locator) {
-  // This method is called very frequently, for example after every transaction
-  // commits. Recalculating disk usage is expensive and often unnecessary (e.g.
-  // when many transactions commit in a row). Therefore, use a null delta to
-  // notify the quota system to invalidate its cache but defer updates to
-  // `bucket_size_map_`.
-  bucket_size_map_.erase(bucket_locator);
-  quota_manager_proxy_->NotifyBucketModified(
-      storage::QuotaClientType::kIndexedDatabase, bucket_locator,
-      /*delta=*/std::nullopt, base::Time::Now(),
-      base::SequencedTaskRunner::GetCurrentDefault(), base::DoNothing());
   for (auto& observer : observers_) {
     observer->OnIndexedDBListChanged(bucket_locator);
   }
@@ -1175,6 +1199,7 @@ void IndexedDBContextImpl::EnsureBucketContext(
       idb_task_runner_,
       base::BindRepeating(&IndexedDBContextImpl::OnFilesWritten,
                           weak_factory_.GetWeakPtr(), bucket_locator));
+  bucket_delegate.client_state_checker = client_state_checker_;
 
   mojo::PendingRemote<storage::mojom::BlobStorageContext>
       cloned_blob_storage_context;
@@ -1205,12 +1230,9 @@ void IndexedDBContextImpl::EnsureBucketContext(
   }
 
   base::FilePath bucket_key = GetStoragePaths(bucket_locator).front();
-  bucket_task_runner = GetTaskRunnerMap().GetTaskRunner(
-      bucket_key, std::move(bucket_task_runner));
-  // Note that this one can run on any sequence.
-  bucket_delegate.on_destroyed =
-      base::BindOnce(&TaskRunnerMap::MaybeCleanupTaskRunner,
-                     base::Unretained(&GetTaskRunnerMap()), bucket_key);
+  std::tie(bucket_task_runner, bucket_delegate.on_destroyed) =
+      GetTaskRunnerMap().GetOrCreateTaskRunner(bucket_key,
+                                               std::move(bucket_task_runner));
 
   const auto& [iter, inserted] = bucket_contexts_.emplace(
       bucket_locator,

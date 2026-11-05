@@ -10,10 +10,11 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/chrome_user_population_helper.h"
-#include "chrome/browser/safe_browsing/chrome_v4_protocol_config_provider.h"
+#include "chrome/browser/safe_browsing/db/chrome_sb_protocol_config_provider.h"
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
+#include "chrome/common/chrome_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/content/browser/web_ui/web_ui_content_info_singleton.h"
@@ -79,7 +80,7 @@ ChromePingManagerFactory::BuildServiceInstanceForBrowserContext(
       std::make_unique<ChromeSafeBrowsingHatsDelegateDesktop>(profile);
 #endif
   return PingManager::Create(
-      GetV4ProtocolConfig(),
+      GetSBProtocolConfig(),
       g_browser_process->safe_browsing_service()->GetURLLoaderFactory(profile),
       std::make_unique<SafeBrowsingPrimaryAccountTokenFetcher>(
           IdentityManagerFactory::GetForProfile(profile)),
@@ -112,7 +113,11 @@ bool ChromePingManagerFactory::ShouldSendPersistedReport(Profile* profile) {
 
 bool ChromePingManagerFactory::ServiceIsCreatedWithBrowserContext() const {
   // PingManager is created at startup to send persisted reports.
-  return true;
+  return !::features::IsLazyAfterStartupKeyedServicesEnabled();
+}
+
+bool ChromePingManagerFactory::ServiceIsCreatedAfterStartup() const {
+  return ::features::IsLazyAfterStartupKeyedServicesEnabled();
 }
 
 bool ChromePingManagerFactory::ServiceIsNULLWhileTesting() const {

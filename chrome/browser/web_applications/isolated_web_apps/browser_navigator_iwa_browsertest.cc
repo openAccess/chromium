@@ -24,6 +24,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_browsertest.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/test/isolated_web_app_test_utils.h"
 #include "chrome/browser/web_applications/isolated_web_apps/commands/install_isolated_web_app_command.h"
@@ -49,8 +50,8 @@
 #include "content/public/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -123,7 +124,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorIwaTest, NavigateCurrentTab) {
   NavigateParams params1 = MakeNavigateParams(browser());
   params1.url = url_info1_->origin().GetURL().Resolve("/first-page.html");
   params1.transition = ui::PAGE_TRANSITION_AUTO_TOPLEVEL;
-  params1.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params1.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   ui_test_utils::NavigateToURL(&params1);
 
   BrowserWindowInterface* iwa_browser = params1.browser;
@@ -148,7 +149,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorIwaTest, NavigateCurrentTab) {
   NavigateParams params2 = MakeNavigateParams(iwa_browser);
   params2.url = url_info1_->origin().GetURL().Resolve("/other-page.html");
   params2.transition = ui::PAGE_TRANSITION_AUTO_TOPLEVEL;
-  params2.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params2.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   ui_test_utils::NavigateToURL(&params2);
 
   // Navigating a tab in the app's scope should not create a new browser.
@@ -164,7 +165,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorIwaTest, NavigateCurrentTab) {
   params3.url =
       url_info2_->origin().GetURL().Resolve("/page-in-another-iwa.html");
   params3.transition = ui::PAGE_TRANSITION_AUTO_TOPLEVEL;
-  params3.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params3.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   ui_test_utils::NavigateToURL(&params3);
 
   // Navigating a tab outside of the app's scope should create a new browser.
@@ -188,7 +189,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorIwaTest, NavigateCurrentTab) {
   NavigateParams params4 = MakeNavigateParams(iwa_browser);
   params4.url = GetGoogleURL();
   params4.transition = ui::PAGE_TRANSITION_AUTO_TOPLEVEL;
-  params4.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params4.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   ui_test_utils::NavigateToURL(&params4);
 
   // It might seem counterintuitive that `params4.browser` is expected to equal
@@ -213,6 +214,28 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorIwaTest, NavigateCurrentTab) {
                   .IsAboutBlank());
   EXPECT_EQ(GetGoogleURL(),
             browser()->tab_strip_model()->GetWebContentsAt(1)->GetURL());
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserNavigatorIwaTest,
+                       AutoBookmarkNavigationCancelled) {
+  ASSERT_NO_FATAL_FAILURE(InstallBundles());
+
+  const size_t browsers_before =
+      GlobalBrowserCollection::GetInstance()->GetSize();
+
+  // Navigating to an IWA via PAGE_TRANSITION_AUTO_BOOKMARK from a non-app
+  // context (e.g. History menu, History clusters, bookmarks) must be cancelled
+  // as a cross-IWA navigation.
+  NavigateParams params = MakeNavigateParams(browser());
+  params.url = url_info1_->origin().GetURL().Resolve("/deep-link.html");
+  params.transition = ui::PAGE_TRANSITION_AUTO_BOOKMARK;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewWindow;
+  base::WeakPtr<content::NavigationHandle> handle = Navigate(&params);
+  EXPECT_EQ(nullptr, handle);
+
+  EXPECT_EQ(browsers_before, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_FALSE(web_app::AppBrowserController::FindForWebApp(
+      *profile(), url_info1_->app_id()));
 }
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -291,7 +314,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorIwaTest, WindowOpenProtocolSelf) {
 
 class BrowserNavigatorIwaNewTabTest
     : public BrowserNavigatorIwaTest,
-      public ::testing::WithParamInterface<WindowOpenDisposition> {};
+      public ::testing::WithParamInterface<ui::mojom::WindowOpenDisposition> {};
 
 IN_PROC_BROWSER_TEST_P(BrowserNavigatorIwaNewTabTest, NavigateNewTab) {
   EXPECT_NO_FATAL_FAILURE(InstallBundles());
@@ -367,14 +390,14 @@ IN_PROC_BROWSER_TEST_P(BrowserNavigatorIwaNewTabTest, NavigateNewTab) {
 INSTANTIATE_TEST_SUITE_P(
     /* no prefix */,
     BrowserNavigatorIwaNewTabTest,
-    ::testing::Values(WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                      WindowOpenDisposition::NEW_BACKGROUND_TAB),
+    ::testing::Values(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                      ui::mojom::WindowOpenDisposition::kNewBackgroundTab),
     [](const testing::TestParamInfo<BrowserNavigatorIwaNewTabTest::ParamType>&
            info) {
       switch (info.param) {
-        case WindowOpenDisposition::NEW_FOREGROUND_TAB:
+        case ui::mojom::WindowOpenDisposition::kNewForegroundTab:
           return "NEW_FOREGROUND_TAB";
-        case WindowOpenDisposition::NEW_BACKGROUND_TAB:
+        case ui::mojom::WindowOpenDisposition::kNewBackgroundTab:
           return "NEW_BACKGROUND_TAB";
         default:
           NOTREACHED();

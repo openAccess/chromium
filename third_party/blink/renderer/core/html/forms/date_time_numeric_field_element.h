@@ -91,6 +91,7 @@ class DateTimeNumericFieldElement : public DateTimeFieldElement {
   void Initialize(const AtomicString& pseudo, const String& ax_help_text);
   int Maximum() const;
   String Placeholder() const override;
+  void ResetTypeAhead() override;
   void SetEmptyValue(EventBehavior = kDispatchNoEvent) final;
   void SetValueAsInteger(int, EventBehavior = kDispatchNoEvent) override;
   int ValueAsInteger() const final;
@@ -105,7 +106,7 @@ class DateTimeNumericFieldElement : public DateTimeFieldElement {
   String Value() const final;
 
   // Node functions.
-  void SetFocused(bool, mojom::blink::FocusType) final;
+  void SetFocused(bool, mojom::blink::FocusType, BlurEventBehavior) final;
 
   String FormatValue(int) const;
   int RoundUp(int) const;

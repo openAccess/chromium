@@ -20,9 +20,7 @@
 #include "base/i18n/time_formatting.h"
 #include "base/time/default_clock.h"
 #include "base/time/time.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ash/extended_updates/extended_updates_controller.h"
-#include "chrome/browser/ui/ash/system/system_tray_client_impl.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/update_engine/update_engine_client.h"
@@ -132,7 +130,7 @@ void EolNotification::CreateNotification(base::Time eol_date, base::Time now) {
   message_center::RichNotificationData data;
   ash::SystemNotificationBuilder notification_builder;
 
-  DCHECK_EQ(BUTTON_MORE_INFO, data.buttons.size());
+  CHECK_EQ(BUTTON_MORE_INFO, data.buttons.size(), base::NotFatalUntil::M160);
   data.buttons.emplace_back(GetStringUTF16(IDS_LEARN_MORE));
 
   NotificationCatalogName catalog_name = NotificationCatalogName::kNone;
@@ -150,7 +148,7 @@ void EolNotification::CreateNotification(base::Time eol_date, base::Time now) {
                            : vector_icons::kBusinessOldIcon);
     catalog_name = NotificationCatalogName::kPendingEOL;
   } else {
-    DCHECK_EQ(BUTTON_DISMISS, data.buttons.size());
+    CHECK_EQ(BUTTON_DISMISS, data.buttons.size(), base::NotFatalUntil::M160);
     data.buttons.emplace_back(GetStringUTF16(IDS_EOL_DISMISS_BUTTON));
 
     // Notifies user that updates will no longer occur after this final update.
@@ -168,7 +166,6 @@ void EolNotification::CreateNotification(base::Time eol_date, base::Time now) {
 
   message_center::MessageCenter::Get()->AddNotification(
       notification_builder.SetId(kEolNotificationId)
-          .SetOriginUrl(GURL(kEolNotificationId))
           .SetNotifierId(notifier_id)
           .SetOptionalFields(data)
           .SetDelegate(

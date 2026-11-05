@@ -4,6 +4,8 @@
 
 #include "ui/ozone/platform/wayland/gpu/gl_surface_egl_readback_wayland.h"
 
+#include <utility>
+
 #include "base/memory/shared_memory_mapping.h"
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/numerics/checked_math.h"
@@ -100,7 +102,7 @@ void GLSurfaceEglReadbackWayland::SwapBuffersAsync(
     SwapCompletionCallback completion_callback,
     PresentationCallback presentation_callback,
     gfx::FrameData data) {
-  DCHECK(pending_frames_ < kMaxBuffers);
+  CHECK(pending_frames_ < kMaxBuffers, base::NotFatalUntil::M163);
 
   // Increase pending frames number.
   ++pending_frames_;
@@ -108,7 +110,7 @@ void GLSurfaceEglReadbackWayland::SwapBuffersAsync(
   completion_callbacks_.push_back(std::move(completion_callback));
   presentation_callbacks_.push_back(std::move(presentation_callback));
 
-  DCHECK(!available_buffers_.empty());
+  CHECK(!available_buffers_.empty(), base::NotFatalUntil::M163);
   in_flight_pixel_buffers_.push_back(std::move(available_buffers_.front()));
   auto* next_buffer = in_flight_pixel_buffers_.back().get();
   available_buffers_.erase(available_buffers_.begin());
@@ -118,10 +120,10 @@ void GLSurfaceEglReadbackWayland::SwapBuffersAsync(
   const auto bounds = gfx::Rect(GetSize());
   constexpr bool enable_blend_for_shadow = true;
   buffer_manager_->CommitBuffer(widget_, next_buffer->buffer_id_,
-                                /*frame_id*/ next_buffer->buffer_id_, data,
-                                bounds, enable_blend_for_shadow,
-                                gfx::RoundedCornersF(), surface_scale_factor_,
-                                bounds);
+                                /*frame_id*/ next_buffer->buffer_id_,
+                                std::move(data), bounds,
+                                enable_blend_for_shadow, gfx::RoundedCornersF(),
+                                surface_scale_factor_, bounds);
 }
 
 gfx::SurfaceOrigin GLSurfaceEglReadbackWayland::GetOrigin() const {
@@ -138,19 +140,20 @@ void GLSurfaceEglReadbackWayland::OnSubmission(
     uint32_t frame_id,
     const gfx::SwapResult& swap_result,
     gfx::GpuFenceHandle release_fence) {
-  DCHECK(release_fence.is_null());
+  CHECK(release_fence.is_null(), base::NotFatalUntil::M163);
   --pending_frames_;
 
   if (in_flight_pixel_buffers_.front()) {
     if (displayed_buffer_)
       available_buffers_.push_back(std::move(displayed_buffer_));
     displayed_buffer_ = std::move(in_flight_pixel_buffers_.front());
-    DCHECK_EQ(displayed_buffer_->buffer_id_, frame_id);
+    CHECK_EQ(displayed_buffer_->buffer_id_, frame_id,
+             base::NotFatalUntil::M163);
   }
 
   in_flight_pixel_buffers_.pop_front();
 
-  DCHECK(!completion_callbacks_.empty());
+  CHECK(!completion_callbacks_.empty(), base::NotFatalUntil::M163);
   std::move(completion_callbacks_.front())
       .Run(gfx::SwapCompletionResult(swap_result));
   completion_callbacks_.erase(completion_callbacks_.begin());
@@ -159,7 +162,7 @@ void GLSurfaceEglReadbackWayland::OnSubmission(
 void GLSurfaceEglReadbackWayland::OnPresentation(
     uint32_t frame_id,
     const gfx::PresentationFeedback& feedback) {
-  DCHECK(!presentation_callbacks_.empty());
+  CHECK(!presentation_callbacks_.empty(), base::NotFatalUntil::M163);
   std::move(presentation_callbacks_.front()).Run(feedback);
   presentation_callbacks_.erase(presentation_callbacks_.begin());
 }

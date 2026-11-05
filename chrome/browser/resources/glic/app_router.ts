@@ -33,6 +33,9 @@ export class AppRouter {
     this.browserProxy.pageCallbackRouter.intentToShow.addListener(
         this.intentToShow_.bind(this),
     );
+    this.browserProxy.pageCallbackRouter.waitForLoad.addListener(
+        this.waitForLoad_.bind(this),
+    );
     this.browserProxy.pageCallbackRouter.updatePageState.addListener(
         this.updatePageState_.bind(this),
     );
@@ -85,6 +88,13 @@ export class AppRouter {
     this.glicController?.intentToShow();
   }
 
+  private waitForLoad_(): Promise<{failed: boolean}> {
+    if (!this.glicController) {
+      return Promise.resolve({failed: true});
+    }
+    return this.glicController.waitForLoad();
+  }
+
   private setProfileReadyState_(state: ProfileReadyState) {
     this.glicController?.setProfileReadyState(state);
   }
@@ -128,9 +138,5 @@ export class AppRouter {
 
   reload(): void {
     this.glicController?.reload();
-  }
-
-  showDebug(): void {
-    this.glicController?.showDebug();
   }
 }

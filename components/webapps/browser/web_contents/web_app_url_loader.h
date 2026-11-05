@@ -15,6 +15,7 @@
 class GURL;
 
 namespace content {
+class NavigationThrottleRegistry;
 class WebContents;
 }  // namespace content
 
@@ -27,8 +28,10 @@ enum class WebAppUrlLoaderResult {
   // The provided URL (matched using |UrlComparison|) was loaded.
   kUrlLoaded = 0,
   // The provided URL redirected to another URL (that did not match using
-  // |UrlComparison|) and the final URL was loaded.
+  // |UrlComparison|), committed a URL that did not match, or changed its URL
+  // after commit before `DidFinishLoad`.
   kRedirectedUrlLoaded = 1,
+  // The navigation failed or aborted before committing for an unknown reason.
   kFailedUnknownReason = 2,
   kFailedPageTookTooLong = 3,
   kFailedWebContentsDestroyed = 4,
@@ -80,6 +83,13 @@ class WebAppUrlLoader {
       UrlComparison url_comparison,
       ResultCallback callback);
 
+  // Registers a NavigationThrottle on `registry` if `registry`'s
+  // NavigationHandle is currently undergoing a WebAppUrlLoader load. This
+  // ensures redirects are constrained according to `UrlComparison` before
+  // network requests are sent.
+  static void MaybeCreateAndAddNavigationThrottle(
+      content::NavigationThrottleRegistry& registry);
+
   // Used by LoadUrl() to put `web_contents` into a clean state, will noop if
   // called redundantly. Useful for other uses of `web_contents` e.g.
   // downloading icons.
@@ -88,7 +98,7 @@ class WebAppUrlLoader {
 
  private:
   void LoadUrlInternal(
-      const content::NavigationController::LoadURLParams& load_url_params,
+      content::NavigationController::LoadURLParams load_url_params,
       base::WeakPtr<content::WebContents> web_contents,
       UrlComparison url_comparison,
       ResultCallback callback);

@@ -5,16 +5,13 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_POLICY_POLICY_UI_HANDLER_H_
 #define CHROME_BROWSER_UI_WEBUI_POLICY_POLICY_UI_HANDLER_H_
 
-#include <stddef.h>
-#include <string.h>
-
 #include <memory>
 #include <string>
-#include <utility>
 
+#include "base/functional/callback_forward.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
-#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/policy/policy_value_and_status_aggregator.h"
 #include "components/policy/core/common/schema_registry.h"
@@ -26,15 +23,22 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
-#if !BUILDFLAG(IS_ANDROID)
-#include "components/enterprise/browser/promotion/promotion_eligibility_checker.h"
-#endif  // !BUILDFLAG(IS_ANDROID)
-
 class PrefChangeRegistrar;
+
+namespace base {
+class ListValue;
+class Value;
+}  // namespace base
 
 namespace enterprise_management {
 class GetUserEligiblePromotionsResponse;
 }  // namespace enterprise_management
+
+#if !BUILDFLAG(IS_ANDROID)
+namespace enterprise_promotion {
+class PromotionEligibilityChecker;
+}  // namespace enterprise_promotion
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 // The JavaScript message handler for the chrome://policy page.
 class PolicyUIHandler : public content::WebUIMessageHandler,
@@ -82,19 +86,22 @@ class PolicyUIHandler : public content::WebUIMessageHandler,
       const std::string& profile_separation_policy_response,
       SetLocalTestPoliciesCallback callback) override;
   void GetPolicyLogs(GetPolicyLogsCallback callback) override;
-
+  void ReloadPolicies() override;
+#if !BUILDFLAG(IS_CHROMEOS)
+  void UploadReport(UploadReportCallback callback) override;
+#endif
 #if !BUILDFLAG(IS_ANDROID)
   void CheckPromotionEligibility(
       CheckPromotionEligibilityCallback callback) override;
   void SetBannerDismissed() override;
   void RecordBannerRedirected() override;
 #endif
-
   void GetPoliciesJson(policy::mojom::GetPoliciesReason reason,
                        GetPoliciesJsonCallback callback) override;
 
+  void SendInitialState(const base::ListValue& args = base::ListValue());
+
  private:
-  void HandleListenPoliciesUpdates(const base::ListValue& args);
   void HandleReloadPolicies(const base::ListValue& args);
   void HandleSetLocalTestPolicies(const base::ListValue& args);
   void HandleRevertLocalTestPolicies(const base::ListValue& args);
@@ -151,8 +158,17 @@ class PolicyUIHandler : public content::WebUIMessageHandler,
   void SendStatus();
 
 #if !BUILDFLAG(IS_CHROMEOS)
-  // Called when report has been uploaded, successfully or not.
-  void OnReportUploaded(const std::string& callback_id);
+  // Core logic for uploading the enterprise browser and profile reports.
+  // `on_report_uploaded` is run once the uploads have completed, successfully
+  // or not.
+  void UploadReportImpl(base::OnceClosure on_report_uploaded);
+
+  // Called when report has been uploaded, successfully or not. Runs
+  // `on_report_uploaded` and refreshes the status shown in the UI.
+  void OnReportUploaded(base::OnceClosure on_report_uploaded);
+
+  // Resolves the legacy WebUI `callback_id` of the "uploadReport" message.
+  void OnReportUploadedWebUiWrapper(base::Value callback_id);
 #endif
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -170,7 +186,7 @@ class PolicyUIHandler : public content::WebUIMessageHandler,
   // Builds a raw JSON string representation of all the policies.
   std::string GetPoliciesJsonImpl(policy::mojom::GetPoliciesReason reason);
 
-  inline bool IsMojoMigrationEnabled() const { return client_.is_bound(); }
+  bool IsMojoMigrationEnabled() const { return client_.is_bound(); }
 
   std::unique_ptr<policy::PolicyValueAndStatusAggregator>
       policy_value_and_status_aggregator_;

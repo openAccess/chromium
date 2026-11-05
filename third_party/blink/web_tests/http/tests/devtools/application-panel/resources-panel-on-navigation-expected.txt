@@ -5,11 +5,12 @@ Application
   Manifest
     Identity
     Presentation
-    Protocol Handlers
+    Protocol handlers
     Icons
     Window Controls Overlay
   Service workers
   Storage
+  WebMCPNEW
 Storage
   Local storage
     http://127.0.0.1:8000
@@ -36,7 +37,7 @@ Background services
     Speculations
   Push messaging
   Reporting API
-    Crash Report Context
+    Crash report context
 Frames
   top
     inspected-page.html
@@ -47,11 +48,12 @@ Application
   Manifest
     Identity
     Presentation
-    Protocol Handlers
+    Protocol handlers
     Icons
     Window Controls Overlay
   Service workers
   Storage
+  WebMCPNEW
 Storage
   Local storage
     http://127.0.0.1:8000
@@ -78,7 +80,7 @@ Background services
     Speculations
   Push messaging
   Reporting API
-    Crash Report Context
+    Crash report context
 Frames
   top
     inspected-page.html

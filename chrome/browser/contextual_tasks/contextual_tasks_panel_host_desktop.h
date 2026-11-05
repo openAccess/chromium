@@ -58,6 +58,8 @@ class ContextualTasksPanelHostDesktop : public ContextualTasksPanelHost,
   content::WebContents* GetWebContents() override;
   content::WebContents* GetToolbarWebContents() override;
   void SetWebContents(content::WebContents* web_contents) override;
+  void SetErrorPageVisible(bool visible) override;
+  bool IsErrorPageVisible() const override;
 
   // SidePanelEntryObserver:
   void OnEntryShown(SidePanelEntry* entry) override;
@@ -79,8 +81,17 @@ class ContextualTasksPanelHostDesktop : public ContextualTasksPanelHost,
   // Shows side panel, transitioning from active tab content's bounds.
   void ShowFromTab();
 
+  // Lazily creates the persistent toolbar and ghost loader WebContents when
+  // side panel rearchitecture is enabled.
+  void EnsureWebUiWebContentsCreated();
+
   // Browser window of the current panel.
   const raw_ptr<BrowserWindowInterface> browser_window_;
+
+  // Persistent WebContents for the toolbar and ghost loader across side panel
+  // view recreations (e.g. when switching tabs).
+  std::unique_ptr<content::WebContents> toolbar_web_contents_;
+  std::unique_ptr<content::WebContents> ghost_loader_web_contents_;
 
   // WebView of the current panel.
   base::WeakPtr<ContextualTasksWebView> web_view_ = nullptr;
@@ -90,6 +101,9 @@ class ContextualTasksPanelHostDesktop : public ContextualTasksPanelHost,
 
   // True if the panel should be suppressed for testing.
   bool suppressed_for_testing_ = false;
+
+  // Whether the protected page error scrim should be visible over the panel.
+  bool is_error_page_visible_ = false;
 
   base::WeakPtrFactory<ContextualTasksPanelHostDesktop> weak_factory_{this};
 };

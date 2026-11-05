@@ -18,6 +18,9 @@
 #include "content/public/browser/web_contents.h"
 #include "net/base/filename_util.h"
 #include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 #include "url/gurl.h"
 
@@ -58,6 +61,16 @@ void BrowserSelectFileDialogController::OpenFile() {
     return;
   }
 
+  base::ScopedClosureRunner fullscreen_block;
+  if (web_contents) {
+    auto blocker =
+        web_contents->ForSecurityDropFullscreen(display::kInvalidDisplayId);
+    if (!blocker) {
+      return;
+    }
+    fullscreen_block = std::move(*blocker);
+  }
+
   base::RecordAction(base::UserMetricsAction("OpenFile"));
   select_file_dialog_ = ui::SelectFileDialog::Create(
       this, std::make_unique<ChromeSelectFilePolicy>(web_contents));
@@ -65,6 +78,7 @@ void BrowserSelectFileDialogController::OpenFile() {
   if (!select_file_dialog_) {
     return;
   }
+  fullscreen_block_ = std::move(fullscreen_block);
 
   const base::FilePath directory = profile_->last_selected_directory();
   // TODO(beng): figure out how to juggle this.
@@ -79,6 +93,8 @@ void BrowserSelectFileDialogController::OpenFile() {
 void BrowserSelectFileDialogController::FileSelected(
     const ui::SelectedFileInfo& file_info,
     int index) {
+  fullscreen_block_.RunAndReset();
+
   // Transfer the ownership of select file dialog so that the ref count is
   // released after the function returns. This is needed because the passed-in
   // data such as |file_info| and |params| could be owned by the dialog.
@@ -91,13 +107,14 @@ void BrowserSelectFileDialogController::FileSelected(
 
   if (!url.is_empty()) {
     page_navigator_->OpenURL(
-        content::OpenURLParams(
-            url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
-            ui::PAGE_TRANSITION_TYPED, /*is_renderer_initiated=*/false),
+        content::OpenURLParams::CreateBrowserInitiated(
+            url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+            ui::PAGE_TRANSITION_TYPED),
         /*navigation_handle_callback=*/{});
   }
 }
 
 void BrowserSelectFileDialogController::FileSelectionCanceled() {
+  fullscreen_block_.RunAndReset();
   select_file_dialog_.reset();
 }

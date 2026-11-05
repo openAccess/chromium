@@ -5,7 +5,6 @@
 #import "ios/chrome/browser/send_tab_to_self/model/send_tab_to_self_tab_card_label_data.h"
 
 #import "base/strings/utf_string_conversions.h"
-#import "components/send_tab_to_self/features.h"
 #import "components/send_tab_to_self/metrics_util.h"
 #import "components/send_tab_to_self/send_tab_to_self_model.h"
 #import "components/send_tab_to_self/send_tab_to_self_sync_service.h"
@@ -18,11 +17,11 @@
 namespace {
 
 // The duration after which the tab card label expires and is no longer shown.
-const base::TimeDelta kLabelExpirationDelay = base::Days(5);
+constexpr base::TimeDelta kLabelExpirationDelay = base::Days(5);
 
 // The maximum acceptable delay between a sync entry being marked as opened
 // and the corresponding WebState being created.
-const base::TimeDelta kCreationTolerance = base::Seconds(2);
+constexpr base::TimeDelta kCreationTolerance = base::Seconds(2);
 
 // Returns true if `timestamp` is older than `kLabelExpirationDelay`.
 bool IsTimestampExpired(base::Time timestamp) {
@@ -127,10 +126,6 @@ NSString* SendTabToSelfTabCardLabelData::GetLabelTextForWebState(
     web::WebState* web_state) {
   if (SendTabToSelfTabCardLabelData* label_data = FromWebState(web_state)) {
     return GetLabelText(label_data->sender_device_name_);
-  }
-
-  if (!base::FeatureList::IsEnabled(send_tab_to_self::kSendTabToSelfAutoOpen)) {
-    return nil;
   }
 
   send_tab_to_self::SendTabToSelfModel* model =

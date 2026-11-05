@@ -5,12 +5,20 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_PEERCONNECTION_STATS_COLLECTING_DECODER_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_PEERCONNECTION_STATS_COLLECTING_DECODER_H_
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <optional>
+
 #include "base/memory/raw_ptr.h"
 #include "base/sequence_checker.h"
+#include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
 #include "base/time/time.h"
 #include "third_party/blink/renderer/platform/peerconnection/stats_collector.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
+#include "third_party/webrtc/api/video/encoded_image.h"
+#include "third_party/webrtc/api/video/video_frame.h"
 #include "third_party/webrtc/api/video_codecs/sdp_video_format.h"
 #include "third_party/webrtc/api/video_codecs/video_decoder.h"
 
@@ -65,8 +73,8 @@ class PLATFORM_EXPORT StatsCollectingDecoder
       LOCKS_EXCLUDED(lock_);
 
   // Implementation of webrtc::DecodedImageCallback.
-  int32_t Decoded(webrtc::VideoFrame& decodedImage) override;
-  void Decoded(webrtc::VideoFrame& decodedImage,
+  int32_t Decoded(webrtc::VideoFrame& decoded_image) override;
+  void Decoded(webrtc::VideoFrame& decoded_image,
                std::optional<int32_t> decode_time_ms,
                std::optional<uint8_t> qp) override;
 

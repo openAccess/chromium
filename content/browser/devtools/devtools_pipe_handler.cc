@@ -302,7 +302,8 @@ class PipeWriterCBOR : public PipeWriterBase {
   explicit PipeWriterCBOR(int write_fd) : PipeWriterBase(write_fd) {}
 
   void WriteIntoPipe(std::string message) override {
-    DCHECK(crdtp::cbor::IsCBORMessage(crdtp::SpanFrom(message)));
+    CHECK(crdtp::cbor::IsCBORMessage(crdtp::SpanFrom(message)),
+          base::NotFatalUntil::M159);
     WriteBytes(message.data(), message.size());
   }
 };
@@ -432,7 +433,7 @@ void DevToolsPipeHandler::Shutdown() {
   shutting_down_ = true;
 
   // Disconnect from the target.
-  DCHECK(browser_target_);
+  CHECK(browser_target_, base::NotFatalUntil::M159);
   browser_target_->DetachClient(this);
   browser_target_ = nullptr;
 
@@ -473,6 +474,10 @@ bool DevToolsPipeHandler::AllowUnsafeOperations() {
 
 std::string DevToolsPipeHandler::GetTypeForMetrics() {
   return "RemoteDebugger";
+}
+
+DevToolsAgentHostClient::PeerMetadata DevToolsPipeHandler::GetPeerMetadata() {
+  return {.transport_type = PeerMetadata::TransportType::kPipe};
 }
 
 }  // namespace content

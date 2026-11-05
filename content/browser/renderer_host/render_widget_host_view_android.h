@@ -14,6 +14,7 @@
 
 #include "base/android/jni_android.h"
 #include "base/callback_list.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/queue.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
@@ -92,7 +93,7 @@ class SelectionPopupController;
 class SynchronousCompositorHost;
 class SynchronousCompositorClient;
 class TouchSelectionControllerClientManagerAndroid;
-class WebContentsAccessibilityAndroid;
+class WebContentsAccessibilityBase;
 struct ContextMenuParams;
 
 BASE_FEATURE(kTooltips, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -116,6 +117,17 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
  public:
   static RenderWidgetHostViewAndroid* FromRenderWidgetHostView(
       RenderWidgetHostView* view);
+
+  // Returns whether a keyboard lock request for `codes` (std::nullopt means
+  // all keys) needs OS-level keyboard capture. Android keyboard capture is
+  // all-or-nothing: while enabled, capturable system shortcuts such as Alt+Tab
+  // and Meta+<key> are routed to the window instead of the system. Those
+  // shortcuts are generally Alt/Ctrl/Meta chords (or Meta alone), so, like
+  // Windows' ModifierKeyboardHookWin, OS capture is only requested when the
+  // page locks all keys or one of those modifiers. Other locked keys are
+  // handled in-browser via `skip_if_unhandled`.
+  static bool ShouldCaptureSystemKeys(
+      const std::optional<base::flat_set<ui::DomCode>>& codes);
 
   // Note: The tree of `gfx::NativeView` might not match the tree of
   // `cc::slim::Layer`.
@@ -175,12 +187,6 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void SetInsets(const gfx::Insets& insets) override;
   gfx::Size GetCompositorViewportPixelSize() override;
   bool IsSurfaceAvailableForCopy() override;
-  void CopyFromSurface(
-      const gfx::Rect& src_rect,
-      const gfx::Size& output_size,
-      base::TimeDelta timeout,
-      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
-      override;
   ui::FilteredGestureProvider* GetFilteredGestureProviderForTesting() override;
   // Identical to `CopyFromSurface()`, except that this method issues the
   // `viz::CopyOutputRequest` against the exact `viz::Surface` currently
@@ -211,12 +217,10 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void RenderProcessGone() override;
   void ShowWithVisibility(PageVisibilityState page_visibility) final;
   void WasOccluded() override;
-  void Destroy() override;
+  void DestroyImpl() override;
+  void OnDestroyOrDefer() override;
   void CreateUnboundedSurface(
-      mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-      mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient>
-          client,
-      const gfx::Rect& bounds_in_dips,
+      const gfx::Rect& bounds_in_screen,
       base::WeakPtr<RenderWidgetHostViewBase> subframe_view) override;
   void UpdateTooltipUnderCursor(const std::u16string& tooltip_text) override;
   void UpdateTooltip(const std::u16string& tooltip_text) override;
@@ -302,7 +306,6 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void OnWindowPositionChanged() override;
   void NotifyVirtualKeyboardOverlayRect(
       const gfx::Rect& keyboard_rect) override;
-  void ShowInterestInElement(int) override;
   void OnPointerLockRelease() override;
 
   // ui::ViewAndroidObserver implementation:
@@ -442,9 +445,10 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
                                uint32_t janky_frames) override;
 
   void WasEvicted();
+  bool IsClosing() const { return in_shutdown_; }
 
   void SetWebContentsAccessibility(
-      WebContentsAccessibilityAndroid* web_contents_accessibility);
+      WebContentsAccessibilityBase* web_contents_accessibility);
 
   base::android::ScopedJavaLocalRef<jobject> GetJavaObject();
 
@@ -504,12 +508,27 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void SetInputTransferHandlerForTesting(InputTransferHandlerAndroid* handler);
 
  protected:
+  // Allows tests to choose between the browser compositor and the synchronous
+  // (WebView) compositor, rather than using `CompositorImpl::IsInitialized()`.
+  RenderWidgetHostViewAndroid(RenderWidgetHostImpl* widget,
+                              gfx::NativeView parent_native_view,
+                              cc::slim::Layer* parent_layer,
+                              bool using_browser_compositor);
   ~RenderWidgetHostViewAndroid() override;
+
+  void CleanUpHostObservers() override;
 
   // RenderWidgetHostViewBase:
   void UpdateFrameSinkIdRegistration() override;
   void UpdateBackgroundColor() override;
   bool HasFallbackSurface() const override;
+  void CopyFromSurfaceImpl(
+      const gfx::Rect& src_rect,
+      const gfx::Size& output_size,
+      bool is_copy_request_secure,
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
+      override;
   std::optional<DisplayFeature> GetDisplayFeature() override;
   void DisableDisplayFeatureOverrideForEmulation() override;
   void OverrideDisplayFeatureForEmulation(
@@ -537,6 +556,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   bool IsHitTestReady();
 
  private:
+  void ShutdownAndDisconnect();
+
   friend class RenderWidgetHostViewAndroidTest;
   friend class RenderWidgetHostViewAndroidFullscreenRotationTest;
   friend class RenderWidgetHostViewAndroidRotationTest;
@@ -571,6 +592,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
     // Clears flags used to throttle SurfaceSync.
     void Unthrottle();
+
+    void StopTimers();
 
    private:
     friend class RenderWidgetHostViewAndroidRotationTest;
@@ -654,7 +677,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
                         float mousedown_x,
                         float mouse_down_y);
 
-  WebContentsAccessibilityAndroid* GetWebContentsAccessibilityAndroid() const;
+  WebContentsAccessibilityBase* GetWebContentsAccessibilityBase() const;
 
   void OnFocusInternal();
   void LostFocusInternal();
@@ -686,6 +709,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   // Window-specific bits that affect widget visibility.
   bool is_window_visible_;
   bool is_window_activity_started_;
+  bool in_shutdown_ = false;
 
   PageVisibilityState page_visibility_ = PageVisibilityState::kHidden;
   Visibility view_visibility_ = Visibility::HIDDEN;
@@ -825,8 +849,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
   bool in_destroy_ = false;
 
-  raw_ptr<WebContentsAccessibilityAndroid> web_contents_accessibility_ =
-      nullptr;
+  raw_ptr<WebContentsAccessibilityBase> web_contents_accessibility_ = nullptr;
 
   // Represents a feature of the physical display whose offset and mask_length
   // are expressed in DIPs relative to the view. See display_feature.h for more
@@ -857,6 +880,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   // Used to schedule a single visual properties update on the next vsync tick
   // to achieve fluid resizing.
   bool visual_properties_update_pending_ = false;
+
+  bool disconnected_ = false;
 
   base::WeakPtrFactory<RenderWidgetHostViewAndroid> weak_ptr_factory_{this};
 };

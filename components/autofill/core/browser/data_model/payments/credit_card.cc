@@ -13,13 +13,11 @@
 #include <ostream>
 #include <string>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "base/check.h"
 #include "base/check_op.h"
-#include "base/feature_list.h"
 #include "base/i18n/rtl.h"
 #include "base/i18n/time_formatting.h"
 #include "base/metrics/histogram_macros.h"
@@ -32,7 +30,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/uuid.h"
 #include "build/build_config.h"
-#include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_model/data_model_util.h"
 #include "components/autofill/core/browser/data_model/form_group.h"
@@ -44,7 +41,6 @@
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/common/autofill_clock.h"
 #include "components/autofill/core/common/autofill_constants.h"
-#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_regexes.h"
 #include "components/autofill/core/common/credit_card_network_identifiers.h"
 #include "components/autofill/core/common/credit_card_number_validation.h"
@@ -119,7 +115,7 @@ std::u16string NetworkForFill(const std::string& network) {
 std::u16string GetLastFourDigits(std::u16string_view number) {
   static constexpr size_t kNumLastDigits = 4;
 
-  std::u16string stripped = StripCardNumberSeparators(number);
+  std::u16string stripped = StripSeparatorsAndNormalizeDigits(number);
   if (stripped.size() <= kNumLastDigits) {
     return stripped;
   }
@@ -292,11 +288,7 @@ std::u16string CreditCard::NetworkForDisplay(const std::string& network) {
 int CreditCard::IconResourceId(Suggestion::Icon icon) {
   switch (icon) {
     case Suggestion::Icon::kCardAmericanExpress:
-      return base::FeatureList::IsEnabled(
-                 features::kAutofillEnableNewAmexNetworkArt)
-                 ? IDR_AUTOFILL_METADATA_CC_AMEX_NEW
-             : ShouldUseNewFopDisplay() ? IDR_AUTOFILL_METADATA_CC_AMEX
-                                        : IDR_AUTOFILL_METADATA_CC_AMEX_OLD;
+      return IDR_AUTOFILL_METADATA_CC_AMEX_NEW;
     case Suggestion::Icon::kCardDiners:
       return ShouldUseNewFopDisplay() ? IDR_AUTOFILL_METADATA_CC_DINERS
                                       : IDR_AUTOFILL_METADATA_CC_DINERS_OLD;
@@ -363,10 +355,13 @@ int CreditCard::IconResourceId(Suggestion::Icon icon) {
     case Suggestion::Icon::kKey:
     case Suggestion::Icon::kLocation:
     case Suggestion::Icon::kLocationSpark:
-    case Suggestion::Icon::kLoyalty:
+    case Suggestion::Icon::kLoyaltyPrograms:
+    case Suggestion::Icon::kLoyaltyProgramsSpark:
     case Suggestion::Icon::kMagic:
+    case Suggestion::Icon::kMailAsterisk:
     case Suggestion::Icon::kNoIcon:
     case Suggestion::Icon::kOfferTag:
+    case Suggestion::Icon::kOpenInNew:
     case Suggestion::Icon::kOrder:
     case Suggestion::Icon::kOrderSpark:
     case Suggestion::Icon::kPassport:
@@ -626,9 +621,10 @@ void CreditCard::GetMatchingTypes(std::u16string_view text,
   if (!card_number.empty() && IsValidCreditCardNumber(text)) {
     // We only have the last four digits for masked cards, so match against
     // that if |this| is a masked card.
-    bool numbers_match = record_type_ == RecordType::kMaskedServerCard
-                             ? GetLastFourDigits(text) == LastFourDigits()
-                             : StripCardNumberSeparators(text) == card_number;
+    bool numbers_match =
+        record_type_ == RecordType::kMaskedServerCard
+            ? GetLastFourDigits(text) == LastFourDigits()
+            : StripSeparatorsAndNormalizeDigits(text) == card_number;
     if (numbers_match) {
       matching_types->insert(CREDIT_CARD_NUMBER);
     }
@@ -766,12 +762,10 @@ int CreditCard::Compare(const CreditCard& credit_card) const {
     return comparison;
   }
 
-  if (static_cast<int>(card_issuer_) <
-      static_cast<int>(credit_card.card_issuer_)) {
+  if (card_issuer_ < credit_card.card_issuer_) {
     return -1;
   }
-  if (static_cast<int>(card_issuer_) >
-      static_cast<int>(credit_card.card_issuer_)) {
+  if (card_issuer_ > credit_card.card_issuer_) {
     return 1;
   }
 
@@ -780,12 +774,12 @@ int CreditCard::Compare(const CreditCard& credit_card) const {
     return comparison;
   }
 
-  if (static_cast<int>(virtual_card_enrollment_state_) <
-      static_cast<int>(credit_card.virtual_card_enrollment_state_)) {
+  if (virtual_card_enrollment_state_ <
+      credit_card.virtual_card_enrollment_state_) {
     return -1;
   }
-  if (static_cast<int>(virtual_card_enrollment_state_) >
-      static_cast<int>(credit_card.virtual_card_enrollment_state_)) {
+  if (virtual_card_enrollment_state_ >
+      credit_card.virtual_card_enrollment_state_) {
     return 1;
   }
 
@@ -826,21 +820,19 @@ int CreditCard::Compare(const CreditCard& credit_card) const {
     return 1;
   }
 
-  if (static_cast<int>(card_info_retrieval_enrollment_state_) <
-      static_cast<int>(credit_card.card_info_retrieval_enrollment_state_)) {
+  if (card_info_retrieval_enrollment_state_ <
+      credit_card.card_info_retrieval_enrollment_state_) {
     return -1;
   }
-  if (static_cast<int>(card_info_retrieval_enrollment_state_) >
-      static_cast<int>(credit_card.card_info_retrieval_enrollment_state_)) {
+  if (card_info_retrieval_enrollment_state_ >
+      credit_card.card_info_retrieval_enrollment_state_) {
     return 1;
   }
 
-  if (static_cast<int>(card_creation_source_) <
-      static_cast<int>(credit_card.card_creation_source_)) {
+  if (card_creation_source_ < credit_card.card_creation_source_) {
     return -1;
   }
-  if (static_cast<int>(card_creation_source_) >
-      static_cast<int>(credit_card.card_creation_source_)) {
+  if (card_creation_source_ > credit_card.card_creation_source_) {
     return 1;
   }
   return 0;
@@ -904,8 +896,8 @@ bool CreditCard::HasSameNumberAs(const CreditCard& other) const {
     return LastFourDigits() == other.LastFourDigits();
   }
 
-  return StripCardNumberSeparators(number_) ==
-         StripCardNumberSeparators(other.number_);
+  return StripSeparatorsAndNormalizeDigits(number_) ==
+         StripSeparatorsAndNormalizeDigits(other.number_);
 }
 
 bool CreditCard::HasSameExpirationDateAs(const CreditCard& other) const {
@@ -997,8 +989,9 @@ std::pair<std::u16string, std::u16string> CreditCard::LabelPieces() const {
   }
 
   if (ShouldUseNewFopDisplay()) {
-    if (CardIdentifierForAutofillDisplay().has_value()) {
-      return std::make_pair(CardIdentifierForAutofillDisplay().value(),
+    if (std::optional<std::u16string> identifier =
+            CardIdentifierForAutofillDisplay()) {
+      return std::make_pair(*std::move(identifier),
                             NetworkAndLastFourDigits(/*obfuscation_length=*/2));
     }
     return std::make_pair(NetworkAndLastFourDigits(/*obfuscation_length=*/2),
@@ -1194,34 +1187,32 @@ FieldTypeSet CreditCard::GetSupportedTypes() const {
   return supported_types;
 }
 
-std::u16string CreditCard::GetInfo(const AutofillType& autofill_type,
+std::u16string CreditCard::GetInfo(FieldType type,
                                    std::string_view app_locale) const {
-  const FieldType type = autofill_type.GetCreditCardType();
   if (type == CREDIT_CARD_NUMBER) {
     // Web pages should never actually be filled by a masked server card,
     // but this function is used at the preview stage.
     if (record_type() == RecordType::kMaskedServerCard) {
       return NetworkAndLastFourDigits();
     }
-    return StripCardNumberSeparators(number_);
+    return StripSeparatorsAndNormalizeDigits(number_);
   }
   return GetRawInfo(type);
 }
 
-bool CreditCard::SetInfoWithVerificationStatus(const AutofillType& type,
+bool CreditCard::SetInfoWithVerificationStatus(FieldType type,
                                                std::u16string_view value,
                                                std::string_view app_locale,
                                                VerificationStatus status) {
-  const FieldType storable_type = type.GetCreditCardType();
-  if (storable_type == CREDIT_CARD_EXP_MONTH) {
+  if (type == CREDIT_CARD_EXP_MONTH) {
     return SetExpirationMonthFromString(value, app_locale);
   }
 
-  if (storable_type == CREDIT_CARD_NUMBER) {
-    SetRawInfoWithVerificationStatus(storable_type,
-                                     StripCardNumberSeparators(value), status);
+  if (type == CREDIT_CARD_NUMBER) {
+    SetRawInfoWithVerificationStatus(
+        type, StripSeparatorsAndNormalizeDigits(value), status);
   } else {
-    SetRawInfoWithVerificationStatus(storable_type, value, status);
+    SetRawInfoWithVerificationStatus(type, value, status);
   }
   return true;
 }
@@ -1255,7 +1246,7 @@ void CreditCard::SetNumber(std::u16string number) {
   // Set the type based on the card number, but only for full numbers, not
   // when we have masked cards from the server (last 4 digits).
   if (record_type_ != RecordType::kMaskedServerCard) {
-    network_ = GetCardNetwork(StripCardNumberSeparators(number_));
+    network_ = GetCardNetwork(StripSeparatorsAndNormalizeDigits(number_));
   }
 }
 
@@ -1310,12 +1301,9 @@ std::ostream& operator<<(std::ostream& os, const CreditCard& credit_card) {
             << credit_card.usage_history().use_count() << " "
             << credit_card.usage_history().use_date() << " "
             << credit_card.billing_address_id() << " " << credit_card.nickname()
+            << " " << std::to_underlying(credit_card.card_issuer()) << " "
+            << credit_card.issuer_id() << " " << credit_card.instrument_id()
             << " "
-            << static_cast<
-                   typename std::underlying_type<CreditCard::Issuer>::type>(
-                   credit_card.card_issuer())
-            << " " << credit_card.issuer_id() << " "
-            << credit_card.instrument_id() << " "
             << std::to_underlying(credit_card.virtual_card_enrollment_state())
             << " " << credit_card.card_art_url().spec() << " "
             << base::UTF16ToUTF8(credit_card.product_description()) << " "

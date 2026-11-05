@@ -338,22 +338,6 @@ AXNode* AXNode::GetDeepestFirstDescendant() const {
   return deepest_descendant;
 }
 
-AXNode* AXNode::GetDeepestFirstDescendantCrossingTreeBoundary() const {
-  DCHECK(!tree_->GetTreeUpdateInProgressState());
-  if (!GetChildCountCrossingTreeBoundary())
-    return nullptr;
-
-  AXNode* deepest_descendant = GetFirstChildCrossingTreeBoundary();
-  DCHECK(deepest_descendant);
-  while (deepest_descendant->GetChildCountCrossingTreeBoundary()) {
-    deepest_descendant =
-        deepest_descendant->GetFirstChildCrossingTreeBoundary();
-    DCHECK(deepest_descendant);
-  }
-
-  return deepest_descendant;
-}
-
 AXNode* AXNode::GetDeepestFirstUnignoredDescendant() const {
   DCHECK(!tree_->GetTreeUpdateInProgressState());
   DCHECK(!IsIgnored()) << "Called unignored method on ignored node: " << *this;
@@ -370,23 +354,6 @@ AXNode* AXNode::GetDeepestFirstUnignoredDescendant() const {
   return deepest_descendant;
 }
 
-AXNode* AXNode::GetDeepestFirstUnignoredDescendantCrossingTreeBoundary() const {
-  DCHECK(!tree_->GetTreeUpdateInProgressState());
-  DCHECK(!IsIgnored()) << "Called unignored method on ignored node: " << *this;
-  if (!GetUnignoredChildCountCrossingTreeBoundary())
-    return nullptr;
-
-  AXNode* deepest_descendant = GetFirstUnignoredChildCrossingTreeBoundary();
-  DCHECK(deepest_descendant);
-  while (deepest_descendant->GetUnignoredChildCountCrossingTreeBoundary()) {
-    deepest_descendant =
-        deepest_descendant->GetFirstUnignoredChildCrossingTreeBoundary();
-    DCHECK(deepest_descendant);
-  }
-
-  return deepest_descendant;
-}
-
 AXNode* AXNode::GetDeepestLastDescendant() const {
   DCHECK(!tree_->GetTreeUpdateInProgressState());
   if (!GetChildCount())
@@ -396,22 +363,6 @@ AXNode* AXNode::GetDeepestLastDescendant() const {
   DCHECK(deepest_descendant);
   while (deepest_descendant->GetChildCount()) {
     deepest_descendant = deepest_descendant->GetLastChild();
-    DCHECK(deepest_descendant);
-  }
-
-  return deepest_descendant;
-}
-
-AXNode* AXNode::GetDeepestLastDescendantCrossingTreeBoundary() const {
-  DCHECK(!tree_->GetTreeUpdateInProgressState());
-  DCHECK(!IsIgnored()) << "Called unignored method on ignored node: " << *this;
-  if (!GetChildCountCrossingTreeBoundary())
-    return nullptr;
-
-  AXNode* deepest_descendant = GetLastChildCrossingTreeBoundary();
-  DCHECK(deepest_descendant);
-  while (deepest_descendant->GetChildCountCrossingTreeBoundary()) {
-    deepest_descendant = deepest_descendant->GetLastChildCrossingTreeBoundary();
     DCHECK(deepest_descendant);
   }
 
@@ -831,6 +782,12 @@ bool AXNode::IsText() const {
   return ui::IsText(GetRole());
 }
 
+const AXNode* AXNode::GetTextAnchor() const {
+  const AXNode* text_anchor =
+      GetRole() == ax::mojom::Role::kInlineTextBox ? GetParent() : this;
+  return text_anchor && text_anchor->IsText() ? text_anchor : nullptr;
+}
+
 bool AXNode::IsLineBreak() const {
   // The last condition captures inline text nodes whose only content is an '\n'
   // character.
@@ -1163,7 +1120,7 @@ bool AXNode::CanComputeIntListAttribute(
   }
 }
 
-const std::vector<int32_t>& AXNode::GetIntListAttribute(
+base::span<const int32_t> AXNode::GetIntListAttribute(
     ax::mojom::IntListAttribute attribute) const {
   if (data().HasIntListAttribute(attribute)) {
     return data().GetIntListAttribute(attribute);
@@ -1171,7 +1128,7 @@ const std::vector<int32_t>& AXNode::GetIntListAttribute(
   if (CanComputeIntListAttribute(attribute)) {
     return GetComputedNodeData().ComputeAttribute(attribute);
   }
-  return data().GetIntListAttribute(ax::mojom::IntListAttribute::kNone);
+  return {};
 }
 
 const AXComputedNodeData& AXNode::GetComputedNodeData() const {
@@ -1296,13 +1253,13 @@ gfx::RectF AXNode::GetTextContentRangeBoundsUTF16(int start_offset,
     return gfx::RectF();
   }
 
-  const std::vector<int32_t>& character_offsets =
+  base::span<const int32_t> character_offsets =
       GetIntListAttribute(ax::mojom::IntListAttribute::kCharacterOffsets);
   int character_offsets_length =
       base::checked_cast<int>(character_offsets.size());
   // Character offsets are always based on the UTF-16 representation of the
   // text.
-  if (character_offsets_length < GetTextContentLengthUTF16()) {
+  if (character_offsets_length < text_content_length) {
     // Blink might not return pixel offsets for all characters. Clamp the
     // character range to be within the number of provided pixels. Note that the
     // first character always starts at pixel 0, so an offset for that character
@@ -1430,20 +1387,20 @@ bool AXNode::IsTable() const {
   return IsTableLike(GetRole());
 }
 
-std::optional<int> AXNode::GetTableColCount() const {
+std::optional<int> AXNode::GetTableDomColCount() const {
   DCHECK(!tree_->GetTreeUpdateInProgressState());
   const AXTableInfo* table_info = GetAncestorTableInfo();
   if (!table_info)
     return std::nullopt;
-  return static_cast<int>(table_info->col_count);
+  return static_cast<int>(table_info->dom_col_count);
 }
 
-std::optional<int> AXNode::GetTableRowCount() const {
+std::optional<int> AXNode::GetTableDomRowCount() const {
   DCHECK(!tree_->GetTreeUpdateInProgressState());
   const AXTableInfo* table_info = GetAncestorTableInfo();
   if (!table_info)
     return std::nullopt;
-  return static_cast<int>(table_info->row_count);
+  return static_cast<int>(table_info->dom_row_count);
 }
 
 std::optional<int> AXNode::GetTableAriaColCount() const {
@@ -1504,9 +1461,9 @@ AXNode* AXNode::GetTableCellFromCoords(int row_index, int col_index) const {
 
   // There is a table but the given coordinates are outside the table.
   if (row_index < 0 ||
-      static_cast<size_t>(row_index) >= table_info->row_count ||
+      static_cast<size_t>(row_index) >= table_info->dom_row_count ||
       col_index < 0 ||
-      static_cast<size_t>(col_index) >= table_info->col_count) {
+      static_cast<size_t>(col_index) >= table_info->dom_col_count) {
     return nullptr;
   }
 
@@ -1532,8 +1489,8 @@ AXNode* AXNode::GetTableCellFromAriaCoords(int aria_row_index,
   // So while we do need to check many of the internal rows/columns, we can do
   // some skipping around, and don't need to continue to search if we are past
   // the specified row/column.
-  for (size_t row = 0; row < table_info->row_count; ++row) {
-    for (size_t col = 0; col < table_info->col_count; ++col) {
+  for (size_t row = 0; row < table_info->dom_row_count; ++row) {
+    for (size_t col = 0; col < table_info->dom_col_count; ++col) {
       AXNode* node = tree_->GetFromId(table_info->cell_ids[row][col]);
       CHECK(node);
 
@@ -1565,9 +1522,8 @@ std::vector<AXNodeID> AXNode::GetTableColHeaderNodeIds() const {
 
   std::vector<AXNodeID> col_header_ids;
   // Flatten and add column header ids of each column to |col_header_ids|.
-  for (std::vector<AXNodeID> col_headers_at_index : table_info->col_headers) {
-    col_header_ids.insert(col_header_ids.end(), col_headers_at_index.begin(),
-                          col_headers_at_index.end());
+  for (const auto& col_headers_at_index : table_info->col_headers) {
+    col_header_ids.append_range(col_headers_at_index);
   }
 
   return col_header_ids;
@@ -1579,8 +1535,10 @@ std::vector<AXNodeID> AXNode::GetTableColHeaderNodeIds(int col_index) const {
   if (!table_info)
     return std::vector<AXNodeID>();
 
-  if (col_index < 0 || static_cast<size_t>(col_index) >= table_info->col_count)
+  if (col_index < 0 ||
+      static_cast<size_t>(col_index) >= table_info->dom_col_count) {
     return std::vector<AXNodeID>();
+  }
 
   return std::vector<AXNodeID>(
       table_info->col_headers[static_cast<size_t>(col_index)]);
@@ -1592,8 +1550,10 @@ std::vector<AXNodeID> AXNode::GetTableRowHeaderNodeIds(int row_index) const {
   if (!table_info)
     return std::vector<AXNodeID>();
 
-  if (row_index < 0 || static_cast<size_t>(row_index) >= table_info->row_count)
+  if (row_index < 0 ||
+      static_cast<size_t>(row_index) >= table_info->dom_row_count) {
     return std::vector<AXNodeID>();
+  }
 
   return std::vector<AXNodeID>(
       table_info->row_headers[static_cast<size_t>(row_index)]);
@@ -1746,7 +1706,7 @@ std::optional<int> AXNode::GetTableCellIndex() const {
   return std::nullopt;
 }
 
-std::optional<int> AXNode::GetTableCellColIndex() const {
+std::optional<int> AXNode::GetTableCellDomColIndex() const {
   const AXTableInfo* table_info = GetAncestorTableInfo();
   if (!table_info)
     return std::nullopt;
@@ -1755,10 +1715,10 @@ std::optional<int> AXNode::GetTableCellColIndex() const {
   if (!index)
     return std::nullopt;
 
-  return static_cast<int>(table_info->cell_data_vector[*index].col_index);
+  return static_cast<int>(table_info->cell_data_vector[*index].dom_col_index);
 }
 
-std::optional<int> AXNode::GetTableCellRowIndex() const {
+std::optional<int> AXNode::GetTableCellDomRowIndex() const {
   const AXTableInfo* table_info = GetAncestorTableInfo();
   if (!table_info)
     return std::nullopt;
@@ -1766,7 +1726,7 @@ std::optional<int> AXNode::GetTableCellRowIndex() const {
   // If it's a table row, use the first cell within.
   if (IsTableRow()) {
     if (const AXNode* first_cell = table_info->GetFirstCellInRow(this)) {
-      return first_cell->GetTableCellRowIndex();
+      return first_cell->GetTableCellDomRowIndex();
     }
     return std::nullopt;
   }
@@ -1775,10 +1735,10 @@ std::optional<int> AXNode::GetTableCellRowIndex() const {
   if (!index)
     return std::nullopt;
 
-  return static_cast<int>(table_info->cell_data_vector[*index].row_index);
+  return static_cast<int>(table_info->cell_data_vector[*index].dom_row_index);
 }
 
-std::optional<int> AXNode::GetTableCellColSpan() const {
+std::optional<int> AXNode::GetTableCellDomColSpan() const {
   // If it's not a table cell, don't return a col span.
   if (!IsTableCellOrHeader())
     return std::nullopt;
@@ -1793,7 +1753,7 @@ std::optional<int> AXNode::GetTableCellColSpan() const {
   return 1;
 }
 
-std::optional<int> AXNode::GetTableCellRowSpan() const {
+std::optional<int> AXNode::GetTableCellDomRowSpan() const {
   // If it's not a table cell, don't return a row span.
   if (!IsTableCellOrHeader())
     return std::nullopt;
@@ -1852,11 +1812,12 @@ std::optional<int> AXNode::GetTableCellAriaRowIndex() const {
 
 std::vector<AXNodeID> AXNode::GetTableCellColHeaderNodeIds() const {
   const AXTableInfo* table_info = GetAncestorTableInfo();
-  if (!table_info || table_info->col_count <= 0)
+  if (!table_info || table_info->dom_col_count == 0u) {
     return std::vector<AXNodeID>();
+  }
 
   // If this node is not a cell, then return the headers for the first column.
-  int col_index = GetTableCellColIndex().value_or(0);
+  int col_index = GetTableCellDomColIndex().value_or(0);
 
   return std::vector<AXNodeID>(table_info->col_headers[col_index]);
 }
@@ -1870,11 +1831,12 @@ void AXNode::GetTableCellColHeaders(std::vector<AXNode*>* col_headers) const {
 
 std::vector<AXNodeID> AXNode::GetTableCellRowHeaderNodeIds() const {
   const AXTableInfo* table_info = GetAncestorTableInfo();
-  if (!table_info || table_info->row_count <= 0)
+  if (!table_info || table_info->dom_row_count == 0u) {
     return std::vector<AXNodeID>();
+  }
 
   // If this node is not a cell, then return the headers for the first row.
-  int row_index = GetTableCellRowIndex().value_or(0);
+  int row_index = GetTableCellDomRowIndex().value_or(0);
 
   return std::vector<AXNodeID>(table_info->row_headers[row_index]);
 }
@@ -1933,14 +1895,47 @@ std::optional<int> AXNode::GetHierarchicalLevel() const {
   return std::nullopt;
 }
 
+namespace {
+
+// Return true if we want to count |item| in "X of Y" announcements when
+// |ordered_set| is a content-violated menu owner.
+bool IsCountableFallbackMenuItem(const AXNode* item,
+                                 const AXNode* ordered_set) {
+  DCHECK(ordered_set);
+  if (!ordered_set->IsContentViolatedMenu()) {
+    return false;
+  }
+  // This is a first approximation to what we don't want to include as countable
+  // in a busted menulist/bar. We'll see how it goes in practice.
+  const ax::mojom::Role item_role = item->GetRole();
+  return !item->IsOrderedSet() && !item->IsIgnoredContainerForOrderedSet() &&
+         item_role != ax::mojom::Role::kSplitter;
+}
+
+}  // namespace
+
 bool AXNode::IsOrderedSetItem() const {
+  const AXNode* ordered_set = GetOrderedSet();
+  if (!ordered_set) {
+    return false;
+  }
+
   // Tree grid rows should be treated as ordered set items. Since we don't have
   // a separate row role for tree grid rows, we can't just add the Role::kRow to
   // IsItemLike. We need to validate that the row is indeed part of a tree grid.
-  if (IsRowInTreeGrid(GetOrderedSet()))
+  if (IsRowInTreeGrid(ordered_set)) {
     return true;
+  }
 
-  return ui::IsItemLike(GetRole());
+  if (ui::IsItemLike(GetRole())) {
+    return true;
+  }
+
+  if (IsCountableFallbackMenuItem(this, ordered_set)) {
+    return true;
+  }
+
+  return false;
 }
 
 bool AXNode::IsOrderedSet() const {
@@ -1952,6 +1947,16 @@ bool AXNode::IsOrderedSet() const {
     return true;
 
   return ui::IsSetLike(GetRole());
+}
+
+bool AXNode::IsContentViolatedMenu() const {
+  if (GetRole() != ax::mojom::Role::kList) {
+    // Content-violated menu owners only have the list role.
+    return false;
+  }
+  const std::string& tag =
+      GetStringAttribute(ax::mojom::StringAttribute::kHtmlTag);
+  return tag == "menubar" || tag == "menulist";
 }
 
 // Uses AXTree's cache to calculate node's PosInSet.
@@ -1981,8 +1986,12 @@ bool AXNode::SetRoleMatchesItemRole(const AXNode* ordered_set) const {
   switch (ordered_set->GetRole()) {
     case ax::mojom::Role::kFeed:
       return item_role == ax::mojom::Role::kArticle;
-    case ax::mojom::Role::kList:
-      return item_role == ax::mojom::Role::kListItem;
+    case ax::mojom::Role::kList: {
+      if (item_role == ax::mojom::Role::kListItem) {
+        return true;
+      }
+      return IsCountableFallbackMenuItem(this, ordered_set);
+    }
     case ax::mojom::Role::kGroup:
       return item_role == ax::mojom::Role::kComment ||
              item_role == ax::mojom::Role::kListItem ||
@@ -2041,10 +2050,12 @@ bool AXNode::IsIgnoredContainerForOrderedSet() const {
 }
 
 bool AXNode::IsRowInTreeGrid(const AXNode* ordered_set) const {
+  DCHECK(ordered_set);
   // Tree grid rows have the requirement of being focusable, so we use it to
   // avoid iterating over rows that clearly aren't part of a tree grid.
-  if (GetRole() != ax::mojom::Role::kRow || !ordered_set || !IsFocusable())
+  if (GetRole() != ax::mojom::Role::kRow || !IsFocusable()) {
     return false;
+  }
 
   if (ordered_set->GetRole() == ax::mojom::Role::kTreeGrid)
     return true;

@@ -9,12 +9,21 @@
 #include "base/functional/bind.h"
 #include "content/browser/picture_in_picture/video_picture_in_picture_window_controller_impl.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/public/browser/disallow_activation_reason.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "media/base/video_spatial_format.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 
 namespace content {
+namespace {
+
+bool IsFrameActive(RenderFrameHost& rfh) {
+  return !rfh.IsInactiveAndDisallowActivation(
+      DisallowActivationReasonId::kPictureInPictureService);
+}
+
+}  // namespace
 
 struct PictureInPictureServiceImpl::PendingSession {
   PendingSession(
@@ -46,7 +55,8 @@ void PictureInPictureServiceImpl::Create(
     RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<blink::mojom::PictureInPictureService> receiver) {
   CHECK(render_frame_host);
-  new PictureInPictureServiceImpl(*render_frame_host, std::move(receiver));
+  base::MakeSelfDeleting<PictureInPictureServiceImpl>(*render_frame_host,
+                                                      std::move(receiver));
 }
 
 // static
@@ -54,8 +64,8 @@ PictureInPictureServiceImpl* PictureInPictureServiceImpl::CreateForTesting(
     RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<blink::mojom::PictureInPictureService> receiver) {
   CHECK(render_frame_host);
-  return new PictureInPictureServiceImpl(*render_frame_host,
-                                         std::move(receiver));
+  return base::MakeSelfDeleting<PictureInPictureServiceImpl>(
+      *render_frame_host, std::move(receiver));
 }
 
 void PictureInPictureServiceImpl::StartSession(
@@ -94,6 +104,10 @@ void PictureInPictureServiceImpl::StartSessionInternal(
     std::unique_ptr<PictureInPictureServiceImpl::PendingSession>
         pending_session,
     std::optional<ImmersiveOptions> immersive_options) {
+  if (!IsFrameActive(render_frame_host())) {
+    return;
+  }
+
   gfx::Size window_size;
   mojo::PendingRemote<blink::mojom::PictureInPictureSession> session_remote;
 
@@ -122,6 +136,10 @@ void PictureInPictureServiceImpl::StartSessionInternal(
 void PictureInPictureServiceImpl::StartSessionImmersive(
     std::unique_ptr<PictureInPictureServiceImpl::PendingSession>
         pending_session) {
+  if (!IsFrameActive(render_frame_host())) {
+    return;
+  }
+
   // Immersive playback confirmation flow can only be requested in a
   // browser-native fullscreen state.
   auto* web_contents = WebContents::FromRenderFrameHost(&render_frame_host());
@@ -201,8 +219,9 @@ PictureInPictureServiceImpl::PendingSession::~PendingSession() = default;
 
 PictureInPictureServiceImpl::PictureInPictureServiceImpl(
     RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<blink::mojom::PictureInPictureService> receiver)
-    : DocumentService(render_frame_host, std::move(receiver)) {}
+    mojo::PendingReceiver<blink::mojom::PictureInPictureService> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key) {}
 
 PictureInPictureServiceImpl::~PictureInPictureServiceImpl() {
   // If the service is destroyed because the frame was destroyed, the session

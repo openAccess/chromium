@@ -24,9 +24,8 @@
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/input/native_web_keyboard_event.h"
+#include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
 #include "components/prefs/pref_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/test/test_renderer_host.h"
@@ -60,6 +59,7 @@ constexpr char16_t kTestLink[] = u"Test Link";
 constexpr char16_t kTestAcceptButton[] = u"Test Accept Button";
 constexpr char16_t kTestAcceptButtonA11yLabel[] =
     u"Test Accept Button A11y Label";
+constexpr char16_t kTestA11yInstructions[] = u"Test A11y Instructions";
 constexpr char kTestHistogram[] = "Test.NoticeInteractions";
 
 class PopupNoticeViewTest : public ChromeViewsTestBase {
@@ -78,17 +78,31 @@ class PopupNoticeViewTest : public ChromeViewsTestBase {
   }
 
   void ShowView() {
-    view_ = widget_->SetContentsView(std::make_unique<PopupNoticeView>(
+    ShowView(std::make_unique<PopupNoticeView>(
         mock_a11y_selection_delegate_, mock_announce_callback_.Get(),
         controller().GetWeakPtr(), kNoticePosition, kTestTitle, kTestContext,
         kTestLink, kTestAcceptButton, kTestAcceptButtonA11yLabel,
-        mock_on_link_clicked_.Get(), kTestHistogram));
+        kTestA11yInstructions, mock_on_link_clicked_.Get(), kTestHistogram));
+  }
+
+  void ShowView(std::unique_ptr<PopupNoticeView> notice_view) {
+    view_ = widget_->SetContentsView(std::move(notice_view));
 
     // Assign manual bounds so the widget has a physical size.
     // In test env, this is required to position child views
     // so the EventGenerator can accurately click them.
     widget_->SetBounds(gfx::Rect(0, 0, 500, 500));
     widget_->Show();
+  }
+
+  // Clicks the link in the description of the shown notice view.
+  void ClickLink() {
+    widget_->LayoutRootViewIfNecessary();
+    views::Link* link =
+        test_api(view()).description()->GetFirstLinkForTesting();
+    ASSERT_TRUE(link);
+    generator_->MoveMouseTo(link->GetBoundsInScreen().CenterPoint());
+    generator_->ClickLeftButton();
   }
 
   void TearDown() override {
@@ -238,7 +252,8 @@ class PopupNoticeViewTest : public ChromeViewsTestBase {
 };
 
 // Tests that the notice view is initialized with correct description, link,
-// and accept button texts, and that the kShown metric is recorded.
+// and accept button texts, that the kShown metric is recorded, and that the
+// accessible name includes navigation instructions.
 TEST_F(PopupNoticeViewTest, InitialStateAndHistogramShown) {
   base::HistogramTester histogram_tester;
   ShowView();
@@ -248,6 +263,11 @@ TEST_F(PopupNoticeViewTest, InitialStateAndHistogramShown) {
   EXPECT_TRUE(VerifyDescription(kTestTitle, kTestContext, kTestLink));
   EXPECT_TRUE(VerifyLink(kTestLink));
   EXPECT_TRUE(VerifyAcceptButton(kTestAcceptButton));
+
+  ui::AXNodeData node_data;
+  view().GetViewAccessibility().GetAccessibleNodeData(&node_data);
+  EXPECT_EQ(node_data.GetString16Attribute(ax::mojom::StringAttribute::kName),
+            u"Test Title Test Context Test Link. Test A11y Instructions");
 }
 
 // Tests that clicking the accept button marks the notice as acknowledged in
@@ -259,11 +279,7 @@ TEST_F(PopupNoticeViewTest, AcceptButtonTriggersRemoveSuggestionAndMetric) {
   widget().LayoutRootViewIfNecessary();
   views::MdTextButton* accept_button = test_api(view()).accept_button();
 
-  EXPECT_CALL(
-      controller(),
-      RemoveSuggestion(
-          kNoticePosition,
-          AutofillMetrics::SingleEntryRemovalMethod::kDeleteButtonClicked))
+  EXPECT_CALL(controller(), RemoveSuggestion(kNoticePosition))
       .WillOnce(Return(true));
 
   generator().MoveMouseTo(accept_button->GetBoundsInScreen().CenterPoint());
@@ -485,11 +501,7 @@ TEST_F(PopupNoticeViewTest, PressReturnOnAcceptButtonFocused) {
   EXPECT_TRUE(view().HandleKeyPressEvent(right_event));
   ASSERT_TRUE(test_api(view()).is_accept_button_focused());
 
-  EXPECT_CALL(
-      controller(),
-      RemoveSuggestion(
-          kNoticePosition,
-          AutofillMetrics::SingleEntryRemovalMethod::kDeleteButtonClicked))
+  EXPECT_CALL(controller(), RemoveSuggestion(kNoticePosition))
       .WillOnce(Return(true));
 
   input::NativeWebKeyboardEvent return_event = right_event;
@@ -552,6 +564,38 @@ TEST_F(PopupNoticeViewTest, AccessibilitySelectionAndAnnouncements) {
   EXPECT_FALSE(IsViewSelected());
 }
 
+// Tests that when a long link wraps across multiple lines in StyledLabel, all
+// views::Link fragments have FocusBehavior::NEVER and UNDERLINE styling, and
+// focusing the link announces the full accessible link name rather than only
+// the first line fragment.
+TEST_F(PopupNoticeViewTest, WrappedMultiLineLinkFragmentsConfiguredAndAnnounced) {
+  const std::u16string kLongLinkText =
+      u"Manage your personal context and autofill settings in Chrome";
+  ShowView(std::make_unique<PopupNoticeView>(
+      mock_a11y_selection_delegate(), mock_announce_callback().Get(),
+      controller().GetWeakPtr(), kNoticePosition,
+      u"Autofill can use your saved information",
+      u"You can review and control what Gemini and Autofill use at any time in",
+      kLongLinkText, kTestAcceptButton, kTestAcceptButtonA11yLabel,
+      kTestA11yInstructions, mock_on_link_clicked().Get(), kTestHistogram));
+  widget().SetBounds(gfx::Rect(0, 0, 320, 500));
+  widget().LayoutRootViewIfNecessary();
+
+  size_t link_fragment_count = 0;
+  for (views::View* child : test_api(view()).description()->children()) {
+    if (auto* link = views::AsViewClass<views::Link>(child)) {
+      ++link_fragment_count;
+      SCOPED_TRACE(link_fragment_count);
+      EXPECT_EQ(link->GetFocusBehavior(), views::View::FocusBehavior::NEVER);
+      EXPECT_NE(link->font_list().GetFontStyle() & gfx::Font::UNDERLINE, 0);
+    }
+  }
+  EXPECT_GT(link_fragment_count, 1u);
+
+  EXPECT_CALL(mock_announce_callback(), Run(kLongLinkText, false));
+  view().SetSelectedCell(PopupInteractiveRowView::CellType::kContent);
+}
+
 // Tests that when the notice is the only suggestion shown in the popup, neither
 // a custom background nor a border is applied to the view.
 TEST_F(PopupNoticeViewTest, SingleSuggestionNoCustomBackgroundOrBorder) {
@@ -589,8 +633,10 @@ TEST_F(PopupNoticeViewTest, CreatePersonalContextNoticeViewAmbientAutofill) {
 
   ui::AXNodeData node_data;
   view->GetViewAccessibility().GetAccessibleNodeData(&node_data);
-  EXPECT_FALSE(node_data.GetString16Attribute(ax::mojom::StringAttribute::kName)
-                   .empty());
+  EXPECT_NE(node_data.GetString16Attribute(ax::mojom::StringAttribute::kName)
+                .find(l10n_util::GetStringUTF16(
+                    IDS_AUTOFILL_POPUP_NOTICE_A11Y_INSTRUCTIONS)),
+            std::u16string::npos);
 }
 
 // Tests that Personal Context Notice view is created with proper histograms
@@ -601,8 +647,7 @@ TEST_F(PopupNoticeViewTest,
       .WillByDefault(Return(FillingProduct::kAtMemory));
   profile()->GetPrefs()->SetInteger(
       optimization_guide::prefs::kFindAndFillWithGeminiSettings,
-      static_cast<int>(optimization_guide::model_execution::prefs::
-                           ModelExecutionEnterprisePolicyValue::kAllow));
+      static_cast<int>(optimization_guide::EnterprisePolicyValue::kAllow));
 
   base::HistogramTester histogram_tester;
   controller().set_suggestions(
@@ -618,6 +663,13 @@ TEST_F(PopupNoticeViewTest,
       test_api(*view).description()->GetText().find(l10n_util::GetStringUTF16(
           IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_SUBTITLE_WITH_LOGGING)),
       std::u16string::npos);
+
+  ui::AXNodeData node_data;
+  view->GetViewAccessibility().GetAccessibleNodeData(&node_data);
+  EXPECT_NE(node_data.GetString16Attribute(ax::mojom::StringAttribute::kName)
+                .find(l10n_util::GetStringUTF16(
+                    IDS_AUTOFILL_POPUP_NOTICE_A11Y_INSTRUCTIONS)),
+            std::u16string::npos);
 }
 
 // Tests that Personal Context Notice view is created with proper texts for
@@ -629,8 +681,7 @@ TEST_F(PopupNoticeViewTest,
   profile()->GetPrefs()->SetInteger(
       optimization_guide::prefs::kFindAndFillWithGeminiSettings,
       static_cast<int>(
-          optimization_guide::model_execution::prefs::
-              ModelExecutionEnterprisePolicyValue::kAllowWithoutLogging));
+          optimization_guide::EnterprisePolicyValue::kAllowWithoutLogging));
 
   controller().set_suggestions(
       {Suggestion(SuggestionType::kPersonalContextNotice)});
@@ -642,6 +693,75 @@ TEST_F(PopupNoticeViewTest,
       test_api(*view).description()->GetText().find(l10n_util::GetStringUTF16(
           IDS_AUTOFILL_POPUP_PERSONAL_CONTEXT_NOTICE_SUBTITLE)),
       std::u16string::npos);
+
+  ui::AXNodeData node_data;
+  view->GetViewAccessibility().GetAccessibleNodeData(&node_data);
+  EXPECT_NE(node_data.GetString16Attribute(ax::mojom::StringAttribute::kName)
+                .find(l10n_util::GetStringUTF16(
+                    IDS_AUTOFILL_POPUP_NOTICE_A11Y_INSTRUCTIONS)),
+            std::u16string::npos);
+}
+
+// Tests that clicking the link in the Personal Context notice view for Ambient
+// Autofill logs the link click and acknowledgement and removes the suggestion.
+TEST_F(PopupNoticeViewTest,
+       ClickLinkInPersonalContextNoticeViewAmbientAutofillAcknowledgesNotice) {
+  // Prevents opening the settings page, which requires a browser window.
+  ON_CALL(controller(), GetWebContents()).WillByDefault(Return(nullptr));
+  controller().set_suggestions(
+      {Suggestion(SuggestionType::kPersonalContextNotice)});
+  base::HistogramTester histogram_tester;
+  ShowView(CreatePersonalContextNoticeView(
+      mock_a11y_selection_delegate(), mock_announce_callback().Get(),
+      controller().GetWeakPtr(), kNoticePosition));
+
+  EXPECT_CALL(controller(), RemoveSuggestion(kNoticePosition))
+      .WillOnce(Return(true));
+  ClickLink();
+
+  histogram_tester.ExpectBucketCount(
+      "PersonalContext.AmbientAutofill.NoticeInteractions",
+      AutofillMetrics::PopupNoticeInteractions::kShown, 1);
+  histogram_tester.ExpectBucketCount(
+      "PersonalContext.AmbientAutofill.NoticeInteractions",
+      AutofillMetrics::PopupNoticeInteractions::kLinkButtonClicked, 1);
+  histogram_tester.ExpectBucketCount(
+      "PersonalContext.AmbientAutofill.NoticeInteractions",
+      AutofillMetrics::PopupNoticeInteractions::kAcknowledged, 1);
+  histogram_tester.ExpectTotalCount(
+      "PersonalContext.AmbientAutofill.NoticeInteractions", 3);
+}
+
+// Tests that clicking the link in the Personal Context notice view for AtMemory
+// logs the link click and acknowledgement and removes the suggestion.
+TEST_F(PopupNoticeViewTest,
+       ClickLinkInPersonalContextNoticeViewAtMemoryAcknowledgesNotice) {
+  // Prevents opening the settings page, which requires a browser window.
+  ON_CALL(controller(), GetWebContents()).WillByDefault(Return(nullptr));
+  ON_CALL(controller(), GetMainFillingProduct())
+      .WillByDefault(Return(FillingProduct::kAtMemory));
+  controller().set_suggestions(
+      {Suggestion(SuggestionType::kPersonalContextNotice)});
+  base::HistogramTester histogram_tester;
+  ShowView(CreatePersonalContextNoticeView(
+      mock_a11y_selection_delegate(), mock_announce_callback().Get(),
+      controller().GetWeakPtr(), kNoticePosition));
+
+  EXPECT_CALL(controller(), RemoveSuggestion(kNoticePosition))
+      .WillOnce(Return(true));
+  ClickLink();
+
+  histogram_tester.ExpectBucketCount(
+      "PersonalContext.AtMemory.NoticeInteractions",
+      AutofillMetrics::PopupNoticeInteractions::kShown, 1);
+  histogram_tester.ExpectBucketCount(
+      "PersonalContext.AtMemory.NoticeInteractions",
+      AutofillMetrics::PopupNoticeInteractions::kLinkButtonClicked, 1);
+  histogram_tester.ExpectBucketCount(
+      "PersonalContext.AtMemory.NoticeInteractions",
+      AutofillMetrics::PopupNoticeInteractions::kAcknowledged, 1);
+  histogram_tester.ExpectTotalCount(
+      "PersonalContext.AtMemory.NoticeInteractions", 3);
 }
 
 // Tests that Autofill AI Private Inference Notice view is created with valid
@@ -660,8 +780,10 @@ TEST_F(PopupNoticeViewTest, CreateAutofillAiPrivateInferenceNoticeViewCreated) {
 
   ui::AXNodeData node_data;
   view->GetViewAccessibility().GetAccessibleNodeData(&node_data);
-  EXPECT_FALSE(node_data.GetString16Attribute(ax::mojom::StringAttribute::kName)
-                   .empty());
+  EXPECT_NE(node_data.GetString16Attribute(ax::mojom::StringAttribute::kName)
+                .find(l10n_util::GetStringUTF16(
+                    IDS_AUTOFILL_POPUP_NOTICE_A11Y_INSTRUCTIONS)),
+            std::u16string::npos);
 }
 
 // Tests that clicking the link in the Autofill AI Private Inference Notice view

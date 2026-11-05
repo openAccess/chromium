@@ -57,6 +57,18 @@ enum class UpdatedFRESequenceVariationType {
   kDBPromoFirstAndRemoveSignInSync,
 };
 
+// Enum to represent variations of feature
+// `kAndroidSwitcherDefaultBrowserPromoInFRE`.
+enum class AndroidSwitcherDefaultBrowserPromoInFREVariationType {
+  kDisabled = 0,
+  // Trigger the Android Switcher promo and record metrics using the
+  // Segmentation Platform `DeviceSwitcherModel` signal.
+  kSegmentationSignal = 1,
+  // Trigger the Android Switcher promo and record metrics using the
+  // `SwitcherInfo` provider API signal.
+  kSwitcherInfoSignal = 2,
+};
+
 // Flag to enable the FRE Default Browser Experiment.
 BASE_DECLARE_FEATURE(kAnimatedDefaultBrowserPromoInFRE);
 
@@ -64,15 +76,15 @@ BASE_DECLARE_FEATURE(kAnimatedDefaultBrowserPromoInFRE);
 // FRE sequence.
 BASE_DECLARE_FEATURE(kBestFeaturesScreenInFirstRun);
 
-// Flag to skip the Default Browser Promo from the FRE in the EU/EEA.
-BASE_DECLARE_FEATURE(kSkipDefaultBrowserPromoInFirstRun);
-
 // Feature to enable updates to the sequence of the first run screens.
 BASE_DECLARE_FEATURE(kUpdatedFirstRunSequence);
 
 // Feature flag (killswitch) to enable presenting post FRE IPH promos in
 // FirstRunProfileAgent instead of FirstRunCoordinator.
 BASE_DECLARE_FEATURE(kPostFREIphInProfileAgent);
+
+// Feature flag to enable the Android Switcher Default Browser Promo in the FRE.
+BASE_DECLARE_FEATURE(kAndroidSwitcherDefaultBrowserPromoInFRE);
 
 // Name of the parameter that controls the experiment type for the Animated
 // Default Browser Promo in the FRE experiment, which determines the layout of
@@ -86,6 +98,17 @@ extern const char kBestFeaturesScreenInFirstRunParam[];
 // Name of the param that indicates which variation of the
 // kUpdatedFirstRunSequence is enabled.
 extern const char kUpdatedFirstRunSequenceParam[];
+
+// Name of the parameter that indicates which variation of the
+// `kAndroidSwitcherDefaultBrowserPromoInFRE` feature is enabled.
+extern const char kAndroidSwitcherDefaultBrowserPromoInFREParam[];
+
+// Parameter values for `kAndroidSwitcherDefaultBrowserPromoInFREParam`.
+extern const char kAndroidSwitcherDefaultBrowserPromoInFREParamDisabled[];
+extern const char
+    kAndroidSwitcherDefaultBrowserPromoInFREParamSegmentationSignal[];
+extern const char
+    kAndroidSwitcherDefaultBrowserPromoInFREParamSwitcherInfoSignal[];
 
 // Returns which variation of the kBestFeaturesScreenInFirstRun feature is
 // enabled or `kDisabled` if the feature is disabled.
@@ -104,12 +127,14 @@ bool IsAnimatedDefaultBrowserPromoInFREEnabled();
 AnimatedDefaultBrowserPromoInFREExperimentType
 AnimatedDefaultBrowserPromoInFREExperimentTypeEnabled();
 
-// Returns whether the Default Browser Promo should be skipped in the FRE.
-bool IsSkipDefaultBrowserPromoInFirstRunEnabled(bool is_in_eea_country);
-
 // Returns whether post FRE IPH promos should be presented in
 // FirstRunProfileAgent instead of FirstRunCoordinator (killswitch).
 bool IsPostFREIphInProfileAgentEnabled();
+
+// Returns which variation of the `kAndroidSwitcherDefaultBrowserPromoInFRE`
+// feature is enabled or `kDisabled` if the feature is disabled.
+AndroidSwitcherDefaultBrowserPromoInFREVariationType
+GetAndroidSwitcherDefaultBrowserPromoInFREVariationType();
 
 }  // namespace first_run
 

@@ -6,9 +6,9 @@
 
 #include <algorithm>
 #include <optional>
+#include <ranges>
 #include <utility>
 
-#include "base/containers/adapters.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_macros.h"
@@ -98,13 +98,12 @@ AlternativeServiceInfoVector GetAlternativeServiceToPersist(
   if (canonical_suffix) {
     // Don't save if have already saved information associated with the same
     // canonical suffix.
-    std::pair<std::string, NetworkAnonymizationKey> index(
-        *canonical_suffix, server_info_key.network_anonymization_key);
-    if (persisted_canonical_suffix_set->find(index) !=
-        persisted_canonical_suffix_set->end()) {
+    if (!persisted_canonical_suffix_set
+             ->emplace(*canonical_suffix,
+                       server_info_key.network_anonymization_key)
+             .second) {
       return AlternativeServiceInfoVector();
     }
-    persisted_canonical_suffix_set->emplace(std::move(index));
   }
   return notbroken_alternative_service_info_vector;
 }
@@ -887,7 +886,8 @@ void HttpServerPropertiesManager::SaveQuicServerInfoMapToServerPrefs(
   if (quic_server_info_map.empty())
     return;
   base::ListValue quic_servers_list;
-  for (const auto& [key, server_info] : base::Reversed(quic_server_info_map)) {
+  for (const auto& [key, server_info] :
+       std::views::reverse(quic_server_info_map)) {
     base::Value network_anonymization_key_value;
     // Don't save entries with ephemeral NAKs.
     if (!key.network_anonymization_key.ToValue(
@@ -934,7 +934,7 @@ void HttpServerPropertiesManager::SaveBrokenAlternativeServicesToPrefs(
 
   if (!recently_broken_alternative_services.empty()) {
     for (const auto& [broken_alt_service, broken_count] :
-         base::Reversed(recently_broken_alternative_services)) {
+         std::views::reverse(recently_broken_alternative_services)) {
       base::DictValue entry_dict;
       if (!TryAddBrokenAlternativeServiceFieldsToDictionaryValue(
               broken_alt_service, entry_dict)) {

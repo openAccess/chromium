@@ -13,8 +13,8 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import android.app.Activity;
 import android.content.Context;
 
-import androidx.test.filters.SmallTest;
-
+import org.jni_zero.JniRawPtr;
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -28,6 +28,7 @@ import org.mockito.invocation.InvocationOnMock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.stubbing.Answer;
+import org.robolectric.Robolectric;
 
 import org.chromium.base.UnownedUserDataHost;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -66,47 +67,70 @@ public final class TranslateMessageTest {
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
+    private JniRawPtr<TranslateMessage.NativeTranslateMessage> mNativePtr;
+    private TranslateMessage mTranslateMessage;
+
     @Before
     public void setUp() {
-
         TranslateMessageJni.setInstanceForTesting(mMockJni);
     }
 
+    @After
+    public void tearDown() {
+        if (mTranslateMessage != null) {
+            mTranslateMessage.clearNativePointer();
+        }
+    }
+
+    private TranslateMessage createTranslateMessageForTesting() {
+        mNativePtr = JniRawPtr.createForTesting(NATIVE_TRANSLATE_MESSAGE);
+        mTranslateMessage =
+                new TranslateMessage(
+                        mContext,
+                        mMessageDispatcher,
+                        mWebContents,
+                        mNativePtr,
+                        DISMISSAL_DURATION_SECONDS);
+        return mTranslateMessage;
+    }
+
     @Test
-    @SmallTest
     public void testCreateWithNullWindowAndroid() {
         doReturn(null).when(mWebContents).getTopLevelNativeWindow();
         Assert.assertNull(
                 TranslateMessage.create(
-                        mWebContents, NATIVE_TRANSLATE_MESSAGE, DISMISSAL_DURATION_SECONDS));
+                        mWebContents,
+                        JniRawPtr.createForTesting(NATIVE_TRANSLATE_MESSAGE),
+                        DISMISSAL_DURATION_SECONDS));
     }
 
     @Test
-    @SmallTest
     public void testCreateWithNullActivityWeakReference() {
         WindowAndroid windowAndroid = Mockito.mock(WindowAndroid.class);
         doReturn(null).when(windowAndroid).getActivity();
         doReturn(windowAndroid).when(mWebContents).getTopLevelNativeWindow();
         Assert.assertNull(
                 TranslateMessage.create(
-                        mWebContents, NATIVE_TRANSLATE_MESSAGE, DISMISSAL_DURATION_SECONDS));
+                        mWebContents,
+                        JniRawPtr.createForTesting(NATIVE_TRANSLATE_MESSAGE),
+                        DISMISSAL_DURATION_SECONDS));
     }
 
     @Test
-    @SmallTest
     public void testCreateWithNullActivity() {
         WindowAndroid windowAndroid = Mockito.mock(WindowAndroid.class);
         doReturn(new WeakReference<Activity>(null)).when(windowAndroid).getActivity();
         doReturn(windowAndroid).when(mWebContents).getTopLevelNativeWindow();
         Assert.assertNull(
                 TranslateMessage.create(
-                        mWebContents, NATIVE_TRANSLATE_MESSAGE, DISMISSAL_DURATION_SECONDS));
+                        mWebContents,
+                        JniRawPtr.createForTesting(NATIVE_TRANSLATE_MESSAGE),
+                        DISMISSAL_DURATION_SECONDS));
     }
 
     @Test
-    @SmallTest
     public void testCreateWithNullMessageDispatcher() {
-        Activity activity = Mockito.mock(Activity.class);
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
         WindowAndroid windowAndroid = Mockito.mock(WindowAndroid.class);
 
         doReturn(new WeakReference<Activity>(activity)).when(windowAndroid).getActivity();
@@ -115,19 +139,14 @@ public final class TranslateMessageTest {
 
         Assert.assertNull(
                 TranslateMessage.create(
-                        mWebContents, NATIVE_TRANSLATE_MESSAGE, DISMISSAL_DURATION_SECONDS));
+                        mWebContents,
+                        JniRawPtr.createForTesting(NATIVE_TRANSLATE_MESSAGE),
+                        DISMISSAL_DURATION_SECONDS));
     }
 
     @Test
-    @SmallTest
     public void testFullTranslateFlowThenDismissViaGesture() {
-        TranslateMessage translateMessage =
-                new TranslateMessage(
-                        mContext,
-                        mMessageDispatcher,
-                        mWebContents,
-                        NATIVE_TRANSLATE_MESSAGE,
-                        DISMISSAL_DURATION_SECONDS);
+        TranslateMessage translateMessage = createTranslateMessageForTesting();
 
         // Show the before translate message.
         translateMessage.showMessage(
@@ -171,7 +190,7 @@ public final class TranslateMessageTest {
                             }
                         })
                 .when(mMockJni)
-                .handlePrimaryAction(NATIVE_TRANSLATE_MESSAGE);
+                .handlePrimaryAction(mNativePtr);
 
         Assert.assertEquals(
                 Integer.valueOf(PrimaryActionClickBehavior.DO_NOT_DISMISS),
@@ -209,19 +228,12 @@ public final class TranslateMessageTest {
                 messageProperties.get(MessageBannerProperties.PRIMARY_BUTTON_TEXT));
 
         messageProperties.get(MessageBannerProperties.ON_DISMISSED).onResult(DismissReason.GESTURE);
-        verify(mMockJni).handleDismiss(NATIVE_TRANSLATE_MESSAGE, DismissReason.GESTURE);
+        verify(mMockJni).handleDismiss(mNativePtr, DismissReason.GESTURE);
     }
 
     @Test
-    @SmallTest
     public void testShowMessageWithoutOverflowMenu() {
-        TranslateMessage translateMessage =
-                new TranslateMessage(
-                        mContext,
-                        mMessageDispatcher,
-                        mWebContents,
-                        NATIVE_TRANSLATE_MESSAGE,
-                        DISMISSAL_DURATION_SECONDS);
+        TranslateMessage translateMessage = createTranslateMessageForTesting();
 
         // Show the message.
         translateMessage.showMessage(
@@ -256,15 +268,8 @@ public final class TranslateMessageTest {
     }
 
     @Test
-    @SmallTest
     public void testDismissFromNative() {
-        TranslateMessage translateMessage =
-                new TranslateMessage(
-                        mContext,
-                        mMessageDispatcher,
-                        mWebContents,
-                        NATIVE_TRANSLATE_MESSAGE,
-                        DISMISSAL_DURATION_SECONDS);
+        TranslateMessage translateMessage = createTranslateMessageForTesting();
         translateMessage.showMessage(
                 TITLE_BEFORE_TRANSLATE,
                 DESCRIPTION,
@@ -295,20 +300,12 @@ public final class TranslateMessageTest {
 
         translateMessage.dismiss();
 
-        verify(mMockJni)
-                .handleDismiss(NATIVE_TRANSLATE_MESSAGE, DismissReason.DISMISSED_BY_FEATURE);
+        verify(mMockJni).handleDismiss(mNativePtr, DismissReason.DISMISSED_BY_FEATURE);
     }
 
     @Test
-    @SmallTest
     public void testClearNativePointer() {
-        TranslateMessage translateMessage =
-                new TranslateMessage(
-                        mContext,
-                        mMessageDispatcher,
-                        mWebContents,
-                        NATIVE_TRANSLATE_MESSAGE,
-                        DISMISSAL_DURATION_SECONDS);
+        TranslateMessage translateMessage = createTranslateMessageForTesting();
         translateMessage.showMessage(
                 TITLE_BEFORE_TRANSLATE,
                 DESCRIPTION,
@@ -336,7 +333,6 @@ public final class TranslateMessageTest {
     }
 
     @Test
-    @SmallTest
     public void testConstructMenuItemArray() {
         final String[] titles = new String[] {"foo", "bar", "", "English", "French"};
         final String[] subtitles = new String[] {"", "", "", "", "Français"};

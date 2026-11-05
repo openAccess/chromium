@@ -5,28 +5,35 @@
 #include "third_party/blink/renderer/modules/peerconnection/rtc_rtp_receiver_impl.h"
 
 #include <memory>
+#include <utility>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/location.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
-#include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
-#include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/web/web_heap.h"
 #include "third_party/blink/renderer/modules/peerconnection/mock_peer_connection_dependency_factory.h"
 #include "third_party/blink/renderer/modules/peerconnection/mock_peer_connection_impl.h"
 #include "third_party/blink/renderer/modules/peerconnection/test_webrtc_stats_report_obtainer.h"
 #include "third_party/blink/renderer/modules/peerconnection/testing/mock_rtp_receiver.h"
 #include "third_party/blink/renderer/modules/peerconnection/webrtc_media_stream_track_adapter_map.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component.h"
 #include "third_party/blink/renderer/platform/peerconnection/rtc_stats.h"
 #include "third_party/blink/renderer/platform/testing/io_task_runner_testing_platform_support.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
+#include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
+#include "third_party/webrtc/api/media_stream_interface.h"
+#include "third_party/webrtc/api/scoped_refptr.h"
 #include "third_party/webrtc/api/stats/rtc_stats_report.h"
 #include "third_party/webrtc/api/stats/rtcstats_objects.h"
+#include "third_party/webrtc/api/units/timestamp.h"
+#include "third_party/webrtc/rtc_base/ref_counted_object.h"
 
 namespace blink {
 
@@ -119,7 +126,7 @@ TEST_F(RTCRtpReceiverImplTest, CreateReceiver) {
       blink::MockWebRtcAudioTrack::Create("webrtc_track");
   receiver_ = CreateReceiver(webrtc_track);
   EXPECT_FALSE(!receiver_->Track());
-  EXPECT_NE(receiver_->Track()->Id().Utf8(), webrtc_track->id());
+  EXPECT_EQ(receiver_->Track()->Id().Utf8(), webrtc_track->id());
   EXPECT_EQ(receiver_->state().track_ref()->webrtc_track().get(),
             webrtc_track.get());
 

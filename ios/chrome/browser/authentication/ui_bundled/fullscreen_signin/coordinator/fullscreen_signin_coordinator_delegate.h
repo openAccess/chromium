@@ -5,16 +5,17 @@
 #ifndef IOS_CHROME_BROWSER_AUTHENTICATION_UI_BUNDLED_FULLSCREEN_SIGNIN_COORDINATOR_FULLSCREEN_SIGNIN_COORDINATOR_DELEGATE_H_
 #define IOS_CHROME_BROWSER_AUTHENTICATION_UI_BUNDLED_FULLSCREEN_SIGNIN_COORDINATOR_FULLSCREEN_SIGNIN_COORDINATOR_DELEGATE_H_
 
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
+
 @class FullscreenSigninCoordinator;
 
-// Delegate for the full screen signin coordinator
+// Delegate for the full screen signin coordinator.
 @protocol FullscreenSigninCoordinatorDelegate <NSObject>
 
-// Let the delegate knows the result and request to be stopped.
-- (void)fullscreenSigninCoordinatorWantsToBeStopped:
-            (FullscreenSigninCoordinator*)coordinator
-                                             result:(SigninCoordinatorResult)
-                                                        result;
+// Lets the delegate know the result and requests to be stopped.
+- (void)
+    fullscreenSigninCoordinatorDone:(FullscreenSigninCoordinator*)coordinator
+                             result:(SigninCoordinatorResultOrIdentity)result;
 
 @end
 

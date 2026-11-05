@@ -137,7 +137,7 @@ class PageNode : public TypedNode<PageNode> {
   virtual bool HasPictureInPicture() const = 0;
 
   // Returns true if this page is opted-out from freezing via origin trial, i.e.
-  // if any of its current frames sets the origin trial.
+  // if any of its active frames sets the origin trial.
   virtual bool HasFreezingOriginTrialOptOut() const = 0;
 
   // Returns true if this page is off the record, false otherwise.
@@ -146,6 +146,17 @@ class PageNode : public TypedNode<PageNode> {
 
   // Returns the page's loading state.
   virtual LoadingState GetLoadingState() const = 0;
+
+  // Returns true if the current (or most recent) load was initiated by the
+  // browser (e.g. omnibox, bookmarks, session restore, extensions) or by a
+  // renderer with transient user activation (e.g. a link click), including
+  // client redirects that continue such a load (renderer-initiated
+  // navigations without activation that start shortly after the previous
+  // commit). Returns false for other renderer-initiated loads, e.g. a
+  // timer-driven `location.reload()` or meta-refresh that fires long after the
+  // page loaded.
+  // See PageNodeObserver::OnIsUserOrBrowserInitiatedLoadChanged.
+  virtual bool IsUserOrBrowserInitiatedLoad() const = 0;
 
   // Returns the UKM source ID associated with the URL of the main frame of
   // this page.
@@ -190,12 +201,11 @@ class PageNode : public TypedNode<PageNode> {
   // frame tree (i.e. not prerendering, not in the BackForwardCache, and not
   // an inner/embedded frame tree like a fenced frame).
   //
-  // Note: If multiple current outermost main frames exist (which can happen
-  // due to a state tracking bug, see crbug.com/40910297), an arbitrary one
-  // is returned.
+  // Note: If multiple active outermost main frames exist (which can happen
+  // transiently during frame swaps), an arbitrary one is returned.
   virtual const FrameNode* GetPrimaryMainFrameNode() const = 0;
 
-  // Returns all of the main frame nodes associated with this page, both current
+  // Returns all of the main frame nodes associated with this page, both active
   // and otherwise. If there are no main frames at the moment, returns the empty
   // set.
   //
@@ -336,6 +346,10 @@ class PageNodeObserver : public base::CheckedObserver {
   // Invoked when the GetLoadingState property changes.
   virtual void OnLoadingStateChanged(const PageNode* page_node,
                                      PageNode::LoadingState previous_state) {}
+
+  // Invoked when the IsUserOrBrowserInitiatedLoad property changes.
+  virtual void OnIsUserOrBrowserInitiatedLoadChanged(
+      const PageNode* page_node) {}
 
   // Invoked when the UkmSourceId property changes.
   virtual void OnUkmSourceIdChanged(const PageNode* page_node) {}

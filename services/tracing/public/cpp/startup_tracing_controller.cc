@@ -57,6 +57,13 @@ std::string& GetGlobalDefaultBasename() {
   return *basename;
 }
 
+StartupTracingController::ExtensionType&
+GetGlobalDefaultBasenameExtensionType() {
+  static StartupTracingController::ExtensionType extension_type =
+      StartupTracingController::ExtensionType::kNone;
+  return extension_type;
+}
+
 bool& GetGlobalBasenameForTestSet() {
   static bool basename_for_test_set = false;
   return basename_for_test_set;
@@ -379,7 +386,7 @@ class TracingSessionCoordinator {
 };
 
 base::FilePath StartupTracingController::BasenameToPath(
-    std::string_view basename) {
+    std::string_view basename) const {
 #if BUILDFLAG(IS_ANDROID)
   if (android_path_generator_callback_) {
     return android_path_generator_callback_.Run(basename);
@@ -394,7 +401,7 @@ base::FilePath StartupTracingController::BasenameToPath(
 }
 
 base::FilePath StartupTracingController::RebasePathIfNeeded(
-    const base::FilePath& path) {
+    const base::FilePath& path) const {
 #if BUILDFLAG(IS_IOS)
   // Relative paths specified at the command line are rebased to the app's user
   // documents directory on iOS to avoid issues with file system permissions.
@@ -423,13 +430,15 @@ StartupTracingController::~StartupTracingController() {
   CHECK_NE(state_, State::kRunning);
 }
 
-base::FilePath StartupTracingController::GetOutputPath() {
+base::FilePath StartupTracingController::GetOutputPath() const {
   auto* command_line = base::CommandLine::ForCurrentProcess();
 
-  base::FilePath path_from_config =
-      tracing::TraceStartupConfig::GetInstance().GetResultFile();
-  if (!path_from_config.empty()) {
-    return RebasePathIfNeeded(path_from_config);
+  if (tracing::TraceStartupConfig::GetInstance().IsEnabled()) {
+    base::FilePath path_from_config =
+        tracing::TraceStartupConfig::GetInstance().GetResultFile();
+    if (!path_from_config.empty()) {
+      return RebasePathIfNeeded(path_from_config);
+    }
   }
 
   // If --trace-startup-file is specified, use it.
@@ -455,9 +464,21 @@ base::FilePath StartupTracingController::GetOutputPath() {
     return RebasePathIfNeeded(result);
   }
 
-  std::string_view basename = GetGlobalDefaultBasename();
+  std::string basename = GetGlobalDefaultBasename();
   if (basename.empty()) {
     basename = "chrome.pftrace";
+  } else if (GetGlobalDefaultBasenameExtensionType() ==
+             ExtensionType::kAppendAppropriate) {
+    if (tracing::TraceStartupConfig::GetInstance().IsEnabled()) {
+      switch (tracing::TraceStartupConfig::GetInstance().GetOutputFormat()) {
+        case tracing::TraceStartupConfig::OutputFormat::kLegacyJSON:
+          basename += ".json";
+          break;
+        case tracing::TraceStartupConfig::OutputFormat::kProto:
+          basename += ".pftrace";
+          break;
+      }
+    }
   }
 
   // If a non-empty directory is specified, use it.
@@ -474,8 +495,8 @@ void StartupTracingController::StartIfNeeded() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK_NE(state_, State::kRunning);
 
-  auto& trace_startup_config = tracing::TraceStartupConfig::GetInstance();
-  if (!trace_startup_config.AttemptAdoptBySessionOwner(
+  const auto& trace_startup_config = tracing::TraceStartupConfig::GetInstance();
+  if (!trace_startup_config.ShouldAdoptBySessionOwner(
           tracing::TraceStartupConfig::SessionOwner::kTracingController)) {
     return;
   }
@@ -527,7 +548,6 @@ void StartupTracingController::OnAutoStopped() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   TracingSessionCoordinator::GetInstance().OnAutoStopped();
   state_ = State::kStopped;
-  tracing::TraceStartupConfig::GetInstance().SetDisabled();
 }
 
 // static
@@ -559,21 +579,8 @@ void StartupTracingController::OverrideDefaultBasenameForTest(
 void StartupTracingController::SetDefaultBasenameInternal(
     std::string basename,
     ExtensionType extension_type) {
-  if (!tracing::TraceStartupConfig::GetInstance().IsEnabled()) {
-    return;
-  }
-
-  if (extension_type == ExtensionType::kAppendAppropriate) {
-    switch (tracing::TraceStartupConfig::GetInstance().GetOutputFormat()) {
-      case tracing::TraceStartupConfig::OutputFormat::kLegacyJSON:
-        basename += ".json";
-        break;
-      case tracing::TraceStartupConfig::OutputFormat::kProto:
-        basename += ".pftrace";
-        break;
-    }
-  }
   GetGlobalDefaultBasename() = std::move(basename);
+  GetGlobalDefaultBasenameExtensionType() = extension_type;
 }
 
 void StartupTracingController::ShutdownAndWaitForStopIfNeeded() {
@@ -581,7 +588,6 @@ void StartupTracingController::ShutdownAndWaitForStopIfNeeded() {
   TracingSessionCoordinator::GetInstance().ShutdownAndWait();
 
   state_ = State::kStopped;
-  tracing::TraceStartupConfig::GetInstance().SetDisabled();
 }
 
 // static

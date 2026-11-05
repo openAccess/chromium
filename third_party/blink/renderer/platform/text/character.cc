@@ -32,6 +32,8 @@
 
 #include <unicode/uchar.h>
 #include <unicode/ucptrie.h>
+#include <unicode/uniset.h>
+#include <unicode/unistr.h>
 #include <unicode/uobject.h>
 #include <unicode/uscript.h>
 
@@ -49,7 +51,7 @@
 #include "third_party/blink/renderer/platform/wtf/text/unicode.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_uchar.h"
 
-namespace blink {
+namespace blink::unicode {
 
 namespace {
 
@@ -77,20 +79,20 @@ base::Lock& GetFreezePatternLock() {
 
 }  // namespace
 
-void Character::ApplyPatternAndFreezeIfEmpty(icu::UnicodeSet* unicodeSet,
-                                             const char* pattern) {
+void internal::ApplyPatternAndFreezeIfEmpty(icu::UnicodeSet* unicode_set,
+                                            const char* pattern) {
   base::AutoLock locker(GetFreezePatternLock());
-  if (!unicodeSet->isEmpty()) {
+  if (!unicode_set->isEmpty()) {
     return;
   }
   blink::IcuError err;
   // Use ICU's invariant-character initialization method.
-  unicodeSet->applyPattern(icu::UnicodeString(pattern, -1, US_INV), err);
-  unicodeSet->freeze();
+  unicode_set->applyPattern(icu::UnicodeString(pattern, -1, US_INV), err);
+  unicode_set->freeze();
   DCHECK_EQ(err, U_ZERO_ERROR);
 }
 
-bool Character::IsUprightInMixedVertical(UChar32 character) {
+bool IsUprightInMixedVertical(UChar32 character) {
   // https://drafts.csswg.org/css-writing-modes-3/#vertical-orientations
   // We should assume U, Tu, and Tr as "upright".
   return u_getIntPropertyValue(character,
@@ -98,55 +100,57 @@ bool Character::IsUprightInMixedVertical(UChar32 character) {
          UVerticalOrientation::U_VO_ROTATED;
 }
 
-bool Character::IsCjkIdeographOrSymbolSlow(UChar32 c) {
+bool internal::IsCjkIdeographOrSymbolSlow(UChar32 c) {
   return GetProperty(c).is_cjk_ideograph_or_symbol;
 }
 
-bool Character::IsBidiControl(UChar32 character) {
+bool IsBidiControl(UChar32 character) {
   return GetProperty(character).is_bidi_control;
 }
 
-bool Character::IsHangulSlow(UChar32 character) {
+bool internal::IsHangulSlow(UChar32 character) {
   return GetProperty(character).is_hangul;
 }
 
-// static
-HanKerningCharType Character::GetHanKerningCharType(UChar32 character) {
+HanKerningCharType GetHanKerningCharType(UChar32 character) {
   return GetProperty(character).han_kerning;
 }
 
-// static
-EastAsianSpacingType Character::GetEastAsianSpacingType(UChar32 character) {
+EastAsianSpacingType GetEastAsianSpacingType(UChar32 character) {
   return GetProperty(character).east_asian_spacing;
 }
 
-bool Character::MaybeHanKerningOpenSlow(UChar32 ch) {
+namespace internal {
+
+bool MaybeHanKerningOpenSlow(UChar32 ch) {
   // See `HanKerning::GetCharType`.
-  const HanKerningCharType type = Character::GetHanKerningCharType(ch);
+  const HanKerningCharType type = GetHanKerningCharType(ch);
   return type == HanKerningCharType::kOpen ||
          type == HanKerningCharType::kOpenQuote;
 }
 
-bool Character::MaybeHanKerningCloseSlow(UChar32 ch) {
+bool MaybeHanKerningCloseSlow(UChar32 ch) {
   // See `HanKerning::GetCharType`.
-  const HanKerningCharType type = Character::GetHanKerningCharType(ch);
+  const HanKerningCharType type = GetHanKerningCharType(ch);
   return type == HanKerningCharType::kClose ||
          type == HanKerningCharType::kCloseQuote;
 }
 
-bool Character::MaybeHanKerningMiddleSlow(UChar32 ch) {
+bool MaybeHanKerningMiddleSlow(UChar32 ch) {
   // See `HanKerning::GetCharType`.
-  const HanKerningCharType type = Character::GetHanKerningCharType(ch);
+  const HanKerningCharType type = GetHanKerningCharType(ch);
   return type == HanKerningCharType::kMiddle;
 }
 
-bool Character::CanTextDecorationSkipInk(UChar32 codepoint) {
+}  // namespace internal
+
+bool CanTextDecorationSkipInk(UChar32 codepoint) {
   if (codepoint == uchar::kSolidus || codepoint == uchar::kReverseSolidus ||
       codepoint == uchar::kLowLine) {
     return false;
   }
 
-  if (Character::IsCjkIdeographOrSymbol(codepoint)) {
+  if (IsCjkIdeographOrSymbol(codepoint)) {
     return false;
   }
 
@@ -166,7 +170,7 @@ bool Character::CanTextDecorationSkipInk(UChar32 codepoint) {
   }
 }
 
-bool Character::CanReceiveTextEmphasis(UChar32 c) {
+bool CanReceiveTextEmphasis(UChar32 c) {
   unicode::CharCategory category = unicode::Category(c);
   if (category & (unicode::kSeparator_Space | unicode::kSeparator_Line |
                   unicode::kSeparator_Paragraph | unicode::kOther_NotAssigned |
@@ -184,39 +188,37 @@ bool Character::CanReceiveTextEmphasis(UChar32 c) {
     return false;
   }
 
-  if (RuntimeEnabledFeatures::TextEmphasisPunctuationExceptionsEnabled()) {
-    // A set of exceptions for punctuation.
-    switch (c) {
-      // List from
-      // https://drafts.csswg.org/css-text-decor/#text-emphasis-style-property
-      case uchar::kNumberSign:
-      case uchar::kPercentSign:
-      case uchar::kAmpersand:
-      case uchar::kCommercialAt:
-      case uchar::kSectionSign:
-      case uchar::kPilcrowSign:
-      case uchar::kArabicIndicPerMilleSign:
-      case uchar::kArabicIndicPerTenThousandSign:
-      case uchar::kArabicPercentSign:
-      case uchar::kPerMilleSign:
-      case uchar::kPerTenThousandSign:
-      case uchar::kTironianSignEt:
-      case uchar::kReversedPilcrowSign:
-      case uchar::kSwungDash:
-      case uchar::kPartAlternationMark:
-      // Characters with NFKD equivalence to the above.
-      case uchar::kSmallNumberSign:
-      case uchar::kSmallAmpersand:
-      case uchar::kSmallPercentSign:
-      case uchar::kSmallCommercialAt:
-      case uchar::kFullwidthNumberSign:
-      case uchar::kFullwidthPercentSign:
-      case uchar::kFullwidthAmpersand:
-      case uchar::kFullwidthCommercialAt:
-        return true;
-      default:
-        break;
-    }
+  // A set of exceptions for punctuation.
+  switch (c) {
+    // List from
+    // https://drafts.csswg.org/css-text-decor/#text-emphasis-style-property
+    case uchar::kNumberSign:
+    case uchar::kPercentSign:
+    case uchar::kAmpersand:
+    case uchar::kCommercialAt:
+    case uchar::kSectionSign:
+    case uchar::kPilcrowSign:
+    case uchar::kArabicIndicPerMilleSign:
+    case uchar::kArabicIndicPerTenThousandSign:
+    case uchar::kArabicPercentSign:
+    case uchar::kPerMilleSign:
+    case uchar::kPerTenThousandSign:
+    case uchar::kTironianSignEt:
+    case uchar::kReversedPilcrowSign:
+    case uchar::kSwungDash:
+    case uchar::kPartAlternationMark:
+    // Characters with NFKD equivalence to the above.
+    case uchar::kSmallNumberSign:
+    case uchar::kSmallAmpersand:
+    case uchar::kSmallPercentSign:
+    case uchar::kSmallCommercialAt:
+    case uchar::kFullwidthNumberSign:
+    case uchar::kFullwidthPercentSign:
+    case uchar::kFullwidthAmpersand:
+    case uchar::kFullwidthCommercialAt:
+      return true;
+    default:
+      break;
   }
 
   // Punctuation
@@ -231,34 +233,33 @@ bool Character::CanReceiveTextEmphasis(UChar32 c) {
   return true;
 }
 
-bool Character::IsEmojiTagSequence(UChar32 c) {
+bool IsEmojiTagSequence(UChar32 c) {
   // http://www.unicode.org/reports/tr51/proposed.html#valid-emoji-tag-sequences
   return (c >= uchar::kTagDigitZero && c <= uchar::kTagDigitNine) ||
          (c >= uchar::kTagLatinSmallLetterA &&
           c <= uchar::kTagLatinSmallLetterZ);
 }
 
-bool Character::IsExtendedPictographic(UChar32 c) {
+bool IsExtendedPictographic(UChar32 c) {
   return u_hasBinaryProperty(c, UCHAR_EXTENDED_PICTOGRAPHIC);
 }
 
-bool Character::IsEmojiComponent(UChar32 c) {
+bool IsEmojiComponent(UChar32 c) {
   return u_hasBinaryProperty(c, UCHAR_EMOJI_COMPONENT);
 }
 
 namespace {
 
-consteval bool MaybeEmojiPresentationForAscii(unsigned char ch) {
+consteval bool MaybeEmojiPresentationForAscii(uint8_t ch) {
   constexpr auto kCopyRightSign = 0xA9;
   constexpr auto kRegisteredSign = 0xAE;
-  return ch == kCopyRightSign || ch == kRegisteredSign ||
-         Character::IsEmojiKeycapBase(ch);
+  return ch == kCopyRightSign || ch == kRegisteredSign || IsEmojiKeycapBase(ch);
 }
 
-template <std::size_t N, typename Function>
+template <std::size_t kSize, typename Function>
 consteval auto GenerateTable(Function&& f) {
-  std::array<bool, N> arr;
-  for (unsigned char i = 0; i < N; ++i) {
+  std::array<bool, kSize> arr;
+  for (uint8_t i = 0; i < kSize; ++i) {
     arr[i] = f(i);
   }
   return arr;
@@ -269,7 +270,7 @@ static const auto maybe_emoji_presentation_ascii =
 
 }  // namespace
 
-bool Character::MaybeEmojiPresentation(UChar32 c) {
+bool MaybeEmojiPresentation(UChar32 c) {
   if (IsAscii(c)) [[likely]] {
     return maybe_emoji_presentation_ascii[c];
   }
@@ -280,22 +281,22 @@ bool Character::MaybeEmojiPresentation(UChar32 c) {
          c >= 65536;
 }
 
-bool Character::IsCommonOrInheritedScript(UChar32 character) {
+bool IsCommonOrInheritedScript(UChar32 character) {
   IcuError status;
   UScriptCode script = uscript_getScript(character, &status);
   return U_SUCCESS(status) &&
          (script == USCRIPT_COMMON || script == USCRIPT_INHERITED);
 }
 
-bool Character::IsPrivateUse(UChar32 character) {
+bool IsPrivateUse(UChar32 character) {
   return unicode::Category(character) & unicode::kOther_PrivateUse;
 }
 
-bool Character::IsNonCharacter(UChar32 character) {
+bool IsNonCharacter(UChar32 character) {
   return U_IS_UNICODE_NONCHAR(character);
 }
 
-bool Character::HasLikelyScript(UChar32 character) {
+bool HasLikelyScript(UChar32 character) {
   IcuError err;
   UScriptCode script = uscript_getScript(character, &err);
 
@@ -318,7 +319,7 @@ bool Character::HasLikelyScript(UChar32 character) {
 // by fonts for scripts closely related to them. See
 // http://unicode.org/cldr/utility/list-unicodeset.jsp?a=[:Script=Common:]
 // FIXME: make this more efficient with a wider coverage
-UScriptCode Character::GetScriptBasedOnUnicodeBlock(int ucs4) {
+UScriptCode GetScriptBasedOnUnicodeBlock(int ucs4) {
   UBlockCode block = ublock_getCode(ucs4);
   switch (block) {
     case UBLOCK_CJK_SYMBOLS_AND_PUNCTUATION:
@@ -328,6 +329,16 @@ UScriptCode Character::GetScriptBasedOnUnicodeBlock(int ucs4) {
       return USCRIPT_KATAKANA_OR_HIRAGANA;
     case UBLOCK_ARABIC:
       return USCRIPT_ARABIC;
+    case UBLOCK_ARABIC_SUPPLEMENT:
+    case UBLOCK_ARABIC_EXTENDED_A:
+    case UBLOCK_ARABIC_EXTENDED_B:
+    case UBLOCK_ARABIC_EXTENDED_C:
+    case UBLOCK_ARABIC_PRESENTATION_FORMS_A:
+    case UBLOCK_ARABIC_PRESENTATION_FORMS_B:
+      if (RuntimeEnabledFeatures::NastaliqScriptEnabled()) {
+        return USCRIPT_ARABIC;
+      }
+      break;
     case UBLOCK_THAI:
       return USCRIPT_THAI;
     case UBLOCK_GREEK:
@@ -346,11 +357,12 @@ UScriptCode Character::GetScriptBasedOnUnicodeBlock(int ucs4) {
     case UBLOCK_GOTHIC:
       return USCRIPT_GOTHIC;
     default:
-      return USCRIPT_COMMON;
+      break;
   }
+  return USCRIPT_COMMON;
 }
 
-bool Character::IsCursiveScript(UChar32 code_point) {
+bool IsCursiveScript(UChar32 code_point) {
   IcuError err;
   UScriptCode script = uscript_getScript(code_point, &err);
   if (!U_SUCCESS(err)) {
@@ -377,7 +389,7 @@ static constexpr UChar kStretchyOperatorWithInlineAxis[]{
     0x290F, 0x2910, 0x294E, 0x2950, 0x2952, 0x2953, 0x2956, 0x2957, 0x295A,
     0x295B, 0x295E, 0x295F, 0x2B45, 0x2B46, 0xFE35, 0xFE36, 0xFE37, 0xFE38};
 
-bool Character::IsVerticalMathCharacter(UChar32 text_content) {
+bool IsVerticalMathCharacter(UChar32 text_content) {
   return text_content !=
              uchar::kArabicMathematicalOperatorMeemWithHahWithTatweel &&
          text_content != uchar::kArabicMathematicalOperatorHahWithDal &&
@@ -385,7 +397,7 @@ bool Character::IsVerticalMathCharacter(UChar32 text_content) {
                                      text_content);
 }
 
-UChar32 Character::FullwidthVariant(UChar32 code_point) {
+UChar32 FullwidthVariant(UChar32 code_point) {
   // ASCII printable characters (U+0021..U+007E) to full-width (U+FF01..U+FF5E).
   if (code_point >= 0x21 && code_point <= 0x7E) {
     return code_point + 0xFEE0;
@@ -480,7 +492,7 @@ UChar32 Character::FullwidthVariant(UChar32 code_point) {
   return code_point;
 }
 
-UChar32 Character::FullSizeKanaVariant(UChar32 code_point) {
+UChar32 FullSizeKanaVariant(UChar32 code_point) {
   switch (code_point) {
     case 0x3041:  // Hiragana small a
       return 0x3042;
@@ -603,4 +615,4 @@ UChar32 Character::FullSizeKanaVariant(UChar32 code_point) {
   return code_point;
 }
 
-}  // namespace blink
+}  // namespace blink::unicode

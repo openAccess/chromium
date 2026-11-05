@@ -5,13 +5,16 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_TOOLBAR_APP_MENU_CONTROL_H_
 #define CHROME_BROWSER_UI_VIEWS_TOOLBAR_APP_MENU_CONTROL_H_
 
+#include "base/timer/elapsed_timer.h"
 #include "chrome/browser/ui/toolbar/app_menu_icon_controller.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 
+class ActionAppMenu;
 class AppMenuButtonObserver;
 namespace views {
 class AccessiblePaneView;
 class DialogDelegate;
+class MenuItemView;
 class View;
 }
 
@@ -37,8 +40,19 @@ class AppMenuControl {
   // Closes the app menu if it is currently showing.
   virtual void CloseMenu() = 0;
 
-  // Shows the app menu.
+  // Shows the app menu simulating user activation (handles promo checks,
+  // animations, and default mnemonic flags).
   virtual void ShowMenu() = 0;
+
+  // Shows the app menu directly with specified MenuRunner::RunTypes flags.
+  virtual void ShowMenuWithFlags(int run_types) = 0;
+
+  // Test hooks for inspecting and interacting with the open menu.
+  virtual views::MenuItemView* GetRootMenuItemViewForTesting() = 0;
+  virtual ActionAppMenu* GetActionAppMenuForTesting() = 0;
+  virtual void ExecuteCommandForTesting(int command_id,
+                                        int mouse_event_flags) = 0;
+  virtual void SetMenuTimerForTesting(base::ElapsedTimer timer) = 0;
 
   // Adds or removes an observer to be notified of app menu events.
   virtual void AddObserver(AppMenuButtonObserver* observer) = 0;

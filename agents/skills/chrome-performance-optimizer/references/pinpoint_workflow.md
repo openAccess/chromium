@@ -7,8 +7,9 @@ ______________________________________________________________________
 
 ## 1. Uploading CL to Gerrit (Work In Progress)
 
-Ensure the change is committed with clean descriptions and tags, and upload as
-**WIP** to prevent notifying reviewers:
+Ensure the candidate has passed the Pre-Upload Code Review gate and is committed
+with clean descriptions and tags, and upload as **WIP** to prevent notifying
+reviewers:
 
 ```bash
 git cl upload -o wip --no-autocc -m "Optimization summary"
@@ -51,7 +52,7 @@ main optimization loop or sit idle.**
 2. Delegate monitoring to a background task or subagent using
    `pinpoint_evaluator.py`:
    ```bash
-   vpython3 agents/skills/chrome-performance-optimizer/scripts/pinpoint_evaluator.py --action evaluate --job-id <JOB_ID>
+   vpython3 .agents/skills/chrome-performance-optimizer/scripts/pinpoint_evaluator.py --action evaluate --job-id <JOB_ID>
    ```
 3. Limit concurrent in-flight Pinpoint try jobs to **max 2** to avoid bot pool
    starvation.
@@ -60,37 +61,71 @@ ______________________________________________________________________
 
 ## 4. Polling and Evaluating Pinpoint Results
 
-Check the comparison table and statistical significance:
+Evaluate the job with `pinpoint_evaluator.py` (see Section 3); its `Decision:`
+line is the verdict. For diagnostics, the raw comparison table is:
 
 ```bash
-pp s <JOB_ID>
+pp s --show-all <JOB_ID>
 ```
 
-### Evaluation Criteria:
+Without `--show-all`, `pp s` hides rows with `p >= 0.01`, usually including
+`Score`. The raw table has no multiple-testing correction.
 
-1. **Metric Direction (`smaller-better` vs `larger-better`)**:
+### Evaluation Criteria (`pinpoint_evaluator.py`):
+
+1. **Metric Direction (`smaller-better` vs `bigger-better` / `larger-better`)**:
    - **Subtests (`TodoMVC-*`, `Editor-*`, `NewsSite-*`)**: Measure
      duration/latency in milliseconds where **smaller is better**.
      - **`-X.X%` (Negative Change)**: Speedup / Improvement (Win).
      - **`+X.X%` (Positive Change)**: Slowdown / Regression (Loss).
-   - **Overall `Score`**: Measures operations/second where **larger is better**.
+   - **Overall `Score`**: Measures operations/second where **bigger is better**.
      - **`+X.X%`**: Improvement.
      - **`-X.X%`**: Regression.
-2. **Statistical Significance**: Look for $p < 0.05$ (marked with `*` in
-   Pinpoint output).
-3. **No Regressions**: Any statistically significant positive delta (`+X%` on
-   `smaller-better`) indicates a real performance regression.
+2. **Multiple Hypothesis Testing Correction (FDR)**:
+   - Testing `m = 20` independent subtests at unadjusted `p < 0.05` raises at
+     least one false alarm in `1 - 0.95^20 = 64%` of jobs without any real
+     effect, and a false regression in `1 - 0.975^20 = 40%`.
+   - Subtest improvements and regressions are confirmed by directional
+     Benjamini-Hochberg (`q_BH < 0.05`, controlling the FDR in each direction).
+     Unlike a Bonferroni-style threshold (`p < 0.05 / m` for every subtest), it
+     still catches small shifts spread over several subtests. `Score` (`Total`
+     for JetStream), the primary endpoint, is judged at unadjusted `p < 0.05`.
+   - The output also lists 95% confidence intervals and the minimum detectable
+     effect (`MDE`) at 80% power for the threshold actually applied.
+3. **Composite Priority & Regression Handling**:
+   - Because `Score` (`Total` for JetStream) is the primary endpoint and already
+     integrates all subtests, a statistically significant `Score` improvement
+     (`p < 0.05`) **always keeps the CL**, even if individual subtest(s) have
+     confirmed regressions (`q_BH < 0.05`). Confirmed subtest regressions are
+     still reported so avoidable collateral overhead can be refined on a
+     follow-up patchset without closing or rejecting the CL.
+   - When `Score` is **not** significantly improved (subtest-only candidate), a
+     confirmed subtest regression (`q_BH < 0.05`), a `Score` regression at
+     `p < 0.05`, or weak evidence of a `Score` drop (more than 0.05% at
+     `p < 0.20`) rejects the CL. Isolated subtest hits with raw `p < 0.05` that
+     fail the correction are ignored as noise.
 
 ### Decision Actions:
 
-- **Winner (Keep & Propose)**: If overall score is improved or sub-workload
-  durations significantly decrease (`-X%`) with $p < 0.05$ and zero regressions:
-  - Set Gerrit topic to `chrome-perf-opt-accepted`.
-  - Add benchmark results to CL description and propose to reviewers.
-- **Neutral / Regressed (Abandon)**: If the change shows no measurable
-  improvement or triggers statistically significant regressions:
-  - Set Gerrit topic to `chrome-perf-opt-rejected`.
-  - Abandon the CL:
+- **Winner (Keep & Propose)** (`Decision: Propose / Keep CL`): `Score` improved
+  significantly (`p < 0.05`), OR at least one subtest improved with zero
+  confirmed regressions and no `Score` veto:
+  - If `Score` improved significantly alongside confirmed subtest regression(s),
+    optionally upload a targeted Patchset 2 refinement on the same CL before
+    finalizing, rather than abandoning it.
+  - Set Gerrit topic to `chrome-perf-opt-accepted`:
     ```bash
-    git cl abandon -m "Pinpoint try job showed statistically significant regression / no speedup."
+    vpython3 .agents/skills/chrome-performance-optimizer/scripts/pinpoint_evaluator.py --action accept
+    ```
+  - Add benchmark results to CL description and propose to reviewers. If only
+    subtests improved and `Score` is not significant, state that the win is
+    tentative.
+- **Neutral / Regressed (Abandon)** (`Decision: Abandon CL`): `Score` did not
+  significantly improve, and either no subtest improvement survives the
+  correction, something regressed, or the `Score` veto fired:
+  - Set Gerrit topic to `chrome-perf-opt-rejected` and abandon the CL. The
+    script sets the topic before closing the CL, because Gerrit rejects topic
+    changes on abandoned CLs:
+    ```bash
+    vpython3 .agents/skills/chrome-performance-optimizer/scripts/pinpoint_evaluator.py --action reject
     ```

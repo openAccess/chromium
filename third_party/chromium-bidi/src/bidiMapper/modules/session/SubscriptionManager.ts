@@ -32,7 +32,7 @@ import type {BrowsingContextStorage} from '../context/BrowsingContextStorage.js'
  * Example:
  *   cartesian([1, 2], ['a', 'b']); => [[1, 'a'], [1, 'b'], [2, 'a'], [2, 'b']]
  */
-export function cartesianProduct(...a: any[][]) {
+export function cartesianProduct(...a: any[][]): unknown[] {
   return a.reduce((a: unknown[], b: unknown[]) =>
     a.flatMap((d) => b.map((e) => [d, e].flat())),
   );
@@ -117,11 +117,15 @@ export class SubscriptionManager {
 
   getGoogChannelsSubscribedToEventGlobally(
     eventName: ChromiumBidi.EventNames,
+    // Optional context to route events originating outside a browsing context.
+    userContextId?: Browser.UserContext,
   ): GoogChannel[] {
     const googChannels = new Set<GoogChannel>();
 
     for (const subscription of this.#subscriptions) {
-      if (this.#isSubscribedTo(subscription, eventName)) {
+      if (
+        this.#isSubscribedTo(subscription, eventName, undefined, userContextId)
+      ) {
         googChannels.add(subscription.googChannel);
       }
     }
@@ -133,6 +137,7 @@ export class SubscriptionManager {
     subscription: Subscription,
     moduleOrEvent: ChromiumBidi.EventNames,
     browsingContextId?: BrowsingContext.BrowsingContext,
+    userContextId?: Browser.UserContext,
   ): boolean {
     let includesEvent = false;
     for (const eventName of subscription.eventNames) {
@@ -157,6 +162,11 @@ export class SubscriptionManager {
 
     // user context subscription.
     if (subscription.userContextIds.size !== 0) {
+      // Check exact user context match if provided.
+      if (userContextId !== undefined) {
+        return subscription.userContextIds.has(userContextId);
+      }
+
       if (!browsingContextId) {
         return false;
       }
@@ -244,7 +254,7 @@ export class SubscriptionManager {
   unsubscribe(
     inputEventNames: ChromiumBidi.EventNames[],
     googChannel: GoogChannel,
-  ) {
+  ): void {
     const eventNames = new Set(unrollEvents(inputEventNames));
 
     const newSubscriptions: Subscription[] = [];
@@ -296,7 +306,7 @@ export class SubscriptionManager {
   /**
    * Unsubscribes by subscriptionId.
    */
-  unsubscribeById(subscriptionIds: string[]) {
+  unsubscribeById(subscriptionIds: string[]): void {
     const subscriptionIdsSet = new Set(subscriptionIds);
     const unknownIds = difference(
       subscriptionIdsSet,

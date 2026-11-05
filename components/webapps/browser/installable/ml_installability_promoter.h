@@ -6,6 +6,7 @@
 #define COMPONENTS_WEBAPPS_BROWSER_INSTALLABLE_ML_INSTALLABILITY_PROMOTER_H_
 
 #include <memory>
+#include <optional>
 
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -18,10 +19,9 @@
 #include "components/webapps/browser/installable/ml_install_result_reporter.h"
 #include "content/public/browser/service_worker_context_observer.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/browser/web_contents_user_data.h"
-#include "mojo/public/cpp/bindings/struct_ptr.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/mojom/favicon/favicon_url.mojom-forward.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -36,6 +36,10 @@ enum class Visibility;
 namespace segmentation_platform {
 struct ClassificationResult;
 }  // namespace segmentation_platform
+
+namespace tabs {
+class TabInterface;
+}  // namespace tabs
 
 namespace webapps {
 class AppBannerManager;
@@ -89,18 +93,27 @@ struct SiteInstallMetrics {
 //
 // Browsertests are located in
 // chrome/browser/web_applications/ml_promotion_browsertest.cc
-class MLInstallabilityPromoter
-    : public content::WebContentsObserver,
-      public content::ServiceWorkerContextObserver,
-      public content::WebContentsUserData<MLInstallabilityPromoter> {
+class MLInstallabilityPromoter : public content::WebContentsObserver,
+                                 public content::ServiceWorkerContextObserver {
  public:
+  DECLARE_USER_DATA(MLInstallabilityPromoter);
+
   static constexpr char kShowInstallPromptLabel[] = "ShowInstallPrompt";
   static constexpr char kDontShowLabel[] = "DontShow";
 
+  // `web_contents` is passed explicitly because during a tab discard the
+  // promoter is recreated for the incoming WebContents before `tab` swaps its
+  // contents.
+  MLInstallabilityPromoter(tabs::TabInterface& tab,
+                           content::WebContents* web_contents);
   ~MLInstallabilityPromoter() override;
 
   MLInstallabilityPromoter(const MLInstallabilityPromoter&) = delete;
   MLInstallabilityPromoter& operator=(const MLInstallabilityPromoter&) = delete;
+
+  static MLInstallabilityPromoter* From(tabs::TabInterface* tab);
+  static MLInstallabilityPromoter* FromWebContents(
+      content::WebContents* web_contents);
 
   // Returns if the current web_contents has an existing install happening.
   bool HasCurrentInstall();
@@ -122,14 +135,11 @@ class MLInstallabilityPromoter
   }
 
  private:
-  explicit MLInstallabilityPromoter(content::WebContents* web_contents);
-  friend class content::WebContentsUserData<MLInstallabilityPromoter>;
-
   // Starts the pipeline. The state MUST be kInvalid.
   void StartPipeline(const GURL& validated_url);
   void OnDidCollectSiteQualityMetrics(
       const SiteQualityMetrics& site_quality_metrics);
-  void OnDidGetManifestForCurrentURL(blink::mojom::ManifestPtr manifest);
+  void OnDidGetManifestForCurrentURL(std::optional<blink::Manifest> manifest);
 
   // This is used to delay the calling of MaybeCompleteMetricsCollection() for a
   // specific amount of seconds for changes in the web contents to modify data
@@ -193,7 +203,9 @@ class MLInstallabilityPromoter
   // Variables & tasks used during metrics collection.
   std::unique_ptr<SiteQualityMetricsTask> site_quality_metrics_task_;
   std::unique_ptr<SiteManifestMetricsTask> site_manifest_metrics_task_;
-  blink::mojom::ManifestPtr manifest_;
+  // Heap-allocated rather than inline std::optional so inactive pages do
+  // not reserve ~2.2 KiB per tab.
+  std::unique_ptr<blink::Manifest> manifest_;
   SiteQualityMetrics site_quality_metrics_;
   SiteInstallMetrics site_install_metrics_;
   bool is_timeout_complete_ = false;
@@ -210,9 +222,9 @@ class MLInstallabilityPromoter
   raw_ptr<content::ServiceWorkerContext> service_worker_context_;
   std::unique_ptr<base::RunLoop> run_loop_for_testing_;
 
-  base::WeakPtrFactory<MLInstallabilityPromoter> weak_factory_{this};
+  ui::ScopedUnownedUserData<MLInstallabilityPromoter> scoped_unowned_user_data_;
 
-  WEB_CONTENTS_USER_DATA_KEY_DECL();
+  base::WeakPtrFactory<MLInstallabilityPromoter> weak_factory_{this};
 };
 
 }  // namespace webapps

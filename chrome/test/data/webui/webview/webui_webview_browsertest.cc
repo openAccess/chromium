@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <cmath>
+
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -10,6 +12,7 @@
 #include "base/strings/string_split.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
@@ -34,6 +37,7 @@
 #include "components/webui/chrome_urls/pref_names.h"
 #include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/context_menu_params.h"
+#include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/web_contents.h"
@@ -51,6 +55,9 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/install_default_websocket_handlers.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/page/page_zoom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 
 // Turn these tests off on Mac while we collect data on windows server crashes
 // on mac chromium builders.
@@ -168,30 +175,6 @@ class TestWebUIConfig
       : DefaultWebUIConfig(content::kChromeUIScheme, kTestWebViewHost) {}
 };
 
-class UntrustedWebUIController : public TestWebUIControllerBase {
- public:
-  explicit UntrustedWebUIController(content::WebUI* web_ui)
-      : TestWebUIControllerBase(web_ui,
-                                chrome::kChromeUILensUntrustedSidePanelURL,
-                                "script-src chrome-untrusted://webui-test;") {
-    web_ui->SetBindings(content::BindingsPolicySet({}));
-  }
-
-  WEB_UI_CONTROLLER_TYPE_DECL();
-};
-
-WEB_UI_CONTROLLER_TYPE_IMPL(UntrustedWebUIController)
-
-class UntrustedWebUIConfig
-    : public content::DefaultWebUIConfig<UntrustedWebUIController> {
- public:
-  UntrustedWebUIConfig()
-      : DefaultWebUIConfig(content::kChromeUIUntrustedScheme,
-                           // Lens is currently the only chrome-untrusted://
-                           // page with webview permission.
-                           chrome::kChromeUILensSidePanelHost) {}
-};
-
 }  // namespace
 
 class WebUIWebViewBrowserTest : public WebUIMochaBrowserTest {
@@ -218,6 +201,31 @@ class WebUIWebViewBrowserTest : public WebUIMochaBrowserTest {
 
   content::WebContents* GetWebContentsForTesting() {
     return browser()->tab_strip_model()->GetActiveWebContents();
+  }
+
+  // A page for autosize tests' guests, which evaluates functions posted to it.
+  GURL GetAutosizeGuestUrl() const {
+    return GetTestUrl("webui/guest_view_shared/eval_post_message.html");
+  }
+
+  // Multiplies the zoom of the WebUI embedder by `factor`, and waits for the
+  // page to pick it up.
+  void ZoomEmbedder(double factor) {
+    content::WebContents* embedder = GetWebContentsForTesting();
+    const double old_dpr =
+        content::EvalJs(embedder, "devicePixelRatio").ExtractDouble();
+    content::HostZoomMap* zoom_map =
+        content::HostZoomMap::GetForWebContents(embedder);
+    zoom_map->SetZoomLevelForHost(
+        kTestWebViewHost,
+        blink::ZoomFactorToZoomLevel(
+            factor * blink::ZoomLevelToZoomFactor(
+                         content::HostZoomMap::GetZoomLevel(embedder))));
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      return std::abs(
+                 content::EvalJs(embedder, "devicePixelRatio").ExtractDouble() -
+                 old_dpr * factor) < 0.01;
+    }));
   }
 
   testing::AssertionResult RunContentScriptTestCase(
@@ -342,6 +350,82 @@ IN_PROC_BROWSER_TEST_F(WebUIWebViewBrowserTest, DisplayNone) {
   ASSERT_TRUE(RunTestOnWebContents(
       GetWebContentsForTesting(), "webview/webview_basic_test.js",
       "runMochaTest('WebviewBasicTest', 'DisplayNone')", true));
+}
+
+// Runs the <webview> autosize tests with the WebUI embedder zoomed, so that its
+// CSS px and physical pixels differ.
+IN_PROC_BROWSER_TEST_F(WebUIWebViewBrowserTest, AutoSizeWithZoomedEmbedder) {
+  content::WebContents* embedder = GetWebContentsForTesting();
+  ASSERT_NO_FATAL_FAILURE(ZoomEmbedder(1.5));
+
+  ASSERT_TRUE(RunTestOnWebContents(
+      embedder, "webview/webview_autosize_test.js",
+      content::JsReplace("window.webviewUrl = $1; mocha.run();",
+                         GetAutosizeGuestUrl()),
+      true));
+}
+
+// A guest created in an embedder that is already zoomed should match the
+// embedder's zoom. The guest's zoom is matched to the embedder's when it
+// attaches, but that can't take effect before it has navigated, so it must be
+// matched again once it has (see kGuestViewMatchEmbedderZoomAfterNavigation).
+IN_PROC_BROWSER_TEST_F(WebUIWebViewBrowserTest,
+                       GuestMatchesZoomOfAlreadyZoomedEmbedder) {
+  content::WebContents* embedder = GetWebContentsForTesting();
+  ASSERT_NO_FATAL_FAILURE(ZoomEmbedder(1.5));
+
+  EXPECT_EQ("1", content::EvalJs(embedder,
+                                 content::JsReplace(R"(
+      (async () => {
+        const utils = await import(
+            'chrome://webui-test/webview/webview_autosize_test_utils.js');
+        const webview =
+            await utils.createAutosizeWebview($1, 50, 50, 1000, 1000);
+        // The number of embedder CSS px per guest CSS px, which is the ratio of
+        // the guest's zoom to the embedder's.
+        return String(await utils.getGuestToEmbedderScale(webview));
+      })())",
+                                                    GetAutosizeGuestUrl())));
+}
+
+// The embedder is zoomed only after autosize is enabled. The guest's zoom
+// should follow the embedder's, and the constraints should be re-applied at the
+// new zoom (see GuestViewBase::OnZoomChanged), so the guest stays limited to
+// the same number of embedder CSS px. Without that, it would stay limited to
+// the physical pixels the constraints were first converted to. The JS steps run
+// via EvalJs so that the embedder can be zoomed in between them.
+IN_PROC_BROWSER_TEST_F(WebUIWebViewBrowserTest,
+                       AutoSizeReappliesConstraintsWhenEmbedderZoomChanges) {
+  content::WebContents* embedder = GetWebContentsForTesting();
+  ASSERT_EQ(
+      "", content::EvalJs(embedder, content::JsReplace(R"(
+      (async () => {
+        const utils = await import(
+            'chrome://webui-test/webview/webview_autosize_test_utils.js');
+        window.autosizeTestUtils = utils;
+        // Wider and taller than the constraints, so autosize clamps to them.
+        window.autosizeWebview =
+            await utils.createAutosizeWebview($1, 50, 50, 200, 100);
+        await utils.setGuestContentSize(window.autosizeWebview, 300, 300);
+        // Each check resolves with an empty string on success, or a
+        // description of the mismatch otherwise. So `||` checks the size only
+        // once the zoom matches, and resolves with the first mismatch.
+        return await utils.waitForGuestToMatchEmbedderZoom(
+                   window.autosizeWebview) ||
+            await utils.waitForGuestSize(window.autosizeWebview, 200, 100);
+      })())",
+                                                       GetAutosizeGuestUrl())));
+
+  ASSERT_NO_FATAL_FAILURE(ZoomEmbedder(1.5));
+
+  EXPECT_EQ("", content::EvalJs(embedder, R"(
+      (async () => {
+        const utils = window.autosizeTestUtils;
+        // As above, resolves with the first mismatch, if any.
+        return await utils.waitForGuestToMatchEmbedderZoom(
+                   window.autosizeWebview) ||
+            await utils.waitForGuestSize(window.autosizeWebview, 200, 100);
+      })())"));
 }
 
 // TODO(crbug.com/460836171): Enable on ChromeOS.
@@ -510,11 +594,12 @@ IN_PROC_BROWSER_TEST_F(WebUIWebViewBrowserTest,
   // Load the victim WebUI first, so that its resources are available to fetch.
   g_browser_process->local_state()->SetBoolean(
       chrome_urls::kInternalOnlyUisEnabled, true);
-  content::WebContents* target_webui_window = browser()->OpenURL(
-      content::OpenURLParams(
-          GURL(chrome::kChromeUIWebUIJsErrorURL), content::Referrer(),
-          WindowOpenDisposition::NEW_WINDOW, ui::PAGE_TRANSITION_TYPED, false),
-      /*navigation_handle_callback=*/{});
+  content::WebContents* target_webui_window =
+      browser()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
+                             GURL(chrome::kChromeUIWebUIJsErrorURL),
+                             ui::mojom::WindowOpenDisposition::kNewWindow,
+                             ui::PAGE_TRANSITION_TYPED),
+                         /*navigation_handle_callback=*/{});
   content::WaitForLoadStop(target_webui_window);
 
   ASSERT_TRUE(RunContentScriptTestCase("ExecuteScriptBadUrlFromOtherWebUi",
@@ -527,43 +612,6 @@ IN_PROC_BROWSER_TEST_F(WebUIWebViewBrowserTest, ContextMenuInspectElement) {
       browser()->tab_strip_model()->GetActiveWebContents();
   TestRenderViewContextMenu menu(*web_contents->GetPrimaryMainFrame(), params);
   EXPECT_FALSE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_INSPECTELEMENT));
-}
-
-class UntrustedWebUIWebViewBrowserTest : public WebUIMochaBrowserTest {
- public:
-  UntrustedWebUIWebViewBrowserTest() = default;
-
-  void SetUpOnMainThread() override {
-    base::FilePath test_data_dir;
-    base::PathService::Get(chrome::DIR_TEST_DATA, &test_data_dir);
-    embedded_test_server()->ServeFilesFromDirectory(test_data_dir);
-    ASSERT_TRUE(embedded_test_server()->Start());
-
-    web_ui_config_registration_ =
-        std::make_unique<content::ScopedWebUIConfigRegistration>(
-            std::make_unique<UntrustedWebUIConfig>());
-    set_test_loader_scheme(content::kChromeUIUntrustedScheme);
-    set_test_loader_host(chrome::kChromeUILensSidePanelHost);
-    ASSERT_TRUE(ui_test_utils::NavigateToURL(
-        browser(), GURL(chrome::kChromeUILensUntrustedSidePanelURL)));
-    WebUIMochaBrowserTest::SetUpOnMainThread();
-  }
-
-  content::WebContents* GetWebContentsForTesting() {
-    return browser()->tab_strip_model()->GetActiveWebContents();
-  }
-
- private:
-  std::unique_ptr<content::ScopedWebUIConfigRegistration>
-      web_ui_config_registration_;
-};
-
-IN_PROC_BROWSER_TEST_F(UntrustedWebUIWebViewBrowserTest, BannedApisThrow) {
-  ASSERT_TRUE(RunTestOnWebContents(GetWebContentsForTesting(),
-                                   "webview/webview_untrusted_test.js",
-                                   "runMochaTest('WebviewUntrustedBasicTest', "
-                                   "'BannedApisThrowInUntrusted')",
-                                   true));
 }
 
 #endif  // !BUILDFLAG(IS_MAC)

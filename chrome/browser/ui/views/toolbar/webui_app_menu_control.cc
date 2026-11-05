@@ -4,9 +4,12 @@
 
 #include "chrome/browser/ui/views/toolbar/webui_app_menu_control.h"
 
+#include "chrome/browser/ui/actions/command_action_updater.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/app_menu/action_app_menu.h"
 #include "chrome/browser/ui/views/frame/app_menu_button_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/app_menu.h"
@@ -16,6 +19,7 @@
 #include "ui/views/accessible_pane_view.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/window/dialog_delegate.h"
 
 namespace {
 
@@ -98,7 +102,8 @@ bool WebUIAppMenuControl::IsDrawn() const {
 }
 
 bool WebUIAppMenuControl::IsMenuShowing() const {
-  return menu_ && menu_->IsShowing();
+  return (action_menu_ && action_menu_->IsShowing()) ||
+         (menu_ && menu_->IsShowing());
 }
 
 views::DialogDelegate* WebUIAppMenuControl::GetDialogDelegate() {
@@ -107,14 +112,62 @@ views::DialogDelegate* WebUIAppMenuControl::GetDialogDelegate() {
 }
 
 void WebUIAppMenuControl::CloseMenu() {
+  if (action_menu_) {
+    action_menu_->CloseMenu();
+  }
   if (menu_) {
     menu_->CloseMenu();
   }
 }
 
 void WebUIAppMenuControl::ShowMenu() {
-  HandleContextMenu(GetAnchor().GetAnchorRect(),
-                    ui::mojom::MenuSourceType::kKeyboard);
+  ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+}
+
+void WebUIAppMenuControl::ShowMenuWithFlags(int run_types) {
+  if (IsMenuShowing()) {
+    return;
+  }
+  ui::mojom::MenuSourceType source =
+      (run_types & views::MenuRunner::INVOKED_FROM_KEYBOARD)
+          ? ui::mojom::MenuSourceType::kKeyboard
+          : ui::mojom::MenuSourceType::kNone;
+  RunMenu(GetAnchor().GetAnchorRect(), source, run_types);
+}
+
+views::MenuItemView* WebUIAppMenuControl::GetRootMenuItemViewForTesting() {
+  if (action_menu_) {
+    return action_menu_->root_menu_item_for_testing();  // IN-TEST
+  }
+  return menu_ ? menu_->root_menu_item() : nullptr;
+}
+
+ActionAppMenu* WebUIAppMenuControl::GetActionAppMenuForTesting() {
+  return action_menu_.get();
+}
+
+void WebUIAppMenuControl::ExecuteCommandForTesting(int command_id,
+                                                   int mouse_event_flags) {
+  if (action_menu_) {
+    int id = command_id;
+    if (std::optional<actions::ActionId> action_id =
+            chrome::CommandActionUpdater::GetActionId(command_id)) {
+      id = action_id.value();
+    }
+    action_menu_->ExecuteCommand(id, mouse_event_flags);
+    return;
+  }
+  CHECK(menu_);
+  menu_->ExecuteCommand(command_id, mouse_event_flags);
+}
+
+void WebUIAppMenuControl::SetMenuTimerForTesting(base::ElapsedTimer timer) {
+  if (action_menu_) {
+    action_menu_->SetTimerForTesting(std::move(timer));  // IN-TEST
+  } else {
+    CHECK(menu_);
+    menu_->SetTimerForTesting(std::move(timer));  // IN-TEST
+  }
 }
 
 void WebUIAppMenuControl::AddObserver(AppMenuButtonObserver* observer) {
@@ -143,9 +196,21 @@ void WebUIAppMenuControl::HandleContextMenu(const gfx::Rect& anchor_bounds,
                                             ui::mojom::MenuSourceType source) {
   if (IsMenuShowing()) {
     CloseMenu();
+    NotifyElementActivated();
     return;
   }
 
+  int run_flags = views::MenuRunner::HAS_MNEMONICS;
+  if (source == ui::mojom::MenuSourceType::kKeyboard) {
+    run_flags |= views::MenuRunner::SHOULD_SHOW_MNEMONICS |
+                 views::MenuRunner::INVOKED_FROM_KEYBOARD;
+  }
+  RunMenu(anchor_bounds, source, run_flags);
+}
+
+void WebUIAppMenuControl::RunMenu(const gfx::Rect& anchor_bounds,
+                                  ui::mojom::MenuSourceType source,
+                                  int run_flags) {
   BrowserWindowInterface* browser_window = delegate_->GetBrowser();
   BrowserView* browser_view =
       BrowserView::GetBrowserViewForBrowser(browser_window);
@@ -153,6 +218,18 @@ void WebUIAppMenuControl::HandleContextMenu(const gfx::Rect& anchor_bounds,
   ToolbarView* toolbar_view = browser_view->toolbar();
   CHECK(toolbar_view);
   BrowserWindowInterface* browser = browser_window;
+
+  if (base::FeatureList::IsEnabled(features::kAppMenuGlowUp)) {
+    action_menu_.reset();
+    action_menu_ = std::make_unique<ActionAppMenu>(
+        browser, base::BindRepeating(&WebUIAppMenuControl::UpdateOpenState,
+                                     weak_ptr_factory_.GetWeakPtr()));
+    action_menu_->RunMenu(delegate_->GetView()->GetWidget(), anchor_bounds,
+                          run_flags, source);
+    UpdateOpenState();
+    NotifyElementActivated();
+    return;
+  }
 
   // Explicitly destroy the old menu UI before recreating the model. `AppMenu`
   // holds a `raw_ptr` to `AppMenuModel`. If we don't reset `menu_` first,
@@ -162,13 +239,9 @@ void WebUIAppMenuControl::HandleContextMenu(const gfx::Rect& anchor_bounds,
   menu_model_ = std::make_unique<AppMenuModel>(
       toolbar_view, browser, toolbar_view->app_menu_icon_controller(),
       AppMenuModel::GetAlertItemForRunningTutorial(browser));
+  highlighter_.MaybeHighlight(browser, kToolbarAppMenuButtonElementId,
+                              menu_model_.get());
   menu_model_->Init();
-
-  int run_flags = views::MenuRunner::HAS_MNEMONICS;
-  if (source == ui::mojom::MenuSourceType::kKeyboard) {
-    run_flags |= views::MenuRunner::SHOULD_SHOW_MNEMONICS |
-                 views::MenuRunner::INVOKED_FROM_KEYBOARD;
-  }
 
   menu_ = std::make_unique<AppMenu>(
       browser, menu_model_.get(), run_flags,
@@ -177,6 +250,17 @@ void WebUIAppMenuControl::HandleContextMenu(const gfx::Rect& anchor_bounds,
 
   menu_->RunMenu(delegate_->GetView()->GetWidget(), anchor_bounds, source);
   UpdateOpenState();
+  NotifyElementActivated();
+}
+
+void WebUIAppMenuControl::NotifyElementActivated() {
+  if (ui::TrackedElement* element =
+          ui::ElementTracker::GetElementTracker()->GetFirstMatchingElement(
+              kToolbarAppMenuButtonElementId,
+              views::ElementTrackerViews::GetContextForView(
+                  delegate_->GetView()))) {
+    ui::ElementTracker::GetFrameworkDelegate()->NotifyElementActivated(element);
+  }
 }
 
 void WebUIAppMenuControl::SetTypeAndSeverity(

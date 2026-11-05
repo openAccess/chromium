@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/autofill/payments/save_card_bubble_controller_impl.h"
+
 #include <memory>
 
 #include "base/functional/callback_helpers.h"
@@ -9,9 +11,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/values.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
-#include "chrome/browser/ui/autofill/payments/save_card_bubble_controller_impl.h"
 #include "chrome/browser/ui/autofill/payments/save_card_ui.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/views/autofill/payments/save_card_bubble_views.h"
@@ -24,6 +24,7 @@
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/views/test/widget_test.h"
 
 namespace autofill {
@@ -72,20 +73,6 @@ class SaveCardBubbleControllerImplTest : public DialogBrowserTest {
     controller_ = SaveCardBubbleControllerImpl::FromWebContents(web_contents);
     CHECK(controller_);
 
-    payments::PaymentsAutofillClient::SaveCreditCardOptions options =
-        payments::PaymentsAutofillClient::SaveCreditCardOptions()
-            .with_should_request_name_from_user(
-                name.find("WithCardholderNameTextfield") != std::string::npos)
-            .with_should_request_expiration_date_from_user(
-                name.find("WithCardExpirationDateDropDownBox") !=
-                std::string::npos)
-            .with_card_save_type(name.find("CvcSave") != std::string::npos
-                                     ? payments::PaymentsAutofillClient::
-                                           CardSaveType::kCvcSaveOnly
-                                     : payments::PaymentsAutofillClient::
-                                           CardSaveType::kCardSaveOnly)
-            .with_show_prompt(true);
-
     PaymentsBubbleType bubble_type = PaymentsBubbleType::kInactive;
     if (name.find("LocalSave") != std::string::npos) {
       bubble_type = PaymentsBubbleType::kLocalSave;
@@ -99,9 +86,44 @@ class SaveCardBubbleControllerImplTest : public DialogBrowserTest {
     if (name.find("ServerCvcSave") != std::string::npos) {
       bubble_type = PaymentsBubbleType::kUploadCvcSave;
     }
+    if (name.find("ServerCardholderNameUpdate") != std::string::npos) {
+      bubble_type = PaymentsBubbleType::kUploadCardholderNameUpdate;
+    }
     if (name.find("Manage") != std::string::npos) {
       bubble_type = PaymentsBubbleType::kManageCards;
     }
+
+    payments::PaymentsAutofillClient::CardSaveType card_save_type;
+    switch (bubble_type) {
+      case PaymentsBubbleType::kLocalCvcSave:
+      case PaymentsBubbleType::kUploadCvcSave:
+        card_save_type =
+            payments::PaymentsAutofillClient::CardSaveType::kCvcSaveOnly;
+        break;
+      case PaymentsBubbleType::kUploadCardholderNameUpdate:
+        card_save_type = payments::PaymentsAutofillClient::CardSaveType::
+            kCardholderNameUpdateOnly;
+        break;
+      case PaymentsBubbleType::kLocalSave:
+      case PaymentsBubbleType::kUploadSave:
+      case PaymentsBubbleType::kManageCards:
+      case PaymentsBubbleType::kUploadInProgress:
+      case PaymentsBubbleType::kUploadComplete:
+      case PaymentsBubbleType::kInactive:
+        card_save_type =
+            payments::PaymentsAutofillClient::CardSaveType::kCardSaveOnly;
+        break;
+    }
+
+    payments::PaymentsAutofillClient::SaveCreditCardOptions options =
+        payments::PaymentsAutofillClient::SaveCreditCardOptions()
+            .with_should_request_name_from_user(
+                name.find("WithCardholderNameTextfield") != std::string::npos)
+            .with_should_request_expiration_date_from_user(
+                name.find("WithCardExpirationDateDropDownBox") !=
+                std::string::npos)
+            .with_card_save_type(card_save_type)
+            .with_show_prompt(true);
 
     switch (bubble_type) {
       case PaymentsBubbleType::kLocalSave:
@@ -122,6 +144,13 @@ class SaveCardBubbleControllerImplTest : public DialogBrowserTest {
                                      GetTestLegalMessage(), options,
                                      base::DoNothing());
         break;
+      case PaymentsBubbleType::kUploadCardholderNameUpdate: {
+        CreditCard card = test::GetMaskedServerCard();
+        card.SetRawInfo(CREDIT_CARD_NAME_FULL, u"Elisa B. Lee");
+        controller_->OfferUploadSave(card, /*legal_message_lines=*/{}, options,
+                                     base::DoNothing());
+        break;
+      }
       case PaymentsBubbleType::kManageCards:
         controller_->ShowBubbleForManageCardsForTesting(test::GetCreditCard());
         break;
@@ -165,6 +194,13 @@ IN_PROC_BROWSER_TEST_F(SaveCardBubbleControllerImplTest, InvokeUi_ServerSave) {
 // card to Google Payments.
 IN_PROC_BROWSER_TEST_F(SaveCardBubbleControllerImplTest,
                        InvokeUi_ServerCvcSave) {
+  ShowAndVerifyUi();
+}
+
+// Invokes a bubble asking the user if they want to save the cardholder name for
+// a credit card to Google Wallet.
+IN_PROC_BROWSER_TEST_F(SaveCardBubbleControllerImplTest,
+                       InvokeUi_ServerCardholderNameUpdate) {
   ShowAndVerifyUi();
 }
 
@@ -212,7 +248,7 @@ IN_PROC_BROWSER_TEST_F(SaveCardBubbleControllerImplTest, NewTabHidesDialog) {
   // Open a new tab page in the foreground.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), chrome::ChromeUINewTabURLAsGURL(),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB |
           ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 

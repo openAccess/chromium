@@ -246,7 +246,7 @@ class TouchSelectionControllerImpl::EditingHandleView : public View {
         break;
       case ui::EventType::kGestureScrollBegin: {
         // Can only drag one handle at a time.
-        DCHECK(!controller_->GetDraggingHandle());
+        CHECK(!controller_->GetDraggingHandle(), base::NotFatalUntil::M163);
         is_dragging_ = true;
         GetWidget()->SetCapture(this);
         controller_->OnDragBegin(this);
@@ -259,7 +259,7 @@ class TouchSelectionControllerImpl::EditingHandleView : public View {
         break;
       }
       case ui::EventType::kGestureScrollUpdate: {
-        DCHECK(is_dragging_);
+        CHECK(is_dragging_, base::NotFatalUntil::M163);
         controller_->OnDragUpdate(this, event->location() + drag_offset_);
         break;
       }
@@ -310,7 +310,8 @@ class TouchSelectionControllerImpl::EditingHandleView : public View {
   void SetBoundInScreen(const gfx::SelectionBound& bound, bool is_visible) {
     bool update_bound_type = false;
     // Cursor handle should always have the bound type CENTER
-    DCHECK(!is_cursor_handle_ || bound.type() == gfx::SelectionBound::CENTER);
+    CHECK(!is_cursor_handle_ || bound.type() == gfx::SelectionBound::CENTER,
+          base::NotFatalUntil::M163);
 
     if (bound.type() != selection_bound_.type()) {
       // Unless this is a cursor handle, do not set the type to CENTER -
@@ -383,13 +384,13 @@ END_METADATA
 TouchSelectionControllerImpl::TouchSelectionControllerImpl(
     ui::TouchEditable* client_view)
     : client_view_(client_view) {
-  DCHECK(client_view_);
+  CHECK(client_view_, base::NotFatalUntil::M163);
   CreateHandleWidgets();
   aura::Window* client_window = client_view_->GetNativeView();
-  client_widget_ = Widget::GetTopLevelWidgetForNativeView(client_window);
   // Observe client widget moves and resizes to update the selection handles.
-  if (client_widget_) {
-    client_widget_->AddObserver(this);
+  if (Widget* client_widget =
+          Widget::GetTopLevelWidgetForNativeView(client_window)) {
+    client_widget_observation_.Observe(client_widget);
   }
 
   // Observe certain event types sent to any event target, to hide this ui.
@@ -406,9 +407,7 @@ TouchSelectionControllerImpl::~TouchSelectionControllerImpl() {
   HideQuickMenu();
   HideMagnifier();
   aura::Env::GetInstance()->RemoveEventObserver(this);
-  if (client_widget_) {
-    client_widget_->RemoveObserver(this);
-  }
+  client_widget_observation_.Reset();
   // Close the handle widgets to clean up the EditingHandleViews. We do this
   // here to ensure that the EditingHandleViews aren't left with a pointer to a
   // deleted TouchSelectionControllerImpl.
@@ -526,13 +525,14 @@ void TouchSelectionControllerImpl::ShowQuickMenuImmediatelyForTesting() {
 }
 
 void TouchSelectionControllerImpl::OnDragBegin(EditingHandleView* handle) {
-  DCHECK_EQ(handle, GetDraggingHandle());
+  CHECK_EQ(handle, GetDraggingHandle(), base::NotFatalUntil::M163);
   UpdateQuickMenu();
   if (handle == GetCursorHandle()) {
     return;
   }
 
-  DCHECK(handle == GetSelectionHandle1() || handle == GetSelectionHandle2());
+  CHECK(handle == GetSelectionHandle1() || handle == GetSelectionHandle2(),
+        base::NotFatalUntil::M163);
 
   // Find selection end points in client_view's coordinate system.
   gfx::Point base = selection_bound_1_.edge_start_rounded();
@@ -554,7 +554,7 @@ void TouchSelectionControllerImpl::OnDragBegin(EditingHandleView* handle) {
 
 void TouchSelectionControllerImpl::OnDragUpdate(EditingHandleView* handle,
                                                 const gfx::Point& drag_pos) {
-  DCHECK_EQ(handle, GetDraggingHandle());
+  CHECK_EQ(handle, GetDraggingHandle(), base::NotFatalUntil::M163);
   gfx::Point drag_pos_in_client = drag_pos;
   ConvertPointToClientView(handle, &drag_pos_in_client);
 
@@ -563,12 +563,13 @@ void TouchSelectionControllerImpl::OnDragUpdate(EditingHandleView* handle,
     return;
   }
 
-  DCHECK(handle == GetSelectionHandle1() || handle == GetSelectionHandle2());
+  CHECK(handle == GetSelectionHandle1() || handle == GetSelectionHandle2(),
+        base::NotFatalUntil::M163);
   client_view_->MoveRangeSelectionExtent(drag_pos_in_client);
 }
 
 void TouchSelectionControllerImpl::OnDragEnd() {
-  DCHECK(!GetDraggingHandle());
+  CHECK(!GetDraggingHandle(), base::NotFatalUntil::M163);
   UpdateQuickMenu();
   HideMagnifier();
 }
@@ -625,16 +626,17 @@ std::u16string TouchSelectionControllerImpl::GetSelectedText() {
 }
 
 void TouchSelectionControllerImpl::OnWidgetDestroying(Widget* widget) {
-  DCHECK_EQ(client_widget_, widget);
-  client_widget_->RemoveObserver(this);
-  client_widget_ = nullptr;
+  CHECK(client_widget_observation_.IsObservingSource(widget),
+        base::NotFatalUntil::M163);
+  client_widget_observation_.Reset();
   client_view_ = nullptr;
 }
 
 void TouchSelectionControllerImpl::OnWidgetBoundsChanged(
     Widget* widget,
     const gfx::Rect& new_bounds) {
-  DCHECK_EQ(client_widget_, widget);
+  CHECK(client_widget_observation_.IsObservingSource(widget),
+        base::NotFatalUntil::M163);
   SelectionChanged();
 }
 
@@ -767,7 +769,7 @@ void TouchSelectionControllerImpl::ShowMagnifier(
   }
 
   aura::Window* root_window = client_view_->GetNativeView()->GetRootWindow();
-  DCHECK(root_window);
+  CHECK(root_window, base::NotFatalUntil::M163);
   if (!touch_selection_magnifier_) {
     touch_selection_magnifier_ =
         std::make_unique<ui::TouchSelectionMagnifierAura>();
@@ -787,7 +789,7 @@ void TouchSelectionControllerImpl::HideMagnifier() {
 }
 
 void TouchSelectionControllerImpl::CreateHandleWidgets() {
-  DCHECK(client_view_);
+  CHECK(client_view_, base::NotFatalUntil::M163);
 
   selection_handle_1_widget_ =
       CreateHandleWidget(client_view_->GetNativeView());

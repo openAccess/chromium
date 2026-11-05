@@ -6,8 +6,6 @@ source_set("ui") {
   sources = [
     "download_manager_consumer.h",
     "download_manager_state.h",
-    "download_manager_state_view.h",
-    "download_manager_state_view.mm",
     "download_manager_view_controller+Testing.h",
     "download_manager_view_controller.h",
     "download_manager_view_controller.mm",
@@ -68,6 +66,7 @@ source_set("eg2_tests") {
     "download_manager_egtest.mm",
     "pass_kit_egtest.mm",
     "safari_download_egtest.mm",
+    "vcard_egtest.mm",
   ]
 
   deps = [
@@ -91,6 +90,7 @@ source_set("eg2_tests") {
     "//ios/chrome/test/earl_grey:eg_test_support+eg2",
     "//ios/components/enterprise/analysis:features",
     "//ios/testing:embedded_test_server_support",
+    "//ios/testing:test_tag_registry",
     "//ios/testing/earl_grey:eg_test_support+eg2",
     "//ios/testing/earl_grey:launch_configuration",
     "//ios/web/common",

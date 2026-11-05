@@ -26,22 +26,16 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_MATH_EXTRAS_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_MATH_EXTRAS_H_
 
+#include <stdint.h>
+
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <numbers>
 
 #include "base/check_op.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
-
-#if defined(COMPILER_MSVC)
-// Make math.h behave like other platforms.
-#define _USE_MATH_DEFINES
-// Even if math.h was already included, including math.h again with
-// _USE_MATH_DEFINES adds the extra defines.
-#include <math.h>
-#include <stdint.h>
-#endif
 
 #if BUILDFLAG(IS_OPENBSD)
 #include <machine/ieee.h>
@@ -50,24 +44,15 @@
 
 namespace blink {
 
-constexpr double kPiDouble = M_PI;
-constexpr float kPiFloat = static_cast<float>(M_PI);
+inline constexpr double kPiOverTwoDouble = std::numbers::pi / 2.0;
+inline constexpr float kPiOverTwoFloat = std::numbers::pi_v<float> / 2.0f;
 
-constexpr double kPiOverTwoDouble = M_PI_2;
-constexpr float kPiOverTwoFloat = static_cast<float>(M_PI_2);
+inline constexpr double kPiOverFourDouble = std::numbers::pi / 4.0;
+inline constexpr float kPiOverFourFloat = std::numbers::pi_v<float> / 4.0f;
 
-constexpr double kPiOverFourDouble = M_PI_4;
-constexpr float kPiOverFourFloat = static_cast<float>(M_PI_4);
+inline constexpr double kTwoPiDouble = std::numbers::pi * 2.0;
+inline constexpr float kTwoPiFloat = std::numbers::pi_v<float> * 2.0f;
 
-constexpr double kTwoPiDouble = kPiDouble * 2.0;
-constexpr float kTwoPiFloat = kPiFloat * 2.0f;
-
-constexpr double Deg2rad(double d) {
-  return d * (kPiDouble / 180.0);
-}
-constexpr double Rad2deg(double r) {
-  return r * (180.0 / kPiDouble);
-}
 constexpr double Deg2grad(double d) {
   return d * (400.0 / 360.0);
 }
@@ -81,10 +66,10 @@ constexpr double Deg2turn(double d) {
   return d * (1.0 / 360.0);
 }
 constexpr double Rad2grad(double r) {
-  return r * (200.0 / kPiDouble);
+  return r * (200.0 / std::numbers::pi);
 }
 constexpr double Grad2rad(double g) {
-  return g * (kPiDouble / 200.0);
+  return g * (std::numbers::pi / 200.0);
 }
 constexpr double Turn2grad(double t) {
   return t * 400;
@@ -99,12 +84,6 @@ constexpr double Turn2rad(double t) {
   return t * kTwoPiDouble;
 }
 
-constexpr float Deg2rad(float d) {
-  return d * (kPiFloat / 180.0f);
-}
-constexpr float Rad2deg(float r) {
-  return r * (180.0f / kPiFloat);
-}
 constexpr float Deg2grad(float d) {
   return d * (400.0f / 360.0f);
 }
@@ -118,10 +97,10 @@ constexpr float Deg2turn(float d) {
   return d * (1.0f / 360.0f);
 }
 constexpr float Rad2grad(float r) {
-  return r * (200.0f / kPiFloat);
+  return r * (200.0f / std::numbers::pi_v<float>);
 }
 constexpr float Grad2rad(float g) {
-  return g * (kPiFloat / 200.0f);
+  return g * (std::numbers::pi_v<float> / 200.0f);
 }
 constexpr float Turn2grad(float t) {
   return t * 400;
@@ -332,11 +311,6 @@ constexpr LimitType ClampToWithNaNTo0(
     return 0;
   }
   return ClampTo<LimitType, ValueType>(value);
-}
-
-constexpr bool IsWithinIntRange(float x) {
-  return x > static_cast<float>(std::numeric_limits<int>::min()) &&
-         x < static_cast<float>(std::numeric_limits<int>::max());
 }
 
 static constexpr size_t GreatestCommonDivisor(size_t a, size_t b) {

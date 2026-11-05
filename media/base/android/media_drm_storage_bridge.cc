@@ -14,6 +14,7 @@
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/unguessable_token.h"
 #include "media/base/android/media_drm_bridge.h"
@@ -89,9 +90,19 @@ void MediaDrmStorageBridge::OnSaveInfo(JNIEnv* env,
                                        // Callback<Boolean>
                                        const JavaRef<jobject>& j_callback) {
   DCHECK(impl_);
+  ScopedJavaLocalRef<jbyteArray> j_key_set_id =
+      Java_PersistentInfo_keySetId(env, j_persist_info);
+  if (!j_key_set_id) {
+    // JavaByteArrayToByteVector() does not accept a null array, and a license
+    // without a key set ID cannot be restored anyway, so fail the save instead
+    // of crashing. See crbug.com/574137610.
+    DLOG(ERROR) << "Cannot persist session data without a key set ID.";
+    RunBooleanCallbackAndroid(j_callback, false);
+    return;
+  }
+
   std::vector<uint8_t> key_set_id;
-  JavaByteArrayToByteVector(
-      env, Java_PersistentInfo_keySetId(env, j_persist_info), &key_set_id);
+  JavaByteArrayToByteVector(env, j_key_set_id, &key_set_id);
 
   std::string mime = ConvertJavaStringToUTF8(
       env, Java_PersistentInfo_mimeType(env, j_persist_info));
@@ -155,19 +166,15 @@ void MediaDrmStorageBridge::OnInitialized(
     return;
   }
 
-  // Note: It's possible that |success| is true but |origin_id| is empty,
-  // to indicate per-device provisioning. If so, do not set |origin_id_|
-  // so that it remains the empty string.
+  // Note: It's possible that |success| is true but |origin_id| is empty.
+  // However, since per-application provisioning is always supported,
+  // the empty string is not allowed.
   if (origin_id && origin_id.value()) {
     origin_id_ = origin_id->ToString();
   } else {
-    // |origin_id| is empty. However, if per-application provisioning is
-    // supported, the empty string is not allowed.
     DCHECK(origin_id_.empty());
-    if (MediaDrmBridge::IsPerApplicationProvisioningSupported()) {
-      std::move(init_cb).Run(false);
-      return;
-    }
+    std::move(init_cb).Run(false);
+    return;
   }
 
   std::move(init_cb).Run(true);

@@ -14,6 +14,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/values.h"
 #include "components/network_session_configurator/common/network_switches.h"
 #include "content/browser/devtools/protocol/devtools_protocol_test_support.h"
 #include "content/browser/loader/navigation_early_hints_manager.h"
@@ -23,7 +24,6 @@
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/content_mock_cert_verifier.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/url_loader_interceptor.h"
@@ -863,6 +863,40 @@ IN_PROC_BROWSER_TEST_F(NavigationEarlyHintsTest, DevtoolsEventsForEarlyHint) {
   }
 }
 
+// Tests that DevTools network emulation applies to Early Hints preloads, as it
+// does to the navigation itself.
+IN_PROC_BROWSER_TEST_F(NavigationEarlyHintsTest,
+                       DevToolsNetworkEmulationAppliesToPreload) {
+  ResponseEntry entry = CreateEmptyPageEntryWithHintedScript();
+  RegisterResponse(entry);
+  shell()->LoadURL(GURL("about:blank"));
+  EXPECT_TRUE(WaitForLoadStop(shell()->web_contents()));
+
+  Attach();
+  // Emulate being offline for the hinted script only, so that the navigation
+  // still succeeds while the preload fails.
+  GURL preloaded_url = net::QuicSimpleTestServer::GetFileURL(kHintedScriptPath);
+  base::DictValue conditions;
+  conditions.Set("urlPattern", preloaded_url.spec());
+  conditions.Set("latency", 0);
+  conditions.Set("downloadThroughput", -1);
+  conditions.Set("uploadThroughput", -1);
+  conditions.Set("offline", true);
+  base::ListValue matched_conditions;
+  matched_conditions.Append(std::move(conditions));
+  base::DictValue params;
+  params.Set("matchedNetworkConditions", std::move(matched_conditions));
+  SendCommandSync("Network.emulateNetworkConditionsByRule", std::move(params));
+
+  EXPECT_TRUE(NavigateToURL(
+      shell(), net::QuicSimpleTestServer::GetFileURL(kEmptyPagePath)));
+  PreloadedResources preloads = WaitForPreloadedResources();
+  auto it = preloads.find(preloaded_url);
+  ASSERT_TRUE(it != preloads.end());
+  ASSERT_TRUE(it->second.error_code.has_value());
+  EXPECT_EQ(it->second.error_code.value(), net::ERR_INTERNET_DISCONNECTED);
+}
+
 class NavigationEarlyHintsAddressSpaceTest : public NavigationEarlyHintsTest {
  public:
   NavigationEarlyHintsAddressSpaceTest() = default;
@@ -953,51 +987,6 @@ IN_PROC_BROWSER_TEST_F(NavigationEarlyHintsPrerenderTest,
 
   GURL script_url = net::QuicSimpleTestServer::GetFileURL(kHintedScriptPath);
   EXPECT_TRUE(preloads.contains(script_url));
-}
-
-class NavigationEarlyHintsFencedFrameTest : public NavigationEarlyHintsTest {
- public:
-  NavigationEarlyHintsFencedFrameTest() = default;
-
-  test::FencedFrameTestHelper& fenced_frame_test_helper() {
-    return fenced_frame_test_helper_;
-  }
-
-  ResponseEntry CreatePageEntryWithHintedScriptInFencedFrame(
-      net::HttpStatusCode status_code) {
-    RegisterHintedScriptResource();
-
-    ResponseEntry entry(kPageWithHintedScriptPath, status_code);
-    entry.headers["supports-loading-mode"] = "fenced-frame";
-    entry.body = kPageWithHintedScriptBody;
-    HeaderField link_header = CreatePreloadLinkForScript();
-    HeaderField fenced_frame_header =
-        HeaderField("supports-loading-mode", "fenced-frame");
-    entry.AddEarlyHints(
-        {std::move(link_header), std::move(fenced_frame_header)});
-    return entry;
-  }
-
- private:
-  test::FencedFrameTestHelper fenced_frame_test_helper_;
-};
-
-IN_PROC_BROWSER_TEST_F(NavigationEarlyHintsFencedFrameTest,
-                       DisallowPreloadInFencedFrame) {
-  EXPECT_TRUE(NavigateToURL(
-      shell(), net::QuicSimpleTestServer::GetFileURL("/title1.html")));
-
-  ResponseEntry entry =
-      CreatePageEntryWithHintedScriptInFencedFrame(net::HTTP_OK);
-  RegisterResponse(entry);
-
-  // Create a fenced frame.
-  RenderFrameHostImpl* fenced_frame_host = static_cast<RenderFrameHostImpl*>(
-      fenced_frame_test_helper().CreateFencedFrame(
-          shell()->web_contents()->GetPrimaryMainFrame(),
-          net::QuicSimpleTestServer::GetFileURL(kPageWithHintedScriptPath)));
-  EXPECT_NE(fenced_frame_host, nullptr);
-  EXPECT_EQ(fenced_frame_host->early_hints_manager(), nullptr);
 }
 
 namespace {

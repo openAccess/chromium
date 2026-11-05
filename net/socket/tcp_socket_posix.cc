@@ -302,7 +302,12 @@ int TCPSocketPosix::Connect(const IPEndPoint& address,
   }
 
 #if BUILDFLAG(IS_MAC)
-  if (base::FeatureList::IsEnabled(features::kTcpPortRandomizationMac)) {
+  // Even if `kTcpPortRandomizationMac` is enabled, we still skip this code for
+  // non-public targets if `kTcpPortRandomizationMacForPrivateRoutes` is false.
+  // See https://crbug.com/575343797 for context.
+  if (base::FeatureList::IsEnabled(features::kTcpPortRandomizationMac) &&
+      (target_address.address().IsPubliclyRoutable() ||
+       features::kTcpPortRandomizationMacForPrivateRoutes.Get())) {
     port_randomization_data_.reset();
     EphemeralPortRandomizer& randomizer =
         EphemeralPortRandomizer::GetInstance();

@@ -14,6 +14,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import static org.chromium.base.test.transit.ViewElement.displayingAtLeastOption;
 import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.flags.ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2;
 import static org.chromium.chrome.browser.ntp.HomeSurfaceTestUtils.START_SURFACE_RETURN_TIME_IMMEDIATE;
@@ -74,6 +75,7 @@ import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.NewTabPageTestUtils;
+import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -103,6 +105,7 @@ public class ShowNtpAtStartupTest {
 
     private static final String TAB_URL = "https://foo.com/";
     private static final String TAB_URL_1 = "https://bar.com/";
+    private static final int MIN_DISPLAYED_PERCENTAGE = 10;
 
     @Before
     public void setUp() {
@@ -284,8 +287,10 @@ public class ShowNtpAtStartupTest {
         Assert.assertTrue(ntp.isMagicStackVisibleForTesting());
 
         waitForView(
+                View.class,
                 cta,
-                allOf(withId(R.id.tab_thumbnail), isDescendantOfA(withId(R.id.single_tab_view))));
+                allOf(withId(R.id.tab_thumbnail), isDescendantOfA(withId(R.id.single_tab_view))),
+                displayingAtLeastOption(MIN_DISPLAYED_PERCENTAGE));
     }
 
     @Test
@@ -306,8 +311,10 @@ public class ShowNtpAtStartupTest {
 
         waitForView(cta, withId(R.id.home_modules_recycler_view));
         waitForView(
+                View.class,
                 cta,
-                allOf(withId(R.id.tab_thumbnail), isDescendantOfA(withId(R.id.single_tab_view))));
+                allOf(withId(R.id.tab_thumbnail), isDescendantOfA(withId(R.id.single_tab_view))),
+                displayingAtLeastOption(MIN_DISPLAYED_PERCENTAGE));
     }
 
     @Test
@@ -464,7 +471,7 @@ public class ShowNtpAtStartupTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> cta.findViewById(R.id.tab_switcher_button).performClick());
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
+        LayoutTestUtils.waitForHubLayout(cta);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     cta.getTabModelSelector()
@@ -485,7 +492,7 @@ public class ShowNtpAtStartupTest {
         NewTabPageTestUtils.waitForNtpLoaded(ntpTab);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> cta.getLayoutManager().showLayout(LayoutType.HUB, false));
-        LayoutTestUtils.waitForLayout(cta.getLayoutManager(), LayoutType.HUB);
+        LayoutTestUtils.waitForHubLayout(cta);
         ThreadUtils.runOnUiThreadBlocking(() -> cta.onBackPressed());
         NewTabPageTestUtils.waitForNtpLoaded(ntpTab);
         assertFalse(
@@ -524,7 +531,7 @@ public class ShowNtpAtStartupTest {
 
         // Re-fetch view to avoid potential staleness after orientation change.
         mRenderTestRule.render(
-                getNtpLayout().findViewById(R.id.search_box), "ntp_search_box_landscape_v3");
+                getNtpLayout().findViewById(R.id.search_box), "ntp_search_box_landscape_v4");
 
         // Switch to portrait screen orientation.
         ActivityTestUtils.rotateActivityToOrientation(
@@ -532,7 +539,7 @@ public class ShowNtpAtStartupTest {
 
         // Re-fetch view to avoid potential staleness after orientation change.
         mRenderTestRule.render(
-                getNtpLayout().findViewById(R.id.search_box), "ntp_search_box_portrait_v3");
+                getNtpLayout().findViewById(R.id.search_box), "ntp_search_box_portrait_v4");
     }
 
     @Test
@@ -681,9 +688,29 @@ public class ShowNtpAtStartupTest {
         verifyFakeSearchBoxWidthForCurrentOrientation();
     }
 
-    private int calculateExpectedWidthSlack(int currentWidth, Resources res) {
-        int contentTwoSideMarginConstant =
-                2 * res.getDimensionPixelSize(R.dimen.ntp_search_box_lateral_margin_tablet);
+    private int calculateExpectedWidthSlack(
+            int currentWidth, Resources res, int horizontalInsetDp) {
+        // Narrow windows use the narrow-window margins. In medium-width windows, the search box has
+        // no extra lateral margins since the NTP is already inset by the Feed's lateral paddings.
+        // Expanded windows use the tablet margins. Same as UiConfig, the window width excludes the
+        // horizontal inset.
+        int windowWidthDp = res.getConfiguration().screenWidthDp - horizontalInsetDp;
+        int expandedWindowMinWidthDp =
+                Math.round(
+                        res.getDimension(R.dimen.ntp_search_box_expanded_window_min_width)
+                                / res.getDisplayMetrics().density);
+        int contentTwoSideMarginConstant;
+        if (windowWidthDp < UiConfig.WIDE_DISPLAY_STYLE_MIN_WIDTH_DP) {
+            contentTwoSideMarginConstant =
+                    2
+                            * res.getDimensionPixelSize(
+                                    R.dimen.ntp_search_box_lateral_margin_narrow_window_tablet);
+        } else if (windowWidthDp >= expandedWindowMinWidthDp) {
+            contentTwoSideMarginConstant =
+                    2 * res.getDimensionPixelSize(R.dimen.ntp_search_box_lateral_margin_tablet);
+        } else {
+            contentTwoSideMarginConstant = 0;
+        }
         int maxContentWidth = res.getDimensionPixelSize(R.dimen.ntp_search_box_max_width);
         return Math.max(contentTwoSideMarginConstant, currentWidth - maxContentWidth);
     }
@@ -701,7 +728,9 @@ public class ShowNtpAtStartupTest {
                     int width = ntpLayout.getWidth();
 
                     // Expected: Calculate the expected slack mathematically from constants.
-                    int expectedSlack = calculateExpectedWidthSlack(width, res);
+                    int horizontalInsetDp =
+                            ntp.getCoordinatorForTesting().getUiConfig().getHorizontalInset();
+                    int expectedSlack = calculateExpectedWidthSlack(width, res, horizontalInsetDp);
 
                     // Actual: Assert the actual search box matches the expected slack.
                     Criteria.checkThat(
@@ -752,14 +781,23 @@ public class ShowNtpAtStartupTest {
                             mvTilesLayout.getChildCount(),
                             Matchers.greaterThan(1));
 
-                    // Expected: Calculate the expected slack mathematically from constants.
-                    int expectedContainerWidthSlack = calculateExpectedWidthSlack(width, res);
+                    int expectedMvtLateralMargin =
+                            ntp.getNewTabPageCoordinator().getLateralMarginToMatchFeeds();
 
-                    // Actual: Assert the actual container matches the expected slack.
-                    Criteria.checkThat(
-                            "MVT container width is inconsistent with screen width.",
-                            width - mvtContainer.getWidth(),
-                            Matchers.is(expectedContainerWidthSlack));
+                    if (mvtContainer.getLayoutParams().width
+                            == android.view.ViewGroup.LayoutParams.WRAP_CONTENT) {
+                        // On tablets, if the content fits, WRAP_CONTENT is used to center MVT.
+                        Criteria.checkThat(
+                                mvtContainer.getLayoutParams().width,
+                                Matchers.is(android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+                    } else {
+                        // If it doesn't fit, it scales to match the Feed width.
+                        int expectedContainerWidthSlack = expectedMvtLateralMargin * 2;
+                        Criteria.checkThat(
+                                "MVT container width is inconsistent with screen width.",
+                                width - mvtContainer.getWidth(),
+                                Matchers.is(expectedContainerWidthSlack));
+                    }
 
                     int mvt1LeftMargin =
                             ((MarginLayoutParams) mvTilesLayout.getTileAt(0).getLayoutParams())

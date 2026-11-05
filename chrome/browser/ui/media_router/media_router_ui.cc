@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "base/atomic_sequence_num.h"
+#include "base/check.h"
+#include "base/containers/linear_find.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
@@ -154,8 +156,8 @@ MediaRouterUI::CreateWithMediaSessionRemotePlayback(
     content::WebContents* initiator,
     media::VideoCodec video_codec,
     media::AudioCodec audio_codec) {
-  DCHECK(video_codec != media::VideoCodec::kUnknown) << "Unknown video codec.";
-  DCHECK(audio_codec != media::AudioCodec::kUnknown) << "Unknown audio codec.";
+  CHECK(video_codec != media::VideoCodec::kUnknown) << "Unknown video codec.";
+  CHECK(audio_codec != media::AudioCodec::kUnknown) << "Unknown audio codec.";
   return CreateMediaRouterUI(MediaRouterUIParameters(
       CreateMediaCastModeSet(MediaCastMode::REMOTE_PLAYBACK), initiator,
       nullptr, video_codec, audio_codec));
@@ -224,7 +226,7 @@ std::unique_ptr<MediaRouteStarter> MediaRouterUI::TakeMediaRouteStarter() {
 }
 
 void MediaRouterUI::RegisterDestructor(base::OnceClosure destructor) {
-  DCHECK(!destructor_);
+  CHECK(!destructor_, base::NotFatalUntil::M162);
   destructor_ = std::move(destructor);
 }
 
@@ -352,7 +354,7 @@ void MediaRouterUI::LogMediaSinkStatus() {
 MediaRouterUI::UiIssuesObserver::UiIssuesObserver(IssueManager* issue_manager,
                                                   MediaRouterUI* ui)
     : IssuesObserver(issue_manager), ui_(ui) {
-  DCHECK(ui);
+  CHECK(ui, base::NotFatalUntil::M162);
 }
 
 MediaRouterUI::UiIssuesObserver::~UiIssuesObserver() = default;
@@ -369,7 +371,7 @@ MediaRouterUI::UIMediaRoutesObserver::UIMediaRoutesObserver(
     MediaRouter* router,
     const RoutesUpdatedCallback& callback)
     : MediaRoutesObserver(router), callback_(callback) {
-  DCHECK(!callback_.is_null());
+  CHECK(!callback_.is_null(), base::NotFatalUntil::M162);
 }
 
 MediaRouterUI::UIMediaRoutesObserver::~UIMediaRoutesObserver() = default;
@@ -435,9 +437,8 @@ void MediaRouterUI::UpdateSinks() {
 
   std::vector<UIMediaSink> media_sinks;
   for (const MediaSinkWithCastModes& sink : GetEnabledSinks()) {
-    auto route_it =
-        std::ranges::find(routes(), sink.sink.id(), &MediaRoute::media_sink_id);
-    const MediaRoute* route = route_it == routes().end() ? nullptr : &*route_it;
+    const MediaRoute* route =
+        base::LinearFind(routes(), sink.sink.id(), &MediaRoute::media_sink_id);
     media_sinks.push_back(ConvertToUISink(sink, route, issue_));
   }
   model_.set_media_sinks(std::move(media_sinks));

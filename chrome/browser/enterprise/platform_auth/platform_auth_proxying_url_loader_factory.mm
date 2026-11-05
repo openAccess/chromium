@@ -16,10 +16,10 @@
 #include "base/strings/sys_string_conversions.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/enterprise/platform_auth/extensible_enterprise_sso_metadata.h"
 #include "chrome/browser/enterprise/platform_auth/extensible_enterprise_sso_policy_handler.h"
 #include "chrome/browser/enterprise/platform_auth/platform_auth_provider_manager.h"
 #include "chrome/common/pref_names.h"
-#include "components/enterprise/platform_auth/platform_auth_features.h"
 #include "components/enterprise/platform_auth/url_session_helper.h"
 #include "components/enterprise/platform_auth/url_session_url_loader.h"
 #include "components/policy/core/common/policy_logger.h"
@@ -58,7 +58,7 @@ ProxyingURLLoaderFactory::ProxyingURLLoaderFactory(
     const url::Origin& request_initiator)
     : configured_hosts_(std::move(configured_hosts)),
       request_initiator_(request_initiator) {
-  DCHECK(!target_factory_.is_bound());
+  CHECK(!target_factory_.is_bound(), base::NotFatalUntil::M161);
   // base::Unretained here is safe because the callbacks are owned by this, so
   // when this destroys itself, the callbacks will also get destroyed.
   target_factory_.Bind(std::move(target_factory));

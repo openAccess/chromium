@@ -11,8 +11,6 @@ import android.content.Context;
 import android.graphics.drawable.ShapeDrawable;
 import android.text.style.ImageSpan;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -21,12 +19,14 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
+import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.UrlBarEditingTextStateProvider;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
@@ -38,7 +38,7 @@ import org.chromium.chrome.browser.omnibox.suggestions.basic.BasicSuggestionProc
 import org.chromium.chrome.browser.omnibox.suggestions.basic.SuggestionViewProperties;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.tab_ui.R;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
@@ -62,7 +62,8 @@ public class TabGroupSuggestionProcessorUnitTest {
     private static final String TITLE = "My Group";
     private static final String DESCRIPTION = JUnitTestGURLs.URL_1.getSpec();
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private SuggestionHost mSuggestionHost;
     @Mock private OmniboxImageSupplier mImageSupplier;
@@ -77,15 +78,18 @@ public class TabGroupSuggestionProcessorUnitTest {
     private AutocompleteMatch mSuggestion;
     private PropertyModel mModel;
     private AutocompleteInput mInput;
+    private OmniboxResourceProvider mResourceProvider;
 
     @Before
     public void setUp() {
         mContext = ContextUtils.getApplicationContext();
         mContext.setTheme(R.style.Theme_BrowserUI_DayNight);
+        mResourceProvider = new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
 
         AutocompleteUIContext uiContext =
                 new AutocompleteUIContext(
                         mContext,
+                        mResourceProvider,
                         mSuggestionHost,
                         mTextProvider,
                         mImageSupplier,
@@ -96,12 +100,10 @@ public class TabGroupSuggestionProcessorUnitTest {
                         mActionDelegate);
         mProcessor = new TabGroupSuggestionProcessor(uiContext);
         mInput = new AutocompleteInput();
-        OmniboxResourceProvider.disableCachesForTesting();
     }
 
     @After
     public void tearDown() {
-        OmniboxResourceProvider.reenableCachesForTesting();
         mInput.reset();
     }
 
@@ -119,7 +121,6 @@ public class TabGroupSuggestionProcessorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testPopulateModelTabGroupSuggestions() {
         mInput.setPageClassification(PageClassification.ANDROID_HUB);
 
@@ -151,6 +152,8 @@ public class TabGroupSuggestionProcessorUnitTest {
                         TITLE,
                         "Red",
                         DESCRIPTION);
-        assertEquals(targetString, mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION));
+        assertEquals(
+                targetString,
+                mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION_SUPPLIER).get());
     }
 }

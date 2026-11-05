@@ -44,6 +44,7 @@
 #import "net/base/apple/url_conversions.h"
 #import "net/base/url_util.h"
 #import "ui/base/l10n/l10n_util_mac.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #import "url/gurl.h"
 
 namespace {
@@ -347,6 +348,10 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
       return;
     }
 
+    if (!URL.SchemeIsHTTPOrHTTPS()) {
+      return;
+    }
+
     [self.delegate lensResultPageOpenURLInNewTabRequested:URL];
     [self.delegate
          lensResultPageMediator:self
@@ -362,8 +367,7 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
     [self.delegate
          lensResultPageMediator:self
         didOpenNewTabFromSource:lens::LensOverlayNewTabSource::kExploreBarTab];
-  } else if (base::FeatureList::IsEnabled(kLensSearchHeadersCheckEnabled) &&
-             requestInfo.target_frame_is_main && lens::IsGoogleHostURL(URL) &&
+  } else if (requestInfo.target_frame_is_main && lens::IsGoogleHostURL(URL) &&
              [self shouldAddHeaders:request]) {
     // Only attach headers for navigation clicks targeting main frame.
     [self loadResultsURL:URL httpHeaders:_latestHttpHeaders];
@@ -488,7 +492,7 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
     web::Referrer referrer(_webState->GetLastCommittedURL(),
                            web::ReferrerPolicyDefault);
     _webState->OpenURL(web::WebState::OpenURLParams(
-        URLToLoad, referrer, WindowOpenDisposition::CURRENT_TAB,
+        URLToLoad, referrer, ui::mojom::WindowOpenDisposition::kCurrentTab,
         ui::PAGE_TRANSITION_LINK, false));
   }
 }
@@ -524,6 +528,11 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
       return nullptr;
     }
   }
+
+  if (!URL.SchemeIsHTTPOrHTTPS()) {
+    return nullptr;
+  }
+
   // Open the URL in a new tab.
   [self.delegate lensResultPageOpenURLInNewTabRequested:URL];
   [self.delegate
@@ -537,7 +546,26 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
 
 - (web::WebState*)webState:(web::WebState*)webState
          openURLWithParams:(const web::WebState::OpenURLParams&)params {
-  return _browserWebStateDelegate->OpenURLFromWebState(webState, params);
+  switch (params.disposition) {
+    case ui::mojom::WindowOpenDisposition::kNewForegroundTab:
+    case ui::mojom::WindowOpenDisposition::kNewBackgroundTab:
+    case ui::mojom::WindowOpenDisposition::kNewPopup: {
+      // `webState` is standalone and not part of any `WebStateList`, so
+      // `_browserWebStateDelegate->OpenURLFromWebState` cannot be used to open
+      // a new tab (it expects `webState` to be present in the `WebStateList` as
+      // the opener). Ask the delegate to open the URL in a new tab instead.
+      if (!params.url.SchemeIsHTTPOrHTTPS()) {
+        return nullptr;
+      }
+      [self.delegate lensResultPageOpenURLInNewTabRequested:params.url];
+      [self.delegate lensResultPageMediator:self
+                    didOpenNewTabFromSource:lens::LensOverlayNewTabSource::
+                                                kWebNavigation];
+      return nullptr;
+    }
+    default:
+      return _browserWebStateDelegate->OpenURLFromWebState(webState, params);
+  }
 }
 
 - (web::JavaScriptDialogPresenter*)javaScriptDialogPresenterForWebState:
@@ -568,6 +596,22 @@ inline constexpr char kDarkModeParameterDarkValue[] = "1";
                                  (void (^)(SecIdentityRef))handler {
   _browserWebStateDelegate->OnAuthRequired(webState, protectionSpace,
                                            base::BindOnce(handler));
+}
+
+- (void)webState:(web::WebState*)webState
+    didRequestProxyAuthForProtectionSpace:(NSURLProtectionSpace*)protectionSpace
+                       proposedCredential:(NSURLCredential*)proposedCredential
+                          failureResponse:(NSURLResponse*)failureResponse
+                        completionHandler:(void (^)(NSString* username,
+                                                    NSString* password,
+                                                    NSError* error))handler
+    API_AVAILABLE(ios(18.1)) {
+  if (!handler) {
+    return;
+  }
+  _browserWebStateDelegate->OnProxyAuthChallenge(
+      webState, protectionSpace, proposedCredential, failureResponse,
+      base::BindOnce(handler));
 }
 
 // This API can be used to show custom input views in the web view.

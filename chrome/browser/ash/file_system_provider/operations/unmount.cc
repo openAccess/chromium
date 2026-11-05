@@ -5,7 +5,7 @@
 #include "chrome/browser/ash/file_system_provider/operations/unmount.h"
 
 #include "base/values.h"
-#include "chrome/common/extensions/api/file_system_provider.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider.h"
 
 namespace ash::file_system_provider::operations {
 
@@ -23,24 +23,26 @@ bool Unmount::Execute(int request_id) {
   options.file_system_id = file_system_info_.file_system_id();
   options.request_id = request_id;
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      extensions::api::file_system_provider::OnUnmountRequested::Create(
+          options));
   return SendEvent(
       request_id, extensions::events::FILE_SYSTEM_PROVIDER_ON_UNMOUNT_REQUESTED,
       extensions::api::file_system_provider::OnUnmountRequested::kEventName,
-      extensions::api::file_system_provider::OnUnmountRequested::Create(
-          options));
+      std::move(event_args));
 }
 
 void Unmount::OnSuccess(/*request_id=*/int,
                         /*result=*/const RequestValue&,
                         /*has_more=*/bool) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
   std::move(callback_).Run(base::File::FILE_OK);
 }
 
 void Unmount::OnError(/*request_id=*/int,
                       /*result=*/const RequestValue&,
                       base::File::Error error) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
   std::move(callback_).Run(error);
 }
 

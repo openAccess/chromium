@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/platform/sparse_vector.h"
 
+#include <algorithm>
+
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/googletest/src/googletest/include/gtest/gtest.h"
 
@@ -186,6 +188,25 @@ TYPED_TEST(SparseVectorTest, MutateValue) {
   EXPECT_EQ(202, this->GetField(FieldId::kFoo));
 }
 
+TEST(SparseVectorIntTest, Iteration) {
+  SparseVector<FieldId, int> sparse_vector;
+  EXPECT_EQ(sparse_vector.begin(), sparse_vector.end());
+
+  // Insertion order does not matter; entries come out in increasing id order.
+  sparse_vector.SetField(FieldId::kBang, 303);
+  sparse_vector.SetField(FieldId::kFoo, 101);
+  sparse_vector.SetField(FieldId::kFive, 202);
+  Vector<std::pair<FieldId, int>> entries;
+  for (auto [key, value] : sparse_vector) {
+    entries.emplace_back(key, value);
+  }
+  EXPECT_EQ(entries, (Vector<std::pair<FieldId, int>>{{FieldId::kFoo, 101},
+                                                      {FieldId::kFive, 202},
+                                                      {FieldId::kBang, 303}}));
+  EXPECT_TRUE(std::ranges::any_of(
+      sparse_vector, [](auto entry) { return entry.value == 202; }));
+}
+
 TYPED_TEST(SparseVectorTest, EraseField) {
   this->SetField(FieldId::kFoo, 101);
   this->SetField(FieldId::kBar, 202);
@@ -249,6 +270,28 @@ TEST(SparseVectorInlineCapacityTest, Basic) {
   EXPECT_GT(sizeof(sparse_vector), sizeof(int) * 16);
 }
 #endif
+
+TEST(SparseVectorEqualityTest, Basic) {
+  SparseVector<FieldId, int> v1;
+  SparseVector<FieldId, int> v2;
+  EXPECT_EQ(v1, v2);
+
+  v1.SetField(FieldId::kFirst, 10);
+  EXPECT_NE(v1, v2);
+
+  // Same value in a different field.
+  v2.SetField(FieldId::kLast, 10);
+  EXPECT_NE(v1, v2);
+
+  // Same fields set in a different order.
+  v1.SetField(FieldId::kLast, 10);
+  v2.SetField(FieldId::kFirst, 10);
+  EXPECT_EQ(v1, v2);
+
+  // Same fields, different value.
+  v2.SetField(FieldId::kLast, 20);
+  EXPECT_NE(v1, v2);
+}
 
 }  // namespace
 }  // namespace blink

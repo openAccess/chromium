@@ -15,6 +15,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
@@ -567,7 +568,7 @@ public abstract class ContentUriUtils {
         Uri treeUri = DocumentsContract.buildTreeDocumentUri(authority, tree);
         Uri queryUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocumentId);
         // Use a selection to match displayName, but don't trust that it actually works.
-        String selection = String.format("%s = ?", DocumentsContract.Document.COLUMN_DISPLAY_NAME);
+        final String selection = DocumentsContract.Document.COLUMN_DISPLAY_NAME + " = ?";
         String[] selectionArgs = {displayName};
         try (Cursor c =
                 assumeNonNull(resolver.query(queryUri, columns, selection, selectionArgs, null))) {
@@ -714,38 +715,61 @@ public abstract class ContentUriUtils {
         }
     }
 
-    public static boolean isUriFromThisApp(Uri uri) {
-        return isUriFromThisApp(uri, ContextUtils.getApplicationContext());
-    }
-
+    /**
+     * Resolves the owner of the ContentProvider that serves the content URI.
+     *
+     * @param uriString The content URI to resolve.
+     * @return The {@link ContentUriOwner} of the URI's provider.
+     */
     @CalledByNative
-    public static boolean isUriFromThisApp(@JniType("std::string") String uriString) {
-        if (TextUtils.isEmpty(uriString)) return false;
+    private static @ContentUriOwner int resolveContentUriOwner(
+            @JniType("std::string") String uriString) {
+        if (TextUtils.isEmpty(uriString)) return ContentUriOwner.UNRESOLVED;
         try {
-            return isUriFromThisApp(Uri.parse(uriString));
+            return resolveContentUriOwner(Uri.parse(uriString));
         } catch (Exception e) {
-            return false;
+            return ContentUriOwner.UNRESOLVED;
         }
     }
 
     /**
-     * Returns whether the content URI is served by a ContentProvider belonging to the current
-     * application (i.e. running under the same UID).
+     * Resolves the owner of the ContentProvider that serves the content URI.
      *
-     * @param uri The URI to check.
-     * @param context The context to retrieve package and provider info.
-     * @return True if the URI is from the current application, false otherwise.
+     * @param uri The content URI to resolve.
+     * @return The {@link ContentUriOwner} of the URI's provider.
      */
-    public static boolean isUriFromThisApp(Uri uri, Context context) {
-        String authority = uri.getAuthority();
-        if (TextUtils.isEmpty(authority)) return false;
+    public static @ContentUriOwner int resolveContentUriOwner(Uri uri) {
+        try {
+            String authority = uri.getAuthority();
+            String reparsedAuthority = Uri.parse(uri.toString()).getAuthority();
+            if (TextUtils.isEmpty(authority) && TextUtils.isEmpty(reparsedAuthority)) {
+                return ContentUriOwner.UNRESOLVED;
+            }
+            // Callers may check the Uri object but then use only its string form. On Android Q, a
+            // Uri unparcelled from another app can have independent encoded and decoded
+            // authorities, and an OpaqueUri reports a null authority even when its string form
+            // includes one. Treat any mismatch as an attack and return the most restrictive owner.
+            if (TextUtils.isEmpty(authority) || !authority.equals(reparsedAuthority)) {
+                return ContentUriOwner.NON_EXPORTED_FROM_CURRENT_APP;
+            }
 
-        // Remove userId prefix in the authority.
-        authority = authority.substring(authority.lastIndexOf('@') + 1);
+            // Preserve existing behavior for user-qualified authorities: discard the user prefix
+            // and resolve the bare authority for the context's user. This does not identify the
+            // provider in the user named by the URI.
+            authority = authority.substring(authority.lastIndexOf('@') + 1);
 
-        PackageManager pm = context.getPackageManager();
-        ProviderInfo info = pm.resolveContentProvider(authority, 0);
-        return info != null && TextUtils.equals(info.packageName, context.getPackageName());
+            PackageManager pm = ContextUtils.getApplicationContext().getPackageManager();
+            ProviderInfo info = pm.resolveContentProvider(authority, 0);
+            if (info == null) return ContentUriOwner.UNRESOLVED;
+            if (info.applicationInfo == null || info.applicationInfo.uid != Process.myUid()) {
+                return ContentUriOwner.OTHER_APP;
+            }
+            return info.exported
+                    ? ContentUriOwner.EXPORTED_FROM_CURRENT_APP
+                    : ContentUriOwner.NON_EXPORTED_FROM_CURRENT_APP;
+        } catch (Exception e) {
+            return ContentUriOwner.UNRESOLVED;
+        }
     }
 
     @NativeMethods

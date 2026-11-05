@@ -13,7 +13,9 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/with_feature_override.h"
+#include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "chrome/browser/certificate_viewer.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/file_system_access/chrome_file_system_access_permission_context.h"
 #include "chrome/browser/file_system_access/file_system_access_features.h"
@@ -26,7 +28,6 @@
 #include "chrome/browser/privacy_sandbox/mock_privacy_sandbox_service.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_service.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_service_factory.h"
-#include "chrome/browser/safe_browsing/chrome_password_protection_service.h"
 #include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/browser/ssl/https_upgrades_interceptor.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -56,6 +57,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/constants/pref_names.h"
+#include "components/content_settings/browser/page_specific_content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/content_settings/core/common/features.h"
 #include "components/content_settings/core/common/pref_names.h"
@@ -71,9 +73,7 @@
 #include "components/permissions/permission_decision_auto_blocker.h"
 #include "components/permissions/permissions_client.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
-#include "components/safe_browsing/content/browser/password_protection/password_protection_test_util.h"
-#include "components/safe_browsing/core/common/features.h"
-#include "components/safe_browsing/core/common/proto/csd.pb.h"
+#include "components/safe_browsing/buildflags.h"
 #include "components/security_interstitials/core/features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/strings/grit/privacy_sandbox_strings.h"
@@ -85,10 +85,12 @@
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/isolated_world_ids.h"
 #include "content/public/common/referrer.h"
+#include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "content/public/test/test_utils.h"
 #include "media/base/media_switches.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/cert_test_util.h"
@@ -103,11 +105,20 @@
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/events/test/test_event.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/checkbox.h"
 #include "ui/views/controls/button/toggle_button.h"
+#include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/test/widget_test.h"
+
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+#include "chrome/browser/safe_browsing/password_protection/chrome_password_protection_service.h"
+#include "components/safe_browsing/content/browser/password_protection/password_protection_test_util.h"
+#include "components/safe_browsing/core/common/proto/csd.pb.h"
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 using AboutThisSiteStatus =
     page_info::about_this_site_validation::AboutThisSiteStatus;
@@ -133,21 +144,10 @@ void PerformMouseClickOnView(views::View* view) {
 void OpenPageInfoBubble(BrowserWindowInterface* browser) {
   LocationIconTestAccessor(browser).ShowBubble();
   views::BubbleDialogDelegateView* page_info =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting();
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(
+          browser->GetTabStripModel()->GetActiveWebContents());
   EXPECT_NE(nullptr, page_info);
   page_info->set_close_on_deactivate(false);
-}
-
-// Opens the Page Info bubble and retrieves the UI view identified by
-// |view_id|.
-views::View* GetView(int view_id) {
-  views::Widget* page_info_bubble =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetWidget();
-  EXPECT_TRUE(page_info_bubble);
-
-  views::View* view = page_info_bubble->GetRootView()->GetViewByID(view_id);
-  EXPECT_TRUE(view);
-  return view;
 }
 
 // Clicks the "Site settings" button from Page Info and waits for a "Settings"
@@ -160,22 +160,6 @@ void ClickAndWaitForSettingsPageToOpen(views::View* site_settings_button) {
   content::TitleWatcher title_watcher(new_tab_observer.GetWebContents(),
                                       expected_title);
   EXPECT_EQ(expected_title, title_watcher.WaitAndGetTitle());
-}
-
-// Returns the URL of the new tab that's opened on clicking the "Site settings"
-// button from Page Info.
-const GURL OpenSiteSettingsForUrl(BrowserWindowInterface* browser,
-                                  const GURL& url) {
-  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser, url));
-  OpenPageInfoBubble(browser);
-  // Get site settings button.
-  views::View* site_settings_button = GetView(
-      PageInfoViewFactory::VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_SITE_SETTINGS);
-  ClickAndWaitForSettingsPageToOpen(site_settings_button);
-
-  return browser->GetTabStripModel()
-      ->GetActiveWebContents()
-      ->GetLastCommittedURL();
 }
 
 void AddHintForTesting(BrowserWindowInterface* browser,
@@ -257,7 +241,7 @@ class PageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
     InProcessBrowserTest::TearDownOnMainThread();
   }
 
-  content::WebContents* web_contents() {
+  content::WebContents* web_contents() const {
     return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
@@ -289,11 +273,34 @@ class PageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
     run_loop.Run();
   }
 
+  views::View* GetView(int view_id) {
+    views::Widget* page_info_bubble =
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents())
+            ->GetWidget();
+    EXPECT_TRUE(page_info_bubble);
+
+    views::View* view = page_info_bubble->GetRootView()->GetViewByID(view_id);
+    EXPECT_TRUE(view);
+    return view;
+  }
+
+  GURL OpenSiteSettingsForUrl(const GURL& url) {
+    EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+    OpenPageInfoBubble(browser());
+    // Get site settings button.
+    views::View* site_settings_button = GetView(
+        PageInfoViewFactory::VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_SITE_SETTINGS);
+    ClickAndWaitForSettingsPageToOpen(site_settings_button);
+
+    return web_contents()->GetLastCommittedURL();
+  }
+
   PageInfo* GetPresenter() const {
     PageInfo* presenter = nullptr;
-    presenter = static_cast<PageInfoBubbleView*>(
-                    PageInfoBubbleView::GetPageInfoBubbleForTesting())
-                    ->presenter_for_testing();
+    presenter =
+        static_cast<PageInfoBubbleView*>(
+            PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents()))
+            ->presenter_for_testing();
     DCHECK(presenter);
     return presenter;
   }
@@ -309,39 +316,44 @@ class PageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
     // Only PageInfoBubbleViewBrowserTest can access certificate_button_ in
     // PageInfoBubbleView, or title() in HoverButton.
     auto* certificate_button = static_cast<RichHoverButton*>(
-        PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetViewByID(
-            PageInfoViewFactory::
-                VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_CERTIFICATE_VIEWER));
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents())
+            ->GetViewByID(
+                PageInfoViewFactory::
+                    VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_CERTIFICATE_VIEWER));
     return certificate_button->GetTitleText();
   }
 
   std::u16string_view GetCertificateButtonSubtitle() const {
     auto* certificate_button = static_cast<RichHoverButton*>(
-        PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetViewByID(
-            PageInfoViewFactory::
-                VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_CERTIFICATE_VIEWER));
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents())
+            ->GetViewByID(
+                PageInfoViewFactory::
+                    VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_CERTIFICATE_VIEWER));
     return certificate_button->GetSubtitleText();
   }
 
   const std::u16string GetPageInfoBubbleViewDetailText() {
     auto* label =
-        PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetViewByID(
-            PageInfoViewFactory::VIEW_ID_PAGE_INFO_SECURITY_DETAILS_LABEL);
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents())
+            ->GetViewByID(
+                PageInfoViewFactory::VIEW_ID_PAGE_INFO_SECURITY_DETAILS_LABEL);
     return static_cast<views::StyledLabel*>(label)->GetText();
   }
 
   const std::u16string GetPageInfoBubbleViewSummaryText() {
     auto* label =
-        PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetViewByID(
-            PageInfoViewFactory::VIEW_ID_PAGE_INFO_SECURITY_SUMMARY_LABEL);
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents())
+            ->GetViewByID(
+                PageInfoViewFactory::VIEW_ID_PAGE_INFO_SECURITY_SUMMARY_LABEL);
     return static_cast<views::StyledLabel*>(label)->GetText();
   }
 
   std::u16string_view GetSecurityInformationButtonText() {
     auto* button =
-        PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetViewByID(
-            PageInfoViewFactory::
-                VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_SECURITY_INFORMATION);
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents())
+            ->GetViewByID(
+                PageInfoViewFactory::
+                    VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_SECURITY_INFORMATION);
     return static_cast<RichHoverButton*>(button)->GetTitleText();
   }
 
@@ -364,11 +376,28 @@ class PageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
       net::EmbeddedTestServer::TYPE_HTTPS};
 };
 
+class PageInfoBubbleViewBrowserTestBFCache
+    : public PageInfoBubbleViewBrowserTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  PageInfoBubbleViewBrowserTestBFCache() {
+    content::InitBackForwardCacheFeature(&feature_list_,
+                                         /*enable_back_forward_cache=*/
+                                         GetParam());
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PageInfoBubbleViewBrowserTestBFCache,
+                         testing::Bool());
+
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest, ShowBubble) {
   SetupSentimentServiceExpectations(/*interacted=*/false);
   OpenPageInfoBubble(browser());
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_PAGE_INFO,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_TRUE(PageInfoBubbleView::IsShowing(web_contents()));
 }
 
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
@@ -378,13 +407,19 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
   ASSERT_TRUE(AddTabAtIndex(0, GURL("data:text/html,<p>puppies!</p>"),
                             ui::PAGE_TRANSITION_TYPED));
   OpenPageInfoBubble(browser());
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_PAGE_INFO,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_TRUE(PageInfoBubbleView::IsShowing(web_contents()));
 
-  web_contents()->Close();
-  base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_NONE,
-            PageInfoBubbleView::GetShownBubbleType());
+  views::BubbleDialogDelegateView* bubble =
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
+  ASSERT_NE(nullptr, bubble);
+  views::Widget* bubble_widget = bubble->GetWidget();
+  ASSERT_NE(nullptr, bubble_widget);
+  views::test::WidgetDestroyedWaiter destroyed_waiter(bubble_widget);
+
+  content::WebContents* closed_contents = web_contents();
+  closed_contents->Close();
+  destroyed_waiter.Wait();
+  EXPECT_FALSE(PageInfoBubbleView::IsShowing(web_contents()));
 }
 
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest, ChromeURL) {
@@ -392,7 +427,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest, ChromeURL) {
       ui_test_utils::NavigateToURL(browser(), GURL("chrome://settings")));
   OpenPageInfoBubble(browser());
   EXPECT_EQ(PageInfoBubbleView::BUBBLE_INTERNAL_PAGE,
-            PageInfoBubbleView::GetShownBubbleType());
+            PageInfoBubbleView::GetShownBubbleTypeForTesting(web_contents()));
 }
 
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest, ChromeExtensionURL) {
@@ -400,7 +435,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest, ChromeExtensionURL) {
       browser(), GURL("chrome-extension://extension-id/options.html")));
   OpenPageInfoBubble(browser());
   EXPECT_EQ(PageInfoBubbleView::BUBBLE_INTERNAL_PAGE,
-            PageInfoBubbleView::GetShownBubbleType());
+            PageInfoBubbleView::GetShownBubbleTypeForTesting(web_contents()));
 }
 
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest, ChromeDevtoolsURL) {
@@ -408,7 +443,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest, ChromeDevtoolsURL) {
       browser(), GURL("devtools://devtools/bundled/inspector.html")));
   OpenPageInfoBubble(browser());
   EXPECT_EQ(PageInfoBubbleView::BUBBLE_INTERNAL_PAGE,
-            PageInfoBubbleView::GetShownBubbleType());
+            PageInfoBubbleView::GetShownBubbleTypeForTesting(web_contents()));
 }
 
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest, ViewSourceURL) {
@@ -417,7 +452,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest, ViewSourceURL) {
   web_contents()->GetPrimaryMainFrame()->ViewSource();
   OpenPageInfoBubble(browser());
   EXPECT_EQ(PageInfoBubbleView::BUBBLE_INTERNAL_PAGE,
-            PageInfoBubbleView::GetShownBubbleType());
+            PageInfoBubbleView::GetShownBubbleTypeForTesting(web_contents()));
 }
 
 // Test opening "Site Details" via Page Info from an ASCII origin does the
@@ -428,8 +463,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest, SiteSettingsLink) {
   std::string expected_url =
       base::StrCat({chrome::kChromeUISettingsURL, chrome::kSiteDetailsSubpage});
   std::string expected_query = "?site=https%3A%2F%2Fwww.google.com";
-  EXPECT_EQ(GURL(expected_url + expected_query),
-            OpenSiteSettingsForUrl(browser(), url));
+  EXPECT_EQ(GURL(expected_url + expected_query), OpenSiteSettingsForUrl(url));
 }
 
 // Test opening "Site Details" via Page Info from a non-ASCII URL converts it to
@@ -440,8 +474,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
   std::string expected_url =
       base::StrCat({chrome::kChromeUISettingsURL, chrome::kSiteDetailsSubpage});
   std::string expected_query = "?site=https%3A%2F%2Fxn--9q9h.ws";
-  EXPECT_EQ(GURL(expected_url + expected_query),
-            OpenSiteSettingsForUrl(browser(), url));
+  EXPECT_EQ(GURL(expected_url + expected_query), OpenSiteSettingsForUrl(url));
 }
 
 // Test opening "Site Details" via Page Info from an origin with a non-default
@@ -452,8 +485,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
   std::string expected_url =
       base::StrCat({chrome::kChromeUISettingsURL, chrome::kSiteDetailsSubpage});
   std::string expected_query = "?site=https%3A%2F%2Fwww.example.com%3A8372";
-  EXPECT_EQ(GURL(expected_url + expected_query),
-            OpenSiteSettingsForUrl(browser(), url));
+  EXPECT_EQ(GURL(expected_url + expected_query), OpenSiteSettingsForUrl(url));
 }
 
 // Test opening "Site Details" via Page Info from about:blank goes to "Content
@@ -461,9 +493,10 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
                        SiteSettingsLinkWithAboutBlankURL) {
   EXPECT_EQ(chrome::GetSettingsUrl(chrome::kContentSettingsSubPage),
-            OpenSiteSettingsForUrl(browser(), GURL(url::kAboutBlankURL)));
+            OpenSiteSettingsForUrl(GURL(url::kAboutBlankURL)));
 }
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 // Test opening page info bubble that matches
 // SB_THREAT_TYPE_ENTERPRISE_PASSWORD_REUSE threat type.
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
@@ -617,46 +650,89 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
   EXPECT_EQ(security_state::MALICIOUS_CONTENT_STATUS_NONE,
             visible_security_state->malicious_content_status);
 }
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
                        ClosesOnUserNavigateToSamePage) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimplePageUrl()));
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_NONE,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_FALSE(PageInfoBubbleView::IsShowing(web_contents()));
   OpenPageInfoBubble(browser());
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_INTERNAL_PAGE,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_TRUE(PageInfoBubbleView::IsShowing(web_contents()));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimplePageUrl()));
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_NONE,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_FALSE(PageInfoBubbleView::IsShowing(web_contents()));
 }
 
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
                        ClosesOnUserNavigateToDifferentPage) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimplePageUrl()));
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_NONE,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_FALSE(PageInfoBubbleView::IsShowing(web_contents()));
   OpenPageInfoBubble(browser());
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_INTERNAL_PAGE,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_TRUE(PageInfoBubbleView::IsShowing(web_contents()));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetIframePageUrl()));
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_NONE,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_FALSE(PageInfoBubbleView::IsShowing(web_contents()));
 }
 
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
                        DoesntCloseOnSubframeNavigate) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetIframePageUrl()));
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_NONE,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_FALSE(PageInfoBubbleView::IsShowing(web_contents()));
   OpenPageInfoBubble(browser());
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_INTERNAL_PAGE,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_TRUE(PageInfoBubbleView::IsShowing(web_contents()));
   content::NavigateIframeToURL(web_contents(), "test", GetSimplePageUrl());
   // Expect that the bubble is still open even after a subframe navigation has
   // happened.
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_INTERNAL_PAGE,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_TRUE(PageInfoBubbleView::IsShowing(web_contents()));
+}
+
+IN_PROC_BROWSER_TEST_P(PageInfoBubbleViewBrowserTestBFCache,
+                       BackForwardCacheRestoreAfterBubbleClose) {
+  // A page that can be stored in the back-forward cache: the file:// pages
+  // used by the close-on-navigate tests go to the internal bubble, not
+  // PageInfo.
+  const GURL url_a = embedded_test_server()->GetURL("/title1.html");
+  const GURL url_b = embedded_test_server()->GetURL("/title2.html");
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url_a));
+  content::RenderFrameHostWrapper rfh_a(web_contents()->GetPrimaryMainFrame());
+  OpenPageInfoBubble(browser());
+  EXPECT_EQ(PageInfoBubbleView::BUBBLE_PAGE_INFO,
+            PageInfoBubbleView::GetShownBubbleTypeForTesting(web_contents()));
+
+  // PageInfo must be destroyed while A is still in the back-forward cache, so
+  // wait for the bubble widget teardown instead of depending on its timing.
+  views::BubbleDialogDelegateView* page_info_bubble =
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
+  ASSERT_NE(nullptr, page_info_bubble);
+  views::Widget* bubble_widget = page_info_bubble->GetWidget();
+  ASSERT_NE(nullptr, bubble_widget);
+  views::test::WidgetDestroyedWaiter bubble_destroyed_waiter(bubble_widget);
+
+  // Navigating to B closes the bubble (the primary frame already switched when
+  // PageInfo is destroyed).
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url_b));
+  bubble_destroyed_waiter.Wait();
+  EXPECT_FALSE(PageInfoBubbleView::IsShowing(web_contents()));
+
+  // PageInfo must stop observing the settings of the page it was created for,
+  // even if that page is no longer primary. Restore A and notify its settings
+  // to verify that no observer is left behind.
+  if (content::BackForwardCache::IsBackForwardCacheFeatureEnabled()) {
+    ASSERT_FALSE(rfh_a.IsDestroyed())
+        << "A was evicted from the back-forward cache instead of stored";
+    EXPECT_EQ(content::RenderFrameHost::LifecycleState::kInBackForwardCache,
+              rfh_a->GetLifecycleState());
+
+    content::TestNavigationObserver back_observer(web_contents());
+    web_contents()->GetController().GoBack();
+    back_observer.Wait();
+    EXPECT_FALSE(rfh_a.IsDestroyed());
+    EXPECT_EQ(rfh_a.get(), web_contents()->GetPrimaryMainFrame());
+  }
+
+  auto* settings = content_settings::PageSpecificContentSettings::GetForFrame(
+      web_contents()->GetPrimaryMainFrame());
+  ASSERT_NE(nullptr, settings);
+  settings->OnContentBlocked(ContentSettingsType::NOTIFICATIONS);
 }
 
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
@@ -713,7 +789,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
 
   // Open the File System subpage view.
   auto* page_info_bubble = static_cast<PageInfoBubbleView*>(
-      PageInfoBubbleView::GetPageInfoBubbleForTesting());
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents));
   page_info_bubble->OpenPermissionPage(
       ContentSettingsType::FILE_SYSTEM_WRITE_GUARD);
   // Simulate toggling the Extended Permissions checkbox button on the File
@@ -844,9 +920,12 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest, BlockedAndInvalidCert) {
 
   // Check that clicking the certificate viewer button is reported to the
   // sentiment service.
+  base::HistogramTester histograms;
   views::View* certificates_button = GetView(
       PageInfoViewFactory::VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_CERTIFICATE_VIEWER);
   PerformMouseClickOnView(certificates_button);
+  histograms.ExpectUniqueSample("Net.CertificateViewer.Opened",
+                                CertificateViewerEntrypoint::kPageInfo, 1);
 }
 
 // Ensure a page that has an EV certificate *and* is blocked by Safe Browsing
@@ -960,7 +1039,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
 
   SetPageInfoBubbleIdentityInfo(identity);
 
-  EXPECT_TRUE(PageInfoBubbleView::GetPageInfoBubbleForTesting());
+  EXPECT_TRUE(PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents()));
 }
 
 // Navigate to a page with an SSL warning (but no malware status) and click
@@ -1016,7 +1095,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
   // here because it will fail if the View doesn't exist, so this is a bit
   // verbose.
   views::Widget* page_info_bubble =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetWidget();
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents())
+          ->GetWidget();
   EXPECT_TRUE(page_info_bubble);
   views::View* view = page_info_bubble->GetRootView()->GetViewByID(
       PageInfoViewFactory::VIEW_ID_PAGE_INFO_RESET_DECISIONS_LABEL);
@@ -1067,7 +1147,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
   // verbose.
   OpenPageInfoBubble(browser());
   views::Widget* page_info_bubble =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetWidget();
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents())
+          ->GetWidget();
   EXPECT_TRUE(page_info_bubble);
   views::View* view = page_info_bubble->GetRootView()->GetViewByID(
       PageInfoViewFactory::VIEW_ID_PAGE_INFO_RESET_DECISIONS_LABEL);
@@ -1096,17 +1177,14 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewPrerenderBrowserTest,
                        DoesntCloseOnPrerenderNavigate) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL("/simple.html")));
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_NONE,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_FALSE(PageInfoBubbleView::IsShowing(web_contents()));
   OpenPageInfoBubble(browser());
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_PAGE_INFO,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_TRUE(PageInfoBubbleView::IsShowing(web_contents()));
   // Start a prerender.
   prerender_helper_.AddPrerender(
       embedded_test_server()->GetURL("/title1.html"));
   // Ensure the bubble is still open after prerender navigation.
-  EXPECT_EQ(PageInfoBubbleView::BUBBLE_PAGE_INFO,
-            PageInfoBubbleView::GetShownBubbleType());
+  EXPECT_TRUE(PageInfoBubbleView::IsShowing(web_contents()));
 }
 
 class PageInfoBubbleViewAboutThisSiteBrowserTest : public InProcessBrowserTest {
@@ -1135,8 +1213,7 @@ class PageInfoBubbleViewAboutThisSiteBrowserTest : public InProcessBrowserTest {
 
   void SetUpCommandLine(base::CommandLine* cmd) override {
     cmd->AppendSwitch(
-        optimization_guide::
-            kDisableCheckingUserPermissionsForTestingSwitch);
+        optimization_guide::kDisableCheckingUserPermissionsForTestingSwitch);
   }
 
   page_info::proto::SiteInfo CreateValidSiteInfo() {
@@ -1160,6 +1237,7 @@ class PageInfoBubbleViewAboutThisSiteBrowserTest : public InProcessBrowserTest {
     return browser()->GetTabStripModel()->GetActiveWebContents();
   }
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   void TriggerSafeBrowsingWarning() {
     safe_browsing::ChromePasswordProtectionService* service =
         safe_browsing::ChromePasswordProtectionService::
@@ -1177,6 +1255,7 @@ class PageInfoBubbleViewAboutThisSiteBrowserTest : public InProcessBrowserTest {
         safe_browsing::LoginReputationClientResponse::VERDICT_TYPE_UNSPECIFIED,
         "unused_token", reused_password_account_type);
   }
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
  protected:
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
@@ -1194,7 +1273,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   OpenPageInfoBubble(browser());
 
-  auto* page_info = PageInfoBubbleView::GetPageInfoBubbleForTesting();
+  auto* page_info =
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
   EXPECT_TRUE(page_info->GetViewByID(
       PageInfoViewFactory::
           VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_SECURITY_INFORMATION));
@@ -1225,7 +1305,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   OpenPageInfoBubble(browser());
 
-  auto* page_info = PageInfoBubbleView::GetPageInfoBubbleForTesting();
+  auto* page_info =
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
   views::View* button = page_info->GetViewByID(
       PageInfoViewFactory::VIEW_ID_PAGE_INFO_ABOUT_THIS_SITE_BUTTON);
   ASSERT_TRUE(button);
@@ -1256,7 +1337,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   OpenPageInfoBubble(browser());
 
-  auto* page_info = PageInfoBubbleView::GetPageInfoBubbleForTesting();
+  auto* page_info =
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
   views::View* button = page_info->GetViewByID(
       PageInfoViewFactory::VIEW_ID_PAGE_INFO_ABOUT_THIS_SITE_BUTTON);
   ASSERT_TRUE(button);
@@ -1288,7 +1370,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   OpenPageInfoBubble(browser());
 
-  auto* page_info = PageInfoBubbleView::GetPageInfoBubbleForTesting();
+  auto* page_info =
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
   EXPECT_TRUE(page_info->GetViewByID(
       PageInfoViewFactory::
           VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_SECURITY_INFORMATION));
@@ -1319,7 +1402,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteBrowserTest,
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   OpenPageInfoBubble(browser());
-  auto* page_info = PageInfoBubbleView::GetPageInfoBubbleForTesting();
+  auto* page_info =
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
   EXPECT_FALSE(page_info->GetViewByID(
       PageInfoViewFactory::
           VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_SECURITY_INFORMATION));
@@ -1337,6 +1421,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteBrowserTest,
   base::RunLoop().RunUntilIdle();
 }
 
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteBrowserTest,
                        AboutThisSiteNotSecureAsync) {
   auto url = https_server_.GetURL("a.test", "/title1.html");
@@ -1344,7 +1429,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteBrowserTest,
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   OpenPageInfoBubble(browser());
-  auto* page_info = PageInfoBubbleView::GetPageInfoBubbleForTesting();
+  auto* page_info =
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
   // The button is shown because connection is secure.
   EXPECT_TRUE(
       page_info
@@ -1368,6 +1454,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteBrowserTest,
       views::Widget::ClosedReason::kEscKeyPressed);
   base::RunLoop().RunUntilIdle();
 }
+#endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
 // Test that no info is shown and "kNotShownOptimizationGuideNotAllowed" is
 // logged when hints fetching is disabled.
@@ -1387,7 +1474,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewAboutThisSiteDisabledBrowserTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   OpenPageInfoBubble(browser());
 
-  auto* page_info = PageInfoBubbleView::GetPageInfoBubbleForTesting();
+  auto* page_info =
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents());
   EXPECT_TRUE(page_info->GetViewByID(
       PageInfoViewFactory::
           VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_SECURITY_INFORMATION));
@@ -1460,7 +1548,7 @@ class PageInfoBubbleViewBrowserTestCookiesSubpage
     base::UserActionTester user_actions_stats;
     PerformMouseClickOnView(cookies_button);
     auto* cookies_subpage_content = static_cast<PageInfoCookiesContentView*>(
-        PageInfoBubbleView::GetPageInfoBubbleForTesting()
+        PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents())
             ->GetViewByID(PageInfoViewFactory::VIEW_ID_PAGE_INFO_CURRENT_VIEW)
             ->children()[1]);
     cookies_subpage_content->SetInitializedCallbackForTesting(
@@ -1673,7 +1761,8 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTestCookiesSubpage,
 
   OpenPageInfoAndGoToCookiesSubpage(/*rws_owner =*/{});
   views::Widget* page_info_bubble =
-      PageInfoBubbleView::GetPageInfoBubbleForTesting()->GetWidget();
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents())
+          ->GetWidget();
   ASSERT_TRUE(page_info_bubble);
   views::View* cookie_sync_disclaimer =
       page_info_bubble->GetRootView()->GetViewByID(
@@ -1710,7 +1799,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTestAutoPip,
 
   // Open the auto-pip subpage view.
   auto* page_info_bubble = static_cast<PageInfoBubbleView*>(
-      PageInfoBubbleView::GetPageInfoBubbleForTesting());
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents()));
   page_info_bubble->OpenPermissionPage(
       ContentSettingsType::AUTO_PICTURE_IN_PICTURE);
 
@@ -1743,7 +1832,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
 
   // Open the Notifications subpage view.
   auto* page_info_bubble = static_cast<PageInfoBubbleView*>(
-      PageInfoBubbleView::GetPageInfoBubbleForTesting());
+      PageInfoBubbleView::GetPageInfoBubbleForTesting(web_contents()));
   page_info_bubble->OpenPermissionPage(ContentSettingsType::NOTIFICATIONS);
 
   // Verify that the state label shows the auto-blocked message.
@@ -1769,7 +1858,7 @@ IN_PROC_BROWSER_TEST_F(PageInfoBubbleViewBrowserTest,
 
   EXPECT_TRUE(controller->IsRevealed());
   views::BubbleDialogDelegateView* bubble =
-      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting();
+      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(web_contents());
   ASSERT_TRUE(bubble);
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
   EXPECT_EQ(bubble->GetWidget()->parent(), browser_view->overlay_widget());

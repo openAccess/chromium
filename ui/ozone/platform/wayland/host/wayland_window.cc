@@ -127,8 +127,24 @@ WaylandWindow::~WaylandWindow() {
     parent_window_->set_child_popup(nullptr);
   }
 
-  if (child_popup_) {
-    child_popup_->set_parent_window(nullptr);
+  // `child_popup_` only tracks the most recently shown popup. Other windows
+  // (e.g. hidden popups or popups that were replaced as `child_popup_`) may
+  // still refer to this window as their parent.
+  for (const auto& window :
+       connection_->window_manager()->GetAllWindowsAsWeakPtr()) {
+    if (!window || window->parent_window() != this) {
+      continue;
+    }
+    // Popups parented to a bubble use the bubble's toplevel as their xdg
+    // parent, so they may still be mapped at this point. Clearing
+    // `parent_window_` would disconnect them from their xdg parent, so hide
+    // them first.
+    if (window->AsWaylandPopup()) {
+      window->Hide();
+    }
+    if (window) {
+      window->set_parent_window(nullptr);
+    }
   }
 
   for (auto bubble : child_bubbles_) {
@@ -167,9 +183,17 @@ void WaylandWindow::UpdateWindowScale(bool update_bounds) {
     return;
   }
 
-  // Propagate update to the popups.
-  if (child_popup_) {
-    child_popup_->UpdateWindowScale(update_bounds);
+  // Propagate update to the popups. `child_popup_` only tracks the most
+  // recently shown popup, so update all visible popups parented to this window.
+  for (const auto& window :
+       connection_->window_manager()->GetAllWindowsAsWeakPtr()) {
+    if (!weak_this) {
+      return;
+    }
+    if (window && window->AsWaylandPopup() && window->IsVisible() &&
+        window->parent_window() == this) {
+      window->UpdateWindowScale(update_bounds);
+    }
   }
 
   // Propagate update to the bubble windows.
@@ -254,7 +278,7 @@ void WaylandWindow::ActivateBubble(WaylandBubble* window) {
 }
 
 void WaylandWindow::SetWindowScale(float new_scale) {
-  DCHECK_GE(new_scale, 0.f);
+  CHECK_GE(new_scale, 0.f, base::NotFatalUntil::M163);
   auto state = GetLatestRequestedState();
   state.window_scale = new_scale;
   // Note that we still need to call this even if the state does not change,
@@ -265,7 +289,7 @@ void WaylandWindow::SetWindowScale(float new_scale) {
 }
 
 std::optional<float> WaylandWindow::GetScaleFactorFromEnteredOutputs() {
-  DCHECK(connection_->wayland_output_manager());
+  CHECK(connection_->wayland_output_manager(), base::NotFatalUntil::M163);
   const auto* output_manager = connection_->wayland_output_manager();
   auto preferred_outputs_id = GetPreferredEnteredOutputId();
   if (!preferred_outputs_id.has_value()) {
@@ -305,8 +329,9 @@ std::optional<WaylandOutput::Id> WaylandWindow::GetPreferredEnteredOutputId() {
   }
 
   // PlatformWindowType::kPopup are created as toplevel windows as well.
-  DCHECK(type() == PlatformWindowType::kWindow ||
-         type() == PlatformWindowType::kPopup);
+  CHECK(type() == PlatformWindowType::kWindow ||
+            type() == PlatformWindowType::kPopup,
+        base::NotFatalUntil::M163);
 
   WaylandOutput::Id preferred_id = root_surface_->entered_outputs().front();
   const auto* output_manager = connection_->wayland_output_manager();
@@ -391,13 +416,13 @@ bool WaylandWindow::StartDrag(
     WmDragHandler::DragFinishedCallback drag_finished_callback,
     WmDragHandler::LocationDelegate* location_delegate) {
   if (!connection_->data_drag_controller()->StartSession(data, operations,
-                                                         source)) {
+                                                         source, this)) {
     return false;
   }
 
   std::move(drag_started_callback).Run();
 
-  DCHECK(drag_finished_callback_.is_null());
+  CHECK(drag_finished_callback_.is_null(), base::NotFatalUntil::M163);
   drag_finished_callback_ = std::move(drag_finished_callback);
 
   base::RunLoop drag_loop(base::RunLoop::Type::kNestableTasksAllowed);
@@ -560,8 +585,17 @@ bool WaylandWindow::IsVisible() const {
 void WaylandWindow::PrepareForShutdown() {
   shutting_down_ = true;
   if (drag_finished_callback_) {
+    auto alive = AsWeakPtr();
     OnDragSessionClose(DragOperation::kNone);
+    if (!alive) {
+      return;
+    }
   }
+  // Destruction of `this` may be deferred after `PrepareForShutdown()`, so
+  // prevent in-flight events from being dispatched directly or rerouted by
+  // another window to `this` during shutdown.
+  PlatformEventSource::GetInstance()->RemovePlatformEventDispatcher(this);
+  ReleaseCapture();
 }
 
 void WaylandWindow::SetBoundsInPixels(const gfx::Rect& bounds_px) {
@@ -668,7 +702,7 @@ bool WaylandWindow::ShouldUseNativeFrame() const {
 }
 
 void WaylandWindow::SetCursor(scoped_refptr<PlatformCursor> platform_cursor) {
-  DCHECK(platform_cursor);
+  CHECK(platform_cursor, base::NotFatalUntil::M163);
 
   auto async_cursor = WaylandAsyncCursor::FromPlatformCursor(platform_cursor);
 
@@ -786,7 +820,7 @@ uint32_t WaylandWindow::DispatchEvent(const PlatformEvent& native_event) {
 bool WaylandWindow::CanAcceptEvent(const Event& event) {
 #if DCHECK_IS_ON()
   if (!disable_null_target_dcheck_for_test_) {
-    DCHECK(event.target());
+    CHECK(event.target(), base::NotFatalUntil::M163);
   }
 #endif
   return this == event.target();
@@ -945,15 +979,20 @@ void WaylandWindow::OnDragSessionClose(DragOperation operation) {
   // quit in that case.
   base::OnceClosure quit_closure = std::move(drag_loop_quit_closure_);
   auto alive = AsWeakPtr();
+  WaylandConnection* const connection = this->connection();
   std::move(drag_finished_callback_).Run(operation);
   // Skip releasing any pointer buttons for the case of a window drag driven by
   // the data drag controller.
   // TODO: crbug.com/40238145 - Refactor this per discussion at
   // crrev.com/c/5570335/comment/0b8811fc_818028c9/.
   if (alive &&
-      !connection()->data_drag_controller()->IsWindowDragSessionRunning()) {
-    connection()->event_source()->ReleasePressedPointerButtons(
-        this, EventTimeForNow());
+      !connection->data_drag_controller()->IsWindowDragSessionRunning()) {
+    connection->event_source()->ReleasePressedPointerButtons(this,
+                                                             EventTimeForNow());
+    // The compositor owns the touch sequences for the duration of the drag and
+    // need not send wl_touch.up for them afterwards, so end any that are still
+    // tracked. Otherwise they would remain active indefinitely.
+    connection->event_source()->CancelActiveTouches(EventTimeForNow());
   }
   std::move(quit_closure).Run();
 }
@@ -1077,6 +1116,22 @@ WaylandWindow* WaylandWindow::GetXdgParentWindow() {
   return xdg_parent_window;
 }
 
+void WaylandWindow::HideChildPopups() {
+  auto weak_this = AsWeakPtr();
+  for (const auto& window :
+       connection_->window_manager()->GetAllWindowsAsWeakPtr()) {
+    if (!weak_this) {
+      return;
+    }
+    if (!window || window.get() == this || !window->AsWaylandPopup() ||
+        !window->IsVisible() || window->GetXdgParentWindow() != this) {
+      continue;
+    }
+    // Hiding the popup recursively hides its own child popups first.
+    window->Hide();
+  }
+}
+
 bool WaylandWindow::IsOpaqueWindow() const {
   return opacity_ == ui::PlatformWindowOpacity::kOpaqueWindow;
 }
@@ -1116,8 +1171,8 @@ uint32_t WaylandWindow::DispatchEventToDelegate(
 }
 
 std::unique_ptr<WaylandSurface> WaylandWindow::TakeWaylandSurface() {
-  DCHECK(shutting_down_);
-  DCHECK(root_surface_);
+  CHECK(shutting_down_, base::NotFatalUntil::M163);
+  CHECK(root_surface_, base::NotFatalUntil::M163);
   root_surface_->UnsetRootWindow();
   return std::move(root_surface_);
 }
@@ -1130,7 +1185,7 @@ bool WaylandWindow::RequestSubsurface() {
   connection_->window_manager()->AddSubsurface(GetWidget(), subsurface.get());
   subsurface_stack_above_.push_back(subsurface.get());
   auto result = wayland_subsurfaces_.emplace(std::move(subsurface));
-  DCHECK(result.second);
+  CHECK(result.second, base::NotFatalUntil::M163);
   return true;
 }
 
@@ -1141,8 +1196,9 @@ bool WaylandWindow::ArrangeSubsurfaceStack(size_t above, size_t below) {
     }
   }
 
-  DCHECK(subsurface_stack_below_.size() + subsurface_stack_above_.size() >=
-         above + below);
+  CHECK(subsurface_stack_below_.size() + subsurface_stack_above_.size() >=
+            above + below,
+        base::NotFatalUntil::M163);
 
   if (subsurface_stack_above_.size() < above) {
     auto splice_start = subsurface_stack_below_.begin();
@@ -1163,8 +1219,8 @@ bool WaylandWindow::ArrangeSubsurfaceStack(size_t above, size_t below) {
                                    subsurface_stack_above_.end());
   }
 
-  DCHECK(subsurface_stack_below_.size() >= below);
-  DCHECK(subsurface_stack_above_.size() >= above);
+  CHECK(subsurface_stack_below_.size() >= below, base::NotFatalUntil::M163);
+  CHECK(subsurface_stack_above_.size() >= above, base::NotFatalUntil::M163);
   return true;
 }
 
@@ -1188,7 +1244,8 @@ bool WaylandWindow::CommitOverlays(
   wl::WaylandOverlayConfig value;
   auto split = std::lower_bound(overlays.begin(), overlays.end(), value,
                                 OverlayStackOrderCompare);
-  DCHECK(split == overlays.end() || (*split).z_order >= 0);
+  CHECK(split == overlays.end() || (*split).z_order >= 0,
+        base::NotFatalUntil::M163);
   size_t num_primary_planes =
       (split != overlays.end() && (*split).z_order == 0) ? 1 : 0;
   size_t num_background_planes =
@@ -1207,7 +1264,7 @@ bool WaylandWindow::CommitOverlays(
   float buffer_scale = (*overlays.begin()).surface_scale_factor;
 
   if (!wayland_overlay_delegation_enabled_) {
-    DCHECK_EQ(overlays.size(), 1u);
+    CHECK_EQ(overlays.size(), 1u, base::NotFatalUntil::M163);
     frame_manager_->RecordFrame(std::make_unique<WaylandFrame>(
         frame_id, data, root_surface(), std::move(*overlays.begin())));
     return true;
@@ -1268,7 +1325,7 @@ bool WaylandWindow::CommitOverlays(
             root_surface()->use_blending(), gfx::Rect(),
             root_surface()->opacity(), gfx::OverlayPriorityHint::kNone,
             gfx::RRectF(), gfx::ColorSpace::CreateSRGB(), std::nullopt),
-        nullptr, root_surface()->buffer_id(), buffer_scale);
+        gfx::GpuFenceHandle(), root_surface()->buffer_id(), buffer_scale);
   }
 
   frame_manager_->RecordFrame(std::make_unique<WaylandFrame>(
@@ -1279,7 +1336,7 @@ bool WaylandWindow::CommitOverlays(
 }
 
 void WaylandWindow::UpdateCursorShape(scoped_refptr<BitmapCursor> cursor) {
-  DCHECK(cursor);
+  CHECK(cursor, base::NotFatalUntil::M163);
   CHECK(cursor->type() == CursorType::kNone ||
         base::IsValueInRangeForNumericType<int>(
             cursor->cursor_image_scale_factor()));
@@ -1422,8 +1479,13 @@ void WaylandWindow::RequestState(PlatformWindowDelegate::State state,
       state.bounds_dip, state.ui_scale / new_ui_scale);
   state.ui_scale = new_ui_scale;
 
-  // Adjust state values if necessary.
-  state.bounds_dip = AdjustBoundsToConstraintsDIP(state.bounds_dip);
+  // Adjust state values if necessary. Size constraints only apply to normal
+  // windows; per the xdg-shell specification, maximized geometry must be obeyed
+  // exactly, and fullscreen geometry is an upper bound (otherwise compositors
+  // raise xdg_wm_base.invalid_surface_state).
+  if (state.window_state == PlatformWindowState::kNormal) {
+    state.bounds_dip = AdjustBoundsToConstraintsDIP(state.bounds_dip);
+  }
 
   const float scale = state.window_scale * state.ui_scale;
 

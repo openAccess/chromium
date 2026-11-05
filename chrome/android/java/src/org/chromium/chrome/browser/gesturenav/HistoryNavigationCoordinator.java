@@ -27,6 +27,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.AnchorSide;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.UiUpdateRequest;
 import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.components.browser_ui.widget.TouchEventObserver;
@@ -47,10 +48,19 @@ public class HistoryNavigationCoordinator
         implements InsetObserver.WindowInsetObserver, PauseResumeWithNativeObserver {
     private final Runnable mUpdateNavigationStateRunnable = this::onNavigationStateChanged;
     private final SideUiObserver mSideUiObserver =
-            (SideUiSpecs sideUiSpecs) ->
+            new SideUiObserver() {
+                @Override
+                public void onSideUiSpecsChangeStarted(
+                        SideUiSpecs sideUiSpecs, UiUpdateRequest request) {
                     updateSideUiWidths(
-                            sideUiSpecs.getWidth(AnchorSide.LEFT),
-                            sideUiSpecs.getWidth(AnchorSide.RIGHT));
+                            sideUiSpecs.getReservedWidth(AnchorSide.LEFT),
+                            sideUiSpecs.getReservedWidth(AnchorSide.RIGHT));
+                }
+
+                @Override
+                public void onSideUiSpecsChangeCompleted(
+                        SideUiSpecs sideUiSpecs, UiUpdateRequest request) {}
+            };
 
     private WindowAndroid mWindow;
     private ViewGroup mParentView;
@@ -201,7 +211,9 @@ public class HistoryNavigationCoordinator
         GestureNavMetrics.logGestureType(isFeatureEnabled());
     }
 
-    /** @return {@link TouchEventObserver} for gesture navigation component. */
+    /**
+     * @return {@link TouchEventObserver} for gesture navigation component.
+     */
     public @Nullable TouchEventObserver getTouchEventObserver() {
         // Can be null if gesture navigation was not triggered at all or already destroyed.
         return mNavigationHandler;
@@ -275,6 +287,9 @@ public class HistoryNavigationCoordinator
 
     /** Sets the {@link SideUiStateProvider} to observe side UI width changes. */
     public void setSideUiStateProvider(SideUiStateProvider provider) {
+        if (mSideUiStateProvider == provider) {
+            return;
+        }
         if (mSideUiStateProvider != null) {
             mSideUiStateProvider.removeObserver(mSideUiObserver);
         }
@@ -283,8 +298,8 @@ public class HistoryNavigationCoordinator
         SideUiSpecs currentSpecs = provider.getCurrentSideUiSpecs();
         if (currentSpecs != null) {
             updateSideUiWidths(
-                    currentSpecs.getWidth(AnchorSide.LEFT),
-                    currentSpecs.getWidth(AnchorSide.RIGHT));
+                    currentSpecs.getReservedWidth(AnchorSide.LEFT),
+                    currentSpecs.getReservedWidth(AnchorSide.RIGHT));
         }
     }
 
@@ -364,7 +379,7 @@ public class HistoryNavigationCoordinator
      * Signals a pull update.
      *
      * @param xDelta The change in horizontal pull distance (positive if toward right, negative if
-     * left).
+     *     left).
      * @param yDelta The change in vertical pull distance.
      */
     public void pull(float xDelta, float yDelta) {

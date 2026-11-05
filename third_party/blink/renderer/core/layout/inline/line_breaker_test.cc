@@ -21,6 +21,7 @@
 #include "third_party/blink/renderer/core/layout/unpositioned_float.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_view.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 
@@ -63,7 +64,7 @@ class LineBreakerTest : public RenderingTest {
     do {
       LineBreaker line_breaker(node, LineBreakerMode::kContent, space,
                                line_opportunity, leading_floats, break_token,
-                               /* column_spanner_path */ nullptr,
+                               /* column_spanner_path */ nullptr, nullptr,
                                &exclusion_space);
       line_breaker.NextLine(&line_info);
       if (callback)
@@ -100,7 +101,7 @@ class LineBreakerTest : public RenderingTest {
     do {
       LineBreaker line_breaker(node, LineBreakerMode::kContent, space,
                                line_opportunity, leading_floats, break_token,
-                               /* column_spanner_path */ nullptr,
+                               /* column_spanner_path */ nullptr, nullptr,
                                &exclusion_space);
       if (line_index < break_points.size()) {
         line_breaker.SetBreakAt(break_points[line_index]);
@@ -130,7 +131,7 @@ class LineBreakerTest : public RenderingTest {
 
     return node
         .ComputeMinMaxSizes(node.Style().GetWritingMode(), space,
-                            MinMaxSizesFloatInput())
+                            MinMaxSizesInput::Unconstrained())
         .sizes;
   }
 
@@ -924,16 +925,13 @@ TEST_F(LineBreakerTest, SplitTextIntoSegementsCrash) {
             text_results_indices.push_back(i);
           }
         }
-        EXPECT_EQ(4u, text_results_indices.size());
+        ASSERT_EQ(3u, text_results_indices.size());
         EXPECT_EQ(
             1u,
             line_info.Results()[text_results_indices[0]].Length());  // U+0343
-        EXPECT_EQ(
-            1u,
-            line_info.Results()[text_results_indices[1]].Length());  // U+2585
+        EXPECT_EQ(3u, line_info.Results()[text_results_indices[1]]
+                          .Length());  // U+2585 U+0343 U+2585
         EXPECT_EQ(2u, line_info.Results()[text_results_indices[2]]
-                          .Length());  // U+0343 U+2585
-        EXPECT_EQ(2u, line_info.Results()[text_results_indices[3]]
                           .Length());  // U+0343 U+2585
       });
 }
@@ -1131,7 +1129,8 @@ TEST_F(LineBreakerTest, WideContentInRuby) {
   LeadingFloats leading_floats;
   LineBreaker line_breaker(node, LineBreakerMode::kContent, space,
                            LineLayoutOpportunity(LayoutUnit::Max()),
-                           leading_floats, nullptr, nullptr, &exclusion_space);
+                           leading_floats, nullptr, nullptr, nullptr,
+                           &exclusion_space);
   LineInfo line_info;
   line_breaker.NextLine(&line_info);
   EXPECT_EQ(InlineItem::kOpenRubyColumn, line_info.Results()[1].item->Type());
@@ -1151,7 +1150,8 @@ TEST_F(LineBreakerTest, SetInputRange) {
   LineBreaker line_breaker(node, LineBreakerMode::kContent,
                            ConstraintSpaceForAvailableSize(LayoutUnit::Max()),
                            LineLayoutOpportunity(LayoutUnit::Max()),
-                           leading_floats, nullptr, nullptr, &exclusion_space);
+                           leading_floats, nullptr, nullptr, nullptr,
+                           &exclusion_space);
   // <span> to just after </span>.
   line_breaker.SetInputRange({1, 6}, 4, LineBreaker::WhitespaceState::kLeading,
                              nullptr);
@@ -1181,7 +1181,7 @@ TEST_F(LineBreakerTest, CreateSubLineInfoAvailableWidth) {
   ConstraintSpace space = ConstraintSpaceForAvailableSize(width);
   LineBreaker line_breaker(node, LineBreakerMode::kContent, space,
                            LineLayoutOpportunity(width), leading_floats,
-                           nullptr, nullptr, &exclusion_space);
+                           nullptr, nullptr, nullptr, &exclusion_space);
   LineInfo line_info;
   line_breaker.NextLine(&line_info);
   // The line should contain the whole text.
@@ -1311,9 +1311,10 @@ TEST_P(CanBreakInsideTest, Data) {
   ExclusionSpace exclusion_space;
   LeadingFloats leading_floats;
   LineLayoutOpportunity line_opportunity(available_width);
-  LineBreaker line_breaker(target, LineBreakerMode::kContent, space,
-                           line_opportunity, leading_floats, break_token,
-                           /* column_spanner_path */ nullptr, &exclusion_space);
+  LineBreaker line_breaker(
+      target, LineBreakerMode::kContent, space, line_opportunity,
+      leading_floats, break_token, /*column_spanner_path=*/nullptr,
+      /*FragmentedOofContainer=*/nullptr, &exclusion_space);
   EXPECT_EQ(line_breaker.CanBreakInside(line_info_list[0]),
             data.can_break_insde);
 }
@@ -1325,6 +1326,22 @@ TEST_F(LineBreakerTest, SplitTrailingBidiCrCrash) {
   )HTML");
   ComputeMinMaxSizes(node);
   // Pass if no CHECK failure.
+}
+
+TEST_F(LineBreakerTest, BidiControlEnterFlag) {
+  ScopedLineBreakBidiControlEnterForTest flag(false);
+  LoadAhem();
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #container {
+        font: 10px/1 Ahem;
+        width: 40px;
+      }
+    </style>
+    <div id="container">xxx-<bdi>xx</bdi></div>
+  )HTML");
+  Element* container = GetElementById("container");
+  EXPECT_EQ(10, container->OffsetHeight());
 }
 
 }  // namespace

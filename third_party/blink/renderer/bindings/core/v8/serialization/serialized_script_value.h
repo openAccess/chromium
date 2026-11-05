@@ -51,7 +51,7 @@
 #include "third_party/blink/renderer/core/streams/writable_stream_transferring_optimizer.h"
 #include "third_party/blink/renderer/core/typed_arrays/array_buffer/array_buffer_contents.h"
 #include "third_party/blink/renderer/platform/bindings/v8_external_memory_accounter.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_child_paint_record.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_drawable_paint_record.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/partitions.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
@@ -73,7 +73,7 @@ class Transferables;
 class UnpackedSerializedScriptValue;
 class WebBlobInfo;
 
-typedef HashMap<String, scoped_refptr<BlobDataHandle>> BlobDataHandleMap;
+typedef Vector<scoped_refptr<BlobDataHandle>> BlobDataHandleArray;
 typedef Vector<mojo::ScopedHandle> MojoScopedHandleArray;
 typedef Vector<WebBlobInfo> WebBlobInfoArray;
 typedef HeapVector<Member<DOMSharedArrayBuffer>> SharedArrayBufferArray;
@@ -108,7 +108,7 @@ class CORE_EXPORT SerializedScriptValue
   using SharedImmutableArrayBufferContentsArray =
       Vector<ArrayBufferContents, 1>;
   using ImageBitmapContentsArray = Vector<scoped_refptr<StaticBitmapImage>, 1>;
-  using ElementImageContentsArray = Vector<CanvasChildPaintRecord, 1>;
+  using ElementImageContentsArray = Vector<CanvasDrawablePaintRecord, 1>;
   using TransferredWasmModulesArray = Vector<v8::CompiledWasmModule>;
   using MessagePortChannelArray = Vector<MessagePortChannel>;
   using StreamArray = Vector<Stream>;
@@ -228,6 +228,8 @@ class CORE_EXPORT SerializedScriptValue
     // Slow mode is intended to mitigate possible timing attacks on v8 string
     // table.
     bool slow_mode = false;
+    // When non-null, used to record UMA.
+    String histogram_variant;
   };
   v8::Local<v8::Value> Deserialize(v8::Isolate* isolate) {
     return Deserialize(isolate, DeserializeOptions());
@@ -257,8 +259,6 @@ class CORE_EXPORT SerializedScriptValue
                                    const HeapVector<ScriptObject>&,
                                    Transferables&,
                                    ExceptionState&);
-
-  static ArrayBufferArray ExtractNonSharedArrayBuffers(Transferables&);
 
   // Helper function which pulls ArrayBufferContents out of an ArrayBufferArray
   // and neuters the ArrayBufferArray.  Returns nullptr if there is an
@@ -310,7 +310,7 @@ class CORE_EXPORT SerializedScriptValue
   decltype(std::declval<v8::ValueSerializer>()
                .ReleaseSharedImmutableBackingStores())
   ReleaseSharedImmutableBackingStores() const;
-  BlobDataHandleMap& BlobDataHandles() { return blob_data_handles_; }
+  BlobDataHandleArray& BlobDataHandles() { return blob_data_handles_; }
   FileSystemAccessTokensArray& FileSystemAccessTokens() {
     return file_system_access_tokens_;
   }
@@ -336,6 +336,22 @@ class CORE_EXPORT SerializedScriptValue
   const v8::SharedValueConveyor* MaybeGetSharedValueConveyor() const;
 
   bool IsLockedToAgentCluster() const;
+
+  enum class OriginCheckRequirement {
+    // No additional origin check is required.
+    kNone,
+
+    // The origins of the contexts must match, except that a related audio
+    // worklet is acceptable (for WebAssembly modules, which are subject to
+    // a Chromium-specific restriction).
+    kAllowRelatedAudioWorklet,
+
+    // The origins of the sender and receiver contexts must match.
+    kStrict,
+  };
+
+  // Returns the origin check required to receive this value.
+  OriginCheckRequirement GetOriginCheckRequirement() const;
 
   // Returns true after serializing script values that remote origins cannot
   // access.
@@ -461,7 +477,7 @@ class CORE_EXPORT SerializedScriptValue
 
   // These do not have one-use transferred contents, like the above.
   TransferredWasmModulesArray wasm_modules_;
-  BlobDataHandleMap blob_data_handles_;
+  BlobDataHandleArray blob_data_handles_;
   MojoScopedHandleArray mojo_handles_;
   SharedArrayBufferContentsArray shared_array_buffers_contents_;
   SharedImmutableArrayBufferContentsArray

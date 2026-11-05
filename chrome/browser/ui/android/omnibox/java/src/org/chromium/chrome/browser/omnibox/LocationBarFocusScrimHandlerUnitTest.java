@@ -5,10 +5,11 @@
 package org.chromium.chrome.browser.omnibox;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import android.graphics.Color;
@@ -21,6 +22,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
@@ -30,6 +32,8 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker.LayerType;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 import org.chromium.components.browser_ui.widget.scrim.ScrimProperties;
 import org.chromium.components.omnibox.OmniboxCapabilities;
@@ -40,14 +44,15 @@ import org.chromium.components.omnibox.OmniboxFeatureList;
 public class LocationBarFocusScrimHandlerUnitTest {
     private static final int BOTTOM_CHIN_HEIGHT = 37;
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
-    @Mock private View mScrimTarget;
     @Mock private Runnable mClickDelegate;
-    @Mock private LocationBarDataProvider mLocationBarDataProvider;
     @Mock private ScrimManager mScrimManager;
     @Mock private BottomControlsStacker mBottomControlsStacker;
 
+    private final View mScrimTarget = new View(ContextUtils.getApplicationContext());
+    private OmniboxResourceProvider mResourceProvider;
     LocationBarFocusScrimHandler mScrimHandler;
 
     private final SettableNonNullObservableSupplier<Integer> mTabStripHeightSupplier =
@@ -60,12 +65,16 @@ public class LocationBarFocusScrimHandlerUnitTest {
                 .when(mBottomControlsStacker)
                 .getHeightFromLayerToBottom(LayerType.BOTTOM_CHIN);
 
+        mResourceProvider =
+                new OmniboxResourceProvider(
+                        ContextUtils.getApplicationContext(), BrandedColorScheme.APP_DEFAULT);
+
         mScrimHandler =
                 new LocationBarFocusScrimHandler(
                         mScrimManager,
                         (visible) -> {},
                         ContextUtils.getApplicationContext(),
-                        mLocationBarDataProvider,
+                        mResourceProvider,
                         mClickDelegate,
                         mScrimTarget,
                         mTabStripHeightSupplier,
@@ -82,7 +91,7 @@ public class LocationBarFocusScrimHandlerUnitTest {
 
         // A second de-focus shouldn't trigger another hide.
         mScrimHandler.setVisibility(false);
-        verify(mScrimManager, times(1)).hideScrim(any(), eq(true));
+        verify(mScrimManager).hideScrim(any(), eq(true));
     }
 
     @Test
@@ -127,5 +136,45 @@ public class LocationBarFocusScrimHandlerUnitTest {
                         .getScrimModelForTesting()
                         .get(ScrimProperties.BACKGROUND_COLOR)
                         .intValue());
+    }
+
+    @Test
+    public void testSetUseOpaqueScrim() {
+        mScrimHandler.setUseOpaqueScrim(true);
+        int color =
+                mScrimHandler
+                        .getScrimModelForTesting()
+                        .get(ScrimProperties.BACKGROUND_COLOR)
+                        .intValue();
+        assertEquals(mResourceProvider.getSuggestionsDropdownBackgroundColor(), color);
+        assertEquals(255, Color.alpha(color));
+
+        mScrimHandler.setUseOpaqueScrim(false);
+        assertNotEquals(
+                color,
+                (Object)
+                        mScrimHandler
+                                .getScrimModelForTesting()
+                                .get(ScrimProperties.BACKGROUND_COLOR));
+    }
+
+    @Test
+    public void testUpdateScrimVisualState_incognitoPhone_usesDefaultScrim() {
+        mResourceProvider.setBrandedColorScheme(BrandedColorScheme.INCOGNITO);
+        mScrimHandler.updateScrimVisualState();
+        assertNull(mScrimHandler.getScrimModelForTesting().get(ScrimProperties.BACKGROUND_COLOR));
+    }
+
+    @Test
+    @EnableFeatures(OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT)
+    @Config(qualifiers = "sw800dp")
+    public void testSetUseOpaqueScrim_overridesTransparentScrim() {
+        mScrimHandler.setUseOpaqueScrim(true);
+        int color =
+                mScrimHandler
+                        .getScrimModelForTesting()
+                        .get(ScrimProperties.BACKGROUND_COLOR)
+                        .intValue();
+        assertEquals(255, Color.alpha(color));
     }
 }

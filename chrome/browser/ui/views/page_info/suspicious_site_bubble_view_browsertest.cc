@@ -9,6 +9,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view_base.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -20,6 +21,7 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/test/button_test_api.h"
 #include "ui/views/test/widget_test.h"
@@ -47,12 +49,16 @@ IN_PROC_BROWSER_TEST_F(SuspiciousSiteBubbleViewBrowserTest,
 
   ShowSuspiciousSiteBubble(web_contents());
 
-  EXPECT_EQ(PageInfoBubbleViewBase::GetShownBubbleType(),
-            PageInfoBubbleViewBase::BUBBLE_SUSPICIOUS_SITE);
+  EXPECT_EQ(
+      PageInfoBubbleViewBase::GetShownBubbleTypeForTesting(web_contents()),
+      PageInfoBubbleViewBase::BUBBLE_SUSPICIOUS_SITE);
   views::BubbleDialogDelegateView* bubble =
-      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting();
+      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(web_contents());
   ASSERT_NE(bubble, nullptr);
   EXPECT_TRUE(bubble->GetWidget()->IsVisible());
+
+  EXPECT_TRUE(web_contents()->ShouldIgnoreInputEventsForTesting());
+  EXPECT_TRUE(browser()->GetTabStripModel()->IsTabBlocked(0));
 }
 
 IN_PROC_BROWSER_TEST_F(SuspiciousSiteBubbleViewBrowserTest, MarkAsSafeAction) {
@@ -67,8 +73,10 @@ IN_PROC_BROWSER_TEST_F(SuspiciousSiteBubbleViewBrowserTest, MarkAsSafeAction) {
   ShowSuspiciousSiteBubble(web_contents());
 
   auto* bubble = static_cast<SuspiciousSiteBubbleView*>(
-      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting());
+      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(web_contents()));
   ASSERT_NE(bubble, nullptr);
+  EXPECT_TRUE(web_contents()->ShouldIgnoreInputEventsForTesting());
+  EXPECT_TRUE(browser()->GetTabStripModel()->IsTabBlocked(0));
 
   views::test::WidgetDestroyedWaiter waiter(bubble->GetWidget());
   views::test::ButtonTestApi(bubble->mark_as_safe_button_for_testing())
@@ -79,8 +87,9 @@ IN_PROC_BROWSER_TEST_F(SuspiciousSiteBubbleViewBrowserTest, MarkAsSafeAction) {
   waiter.Wait();
 
   EXPECT_TRUE(allowlist.IsSiteAllowedForHost("a.test"));
-  EXPECT_EQ(PageInfoBubbleViewBase::GetShownBubbleType(),
-            PageInfoBubbleViewBase::BUBBLE_NONE);
+  EXPECT_FALSE(PageInfoBubbleViewBase::IsShowing(web_contents()));
+  EXPECT_FALSE(web_contents()->ShouldIgnoreInputEventsForTesting());
+  EXPECT_FALSE(browser()->GetTabStripModel()->IsTabBlocked(0));
 }
 
 IN_PROC_BROWSER_TEST_F(SuspiciousSiteBubbleViewBrowserTest,
@@ -95,8 +104,10 @@ IN_PROC_BROWSER_TEST_F(SuspiciousSiteBubbleViewBrowserTest,
   ShowSuspiciousSiteBubble(web_contents());
 
   auto* bubble = static_cast<SuspiciousSiteBubbleView*>(
-      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting());
+      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(web_contents()));
   ASSERT_NE(bubble, nullptr);
+  EXPECT_TRUE(web_contents()->ShouldIgnoreInputEventsForTesting());
+  EXPECT_TRUE(browser()->GetTabStripModel()->IsTabBlocked(0));
 
   content::TestNavigationObserver nav_observer(web_contents());
   views::test::ButtonTestApi(bubble->back_to_safety_button_for_testing())
@@ -107,4 +118,6 @@ IN_PROC_BROWSER_TEST_F(SuspiciousSiteBubbleViewBrowserTest,
   nav_observer.Wait();
 
   EXPECT_EQ(web_contents()->GetLastCommittedURL(), first_url);
+  EXPECT_FALSE(web_contents()->ShouldIgnoreInputEventsForTesting());
+  EXPECT_FALSE(browser()->GetTabStripModel()->IsTabBlocked(0));
 }

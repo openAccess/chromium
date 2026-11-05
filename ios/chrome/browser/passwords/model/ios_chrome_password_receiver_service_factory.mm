@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_receiver_service_factory.h"
 
 #import <memory>
+#import <utility>
 
 #import "base/functional/bind.h"
 #import "components/keyed_service/core/service_access_type.h"
@@ -21,39 +22,23 @@
 #import "ios/chrome/browser/sync/model/data_type_store_service_factory.h"
 #import "ios/chrome/common/channel_info.h"
 
-// static
-IOSChromePasswordReceiverServiceFactory*
-IOSChromePasswordReceiverServiceFactory::GetInstance() {
-  static base::NoDestructor<IOSChromePasswordReceiverServiceFactory> instance;
-  return instance.get();
-}
-
-// static
-password_manager::PasswordReceiverService*
-IOSChromePasswordReceiverServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return GetInstance()
-      ->GetServiceForProfileAs<password_manager::PasswordReceiverService>(
-          profile, /*create=*/true);
-}
-
 IOSChromePasswordReceiverServiceFactory::
-    IOSChromePasswordReceiverServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("PasswordReceiverService",
-                                    ProfileSelection::kRedirectedInIncognito) {
+    IOSChromePasswordReceiverServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "PasswordReceiverService",
+          ProfileSelection::kRedirectedInIncognito) {
   DependsOn(DataTypeStoreServiceFactory::GetInstance());
   DependsOn(IOSChromeAccountPasswordStoreFactory::GetInstance());
   DependsOn(IOSChromeProfilePasswordStoreFactory::GetInstance());
 }
 
-IOSChromePasswordReceiverServiceFactory::
-    ~IOSChromePasswordReceiverServiceFactory() = default;
-
 std::unique_ptr<KeyedService>
 IOSChromePasswordReceiverServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
+    ProfileIOS& profile) const {
   // Since Password Manager doesn't work for non-standard profiles, the
   // PasswordReceiverService also shouldn't be created for such profiles.
-  CHECK(!profile->IsOffTheRecord());
+  CHECK(!profile.IsOffTheRecord());
 
   auto change_processor =
       std::make_unique<syncer::ClientTagBasedDataTypeProcessor>(

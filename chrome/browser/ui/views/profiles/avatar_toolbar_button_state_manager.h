@@ -134,11 +134,18 @@ class StateProvider {
   // Returns the accessibility label of the button.
   virtual std::optional<std::u16string> GetAccessibilityLabel() const;
 
+  // Action run when the button is pressed. `keep_anchor_visible` keeps the
+  // button from being hidden (e.g., due to WebUI toolbar overflow) while alive.
+  // Actions that show a bubble anchored to the avatar button should keep it
+  // alive while that bubble is open; otherwise it should be destroyed.
+  using ButtonAction = base::RepeatingCallback<void(
+      bool is_source_accelerator,
+      base::ScopedClosureRunner keep_anchor_visible)>;
+
   // Returns the action to be used when the button is pressed. This is used to
   // override the default action of the button (defined by
   // `AvatarToolbarButtonDelegate`) when it is pressed.
-  virtual std::optional<base::RepeatingCallback<void(bool)>>
-  GetButtonActionOverride();
+  virtual std::optional<ButtonAction> GetButtonActionOverride();
 
   virtual void OnButtonPressed();
   virtual void OnIconUpdated();
@@ -265,15 +272,14 @@ class AvatarToolbarButtonStateManager
                               int avatar_size,
                               bool is_label_visible) const;
 
-  // Shared button press logic.
-  void HandleButtonPressed(bool is_source_accelerator);
+  // Shared button press logic. Callers should make the button visible first,
+  // where possible. `keep_anchor_visible` keeps the button from being hidden
+  // (e.g., due to WebUI toolbar overflow) while alive. It is passed along to
+  // whatever action is taken, which will keep it alive as long as it shows a
+  // bubble anchored to the button.
+  void HandleButtonPressed(bool is_source_accelerator,
+                           base::ScopedClosureRunner keep_anchor_visible);
 
-  // Shared IPH methods.
-  void MaybeShowProfileSwitchIPH();
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  void MaybeShowSupervisedUserSignInIPH();
-  void MaybeShowSignInBenefitsIPH();
-#endif
   void MaybeShowExplicitBrowserSigninPreferenceRememberedIPH(
       const AccountInfo& account_info);
 
@@ -285,14 +291,6 @@ class AvatarToolbarButtonStateManager
   [[nodiscard]] static base::AutoReset<std::optional<base::TimeDelta>>
   CreateScopedInfiniteDelayOverrideForTesting(AvatarDelayType delay_type);
 
-  // static
-  [[nodiscard]] static base::AutoReset<base::TimeDelta>
-  SetScopedIPHMinDelayAfterCreationForTesting(base::TimeDelta delay);
-
-  // Do not show the IPH right when creating the window, so that the IPH has a
-  // separate animation.
-  static base::TimeDelta g_iph_min_delay_after_creation;
-
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
   [[nodiscard]] static base::AutoReset<std::optional<base::TimeDelta>>
   CreateScopedZeroDelayOverrideSigninPendingTextForTesting();
@@ -300,10 +298,6 @@ class AvatarToolbarButtonStateManager
   // WARNING: Check `AvatarToolbarButton::ForceShowingPromoForTesting()` before
   // using.
   void ForceShowingPromoForTesting();
-
-  // Returns whether the delay timer was running or not.
-  // Stops the timer if it is running.
-  bool GetStateAndFireSignedOutTriggerDelayTimerForTesting();
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
  private:
@@ -390,9 +384,6 @@ class AvatarToolbarButtonStateManager
   // remembered following a web sign-in event but waiting for the available
   // account information to be fetched in order to show the sign in IPH.
   GaiaId gaia_id_for_signin_choice_remembered_;
-
-  // Time when this object was created.
-  const base::TimeTicks creation_time_;
 
   std::vector<raw_ref<Observer>> state_manager_observers_;
 

@@ -11,22 +11,18 @@
 #import "base/feature_list.h"
 #import "base/memory/raw_ptr.h"
 #import "base/metrics/histogram_functions.h"
-#import "base/metrics/histogram_macros.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/sequenced_task_runner.h"
 #import "build/branding_buildflags.h"
 #import "components/autofill/core/browser/metrics/autofill_settings_metrics.h"
-#import "components/autofill/core/common/autofill_prefs.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/omnibox/browser/omnibox_pref_names.h"
-#import "components/password_manager/core/browser/manage_passwords_referrer.h"
 #import "components/password_manager/core/browser/ui/password_check_referrer.h"
-#import "components/password_manager/core/common/password_manager_pref_names.h"
 #import "components/prefs/ios/pref_observer_bridge.h"
 #import "components/prefs/pref_member.h"
 #import "components/prefs/pref_service.h"
@@ -40,8 +36,11 @@
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/strings/grit/components_strings.h"
+#import "components/subscription_eligibility/objc/subscription_eligibility_observer_bridge.h"
+#import "components/subscription_eligibility/subscription_eligibility_service.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync/service/sync_user_settings.h"
+#import "components/universal_optout/features.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/table_view_account_item.h"
 #import "ios/chrome/browser/authentication/ui_bundled/change_profile/change_profile_settings_continuation.h"
@@ -84,16 +83,15 @@
 #import "ios/chrome/browser/search_engines/model/search_engine_observer_bridge.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/settings/autofill/autofill_and_passwords/coordinator/autofill_and_passwords_coordinator.h"
-#import "ios/chrome/browser/settings/autofill/autofill_and_passwords/utils/autofill_and_passwords_item_utils.h"
-#import "ios/chrome/browser/settings/autofill/payments/coordinator/autofill_credit_card_coordinator.h"
-#import "ios/chrome/browser/settings/autofill/payments/coordinator/autofill_credit_card_coordinator_delegate.h"
 #import "ios/chrome/browser/settings/google_services/coordinator/google_services_settings_coordinator.h"
 #import "ios/chrome/browser/settings/manage_sync/coordinator/manage_sync_settings_coordinator.h"
 #import "ios/chrome/browser/settings/model/sync/utils/identity_error_util.h"
 #import "ios/chrome/browser/settings/model/sync/utils/sync_util.h"
+#import "ios/chrome/browser/settings/site_settings/coordinator/site_settings_coordinator.h"
+#import "ios/chrome/browser/settings/site_settings/coordinator/site_settings_coordinator_delegate.h"
+#import "ios/chrome/browser/settings/site_settings/public/site_settings_constants.h"
 #import "ios/chrome/browser/settings/ui_bundled/about_chrome_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/address_bar_preference/address_bar_preference_coordinator.h"
-#import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_profile_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/bandwidth/bandwidth_management_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/bwg/coordinator/gemini_settings_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/cells/enhanced_safe_browsing_inline_promo_item.h"
@@ -109,7 +107,6 @@
 #import "ios/chrome/browser/settings/ui_bundled/language/language_settings_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/notifications/notifications_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/notifications/notifications_settings_observer.h"
-#import "ios/chrome/browser/settings/ui_bundled/password/passwords_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/safe_browsing/enhanced_safe_browsing_inline_promo_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/safety_check/safety_check_constants.h"
@@ -117,8 +114,6 @@
 #import "ios/chrome/browser/settings/ui_bundled/safety_check/safety_check_utils.h"
 #import "ios/chrome/browser/settings/ui_bundled/search_engine_table_view_controller.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
-#import "ios/chrome/browser/settings/ui_bundled/site_permissions/site_permissions_coordinator.h"
-#import "ios/chrome/browser/settings/ui_bundled/site_permissions/site_permissions_coordinator_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/tabs/tabs_settings_coordinator.h"
 #import "ios/chrome/browser/settings/ui_bundled/voice_search_table_view_controller.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -140,6 +135,7 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
 #import "ios/chrome/browser/shared/ui/buildflags.h"
+#import "ios/chrome/browser/shared/ui/image/g_with_point_size.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_detail_icon_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_image_item.h"
@@ -155,14 +151,19 @@
 #import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
+#import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
+#import "ios/chrome/browser/subscription_eligibility/model/subscription_eligibility_service_factory.h"
 #import "ios/chrome/browser/sync/model/enterprise_utils.h"
 #import "ios/chrome/browser/sync/model/sync_observer_bridge.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/upgrade/model/upgrade_utils.h"
 #import "ios/chrome/browser/voice/model/speech_input_locale_config.h"
 #import "ios/chrome/browser/voice/model/voice_search_prefs.h"
+#import "ios/chrome/browser/web_extension/model/extension_service.h"
+#import "ios/chrome/browser/web_extension/model/extension_service_factory.h"
+#import "ios/chrome/browser/web_extension/model/extension_service_observer_bridge.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
@@ -186,7 +187,7 @@ NSString* const kDevViewSourceKey = @"DevViewSource";
 // Returns the branded version of the Google Services symbol.
 UIImage* GetBrandedGoogleServicesSymbol() {
 #if BUILDFLAG(IOS_USE_BRANDED_ASSETS)
-  return SettingsRootMulticolorSymbol(SymbolGoogleIcon);
+  return GWithPointSize(SuperGSize::k18pt);
 #else
   return SettingsRootSymbol(SymbolGearshape2);
 #endif
@@ -259,12 +260,12 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
     AddressBarPreferenceCoordinatorDelegate,
     AuthenticationServiceObserving,
     AutofillAndPasswordsCoordinatorDelegate,
-    AutofillCreditCardCoordinatorDelegate,
     BooleanObserver,
     ContentSettingsCoordinatorDelegate,
     DiscoverFeedVisibilityObserver,
     DownloadsSettingsCoordinatorDelegate,
     EnhancedSafeBrowsingInlinePromoDelegate,
+    ExtensionServiceObserving,
     GeminiSettingsCoordinatorDelegate,
     GoogleServicesSettingsCoordinatorDelegate,
     IdentityManagerObserving,
@@ -272,14 +273,14 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
     NotificationsCoordinatorDelegate,
     NotificationsSettingsObserverDelegate,
     PasswordCheckObserver,
-    PasswordsCoordinatorDelegate,
     PopoverLabelViewControllerDelegate,
     PrefObserverDelegate,
     PrivacyCoordinatorDelegate,
     SafariDataImportUIHandler,
     SafetyCheckCoordinatorDelegate,
     SearchEngineObserving,
-    SitePermissionsCoordinatorDelegate,
+    SiteSettingsCoordinatorDelegate,
+    SubscriptionEligibilityServiceObserving,
     SyncObserverModelBridge,
     TabsSettingsCoordinatorDelegate> {
   // The browser where the settings are being displayed.
@@ -312,6 +313,13 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   raw_ptr<AuthenticationService> _authService;
   std::unique_ptr<AuthenticationServiceObserverBridge>
       _authServiceObserverBridge;
+  raw_ptr<subscription_eligibility::SubscriptionEligibilityService>
+      _subscriptionEligibilityService;
+  std::unique_ptr<
+      subscription_eligibility::SubscriptionEligibilityObserverBridge>
+      _subscriptionEligibilityObserverBridge;
+  std::unique_ptr<ExtensionServiceObserverBridge>
+      _extensionServiceObserverBridge;
 
   // Gemini settings coordinator.
   GeminiSettingsCoordinator* _geminiSettingsCoordinator;
@@ -331,14 +339,8 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   // Safety Check coordinator.
   SafetyCheckCoordinator* _safetyCheckCoordinator;
 
-  // Passwords coordinator.
-  PasswordsCoordinator* _passwordsCoordinator;
-
   // Autofill and passwords coordinator.
   AutofillAndPasswordsCoordinator* _autofillAndPasswordsCoordinator;
-
-  // Autofill credit card coordinator.
-  AutofillCreditCardCoordinator* _autofillCreditCardCoordinator;
 
   // Feature engagement tracker for the signin IPH.
   raw_ptr<feature_engagement::Tracker>
@@ -374,11 +376,9 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   TableViewDetailIconItem* _defaultSearchEngineItem;
   TableViewInfoButtonItem* _managedSearchEngineItem;
   TableViewDetailIconItem* _addressBarPreferenceItem;
-  TableViewDetailIconItem* _passwordsDetailItem;
-  TableViewDetailIconItem* _autoFillProfileDetailItem;
-  TableViewDetailIconItem* _autoFillCreditCardDetailItem;
   TableViewDetailIconItem* _autofillAndPasswordsDetailItem;
   TableViewDetailIconItem* _notificationsItem;
+  TableViewDetailIconItem* _privacyDetailItem;
   TableViewDetailIconItem* _defaultBrowserCellItem;
   TableViewDetailIconItem* _BWGDetailItem;
 
@@ -397,8 +397,9 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   // Downloads settings coordinator.
   DownloadsSettingsCoordinator* _downloadsSettingsCoordinator;
 
-  // Site permissions coordinator.
-  SitePermissionsCoordinator* _sitePermissionsCoordinator;
+
+  // Site settings coordinator.
+  SiteSettingsCoordinator* _siteSettingsCoordinator;
 }
 
 // The item related to the switch for the show feed settings.
@@ -429,8 +430,8 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 
 - (instancetype)initWithBrowser:(Browser*)browser
        hasDefaultBrowserBlueDot:(BOOL)hasDefaultBrowserBlueDot {
-  CHECK(browser, base::NotFatalUntil::M151);
-  CHECK_EQ(browser->type(), Browser::Type::kRegular, base::NotFatalUntil::M151);
+  CHECK(browser);
+  CHECK_EQ(browser->type(), Browser::Type::kRegular);
 
   self = [super initWithStyle:ChromeTableViewStyle()];
   if (self) {
@@ -446,7 +447,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
         ChromeAccountManagerServiceFactory::GetForProfile(_profile);
     // It is expected that `identityManager` should never be nil except in
     // tests. In that case, the tests should be fixed.
-    CHECK(identityManager, base::NotFatalUntil::M151);
+    CHECK(identityManager);
     _identityObserverBridge.reset(
         new signin::IdentityManagerObserverBridge(identityManager, self));
     syncer::SyncService* syncService =
@@ -481,6 +482,22 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
     _authServiceObserverBridge =
         std::make_unique<AuthenticationServiceObserverBridge>(_authService,
                                                               self);
+    _subscriptionEligibilityService =
+        SubscriptionEligibilityServiceFactory::GetForProfile(_profile);
+    CHECK(_subscriptionEligibilityService, base::NotFatalUntil::M156);
+    _subscriptionEligibilityObserverBridge = std::make_unique<
+        subscription_eligibility::SubscriptionEligibilityObserverBridge>(
+        _subscriptionEligibilityService, self);
+    if (base::FeatureList::IsEnabled(
+            universal_optout::features::kUniversalOptOutSettings)) {
+      ExtensionService* extensionService =
+          ExtensionServiceFactory::GetForProfile(_profile);
+      if (extensionService) {
+        _extensionServiceObserverBridge =
+            std::make_unique<ExtensionServiceObserverBridge>(extensionService,
+                                                             self);
+      }
+    }
     _bottomOmniboxEnabled = [[PrefBackedBoolean alloc]
         initWithPrefService:localState
                    prefName:omnibox::kIsOmniboxInBottomPosition];
@@ -499,13 +516,6 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
     _prefObserverBridge->ObserveChangesForPreference(prefs::kVoiceSearchLocale,
                                                      &_prefChangeRegistrar);
     _prefObserverBridge->ObserveChangesForPreference(
-        password_manager::prefs::kCredentialsEnableService,
-        &_prefChangeRegistrar);
-    _prefObserverBridge->ObserveChangesForPreference(
-        autofill::prefs::kAutofillCreditCardEnabled, &_prefChangeRegistrar);
-    _prefObserverBridge->ObserveChangesForPreference(
-        autofill::prefs::kAutofillProfileEnabled, &_prefChangeRegistrar);
-    _prefObserverBridge->ObserveChangesForPreference(
         DefaultSearchManager::kDefaultSearchProviderDataPrefName,
         &_prefChangeRegistrar);
     _prefObserverBridge->ObserveChangesForPreference(prefs::kSigninAllowed,
@@ -519,7 +529,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 }
 
 - (void)dealloc {
-  CHECK(_settingsAreDismissed, base::NotFatalUntil::M151)
+  CHECK(_settingsAreDismissed)
       << "-settingsWillBeDismissed must be called before -dealloc";
 }
 
@@ -565,6 +575,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   }
 
   [self updateNotificationsDetailText];
+  [self updatePrivacyDetailItem];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -623,17 +634,8 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 
   // Basics section
   [model addSectionWithIdentifier:SettingsSectionIdentifierBasics];
-  if (IsYourSavedInfoSettingsPageIosEnabled()) {
-    [model addItem:[self autofillAndPasswordsDetailItem]
-        toSectionWithIdentifier:SettingsSectionIdentifierBasics];
-  } else {
-    [model addItem:[self passwordsDetailItem]
-        toSectionWithIdentifier:SettingsSectionIdentifierBasics];
-    [model addItem:[self autoFillCreditCardDetailItem]
-        toSectionWithIdentifier:SettingsSectionIdentifierBasics];
-    [model addItem:[self autoFillProfileDetailItem]
-        toSectionWithIdentifier:SettingsSectionIdentifierBasics];
-  }
+  [model addItem:[self autofillAndPasswordsDetailItem]
+      toSectionWithIdentifier:SettingsSectionIdentifierBasics];
 
   // Advanced Section
   [model addSectionWithIdentifier:SettingsSectionIdentifierAdvanced];
@@ -681,7 +683,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   [model addItem:[self contentSettingsDetailItem]
       toSectionWithIdentifier:SettingsSectionIdentifierInfo];
   if (IsDomainLevelSitePermissionsEnabled()) {
-    [model addItem:[self sitePermissionsDetailItem]
+    [model addItem:[self siteSettingsDetailItem]
         toSectionWithIdentifier:SettingsSectionIdentifierInfo];
   }
   if (shouldShowDownloadsSettings) {
@@ -1038,24 +1040,6 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   return _managedSearchEngineItem;
 }
 
-- (TableViewItem*)passwordsDetailItem {
-  _passwordsDetailItem = PasswordsItem(_profile->GetPrefs()->GetBoolean(
-      password_manager::prefs::kCredentialsEnableService));
-  return _passwordsDetailItem;
-}
-
-- (TableViewItem*)autoFillCreditCardDetailItem {
-  _autoFillCreditCardDetailItem = AutofillCreditCardItem(
-      autofill::prefs::IsAutofillPaymentMethodsEnabled(_profile->GetPrefs()));
-  return _autoFillCreditCardDetailItem;
-}
-
-- (TableViewItem*)autoFillProfileDetailItem {
-  _autoFillProfileDetailItem = AutofillProfileItem(
-      autofill::prefs::IsAutofillProfileEnabled(_profile->GetPrefs()));
-  return _autoFillProfileDetailItem;
-}
-
 - (TableViewItem*)autofillAndPasswordsDetailItem {
   _autofillAndPasswordsDetailItem =
       [self detailItemWithType:SettingsItemTypeAutofillAndPasswords
@@ -1124,15 +1108,17 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 }
 
 - (TableViewItem*)privacyDetailItem {
-  NSString* title = nil;
-  title = l10n_util::GetNSString(IDS_IOS_SETTINGS_PRIVACY_TITLE);
+  NSString* title = l10n_util::GetNSString(IDS_IOS_SETTINGS_PRIVACY_TITLE);
 
-  return [self detailItemWithType:SettingsItemTypePrivacy
+  _privacyDetailItem =
+      [self detailItemWithType:SettingsItemTypePrivacy
                              text:title
                        detailText:nil
                            symbol:SettingsRootSymbol(SymbolPrivacy)
             symbolBackgroundColor:[UIColor colorNamed:kBlue500Color]
           accessibilityIdentifier:kSettingsPrivacyCellId];
+  [self updatePrivacyDetailItem];
+  return _privacyDetailItem;
 }
 
 - (TableViewSwitchItem*)feedSettingsItem {
@@ -1190,14 +1176,14 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
           accessibilityIdentifier:kSettingsContentSettingsCellId];
 }
 
-- (TableViewItem*)sitePermissionsDetailItem {
-  // TODO(crbug.com/553098545): Use localized string.
-  return [self detailItemWithType:SettingsItemTypeSitePermissions
-                             text:@"Site Permissions"
+- (TableViewItem*)siteSettingsDetailItem {
+  return [self detailItemWithType:SettingsItemTypeSiteSettings
+                             text:l10n_util::GetNSString(
+                                      IDS_IOS_SITE_SETTINGS_TITLE)
                        detailText:nil
-                           symbol:SettingsRootSymbol(SymbolGearshape2)
+                           symbol:SettingsRootSymbol(SymbolSliderHorizontal)
             symbolBackgroundColor:[UIColor colorNamed:kGrey400Color]
-          accessibilityIdentifier:kSettingsSitePermissionsCellId];
+          accessibilityIdentifier:kSettingsSiteSettingsCellId];
 }
 
 - (TableViewItem*)downloadsSettingsDetailItem {
@@ -1405,7 +1391,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   infoButton.statusText = status;
   if (image) {
     infoButton.iconImage = image;
-    CHECK(imageBackground, base::NotFatalUntil::M151);
+    CHECK(imageBackground);
     infoButton.iconBackgroundColor = imageBackground;
     infoButton.iconTintColor = UIColor.whiteColor;
   }
@@ -1508,25 +1494,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
       GetApplicationContext()->GetLocalState()->SetInteger(
           prefs::kAddressBarSettingsNewBadgeShownCount, INT_MAX);
       break;
-    case SettingsItemTypePasswords:
-      base::RecordAction(
-          base::UserMetricsAction("Options_ShowPasswordManager"));
-      UMA_HISTOGRAM_ENUMERATION(
-          "PasswordManager.ManagePasswordsReferrer",
-          password_manager::ManagePasswordsReferrer::kChromeSettings);
-      [self showPasswords];
-      break;
-    case SettingsItemTypeAutofillCreditCard:
-      base::RecordAction(base::UserMetricsAction("AutofillCreditCardsViewed"));
-      [self showCreditCardSettingsWithLevelUpWalkthroughIPH:NO];
-      break;
-    case SettingsItemTypeAutofillProfile:
-      base::RecordAction(base::UserMetricsAction("AutofillAddressesViewed"));
-      controller =
-          [[AutofillProfileTableViewController alloc] initWithBrowser:_browser];
-      break;
     case SettingsItemTypeAutofillAndPasswords:
-      // TODO(crbug.com/500341282): Add user metric for this item.
       [self showAutofillAndPasswords];
       break;
     case SettingsItemTypeNotifications:
@@ -1565,9 +1533,9 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
       base::RecordAction(base::UserMetricsAction("Settings.ContentSettings"));
       [self showContentSettings];
       break;
-    case SettingsItemTypeSitePermissions:
-      base::RecordAction(base::UserMetricsAction("Settings.SitePermissions"));
-      [self showSitePermissionsSettings];
+    case SettingsItemTypeSiteSettings:
+      base::RecordAction(base::UserMetricsAction("Settings.SiteSettings"));
+      [self showSiteSettings];
       break;
     case SettingsItemTypeDownloadsSettings:
       base::RecordAction(base::UserMetricsAction("Settings.DownloadsSettings"));
@@ -1860,6 +1828,9 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
     base::debug::DumpWithoutCrashing();
   }
 
+  // Stop the coordinator before restarting it, if it exists.
+  [_contentSettingsCoordinator stop];
+
   _contentSettingsCoordinator = [[ContentSettingsCoordinator alloc]
       initWithBaseNavigationController:self.navigationController
                                browser:_browser];
@@ -1941,22 +1912,6 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   [_manageSyncSettingsCoordinator start];
 }
 
-- (void)showPasswords {
-  if (_passwordsCoordinator &&
-      self.navigationController.topViewController != self) {
-    base::debug::DumpWithoutCrashing();
-  }
-
-  // Stop the coordinator before restarting it, if it exists.
-  [_passwordsCoordinator stop];
-
-  _passwordsCoordinator = [[PasswordsCoordinator alloc]
-      initWithBaseNavigationController:self.navigationController
-                               browser:_browser];
-  _passwordsCoordinator.delegate = self;
-  [_passwordsCoordinator start];
-}
-
 - (void)showAutofillAndPasswords {
   if (_autofillAndPasswordsCoordinator &&
       self.navigationController.topViewController != self) {
@@ -1973,6 +1928,10 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
                                            AutofillSettingsReferrer::
                                                kSettingsMenu];
   _autofillAndPasswordsCoordinator.delegate = self;
+  _autofillAndPasswordsCoordinator
+      .shouldShowLevelUpPaymentMethodsWalkthroughIPH =
+      self.shouldShowLevelUpPaymentMethodsWalkthroughIPH;
+  self.shouldShowLevelUpPaymentMethodsWalkthroughIPH = NO;
   [_autofillAndPasswordsCoordinator start];
 }
 
@@ -2101,20 +2060,20 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   identityAccountItem.image =
       GetApplicationContext()->GetIdentityAvatarProvider()->GetIdentityAvatar(
           _identity, IdentityAvatarSize::TableViewIcon);
-  NSString* name = _identity.userFullName;
-  NSString* email = _identity.userEmail;
-  if (name) {
-    identityAccountItem.text = name;
-    identityAccountItem.detailText = email;
-  } else {
-    identityAccountItem.text = email;
-  }
+  identityAccountItem.name = _identity.userFullName;
+  identityAccountItem.email = _identity.userEmail;
 
   syncer::SyncService* syncService =
       SyncServiceFactory::GetForProfile(_profile);
-  CHECK(syncService, base::NotFatalUntil::M151);
+  CHECK(syncService);
   if (GetAccountErrorUIInfo(syncService) != nil) {
     identityAccountItem.detailImage = TableViewAccountDetailImage::kError;
+  } else if (_subscriptionEligibilityService &&
+             _subscriptionEligibilityService->GetAiSubscriptionTier() > 0 &&
+             IsAiSubscriptionAvatarRingFollowupIOSEnabled()) {
+    identityAccountItem.detailImage = TableViewAccountDetailImage::kAITierRing;
+  } else {
+    identityAccountItem.detailImage = TableViewAccountDetailImage::kNone;
   }
 }
 
@@ -2200,7 +2159,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 // Presents the Level Up Payment Methods walkthrough IPH if needed.
 - (void)maybeShowLevelUpWalkthroughIPH {
   if (!self.shouldShowLevelUpPaymentMethodsWalkthroughIPH ||
-      _settingsAreDismissed || !IsYourSavedInfoSettingsPageIosEnabled()) {
+      _settingsAreDismissed) {
     return;
   }
 
@@ -2247,13 +2206,12 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
                       alignment:BubbleAlignmentBottomOrTrailing
                      bubbleType:BubbleViewTypeRichWithNext
                 pageControlPage:BubblePageControlPageThird
-          totalPageControlPages:4
+          totalPageControlPages:5
           customNextButtonTitle:l10n_util::GetNSString(IDS_IOS_IPH_BUBBLE_NEXT)
               dismissalCallback:dismissalCallback];
   presenter.dismissalTimerDisabled = YES;
 
   if ([presenter canPresentInView:targetView anchorPoint:anchorPoint]) {
-    self.shouldShowLevelUpPaymentMethodsWalkthroughIPH = NO;
     _bubblePresenter = presenter;
     [presenter presentInViewController:self anchorPoint:anchorPoint];
   }
@@ -2267,47 +2225,14 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
     case IPHDismissalReasonType::kTappedNext:
     case IPHDismissalReasonType::kTappedAnchorView:
     case IPHDismissalReasonType::kTappedIPH:
-      [self showAutofillAndPasswordsWithLevelUpWalkthroughIPH:YES];
+      [self showAutofillAndPasswords];
+      break;
+    case IPHDismissalReasonType::kTappedClose:
+      self.shouldShowLevelUpPaymentMethodsWalkthroughIPH = NO;
       break;
     default:
       break;
   }
-}
-
-// Shows the Autofill & Passwords settings page, optionally triggering the
-// Level Up Payment Methods walkthrough IPH.
-- (void)showAutofillAndPasswordsWithLevelUpWalkthroughIPH:(BOOL)shouldShowIPH {
-  if (_autofillAndPasswordsCoordinator &&
-      self.navigationController.topViewController != self) {
-    base::debug::DumpWithoutCrashing();
-  }
-
-  [_autofillAndPasswordsCoordinator stop];
-
-  _autofillAndPasswordsCoordinator = [[AutofillAndPasswordsCoordinator alloc]
-      initWithBaseNavigationController:self.navigationController
-                               browser:_browser
-                              referrer:autofill::autofill_metrics::
-                                           AutofillSettingsReferrer::
-                                               kSettingsMenu];
-  _autofillAndPasswordsCoordinator.delegate = self;
-  _autofillAndPasswordsCoordinator
-      .shouldShowLevelUpPaymentMethodsWalkthroughIPH = shouldShowIPH;
-  [_autofillAndPasswordsCoordinator start];
-}
-
-// Shows the Payment Methods settings page, optionally triggering the Level Up
-// Payment Methods walkthrough IPH.
-- (void)showCreditCardSettingsWithLevelUpWalkthroughIPH:(BOOL)shouldShowIPH {
-  [_autofillCreditCardCoordinator stop];
-
-  _autofillCreditCardCoordinator = [[AutofillCreditCardCoordinator alloc]
-      initWithBaseNavigationController:self.navigationController
-                               browser:_browser];
-  _autofillCreditCardCoordinator.delegate = self;
-  _autofillCreditCardCoordinator.shouldShowLevelUpPaymentMethodsWalkthroughIPH =
-      shouldShowIPH;
-  [_autofillCreditCardCoordinator start];
 }
 
 // Check if the default search engine is managed by policy.
@@ -2406,6 +2331,28 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   }
 }
 
+// Updates the privacy detail item badge if the extension service has a load
+// error and silent mode is not enabled.
+- (void)updatePrivacyDetailItem {
+  if (!_privacyDetailItem || !_profile) {
+    return;
+  }
+  if (!base::FeatureList::IsEnabled(
+          universal_optout::features::kUniversalOptOutSettings)) {
+    return;
+  }
+  ExtensionService* extensionService =
+      ExtensionServiceFactory::GetForProfile(_profile);
+  const bool hasError = extensionService && extensionService->HasGPCLoadError();
+  BadgeType badgeType = hasError ? BadgeType::kWarning : BadgeType::kNone;
+  if (badgeType != _privacyDetailItem.badgeType) {
+    _privacyDetailItem.badgeType = badgeType;
+    if ([self.tableViewModel hasItem:_privacyDetailItem]) {
+      [self reconfigureCellsForItems:@[ _privacyDetailItem ]];
+    }
+  }
+}
+
 // Updates the state of the Safety Check notifications button based on whether
 // the user has Safety Check notifications enabled.
 - (void)updateSafetyCheckNotificationsButtonState {
@@ -2459,20 +2406,20 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   [_downloadsSettingsCoordinator start];
 }
 
-- (void)showSitePermissionsSettings {
-  if (_sitePermissionsCoordinator &&
+- (void)showSiteSettings {
+  if (_siteSettingsCoordinator &&
       self.navigationController.topViewController != self) {
     base::debug::DumpWithoutCrashing();
   }
 
   // Stop the coordinator before restarting it, if it exists.
-  [_sitePermissionsCoordinator stop];
+  [_siteSettingsCoordinator stop];
 
-  _sitePermissionsCoordinator = [[SitePermissionsCoordinator alloc]
+  _siteSettingsCoordinator = [[SiteSettingsCoordinator alloc]
       initWithBaseNavigationController:self.navigationController
                                browser:_browser];
-  _sitePermissionsCoordinator.delegate = self;
-  [_sitePermissionsCoordinator start];
+  _siteSettingsCoordinator.delegate = self;
+  [_siteSettingsCoordinator start];
 }
 
 // Records that the user has reached the impression limit for the enhanced safe
@@ -2739,16 +2686,15 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
                                             fullscreenPromo:NO
                                        continuationProvider:provider];
   _signinAndHistorySyncCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> identity) {
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
         [weakSelf didFinishSigninWithCoordinator:coordinator];
       };
   [_signinAndHistorySyncCoordinator start];
 }
 
 - (void)didFinishSigninWithCoordinator:(SigninCoordinator*)coordinator {
-  CHECK_EQ(_signinAndHistorySyncCoordinator, coordinator,
-           base::NotFatalUntil::M151);
+  CHECK_EQ(_signinAndHistorySyncCoordinator, coordinator);
   [self stopSigninCoordinator];
   if (_settingsAreDismissed) {
     return;
@@ -2822,17 +2768,9 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   [_safetyCheckCoordinator stop];
   _safetyCheckCoordinator = nil;
 
-  [_passwordsCoordinator stop];
-  _passwordsCoordinator.delegate = nil;
-  _passwordsCoordinator = nil;
-
   [_autofillAndPasswordsCoordinator stop];
   _autofillAndPasswordsCoordinator.delegate = nil;
   _autofillAndPasswordsCoordinator = nil;
-
-  [_autofillCreditCardCoordinator stop];
-  _autofillCreditCardCoordinator.delegate = nil;
-  _autofillCreditCardCoordinator = nil;
 
   [_notificationsCoordinator stop];
   _notificationsCoordinator = nil;
@@ -2851,8 +2789,8 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   [_downloadsSettingsCoordinator stop];
   _downloadsSettingsCoordinator = nil;
 
-  [_sitePermissionsCoordinator stop];
-  _sitePermissionsCoordinator = nil;
+  [_siteSettingsCoordinator stop];
+  _siteSettingsCoordinator = nil;
 
   // Stop observable prefs.
   [_showMemoryDebugToolsEnabled stop];
@@ -2881,6 +2819,9 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   _identityObserverBridge.reset();
   _authServiceObserverBridge.reset();
   _authService = nil;
+  _subscriptionEligibilityObserverBridge.reset();
+  _subscriptionEligibilityService = nullptr;
+  _extensionServiceObserverBridge.reset();
 
   // Remove PrefObserverDelegates.
   _notificationsObserver.delegate = nil;
@@ -3054,28 +2995,6 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
     [self reconfigureCellsForItems:@[ _voiceSearchDetailItem ]];
   }
 
-  if (!IsYourSavedInfoSettingsPageIosEnabled()) {
-    if (preferenceName == password_manager::prefs::kCredentialsEnableService) {
-      _passwordsDetailItem.detailText =
-          DetailTextForEnabledState(_profile->GetPrefs()->GetBoolean(
-              password_manager::prefs::kCredentialsEnableService));
-      [self reconfigureCellsForItems:@[ _passwordsDetailItem ]];
-    }
-
-    if (preferenceName == autofill::prefs::kAutofillProfileEnabled) {
-      _autoFillProfileDetailItem.detailText = DetailTextForEnabledState(
-          autofill::prefs::IsAutofillProfileEnabled(_profile->GetPrefs()));
-      [self reconfigureCellsForItems:@[ _autoFillProfileDetailItem ]];
-    }
-
-    if (preferenceName == autofill::prefs::kAutofillCreditCardEnabled) {
-      _autoFillCreditCardDetailItem.detailText = DetailTextForEnabledState(
-          autofill::prefs::IsAutofillPaymentMethodsEnabled(
-              _profile->GetPrefs()));
-      [self reconfigureCellsForItems:@[ _autoFillCreditCardDetailItem ]];
-    }
-  }
-
   if (preferenceName ==
       DefaultSearchManager::kDefaultSearchProviderDataPrefName) {
     // Reloading the data is needed because the item type and its class are
@@ -3088,7 +3007,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 
 - (void)geminiSettingsCoordinatorViewControllerWasRemoved:
     (GeminiSettingsCoordinator*)coordinator {
-  CHECK_EQ(_geminiSettingsCoordinator, coordinator, base::NotFatalUntil::M151);
+  CHECK_EQ(_geminiSettingsCoordinator, coordinator);
   [_geminiSettingsCoordinator stop];
   _geminiSettingsCoordinator = nil;
 }
@@ -3097,7 +3016,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 
 - (void)contentSettingsCoordinatorViewControllerWasRemoved:
     (ContentSettingsCoordinator*)coordinator {
-  CHECK_EQ(_contentSettingsCoordinator, coordinator, base::NotFatalUntil::M151);
+  CHECK_EQ(_contentSettingsCoordinator, coordinator);
   [_contentSettingsCoordinator stop];
   _contentSettingsCoordinator = nil;
 }
@@ -3106,8 +3025,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 
 - (void)googleServicesSettingsCoordinatorDidRemove:
     (GoogleServicesSettingsCoordinator*)coordinator {
-  CHECK_EQ(_googleServicesSettingsCoordinator, coordinator,
-           base::NotFatalUntil::M151);
+  CHECK_EQ(_googleServicesSettingsCoordinator, coordinator);
   [_googleServicesSettingsCoordinator stop];
   _googleServicesSettingsCoordinator.delegate = nil;
   _googleServicesSettingsCoordinator = nil;
@@ -3126,7 +3044,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 #pragma mark - SafetyCheckCoordinatorDelegate
 
 - (void)safetyCheckCoordinatorDidRemove:(SafetyCheckCoordinator*)coordinator {
-  CHECK_EQ(_safetyCheckCoordinator, coordinator, base::NotFatalUntil::M151);
+  CHECK_EQ(_safetyCheckCoordinator, coordinator);
   [_safetyCheckCoordinator stop];
   _safetyCheckCoordinator.delegate = nil;
   _safetyCheckCoordinator = nil;
@@ -3136,59 +3054,17 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 
 - (void)autofillAndPasswordsCoordinatorDidRemove:
     (AutofillAndPasswordsCoordinator*)coordinator {
-  CHECK_EQ(_autofillAndPasswordsCoordinator, coordinator,
-           base::NotFatalUntil::M151);
+  CHECK_EQ(_autofillAndPasswordsCoordinator, coordinator);
   [_autofillAndPasswordsCoordinator stop];
   _autofillAndPasswordsCoordinator.delegate = nil;
   _autofillAndPasswordsCoordinator = nil;
-}
-
-#pragma mark - AutofillCreditCardCoordinatorDelegate
-
-- (void)autofillCreditCardCoordinatorDidRemove:
-    (AutofillCreditCardCoordinator*)coordinator {
-  CHECK_EQ(_autofillCreditCardCoordinator, coordinator,
-           base::NotFatalUntil::M157);
-  [_autofillCreditCardCoordinator stop];
-  _autofillCreditCardCoordinator.delegate = nil;
-  _autofillCreditCardCoordinator = nil;
-}
-
-#pragma mark - PasswordsCoordinatorDelegate
-
-- (void)passwordsCoordinatorDidRemove:(PasswordsCoordinator*)coordinator {
-  CHECK_EQ(_passwordsCoordinator, coordinator, base::NotFatalUntil::M151);
-  [_passwordsCoordinator stop];
-  _passwordsCoordinator.delegate = nil;
-  _passwordsCoordinator = nil;
-}
-
-#pragma mark - PasswordManagerReauthenticationDelegate
-
-- (void)dismissPasswordManagerAfterFailedReauthentication {
-  // Pop everything up to the Settings page.
-  // When there is content presented, don't animate the dismissal of the view
-  // controllers in the navigation controller to prevent revealing passwords
-  // when the presented content is the one covered by the reauthentication UI.
-
-  UINavigationController* navigationController = self.navigationController;
-  UIViewController* topViewController = navigationController.topViewController;
-  UIViewController* presentedViewController =
-      topViewController.presentedViewController;
-
-  [navigationController popToViewController:self
-                                   animated:presentedViewController == nil];
-
-  [presentedViewController.presentingViewController
-      dismissViewControllerAnimated:YES
-                         completion:nil];
 }
 
 #pragma mark - NotificationsCoordinatorDelegate
 
 - (void)notificationsCoordinatorDidRemove:
     (NotificationsCoordinator*)coordinator {
-  CHECK_EQ(_notificationsCoordinator, coordinator, base::NotFatalUntil::M151);
+  CHECK_EQ(_notificationsCoordinator, coordinator);
   [_notificationsCoordinator stop];
   _notificationsCoordinator = nil;
 }
@@ -3197,7 +3073,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 
 - (void)privacyCoordinatorViewControllerWasRemoved:
     (PrivacyCoordinator*)coordinator {
-  CHECK_EQ(_privacyCoordinator, coordinator, base::NotFatalUntil::M151);
+  CHECK_EQ(_privacyCoordinator, coordinator);
   [_privacyCoordinator stop];
   _privacyCoordinator = nil;
 }
@@ -3226,7 +3102,7 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 
 - (void)extendedAccountInfoDidUpdate:(const AccountInfo&)info {
   id<SystemIdentity> identity =
-      _accountManagerService->GetIdentityOnDeviceWithGaiaID(info.gaia);
+      _accountManagerService->GetIdentityOnDeviceWithGaiaID(info.GetGaiaId());
   if ([_identity isEqual:identity]) {
     [self reloadAccountCell];
   }
@@ -3249,15 +3125,14 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 
 - (void)manageSyncSettingsCoordinatorWasRemoved:
     (ManageSyncSettingsCoordinator*)coordinator {
-  CHECK_EQ(_manageSyncSettingsCoordinator, coordinator,
-           base::NotFatalUntil::M151);
+  CHECK_EQ(_manageSyncSettingsCoordinator, coordinator);
   [self stopManageSyncSettingsCoordinator];
 }
 
 #pragma mark - TabsSettingsCoordinatorDelegate
 
 - (void)tabsSettingsCoordinatorDidRemove:(TabsSettingsCoordinator*)coordinator {
-  CHECK_EQ(coordinator, _tabsCoordinator, base::NotFatalUntil::M151);
+  CHECK_EQ(coordinator, _tabsCoordinator);
   [self stopTabsCoordinator];
 }
 
@@ -3280,12 +3155,12 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   _downloadsSettingsCoordinator = nil;
 }
 
-#pragma mark - SitePermissionsCoordinatorDelegate
+#pragma mark - SiteSettingsCoordinatorDelegate
 
-- (void)sitePermissionsCoordinatorWasRemoved:
-    (SitePermissionsCoordinator*)coordinator {
-  [_sitePermissionsCoordinator stop];
-  _sitePermissionsCoordinator = nil;
+- (void)siteSettingsCoordinatorWasRemoved:
+    (SiteSettingsCoordinator*)coordinator {
+  [_siteSettingsCoordinator stop];
+  _siteSettingsCoordinator = nil;
 }
 
 #pragma mark - EnhancedSafeBrowsingInlinePromoDelegate
@@ -3326,6 +3201,19 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
 - (void)onServiceStatusChanged {
   [self updateSigninSection];
   [self.tableView reloadData];
+}
+
+#pragma mark - ExtensionServiceObserving
+
+- (void)extensionService:(ExtensionService*)service
+    didChangeGPCLoadError:(bool)hasGPCLoadError {
+  [self updatePrivacyDetailItem];
+}
+
+#pragma mark - SubscriptionEligibilityServiceObserving
+
+- (void)aiSubscriptionTierDidUpdate:(int32_t)newSubscriptionTier {
+  [self reloadAccountCell];
 }
 
 @end

@@ -13,11 +13,10 @@
 #include "ash/style/icon_button.h"
 #include "ash/wm/window_pin_util.h"
 #include "ash/wm/window_state.h"
-#include "chrome/browser/ash/browser_delegate/browser_controller.h"
-#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chromeos/ash/components/boca/boca_metrics_util.h"
+#include "chromeos/ash/components/browser_delegate/browser_controller.h"
+#include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "chromeos/ui/frame/frame_header.h"
 #include "chromeos/ui/frame/immersive/immersive_fullscreen_controller.h"
@@ -28,6 +27,7 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_delegate.h"
 
 namespace ash {
 namespace {
@@ -72,7 +72,7 @@ OnTaskPodControllerImpl::OnTaskPodControllerImpl(ash::BrowserDelegate* browser)
   pod_widget_->SetBounds(CalculateWidgetBounds());
   OnPageNavigationContextChanged();
   pod_widget_->SetFocusTraversableParentView(
-      BrowserView::GetBrowserViewForBrowser(&browser_->GetBrowser()));
+      pod_widget_->parent()->client_view());
   pod_widget_->Show();
 
   browser_controller_observation_.Observe(BrowserController::GetInstance());
@@ -194,7 +194,7 @@ void OnTaskPodControllerImpl::OnPostWindowStateTypeChange(
 
 void OnTaskPodControllerImpl::OnWindowVisibilityChanged(aura::Window* window,
                                                         bool visible) {
-  DCHECK(pod_widget_);
+  CHECK(pod_widget_, base::NotFatalUntil::M160);
   // We need to check browser window visibility directly; `visible` param is for
   // webcontents visibility, which changes when we switch tabs.
   if (browser_->IsVisible()) {

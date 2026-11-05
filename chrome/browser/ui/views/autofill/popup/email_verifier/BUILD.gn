@@ -5,15 +5,16 @@
 assert(is_win || is_mac || is_linux || is_chromeos)
 
 source_set("email_verifier") {
-  public = [ "email_verification_popup_view.h" ]
-  sources = [ "email_verification_popup_view.cc" ]
+  public = [ "email_verification_popup_view_impl.h" ]
+  sources = [ "email_verification_popup_view_impl.cc" ]
 
   public_deps = [
     "//base",
+    "//chrome/browser/ui/autofill/email_verifier",
     "//chrome/browser/ui/views/autofill/popup",
     "//components/favicon_base",
-    "//net",
     "//ui/views",
+    "//url",
   ]
 
   deps = [
@@ -26,7 +27,29 @@ source_set("email_verifier") {
     "//components/url_formatter",
     "//components/vector_icons",
     "//content/public/browser",
+    "//net",
+    "//skia",
     "//ui/base",
+    "//ui/gfx",
+    "//ui/gfx/codec",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+
+  sources = [ "email_verification_popup_view_unittest.cc" ]
+
+  deps = [
+    ":email_verifier",
+    "//base/test:test_support",
+    "//chrome/browser/favicon",
+    "//chrome/test:test_support",
+    "//components/favicon/core",
+    "//components/favicon/core/test:test_support",
+    "//components/favicon_base",
+    "//ui/base",
+    "//ui/display",
     "//ui/gfx",
   ]
 }

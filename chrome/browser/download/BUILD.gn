@@ -66,7 +66,7 @@ source_set("download") {
     "//components/policy/core/common",
     "//components/prefs",
     "//components/safe_browsing:buildflags",
-    "//components/safe_browsing/content/common/proto:download_file_types_proto",
+    "//components/safe_browsing/content/common/file_type_policies/proto:download_file_types_proto",
     "//components/safe_browsing/core/common",
     "//components/safe_browsing/core/common/proto:csd_proto",
     "//content/public/browser",
@@ -180,10 +180,7 @@ source_set("impl") {
     "trusted_sources_manager.cc",
   ]
 
-  public_deps = [
-    ":download",
-    "//chrome/browser:browser_public_dependencies",
-  ]
+  public_deps = [ ":download" ]
 
   deps = [
     ":status_text_builder_utils",
@@ -200,11 +197,13 @@ source_set("impl") {
     "//chrome/browser/notifications",
     "//chrome/browser/offline_items_collection",
     "//chrome/browser/optimization_guide",
+    "//chrome/browser/plugins",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/profiles/keep_alive",
     "//chrome/browser/safe_browsing",
     "//chrome/browser/safe_browsing:metrics_collector",
     "//chrome/browser/signin",
+    "//chrome/browser/supervised_user",
     "//chrome/browser/tab_contents",
     "//chrome/browser/tab_group_sync",
     "//chrome/browser/thumbnail/generator",
@@ -232,6 +231,9 @@ source_set("impl") {
     "//components/security_state/content",
     "//components/services/quarantine",
     "//components/strings",
+    "//components/supervised_user/core/browser",
+    "//components/supervised_user/core/common",
+    "//third_party/re2",
     "//ui/base/unowned_user_data",
     "//url",
   ]
@@ -265,7 +267,8 @@ source_set("impl") {
     deps += [
       "//chrome/android:jni_headers",
       "//chrome/browser:chrome_content_browser_client",
-      "//chrome/browser:profile_key_startup_accessor",
+      "//chrome/browser/android:profile_key_startup_accessor",
+      "//chrome/browser/android:resource_mapper",
       "//chrome/browser/android:tabs_public",
       "//chrome/browser/download/android:jni_headers",
       "//chrome/browser/flags:flags_android",
@@ -296,7 +299,10 @@ source_set("impl") {
     deps += [
       "//chrome/browser/image_decoder",
       "//chrome/browser/policy:path_parser",
+      "//chrome/browser/ui:browser_tabstrip",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:chrome_pages",
+      "//chrome/browser/ui:scoped_tabbed_browser_displayer",
       "//chrome/browser/ui/hats",
       "//chrome/browser/ui/views/download",
       "//chrome/browser/ui/web_applications",
@@ -327,6 +333,7 @@ source_set("impl") {
     ]
 
     deps += [
+      "//ash/public/cpp",
       "//chrome/browser/apps/app_service",
       "//chrome/browser/ash/drive",
       "//chrome/browser/ash/file_manager",
@@ -382,7 +389,7 @@ source_set("impl") {
   if (safe_browsing_mode != 0) {
     deps += [
       "//components/safe_browsing/content/browser/download:download_stats",
-      "//components/safe_browsing/content/common:file_type_policies",
+      "//components/safe_browsing/content/common/file_type_policies",
     ]
   }
 
@@ -489,6 +496,8 @@ source_set("unit_tests") {
     "//chrome/browser/ui/color:color_headers",
     "//chrome/common:non_code_constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//chrome/test/base:testing_browser_process",
     "//components/content_settings/core/browser",
     "//components/download/public/background_service/test:test_support",
     "//components/download/public/common:public",
@@ -508,18 +517,20 @@ source_set("unit_tests") {
     "//testing/gmock",
     "//testing/gtest",
     "//ui/shell_dialogs",
+    "//ui/shell_dialogs:test_support",
     "//url",
   ]
 
   if (safe_browsing_mode != 0) {
     deps += [
-      "//components/safe_browsing/content/common:file_type_policies",
-      "//components/safe_browsing/content/common:file_type_policies_test_support",
+      "//components/safe_browsing/content/common/file_type_policies",
+      "//components/safe_browsing/content/common/file_type_policies:file_type_policies_test_support",
     ]
   }
 
   if (is_android) {
     sources += [
+      "android/dangerous_download_dialog_bridge_unittest.cc",
       "android/download_controller_unittest.cc",
       "android/download_manager_service_unittest.cc",
     ]
@@ -571,17 +582,20 @@ if (!is_android) {
       ":test_support",
       "//base",
       "//chrome/browser/subresource_filter:test_support",
+      "//chrome/browser/ui:browser_commands",
+      "//chrome/browser/ui:browser_tabstrip",
+      "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:chrome_pages",
       "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
+      "//components/enterprise/isolated_mode:test_support",
       "//components/history/content/browser",
       "//components/infobars/content",
       "//components/lookalikes/core:safety_tips",
       "//components/page_load_metrics/browser:test_support",
       "//components/safe_browsing/content/browser:safe_browsing_service",
-      "//components/safe_browsing/content/common:file_type_policies",
-      "//components/safe_browsing/content/common:file_type_policies_test_support",
+      "//components/safe_browsing/content/common/file_type_policies",
+      "//components/safe_browsing/content/common/file_type_policies:file_type_policies_test_support",
       "//components/services/quarantine:test_support",
       "//content/public/browser",
       "//content/test:test_support",

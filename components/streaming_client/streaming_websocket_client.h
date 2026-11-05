@@ -11,7 +11,6 @@
 #include <string>
 #include <vector>
 
-#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
@@ -22,12 +21,9 @@
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "services/network/public/cpp/network_context_getter.h"
 #include "services/network/public/mojom/websocket.mojom.h"
 #include "url/gurl.h"
-
-namespace network::mojom {
-class NetworkContext;
-}  // namespace network::mojom
 
 namespace streaming_client {
 
@@ -70,12 +66,15 @@ class StreamingWebSocketClient
     // Called when the Mojo pipe disconnects.
     virtual void OnClose() = 0;
 
+    // Called when the WebSocket connection is successfully established.
+    virtual void OnConnected();
+
     // Called when establishing the connection to get additional HTTP headers.
     virtual std::vector<network::mojom::HttpHeaderPtr> GetAdditionalHeaders();
   };
 
   StreamingWebSocketClient(const GURL& service_url,
-                           network::mojom::NetworkContext* network_context,
+                           network::NetworkContextGetter network_context_getter,
                            net::NetworkTrafficAnnotationTag traffic_annotation,
                            Delegate* delegate);
   ~StreamingWebSocketClient() override;
@@ -83,12 +82,18 @@ class StreamingWebSocketClient
   StreamingWebSocketClient(const StreamingWebSocketClient&) = delete;
   StreamingWebSocketClient& operator=(const StreamingWebSocketClient&) = delete;
 
+  // Initiates the WebSocket handshake if not already connected or connecting.
+  // Virtual for testing.
+  virtual void Connect();
+
   // Sends a binary request to the server. If not connected, initiates the
   // connection automatically and queues the request.
-  void Send(std::vector<uint8_t> request);
+  // Virtual for testing.
+  virtual void Send(std::vector<uint8_t> request);
 
   // Closes the connection and resets internal state.
-  void Close();
+  // Virtual for testing.
+  virtual void Close();
 
   const GURL& service_url() const { return service_url_; }
 
@@ -100,8 +105,11 @@ class StreamingWebSocketClient
     kDisconnected,
   };
 
-  void Connect();
-  void InternalWrite(base::span<const uint8_t> data);
+  // Drains `pending_write_data_` into `writable_` for as long as the pipe
+  // accepts data. Invoked directly and by `writable_watcher_` once the pipe
+  // becomes writable again after a partial write.
+  void WriteToDataPipe(MojoResult result,
+                       const mojo::HandleSignalsState& state);
   void ReadFromDataPipe(MojoResult result,
                         const mojo::HandleSignalsState& state);
   void ProcessCompletedResponse();
@@ -134,7 +142,7 @@ class StreamingWebSocketClient
   State state_ = State::kInitialized;
   base::TimeTicks connection_open_time_;
   const GURL service_url_;
-  const raw_ptr<network::mojom::NetworkContext> network_context_;
+  const network::NetworkContextGetter network_context_getter_;
   const net::NetworkTrafficAnnotationTag traffic_annotation_;
   const raw_ptr<Delegate> delegate_;
 
@@ -143,6 +151,13 @@ class StreamingWebSocketClient
   bool pending_read_finished_ = false;
 
   std::queue<std::vector<uint8_t>> pending_write_data_;
+  // Number of bytes of `pending_write_data_.front()` already written to
+  // `writable_`. Non-zero only while a message is partially written.
+  size_t current_write_offset_ = 0;
+  // Whether SendMessage() has been issued for `pending_write_data_.front()`.
+  // Tracked separately from the offset because a full pipe can leave the
+  // offset at zero after the frame was already announced.
+  bool head_message_announced_ = false;
 
   mojo::Receiver<network::mojom::WebSocketHandshakeClient> handshake_receiver_{
       this};
@@ -151,6 +166,7 @@ class StreamingWebSocketClient
   mojo::ScopedDataPipeConsumerHandle readable_;
   mojo::SimpleWatcher readable_watcher_;
   mojo::ScopedDataPipeProducerHandle writable_;
+  mojo::SimpleWatcher writable_watcher_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 };

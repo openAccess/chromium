@@ -19,6 +19,7 @@ namespace blink {
 class CSSValue;
 class StyleResolverState;
 class UnderlyingValue;
+struct ColorThemeInfo;
 
 // Represents a CSS shadow value (such as [0] or [1]), converted into a form
 // that can be interpolated from/to.
@@ -36,8 +37,7 @@ class InterpolableShadow : public InterpolableValue {
 
   static InterpolableShadow* Create(const ShadowData&,
                                     double zoom,
-                                    mojom::blink::ColorScheme color_scheme,
-                                    const ui::ColorProvider* color_provider);
+                                    const ColorThemeInfo&);
   static InterpolableShadow* CreateNeutral();
 
   static InterpolableShadow* MaybeConvertCSSValue(const CSSValue&,
@@ -46,8 +46,6 @@ class InterpolableShadow : public InterpolableValue {
   // Helpers for CSSListInterpolationFunctions.
   static PairwiseInterpolationValue MaybeMergeSingles(InterpolableValue* start,
                                                       InterpolableValue* end);
-  static bool CompatibleForCompositing(const InterpolableValue*,
-                                       const InterpolableValue*);
   static void Composite(UnderlyingValue&,
                         double underlying_fraction,
                         const InterpolableValue&,

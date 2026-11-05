@@ -29,7 +29,7 @@
 #include "cc/base/features.h"
 #include "cc/debug/layer_tree_debug_state.h"
 #include "cc/debug/rendering_stats_instrumentation.h"
-#include "cc/input/browser_controls_offset_manager.h"
+#include "cc/input/browser_controls_offset_manager_interface.h"
 #include "cc/layers/layer_impl.h"
 #include "cc/layers/mirror_layer_impl.h"
 #include "cc/layers/nine_patch_layer_impl.h"
@@ -403,7 +403,7 @@ base::expected<void, std::string> UpdatePropertyTreeNode(
   // CalculateRenderProperties(). It should only be cleared in
   // ResetAllChangeTracking() which happens at the end of every frame.
   if (wire.effect_changed) {
-    node.effect_changed = true;
+    node.SetEffectChanged(cc::DamageReason::kUntracked);
   }
   node.render_surface_reason = wire.render_surface_reason;
   node.surface_contents_scale = wire.surface_contents_scale;
@@ -973,7 +973,6 @@ void UpdateTileDisplayLayerExtra(const mojom::TileDisplayLayerExtraPtr& extra,
   if (extra->has_non_animated_image_update_rect) {
     layer.set_has_non_animated_image_update_rect();
   }
-  layer.SetContentColorUsage(extra->content_color_usage);
   layer.SetRecordedBounds(extra->recorded_bounds);
   layer.SetProposedTilingScalesForDeletion(
       extra->proposed_tiling_scales_for_deletion);
@@ -1879,6 +1878,8 @@ void LayerContextImpl::SetNeedsOneBeginImplFrameOnImplThread() {
   }
 }
 
+void LayerContextImpl::NotifyInputEvent() {}
+
 void LayerContextImpl::SetNeedsPrepareTilesOnImplThread() {
   NOTREACHED();
 }
@@ -2217,6 +2218,8 @@ base::expected<void, std::string> LayerContextImpl::DoUpdateDisplayTree(
 
   host_impl_->set_tracked_element_rects_from_client(
       std::move(update->tracked_element_rects));
+  host_impl_->set_frame_interval_inputs_from_client(
+      std::move(update->frame_interval_inputs));
 
   for (const auto& latency : update->latency_info) {
     if (latency.terminated()) {

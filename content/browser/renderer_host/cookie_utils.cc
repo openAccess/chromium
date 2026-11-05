@@ -30,6 +30,7 @@
 #include "services/metrics/public/cpp/metrics_utils.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
+#include "third_party/blink/public/mojom/use_counter/metrics/webdx_feature.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -125,16 +126,6 @@ void PotentiallyRecordCookieOriginMismatch(
   }
 }
 
-void RecordCookiesExemptedByTopLevelStorage(ukm::SourceId source_id,
-                                            int affected_cookies_in_request) {
-  ukm::builders::RequestStorageAccessFor_TopLevelStorageIsExemptionReason(
-      source_id)
-      .SetNumberOfCookies(ukm::GetExponentialBucketMin(
-          affected_cookies_in_request, /*bucket_spacing=*/2.0))
-      .Record(ukm::UkmRecorder::Get());
-}
-
-
 // Records the PartitionedCookiePresentV3 UKM. It ignores prerendering pages.
 void RecordPartitionedCookieUseV3UKM(RenderFrameHost* rfh,
                                      const ukm::SourceId& source_id) {
@@ -189,9 +180,6 @@ bool ShouldReportDevToolsIssueForStatus(
                                        EXCLUDE_PORT_MISMATCH) ||
          status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                        EXCLUDE_SCHEME_MISMATCH) ||
-         status.HasExclusionReason(
-             net::CookieInclusionStatus::ExclusionReason::
-                 EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET) ||
          status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                        EXCLUDE_THIRD_PARTY_PHASEOUT);
 }
@@ -285,6 +273,7 @@ void EmitCookieWarningsAndMetrics(
   bool lax_allow_unsafe_cookies = false;
 
   bool samesite_cookie_inclusion_changed_by_cross_site_redirect = false;
+  bool samesite_cookie_inclusion_changed_by_redirect_no_initiator = false;
 
   bool partitioned_cookies_exist = false;
   bool valid_partitioned_cookies_for_ukm_exist = false;
@@ -297,11 +286,10 @@ void EmitCookieWarningsAndMetrics(
   bool cookie_has_not_been_refreshed_in_351_to_400_days = false;
 
   bool cookie_has_domain_non_ascii = false;
+  bool cookie_has_invalid_host = false;
 
   bool cookie_set_has_empty_name = false;
   bool cookie_set_has_empty_name_and_ambiguous_value = false;
-
-  int cookies_exempted_by_top_level_storage_access = 0;
 
   for (const network::mojom::CookieOrLineWithAccessResultPtr& cookie :
        cookie_details->cookie_list) {
@@ -350,6 +338,13 @@ void EmitCookieWarningsAndMetrics(
           status.HasWarningReason(
               net::CookieInclusionStatus::WarningReason::
                   WARN_CROSS_SITE_REDIRECT_DOWNGRADE_CHANGES_INCLUSION);
+      if (samesite_cookie_inclusion_changed_by_cross_site_redirect) {
+        samesite_cookie_inclusion_changed_by_redirect_no_initiator =
+            samesite_cookie_inclusion_changed_by_redirect_no_initiator ||
+            status.HasWarningReason(
+                net::CookieInclusionStatus::WarningReason::
+                    WARN_CROSS_SITE_REDIRECT_DOWNGRADE_CHANGES_INCLUSION_NO_INITIATOR);
+      }
     }
 
     cookie_has_domain_non_ascii =
@@ -358,6 +353,13 @@ void EmitCookieWarningsAndMetrics(
             net::CookieInclusionStatus::WarningReason::WARN_DOMAIN_NON_ASCII) ||
         status.HasExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                       EXCLUDE_DOMAIN_NON_ASCII);
+
+    cookie_has_invalid_host =
+        cookie_has_invalid_host ||
+        status.HasWarningReason(
+            net::CookieInclusionStatus::WarningReason::WARN_INVALID_HOST) ||
+        status.HasExclusionReason(
+            net::CookieInclusionStatus::ExclusionReason::EXCLUDE_INVALID_HOST);
 
     bool is_partitioned_cookie =
         (cookie->cookie_or_line->is_cookie() &&
@@ -384,11 +386,6 @@ void EmitCookieWarningsAndMetrics(
       httponly_cookie_names.insert(cookie->cookie_or_line->get_cookie().Name());
     }
 
-    if (cookie->access_result.status.exemption_reason() ==
-        net::CookieInclusionStatus::ExemptionReason::kTopLevelStorageAccess) {
-      cookies_exempted_by_top_level_storage_access++;
-    }
-
     if (status.HasWarningReason(
             net::CookieInclusionStatus::WarningReason::
                 WARN_CROSS_SITE_REDIRECT_DOWNGRADE_CHANGES_INCLUSION) &&
@@ -399,10 +396,19 @@ void EmitCookieWarningsAndMetrics(
     }
 
     if (cookie->cookie_or_line->is_cookie()) {
+      const net::CanonicalCookie& canonical_cookie =
+          cookie->cookie_or_line->get_cookie();
+      const std::string cookie_value = canonical_cookie.Value();
       PotentiallyRecordNonAsciiCookieNameValue(
-          rfh, cookie_details->type,
-          cookie->cookie_or_line->get_cookie().Name(),
-          cookie->cookie_or_line->get_cookie().Value());
+          rfh, cookie_details->type, canonical_cookie.Name(), cookie_value);
+
+      if (cookie_details->type == CookieAccessDetails::Type::kChange &&
+          canonical_cookie.Name().empty()) {
+        cookie_set_has_empty_name = true;
+        if (cookie_value.contains('=')) {
+          cookie_set_has_empty_name_and_ambiguous_value = true;
+        }
+      }
     }
 
     PotentiallyRecordCookieOriginMismatch(rfh, cookie_details->type, status);
@@ -427,15 +433,6 @@ void EmitCookieWarningsAndMetrics(
       cookie_has_not_been_refreshed_in_351_to_400_days |=
           days_since_refresh > 350 && days_since_refresh <= 400;
     }
-
-    if (cookie_details->type == CookieAccessDetails::Type::kChange &&
-        cookie->cookie_or_line->is_cookie() &&
-        cookie->cookie_or_line->get_cookie().Name().empty()) {
-      cookie_set_has_empty_name = true;
-      if (cookie->cookie_or_line->get_cookie().Value().contains('=')) {
-        cookie_set_has_empty_name_and_ambiguous_value = true;
-      }
-    }
   }
 
   if (samesite_treated_as_lax_cookies) {
@@ -457,6 +454,12 @@ void EmitCookieWarningsAndMetrics(
     GetContentClient()->browser()->LogWebFeatureForCurrentPage(
         rfh, blink::mojom::WebFeature::
                  kSameSiteCookieInclusionChangedByCrossSiteRedirect);
+    if (samesite_cookie_inclusion_changed_by_redirect_no_initiator) {
+      GetContentClient()->browser()->LogWebDXFeatureForCurrentPage(
+          rfh,
+          blink::mojom::WebDXFeature::
+              kSameSiteCookieInclusionChangedByCrossSiteRedirectNoInitiator);
+    }
   }
 
   if (partitioned_cookies_exist) {
@@ -511,6 +514,13 @@ void EmitCookieWarningsAndMetrics(
         rfh, blink::mojom::WebFeature::kCookieDomainNonASCII);
   }
 
+  if (cookie_has_invalid_host) {
+    GetContentClient()->browser()->LogWebFeatureForCurrentPage(
+        rfh, cookie_details->type == CookieAccessDetails::Type::kRead
+                 ? blink::mojom::WebFeature::kCookieReadInvalidHost
+                 : blink::mojom::WebFeature::kCookieWriteInvalidHost);
+  }
+
   if (cookie_set_has_empty_name) {
     GetContentClient()->browser()->LogWebFeatureForCurrentPage(
         rfh, blink::mojom::WebFeature::kSetCookieWithEmptyName);
@@ -520,12 +530,6 @@ void EmitCookieWarningsAndMetrics(
     GetContentClient()->browser()->LogWebFeatureForCurrentPage(
         rfh,
         blink::mojom::WebFeature::kSetCookieWithEmptyNameAndAmbiguousValue);
-  }
-
-  if (cookies_exempted_by_top_level_storage_access) {
-    RecordCookiesExemptedByTopLevelStorage(
-        rfh->GetPageUkmSourceId(),
-        cookies_exempted_by_top_level_storage_access);
   }
 }
 

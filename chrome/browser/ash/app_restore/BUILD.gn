@@ -45,7 +45,6 @@ static_library("app_restore") {
   public_deps = [
     "//ash/public/cpp",
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/sessions",
     "//chrome/common:buildflags",
@@ -85,7 +84,6 @@ static_library("app_restore") {
     "//chrome/browser/ash/arc:arc_util",
     "//chrome/browser/ash/arc/session",
     "//chrome/browser/ash/arc/window_predictor",
-    "//chrome/browser/ash/browser_delegate",
     "//chrome/browser/ash/floating_workspace:utils",
     "//chrome/browser/ash/login/session",
     "//chrome/browser/ash/policy/scheduled_task_handler",
@@ -95,13 +93,13 @@ static_library("app_restore") {
     "//chrome/browser/prefs:util",
     "//chrome/browser/profiles:profile_io_data",
     "//chrome/browser/ui/browser_window:create_browser_window",
-    "//chrome/browser/ui/navigator",
     "//chrome/browser/ui/startup",
     "//chrome/browser/ui/startup:startup_tab",
     "//chrome/browser/web_applications",
     "//chrome/common:chrome_features",
     "//chrome/common:constants",
     "//chrome/common:non_code_constants",
+    "//chromeos/ash/components/browser_delegate",
     "//chromeos/ash/components/demo_mode",
     "//chromeos/ash/components/login/session",
     "//chromeos/ash/components/system",
@@ -207,7 +205,7 @@ source_set("browser_tests") {
     "//chrome/browser/policy:test_support",
     "//chrome/browser/prefs:util",
     "//chrome/browser/profiles:profile",
-    "//chrome/browser/ui",
+    "//chrome/browser/ui:browser_tabstrip",
     "//chrome/browser/ui/ash/desks",
     "//chrome/browser/ui/ash/device_scheduled_reboot",
     "//chrome/browser/ui/ash/system_web_apps",
@@ -248,10 +246,6 @@ source_set("browser_tests") {
     "//ui/views:test_support",
     "//ui/wm",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("unit_tests") {
@@ -284,6 +278,7 @@ source_set("unit_tests") {
     "//chrome/common:constants",
     "//chrome/common:non_code_constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/login/session",
     "//chromeos/ash/experiences/arc:arc_features",
     "//chromeos/constants",

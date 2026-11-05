@@ -25,8 +25,8 @@
 #include "sql/meta_table.h"
 #include "sql/statement.h"
 #include "sql/transaction.h"
-#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
-#include "ui/base/page_transition_types.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#include "url/gurl.h"
 
 #if BUILDFLAG(IS_APPLE)
 #include "base/apple/backup_util.h"
@@ -73,13 +73,6 @@ HistoryDatabase::HistoryDatabase(
     : DownloadDatabase(download_interrupt_reason_none,
                        download_interrupt_reason_crash),
       db_(sql::DatabaseOptions()
-              // Note that we don't set exclusive locking here. That's done by
-              // BeginExclusiveMode below which is called later (we have to be
-              // in shared mode to start out for the in-memory backend to read
-              // the data).
-              // TODO(crbug.com/40159106) Remove this dependency on normal
-              // locking mode.
-              .set_exclusive_locking(false)
               // Set the cache size. The page size, plus a little extra, times
               // this value, tells us how much memory the cache will use
               // maximum. 1000 * 4kB = 4MB
@@ -90,7 +83,8 @@ HistoryDatabase::HistoryDatabase(
 #endif  // !BUILDFLAG(IS_FUCHSIA)
               ,
           /*tag=*/"History"),
-      history_metadata_db_(&db_, &meta_table_) {
+      history_metadata_db_(&db_, &meta_table_),
+      journeys_metadata_db_(&db_, &meta_table_) {
 }
 
 HistoryDatabase::~HistoryDatabase() = default;
@@ -161,7 +155,8 @@ sql::InitStatus HistoryDatabase::Init(const base::FilePath& history_name) {
   if (!CreateURLTable(false) || !InitVisitTable() ||
       !InitKeywordSearchTermsTable() || !InitDownloadTable() ||
       !InitSegmentTables() || !InitVisitAnnotationsTables() ||
-      !CreateVisitedLinkTable() || !history_metadata_db_.Init()) {
+      !CreateVisitedLinkTable() || !history_metadata_db_.Init() ||
+      !InitJourneysTables() || !journeys_metadata_db_.Init()) {
     return LogInitFailure(InitStep::CREATE_TABLES);
   }
   CreateMainURLIndex();
@@ -208,6 +203,10 @@ void HistoryDatabase::ComputeDatabaseMetrics(
   }
   base::UmaHistogramCounts1M("History.VisitedLinkTableCount",
                              visited_link_count.ColumnInt(0));
+
+  if (base::FeatureList::IsEnabled(kHistoryReportClusterDatabaseMetrics)) {
+    ReportClusterDatabaseMetrics();
+  }
 
   // Compute metrics about foreign visits (i.e. visits coming from other
   // devices) in the DB.
@@ -316,6 +315,43 @@ void HistoryDatabase::ComputeDatabaseMetrics(
   }
 }
 
+void HistoryDatabase::ReportClusterDatabaseMetrics() {
+  sql::Statement cluster_count(
+      db_.GetUniqueStatement("SELECT count(*) FROM clusters"));
+  if (!cluster_count.Step()) {
+    return;
+  }
+
+  int num_clusters = cluster_count.ColumnInt(0);
+  base::UmaHistogramCounts10M("History.Clusters.NumClusters", num_clusters);
+
+  if (num_clusters == 0) {
+    base::UmaHistogramCounts10M("History.Clusters.NumOrphanClusters", 0);
+    base::UmaHistogramCounts10M("History.Clusters.MaxClusterLabelDuplicates",
+                                0);
+    return;
+  }
+
+  sql::Statement orphan_cluster_count(
+      db_.GetUniqueStatement("SELECT count(*) FROM clusters c "
+                             "WHERE NOT EXISTS ("
+                             "SELECT 1 FROM clusters_and_visits cv "
+                             "WHERE cv.cluster_id = c.cluster_id"
+                             ")"));
+  if (orphan_cluster_count.Step()) {
+    base::UmaHistogramCounts10M("History.Clusters.NumOrphanClusters",
+                                orphan_cluster_count.ColumnInt(0));
+  }
+
+  sql::Statement max_cluster_label_duplicates(
+      db_.GetUniqueStatement("SELECT count(*) FROM clusters GROUP BY label "
+                             "ORDER BY count(*) DESC LIMIT 1"));
+  if (max_cluster_label_duplicates.Step()) {
+    base::UmaHistogramCounts10M("History.Clusters.MaxClusterLabelDuplicates",
+                                max_cluster_label_duplicates.ColumnInt(0));
+  }
+}
+
 DomainsVisitedResult HistoryDatabase::GetUniqueDomainsVisited(
     base::Time begin_time,
     base::Time end_time,
@@ -401,11 +437,6 @@ int HistoryDatabase::CountUniqueDomainsVisited(
   return result.locally_visited_domains.size();
 }
 
-void HistoryDatabase::BeginExclusiveMode() {
-  // We need to use a PRAGMA statement here as the DB has already been created.
-  std::ignore = db_.Execute("PRAGMA locking_mode=EXCLUSIVE");
-}
-
 // static
 int HistoryDatabase::GetCurrentVersion() {
   return kCurrentVersionNumber;
@@ -446,6 +477,13 @@ bool HistoryDatabase::RecreateAllTablesButURL() {
     return false;
   if (!InitVisitAnnotationsTables())
     return false;
+
+  if (!DropJourneysTables()) {
+    return false;
+  }
+  if (!InitJourneysTables()) {
+    return false;
+  }
 
   return true;
 }
@@ -546,6 +584,11 @@ void HistoryDatabase::SetKnownToSyncVisitsExist(bool exist) {
 
 HistorySyncMetadataDatabase* HistoryDatabase::GetHistoryMetadataDB() {
   return &history_metadata_db_;
+}
+
+journeys::JourneysSyncMetadataDatabase*
+HistoryDatabase::GetJourneysMetadataDB() {
+  return &journeys_metadata_db_;
 }
 
 sql::Database& HistoryDatabase::GetDBForTesting() {
@@ -663,7 +706,7 @@ HistoryDatabase::GetBatchRecentVisitsForSignificantURLs(
 
   while (statement.Step()) {
     URLID url_id = statement.ColumnInt64(0);
-    auto& visits = result[url_id];
+    auto& visits = result.try_emplace(url_id).first->second;
     if (static_cast<int>(visits.size()) >= max_visits_per_url) {
       continue;
     }

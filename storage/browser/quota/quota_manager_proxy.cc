@@ -64,9 +64,29 @@ QuotaManagerProxy::QuotaManagerProxy(
       quota_manager_impl_task_runner_(
           std::move(quota_manager_impl_task_runner)),
       profile_path_(profile_path) {
-  CHECK(quota_manager_impl_task_runner_.get(), base::NotFatalUntil::M148);
+  CHECK(quota_manager_impl_task_runner_.get());
 
   DETACH_FROM_SEQUENCE(quota_manager_impl_sequence_checker_);
+}
+
+void QuotaManagerProxy::PostTaskWithQuotaManager(
+    base::OnceCallback<void(base::WeakPtr<QuotaManagerImpl>)> callback) {
+  quota_manager_impl_task_runner_->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](scoped_refptr<QuotaManagerProxy> proxy,
+             base::OnceCallback<void(base::WeakPtr<QuotaManagerImpl>)>
+                 callback) {
+            DCHECK_CALLED_ON_VALID_SEQUENCE(
+                proxy->quota_manager_impl_sequence_checker_);
+            base::WeakPtr<QuotaManagerImpl> quota_manager;
+            if (proxy->quota_manager_impl_) {
+              quota_manager =
+                  proxy->quota_manager_impl_->weak_factory_.GetWeakPtr();
+            }
+            std::move(callback).Run(std::move(quota_manager));
+          },
+          base::WrapRefCounted(this), std::move(callback)));
 }
 
 base::FilePath QuotaManagerProxy::GetBucketPath(const BucketLocator& bucket) {
@@ -113,8 +133,8 @@ void QuotaManagerProxy::UpdateOrCreateBucket(
     const BucketInitParams& bucket_params,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceCallback<void(QuotaErrorOr<BucketInfo>)> callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -182,8 +202,8 @@ void QuotaManagerProxy::CreateBucketForTesting(
     const std::string& bucket_name,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceCallback<void(QuotaErrorOr<BucketInfo>)> callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -212,8 +232,8 @@ void QuotaManagerProxy::GetBucketByNameUnsafe(
     const std::string& bucket_name,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceCallback<void(QuotaErrorOr<BucketInfo>)> callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -242,8 +262,8 @@ void QuotaManagerProxy::GetBucketsForStorageKey(
     bool delete_expired,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceCallback<void(QuotaErrorOr<std::set<BucketInfo>>)> callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -267,12 +287,63 @@ void QuotaManagerProxy::GetBucketsForStorageKey(
                                                delete_expired);
 }
 
+void QuotaManagerProxy::GetBucketsModifiedBetween(base::Time begin,
+                                                  base::Time end,
+                                                  GetBucketsCallback callback) {
+  if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
+    quota_manager_impl_task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            &QuotaManagerProxy::GetBucketsModifiedBetween, this, begin, end,
+            base::BindPostTask(base::SequencedTaskRunner::GetCurrentDefault(),
+                               std::move(callback))));
+    return;
+  }
+
+  DCHECK_CALLED_ON_VALID_SEQUENCE(quota_manager_impl_sequence_checker_);
+  if (!quota_manager_impl_) {
+    std::move(callback).Run(std::set<BucketLocator>());
+    return;
+  }
+
+  quota_manager_impl_->GetBucketsModifiedBetween(begin, end,
+                                                 std::move(callback));
+}
+
+void QuotaManagerProxy::DeleteStorageKeyData(
+    const StorageKey& storage_key,
+    scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
+    StatusCallback callback) {
+  CHECK(callback_task_runner);
+  CHECK(callback);
+
+  if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
+    quota_manager_impl_task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(&QuotaManagerProxy::DeleteStorageKeyData, this,
+                       storage_key, std::move(callback_task_runner),
+                       std::move(callback)));
+    return;
+  }
+
+  DCHECK_CALLED_ON_VALID_SEQUENCE(quota_manager_impl_sequence_checker_);
+
+  auto respond =
+      base::BindPostTask(std::move(callback_task_runner), std::move(callback));
+  if (!quota_manager_impl_) {
+    std::move(respond).Run(blink::mojom::QuotaStatusCode::kErrorAbort);
+    return;
+  }
+
+  quota_manager_impl_->DeleteStorageKeyData(storage_key, std::move(respond));
+}
+
 void QuotaManagerProxy::GetBucketById(
     const BucketId& bucket_id,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceCallback<void(QuotaErrorOr<BucketInfo>)> callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -299,8 +370,8 @@ void QuotaManagerProxy::DeleteBucket(
     const std::string& bucket_name,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceCallback<void(blink::mojom::QuotaStatusCode)> callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -329,8 +400,8 @@ void QuotaManagerProxy::UpdateBucketExpiration(
     const base::Time& expiration,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceCallback<void(QuotaErrorOr<BucketInfo>)> callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -359,8 +430,8 @@ void QuotaManagerProxy::UpdateBucketPersistence(
     bool persistent,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceCallback<void(QuotaErrorOr<BucketInfo>)> callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -406,8 +477,8 @@ void QuotaManagerProxy::NotifyBucketModified(
     base::Time modification_time,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceClosure callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -465,8 +536,8 @@ void QuotaManagerProxy::GetUsageAndQuota(
     const StorageKey& storage_key,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     UsageAndQuotaCallback callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -488,12 +559,71 @@ void QuotaManagerProxy::GetUsageAndQuota(
   quota_manager_impl_->GetUsageAndQuota(storage_key, std::move(respond));
 }
 
+void QuotaManagerProxy::GetUsageAndQuotaForWebApps(
+    const StorageKey& storage_key,
+    scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
+    UsageAndQuotaCallback callback) {
+  CHECK(callback_task_runner);
+  CHECK(callback);
+
+  if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
+    quota_manager_impl_task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(&QuotaManagerProxy::GetUsageAndQuotaForWebApps, this,
+                       storage_key, std::move(callback_task_runner),
+                       std::move(callback)));
+    return;
+  }
+
+  DCHECK_CALLED_ON_VALID_SEQUENCE(quota_manager_impl_sequence_checker_);
+
+  auto respond =
+      base::BindPostTask(std::move(callback_task_runner), std::move(callback));
+  if (!quota_manager_impl_) {
+    std::move(respond).Run(blink::mojom::QuotaStatusCode::kErrorAbort, 0, 0);
+    return;
+  }
+
+  quota_manager_impl_->GetUsageAndQuotaForWebApps(storage_key,
+                                                  std::move(respond));
+}
+
+void QuotaManagerProxy::GetUsageAndQuotaForDevtools(
+    const StorageKey& storage_key,
+    scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
+    UsageAndQuotaWithBreakdownAndOverrideFlagCallback callback) {
+  CHECK(callback_task_runner);
+  CHECK(callback);
+
+  if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
+    quota_manager_impl_task_runner_->PostTask(
+        FROM_HERE,
+        base::BindOnce(&QuotaManagerProxy::GetUsageAndQuotaForDevtools, this,
+                       storage_key, std::move(callback_task_runner),
+                       std::move(callback)));
+    return;
+  }
+
+  DCHECK_CALLED_ON_VALID_SEQUENCE(quota_manager_impl_sequence_checker_);
+
+  auto respond =
+      base::BindPostTask(std::move(callback_task_runner), std::move(callback));
+  if (!quota_manager_impl_) {
+    std::move(respond).Run(blink::mojom::QuotaStatusCode::kErrorAbort, 0, 0,
+                           false, nullptr);
+    return;
+  }
+
+  quota_manager_impl_->GetUsageAndQuotaForDevtools(storage_key,
+                                                   std::move(respond));
+}
+
 void QuotaManagerProxy::GetBucketUsageAndReportedQuota(
     BucketId bucket,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     UsageAndQuotaCallback callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -521,8 +651,8 @@ void QuotaManagerProxy::GetBucketSpaceRemaining(
     const BucketLocator& bucket,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceCallback<void(QuotaErrorOr<int64_t>)> callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -549,8 +679,8 @@ void QuotaManagerProxy::IsStorageUnlimited(
     const StorageKey& storage_key,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceCallback<void(bool)> callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -610,8 +740,8 @@ void QuotaManagerProxy::OverrideQuotaForStorageKey(
     std::optional<int64_t> quota_size,
     scoped_refptr<base::SequencedTaskRunner> callback_task_runner,
     base::OnceClosure callback) {
-  CHECK(callback_task_runner, base::NotFatalUntil::M148);
-  CHECK(callback, base::NotFatalUntil::M148);
+  CHECK(callback_task_runner);
+  CHECK(callback);
 
   if (!quota_manager_impl_task_runner_->RunsTasksInCurrentSequence()) {
     quota_manager_impl_task_runner_->PostTask(
@@ -674,8 +804,7 @@ void QuotaManagerProxy::InvalidateQuotaManagerImpl(
     base::PassKey<QuotaManagerImpl>) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(quota_manager_impl_sequence_checker_);
 
-  CHECK(quota_manager_impl_, base::NotFatalUntil::M148)
-      << __func__ << " called multiple times";
+  CHECK(quota_manager_impl_) << __func__ << " called multiple times";
   quota_manager_impl_ = nullptr;
 }
 

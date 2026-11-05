@@ -10,17 +10,20 @@
 #include <memory>
 
 #include "base/android/scoped_java_ref.h"
+#include "base/containers/flat_set.h"
 #include "base/gtest_prod_util.h"
 #include "components/ntp_tiles/most_visited_sites.h"
 #include "components/ntp_tiles/ntp_tile.h"
+#include "url/gurl.h"
 
 // AuxiliarySearchTopSiteProviderBridge is responsible for providing top sites
 // information for the auxiliary search.
 class AuxiliarySearchTopSiteProviderBridge
     : public ntp_tiles::MostVisitedSites::Observer {
  public:
-  explicit AuxiliarySearchTopSiteProviderBridge(
-      std::unique_ptr<ntp_tiles::MostVisitedSites>);
+  AuxiliarySearchTopSiteProviderBridge(
+      std::unique_ptr<ntp_tiles::MostVisitedSites> most_visited_sites,
+      base::flat_set<GURL> excluded_urls);
 
   AuxiliarySearchTopSiteProviderBridge(
       const AuxiliarySearchTopSiteProviderBridge&) = delete;
@@ -33,9 +36,6 @@ class AuxiliarySearchTopSiteProviderBridge
   // suggestions.
   void SetObserverAndTrigger(JNIEnv* env,
                              const base::android::JavaRef<jobject>& j_ref_obj);
-
-  // Removes the observer and destroys the bridge.
-  void Destroy(JNIEnv* env);
 
   // Starts a fetch of the current most visited sites suggestions.
   void GetMostVisitedSites(JNIEnv* env) const;
@@ -54,8 +54,11 @@ class AuxiliarySearchTopSiteProviderBridge
   void OnIconMadeAvailable(const GURL& site_url) override;
 
   jni_zero::ScopedJavaGlobalRef<jobject> observer_;
+  bool is_observing_ = false;
 
   std::unique_ptr<ntp_tiles::MostVisitedSites> most_visited_sites_;
+
+  const base::flat_set<GURL> excluded_urls_;
 };
 
 #endif  // CHROME_BROWSER_AUXILIARY_SEARCH_AUXILIARY_SEARCH_TOP_SITE_PROVIDER_BRIDGE_H_

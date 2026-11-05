@@ -74,8 +74,11 @@ struct HistoryVisit {
   HistoryVisit();
   HistoryVisit(base::Time nav_entry_timestamp, GURL url);
   explicit HistoryVisit(history::VisitID visit_id);
-  ~HistoryVisit();
+
   HistoryVisit(const HistoryVisit&);
+  HistoryVisit(HistoryVisit&&);
+
+  ~HistoryVisit();
 
   base::Time nav_entry_timestamp;
   GURL url;
@@ -207,7 +210,8 @@ class PageContentAnnotationsService
   // Invoked when related searches have been extracted for |visit|, to store
   // the related searches in History Service.
   void OnRelatedSearchesExtracted(
-      const HistoryVisit& visit,
+      base::Time navigation_timestamp,
+      const GURL& navigation_url,
       continuous_search::SearchResultExtractorClientStatus status,
       continuous_search::mojom::CategoryResultsPtr results);
 
@@ -237,9 +241,13 @@ class PageContentAnnotationsService
                               const std::vector<Category>& categories) override;
 
  private:
+  // Updates whether the category classifier bridge should be observing based on
+  // whether there are any registered kCategoryClassifier observers.
+  void UpdateCategoryClassifierBridgeDemand();
+
   // Callback invoked when a single |visit| has been annotated.
   void OnPageContentAnnotated(
-      const HistoryVisit& visit,
+      HistoryVisit visit,
       const std::optional<history::VisitContentModelAnnotations>&
           content_annotations);
 
@@ -275,9 +283,8 @@ class PageContentAnnotationsService
   std::unique_ptr<OnDeviceCategoryClassifier> on_device_category_classifier_;
 
   // A bridge that allows page category classification. The functionality of the
-  // bridge is type-erased at the 'core' level, but it's stored on this object
-  // because it shares the same lifetime -- hence it has an interface that only
-  // exposes a virtual destructor.
+  // bridge is implemented at the 'content' level, while exposing demand
+  // activation control to this service.
   std::unique_ptr<PageCategoryClassifierBridge>
       page_category_classifier_bridge_;
 
@@ -296,14 +303,15 @@ class PageContentAnnotationsService
   friend class PageContentAnnotationsWebContentsObserver;
   friend class PageContentAnnotationsServiceBrowserTest;
   // Virtualized for testing.
-  virtual void Annotate(const HistoryVisit& visit);
+  virtual void Annotate(HistoryVisit visit);
 
   // Annotates the provided `visit` in the history DB with the given list of
   // `related_searches`.
   //
   // Virtualized for testing.
   virtual void AddRelatedSearchesForVisit(
-      const HistoryVisit& visit,
+      base::Time navigation_timestamp,
+      const GURL& navigation_url,
       const std::vector<std::string>& related_searches);
 
   // Persist |page_entities_metadata| for |visit| in |history_service_|.
@@ -328,13 +336,14 @@ class PageContentAnnotationsService
   // |history_service| once the visits to the given URL have returned. The
   // |annotation_type| of data to be stored in History Service is passed along
   // for metrics purposes.
-  void QueryURL(const HistoryVisit& visit,
+  void QueryURL(base::Time navigation_timestamp,
+                const GURL& navigation_url,
                 PersistAnnotationsCallback callback,
                 PageContentAnnotationsType annotation_type);
   // Callback invoked when |history_service| has returned results for the visits
   // to a URL. In turn invokes |callback| to write the bound content annotations
   // to |history_service|.
-  void OnURLQueried(const HistoryVisit& visit,
+  void OnURLQueried(base::Time navigation_timestamp,
                     PersistAnnotationsCallback callback,
                     PageContentAnnotationsType annotation_type,
                     history::QueryURLAndVisitsResult url_result);

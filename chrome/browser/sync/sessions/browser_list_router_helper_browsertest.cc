@@ -26,12 +26,14 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sync_sessions/synced_tab_delegate.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/constants/ash_switches.h"
@@ -172,7 +174,7 @@ IN_PROC_BROWSER_TEST_P(BrowserListRouterHelperBrowserTest, NotifyOnDiscardTab) {
   GURL gurl_2 = embedded_test_server()->GetURL("/title2.html");
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), gurl_1));
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), gurl_2, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), gurl_2, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   // Find old_id of gurl_1.

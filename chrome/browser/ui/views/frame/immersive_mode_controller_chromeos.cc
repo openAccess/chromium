@@ -31,7 +31,6 @@
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/background.h"
-#include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/native_widget_aura.h"
 #include "ui/views/widget/widget.h"
@@ -109,9 +108,7 @@ void ImmersiveModeControllerChromeos::SetEnabled(bool enabled) {
 
   if (!fullscreen_subscription_) {
     fullscreen_subscription_ =
-        browser_view_->browser()
-            ->GetFeatures()
-            .exclusive_access_manager()
+        ExclusiveAccessManager::From(browser_view_->browser())
             ->fullscreen_controller()
             ->RegisterOnFullscreenStateChanged(base::BindRepeating(
                 &ImmersiveModeControllerChromeos::OnFullscreenStateChanged,
@@ -188,11 +185,6 @@ void ImmersiveModeControllerChromeos::OnImmersiveRevealStarted() {
 
 void ImmersiveModeControllerChromeos::OnImmersiveRevealEnded() {
   visible_fraction_ = 0;
-  std::vector<ContentsWebView*> contents_views =
-      browser_view_->GetAllVisibleContentsWebViews();
-  for (ContentsWebView* contents_view : contents_views) {
-    contents_view->holder()->SetHitTestTopInset(0);
-  }
   for (Observer& observer : observers_) {
     observer.OnImmersiveRevealEnded();
   }
@@ -207,11 +199,6 @@ void ImmersiveModeControllerChromeos::OnImmersiveFullscreenEntered() {
 void ImmersiveModeControllerChromeos::OnImmersiveFullscreenExited() {
   browser_view_->set_theme_background_y_offset(std::nullopt);
 
-  std::vector<ContentsWebView*> contents_views =
-      browser_view_->GetAllVisibleContentsWebViews();
-  for (ContentsWebView* contents_view : contents_views) {
-    contents_view->holder()->SetHitTestTopInset(0);
-  }
   for (Observer& observer : observers_) {
     observer.OnImmersiveFullscreenExited();
   }
@@ -221,28 +208,6 @@ void ImmersiveModeControllerChromeos::SetVisibleFraction(
     double visible_fraction) {
   if (visible_fraction_ == visible_fraction) {
     return;
-  }
-
-  // Sets the top inset only when the top-of-window views is fully visible. This
-  // means some gesture may not be recognized well during the animation, but
-  // that's fine since a complicated gesture wouldn't be involved during the
-  // animation duration. See: https://crbug.com/41424205.
-  // TODO(crbug.com/434082728): As the NativeViewHost's attached layer can now
-  // be managed by views, the event targeting should now be handled by view's
-  // targeting logic.
-  if (visible_fraction == 1.0) {
-    std::vector<ContentsWebView*> contents_views =
-        browser_view_->GetAllVisibleContentsWebViews();
-    for (ContentsWebView* contents_view : contents_views) {
-      contents_view->holder()->SetHitTestTopInset(
-          browser_view_->top_container()->height());
-    }
-  } else if (visible_fraction_ == 1.0) {
-    std::vector<ContentsWebView*> contents_views =
-        browser_view_->GetAllVisibleContentsWebViews();
-    for (ContentsWebView* contents_view : contents_views) {
-      contents_view->holder()->SetHitTestTopInset(0);
-    }
   }
 
   float old_visible_fraction = visible_fraction_;
@@ -293,11 +258,10 @@ void ImmersiveModeControllerChromeos::OnFullscreenStateChanged() {
   }
 
   // Auto hide the shelf in immersive browser fullscreen.
-  bool in_tab_fullscreen = browser_view_->browser()
-                               ->GetFeatures()
-                               .exclusive_access_manager()
-                               ->fullscreen_controller()
-                               ->IsWindowFullscreenForTabOrPending();
+  bool in_tab_fullscreen =
+      ExclusiveAccessManager::From(browser_view_->browser())
+          ->fullscreen_controller()
+          ->IsWindowFullscreenForTabOrPending();
   browser_view_->GetNativeWindow()->SetProperty(
       chromeos::kHideShelfWhenFullscreenKey, in_tab_fullscreen);
 }
@@ -321,13 +285,34 @@ void ImmersiveModeControllerChromeos::OnWindowPropertyChanged(
     ui::mojom::WindowShowState new_state =
         window->GetProperty(aura::client::kShowStateKey);
     auto old_state = static_cast<ui::mojom::WindowShowState>(old);
+    if (old_state == new_state) {
+      return;
+    }
 
     // Make sure the browser stays up to date with the window's state. This is
     // necessary in classic Ash if the user exits fullscreen with the restore
     // button, and it's necessary in OopAsh if the window manager initiates a
-    // fullscreen mode change (e.g. due to a WM shortcut).
+    // fullscreen mode change (e.g. due to a WM shortcut). Minimizing a
+    // fullscreen window does not exit fullscreen. This way it can be properly
+    // restored to fullscreen when unminimized.
+    bool fullscreen_to_minimized =
+        old_state == ui::mojom::WindowShowState::kFullscreen &&
+        new_state == ui::mojom::WindowShowState::kMinimized;
+
+    ExclusiveAccessManager* manager =
+        browser_view_->browser()
+            ? ExclusiveAccessManager::From(browser_view_->browser())
+            : nullptr;
+
+    bool minimized_fullscreen_to_unminimized_non_fullscreen =
+        old_state == ui::mojom::WindowShowState::kMinimized &&
+        new_state != ui::mojom::WindowShowState::kFullscreen && manager &&
+        manager->fullscreen_controller()->IsControllerInitiatedFullscreen();
+
     if (new_state == ui::mojom::WindowShowState::kFullscreen ||
-        old_state == ui::mojom::WindowShowState::kFullscreen) {
+        (old_state == ui::mojom::WindowShowState::kFullscreen &&
+         !fullscreen_to_minimized) ||
+        minimized_fullscreen_to_unminimized_non_fullscreen) {
       // If the browser view initiated this state change,
       // BrowserView::ProcessFullscreen will no-op, so this call is harmless.
       browser_view_->FullscreenStateChanging();
@@ -338,7 +323,8 @@ void ImmersiveModeControllerChromeos::OnWindowPropertyChanged(
 void ImmersiveModeControllerChromeos::OnWindowDestroying(aura::Window* window) {
   // Clean up observers here rather than in the destructor because the owning
   // BrowserView has already destroyed the aura::Window.
-  DCHECK(window_observation_.IsObservingSource(window));
+  CHECK(window_observation_.IsObservingSource(window),
+        base::NotFatalUntil::M162);
   window_observation_.Reset();
-  DCHECK(!window_observation_.IsObserving());
+  CHECK(!window_observation_.IsObserving(), base::NotFatalUntil::M162);
 }

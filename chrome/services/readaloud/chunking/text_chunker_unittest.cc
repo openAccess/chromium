@@ -51,10 +51,12 @@ TEST_F(TextChunkerTest, SentencesWithWhitespaceSpeedMode) {
 
   ASSERT_EQ(chunks.size(), 2u);
   EXPECT_EQ(chunks[0].text, u"Hello   .");
-  EXPECT_EQ(chunks[0].start_code_unit_offset, 3u);
+  // Leading whitespace is not counted.
+  EXPECT_EQ(chunks[0].start_code_unit_offset, 0u);
 
   EXPECT_EQ(chunks[1].text, u"World");
-  EXPECT_EQ(chunks[1].start_code_unit_offset, 15u);
+  // len("Hello   .") + 1 separator; the original 3 spaces collapse to one.
+  EXPECT_EQ(chunks[1].start_code_unit_offset, 10u);
 }
 
 TEST_F(TextChunkerTest, MultiByteCharactersSpeedMode) {
@@ -67,10 +69,11 @@ TEST_F(TextChunkerTest, MultiByteCharactersSpeedMode) {
   EXPECT_EQ(chunks[0].start_code_unit_offset, 0u);
 
   EXPECT_EQ(chunks[1].text, u"元気ですか？");
-  EXPECT_EQ(chunks[1].start_code_unit_offset, 6u);
+  // A separator is counted even though the source has no space here.
+  EXPECT_EQ(chunks[1].start_code_unit_offset, 7u);
 
   EXPECT_EQ(chunks[2].text, u"はい。");
-  EXPECT_EQ(chunks[2].start_code_unit_offset, 13u);
+  EXPECT_EQ(chunks[2].start_code_unit_offset, 14u);
 }
 
 TEST_F(TextChunkerTest, AbbreviationsSpeedMode) {
@@ -171,10 +174,10 @@ TEST_F(TextChunkerTest, QualityLeadingAndTrailingNewlines) {
 
   ASSERT_EQ(chunks.size(), 2u);
   EXPECT_EQ(chunks[0].text, u"First paragraph.");
-  EXPECT_EQ(chunks[0].start_code_unit_offset, 4u);
+  EXPECT_EQ(chunks[0].start_code_unit_offset, 0u);
 
   EXPECT_EQ(chunks[1].text, u"Second paragraph.");
-  EXPECT_EQ(chunks[1].start_code_unit_offset, 26u);
+  EXPECT_EQ(chunks[1].start_code_unit_offset, 17u);
 }
 
 TEST_F(TextChunkerTest, QualityUnicodeAndSurrogatePairs) {
@@ -200,7 +203,8 @@ TEST_F(TextChunkerTest, QualityWindowsCRLFParagraphBoundary) {
   EXPECT_EQ(chunks[0].start_code_unit_offset, 0u);
 
   EXPECT_EQ(chunks[1].text, u"Second paragraph sentence.");
-  EXPECT_EQ(chunks[1].start_code_unit_offset, 27u);
+  // "\r\n" collapses to a single separator.
+  EXPECT_EQ(chunks[1].start_code_unit_offset, 26u);
 }
 
 TEST_F(TextChunkerTest, QualityMultipleSentencesAccumulateExceedingThreshold) {

@@ -5,17 +5,14 @@
 package org.chromium.chrome.browser.tab_bottom_sheet;
 
 import static org.junit.Assert.assertEquals;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
 import android.view.MotionEvent;
-import android.view.ViewParent;
+import android.widget.FrameLayout;
 
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -34,21 +31,44 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.Shee
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /** Unit tests for {@link TabBottomSheetMediator}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class TabBottomSheetMediatorUnitTest {
+    /**
+     * Records the last value passed to requestDisallowInterceptTouchEvent(), since ViewGroup does
+     * not expose the resulting flag. Boxed so that it is null if never called.
+     */
+    private static class RecordingParent extends FrameLayout {
+        Boolean mLastDisallowIntercept;
+
+        RecordingParent(Context context) {
+            super(context);
+        }
+
+        @Override
+        public void requestDisallowInterceptTouchEvent(boolean disallowIntercept) {
+            mLastDisallowIntercept = disallowIntercept;
+            super.requestDisallowInterceptTouchEvent(disallowIntercept);
+        }
+    }
+
     private static final int MAX_OFFSET = 1000;
     private static final float EPSILON = 0.001f;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
+    private final List<MotionEvent> mDispatchedEvents = new ArrayList<>();
+
     private Context mContext;
     private PropertyModel mModel;
     private TabBottomSheetMediator mMediator;
+    private TabBottomSheetWebUiContainer mView;
+    private RecordingParent mParent;
 
     @Mock private CoBrowseViews mCoBrowseViews;
-    @Mock private TabBottomSheetWebUiContainer mView;
-    @Mock private ViewParent mParent;
     @Mock private WebViewResizingHelper mWebViewResizingHelper;
     @Mock private ResizeLock mResizeLock;
 
@@ -56,9 +76,16 @@ public class TabBottomSheetMediatorUnitTest {
     public void setUp() {
         mContext = ApplicationProvider.getApplicationContext();
 
+        mView = new TabBottomSheetWebUiContainer(mContext, null);
+        mView.setOnTouchListener(
+                (v, event) -> {
+                    mDispatchedEvents.add(event);
+                    return true;
+                });
+        mParent = new RecordingParent(mContext);
+        mParent.addView(mView);
+
         when(mCoBrowseViews.getView()).thenReturn(mView);
-        when(mView.getContext()).thenReturn(mContext);
-        when(mView.getParent()).thenReturn(mParent);
         when(mCoBrowseViews.getWebViewResizingHelper()).thenReturn(mWebViewResizingHelper);
         when(mWebViewResizingHelper.requestResize()).thenReturn(mResizeLock);
 
@@ -67,7 +94,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnSheetStateChanged_Full() {
         mMediator.onSheetStateChanged(BottomSheetController.SheetState.FULL);
         assertEquals(BottomSheetController.SheetState.FULL, mMediator.getSheetStateForTesting());
@@ -76,7 +102,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnSheetStateChanged_Peek() {
         mMediator.onSheetStateChanged(BottomSheetController.SheetState.PEEK);
         assertEquals(BottomSheetController.SheetState.PEEK, mMediator.getSheetStateForTesting());
@@ -85,7 +110,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testOnSheetStateChanged_Half() {
         mMediator.onSheetStateChanged(BottomSheetController.SheetState.HALF);
         assertEquals(BottomSheetController.SheetState.HALF, mMediator.getSheetStateForTesting());
@@ -94,7 +118,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdateCrossFadeAlpha_AtPeek() {
         int peekHeight = 100;
 
@@ -106,7 +129,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdateCrossFadeAlpha_Transition_FirstHalf() {
         int peekHeight = 100;
         float offsetPx = 125f; // Quarter way
@@ -119,7 +141,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdateCrossFadeAlpha_Transition_Midpoint() {
         int peekHeight = 100;
         float offsetPx = 150f; // Midpoint
@@ -132,7 +153,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdateCrossFadeAlpha_Transition_SecondHalf() {
         int peekHeight = 100;
         float offsetPx = 175f; // Three-quarters way
@@ -145,7 +165,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdateCrossFadeAlpha_AtDoublePeek() {
         int peekHeight = 100;
         float offsetPx = 200f;
@@ -158,7 +177,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdateCrossFadeAlpha_PeekHeightZero() {
         mMediator.setPeekHeight(0);
         mMediator.updateCrossFadeAlpha(100);
@@ -168,7 +186,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdateCrossFadeAlpha_BelowPeek() {
         int peekHeight = 100;
         float offsetPx = 50f;
@@ -181,7 +198,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testUpdateCrossFadeAlpha_AboveDoublePeek() {
         int peekHeight = 100;
         float offsetPx = 250f;
@@ -194,7 +210,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIsSheetHeightSufficient_Sufficient() {
         float density = DisplayAndroid.getNonMultiDisplay(mContext).getDipScale();
         int sufficientPx = (int) Math.ceil(240 * density);
@@ -202,7 +217,6 @@ public class TabBottomSheetMediatorUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testIsSheetHeightSufficient_Insufficient() {
         float density = DisplayAndroid.getNonMultiDisplay(mContext).getDipScale();
         int insufficientPx = (int) (239 * density);
@@ -223,8 +237,9 @@ public class TabBottomSheetMediatorUnitTest {
 
         Assert.assertTrue(
                 "Should be dispatched to content since it is below gesture zone", handled);
-        verify(mView, atLeastOnce()).dispatchTouchEvent(any(MotionEvent.class));
-        verify(mParent, atLeastOnce()).requestDisallowInterceptTouchEvent(true);
+        assertEquals(1, mDispatchedEvents.size());
+        Assert.assertSame(down, mDispatchedEvents.get(0));
+        Assert.assertTrue(mParent.mLastDisallowIntercept);
     }
 
     @Test
@@ -237,7 +252,8 @@ public class TabBottomSheetMediatorUnitTest {
         boolean handled = mMediator.getWebUiTouchHandler().handleTouchEvent(mView, down);
 
         Assert.assertFalse("Should fallback to sheet since it is not maximized", handled);
-        verify(mParent, atLeastOnce()).requestDisallowInterceptTouchEvent(false);
+        Assert.assertFalse(mParent.mLastDisallowIntercept);
+        assertEquals(0, mDispatchedEvents.size());
     }
 
     @Test
@@ -250,7 +266,8 @@ public class TabBottomSheetMediatorUnitTest {
         boolean handled = mMediator.getWebUiTouchHandler().handleTouchEvent(mView, down);
 
         Assert.assertFalse("Should fallback to sheet since it is in gesture zone", handled);
-        verify(mParent, atLeastOnce()).requestDisallowInterceptTouchEvent(false);
+        Assert.assertFalse(mParent.mLastDisallowIntercept);
+        assertEquals(0, mDispatchedEvents.size());
     }
 
     @Test
@@ -291,6 +308,9 @@ public class TabBottomSheetMediatorUnitTest {
         mMediator.onSheetStateChanged(SheetState.PEEK);
         Assert.assertFalse(mMediator.isNotPeeking());
 
+        mMediator.onSheetStateChanged(SheetState.SCROLLING);
+        Assert.assertTrue(mMediator.isNotPeeking());
+
         mMediator.onSheetStateChanged(SheetState.HALF);
         Assert.assertTrue(mMediator.isNotPeeking());
 
@@ -307,18 +327,17 @@ public class TabBottomSheetMediatorUnitTest {
         boolean handled = mMediator.getWebUiTouchHandler().handleTouchEvent(mView, down);
 
         Assert.assertFalse("Should fallback to sheet since it is in gesture zone", handled);
-        verify(mParent, atLeastOnce()).requestDisallowInterceptTouchEvent(false);
+        Assert.assertFalse(mParent.mLastDisallowIntercept);
+        assertEquals(0, mDispatchedEvents.size());
     }
 
     @Test
-    @SmallTest
     public void testSetToFlexibleHeight() {
         mMediator.setToFlexibleHeight();
         verify(mWebViewResizingHelper).setToFlexibleHeight();
     }
 
     @Test
-    @SmallTest
     public void testSetToFixedHeight() {
         mMediator.setToFixedHeight(MAX_OFFSET);
         verify(mWebViewResizingHelper).setToFixedHeight(MAX_OFFSET);

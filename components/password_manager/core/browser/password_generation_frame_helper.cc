@@ -24,6 +24,7 @@
 #include "components/password_manager/core/browser/password_manager_util.h"
 #include "components/password_manager/core/browser/password_requirements_service.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
+#include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "url/gurl.h"
 
@@ -152,6 +153,10 @@ void PasswordGenerationFrameHelper::AddManualGenerationEnabledField(
   generation_enabled_fields_.insert(field_renderer_id);
 }
 
+void PasswordGenerationFrameHelper::DidNavigateFrame() {
+  generation_enabled_fields_.clear();
+}
+
 autofill::PasswordRequirementsSpec
 PasswordGenerationFrameHelper::GetPasswordRequirementsSpec(
     const GURL& last_committed_url,
@@ -194,7 +199,7 @@ PasswordGenerationFrameHelper::GetPasswordRequirementsSpec(
   return spec;
 }
 
-std::u16string PasswordGenerationFrameHelper::GeneratePassword(
+PasswordString PasswordGenerationFrameHelper::GeneratePassword(
     const GURL& last_committed_url,
     PasswordGenerationType generation_type,
     autofill::FormSignature form_signature,

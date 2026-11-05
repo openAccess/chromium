@@ -14,6 +14,7 @@
 #include "components/payments/core/journey_logger.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
 
 namespace payments {
@@ -563,7 +564,7 @@ IN_PROC_BROWSER_TEST_F(PaymentRequestCanMakePaymentMetricsTest,
 
   // Simulate that the user reloads the page containing the Payment Request.
   ResetEventWaiterForSequence({DialogEvent::DIALOG_CLOSED});
-  chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+  chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
   ASSERT_TRUE(WaitForObservedEvent());
 
   // Make sure the correct events were logged.

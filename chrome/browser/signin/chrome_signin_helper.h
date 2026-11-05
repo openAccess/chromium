@@ -52,7 +52,8 @@ enum class MirrorHeaderEvent {
   kAccountNotOnDevice = 0,
   kAccountInPersistentError = 1,
   kAccountRecentlyAdded = 2,
-  kMaxValue = kAccountRecentlyAdded,
+  kAccountWithPrimaryInPersistentError = 3,
+  kMaxValue = kAccountWithPrimaryInPersistentError,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:MirrorHeaderEvent)
 
@@ -143,7 +144,7 @@ void FixAccountConsistencyRequestHeader(
     const GaiaId& primary_account_gaia_id,
     ConsentLevel primary_account_consent_level,
     signin::Tribool is_child_account,
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_MIRROR)
     bool is_secondary_account_addition_allowed,
 #endif
     bool is_sync_feature_enabled,

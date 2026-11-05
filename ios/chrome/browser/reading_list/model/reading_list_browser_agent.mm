@@ -11,7 +11,6 @@
 #import "base/strings/sys_string_conversions.h"
 #import "components/reading_list/core/reading_list_model.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
-#import "components/sync/base/features.h"
 #import "components/ukm/ios/ukm_url_recorder.h"
 #import "ios/chrome/browser/ntp/shared/metrics/home_metrics.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_model_factory.h"
@@ -62,7 +61,6 @@ void ReadingListBrowserAgent::AddURLsToReadingList(
             pattern, "count", (int)urls.count, "email",
             account_info.GetEmail());
     snackbar_text = base::SysUTF16ToNSString(utf16Text);
-    static_assert(syncer::IsReadingListAccountStorageEnabled());
     snackbar_action = CreateUndoActionWithReadingListURLs(urls);
   } else {
     snackbar_text =
@@ -127,7 +125,7 @@ void ReadingListBrowserAgent::BulkAddURLsToReadingListWithViewSnackbar(
             l10n_util::GetStringUTF16(
                 IDS_IOS_READING_LIST_SNACKBAR_MESSAGE_FOR_ACCOUNT_WITH_COUNT),
             "count", successfully_added_reading_list_items, "email",
-            GetAccountInfoFromLastAddedURL(last_valid_url).email));
+            GetAccountInfoFromLastAddedURL(last_valid_url).GetEmail()));
 
   } else {
     result = base::SysUTF16ToNSString(

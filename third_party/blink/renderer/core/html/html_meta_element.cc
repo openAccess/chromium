@@ -691,8 +691,7 @@ void HTMLMetaElement::ProcessContent() {
   if (name_value.empty())
     return;
 
-  if (RuntimeEnabledFeatures::ResponsiveIframesEnabled() &&
-      EqualIgnoringAsciiCase(name_value, keywords::kResponsiveEmbeddedSizing) &&
+  if (EqualIgnoringAsciiCase(name_value, keywords::kResponsiveEmbeddedSizing) &&
       !GetDocument().body() && IsAllowOrigins()) {
     GetDocument().SetResponsiveEmbeddedSizing();
   }
@@ -741,6 +740,7 @@ void HTMLMetaElement::ProcessContent() {
     network::mojom::ReferrerPolicy new_referrer_policy =
         GetExecutionContext()->GetReferrerPolicy();
     if (old_referrer_policy != new_referrer_policy) {
+      GetDocument().ReferrerPolicyChanged();
       if (auto* document_rules =
               DocumentSpeculationRules::FromIfExists(GetDocument())) {
         document_rules->DocumentReferrerPolicyChanged();

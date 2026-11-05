@@ -10,6 +10,7 @@
 #import <iterator>
 #import <set>
 
+#import "base/check.h"
 #import "base/memory/raw_ptr.h"
 #import "components/application_locale_storage/application_locale_storage.h"
 #import "components/contextual_search/contextual_search_service.h"
@@ -35,7 +36,6 @@
 #import "ios/chrome/browser/composebox/public/composebox_entrypoint.h"
 #import "ios/chrome/browser/composebox/public/composebox_focus_params.h"
 #import "ios/chrome/browser/composebox/public/composebox_input_item_source.h"
-#import "ios/chrome/browser/composebox/public/composebox_model_option.h"
 #import "ios/chrome/browser/composebox/public/composebox_theme.h"
 #import "ios/chrome/browser/composebox/public/features.h"
 #import "ios/chrome/browser/composebox/shared/coordinator/composebox_attachment_diff.h"
@@ -54,6 +54,7 @@
 #import "ios/chrome/browser/location_bar/model/web_location_bar_impl.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_model_delegate_ios.h"
 #import "ios/chrome/browser/location_bar/ui_bundled/location_bar_url_loader.h"
+#import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/omnibox/coordinator/omnibox_coordinator.h"
 #import "ios/chrome/browser/omnibox/public/omnibox_presentation_context.h"
 #import "ios/chrome/browser/omnibox/ui/omnibox_focus_delegate.h"
@@ -88,6 +89,7 @@
 #import "net/base/apple/url_conversions.h"
 #import "services/network/public/cpp/shared_url_loader_factory.h"
 #import "third_party/omnibox_proto/searchbox_config.pb.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace {
 const size_t kMaxURLDisplayChars = 32 * 1024;
@@ -97,7 +99,14 @@ const CGFloat kSnackbarBottomMargin = 10;
 contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
     ComposeboxEntrypoint entrypoint) {
   switch (entrypoint) {
+    case ComposeboxEntrypoint::kNTPAttachImageButton: {
+      AimButtonRefactorArm arm = GetAimButtonRefactorArm();
+      CHECK(arm == AimButtonRefactorArm::kAttachImageQuickAction ||
+            arm == AimButtonRefactorArm::kImageGenerationQuickAction);
+      return contextual_search::ContextualSearchSource::kNewTabPage;
+    }
     case ComposeboxEntrypoint::kNTPAIMButton:
+    case ComposeboxEntrypoint::kNTPImageGenerationButton:
     case ComposeboxEntrypoint::kNTPPlusButton:
       return contextual_search::ContextualSearchSource::kNewTabPage;
     case ComposeboxEntrypoint::kNTPFakebox:
@@ -128,7 +137,13 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 @implementation ComposeboxInputPlateCoordinator {
   ComposeboxInputPlateViewController* _viewController;
   ComposeboxInputPlateMediator* _mediator;
+  // Used to display the legacy Voice Search UI.
+  // TODO(crbug.com/549858749): Remove once the legacy Voice Search UI is
+  // removed.
   id<VoiceSearchController> _voiceSearchController;
+  // Coordinator presenting the Voice Search UI. Nil if Voice Search isn't
+  // started.
+  ChromeCoordinator* _voiceSearchCoordinator;
   /// The entrypoing from which the coordinator was invoked.
   ComposeboxEntrypoint _entrypoint;
   /// Optional query inserted into the omnibox at start.
@@ -197,12 +212,24 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
         recordAiModeActivationSource:AiModeActivationSource::kNTPButton];
   }
 
-  _voiceSearchController =
-      ios::provider::CreateVoiceSearchController(self.browser);
+  if (!IsVoiceSearchEvolutionPhase1Enabled()) {
+    _voiceSearchController =
+        ios::provider::CreateVoiceSearchController(self.browser);
+  }
+
+  _contextualService =
+      ContextualSearchServiceFactory::GetForProfile(self.profile);
 
   std::unique_ptr<contextual_search::ContextualSearchSessionHandle>
-      contextualSearchSession = nullptr;
-  if (!IsComposeboxAIMDisabled()) {
+      contextualSearchSession;
+  if (_focusParams.hasContextualSearchSession) {
+    contextualSearchSession = [_focusParams takeContextualSearchSession];
+    if (contextual_search::ContextualSearchMetricsRecorder* metricsRecorder =
+            contextualSearchSession->GetMetricsRecorder()) {
+      metricsRecorder->UpdateContextualSearchSource(
+          ContextualSearchSourceFromEntrypoint(_entrypoint));
+    }
+  } else {
     auto query_controller_config_params = std::make_unique<
         contextual_search::ContextualSearchContextController::ConfigParams>();
     query_controller_config_params->send_lns_surface = false;
@@ -210,16 +237,13 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
     query_controller_config_params
         ->prioritize_suggestions_for_the_first_attached_document = true;
 
-    _contextualService =
-        ContextualSearchServiceFactory::GetForProfile(self.profile);
-
     contextualSearchSession = _contextualService->CreateSession(
         std::move(query_controller_config_params),
         ContextualSearchSourceFromEntrypoint(_entrypoint),
         lens::LensOverlayInvocationSource::kOmniboxContextualQuery);
-    _metricsRecorder.contextualSearchMetricsRecorder =
-        contextualSearchSession->GetMetricsRecorder();
   }
+  _metricsRecorder.contextualSearchMetricsRecorder =
+      contextualSearchSession->GetMetricsRecorder();
 
   FaviconLoader* faviconLoader =
       IOSChromeFaviconLoaderFactory::GetForProfile(self.profile);
@@ -255,11 +279,13 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
   _mediator.consumer = _viewController;
   _mediator.delegate = self;
   _mediator.metricsRecorder = _metricsRecorder;
-
+  _mediator.assistantMetricsRecorder = _focusParams.assistantMetricsRecorder;
 
   _viewController.mutator = _mediator;
-  // Mediator is the voice search delegate to load queries in composebox.
-  _voiceSearchController.delegate = _mediator;
+  if (!IsVoiceSearchEvolutionPhase1Enabled()) {
+    // Mediator is the voice search delegate to load queries in composebox.
+    _voiceSearchController.delegate = _mediator;
+  }
 
   _locationBar = std::make_unique<WebLocationBarImpl>(self);
   _locationBar->SetURLLoader(self);
@@ -323,6 +349,7 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 
   _metricsRecorder.contextualSearchMetricsRecorder = nullptr;
 
+  [self stopVoiceSearchCoordinator];
   _viewController.mutator = nil;
   _viewController = nil;
   _pickerPresenter = nil;
@@ -360,21 +387,23 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 
 - (void)hideComposeboxMenu {
   if (IsComposeboxPlusButtonBottomSheet()) {
-    [_menuCoorinator stop];
-    _menuCoorinator = nil;
+    [_menuCoorinator dismissMenu];
   } else {
     [_viewController dismissContextMenu];
   }
 }
 
 - (void)focusComposebox {
+  if (_entrypoint == ComposeboxEntrypoint::kCobrowse &&
+      _viewController.view.hidden) {
+    return;
+  }
   [_omniboxCoordinator focusOmnibox];
 }
 
-- (void)processContextLibraryWebpageSignalWithURL:(const GURL&)url
-                                            title:(NSString*)title {
-  CHECK(_entrypoint == ComposeboxEntrypoint::kCobrowse);
-  [_mediator processContextLibraryWebpageSignalWithURL:url title:title];
+- (void)updateTheme:(ComposeboxTheme*)theme {
+  _theme = theme;
+  [_viewController updateTheme:theme];
 }
 
 #pragma mark - ComposeboxInputPlateViewControllerDelegate
@@ -383,6 +412,16 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
             (ComposeboxInputPlateViewController*)composeboxViewController
                  didTapMicButton:(UIButton*)micButton {
   [_metricsRecorder recordVoiceSearchButtonUsed];
+
+  if (IsVoiceSearchEvolutionPhase1Enabled()) {
+    [self stopVoiceSearchCoordinator];
+    // TODO(crbug.com/571184218): Implement `VoiceSearchCoordinatorDelegate` to
+    // submit recognized queries and stop the coordinator on dismissal.
+    _voiceSearchCoordinator = ios::provider::CreateVoiceSearchCoordinator(
+        _viewController, self.browser, /*delegate=*/nil);
+    [_voiceSearchCoordinator start];
+    return;
+  }
 
   WebStateList* webStateList = self.browser->GetWebStateList();
   if (!webStateList) {
@@ -434,7 +473,8 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 
 - (void)composeboxViewControllerDidCompleteInitialPresentation:
     (ComposeboxInputPlateViewController*)composeboxViewController {
-  if (_entrypoint == ComposeboxEntrypoint::kNTPPlusButton) {
+  if (_entrypoint == ComposeboxEntrypoint::kNTPPlusButton &&
+      !(IsPlusButtonMenuInFakeboxEnabled())) {
     [composeboxViewController showMultimodalMenu];
   }
 }
@@ -476,61 +516,18 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 
 - (void)composeboxViewControllerDidTapPlusButton:
             (ComposeboxInputPlateViewController*)composeboxViewController
-                                withUIInputState:
-                                    (ComposeboxUIInputState*)state {
-  if (IsComposeboxPlusButtonBottomSheet()) {
-    _menuCoorinator = [[ComposeboxMenuCoordinator alloc]
-        initWithBaseViewController:_viewController
-                           browser:self.browser
-            preselectedAttachments:_mediator.currentAttachmentSelection
-                        inputState:state
-                   metricsRecorder:_metricsRecorder
-                        entrypoint:_entrypoint];
-    _menuCoorinator.inputPlateDelegate = self;
-    _menuCoorinator.delegate = self;
-    [_menuCoorinator start];
+                                withUIInputState:(ComposeboxUIInputState*)state
+                                          button:(UIButton*)button {
+  if (_entrypoint == ComposeboxEntrypoint::kCobrowse ||
+      IsComposeboxPlusButtonBottomSheet()) {
+    [self createMenuCoordinatorForInputState:state];
+    [_menuCoorinator presentBottomSheetMenu];
 
     // Hide the input plate when the bottom sheet modal is open.
     if (_entrypoint == ComposeboxEntrypoint::kCobrowse) {
       _viewController.view.hidden = YES;
     }
   }
-}
-
-- (void)composeboxViewControllerDidTapFileButton:
-    (ComposeboxInputPlateViewController*)composeboxViewController {
-  [_metricsRecorder
-      recordAttachmentButtonUsed:FuseboxAttachmentButtonType::kFiles];
-  if (![_mediator canAddMoreAttachments]) {
-    [self showMaxAttachmentSnackbarError];
-    return;
-  }
-
-  [_pickerPresenter presentFilePicker];
-}
-
-- (void)composeboxViewControllerDidTapDriveButton:
-    (ComposeboxInputPlateViewController*)composeboxViewController {
-  [_metricsRecorder
-      recordAttachmentButtonUsed:FuseboxAttachmentButtonType::kDriveFiles];
-  if (![_mediator canAddMoreAttachments]) {
-    [self showMaxAttachmentSnackbarError];
-    return;
-  }
-
-  [_pickerPresenter presentDriveFilePicker];
-}
-
-- (void)composeboxViewControllerDidTapAttachTabsButton:
-    (ComposeboxInputPlateViewController*)viewController {
-  if (![_mediator canAddMoreAttachments]) {
-    [self showMaxAttachmentSnackbarError];
-    return;
-  }
-
-  [_metricsRecorder
-      recordAttachmentButtonUsed:FuseboxAttachmentButtonType::kTabPicker];
-  [_pickerPresenter presentTabPicker];
 }
 
 - (void)composeboxViewController:
@@ -544,13 +541,6 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
                       didTapTool:(ComposeboxMode)toolMode
                 activationSource:(AiModeActivationSource)activationSource {
   [self selectTool:toolMode activationSource:activationSource];
-}
-
-- (void)composeboxViewController:
-            (ComposeboxInputPlateViewController*)composeboxViewController
-                  didSelectModel:(ComposeboxModelOption)modelOption {
-  [_mediator setModelOption:modelOption explicitUserAction:YES];
-  [_metricsRecorder recordModelSelected:modelOption];
 }
 
 - (void)composeboxViewController:
@@ -574,6 +564,15 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
       return;
   }
   NOTREACHED();
+}
+
+- (UIMenu*)composeboxViewControllerPlusButtonMenu:
+    (ComposeboxInputPlateViewController*)composeboxViewController {
+  if (!_menuCoorinator) {
+    ComposeboxUIInputState* state = [_mediator currentUIInputState];
+    [self createMenuCoordinatorForInputState:state];
+  }
+  return [_menuCoorinator createMenu];
 }
 
 - (BOOL)tabExistsOnCurrentProfile:(TabInfo*)tabInfo {
@@ -624,13 +623,23 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
   [self showUnableToAddAttachmentSnackbarError];
 }
 
+- (void)inputStateManagerDidUpdateUIState {
+  // Don't recreate the coordinator if it's presenting the bottom sheet.
+  if (_menuCoorinator.presentingBottomSheet) {
+    return;
+  }
+  ComposeboxUIInputState* state = [_mediator currentUIInputState];
+  [self createMenuCoordinatorForInputState:state];
+}
+
 #pragma mark - LocationBarURLLoader
 
 - (void)loadGURLFromLocationBar:(const GURL&)url
                                postContent:
                                    (TemplateURLRef::PostContent*)postContent
                                 transition:(ui::PageTransition)transition
-                               disposition:(WindowOpenDisposition)disposition
+                               disposition:
+                                   (ui::mojom::WindowOpenDisposition)disposition
     destination_url_entered_without_scheme:
         (bool)destination_url_entered_without_scheme {
   if (url.SchemeIs(url::kJavaScriptScheme)) {
@@ -652,8 +661,8 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
     UrlLoadParams params = UrlLoadParams::InNewTab(web_params);
     params.disposition = disposition;
     params.in_incognito = isIncognito;
-    if (params.disposition == WindowOpenDisposition::CURRENT_TAB) {
-      params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    if (params.disposition == ui::mojom::WindowOpenDisposition::kCurrentTab) {
+      params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     }
     UrlLoadingBrowserAgent::FromBrowser(self.browser)->Load(params);
   }
@@ -700,6 +709,12 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 
 #pragma mark - Private helpers
 
+// Stops the Voice Search coordinator, if any.
+- (void)stopVoiceSearchCoordinator {
+  [_voiceSearchCoordinator stop];
+  _voiceSearchCoordinator = nil;
+}
+
 /// Updates the active tool mode in the composebox, toggling it off if it's
 /// already active, and records associated metrics.
 - (void)selectTool:(ComposeboxMode)toolMode
@@ -730,7 +745,7 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 - (void)showMaxAttachmentSnackbarError {
   [self createSnackbarPresenterIfNeeded];
   CGFloat offset = _viewController.keyboardHeight;
-  if (!_theme.isTopInputPlate) {
+  if (_theme.isBottomInputPlate) {
     offset += _viewController.inputHeight + kSnackbarBottomMargin;
   }
   [_snackbarPresenter
@@ -742,7 +757,7 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 - (void)showUnableToAddAttachmentSnackbarError {
   [self createSnackbarPresenterIfNeeded];
   CGFloat offset = _viewController.keyboardHeight;
-  if (!_theme.isTopInputPlate) {
+  if (_theme.isBottomInputPlate) {
     offset += _viewController.inputHeight + kSnackbarBottomMargin;
   }
   [_snackbarPresenter showUnableToAddAttachmentSnackbarWithBottomOffset:offset];
@@ -753,7 +768,7 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 - (void)showMaxAttachmentForImageGenerationSnackbarError {
   [self createSnackbarPresenterIfNeeded];
   CGFloat offset = _viewController.keyboardHeight;
-  if (!_theme.isTopInputPlate) {
+  if (_theme.isBottomInputPlate) {
     offset += _viewController.inputHeight + kSnackbarBottomMargin;
   }
   [_snackbarPresenter showAttachmentLimitForImageGenerationSnackbar:
@@ -769,11 +784,30 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
       [[ComposeboxSnackbarPresenter alloc] initWithBrowser:self.browser];
 }
 
+// Creates a new menu coordinator for the given input state.
+- (void)createMenuCoordinatorForInputState:(ComposeboxUIInputState*)state {
+  if (_menuCoorinator) {
+    [_menuCoorinator stop];
+  }
+  _menuCoorinator = [[ComposeboxMenuCoordinator alloc]
+      initWithBaseViewController:_viewController
+                         browser:self.browser
+          preselectedAttachments:_mediator.currentAttachmentSelection
+                      inputState:state
+                 metricsRecorder:_metricsRecorder
+                      entrypoint:_entrypoint];
+  _menuCoorinator.inputPlateDelegate = self;
+  _menuCoorinator.delegate = self;
+  [_menuCoorinator start];
+}
+
 #pragma mark - ComposeboxPickerPresenterDelegate
 
 - (void)composeboxPickerPresenter:(ComposeboxPickerPresenter*)presenter
                     didPickImages:
                         (NSArray<ComposeboxPickerImageResult*>*)results {
+  [presenter dismissPicker];
+
   // Gallery picker results (PHPickerViewController) return the complete set of
   // selected gallery items. Reconcile preselected asset IDs so that any gallery
   // photo deselected by the user is removed from attachments. Camera picker
@@ -862,27 +896,33 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
                  completion:stopAccessScopedResourcesIfNeeded];
 }
 
-- (void)composeboxPickerPresenterDidDissmissCamera:
+- (void)composeboxPickerPresenterDidDismissCamera:
+    (ComposeboxPickerPresenter*)presenter {
+  [self focusComposebox];
+}
+
+- (void)composeboxPickerPresenterDidCancelDrivePicker:
+    (ComposeboxPickerPresenter*)presenter {
+  [self focusComposebox];
+}
+
+- (void)composeboxPickerPresenterDidCancelTabPicker:
     (ComposeboxPickerPresenter*)presenter {
   [self focusComposebox];
 }
 
 - (void)composeboxPickerPresenter:(ComposeboxPickerPresenter*)presenter
-    handleSelectedTabsWithWebStateIDs:
-        (std::set<web::WebStateID>)selectedWebStateIDs
-                    cachedWebStateIDs:
-                        (std::set<web::WebStateID>)cachedWebStateIDs {
+                      didPickTabs:(const ComposeboxTabSelection&)selection {
   std::set<web::WebStateID> alreadyProcessedIDs =
       [_mediator allAttachedWebStateIDs];
   composebox::TabDiff diff =
-      composebox::ComputeTabDiff(alreadyProcessedIDs, selectedWebStateIDs);
+      composebox::ComputeTabDiff(alreadyProcessedIDs, selection.selected_ids);
 
   if (diff.added.size() > 0) {
     [_metricsRecorder recordTabPickerTabsAttached:diff.added.size()];
   }
 
-  [_mediator attachSelectedTabsWithWebStateIDs:selectedWebStateIDs
-                             cachedWebStateIDs:cachedWebStateIDs];
+  [_mediator attachTabSelection:selection];
 }
 
 - (void)composeboxPickerPresenter:(ComposeboxPickerPresenter*)presenter
@@ -893,9 +933,6 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
   }
 
   [_metricsRecorder recordDriveFilesAttached:results.count];
-  [_metricsRecorder
-      recordPickerOutcome:MobileFuseboxPickerOutcome::kAttachmentAdded
-        forAttachmentType:MobileFuseboxPickerAttachmentType::kDrive];
 
   for (ComposeboxPickerDriveResult* result in results) {
     [_mediator processDriveFileWithIdentifier:result.identifier
@@ -935,9 +972,9 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 }
 
 - (void)composeboxMenuCoordinator:(ComposeboxMenuCoordinator*)coordinator
-                      didTapModel:(ComposeboxModelOption)modelMode {
-  [_mediator setModelOption:modelMode explicitUserAction:YES];
-  [_metricsRecorder recordModelSelected:modelMode];
+                      didTapModel:(omnibox::ModelMode)model {
+  [_mediator setModel:model explicitUserAction:YES];
+  [_metricsRecorder recordModelSelected:model];
 }
 
 - (void)composeboxMenuCoordinator:(ComposeboxMenuCoordinator*)coordinator
@@ -948,8 +985,9 @@ contextual_search::ContextualSearchSource ContextualSearchSourceFromEntrypoint(
 }
 
 - (void)composeboxMenuCoordinator:(ComposeboxMenuCoordinator*)coordinator
-      didRemoveTabWithServerToken:(const base::UnguessableToken&)serverToken {
-  [_mediator removeSharedTabWithServerToken:serverToken];
+    didRemoveTabWithInputItemIdentifier:
+        (const base::UnguessableToken&)inputItemIdentifier {
+  [_mediator removeSharedTabWithInputItemIdentifier:inputItemIdentifier];
 }
 
 - (ComposeboxUIInputState*)currentUIInputStateForMenuCoordinator:

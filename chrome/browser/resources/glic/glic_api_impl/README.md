@@ -1,30 +1,42 @@
 ## Glic web client API implementation
 
-This directory contains the implementation of ../glic_api.
+This directory contains the implementation of `../glic_api`. This code is
+bundled into a single `.js` file and injected into the web client at startup,
+where it communicates directly with the browser via Mojo.
 
-### client/
-
-Contains the web client side of the postMessage interface. Directly implements
-objects used by the web client. This code is bundled into a .js file and sent to
-the web client at startup for execution.
-
-### host/
-
-Contains the browser-side of the postMessage interface, which runs within a
-WebUI. Forwards requests from the web client to the browser via mojo.
-
-### request_types.ts
-
-The private postMessage API between the web client and WebUI.
-
-### transport/
-
-Shared utilities for message passing with postMessage.
+The core web client API implementation (`GlicHostRegistryImpl` and
+`GlicBrowserHostImpl`) lives in `glic_api_client.ts`, with feature-specific
+delegates in subdirectories:
 
 ### actor/
 
-The actor module. Contains both client and host implementations for actor
-related glic API functions. Future modules should match this format.
-  actor_client.ts - client implementation.
-  actor_host.ts - host implementation.
-  actor_types.ts - types shared between client and host.
+Contains the client implementation for actor-related Glic API functions.
+
+### annotation/
+
+Contains the client implementation for scroll-to and highlight annotation
+functions.
+
+### experimental_triggering/
+
+Contains the client implementation for experimental triggering Glic API
+functions.
+
+### geic/
+
+Contains the client implementation for Gemini Enterprise in Chrome (GEIC) API
+functions.
+
+### skills/
+
+Contains the client implementation for skills-related Glic API functions.
+
+### tools/
+
+Contains the client implementation for Chrome tool execution functions.
+
+### zero_state_suggestions/
+
+Contains the client implementation for zero-state suggestions Glic API
+functions.
+

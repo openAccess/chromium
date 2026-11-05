@@ -8,6 +8,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ash/app_list/model/app_list_model_export.h"
@@ -39,9 +40,6 @@ class APP_LIST_MODEL_EXPORT SearchModel {
     return search_box_->search_engine_is_google();
   }
 
-  void SetWouldTriggerLauncherSearchIph(bool would_trigger);
-  bool would_trigger_iph() const { return search_box_->would_trigger_iph(); }
-
   // Filter the given |results| by those which |result_filter| returns true for.
   // The returned list is truncated to |max_results|.
   static std::vector<SearchResult*> FilterSearchResultsByFunction(
@@ -59,7 +57,7 @@ class APP_LIST_MODEL_EXPORT SearchModel {
       std::vector<std::unique_ptr<SearchResult>> new_results,
       const std::vector<ash::AppListSearchResultCategory>& categories);
 
-  SearchResult* FindSearchResult(const std::string& id);
+  SearchResult* FindSearchResult(std::string_view id);
 
   // Deletes all search results. This is used when moving from zero-state to a
   // search query.

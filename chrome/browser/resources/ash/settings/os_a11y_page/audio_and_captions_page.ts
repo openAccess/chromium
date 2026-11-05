@@ -19,7 +19,6 @@ import '../settings_shared.css.js';
 import './captions_subpage.js';
 import 'chrome://resources/ash/common/cr_elements/localized_link/localized_link.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
 import type {CrToggleElement} from 'chrome://resources/ash/common/cr_elements/cr_toggle/cr_toggle.js';
 import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {WebUiListenerMixin} from 'chrome://resources/ash/common/cr_elements/web_ui_listener_mixin.js';
@@ -30,7 +29,8 @@ import {DeepLinkingMixin} from '../common/deep_linking_mixin.js';
 import {RouteOriginMixin} from '../common/route_origin_mixin.js';
 import {Setting} from '../mojom-webui/setting.mojom-webui.js';
 import type {LanguageHelper, LanguagesModel} from '../os_languages_page/languages_types.js';
-import type {Route} from '../router.js';
+import type {Route} from '../os_settings_routes.js';
+import {PrefsMixin} from '../prefs/prefs_mixin.js';
 import {routes} from '../router.js';
 
 import {getTemplate} from './audio_and_captions_page.html.js';
@@ -89,15 +89,6 @@ export class SettingsAudioAndCaptionsPageElement extends
         },
       },
 
-      isAccessibilityFlashNotificationFeatureEnabled_: {
-        readOnly: true,
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean(
-              'isAccessibilityFlashNotificationFeatureEnabled');
-        },
-      },
-
       notificationColorOptions_: {
         readOnly: true,
         type: Array,
@@ -149,8 +140,6 @@ export class SettingsAudioAndCaptionsPageElement extends
   ]);
 
   private audioAndCaptionsBrowserProxy_: AudioAndCaptionsPageBrowserProxy;
-  declare private readonly isAccessibilityFlashNotificationFeatureEnabled_:
-      boolean;
   declare private isKioskModeActive_: boolean;
   declare private readonly notificationColorOptions_:
       Array<{value: number, name: string}>;

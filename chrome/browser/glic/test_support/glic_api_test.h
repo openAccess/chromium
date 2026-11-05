@@ -209,15 +209,14 @@ class GlicApiBrowserTestMixin : public T {
     Base::AddMockGlicQueryParam("testsrc", js_source_path.value);
 
     Base::embedded_test_server()->RegisterRequestHandler(
-        base::BindRepeating(&GlicApiBrowserTestMixin::SorryHtmlRequestHandler,
-                            base::Unretained(this)));
+        base::BindRepeating(&GlicApiBrowserTestMixin::SorryHtmlRequestHandler));
     Base::embedded_test_server()->RegisterRequestHandler(
-        base::BindRepeating(&GlicApiBrowserTestMixin::FakeRpcRequestHandler,
-                            base::Unretained(this)));
+        base::BindRepeating(&GlicApiBrowserTestMixin::FakeRpcRequestHandler));
 
-    Base::embedded_test_server()->RegisterRequestMonitor(base::BindRepeating(
-        &GlicApiBrowserTestMixin::OnEmbeddedTestServerHttpRequest,
-        base::Unretained(this)));
+    Base::embedded_https_test_server().RegisterRequestHandler(
+        base::BindRepeating(&GlicApiBrowserTestMixin::SorryHtmlRequestHandler));
+    Base::embedded_https_test_server().RegisterRequestHandler(
+        base::BindRepeating(&GlicApiBrowserTestMixin::FakeRpcRequestHandler));
 
     features_.InitWithFeaturesAndParameters(
         /*enabled_features=*/
@@ -346,7 +345,11 @@ class GlicApiBrowserTestMixin : public T {
       GlicInstanceImpl* instance = nullptr) {
     auto end_time = base::TimeTicks::Now() + base::Seconds(30);
     auto next_message_time = base::TimeTicks::Now() + base::Seconds(2);
-    auto sleep_time = base::Milliseconds(200);
+    // Poll frequently at first: the guest typically becomes ready within ~1 s
+    // of the panel opening, and any sleep that overshoots that moment is paid
+    // by every Glic API test. Grow slowly (1.25x) up to 2 s so slow bots that
+    // take many seconds to load are not flooded with EvalJs checks.
+    auto sleep_time = base::Milliseconds(25);
     content::RenderFrameHost* frame = nullptr;
     content::RenderFrameHost* last_frame = nullptr;
     while (base::TimeTicks::Now() < end_time) {
@@ -387,7 +390,7 @@ class GlicApiBrowserTestMixin : public T {
         next_message_time = base::TimeTicks::Now() + base::Seconds(2);
       }
       sleepWithRunLoop(sleep_time);
-      sleep_time = std::min(base::Seconds(2), 2 * sleep_time);
+      sleep_time = std::min(base::Seconds(2), sleep_time * 1.25);
     }
     return base::unexpected(base::StrCat(
         {"Timed out waiting for guest frame. Guest frame: ",
@@ -404,8 +407,8 @@ class GlicApiBrowserTestMixin : public T {
   const std::optional<base::Value>& step_data() const { return step_data_; }
 
   // Fake handler that returns a "Sorry!" page.
-  std::unique_ptr<net::test_server::HttpResponse> SorryHtmlRequestHandler(
-      const net::test_server::HttpRequest& request) {
+  static std::unique_ptr<net::test_server::HttpResponse>
+  SorryHtmlRequestHandler(const net::test_server::HttpRequest& request) {
     if (request.method != net::test_server::METHOD_GET ||
         request.relative_url != "/glic/browser_tests/sorry.html") {
       return nullptr;
@@ -419,7 +422,7 @@ class GlicApiBrowserTestMixin : public T {
 
   // Fake RPC endpoint that sometimes produces a CORS response.
   // It does not respond to allow preflights, though.
-  std::unique_ptr<net::test_server::HttpResponse> FakeRpcRequestHandler(
+  static std::unique_ptr<net::test_server::HttpResponse> FakeRpcRequestHandler(
       const net::test_server::HttpRequest& request) {
     if (request.method != net::test_server::METHOD_GET ||
         !base::StartsWith(request.relative_url, "/fake-rpc")) {
@@ -436,11 +439,6 @@ class GlicApiBrowserTestMixin : public T {
   }
 
  private:
-  void OnEmbeddedTestServerHttpRequest(
-      const net::test_server::HttpRequest& request) {
-    VLOG(1) << "EmbeddedTestServerHttpRequest: " << request.relative_url;
-    embedded_test_server_requests_.push_back(request);
-  }
   void ProcessTestResult(content::GlobalRenderFrameHostId frame_id,
                          const ExecuteTestOptions& options,
                          const content::EvalJsResult& result_in) {
@@ -452,7 +450,7 @@ class GlicApiBrowserTestMixin : public T {
         return;
       }
 
-      ASSERT_TRUE(result.is_ok());
+      ASSERT_TRUE(result.is_ok()) << result;
       if (result.is_dict()) {
         content::EvalJsResult result_copy = result;
         const base::DictValue& dict = result_copy.ExtractDict();
@@ -631,9 +629,6 @@ class GlicApiBrowserTestMixin : public T {
   base::test::ScopedFeatureList features_;
   std::set<content::GlobalRenderFrameHostId> next_step_required_;
   std::optional<base::Value> step_data_;
-
- protected:
-  std::vector<net::test_server::HttpRequest> embedded_test_server_requests_;
 };
 
 using GlicApiBrowserTest = GlicApiBrowserTestMixin<GlicBrowserTest>;

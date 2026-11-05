@@ -12,6 +12,7 @@
 #include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/favicon_source.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter_service.h"
@@ -22,6 +23,8 @@
 #include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
+#include "chrome/grit/tab_group_shared_resources.h"
+#include "chrome/grit/tab_group_shared_resources_map.h"
 #include "chrome/grit/tab_search_resources.h"
 #include "chrome/grit/tab_search_resources_map.h"
 #include "components/favicon_base/favicon_url_parser.h"
@@ -46,7 +49,7 @@ bool TabSearchUIConfig::ShouldAutoResizeHost() {
 }
 
 bool TabSearchUIConfig::IsPreloadable() {
-  return true;
+  return !organizer_panel::IsOrganizerPanelFeatureEnabled();
 }
 
 std::optional<int> TabSearchUIConfig::GetCommandIdForTesting() {
@@ -70,10 +73,14 @@ TabSearchUI::TabSearchUI(content::WebUI* web_ui)
       {"a11yFoundTabFor", IDS_TAB_SEARCH_A11Y_FOUND_TAB_FOR},
       {"a11yFoundTabs", IDS_TAB_SEARCH_A11Y_FOUND_TABS},
       {"a11yFoundTabsFor", IDS_TAB_SEARCH_A11Y_FOUND_TABS_FOR},
+      {"a11yOpenSplitView", IDS_TAB_SEARCH_A11Y_OPEN_SPLIT_VIEW},
       {"a11yOpenTab", IDS_TAB_SEARCH_A11Y_OPEN_TAB},
+      {"a11yRecentlyClosedSplitView",
+       IDS_TAB_SEARCH_A11Y_RECENTLY_CLOSED_SPLIT_VIEW},
       {"a11yRecentlyClosedTab", IDS_TAB_SEARCH_A11Y_RECENTLY_CLOSED_TAB},
       {"a11yRecentlyClosedTabGroup",
        IDS_TAB_SEARCH_A11Y_RECENTLY_CLOSED_TAB_GROUP},
+      {"a11ySplitView", IDS_TAB_SEARCH_A11Y_SPLIT_VIEW},
       {"audioMuting", IDS_TAB_AX_LABEL_AUDIO_MUTING_FORMAT},
       {"audioPlaying", IDS_TAB_AX_LABEL_AUDIO_PLAYING_FORMAT},
       {"blobUrlSource", IDS_HOVER_CARD_BLOB_URL_SOURCE},
@@ -109,8 +116,8 @@ TabSearchUI::TabSearchUI(content::WebUI* web_ui)
   source->AddBoolean("useTabGroupColorRefresh",
                      features::IsTabGroupColorRefreshEnabled());
   source->AddBoolean(
-      "cjkWordBoundaryEnabled",
-      base::FeatureList::IsEnabled(tabs::kTabSearchCjkWordBoundary));
+      "tabSearchPerformanceImprovements",
+      base::FeatureList::IsEnabled(tabs::kTabSearchPerformanceImprovements));
 
   source->AddLocalizedString("close", IDS_CLOSE);
 
@@ -127,6 +134,7 @@ TabSearchUI::TabSearchUI(content::WebUI* web_ui)
 
   webui::SetupWebUIDataSource(source, kTabSearchResources,
                               IDR_TAB_SEARCH_TAB_SEARCH_HTML);
+  source->AddResourcePaths(kTabGroupSharedResources);
 
   content::URLDataSource::Add(
       profile, std::make_unique<FaviconSource>(
@@ -169,7 +177,7 @@ void TabSearchUI::BeforeBubbleWidgetShowed() {
 void TabSearchUI::CreatePageHandler(
     mojo::PendingRemote<tab_search::mojom::Page> page,
     mojo::PendingReceiver<tab_search::mojom::PageHandler> receiver) {
-  DCHECK(page);
+  CHECK(page, base::NotFatalUntil::M162);
 
   // CreatePageHandler() can be called multiple times if reusing the same
   // WebUIController. For eg refreshing the page will create new PageHandler but

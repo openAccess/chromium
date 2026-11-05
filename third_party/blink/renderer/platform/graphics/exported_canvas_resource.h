@@ -14,12 +14,21 @@
 namespace blink {
 
 class CanvasResource;
+class CanvasResourceSharedImage;
 class StaticBitmapImage;
 
 class PLATFORM_EXPORT ExportedCanvasResource
     : public ThreadSafeRefCounted<ExportedCanvasResource> {
  public:
-  explicit ExportedCanvasResource(scoped_refptr<CanvasResource> resource);
+  explicit ExportedCanvasResource(
+      scoped_refptr<CanvasResourceSharedImage> resource);
+  explicit ExportedCanvasResource(
+      scoped_refptr<gpu::ClientSharedImage> client_si,
+      const gpu::SyncToken& sync_token,
+      viz::TransferableResource::ResourceSource resource_source,
+      const gfx::HDRMetadata& hdr_metadata,
+      viz::ReleaseCallback callback,
+      base::WeakPtr<WebGraphicsContext3DProviderWrapper> provider);
   ~ExportedCanvasResource();
 
   static void OnPlaceholderReleasedResource(
@@ -27,18 +36,28 @@ class PLATFORM_EXPORT ExportedCanvasResource
 
   gfx::Size Size() const;
   bool OriginClean() const;
+  void SetOriginClean(bool clean);
   scoped_refptr<StaticBitmapImage> Bitmap();
-  void Transfer();
   void EndDisplayCompositorAccess(gpu::SharedImageExportResult export_result,
                                   bool is_lost);
-  bool PrepareTransferableResource(
-      viz::TransferableResource* transferable_resource,
-      bool needs_verified_synctoken);
+  void EndDisplayCompositorAccess(gpu::SyncToken export_result, bool is_lost);
+  viz::TransferableResource PrepareTransferableResource();
 
   CanvasResource* GetResourceForTesting() const { return resource_.get(); }
+  scoped_refptr<gpu::ClientSharedImage> GetSharedImageForTesting() {
+    return GetResourceForTesting()->GetSharedImage();
+  }
 
  private:
+  bool is_cross_thread() const {
+    return base::PlatformThread::CurrentRef() != owning_thread_ref_;
+  }
+
   scoped_refptr<CanvasResource> resource_;
+  const base::PlatformThreadRef owning_thread_ref_;
+  const scoped_refptr<base::SingleThreadTaskRunner> owning_thread_task_runner_;
+
+  const bool use_legacy_external_canvas_resource_bitmap_path_;
 };
 
 }  // namespace blink

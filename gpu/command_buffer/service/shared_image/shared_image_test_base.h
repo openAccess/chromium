@@ -7,6 +7,7 @@
 
 #include <vector>
 
+#include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/command_buffer/service/feature_info.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_backing_factory.h"
@@ -18,20 +19,22 @@
 #include "gpu/config/gpu_preferences.h"
 #include "gpu/vulkan/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/skia/include/core/SkAlphaType.h"
 #include "third_party/skia/include/core/SkBitmap.h"
-
-namespace viz {
-class VulkanInProcessContextProvider;
-}
 
 namespace gpu {
 
 class VulkanImplementation;
+class VulkanInProcessContextProvider;
 
 // Test base that initializes SharedContextState and other classes needed to
 // create SharedImageBackings + SharedImageBackingFactories.
 class SharedImageTestBase : public testing::Test {
  protected:
+  // Returns the expected alpha type for the given format. Multiplanar formats
+  // without external sampler must be unpremul (or opaque).
+  static SkAlphaType GetAlphaType(viz::SharedImageFormat format);
+
   // Allocate a bitmap with red pixels. RED_8 will be filled with 0xFF repeating
   // and RG_88 will be filled with OxFF00 repeating. `added_stride` is a
   // multiplier that allocates bytePerPixel * added_stride extra bytes per row.
@@ -86,7 +89,7 @@ class SharedImageTestBase : public testing::Test {
 
 #if BUILDFLAG(ENABLE_VULKAN)
   std::unique_ptr<VulkanImplementation> vulkan_implementation_;
-  scoped_refptr<viz::VulkanInProcessContextProvider> vulkan_context_provider_;
+  scoped_refptr<VulkanInProcessContextProvider> vulkan_context_provider_;
 #endif
 
 #if BUILDFLAG(SKIA_USE_DAWN)

@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <optional>
-#include <variant>
 
 #include "base/check.h"
 #include "base/check_deref.h"
@@ -22,6 +21,7 @@
 #include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
 #include "components/autofill/core/common/aliases.h"
+#include "components/device_reauth/device_auth_availability_checker.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/form_fetcher_impl.h"
 #include "components/password_manager/core/browser/form_parsing/form_data_parser.h"
@@ -138,6 +138,7 @@ bool PasswordManualFallbackFlow::SupportsSuggestionType(
     case autofill::SuggestionType::kViewPasswordDetails:
     case autofill::SuggestionType::kAllSavedPasswordsEntry:
     case autofill::SuggestionType::kWebauthnSignInWithAnotherDevice:
+    case autofill::SuggestionType::kWebauthnPasskeyQrCode:
       return true;
     default:
       return false;
@@ -188,15 +189,10 @@ void PasswordManualFallbackFlow::RunFlow(
   RunFlowImpl(bounds, text_direction);
 }
 
-std::variant<autofill::AutofillDriver*, PasswordManagerDriver*>
-PasswordManualFallbackFlow::GetDriver_DoNotUse() {
-  return password_manager_driver_.get();
-}
-
 void PasswordManualFallbackFlow::OnSuggestionsShown(
     base::span<const Suggestion> suggestions,
-    base::optional_ref<const SuggestionMetadata> parent_suggestion_metadata) {
-  if (parent_suggestion_metadata.has_value()) {
+    const SuggestionUiMetadata& metadata) {
+  if (metadata.is_subpopup()) {
     // This event corresponds to a sub-popup - we can ignore it.
     return;
   }
@@ -204,6 +200,15 @@ void PasswordManualFallbackFlow::OnSuggestionsShown(
       password_manager_driver_, field_id_.renderer_id);
   manual_fallback_metrics_recorder_->OnDidShowSuggestions(
       IsTriggerFieldRelevantInPasswordForm(form));
+
+  if (std::ranges::contains(suggestions,
+                            autofill::SuggestionType::kWebauthnPasskeyQrCode,
+                            &Suggestion::type)) {
+    if (autofill::PasswordManagerDelegate* password_manager_delegate =
+            password_manager_driver_->GetPasswordManagerDelegate()) {
+      password_manager_delegate->OnWebauthnInlineQrCodeSuggestionShown();
+    }
+  }
 }
 
 void PasswordManualFallbackFlow::OnSuggestionsHidden(
@@ -219,7 +224,9 @@ bool PasswordManualFallbackFlow::OnSearchSubmitted(
 }
 
 void PasswordManualFallbackFlow::DidSelectSuggestion(
-    const Suggestion& suggestion) {
+    const Suggestion& suggestion,
+    const autofill::FormGlobalId& form_id,
+    const autofill::FieldGlobalId& field_id) {
   CHECK(SupportsSuggestionType(suggestion.type));
   if (!suggestion.IsAcceptable()) {
     return;
@@ -263,6 +270,7 @@ void PasswordManualFallbackFlow::DidSelectSuggestion(
       break;
     }
     case autofill::SuggestionType::kWebauthnSignInWithAnotherDevice:
+    case autofill::SuggestionType::kWebauthnPasskeyQrCode:
       if (auto* password_manager_delegate =
               password_manager_driver_->GetPasswordManagerDelegate()) {
         password_manager_delegate->SelectSuggestion(suggestion);
@@ -281,7 +289,9 @@ void PasswordManualFallbackFlow::DidSelectSuggestion(
 
 void PasswordManualFallbackFlow::DidAcceptSuggestion(
     const Suggestion& suggestion,
-    const SuggestionMetadata& metadata) {
+    const SuggestionMetadata& metadata,
+    const autofill::FormGlobalId& form_id,
+    const autofill::FieldGlobalId& field_id) {
   CHECK(SupportsSuggestionType(suggestion.type));
   if (!suggestion.IsAcceptable()) {
     return;
@@ -370,6 +380,7 @@ void PasswordManualFallbackFlow::DidAcceptSuggestion(
           password_client_->IsOffTheRecord());
       break;
     case autofill::SuggestionType::kWebauthnSignInWithAnotherDevice:
+    case autofill::SuggestionType::kWebauthnPasskeyQrCode:
       if (auto* password_manager_delegate =
               password_manager_driver_->GetPasswordManagerDelegate()) {
         password_manager_delegate->AcceptSuggestion(suggestion, metadata);
@@ -433,8 +444,10 @@ void PasswordManualFallbackFlow::RunFlowImpl(
               IsTriggerFieldRelevantInPasswordForm(password_form) &&
               !password_form->HasNewPasswordElement()));
   // TODO(crbug.com/41474723): Set the right `form_control_ax_id`.
+  // TODO(crbug.com/563089510): Set the right FormGlobalId.
   autofill::AutofillClient::PopupOpenArgs open_args(
-      field_id_.frame_token, bounds, text_direction, std::move(suggestions),
+      autofill::FormGlobalId(), field_id_, bounds, text_direction,
+      std::move(suggestions),
       autofill::AutofillSuggestionTriggerSource::kManualFallbackPasswords,
       /*form_control_ax_id=*/0, autofill::PopupAnchorType::kField);
   autofill_client_->ShowAutofillSuggestions(open_args,
@@ -445,36 +458,47 @@ void PasswordManualFallbackFlow::MaybeAuthenticateBeforeFilling(
     base::OnceClosure fill_fields,
     bool is_password_filled_in_non_password_field) {
   CancelBiometricReauthIfOngoing();
-  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
-      password_client_->GetDeviceAuthenticator();
-  // Note: this is currently only implemented on Android, Mac and Windows.
-  // For other platforms, the `authenticator` will be null.
-  // Authentication is always required if the user is entering their password on
-  // a non password field.
-  bool authentication_required =
-      password_client_->IsReauthBeforeFillingRequired(authenticator.get()) ||
-      is_password_filled_in_non_password_field;
-  if (!authenticator || !authentication_required) {
-    std::move(fill_fields).Run();
+  bool authentication_required = false;
+  std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator;
+  if (!base::FeatureList::IsEnabled(features::kDeviceReauthRefactor)) {
+    authenticator = password_client_->GetDeviceAuthenticator();
+    authentication_required =
+        password_client_->IsReauthBeforeFillingRequiredLegacy(
+            authenticator.get()) ||
+        is_password_filled_in_non_password_field;
   } else {
-    authenticator_ = std::move(authenticator);
+    std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker> checker =
+        password_client_->GetDeviceAuthAvailabilityChecker();
+    authentication_required =
+        password_client_->IsReauthBeforeFillingRequired(checker.get()) ||
+        is_password_filled_in_non_password_field;
+    if (authentication_required) {
+      authenticator = password_client_->GetDeviceAuthenticator();
+    }
+  }
 
-    std::u16string message;
-    auto on_reath_complete =
-        base::BindOnce(&PasswordManualFallbackFlow::OnBiometricReauthCompleted,
-                       weak_ptr_factory_.GetWeakPtr(), std::move(fill_fields));
+  if (!authentication_required || !authenticator) {
+    std::move(fill_fields).Run();
+    return;
+  }
+
+  authenticator_ = std::move(authenticator);
+
+  std::u16string message;
+  auto on_reath_complete =
+      base::BindOnce(&PasswordManualFallbackFlow::OnBiometricReauthCompleted,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(fill_fields));
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
-    const std::u16string origin = base::UTF8ToUTF16(GetShownOrigin(
-        url::Origin::Create(password_manager_driver_->GetLastCommittedURL())));
-    message =
-        l10n_util::GetStringFUTF16(IDS_PASSWORD_MANAGER_FILLING_REAUTH, origin);
+  const std::u16string origin = base::UTF8ToUTF16(GetShownOrigin(
+      url::Origin::Create(password_manager_driver_->GetLastCommittedURL())));
+  message =
+      l10n_util::GetStringFUTF16(IDS_PASSWORD_MANAGER_FILLING_REAUTH, origin);
 #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
-    authenticator_->AuthenticateWithMessage(
-        message, metrics_util::TimeCallbackMediumTimes(
-                     std::move(on_reath_complete),
-                     "PasswordManager.PasswordFilling.AuthenticationTime2"));
-  }
+  authenticator_->AuthenticateWithMessage(
+      message, metrics_util::TimeCallbackMediumTimes(
+                   std::move(on_reath_complete),
+                   "PasswordManager.PasswordFilling.AuthenticationTime2"));
 }
 
 void PasswordManualFallbackFlow::OnBiometricReauthCompleted(

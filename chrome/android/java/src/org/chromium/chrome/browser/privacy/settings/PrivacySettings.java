@@ -119,7 +119,7 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
     public static void onJavascriptOptimizerLinkClicked(Context context) {
         Bundle extras = new Bundle();
         extras.putString(SingleCategorySettings.EXTRA_CATEGORY, "javascript_optimizer");
-        SettingsNavigation navigation = SettingsNavigationFactory.createSettingsNavigation();
+        SettingsNavigation navigation = SettingsNavigationFactory.createSettingsNavigation(context);
         navigation.startSettings(
                 context, SingleCategorySettings.class, extras, /* addToBackStack= */ true);
     }
@@ -154,11 +154,11 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
                             PrivacyGuideInteractions.MAX_VALUE + 1);
                     UserPrefs.get(getProfile()).setBoolean(Pref.PRIVACY_GUIDE_VIEWED, true);
 
-                    // Explicitly launch PrivacyGuideFragment from here. Because the fragment
-                    // does not implement EmbeddableSettingsPage, it will work as standalone mode.
-                    // In details it is still a part of SettingsActivity, it will let user find
-                    // it is an independent flow.
-                    SettingsNavigationFactory.createSettingsNavigation()
+                    // Explicitly launch PrivacyGuideFragment from here so that the click is
+                    // recorded above before navigating. The fragment implements
+                    // EmbeddableSettingsPage, so it is shown as a regular settings page rather
+                    // than in standalone mode.
+                    SettingsNavigationFactory.createSettingsNavigation(requireContext())
                             .startSettings(
                                     getActivity(),
                                     PrivacyGuideFragment.class,
@@ -280,11 +280,18 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
             scrollToPreference(PREF_ADVANCED_PROTECTION_INFO);
         }
 
-        if (!shouldShowUniversalOptOutSettings(getProfile())) {
+        boolean universalOptOutSettingsVisible = shouldShowUniversalOptOutSettings(getProfile());
+        if (!universalOptOutSettingsVisible) {
             getPreferenceScreen().removePreference(findPreference(PREF_UNIVERSAL_OPT_OUT));
         }
+        recordUniversalOptOutSettingsVisibility(universalOptOutSettingsVisible);
 
         updatePreferences();
+    }
+
+    private void recordUniversalOptOutSettingsVisibility(boolean universalOptOutSettingsVisible) {
+        RecordHistogram.recordBooleanHistogram(
+                "Privacy.UniversalOptOut.SettingsVisibility", universalOptOutSettingsVisible);
     }
 
     private static boolean isAdvancedProtectionEnabled() {
@@ -309,7 +316,7 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
                 new ClickableSpan() {
                     @Override
                     public void onClick(View view) {
-                        SettingsNavigationFactory.createSettingsNavigation()
+                        SettingsNavigationFactory.createSettingsNavigation(requireContext())
                                 .startSettings(
                                         getActivity(),
                                         GoogleServicesSettings.class,
@@ -322,7 +329,7 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
                 new ClickableSpan() {
                     @Override
                     public void onClick(View view) {
-                        SettingsNavigationFactory.createSettingsNavigation()
+                        SettingsNavigationFactory.createSettingsNavigation(requireContext())
                                 .startSettings(
                                         getActivity(),
                                         ManageSyncSettings.class,
@@ -395,14 +402,12 @@ public class PrivacySettings extends ChromeBaseSettingsFragment
                             : R.string.text_off);
         }
 
-        if (shouldShowUniversalOptOutSettings(getProfile())) {
-            Preference universalOptOutPref = findPreference(PREF_UNIVERSAL_OPT_OUT);
-            if (universalOptOutPref != null) {
-                universalOptOutPref.setSummary(
-                        UserPrefs.get(getProfile()).getBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED)
-                                ? R.string.text_on
-                                : R.string.text_off);
-            }
+        Preference universalOptOutPref = findPreference(PREF_UNIVERSAL_OPT_OUT);
+        if (universalOptOutPref != null) {
+            universalOptOutPref.setSummary(
+                    UserPrefs.get(getProfile()).getBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED)
+                            ? R.string.text_on
+                            : R.string.text_off);
         }
 
         Preference preloadPagesPreference = findPreference(PREF_PRELOAD_PAGES);

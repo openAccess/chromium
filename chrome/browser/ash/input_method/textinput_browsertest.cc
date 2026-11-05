@@ -5,7 +5,6 @@
 #include <stddef.h>
 
 #include "chrome/browser/ash/input_method/textinput_test_helper.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/chrome_test_path_utils.h"
@@ -16,6 +15,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace ash {
 namespace input_method {
@@ -277,7 +277,8 @@ IN_PROC_BROWSER_TEST_F(TextInput_TextInputStateChangedTest,
       base::FilePath(FILE_PATH_LITERAL("textinput")),
       base::FilePath(FILE_PATH_LITERAL("focus_input_on_load.html")));
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), new_url, WindowOpenDisposition::NEW_FOREGROUND_TAB, 0);
+      browser(), new_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+      0);
   content::WebContents* new_tab =
       browser()->tab_strip_model()->GetActiveWebContents();
   EXPECT_NE(base_tab, new_tab);

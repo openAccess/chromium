@@ -85,6 +85,7 @@ class PaintWorkletLayerPainter;
 class RasterDarkModeFilter;
 class RenderFrameMetadataObserver;
 class RenderingStatsInstrumentation;
+class ScrollTimingBufferConsumer;
 class TaskGraphRunner;
 class UIResourceManager;
 
@@ -260,6 +261,18 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   GetScopedEventMetricsMonitor(
       EventsMetricsManager::ScopedMonitor::DoneCallback done_callback);
   void ClearEventsMetrics();
+
+  // Called by the proxy during startup.
+  void InitializeScrollTimingBufferConsumer(
+      base::ReadOnlySharedMemoryRegion region);
+
+  // Owned by this host until destruction; main-thread only. Null when Scroll
+  // Timing is disabled, unsupported, or shared-memory setup fails. It has one
+  // read position, so only one client should call ReadRecords().
+  ScrollTimingBufferConsumer* scroll_timing_buffer_consumer() {
+    DCHECK(IsMainThread());
+    return scroll_timing_buffer_consumer_.get();
+  }
 
   size_t saved_events_metrics_count_for_testing() const {
     DCHECK(IsMainThread());
@@ -560,6 +573,11 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   // because each compositor doesn't know its position relative to other
   // compositors. This is specified in device viewport coordinate space.
   void SetVisualDeviceViewportSize(const gfx::Size&);
+  void SetMemoryPolicy(const ManagedMemoryPolicy& policy);
+  const ManagedMemoryPolicy& memory_policy() const {
+    DCHECK(IsMainThread());
+    return memory_policy_;
+  }
 
   void SetMaxSafeAreaInsets(const gfx::InsetsF& max_safe_area_insets);
   gfx::Rect device_viewport_rect() const {
@@ -677,6 +695,9 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   // calculations.
   void SetExternalPageScaleFactor(float page_scale_factor,
                                   bool is_external_pinch_gesture_active);
+  float external_page_scale_factor() const {
+    return pending_commit_state()->external_page_scale_factor;
+  }
   bool is_external_pinch_gesture_active_for_testing() {
     return pending_commit_state()->is_external_pinch_gesture_active;
   }
@@ -716,6 +737,8 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   }
 
   bool in_will_commit() const { return inside_will_commit_; }
+
+  void ScheduleLayerForPostCommitDisposal(scoped_refptr<Layer> layer);
 
   bool in_commit() const {
     return commit_completion_event_ && !commit_completion_event_->IsSignaled();
@@ -1064,6 +1087,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   bool DoUpdateLayers();
   std::unique_ptr<CommitState> ActivateCommitState();
   void WaitForCommitCompletion(bool for_protected_sequence) const;
+  void DisposeLayersAfterCommit();
 
   void UpdateDeferMainFrameUpdateInternal();
   void UpdatePauseRenderingInternal();
@@ -1105,6 +1129,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   std::unique_ptr<LayerTreeFrameSink> current_layer_tree_frame_sink_;
 
   const LayerTreeSettings settings_;
+  ManagedMemoryPolicy memory_policy_;
 
   bool visible_ = false;
   bool should_warm_up_ = false;
@@ -1121,6 +1146,10 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   // Track when we're inside `WillCommit` to ensure commit state is not
   // modified.
   bool inside_will_commit_ = false;
+
+  // Layers queued during `WillCommit` to be detached and cleaned up once the
+  // commit completes.
+  LayerList layers_to_dispose_;
 
   // Set to force a commit during BeginMainFrame even if there are no actual
   // rendering changes, to ensure the bits in CommitState are propagated.
@@ -1174,6 +1203,7 @@ class CC_EXPORT LayerTreeHost : public MutatorHostDelegate {
   mutable std::unique_ptr<CompletionEvent> commit_completion_event_;
 
   EventsMetricsManager events_metrics_manager_;
+  std::unique_ptr<ScrollTimingBufferConsumer> scroll_timing_buffer_consumer_;
 
   // A map from ViewTransition tokens to whether a new LocalSurfaceId is
   // needed for this ViewTransitionRequest.

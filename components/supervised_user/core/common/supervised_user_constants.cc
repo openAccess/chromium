@@ -109,6 +109,9 @@ const base::FilePath::CharType kSupervisedUserSettingsFilename[] =
 const char kFamilyLinkUserLogSegmentHistogramName[] =
     "FamilyLinkUser.LogSegment";
 
+const char kFamilyLinkAccountTypeHistogramName[] =
+    "SupervisedUsers.FamilyLinkAccountType";
+
 const char kFamilyLinkUserLogSegmentWebFilterHistogramName[] =
     "FamilyUser.WebFilterType.PerRecord";
 
@@ -147,10 +150,5 @@ const char kLocalWebApprovalDurationMillisecondsHistogramName[] =
     "FamilyLinkUser.LocalWebApprovalCompleteRequestTotalDuration";
 const char kLocalWebApprovalErrorTypeHistogramName[] =
     "FamilyLinkUser.LocalWebApprovalErrorType";
-
-const char kBrowserContentFiltersSettingName[] =
-    "browser_content_filters_enabled";
-const char kSearchContentFiltersSettingName[] =
-    "search_content_filters_enabled";
 
 }  // namespace supervised_user

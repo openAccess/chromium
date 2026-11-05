@@ -7,16 +7,21 @@ package org.chromium.chrome.browser.tab_bottom_sheet;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -38,16 +43,23 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ActivityState;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.context_sharing.R;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab_bottom_sheet.WebViewResizingHelper.ResizeLock;
 import org.chromium.chrome.browser.ui.side_panel.SidePanelContainerCoordinator;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
 import org.chromium.components.thinwebview.ThinWebView;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.base.WindowAndroid.ActivityStateObserver;
+import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.insets.InsetObserver;
+import org.chromium.ui.insets.InsetObserver.WindowInsetObserver;
 import org.chromium.ui.insets.InsetObserver.WindowInsetsAnimationListener;
 
 /** Unit tests for {@link WebViewResizingHelper}. */
@@ -62,12 +74,15 @@ public class WebViewResizingHelperUnitTest {
     @Mock private ThinWebView mMockThinWebView;
     @Mock private WebContents mMockWebContents;
     @Mock private WindowAndroid mMockWindowAndroid;
+    @Mock private BottomSheetController mMockBottomSheetController;
+    @Mock private DisplayAndroid mMockDisplayAndroid;
     @Mock private InsetObserver mMockInsetObserver;
     @Mock private Window mMockWindow;
-    @Mock private View mMockDecorView;
+    @Mock private CoBrowseComponentProvider mMockComponentProvider;
     @Captor private ArgumentCaptor<WindowInsetsAnimationListener> mAnimationListenerCaptor;
 
     private Context mContext;
+    private View mMockDecorView;
     private View mView;
     private View mContainerView;
     private WebViewResizingHelper mHelper;
@@ -85,27 +100,85 @@ public class WebViewResizingHelperUnitTest {
                 .when(mMockThinWebView)
                 .runOnNextFrame(any());
 
+        mMockDecorView = new View(mContext);
+        mMockDecorView.layout(0, 0, 0, 1000);
         when(mMockWindowAndroid.getWindow()).thenReturn(mMockWindow);
+        when(mMockWindowAndroid.getDisplay()).thenReturn(mMockDisplayAndroid);
+        when(mMockDisplayAndroid.getDipScale()).thenReturn(1.0f);
         when(mMockWindowAndroid.getInsetObserver()).thenReturn(mMockInsetObserver);
         when(mMockWindow.getDecorView()).thenReturn(mMockDecorView);
-        when(mMockDecorView.getHeight()).thenReturn(1000);
+        when(mMockComponentProvider.createResizingPlaceholderCoordinator(any(), anyInt(), anyInt()))
+                .thenAnswer(
+                        inv ->
+                                new LegacyResizingPlaceholderCoordinator(
+                                        inv.getArgument(0), inv.getArgument(1)));
 
         mContainerView = LayoutInflater.from(mContext).inflate(R.layout.tab_bottom_sheet, null);
-        mHelper = new WebViewResizingHelper(mContainerView, mMockWindowAndroid, Color.WHITE);
+        mHelper =
+                new WebViewResizingHelper(
+                        mContainerView,
+                        mMockWindowAndroid,
+                        mMockBottomSheetController,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        /* isSidePanel= */ false,
+                        mMockComponentProvider);
     }
 
     @Test
     public void testInitialization() {
         FrameLayout container = (FrameLayout) mHelper.getResizingContainer();
-        assertEquals(1, container.getChildCount());
+        assertEquals(0, container.getChildCount());
         verify(mMockInsetObserver).addWindowInsetsAnimationListener(any());
+        assertEquals(mMockComponentProvider, mHelper.getComponentProviderForTesting());
+        verify(mMockComponentProvider, never())
+                .createResizingPlaceholderCoordinator(any(), anyInt(), anyInt());
+        assertNull(mHelper.getPlaceholderCoordinator());
+    }
+
+    @Test
+    public void testComponentProvider_PassedThroughConstructor() {
+        CoBrowseComponentProvider mockProvider = mock(CoBrowseComponentProvider.class);
+        WebViewResizingHelper helper =
+                new WebViewResizingHelper(
+                        mContainerView,
+                        mMockWindowAndroid,
+                        mMockBottomSheetController,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        false,
+                        mockProvider);
+        assertEquals(mockProvider, helper.getComponentProviderForTesting());
+    }
+
+    @Test
+    public void testComponentProvider_NullPassedThroughConstructor() {
+        WebViewResizingHelper helper =
+                new WebViewResizingHelper(
+                        mContainerView,
+                        mMockWindowAndroid,
+                        mMockBottomSheetController,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        /* isSidePanel= */ false,
+                        /* componentProvider= */ null);
+        assertNull(helper.getComponentProviderForTesting());
     }
 
     @Test
     public void testDestroy() {
+        mHelper.reset();
+        View placeholder = mHelper.getPlaceholderCoordinator().getView();
+        placeholder.setVisibility(View.VISIBLE);
+        placeholder.setAlpha(0.4f);
+
         mHelper.destroy();
+
         verify(mMockInsetObserver).removeWindowInsetsAnimationListener(any());
         verify(mMockWindowAndroid).removeActivityStateObserver(any());
+        assertEquals(View.INVISIBLE, placeholder.getVisibility());
+        assertEquals(1.0f, placeholder.getAlpha(), 0.01f);
+        assertEquals(0, ((FrameLayout) mHelper.getResizingContainer()).getChildCount());
     }
 
     @Test
@@ -123,11 +196,15 @@ public class WebViewResizingHelperUnitTest {
     @Test
     public void testReset() {
         mHelper.setThinWebView(mMockThinWebView, mMockWebContents);
+        View placeholder = mHelper.getPlaceholderCoordinator().getView();
+        placeholder.setVisibility(View.VISIBLE);
+        placeholder.setAlpha(0.4f);
         mHelper.reset();
 
         FrameLayout container = (FrameLayout) mHelper.getResizingContainer();
         assertEquals(1, container.getChildCount());
         assertEquals(View.INVISIBLE, container.getChildAt(0).getVisibility());
+        assertEquals(1.0f, container.getChildAt(0).getAlpha(), 0.01f);
     }
 
     @Test
@@ -361,8 +438,7 @@ public class WebViewResizingHelperUnitTest {
         mHelper.setThinWebView(mMockThinWebView, mMockWebContents);
         FrameLayout container = (FrameLayout) mHelper.getResizingContainer();
 
-        when(mMockDecorView.getWidth()).thenReturn(1080);
-        when(mMockDecorView.getHeight()).thenReturn(1920);
+        mMockDecorView.layout(0, 0, 1080, 1920);
 
         container.measure(
                 View.MeasureSpec.makeMeasureSpec(100, View.MeasureSpec.EXACTLY),
@@ -376,13 +452,21 @@ public class WebViewResizingHelperUnitTest {
 
     @Test
     public void testUpdateBounds_SidePanel_FallbackSizing() {
-        mHelper = new WebViewResizingHelper(mContainerView, mMockWindowAndroid, Color.WHITE, true);
+        mHelper =
+                new WebViewResizingHelper(
+                        mContainerView,
+                        mMockWindowAndroid,
+                        mMockBottomSheetController,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        true,
+                        mMockComponentProvider);
         mHelper.setThinWebView(mMockThinWebView, mMockWebContents);
         FrameLayout container = (FrameLayout) mHelper.getResizingContainer();
 
         when(mMockWebContents.getWidth()).thenReturn(50);
         when(mMockWebContents.getHeight()).thenReturn(50);
-        when(mMockDecorView.getHeight()).thenReturn(1000);
+        mMockDecorView.layout(0, 0, 0, 1000);
 
         container.measure(
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.EXACTLY),
@@ -399,13 +483,21 @@ public class WebViewResizingHelperUnitTest {
 
     @Test
     public void testUpdateBounds_SidePanel_FallbackSizing_WebContentsOnly() {
-        mHelper = new WebViewResizingHelper(mContainerView, mMockWindowAndroid, Color.WHITE, true);
+        mHelper =
+                new WebViewResizingHelper(
+                        mContainerView,
+                        mMockWindowAndroid,
+                        mMockBottomSheetController,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        true,
+                        mMockComponentProvider);
         mHelper.setThinWebView(null, mMockWebContents);
         FrameLayout container = (FrameLayout) mHelper.getResizingContainer();
 
         when(mMockWebContents.getWidth()).thenReturn(50);
         when(mMockWebContents.getHeight()).thenReturn(50);
-        when(mMockDecorView.getHeight()).thenReturn(1000);
+        mMockDecorView.layout(0, 0, 0, 1000);
 
         container.measure(
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.EXACTLY),
@@ -421,6 +513,7 @@ public class WebViewResizingHelperUnitTest {
 
     @Test
     public void testUpdatePlaceholderHeight_LimitsAndAlphaTransitions() {
+        mHelper.reset();
         FrameLayout resizingContainer = (FrameLayout) mHelper.getResizingContainer();
         View placeholder = resizingContainer.getChildAt(0);
         View content = placeholder.findViewById(R.id.tab_bottom_sheet_resizing_content);
@@ -698,5 +791,375 @@ public class WebViewResizingHelperUnitTest {
                 View.MeasureSpec.makeMeasureSpec(600, View.MeasureSpec.EXACTLY));
         container.layout(0, 0, 500, 600);
         verify(mMockThinWebView).resizeWebContents(500, 600);
+    }
+
+    @Test
+    public void testPlaceholderCoordinator_DelegatesToComponentProvider() {
+        CoBrowseComponentProvider provider = mock(CoBrowseComponentProvider.class);
+        ResizingPlaceholderCoordinator customCoordinator =
+                mock(ResizingPlaceholderCoordinator.class);
+        View customPlaceholderView = new View(mContext);
+        when(customCoordinator.getView()).thenReturn(customPlaceholderView);
+        when(provider.createResizingPlaceholderCoordinator(any(), anyInt(), anyInt()))
+                .thenReturn(customCoordinator);
+
+        WebViewResizingHelper helper =
+                new WebViewResizingHelper(
+                        mContainerView,
+                        mMockWindowAndroid,
+                        mMockBottomSheetController,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        false,
+                        provider);
+        verify(provider, never()).createResizingPlaceholderCoordinator(any(), anyInt(), anyInt());
+        assertNull(helper.getPlaceholderCoordinator());
+
+        helper.reset();
+        verify(provider).createResizingPlaceholderCoordinator(mContext, Color.WHITE, Color.LTGRAY);
+        assertSame(customCoordinator, helper.getPlaceholderCoordinator());
+
+        helper.updatePlaceholderHeight(250);
+        verify(customCoordinator).updateVisibleHeight(250);
+
+        customPlaceholderView.setVisibility(View.VISIBLE);
+        customPlaceholderView.setAlpha(0.4f);
+        helper.destroy();
+        verify(customCoordinator).destroy();
+        assertEquals(View.INVISIBLE, customPlaceholderView.getVisibility());
+        assertEquals(1.0f, customPlaceholderView.getAlpha(), 0.01f);
+        assertEquals(0, ((FrameLayout) helper.getResizingContainer()).getChildCount());
+    }
+
+    @Test
+    public void testUpdatePlaceholderHeight_BeforeReset_NoOpUntilReset() {
+        CoBrowseComponentProvider provider = mock(CoBrowseComponentProvider.class);
+        ResizingPlaceholderCoordinator customCoordinator =
+                mock(ResizingPlaceholderCoordinator.class);
+        View customPlaceholderView = new View(mContext);
+        when(customCoordinator.getView()).thenReturn(customPlaceholderView);
+        when(provider.createResizingPlaceholderCoordinator(any(), anyInt(), anyInt()))
+                .thenReturn(customCoordinator);
+
+        WebViewResizingHelper helper =
+                new WebViewResizingHelper(
+                        mContainerView,
+                        mMockWindowAndroid,
+                        mMockBottomSheetController,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        false,
+                        provider);
+
+        helper.updatePlaceholderHeight(180);
+
+        verify(provider, never()).createResizingPlaceholderCoordinator(any(), anyInt(), anyInt());
+        assertNull(helper.getPlaceholderCoordinator());
+        verify(customCoordinator, never()).updateVisibleHeight(anyInt());
+
+        helper.reset();
+
+        verify(provider).createResizingPlaceholderCoordinator(mContext, Color.WHITE, Color.LTGRAY);
+        verify(customCoordinator, never()).updateVisibleHeight(anyInt());
+
+        helper.updatePlaceholderHeight(320);
+        verify(customCoordinator).updateVisibleHeight(320);
+        helper.destroy();
+    }
+
+    @Test
+    public void testPlaceholderCoordinator_NullCoordinator_WorksCleanly() {
+        CoBrowseComponentProvider provider = mock(CoBrowseComponentProvider.class);
+        when(provider.createResizingPlaceholderCoordinator(any(), anyInt(), anyInt()))
+                .thenReturn(null);
+
+        WebViewResizingHelper helper =
+                new WebViewResizingHelper(
+                        mContainerView,
+                        mMockWindowAndroid,
+                        mMockBottomSheetController,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        false,
+                        provider);
+        assertNull(helper.getPlaceholderCoordinator());
+        FrameLayout container = (FrameLayout) helper.getResizingContainer();
+        assertEquals(0, container.getChildCount());
+
+        helper.setThinWebView(mMockThinWebView, mMockWebContents);
+        assertEquals(1, container.getChildCount());
+
+        helper.updatePlaceholderHeight(250);
+        ResizeLock lock = helper.requestResize();
+        assertNotNull(lock);
+        lock.unlock();
+
+        helper.reset();
+        assertEquals(0, container.getChildCount());
+
+        helper.destroy();
+    }
+
+    @Test
+    public void testReset_CancelsPendingTimeoutRunnable() {
+        mHelper.setThinWebView(mMockThinWebView, mMockWebContents);
+        mView.layout(0, 0, 100, 200);
+        FrameLayout container = (FrameLayout) mHelper.getResizingContainer();
+
+        doAnswer(invocation -> null).when(mMockThinWebView).runOnNextFrame(any());
+
+        when(mMockWebContents.getWidth()).thenReturn(ViewUtils.pxToDp(mContext, 100));
+        when(mMockWebContents.getHeight()).thenReturn(ViewUtils.pxToDp(mContext, 200));
+
+        ResizeLock lock = mHelper.requestResize();
+        assertNotNull(lock);
+
+        container.measure(
+                View.MeasureSpec.makeMeasureSpec(300, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY));
+        container.layout(0, 0, 300, 400);
+
+        lock.unlock();
+
+        assertNotNull(mHelper.getPendingTimeoutRunnableForTesting());
+
+        mHelper.reset();
+
+        assertNull(mHelper.getPendingTimeoutRunnableForTesting());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.TAB_BOTTOM_SHEET,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_EDGE_TO_EDGE,
+        ChromeFeatureList.GLIC_NO_WEBVIEW
+    })
+    public void testSetThinWebView_UpdatesSafeAreaInsetsWhenEdgeToEdgeEnabled() {
+        when(mMockDisplayAndroid.getDipScale()).thenReturn(2.0f);
+
+        int topMarginPx =
+                mContext.getResources()
+                        .getDimensionPixelSize(R.dimen.tab_bottom_sheet_web_ui_top_margin);
+        int expectedTopDip = (int) Math.ceil(topMarginPx / 2.0f);
+
+        mHelper.setThinWebView(mMockThinWebView, mMockWebContents);
+
+        verify(mMockWebContents).setDisplayCutoutSafeArea(eq(new Rect(0, expectedTopDip, 0, 0)));
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.TAB_BOTTOM_SHEET,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_EDGE_TO_EDGE,
+        ChromeFeatureList.GLIC_NO_WEBVIEW
+    })
+    public void testSetThinWebView_UpdatesBottomSafeAreaInsetAndObservesChanges() {
+        when(mMockDisplayAndroid.getDipScale()).thenReturn(2.0f);
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(48);
+
+        int topMarginPx =
+                mContext.getResources()
+                        .getDimensionPixelSize(R.dimen.tab_bottom_sheet_web_ui_top_margin);
+        int expectedTopDip = (int) Math.ceil(topMarginPx / 2.0f);
+
+        mHelper.setThinWebView(mMockThinWebView, mMockWebContents);
+
+        ArgumentCaptor<Rect> safeAreaCaptor = ArgumentCaptor.forClass(Rect.class);
+        verify(mMockWebContents).setDisplayCutoutSafeArea(safeAreaCaptor.capture());
+        Rect firstSafeArea = safeAreaCaptor.getValue();
+        assertEquals(new Rect(0, expectedTopDip, 0, 24), firstSafeArea);
+
+        ArgumentCaptor<WindowInsetObserver> insetObserverCaptor =
+                ArgumentCaptor.forClass(WindowInsetObserver.class);
+        ArgumentCaptor<BottomSheetObserver> bottomSheetObserverCaptor =
+                ArgumentCaptor.forClass(BottomSheetObserver.class);
+        verify(mMockInsetObserver).addObserver(insetObserverCaptor.capture());
+        verify(mMockBottomSheetController).addObserver(bottomSheetObserverCaptor.capture());
+
+        clearInvocations(mMockWebContents);
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(0);
+        insetObserverCaptor.getValue().onKeyboardInsetChanged(300);
+        verify(mMockWebContents).setDisplayCutoutSafeArea(safeAreaCaptor.capture());
+        assertSame(firstSafeArea, safeAreaCaptor.getValue());
+        assertEquals(new Rect(0, expectedTopDip, 0, 0), safeAreaCaptor.getValue());
+
+        clearInvocations(mMockWebContents);
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(60);
+        insetObserverCaptor.getValue().onInsetChanged();
+        verify(mMockWebContents).setDisplayCutoutSafeArea(eq(new Rect(0, expectedTopDip, 0, 30)));
+
+        clearInvocations(mMockWebContents);
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(0);
+        bottomSheetObserverCaptor.getValue().onContainerBottomMarginChanged(100);
+        verify(mMockWebContents).setDisplayCutoutSafeArea(eq(new Rect(0, expectedTopDip, 0, 0)));
+
+        clearInvocations(mMockWebContents);
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(40);
+        bottomSheetObserverCaptor.getValue().onSheetContentChanged(/* newContent= */ null);
+        verify(mMockWebContents).setDisplayCutoutSafeArea(eq(new Rect(0, expectedTopDip, 0, 20)));
+
+        clearInvocations(mMockWebContents);
+        insetObserverCaptor.getValue().onInsetChanged();
+        verify(mMockWebContents, never()).setDisplayCutoutSafeArea(any());
+
+        verify(mMockInsetObserver)
+                .addWindowInsetsAnimationListener(mAnimationListenerCaptor.capture());
+        mAnimationListenerCaptor.getValue().onPrepare(/* animation= */ null);
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(80);
+        insetObserverCaptor.getValue().onInsetChanged();
+        verify(mMockWebContents, never()).setDisplayCutoutSafeArea(any());
+
+        mAnimationListenerCaptor.getValue().onEnd(/* animation= */ null);
+        verify(mMockWebContents).setDisplayCutoutSafeArea(eq(new Rect(0, expectedTopDip, 0, 40)));
+
+        clearInvocations(mMockWebContents);
+        mHelper.setThinWebView(mMockThinWebView, mMockWebContents);
+        verify(mMockWebContents).setDisplayCutoutSafeArea(eq(new Rect(0, expectedTopDip, 0, 40)));
+
+        WebContents secondWebContents = mock(WebContents.class);
+        mHelper.setThinWebView(mMockThinWebView, secondWebContents);
+        verify(secondWebContents).setDisplayCutoutSafeArea(eq(new Rect(0, expectedTopDip, 0, 40)));
+
+        clearInvocations(mMockWebContents);
+        mHelper.reset();
+        mHelper.setThinWebView(mMockThinWebView, mMockWebContents);
+        verify(mMockWebContents).setDisplayCutoutSafeArea(eq(new Rect(0, expectedTopDip, 0, 40)));
+        clearInvocations(mMockWebContents);
+
+        ArgumentCaptor<ActivityStateObserver> activityObserverCaptor =
+                ArgumentCaptor.forClass(ActivityStateObserver.class);
+        verify(mMockWindowAndroid).addActivityStateObserver(activityObserverCaptor.capture());
+        when(mMockWindowAndroid.getActivityState()).thenReturn(ActivityState.STOPPED);
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(120);
+        insetObserverCaptor.getValue().onInsetChanged();
+        verify(mMockWebContents, never()).setDisplayCutoutSafeArea(any());
+
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(80);
+        when(mMockWindowAndroid.getActivityState()).thenReturn(ActivityState.RESUMED);
+        activityObserverCaptor.getValue().onActivityResumed();
+        verify(mMockWebContents).setDisplayCutoutSafeArea(eq(new Rect(0, expectedTopDip, 0, 40)));
+
+        clearInvocations(mMockWebContents);
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(100);
+        when(mMockWebContents.isDestroyed()).thenReturn(true);
+        insetObserverCaptor.getValue().onInsetChanged();
+        verify(mMockWebContents, never()).setDisplayCutoutSafeArea(any());
+
+        mHelper.destroy();
+        verify(mMockInsetObserver).removeObserver(insetObserverCaptor.getValue());
+        verify(mMockBottomSheetController).removeObserver(bottomSheetObserverCaptor.getValue());
+    }
+
+    @Test
+    @EnableFeatures({ChromeFeatureList.TAB_BOTTOM_SHEET, ChromeFeatureList.GLIC_NO_WEBVIEW})
+    @DisableFeatures(ChromeFeatureList.TAB_BOTTOM_SHEET_EDGE_TO_EDGE)
+    public void testSetThinWebView_DoesNotUpdateSafeAreaInsetsWhenEdgeToEdgeDisabled() {
+        mHelper.setThinWebView(mMockThinWebView, mMockWebContents);
+
+        verify(mMockWebContents, never()).setDisplayCutoutSafeArea(any());
+        verify(mMockInsetObserver, never()).addObserver(any());
+        verify(mMockBottomSheetController, never()).addObserver(any());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.TAB_BOTTOM_SHEET,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_EDGE_TO_EDGE
+    })
+    @DisableFeatures(ChromeFeatureList.GLIC_NO_WEBVIEW)
+    public void testSetThinWebView_DoesNotUpdateSafeAreaInsetsWhenGlicNoWebviewDisabled() {
+        mHelper.setThinWebView(mMockThinWebView, mMockWebContents);
+
+        verify(mMockWebContents, never()).setDisplayCutoutSafeArea(any());
+        verify(mMockInsetObserver, never()).addObserver(any());
+        verify(mMockBottomSheetController, never()).addObserver(any());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.TAB_BOTTOM_SHEET,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_EDGE_TO_EDGE,
+        ChromeFeatureList.GLIC_NO_WEBVIEW
+    })
+    public void testSetThinWebView_SidePanel_DoesNotUpdateSafeAreaInsets() {
+        clearInvocations(mMockInsetObserver, mMockBottomSheetController);
+        WebViewResizingHelper sidePanelHelper =
+                new WebViewResizingHelper(
+                        mContainerView,
+                        mMockWindowAndroid,
+                        mMockBottomSheetController,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        /* isSidePanel= */ true,
+                        mMockComponentProvider);
+
+        sidePanelHelper.setThinWebView(mMockThinWebView, mMockWebContents);
+
+        verify(mMockWebContents, never()).setDisplayCutoutSafeArea(any());
+        verify(mMockInsetObserver, never()).addObserver(any());
+        verify(mMockBottomSheetController, never()).addObserver(any());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.TAB_BOTTOM_SHEET,
+        ChromeFeatureList.TAB_BOTTOM_SHEET_EDGE_TO_EDGE,
+        ChromeFeatureList.GLIC_NO_WEBVIEW
+    })
+    public void testPlaceholderCoordinator_UpdatesBottomInset() {
+        ResizingPlaceholderCoordinator coordinator = mock(ResizingPlaceholderCoordinator.class);
+        doReturn(coordinator)
+                .when(mMockComponentProvider)
+                .createResizingPlaceholderCoordinator(any(), anyInt(), anyInt());
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(48);
+
+        mHelper.reset();
+        verify(coordinator).updateBottomInset(48);
+
+        ArgumentCaptor<WindowInsetObserver> insetObserverCaptor =
+                ArgumentCaptor.forClass(WindowInsetObserver.class);
+        verify(mMockInsetObserver).addObserver(insetObserverCaptor.capture());
+
+        ArgumentCaptor<BottomSheetObserver> sheetObserverCaptor =
+                ArgumentCaptor.forClass(BottomSheetObserver.class);
+        verify(mMockBottomSheetController).addObserver(sheetObserverCaptor.capture());
+
+        // Unchanged bottom inset does not invoke updateBottomInset.
+        clearInvocations(coordinator);
+        insetObserverCaptor.getValue().onInsetChanged();
+        verify(coordinator, never()).updateBottomInset(anyInt());
+
+        // Changed bottom inset invokes updateBottomInset.
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(72);
+        insetObserverCaptor.getValue().onInsetChanged();
+        verify(coordinator).updateBottomInset(72);
+
+        // Non-zero bottom margin with inset 0 updates bottom inset.
+        clearInvocations(coordinator);
+        when(mMockBottomSheetController.getEdgeToEdgeBottomInset()).thenReturn(0);
+        sheetObserverCaptor.getValue().onContainerBottomMarginChanged(100);
+        verify(coordinator).updateBottomInset(0);
+
+        mHelper.destroy();
+
+        // Side panel helper never propagates bottom inset.
+        clearInvocations(mMockBottomSheetController);
+        ResizingPlaceholderCoordinator sidePanelCoordinator =
+                mock(ResizingPlaceholderCoordinator.class);
+        doReturn(sidePanelCoordinator)
+                .when(mMockComponentProvider)
+                .createResizingPlaceholderCoordinator(any(), anyInt(), anyInt());
+        WebViewResizingHelper sidePanelHelper =
+                new WebViewResizingHelper(
+                        mContainerView,
+                        mMockWindowAndroid,
+                        mMockBottomSheetController,
+                        Color.WHITE,
+                        Color.LTGRAY,
+                        /* isSidePanel= */ true,
+                        mMockComponentProvider);
+        sidePanelHelper.reset();
+        verify(sidePanelCoordinator, never()).updateBottomInset(anyInt());
+        sidePanelHelper.destroy();
     }
 }

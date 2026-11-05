@@ -74,8 +74,30 @@ public class AndroidNetworkLibraryTest {
 
             mockProxy.setMode(NetworkSecurityPolicy.DOMAIN_ENCRYPTION_MODE_OPPORTUNISTIC);
             Assert.assertEquals(EchMode.OPPORTUNISTIC, AndroidNetworkLibrary.getEchMode("foo.com"));
+
+            mockProxy.setMode(NetworkSecurityPolicy.DOMAIN_ENCRYPTION_MODE_REQUIRED);
+            Assert.assertEquals(EchMode.STRICT, AndroidNetworkLibrary.getEchMode("foo.com"));
         } finally {
             AndroidNetworkLibrary.NetworkSecurityPolicyProxy.setInstanceForTesting(originalProxy);
         }
+    }
+
+    @Test
+    @SmallTest
+    @MinAndroidSdkLevel(Build.VERSION_CODES.CINNAMON_BUN)
+    // Regression test for https://crbug.com/558378904.
+    public void testGetEchMode_illegalArgumentException() {
+        AndroidNetworkLibrary.NetworkSecurityPolicyProxy.setInstanceForTesting(
+                new AndroidNetworkLibrary.NetworkSecurityPolicyProxy() {
+                    @Override
+                    public int getDomainEncryptionMode(String host) {
+                        throw new IllegalArgumentException("Illegal hostname");
+                    }
+                });
+
+        Assert.assertEquals(
+                EchMode.OPPORTUNISTIC, AndroidNetworkLibrary.getEchMode(".example.com"));
+        Assert.assertEquals(
+                EchMode.OPPORTUNISTIC, AndroidNetworkLibrary.getEchMode("."));
     }
 }

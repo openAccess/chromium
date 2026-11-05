@@ -22,7 +22,7 @@ import '../settings_shared.css.js';
 import './recent_site_permissions.js';
 import './site_settings_list.js';
 
-import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
+import {WebUiListenerMixin} from '/shared/settings/web_ui_listener_mixin.js';
 import {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
@@ -379,7 +379,7 @@ function getCategoryItemMap(): Map<ContentSettingsTypes, CategoryListItem> {
       label: 'siteDataPageTitle',
       icon: 'privacy:database',
     },
-    // <if expr="is_chromeos">
+    // <if expr="enable_smart_card">
     {
       route: routes.SITE_SETTINGS_SMART_CARD_READERS,
       id: Id.SMART_CARD_READERS,
@@ -390,6 +390,8 @@ function getCategoryItemMap(): Map<ContentSettingsTypes, CategoryListItem> {
       shouldShow: () =>
           loadTimeData.getBoolean('enableSmartCardReadersContentSetting'),
     },
+    // </if>
+    // <if expr="is_chromeos">
     {
       route: routes.SITE_SETTINGS_WEB_PRINTING,
       id: Id.WEB_PRINTING,
@@ -502,14 +504,6 @@ export class SettingsSiteSettingsPageElement extends
 
   static get properties() {
     return {
-      /**
-       * Preferences state.
-       */
-      prefs: {
-        type: Object,
-        notify: true,
-      },
-
       lists_: {
         type: Object,
         value: function() {
@@ -544,8 +538,10 @@ export class SettingsSiteSettingsPageElement extends
               Id.AUTO_PICTURE_IN_PICTURE,
               Id.CAPTURED_SURFACE_CONTROL,
               Id.KEYBOARD_LOCK,
-              // <if expr="is_chromeos">
+              // <if expr="enable_smart_card">
               Id.SMART_CARD_READERS,
+              // </if>
+              // <if expr="is_chromeos">
               Id.WEB_PRINTING,
               // </if>
               Id.WEB_APP_INSTALLATION,
@@ -604,7 +600,6 @@ export class SettingsSiteSettingsPageElement extends
             this.onUnusedSitePermissionListChanged_(sites));
   }
 
-  declare prefs: Object;
   declare private permissionsExpanded_: boolean;
   declare private contentExpanded_: boolean;
   declare private noRecentSitePermissions_: boolean;

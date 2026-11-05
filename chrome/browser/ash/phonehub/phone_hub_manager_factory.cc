@@ -124,17 +124,12 @@ PhoneHubManagerFactory::BuildServiceInstanceForBrowserContext(
     return nullptr;
   }
 
-  std::unique_ptr<AttestationCertificateGeneratorImpl>
-      attestation_certificate_generator = nullptr;
+  auto soft_bind_attestation_flow =
+      std::make_unique<attestation::SoftBindAttestationFlowImpl>();
 
-  if (features::IsEcheSWAEnabled()) {
-    auto soft_bind_attestation_flow =
-        std::make_unique<attestation::SoftBindAttestationFlowImpl>();
-
-    attestation_certificate_generator =
-        std::make_unique<AttestationCertificateGeneratorImpl>(
-            profile, std::move(soft_bind_attestation_flow));
-  }
+  auto attestation_certificate_generator =
+      std::make_unique<AttestationCertificateGeneratorImpl>(
+          profile, std::move(soft_bind_attestation_flow));
 
   auto phone_hub_manager = std::make_unique<PhoneHubManagerImpl>(
       profile->GetPrefs(),
@@ -161,7 +156,7 @@ PhoneHubManagerFactory::BuildServiceInstanceForBrowserContext(
   // the UI.
   SystemTray::Get()->SetPhoneHubManager(phone_hub_manager.get());
 
-  DCHECK(!g_context_for_service);
+  CHECK(!g_context_for_service, base::NotFatalUntil::M161);
   g_context_for_service = context;
 
   return phone_hub_manager;

@@ -97,7 +97,7 @@ class Section {
                            const FieldIdentifier& rhs) = default;
 
     std::string field_name;
-    size_t local_frame_id;
+    size_t local_frame_id = 0;
     FieldRendererId field_renderer_id;
   };
 
@@ -229,23 +229,6 @@ class AutofillField : public FormFieldData {
   }
 
   void SetHtmlType(HtmlFieldType type, HtmlFieldMode mode);
-
-  // This is deprecated. Please use `AutofillField::AddFieldModifier()` instead.
-  void set_previously_autofilled_deprecated(
-      bool previously_autofilled_deprecated) {
-    previously_autofilled_deprecated_ = previously_autofilled_deprecated;
-  }
-  // This is deprecated. Please use `AutofillField::all_modifiers()` instead.
-  bool previously_autofilled_deprecated() const {
-    return previously_autofilled_deprecated_;
-  }
-
-  // This is deprecated. Please use `AutofillField::AddFieldModifier()` instead.
-  void set_is_user_edited_deprecated(bool is_user_edited_deprecated) {
-    is_user_edited_deprecated_ = is_user_edited_deprecated;
-  }
-  // This is deprecated. Please use `AutofillField::all_modifiers()` instead.
-  bool is_user_edited_deprecated() const { return is_user_edited_deprecated_; }
 
   // Returns all the modifiers to have acted on the field, in no particular
   // order.
@@ -421,6 +404,11 @@ class AutofillField : public FormFieldData {
     }
   }
 
+  void ClearFormatString() {
+    format_string_ = {};
+    format_string_source_ = AutofillFormatStringSource::kUnset;
+  }
+
   void set_field_log_events(const std::vector<FieldLogEventType>& events) {
     field_log_events_ = events;
   }
@@ -457,6 +445,11 @@ class AutofillField : public FormFieldData {
   const std::optional<std::string>& autofill_source_profile_guid() const {
     return autofill_source_profile_guid_;
   }
+
+  void set_was_filled_with_bnpl(bool was_filled_with_bnpl) {
+    was_filled_with_bnpl_ = was_filled_with_bnpl;
+  }
+  bool was_filled_with_bnpl() const { return was_filled_with_bnpl_; }
 
   void set_autofilled_type(std::optional<FieldType> autofilled_type) {
     autofilled_type_ = std::move(autofilled_type);
@@ -506,14 +499,6 @@ class AutofillField : public FormFieldData {
     UpdateFieldData(field_data);
   }
 
-#if defined(UNIT_TEST)
-  const std::array<FieldType,
-                   static_cast<size_t>(HeuristicSource::kMaxValue) + 1>&
-  local_type_predictions() const {
-    return local_type_predictions_;
-  }
-#endif
-
  private:
   friend class AutofillFieldTestApi;
 
@@ -546,10 +531,7 @@ class AutofillField : public FormFieldData {
   //
   // A union type is an AutofillType that holds multiple FieldType.
   // See AutofillType for details.
-  //
-  // TODO(crbug.com/436013479): Remove the hack that represents country codes.
-  AutofillType MakeAutofillType(FieldType primary_field_type,
-                                bool is_country_code = false) const;
+  AutofillType MakeAutofillType(FieldType primary_field_type) const;
 
   // Combines the server, heuristic and HTML type based predictions. Doesn't
   // take server overwrites or rationalization into consideration.
@@ -582,7 +564,7 @@ class AutofillField : public FormFieldData {
   // Predictions which where calculated on the client. This is initialized to
   // `NO_SERVER_DATA`, which means "NO_DATA", i.e. no classification was
   // attempted.
-  std::array<FieldType, static_cast<size_t>(HeuristicSource::kMaxValue) + 1>
+  std::array<FieldType, std::to_underlying(HeuristicSource::kMaxValue) + 1>
       local_type_predictions_;
 
   // Structure that holds the additional information on the regex match (e.g.
@@ -621,17 +603,6 @@ class AutofillField : public FormFieldData {
   // Used to hold the position of the first digit to be copied as a substring
   // from credit card number.
   size_t credit_card_number_offset_ = 0;
-
-  // Whether the field was autofilled then later edited.
-  // TODO(crbug.com/393114125): Remove after fully launching
-  // `AutofillField::field_modifiers_`.
-  bool previously_autofilled_deprecated_ = false;
-
-  // This is deprecated, please use `field_modifiers_` instead.
-  // Whether or not the user edited the field. It corresponds to whether the
-  // field is seen by `AutofillManager` in an `OnTextFieldValueChanged()`
-  // signal.
-  bool is_user_edited_deprecated_ = false;
 
   // Tracks the relative order of all the modifiers of the field. Each
   // `FieldModifier` value is present at most once in the list, and the order of
@@ -688,6 +659,9 @@ class AutofillField : public FormFieldData {
 
   // Denotes whether this field triggered a custom JS autofill.
   bool did_trigger_javascript_autofill_ = false;
+
+  // Whether the field was ever filled using a BNPL virtual credit card.
+  bool was_filled_with_bnpl_ = false;
 
   // Field types that the ML model is able to output.
   // Assigned by the model when it has classified the field.

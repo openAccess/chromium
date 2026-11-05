@@ -17,11 +17,8 @@
 #include "components/private_ai/private_ai_common.h"
 #include "components/private_ai/transport.h"
 #include "components/streaming_client/streaming_websocket_client.h"
+#include "services/network/public/cpp/network_context_getter.h"
 #include "url/gurl.h"
-
-namespace network::mojom {
-class NetworkContext;
-}  // namespace network::mojom
 
 namespace private_ai {
 
@@ -32,8 +29,9 @@ class WebSocketClient
       public streaming_client::StreamingWebSocketClient::Delegate {
  public:
   WebSocketClient(const GURL& service_url,
-                  network::mojom::NetworkContext* network_context,
-                  PrivateAiLogger* logger);
+                  network::NetworkContextGetter network_context_getter,
+                  PrivateAiLogger* logger,
+                  std::optional<bool> has_chrome_proxy = std::nullopt);
   ~WebSocketClient() override;
 
   WebSocketClient(const WebSocketClient&) = delete;
@@ -44,6 +42,7 @@ class WebSocketClient
   void Send(const oak::session::v1::SessionRequest& request) override;
 
   // streaming_client::StreamingWebSocketClient::Delegate:
+  void OnConnected() override;
   void OnMessage(std::vector<uint8_t> message) override;
   void OnConnectionError(const std::string& message,
                          int net_error,
@@ -67,12 +66,15 @@ class WebSocketClient
   void OnResponse(
       base::expected<std::vector<uint8_t>, TransportError> response);
   void ClosePipe(TransportError status);
+  void RecordConnectionResult(int net_error);
 
   State state_ = State::kInitialized;
   const raw_ptr<PrivateAiLogger> logger_;
   ResponseCallback response_callback_;
 
   streaming_client::StreamingWebSocketClient streaming_client_;
+  const std::optional<bool> has_chrome_proxy_;
+  bool has_recorded_connection_result_ = false;
 
   SEQUENCE_CHECKER(sequence_checker_);
 

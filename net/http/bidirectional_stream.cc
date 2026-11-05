@@ -4,6 +4,7 @@
 
 #include "net/http/bidirectional_stream.h"
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,6 +19,7 @@
 #include "base/values.h"
 #include "net/base/load_flags.h"
 #include "net/base/net_errors.h"
+#include "net/cert/cert_status_flags.h"
 #include "net/http/bidirectional_stream_request_info.h"
 #include "net/http/http_network_session.h"
 #include "net/http/http_response_headers.h"
@@ -30,6 +32,7 @@
 #include "net/spdy/spdy_http_utils.h"
 #include "net/spdy/spdy_log_util.h"
 #include "net/ssl/ssl_cert_request_info.h"
+#include "net/ssl/ssl_info.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "url/gurl.h"
 
@@ -208,6 +211,7 @@ void BidirectionalStream::StartRequest() {
   http_request_info.method = request_info_->method;
   http_request_info.extra_headers = request_info_->extra_headers;
   http_request_info.socket_tag = request_info_->socket_tag;
+  http_request_info.target_network = request_info_->target_network;
   stream_request_ =
       session_->http_stream_factory()->RequestBidirectionalStreamImpl(
           http_request_info, request_info_->priority, /*allowed_bad_certs=*/{},
@@ -258,9 +262,15 @@ void BidirectionalStream::OnHeadersReceived(
   }
   load_timing_info_.receive_headers_end = base::TimeTicks::Now();
   read_end_time_ = load_timing_info_.receive_headers_end;
-  session_->http_stream_factory()->ProcessAlternativeServices(
-      session_, NetworkAnonymizationKey(), response_info.headers.get(),
-      url::SchemeHostPort(request_info_->url));
+  // Only trust Alt-Svc headers received over connections with valid
+  // certificates (with no errors, even bypassed ones).
+  std::optional<SSLInfo> ssl_info = stream_impl_->GetSSLInfo();
+  if (ssl_info && ssl_info->is_valid() &&
+      !IsCertStatusError(ssl_info->cert_status)) {
+    session_->http_stream_factory()->ProcessAlternativeServices(
+        session_, NetworkAnonymizationKey(), response_info.headers.get(),
+        url::SchemeHostPort(request_info_->url));
+  }
   delegate_->OnHeadersReceived(response_headers, used_proxy_info_);
 }
 

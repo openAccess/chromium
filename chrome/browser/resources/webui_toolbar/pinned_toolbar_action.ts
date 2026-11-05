@@ -6,22 +6,25 @@
 import './internal/icons.js';
 // </if>
 
-import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
+import './toolbar_chip_button.js';
+import '/shared/icon_from_table.js';
 
-import type {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import {assertNotReachedCase} from '//resources/js/assert.js';
+import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
-import {IconTable} from '/shared/icon_table.js';
-import {PinnedToolbarAction} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import {getContextMenuPosition, getContextMenuSourceType} from '/shared/toolbar_button.js';
+import type {OverflowMenuItem} from '/shared/toolbar_ui_api.mojom-webui.js';
+import {ContextMenuType, DownloadProgressRingStatus, PinnedToolbarAction} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 import type {PinnedToolbarActionState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 
 import {BrowserProxyImpl} from './browser_proxy.js';
 import type {BrowserProxy} from './browser_proxy.js';
-import {ContextMenuType} from './browser_proxy.js';
+import {OverflowableToolbarActionMixin} from './overflowable_toolbar_action_mixin.js';
+import {getCss} from './pinned_toolbar_action.css.js';
 import {getHtml} from './pinned_toolbar_action.html.js';
 import {ToolbarActionMixin} from './toolbar_action_mixin.js';
-import {getCss} from './toolbar_button.css.js';
-import {getContextMenuPosition, getContextMenuSourceType} from './toolbar_button.js';
+import type {ToolbarChipButtonElement} from './toolbar_chip_button.js';
 
 const initialState: PinnedToolbarActionState = {
   action: PinnedToolbarAction.kUnspecified,
@@ -32,14 +35,16 @@ const initialState: PinnedToolbarActionState = {
   accessibilityText: '',
   elementId: null,
   icon: {handleId: 0n},
+  progressRing: null,
+  badgeNumber: null,
 };
 
-const PinnedToolbarActionElementBase =
-    ToolbarActionMixin(CrLitElement, initialState);
+const PinnedToolbarActionElementBase = OverflowableToolbarActionMixin(
+    ToolbarActionMixin(CrLitElement, initialState));
 
 export interface PinnedToolbarActionElement {
   $: {
-    button: CrIconButtonElement,
+    button: ToolbarChipButtonElement,
   };
 }
 
@@ -56,6 +61,15 @@ export class PinnedToolbarActionElement extends PinnedToolbarActionElementBase {
     return getHtml.bind(this)();
   }
 
+  override getOverflowMenuItem(): OverflowMenuItem {
+    return {
+      id: {
+        pinnedAction: this.state.action,
+      },
+      isEnabled: this.state.enabled,
+    };
+  }
+
   static override get properties() {
     return {
       poppedOut: {type: Boolean},
@@ -64,7 +78,16 @@ export class PinnedToolbarActionElement extends PinnedToolbarActionElementBase {
 
   accessor poppedOut: boolean = false;
 
-  private iconTable_: IconTable = IconTable.getInstance();
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
+
+    if (changedProperties.has('state') ||
+        changedProperties.has('trackedHighlighted')) {
+      // Highlighted actions, which for pinned toolbar actions, generally means
+      // ones with an open side panel, may not be hidden due to overflow.
+      this.preventOverflow = this.state.highlighted || this.trackedHighlighted;
+    }
+  }
 
   private get browserProxy_(): BrowserProxy {
     return BrowserProxyImpl.getInstance();
@@ -74,30 +97,68 @@ export class PinnedToolbarActionElement extends PinnedToolbarActionElementBase {
     return state.elementId ?? undefined;
   }
 
-  protected getIronIcon_(): string|undefined {
-    return this.iconTable_.getIconName(this.state.icon);
-  }
-
-  protected getIconStyle_(): string|undefined {
-    const providedIconUrl = this.iconTable_.getIconMaskUrl(this.state.icon);
-    const providedIconColor = this.iconTable_.getIconColor(this.state.icon);
-    let style = '';
-
-    if (providedIconUrl) {
-      style += `--cr-icon-image: url(${providedIconUrl});`;
+  protected onActionClick_(e: PointerEvent) {
+    if (!this.highlightTracker.shouldSkipClick(e)) {
+      TrackedElementManager.getInstance().notifyElementActivated(this);
+      this.browserProxy_.toolbarUIHandler.invokePinnedToolbarAction(
+          this.state.action);
     }
-    if (providedIconColor) {
-      style += `--cr-icon-button-fill-color: ${providedIconColor};`;
+  }
+
+  /**
+   * Returns the value of the progress ring's `status` attribute, or undefined
+   * if no ring should be drawn.
+   */
+  protected getProgressRingStatus_(): string|undefined {
+    switch (this.state.progressRing?.status) {
+      case DownloadProgressRingStatus.kDormant:
+        return 'dormant';
+      case DownloadProgressRingStatus.kScanning:
+        return 'scanning';
+      case DownloadProgressRingStatus.kDownloading:
+        return 'downloading';
+      default:
+        return undefined;
     }
-    return style.length > 0 ? style : undefined;
   }
 
-  protected onActionClick_() {
-    this.browserProxy_.toolbarUIHandler.invokePinnedToolbarAction(
-        this.state.action);
+  /**
+   * Returns the portion of the ring to fill in. The ring's circles declare
+   * `pathLength="100"`, so the dash lengths are in percent. Only applies to
+   * determinate (downloading) rings; the scanning and dormant dash patterns
+   * are set in CSS.
+   */
+  protected getProgressRingFillStyle_(): string|undefined {
+    const progressRing = this.state.progressRing;
+    if (!progressRing ||
+        progressRing.status !== DownloadProgressRingStatus.kDownloading ||
+        progressRing.progressPercentage === null ||
+        progressRing.progressPercentage === undefined) {
+      return undefined;
+    }
+    const percentage =
+        Math.max(0, Math.min(100, progressRing.progressPercentage));
+    return `stroke-dasharray: ${percentage} 100;`;
   }
 
+  /**
+   * Returns the text to display in the badge, or undefined if no badge should
+   * be drawn.
+   */
+  protected getBadgeText_(): string|undefined {
+    if (!this.state.badgeNumber) {
+      return undefined;
+    }
+    if (this.state.badgeNumber > 9) {
+      return '9+';
+    }
+    return this.state.badgeNumber.toString();
+  }
 
+  protected isDormant_(): boolean {
+    return this.state.progressRing?.status ===
+        DownloadProgressRingStatus.kDormant;
+  }
 
   private getContextMenuType_(): ContextMenuType {
     switch (this.state.action) {
@@ -157,6 +218,16 @@ export class PinnedToolbarActionElement extends PinnedToolbarActionElementBase {
         return ContextMenuType.kPinnedActionSendSharedTabGroupFeedback;
       case PinnedToolbarAction.kSidePanelShowComments:
         return ContextMenuType.kPinnedActionSidePanelShowComments;
+      case PinnedToolbarAction.kShowAiOverlayDialog:
+        return ContextMenuType.kPinnedActionShowAiOverlayDialog;
+      case PinnedToolbarAction.kTtcToolbar:
+        return ContextMenuType.kPinnedActionTtcToolbar;
+      case PinnedToolbarAction.kSidePanelShowHistory:
+        return ContextMenuType.kPinnedActionSidePanelShowHistory;
+      case PinnedToolbarAction.kShowChromeLabs:
+        return ContextMenuType.kPinnedActionShowChromeLabs;
+      case PinnedToolbarAction.kSidePanelShowGlic:
+        return ContextMenuType.kPinnedActionSidePanelShowGlic;
       case PinnedToolbarAction.kUnspecified:
       case PinnedToolbarAction.kDivider:
         return ContextMenuType.kUnspecified;
@@ -192,7 +263,8 @@ export class PinnedToolbarActionElement extends PinnedToolbarActionElementBase {
     const type = this.getContextMenuType_();
     if (type !== ContextMenuType.kUnspecified) {
       this.browserProxy_.toolbarUIHandler.showContextMenu(
-          type, getContextMenuPosition(this), getContextMenuSourceType(e));
+          type, getContextMenuPosition(this), getContextMenuSourceType(e),
+          /*showMenuToken=*/ null);
     }
   }
 }

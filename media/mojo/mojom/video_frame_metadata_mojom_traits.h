@@ -45,6 +45,41 @@ struct StructTraits<media::mojom::CaptureVersionDataView,
 };
 
 template <>
+struct StructTraits<media::mojom::CaptureMetadataDataView,
+                    media::CaptureMetadata> {
+  static std::optional<int> counter(const media::CaptureMetadata& input) {
+    return input.counter;
+  }
+
+  static const std::optional<gfx::Rect>& update_rect(
+      const media::CaptureMetadata& input) {
+    return input.update_rect;
+  }
+
+  static const std::optional<gfx::Size>& source_size(
+      const media::CaptureMetadata& input) {
+    return input.source_size;
+  }
+
+  static const std::optional<gfx::Rect>& region_capture_rect(
+      const media::CaptureMetadata& input) {
+    return input.region_capture_rect;
+  }
+
+  static const base::flat_map<base::Token, gfx::Rect>& region_capture_bounds(
+      const media::CaptureMetadata& input) {
+    return input.region_capture_bounds;
+  }
+
+  static media::CaptureVersion version(const media::CaptureMetadata& input) {
+    return input.version;
+  }
+
+  static bool Read(media::mojom::CaptureMetadataDataView input,
+                   media::CaptureMetadata* output);
+};
+
+template <>
 struct EnumTraits<media::mojom::EffectState, intermediate::EffectState> {
   static media::mojom::EffectState ToMojom(intermediate::EffectState input);
 
@@ -54,10 +89,6 @@ struct EnumTraits<media::mojom::EffectState, intermediate::EffectState> {
 template <>
 struct StructTraits<media::mojom::VideoFrameMetadataDataView,
                     media::VideoFrameMetadata> {
-  static bool copy_required(const media::VideoFrameMetadata& input) {
-    return input.copy_required;
-  }
-
   static bool end_of_stream(const media::VideoFrameMetadata& input) {
     return input.end_of_stream;
   }
@@ -82,10 +113,6 @@ struct StructTraits<media::mojom::VideoFrameMetadataDataView,
     return input.needs_detiling;
   }
 
-  static bool is_webgpu_compatible(const media::VideoFrameMetadata& input) {
-    return input.is_webgpu_compatible;
-  }
-
   static bool power_efficient(const media::VideoFrameMetadata& input) {
     return input.power_efficient;
   }
@@ -98,14 +125,9 @@ struct StructTraits<media::mojom::VideoFrameMetadataDataView,
     return input.interactive_content;
   }
 
-  static media::CaptureVersion capture_version(
+  static const media::CaptureMetadata& capture(
       const media::VideoFrameMetadata& input) {
-    return input.capture_version;
-  }
-
-  static std::optional<int> capture_counter(
-      const media::VideoFrameMetadata& input) {
-    return input.capture_counter;
+    return input.capture;
   }
 
   static const std::optional<media::VideoTransformation>& transformation(
@@ -146,21 +168,6 @@ struct StructTraits<media::mojom::VideoFrameMetadataDataView,
   static std::optional<double> rtp_timestamp(
       const media::VideoFrameMetadata& input) {
     return input.rtp_timestamp;
-  }
-
-  static const std::optional<gfx::Rect>& capture_update_rect(
-      const media::VideoFrameMetadata& input) {
-    return input.capture_update_rect;
-  }
-
-  static const std::optional<gfx::Size>& source_size(
-      const media::VideoFrameMetadata& input) {
-    return input.source_size;
-  }
-
-  static const std::optional<gfx::Rect>& region_capture_rect(
-      const media::VideoFrameMetadata& input) {
-    return input.region_capture_rect;
   }
 
   static const std::optional<base::UnguessableToken>& tracking_token(

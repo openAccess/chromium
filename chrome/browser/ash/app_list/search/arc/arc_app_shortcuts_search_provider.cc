@@ -12,7 +12,6 @@
 #include "chrome/browser/ash/app_list/arc/arc_app_list_prefs.h"
 #include "chrome/browser/ash/app_list/search/arc/arc_app_shortcut_search_result.h"
 #include "chrome/browser/ash/app_list/search/types.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/components/string_matching/tokenized_string.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/arc_service_manager.h"
@@ -39,7 +38,7 @@ ash::AppListSearchResultType ArcAppShortcutsSearchProvider::ResultType() const {
 }
 
 void ArcAppShortcutsSearchProvider::Start(const std::u16string& query) {
-  DCHECK(!query.empty());
+  CHECK(!query.empty(), base::NotFatalUntil::M160);
 
   arc::mojom::AppInstance* app_instance =
       arc::ArcServiceManager::Get()
@@ -71,7 +70,7 @@ void ArcAppShortcutsSearchProvider::StopQuery() {
 void ArcAppShortcutsSearchProvider::OnGetAppShortcutGlobalQueryItems(
     std::vector<arc::mojom::AppShortcutItemPtr> shortcut_items) {
   const ArcAppListPrefs* arc_prefs = ArcAppListPrefs::Get(profile_);
-  DCHECK(arc_prefs);
+  CHECK(arc_prefs, base::NotFatalUntil::M160);
 
   TokenizedString tokenized_query(last_query_, TokenizedString::Mode::kWords);
 

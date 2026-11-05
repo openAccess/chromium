@@ -25,7 +25,7 @@
 #include "third_party/boringssl/src/pki/trust_store_collection.h"
 #include "third_party/boringssl/src/pki/trust_store_in_memory.h"
 
-#if BUILDFLAG(USE_NSS_CERTS)
+#if BUILDFLAG(USE_NSS_SERVER_CERTS)
 #include "net/cert/internal/trust_store_nss.h"
 #elif BUILDFLAG(IS_MAC)
 #include <Security/Security.h>
@@ -76,9 +76,8 @@ class PemFileCertStore {
 
     for (const auto& cert : certs) {
       bssl::CertErrors errors;
-      auto parsed = bssl::ParsedCertificate::Create(
-          bssl::UpRef(cert->cert_buffer()),
-          x509_util::DefaultParseCertificateOptions(), &errors);
+      auto parsed = x509_util::CreateParsedCertificate(
+          bssl::UpRef(cert->cert_buffer()), &errors);
       if (!parsed) {
         LOG(ERROR) << file_name << ": " << errors.ToDebugString();
         continue;
@@ -248,13 +247,12 @@ std::unique_ptr<SystemTrustStore> CreateSystemTrustStoreChromeForTesting(
 }
 #endif  // CHROME_ROOT_STORE_SUPPORTED
 
-#if BUILDFLAG(USE_NSS_CERTS)
+#if BUILDFLAG(USE_NSS_SERVER_CERTS)
 
 std::unique_ptr<SystemTrustStore> CreateSslSystemTrustStoreChromeRoot(
     std::unique_ptr<TrustStoreChrome> chrome_root) {
   return std::make_unique<SystemTrustStoreChrome>(
-      std::move(chrome_root), std::make_unique<TrustStoreNSS>(
-                                  TrustStoreNSS::UseTrustFromAllUserSlots()));
+      std::move(chrome_root), std::make_unique<TrustStoreNSS>());
 }
 
 #elif BUILDFLAG(IS_MAC)
@@ -309,9 +307,8 @@ class FuchsiaSystemCerts {
 
     for (const auto& cert : certs) {
       bssl::CertErrors errors;
-      auto parsed = bssl::ParsedCertificate::Create(
-          bssl::UpRef(cert->cert_buffer()),
-          x509_util::DefaultParseCertificateOptions(), &errors);
+      auto parsed = x509_util::CreateParsedCertificate(
+          bssl::UpRef(cert->cert_buffer()), &errors);
       CHECK(parsed) << errors.ToDebugString();
       system_trust_store_.AddTrustAnchor(std::move(parsed));
     }

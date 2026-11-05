@@ -15,11 +15,13 @@
 #include "net/base/net_export.h"
 #include "net/base/pickle_traits.h"
 #include "net/http/structured_headers.h"
-#include "url/gurl.h"
+
+class GURL;
 
 namespace net {
 
 class HttpResponseHeaders;
+class UrlSearchParamsView;
 
 // Data extracted from No-Vary-Search header.
 //
@@ -115,11 +117,6 @@ class NET_EXPORT_PRIVATE HttpNoVarySearchData {
   bool vary_on_key_order() const { return vary_on_key_order_; }
   bool vary_by_default() const { return vary_by_default_; }
 
-  // Direct access to the two AreEquivalent() implementations for tests and
-  // benchmarking.
-  bool AreEquivalentOldImplForTesting(const GURL& a, const GURL& b) const;
-  bool AreEquivalentNewImplForTesting(const GURL& a, const GURL& b) const;
-
  private:
   friend struct PickleTraits<HttpNoVarySearchData>;
   friend NET_EXPORT_PRIVATE std::ostream& operator<<(
@@ -139,17 +136,8 @@ class NET_EXPORT_PRIVATE HttpNoVarySearchData {
                         HttpNoVarySearchData::ParseErrorEnum>
   ParseNoVarySearchDictionary(const structured_headers::Dictionary& dict);
 
-  // The old implementation of AreEquivalent() using UrlSearchParams.
-  // TODO(https://crbug.com/444335347): Remove this.
-  bool AreEquivalentOldImpl(const GURL& a, const GURL& b) const;
-
-  // The new implementation of AreEquivalent() using UrlSearchParamsView.
-  bool AreEquivalentNewImpl(const GURL& a, const GURL& b) const;
-
-  // Applies No-Vary-Search rules to URL search params. This is a private
-  // template method so it can directly access affected_params_.
-  template <typename ParamsType>
-  void ApplyRulesToParams(ParamsType& params) const;
+  // Applies No-Vary-Search rules to `params`.
+  void ApplyRulesToParams(UrlSearchParamsView& params) const;
 
   // Helper for `operator<<`.
   void DescribeForLog(std::ostream& ostream) const;
@@ -197,14 +185,6 @@ struct NET_EXPORT_PRIVATE PickleTraits<HttpNoVarySearchData> {
       base::PickleIterator& iter);
 
   static size_t PickleSize(const HttpNoVarySearchData& value);
-};
-
-class
-    NET_EXPORT_PRIVATE ScopedHttpNoVarySearchDataEquivalentImplementationOverrideForTesting {
- public:
-  explicit ScopedHttpNoVarySearchDataEquivalentImplementationOverrideForTesting(
-      bool use_new_implementation);
-  ~ScopedHttpNoVarySearchDataEquivalentImplementationOverrideForTesting();
 };
 
 NET_EXPORT_PRIVATE std::ostream& operator<<(

@@ -45,9 +45,29 @@ fn test_basic_message_write_and_send() {
     // message, returning a new state.
     let (_handles, bytes_only_msg) = hello_msg.read_data().unwrap();
 
-    // Calling read_bytes is independent of read_data and can be done many times.
+    // Calling read_bytes is independent of read_data and can be done many
+    // times.
     let _ = bytes_only_msg.read_bytes().unwrap();
     let _ = bytes_only_msg.read_bytes().unwrap();
+}
+
+#[gtest(RustSystemAPITestSuite, EmptyMessageWriteAndSendTest)]
+fn test_empty_message_write_and_send() {
+    // A message with no bytes and no handles is valid, and reading it should
+    // produce an empty payload. Mojo may represent an empty payload with a
+    // null data pointer, which can't be passed to `slice::from_raw_parts`.
+    let (endpoint_a, endpoint_b) = system::message_pipe::MessageEndpoint::create_pipe().unwrap();
+
+    let empty = system::message::WritableMessage::new_with_bytes(&[]).unwrap();
+    endpoint_b.write(empty.into()).unwrap();
+
+    let empty_msg = endpoint_a.read().expect("failed to read from endpoint_a");
+    expect_eq!(empty_msg.read_bytes().unwrap(), b"");
+
+    // `read_data` also requests the handles, so check that path too.
+    let (handles, bytes_only_msg) = empty_msg.read_data().unwrap();
+    expect_true!(handles.is_empty());
+    expect_eq!(bytes_only_msg.read_bytes().unwrap(), b"");
 }
 
 #[gtest(RustSystemAPITestSuite, DataPipeWriteAndSendTest)]
@@ -150,11 +170,11 @@ fn test_trap_signal_on_readable() {
 
 #[gtest(RustSystemAPITestSuite, CloseSafeTrapWithActiveTrigger)]
 fn test_close_trap_with_active_trigger() {
-    // Trap must do some lifecycle management/teardown of the pointers it encloses
-    // when it is `drop`'d.
+    // Trap must do some lifecycle management/teardown of the pointers it
+    // encloses when it is `drop`'d.
     //
-    // Additionally we expect remove_trigger to be called on each active trigger,
-    // and the associated callback to return TrapError::Cancelled.
+    // Additionally we expect remove_trigger to be called on each active
+    // trigger, and the associated callback to return TrapError::Cancelled.
     let trap = system::trap::Trap::new().expect("Failed to create trap");
     let (ep_a, _ep_b) = system::message_pipe::MessageEndpoint::create_pipe().unwrap();
 
@@ -245,24 +265,26 @@ fn test_shared_buffer() {
     let mut mapped = handle.map(0, num_bytes as usize).unwrap();
 
     // Write to the mapped memory safely using the mutable slice.
-    // SAFETY: We are the only ones with a mapping to this memory right now.
-    unsafe {
-        let mapped_slice = mapped.as_mut_slice();
+    {
+        // SAFETY: We are the only ones with a mapping to this memory right now,
+        // and the reference expires at the end of the block.
+        let mapped_slice = unsafe { mapped.as_mut_slice() };
         mapped_slice[0] = 42;
         mapped_slice[1023] = 43;
     }
 
-    // Duplicate the buffer handle. The shared buffer remains alive as long as at
-    // least one handle to it exists.
+    // Duplicate the buffer handle. The shared buffer remains alive as long as
+    // at least one handle to it exists.
     let duplicate = handle.clone_handle().unwrap();
 
-    // Map the newly duplicated handle and verify the memory contents are exactly
-    // what we wrote using the original handle.
+    // Map the newly duplicated handle and verify the memory contents are
+    // exactly what we wrote using the original handle.
     let mapped_dup = duplicate.map(0, num_bytes as usize).unwrap();
 
-    // SAFETY: We mapped it successfully and we are just reading from it.
-    unsafe {
-        let mapped_dup_slice = mapped_dup.as_slice();
+    {
+        // SAFETY: We are the only ones with a mapping to this memory right now,
+        // and the reference expires at the end of the block.
+        let mapped_dup_slice = unsafe { mapped_dup.as_slice() };
         expect_eq!(mapped_dup_slice[0], 42);
         expect_eq!(mapped_dup_slice[1023], 43);
     }

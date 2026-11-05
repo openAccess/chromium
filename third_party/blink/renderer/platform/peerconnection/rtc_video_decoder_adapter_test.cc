@@ -7,15 +7,20 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/functional/callback_forward.h"
+#include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/mock_callback.h"
@@ -25,14 +30,21 @@
 #include "base/threading/thread.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "gpu/command_buffer/client/client_shared_image.h"
 #include "gpu/command_buffer/common/mailbox.h"
+#include "gpu/command_buffer/common/shared_image_usage.h"
+#include "gpu/command_buffer/common/sync_token.h"
+#include "media/base/decoder.h"
 #include "media/base/decoder_status.h"
 #include "media/base/media_switches.h"
 #include "media/base/media_util.h"
+#include "media/base/overlay_info.h"
+#include "media/base/video_codecs.h"
 #include "media/base/video_decoder.h"
 #include "media/base/video_decoder_config.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_types.h"
+#include "media/base/waiting.h"
 #include "media/video/mock_gpu_video_accelerator_factories.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -41,7 +53,16 @@
 #include "third_party/blink/public/platform/scheduler/test/renderer_scheduler_test_support.h"
 #include "third_party/blink/renderer/platform/peerconnection/resolution_monitor.h"
 #include "third_party/blink/renderer/platform/webrtc/webrtc_video_utils.h"
+#include "third_party/skia/include/core/SkAlphaType.h"
+#include "third_party/skia/include/gpu/ganesh/GrTypes.h"
+#include "third_party/webrtc/api/video/color_space.h"
+#include "third_party/webrtc/api/video/encoded_image.h"
+#include "third_party/webrtc/api/video/video_codec_type.h"
+#include "third_party/webrtc/api/video/video_frame.h"
+#include "third_party/webrtc/api/video/video_frame_type.h"
+#include "third_party/webrtc/api/video_codecs/sdp_video_format.h"
 #include "third_party/webrtc/api/video_codecs/video_codec.h"
+#include "third_party/webrtc/api/video_codecs/video_decoder.h"
 #include "third_party/webrtc/api/video_codecs/vp9_profile.h"
 #include "third_party/webrtc/modules/video_coding/include/video_error_codes.h"
 #include "ui/gfx/geometry/rect.h"
@@ -135,8 +156,8 @@ class DecodedImageCallback : public webrtc::DecodedImageCallback {
   DecodedImageCallback(const DecodedImageCallback&) = delete;
   DecodedImageCallback& operator=(const DecodedImageCallback&) = delete;
 
-  int32_t Decoded(webrtc::VideoFrame& decodedImage) override {
-    callback_.Run(decodedImage);
+  int32_t Decoded(webrtc::VideoFrame& decoded_image) override {
+    callback_.Run(decoded_image);
     // TODO(sandersd): Does the return value matter? RTCVideoDecoder
     // ignores it.
     return 0;
@@ -396,13 +417,17 @@ class RTCVideoDecoderAdapterTest : public ::testing::Test {
   }
 
   void FinishDecode(uint32_t timestamp) {
+    FinishDecode(base::Seconds(timestamp) / 90000);
+  }
+
+  void FinishDecode(base::TimeDelta timestamp) {
     media_thread_.task_runner()->PostTask(
         FROM_HERE,
         base::BindOnce(&RTCVideoDecoderAdapterTest::FinishDecodeOnMediaThread,
                        base::Unretained(this), timestamp));
   }
 
-  void FinishDecodeOnMediaThread(uint32_t timestamp) {
+  void FinishDecodeOnMediaThread(base::TimeDelta timestamp) {
     DCHECK(media_thread_.task_runner()->BelongsToCurrentThread());
     auto si_size = gfx::Size(640, 360);
     gpu::SharedImageMetadata metadata;
@@ -417,7 +442,7 @@ class RTCVideoDecoderAdapterTest : public ::testing::Test {
     scoped_refptr<media::VideoFrame> frame = media::VideoFrame::WrapSharedImage(
         media::PIXEL_FORMAT_ABGR, shared_image, gpu::SyncToken(),
         media::VideoFrame::ReleaseMailboxCB(), gfx::Rect(si_size), si_size,
-        base::Microseconds(timestamp));
+        timestamp);
     output_cb_.Run(std::move(frame));
   }
 
@@ -557,6 +582,61 @@ TEST_F(RTCVideoDecoderAdapterTest, Decode) {
   EXPECT_CALL(decoded_cb_, Run(_));
   FinishDecode(0);
   media_thread_.FlushForTesting();
+}
+
+TEST_F(RTCVideoDecoderAdapterTest, Decode_UnwrapsAndScalesRtpTimestamp) {
+  ASSERT_TRUE(BasicSetup());
+
+  // Start near the 32-bit wraparound boundary with a non-zero initial offset.
+  constexpr uint32_t kRtpTimestamp1 = 0xFFFFFFFF - 1500;
+  // Advance by 3000 ticks (1/30 s at 90 kHz = 33333 us), wrapping around 2^32.
+  constexpr uint32_t kRtpTimestamp2 = kRtpTimestamp1 + 3000;
+  // Advance by another 3000 ticks (2/30 s at 90 kHz = 66666 us).
+  constexpr uint32_t kRtpTimestamp3 = kRtpTimestamp2 + 3000;
+
+  scoped_refptr<media::DecoderBuffer> decoder_buffer;
+  EXPECT_CALL(*video_decoder_, Decode_(_, _))
+      .WillRepeatedly(DoAll(SaveArg<0>(&decoder_buffer),
+                            base::test::RunOnceCallbackRepeatedly<1>(
+                                media::DecoderStatus::Codes::kOk)));
+
+  // First frame: media timestamp should be zero, and output frame should
+  // preserve the exact initial RTP timestamp.
+  ASSERT_EQ(Decode(kRtpTimestamp1, /*keyframe=*/true), WEBRTC_VIDEO_CODEC_OK);
+  media_thread_.FlushForTesting();
+  ASSERT_TRUE(decoder_buffer);
+  EXPECT_EQ(decoder_buffer->timestamp(), base::Microseconds(0));
+
+  uint32_t decoded_rtp_timestamp = 0;
+  EXPECT_CALL(decoded_cb_, Run(_))
+      .WillRepeatedly([&](const webrtc::VideoFrame& frame) {
+        decoded_rtp_timestamp = frame.rtp_timestamp();
+      });
+  FinishDecode(decoder_buffer->timestamp());
+  media_thread_.FlushForTesting();
+  EXPECT_EQ(decoded_rtp_timestamp, kRtpTimestamp1);
+
+  // Second frame (wraps around 32-bit uint32_t): media timestamp should be
+  // scaled from the unwrapped delta (3000 ticks / 90 kHz = 33333 us), and
+  // output frame should preserve the wrapped 32-bit RTP timestamp.
+  ASSERT_EQ(Decode(kRtpTimestamp2, /*keyframe=*/false), WEBRTC_VIDEO_CODEC_OK);
+  media_thread_.FlushForTesting();
+  ASSERT_TRUE(decoder_buffer);
+  EXPECT_EQ(decoder_buffer->timestamp(), base::Microseconds(33333));
+
+  FinishDecode(decoder_buffer->timestamp());
+  media_thread_.FlushForTesting();
+  EXPECT_EQ(decoded_rtp_timestamp, kRtpTimestamp2);
+
+  // Third frame: media timestamp should be 6000 ticks / 90 kHz = 66666 us.
+  ASSERT_EQ(Decode(kRtpTimestamp3, /*keyframe=*/false), WEBRTC_VIDEO_CODEC_OK);
+  media_thread_.FlushForTesting();
+  ASSERT_TRUE(decoder_buffer);
+  EXPECT_EQ(decoder_buffer->timestamp(), base::Microseconds(66666));
+
+  FinishDecode(decoder_buffer->timestamp());
+  media_thread_.FlushForTesting();
+  EXPECT_EQ(decoded_rtp_timestamp, kRtpTimestamp3);
 }
 
 TEST_F(RTCVideoDecoderAdapterTest, Decode_Error) {

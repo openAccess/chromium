@@ -449,17 +449,16 @@ static bool DisplayStateMediaFeatureEval(const MediaQueryExpValue& value,
 static bool ResizableMediaFeatureEval(const MediaQueryExpValue& value,
                                       MediaQueryOperator,
                                       const MediaValues& media_values) {
-  // No value = boolean context:
-  // https://w3c.github.io/csswg-drafts/mediaqueries/#mq-boolean-context
+  bool resizable = media_values.Resizable();
+
+  // No value = boolean context.
   if (!value.IsValid()) {
-    return true;
+    return resizable;
   }
 
   if (!value.IsId()) {
     return false;
   }
-
-  bool resizable = media_values.Resizable();
 
   return (resizable && value.Id() == CSSValueID::kTrue) ||
          (!resizable && value.Id() == CSSValueID::kFalse);
@@ -516,9 +515,12 @@ static bool DynamicRangeMediaFeatureEval(const MediaQueryExpValue& value,
   UseCounter::Count(media_values.GetDocument(),
                     WebFeature::kDynamicRangeMediaQuery);
 
-  if (!value.IsId()) {
-    return false;
+  // An invalid value is only possible in a boolean context with no value
+  // attached. We should treat no value as truthy.
+  if (!value.IsValid()) {
+    return true;
   }
+  CHECK(value.IsId());
 
   switch (value.Id()) {
     case CSSValueID::kStandard:
@@ -1804,49 +1806,49 @@ KleeneValue MediaQueryEvaluator::EvalStyleFeature(
     state.UpdateLineHeight();
     const auto* context = MakeGarbageCollected<CSSParserContext>(*document);
 
-    if (feature.ReferenceValue().HasRandomFunctions()) {
+    if (feature.ReferenceValue().HasRandomFunctions() ||
+        (bounds.left.IsValid() &&
+         bounds.left.value.GetCSSValue().HasRandomFunctions()) ||
+        (bounds.right.IsValid() &&
+         bounds.right.value.GetCSSValue().HasRandomFunctions())) {
       return KleeneValue::kUnknown;
     }
     const CSSValue* reference = StyleCascade::CoerceIntoNumericValue(
         state, feature.ReferenceValue(), document, *context);
     if (!reference) {
-      return KleeneValue::kFalse;
+      result = KleeneValue::kFalse;
     }
 
-    if (bounds.left.IsValid()) {
+    if (result == KleeneValue::kTrue && bounds.left.IsValid()) {
       const CSSUnparsedDeclarationValue* left =
           DynamicTo<CSSUnparsedDeclarationValue>(
               bounds.left.value.GetCSSValue());
       DCHECK(left);
-      if (left->HasRandomFunctions()) {
-        return KleeneValue::kUnknown;
-      }
       const CSSValue* left_resolved = StyleCascade::CoerceIntoNumericValue(
           state, *left, document, *context);
       if (!left_resolved) {
-        return KleeneValue::kFalse;
+        result = KleeneValue::kFalse;
+      } else {
+        result = KleeneAnd(
+            result, MediaQueryEvaluator::EvalStyleRange(
+                        *reference, *left_resolved, bounds.left.op, true));
       }
-      result = KleeneAnd(result,
-                         MediaQueryEvaluator::EvalStyleRange(
-                             *reference, *left_resolved, bounds.left.op, true));
     }
 
-    if (bounds.right.IsValid()) {
+    if (result == KleeneValue::kTrue && bounds.right.IsValid()) {
       const CSSUnparsedDeclarationValue* right =
           DynamicTo<CSSUnparsedDeclarationValue>(
               bounds.right.value.GetCSSValue());
       DCHECK(right);
-      if (right->HasRandomFunctions()) {
-        return KleeneValue::kUnknown;
-      }
       const CSSValue* right_resolved = StyleCascade::CoerceIntoNumericValue(
           state, *right, document, *context);
       if (!right_resolved) {
-        return KleeneValue::kFalse;
+        result = KleeneValue::kFalse;
+      } else {
+        result = KleeneAnd(
+            result, MediaQueryEvaluator::EvalStyleRange(
+                        *reference, *right_resolved, bounds.right.op, false));
       }
-      result = KleeneAnd(
-          result, MediaQueryEvaluator::EvalStyleRange(
-                      *reference, *right_resolved, bounds.right.op, false));
     }
 
     if (result_flags) {
@@ -1855,6 +1857,9 @@ KleeneValue MediaQueryEvaluator::EvalStyleFeature(
       if (conversion_flags != 0) {
         result_flags->unit_flags |=
             ConversionFlagsToUnitFlags(conversion_flags);
+      }
+      if (state.HasAttrFunction()) {
+        result_flags->unit_flags |= MediaQueryExpValue::UnitFlags::kAttr;
       }
     }
 
@@ -1884,12 +1889,22 @@ KleeneValue MediaQueryEvaluator::EvalStyleFeature(
 
   CSSToLengthConversionData::Flags conversion_flags = 0;
   bool has_random = false;
+  bool has_attr = false;
   const CSSValue* query_value = StyleResolver::ComputeValue(
       container, CSSPropertyName(property_name), query_specified,
-      conversion_flags, has_random);
+      conversion_flags, has_random, has_attr);
 
   if (has_random) {
     return KleeneValue::kUnknown;
+  }
+
+  if (result_flags) {
+    if (conversion_flags != 0) {
+      result_flags->unit_flags |= ConversionFlagsToUnitFlags(conversion_flags);
+    }
+    if (has_attr) {
+      result_flags->unit_flags |= MediaQueryExpValue::UnitFlags::kAttr;
+    }
   }
 
   if (const auto* decl_value =
@@ -1908,10 +1923,6 @@ KleeneValue MediaQueryEvaluator::EvalStyleFeature(
       return KleeneValue::kTrue;
     }
     return KleeneValue::kFalse;
-  }
-
-  if (result_flags && conversion_flags != 0) {
-    result_flags->unit_flags |= ConversionFlagsToUnitFlags(conversion_flags);
   }
 
   const CSSValue* computed_value =

@@ -11,14 +11,12 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
+#include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/feature_registry/mqls_feature_registry.h"
 #include "components/optimization_guide/core/feature_registry/settings_ui_registry.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/model_execution_features.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/prefs/pref_service.h"
@@ -67,15 +65,12 @@ ModelExecutionFeaturesController::ModelExecutionFeaturesController(
     signin::IdentityManager* identity_manager,
     policy::ManagementService* management_service,
     DogfoodStatus dogfood_status,
-    bool is_official_build,
-    HistorySearchVisibilityCallback history_search_visibility_callback)
+    bool is_official_build)
     : browser_context_profile_service_(browser_context_profile_service),
       identity_manager_(identity_manager),
       features_allowed_for_unsigned_user_(
           features::internal::GetAllowedFeaturesForUnsignedUser()),
       management_service_(management_service),
-      history_search_visibility_callback_(
-          std::move(history_search_visibility_callback)),
       dogfood_status_(dogfood_status),
       is_official_build_(is_official_build) {
   CHECK(browser_context_profile_service_);
@@ -120,9 +115,6 @@ bool ModelExecutionFeaturesController::
   // Check common things like enterprise policy, etc. first. The basic feature
   // with `allow_unsigned_user` true is more permissive. This check adds the
   // additional requirement that user is signed in and allowed execution.
-  // This is needed by kHistorySearch feature to gate answer generation
-  // on account details while allowing all users (including unsigned users)
-  // access to basic embeddings search functionality.
   return ShouldFeatureBeCurrentlyEnabledForUser(feature) &&
          ShouldModelExecutionBeAllowedForUser();
 }
@@ -137,7 +129,7 @@ bool ModelExecutionFeaturesController::
       dogfood_status_ == DogfoodStatus::DOGFOOD || !is_official_build_;
   bool has_logging_force_enabled =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kEnableModelQualityDogfoodLogging);
+          kEnableModelQualityDogfoodLoggingSwitch);
   if (is_eligible_for_override && has_logging_force_enabled) {
     return true;
   }
@@ -153,7 +145,7 @@ bool ModelExecutionFeaturesController::
   }
 
   return enterprise_policy->GetValue(browser_context_profile_service_) ==
-         model_execution::prefs::ModelExecutionEnterprisePolicyValue::kAllow;
+         EnterprisePolicyValue::kAllow;
 }
 
 prefs::FeatureOptInState ModelExecutionFeaturesController::GetPrefState(
@@ -205,11 +197,9 @@ ModelExecutionFeaturesController::GetCurrentUserValidityResult(
   const SettingsUiMetadata* metadata =
       SettingsUiRegistry::GetInstance().GetFeature(feature);
   CHECK(metadata);
-  if (!skip_enterprise_check &&
-      metadata->enterprise_policy().GetValue(
-          browser_context_profile_service_) ==
-          model_execution::prefs::ModelExecutionEnterprisePolicyValue::
-              kDisable) {
+  if (!skip_enterprise_check && metadata->enterprise_policy().GetValue(
+                                    browser_context_profile_service_) ==
+                                    EnterprisePolicyValue::kDisable) {
     return ModelExecutionFeaturesController::UserValidityResult::
         kInvalidEnterprisePolicy;
   }
@@ -237,15 +227,6 @@ bool ModelExecutionFeaturesController::ShouldModelExecutionBeAllowedForUser()
   return PerformSigninChecks() == UserValidityResult::kValid;
 }
 
-// static
-ModelExecutionFeaturesController::HistorySearchVisibilityCallback
-ModelExecutionFeaturesController::HistorySearchNotSupported() {
-  return base::BindRepeating([]() {
-    return ModelExecutionFeaturesController::SettingsVisibilityResult::
-        kNotVisibleHardwareUnsupported;
-  });
-}
-
 ModelExecutionFeaturesController::SettingsVisibilityResult
 ModelExecutionFeaturesController::GetSettingsVisibility(
     UserVisibleFeatureKey feature) const {
@@ -264,14 +245,6 @@ ModelExecutionFeaturesController::GetSettingsVisibility(
       return SettingsVisibilityResult::kNotVisibleModelExecutionCapability;
     case ModelExecutionFeaturesController::UserValidityResult::kValid:
       break;
-  }
-
-  // Check feature-specific requirements.
-  if (feature == UserVisibleFeatureKey::kHistorySearch) {
-    SettingsVisibilityResult result = history_search_visibility_callback_.Run();
-    if (result != SettingsVisibilityResult::kUnknown) {
-      return result;
-    }
   }
 
   // If the setting is currently enabled by user, then we should show the

@@ -8,6 +8,9 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/span.h"
+#include "base/containers/to_vector.h"
+
 namespace glic {
 
 namespace {
@@ -110,9 +113,13 @@ ExperimentalTriggeringRequest ProtoToRequest(
       case components_sharing_message::GlicExperimentalTriggering::
           ExperimentalTriggeringRequest::kTriggerActuationRequest: {
         TriggerActuationRequest trigger_req;
-        if (req_proto.trigger_actuation_request().has_initial_prompt()) {
-          trigger_req.initial_prompt =
-              req_proto.trigger_actuation_request().initial_prompt();
+        const auto& trigger_proto = req_proto.trigger_actuation_request();
+        if (trigger_proto.has_initial_prompt()) {
+          trigger_req.initial_prompt = trigger_proto.initial_prompt();
+        }
+        if (trigger_proto.has_payment_metadata()) {
+          trigger_req.payment_metadata = base::ToVector(
+              base::as_byte_span(trigger_proto.payment_metadata()));
         }
         request.payload = std::move(trigger_req);
         break;
@@ -165,6 +172,28 @@ ExperimentalTriggeringRequest ProtoToRequest(
               screenshot_proto.request_token().end()};
         }
         request.payload = std::move(screenshot_req);
+        break;
+      }
+      case components_sharing_message::GlicExperimentalTriggering::
+          ExperimentalTriggeringRequest::kExecuteActionsRequest: {
+        ExecuteActionsRequest exec_actions_req;
+        if (req_proto.execute_actions_request().has_actions()) {
+          exec_actions_req.actions =
+              req_proto.execute_actions_request().actions();
+        }
+        request.payload = std::move(exec_actions_req);
+        break;
+      }
+      case components_sharing_message::GlicExperimentalTriggering::
+          ExperimentalTriggeringRequest::kSubmitConfirmation: {
+        SubmitConfirmation confirmation;
+        const auto& confirmation_proto = req_proto.submit_confirmation();
+        if (confirmation_proto.has_confirmation_response()) {
+          confirmation.confirmation_response = {
+              confirmation_proto.confirmation_response().begin(),
+              confirmation_proto.confirmation_response().end()};
+        }
+        request.payload = std::move(confirmation);
         break;
       }
       case components_sharing_message::GlicExperimentalTriggering::
@@ -271,18 +300,60 @@ ResponseToTriggeringProto(const ExperimentalTriggeringResponse& response) {
         proto_screenshot->set_status(
             ProtoResponse::ScreenshotResult::ERROR_SERVER);
         break;
+      case ScreenshotResult::Status::kErrorDisabled:
+        proto_screenshot->set_status(
+            ProtoResponse::ScreenshotResult::ERROR_DISABLED);
+        break;
+      case ScreenshotResult::Status::kErrorInvalidRequest:
+        proto_screenshot->set_status(
+            ProtoResponse::ScreenshotResult::ERROR_INVALID_REQUEST);
+        break;
     }
     if (!response.screenshot_result->file_token.empty()) {
       proto_screenshot->set_file_token(response.screenshot_result->file_token);
-    }
-    if (!response.screenshot_result->error_message.empty()) {
-      proto_screenshot->set_error_message(
-          response.screenshot_result->error_message);
     }
     if (!response.screenshot_result->request_token.empty()) {
       proto_screenshot->set_request_token(
           response.screenshot_result->request_token.data(),
           response.screenshot_result->request_token.size());
+    }
+  }
+
+  if (response.execute_actions_response.has_value()) {
+    auto* proto_execute_actions_response =
+        triggering.mutable_response()->mutable_execute_actions_response();
+    *proto_execute_actions_response->mutable_actions_result() =
+        response.execute_actions_response->actions_result;
+  }
+
+  if (response.confirmation_result.has_value()) {
+    auto* proto_confirmation =
+        triggering.mutable_response()->mutable_confirmation_result();
+    switch (response.confirmation_result->status) {
+      case ConfirmationResult::Status::kUnspecified:
+        proto_confirmation->set_status(
+            ProtoResponse::ConfirmationResult::UNSPECIFIED);
+        break;
+      case ConfirmationResult::Status::kApplied:
+        proto_confirmation->set_status(
+            ProtoResponse::ConfirmationResult::APPLIED);
+        break;
+      case ConfirmationResult::Status::kNotApplied:
+        proto_confirmation->set_status(
+            ProtoResponse::ConfirmationResult::NOT_APPLIED);
+        break;
+      case ConfirmationResult::Status::kErrorInvalidRequest:
+        proto_confirmation->set_status(
+            ProtoResponse::ConfirmationResult::ERROR_INVALID_REQUEST);
+        break;
+      case ConfirmationResult::Status::kErrorUnavailable:
+        proto_confirmation->set_status(
+            ProtoResponse::ConfirmationResult::ERROR_UNAVAILABLE);
+        break;
+    }
+    if (!response.confirmation_result->error_message.empty()) {
+      proto_confirmation->set_error_message(
+          response.confirmation_result->error_message);
     }
   }
 

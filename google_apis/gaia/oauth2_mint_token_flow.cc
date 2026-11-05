@@ -78,9 +78,8 @@ constexpr char kTokenBindingChallengeHeader[] =
 constexpr char kTokenBindingResponseKey[] = "tokenBindingResponse";
 constexpr char kDirectedResponseKey[] = "directedResponse";
 
-constexpr std::array kDefaultAlgorithms = {
-    crypto::SignatureVerifier::ECDSA_SHA256,
-    crypto::SignatureVerifier::RSA_PKCS1_SHA256};
+constexpr std::array kDefaultAlgorithms = {crypto::sign::ECDSA_SHA256,
+                                           crypto::sign::RSA_PKCS1_SHA256};
 
 constexpr auto kOAuth2ResponseByErrorReason =
     base::MakeFixedFlatMap<std::string_view, OAuth2Response>({
@@ -192,9 +191,14 @@ GoogleServiceAuthError ConvertErrorOAuth2ResponseToAuthError(
   }
 
   if (http_response_code == net::HTTP_PROXY_AUTHENTICATION_REQUIRED ||
-      http_response_code >= net::HTTP_INTERNAL_SERVER_ERROR) {
+      http_response_code >= net::HTTP_INTERNAL_SERVER_ERROR ||
+      (http_response_code == net::HTTP_REQUEST_TIMEOUT &&
+       base::FeatureList::IsEnabled(
+           gaia::features::kOAuth2MintTokenHttp408IsTransient))) {
     // HTTP_PROXY_AUTHENTICATION_REQUIRED (407): is treated as a network error.
     // HTTP_INTERNAL_SERVER_ERROR: 5xx is always treated as transient.
+    // HTTP_REQUEST_TIMEOUT (408): is treated as transient when the feature is
+    // enabled.
     return GoogleServiceAuthError::FromServiceUnavailable(display_message);
   }
 
@@ -263,13 +267,13 @@ void RecordApiCallMetrics(OAuth2MintTokenApiCallResult result,
   }
 }
 
-std::optional<crypto::SignatureVerifier::SignatureAlgorithm>
-ParseSignatureAlgorithm(std::string_view algo_str) {
+std::optional<crypto::sign::SignatureKind> ParseSignatureAlgorithm(
+    std::string_view algo_str) {
   if (base::EqualsCaseInsensitiveASCII(algo_str, "ES256")) {
-    return crypto::SignatureVerifier::ECDSA_SHA256;
+    return crypto::sign::ECDSA_SHA256;
   }
   if (base::EqualsCaseInsensitiveASCII(algo_str, "RS256")) {
-    return crypto::SignatureVerifier::RSA_PKCS1_SHA256;
+    return crypto::sign::RSA_PKCS1_SHA256;
   }
   return std::nullopt;
 }
@@ -611,7 +615,7 @@ OAuth2MintTokenFlow::ParseMintTokenResponse(const base::DictValue& dict) {
         continue;
       }
 
-      std::optional<crypto::SignatureVerifier::SignatureAlgorithm> algo =
+      std::optional<crypto::sign::SignatureKind> algo =
           ParseSignatureAlgorithm(*algo_str);
       if (algo.has_value()) {
         result.bound_token_upgrade_supported_algorithms.push_back(*algo);

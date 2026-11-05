@@ -5,15 +5,27 @@
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/stringprintf.h"
+#include "chrome/browser/extensions/blocked_action_waiter.h"
+#include "chrome/browser/extensions/extension_action_runner.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
+#include "chrome/browser/extensions/extension_tab_util.h"
+#include "chrome/browser/profiles/profile.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "extensions/browser/permissions/scripting_permissions_modifier.h"
+#include "extensions/browser/script_injection_tracker.h"
 #include "extensions/buildflags/buildflags.h"
+#include "extensions/common/extension.h"
 #include "extensions/common/extension_id.h"
+#include "extensions/common/permissions/permissions_data.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
@@ -104,11 +116,19 @@ class RequestContentScriptAPITest : public ExtensionBrowserTest {
                                    PermissionOrMatcherType script_matcher,
                                    bool should_inject);
 
- private:
+ protected:
+  void TearDownOnMainThread() override {
+    extension_ = nullptr;
+    ExtensionBrowserTest::TearDownOnMainThread();
+  }
+
   testing::AssertionResult CreateAndLoadExtension(
       PermissionOrMatcherType manifest_permission,
       PermissionOrMatcherType script_matcher);
 
+  const Extension* extension() const { return extension_.get(); }
+
+ private:
   std::unique_ptr<TestExtensionDir> test_extension_dir_;
   raw_ptr<const Extension> extension_ = nullptr;
 };
@@ -220,6 +240,94 @@ IN_PROC_BROWSER_TEST_F(RequestContentScriptAPITest,
   // - Inject multiple scripts
   // - Match on CSS selector conditions
   // - Match all frames in document containing frames
+}
+
+// Tests that when an extension's host permissions are withheld (e.g., site
+// access set to "On click"), triggering a declarative content rule with
+// `RequestContentScript` does not record script execution in
+// `ScriptInjectionTracker` until the user explicitly grants permission.
+//
+// In the browser process,
+// `RequestContentScript::InstructRenderProcessToInject()` checks
+// `PermissionsData::GetPageAccess()`. When page access is
+// `PermissionsData::PageAccess::kWithheld`, the browser sends
+// `extensions::mojom::LocalFrame::ExecuteDeclarativeScript()` to the renderer
+// without calling `ScriptInjectionTracker::WillExecuteCode()`. In the renderer,
+// `ScriptInjection::TryToInject()` detects that permissions are withheld,
+// defers the injection, and requests permission from the browser via
+// `extensions::mojom::LocalFrameHost::RequestScriptInjectionPermission()`.
+//
+// Once the user grants permission (simulated via
+// `ExtensionActionRunner::RunForTesting()`), the deferred content script
+// executes in the renderer and `ScriptInjectionTracker` records that the
+// process ran a content script from the extension.
+IN_PROC_BROWSER_TEST_F(RequestContentScriptAPITest,
+                       WithheldPermissionsUpdateTrackerOnlyAfterGrant) {
+  // Start the embedded test server to serve test pages.
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  // Set up an unpacked extension that registers a declarative content rule with
+  // `RequestContentScript` matching HTTP and HTTPS URLs.
+  ASSERT_TRUE(CreateAndLoadExtension(/*manifest_permission=*/ALL,
+                                     /*script_matcher=*/ALL));
+
+  // Withhold host permissions for the extension so that page access requires
+  // explicit user permission.
+  ScriptingPermissionsModifier(profile(), extension())
+      .SetWithholdHostPermissions(/*withhold=*/true);
+
+  // Set up a listener for script execution and navigate to a test URL on the
+  // embedded test server, waiting for the renderer to request permission for
+  // the deferred injection.
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
+
+  ExtensionActionRunner* action_runner =
+      ExtensionActionRunner::GetForWebContents(web_contents);
+  ASSERT_TRUE(action_runner);
+
+  ExtensionTestMessageListener script_listener(kInjectionSucceeded);
+  script_listener.set_extension_id(extension()->id());
+
+  const GURL target_url =
+      embedded_test_server()->GetURL("/extensions/test_file.html");
+  {
+    BlockedActionWaiter blocked_action_waiter(action_runner);
+    ASSERT_TRUE(NavigateToURL(web_contents, target_url));
+    SCOPED_TRACE("Waiting for the deferred injection to request permission");
+    blocked_action_waiter.Wait();
+  }
+
+  content::RenderProcessHost* target_process =
+      web_contents->GetPrimaryMainFrame()->GetProcess();
+  ASSERT_TRUE(target_process);
+
+  // Verify that the extension's page access is withheld on the target URL.
+  EXPECT_EQ(PermissionsData::PageAccess::kWithheld,
+            extension()->permissions_data()->GetPageAccess(
+                target_url, ExtensionTabUtil::GetTabId(web_contents),
+                /*error=*/nullptr));
+
+  // Verify that the content script was not executed in the renderer.
+  EXPECT_FALSE(script_listener.was_satisfied());
+
+  // Verify that `ScriptInjectionTracker` does not record that the process ran a
+  // content script from this extension while permissions are withheld.
+  EXPECT_FALSE(ScriptInjectionTracker::DidProcessRunContentScriptFromExtension(
+      *target_process, extension()->id()));
+
+  // Grant permission to run the blocked action on the active tab and verify
+  // that the deferred content script executes and updates the tracker.
+  ASSERT_TRUE(action_runner->WantsToRun(extension()));
+  action_runner->RunForTesting(extension());
+
+  {
+    SCOPED_TRACE("Waiting for content script to execute after granting access");
+    ASSERT_TRUE(script_listener.WaitUntilSatisfied());
+  }
+
+  EXPECT_TRUE(ScriptInjectionTracker::DidProcessRunContentScriptFromExtension(
+      *target_process, extension()->id()));
 }
 
 }  // namespace extensions

@@ -198,12 +198,6 @@ net::SiteForCookies WebDocument::SiteForCookies() const {
   return ConstUnwrap<Document>()->SiteForCookies();
 }
 
-net::StorageAccessApiStatus WebDocument::StorageAccessApiStatus() const {
-  return ConstUnwrap<Document>()
-      ->GetExecutionContext()
-      ->GetStorageAccessApiStatus();
-}
-
 WebSecurityOrigin WebDocument::TopFrameOrigin() const {
   return ConstUnwrap<Document>()->TopFrameOrigin();
 }
@@ -427,55 +421,93 @@ uint64_t WebDocument::CookieModificationCount() const {
   return ConstUnwrap<Document>()->CookieModificationCount();
 }
 
+namespace {
+
+// Describes `tool_data` to the embedder, which reports it alongside the
+// execution result. If there's no tool, the declaration stays empty, and the
+// execution reports the failure through the result.
+std::unique_ptr<WebScriptToolDeclaration> MakeWebScriptToolDeclaration(
+    const ToolData* tool_data) {
+  auto web_tool_declaration = std::make_unique<WebScriptToolDeclaration>();
+  if (!tool_data) {
+    return web_tool_declaration;
+  }
+  const mojom::blink::ScriptTool& script_tool = tool_data->ScriptTool();
+  web_tool_declaration->description = WebString(script_tool.description);
+  web_tool_declaration->input_schema = WebString(script_tool.input_schema);
+  web_tool_declaration->output_schema = WebString(script_tool.output_schema);
+  if (script_tool.annotations) {
+    web_tool_declaration->read_only = script_tool.annotations->read_only;
+    web_tool_declaration->untrusted_content =
+        script_tool.annotations->untrusted_content;
+    web_tool_declaration->consequential =
+        script_tool.annotations->consequential;
+    web_tool_declaration->debugging = script_tool.annotations->debugging;
+  }
+  return web_tool_declaration;
+}
+
+ScriptToolExecutedCallback ToScriptToolExecutedCallback(
+    WebScriptToolResultCallback tool_result_cb,
+    std::unique_ptr<WebScriptToolDeclaration> web_tool_declaration) {
+  return blink::BindOnce(
+      [](WebScriptToolResultCallback tool_result_cb,
+         std::unique_ptr<WebScriptToolDeclaration> web_tool_declaration,
+         base::expected<String, ScriptToolError> result) {
+        if (result.has_value()) {
+          std::move(tool_result_cb)
+              .Run(std::move(web_tool_declaration),
+                   base::expected<WebString, WebScriptToolError>(
+                       WebString(*result)));
+        } else {
+          std::move(tool_result_cb)
+              .Run(std::move(web_tool_declaration),
+                   base::unexpected(ToWebScriptToolError(result.error())));
+        }
+      },
+      std::move(tool_result_cb), std::move(web_tool_declaration));
+}
+
+}  // namespace
+
 bool WebDocument::ExecuteScriptTool(
-    const base::UnguessableToken& invocation_id,
+    const ToolInvocationToken& invocation_id,
+    const ScriptToolToken& tool_id,
+    const WebString& input_arguments,
+    WebScriptToolResultCallback tool_result_cb) {
+  auto* model_context =
+      ModelContextSupplement::modelContext(*Unwrap<Document>());
+  auto web_tool_declaration =
+      MakeWebScriptToolDeclaration(model_context->FindToolDataById(tool_id));
+  return model_context->ExecuteTool(
+      invocation_id, tool_id, input_arguments,
+      ToScriptToolExecutedCallback(std::move(tool_result_cb),
+                                   std::move(web_tool_declaration)));
+}
+
+bool WebDocument::ExecuteScriptToolByName(
+    const ToolInvocationToken& invocation_id,
     const WebString& name,
     const WebString& input_arguments,
     WebScriptToolResultCallback tool_result_cb) {
   auto* model_context =
       ModelContextSupplement::modelContext(*Unwrap<Document>());
-  auto web_tool_declaration = std::make_unique<WebScriptToolDeclaration>();
-  if (auto script_tool_declaration =
-          model_context->GetScriptToolDeclaration(name)) {
-    web_tool_declaration->description =
-        WebString(script_tool_declaration->description);
-    web_tool_declaration->input_schema =
-        WebString(script_tool_declaration->input_schema);
-    web_tool_declaration->read_only = script_tool_declaration->read_only;
-    web_tool_declaration->untrusted_content =
-        script_tool_declaration->untrusted_content;
-    web_tool_declaration->consequential =
-        script_tool_declaration->consequential;
-  }
-  return model_context->ExecuteTool(
+  auto web_tool_declaration =
+      MakeWebScriptToolDeclaration(model_context->FindToolDataByName(name));
+  return model_context->ExecuteToolByName(
       invocation_id, name, input_arguments,
-      blink::BindOnce(
-          [](WebScriptToolResultCallback tool_result_cb,
-             std::unique_ptr<WebScriptToolDeclaration> web_tool_declaration,
-             base::expected<String, ScriptToolError> result) {
-            if (result.has_value()) {
-              std::move(tool_result_cb)
-                  .Run(std::move(web_tool_declaration),
-                       base::expected<WebString, WebScriptToolError>(
-                           WebString(*result)));
-            } else {
-              std::move(tool_result_cb)
-                  .Run(std::move(web_tool_declaration),
-                       base::unexpected(ToWebScriptToolError(result.error())));
-            }
-          },
-          std::move(tool_result_cb), std::move(web_tool_declaration)));
+      ToScriptToolExecutedCallback(std::move(tool_result_cb),
+                                   std::move(web_tool_declaration)));
 }
 
-void WebDocument::CancelScriptTool(
-    const base::UnguessableToken& invocation_id) {
+void WebDocument::CancelScriptTool(const ToolInvocationToken& invocation_id) {
   auto* model_context =
       ModelContextSupplement::modelContext(*Unwrap<Document>());
   model_context->CancelTool(invocation_id);
 }
 
 void WebDocument::GetCrossDocumentScriptToolResult(
-    const base::UnguessableToken& invocation_id,
+    const ToolInvocationToken& invocation_id,
     CrossDocumentScriptToolResultCallback result_callback) {
   auto* model_context =
       ModelContextSupplement::modelContext(*Unwrap<Document>());

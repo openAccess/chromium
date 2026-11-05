@@ -50,7 +50,7 @@ const CGFloat kSelectionUICornerRadius = 13.0;
 
 @implementation LensOverlayContainerViewController {
   // The overlay commands handler.
-  id<LensOverlayCommands> _overlayCommandsHandler;
+  __weak id<LensOverlayCommands> _overlayCommandsHandler;
   // The overlay close button.
   UIButton* _closeButton;
   // View that blocks user interaction with selection UI when the consent view
@@ -189,6 +189,7 @@ const CGFloat kSelectionUICornerRadius = 13.0;
                                   animated:(BOOL)animated
                                 completion:(ProceduralBlock)completion {
   _bottomSheet.view.translatesAutoresizingMaskIntoConstraints = NO;
+  [_bottomSheet willMoveToParentViewController:self];
   [self addChildViewController:_bottomSheet];
   [self.view addSubview:_bottomSheet.view];
   [_bottomSheet didMoveToParentViewController:self];
@@ -321,6 +322,11 @@ const CGFloat kSelectionUICornerRadius = 13.0;
 
 - (void)sizeClassDidChange {
   [self.delegate lensOverlayContainerDidChangeSizeClass:self];
+}
+
+- (void)viewSafeAreaInsetsDidChange {
+  [super viewSafeAreaInsetsDidChange];
+  [self.delegate lensOverlayContainerDidChangeSafeAreaInsets:self];
 }
 
 #pragma mark - UIAccessibilityAction

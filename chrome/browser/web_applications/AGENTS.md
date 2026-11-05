@@ -8,10 +8,27 @@ storage, sync, and OS integration.
 
 ## Canonical Docs
 
+- [Security Notes](SECURITY.md)
 - [Commands Architecture](commands/README.md)
 - [Lock System](locks/README.md)
 - [Jobs](jobs/README.md)
 - [Desktop Testing Guide](docs/testing.md)
+- [Isolated Web Apps Engine](isolated_web_apps/README.md) ·
+  [IWA Rules](isolated_web_apps/AGENTS.md)
+- [Sub Apps API](sub_apps/README.md)
+
+## Layering & Decoupling Invariants
+
+- **App Service Decoupling (crbug.com/523338828):** App Service sits *above* Web
+  Apps as a downstream consumer/publisher. `WebAppProvider` must not call into
+  App Service. Do NOT add new dependencies on
+  `//components/services/app_service` or `apps::` types in `web_applications/`.
+  Always define or use `webapps::` types.
+- **Extensions Decoupling:** Web Apps is decoupled from Extensions. All
+  interactions with the extension system (e.g. for legacy preinstalled app
+  migration) must go through the fakeable
+  [`ExtensionsManager`](extensions_manager.h) abstraction. Never introduce
+  direct `extensions/` dependencies into Web Apps.
 
 ## Command Scheduling & Locking Rules
 

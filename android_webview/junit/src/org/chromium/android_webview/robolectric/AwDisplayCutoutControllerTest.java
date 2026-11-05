@@ -8,8 +8,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,7 +21,6 @@ import android.view.WindowInsets;
 
 import androidx.core.graphics.Insets;
 import androidx.core.view.WindowInsetsCompat;
-import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -33,16 +30,15 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.android_webview.AwDisplayCutoutController;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
 
 /** JUnit tests for AwDisplayCutoutController. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AwDisplayCutoutControllerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -52,9 +48,10 @@ public class AwDisplayCutoutControllerTest {
     @Mock private AwDisplayCutoutController.Delegate mDelegate;
     @Mock private WindowInsets mWindowInsets;
     @Mock private DisplayCutout mDisplayCutout;
-    @Mock private View mView;
-    @Mock private View mAnotherView;
     @Mock private ViewTreeObserver mViewTreeObserver;
+
+    private final TestView mView = new TestView();
+    private final TestView mAnotherView = new TestView();
 
     private View.OnApplyWindowInsetsListener mListener;
     private OnPreDrawListener mPreDrawListener;
@@ -62,6 +59,41 @@ public class AwDisplayCutoutControllerTest {
     private float mDipScale;
 
     private AwDisplayCutoutController mController;
+
+    /**
+     * A View that records calls to requestApplyInsets() and dispatches the test's insets, and
+     * returns the test's ViewTreeObserver.
+     */
+    private class TestView extends View {
+        int mRequestApplyInsetsCount;
+
+        TestView() {
+            super(ContextUtils.getApplicationContext());
+        }
+
+        @Override
+        public void setOnApplyWindowInsetsListener(View.OnApplyWindowInsetsListener listener) {
+            super.setOnApplyWindowInsetsListener(listener);
+            mListener = listener;
+        }
+
+        @Override
+        public ViewTreeObserver getViewTreeObserver() {
+            return mViewTreeObserver;
+        }
+
+        @Override
+        public void requestApplyInsets() {
+            mRequestApplyInsetsCount++;
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                if (mListener != null) {
+                    mListener.onApplyWindowInsets(this, mWindowInsets);
+                }
+            } else {
+                mController.onApplyWindowInsets(mWindowInsets);
+            }
+        }
+    }
 
     public AwDisplayCutoutControllerTest() {}
 
@@ -72,19 +104,6 @@ public class AwDisplayCutoutControllerTest {
         // Set up default values.
         setWindowInsets(new Rect(20, 40, 60, 80));
         mDipScale = 2.0f;
-
-        // Set up the view.
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            doAnswer(inv -> mListener = (View.OnApplyWindowInsetsListener) inv.getArguments()[0])
-                    .when(mView)
-                    .setOnApplyWindowInsetsListener(any(View.OnApplyWindowInsetsListener.class));
-            doAnswer(inv -> mListener = (View.OnApplyWindowInsetsListener) inv.getArguments()[0])
-                    .when(mAnotherView)
-                    .setOnApplyWindowInsetsListener(any(View.OnApplyWindowInsetsListener.class));
-        }
-
-        setupRequestApplyInsetsMock(mView);
-        setupRequestApplyInsetsMock(mAnotherView);
 
         doAnswer(inv -> mPreDrawListener = (OnPreDrawListener) inv.getArguments()[0])
                 .when(mViewTreeObserver)
@@ -98,36 +117,14 @@ public class AwDisplayCutoutControllerTest {
                 .when(mViewTreeObserver)
                 .removeOnPreDrawListener(any(OnPreDrawListener.class));
 
-        when(mView.getViewTreeObserver()).thenReturn(mViewTreeObserver);
-        when(mAnotherView.getViewTreeObserver()).thenReturn(mViewTreeObserver);
-
         // Set up the delegate.
         when(mDelegate.getDipScale()).thenReturn(mDipScale);
         mController = new AwDisplayCutoutController(mDelegate, mView);
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            verify(mView)
-                    .setOnApplyWindowInsetsListener(any(View.OnApplyWindowInsetsListener.class));
+            Assert.assertNotNull(mListener);
         } else {
-            verify(mView, never())
-                    .setOnApplyWindowInsetsListener(any(View.OnApplyWindowInsetsListener.class));
+            Assert.assertNull(mListener);
         }
-    }
-
-    private void setupRequestApplyInsetsMock(View view) {
-        doAnswer(
-                        inv -> {
-                            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-                                if (mListener != null) {
-                                    return mListener.onApplyWindowInsets(
-                                            (View) inv.getMock(), mWindowInsets);
-                                }
-                            } else {
-                                return mController.onApplyWindowInsets(mWindowInsets);
-                            }
-                            return null;
-                        })
-                .when(view)
-                .requestApplyInsets();
     }
 
     private void setWindowInsets(Rect insets) {
@@ -153,7 +150,6 @@ public class AwDisplayCutoutControllerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testOnApplyWindowInsets() {
         mController.onApplyWindowInsets(mWindowInsets);
@@ -164,25 +160,23 @@ public class AwDisplayCutoutControllerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testOnSizeChanged() {
         mController.onSizeChanged();
 
         // Changing the size of the view should trigger new insets.
-        verify(mView).requestApplyInsets();
+        Assert.assertEquals(1, mView.mRequestApplyInsetsCount);
         verify(mDelegate).getDipScale();
         // Note that DIP of 2.0 is applied, so the values are halved.
         verify(mDelegate).setDisplayCutoutSafeArea(eq(Insets.of(10, 20, 30, 40)));
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testOnAttachedToWindow() {
         mController.onAttachedToWindow();
 
-        verify(mView).requestApplyInsets();
+        Assert.assertEquals(1, mView.mRequestApplyInsetsCount);
         verify(mDelegate).getDipScale();
         // Note that DIP of 2.0 is applied, so the values are halved.
         verify(mDelegate).setDisplayCutoutSafeArea(eq(Insets.of(10, 20, 30, 40)));
@@ -190,15 +184,14 @@ public class AwDisplayCutoutControllerTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     public void testChangeContainerView_doesNotTriggerOriginalView() {
         // Switching to another container view.
         mController.setCurrentContainerView(mAnotherView);
         mController.onAttachedToWindow();
 
-        verify(mAnotherView, times(2)).requestApplyInsets();
+        Assert.assertEquals(2, mAnotherView.mRequestApplyInsetsCount);
         // Note that mView methods are not triggered.
-        verify(mView, never()).requestApplyInsets();
+        Assert.assertEquals(0, mView.mRequestApplyInsetsCount);
     }
 }

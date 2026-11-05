@@ -31,7 +31,6 @@
 #include "third_party/skia/include/gpu/graphite/Context.h"
 #include "third_party/skia/include/gpu/graphite/GraphiteTypes.h"
 #include "third_party/skia/include/gpu/graphite/Recorder.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gl/gl_bindings.h"
@@ -39,8 +38,8 @@
 #include "ui/gl/gl_version_info.h"
 
 #if BUILDFLAG(ENABLE_VULKAN)
-#include "components/viz/common/gpu/vulkan_context_provider.h"
 #include "components/viz/common/resources/shared_image_format.h"
+#include "gpu/command_buffer/service/vulkan_context_provider.h"
 #include "gpu/vulkan/vulkan_device_queue.h"
 #include "gpu/vulkan/vulkan_fence_helper.h"
 #include "gpu/vulkan/vulkan_function_pointers.h"
@@ -121,9 +120,6 @@ GrContextOptions GetDefaultGrContextOptions() {
   options.fSuppressMipmapSupport =
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           switches::kDisableMipmapGeneration);
-
-  // fSupportBilerpFromGlyphAtlas is needed for Raw Draw.
-  options.fSupportBilerpFromGlyphAtlas = features::IsUsingRawDraw();
 
   return options;
 }
@@ -327,9 +323,8 @@ void AddCleanupTaskForGraphiteRecording(
   context->cleanup_tasks.push_back(std::move(task));
 }
 
-void AddVulkanCleanupTaskForSkiaFlush(
-    viz::VulkanContextProvider* context_provider,
-    GrFlushInfo* flush_info) {
+void AddVulkanCleanupTaskForSkiaFlush(VulkanContextProvider* context_provider,
+                                      GrFlushInfo* flush_info) {
 #if BUILDFLAG(ENABLE_VULKAN)
   if (context_provider) {
     auto task = context_provider->GetDeviceQueue()
@@ -461,9 +456,9 @@ CreateVulkanYcbcrConversionInfo(
             ? VK_SAMPLER_YCBCR_RANGE_ITU_FULL
             : VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
 
-    valid_ycbcr_info.emplace(format, 0, ycbcr_model, ycbcr_range,
-                             VK_CHROMA_LOCATION_COSITED_EVEN,
-                             VK_CHROMA_LOCATION_COSITED_EVEN, 0);
+    valid_ycbcr_info.emplace(
+        format, 0, ycbcr_model, ycbcr_range, VK_CHROMA_LOCATION_COSITED_EVEN,
+        VK_CHROMA_LOCATION_COSITED_EVEN, /*format_features=*/0);
   }
 
   VkFormat vk_format = static_cast<VkFormat>(valid_ycbcr_info->image_format);
@@ -540,8 +535,7 @@ CreateVulkanYcbcrConversionInfo(
 
 #endif  // BUILDFLAG(ENABLE_VULKAN)
 
-bool ShouldVulkanSyncCpuForSkiaSubmit(
-    viz::VulkanContextProvider* context_provider) {
+bool ShouldVulkanSyncCpuForSkiaSubmit(VulkanContextProvider* context_provider) {
 #if BUILDFLAG(ENABLE_VULKAN)
   if (context_provider) {
     const std::optional<uint32_t>& sync_cpu_memory_limit =

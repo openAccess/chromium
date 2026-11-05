@@ -265,8 +265,7 @@ TEST_F(FrameLoaderTest, PolicyContainerIsStoredOnCommitNavigation) {
   std::unique_ptr<WebNavigationParams> params =
       WebNavigationParams::CreateWithEmptyHTMLForTesting(url);
   MockPolicyContainerHost mock_policy_container_host;
-  base::UnguessableToken initiator_state_token =
-      base::UnguessableToken::Create();
+  InitiatorStateToken initiator_state_token;
   params->initiator_state_token = initiator_state_token;
   params->policy_container = std::make_unique<WebPolicyContainer>(
       WebPolicyContainerPolicies{
@@ -308,8 +307,7 @@ TEST_F(FrameLoaderSimTest, DirectLaunchSchemeBlocked) {
   main_request.Complete(StrCat({"<a id='link' href='", kScheme,
                                 ":https://example.com/dest.html'>link</a>"}));
 
-  auto* anchor =
-      To<HTMLAnchorElement>(GetDocument().getElementById(AtomicString("link")));
+  auto* anchor = To<HTMLAnchorElement>(GetElementById("link"));
   ASSERT_NE(anchor, nullptr);
 
   anchor->click();
@@ -334,8 +332,7 @@ TEST_F(FrameLoaderSimTest, DirectLaunchSchemeTargetBlankBlocked) {
   main_request.Complete(StrCat({"<a id='link' target='_blank' href='", kScheme,
                                 "://https://example.com/dest.html'>link</a>"}));
 
-  auto* anchor =
-      To<HTMLAnchorElement>(GetDocument().getElementById(AtomicString("link")));
+  auto* anchor = To<HTMLAnchorElement>(GetElementById("link"));
   ASSERT_NE(anchor, nullptr);
 
   anchor->click();

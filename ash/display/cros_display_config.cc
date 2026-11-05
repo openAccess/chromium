@@ -8,8 +8,6 @@
 #include <sstream>
 #include <utility>
 
-#include "ash/constants/ash_features.h"
-#include "ash/display/display_alignment_controller.h"
 #include "ash/display/display_configuration_controller.h"
 #include "ash/display/display_highlight_controller.h"
 #include "ash/display/display_prefs.h"
@@ -30,8 +28,10 @@
 #include "ui/display/display_layout_builder.h"
 #include "ui/display/display_observer.h"
 #include "ui/display/manager/display_manager.h"
+#include "ui/display/manager/managed_display_info.h"
 #include "ui/display/manager/util/display_manager_util.h"
 #include "ui/display/screen.h"
+#include "ui/gfx/geometry/insets.h"
 
 namespace ash {
 
@@ -331,8 +331,8 @@ DisplayConfigResult ValidateDisplayProperties(
     return DisplayConfigResult::kInvalidDisplayIdError;
   }
 
-  // Overscan cannot be changed for the internal display, and should be at most
-  // half of the screen size.
+  // Overscan cannot be changed for the internal display, and each edge should
+  // be at most a quarter of the screen size.
   if (properties.overscan) {
     if (display.IsInternal()) {
       DISPLAY_LOG(ERROR) << "Overscan is not supported on the internal display:"
@@ -346,18 +346,13 @@ DisplayConfigResult ValidateDisplayProperties(
       return DisplayConfigResult::kPropertyValueOutOfRangeError;
     }
 
-    const gfx::Insets overscan = display_manager->GetOverscanInsets(id);
-    int screen_width = display.bounds().width() + overscan.width();
-    int screen_height = display.bounds().height() + overscan.height();
-
-    if ((properties.overscan->left() + properties.overscan->right()) * 2 >
-            screen_width ||
-        (properties.overscan->top() + properties.overscan->bottom()) * 2 >
-            screen_height) {
+    display::ManagedDisplayInfo info = display_manager->GetDisplayInfo(id);
+    info.SetOverscanInsets(*properties.overscan);
+    if (*properties.overscan != info.overscan_insets_in_dip()) {
       DISPLAY_LOG(ERROR) << "Invalid Overscan: " << dump_state()
                          << ", overscan (" << properties.overscan->ToString()
-                         << ") exceeds bounds (" << screen_width << "x"
-                         << screen_height << ")";
+                         << ") exceeds clamped ("
+                         << info.overscan_insets_in_dip().ToString() << ")";
       return DisplayConfigResult::kPropertyValueOutOfRangeError;
     }
   }
@@ -986,14 +981,6 @@ OverscanCalibrator* CrosDisplayConfigImpl::GetOverscanCalibrator(
 void CrosDisplayConfigImpl::HighlightDisplay(int64_t display_id) {
   Shell::Get()->display_highlight_controller()->SetHighlightedDisplay(
       display_id);
-}
-
-void CrosDisplayConfigImpl::DragDisplayDelta(int64_t display_id,
-                                             int32_t delta_x,
-                                             int32_t delta_y) {
-  DCHECK(features::IsDisplayAlignmentAssistanceEnabled());
-  Shell::Get()->display_alignment_controller()->DisplayDragged(
-      display_id, delta_x, delta_y);
 }
 
 bool CrosDisplayConfigImpl::IsCalibrating() const {

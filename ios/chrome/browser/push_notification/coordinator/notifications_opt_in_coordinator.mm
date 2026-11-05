@@ -7,6 +7,7 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
+#import "components/segmentation_platform/embedder/home_modules/tips_manager/signal_constants.h"
 #import "components/signin/public/base/signin_metrics.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/content_notification/model/content_notification_util.h"
@@ -21,13 +22,15 @@
 #import "ios/chrome/browser/push_notification/ui/notifications_opt_in_view_controller.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
-#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
+#import "ios/chrome/browser/tips_manager/model/tips_manager_ios.h"
+#import "ios/chrome/browser/tips_manager/model/tips_manager_ios_factory.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
@@ -49,12 +52,19 @@
 }
 
 - (void)start {
+  if (TipsManagerIOS* tipsManager =
+          TipsManagerIOSFactory::GetForProfile(self.profile)) {
+    tipsManager->NotifySignal(segmentation_platform::tips_manager::signals::
+                                  kTipsNotificationOptInPromptReceived);
+  }
+
   _viewController = [[NotificationsOptInViewController alloc] init];
   NotificationsOptInMediator* mediator = [[NotificationsOptInMediator alloc]
       initWithAuthenticationService:AuthenticationServiceFactory::GetForProfile(
                                         self.profile)];
   mediator.consumer = _viewController;
   mediator.presenter = self;
+  mediator.accessPoint = self.accessPoint;
   _viewController.delegate = mediator;
   _viewController.notificationsDelegate = mediator;
   _viewController.presentationController.delegate = self;
@@ -82,9 +92,9 @@
 - (void)presentSignIn {
   __weak __typeof(self) weakSelf = self;
   SigninCoordinatorCompletionCallback completion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> completionIdentity) {
-        if (result != SigninCoordinatorResultSuccess) {
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
+        if (!result.has_value()) {
           [weakSelf.mediator disableUserSelectionForItem:kContent];
         }
       };
@@ -100,7 +110,7 @@
             promoAction:signin_metrics::PromoAction::
                             PROMO_ACTION_NO_SIGNIN_PROMO
              completion:completion];
-  [HandlerForProtocol(self.browser->GetCommandDispatcher(), SceneCommands)
+  [HandlerForProtocol(self.browser->GetCommandDispatcher(), SceneSignInCommands)
               showSignin:command
       baseViewController:_viewController];
 }
@@ -137,8 +147,10 @@
                                                      .value()];
       break;
     case NotificationsOptInAlertResult::kPermissionDenied:
-    case NotificationsOptInAlertResult::kOpenedSettings:
     case NotificationsOptInAlertResult::kCanceled:
+      [self dismissViewController];
+      break;
+    case NotificationsOptInAlertResult::kOpenedSettings:
     case NotificationsOptInAlertResult::kError:
       break;
   }

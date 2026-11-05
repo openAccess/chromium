@@ -6,28 +6,26 @@
 
 #include <memory>
 
-#include "base/command_line.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "build/build_config.h"
-#include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
+#include "chrome/browser/page_load_metrics/chrome_navigation_initiator.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/page_load_metrics/browser/navigation_handle_user_data.h"
+#include "components/page_load_metrics/browser/navigation_initiator.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
-#include "net/http/http_request_headers.h"
 #include "net/http/http_status_code.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
-#include "net/test/embedded_test_server/embedded_test_server_connection_listener.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
-#include "services/metrics/public/cpp/ukm_source.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
 
 namespace {
 
@@ -178,16 +176,16 @@ IN_PROC_BROWSER_TEST_F(UkmPageLoadMetricsObserverBrowserTest,
                        NavigationHandleUserDataTypeMetrics_BookmarkBar) {
   base::RepeatingCallback<void(content::NavigationHandle&)>
       prerender_navigation_handle_callback =
-          base::BindRepeating(&AttachBookmarkBarNavigationHandleUserData);
+          page_load_metrics::NavigationInitiatorHolder::AttacherCallback(
+              chrome_navigation_initiator::kBookmarkBar);
 
   browser()->GetTabStripModel()->GetActiveWebContents()->OpenURL(
-      content::OpenURLParams(
+      content::OpenURLParams::CreateBrowserInitiated(
           embedded_test_server()->GetURL("origin.com",
                                          "/subresource_loading/index.html"),
-          content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-          /*is_renderer_initiated=*/false),
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR)),
       /*navigation_handle_callback=*/std::move(
           prerender_navigation_handle_callback));
   NavigateAway();
@@ -195,24 +193,23 @@ IN_PROC_BROWSER_TEST_F(UkmPageLoadMetricsObserverBrowserTest,
   ASSERT_THAT(
       GetUkmMetricEntryValues(PageLoad::kEntryName,
                               PageLoad::kNavigation_InitiatorLocationName),
-      testing::ElementsAre(
-          GetInitiatorLocation(ChromeInitiatorLocation::kBookmarkBar)));
+      testing::ElementsAre(chrome_navigation_initiator::kBookmarkBar.id()));
 }
 
 IN_PROC_BROWSER_TEST_F(UkmPageLoadMetricsObserverBrowserTest,
                        NavigationHandleUserDataTypeMetrics_NewTabPage) {
   base::RepeatingCallback<void(content::NavigationHandle&)>
       prerender_navigation_handle_callback =
-          base::BindRepeating(&AttachNewTabPageNavigationHandleUserData);
+          page_load_metrics::NavigationInitiatorHolder::AttacherCallback(
+              chrome_navigation_initiator::kNewTabPage);
 
   browser()->GetTabStripModel()->GetActiveWebContents()->OpenURL(
-      content::OpenURLParams(
+      content::OpenURLParams::CreateBrowserInitiated(
           embedded_test_server()->GetURL("origin.com",
                                          "/subresource_loading/index.html"),
-          content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED |
-                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR),
-          /*is_renderer_initiated=*/false),
+                                    ui::PAGE_TRANSITION_FROM_ADDRESS_BAR)),
       /*navigation_handle_callback=*/std::move(
           prerender_navigation_handle_callback));
   NavigateAway();
@@ -220,8 +217,7 @@ IN_PROC_BROWSER_TEST_F(UkmPageLoadMetricsObserverBrowserTest,
   ASSERT_THAT(
       GetUkmMetricEntryValues(PageLoad::kEntryName,
                               PageLoad::kNavigation_InitiatorLocationName),
-      testing::ElementsAre(
-          GetInitiatorLocation(ChromeInitiatorLocation::kNewTabPage)));
+      testing::ElementsAre(chrome_navigation_initiator::kNewTabPage.id()));
 }
 
 }  // namespace

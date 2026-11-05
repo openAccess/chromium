@@ -27,12 +27,10 @@
 #include "chrome/browser/ash/hats/hats_dialog.h"
 #include "chrome/browser/ash/hats/hats_finch_helper.h"
 #include "chrome/browser/ash/login/startup_utils.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/themes/theme_service.h"
-#include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/grit/generated_resources.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/network/network_handler.h"
@@ -42,7 +40,10 @@
 #include "components/language/core/browser/pref_names.h"
 #include "components/language/core/common/locale_util.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/browser_thread.h"
 #include "google_apis/gaia/gaia_auth_util.h"
@@ -55,8 +56,6 @@
 namespace ash {
 
 namespace {
-
-const char kNotificationOriginUrl[] = "chrome://hats";
 
 const char kNotifierHats[] = "ash.hats";
 
@@ -183,15 +182,11 @@ const char HatsNotificationController::kNotificationId[] = "hats_notification";
 HatsNotificationController::HatsNotificationController(
     Profile* profile,
     const HatsConfig& hats_config,
-    const base::flat_map<std::string, std::string>& product_specific_data,
-    std::u16string title,
-    std::u16string body)
+    const base::flat_map<std::string, std::string>& product_specific_data)
     : profile_(profile),
       hats_config_(hats_config),
-      product_specific_data_(product_specific_data),
-      title_(std::move(title)),
-      body_(std::move(body)) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+      product_specific_data_(product_specific_data) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   std::string histogram_name = HatsFinchHelper::GetHistogramName(*hats_config_);
   if (!histogram_name.empty()) {
@@ -209,30 +204,19 @@ HatsNotificationController::HatsNotificationController(
 
 HatsNotificationController::HatsNotificationController(
     Profile* profile,
-    const HatsConfig& hats_config,
-    const base::flat_map<std::string, std::string>& product_specific_data)
-    : HatsNotificationController(
-          profile,
-          hats_config,
-          product_specific_data,
-          l10n_util::GetStringUTF16(IDS_HATS_NOTIFICATION_TITLE),
-          l10n_util::GetStringUTF16(IDS_HATS_NOTIFICATION_BODY)) {}
-
-HatsNotificationController::HatsNotificationController(
-    Profile* profile,
     const HatsConfig& hats_config)
     : HatsNotificationController(profile,
                                  hats_config,
                                  base::flat_map<std::string, std::string>()) {}
 
 HatsNotificationController::~HatsNotificationController() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   base::UmaHistogramEnumeration("Browser.ChromeOS.HatsStatus", state_);
 }
 
 void HatsNotificationController::Initialize(bool is_new_device) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (is_new_device && !IsTestingEnabled(*hats_config_)) {
     // This device has been chosen for a survey, but it is too new. Instead
@@ -263,7 +247,7 @@ void HatsNotificationController::Initialize(bool is_new_device) {
 bool HatsNotificationController::ShouldShowSurveyToProfile(
     Profile* profile,
     const HatsConfig& hats_config) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (IsTestingEnabled(hats_config))
     return true;
@@ -285,7 +269,7 @@ bool HatsNotificationController::ShouldShowSurveyToProfile(
   const bool is_enterprise_enrolled =
       ash::InstallAttributes::Get()->IsEnterpriseManaged();
 
-  HatsFinchHelper hats_finch_helper(profile, hats_config);
+  HatsFinchHelper hats_finch_helper(profile->GetPrefs(), hats_config);
 
   // Do not show survey to enterprise users.
   // Exceptions for Googlers if the survey wants Googlers participation.
@@ -297,7 +281,9 @@ bool HatsNotificationController::ShouldShowSurveyToProfile(
 
   // Do not show survey to non-owners. However, enterprise-enrolled Googlers
   // who passed the previous check will not be owners; don't exclude them.
-  if (!is_enterprise_enrolled && !ProfileHelper::IsOwnerProfile(profile)) {
+  if (!is_enterprise_enrolled &&
+      !user_manager::UserManager::Get()->IsOwnerUser(
+          BrowserContextHelper::Get()->GetUserByBrowserContext(profile))) {
     return false;
   }
 
@@ -349,7 +335,7 @@ std::string HatsNotificationController::
 void HatsNotificationController::Click(
     const std::optional<int>& button_index,
     const std::optional<std::u16string>& reply) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   CHECK(profile_) << "Profile must NOT be null.";
 
   UpdateLastInteractionTime();
@@ -377,7 +363,11 @@ void HatsNotificationController::Click(
 }
 
 void HatsNotificationController::ShowDialog(const std::string& site_context) {
-  if (profile_ != ProfileManager::GetActiveUserProfile()) {
+  const auto* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  if (!active_session ||
+      CHECK_DEREF(AnnotatedAccountId::Get(profile_->GetOriginalProfile())) !=
+          active_session->account_id()) {
     DVLOG(1) << "Different user detected, not showing dialog";
     return;
   }
@@ -389,7 +379,7 @@ void HatsNotificationController::ShowDialog(const std::string& site_context) {
 
 // message_center::NotificationDelegate override:
 void HatsNotificationController::Close(bool by_user) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (by_user) {
     UpdateLastInteractionTime();
@@ -405,7 +395,7 @@ void HatsNotificationController::Close(bool by_user) {
 void HatsNotificationController::PortalStateChanged(
     const NetworkState* default_network,
     NetworkState::PortalState portal_state) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   CHECK(profile_) << "Profile must NOT be null.";
   VLOG(1) << "PortalStateChanged: default_network="
           << (default_network ? default_network->path() : "")
@@ -424,11 +414,12 @@ void HatsNotificationController::PortalStateChanged(
       notifier_id.profile_id = profile_->GetProfileUserName();
 
       auto notification = ash::CreateSystemNotificationPtr(
-          message_center::NOTIFICATION_TYPE_SIMPLE, notification_id_, title_,
-          body_,
+          message_center::NOTIFICATION_TYPE_SIMPLE, notification_id_,
+          l10n_util::GetStringUTF16(IDS_HATS_NOTIFICATION_TITLE),
+          l10n_util::GetStringUTF16(IDS_HATS_NOTIFICATION_BODY),
           l10n_util::GetStringUTF16(IDS_MESSAGE_CENTER_NOTIFIER_HATS_NAME),
-          GURL(kNotificationOriginUrl), notifier_id,
-          message_center::RichNotificationData(), this, kNotificationGoogleIcon,
+          notifier_id, message_center::RichNotificationData(), this,
+          kNotificationGoogleIcon,
           message_center::SystemNotificationWarningLevel::NORMAL);
       message_center::MessageCenter::Get()->AddNotification(
           std::move(notification));
@@ -499,7 +490,7 @@ std::string HatsNotificationController::GetFormattedSiteContext(
 }
 
 void HatsNotificationController::UpdateLastInteractionTime() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   CHECK(profile_) << "Profile must NOT be null.";
 
   PrefService* pref_service = profile_->GetPrefs();

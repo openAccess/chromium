@@ -12,12 +12,11 @@ import re
 import unittest
 
 # vpython-provided modules.
-from pyfakefs import fake_filesystem_unittest  # pylint: disable=import-error
+from pyfakefs import fake_filesystem_unittest
 
 # //testing/buildbot imports.
 import generate_buildbot_json
 
-# pylint: disable=super-with-arguments
 
 EMPTY_PYL_FILE = """\
 {
@@ -77,7 +76,7 @@ def dump_on_failure(fbb, dump=True):
     yield
   except:
     if dump:
-      for l in fbb.printed_lines:
+      for l in fbb.printed_lines:  # noqa: E741
         print(l)
     raise
 
@@ -1786,7 +1785,6 @@ GPU_TELEMETRY_GN_ISOLATE_MAP = """\
 }
 """
 
-# pylint: disable=line-too-long
 GPU_TELEMETRY_GN_ISOLATE_MAP_ANDROID = """\
 {
   'telemetry_gpu_integration_test_android_chrome': {
@@ -1806,7 +1804,6 @@ GPU_TELEMETRY_GN_ISOLATE_MAP_ANDROID_WEBVIEW = """\
       }
 }
 """
-# pylint: enable=line-too-long
 
 GPU_TELEMETRY_GN_ISOLATE_MAP_FUCHSIA = """\
 {
@@ -2947,6 +2944,24 @@ FOO_TEST_SUITE_WITH_TEST_COMMON = """\
 }
 """
 
+FOO_TEST_SUITE_WITH_REMOVE_TEST_COMMON_MIXIN = """\
+{
+  'basic_suites': {
+    'foo_tests': {
+      'foo_test': {
+        'remove_mixins': ['test-common-mixin'],
+        'test_common': {
+          'args': ['test-common-arg'],
+          'mixins': ['test-common-mixin'],
+        },
+        'args': ['test-arg'],
+        'mixins': ['test-mixin'],
+      },
+    },
+  },
+}
+"""
+
 MIXIN_ARGS = """\
 {
   'builder_mixin': {
@@ -3443,6 +3458,23 @@ class MixinTests(TestCase):
     )
     fbb.check_consistency(verbose=True)
     self.assertFalse(fbb.printed_lines)
+
+  def test_remove_mixin_test_common(self):
+    fbb = FakeBBGen(
+      self.args,
+      FOO_GTESTS_WATERFALL,
+      FOO_TEST_SUITE_WITH_REMOVE_TEST_COMMON_MIXIN,
+      LUCI_MILO_CFG,
+      mixins=TEST_COMMON_MIXINS,
+    )
+    outputs = fbb.generate_outputs()
+    tester_tests = outputs['chromium.test']['Fake Tester']['gtest_tests']
+    self.assertEqual(len(tester_tests), 1)
+    foo_test = tester_tests[0]
+    self.assertIn('test-common-arg', foo_test['args'])
+    self.assertIn('test-arg', foo_test['args'])
+    self.assertIn('test-mixin-arg', foo_test['args'])
+    self.assertNotIn('test-common-mixin-arg', foo_test['args'])
 
 
 TEST_SUITE_WITH_PARAMS = """\

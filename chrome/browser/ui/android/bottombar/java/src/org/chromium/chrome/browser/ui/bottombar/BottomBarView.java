@@ -6,15 +6,21 @@ package org.chromium.chrome.browser.ui.bottombar;
 
 import static org.chromium.build.NullUtil.assertNonNull;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
+import android.graphics.drawable.LayerDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.util.AttributeSet;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.LinearLayout;
 
 import androidx.annotation.ColorInt;
+import androidx.annotation.Px;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -31,7 +37,7 @@ public class BottomBarView extends LinearLayout {
     private BottomBarButtonContainer mTabSwitcherContainer;
     private BottomBarButtonContainer mAppMenuContainer;
     private View mNewTabButton;
-    private Drawable mNewTabBackground;
+    private LayerDrawable mNewTabBackground;
     private RippleDrawable mNewTabRippleBackground;
     private RippleDrawable mNewTabRippleNoBackground;
     private BottomBarButtonContainer[] mOtherContainers;
@@ -45,14 +51,25 @@ public class BottomBarView extends LinearLayout {
     private @ColorInt int mNewTabRippleBackgroundColorForTesting;
     private @ColorInt int mOtherRipplesColorForTesting;
     private @ColorInt int mCachedOnSurfaceColor;
-    private int mNewTabPaddingStart;
-    private int mNewTabPaddingTop;
-    private int mNewTabPaddingEnd;
-    private int mNewTabPaddingBottom;
+    private @Px int mNewTabPaddingStart;
+    private @Px int mNewTabPaddingTop;
+    private @Px int mNewTabPaddingEnd;
+    private @Px int mNewTabPaddingBottom;
     private float mDisabledAlpha;
+    private boolean mRemoveTopPadding;
 
     public BottomBarView(Context context, @Nullable AttributeSet attributeSet) {
         super(context, attributeSet);
+    }
+
+    @Override
+    @SuppressLint("ClickableViewAccessibility")
+    public boolean onTouchEvent(MotionEvent event) {
+        // Consume touches in padding/empty space so they don't fall through to WebContents
+        // and trigger Contextual Search or click interactions (crbug.com/558675943).
+        // Done via onTouchEvent instead of clickable="true" so TalkBack doesn't announce the
+        // entire bottom bar layout as a button.
+        return true;
     }
 
     @Override
@@ -73,8 +90,9 @@ public class BottomBarView extends LinearLayout {
         mDisabledAlpha =
                 ValueUtils.getFloat(context.getResources(), R.dimen.default_disabled_alpha);
         mNewTabBackground =
-                assertNonNull(context.getDrawable(R.drawable.bottom_bar_new_tab_background))
-                        .mutate();
+                (LayerDrawable)
+                        assertNonNull(context.getDrawable(R.drawable.bottom_bar_new_tab_background))
+                                .mutate();
 
         mNewTabRippleBackground =
                 new RippleDrawable(ColorStateList.valueOf(0), mNewTabBackground, mNewTabBackground);
@@ -89,9 +107,77 @@ public class BottomBarView extends LinearLayout {
         mOtherRipples = new RippleDrawable[mOtherContainers.length];
 
         mNewTabPaddingStart = mNewTabButton.getPaddingStart();
-        mNewTabPaddingTop = mNewTabButton.getPaddingTop();
         mNewTabPaddingEnd = mNewTabButton.getPaddingEnd();
-        mNewTabPaddingBottom = mNewTabButton.getPaddingBottom();
+        applyDynamicDimensions(context);
+    }
+
+    /**
+     * Sets whether the top vertical padding of the bottom bar is removed (e.g. when the bottom
+     * omnibox is present).
+     *
+     * @param removeTopPadding True if the top padding should be removed, false otherwise.
+     */
+    public void setTopPaddingRemoved(boolean removeTopPadding) {
+        if (mRemoveTopPadding == removeTopPadding) return;
+        mRemoveTopPadding = removeTopPadding;
+        applyDynamicDimensions(getContext());
+    }
+
+    /**
+     * Applies dynamic button vertical padding and bar height based on the configured bar height and
+     * whether top padding is removed.
+     *
+     * <p>The new tab background, the action icons and the hover ripples all declare a fixed size in
+     * XML and center themselves within their layer bounds. When top padding is removed, asymmetric
+     * vertical layer insets keep the fixed-size background and ripples aligned with the padded
+     * content box and the {@code boundsRespectPadding} IPH highlight.
+     */
+    private void applyDynamicDimensions(Context context) {
+        @Px int vPad = BottomBarUtils.getButtonPaddingVertical(context);
+        @Px int topPad = mRemoveTopPadding ? 0 : vPad;
+        @Px int bottomPad = vPad;
+        @Px
+        int hPad =
+                context.getResources()
+                        .getDimensionPixelSize(R.dimen.bottom_bar_button_padding_horizontal);
+
+        @Px
+        int height =
+                BottomBarUtils.getBottomBarHeight(context, /* isBottomOmniboxPresent= */ false)
+                        - (vPad - topPad);
+        ViewGroup.LayoutParams params = getLayoutParams();
+        if (params != null && params.height != height) {
+            params.height = height;
+            setLayoutParams(params);
+        }
+
+        mNewTabPaddingTop = topPad;
+        mNewTabPaddingBottom = bottomPad;
+        updateDrawableLayerInsets();
+
+        mNewTabButton.setPaddingRelative(mNewTabPaddingStart, topPad, mNewTabPaddingEnd, bottomPad);
+
+        for (BottomBarButtonContainer container : mOtherContainers) {
+            container.setTargetPaddings(hPad, topPad, bottomPad);
+        }
+    }
+
+    private void updateDrawableLayerInsets() {
+        applyVerticalLayerInset(mNewTabBackground);
+        applyVerticalLayerInset(mNewTabRippleNoBackground);
+        for (RippleDrawable ripple : mOtherRipples) {
+            if (ripple != null) {
+                applyVerticalLayerInset(ripple);
+            }
+        }
+    }
+
+    private void applyVerticalLayerInset(LayerDrawable drawable) {
+        drawable.setLayerInset(0, 0, mNewTabPaddingTop, 0, mNewTabPaddingBottom);
+        Rect bounds = drawable.getBounds();
+        if (!bounds.isEmpty()) {
+            drawable.setBounds(bounds.left, bounds.top, bounds.right, bounds.bottom);
+        }
     }
 
     /**
@@ -215,9 +301,12 @@ public class BottomBarView extends LinearLayout {
             mColorScheme = colorScheme;
             for (int i = 0; i < mOtherContainers.length; i++) {
                 mOtherRipples[i] = BottomBarUtils.createHoverableRipple(context, colorScheme);
-                mOtherContainers[i].setTargetBackground(mOtherRipples[i]);
             }
             mNewTabRippleNoBackground = BottomBarUtils.createHoverableRipple(context, colorScheme);
+            updateDrawableLayerInsets();
+            for (int i = 0; i < mOtherContainers.length; i++) {
+                mOtherContainers[i].setTargetBackground(mOtherRipples[i]);
+            }
             if (mNewTabBackgroundVisible == null || !mNewTabBackgroundVisible) {
                 setNewTabButtonBackground(mNewTabRippleNoBackground);
             }
@@ -242,6 +331,10 @@ public class BottomBarView extends LinearLayout {
         } else {
             setNewTabButtonBackground(mNewTabRippleNoBackground);
         }
+    }
+
+    public boolean isNewTabBackgroundVisible() {
+        return Boolean.TRUE.equals(mNewTabBackgroundVisible);
     }
 
     private void setNewTabButtonBackground(Drawable drawable) {
@@ -271,7 +364,6 @@ public class BottomBarView extends LinearLayout {
             case ActionId.HOME_BUTTON:
                 return mHomeContainer;
             case ActionId.GLIC:
-            case ActionId.AI_MODE:
                 return mExtraContainer;
             case ActionId.NEW_TAB:
                 return mNewTabContainer;
@@ -287,12 +379,10 @@ public class BottomBarView extends LinearLayout {
     /**
      * Inflates all ViewStubs in the bottom bar for testing purposes. This respects configuration
      * flags, so it will not inflate buttons that should not be present in the current configuration
-     * (e.g., Home or App Menu).
+     * (e.g., App Menu).
      */
     public void inflateAllStubsForTesting() {
-        if (BottomBarConfigUtils.shouldIncludeHomeButtonIfEnabled()) {
-            mHomeContainer.inflateStub();
-        }
+        mHomeContainer.inflateStub();
         mExtraContainer.inflateStub();
         mNewTabContainer.inflateStub();
         mTabSwitcherContainer.inflateStub();

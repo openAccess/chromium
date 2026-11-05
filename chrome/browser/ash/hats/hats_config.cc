@@ -25,7 +25,8 @@ HatsConfig::HatsConfig(const base::Feature& feature,
       survey_last_interaction_timestamp_pref_name(nullptr),
       threshold_time(base::TimeDelta()),
       prioritized(false) {
-  DCHECK(new_device_threshold.InDaysFloored() >= kMinDaysThreshold);
+  CHECK(new_device_threshold.InDaysFloored() >= kMinDaysThreshold,
+        base::NotFatalUntil::M161);
 }
 
 HatsConfig::HatsConfig(
@@ -43,7 +44,8 @@ HatsConfig::HatsConfig(
           survey_last_interaction_timestamp_pref_name),
       threshold_time(threshold_time),
       prioritized(true) {
-  DCHECK(new_device_threshold.InDaysFloored() >= kMinDaysThreshold);
+  CHECK(new_device_threshold.InDaysFloored() >= kMinDaysThreshold,
+        base::NotFatalUntil::M161);
 }
 
 // General Survey -- shown after login
@@ -52,14 +54,6 @@ const HatsConfig kHatsGeneralSurvey = {
     base::Days(7),                             // new_device_threshold
     ash::prefs::kHatsDeviceIsSelected,         // is_selected_pref_name
     ash::prefs::kHatsSurveyCycleEndTimestamp,  // cycle_end_timestamp_pref_name
-};
-
-// ENT Survey -- shown after login, along with the General Survey
-const HatsConfig kHatsEntSurvey = {
-    ash::features::kHappinessTrackingSystemEnt,  // feature
-    base::Days(7),                               // new_device_threshold
-    ash::prefs::kHatsEntDeviceIsSelected,        // is_selected_pref_name
-    ash::prefs::kHatsEntSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
 };
 
 // Stability Survey -- shown after login, along with the General Survey
@@ -80,23 +74,6 @@ const HatsConfig kHatsPerformanceSurvey = {
         kHatsPerformanceSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
 };
 
-// Onboarding Experience Survey -- shown after completing the Onboarding Dialog
-const HatsConfig kHatsOnboardingSurvey = {
-    ash::features::kHappinessTrackingSystemOnboarding,  // feature
-    base::Minutes(30),                                  // new_device_threshold
-    ash::prefs::kHatsOnboardingDeviceIsSelected,        // is_selected_pref_name
-    ash::prefs::
-        kHatsOnboardingSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
-// ARC++ Games Survey -- shown after a user played a top XX ARC++ game
-const HatsConfig kHatsArcGamesSurvey = {
-    ash::features::kHappinessTrackingSystemArcGames,  // feature
-    base::Days(7),                                    // new_device_threshold
-    ash::prefs::kHatsArcGamesDeviceIsSelected,        // is_selected_pref_name
-    ash::prefs::kHatsArcGamesSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
 // Audio Survey -- shown after a user closed an audio stream living for more
 // than 3 minutes
 const HatsConfig kHatsAudioSurvey = {
@@ -104,14 +81,6 @@ const HatsConfig kHatsAudioSurvey = {
     base::Days(90),                                // new_device_threshold
     ash::prefs::kHatsAudioDeviceIsSelected,        // is_selected_pref_name
     ash::prefs::kHatsAudioSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
-const HatsConfig kHatsAudioOutputProcSurvey = {
-    ash::features::kHappinessTrackingSystemAudioOutputProc,  // feature
-    base::Days(7),                                     // new_device_threshold
-    ash::prefs::kHatsAudioOutputProcDeviceIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsAudioOutputProcSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
 };
 
 // Bluetooth Audio Survey -- shown after the user closed an audio stream
@@ -123,49 +92,6 @@ const HatsConfig kHatsBluetoothAudioSurvey = {
     ash::prefs::
         kHatsBluetoothAudioSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
 };
-// Personalization Avatar Survey -- shown 60 seconds after a user closes the
-// Avatar selection page of either OS Settings or Personalization Hub, depending
-// on whether PersonalizationHub feature is enabled.
-const HatsConfig kHatsPersonalizationAvatarSurvey = {
-    ash::features::kHappinessTrackingPersonalizationAvatar,  // feature
-    base::Days(1),  // new_device_threshold
-    ash::prefs::
-        kHatsPersonalizationAvatarSurveyIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsPersonalizationAvatarSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
-// Personalization Screensaver Survey -- shown 60 seconds after a user closes
-// the Screensaver settings page of either OS Settings or Personalization Hub,
-// depending on whether PersonalizationHub feature is enabled.
-const HatsConfig kHatsPersonalizationScreensaverSurvey = {
-    ash::features::kHappinessTrackingPersonalizationScreensaver,  // feature
-    base::Days(1),  // new_device_threshold
-    ash::prefs::
-        kHatsPersonalizationScreensaverSurveyIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsPersonalizationScreensaverSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
-// Personalization Wallpaper Survey -- shown 60 seconds after a user closes the
-// Wallpaper subpage of the Personalization App.
-const HatsConfig kHatsPersonalizationWallpaperSurvey = {
-    ash::features::kHappinessTrackingPersonalizationWallpaper,  // feature
-    base::Days(1),  // new_device_threshold
-    ash::prefs::
-        kHatsPersonalizationWallpaperSurveyIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsPersonalizationWallpaperSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
-// MediaApp PDF Editing experience survey -- shown after a user clicks `Save`
-// after editing a PDF in the MediaApp (Gallery), and the save is complete.
-const HatsConfig kHatsMediaAppPdfSurvey = {
-    ash::features::kHappinessTrackingMediaAppPdf,  // feature
-    base::Days(7),                                 // new_device_threshold
-    ash::prefs::kHatsMediaAppPdfIsSelected,        // hatsIsSelectedPrefName
-    ash::prefs::kHatsMediaAppPdfCycleEndTs,  // hatsCycleEndTimestampPrefName
-};
 
 // Camera App Survey -- shown after an user captured a photo/video or left the
 // app with session > 15 seconds.
@@ -175,16 +101,6 @@ const HatsConfig kHatsCameraAppSurvey = {
     ash::prefs::kHatsCameraAppDeviceIsSelected,        // is_selected_pref_name
     ash::prefs::
         kHatsCameraAppSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
-// Chromebook Video/Image Editing/Viewing experience survey -- shown after a
-// user opens and then subsequently closes the Google Photos Android App.
-const HatsConfig kHatsPhotosExperienceSurvey = {
-    ash::features::kHappinessTrackingPhotosExperience,  // feature
-    base::Days(7),                                      // new_device_threshold
-    ash::prefs::kHatsPhotosExperienceIsSelected,  // hatsIsSelectedPrefName
-    ash::prefs::
-        kHatsPhotosExperienceCycleEndTs,  // hatsCycleEndTimestampPrefName
 };
 
 // General Camera Survey -- shown after camera is closed after being open for
@@ -214,16 +130,6 @@ const HatsConfig kHatsGeneralCameraPrioritizedSurvey = {
     base::Days(120),
 };
 
-// Bluetooth revamp experience survey -- shown 5 mins after interacting with new
-// Bluetooth UI surfaces.
-const HatsConfig kHatsBluetoothRevampSurvey = {
-    ash::features::kHappinessTrackingSystemBluetoothRevamp,  // feature
-    base::Days(1),                               // new_device_threshold
-    ash::prefs::kHatsBluetoothRevampIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsBluetoothRevampCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
 // Battery life experience survey -- shown after login.
 const HatsConfig kHatsBatteryLifeSurvey = {
     ash::features::kHappinessTrackingSystemBatteryLife,  // feature
@@ -238,59 +144,6 @@ const HatsConfig kHatsPeripheralsSurvey = {
     base::Days(7),                                       // new_device_threshold
     ash::prefs::kHatsPeripheralsIsSelected,  // is_selected_pref_name
     ash::prefs::kHatsPeripheralsCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
-// OS Settings Survey -- shown [5-30] seconds after a user removes focus from
-// Settings or closes the Settings app, if user has used Search, it will add it
-// as a Product Specific Data (PSD).
-const HatsConfig kHatsOsSettingsSearchSurvey = {
-    ash::features::kHappinessTrackingOsSettingsSearch,  // feature
-    base::Days(1),                                      // new_device_threshold
-    ash::prefs::kHatsOsSettingsSearchSurveyIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsOsSettingsSearchSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
-// Borealis games survey -- Shown after a Steam game exits.
-const HatsConfig kHatsBorealisGamesSurvey = {
-    ash::features::kHappinessTrackingBorealisGames,  // feature
-    base::Days(1),                                   // new_device_threshold
-    ash::prefs::kHatsBorealisGamesSurveyIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsBorealisGamesSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-    ash::prefs::kHatsBorealisGamesLastInteractionTimestamp,
-    // survey_last_interaction_timestamp_pref_name
-    base::Days(7),  // threshold_time
-};
-
-// Launcher survey -- Shown after a user opens the launcher for the first time.
-// This survey is enabled for 25% of users.
-const HatsConfig kHatsLauncherAppsFindingSurvey = {
-    ash::features::kHappinessTrackingLauncherAppsFinding,  // feature
-    base::Hours(2),                                 // new_device_threshold
-    ash::prefs::kHatsLauncherAppsSurveyIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsLauncherAppsSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
-// Launcher survey -- Shown after a user opens the launcher for the first time.
-// This survey is enabled for 75% of users.
-const HatsConfig kHatsLauncherAppsNeedingSurvey = {
-    ash::features::kHappinessTrackingLauncherAppsNeeding,  // feature
-    base::Hours(2),                                 // new_device_threshold
-    ash::prefs::kHatsLauncherAppsSurveyIsSelected,  // is_selected_pref_name
-    ash::prefs::
-        kHatsLauncherAppsSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
-};
-
-// Office integration survey -- Shown after the user opens an Office file:
-// For MS365 and Docs/Sheets/Slides, shown when the app is inactive or closed.
-// For QuickOffice, shown 1 minute after launch.
-const HatsConfig kHatsOfficeSurvey = {
-    ash::features::kHappinessTrackingOffice,  // feature
-    base::Days(1),                            // new_device_threshold
-    ash::prefs::kHatsOfficeSurveyIsSelected,  // is_selected_pref_name
-    ash::prefs::kHatsOfficeSurveyCycleEndTs,  // cycle_end_timestamp_pref_name
 };
 
 // Slow and laggy deep dive survey. -- Shown after login.

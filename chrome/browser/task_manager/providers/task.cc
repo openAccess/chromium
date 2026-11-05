@@ -17,6 +17,7 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/task_manager/providers/task_provider_observer.h"
 #include "chrome/browser/task_manager/task_manager_observer.h"
+#include "components/sessions/core/session_id.h"
 #include "content/public/common/result_codes.h"
 #include "ui/base/resource/resource_bundle.h"
 
@@ -50,7 +51,7 @@ Task::~Task() = default;
 
 // static
 std::u16string Task::GetProfileNameFromProfile(Profile* profile) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   ProfileAttributesEntry* entry =
       g_browser_process->profile_manager()
           ->GetProfileAttributesStorage()
@@ -73,7 +74,7 @@ bool Task::IsKillable() {
 bool Task::Kill() {
   if (!IsKillable())
     return false;
-  DCHECK_NE(process_id(), base::GetCurrentProcId());
+  CHECK_NE(process_id(), base::GetCurrentProcId(), base::NotFatalUntil::M162);
   base::Process process = base::Process::Open(process_id());
   return process.Terminate(content::RESULT_CODE_KILLED, false);
 }
@@ -130,8 +131,8 @@ Task::SubType Task::GetSubType() const {
 
 void Task::GetTerminationStatus(base::TerminationStatus* out_status,
                                 int* out_error_code) const {
-  DCHECK(out_status);
-  DCHECK(out_error_code);
+  CHECK(out_status, base::NotFatalUntil::M162);
+  CHECK(out_error_code, base::NotFatalUntil::M162);
 
   *out_status = base::TERMINATION_STATUS_STILL_RUNNING;
   *out_error_code = 0;
@@ -166,6 +167,14 @@ std::optional<base::ByteSize> Task::GetV8MemoryAllocated() const {
 }
 
 std::optional<base::ByteSize> Task::GetV8MemoryUsed() const {
+  return std::nullopt;
+}
+
+std::optional<base::ByteSize> Task::GetCppGCMemoryAllocated() const {
+  return std::nullopt;
+}
+
+std::optional<base::ByteSize> Task::GetCppGCMemoryUsed() const {
   return std::nullopt;
 }
 

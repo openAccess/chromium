@@ -8,10 +8,14 @@
 #include <string>
 #include <vector>
 
+#include "base/check_deref.h"
 #include "base/no_destructor.h"
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
-#include "chrome/browser/profiles/profile_manager.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 
 namespace ash {
@@ -63,7 +67,7 @@ std::vector<std::string> GetRandomHosts(int num_hosts, int prefix_length) {
   std::vector<std::string> random_hosts;
   std::vector<std::string> random_prefixes =
       GetRandomPrefixes(num_hosts, prefix_length);
-  DCHECK(random_prefixes.size() == 1U * num_hosts);
+  CHECK(random_prefixes.size() == 1U * num_hosts, base::NotFatalUntil::M160);
   for (int i = 0; i < num_hosts; i++) {
     random_hosts.push_back(random_prefixes[i] + GetGstaticHostSuffix());
   }
@@ -135,17 +139,29 @@ std::vector<GURL> GetRandomHostsWithSchemeAndPortAndGenerate204Path(
   for (auto& host : hosts) {
     auto url = GURL(scheme + host + ":" + base::NumberToString(port_number) +
                     kGenerate204Path);
-    DCHECK(url.is_valid());
+    CHECK(url.is_valid(), base::NotFatalUntil::M160);
     urls.push_back(url);
   }
   return urls;
 }
 
-Profile* GetUserProfile() {
-  Profile* profile = ProfileManager::GetPrimaryUserProfile();
-  DCHECK(profile);
+content::BrowserContext& GetUserBrowserContext() {
+  const session_manager::Session* const primary_session =
+      session_manager::SessionManager::Get()->GetPrimarySession();
+  if (primary_session) {
+    // The session is created before the browser context is, so this is still
+    // null for a while after the user has signed in.
+    content::BrowserContext* const browser_context =
+        BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+            primary_session->account_id());
+    if (browser_context) {
+      return *browser_context;
+    }
+  }
 
-  return profile;
+  // Fall back to the sign-in browser context. It is loaded before the login
+  // screen is shown and stays around until the session becomes active.
+  return CHECK_DEREF(BrowserContextHelper::Get()->GetSigninBrowserContext());
 }
 
 const std::array<uint8_t, kStunHeaderSize>& GetStunHeader() {

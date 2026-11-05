@@ -4,19 +4,21 @@
 
 #include "chrome/browser/devtools/protocol/page_handler.h"
 
+#include <string>
+#include <utility>
 #include <variant>
 
-#include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/custom_handlers/protocol_handler_registry_factory.h"
-#include "chrome/browser/web_applications/web_app_helpers.h"
-#include "components/custom_handlers/protocol_handler_registry.h"
-#include "components/payments/content/payment_request_web_contents_manager.h"
-#include "components/subresource_filter/content/browser/devtools_interaction_tracker.h"
-#include "third_party/blink/public/common/manifest/manifest_util.h"
-#include "ui/gfx/image/image.h"
+#include "base/check.h"
+#include "base/functional/bind.h"
+#include "base/strings/strcat.h"
+#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
+#include "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
 
 #if BUILDFLAG(ENABLE_PRINTING)
+#include "components/printing/browser/headless/headless_print_manager.h"
 #include "components/printing/browser/print_to_pdf/pdf_print_utils.h"
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW)
 #include "chrome/browser/printing/print_view_manager.h"
@@ -34,192 +36,6 @@ using ActivePrintManager = printing::PrintViewManagerBasic;
 #endif
 
 #endif  // BUILDFLAG(ENABLE_PRINTING)
-
-PageHandler::PageHandler(scoped_refptr<content::DevToolsAgentHost> agent_host,
-                         content::WebContents* web_contents,
-                         protocol::UberDispatcher* dispatcher,
-                         bool is_trusted)
-    : agent_host_(agent_host),
-      web_contents_(web_contents->GetWeakPtr()),
-      is_trusted_(is_trusted) {
-  protocol::Page::Dispatcher::wire(dispatcher, this);
-}
-
-PageHandler::~PageHandler() {
-  Disable();
-}
-
-void PageHandler::ToggleAdBlocking(bool enabled) {
-  if (!web_contents_)
-    return;
-
-  // Create the DevtoolsInteractionTracker lazily (note that this call is a
-  // no-op if the object was already created).
-  subresource_filter::DevtoolsInteractionTracker::CreateForWebContents(
-      web_contents_.get());
-
-  subresource_filter::DevtoolsInteractionTracker::FromWebContents(
-      web_contents_.get())
-      ->ToggleForceActivation(enabled);
-}
-
-protocol::Response PageHandler::Enable(
-    std::optional<bool> enable_file_chooser_opened_event) {
-  enabled_ = true;
-  // Do not mark the command as handled. Let it fall through instead, so that
-  // the handler in content gets a chance to process the command.
-  return protocol::Response::FallThrough();
-}
-
-protocol::Response PageHandler::Disable() {
-  enabled_ = false;
-  ToggleAdBlocking(false /* enable */);
-  SetSPCTransactionMode(protocol::Page::SetSPCTransactionMode::ModeEnum::None);
-  // Do not mark the command as handled. Let it fall through instead, so that
-  // the handler in content gets a chance to process the command.
-  return protocol::Response::FallThrough();
-}
-
-protocol::Response PageHandler::SetAdBlockingEnabled(bool enabled) {
-  if (!enabled_)
-    return protocol::Response::ServerError("Page domain is disabled.");
-  ToggleAdBlocking(enabled);
-  return protocol::Response::Success();
-}
-
-protocol::Response PageHandler::SetSPCTransactionMode(
-    const protocol::String& mode) {
-  if (!is_trusted_) {
-    return protocol::Response::ServerError(
-        "Permission denied: Page.setSPCTransactionMode requires a trusted "
-        "client");
-  }
-  if (!web_contents_)
-    return protocol::Response::ServerError("No web contents to host a dialog.");
-
-  payments::SPCTransactionMode spc_mode = payments::SPCTransactionMode::kNone;
-  if (mode == protocol::Page::SetSPCTransactionMode::ModeEnum::AutoAccept) {
-    spc_mode = payments::SPCTransactionMode::kAutoAccept;
-  } else if (mode == protocol::Page::SetSPCTransactionMode::ModeEnum::
-                         AutoChooseToAuthAnotherWay) {
-    spc_mode = payments::SPCTransactionMode::kAutoAuthAnotherWay;
-  } else if (mode ==
-             protocol::Page::SetSPCTransactionMode::ModeEnum::AutoReject) {
-    spc_mode = payments::SPCTransactionMode::kAutoReject;
-  } else if (mode ==
-             protocol::Page::SetSPCTransactionMode::ModeEnum::AutoOptOut) {
-    spc_mode = payments::SPCTransactionMode::kAutoOptOut;
-  } else if (mode != protocol::Page::SetSPCTransactionMode::ModeEnum::None) {
-    return protocol::Response::ServerError("Unrecognized mode value");
-  }
-
-  auto* payment_request_manager =
-      payments::PaymentRequestWebContentsManager::GetOrCreateForWebContents(
-          web_contents_.get());
-  payment_request_manager->SetSPCTransactionMode(spc_mode);
-  return protocol::Response::Success();
-}
-
-protocol::Response PageHandler::SetRPHRegistrationMode(
-    const protocol::String& mode) {
-  if (!web_contents_) {
-    return protocol::Response::ServerError("No web contents to host a dialog.");
-  }
-  if (!is_trusted_) {
-    return protocol::Response::ServerError(
-        "Permission denied: Page.setRPHRegistrationMode requires a trusted "
-        "client");
-  }
-
-  custom_handlers::RphRegistrationMode rph_mode =
-      custom_handlers::RphRegistrationMode::kNone;
-  if (mode == protocol::Page::SetRPHRegistrationMode::ModeEnum::AutoAccept) {
-    rph_mode = custom_handlers::RphRegistrationMode::kAutoAccept;
-  } else if (mode ==
-             protocol::Page::SetRPHRegistrationMode::ModeEnum::AutoReject) {
-    rph_mode = custom_handlers::RphRegistrationMode::kAutoReject;
-  } else if (mode != protocol::Page::SetRPHRegistrationMode::ModeEnum::None) {
-    return protocol::Response::ServerError("Unrecognized mode value");
-  }
-
-  custom_handlers::ProtocolHandlerRegistry* registry =
-      ProtocolHandlerRegistryFactory::GetForBrowserContext(
-          web_contents_->GetBrowserContext());
-  registry->SetRphRegistrationMode(rph_mode);
-  return protocol::Response::Success();
-}
-
-void PageHandler::GetInstallabilityErrors(
-    std::unique_ptr<GetInstallabilityErrorsCallback> callback) {
-  auto errors = std::make_unique<protocol::Array<std::string>>();
-  webapps::InstallableManager* manager =
-      web_contents_
-          ? webapps::InstallableManager::FromWebContents(web_contents_.get())
-          : nullptr;
-  if (!manager) {
-    callback->sendFailure(
-        protocol::Response::ServerError("Unable to fetch errors for target"));
-    return;
-  }
-  manager->GetAllErrors(base::BindOnce(&PageHandler::GotInstallabilityErrors,
-                                       std::move(callback)));
-}
-
-// static
-void PageHandler::GotInstallabilityErrors(
-    std::unique_ptr<GetInstallabilityErrorsCallback> callback,
-    std::vector<content::InstallabilityError> installability_errors) {
-  auto result_installability_errors =
-      std::make_unique<protocol::Array<protocol::Page::InstallabilityError>>();
-  for (const auto& installability_error : installability_errors) {
-    auto installability_error_arguments = std::make_unique<
-        protocol::Array<protocol::Page::InstallabilityErrorArgument>>();
-    for (const auto& error_argument :
-         installability_error.installability_error_arguments) {
-      installability_error_arguments->emplace_back(
-          protocol::Page::InstallabilityErrorArgument::Create()
-              .SetName(error_argument.name)
-              .SetValue(error_argument.value)
-              .Build());
-    }
-    result_installability_errors->emplace_back(
-        protocol::Page::InstallabilityError::Create()
-            .SetErrorId(installability_error.error_id)
-            .SetErrorArguments(std::move(installability_error_arguments))
-            .Build());
-  }
-  callback->sendSuccess(std::move(result_installability_errors));
-}
-
-void PageHandler::GetManifestIcons(
-    std::unique_ptr<GetManifestIconsCallback> callback) {
-  webapps::InstallableManager* manager =
-      web_contents_
-          ? webapps::InstallableManager::FromWebContents(web_contents_.get())
-          : nullptr;
-
-  if (!manager) {
-    callback->sendFailure(
-        protocol::Response::ServerError("Unable to fetch icons for target"));
-    return;
-  }
-
-  manager->GetPrimaryIcon(
-      base::BindOnce(&PageHandler::GotManifestIcons, std::move(callback)));
-}
-
-void PageHandler::GotManifestIcons(
-    std::unique_ptr<GetManifestIconsCallback> callback,
-    const SkBitmap* primary_icon) {
-  std::optional<protocol::Binary> primaryIconAsBinary;
-
-  if (primary_icon && !primary_icon->empty()) {
-    primaryIconAsBinary = protocol::Binary::fromRefCounted(
-        gfx::Image::CreateFrom1xBitmap(*primary_icon).As1xPNGBytes());
-  }
-
-  callback->sendSuccess(std::move(primaryIconAsBinary));
-}
 
 void PageHandler::PrintToPDF(std::optional<bool> landscape,
                              std::optional<bool> display_header_footer,
@@ -239,7 +55,17 @@ void PageHandler::PrintToPDF(std::optional<bool> landscape,
                              std::optional<bool> generate_tagged_pdf,
                              std::optional<bool> generate_document_outline,
                              std::unique_ptr<PrintToPDFCallback> callback) {
-  DCHECK(callback);
+  CHECK(callback, base::NotFatalUntil::M161);
+
+#if BUILDFLAG(IS_ANDROID)
+  // On Android, Page.printToPDF is only available to trusted clients. Fall
+  // through so that untrusted clients observe the same behavior as when this
+  // handler is not instantiated.
+  if (!is_trusted_) {
+    callback->fallThrough();
+    return;
+  }
+#endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(ENABLE_PRINTING)
   if (!web_contents_) {
@@ -261,8 +87,9 @@ void PageHandler::PrintToPDF(std::optional<bool> landscape,
     return;
   }
 
-  DCHECK(std::holds_alternative<printing::mojom::PrintPagesParamsPtr>(
-      print_pages_params));
+  CHECK(std::holds_alternative<printing::mojom::PrintPagesParamsPtr>(
+            print_pages_params),
+        base::NotFatalUntil::M161);
 
   bool return_as_stream =
       transfer_mode.value_or("") ==
@@ -303,43 +130,51 @@ void PageHandler::PrintToPDF(std::optional<bool> landscape,
       protocol::Response::ServerError("Printing is not available"));
 }
 
-void PageHandler::GetAppId(std::unique_ptr<GetAppIdCallback> callback) {
-  webapps::InstallableManager* manager =
-      web_contents_
-          ? webapps::InstallableManager::FromWebContents(web_contents_.get())
-          : nullptr;
-
-  if (!manager) {
+void PageHandler::GetAnnotatedPageContent(
+    std::optional<bool> include_actionable_information,
+    std::unique_ptr<GetAnnotatedPageContentCallback> callback) {
+  if (!web_contents_) {
     callback->sendFailure(
-        protocol::Response::ServerError("Unable to fetch app id for target"));
+        protocol::Response::ServerError("WebContents not found."));
     return;
   }
 
-  webapps::InstallableParams params;
-  manager->GetData(params, base::BindOnce(&PageHandler::OnDidGetManifest,
-                                          weak_ptr_factory_.GetWeakPtr(),
-                                          std::move(callback)));
+  // optimization_guide::GetAIPageContent() extracts content from the primary
+  // main frame of `web_contents_`. Reject sessions attached to a non-primary
+  // page (e.g. a prerendered page) rather than returning the content of a
+  // different page.
+  if (!IsAttachedToPrimaryPage()) {
+    callback->sendFailure(
+        protocol::Response::ServerError("Not attached to an active page"));
+    return;
+  }
+
+  auto options = include_actionable_information.value_or(true)
+                     ? optimization_guide::ActionableAIPageContentOptions(
+                           /*on_critical_path=*/false)
+                     : optimization_guide::DefaultAIPageContentOptions(
+                           /*on_critical_path=*/false);
+
+  optimization_guide::GetAIPageContent(
+      web_contents_.get(), std::move(options),
+      base::BindOnce(
+          [](std::unique_ptr<GetAnnotatedPageContentCallback> callback,
+             optimization_guide::AIPageContentResultOrError result) {
+            if (!result.has_value()) {
+              callback->sendFailure(protocol::Response::ServerError(
+                  base::StrCat({"Failed to get annotated page content: ",
+                                result.error().message})));
+              return;
+            }
+            callback->sendSuccess(protocol::Binary::fromString(
+                result->proto.SerializeAsString()));
+          },
+          std::move(callback)));
 }
 
-void PageHandler::OnDidGetManifest(std::unique_ptr<GetAppIdCallback> callback,
-                                   const webapps::InstallableData& data) {
-  if (data.manifest_url->is_empty()) {
-    callback->sendSuccess(std::nullopt, std::nullopt);
-    return;
-  }
-  // Either both the id and start_url are present, or they are both empty.
-  std::string current_app_id_str;
-  std::string recommended_manifest_id_path_only;
-  if (data.manifest->id.is_valid()) {
-    CHECK(data.manifest->start_url.is_valid());
-    current_app_id_str = data.manifest->id.spec();
-    recommended_manifest_id_path_only =
-        web_app::GenerateManifestIdFromStartUrlOnly(data.manifest->start_url)
-            .value().PathForRequest();
-  } else {
-    CHECK(!data.manifest->start_url.is_valid());
-  }
-  callback->sendSuccess(current_app_id_str, recommended_manifest_id_path_only);
+bool PageHandler::IsAttachedToPrimaryPage() const {
+  return web_contents_ && content::DevToolsAgentHost::GetOrCreateFor(
+                              web_contents_.get()) == agent_host_;
 }
 
 #if BUILDFLAG(ENABLE_PRINTING)

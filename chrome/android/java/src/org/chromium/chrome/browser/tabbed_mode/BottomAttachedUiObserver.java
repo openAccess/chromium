@@ -31,13 +31,13 @@ import org.chromium.chrome.browser.keyboard_accessory.ManualFillingComponent;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestionsVisualState;
 import org.chromium.chrome.browser.overlay_panel.PanelState;
-import org.chromium.chrome.browser.ui.BottomSheetUtils;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetUtils;
 import org.chromium.ui.insets.InsetObserver;
 
 import java.util.Objects;
@@ -125,6 +125,7 @@ public class BottomAttachedUiObserver
     private boolean mAccessorySheetVisible;
     private @Nullable @ColorInt Integer mAccessorySheetColor;
     private boolean mNonBottomChinBottomControlsVisible;
+    private boolean mWasBottomBarVisible;
 
     /**
      * Build the observer that listens to changes in the UI bordering the bottom.
@@ -351,18 +352,19 @@ public class BottomAttachedUiObserver
                 !mNonBottomChinBottomControlsVisible && nonBottomChinBottomControlsVisible;
         mNonBottomChinBottomControlsVisible = nonBottomChinBottomControlsVisible;
 
-        if (disableAnimationsTabGroupToolbar) {
-            return true;
-        }
-
         boolean isBottomBarVisible =
                 (BottomBarConfigUtils.isBottomBarEnabled(mContext)
                                 || mBrowserControlsStateProvider.getControlsPosition()
                                         == ControlsPosition.BOTTOM)
                         && !BrowserControlsUtils.areBottomControlsOffScreen(
                                 mBrowserControlsStateProvider);
+        boolean disableAnimationsBottomBar =
+                isBottomBarVisible
+                        || (ChromeFeatureList.sBottomControlsJankImprovement.isEnabled()
+                                && mWasBottomBarVisible);
+        mWasBottomBarVisible = isBottomBarVisible;
 
-        if (isBottomBarVisible) {
+        if (disableAnimationsTabGroupToolbar || disableAnimationsBottomBar) {
             return true;
         }
 

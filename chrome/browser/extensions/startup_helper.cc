@@ -8,13 +8,13 @@
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/logging.h"
 #include "base/memory/raw_ref.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/common/initialize_extensions_client.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "extensions/browser/extension_file_task_runner.h"
@@ -37,9 +37,7 @@ void PrintPackExtensionMessage(const std::u16string& message) {
 
 }  // namespace
 
-StartupHelper::StartupHelper() {
-  EnsureExtensionsClientInitialized();
-}
+StartupHelper::StartupHelper() = default;
 
 StartupHelper::~StartupHelper() = default;
 
@@ -116,14 +114,16 @@ class ValidateCrxHelper : public SandboxedUnpackerClient {
                        const Extension* extension,
                        const SkBitmap& install_icon,
                        base::DictValue ruleset_install_prefs) override {
-    DCHECK(GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence());
+    CHECK(GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M161);
     success_ = true;
     content::GetUIThreadTaskRunner({})->PostTask(
         FROM_HERE, base::BindOnce(&ValidateCrxHelper::FinishOnUIThread, this));
   }
 
   void OnUnpackFailure(const CrxInstallError& error) override {
-    DCHECK(GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence());
+    CHECK(GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M161);
     success_ = false;
     error_ = error.message();
     content::GetUIThreadTaskRunner({})->PostTask(
@@ -131,12 +131,13 @@ class ValidateCrxHelper : public SandboxedUnpackerClient {
   }
 
   void FinishOnUIThread() {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M161);
     std::move(quit_closure_).Run();
   }
 
   void StartOnBlockingThread() {
-    DCHECK(GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence());
+    CHECK(GetExtensionFileTaskRunner()->RunsTasksInCurrentSequence(),
+          base::NotFatalUntil::M161);
     auto unpacker = base::MakeRefCounted<SandboxedUnpacker>(
         mojom::ManifestLocation::kInternal, 0, /* no special creation flags */
         *temp_dir_, GetExtensionFileTaskRunner().get(), this);

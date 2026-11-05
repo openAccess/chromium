@@ -56,7 +56,7 @@ class ScrollbarThemeWithMockInvalidation : public ScrollbarThemeOverlayMock {
  public:
   MOCK_CONST_METHOD0(ShouldRepaintAllPartsOnInvalidation, bool());
   MOCK_CONST_METHOD3(PartsToInvalidateOnThumbPositionChange,
-                     ScrollbarPart(const Scrollbar&, float, float));
+                     int(const Scrollbar&, float, float));
 };
 
 }  // namespace
@@ -175,8 +175,8 @@ TEST_P(ScrollableAreaTest, ScrollableAreaDidScroll) {
   scrollable_area->DidCompositorScroll(gfx::PointF(40, 51),
                                        cc::ScrollSourceType::kNone);
 
-  EXPECT_EQ(40, scrollable_area->ScrollOffsetInt().x());
-  EXPECT_EQ(51, scrollable_area->ScrollOffsetInt().y());
+  EXPECT_EQ(40, scrollable_area->PixelSnappedScrollOffset().x());
+  EXPECT_EQ(51, scrollable_area->PixelSnappedScrollOffset().y());
 }
 
 TEST_P(ScrollableAreaTest, ProgrammaticScrollRespectAnimatorEnabled) {
@@ -332,9 +332,9 @@ TEST_P(ScrollableAreaTest, FilterIncomingScrollDuringSmoothUserScroll) {
 }
 
 class ScrollableAreaOverscrollTest : public testing::Test,
-                                     ScopedOverscrollGesturesForTest {
+                                     ScopedOverscrollAreasForTest {
  public:
-  ScrollableAreaOverscrollTest() : ScopedOverscrollGesturesForTest(true) {}
+  ScrollableAreaOverscrollTest() : ScopedOverscrollAreasForTest(true) {}
 
   void SetUp() override {
     dummy_page_holder_ =

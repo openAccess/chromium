@@ -19,6 +19,7 @@
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_path_override.h"
+#include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/win/installer_downloader/installer_downloader_constants.h"
 #include "chrome/browser/win/installer_downloader/installer_downloader_model.h"
 #include "chrome/test/base/testing_profile.h"
@@ -65,7 +66,7 @@ class MockInstallerDownloaderModel : public InstallerDownloaderModel {
 
 class InstallerDownloaderControllerTest : public testing::Test {
  protected:
-  InstallerDownloaderControllerTest() {
+  void SetUp() override {
     auto download_manager = std::make_unique<content::MockDownloadManager>();
     mock_download_manager_ = download_manager.get();
     profile_.SetDownloadManagerForTesting(std::move(download_manager));
@@ -176,13 +177,12 @@ TEST_F(InstallerDownloaderControllerTest,
               &GURL::spec,
               AllOf(
                   // GUID in the iid= query param.
-                  ContainsRegex(
-                      "iid=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-"
-                      "[0-9a-f]{12}"),
+                  ContainsRegex("iid%3D%7B[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                                "[0-9a-f]{4}-[0-9a-f]{12}%7D"),
                   // Metrics flag.
-                  HasSubstr("&stats=1"),
+                  HasSubstr("%26usagestats%3D1"),
                   // Language substitution.
-                  HasSubstr("&lang=en"),
+                  HasSubstr("%26lang%3Den"),
                   // No leftover placeholders.
                   Not(HasSubstr("IIDGUID")), Not(HasSubstr("STATS")),
                   Not(HasSubstr("LANGUAGE")))),
@@ -197,7 +197,7 @@ TEST_F(InstallerDownloaderControllerTest, DownloadUrlStatsEnabled) {
   const base::FilePath destination(FILE_PATH_LITERAL("C:\\tmp"));
   EXPECT_CALL(*mock_model_,
               StartDownload(
-                  Property(&GURL::spec, HasSubstr("&stats=1")),
+                  Property(&GURL::spec, HasSubstr("%26usagestats%3D1")),
                   destination.AppendASCII(kDownloadedInstallerFileName), _, _));
 
   controller_->OnDownloadRequestAccepted(destination);
@@ -209,7 +209,7 @@ TEST_F(InstallerDownloaderControllerTest, DownloadUrlStatsDisabled) {
   const base::FilePath destination(FILE_PATH_LITERAL("C:\\tmp"));
   EXPECT_CALL(*mock_model_,
               StartDownload(
-                  Property(&GURL::spec, HasSubstr("&stats=0")),
+                  Property(&GURL::spec, HasSubstr("%26usagestats%3D0")),
                   destination.AppendASCII(kDownloadedInstallerFileName), _, _));
 
   controller_->OnDownloadRequestAccepted(destination);
@@ -221,7 +221,7 @@ TEST_F(InstallerDownloaderControllerTest, DownloadUrlLanguageSubstitution) {
   const base::FilePath destination(FILE_PATH_LITERAL("C:\\tmp"));
   EXPECT_CALL(*mock_model_,
               StartDownload(
-                  Property(&GURL::spec, AllOf(HasSubstr("&lang=en"),
+                  Property(&GURL::spec, AllOf(HasSubstr("%26lang%3Den"),
                                               Not(HasSubstr("LANGUAGE")))),
                   destination.AppendASCII(kDownloadedInstallerFileName), _, _));
 
@@ -371,6 +371,7 @@ TEST_F(InstallerDownloaderControllerTest, LogsDownloadResultMetric) {
         download_completion_callback = std::move(callback);
       });
   EXPECT_CALL(*mock_model_, PreventFutureDisplay()).Times(1);
+  EXPECT_CALL(*mock_model_, RecordDownloadCompleted()).Times(1);
 
   controller_->OnDownloadRequestAccepted(
       base::FilePath(FILE_PATH_LITERAL("C:\\tmp"))
@@ -420,6 +421,32 @@ TEST_F(InstallerDownloaderControllerTest, NoInfobarOnGuestProfile) {
   controller_->MaybeShowInfoBar();
 }
 
+TEST_F(InstallerDownloaderControllerTest, OnlyRegularProfilesAreEligible) {
+  EXPECT_TRUE(InstallerDownloaderController::IsEligibleProfile(profile_));
+  EXPECT_FALSE(InstallerDownloaderController::IsEligibleProfile(
+      *profile_.GetPrimaryOTRProfile(/*create_if_needed=*/true)));
+
+  std::unique_ptr<TestingProfile> guest =
+      TestingProfile::Builder().SetGuestSession().Build();
+  EXPECT_FALSE(InstallerDownloaderController::IsEligibleProfile(*guest));
+}
+
+TEST_F(InstallerDownloaderControllerTest,
+       AcceptWithIncognitoTabActiveStartsNoDownload) {
+  content::WebContents* incognito_contents =
+      web_contents_factory_.CreateWebContents(
+          profile_.GetPrimaryOTRProfile(/*create_if_needed=*/true));
+  controller_->SetActiveWebContentsCallbackForTesting(
+      base::BindLambdaForTesting(
+          [incognito_contents]() { return incognito_contents; }));
+
+  // The strict mocks fail the test if the URL is built or a download starts.
+  EXPECT_CALL(*mock_model_, StartDownload(_, _, _, _)).Times(0);
+
+  controller_->OnDownloadRequestAccepted(
+      base::FilePath(FILE_PATH_LITERAL("C:\\foo")));
+}
+
 TEST_F(InstallerDownloaderControllerTest, SkipsWhenActiveBrowserHasNoTabs) {
   controller_->SetActiveWebContentsCallbackForTesting(
       base::BindLambdaForTesting(
@@ -465,6 +492,33 @@ TEST_F(InstallerDownloaderControllerTest, ReengagementMetricsLogCorrectCycle) {
   histograms.ExpectUniqueSample(
       "Windows.InstallerDownloader.Reengagement.RequestAccepted",
       /*cycle=*/2, /*expected_count=*/1);
+}
+
+class InstallerDownloaderControllerMigratedTest
+    : public InstallerDownloaderControllerTest {
+ protected:
+  InstallerDownloaderControllerMigratedTest() {
+    feature_list_.InitAndEnableFeatureWithParameters(
+        infobars::kCentralizedInfoBarFramework,
+        {{"MigratedInstallerDownloader", "true"}});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Regression test for the infobar staying hidden after startup until a new tab
+// was opened. The startup trigger runs when the first tab is inserted, which is
+// before the freshly created window has been shown and activated, so gating the
+// eligibility check on there being an *active* browser window dropped that
+// attempt.
+TEST_F(InstallerDownloaderControllerMigratedTest,
+       ChecksEligibilityWithoutActiveBrowserWindow) {
+  EXPECT_CALL(*mock_model_, CanShowInfobar()).WillOnce(Return(true));
+  EXPECT_CALL(should_show_infobar_for_profile_mock_callback_, Run()).Times(0);
+  EXPECT_CALL(*mock_model_, CheckEligibility(_)).Times(1);
+
+  controller_->MaybeShowInfoBar();
 }
 
 }  // namespace

@@ -24,7 +24,7 @@
 
 namespace content {
 
-// Encapsulates an SQL database that holds DIPS info.
+// Encapsulates an SQL database that holds BTM info.
 class CONTENT_EXPORT BtmDatabase {
  public:
   enum class BounceFilterType {
@@ -38,20 +38,16 @@ class CONTENT_EXPORT BtmDatabase {
 
   // Version number of the database schema.
   // NOTE: When changing the version, add a new golden file for the new version
-  // at `//chrome/test/data/dips/v<N>.sql`.
-  static constexpr int kLatestSchemaVersion = 11;
+  // at `//content/test/data/btm/v<N>.sql`.
+  static constexpr int kLatestSchemaVersion = 12;
 
   // The minimum database schema version this Chrome code is compatible with.
-  static constexpr int kMinCompatibleSchemaVersion = 11;
+  static constexpr int kMinCompatibleSchemaVersion = 12;
 
   static constexpr char kPrepopulatedKey[] = "prepopulated";
 
   // The length of time that will be waited between emitting db health metrics.
   static constexpr base::TimeDelta kMetricsInterval = base::Hours(24);
-
-  // How long DIPS maintains popups in storage (for recording Popup Heuristic
-  // storage accesses).
-  static constexpr base::TimeDelta kPopupTtl = base::Days(60);
 
   // Passing in an std::nullopt `db_path` causes the db to be created in
   // memory. Init() must be called before using the BtmDatabase to make sure it
@@ -65,27 +61,17 @@ class CONTENT_EXPORT BtmDatabase {
   BtmDatabase(const BtmDatabase&) = delete;
   BtmDatabase& operator=(const BtmDatabase&) = delete;
 
-  // DIPS Bounce table functions -----------------------------------------------
+  // BTM Bounce table functions ------------------------------------------------
   bool Write(const std::string& site,
              const TimestampRange& user_activation_times,
              const TimestampRange& bounce_times,
              const TimestampRange& web_authn_assertion_times);
 
-  bool WritePopup(const std::string& opener_site,
-                  const std::string& popup_site,
-                  const uint64_t access_id,
-                  const base::Time& popup_time,
-                  bool is_current_interaction,
-                  bool is_authentication_interaction);
-
   std::optional<StateValue> Read(const std::string& site);
-
-  std::optional<PopupsStateValue> ReadPopup(const std::string& opener_site,
-                                            const std::string& popup_site);
 
   // Note: this doesn't clear expired interactions from the database unlike
   // the other database querying methods.
-  std::vector<std::string> GetAllSitesForTesting(const BtmDatabaseTable table);
+  std::vector<std::string> GetAllSitesForTesting();
 
   // Returns the subset of sites in `sites` WITH some property recorded, as
   // determined by the filtering condition.
@@ -98,7 +84,7 @@ class CONTENT_EXPORT BtmDatabase {
   std::set<std::string> FilterSites(const std::set<std::string>& sites,
                                     BounceFilterType filter);
 
-  // Returns all sites which bounced the user and aren't protected from DIPS.
+  // Returns all sites which bounced the user and aren't protected from BTM.
   //
   // A site can be protected in several ways:
   // - it's still in its grace period after the first bounce
@@ -112,12 +98,12 @@ class CONTENT_EXPORT BtmDatabase {
 
   // Deletes all rows in the database whose interactions have expired out.
   //
-  // When an interaction happens before a DIPS-triggering action or during the
+  // When an interaction happens before a BTM-triggering action or during the
   // following grace-period, it protects that site from its data being cleared
-  // by DIPS. Further interactions will prolong that protection until the last
+  // by BTM. Further interactions will prolong that protection until the last
   // one reaches the `interaction_ttl`.
   //
-  // Clearing expired interactions effectively restarts the DIPS procedure for
+  // Clearing expired interactions effectively restarts the BTM procedure for
   // determining if a site is a tracker for sites that are cleared.
   //
   // Returns the number of rows that are removed.
@@ -128,10 +114,9 @@ class CONTENT_EXPORT BtmDatabase {
   //
   // NOTE: This method's main procedure is performed after calling
   // `ClearExpiredRows()`.
-  bool RemoveRow(const BtmDatabaseTable table, std::string_view site);
+  bool RemoveRow(std::string_view site);
 
-  bool RemoveRows(const BtmDatabaseTable table,
-                  const std::vector<std::string>& sites);
+  bool RemoveRows(const std::vector<std::string>& sites);
 
   // NOTE: This method's main procedure is performed after calling
   // `ClearExpiredRows()`.
@@ -149,7 +134,7 @@ class CONTENT_EXPORT BtmDatabase {
   //
   // NOTE: This method's main procedure is performed after calling
   // `ClearExpiredRows()`.
-  size_t GetEntryCount(const BtmDatabaseTable table);
+  size_t GetEntryCount();
 
   // If the number of entries in the database is greater than
   // |GetMaxEntries()|, garbage collect. Returns the number of entries deleted
@@ -162,14 +147,13 @@ class CONTENT_EXPORT BtmDatabase {
   //
   // NOTE: The SQLITE sub-query in this method must match that of
   // `GetGarbageCollectOldestSitesForTesting()`'s query.
-  size_t GarbageCollectOldest(const BtmDatabaseTable table, int purge_goal);
+  size_t GarbageCollectOldest(int purge_goal);
 
   // Used for testing the intended behavior `GarbageCollectOldest()`.
   //
   // NOTE: The SQLITE query in this method must match that of
   // `GarbageCollectOldest()`'s sub-query.
-  std::vector<std::string> GetGarbageCollectOldestSitesForTesting(
-      const BtmDatabaseTable table);
+  std::vector<std::string> GetGarbageCollectOldestSitesForTesting();
 
   bool in_memory() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);

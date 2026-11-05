@@ -24,6 +24,8 @@ use crate::errors::DecodeErrors;
 use crate::huffman::HuffmanTable;
 use crate::misc::{SOFMarkers, UN_ZIGZAG};
 
+const MARKER_BODY_CANCEL_CHUNK_SIZE: usize = 4096;
+
 /// Wrapper over a marker body that exposes a cursor-style read API.
 ///
 /// All header parsers use this rather than `decoder.stream` directly, so any
@@ -102,10 +104,19 @@ where
     bytes.clear();
     bytes.resize(body_len, 0);
 
-    if let Err(e) = decoder.stream.read_exact_bytes(&mut bytes) {
-        bytes.clear();
-        decoder.marker_body_scratch = bytes;
-        return Err(e.into());
+    for (chunk_index, chunk) in bytes.chunks_mut(MARKER_BODY_CANCEL_CHUNK_SIZE).enumerate() {
+        if chunk_index > 0 {
+            if let Err(error) = decoder.check_cancelled() {
+                bytes.clear();
+                decoder.marker_body_scratch = bytes;
+                return Err(error);
+            }
+        }
+        if let Err(error) = decoder.stream.read_exact_bytes(chunk) {
+            bytes.clear();
+            decoder.marker_body_scratch = bytes;
+            return Err(error.into());
+        }
     }
 
     let result = parse(decoder, MarkerBody::new(&bytes));
@@ -344,7 +355,8 @@ pub(crate) fn parse_start_of_frame<T: ZByteReaderTrait>(
         #[allow(clippy::cast_possible_truncation)]
         let length = (cursor.body().len() + 2) as u16;
         // Pixel decoding remains 8-bit only, but Huffman-coded 12-bit frame
-        // headers are useful to callers that inspect image metadata.
+        // and lossless frame headers are useful to callers that inspect image
+        // metadata.
         let dt_precision = cursor.read_u8()?;
 
         let supported_header_precision = if sof.is_lossless() {
@@ -352,11 +364,11 @@ pub(crate) fn parse_start_of_frame<T: ZByteReaderTrait>(
         } else {
             dt_precision == 8
                 || (dt_precision == 12
-                    && matches!(
-                        sof,
-                        SOFMarkers::ExtendedSequentialHuffman
-                            | SOFMarkers::ProgressiveDctHuffman
-                    ))
+                && matches!(
+                    sof,
+                    SOFMarkers::ExtendedSequentialHuffman
+                        | SOFMarkers::ProgressiveDctHuffman
+                ))
         };
         if !supported_header_precision {
             return Err(DecodeErrors::SofError(format!(
@@ -404,6 +416,12 @@ pub(crate) fn parse_start_of_frame<T: ZByteReaderTrait>(
 
         trace!("Image components : {num_components}");
 
+        if usize::from(num_components) > MAX_COMPONENTS {
+            return Err(DecodeErrors::SofError(format!(
+                "Invalid number of components in start of frame {num_components}, expected in range 1..={MAX_COMPONENTS}"
+            )));
+        }
+
         // Build components list locally; commit only when the whole body parses.
         let mut components = Vec::with_capacity(num_components as usize);
         let mut temp = [0; 3];
@@ -436,6 +454,7 @@ pub(crate) fn parse_start_of_frame<T: ZByteReaderTrait>(
         // intercept the DNL marker rather than stopping at row 0.
         if img_height == 0 {
             img.expects_dnl = true;
+            img.dnl_image = true;
         }
         img.info.components = num_components;
         img.components = components;
@@ -448,12 +467,7 @@ pub(crate) fn parse_start_of_frame<T: ZByteReaderTrait>(
 }
 
 fn validate_scan_parameters(
-    is_lossless: bool,
-    precision: u8,
-    spec_start: u8,
-    spec_end: u8,
-    succ_high: u8,
-    succ_low: u8,
+    is_lossless: bool, precision: u8, spec_start: u8, spec_end: u8, succ_high: u8, succ_low: u8
 ) -> Result<(), DecodeErrors> {
     if is_lossless {
         if !(1..=7).contains(&spec_start)
@@ -579,7 +593,7 @@ pub(crate) fn parse_sos<T: ZByteReaderTrait>(
             spec_start,
             spec_end,
             succ_high,
-            succ_low,
+            succ_low
         )?;
 
         // Commit phase: all reads and validations succeeded.
@@ -590,6 +604,8 @@ pub(crate) fn parse_sos<T: ZByteReaderTrait>(
             let component = &mut image.components[j];
             component.dc_huff_table = usize::from((y >> 4) & 0xF);
             component.ac_huff_table = usize::from(y & 0xF);
+            component.dc_pred = 0;
+            component.dc_diff = 0;
             trace!(
                 "Assigned huffman tables {}/{} to component {j}, id={}",
                 component.dc_huff_table,
@@ -601,6 +617,11 @@ pub(crate) fn parse_sos<T: ZByteReaderTrait>(
         image.spec_end = spec_end;
         image.succ_high = succ_high;
         image.succ_low = succ_low;
+        image.todo = if image.restart_interval == 0 {
+            0x7fff_ffff
+        } else {
+            image.restart_interval
+        };
 
         trace!("Ss={spec_start}, Se={spec_end} Ah={succ_high} Al={succ_low}");
 
@@ -728,7 +749,14 @@ pub(crate) fn parse_app1<T: ZByteReaderTrait>(
         match payload {
             App1Payload::Exif(data) => decoder.info.exif_data = Some(data),
             App1Payload::Xmp(data) => decoder.info.xmp_data = Some(data),
-            App1Payload::ExtendedXmp(seg) => decoder.extended_xmp_segments.push(seg),
+            App1Payload::ExtendedXmp(seg) => {
+                let bytes_received = decoder
+                    .extended_xmp_bytes_received
+                    .checked_add(seg.data.len())
+                    .ok_or(DecodeErrors::FormatStatic("Extended XMP size overflow"))?;
+                decoder.extended_xmp_segments.push(seg);
+                decoder.extended_xmp_bytes_received = bytes_received;
+            }
             App1Payload::Unknown => {}
         }
         Ok(())

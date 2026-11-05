@@ -24,7 +24,8 @@ public class AutofillSuggestion {
                     SuggestionType.SEPARATOR,
                     SuggestionType.INSECURE_CONTEXT_PAYMENT_DISABLED_MESSAGE,
                     SuggestionType.TITLE,
-                    SuggestionType.AT_MEMORY_SOURCE_ATTRIBUTION);
+                    SuggestionType.AT_MEMORY_SOURCE_ATTRIBUTION,
+                    SuggestionType.AUTOFILL_AI_SOURCE_ATTRIBUTION);
     // LINT.ThenChange(/components/autofill/core/browser/suggestions/suggestion.cc:UnacceptableSuggestionTypes)
 
     private final @Nullable String mLabel;
@@ -46,7 +47,7 @@ public class AutofillSuggestion {
     private final int mOriginalIndex;
 
     public sealed interface Payload
-            permits AutofillAiPayload, AutofillProfilePayload, PaymentsPayload {}
+            permits AtMemoryPayload, AutofillAiPayload, AutofillProfilePayload, PaymentsPayload {}
 
     /**
      * Constructs a Autofill suggestion container. Use the {@link AutofillSuggestion.Builder}
@@ -173,6 +174,13 @@ public class AutofillSuggestion {
     public boolean showLoadingOnAcceptance() {
         AutofillAiPayload aiPayload = getAutofillAiPayload();
         return aiPayload != null && aiPayload.requiresServerFetch();
+    }
+
+    public @Nullable AtMemoryPayload getAtMemoryPayload() {
+        if (mPayload instanceof AtMemoryPayload) {
+            return (AtMemoryPayload) mPayload;
+        }
+        return null;
     }
 
     public @Nullable AutofillAiPayload getAutofillAiPayload() {
@@ -363,7 +371,7 @@ public class AutofillSuggestion {
             return this;
         }
 
-        public Builder setPayload(Payload payload) {
+        public Builder setPayload(@Nullable Payload payload) {
             this.mPayload = payload;
             return this;
         }

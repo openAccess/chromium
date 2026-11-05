@@ -7,11 +7,13 @@
 #include <algorithm>
 #include <memory>
 
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/no_destructor.h"
 #include "base/scoped_observation.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/app/vector_icons/vector_icons.h"
@@ -288,7 +290,7 @@ ExtensionsToolbarDesktop::~ExtensionsToolbarDesktop() {
   }
   // The widgets should close synchronously (resulting in OnWidgetClosing()),
   // so |anchored_widgets_| should now be empty.
-  DCHECK(anchored_widgets_.empty());
+  CHECK(anchored_widgets_.empty(), base::NotFatalUntil::M162);
   CHECK(!views::WidgetObserver::IsInObserverList());
 }
 
@@ -374,20 +376,8 @@ void ExtensionsToolbarDesktop::ShowPinnedByDefaultIPH(
   }
 
   auto show_iph_closure = base::BindOnce(
-      [](base::WeakPtr<BrowserWindowInterface> browser,
+      [](base::WeakPtr<ExtensionsToolbarDesktop> extensions_toolbar,
          const extensions::ExtensionId& extension_id) {
-        if (!browser) {
-          return;
-        }
-
-        BrowserView* browser_view =
-            BrowserView::GetBrowserViewForBrowser(browser.get());
-        if (!browser_view->toolbar()) {
-          return;
-        }
-
-        ExtensionsToolbarDesktop* extensions_toolbar =
-            browser_view->toolbar()->extensions_container();
         if (!extensions_toolbar) {
           return;
         }
@@ -407,18 +397,31 @@ void ExtensionsToolbarDesktop::ShowPinnedByDefaultIPH(
             feature_engagement::kIPHExtensionsPinnedByDefaultFeature);
         params.close_callback = base::BindOnce(
             [](std::unique_ptr<views::ViewTracker> tracker) {
-              if (tracker->view()) {
-                tracker->view()->ClearProperty(views::kElementIdentifierKey);
-              }
+              // The promo may be closing because the anchor is being hidden,
+              // in which case ElementTracker is in the middle of notifying
+              // that kExtensionsPinnedByDefaultElementId was hidden. Clearing
+              // the identifier now would re-enter ElementTracker for the same
+              // element, so defer it.
+              base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+                  FROM_HERE,
+                  base::BindOnce(
+                      [](std::unique_ptr<views::ViewTracker> tracker) {
+                        if (tracker->view()) {
+                          tracker->view()->ClearProperty(
+                              views::kElementIdentifierKey);
+                        }
+                      },
+                      std::move(tracker)));
             },
             std::make_unique<views::ViewTracker>(extension_view));
-        bool promo_shown = BrowserUserEducationInterface::From(browser.get())
-                               ->MaybeShowFeaturePromo(std::move(params));
+        bool promo_shown =
+            BrowserUserEducationInterface::From(extensions_toolbar->browser_)
+                ->MaybeShowFeaturePromo(std::move(params));
         if (!promo_shown) {
           extension_view->ClearProperty(views::kElementIdentifierKey);
         }
       },
-      browser_->GetWeakPtr(), extension_id);
+      weak_ptr_factory_.GetWeakPtr(), extension_id);
 
   auto run_or_wait_for_active_widget = base::BindOnce(
       [](views::Widget* browser_widget, base::OnceClosure show_iph_closure) {
@@ -602,7 +605,7 @@ bool ExtensionsToolbarDesktop::IsActionVisibleOnToolbar(
 }
 
 void ExtensionsToolbarDesktop::UndoPopOut() {
-  DCHECK(popped_out_action_);
+  CHECK(popped_out_action_, base::NotFatalUntil::M162);
   const extensions::ExtensionId popped_out_action = popped_out_action_.value();
   popped_out_action_ = std::nullopt;
   UpdateIconVisibility(popped_out_action);
@@ -613,7 +616,8 @@ void ExtensionsToolbarDesktop::SetPopupOwner(
     ToolbarActionViewModel* popup_owner) {
   // We should never be setting a popup owner when one already exists, and
   // never unsetting one when one wasn't set.
-  DCHECK((popup_owner_ != nullptr) ^ (popup_owner != nullptr));
+  CHECK((popup_owner_ != nullptr) ^ (popup_owner != nullptr),
+        base::NotFatalUntil::M162);
   popup_owner_ = popup_owner;
 
   // Container should become visible if |popup_owner_| and may lose visibility
@@ -630,7 +634,7 @@ void ExtensionsToolbarDesktop::PopOutAction(
     const extensions::ExtensionId& action_id,
     base::OnceClosure closure) {
   // TODO(pbos): Highlight popout differently.
-  DCHECK(!popped_out_action_.has_value());
+  CHECK(!popped_out_action_.has_value(), base::NotFatalUntil::M162);
   popped_out_action_ = action_id;
   UpdateIconVisibility(action_id);
   GetAnimatingLayoutManager()->PostOrQueueAction(std::move(closure));
@@ -639,7 +643,8 @@ void ExtensionsToolbarDesktop::PopOutAction(
 
 void ExtensionsToolbarDesktop::ReorderAllChildViews() {
   // Reorder pinned action views left-to-right.
-  const auto& pinned_action_ids = toolbar_view_model_->GetPinnedActionIds();
+  base::span<const ToolbarActionsModel::ActionId> pinned_action_ids =
+      toolbar_view_model_->GetPinnedActionIds();
   for (size_t i = 0; i < pinned_action_ids.size(); ++i) {
     ReorderChildView(GetViewForId(pinned_action_ids[i]), i);
   }
@@ -754,12 +759,14 @@ void ExtensionsToolbarDesktop::OnContextMenuClosed(
 void ExtensionsToolbarDesktop::WriteDragDataForView(View* sender,
                                                     const gfx::Point& press_pt,
                                                     ui::OSExchangeData* data) {
-  DCHECK(data);
+  CHECK(data, base::NotFatalUntil::M162);
 
+  base::span<const ToolbarActionsModel::ActionId> pinned_action_ids =
+      toolbar_view_model_->GetPinnedActionIds();
   auto it = std::ranges::find(
-      toolbar_view_model_->GetPinnedActionIds(), sender,
+      pinned_action_ids, sender,
       [this](const std::string& action_id) { return GetViewForId(action_id); });
-  DCHECK(it != toolbar_view_model_->GetPinnedActionIds().cend());
+  CHECK(it != pinned_action_ids.cend(), base::NotFatalUntil::M162);
   ToolbarActionView* extension_view = GetViewForId(*it);
 
   ui::ImageModel icon = GetExtensionIcon(extension_view);
@@ -767,7 +774,7 @@ void ExtensionsToolbarDesktop::WriteDragDataForView(View* sender,
                                 press_pt.OffsetFromOrigin());
 
   // Fill in the remaining info.
-  size_t index = it - toolbar_view_model_->GetPinnedActionIds().cbegin();
+  size_t index = it - pinned_action_ids.cbegin();
   BrowserActionDragData drag_data(extension_view->view_model()->GetId(), index);
   drag_data.Write(browser_->GetProfile(), data);
 }
@@ -919,7 +926,7 @@ void ExtensionsToolbarDesktop::HideActivePopup() {
   if (popup_owner_) {
     popup_owner_->HidePopup();
   }
-  DCHECK(!popup_owner_);
+  CHECK(!popup_owner_, base::NotFatalUntil::M162);
   UpdateContainerVisibilityAfterAnimation();
 }
 
@@ -1074,10 +1081,12 @@ ui::ImageModel ExtensionsToolbarDesktop::GetExtensionIcon(
 void ExtensionsToolbarDesktop::SetExtensionIconVisibility(
     ToolbarActionsModel::ActionId id,
     bool visible) {
+  base::span<const ToolbarActionsModel::ActionId> pinned_action_ids =
+      toolbar_view_model_->GetPinnedActionIds();
   auto it = std::ranges::find(
-      toolbar_view_model_->GetPinnedActionIds(), GetViewForId(id),
+      pinned_action_ids, GetViewForId(id),
       [this](const std::string& action_id) { return GetViewForId(action_id); });
-  if (it == toolbar_view_model_->GetPinnedActionIds().cend()) {
+  if (it == pinned_action_ids.cend()) {
     return;
   }
 
@@ -1221,7 +1230,7 @@ void ExtensionsToolbarDesktop::UpdateControlsVisibility() {
 }
 
 void ExtensionsToolbarDesktop::CloseSidePanelButtonPressed() {
-  browser_->GetFeatures().side_panel_ui()->Close();
+  SidePanelUI::From(browser_)->Close();
 }
 
 void ExtensionsToolbarDesktop::CollapseConfirmation() {
@@ -1262,6 +1271,10 @@ views::BubbleAnchor ExtensionsToolbarDesktop::GetReferenceButtonForPopup(
 
 views::BubbleAnchor ExtensionsToolbarDesktop::GetExtensionsButtonAnchor() {
   return views::BubbleAnchor(GetExtensionsButton());
+}
+
+views::BubbleBorder::Arrow ExtensionsToolbarDesktop::GetPopupArrow() const {
+  return views::BubbleBorder::TOP_RIGHT;
 }
 
 void ExtensionsToolbarDesktop::OnMouseExited(const ui::MouseEvent& event) {

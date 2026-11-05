@@ -163,14 +163,10 @@ class ClosePromoButton : public views::ImageButton {
                                                 : views::kIcCloseOldIcon,
             cros_tokens::kCrosSysOnSurface, kIconSize));
 
+    StyleUtil::SetUpInkDropForButton(this);
     constexpr float kCloseButtonFocusRingHaloThickness = 1.25f;
     views::FocusRing::Get(this)->SetHaloThickness(
         kCloseButtonFocusRingHaloThickness);
-  }
-
-  void OnThemeChanged() override {
-    views::ImageButton::OnThemeChanged();
-    StyleUtil::SetUpInkDropForButton(this);
     views::FocusRing::Get(this)->SetColorId(cros_tokens::kCrosSysOnSurface);
   }
 };
@@ -280,10 +276,10 @@ HelpBubbleViewAsh::HelpBubbleViewAsh(
     HelpBubbleId id,
     const internal::HelpBubbleAnchorParams& anchor,
     user_education::HelpBubbleParams params)
-    : BubbleDialogDelegateView(anchor.view,
-                               TranslateArrow(params.arrow),
-                               views::BubbleBorder::STANDARD_SHADOW),
+    : BubbleDialogDelegateView(anchor.view, TranslateArrow(params.arrow)),
       id_(id) {
+  set_shadow_config({.shadow_type = views::BubbleBorder::STANDARD_SHADOW,
+                     .elevation = kBubbleShadowElevation});
   SetBackgroundColor(cros_tokens::kCrosSysDialogContainer);
   SetCanActivate(true);
 
@@ -397,6 +393,8 @@ HelpBubbleViewAsh::HelpBubbleViewAsh(
                 kBodyIconSize))
             .SetPreferredSize(
                 gfx::Size(kBodyIconBackgroundSize, kBodyIconBackgroundSize))
+            .SetBackground(
+                views::CreatePillBackground(cros_tokens::kCrosSysOnSurface))
             .SetProperty(views::kElementIdentifierKey, kBodyIconIdForTesting)
             .Build(),
         0);
@@ -424,6 +422,8 @@ HelpBubbleViewAsh::HelpBubbleViewAsh(
     label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label->SetMultiLine(true);
     label->SetElideBehavior(gfx::NO_ELIDE);
+    label->SetEnabledColor(cros_tokens::kCrosSysOnSurface);
+    label->SetBackgroundColor(cros_tokens::kCrosSysDialogContainer);
   }
 
   // Add close button.
@@ -725,14 +725,6 @@ void HelpBubbleViewAsh::OnTimeout() {
   GetWidget()->Close();
 }
 
-std::unique_ptr<views::FrameView> HelpBubbleViewAsh::CreateFrameView(
-    views::Widget* widget) {
-  auto frame = BubbleDialogDelegateView::CreateFrameView(widget);
-  auto* frame_ptr = static_cast<views::BubbleFrameView*>(frame.get());
-  frame_ptr->bubble_border()->set_md_shadow_elevation(kBubbleShadowElevation);
-  return frame;
-}
-
 void HelpBubbleViewAsh::OnAnchorBoundsChanged() {
   views::BubbleDialogDelegateView::OnAnchorBoundsChanged();
   UpdateRoundedCorners();
@@ -772,25 +764,6 @@ void HelpBubbleViewAsh::OnWidgetBoundsChanged(views::Widget* widget,
                                               const gfx::Rect& bounds) {
   views::BubbleDialogDelegateView::OnWidgetBoundsChanged(widget, bounds);
   UpdateRoundedCorners();
-}
-
-void HelpBubbleViewAsh::OnThemeChanged() {
-  views::BubbleDialogDelegateView::OnThemeChanged();
-
-  const auto* color_provider = GetColorProvider();
-  const SkColor foreground_color =
-      color_provider->GetColor(cros_tokens::kCrosSysOnSurface);
-  if (icon_view_) {
-    icon_view_->SetBackground(views::CreateRoundedRectBackground(
-        foreground_color, icon_view_->GetPreferredSize().height() / 2));
-  }
-
-  const SkColor background_color =
-      color_provider->GetColor(cros_tokens::kCrosSysDialogContainer);
-  for (views::Label* label : labels_) {
-    label->SetBackgroundColor(background_color);
-    label->SetEnabledColor(foreground_color);
-  }
 }
 
 gfx::Size HelpBubbleViewAsh::CalculatePreferredSize(

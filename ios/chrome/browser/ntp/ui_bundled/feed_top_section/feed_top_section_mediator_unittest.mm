@@ -23,7 +23,6 @@
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
-#import "ios/chrome/browser/signin/model/fake_authentication_service_delegate.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -44,8 +43,7 @@ class FeedTopSectionMediatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
-        AuthenticationServiceFactory::GetFactoryWithDelegateForTesting(
-            std::make_unique<FakeAuthenticationServiceDelegate>()));
+        AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateTestSyncService));
     fake_profile_ = std::move(builder).Build();
@@ -162,4 +160,33 @@ TEST_F(FeedTopSectionMediatorTest,
       "ContentNotifications.Promo.TopOfFeed.Action",
       ContentNotificationTopOfFeedPromoAction::kDismissedFromSecondaryButton,
       1);
+}
+
+#pragma mark - Visibility Tests
+
+// Tests that the mediator updates feedTopSectionVisible and notifies its
+// delegate when promo visibility changes.
+TEST_F(FeedTopSectionMediatorTest, TestVisibilityUpdatesDelegate) {
+  id delegate_mock = OCMProtocolMock(@protocol(FeedTopSectionMediatorDelegate));
+  feed_top_section_mediator_.delegate = delegate_mock;
+
+  EXPECT_FALSE(feed_top_section_mediator_.feedTopSectionVisible);
+
+  // Setup user engagement and signin promo enabled.
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  [defaults setBool:YES forKey:kEngagedWithFeedKey];
+  feed_top_section_mediator_.isSignInPromoEnabled = YES;
+
+  OCMExpect([delegate_mock feedTopSectionMediator:feed_top_section_mediator_
+                              didUpdateVisibility:YES]);
+  [feed_top_section_mediator_ setUp];
+  EXPECT_TRUE(feed_top_section_mediator_.feedTopSectionVisible);
+  EXPECT_OCMOCK_VERIFY(delegate_mock);
+
+  // Closing the promo notifies delegate with NO.
+  OCMExpect([delegate_mock feedTopSectionMediator:feed_top_section_mediator_
+                              didUpdateVisibility:NO]);
+  [feed_top_section_mediator_ updateFeedTopSectionWhenClosed];
+  EXPECT_FALSE(feed_top_section_mediator_.feedTopSectionVisible);
+  EXPECT_OCMOCK_VERIFY(delegate_mock);
 }

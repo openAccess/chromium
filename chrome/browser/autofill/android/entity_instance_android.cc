@@ -5,6 +5,7 @@
 #include "chrome/browser/autofill/android/entity_instance_android.h"
 
 #include <optional>
+#include <utility>
 
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
@@ -21,7 +22,7 @@ base::android::ScopedJavaLocalRef<jobject> EntityInstanceAndroid::Create(
     bool requires_reauth_to_see,
     bool is_masked_server_entity) {
   return Java_EntityInstance_Constructor(
-      env, static_cast<int>(entity_instance.record_type),
+      env, std::to_underlying(entity_instance.record_type),
       entity_instance.entity_type, entity_instance.attribute_instances,
       entity_instance.nickname, entity_instance.metadata,
       requires_reauth_to_see, is_masked_server_entity);
@@ -137,14 +138,23 @@ EntityInstance EntityInstanceAndroid::ToEntityInstance(
   }
 
   // TODO(crbug.com/542083924): The Java EntityInstance doesn't support
-  // RecordTypeData. Until metadata exists that is relevant in Android or can be
-  // created by Android, creating an empty payload from the RecordType suffices.
+  // RecordTypeData. Until RecordTypeData exists that is relevant in Android or
+  // can be/ created by Android, copying the RecordTypeData from the existing
+  // entity (if available) or default constructing it suffices.
   auto record_type_data = [&] -> EntityInstance::RecordTypeData {
+    if (existing_entity) {
+      return existing_entity->record_type_data();
+    }
+    // If there is no existing entity, we default construct the record type
+    // data.
     switch (record_type) {
       case EntityInstance::RecordType::kLocal:
         return EntityInstance::LocalRecordTypePayload{};
       case EntityInstance::RecordType::kServerWallet:
-        return EntityInstance::WalletRecordTypePayload{};
+        // If there was no existing entity, the newly created entity cannot yet
+        // have a management URL, which is provided by the Wallet server.
+        return EntityInstance::WalletRecordTypePayload{.management_url =
+                                                           GURL()};
       case EntityInstance::RecordType::kPersonalContext:
         // pContext entities cannot be created from settings.
         NOTREACHED();

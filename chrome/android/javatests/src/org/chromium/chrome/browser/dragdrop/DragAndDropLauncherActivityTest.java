@@ -34,6 +34,7 @@ import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Matchers;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
@@ -42,11 +43,12 @@ import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.PersistedIns
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
+import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabGroupMetadata;
 import org.chromium.chrome.browser.tabmodel.TabGroupMetadataExtractor;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.tabmodel.TabModelSelectorObserver;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -56,6 +58,7 @@ import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.ui.dragdrop.DragDropMetricUtils.DragDropType;
 import org.chromium.ui.dragdrop.DragDropMetricUtils.UrlIntentSource;
+import org.chromium.ui.test.util.DeviceRestriction;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
@@ -80,6 +83,7 @@ public class DragAndDropLauncherActivityTest {
     private final CallbackHelper mTabAddedCallback = new CallbackHelper();
     private UserActionTester mActionTester;
     private WebPageStation mPage;
+    private TabModelSelectorTabModelObserver mTabModelObserver;
 
     @Before
     public void setUp() {
@@ -92,6 +96,12 @@ public class DragAndDropLauncherActivityTest {
     @After
     public void tearDown() {
         mActionTester.tearDown();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    if (mTabModelObserver != null) {
+                        mTabModelObserver.destroy();
+                    }
+                });
     }
 
     /**
@@ -150,6 +160,8 @@ public class DragAndDropLauncherActivityTest {
      */
     @Test
     @LargeTest
+    // TODO(crbug.com/559090451): Solve flakiness and re-enable on auto.
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
     public void testDraggedLink_existingWindow_maxInstances() throws Exception {
         // Simulate creation of max Chrome instances (= 2 for the purpose of testing) and establish
         // the last accessed instance. Actual max # of instances will not be created as this would
@@ -421,15 +433,17 @@ public class DragAndDropLauncherActivityTest {
         TabModelSelector tabModelSelector = activity.getTabModelSelector();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    TabModelSelectorObserver tabModelSelectorObserver =
-                            new TabModelSelectorObserver() {
+                    mTabModelObserver =
+                            new TabModelSelectorTabModelObserver(tabModelSelector) {
                                 @Override
-                                public void onNewTabCreated(
-                                        Tab tab, @TabCreationState int creationState) {
+                                public void didAddTab(
+                                        Tab tab,
+                                        @TabLaunchType int type,
+                                        @TabCreationState int creationState,
+                                        boolean markedForSelection) {
                                     mTabAddedCallback.notifyCalled();
                                 }
                             };
-                    tabModelSelector.addObserver(tabModelSelectorObserver);
                 });
     }
 
@@ -485,8 +499,7 @@ public class DragAndDropLauncherActivityTest {
                                             .getModel(false),
                                     draggedTabGroup,
                                     sourceWindowId,
-                                    draggedTabGroup.get(0).getId(),
-                                    /* isGroupShared= */ false);
+                                    draggedTabGroup.get(0).getId());
                     return DragAndDropLauncherActivity.buildTabOrGroupIntent(
                             createTabGroupDropData(
                                     tabGroupMetadata, /* allowDragToCreateNewInstance= */ true),

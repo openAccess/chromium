@@ -30,7 +30,6 @@ android_library("java") {
     "//base:base_java",
     "//base:tristate_java",
     "//build/android:build_java",
-    "//chrome/android/features/tab_ui/public:java",
     "//chrome/browser//device:java",
     "//chrome/browser/android/cookies:java",
     "//chrome/browser/android/lifecycle:java",
@@ -59,7 +58,6 @@ android_library("java") {
     "//third_party/androidx:androidx_preference_preference_java",
     "//third_party/jni_zero:jni_zero_java",
     "//ui/android:ui_full_java",
-    "//url:gurl_java",
   ]
   public_deps = [ ":incognito_utils_java" ]
 
@@ -142,11 +140,13 @@ android_library("incognito_java_tests") {
 robolectric_library("incognito_junit_tests") {
   resources_package = "org.chromium.chrome.browser.incognito"
   sources = [
+    "android/java/src/org/chromium/chrome/browser/incognito/IncognitoStartupUnitTest.java",
     "android/java/src/org/chromium/chrome/browser/incognito/reauth/FullScreenIncognitoReauthCoordinatorTest.java",
     "android/java/src/org/chromium/chrome/browser/incognito/reauth/IncognitoReauthControllerImplTest.java",
     "android/java/src/org/chromium/chrome/browser/incognito/reauth/IncognitoReauthCoordinatorFactoryTest.java",
     "android/java/src/org/chromium/chrome/browser/incognito/reauth/IncognitoReauthDialogTest.java",
     "android/java/src/org/chromium/chrome/browser/incognito/reauth/IncognitoReauthManagerTest.java",
+    "android/java/src/org/chromium/chrome/browser/incognito/reauth/IncognitoReauthMediatorTest.java",
     "android/java/src/org/chromium/chrome/browser/incognito/reauth/TabSwitcherIncognitoReauthCoordinatorTest.java",
   ]
 
@@ -158,7 +158,7 @@ robolectric_library("incognito_junit_tests") {
     "//base:base_junit_test_support",
     "//base:tristate_java",
     "//chrome/android:chrome_java",
-    "//chrome/android/features/tab_ui/public:java",
+    "//chrome/browser/android/cookies:java",
     "//chrome/browser/android/lifecycle:java",
     "//chrome/browser/device_reauth/android:java",
     "//chrome/browser/flags:java",
@@ -177,7 +177,6 @@ robolectric_library("incognito_junit_tests") {
     "//components/user_prefs/android:java",
     "//content/public/android:content_java",
     "//third_party/androidx:androidx_activity_activity_java",
-    "//third_party/androidx:androidx_test_runner_java",
     "//third_party/jni_zero:jni_zero_java",
     "//third_party/junit",
     "//third_party/mockito:mockito_java",

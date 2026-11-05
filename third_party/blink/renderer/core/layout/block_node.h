@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/layout/fragmentation_layout_input.h"
 #include "third_party/blink/renderer/core/layout/layout_input_node.h"
 #include "third_party/blink/renderer/platform/fonts/font_baseline.h"
 #include "third_party/blink/renderer/platform/geometry/physical_offset.h"
@@ -16,9 +17,7 @@
 namespace blink {
 
 class BlockBreakToken;
-class ColumnSpannerPath;
 class ConstraintSpace;
-class EarlyBreak;
 class InlineNode;
 class LayoutBox;
 class LayoutResult;
@@ -38,9 +37,7 @@ class CORE_EXPORT BlockNode : public LayoutInputNode {
   BlockNode(std::nullptr_t) : LayoutInputNode(nullptr) {}
 
   const LayoutResult* Layout(const ConstraintSpace& constraint_space,
-                             const BlockBreakToken* break_token = nullptr,
-                             const EarlyBreak* = nullptr,
-                             const ColumnSpannerPath* = nullptr) const;
+                             const FragmentationLayoutInput& = {}) const;
 
   // This method is just for use within the |SimplifiedLayoutAlgorithm|.
   //
@@ -106,11 +103,10 @@ class CORE_EXPORT BlockNode : public LayoutInputNode {
   // The constraint space is also used to perform layout when this block's
   // writing mode is orthogonal to its parent's, in which case the constraint
   // space is not optional.
-  MinMaxSizesResult ComputeMinMaxSizes(
-      WritingMode container_writing_mode,
-      const SizeType,
-      const ConstraintSpace&,
-      const MinMaxSizesFloatInput float_input = MinMaxSizesFloatInput()) const;
+  MinMaxSizesResult ComputeMinMaxSizes(WritingMode container_writing_mode,
+                                       const SizeType,
+                                       const ConstraintSpace&,
+                                       const MinMaxSizesInput& input) const;
 
   LayoutInputNode FirstChild() const;
 
@@ -274,19 +270,6 @@ class CORE_EXPORT BlockNode : public LayoutInputNode {
 template <>
 struct DowncastTraits<BlockNode> {
   static bool AllowFrom(const LayoutInputNode& node) { return node.IsBlock(); }
-};
-
-// Devtools can trigger layout to collect devtools-specific data. We don't want
-// or need such devtools layouts to write to the fragment or layout trees. This
-// class sets a flag that is checked before storing the layout results. If the
-// flag is true, we bail before writing anything.
-class DevtoolsReadonlyLayoutScope {
-  STACK_ALLOCATED();
-
- public:
-  DevtoolsReadonlyLayoutScope();
-  static bool InDevtoolsLayout();
-  ~DevtoolsReadonlyLayoutScope();
 };
 
 }  // namespace blink

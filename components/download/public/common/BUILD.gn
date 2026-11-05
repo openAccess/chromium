@@ -30,6 +30,8 @@ component("public") {
     "download_file.h",
     "download_file_factory.h",
     "download_file_impl.h",
+    "download_file_utils.cc",
+    "download_file_utils.h",
     "download_interrupt_reason_values.h",
     "download_interrupt_reasons.h",
     "download_interrupt_reasons_utils.h",
@@ -73,10 +75,7 @@ component("public") {
     "url_loader_factory_provider.h",
   ]
 
-  configs += [
-    ":components_download_implementation",
-    "//build/config/compiler:wexit_time_destructors",
-  ]
+  configs += [ ":components_download_implementation" ]
 
   public_deps = [
     ":interfaces",
@@ -132,6 +131,8 @@ if (is_android) {
   android_library("public_java") {
     srcjar_deps = [ ":jni_enums" ]
 
+    # Required for @CalledByNative JNI bridge classes invoked by native download
+    # code in WebView (crbug.com/1135162).
     deps = [
       "//components/download/internal/common:internal_java",
       "//third_party/androidx:androidx_annotation_annotation_java",
@@ -185,7 +186,7 @@ source_set("test_support") {
 source_set("unit_tests") {
   testonly = true
 
-  sources = []
+  sources = [ "download_file_utils_unittest.cc" ]
 
   if (is_android) {
     sources += [ "android/auto_resumption_handler_unittest.cc" ]

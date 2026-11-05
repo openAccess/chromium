@@ -74,7 +74,7 @@ void CheckSnapped(float snapped_position) {
   // uncommon device scale factor is applied.
   const float kEplison = 0.003f;
   float diff = std::abs(snapped_position - std::round(snapped_position));
-  DCHECK_LT(diff, kEplison);
+  CHECK_LT(diff, kEplison, base::NotFatalUntil::M163);
 }
 #endif
 
@@ -179,51 +179,51 @@ std::unique_ptr<Layer> Layer::Create(LayerType type) {
 }
 
 LayerTextured* Layer::AsTextured() {
-  return As<LayerTextured>();
+  return AsA<LayerTextured>();
 }
 
 const LayerTextured* Layer::AsTextured() const {
-  return As<LayerTextured>();
+  return AsA<LayerTextured>();
 }
 
 LayerSolidColor* Layer::AsSolidColor() {
-  return As<LayerSolidColor>();
+  return AsA<LayerSolidColor>();
 }
 
 const LayerSolidColor* Layer::AsSolidColor() const {
-  return As<LayerSolidColor>();
+  return AsA<LayerSolidColor>();
 }
 
 LayerNinePatch* Layer::AsNinePatch() {
-  return As<LayerNinePatch>();
+  return AsA<LayerNinePatch>();
 }
 
 const LayerNinePatch* Layer::AsNinePatch() const {
-  return As<LayerNinePatch>();
+  return AsA<LayerNinePatch>();
 }
 
 LayerSurface* Layer::AsSurface() {
-  return As<LayerSurface>();
+  return AsA<LayerSurface>();
 }
 
 const LayerSurface* Layer::AsSurface() const {
-  return As<LayerSurface>();
+  return AsA<LayerSurface>();
 }
 
 LayerWithExternalTexture* Layer::AsWithExternalTexture() {
-  return As<LayerWithExternalTexture>();
+  return AsA<LayerWithExternalTexture>();
 }
 
 const LayerWithExternalTexture* Layer::AsWithExternalTexture() const {
-  return As<LayerWithExternalTexture>();
+  return AsA<LayerWithExternalTexture>();
 }
 
 LayerNotDrawn* Layer::AsNotDrawn() {
-  return As<LayerNotDrawn>();
+  return AsA<LayerNotDrawn>();
 }
 
 const LayerNotDrawn* Layer::AsNotDrawn() const {
-  return As<LayerNotDrawn>();
+  return AsA<LayerNotDrawn>();
 }
 
 Layer::Layer(LayerType type)
@@ -303,11 +303,7 @@ std::unique_ptr<Layer> Layer::Clone() const {
   clone->SetGradientMask(gradient_mask());
   clone->SetIsFastRoundedCorner(is_fast_rounded_corner());
   clone->SetName(name_);
-
-  // TODO(crbug.com/522627357): Move to LayerSolidColor.
-  if (!AsSolidColor()) {
-    clone->SetFillsBoundsOpaquely(fills_bounds_opaquely_);
-  }
+  clone->SetFillsBoundsOpaquely(fills_bounds_opaquely_);
 
   // the |damaged_region_| will be sent to cc later in SendDamagedRects().
   clone->damaged_region_ = damaged_region_;
@@ -345,10 +341,10 @@ void Layer::SetCompositor(Compositor* compositor,
                           scoped_refptr<cc::Layer> root_layer) {
   // This function must only be called to set the compositor on the root ui
   // layer.
-  DCHECK(compositor);
-  DCHECK(!compositor_);
-  DCHECK(compositor->root_layer() == this);
-  DCHECK(!parent_);
+  CHECK(compositor, base::NotFatalUntil::M163);
+  CHECK(!compositor_, base::NotFatalUntil::M163);
+  CHECK(compositor->root_layer() == this, base::NotFatalUntil::M163);
+  CHECK(!parent_, base::NotFatalUntil::M163);
 
   compositor_ = compositor;
   OnDeviceScaleFactorChanged(compositor->device_scale_factor());
@@ -358,7 +354,7 @@ void Layer::SetCompositor(Compositor* compositor,
 }
 
 void Layer::ResetCompositor() {
-  DCHECK(!parent_);
+  CHECK(!parent_, base::NotFatalUntil::M163);
   if (compositor_) {
     ResetCompositorForAnimatorsInTree(compositor_);
     compositor_ = nullptr;
@@ -374,7 +370,7 @@ void Layer::RemoveObserver(LayerObserver* observer) {
 }
 
 void Layer::Add(Layer* child) {
-  DCHECK(!child->compositor_);
+  CHECK(!child->compositor_, base::NotFatalUntil::M163);
   if (child->parent_)
     child->parent_->Remove(child);
   child->parent_ = this;
@@ -413,8 +409,15 @@ void Layer::Remove(Layer* child) {
 }
 
 void Layer::StackAtTop(Layer* child) {
-  if (children_.size() <= 1 || child == children_.back())
+  // TODO(crbug.com/565603740): Remove DUMP_WILL_BE_CHECK and early return.
+  DUMP_WILL_BE_CHECK(child);
+  DUMP_WILL_BE_CHECK_EQ(this, child->parent());
+  if (!child || child->parent() != this) {
+    return;
+  }
+  if (children_.size() <= 1 || child == children_.back()) {
     return;  // Already in front.
+  }
   StackAbove(child, children_.back());
 }
 
@@ -423,8 +426,15 @@ void Layer::StackAbove(Layer* child, Layer* other) {
 }
 
 void Layer::StackAtBottom(Layer* child) {
-  if (children_.size() <= 1 || child == children_.front())
+  // TODO(crbug.com/565603740): Remove DUMP_WILL_BE_CHECK and early return.
+  DUMP_WILL_BE_CHECK(child);
+  DUMP_WILL_BE_CHECK_EQ(this, child->parent());
+  if (!child || child->parent() != this) {
+    return;
+  }
+  if (children_.size() <= 1 || child == children_.front()) {
     return;  // Already on bottom.
+  }
   StackBelow(child, children_.front());
 }
 
@@ -657,7 +667,7 @@ void Layer::SetLayerInverted(bool inverted) {
 void Layer::SetMaskLayer(LayerTextured* layer_mask) {
   if (layer_mask_ == layer_mask)
     return;
-  DCHECK(!layer_mask_back_link_);
+  CHECK(!layer_mask_back_link_, base::NotFatalUntil::M163);
   // We need to de-reference the currently linked object so that no problem
   // arises if the mask layer gets deleted before this object.
   if (layer_mask_) {
@@ -669,8 +679,9 @@ void Layer::SetMaskLayer(LayerTextured* layer_mask) {
   // link to us when it gets deleted.
   if (layer_mask) {
     // The provided mask should not have a layer mask itself.
-    DCHECK(!layer_mask->layer_mask_layer() && layer_mask->children().empty());
-    DCHECK(!layer_mask->IsPaintDeferred());
+    CHECK(!layer_mask->layer_mask_layer() && layer_mask->children().empty(),
+          base::NotFatalUntil::M163);
+    CHECK(!layer_mask->IsPaintDeferred(), base::NotFatalUntil::M163);
     // A `layer_mask` of this would lead to recursion.
     CHECK(layer_mask != this);
 
@@ -914,7 +925,6 @@ void Layer::ConvertPointToLayer(const Layer* source,
 }
 
 void Layer::SetFillsBoundsOpaquely(bool fills_bounds_opaquely) {
-  CHECK_NE(type_, LayerType::LAYER_SOLID_COLOR);
   SetFillsBoundsOpaquelyWithReason(fills_bounds_opaquely,
                                    PropertyChangeReason::NOT_FROM_ANIMATION);
 }
@@ -965,7 +975,6 @@ void Layer::SwitchToLayer(scoped_refptr<cc::Layer> new_layer) {
       cc_layer_->SafeOpaqueBackgroundColor());
   new_layer->SetSubtreeCaptureId(cc_layer_->subtree_capture_id());
   new_layer->SetCacheRenderSurface(cc_layer_->cache_render_surface());
-  new_layer->SetTrilinearFiltering(cc_layer_->trilinear_filtering());
   new_layer->SetRoundedCorner(cc_layer_->corner_radii());
   new_layer->SetIsFastRoundedCorner(cc_layer_->is_fast_rounded_corner());
   new_layer->SetMasksToBounds(cc_layer_->masks_to_bounds());
@@ -976,7 +985,7 @@ void Layer::SwitchToLayer(scoped_refptr<cc::Layer> new_layer) {
   Reset();
 
   for (ui::Layer* child : children_) {
-    DCHECK(child->cc_layer_);
+    CHECK(child->cc_layer_, base::NotFatalUntil::M163);
     cc_layer_->AddChild(child->cc_layer_.get());
   }
   cc_layer_->SetTransformOrigin(gfx::Point3F());
@@ -1016,7 +1025,7 @@ void Layer::AddCacheRenderSurfaceRequest() {
 }
 
 void Layer::RemoveCacheRenderSurfaceRequest() {
-  DCHECK_GT(cache_render_surface_requests_, 0u);
+  CHECK_GT(cache_render_surface_requests_, 0u, base::NotFatalUntil::M163);
 
   --cache_render_surface_requests_;
   TRACE_COUNTER_ID1("ui", "CacheRenderSurfaceRequests", this,
@@ -1024,29 +1033,6 @@ void Layer::RemoveCacheRenderSurfaceRequest() {
   if (cache_render_surface_requests_ == 0) {
     cc_layer_->SetCacheRenderSurface(false);
   }
-}
-
-// Note: The code that sets this flag would be responsible to unset it on that
-// Layer. We do not want to clone this flag to a cloned layer by accident,
-// which could be a supprise. But we want to preserve it after switching to a
-// new cc::Layer. There could be a whole subtree and the root changed, but does
-// not mean we want to treat the trilinear filtering all different.
-void Layer::AddTrilinearFilteringRequest() {
-  ++trilinear_filtering_request_;
-  TRACE_COUNTER_ID1("ui", "TrilinearFilteringRequests", this,
-                    trilinear_filtering_request_);
-  if (trilinear_filtering_request_ == 1)
-    cc_layer_->SetTrilinearFiltering(true);
-}
-
-void Layer::RemoveTrilinearFilteringRequest() {
-  DCHECK_GT(trilinear_filtering_request_, 0u);
-
-  --trilinear_filtering_request_;
-  TRACE_COUNTER_ID1("ui", "TrilinearFilteringRequests", this,
-                    trilinear_filtering_request_);
-  if (trilinear_filtering_request_ == 0)
-    cc_layer_->SetTrilinearFiltering(false);
 }
 
 base::WeakPtr<Layer> Layer::AsWeakPtr() {
@@ -1115,24 +1101,31 @@ void Layer::StackChildrenAtBottom(
   new_cc_children_order.reserve(cc_layer_->children().size());
 
   for (Layer* leading_child : new_leading_children) {
-    DCHECK_EQ(leading_child->cc_layer_->parent(), cc_layer_);
-    DCHECK_EQ(leading_child->parent(), this);
+    CHECK_EQ(leading_child->cc_layer_->parent(), cc_layer_,
+             base::NotFatalUntil::M163);
+    CHECK_EQ(leading_child->parent(), this, base::NotFatalUntil::M163);
     new_children_order.emplace_back(leading_child);
-    new_cc_children_order.emplace_back(
-        scoped_refptr<cc::Layer>(leading_child->cc_layer_.get()));
+    new_cc_children_order.emplace_back(leading_child->cc_layer_.get());
   }
 
   base::flat_set<raw_ptr<Layer, VectorExperimental>> reordered_children(
       new_children_order);
 
-  const cc::LayerList& old_cc_children_order = cc_layer_->children();
-
-  for (size_t i = 0; i < children_.size(); ++i) {
-    if (reordered_children.count(children_.at(i)) > 0)
+  for (Layer* child : children_) {
+    if (reordered_children.contains(child)) {
       continue;
-    new_children_order.emplace_back(children_.at(i));
-    new_cc_children_order.emplace_back(old_cc_children_order.at(i));
+    }
+    new_children_order.emplace_back(child);
+    new_cc_children_order.emplace_back(child->cc_layer_.get());
   }
+
+  // The mask layer is a cc::Layer child that is not tracked in `children_`.
+  // cc::Layer requires it to remain the last child, so re-append it.
+  if (cc::PictureLayer* mask_layer = cc_layer_->mask_layer()) {
+    CHECK_EQ(mask_layer, cc_layer_->children().back().get());
+    new_cc_children_order.emplace_back(mask_layer);
+  }
+  CHECK_EQ(new_cc_children_order.size(), cc_layer_->children().size());
 
   children_ = std::move(new_children_order);
   cc_layer_->ReorderChildren(&new_cc_children_order);
@@ -1274,9 +1267,15 @@ void Layer::CollectAnimators(
 }
 
 void Layer::StackRelativeTo(Layer* child, Layer* other, bool above) {
-  DCHECK_NE(child, other);
-  DCHECK_EQ(this, child->parent());
-  DCHECK_EQ(this, other->parent());
+  CHECK_NE(child, other, base::NotFatalUntil::M163);
+  // TODO(crbug.com/565603740): Revert back to DCHECK_EQ and remove early
+  // return.
+  DUMP_WILL_BE_CHECK_EQ(this, child->parent());
+  DUMP_WILL_BE_CHECK_EQ(this, other->parent());
+  if (!child || !other || child == other || child->parent() != this ||
+      other->parent() != this) {
+    return;
+  }
 
   const size_t child_i =
       std::ranges::find(children_, child) - children_.begin();
@@ -1284,6 +1283,10 @@ void Layer::StackRelativeTo(Layer* child, Layer* other, bool above) {
       std::ranges::find(children_, other) - children_.begin();
   DCHECK_LT(child_i, children_.size()) << " child not in vector";
   DCHECK_LT(other_i, children_.size()) << " other not in vector";
+  if (child_i >= children_.size() || other_i >= children_.size()) {
+    return;
+  }
+
   if ((above && child_i == other_i + 1) || (!above && child_i + 1 == other_i))
     return;
 
@@ -1534,7 +1537,7 @@ cc::Layer* Layer::GetCcLayer() const {
 }
 
 LayerThreadedAnimationDelegate* Layer::GetThreadedAnimationDelegate() {
-  DCHECK(animator_);
+  CHECK(animator_, base::NotFatalUntil::M163);
   return animator_.get();
 }
 
@@ -1552,7 +1555,7 @@ void Layer::InitializeCcLayer() {
 }
 
 void Layer::RecomputeDrawsContentAndUVRect() {
-  DCHECK(cc_layer_);
+  CHECK(cc_layer_, base::NotFatalUntil::M163);
   gfx::Size size(bounds_.size());
   cc_layer_->SetBounds(size);
 }
@@ -1562,7 +1565,7 @@ void Layer::RecomputePosition() {
 }
 
 void Layer::SetCompositorForAnimatorsInTree(Compositor* compositor) {
-  DCHECK(compositor);
+  CHECK(compositor, base::NotFatalUntil::M163);
   LayerAnimatorCollection* collection = compositor->layer_animator_collection();
 
   if (animator_) {
@@ -1577,7 +1580,7 @@ void Layer::SetCompositorForAnimatorsInTree(Compositor* compositor) {
 }
 
 void Layer::ResetCompositorForAnimatorsInTree(Compositor* compositor) {
-  DCHECK(compositor);
+  CHECK(compositor, base::NotFatalUntil::M163);
   LayerAnimatorCollection* collection = compositor->layer_animator_collection();
 
   if (animator_) {

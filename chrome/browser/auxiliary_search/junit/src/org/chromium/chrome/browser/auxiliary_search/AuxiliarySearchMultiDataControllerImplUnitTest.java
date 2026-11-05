@@ -18,8 +18,6 @@ import android.content.Context;
 import android.content.res.Resources;
 import android.text.format.DateUtils;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -77,6 +75,7 @@ public class AuxiliarySearchMultiDataControllerImplUnitTest {
 
     @Before
     public void setUp() {
+        when(mContext.getApplicationContext()).thenReturn(mContext);
         when(mContext.getResources()).thenReturn(mResources);
 
         var factory = AuxiliarySearchControllerFactory.getInstance();
@@ -165,7 +164,6 @@ public class AuxiliarySearchMultiDataControllerImplUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testGetMergedList() {
         long now = TimeUtils.uptimeMillis();
         // Verifies the case that both history data list and most visited sites list are null.

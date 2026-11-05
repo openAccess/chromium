@@ -12,7 +12,6 @@
 #include "base/time/time.h"
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/session/arc_session_manager.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "content/public/browser/browser_thread.h"
 
@@ -34,7 +33,7 @@ ArcInitialOptInMetricsRecorder::~ArcInitialOptInMetricsRecorder() {
 }
 
 void ArcInitialOptInMetricsRecorder::OnArcOptInUserAction() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   arc_opt_in_time_ = base::TimeTicks::Now();
 }
 
@@ -49,7 +48,7 @@ void ArcInitialOptInMetricsRecorder::OnArcInitialStart() {
 }
 
 void ArcInitialOptInMetricsRecorder::OnArcAppListReady() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   if (arc_app_list_ready_reported_) {
     return;

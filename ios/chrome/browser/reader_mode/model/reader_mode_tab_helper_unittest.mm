@@ -15,8 +15,6 @@
 #import "components/ukm/ios/ukm_url_recorder.h"
 #import "components/ukm/test_ukm_recorder.h"
 #import "ios/chrome/browser/browser_content/model/edit_menu_tab_helper.h"
-#import "ios/chrome/browser/dom_distiller/model/distiller_service.h"
-#import "ios/chrome/browser/dom_distiller/model/distiller_service_factory.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
 #import "ios/chrome/browser/infobars/model/overlays/fake_infobar_overlay_request_factory.h"
 #import "ios/chrome/browser/infobars/model/overlays/infobar_overlay_request_inserter.h"
@@ -25,12 +23,13 @@
 #import "ios/chrome/browser/optimization_guide/model/optimization_guide_service_factory.h"
 #import "ios/chrome/browser/overlays/model/public/overlay_request_queue.h"
 #import "ios/chrome/browser/reader_mode/model/constants.h"
-#import "ios/chrome/browser/reader_mode/model/features.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_test.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_source_tab_helper.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/web/model/web_view_proxy/web_view_proxy_tab_helper.h"
+#import "ios/chrome/browser/web_distiller/model/distiller_service.h"
+#import "ios/chrome/browser/web_distiller/model/distiller_service_factory.h"
 #import "ios/chrome/browser/web_selection/model/web_selection_tab_helper.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
@@ -84,12 +83,10 @@ class FakeDistillerService : public DistillerService {
   ~FakeDistillerService() override = default;
 
   // Does not perform any action on page distillation.
-  void DistillPage(
-      const GURL& url,
-      std::unique_ptr<dom_distiller::DistillerPage> distiller_page,
-      dom_distiller::Distiller::DistillationFinishedCallback finished_cb,
-      const dom_distiller::Distiller::DistillationUpdateCallback& update_cb)
-      override {}
+  void DistillPage(const GURL& url,
+                   std::unique_ptr<dom_distiller::DistillerPage> distiller_page,
+                   dom_distiller::Distiller::DistillationFinishedCallback
+                       finished_cb) override {}
 };
 
 class ReaderModeTabHelperTest : public ReaderModeTest {
@@ -299,23 +296,6 @@ TEST_F(ReaderModeTabHelperTest, ReaderModeNotEligibleOnNtp) {
   ASSERT_FALSE(reader_mode_tab_helper()->CurrentPageIsDistillable());
 }
 
-// Tests that reader mode is eligible on a regular page.
-TEST_F(ReaderModeTabHelperTest, ReaderModeEligibleOnRegularPage) {
-  GURL test_url("https://www.regular.com");
-  SetReaderModeState(web_state(), test_url,
-                     ReaderModeHeuristicResult::kReaderModeEligible, "");
-
-  LoadWebpage(web_state(), test_url);
-  WaitForPageLoadDelayAndRunUntilIdle();
-
-  ASSERT_TRUE(reader_mode_tab_helper()->CurrentPageIsEligibleForReaderMode());
-  reader_mode_tab_helper()->ActivateReader(
-      ReaderModeAccessPoint::kContextualChip);
-  ASSERT_TRUE(reader_mode_tab_helper()->IsActive());
-  WaitForAvailableReaderModeContentInWebState(web_state());
-  histogram_tester_.ExpectTotalCount(kReaderModeHeuristicResultHistogram, 1);
-}
-
 // Tests that reader mode is not eligible on pages that are not html.
 TEST_F(ReaderModeTabHelperTest, ReaderModeNotEligibleOnNonHTML) {
   GURL test_url("https://test.url/");
@@ -446,7 +426,7 @@ TEST_F(ReaderModeTabHelperTest, NotifiesObserversOfAvailability) {
               ReaderModeWebStateDidLoadContent(reader_mode_tab_helper(), _));
   reader_mode_tab_helper()->ActivateReader(
       ReaderModeAccessPoint::kContextualChip);
-  WaitForAvailableReaderModeContentInWebState(web_state());
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
   testing::Mock::VerifyAndClearExpectations(&mock_observer);
 
   // When DeactivateReader() is called,
@@ -560,7 +540,7 @@ TEST_F(ReaderModeTabHelperTest, WebViewProxyUpdated) {
               ReaderModeWebStateDidLoadContent(reader_mode_tab_helper(), _));
   reader_mode_tab_helper()->ActivateReader(
       ReaderModeAccessPoint::kContextualChip);
-  WaitForAvailableReaderModeContentInWebState(web_state());
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
   testing::Mock::VerifyAndClearExpectations(&mock_observer);
 
   id<CRWWebViewProxy> reader_mode_proxy =
@@ -592,7 +572,7 @@ TEST_F(ReaderModeTabHelperTest, TestTabHelpers) {
 
   reader_mode_tab_helper()->ActivateReader(
       ReaderModeAccessPoint::kContextualChip);
-  WaitForAvailableReaderModeContentInWebState(web_state());
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
   web::WebState* reader_mode_web_state =
       reader_mode_tab_helper()->GetReaderModeWebState();
   EXPECT_NE(nullptr, reader_mode_web_state);
@@ -617,7 +597,7 @@ TEST_F(ReaderModeTabHelperTest, TestEligibleContentIsDisplayed) {
   // ReaderModeWebStateDidBecomeAvailable should be called.
   reader_mode_tab_helper()->ActivateReader(
       ReaderModeAccessPoint::kContextualChip);
-  WaitForAvailableReaderModeContentInWebState(web_state());
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
 
   // The metrics for the navigation are recorded.
   FlushMetrics();
@@ -641,7 +621,7 @@ TEST_F(ReaderModeTabHelperTest, TestMultipleActivationsOnURL) {
   // ReaderModeWebStateDidBecomeAvailable should be called.
   reader_mode_tab_helper()->ActivateReader(
       ReaderModeAccessPoint::kContextualChip);
-  WaitForAvailableReaderModeContentInWebState(web_state());
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
 
   reader_mode_tab_helper()->DeactivateReader(
       ReaderModeDeactivationReason::kHostTabDestructionDeactivated);
@@ -649,7 +629,7 @@ TEST_F(ReaderModeTabHelperTest, TestMultipleActivationsOnURL) {
   // Activate the reader a second time.
   reader_mode_tab_helper()->ActivateReader(
       ReaderModeAccessPoint::kContextualChip);
-  WaitForAvailableReaderModeContentInWebState(web_state());
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
 
   // The metrics for the navigation are recorded.
   FlushMetrics();
@@ -673,7 +653,7 @@ TEST_F(ReaderModeTabHelperTest, TestMultipleActivationsOnFragmentURL) {
   // ReaderModeWebStateDidBecomeAvailable should be called.
   reader_mode_tab_helper()->ActivateReader(
       ReaderModeAccessPoint::kContextualChip);
-  WaitForAvailableReaderModeContentInWebState(web_state());
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
 
   reader_mode_tab_helper()->DeactivateReader(
       ReaderModeDeactivationReason::kHostTabDestructionDeactivated);
@@ -681,7 +661,7 @@ TEST_F(ReaderModeTabHelperTest, TestMultipleActivationsOnFragmentURL) {
   // Activate the reader a second time.
   reader_mode_tab_helper()->ActivateReader(
       ReaderModeAccessPoint::kContextualChip);
-  WaitForAvailableReaderModeContentInWebState(web_state());
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
 
   // The metrics for the navigation are recorded.
   FlushMetrics();
@@ -738,7 +718,7 @@ TEST_F(ReaderModeTabHelperTest, TestDistillationCompletedAfterTimeout) {
   // ReaderModeWebStateDidBecomeAvailable should be called.
   reader_mode_tab_helper()->ActivateReader(
       ReaderModeAccessPoint::kContextualChip);
-  WaitForAvailableReaderModeContentInWebState(web_state());
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
 
   // The completion is recorded.
   EXPECT_THAT(histogram_tester_.GetAllSamples(kReaderModeStateHistogram),
@@ -872,39 +852,6 @@ TEST_P(ReaderModeTabHelperWithEligibilityTest, TriggerHeuristicOnPageLoad) {
   EXPECT_THAT(ukm_entries, testing::ElementsAre(static_cast<int>(eligibility)));
 }
 
-// Tests that metrics are recorded correctly when the Readability trigger
-// heuristic runs on page load and returns a result.
-TEST_P(ReaderModeTabHelperWithEligibilityTest,
-       TriggerReadabilityHeuristicOnPageLoad) {
-  ReaderModeHeuristicResult eligibility = GetEligibility();
-
-  histogram_tester_.ExpectTotalCount(kReaderModeHeuristicResultHistogram, 0);
-  ASSERT_EQ(0u, GetHeuristicResultEntries().size());
-
-  GURL test_url("https://test.url/");
-  SetReaderModeState(web_state(), test_url, eligibility, "");
-
-  LoadWebpage(web_state(), test_url);
-  WaitForPageLoadDelayAndRunUntilIdle();
-
-  ASSERT_EQ(eligibility == ReaderModeHeuristicResult::kReaderModeEligible,
-            reader_mode_tab_helper()->CurrentPageIsDistillable());
-
-  FlushMetrics();
-  EXPECT_THAT(histogram_tester_.GetAllSamples(kReaderModeStateHistogram),
-              BucketsAre(Bucket(ReaderModeState::kHeuristicCompleted, 1)));
-  EXPECT_THAT(
-      histogram_tester_.GetAllSamples(kReaderModeHeuristicResultHistogram),
-      BucketsAre(Bucket(eligibility, 1)));
-  EXPECT_THAT(
-      histogram_tester_.GetAllSamples(kReaderModeHeuristicLatencyHistogram),
-      BucketsAre(Bucket(0, 1)));
-  std::vector<int64_t> ukm_entries = test_ukm_recorder_.GetMetricsEntryValues(
-      IOS_ReaderMode_Heuristic_Result::kEntryName,
-      IOS_ReaderMode_Heuristic_Result::kResultName);
-  EXPECT_THAT(ukm_entries, testing::ElementsAre(static_cast<int>(eligibility)));
-}
-
 // Tests that histograms related to distillation results are recorded after the
 // JavaScript execution.
 TEST_P(ReaderModeTabHelperWithEligibilityTest, TriggerDistillationOnActive) {
@@ -954,7 +901,7 @@ TEST_F(ReaderModeTabHelperTest, AddsInfobarWhenActivated) {
 
   reader_mode_tab_helper()->ActivateReader(
       ReaderModeAccessPoint::kContextualChip);
-  WaitForAvailableReaderModeContentInWebState(web_state());
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
 
   infobars::InfoBarManager* infobar_manager =
       InfoBarManagerImpl::FromWebState(web_state());
@@ -981,7 +928,7 @@ TEST_F(ReaderModeTabHelperTest, ReaderModeContentDidCancelRequestForwarding) {
   // Activate Reader Mode.
   reader_mode_tab_helper()->ActivateReader(
       ReaderModeAccessPoint::kContextualChip);
-  WaitForAvailableReaderModeContentInWebState(web_state());
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
 
   // Ensure the host tab navigation manager has not been called yet.
   web::FakeNavigationManager* navigation_manager =

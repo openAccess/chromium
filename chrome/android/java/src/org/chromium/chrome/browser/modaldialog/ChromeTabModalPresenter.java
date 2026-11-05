@@ -223,6 +223,10 @@ public class ChromeTabModalPresenter extends TabModalPresenter
                     ContextCompat.getColor(mActivity, R.color.modal_dialog_scrim_color_lff));
         }
 
+        if (mContainerParent != null && mContainerParent.getId() != R.id.coordinator) {
+            scrimModelBuilder.with(ScrimProperties.CUSTOM_PARENT, mContainerParent);
+        }
+
         mScrimModel = scrimModelBuilder.build();
 
         mScrimManager.showScrim(mScrimModel);
@@ -242,7 +246,8 @@ public class ChromeTabModalPresenter extends TabModalPresenter
             // Dismiss the action bar that obscures the dialogs but preserve the text selection.
             WebContents webContents = mActiveTab.getWebContents();
             if (webContents != null) {
-                saveOrRestoreTextSelection(webContents, true);
+                saveOrRestoreTextSelection(
+                        webContents, /* save= */ true, /* restoreFocus= */ false);
             }
 
             // Force toolbar to show and disable overflow menu.
@@ -257,10 +262,15 @@ public class ChromeTabModalPresenter extends TabModalPresenter
         } else {
             if (mActiveTab == null) return;
 
-            // Show the action bar back if it was dismissed when the dialogs were showing.
             WebContents webContents = mActiveTab.getWebContents();
             if (webContents != null) {
-                saveOrRestoreTextSelection(webContents, false);
+                // Show the action bar back if it was dismissed when the dialogs were showing, and
+                // give focus back to the page unless the tab is no longer shown and selected, e.g.
+                // the dialog is being suspended or dismissed because of a tab switch.
+                boolean restoreFocus =
+                        mActiveTab.isUserInteractable()
+                                && mActiveTab == mTabModelSelector.getCurrentTab();
+                saveOrRestoreTextSelection(webContents, /* save= */ false, restoreFocus);
             }
 
             onTabModalDialogStateChanged(false);
@@ -300,14 +310,6 @@ public class ChromeTabModalPresenter extends TabModalPresenter
         if (mScrimManager != null && mScrimModel != null) {
             mScrimManager.hideScrim(mScrimModel, /* animate= */ false);
             mScrimModel = null;
-        }
-
-        if (mContainerParent != null
-                && mContainerParent.getId() != R.id.coordinator
-                && mContainerParent.getParent() instanceof ViewGroup coordinator) {
-            View nextSibling = coordinator.findViewById(R.id.constrained_views_container);
-            UiUtils.removeViewFromParent(mContainerParent);
-            UiUtils.insertBefore(coordinator, mContainerParent, assumeNonNull(nextSibling));
         }
 
         super.removeDialogView(model);
@@ -356,25 +358,24 @@ public class ChromeTabModalPresenter extends TabModalPresenter
         ViewGroup dialogContainer = getDialogContainer();
         if (dialogContainer == null) return;
 
-        if (toFront) {
-            dialogContainer.bringToFront();
-        } else {
-            assumeNonNull(mContainerParent);
-            assumeNonNull(mDefaultNextSiblingView);
-            UiUtils.removeViewFromParent(dialogContainer);
-            UiUtils.insertBefore(mContainerParent, dialogContainer, mDefaultNextSiblingView);
-        }
-
         if (mContainerParent != null
                 && mContainerParent.getId() != R.id.coordinator
                 && mContainerParent.getParent() instanceof ViewGroup coordinator) {
             if (toFront) {
                 mContainerParent.bringToFront();
             } else {
-                View controlContainer = coordinator.findViewById(R.id.control_container);
+                assumeNonNull(mDefaultNextSiblingView);
                 UiUtils.removeViewFromParent(mContainerParent);
-                UiUtils.insertBefore(
-                        coordinator, mContainerParent, assumeNonNull(controlContainer));
+                UiUtils.insertBefore(coordinator, mContainerParent, mDefaultNextSiblingView);
+            }
+        } else {
+            if (toFront) {
+                dialogContainer.bringToFront();
+            } else {
+                assumeNonNull(mContainerParent);
+                assumeNonNull(mDefaultNextSiblingView);
+                UiUtils.removeViewFromParent(dialogContainer);
+                UiUtils.insertBefore(mContainerParent, dialogContainer, mDefaultNextSiblingView);
             }
         }
     }
@@ -465,7 +466,8 @@ public class ChromeTabModalPresenter extends TabModalPresenter
         // toolbar) and bottom chin is enabled. Note: Bottom inset is 0 in 3-button mode.
         boolean isOnlyNavBarPresent =
                 (bottomInset == mBrowserControlsVisibilityManager.getBottomControlsHeight());
-        return isOnlyNavBarPresent && EdgeToEdgeUtils.isEdgeToEdgeBottomChinEnabled(mActivity);
+        return isOnlyNavBarPresent
+                && EdgeToEdgeUtils.isEdgeToEdgeBottomChinSupportedByDevice(mActivity);
     }
 
     private int getScrimBottomMargin(boolean affectsNavBar) {

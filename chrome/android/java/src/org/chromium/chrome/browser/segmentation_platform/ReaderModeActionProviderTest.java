@@ -26,29 +26,26 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
-import org.chromium.chrome.browser.dom_distiller.DistillerHeuristicsType;
-import org.chromium.chrome.browser.dom_distiller.DomDistillerTabUtils;
-import org.chromium.chrome.browser.dom_distiller.DomDistillerTabUtilsJni;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeActionRateLimiter;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeManager;
-import org.chromium.chrome.browser.dom_distiller.ReaderModeMetrics;
-import org.chromium.chrome.browser.dom_distiller.TabDistillabilityProvider;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.reader_mode.DistillerHeuristicsType;
+import org.chromium.chrome.browser.reader_mode.ReaderModeActionRateLimiter;
+import org.chromium.chrome.browser.reader_mode.ReaderModeManager;
+import org.chromium.chrome.browser.reader_mode.ReaderModeMetrics;
+import org.chromium.chrome.browser.reader_mode.ReaderModeTabUtils;
+import org.chromium.chrome.browser.reader_mode.ReaderModeTabUtilsJni;
+import org.chromium.chrome.browser.reader_mode.TabDistillabilityProvider;
 import org.chromium.chrome.browser.segmentation_platform.ContextualPageActionController.ActionProvider;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.components.dom_distiller.content.DistillablePageUtils;
 import org.chromium.components.dom_distiller.content.DistillablePageUtilsJni;
-import org.chromium.components.dom_distiller.core.DomDistillerFeatures;
 import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.ukm.UkmRecorder;
@@ -64,7 +61,6 @@ import java.util.concurrent.TimeoutException;
 
 /** Unit tests for {@link ReaderModeActionProvider} */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class ReaderModeActionProviderTest {
 
     private static final GURL TEST_URL = new GURL("https://test.com");
@@ -81,7 +77,7 @@ public class ReaderModeActionProviderTest {
     @Mock private UserPrefs.Natives mUserPrefsJniMock;
     @Mock private PrefService mPrefService;
     @Mock private UkmRecorder.Natives mUkmRecorderJniMock;
-    @Mock private DomDistillerTabUtilsJni mDomDistillerTabUtilsJni;
+    @Mock private ReaderModeTabUtilsJni mReaderModeTabUtilsJni;
     @Mock private DomDistillerUrlUtilsJni mDomDistillerUrlUtilsJni;
     @Mock private OneshotSupplier<Boolean> mButtonVisibilitySupplier;
     @Mock private ReaderModeActionRateLimiter mReaderModeActionRateLimiter;
@@ -91,7 +87,7 @@ public class ReaderModeActionProviderTest {
     @SuppressWarnings("DirectInvocationOnMock")
     public void setUp() {
         UkmRecorderJni.setInstanceForTesting(mUkmRecorderJniMock);
-        DomDistillerTabUtilsJni.setInstanceForTesting(mDomDistillerTabUtilsJni);
+        ReaderModeTabUtilsJni.setInstanceForTesting(mReaderModeTabUtilsJni);
         DomDistillerUrlUtilsJni.setInstanceForTesting(mDomDistillerUrlUtilsJni);
         DistillablePageUtilsJni.setInstanceForTesting(mDistillablePageUtilsJniMock);
 
@@ -114,7 +110,7 @@ public class ReaderModeActionProviderTest {
         when(mPrefService.getBoolean(Pref.READER_FOR_ACCESSIBILITY)).thenReturn(false);
 
         TabDistillabilityProvider.from(mMockTab);
-        DomDistillerTabUtils.setExcludeMobileFriendlyForTesting(true);
+        ReaderModeTabUtils.setExcludeMobileFriendlyForTesting(true);
     }
 
     private void setReaderModeBackendSignal(boolean isDistillable) {
@@ -224,7 +220,7 @@ public class ReaderModeActionProviderTest {
 
     @Test
     public void testReaderModeDisabledOnDesktopPages() {
-        DomDistillerTabUtils.setDistillerHeuristicsForTesting(DistillerHeuristicsType.OG_ARTICLE);
+        ReaderModeTabUtils.setDistillerHeuristicsForTesting(DistillerHeuristicsType.OG_ARTICLE);
         when(mMockNavigationController.getUseDesktopUserAgent()).thenReturn(true);
 
         var provider = new ReaderModeActionProvider(mButtonVisibilitySupplier);
@@ -239,7 +235,7 @@ public class ReaderModeActionProviderTest {
     @Test
     public void testReaderModeDisabledOnDesktopPages_exceptIfHeuristicIsAlwaysTrue() {
         // Set heuristic to flag all sites as distillable.
-        DomDistillerTabUtils.setDistillerHeuristicsForTesting(DistillerHeuristicsType.ALWAYS_TRUE);
+        ReaderModeTabUtils.setDistillerHeuristicsForTesting(DistillerHeuristicsType.ALWAYS_TRUE);
 
         WebContents mockWebContents = mock(WebContents.class);
         NavigationController mockNavigationController = mock(NavigationController.class);
@@ -293,7 +289,6 @@ public class ReaderModeActionProviderTest {
     }
 
     @Test
-    @EnableFeatures(DomDistillerFeatures.READER_MODE_DISTILL_IN_APP)
     public void testDistillableButSupressed() {
         when(mReaderModeActionRateLimiter.isActionSuppressed()).thenReturn(true);
         var provider = new ReaderModeActionProvider(mButtonVisibilitySupplier);
@@ -306,7 +301,6 @@ public class ReaderModeActionProviderTest {
     }
 
     @Test
-    @EnableFeatures(DomDistillerFeatures.READER_MODE_DISTILL_IN_APP)
     public void testActionAlwaysAvailableInReadingMode() {
         var provider = new ReaderModeActionProvider(mButtonVisibilitySupplier);
 

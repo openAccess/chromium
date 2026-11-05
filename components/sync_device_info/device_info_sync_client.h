@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 
+#include "base/containers/flat_set.h"
 #include "components/desktop_to_mobile_promos/features.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/protocol/device_info_specifics.pb.h"
@@ -26,7 +27,6 @@ class DeviceInfoSyncClient {
   virtual ~DeviceInfoSyncClient();
 
   virtual std::string GetSigninScopedDeviceId() const = 0;
-  virtual bool GetSendTabToSelfReceivingEnabled() const = 0;
   virtual DeviceInfo::SendTabReceivingType GetSendTabToSelfReceivingType()
       const = 0;
   virtual std::optional<DeviceInfo::SharingInfo> GetLocalSharingInfo()
@@ -64,9 +64,15 @@ class DeviceInfoSyncClient {
   // by the current client, or std::nullopt if unavailable.
   virtual std::optional<int> GetGlicExperimentalTriggeringVersion() const = 0;
 
-  // Returns Personal Context specific information for this device, or
-  // std::nullopt if unavailable.
-  virtual std::optional<DeviceInfo::PersonalContextInfo>
+  // Returns the local Glic experimental triggering capabilities supported by
+  // the current client.
+  virtual base::flat_set<std::string>
+  GetGlicExperimentalTriggeringCapabilities() const;
+
+  // Returns Personal Context specific information for this device, or one of
+  // the special `Status` values to indicate that the information isn't ready
+  // yet or the device is not eligible.
+  virtual DeviceInfo::PersonalContextInfo::StatusOrInfo
   GetLocalPersonalContextInfo() const = 0;
 };
 

@@ -4,12 +4,14 @@
 
 #include "partition_alloc/pointers/raw_ptr.h"
 
+#include <array>
 #include <climits>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -277,6 +279,19 @@ using CountingRawPtrUnprotectedInRelease =
 // the presence of `kIsUnprotectedInRelease`.
 static_assert(std::is_same_v<CountingRawPtrUnprotectedInRelease<int>::Impl,
                              RawPtrCountingImpl>);
+
+template <typename T>
+using CountingRawPtrUnprotectedInReleaseForPerformance =
+    raw_ptr<T,
+            base::RawPtrTraits::kUseCountingImplForTest |
+                base::RawPtrTraits::kAllowPtrArithmetic |
+                base::RawPtrTraits::kIsUnprotectedInReleaseForPerformance>;
+
+// Ensure that the `kUseCountingImplForTest` flag selects the test impl even in
+// the presence of `kIsUnprotectedInReleaseForPerformance`.
+static_assert(
+    std::is_same_v<CountingRawPtrUnprotectedInReleaseForPerformance<int>::Impl,
+                   RawPtrCountingImpl>);
 
 struct MyStruct {
   int x;
@@ -1097,13 +1112,15 @@ TEST_F(RawPtrTest, PlusOperator) {
 }
 
 TEST_F(RawPtrTest, MinusOperator) {
-  int foo[] = {42, 43, 44, 45};
-  CountingRawPtr<int> ptr = PA_UNSAFE_TODO(&foo[4]);
-  for (int i = 1; i <= 4; ++i) {
-    ASSERT_EQ(PA_UNSAFE_TODO(*(ptr - i)), 46 - i);
+  auto foo = std::to_array<int>({42, 43, 44, 45});
+  CountingRawPtr<int> end_ptr = base::to_address(foo.end());
+  for (int i = 1; i <= foo.size(); ++i) {
+    ASSERT_EQ(foo[foo.size() - i], 46 - i);
+    // SAFETY: we've verified the address is in bounds above.
+    ASSERT_EQ(PA_UNSAFE_BUFFERS(*(end_ptr - i)), 46 - i);
   }
   EXPECT_THAT((CountingRawPtrExpectations{
-                  .get_for_dereference_cnt = 4,
+                  .get_for_dereference_cnt = foo.size(),
                   .get_for_extraction_cnt = 0,
                   .get_for_comparison_cnt = 0,
               }),
@@ -1111,15 +1128,23 @@ TEST_F(RawPtrTest, MinusOperator) {
 }
 
 TEST_F(RawPtrTest, MinusDeltaOperator) {
-  int foo[] = {42, 43, 44, 45};
-  CountingRawPtr<int> ptrs[] = {
-      PA_UNSAFE_TODO(&foo[0]), PA_UNSAFE_TODO(&foo[1]), PA_UNSAFE_TODO(&foo[2]),
-      PA_UNSAFE_TODO(&foo[3]), PA_UNSAFE_TODO(&foo[4])};
+  // This test ensures that when subtracting two raw_ptrs from each other the
+  // resulting ptrdiff_t is the same distance from each other as what you'd get
+  // if you subtracted just regular std::array (or int*) pointers. We also want
+  // to test the "end()" address to ensure old C style arrays would work. But to
+  // avoid indexing out of bounds we use base::to_address(foo.end()) to get
+  // the address.
+
+  auto foo = std::to_array<int>({42, 43, 44, 45});
+  auto ptrs = std::to_array<CountingRawPtr<int>>(
+      {&foo[0], &foo[1], &foo[2], &foo[3], base::to_address(foo.end())});
   for (int i = 0; i <= 4; ++i) {
     for (int j = 0; j <= 4; ++j) {
-      ASSERT_EQ(PA_UNSAFE_TODO(ptrs[i] - ptrs[j]), i - j);
-      ASSERT_EQ(PA_UNSAFE_TODO(ptrs[i] - &foo[j]), i - j);
-      ASSERT_EQ(PA_UNSAFE_TODO(&foo[i] - ptrs[j]), i - j);
+      int* foo_i = i == foo.size() ? base::to_address(foo.end()) : &foo[i];
+      int* foo_j = j == foo.size() ? base::to_address(foo.end()) : &foo[j];
+      ASSERT_EQ(ptrs[i] - ptrs[j], i - j);
+      ASSERT_EQ(ptrs[i] - foo_j, i - j);
+      ASSERT_EQ(foo_i - ptrs[j], i - j);
     }
   }
   EXPECT_THAT((CountingRawPtrExpectations{
@@ -1131,11 +1156,11 @@ TEST_F(RawPtrTest, MinusDeltaOperator) {
 }
 
 TEST_F(RawPtrTest, AdvanceString) {
-  const char kChars[] = "Hello";
-  std::string str = kChars;
+  std::string str = "Hello";
   CountingRawPtr<const char> ptr = str.c_str();
-  for (size_t i = 0; i < str.size(); ++i, PA_UNSAFE_TODO(++ptr)) {
-    ASSERT_EQ(*ptr, PA_UNSAFE_TODO(kChars[i]));
+  // SAFETY: `ptr` is incremented only up to `str.size()` times.
+  for (size_t i = 0; i < str.size(); ++i, PA_UNSAFE_BUFFERS(++ptr)) {
+    ASSERT_EQ(*ptr, str[i]);
   }
   EXPECT_THAT((CountingRawPtrExpectations{
                   .get_for_dereference_cnt = 5,
@@ -1690,10 +1715,12 @@ TEST_F(BackupRefPtrTest, Basic) {
   EXPECT_EQ(*raw_ptr1, *wrapped_ptr1);
 
   allocator_.root()->Free(raw_ptr1);
-#if DCHECK_IS_ON() || PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SLOW_CHECKS)
+#if PA_BUILDFLAG(EXPENSIVE_DCHECKS_ARE_ON) || \
+    PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SLOW_CHECKS)
   // In debug builds, the use-after-free should be caught immediately.
   EXPECT_DEATH_IF_SUPPORTED(g_volatile_int_to_ignore = *wrapped_ptr1, "");
-#else   // DCHECK_IS_ON() || PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SLOW_CHECKS)
+#else   // PA_BUILDFLAG(EXPENSIVE_DCHECKS_ARE_ON) ||
+        // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SLOW_CHECKS)
   // The allocation should be poisoned since there's a raw_ptr alive.
   EXPECT_NE(*wrapped_ptr1, 42);
 
@@ -1709,7 +1736,8 @@ TEST_F(BackupRefPtrTest, Basic) {
   EXPECT_EQ(partition_alloc::UntagPtr(raw_ptr1),
             partition_alloc::UntagPtr(raw_ptr3));
   allocator_.root()->Free(raw_ptr3);
-#endif  // DCHECK_IS_ON() || PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SLOW_CHECKS)
+#endif  // PA_BUILDFLAG(EXPENSIVE_DCHECKS_ARE_ON) ||
+        // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SLOW_CHECKS)
 }
 
 TEST_F(BackupRefPtrTest, ZeroSized) {

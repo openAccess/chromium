@@ -7,6 +7,7 @@
 #include "base/scoped_observation.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/base_window.h"
@@ -112,7 +113,7 @@ BrowserWindowInterface* BrowserCollection::FindBrowserWithID(
 
 BrowserWindowInterface* BrowserCollection::FindBrowserWithTab(
     const content::WebContents* web_contents) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M162);
   tabs::TabInterface* tab = tabs::TabInterface::MaybeGetFromContents(
       const_cast<content::WebContents*>(web_contents));
   if (!tab) {

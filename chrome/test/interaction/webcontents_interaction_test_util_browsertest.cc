@@ -19,6 +19,7 @@
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/interaction/interaction_test_util_browser.h"
@@ -33,8 +34,8 @@
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/interaction/expect_call_in_scope.h"
 #include "ui/base/interaction/interaction_sequence.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace {
@@ -366,8 +367,9 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilTest,
                              EXPECT_EQ(url2, util->web_contents()->GetURL());
                              EXPECT_TRUE(chrome::CanGoBack(browser()));
                              util->set_page_identifier(kWebContentsElementId);
-                             chrome::GoBack(browser(),
-                                            WindowOpenDisposition::CURRENT_TAB);
+                             chrome::GoBack(
+                                 browser(),
+                                 ui::mojom::WindowOpenDisposition::kCurrentTab);
                            }))
                        .Build())
           .AddStep(ui::InteractionSequence::StepBuilder()
@@ -381,7 +383,8 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilTest,
                              EXPECT_TRUE(chrome::CanGoForward(browser()));
                              util->set_page_identifier(kWebContentsElementId2);
                              chrome::GoForward(
-                                 browser(), WindowOpenDisposition::CURRENT_TAB);
+                                 browser(),
+                                 ui::mojom::WindowOpenDisposition::kCurrentTab);
                            }))
                        .Build())
           .AddStep(ui::InteractionSequence::StepBuilder()
@@ -2374,7 +2377,7 @@ IN_PROC_BROWSER_TEST_F(WebContentsInteractionTestUtilTest,
   NavigateParams params(browser(),
                         embedded_test_server()->GetURL(kDocumentWithLinksURL),
                         ui::PAGE_TRANSITION_TYPED);
-  params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
   Navigate(&params);
 
   // Using this constructor hits all of the rest of the constructors, saving us

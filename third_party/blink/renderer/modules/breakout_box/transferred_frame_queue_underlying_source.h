@@ -5,6 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_BREAKOUT_BOX_TRANSFERRED_FRAME_QUEUE_UNDERLYING_SOURCE_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_BREAKOUT_BOX_TRANSFERRED_FRAME_QUEUE_UNDERLYING_SOURCE_H_
 
+#include <optional>
+
 #include "base/task/sequenced_task_runner.h"
 #include "base/threading/thread_checker.h"
 #include "third_party/blink/renderer/modules/breakout_box/frame_queue_underlying_source.h"
@@ -20,9 +22,12 @@ class TransferredFrameQueueUnderlyingSource
 
   TransferredFrameQueueUnderlyingSource(
       ScriptState*,
-      CrossThreadPersistent<FrameQueueHost>,
+      scoped_refptr<FrameQueue<NativeFrameType>> queue,
       scoped_refptr<base::SequencedTaskRunner> host_runner,
-      CrossThreadOnceClosure transferred_source_destroyed_callback);
+      CrossThreadWeakHandle<FrameQueueHost> host_handle,
+      std::string device_id = std::string(),
+      wtf_size_t frame_pool_size = 0,
+      std::optional<base::ThreadType> thread_type = std::nullopt);
   ~TransferredFrameQueueUnderlyingSource() override = default;
 
   TransferredFrameQueueUnderlyingSource(
@@ -33,6 +38,7 @@ class TransferredFrameQueueUnderlyingSource
   // FrameQueueUnderlyingSource<NativeFrameType> implementation.
   bool StartFrameDelivery() override;
   void StopFrameDelivery() override;
+  void Close() override;
 
   // ExecutionLifecycleObserver
   void ContextDestroyed() override;
@@ -41,8 +47,18 @@ class TransferredFrameQueueUnderlyingSource
 
  private:
   scoped_refptr<base::SequencedTaskRunner> host_runner_;
-  CrossThreadPersistent<FrameQueueHost> host_;
-  CrossThreadOnceClosure transferred_source_destroyed_callback_;
+  // Weak handle because this object is constructed on the destination thread
+  // from FrameQueueTransferringOptimizer's CrossThreadWeakHandle, and a strong
+  // CrossThreadHandle can only be constructed on the host's creation thread.
+  //
+  // This doesn't shorten the host's lifetime while frames flow: the host keeps
+  // itself alive while it is connected to its track, and it stays connected
+  // until it is closed (see StartFrameDelivery() in
+  // MediaStreamVideoTrackUnderlyingSource and
+  // MediaStreamAudioTrackUnderlyingSource). Requests posted after the host is
+  // gone are dropped, except the one from StartFrameDelivery(), which closes
+  // this source instead so that the transferred stream doesn't hang.
+  CrossThreadWeakHandle<FrameQueueHost> host_handle_;
 };
 
 extern template class MODULES_EXTERN_TEMPLATE_EXPORT

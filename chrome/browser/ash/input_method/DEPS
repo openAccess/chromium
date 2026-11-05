@@ -10,22 +10,15 @@ include_rules = [
   "+chrome/browser/ash/lobster/lobster_service_provider.h",
   "+chrome/browser/ash/magic_boost/magic_boost_controller.h",
   "+chrome/browser/ash/profiles",
-  "+chrome/browser/browser_process.h",
   "+chrome/browser/browser_process_platform_part_ash.h",
   "+chrome/browser/extensions/component_loader.h",
   "+chrome/browser/feedback",
-  "+chrome/browser/global_features.h",
-  "+chrome/browser/manta",
   "+chrome/browser/metrics",
   "+chrome/browser/profiles",
   "+chrome/browser/ui/ash/input_method",
   "+chrome/browser/ui/ash/keyboard",
   "+chrome/browser/ui/aura/accessibility",
   "+chrome/browser/ui/webui/ash/mako",
-  "+chrome/browser/ui/webui/ash/settings/search",
-  "+chrome/common/chrome_features.h",
-  "+chrome/common/chrome_paths.h",
-  "+chrome/common/extensions",
 
   # Dependencies outside of //chrome:
   "-content",
@@ -33,6 +26,15 @@ include_rules = [
 ]
 
 specific_include_rules = {
+  # Only the EditorMediator factory reaches MantaServiceFactory: it DependsOn
+  # it and injects the MantaService into EditorMediator; the editor consumers
+  # take the injected service instead of calling the factory.
+  "editor_mediator_factory\\.cc": [
+    "+chrome/browser/browser_process.h",
+    "+chrome/browser/global_features.h",
+    "+chrome/browser/manta",
+  ],
+
   "component_extension_ime_manager_delegate_impl\\.cc": [
     "+chrome/grit",
   ],

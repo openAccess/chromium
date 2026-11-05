@@ -19,19 +19,20 @@ import './add_site_dialog.js';
 import './edit_exception_dialog.js';
 import './site_list_entry.js';
 
+import {WebUiListenerMixin} from '/shared/settings/web_ui_listener_mixin.js';
 import type {CrTooltipElement} from 'chrome://resources/cr_elements/cr_tooltip/cr_tooltip.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
-import {ListPropertyUpdateMixin} from 'chrome://resources/cr_elements/list_property_update_mixin.js';
-import {WebUiListenerMixin} from 'chrome://resources/cr_elements/web_ui_listener_mixin.js';
 import {assert, assertNotReachedCase} from 'chrome://resources/js/assert.js';
 import {focusWithoutInk} from 'chrome://resources/js/focus_without_ink.js';
 import {sanitizeInnerHtml} from 'chrome://resources/js/parse_html_subset.js';
 import type {SanitizeInnerHtmlOpts} from 'chrome://resources/js/parse_html_subset.js';
+import type {IronListElement} from 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {TooltipMixin} from '../tooltip_mixin.js';
 
 import {ContentSetting, ContentSettingsTypes, CookiesExceptionType, INVALID_CATEGORY_SUBTYPE, SITE_EXCEPTION_WILDCARD} from './constants.js';
+import {ListPropertyUpdateMixin} from './list_property_update_mixin.js';
 import {getTemplate} from './site_list.html.js';
 import type {RawSiteException, SiteException, SiteSettingsBrowserProxy} from './site_settings_browser_proxy.js';
 import {SiteSettingsBrowserProxyImpl} from './site_settings_browser_proxy.js';
@@ -41,6 +42,7 @@ export interface SiteListElement {
   $: {
     addSite: HTMLElement,
     category: HTMLElement,
+    list: IronListElement,
     listContainer: HTMLElement,
     listHeader: HTMLElement,
     tooltip: CrTooltipElement,
@@ -187,6 +189,17 @@ export class SiteListElement extends SiteListElementBase {
   private browserProxy_: SiteSettingsBrowserProxy =
       SiteSettingsBrowserProxyImpl.getInstance();
 
+  /**
+   * Observes |listContainer| so that the <iron-list> within it can be told to
+   * render once it actually has a layout box. See
+   * onListContainerResize_() for details.
+   */
+  private listContainerResizeObserver_: ResizeObserver =
+      new ResizeObserver(() => this.onListContainerResize_());
+
+  /** Whether |listContainer| currently has a layout box. */
+  private listContainerVisible_: boolean = false;
+
   constructor() {
     super();
 
@@ -219,6 +232,43 @@ export class SiteListElement extends SiteListElementBase {
           this.setCategoryWarning_(messages.includes(this.category));
         });
     this.browserProxy.updateIncognitoStatus();
+  }
+
+  override connectedCallback() {
+    super.connectedCallback();
+    this.listContainerResizeObserver_.observe(this.$.listContainer);
+  }
+
+  override disconnectedCallback() {
+    super.disconnectedCallback();
+    this.listContainerResizeObserver_.disconnect();
+    this.listContainerVisible_ = false;
+  }
+
+  /**
+   * <iron-list> refuses to render anything while it is not visible, and only
+   * retries when it receives an 'iron-resize' event, which nothing in Settings
+   * fires for this list. Meanwhile the exception list is fetched as soon as
+   * this element is created, which - because Settings views are stamped into a
+   * <cr-view-manager> view before that view is made visible - regularly
+   * happens while this element is still display:none. The result is a list
+   * that stays permanently empty until some unrelated event (e.g. the user
+   * adding an exception) causes another render.
+   *
+   * Detect the transition to having a layout box and notify the <iron-list>,
+   * so that exceptions loaded while hidden are rendered once shown.
+   */
+  private onListContainerResize_() {
+    const container = this.$.listContainer;
+    const visible = container.offsetWidth > 0 || container.offsetHeight > 0;
+    if (visible === this.listContainerVisible_) {
+      return;
+    }
+
+    this.listContainerVisible_ = visible;
+    if (visible) {
+      this.$.list.notifyResize();
+    }
   }
 
   /**

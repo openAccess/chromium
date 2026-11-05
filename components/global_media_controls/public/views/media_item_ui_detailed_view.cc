@@ -84,10 +84,6 @@ constexpr char kMediaDisplayPageHistogram[] = "Media.Notification.DisplayPage";
 constexpr int kProgressRowHeight = 20;
 constexpr gfx::Insets kButtonRowInsets = gfx::Insets::TLBR(0, 8, 0, 0);
 constexpr char16_t kTimestampDelimiter[] = u" / ";
-const gfx::FontList kTimestampFont({"Google Sans"},
-                                   gfx::Font::NORMAL,
-                                   13,
-                                   gfx::Font::Weight::MEDIUM);
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 class MediaLabelButton : public views::Button {
@@ -264,8 +260,7 @@ MediaItemUIDetailedView::MediaItemUIDetailedView(
           : media_message_center::kPlayArrowOldIcon,
       IDS_MEDIA_MESSAGE_CENTER_MEDIA_NOTIFICATION_ACTION_PLAY);
   play_pause_button_->SetBackground(
-      views::CreateRoundedRectBackground(theme_.play_button_container_color_id,
-                                         kPlayPauseButtonSize.height() / 2));
+      views::CreatePillBackground(theme_.play_button_container_color_id));
 
   // `controls_row` holds all the available media action buttons and the
   // progress view.
@@ -423,9 +418,8 @@ void MediaItemUIDetailedView::UpdateWithMediaSessionInfo(
             : media_message_center::kPauseOldIcon,
         IDS_MEDIA_MESSAGE_CENTER_MEDIA_NOTIFICATION_ACTION_PAUSE,
         theme_.pause_button_foreground_color_id);
-    play_pause_button_->SetBackground(views::CreateRoundedRectBackground(
-        theme_.pause_button_container_color_id,
-        kPlayPauseButtonSize.height() / 2));
+    play_pause_button_->SetBackground(
+        views::CreatePillBackground(theme_.pause_button_container_color_id));
   } else {
     play_pause_button_->Update(
         static_cast<int>(MediaSessionAction::kPlay),
@@ -434,9 +428,8 @@ void MediaItemUIDetailedView::UpdateWithMediaSessionInfo(
             : media_message_center::kPlayArrowOldIcon,
         IDS_MEDIA_MESSAGE_CENTER_MEDIA_NOTIFICATION_ACTION_PLAY,
         theme_.play_button_foreground_color_id);
-    play_pause_button_->SetBackground(views::CreateRoundedRectBackground(
-        theme_.play_button_container_color_id,
-        kPlayPauseButtonSize.height() / 2));
+    play_pause_button_->SetBackground(
+        views::CreatePillBackground(theme_.play_button_container_color_id));
   }
 
   in_picture_in_picture_ =
@@ -900,6 +893,8 @@ views::View* MediaItemUIDetailedView::CreateControlsRow() {
     return nullptr;
   }
 
+  const gfx::FontList timestamp_font({"Google Sans"}, gfx::Font::NORMAL, 13,
+                                     gfx::Font::Weight::MEDIUM);
   views::View* button_container;
   AddChildView(
       views::Builder<views::BoxLayoutView>()
@@ -915,14 +910,14 @@ views::View* MediaItemUIDetailedView::CreateControlsRow() {
                           .CopyAddressTo(&current_timestamp_view_)
                           .SetText(
                               GetFormattedDuration(position_.GetPosition()))
-                          .SetFontList(kTimestampFont)
+                          .SetFontList(timestamp_font)
                           .SetHorizontalAlignment(gfx::ALIGN_LEFT)
                           .SetEnabledColor(theme_.primary_foreground_color_id),
                       views::Builder<views::Label>()
                           .CopyAddressTo(&total_duration_view_)
                           .SetText(kTimestampDelimiter +
                                    GetFormattedDuration(position_.duration()))
-                          .SetFontList(kTimestampFont)
+                          .SetFontList(timestamp_font)
                           .SetHorizontalAlignment(gfx::ALIGN_LEFT)
                           .SetEnabledColor(theme_.primary_foreground_color_id)))
           .AddChildren(

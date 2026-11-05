@@ -183,6 +183,7 @@ source_set("session_restoration_service_factory") {
     "session_restoration_service_factory.mm",
   ]
   deps = [
+    ":session_restoration_service",
     ":session_restoration_service_impl",
     "//base",
     "//ios/chrome/browser/shared/model/profile",
@@ -230,7 +231,7 @@ source_set("test_support") {
     "//ios/chrome/browser/sessions/model/proto",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/profile",
-    "//ios/chrome/browser/shared/model/profile:profile_keyed_service_factory",
+    "//ios/chrome/browser/shared/model/profile/test:testing_factories",
     "//ios/web/public",
     "//ios/web/public/session/proto",
     "//third_party/protobuf:protobuf_lite",
@@ -243,11 +244,12 @@ source_set("fake") {
     "fake_tab_restore_service.h",
     "fake_tab_restore_service.mm",
   ]
+  public_deps = [ "//ui/base/mojom" ]
   deps = [
     "//base",
     "//components/sessions",
     "//components/split_tabs",
-    "//ios/chrome/browser/shared/model/profile:profile_keyed_service_factory",
+    "//ios/chrome/browser/shared/model/profile/test:testing_factories",
   ]
 }
 

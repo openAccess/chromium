@@ -51,6 +51,8 @@ class TextControlInnerEditorElement final : public HTMLDivElement {
   explicit TextControlInnerEditorElement(Document&);
 
   void DefaultEventHandler(Event&) override;
+  String FilterBeforeTextInserted(const String& text) override;
+  void NotifyEditableContentChanged() override;
 
   void SetVisibility(bool is_visible);
   void FocusChanged();
@@ -84,16 +86,6 @@ class PasswordRevealButtonElement final : public HTMLDivElement {
 
   void DefaultEventHandler(Event&) override;
   bool WillRespondToMouseClickEvents() override;
-
- private:
-  FocusableState SupportsFocus(UpdateBehavior) const override {
-    return FocusableState::kNotFocusable;
-  }
-};
-
-class EmailVerificationIndicatorElement final : public HTMLDivElement {
- public:
-  explicit EmailVerificationIndicatorElement(Document&);
 
  private:
   FocusableState SupportsFocus(UpdateBehavior) const override {

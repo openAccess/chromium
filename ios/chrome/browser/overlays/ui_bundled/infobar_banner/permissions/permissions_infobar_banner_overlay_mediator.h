@@ -7,8 +7,18 @@
 
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_banner/infobar_banner_overlay_mediator.h"
 
+@protocol PageActionMenuCommands;
+@protocol PageInfoCommands;
+
 // Mediator that configures an infobar banner for the permissions infobar.
 @interface PermissionsBannerOverlayMediator : InfobarBannerOverlayMediator
+
+// Handler for page action menu commands.
+@property(nonatomic, weak) id<PageActionMenuCommands> pageActionMenuHandler;
+
+// Handler for page info commands.
+@property(nonatomic, weak) id<PageInfoCommands> pageInfoHandler;
+
 @end
 
 #endif  // IOS_CHROME_BROWSER_OVERLAYS_UI_BUNDLED_INFOBAR_BANNER_PERMISSIONS_PERMISSIONS_INFOBAR_BANNER_OVERLAY_MEDIATOR_H_

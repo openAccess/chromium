@@ -5,16 +5,23 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_ADAPTERS_ICE_TRANSPORT_PROXY_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_ADAPTERS_ICE_TRANSPORT_PROXY_H_
 
+#include <memory>
+#include <utility>
+
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_checker.h"
-#include "third_party/blink/renderer/modules/peerconnection/adapters/ice_transport_adapter.h"
 #include "third_party/blink/renderer/modules/peerconnection/adapters/ice_transport_adapter_cross_thread_factory.h"
+#include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/heap/safe_non_retaining_persistent.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_scheduler.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
-#include "third_party/webrtc/p2p/base/p2p_transport_channel.h"
+#include "third_party/webrtc/api/candidate.h"
+#include "third_party/webrtc/api/transport/enums.h"
+#include "third_party/webrtc/p2p/base/ice_transport_internal.h"
 
 namespace blink {
 
@@ -42,7 +49,7 @@ class IceTransportProxy final {
  public:
   // Delegate for receiving callbacks from the ICE implementation. These all run
   // on the proxy thread.
-  class Delegate {
+  class Delegate : public GarbageCollectedMixin {
    public:
     virtual ~Delegate() = default;
 
@@ -84,7 +91,7 @@ class IceTransportProxy final {
   // Since the Host is deleted on the host thread (via OnTaskRunnerDeleter), as
   // long as this is alive it is safe to post tasks to it (using unretained).
   std::unique_ptr<IceTransportHost, base::OnTaskRunnerDeleter> host_;
-  const raw_ptr<Delegate> delegate_;
+  const SafeNonRetainingPersistent<Delegate> delegate_;
 
   // This handle notifies scheduler about an active connection associated
   // with a frame. Handle should be destroyed when connection is closed.

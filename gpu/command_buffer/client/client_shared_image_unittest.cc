@@ -11,6 +11,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "components/viz/test/test_context_support.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/command_buffer/client/test_shared_image_interface.h"
 #include "gpu/command_buffer/common/shared_image_capabilities.h"
@@ -21,6 +22,14 @@
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/gpu_fence.h"
+
+#if BUILDFLAG(IS_WIN)
+#include <windows.h>
+
+#include "base/memory/unsafe_shared_memory_region.h"
+#include "base/win/scoped_handle.h"
+#include "ui/gfx/gpu_memory_buffer_handle.h"
+#endif
 
 namespace gpu {
 
@@ -335,6 +344,49 @@ TEST(ClientSharedImageTest, ExportAndImport) {
             static_cast<uint32_t>(GL_TEXTURE_2D));
 }
 
+#if BUILDFLAG(IS_WIN)
+// An imported DXGI image without a shared memory pool, as
+// TestSharedImageInterface and ImportUnowned() produce, cannot read pixels
+// back from the GPU. It must still serve premapped mappings, and fail any
+// other mapping without crashing.
+TEST(ClientSharedImageTest, ImportedDXGIImageWithoutPoolMapsOnlyPremapped) {
+  auto sii = base::MakeRefCounted<TestSharedImageInterface>();
+  constexpr uint8_t kMarker = 0x5a;
+
+  // Attach a premapped region to a stand-in DXGI handle, as video capture does.
+  auto region = base::UnsafeSharedMemoryRegion::Create(kSize.GetArea() * 3 / 2);
+  ASSERT_TRUE(region.IsValid());
+  auto region_mapping = region.Map();
+  for (auto& byte : region_mapping.GetMemoryAsSpan<uint8_t>()) {
+    byte = kMarker;
+  }
+  gfx::DXGIHandle dxgi_handle(base::win::ScopedHandle(::CreateEvent(
+      nullptr, /*bManualReset=*/TRUE, /*bInitialState=*/FALSE, nullptr)));
+  ASSERT_TRUE(dxgi_handle.IsValid());
+  dxgi_handle = dxgi_handle.CloneWithRegion(std::move(region));
+
+  auto client_si = sii->CreateSharedImage(
+      CreateSharedImageInfo(viz::MultiPlaneFormat::kNV12,
+                            SHARED_IMAGE_USAGE_DISPLAY_READ),
+      kNullSurfaceHandle, gfx::BufferUsage::SCANOUT_VEA_CPU_READ,
+      gfx::GpuMemoryBufferHandle(std::move(dxgi_handle)));
+  ASSERT_TRUE(client_si);
+  auto imported_si =
+      sii->ImportSharedImage(client_si->Export(/*with_buffer_handle=*/true));
+  ASSERT_EQ(imported_si->GetGpuMemoryBufferType(), gfx::DXGI_SHARED_HANDLE);
+
+  // Not premapped: this needs a readback, which needs a pool.
+  imported_si->SetUsePreMappedMemory(false);
+  EXPECT_FALSE(imported_si->Map());
+
+  // Premapped: served from the region that came with the handle.
+  imported_si->SetUsePreMappedMemory(true);
+  auto scoped_mapping = imported_si->Map();
+  ASSERT_TRUE(scoped_mapping);
+  EXPECT_EQ(scoped_mapping->GetMemoryForPlane(0)[0], kMarker);
+}
+#endif
+
 TEST(ClientSharedImageTest, MakeUnowned) {
   auto sii = base::MakeRefCounted<TestSharedImageInterface>();
 
@@ -372,19 +424,11 @@ TEST(ClientSharedImageTest,
 }
 
 // When the client provides a native buffer with a single-plane format,
-// GL_TEXTURE_2D should be used as the texture target on all platforms other
-// than Mac, where the target for IO surfaces should be used.
+// GL_TEXTURE_2D
 TEST(ClientSharedImageTest,
      GetTextureTarget_SinglePlaneFormats_ClientNativeBuffer) {
   auto sii = base::MakeRefCounted<TestSharedImageInterface>();
   sii->emulate_client_provided_native_buffer();
-
-#if BUILDFLAG(IS_MAC)
-  // Explicitly set the texture target for IO surfaces to a target other than
-  // GL_TEXTURE_2D to ensure that the test is meaningful on Mac.
-  const uint32_t kTargetForIOSurfaces = GL_TEXTURE_RECTANGLE_ARB;
-  sii->set_texture_target_for_io_surfaces(kTargetForIOSurfaces);
-#endif
 
   const SharedImageUsageSet kUsage =
       SHARED_IMAGE_USAGE_RASTER_WRITE | SHARED_IMAGE_USAGE_DISPLAY_READ;
@@ -393,99 +437,15 @@ TEST(ClientSharedImageTest,
     auto client_si = sii->CreateSharedImage(
         CreateSharedImageInfo(format, kUsage), kNullSurfaceHandle);
 
-#if BUILDFLAG(IS_MAC)
-    const uint32_t expected_texture_target = kTargetForIOSurfaces;
-#else
-    const uint32_t expected_texture_target = GL_TEXTURE_2D;
-#endif
-    EXPECT_EQ(client_si->GetTextureTarget(), expected_texture_target);
-  }
-}
-
-// When the client asks for SCANOUT usage, GL_TEXTURE_2D should be used as the
-// texture target on all platforms other than Mac, where the target for IO
-// surfaces should be used.
-TEST(ClientSharedImageTest, GetTextureTarget_ScanoutUsage) {
-  auto sii = base::MakeRefCounted<TestSharedImageInterface>();
-
-#if BUILDFLAG(IS_MAC)
-  // Explicitly set the texture target for IO surfaces to a target other than
-  // GL_TEXTURE_2D to ensure that the test is meaningful on Mac.
-  const uint32_t kTargetForIOSurfaces = GL_TEXTURE_RECTANGLE_ARB;
-  sii->set_texture_target_for_io_surfaces(kTargetForIOSurfaces);
-#endif
-
-  const SharedImageUsageSet kUsage = SHARED_IMAGE_USAGE_SCANOUT;
-
-  // Test all single-plane formats as well as multiplane formats for which
-  // hardware GMBs are supported.
-  std::vector<viz::SharedImageFormat> formats_to_test;
-  for (auto format : viz::SinglePlaneFormat::kAll) {
-    formats_to_test.push_back(format);
-  }
-  for (auto format : kMultiPlaneFormatsWithHardwareGMBs) {
-    formats_to_test.push_back(format);
-  }
-
-  for (auto format : formats_to_test) {
-    auto client_si = sii->CreateSharedImage(
-        CreateSharedImageInfo(format, kUsage), kNullSurfaceHandle);
-
-#if BUILDFLAG(IS_MAC)
-    const uint32_t expected_texture_target = kTargetForIOSurfaces;
-#else
-    const uint32_t expected_texture_target = GL_TEXTURE_2D;
-#endif
-    EXPECT_EQ(client_si->GetTextureTarget(), expected_texture_target);
-  }
-}
-
-// When the client asks for WEBGPU usage, GL_TEXTURE_2D should be used as the
-// texture target on all platforms other than Mac, where the target for IO
-// surfaces should be used.
-TEST(ClientSharedImageTest, GetTextureTarget_WebGPUUsage) {
-  auto sii = base::MakeRefCounted<TestSharedImageInterface>();
-
-#if BUILDFLAG(IS_MAC)
-  // Explicitly set the texture target for IO surfaces to a target other than
-  // GL_TEXTURE_2D to ensure that the test is meaningful on Mac.
-  const uint32_t kTargetForIOSurfaces = GL_TEXTURE_RECTANGLE_ARB;
-  sii->set_texture_target_for_io_surfaces(kTargetForIOSurfaces);
-#endif
-
-  // Test all single-plane formats as well as multiplane formats for which
-  // hardware GMBs are supported.
-  std::vector<viz::SharedImageFormat> formats_to_test;
-  for (auto format : viz::SinglePlaneFormat::kAll) {
-    formats_to_test.push_back(format);
-  }
-  for (auto format : kMultiPlaneFormatsWithHardwareGMBs) {
-    formats_to_test.push_back(format);
-  }
-
-  for (SharedImageUsageSet webgpu_usage :
-       {SHARED_IMAGE_USAGE_WEBGPU_READ, SHARED_IMAGE_USAGE_WEBGPU_WRITE}) {
-    const SharedImageUsageSet kUsage = webgpu_usage;
-
-    for (auto format : formats_to_test) {
-      auto client_si = sii->CreateSharedImage(
-          CreateSharedImageInfo(format, kUsage), kNullSurfaceHandle);
-
-#if BUILDFLAG(IS_MAC)
-      const uint32_t expected_texture_target = kTargetForIOSurfaces;
-#else
-      const uint32_t expected_texture_target = GL_TEXTURE_2D;
-#endif
-      EXPECT_EQ(client_si->GetTextureTarget(), expected_texture_target);
-    }
+    EXPECT_EQ(client_si->GetTextureTarget(),
+              static_cast<uint32_t>(GL_TEXTURE_2D));
   }
 }
 
 // On all platforms, the default target should be used for multi-planar
 // formats if external sampling is not set and scanout/WebGPU usage are not
 // specified.
-TEST(ClientSharedImageTest,
-     GetTextureTarget_MultiplanarFormats_NoScanoutOrWebGPUUsage) {
+TEST(ClientSharedImageTest, GetTextureTarget_MultiplanarFormats) {
   auto sii = base::MakeRefCounted<TestSharedImageInterface>();
   const SharedImageUsageSet kUsage =
       SHARED_IMAGE_USAGE_RASTER_WRITE | SHARED_IMAGE_USAGE_DISPLAY_READ;
@@ -502,8 +462,8 @@ TEST(ClientSharedImageTest,
   }
 }
 
-#if BUILDFLAG(IS_OZONE)
-// On Ozone, the target for native buffers should be used if a
+#if BUILDFLAG(IS_OZONE) || BUILDFLAG(IS_ANDROID)
+// On Ozone/Android, the target for native buffers should be used if a
 // multiplanar format with external sampling is passed.
 TEST(ClientSharedImageTest,
      GetTextureTarget_MultiplanarFormatsWithExternalSampling) {
@@ -530,6 +490,29 @@ TEST(ClientSharedImageTest,
               static_cast<uint32_t>(GL_TEXTURE_EXTERNAL_OES));
 #endif
   }
+}
+
+TEST(ClientSharedImageTest,
+     MultiplanarFormatWithExternalSamplerSharedMemoryHandle) {
+  auto sii = base::MakeRefCounted<TestSharedImageInterface>();
+
+  const SharedImageUsageSet kUsage =
+      SHARED_IMAGE_USAGE_RASTER_WRITE | SHARED_IMAGE_USAGE_DISPLAY_READ;
+
+  auto format = viz::MultiPlaneFormat::kNV12;
+  format.SetPrefersExternalSampler();
+  SharedImageInfo si_info(format, gfx::Size(100, 100), gfx::ColorSpace(),
+                          kUsage, "TestClearExternalSamplerHandle");
+  EXPECT_EQ(si_info.alpha_type, kPremul_SkAlphaType);
+
+  gfx::GpuMemoryBufferHandle handle =
+      TestSharedImageInterface::CreateGMBHandle(format, gfx::Size(100, 100));
+  auto client_si =
+      sii->CreateSharedImage(si_info, kNullSurfaceHandle,
+                             gfx::BufferUsage::GPU_READ, std::move(handle));
+  ASSERT_TRUE(client_si);
+  EXPECT_FALSE(client_si->format().PrefersExternalSampler());
+  EXPECT_EQ(client_si->alpha_type(), kUnpremul_SkAlphaType);
 }
 #endif
 
@@ -568,6 +551,31 @@ TEST(ClientSharedImageTest,
   EXPECT_TRUE(exported_vec.empty());
 }
 
+TEST(ClientSharedImageTest,
+     AutomaticSyncTokenManagement_EndDisplayCompositorAccess) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kUseAutomaticSyncTokenManagement);
+
+  auto sii = base::MakeRefCounted<TestSharedImageInterface>();
+  auto client_si =
+      sii->CreateSharedImage(CreateSharedImageInfo(), kNullSurfaceHandle);
+
+  SyncToken compositor_token(CommandBufferNamespace::GPU_IO,
+                             CommandBufferId::FromUnsafeValue(789),
+                             /*release_count=*/101);
+
+  client_si->EndDisplayCompositorAccess(compositor_token);
+
+  auto exported_result = client_si->EndImport(SyncToken());
+  SyncToken expected_creation_token = client_si->creation_sync_token();
+  expected_creation_token.SetVerifyFlush();
+  SyncToken expected_compositor_token = compositor_token;
+  expected_compositor_token.SetVerifyFlush();
+  EXPECT_TRUE(exported_result.IsEqualForTesting(
+      SharedImageExportResult::CreateForTesting(
+          {expected_creation_token, expected_compositor_token})));
+}
+
 // Checks whether ClientSharedImage correctly stores only the latest SyncToken
 // on a sequence when feature UseAutomaticSyncTokenManagement is enabled.
 TEST(ClientSharedImageTest, AutomaticSyncTokenManagement_SyncTokenUpdate) {
@@ -597,10 +605,15 @@ TEST(ClientSharedImageTest, AutomaticSyncTokenManagement_SyncTokenUpdate) {
   SharedImageExportResult export_result = client_si->EndImport(SyncToken());
   EXPECT_TRUE(export_result.HasData());
 
-  // The export_result should only contain token2 (verified).
+  // The export_result should contain the creation sync token and token2 (both
+  // verified).
+  SyncToken expected_creation_token = client_si->creation_sync_token();
+  expected_creation_token.SetVerifyFlush();
   SyncToken expected_token = token2;
   expected_token.SetVerifyFlush();
-  EXPECT_TRUE(export_result.IsEqualForTesting(expected_token));
+  EXPECT_TRUE(
+      export_result.IsEqualForTesting(SharedImageExportResult::CreateForTesting(
+          {expected_creation_token, expected_token})));
 }
 
 TEST(ClientSharedImageTest, SignalLatestSyncToken_WithCallbackId) {
@@ -621,7 +634,7 @@ TEST(ClientSharedImageTest, SignalLatestSyncToken_WithCallbackId) {
   uint64_t callback_id = ClientSharedImage::SignalLatestSyncToken(
       {client_si}, {SyncToken()},
       base::BindOnce([](bool* called) { *called = true; }, &callback_called),
-      sii.get(), /*pending_callback_id=*/0);
+      sii.get(), /*context_support=*/nullptr, /*pending_callback_id=*/0);
   EXPECT_EQ(callback_id, 0u);
   EXPECT_TRUE(callback_called);
 
@@ -631,7 +644,7 @@ TEST(ClientSharedImageTest, SignalLatestSyncToken_WithCallbackId) {
   callback_id = ClientSharedImage::SignalLatestSyncToken(
       {client_si}, {token},
       base::BindOnce([](bool* called) { *called = true; }, &callback_called),
-      sii.get(), /*pending_callback_id=*/100);
+      sii.get(), /*context_support=*/nullptr, /*pending_callback_id=*/100);
   EXPECT_EQ(callback_id, 100u);
   base::RunLoop run_loop;
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
@@ -645,7 +658,7 @@ TEST(ClientSharedImageTest, SignalLatestSyncToken_WithCallbackId) {
   callback_id = ClientSharedImage::SignalLatestSyncToken(
       {client_si}, {token},
       base::BindOnce([](bool* called) { *called = true; }, &callback_called),
-      sii.get(), /*pending_callback_id=*/0);
+      sii.get(), /*context_support=*/nullptr, /*pending_callback_id=*/0);
   EXPECT_EQ(callback_id, 100u);
   EXPECT_FALSE(callback_called);
   base::RunLoop run_loop2;
@@ -670,11 +683,14 @@ TEST(ClientSharedImageTest,
   SyncToken token(ns, cmd_id, /*release_count=*/250);
   client_si->EndExport(SharedImageExportResult::CreateForTesting(token));
 
+  viz::TestContextSupport context_support;
+  context_support.set_sync_point_client_id(token.GetClientId());
+
   bool callback_called = false;
   uint64_t callback_id = ClientSharedImage::SignalLatestSyncToken(
       {client_si}, /*sync_tokens=*/{},
       base::BindOnce([](bool* called) { *called = true; }, &callback_called),
-      sii.get(), /*pending_callback_id=*/0);
+      sii.get(), &context_support, /*pending_callback_id=*/0);
   EXPECT_EQ(callback_id, 250u);
   EXPECT_FALSE(callback_called);
   base::RunLoop run_loop;
@@ -716,6 +732,33 @@ TEST(ClientSharedImageTest,
       FROM_HERE, run_loop.QuitClosure());
   run_loop.Run();
   EXPECT_TRUE(callback_called);
+}
+
+TEST(ClientSharedImageTest, DestroySharedImage_AutomaticSyncTokenManagement) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kUseAutomaticSyncTokenManagement);
+
+  auto sii = base::MakeRefCounted<TestSharedImageInterface>();
+  auto client_si =
+      sii->CreateSharedImage(CreateSharedImageInfo(), kNullSurfaceHandle);
+  SyncToken creation_token = client_si->creation_sync_token();
+
+  CommandBufferNamespace ns = CommandBufferNamespace::GPU_IO;
+  CommandBufferId cmd_id1 = CommandBufferId::FromUnsafeValue(10);
+  CommandBufferId cmd_id2 = CommandBufferId::FromUnsafeValue(20);
+  SyncToken token1(ns, cmd_id1, /*release_count=*/100);
+  SyncToken token2(ns, cmd_id2, /*release_count=*/200);
+
+  client_si->EndExport(SharedImageExportResult::CreateForTesting(token1));
+  // In automatic mode, UpdateDestructionSyncToken is effectively a no-op and
+  // any SyncToken passed into it should be ignored.
+  client_si->UpdateDestructionSyncToken(token2);
+  client_si->UpdateDestructionSyncToken(SyncToken());
+
+  client_si.reset();
+
+  EXPECT_THAT(sii->MostRecentDestroyTokens(),
+              testing::UnorderedElementsAre(creation_token, token1));
 }
 
 }  // namespace gpu

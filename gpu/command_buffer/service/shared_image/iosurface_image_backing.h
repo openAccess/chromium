@@ -172,6 +172,7 @@ class GPU_GLES2_EXPORT IOSurfaceImageBacking
   class SkiaGraphiteDawnMetalRepresentation;
   class SkiaGaneshRepresentation;
   class OverlayRepresentation;
+  class VideoRepresentation;
 
   class DawnBufferCopyRepresentation final : public DawnBufferRepresentation {
    public:
@@ -211,6 +212,10 @@ class GPU_GLES2_EXPORT IOSurfaceImageBacking
   std::unique_ptr<OverlayImageRepresentation> ProduceOverlay(
       SharedImageManager* manager,
       MemoryTypeTracker* tracker) final;
+  std::unique_ptr<VideoImageRepresentation> ProduceVideo(
+      SharedImageManager* manager,
+      MemoryTypeTracker* tracker,
+      VideoDevice device) final;
   std::unique_ptr<DawnImageRepresentation> ProduceDawn(
       SharedImageManager* manager,
       MemoryTypeTracker* tracker,
@@ -228,7 +233,7 @@ class GPU_GLES2_EXPORT IOSurfaceImageBacking
       scoped_refptr<SharedContextState> context_state) override;
   void SetPurgeable(bool purgeable) override;
   bool IsPurgeable() const override;
-  void Update(std::unique_ptr<gfx::GpuFence> in_fence) override;
+  void Update(gfx::GpuFenceHandle in_fence) override;
   gfx::GpuMemoryBufferHandle GetGpuMemoryBufferHandle() override;
   std::unique_ptr<WebNNTensorRepresentation> ProduceWebNNTensor(
       SharedImageManager* manager,

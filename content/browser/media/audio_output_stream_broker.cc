@@ -81,6 +81,8 @@ AudioOutputStreamBroker::AudioOutputStreamBroker(
     mojo::PendingRemote<media::mojom::AudioOutputStreamProviderClient> client)
     : AudioStreamBroker(render_process_id, render_frame_id),
       main_frame_token_(main_frame_token),
+      is_default_device_(
+          media::AudioDeviceDescription::IsDefaultDevice(output_device_id)),
       output_device_id_(output_device_id),
       params_(params),
       group_id_(group_id),
@@ -88,17 +90,18 @@ AudioOutputStreamBroker::AudioOutputStreamBroker(
       client_(std::move(client)),
       observer_(render_process_id, render_frame_id, stream_id),
       observer_receiver_(&observer_) {
-  DCHECK(client_);
-  DCHECK(deleter_);
-  DCHECK(group_id_);
+  CHECK(client_, base::NotFatalUntil::M160);
+  CHECK(deleter_, base::NotFatalUntil::M160);
+  CHECK(group_id_, base::NotFatalUntil::M160);
   TRACE_EVENT_BEGIN("audio", "AudioOutputStreamBroker", GetTracingTrack(this));
 
   MediaObserver* media_observer =
       GetContentClient()->browser()->GetMediaObserver();
 
   // May be null in unit tests.
-  if (media_observer)
+  if (media_observer) {
     media_observer->OnCreatingAudioStream(render_process_id, render_frame_id);
+  }
 
   // Unretained is safe because |this| owns |client_|
   client_.set_disconnect_handler(
@@ -134,11 +137,38 @@ AudioOutputStreamBroker::~AudioOutputStreamBroker() {
                   static_cast<uint32_t>(reason));
 }
 
+bool AudioOutputStreamBroker::Reparent(int new_render_frame_id) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
+  // Only default-device streams with playback latency can be shared across
+  // frames via AudioRendererMixerManager.
+  if (!is_default_device_ ||
+      params_.latency_tag() != media::AudioLatency::Type::kPlayback) {
+    return false;
+  }
+  if (render_frame_id_ == new_render_frame_id) {
+    return true;
+  }
+
+  const int old_render_frame_id = render_frame_id_;
+  render_frame_id_ = new_render_frame_id;
+
+  // Transfer stream tracking to the surviving frame. Note that the old frame's
+  // media streams may have already been cleaned up by CleanUpMediaStreams() on
+  // the UI thread, in which case NotifyFrameHostOfAudioStreamStopped() is a
+  // no-op.
+  NotifyFrameHostOfAudioStreamStarted(render_process_id(), render_frame_id_,
+                                      /*is_capturing=*/false);
+  NotifyFrameHostOfAudioStreamStopped(render_process_id(), old_render_frame_id,
+                                      /*is_capturing=*/false);
+  observer_.Reparent(new_render_frame_id);
+  return true;
+}
+
 void AudioOutputStreamBroker::CreateStream(
     media::mojom::AudioStreamFactory* factory) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  DCHECK(!observer_receiver_.is_bound());
-  DCHECK(!device_switch_interface_.is_bound());
+  CHECK(!observer_receiver_.is_bound(), base::NotFatalUntil::M160);
+  CHECK(!device_switch_interface_.is_bound(), base::NotFatalUntil::M160);
   TRACE_EVENT_BEGIN("audio", "CreateStream", GetTracingTrack(this), "device id",
                     output_device_id_);
 
@@ -161,7 +191,7 @@ void AudioOutputStreamBroker::CreateStream(
   constexpr int log_component_id = 0;
 
   if (MediaStreamManager::GetPreferredOutputManagerInstance() &&
-      media::AudioDeviceDescription::IsDefaultDevice(output_device_id_)) {
+      is_default_device_) {
     // Register the device switcher with PreferredAudioOutputDeviceManager.
     // `output_device_id_` will be updated by the `SwitchAudioOutputDeviceId`,
     // which is called by the PreferredAudioOutputDeviceManager during
@@ -233,7 +263,8 @@ void AudioOutputStreamBroker::ObserverBindingLost(
 
 void AudioOutputStreamBroker::Cleanup(DisconnectReason reason) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(owning_sequence_);
-  DCHECK_EQ(DisconnectReason::kDocumentDestroyed, disconnect_reason_);
+  CHECK_EQ(DisconnectReason::kDocumentDestroyed, disconnect_reason_,
+           base::NotFatalUntil::M160);
   disconnect_reason_ = reason;
   std::move(deleter_).Run(this);
 }

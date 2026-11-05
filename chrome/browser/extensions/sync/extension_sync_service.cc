@@ -38,9 +38,12 @@
 #include "extensions/browser/launch_util.h"
 #include "extensions/browser/pending_extension_manager.h"
 #include "extensions/browser/permissions/permissions_updater.h"
+#include "extensions/browser/permissions/scripting_permissions_modifier.h"
+#include "extensions/browser/permissions_manager.h"
 #include "extensions/browser/uninstall_reason.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_set.h"
 #include "extensions/common/permissions/permission_message_provider.h"
 #include "extensions/common/permissions/permission_set.h"
@@ -128,7 +131,7 @@ std::vector<ExtensionSyncData> ToExtensionSyncDataList(
 // reasons.
 base::flat_set<int> GetSyncableDisableReasons(
     const base::flat_set<int>& disable_reasons) {
-  static_assert(extensions::disable_reason::DISABLE_REASON_LAST == (1LL << 27),
+  static_assert(extensions::disable_reason::DISABLE_REASON_LAST == (1LL << 28),
                 "Please consider whether your new disable reason should be"
                 " syncable, and if so update the list below accordingly!");
   const base::flat_set<int> kKnownSyncableDisableReasons = {
@@ -162,14 +165,17 @@ base::flat_set<int> GetLocalDisableReasons(
 }  // namespace
 
 struct ExtensionSyncService::PendingUpdate {
-  PendingUpdate() : grant_permissions_and_reenable(false) {}
+  PendingUpdate() = default;
   PendingUpdate(const base::Version& version,
-                bool grant_permissions_and_reenable)
+                bool grant_permissions_and_reenable,
+                std::optional<bool> withhold_permissions)
       : version(version),
-        grant_permissions_and_reenable(grant_permissions_and_reenable) {}
+        grant_permissions_and_reenable(grant_permissions_and_reenable),
+        withhold_permissions(withhold_permissions) {}
 
   base::Version version;
-  bool grant_permissions_and_reenable;
+  bool grant_permissions_and_reenable = false;
+  std::optional<bool> withhold_permissions;
 };
 
 ExtensionSyncService::ExtensionSyncService(Profile* profile)
@@ -304,7 +310,7 @@ std::string ExtensionSyncService::GetClientTag(
   if (entity_data.specifics.has_extension()) {
     return entity_data.specifics.extension().id();
   }
-  DCHECK(entity_data.specifics.has_app());
+  CHECK(entity_data.specifics.has_app(), base::NotFatalUntil::M161);
   return entity_data.specifics.app().extension().id();
 }
 
@@ -333,9 +339,19 @@ ExtensionSyncData ExtensionSyncService::CreateSyncData(
     NOTREACHED() << "Blocklisted extensions should not be getting synced.";
   }
 
-  bool incognito_enabled = extensions::util::IsIncognitoEnabled(id, profile_);
+  bool incognito_enabled =
+      extensions::util::IsIncognitoEnabledForSync(id, profile_);
   bool remote_install = extension_prefs->HasDisableReason(
       id, extensions::disable_reason::DISABLE_REMOTE_INSTALL);
+  std::optional<bool> withhold_permissions;
+  if (base::FeatureList::IsEnabled(
+          extensions_features::kExtensionInstallSiteAccessOptions)) {
+    auto* permissions_manager = extensions::PermissionsManager::Get(profile_);
+    if (permissions_manager->CanAffectExtension(extension)) {
+      withhold_permissions =
+          permissions_manager->HasWithheldHostPermissions(extension);
+    }
+  }
   AppSorting* app_sorting = system_->app_sorting();
 
   ExtensionManagement* extension_management =
@@ -353,7 +369,8 @@ ExtensionSyncData ExtensionSyncService::CreateSyncData(
                 app_sorting->GetPageOrdinal(id),
                 extensions::GetLaunchTypePrefValue(extension_prefs, id))
           : ExtensionSyncData(extension, enabled, syncable_disable_reasons,
-                              incognito_enabled, remote_install, update_url);
+                              incognito_enabled, remote_install, update_url,
+                              withhold_permissions);
 
   // If there's a pending update, send the new version to sync instead of the
   // installed one.
@@ -361,12 +378,19 @@ ExtensionSyncData ExtensionSyncService::CreateSyncData(
   if (it != pending_updates_.end()) {
     const base::Version& version = it->second.version;
     // If we have a pending version, it should be newer than the installed one.
+    // TODO(crbug.com/573016740): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK_EQ(-1, extension.version().CompareTo(version));
     result.set_version(version);
     // If we'll re-enable the extension once it's updated, also send that back
     // to sync.
     if (it->second.grant_permissions_and_reenable) {
       result.set_enabled(true);
+    }
+    if (base::FeatureList::IsEnabled(
+            extensions_features::kExtensionInstallSiteAccessOptions) &&
+        it->second.withhold_permissions.has_value()) {
+      result.set_withhold_permissions(*it->second.withhold_permissions);
     }
   }
   return result;
@@ -438,7 +462,7 @@ void ExtensionSyncService::ApplySyncData(
   syncer::DataType type =
       extension_sync_data.is_app() ? syncer::APPS : syncer::EXTENSIONS;
   SyncBundle* bundle = GetSyncBundle(type);
-  DCHECK(bundle->IsSyncing());
+  CHECK(bundle->IsSyncing(), base::NotFatalUntil::M161);
   if (extension && !IsCorrectSyncType(*extension, type)) {
     // The installed item isn't the same type as the sync data item, so we need
     // to remove the sync data item; otherwise it will be a zombie that will
@@ -549,6 +573,65 @@ void ExtensionSyncService::ApplySyncData(
         disable_reasons, cleaned_incoming_disable_reasons_set);
   }
 
+  // Update the withheld permissions state if kExtensionInstallSiteAccessOptions
+  // is enabled, `withhold_permissions` is present in the incoming sync data,
+  // and the incoming sync data is not from an older version of the extension
+  // than the locally installed one.
+  // If `withhold_permissions` is not set (e.g. from an older client or when the
+  // feature flag was disabled on the committing device), preserve the local
+  // state (which defaults to false for newly installed extensions).
+  std::optional<bool> pending_withhold_permissions;
+  if (base::FeatureList::IsEnabled(
+          extensions_features::kExtensionInstallSiteAccessOptions) &&
+      extension_sync_data.withhold_permissions().has_value()) {
+    const bool should_withhold = *extension_sync_data.withhold_permissions();
+    // Only allow granting host permissions if the synced version's permissions
+    // are approved.
+    const bool can_grant_permissions =
+        extension_sync_data.supports_disable_reasons() &&
+        !disable_reasons.contains(
+            extensions::disable_reason::DISABLE_PERMISSIONS_INCREASE) &&
+        !disable_reasons.contains(
+            extensions::disable_reason::DISABLE_REMOTE_INSTALL);
+    switch (state) {
+      case NOT_INSTALLED:
+        extension_prefs->SetWithholdingPermissions(id, should_withhold);
+        break;
+      case INSTALLED_MATCHING:
+        if ((should_withhold || can_grant_permissions) &&
+            extensions::PermissionsManager::Get(profile_)->CanAffectExtension(
+                *extension)) {
+          extensions::ScriptingPermissionsModifier(profile_, extension)
+              .SetWithholdHostPermissions(should_withhold);
+        }
+        break;
+      case INSTALLED_OUTDATED:
+        if (should_withhold) {
+          if (extensions::PermissionsManager::Get(profile_)->CanAffectExtension(
+                  *extension)) {
+            extensions::ScriptingPermissionsModifier(profile_, extension)
+                .SetWithholdHostPermissions(true);
+          } else {
+            // The outdated local version may not have host permissions even
+            // though the incoming synced version does. Pre-set the pref so that
+            // when the new version is installed,
+            // PermissionsUpdater::InitializePermissions immediately withholds
+            // its host permissions.
+            extension_prefs->SetWithholdingPermissions(id, true);
+          }
+          pending_withhold_permissions = true;
+        } else if (can_grant_permissions) {
+          // Defer granting host permissions until the extension finishes
+          // updating to the synced version so an older local version with
+          // broader host permissions is not granted access prematurely.
+          pending_withhold_permissions = false;
+        }
+        break;
+      case INSTALLED_NEWER:
+        break;
+    }
+  }
+
   // Enable/disable the extension.
   bool should_be_enabled = disable_reasons.empty();
   bool reenable_after_update = false;
@@ -606,7 +689,7 @@ void ExtensionSyncService::ApplySyncData(
   }
 
   // Update the incognito flag.
-  extensions::util::SetIsIncognitoEnabled(
+  extensions::util::SetIsIncognitoEnabledForSync(
       id, profile_, extension_sync_data.incognito_enabled());
   extension = nullptr;  // No longer safe to use.
 
@@ -634,7 +717,8 @@ void ExtensionSyncService::ApplySyncData(
 
   // Notify the AccountExtensionTracker of an incoming extension via sync.
   if (!extension_sync_data.is_app() && state != NOT_INSTALLED) {
-    DCHECK(ShouldPromoteToAccountExtension(extension_sync_data));
+    CHECK(ShouldPromoteToAccountExtension(extension_sync_data),
+          base::NotFatalUntil::M161);
     AccountExtensionTracker::Get(profile_)->OnExtensionSyncDataReceived(id);
   }
 
@@ -647,11 +731,26 @@ void ExtensionSyncService::ApplySyncData(
 #endif
 
   // Finally, trigger installation/update as required.
+  if (state != INSTALLED_OUTDATED) {
+    pending_updates_.erase(id);
+  }
+
   bool check_for_updates = false;
   if (state == INSTALLED_OUTDATED) {
     // If the extension is installed but outdated, store the new version.
+    // Preserve any previously queued `withhold_permissions` value if the
+    // incoming sync data omitted `withhold_permissions`.
+    if (base::FeatureList::IsEnabled(
+            extensions_features::kExtensionInstallSiteAccessOptions) &&
+        !pending_withhold_permissions.has_value() &&
+        !extension_sync_data.withhold_permissions().has_value()) {
+      if (auto it = pending_updates_.find(id); it != pending_updates_.end()) {
+        pending_withhold_permissions = it->second.withhold_permissions;
+      }
+    }
     pending_updates_[id] =
-        PendingUpdate(extension_sync_data.version(), reenable_after_update);
+        PendingUpdate(extension_sync_data.version(), reenable_after_update,
+                      pending_withhold_permissions);
     check_for_updates = true;
   } else if (state == NOT_INSTALLED) {
     if (IsMigratingPreinstalledWebApp(id)) {
@@ -686,7 +785,7 @@ void ExtensionSyncService::SetSyncStartFlareForTesting(
 }
 
 void ExtensionSyncService::DeleteThemeDoNotUse(const Extension& theme) {
-  DCHECK(theme.is_theme());
+  CHECK(theme.is_theme(), base::NotFatalUntil::M161);
   GetSyncBundle(syncer::EXTENSIONS)
       ->PushSyncDeletion(theme.id(), CreateSyncData(theme).GetSyncData());
 }
@@ -702,7 +801,7 @@ void ExtensionSyncService::OnExtensionInstalled(
     content::BrowserContext* browser_context,
     const Extension* extension,
     bool is_update) {
-  DCHECK_EQ(profile_, browser_context);
+  CHECK_EQ(profile_, browser_context, base::NotFatalUntil::M161);
 
   if (!is_update && IsPendingSyncInstall(extension->id())) {
     sync_installs_in_progress_.insert(extension->id());
@@ -723,15 +822,40 @@ void ExtensionSyncService::OnExtensionInstalled(
   auto it = pending_updates_.find(extension->id());
   if (it != pending_updates_.end()) {
     int compare_result = extension->version().CompareTo(it->second.version);
-    if (compare_result == 0 && it->second.grant_permissions_and_reenable) {
+    if (compare_result >= 0) {
       // The call to SyncExtensionChangeIfNeeded below will take care of syncing
       // changes to this extension, so we don't want to trigger sync activity
-      // from the call to GrantPermissionsAndEnableExtension.
+      // from applying the pending update state.
       base::AutoReset<bool> ignore_updates(&ignore_updates_, true);
-      extensions::ExtensionRegistrar::Get(profile_)
-          ->GrantPermissionsAndEnableExtension(*extension);
-    }
-    if (compare_result >= 0) {
+      // Apply `withhold_permissions` before
+      // `GrantPermissionsAndEnableExtension` so `GrantActivePermissions` only
+      // grants non-withheld active permissions.
+      if (base::FeatureList::IsEnabled(
+              extensions_features::kExtensionInstallSiteAccessOptions) &&
+          it->second.withhold_permissions.has_value()) {
+        const bool should_withhold = *it->second.withhold_permissions;
+        const bool can_grant_permissions =
+            !ExtensionPrefs::Get(profile_)->HasDisableReason(
+                extension->id(),
+                extensions::disable_reason::DISABLE_PERMISSIONS_INCREASE) &&
+            !ExtensionPrefs::Get(profile_)->HasDisableReason(
+                extension->id(),
+                extensions::disable_reason::DISABLE_REMOTE_INSTALL);
+        if (should_withhold || can_grant_permissions) {
+          if (extensions::PermissionsManager::Get(profile_)->CanAffectExtension(
+                  *extension)) {
+            extensions::ScriptingPermissionsModifier(profile_, extension)
+                .SetWithholdHostPermissions(should_withhold);
+          } else {
+            ExtensionPrefs::Get(profile_)->SetWithholdingPermissions(
+                extension->id(), should_withhold);
+          }
+        }
+      }
+      if (compare_result == 0 && it->second.grant_permissions_and_reenable) {
+        extensions::ExtensionRegistrar::Get(profile_)
+            ->GrantPermissionsAndEnableExtension(*extension);
+      }
       pending_updates_.erase(it);
     }
   }
@@ -763,7 +887,7 @@ void ExtensionSyncService::OnExtensionUninstalled(
     content::BrowserContext* browser_context,
     const Extension* extension,
     extensions::UninstallReason reason) {
-  DCHECK_EQ(profile_, browser_context);
+  CHECK_EQ(profile_, browser_context, base::NotFatalUntil::M161);
   // Don't bother syncing if the extension will be re-installed momentarily.
   // Don't sync extension removals enforced by policy.
   if (reason == extensions::UNINSTALL_REASON_REINSTALL ||
@@ -815,9 +939,35 @@ void ExtensionSyncService::OnExtensionDisableReasonsChanged(
   }
 }
 
+void ExtensionSyncService::OnExtensionWithholdingPermissionsChanged(
+    const extensions::ExtensionId& extension_id) {
+  if (!base::FeatureList::IsEnabled(
+          extensions_features::kExtensionInstallSiteAccessOptions)) {
+    return;
+  }
+  if (!ignore_updates_) {
+    // A local change to the withholding preference overrides any pending
+    // synced `withhold_permissions` value.
+    if (auto it = pending_updates_.find(extension_id);
+        it != pending_updates_.end()) {
+      it->second.withhold_permissions.reset();
+    }
+  }
+  ExtensionRegistry* registry = ExtensionRegistry::Get(profile_);
+  const Extension* extension = registry->GetInstalledExtension(extension_id);
+  if (extension) {
+    SyncExtensionChangeIfNeeded(*extension);
+  } else if (!ignore_updates_) {
+    // Mark as needing sync if the preference changed before the extension is
+    // loaded in ExtensionRegistry (similar to
+    // OnExtensionDisableReasonsChanged).
+    ExtensionPrefs::Get(profile_)->SetNeedsSync(extension_id, true);
+  }
+}
+
 void ExtensionSyncService::OnExtensionPrefsWillBeDestroyed(
     ExtensionPrefs* prefs) {
-  DCHECK(prefs_observation_.IsObservingSource(prefs));
+  CHECK(prefs_observation_.IsObservingSource(prefs), base::NotFatalUntil::M161);
   prefs_observation_.Reset();
 }
 
@@ -855,7 +1005,8 @@ void ExtensionSyncService::FillSyncDataList(
   for (const scoped_refptr<const Extension>& extension : extensions) {
     if (IsCorrectSyncType(*extension, type) && ShouldSync(*extension)) {
       // We should never have pending data for an installed extension.
-      DCHECK(!GetSyncBundle(type)->HasPendingExtensionData(extension->id()));
+      CHECK(!GetSyncBundle(type)->HasPendingExtensionData(extension->id()),
+            base::NotFatalUntil::M161);
       sync_data_list->push_back(CreateSyncData(*extension));
     }
   }

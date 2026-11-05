@@ -19,23 +19,14 @@
 #import "components/sync_sessions/open_tabs_ui_delegate.h"
 #import "components/sync_sessions/session_sync_service.h"
 #import "components/sync_sessions/synced_session.h"
-#import "ios/chrome/browser/default_browser/model/default_browser_interest_signals.h"
 #import "ios/chrome/browser/favicon/model/favicon_loader.h"
-#import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/recent_tabs/ui/recent_tabs_consumer.h"
 #import "ios/chrome/browser/recent_tabs/ui/sessions_sync_user_state.h"
-#import "ios/chrome/browser/sessions/model/ios_chrome_tab_restore_service_factory.h"
-#import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
-#import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
-#import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer_bridge.h"
-#import "ios/chrome/browser/signin/model/identity_manager_factory.h"
-#import "ios/chrome/browser/sync/model/session_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_observer_bridge.h"
+#import "ios/chrome/browser/synced_sessions/model/synced_sessions.h"
 #import "ios/chrome/common/ui/favicon/favicon_constants.h"
 #import "url/gurl.h"
 
@@ -104,6 +95,12 @@ bool UserActionIsRequiredToHaveTabSyncWork(syncer::SyncService* sync_service) {
   std::unique_ptr<base::RetainingOneShotTimer> _timer;
   std::unique_ptr<AuthenticationServiceObserverBridge>
       _authServiceObserverBridge;
+  std::unique_ptr<
+      base::ScopedObservation<sessions::TabRestoreService,
+                              recent_tabs::ClosedTabsObserverBridge>>
+      _restoreServiceObserver;
+  // The authentication service.
+  raw_ptr<AuthenticationService> _authService;
 }
 
 // Return the user's current sign-in and chrome-sync state.
@@ -138,6 +135,7 @@ bool UserActionIsRequiredToHaveTabSyncWork(syncer::SyncService* sync_service) {
     CHECK(syncService, base::NotFatalUntil::M155);
     _sessionSyncService = sessionSyncService;
     _identityManager = identityManager;
+    _authService = authService;
     _authServiceObserverBridge =
         std::make_unique<AuthenticationServiceObserverBridge>(authService,
                                                               self);
@@ -149,58 +147,47 @@ bool UserActionIsRequiredToHaveTabSyncWork(syncer::SyncService* sync_service) {
         FROM_HERE, base::Milliseconds(100), base::BindRepeating(^{
           [weakSelf updateConsumerTabs];
         }));
+    _syncedSessionsObserver =
+        std::make_unique<synced_sessions::SyncedSessionsObserverBridge>(
+            self, self.sessionSyncService);
+    _identityManagerObserver =
+        std::make_unique<signin::IdentityManagerObserverBridge>(
+            self.identityManager, self);
+    _syncObserver = std::make_unique<SyncObserverBridge>(self, syncService);
+    _closedTabsObserver =
+        std::make_unique<recent_tabs::ClosedTabsObserverBridge>(self);
+    _restoreServiceObserver = std::make_unique<base::ScopedObservation<
+        sessions::TabRestoreService, recent_tabs::ClosedTabsObserverBridge>>(
+        _closedTabsObserver.get());
+    _restoreServiceObserver->Observe(restoreService);
   }
   return self;
 }
 
 #pragma mark - Public Interface
 
-- (void)initObservers {
-  if (!_syncedSessionsObserver) {
-    _syncedSessionsObserver =
-        std::make_unique<synced_sessions::SyncedSessionsObserverBridge>(
-            self, self.sessionSyncService);
-  }
-  if (!_identityManagerObserver) {
-    _identityManagerObserver =
-        std::make_unique<signin::IdentityManagerObserverBridge>(
-            self.identityManager, self);
-  }
-  if (!_syncObserver && self.syncService) {
-    _syncObserver =
-        std::make_unique<SyncObserverBridge>(self, self.syncService);
-  }
-  if (!_closedTabsObserver) {
-    _closedTabsObserver =
-        std::make_unique<recent_tabs::ClosedTabsObserverBridge>(self);
-    if (self.restoreService) {
-      self.restoreService->AddObserver(_closedTabsObserver.get());
-    }
-    [self.consumer setTabRestoreService:self.restoreService];
-  }
-}
-
 - (void)disconnect {
   _syncedSessionsObserver.reset();
   _identityManagerObserver.reset();
   _syncObserver.reset();
-
-  if (_closedTabsObserver) {
-    if (self.restoreService) {
-      self.restoreService->RemoveObserver(_closedTabsObserver.get());
-    }
-    _closedTabsObserver.reset();
-    _sessionSyncService = nullptr;
-    _identityManager = nullptr;
-    _restoreService = nullptr;
-    _authServiceObserverBridge.reset();
-    _faviconLoader = nullptr;
-    _syncService = nullptr;
-  }
+  _restoreServiceObserver.reset();
+  _closedTabsObserver.reset();
+  _sessionSyncService = nullptr;
+  _identityManager = nullptr;
+  _restoreService = nullptr;
+  _authServiceObserverBridge.reset();
+  _faviconLoader = nullptr;
+  _syncService = nullptr;
+  _consumer = nil;
+  _authService = nullptr;
 }
 
-- (void)configureConsumer {
-  [self refreshSessionsView];
+- (void)setConsumer:(id<RecentTabsConsumer>)consumer {
+  _consumer = consumer;
+  if (consumer) {
+    [self.consumer setTabRestoreService:self.restoreService];
+    [self refreshSessionsView];
+  }
 }
 
 - (void)refreshSessionsView {
@@ -210,7 +197,13 @@ bool UserActionIsRequiredToHaveTabSyncWork(syncer::SyncService* sync_service) {
   // opt-in screen is dismissed.
   // The 2 latter calls are necessary because they can happen much more
   // immediately than the former call.
-  [self.consumer refreshUserState:[self userSignedInState]];
+  auto syncedSessions =
+      std::make_unique<synced_sessions::SyncedSessions>(_sessionSyncService);
+  [self.consumer refreshUserState:[self userSignedInState]
+                   syncedSessions:std::move(syncedSessions)
+      syncDisabledByAdministrator:[self isSyncDisabledByAdministrator]
+           signinDisabledByPolicy:[self isSigninDisabledByPolicy]
+             signinDisabledByUser:[self isSigninDisabledByUserOrInternal]];
 }
 
 #pragma mark - SyncedSessionsObserver
@@ -271,6 +264,38 @@ bool UserActionIsRequiredToHaveTabSyncWork(syncer::SyncService* sync_service) {
       ^(FaviconAttributes* attributes, bool cached) {
         completion(attributes, cached);
       });
+}
+
+// Returns YES if the user cannot turn on sync for enterprise policy reasons.
+- (BOOL)isSyncDisabledByAdministrator {
+  if (_syncService->HasDisableReason(
+          syncer::SyncService::DISABLE_REASON_ENTERPRISE_POLICY)) {
+    return YES;
+  }
+  if (_syncService->GetUserSettings()->IsTypeManagedByPolicy(
+          syncer::UserSelectableType::kTabs) ||
+      _syncService->GetUserSettings()->IsTypeManagedByPolicy(
+          syncer::UserSelectableType::kHistory)) {
+    return YES;
+  }
+  return _authService->GetServiceStatus() ==
+         AuthenticationService::ServiceStatus::SigninDisabledByPolicy;
+}
+
+// Returns YES if sign-in is disabled by policy.
+- (BOOL)isSigninDisabledByPolicy {
+  return _authService->GetServiceStatus() ==
+         AuthenticationService::ServiceStatus::SigninDisabledByPolicy;
+}
+
+// Returns YES if sign-in is disabled through user settings or internal reasons.
+- (BOOL)isSigninDisabledByUserOrInternal {
+  const AuthenticationService::ServiceStatus authServiceStatus =
+      _authService->GetServiceStatus();
+  return authServiceStatus ==
+             AuthenticationService::ServiceStatus::SigninDisabledByUser ||
+         authServiceStatus ==
+             AuthenticationService::ServiceStatus::SigninDisabledByInternal;
 }
 
 #pragma mark - Private

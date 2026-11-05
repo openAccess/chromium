@@ -19,8 +19,6 @@ export function getHtml(this: ContextualTasksInnerComposeboxElement) {
         .transcript="${this.transcript}"
         .receivedSpeech="${this.receivedSpeech}"
         .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
-        .entrypointName="${this.entrypointName}"
-        .isZeroState="${this.isZeroState}"
         .darkThemeColorsEnabled="${true}"
         .showingOnlyCarouselOnTopOfInput="${this.showFileCarousel &&
             !this.inToolMode && this.carouselOnTop_ &&
@@ -120,7 +118,7 @@ export function getHtml(this: ContextualTasksInnerComposeboxElement) {
               .maxSuggestions="${this.maxSuggestions}"
               .toolMode="${this.inputState?.activeTool || ToolMode.kUnspecified}"
               .lastQueriedInput="${this.lastQueriedInput}"
-              ?hidden="${!this.showDropdown || !this.dropdownNeeded}"
+              ?hidden="${this.shouldHideDropdown()}"
               @selected-match-index-changed="${this.onSelectedMatchIndexChanged}"
               @match-focusin="${this.onMatchFocusin}"
               @match-click="${this.onMatchClick}">

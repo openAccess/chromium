@@ -264,10 +264,6 @@ static_library("test_support") {
   if (is_linux || is_chromeos) {
     deps += [ "//ui/platform_window/common" ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 executable("aura_demo") {
@@ -303,7 +299,11 @@ test("aura_unittests") {
   use_xvfb = use_xvfb_in_this_config
 
   sources = [
-    "../compositor_extra/shadow_unittest.cc",
+    "../decoration/decoration_unittest.cc",
+    "../decoration/decoration_util_unittest.cc",
+    "../decoration/highlight_border_unittest.cc",
+    "../decoration/shadow_unittest.cc",
+    "../decoration/shadow_with_highlight_border_unittest.cc",
     "client/screen_position_client_unittest.cc",
     "gestures/gesture_recognizer_unittest.cc",
     "test/aura_test_suite.h",
@@ -330,7 +330,7 @@ test("aura_unittests") {
     "//ui/base:test_support",
     "//ui/base/clipboard:clipboard_types",
     "//ui/compositor:test_support",
-    "//ui/compositor_extra",
+    "//ui/decoration",
     "//ui/display:test_support",
     "//ui/events:gesture_detection",
     "//ui/events:test_support",
@@ -345,6 +345,10 @@ test("aura_unittests") {
 
   if (use_ozone) {
     deps += [ "//ui/ozone" ]
+  }
+
+  if (is_win) {
+    sources += [ "native_window_occlusion_tracker_win_unittest.cc" ]
   }
 
   if (is_fuchsia) {

@@ -6,28 +6,32 @@
 
 #import <Foundation/Foundation.h>
 
+#import <map>
+#import <optional>
+#import <string>
+#import <string_view>
+#import <vector>
+
 #import "base/auto_reset.h"
 #import "base/check_is_test.h"
+#import "base/containers/map_util.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
-#import "base/strings/sys_string_conversions.h"
+#import "base/scoped_observation.h"
 #import "components/policy/core/common/management/platform_management_service.h"
 #import "components/prefs/pref_service.h"
 #import "components/signin/core/browser/account_management_type_metrics_recorder.h"
 #import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/app/change_profile_commands.h"
-#import "ios/chrome/browser/policy/model/policy_util.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/model/profile/features.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_observer_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 #import "ios/chrome/browser/signin/model/system_identity_manager_observer.h"
 #import "net/base/backoff_entry.h"
@@ -65,8 +69,6 @@ const net::BackoffEntry::Policy kBackoffPolicy = {
 constexpr char kPersonalProfileNameForTesting[] =
     "bf09f5cf-94cc-4336-9cc2-26a5e1b8c358";
 
-constexpr base::TimeDelta kForceMigrationGracePeriod = base::Days(90);
-
 using ProfileNameToGaiaIds =
     std::map<std::string, std::set<GaiaId, std::less<>>, std::less<>>;
 
@@ -81,19 +83,6 @@ ProfileNameToGaiaIds GetMappingFromProfileAttributes(
     SystemIdentityManager* system_identity_manager,
     const ProfileAttributesStorageIOS* profile_attributes_storage) {
   ProfileNameToGaiaIds result;
-
-  if (!AreSeparateProfilesForManagedAccountsEnabled()) {
-    system_identity_manager->IterateOverIdentities(base::BindRepeating(
-        [](ProfileNameToGaiaIds& result, id<SystemIdentity> identity) {
-          // Note: In this case (with the feature flag disabled), the profile
-          // name in the mapping isn't used - every identity is considered
-          // assigned to every profile.
-          result[std::string()].insert(identity.gaiaId);
-          return SystemIdentityManager::IteratorResult::kContinueIteration;
-        },
-        std::ref(result)));
-    return result;
-  }
 
   if (!profile_attributes_storage) {
     CHECK_IS_TEST();
@@ -154,6 +143,177 @@ void RecordAccountProfileStartupState(bool is_primary_account,
   }
 
   base::UmaHistogramEnumeration("Signin.AccountProfileStartupState2", state);
+}
+
+constexpr char kDefaultProfileName[] = "Default";
+
+// Classifies the corruption cohort for a managed `gaia_id` attached to 2 or
+// more `profiles` (sorted in ASCII order).
+IOSAccountProfileMappingStartupState ClassifyCorruptedManagedGaia(
+    const GaiaId& gaia_id,
+    const std::vector<std::string>& profiles,
+    const std::string& personal_profile_name,
+    const ProfileAttributesStorageIOS* storage) {
+  CHECK_GE(profiles.size(), 2u);
+  if (profiles.size() >= 3) {
+    return IOSAccountProfileMappingStartupState::kThreeOrMoreProfiles;
+  }
+
+  // `profiles.size() == 2`, with `profiles[0] < profiles[1]` in ASCII order.
+  const ProfileAttributesIOS attr0 =
+      storage->GetAttributesForProfileWithName(profiles[0]);
+  const ProfileAttributesIOS attr1 =
+      storage->GetAttributesForProfileWithName(profiles[1]);
+  const bool is_personal_0 = (profiles[0] == personal_profile_name);
+  const bool is_personal_1 = (profiles[1] == personal_profile_name);
+
+  const std::optional<ProfileAttributesIOS> personal_attr =
+      (!personal_profile_name.empty() &&
+       storage->HasProfileWithName(personal_profile_name))
+          ? std::make_optional(
+                storage->GetAttributesForProfileWithName(personal_profile_name))
+          : std::nullopt;
+  const bool personal_init =
+      personal_attr.has_value() && personal_attr->IsFullyInitialized();
+  const base::Time personal_last_active =
+      personal_attr.has_value() ? personal_attr->GetLastActiveTime()
+                                : base::Time();
+
+  if (!is_personal_0 && !is_personal_1) {
+    // Attached to 2 Managed profiles (Cohorts A and B).
+    // Note: `orig_profile` was the active profile when migrated to Managed, so
+    // it is guaranteed to have Init=1. `UUID_M` starts with Init=0 and can only
+    // be initialized if it sits at `profiles[0]` (since
+    // `FindProfileNameForGaiaID` always returns `profiles[0]`). Furthermore,
+    // `"Default"` can only ever be `orig_profile` (newly created profiles
+    // always get a random UUID), so `profiles[0] == "Default"` implies Cohort B
+    // (`orig_profile < UUID_M`).
+    const bool init0 = attr0.IsFullyInitialized();
+    const bool init1 = attr1.IsFullyInitialized();
+    if (!init0 && init1) {
+      if (profiles[0] == kDefaultProfileName) {
+        return IOSAccountProfileMappingStartupState::
+            kCohortB_FirstIsDefaultUninit_SecondInit;
+      }
+      // Cohort A (`UUID_M < orig_profile`): `profiles[0]` is uninitialized
+      // `UUID_M`, `profiles[1]` is initialized `orig_profile`.
+      return personal_init
+                 ? IOSAccountProfileMappingStartupState::
+                       kCohortA2_ShadowedByUninitManaged_PersonalInit
+                 : IOSAccountProfileMappingStartupState::
+                       kCohortA1_ShadowedByUninitManaged_PersonalUninit;
+    }
+    if (init0 && init1) {
+      if (profiles[0] == kDefaultProfileName) {
+        return IOSAccountProfileMappingStartupState::
+            kCohortB_TwoInitManaged_FirstIsDefault;
+      }
+      // Cohort A3: both Managed profiles are initialized.
+      if (attr1.GetLastActiveTime() > attr0.GetLastActiveTime()) {
+        return IOSAccountProfileMappingStartupState::
+            kCohortA3c_TwoInitManaged_SecondMoreRecent;
+      }
+      if (personal_init && personal_last_active > attr0.GetLastActiveTime()) {
+        return IOSAccountProfileMappingStartupState::
+            kCohortA3b_TwoInitManaged_PersonalMoreRecent;
+      }
+      return IOSAccountProfileMappingStartupState::
+          kCohortA3a_TwoInitManaged_FirstMoreRecent;
+    }
+    if (init0 && !init1) {
+      // Cohort B (`orig_profile < UUID_M`): `profiles[0]` is initialized
+      // `orig_profile`, `profiles[1]` is uninitialized `UUID_M`.
+      return (personal_init && personal_last_active > attr0.GetLastActiveTime())
+                 ? IOSAccountProfileMappingStartupState::
+                       kCohortB2_ExtraUninitManaged_PersonalMoreRecent
+                 : IOSAccountProfileMappingStartupState::
+                       kCohortB1_ExtraUninitManaged_OrigMoreRecent;
+    }
+    return IOSAccountProfileMappingStartupState::kTwoUninitManagedProfiles;
+  }
+
+  // Attached to 1 Personal profile and 1 Managed profile (Cohort C).
+  const ProfileAttributesIOS& managed_attr = is_personal_0 ? attr1 : attr0;
+  if (!personal_init) {
+    return IOSAccountProfileMappingStartupState::
+        kCohortC1_PersonalAndManaged_PersonalUninit;
+  }
+  if (personal_attr->GetGaiaId() != gaia_id) {
+    return IOSAccountProfileMappingStartupState::
+        kCohortC2_PersonalAndManaged_NotPrimaryInPersonal;
+  }
+  if (managed_attr.GetLastActiveTime() > personal_last_active) {
+    return IOSAccountProfileMappingStartupState::
+        kCohortC3_PersonalAndManaged_PrimaryInPersonal_ManagedMoreRecent;
+  }
+  return IOSAccountProfileMappingStartupState::
+      kCohortC3_PersonalAndManaged_PrimaryInPersonal;
+}
+
+// Records the on-disk profile attachment state for managed Gaia IDs stored in
+// `storage` once at browser startup.
+void RecordAccountProfileMappingStartupState(
+    const ProfileNameToGaiaIds& profile_to_gaia_ids,
+    const ProfileAttributesStorageIOS* storage) {
+  if (!storage) {
+    CHECK_IS_TEST();
+    return;
+  }
+
+  // Invert `profile_to_gaia_ids` (which is sorted in ASCII order of profile
+  // names) into a map from `GaiaId` to sorted vector of profile names.
+  std::map<GaiaId, std::vector<std::string>> gaia_id_to_profiles;
+  for (const auto& [profile_name, gaia_ids] : profile_to_gaia_ids) {
+    for (const GaiaId& gaia_id : gaia_ids) {
+      gaia_id_to_profiles[gaia_id].push_back(profile_name);
+    }
+  }
+
+  const std::string personal_profile_name = storage->GetPersonalProfileName();
+  bool has_any_managed_account = false;
+  std::vector<IOSAccountProfileMappingStartupState> corrupted_states;
+
+  for (const auto& [gaia_id, profiles] : gaia_id_to_profiles) {
+    // Skip personal accounts (attached only to `personal_profile_name`). Note
+    // that this also skips a pre-multi-profile managed primary account that has
+    // not yet been force-migrated out of the personal profile, which is fine
+    // since unmigrated accounts cannot be affected by crbug.com/577577623.
+    if (profiles.size() == 1 && profiles[0] == personal_profile_name) {
+      continue;
+    }
+    has_any_managed_account = true;
+    if (profiles.size() >= 2) {
+      corrupted_states.push_back(ClassifyCorruptedManagedGaia(
+          gaia_id, profiles, personal_profile_name, storage));
+    }
+  }
+
+  // Do not emit on devices with no managed accounts.
+  if (!has_any_managed_account) {
+    return;
+  }
+
+  const IOSAccountProfileMappingStartupState state =
+      corrupted_states.empty() ? IOSAccountProfileMappingStartupState::
+                                     kEachManagedAccountInSingleProfile
+                               : (corrupted_states.size() == 1
+                                      ? corrupted_states[0]
+                                      : IOSAccountProfileMappingStartupState::
+                                            kMultipleCorruptedManagedAccounts);
+
+  constexpr char kProfileMappingStartupStateHistogram[] =
+      "Signin.IOSAccountProfileMappingStartupState";
+  constexpr char kProfileMappingStartupStateHasDefaultHistogram[] =
+      "Signin.IOSAccountProfileMappingStartupState.HasDefaultProfile";
+  constexpr char kProfileMappingStartupStateNoDefaultHistogram[] =
+      "Signin.IOSAccountProfileMappingStartupState.NoDefaultProfile";
+
+  base::UmaHistogramEnumeration(kProfileMappingStartupStateHistogram, state);
+  base::UmaHistogramEnumeration(
+      storage->HasProfileWithName(kDefaultProfileName)
+          ? kProfileMappingStartupStateHasDefaultHistogram
+          : kProfileMappingStartupStateNoDefaultHistogram,
+      state);
 }
 
 }  // namespace
@@ -301,13 +461,8 @@ class AccountProfileMapper::Assigner
       identity_access_token_refresh_failed_cb_;
 
   // The mapping from profile name to the list of attached Gaia IDs.
-  // If `kSeparateProfilesForManagedAccounts` is enabled, this is a cache of
-  // the data in ProfileAttributesStorageIOS. It is used to detect when any
-  // mappings have changed.
-  // If `kSeparateProfilesForManagedAccounts` is disabled, the data from
-  // ProfileAttributesStorageIOS isn't used here, and all Gaia IDs are
-  // nominally assigned to an empty profile name (just to detect changes to
-  // the list - AccountProfileMapper won't do any filtering).
+  // This is a cache of the data in ProfileAttributesStorageIOS. It is used to
+  // detect when any mappings have changed.
   ProfileNameToGaiaIds profile_to_gaia_ids_;
 
   // The system identities for which the hosted domain must be fetched. Last
@@ -364,6 +519,7 @@ AccountProfileMapper::Assigner::Assigner(
   ProfileAttributesStorageIOS* storage = GetProfileAttributesStorage();
   profile_to_gaia_ids_ =
       GetMappingFromProfileAttributes(system_identity_manager_, storage);
+  RecordAccountProfileMappingStartupState(profile_to_gaia_ids_, storage);
   // Ensure the mapping is populated and up-to-date.
   UpdateIdentityProfileMappings();
 
@@ -418,13 +574,14 @@ void AccountProfileMapper::Assigner::MakePersonalProfileManagedWithGaiaID(
 
     const std::string previous_personal_profile_name = GetPersonalProfileName();
 
-    const std::set<GaiaId, std::less<>> personal_gaia_ids =
+    std::set<GaiaId, std::less<>> personal_gaia_ids =
         profile_to_gaia_ids_[previous_personal_profile_name];
 
     // Detach all Gaia IDs from the old personal profile.
     for (const GaiaId& gaia_id : personal_gaia_ids) {
       DetachGaiaIdFromProfile(previous_personal_profile_name, gaia_id);
     }
+    personal_gaia_ids.erase(managed_gaia_id);
 
     ProfileAttributesStorageIOS* storage = GetProfileAttributesStorage();
     CHECK(storage);
@@ -464,8 +621,6 @@ void AccountProfileMapper::Assigner::MakePersonalProfileManagedWithGaiaID(
 
   if (migrating_primary_managed_account) {
     // At this point, the migration is done.
-    local_pref_service_->ClearPref(
-        prefs::kWaitingForMultiProfileForcedMigrationTimestamp);
     local_pref_service_->SetBoolean(prefs::kMultiProfileForcedMigrationDone,
                                     true);
     base::RecordAction(base::UserMetricsAction(
@@ -527,7 +682,7 @@ void AccountProfileMapper::Assigner::UpdateIdentityProfileMappings() {
     // Check if any of the previously-assigned Gaia IDs have been removed.
     ProfileAttributesStorageIOS* attributes_storage =
         GetProfileAttributesStorage();
-    if (AreSeparateProfilesForManagedAccountsEnabled() && attributes_storage) {
+    if (attributes_storage) {
       for (const auto& [profile_name, gaia_ids] : profile_to_gaia_ids_) {
         for (const GaiaId& gaia_id : gaia_ids) {
           if (processed_gaia_ids.contains(gaia_id)) {
@@ -687,21 +842,6 @@ AccountProfileMapper::Assigner::ProcessIdentityForAssignmentToProfile(
   CHECK(identity);
   processed_gaia_ids.insert(identity.gaiaId);
 
-  if (!AreSeparateProfilesForManagedAccountsEnabled()) {
-    if (!local_pref_service_) {
-      CHECK_IS_TEST();
-    } else if (local_pref_service_->GetTime(
-                   prefs::kWaitingForMultiProfileForcedMigrationTimestamp) !=
-               base::Time()) {
-      // Clear `kWaitingForMultiProfileForcedMigrationTimestamp` if the feature
-      // gets disabled.
-      local_pref_service_->ClearPref(
-          prefs::kWaitingForMultiProfileForcedMigrationTimestamp);
-    }
-    // With the feature flag disabled, no actual assignment is necessary.
-    return SystemIdentityManager::IteratorResult::kContinueIteration;
-  }
-
   NSString* hosted_domain =
       system_identity_manager_->GetCachedHostedDomainForIdentity(identity);
   if (!hosted_domain) {
@@ -782,7 +922,6 @@ void AccountProfileMapper::Assigner::HostedDomainFetched(
 HostedDomainFetchEvent AccountProfileMapper::Assigner::HostedDomainFetchedImpl(
     NSString* hosted_domain,
     NSError* error) {
-  CHECK(AreSeparateProfilesForManagedAccountsEnabled());
   backoff_entry_.InformOfRequest(!error);
   if (error) {
     if (--number_of_remaining_tries_ > 0) {
@@ -820,8 +959,6 @@ HostedDomainFetchEvent AccountProfileMapper::Assigner::HostedDomainFetchedImpl(
 void AccountProfileMapper::Assigner::AssignIdentityToProfile(
     id<SystemIdentity> identity,
     bool is_managed_account) {
-  CHECK(AreSeparateProfilesForManagedAccountsEnabled());
-
   const GaiaId gaia_id(identity.gaiaId);
   const std::optional<std::string> profile_name =
       FindProfileNameForGaiaID(gaia_id);
@@ -897,37 +1034,6 @@ void AccountProfileMapper::Assigner::AssignIdentityToProfile(
 
 void AccountProfileMapper::Assigner::MaybeMigratePrimaryManagedAccount(
     const GaiaId gaia_id) {
-  CHECK(AreSeparateProfilesForManagedAccountsEnabled());
-
-  base::Time recorded_at = local_pref_service_->GetTime(
-      prefs::kWaitingForMultiProfileForcedMigrationTimestamp);
-  if (recorded_at == base::Time()) {
-    // Record force migration pref for managed accounts in personal profile if
-    // not recorded yet.
-    local_pref_service_->SetTime(
-        prefs::kWaitingForMultiProfileForcedMigrationTimestamp,
-        base::Time::Now());
-    // If the *immediate* migration is not enabled (i.e. there's a non-zero
-    // grace period), there's nothing else to do for now. Otherwise, continue
-    // so that the force-migration may run now.
-    if (!base::FeatureList::IsEnabled(
-            kSeparateProfilesForManagedAccountsImmediateForceMigration)) {
-      return;
-    }
-  }
-
-  if (!base::FeatureList::IsEnabled(
-          kSeparateProfilesForManagedAccountsForceMigration)) {
-    return;
-  }
-
-  // If the grace period should be observed but is not over yet, do nothing.
-  if (!base::FeatureList::IsEnabled(
-          kSeparateProfilesForManagedAccountsImmediateForceMigration) &&
-      base::Time::Now() - recorded_at < kForceMigrationGracePeriod) {
-    return;
-  }
-
   MakePersonalProfileManagedWithGaiaID(
       gaia_id, /* migrating_primary_managed_account= */ true);
 }
@@ -1044,16 +1150,18 @@ void AccountProfileMapper::SetChangeProfileCommandsHandler(
 void AccountProfileMapper::AddObserver(AccountProfileMapper::Observer* observer,
                                        std::string_view profile_name) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  observer_lists_per_profile_name_[std::string(profile_name)].AddObserver(
-      observer);
+  base::GetOrCreate(observer_lists_per_profile_name_, profile_name)
+      .AddObserver(observer);
 }
 
 void AccountProfileMapper::RemoveObserver(
     AccountProfileMapper::Observer* observer,
     std::string_view profile_name) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  observer_lists_per_profile_name_[std::string(profile_name)].RemoveObserver(
-      observer);
+  if (auto* observers =
+          base::FindOrNull(observer_lists_per_profile_name_, profile_name)) {
+    observers->RemoveObserver(observer);
+  }
 }
 
 bool AccountProfileMapper::IsSigninSupported() {
@@ -1153,7 +1261,7 @@ AccountProfileMapper::FilterIdentitiesForProfile(
     id<SystemIdentity> identity) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (AreSeparateProfilesForManagedAccountsEnabled() && profile_manager_) {
+  if (profile_manager_) {
     ProfileAttributesIOS attr =
         profile_manager_->GetProfileAttributesStorage()
             ->GetAttributesForProfileWithName(profile_name);
@@ -1175,24 +1283,20 @@ void AccountProfileMapper::MappingUpdated(
     const ProfileNameToGaiaIds& old_mapping,
     const ProfileNameToGaiaIds& new_mapping) {
   std::set<std::string> profiles_to_notify;
-  // Note: If the feature flag is disabled, all profiles are notified, so no
-  // need to find the affected profiles.
-  if (AreSeparateProfilesForManagedAccountsEnabled()) {
-    std::set<std::string> all_profiles;
-    for (const auto& [name, gaia_ids] : old_mapping) {
-      all_profiles.insert(name);
-    }
-    for (const auto& [name, gaia_ids] : new_mapping) {
-      all_profiles.insert(name);
-    }
-    // Notify all profiles for which the mapping was added, removed, or changed.
-    for (const std::string& name : all_profiles) {
-      auto old_it = old_mapping.find(name);
-      auto new_it = new_mapping.find(name);
-      if (old_it == old_mapping.end() || new_it == new_mapping.end() ||
-          old_it->second != new_it->second) {
-        profiles_to_notify.insert(name);
-      }
+  std::set<std::string> all_profiles;
+  for (const auto& [name, gaia_ids] : old_mapping) {
+    all_profiles.insert(name);
+  }
+  for (const auto& [name, gaia_ids] : new_mapping) {
+    all_profiles.insert(name);
+  }
+  // Notify all profiles for which the mapping was added, removed, or changed.
+  for (const std::string& name : all_profiles) {
+    auto old_it = old_mapping.find(name);
+    auto new_it = new_mapping.find(name);
+    if (old_it == old_mapping.end() || new_it == new_mapping.end() ||
+        old_it->second != new_it->second) {
+      profiles_to_notify.insert(name);
     }
   }
   NotifyIdentityListChanged(profiles_to_notify);
@@ -1201,22 +1305,13 @@ void AccountProfileMapper::MappingUpdated(
 void AccountProfileMapper::NotifyIdentityListChanged(
     const std::set<std::string>& profile_names_to_notify) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (AreSeparateProfilesForManagedAccountsEnabled()) {
-    for (const std::string& profile_name : profile_names_to_notify) {
-      auto it = observer_lists_per_profile_name_.find(profile_name);
-      if (it == observer_lists_per_profile_name_.end()) {
-        continue;
-      }
-      for (Observer& observer : it->second) {
-        observer.OnIdentitiesInProfileChanged();
-      }
+  for (const std::string& profile_name : profile_names_to_notify) {
+    auto it = observer_lists_per_profile_name_.find(profile_name);
+    if (it == observer_lists_per_profile_name_.end()) {
+      continue;
     }
-  } else {
-    // If the feature flag is not enabled, notify all profiles.
-    for (const auto& [name, observer_list] : observer_lists_per_profile_name_) {
-      for (Observer& observer : observer_list) {
-        observer.OnIdentitiesInProfileChanged();
-      }
+    for (Observer& observer : it->second) {
+      observer.OnIdentitiesInProfileChanged();
     }
   }
 }
@@ -1234,25 +1329,16 @@ void AccountProfileMapper::NotifyIdentityUpdated(
     }
   }
 
-  if (AreSeparateProfilesForManagedAccountsEnabled()) {
-    // Notify observers for the affected profile.
-    if (!profile_name.has_value()) {
-      return;
-    }
-    auto it = observer_lists_per_profile_name_.find(*profile_name);
-    if (it == observer_lists_per_profile_name_.end()) {
-      return;
-    }
-    for (Observer& observer : it->second) {
-      observer.OnIdentityInProfileUpdated(identity);
-    }
-  } else {
-    // If the feature flag is not enabled, notify all profiles.
-    for (const auto& [name, observer_list] : observer_lists_per_profile_name_) {
-      for (Observer& observer : observer_list) {
-        observer.OnIdentityInProfileUpdated(identity);
-      }
-    }
+  // Notify observers for the affected profile.
+  if (!profile_name.has_value()) {
+    return;
+  }
+  auto it = observer_lists_per_profile_name_.find(*profile_name);
+  if (it == observer_lists_per_profile_name_.end()) {
+    return;
+  }
+  for (Observer& observer : it->second) {
+    observer.OnIdentityInProfileUpdated(identity);
   }
 }
 
@@ -1260,24 +1346,15 @@ void AccountProfileMapper::NotifyRefreshTokenUpdated(
     id<SystemIdentity> identity,
     const std::optional<std::string>& profile_name) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (AreSeparateProfilesForManagedAccountsEnabled()) {
-    if (!profile_name.has_value()) {
-      return;
-    }
-    auto it = observer_lists_per_profile_name_.find(*profile_name);
-    if (it == observer_lists_per_profile_name_.end()) {
-      return;
-    }
-    for (Observer& observer : it->second) {
-      observer.OnIdentityRefreshTokenUpdated(identity);
-    }
-  } else {
-    // If the feature flag is not enabled, notify all profiles.
-    for (const auto& [name, observer_list] : observer_lists_per_profile_name_) {
-      for (Observer& observer : observer_list) {
-        observer.OnIdentityRefreshTokenUpdated(identity);
-      }
-    }
+  if (!profile_name.has_value()) {
+    return;
+  }
+  auto it = observer_lists_per_profile_name_.find(*profile_name);
+  if (it == observer_lists_per_profile_name_.end()) {
+    return;
+  }
+  for (Observer& observer : it->second) {
+    observer.OnIdentityRefreshTokenUpdated(identity);
   }
 }
 
@@ -1287,23 +1364,14 @@ void AccountProfileMapper::NotifyAccessTokenRefreshFailed(
     const std::optional<std::string>& profile_name,
     const std::set<std::string>& scopes) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (AreSeparateProfilesForManagedAccountsEnabled()) {
-    if (!profile_name.has_value()) {
-      return;
-    }
-    auto it = observer_lists_per_profile_name_.find(*profile_name);
-    if (it == observer_lists_per_profile_name_.end()) {
-      return;
-    }
-    for (Observer& observer : it->second) {
-      observer.OnIdentityAccessTokenRefreshFailed(identity, error, scopes);
-    }
-  } else {
-    // If the feature flag is not enabled, notify all profiles.
-    for (const auto& [name, observer_list] : observer_lists_per_profile_name_) {
-      for (Observer& observer : observer_list) {
-        observer.OnIdentityAccessTokenRefreshFailed(identity, error, scopes);
-      }
-    }
+  if (!profile_name.has_value()) {
+    return;
+  }
+  auto it = observer_lists_per_profile_name_.find(*profile_name);
+  if (it == observer_lists_per_profile_name_.end()) {
+    return;
+  }
+  for (Observer& observer : it->second) {
+    observer.OnIdentityAccessTokenRefreshFailed(identity, error, scopes);
   }
 }

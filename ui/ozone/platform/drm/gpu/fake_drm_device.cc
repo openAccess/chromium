@@ -5,10 +5,13 @@
 #include "ui/ozone/platform/drm/gpu/fake_drm_device.h"
 
 #include <algorithm>
+#include <array>
+#include <string_view>
 #include <utility>
 
 #include "base/check.h"
 #include "base/compiler_specific.h"
+#include "base/containers/linear_find.h"
 #include "base/logging.h"
 #include "skia/ext/legacy_display_globals.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -31,61 +34,67 @@ constexpr uint32_t kCommitModesetFlags = DRM_MODE_ATOMIC_ALLOW_MODESET;
 // pageflip, or other atomic property changes that do not require modesetting.
 constexpr uint32_t kSeamlessModesetFlags = 0;
 
-const std::vector<uint32_t> kBlobPropertyIds = {kEdidBlobPropId};
+constexpr auto kBlobPropertyIds = std::to_array<uint32_t>({kEdidBlobPropId});
 
 const ResolutionAndRefreshRate kStandardMode =
     ResolutionAndRefreshRate{gfx::Size(1920, 1080), 60u};
 
-const std::map<uint32_t, std::string> kCrtcRequiredPropertyNames = {
-    {kActivePropId, "ACTIVE"},
-    {kModePropId, "MODE_ID"},
-};
+constexpr auto kCrtcRequiredPropertyNames =
+    std::to_array<std::pair<uint32_t, std::string_view>>({
+        {kActivePropId, "ACTIVE"},
+        {kModePropId, "MODE_ID"},
+    });
 
-const std::map<uint32_t, std::string> kCrtcOptionalPropertyNames = {
-    {kBackgroundColorPropId, "BACKGROUND_COLOR"},
-    {kCtmPropId, "CTM"},
-    {kGammaLutPropId, "GAMMA_LUT"},
-    {kGammaLutSizePropId, "GAMMA_LUT_SIZE"},
-    {kDegammaLutPropId, "DEGAMMA_LUT"},
-    {kDegammaLutSizePropId, "DEGAMMA_LUT_SIZE"},
-    {kOutFencePtrPropId, "OUT_FENCE_PTR"},
-    {kVrrEnabledPropId, "VRR_ENABLED"},
-};
+constexpr auto kCrtcOptionalPropertyNames =
+    std::to_array<std::pair<uint32_t, std::string_view>>({
+        {kBackgroundColorPropId, "BACKGROUND_COLOR"},
+        {kCtmPropId, "CTM"},
+        {kGammaLutPropId, "GAMMA_LUT"},
+        {kGammaLutSizePropId, "GAMMA_LUT_SIZE"},
+        {kDegammaLutPropId, "DEGAMMA_LUT"},
+        {kDegammaLutSizePropId, "DEGAMMA_LUT_SIZE"},
+        {kOutFencePtrPropId, "OUT_FENCE_PTR"},
+        {kVrrEnabledPropId, "VRR_ENABLED"},
+    });
 
-const std::map<uint32_t, std::string> kConnectorRequiredPropertyNames = {
-    {kCrtcIdPropId, "CRTC_ID"},
-    {kLinkStatusPropId, "link-status"},
-    {kEdidBlobPropId, "EDID"},
-};
+constexpr auto kConnectorRequiredPropertyNames =
+    std::to_array<std::pair<uint32_t, std::string_view>>({
+        {kCrtcIdPropId, "CRTC_ID"},
+        {kLinkStatusPropId, "link-status"},
+        {kEdidBlobPropId, "EDID"},
+    });
 
-const std::map<uint32_t, std::string> kConnectorOptionalPropertyNames = {
-    {kTileBlobPropId, "TILE"},
-    {kVrrCapablePropId, "vrr_capable"},
-};
+constexpr auto kConnectorOptionalPropertyNames =
+    std::to_array<std::pair<uint32_t, std::string_view>>({
+        {kTileBlobPropId, "TILE"},
+        {kVrrCapablePropId, "vrr_capable"},
+    });
 
-const std::map<uint32_t, std::string> kPlaneRequiredPropertyNames = {
-    // Add all required properties.
-    {kPlaneCrtcId, "CRTC_ID"},
-    {kCrtcX, "CRTC_X"},
-    {kCrtcY, "CRTC_Y"},
-    {kCrtcW, "CRTC_W"},
-    {kCrtcH, "CRTC_H"},
-    {kPlaneFbId, "FB_ID"},
-    {kSrcX, "SRC_X"},
-    {kSrcY, "SRC_Y"},
-    {kSrcW, "SRC_W"},
-    {kSrcH, "SRC_H"},
-    {kInFencePropId, "IN_FENCE_FD"},
-    {kTypePropId, "type"},
-    {kInFormatsPropId, "IN_FORMATS"},
-    {kRotationPropId, "rotation"},
-};
+constexpr auto kPlaneRequiredPropertyNames =
+    std::to_array<std::pair<uint32_t, std::string_view>>({
+        // Add all required properties.
+        {kPlaneCrtcId, "CRTC_ID"},
+        {kCrtcX, "CRTC_X"},
+        {kCrtcY, "CRTC_Y"},
+        {kCrtcW, "CRTC_W"},
+        {kCrtcH, "CRTC_H"},
+        {kPlaneFbId, "FB_ID"},
+        {kSrcX, "SRC_X"},
+        {kSrcY, "SRC_Y"},
+        {kSrcW, "SRC_W"},
+        {kSrcH, "SRC_H"},
+        {kInFencePropId, "IN_FENCE_FD"},
+        {kTypePropId, "type"},
+        {kInFormatsPropId, "IN_FORMATS"},
+        {kRotationPropId, "rotation"},
+    });
 
-const std::map<uint32_t, std::string> kPlaneOptionalPropertyNames = {
-    {kColorEncodingPropId, "COLOR_ENCODING"},
-    {kColorRangePropId, "COLOR_RANGE"},
-    {kSizeHintsPropId, "SIZE_HINTS"},
-};
+constexpr auto kPlaneOptionalPropertyNames =
+    std::to_array<std::pair<uint32_t, std::string_view>>({
+        {kColorEncodingPropId, "COLOR_ENCODING"},
+        {kColorRangePropId, "COLOR_RANGE"},
+        {kSizeHintsPropId, "SIZE_HINTS"},
+    });
 
 template <class T>
 uint32_t GetNextId(const std::vector<T>& collection, uint32_t base) {
@@ -115,15 +124,13 @@ ScopedDrmObjectPropertyPtr CreatePropertyObject(
 
 template <class Type>
 Type* FindObjectById(uint32_t id, std::vector<Type>& properties) {
-  auto it = std::ranges::find(properties, id, &Type::id);
-  return it != properties.end() ? &(*it) : nullptr;
+  return base::LinearFind(properties, id, &Type::id);
 }
 
 // The const version of FindObjectById().
 template <class Type>
 const Type* FindObjectById(uint32_t id, const std::vector<Type>& properties) {
-  auto it = std::ranges::find(properties, id, &Type::id);
-  return it != properties.end() ? &(*it) : nullptr;
+  return base::LinearFind(properties, id, &Type::id);
 }
 
 // TODO(dnicoara): Generate all IDs internal to FakeDrmDevice.
@@ -230,7 +237,7 @@ FakeDrmDevice::FakeDrmState& FakeDrmDevice::ResetStateWithDefaultObjects(
 }
 
 FakeDrmDevice::ConnectorProperties& FakeDrmDevice::AddConnector() {
-  DCHECK(!IsInitialized());
+  CHECK(!IsInitialized(), base::NotFatalUntil::M163);
   uint32_t next_connector_id =
       GetNextId(drm_state_.connector_properties, kConnectorIdBase);
   auto& connector_property = drm_state_.connector_properties.emplace_back();
@@ -247,7 +254,7 @@ FakeDrmDevice::ConnectorProperties& FakeDrmDevice::AddConnector() {
 }
 
 FakeDrmDevice::EncoderProperties& FakeDrmDevice::AddEncoder() {
-  DCHECK(!IsInitialized());
+  CHECK(!IsInitialized(), base::NotFatalUntil::M163);
   uint32_t next_encoder_id =
       GetNextId(drm_state_.encoder_properties, kEncoderIdBase);
   auto& encoder_property = drm_state_.encoder_properties.emplace_back();
@@ -257,7 +264,7 @@ FakeDrmDevice::EncoderProperties& FakeDrmDevice::AddEncoder() {
 }
 
 FakeDrmDevice::CrtcProperties& FakeDrmDevice::AddCrtc() {
-  DCHECK(!IsInitialized());
+  CHECK(!IsInitialized(), base::NotFatalUntil::M163);
   uint32_t next_crtc_id = GetNextId(drm_state_.crtc_properties, kCrtcIdBase);
   auto& crtc_property = drm_state_.crtc_properties.emplace_back();
   crtc_property.id = next_crtc_id;
@@ -273,7 +280,7 @@ FakeDrmDevice::CrtcProperties& FakeDrmDevice::AddCrtc() {
 
 std::pair<FakeDrmDevice::CrtcProperties&, FakeDrmDevice::ConnectorProperties&>
 FakeDrmDevice::AddCrtcAndConnector() {
-  DCHECK(!IsInitialized());
+  CHECK(!IsInitialized(), base::NotFatalUntil::M163);
   return {AddCrtc(), AddConnector()};
 }
 
@@ -282,7 +289,7 @@ FakeDrmDevice::PlaneProperties& FakeDrmDevice::AddPlane(
     uint32_t type,
     std::vector<uint32_t> supported_formats,
     std::vector<drm_format_modifier> supported_format_modifiers) {
-  DCHECK(!IsInitialized());
+  CHECK(!IsInitialized(), base::NotFatalUntil::M163);
   return AddPlane(std::vector<uint32_t>{crtc_id}, type, supported_formats,
                   supported_format_modifiers);
 }
@@ -292,7 +299,7 @@ FakeDrmDevice::PlaneProperties& FakeDrmDevice::AddPlane(
     uint32_t type,
     std::vector<uint32_t> supported_formats,
     std::vector<drm_format_modifier> supported_format_modifiers) {
-  DCHECK(!IsInitialized());
+  CHECK(!IsInitialized(), base::NotFatalUntil::M163);
   uint32_t next_plane_id = GetNextId(drm_state_.plane_properties, kPlaneOffset);
 
   size_t crtc_mask = 0u;
@@ -330,7 +337,7 @@ bool FakeDrmDevice::FakeDrmState::HasResources() const {
 
 FakeDrmDevice::CrtcProperties&
 FakeDrmDevice::AddCrtcWithPrimaryAndCursorPlanes() {
-  DCHECK(!IsInitialized());
+  CHECK(!IsInitialized(), base::NotFatalUntil::M163);
   auto& crtc = AddCrtc();
   AddPlane(crtc.id, DRM_PLANE_TYPE_PRIMARY);
   AddPlane(crtc.id, DRM_PLANE_TYPE_CURSOR);
@@ -401,7 +408,7 @@ void FakeDrmDevice::InitializeState(bool use_atomic) {
 }
 
 bool FakeDrmDevice::InitializeStateWithResult(bool use_atomic) {
-  DCHECK(!plane_manager_);
+  CHECK(!plane_manager_, base::NotFatalUntil::M163);
   if (use_atomic) {
     plane_manager_ = std::make_unique<HardwareDisplayPlaneManagerAtomic>(this);
   } else {
@@ -645,7 +652,7 @@ bool FakeDrmDevice::PageFlip(uint32_t crtc_id,
                              uint32_t framebuffer,
                              scoped_refptr<PageFlipRequest> page_flip_request) {
   page_flip_call_count_++;
-  DCHECK(page_flip_request);
+  CHECK(page_flip_request, base::NotFatalUntil::M163);
   crtc_fb_[crtc_id] = framebuffer;
   current_framebuffer_ = framebuffer;
   if (page_flip_expectation_)
@@ -698,7 +705,7 @@ ScopedDrmPropertyBlob FakeDrmDevice::CreatePropertyBlob(const void* blob,
                                                         size_t size) {
   uint32_t id = GetUniqueNumber();
   auto& blob_state = allocated_blobs_[id];
-  DCHECK(blob_state.ref_count == 0);
+  CHECK(blob_state.ref_count == 0, base::NotFatalUntil::M163);
   blob_state.ref_count = 1;
   const uint8_t* blob_uint8 = reinterpret_cast<const uint8_t*>(blob);
   blob_state.data.assign(blob_uint8, UNSAFE_TODO(blob_uint8 + size));
@@ -709,7 +716,7 @@ void FakeDrmDevice::DestroyPropertyBlob(uint32_t id) {
   bool did_release = ReleaseBlob(id);
   // ReleaseBlob will return true if there exists a blob with `id`. It should
   // never be the case that we are are destroying a blob that does not exist.
-  DCHECK(did_release);
+  CHECK(did_release, base::NotFatalUntil::M163);
 }
 
 FakeDrmDevice::BlobState::BlobState() = default;
@@ -723,7 +730,7 @@ bool FakeDrmDevice::RetainBlob(uint32_t id) {
   if (it == allocated_blobs_.end()) {
     return false;
   }
-  DCHECK(it->second.ref_count > 0);
+  CHECK(it->second.ref_count > 0, base::NotFatalUntil::M163);
   it->second.ref_count += 1;
   return true;
 }
@@ -733,7 +740,7 @@ bool FakeDrmDevice::ReleaseBlob(uint32_t id) {
   if (it == allocated_blobs_.end()) {
     return false;
   }
-  DCHECK(it->second.ref_count > 0);
+  CHECK(it->second.ref_count > 0, base::NotFatalUntil::M163);
   it->second.ref_count -= 1;
   if (it->second.ref_count == 0) {
     allocated_blobs_.erase(it);
@@ -989,7 +996,7 @@ void FakeDrmDevice::RunCallbacks() {
 
 void FakeDrmDevice::AddProperty(uint32_t object_id,
                                 const DrmWrapper::Property& property) {
-  DCHECK(!IsInitialized());
+  CHECK(!IsInitialized(), base::NotFatalUntil::M163);
   UpdateProperty(object_id, property.id, property.value,
                  /*add_property_if_needed=*/true);
 }
@@ -998,8 +1005,8 @@ void FakeDrmDevice::SetPossibleValuesForEnumProperty(
     uint32_t property_id,
     std::vector<std::pair<uint64_t /* value */, std::string /* name */>>
         values) {
-  DCHECK(!IsInitialized());
-  DCHECK(!values.empty());
+  CHECK(!IsInitialized(), base::NotFatalUntil::M163);
+  CHECK(!values.empty(), base::NotFatalUntil::M163);
   drm_state_.enum_values[property_id] = std::move(values);
 }
 
@@ -1009,7 +1016,7 @@ bool FakeDrmDevice::IsPropertyValueEnum(uint32_t prop_id) const {
 
 void FakeDrmDevice::FillPossibleValuesForEnumProperty(
     drmModePropertyRes* property) const {
-  DCHECK(IsPropertyValueEnum(property->prop_id));
+  CHECK(IsPropertyValueEnum(property->prop_id), base::NotFatalUntil::M163);
 
   const std::vector<std::pair<uint64_t, std::string>>& enum_values =
       drm_state_.enum_values.find(property->prop_id)->second;

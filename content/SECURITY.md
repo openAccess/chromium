@@ -101,9 +101,13 @@ generally lower priority. Examples include:
   are enforced via Site Isolation), typically allowing CSRF-like attacks but not
   direct access to the cookies.
 * **Cross-Origin Information Leaks (No Direct Read):** Side channels or limited
-  leaks (e.g., sniffing cross-origin layout or detecting whether a cross-origin
-  resource is cached) that do not allow direct reading of sensitive cross-site
-  data.
+  leaks that do not allow direct reading of sensitive cross-site data. Some
+  examples include:
+  * Sniffing cross-origin layout.
+  * Detecting whether a cross-origin resource is cached.
+  * Knowledge of an `UnguessableToken` the origin should not have access to,
+    such as a `RemoteFrameToken` meant for a different process, or a
+   `LocalFrameToken` sent to a process that doesn't host that frame.
 * **UI Spoofing via Unvalidated IPCs:** A compromised renderer supplying
   unvalidated strings via IPC to manipulate native browser UI. While spoofing
   the Omnibox or permission prompts is severe, spoofing on surfaces that aren't
@@ -149,6 +153,36 @@ functional bugs (unless a broader boundary is broken):
 * **Safe Browsing:** Safe Browsing is not designed to be protected against a
   compromised renderer process; we can assume that Safe Browsing already failed
   to do its job if a renderer process is compromised.
+* **TLS Certificate Error:** If the user encounters a TLS certificate error
+  interstitial and allows the page load to move forward, it is generally
+  permissable for the HTTP Headers or JavaScript of that page to cause writes
+  (i.e., Set-Cookie, document.cookie, Clear-Site-Data, Accept-CH, localStorage).
+  Data not directly manageable by the origin va HTTP Headers or JavaScript may
+  be withheld due to sensitivity (i.e., passwords or autofill) or to prevent
+  caching of insecure resources (i.e., HTTP Cache), and is still in-scope.
+* **Storage Access API Revocation:** In most cases when access to a permission
+  is revoked, the renderer should be cut-off from the protected resource without
+  requiring a page navigation. The Storage Access API (SAA) is an exception to
+  this as downgrading the storage access of a page between navigations is not
+  supported. Thus, if a document successfully obtains SAA access and then loses
+  it, the document (and workers that descend from that document) may retain
+  access to unpartitioned storage and third-party cookies via JavaScript, but
+  network requests from the document (or workers) must reflect the revoked
+  permission.
+* **Client Hints (`Accept-CH` / `Critical-CH`):** Client Hints and their
+  persistence (`ContentSettingsType::CLIENT_HINTS`) are a content-negotiation
+  and privacy mechanism, not a process-isolated security boundary. High-entropy
+  client hints expose device and user-agent properties that are already
+  accessible to active scripts via JavaScript APIs (e.g.,
+  `navigator.userAgentData.getHighEntropyValues()`), and any site can already
+  trigger `Accept-CH` persistence for a third-party origin via a top-level
+  redirect. Additionally, Client Hints intentionally propagate main-frame
+  context and policies (`main_frame_origin`, `is_outermost_main_frame`, and
+  `PermissionsPolicy`) to subframes, subresources, preloads, and network-service
+  interceptors. Issues where preloading, prefetching, or subresource fetches
+  persist or inherit `Accept-CH` state should be filed as functional bugs rather
+  than security vulnerabilities.
+
 
 ## Mitigating Factors
 
@@ -209,6 +243,33 @@ implementation mistakes in these patterns in the code base:
   the IPC was sent by an inactive `RenderFrameHost` (e.g., pending deletion),
   acting on `current_frame_host()` may unintentionally apply the action to the
   *new*, potentially cross-origin document.
+* **Missing Navigation Initiators:** The initiator `RenderFrameHost` of a
+  navigation can be deleted or navigate away before the browser handles the
+  request. If the initiator cannot be found, do not substitute
+  `frame_tree_node->current_frame_host()`. That is the target frame, not the
+  initiator. Instead, use the `NavigationRequest`'s `InitiatorNavigationState`
+  to track the state needed after the initiator is gone, or treat the initiator
+  as unknown and fail closed.
+* **Re-entrancy:** A call to a delegate, an observer, a Mojo callback, or the
+  embedder can re-enter and destroy `this`, the frame, the widget, the
+  `FrameTree`, or the `WebContents` while the caller is still on the stack. In
+  general, observers and delegates should not synchronously destroy these
+  objects, and doing so is usually a bug in the observer or delegate. A report
+  about a hypothetical observer that does this is not a vulnerability (see
+  [Threat Model](#threat-model) and https://crbug.com/575343800). Some calls do
+  allow it, though. Code that makes such calls must handle this. Only add
+  handling where a call is actually known to allow deletion. Do not add
+  `WeakPtr` checks speculatively after every external call. Common options:
+  * Forbid deletion by contract: `CHECK` that the object is not destroyed or
+    re-entered during the call, so a violation crashes safely instead of
+    causing memory errors. Examples:
+    `NavigationControllerImpl::ScopedPendingEntryReentrancyGuard`, and the
+    `CHECK(!observers_.is_notifying_observers())` in `~WebContentsImpl()`.
+  * Detect deletion: take a `WeakPtr` before the call and stop if it is null
+    afterward. Drawbacks: every use after every call needs a check, each
+    object that can be destroyed needs its own `WeakPtr`, returning early
+    can leave an operation half done, and every caller on the stack may need
+    to handle the deletion as well.
 
 ## Terminology and Categorization
 

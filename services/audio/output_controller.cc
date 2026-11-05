@@ -12,12 +12,15 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/dcheck_is_on.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/power_monitor/power_monitor.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
 #include "base/threading/platform_thread.h"
@@ -207,14 +210,19 @@ OutputController::OutputController(
   DCHECK(audio_manager);
   DCHECK(handler_);
   DCHECK(sync_reader_);
-  DCHECK(task_runner_.get());
+  DCHECK(task_runner_);
 }
 
 OutputController::~OutputController() {
   DCHECK(task_runner_->BelongsToCurrentThread());
   DCHECK_EQ(kClosed, state_);
   DCHECK_EQ(nullptr, stream_);
-  DCHECK(snoopers_.empty());
+#if DCHECK_IS_ON()
+  {
+    base::AutoLock lock(snooper_lock_);
+    DCHECK(snoopers_.empty());
+  }
+#endif
   UMA_HISTOGRAM_LONG_TIMES("Media.AudioOutputController.LifeTime",
                            base::TimeTicks::Now() - construction_time_);
 }
@@ -616,8 +624,8 @@ void OutputController::StartSnooping(Snooper* snooper) {
 
   // The list will only update on this thread, and only be read on the realtime
   // audio thread.
-  DCHECK(!std::ranges::contains(snoopers_, snooper));
   base::AutoLock lock(snooper_lock_);
+  DCHECK(!std::ranges::contains(snoopers_, snooper));
   snoopers_.push_back(snooper);
 }
 
@@ -626,10 +634,10 @@ void OutputController::StopSnooping(Snooper* snooper) {
 
   // The list will only update on this thread, and only be read on the realtime
   // audio thread.
-  const auto it = std::ranges::find(snoopers_, snooper);
-  CHECK(it != snoopers_.end());
   // We also don't care about ordering, so swap and pop rather than erase.
   base::AutoLock lock(snooper_lock_);
+  const auto it = std::ranges::find(snoopers_, snooper);
+  CHECK(it != snoopers_.end());
   *it = snoopers_.back();
   snoopers_.pop_back();
 }
@@ -677,8 +685,7 @@ void OutputController::ToggleLocalOutput() {
 
 void OutputController::ProcessDeviceChange() {
   DCHECK(task_runner_->BelongsToCurrentThread());
-  SCOPED_UMA_HISTOGRAM_TIMER(
-      "Media.AudioOutputController.ProcessDeviceChangeTime");
+  const base::TimeTicks start_time = base::TimeTicks::Now();
   SendLogMessage(
       base::StringPrintf("%s([state=%s])", __func__, StateToString(state_)));
   TRACE_EVENT0("audio", "OutputController::ProcessDeviceChange");
@@ -693,6 +700,33 @@ void OutputController::ProcessDeviceChange() {
   RecreateStream(RecreateReason::DEVICE_CHANGE);
   if (state_ == kCreated && restore_playback)
     StartStream();
+
+  // Device changes can coincide with system sleep/wake (e.g. closing a laptop
+  // lid or unplugging a dock). Field traces show that ProcessDeviceChange can
+  // start just before suspend or after suspend has already been initiated (e.g.
+  // during a ThreadController::Suspended interval), freezing the audio thread
+  // mid-operation until the machine resumes.
+  //
+  // Because TimeTicks advances during sleep, the elapsed duration accumulates
+  // the entire sleep period. Comparing GetLastSystemResumeTime() > `start_time`
+  // detects that the operation spanned a suspend/resume cycle:
+  // - If still suspended, GetLastSystemResumeTime() returns TimeTicks::Max().
+  // - Once resumed, it returns the wake timestamp (which is > `start_time`).
+  // - If no system suspend/resume was observed, it returns an empty time.
+  bool was_suspended = false;
+  if (base::PowerMonitor::GetInstance()->IsInitialized()) {
+    was_suspended =
+        base::PowerMonitor::GetInstance()->GetLastSystemResumeTime() >
+        start_time;
+  }
+
+  // Record execution latency excluding intervals where the machine entered
+  // system sleep / suspend.
+  const base::TimeDelta elapsed = base::TimeTicks::Now() - start_time;
+  if (!was_suspended) {
+    base::UmaHistogramMediumTimes(
+        "Media.AudioOutputController.ProcessDeviceChangeTime2", elapsed);
+  }
 }
 
 std::pair<float, bool> OutputController::ReadCurrentPowerAndClip() {

@@ -122,8 +122,25 @@ class BundleJsTest(unittest.TestCase):
       str(context.exception),
     )
 
+  def testBundleWithRootRelativeExcludes(self):
+    args = [
+      '--host',
+      'chrome-extension://myextensionid',
+      '--js_module_in_files',
+      'root_relative_excludes.js',
+    ]
+    self._run_bundle(args)
+
+    output_js = self._read_out_file('root_relative_excludes.rollup.js')
+    self.assertIn(
+      "import 'chrome-extension://myextensionid/strings.m.js';",
+      output_js,
+    )
+    depfile_d = self._read_out_file('depfile.d')
+    self.assertNotIn('strings.m.js', depfile_d)
+
   def testBundleWithResources(self):
-    resources_path = './tests/bundle_js/resources'
+    resources_path = './tests/bundle_js/resources'  # noqa: F841
     args = [
       '--host',
       'fake-host',
@@ -206,7 +223,7 @@ class BundleJsTest(unittest.TestCase):
     ]
     self._run_bundle(args)
 
-    output_js = self._read_out_file('foo_ui.rollup.js')
+    output_js = self._read_out_file('foo_ui.rollup.js')  # noqa: F841
     self._check_bundle_output(
       'foo_ui_excludes_resources.rollup.js', 'foo_ui.rollup.js'
     )

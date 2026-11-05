@@ -136,7 +136,7 @@ class BundleDataPresubmit(unittest.TestCase):
                 f.write(_TEMP_GLOBLIST_CONTENTS)
             with open(os.path.join(temp_dir, 'untracked.txt'), 'w') as f:
                 f.write('Hello, World!')
-            path = os.path.join(temp_dir, 'untracked')
+            path = os.path.join(temp_dir, 'untracked')  # noqa: F841
             self.mock_input_api.change.RepositoryRoot = lambda: temp_dir
             self.mock_input_api.PresubmitLocalPath = lambda: temp_dir
             results = presubmit_support.CheckBundleData(
@@ -269,6 +269,14 @@ class NotFatalUntilAdoptionTest(unittest.TestCase):
         file = MockFile(
             'ios/web_view/test.cc', ['  // CHECK(condition);'], action='A'
         )
+        self.mock_input_api.InitFiles([file])
+        errors = presubmit_support.CheckNotFatalUntilAdoption(
+            self.mock_input_api, self.mock_output_api
+        )
+        self.assertEqual(len(errors), 0)
+
+    def testNotReachedIgnored(self):
+        file = MockFile('ios/web_view/test.cc', ['  NOTREACHED();'], action='A')
         self.mock_input_api.InitFiles([file])
         errors = presubmit_support.CheckNotFatalUntilAdoption(
             self.mock_input_api, self.mock_output_api

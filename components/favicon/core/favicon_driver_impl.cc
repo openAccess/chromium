@@ -53,6 +53,12 @@ void FaviconDriverImpl::FetchFavicon(const GURL& page_url,
     handler->FetchFavicon(page_url, is_same_document);
 }
 
+void FaviconDriverImpl::CancelPendingFaviconRequests() {
+  for (const std::unique_ptr<FaviconHandler>& handler : handlers_) {
+    handler->CancelPendingFaviconRequests();
+  }
+}
+
 bool FaviconDriverImpl::HasPendingTasksForTest() {
   for (const std::unique_ptr<FaviconHandler>& handler : handlers_) {
     if (handler->HasPendingTasksForTest())
@@ -80,8 +86,7 @@ void FaviconDriverImpl::OnUpdateCandidates(
     // icons override inline touch icons).
     handler->OnUpdateCandidates(
         page_url, candidates,
-        (handler->icon_types().count(
-             favicon_base::IconType::kWebManifestIcon) != 0)
+        handler->icon_types().Has(favicon_base::IconType::kWebManifestIcon)
             ? manifest_url
             : GURL());
   }

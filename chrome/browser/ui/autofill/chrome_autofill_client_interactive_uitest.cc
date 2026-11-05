@@ -2,14 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/autofill/chrome_autofill_client.h"
+
 #include "base/i18n/rtl.h"
 #include "base/memory/weak_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
-#include "chrome/browser/ui/autofill/chrome_autofill_client.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -24,6 +25,7 @@
 #include "components/autofill/core/browser/metrics/autofill_settings_metrics.h"
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/suggestions/suggestion_type.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_util.h"
 #include "components/autofill/core/browser/ui/autofill_external_delegate.h"
 #include "components/autofill/core/browser/ui/popup_open_enums.h"
@@ -57,9 +59,8 @@ class TestAutofillExternalDelegate : public AutofillExternalDelegate {
       : AutofillExternalDelegate(autofill_manager), client_(*autofill_client) {}
   ~TestAutofillExternalDelegate() override = default;
 
-  void OnSuggestionsShown(
-      base::span<const Suggestion>,
-      base::optional_ref<const SuggestionMetadata>) override {
+  void OnSuggestionsShown(base::span<const Suggestion>,
+                          const SuggestionUiMetadata&) override {
     ++show_counter_;
     ui_session_id_at_last_show_ =
         client_->GetSessionIdForCurrentAutofillSuggestions();
@@ -99,7 +100,7 @@ class ChromeAutofillClientBrowserTest : public InProcessBrowserTest {
     // `BrowserWindow::MaybeShowFeaturePromo()` doesn't work in tests unless the
     // IPH feature is explicitly enabled.
     iph_feature_list_.InitAndEnableFeatures(
-        {feature_engagement::kIPHAutofillAiOptInFeature});
+        {feature_engagement::kIPHAutofillAiValuablesFeature});
   }
 
   void SetUpOnMainThread() override {
@@ -133,12 +134,12 @@ class ChromeAutofillClientBrowserTest : public InProcessBrowserTest {
   }
 
   AutofillClient::SuggestionUiSessionId ShowSuggestions(
+      const FormGlobalId& form_id,
       const FieldGlobalId& field_id,
       const gfx::RectF& bounds) {
     return client()->ShowAutofillSuggestions(
         ChromeAutofillClient::PopupOpenArgs(
-            field_id.frame_token, bounds,
-            base::i18n::TextDirection::LEFT_TO_RIGHT,
+            form_id, field_id, bounds, base::i18n::TextDirection::LEFT_TO_RIGHT,
             {Suggestion(u"test", SuggestionType::kAutocompleteEntry)},
             AutofillSuggestionTriggerSource::kFormControlElementClicked,
             /*form_control_ax_id=*/0, PopupAnchorType::kField),
@@ -179,21 +180,24 @@ class ChromeAutofillClientBrowserTest : public InProcessBrowserTest {
 // that the IPH is hidden and the Autofill Popup is successfully shown.
 IN_PROC_BROWSER_TEST_F(ChromeAutofillClientBrowserTest,
                        AutofillPopupIsShownIfOverlappingWithIph) {
-  FormData form = test::CreateTestAddressFormData();
+  FormData form = test::GetFormData(test::FormDescription{
+      .fields = {{.label = u"First Name", .name = u"firstname"},
+                 {.label = u"Last Name", .name = u"lastname"},
+                 {.label = u"Address Line 1", .name = u"addr1"}},
+      .host_frame = driver()->GetFrameToken()});
   test_api(form).field(0).set_bounds(gfx::RectF(10, 10));
   client()->ShowAutofillFieldIphForFeature(
       form.fields()[0], AutofillClient::IphFeature::kAutofillAi);
 
   // Set the bounds such that the Autofill Popup would overlap with the IPH (the
   // IPH is displayed right below `form.fields[0]`, whose bounds are set above).
-  ShowSuggestions(
-      FieldGlobalId(driver()->GetFrameToken(), form.fields()[0].renderer_id()),
-      /*bounds=*/gfx::RectF(100, 100));
+  ShowSuggestions(form.global_id(), form.fields()[0].global_id(),
+                  /*bounds=*/gfx::RectF(100, 100));
   WaitUntilSuggestionsHaveBeenShown();
 
   EXPECT_FALSE(
       BrowserUserEducationInterface::From(browser())->IsFeaturePromoActive(
-          feature_engagement::kIPHAutofillAiOptInFeature));
+          feature_engagement::kIPHAutofillAiValuablesFeature));
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeAutofillClientBrowserTest, SuggestionUiSessionId) {
@@ -204,12 +208,14 @@ IN_PROC_BROWSER_TEST_F(ChromeAutofillClientBrowserTest, SuggestionUiSessionId) {
   // Showing suggestions leads (asynchronously) to showing a popup with the
   // identifier returned by ShowAutofillSuggestions.
   const AutofillClient::SuggestionUiSessionId first_id = ShowSuggestions(
+      FormGlobalId(driver()->GetFrameToken(), test::MakeFormRendererId()),
       FieldGlobalId(driver()->GetFrameToken(), test::MakeFieldRendererId()),
       gfx::RectF(50, 50));
   WaitUntilSuggestionsHaveBeenShown();
   EXPECT_THAT(ui_session_id_at_last_show(), std::make_optional(first_id));
 
   const AutofillClient::SuggestionUiSessionId second_id = ShowSuggestions(
+      FormGlobalId(driver()->GetFrameToken(), test::MakeFormRendererId()),
       FieldGlobalId(driver()->GetFrameToken(), test::MakeFieldRendererId()),
       gfx::RectF(60, 60));
   EXPECT_NE(first_id, second_id);

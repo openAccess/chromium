@@ -4,27 +4,43 @@
 
 #include "chrome/browser/ui/views/extensions/extensions_menu_site_permissions_page_view.h"
 
+#include <vector>
+
+#include "base/memory/scoped_refptr.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_coordinator.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_delegate_desktop.h"
+#include "chrome/browser/ui/views/extensions/extensions_menu_entry_view.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_main_page_view.h"
 #include "chrome/browser/ui/views/extensions/extensions_request_access_button.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_browsertest.h"
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_button.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/permissions/scripting_permissions_modifier.h"
 #include "extensions/browser/permissions/site_permissions_helper.h"
 #include "extensions/browser/permissions_manager.h"
 #include "extensions/browser/test_extension_registry_observer.h"
+#include "extensions/common/extension.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/test/permissions_manager_waiter.h"
 #include "extensions/test/test_extension_dir.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "ui/events/event.h"
+#include "ui/events/event_utils.h"
+#include "ui/gfx/geometry/point_f.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/radio_button.h"
 #include "ui/views/controls/button/toggle_button.h"
 #include "ui/views/test/views_test_utils.h"
+#include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_delegate.h"
 #include "url/gurl.h"
 
 namespace {
@@ -43,6 +59,11 @@ class ExtensionsSitePermissionsPageViewBrowserTest
       const ExtensionsSitePermissionsPageViewBrowserTest&) = delete;
   ExtensionsSitePermissionsPageViewBrowserTest& operator=(
       const ExtensionsSitePermissionsPageViewBrowserTest&) = delete;
+
+  // Opens menu on the main page with `close_on_deactivate` disabled before
+  // showing the widget so that asynchronous/concurrent window deactivation in
+  // parallel browser_tests does not close the menu.
+  void ShowMenu();
 
   // Opens menu and navigates to site permissions page for `extension_id`. This
   // will CHECK if extension cannot have a site permissions page (e.g
@@ -67,27 +88,31 @@ class ExtensionsSitePermissionsPageViewBrowserTest
   ExtensionsMenuMainPageView* main_page();
   ExtensionsMenuSitePermissionsPageView* site_permissions_page();
 
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  // ExtensionsToolbarBrowserTest:
+  void TearDownOnMainThread() override;
 };
 
 ExtensionsSitePermissionsPageViewBrowserTest::
-    ExtensionsSitePermissionsPageViewBrowserTest() {
-  scoped_feature_list_.InitAndEnableFeature(
-      extensions_features::kExtensionsMenuAccessControl);
+    ExtensionsSitePermissionsPageViewBrowserTest()
+    : ExtensionsToolbarBrowserTest(
+          /*enabled_features=*/{extensions_features::
+                                    kExtensionsMenuAccessControl},
+          /*disabled_features=*/{features::kWebUIExtensionsContainer}) {}
+
+void ExtensionsSitePermissionsPageViewBrowserTest::ShowMenu() {
+  std::unique_ptr<views::BubbleDialogDelegate> bubble_delegate =
+      menu_coordinator()->CreateExtensionsMenuBubbleDialogDelegateForTesting(
+          views::BubbleAnchor(extensions_button()), extensions_container());
+  bubble_delegate->set_close_on_deactivate(false);
+  views::BubbleDialogDelegate::CreateBubbleDeprecated(
+      std::move(bubble_delegate),
+      views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET)
+      ->Show();
 }
 
 void ExtensionsSitePermissionsPageViewBrowserTest::ShowSitePermissionsPage(
     extensions::ExtensionId extension_id) {
-  menu_coordinator()->Show(views::BubbleAnchor(extensions_button()),
-                           extensions_container());
-  if (views::Widget* menu_widget =
-          menu_coordinator()->GetExtensionsMenuWidget()) {
-    if (auto* bubble_delegate =
-            menu_widget->widget_delegate()->AsBubbleDialogDelegate()) {
-      bubble_delegate->set_close_on_deactivate(false);
-    }
-  }
+  ShowMenu();
   menu_coordinator()->GetDelegateForTesting()->OpenSitePermissionsPage(
       extension_id);
 }
@@ -130,6 +155,14 @@ ExtensionsSitePermissionsPageViewBrowserTest::site_permissions_page() {
       menu_coordinator()->GetDelegateForTesting();
   return menu_delegate ? menu_delegate->GetSitePermissionsPageForTesting()
                        : nullptr;
+}
+
+void ExtensionsSitePermissionsPageViewBrowserTest::TearDownOnMainThread() {
+  if (views::Widget* menu_widget =
+          menu_coordinator()->GetExtensionsMenuWidget()) {
+    menu_widget->CloseNow();
+  }
+  ExtensionsToolbarBrowserTest::TearDownOnMainThread();
 }
 
 IN_PROC_BROWSER_TEST_F(ExtensionsSitePermissionsPageViewBrowserTest,
@@ -273,7 +306,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsSitePermissionsPageViewBrowserTest,
 
   NavigateAndCommit(GURL("http://www.url.com"));
   ShowSitePermissionsPage(extensionA->id());
-  EXPECT_TRUE(IsSitePermissionsPageOpened(extensionA->id()));
+  ASSERT_TRUE(IsSitePermissionsPageOpened(extensionA->id()));
 
   // RunScheduledLayout() is needed due to widget auto-resize.
   views::test::RunScheduledLayout(site_permissions_page());
@@ -302,6 +335,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsSitePermissionsPageViewBrowserTest,
 
   // Toggle on the shows requests button for extension A and verify it is
   // requesting access in the toolbar.
+  ASSERT_TRUE(site_permissions_page());
   ClickButton(site_permissions_page()->GetShowRequestsToggleForTesting());
   WaitForAnimation();
   EXPECT_THAT(GetExtensionsShowingRequests(),
@@ -540,6 +574,37 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_FALSE(IsSitePermissionsPageOpened(extension->id()));
 }
 
+// Tests that uncommitted navigations (e.g. 204 No Content or aborted old frame
+// navigations) and subframe navigations do not close the site permissions page.
+IN_PROC_BROWSER_TEST_F(
+    ExtensionsSitePermissionsPageViewBrowserTest,
+    UncommittedOrSubframeNavigationDoesNotCloseSitePermissionsPage) {
+  auto extension =
+      InstallExtensionWithHostPermissions("Extension", {"<all_urls>"});
+
+  NavigateAndCommit(
+      embedded_test_server()->GetURL("www.a.com", "/iframe.html"));
+  ShowSitePermissionsPage(extension->id());
+  ASSERT_FALSE(IsMainPageOpened());
+  ASSERT_TRUE(IsSitePermissionsPageOpened(extension->id()));
+
+  // An uncommitted main-frame navigation (204 No Content) should not cause the
+  // menu to navigate back to the main page.
+  EXPECT_FALSE(content::NavigateToURL(
+      web_contents(),
+      embedded_test_server()->GetURL("www.a.com", "/nocontent")));
+  EXPECT_FALSE(IsMainPageOpened());
+  EXPECT_TRUE(IsSitePermissionsPageOpened(extension->id()));
+
+  // Navigating a subframe should also not cause the menu to navigate back to
+  // the main page.
+  ASSERT_TRUE(content::NavigateIframeToURL(
+      web_contents(), "test",
+      embedded_test_server()->GetURL("www.b.com", "/title1.html")));
+  EXPECT_FALSE(IsMainPageOpened());
+  EXPECT_TRUE(IsSitePermissionsPageOpened(extension->id()));
+}
+
 // Tests that the site access radio buttons are mutually exclusive, and focusing
 // a radio button does not result in multiple selected radio buttons.
 IN_PROC_BROWSER_TEST_F(ExtensionsSitePermissionsPageViewBrowserTest,
@@ -590,4 +655,186 @@ IN_PROC_BROWSER_TEST_F(ExtensionsSitePermissionsPageViewBrowserTest,
   EXPECT_TRUE(on_click_button->GetChecked());
   EXPECT_FALSE(on_site_button->GetChecked());
   EXPECT_FALSE(on_all_sites_button->GetChecked());
+}
+
+// Verifies that if a cross-origin navigation occurs while the site permissions
+// sub-page is open and causes
+// `ExtensionsMenuDelegateDesktop::OnPageNavigation()` to rebuild back to
+// `ExtensionsMenuMainPageView`, an immediate in-flight click on the rebuilt
+// version does not inadvertently grant site access to the newly committed
+// origin (crbug.com/523237501).
+IN_PROC_BROWSER_TEST_F(
+    ExtensionsSitePermissionsPageViewBrowserTest,
+    SitePermissionsPageNavigationDoesNotGrantNewOriginAccessOnImmediateToggleClick) {
+  // Install an extension requesting `<all_urls>` host permissions.
+  scoped_refptr<const extensions::Extension> extension =
+      InstallExtensionWithHostPermissions(
+          /*name=*/"Test Extension", /*host_permissions=*/{"<all_urls>"});
+  ASSERT_TRUE(extension);
+
+  const GURL origin_a_url = embedded_test_server()->GetURL(
+      /*hostname=*/"a.com", /*relative_url=*/"/title1.html");
+  const GURL origin_b_url = embedded_test_server()->GetURL(
+      /*hostname=*/"b.com", /*relative_url=*/"/title1.html");
+
+  // Navigate to the initial origin.
+  NavigateAndCommit(origin_a_url);
+
+  // Set the extension's user site access to on-click (withheld) on all sites so
+  // that the user must explicitly grant access per site.
+  extensions::PermissionsManagerWaiter waiter(
+      PermissionsManager::Get(profile()));
+  SitePermissionsHelper(profile()).UpdateSiteAccess(
+      *extension, web_contents(),
+      /*new_access=*/PermissionsManager::UserSiteAccess::kOnClick,
+      /*expected_origin=*/
+      web_contents()->GetPrimaryMainFrame()->GetLastCommittedOrigin());
+  {
+    SCOPED_TRACE("Waiting for initial on click site access update");
+    waiter.WaitForExtensionPermissionsUpdate();
+  }
+  ASSERT_EQ(GetUserSiteAccess(*extension, origin_a_url),
+            PermissionsManager::UserSiteAccess::kOnClick);
+  ASSERT_EQ(GetUserSiteAccess(*extension, origin_b_url),
+            PermissionsManager::UserSiteAccess::kOnClick);
+
+  // Open the Extensions Menu and navigate to the extension's site permissions
+  // sub-page while on `origin_a_url`.
+  ShowSitePermissionsPage(extension->id());
+  ASSERT_FALSE(IsMainPageOpened());
+  ASSERT_TRUE(IsSitePermissionsPageOpened(extension->id()));
+
+  // Trigger a cross-origin same-tab navigation to `origin_b_url` while the site
+  // permissions sub-page is open.
+  // `ExtensionsMenuDelegateDesktop::OnPageNavigation()` synchronously switches
+  // the menu back to a freshly constructed `ExtensionsMenuMainPageView`.
+  NavigateAndCommit(origin_b_url);
+  ASSERT_TRUE(IsMainPageOpened());
+  ASSERT_FALSE(IsSitePermissionsPageOpened(extension->id()));
+  LayoutMenuIfNecessary();
+
+  // Locate the newly rebuilt `ExtensionsMenuEntryView` on the main page.
+  ASSERT_TRUE(main_page());
+  std::vector<ExtensionsMenuEntryView*> entries = main_page()->GetMenuEntries();
+  ASSERT_EQ(entries.size(), 1u);
+  ExtensionsMenuEntryView* entry_view = entries.front();
+  views::ToggleButton* site_access_toggle =
+      entry_view->site_access_toggle_for_testing();
+  ASSERT_TRUE(site_access_toggle);
+  EXPECT_FALSE(site_access_toggle->GetIsOn());
+
+  // Simulate an in-flight user mouse click landing immediately on the rebuilt
+  // `site_access_toggle` right after the sub-page to main-page swap.
+  ui::MouseEvent press_event(ui::EventType::kMousePressed,
+                             /*location=*/gfx::PointF(1, 1),
+                             /*root_location=*/gfx::PointF(1, 1),
+                             /*time_stamp=*/ui::EventTimeForNow(),
+                             /*flags=*/ui::EF_LEFT_MOUSE_BUTTON,
+                             /*changed_button_flags=*/ui::EF_LEFT_MOUSE_BUTTON);
+  ui::MouseEvent release_event(
+      ui::EventType::kMouseReleased, /*location=*/gfx::PointF(1, 1),
+      /*root_location=*/gfx::PointF(1, 1),
+      /*time_stamp=*/ui::EventTimeForNow(),
+      /*flags=*/ui::EF_LEFT_MOUSE_BUTTON,
+      /*changed_button_flags=*/ui::EF_LEFT_MOUSE_BUTTON);
+  site_access_toggle->OnMousePressed(press_event);
+  site_access_toggle->OnMouseReleased(release_event);
+
+  // Verify that `origin_b_url` remains at on-click (withheld) and has not been
+  // granted on-site or on-all-sites access.
+  EXPECT_FALSE(site_access_toggle->GetIsOn());
+  EXPECT_EQ(GetUserSiteAccess(*extension, origin_b_url),
+            PermissionsManager::UserSiteAccess::kOnClick);
+}
+
+// Verifies that if a cross-origin navigation occurs while
+// `ExtensionsMenuMainPageView` is open and
+// `ExtensionsMenuDelegateDesktop::OnPageNavigation()` updates the menu entries,
+// an immediate in-flight click on the site access toggle does not inadvertently
+// grant site access to the newly committed origin (crbug.com/523237501).
+// This test is placed in `ExtensionsSitePermissionsPageViewBrowserTest` rather
+// than `ExtensionsMenuMainPageViewBrowserTest` because
+// `ExtensionsMenuMainPageViewBrowserTest` disables input protection via the
+// `views::switches::kDisableInputEventActivationProtectionForTesting` command
+// line switch for all of its tests.
+IN_PROC_BROWSER_TEST_F(
+    ExtensionsSitePermissionsPageViewBrowserTest,
+    MainPageNavigationDoesNotGrantNewOriginAccessOnImmediateToggleClick) {
+  // Install an extension requesting `<all_urls>` host permissions.
+  scoped_refptr<const extensions::Extension> extension =
+      InstallExtensionWithHostPermissions(
+          /*name=*/"Test Extension", /*host_permissions=*/{"<all_urls>"});
+  ASSERT_TRUE(extension);
+
+  const GURL origin_a_url = embedded_test_server()->GetURL(
+      /*hostname=*/"a.com", /*relative_url=*/"/title1.html");
+  const GURL origin_b_url = embedded_test_server()->GetURL(
+      /*hostname=*/"b.com", /*relative_url=*/"/title1.html");
+
+  // Navigate to the initial origin (`origin_a_url`).
+  NavigateAndCommit(origin_a_url);
+
+  // Set the extension's user site access to on-click (withheld) on all sites so
+  // that the user must explicitly grant access per site.
+  extensions::PermissionsManagerWaiter waiter(
+      PermissionsManager::Get(profile()));
+  SitePermissionsHelper(profile()).UpdateSiteAccess(
+      *extension, web_contents(),
+      /*new_access=*/PermissionsManager::UserSiteAccess::kOnClick,
+      /*expected_origin=*/
+      web_contents()->GetPrimaryMainFrame()->GetLastCommittedOrigin());
+  {
+    SCOPED_TRACE("Waiting for initial on click site access update");
+    waiter.WaitForExtensionPermissionsUpdate();
+  }
+  ASSERT_EQ(GetUserSiteAccess(*extension, origin_a_url),
+            PermissionsManager::UserSiteAccess::kOnClick);
+  ASSERT_EQ(GetUserSiteAccess(*extension, origin_b_url),
+            PermissionsManager::UserSiteAccess::kOnClick);
+
+  // Open the Extensions Menu main page while on `origin_a_url`.
+  ShowMenu();
+  ASSERT_TRUE(IsMainPageOpened());
+  LayoutMenuIfNecessary();
+
+  // Trigger a cross-origin same-tab navigation to `origin_b_url` while the main
+  // page is open. `ExtensionsMenuDelegateDesktop::OnPageNavigation()` updates
+  // the existing `ExtensionsMenuEntryView` in place and resets input
+  // protection.
+  NavigateAndCommit(origin_b_url);
+  ASSERT_TRUE(IsMainPageOpened());
+  LayoutMenuIfNecessary();
+
+  // Locate `ExtensionsMenuEntryView` on the main page.
+  ASSERT_TRUE(main_page());
+  std::vector<ExtensionsMenuEntryView*> entries = main_page()->GetMenuEntries();
+  ASSERT_EQ(entries.size(), 1u);
+  ExtensionsMenuEntryView* entry_view = entries.front();
+  views::ToggleButton* site_access_toggle =
+      entry_view->site_access_toggle_for_testing();
+  ASSERT_TRUE(site_access_toggle);
+  EXPECT_FALSE(site_access_toggle->GetIsOn());
+
+  // Simulate an in-flight user mouse click landing immediately on
+  // `site_access_toggle` right after the cross-origin navigation update.
+  ui::MouseEvent press_event(ui::EventType::kMousePressed,
+                             /*location=*/gfx::PointF(1, 1),
+                             /*root_location=*/gfx::PointF(1, 1),
+                             /*time_stamp=*/ui::EventTimeForNow(),
+                             /*flags=*/ui::EF_LEFT_MOUSE_BUTTON,
+                             /*changed_button_flags=*/ui::EF_LEFT_MOUSE_BUTTON);
+  ui::MouseEvent release_event(
+      ui::EventType::kMouseReleased, /*location=*/gfx::PointF(1, 1),
+      /*root_location=*/gfx::PointF(1, 1),
+      /*time_stamp=*/ui::EventTimeForNow(),
+      /*flags=*/ui::EF_LEFT_MOUSE_BUTTON,
+      /*changed_button_flags=*/ui::EF_LEFT_MOUSE_BUTTON);
+  site_access_toggle->OnMousePressed(press_event);
+  site_access_toggle->OnMouseReleased(release_event);
+
+  // Verify that `origin_b_url` remains at on-click (withheld) and
+  // `site_access_toggle` remains off.
+  EXPECT_FALSE(site_access_toggle->GetIsOn());
+  EXPECT_EQ(GetUserSiteAccess(*extension, origin_b_url),
+            PermissionsManager::UserSiteAccess::kOnClick);
 }

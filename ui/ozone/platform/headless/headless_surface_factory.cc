@@ -55,7 +55,7 @@ base::FilePath GetPathForWidget(const base::FilePath& base_path,
 }
 
 void WriteDataToFile(const base::FilePath& location, const SkBitmap& bitmap) {
-  DCHECK(!location.empty());
+  CHECK(!location.empty(), base::NotFatalUntil::M163);
   std::optional<std::vector<uint8_t>> png_data =
       gfx::PNGCodec::FastEncodeBGRASkBitmap(bitmap,
                                             /*discard_transparency=*/true);
@@ -162,11 +162,9 @@ class TestPixmap : public gfx::NativePixmap {
   bool SupportsZeroCopyWebGPUImport() const override { return false; }
   gfx::Size GetBufferSize() const override { return gfx::Size(); }
   uint32_t GetUniqueId() const override { return 0; }
-  bool ScheduleOverlayPlane(
-      gfx::AcceleratedWidget widget,
-      const gfx::OverlayPlaneData& overlay_plane_data,
-      std::vector<gfx::GpuFence> acquire_fences,
-      std::vector<gfx::GpuFence> release_fences) override {
+  bool ScheduleOverlayPlane(gfx::AcceleratedWidget widget,
+                            const gfx::OverlayPlaneData& overlay_plane_data,
+                            gfx::GpuFenceHandle acquire_fence) override {
     return true;
   }
   gfx::NativePixmapHandle ExportHandle() const override {

@@ -202,7 +202,7 @@ size_t OmniboxFieldTrial::GetProviderMaxMatches(
 
       if (kv_pair.first == "*") {
         default_max_matches_per_provider = v;
-      } else if (k == provider) {
+      } else if (k == static_cast<int>(provider)) {
         return v;
       }
     }
@@ -552,8 +552,6 @@ const char OmniboxFieldTrial::kDynamicMaxAutocompleteUrlCutoffParam[] =
     "OmniboxDynamicMaxAutocompleteUrlCutoff";
 const char OmniboxFieldTrial::kDynamicMaxAutocompleteIncreasedLimitParam[] =
     "OmniboxDynamicMaxAutocompleteIncreasedLimit";
-const char OmniboxFieldTrial::kSuppressPsuggestBackfillWithMIAParam[] =
-    "SuppressPsuggestBackfillWithMIA";
 
 const char OmniboxFieldTrial::kOnDeviceHeadModelLocaleConstraint[] =
     "ForceModelLocaleConstraint";

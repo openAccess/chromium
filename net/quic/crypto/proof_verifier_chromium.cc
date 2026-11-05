@@ -17,7 +17,7 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
-#include "crypto/signature_verifier.h"
+#include "crypto/sign.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
@@ -456,13 +456,13 @@ bool ProofVerifierChromium::Job::VerifySignature(
   size_t size_bits;
   X509Certificate::PublicKeyType type;
   X509Certificate::GetPublicKeyInfo(cert_->cert_buffer(), &size_bits, &type);
-  crypto::SignatureVerifier::SignatureAlgorithm algorithm;
+  crypto::sign::SignatureKind algorithm;
   switch (type) {
     case X509Certificate::kPublicKeyTypeRSA:
-      algorithm = crypto::SignatureVerifier::RSA_PSS_SHA256;
+      algorithm = crypto::sign::RSA_PSS_SHA256;
       break;
     case X509Certificate::kPublicKeyTypeECDSA:
-      algorithm = crypto::SignatureVerifier::ECDSA_SHA256;
+      algorithm = crypto::sign::ECDSA_SHA256;
       break;
     default:
       LOG(ERROR) << "Unsupported public key type " << type;
@@ -474,22 +474,22 @@ bool ProofVerifierChromium::Job::VerifySignature(
     return false;
   }
 
-  crypto::SignatureVerifier verifier;
-  if (!x509_util::SignatureVerifierInitWithCertificate(
-          &verifier, algorithm, base::as_byte_span(signature),
-          cert_->cert_buffer())) {
-    DLOG(WARNING) << "SignatureVerifierInitWithCertificate failed";
+  std::optional<crypto::sign::Verifier> verifier =
+      x509_util::CreateSignatureVerifierWithCertificate(
+          algorithm, base::as_byte_span(signature), cert_->cert_buffer());
+  if (!verifier) {
+    DLOG(WARNING) << "CreateSignatureVerifierWithCertificate failed";
     return false;
   }
 
-  verifier.VerifyUpdate(base::as_byte_span(quic::kProofSignatureLabel));
+  verifier->Update(base::as_byte_span(quic::kProofSignatureLabel));
   uint32_t len = chlo_hash.length();
-  verifier.VerifyUpdate(base::byte_span_from_ref(len));
-  verifier.VerifyUpdate(base::as_byte_span(chlo_hash));
-  verifier.VerifyUpdate(base::as_byte_span(signed_data));
+  verifier->Update(base::byte_span_from_ref(len));
+  verifier->Update(base::as_byte_span(chlo_hash));
+  verifier->Update(base::as_byte_span(signed_data));
 
-  if (!verifier.VerifyFinal()) {
-    DLOG(WARNING) << "VerifyFinal failed";
+  if (!verifier->Finish()) {
+    DLOG(WARNING) << "verifier->Finish() failed";
     return false;
   }
 

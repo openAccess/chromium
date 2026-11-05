@@ -23,6 +23,7 @@
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/scoped_observation.h"
@@ -36,18 +37,19 @@
 #include "chrome/browser/ash/mahi/mahi_availability.h"
 #include "chrome/browser/ash/mahi/mahi_cache_manager.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
-#include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/manta/manta_service_factory.h"
-#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/history/history_service_provider.h"
+#include "chromeos/ash/components/manta/manta_service_provider.h"
 #include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
 #include "chromeos/components/mahi/public/cpp/mahi_manager.h"
 #include "chromeos/components/mahi/public/cpp/mahi_media_app_content_manager.h"
 #include "chromeos/components/mahi/public/cpp/mahi_types.h"
 #include "chromeos/components/mahi/public/cpp/mahi_web_contents_manager.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
+#include "components/account_id/account_id.h"
 #include "components/feedback/feedback_constants.h"
 #include "components/manta/manta_service.h"
 #include "components/session_manager/core/session.h"
@@ -101,8 +103,7 @@ void LogProviderCreationStatus(ProviderCreationStatus status) {
 std::optional<std::string> MaybeGetUrl(
     const chromeos::MahiPageInfo& mahi_page_info) {
   // Do not send the fake URL of media app PDF files.
-  return chromeos::features::IsMahiSendingUrl() &&
-                 !mahi_page_info.url.spec().starts_with(kMediaAppPDFUrlPrefix)
+  return !mahi_page_info.url.spec().starts_with(kMediaAppPDFUrlPrefix)
              ? std::make_optional(mahi_page_info.url.spec())
              : std::nullopt;
 }
@@ -187,14 +188,18 @@ MahiResponseStatus GetMahiResponseStatusFromMantaStatus(
 }
 
 std::unique_ptr<manta::MahiProvider> CreateProvider() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  if (!profile) {
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const auto* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  if (!session ||
+      !ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id())) {
     LogProviderCreationStatus(ProviderCreationStatus::kProfileUnavailable);
     return nullptr;
   }
 
   if (manta::MantaService* service =
-          manta::MantaServiceFactory::GetForProfile(profile)) {
+          ash::MantaServiceProvider::Get().Find(session->account_id())) {
     auto provider = service->CreateMahiProvider();
     if (!provider) {
       LogProviderCreationStatus(
@@ -223,8 +228,10 @@ bool IsMahiApproved() {
 
 namespace ash {
 
-MahiManagerImpl::MahiManagerImpl()
-    : cache_manager_(std::make_unique<MahiCacheManager>()),
+MahiManagerImpl::MahiManagerImpl(
+    const variations::VariationsService* variations_service)
+    : variations_service_(CHECK_DEREF(variations_service)),
+      cache_manager_(std::make_unique<MahiCacheManager>()),
       mahi_nudge_controller_(std::make_unique<MahiNudgeController>()) {
   magic_boost_state_observation_.Observe(chromeos::MagicBoostState::Get());
 }
@@ -608,9 +615,15 @@ void MahiManagerImpl::OpenFeedbackDialog() {
   base::DictValue ai_metadata;
   ai_metadata.Set(feedback::kMahiMetadataKey, "true");
 
+  // TODO(crbug.com/278643115): Take the account_id from the callers.
+  const auto* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  CHECK(session);
+  Profile* profile = Profile::FromBrowserContext(
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          session->account_id()));
   chrome::ShowFeedbackPage(
-      /*browser=*/ProfileBrowserCollection::GetForProfile(
-          ProfileManager::GetActiveUserProfile())
+      /*browser=*/ProfileBrowserCollection::GetForProfile(profile)
           ->GetLastActiveBrowser(),
       /*source=*/feedback::kFeedbackSourceAI, description_template,
       /*description_placeholder_text=*/
@@ -635,8 +648,8 @@ void MahiManagerImpl::OpenMahiPanelForElucidation(
 }
 
 bool MahiManagerImpl::IsEnabled() {
-  return (mahi_availability::IsMahiAvailable().has_value() &&
-          mahi_availability::IsMahiAvailable().value()) &&
+  return mahi_availability::IsMahiAvailable(variations_service_.get())
+             .value_or(false) &&
          chromeos::MagicBoostState::Get()->hmr_enabled().value_or(false);
 }
 
@@ -769,13 +782,17 @@ bool MahiManagerImpl::MaybeInitializeAndDiscardPendingRequests() {
 }
 
 void MahiManagerImpl::MaybeObserveHistoryService() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  if (!profile) {
+  const session_manager::Session* session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  // TODO(crbug.com/447287122): Production always has an active session here, so
+  // this should CHECK(session); it returns early only because
+  // MahiManagerImplTest (NoSessionAshTestBase) reaches here without one.
+  if (!session) {
     return;
   }
 
   history::HistoryService* service =
-      HistoryServiceFactory::GetForProfileWithoutCreating(profile);
+      ash::HistoryServiceProvider::Get().Find(session->account_id());
   if (service && !scoped_history_service_observer_.IsObserving()) {
     scoped_history_service_observer_.Observe(service);
   }

@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/views/tabs/tab/tab_icon.h"
 #include "chrome/browser/ui/views/tabs/tab/tab_title.h"
 #include "chrome/browser/ui/views/tabs/tab_style_views.h"
+#include "content/public/browser/navigation_controller.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/views/view_utils.h"
@@ -49,7 +50,7 @@ int Center(int size, int item_size) {
 }
 }  // namespace
 
-TabViewHorizontalLayout::TabViewHorizontalLayout() = default;
+TabViewHorizontalLayout::TabViewHorizontalLayout() : title_animation_(this) {}
 TabViewHorizontalLayout::~TabViewHorizontalLayout() = default;
 
 void TabViewHorizontalLayout::OnTabClosing() {
@@ -57,6 +58,20 @@ void TabViewHorizontalLayout::OnTabClosing() {
       CalculateChildVisibilities(TabView().width(),
                                  TabView().GetContentsBounds().width())
           .center_icon;
+}
+
+void TabViewHorizontalLayout::OnShouldDisplayFaviconChanged() {
+  start_title_bounds_ = TabView().title_->bounds();
+  title_animation_.Stop();
+  title_animation_.SetDuration(
+      gfx::Animation::RichAnimationDuration(base::Milliseconds(100)));
+  title_animation_.Start();
+}
+
+void TabViewHorizontalLayout::AnimationProgressed(
+    const gfx::Animation* animation) {
+  CHECK_EQ(animation, &title_animation_, base::NotFatalUntil::M162);
+  TabView().InvalidateLayout();
 }
 
 views::ProposedLayout TabViewHorizontalLayout::CalculateProposedLayout(
@@ -215,8 +230,9 @@ views::ProposedLayout TabViewHorizontalLayout::CalculateProposedLayout(
     const int title_width = std::max(title_right - title_left, 0);
     // The Label will automatically center the font's cap height within the
     // provided vertical space.
-    title_bounds = gfx::Rect(title_left, 0, title_width, height);
+    const gfx::Rect target_title_bounds(title_left, 0, title_width, height);
     show_title = title_width > 0;
+    title_bounds = GetTitleBounds(target_title_bounds);
   }
   layouts.child_layouts.emplace_back(TabView().title_.get(), show_title,
                                      title_bounds);
@@ -247,7 +263,8 @@ TabViewHorizontalLayout::CalculateChildVisibilities(int width,
       TabView().alert_indicator_->showing_alert_state();
   if (TabView().glic_tab_underline_view_ &&
       (current_alert_state == tabs::TabAlert::kGlicAccessing ||
-       current_alert_state == tabs::TabAlert::kGlicSharing)) {
+       current_alert_state == tabs::TabAlert::kGlicSharing ||
+       current_alert_state == tabs::TabAlert::kAiModeSharing)) {
     // Tab underlines for glic multitab replace `alert_indicator_` as the
     // UI indicator for sharing. In this case, ensure the alert indicator is
     // hidden.
@@ -301,7 +318,10 @@ TabViewHorizontalLayout::CalculateChildVisibilities(int width,
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   if (TabView().active_) {
-    if (!declutter_eligible) {
+    const bool active_tab_declutter_eligible =
+        declutter_eligible &&
+        features::kTabStripDeclutterActiveTabCloseHideEnabled.Get();
+    if (!active_tab_declutter_eligible) {
       // Close button is shown on active tabs regardless of the size.
       showing_close_button = should_show_close_button;
       if (showing_close_button) {
@@ -320,7 +340,7 @@ TabViewHorizontalLayout::CalculateChildVisibilities(int width,
       available_width -= favicon_width;
     }
 
-    if (declutter_eligible) {
+    if (active_tab_declutter_eligible) {
       showing_close_button =
           should_show_close_button && ((!has_alert_icon && !has_favicon) ||
                                        close_button_width <= available_width);
@@ -342,8 +362,9 @@ TabViewHorizontalLayout::CalculateChildVisibilities(int width,
     showing_close_button =
         should_show_close_button && large_enough_for_close_button &&
         !(declutter_eligible &&
+          features::kTabStripDeclutterInactiveTabCloseHideEnabled.Get() &&
           available_width <=
-              TabStyle::kTabStripDeclutterMaxTabWidthForCloseHide);
+              features::kTabStripDeclutterMaxTabWidthForCloseHide.Get());
     if (showing_close_button) {
       available_width -= close_button_width;
     }
@@ -386,4 +407,16 @@ TabViewHorizontalLayout::CalculateChildVisibilities(int width,
   show_title = !(features::IsTabStripDeclutterEnabled() && center_icon);
 
   return icon_visibilities;
+}
+
+gfx::Rect TabViewHorizontalLayout::GetTitleBounds(
+    const gfx::Rect& target_bounds) const {
+  if (title_animation_.is_animating() && !start_title_bounds_.IsEmpty() &&
+      !target_bounds.IsEmpty()) {
+    return gfx::Tween::RectValueBetween(
+        gfx::Tween::CalculateValue(gfx::Tween::FAST_OUT_SLOW_IN,
+                                   title_animation_.GetCurrentValue()),
+        start_title_bounds_, target_bounds);
+  }
+  return target_bounds;
 }

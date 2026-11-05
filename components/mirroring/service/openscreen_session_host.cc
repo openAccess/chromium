@@ -36,8 +36,8 @@
 #include "components/mirroring/service/audio_capturing_callback.h"
 #include "components/mirroring/service/captured_audio_input.h"
 #include "components/mirroring/service/mirroring_features.h"
+#include "components/mirroring/service/openscreen_rpc_dispatcher.h"
 #include "components/mirroring/service/remoting_sender.h"
-#include "components/mirroring/service/rpc_dispatcher_impl.h"
 #include "components/mirroring/service/video_capture_client.h"
 #include "components/openscreen_platform/network_util.h"
 #include "components/openscreen_platform/socket_factory.h"
@@ -138,6 +138,27 @@ const char* AsErrorMessage(OperationalStatus status) {
       return "Fatal error in codec runtime.";
   }
 }
+
+constexpr bool IsAnswerError(SessionError error) {
+  switch (error) {
+    case SessionError::ANSWER_TIME_OUT:
+    case SessionError::ANSWER_NOT_OK:
+    case SessionError::ANSWER_MISMATCHED_CAST_MODE:
+    case SessionError::ANSWER_MISMATCHED_SSRC_LENGTH:
+    case SessionError::ANSWER_SELECT_MULTIPLE_AUDIO:
+    case SessionError::ANSWER_SELECT_MULTIPLE_VIDEO:
+    case SessionError::ANSWER_SELECT_INVALID_INDEX:
+    case SessionError::ANSWER_NO_AUDIO_OR_VIDEO:
+      return true;
+    case SessionError::AUDIO_CAPTURE_ERROR:
+    case SessionError::VIDEO_CAPTURE_ERROR:
+    case SessionError::RTP_STREAM_ERROR:
+    case SessionError::ENCODING_ERROR:
+    case SessionError::CAST_TRANSPORT_ERROR:
+    case SessionError::OPENSCREEN_SESSION_ERROR:
+      return false;
+  }
+}
 }  // namespace
 
 OpenscreenSessionHost::RemotingStreamData::RemotingStreamData(
@@ -227,7 +248,8 @@ OpenscreenSessionHost::OpenscreenSessionHost(
   // Use of `Unretained` is safe here since we own the update timer.
   bandwidth_update_timer_.Start(
       FROM_HERE, kBandwidthUpdateInterval,
-      base::BindRepeating(&OpenscreenSessionHost::UpdateBandwidthEstimate,
+      base::BindRepeating(static_cast<void (OpenscreenSessionHost::*)()>(
+                              &OpenscreenSessionHost::UpdateBandwidthEstimate),
                           base::Unretained(this)));
 }
 
@@ -384,7 +406,13 @@ void OpenscreenSessionHost::OnNegotiated(
               base::SingleThreadTaskRunner::GetCurrentDefault(),
               base::BindOnce(&OpenscreenSessionHost::OnGpuFactoriesConfigured,
                              weak_factory_.GetWeakPtr())));
-      gpu_factories = &(gpu_factories_factory_.value()->GetInstance());
+      if (gpu_factories_factory_.has_value()) {
+        gpu_factories = &(gpu_factories_factory_.value()->GetInstance());
+      } else {
+        // The GPU channel could not be established, so fall back to software
+        // encoding.
+        video_config->use_hardware_encoder = false;
+      }
     }
 
     auto video_encoder = media::cast::VideoEncoder::Create(
@@ -412,6 +440,7 @@ void OpenscreenSessionHost::OnNegotiated(
         base::BindRepeating(&OpenscreenSessionHost::GetVideoNetworkBandwidth,
                             base::Unretained(this)));
     video_sender_ = std::move(video_sender);
+    num_video_frames_dropped_ = 0;
     refresh_interval_ = mirror_settings_.refresh_interval();
     expecting_a_refresh_frame_ = false;
     if (refresh_interval_.is_positive()) {
@@ -530,8 +559,14 @@ void OpenscreenSessionHost::OnError(
 
     // If remoting is not supported, the session will continue but
     // OnCapabilitiesDetermined() will never be called and the media remoter
-    // will not be set up.
+    // will not be set up. If this error occurs while attempting to start
+    // remoting, report the error so that the session can fallback to
+    // mirroring.
     case openscreen::Error::Code::kRemotingNotSupported:
+      if (state_ == State::kRemoting) {
+        ReportAndLogError(SessionError::ANSWER_NOT_OK, error.ToString());
+        return;
+      }
       logger_.LogInfo(base::StrCat(
           {"Remoting is disabled for this session. error=", error.ToString()}));
       return;
@@ -566,7 +601,7 @@ void OpenscreenSessionHost::InsertVideoFrame(
   expecting_a_refresh_frame_ = false;
   base::TimeTicks reference_time = *video_frame->metadata().reference_time;
   video_sender_->InsertRawVideoFrame(std::move(video_frame), reference_time);
-  if (refresh_timer_.IsRunning()) {
+  if (refresh_interval_.is_positive()) {
     refresh_timer_.Reset();
   }
 }
@@ -759,7 +794,7 @@ void OpenscreenSessionHost::ReportAndLogError(SessionError error,
                                 error);
   logger_.LogError(error, message);
 
-  if (state_ == State::kRemoting) {
+  if (state_ == State::kRemoting && IsAnswerError(error)) {
     // Try to fallback to mirroring.
     media_remoter_->OnRemotingFailed();
     return;
@@ -779,6 +814,22 @@ void OpenscreenSessionHost::StopStreaming() {
       base::StrCat({"stopped streaming. state=",
                     base::NumberToString(static_cast<int>(state_))}));
 
+  // This cleanup must happen even when there is no active `session_`, since
+  // callers awaiting a VEA need an explicit failure rather than a dropped
+  // callback.
+  gpu_factories_factory_.reset();
+  channel_token_ = base::UnguessableToken();
+  route_id_ = 0;
+
+  // Fail all pending VEA requests as the GPU factory is gone. This explicitly
+  // signals failure to callers, so they won't get an invalid token/ID. They'll
+  // simply know VEA creation failed.
+  for (auto& callback : pending_vea_requests_) {
+    std::move(callback).Run(base::SingleThreadTaskRunner::GetCurrentDefault(),
+                            nullptr);
+  }
+  pending_vea_requests_.clear();
+
   if (!session_) {
     return;
   }
@@ -788,7 +839,6 @@ void OpenscreenSessionHost::StopStreaming() {
   audio_sender_.reset();
   video_sender_.reset();
   refresh_timer_.Stop();
-  gpu_factories_factory_.reset();
   remoting_stream_data_.reset();
 }
 
@@ -959,21 +1009,9 @@ void OpenscreenSessionHost::OnGpuFactoryContextLost(
   CHECK(config.use_hardware_encoder);
   CHECK_EQ(state_, State::kMirroring);
 
-  gpu_factories_factory_.reset();
-  channel_token_ = base::UnguessableToken();
-  route_id_ = 0;
   base::UmaHistogramEnumeration(
       "MediaRouter.MirroringService.GpuFactoryContextLost",
       config.video_codec());
-
-  // Fail all pending VEA requests as the GPU factory is lost. This explicitly
-  // signals failure to callers, so they won't get an invalid token/ID. They'll
-  // simply know VEA creation failed.
-  for (auto& callback : pending_vea_requests_) {
-    std::move(callback).Run(base::SingleThreadTaskRunner::GetCurrentDefault(),
-                            nullptr);
-  }
-  pending_vea_requests_.clear();
 
   MaybeDenylistHardwareCodecAndRenegotiate(config.video_codec());
 }
@@ -1021,9 +1059,17 @@ uint32_t OpenscreenSessionHost::GetVideoNetworkBandwidth() const {
 
 void OpenscreenSessionHost::UpdateBandwidthEstimate() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  const int bandwidth_estimate = forced_bandwidth_estimate_for_testing_ > 0
-                                     ? forced_bandwidth_estimate_for_testing_
-                                     : session_->GetEstimatedNetworkBandwidth();
+  UpdateBandwidthEstimate(session_->GetEstimatedNetworkBandwidth());
+}
+
+void OpenscreenSessionHost::UpdateBandwidthEstimate(
+    const int bandwidth_estimate) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  const int current_frames_dropped =
+      video_sender_ ? video_sender_->GetFramesDropped() : 0;
+  const bool frames_dropped_since_last_update =
+      video_sender_ && (current_frames_dropped > num_video_frames_dropped_);
+  num_video_frames_dropped_ = current_frames_dropped;
 
   // Nothing to do yet.
   if (bandwidth_estimate <= 0) {
@@ -1040,8 +1086,10 @@ void OpenscreenSessionHost::UpdateBandwidthEstimate() {
     constexpr double kConservativeIncrease = 1.1;
     usable_bandwidth_ = std::min<uint32_t>(
         usable_bandwidth_ * kConservativeIncrease, usable_bandwidth);
-  } else {
-    usable_bandwidth_ = usable_bandwidth;
+  } else if (usable_bandwidth < usable_bandwidth_) {
+    if (!video_sender_ || frames_dropped_since_last_update) {
+      usable_bandwidth_ = usable_bandwidth;
+    }
   }
 
   VLOG(2) << ": updated available bandwidth to " << usable_bandwidth_ << "/"
@@ -1159,7 +1207,7 @@ void OpenscreenSessionHost::InitMediaRemoter(
     const openscreen::cast::RemotingCapabilities& capabilities) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   rpc_dispatcher_ =
-      std::make_unique<RpcDispatcherImpl>(session_->session_messenger());
+      std::make_unique<OpenscreenRpcDispatcher>(session_->session_messenger());
   media_remoter_ = std::make_unique<MediaRemoter>(
       *this,
       media::cast::ToRemotingSinkMetadata(

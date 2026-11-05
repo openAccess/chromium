@@ -9,6 +9,7 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 import android.app.Activity;
 import android.view.View;
 
+import org.chromium.base.BaseFeatureList;
 import org.chromium.base.Callback;
 import org.chromium.base.supplier.LazyOneshotSupplier;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -29,7 +30,7 @@ public class ActivityKeyboardVisibilityDelegate extends KeyboardVisibilityDelega
         implements View.OnLayoutChangeListener {
     private final Callback<Integer> mOnKeyboardInsetChanged = this::onKeyboardInsetChanged;
 
-    private final WeakReference<Activity> mActivity;
+    private final WeakReference<@Nullable Activity> mActivity;
     private @Nullable LazyOneshotSupplier<MonotonicObservableSupplier<Integer>>
             mLazyKeyboardInsetSupplier;
     private boolean mIsKeyboardShowing;
@@ -41,7 +42,7 @@ public class ActivityKeyboardVisibilityDelegate extends KeyboardVisibilityDelega
      *
      * @param activity A {@link WeakReference} to an {@link Activity}.
      */
-    public ActivityKeyboardVisibilityDelegate(WeakReference<Activity> activity) {
+    public ActivityKeyboardVisibilityDelegate(WeakReference<@Nullable Activity> activity) {
         mActivity = activity;
     }
 
@@ -103,7 +104,13 @@ public class ActivityKeyboardVisibilityDelegate extends KeyboardVisibilityDelega
     }
 
     private void onKeyboardInsetChanged(int inset) {
-        updateKeyboardShowing(inset > 0);
+        if (!BaseFeatureList.sSplitScreenImeInsetVisibility.isEnabled()) {
+            updateKeyboardShowing(inset > 0);
+            return;
+        }
+        Activity activity = getActivity();
+        if (activity == null) return;
+        updateKeyboardShowing(isKeyboardShowing(getContentView(activity)));
     }
 
     private void updateKeyboardShowing(boolean isShowing) {

@@ -14,7 +14,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNotNull;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
@@ -39,6 +41,7 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.mockito.quality.Strictness;
 
 import org.chromium.base.Callback;
 import org.chromium.base.task.AsyncTask;
@@ -52,12 +55,16 @@ import org.chromium.chrome.browser.device.DeviceConditions;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxAttachmentRecyclerViewAdapter.FuseboxAttachmentType;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.FuseboxAttachmentButtonType;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.FuseboxAttachmentReadResult;
+import org.chromium.chrome.browser.omnibox.fusebox.ImageFormatSniffer.ImageFormat;
 import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.ui.base.MimeTypeUtils;
 
 import java.io.ByteArrayInputStream;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /** Unit tests for {@link FuseboxAttachmentDetailsFetcher}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -69,13 +76,24 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
     private static final String SAMPLE_TITLE = "file.txt";
     private static final String SAMPLE_PNG_TITLE = "photo.png";
     private static final int SAMPLE_IMAGE_DIMENSION = 512;
-    private static final byte[] SAMPLE_DATA = new byte[] {1, 2, 3};
+
+    /**
+     * A payload with a valid PNG signature. Image fixtures must sniff as a Blink-decodable format,
+     * otherwise the fetcher (correctly) routes them to the platform decoder for transcoding.
+     */
+    private static final byte[] SAMPLE_DATA = ImageFormatSnifferUnitTest.PNG;
+
+    /** Plain-text bytes with no image signature, for non-image fixtures. */
+    private static final byte[] SAMPLE_TEXT_DATA =
+            "plain text attachment body".getBytes(StandardCharsets.US_ASCII);
+
     private static final Bitmap SAMPLE_SMALL_BITMAP =
             Bitmap.createBitmap(/* width= */ 1, /* height= */ 1, Bitmap.Config.ARGB_8888);
     private static final Uri SAMPLE_URI = Uri.parse("content://media/external/1");
     private static final Uri SAMPLE_URI_NO_FINAL_PATH_SEGMENT = Uri.parse("content://media");
 
-    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Rule
+    public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     @Mock private ContentResolver mContentResolver;
     @Mock private Callback<@Nullable FuseboxAttachment> mCallback;
@@ -85,11 +103,23 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
     private Context mContext;
     private FuseboxAttachmentDetailsFetcher mFetcher;
     private HistogramWatcher mOomHistogramWatcher;
+    private byte[] mAttachmentData;
 
     @Before
-    public void setUp() {
+    public void setUp() throws IOException {
         mContext = ApplicationProvider.getApplicationContext();
         setIsNetworkMetered(false);
+        mAttachmentData = null;
+        lenient()
+                .when(mContentResolver.openInputStream(any()))
+                .thenAnswer(
+                        inv ->
+                                mAttachmentData == null
+                                        ? null
+                                        : new ByteArrayInputStream(mAttachmentData));
+        lenient()
+                .when(mContentResolver.loadThumbnail(any(), any(), any()))
+                .thenThrow(new IOException("No thumbnail"));
     }
 
     private void setIsNetworkMetered(boolean isMetered) {
@@ -143,20 +173,13 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
         cursor.addRow(new Object[] {title, sizeBytes});
 
         when(mContentResolver.getType(attachmentUri)).thenReturn(mimeType);
-        try {
-            lenient()
-                    .when(mContentResolver.openInputStream(attachmentUri))
-                    .thenAnswer(inv -> data == null ? null : new ByteArrayInputStream(data));
-            if (thumbnail != null) {
-                when(mContentResolver.loadThumbnail(any(), any(), any())).thenReturn(thumbnail);
-            } else {
-                when(mContentResolver.loadThumbnail(any(), any(), any()))
-                        .thenThrow(new IOException("No thumbnail"));
+        mAttachmentData = data;
+        if (thumbnail != null) {
+            try {
+                doReturn(thumbnail).when(mContentResolver).loadThumbnail(any(), any(), any());
+            } catch (IOException e) {
+                throw new RuntimeException(e);
             }
-        } catch (IOException e) {
-            // The compiler requires us to catch the exceptions thrown by the mocked methods, but
-            // we know they aren't actually called here, and so no exception should be thrown.
-            throw new RuntimeException(e);
         }
         when(mContentResolver.query(eq(attachmentUri), isNull(), isNull(), isNull(), isNull()))
                 .thenReturn(cursor);
@@ -191,7 +214,7 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
         setupFetcherWithAttachment(
                 /* title= */ "large_file.txt",
                 MimeTypeUtils.TEXT_PLAIN_MIME_TYPE,
-                SAMPLE_DATA,
+                SAMPLE_TEXT_DATA,
                 /* thumbnail= */ null,
                 sizeBytes,
                 FuseboxAttachmentButtonType.FILES);
@@ -395,11 +418,12 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
     public void testFetchAttachmentDetails_forImageNoThumbnail() {
         String title = SAMPLE_PNG_TITLE;
         String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
-        // We pass an empty byte array so that the fallback thumbnail generation fails.
-        byte[] data = new byte[] {};
+        byte[] data = SAMPLE_DATA;
         Bitmap thumbnail = null;
         @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
         setupFetcherWithAttachment(title, mimeType, data, thumbnail, buttonType);
+        // Make the fallback thumbnail generation fail.
+        setupMockBitmapDecoder(/* bitmap= */ null, /* throwOom= */ false);
 
         mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
         RobolectricUtil.runAllBackgroundAndUi();
@@ -418,11 +442,12 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
         setIsNetworkMetered(false);
         String title = "large_image.png";
         String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
-        byte[] data = new byte[] {};
+        byte[] data = SAMPLE_DATA;
         Bitmap thumbnail = null;
         long size = FuseboxAttachmentDetailsFetcher.MAX_ATTACHMENT_SIZE_BYTES + 1;
         @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
         setupFetcherWithAttachment(title, mimeType, data, thumbnail, size, buttonType);
+        setupMockBitmapDecoder(/* bitmap= */ null, /* throwOom= */ false);
 
         mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
         RobolectricUtil.runAllBackgroundAndUi();
@@ -446,8 +471,7 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
                         .build();
         String title = SAMPLE_PNG_TITLE;
         String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
-        byte[] c2paData =
-                "sample_prefix urn:c2pa: sample_suffix".getBytes(StandardCharsets.US_ASCII);
+        byte[] c2paData = pngPayload("sample_prefix urn:c2pa: sample_suffix");
         Bitmap thumbnail = SAMPLE_SMALL_BITMAP;
         @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
         setupFetcherWithAttachment(title, mimeType, c2paData, thumbnail, buttonType);
@@ -472,12 +496,13 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
         setIsNetworkMetered(true);
         String title = "large_image.png";
         String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
-        byte[] data = new byte[] {};
+        byte[] data = SAMPLE_DATA;
         Bitmap thumbnail = null;
         long size =
                 FuseboxAttachmentDetailsFetcher.MAX_ATTACHMENT_SIZE_BYTES_ON_METERED_NETWORK + 1;
         @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
         setupFetcherWithAttachment(title, mimeType, data, thumbnail, size, buttonType);
+        setupMockBitmapDecoder(/* bitmap= */ null, /* throwOom= */ false);
 
         mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
         RobolectricUtil.runAllBackgroundAndUi();
@@ -654,15 +679,69 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
 
     @Test
     @EnableFeatures("OmniboxAimImageDownscaling")
-    public void testFetchAttachmentDetails_ioExceptionOnDownscaledImage_fallsBackToRegular() {
+    public void testFetchAttachmentDetails_ioExceptionOnDownscaledImage_failsWithDecodeFailed() {
         String title = SAMPLE_PNG_TITLE;
         String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
         byte[] data = SAMPLE_DATA;
-        Bitmap thumbnail = SAMPLE_SMALL_BITMAP;
         @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
-        setupFetcherWithAttachment(title, mimeType, data, thumbnail, buttonType);
+        // No thumbnail stub: the attachment is rejected before the thumbnail is ever fetched.
+        setupFetcherWithAttachment(title, mimeType, data, /* thumbnail= */ null, buttonType);
         setupMockImageDecoder(/* throwOom= */ false, /* throwIoException= */ true);
         setupOomHistogramWatcher(/* oomExpected= */ false, MimeTypeUtils.Type.IMAGE);
+        var readResultWatcher =
+                newReadResultWatcher(
+                        FuseboxAttachmentReadResult.DECODE_FAILED, MimeTypeUtils.Type.IMAGE);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        // The bytes were read in full but the platform decoder rejected them; native would reject
+        // them too, so the attachment is dropped locally rather than forwarded.
+        verify(mCallback).onResult(null);
+        verifyNoMoreInteractions(mCallback);
+        verifyOomHistogram();
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    public void testFetchAttachmentDetails_emptyStream_failsWithEmpty() throws IOException {
+        String title = SAMPLE_PNG_TITLE;
+        String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(
+                title, mimeType, /* data= */ new byte[] {}, /* thumbnail= */ null, buttonType);
+        var readResultWatcher =
+                newReadResultWatcher(FuseboxAttachmentReadResult.EMPTY, MimeTypeUtils.Type.IMAGE);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verify(mCallback).onResult(null);
+        verifyNoMoreInteractions(mCallback);
+        // One initial open plus one retry.
+        verify(mContentResolver, times(FuseboxAttachmentDetailsFetcher.MAX_READ_ATTEMPTS))
+                .openInputStream(SAMPLE_URI);
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    public void testFetchAttachmentDetails_shortReadRecoveredOnRetry_succeeds() throws IOException {
+        String title = SAMPLE_PNG_TITLE;
+        String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
+        byte[] fullData = pngPayload("full payload bytes");
+        byte[] truncatedData = Arrays.copyOf(fullData, fullData.length / 2);
+        Bitmap thumbnail = SAMPLE_SMALL_BITMAP;
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(
+                title, mimeType, fullData, thumbnail, (long) fullData.length, buttonType);
+        // First open yields a truncated stream (e.g. cloud media still being prepared); the
+        // second yields the full payload.
+        when(mContentResolver.openInputStream(SAMPLE_URI))
+                .thenReturn(new ByteArrayInputStream(truncatedData))
+                .thenReturn(new ByteArrayInputStream(fullData));
+        var readResultWatcher =
+                newReadResultWatcher(
+                        FuseboxAttachmentReadResult.SUCCESS_AFTER_RETRY, MimeTypeUtils.Type.IMAGE);
 
         mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
         RobolectricUtil.runAllBackgroundAndUi();
@@ -670,11 +749,468 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
         verifyAttachmentResult(
                 title,
                 mimeType,
-                data,
+                fullData,
                 thumbnail,
                 FuseboxAttachmentType.ATTACHMENT_IMAGE,
                 buttonType);
+        verify(mContentResolver, times(2)).openInputStream(SAMPLE_URI);
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    public void testFetchAttachmentDetails_persistentShortRead_forwardsBytesAndRecords()
+            throws IOException {
+        String title = SAMPLE_PNG_TITLE;
+        String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
+        byte[] truncatedData = pngPayload("truncated");
+        long advertisedSize = 1_000L;
+        Bitmap thumbnail = SAMPLE_SMALL_BITMAP;
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(
+                title, mimeType, truncatedData, thumbnail, advertisedSize, buttonType);
+        var readResultWatcher =
+                newReadResultWatcher(
+                        FuseboxAttachmentReadResult.SHORT_READ, MimeTypeUtils.Type.IMAGE);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        // The provider-reported size is advisory; non-empty bytes are still forwarded, but the
+        // short read is recorded so it can be correlated with downstream decode failures.
+        verifyAttachmentResult(
+                title,
+                mimeType,
+                truncatedData,
+                thumbnail,
+                FuseboxAttachmentType.ATTACHMENT_IMAGE,
+                buttonType);
+        verify(mContentResolver, times(FuseboxAttachmentDetailsFetcher.MAX_READ_ATTEMPTS))
+                .openInputStream(SAMPLE_URI);
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    public void testFetchAttachmentDetails_shortReadThenRetryThrows_keepsFirstRead()
+            throws IOException {
+        String title = SAMPLE_PNG_TITLE;
+        String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
+        byte[] truncatedData = pngPayload("truncated");
+        long advertisedSize = 1_000L;
+        Bitmap thumbnail = SAMPLE_SMALL_BITMAP;
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(
+                title, mimeType, truncatedData, thumbnail, advertisedSize, buttonType);
+        // One-shot pipe-backed provider: the first open yields a short stream, the second open
+        // fails outright. The bytes from the first open must survive.
+        when(mContentResolver.openInputStream(SAMPLE_URI))
+                .thenReturn(new ByteArrayInputStream(truncatedData))
+                .thenThrow(new FileNotFoundException("Cannot reopen pipe"));
+        var readResultWatcher =
+                newReadResultWatcher(
+                        FuseboxAttachmentReadResult.SHORT_READ, MimeTypeUtils.Type.IMAGE);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verifyAttachmentResult(
+                title,
+                mimeType,
+                truncatedData,
+                thumbnail,
+                FuseboxAttachmentType.ATTACHMENT_IMAGE,
+                buttonType);
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    public void testFetchAttachmentDetails_successfulRead_recordsSuccess() {
+        setupFetcherWithTxtFileAttachment(FILE_SIZE_SMALL);
+        var readResultWatcher =
+                newReadResultWatcher(FuseboxAttachmentReadResult.SUCCESS, MimeTypeUtils.Type.TEXT);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verify(mCallback).onResult(isNotNull());
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    @EnableFeatures({
+        OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING,
+        ChromeFeatureList.LENS_BYPASS_COMPRESSION_FOR_C2PA
+    })
+    public void testFetchAttachmentDetails_downscalingWithC2paCheck_opensUriOnce()
+            throws IOException {
+        String title = SAMPLE_PNG_TITLE;
+        String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
+        Bitmap thumbnail = SAMPLE_SMALL_BITMAP;
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(title, mimeType, SAMPLE_DATA, thumbnail, buttonType);
+        setupMockImageDecoder(/* throwOom= */ false, /* throwIoException= */ false);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verify(mCallback).onResult(isNotNull());
+        // Previously the C2PA sniff, the ImageDecoder source and the raw fallback each opened the
+        // URI. Pipe-backed cloud media must only be streamed once.
+        verify(mContentResolver).openInputStream(SAMPLE_URI);
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING)
+    public void testFetchAttachmentDetails_heicByMimeType_transcodedToJpegWithoutFlag() {
+        String title = "photo.heic";
+        byte[] heicData = ImageFormatSnifferUnitTest.isobmff("heic");
+        Bitmap thumbnail = SAMPLE_SMALL_BITMAP;
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(title, "image/heic", heicData, thumbnail, buttonType);
+        setupMockImageDecoder(/* throwOom= */ false, /* throwIoException= */ false);
+        var formatWatcher = newFormatWatcher(ImageFormat.HEIF, /* mismatch= */ false);
+        var readResultWatcher =
+                newReadResultWatcher(FuseboxAttachmentReadResult.SUCCESS, MimeTypeUtils.Type.IMAGE);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        // Blink cannot decode HEIF, so the payload must have been re-encoded as JPEG even though
+        // the downscaling feature is disabled.
+        FuseboxAttachment attachment = verifyTranscodedToJpeg(heicData);
+        assertEquals(title, attachment.title);
+        formatWatcher.assertExpected();
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING)
+    public void testFetchAttachmentDetails_heicDeclaredAsJpeg_sniffedAndTranscoded() {
+        byte[] heicData = ImageFormatSnifferUnitTest.isobmff("heix");
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        // Cloud-backed picker items may report image/jpeg for a HEIF payload.
+        setupFetcherWithAttachment(
+                "photo.jpg",
+                MimeTypeUtils.IMAGE_JPEG_MIME_TYPE,
+                heicData,
+                SAMPLE_SMALL_BITMAP,
+                buttonType);
+        setupMockImageDecoder(/* throwOom= */ false, /* throwIoException= */ false);
+        var formatWatcher = newFormatWatcher(ImageFormat.HEIF, /* mismatch= */ true);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verifyTranscodedToJpeg(heicData);
+        formatWatcher.assertExpected();
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING)
+    public void testFetchAttachmentDetails_dngDeclaredAsJpeg_sniffedAndTranscoded() {
+        byte[] dngData = ImageFormatSnifferUnitTest.TIFF_LE;
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(
+                "raw.dng",
+                MimeTypeUtils.IMAGE_JPEG_MIME_TYPE,
+                dngData,
+                SAMPLE_SMALL_BITMAP,
+                buttonType);
+        setupMockImageDecoder(/* throwOom= */ false, /* throwIoException= */ false);
+        var formatWatcher = newFormatWatcher(ImageFormat.TIFF, /* mismatch= */ true);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verifyTranscodedToJpeg(dngData);
+        formatWatcher.assertExpected();
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING)
+    public void testFetchAttachmentDetails_unknownSignatureWithImageMime_attemptsTranscode() {
+        // e.g. SVG: declared as an image, but no raster signature. Blink would fail on it, so the
+        // platform decoder gets a chance first; here it also fails, so we fail locally.
+        byte[] svgData =
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"/>".getBytes(StandardCharsets.US_ASCII);
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
+        setupFetcherWithAttachment(
+                "icon.svg", "image/svg+xml", svgData, /* thumbnail= */ null, buttonType);
+        setupMockImageDecoder(/* throwOom= */ false, /* throwIoException= */ true);
+        var formatWatcher = newFormatWatcher(ImageFormat.UNKNOWN, /* mismatch= */ false);
+        var readResultWatcher =
+                newReadResultWatcher(
+                        FuseboxAttachmentReadResult.DECODE_FAILED, MimeTypeUtils.Type.IMAGE);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verify(mCallback).onResult(null);
+        formatWatcher.assertExpected();
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING)
+    public void testFetchAttachmentDetails_jpegDeclaredAsHeic_notTranscoded() {
+        // The bytes are what matter: a real JPEG mislabelled as HEIC is forwarded untouched.
+        byte[] jpegData = ImageFormatSnifferUnitTest.JPEG;
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(
+                "photo.heic", "image/heic", jpegData, SAMPLE_SMALL_BITMAP, buttonType);
+        // Would throw if the transcode path were taken.
+        setupMockImageDecoder(/* throwOom= */ false, /* throwIoException= */ true);
+        var formatWatcher = newFormatWatcher(ImageFormat.JPEG, /* mismatch= */ true);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verifyAttachmentResult(
+                "photo.heic",
+                "image/heic",
+                jpegData,
+                SAMPLE_SMALL_BITMAP,
+                FuseboxAttachmentType.ATTACHMENT_IMAGE,
+                buttonType);
+        formatWatcher.assertExpected();
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING)
+    public void testFetchAttachmentDetails_heicUndecodable_failsWithDecodeFailed() {
+        byte[] heicData = ImageFormatSnifferUnitTest.isobmff("heic");
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(
+                "photo.heic", "image/heic", heicData, /* thumbnail= */ null, buttonType);
+        setupMockImageDecoder(/* throwOom= */ false, /* throwIoException= */ true);
+        var readResultWatcher =
+                newReadResultWatcher(
+                        FuseboxAttachmentReadResult.DECODE_FAILED, MimeTypeUtils.Type.IMAGE);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        // Raw HEIF bytes are never forwarded: native would fail on them anyway.
+        verify(mCallback).onResult(null);
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING)
+    public void testFetchAttachmentDetails_heicOomDuringTranscode_failsWithDecodeFailed() {
+        byte[] heicData = ImageFormatSnifferUnitTest.isobmff("heic");
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(
+                "photo.heic", "image/heic", heicData, /* thumbnail= */ null, buttonType);
+        setupMockImageDecoder(/* throwOom= */ true, /* throwIoException= */ false);
+        setupOomHistogramWatcher(/* oomExpected= */ true, MimeTypeUtils.Type.IMAGE);
+        var readResultWatcher =
+                newReadResultWatcher(
+                        FuseboxAttachmentReadResult.DECODE_FAILED, MimeTypeUtils.Type.IMAGE);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        // Unlike JPEG/PNG, there is no useful raw-bytes fallback for HEIF.
+        verify(mCallback).onResult(null);
         verifyOomHistogram();
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    @EnableFeatures({
+        OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING,
+        ChromeFeatureList.LENS_BYPASS_COMPRESSION_FOR_C2PA
+    })
+    public void testFetchAttachmentDetails_heicWithC2pa_stillTranscoded() {
+        byte[] header = ImageFormatSnifferUnitTest.isobmff("heic");
+        byte[] marker = " urn:c2pa: ".getBytes(StandardCharsets.US_ASCII);
+        byte[] heicData = new byte[header.length + marker.length];
+        System.arraycopy(header, 0, heicData, 0, header.length);
+        System.arraycopy(marker, 0, heicData, header.length, marker.length);
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(
+                "photo.heic", "image/heic", heicData, SAMPLE_SMALL_BITMAP, buttonType);
+        setupMockImageDecoder(/* throwOom= */ false, /* throwIoException= */ false);
+        // The C2PA bypass forwards raw bytes, which is never viable for HEIF; the C2PA check is
+        // skipped entirely so no C2PA histogram is recorded.
+        var c2paWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords(FuseboxMetrics.ATTACHMENT_C2PA_DETECTED_HISTOGRAM)
+                        .build();
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verifyTranscodedToJpeg(heicData);
+        c2paWatcher.assertExpected();
+    }
+
+    @Test
+    public void testFetchAttachmentDetails_pngImage_recordsFormatWithoutMismatch() {
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.GALLERY;
+        setupFetcherWithAttachment(
+                SAMPLE_PNG_TITLE,
+                MimeTypeUtils.IMAGE_PNG_MIME_TYPE,
+                SAMPLE_DATA,
+                SAMPLE_SMALL_BITMAP,
+                buttonType);
+        var formatWatcher = newFormatWatcher(ImageFormat.PNG, /* mismatch= */ false);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verify(mCallback).onResult(isNotNull());
+        formatWatcher.assertExpected();
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING)
+    public void testFetchAttachmentDetails_heicWithGenericMimeType_recordedAndTranscoded() {
+        byte[] heicData = ImageFormatSnifferUnitTest.isobmff("heic");
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
+        // A generic file picker may hand back application/octet-stream for a .heic file. That is
+        // not an image mime type, but the payload is still HEIF and must be recorded/transcoded.
+        setupFetcherWithAttachment(
+                "IMG_0001.HEIC",
+                "application/octet-stream",
+                heicData,
+                /* thumbnail= */ null,
+                (long) heicData.length,
+                buttonType);
+        setupMockImageDecoder(/* throwOom= */ false, /* throwIoException= */ false);
+        setupMockBitmapDecoder(/* bitmap= */ null, /* throwOom= */ false);
+        // Format is recorded; the mismatch histogram is not, since no image mime was declared.
+        var formatWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                FuseboxMetrics.ATTACHMENT_IMAGE_FORMAT_HISTOGRAM, ImageFormat.HEIF)
+                        .expectNoRecords(FuseboxMetrics.ATTACHMENT_IMAGE_FORMAT_MISMATCH_HISTOGRAM)
+                        .build();
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verifyTranscodedToJpeg(heicData);
+        formatWatcher.assertExpected();
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING)
+    public void testFetchAttachmentDetails_undecodableTiffWithGenericMimeType_keptAsPlainFile() {
+        // Multi-page TIFFs and many camera RAW files sniff as TIFF, are rejected by Android's
+        // ImageDecoder, and were not declared as images; keep uploading them as plain files.
+        byte[] tiffData = ImageFormatSnifferUnitTest.TIFF_LE;
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
+        setupFetcherWithAttachment(
+                "scan.tiff",
+                "application/octet-stream",
+                tiffData,
+                /* thumbnail= */ null,
+                (long) tiffData.length,
+                buttonType);
+        setupMockImageDecoder(/* throwOom= */ false, /* throwIoException= */ true);
+        var readResultWatcher =
+                newReadResultWatcher(
+                        FuseboxAttachmentReadResult.SUCCESS, MimeTypeUtils.Type.UNKNOWN);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verifyAttachmentResult(
+                "scan.tiff",
+                "application/octet-stream",
+                tiffData,
+                /* expectedThumbnail= */ null,
+                FuseboxAttachmentType.ATTACHMENT_FILE,
+                buttonType);
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING)
+    public void testFetchAttachmentDetails_oomTranscodingWithGenericMimeType_keptAsPlainFile() {
+        byte[] tiffData = ImageFormatSnifferUnitTest.TIFF_LE;
+        @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
+        setupFetcherWithAttachment(
+                "scan.tiff",
+                "application/octet-stream",
+                tiffData,
+                /* thumbnail= */ null,
+                (long) tiffData.length,
+                buttonType);
+        setupMockImageDecoder(/* throwOom= */ true, /* throwIoException= */ false);
+        setupOomHistogramWatcher(/* oomExpected= */ true, MimeTypeUtils.Type.UNKNOWN);
+        var readResultWatcher =
+                newReadResultWatcher(
+                        FuseboxAttachmentReadResult.SUCCESS, MimeTypeUtils.Type.UNKNOWN);
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verifyAttachmentResult(
+                "scan.tiff",
+                "application/octet-stream",
+                tiffData,
+                /* expectedThumbnail= */ null,
+                FuseboxAttachmentType.ATTACHMENT_FILE,
+                buttonType);
+        verifyOomHistogram();
+        readResultWatcher.assertExpected();
+    }
+
+    @Test
+    public void testFetchAttachmentDetails_nonImageNonImageBytes_doesNotRecordFormat() {
+        setupFetcherWithTxtFileAttachment(FILE_SIZE_SMALL);
+        var formatWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords(FuseboxMetrics.ATTACHMENT_IMAGE_FORMAT_HISTOGRAM)
+                        .expectNoRecords(FuseboxMetrics.ATTACHMENT_IMAGE_FORMAT_MISMATCH_HISTOGRAM)
+                        .build();
+
+        mFetcher.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        verify(mCallback).onResult(isNotNull());
+        formatWatcher.assertExpected();
+    }
+
+    /**
+     * Verifies the callback received a JPEG attachment whose bytes differ from {@code original}.
+     */
+    private FuseboxAttachment verifyTranscodedToJpeg(byte[] original) {
+        verify(mCallback).onResult(mAttachmentCaptor.capture());
+        FuseboxAttachment attachment = mAttachmentCaptor.getValue();
+        assertNotNull(attachment);
+        assertEquals(MimeTypeUtils.IMAGE_JPEG_MIME_TYPE, attachment.mimeType);
+        assertThat(attachment.data).isNotEqualTo(original);
+        return attachment;
+    }
+
+    private static HistogramWatcher newFormatWatcher(@ImageFormat int format, boolean mismatch) {
+        return HistogramWatcher.newBuilder()
+                .expectIntRecord(FuseboxMetrics.ATTACHMENT_IMAGE_FORMAT_HISTOGRAM, format)
+                .expectBooleanRecord(
+                        FuseboxMetrics.ATTACHMENT_IMAGE_FORMAT_MISMATCH_HISTOGRAM, mismatch)
+                .build();
+    }
+
+    /** A PNG-signed payload followed by {@code ascii}, so that it sniffs as PNG. */
+    private static byte[] pngPayload(String ascii) {
+        byte[] sig = ImageFormatSnifferUnitTest.PNG;
+        byte[] body = ascii.getBytes(StandardCharsets.US_ASCII);
+        byte[] out = new byte[sig.length + body.length];
+        System.arraycopy(sig, 0, out, 0, sig.length);
+        System.arraycopy(body, 0, out, sig.length, body.length);
+        return out;
+    }
+
+    private static HistogramWatcher newReadResultWatcher(
+            @FuseboxAttachmentReadResult int expected, @MimeTypeUtils.Type int fileType) {
+        return HistogramWatcher.newBuilder()
+                .expectIntRecord(FuseboxMetrics.ATTACHMENT_READ_RESULT_HISTOGRAM, expected)
+                .expectIntRecord(
+                        FuseboxMetrics.getAttachmentReadResultHistogram(fileType), expected)
+                .build();
     }
 
     @Test
@@ -688,8 +1224,7 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
                         FuseboxMetrics.ATTACHMENT_C2PA_DETECTED_HISTOGRAM, true);
         String title = SAMPLE_PNG_TITLE;
         String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
-        byte[] c2paData =
-                "sample_prefix urn:c2pa: sample_suffix".getBytes(StandardCharsets.US_ASCII);
+        byte[] c2paData = pngPayload("sample_prefix urn:c2pa: sample_suffix");
         Bitmap thumbnail = SAMPLE_SMALL_BITMAP;
         @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
         setupFetcherWithAttachment(title, mimeType, c2paData, thumbnail, buttonType);
@@ -720,8 +1255,7 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
                         FuseboxMetrics.ATTACHMENT_C2PA_DETECTED_HISTOGRAM, false);
         String title = SAMPLE_PNG_TITLE;
         String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
-        byte[] c2paData =
-                "sample_prefix urn:c2pa: sample_suffix".getBytes(StandardCharsets.US_ASCII);
+        byte[] c2paData = pngPayload("sample_prefix urn:c2pa: sample_suffix");
         Bitmap thumbnail = SAMPLE_SMALL_BITMAP;
         @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
         setupFetcherWithAttachment(title, mimeType, c2paData, thumbnail, buttonType);
@@ -756,8 +1290,15 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
                         FuseboxMetrics.ATTACHMENT_C2PA_DETECTED_HISTOGRAM, true);
         String title = SAMPLE_PNG_TITLE;
         String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
-        // Position "urn:c2pa:" across the 8192-byte chunk boundary (starts at byte 8190).
+        // Position "urn:c2pa:" across the 8192-byte chunk boundary (starts at byte 8190). The
+        // payload still needs a PNG signature so that it sniffs as a Blink-decodable image.
         byte[] prefix = new byte[8190];
+        System.arraycopy(
+                ImageFormatSnifferUnitTest.PNG,
+                0,
+                prefix,
+                0,
+                ImageFormatSnifferUnitTest.PNG.length);
         byte[] marker = "urn:c2pa:".getBytes(StandardCharsets.US_ASCII);
         byte[] suffix = new byte[100];
         byte[] c2paData = new byte[prefix.length + marker.length + suffix.length];
@@ -790,7 +1331,7 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
         String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
         byte[] data = SAMPLE_DATA;
         @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
-        setupFetcherWithAttachment(title, mimeType, data, SAMPLE_SMALL_BITMAP, buttonType);
+        setupFetcherWithAttachment(title, mimeType, data, /* thumbnail= */ null, buttonType);
         setupMockFileStreamReader(/* throwOom= */ true, /* throwIoException= */ false);
         setupOomHistogramWatcher(/* oomExpected= */ true, MimeTypeUtils.Type.IMAGE);
 
@@ -808,7 +1349,7 @@ public class FuseboxAttachmentDetailsFetcherUnitTest {
         String mimeType = MimeTypeUtils.IMAGE_PNG_MIME_TYPE;
         byte[] data = SAMPLE_DATA;
         @FuseboxAttachmentButtonType int buttonType = FuseboxAttachmentButtonType.FILES;
-        setupFetcherWithAttachment(title, mimeType, data, SAMPLE_SMALL_BITMAP, buttonType);
+        setupFetcherWithAttachment(title, mimeType, data, /* thumbnail= */ null, buttonType);
         setupMockFileStreamReader(/* throwOom= */ false, /* throwIoException= */ true);
         setupOomHistogramWatcher(/* oomExpected= */ false, MimeTypeUtils.Type.IMAGE);
 

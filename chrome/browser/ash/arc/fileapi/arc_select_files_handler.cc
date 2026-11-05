@@ -22,7 +22,6 @@
 #include "chrome/browser/ash/policy/dlp/dlp_files_controller_ash.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_file_destination.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
@@ -211,7 +210,7 @@ ArcSelectFilesHandler::~ArcSelectFilesHandler() {
 void ArcSelectFilesHandler::SelectFiles(
     const mojom::SelectFilesRequestPtr& request,
     mojom::FileSystemHost::SelectFilesCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   callback_ = std::move(callback);
 
@@ -242,8 +241,8 @@ void ArcSelectFilesHandler::SelectFiles(
 
 void ArcSelectFilesHandler::FileSelected(const ui::SelectedFileInfo& file,
                                          int index) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(callback_);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(callback_, base::NotFatalUntil::M160);
 
   const std::string& activity = ConvertFilePathToAndroidActivity(file.path());
   if (!activity.empty()) {
@@ -259,20 +258,20 @@ void ArcSelectFilesHandler::FileSelected(const ui::SelectedFileInfo& file,
 
 void ArcSelectFilesHandler::MultiFilesSelected(
     const std::vector<ui::SelectedFileInfo>& files) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   FilesSelectedInternal(files);
 }
 
 void ArcSelectFilesHandler::FileSelectionCanceled() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(callback_);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(callback_, base::NotFatalUntil::M160);
   // Returns an empty result if the user cancels file selection.
   std::move(callback_).Run(mojom::SelectFilesResult::New());
 }
 
 void ArcSelectFilesHandler::FilesSelectedInternal(
     const std::vector<ui::SelectedFileInfo>& files) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
 
   storage::FileSystemContext* file_system_context =
       file_manager::util::GetFileManagerFileSystemContext(profile_);
@@ -294,7 +293,7 @@ void ArcSelectFilesHandler::FilesSelectedInternal(
 void ArcSelectFilesHandler::OnFileSelectorEvent(
     mojom::FileSelectorEventPtr event,
     mojom::FileSystemHost::OnFileSelectorEventCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   std::string quotedClickTargetName =
       base::GetQuotedJSONString(event->click_target->name.c_str());
@@ -323,7 +322,7 @@ void ArcSelectFilesHandler::OnFileSelectorEvent(
 void ArcSelectFilesHandler::GetFileSelectorElements(
     mojom::GetFileSelectorElementsRequestPtr request,
     mojom::FileSystemHost::GetFileSelectorElementsCallback callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   dialog_holder_->ExecuteJavaScript(
       kScriptGetElements,
@@ -369,7 +368,6 @@ bool SelectFileDialogHolder::SelectFile(
 
   SelectFileDialogExtension::Owner owner;
   owner.window = owner_window;
-  owner.android_task_id = task_id;
   owner.dialog_caller =
       policy::DlpFileDestination(data_controls::Component::kArc);
   select_file_dialog_->SelectFileWithFileManagerParams(

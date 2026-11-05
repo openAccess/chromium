@@ -46,7 +46,6 @@
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/extension.h"
-#include "extensions/common/extension_features.h"
 #include "extensions/common/extension_l10n_util.h"
 #include "extensions/common/file_util.h"
 #include "extensions/common/manifest.h"
@@ -262,7 +261,7 @@ void UnpackedInstaller::OnInstallChecksComplete(
   }
 
   std::u16string error_message;
-  if (errors.count(PreloadCheck::Error::kDisallowedByPolicy)) {
+  if (errors.contains(PreloadCheck::Error::kDisallowedByPolicy)) {
     error_message = policy_check_->GetErrorMessage();
   } else {
     error_message = requirements_check_->GetErrorMessage();
@@ -290,12 +289,6 @@ int UnpackedInstaller::GetFlags() {
   }
   if (require_modern_manifest_version_) {
     result |= Extension::REQUIRE_MODERN_MANIFEST_VERSION;
-  }
-
-  if (base::FeatureList::IsEnabled(
-          extensions_features::
-              kAllowWithholdingExtensionPermissionsOnInstall)) {
-    result |= Extension::WITHHOLD_PERMISSIONS;
   }
 
   if (installed_via_cdp_) {
@@ -449,7 +442,13 @@ void UnpackedInstaller::InstallExtension() {
     prefs->SetAllowFileAccess(extension()->id(), *allow_file_access_);
   }
   if (allow_incognito_access_.has_value()) {
-    prefs->SetIsIncognitoEnabled(extension()->id(), *allow_incognito_access_);
+    if (ExtensionsBrowserClient::Get()->IsolatedModeReplacesIncognito(
+            browser_context_)) {
+      prefs->SetIsIsolatedModeEnabled(extension()->id(),
+                                      *allow_incognito_access_);
+    } else {
+      prefs->SetIsIncognitoEnabled(extension()->id(), *allow_incognito_access_);
+    }
   }
   if (install_param_.has_value()) {
     SetInstallParam(prefs, extension()->id(), *install_param_);

@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -10,9 +12,12 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/types/expected.h"
 #include "components/private_ai/client_impl.h"
 #include "components/private_ai/common/private_ai_logger.h"
@@ -21,6 +26,7 @@
 #include "components/private_ai/connection_metrics.h"
 #include "components/private_ai/connection_timeout.h"
 #include "components/private_ai/connection_token_attestation.h"
+#include "components/private_ai/features.h"
 #include "components/private_ai/private_ai_common.h"
 #include "components/private_ai/private_ai_network_driver.h"
 #include "components/private_ai/private_ai_oak_session_driver.h"
@@ -31,10 +37,13 @@
 #include "components/private_ai/testing/fake_private_ai_oak_session_driver.h"
 #include "components/private_ai/testing/fake_secure_channel.h"
 #include "components/private_ai/testing/fake_token_manager.h"
+#include "components/private_ai/tls_certificate_downloader.h"
+#include "components/private_ai/tls_certificate_repository.h"
 #include "components/version_info/channel.h"
 #include "services/network/test/test_network_context.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "url/gurl.h"
 
 namespace private_ai {
 
@@ -51,8 +60,12 @@ class ClientImplIntegrationTest : public testing::Test {
     GURL url("wss://example.com?key=test-api-key");
 
     auto factory = std::make_unique<ConnectionFactoryImpl>(
-        url, &test_network_context_, &logger_, &oak_session_driver_,
-        &network_driver_, version_info::Channel::UNKNOWN);
+        url,
+        base::BindRepeating(
+            [](network::mojom::NetworkContext* context) { return context; },
+            base::Unretained(&test_network_context_)),
+        &logger_, &oak_session_driver_, &network_driver_,
+        version_info::Channel::UNKNOWN);
     factory_ptr_ = factory.get();
     factory->EnableTokenAttestation(&token_manager_);
     factory->SetSecureChannelFactoryForTesting(base::BindLambdaForTesting(
@@ -150,7 +163,8 @@ TEST_F(ClientImplIntegrationTest, AttestationFailure) {
 
   // 1. Attestation starts.
   // Simulate token fetch failure.
-  token_manager_.RespondToGetAuthToken(std::nullopt);
+  token_manager_.RespondToGetAuthToken(
+      base::unexpected(phosphor::TokenManager::Error::kTokenFetchFailed));
 
   // 2. Client should receive an error.
   auto result = future.Get();
@@ -258,16 +272,37 @@ TEST_F(ClientImplIntegrationTest, DisconnectDuringAttestation) {
   auto* channel = last_secure_channel();
   ASSERT_TRUE(channel);
 
-  // 2. Simulate channel disconnect before responding to attestation.
+  // 2. Simulate channel network error before responding to attestation.
   channel->send_back_error(StatusCode::kNetworkError);
 
-  // 3. The original request should fail with the disconnect error.
+  // 3. The original request should fail with the network error unchanged.
   ASSERT_TRUE(future.IsReady());
   auto result = future.Get();
   ASSERT_FALSE(result.has_value());
-  // Our heuristic correctly rewrites this early error (before first successful
-  // response) into kClientAttestationFailed.
-  EXPECT_EQ(result.error(), StatusCode::kClientAttestationFailed);
+  EXPECT_EQ(result.error(), StatusCode::kNetworkError);
+}
+
+TEST_F(ClientImplIntegrationTest, ServerCloseDuringAttestation) {
+  base::test::TestFuture<base::expected<std::string, StatusCode>> future;
+  client_->SendTextRequest(
+      proto::FeatureName::FEATURE_NAME_CHROME_ZERO_STATE_SUGGESTION, "hello",
+      future.GetCallback(), /*options=*/{});
+
+  // 1. Attestation starts.
+  token_manager_.RunPendingCallbacks();
+  auto* channel = last_secure_channel();
+  ASSERT_TRUE(channel);
+
+  // 2. Simulate server closing the connection before responding to attestation.
+  channel->send_back_error(StatusCode::kConnectionClosedByServer);
+
+  // 3. Our heuristic rewrites kConnectionClosedByServer (before first
+  // successful response) into kClientAttestationPresumedRejectedByServer.
+  ASSERT_TRUE(future.IsReady());
+  auto result = future.Get();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(),
+            StatusCode::kClientAttestationPresumedRejectedByServer);
 }
 
 TEST_F(ClientImplIntegrationTest, ClientDestroyedDuringAttestation) {
@@ -373,6 +408,84 @@ TEST_F(ClientImplIntegrationTest, ProxyConfigFailure) {
   auto result = future.Get();
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error(), StatusCode::kProxyConfigFailed);
+}
+
+TEST_F(ClientImplIntegrationTest, TlsSessionUsesInjectedCertificateRepository) {
+  base::test::ScopedFeatureList feature_list(kPrivateAiUseTlsSession);
+
+  class FailingCertRepository : public TlsCertificateRepository {
+   public:
+    FailingCertRepository()
+        : TlsCertificateRepository(std::make_unique<TlsCertificateDownloader>(
+                                       GURL(),
+                                       GURL(),
+                                       network::NetworkContextGetter()),
+                                   "tca",
+                                   "oakct.transparentrelease.goog",
+                                   network::NetworkContextGetter()) {}
+    void GetCertificates(CertificatesCallback callback) override {
+      ++get_count_;
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce(std::move(callback), std::nullopt));
+    }
+    int get_count() const { return get_count_; }
+
+   private:
+    int get_count_ = 0;
+  };
+
+  auto cert_repo = std::make_unique<FailingCertRepository>();
+  FailingCertRepository* cert_repo_ptr = cert_repo.get();
+  factory_ptr_->SetSecureChannelFactoryForTesting(
+      ConnectionFactoryImpl::SecureChannelFactoryOverride());
+  factory_ptr_->SetTlsCertificateRepositoryForTesting(std::move(cert_repo));
+
+  base::test::TestFuture<base::expected<std::string, StatusCode>> direct_future;
+  client_->SendTextRequest(
+      proto::FeatureName::FEATURE_NAME_CHROME_ZERO_STATE_SUGGESTION, "hello",
+      direct_future.GetCallback(), /*options=*/{});
+
+  auto direct_result = direct_future.Get();
+  EXPECT_EQ(cert_repo_ptr->get_count(), 1);
+  ASSERT_FALSE(direct_result.has_value());
+  EXPECT_EQ(direct_result.error(), StatusCode::kAttestationFailed);
+
+  // Also verify that the proxied connection path forwards the certificate
+  // repository to the inner connection factory.
+  factory_ptr_->EnableProxy(GURL("https://proxy.example.com"));
+  base::test::TestFuture<base::expected<std::string, StatusCode>> proxy_future;
+  client_->SendTextRequest(
+      proto::FeatureName::FEATURE_NAME_CHROME_ZERO_STATE_SUGGESTION, "hello",
+      proxy_future.GetCallback(), /*options=*/{});
+  token_manager_.RunPendingProxyCallbacks();
+
+  auto proxy_result = proxy_future.Get();
+  EXPECT_EQ(cert_repo_ptr->get_count(), 2);
+  ASSERT_FALSE(proxy_result.has_value());
+  EXPECT_EQ(proxy_result.error(), StatusCode::kAttestationFailed);
+}
+
+TEST_F(ClientImplIntegrationTest,
+       GetPrivateAiServiceUrlSelectsEndpointByFeatureFlag) {
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(kPrivateAiUseTlsSession);
+    EXPECT_EQ(GetPrivateAiServiceUrl(), kPrivateAiUrl.Get());
+  }
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(kPrivateAiUseTlsSession);
+    EXPECT_EQ(GetPrivateAiServiceUrl(), kPrivateAiTlsUrl.Get());
+  }
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeatureWithParameters(
+        kPrivateAiUseTlsSession,
+        {{kPrivateAiTlsUrl.name, "custom.example.com/ws/TlsSession"}});
+    EXPECT_EQ(GetPrivateAiServiceUrl(), "custom.example.com/ws/TlsSession");
+  }
 }
 
 }  // namespace private_ai

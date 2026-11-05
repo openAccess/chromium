@@ -18,6 +18,8 @@
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_metrics.h"
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_model.h"
+#include "chrome/browser/ui/webui/settings/settings_element_ids.h"
+#include "chrome/browser/ui/webui/settings/settings_utils.h"
 #include "chrome/common/pref_names.h"
 #include "content/public/browser/web_ui.h"
 #include "ui/actions/actions.h"
@@ -73,8 +75,11 @@ void AppearanceHandler::RegisterMessages() {
 
 void AppearanceHandler::HandleUseTheme(ui::SystemTheme system_theme,
                                        const base::ListValue& args) {
-  DCHECK(system_theme != ui::SystemTheme::kDefault || !profile_->IsChild());
+  CHECK(system_theme != ui::SystemTheme::kDefault || !profile_->IsChild(),
+        base::NotFatalUntil::M162);
   ThemeServiceFactory::GetForProfile(profile_)->UseTheme(system_theme);
+  settings_utils::MaybeNotifySettingsCustomEvent(
+      web_ui(), settings::kAppearanceThemeChangedEventId);
 }
 
 void AppearanceHandler::OpenCustomizeChrome(const base::ListValue& args) {

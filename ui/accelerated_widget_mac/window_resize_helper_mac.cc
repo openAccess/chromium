@@ -11,6 +11,7 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/synchronization/lock.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
@@ -22,7 +23,7 @@ namespace {
 
 class WrappedTask;
 class PumpableTaskRunner;
-using WrappedTaskQueue = std::list<WrappedTask*>;
+using WrappedTaskQueue = std::list<raw_ptr<WrappedTask, DanglingUntriaged>>;
 using EventTimedWaitCallback =
     base::RepeatingCallback<void(base::WaitableEvent*, base::TimeDelta)>;
 
@@ -183,7 +184,7 @@ PumpableTaskRunner::PumpableTaskRunner(
 PumpableTaskRunner::~PumpableTaskRunner() {
   // Because tasks hold a reference to the task runner, the task queue must
   // be empty when it is destroyed.
-  DCHECK(task_queue_.empty());
+  CHECK(task_queue_.empty(), base::NotFatalUntil::M163);
 }
 
 bool PumpableTaskRunner::WaitForSingleWrappedTaskToRun(
@@ -292,7 +293,7 @@ WindowResizeHelperMac* WindowResizeHelperMac::Get() {
 
 void WindowResizeHelperMac::Init(
     const scoped_refptr<base::SingleThreadTaskRunner>& target_task_runner) {
-  DCHECK(!task_runner_);
+  CHECK(!task_runner_, base::NotFatalUntil::M163);
   task_runner_ = new PumpableTaskRunner(
       base::BindRepeating(&WindowResizeHelperMac::EventTimedWait),
       target_task_runner);

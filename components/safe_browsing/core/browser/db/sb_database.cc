@@ -8,7 +8,9 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/containers/flat_set.h"
 #include "base/debug/crash_logging.h"
+#include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -16,7 +18,9 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
+#include "base/not_fatal_until.h"
 #include "base/strings/strcat.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -31,9 +35,6 @@
 #endif
 
 using base::TimeTicks;
-
-// TODO(crbug.com/362791941): replace all |comments| with `comments` for v5.
-// TODO(crbug.com/362791941): change all DCHECKs to CHECKs for v5 usages.
 namespace safe_browsing {
 
 namespace {
@@ -44,16 +45,9 @@ constexpr int kUmaNumBuckets = 50;
 
 // Returns the name of the metric by combining `prefix`, "V4" or "V5",
 // and `suffix`.
-std::string GetMetricName(std::string_view prefix,
-                          std::string_view suffix,
-                          bool allow_v5_logging = false) {
-  // TODO(crbug.com/362791941): handle v5 and SB. Eventually `allow_v5_logging`
-  // should be removed and always be true.
+std::string GetMetricName(std::string_view prefix, std::string_view suffix) {
   return base::StrCat(
-      {prefix,
-       allow_v5_logging && base::FeatureList::IsEnabled(kLocalListsUseSBv5)
-           ? "V5"
-           : "V4",
+      {prefix, base::FeatureList::IsEnabled(kLocalListsUseSBv5) ? "V5" : "V4",
        suffix});
 }
 
@@ -87,8 +81,7 @@ void RecordCheckStoresTimeTaken(const std::string& metric_name,
   base::UmaHistogramTimes(
       GetMetricName(
           "SafeBrowsing.",
-          base::StrCat({"CheckUrl.TimeTaken.LocalLookup.", metric_name}),
-          /*allow_v5_logging=*/true),
+          base::StrCat({"CheckUrl.TimeTaken.LocalLookup.", metric_name})),
       delta);
   base::UmaHistogramTimes(
       base::StrCat(
@@ -145,8 +138,8 @@ void SBDatabase::Create(
     const base::FilePath& base_path,
     const ListInfos& list_infos,
     NewDatabaseReadyCallback new_db_callback) {
-  DCHECK(base_path.IsAbsolute());
-  DCHECK(!list_infos.empty());
+  CHECK(base_path.IsAbsolute(), base::NotFatalUntil::M162);
+  CHECK(!list_infos.empty(), base::NotFatalUntil::M162);
 
   const scoped_refptr<base::SequencedTaskRunner> callback_task_runner =
       base::SequencedTaskRunner::GetCurrentDefault();
@@ -163,7 +156,8 @@ void SBDatabase::CreateOnTaskRunner(
     const ListInfos& list_infos,
     const scoped_refptr<base::SequencedTaskRunner>& callback_task_runner,
     NewDatabaseReadyCallback new_db_callback) {
-  DCHECK(db_task_runner->RunsTasksInCurrentSequence());
+  CHECK(db_task_runner->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M162);
 
   if (!base::CreateDirectory(base_path)) {
     return;
@@ -181,10 +175,10 @@ void SBDatabase::CreateOnTaskRunner(
     }
 
     SBStorePtr store = CreateStore(db_task_runner, base_path, it);
-    // Logs SafeBrowsing.V4Store.ReadyOnStartup
+    // Logs SafeBrowsing.V4Store.ReadyOnStartup or
+    // SafeBrowsing.V5Store.ReadyOnStartup
     base::UmaHistogramBoolean(
-        GetMetricName("SafeBrowsing.", "Store.ReadyOnStartup",
-                      /*allow_v5_logging=*/true),
+        GetMetricName("SafeBrowsing.", "Store.ReadyOnStartup"),
         store->HasValidData());
     base::UmaHistogramBoolean("SafeBrowsing.SBStore.ReadyOnStartup",
                               store->HasValidData());
@@ -197,6 +191,10 @@ void SBDatabase::CreateOnTaskRunner(
 
   std::unique_ptr<SBDatabase, base::OnTaskRunnerDeleter> sb_database =
       GetDatabaseFactory()->Create(db_task_runner, std::move(store_map));
+
+  if (base::FeatureList::IsEnabled(kSafeBrowsingDeleteUnusedStores)) {
+    sb_database->DeleteUnusedStoreFiles(base_path);
+  }
 
   // Database is done loading, pass it to the new_db_callback on the caller's
   // thread. This would unblock resource loads.
@@ -239,16 +237,17 @@ SBDatabase::SBDatabase(
     : store_map_(std::move(store_map)),
       db_task_runner_(db_task_runner),
       pending_store_updates_(0) {
-  DCHECK(db_task_runner->RunsTasksInCurrentSequence());
+  CHECK(db_task_runner->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M162);
   // This method executes on the DB sequence, whereas
-  // |sequence_checker_| is meant to verify methods that should
+  // `sequence_checker_` is meant to verify methods that should
   // execute on the UI sequence. Detach that sequence checker here; it
   // will be bound to the UI sequence in InitializeOnUIThread().
   DETACH_FROM_SEQUENCE(sequence_checker_);
 }
 
 void SBDatabase::InitializeOnUIThread() {
-  // This invocation serves to bind |sequence_checker_| to the UI sequence
+  // This invocation serves to bind `sequence_checker_` to the UI sequence
   // after its having been detached from the DB sequence in this object's
   // constructor.
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -260,14 +259,15 @@ void SBDatabase::StopOnUIThread() {
 }
 
 SBDatabase::~SBDatabase() {
-  DCHECK(db_task_runner_->RunsTasksInCurrentSequence());
+  CHECK(db_task_runner_->RunsTasksInCurrentSequence(),
+        base::NotFatalUntil::M162);
 }
 
 void SBDatabase::ApplyUpdate(std::unique_ptr<SBUpdateResponseMap> update_map,
                              DatabaseUpdatedCallback db_updated_callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!pending_store_updates_);
-  DCHECK(db_updated_callback_.is_null());
+  CHECK(!pending_store_updates_, base::NotFatalUntil::M162);
+  CHECK(db_updated_callback_.is_null(), base::NotFatalUntil::M162);
 
   db_updated_callback_ = db_updated_callback;
 
@@ -309,13 +309,33 @@ void SBDatabase::ApplyUpdate(std::unique_ptr<SBUpdateResponseMap> update_map,
 void SBDatabase::UpdatedStoreReady(ListIdentifier identifier,
                                    SBStorePtr new_store) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(pending_store_updates_);
+  CHECK(pending_store_updates_, base::NotFatalUntil::M162);
   if (new_store) {
     if (auto it = store_map_->find(identifier); it != store_map_->end()) {
-      it->second.swap(new_store);
+      SBStorePtr old_store = std::exchange(it->second, std::move(new_store));
+      base::flat_set<base::FilePath> paths_in_use(it->second->GetPathsInUse());
+      base::FilePath store_path = it->second->store_path();
+      // Reset `old_store` explicitly to trigger `SBStoreDeleter`, which posts
+      // the deletion of the old store to `db_task_runner_`. This ensures that
+      // any memory-mapped files held by the old store are unmapped before
+      // `CleanupExtraFiles` runs.
+      old_store.reset();
+      db_task_runner_->PostTaskAndReply(
+          FROM_HERE,
+          base::BindOnce(&SBStore::CleanupExtraFiles, store_path,
+                         std::move(paths_in_use)),
+          base::BindOnce(&SBDatabase::OnStoreUpdateFinalized,
+                         weak_factory_on_io_.GetWeakPtr()));
+      return;
     }
   }
 
+  OnStoreUpdateFinalized();
+}
+
+void SBDatabase::OnStoreUpdateFinalized() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(pending_store_updates_, base::NotFatalUntil::M162);
   pending_store_updates_--;
   if (!pending_store_updates_) {
     db_updated_callback_.Run();
@@ -360,7 +380,8 @@ bool SBDatabase::AreAllStoresAvailable(
 void SBDatabase::GetStoresMatchingFullHash(
     const std::vector<FullHashStr>& full_hashes,
     const StoresToCheck& stores_to_check,
-    base::OnceCallback<void(DbLookupResult)> callback) {
+    base::OnceCallback<void(DbLookupResult)> callback,
+    scoped_refptr<base::SequencedTaskRunner> reply_task_runner) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   std::vector<std::pair<ListIdentifier, SBStore*>> stores;
@@ -379,8 +400,18 @@ void SBDatabase::GetStoresMatchingFullHash(
 
   // The SBStores ptrs are guaranteed to be valid because their deletion would
   // be sequenced on the DB thread, after this posted task is serviced.
-  db_task_runner_->PostTaskAndReplyWithResult(
-      FROM_HERE, std::move(check_stores), std::move(callback));
+  // When `reply_task_runner` is provided (e.g. `kNavigationNetworkResponse` for
+  // navigation-blocking checks), post the lookup reply onto it instead of
+  // `GetCurrentDefault()`, which is `QueueType::kDefault` when initiated from
+  // `NavigationURLLoaderImpl::Start` and would otherwise priority-invert local
+  // hash-prefix lookup completion.
+  db_task_runner_->PostTask(
+      FROM_HERE, std::move(check_stores)
+                     .Then(base::BindPostTask(
+                         reply_task_runner
+                             ? std::move(reply_task_runner)
+                             : base::SequencedTaskRunner::GetCurrentDefault(),
+                         std::move(callback))));
 }
 
 void SBDatabase::ResetStores(
@@ -435,8 +466,7 @@ int64_t SBDatabase::GetStoreSizeInBytes(
 
 void SBDatabase::RecordFileSizeHistograms() {
   // Logs SafeBrowsing.V4Database.Size or SafeBrowsing.V5Database.Size
-  std::string size_metric = GetMetricName("SafeBrowsing.", "Database.Size",
-                                          /*allow_v5_logging=*/true);
+  std::string size_metric = GetMetricName("SafeBrowsing.", "Database.Size");
   int64_t db_size = 0;
   for (const auto& store_map_iter : *store_map_) {
     const int64_t size =
@@ -451,9 +481,8 @@ void SBDatabase::RecordFileSizeHistograms() {
   // Logs SafeBrowsing.V4Database.SizeLinear or
   // SafeBrowsing.V5Database.SizeLinear
   base::UmaHistogramExactLinear(
-      GetMetricName("SafeBrowsing.", "Database.SizeLinear",
-                    /*allow_v5_logging=*/true),
-      db_size_megabytes, /*value_max=*/50);
+      GetMetricName("SafeBrowsing.", "Database.SizeLinear"), db_size_megabytes,
+      /*exclusive_max=*/50);
 }
 
 void SBDatabase::RecordDatabaseUpdateLatency() {
@@ -461,11 +490,63 @@ void SBDatabase::RecordDatabaseUpdateLatency() {
     // Logs SafeBrowsing.V4Database.UpdateLatency or
     // SafeBrowsing.V5Database.UpdateLatency
     base::UmaHistogramCustomTimes(
-        GetMetricName("SafeBrowsing.", "Database.UpdateLatency",
-                      /*allow_v5_logging=*/true),
+        GetMetricName("SafeBrowsing.", "Database.UpdateLatency"),
         base::Time::Now() - last_update_, kUmaMinTime, kUmaMaxTime,
         kUmaNumBuckets);
   }
+}
+
+void SBDatabase::DeleteUnusedStoreFiles(const base::FilePath& base_path) {
+  CHECK(db_task_runner_->RunsTasksInCurrentSequence());
+  base::ScopedUmaHistogramTimer timer("SafeBrowsing.UnusedStoresCleanup.Time");
+
+  base::flat_set<base::FilePath> paths_in_use;
+  for (const auto& [list_id, store] : *store_map_) {
+    for (const base::FilePath& path : store->GetPathsInUse()) {
+      paths_in_use.insert(path);
+    }
+  }
+
+  std::vector<base::FilePath> files_to_delete;
+  int active_store_files_remaining_count = 0;
+  base::FileEnumerator enumerator(base_path, /*recursive=*/false,
+                                  base::FileEnumerator::FILES,
+                                  FILE_PATH_LITERAL("*.store*"));
+  for (base::FilePath file_path = enumerator.Next(); !file_path.empty();
+       file_path = enumerator.Next()) {
+    if (paths_in_use.contains(file_path)) {
+      active_store_files_remaining_count++;
+    } else {
+      files_to_delete.push_back(file_path);
+    }
+  }
+
+  bool is_cleanup_needed = !files_to_delete.empty();
+  base::UmaHistogramBoolean("SafeBrowsing.UnusedStoresCleanup.Needed",
+                            is_cleanup_needed);
+  if (!is_cleanup_needed) {
+    return;
+  }
+
+  int files_cleaned_count = 0;
+  int files_failed_to_delete_count = 0;
+  for (const base::FilePath& file_path : files_to_delete) {
+    if (base::DeleteFile(file_path)) {
+      files_cleaned_count++;
+    } else {
+      files_failed_to_delete_count++;
+    }
+  }
+
+  base::UmaHistogramCounts100(
+      "SafeBrowsing.UnusedStoresCleanup.FileCount.Cleaned",
+      files_cleaned_count);
+  base::UmaHistogramCounts100(
+      "SafeBrowsing.UnusedStoresCleanup.FileCount.DeleteFailed",
+      files_failed_to_delete_count);
+  base::UmaHistogramCounts100(
+      "SafeBrowsing.UnusedStoresCleanup.FileCount.ActiveRemaining",
+      active_store_files_remaining_count);
 }
 
 void SBDatabase::CollectDatabaseInfo(

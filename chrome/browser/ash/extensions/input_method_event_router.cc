@@ -12,7 +12,7 @@
 #include "base/values.h"
 #include "chrome/browser/ash/extensions/input_method_api.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/extensions/api/input_method_private.h"
+#include "chromeos/ash/experiences/extensions/common/api/input_method_private.h"
 #include "content/public/browser/browser_context.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/extension_system.h"
@@ -44,8 +44,8 @@ void ExtensionInputMethodEventRouter::InputMethodChanged(
   if (!router->HasEventListener(OnChanged::kEventName))
     return;
 
-  base::ListValue args;
-  args.Append(manager->GetActiveIMEState()->GetCurrentInputMethod().id());
+  auto args = base::MakeRefCounted<extensions::EventArgs>();
+  args->data.Append(manager->GetActiveIMEState()->GetCurrentInputMethod().id());
 
   // The router will only send the event to extensions that are listening.
   auto event = std::make_unique<extensions::Event>(

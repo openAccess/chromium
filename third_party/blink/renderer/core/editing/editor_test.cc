@@ -58,8 +58,7 @@ TEST_F(EditorTest, copyGeneratedPassword) {
   const char* body_content = "<input type='password' id='password'></input>";
   SetBodyContent(body_content);
 
-  auto& element = To<HTMLInputElement>(
-      *GetDocument().getElementById(AtomicString("password")));
+  auto& element = To<HTMLInputElement>(*GetElementById("password"));
 
   const String kPasswordValue = "secret";
   element.Focus();
@@ -69,7 +68,8 @@ TEST_F(EditorTest, copyGeneratedPassword) {
   Editor& editor = GetDocument().GetFrame()->GetEditor();
   EXPECT_FALSE(editor.CanCopy());
 
-  element.SetShouldRevealPassword(true);
+  element.SetShouldRevealPassword(true,
+                                  PasswordVisibilityAnnouncement::kSilent);
   EXPECT_TRUE(editor.CanCopy());
 }
 
@@ -77,8 +77,7 @@ TEST_F(EditorTest, CopyVisibleSelection) {
   const char* body_content = "<input id=hiding value=HEY>";
   SetBodyContent(body_content);
 
-  auto& text_control = To<HTMLInputElement>(
-      *GetDocument().getElementById(AtomicString("hiding")));
+  auto& text_control = To<HTMLInputElement>(*GetElementById("hiding"));
   text_control.select();
 
   ExecuteCopy();
@@ -94,12 +93,10 @@ TEST_F(EditorTest, DontCopyHiddenSelections) {
       "<input id=hiding value=HEY>";
   SetBodyContent(body_content);
 
-  auto& text_control = To<HTMLInputElement>(
-      *GetDocument().getElementById(AtomicString("hiding")));
+  auto& text_control = To<HTMLInputElement>(*GetElementById("hiding"));
   text_control.select();
 
-  auto& checkbox = To<HTMLInputElement>(
-      *GetDocument().getElementById(AtomicString("checkbox")));
+  auto& checkbox = To<HTMLInputElement>(*GetElementById("checkbox"));
   checkbox.Focus();
 
   ExecuteCopy();
@@ -113,8 +110,7 @@ TEST_F(EditorTest, ReplaceSelection) {
   const char* body_content = "<input id=text value='HELLO'>";
   SetBodyContent(body_content);
 
-  auto& text_control =
-      To<HTMLInputElement>(*GetDocument().getElementById(AtomicString("text")));
+  auto& text_control = To<HTMLInputElement>(*GetElementById("text"));
   text_control.select();
   text_control.SetSelectionRange(2, 2);
 

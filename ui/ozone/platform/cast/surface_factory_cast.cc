@@ -70,11 +70,9 @@ class CastPixmap : public gfx::NativePixmap {
   gfx::Size GetBufferSize() const override { return gfx::Size(); }
   uint32_t GetUniqueId() const override { return 0; }
 
-  bool ScheduleOverlayPlane(
-      gfx::AcceleratedWidget widget,
-      const gfx::OverlayPlaneData& overlay_plane_data,
-      std::vector<gfx::GpuFence> acquire_fences,
-      std::vector<gfx::GpuFence> release_fences) override {
+  bool ScheduleOverlayPlane(gfx::AcceleratedWidget widget,
+                            const gfx::OverlayPlaneData& overlay_plane_data,
+                            gfx::GpuFenceHandle acquire_fence) override {
     return false;
   }
   gfx::NativePixmapHandle ExportHandle() const override {
@@ -133,7 +131,8 @@ scoped_refptr<gfx::NativePixmap> SurfaceFactoryCast::CreateNativePixmap(
     viz::SharedImageFormat format,
     gfx::BufferUsage usage,
     std::optional<gfx::Size> framebuffer_size) {
-  DCHECK(!framebuffer_size || framebuffer_size == size);
+  CHECK(!framebuffer_size || framebuffer_size == size,
+        base::NotFatalUntil::M163);
   return base::MakeRefCounted<CastPixmap>();
 }
 

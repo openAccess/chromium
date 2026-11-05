@@ -11,6 +11,7 @@
 
 #include "base/functional/callback.h"
 #include "base/run_loop.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
@@ -207,10 +208,26 @@ TEST_F(DefaultChipSelectorTest, OnTabActiveChangedNoOp) {
   EXPECT_THAT(calls, ElementsAre(Pair("show_anchored_message", 0)));
 }
 
+TEST_F(DefaultChipSelectorTest, DowngradeQueuedAnchoredMessageRequests) {
+  selector->RequestAnchoredMessageShow(0, AnchoredMessageConfig{});
+  selector->RequestAnchoredMessageShow(1, AnchoredMessageConfig{});
+  selector->RequestAnchoredMessageShow(2, AnchoredMessageConfig{});
+  calls.clear();
+
+  selector->DowngradeQueuedAnchoredMessageRequests();
+  EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 2), Pair("show_chip", 1)));
+
+  calls.clear();
+  selector->RequestAnchoredMessageHide(0);
+  EXPECT_THAT(calls, ElementsAre(Pair("hide_anchored_message", 0)));
+}
+
 class PriorityChipSelectorTest : public testing::Test {
  public:
   void SetUp() override {
     selector = std::make_unique<internal::PriorityChipSelector>(
+        base::BindRepeating(&PriorityChipSelectorTest::IsSuppressedCallback,
+                            base::Unretained(this)),
         base::BindRepeating(&PriorityChipSelectorTest::ShowChipCallback,
                             base::Unretained(this)),
         base::BindRepeating(&PriorityChipSelectorTest::HideChipCallback,
@@ -224,13 +241,23 @@ class PriorityChipSelectorTest : public testing::Test {
   }
 
  protected:
+  bool IsSuppressedCallback(actions::ActionId page_action_id) {
+    return suppressed_actions_.contains(page_action_id);
+  }
+
   void ShowChipCallback(actions::ActionId page_action_id,
                         const SuggestionChipConfig& config) {
     calls.emplace_back("show_chip", page_action_id);
+    if (!on_chip_show_.is_null()) {
+      on_chip_show_.Run(page_action_id);
+    }
   }
 
   void HideChipCallback(actions::ActionId page_action_id) {
     calls.emplace_back("hide_chip", page_action_id);
+    if (!on_chip_hide_.is_null()) {
+      on_chip_hide_.Run(page_action_id);
+    }
   }
 
   void ShowAnchoredMessageCallback(actions::ActionId page_action_id,
@@ -242,8 +269,11 @@ class PriorityChipSelectorTest : public testing::Test {
     calls.emplace_back("hide_anchored_message", page_action_id);
   }
 
+  std::set<actions::ActionId> suppressed_actions_;
   std::unique_ptr<internal::PriorityChipSelector> selector;
   std::vector<std::pair<std::string, actions::ActionId>> calls;
+  base::RepeatingCallback<void(actions::ActionId)> on_chip_show_;
+  base::RepeatingCallback<void(actions::ActionId)> on_chip_hide_;
 };
 
 TEST_F(PriorityChipSelectorTest, ShowSingleChip) {
@@ -274,6 +304,11 @@ TEST_F(PriorityChipSelectorTest, LowerPriorityIgnored) {
                                   PageActionPriorityCategory::kContextualCue});
 
   EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 0)));
+
+  // Now hide the higher-priority chip; lower one should expand.
+  selector->RequestChipHide(0);
+  EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 0), Pair("hide_chip", 0),
+                                 Pair("show_chip", 1)));
 }
 
 TEST_F(PriorityChipSelectorTest, SamePriorityIgnored) {
@@ -285,6 +320,121 @@ TEST_F(PriorityChipSelectorTest, SamePriorityIgnored) {
                                   PageActionPriorityCategory::kContextualCue});
 
   EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 0)));
+}
+
+TEST_F(PriorityChipSelectorTest, SamePriorityReevalSuppression) {
+  selector->RequestChipShow(
+      0, SuggestionChipConfig{.priority =
+                                  PageActionPriorityCategory::kContextualCue});
+  selector->RequestChipShow(
+      1, SuggestionChipConfig{.priority =
+                                  PageActionPriorityCategory::kContextualCue});
+
+  EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 0)));
+
+  // Suppress chip 0 and ask to reevaluate priorities; chip 1 should show up.
+  suppressed_actions_.insert(0);
+  selector->ReevaluateAfterSuppressionChange();
+
+  EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 0), Pair("hide_chip", 0),
+                                 Pair("show_chip", 1)));
+}
+
+TEST_F(PriorityChipSelectorTest, ReevalSuppressionReentry) {
+  selector->RequestChipShow(
+      0, SuggestionChipConfig{.priority =
+                                  PageActionPriorityCategory::kContextualCue});
+  selector->RequestChipShow(
+      1, SuggestionChipConfig{.priority =
+                                  PageActionPriorityCategory::kContextualCue});
+
+  EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 0)));
+
+  // Suppress chip 0 and ask to reevaluate priorities; chip 1 should show up.
+  suppressed_actions_.insert(0);
+
+  // ... have a bunch of other chips queued while suppression of 0 is applied.
+  on_chip_hide_ = base::BindLambdaForTesting([&](actions::ActionId id) {
+    if (id == 0) {
+      for (int i = 2; i < 100; ++i) {
+        selector->RequestChipShow(
+            i, SuggestionChipConfig{
+                   .priority = PageActionPriorityCategory::kContextualCue});
+      }
+    }
+  });
+  selector->ReevaluateAfterSuppressionChange();
+
+  EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 0), Pair("hide_chip", 0),
+                                 Pair("show_chip", 1)));
+}
+
+TEST_F(PriorityChipSelectorTest, ReevalSuppressionReentry2) {
+  selector->RequestChipShow(
+      0, SuggestionChipConfig{.priority =
+                                  PageActionPriorityCategory::kContextualCue});
+  selector->RequestChipShow(
+      1, SuggestionChipConfig{.priority =
+                                  PageActionPriorityCategory::kContextualCue});
+  selector->RequestChipShow(
+      2, SuggestionChipConfig{.priority =
+                                  PageActionPriorityCategory::kContextualCue});
+
+  EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 0)));
+
+  // Suppress chip 0 and ask to reevaluate priorities; chip 2 should show up.
+  suppressed_actions_.insert(0);
+  suppressed_actions_.insert(1);
+  calls.clear();
+  selector->ReevaluateAfterSuppressionChange();
+
+  EXPECT_THAT(calls, ElementsAre(Pair("hide_chip", 0), Pair("show_chip", 2)));
+
+  // Now Unsuppress, but when attempt to re-show 0 is made, hide it and 1.
+  suppressed_actions_.clear();
+  calls.clear();
+
+  // ... have a bunch of other chips queued while suppression of 0 is applied.
+  on_chip_show_ = base::BindLambdaForTesting([&](actions::ActionId id) {
+    if (id == 0) {
+      selector->RequestChipHide(0);
+      selector->RequestChipHide(1);
+    }
+  });
+
+  selector->RequestChipHide(2);
+
+  EXPECT_THAT(calls, ElementsAre(Pair("hide_chip", 2), Pair("show_chip", 0),
+                                 Pair("hide_chip", 0), Pair("show_chip", 1),
+                                 Pair("hide_chip", 1)));
+}
+
+TEST_F(PriorityChipSelectorTest, PriorityChangeReevalSuppression) {
+  selector->RequestChipShow(
+      0, SuggestionChipConfig{.priority =
+                                  PageActionPriorityCategory::kContextualCue});
+  selector->RequestChipShow(
+      1, SuggestionChipConfig{.priority =
+                                  PageActionPriorityCategory::kContextualCue});
+  // Change priority of action 1; that should make it expand in preference to
+  // 0.
+  selector->RequestChipShow(
+      1, SuggestionChipConfig{
+             .priority = PageActionPriorityCategory::kPrivacySecurity});
+  EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 0), Pair("hide_chip", 0),
+                                 Pair("show_chip", 1)));
+
+  // Suppress chip 1; we should get 0 to expand.
+  calls.clear();
+  suppressed_actions_.insert(1);
+  selector->ReevaluateAfterSuppressionChange();
+  EXPECT_THAT(calls, ElementsAre(Pair("hide_chip", 1), Pair("show_chip", 0)));
+
+  // Unsuppress chip 1, it should be what's expanded, with 0 collapsed again.
+  calls.clear();
+  suppressed_actions_.erase(1);
+  selector->ReevaluateAfterSuppressionChange();
+  EXPECT_THAT(calls, ElementsAre(Pair("hide_chip", 0), Pair("show_chip", 1)));
 }
 
 TEST_F(PriorityChipSelectorTest, PrivacySecurityAllowsMultipleChips) {
@@ -595,6 +745,7 @@ class PriorityChipSelectorPmcTest : public testing::Test {
     pmc_.Init(session_provider_, storage_service_,
               user_education::ProductMessagingPolicyImpl::CreateDefault());
     selector = std::make_unique<internal::PriorityChipSelector>(
+        base::BindRepeating([](actions::ActionId) { return false; }),
         base::BindRepeating(&PriorityChipSelectorPmcTest::ShowChipCallback,
                             base::Unretained(this)),
         base::BindRepeating(&PriorityChipSelectorPmcTest::HideChipCallback,
@@ -1003,6 +1154,7 @@ TEST_F(PriorityChipSelectorPmcTest, ActiveTabOnlyDisabled_ShowsImmediately) {
 
 TEST_F(PriorityChipSelectorPmcTest, NullPmc_ShowsImmediately) {
   auto null_pmc_selector = std::make_unique<internal::PriorityChipSelector>(
+      base::BindRepeating([](actions::ActionId) { return false; }),
       base::BindRepeating(&PriorityChipSelectorPmcTest::ShowChipCallback,
                           base::Unretained(this)),
       base::BindRepeating(&PriorityChipSelectorPmcTest::HideChipCallback,
@@ -1020,6 +1172,30 @@ TEST_F(PriorityChipSelectorPmcTest, NullPmc_ShowsImmediately) {
                                    PageActionPriorityCategory::kContextualCue});
 
   EXPECT_THAT(calls, ElementsAre(Pair("show_anchored_message", 0)));
+}
+
+TEST_F(PriorityChipSelectorPmcTest,
+       DowngradeQueuedAnchoredMessageRequests_CancelsPendingPmcAndShowsChip) {
+  user_education::ProductMessagingHandle blocking_handle =
+      AcquireBlockingNotice();
+
+  selector->RequestAnchoredMessageShow(
+      0, AnchoredMessageConfig{.priority =
+                                   PageActionPriorityCategory::kContextualCue});
+  EXPECT_THAT(calls, IsEmpty());
+  EXPECT_EQ(pmc().GetMessageStatus(
+                internal::PriorityChipSelector::kAnchoredMessageId),
+            user_education::ProductMessageStatus::kWaiting);
+
+  selector->DowngradeQueuedAnchoredMessageRequests();
+  EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 0)));
+  EXPECT_EQ(pmc().GetMessageStatus(
+                internal::PriorityChipSelector::kAnchoredMessageId),
+            user_education::ProductMessageStatus::kNone);
+
+  blocking_handle.reset();
+  task_environment().FastForwardBy(base::Seconds(10));
+  EXPECT_THAT(calls, ElementsAre(Pair("show_chip", 0)));
 }
 
 }  // namespace

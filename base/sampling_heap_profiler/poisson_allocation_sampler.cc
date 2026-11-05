@@ -11,6 +11,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/allocator/dispatcher/dispatcher.h"
 #include "base/allocator/dispatcher/reentry_guard.h"
 #include "base/allocator/dispatcher/tls.h"
 #include "base/check.h"
@@ -157,20 +158,16 @@ bool PoissonAllocationSampler::ScopedSuppressRandomnessForTesting::
 }
 
 PoissonAllocationSampler::ScopedMuteHookedSamplesForTesting::
-    ScopedMuteHookedSamplesForTesting() {
+    ScopedMuteHookedSamplesForTesting()
+    : accumulated_bytes_snapshot_(&GetThreadLocalData()->accumulated_bytes, 0),
+      sampling_interval_initialized_snapshot_(
+          &GetThreadLocalData()->sampling_interval_initialized,
+          false) {
   SetProfilingStateFlag(ProfilingStateFlag::kHookedSamplesMutedForTesting);
-
-  // Reset the accumulated bytes to 0 on this thread.
-  ThreadLocalData* const thread_local_data = GetThreadLocalData();
-  accumulated_bytes_snapshot_ = thread_local_data->accumulated_bytes;
-  thread_local_data->accumulated_bytes = 0;
 }
 
 PoissonAllocationSampler::ScopedMuteHookedSamplesForTesting::
     ~ScopedMuteHookedSamplesForTesting() {
-  // Restore the accumulated bytes.
-  ThreadLocalData* const thread_local_data = GetThreadLocalData();
-  thread_local_data->accumulated_bytes = accumulated_bytes_snapshot_;
   ResetProfilingStateFlag(ProfilingStateFlag::kHookedSamplesMutedForTesting);
 }
 
@@ -251,7 +248,7 @@ size_t PoissonAllocationSampler::GetNextSampleInterval(size_t interval) {
   return static_cast<size_t>(value);
 }
 
-void PoissonAllocationSampler::DoRecordAllocation(
+bool PoissonAllocationSampler::DoRecordAllocation(
     const ProfilingStateFlagMask state,
     void* address,
     size_t size,
@@ -262,7 +259,7 @@ void PoissonAllocationSampler::DoRecordAllocation(
   thread_local_data->accumulated_bytes += size;
   intptr_t accumulated_bytes = thread_local_data->accumulated_bytes;
   if (accumulated_bytes < 0) [[likely]] {
-    return;
+    return false;
   }
 
   if (!(state & ProfilingStateFlag::kIsRunning)) [[unlikely]] {
@@ -273,12 +270,12 @@ void PoissonAllocationSampler::DoRecordAllocation(
     // for the rest of the Chrome session.)
     thread_local_data->sampling_interval_initialized = false;
     thread_local_data->accumulated_bytes = 0;
-    return;
+    return false;
   }
 
   // Failed allocation? Skip the sample.
   if (!address) [[unlikely]] {
-    return;
+    return false;
   }
 
   size_t mean_interval = g_sampling_interval.load(std::memory_order_relaxed);
@@ -292,7 +289,7 @@ void PoissonAllocationSampler::DoRecordAllocation(
     accumulated_bytes -= GetNextSampleInterval(mean_interval);
     if (accumulated_bytes < 0) {
       thread_local_data->accumulated_bytes = accumulated_bytes;
-      return;
+      return false;
     }
   }
 
@@ -309,7 +306,7 @@ void PoissonAllocationSampler::DoRecordAllocation(
   thread_local_data->accumulated_bytes = accumulated_bytes;
 
   if (ScopedMuteThreadSamples::IsMuted()) [[unlikely]] {
-    return;
+    return false;
   }
 
   ScopedMuteThreadSamples no_reentrancy_scope;
@@ -322,7 +319,7 @@ void PoissonAllocationSampler::DoRecordAllocation(
     LockFreeAddressHashSet& address_cache = sampled_addresses_set();
     if (address_cache.Contains(address) ==
         LockFreeAddressHashSet::ContainsResult::kFound) {
-      return;
+      return false;
     }
     address_cache.Insert(address);
     BalanceAddressesHashSet();
@@ -335,6 +332,7 @@ void PoissonAllocationSampler::DoRecordAllocation(
        observers_copy) {
     observer->SampleAdded(address, size, total_allocated, type, context);
   }
+  return true;
 }
 
 void PoissonAllocationSampler::DoRecordFree(void* address) {
@@ -347,12 +345,45 @@ void PoissonAllocationSampler::DoRecordFree(void* address) {
   {
     AutoLock lock(mutex_);
     observers_copy = observers_;
-    sampled_addresses_set().Remove(address);
+    bool removed = sampled_addresses_set().Remove(address);
+    DCHECK(removed);
   }
   for (base::PoissonAllocationSampler::SamplesObserver* observer :
        observers_copy) {
     observer->SampleRemoved(address);
   }
+}
+
+bool PoissonAllocationSampler::OnMove(void* from, void* to) {
+  const ProfilingStateFlagMask state =
+      profiling_state_.load(std::memory_order_relaxed);
+  if (!(state & ProfilingStateFlag::kWasStarted)) [[likely]] {
+    return false;
+  }
+  if (from == nullptr || to == nullptr) [[unlikely]] {
+    return false;
+  }
+  if (ScopedMuteThreadSamples::IsMuted()) [[unlikely]] {
+    return false;
+  }
+
+  ScopedMuteThreadSamples no_reentrancy_scope;
+  std::vector<SamplesObserver*> observers_copy;
+  {
+    AutoLock lock(mutex_);
+    LockFreeAddressHashSet& address_cache = sampled_addresses_set();
+    if (!address_cache.Remove(from)) {
+      return false;
+    }
+    address_cache.Insert(to);
+    BalanceAddressesHashSet();
+    observers_copy = observers_;
+  }
+  for (base::PoissonAllocationSampler::SamplesObserver* observer :
+       observers_copy) {
+    observer->SampleMoved(from, to);
+  }
+  return true;
 }
 
 void PoissonAllocationSampler::BalanceAddressesHashSet() {
@@ -434,6 +465,11 @@ void PoissonAllocationSampler::AddSamplesObserver(SamplesObserver* observer) {
   // while holding `mutex_`.
   if (profiler_was_stopped) {
     SetProfilingStateFlag(ProfilingStateFlag::kIsRunning);
+    // Connect the allocation hooks in case the Dispatcher deferred it (see
+    // ShouldDeferDispatcherConnection()). This must happen after kWasStarted
+    // is set. The Dispatcher never acquires `mutex_`, so calling it while
+    // holding `mutex_` can't deadlock.
+    allocator::dispatcher::Dispatcher::GetInstance().EnsureConnected();
   }
   DCHECK(profiling_state_.load(std::memory_order_relaxed) &
          ProfilingStateFlag::kIsRunning);

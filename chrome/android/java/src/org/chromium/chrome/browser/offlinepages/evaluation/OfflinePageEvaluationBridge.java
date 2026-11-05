@@ -6,7 +6,10 @@ package org.chromium.chrome.browser.offlinepages.evaluation;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Callback;
@@ -34,6 +37,9 @@ import java.util.Locale;
 /** Class used for offline page evaluation testing tools. */
 @JNINamespace("offline_pages::android")
 public class OfflinePageEvaluationBridge {
+    @JniType("::offline_pages::android::OfflinePageEvaluationBridge")
+    interface NativeOfflinePageEvaluationBridge extends JniTypeToken {}
+
     /**
      * Observer class for notifications on changes to save page requests or offline page model which
      * are used for testing.
@@ -73,7 +79,7 @@ public class OfflinePageEvaluationBridge {
         ThreadUtils.assertOnUiThread();
         mNativeOfflinePageEvaluationBridge =
                 OfflinePageEvaluationBridgeJni.get()
-                        .createBridgeForProfile(profile, useEvaluationScheduler);
+                        .createBridgeForProfile(this, profile, useEvaluationScheduler);
     }
 
     private static final String TAG = "OPEvalBridge";
@@ -81,7 +87,7 @@ public class OfflinePageEvaluationBridge {
     private static TaskRunner sSequencedTaskRunner =
             PostTask.createSequencedTaskRunner(TaskTraits.BEST_EFFORT_MAY_BLOCK);
 
-    private long mNativeOfflinePageEvaluationBridge;
+    private JniUniquePtr<NativeOfflinePageEvaluationBridge> mNativeOfflinePageEvaluationBridge;
     private boolean mIsOfflinePageModelLoaded;
     private ObserverList<OfflinePageEvaluationObserver> mObservers = new ObserverList<>();
 
@@ -89,10 +95,9 @@ public class OfflinePageEvaluationBridge {
 
     /** Destroys the native portion of the bridge. */
     public void destroy() {
-        if (mNativeOfflinePageEvaluationBridge != 0) {
-            OfflinePageEvaluationBridgeJni.get()
-                    .destroy(mNativeOfflinePageEvaluationBridge, OfflinePageEvaluationBridge.this);
-            mNativeOfflinePageEvaluationBridge = 0;
+        if (mNativeOfflinePageEvaluationBridge != null) {
+            mNativeOfflinePageEvaluationBridge.destroy();
+            mNativeOfflinePageEvaluationBridge = null;
             mIsOfflinePageModelLoaded = false;
         }
         mObservers.clear();
@@ -250,17 +255,17 @@ public class OfflinePageEvaluationBridge {
     @CalledByNative
     private static void createOfflinePageAndAddToList(
             List<OfflinePageItem> offlinePagesList,
-            String url,
+            @JniType("std::string") String url,
             long offlineId,
-            String clientNamespace,
-            String clientId,
-            String title,
-            String filePath,
+            @JniType("std::string") String clientNamespace,
+            @JniType("std::string") String clientId,
+            @JniType("std::u16string") String title,
+            @JniType("std::string") String filePath,
             long fileSize,
             long creationTime,
             int accessCount,
             long lastAccessTimeMs,
-            String requestOrigin) {
+            @JniType("std::string") String requestOrigin) {
         offlinePagesList.add(
                 createOfflinePageItem(
                         url,
@@ -285,8 +290,17 @@ public class OfflinePageEvaluationBridge {
             long requestId,
             @JniType("std::string") String url,
             @JniType("std::string") String clientIdNamespace,
-            @JniType("std::string") String clientIdId) {
-        return SavePageRequest.create(state, requestId, url, clientIdNamespace, clientIdId);
+            @JniType("std::string") String clientIdId,
+            @JniType("std::string") String originString,
+            int autoFetchNotificationState) {
+        return SavePageRequest.create(
+                state,
+                requestId,
+                url,
+                clientIdNamespace,
+                clientIdId,
+                originString,
+                autoFetchNotificationState);
     }
 
     private static OfflinePageItem createOfflinePageItem(
@@ -317,32 +331,33 @@ public class OfflinePageEvaluationBridge {
 
     @NativeMethods
     interface Natives {
-        long createBridgeForProfile(
-                @JniType("Profile*") Profile profile, boolean useEvaluationScheduler);
-
-        void destroy(long nativeOfflinePageEvaluationBridge);
+        JniUniquePtr<NativeOfflinePageEvaluationBridge> createBridgeForProfile(
+                OfflinePageEvaluationBridge caller,
+                @JniType("Profile*") Profile profile,
+                boolean useEvaluationScheduler);
 
         void getAllPages(
-                long nativeOfflinePageEvaluationBridge,
+                JniPtr<NativeOfflinePageEvaluationBridge> self,
                 List<OfflinePageItem> offlinePages,
                 Callback<List<OfflinePageItem>> callback);
 
         void savePageLater(
-                long nativeOfflinePageEvaluationBridge,
+                JniPtr<NativeOfflinePageEvaluationBridge> self,
                 @JniType("std::string") String url,
                 @JniType("std::string") String clientNamespace,
                 @JniType("std::string") String clientId,
                 boolean userRequested);
 
         boolean pushRequestProcessing(
-                long nativeOfflinePageEvaluationBridge, Callback<Boolean> callback);
+                JniPtr<NativeOfflinePageEvaluationBridge> self, Callback<Boolean> callback);
 
         void getRequestsInQueue(
-                long nativeOfflinePageEvaluationBridge, Callback<SavePageRequest[]> callback);
+                JniPtr<NativeOfflinePageEvaluationBridge> self,
+                Callback<SavePageRequest[]> callback);
 
         void removeRequestsFromQueue(
-                long nativeOfflinePageEvaluationBridge,
-                long[] requestIds,
+                JniPtr<NativeOfflinePageEvaluationBridge> self,
+                @JniType("std::vector<int64_t>") long[] requestIds,
                 Callback<Integer> callback);
     }
 }

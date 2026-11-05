@@ -12,9 +12,8 @@
 #import "components/component_updater/pref_names.h"
 #import "components/download/internal/background_service/ios/background_download_task_helper.h"
 #import "components/optimization_guide/core/delivery/optimization_target_model_observer.h"
-#import "components/optimization_guide/core/optimization_guide_enums.h"
+#import "components/optimization_guide/core/delivery/prediction_model_download_manager.h"
 #import "components/optimization_guide/core/optimization_guide_features.h"
-#import "components/optimization_guide/core/optimization_guide_prefs.h"
 #import "components/optimization_guide/core/optimization_guide_permissions_util.h"
 #import "components/sync_preferences/pref_service_syncable.h"
 #import "components/sync_preferences/testing_pref_service_syncable.h"
@@ -473,10 +472,6 @@ TEST_F(PredictionManagerModelDownloadingBrowserTest,
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.PredictionModelDownloadManager.DownloadStatus",
       optimization_guide::PredictionModelDownloadStatus::kSuccess, 1);
-
-  // No error when moving the file so there will be no record.
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.PredictionModelDownloadManager.ReplaceFileError", 0);
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.PredictionModelUpdateVersion.PainfulPageLoad",
       kSuccessfulModelVersion, 1);
@@ -511,10 +506,6 @@ TEST_F(PredictionManagerModelDownloadingBrowserTest,
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.PredictionModelDownloadManager.DownloadStatus",
       optimization_guide::PredictionModelDownloadStatus::kSuccess, 1);
-
-  // No error when moving the file so there will be no record.
-  histogram_tester.ExpectTotalCount(
-      "OptimizationGuide.PredictionModelDownloadManager.ReplaceFileError", 0);
   histogram_tester.ExpectUniqueSample(
       "OptimizationGuide.PredictionModelUpdateVersion.PainfulPageLoad",
       kSuccessfulModelVersion, 1);

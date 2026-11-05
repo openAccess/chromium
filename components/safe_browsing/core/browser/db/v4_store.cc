@@ -17,7 +17,6 @@
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/files/file.h"
-#include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -161,28 +160,6 @@ void RecordStoreWriteResult(StoreWriteResult result) {
                             STORE_WRITE_RESULT_MAX);
 }
 
-// Cleans up files that are no longer needed after a successful write. These are
-// hash files that may be left behind in the event of a crash or other failure
-// which fails to clean up.
-void CleanupExtraFiles(const base::FilePath& store_path,
-                       const V4StoreFileFormat& file_format) {
-  std::set<base::FilePath> paths_in_use{store_path};
-  for (const auto& hash_file : file_format.hash_files()) {
-    paths_in_use.insert(
-        HashPrefixMap::GetPath(store_path, hash_file.extension()));
-  }
-
-  // Iterate through all files that start with the store path name. All hash
-  // files will be the store path plus an extension.
-  base::FileEnumerator e(
-      store_path.DirName(), false, base::FileEnumerator::FILES,
-      store_path.BaseName().value() + FILE_PATH_LITERAL(".*"));
-  for (base::FilePath name = e.Next(); !name.empty(); name = e.Next()) {
-    if (paths_in_use.find(name) == paths_in_use.end()) {
-      base::DeleteFile(name);
-    }
-  }
-}
 
 void RecordMigrationTime(base::TimeDelta elapsed,
                          const base::FilePath& store_path) {
@@ -290,6 +267,14 @@ void V4Store::Reset() {
   expected_checksum_.clear();
   hash_prefix_map_->Clear();
   state_ = "";
+}
+
+std::vector<base::FilePath> V4Store::GetPathsInUse() const {
+  std::vector<base::FilePath> paths{store_path_};
+  for (const auto& path : hash_prefix_map_->GetPaths()) {
+    paths.push_back(path);
+  }
+  return paths;
 }
 
 ApplyUpdateResult V4Store::ProcessPartialUpdateAndWriteToDisk(
@@ -1099,10 +1084,6 @@ StoreWriteResult V4Store::WriteToDisk(V4StoreFileFormat* file_format) {
               size += hash_file.file_size();
             }
             return size;
-          },
-          /*cleanup_extra_files=*/
-          [this, file_format] {
-            CleanupExtraFiles(store_path_, *file_format);
           });
 
   if (file_size_or_error.has_value()) {
@@ -1160,8 +1141,6 @@ bool V4Store::VerifyChecksum() {
   base::ElapsedThreadTimer thread_timer;
   DCHECK(task_runner_->RunsTasksInCurrentSequence());
 
-  // TODO(crbug.com/362791941): Remove this once have confirmed assumption that
-  // empty checksums are rare for valid stores.
   if (has_valid_data_) {
     base::UmaHistogramBoolean(
         "SafeBrowsing.V4Store.VerifyChecksum.ValidStoreChecksumEmpty" +

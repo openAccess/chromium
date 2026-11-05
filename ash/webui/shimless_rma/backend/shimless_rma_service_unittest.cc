@@ -34,15 +34,13 @@
 #include "chromeos/ash/components/network/network_state_test_helper.h"
 #include "chromeos/ash/components/network/network_type_pattern.h"
 #include "chromeos/ash/components/network/technology_state_controller.h"
-#include "chromeos/ash/components/test/ash_test_suite.h"
 #include "chromeos/ash/services/network_config/public/cpp/cros_network_config_test_helper.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
-#include "components/session_manager/test/test_user_session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/user_manager/user_manager.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
-#include "ui/base/resource/resource_bundle.h"
 
 namespace ash {
 namespace shimless_rma {
@@ -114,7 +112,9 @@ class FakeDiagnosticsBrowserDelegate
   FakeDiagnosticsBrowserDelegate() = default;
   ~FakeDiagnosticsBrowserDelegate() override = default;
 
-  base::FilePath GetActiveUserProfileDir() override { return base::FilePath(); }
+  std::optional<base::FilePath> GetActiveUserProfileDir() override {
+    return std::nullopt;
+  }
 };
 
 }  // namespace
@@ -136,11 +136,8 @@ class ShimlessRmaServiceTest : public NoSessionAshTestBase {
     FakeRmadClientForTest::Initialize();
     rmad_client_ = RmadClient::Get();
 
-    ui::ResourceBundle::CleanupSharedInstance();
-    AshTestSuite::LoadTestResources();
-
-    user_session_manager_ =
-        std::make_unique<ash::test::TestUserSessionManager>(local_state());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(local_state());
     NoSessionAshTestBase::SetUp();
 
     diagnostics::DiagnosticsLogController::Initialize(
@@ -171,7 +168,7 @@ class ShimlessRmaServiceTest : public NoSessionAshTestBase {
 
     task_environment()->RunUntilIdle();
     NoSessionAshTestBase::TearDown();
-    user_session_manager_.reset();
+    user_session_test_environment_.reset();
 
     rmad_client_ = nullptr;
     RmadClient::Shutdown();
@@ -332,7 +329,8 @@ class ShimlessRmaServiceTest : public NoSessionAshTestBase {
   raw_ptr<VersionUpdater> version_updater_ = nullptr;
 
  private:
-  std::unique_ptr<ash::test::TestUserSessionManager> user_session_manager_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
 
   std::unique_ptr<network_config::CrosNetworkConfigTestHelper>
       cros_network_config_test_helper_;

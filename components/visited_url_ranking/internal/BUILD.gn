@@ -182,10 +182,6 @@ source_set("unit_tests") {
       ":test_jni_headers",
     ]
   }
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 if (is_android) {
@@ -229,6 +225,7 @@ if (is_android) {
     sources = [ "url_grouping/android/java/src/org/chromium/components/visited_url_ranking/url_grouping/TestServiceDelegate.java" ]
     deps = [
       "//base:base_java",
+      "//build/android:build_java",
       "//components/visited_url_ranking/public:public_java",
       "//third_party/jni_zero:jni_zero_java",
     ]

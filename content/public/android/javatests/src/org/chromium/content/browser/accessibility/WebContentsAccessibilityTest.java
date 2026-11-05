@@ -44,6 +44,7 @@ import static androidx.core.view.accessibility.AccessibilityNodeInfoCompat.EXTRA
 import static androidx.core.view.accessibility.AccessibilityNodeInfoCompat.EXTRA_DATA_TEXT_CHARACTER_LOCATION_IN_WINDOW_KEY;
 import static androidx.core.view.accessibility.AccessibilityNodeInfoCompat.EXTRA_DATA_TEXT_CHARACTER_LOCATION_KEY;
 import static androidx.core.view.accessibility.AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_CHARACTER;
+import static androidx.core.view.accessibility.AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_LINE;
 import static androidx.core.view.accessibility.AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_PARAGRAPH;
 import static androidx.core.view.accessibility.AccessibilityNodeInfoCompat.MOVEMENT_GRANULARITY_WORD;
 
@@ -53,6 +54,7 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
@@ -132,6 +134,8 @@ import android.view.accessibility.AccessibilityEvent;
 import android.widget.Button;
 
 import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat.SelectionCompat;
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat.SelectionPositionCompat;
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
@@ -160,7 +164,9 @@ import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.TestAnimations;
 import org.chromium.base.test.util.UrlUtils;
-import org.chromium.content_public.browser.ContentFeatureList;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.content.browser.webcontents.WebContentsImpl;
+import org.chromium.content_public.browser.HostZoomMap;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.WebContents;
@@ -193,11 +199,6 @@ import java.util.concurrent.ExecutionException;
 @SuppressLint("VisibleForTests")
 @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
 @TestAnimations.EnableAnimations
-@EnableFeatures({
-    ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION,
-    // This flag is needed to set and read `isTextSelectable` property.
-    ContentFeatureList.ACCESSIBILITY_SET_SELECTABLE_ON_ALL_NODES_WITH_TEXT
-})
 public class WebContentsAccessibilityTest {
     private static final String TAG = "WebContentsAXTest";
 
@@ -225,6 +226,12 @@ public class WebContentsAccessibilityTest {
             "AccessibilityNodeInfo object should have unclipped bounds in extras bundle";
     private static final String TEXT_TRAVERSAL_ERROR = "Expected to receive a traversal event";
     private static final String TEXT_SELECTION_ERROR = "Expected to receive a selection text event";
+    // A paragraph in the root frame, followed by a subframe with another paragraph.
+    private static final String PARAGRAPH_AND_SUBFRAME_HTML =
+            """
+            <p id='p1'>Paragraph 1</p>
+            <iframe id='f1' srcdoc="<p id='p2'>Paragraph 2</p>"></iframe>
+            """;
     private static final String TEXT_SELECTION_AND_TRAVERSAL_ERROR =
             "Expected to receive both a traversal and selection text event";
     private static final String BOUNDING_BOX_ERROR =
@@ -727,6 +734,25 @@ public class WebContentsAccessibilityTest {
         return true;
     }
 
+    private boolean selectTextOnUiThreadAndWaitForSelectionEvent(int viewId, @Nullable Bundle args)
+            throws ExecutionException {
+        // Reset value for selection event.
+        mTestData.setReceivedSelectionEvent(false);
+
+        boolean successful = mActivityTestRule.setSelectionOnUiThread(viewId, args);
+
+        if (!successful) {
+            return false;
+        }
+        // Poll until selection event is received.
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    return mTestData.hasReceivedSelectionEvent();
+                },
+                TEXT_SELECTION_ERROR);
+        return true;
+    }
+
     /**
      * Helper method for clearing extended selection and confirming that the associated text
      * selection event have been dispatched before continuing with test.
@@ -747,6 +773,24 @@ public class WebContentsAccessibilityTest {
                     return mTestData.hasReceivedSelectionEvent();
                 },
                 TEXT_SELECTION_ERROR);
+    }
+
+    /**
+     * Clears the extended selection from the root of the main frame's tree, and asserts that no
+     * selection is reported afterwards.
+     */
+    private void clearAndAssertNoExtendedSelection(int rootVvid) throws ExecutionException {
+        clearSelectionOnUiThreadAndWaitForSelectionEvent(rootVvid);
+        Assert.assertNull(getExtendedSelectionOnUiThread(rootVvid));
+    }
+
+    /** Runs `script` in the page, and waits for the selection changed event that it causes. */
+    private void executeJSAndWaitForSelectionEvent(String script) throws Exception {
+        mTestData.setReceivedSelectionEvent(false);
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                mActivityTestRule.getWebContents(), script);
+        CriteriaHelper.pollUiThread(
+                () -> mTestData.hasReceivedSelectionEvent(), TEXT_SELECTION_ERROR);
     }
 
     private void setAndAssertExtendedSelection(
@@ -799,39 +843,121 @@ public class WebContentsAccessibilityTest {
                         endNodeId,
                         endOffset,
                         endOffsetType));
-        mNodeInfo = createAccessibilityNodeInfo(rootVvid);
 
-        Object[] selection = getExtendedSelectionOnUiThread(rootVvid);
-        Assert.assertNotNull(PERFORM_ACTION_ERROR, selection);
+        assertExtendedSelection(
+                rootVvid,
+                expectedStartNodeId,
+                expectedStartOffset,
+                expectedStartOffsetType,
+                expectedEndNodeId,
+                expectedEndOffset,
+                expectedEndOffsetType);
+    }
 
-        AccessibilityNodeInfoCompat startNode =
-                (AccessibilityNodeInfoCompat)
-                        selection[WebContentsAccessibilityImpl.EXT_SEL_START_NODE];
-        int actualStartOffset = (int) selection[WebContentsAccessibilityImpl.EXT_SEL_START_OFFSET];
-        int actualStartOffsetType =
-                (int) selection[WebContentsAccessibilityImpl.EXT_SEL_START_OFFSET_TYPE];
-        AccessibilityNodeInfoCompat endNode =
-                (AccessibilityNodeInfoCompat)
-                        selection[WebContentsAccessibilityImpl.EXT_SEL_END_NODE];
-        int actualEndOffset = (int) selection[WebContentsAccessibilityImpl.EXT_SEL_END_OFFSET];
-        int actualEndOffsetType =
-                (int) selection[WebContentsAccessibilityImpl.EXT_SEL_END_OFFSET_TYPE];
+    private void assertExtendedSelection(
+            int rootVvid,
+            int expectedStartNodeId,
+            int expectedStartOffset,
+            int expectedStartOffsetType,
+            int expectedEndNodeId,
+            int expectedEndOffset,
+            int expectedEndOffsetType)
+            throws ExecutionException {
+        // Setting a selection in a frame that is not focused also moves the focus to that frame.
+        // The selection changed event of that frame can be received before the focused frame of
+        // the root is updated, so the exposed selection is polled rather than read once.
+        //
+        // Both mWcax.getExtendedSelection and createAccessibilityNodeInfo are checked:
+        // 1. getExtendedSelection directly verifies the native extended selection data
+        //    (endpoint nodes, offsets, and offset types), which is necessary on Android
+        //    versions below API 36.1 where AccessibilityNodeInfoCompat.getSelection()
+        //    returns null and extras only expose the offset types.
+        // 2. createAccessibilityNodeInfo verifies that the AccessibilityNodeInfo attributes
+        //    exposed to accessibility services are populated and that the root node's
+        //    cache entry was properly invalidated when the selection changed.
+        CriteriaHelper.pollUiThreadLongTimeout(
+                null,
+                () -> {
+                    Object[] selection = mActivityTestRule.mWcax.getExtendedSelection(rootVvid);
+                    Criteria.checkThat(PERFORM_ACTION_ERROR, selection, Matchers.notNullValue());
+                    checkExtendedSelectionEndpoint(
+                            "Start",
+                            (AccessibilityNodeInfoCompat)
+                                    selection[WebContentsAccessibilityImpl.EXT_SEL_START_NODE],
+                            (int) selection[WebContentsAccessibilityImpl.EXT_SEL_START_OFFSET],
+                            (int) selection[WebContentsAccessibilityImpl.EXT_SEL_START_OFFSET_TYPE],
+                            expectedStartNodeId,
+                            expectedStartOffset,
+                            expectedStartOffsetType);
+                    checkExtendedSelectionEndpoint(
+                            "End",
+                            (AccessibilityNodeInfoCompat)
+                                    selection[WebContentsAccessibilityImpl.EXT_SEL_END_NODE],
+                            (int) selection[WebContentsAccessibilityImpl.EXT_SEL_END_OFFSET],
+                            (int) selection[WebContentsAccessibilityImpl.EXT_SEL_END_OFFSET_TYPE],
+                            expectedEndNodeId,
+                            expectedEndOffset,
+                            expectedEndOffsetType);
 
-        Assert.assertNotNull(PERFORM_ACTION_ERROR, startNode);
-        Assert.assertEquals(
-                PERFORM_ACTION_ERROR, String.valueOf(expectedStartNodeId), startNode.getUniqueId());
-        Assert.assertEquals(PERFORM_ACTION_ERROR, expectedStartOffset, actualStartOffset);
-        Assert.assertEquals(PERFORM_ACTION_ERROR, expectedStartOffsetType, actualStartOffsetType);
-        if (actualStartOffsetType == OFFSET_TYPE_TEXT) {
-            Assert.assertTrue(PERFORM_ACTION_ERROR, startNode.isTextSelectable());
-        }
-        Assert.assertNotNull(PERFORM_ACTION_ERROR, endNode);
-        Assert.assertEquals(
-                PERFORM_ACTION_ERROR, String.valueOf(expectedEndNodeId), endNode.getUniqueId());
-        Assert.assertEquals(PERFORM_ACTION_ERROR, expectedEndOffset, actualEndOffset);
-        Assert.assertEquals(PERFORM_ACTION_ERROR, expectedEndOffsetType, actualEndOffsetType);
-        if (actualEndOffsetType == OFFSET_TYPE_TEXT) {
-            Assert.assertTrue(PERFORM_ACTION_ERROR, endNode.isTextSelectable());
+                    // Verify that the values are also correctly read from the root node.
+                    AccessibilityNodeInfoCompat rootNode = createAccessibilityNodeInfo(rootVvid);
+                    Criteria.checkThat("Root node", rootNode, Matchers.notNullValue());
+                    Criteria.checkThat(
+                            "Start offset type in root extras",
+                            rootNode.getExtras()
+                                    .getInt(
+                                            AccessibilityNodeInfoBuilder
+                                                    .EXTRA_SELECTION_START_OFFSET_TYPE),
+                            Matchers.is(expectedStartOffsetType));
+                    Criteria.checkThat(
+                            "End offset type in root extras",
+                            rootNode.getExtras()
+                                    .getInt(
+                                            AccessibilityNodeInfoBuilder
+                                                    .EXTRA_SELECTION_END_OFFSET_TYPE),
+                            Matchers.is(expectedEndOffsetType));
+                    SelectionCompat selectionCompat = rootNode.getSelection();
+                    if (selectionCompat != null) {
+                        Criteria.checkThat(
+                                "Root selection start offset",
+                                selectionCompat.getStart().getOffset(),
+                                Matchers.is(expectedStartOffset));
+                        Criteria.checkThat(
+                                "Root selection start offset type",
+                                selectionCompat.getStart().getOffsetType(),
+                                Matchers.is(expectedStartOffsetType));
+                        Criteria.checkThat(
+                                "Root selection end offset",
+                                selectionCompat.getEnd().getOffset(),
+                                Matchers.is(expectedEndOffset));
+                        Criteria.checkThat(
+                                "Root selection end offset type",
+                                selectionCompat.getEnd().getOffsetType(),
+                                Matchers.is(expectedEndOffsetType));
+                    }
+                });
+    }
+
+    private static void checkExtendedSelectionEndpoint(
+            String endpoint,
+            AccessibilityNodeInfoCompat node,
+            int offset,
+            int offsetType,
+            int expectedNodeId,
+            int expectedOffset,
+            int expectedOffsetType) {
+        Criteria.checkThat(endpoint + " node", node, Matchers.notNullValue());
+        Criteria.checkThat(
+                endpoint + " node id",
+                node.getUniqueId(),
+                Matchers.is(String.valueOf(expectedNodeId)));
+        Criteria.checkThat(endpoint + " offset", offset, Matchers.is(expectedOffset));
+        Criteria.checkThat(endpoint + " offset type", offsetType, Matchers.is(expectedOffsetType));
+        if (offsetType == OFFSET_TYPE_TEXT) {
+            Criteria.checkThat(
+                    endpoint + " node is text selectable",
+                    node.isTextSelectable(),
+                    Matchers.is(true));
         }
     }
 
@@ -1299,6 +1425,52 @@ public class WebContentsAccessibilityTest {
                 "Expected view to scroll down to make button visible.");
     }
 
+    @Test
+    @SmallTest
+    public void testAccessibilityFocusPartiallyOffscreenBottomScrollsIntoView() throws Throwable {
+        // Build a page where a target element's top edge is visible near the bottom of the
+        // viewport (`90vh`) and its height (`20vh`) extends below the viewport (`110vh`), with
+        // trailing content below so the page has room to scroll further down and center the target.
+        setupTestWithHTML(
+                """
+                <body style="margin: 0;">
+                  <div style="height: 90vh;"></div>
+                  <div id="target" style="height: 20vh; background: red;">Partially offscreen</div>
+                  <div style="height: 200vh;"></div>
+                </body>
+                """);
+
+        int targetVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "target");
+        mNodeInfo = createAccessibilityNodeInfo(targetVvid);
+        Assert.assertNotNull(NODE_TIMEOUT_ERROR, mNodeInfo);
+        Rect initialBounds = new Rect();
+        mNodeInfo.getBoundsInScreen(initialBounds);
+
+        // Initial scroll Y should be 0.
+        Assert.assertEquals(0f, mActivityTestRule.mWcax.getScrollYForTesting(), 0.01f);
+
+        // Perform accessibility focus action.
+        performActionOnUiThread(targetVvid, ACTION_ACCESSIBILITY_FOCUS, null);
+
+        // Poll until scroll Y centers the target in the viewport (`scrollY ~= 50vh`), rather than
+        // stopping as soon as the bottom edge enters the viewport (`scrollY ~= 10vh`).
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    float scrollY = mActivityTestRule.mWcax.getScrollYForTesting();
+                    Criteria.checkThat(scrollY, Matchers.greaterThan(0f));
+                    Rect currentBounds = new Rect();
+                    AccessibilityNodeInfoCompat info = createAccessibilityNodeInfo(targetVvid);
+                    Criteria.checkThat(info, Matchers.notNullValue());
+                    info.getBoundsInScreen(currentBounds);
+                    // `#target` has height `20vh`. When centered in the viewport, `#target`'s top
+                    // moves up by `50vh` (`2.5 * height`), whereas `kClosestEdge` only moves
+                    // `#target`'s top up by `10vh` (`0.5 * height`).
+                    Criteria.checkThat(
+                            initialBounds.top - currentBounds.top,
+                            Matchers.greaterThan(initialBounds.height() * 2));
+                });
+    }
+
     /**
      * Test that UMA histograms are recorded for the cache statistics, including the max number of
      * nodes stored in the cache, and percentage of requests retrieved from the cache.
@@ -1656,6 +1828,120 @@ public class WebContentsAccessibilityTest {
                 });
 
         Assert.assertFalse(mActivityTestRule.mWcax.hasAnyPendingTimersForTesting());
+    }
+
+    /**
+     * Tests that requesting an AccessibilityNodeProvider initializes native accessibility only when
+     * an accessibility service or password manager is enabled (e.g. not when only UiAutomation
+     * queries the view hierarchy).
+     */
+    @Test
+    @SmallTest
+    public void testGetAccessibilityNodeProvider_initializesNativeOnlyWithClients() {
+        mActivityTestRule.launchContentShellWithUrl(
+                UrlUtils.encodeHtmlDataUri("<p>This is a test</p>"));
+        mActivityTestRule.waitForActiveShellToBeDoneLoading();
+        mActivityTestRule.mockWebContentsAccessibilityImpl();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    WebContentsAccessibilityImpl wcax =
+                            mActivityTestRule.getWebContentsAccessibility();
+                    mActivityTestRule.mWcax = wcax;
+                    wcax.setIsAutoDisableAccessibilityCandidateForTesting(true);
+
+                    AccessibilityStateTestHelper.setIsOnlyPasswordManagersEnabledForTesting(false);
+                    AccessibilityStateTestHelper.setIsAnyAccessibilityServiceEnabledForTesting(
+                            false);
+                    Assert.assertNull(wcax.getAccessibilityNodeProviderCompat());
+                    Assert.assertFalse(wcax.isNativeInitialized());
+
+                    // Returns null since the root manager is not connected yet.
+                    AccessibilityStateTestHelper.setIsOnlyPasswordManagersEnabledForTesting(true);
+                    Assert.assertNull(wcax.getAccessibilityNodeProviderCompat());
+                    Assert.assertTrue(wcax.isNativeInitialized());
+                });
+    }
+
+    /**
+     * Tests that once accessibility is auto-disabled and no accessibility services or password
+     * managers are enabled, neither refreshing native state nor requesting an
+     * AccessibilityNodeProvider re-enables renderer accessibility or sets an AXMode.
+     */
+    @Test
+    @SmallTest
+    public void testAutoDisableAccessibility_noClientsDoesNotReEnableOrSetAXMode()
+            throws Throwable {
+        setupTestWithHTML("<p>This is a test</p>");
+        waitForNodeMatching(sTextMatcher, "This is a test");
+
+        mActivityTestRule.mWcax.setIsAutoDisableAccessibilityCandidateForTesting(true);
+
+        var histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords(AUTO_DISABLE_ACCESSIBILITY_REENABLE_METHOD_CALLED_INITIAL)
+                        .build();
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    WebContentsAccessibilityImpl wcax = mActivityTestRule.mWcax;
+                    wcax.forceAutoDisableAccessibilityForTesting();
+                    Assert.assertFalse(wcax.hasScopedAXModeForTesting());
+
+                    // The state change refreshes native state, which must not restore an AXMode.
+                    AccessibilityStateTestHelper.setIsAnyAccessibilityServiceEnabledForTesting(
+                            false);
+                    Assert.assertFalse(wcax.hasScopedAXModeForTesting());
+
+                    // Nor may requesting the node provider.
+                    Assert.assertNull(wcax.getAccessibilityNodeProviderCompat());
+                    Assert.assertFalse(wcax.hasScopedAXModeForTesting());
+                });
+
+        histogramWatcher.assertExpected();
+
+        // Non-candidates (e.g. WebView) re-enable and restore basic AXMode even without services.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mActivityTestRule.mWcax.setIsAutoDisableAccessibilityCandidateForTesting(false);
+                    mActivityTestRule.mWcax.getAccessibilityNodeProviderCompat();
+                    Assert.assertTrue(mActivityTestRule.mWcax.hasScopedAXModeForTesting());
+                });
+    }
+
+    /**
+     * Tests that re-enabling renderer accessibility after an auto-disable restores the AXMode that
+     * was cleared when disabling.
+     */
+    @Test
+    @SmallTest
+    public void testAutoDisableAccessibility_reEnableRestoresAXMode() throws Throwable {
+        setupTestWithHTML("<p>This is a test</p>");
+        waitForNodeMatching(sTextMatcher, "This is a test");
+
+        mActivityTestRule.mWcax.setIsAutoDisableAccessibilityCandidateForTesting(true);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    WebContentsAccessibilityImpl wcax = mActivityTestRule.mWcax;
+                    wcax.forceAutoDisableAccessibilityForTesting();
+                    Assert.assertFalse(wcax.hasScopedAXModeForTesting());
+
+                    // Refreshing native state while auto-disabled (even with a service enabled)
+                    // must not restore the AXMode before renderer accessibility is re-enabled.
+                    // Note: AccessibilityStateTestHelper notifies AccessibilityState listeners
+                    // (and thus calls refreshNativeState()) synchronously on the calling thread.
+                    AccessibilityStateTestHelper.setIsAnyAccessibilityServiceEnabledForTesting(
+                            false);
+                    AccessibilityStateTestHelper.setIsAnyAccessibilityServiceEnabledForTesting(
+                            true);
+                    Assert.assertFalse(wcax.hasScopedAXModeForTesting());
+
+                    // Requesting the node provider re-enables renderer accessibility and restores
+                    // the AXMode.
+                    wcax.getAccessibilityNodeProviderCompat();
+                    Assert.assertTrue(wcax.hasScopedAXModeForTesting());
+                });
     }
 
     // ------------------ Tests of AccessibilityNodeInfo caching mechanism ------------------ //
@@ -3769,6 +4055,7 @@ public class WebContentsAccessibilityTest {
         // Set hover state to true so handleHover can process events.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    AccessibilityStateTestHelper.setIsTouchExplorationEnabledForTesting(true);
                     mActivityTestRule.mWcax.onHoverEventNoRenderer(
                             android.view.MotionEvent.obtain(
                                     0, 0, android.view.MotionEvent.ACTION_HOVER_ENTER, 0, 0, 0));
@@ -4255,6 +4542,50 @@ public class WebContentsAccessibilityTest {
         }
     }
 
+    /**
+     * Test that attempting to set extended selection on an ignored node does not crash and safely
+     * returns false.
+     */
+    @Test
+    @SmallTest
+    public void testPerformAction_setExtendedSelection_ignoredNodes() throws Throwable {
+        setupTestWithHTML("<p id=\"target\">Selectable text</p>");
+
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int targetVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "target");
+
+        // Dynamically hide the element so it becomes ignored in the accessibility tree while
+        // retaining its unique virtual view ID.
+        mTestData.setTypeWindowContentChangedCount(0);
+        executeJS("document.getElementById('target').setAttribute('aria-hidden', 'true');");
+
+        // Wait for the window content changed event to ensure the browser has received
+        // and processed the accessibility update marking the node as ignored.
+        CriteriaHelper.pollUiThread(
+                () -> mTestData.getTypeWindowContentChangedCount() > 0,
+                "TYPE_WINDOW_CONTENT_CHANGED event not received before timeout.");
+
+        // Verify that setting extended selection on an ignored node safely returns false.
+        Assert.assertFalse(
+                mActivityTestRule.setSelectionOnUiThread(
+                        rootVvid,
+                        targetVvid,
+                        0,
+                        OFFSET_TYPE_TEXT,
+                        targetVvid,
+                        5,
+                        OFFSET_TYPE_TEXT));
+        Assert.assertFalse(
+                mActivityTestRule.setSelectionOnUiThread(
+                        rootVvid, targetVvid, 0, OFFSET_TYPE_TEXT, rootVvid, 1, OFFSET_TYPE_CHILD));
+        Assert.assertFalse(
+                mActivityTestRule.setSelectionOnUiThread(
+                        rootVvid, rootVvid, 0, OFFSET_TYPE_CHILD, targetVvid, 0, OFFSET_TYPE_TEXT));
+        Assert.assertFalse(
+                mActivityTestRule.setSelectionOnUiThread(
+                        rootVvid, rootVvid, 0, OFFSET_TYPE_CHILD, rootVvid, 1, OFFSET_TYPE_CHILD));
+    }
+
     /** Test extended selection on editable node. */
     @Test
     @SmallTest
@@ -4383,6 +4714,44 @@ public class WebContentsAccessibilityTest {
         // Expected result: root#getSelection should be null
         Object[] selection = getExtendedSelectionOnUiThread(rootVvid);
         Assert.assertNull(selection);
+
+        // The previous calls invoke native C++ JNI methods directly and work on all Android
+        // versions. The following test cases exercise performAction(ACTION_SET_EXTENDED_SELECTION)
+        // and the underlying AccessibilityNodeInfo.Selection parcelable, which are only supported
+        // starting from Android 16.1 (BAKLAVA_1).
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA
+                || Build.VERSION.SDK_INT_FULL < Build.VERSION_CODES_FULL.BAKLAVA_1) {
+            return;
+        }
+
+        // Select and clear with null arguments.
+        setAndAssertExtendedSelection(
+                rootVvid, paragraph1Vvid, 1, OFFSET_TYPE_TEXT, paragraph1Vvid, 5, OFFSET_TYPE_TEXT);
+        Assert.assertTrue(selectTextOnUiThreadAndWaitForSelectionEvent(rootVvid, null));
+        Assert.assertNull(getExtendedSelectionOnUiThread(rootVvid));
+
+        // Select and clear with missing selection argument (empty bundle).
+        setAndAssertExtendedSelection(
+                rootVvid, paragraph1Vvid, 1, OFFSET_TYPE_TEXT, paragraph1Vvid, 5, OFFSET_TYPE_TEXT);
+        Assert.assertTrue(selectTextOnUiThreadAndWaitForSelectionEvent(rootVvid, new Bundle()));
+        Assert.assertNull(getExtendedSelectionOnUiThread(rootVvid));
+
+        // Select without explicit offset types does not clear the selection and defaults to
+        // OFFSET_TYPE_TEXT.
+        Bundle defaultOffsetTypeArgs = new Bundle();
+        SelectionCompat selectionCompat =
+                new SelectionCompat(
+                        new SelectionPositionCompat(
+                                mActivityTestRule.getContainerView(), paragraph1Vvid, 1),
+                        new SelectionPositionCompat(
+                                mActivityTestRule.getContainerView(), paragraph1Vvid, 5));
+        defaultOffsetTypeArgs.putParcelable(
+                AccessibilityNodeInfoCompat.ACTION_ARGUMENT_SELECTION_PARCELABLE,
+                selectionCompat.unwrap());
+        Assert.assertTrue(
+                selectTextOnUiThreadAndWaitForSelectionEvent(rootVvid, defaultOffsetTypeArgs));
+        assertExtendedSelection(
+                rootVvid, paragraph1Vvid, 1, OFFSET_TYPE_TEXT, paragraph1Vvid, 5, OFFSET_TYPE_TEXT);
     }
 
     /** Test extended selection cross frames. */
@@ -4514,6 +4883,57 @@ public class WebContentsAccessibilityTest {
 
         setAndAssertExtendedSelection(
                 rootVvid, paragraphVvid, 4, OFFSET_TYPE_TEXT, paragraphVvid, 14, OFFSET_TYPE_TEXT);
+    }
+
+    /** Test selection on a multiline content editable imitating Ctrl+A. */
+    @Test
+    @SmallTest
+    public void testPerformAction_selectAll_multilineContentEditable() throws Throwable {
+        setupTestWithHTML(
+                """
+                <div id="contenteditable" contenteditable>
+                  <div>test</div>
+                  <div><br></div>
+                  <div>tester</div>
+                  <div>testing</div>
+                </div>
+                """);
+
+        // Find nodes.
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int contenteditableVvid =
+                waitForNodeMatching(sViewIdResourceNameMatcher, "contenteditable");
+
+        // Focus the content editable node.
+        focusNodeAndWaitForSelection(contenteditableVvid);
+
+        // Select all using WebContents.selectAll() to imitate Ctrl+A.
+        mTestData.setReceivedSelectionEvent(false);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> ((WebContentsImpl) mActivityTestRule.getWebContents()).selectAll());
+        CriteriaHelper.pollUiThread(
+                () -> mTestData.hasReceivedSelectionEvent(), TEXT_SELECTION_ERROR);
+
+        assertExtendedSelection(
+                rootVvid,
+                contenteditableVvid,
+                0,
+                OFFSET_TYPE_TEXT,
+                contenteditableVvid,
+                18,
+                OFFSET_TYPE_TEXT);
+
+        // Verify that the editable node itself reports the full selection.
+        AccessibilityNodeInfoCompat contentEditableNode =
+                createAccessibilityNodeInfo(contenteditableVvid);
+        Assert.assertEquals(
+                "The editable node must report the full text selection start.",
+                0,
+                contentEditableNode.getTextSelectionStart());
+        Assert.assertEquals(
+                "The editable node must report the full text selection end.",
+                18,
+                contentEditableNode.getTextSelectionEnd());
     }
 
     /** Test extended selection at the beginning and end of an anchor (e.g. image). */
@@ -4718,6 +5138,336 @@ public class WebContentsAccessibilityTest {
                 rootVvid,
                 containerIndex + 1,
                 OFFSET_TYPE_CHILD);
+    }
+
+    /**
+     * Test extended selection when an ignored tree position adjusts backward into a childless
+     * iframe root whose unignored parent within its own AXTree is null.
+     *
+     * <p>The adjusted position is in the tree of the subframe, and is moved back to the frame that
+     * owns the selection, where it is reported as a child offset after the subframe.
+     */
+    @Test
+    @SmallTest
+    public void testGetExtendedSelection_adjustedIntoChildlessSubframeRoot() throws Throwable {
+        setupTestWithHTML(
+                """
+                <iframe id='f' srcdoc='<script>document.documentElement.remove()</script>'></iframe>
+                <p id='p' aria-hidden='true'>Hello</p>
+                """);
+
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+
+        executeJSAndWaitForSelectionEvent(
+                "window.getSelection().collapse(document.getElementById('p'), 0);");
+
+        // The collapsed selection is reported as a child offset after the subframe, on the
+        // root of the frame that owns it.
+        assertExtendedSelection(
+                rootVvid, rootVvid, 1, OFFSET_TYPE_CHILD, rootVvid, 1, OFFSET_TYPE_CHILD);
+    }
+
+    /**
+     * Test setting and clearing the extended selection when both endpoints are inside the same
+     * subframe.
+     *
+     * <p>The actions are performed on the root of the main frame's tree, while the selection
+     * belongs to the subframe. The selection must still be applied, reported back, and cleared.
+     */
+    @Test
+    @SmallTest
+    public void testPerformAction_setAndClearExtendedSelection_withinSubframe() throws Throwable {
+        setupTestWithHTML(PARAGRAPH_AND_SUBFRAME_HTML);
+
+        // Find nodes.
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int p2Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p2");
+
+        // Selection fully contained in the subframe.
+        setAndAssertExtendedSelection(
+                rootVvid, p2Vvid, 1, OFFSET_TYPE_TEXT, p2Vvid, 5, OFFSET_TYPE_TEXT);
+
+        // Clear the selection from the root of the main frame's tree.
+        clearAndAssertNoExtendedSelection(rootVvid);
+    }
+
+    /**
+     * Test that a selection that moves from a subframe to the root frame is reported on the root
+     * frame afterwards, and that the previous selection of the subframe is not reported once the
+     * selection is cleared.
+     */
+    @Test
+    @SmallTest
+    public void testPerformAction_setExtendedSelection_movingAcrossFrames() throws Throwable {
+        setupTestWithHTML(PARAGRAPH_AND_SUBFRAME_HTML);
+
+        // Find nodes.
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int p1Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p1");
+        int p2Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p2");
+
+        // Selection in the subframe.
+        setAndAssertExtendedSelection(
+                rootVvid, p2Vvid, 1, OFFSET_TYPE_TEXT, p2Vvid, 5, OFFSET_TYPE_TEXT);
+
+        // Selection moved to the root frame.
+        setAndAssertExtendedSelection(
+                rootVvid, p1Vvid, 1, OFFSET_TYPE_TEXT, p1Vvid, 5, OFFSET_TYPE_TEXT);
+
+        // The subframe keeps its previous selection, which must not be reported once the
+        // selection of the root frame is cleared.
+        clearAndAssertNoExtendedSelection(rootVvid);
+    }
+
+    /**
+     * Test clearing the extended selection when the first content of the focused frame is a
+     * subframe.
+     *
+     * <p>The first leaf of the focused frame is in the tree of the subframe. The selection must
+     * still be cleared from the focused frame, both when the root frame and when the subframe owns
+     * the selection.
+     */
+    @Test
+    @SmallTest
+    public void testPerformAction_clearExtendedSelection_subframeFirst() throws Throwable {
+        setupTestWithHTML(
+                """
+                  <iframe id='f1' srcdoc="<p id='p2'>Paragraph 2</p>"></iframe>
+                  <p id='p1'>Paragraph 1</p>
+                """);
+
+        // Find nodes. The content of the subframe is awaited, since the first leaf of the root
+        // frame is inside it.
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int p1Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p1");
+        int p2Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p2");
+
+        // Selection in the root frame, cleared from the root frame.
+        setAndAssertExtendedSelection(
+                rootVvid, p1Vvid, 1, OFFSET_TYPE_TEXT, p1Vvid, 5, OFFSET_TYPE_TEXT);
+        clearAndAssertNoExtendedSelection(rootVvid);
+
+        // Selection in the subframe, cleared from the subframe.
+        setAndAssertExtendedSelection(
+                rootVvid, p2Vvid, 1, OFFSET_TYPE_TEXT, p2Vvid, 5, OFFSET_TYPE_TEXT);
+        clearAndAssertNoExtendedSelection(rootVvid);
+    }
+
+    /** Test clearing the extended selection when no selection exists on the page. */
+    @Test
+    @SmallTest
+    public void testPerformAction_clearExtendedSelection_noSelection() throws Throwable {
+        setupTestWithHTML(PARAGRAPH_AND_SUBFRAME_HTML);
+
+        // Find nodes.
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        Assert.assertNull(getExtendedSelectionOnUiThread(rootVvid));
+
+        // Clearing an empty selection succeeds without error.
+        Assert.assertTrue(mActivityTestRule.clearSelectionOnUiThread(rootVvid));
+        Assert.assertNull(getExtendedSelectionOnUiThread(rootVvid));
+    }
+
+    /**
+     * Test that the selection of a subframe is not exposed while another frame is focused, and that
+     * it is exposed after the focus moves to the subframe, including in the node info of the root
+     * of the main frame's tree that was cached before the focus moved.
+     */
+    @Test
+    @SmallTest
+    public void testExtendedSelection_focusMovingToSubframeExposesItsSelection() throws Throwable {
+        setupTestWithHTML("<button id='b'>Button</button>" + PARAGRAPH_AND_SUBFRAME_HTML);
+
+        // Find nodes.
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int buttonVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "b");
+        int p2Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p2");
+
+        // Focus an element of the root frame other than its root. Otherwise the root would be the
+        // previously focused node when the focus moves to the subframe, and its node info would
+        // be invalidated as such, regardless of the frame change.
+        Assert.assertTrue(
+                performActionOnUiThread(
+                        buttonVvid,
+                        ACTION_FOCUS,
+                        null,
+                        () -> createAccessibilityNodeInfo(buttonVvid).isFocused()));
+
+        // Select in the subframe while the root frame is focused, and don't wait for the
+        // selection to be exposed.
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                mActivityTestRule.getWebContents(),
+                """
+                const p2 = document.getElementById('f1').contentDocument.getElementById('p2');
+                p2.ownerDocument.getSelection().setBaseAndExtent(
+                    p2.firstChild, 1, p2.firstChild, 5);
+                """);
+        Assert.assertNull(getExtendedSelectionOnUiThread(rootVvid));
+
+        // Pre-cache the root node info while focus is on the button in the main frame.
+        createAccessibilityNodeInfo(rootVvid);
+
+        // Move the focus to the subframe, and wait until its selection is exposed.
+        // TODO(crbug.com/481134054): Moving the focus to another frame should fire a selection
+        // changed event, since it changes the exposed selection.
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                mActivityTestRule.getWebContents(),
+                "document.getElementById('f1').contentWindow.focus();");
+        assertExtendedSelection(rootVvid, p2Vvid, 1, OFFSET_TYPE_TEXT, p2Vvid, 5, OFFSET_TYPE_TEXT);
+    }
+
+    /**
+     * Test that setting the extended selection is rejected when the action is performed on a node
+     * other than the root of the main frame's tree.
+     */
+    @Test
+    @SmallTest
+    public void testPerformAction_setExtendedSelection_rejectedOnNonMainFrameRoot()
+            throws Throwable {
+        setupTestWithHTML(PARAGRAPH_AND_SUBFRAME_HTML);
+
+        // Find nodes.
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int p1Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p1");
+        int p2Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p2");
+        int frameVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "f1");
+
+        // The selection of the page is only exposed on the root of the main frame's tree, so the
+        // action is only accepted on that node, whether the other node belongs to the root
+        // frame or to a subframe.
+        Assert.assertFalse(
+                mActivityTestRule.setSelectionOnUiThread(
+                        p1Vvid, p1Vvid, 1, OFFSET_TYPE_TEXT, p1Vvid, 5, OFFSET_TYPE_TEXT));
+        Assert.assertFalse(
+                mActivityTestRule.setSelectionOnUiThread(
+                        p2Vvid, p2Vvid, 1, OFFSET_TYPE_TEXT, p2Vvid, 5, OFFSET_TYPE_TEXT));
+        Assert.assertFalse(
+                mActivityTestRule.setSelectionOnUiThread(
+                        frameVvid, p2Vvid, 1, OFFSET_TYPE_TEXT, p2Vvid, 5, OFFSET_TYPE_TEXT));
+
+        // No selection was applied.
+        Assert.assertNull(getExtendedSelectionOnUiThread(rootVvid));
+    }
+
+    /**
+     * Test that setting the extended selection across frame boundaries from a subframe to the main
+     * frame is rejected.
+     */
+    @Test
+    @SmallTest
+    public void testPerformAction_setExtendedSelection_crossFrame_subframeToMain()
+            throws Throwable {
+        setupTestWithHTML(PARAGRAPH_AND_SUBFRAME_HTML);
+
+        // Find nodes.
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int p1Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p1");
+        int p2Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p2");
+
+        // Setting selection from subframe node p2 to main frame node p1 must be rejected.
+        Assert.assertFalse(
+                mActivityTestRule.setSelectionOnUiThread(
+                        rootVvid, p2Vvid, 1, OFFSET_TYPE_TEXT, p1Vvid, 5, OFFSET_TYPE_TEXT));
+        Assert.assertNull(getExtendedSelectionOnUiThread(rootVvid));
+    }
+
+    /**
+     * Test that clearing the extended selection is rejected when the action is performed on a node
+     * other than the root of the main frame's tree.
+     */
+    @Test
+    @SmallTest
+    public void testPerformAction_clearExtendedSelection_rejectedOnNonMainFrameRoot()
+            throws Throwable {
+        setupTestWithHTML(PARAGRAPH_AND_SUBFRAME_HTML);
+
+        // Find nodes.
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int p1Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p1");
+        int p2Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p2");
+        int frameVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "f1");
+
+        setAndAssertExtendedSelection(
+                rootVvid, p1Vvid, 1, OFFSET_TYPE_TEXT, p1Vvid, 5, OFFSET_TYPE_TEXT);
+
+        // The action is rejected and the selection is left untouched.
+        Assert.assertFalse(mActivityTestRule.clearSelectionOnUiThread(p1Vvid));
+        Assert.assertFalse(mActivityTestRule.clearSelectionOnUiThread(p2Vvid));
+        Assert.assertFalse(mActivityTestRule.clearSelectionOnUiThread(frameVvid));
+        assertExtendedSelection(rootVvid, p1Vvid, 1, OFFSET_TYPE_TEXT, p1Vvid, 5, OFFSET_TYPE_TEXT);
+    }
+
+    /**
+     * Test that a selection endpoint that normalizes into a subframe is reported on the frame that
+     * owns the selection.
+     *
+     * <p>A selection never spans frames, but normalizing an endpoint to a leaf position can move it
+     * into a subframe. Such an endpoint has to be moved back to the frame that owns the selection,
+     * otherwise the reported selection is rejected when it is set back, since the endpoints of a
+     * selection cannot be in two frames.
+     */
+    @Test
+    @SmallTest
+    public void testExtendedSelection_endpointNormalizingIntoSubframe() throws Throwable {
+        setupTestWithHTML(PARAGRAPH_AND_SUBFRAME_HTML);
+
+        // Find nodes. The content of the subframe is awaited, since the anchor of the selection
+        // normalizes into it.
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int p1Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p1");
+        waitForNodeMatching(sViewIdResourceNameMatcher, "p2");
+
+        // Select backwards, from just after the subframe to the start of the paragraph of the
+        // root frame. The anchor can be normalized into the text of the subframe, but is reported
+        // back unchanged on the root of the frame that owns the selection.
+        setAndAssertExtendedSelection(
+                rootVvid, rootVvid, 2, OFFSET_TYPE_CHILD, p1Vvid, 0, OFFSET_TYPE_TEXT);
+    }
+
+    /**
+     * Test that the node info of the root of the main frame's tree exposes a selection that is
+     * within a single text field of a subframe.
+     *
+     * <p>The selection changed event for such a selection is sent to the text field rather than to
+     * the root, while the selection is exposed on the root of the main frame's tree, so the node
+     * info of that root that was cached before must still be invalidated. The text field is in a
+     * subframe, since the content changed event that comes with any selection change is sent on the
+     * root of the frame that owns the selection, which would invalidate the node info of the root
+     * on its own if that frame were the main frame.
+     */
+    @Test
+    @SmallTest
+    public void testExtendedSelection_withinTextFieldInSubframeRefreshesRootNodeInfo()
+            throws Throwable {
+        setupTestWithHTML(
+                """
+                <iframe id='f1' srcdoc="<button id='b'>Button</button>
+                    <input id='input1' type='text' value='EditableText'>"></iframe>
+                """);
+
+        // Find nodes.
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int buttonVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "b");
+        int inputVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "input1");
+
+        // Focus an element of the subframe other than its root. This focuses the subframe, so
+        // that setting the selection does not move the focus to another frame, which would
+        // invalidate the node info of the root on its own. Setting the selection may still move
+        // the focus to the text field, which stays within the subframe and has no effect on the
+        // node info of the root of the main frame's tree.
+        Assert.assertTrue(
+                performActionOnUiThread(
+                        buttonVvid,
+                        ACTION_FOCUS,
+                        null,
+                        () -> createAccessibilityNodeInfo(buttonVvid).isFocused()));
+
+        // Pre-cache the root node info while focus is on the subframe button.
+        createAccessibilityNodeInfo(rootVvid);
+
+        // A selection within the text field, whose event is sent to the text field.
+        setAndAssertExtendedSelection(
+                rootVvid, inputVvid, 1, OFFSET_TYPE_TEXT, inputVvid, 5, OFFSET_TYPE_TEXT);
     }
 
     /** Test that the performAction for ACTION_CUT works properly with accessibility. */
@@ -6119,12 +6869,11 @@ public class WebContentsAccessibilityTest {
                         new SpanRange(new BackgroundColorSpan(0xFFFFFF00), 47, 52),
                         new SpanRange(new StyleSpan(Typeface.ITALIC), 41, 47)));
 
-        // TODO: crbug.com/426007976 - Add back missing span once zero font size nodes are fixed.
         testCases.put(
                 "Example Text - Nested invisible text",
                 List.of(
                         new SpanRange(new AbsoluteSizeSpan(16), 0, 22),
-                        // new SpanRange(new AbsoluteSizeSpan(0), 22, 31),
+                        new SpanRange(new AbsoluteSizeSpan(0), 22, 31),
                         new SpanRange(new AbsoluteSizeSpan(16), 31, 36)));
 
         testCases.put("Italic text field", List.of(new SpanRange(new StyleSpan(Typeface.ITALIC))));
@@ -6525,6 +7274,85 @@ public class WebContentsAccessibilityTest {
     }
 
     /**
+     * Test that replacing the content of a child frame does not clear accessibility focus held by a
+     * node outside of that frame. Android has no notion of child frames, so accessibility focus is
+     * tracked per WebContents, and work done for a navigation of the root frame must not be
+     * repeated for a child frame.
+     */
+    @Test
+    @SmallTest
+    public void testChildFrameContentReplacedWithAccessibilityFocusOutsideFrame() throws Throwable {
+        setupTestWithHTML(
+                """
+                <p id='p1'>Paragraph 1</p>
+                <iframe id='f1' srcdoc="<p id='p2'>Paragraph 2</p>"></iframe>
+                """);
+
+        int p1Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p1");
+        int p2Vvid = waitForNodeMatching(sViewIdResourceNameMatcher, "p2");
+
+        // Focus a node outside of the child frame.
+        focusNode(p1Vvid);
+        Assert.assertTrue(FOCUSING_ERROR, isNodeAccessibilityFocused(p1Vvid));
+
+        // Replace the content of the child frame, and wait until its previous content is removed
+        // from the accessibility tree.
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                mActivityTestRule.getWebContents(),
+                """
+                var doc = document.getElementById('f1').contentDocument;
+                doc.open();
+                doc.write("<p id='p3'>Paragraph 3</p>");
+                doc.close();
+                """);
+        CriteriaHelper.pollUiThread(
+                () -> createAccessibilityNodeInfo(p2Vvid) == null,
+                "Child frame content was not removed from the accessibility tree");
+
+        // The focused node is outside of the child frame, so it keeps accessibility focus.
+        Assert.assertTrue(FOCUSING_ERROR, isNodeAccessibilityFocused(p1Vvid));
+    }
+
+    /**
+     * Test that when an element is removed from DOM and DOM focus is reset to root, accessibility
+     * focus is moved to the root.
+     */
+    @Test
+    @SmallTest
+    public void testRemovedElementMovesAccessibilityFocusToRoot() throws Throwable {
+        setupTestWithHTML(
+                "<button id='btn' onclick='this.remove();'>Click to remove</button>"
+                        + "<p id='text'>Description</p>");
+
+        int rootVvid = waitForNodeMatching(sClassNameMatcher, "android.webkit.WebView");
+        int btnVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "btn");
+
+        Assert.assertNotNull(NODE_TIMEOUT_ERROR, createAccessibilityNodeInfo(rootVvid));
+        Assert.assertNotNull(NODE_TIMEOUT_ERROR, createAccessibilityNodeInfo(btnVvid));
+
+        // Focus the button.
+        focusNode(btnVvid);
+
+        AccessibilityNodeInfoCompat btnNodeInfo = createAccessibilityNodeInfo(btnVvid);
+        AccessibilityNodeInfoCompat rootNodeInfo = createAccessibilityNodeInfo(rootVvid);
+        Assert.assertTrue(FOCUSING_ERROR, btnNodeInfo.isAccessibilityFocused());
+        Assert.assertFalse(FOCUSING_ERROR, rootNodeInfo.isAccessibilityFocused());
+
+        // Perform click action on the button, which removes the button and clears DOM focus.
+        Assert.assertTrue(performActionOnUiThread(btnVvid, ACTION_CLICK, null, () -> true));
+
+        // Verify that root gains accessibility focus once the button is removed.
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    AccessibilityNodeInfoCompat currentRoot = createAccessibilityNodeInfo(rootVvid);
+                    return currentRoot != null && currentRoot.isAccessibilityFocused();
+                });
+
+        rootNodeInfo = createAccessibilityNodeInfo(rootVvid);
+        Assert.assertTrue(FOCUSING_ERROR, rootNodeInfo.isAccessibilityFocused());
+    }
+
+    /**
      * Test that when content height dynamically expands via JavaScript, the updated scroll
      * dimensions cause ACTION_SCROLL_FORWARD and ACTION_SCROLL_DOWN to be added to the
      * AccessibilityNodeInfo.
@@ -6588,5 +7416,270 @@ public class WebContentsAccessibilityTest {
                 0,
                 ex2NodeInfo.getChildCount());
     }
-}
 
+    @Test
+    @SmallTest
+    public void testZoomUpdatesFocusBounds_withCacheEnabled() throws Throwable {
+        setupTestWithHTML(
+                "<div>"
+                        + "<button id='button1'>Button 1</button>"
+                        + "<button id='button2'>Button 2</button>"
+                        + "<button id='button3'>Button 3</button>"
+                        + "<button id='button4'>Button 4</button>"
+                        + "</div>");
+
+        int buttonVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "button1");
+        performActionOnUiThread(buttonVvid, ACTION_ACCESSIBILITY_FOCUS, null);
+
+        AccessibilityNodeInfoCompat initialNodeInfo = createAccessibilityNodeInfo(buttonVvid);
+        Assert.assertNotNull(NODE_TIMEOUT_ERROR, initialNodeInfo);
+
+        Rect initialBounds = new Rect();
+        initialNodeInfo.getBoundsInScreen(initialBounds);
+
+        clearInvocations(mActivityTestRule.getWebContentsAccessibility());
+
+        // Simulate page zoom.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> HostZoomMap.setZoomLevel(mActivityTestRule.getWebContents(), 2.22));
+
+        // When multiple elements change bounds at once (e.g. during page zoom), updates are batched
+        // and the focused node is cleared from `mNodeInfoCache`.
+        verify(
+                        mActivityTestRule.getWebContentsAccessibility(),
+                        timeout(CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL).atLeastOnce())
+                .clearNodeInfoCacheForGivenId(eq(buttonVvid));
+
+        // Wait for the bounds of the focused node to update.
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    AccessibilityNodeInfoCompat zoomedNodeInfo =
+                            createAccessibilityNodeInfo(buttonVvid);
+                    if (zoomedNodeInfo == null) return false;
+                    Rect zoomedBounds = new Rect();
+                    zoomedNodeInfo.getBoundsInScreen(zoomedBounds);
+                    return !initialBounds.equals(zoomedBounds);
+                },
+                "Expected focus bounds to change after zoom.");
+    }
+
+    @Test
+    @SmallTest
+    public void testZoomUpdatesFocusBounds_withCacheDisabled() throws Throwable {
+        setupTestWithHTML(
+                "<div>"
+                        + "<button id='button1'>Button 1</button>"
+                        + "<button id='button2'>Button 2</button>"
+                        + "<button id='button3'>Button 3</button>"
+                        + "<button id='button4'>Button 4</button>"
+                        + "</div>");
+
+        doReturn(false)
+                .when(mActivityTestRule.getWebContentsAccessibility())
+                .isNodeInfoCacheEnabled();
+
+        int buttonVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "button1");
+        performActionOnUiThread(buttonVvid, ACTION_ACCESSIBILITY_FOCUS, null);
+
+        AccessibilityNodeInfoCompat initialNodeInfo = createAccessibilityNodeInfo(buttonVvid);
+        Assert.assertNotNull(NODE_TIMEOUT_ERROR, initialNodeInfo);
+
+        Rect initialBounds = new Rect();
+        initialNodeInfo.getBoundsInScreen(initialBounds);
+
+        clearInvocations(mActivityTestRule.getWebContentsAccessibility());
+
+        // Simulate page zoom.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> HostZoomMap.setZoomLevel(mActivityTestRule.getWebContents(), 2.22));
+
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    AccessibilityNodeInfoCompat zoomedNodeInfo =
+                            createAccessibilityNodeInfo(buttonVvid);
+                    if (zoomedNodeInfo == null) return false;
+                    Rect zoomedBounds = new Rect();
+                    zoomedNodeInfo.getBoundsInScreen(zoomedBounds);
+                    return !initialBounds.equals(zoomedBounds);
+                },
+                "Expected focus bounds to change after zoom with cache disabled.");
+
+        // When cache is disabled, clearNodeInfoCache() should not be called.
+        verify(mActivityTestRule.getWebContentsAccessibility(), never()).clearNodeInfoCache();
+    }
+
+    @Test
+    @SmallTest
+    public void testZoomUpdatesFocusBounds_singleElement() throws Throwable {
+        setupTestWithHTML("<button id='button'>Target Button</button>");
+
+        int buttonVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "button");
+        performActionOnUiThread(buttonVvid, ACTION_ACCESSIBILITY_FOCUS, null);
+
+        AccessibilityNodeInfoCompat initialNodeInfo = createAccessibilityNodeInfo(buttonVvid);
+        Assert.assertNotNull(NODE_TIMEOUT_ERROR, initialNodeInfo);
+
+        Rect initialBounds = new Rect();
+        initialNodeInfo.getBoundsInScreen(initialBounds);
+
+        clearInvocations(mActivityTestRule.getWebContentsAccessibility());
+
+        // Simulate page zoom.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> HostZoomMap.setZoomLevel(mActivityTestRule.getWebContents(), 2.22));
+
+        // The focused node should be cleared from `mNodeInfoCache`.
+        verify(
+                        mActivityTestRule.getWebContentsAccessibility(),
+                        timeout(CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL).atLeastOnce())
+                .clearNodeInfoCacheForGivenId(eq(buttonVvid));
+
+        // Wait for the bounds of the focused node to update.
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    AccessibilityNodeInfoCompat zoomedNodeInfo =
+                            createAccessibilityNodeInfo(buttonVvid);
+                    if (zoomedNodeInfo == null) return false;
+                    Rect zoomedBounds = new Rect();
+                    zoomedNodeInfo.getBoundsInScreen(zoomedBounds);
+                    return !initialBounds.equals(zoomedBounds);
+                },
+                "Expected focus bounds to change after zoom.");
+    }
+
+    @Test
+    @SmallTest
+    public void testSendDelayedWindowContentChangedEvent_clearsCache() throws Throwable {
+        setupTestWithHTML("<button id='button'>Target Button</button>");
+
+        int buttonVvid = waitForNodeMatching(sViewIdResourceNameMatcher, "button");
+        performActionOnUiThread(buttonVvid, ACTION_ACCESSIBILITY_FOCUS, null);
+
+        AccessibilityNodeInfoCompat initialNodeInfo = createAccessibilityNodeInfo(buttonVvid);
+        Assert.assertNotNull(NODE_TIMEOUT_ERROR, initialNodeInfo);
+
+        clearInvocations(mActivityTestRule.getWebContentsAccessibility());
+
+        // Call sendDelayedWindowContentChangedEvent directly on UI thread.
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        mActivityTestRule
+                                .getWebContentsAccessibility()
+                                .sendDelayedWindowContentChangedEvent());
+
+        verify(
+                        mActivityTestRule.getWebContentsAccessibility(),
+                        timeout(CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL))
+                .clearNodeInfoCache();
+    }
+
+    @Test
+    @SmallTest
+    public void testANIBuilder_movementGranularityForNodesWithVisibleText() throws Throwable {
+        setupTestWithHTML(
+                """
+                <p id="paragraph">Hello world</p>
+                <button id="visible_text_button">Submit</button>
+                <input id="text_input" type="text" value="Typed text">
+                """);
+
+        int expectedTextGranularities =
+                MOVEMENT_GRANULARITY_CHARACTER
+                        | MOVEMENT_GRANULARITY_WORD
+                        | MOVEMENT_GRANULARITY_LINE
+                        | MOVEMENT_GRANULARITY_PARAGRAPH;
+
+        // The AccessibilityNodeInfo of nodes with valid text content (visible text) should have:
+        // (1) character, word, line, and paragraph movement granularities and (2)
+        // NEXT/PREVIOUS_AT_MOVEMENT_GRANULARITY actions.
+        String[] idsOfTextNodes = new String[] {"paragraph", "visible_text_button", "text_input"};
+        for (String id : idsOfTextNodes) {
+            int vvId = waitForNodeMatching(sViewIdResourceNameMatcher, id);
+            AccessibilityNodeInfoCompat nodeInfo = createAccessibilityNodeInfo(vvId);
+            Assert.assertNotNull(NODE_TIMEOUT_ERROR, nodeInfo);
+            Assert.assertEquals(
+                    "Node '" + id + "' with visible text should have movement granularities.",
+                    expectedTextGranularities,
+                    nodeInfo.getMovementGranularities());
+            Assert.assertTrue(
+                    "Node '"
+                            + id
+                            + "' with visible text should have"
+                            + " ACTION_NEXT_AT_MOVEMENT_GRANULARITY.",
+                    nodeInfo.getActionList().contains(ACTION_NEXT_AT_MOVEMENT_GRANULARITY));
+            Assert.assertTrue(
+                    "Node '"
+                            + id
+                            + "' with visible text should have"
+                            + " ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY.",
+                    nodeInfo.getActionList().contains(ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY));
+        }
+    }
+
+    @Test
+    @SmallTest
+    public void testANIBuilder_noMovementGranularityOnNodesWithoutVisibleText() throws Throwable {
+        setupTestWithHTML(
+                """
+                <div id="empty_group" role="group"></div>
+                <button id="aria_label_button" aria-label="Close"></button>
+                <img id="alt_text_image" alt="Logo">
+                <input id="checkbox_input" type="checkbox">
+                """);
+
+        // The AccessibilityNodeInfo of nodes without valid text content (visible text) should have:
+        // (1) an empty bitmask of movement granularities and (2) no
+        // NEXT/PREVIOUS_AT_MOVEMENT_GRANULARITY actions.
+        String[] nodesWithoutTextIds =
+                new String[] {
+                    "empty_group", "aria_label_button", "alt_text_image", "checkbox_input"
+                };
+        for (String id : nodesWithoutTextIds) {
+            int vvId = waitForNodeMatching(sViewIdResourceNameMatcher, id);
+            AccessibilityNodeInfoCompat nodeInfo = createAccessibilityNodeInfo(vvId);
+            Assert.assertNotNull(NODE_TIMEOUT_ERROR, nodeInfo);
+            Assert.assertEquals(
+                    "Node '"
+                            + id
+                            + "' without visible text should not have movement granularities.",
+                    0,
+                    nodeInfo.getMovementGranularities());
+            Assert.assertFalse(
+                    "Node '"
+                            + id
+                            + "' without visible text should not have"
+                            + " ACTION_NEXT_AT_MOVEMENT_GRANULARITY.",
+                    nodeInfo.getActionList().contains(ACTION_NEXT_AT_MOVEMENT_GRANULARITY));
+            Assert.assertFalse(
+                    "Node '"
+                            + id
+                            + "' without visible text should not have"
+                            + " ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY.",
+                    nodeInfo.getActionList().contains(ACTION_PREVIOUS_AT_MOVEMENT_GRANULARITY));
+        }
+    }
+
+    /**
+     * Test that hover events are not consumed by accessibility when an accessibility service is
+     * enabled without touch exploration (e.g. Select to Speak), so standard mouse/trackpad hover
+     * events still reach the renderer.
+     */
+    @Test
+    @SmallTest
+    public void testOnHoverEvent_requiresTouchExplorationEnabled() throws Throwable {
+        setupTestWithHTMLForBasicMode("<button id=\"button1\">Button 1</button>", true);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    AccessibilityStateTestHelper.setIsTouchExplorationEnabledForTesting(false);
+                    android.view.MotionEvent hoverEnter =
+                            android.view.MotionEvent.obtain(
+                                    0, 0, android.view.MotionEvent.ACTION_HOVER_ENTER, 0, 0, 0);
+                    Assert.assertFalse(
+                            "Hover events should not be consumed when touch exploration is"
+                                    + " disabled.",
+                            mActivityTestRule.mWcax.onHoverEventNoRenderer(hoverEnter));
+                    hoverEnter.recycle();
+                });
+    }
+}

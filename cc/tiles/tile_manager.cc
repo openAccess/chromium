@@ -110,7 +110,7 @@ class RasterTaskImpl : public TileTask {
                  bool is_gpu_rasterization,
                  DispatchingImageProvider image_provider,
                  GURL url,
-                 ScrollOffsetMap raster_inducing_scroll_offsets)
+                 RasterInducingValues raster_inducing_values)
       : TileTask(
             is_gpu_rasterization ? TileTask::SupportsConcurrentExecution::kNo
                                  : TileTask::SupportsConcurrentExecution::kYes,
@@ -135,12 +135,10 @@ class RasterTaskImpl : public TileTask {
         raster_buffer_(std::move(raster_buffer)),
         image_provider_(std::move(image_provider)),
         url_(std::move(url)),
-        raster_inducing_scroll_offsets_(
-            std::move(raster_inducing_scroll_offsets)) {
+        raster_inducing_values_(std::move(raster_inducing_values)) {
     DCHECK(origin_thread_checker_.CalledOnValidThread());
     playback_settings_.image_provider = &image_provider_;
-    playback_settings_.raster_inducing_scroll_offsets =
-        &raster_inducing_scroll_offsets_;
+    playback_settings_.raster_inducing_values = &raster_inducing_values_;
   }
   RasterTaskImpl(const RasterTaskImpl&) = delete;
   RasterTaskImpl& operator=(const RasterTaskImpl&) = delete;
@@ -207,7 +205,7 @@ class RasterTaskImpl : public TileTask {
   std::unique_ptr<RasterBuffer> raster_buffer_;
   DispatchingImageProvider image_provider_;
   const GURL url_;
-  const ScrollOffsetMap raster_inducing_scroll_offsets_;
+  const RasterInducingValues raster_inducing_values_;
 };
 
 TaskCategory TaskCategoryForTileTask(TileTask* task,
@@ -346,7 +344,8 @@ gfx::ContentColorUsage GetContentColorUsageForPrioritizedTile(
     const PrioritizedTile& prioritized_tile) {
   return prioritized_tile.raster_source()
       ->GetDisplayItemList()
-      ->content_color_usage();
+      ->content_color_volume()
+      .GetContentColorUsage();
 }
 
 }  // namespace
@@ -838,6 +837,7 @@ void TileManager::SetTileTaskManagerForTesting(
 
 std::vector<Tile*> TileManager::AllTilesForTesting() const {
   std::vector<Tile*> tiles;
+  tiles.reserve(tiles_.size());
   for (auto& tile_pair : tiles_) {
     tiles.push_back(tile_pair.second);
   }
@@ -1532,8 +1532,6 @@ scoped_refptr<TileTask> TileManager::CreateRasterTask(
   RasterSource::PlaybackSettings playback_settings;
   playback_settings.use_lcd_text = tile->can_use_lcd_text();
   playback_settings.msaa_sample_count = msaa_sample_count;
-  playback_settings.visible =
-      tile->required_for_activation() || tile->required_for_draw();
   playback_settings.hdr_headroom = target_color_params.GetHdrHeadroom();
 
   // Create and queue all image decode tasks that this tile depends on. Note
@@ -1627,7 +1625,7 @@ scoped_refptr<TileTask> TileManager::CreateRasterTask(
       invalidated_rect, prepare_tiles_count_, std::move(raster_buffer),
       &decode_tasks, use_gpu_rasterization_,
       std::move(dispatching_image_provider), active_url_,
-      prioritized_tile.GetRasterInducingScrollOffsets());
+      prioritized_tile.GetRasterInducingValues());
 }
 
 void TileManager::InsertNodeForDecodeTask(TileTask* task,
@@ -1735,7 +1733,18 @@ void TileManager::OnRasterTaskCompleted(
     return;
   }
 
-  resource_pool_->OnContentReplaced(resource, tile_id);
+  // Only register a content id if this resource holds a complete render. A
+  // raster that skipped checker-imaged images leaves gray placeholders
+  // behind, and a later partial raster on top of it would keep them forever.
+  // See crbug.com/515542787. Passing 0 also clears any content id the
+  // resource carries from a previous raster: pool resources are reused
+  // between tiles, and this tile itself may have rastered cleanly before a
+  // checker-imaged image was added to it. If the tile was destroyed while
+  // the task was still running, we cannot tell whether images were skipped,
+  // so play it safe and clear the content id too.
+  resource_pool_->OnContentReplaced(
+      resource,
+      (tile && !raster_task_was_scheduled_with_checker_images) ? tile_id : 0);
   ++raster_task_completion_stats_.completed_count;
 
   if (!tile) {
@@ -1791,9 +1800,8 @@ std::unique_ptr<Tile> TileManager::CreateTile(const Tile::CreateInfo& info,
   DCHECK(tile_task_manager_);
   std::unique_ptr<Tile> tile(
       new Tile(this, info, layer_id, source_frame_number, flags));
-  DCHECK(!tiles_.contains(tile->id()));
-
-  tiles_[tile->id()] = tile.get();
+  const bool inserted = tiles_.try_emplace(tile->id(), tile.get()).second;
+  DCHECK(inserted);
   return tile;
 }
 
@@ -2119,38 +2127,40 @@ void TileManager::CheckPendingGpuWorkAndIssueSignals() {
 
   std::vector<const ResourcePool::InUsePoolResource*> required_for_activation;
   std::vector<const ResourcePool::InUsePoolResource*> required_for_draw;
+  bool ready_tile_required_for_draw = false;
 
-  for (auto it = pending_gpu_work_tiles_.begin();
-       it != pending_gpu_work_tiles_.end();) {
-    Tile* tile = *it;
+  absl::erase_if(pending_gpu_work_tiles_, [&](Tile* tile) {
     DCHECK(tile->draw_info().has_resource());
     const ResourcePool::InUsePoolResource& resource =
         tile->draw_info().GetResource();
 
     // Update requirements first so that if the tile has become required
     // it will force a redraw.
-    if (pending_tile_requirements_dirty_)
+    if (pending_tile_requirements_dirty_) {
       tile->tiling()->UpdateRequiredStatesOnTile(tile);
+    }
 
     if (global_state_.tree_priority != SMOOTHNESS_TAKES_PRIORITY ||
         raster_buffer_provider_->IsResourceReadyToDraw(resource)) {
       tile->draw_info().set_resource_ready_for_draw();
       client_->NotifyTileStateChanged(tile, /*update_damage=*/true,
-                                      /*set_needs_redraw=*/true);
-      it = pending_gpu_work_tiles_.erase(it);
-      continue;
+                                      /*set_needs_redraw=*/false);
+      ready_tile_required_for_draw |= tile->required_for_draw();
+      return true;
     }
 
     // TODO(ericrk): If a tile in our list no longer has valid tile priorities,
     // it may still report that it is required, and unnecessarily delay
     // activation. crbug.com/687265
-    if (tile->required_for_activation())
+    if (tile->required_for_activation()) {
       required_for_activation.push_back(&resource);
-    if (tile->required_for_draw())
+    }
+    if (tile->required_for_draw()) {
       required_for_draw.push_back(&resource);
+    }
 
-    ++it;
-  }
+    return false;
+  });
 
   if (required_for_activation.empty()) {
     pending_required_for_activation_callback_id_ = 0;
@@ -2174,6 +2184,18 @@ void TileManager::CheckPendingGpuWorkAndIssueSignals() {
                 &TileManager::CheckPendingGpuWorkAndIssueSignals,
                 ready_to_draw_callback_weak_ptr_factory_.GetWeakPtr()),
             pending_required_for_draw_callback_id_);
+  }
+
+  // Similar to MarkTilesOutOfMemory(), if we trigger SetNeedsRedraw() while
+  // iterating pending_gpu_work_tiles_, we may end up triggering
+  // Scheduler::ProcessScheduledActions(), which is inefficient and may in turn
+  // trigger ActivateSyncTree() and other actions that remove tiles still
+  // referenced by the loop iterator and the resource lists above, leading to
+  // UAF (crbug.com/534956586). Defer the redraw until the iteration is
+  // complete and the resource lists have been consumed.
+  if (ready_tile_required_for_draw) {
+    client_->SetNeedsRedraw(/*animation_only=*/false,
+                            /*skip_if_inside_draw=*/true);
   }
 
   // Update our signals now that we know whether we have pending resources.

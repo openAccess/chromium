@@ -95,6 +95,9 @@ class WaylandToplevelWindow : public WaylandWindow,
   void Hide() override;
   bool IsVisible() const override;
   void SetTitle(const std::u16string& title) override;
+  void SetWindowClass(const std::string& wm_class_name,
+                      const std::string& wm_class_class,
+                      const std::string& wayland_app_id) override;
   void SetFullscreen(bool fullscreen, int64_t target_display_id) override;
   void Maximize() override;
   void Minimize() override;
@@ -184,10 +187,29 @@ class WaylandToplevelWindow : public WaylandWindow,
   bool ShouldTriggerStateChange(PlatformWindowState state,
                                 int64_t target_display_id) const;
 
+  // Sends set_minimized and a wl_display.sync to track when the compositor has
+  // processed it.
+  void SendSetMinimized();
+
+  // wl_callback_listener callback for `minimize_sync_callback_`.
+  static void OnMinimizeSyncDone(void* data,
+                                 wl_callback* callback,
+                                 uint32_t time);
+
+  // Sends set_fullscreen and a wl_display.sync to track when the compositor has
+  // processed it.
+  void SendSetFullscreen(int64_t fullscreen_display_id);
+
+  // wl_callback_listener callback for `fullscreen_sync_callback_`.
+  static void OnFullscreenSyncDone(void* data,
+                                   wl_callback* callback,
+                                   uint32_t time);
+
   // We want to remember whether it was previously maximized, for cases like
   // restoring from fullscreen or compositor-initiated tiling, so we can
   // restore back to the correct state.
-  void UpdatePreviouslyMaximized(PlatformWindowState new_state);
+  void UpdatePreviouslyMaximized(PlatformWindowState previous_state,
+                                 PlatformWindowState new_state);
 
   // Activates the surface using XDG activation given an activation token.
   void ActivateWithToken(std::string token);
@@ -224,7 +246,24 @@ class WaylandToplevelWindow : public WaylandWindow,
   // client.
   bool previously_maximized_ = false;
 
+  // The window state carried by the last xdg_toplevel configure, independent of
+  // states the client applied without waiting for the compositor.
+  PlatformWindowState last_configured_window_state_ =
+      PlatformWindowState::kUnknown;
+
   bool pending_minimize_ = false;
+
+  // Set while the compositor has not yet processed the last set_minimized
+  // request. Configures received in the meantime were sent before the
+  // compositor minimized the window, so their activated state must not be
+  // taken to mean that the window was restored.
+  wl::Object<wl_callback> minimize_sync_callback_;
+
+  // Set while the compositor has not yet processed the last set_fullscreen
+  // request. Configures received in the meantime were sent before the
+  // compositor fullscreened the window, so their non-fullscreen state must not
+  // be taken to mean that fullscreen was exited.
+  wl::Object<wl_callback> fullscreen_sync_callback_;
 
   bool is_active_ = false;
   bool is_xdg_active_ = false;

@@ -19,11 +19,10 @@
 #include "chrome/browser/ai/ai_test_utils.h"
 #include "chrome/browser/ai/features.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
+#include "components/optimization_guide/core/model_execution/configs/substitution_builder.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
 #include "components/optimization_guide/core/model_execution/test/mock_on_device_capability.h"
-#include "components/optimization_guide/core/model_execution/test/substitution_builder.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/features/proofreader_api.pb.h"
 #include "components/optimization_guide/proto/string_value.pb.h"
@@ -46,7 +45,6 @@ using ::blink::mojom::AILanguageCode;
 using ::blink::mojom::AILanguageCodePtr;
 using ::on_device_model::mojom::PerformanceClass;
 using ::optimization_guide::FieldSubstitution;
-using ::optimization_guide::ForbidUnsafe;
 using ::optimization_guide::ProtoField;
 using ::optimization_guide::StringValueField;
 using ::optimization_guide::proto::ProofreaderApiRequest;
@@ -105,31 +103,6 @@ blink::mojom::AIProofreaderCreateOptionsPtr GetDefaultOptions() {
       /*expected_input_languages=*/std::vector<AILanguageCodePtr>());
 }
 
-optimization_guide::proto::FeatureTextSafetyConfiguration CreateSafetyConfig() {
-  optimization_guide::proto::FeatureTextSafetyConfiguration safety_config;
-  safety_config.set_feature(
-      optimization_guide::proto::MODEL_EXECUTION_FEATURE_PROOFREADER_API);
-  safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-
-  {
-    auto* check = safety_config.add_request_check();
-    check->mutable_input_template()->Add(FieldSubstitution(
-        "%s", ProtoField({ProofreaderApiRequest::kTextFieldNumber})));
-  }
-  {
-    auto* check = safety_config.add_request_check();
-    check->mutable_input_template()->Add(FieldSubstitution(
-        "%s", ProtoField({ProofreaderApiRequest::kCorrectedTextFieldNumber})));
-  }
-  {
-    auto* check = safety_config.add_request_check();
-    check->mutable_input_template()->Add(FieldSubstitution(
-        "%s", ProtoField({ProofreaderApiRequest::kCorrectionFieldNumber})));
-  }
-
-  return safety_config;
-}
-
 class AIProofreaderTest : public AITestUtils::AITestBase {
  public:
   AIProofreaderTest() {
@@ -140,12 +113,13 @@ class AIProofreaderTest : public AITestUtils::AITestBase {
  protected:
   proto::SolutionConfig CreateSolution() override {
     proto::OnDeviceModelExecutionFeatureConfig config;
-    config.set_can_skip_text_safety(true);
     config.set_feature(proto::ModelExecutionFeature::
                            MODEL_EXECUTION_FEATURE_PROOFREADER_API);
 
     auto& input_config = *config.mutable_input_config();
     input_config.set_request_base_name(ProofreaderApiRequest().GetTypeName());
+    input_config.set_max_execute_tokens(
+        blink::mojom::kTinyModelMaxInputTokenSize);
 
     *input_config.add_execute_substitutions() = FieldSubstitution(
         "%s", ProtoField({ProofreaderApiRequest::kTextFieldNumber}));
@@ -160,7 +134,6 @@ class AIProofreaderTest : public AITestUtils::AITestBase {
 
     proto::SolutionConfig solution_config;
     *solution_config.mutable_feature() = config;
-    *solution_config.mutable_safety() = CreateSafetyConfig();
     return solution_config;
   }
 
@@ -277,6 +250,31 @@ TEST_F(AIProofreaderTest, ContextWindowUsesContextLimit) {
   EXPECT_EQ(client.context_window(), blink::mojom::kTinyModelMaxInputTokenSize);
 }
 
+TEST_F(AIProofreaderTest, CustomInputContextLimit) {
+  constexpr uint32_t kCustomMaxTokens = 2000;
+  SetModelInputContextLimit(kCustomMaxTokens);
+
+  TestCreateProofreaderClient client;
+  GetAIManagerRemote()->CreateProofreader(client.BindNewPipeAndPassRemote(),
+                                          GetDefaultOptions(),
+                                          /*monitor=*/mojo::NullRemote());
+  CreateProofreaderResult result = client.result().Take();
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(client.context_window(), kCustomMaxTokens);
+
+  mojo::Remote<blink::mojom::AIProofreader> proofreader_remote(
+      std::move(result.value()));
+  SetSizeInTokens(kCustomMaxTokens + 1);
+
+  AITestUtils::TestStreamingResponder responder;
+  proofreader_remote->Proofread(kInputString, responder.BindRemote());
+  EXPECT_FALSE(responder.WaitForCompletion());
+  EXPECT_EQ(responder.error_status(),
+            blink::mojom::ModelStreamingResponseStatus::kErrorInputTooLarge);
+  ASSERT_EQ(responder.quota_error_info().requested, kCustomMaxTokens + 1);
+  ASSERT_EQ(responder.quota_error_info().quota, kCustomMaxTokens);
+}
+
 TEST_F(AIProofreaderTest, CanCreateIsLanguagesSupported) {
   EnsureModelIsReady();
 
@@ -324,29 +322,6 @@ TEST_F(AIProofreaderTest, CreateProofreaderModelNotEligible) {
       ErrorIs(
           blink::mojom::AIManagerCreateClientError::kUnableToCreateSession));
 }
-
-#if BUILDFLAG(IS_ANDROID)
-TEST_F(AIProofreaderTest, CreateProofreaderSafetyConfigNotAvailable) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    // Provide a safety asset that does not support proofreader.
-    solution_config.mutable_safety()->set_feature(
-        optimization_guide::proto::MODEL_EXECUTION_FEATURE_TEST);
-    return solution_config;
-  }());
-
-  TestCreateProofreaderClient create_proofreader_client;
-  GetAIManagerRemote()->CreateProofreader(
-      create_proofreader_client.BindNewPipeAndPassRemote(), GetDefaultOptions(),
-      mojo::NullRemote());
-
-  EXPECT_THAT(
-      create_proofreader_client.result().Take(),
-      ErrorIs(
-          blink::mojom::AIManagerCreateClientError::kUnableToCreateSession));
-}
-#endif
 
 TEST_F(AIProofreaderTest, ProofreadUnableToCalculateTokenSize) {
   SetSolutionConfig([&]() {
@@ -453,72 +428,6 @@ TEST_F(AIProofreaderTest, Priority) {
 
   web_contents()->WasShown();
   EXPECT_THAT(Proofread(*proofreader_remote, kInputString), ElementsAre("hi"));
-}
-
-TEST_F(AIProofreaderTest, TextSafetyInput) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    return solution_config;
-  }());
-
-  fake_broker_->settings().set_execute_result({"hi"});
-  auto proofreader_remote = GetAIProofreaderRemote();
-  EXPECT_THAT(Proofread(*proofreader_remote, kInputString), ElementsAre("hi"));
-
-  AITestUtils::TestStreamingResponder responder;
-  proofreader_remote->Proofread("unsafe", responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-}
-
-TEST_F(AIProofreaderTest, TextSafetyOutput) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_minimum_tokens(1000);
-    return solution_config;
-  }());
-
-  // Fake text safety checker looks for the string "unsafe".
-  fake_broker_->settings().set_execute_result(
-      {"a", "b", "c", "d", "e", "f", "g", "unsafe", "h"});
-  auto proofreader_remote = GetAIProofreaderRemote();
-  AITestUtils::TestStreamingResponder responder;
-  proofreader_remote->Proofread(kInputString, responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-  EXPECT_TRUE(responder.responses().empty());
-}
-
-TEST_F(AIProofreaderTest, TextSafetyOutputPartial) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_minimum_tokens(3);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_token_interval(2);
-    return solution_config;
-  }());
-
-  // Fake text safety checker looks for the string "unsafe".
-  fake_broker_->settings().set_execute_result(
-      {"a", "b", "c", "d", "e", "f", "g", "unsafe", "h"});
-  auto proofreader_remote = GetAIProofreaderRemote();
-  AITestUtils::TestStreamingResponder responder;
-  proofreader_remote->Proofread(kInputString, responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-  // Partial checks should still allow some output to stream.
-  EXPECT_THAT(responder.responses(), ElementsAre("abc", "de", "fg"));
 }
 
 TEST_F(AIProofreaderTest, ServiceCrash) {

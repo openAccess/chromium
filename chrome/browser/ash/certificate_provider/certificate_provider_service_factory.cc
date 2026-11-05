@@ -18,7 +18,7 @@
 #include "base/no_destructor.h"
 #include "base/values.h"
 #include "chrome/browser/ash/certificate_provider/certificate_provider_service.h"
-#include "chrome/common/extensions/api/certificate_provider.h"
+#include "chromeos/ash/experiences/extensions/common/api/certificate_provider.h"
 #include "extensions/browser/event_listener_map.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/event_router_factory.h"
@@ -86,8 +86,8 @@ std::unique_ptr<extensions::Event> BuildOnCertificatesUpdateRequestedEvent(
     int request_id) {
   api_cp::CertificatesUpdateRequest certificates_update_request;
   certificates_update_request.certificates_request_id = request_id;
-  base::ListValue event_args;
-  event_args.Append(certificates_update_request.ToValue());
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>();
+  event_args->data.Append(certificates_update_request.ToValue());
   return std::make_unique<extensions::Event>(
       extensions::events::CERTIFICATEPROVIDER_ON_CERTIFICATES_UPDATE_REQUESTED,
       api_cp::OnCertificatesUpdateRequested::kEventName, std::move(event_args));
@@ -96,8 +96,8 @@ std::unique_ptr<extensions::Event> BuildOnCertificatesUpdateRequestedEvent(
 // Constructs the legacy "onCertificatesRequested" event.
 std::unique_ptr<extensions::Event> BuildOnCertificatesRequestedEvent(
     int request_id) {
-  base::ListValue event_args;
-  event_args.Append(request_id);
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>();
+  event_args->data.Append(request_id);
   return std::make_unique<extensions::Event>(
       extensions::events::CERTIFICATEPROVIDER_ON_CERTIFICATES_REQUESTED,
       api_cp::OnCertificatesRequested::kEventName, std::move(event_args));
@@ -142,8 +142,8 @@ std::unique_ptr<extensions::Event> BuildOnSignatureRequestedEvent(
       net::x509_util::CryptoBufferAsStringPiece(certificate.cert_buffer());
   request.certificate.assign(cert_der.begin(), cert_der.end());
 
-  base::ListValue event_args;
-  event_args.Append(request.ToValue());
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>();
+  event_args->data.Append(request.ToValue());
 
   return std::make_unique<extensions::Event>(
       extensions::events::CERTIFICATEPROVIDER_ON_SIGNATURE_REQUESTED,
@@ -190,9 +190,9 @@ std::unique_ptr<extensions::Event> BuildOnSignDigestRequestedEvent(
   }
   request.digest.resize(digest_len);
 
-  base::ListValue event_args;
-  event_args.Append(request_id);
-  event_args.Append(request.ToValue());
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>();
+  event_args->data.Append(request_id);
+  event_args->data.Append(request.ToValue());
 
   return std::make_unique<extensions::Event>(
       extensions::events::CERTIFICATEPROVIDER_ON_SIGN_DIGEST_REQUESTED,
@@ -203,7 +203,7 @@ DefaultDelegate::DefaultDelegate(CertificateProviderService* service,
                                  extensions::ExtensionRegistry* registry,
                                  extensions::EventRouter* event_router)
     : service_(service), registry_(registry), event_router_(event_router) {
-  DCHECK(service_);
+  CHECK(service_, base::NotFatalUntil::M160);
   registry_->AddObserver(this);
   event_router_->RegisterObserver(
       this, api_cp::OnCertificatesUpdateRequested::kEventName);
@@ -251,7 +251,7 @@ bool DefaultDelegate::DispatchSignRequestToExtension(
     uint16_t algorithm,
     const scoped_refptr<net::X509Certificate>& certificate,
     base::span<const uint8_t> input) {
-  DCHECK(certificate);
+  CHECK(certificate, base::NotFatalUntil::M160);
   std::unique_ptr<extensions::Event> event;
   // Send the up-to-date version of the event, and fall back to the legacy event
   // if the extension is only listening for that one.

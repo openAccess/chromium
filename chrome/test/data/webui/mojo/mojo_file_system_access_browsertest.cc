@@ -9,6 +9,8 @@
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/test_file_util.h"
+#include "base/threading/thread_restrictions.h"
+#include "build/build_config.h"
 #include "chrome/browser/bad_message.h"
 #include "chrome/browser/chrome_content_browser_client.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -35,12 +37,17 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
+#include "mojo/public/cpp/system/message_pipe.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/shell_dialogs/select_file_dialog_factory.h"
 #include "ui/shell_dialogs/select_file_policy.h"
 #include "ui/webui/mojo_web_ui_controller.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "ui/base/resource/resource_bundle_android.h"
+#endif
 
 namespace {
 
@@ -81,11 +88,10 @@ class MojoFileSystemAccessUI : public ui::MojoWebUIController,
   }
 
   // ::test::mojom::MojoFileSystemAccessTest:
-  void ResolveTransferToken(mojo::ScopedHandle h) override {
+  void ResolveTransferToken(mojo::ScopedMessagePipeHandle h) override {
     EXPECT_TRUE(true);
     mojo::PendingRemote<blink::mojom::FileSystemAccessTransferToken> token(
-        mojo::ScopedMessagePipeHandle::From(std::move(h)),
-        blink::mojom::FileSystemAccessTransferToken::Version_);
+        std::move(h), blink::mojom::FileSystemAccessTransferToken::Version_);
 
     auto* web_contents = web_ui()->GetWebContents();
     web_contents->GetBrowserContext()
@@ -174,11 +180,15 @@ class MojoFileSystemAccessBrowserTest : public InProcessBrowserTest {
   }
 
   void SetUpOnMainThread() override {
+#if BUILDFLAG(IS_ANDROID)
+    ui::LoadPackFileFromApk("assets/browser_tests.pak", /*split_name=*/"");
+#else
     base::FilePath pak_path;
     ASSERT_TRUE(base::PathService::Get(base::DIR_ASSETS, &pak_path));
     pak_path = pak_path.AppendASCII("browser_tests.pak");
     ui::ResourceBundle::GetSharedInstance().AddDataPackFromPath(
         pak_path, ui::kScaleFactorNone);
+#endif
 
     content::SetBrowserClientForTesting(&test_content_browser_client_);
   }

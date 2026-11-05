@@ -284,6 +284,10 @@ void BrowserSavePasswordProgressLogger::LogFormStructure(
        ": ",
        FormSignatureToDebugString(form_structure.alternative_form_signature()),
        "\n",
+       GetStringFromID(STRING_STRUCTURAL_FORM_SIGNATURE),
+       ": ",
+       FormSignatureToDebugString(form_structure.structural_form_signature()),
+       "\n",
        GetStringFromID(STRING_ORIGIN),
        ": ",
        ScrubURL(form_structure.source_url()),
@@ -453,8 +457,6 @@ void BrowserSavePasswordProgressLogger::LogPasswordForm(
   base::DictValue log;
   log.Set(GetStringFromID(STRING_SCHEME_MESSAGE),
           GetStringFromID(FormSchemeToStringID(form.scheme)));
-  log.Set(GetStringFromID(STRING_SCHEME_MESSAGE),
-          GetStringFromID(FormSchemeToStringID(form.scheme)));
   log.Set(GetStringFromID(STRING_SIGNON_REALM),
           ScrubURL(GURL(form.signon_realm)));
   log.Set(GetStringFromID(STRING_ORIGIN), ScrubURL(form.url));
@@ -568,6 +570,9 @@ std::string BrowserSavePasswordProgressLogger::GetFormDataLog(
        GetStringFromID(STRING_ALTERNATIVE_FORM_SIGNATURE), ": ",
        FormSignatureToDebugString(
            autofill::CalculateAlternativeFormSignature(form)),
+       "\n", GetStringFromID(STRING_STRUCTURAL_FORM_SIGNATURE), ": ",
+       FormSignatureToDebugString(
+           autofill::CalculateStructuralFormSignature(form)),
        "\n", GetStringFromID(STRING_ORIGIN), ": ", ScrubURL(form.url()), "\n",
        GetStringFromID(STRING_ACTION), ": ", ScrubURL(form.action()), "\n"});
   if (form.fields().size() > 0) {

@@ -34,6 +34,7 @@ import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.actor.BackgroundTabRestorationHelper;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.crash.ChromePureJavaExceptionReporter;
 import org.chromium.chrome.browser.crypto.CipherFactory;
@@ -65,6 +66,7 @@ import org.chromium.components.browser_ui.util.ConversionUtils;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.url.GURL;
+import org.chromium.url.Origin;
 
 import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
@@ -76,6 +78,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -109,6 +112,7 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
 
     private static boolean sDeferredStartupComplete;
 
+    // LINT.IfChange(TabRestoreMethod)
     /** Values are recorded in metrics and should not be changed. */
     @IntDef({
         TabRestoreMethod.TAB_STATE,
@@ -117,6 +121,7 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         TabRestoreMethod.FAILED_TO_RESTORE,
         TabRestoreMethod.SKIPPED_NTP,
         TabRestoreMethod.SKIPPED_EMPTY_URL,
+        TabRestoreMethod.REPARENTING,
         TabRestoreMethod.NUM_ENTRIES
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -140,8 +145,13 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         /** The URL was empty so restoration was skipped. */
         int SKIPPED_EMPTY_URL = 5;
 
-        int NUM_ENTRIES = 6;
+        /** Tab restored via reparenting. */
+        int REPARENTING = 6;
+
+        int NUM_ENTRIES = 7;
     }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/tab/enums.xml:TabRestoreMethod)
 
     /** Provides additional meta data to restore an individual tab. */
     @VisibleForTesting
@@ -150,14 +160,14 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         public final int originalIndex;
         public final String url;
         public final @TriState int isIncognito;
-        public final Boolean fromMerge;
+        public final boolean fromMerge;
 
         public TabRestoreDetails(
                 int id,
                 int originalIndex,
                 @TriState int isIncognito,
                 String url,
-                Boolean fromMerge) {
+                boolean fromMerge) {
             this.id = id;
             this.originalIndex = originalIndex;
             this.url = url;
@@ -167,8 +177,6 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
     }
 
     private final Set<Integer> mSeenTabIds = new HashSet<>();
-    // Counts distinct URLs.
-    private final Map<String, Integer> mSeenTabUrlMap = new HashMap<>();
     private final @TabOrchestratorType int mOrchestratorType;
     private final TabPersistencePolicy mPersistencePolicy;
     private final TabModelSelector mTabModelSelector;
@@ -203,12 +211,18 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
     // Keys are the original tab indexes, values are the tab ids.
     private @Nullable SparseIntArray mNormalTabsRestored;
     private @Nullable SparseIntArray mIncognitoTabsRestored;
+    private Set<@TabId Integer> mBackgroundTabIds = Collections.emptySet();
+    private Set<@TabId Integer> mRemainingBackgroundTabIds = Collections.emptySet();
+    private boolean mBackgroundTabsInitialized;
     private @Nullable AsyncTask<@Nullable DataInputStream> mPrefetchTabListTask;
     private @Nullable TabModelSelectorMetadata mLastSavedMetadata;
     // Tracks whether this TabPersistentStore's tabs are being loaded.
     private boolean mLoadInProgress;
     private long mTabRestoreStartTime = INVALID_TIME;
     @Nullable AsyncTask<@Nullable TabState> mPrefetchTabStateActiveTabTask;
+    @TabId int mPrefetchedActiveTabId = Tab.INVALID_TAB_ID;
+    // Counts distinct URLs.
+    private @Nullable Map<String, Integer> mSeenTabUrlMap;
 
     /**
      * Creates an instance of a TabPersistentStore.
@@ -514,6 +528,9 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         mCancelIncognitoTabLoads = ignoreIncognitoFiles;
         mNormalTabsRestored = new SparseIntArray();
         mIncognitoTabsRestored = new SparseIntArray();
+        mBackgroundTabIds = Collections.emptySet();
+        mRemainingBackgroundTabIds = Collections.emptySet();
+        mBackgroundTabsInitialized = false;
     }
 
     @Override
@@ -524,6 +541,14 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         waitForMigrationToFinish();
 
         initializeRestoreVars(ignoreIncognitoFiles, ignoreRegularFiles);
+
+        mBackgroundTabIds =
+                BackgroundTabRestorationHelper.fetchBackgroundTabIds(
+                        mOrchestratorType, mTabModelSelector, ignoreRegularFiles, mIsAuthoritative);
+        mRemainingBackgroundTabIds =
+                BackgroundTabRestorationHelper.claimRemainingBackgroundTabIds(
+                        mOrchestratorType, mTabModelSelector, ignoreRegularFiles, mIsAuthoritative);
+        mBackgroundTabsInitialized = true;
 
         try {
             mTabRestoreStartTime = SystemClock.elapsedRealtime();
@@ -575,7 +600,7 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
             }
         } catch (Exception e) {
             // Catch generic exception to prevent a corrupted state from crashing app on startup.
-            Log.i(TAG, "loadState exception: " + e.toString(), e);
+            Log.i(TAG, "loadState exception: %s", e.toString(), e);
             mTabRestoreStartTime = INVALID_TIME;
         }
 
@@ -624,6 +649,29 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
 
     @Override
     public void restoreTabs(boolean setActiveTab) {
+        if (mDestroyed) return;
+        if (mSeenTabUrlMap == null && !mTabsToRestore.isEmpty()) {
+            mSeenTabUrlMap =
+                    ChromeFeatureList.sClankStartupTabOptimizations.isEnabled()
+                            ? new HashMap<>((int) (mTabsToRestore.size() / 0.75f) + 1)
+                            : new HashMap<>();
+        }
+        if (!mBackgroundTabsInitialized) {
+            mBackgroundTabIds =
+                    BackgroundTabRestorationHelper.fetchBackgroundTabIds(
+                            mOrchestratorType,
+                            mTabModelSelector,
+                            mCancelNormalTabLoads,
+                            mIsAuthoritative);
+            assert mRemainingBackgroundTabIds.isEmpty();
+            mRemainingBackgroundTabIds =
+                    BackgroundTabRestorationHelper.claimRemainingBackgroundTabIds(
+                            mOrchestratorType,
+                            mTabModelSelector,
+                            mCancelNormalTabLoads,
+                            mIsAuthoritative);
+            mBackgroundTabsInitialized = true;
+        }
         if (setActiveTab) {
             // Restore and select the active tab, which is first in the restore list.
             // If the active tab can't be restored, restore and select another tab. Otherwise, the
@@ -690,34 +738,71 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         // This will no longer be necessary when the TabState schema is replaced with
         // a FlatBuffer approach - go/tabstate-flatbuffer-decision.
         try {
-            int restoredTabId =
-                    ChromeSharedPreferences.getInstance()
-                            .readInt(
-                                    ChromePreferenceKeys.TABMODEL_ACTIVE_TAB_ID,
-                                    Tab.INVALID_TAB_ID);
-            @Nullable TabState state = maybeRestoreTabState(restoredTabId, tabToRestore);
+            @Nullable TabState state = maybeRestoreTabState(tabToRestore);
             restoreTab(tabToRestore, state, setAsActive);
         } catch (Exception e) {
             // Catch generic exception to prevent a corrupted state from crashing the app
             // at startup.
-            Log.e(TAG, "loadTabs exception: " + e, e);
+            Log.e(TAG, "loadTabs exception: %s", e, e);
             ChromePureJavaExceptionReporter.reportJavaException(e, false);
         } finally {
             StrictMode.setThreadPolicy(oldPolicy);
         }
     }
 
-    private @Nullable TabState maybeRestoreTabState(
-            int restoredTabId, TabRestoreDetails tabToRestore)
+    private @Nullable TabState maybeRestoreTabState(TabRestoreDetails tabToRestore)
             throws InterruptedException, ExecutionException {
         // If the Tab being restored is the Active Tab and the corresponding TabState prefetch
         // was initiated, use the prefetch result.
-        if (restoredTabId == tabToRestore.id && mPrefetchTabStateActiveTabTask != null) {
+        if (mPrefetchTabStateActiveTabTask != null
+                && shouldAccessActiveTabPrefs()
+                && mPrefetchedActiveTabId == tabToRestore.id) {
             return mPrefetchTabStateActiveTabTask.get();
         }
         // Necessary to do on the UI thread as a last resort.
         return TabStateFileManager.restoreTabState(
-                getStateDirectory(), tabToRestore.id, mCipherFactory);
+                getStateDirectory(), tabToRestore.id, mCipherFactory, tabToRestore.isIncognito);
+    }
+
+    private boolean isTabReparenting(@TabId int id, boolean isIncognito) {
+        TabCreator tabCreator = mTabCreatorManager.getTabCreator(isIncognito);
+        return AsyncTabParamsManagerSingleton.getInstance().hasParamsForTabId(id)
+                && tabCreator.isReparenting(id);
+    }
+
+    private @Nullable Tab createTabFromReparentingOrTabState(
+            @Nullable TabState tabState,
+            TabRestoreDetails tabToRestore,
+            int restoredIndex,
+            boolean isIncognito) {
+        TabCreator tabCreator = mTabCreatorManager.getTabCreator(isIncognito);
+        if (tabState == null) {
+            return null;
+        }
+        if (tabState.legacyFileToDelete != null
+                && mLegacyTabStateFilesToDelete.size()
+                        < MAX_FILES_DELETED_PER_SESSION_LEGACY_TABSTATE) {
+            mLegacyTabStateFilesToDelete.add(tabState.legacyFileToDelete);
+            tabState.legacyFileToDelete = null;
+        }
+        // This may not create a frozen tab for reparenting cases which is misleading.
+        Tab tab = tabCreator.createFrozenTab(tabState, tabToRestore.id, restoredIndex);
+        if (tab != null && tabState.shouldMigrate) {
+            mTabsToMigrate.add(tab);
+        }
+        return tab;
+    }
+
+    private void recordRestorationResult(@Nullable Tab tab, @TabRestoreMethod int restoreMethod) {
+        if (tab == null) {
+            RecordHistogram.recordEnumeratedHistogram(
+                    "Tabs.TabRestoreMethod",
+                    TabRestoreMethod.FAILED_TO_RESTORE,
+                    TabRestoreMethod.NUM_ENTRIES);
+            return;
+        }
+        RecordHistogram.recordEnumeratedHistogram(
+                "Tabs.TabRestoreMethod", restoreMethod, TabRestoreMethod.NUM_ENTRIES);
     }
 
     /**
@@ -741,9 +826,7 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
             } else if (isIncognito) {
                 boolean isNtp = UrlUtilities.isNtpUrl(tabToRestore.url);
                 boolean isNtpFromMerge = isNtp && tabToRestore.fromMerge;
-                boolean isFromReparenting =
-                        AsyncTabParamsManagerSingleton.getInstance()
-                                .hasParamsForTabId(tabToRestore.id);
+                boolean isFromReparenting = isTabReparenting(tabToRestore.id, isIncognito);
 
                 if (!isNtpFromMerge
                         && !isFromReparenting
@@ -771,7 +854,8 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
             // TODO(ltian): need to figure out a way to add merged tabs before Browser Actions tabs
             // when tab restore and Browser Actions tab merging happen at the same time.
             restoredIndex = model.getCount();
-        } else if (restoredTabs != null && restoredTabs.size() > 0
+        } else if (restoredTabs != null
+                && restoredTabs.size() > 0
                 && tabToRestore.originalIndex > restoredTabs.keyAt(restoredTabs.size() - 1)) {
             // If the tab's index is too large, restore it at the end of the list.
             restoredIndex = Math.min(model.getCount(), restoredTabs.size());
@@ -793,86 +877,93 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         }
         // Track duplicate tab urls in the regular tab models.
         if (!isIncognito) {
-            mSeenTabUrlMap.put(
-                    tabToRestore.url, mSeenTabUrlMap.getOrDefault(tabToRestore.url, 0) + 1);
+            Map<String, Integer> seenTabUrlMap = mSeenTabUrlMap;
+            if (seenTabUrlMap != null) {
+                seenTabUrlMap.put(
+                        tabToRestore.url, seenTabUrlMap.getOrDefault(tabToRestore.url, 0) + 1);
+            }
         }
 
-        if (tabState != null) {
+        boolean isFromReparenting = isTabReparenting(tabToRestore.id, isIncognito);
+        @Nullable Tab tab = null;
+        if (maybeRestoreBackgroundTab(
+                tabToRestore, restoredIndex, tabState, isIncognito, setAsActive)) {
+            // Handled as a background tab.
+            if (setAsActive || (tabToRestore.fromMerge && restoredIndex == 0)) {
+                TabModelUtils.setIndex(model, TabModelUtils.getTabIndexById(model, tabId));
+            }
+            return;
+        } else if (isFromReparenting) {
+            // The tabState should be ignored in this case, but it may still be null; as a
+            // precaution, fall back to the TabState from the AsyncTabParams or a new instance if
+            // that still failed.
+            if (tabState == null) {
+                AsyncTabParams asyncParams =
+                        AsyncTabParamsManagerSingleton.getInstance()
+                                .getAsyncTabParams()
+                                .get(tabToRestore.id);
+                if (asyncParams != null && asyncParams.getTabToReparent() != null) {
+                    tabState = TabStateExtractor.from(asyncParams.getTabToReparent());
+                }
+            }
+            assert tabState != null : "Reparenting with no valid TabState should not happen.";
+            tab =
+                    createTabFromReparentingOrTabState(
+                            tabState, tabToRestore, restoredIndex, isIncognito);
+            recordRestorationResult(tab, TabRestoreMethod.REPARENTING);
+        } else if (tabState != null) {
             if (tabState.contentsState != null) {
                 tabState.contentsState.setFallbackUrlForRestorationFailure(tabToRestore.url);
             }
 
-            if (tabState.legacyFileToDelete != null
-                    && mLegacyTabStateFilesToDelete.size()
-                            < MAX_FILES_DELETED_PER_SESSION_LEGACY_TABSTATE) {
-                mLegacyTabStateFilesToDelete.add(tabState.legacyFileToDelete);
-                tabState.legacyFileToDelete = null;
-            }
-
-            @TabRestoreMethod int tabRestoreMethod = TabRestoreMethod.TAB_STATE;
-            RecordHistogram.recordEnumeratedHistogram(
-                    "Tabs.TabRestoreMethod", tabRestoreMethod, TabRestoreMethod.NUM_ENTRIES);
-            Tab tab =
-                    mTabCreatorManager
-                            .getTabCreator(isIncognito)
-                            .createFrozenTab(tabState, tabToRestore.id, restoredIndex);
-            if (tab == null) return;
-            if (setAsActive) {
-                for (TabPersistentStoreObserver observer : mObservers) {
-                    observer.onActiveTabLoaded(isIncognito);
-                }
-            }
-
-            if (tabState.shouldMigrate) {
-                mTabsToMigrate.add(tab);
-            }
-
-            if (!isIncognito) {
-                RecordHistogram.recordBooleanHistogram(
-                        "Tabs.TabRestoreUrlMatch", tabToRestore.url.equals(tab.getUrl().getSpec()));
-            }
-
-            mSeenTabIds.add(tabId);
+            tab =
+                    createTabFromReparentingOrTabState(
+                            tabState, tabToRestore, restoredIndex, isIncognito);
+            recordRestorationResult(tab, TabRestoreMethod.TAB_STATE);
         } else {
-            Log.w(TAG, "Failed to restore TabState; creating Tab with last known URL.");
+            Log.w(
+                    TAG,
+                    "Failed to restore TabState and not reparenting; creating Tab with last known"
+                            + " URL.");
+            TabCreator tabCreator = mTabCreatorManager.getTabCreator(isIncognito);
             if (!isIncognito) {
-                TabCreator tabCreator = mTabCreatorManager.getTabCreator(isIncognito);
                 if (tabCreator instanceof RecordingTabCreator recordingTabCreator) {
-                    recordingTabCreator
-                            .recordFallbackTab(tabToRestore.id, tabToRestore.url);
+                    recordingTabCreator.recordFallbackTab(tabToRestore.id, tabToRestore.url);
                 }
             }
-            Tab fallbackTab =
-                    mTabCreatorManager
-                            .getTabCreator(isIncognito)
-                            .createNewTab(
-                                    new LoadUrlParams(tabToRestore.url),
-                                    TabLaunchType.FROM_RESTORE,
-                                    null,
-                                    restoredIndex);
-
-            if (fallbackTab == null) {
-                RecordHistogram.recordEnumeratedHistogram(
-                        "Tabs.TabRestoreMethod",
-                        TabRestoreMethod.FAILED_TO_RESTORE,
-                        TabRestoreMethod.NUM_ENTRIES);
-                return;
-            }
-
-            if (setAsActive) {
-                for (TabPersistentStoreObserver observer : mObservers) {
-                    observer.onActiveTabLoaded(isIncognito);
-                }
-            }
-
-            RecordHistogram.recordEnumeratedHistogram(
-                    "Tabs.TabRestoreMethod",
-                    TabRestoreMethod.CREATE_NEW_TAB,
-                    TabRestoreMethod.NUM_ENTRIES);
+            LoadUrlParams params = new LoadUrlParams(tabToRestore.url);
+            params.setIsRendererInitiated(true);
+            params.setInitiatorOrigin(Origin.createOpaqueOrigin());
+            tab =
+                    tabCreator.createNewTab(
+                            params, TabLaunchType.FROM_RESTORE, /* parent= */ null, restoredIndex);
+            recordRestorationResult(tab, TabRestoreMethod.CREATE_NEW_TAB);
 
             // restoredIndex might not be the one used in createNewTab so update accordingly.
-            tabId = fallbackTab.getId();
-            restoredIndex = model.indexOf(fallbackTab);
+            if (tab != null) {
+                tabId = tab.getId();
+                restoredIndex = model.indexOf(tab);
+            }
+        }
+
+        if (tab == null) {
+            Log.w(TAG, "Failed to restore tab %d: tab is null.", tabToRestore.id);
+            return;
+        }
+
+        if (setAsActive) {
+            notifyActiveTabLoaded(isIncognito);
+        }
+
+        if (!isIncognito && (isFromReparenting || tabState != null)) {
+            GURL tabUrl = tab.getUrl();
+            RecordHistogram.recordBooleanHistogram(
+                    "Tabs.TabRestoreUrlMatch",
+                    tabUrl != null && tabToRestore.url.equals(tabUrl.getSpec()));
+        }
+
+        if (isFromReparenting || tabState != null) {
+            mSeenTabIds.add(tabId);
         }
 
         // If the tab is being restored from a merge and its index is 0, then the model being
@@ -912,6 +1003,7 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
 
     @Override
     public void clearState() {
+        mSeenTabUrlMap = null;
         new TabPersistentStoreImplCleaner().clearState(mPersistencePolicy, mSequencedTaskRunner);
         onStateLoaded();
     }
@@ -946,11 +1038,6 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         @DirtinessState int dirtinessState = tabStateAttributes.getDirtinessState();
         if (mTabsToSave.contains(tab) || dirtinessState == DirtinessState.CLEAN) {
             return;
-        }
-
-        if (mSaveTabTask != null && mSaveTabTask.mId == tab.getId()) {
-            RecordHistogram.recordCount100Histogram(
-                    "Tabs.PotentialDoubleDirty.SaveQueueSize", mTabsToSave.size());
         }
 
         mTabsToSave.addLast(tab);
@@ -1008,10 +1095,51 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         return null;
     }
 
+    private boolean maybeRestoreBackgroundTab(
+            TabRestoreDetails tabToRestore,
+            int restoredIndex,
+            @Nullable TabState tabState,
+            boolean isIncognito,
+            boolean setAsActive) {
+        if (!BackgroundTabRestorationHelper.shouldIntercept(
+                        mOrchestratorType, isIncognito, mIsAuthoritative)
+                || !mBackgroundTabIds.contains(tabToRestore.id)) {
+            return false;
+        }
+
+        Tab tab =
+                BackgroundTabRestorationHelper.maybeRestoreBackgroundTab(
+                        mOrchestratorType,
+                        mTabModelSelector,
+                        tabToRestore.id,
+                        restoredIndex,
+                        tabState,
+                        mIsAuthoritative);
+        if (tab == null) return false;
+
+        if (setAsActive) {
+            notifyActiveTabLoaded(isIncognito);
+        }
+        mSeenTabIds.add(tabToRestore.id);
+        if (tab.getId() != tabToRestore.id) {
+            mSeenTabIds.add(tab.getId());
+        }
+        return true;
+    }
+
+    private void notifyActiveTabLoaded(boolean isIncognito) {
+        for (TabPersistentStoreObserver observer : mObservers) {
+            observer.onActiveTabLoaded(isIncognito);
+        }
+    }
+
     @SuppressWarnings("NullAway")
     @Override
     public void destroy() {
         mDestroyed = true;
+        mBackgroundTabIds = Collections.emptySet();
+        mRemainingBackgroundTabIds = Collections.emptySet();
+        mBackgroundTabsInitialized = false;
         if (mTabModelObserver != null) {
             mTabModelSelector.getModel(false).removeObserver(mTabModelObserver);
             mTabModelSelector.getModel(true).removeObserver(mTabModelObserver);
@@ -1029,6 +1157,7 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         }
         mTabsToSave.clear();
         mTabsToRestore.clear();
+        mSeenTabUrlMap = null;
         if (mSaveTabTask != null) mSaveTabTask.cancel(false);
         // Same reason as mTabBatchLoader: SaveListTask writes via FileChannel.
         if (mSaveListTask != null) mSaveListTask.cancel(false);
@@ -1040,6 +1169,26 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         // done as part of the standard tab removal process.
     }
 
+    private boolean shouldAccessActiveTabPrefs() {
+        return !ChromeFeatureList.sAndroidTabPersistentStoreActiveTabPrefs.isEnabled()
+                || (mIsAuthoritative && mOrchestratorType == TabOrchestratorType.TABBED);
+    }
+
+    private void saveActiveTabPrefs(TabModelMetadata normalModelMetadata) {
+        // Cache the active tab id to be pre-loaded next launch.
+        @TabId int activeTabId = Tab.INVALID_TAB_ID;
+        @ActiveTabState int activeTabState = ActiveTabState.EMPTY;
+        int activeIndex = normalModelMetadata.index;
+        if (activeIndex >= 0 && activeIndex < normalModelMetadata.ids.size()) {
+            activeTabId = normalModelMetadata.ids.get(activeIndex);
+            activeTabState =
+                    UrlUtilities.isNtpUrl(normalModelMetadata.urls.get(activeIndex))
+                            ? ActiveTabState.NTP
+                            : ActiveTabState.OTHER;
+        }
+        saveTabModelPrefs(activeTabId, activeTabState);
+    }
+
     private TabModelSelectorMetadata extractTabMetadata() throws IOException {
         List<TabRestoreDetails> tabsToRestore = new ArrayList<>();
 
@@ -1048,8 +1197,15 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         if (mTabBatchLoader != null) tabsToRestore.addAll(mTabBatchLoader.getTabsInBatch());
         tabsToRestore.addAll(mTabsToRestore);
 
-        return extractTabMetadataFromSelector(
-                mTabModelSelector, tabsToRestore, mPersistencePolicy.isRecreating());
+        TabModelSelectorMetadata metadata =
+                extractTabMetadataFromSelector(
+                        mTabModelSelector, tabsToRestore, mPersistencePolicy.isRecreating());
+
+        if (shouldAccessActiveTabPrefs()) {
+            saveActiveTabPrefs(metadata.normalModelMetadata);
+        }
+
+        return metadata;
     }
 
     private void saveListToFile(TabModelSelectorMetadata listData) {
@@ -1230,7 +1386,7 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
                     ThreadUtils.assertOnBackgroundThread();
                     for (File fileToDelete : filesToDelete) {
                         if (fileToDelete.exists() && !fileToDelete.delete()) {
-                            Log.e(TAG, "Error deleting " + fileToDelete);
+                            Log.e(TAG, "Error deleting %s", fileToDelete);
                         }
                     }
                 });
@@ -1480,29 +1636,21 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         if (mTabBatchLoader != null) return;
 
         if (mTabsToRestore.isEmpty()) {
+            restoreRemainingBackgroundTabs();
             mNormalTabsRestored = null;
             mIncognitoTabsRestored = null;
             mLoadInProgress = false;
 
             // If tabs are done being merged into this instance, save the tab metadata file for this
-            // TabPersistentStore and delete the metadata file for the other instance, then notify
-            // observers.
+            // TabPersistentStore and delete the metadata file for the other instance.
             if (mPersistencePolicy.isMergeInProgress()) {
-                PostTask.postTask(
-                        TaskTraits.UI_DEFAULT,
-                        new Runnable() {
-                            @Override
-                            public void run() {
-                                // This eventually calls saveTabModelSelectorMetadata() which much
-                                // be called from the UI thread. #mergeState() starts an async task
-                                // in the background that goes through this code path.
-                                saveTabListAsynchronously();
-                            }
-                        });
+                // This eventually calls saveTabModelSelectorMetadata() which must
+                // be called from the UI thread. #mergeState() starts an async task
+                // in the background that goes through this code path.
+                PostTask.postTask(TaskTraits.UI_DEFAULT, this::saveTabListAsynchronously);
                 for (String mergedFileName : new HashSet<>(mMergedFileNames)) {
                     deleteFileAsync(mergedFileName);
                 }
-                for (TabPersistentStoreObserver observer : mObservers) observer.onStateMerged();
             }
 
             recordLegacyTabCountMetrics();
@@ -1525,13 +1673,26 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
                 saveState();
             }
         } else {
-            ArrayList<TabRestoreDetails> details = new ArrayList<>();
+            List<TabRestoreDetails> details = new ArrayList<>(BATCH_RESTORE_SIZE);
             for (int i = 0; i < BATCH_RESTORE_SIZE && !mTabsToRestore.isEmpty(); i++) {
                 details.add(mTabsToRestore.removeFirst());
             }
             mTabBatchLoader = new TabBatchLoader(details);
             mTabBatchLoader.load();
         }
+    }
+
+    private void restoreRemainingBackgroundTabs() {
+        List<Tab> remainingTabs =
+                BackgroundTabRestorationHelper.restoreRemainingBackgroundTabs(
+                        mOrchestratorType,
+                        mTabModelSelector,
+                        mRemainingBackgroundTabIds,
+                        mIsAuthoritative);
+        for (Tab tab : remainingTabs) {
+            mSeenTabIds.add(tab.getId());
+        }
+        mRemainingBackgroundTabIds = Collections.emptySet();
     }
 
     private void recordDuplicateTabIdMetrics() {
@@ -1585,12 +1746,15 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
     }
 
     private void recordUniqueTabUrlMetrics() {
+        Map<String, Integer> seenTabUrlMap = mSeenTabUrlMap;
+        if (seenTabUrlMap == null) return;
+        mSeenTabUrlMap = null;
+
         String clientTag = toClientTag(mOrchestratorType);
-        for (Entry<String, Integer> entry : mSeenTabUrlMap.entrySet()) {
+        for (Entry<String, Integer> entry : seenTabUrlMap.entrySet()) {
             RecordHistogram.recordCount1000Histogram(
                     "Tabs.Startup.UniqueUrlCount." + clientTag, entry.getValue());
         }
-        mSeenTabUrlMap.clear();
     }
 
     /**
@@ -1754,9 +1918,9 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         private @Nullable TabState restoreTabState(TabRestoreDetails details) {
             try {
                 return TabStateFileManager.restoreTabState(
-                        getStateDirectory(), details.id, mCipherFactory);
+                        getStateDirectory(), details.id, mCipherFactory, details.isIncognito);
             } catch (Exception e) {
-                Log.w(TAG, "Unable to read state: " + e);
+                Log.w(TAG, "Unable to read state: %s", e);
                 return null;
             }
         }
@@ -1848,7 +2012,8 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
     }
 
     private void startPrefetchActiveTabTask(TaskRunner taskRunner) {
-        final int activeTabId =
+        if (!shouldAccessActiveTabPrefs()) return;
+        final @TabId int activeTabId =
                 ChromeSharedPreferences.getInstance()
                         .readInt(ChromePreferenceKeys.TABMODEL_ACTIVE_TAB_ID, Tab.INVALID_TAB_ID);
         if (activeTabId == Tab.INVALID_TAB_ID) return;
@@ -1856,13 +2021,14 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
     }
 
     @SuppressWarnings("NullAway") // executeOnTaskRunner() drops null information.
-    private void prefetchActiveTabTask(int activeTabId, TaskRunner taskRunner) {
+    private void prefetchActiveTabTask(@TabId int activeTabId, TaskRunner taskRunner) {
+        mPrefetchedActiveTabId = activeTabId;
         mPrefetchTabStateActiveTabTask =
                 new BackgroundOnlyAsyncTask<@Nullable TabState>() {
                     @Override
                     protected @Nullable TabState doInBackground() {
                         return TabStateFileManager.restoreTabState(
-                                getStateDirectory(), activeTabId, mCipherFactory);
+                                getStateDirectory(), activeTabId, mCipherFactory, TriState.NOT_SET);
                     }
                 }.executeOnTaskRunner(taskRunner);
     }
@@ -1902,32 +2068,18 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         // TODO(crbug.com/40549331): Convert TabModelMetadata to use GURL.
         TabModelMetadata incognitoInfo = metadataFromModel(selector, true, isRecreating);
 
-        TabModel normalModel = selector.getModel(false);
         TabModelMetadata normalInfo = metadataFromModel(selector, false, isRecreating);
-
-        // Cache the active tab id to be pre-loaded next launch.
-        int activeTabId = Tab.INVALID_TAB_ID;
-        int activeIndex = normalModel.index();
-        @ActiveTabState int activeTabState = ActiveTabState.EMPTY;
-        if (activeIndex != TabList.INVALID_TAB_INDEX) {
-            Tab activeTab = normalModel.getTabAtChecked(activeIndex);
-            activeTabId = activeTab.getId();
-            activeTabState =
-                    UrlUtilities.isNtpUrl(activeTab.getUrl())
-                            ? ActiveTabState.NTP
-                            : ActiveTabState.OTHER;
-        }
 
         // Add information about the tabs that haven't finished being loaded. We shouldn't have to
         // worry about Tab duplication because the tab details are processed only on the UI Thread.
         if (tabsBeingRestored != null) {
             for (TabRestoreDetails details : tabsBeingRestored) {
-                // isIncognito was added in M61 (see https://crbug.com/40417122), so it is extremely
-                // unlikely that isIncognito will be null. But if it is, assume that the tab is
-                // incognito so that #restoreTab() will require a tab state file on disk to
-                // restore. If a tab state file exists and the tab is not actually incognito, it
-                // will be restored in the normal tab model. If a tab state file does not exist,
-                // the tab will not be restored.
+                // isIncognito was added in M61 (see https://crbug.com/40417122), so it is
+                // extremely unlikely that isIncognito will be TriState.NOT_SET. But if it is,
+                // assume that the tab is incognito so that #restoreTab() will require a tab
+                // state file on disk to restore. If a tab state file exists and the tab is not
+                // actually incognito, it will be restored in the normal tab model. If a tab state
+                // file does not exist, the tab will not be restored.
                 if (details.isIncognito != TriState.FALSE) {
                     incognitoInfo.ids.add(details.id);
                     incognitoInfo.urls.add(details.url);
@@ -1944,9 +2096,6 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
                 normalInfo.ids.size(),
                 incognitoInfo.ids.size());
 
-        // TODO(https://crbug.com/445197903): This is a modification to shared prefs that may not be
-        // correct if this store isn't authoritative. Move this into an observer.
-        saveTabModelPrefs(activeTabId, activeTabState);
         return new TabModelSelectorMetadata(normalInfo, incognitoInfo);
     }
 
@@ -2045,6 +2194,10 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
         return mTabsToMigrate;
     }
 
+    protected Deque<File> getLegacyTabStateFilesToDeleteForTesting() {
+        return mLegacyTabStateFilesToDelete;
+    }
+
     public SequencedTaskRunner getTaskRunnerForTesting() {
         return mSequencedTaskRunner;
     }
@@ -2068,6 +2221,10 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
 
     public void setSequencedTaskRunnerForTesting(SequencedTaskRunner sequencedTaskRunner) {
         mSequencedTaskRunner = sequencedTaskRunner;
+    }
+
+    @Nullable Map<String, Integer> getSeenTabUrlMapForTesting() {
+        return mSeenTabUrlMap;
     }
 
     /** Information about a tab in a closed window instance. */
@@ -2124,7 +2281,7 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
             TabMetadataFileManager.readSavedMetadataFile(
                     stream, createClosedWindowTabReader(tabs), /* tabIds= */ null);
         } catch (Exception e) {
-            Log.i(TAG, "getTabListForClosedWindowSync exception: " + e.toString(), e);
+            Log.i(TAG, "getTabListForClosedWindowSync exception: %s", e.toString(), e);
         } finally {
             StreamUtil.closeQuietly(stream);
         }
@@ -2173,14 +2330,14 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
                             // well as those that reside in sub directories.
                             if (!baseStateFile.isDirectory()) {
                                 if (!baseStateFile.delete()) {
-                                    Log.e(TAG, "Failed to delete file: " + baseStateFile);
+                                    Log.e(TAG, "Failed to delete file: %s", baseStateFile);
                                 }
                             } else {
                                 File[] files = baseStateFile.listFiles();
                                 if (files == null) continue;
                                 for (File file : files) {
                                     if (!file.delete()) {
-                                        Log.e(TAG, "Failed to delete file: " + file);
+                                        Log.e(TAG, "Failed to delete file: %s", file);
                                     }
                                 }
                             }
@@ -2250,7 +2407,7 @@ public class TabPersistentStoreImpl implements TabPersistentStore {
             ThreadUtils.assertOnBackgroundThread();
             File stateFile = new File(getStateDirectory(persistencePolicy), file);
             if (stateFile.exists()) {
-                if (!stateFile.delete()) Log.e(TAG, "Failed to delete file: " + stateFile);
+                if (!stateFile.delete()) Log.e(TAG, "Failed to delete file: %s", stateFile);
 
                 // The merge isn't completely finished until the other TabPersistentStores'
                 // metadata files are deleted.

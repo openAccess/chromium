@@ -31,10 +31,14 @@ consoles.list_view(
     name = "tryserver.chromium.fuzz",
 )
 
-def _builder(mirror_of = None, **kwargs):
+def _builder(mirror_of = None, extra_gn_configs = [], **kwargs):
+    if kwargs.get("os", os.LINUX_DEFAULT) == os.LINUX_DEFAULT:
+        kwargs.setdefault("ssd", True)
     try_.builder(
         mirrors = [mirror_of],
-        gn_args = mirror_of,
+        gn_args = gn_args.config(
+            configs = [mirror_of] + extra_gn_configs,
+        ),
         **kwargs
     )
 
@@ -47,13 +51,29 @@ def _mirror_builder(name = None, **kwargs):
         **kwargs
     )
 
+def _fuzzer_upload_mirror_builder(**kwargs):
+    """Defines a trybot that mirrors a CI fuzzer upload builder."""
+    _mirror_builder(
+        executable = "recipe:chromium/fuzz",
+        # Matches the other fuzzer trybots that mirror CI fuzzer upload
+        # builders, e.g. linux-libfuzzer-asan-rel and mac-libfuzzer-asan-rel.
+        extra_gn_configs = [
+            "dcheck_always_on",
+            "no_symbols",
+            "skip_generate_fuzzer_owners",
+        ],
+        **kwargs
+    )
+
 _builder(
     name = "linux-asan-dbg",
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/ASAN Debug",
 )
 
 _builder(
     name = "linux-asan-rel",
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/ASAN Release",
 )
 
@@ -64,11 +84,13 @@ _builder(
 
 _builder(
     name = "linux-asan-v8-arm-rel",
+    contact_team_email = "v8-infra@google.com",
     mirror_of = "ci/ASan Release (32-bit x86 with V8-ARM)",
 )
 
 _builder(
     name = "linux-asan-media-v8-arm-rel",
+    contact_team_email = "v8-infra@google.com",
     mirror_of = "ci/ASan Release Media (32-bit x86 with V8-ARM)",
 )
 
@@ -80,36 +102,43 @@ _builder(
 
 _builder(
     name = "linux-chromeos-asan-rel",
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/ChromiumOS ASAN Release",
 )
 
 _builder(
     name = "linux-msan-chained-origins-rel",
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/MSAN Release (chained origins)",
 )
 
 _builder(
     name = "linux-msan-no-origins-rel",
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/MSAN Release (no origins)",
 )
 
 _builder(
     name = "linux-tsan-dbg",
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/TSAN Debug",
 )
 
 _builder(
     name = "linux-tsan-rel",
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/TSAN Release",
 )
 
 _builder(
     name = "linux-ubsan-rel",
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/UBSan Release",
 )
 
 _builder(
     name = "linux-ubsan-vptr-rel",
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/UBSan vptr Release",
 )
 
@@ -119,11 +148,26 @@ _mirror_builder(name = "android-desktop-x64-asan-rel")
 
 _mirror_builder(name = "android-arm64-libfuzzer-hwasan", executable = "recipe:chromium/fuzz")
 
+_fuzzer_upload_mirror_builder(
+    name = "mac-arm64-libfuzzer-asan-rel",
+    cores = None,
+    os = os.MAC_DEFAULT,
+    cpu = cpu.ARM64,
+)
+
+_fuzzer_upload_mirror_builder(
+    name = "mac-arm64-centipede-asan-rel",
+    cores = None,
+    os = os.MAC_DEFAULT,
+    cpu = cpu.ARM64,
+)
+
 _builder(
     name = "mac-asan-rel",
     cores = None,
     os = os.MAC_DEFAULT,
     cpu = cpu.ARM64,
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/Mac ASAN Release",
 )
 
@@ -147,52 +191,15 @@ _builder(
 _builder(
     name = "win-asan-rel",
     os = os.WINDOWS_DEFAULT,
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/Win ASan Release",
 )
 
 _builder(
     name = "win-asan-media-rel",
     os = os.WINDOWS_DEFAULT,
+    contact_team_email = "chrome-sanitizer-builder-owners@google.com",
     mirror_of = "ci/Win ASan Release Media",
-)
-
-try_.builder(
-    name = "linux-centipede-high-end-asan-dcheck",
-    mirrors = ["ci/Centipede High End Upload Linux ASan DCheck"],
-    gn_args = gn_args.config(
-        configs = [
-            "ci/Centipede High End Upload Linux ASan DCheck",
-            "no_symbols",
-            "skip_generate_fuzzer_owners",
-        ],
-    ),
-    contact_team_email = "chrome-fuzzing-core@google.com",
-)
-
-try_.builder(
-    name = "linux-libfuzzer-high-end-asan-rel",
-    mirrors = ["ci/Libfuzzer High End Upload Linux ASan"],
-    gn_args = gn_args.config(
-        configs = [
-            "ci/Libfuzzer High End Upload Linux ASan",
-            "no_symbols",
-            "skip_generate_fuzzer_owners",
-        ],
-    ),
-    contact_team_email = "chrome-fuzzing-core@google.com",
-)
-
-try_.builder(
-    name = "linux-libfuzzer-high-end-asan-dbg",
-    mirrors = ["ci/Libfuzzer High End Upload Linux ASan Debug"],
-    gn_args = gn_args.config(
-        configs = [
-            "ci/Libfuzzer High End Upload Linux ASan Debug",
-            "no_symbols",
-            "skip_generate_fuzzer_owners",
-        ],
-    ),
-    contact_team_email = "chrome-fuzzing-core@google.com",
 )
 
 # Libfuzzer test bots.
@@ -239,3 +246,12 @@ _test_builder(
 )
 
 _test_builder(name = "linux-x64-centipede-asan-rel-tests")
+
+# TODO(crbug.com/552017873): Change this to a _test_builder once it is reliably
+# green.
+_mirror_builder(
+    name = "mac-arm64-centipede-asan-rel-tests",
+    cores = None,
+    os = os.MAC_DEFAULT,
+    cpu = cpu.ARM64,
+)

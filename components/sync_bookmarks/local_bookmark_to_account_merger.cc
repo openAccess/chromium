@@ -8,12 +8,12 @@
 #include <cstddef>
 #include <list>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "base/containers/adapters.h"
 #include "base/containers/flat_set.h"
 #include "base/feature_list.h"
 #include "base/hash/hash.h"
@@ -23,6 +23,7 @@
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/sync_bookmarks/bookmark_model_view.h"
 #include "components/sync_bookmarks/bookmark_specifics_conversions.h"
+#include "components/sync_bookmarks/scoped_bookmark_extensive_changes.h"
 #include "components/sync_bookmarks/switches.h"
 #include "ui/base/models/tree_node_iterator.h"
 #include "url/gurl.h"
@@ -132,11 +133,7 @@ void LocalBookmarkToAccountMerger::MoveAndMergeSpecificSubtrees(
 
 void LocalBookmarkToAccountMerger::MoveAndMergeInternal(
     std::optional<std::set<int64_t>> permanent_folder_child_ids_to_merge) {
-  // Notify UI intensive observers of BookmarkModel that we are about to make
-  // potentially significant changes to it, so the updates may be batched. For
-  // example, on Mac, the bookmarks bar displays animations when bookmark items
-  // are added or deleted.
-  model_->BeginExtensiveChanges();
+  ScopedBookmarkExtensiveChanges extensive_changes(*model_);
 
   // Algorithm description:
   // Match up the roots and recursively do the following:
@@ -175,8 +172,6 @@ void LocalBookmarkToAccountMerger::MoveAndMergeInternal(
                  !permanent_folder_child_ids_to_merge->contains(child->id());
         }));
   }
-
-  model_->EndExtensiveChanges();
 }
 
 void LocalBookmarkToAccountMerger::RemoveChildrenAtForTesting(
@@ -212,7 +207,7 @@ void LocalBookmarkToAccountMerger::RemoveChildrenAt(
   // lead to quadratic behavior. However, A/B experiments via variations led to
   // the conclusion that this simple implementation isn't slower than more
   // sophisticated variants, even at high percentiles.
-  for (size_t index : base::Reversed(indices_to_remove)) {
+  for (size_t index : std::views::reverse(indices_to_remove)) {
     const bookmarks::BookmarkNode* child = parent->children().at(index).get();
     model_->Remove(child, kEditSourceForMetrics, location);
   }

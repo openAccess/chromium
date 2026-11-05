@@ -462,18 +462,6 @@ Its
 [`layoutchange`](https://github.com/WICG/keyboard-map/blob/main/explainer.md#layoutchange-event)
 event originates from if the system changes its keyboard layout.
 
-### ✅ Browsing Topics: no risk
-*Feature: kBrowsingTopics, kBrowsingTopicsBackwardCompatible*
-
-No arbitrary data can be logged as a browsing topic; there are a [fixed number
-of
-topics](https://privacysandbox.com/proposals/topics/#:~:text=The%20updated%20list%20contains%20around%20469%20topics)
-that can be joined. The browser also [has the final
-say](https://privacysandbox.com/proposals/topics/#:~:text=For%20example%2C%20the%20browser%20would%20match%20a%20sports%20website%20with%20the%20topic%20%22Sports%22.)
-on what topics are shown to a context, which prevents arbitrary data from being
-exfiltrated out of a frame. The fixed number of topics removes any potential
-fingerprinting vectors.
-
 ### 🖐️ Local Fonts: fingerprinting risk, no exfiltration risk
 *Feature: kLocalFonts*
 
@@ -481,23 +469,6 @@ There is no way to send data out of a fenced frame using this method. This just
 involves getting information about installed fonts from the operating system.
 This can be used for fingerprinting since installed fonts are unique to each
 computer.
-
-### 🔺🖐️ Shared Storage selectURL(): exfiltration/fingerprinting risk, no infiltration risk
-*Feature: kSharedStorage, kSharedStorageSelectUrl*
-
-There is no infiltration risk, as enabling this feature inside a fenced frame
-will have no effect on what information about the embedder is available to the
-frame.
-
-There is no exfiltration or fingerprinting risk directly to the embedder with
-this API, as it is set up (both through worklets and rendering selectURL result
-in a fenced frame) to prevent the sensitive data it keeps from being exfiltrated
-and joined with cross-site data. However, there is the possibility of leaking 3
-bits per `selectURL()` invocation. One of 8 URLs that can be input to
-`selectURL()` gets selected based on cross-site data, and the existence of the
-resulting frame and the URL that was picked can be leaked via network requests
-from the result rendering fenced frame. This is an ongoing privacy consideration
-for fenced frames.
 
 ### 🔺🖐️ Shared Storage get(): no risk
 *Feature: Deprecated unpartitioned access feature*

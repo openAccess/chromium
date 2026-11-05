@@ -10,9 +10,11 @@ import android.content.res.Configuration;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import androidx.annotation.ColorInt;
+import androidx.annotation.Px;
 
 import org.chromium.base.Callback;
 import org.chromium.base.supplier.NonNullObservableSupplier;
@@ -20,7 +22,10 @@ import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker.LayerScrollBehavior;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityManager;
 import org.chromium.chrome.browser.layouts.LayoutStateProvider;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
@@ -34,7 +39,7 @@ import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarCoordinator;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarMediator;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
-import org.chromium.ui.modaldialog.ModalDialogManager;
+import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 
 /**
  * Container for the bottom bar.
@@ -49,12 +54,18 @@ public class BottomBarContainerCoordinator
     private final Callback<Boolean> mRequestLayerUpdateCallback;
     private final BottomBarCoordinator mBottomBarCoordinator;
     private final Handler mHandler;
-    private final Runnable mModelTokenChangeRunnable = this::onModelTokenChange;
+    private final Runnable mModelTokenChangeRunnable =
+            () -> {
+                mPendingVisibilityUpdate = false;
+                onModelTokenChange();
+            };
     private final ComponentCallbacks mComponentCallbacks =
             new ComponentCallbacks() {
                 @Override
                 public void onConfigurationChanged(Configuration newConfig) {
-                    if (newConfig.orientation == mCurrentOrientation) {
+                    if (newConfig.orientation == mCurrentOrientation
+                            && newConfig.screenWidthDp == mCurrentScreenWidthDp
+                            && newConfig.screenHeightDp == mCurrentScreenHeightDp) {
                         return;
                     }
 
@@ -62,6 +73,8 @@ public class BottomBarContainerCoordinator
                         mHandler.removeCallbacks(mModelTokenChangeRunnable);
                     }
                     mCurrentOrientation = newConfig.orientation;
+                    mCurrentScreenWidthDp = newConfig.screenWidthDp;
+                    mCurrentScreenHeightDp = newConfig.screenHeightDp;
                     mPendingVisibilityUpdate = true;
                     mHandler.post(mModelTokenChangeRunnable);
                 }
@@ -74,40 +87,54 @@ public class BottomBarContainerCoordinator
     private @Nullable Callback<Object> mOnModelTokenChange;
     private @Nullable BottomBarAppMenuUpdateBadgeController mAppMenuUpdateBadgeController;
     private boolean mIsVisible = true;
+    private @Px int mHeight;
     // Tracking if there is a pending visibility update to avoid scanning the whole queue.
     private boolean mPendingVisibilityUpdate;
     private int mCurrentOrientation;
+    private int mCurrentScreenWidthDp;
+    private int mCurrentScreenHeightDp;
 
     /**
-     * @param bottomBarContainer The {@link FrameLayout} for the bottom bar.
+     * @param bottomAppBarContainer The {@link ViewGroup} for the bottom app bar container.
      * @param requestLayerUpdateCallback A callback to request layer updates.
      * @param actionRegistry The {@link ActionRegistry}.
      * @param tabSupplier Supplier for the current tab.
      * @param themeColorProvider Theme color provider for the bottom bar.
      * @param homepageEnabledSupplier Supplier of whether the homepage is enabled.
      * @param profileSupplier Supplier of the current profile.
-     * @param countrySupplier Supplier of the latest variations country code.
      * @param omniboxFocusStateSupplier Supplier of the omnibox focus state.
-     * @param modalDialogManagerSupplier Supplier of the {@link ModalDialogManager}.
      * @param appMenuCoordinatorSupplier Supplier of the {@link AppMenuCoordinator}.
+     * @param layoutStateProvider The {@link LayoutStateProvider} to observe layout state changes.
+     * @param toolbarPositionSupplier Supplier of the current toolbar position.
+     * @param browserControlsVisibilityManager The {@link BrowserControlsVisibilityManager}.
+     * @param scrimManager The {@link ScrimManager}.
+     * @param controlContainer The control container view.
      */
     public BottomBarContainerCoordinator(
-            FrameLayout bottomBarContainer,
+            ViewGroup bottomAppBarContainer,
             Callback<Boolean> requestLayerUpdateCallback,
             ActionRegistry actionRegistry,
             NullableObservableSupplier<Tab> tabSupplier,
             ThemeColorProvider themeColorProvider,
             NonNullObservableSupplier<Boolean> homepageEnabledSupplier,
             NullableObservableSupplier<Profile> profileSupplier,
-            OneshotSupplier<String> countrySupplier,
             NonNullObservableSupplier<Boolean> omniboxFocusStateSupplier,
-            NonNullObservableSupplier<ModalDialogManager> modalDialogManagerSupplier,
             OneshotSupplier<AppMenuCoordinator> appMenuCoordinatorSupplier,
-            LayoutStateProvider layoutStateProvider) {
+            LayoutStateProvider layoutStateProvider,
+            NonNullObservableSupplier<@ControlsPosition Integer> toolbarPositionSupplier,
+            BrowserControlsVisibilityManager browserControlsVisibilityManager,
+            ScrimManager scrimManager,
+            View controlContainer) {
+        FrameLayout bottomBarContainer =
+                bottomAppBarContainer.findViewById(R.id.bottom_container_slot);
+        assert bottomBarContainer != null;
         mBottomBarContainer = bottomBarContainer;
         Context context = bottomBarContainer.getContext();
         mContext = context;
-        mCurrentOrientation = context.getResources().getConfiguration().orientation;
+        Configuration configuration = context.getResources().getConfiguration();
+        mCurrentOrientation = configuration.orientation;
+        mCurrentScreenWidthDp = configuration.screenWidthDp;
+        mCurrentScreenHeightDp = configuration.screenHeightDp;
         mContext.registerComponentCallbacks(mComponentCallbacks);
         mHandler = new Handler(Looper.getMainLooper());
         mRequestLayerUpdateCallback = requestLayerUpdateCallback;
@@ -121,10 +148,13 @@ public class BottomBarContainerCoordinator
                         homepageEnabledSupplier,
                         this,
                         profileSupplier,
-                        countrySupplier,
                         omniboxFocusStateSupplier,
-                        modalDialogManagerSupplier,
-                        layoutStateProvider);
+                        layoutStateProvider,
+                        toolbarPositionSupplier,
+                        browserControlsVisibilityManager,
+                        scrimManager,
+                        controlContainer,
+                        bottomAppBarContainer);
         if (BottomBarConfigUtils.shouldIncludeAppMenuButton()
                 && BottomBarConfigUtils.shouldShowAppMenuUpdateBadge()) {
             mAppMenuUpdateBadgeController =
@@ -139,6 +169,7 @@ public class BottomBarContainerCoordinator
             Callback<Object> onModelTokenChange) {
         mVisibilityController = visibilityController;
         mOnModelTokenChange = onModelTokenChange;
+        updateHeight();
         updateVisibility();
         onModelTokenChange();
     }
@@ -148,10 +179,8 @@ public class BottomBarContainerCoordinator
         if (mAppMenuUpdateBadgeController != null) {
             mAppMenuUpdateBadgeController.destroy();
         }
-        if (mPendingVisibilityUpdate) {
-            mHandler.removeCallbacks(mModelTokenChangeRunnable);
-            mPendingVisibilityUpdate = false;
-        }
+        mHandler.removeCallbacks(mModelTokenChangeRunnable);
+        mPendingVisibilityUpdate = false;
         mContext.unregisterComponentCallbacks(mComponentCallbacks);
         mBottomBarCoordinator.destroy();
     }
@@ -167,12 +196,18 @@ public class BottomBarContainerCoordinator
         if (mOnModelTokenChange != null) {
             mOnModelTokenChange.onResult(new Object());
         }
-        mPendingVisibilityUpdate = false;
     }
 
     @Override
     public void onBackgroundColorChanged() {
         mRequestLayerUpdateCallback.onResult(false);
+    }
+
+    @Override
+    public void onHeightChanged(@Px int height) {
+        if (mHeight == height) return;
+        mHeight = height;
+        updateHeight();
     }
 
     @Override
@@ -196,6 +231,12 @@ public class BottomBarContainerCoordinator
 
         onModelTokenChange();
         mRequestLayerUpdateCallback.onResult(true);
+    }
+
+    private void updateHeight() {
+        if (mVisibilityController != null && mHeight > 0) {
+            mVisibilityController.setBottomControlsHeight(mHeight);
+        }
     }
 
     private void updateVisibility() {

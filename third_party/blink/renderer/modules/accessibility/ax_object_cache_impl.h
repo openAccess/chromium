@@ -74,7 +74,6 @@ namespace blink {
 
 class AXBlockFlowData;
 class AXRelationCache;
-class AbstractInlineTextBox;
 class HTMLAreaElement;
 class WebLocalFrameClient;
 
@@ -200,6 +199,7 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
       ax_tree_source_->Thaw();
       ClearCachedNodesOnLine();
       radio_group_name_to_node_ids_.clear();
+      aria_radio_group_members_.clear();
     }
   }
   bool IsFrozen() const override { return frozen_count_; }
@@ -250,7 +250,6 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   // parent will recompute its children and be reserialized.
   void Remove(Node*) override;
   void RemovePopup(Document*) override;
-  void Remove(AbstractInlineTextBox*) override;
   // Remove an AXObject or its subtree, and if |notify_parent| is true,
   // recompute the parent's children and reserialize the parent.
   void Remove(AXObject*, bool notify_parent);
@@ -278,6 +277,11 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   void RemoveIncludedSubtree(AXObject* object, bool remove_root);
   // Remove all AXObjects in the layout subtree of node, and notify the parent.
   void RemoveAXObjectsInLayoutSubtree(LayoutObject* layout_object) override;
+  // Removes the AXObjects for an image's map children and marks the image and
+  // any ancestor caching them to update children. This doesn't notify or
+  // update relations, so it can run while other images still have stale map
+  // children.
+  void RemoveImageMapChildren(AXObject& image);
 
   // For any ancestor that could contain the passed-in AXObject* in their cached
   // children, clear their children and set needs to update children on them.
@@ -452,11 +456,9 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   AXObject* GetOrCreate(LayoutObject* layout_object);
   AXObject* GetOrCreate(const Node*, AXObject* parent) override;
   AXObject* GetOrCreate(Node*, AXObject* parent);
-  AXObject* GetOrCreate(AbstractInlineTextBox*, AXObject* parent);
   AXObject* GetOrCreate(AXBlockFlowIterator::FragmentIndex index,
                         AXObject* parent);
 
-  AXObject* Get(AbstractInlineTextBox*) const;
   AXObject* Get(const LayoutObject* object,
                 AXBlockFlowIterator::FragmentIndex index) const;
 
@@ -506,7 +508,7 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   void MaybeNewRelationTarget(Node& node, AXObject* obj);
 
   void HandleActiveDescendantChangedWithCleanLayout(Node*);
-  void SectionOrRegionRoleMaybeChangedWithCleanLayout(Node*);
+  void NameDependentRolesMaybeChangedWithCleanLayout(Node*);
   void TableCellRoleMaybeChanged(Node* node);
   void HandleRoleMaybeChangedWithCleanLayout(Node*);
   void HandleRoleChangeWithCleanLayout(Node*);
@@ -612,6 +614,12 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   // vector so that the next time it's called, it will only retrieve objects
   // that have changed since now.
   ui::AXLocationAndScrollUpdates TakeLocationChangsForSerialization();
+  bool HasPendingLocationChanges() const {
+    return !changed_bounds_ids_.empty();
+  }
+  bool HasPendingLocationChange(AXID id) const {
+    return changed_bounds_ids_.Contains(id);
+  }
 
   // Sends the location changes over mojo to the browser process.
   void SerializeLocationChanges();
@@ -652,6 +660,13 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   // to the serializer.
   bool HasObjectsPendingSerialization() const override {
     return !pending_objects_to_serialize_.empty();
+  }
+  void ClearObjectsPendingSerializationForTesting() {
+    pending_objects_to_serialize_.clear();
+    pending_events_to_serialize_.clear();
+  }
+  void ResetLifecycleForTesting() {
+    lifecycle_.EnsureStateAtMost(AXObjectCacheLifecycle::kDeferTreeUpdates);
   }
   bool IsDirty() override;
 
@@ -813,9 +828,18 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   // information is used.
   void ComputeNodesOnLine(const LayoutObject* layout_object);
 
-  // Returns the radio button group members for the given radio button.
+  // Returns the radio button group members for the given HTML radio button.
   HeapVector<Member<AXObject>> GetRadioButtonGroupMembers(
       HTMLInputElement* radio_button);
+
+  // Returns the list of radios contained within `radiogroup`.
+  HeapVector<Member<AXObject>> GetOrComputeAriaRadioButtonGroupMembers(
+      AXObject* radiogroup);
+
+  // Called when the children of `obj` changed. If `obj` is within an ARIA
+  // radiogroup, records the radiogroup so that all of its radios are marked
+  // dirty (their radioGroupIds may have changed) before the tree is finalized.
+  void AriaRadioGroupChildrenChanged(AXObject* obj);
 
   bool HasCachedDataForNodesOnLine() const {
     return !processed_blocks_.empty();
@@ -911,16 +935,12 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   // Helpers for CreateAndInit().
   AXObject* CreateFromRenderer(LayoutObject*);
   AXObject* CreateFromNode(Node*);
-  AXObject* CreateFromInlineTextBox(AbstractInlineTextBox*);
-  AXObject* CreateFromBlockFlowIterator(
-      AXBlockFlowIterator::FragmentIndex index);
 
   // Removes AXObject backed by passed-in object, if there is one.
   // It will also notify the parent that its children have changed, so that the
   // parent will recompute its children and be reserialized, unless
   // |notify_parent| is passed in as false.
   void Remove(LayoutObject*, bool notify_parent);
-  void Remove(AbstractInlineTextBox*, bool notify_parent);
   void Remove(const LayoutObject* object,
               AXBlockFlowIterator::FragmentIndex index,
               bool notify_parent);
@@ -1045,8 +1065,6 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   // layout_object_mapping_. When the AXObject is backed by a node, its
   // AXID can be looked up via node->GetDomNodeId().
   HeapHashMap<Member<const LayoutObject>, AXID> layout_object_mapping_;
-  HeapHashMap<Member<AbstractInlineTextBox>, AXID>
-      inline_text_box_object_mapping_;
 
   // A LayoutObject may be connected to one or more AXInlineTextBoxes.
   struct AXInlineTextBoxFragmentMapping {
@@ -1191,8 +1209,6 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   // If the presence of document markers changed for the given text node, then
   // call children changed.
   void HandleTextMarkerDataAddedWithCleanLayout(Node*);
-  void HandleUseMapAttributeChangedWithCleanLayout(Node*);
-  void HandleNameAttributeChanged(Node*);
 
   bool DoesEventListenerImpactIgnoredState(const AtomicString& event_type,
                                            const Node& node) const;
@@ -1313,6 +1329,11 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   // been requested.
   bool serialize_immediately_after_current_serialization_ = false;
 
+  // If true, an accessibility action requested immediate serialization, so
+  // ScheduleAXUpdate() may schedule a visual update even while the document is
+  // still loading.
+  bool serialize_immediately_for_action_ = false;
+
   // Maps ids to their object's autofill suggestion availability.
   HashMap<AXID, WebAXAutofillSuggestionAvailability>
       autofill_suggestion_availability_map_;
@@ -1338,6 +1359,27 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
 
   HeapHashMap<String, HeapVector<Member<RadioButtonGroup>>>
       radio_group_name_to_node_ids_;
+
+  // Cache of ARIA role=radio to role=radiogroup membership, keyed by the
+  // radiogroup AXObject's own AXID. Populated during serialization and
+  // cleared in every Thaw().
+  HashMap<AXID, Vector<AXID>> aria_radio_group_members_;
+
+  // ARIA radiogroups whose membership may have changed since the last
+  // serialization. Populated by AriaRadioGroupChildrenChanged() and processed
+  // by MarkAriaRadioGroupMembersDirty() before the tree is finalized.
+  HashSet<AXID> aria_radiogroups_with_changed_membership_;
+
+  // HTML radio button peers whose group had a member removed during immediate
+  // tree updates. Deferred to `MarkAriaRadioGroupMembersDirty()` so peer
+  // invalidation does not mutate ancestor subtrees during `RemoveSubtree()`.
+  HashSet<AXID> dirty_radio_button_peers_;
+
+  bool in_remove_subtree_ = false;
+
+  // Marks all radios in each radiogroup in
+  // `aria_radiogroups_with_changed_membership_` dirty, then clears it.
+  void MarkAriaRadioGroupMembersDirty();
 
   // The set of node IDs whose bounds has changed since the last time
   // SerializeLocationChanges was called.
@@ -1445,6 +1487,12 @@ class MODULES_EXPORT AXObjectCacheImpl : public AXObjectCacheBase {
   FRIEND_TEST_ALL_PREFIXES(AccessibilityTest, NodesRequiringCacheUpdate);
   FRIEND_TEST_ALL_PREFIXES(AccessibilityTest,
                            SetMenuListOptionsBoundsBasePickerClearsState);
+  FRIEND_TEST_ALL_PREFIXES(
+      AccessibilityTest,
+      SelectionSerializedBeforeNextActionWhileDocumentLoading);
+  FRIEND_TEST_ALL_PREFIXES(
+      AccessibilityTest,
+      CommitAXUpdatesPreservesSerializeImmediatelyAcrossParserPauseAndInFlight);
 
   // The ID of the object to fetch image data for.
   AXID image_data_node_id_ = ui::AXNodeData::kInvalidAXID;

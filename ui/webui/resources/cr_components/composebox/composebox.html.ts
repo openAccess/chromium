@@ -14,15 +14,14 @@ export function getHtml(this: ComposeboxElement) {
   ${!this.disableComposeboxAnimation ? html`
     <search-animated-glow id="animatedSearchElement"
         animation-state="${this.animationState}"
+        glow-mode="inner-glow"
         .coloredTicTacVoiceAnimationEnabled=
             "${this.voiceSearchCoherenceEnabled}"
         .isListening="${this.isListening}"
-        .entrypointName="${this.entrypointName}"
         .requiresVoice="${this.shouldShowVoiceSearchAnimation()}"
         .transcript="${this.transcript}"
         .receivedSpeech="${this.receivedSpeech}"
         .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
-        .isZeroState="${this.isZeroState}"
         .darkThemeColorsEnabled="${this.entrypointName !== ''}"
         .showingOnlyCarouselOnTopOfInput="${this.showFileCarousel
             && !this.inToolMode
@@ -57,8 +56,8 @@ export function getHtml(this: ComposeboxElement) {
                   <cr-composebox-tool-chip
                     exportparts="tool-chip-label"
                     .inputState="${this.inputState}"
-                    .isCanvasQuerySubmitted="
-                        ${this.isCanvasQuerySubmitted}"
+                    .isCanvasQuerySubmitted="${
+                        this.isCanvasQuerySubmitted}"
                     @tool-click="${this.onToolClick}"
                     part="tool-chip">
                   </cr-composebox-tool-chip>
@@ -119,7 +118,6 @@ export function getHtml(this: ComposeboxElement) {
                     id="carousel"
                     class="${this.carouselOnTop_ ? 'top' : ''}"
                     .files="${this.getFilteredCarouselFiles()}"
-                    ?enable-scrolling="${this.enableCarouselScrolling}"
                     @delete-file="${this.onDeleteFile}">
                   </cr-composebox-file-carousel> ` : ''}
                   ${this.searchboxLayoutMode === 'Compact' && !this.isOmniboxInCompactMode_ && this.hasTabs() ? html`
@@ -164,7 +162,7 @@ export function getHtml(this: ComposeboxElement) {
                 @selected-match-index-changed="${this.onSelectedMatchIndexChanged}"
                 @match-focusin="${this.onMatchFocusin}"
                 @match-click="${this.onMatchClick}"
-                ?hidden="${!this.showDropdown || !this.dropdownNeeded}"
+                ?hidden="${this.shouldHideDropdown()}"
                 .lastQueriedInput="${this.lastQueriedInput}">
             </cr-composebox-dropdown>
             ${this.searchboxLayoutMode === 'TallBottomContext' || this.searchboxLayoutMode === '' || this.isOmniboxInCompactMode_ ? html`

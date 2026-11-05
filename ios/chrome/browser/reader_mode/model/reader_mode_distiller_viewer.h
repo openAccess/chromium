@@ -10,16 +10,23 @@
 
 #import "base/scoped_observation.h"
 #import "components/dom_distiller/core/distilled_page_prefs.h"
-#import "ios/chrome/browser/dom_distiller/model/distiller_service.h"
-#import "ios/chrome/browser/dom_distiller/model/distiller_viewer_interface.h"
+#import "components/dom_distiller/core/dom_distiller_request_view_base.h"
+#import "ios/chrome/browser/web_distiller/model/distiller_service.h"
 #import "ios/web/public/web_state.h"
 
 class GURL;
 
 // An implementation of the DistillerViewer for pages that will update the
 // Reader Mode UI surface (e.g. fonts, themes) dynamically.
-class ReaderModeDistillerViewer : public DistillerViewerInterface {
+class ReaderModeDistillerViewer
+    : public dom_distiller::DomDistillerRequestViewBase {
  public:
+  using DistillationFinishedCallback =
+      base::OnceCallback<void(const GURL& url,
+                              const std::string& html,
+                              const std::string& title,
+                              const std::string& csp_nonce)>;
+
   // Creates a `DistillerView` without depending on the DistillerService.
   // Caller must provide `distiller_service` and `page` which cannot be null.
   // `callback` is called when distillation is finished with the protobuf
@@ -36,7 +43,7 @@ class ReaderModeDistillerViewer : public DistillerViewerInterface {
 
   ~ReaderModeDistillerViewer() override;
 
-  // DistillerViewerInterface implementation:
+  // dom_distiller::DomDistillerRequestViewBase implementation:
   // Called by the distiller service when article is ready.
   void OnArticleReady(
       const dom_distiller::DistilledArticleProto* article_proto) override;
@@ -51,12 +58,13 @@ class ReaderModeDistillerViewer : public DistillerViewerInterface {
       std::unique_ptr<dom_distiller::DistilledArticleProto> distilled_article,
       dom_distiller::DistillationParseResult result);
 
-  // Called by the distiller when article is updated.
-  void OnArticleDistillationUpdated(
-      const dom_distiller::ArticleDistillationUpdate& article_update);
-
   // The url of the distilled page.
   const GURL url_;
+  // CSP nonce for the viewer's inline script. The viewer document is
+  // committed at the original article's origin without HTTP response
+  // headers, so a nonce-based <meta> CSP is required to prevent untrusted
+  // markup from executing script at that origin.
+  const std::string csp_nonce_;
   // Callback to run once distillation is complete.
   DistillationFinishedCallback callback_;
   // Whether the page is sufficiently initialized to handle updates from the

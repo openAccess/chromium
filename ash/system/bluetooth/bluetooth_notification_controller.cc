@@ -24,6 +24,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "device/base/public/cpp/string_util.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/bluetooth/bluetooth_device.h"
 #include "device/bluetooth/chromeos/bluetooth_utils.h"
@@ -228,7 +229,8 @@ void BluetoothNotificationController::DisplayPinCode(
     const std::string& pincode) {
   std::u16string message = l10n_util::GetStringFUTF16(
       IDS_ASH_STATUS_TRAY_BLUETOOTH_DISPLAY_PINCODE,
-      device->GetNameForDisplay(), base::UTF8ToUTF16(pincode));
+      device::ContainStringForDisplay(device->GetNameForDisplay()),
+      base::UTF8ToUTF16(pincode));
 
   NotifyPairing(device, message, false);
 }
@@ -237,7 +239,7 @@ void BluetoothNotificationController::DisplayPasskey(BluetoothDevice* device,
                                                      uint32_t passkey) {
   std::u16string message = l10n_util::GetStringFUTF16(
       IDS_ASH_STATUS_TRAY_BLUETOOTH_DISPLAY_PASSKEY,
-      device->GetNameForDisplay(),
+      device::ContainStringForDisplay(device->GetNameForDisplay()),
       base::UTF8ToUTF16(base::StringPrintf("%06i", passkey)));
 
   NotifyPairing(device, message, false);
@@ -252,7 +254,7 @@ void BluetoothNotificationController::ConfirmPasskey(BluetoothDevice* device,
                                                      uint32_t passkey) {
   std::u16string message = l10n_util::GetStringFUTF16(
       IDS_ASH_STATUS_TRAY_BLUETOOTH_CONFIRM_PASSKEY,
-      device->GetNameForDisplay(),
+      device::ContainStringForDisplay(device->GetNameForDisplay()),
       base::UTF8ToUTF16(base::StringPrintf("%06i", passkey)));
 
   NotifyPairing(device, message, true);
@@ -262,7 +264,7 @@ void BluetoothNotificationController::AuthorizePairing(
     BluetoothDevice* device) {
   std::u16string message = l10n_util::GetStringFUTF16(
       IDS_ASH_STATUS_TRAY_BLUETOOTH_AUTHORIZE_PAIRING,
-      device->GetNameForDisplay());
+      device::ContainStringForDisplay(device->GetNameForDisplay()));
 
   NotifyPairing(device, message, true);
 }
@@ -340,7 +342,7 @@ void BluetoothNotificationController::NotifyPairing(
   std::unique_ptr<Notification> notification = CreateSystemNotificationPtr(
       message_center::NOTIFICATION_TYPE_SIMPLE, notification_id,
       std::u16string() /* title */, message,
-      std::u16string() /* display source */, GURL(),
+      std::u16string() /* display source */,
       message_center::NotifierId(
           message_center::NotifierType::SYSTEM_COMPONENT, kNotifierBluetooth,
           NotificationCatalogName::kBluetoothPairingRequest),

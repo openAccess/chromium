@@ -23,7 +23,7 @@ namespace content {
 class WebContents;
 }
 
-struct AccountInfo;
+class AccountInfo;
 class BrowserWindowInterface;
 class SigninUIError;
 
@@ -31,6 +31,8 @@ class SigninUIError;
 // bubble is shown or not).
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+//
+// LINT.IfChange(SigninInterceptionHeuristicOutcome)
 enum class SigninInterceptionHeuristicOutcome {
   // Interception succeeded:
   kInterceptProfileSwitch = 0,
@@ -38,8 +40,8 @@ enum class SigninInterceptionHeuristicOutcome {
   kInterceptEnterprise = 2,
 
   // Interception aborted:
-  // This is a "Sync" sign in and not a "web" sign in.
-  kAbortSyncSignin = 3,
+  // This is a sign in to Chrome flow and not a "web" sign in.
+  kAbortChromeSignin = 3,
   // Another interception is already in progress.
   kAbortInterceptInProgress = 4,
   // This is not a new account (reauth).
@@ -95,6 +97,7 @@ enum class SigninInterceptionHeuristicOutcome {
 
   kMaxValue = kAbortAccountConnected,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:SigninInterceptHeuristicOutcome)
 
 // Returns whether the heuristic outcome is a success (the signin should be
 // intercepted).
@@ -160,7 +163,10 @@ class WebSigninInterceptor {
     kEnterpriseAcceptManagement,
     kProfileSwitchForced,
     kChromeSignin,
-    kEnterpriseOIDC
+    kEnterpriseOIDC,
+    // Used when displaying the Chrome Signin bubble directly (e.g. from the
+    // 3-dots menu) rather than from a web sign-in interception.
+    kChromeSigninNonIntercept,
   };
 
   // Delegate class responsible for showing the various interception UIs.
@@ -177,11 +183,17 @@ class WebSigninInterceptor {
           bool show_managed_disclaimer = false,
           std::optional<
               signin::AccountPreviewDataService::AccountPreviewPreference>
-              account_preview_preference = std::nullopt);
+              account_preview_preference = std::nullopt,
+          std::optional<base::TimeDelta> account_preview_fetch_duration =
+              std::nullopt);
 
       BubbleParameters(const BubbleParameters& copy);
       BubbleParameters& operator=(const BubbleParameters&);
       ~BubbleParameters();
+
+      // Returns true if the bubble is a Chrome Signin bubble (`kChromeSignin`
+      // or `kChromeSigninNonIntercept`).
+      bool IsChromeSignin() const;
 
       SigninInterceptionType interception_type;
       AccountInfo intercepted_account;
@@ -191,11 +203,14 @@ class WebSigninInterceptor {
       bool show_managed_disclaimer;
       std::optional<signin::AccountPreviewDataService::AccountPreviewPreference>
           account_preview_preference;
+      std::optional<base::TimeDelta> account_preview_fetch_duration;
     };
 
     virtual ~Delegate() = default;
 
     // Returns whether the `web_contents` supports signin interception.
+    // Interception is supported in normal browser windows and popup windows
+    // (which support modal enterprise interception), but not in web apps.
     virtual bool IsSigninInterceptionSupported(
         const content::WebContents& web_contents) = 0;
 

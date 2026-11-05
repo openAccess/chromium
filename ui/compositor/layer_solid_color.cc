@@ -18,6 +18,8 @@
 
 namespace ui {
 
+DEFINE_SAFE_CAST_TARGET(LayerSolidColor)
+
 LayerSolidColor::LayerSolidColor() : Layer(LAYER_SOLID_COLOR) {
   solid_color_layer_ = cc::SolidColorLayer::Create();
   cc_layer_ = solid_color_layer_.get();
@@ -41,6 +43,8 @@ std::unique_ptr<Layer> LayerSolidColor::Clone() const {
   return clone;
 }
 
+void LayerSolidColor::SetFillsBoundsOpaquely(bool fills_bounds_opaquely) {}
+
 bool LayerSolidColor::ShouldSchedulePaint() const {
   return false;
 }
@@ -51,7 +55,7 @@ void LayerSolidColor::OnPaintScheduled() {
 
 void LayerSolidColor::SetShowReflectedLayerSubtree(
     Layer* subtree_reflected_layer) {
-  DCHECK(subtree_reflected_layer);
+  CHECK(subtree_reflected_layer, base::NotFatalUntil::M163);
   if (subtree_reflected_layer_ == subtree_reflected_layer) {
     return;
   }
@@ -71,7 +75,7 @@ void LayerSolidColor::SetShowReflectedLayerSubtree(
   subtree_reflected_layer_ = subtree_reflected_layer;
   auto insert_pair =
       subtree_reflected_layer_->subtree_reflecting_layers_.insert(this);
-  DCHECK(insert_pair.second);
+  CHECK(insert_pair.second, base::NotFatalUntil::M163);
 
   MatchLayerSize(subtree_reflected_layer_);
 
@@ -147,7 +151,7 @@ void LayerSolidColor::ResetSubtreeReflectedLayer() {
 
   size_t result =
       subtree_reflected_layer_->subtree_reflecting_layers_.erase(this);
-  DCHECK_EQ(1u, result);
+  CHECK_EQ(1u, result, base::NotFatalUntil::M163);
   subtree_reflected_layer_ = nullptr;
 }
 

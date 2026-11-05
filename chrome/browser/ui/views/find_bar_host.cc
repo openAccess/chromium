@@ -275,7 +275,7 @@ void FindBarHost::SetFindBarController(FindBarController* find_bar_controller) {
 
 void FindBarHost::Show(bool animate, bool focus) {
   RestoreOrCreateFocusTracker();
-  DCHECK(host_);
+  CHECK(host_, base::NotFatalUntil::M162);
 
   SetDialogPosition(GetDialogPosition(gfx::Rect()));
 
@@ -367,6 +367,17 @@ std::u16string_view FindBarHost::GetFindText() const {
 
 gfx::Range FindBarHost::GetSelectedRange() const {
   return view_->GetSelectedRange();
+}
+
+// TODO(crbug.com/41298878): Move FindBar state storage (such as match-case,
+// find text, and selected range) out of FindBarView and into the
+// model/controller.
+bool FindBarHost::IsMatchCase() const {
+  return view_->IsMatchCase();
+}
+
+void FindBarHost::SetMatchCase(bool match_case) {
+  view_->SetMatchCase(match_case);
 }
 
 void FindBarHost::UpdateUIForFindResult(
@@ -610,7 +621,7 @@ void FindBarHost::OnVisibilityChanged() {
 }
 
 void FindBarHost::RegisterAccelerators() {
-  DCHECK(!esc_accel_target_registered_);
+  CHECK(!esc_accel_target_registered_, base::NotFatalUntil::M162);
   ui::Accelerator escape(ui::VKEY_ESCAPE, ui::EF_NONE);
   focus_manager_->RegisterAccelerator(
       escape, ui::AcceleratorManager::kNormalPriority, this);
@@ -626,7 +637,7 @@ void FindBarHost::UnregisterAccelerators() {
   ui::Accelerator ctrl_ret(ui::VKEY_RETURN, ui::EF_CONTROL_DOWN);
   focus_manager_->UnregisterAccelerator(ctrl_ret, this);
 
-  DCHECK(esc_accel_target_registered_);
+  CHECK(esc_accel_target_registered_, base::NotFatalUntil::M162);
   ui::Accelerator escape(ui::VKEY_ESCAPE, ui::EF_NONE);
   focus_manager_->UnregisterAccelerator(escape, this);
   esc_accel_target_registered_ = false;
@@ -735,7 +746,7 @@ void FindBarHost::AnimationEnded(const gfx::Animation* animation) {
 
   if (!animation_->IsShowing()) {
     // Animation has finished closing.
-    DCHECK(host_);
+    CHECK(host_, base::NotFatalUntil::M162);
     host_->Hide();
     is_visible_ = false;
     OnVisibilityChanged();

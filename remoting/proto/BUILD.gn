@@ -14,6 +14,7 @@ group("proto_lite") {
 proto_library("proto") {
   sources = [
     "action.proto",
+    "agent_integration_control.proto",
     "audio.proto",
     "control.proto",
     "coordinates.proto",
@@ -27,6 +28,7 @@ proto_library("proto") {
     "remote_open_url.proto",
     "remote_webauthn.proto",
     "security_key.proto",
+    "terminal.proto",
     "test_data_channel_manager.proto",
     "url_forwarder_control.proto",
     "video.proto",
@@ -58,10 +60,6 @@ source_set("internal_structs") {
     "//remoting/base:errors",
     "//remoting/base:session_policies",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 source_set("internal_stubs") {
@@ -77,10 +75,6 @@ source_set("internal_stubs") {
     ":proto",
     "//base",
   ]
-
-  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-  # enable the diagnostic by removing this line.
-  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 proto_library("error_code_proto") {

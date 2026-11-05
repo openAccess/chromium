@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {CrLitElement} from '/resources/lit/v3_0/lit.rollup.js';
+import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
 import {MyTestMixin} from './with_webui_plugin_lit_element_bindings_violations_mixin.js';
 import type {MyTestMixinInterface} from './with_webui_plugin_lit_element_bindings_violations_mixin.js';
@@ -29,6 +29,7 @@ export class SomeFooElement extends SomeFooElementBase {
 
   accessor propInProperties: string = 'in properties';
   propNotInProperties: string = 'not in properties';
+  readonly readonlyProp: string = 'readonly';
   get getterProp(): string {
     return 'getter';
   }

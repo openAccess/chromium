@@ -22,6 +22,7 @@
 #include "base/strings/strcat.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/crostini/crostini_manager.h"
 #include "chrome/browser/ash/crostini/crostini_pref_names.h"
@@ -44,25 +45,22 @@
 #include "chrome/browser/ash/policy/dlp/files_policy_notification_manager.h"
 #include "chrome/browser/ash/policy/dlp/files_policy_notification_manager_factory.h"
 #include "chrome/browser/ash/policy/dlp/test/mock_files_policy_notification_manager.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_file_destination.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager.h"
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager_factory.h"
 #include "chrome/browser/chromeos/policy/dlp/test/mock_dlp_rules_manager.h"
 #include "chrome/browser/extensions/extension_apitest.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/extensions/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
 #include "chromeos/ash/components/dbus/cros_disks/cros_disks_client.h"
 #include "chromeos/ash/components/dbus/vm_concierge/concierge_service.pb.h"
 #include "chromeos/ash/components/disks/disk.h"
 #include "chromeos/ash/components/disks/mock_disk_mount_manager.h"
+#include "chromeos/ash/experiences/extensions/common/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
 #include "chromeos/dbus/dlp/dlp_client.h"
 #include "chromeos/dbus/dlp/dlp_service.pb.h"
 #include "components/drive/drive_pref_names.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/api_test_utils.h"
 #include "extensions/common/extension.h"
@@ -211,8 +209,8 @@ class FileManagerPrivateApiTest : public extensions::ExtensionApiTest {
   }
 
   ~FileManagerPrivateApiTest() override {
-    DCHECK(!disk_mount_manager_mock_);
-    DCHECK(!event_router_);
+    CHECK(!disk_mount_manager_mock_, base::NotFatalUntil::M160);
+    CHECK(!event_router_, base::NotFatalUntil::M160);
   }
 
   bool SetUpUserDataDirectory() override {

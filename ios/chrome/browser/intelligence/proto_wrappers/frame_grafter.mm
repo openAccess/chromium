@@ -4,6 +4,9 @@
 
 #import "ios/chrome/browser/intelligence/proto_wrappers/frame_grafter.h"
 
+#import <algorithm>
+#import <vector>
+
 #import "base/check.h"
 #import "base/functional/callback.h"
 #import "base/not_fatal_until.h"
@@ -13,6 +16,17 @@
 // TODO(crbug.com/458081684): Move to using the ios/web frame id system.
 
 namespace {
+
+// Returns whether `target` is inside the `root` subtree.
+bool SubtreeContainsNode(const optimization_guide::proto::ContentNode& root,
+                         const optimization_guide::proto::ContentNode* target) {
+  if (&root == target) {
+    return true;
+  }
+  return std::ranges::any_of(root.children_nodes(), [&](const auto& child) {
+    return SubtreeContainsNode(child, target);
+  });
+}
 
 // Merges the content from `content` into the `placeholder`.
 //
@@ -24,12 +38,16 @@ namespace {
 // frames.
 void MergeContent(optimization_guide::proto::ContentNode* placeholder,
                   FrameGrafter::FrameContent&& frame_content,
-                  autofill::RemoteFrameToken document_id) {
+                  autofill::RemoteFrameToken document_id,
+                  FrameGrafter* grafter = nullptr) {
   if (placeholder->content_attributes().attribute_type() ==
       optimization_guide::proto::CONTENT_ATTRIBUTE_IFRAME) {
     if (frame_content.content.content_attributes()
             .iframe_data()
             .has_redacted_frame_metadata()) {
+      if (grafter) {
+        grafter->RecordCrossSiteIframePlaceholder(*placeholder);
+      }
       placeholder->mutable_content_attributes()
           ->mutable_iframe_data()
           ->mutable_redacted_frame_metadata()
@@ -37,7 +55,7 @@ void MergeContent(optimization_guide::proto::ContentNode* placeholder,
                          .iframe_data()
                          .redacted_frame_metadata());
     } else {
-      // Rich Extraction:  The placeholder is already assigned as an
+      // Rich Extraction: The placeholder is already assigned as an
       // iframe, this means that the data in the `placeholder` is already
       // partially set so do a partial merge in this case. The iframe content
       // tree needs to be added as a child of the attributed iframe ContentNode.
@@ -58,7 +76,7 @@ void MergeContent(optimization_guide::proto::ContentNode* placeholder,
   } else {
     // Light Extraction: The placeholder doesn't hold any partial data,
     // it means that the whole ContentNode for the iframe is provided from the
-    // content stored in `unregistered_content_.
+    // content stored in `unregistered_content_`.
     *placeholder = std::move(frame_content.content);
   }
 }
@@ -104,7 +122,8 @@ void FrameGrafter::ResolveUnregisteredContent(
         autofill::RemoteFrameToken)> mapping_lookup,
     base::RepeatingCallback<void(FrameContent unregistered)> placer,
     base::RepeatingCallback<
-        void(optimization_guide::proto::ContentNode* unresolved)>
+        void(const autofill::RemoteFrameToken& remote_token,
+             optimization_guide::proto::ContentNode* unresolved)>
         unresolved_placeholder_handler) {
   // Try to fulfill placeholders by resolving remote tokens to local tokens.
   for (auto it = placeholders_.begin(); it != placeholders_.end();) {
@@ -116,7 +135,8 @@ void FrameGrafter::ResolveUnregisteredContent(
       if (auto content_it = unregistered_content_.find(*local_token);
           content_it != unregistered_content_.end()) {
         // Fulfill the placeholder.
-        MergeContent(it->second, std::move(content_it->second), remote_token);
+        MergeContent(it->second, std::move(content_it->second), remote_token,
+                     this);
         unregistered_content_.erase(content_it);
         it = placeholders_.erase(it);
         continue;
@@ -125,17 +145,27 @@ void FrameGrafter::ResolveUnregisteredContent(
     ++it;
   }
 
-  for (auto& [_, placeholder] : placeholders_) {
-    unresolved_placeholder_handler.Run(placeholder);
+  for (auto& [remote_token, placeholder] : placeholders_) {
+    unresolved_placeholder_handler.Run(remote_token, placeholder);
   }
 
+  // Nested placeholders inside un-grafted frames point into
+  // `unregistered_content_`; clear `placeholders_` before `placer` destroys
+  // that content to avoid dangling pointers.
+  placeholders_.clear();
+
   // TODO(crbug.com/473796618): Add a metric for when content has to be placed.
-  // Place the remaining unregistered content using the `placer`.
-  for (auto& [_, o] : unregistered_content_) {
-    placer.Run(std::move(o));
+  // Place the remaining unregistered content using the `placer`. First remove
+  // any `cross_site_iframe_records_` pointing into `frame_content` so their
+  // `raw_ptr`s don't dangle when `placer` destroys `frame_content`.
+  for (auto& [_, frame_content] : unregistered_content_) {
+    std::erase_if(
+        cross_site_iframe_records_, [&](const CrossSiteIframeRecord& record) {
+          return SubtreeContainsNode(frame_content.content, record.node.get());
+        });
+    placer.Run(std::move(frame_content));
   }
   unregistered_content_.clear();
-  placeholders_.clear();
 }
 
 namespace {
@@ -179,6 +209,111 @@ void TraverseAndCollectFormControlRedactionBoxes(
 }
 
 }  // namespace
+
+void FrameGrafter::TraverseAndCollectCrossSiteIframes(
+    const optimization_guide::proto::ContentNode& node,
+    CGPoint accumulated_offset,
+    const std::map<const optimization_guide::proto::ContentNode*,
+                   const CrossSiteIframeRecord*>& records_by_node,
+    optimization_guide::proto::ScreenshotInfo* screenshot_info) {
+  const auto& attributes = node.content_attributes();
+  const auto& geometry = attributes.geometry();
+
+  CGPoint next_offset = accumulated_offset;
+  if (attributes.attribute_type() ==
+      optimization_guide::proto::CONTENT_ATTRIBUTE_IFRAME) {
+    if (!geometry.has_visible_bounding_box()) {
+      return;
+    }
+    const auto& iframe_box = geometry.visible_bounding_box();
+
+    auto it = records_by_node.find(&node);
+    if (it != records_by_node.end()) {
+      const auto* record = it->second;
+
+      optimization_guide::proto::IframeInfo* iframe_info =
+          screenshot_info->add_iframe_info();
+      auto* box = iframe_info->mutable_bounding_box();
+      box->set_x(iframe_box.x() + accumulated_offset.x);
+      box->set_y(iframe_box.y() + accumulated_offset.y);
+      box->set_width(iframe_box.width());
+      box->set_height(iframe_box.height());
+      box->set_is_screenshot_relative(true);
+      if (!record->url.empty()) {
+        iframe_info->set_url(record->url);
+      }
+      if (record->has_security_origin) {
+        *iframe_info->mutable_security_origin() = record->security_origin;
+      }
+    }
+
+    next_offset.x += iframe_box.x();
+    next_offset.y += iframe_box.y();
+  }
+
+  for (const auto& child_node : node.children_nodes()) {
+    TraverseAndCollectCrossSiteIframes(child_node, next_offset, records_by_node,
+                                       screenshot_info);
+  }
+}
+
+void FrameGrafter::RecordCrossSiteIframePlaceholder(
+    const optimization_guide::proto::ContentNode& placeholder) {
+  const auto& content_attributes = placeholder.content_attributes();
+  if (!content_attributes.has_geometry() ||
+      !content_attributes.geometry().has_visible_bounding_box()) {
+    return;
+  }
+
+  CrossSiteIframeRecord record;
+  record.node = &placeholder;
+  if (content_attributes.has_iframe_data() &&
+      content_attributes.iframe_data().has_frame_data()) {
+    const auto& frame_data = content_attributes.iframe_data().frame_data();
+    if (frame_data.has_url()) {
+      record.url = frame_data.url();
+    }
+    if (frame_data.has_security_origin()) {
+      record.security_origin = frame_data.security_origin();
+      record.has_security_origin = true;
+    }
+  }
+  cross_site_iframe_records_.push_back(std::move(record));
+}
+
+void FrameGrafter::PopulateScreenshotInfo(
+    optimization_guide::proto::AnnotatedPageContent* apc) {
+  if (!apc || cross_site_iframe_records_.empty()) {
+    return;
+  }
+
+  std::map<const optimization_guide::proto::ContentNode*,
+           const CrossSiteIframeRecord*>
+      records_by_node;
+  for (const auto& record : cross_site_iframe_records_) {
+    if (record.node) {
+      records_by_node[record.node] = &record;
+    }
+  }
+
+  auto* screenshot_info =
+      apc->mutable_gemini_in_chrome_page_metadata()->mutable_screenshot_info();
+  screenshot_info->clear_iframe_info();
+  if (apc->has_root_node()) {
+    TraverseAndCollectCrossSiteIframes(apc->root_node(), CGPointZero,
+                                       records_by_node, screenshot_info);
+  }
+  if (apc->has_viewport_geometry() && apc->viewport_geometry().width() > 0 &&
+      apc->viewport_geometry().height() > 0) {
+    screenshot_info->mutable_screenshot_size()->set_width(
+        apc->viewport_geometry().width());
+    screenshot_info->mutable_screenshot_size()->set_height(
+        apc->viewport_geometry().height());
+  }
+
+  // Clear records to release raw pointers to placeholder nodes.
+  cross_site_iframe_records_.clear();
+}
 
 void FrameGrafter::CollectFormControlRedactionBoxesFromTree(
     const optimization_guide::proto::ContentNode& root_node) {

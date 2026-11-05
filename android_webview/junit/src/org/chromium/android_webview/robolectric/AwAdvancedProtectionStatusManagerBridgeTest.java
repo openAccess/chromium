@@ -13,8 +13,6 @@ import static org.mockito.Mockito.verify;
 import android.Manifest;
 import android.os.Build;
 
-import androidx.test.filters.SmallTest;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -37,7 +35,6 @@ import org.chromium.components.safe_browsing.OsAdditionalSecurityUtil;
 
 /** Tests for {@link AwAdvancedProtectionStatusManagerBridge}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE)
 public class AwAdvancedProtectionStatusManagerBridgeTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -95,7 +92,6 @@ public class AwAdvancedProtectionStatusManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @Config(sdk = Build.VERSION_CODES.VANILLA_ICE_CREAM)
     // Permission is not granted, SDK is < 36, which doesn't include AAPM.
@@ -106,7 +102,6 @@ public class AwAdvancedProtectionStatusManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @Config(sdk = Build.VERSION_CODES.BAKLAVA)
     public void testIsUnderAdvancedProtection_noServiceProvider() {
@@ -117,7 +112,6 @@ public class AwAdvancedProtectionStatusManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @Config(sdk = Build.VERSION_CODES.BAKLAVA)
     public void testIsUnderAdvancedProtection_providerReturnsFalse() {
@@ -129,7 +123,6 @@ public class AwAdvancedProtectionStatusManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @Config(sdk = Build.VERSION_CODES.BAKLAVA)
     public void testIsUnderAdvancedProtection_providerReturnsTrue() {
@@ -141,7 +134,6 @@ public class AwAdvancedProtectionStatusManagerBridgeTest {
     }
 
     @Test
-    @SmallTest
     @Feature({"AndroidWebView"})
     @Config(sdk = Build.VERSION_CODES.BAKLAVA)
     public void testObserver_notifiesNative() {

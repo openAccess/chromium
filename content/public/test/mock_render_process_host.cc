@@ -13,7 +13,6 @@
 #include "base/functional/callback_helpers.h"
 #include "base/lazy_instance.h"
 #include "base/location.h"
-#include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/process/process_handle.h"
 #include "base/task/single_thread_task_runner.h"
@@ -28,6 +27,7 @@
 #include "content/browser/renderer_host/spare_render_process_host_manager_impl.h"
 #include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/common/renderer.mojom.h"
+#include "content/common/renderer_variations_configuration.mojom.h"
 #include "content/public/browser/android/child_process_importance.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/global_request_id.h"
@@ -36,6 +36,7 @@
 #include "content/public/browser/site_instance.h"
 #include "content/test/fake_network_url_loader_factory.h"
 #include "gpu/config/gpu_finch_features.h"
+#include "ipc/ipc_channel_proxy.h"
 #include "media/media_buildflags.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 
@@ -79,14 +80,13 @@ MockRenderProcessHost::MockRenderProcessHost(
       deletion_callback_called_(false),
       is_for_guests_only_(is_for_guests_only),
       priority_(base::Process::Priority::kUserBlocking),
-      is_unused_(true),
       pending_view_count_(0),
       worker_ref_count_(0),
       pending_reuse_ref_count_(0),
       foreground_service_worker_count_(0) {
   // Child process security operations can't be unit tested unless we add
   // ourselves as an existing child process.
-  ChildProcessSecurityPolicyImpl::GetInstance()->Add(GetID(), browser_context);
+  ChildProcessSecurityPolicyImpl::GetInstance()->Add(GetID());
 
   RenderProcessHostImpl::RegisterHost(GetID(), this);
 }
@@ -110,6 +110,7 @@ void MockRenderProcessHost::SimulateRenderProcessExit(
     base::TerminationStatus status,
     int exit_code) {
   has_connection_ = false;
+  renderer_variations_configuration_.reset();
   ChildProcessTerminationInfo termination_info;
   termination_info.status = status;
   termination_info.exit_code = exit_code;
@@ -131,6 +132,10 @@ void MockRenderProcessHost::SimulateReady() {
   is_ready_ = true;
   for (auto& observer : observers_)
     observer.RenderProcessReady(this);
+}
+
+bool MockRenderProcessHost::IsMock() const {
+  return true;
 }
 
 bool MockRenderProcessHost::Init() {
@@ -288,8 +293,13 @@ bool MockRenderProcessHost::FastShutdownIfPossible(
     bool ignore_keep_alive,
     bool ignore_pending_reuse,
     bool use_outermost_main_frame_check) {
-  if (GetActiveViewCount() != page_count)
+  if ((page_count || use_outermost_main_frame_check) &&
+      GetActiveViewCount() != page_count) {
     return false;
+  }
+  if (worker_ref_count_ > 0 && !ignore_workers) {
+    return false;
+  }
   // We aren't actually going to do anything, but set |fast_shutdown_started_|
   // to true so that tests know we've been called.
   fast_shutdown_started_ = true;
@@ -301,15 +311,9 @@ bool MockRenderProcessHost::FastShutdownStarted() {
 }
 
 const base::Process& MockRenderProcessHost::GetProcess() {
-  if (process_still_launching_) {
-    // Matches RenderProcessHostImpl::GetProcess() while the launcher is still
-    // starting: a sentinel for "no process".
-    static const base::NoDestructor<base::Process> null_process;
-    return *null_process;
-  }
-
-  static const base::Process current_process(base::Process::Current());
-  return current_process;
+  // While launching, match RenderProcessHostImpl::GetProcess(): a sentinel
+  // for "no process".
+  return process_still_launching_ ? null_process_ : current_process_;
 }
 
 bool MockRenderProcessHost::IsReady() {
@@ -515,7 +519,7 @@ void MockRenderProcessHost::ForEachRenderFrameHost(
     // Speculative RFHs are not exposed to //content embedders, so we have to
     // explicitly check them here to avoid leaks.
     if (rfh->lifecycle_state() ==
-        RenderFrameHostImpl::LifecycleStateImpl::kSpeculative) {
+        RenderFrameHostLifecycleStateImpl::kSpeculative) {
       continue;
     }
     on_render_frame_host(rfh);
@@ -578,16 +582,31 @@ mojom::Renderer* MockRenderProcessHost::GetRendererInterface() {
   return renderer_interface_->get();
 }
 
+mojom::RendererVariationsConfiguration*
+MockRenderProcessHost::GetRendererVariationsConfiguration() {
+  if (!renderer_variations_configuration_) {
+    IPC::ChannelProxy* channel = GetChannel();
+    if (!channel) {
+      return nullptr;
+    }
+    renderer_variations_configuration_ = std::make_unique<
+        mojo::AssociatedRemote<mojom::RendererVariationsConfiguration>>();
+    channel->GetRemoteAssociatedInterface(
+        renderer_variations_configuration_.get());
+  }
+  return renderer_variations_configuration_->get();
+}
+
 bool MockRenderProcessHost::MayReuseHost() {
   return true;
 }
 
 bool MockRenderProcessHost::IsUnused() {
-  return is_unused_;
+  return GetProcessLock().is_unused();
 }
 
 void MockRenderProcessHost::SetIsUsed() {
-  is_unused_ = false;
+  ChildProcessSecurityPolicyImpl::GetInstance()->SetProcessIsUsed(GetID());
 }
 
 bool MockRenderProcessHost::HostHasNotBeenUsed() {
@@ -603,7 +622,7 @@ void MockRenderProcessHost::SetProcessLock(
     const IsolationContext& isolation_context,
     const ProcessLock& process_lock) {
   ChildProcessSecurityPolicyImpl::GetInstance()->LockProcess(
-      isolation_context, GetID(), !IsUnused(), process_lock);
+      isolation_context, GetID(), process_lock);
   if (process_lock.IsASiteOrOrigin())
     is_renderer_locked_to_site_ = true;
 }
@@ -644,6 +663,29 @@ void MockRenderProcessHost::GetSandboxedFileSystemForBucket(
 std::string
 MockRenderProcessHost::GetInfoForBrowserContextDestructionCrashReporting() {
   return std::string();
+}
+
+const std::string&
+MockRenderProcessHost::GetUnresponsiveDocumentJavascriptCallStack() const {
+  return unresponsive_document_javascript_call_stack_;
+}
+
+const blink::LocalFrameToken&
+MockRenderProcessHost::GetUnresponsiveDocumentToken() const {
+  return unresponsive_document_token_;
+}
+
+std::optional<blink::OomInterventionMetrics>
+MockRenderProcessHost::GetCrashMemoryMetrics() const {
+  return std::nullopt;
+}
+
+void MockRenderProcessHost::SetUnresponsiveDocumentJSCallStackAndToken(
+    std::string javascript_call_stack,
+    blink::LocalFrameToken token) {
+  unresponsive_document_javascript_call_stack_ =
+      std::move(javascript_call_stack);
+  unresponsive_document_token_ = token;
 }
 
 void MockRenderProcessHost::WriteIntoTrace(

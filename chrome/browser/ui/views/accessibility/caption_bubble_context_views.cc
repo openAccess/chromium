@@ -16,7 +16,8 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
 #include "ui/views/widget/widget.h"
 
 namespace captions {
@@ -112,10 +113,11 @@ CaptionBubbleContextViews::GetOpenCaptionSettingsCallback() {
 }
 
 void CaptionBubbleContextViews::OpenCaptionSettings() {
-  content::OpenURLParams params(GURL(GetCaptionSettingsUrl()),
-                                content::Referrer(),
-                                WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                ui::PAGE_TRANSITION_LINK, false);
+  content::OpenURLParams params =
+      content::OpenURLParams::CreateBrowserInitiated(
+          GURL(GetCaptionSettingsUrl()),
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK);
   web_contents_->OpenURL(params, /*navigation_handle_callback=*/{});
 }
 }  // namespace captions

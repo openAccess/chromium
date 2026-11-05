@@ -18,9 +18,9 @@
 #include "chrome/browser/ash/login/test/oobe_screens_utils.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/webui/ash/login/guest_tos_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/signin_fatal_error_screen_handler.h"
@@ -31,6 +31,9 @@
 #include "chromeos/ash/components/dbus/userdataauth/fake_userdataauth_client.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/webui/flags/feature_entry_macros.h"
 #include "content/public/test/browser_test.h"
@@ -131,7 +134,11 @@ IN_PROC_BROWSER_TEST_F(GuestLoginTest, Login) {
   EXPECT_TRUE(user_manager->IsLoggedInAsGuest());
 
   // Checks User::GetProfilePrefs() uses the correct instance.
-  user_manager::User* user = user_manager->GetActiveUser();
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  ASSERT_TRUE(active_session);
+  const user_manager::User* user =
+      user_manager->FindUser(active_session->account_id());
   ASSERT_TRUE(user);
   EXPECT_EQ(user_manager::UserType::kGuest, user->GetType());
   EXPECT_EQ(Profile::FromBrowserContext(
@@ -215,9 +222,7 @@ IN_PROC_BROWSER_TEST_F(GuestLoginTest, PRE_ExitFullscreenOnSuspend) {
 IN_PROC_BROWSER_TEST_F(GuestLoginTest, ExitFullscreenOnSuspend) {
   login_manager_.WaitForActiveSession();
   BrowserWindow* browser_window = BrowserWindow::FromBrowser(browser());
-  browser()
-      ->GetFeatures()
-      .exclusive_access_manager()
+  ExclusiveAccessManager::From(browser())
       ->fullscreen_controller()
       ->ToggleBrowserFullscreenMode(/*user_initiated=*/true);
   EXPECT_TRUE(browser_window->IsFullscreen());

@@ -8,6 +8,7 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/timer/elapsed_timer.h"
+#include "build/build_config.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/browser/preloading/preloading.h"
 #include "content/browser/preloading/preloading_data_impl.h"
@@ -36,20 +37,16 @@ class PreloadingDeciderBrowserTest : public ContentBrowserTest {
   ~PreloadingDeciderBrowserTest() override = default;
 
   void SetUp() override {
-    feature_list_.InitWithFeaturesAndParameters(
-        {
-            {blink::features::kPreloadingHeuristicsMLModel,
-             {{"enact_candidates", "true"}}},
-        },
-        {
-            // Disable the memory requirement of Prerender2 so the test can run
-            // on any bot.
-            {blink::features::kPrerender2MemoryControls},
-            // These tests cover the moderate hover heuristic. The eager one
-            // fires first on a real hover, which would be a second, unrelated
-            // heuristic firing for the same anchor.
-            {blink::features::kPreloadingEagerHoverHeuristics},
-        });
+    feature_list_.InitWithFeatures(
+        {}, {
+                // Disable the memory requirement of Prerender2 so the test can
+                // run on any bot.
+                blink::features::kPrerender2MemoryControls,
+                // These tests cover the moderate hover heuristic. The eager one
+                // fires first on a real hover, which would be a second,
+                // unrelated heuristic firing for the same anchor.
+                blink::features::kPreloadingEagerHoverHeuristics,
+            });
 
     ContentBrowserTest::SetUp();
   }
@@ -140,9 +137,6 @@ IN_PROC_BROWSER_TEST_F(PreloadingDeciderBrowserTest,
   histogram_tester.ExpectBucketCount(
       "Preloading.Predictor.UrlPointerHoverOnAnchor.Recall",
       PredictorConfusionMatrix::kFalseNegative, 1);
-  histogram_tester.ExpectBucketCount(
-      "Preloading.Predictor.PreloadingHeuristicsMLModel.Recall",
-      PredictorConfusionMatrix::kFalseNegative, 1);
 }
 
 class PreloadingDeciderNonImmediateBrowserTest
@@ -161,7 +155,6 @@ class PreloadingDeciderNonImmediateBrowserTest
   static constexpr PreloadingPredictor kNonImmediatePredictors[] = {
       preloading_predictor::kUrlPointerDownOnAnchor,
       preloading_predictor::kUrlPointerHoverOnAnchor,
-      preloading_predictor::kPreloadingHeuristicsMLModel,
   };
 
   static constexpr PreloadingType kPreloadingTypes[] = {
@@ -186,8 +179,14 @@ INSTANTIATE_TEST_SUITE_P(
             PreloadingDeciderNonImmediateBrowserTest::kPreloadingTypes)),
     PreloadingDeciderNonImmediateBrowserTest::DescribeParams);
 
+// TODO(crbug.com/562033291): Flaky on Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_EnactModerateCandidate DISABLED_EnactModerateCandidate
+#else
+#define MAYBE_EnactModerateCandidate EnactModerateCandidate
+#endif
 IN_PROC_BROWSER_TEST_P(PreloadingDeciderNonImmediateBrowserTest,
-                       EnactModerateCandidate) {
+                       MAYBE_EnactModerateCandidate) {
   base::ScopedMockElapsedTimersForTest mock_elapsed_timer;
   base::HistogramTester histogram_tester;
   ukm::TestAutoSetUkmRecorder ukm_recorder;
@@ -217,17 +216,10 @@ IN_PROC_BROWSER_TEST_P(PreloadingDeciderNonImmediateBrowserTest,
   // Trigger the non-immediate predictor. The pointer heuristics run in the
   // renderer, so drive them with real input rather than by calling
   // PreloadingDecider directly.
-  auto* preloading_decider = PreloadingDecider::GetOrCreateForCurrentDocument(
-      web_contents()->GetPrimaryMainFrame());
-  ASSERT_TRUE(preloading_decider);
   if (predictor() == preloading_predictor::kUrlPointerDownOnAnchor) {
     SimulateMouseDownOnElement(next_page_id);
   } else if (predictor() == preloading_predictor::kUrlPointerHoverOnAnchor) {
     SimulateMouseHoverOnElement(next_page_id);
-  } else if (predictor() ==
-             preloading_predictor::kPreloadingHeuristicsMLModel) {
-    preloading_decider->OnPreloadingHeuristicsModelDone(next_page_url,
-                                                        /*score=*/1.0);
   } else {
     FAIL();
   }
@@ -291,7 +283,7 @@ IN_PROC_BROWSER_TEST_P(PreloadingDeciderNonImmediateBrowserTest,
             blink::mojom::SpeculationEagerness::kModerate);
     std::vector<ukm::TestUkmRecorder::HumanReadableUkmEntry> attempts =
         ukm_recorder.GetEntries(ukm::builders::Preloading_Attempt::kEntryName,
-                                test::kPreloadingAttemptUkmMetrics);
+                                test::GetPreloadingAttemptUkmMetrics());
     std::erase_if(attempts, [&](const auto& entry) {
       return entry.metrics.at(
                  ukm::builders::Preloading_Attempt::kPreloadingPredictorName) !=
@@ -317,7 +309,7 @@ IN_PROC_BROWSER_TEST_P(PreloadingDeciderNonImmediateBrowserTest,
     std::vector<ukm::TestUkmRecorder::HumanReadableUkmEntry> predictions =
         ukm_recorder.GetEntries(
             ukm::builders::Preloading_Prediction::kEntryName,
-            test::kPreloadingPredictionUkmMetrics);
+            test::GetPreloadingPredictionUkmMetrics());
     std::erase_if(predictions, [&](const auto& entry) {
       return entry.metrics.at(ukm::builders::Preloading_Prediction::
                                   kPreloadingPredictorName) !=
@@ -363,7 +355,7 @@ IN_PROC_BROWSER_TEST_P(PreloadingDeciderNonImmediateBrowserTest,
             blink::mojom::SpeculationEagerness::kModerate);
     std::vector<ukm::TestUkmRecorder::HumanReadableUkmEntry> attempts =
         ukm_recorder.GetEntries(ukm::builders::Preloading_Attempt::kEntryName,
-                                test::kPreloadingAttemptUkmMetrics);
+                                test::GetPreloadingAttemptUkmMetrics());
     std::erase_if(attempts, [&](const auto& entry) {
       return entry.metrics.at(
                  ukm::builders::Preloading_Attempt::kPreloadingPredictorName) !=
@@ -393,7 +385,7 @@ IN_PROC_BROWSER_TEST_P(PreloadingDeciderNonImmediateBrowserTest,
     std::vector<ukm::TestUkmRecorder::HumanReadableUkmEntry> predictions =
         ukm_recorder.GetEntries(
             ukm::builders::Preloading_Prediction::kEntryName,
-            test::kPreloadingPredictionUkmMetrics);
+            test::GetPreloadingPredictionUkmMetrics());
     std::erase_if(predictions, [&](const auto& entry) {
       return entry.metrics.at(ukm::builders::Preloading_Prediction::
                                   kPreloadingPredictorName) !=

@@ -4,14 +4,18 @@
 
 package org.chromium.chrome.browser.glic;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.ObserverList;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
@@ -19,8 +23,14 @@ import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarFeatures;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarPrefs;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
+import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask.NativeBrowserWindowInterface;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.content_public.browser.RenderFrameHost;
+import org.chromium.url.GURL;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Java side of the JNI bridge between GlicKeyedServiceImpl in Java and C++. All method calls are
@@ -33,6 +43,8 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
     private final ObserverList<GlobalShowHideObserver> mObservers = new ObserverList<>();
     private final ObserverList<UserEnabledActuationOnWebObserver>
             mUserEnabledActuationOnWebObservers = new ObserverList<>();
+    private final ObserverList<ExperimentalTriggeringObserver> mExperimentalTriggeringObservers =
+            new ObserverList<>();
     private final ObserverList<AllowedChangedObserver> mAllowedChangedObservers =
             new ObserverList<>();
 
@@ -41,13 +53,14 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
         return new GlicKeyedServiceImpl(nativePtr);
     }
 
-    private GlicKeyedServiceImpl(long nativePtr) {
+    @VisibleForTesting
+    GlicKeyedServiceImpl(long nativePtr) {
         mNativePtr = nativePtr;
     }
 
     @Override
     public void toggleUI(
-            long browserWindowPtr,
+            JniPtr<NativeBrowserWindowInterface> browserWindow,
             boolean preventClose,
             Profile profile,
             @GlicInvocationSource int invocationSource) {
@@ -57,7 +70,7 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
         tracker.notifyEvent(EventConstants.GLIC_ANDROID_USED);
 
         GlicKeyedServiceImplJni.get()
-                .toggleUI(mNativePtr, browserWindowPtr, preventClose, profile, invocationSource);
+                .toggleUI(mNativePtr, browserWindow, preventClose, profile, invocationSource);
     }
 
     @Override
@@ -70,10 +83,15 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
     }
 
     @Override
-    public void invokeWithPrompt(Tab tab, String text, @GlicInvocationSource int invocationSource) {
-        if (mNativePtr == 0) return;
+    public boolean invokeWithPrompt(
+            Tab tab,
+            @Nullable RenderFrameHost frame,
+            String text,
+            @GlicInvocationSource int invocationSource) {
+        if (mNativePtr == 0) return false;
 
-        GlicKeyedServiceImplJni.get().invokeWithPrompt(mNativePtr, tab, text, invocationSource);
+        return GlicKeyedServiceImplJni.get()
+                .invokeWithPrompt(mNativePtr, tab, frame, text, invocationSource);
     }
 
     @Override
@@ -84,9 +102,76 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
     }
 
     @Override
-    public boolean isPanelShowingForBrowser(long browserWindowPtr) {
+    public void invokeWithConversation(
+            @Nullable Tab tab,
+            String glicConversationId,
+            @GlicInvocationSource int invocationSource) {
+        if (mNativePtr == 0) return;
+
+        GlicKeyedServiceImplJni.get()
+                .invokeWithConversation(mNativePtr, tab, glicConversationId, invocationSource);
+    }
+
+    @Override
+    public void shareTabs(
+            List<Tab> tabs,
+            @Nullable String instanceId,
+            boolean newConversation,
+            @GlicInvocationSource int invocationSource) {
+        if (mNativePtr == 0) return;
+        GlicKeyedServiceImplJni.get()
+                .shareTabs(
+                        mNativePtr,
+                        tabs,
+                        instanceId == null ? "" : instanceId,
+                        newConversation,
+                        invocationSource);
+    }
+
+    @Override
+    public void unshareTabs(List<Tab> tabs) {
+        if (mNativePtr == 0) return;
+        GlicKeyedServiceImplJni.get().unshareTabs(mNativePtr, tabs);
+    }
+
+    @Override
+    public boolean isTabPinnedToAnyInstance(List<Tab> tabs) {
         if (mNativePtr == 0) return false;
-        return GlicKeyedServiceImplJni.get().isPanelShowingForBrowser(mNativePtr, browserWindowPtr);
+        return GlicKeyedServiceImplJni.get().isTabPinnedToAnyInstance(mNativePtr, tabs);
+    }
+
+    @Override
+    public List<ConversationInfo> getRecentlyActiveInstances(int limit) {
+        List<ConversationInfo> list = new ArrayList<>();
+        if (mNativePtr == 0) return list;
+        // Native returns a flattened [id0, title0, id1, title1, ...] list.
+        List<String> flat =
+                GlicKeyedServiceImplJni.get().getRecentlyActiveInstances(mNativePtr, limit);
+        for (int i = 0; i + 1 < flat.size(); i += 2) {
+            list.add(new ConversationInfo(flat.get(i), flat.get(i + 1)));
+        }
+        return list;
+    }
+
+    @Override
+    public void showExperimentalOptInDialogForTesting(Tab tab) {
+        if (mNativePtr == 0) return;
+
+        GlicKeyedServiceImplJni.get()
+                .showExperimentalOptInDialogForTesting(mNativePtr, tab); // IN-TEST
+    }
+
+    @Override
+    public void shareContextImage(Tab tab, @Nullable RenderFrameHost renderFrameHost, GURL srcUrl) {
+        if (mNativePtr == 0 || renderFrameHost == null) return;
+
+        GlicKeyedServiceImplJni.get().shareContextImage(mNativePtr, tab, renderFrameHost, srcUrl);
+    }
+
+    @Override
+    public boolean isPanelShowingForBrowser(JniPtr<NativeBrowserWindowInterface> browserWindow) {
+        if (mNativePtr == 0) return false;
+        return GlicKeyedServiceImplJni.get().isPanelShowingForBrowser(mNativePtr, browserWindow);
     }
 
     @Override
@@ -99,6 +184,18 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
     public void setUserEnabledActuationOnWeb(boolean enabled) {
         if (mNativePtr == 0) return;
         GlicKeyedServiceImplJni.get().setUserEnabledActuationOnWeb(mNativePtr, enabled);
+    }
+
+    @Override
+    public boolean getExperimentalTriggeringEnabled() {
+        if (mNativePtr == 0) return false;
+        return GlicKeyedServiceImplJni.get().getExperimentalTriggeringEnabled(mNativePtr);
+    }
+
+    @Override
+    public void setExperimentalTriggeringEnabled(boolean enabled) {
+        if (mNativePtr == 0) return;
+        GlicKeyedServiceImplJni.get().setExperimentalTriggeringEnabled(mNativePtr, enabled);
     }
 
     @Override
@@ -126,7 +223,8 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
     }
 
     @CalledByNative
-    private void onNativeDestroyed() {
+    @VisibleForTesting
+    void onNativeDestroyed() {
         mNativePtr = 0;
     }
 
@@ -159,6 +257,16 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
     }
 
     @Override
+    public void addExperimentalTriggeringObserver(ExperimentalTriggeringObserver observer) {
+        mExperimentalTriggeringObservers.addObserver(observer);
+    }
+
+    @Override
+    public void removeExperimentalTriggeringObserver(ExperimentalTriggeringObserver observer) {
+        mExperimentalTriggeringObservers.removeObserver(observer);
+    }
+
+    @Override
     public void addAllowedChangedObserver(AllowedChangedObserver observer) {
         mAllowedChangedObservers.addObserver(observer);
     }
@@ -176,6 +284,13 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
     }
 
     @CalledByNative
+    private void onExperimentalTriggeringEnabledChanged(boolean enabled) {
+        for (ExperimentalTriggeringObserver observer : mExperimentalTriggeringObservers) {
+            observer.onExperimentalTriggeringEnabledChanged(enabled);
+        }
+    }
+
+    @CalledByNative
     private void onAllowedStateChanged() {
         for (AllowedChangedObserver observer : mAllowedChangedObservers) {
             observer.onAllowedStateChanged();
@@ -186,7 +301,7 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
     interface Natives {
         void toggleUI(
                 long nativeGlicKeyedServiceAndroid,
-                long browserWindowPtr,
+                JniPtr<NativeBrowserWindowInterface> browserWindow,
                 boolean preventClose,
                 @JniType("Profile*") Profile profile,
                 @GlicInvocationSource int source);
@@ -197,9 +312,10 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
                 @JniType("std::string") String text,
                 @GlicInvocationSource int source);
 
-        void invokeWithPrompt(
+        boolean invokeWithPrompt(
                 long nativeGlicKeyedServiceAndroid,
                 @JniType("TabAndroid*") Tab tab,
+                @JniType("content::RenderFrameHost*") @Nullable RenderFrameHost frame,
                 @JniType("std::string") String text,
                 @GlicInvocationSource int source);
 
@@ -208,10 +324,49 @@ public class GlicKeyedServiceImpl implements GlicKeyedService {
                 @JniType("TabAndroid*") Tab tab,
                 @GlicInvocationSource int source);
 
-        boolean isPanelShowingForBrowser(long nativeGlicKeyedServiceAndroid, long browserWindowPtr);
+        void invokeWithConversation(
+                long nativeGlicKeyedServiceAndroid,
+                @JniType("TabAndroid*") @Nullable Tab tab,
+                @JniType("std::string") String glicConversationId,
+                @GlicInvocationSource int source);
+
+        void shareContextImage(
+                long nativeGlicKeyedServiceAndroid,
+                @JniType("TabAndroid*") Tab tab,
+                @JniType("content::RenderFrameHost*") @Nullable RenderFrameHost renderFrameHost,
+                @JniType("GURL") GURL srcUrl);
+
+        boolean isPanelShowingForBrowser(
+                long nativeGlicKeyedServiceAndroid,
+                JniPtr<NativeBrowserWindowInterface> browserWindow);
+
+        void showExperimentalOptInDialogForTesting( // IN-TEST
+                long nativeGlicKeyedServiceAndroid, @JniType("TabAndroid*") Tab tab);
 
         boolean getUserEnabledActuationOnWeb(long nativeGlicKeyedServiceAndroid);
 
         void setUserEnabledActuationOnWeb(long nativeGlicKeyedServiceAndroid, boolean enabled);
+
+        boolean getExperimentalTriggeringEnabled(long nativeGlicKeyedServiceAndroid);
+
+        void setExperimentalTriggeringEnabled(long nativeGlicKeyedServiceAndroid, boolean enabled);
+
+        void shareTabs(
+                long nativeGlicKeyedServiceAndroid,
+                @JniType("std::vector<TabAndroid*>") List<Tab> tabs,
+                @JniType("std::string") String instanceId,
+                boolean newConversation,
+                @GlicInvocationSource int source);
+
+        void unshareTabs(
+                long nativeGlicKeyedServiceAndroid,
+                @JniType("std::vector<TabAndroid*>") List<Tab> tabs);
+
+        boolean isTabPinnedToAnyInstance(
+                long nativeGlicKeyedServiceAndroid,
+                @JniType("std::vector<TabAndroid*>") List<Tab> tabs);
+
+        @JniType("std::vector<std::string>")
+        List<String> getRecentlyActiveInstances(long nativeGlicKeyedServiceAndroid, int limit);
     }
 }

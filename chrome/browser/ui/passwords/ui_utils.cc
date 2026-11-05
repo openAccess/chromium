@@ -9,8 +9,10 @@
 #include <algorithm>
 
 #include "base/feature_list.h"
+#include "base/i18n/rtl.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/branding_buildflags.h"
 #include "chrome/app/vector_icons/vector_icons.h"
@@ -68,17 +70,27 @@ bool SameDomainOrHost(const GURL& gurl, const url::Origin& origin) {
 
 }  // namespace
 
-gfx::ImageSkia ScaleImageForAccountAvatar(gfx::ImageSkia skia_image) {
-  gfx::Size size = skia_image.size();
-  if (size.height() != size.width()) {
-    gfx::Rect target(size);
-    int side = std::min(size.height(), size.width());
+gfx::ImageSkia ScaleImageForAccountAvatar(gfx::ImageSkia skia_image,
+                                          int size) {
+  gfx::Size image_size = skia_image.size();
+  if (image_size.height() != image_size.width()) {
+    gfx::Rect target(image_size);
+    int side = std::min(image_size.height(), image_size.width());
     target.ClampToCenteredSize(gfx::Size(side, side));
     skia_image = gfx::ImageSkiaOperations::ExtractSubset(skia_image, target);
   }
   return gfx::ImageSkiaOperations::CreateResizedImage(
-      skia_image, skia::ImageOperations::RESIZE_BEST,
-      gfx::Size(kAvatarImageSize, kAvatarImageSize));
+      skia_image, skia::ImageOperations::RESIZE_BEST, gfx::Size(size, size));
+}
+
+std::u16string GetSingleLineDisplayText(std::u16string text) {
+  std::ranges::replace_if(
+      text, [](char16_t c) { return base::IsUnicodeControl(c); }, u' ');
+  // Also collapses Unicode line and paragraph separators (U+2028, U+2029).
+  text = base::CollapseWhitespace(text,
+                                  /*trim_sequences_with_line_breaks=*/false);
+  base::i18n::EnsureTerminatedDirectionalFormatting(&text);
+  return text;
 }
 
 std::pair<std::u16string, std::u16string> GetCredentialLabelsForAccountChooser(
@@ -88,17 +100,19 @@ std::pair<std::u16string, std::u16string> GetCredentialLabelsForAccountChooser(
     federation = GetDisplayFederation(form);
   }
 
-  if (form.display_name.empty()) {
-    return std::make_pair(form.username_value, std::move(federation));
+  // The username and the display name are provided by the site, so make sure
+  // they cannot add extra lines to the UI.
+  std::u16string username = GetSingleLineDisplayText(form.username_value);
+  std::u16string display_name = GetSingleLineDisplayText(form.display_name);
+  if (display_name.empty()) {
+    return {std::move(username), std::move(federation)};
   }
 
-  // Display name isn't empty.
   if (federation.empty()) {
-    return std::make_pair(form.display_name, form.username_value);
+    return {std::move(display_name), std::move(username)};
   }
 
-  return std::make_pair(form.display_name,
-                        form.username_value + u"\n" + federation);
+  return {std::move(display_name), base::StrCat({username, u"\n", federation})};
 }
 
 std::u16string GetSavePasswordDialogTitleText(
@@ -140,7 +154,7 @@ std::u16string GetManagePasswordsDialogTitleText(
     const GURL& user_visible_url,
     const url::Origin& password_origin_url,
     bool has_credentials) {
-  DCHECK(!password_origin_url.opaque());
+  CHECK(!password_origin_url.opaque(), base::NotFatalUntil::M162);
   // Check whether the registry controlled domains for user-visible URL
   // (i.e. the one seen in the omnibox) and the managed password origin URL
   // differ or not.

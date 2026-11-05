@@ -8,17 +8,20 @@
 #ifdef __cplusplus
 #import "base/feature_list.h"
 
-// Feature flag to enable new snapshot system written in Swift.
-BASE_DECLARE_FEATURE(kSnapshotInSwift);
-
 // Feature flag to enable compressed JPEG quality (0.97) for snapshot images.
 // When disabled (default), snapshots use quality 1.0 (no compression).
 BASE_DECLARE_FEATURE(kSnapshotCompressedJPEGQuality);
 
-// Feature flag to enable downsampling snapshot images to half resolution
+// Feature flag to enable downsampling snapshot images to 70% resolution
 // before writing to disk. When disabled (default), snapshots are written
 // at their original captured resolution.
 BASE_DECLARE_FEATURE(kSnapshotDownsampleImage);
+
+// Feature flag to enable background decoding of tab grid images.
+BASE_DECLARE_FEATURE(kSnapshotBackgroundDecode);
+
+// Feature flag to enable concurrent access in the snapshot file manager.
+BASE_DECLARE_FEATURE(kSnapshotConcurrentAccess);
 
 extern "C" {
 #endif  // __cplusplus
@@ -28,6 +31,12 @@ bool IsSnapshotCompressedJPEGQualityEnabled(void);
 
 // Returns true if the kSnapshotDownsampleImage feature flag is enabled.
 bool IsSnapshotDownsampleImageEnabled(void);
+
+// Returns true if the kSnapshotBackgroundDecode feature flag is enabled.
+bool IsSnapshotBackgroundDecodeEnabled(void);
+
+// Returns true if the kSnapshotConcurrentAccess feature flag is enabled.
+bool IsSnapshotConcurrentAccessEnabled(void);
 
 #ifdef __cplusplus
 }  // extern "C"

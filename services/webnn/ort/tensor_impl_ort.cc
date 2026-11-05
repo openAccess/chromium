@@ -8,6 +8,7 @@
 #include "base/containers/span.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "services/webnn/ort/context_impl_ort.h"
+#include "services/webnn/ort/environment.h"
 #include "services/webnn/ort/ort_data_type.h"
 #include "services/webnn/ort/ort_status.h"
 #include "services/webnn/ort/platform_functions_ort.h"
@@ -24,15 +25,9 @@ TensorImplOrt::TensorImplOrt(
     ScopedOrtValue tensor,
     scoped_refptr<DeviceAllocator> device_allocator)
     : WebNNTensorImpl(std::move(receiver), context, std::move(tensor_info)),
-      device_allocator_((std::move(device_allocator))),
+      device_allocator_(std::move(device_allocator)),
       tensor_(std::move(tensor)),
-      size_(size) {
-  // Initialize the tensor with zeros, otherwise, reading uninitialized memory
-  // will get random values.
-  // TODO(crbug.com/461303833): check whether fast HW clears can be used
-  // instead.
-  std::ranges::fill(AsSpan(), 0);
-}
+      size_(size) {}
 
 TensorImplOrt::TensorImplOrt(
     mojo::PendingAssociatedReceiver<mojom::WebNNTensor> receiver,
@@ -40,21 +35,32 @@ TensorImplOrt::TensorImplOrt(
     mojom::TensorInfoPtr tensor_info,
     RepresentationPtr representation,
     size_t size,
+    scoped_refptr<Environment> env,
     ScopedOrtExternalMemoryHandle d3d_heap_external_memory_handle,
+    Microsoft::WRL::ComPtr<ID3D12Resource> mapped_d3d12_buffer,
     ScopedOrtValue tensor)
     : WebNNTensorImpl(std::move(receiver),
                       context,
                       std::move(tensor_info),
                       std::move(representation)),
+      env_(std::move(env)),
       d3d_heap_external_memory_handle_(
           std::move(d3d_heap_external_memory_handle)),
+      mapped_d3d12_buffer_(std::move(mapped_d3d12_buffer)),
       tensor_(std::move(tensor)),
-      size_(size) {}
+      size_(size) {
+  CHECK(env_);
+}
 
 TensorImplOrt::~TensorImplOrt() = default;
 
 base::span<uint8_t> TensorImplOrt::AsSpan() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Tensor creation keeps a tensor the renderer can read or write out of
+  // device-only memory, and rejects the combination outright for an exportable
+  // tensor, so a caller can never reach here without mappable memory.
+  CHECK(!device_allocator_ || device_allocator_->CanAccessOnCpu())
+      << "[WebNN] ORT tensor is not CPU-accessible.";
 
   void* ort_tensor_raw_data = nullptr;
   CHECK_STATUS(

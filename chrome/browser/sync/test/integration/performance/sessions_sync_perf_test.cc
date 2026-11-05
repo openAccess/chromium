@@ -13,6 +13,9 @@
 #include "chrome/common/webui_url_constants.h"
 #include "content/public/test/browser_test.h"
 #include "testing/perf/perf_result_reporter.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "ui/base/page_transition_types.h"
+#include "url/gurl.h"
 
 using content::OpenURLParams;
 using sessions_helper::GetLocalSession;
@@ -53,7 +56,11 @@ class SessionsSyncPerfTest : public SyncTest {
   }
 
   GURL GetInitialURL() const override {
-    return chrome::ChromeUINewTabURLAsGURL();
+    // Return a lightweight unsynced WebUI URL so the initial tab is not synced
+    // (unlike the default about:blank). Avoid chrome://newtab/ because loading
+    // the full New Tab Page WebUI and its subframes significantly slows down
+    // test setup and teardown.
+    return GURL(chrome::kChromeUIVersionURL);
   }
 
   // Opens |num_tabs| new tabs on |profile|.
@@ -92,12 +99,11 @@ void SessionsSyncPerfTest::UpdateTabs(int profile) {
     chrome::SelectNumberedTab(browser, i);
     url = NextURL();
     browser->OpenURL(
-        OpenURLParams(
-            url,
+        OpenURLParams::CreateBrowserInitiated(
+            url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+            ui::PAGE_TRANSITION_LINK,
             content::Referrer(GURL("http://localhost"),
-                              network::mojom::ReferrerPolicy::kDefault),
-            WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_LINK,
-            false),
+                              network::mojom::ReferrerPolicy::kDefault)),
         /*navigation_handle_callback=*/{});
     urls.push_back(url);
   }

@@ -7,11 +7,11 @@
 
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
 #include <variant>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -26,6 +26,21 @@
 
 namespace net {
 
+// Presence of address hints in HTTPS records.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// LINT.IfChange(HttpsRecordAddressHintsPresence)
+enum class HttpsRecordAddressHintsPresence {
+  kNoHints = 0,
+  kIPv4Only = 1,
+  kIPv6Only = 2,
+  kBoth = 3,
+  kMaxValue = kBoth,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:DNS.HttpsRecordAddressHintsPresence)
+
 // Creates and updates intermediate service endpoints while resolving a host.
 // This class is designed to have a 1:1 relationship with a HostResolverDnsTask
 // and expects to be notified every time a DnsTransaction is completed. When
@@ -35,6 +50,9 @@ namespace net {
 // If the A response comes before the AAAA response, delays service endpoints
 // creation/update until an AAAA response is received or the AAAA query is
 // timed out.
+//
+// Address hints from HTTPS records are published as provisional endpoints only
+// until the corresponding address family's response arrives.
 class NET_EXPORT_PRIVATE DnsTaskResultsManager {
  public:
   // Time to wait for a AAAA response after receiving an A response.
@@ -66,13 +84,18 @@ class NET_EXPORT_PRIVATE DnsTaskResultsManager {
   void ProcessDnsTransactionResults(DnsQueryType query_type,
                                     HostResolverDnsTask::ResultRefs results);
 
+  // Called when the entire DnsTask completes. If HTTPS completed as the final
+  // transaction, records address hints metrics. Also stops the resolution delay
+  // timer if still running.
+  void ProcessDnsTaskComplete(const HostResolverDnsTask::Results& results);
+
   // Returns the current service endpoints. The results could change over time.
   // Use the delegate's OnServiceEndpointsUpdated() to watch for updates.
   const std::vector<ServiceEndpoint>& GetCurrentEndpoints() const;
 
   // Returns all DNS record aliases, found as a result of A, AAAA, and HTTPS
   // queries. The results could change over time.
-  const std::set<std::string>& GetAliases() const;
+  const base::flat_set<std::string>& GetAliases() const;
 
   // True when a HTTP response is received. When true, call sites can start
   // cryptographic handshakes since Chrome doesn't support HTTPS follow-up
@@ -92,11 +115,31 @@ class NET_EXPORT_PRIVATE DnsTaskResultsManager {
 
   void UpdateEndpoints();
 
+  // Stops the resolution delay timer if running and records the NetLog event.
+  // Returns true if the timer was running.
+  bool MaybeStopResolutionDelayTimer();
+
+  // Address hints are usable only while the corresponding address family's
+  // query is expected and its response has not arrived yet.
+  bool Ipv4HintsUsable() const;
+  bool Ipv6HintsUsable() const;
+
+  // True when any per domain result has hint endpoints for the family,
+  // regardless of usability.
+  bool HasIpv4HintEndpoints() const;
+  bool HasIpv6HintEndpoints() const;
+
   // Checks all per domain results and return true when there is at least one
-  // valid address.
-  bool HasIpv4Addresses();
+  // valid address or usable IPv4 hint.
+  bool HasIpv4Addresses() const;
 
   void RecordResolutionDelayResult(bool timedout);
+
+  // Records address hints UMA (presence and whether address queries were
+  // outstanding) for the HTTPS transaction results.
+  void RecordAddressHintsMetrics(
+      const HostResolverInternalMetadataResult::AddressHintsMap& address_hints,
+      bool is_terminal_transaction);
 
   const raw_ptr<Delegate> delegate_;
   const HostResolver::Host host_;
@@ -107,11 +150,15 @@ class NET_EXPORT_PRIVATE DnsTaskResultsManager {
 
   bool is_metadata_ready_ = false;
 
+  // True when the A DNS transaction completes (including NODATA / empty
+  // results).
+  bool a_response_received_ = false;
+
   // True when the AAAA DNS transaction completes (including NODATA / empty
   // results).
   bool aaaa_response_received_ = false;
 
-  std::set<std::string> aliases_;
+  base::flat_set<std::string> aliases_;
 
   std::map</*domain_name=*/std::string, std::unique_ptr<PerDomainResult>>
       per_domain_results_;

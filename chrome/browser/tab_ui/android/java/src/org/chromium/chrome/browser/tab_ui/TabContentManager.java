@@ -106,7 +106,7 @@ public class TabContentManager {
     private final ArrayList<ThumbnailChangeListener> mListeners = new ArrayList<>();
 
     private final boolean mSnapshotsEnabled;
-    private final TabFinder mTabFinder;
+    private final @Nullable TabFinder mTabFinder;
     private final Context mContext;
     private final TabWindowManager mTabWindowManager;
 
@@ -149,7 +149,7 @@ public class TabContentManager {
             Context context,
             BrowserControlsStateProvider browserControlsStateProvider,
             boolean snapshotsEnabled,
-            TabFinder tabFinder,
+            @Nullable TabFinder tabFinder,
             TabWindowManager tabWindowManager) {
         mContext = context;
         mBrowserControlsStateProvider = browserControlsStateProvider;
@@ -205,6 +205,7 @@ public class TabContentManager {
             TabContentManagerJni.get().destroy(mNativeTabContentManager);
             mNativeTabContentManager = 0;
         }
+        mListeners.clear();
     }
 
     /**
@@ -220,7 +221,7 @@ public class TabContentManager {
     }
 
     @CalledByNative
-    private @Nullable Tab getTabById(int tabId) {
+    private @Nullable @JniType("TabAndroid*") Tab getTabById(int tabId) {
         if (mTabFinder == null) return null;
 
         return mTabFinder.getTabById(tabId);
@@ -764,7 +765,8 @@ public class TabContentManager {
                 @JniType("TabAndroid*") Tab tab,
                 float thumbnailScale,
                 boolean returnBitmap,
-                Callback<@Nullable Bitmap> callback);
+                @JniType("base::OnceCallback<void(const base::android::JavaRef<jobject>&)>")
+                        Callback<@Nullable Bitmap> callback);
 
         void cacheTabWithBitmap(
                 long nativeTabContentManager,
@@ -786,10 +788,15 @@ public class TabContentManager {
                 long nativeTabContentManager, @JniType("std::vector<int>") int[] tabIds);
 
         void waitForJpegTabThumbnail(
-                long nativeTabContentManager, int tabId, Callback<Boolean> callback);
+                long nativeTabContentManager,
+                int tabId,
+                @JniType("base::OnceCallback<void(bool)>") Callback<Boolean> callback);
 
         void getEtc1TabThumbnail(
-                long nativeTabContentManager, int tabId, Callback<@Nullable Bitmap> callback);
+                long nativeTabContentManager,
+                int tabId,
+                @JniType("base::OnceCallback<void(const base::android::JavaRef<jobject>&)>")
+                        Callback<@Nullable Bitmap> callback);
 
         void setCaptureMinRequestTimeForTesting(long nativeTabContentManager, int timeMs);
 

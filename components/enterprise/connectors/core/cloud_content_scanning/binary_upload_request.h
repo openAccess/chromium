@@ -8,12 +8,17 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/read_only_shared_memory_region.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/types/id_type.h"
 #include "base/types/optional_ref.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
 #include "components/enterprise/connectors/core/analysis_settings.h"
 #include "components/enterprise/connectors/core/cloud_content_scanning/common.h"
 #include "url/gurl.h"
+
+namespace network {
+class ResourceRequestBody;
+}  // namespace network
 
 namespace policy {
 class BrowserPolicyConnector;
@@ -88,6 +93,10 @@ class BinaryUploadRequest {
     // The page's content. Only populated for page requests.
     base::ReadOnlySharedMemoryRegion page;
 
+    // The body of the network request being evaluated. Only populated for
+    // network request requests.
+    scoped_refptr<network::ResourceRequestBody> request_body;
+
     // Whether the file has been obfuscated. Only populated for file requests.
     bool is_obfuscated = false;
   };
@@ -157,6 +166,9 @@ class BinaryUploadRequest {
       const google::protobuf::RepeatedPtrField<std::string> frame_url_chain);
   void set_content_hash_in_final_call(bool content_hash_in_final_call);
   void set_file_size(uint64_t file_size);
+  void set_extension_initiator(
+      safe_browsing::ExtensionTelemetryReportRequest::ExtensionInfo
+          extension_initiator);
 
   std::string SetRandomRequestToken();
 

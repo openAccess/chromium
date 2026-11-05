@@ -261,7 +261,7 @@ void ChromeContentVerifierDelegate::VerifyFailed(
   const bool should_disable = info.mode >= VerifyInfo::Mode::ENFORCE;
   // Configuration when we should repair extension, but not disable it, is
   // invalid.
-  DCHECK(!info.should_repair || should_disable);
+  CHECK(!info.should_repair || should_disable, base::NotFatalUntil::M161);
 
   if (!should_disable) {
     if (!would_be_disabled_ids_.contains(extension_id)) {
@@ -289,7 +289,7 @@ void ChromeContentVerifierDelegate::VerifyFailed(
     return;
   }
 
-  DCHECK(should_disable);
+  CHECK(should_disable, base::NotFatalUntil::M161);
   registrar->DisableExtension(extension_id,
                               {disable_reason::DISABLE_CORRUPTED});
   ExtensionPrefs::Get(context_)->IncrementPref(kCorruptedDisableCount);
@@ -324,6 +324,15 @@ ChromeContentVerifierDelegate::VerifyInfo
 ChromeContentVerifierDelegate::GetVerifyInfo(const Extension& extension) const {
   if (g_verify_info_test_callback) {
     return g_verify_info_test_callback->Run(extension);
+  }
+
+  // Built-in component extensions don't ship content verification
+  // hashes and aren't managed by ExternalProviderManager, so content
+  // verification and corruption repair don't apply to them. This
+  // intentionally excludes kExternalComponent, which are CWS CRXs
+  // installed into the profile and can be repaired.
+  if (extension.location() == mojom::ManifestLocation::kComponent) {
+    return VerifyInfo(VerifyInfo::Mode::NONE, false, false);
   }
 
   ManagementPolicy* management_policy =

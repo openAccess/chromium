@@ -33,7 +33,9 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui_message_handler.h"
 #include "net/base/url_util.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/views/controls/webview/web_dialog_view.h"
 #include "ui/views/widget/widget.h"
 #include "ui/web_dialogs/web_dialog_delegate.h"
@@ -41,7 +43,7 @@
 namespace {
 
 // The OAuth token consumer name.
-const char kOAuthConsumerName[] = "credential_provider_signin_dialog";
+constexpr char kOAuthConsumerName[] = "credential_provider_signin_dialog";
 
 // This message must match the one sent in inline_login_app.js:
 // sendLSTFetchResults.
@@ -98,7 +100,7 @@ void HandleSigninCompleteForGcpwLogin(
     base::DictValue signin_result,
     const std::string& additional_mdm_oauth_scopes,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
-  DCHECK(!signin_result.empty());
+  CHECK(!signin_result.empty(), base::NotFatalUntil::M162);
   int exit_code = *signin_result.FindInt(credential_provider::kKeyExitCode);
 
   // If there is an error code, write out the signin results directly.
@@ -113,9 +115,10 @@ void HandleSigninCompleteForGcpwLogin(
   } else if (signin_result.size() > 1) {
     std::string access_token =
         *signin_result.FindString(credential_provider::kKeyAccessToken);
-    std::string refresh_token =
+    const std::string& refresh_token =
         *signin_result.FindString(credential_provider::kKeyRefreshToken);
-    DCHECK(!access_token.empty() && !refresh_token.empty());
+    CHECK(!access_token.empty() && !refresh_token.empty(),
+          base::NotFatalUntil::M162);
 
     // Create the fetcher and pass it to the callback so that it can be
     // deleted once it is finished.
@@ -139,9 +142,9 @@ class CredentialProviderWebUIMessageHandler
  public:
   explicit CredentialProviderWebUIMessageHandler(
       HandleGcpwSigninCompleteResult signin_callback,
-      const std::string& additional_mdm_oauth_scopes)
+      std::string additional_mdm_oauth_scopes)
       : signin_callback_(std::move(signin_callback)),
-        additional_mdm_oauth_scopes_(additional_mdm_oauth_scopes) {}
+        additional_mdm_oauth_scopes_(std::move(additional_mdm_oauth_scopes)) {}
 
   CredentialProviderWebUIMessageHandler(
       const CredentialProviderWebUIMessageHandler&) = delete;
@@ -182,7 +185,7 @@ class CredentialProviderWebUIMessageHandler
 
  private:
   base::DictValue ParseArgs(const base::ListValue& args, int* out_exit_code) {
-    DCHECK(out_exit_code);
+    CHECK(out_exit_code, base::NotFatalUntil::M162);
 
     if (args.empty()) {
       *out_exit_code = credential_provider::kUiecMissingSigninData;
@@ -266,19 +269,19 @@ class CredentialProviderWebDialogDelegate : public ui::WebDialogDelegate {
   // |email_domains| is used to pre fill the email domain on Gaia's signin page
   // so that the user only needs to enter their user name.
   CredentialProviderWebDialogDelegate(
-      const std::string& reauth_email,
-      const std::string& reauth_gaia_id,
-      const std::string& email_domains,
-      const std::string& gcpw_endpoint_path,
-      const std::string& additional_mdm_oauth_scopes,
-      const std::string& show_tos,
+      std::string reauth_email,
+      std::string reauth_gaia_id,
+      std::string email_domains,
+      std::string gcpw_endpoint_path,
+      std::string additional_mdm_oauth_scopes,
+      std::string show_tos,
       HandleGcpwSigninCompleteResult signin_callback)
-      : reauth_email_(reauth_email),
-        reauth_gaia_id_(reauth_gaia_id),
-        email_domains_(email_domains),
-        gcpw_endpoint_path_(gcpw_endpoint_path),
-        additional_mdm_oauth_scopes(additional_mdm_oauth_scopes),
-        show_tos_(show_tos),
+      : reauth_email_(std::move(reauth_email)),
+        reauth_gaia_id_(std::move(reauth_gaia_id)),
+        email_domains_(std::move(email_domains)),
+        gcpw_endpoint_path_(std::move(gcpw_endpoint_path)),
+        additional_mdm_oauth_scopes_(std::move(additional_mdm_oauth_scopes)),
+        show_tos_(std::move(show_tos)),
         signin_callback_(std::move(signin_callback)) {}
 
   CredentialProviderWebDialogDelegate(
@@ -341,9 +344,9 @@ class CredentialProviderWebDialogDelegate : public ui::WebDialogDelegate {
   void GetWebUIMessageHandlers(
       std::vector<content::WebUIMessageHandler*>* handlers) override {
     // The WebDialogUI will own and delete this message handler.
-    DCHECK(!handler_);
+    CHECK(!handler_, base::NotFatalUntil::M162);
     handler_ = new CredentialProviderWebUIMessageHandler(
-        std::move(signin_callback_), additional_mdm_oauth_scopes);
+        std::move(signin_callback_), std::move(additional_mdm_oauth_scopes_));
     handlers->push_back(handler_);
   }
 
@@ -400,7 +403,7 @@ class CredentialProviderWebDialogDelegate : public ui::WebDialogDelegate {
   const std::string gcpw_endpoint_path_;
 
   // Additional mdm oauth scopes flag value.
-  const std::string additional_mdm_oauth_scopes;
+  std::string additional_mdm_oauth_scopes_;
 
   // Show tos page in the login path when this parameter is set to 1.
   const std::string show_tos_;
@@ -496,12 +499,13 @@ class CredentialProviderWebDialogView : public views::WebDialogView {
       const GURL& opener_url,
       const std::string& frame_name,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       const content::StoragePartitionConfig& partition_config,
-      content::SessionStorageNamespace* session_storage_namespace) override {
-    VLOG(0) << "Suppressed window creation for  " << target_url.GetHost()
-            << target_url.GetPath();
+      content::SessionStorageNamespaceHandle* session_storage_namespace)
+      override {
+    VLOG(0) << "Suppressed window creation for  " << target_url.host()
+            << target_url.path();
     return nullptr;
   }
 };
@@ -510,7 +514,7 @@ views::WebDialogView* ShowCredentialProviderSigninDialog(
     const base::CommandLine& command_line,
     content::BrowserContext* context,
     HandleGcpwSigninCompleteResult signin_complete_handler) {
-  DCHECK(signin_complete_handler);
+  CHECK(signin_complete_handler, base::NotFatalUntil::M162);
 
   // Open a frameless window whose entire surface displays a gaia sign in web
   // page.
@@ -530,8 +534,9 @@ views::WebDialogView* ShowCredentialProviderSigninDialog(
   // Delegate to handle the result of the sign in request. This will
   // delete itself eventually when it receives the OnDialogClosed call.
   auto delegate = std::make_unique<CredentialProviderWebDialogDelegate>(
-      reauth_email, reauth_gaia_id, email_domains, gcpw_endpoint_path,
-      additional_mdm_oauth_scopes, show_tos,
+      std::move(reauth_email), std::move(reauth_gaia_id),
+      std::move(email_domains), std::move(gcpw_endpoint_path),
+      std::move(additional_mdm_oauth_scopes), std::move(show_tos),
       std::move(signin_complete_handler));
 
   // The web dialog view that will contain the web ui for the login screen.

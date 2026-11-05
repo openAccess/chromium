@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "ash/public/cpp/ash_view_ids.h"
-#include "ash/public/cpp/style/color_provider.h"
 #include "ash/public/cpp/system/anchored_nudge_data.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/shell.h"
@@ -18,9 +17,11 @@
 #include "ash/style/ash_color_id.h"
 #include "ash/style/keyboard_shortcut_view.h"
 #include "ash/style/pill_button.h"
-#include "ash/style/system_shadow.h"
+#include "ash/style/style_util.h"
+#include "ash/style/system_decoration.h"
 #include "ash/style/typography.h"
 #include "ash/system/toast/nudge_constants.h"
+#include "base/memory/raw_ptr.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -33,7 +34,6 @@
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_view.h"
@@ -142,7 +142,7 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(SystemNudgeView,
 class SystemNudgeView::FocusableChildrenObserver : public views::ViewObserver {
  public:
   FocusableChildrenObserver(
-      std::vector<views::View*> observed_children,
+      std::vector<raw_ptr<views::View>> observed_children,
       base::RepeatingCallback<void(/*has_focus=*/bool)> focus_callback)
       : observed_children_(std::move(observed_children)),
         focus_callback_(std::move(focus_callback)) {
@@ -170,8 +170,7 @@ class SystemNudgeView::FocusableChildrenObserver : public views::ViewObserver {
   void OnViewBlurred(views::View* observed_view) override {
     focus_callback_.Run(/*has_focus=*/false);
   }
-
-  const std::vector<views::View*> observed_children_;
+  const std::vector<raw_ptr<views::View>> observed_children_;
 
   base::RepeatingCallback<void(/*has_focus=*/bool)> focus_callback_;
 };
@@ -182,9 +181,10 @@ SystemNudgeView::SystemNudgeView(
     const AnchoredNudgeData& nudge_data,
     base::RepeatingCallback<void(/*is_hovered_or_has_focus=*/bool)>
         hover_or_focus_changed_callback)
-    : shadow_(SystemShadow::CreateShadowOnNinePatchLayerForView(
+    : decoration_(SystemDecoration::CreateForView(
           this,
-          SystemShadow::Type::kElevation4)),
+          SystemDecoration::ShadowType::kElevation4,
+          SystemDecoration::HighlightBorderMode::kHighlightBorder)),
       is_corner_anchored_(CalculateIsCornerAnchored(nudge_data.arrow)),
       hover_changed_callback_(std::move(nudge_data.hover_changed_callback)),
       hover_or_focus_changed_callback_(
@@ -194,8 +194,8 @@ SystemNudgeView::SystemNudgeView(
   SetPaintToLayer();
   if (chromeos::features::IsSystemBlurEnabled()) {
     layer()->SetFillsBoundsOpaquely(false);
-    layer()->SetBackgroundBlur(ColorProvider::kBackgroundBlurSigma);
-    layer()->SetBackdropFilterQuality(ColorProvider::kBackgroundBlurQuality);
+    layer()->SetBackgroundBlur(StyleUtil::kBackgroundBlurSigma);
+    layer()->SetBackdropFilterQuality(StyleUtil::kBackgroundBlurQuality);
   }
 
   const ui::ColorId default_background_color_id =
@@ -402,7 +402,7 @@ SystemNudgeView::SystemNudgeView(
           .Build());
   buttons_container->SetDefault(views::kMarginsKey, kButtonsMargins);
 
-  std::vector<views::View*> focusable_children;
+  std::vector<raw_ptr<views::View>> focusable_children;
   focusable_children.push_back(buttons_container->AddChildView(
       views::Builder<PillButton>()
           .SetID(VIEW_ID_SYSTEM_NUDGE_PRIMARY_BUTTON)
@@ -509,9 +509,7 @@ bool SystemNudgeView::IsHoveredOrChildHasFocus() {
 void SystemNudgeView::SetNudgeRoundedCornerRadius(
     const gfx::RoundedCornersF& rounded_corners) {
   layer()->SetRoundedCornerRadius(rounded_corners);
-  SetBorder(std::make_unique<views::HighlightBorder>(
-      rounded_corners, views::HighlightBorder::Type::kHighlightBorderOnShadow));
-  shadow_->SetRoundedCorners(rounded_corners);
+  decoration_->SetRoundedCorners(rounded_corners);
 }
 
 BEGIN_METADATA(SystemNudgeView)

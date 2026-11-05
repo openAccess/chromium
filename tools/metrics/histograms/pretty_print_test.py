@@ -7,6 +7,7 @@ import unittest
 
 import setup_modules  # pylint: disable=unused-import
 
+
 import chromium_src.tools.metrics.histograms.pretty_print as pretty_print
 
 
@@ -30,23 +31,14 @@ ORIGINAL_XML = """
   <enums>This shouldn't be here</enums>
  </histogram>
 
- <histogram_suffixes name="Test.HistogramSuffixes" separator=".">
-  <suffix name="TestSuffix" label="A misplaced histogram_suffixes"/>
-  <affected-histogram name="Test.Histogram"/>
-</histogram_suffixes>
-
-</histograms>
-
-<histogram_suffixes_list>
-
-<histogram name="Test.MisplacedHistogram" units="us">
+ <histogram name="Test.MisplacedHistogram" units="us">
    <owner>person@chromium.org</owner>
    Misplaced content.
    <summary>A misplaced histogram
    </summary>
  </histogram>
 
-</histogram_suffixes_list>
+</histograms>
 
 <enums>This shouldn't be here</enums>
 </histogram-configuration>
@@ -82,15 +74,6 @@ PRETTY_XML = """
 </histogram>
 
 </histograms>
-
-<histogram_suffixes_list>
-
-<histogram_suffixes name="Test.HistogramSuffixes" separator=".">
-  <suffix name="TestSuffix" label="A misplaced histogram_suffixes"/>
-  <affected-histogram name="Test.Histogram"/>
-</histogram_suffixes>
-
-</histogram_suffixes_list>
 
 </histogram-configuration>
 """.strip()

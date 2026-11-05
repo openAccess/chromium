@@ -108,7 +108,7 @@ class ObservableBase<T> {
       }
     });
     this.subscribers.clear();
-    if (hadSubscribers){
+    if (hadSubscribers) {
       this.activeSubscriptionChanged(false);
     }
   }
@@ -136,7 +136,7 @@ class ObservableBase<T> {
       }
     });
     this.subscribers.clear();
-    if (hadSubscribers){
+    if (hadSubscribers) {
       this.activeSubscriptionChanged(false);
     }
   }
@@ -274,6 +274,16 @@ export class ObservableValue<T> extends Subject<T> {
       return;
     }
     super.next(v);
+  }
+
+  /**
+   * Clears the stored value and resets the ObservableValue to an uninitialized
+   * state. Does not signal subscribers; subsequent subscribers will not receive
+   * a value until assignAndSignal() is called again.
+   */
+  reset(): void {
+    this.isSet = false;
+    this.value = undefined;
   }
 
   /** Returns the current value, or undefined if not initialized. */

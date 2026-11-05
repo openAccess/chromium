@@ -13,6 +13,7 @@
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
+#include "chrome/browser/ui/views/extensions/security_dialog_tracker.h"
 #include "components/autofill/core/browser/ui/payments/card_unmask_otp_input_dialog_controller.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "content/public/browser/web_contents.h"
@@ -127,7 +128,7 @@ bool CardUnmaskOtpInputDialogViews::Accept() {
 }
 
 views::View* CardUnmaskOtpInputDialogViews::GetInitiallyFocusedView() {
-  DCHECK(otp_input_textfield_);
+  CHECK(otp_input_textfield_, base::NotFatalUntil::M162);
   return otp_input_textfield_;
 }
 
@@ -144,7 +145,7 @@ void CardUnmaskOtpInputDialogViews::ContentsChanged(
 }
 
 void CardUnmaskOtpInputDialogViews::InitViews() {
-  DCHECK(children().empty());
+  CHECK(children().empty(), base::NotFatalUntil::M162);
   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets(),
       ChromeLayoutProvider::Get()->GetDistanceMetric(
@@ -254,7 +255,7 @@ void CardUnmaskOtpInputDialogViews::CreateHiddenProgressView() {
 }
 
 void CardUnmaskOtpInputDialogViews::HideInvalidState() {
-  DCHECK(otp_input_textfield_->GetInvalid());
+  CHECK(otp_input_textfield_->GetInvalid(), base::NotFatalUntil::M162);
   otp_input_textfield_->SetInvalid(false);
   otp_input_textfield_invalid_label_->SetText(std::u16string());
   otp_input_textfield_invalid_label_->SetVisible(false);
@@ -301,7 +302,9 @@ base::WeakPtr<CardUnmaskOtpInputDialogView> CreateAndShowOtpInputDialog(
     content::WebContents* web_contents) {
   CardUnmaskOtpInputDialogViews* dialog_view =
       new CardUnmaskOtpInputDialogViews(controller);
-  constrained_window::ShowWebModalDialogViews(dialog_view, web_contents);
+  views::Widget* widget =
+      constrained_window::ShowWebModalDialogViews(dialog_view, web_contents);
+  extensions::SecurityDialogTracker::GetInstance()->AddSecurityDialog(widget);
   return dialog_view->GetWeakPtr();
 }
 

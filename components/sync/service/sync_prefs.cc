@@ -42,10 +42,6 @@ namespace syncer {
 
 namespace {
 
-// State of the migration done by MaybeMigrateCustomPassphrasePref().
-constexpr char kSyncEncryptionBootstrapTokenPerAccountMigrationDone[] =
-    "sync.encryption_bootstrap_token_per_account_migration_done";
-
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 // Pref to record if the one-off MaybeMigrateAutofillToPerAccountPref()
 // migration ran.
@@ -192,6 +188,10 @@ void SyncPrefs::RegisterProfilePrefs(PrefRegistrySimple* registry) {
       prefs::internal::kMigrateExtensionsFromLocalToAccount, false);
   registry->RegisterBooleanPref(
       prefs::internal::kMigrateThemeFromLocalToAccount, false);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  registry->RegisterBooleanPref(
+      prefs::internal::kReadingListPrefMigratedToAccount, false);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   registry->RegisterBooleanPref(
       prefs::kCleanUpStatsTableFromAccountPasswordStore, false);
 
@@ -203,9 +203,6 @@ void SyncPrefs::RegisterProfilePrefs(PrefRegistrySimple* registry) {
   // time the engine is successfully initialized.
   registry->RegisterStringPref(
       prefs::internal::kSyncCachedTrustedVaultAutoUpgradeExperimentGroup, "");
-  // The encryption bootstrap token represents a user-entered passphrase.
-  registry->RegisterStringPref(prefs::internal::kSyncEncryptionBootstrapToken,
-                               std::string());
 
   // Cached notion of whether or not a persistent auth error exists.
   registry->RegisterBooleanPref(
@@ -215,9 +212,6 @@ void SyncPrefs::RegisterProfilePrefs(PrefRegistrySimple* registry) {
   // account.
   registry->RegisterDictionaryPref(
       prefs::internal::kSyncEncryptionBootstrapTokenPerAccount);
-  // For migration only, tracks if the EncryptionBootstrapToken is migrated.
-  registry->RegisterBooleanPref(
-      kSyncEncryptionBootstrapTokenPerAccountMigrationDone, false);
 
   registry->RegisterBooleanPref(prefs::internal::kSyncManaged, false);
   registry->RegisterIntegerPref(
@@ -230,6 +224,10 @@ void SyncPrefs::RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterTimePref(
       prefs::internal::kFirstTimeTriedToMigrateSyncFeaturePausedToSignin,
       base::Time());
+#if !BUILDFLAG(IS_CHROMEOS)
+  registry->RegisterBooleanPref(prefs::internal::kWipedAppsAndAppSettingsData,
+                                false);
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
   SyncFeatureStatusForMigrationsRecorder::RegisterProfilePrefs(registry);
 }
@@ -600,7 +598,6 @@ void SyncPrefs::ClearCachedTrustedVaultAutoUpgradeExperimentGroup() {
 
 void SyncPrefs::ClearAllEncryptionBootstrapTokens() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  pref_service_->ClearPref(prefs::internal::kSyncEncryptionBootstrapToken);
   if (IsInitialSyncFeatureSetupComplete()) {
     // When Sync-the-feature gets turned off, the user's encryption bootstrap
     // token should be cleared. However, at this point it's hard to determine
@@ -714,7 +711,7 @@ bool SyncPrefs::IsTypeSupportedInTransportMode(UserSelectableType type) {
       return base::FeatureList::IsEnabled(
           switches::kSyncEnableBookmarksInTransportMode);
     case UserSelectableType::kReadingList:
-      return syncer::IsReadingListAccountStorageEnabled();
+      return true;
     case UserSelectableType::kPreferences:
       if (!base::FeatureList::IsEnabled(
               switches::kEnablePreferencesAccountStorage)) {
@@ -723,9 +720,7 @@ bool SyncPrefs::IsTypeSupportedInTransportMode(UserSelectableType type) {
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
       return IsReplaceSyncPromosWithSignInPromosEnabled();
 #else
-      // Search engines are behind `UserSelectableType::kPreferences`.
-      return base::FeatureList::IsEnabled(
-          kSeparateLocalAndAccountSearchEngines);
+      return true;
 #endif
     case UserSelectableType::kPasswords:
       return true;
@@ -757,8 +752,7 @@ bool SyncPrefs::IsTypeSupportedInTransportMode(UserSelectableType type) {
       // Allow 'Themes' toggle on iOS if the feature is enabled.
       return base::FeatureList::IsEnabled(syncer::kSyncThemesIos);
 #else
-      return base::FeatureList::IsEnabled(
-          syncer::kSeparateLocalAndAccountThemes);
+      return true;
 #endif
     case UserSelectableType::kApps:
       return IsReplaceSyncPromosWithSignInPromosEnabled();
@@ -942,31 +936,6 @@ bool SyncPrefs::MaybeMigratePrefsForSyncToSigninPart2(
   return false;
 }
 
-void SyncPrefs::MaybeMigrateCustomPassphrasePref(const GaiaId& gaia_id) {
-  if (pref_service_->GetBoolean(
-          kSyncEncryptionBootstrapTokenPerAccountMigrationDone)) {
-    return;
-  }
-  pref_service_->SetBoolean(
-      kSyncEncryptionBootstrapTokenPerAccountMigrationDone, true);
-
-  if (gaia_id.empty()) {
-    // Do not migrate if gaia_id is empty; no signed in user.
-    return;
-  }
-
-  const std::string& token =
-      pref_service_->GetString(prefs::internal::kSyncEncryptionBootstrapToken);
-  if (token.empty()) {
-    // No custom passphrase is used, or it is not set.
-    return;
-  }
-  SetAccountKeyedPrefValue(
-      pref_service_, prefs::internal::kSyncEncryptionBootstrapTokenPerAccount,
-      signin::GaiaIdHash::FromGaiaId(gaia_id), base::Value(token));
-  return;
-}
-
 // static
 void SyncPrefs::MigrateGlobalDataTypePrefsToAccount(PrefService* pref_service,
                                                     const GaiaId& gaia_id) {
@@ -998,10 +967,11 @@ void SyncPrefs::MigrateGlobalDataTypePrefsToAccount(PrefService* pref_service,
   // sign-in to be enabled by default. This is to specifically handle the case
   // when `syncer::kExplicitSigninForExtension` is true.
   bool extensions_enabled = everything_enabled;
-  // Explicitly set the bookmarks toggle, which otherwise requires an explicit
-  // sign-in to be enabled by default. This is to specifically handle the case
-  // when `syncer::kExplicitSigninForBookmarks` is true.
+  // Explicitly set the bookmarks and reading list toggles, which otherwise
+  // require an explicit sign-in to be enabled by default (see
+  // `SigninPrefs::GetBookmarksExplicitBrowserSignin()`).
   bool bookmarks_enabled = everything_enabled;
+  bool reading_list_enabled = everything_enabled;
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   if (everything_enabled) {
     // On desktop, Passwords is considered disabled by default and
@@ -1031,6 +1001,8 @@ void SyncPrefs::MigrateGlobalDataTypePrefsToAccount(PrefService* pref_service,
         GetPrefNameForType(UserSelectableType::kExtensions));
     bookmarks_enabled = pref_service->GetBoolean(
         GetPrefNameForType(UserSelectableType::kBookmarks));
+    reading_list_enabled = pref_service->GetBoolean(
+        GetPrefNameForType(UserSelectableType::kReadingList));
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   }
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
@@ -1049,10 +1021,18 @@ void SyncPrefs::MigrateGlobalDataTypePrefsToAccount(PrefService* pref_service,
                         tabs_enabled);
   account_settings->Set(GetPrefNameForType(UserSelectableType::kBookmarks),
                         bookmarks_enabled);
+  account_settings->Set(GetPrefNameForType(UserSelectableType::kReadingList),
+                        reading_list_enabled);
   account_settings->Set(GetPrefNameForType(UserSelectableType::kSavedTabGroups),
                         saved_tab_groups_enabled);
   account_settings->Set(GetPrefNameForType(UserSelectableType::kExtensions),
                         extensions_enabled);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  // Record that this migration now covers the Reading List toggle, to be able
+  // to identify users who were migrated before it did (crbug.com/568406887).
+  pref_service->SetBoolean(prefs::internal::kReadingListPrefMigratedToAccount,
+                           true);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)

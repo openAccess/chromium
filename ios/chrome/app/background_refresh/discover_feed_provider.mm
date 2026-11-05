@@ -34,7 +34,6 @@ enum class DiscoverFeedServiceAvailability {
 }  // namespace
 
 @implementation DiscoverFeedProvider {
-  raw_ptr<DiscoverFeedService> _service;
   __weak DiscoverFeedTask* _runningTask;
   SEQUENCE_CHECKER(_sequenceChecker);
 }
@@ -52,13 +51,16 @@ enum class DiscoverFeedServiceAvailability {
 
 - (BOOL)isDue {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
+  if (!IsDiscoverBackgroundRefreshEnabled()) {
+    return NO;
+  }
   DiscoverFeedService* service = [self discoverFeedService];
   if (!service) {
     return NO;
   }
 
   NSDate* earliestDate = service->GetEarliestBackgroundRefreshBeginDate();
-  if (!earliestDate) {
+  if (!earliestDate || [earliestDate timeIntervalSince1970] <= 0) {
     return NO;
   }
 
@@ -67,13 +69,16 @@ enum class DiscoverFeedServiceAvailability {
 
 - (base::TimeDelta)refreshInterval {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
+  if (!IsDiscoverBackgroundRefreshEnabled()) {
+    return base::TimeDelta::Max();
+  }
   DiscoverFeedService* service = [self discoverFeedService];
   if (!service) {
     return kDiscoverFeedBackgroundRefreshNoServiceInterval.Get();
   }
 
   NSDate* earliestDate = service->GetEarliestBackgroundRefreshBeginDate();
-  if (!earliestDate) {
+  if (!earliestDate || [earliestDate timeIntervalSince1970] <= 0) {
     return kDiscoverFeedBackgroundRefreshNoDateInterval.Get();
   }
 
@@ -88,6 +93,9 @@ enum class DiscoverFeedServiceAvailability {
 }
 
 - (id<AppRefreshProviderTask>)task {
+  if (!IsDiscoverBackgroundRefreshEnabled()) {
+    return nil;
+  }
   return [self discoverFeedTask];
 }
 
@@ -99,7 +107,6 @@ enum class DiscoverFeedServiceAvailability {
 
 - (void)refreshDidComplete {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
-  _service = nullptr;
 }
 
 #pragma mark - Private
@@ -125,27 +132,17 @@ enum class DiscoverFeedServiceAvailability {
 
 - (DiscoverFeedService*)discoverFeedService {
   DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
-  if (!_service) {
-    _service = [self loadDiscoverFeedService];
-  }
-  return _service.get();
-}
-
-- (DiscoverFeedService*)loadDiscoverFeedService {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(_sequenceChecker);
   ProfileManagerIOS* profileManager =
       GetApplicationContext()->GetProfileManager();
   PrefService* localState = GetApplicationContext()->GetLocalState();
   if (!profileManager || !localState) {
     return nullptr;
   }
-
   ProfileIOS* profile = nullptr;
   std::string profileName = localState->GetString(prefs::kLastUsedProfile);
   if (!profileName.empty()) {
     profile = profileManager->GetProfileWithName(profileName);
   }
-
   // Fallback: Use first loaded profile if last-used is missing/unloaded.
   if (!profile) {
     std::vector<ProfileIOS*> loadedProfiles =
@@ -154,14 +151,11 @@ enum class DiscoverFeedServiceAvailability {
       profile = loadedProfiles[0];
     }
   }
-
   if (!profile) {
     return nullptr;
   }
-
   // Get the original profile if in Incognito state.
   profile = profile->GetOriginalProfile();
-
   return DiscoverFeedServiceFactory::GetForProfile(profile);
 }
 

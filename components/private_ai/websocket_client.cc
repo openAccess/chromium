@@ -20,8 +20,8 @@
 #include "components/private_ai/attestation/server_verification_key.h"
 #include "components/private_ai/common/private_ai_logger.h"
 #include "components/private_ai/proto_utils/google_rpc_code.h"
+#include "net/base/net_errors.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-#include "services/network/public/mojom/network_context.mojom.h"
 #include "third_party/oak/chromium/proto/session/session.pb.h"
 #include "url/gurl.h"
 
@@ -50,6 +50,7 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
             }
           }
           destination: GOOGLE_OWNED_SERVICE
+          api_service_name: "privatearatea.pa.googleapis.com"
           last_reviewed: "2025-09-12"
         }
         policy {
@@ -64,13 +65,15 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
 
 WebSocketClient::WebSocketClient(
     const GURL& service_url,
-    network::mojom::NetworkContext* network_context,
-    PrivateAiLogger* logger)
+    network::NetworkContextGetter network_context_getter,
+    PrivateAiLogger* logger,
+    std::optional<bool> has_chrome_proxy)
     : logger_(logger),
       streaming_client_(service_url,
-                        network_context,
+                        std::move(network_context_getter),
                         kTrafficAnnotation,
-                        /*delegate=*/this) {
+                        /*delegate=*/this),
+      has_chrome_proxy_(has_chrome_proxy) {
   CHECK(logger_);
 }
 
@@ -144,17 +147,38 @@ void WebSocketClient::OnMessage(std::vector<uint8_t> message) {
                                 base::ok(std::move(message))));
 }
 
+void WebSocketClient::OnConnected() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RecordConnectionResult(net::OK);
+}
+
 void WebSocketClient::OnConnectionError(const std::string& message,
                                         int net_error,
                                         int response_code) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  RecordConnectionResult(net_error);
+  // Called when the WebSocket opening handshake fails, i.e. the connection to
+  // the server could not be established. Unrelated to the secure channel
+  // handshake.
   logger_->LogError(
       FROM_HERE, base::StrCat({"PrivateAI service connection failed ", message,
                                " (net error:", base::NumberToString(net_error),
                                ", response code:",
                                base::NumberToString(response_code), ")"}));
 
-  ClosePipe(TransportError::kError);
+  // Net error codes are negative, while the NetErrorCodes enum used for the
+  // histogram contains their absolute values.
+  base::UmaHistogramSparse("PrivateAi.Client.WebSocketConnectionError.NetError",
+                           -net_error);
+  // `response_code` is -1 if no HTTP response was received, e.g. because of a
+  // network error.
+  if (response_code > 0) {
+    base::UmaHistogramSparse(
+        "PrivateAi.Client.WebSocketConnectionError.ResponseCode",
+        response_code);
+  }
+
+  ClosePipe(TransportError::kConnectionFailed);
 }
 
 void WebSocketClient::OnDropChannel(bool was_clean,
@@ -218,6 +242,19 @@ void WebSocketClient::ClosePipe(TransportError status) {
       FROM_HERE,
       base::BindOnce(&WebSocketClient::OnResponse,
                      weak_ptr_factory_.GetWeakPtr(), base::unexpected(status)));
+}
+
+void WebSocketClient::RecordConnectionResult(int net_error) {
+  if (has_recorded_connection_result_ || !has_chrome_proxy_.has_value()) {
+    return;
+  }
+  has_recorded_connection_result_ = true;
+  const char* variant = *has_chrome_proxy_ ? "WithProxy" : "WithoutProxy";
+  // Net error codes are negative, while the NetErrorCodes enum used for
+  // histogram contains their absolute values. net::OK is 0.
+  base::UmaHistogramSparse(
+      base::StrCat({"PrivateAi.Client.ConnectionResult.", variant}),
+      net_error == net::OK ? net::OK : -net_error);
 }
 
 }  // namespace private_ai

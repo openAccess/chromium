@@ -8,36 +8,34 @@ import org.junit.Assert;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.robolectric.RuntimeEnvironment;
-import org.robolectric.annotation.LooperMode;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 
 /** Unit tests for {@link BadgeConfig} and {@link BadgeConfig.Builder} */
 @RunWith(BaseRobolectricTestRunner.class)
-@LooperMode(LooperMode.Mode.LEGACY)
 public class BadgeConfigBuilderUnitTest {
 
     @Test
     public void testDefaultSizeChildAccountBadgeConfig() {
         BadgeConfig childAccountConfig =
-                BadgeConfig.create(R.drawable.ic_error)
+                BadgeConfig.create(R.drawable.ic_error_24dp)
                         .withDefaultSizeChildAccountConfig()
-                        .build(RuntimeEnvironment.application.getApplicationContext());
+                        .build(RuntimeEnvironment.getApplication().getApplicationContext());
 
         BadgeConfig expectedConfig =
-                BadgeConfig.create(R.drawable.ic_error)
+                BadgeConfig.create(R.drawable.ic_error_24dp)
                         .withBadgeSize(R.dimen.badge_size)
                         .withBorderSize(R.dimen.badge_border_size)
                         .withXPosition(R.dimen.badge_position_x)
                         .withYPosition(R.dimen.badge_position_y)
-                        .build(RuntimeEnvironment.application.getApplicationContext());
+                        .build(RuntimeEnvironment.getApplication().getApplicationContext());
 
         Assert.assertEquals(expectedConfig, childAccountConfig);
     }
 
     @Test
     public void testToolbarIdentityDiscBadgeConfig() {
-        var context = RuntimeEnvironment.application.getApplicationContext();
+        var context = RuntimeEnvironment.getApplication().getApplicationContext();
         var resources = context.getResources();
         BadgeConfig identityDiscBadgeConfig =
                 BadgeConfig.create(R.drawable.ic_error_badge_16dp)
@@ -50,14 +48,14 @@ public class BadgeConfigBuilderUnitTest {
                         .withBorderSize(R.dimen.toolbar_identity_disc_badge_border_size)
                         .withXPosition(R.dimen.toolbar_identity_disc_badge_position_x)
                         .withYPosition(R.dimen.toolbar_identity_disc_badge_position_y)
-                        .build(RuntimeEnvironment.application.getApplicationContext());
+                        .build(RuntimeEnvironment.getApplication().getApplicationContext());
 
         Assert.assertEquals(expectedConfig, identityDiscBadgeConfig);
     }
 
     @Test
     public void testBadgeConfigBuilder() {
-        var context = RuntimeEnvironment.application.getApplicationContext();
+        var context = RuntimeEnvironment.getApplication().getApplicationContext();
         var resources = context.getResources();
         BadgeConfig badgeConfig =
                 BadgeConfig.create(R.drawable.ic_error_badge_16dp)

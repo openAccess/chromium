@@ -10,7 +10,6 @@
 #include <string_view>
 #include <utility>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_paths.h"
 #include "ash/constants/ash_pref_names.h"
 #include "base/check_deref.h"
@@ -32,6 +31,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/app_list/app_list_syncable_service.h"
 #include "chrome/browser/ash/app_list/app_list_syncable_service_factory.h"
@@ -160,7 +160,7 @@ std::string GetLocaleSpecificStringImpl(const base::DictValue& root,
 }
 
 void CheckWallpaperCacheExists(const base::FilePath& path, bool* exists) {
-  DCHECK(exists);
+  CHECK(exists, base::NotFatalUntil::M160);
   *exists = base::PathExists(path);
 }
 
@@ -421,7 +421,7 @@ StartupCustomizationDocument::configured_locales() const {
 
 const std::string& StartupCustomizationDocument::initial_locale_default()
     const {
-  DCHECK_GT(configured_locales_.size(), 0UL);
+  CHECK_GT(configured_locales_.size(), 0UL, base::NotFatalUntil::M160);
   return configured_locales_.front();
 }
 
@@ -458,11 +458,11 @@ ServicesCustomizationDocument::ApplyingTask::ApplyingTask(
 }
 
 ServicesCustomizationDocument::ApplyingTask::~ApplyingTask() {
-  DCHECK(!engaged_);
+  CHECK(!engaged_, base::NotFatalUntil::M160);
 }
 
 void ServicesCustomizationDocument::ApplyingTask::Finished(bool success) {
-  DCHECK(engaged_);
+  CHECK(engaged_, base::NotFatalUntil::M160);
   if (engaged_) {
     engaged_ = false;
     document_->ApplyingTaskFinished(success);
@@ -738,30 +738,21 @@ base::DictValue ServicesCustomizationDocument::GetDefaultAppsInProviderFormat(
       }
       base::Value* update_url_value =
           entry.Find(ExternalProviderImpl::kExternalUpdateUrl);
-      if (ash::features::IsOemAppsMustUpdateFromWebstoreEnabled()) {
-        // Fix for crbug.com/502771678. OEM apps must update from the webstore.
-        // Providing a non-webstore update URL is a fatal error.
-        if (update_url_value) {
-          CHECK(update_url_value->is_string());
-          GURL update_url(update_url_value->GetString());
-          CHECK(update_url.is_valid());
-          if (!extension_urls::IsWebstoreUpdateUrl(update_url)) {
-            // Use log because official builds strip the stream passed to CHECK.
-            LOG(FATAL) << "Invalid update URL: " << update_url;
-          }
-          // If we get here, a extension provided a valid update URL.
-        } else {
-          // Provide the default update URL.
-          entry.Set(ExternalProviderImpl::kExternalUpdateUrl,
-                    extension_urls::GetWebstoreUpdateUrl().spec());
+      // Fix for crbug.com/502771678. OEM apps must update from the webstore.
+      // Providing a non-webstore update URL is a fatal error.
+      if (update_url_value) {
+        CHECK(update_url_value->is_string());
+        GURL update_url(update_url_value->GetString());
+        CHECK(update_url.is_valid());
+        if (!extension_urls::IsWebstoreUpdateUrl(update_url)) {
+          // Use log because official builds strip the stream passed to CHECK.
+          LOG(FATAL) << "Invalid update URL: " << update_url;
         }
+        // If we get here, an extension provided a valid update URL.
       } else {
-        // Legacy behavior. Keep any provided external_update_url value, but
-        // override to web store if it's not set.
-        if (!update_url_value) {
-          entry.Set(ExternalProviderImpl::kExternalUpdateUrl,
-                    extension_urls::GetWebstoreUpdateUrl().spec());
-        }
+        // Provide the default update URL.
+        entry.Set(ExternalProviderImpl::kExternalUpdateUrl,
+                  extension_urls::GetWebstoreUpdateUrl().spec());
       }
       prefs.SetByDottedPath(app_id, std::move(entry));
     }
@@ -808,8 +799,8 @@ void ServicesCustomizationDocument::OnCustomizationNotFound() {
 void ServicesCustomizationDocument::SetOemFolderName(
     Profile* profile,
     const base::DictValue& root) {
-  std::string name =
-      GetOemAppsFolderNameImpl(application_locale_storage_->Get(), root);
+  std::string name = GetOemAppsFolderNameImpl(
+      std::string(application_locale_storage_->GetTag().tag_string()), root);
   if (name.empty())
     name = chromeos::default_app_order::GetOemAppsFolderName();
   if (!name.empty()) {
@@ -834,7 +825,7 @@ std::string ServicesCustomizationDocument::GetOemAppsFolderNameImpl(
 void ServicesCustomizationDocument::StartOEMWallpaperDownload(
     const GURL& wallpaper_url,
     std::unique_ptr<ServicesCustomizationDocument::ApplyingTask> applying) {
-  DCHECK(wallpaper_url.is_valid());
+  CHECK(wallpaper_url.is_valid(), base::NotFatalUntil::M160);
 
   const base::FilePath dir = GetCustomizedWallpaperCacheDir();
   const base::FilePath file = GetCustomizedWallpaperDownloadedFileName();
@@ -873,7 +864,7 @@ void ServicesCustomizationDocument::CheckAndApplyWallpaper() {
   }
 
   // Should fail if this ever happens in tests.
-  DCHECK(wallpaper_url.is_valid());
+  CHECK(wallpaper_url.is_valid(), base::NotFatalUntil::M160);
   if (!wallpaper_url.is_valid()) {
     if (!wallpaper_url.is_empty()) {
       LOG(WARNING) << "Invalid Customized Wallpaper URL '"
@@ -899,9 +890,9 @@ void ServicesCustomizationDocument::CheckAndApplyWallpaper() {
 void ServicesCustomizationDocument::OnCheckedWallpaperCacheExists(
     std::unique_ptr<bool> exists,
     std::unique_ptr<ServicesCustomizationDocument::ApplyingTask> applying) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(exists);
-  DCHECK(applying);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
+  CHECK(exists, base::NotFatalUntil::M160);
+  CHECK(applying, base::NotFatalUntil::M160);
 
   ApplyWallpaper(*exists, std::move(applying));
 }
@@ -935,7 +926,7 @@ void ServicesCustomizationDocument::ApplyWallpaper(
     return;
   }
 
-  DCHECK(wallpaper_url.is_valid());
+  CHECK(wallpaper_url.is_valid(), base::NotFatalUntil::M160);
 
   // Never update system-wide wallpaper (i.e. do not check
   // current_url == wallpaper_url.spec() )
@@ -955,7 +946,7 @@ void ServicesCustomizationDocument::OnOEMWallpaperDownloaded(
     bool success,
     const GURL& wallpaper_url) {
   if (success) {
-    DCHECK(wallpaper_url.is_valid());
+    CHECK(wallpaper_url.is_valid(), base::NotFatalUntil::M160);
 
     VLOG(1) << "Setting default wallpaper to '"
             << GetCustomizedWallpaperDownloadedFileName().value() << "' ('"
@@ -974,7 +965,8 @@ void ServicesCustomizationDocument::ApplyingTaskStarted() {
 }
 
 void ServicesCustomizationDocument::ApplyingTaskFinished(bool success) {
-  DCHECK_GT(apply_tasks_started_, apply_tasks_finished_);
+  CHECK_GT(apply_tasks_started_, apply_tasks_finished_,
+           base::NotFatalUntil::M160);
   ++apply_tasks_finished_;
 
   apply_tasks_success_ += success;

@@ -8,8 +8,11 @@
 #include <string>
 
 #include "base/command_line.h"
+#include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/json/values_util.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/task_environment.h"
@@ -21,7 +24,6 @@
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/signin/public/base/signin_switches.h"
-#include "components/signin/public/identity_manager/account_capabilities.h"
 #include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -29,6 +31,7 @@
 #include "components/signin/public/identity_manager/tribool.h"
 #include "components/universal_optout/features.h"
 #include "components/universal_optout/prefs.h"
+#include "components/universal_optout/switches.h"
 #include "components/variations/service/test_variations_service.h"
 #include "components/variations/variations_switches.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -65,22 +68,13 @@ class UniversalOptOutServiceTest : public ::testing::Test {
     pref_service_.SetBoolean(prefs::kUniversalOptOutEnabled, false);
   }
 
-  void TearDown() override {
-    AccountCapabilities::ResetSupportedAccountCapabilityNamesForTesting();
-  }
-
   void EnableFeatureWithTargetLocations(const std::string& target_locations) {
     scoped_feature_list_.Reset();
     scoped_feature_list_.InitWithFeaturesAndParameters(
         /*enabled_features=*/{base::test::FeatureRefAndParams(
-                                  features::kUniversalOptOut,
-                                  {{"target_locations", target_locations}}),
-                              base::test::FeatureRefAndParams(
-                                  switches::
-                                      kReadIsSubjectToUniversalOptOutCapability,
-                                  {})},
+            features::kUniversalOptOut,
+            {{"target_locations", target_locations}})},
         /*disabled_features=*/{});
-    AccountCapabilities::ResetSupportedAccountCapabilityNamesForTesting();
   }
 
   void SetGeoLevel1(const std::string& geo_level1) {
@@ -136,6 +130,22 @@ TEST_F(UniversalOptOutServiceTest, EligibleWhenInTargetLocation) {
   base::Time current_day = GetCurrentDay(test_clock_.Now());
   std::string day_key = base::TimeToValue(current_day).GetString();
   EXPECT_EQ(history.FindBool(day_key), true);
+}
+
+TEST_F(UniversalOptOutServiceTest, ForceEligibleParamOverridesLocation) {
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.InitWithFeaturesAndParameters(
+      /*enabled_features=*/{base::test::FeatureRefAndParams(
+          features::kUniversalOptOut,
+          {{"target_locations", "us-tx"}, {"force_eligible", "true"}})},
+      /*disabled_features=*/{});
+
+  SetGeoLevel1("us-ny");
+  auto service = CreateService();
+
+  EXPECT_TRUE(service->IsEligible());
+  // The underlying location-based eligibility is unaffected.
+  EXPECT_FALSE(pref_service_.GetBoolean(prefs::kUniversalOptOutEligible));
 }
 
 TEST_F(UniversalOptOutServiceTest, IneligibleWhenNotInTargetLocation) {
@@ -267,7 +277,7 @@ TEST_F(UniversalOptOutServiceTest,
   EXPECT_TRUE(pref_service_.GetBoolean(prefs::kUniversalOptOutEligible));
 }
 
-TEST_F(UniversalOptOutServiceTest, RemainsEligibleWhenToggleOn) {
+TEST_F(UniversalOptOutServiceTest, BecomesIneligibleEvenWhenToggleOn) {
   EnableFeatureWithTargetLocations("us-nc");
 
   // User is currently eligible and has the toggle turned ON.
@@ -283,9 +293,9 @@ TEST_F(UniversalOptOutServiceTest, RemainsEligibleWhenToggleOn) {
   SetGeoLevel1("us-ga");
   auto service = CreateService();
 
-  // Because the toggle is enabled, the user does NOT become ineligible.
-  EXPECT_TRUE(service->IsEligible());
-  EXPECT_TRUE(pref_service_.GetBoolean(prefs::kUniversalOptOutEligible));
+  // The toggle state does not affect eligibility; the user becomes ineligible.
+  EXPECT_FALSE(service->IsEligible());
+  EXPECT_FALSE(pref_service_.GetBoolean(prefs::kUniversalOptOutEligible));
 }
 
 TEST_F(UniversalOptOutServiceTest, PrunesExpiredHistory) {
@@ -328,6 +338,51 @@ TEST_F(UniversalOptOutServiceTest, OnSeedFetchedUpdatesEligibility) {
   service->OnSeedFetched();
 
   EXPECT_TRUE(service->IsEligible());
+}
+
+TEST_F(UniversalOptOutServiceTest,
+       OnCountryOrAdminAreaChangedUpdatesEligibility) {
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.InitWithFeaturesAndParameters(
+      /*enabled_features=*/{base::test::FeatureRefAndParams(
+                                features::kUniversalOptOut,
+                                {{"target_locations", "us-hi"}}),
+                            base::test::FeatureRefAndParams(
+                                features::
+                                    kUniversalOptOutUpdateOnGeoLocationChanged,
+                                {})},
+      /*disabled_features=*/{});
+
+  // Initially no location is set and user is not eligible.
+  auto service = CreateService();
+  EXPECT_FALSE(service->IsEligible());
+
+  // When `kUniversalOptOutUpdateOnGeoLocationChanged` is enabled,
+  // `OnSeedFetched()` is ignored in favor of `OnCountryOrAdminAreaChanged()`.
+  SetGeoLevel1("us-hi");
+  service->OnSeedFetched();
+  EXPECT_FALSE(service->IsEligible());
+
+  // Location is updated when `OnCountryOrAdminAreaChanged()` fires.
+  service->OnCountryOrAdminAreaChanged();
+
+  EXPECT_TRUE(service->IsEligible());
+}
+
+TEST_F(UniversalOptOutServiceTest,
+       OnCountryOrAdminAreaChangedIgnoredWhenFeatureDisabled) {
+  EnableFeatureWithTargetLocations("us-hi");
+
+  // Initially no location is set and user is not eligible.
+  auto service = CreateService();
+  EXPECT_FALSE(service->IsEligible());
+
+  // Location is updated on a 304 response, but
+  // `kUniversalOptOutUpdateOnGeoLocationChanged` is disabled by default.
+  SetGeoLevel1("us-hi");
+  service->OnCountryOrAdminAreaChanged();
+
+  EXPECT_FALSE(service->IsEligible());
 }
 
 TEST_F(UniversalOptOutServiceTest, MultipleTargetLocations) {
@@ -559,6 +614,71 @@ TEST_F(UniversalOptOutServiceTest,
   histogram_tester.ExpectUniqueSample(
       kEligibilityChangedHistogram,
       EligibilityTransition::kEligibleToIneligible, 1);
+}
+
+TEST_F(UniversalOptOutServiceTest, OptOutChangedCallback) {
+  std::vector<bool> observed_values;
+  pref_service_.SetBoolean(prefs::kUniversalOptOutEnabled, false);
+
+  auto service = std::make_unique<UniversalOptOutService>(
+      pref_service_, *variations_service_,
+      *identity_test_env_.identity_manager(), test_clock_,
+      base::BindRepeating([](std::vector<bool>* out,
+                             bool enabled) { out->push_back(enabled); },
+                          &observed_values));
+
+  // Initial state should be reported upon construction.
+  ASSERT_EQ(observed_values.size(), 1u);
+  EXPECT_FALSE(observed_values.back());
+
+  // Toggling the pref should invoke the callback.
+  pref_service_.SetBoolean(prefs::kUniversalOptOutEnabled, true);
+  ASSERT_EQ(observed_values.size(), 2u);
+  EXPECT_TRUE(observed_values.back());
+
+  pref_service_.SetBoolean(prefs::kUniversalOptOutEnabled, false);
+  ASSERT_EQ(observed_values.size(), 3u);
+  EXPECT_FALSE(observed_values.back());
+}
+
+TEST_F(UniversalOptOutServiceTest, OverrideHistoryFromJsonFile) {
+  EnableFeatureWithTargetLocations("us-fl");
+  SetGeoLevel1("us-ny");
+
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  base::FilePath json_path = temp_dir.GetPath().AppendASCII("history.json");
+
+  // Override history with the past 2 days of eligibility.
+  std::string json_content = R"({
+    "universal_optout.eligibility_history": {
+      "2026-08-10": true,
+      "2026-08-09": true
+    }
+  })";
+  ASSERT_TRUE(base::WriteFile(json_path, json_content));
+
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchPath(
+      switches::kUniversalOptOutHistoryJsonPath, json_path);
+
+  auto service = CreateService();
+  EXPECT_TRUE(service->IsEligible());
+
+  const base::DictValue& history =
+      pref_service_.GetDict(prefs::kUniversalOptOutEligibilityHistory);
+  base::Time today = GetCurrentDay(test_clock_.Now());
+  std::string one_day_ago_key =
+      base::TimeToValue(today - base::Days(1)).GetString();
+  std::string two_days_ago_key =
+      base::TimeToValue(today - base::Days(2)).GetString();
+  std::string today_key = base::TimeToValue(today).GetString();
+
+  EXPECT_EQ(history.size(), 3u);
+  EXPECT_EQ(history.FindBool(one_day_ago_key), true);
+  EXPECT_EQ(history.FindBool(two_days_ago_key), true);
+  // The history will continue to be recorded after the pref is overridden.
+  EXPECT_EQ(history.FindBool(today_key), false);
 }
 
 }  // namespace universal_optout

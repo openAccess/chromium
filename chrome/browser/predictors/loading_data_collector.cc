@@ -123,7 +123,9 @@ void PageRequestSummary::UpdateOrAddResource(
       const GURL final_url =
           net::SimplifyUrlForRequest(resource_load_info.final_url);
       if (is_low_priority) {
-        low_priority_subresource_urls.insert(final_url);
+        if (low_priority_subresource_urls.size() < kMaxLowPriorityEntries) {
+          low_priority_subresource_urls.insert(final_url);
+        }
       } else {
         subresource_urls.insert(final_url);
       }
@@ -214,7 +216,9 @@ void PageRequestSummary::UpdateOrAddToOrigins(
     return;
 
   if (is_low_priority) {
-    low_priority_origins.insert(origin);
+    if (low_priority_origins.size() < kMaxLowPriorityEntries) {
+      low_priority_origins.insert(origin);
+    }
     return;
   }
 
@@ -291,7 +295,7 @@ void LoadingDataCollector::RecordResourceLoadComplete(
 void LoadingDataCollector::RecordPreconnectInitiated(
     NavigationId navigation_id,
     const GURL& preconnect_url) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   auto nav_it = inflight_navigations_.find(navigation_id);
   if (nav_it == inflight_navigations_.end())
@@ -303,7 +307,7 @@ void LoadingDataCollector::RecordPreconnectInitiated(
 
 void LoadingDataCollector::RecordPrefetchInitiated(NavigationId navigation_id,
                                                    const GURL& prefetch_url) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   auto nav_it = inflight_navigations_.find(navigation_id);
   if (nav_it == inflight_navigations_.end())
@@ -315,7 +319,7 @@ void LoadingDataCollector::RecordPrefetchInitiated(NavigationId navigation_id,
 
 void LoadingDataCollector::RecordMainFrameLoadComplete(
     NavigationId navigation_id) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 
   // Initialize |predictor_| no matter whether the |navigation_id| is present in
   // |inflight_navigations_|. This is the case for NTP and about:blank pages,

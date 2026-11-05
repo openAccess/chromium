@@ -13,10 +13,6 @@
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/menus/simple_menu_model.h"
 
-namespace send_tab_to_self {
-class SendTabToSelfContextMenuDelegate;
-}
-
 #if BUILDFLAG(ENABLE_EXTENSIONS)
 namespace extensions {
 class ContextMenuMatcher;
@@ -51,6 +47,7 @@ class TabMenuModel : public ui::SimpleMenuModel {
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAddNewTabAdjacentMenuItem);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kAddToNewGroupItemIdentifier);
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kDuplicateMenuItem);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kFocusSelectionMenuItem);
 
   TabMenuModel(ui::SimpleMenuModel::Delegate* delegate,
                TabMenuModelDelegate* tab_menu_model_delegate,
@@ -81,11 +78,14 @@ class TabMenuModel : public ui::SimpleMenuModel {
  private:
   void Build(int index);
   void BuildForWebApp(int index);
-  void BuildSendTabToSelfSubmenu(int index, const std::vector<int>& indices);
-  void BuildLegacySendTabToSelfItem();
+  void BuildSendTabToSelfItem(int index, const std::vector<int>& indices);
   void AppendGlicItems(int index,
                        int num_tabs,
                        const std::vector<int>& indices);
+  void AppendAiModeItems(int index,
+                         int num_tabs,
+                         bool show_share,
+                         bool show_unshare);
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   // Support for appending and executing commands for extension items in the
@@ -100,12 +100,11 @@ class TabMenuModel : public ui::SimpleMenuModel {
   std::unique_ptr<ui::SimpleMenuModel>
       add_to_existing_comparison_table_submenu_;
   std::unique_ptr<ui::SimpleMenuModel> swap_with_split_submenu_;
-  std::unique_ptr<ui::SimpleMenuModel> split_layout_submenu_;
   std::unique_ptr<ui::SimpleMenuModel> arrange_split_view_submenu_;
+  std::unique_ptr<ui::SimpleMenuModel> split_mute_submenu_;
   std::unique_ptr<ui::SimpleMenuModel> glic_tab_sub_menu_model_;
+  std::unique_ptr<ui::SimpleMenuModel> contextual_tasks_tab_sub_menu_model_;
   std::unique_ptr<ui::SimpleMenuModel> send_tab_to_self_submenu_;
-  std::unique_ptr<send_tab_to_self::SendTabToSelfContextMenuDelegate>
-      send_tab_to_self_submenu_delegate_;
 
   // `tab_strip_` needs to outlive this class.
   raw_ptr<TabStripModel> tab_strip_;

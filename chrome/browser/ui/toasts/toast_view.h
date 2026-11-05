@@ -27,6 +27,7 @@ class Label;
 class MdTextButton;
 class MenuModelAdapter;
 class MenuRunner;
+class Throbber;
 }  // namespace views
 
 namespace toasts {
@@ -63,6 +64,11 @@ class ToastView : public views::BubbleDialogDelegateView,
       std::optional<ui::ImageModel> image_override,
       bool should_hide_ui_for_fullscreen,
       base::RepeatingCallback<void(ToastCloseReason)> on_toast_close_callback);
+  ToastView(
+      views::View* anchor_view,
+      const std::u16string& toast_text,
+      bool should_hide_ui_for_fullscreen,
+      base::RepeatingCallback<void(ToastCloseReason)> on_toast_close_callback);
   ~ToastView() override;
 
   // Must be called prior to Init (which is called from
@@ -80,6 +86,11 @@ class ToastView : public views::BubbleDialogDelegateView,
   // `model`. Must be called prior to `Init` (which is called from
   // views::BubbleDialogDelegateView::CreateBubble).
   void AddMenu(std::unique_ptr<ui::MenuModel> model);
+
+  // Adds an animated throbber spinner replacing the leading static icon.
+  // Must be called prior to `Init` (which is called from
+  // views::BubbleDialogDelegateView::CreateBubble).
+  void AddThrobber();
 
   // views::BubbleDialogDelegateView:
   void Init() override;
@@ -105,6 +116,10 @@ class ToastView : public views::BubbleDialogDelegateView,
     return close_button_;
   }
   views::ImageView* icon_view_for_testing() { return icon_view_; }
+  views::Throbber* throbber_for_testing() { return throbber_; }
+  gfx::LinearAnimation& height_animation_for_testing() {
+    return height_animation_;
+  }
 
   // Gets the icon/image size from the layout provider.
   static int GetIconSize();
@@ -112,7 +127,6 @@ class ToastView : public views::BubbleDialogDelegateView,
  protected:
   // views::BubbleDialogDelegateView:
   gfx::Rect GetBubbleBounds() override;
-  void OnThemeChanged() override;
 
  private:
   void AnimateOut(base::OnceClosure callback, bool show_height_animation);
@@ -125,16 +139,21 @@ class ToastView : public views::BubbleDialogDelegateView,
   void OnMenuClosed();
 
   gfx::LinearAnimation height_animation_{this};
-  gfx::Rect starting_widget_bounds_;
-  gfx::Rect target_widget_bounds_;
+  // Vertical offsets, relative to the toast's desired bounds, between which
+  // `height_animation_` interpolates. Offsets are used instead of absolute
+  // screen bounds so the toast follows the browser window if it moves while
+  // the animation is running (e.g. while the window is restored at startup).
+  int starting_y_offset_ = 0;
+  int target_y_offset_ = 0;
   gfx::Tween::Type height_animation_tween_;
 
   const std::u16string toast_text_;
-  const raw_ref<const gfx::VectorIcon> icon_;
+  const raw_ptr<const gfx::VectorIcon> icon_ = nullptr;
   const std::optional<ui::ImageModel> image_override_;
   bool render_toast_over_web_contents_;
   bool has_close_button_ = false;
   bool has_action_button_ = false;
+  bool has_throbber_ = false;
   std::u16string action_button_text_;
   base::RepeatingClosure action_button_callback_;
   base::RepeatingClosure close_button_callback_;
@@ -148,6 +167,7 @@ class ToastView : public views::BubbleDialogDelegateView,
   // Raw pointers to child views.
   raw_ptr<views::Label> label_ = nullptr;
   raw_ptr<views::ImageView> icon_view_ = nullptr;
+  raw_ptr<views::Throbber> throbber_ = nullptr;
   raw_ptr<views::MdTextButton> action_button_ = nullptr;
   raw_ptr<views::ImageButton> close_button_ = nullptr;
 

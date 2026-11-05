@@ -7,6 +7,8 @@
 
 #import <CoreFoundation/CoreFoundation.h>
 
+#import <vector>
+
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/observer_list.h"
@@ -14,6 +16,10 @@
 #import "ios/chrome/browser/shared/model/browser/browser_user_data.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_observer.h"
+
+namespace base {
+class FilePath;
+}  // namespace base
 
 namespace signin {
 class IdentityManager;
@@ -46,14 +52,22 @@ class PolicyWatcherBrowserAgent
   // used to send UI commands when the SignOut is done.
   void Initialize(id<PolicyChangeCommands> handler);
 
+  // Sets custom app group paths to be used instead of NSFileManager container
+  // URLs in tests. Pass `nullptr` to reset.
+  static void SetAppGroupPathsForTesting(
+      const std::vector<base::FilePath>* paths);
+
  private:
   friend class BrowserUserData<PolicyWatcherBrowserAgent>;
 
   explicit PolicyWatcherBrowserAgent(Browser* browser);
 
-  // Handler for changes to kSigninAllowed. When the pref changes to `false`,
-  // sends a command to the SceneController to dismiss any in-progress sign-in
-  // UI.
+  // Handler for changes to `prefs::kBrowserSigninPolicy`. When sign-in is
+  // disabled by enterprise policy, signs out the user and sends a command to
+  // dismiss any in-progress sign-in UI.
+  // Note: Sign-out due to local policy (`prefs::kSigninAllowedOnDevice`) is
+  // handled by `SigninDisabledBrowserAgent`
+  // (`ios/chrome/browser/signin/model/signin_disabled_browser_agent.h`).
   void ForceSignOutIfSigninDisabled();
 
   // Handler for change to kSyncManaged. When the pref changes to `true`,

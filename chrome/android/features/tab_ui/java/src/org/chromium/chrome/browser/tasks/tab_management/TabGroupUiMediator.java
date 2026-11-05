@@ -163,8 +163,10 @@ public class TabGroupUiMediator implements BackPressHandler {
     private final LayoutStateObserver mLayoutStateObserver;
     private final TabGroupObserver mTabGroupObserver;
     private final Callback<Boolean> mOmniboxFocusObserver;
+    private final Callback<Boolean> mDialogBackPressObserver;
 
     private CallbackController mCallbackController = new CallbackController();
+    private @Nullable NonNullObservableSupplier<Boolean> mDialogBackPressSupplier;
     private @Nullable LayoutStateProvider mLayoutStateProvider;
     private @Nullable TabModelSelectorTabObserver mTabModelSelectorTabObserver;
     private @Nullable Token mCurrentTabGroupId;
@@ -263,7 +265,13 @@ public class TabGroupUiMediator implements BackPressHandler {
                                 && Objects.equals(tab.getTabGroupId(), mCurrentTabGroupId)
                                 && type == TabLaunchType.FROM_TAB_GROUP_UI) {
                             postUpdateInitialScrollIndex(
-                                    () -> Math.max(0, getTabsToShowForId(tab.getId()).size() - 1));
+                                    () ->
+                                            Math.max(
+                                                    0,
+                                                    getCurrentModel()
+                                                                    .getTabCountForGroup(
+                                                                            mCurrentTabGroupId)
+                                                            - 1));
                         }
                     }
 
@@ -340,7 +348,7 @@ public class TabGroupUiMediator implements BackPressHandler {
         mTabGroupObserver =
                 new TabGroupObserver() {
                     @Override
-                    public void didMoveTabOutOfGroup(Tab movedTab, int prevFilterIndex) {
+                    public void didMoveTabOutOfGroup(Tab movedTab, Token oldTabGroupId) {
                         resetTabStrip();
                     }
 
@@ -375,13 +383,16 @@ public class TabGroupUiMediator implements BackPressHandler {
         resetTabStrip();
 
         mHandleBackPressChangedSupplier = handleBackPressChangedSupplier;
+        mDialogBackPressObserver = mHandleBackPressChangedSupplier::set;
         if (mTabGridDialogControllerSupplier != null) {
             mTabGridDialogControllerSupplier.onAvailable(
-                    controller ->
-                            controller
-                                    .getHandleBackPressChangedSupplier()
-                                    .addSyncObserverAndPostIfNonNull(
-                                            mHandleBackPressChangedSupplier::set));
+                    mCallbackController.makeCancelable(
+                            controller -> {
+                                NonNullObservableSupplier<Boolean> supplier =
+                                        controller.getHandleBackPressChangedSupplier();
+                                supplier.addSyncObserverAndPostIfNonNull(mDialogBackPressObserver);
+                                mDialogBackPressSupplier = supplier;
+                            }));
         }
     }
 
@@ -421,7 +432,7 @@ public class TabGroupUiMediator implements BackPressHandler {
                     // Ensure the current tab has a thumbnail.
                     mTabContentManager.cacheTabThumbnail(currentTab);
 
-                    mResetHandler.resetGridWithListOfTabs(getTabsToShowForId(currentTab.getId()));
+                    mResetHandler.resetGridWithListOfTabs(getTabsInGroup(currentTab));
                     RecordUserAction.record("TabGroup.ExpandedFromStrip.TabGridDialog");
                 };
         mModel.set(SHOW_GROUP_DIALOG_ON_CLICK_LISTENER, showGroupDialogOnClickListener);
@@ -430,15 +441,15 @@ public class TabGroupUiMediator implements BackPressHandler {
                 _ -> {
                     Tab currentTab = mTabModelSelector.getCurrentTab();
                     assumeNonNull(currentTab);
-                    List<Tab> relatedTabs = getTabsToShowForId(currentTab.getId());
+                    List<Tab> tabsInGroup = getTabsInGroup(currentTab);
 
-                    assert !relatedTabs.isEmpty();
+                    assert !tabsInGroup.isEmpty();
 
                     Profile currentTabProfile = currentTab.getProfile();
                     UrlConstantResolver urlConstantResolver =
                             UrlConstantResolverFactory.getForProfile(currentTabProfile);
 
-                    Tab parentTabToAttach = relatedTabs.get(relatedTabs.size() - 1);
+                    Tab parentTabToAttach = tabsInGroup.get(tabsInGroup.size() - 1);
                     mTabCreatorManager
                             .getTabCreator(currentTab.isIncognito())
                             .createNewTab(
@@ -469,7 +480,7 @@ public class TabGroupUiMediator implements BackPressHandler {
         hideTabGridDialog();
         updateTabGroupIdForShareByTab(tab);
         assert tab.getTabGroupId() != null;
-        List<Tab> listOfTabs = getTabsToShowForId(tab.getId());
+        List<Tab> listOfTabs = getTabsInGroup(tab);
         mResetHandler.resetStripWithListOfTabs(listOfTabs);
         mCurrentTabGroupId = tab.getTabGroupId();
 
@@ -478,7 +489,7 @@ public class TabGroupUiMediator implements BackPressHandler {
                     @Nullable Tab currentTab = mTabModelSelector.getCurrentTab();
                     if (currentTab == null) return 0;
 
-                    return getTabsToShowForId(currentTab.getId()).indexOf(currentTab);
+                    return Math.max(0, getCurrentModel().getIndexOfTabInGroup(currentTab));
                 });
         mVisibilityController.setBottomControlsVisible(true);
     }
@@ -541,14 +552,8 @@ public class TabGroupUiMediator implements BackPressHandler {
         }
     }
 
-    /**
-     * Get a list of tabs to show based on a tab ID. When tab group is enabled, it will return all
-     * tabs that are in the same group with target tab.
-     *
-     * @param id The ID of the tab that will be used to decide the list of tabs to show.
-     */
-    private List<Tab> getTabsToShowForId(int id) {
-        return getCurrentModel().getRelatedTabList(id);
+    private List<Tab> getTabsInGroup(Tab tab) {
+        return getCurrentModel().getTabsInGroup(tab.getTabGroupId());
     }
 
     private TabModel getCurrentModel() {
@@ -611,6 +616,10 @@ public class TabGroupUiMediator implements BackPressHandler {
                     .getGroupMembersSupplier()
                     .removeObserver(mOnGroupMembersChanged);
             mTransitiveSharedGroupObserver.destroy();
+        }
+        if (mDialogBackPressSupplier != null) {
+            mDialogBackPressSupplier.removeObserver(mDialogBackPressObserver);
+            mDialogBackPressSupplier = null;
         }
         mChildTokenSupplier.removeObserver(mOnChildTokenChange);
         mWidthPxSupplier.removeObserver(mOnWidthChange);

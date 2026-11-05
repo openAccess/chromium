@@ -283,7 +283,7 @@ std::string CertProvisioningWorkerDynamic::GetFailureMessageWithPii() const {
 void CertProvisioningWorkerDynamic::Stop(CertProvisioningWorkerState state) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  DCHECK(IsFinalState(state));
+  CHECK(IsFinalState(state), base::NotFatalUntil::M160);
 
   CancelScheduledTasks();
   FINAL_STATE_EXPECTED(UpdateState(FROM_HERE, state));
@@ -336,6 +336,8 @@ void CertProvisioningWorkerDynamic::DoStep() {
     case CertProvisioningWorkerState::kInconsistentDataError:
     case CertProvisioningWorkerState::kFailed:
     case CertProvisioningWorkerState::kCanceled:
+      // TODO(crbug.com/577170828): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
       DCHECK(false);
       return;
     case CertProvisioningWorkerState::kStartCsrResponseReceived:
@@ -1261,7 +1263,7 @@ void CertProvisioningWorkerDynamic::InitAfterDeserialization() {
 void CertProvisioningWorkerDynamic::RegisterForInvalidations() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  DCHECK(invalidator_);
+  CHECK(invalidator_, base::NotFatalUntil::M160);
 
   // Registering the callback with base::Unretained is OK because this class
   // owns |invalidator_|, and the callback will never be called after
@@ -1278,7 +1280,7 @@ void CertProvisioningWorkerDynamic::RegisterForInvalidations() {
 void CertProvisioningWorkerDynamic::UnregisterFromInvalidations() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  DCHECK(invalidator_);
+  CHECK(invalidator_, base::NotFatalUntil::M160);
 
   invalidator_->Unregister();
 }

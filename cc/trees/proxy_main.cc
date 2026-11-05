@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/functional/bind.h"
+#include "base/memory/read_only_shared_memory_region.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/notimplemented.h"
@@ -77,14 +78,17 @@ ProxyMain::~ProxyMain() {
   DCHECK(!started_);
 }
 
-void ProxyMain::InitializeOnImplThread(CompletionEvent* completion_event,
-                                       int id,
-                                       const LayerTreeSettings* settings) {
+void ProxyMain::InitializeOnImplThread(
+    CompletionEvent* completion_event,
+    int id,
+    const LayerTreeSettings* settings,
+    base::ReadOnlySharedMemoryRegion* scroll_timing_buffer_region) {
   DCHECK(task_runner_provider_->IsImplThread());
   DCHECK(!proxy_impl_);
   proxy_impl_ =
       std::make_unique<ProxyImpl>(weak_factory_.GetWeakPtr(), layer_tree_host_,
                                   id, settings, task_runner_provider_);
+  *scroll_timing_buffer_region = proxy_impl_->TakeScrollTimingBufferRegion();
   completion_event->Signal();
 }
 
@@ -153,7 +157,7 @@ void ProxyMain::RecordBeginMainFrameMetrics(
     const BeginMainFrameReasons& begin_main_frame_reason,
     const base::ElapsedTimer& timer,
     std::string_view suffix) const {
-  constexpr size_t num_buckets = 1 << begin_main_frame_reason.size();
+  constexpr size_t num_buckets = 1 << BeginMainFrameReasons::size();
 
   base::UmaHistogramCustomMicrosecondsTimes(
       base::StrCat({"Compositing.BeginMainFrame.TimeUs", suffix}),
@@ -715,7 +719,7 @@ void ProxyMain::SetShouldWarmUp() {
 void ProxyMain::SetNeedsAnimate(BeginMainFrameReason reason, bool urgent) {
   DCHECK(IsMainThread());
   needs_begin_main_frame_ = true;
-  set_begin_main_frame_reason(reason);
+  begin_main_frame_reason_ |= reason;
   if (SendCommitRequestToImplThreadIfNeeded(reason, ANIMATE_PIPELINE_STAGE,
                                             urgent)) {
     TRACE_EVENT_INSTANT("cc", "ProxyMain::SetNeedsAnimate", "urgent", urgent);
@@ -771,6 +775,13 @@ void ProxyMain::SetTargetLocalSurfaceId(
       FROM_HERE, base::BindOnce(&ProxyImpl::SetTargetLocalSurfaceIdOnImpl,
                                 base::Unretained(proxy_impl_.get()),
                                 target_local_surface_id));
+}
+
+void ProxyMain::SetMemoryPolicy(const ManagedMemoryPolicy& policy) {
+  DCHECK(IsMainThread());
+  ImplThreadTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(&ProxyImpl::SetMemoryPolicyOnImpl,
+                                base::Unretained(proxy_impl_.get()), policy));
 }
 
 void ProxyMain::DetachInputDelegateAndRenderFrameObserver() {
@@ -899,6 +910,7 @@ void ProxyMain::Start() {
   DCHECK(IsMainThread());
   DCHECK(layer_tree_host_->IsThreaded());
 
+  base::ReadOnlySharedMemoryRegion scroll_timing_buffer_region;
   {
     DebugScopedSetMainThreadBlocked main_thread_blocked(task_runner_provider_);
     CompletionEvent completion;
@@ -906,11 +918,16 @@ void ProxyMain::Start() {
         FROM_HERE, base::BindOnce(&ProxyMain::InitializeOnImplThread,
                                   base::Unretained(this), &completion,
                                   layer_tree_host_->GetId(),
-                                  &layer_tree_host_->GetSettings()));
+                                  &layer_tree_host_->GetSettings(),
+                                  &scroll_timing_buffer_region));
     completion.Wait();
   }
 
   started_ = true;
+  if (scroll_timing_buffer_region.IsValid()) {
+    layer_tree_host_->InitializeScrollTimingBufferConsumer(
+        std::move(scroll_timing_buffer_region));
+  }
 }
 
 void ProxyMain::Stop() {
@@ -1110,7 +1127,7 @@ void ProxyMain::RequestBeginMainFrameNotExpected(bool new_state) {
 }
 
 bool ProxyMain::SendCommitRequestToImplThreadIfNeeded(
-    BeginMainFrameReason reason,
+    BeginMainFrameReasons reason,
     CommitPipelineStage required_stage,
     bool urgent) {
   DCHECK(IsMainThread());
@@ -1127,6 +1144,17 @@ bool ProxyMain::SendCommitRequestToImplThreadIfNeeded(
   // no correctness issue.
   bool next_frame_may_be_throttled =
       GetThrottlingFactor(consecutive_no_damage_main_frames_ + 2);
+
+  // Urgent commit requests, while mainly used when 60Hz throttling is enabled,
+  // can also be used to end independent throttling. Always forward them in this
+  // case.
+  bool main_frame_may_be_throttled =
+      next_frame_may_be_throttled ||
+      features::IsThrottleMainFrameTo60HzEnabled(
+          layer_tree_host_->GetSettings()
+              .using_synchronous_renderer_compositor);
+  urgent = urgent && main_frame_may_be_throttled;
+
   if (already_posted && (!urgent || has_sent_urgent_commit_request_) &&
       (!next_frame_may_be_throttled || !unthrottle_next ||
        has_sent_unthrottled_commit_request_)) {

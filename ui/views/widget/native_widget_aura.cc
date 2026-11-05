@@ -56,7 +56,6 @@
 #include "ui/views/views_features.h"
 #include "ui/views/widget/drop_helper.h"
 #include "ui/views/widget/focus_manager_event_handler.h"
-#include "ui/views/widget/legacy_window_reorderer.h"
 #include "ui/views/widget/native_widget_delegate.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/tooltip_manager_aura.h"
@@ -232,7 +231,7 @@ void NativeWidgetAura::SetResizeBehaviorFromDelegate(WidgetDelegate* delegate,
 
 void NativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
   // See Widget::InitParams::context for details.
-  DCHECK(params.parent || params.context);
+  CHECK(params.parent || params.context, base::NotFatalUntil::M163);
 
   ownership_ = params.ownership;
   if (ownership_ == Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET) {
@@ -297,7 +296,8 @@ void NativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
   gfx::NativeView context = params.context;
 
   if (!params.child) {
-    wm::TransientWindowManager::GetOrCreate(window_)->AddObserver(this);
+    transient_window_observation_.Observe(
+        wm::TransientWindowManager::GetOrCreate(window_));
 
     // Set up the transient child before the window is added. This way the
     // LayoutManager knows the window has a transient parent.
@@ -348,7 +348,7 @@ void NativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
         target_display.value_or(display::kInvalidDisplayId));
   }
 
-  window_->AddObserver(this);
+  window_observation_.Observe(window_);
 
   // Wait to set the bounds until we have a parent. That way we can know our
   // true state/bounds (the LayoutManager may enforce a particular
@@ -361,15 +361,23 @@ void NativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
   window_->SetEventTargetingPolicy(
       params.accept_events ? aura::EventTargetingPolicy::kTargetAndDescendants
                            : aura::EventTargetingPolicy::kNone);
-  DCHECK(GetWidget()->GetRootView());
+  CHECK(GetWidget()->GetRootView(), base::NotFatalUntil::M163);
   if (params.type != Widget::InitParams::TYPE_TOOLTIP) {
     tooltip_manager_ = std::make_unique<views::TooltipManagerAura>(this);
   }
 
-  drop_helper_ = std::make_unique<DropHelper>(GetWidget()->GetRootView());
-  if (params.type != Widget::InitParams::TYPE_TOOLTIP &&
-      params.type != Widget::InitParams::TYPE_POPUP) {
-    aura::client::SetDragDropDelegate(window_, this);
+  if (base::FeatureList::IsEnabled(
+          views::features::kDisableDragDropForUnneededWidgets)) {
+    if (ShouldEnableDragDrop(params)) {
+      drop_helper_ = std::make_unique<DropHelper>(GetWidget()->GetRootView());
+      aura::client::SetDragDropDelegate(window_, this);
+    }
+  } else {
+    drop_helper_ = std::make_unique<DropHelper>(GetWidget()->GetRootView());
+    if (params.type != Widget::InitParams::TYPE_TOOLTIP &&
+        params.type != Widget::InitParams::TYPE_POPUP) {
+      aura::client::SetDragDropDelegate(window_, this);
+    }
   }
 
   if (params.type == Widget::InitParams::TYPE_WINDOW) {
@@ -379,13 +387,8 @@ void NativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
 
   wm::SetActivationDelegate(window_, this);
 
-  if (base::FeatureList::IsEnabled(features::kNativeViewHostManagesLayers)) {
-    window_reorderer_ =
-        std::make_unique<WindowReorderer>(window_, GetWidget()->GetRootView());
-  } else {
-    legacy_window_reorderer_ = std::make_unique<legacy::WindowReorderer>(
-        window_, GetWidget()->GetRootView());
-  }
+  window_reorderer_ =
+      std::make_unique<WindowReorderer>(window_, GetWidget()->GetRootView());
 }
 
 void NativeWidgetAura::OnWidgetInitDone() {}
@@ -436,7 +439,8 @@ Widget* NativeWidgetAura::GetTopLevelWidget() {
 }
 
 const ui::Compositor* NativeWidgetAura::GetCompositor() const {
-  return window_ ? window_->layer()->GetCompositor() : nullptr;
+  return window_ && window_->GetHost() ? window_->GetHost()->compositor()
+                                       : nullptr;
 }
 
 const ui::Layer* NativeWidgetAura::GetLayer() const {
@@ -444,16 +448,15 @@ const ui::Layer* NativeWidgetAura::GetLayer() const {
 }
 
 void NativeWidgetAura::ReorderNativeViews() {
-  if (legacy_window_reorderer_) {
-    legacy_window_reorderer_->ReorderChildWindows();
-  } else if (window_reorderer_) {
+  if (window_reorderer_) {
     window_reorderer_->ReorderChildWindows();
   }
 }
 
 void NativeWidgetAura::ViewRemoved(View* view) {
-  DCHECK(drop_helper_.get() != nullptr);
-  drop_helper_->ResetTargetViewIfEquals(view);
+  if (drop_helper_) {
+    drop_helper_->ResetTargetViewIfEquals(view);
+  }
 }
 
 void NativeWidgetAura::SetNativeWindowProperty(const char* name, void* value) {
@@ -739,17 +742,21 @@ void NativeWidgetAura::Close() {
   // |window_| may already be deleted by parent window. This can happen
   // when this widget is child widget or has transient parent
   // and ownership is WIDGET_OWNS_NATIVE_WIDGET or CLIENT_OWNS_WIDGET.
-  DCHECK(window_ ||
-         ownership_ == Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET ||
-         ownership_ == Widget::InitParams::CLIENT_OWNS_WIDGET);
+  CHECK(window_ ||
+            ownership_ == Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET ||
+            ownership_ == Widget::InitParams::CLIENT_OWNS_WIDGET,
+        base::NotFatalUntil::M163);
+  auto weak_this = weak_factory.GetWeakPtr();
   if (window_) {
     Hide();
+    if (!weak_this || !window_) {
+      return;
+    }
     window_->SetProperty(aura::client::kModalKey, ui::mojom::ModalType::kNone);
   }
 
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE,
-      base::BindOnce(&NativeWidgetAura::CloseNow, weak_factory.GetWeakPtr()));
+      FROM_HERE, base::BindOnce(&NativeWidgetAura::CloseNow, weak_this));
 }
 
 void NativeWidgetAura::CloseNow() {
@@ -791,10 +798,24 @@ void NativeWidgetAura::Show(ui::mojom::WindowShowState show_state,
     disabler.emplace(window_);
   }
 
+  // `window_->Show()` and `Activate()` below fan out to aura::Window
+  // observers, which are explicitly permitted to synchronously destroy
+  // `window_` (see Window::NotifyWindowVisibilityChangedAtReceiver()). When
+  // that happens under NATIVE_WIDGET_OWNS_WIDGET or CLIENT_OWNS_WIDGET
+  // ownership, OnWindowDestroyed() deletes `this`, so the rest of this method
+  // must not run.
+  auto weak_this = weak_factory.GetWeakPtr();
+
   window_->Show();
+  if (!weak_this || !window_) {
+    return;
+  }
   if (delegate_->CanActivate()) {
     if (show_state != ui::mojom::WindowShowState::kInactive) {
       Activate();
+      if (!weak_this || !window_) {
+        return;
+      }
     }
     // SetInitialFocus() should be always be called, even for
     // SHOW_STATE_INACTIVE. If the window has to stay inactive, the method will
@@ -934,7 +955,7 @@ void NativeWidgetAura::SetOpacity(float opacity) {
 
 void NativeWidgetAura::SetAspectRatio(const gfx::SizeF& aspect_ratio,
                                       const gfx::Size& excluded_margin) {
-  DCHECK(!aspect_ratio.IsEmpty());
+  CHECK(!aspect_ratio.IsEmpty(), base::NotFatalUntil::M163);
   if (excluded_margin.width() > 0 || excluded_margin.height() > 0) {
     NOTIMPLEMENTED_LOG_ONCE();
   }
@@ -1130,7 +1151,7 @@ bool NativeWidgetAura::IsDesktopNativeWidget() const {
 }
 
 std::string NativeWidgetAura::GetName() const {
-  return window_ ? window_->GetName() : std::string();
+  return window_ ? std::string(window_->GetName()) : std::string();
 }
 
 base::WeakPtr<internal::NativeWidgetPrivate> NativeWidgetAura::GetWeakPtr() {
@@ -1210,10 +1231,8 @@ void NativeWidgetAura::OnDeviceScaleFactorChanged(
 }
 
 void NativeWidgetAura::OnWindowDestroying(aura::Window* window) {
-  window_->RemoveObserver(this);
-  if (wm::TransientWindowManager::GetIfExists(window_)) {
-    wm::TransientWindowManager::GetOrCreate(window_)->RemoveObserver(this);
-  }
+  window_observation_.Reset();
+  transient_window_observation_.Reset();
   if (delegate_) {
     delegate_->OnNativeWidgetDestroying();
   }
@@ -1250,7 +1269,7 @@ bool NativeWidgetAura::HasHitTestMask() const {
 }
 
 void NativeWidgetAura::GetHitTestMask(SkPath* mask) const {
-  DCHECK(mask);
+  CHECK(mask, base::NotFatalUntil::M163);
   if (delegate_) {
     delegate_->GetHitTestMask(mask);
   }
@@ -1322,7 +1341,7 @@ void NativeWidgetAura::OnWindowRemovingFromRootWindow(aura::Window* window,
 // NativeWidgetAura, ui::EventHandler implementation:
 
 void NativeWidgetAura::OnKeyEvent(ui::KeyEvent* event) {
-  DCHECK(window_);
+  CHECK(window_, base::NotFatalUntil::M163);
   // Renderer may send a key event back to us if the key event wasn't handled,
   // and the window may be invisible by that time.
   if (!window_->IsVisible()) {
@@ -1335,8 +1354,8 @@ void NativeWidgetAura::OnKeyEvent(ui::KeyEvent* event) {
 }
 
 void NativeWidgetAura::OnMouseEvent(ui::MouseEvent* event) {
-  DCHECK(window_);
-  DCHECK(window_->IsVisible());
+  CHECK(window_, base::NotFatalUntil::M163);
+  CHECK(window_->IsVisible(), base::NotFatalUntil::M163);
   if (delegate_ && event->type() == ui::EventType::kMousewheel) {
     delegate_->OnMouseEvent(event);
     return;
@@ -1359,8 +1378,9 @@ void NativeWidgetAura::OnScrollEvent(ui::ScrollEvent* event) {
 }
 
 void NativeWidgetAura::OnGestureEvent(ui::GestureEvent* event) {
-  DCHECK(window_);
-  DCHECK(window_->IsVisible() || event->IsEndingEvent());
+  CHECK(window_, base::NotFatalUntil::M163);
+  CHECK(window_->IsVisible() || event->IsEndingEvent(),
+        base::NotFatalUntil::M163);
   if (delegate_) {
     delegate_->OnGestureEvent(event);
   }
@@ -1380,7 +1400,8 @@ void NativeWidgetAura::OnWindowActivated(
     wm::ActivationChangeObserver::ActivationReason,
     aura::Window* gained_active,
     aura::Window* lost_active) {
-  DCHECK(window_ == gained_active || window_ == lost_active);
+  CHECK(window_ == gained_active || window_ == lost_active,
+        base::NotFatalUntil::M163);
   if (GetWidget() && GetWidget()->GetFocusManager()) {
     if (window_ == gained_active) {
       GetWidget()->GetFocusManager()->RestoreFocusedView();
@@ -1409,14 +1430,16 @@ void NativeWidgetAura::OnWindowFocused(aura::Window* gained_focus,
 // NativeWidgetAura, aura::WindowDragDropDelegate implementation:
 
 void NativeWidgetAura::OnDragEntered(const ui::DropTargetEvent& event) {
-  DCHECK(drop_helper_.get() != nullptr);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   last_drop_operation_ = drop_helper_->OnDragOver(
       event.data(), event.location(), event.source_operations());
 }
 
 aura::client::DragUpdateInfo NativeWidgetAura::OnDragUpdated(
     const ui::DropTargetEvent& event) {
-  DCHECK(drop_helper_.get() != nullptr);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   last_drop_operation_ = drop_helper_->OnDragOver(
       event.data(), event.location(), event.source_operations());
   return aura::client::DragUpdateInfo(
@@ -1425,13 +1448,15 @@ aura::client::DragUpdateInfo NativeWidgetAura::OnDragUpdated(
 }
 
 void NativeWidgetAura::OnDragExited() {
-  DCHECK(drop_helper_.get() != nullptr);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   drop_helper_->OnDragExit();
 }
 
 aura::client::DragDropDelegate::DropCallback NativeWidgetAura::GetDropCallback(
     const ui::DropTargetEvent& event) {
-  DCHECK(drop_helper_);
+  // Can only be called if drag and drop is enabled for this widget.
+  CHECK(drop_helper_);
   return drop_helper_->GetDropCallback(event.data(), event.location(),
                                        last_drop_operation_);
 }
@@ -1454,7 +1479,6 @@ NativeWidgetAura::~NativeWidgetAura() {
     // root view. Reset them before deleting `delegate_` to avoid holding a
     // briefly dangling ptr.
     drop_helper_.reset();
-    legacy_window_reorderer_.reset();
     window_reorderer_.reset();
     owned_delegate_.reset();
   } else {
@@ -1605,7 +1629,7 @@ Widget::Widgets NativeWidgetPrivate::GetAllOwnedWidgets(
 // static
 void NativeWidgetPrivate::ReparentNativeView(gfx::NativeView native_view,
                                              gfx::NativeView new_parent) {
-  DCHECK(native_view != new_parent);
+  CHECK(native_view != new_parent, base::NotFatalUntil::M163);
 
   gfx::NativeView previous_parent = native_view->parent();
   if (previous_parent == new_parent) {

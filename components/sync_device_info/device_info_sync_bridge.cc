@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "base/compiler_specific.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
@@ -28,7 +29,6 @@
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "components/sync/base/data_type.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/time.h"
 #include "components/sync/engine/commit_and_get_updates_types.h"
 #include "components/sync/model/data_type_activation_request.h"
@@ -194,6 +194,17 @@ std::optional<int> SpecificsToGlicExperimentalTriggeringVersion(
   return std::nullopt;
 }
 
+base::flat_set<std::string> SpecificsToGlicExperimentalTriggeringCapabilities(
+    const DeviceInfoSpecifics& specifics) {
+  return base::flat_set<std::string>(
+      specifics.feature_fields()
+          .glic_experimental_triggering_capabilities()
+          .begin(),
+      specifics.feature_fields()
+          .glic_experimental_triggering_capabilities()
+          .end());
+}
+
 std::optional<DeviceInfo::PersonalContextInfo>
 SpecificsToPersonalContextInfo(const DeviceInfoSpecifics& specifics) {
   if (!specifics.has_personal_context_fields() ||
@@ -204,7 +215,8 @@ SpecificsToPersonalContextInfo(const DeviceInfoSpecifics& specifics) {
       specifics.personal_context_fields();
   return DeviceInfo::PersonalContextInfo{
       .serialized_tink_keyset =
-          base::ToVector(base::as_byte_span(fields.serialized_tink_keyset()))};
+          base::ToVector(base::as_byte_span(fields.serialized_tink_keyset())),
+      .eligible_for_spii = fields.eligible_for_spii()};
 }
 
 // Converts DeviceInfoSpecifics into DeviceInfo.
@@ -237,7 +249,6 @@ DeviceInfo SpecificsToModel(const DeviceInfoSpecifics& specifics) {
       specifics.full_hardware_class(),
       ProtoTimeToTime(specifics.last_updated_timestamp()),
       GetPulseIntervalFromSpecifics(specifics),
-      specifics.feature_fields().send_tab_to_self_receiving_enabled(),
       ToDeviceInfoSendTabReceivingType(
           specifics.feature_fields().send_tab_to_self_receiving_type()),
       SpecificsToSharingInfo(specifics),
@@ -250,6 +261,7 @@ DeviceInfo SpecificsToModel(const DeviceInfoSpecifics& specifics) {
       SpecificsToDesktopToIOSPromoReceivingTypes(specifics),
       SpecificsToGlicExperimentalTriggeringState(specifics),
       SpecificsToGlicExperimentalTriggeringVersion(specifics),
+      SpecificsToGlicExperimentalTriggeringCapabilities(specifics),
       android_os_build_fingerprint_prefix,
       SpecificsToPersonalContextInfo(specifics));
 }
@@ -295,13 +307,11 @@ std::unique_ptr<DeviceInfoSpecifics> MakeLocalDeviceSpecifics(
   specifics->set_model(info.model_name());
 
 #if BUILDFLAG(IS_ANDROID)
-  if (base::FeatureList::IsEnabled(kSyncUploadAndroidBuildFingerprintPrefix)) {
-    const std::optional<std::string>& android_os_build_fingerprint_prefix =
-        info.android_os_build_fingerprint_prefix();
-    if (android_os_build_fingerprint_prefix.has_value()) {
-      specifics->set_android_os_build_fingerprint_prefix(
-          *android_os_build_fingerprint_prefix);
-    }
+  const std::optional<std::string>& android_os_build_fingerprint_prefix =
+      info.android_os_build_fingerprint_prefix();
+  if (android_os_build_fingerprint_prefix.has_value()) {
+    specifics->set_android_os_build_fingerprint_prefix(
+        *android_os_build_fingerprint_prefix);
   }
 #endif
 
@@ -317,8 +327,10 @@ std::unique_ptr<DeviceInfoSpecifics> MakeLocalDeviceSpecifics(
   specifics->set_pulse_interval_in_minutes(info.pulse_interval().InMinutes());
 
   FeatureSpecificFields* feature_fields = specifics->mutable_feature_fields();
-  feature_fields->set_send_tab_to_self_receiving_enabled(
-      info.send_tab_to_self_receiving_enabled());
+  // TODO(crbug.com/573435919): Stop populating
+  // `send_tab_to_self_receiving_enabled` once M157 (which still reads it with a
+  // default of `false`) passes the Sync client support horizon.
+  feature_fields->set_send_tab_to_self_receiving_enabled(true);
   feature_fields->set_send_tab_to_self_receiving_type(
       ToSendTabReceivingTypeProto(info.send_tab_to_self_receiving_type()));
 
@@ -358,6 +370,9 @@ std::unique_ptr<DeviceInfoSpecifics> MakeLocalDeviceSpecifics(
     // the synced proto.
     feature_fields->clear_glic_experimental_triggering_version();
   }
+  feature_fields->mutable_glic_experimental_triggering_capabilities()->Assign(
+      info.glic_experimental_triggering_capabilities().begin(),
+      info.glic_experimental_triggering_capabilities().end());
   const std::optional<DeviceInfo::SharingInfo>& sharing_info =
       info.sharing_info();
   if (sharing_info) {
@@ -396,9 +411,13 @@ std::unique_ptr<DeviceInfoSpecifics> MakeLocalDeviceSpecifics(
       info.personal_context_info();
   if (personal_context_info &&
       !personal_context_info->serialized_tink_keyset.empty()) {
-    specifics->mutable_personal_context_fields()->set_serialized_tink_keyset(
+    sync_pb::PersonalContextSpecificFields* personal_context_fields =
+        specifics->mutable_personal_context_fields();
+    personal_context_fields->set_serialized_tink_keyset(
         personal_context_info->serialized_tink_keyset.data(),
         personal_context_info->serialized_tink_keyset.size());
+    personal_context_fields->set_eligible_for_spii(
+        personal_context_info->eligible_for_spii);
   } else {
     specifics->clear_personal_context_fields();
   }
@@ -434,8 +453,6 @@ bool IsStoredLocalDeviceInfoStillAccurate(const DeviceInfo* stored,
          current->manufacturer_name() == stored->manufacturer_name() &&
          current->model_name() == stored->model_name() &&
          current->full_hardware_class() == stored->full_hardware_class() &&
-         current->send_tab_to_self_receiving_enabled() ==
-             stored->send_tab_to_self_receiving_enabled() &&
          current->send_tab_to_self_receiving_type() ==
              stored->send_tab_to_self_receiving_type() &&
          current->desktop_to_ios_promo_receiving_enabled() ==
@@ -453,8 +470,9 @@ bool IsStoredLocalDeviceInfoStillAccurate(const DeviceInfo* stored,
              stored->glic_experimental_triggering_state() &&
          current->glic_experimental_triggering_version() ==
              stored->glic_experimental_triggering_version() &&
-         current->personal_context_info() ==
-             stored->personal_context_info();
+         current->glic_experimental_triggering_capabilities() ==
+             stored->glic_experimental_triggering_capabilities() &&
+         current->personal_context_info() == stored->personal_context_info();
 }
 
 int CalculateMaxConcurrentEvents(const std::multimap<base::Time, int>& events) {
@@ -752,7 +770,7 @@ bool DeviceInfoSyncBridge::IsSyncing() const {
   return change_processor()->IsTrackingMetadata() && !all_data_.empty();
 }
 
-const DeviceInfo* DeviceInfoSyncBridge::GetDeviceInfo(
+const DeviceInfo* DeviceInfoSyncBridge::GetChromeDeviceInfo(
     const std::string& client_id) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   const ClientIdToDeviceInfo::const_iterator iter = all_data_.find(client_id);

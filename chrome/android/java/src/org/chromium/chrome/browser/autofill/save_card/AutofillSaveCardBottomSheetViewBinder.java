@@ -13,6 +13,7 @@ import androidx.annotation.DrawableRes;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils;
+import org.chromium.components.autofill.payments.LegalMessage;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
@@ -58,7 +59,7 @@ import org.chromium.ui.modelutil.PropertyModel;
                     view.mCardSubLabel,
                     model.get(AutofillSaveCardBottomSheetProperties.CARD_SUB_LABEL));
         } else if (AutofillSaveCardBottomSheetProperties.LEGAL_MESSAGE == propertyKey) {
-            AutofillSaveCardBottomSheetProperties.LegalMessage legalMessage =
+            LegalMessage legalMessage =
                     model.get(AutofillSaveCardBottomSheetProperties.LEGAL_MESSAGE);
             if (legalMessage.mLines.isEmpty()) {
                 view.mLegalMessage.setVisibility(View.GONE);
@@ -83,6 +84,18 @@ import org.chromium.ui.modelutil.PropertyModel;
             setMaybeEmptyText(
                     view.mCancelButton,
                     model.get(AutofillSaveCardBottomSheetProperties.CANCEL_BUTTON_LABEL));
+        } else if (AutofillSaveCardBottomSheetProperties.ON_ACCEPT_BUTTON_CLICK_ACTION
+                == propertyKey) {
+            Runnable action =
+                    model.get(AutofillSaveCardBottomSheetProperties.ON_ACCEPT_BUTTON_CLICK_ACTION);
+            assert action != null;
+            view.mAcceptButton.setOnClickListener(_ -> action.run());
+        } else if (AutofillSaveCardBottomSheetProperties.ON_CANCEL_BUTTON_CLICK_ACTION
+                == propertyKey) {
+            Runnable action =
+                    model.get(AutofillSaveCardBottomSheetProperties.ON_CANCEL_BUTTON_CLICK_ACTION);
+            assert action != null;
+            view.mCancelButton.setOnClickListener(_ -> action.run());
         } else if (AutofillSaveCardBottomSheetProperties.SHOW_LOADING_STATE == propertyKey) {
             if (model.get(AutofillSaveCardBottomSheetProperties.SHOW_LOADING_STATE)) {
                 view.mAcceptButton.setVisibility(View.GONE);

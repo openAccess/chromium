@@ -9,17 +9,12 @@
 
 @interface TranslateAppInterface : NSObject
 
-// Sets up the app for testing. `translateScriptServer` is the URL
+// Sets up the app for testing. `translateScriptServerURL` is the URL
 // for the server that can serve up translate scripts to app.
 + (void)setUpWithScriptServer:(NSString*)translateScriptServerURL;
 
 // Tears down the testing set up for the app.
 + (void)tearDown;
-
-// Registers an observer of the IOSLanguageDetectionTabHelper to capture
-// the details of webpage language detection. The captured details can be
-// used for test verification.
-+ (void)setUpLanguageDetectionTabHelperObserver;
 
 // Deallocates the observer for IOSLanguageDetectionTabHelper.
 + (void)tearDownLanguageDetectionTabHelperObserver;
@@ -42,26 +37,17 @@
 // Returns the language code for the language determined from the webpage.
 + (NSString*)adoptedLanguage;
 
-+ (void)setAutoTranslateFromLanguage:(NSString*)source
-                          toLanguage:(NSString*)target;
-
-/// Whether user has set a preference to translate from `source` language to
-// `target` language.
+// Returns whether user has set a preference to translate from `source`
+// language to `target` language.
 + (BOOL)shouldAutoTranslateFromLanguage:(NSString*)source
                              toLanguage:(NSString*)target;
 
-// Whether user has set a preference to block the translation of `language`.
+// Returns whether user has set a preference to block the translation of
+// `language`.
 + (BOOL)isBlockedLanguage:(NSString*)language;
 
-// Whether user has set a preference to translate any pages on `hostName`.
+// Returns whether user has set a preference to block translation on `hostName`.
 + (BOOL)isBlockedSite:(NSString*)hostName;
-
-// The following are Translate Infobar UI constants. Test client needs to know
-// to verify that Translate Infobar is behaving correctly.
-+ (int)infobarAutoAlwaysThreshold;
-+ (int)infobarAutoNeverThreshold;
-+ (int)infobarMaximumNumberOfAutoAlways;
-+ (int)infobarMaximumNumberOfAutoNever;
 
 @end
 

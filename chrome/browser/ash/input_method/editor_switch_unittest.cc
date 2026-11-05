@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/input_method/editor_switch.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -110,22 +111,16 @@ INSTANTIATE_TEST_SUITE_P(
     EditorSwitchAvailabilityWithoutPolicyTests,
     EditorSwitchAvailabilityWithoutPolicyTest,
     testing::ValuesIn<EditorSwitchAvailabilityWithoutPolicyTestCase>({
-        {.test_name = "FeatureNotAvailableForUseWithoutReceivingOrcaFlag",
-         .enabled_flags = {},
-         .disabled_flags = {ash::features::kOrcaUseAccountCapabilities},
-         .country_code = kAllowedTestCountry,
-         .expected_availability = false},
-        {.test_name = "FeatureNotAvailableInACountryNotApprovedYet",
-         .enabled_flags = {chromeos::features::kOrca,
-                           chromeos::features::kFeatureManagementOrca},
-         .disabled_flags = {ash::features::kOrcaUseAccountCapabilities},
-         .country_code = kDeniedTestCountry,
-         .expected_availability = false},
         {.test_name = "FeatureNotAvailableWithoutFeatureManagementFlag",
-         .enabled_flags = {chromeos::features::kOrca},
+         .enabled_flags = {},
          .disabled_flags = {chromeos::features::kFeatureManagementOrca,
                             ash::features::kOrcaUseAccountCapabilities},
          .country_code = kAllowedTestCountry,
+         .expected_availability = false},
+        {.test_name = "FeatureNotAvailableInACountryNotApprovedYet",
+         .enabled_flags = {chromeos::features::kFeatureManagementOrca},
+         .disabled_flags = {ash::features::kOrcaUseAccountCapabilities},
+         .country_code = kDeniedTestCountry,
          .expected_availability = false},
         {.test_name = "FeatureAvailableWhenReceivingDogfoodFlag",
          .enabled_flags = {chromeos::features::kOrcaDogfood},
@@ -134,8 +129,7 @@ INSTANTIATE_TEST_SUITE_P(
          .expected_availability = true},
         {.test_name = "FeatureAvailableInApprovedCountryWithFe"
                       "atureManagementFlag",
-         .enabled_flags = {chromeos::features::kOrca,
-                           chromeos::features::kFeatureManagementOrca},
+         .enabled_flags = {chromeos::features::kFeatureManagementOrca},
          .disabled_flags = {ash::features::kOrcaUseAccountCapabilities},
          .country_code = kAllowedTestCountry,
          .expected_availability = true},
@@ -157,10 +151,12 @@ TEST_P(EditorSwitchAvailabilityWithoutPolicyTest,
   FakeSystem system;
   FakeEditorContextObserver context_observer;
   FakeEditorSwitchObserver switch_observer;
-  EditorGeolocationMockProvider geolocation_provider(test_case.country_code);
-  EditorContext context(&context_observer, &system, &geolocation_provider);
+  EditorContext context(
+      &context_observer, &system,
+      std::make_unique<EditorGeolocationMockProvider>(test_case.country_code));
   EditorSwitch editor_switch(/*observer=*/&switch_observer,
                              /*profile=*/&profile,
+                             /*manta_service=*/nullptr,
                              /*context=*/&context);
 
   EXPECT_EQ(editor_switch.IsAllowedForUse(), test_case.expected_availability);
@@ -188,22 +184,19 @@ INSTANTIATE_TEST_SUITE_P(
     EditorSwitchAvailabilityWithPolicyTest,
     testing::ValuesIn<EditorSwitchAvailabilityWithPolicyTestCase>(
         {{.test_name = "FeatureAvailableIfAllowedByPolicy",
-          .enabled_flags = {chromeos::features::kOrca,
-                            chromeos::features::kFeatureManagementOrca},
+          .enabled_flags = {chromeos::features::kFeatureManagementOrca},
           .disabled_flags = {ash::features::kOrcaUseAccountCapabilities},
           .country_code = kAllowedTestCountry,
           .enabled_by_policy = true,
           .expected_availability = true},
          {.test_name = "FeatureAvailableEvenIfPolicyValueIsDisabled",
-          .enabled_flags = {chromeos::features::kOrca,
-                            chromeos::features::kFeatureManagementOrca},
+          .enabled_flags = {chromeos::features::kFeatureManagementOrca},
           .disabled_flags = {ash::features::kOrcaUseAccountCapabilities},
           .country_code = kAllowedTestCountry,
           .enabled_by_policy = false,
           .expected_availability = true},
          {.test_name = "FeatureUnavailableIfOrcaForManagedUsersFlagIsDisabled",
-          .enabled_flags = {chromeos::features::kOrca,
-                            chromeos::features::kFeatureManagementOrca},
+          .enabled_flags = {chromeos::features::kFeatureManagementOrca},
           .disabled_flags = {ash::features::kOrcaUseAccountCapabilities,
                              ash::features::kOrcaForManagedUsers},
           .country_code = kAllowedTestCountry,
@@ -228,10 +221,12 @@ TEST_P(EditorSwitchAvailabilityWithPolicyTest,
   FakeSystem system;
   FakeEditorContextObserver context_observer;
   FakeEditorSwitchObserver switch_observer;
-  EditorGeolocationMockProvider geolocation_provider(test_case.country_code);
-  EditorContext context(&context_observer, &system, &geolocation_provider);
+  EditorContext context(
+      &context_observer, &system,
+      std::make_unique<EditorGeolocationMockProvider>(test_case.country_code));
   EditorSwitch editor_switch(/*observer=*/&switch_observer,
                              /*profile=*/&profile,
+                             /*manta_service=*/nullptr,
                              /*context=*/&context);
 
   EXPECT_EQ(editor_switch.IsAllowedForUse(), test_case.expected_availability);
@@ -580,7 +575,7 @@ TEST_P(EditorSwitchTriggerTest, TestEditorMode) {
   content::BrowserTaskEnvironment task_environment;
   base::test::ScopedFeatureList feature_list;
   std::vector<base::test::FeatureRef> base_enabled_features = {
-      chromeos::features::kOrca, chromeos::features::kFeatureManagementOrca};
+      chromeos::features::kFeatureManagementOrca};
   base_enabled_features.insert(base_enabled_features.end(),
                                test_case.additional_enabled_flags.begin(),
                                test_case.additional_enabled_flags.end());
@@ -596,10 +591,12 @@ TEST_P(EditorSwitchTriggerTest, TestEditorMode) {
   FakeSystem system;
   FakeEditorContextObserver context_observer;
   FakeEditorSwitchObserver switch_observer;
-  EditorGeolocationMockProvider geolocation_provider(kAllowedTestCountry);
-  EditorContext context(&context_observer, &system, &geolocation_provider);
+  EditorContext context(
+      &context_observer, &system,
+      std::make_unique<EditorGeolocationMockProvider>(kAllowedTestCountry));
   EditorSwitch editor_switch(/*observer=*/&switch_observer,
                              /*profile=*/profile.get(),
+                             /*manta_service=*/nullptr,
                              /*context=*/&context);
 
   auto mock_notifier = net::test::MockNetworkChangeNotifier::Create();
@@ -671,8 +668,7 @@ TEST_P(EditorSwitchDenylistTest, IsBlockedWhenVisitingUrlInDenylist) {
   content::BrowserTaskEnvironment task_environment;
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
-      /*enabled_features=*/{chromeos::features::kOrca,
-                            chromeos::features::kFeatureManagementOrca},
+      /*enabled_features=*/{chromeos::features::kFeatureManagementOrca},
       /*disabled_features=*/{ash::features::kOrcaUseAccountCapabilities,
                              ash::features::kOrcaOnWorkspace});
   ScopedBrowserLocale browser_locale("en");
@@ -682,10 +678,12 @@ TEST_P(EditorSwitchDenylistTest, IsBlockedWhenVisitingUrlInDenylist) {
   FakeSystem system;
   FakeEditorContextObserver context_observer;
   FakeEditorSwitchObserver switch_observer;
-  EditorGeolocationMockProvider geolocation_provider(kAllowedTestCountry);
-  EditorContext context(&context_observer, &system, &geolocation_provider);
+  EditorContext context(
+      &context_observer, &system,
+      std::make_unique<EditorGeolocationMockProvider>(kAllowedTestCountry));
   EditorSwitch editor_switch(/*observer=*/&switch_observer,
                              /*profile=*/profile.get(),
+                             /*manta_service=*/nullptr,
                              /*context=*/&context);
 
   auto mock_notifier = net::test::MockNetworkChangeNotifier::Create();
@@ -717,8 +715,10 @@ class InternationalizeTestSuite : public TestWithParam<InputMethodTestCase> {
   InternationalizeTestSuite()
       : browser_locale_("en"),
         profile_(CreateTestingProfile("testuser@gmail.com")),
-        geolocation_provider_(kAllowedTestCountry),
-        context_(&context_observer_, &system_, &geolocation_provider_) {
+        context_(&context_observer_,
+                 &system_,
+                 std::make_unique<EditorGeolocationMockProvider>(
+                     kAllowedTestCountry)) {
     auto mock_notifier = net::test::MockNetworkChangeNotifier::Create();
     profile_->GetProfilePolicyConnector()->OverrideIsManagedForTesting(false);
     mock_notifier->SetConnectionType(
@@ -738,7 +738,6 @@ class InternationalizeTestSuite : public TestWithParam<InputMethodTestCase> {
   FakeSystem system_;
   FakeEditorContextObserver context_observer_;
   FakeEditorSwitchObserver switch_observer_;
-  EditorGeolocationMockProvider geolocation_provider_;
   EditorContext context_;
 };
 
@@ -815,11 +814,11 @@ TEST_P(EditorSwitchDefaultFlagsTest, EditorModeHasCorrectState) {
   const EditorMode& expected_mode = std::get<1>(test_case);
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
-      /*enabled_features=*/{chromeos::features::kOrca,
-                            chromeos::features::kFeatureManagementOrca},
+      /*enabled_features=*/{chromeos::features::kFeatureManagementOrca},
       /*disabled_features=*/{ash::features::kOrcaUseAccountCapabilities});
 
-  EditorSwitch editor_switch(&switch_observer_, profile_.get(), &context_);
+  EditorSwitch editor_switch(&switch_observer_, profile_.get(),
+                             /*manta_service=*/nullptr, &context_);
   context_.OnTabletModeUpdated(false);
   context_.OnActivateIme(engine_id);
   context_.OnInputContextUpdated(
@@ -905,15 +904,15 @@ TEST_P(EditorSwitchAllFlagsEnabledTest, EditorModeHasCorrectState) {
   const EditorMode& expected_mode = std::get<1>(test_case);
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeatures(
-      /*enabled_features=*/{chromeos::features::kOrca,
-                            chromeos::features::kFeatureManagementOrca,
+      /*enabled_features=*/{chromeos::features::kFeatureManagementOrca,
                             features::kOrcaDanish, features::kOrcaDutch,
                             features::kOrcaFinnish, features::kOrcaItalian,
                             features::kOrcaNorwegian, features::kOrcaPortugese,
                             features::kOrcaSpanish, features::kOrcaSwedish},
       /*disabled_features=*/{ash::features::kOrcaUseAccountCapabilities});
 
-  EditorSwitch editor_switch(&switch_observer_, profile_.get(), &context_);
+  EditorSwitch editor_switch(&switch_observer_, profile_.get(),
+                             /*manta_service=*/nullptr, &context_);
   context_.OnTabletModeUpdated(false);
   context_.OnActivateIme(engine_id);
   context_.OnInputContextUpdated(
@@ -933,10 +932,12 @@ TEST(EditorSwitchTest, AllowedForUseForGooglers) {
   FakeSystem system;
   FakeEditorContextObserver context_observer;
   FakeEditorSwitchObserver switch_observer;
-  EditorGeolocationMockProvider geolocation_provider("unknown_country");
-  EditorContext context(&context_observer, &system, &geolocation_provider);
+  EditorContext context(
+      &context_observer, &system,
+      std::make_unique<EditorGeolocationMockProvider>("unknown_country"));
   EditorSwitch editor_switch(/*observer=*/&switch_observer,
                              /*profile=*/profile.get(),
+                             /*manta_service=*/nullptr,
                              /*context=*/&context);
 
   EXPECT_TRUE(editor_switch.IsAllowedForUse());
